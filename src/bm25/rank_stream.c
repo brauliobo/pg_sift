@@ -8,6 +8,8 @@
  */
 #include "rank_int.h"
 
+#include "core/cmp.h"
+
 /* A walk in ascending gid over the superblocks one scoring leaf has postings in, in one segment */
 typedef struct SiftLeafBoundCur
 {
@@ -16,6 +18,10 @@ typedef struct SiftLeafBoundCur
 	int			nterms;
 	const RkTerm *terms;
 	int		   *tpos;			/* [nterms] the next entry of each term's bounds */
+	GidEnt	   *theap;			/* the terms that are not done, by the gid at their position */
+	int			nth;
+	int		   *stk;			/* [nterms] scratch of lbcur_ub */
+	int		   *hit;			/* [nterms] ditto */
 	uint32		cur_gid;		/* the smallest gid at the terms' positions, UINT32_MAX when they are all done */
 } SiftLeafBoundCur;
 
@@ -28,6 +34,12 @@ struct UnitStream
 	int			seed_i;			/* the first seed the walk has not passed */
 	int			ncur;			/* cursors of the scoring leaves that have terms in the segment, by ascending lmax */
 	SiftLeafBoundCur *cur;
+	int			pivot;			/* the cursors below it are non-essential (a union search): the leaves below it cannot lift a document over theta */
+	float4		below;			/* the sum of their lmax */
+	GidEnt	   *eheap;			/* the essential cursors by the gid they stand on, as of their last move */
+	int			neh;
+	int		   *stk;			/* [ncur] scratch of the heap walks */
+	int		   *hit;			/* [ncur] the essential cursors on the superblock being made */
 	int			nreq;			/* a conjunctive search is driven by the leaves its root AND requires: their cursors */
 	SiftLeafBoundCur **req;
 	bool		dead;			/* a required leaf has no term in the segment: no unit */
@@ -65,29 +77,37 @@ gb_lower(const SiftGroupBounds *gb, int n, int pos, uint32 target)
 	return hi;
 }
 
+/* The terms are walked through a heap: a leaf of thousands of terms (a pattern) costs the terms that move, not all of them, in a superblock */
 static void
 lbcur_settle(SiftLeafBoundCur *c)
 {
-	c->cur_gid = UINT32_MAX;
+	c->nth = 0;
 	for (int i = 0; i < c->nterms; i++)
 		if (c->tpos[i] < c->terms[i].ngb)
-			c->cur_gid = Min(c->cur_gid, c->terms[i].gb[c->tpos[i]].gid);
+			c->theap[c->nth++] = (GidEnt) {c->terms[i].gb[c->tpos[i]].gid, i};
+	gidheap_build(c->theap, c->nth);
+	c->cur_gid = c->nth > 0 ? c->theap[0].gid : UINT32_MAX;
 }
 
 static void
 lbcur_advance_to(SiftLeafBoundCur *c, uint32 target)
 {
-	if (c->cur_gid >= target)
-		return;
-	for (int i = 0; i < c->nterms; i++)
+	while (c->nth > 0 && c->theap[0].gid < target)
+	{
+		int			i = c->theap[0].idx;
+
 		c->tpos[i] = gb_lower(c->terms[i].gb, c->terms[i].ngb, c->tpos[i], target);
-	lbcur_settle(c);
+		gidheap_top_to(c->theap, &c->nth, c->tpos[i] < c->terms[i].ngb ? c->terms[i].gb[c->tpos[i]].gid : UINT32_MAX);
+	}
+	c->cur_gid = c->nth > 0 ? c->theap[0].gid : UINT32_MAX;
 }
 
 /* The leaf's bounds in superblock gid, which the cursor stands on: the max over its terms there, as leaf_bounds merges them */
 static void
-lbcur_ub(const SiftLeafBoundCur *c, uint32 gid, float4 *ub)
+lbcur_ub(SiftLeafBoundCur *c, uint32 gid, float4 *ub)
 {
+	int			nhit;
+
 	memset(ub, 0, SIFT_BLKS_PER_SB * sizeof(float4));
 	if (c->nterms == 1)
 	{
@@ -97,14 +117,13 @@ lbcur_ub(const SiftLeafBoundCur *c, uint32 gid, float4 *ub)
 			sift_kern->ub_accum(ub, t->gb[c->tpos[0]].blk_bound, t->ubw, SIFT_BLKS_PER_SB);
 		return;
 	}
-	for (int i = 0; i < c->nterms; i++)
+	nhit = gidheap_at(c->theap, c->nth, gid, c->stk, c->hit);
+	for (int h = 0; h < nhit; h++)
 	{
-		const RkTerm *t = &c->terms[i];
+		const RkTerm *t = &c->terms[c->hit[h]];
 		float4		v[SIFT_BLKS_PER_SB] = {0};
 
-		if (c->tpos[i] >= t->ngb || t->gb[c->tpos[i]].gid != gid)
-			continue;
-		sift_kern->ub_accum(v, t->gb[c->tpos[i]].blk_bound, t->ubw, SIFT_BLKS_PER_SB);
+		sift_kern->ub_accum(v, t->gb[c->tpos[c->hit[h]]].blk_bound, t->ubw, SIFT_BLKS_PER_SB);
 		for (int k = 0; k < SIFT_BLKS_PER_SB; k++)
 			ub[k] = Max(ub[k], v[k]);
 	}
@@ -146,6 +165,9 @@ stream_make(SiftRanker *r, int s)
 	st->req = MemoryContextAllocZero(cx, nleaves * sizeof(SiftLeafBoundCur *));
 	st->ubp = MemoryContextAllocZero(cx, nleaves * sizeof(float4 *));
 	st->ubuf = MemoryContextAllocZero(cx, nleaves * sizeof(*st->ubuf));
+	st->eheap = MemoryContextAllocZero(cx, nleaves * sizeof(GidEnt));
+	st->stk = MemoryContextAllocZero(cx, nleaves * sizeof(int));
+	st->hit = MemoryContextAllocZero(cx, nleaves * sizeof(int));
 	for (int i = 0; i < p->nleaves; i++)
 	{
 		SiftLeafBoundCur *c;
@@ -164,6 +186,9 @@ stream_make(SiftRanker *r, int s)
 		c = &st->cur[j];
 		*c = (SiftLeafBoundCur) {.leaf = i,.lmax = rs->lmax[i],.nterms = p->leaves[i].nterms[s],.terms = rs->term + rs->first[i]};
 		c->tpos = MemoryContextAllocZero(cx, c->nterms * sizeof(int));
+		c->theap = MemoryContextAllocZero(cx, c->nterms * sizeof(GidEnt));
+		c->stk = MemoryContextAllocZero(cx, c->nterms * sizeof(int));
+		c->hit = MemoryContextAllocZero(cx, c->nterms * sizeof(int));
 		st->ncur++;
 	}
 	if (r->mode == SIFT_RM_CONJUNCTIVE)
@@ -294,6 +319,44 @@ rank_seed_units(SiftRanker *r, Unit *seed)
 	return nseed;
 }
 
+/* The essential cursors, those from the pivot up, by the gid they stand on */
+static void
+ecur_build(UnitStream *st)
+{
+	st->neh = 0;
+	for (int k = st->pivot; k < st->ncur; k++)
+		if (st->cur[k].cur_gid != UINT32_MAX)
+			st->eheap[st->neh++] = (GidEnt) {st->cur[k].cur_gid, k};
+	gidheap_build(st->eheap, st->neh);
+}
+
+/* The smallest gid an essential cursor stands on: the keys that lag behind their cursor are refreshed from the top */
+static uint32
+ecur_min_gid(UnitStream *st)
+{
+	while (st->neh > 0 && st->eheap[0].gid != st->cur[st->eheap[0].idx].cur_gid)
+		gidheap_top_to(st->eheap, &st->neh, st->cur[st->eheap[0].idx].cur_gid);
+	return st->neh > 0 ? st->eheap[0].gid : UINT32_MAX;
+}
+
+/* Brings the essential cursors up to gid and lists in st->hit, by ascending position, the ones standing on it */
+static int
+ecur_on(UnitStream *st, uint32 gid)
+{
+	int			nhit;
+
+	while (ecur_min_gid(st) < gid)
+	{
+		SiftLeafBoundCur *c = &st->cur[st->eheap[0].idx];
+
+		lbcur_advance_to(c, gid);
+		gidheap_top_to(st->eheap, &st->neh, c->cur_gid);
+	}
+	nhit = gidheap_at(st->eheap, st->neh, gid, st->stk, st->hit);
+	qsort(st->hit, nhit, sizeof(int), sift_cmp_i32);
+	return nhit;
+}
+
 UnitStream *
 unit_stream_open(SiftRanker *r, int s, const Unit *seed, int nseed)
 {
@@ -311,6 +374,9 @@ unit_stream_open(SiftRanker *r, int s, const Unit *seed, int nseed)
 		memset(st->cur[k].tpos, 0, st->cur[k].nterms * sizeof(int));
 		lbcur_settle(&st->cur[k]);
 	}
+	st->pivot = 0;
+	st->below = 0;
+	ecur_build(st);
 	return st->dead ? NULL : st;
 }
 
@@ -360,37 +426,54 @@ stream_aligned_gid(UnitStream *st)
 	}
 }
 
+/* Moves the essential cursors that stand on gid or before it past it */
+static void
+ecur_past(UnitStream *st, uint32 gid)
+{
+	while (ecur_min_gid(st) <= gid)
+	{
+		SiftLeafBoundCur *c = &st->cur[st->eheap[0].idx];
+
+		lbcur_advance_to(c, gid + 1);
+		gidheap_top_to(st->eheap, &st->neh, c->cur_gid);
+	}
+}
+
 /*
  * The first leaf (cursors are by ascending lmax) whose bound, with those below it, can lift a document over theta, and the smallest gid
- * those from it up have postings in: the superblocks only the leaves below it have are no unit. The last leaf is always essential.
+ * those from it up have postings in: the superblocks only the leaves below it have are no unit. The last leaf is always essential. The
+ * threshold only rises, so the pivot only moves up, and the cursors that fell below it are no longer looked at but where a unit needs them.
  */
 static uint32
-stream_union_gid(const UnitStream *st, float4 theta, int *pivot, float4 *below)
+stream_union_gid(UnitStream *st, float4 theta)
 {
-	uint32		gid = UINT32_MAX;
+	int			pivot = st->pivot;
 
-	*pivot = 0;
-	*below = 0;
-	while (*pivot < st->ncur - 1 && *below + st->cur[*pivot].lmax <= theta)
-		*below += st->cur[(*pivot)++].lmax;
-	for (int k = *pivot; k < st->ncur; k++)
-		gid = Min(gid, st->cur[k].cur_gid);
-	return gid;
+	SIFT_INVARIANT(pivot == 0 || st->below <= theta, "sift: the threshold of a search fell from %g to %g", st->below, theta);
+	while (pivot < st->ncur - 1 && st->below + st->cur[pivot].lmax <= theta)
+		st->below += st->cur[pivot++].lmax;
+	if (pivot != st->pivot)
+	{
+		st->pivot = pivot;
+		ecur_build(st);
+	}
+	return ecur_min_gid(st);
 }
 
 /* The unit of superblock gid, false when no unit is worth ranking; the leaves below the pivot are looked at only if the others do not rule it out */
 static bool
-stream_unit(UnitStream *st, uint32 gid, int pivot, float4 below, float4 theta, Unit *u)
+stream_unit(UnitStream *st, uint32 gid, float4 theta, Unit *u)
 {
 	SiftPlan   *p = st->r->plan;
-	float4		ub = below;
+	int			pivot = st->pivot,
+				non = ecur_on(st, gid);
+	float4		ub = st->below;
 
 	memset(st->ubp, 0, Max(p->nleaves, 1) * sizeof(float4 *));
-	for (int k = pivot; k < st->ncur; k++)
+	for (int h = 0; h < non; h++)
 	{
-		SiftLeafBoundCur *c = &st->cur[k];
+		SiftLeafBoundCur *c = &st->cur[st->hit[h]];
 
-		lbcur_advance_to(c, gid);
 		if (c->cur_gid != gid)
 			continue;
 		lbcur_ub(c, gid, st->ubuf[c->leaf]);
@@ -421,9 +504,7 @@ unit_stream_next(UnitStream *st, const SiftTopK *tk, Unit *u)
 
 	for (;;)
 	{
-		float4		theta = sift_kern_topk_theta(tk),
-					below = 0;
-		int			pivot = 0;
+		float4		theta = sift_kern_topk_theta(tk);
 		uint32		gid;
 		bool		made = false;
 
@@ -435,17 +516,15 @@ unit_stream_next(UnitStream *st, const SiftTopK *tk, Unit *u)
 		else if (st->nreq > 0)
 			gid = stream_aligned_gid(st);
 		else
-			gid = stream_union_gid(st, theta, &pivot, &below);
+			gid = stream_union_gid(st, theta);
 		if (gid == UINT32_MAX)
 			return false;
 		if (!stream_seeded(st, gid))
-			made = rs->inverted ? unit_at(st, gid, u) : stream_unit(st, gid, pivot, below, theta, u);
+			made = rs->inverted ? unit_at(st, gid, u) : stream_unit(st, gid, theta, u);
 		if (rs->inverted)
 			st->bridge_i++;
 		else
-			for (int k = 0; k < st->ncur; k++)
-				if (st->cur[k].cur_gid == gid)
-					lbcur_advance_to(&st->cur[k], gid + 1);
+			ecur_past(st, gid);
 		if (made && !(u->maxub > theta))
 		{
 			r->plan->stats.blocks_skipped += u->nblk;

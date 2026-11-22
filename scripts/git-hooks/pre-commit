@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Opt-in pre-commit hook: the complexity check on the C sources that differ from HEAD (make dev-check runs the others).
+#   git config core.hooksPath scripts/git-hooks
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+git diff --cached --name-only --diff-filter=ACMR -- '*.c' '*.h' | grep -q . || exit 0
+scripts/check-complexity.sh --diff HEAD

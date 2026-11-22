@@ -143,6 +143,20 @@ cache_find(const SqCache *c, uint32 chunk)
 	return -1;
 }
 
+static inline bool
+slot_held(const SqSlot *sl)
+{
+	return sl->valid && (__atomic_load_n(&sl->pins, __ATOMIC_RELAXED) > 0 || sl->dirty);
+}
+
+static void
+cache_recount_held(SqCache *c)
+{
+	c->nheld = 0;
+	for (uint32 i = 0; i < c->hard; i++)
+		c->nheld += slot_held(&c->slot[i]);
+}
+
 static void
 cache_unlink(SqCache *c, uint32 s)
 {
@@ -235,8 +249,14 @@ cache_get(SqStore *st, uint32 unit)
 	}
 	if (st->shared)
 		elog(ERROR, "sift: chunk %u of \"%s\" is not cached in a parallel scan", unit, st->name);
-	while (c->nvalid >= c->soft && cache_evict_one(c))
+	while (c->nvalid >= c->soft && c->nvalid > c->nheld && cache_evict_one(c))
 		;
+	if (c->nfree == 0 && st->ndirty > 0)
+	{
+		sq_store_flush_pages(st);			/* the edited units are written back, and can go */
+		while (c->nvalid >= c->soft && c->nvalid > c->nheld && cache_evict_one(c))
+			;
+	}
 	if (c->nfree == 0)
 		elog(ERROR, "sift: the cache of \"%s\" is full of pinned chunks (%u)", st->name, c->hard);
 	s = c->freelist[--c->nfree];
@@ -264,7 +284,11 @@ cache_invalidate(SqStore *st)
 			c->slot[i].queued = 0;
 			cache_unlink(c, i);
 		}
+	if (c)
+		cache_recount_held(c);
 	st->ndirty = 0;
+	sq_store_close_del_segs(st);
+	sift_host_segcache_drop_rel(st->rel.rd_locator.relNumber);
 	st->epoch++;
 	st->rel.rd_locator.relNumber = (st->serial << 12) + (st->epoch & 0xFFF);
 }
@@ -297,6 +321,35 @@ sq_store_set_cache(SqStore *st, int cache_kib)
 }
 
 void
+sq_store_close_del_segs(SqStore *st)
+{
+	for (int i = 0; i < st->ndel_segs; i++)
+		sift_seg_close(st->del_seg[i]);
+	st->ndel_segs = 0;
+	if (st->del_cx)
+		MemoryContextReset(st->del_cx);
+}
+
+/* The segment of e, open for the deletes of a run: opened by the first, with the entry the directory has now */
+SiftSegment *
+sq_store_del_seg(SqStore *st, const SiftSegEntry *e)
+{
+	SiftSegment *seg;
+
+	for (int i = 0; i < st->ndel_segs; i++)
+		if (st->del_seg[i]->entry.gen == e->gen)
+		{
+			st->del_seg[i]->entry = *e;
+			return st->del_seg[i];
+		}
+	if (st->del_cx == NULL)
+		st->del_cx = AllocSetContextCreate(NULL, "sift deletes", ALLOCSET_DEFAULT_SIZES);
+	seg = sift_seg_open(sq_store_rel(st), e, st->del_cx);
+	st->del_seg[st->ndel_segs++] = seg;
+	return seg;
+}
+
+void
 sq_store_recover(SqStore *st)
 {
 	SqCache    *c = st->cache;
@@ -305,6 +358,8 @@ sq_store_recover(SqStore *st)
 		c->all_held = false;
 	for (uint32 i = 0; c && i < c->hard; i++)
 		c->slot[i].pins = 0;
+	if (c)
+		cache_recount_held(c);
 	__atomic_store_n(&st->npinned, 0, __ATOMIC_RELAXED);
 	close_blobs(st);
 }
@@ -343,6 +398,8 @@ void
 sq_store_set_shared(SqStore *st, bool on)
 {
 	st->shared = on;
+	if (!on && st->cache)
+		cache_recount_held(st->cache);
 }
 
 /* ---------- lifecycle ---------- */
@@ -373,6 +430,10 @@ void
 sq_store_free(SqStore *st)
 {
 	finalize_all(st);
+	sq_store_close_del_segs(st);
+	if (st->del_cx)
+		MemoryContextDelete(st->del_cx);
+	sift_host_segcache_drop_rel(st->rel.rd_locator.relNumber);
 	cache_free(st->cache);
 	free(st->dir);
 	free(st->dirty);
@@ -588,8 +649,11 @@ ReadBuffer(Relation rel, BlockNumber blkno)
 {
 	SqStore    *st = rel->store;
 	uint32		s = cache_get(st, blkno / st->P);
+	SqSlot	   *sl = &st->cache->slot[s];
 
-	__atomic_fetch_add(&st->cache->slot[s].pins, 1, __ATOMIC_ACQUIRE);
+	if (!st->shared && !slot_held(sl))
+		st->cache->nheld++;
+	__atomic_fetch_add(&sl->pins, 1, __ATOMIC_ACQUIRE);
 	__atomic_fetch_add(&st->npinned, 1, __ATOMIC_RELAXED);
 	return slot_data(st, s) + (size_t) (blkno % st->P) * SQ_PAGE;
 }
@@ -606,6 +670,8 @@ sq_unpin(Buffer buf)
 	if (__atomic_load_n(&sl->pins, __ATOMIC_RELAXED) > 0)
 	{
 		__atomic_fetch_sub(&sl->pins, 1, __ATOMIC_RELEASE);
+		if (!st->shared && !slot_held(sl))
+			st->cache->nheld--;
 		__atomic_fetch_sub(&st->npinned, 1, __ATOMIC_RELAXED);
 		__atomic_store_n(&st->cache->all_held, false, __ATOMIC_RELAXED);
 	}
@@ -633,6 +699,8 @@ GenericXLogRegisterBuffer(GenericXLogState *state, Buffer buf, int flags)
 	uint32		s = slot_index(st, buf);
 	SqSlot	   *sl = &st->cache->slot[s];
 
+	if (!slot_held(sl))
+		st->cache->nheld++;
 	sl->dirty |= 1 << ((buf - slot_data(st, s)) / SQ_PAGE);
 	st->changed = true;				/* a rollback must drop the edit */
 	if (!sl->queued)
@@ -702,6 +770,8 @@ sq_store_flush_pages(SqStore *st)
 			}
 		sl->dirty = 0;
 		sl->queued = 0;
+		if (!slot_held(sl))
+			st->cache->nheld--;
 	}
 	if (st->ndirty)
 		st->cache->all_held = false;

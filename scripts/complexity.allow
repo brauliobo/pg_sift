@@ -1,0 +1,143 @@
+# scripts/complexity.allow - baseline ratchet of scripts/check-complexity.sh: the sites of each rule a file has today.
+# Columns (tab-separated): RULE	PATH	COUNT	REASON
+#   - foreach-node-raw never has a row (a hard zero).
+#   - A new site, or a COUNT above the row, fails. A fixed site lowers the actual count under the row and fails too until the row is lowered or deleted,
+#     so the list shrinks to zero. A new row is not the fix: the site gets the geometric growth, the cursor or the single sort.
+#   - Rows are sorted by RULE, then PATH (LC_ALL=C). Refresh: scripts/check-complexity.sh --list > scripts/complexity.allow
+bit-by-bit-u64	src/col/skip/probe.c	1	a bounded loop outside the hot path
+bsearch-in-seq-loop	src/col/f2/compact.c	1	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/col/f2/f2_write.c	1	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/col/f2/l0_stage.c	2	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/col/f2/part_vis.c	1	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/col/granule/granule_filter.c	1	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/col/v1/preagg/dsets.c	1	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/table/f2/f2_vacuum.c	1	an unsorted or random-order probe list
+bsearch-in-seq-loop	src/table/v1/vers.c	1	an unsorted or random-order probe list
+hash-seq-hot	src/agg/search.c	1	a bounded table walked once per call
+hash-seq-hot	src/bm25/facet.c	1	a bounded table walked once per call
+hash-seq-hot	src/bm25/wbind.c	2	a bounded table walked once per call
+hash-seq-hot	src/col/am/cache.c	1	a bounded table walked once per call
+hash-seq-hot	src/col/f2/f2_gbuf.c	2	a bounded table walked once per call
+hash-seq-hot	src/col/f2/f2_store.c	1	a bounded table walked once per call
+hash-seq-hot	src/col/keystore/keystore_view.c	2	a bounded table walked once per call
+hash-seq-hot	src/col/v1/seg/dead.c	1	a bounded table walked once per call
+hash-seq-hot	src/col/v1/tomblog.c	2	a bounded table walked once per call
+hash-seq-hot	src/core/dirchain.c	1	a bounded table walked once per call
+hash-seq-hot	src/core/v1_col/tomb.c	1	a bounded table walked once per call
+hash-seq-hot	src/table/f2/f2_gcache.c	1	a bounded table walked once per call
+hash-seq-hot	src/table/v1/store.c	2	a bounded table walked once per call
+manifest-unbounded	src/col/f2/compact.c	3	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/delete.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/delvec_delta.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_cache.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_check.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_drop_parts.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_granules.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_inspect.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_kll_sql.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_maint.c	6	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_pack.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_proj_build.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_scope.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_scope_build.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_scope_cur.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_tail.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_tier_check.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_tier_maint.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_vacuum_run.c	4	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_write.c	3	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/l0_href.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/l0_href_fetch.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/l0_slab.c	3	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/l0_stage.c	4	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/part_format.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/pend_del.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/f2/f2_progress.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/f2/manifest/part_edit.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/f2/vis_f2.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/progress.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/sql_api.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/sql_parts.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/core/sql_status.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/table/f2/f2_col_delta_io.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/table/f2/f2_ddl.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/table/f2/f2_row_state.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/table/f2/f2_vacuum.c	2	maintenance or inspection of a whole relation
+mem-alloc-hot	src/agg/rows.c	2	a census or a budget check; the call is not per row
+mem-alloc-hot	src/agg/spill/stream.c	1	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/f2/f2_cache.c	1	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/f2/f2_gbuf.c	1	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/v1/build/run.c	2	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/v1/scan/gmem.c	3	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/v1/tomblog.c	1	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/v1/wbuf/batches.c	2	a census or a budget check; the call is not per row
+mem-alloc-hot	src/table/f2/f2_gcache.c	1	a census or a budget check; the call is not per row
+mem-alloc-hot	src/table/v1/gscan_cache.c	1	a census or a budget check; the call is not per row
+memmove-in-loop	src/agg/dist/convert.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/agg/filter_adapt.c	1	bounded: at most SIFT_AFILT_MAX (64) entries, a shift of at most 128 bytes
+memmove-in-loop	src/agg/spec_fuse/build.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/agg/v6/v6_fuse.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/col/f2/part_format.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/col/scope_v6/cube.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/col/v1/build/build.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/col/v1/order.c	2	a bounded array shifted in a cold path
+memmove-in-loop	src/col/v1/preagg_opt.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/col/v1/seg/net.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/col/v1/wbuf/batches.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/core/f2/fsm.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/core/f2/fsm/slab.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/core/f2/manifest.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/core/freelist_alloc.c	1	a bounded array shifted in a cold path
+memmove-in-loop	src/core/jsonbuild.c	1	a bounded array shifted in a cold path
+qsort-in-loop	src/bm25/build_runs.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/bm25/cscan_exec.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/bm25/runs/runs.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/f2/compact_plan.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/f2/delete.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/f2/rowbuf_cluster.c	2	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/scope_v6/assemble.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/col/scope_v6/topk.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/core/f2/manifest/scopedir.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/core/space.c	1	one sort of a fresh temporary array per outer bucket
+repalloc-additive	src/agg/init_table.c	4	additive growth of the join-filter arrays: Spec 66 ON-RES-09 (lane 66A) makes it geometric
+repalloc-additive	src/agg/part/tests.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/agg/stream_exec.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/agg/v6/group.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/agg/v6/plan.c	3	additive growth of the aggregate and function lists: Spec 66 ON-RES-04 (lane 66A) makes it geometric
+repalloc-additive	src/agg/v6/scope_v6.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/agg/v6/scope_v6_run.c	2	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/bm25/eval.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/compact.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/f2_proj_agg.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/f2_scan.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/f2_scope_build.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/f2_scope_over.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/f2_tail.c	3	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/f2_tier_policy.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/l0_stage.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/f2/pend_del.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/scope_v6/build.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/scope_v6/refresh.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/batch.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/build/from_index.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/maint/scope.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/order.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/scan/point.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/scan/scope.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/col/v1/seg/points.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/core/f2/manifest/projdir.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/core/lane.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/core/maint.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/core/v1_col/tomb_write.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/core/verify.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/table/f2/f2_col_delta_fold.c	2	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+repalloc-additive	src/table/v1/src.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
+spinlock-loop	src/agg/lookshm.c	11	a fixed number of slots of a shared table
+spinlock-loop	src/agg/verdict.c	4	a fixed number of slots of a shared table
+spinlock-loop	src/col/dictshm.c	5	a fixed number of slots of a shared table
+spinlock-loop	src/col/leafshm.c	5	a fixed number of slots of a shared table
+spinlock-loop	src/col/shmstatus.c	1	a fixed number of slots of a shared table
+spinlock-loop	src/col/v1/rollup.c	8	a fixed number of slots of a shared table
+spinlock-loop	src/col/v1/wbuf/arena.c	5	a fixed number of slots of a shared table
+spinlock-loop	src/core/progress.c	2	a fixed number of slots of a shared table
+spinlock-loop	src/core/quarantine.c	3	a fixed number of slots of a shared table

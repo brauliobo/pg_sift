@@ -77,4 +77,15 @@ row_stmt_give_back(SqVtab *vt, sqlite3_stmt *q)
 		vt->rowstmt = q;
 }
 
+/* The statements on the content table name it: finalized where it is renamed, dropped or the table goes */
+static inline void
+sq_vtab_reset_stmts(SqVtab *vt)
+{
+	sqlite3_finalize(vt->rowstmt);
+	sqlite3_finalize(vt->ins_stmt);
+	sqlite3_finalize(vt->upd_stmt);
+	sqlite3_finalize(vt->del_stmt);
+	vt->rowstmt = vt->ins_stmt = vt->upd_stmt = vt->del_stmt = NULL;
+}
+
 #endif							/* SIFT_VTAB_INT_H */

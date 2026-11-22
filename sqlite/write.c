@@ -126,50 +126,82 @@ any_dirty(const SqVtab *vt)
 
 /* ---------- writes ---------- */
 
+/* The statement of one row of the content table, prepared once for as long as the table keeps its name (sq_vtab_reset_stmts) */
+static sqlite3_stmt *
+content_stmt(SqVtab *vt, sqlite3_stmt **slot, char *(*sql_of) (SqVtab *))
+{
+	if (*slot == NULL)
+	{
+		char	   *sql = sql_of(vt);
+		int			rc = sqlite3_prepare_v3(vt->db, sql, -1, SQLITE_PREPARE_PERSISTENT, slot, NULL);
+
+		sqlite3_free(sql);
+		if (rc != SQLITE_OK)
+			elog(ERROR, "sift: %s", sqlite3_errmsg(vt->db));
+	}
+	return *slot;
+}
+
+static char *
+insert_sql(SqVtab *vt)
+{
+	sqlite3_str *s = sqlite3_str_new(vt->db);
+	char	   *t = shadow(vt, "content");
+
+	sqlite3_str_appendf(s, "INSERT INTO %s(id", t);
+	for (int i = 0; i < vt->ncols; i++)
+		sqlite3_str_appendf(s, ", c%d", i);
+	sqlite3_str_appendf(s, ") VALUES(?1");
+	for (int i = 0; i < vt->ncols; i++)
+		sqlite3_str_appendf(s, ", ?%d", i + 3);
+	sqlite3_str_appendf(s, ")");
+	sqlite3_free(t);
+	return sqlite3_str_finish(s);
+}
+
+static char *
+update_sql(SqVtab *vt)
+{
+	sqlite3_str *s = sqlite3_str_new(vt->db);
+	char	   *t = shadow(vt, "content");
+
+	sqlite3_str_appendf(s, "UPDATE %s SET id = ?1", t);
+	for (int i = 0; i < vt->ncols; i++)
+		sqlite3_str_appendf(s, ", c%d = ?%d", i, i + 3);
+	sqlite3_str_appendf(s, " WHERE id = ?2");
+	sqlite3_free(t);
+	return sqlite3_str_finish(s);
+}
+
+static char *
+delete_sql(SqVtab *vt)
+{
+	char	   *t = shadow(vt, "content"),
+			   *sql = sqlite3_mprintf("DELETE FROM %s WHERE id = ?1", t);
+
+	sqlite3_free(t);
+	return sql;
+}
+
+/* Runs a statement of the content table to its end, whatever its result, and leaves it ready for the next row */
+static void
+content_run(SqVtab *vt, sqlite3_stmt *q)
+{
+	int			rc = sqlite3_step(q);
+	char	   *msg = rc == SQLITE_DONE ? NULL : sqlite3_mprintf("%s", sqlite3_errmsg(vt->db));
+
+	sqlite3_reset(q);
+	sqlite3_clear_bindings(q);
+	if (msg)
+		sq_error_set(ERRCODE_INTERNAL_ERROR, "%s", msg);
+}
+
 /* The internal content table: INSERT or UPDATE of one row, whose rowid is returned */
 static void
 content_write(SqVtab *vt, sqlite3_int64 oldid, sqlite3_value *newid, sqlite3_value **cols, sqlite3_int64 *rowid)
 {
-	char	   *t = shadow(vt, "content"),
-			   *cl = col_list(vt, ""),
-			   *sql;
-	sqlite3_stmt *q;
-	int			rc;
+	sqlite3_stmt *q = oldid >= 0 ? content_stmt(vt, &vt->upd_stmt, update_sql) : content_stmt(vt, &vt->ins_stmt, insert_sql);
 
-	if (oldid >= 0)
-	{
-		char	   *set = sqlite3_mprintf("id = ?1");
-
-		for (int i = 0; i < vt->ncols; i++)
-		{
-			char	   *s = sqlite3_mprintf("%s, c%d = ?%d", set, i, i + 3);
-
-			sqlite3_free(set);
-			set = s;
-		}
-		sql = sqlite3_mprintf("UPDATE %s SET %s WHERE id = ?2", t, set);
-		sqlite3_free(set);
-	}
-	else
-	{
-		char	   *ph = sqlite3_mprintf("?1");
-
-		for (int i = 0; i < vt->ncols; i++)
-		{
-			char	   *s = sqlite3_mprintf("%s, ?%d", ph, i + 3);
-
-			sqlite3_free(ph);
-			ph = s;
-		}
-		sql = sqlite3_mprintf("INSERT INTO %s(id, %s) VALUES(%s)", t, cl, ph);
-		sqlite3_free(ph);
-	}
-	rc = sqlite3_prepare_v2(vt->db, sql, -1, &q, NULL);
-	sqlite3_free(sql);
-	sqlite3_free(t);
-	sqlite3_free(cl);
-	if (rc != SQLITE_OK)
-		elog(ERROR, "sift: %s", sqlite3_errmsg(vt->db));
 	if (sqlite3_value_type(newid) == SQLITE_NULL)
 		sqlite3_bind_null(q, 1);
 	else
@@ -178,15 +210,7 @@ content_write(SqVtab *vt, sqlite3_int64 oldid, sqlite3_value *newid, sqlite3_val
 		sqlite3_bind_int64(q, 2, oldid);
 	for (int i = 0; i < vt->ncols; i++)
 		sqlite3_bind_value(q, i + 3, cols[i]);
-	rc = sqlite3_step(q);
-	if (rc != SQLITE_DONE)
-	{
-		char	   *msg = sqlite3_mprintf("%s", sqlite3_errmsg(vt->db));
-
-		sqlite3_finalize(q);
-		sq_error_set(ERRCODE_INTERNAL_ERROR, "%s", msg);
-	}
-	sqlite3_finalize(q);
+	content_run(vt, q);
 	*rowid = oldid >= 0 && sqlite3_value_type(newid) == SQLITE_NULL ? oldid : sqlite3_last_insert_rowid(vt->db);
 	if (oldid >= 0 && sqlite3_value_type(newid) != SQLITE_NULL)
 		*rowid = sqlite3_value_int64(newid);
@@ -204,14 +228,10 @@ index_remove(SqVtab *vt, sqlite3_int64 rowid)
 static void
 content_delete(SqVtab *vt, sqlite3_int64 rowid)
 {
-	char	   *t = shadow(vt, "content"),
-			   *sql = sqlite3_mprintf("DELETE FROM %s WHERE id = %lld", t, (long long) rowid);
-	int			rc = sqlite3_exec(vt->db, sql, NULL, NULL, NULL);
+	sqlite3_stmt *q = content_stmt(vt, &vt->del_stmt, delete_sql);
 
-	sqlite3_free(sql);
-	sqlite3_free(t);
-	if (rc != SQLITE_OK)
-		elog(ERROR, "sift: %s", sqlite3_errmsg(vt->db));
+	sqlite3_bind_int64(q, 1, rowid);
+	content_run(vt, q);
 }
 
 /* Reads every document of the content source again: the index is rebuilt from the text */
@@ -285,44 +305,102 @@ check_segment(SqVtab *vt, const SiftSegEntry *e)
 	return live;
 }
 
-typedef struct DocCheck
+/* The live documents of a segment, in rowid order */
+typedef struct IdxCursor
 {
-	sqlite3_stmt *q;
-	uint64		missing;
-	int64_t		first;
-} DocCheck;
+	SiftSegment *seg;
+	SiftSegCursor *c;
+	int64_t		id;				/* the rowid it is at */
+} IdxCursor;
 
-static void
-check_doc(void *arg, SiftKey key, uint16 dl)
+static bool
+idx_advance(IdxCursor *x)
 {
-	DocCheck   *d = arg;
-	int64_t		id = sq_key_rowid(key);
+	SiftKey		key;
+	uint16		dl;
 
-	sqlite3_bind_int64(d->q, 1, id);
-	if (sqlite3_step(d->q) != SQLITE_ROW && d->missing++ == 0)
-		d->first = id;
-	sqlite3_reset(d->q);
+	if (!sift_seg_cursor_doc(x->c, &key, &dl))
+		return false;
+	x->id = sq_key_rowid(key);
+	return true;
 }
 
-/* Every live document of the index is in the text, and the text has no others */
+static void
+heap_down(IdxCursor **h, int n, int i)
+{
+	for (;;)
+	{
+		int			w = i,
+					l = 2 * i + 1;
+
+		if (l < n && h[l]->id < h[w]->id)
+			w = l;
+		if (l + 1 < n && h[l + 1]->id < h[w]->id)
+			w = l + 1;
+		if (w == i)
+			return;
+		IdxCursor  *t = h[i];
+
+		h[i] = h[w];
+		h[w] = t;
+		i = w;
+	}
+}
+
+/* Every live document of the index is in the text, and the text has no others: the segments' rowids, merged by a heap, against the text's in rowid order */
 static void
 check_content(SqVtab *vt, uint64 live)
 {
 	const SiftDirSnapshot *dir = sq_store_dir(vt->st);
-	DocCheck	d = {0};
-	sqlite3_stmt *c;
-	int64_t		n = 0;
+	IdxCursor  *cur = palloc0(Max(dir->nsegs, 1) * sizeof(IdxCursor));
+	IdxCursor **heap = palloc(Max(dir->nsegs, 1) * sizeof(IdxCursor *));
+	sqlite3_stmt *c = source_stmt(vt, SRC_IDS, 0);
+	int			nheap = 0;
+	uint64		missing = 0;
+	int64_t		first = 0,
+				n = 0,
+				sid = 0;
+	bool		more;
 
-	d.q = source_stmt(vt, SRC_ID, 0);
 	for (int i = 0; i < dir->nsegs; i++)
-		sq_seg_live_docs(vt->st, &dir->segs[i], check_doc, &d);
-	sqlite3_finalize(d.q);
-	c = source_stmt(vt, SRC_IDS, 0);
-	while (sqlite3_step(c) == SQLITE_ROW)
-		n++;
+	{
+		cur[i].seg = sift_seg_open(sq_store_rel(vt->st), &dir->segs[i], CurrentMemoryContext);
+		cur[i].c = sift_seg_cursor(cur[i].seg, 0, NULL, 0);
+		if (idx_advance(&cur[i]))
+			heap[nheap++] = &cur[i];
+	}
+	for (int i = nheap / 2 - 1; i >= 0; i--)
+		heap_down(heap, nheap, i);
+	more = sqlite3_step(c) == SQLITE_ROW;
+	sid = more ? sqlite3_column_int64(c, 0) : 0;
+	while (more || nheap > 0)
+	{
+		bool		text_first = more && (nheap == 0 || sid <= heap[0]->id),
+					same = text_first && nheap > 0 && sid == heap[0]->id;
+
+		if (text_first)
+		{
+			n++;
+			more = sqlite3_step(c) == SQLITE_ROW;
+			sid = more ? sqlite3_column_int64(c, 0) : 0;
+		}
+		else if (missing++ == 0)
+			first = heap[0]->id;
+		if (!text_first || same)
+		{
+			if (!idx_advance(heap[0]))
+				heap[0] = heap[--nheap];
+			heap_down(heap, nheap, 0);
+		}
+	}
 	sqlite3_finalize(c);
-	if (d.missing)
-		BAD("%llu indexed documents are not in the text (first: rowid %lld)", (unsigned long long) d.missing, (long long) d.first);
+	for (int i = 0; i < dir->nsegs; i++)
+	{
+		sift_seg_cursor_close(cur[i].c);
+		sift_seg_close(cur[i].seg);
+	}
+	if (missing)
+		BAD("%llu indexed documents are not in the text (first: rowid %lld)", (unsigned long long) missing, (long long) first);
 	if (n != (int64_t) live)
 		BAD("the text has %lld documents, the index %llu", (long long) n, (unsigned long long) live);
 }

@@ -201,6 +201,7 @@ struct SiftMatchIter
 	const sift_grp **grp;		/* scratch: current group per segment */
 	int64		mpos;			/* next write buffer match */
 	uint32		next_sb;
+	int64		flt_pos;		/* the filter's superblock at or after next_sb */
 	uint32		sb_end;			/* the visited range ends before this superblock */
 	SiftNextRangeFn next_range;	/* parallel: where the next range comes from */
 	void	   *range_arg;
@@ -457,5 +458,7 @@ extern SIFT_INTERNAL bool doc_pass(SiftPlan *p, text *doc, float4 *score);
 /* iter.c */
 extern SIFT_INTERNAL sift_cur *seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *ic, MemoryContext cx);
 extern SIFT_INTERNAL bool iter_find_sb(SiftMatchIter *it, uint32 *sbp);
+extern SIFT_INTERNAL const SiftFilterSB *iter_filter_sb(const SiftMatchIter *it);
+extern SIFT_INTERNAL bool filter_page_mask(const SiftFilter *f, const SiftFilterSB *fs, int page, uint64 *mask);
 
 #endif							/* SIFT_EVAL_INT_H */

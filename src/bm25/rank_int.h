@@ -62,6 +62,82 @@ extern uint32 block_live(SiftPlan *p, RankSeg *rs, int b, float4 theta);
 extern void hot_forget(SiftRanker *r);
 extern void rank_spill_end(SiftRanker *r);
 
+/*
+ * A binary min-heap of walkers by the superblock they stand on, for the walks that merge many of them: the one at the top has the smallest gid.
+ * A key may lag behind its walker (walkers only move forward), so a reader refreshes the top until it is current.
+ */
+typedef struct GidEnt
+{
+	uint32		gid;
+	int			idx;
+} GidEnt;
+
+static inline void
+gidheap_down(GidEnt *h, int n, int i)
+{
+	GidEnt		e = h[i];
+
+	for (int c; (c = 2 * i + 1) < n; i = c)
+	{
+		if (c + 1 < n && h[c + 1].gid < h[c].gid)
+			c++;
+		if (h[c].gid >= e.gid)
+			break;
+		h[i] = h[c];
+	}
+	h[i] = e;
+}
+
+static inline void
+gidheap_build(GidEnt *h, int n)
+{
+	for (int i = n / 2 - 1; i >= 0; i--)
+		gidheap_down(h, n, i);
+}
+
+static inline void
+gidheap_push(GidEnt *h, int *n, GidEnt e)
+{
+	int			i = (*n)++;
+
+	for (; i > 0 && h[(i - 1) / 2].gid > e.gid; i = (i - 1) / 2)
+		h[i] = h[(i - 1) / 2];
+	h[i] = e;
+}
+
+/* The walker at the top now stands on gid (UINT32_MAX: it is done and leaves the heap) */
+static inline void
+gidheap_top_to(GidEnt *h, int *n, uint32 gid)
+{
+	if (gid == UINT32_MAX)
+		h[0] = h[--*n];
+	else
+		h[0].gid = gid;
+	if (*n > 0)
+		gidheap_down(h, *n, 0);
+}
+
+/* The walkers keyed gid, in no order, in out; stk is scratch of n entries */
+static inline int
+gidheap_at(const GidEnt *h, int n, uint32 gid, int *stk, int *out)
+{
+	int			nstk = 0,
+				nout = 0;
+
+	if (n > 0 && h[0].gid == gid)
+		stk[nstk++] = 0;
+	while (nstk > 0)
+	{
+		int			i = stk[--nstk];
+
+		out[nout++] = h[i].idx;
+		for (int c = 2 * i + 1; c <= 2 * i + 2 && c < n; c++)
+			if (h[c].gid == gid)
+				stk[nstk++] = c;
+	}
+	return nout;
+}
+
 /* The cursors of the narrowed leaves rewind when used first after a rewind of the segment */
 static inline void
 term_sync(RankSeg *rs, SiftPostingCursor *pc, uint32 *epoch)

@@ -234,6 +234,9 @@ typedef struct SqErrorFrame
 extern void sift_host_cache_lock(void);
 extern void sift_host_cache_unlock(void);
 
+/* The segment bytes the cache keeps under relation rel are never wanted again (host_stubs.c) */
+extern void sift_host_segcache_drop_rel(Oid rel);
+
 extern _Thread_local SqErrorFrame *sq_error_top;
 extern const char *sq_errmsg(void);
 extern int sq_errcode(void);

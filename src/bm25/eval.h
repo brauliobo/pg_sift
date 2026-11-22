@@ -288,6 +288,8 @@ typedef struct SiftEstimate
 } SiftEstimate;
 
 extern void sift_eval_estimate(Relation index, text **queries, int nqueries, SiftEstimate *est);
+/* The postings a bound plan reads, as sift_eval_estimate's: for a caller that has bound it already */
+extern double sift_plan_est_postings(const SiftPlan *plan);
 extern void sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est);
 
 #endif							/* SIFT_BM25_EVAL_H */

@@ -166,7 +166,7 @@ free_vtab(SqVtab *vt)
 		pp = &(*pp)->next;
 	if (*pp)
 		*pp = vt->next;
-	sqlite3_finalize(vt->rowstmt);
+	sq_vtab_reset_stmts(vt);
 	if (vt->st)
 		sq_store_free(vt->st);
 	if (vt->pend)
@@ -371,8 +371,7 @@ sqDestroy(sqlite3_vtab *pVtab)
 	SqStore    *prev = sq_store_enter(vt->st);
 	int			rc = SQLITE_OK;
 
-	sqlite3_finalize(vt->rowstmt);
-	vt->rowstmt = NULL;
+	sq_vtab_reset_stmts(vt);
 	SQ_TRY();
 	sq_store_drop_tables(vt->st);
 	if (vt->content == SQ_CONTENT_INTERNAL)
@@ -394,8 +393,7 @@ sqRename(sqlite3_vtab *pVtab, const char *newname)
 	static const char *const sfx[] = {"chunks", "segs", "meta", "config", "content"};
 	int			rc = SQLITE_OK;
 
-	sqlite3_finalize(vt->rowstmt);
-	vt->rowstmt = NULL;
+	sq_vtab_reset_stmts(vt);
 	sq_store_rename(vt->st, vt->name);		/* closes the store's statements and blob handles on the old names */
 	for (int i = 0; i < 5 && rc == SQLITE_OK; i++)
 	{

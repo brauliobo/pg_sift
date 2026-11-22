@@ -236,7 +236,6 @@ publish_merge(SiftIdx *ix, const Plan *plan, Merged *mg, int *oldg, uint32 *oldb
 		bytes += (int64) ix->sr->slot_blocks[segs[i].slot] * BLCKSZ;
 	ix->bytes = bytes;
 	ix->merges++;
-	ix->sr->any_dead = ix->ndead > 0;
 	WR_UNLOCK(ix);
 	mg->have = false;
 }

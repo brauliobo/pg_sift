@@ -220,9 +220,9 @@ slot_reserve(SiftIdx *ix)
 	int			slot = 0;
 
 	pthread_mutex_lock(&ix->wmu);
-	while (slot < SIFT_DELTA_SLOT && (ix->sr->slot_used[slot] || ix->slot_reserved[slot]))
+	while (slot < SIFT_DELTA2_SLOT && (ix->sr->slot_used[slot] || ix->slot_reserved[slot]))
 		slot++;
-	if (slot == SIFT_DELTA_SLOT)
+	if (slot == SIFT_DELTA2_SLOT)
 	{
 		pthread_mutex_unlock(&ix->wmu);
 		fail("sift: index \"%s\" has too many segments: merge it", ix->name);
@@ -264,34 +264,4 @@ rename_segment(SiftIdx *ix, SiftWriteTarget *wt, uint64 gen, ManSeg *ms, int *g,
 	sync_dir(ix->dir);
 	ms->slot = sift_wt_slot(wt);
 	*g = sift_map_path(final, ms->slot, blocks);
-}
-
-void
-delta_release(Delta *d)
-{
-	if (d == NULL || __atomic_sub_fetch(&d->refs, 1, __ATOMIC_ACQ_REL) > 0)
-		return;
-	if (d->g >= 0)
-		sift_unmap(d->g, d->blocks);
-	for (size_t i = 0; i < d->nd; i++)
-		free(d->text[i]);
-	free(d->dead);
-	free(d->dids);
-	free(d->dpks);
-	free(d->text);
-	free(d->tlen);
-	free(d);
-}
-
-/* Forgets the cached live segment (a writer published: the queue rows it was built over are in the segments) */
-void
-delta_drop(SiftIdx *ix)
-{
-	Delta	   *d;
-
-	pthread_mutex_lock(&ix->dmu);
-	d = ix->delta;
-	ix->delta = NULL;
-	pthread_mutex_unlock(&ix->dmu);
-	delta_release(d);
 }

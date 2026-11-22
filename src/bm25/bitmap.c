@@ -433,9 +433,10 @@ uint32_t sift_cur_gids(sift_cur *c, uint32_t *out)
 
 /*
  * The postings of an unused LIST cursor that sit on a set bit of dead[gid - lo] (bits NULL: none in that group), counted posting by
- * posting: no group is built for them. Another cursor answers all ones: the caller counts its groups.
+ * posting: no group is built for them. The postings outside the window [lo, lo + nsb) are another window's; one outside the
+ * segment's [seg_lo, seg_lo + seg_nsb) is corrupt. Another cursor answers all ones: the caller counts its groups.
  */
-uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, uint32_t nsb)
+uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, uint32_t nsb, uint32_t seg_lo, uint32_t seg_nsb)
 {
 	uint64_t n = 0;
 	uint32_t i = 0, tot = c->ls.n;
@@ -455,7 +456,8 @@ uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, u
 			uint32_t gid = SIFT_GID(x) - lo, row = SIFT_BLK(x) & (SIFT_GROUP_PAGES - 1), off = SIFT_OFF(x) - 1;
 			const sift_dead_sb *d;
 
-			if (gid >= nsb) sift_codec_corrupt("a posting lies outside the superblocks of its segment");
+			if (SIFT_GID(x) - seg_lo >= seg_nsb) sift_codec_corrupt("a posting lies outside the superblocks of its segment");
+			if (gid >= nsb) continue;
 			d = &dead[gid];
 			if (d->bits == NULL || (off >> 3) >= d->w) continue;
 			n += d->bits[(size_t) row * d->w + (off >> 3)] >> (off & 7) & 1;

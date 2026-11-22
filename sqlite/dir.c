@@ -227,6 +227,7 @@ sq_store_publish(SqStore *st, const SiftSegEntry *e)
 	CHECK(st, rc);
 	if (d->nsegs == SIFT_DIR_POLICY_MAX)
 		elog(ERROR, "sift: more than %d segments", SIFT_DIR_POLICY_MAX);
+	sq_store_close_del_segs(st);
 	d->segs[d->nsegs++] = *e;
 	d->meta.ndocs += e->ndocs;
 	d->meta.sum_dl += e->sum_dl;

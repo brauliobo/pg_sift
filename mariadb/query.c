@@ -24,8 +24,6 @@
 #include "bm25/kernels.h"
 #include "bm25/runs.h"
 
-#define DELTA_BUDGET	((Size) 256 << 20)
-#define DELTA_MAX_DOCS	500000
 #define RETRIES			8
 
 typedef struct Qry
@@ -50,257 +48,10 @@ typedef struct Qry
 	int64	   *fdocs;				/* documents the filter allows, ascending */
 	size_t		nfdocs;
 	SiftFilter *filter;
-	size_t		id_pos,				/* where live_pk_seq found the last document in the keys of the index and in the live segment */
-				dl_pos;
+	size_t		id_pos,				/* where live_pk_seq found the last document in the keys of the index, in the live segment and in its primary */
+				dl_pos,
+				root_pos;
 } Qry;
-
-/* ------------------------------------------------ the live segment */
-
-typedef struct LastRow				/* the last queue row of a key */
-{
-	int64		pk;
-	int64		seq;
-	char		op;
-} LastRow;
-
-static uint64
-events_sig(const SxEvent *ev, size_t n)
-{
-	uint64		h = 1469598103934665603ULL;
-
-	for (size_t i = 0; i < n; i++)
-	{
-		h = (h ^ (uint64) ev[i].seq) * 1099511628211ULL;
-		h = (h ^ (uint64) ev[i].pk) * 1099511628211ULL;
-		h = (h ^ (uint64) ev[i].op) * 1099511628211ULL;
-	}
-	return h ^ n;
-}
-
-static int
-cmp_group(const void *a, const void *b)
-{
-	const LastRow *x = a,
-			   *y = b;
-
-	if (x->pk != y->pk)
-		return x->pk < y->pk ? -1 : 1;
-	return (x->seq > y->seq) - (x->seq < y->seq);
-}
-
-/* One entry per key with the last of its rows: what the queue says the row is now */
-static size_t
-last_rows(const SxEvent *ev, size_t n, LastRow **out)
-{
-	LastRow	   *g = malloc(n * sizeof(LastRow));
-	size_t		ng = 0;
-
-	for (size_t i = 0; i < n; i++)
-		g[i] = (LastRow) {ev[i].pk, ev[i].seq, ev[i].op};
-	qsort(g, n, sizeof(LastRow), cmp_group);
-	for (size_t i = 0; i < n; i++)
-		if (i + 1 == n || g[i + 1].pk != g[i].pk)
-			g[ng++] = g[i];
-	*out = g;
-	return ng;
-}
-
-static Delta *
-delta_cached(SiftIdx *ix, uint64 sig, int64 after, uint64 epoch)
-{
-	Delta	   *d;
-
-	pthread_mutex_lock(&ix->dmu);
-	d = ix->delta;
-	if (d && d->sig == sig && d->after == after && d->epoch == epoch)
-		__atomic_add_fetch(&d->refs, 1, __ATOMIC_ACQ_REL);
-	else
-		d = NULL;
-	pthread_mutex_unlock(&ix->dmu);
-	return d;
-}
-
-/* Analyzes the documents of the delta and maps them as a segment in memory */
-static void
-delta_segment(SiftIdx *ix, Delta *d)
-{
-	static uint64 counter;
-	MemoryContext cx = op_begin(),
-				old = MemoryContextSwitchTo(cx);
-	SiftAnalyzerConfig cfg;
-	SiftAnalyzer *an;
-	SiftInvBuf *inv;
-	SiftWriteTarget *wt;
-	SiftScoreRef ref = {ix->sr->opts.k1, ix->sr->opts.b, 0};
-	bool		pos = ix->sr->opts.positions;
-
-	sift_analyzer_config_from_options(&ix->sr->opts, &cfg);
-	an = sift_analyzer_create(&cfg, cx);
-	sift_analyzer_set_positions(an, pos);
-	inv = sift_inv_create(DELTA_BUDGET, cx, pos);
-	for (size_t i = 0; i < d->nd; i++)
-	{
-		SiftTermFreq *terms;
-		uint32		dl;
-		ItemPointerData tid;
-		int			n;
-
-		sift_key_to_tid(sift_docid_key(ix->sr, d->dids[i]), &tid);
-		n = sift_analyze_doc(an, d->text[i], d->tlen[i], &terms, &dl);
-		sift_inv_add(inv, &tid, terms, n, dl);
-		sift_analyzer_reset(an);
-	}
-	wt = sift_wt_begin_at(ix->sr, SIFT_DELTA_SLOT, true);
-	sift_inv_write(inv, wt, ((uint64) 0xFFFF << 48) | __atomic_add_fetch(&counter, 1, __ATOMIC_RELAXED), &ref, &d->e);
-	sift_wt_finish(wt);
-	d->g = sift_map_fd(sift_wt_fd(wt), SIFT_DELTA_SLOT, &d->blocks);
-	close(sift_wt_fd(wt));
-	MemoryContextSwitchTo(old);
-	op_end(cx);
-}
-
-typedef struct DocRef
-{
-	int64		did;
-	int64		pk;
-	char	   *text;
-	size_t		len;
-} DocRef;
-
-static int
-cmp_doc(const void *a, const void *b)
-{
-	return sift_cmp_i64(&((const DocRef *) a)->did, &((const DocRef *) b)->did);
-}
-
-/* The documents the queue rows add (those whose row has text) in ascending docids, and the segment documents they retire */
-static void
-delta_fill(SiftIdx *ix, Delta *d, const LastRow *g, size_t ng, size_t nc, SxRow *rows)
-{
-	DocRef	   *docs = malloc((nc + 1) * sizeof(DocRef));
-	size_t		next = 0;
-
-	d->dead = malloc(ng * sizeof(int64));
-	for (size_t i = 0; i < ng; i++)
-	{
-		int64		doc = latest_get(ix, g[i].pk);
-
-		if (doc)
-			d->dead[d->ndead++] = doc;
-		if (g[i].op == 'I' && rows[next++].text)
-			docs[d->nd++] = (DocRef) {g[i].seq + ix->man.docbase, g[i].pk, rows[next - 1].text, rows[next - 1].len};
-	}
-	qsort(d->dead, d->ndead, sizeof(int64), sift_cmp_i64);
-	qsort(docs, d->nd, sizeof(DocRef), cmp_doc);
-	d->dids = malloc((d->nd + 1) * sizeof(int64));
-	d->dpks = malloc((d->nd + 1) * sizeof(int64));
-	d->text = malloc((d->nd + 1) * sizeof(char *));
-	d->tlen = malloc((d->nd + 1) * sizeof(size_t));
-	for (size_t i = 0; i < d->nd; i++)
-	{
-		d->dids[i] = docs[i].did;
-		d->dpks[i] = docs[i].pk;
-		d->text[i] = docs[i].text;
-		d->tlen[i] = docs[i].len;
-	}
-	free(docs);
-}
-
-/*
- * The live segment over the queue rows ev: the text of the rows comes from the host, the segments' state from the
- * index. NULL when the index moved meanwhile (the caller reads the queue again).
- */
-static Delta *
-delta_make(SiftIdx *ix, const SxHost *h, const SxEvent *ev, size_t n, int64 after, uint64 epoch, uint64 sig)
-{
-	LastRow	   *g;
-	size_t		ng = last_rows(ev, n, &g),
-				nc = 0;
-	int64	   *cand = malloc((ng + 1) * sizeof(int64));
-	SxRow	   *rows = calloc(ng + 1, sizeof(SxRow));
-	char		err[512];
-	Delta	   *d = calloc(1, sizeof(Delta));
-
-	for (size_t i = 0; i < ng; i++)
-		if (g[i].op == 'I')
-			cand[nc++] = g[i].pk;
-	if (nc > DELTA_MAX_DOCS)
-		fail("sift: %zu rows are waiting in the queue: run sift_sync", nc);
-	if (nc && h->fetch(h->ctx, ix, cand, nc, rows, err, sizeof(err)) != 0)
-		fail("%s", err);
-	RD_LOCK(ix);
-	if (ix->man.drained != after || ix->epoch != epoch)
-	{
-		RD_UNLOCK(ix);
-		for (size_t i = 0; i < nc; i++)
-			free(rows[i].text);
-		free(g);
-		free(cand);
-		free(rows);
-		free(d);
-		return NULL;
-	}
-	d->refs = 2;
-	d->epoch = epoch;
-	d->after = after;
-	d->sig = sig;
-	d->nev = n;
-	d->g = -1;
-	delta_fill(ix, d, g, ng, nc, rows);
-	RD_UNLOCK(ix);
-	if (d->nd)
-		delta_segment(ix, d);
-	free(g);
-	free(cand);
-	free(rows);
-	pthread_mutex_lock(&ix->dmu);
-	delta_release(ix->delta);
-	ix->delta = d;
-	pthread_mutex_unlock(&ix->dmu);
-	return d;
-}
-
-/* The live segment for the queue as it is now (NULL when the queue holds nothing the segments lack) */
-static void
-delta_acquire(Qry *q)
-{
-	SiftIdx    *ix = q->ix;
-	const SxHost *h = q->h;
-	char		err[512];
-
-	for (int tries = 0; tries < RETRIES; tries++)
-	{
-		SxEvent    *ev;
-		size_t		n;
-		int64		after;
-		uint64		epoch,
-					sig;
-		Delta	   *d;
-
-		RD_LOCK(ix);
-		after = ix->man.drained;
-		epoch = ix->epoch;
-		RD_UNLOCK(ix);
-		if (h->queue(h->ctx, ix, after, &ev, &n, err, sizeof(err)) != 0)
-			fail("%s", err);
-		if (n == 0)
-		{
-			free(ev);
-			return;
-		}
-		sig = events_sig(ev, n);
-		d = delta_cached(ix, sig, after, epoch);
-		if (d == NULL)
-			d = delta_make(ix, h, ev, n, after, epoch, sig);
-		free(ev);
-		if (d)
-		{
-			q->dl = d;
-			return;
-		}
-	}
-	fail("sift: index \"%s\" kept changing while the query read its queue", ix->name);
-}
 
 /* ------------------------------------------------ the view of a query */
 
@@ -322,11 +73,12 @@ live_pk(Qry *q, int64 docid)
 {
 	if (docid > q->dlfrom)
 	{
-		int64	   *at = bsearch(&docid, q->dl->dids, q->dl->nd, sizeof(int64), sift_cmp_i64);
+		const Delta *own;
+		size_t		i;
 
-		if (at == NULL)
+		if (!delta_doc(q->dl, docid, &own, &i))
 			fail("sift: document %lld is not in the live segment", (long long) docid);
-		return q->dl->dpks[at - q->dl->dids];
+		return own->dpks[i];
 	}
 	return pk_of(q->ix, docid);
 }
@@ -336,7 +88,8 @@ build_filter(Qry *q)
 {
 	SiftIdx    *ix = q->ix;
 	const SxIdSet *f = q->flt;
-	int64	   *docs = malloc((f->n + (q->dl ? q->dl->nd : 0) + 1) * sizeof(int64));
+	size_t		ndelta = q->dl ? delta_ndocs(q->dl) : 0;
+	int64	   *docs = malloc((f->n + ndelta + 1) * sizeof(int64));
 	size_t		nd = 0;
 
 	for (size_t i = 0; i < f->n; i++)
@@ -346,9 +99,19 @@ build_filter(Qry *q)
 		if (doc)
 			docs[nd++] = doc;
 	}
-	for (size_t i = 0; q->dl && i < q->dl->nd; i++)
-		if (in_sorted(f->ids, f->n, q->dl->dpks[i]))
-			docs[nd++] = q->dl->dids[i];
+	if (q->dl && f->n * 8 < ndelta)		/* the keys of the filter are fewer: look each up in the live segment */
+		for (size_t i = 0; i < f->n; i++)
+		{
+			int64		doc = delta_pk_doc(q->dl, f->ids[i]);
+
+			if (doc)
+				docs[nd++] = doc;
+		}
+	else
+		for (const Delta *d = q->dl; d; d = d->root)
+			for (size_t i = 0; i < d->nd; i++)
+				if (in_sorted(f->ids, f->n, d->dpks[i]) && !in_sorted(q->dl->dead, q->dl->ndead, d->dids[i]))
+					docs[nd++] = d->dids[i];
 	qsort(docs, nd, sizeof(int64), sift_cmp_i64);
 	q->fdocs = docs;
 	q->nfdocs = nd;
@@ -364,22 +127,27 @@ view_open(Qry *q)
 
 	q->rel = sift_rel_view(ix->sr, &q->sr);
 	sift_analyzer_config_from_options(&ix->sr->opts, &cfg);
-	q->snap = sift_dir_alloc(n + 1);
+	q->snap = sift_dir_alloc(n + 2);
 	q->snap->meta.analyzer_hash = cfg.hash;
 	q->snap->meta.k1 = ix->sr->opts.k1;
 	q->snap->meta.b = ix->sr->opts.b;
 	for (int i = 0; i < n; i++)
 		q->snap->segs[i] = ix->segs[i].e;
-	if (q->dl && q->dl->g >= 0)
-	{
-		q->snap->segs[n++] = q->dl->e;
-		sift_slot_attach(q->sr, SIFT_DELTA_SLOT, q->dl->g, q->dl->blocks);
-	}
+	for (const Delta *d = q->dl; d; d = d->root)
+		if (d->g >= 0)
+		{
+			q->snap->segs[n++] = d->e;
+			sift_slot_attach(q->sr, d->root ? SIFT_DELTA2_SLOT : SIFT_DELTA_SLOT, d->g, d->blocks);
+		}
 	q->snap->nsegs = n;
 	q->dlfrom = ix->man.drained + ix->man.docbase;
-	q->sr->is_dead = excluded;
-	q->sr->dead_ctx = q;
-	q->sr->any_dead = ix->ndead > 0 || (q->dl && q->dl->ndead > 0) || q->flt;
+	q->sr->dead[0] = ix->dead;
+	q->sr->ndead[0] = ix->ndead;
+	if (q->dl)
+	{
+		q->sr->dead[1] = q->dl->dead;
+		q->sr->ndead[1] = q->dl->ndead;
+	}
 	if (q->flt)
 		build_filter(q);
 }
@@ -423,10 +191,13 @@ load_doc(Qry *q, int64 docid, text **doc)
 
 	if (docid > q->dlfrom)
 	{
-		int64	   *at = bsearch(&docid, q->dl->dids, q->dl->nd, sizeof(int64), sift_cmp_i64);
+		const Delta *own;
+		size_t		i;
 
-		t = q->dl->text[at - q->dl->dids];
-		len = q->dl->tlen[at - q->dl->dids];
+		if (!delta_doc(q->dl, docid, &own, &i))
+			fail("sift: document %lld is not in the live segment", (long long) docid);
+		t = own->text[i];
+		len = own->tlen[i];
 	}
 	else
 	{
@@ -515,6 +286,8 @@ run_count(Qry *q, MemoryContext cx)
 	SiftPlan   *plan = bind_query(q, st, 0);
 	SiftVis		vis = {.heap = q->rel};
 
+	if (q->filter)
+		sift_plan_set_filter(plan, q->filter);
 	q->count = sift_eval_count(plan, &vis, verify_cb, q);
 	sift_state_close(st);
 }
@@ -525,10 +298,18 @@ live_pk_seq(Qry *q, int64 docid)
 {
 	if (docid > q->dlfrom)
 	{
-		q->dl_pos = lower_bound_from(q->dl->dids, q->dl->nd, q->dl_pos, docid);
-		if (q->dl_pos == q->dl->nd || q->dl->dids[q->dl_pos] != docid)
+		const Delta *d = q->dl;
+		size_t	   *pos = &q->dl_pos;
+
+		if (d->root && (d->nd == 0 || docid < d->dids[0]))		/* the primary's documents come before the micro segment's */
+		{
+			d = d->root;
+			pos = &q->root_pos;
+		}
+		*pos = lower_bound_from(d->dids, d->nd, *pos, docid);
+		if (*pos == d->nd || d->dids[*pos] != docid)
 			fail("sift: document %lld is not in the live segment", (long long) docid);
-		return q->dl->dpks[q->dl_pos];
+		return d->dpks[*pos];
 	}
 	q->id_pos = lower_bound_from(q->ix->ids, q->ix->ndoc, q->id_pos, docid);
 	if (q->id_pos == q->ix->ndoc || q->ix->ids[q->id_pos] != docid)
@@ -559,6 +340,8 @@ run_matches(Qry *q, MemoryContext cx)
 	SiftPlan   *plan = bind_query(q, st, 0);
 	SiftVis		vis = {.heap = q->rel};
 
+	if (q->filter)
+		sift_plan_set_filter(plan, q->filter);
 	sift_eval_pages(plan, &vis, verify_cb, q, collect_page, q);
 	sift_state_close(st);
 }
@@ -588,7 +371,7 @@ run_query(Qry *q, void (*body) (Qry *, MemoryContext), char *err, size_t errlen)
 
 		q->dl = NULL;
 		if (q->h && ix->fresh)
-			rc = SIFT_TRY(delta_acquire(q));
+			rc = SIFT_TRY(q->dl = delta_acquire(ix, q->h));
 		else
 			rc = 0;
 		if (rc != 0)

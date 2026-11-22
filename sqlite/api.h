@@ -145,6 +145,8 @@ extern void sq_inv_write(SqInv *inv, SqStore *st);
 
 /* Clears the liveness bit of key in whichever segment holds it; true when it was live */
 extern bool sq_delete_key(SqStore *st, SiftKey key);
+/* The segment of e, open for a run of deletes: the first call opens it, the blobs closing (store_int.h) closes it */
+extern SiftSegment *sq_store_del_seg(SqStore *st, const SiftSegEntry *e);
 
 /* ---------- merge.c ---------- */
 

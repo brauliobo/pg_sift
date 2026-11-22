@@ -207,6 +207,32 @@ mask_or(uint64 *pages, uint64 (*om)[SIFT_OFFMASK_WORDS], int page, const uint64 
 		om[page][k] |= mask[k];
 }
 
+/* The filter's superblock of the match the iterator found (NULL without a filter) */
+const SiftFilterSB *
+iter_filter_sb(const SiftMatchIter *it)
+{
+	return it->plan->filter ? &it->plan->filter->sb[it->flt_pos] : NULL;
+}
+
+/* Keeps of mask what the filter keeps of the page: false when it keeps none of the page (an exact page ANDs its offsets in) */
+bool
+filter_page_mask(const SiftFilter *f, const SiftFilterSB *fs, int page, uint64 *mask)
+{
+	int			wd = page / 64,
+				row = 0;
+
+	if (!(fs->pages[wd] >> (page & 63) & 1))
+		return false;
+	if (fs->lossy[wd] >> (page & 63) & 1)
+		return true;
+	for (int w = 0; w < wd; w++)
+		row += pg_popcount64(fs->pages[w] & ~fs->lossy[w]);
+	row += pg_popcount64(fs->pages[wd] & ~fs->lossy[wd] & ((UINT64CONST(1) << (page & 63)) - 1));
+	for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+		mask[k] &= f->row[fs->row + row][k];
+	return true;
+}
+
 /*
  * ORs the live part of one segment's group into the SB buffer, minus the docs the positions refute. The sure
  * group (the sure tree's) goes to the buffer of the matches that need no recheck instead. So do the matches
@@ -221,6 +247,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid);
 	bool		pos = !sure && p->npleaf > 0,
 				decided = !sure && it->som && !p->hardrecheck && !p->segheap[s];
+	const SiftFilterSB *fs = iter_filter_sb(it);
 
 	if (pos)
 		iter_phrase_groups(it, s, g->gid);
@@ -233,6 +260,8 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 			bool		any = false;
 
 			memcpy(mask, off, g->w);
+			if (fs && !filter_page_mask(p->filter, fs, page, mask))
+				continue;
 			if (dirty)
 				sift_seg_live_mask(seg, g->gid, page, mask);
 			if (pos)
@@ -278,9 +307,43 @@ iter_merge_wbuf(SiftMatchIter *it, uint32 sb)
 	}
 }
 
+/* Continues at superblock sb: the write buffer matches before it are passed */
+static void
+iter_start_at(SiftMatchIter *it, uint32 sb)
+{
+	it->next_sb = sb;
+	while (it->mpos < it->plan->nmhit && sift_block_sb(sift_key_block(it->plan->mhit[it->mpos].key)) < sb)
+		it->mpos++;
+}
+
+/* Moves the filter's position to its first superblock at or after sb (a gallop, then a bisection of its last step); false when none is left */
+static bool
+iter_filter_seek(SiftMatchIter *it, uint32 sb)
+{
+	const SiftFilter *f = it->plan->filter;
+	int64		lo = it->flt_pos,
+				step = 1,
+				hi;
+
+	if (lo < f->nsb && f->sb[lo].sb < sb)
+	{
+		while (lo + step < f->nsb && f->sb[lo + step].sb < sb)
+		{
+			lo += step;
+			step <<= 1;
+		}
+		hi = Min(lo + step, f->nsb);
+		lo++;
+		SIFT_BISECT(int64, mid, lo, hi, f->sb[mid].sb < sb);
+	}
+	it->flt_pos = lo;
+	return lo < f->nsb;
+}
+
 /*
  * Seeks the segments' cursors to the next SB with matches in any of them or in the write buffers
- * (it->grp[s] are their groups there); false at the end
+ * (it->grp[s] are their groups there); false at the end. With a filter, only the superblocks it keeps are visited:
+ * the segments and the filter take turns seeking to each other's position.
  */
 bool
 iter_find_sb(SiftMatchIter *it, uint32 *sbp)
@@ -296,10 +359,8 @@ iter_find_sb(SiftMatchIter *it, uint32 *sbp)
 
 			if (!it->next_range(it->range_arg, &lo, &hi))
 				return false;
-			it->next_sb = lo;
+			iter_start_at(it, lo);
 			it->sb_end = hi;
-			while (it->mpos < it->plan->nmhit && sift_block_sb(sift_key_block(it->plan->mhit[it->mpos].key)) < lo)
-				it->mpos++;
 		}
 		for (int s = 0; s < it->plan->nsegs; s++)
 		{
@@ -315,6 +376,16 @@ iter_find_sb(SiftMatchIter *it, uint32 *sbp)
 				return false;
 			it->next_sb = it->sb_end;
 			continue;
+		}
+		if (it->plan->filter)
+		{
+			if (!iter_filter_seek(it, sb))
+				return false;
+			if (it->plan->filter->sb[it->flt_pos].sb != sb)
+			{
+				iter_start_at(it, it->plan->filter->sb[it->flt_pos].sb);
+				continue;
+			}
 		}
 		CHECK_FOR_INTERRUPTS();
 		*sbp = sb;

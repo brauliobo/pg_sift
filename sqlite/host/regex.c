@@ -125,7 +125,13 @@ gen_rep(Comp *c, const Node *nd)
 	if (c->nodes[nd->kid].t == N_BACK && nd->min == 0 && nd->max != 0)
 		emit(c, I_BACK, c->nodes[nd->kid].a, 1);
 	for (i = 0; i < nd->min; i++)
+	{
+		int			start = c->nprog;
+
 		gen(c, nd->kid);
+		if (c->nprog == start)
+			break;
+	}
 	if (nd->max >= 0)
 	{
 		for (i = nd->min; i < nd->max; i++)

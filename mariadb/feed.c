@@ -194,6 +194,7 @@ publish_drain(SiftFeed *f)
 	Manifest	m = ix->man;
 	ManSeg		segs[SIFT_DIR_POLICY_MAX];
 	bool		have = f->ndocs > 0;
+	Prep		prep;
 
 	memcpy(segs, ix->segs, m.nsegs * sizeof(ManSeg));
 	if (have)
@@ -208,6 +209,7 @@ publish_drain(SiftFeed *f)
 	m.drained = f->last;
 	m.version++;
 	write_manifest(ix, &m, segs);
+	prepare_events(ix, f->ev, f->nev, &prep);
 	WR_LOCK(ix);
 	ix->man = m;
 	memcpy(ix->segs, segs, m.nsegs * sizeof(ManSeg));
@@ -217,11 +219,10 @@ publish_drain(SiftFeed *f)
 		ix->bytes += (int64) f->blocks * BLCKSZ;
 		ix->slot_reserved[f->ms.slot] = false;
 	}
-	for (size_t i = 0; i < f->nev; i++)
-		apply_event(ix, f->ev[i].docid, f->ev[i].pk, f->ev[i].op);
-	finish_events(ix);
+	install_prepared(ix, f->ev, f->nev, &prep);
 	delta_drop(ix);
 	WR_UNLOCK(ix);
+	release_prepared(&prep);
 	f->slot = f->g = -1;
 }
 

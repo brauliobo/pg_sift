@@ -626,6 +626,7 @@ TESTING_REGRESS += quarantine_txstate
 TESTING_REGRESS += quarantine_vacuum
 TESTING_REGRESS += quarantine_views
 TESTING_REGRESS += read_%
+TESTING_REGRESS += scaling_ops_gate
 TESTING_REGRESS += scope_overlay_parity
 TESTING_REGRESS += scope_pair_edit_live
 TESTING_REGRESS += segfmt_%
@@ -822,14 +823,18 @@ include $(dir $(SIFT_MK))scripts/harden.mk
 # make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
 # claim "check" is unsupported, so it is not included for these goals. pg-assert and pg-valgrind build the PostgreSQL of the `assert`
 # and `valgrind` CI lanes once into a cache outside the repo (scripts/pg-assert.sh; PG_ASSERT_MAJOR=17 for the 17 branch).
-ifneq ($(filter check check-full pg-assert pg-valgrind,$(MAKECMDGOALS)),)
-.PHONY: check check-full lint pg-assert pg-valgrind
+ifneq ($(filter check check-full lint dev-check check-scaling-ops pg-assert pg-valgrind,$(MAKECMDGOALS)),)
+.PHONY: check check-full lint dev-check check-scaling-ops pg-assert pg-valgrind
 check:
 	scripts/ci.sh quick
 check-full:
 	scripts/ci.sh full
 lint:
 	scripts/lint.sh
+dev-check:
+	scripts/lint.sh complexity memory locks capacity file-size neutral format-isolation
+check-scaling-ops:
+	scripts/check-scaling-ops.sh
 pg-assert:
 	nice scripts/pg-assert.sh $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
 pg-valgrind:

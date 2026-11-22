@@ -17,9 +17,11 @@ nice make -j4 isa-check
 python3 -I tests/smoke.py build/sift "$(cat VERSION)"
 python3 -I tests/test_sift.py
 python3 -I tests/test_features.py
+python3 -I tests/test_port2.py
 python3 -I tests/diff_fts5.py
 SIFT_SIMD=scalar python3 -I tests/test_sift.py
 SIFT_SIMD=scalar python3 -I tests/test_features.py
+SIFT_SIMD=scalar python3 -I tests/test_port2.py
 SIFT_SIMD=scalar python3 -I tests/diff_fts5.py
 nice make -j4 SIMD=none B=build-scalar
 nice make -j4 span-test hash-test col-smoke
@@ -29,7 +31,7 @@ SIFT_EXT="$PWD/build-scalar/sift" python3 -I tests/test_features.py
 if [ -n "$SIFT_SANITIZE" ]; then
 	nice make -j4 asan span-test-asan
 	export ASAN_OPTIONS=detect_leaks=0
-	for t in test_sift test_features; do
+	for t in test_sift test_features test_port2; do
 		SIFT_EXT="$PWD/build-asan/sift" LD_PRELOAD="$(cc -print-file-name=libasan.so) $(cc -print-file-name=libubsan.so)" python3 -I tests/$t.py
 	done
 	# shellcheck disable=SC2086  # the options are split on purpose

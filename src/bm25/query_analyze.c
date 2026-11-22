@@ -216,6 +216,7 @@ analyze_fuzzy(const SiftQNode *raw, SiftAnalyzer *a, float4 boost)
 		return analyze_words(raw, a, boost);
 	n = new_leaf(raw, SQ_FUZZY, buf.data, buf.len, boost);
 	n->fuzzy = nchar < 6 ? 1 : raw->fuzzy;
+	sift_query_fuzzy_prepare(n);
 	return n;
 }
 

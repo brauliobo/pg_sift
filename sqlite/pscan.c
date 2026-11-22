@@ -231,12 +231,10 @@ superblocks(const SqStore *st)
 
 /* The bind every participant of a ranked scan scores from: statistics and directory as of now, whoever runs it */
 static void
-export_bind(Scan *s)
+export_bind(Scan *s, const SiftPlan *plan)
 {
 	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift parallel bind", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(tmp);
-	SiftIndexState *state = sift_state_open(sq_store_rel(s->vt->st), tmp);
-	SiftPlan   *plan = sift_plan_bind(state, parse(s, state), s->nq, SIFT_BIND_SCORE);
 	Size		len;
 	void	   *data = sift_plan_export(plan, &len);
 
@@ -246,7 +244,7 @@ export_bind(Scan *s)
 }
 
 static void
-scan_start(Scan *s, SqVtab *vt, const SqQuery *q, int nq, int64_t k)
+scan_start(Scan *s, SqVtab *vt, const SqQuery *q, int nq, int64_t k, const SiftPlan *plan)
 {
 	int			n = Min(vt->parallel, PAR_MAX);
 
@@ -257,7 +255,7 @@ scan_start(Scan *s, SqVtab *vt, const SqQuery *q, int nq, int64_t k)
 	s->hits = calloc(n, sizeof(SqHit *));
 	s->nhits = calloc(n, sizeof(int64_t));
 	if (k > 0)
-		export_bind(s);
+		export_bind(s, plan);
 }
 
 static void
@@ -306,33 +304,21 @@ sq_par_count_pays(const SiftQuery *q)
 }
 
 /* Postings a query reads below which handing the work to threads costs more than it saves */
-static bool
-big_enough(SqVtab *vt, const SqQuery *q, int nq)
-{
-	text	  **t = palloc(nq * sizeof(text *));
-	SiftEstimate est;
-
-	for (int i = 0; i < nq; i++)
-		t[i] = cstring_to_text_with_len(q[i].text, q[i].len);
-	sift_eval_estimate(sq_store_rel(vt->st), t, nq, &est);
-	return est.postings >= PAR_MIN_POSTINGS;
-}
-
 int
 sq_par_available(SqVtab *vt, SiftPlan *plan, const SqQuery *q, int nq)
 {
 	return vt->parallel >= 2 && plan != NULL && !sift_plan_recheck_needed(plan) && sq_store_preload(vt->st) &&
-		big_enough(vt, q, nq);
+		sift_plan_est_postings(plan) >= PAR_MIN_POSTINGS;
 }
 
 SqHit *
-sq_par_rank(SqVtab *vt, const SqQuery *q, int nq, int64_t k, int64_t *nhits)
+sq_par_rank(SqVtab *vt, const SiftPlan *plan, const SqQuery *q, int nq, int64_t k, int64_t *nhits)
 {
 	Scan		s;
 	SqHit	   *all = NULL;
 	int64_t		n = 0;
 
-	scan_start(&s, vt, q, nq, k);
+	scan_start(&s, vt, q, nq, k, plan);
 	vt->par_scans++;
 	SQ_TRY();
 	scan_run(&s);
@@ -360,7 +346,7 @@ sq_par_count(SqVtab *vt, const SqQuery *q, int nq)
 	Scan		s;
 	int64_t		n;
 
-	scan_start(&s, vt, q, nq, 0);
+	scan_start(&s, vt, q, nq, 0, NULL);
 	vt->par_scans++;
 	SQ_TRY();
 	scan_run(&s);

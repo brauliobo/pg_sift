@@ -110,6 +110,26 @@ host_queue(void *ctx, SiftIdx *ix, int64_t after, SxEvent **out, size_t *n, char
 	return 0;
 }
 
+int
+host_queue_probe(void *ctx, SiftIdx *ix, int64_t after, int64_t *max_seq, size_t *count, char *err, size_t errlen)
+{
+	Sql			s = {0};
+	MYSQL_RES  *r;
+	MYSQL_ROW	row;
+
+	sql_put(&s, SQL_PREFIX "SELECT COUNT(*), COALESCE(MAX(seq), 0) FROM %s WHERE seq > %lld AND op <> 'B'", sx_cfg(ix, "queue"),
+			(long long) after);
+	r = sql_run(&s, err, errlen);
+	sql_free(&s);
+	if (r == NULL)
+		return -1;
+	row = SQL(fetch_row) (r);
+	*count = strtoull(row[0], NULL, 10);
+	*max_seq = strtoll(row[1], NULL, 10);
+	SQL(free_result) (r);
+	return 0;
+}
+
 static void
 put_keys(Sql *s, const int64_t *pks, size_t n)
 {
@@ -223,4 +243,4 @@ host_exists(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *prese
 	return rc;
 }
 
-const SxHost host = {.queue = host_queue,.fetch = host_fetch,.exists = host_exists};
+const SxHost host = {.queue = host_queue,.queue_probe = host_queue_probe,.fetch = host_fetch,.exists = host_exists};

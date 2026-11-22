@@ -17,6 +17,7 @@
 #include "col/pg.h"
 #include "core/maint_int.h"
 #include "core/check.h"
+#include "core/cmp.h"
 #include "core/errctx.h"
 #include "core/explain.h"
 #include "core/sql.h"
@@ -510,6 +511,19 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	table_close(heap, AccessShareLock);
 }
 
+typedef struct SbRange
+{
+	uint32		lo,
+				hi;
+} SbRange;
+
+typedef struct SeenBlock
+{
+	uint32		block;
+	bool		used;
+	uint64		live[SIFT_OFFMASK_WORDS];
+} SeenBlock;
+
 /* One verification, in steps (core/check.h): the store and the directory, each segment, then the totals and the heap */
 typedef struct Bm25Verify
 {
@@ -523,7 +537,58 @@ typedef struct Bm25Verify
 	uint64		ndocs,
 				sum_dl,
 				nelems;
+	SbRange    *shared;			/* the SBs that two or more immutable segments cover, ascending: the only ones that can break invariant I1 */
+	int			nshared;
+	SeenBlock  *seen;			/* the live offsets of the shared SBs of the segments verified so far, by heap block */
+	size_t		seen_cap,
+				seen_used;
+	bool		seen_full;		/* the table outgrew its budget: the next segments are compared with the earlier ones pairwise */
 } Bm25Verify;
+
+typedef struct SbEdge
+{
+	uint32		sb;
+	int			delta;
+} SbEdge;
+
+static int
+cmp_edge(const void *a, const void *b)
+{
+	return SIFT_CMP3(((const SbEdge *) a)->sb, ((const SbEdge *) b)->sb);
+}
+
+/* The SBs covered by two or more immutable segments, as ascending ranges: a sweep of the segments' SB ranges */
+static SbRange *
+shared_ranges(const SiftDirSnapshot *snap, int *nout)
+{
+	SbEdge	   *edge = palloc((Size) Max(snap->nsegs, 1) * 2 * sizeof(SbEdge));
+	SbRange    *out = palloc((Size) Max(snap->nsegs, 1) * sizeof(SbRange));
+	int			ne = 0,
+				cover = 0;
+
+	*nout = 0;
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			edge[ne++] = (SbEdge) {snap->segs[i].sb_lo, 1};
+			edge[ne++] = (SbEdge) {snap->segs[i].sb_hi + 1, -1};
+		}
+	qsort(edge, ne, sizeof(SbEdge), cmp_edge);
+	for (int i = 0; i < ne;)
+	{
+		uint32		sb = edge[i].sb;
+		int			before = cover;
+
+		for (; i < ne && edge[i].sb == sb; i++)
+			cover += edge[i].delta;
+		if (before < 2 && cover >= 2)
+			out[(*nout)++].lo = sb;
+		else if (before >= 2 && cover < 2)
+			out[*nout - 1].hi = sb - 1;
+	}
+	pfree(edge);
+	return out;
+}
 
 static void
 step_store(void *arg)
@@ -534,6 +599,7 @@ step_store(void *arg)
 
 	sift_store_verify(bv->index);
 	bv->snap = sift_dir_read(bv->index);
+	bv->shared = shared_ranges(bv->snap, &bv->nshared);
 	opts = sift_index_options(bv->index);
 	sift_analyzer_config_from_index(bv->index, &cfg);
 	if (bv->snap->meta.k1 != (float4) opts->k1 || bv->snap->meta.b != (float4) opts->b ||
@@ -566,6 +632,90 @@ disjoint_from_earlier(Bm25Verify *bv, SiftSegment *seg)
 	}
 }
 
+static SeenBlock *
+seen_find(SeenBlock *t, size_t cap, uint32 block)
+{
+	for (size_t h = (size_t) block * 0x9E3779B1u % cap;; h = (h + 1) % cap)
+		if (!t[h].used || t[h].block == block)
+			return &t[h];
+}
+
+/* The entry of a heap block in the table of live offsets, grown within half the maintenance memory; NULL when it cannot be */
+static SeenBlock *
+seen_entry(Bm25Verify *bv, uint32 block)
+{
+	SeenBlock  *e;
+
+	if (bv->seen_used * 2 >= bv->seen_cap)
+	{
+		size_t		cap = Max(bv->seen_cap * 2, 1024);
+		SeenBlock  *t;
+
+		if (cap * sizeof(SeenBlock) > (Size) maintenance_work_mem * 1024 / 2)
+			return NULL;
+		t = MemoryContextAllocZero(bv->cxt, cap * sizeof(SeenBlock));
+		for (size_t i = 0; i < bv->seen_cap; i++)
+			if (bv->seen[i].used)
+				*seen_find(t, cap, bv->seen[i].block) = bv->seen[i];
+		if (bv->seen)
+			pfree(bv->seen);
+		bv->seen = t;
+		bv->seen_cap = cap;
+	}
+	e = seen_find(bv->seen, bv->seen_cap, block);
+	if (!e->used)
+	{
+		e->used = true;
+		e->block = block;
+		bv->seen_used++;
+	}
+	return e;
+}
+
+/*
+ * Invariant I1 of the segment with all the earlier ones at once: the live offsets of its docs in the SBs that other segments cover too are
+ * looked up in, and added to, the table of the segments before it, so that no segment is opened again. A clash (or a table that outgrew its
+ * budget) is left to the pairwise check, which names the two segments.
+ */
+static void
+disjoint_from_seen(Bm25Verify *bv, SiftSegment *seg)
+{
+	bool		clash = bv->seen_full;
+
+	for (int r = 0; r < bv->nshared && !clash; r++)
+	{
+		uint32		hi = Min(bv->shared[r].hi, seg->hdr->sb_hi);
+		SiftDocChunk dc;
+
+		for (uint32 sb = Max(bv->shared[r].lo, seg->hdr->sb_lo); sb <= hi && !clash && sift_seg_docs_next(seg, sb, &dc) && dc.sb <= hi;
+			 sb = dc.sb + 1)
+			for (int p = 0; p < SIFT_SB_PAGES && !clash; p++)
+			{
+				uint64		live[SIFT_OFFMASK_WORDS];
+				uint64		any = 0;
+				SeenBlock  *e;
+
+				if (!(dc.pagemask[p / 64] >> (p % 64) & 1))
+					continue;
+				sift_seg_page_live(seg, &dc, p, live);
+				for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
+					any |= live[w];
+				if (!any)
+					continue;
+				e = seen_entry(bv, dc.sb * SIFT_SB_PAGES + p);
+				bv->seen_full |= e == NULL;
+				clash = e == NULL;
+				for (int w = 0; w < SIFT_OFFMASK_WORDS && e; w++)
+				{
+					clash |= (e->live[w] & live[w]) != 0;
+					e->live[w] |= live[w];
+				}
+			}
+	}
+	if (clash)
+		disjoint_from_earlier(bv, seg);
+}
+
 /* One segment, under the maintenance lock for its length alone: a promotion or merge waits for one segment, not for the index (the snapshot keeps the others readable) */
 static void
 step_segment(void *arg)
@@ -591,7 +741,7 @@ step_segment(void *arg)
 		bv->nelems += st.postings + e->ndocs;
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(bv->walk);
-		disjoint_from_earlier(bv, seg);
+		disjoint_from_seen(bv, seg);
 		sift_seg_close(seg);
 	}
 	MemoryContextDelete(segcx);

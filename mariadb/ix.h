@@ -77,25 +77,50 @@ typedef struct Slot				/* open addressing pk -> docid; 0 = no live document */
 	uint8		used;
 } Slot;
 
-/* The live segment: what the queue holds that the segments do not, as an in-memory segment of its own */
+/*
+ * The live segment: what the queue holds that the segments do not, as an in-memory segment of its own (delta.c). A micro
+ * segment (root set) holds the later rows' documents in its own segment at SIFT_DELTA2_SLOT, over the primary `root` that
+ * stays attached at SIFT_DELTA_SLOT; its dead list is the whole one.
+ */
 typedef struct Delta
 {
 	int			refs;
 	uint64		epoch;
 	int64		after;			/* the watermark it was built over */
-	uint64		sig;			/* of the queue rows it was built from */
-	size_t		nev;
+	int64		max_seq;		/* highest seq of the queue rows it was built from */
+	size_t		nev;			/* their number: the queue is what it holds while both still are what the host counts */
+	struct Delta *root;			/* a micro segment's primary (a reference), else NULL */
 	int			g;				/* mapped slot of the reserved range, -1 without documents */
 	uint32		blocks;
 	SiftSegEntry e;
 	int64	   *dead;			/* live docids of the segments that a queue row retires, ascending */
 	size_t		ndead;
-	int64	   *dids;			/* its documents, ascending docids */
+	int64	   *dids;			/* its own documents, ascending docids */
 	int64	   *dpks;
 	char	  **text;
 	size_t	   *tlen;
 	size_t		nd;
+	Slot	   *pk_map;			/* key -> docid of its own documents, from PKMAP_MIN of them */
+	size_t		pk_cap;
 } Delta;
+
+/*
+ * What a drain adds to the documents, made before the write lock is taken (the writers' mutex is held, so nothing it reads changes
+ * and the readers are not blocked): the dead docids with the ones the events retire merged in, the tables with room for the
+ * events. install_prepared swaps them in under the write lock in O(events); the fields then hold the old buffers, for
+ * release_prepared after the unlock.
+ */
+typedef struct Prep
+{
+	int64	   *dead;
+	size_t		ndead;
+	Slot	   *latest;			/* NULL: the table has the room */
+	size_t		caplatest,
+				nlatest;
+	int64	   *ids,			/* NULL: the document tables have the room */
+			   *pks;
+	size_t		capdoc;
+} Prep;
 
 struct SiftIdx
 {
@@ -144,13 +169,17 @@ extern void op_end(MemoryContext cx);
 extern void path_of(const SiftIdx *ix, char *out, size_t n, const char *file);
 extern void sync_dir(const char *dir);
 extern void write_all(int fd, const void *p, size_t n, const char *what);
-extern size_t lower_bound(const int64 *a, size_t n, int64 v);
 extern bool in_sorted(const int64 *a, size_t n, int64 v);
 extern bool is_dead(const SiftIdx *ix, int64 docid);
 extern int64 latest_get(const SiftIdx *ix, int64 pk);
 extern int64 pk_of(const SiftIdx *ix, int64 docid);
 extern size_t lower_bound_from(const int64 *a, size_t n, size_t pos, int64 v);
 extern void apply_event(SiftIdx *ix, int64 docid, int64 pk, int64 op);
+extern void apply_live(SiftIdx *ix, int64 docid, int64 pk, int64 op);
+extern Slot *latest_reserve(const SiftIdx *ix, size_t extra, size_t *cap, size_t *nused);
+extern void prepare_events(const SiftIdx *ix, const Ev *ev, size_t n, Prep *p);
+extern void install_prepared(SiftIdx *ix, const Ev *ev, size_t n, Prep *p);
+extern void release_prepared(Prep *p);
 extern void finish_events(SiftIdx *ix);
 extern void reset_docs(SiftIdx *ix);
 extern void write_manifest(SiftIdx *ix, const Manifest *m, const ManSeg *segs);
@@ -161,8 +190,15 @@ extern int	slot_reserve(SiftIdx *ix);
 extern void slot_release(SiftIdx *ix, int slot);
 extern uint64 gen_take(SiftIdx *ix);
 extern void rename_segment(SiftIdx *ix, SiftWriteTarget *wt, uint64 gen, ManSeg *ms, int *g, uint32 *blocks);
+extern Slot *slot_find(Slot *t, size_t cap, int64 pk);
+
+/* delta.c */
+extern Delta *delta_acquire(SiftIdx *ix, const SxHost *h);
 extern void delta_drop(SiftIdx *ix);
 extern void delta_release(Delta *d);
+extern bool delta_doc(const Delta *d, int64 docid, const Delta **owner, size_t *idx);
+extern size_t delta_ndocs(const Delta *d);
+extern int64 delta_pk_doc(const Delta *head, int64 pk);
 extern SiftIdx *registered(const char *name);
 extern void registry_each(void (*fn) (SiftIdx *ix, void *arg), void *arg);
 extern void rethrow(void) pg_attribute_noreturn();

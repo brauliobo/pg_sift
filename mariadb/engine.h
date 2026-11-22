@@ -50,6 +50,8 @@ typedef struct SxHost
 	int			(*queue) (void *ctx, SiftIdx *ix, int64_t after, SxEvent **ev, size_t *n, char *err, size_t errlen);
 	/* the rows of pks, in that order */
 	int			(*fetch) (void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, SxRow *rows, char *err, size_t errlen);
+	/* how many queue rows (barriers excluded) wait above `after` and the highest seq among them: what a live segment is checked against */
+	int			(*queue_probe) (void *ctx, SiftIdx *ix, int64_t after, int64_t *max_seq, size_t *count, char *err, size_t errlen);
 	/* which of pks exist in the base table */
 	int			(*exists) (void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *present, char *err, size_t errlen);
 } SxHost;

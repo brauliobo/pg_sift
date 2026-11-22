@@ -609,7 +609,6 @@ typedef struct DeadScan
 	sift_dead_sb *flat;			/* ... and as a row for each of the group's pages, to test a posting by its page and offset */
 	uint32	   *dead;			/* by slot */
 	uint32		nslots;
-	bool		windowed;		/* the dead rows of the segment are counted in more than one window: a posting is looked for from the first SB of the window */
 	uint32		wlo,
 				whi;			/* the SBs of the window */
 	uint32	   *dsb;			/* the SBs of the window with dead docs, ascending: the postings of a term are looked for there only */
@@ -668,7 +667,8 @@ dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	c = sift_post_open(&seg->sr, info, ds->tcxt);
 	sift_sr_unlock(&seg->sr);
 	cur = sift_post_cursor(c);
-	n = ds->windowed ? ~(uint64) 0 : sift_cur_count_in(cur, ds->flat, seg->hdr->sb_lo, seg->hdr->sb_hi - seg->hdr->sb_lo + 1);
+	n = sift_cur_count_in(cur, ds->flat + (ds->wlo - seg->hdr->sb_lo), ds->wlo, ds->whi - ds->wlo + 1, seg->hdr->sb_lo,
+						  seg->hdr->sb_hi - seg->hdr->sb_lo + 1);
 	if (n != ~(uint64) 0)
 	{
 		ds->dead[info->slot] += n;
@@ -778,7 +778,6 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 		bool		any;
 
 		next = dead_window(&ds, dm, dirty, i, budget, wcx, &any);
-		ds.windowed = i > 0 || next < dm->nsb;
 		if (any)
 		{
 #ifdef SIFT_TESTING

@@ -125,23 +125,27 @@ lev_within(const pg_wchar *a, int n, const pg_wchar *b, int m, int k)
 	return prev[m] <= k;
 }
 
+void
+sift_query_fuzzy_prepare(SiftQNode *leaf)
+{
+	leaf->headlen = char_len(leaf->text, leaf->text + leaf->textlen);
+	leaf->tail = to_wchar(leaf->text + leaf->headlen, leaf->textlen - leaf->headlen, palloc((WBUF + 1) * sizeof(pg_wchar)),
+						  &leaf->ntail);
+}
+
 /* Edit distance <= k with the first character fixed */
 static bool
-fuzzy_match(const char *q, int qlen, const char *t, int tlen, int k)
+fuzzy_match(const SiftQNode *q, const char *t, int tlen)
 {
-	int			l = char_len(q, q + qlen),
-				n,
+	int			l = q->headlen,
 				m;
-	pg_wchar	qb[WBUF],
-				tb[WBUF];
-	pg_wchar   *qw,
-			   *tw;
+	pg_wchar	tb[WBUF];
+	pg_wchar   *tw;
 
-	if (abs(qlen - tlen) > 4 * k || tlen < l || memcmp(q, t, l) != 0)
+	if (abs(q->textlen - tlen) > 4 * q->fuzzy || tlen < l || memcmp(q->text, t, l) != 0)
 		return false;
-	qw = to_wchar(q + l, qlen - l, qb, &n);
 	tw = to_wchar(t + l, tlen - l, tb, &m);
-	return lev_within(qw, n, tw, m, k);
+	return lev_within(q->tail, q->ntail, tw, m, q->fuzzy);
 }
 
 /*
@@ -149,23 +153,22 @@ fuzzy_match(const char *q, int qlen, const char *t, int tlen, int k)
  * leaf's first character): a prefix more than k edits from every prefix of the query is that far from the query whatever follows it.
  */
 static int
-fuzzy_dead_prefix(const char *q, int qlen, const char *t, int tlen, int k)
+fuzzy_dead_prefix(const SiftQNode *q, const char *t, int tlen)
 {
-	int			l = char_len(q, q + qlen),
-				n,
+	int			l = q->headlen,
+				k = q->fuzzy,
+				n = q->ntail,
 				m,
 				off = l;
-	pg_wchar	qb[WBUF],
-				tb[WBUF];
-	pg_wchar   *qw,
+	pg_wchar	tb[WBUF];
+	pg_wchar   *qw = q->tail,
 			   *tw;
 	int			rows[2][WBUF + 1];
 	int		   *prev = rows[0],
 			   *row = rows[1];
 
-	if (tlen < l || memcmp(q, t, l) != 0)
+	if (tlen < l || memcmp(q->text, t, l) != 0)
 		return 0;
-	qw = to_wchar(q + l, qlen - l, qb, &n);
 	tw = to_wchar(t + l, tlen - l, tb, &m);
 	for (int j = 0; j <= n; j++)
 		prev[j] = j;
@@ -202,7 +205,7 @@ fuzzy_dead_prefix(const char *q, int qlen, const char *t, int tlen, int k)
 int
 sift_query_leaf_dead_prefix(const SiftQNode *leaf, const char *term, int len)
 {
-	return leaf->kind == SQ_FUZZY ? fuzzy_dead_prefix(leaf->text, leaf->textlen, term, len, leaf->fuzzy) : 0;
+	return leaf->kind == SQ_FUZZY ? fuzzy_dead_prefix(leaf, term, len) : 0;
 }
 
 bool
@@ -219,7 +222,7 @@ sift_query_leaf_match(const SiftQNode *leaf, const char *term, int len)
 		case SQ_REGEX:
 			return regex_match(leaf->re, term, len);
 		case SQ_FUZZY:
-			return fuzzy_match(leaf->text, leaf->textlen, term, len, leaf->fuzzy);
+			return fuzzy_match(leaf, term, len);
 		default:
 			SIFT_INVARIANT(false, "sift: query node kind %d has no term matcher", leaf->kind);
 	}

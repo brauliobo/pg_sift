@@ -191,6 +191,7 @@ sift_rel_destroy(Relation rel)
 {
 	SiftRel    *sr = rel->store;
 
+	sift_host_segcache_drop_rel(sr->rel.rd_locator.relNumber);
 	for (int i = 0; i < SIFT_NSLOTS; i++)
 		if (sr->slot_blocks[i])
 			sift_slot_unmap(sr, i);
@@ -204,9 +205,8 @@ sift_rel_view(const SiftRel *base, SiftRel **out)
 
 	memcpy(sr, base, sizeof(SiftRel));
 	sr->rel.store = sr;
-	sr->rel.rd_locator.relNumber = __atomic_fetch_add(&next_relnumber, 1, __ATOMIC_RELAXED);
-	sr->is_dead = NULL;
-	sr->any_dead = false;
+	memset(sr->dead, 0, sizeof(sr->dead));
+	memset(sr->ndead, 0, sizeof(sr->ndead));
 	*out = sr;
 	return &sr->rel;
 }

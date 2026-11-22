@@ -30,7 +30,7 @@ SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
 PORTABLE := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list)))
 HOSTC    := host container mb spool regex regex_parse regex_exec host_stubs
 OWN      := store stubs
-GLUE     := engine docs persist query feed merge
+GLUE     := engine docs persist delta query feed merge
 UDFOBJS  := $(addprefix $(OUT)/,udf.o udf_host.o udf_query.o udf_drain.o)
 OBJS     := $(addprefix $(OUT)/,$(addsuffix .o,$(PORTABLE) $(HOSTC) $(OWN) $(GLUE)))
 

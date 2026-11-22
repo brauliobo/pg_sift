@@ -18,6 +18,7 @@
 #define SIFT_SLOT_SHIFT		19
 #define SIFT_NSLOTS			256		/* segment slots of one index (the block numbers in its manifest) */
 #define SIFT_DELTA_SLOT		(SIFT_NSLOTS - 1)	/* the slot of the live segment built from the queue */
+#define SIFT_DELTA2_SLOT	(SIFT_NSLOTS - 2)	/* the slot of its micro segment */
 #define SIFT_NGSLOTS		1024	/* slots of the reserved range, shared by every index of the process */
 
 /* What SqStore is for this host (host_store.h declares it): the state of one index, whose RelationData is `rel` */
@@ -31,13 +32,15 @@ struct SqStore
 	bool		slot_used[SIFT_NSLOTS];
 	int			gslot[SIFT_NSLOTS];	/* where each mapped slot sits in the reserved range */
 	uint32		slot_blocks[SIFT_NSLOTS];
-	/* visibility: documents that do not count (superseded, deleted, outside the filter), see sift_vis_filter_page */
-	bool		(*is_dead) (void *ctx, int64 docid);
-	void	   *dead_ctx;
-	bool		any_dead;
+	/* visibility: the docids that do not count (superseded or deleted), ascending, in two lists (the index's and the live segment's) */
+	const int64 *dead[2];
+	size_t		ndead[2];
 };
 
 typedef struct SqStore SiftRel;
+
+/* The first position of a[0, n) whose value is not below v */
+extern size_t lower_bound(const int64 *a, size_t n, int64 v);
 
 static inline SiftKey
 sift_docid_key(const SiftRel *sr, int64 docid)

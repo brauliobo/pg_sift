@@ -33,6 +33,7 @@ typedef struct SqCache
 	uint32		soft,					/* units the cache keeps */
 				hard;					/* units it may hold while the rest is pinned */
 	uint32		nvalid;
+	uint32		nheld;					/* valid units that are pinned or edited: exact while the scan is not parallel (recounted when it ends) */
 	uint32		hand;
 	bool		all_held;				/* a sweep found every unit pinned or edited: none is looked at again until one is released (an eviction is O(1) while the cache is full of them) */
 	uint64		hits,
@@ -78,6 +79,10 @@ struct SqStore
 	uint64		resident_epoch,
 				resident_evictions;
 	uint32		resident_version;
+	/* the segments sq_delete_key has open: a run of deletes opens each once (closed where the blobs are, sq_store_close_del_segs) */
+	MemoryContext del_cx;
+	SiftSegment *del_seg[SIFT_DIR_POLICY_MAX];
+	int			ndel_segs;
 	/* fault injection */
 	int			fault_mode;
 	int64_t		fault_after;
@@ -104,9 +109,12 @@ extern SIFT_INTERNAL void persist_meta(SqStore *st, bool live);
 
 SQLITE_EXTENSION_INIT3
 
+extern SIFT_INTERNAL void sq_store_close_del_segs(SqStore *st);
+
 static inline void
 close_blobs(SqStore *st)
 {
+	sq_store_close_del_segs(st);
 	sqlite3_blob_close(st->blob);
 	sqlite3_blob_close(st->wblob);
 	st->blob = st->wblob = NULL;

@@ -217,6 +217,8 @@ phrase_group(PhraseCur *pc, const sift_grp *g)
 	uint8	   *dst = pc->c.buf;
 	uint64		pages[SIFT_PAGEMASK_WORDS] = {0};
 
+	if ((g->pages[0] | g->pages[1] | g->pages[2] | g->pages[3]) == 0)
+		return false;
 	for (int i = 0; i < ph->nterms; i++)
 	{
 		SiftPostingCursor *tc = pc->ic->leafpc[ph->leaf[i]][0];

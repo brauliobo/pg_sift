@@ -120,6 +120,7 @@ cursor_reset(SqCursor *c)
 	c->iter = NULL;
 	c->qs = NULL;
 	c->nqs = 0;
+	c->mi = NULL;
 	c->hits = NULL;
 	c->nhits = c->hitpos = 0;
 	c->have_pm = false;
@@ -262,7 +263,7 @@ start_match(SqCursor *c, int idx, sqlite3_value **argv)
 
 		c->mode = SC_RANK;
 		if (k > 0 && sq_par_available(vt, c->plan, texts, nmatch))
-			c->hits = sq_par_rank(vt, texts, nmatch, k, &c->nhits);
+			c->hits = sq_par_rank(vt, c->plan, texts, nmatch, k, &c->nhits);
 		if (c->hits == NULL)
 			c->ranker = sift_rank_begin(c->plan, k, sq_vt_verify, vt);
 		ranked_next(c);

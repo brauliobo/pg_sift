@@ -234,33 +234,53 @@ seg_units_bridge(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap
 	pfree(buf);
 }
 
-/* Units of one segment, ascending gid: the leaf lists merged and the tree evaluated per SB */
+/* Units of one segment, ascending gid: the leaf lists merged (a heap of them by the gid they stand on) and the tree evaluated per SB */
 static void
 seg_units(SiftRanker *r, RankSeg *rs, Unit **units, int *nunits, int *cap)
 {
 	SiftPlan   *p = r->plan;
+	int			nl = Max(p->nleaves, 1),
+				nh = 0;
 	const float4 **ubp;
+	GidEnt	   *heap;
+	int		   *hit;
 
 	if (rs->inverted)
 		return seg_units_bridge(r, rs, units, nunits, cap);
-	ubp = palloc(Max(p->nleaves, 1) * sizeof(float4 *));
-	for (;;)
+	ubp = palloc0(nl * sizeof(float4 *));
+	heap = palloc(nl * sizeof(GidEnt));
+	hit = palloc(nl * sizeof(int));
+	for (int i = 0; i < p->nleaves; i++)
+		if (rs->lub[i].pos < rs->lub[i].n)
+			heap[nh++] = (GidEnt) {rs->lub[i].list[rs->lub[i].pos].gid, i};
+	gidheap_build(heap, nh);
+	while (nh > 0)
 	{
-		uint32		gid = UINT32_MAX;
+		uint32		gid = heap[0].gid;
+		int			nhit = 0;
 
-		for (int i = 0; i < p->nleaves; i++)
-			if (rs->lub[i].pos < rs->lub[i].n)
-				gid = Min(gid, rs->lub[i].list[rs->lub[i].pos].gid);
-		if (gid == UINT32_MAX)
-			break;
-		for (int i = 0; i < p->nleaves; i++)
-			ubp[i] = rs->lub[i].pos < rs->lub[i].n && rs->lub[i].list[rs->lub[i].pos].gid == gid ? rs->lub[i].list[rs->lub[i].pos].ub : NULL;
+		for (; nh > 0 && heap[0].gid == gid; nhit++)
+		{
+			LeafUB	   *l = &rs->lub[hit[nhit] = heap[0].idx];
+
+			ubp[hit[nhit]] = l->list[l->pos].ub;
+			gidheap_top_to(heap, &nh, UINT32_MAX);
+		}
 		unit_add(r, rs->s, gid, ubp, units, nunits, cap);
-		for (int i = 0; i < p->nleaves; i++)
-			if (ubp[i])
-				rs->lub[i].pos++;
+		for (int k = 0; k < nhit; k++)
+		{
+			LeafUB	   *l = &rs->lub[hit[k]];
+
+			ubp[hit[k]] = NULL;
+			if (++l->pos < l->n)
+			{
+				gidheap_push(heap, &nh, (GidEnt) {l->list[l->pos].gid, hit[k]});
+			}
+		}
 	}
 	pfree(ubp);
+	pfree(heap);
+	pfree(hit);
 }
 
 static int

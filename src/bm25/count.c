@@ -125,32 +125,39 @@ count_page(void *arg, BlockNumber blk, const uint64 *offmask)
 
 /*
  * The visible matches of one segment's group of a superblock, counted where they lie in the group: the
- * all-visible pages of a clean group in one pass, the others page by page. With delta, the live postings of the group
+ * all-visible pages of a clean group in one pass, the others page by page. A filter drops the pages it does not keep and
+ * counts the offsets of an exact page it keeps (a page it keeps whole still counts in the pass). With delta, the live postings of the group
  * are counted already (the term's df over the segment) and the result is what the pages the heap decides add to
  * or take off them
  */
 static int64
-count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g, bool delta)
+count_group(CountCtx *cc, SiftSegment *seg, const sift_grp *g, const SiftFilterSB *fs, bool delta)
 {
 	const uint8 *off = g->off;
 	const uint64 *allvis = allvisible(cc, g->gid);
-	uint64		bulk[SIFT_PAGEMASK_WORDS];
+	uint64		want[SIFT_PAGEMASK_WORDS],
+				bulk[SIFT_PAGEMASK_WORDS];
 	int64		n = 0;
 	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid);
 
 	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS; wd++)
-		bulk[wd] = g->pages[wd] & allvis[wd];
+	{
+		want[wd] = fs ? g->pages[wd] & fs->pages[wd] : g->pages[wd];
+		bulk[wd] = want[wd] & allvis[wd] & (fs ? fs->lossy[wd] : ~UINT64CONST(0));
+	}
 	if (!delta)
 		n = dirty ? sift_seg_live_count(seg, g, bulk) : sift_grp_count_mask(g, bulk);
-	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS && memcmp(bulk, g->pages, sizeof(bulk)) != 0; wd++)
+	for (int wd = 0; wd < SIFT_PAGEMASK_WORDS && memcmp(bulk, want, sizeof(bulk)) != 0; wd++)
 		for (uint64 m = g->pages[wd]; m; m &= m - 1, off += g->w)
 		{
 			int			page = wd * 64 + pg_rightmost_one_pos64(m);
 			uint64		mask[SIFT_OFFMASK_WORDS] = {0};
 
-			if (bulk[wd] >> (page & 63) & 1)
+			if ((bulk[wd] >> (page & 63) & 1) || !(want[wd] >> (page & 63) & 1))
 				continue;
 			memcpy(mask, off, g->w);
+			if (fs && !filter_page_mask(cc->plan->filter, fs, page, mask))
+				continue;
 			if (dirty && sift_seg_live_mask(seg, g->gid, page, mask) == 0)
 				continue;
 			n -= delta ? sift_offmask_popcount(mask, 1) : 0;
@@ -212,7 +219,7 @@ retry:
 	{
 		for (int s = 0; s < plan->nsegs; s++)
 			if (it->grp[s] && it->grp[s]->gid == sb)
-				n += count_group(&cc, plan->seg[s], it->grp[s], delta);
+				n += count_group(&cc, plan->seg[s], it->grp[s], iter_filter_sb(it), delta);
 		it->next_sb = sb + 1;
 		plan->stats.sb_scanned++;
 	}

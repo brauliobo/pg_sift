@@ -842,6 +842,15 @@ sift_plan_docs(const SiftPlan *p)
 	return node_prob(p, p->root, &e) * p->stats.ndocs;
 }
 
+double
+sift_plan_est_postings(const SiftPlan *plan)
+{
+	Estimate	e = {0};
+
+	node_prob(plan, plan->root, &e);
+	return e.postings;
+}
+
 void
 sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est)
 {

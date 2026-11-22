@@ -52,6 +52,9 @@ struct SqVtab
 	int			ncursors;
 	bool		in_txn;
 	sqlite3_stmt *rowstmt;				/* reusable SELECT of one content row */
+	sqlite3_stmt *ins_stmt,				/* the INSERT, UPDATE and DELETE of one row of the internal content table: prepared once */
+			   *upd_stmt,
+			   *del_stmt;
 	SqVtab	   *next;
 };
 
@@ -73,6 +76,7 @@ typedef struct SqCursor
 	SiftMatchIter *iter;
 	SiftQuery **qs;						/* the analyzed MATCH queries */
 	int			nqs;
+	struct SqMatchIndex *mi;			/* what sift_highlight and sift_snippet look tokens up in, made by the first call of the scan */
 	SiftPageMatch pm;
 	uint64		left[SIFT_OFFMASK_WORDS];	/* unreported offsets of pm */
 	bool		have_pm;
@@ -114,7 +118,8 @@ typedef struct SqQuery
 } SqQuery;
 
 extern int	sq_par_available(SqVtab *vt, SiftPlan *plan, const SqQuery *q, int nq);
-extern SqHit *sq_par_rank(SqVtab *vt, const SqQuery *q, int nq, int64_t k, int64_t *nhits);
+/* plan: the bound plan of the query, which every participant scores from (exported, not bound again) */
+extern SqHit *sq_par_rank(SqVtab *vt, const SiftPlan *plan, const SqQuery *q, int nq, int64_t k, int64_t *nhits);
 extern bool sq_par_count_pays(const SiftQuery *q);
 extern int64_t sq_par_count(SqVtab *vt, const SqQuery *q, int nq);
 
