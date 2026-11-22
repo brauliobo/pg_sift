@@ -224,6 +224,7 @@ static void
 set_found(SiftF2ColMap *m, const SiftF2Store *store, const SiftPartColIdentity *id, int phys, int c)
 {
 	m->phys_col[c] = phys;
+	m->leaf_of_phys[phys] = c;
 	m->phys_kind[c] = id->phys_kind;
 	m->old_scale[c] = id->phys_scale;
 	m->mode[c] = id->phys_scale != store->scales[c] ? SIFT_CMAP_WIDEN_N64 : id->phys_hint != store->hints[c] ? SIFT_CMAP_RECAST : SIFT_CMAP_DIRECT;
@@ -252,6 +253,9 @@ sift_tbl_f2_build_col_map(const SiftF2Store *store, Relation rel, const SiftPart
 	sift_defaults_map_columns(part_attnums, nids, store->leaf_attno, store->ncols, phys);
 	m = MemoryContextAllocZero(cx, sizeof(SiftF2ColMap));
 	m->cur_ncols = store->ncols;
+	m->phys_ncols = nids;
+	m->leaf_of_phys = MemoryContextAlloc(cx, sizeof(int16) * Max(nids, 1));
+	memset(m->leaf_of_phys, -1, sizeof(int16) * Max(nids, 1));
 	m->phys_col = MemoryContextAlloc(cx, sizeof(int16) * store->ncols);
 	m->mode = MemoryContextAlloc(cx, sizeof(SiftColMapMode) * store->ncols);
 	m->old_scale = MemoryContextAllocZero(cx, store->ncols);

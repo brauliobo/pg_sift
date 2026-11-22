@@ -28,6 +28,8 @@
 #include "core/part_lock.h"
 #include "core/worker.h"
 #include "col/f2/f2_store_schema.h"
+#include "core/u64set.h"
+#include "table/f2/f2_chain_cache.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_gcache.h"
 
@@ -166,23 +168,43 @@ struct SiftColDeltaScan
 	SiftColDeltaPartMap *map;
 };
 
+/* The scan's context ends, by an error or not: its map is given back */
+static void
+scan_release(void *arg)
+{
+	SiftColDeltaScan *ds = arg;
+
+	sift_col_delta_part_map_unref(ds->map);
+	ds->map = NULL;
+}
+
 SiftColDeltaScan *
 sift_col_delta_scan_begin(Relation rel, SiftTblVis *vis, MemoryContext cx)
 {
 	SiftColDeltaScan *ds = MemoryContextAllocZero(cx, sizeof(SiftColDeltaScan));
+	MemoryContextCallback *cb = MemoryContextAlloc(cx, sizeof(*cb));
 
 	ds->rel = rel;
 	ds->vis = vis;
 	ds->cx = cx;
+	cb->func = scan_release;
+	cb->arg = ds;
+	MemoryContextRegisterResetCallback(cx, cb);
 	return ds;
 }
 
 void
 sift_col_delta_scan_reset(SiftColDeltaScan *ds)
 {
-	sift_col_delta_part_map_free(ds->map);
+	sift_col_delta_part_map_unref(ds->map);
 	ds->map = NULL;
 	ds->valid = false;
+}
+
+SiftColDeltaPartMap *
+sift_col_delta_scan_part_map(const SiftColDeltaScan *ds)
+{
+	return ds->map;
 }
 
 /* The cells of column phys of the granule have just been decoded: the patches of the leaf that has it go over them */
@@ -191,16 +213,14 @@ patch_decoded(SiftF2GranuleBuf *gb, int phys)
 {
 	const SiftF2Store *store = gb->store;
 	const SiftF2ColMap *map = gb->pin->col_map;
+	int			leaf = map == NULL ? phys : phys < map->phys_ncols ? map->leaf_of_phys[phys] : -1;
+	SiftColDeltaCells cells;
 
-	for (int leaf = 0; leaf < store->ncols; leaf++)
-		if ((map != NULL ? map->phys_col[leaf] : leaf) == phys)
-		{
-			SiftColDeltaCells cells = {.kind = store->kinds[leaf],.i = gb->col_i[phys],.f = gb->col_f[phys],.s = gb->col_s[phys],.isnull = gb->col_isnull[phys],
-									   .tag = gb->col_tag[phys],.cx = gb->cx};
-
-			(void) sift_col_delta_apply_cells(&cells, gb->patch_arg, store->leaf_attno[leaf]);
-			return;
-		}
+	if (leaf < 0)
+		return;
+	cells = (SiftColDeltaCells) {.kind = store->kinds[leaf],.i = gb->col_i[phys],.f = gb->col_f[phys],.s = gb->col_s[phys],.isnull = gb->col_isnull[phys],
+								 .tag = gb->col_tag[phys],.cx = gb->cx};
+	(void) sift_col_delta_apply_cells(&cells, gb->patch_arg, store->leaf_attno[leaf]);
 }
 
 const SiftColDeltaGranMap *
@@ -210,14 +230,17 @@ sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, c
 		return NULL;
 	if (!ds->valid || ds->part_id != entry->part_id || ds->part_gen != gb->pin->part_gen)
 	{
-		MemoryContext old = MemoryContextSwitchTo(ds->cx);
+		MemoryContext map_cx = sift_col_delta_part_map_context(ds->cx);
+		MemoryContext old = MemoryContextSwitchTo(map_cx);
+		SiftColDeltaPartMap *loaded;
 
 		sift_col_delta_scan_reset(ds);
-		ds->map = sift_col_delta_load_part_map(ds->rel, entry, gb->pin->part_gen, gb->pin->part->hdr.ngranules, ds->vis, 0);
+		loaded = sift_col_delta_load_part_map(ds->rel, entry, gb->pin->part_gen, gb->pin->part->hdr.ngranules, ds->vis, 0);
+		MemoryContextSwitchTo(old);
+		ds->map = sift_col_delta_part_map_share(map_cx, loaded);
 		ds->part_id = entry->part_id;
 		ds->part_gen = gb->pin->part_gen;
 		ds->valid = true;
-		MemoryContextSwitchTo(old);
 	}
 	return ds->map != NULL ? sift_col_delta_gran_map(ds->map, gb->granule_id) : NULL;
 }
@@ -229,7 +252,8 @@ sift_col_delta_scan_attach(SiftColDeltaScan *ds, const SiftPartitionEntry *entry
 
 	if (gm == NULL)
 		return;
-	gb->patch_arg = sift_col_delta_gran_copy(gm, gb->cx);
+	sift_col_delta_part_map_hold_in(gb->cx, ds->map);
+	gb->patch_arg = gm;
 	gb->patch = patch_decoded;
 }
 
@@ -242,17 +266,22 @@ target_of(const SiftF2Loc *loc, uint64 tid)
 static SiftColDeltaLast
 latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
 {
-	SiftColDeltaChain chain;
+	const SiftColDeltaLog *log = sift_col_delta_log(rel, &loc->entry);
 	SiftColDeltaOps ops;
 	SiftColDeltaTarget t = target_of(loc, tid);
-	SiftColDeltaLast last = {0};
 
-	if (!load_chain(rel, &loc->entry, 0, &chain))
-		return last;
+	if (log == NULL)
+		return (SiftColDeltaLast) {0};
 	sift_col_delta_ops_init(&ops, NULL);
-	last = sift_col_delta_latest_for_row(&chain, &t, &ops);
-	sift_col_delta_chain_free(&chain);
-	return last;
+	for (int i = sift_col_delta_log_newest(log, tid); i >= 0; i = sift_col_delta_log_prev(log, i))
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, sift_col_delta_log_rec(log, i), sizeof(h));
+		if (sift_col_delta_rec_is_of_row(&h, &t) && !ops.is_aborted(ops.ctx, h.xmin))
+			return (SiftColDeltaLast) {.found = true,.xid = h.xmin,.cid = h.cid};
+	}
+	return (SiftColDeltaLast) {0};
 }
 
 SiftColDeltaVerdict
@@ -459,14 +488,13 @@ sift_col_delta_stage_plan(Relation rel, const SiftColDeltaPlan *plan, CommandId 
 /* ---- writing the stage ---- */
 
 static SiftPartitionEntry
-fresh_entry(Relation rel, uint64 part_id)
+fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
 {
-	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+	SiftPartitionEntry e;
 
-	for (int i = 0; i < mr.n; i++)
-		if (mr.entries[i].part_id == part_id)
-			return mr.entries[i];
-	ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
+	if (!sift_manifest_find_entry(rel, part_id, key_lo, &e))
+		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
+	return e;
 }
 
 typedef struct DiskChain
@@ -490,40 +518,35 @@ disk_commit_anchor(void *ctx, const SiftColDeltaAnchor *a)
 
 /* A row whose part a compaction replaced since the record was staged is where its address says now; one whose part a TTL drop took is gone, and its record with it */
 static void
-relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, uint64 part_id, const SiftPartDesc *parts, int nparts)
+relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, const SiftPartDesc *parts, int nparts)
 {
-	for (int i = 0; i < cd->n;)
+	SiftU64Set	gens;
+
+	sift_u64set_init(&gens, nparts);
+	for (int p = 0; p < nparts; p++)
+		(void) sift_u64set_add(&gens, parts[p].part_gen);
+	for (int k = lo; k < hi; k++)
 	{
+		SiftStageColDelta *it = &cd->items[ord[k]];
 		SiftColDeltaEntryHdr h;
 		SiftF2Loc	loc;
-		bool		listed = false;
 
-		if (cd->items[i].part_id != part_id)
-		{
-			i++;
+		memcpy(&h, it->rec, sizeof(h));
+		if (sift_u64set_has(&gens, h.part_gen))
 			continue;
-		}
-		memcpy(&h, cd->items[i].rec, sizeof(h));
-		for (int p = 0; p < nparts; p++)
-			listed |= parts[p].part_gen == h.part_gen;
-		if (listed)
-		{
-			i++;
-			continue;
-		}
 		if (!sift_f2_locate_cached(rel, store, sift_col_delta_hdr_tid(&h), &loc))
 		{
-			sift_col_delta_stage_discard(cd, i);
+			sift_col_delta_stage_release(cd, ord[k]);
 			continue;
 		}
-		SIFT_INVARIANT(loc.entry.part_id == part_id, "the row of a staged column delta is not in its partition");
+		SIFT_INVARIANT(loc.entry.part_id == it->part_id, "the row of a staged column delta is not in its partition");
 		h.part_gen = loc.gb->pin->part_gen;
 		h.granule_id = loc.gb->granule_id;
 		h.row_ordinal = loc.row;
-		memcpy(cd->items[i].rec, &h, sizeof(h));
+		memcpy(it->rec, &h, sizeof(h));
 		sift_f2_gbuf_unref(loc.gb);
-		i++;
 	}
+	sift_u64set_free(&gens);
 }
 
 static bool
@@ -604,20 +627,24 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	FullTransactionId next = ReadNextFullTransactionId();
+	int			nlive;
+	int		   *ord = sift_col_delta_stage_by_part(cd, &nlive);
 
-	while (cd->n > 0)
+	for (int lo = 0, hi; lo < nlive; lo = hi)
 	{
-		uint64		part_id = cd->items[0].part_id;
+		uint64		part_id = cd->items[ord[lo]].part_id;
 		SiftPartitionEntry e;
 		SiftPartDesc *parts;
 		int			nparts;
 		SiftColDeltaBatch b;
 
+		for (hi = lo; hi < nlive && cd->items[ord[hi]].part_id == part_id; hi++)
+			;
 		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		e = fresh_entry(rel, part_id);
+		e = fresh_entry(rel, part_id, cd->items[ord[lo]].key_lo);
 		parts = sift_manifest_read_parts(rel, &e, &nparts);
-		relocate_stale(rel, store, cd, part_id, parts, nparts);
-		b = sift_col_delta_stage_take_part(cd, next, part_id);
+		relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
+		b = sift_col_delta_stage_take_run(cd, ord, lo, hi, next);
 		if (b.nentries > 0)
 			append_locked(rel, &e, &b, next);
 		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
@@ -626,6 +653,8 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		sift_col_delta_batch_free(&b);
 		pfree(parts);
 	}
+	pfree(ord);
+	sift_col_delta_stage_clear(cd);
 }
 
 void
@@ -704,7 +733,7 @@ sift_col_delta_horizon_status(void *ctx, TransactionId xid, FullTransactionId *f
 
 /* Every record is an aborted writer's or a gone part's: the pages go and the partition has no chain, and no row of any part is written. False when a record stays. */
 bool
-sift_col_delta_gc(Relation rel, uint64 part_id, FullTransactionId oldest_fx)
+sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransactionId oldest_fx)
 {
 	SiftPartitionEntry e;
 	SiftColDeltaChain chain;
@@ -718,7 +747,7 @@ sift_col_delta_gc(Relation rel, uint64 part_id, FullTransactionId oldest_fx)
 	bool		gone;
 
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	e = fresh_entry(rel, part_id);
+	e = fresh_entry(rel, part_id, key_lo);
 	if (!load_chain(rel, &e, 0, &chain))
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);

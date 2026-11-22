@@ -79,23 +79,6 @@ write_tierdir(Relation rel, uint64 gen, uint64 version, const SiftTierPartRef *r
 	return head;
 }
 
-/* The generations among the dropped parts of the edit that are in object storage (NULL when none): their refs stay, waiting for the deletion of their objects */
-uint64 *
-sift_mf_remote_drops(const SiftPartDesc *parts, int n, const SiftManifestEdit *e, int *nexpire)
-{
-	uint64	   *gens = NULL;
-
-	*nexpire = 0;
-	for (int i = 0; i < e->ndrop; i++)
-		for (int k = 0; k < n; k++)
-			if (parts[k].part_gen == e->drop_gens[i] && (parts[k].ext_flags & SIFT_PART_EXT_REMOTE))
-			{
-				gens = gens ? gens : palloc(e->ndrop * sizeof(uint64));
-				gens[(*nexpire)++] = e->drop_gens[i];
-			}
-	return gens;
-}
-
 /* The tier fields of the metapage after the commit; the format says it holds parts in object storage while it has refs */
 void
 sift_mf_apply_tier(SiftColMetaPageData *m, const Change *ch)

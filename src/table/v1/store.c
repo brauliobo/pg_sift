@@ -19,6 +19,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "table/v1/keyidx.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/store_int.h"
 
@@ -196,6 +197,7 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 	SiftTblSeg *old = st->wbuf;
 	int			nold = st->nwbuf,
 				n = 0;
+	KeyIdx		old_gen = {0};
 
 	if (!BLOCKS_WRITTEN(rel))
 	{
@@ -212,23 +214,26 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 		n += is_wbuf(&st->dir->segs[i]);
 	st->wbuf = MemoryContextAllocZero(st->cxt, Max(n, 1) * sizeof(SiftTblSeg));
 	st->nwbuf = 0;
+	for (int j = 0; j < nold; j++)
+		keyidx_put(CurrentMemoryContext, &old_gen, old[j].gen, j);
 	for (int i = 0; i < st->dir->nsegs; i++)
 	{
 		const SiftSegEntry *e = &st->dir->segs[i];
 		SiftTblSeg *s;
+		int			j;
 
 		if (!is_wbuf(e))
 			continue;
 		s = &st->wbuf[st->nwbuf++];
-		for (int j = 0; j < nold; j++)
-			if (old[j].gen == e->gen)
-				*s = old[j];
+		if ((j = keyidx_find(&old_gen, e->gen)) >= 0)
+			*s = old[j];
 		s->gen = e->gen;
 		s->hdr = e->header_blk;
 		s->vbase = (uint64) e->sb_lo * SIFT_TBL_VBLOCKS_SB;
 		s->vcap = (e->sb_hi - e->sb_lo + 1) * SIFT_TBL_VBLOCKS_SB;
 	}
 	st->wbuf_version = st->dir->version;
+	keyidx_free(&old_gen);
 	if (old)
 		pfree(old);
 }

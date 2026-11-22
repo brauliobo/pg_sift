@@ -15,6 +15,7 @@
 #include "bm25/merge.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/seg_int.h"
+#include "core/u64set.h"
 
 /* An insertion that is final for every snapshot: committed before oldest (the last answer is remembered) */
 typedef struct XidFinal
@@ -106,15 +107,19 @@ static void
 freeze_groups_swap(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
 	const FreezeArg *a = arg;
+	SiftU64Set	frozen;
 
+	sift_u64set_init(&frozen, a->n);
+	for (int k = 0; k < a->n; k++)
+		(void) sift_u64set_add(&frozen, a->gens[k]);
 	for (int i = 0; i < dir->nsegs; i++)
-		for (int k = 0; k < a->n; k++)
-			if (dir->segs[i].gen == a->gens[k])
-			{
-				if (dir->segs[i].format < SIFT_COL_FORMAT_VERS)
-					dir->segs[i].reserved = 0;
-				dir->segs[i].flags &= ~SIFT_SEG_VERS;
-			}
+		if (sift_u64set_has(&frozen, dir->segs[i].gen))
+		{
+			if (dir->segs[i].format < SIFT_COL_FORMAT_VERS)
+				dir->segs[i].reserved = 0;
+			dir->segs[i].flags &= ~SIFT_SEG_VERS;
+		}
+	sift_u64set_free(&frozen);
 }
 
 int

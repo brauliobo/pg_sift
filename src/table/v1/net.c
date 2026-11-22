@@ -36,6 +36,7 @@ void
 sift_tbl_net_refresh(Relation rel, SiftTblRel *st)
 {
 	SiftDirSnapshot *snap;
+	bool		wrote = false;
 
 	if (RecoveryInProgress() || rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
 		return;
@@ -62,10 +63,10 @@ sift_tbl_net_refresh(Relation rel, SiftTblRel *st)
 
 			if (written > 0)
 				sift_log_maint(rel, "wrote the net pre-aggregates of", start, snap->segs[i].ndocs, written * BLCKSZ);
-			sift_tbl_refresh(rel, st);
-			pfree(snap);
-			snap = sift_dir_copy(st->dir);
+			wrote = true;
 		}
 	}
+	if (wrote)
+		sift_tbl_refresh(rel, st);
 	pfree(snap);
 }

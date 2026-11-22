@@ -38,7 +38,7 @@ check_batch(Relation rel, const SiftExtent *ext, int n)
 }
 
 #if defined(SIFT_TESTING) || defined(USE_ASSERT_CHECKING)
-/* Is a block of the release in a list already: the double free, found at the caller that makes it */
+/* Is a block of the release in a list already: the double free, found at the caller that makes it. The listed extents do not overlap, so they are sorted once and each released one is looked for by its start */
 static void
 check_unheld(Relation rel, Page root, const SiftExtent *ext, int n)
 {
@@ -49,10 +49,24 @@ check_unheld(Relation rel, Page root, const SiftExtent *ext, int n)
 	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
 		sift_fsm_walk_list(rel, m->class_head[k], k, &held, &pages);
 	sift_fsm_walk_list(rel, m->quarantine_head, SIFT_FSM_CLASS_QUEUE, &held, &pages);
+	qsort(held.v, held.n, sizeof(SiftFsmExtent), sift_fsm_ext_cmp);
 	for (int i = 0; i < n; i++)
-		for (int j = 0; j < held.n; j++)
-			if ((uint64) ext[i].start < (uint64) held.v[j].start + held.v[j].nblocks && (uint64) held.v[j].start < (uint64) ext[i].start + ext[i].nblocks)
-				SIFT_CORRUPT(rel, "A release of block %u frees a block that is free or queued already (duplicate release of block %u).", ext[i].start, held.v[j].start);
+	{
+		int			lo = 0,
+					hi = held.n;
+
+		while (lo < hi)
+		{
+			int			mid = lo + (hi - lo) / 2;
+
+			if ((uint64) held.v[mid].start + held.v[mid].nblocks <= ext[i].start)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		if (lo < held.n && (uint64) held.v[lo].start < (uint64) ext[i].start + ext[i].nblocks)
+			SIFT_CORRUPT(rel, "A release of block %u frees a block that is free or queued already (duplicate release of block %u).", ext[i].start, held.v[lo].start);
+	}
 }
 #endif
 

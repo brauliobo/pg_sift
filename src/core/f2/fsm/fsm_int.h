@@ -38,7 +38,10 @@ extern int	sift_fsm_ext_cmp(const void *a, const void *b);
 extern void sift_fsm_check_root(Relation rel, Buffer buf);
 extern void sift_fsm_walk_list(Relation rel, BlockNumber head, uint16 size_class, ExtVec *out, ExtVec *pages);
 
-/* fsm.c: what the slab code needs of the lists and of block 0 */
+/* fsm.c: what the slab code and the reclaim need of the lists and of block 0 */
+extern int	sift_fsm_class_floor(uint64 nblocks);
+extern void sift_fsm_init_list_page(Page page, uint16 size_class, uint16 flags, BlockNumber next);
+extern void sift_fsm_list_seal(Page page);
 extern Buffer sift_fsm_lock_root(Relation rel);
 extern void sift_fsm_root_seal(Page page);
 extern SiftFsmExtent sift_fsm_pop_class(FsmCtx *c, int cls);

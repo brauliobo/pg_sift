@@ -3,7 +3,11 @@
  */
 #include "vacuum_int.h"
 
+#include "access/tupdesc.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "executor/executor.h"
+#include "utils/tuplesort.h"
 #include "utils/typcache.h"
 
 typedef struct CopyState
@@ -199,73 +203,179 @@ sift_tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relatio
 	*multi_cutoff = GetOldestMultiXactId();
 }
 
+typedef struct ValidateCtx
+{
+	Relation	table_rel;
+	Relation	index_rel;
+	IndexInfo  *info;
+	EState	   *estate;
+	ExprContext *econtext;
+	TupleTableSlot *slot;
+	ValidateIndexState *state;
+} ValidateCtx;
+
+/* The row in the slot is inserted into the index at its address, when the index predicate holds */
+static void
+validate_insert(ValidateCtx *v, ItemPointer tid)
+{
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+
+	MemoryContextReset(v->econtext->ecxt_per_tuple_memory);
+	if (v->info->ii_PredicateState != NULL && !ExecQual(v->info->ii_PredicateState, v->econtext))
+		return;
+	FormIndexDatum(v->info, v->slot, v->estate, values, isnull);
+	index_insert(v->index_rel, values, isnull, tid, v->table_rel,
+				 v->info->ii_Unique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO, false, v->info);
+	v->state->tups_inserted += 1;
+}
+
+/* The address of a row in the index: the entries of a chain are at its root, where the other indexes have them */
+static void
+validate_root(const SiftTblRel *st, ItemPointer tid)
+{
+	uint64		key = sift_key_from_tid(tid),
+				pred;
+
+	while (sift_tomb_hot_pred(&st->tomb, key, &pred))
+		key = pred;
+	sift_key_to_tid(key, tid);
+}
+
+/* The addresses the index has: the batch already read, then the rest of the sorted stream */
+typedef struct IndexAddrs
+{
+	const TidList *head;
+	uint64		pos;
+	ValidateIndexState *state;
+	Datum		next;
+	bool		more;
+} IndexAddrs;
+
+static bool
+index_addr_next(IndexAddrs *a, int64 *addr)
+{
+	bool		isnull;
+
+	if (a->pos < a->head->n)
+		*addr = (int64) itemptr_encode(&a->head->tid[a->pos++]);
+	else if (a->more)
+	{
+		*addr = DatumGetInt64(a->next);
+		a->state->itups += 1;
+		a->more = tuplesort_getdatum(a->state->tuplesort, true, false, &a->next, &isnull, NULL);
+	}
+	else
+		return false;
+	return true;
+}
+
+/* One scan of the table whatever the memory: the addresses of the visible rows (root and own) sorted, and merged with the sorted addresses of the index */
+static void
+validate_merge(ValidateCtx *v, Snapshot snapshot, IndexAddrs *idx)
+{
+	SiftTblRel *st = sift_tbl_rel(v->table_rel);
+	TupleDesc	desc = CreateTemplateTupleDesc(2);
+	AttrNumber	sortcol = 1;
+	Oid			sortop = Int8LessOperator,
+				coll = InvalidOid;
+	bool		nulls_first = false;
+	Tuplesortstate *mine;
+	TupleTableSlot *put,
+			   *rows;
+	TableScanDesc scan;
+	int64		addr = 0;
+	bool		have = index_addr_next(idx, &addr);
+
+	TupleDescInitEntry(desc, 1, "root", INT8OID, -1, 0);
+	TupleDescInitEntry(desc, 2, "own", INT8OID, -1, 0);
+	mine = tuplesort_begin_heap(desc, 1, &sortcol, &sortop, &coll, &nulls_first, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	rows = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	scan = sift_table_beginscan(v->table_rel, snapshot, 0, NULL);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, v->slot))
+	{
+		ItemPointerData root = v->slot->tts_tid;
+
+		CHECK_FOR_INTERRUPTS();
+		validate_root(st, &root);
+		ExecClearTuple(put);
+		put->tts_values[0] = Int64GetDatum((int64) itemptr_encode(&root));
+		put->tts_values[1] = Int64GetDatum((int64) itemptr_encode(&v->slot->tts_tid));
+		put->tts_isnull[0] = put->tts_isnull[1] = false;
+		ExecStoreVirtualTuple(put);
+		tuplesort_puttupleslot(mine, put);
+		v->state->htups += 1;
+	}
+	table_endscan(scan);
+	tuplesort_performsort(mine);
+	while (tuplesort_gettupleslot(mine, true, false, rows, NULL))
+	{
+		bool		isnull;
+		int64		root = DatumGetInt64(slot_getattr(rows, 1, &isnull));
+		ItemPointerData own,
+					tid;
+
+		CHECK_FOR_INTERRUPTS();
+		while (have && addr < root)
+			have = index_addr_next(idx, &addr);
+		if (have && addr == root)
+			continue;
+		itemptr_decode(&tid, root);
+		itemptr_decode(&own, DatumGetInt64(slot_getattr(rows, 2, &isnull)));
+		if (table_tuple_fetch_row_version(v->table_rel, &own, snapshot, v->slot))
+			validate_insert(v, &tid);
+	}
+	ExecDropSingleTupleTableSlot(put);
+	ExecDropSingleTupleTableSlot(rows);
+	tuplesort_end(mine);
+}
+
 /*
- * The rows the first pass did not index are inserted. The TIDs it found, sorted, are held a batch at a time (6 bytes a row would be
- * 1.5 GB for 260 million): a batch covers the TIDs from its first to the first of the next, the table is scanned for each, and a row is
- * looked for in the batch of its TID only.
+ * The rows the first pass did not index are inserted. The TIDs it found, sorted, are held when they fit in maintenance_work_mem (6 bytes a row would be
+ * 1.5 GB for 260 million): the table is scanned once and a row is looked for in them. When they do not, the rows of the table are sorted by address as well,
+ * and the two sorted streams are merged: one scan of the table whatever the size.
  */
 void
 sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *indexInfo, Snapshot snapshot,
 							 ValidateIndexState *state)
 {
 	EState	   *estate = CreateExecutorState();
-	ExprContext *econtext = GetPerTupleExprContext(estate);
-	TupleTableSlot *slot = table_slot_create(table_rel, NULL);
+	ValidateCtx v = {table_rel, index_rel, indexInfo, estate, GetPerTupleExprContext(estate), table_slot_create(table_rel, NULL), state};
 	uint64		cap = Max((uint64) maintenance_work_mem * 1024 / sizeof(ItemPointerData), 1024);
 	TidList		have = {.max = cap};
-	Datum		values[INDEX_MAX_KEYS];
-	bool		isnull[INDEX_MAX_KEYS];
 	SiftTblRel *st = sift_tbl_rel(table_rel);
-	ItemPointerData lo = {0},
-				hi = {0};
-	Datum		ts_val;
-	bool		ts_isnull,
-				more = tuplesort_getdatum(state->tuplesort, true, false, &ts_val, &ts_isnull, NULL);
+	IndexAddrs	idx = {&have, 0, state};
+	bool		isnull;
+	TableScanDesc scan;
 
-	econtext->ecxt_scantuple = slot;
+	v.econtext->ecxt_scantuple = v.slot;
 	indexInfo->ii_PredicateState = ExecPrepareQual(indexInfo->ii_Predicate, estate);
-	do
+	idx.more = tuplesort_getdatum(state->tuplesort, true, false, &idx.next, &isnull, NULL);
+	while (idx.more && have.n < cap)
 	{
-		TableScanDesc scan;
-
-		have.n = 0;
-		while (more && have.n < cap)
-		{
-			itemptr_decode(tid_push(&have), DatumGetInt64(ts_val));
-			state->itups += 1;
-			more = tuplesort_getdatum(state->tuplesort, true, false, &ts_val, &ts_isnull, NULL);
-		}
-		if (more)
-			itemptr_decode(&hi, DatumGetInt64(ts_val));
+		itemptr_decode(tid_push(&have), DatumGetInt64(idx.next));
+		state->itups += 1;
+		idx.more = tuplesort_getdatum(state->tuplesort, true, false, &idx.next, &isnull, NULL);
+	}
+	if (idx.more)
+		validate_merge(&v, snapshot, &idx);
+	else
+	{
 		scan = sift_table_beginscan(table_rel, snapshot, 0, NULL);
-		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		while (table_scan_getnextslot(scan, ForwardScanDirection, v.slot))
 		{
-			ItemPointerData tid = slot->tts_tid;
-			uint64		key = sift_key_from_tid(&tid),
-						pred;
+			ItemPointerData tid = v.slot->tts_tid;
 
 			CHECK_FOR_INTERRUPTS();
-			/* the entries of a chain are at its root, where the other indexes have them */
-			while (sift_tomb_hot_pred(&st->tomb, key, &pred))
-				key = pred;
-			sift_key_to_tid(key, &tid);
-			if (ItemPointerCompare(&tid, &lo) < 0 || (more && ItemPointerCompare(&tid, &hi) >= 0))
-				continue;
+			validate_root(st, &tid);
 			state->htups += 1;
-			if (tid_has(&tid, &have))
-				continue;
-			MemoryContextReset(econtext->ecxt_per_tuple_memory);
-			if (indexInfo->ii_PredicateState != NULL && !ExecQual(indexInfo->ii_PredicateState, econtext))
-				continue;
-			FormIndexDatum(indexInfo, slot, estate, values, isnull);
-			index_insert(index_rel, values, isnull, &tid, table_rel,
-						 indexInfo->ii_Unique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO, false, indexInfo);
-			state->tups_inserted += 1;
+			if (!tid_has(&tid, &have))
+				validate_insert(&v, &tid);
 		}
 		table_endscan(scan);
-		lo = hi;
-	} while (more);
-	ExecDropSingleTupleTableSlot(slot);
+	}
+	ExecDropSingleTupleTableSlot(v.slot);
 	FreeExecutorState(estate);
 	indexInfo->ii_PredicateState = NULL;
 	if (have.tid)

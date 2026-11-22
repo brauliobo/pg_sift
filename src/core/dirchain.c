@@ -15,6 +15,7 @@
 #include "core/cachebudget.h"
 #include "core/store_int.h"
 #include "core/dirchain.h"
+#include "core/dirchain_int.h"
 #include "core/range.h"
 #include "core/restrict.h"
 
@@ -302,151 +303,10 @@ chain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEn
 	return n;
 }
 
-/*
- * The whole chain at a version, memoized per backend. A directory update stores a new version and a chain is immutable under one, so the entries of an index at a version are the
- * same wherever they were read: a statement that asks for the directory again (each of its writers does, to find a segment, to open the tombstone log, to add a segment) copies the memo
- * instead of reading and checking every page of the chain. One entry per index, dropped by the budget the backend's caches share (core/cachebudget.h) and by a newer version. The
- * checks and the reports of the directory read the pages (sift_dirchain_read).
- */
-typedef struct DirMemo
-{
-	RelFileLocator rel;			/* hash key */
-	BlockNumber root;
-	uint64		version;
-	uint64		used;
-	Size		bytes;
-	SiftDirChain chain;			/* leaf, inner and blocks point into data */
-	int			nsegs;
-	SiftSegEntry *segs;
-	char	   *data;
-} DirMemo;
-
-static HTAB *memos;
-static MemoryContext memo_cx;
-
-static DirMemo *
-memo_oldest_entry(void)
-{
-	HASH_SEQ_STATUS seq;
-	DirMemo    *e,
-			   *oldest = NULL;
-
-	if (memos == NULL)
-		return NULL;
-	hash_seq_init(&seq, memos);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (oldest == NULL || e->used < oldest->used)
-			oldest = e;
-	return oldest;
-}
-
-static uint64
-memo_oldest(void)
-{
-	DirMemo    *e = memo_oldest_entry();
-
-	return e ? e->used : UINT64_MAX;
-}
-
-static void
-memo_drop(DirMemo *e)
-{
-	RelFileLocator rel = e->rel;
-
-	pfree(e->data);
-	hash_search(memos, &rel, HASH_REMOVE, NULL);
-}
-
-static bool
-memo_evict_one(void)
-{
-	DirMemo    *e = memo_oldest_entry();
-
-	if (e == NULL)
-		return false;
-	memo_drop(e);
-	return true;
-}
-
-static void
-memo_evict_all(void)
-{
-	while (memo_evict_one())
-		;
-}
-
-static const SiftCacheKind memo_kind = {"core_dirchain", memo_oldest, memo_evict_one, memo_evict_all};
-
-static void
-memo_init(void)
-{
-	HASHCTL		ctl = {.keysize = sizeof(RelFileLocator),.entrysize = sizeof(DirMemo)};
-
-	memo_cx = sift_cache_create_context("sift cache directories");
-	ctl.hcxt = memo_cx;
-	memos = hash_create("sift chained directories", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	sift_cache_register(&memo_kind);
-}
-
-/* Where the arrays of a chain of nsegs entries lie in one allocation: entries, leaves, interior pages, blocks */
-static Size
-memo_bytes_of(int nsegs, const SiftDirChain *c)
-{
-	return nsegs * sizeof(SiftSegEntry) + c->nleaves * sizeof(SiftChainRef) + c->ninner * sizeof(SiftDirInner) + c->nblocks * sizeof(BlockNumber);
-}
-
-static DirMemo *
-memo_keep(Relation index, uint64 version, const SiftSegEntry *segs, int nsegs, const SiftDirChain *chain)
-{
-	Size		bytes = memo_bytes_of(nsegs, chain);
-	DirMemo    *e;
-	bool		found;
-	char	   *at;
-
-	if (memos == NULL)
-		memo_init();
-	if ((e = hash_search(memos, &index->rd_locator, HASH_FIND, NULL)) != NULL)
-		memo_drop(e);
-	if (!sift_cache_room(bytes))
-		return NULL;
-	e = hash_search(memos, &index->rd_locator, HASH_ENTER, &found);
-	e->root = chain->root;
-	e->version = version;
-	e->used = sift_cache_tick();
-	e->bytes = bytes;
-	e->nsegs = nsegs;
-	e->data = at = MemoryContextAlloc(memo_cx, Max(bytes, 1));
-	e->segs = (SiftSegEntry *) at;
-	memcpy(at, segs, nsegs * sizeof(SiftSegEntry));
-	at += nsegs * sizeof(SiftSegEntry);
-	e->chain = *chain;
-	e->chain.leaf = (SiftChainRef *) at;
-	memcpy(at, chain->leaf, chain->nleaves * sizeof(SiftChainRef));
-	at += chain->nleaves * sizeof(SiftChainRef);
-	e->chain.inner = (SiftDirInner *) at;
-	memcpy(at, chain->inner, chain->ninner * sizeof(SiftDirInner));
-	at += chain->ninner * sizeof(SiftDirInner);
-	e->chain.blocks = (BlockNumber *) at;
-	memcpy(at, chain->blocks, chain->nblocks * sizeof(BlockNumber));
-	e->chain.maxblocks = chain->nblocks;
-	return e;
-}
-
-static DirMemo *
-memo_find(Relation index, BlockNumber root, uint64 version)
-{
-	DirMemo    *e = memos == NULL ? NULL : hash_search(memos, &index->rd_locator, HASH_FIND, NULL);
-
-	if (e == NULL || e->root != root || e->version != version)
-		return NULL;
-	e->used = sift_cache_tick();
-	return e;
-}
-
 SiftDirEntries
 sift_dirchain_entries(Relation index, BlockNumber root, uint64 version)
 {
-	DirMemo    *e = memo_find(index, root, version);
+	DirMemo    *e = sift_dirchain_memo_find(index, root, version);
 	SiftSegEntry *segs;
 	SiftDirChain chain = {0};
 	int			n;
@@ -454,7 +314,7 @@ sift_dirchain_entries(Relation index, BlockNumber root, uint64 version)
 	if (e != NULL)
 		return (SiftDirEntries) {.segs = e->segs,.nsegs = e->nsegs,.blocks = e->chain.blocks,.nblocks = e->chain.nblocks,.kept = true};
 	n = chain_read(index, root, version, 0, &segs, &chain, NULL);
-	if ((e = memo_keep(index, version, segs, n, &chain)) == NULL)
+	if ((e = sift_dirchain_memo_keep(index, version, segs, n, &chain)) == NULL)
 	{
 		pfree(chain.leaf);
 		pfree(chain.inner);
@@ -480,13 +340,13 @@ sift_dirchain_entries_release(SiftDirEntries *e)
 int
 sift_dirchain_load(Relation index, BlockNumber root, uint64 version, SiftSegEntry **segs, SiftDirChain *chain)
 {
-	DirMemo    *e = memo_find(index, root, version);
+	DirMemo    *e = sift_dirchain_memo_find(index, root, version);
 	int			n;
 
 	if (e == NULL)
 	{
 		n = chain_read(index, root, version, 0, segs, chain, NULL);
-		memo_keep(index, version, *segs, n, chain);
+		sift_dirchain_memo_keep(index, version, *segs, n, chain);
 		return n;
 	}
 	*segs = memcpy(palloc(Max(e->nsegs, 1) * sizeof(SiftSegEntry)), e->segs, e->nsegs * sizeof(SiftSegEntry));
@@ -677,12 +537,59 @@ put_interiors(ChainOut *o, SiftChainRef *inner, int *ninner, int from, int to)
 }
 
 /* Where the leaf reference ref stands in o->ref at or after from: -1 when it does not */
-static int
-ref_at(const ChainOut *o, int from, const SiftChainRef *ref)
+/* The place of each reference of o by its block and slot: the pages of the old chain look theirs up one by one */
+typedef struct RefPlaces
 {
-	for (int i = from; i < o->nref; i++)
-		if (o->ref[i].blk == ref->blk && o->ref[i].at == ref->at)
-			return i;
+	uint32		mask;
+	uint64	   *key;
+	int32	   *pos;			/* plus one; 0 for an empty slot */
+} RefPlaces;
+
+static uint64
+ref_key(const SiftChainRef *ref)
+{
+	return ((uint64) ref->blk << 32) | (uint32) ref->at;
+}
+
+static uint32
+ref_slot(const RefPlaces *rp, uint64 key)
+{
+	return (uint32) ((key * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & rp->mask;
+}
+
+static void
+ref_places_build(RefPlaces *rp, const ChainOut *o)
+{
+	uint32		cap = pg_nextpower2_32(Max(2 * o->nref, 16));
+
+	rp->mask = cap - 1;
+	/* check-memory: allow a table of twice the references of the chain, which the segments of the index bound */
+	rp->key = palloc(sizeof(uint64) * cap);
+	rp->pos = palloc0(sizeof(int32) * cap);
+	for (int i = 0; i < o->nref; i++)
+	{
+		uint64		key = ref_key(&o->ref[i]);
+		uint32		p = ref_slot(rp, key);
+
+		while (rp->pos[p] != 0 && rp->key[p] != key)
+			p = (p + 1) & rp->mask;
+		if (rp->pos[p] == 0)
+		{
+			rp->key[p] = key;
+			rp->pos[p] = i + 1;
+		}
+	}
+}
+
+/* The first place at or after from that holds the reference, or -1 */
+static int
+ref_at(const RefPlaces *rp, int from, const SiftChainRef *ref)
+{
+	uint64		key = ref_key(ref);
+
+	for (uint32 p = ref_slot(rp, key); rp->pos[p] != 0; p = (p + 1) & rp->mask)
+		if (rp->key[p] == key)
+			return rp->pos[p] - 1 >= from ? rp->pos[p] - 1 : -1;
 	return -1;
 }
 
@@ -706,6 +613,7 @@ put_top(ChainOut *o, Relation index, int n, const SiftDirChain *old, bool *kept_
 	int			ninner = 0,
 				pos = 0,
 				npages = 0;
+	RefPlaces	places;
 
 	if ((uint32) o->nref <= root_cap())
 	{
@@ -713,11 +621,12 @@ put_top(ChainOut *o, Relation index, int n, const SiftDirChain *old, bool *kept_
 		pfree(at);
 		return;
 	}
+	ref_places_build(&places, o);
 	for (uint32 j = 0; old && j < old->ninner; j++)
 	{
 		const SiftDirInner *oi = &old->inner[j];
 		uint32		m = (j + 1 < old->ninner ? old->inner[j + 1].leaf0 : old->nleaves) - oi->leaf0;
-		int			found = ref_at(o, pos, &old->leaf[oi->leaf0]);
+		int			found = ref_at(&places, pos, &old->leaf[oi->leaf0]);
 
 		at[j] = -1;
 		if (m * 2 < root_cap() || found < 0 || (uint32) found + m > (uint32) o->nref || (BlockNumberIsValid(o->below) && oi->ref.blk >= o->below) ||
@@ -755,6 +664,8 @@ put_top(ChainOut *o, Relation index, int n, const SiftDirChain *old, bool *kept_
 	*rootblk = put_refs(o, inner, 0, ninner, 2);
 	pfree(inner);
 	pfree(at);
+	pfree(places.key);
+	pfree(places.pos);
 }
 
 /* The entries [a, b) of no partition as groups: in as many even pieces as a leaf asks for */

@@ -151,13 +151,30 @@ sift_dir_part_inherit(const uint64 *old, int nold, const SiftSegEntry *neu, int 
 	part_sort(e);
 }
 
+typedef struct PartRef
+{
+	uint64		lineage;
+	const uint8 *lo;
+	int			at;				/* the position of the entry */
+} PartRef;
+
 typedef struct PartGroup
 {
 	uint64		lineage;
 	const uint8 *lo;
 	int			first;			/* the position of its first entry, which orders the partitions of one bound */
 	int			n;
+	int			from;			/* its entries are the refs [from, from + n) */
 } PartGroup;
+
+static int
+cmp_ref(const void *a, const void *b)
+{
+	const PartRef *x = a,
+			   *y = b;
+
+	return x->lineage != y->lineage ? pg_cmp_u64(x->lineage, y->lineage) : (x->at > y->at) - (x->at < y->at);
+}
 
 static int
 cmp_group(const void *a, const void *b)
@@ -176,25 +193,27 @@ cmp_group(const void *a, const void *b)
 int
 sift_dirpart_arrange(Relation index, const SiftDirParts *e, SiftSegEntry *segs, int n, SiftDirPart **parts)
 {
-	const SiftPartOf **of = palloc(Max(n, 1) * sizeof(SiftPartOf *));
+	PartRef    *ref = palloc(Max(n, 1) * sizeof(PartRef));
 	PartGroup  *g = palloc(Max(n, 1) * sizeof(PartGroup));
 	SiftSegEntry *out = palloc(Max(n, 1) * sizeof(SiftSegEntry));
-	int			ng = 0,
+	int			nref = 0,
+				ng = 0,
 				at = 0;
 
 	for (int i = 0; i < n; i++)
-		of[i] = part_of(e, segs[i].gen);
-	for (int i = 0; i < n; i++)
 	{
-		int			k = 0;
+		const SiftPartOf *p = part_of(e, segs[i].gen);
 
-		if (of[i] == NULL)
-			continue;
-		while (k < ng && g[k].lineage != of[i]->lineage)
-			k++;
-		if (k == ng)
-			g[ng++] = (PartGroup) {of[i]->lineage, of[i]->lo, i, 0};
-		g[k].n++;
+		if (p != NULL)
+			ref[nref++] = (PartRef) {p->lineage, p->lo, i};
+	}
+	if (nref > 1)
+		qsort(ref, nref, sizeof(PartRef), cmp_ref);
+	for (int r = 0; r < nref; r++)
+	{
+		if (r == 0 || ref[r].lineage != ref[r - 1].lineage)
+			g[ng++] = (PartGroup) {ref[r].lineage, ref[r].lo, ref[r].at, 0, r};
+		g[ng - 1].n++;
 	}
 	for (int k = 0; k < ng; k++)
 		if ((uint32) g[k].n > sift_dirchain_leaf_cap())
@@ -205,19 +224,18 @@ sift_dirpart_arrange(Relation index, const SiftDirParts *e, SiftSegEntry *segs, 
 					 errhint("Merge the segments of the partition first (sift.merge()).")));
 	qsort(g, ng, sizeof(PartGroup), cmp_group);
 	for (int i = 0; i < n; i++)
-		if (of[i] == NULL)
+		if (part_of(e, segs[i].gen) == NULL)
 			out[at++] = segs[i];
 	*parts = palloc(Max(ng, 1) * sizeof(SiftDirPart));
 	for (int k = 0; k < ng; k++)
 	{
 		(*parts)[k] = (SiftDirPart) {.lineage = g[k].lineage,.first = at,.n = g[k].n};
 		memcpy((*parts)[k].lo, g[k].lo, SIFT_BOUND_BYTES);
-		for (int i = 0; i < n; i++)
-			if (of[i] != NULL && of[i]->lineage == g[k].lineage)
-				out[at++] = segs[i];
+		for (int r = g[k].from; r < g[k].from + g[k].n; r++)
+			out[at++] = segs[ref[r].at];
 	}
 	memcpy(segs, out, n * sizeof(SiftSegEntry));
-	pfree(of);
+	pfree(ref);
 	pfree(g);
 	pfree(out);
 	return ng;

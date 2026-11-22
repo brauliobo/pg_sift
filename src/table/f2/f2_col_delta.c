@@ -278,6 +278,23 @@ sift_col_delta_batch_split(SiftColDeltaBatch *b, uint32 room, FullTransactionId 
 	*b = rest;
 }
 
+/* The entries of b from byte offset *off that fit room, as a batch of their own: the first always goes in, so that a page is never empty */
+static void
+batch_take(const SiftColDeltaBatch *b, uint32 *off, uint32 room, FullTransactionId next, SiftColDeltaBatch *part)
+{
+	memset(part, 0, sizeof(*part));
+	while (*off < b->nbytes)
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, b->bytes + *off, sizeof(h));
+		if (part->nentries > 0 && part->nbytes + h.rec_bytes > room)
+			break;
+		sift_col_delta_batch_add(part, next, b->bytes + *off);
+		*off += h.rec_bytes;
+	}
+}
+
 void
 sift_col_delta_batch_free(SiftColDeltaBatch *b)
 {
@@ -412,11 +429,11 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 	}
 	if (sift_col_delta_anchor_has_chain(a) && w->append_head(w->ctx, a->delta_head_blkno, b, next))
 		a->max_xid = sift_fxid_max(a->max_xid, bmax);
-	while (b->nentries > 0)
+	for (uint32 off = 0; off < b->nbytes;)
 	{
 		SiftColDeltaBatch part;
 
-		sift_col_delta_batch_split(b, (uint32) SIFT_COL_DELTA_PAGE_ROOM, next, &part);
+		batch_take(b, &off, (uint32) SIFT_COL_DELTA_PAGE_ROOM, next, &part);
 		a->delta_head_blkno = w->new_page(w->ctx, &part, a->delta_head_blkno, (uint16) (a->npages + 1));
 		a->npages++;
 		a->min_xid = xid_min(a->min_xid, bmin);
@@ -424,6 +441,7 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 		w->commit_anchor(w->ctx, a);
 		sift_col_delta_batch_free(&part);
 	}
+	sift_col_delta_batch_free(b);
 }
 
 /* ---- the chain ---- */
@@ -566,6 +584,58 @@ sift_col_delta_judge(const RelFileLocator *loc, uint64 tid, CommandId cid, const
 
 /* ---- the stage of a transaction ---- */
 
+static uint32
+part_slot_of(uint64 part_id, uint32 mask)
+{
+	return (uint32) ((part_id * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & mask;
+}
+
+static SiftCdPartBytes *
+part_slot(SiftCdPartBytes *tab, uint32 cap, uint64 part_id)
+{
+	uint32		p = part_slot_of(part_id, cap - 1);
+
+	while (tab[p].used && tab[p].part_id != part_id)
+		p = (p + 1) & (cap - 1);
+	return &tab[p];
+}
+
+static void
+part_bytes_grow(SiftColDeltaStage *st)
+{
+	uint32		cap = Max(16, st->part_bytes_cap * 2);
+	SiftCdPartBytes *tab = MemoryContextAllocZero(TopTransactionContext, sizeof(SiftCdPartBytes) * cap);
+
+	for (uint32 i = 0; i < st->part_bytes_cap; i++)
+		if (st->part_bytes_tab[i].used)
+			*part_slot(tab, cap, st->part_bytes_tab[i].part_id) = st->part_bytes_tab[i];
+	if (st->part_bytes_tab != NULL)
+		pfree(st->part_bytes_tab);
+	st->part_bytes_tab = tab;
+	st->part_bytes_cap = cap;
+}
+
+void
+sift_col_delta_stage_book(SiftColDeltaStage *st, const SiftStageColDelta *it, int64 bytes, int items)
+{
+	SiftCdPartBytes *ent;
+
+	if ((st->part_bytes_n + 1) * 2 > st->part_bytes_cap)
+		part_bytes_grow(st);
+	ent = part_slot(st->part_bytes_tab, st->part_bytes_cap, it->part_id);
+	if (!ent->used)
+	{
+		ent->used = true;
+		ent->part_id = it->part_id;
+		st->part_bytes_n++;
+	}
+	SIFT_INVARIANT(bytes >= 0 || ent->bytes >= (uint64) -bytes, "the books of a column delta stage hold fewer bytes for partition %llu than a record leaving it", (unsigned long long) it->part_id);
+	ent->bytes += (uint64) bytes;
+	st->bytes += (uint64) bytes;
+	if (it->subxid != TopSubTransactionId)
+		st->sub_items += items;
+}
+
 void
 sift_col_delta_stage_add(SiftColDeltaStage *st, uint64 part_id, const uint8 *key_lo, SubTransactionId subxid, const uint8 *rec)
 {
@@ -585,7 +655,7 @@ sift_col_delta_stage_add(SiftColDeltaStage *st, uint64 part_id, const uint8 *key
 	it->subxid = subxid;
 	it->rec = MemoryContextAlloc(TopTransactionContext, h.rec_bytes);
 	memcpy(it->rec, rec, h.rec_bytes);
-	st->bytes += h.rec_bytes;
+	sift_col_delta_stage_book(st, it, h.rec_bytes, 1);
 }
 
 static uint32
@@ -598,38 +668,51 @@ item_bytes(const SiftStageColDelta *it)
 }
 
 void
-sift_col_delta_stage_discard(SiftColDeltaStage *st, int i)
+sift_col_delta_stage_release(SiftColDeltaStage *st, int i)
 {
-	st->bytes -= item_bytes(&st->items[i]);
-	pfree(st->items[i].rec);
-	memmove(&st->items[i], &st->items[i + 1], (st->n - i - 1) * sizeof(SiftStageColDelta));
-	st->n--;
+	SiftStageColDelta *it = &st->items[i];
+
+	sift_col_delta_stage_book(st, it, -(int64) item_bytes(it), -1);
+	pfree(it->rec);
+	it->rec = NULL;
+}
+
+/*
+ * A subtransaction stages after it begins and nothing else stages while it runs, so its records, and those of the subtransactions released into it, are the last of the stage: the walk from
+ * the end stops at the first record of an ancestor.
+ */
+static void
+drop_sub_tail(SiftColDeltaStage *st, SubTransactionId sub)
+{
+	int			i = st->n;
+
+	while (i > 0 && (st->items[i - 1].rec == NULL || st->items[i - 1].subxid == sub))
+		i--;
+	for (int k = i; k < st->n; k++)
+		if (st->items[k].rec != NULL)
+			sift_col_delta_stage_release(st, k);
+	st->n = i;
 }
 
 void
 sift_col_delta_stage_drop_sub(SiftColDeltaStage *st, SubTransactionId sub)
 {
-	int			kept = 0;
-
-	for (int i = 0; i < st->n; i++)
-	{
-		if (st->items[i].subxid != sub)
-		{
-			st->items[kept++] = st->items[i];
-			continue;
-		}
-		st->bytes -= item_bytes(&st->items[i]);
-		pfree(st->items[i].rec);
-	}
-	st->n = kept;
+	if (st->sub_items > 0)
+		drop_sub_tail(st, sub);
 }
 
 void
 sift_col_delta_stage_promote_sub(SiftColDeltaStage *st, SubTransactionId sub, SubTransactionId parent)
 {
-	for (int i = 0; i < st->n; i++)
-		if (st->items[i].subxid == sub)
-			st->items[i].subxid = parent;
+	if (st->sub_items == 0)
+		return;
+	for (int i = st->n; i > 0 && (st->items[i - 1].rec == NULL || st->items[i - 1].subxid == sub); i--)
+		if (st->items[i - 1].rec != NULL)
+		{
+			st->items[i - 1].subxid = parent;
+			if (parent == TopSubTransactionId)
+				st->sub_items--;
+		}
 }
 
 void
@@ -639,6 +722,8 @@ sift_col_delta_stage_normalize_top(SiftColDeltaStage *st, TransactionId top_xid)
 	{
 		SiftColDeltaEntryHdr h;
 
+		if (st->items[i].rec == NULL)
+			continue;
 		memcpy(&h, st->items[i].rec, sizeof(h));
 		h.xmin = top_xid;
 		h.flags &= ~SIFT_CDENT_FLAG_SUBXID;
@@ -649,41 +734,70 @@ sift_col_delta_stage_normalize_top(SiftColDeltaStage *st, TransactionId top_xid)
 uint64
 sift_col_delta_stage_part_bytes(const SiftColDeltaStage *st, uint64 part_id)
 {
-	uint64		n = 0;
+	const SiftCdPartBytes *ent;
 
+	if (st->part_bytes_cap == 0)
+		return 0;
+	ent = part_slot(st->part_bytes_tab, st->part_bytes_cap, part_id);
+	return ent->used ? ent->bytes : 0;
+}
+
+static int
+by_part_cmp(const void *x, const void *y, void *arg)
+{
+	const SiftStageColDelta *items = arg;
+	int			a = *(const int *) x,
+				b = *(const int *) y;
+
+	if (items[a].part_id != items[b].part_id)
+		return items[a].part_id < items[b].part_id ? -1 : 1;
+	return a < b ? -1 : a > b;
+}
+
+int *
+sift_col_delta_stage_by_part(const SiftColDeltaStage *st, int *nlive)
+{
+	int		   *ord = palloc(sizeof(int) * Max(st->n, 1));
+
+	*nlive = 0;
 	for (int i = 0; i < st->n; i++)
-		if (st->items[i].part_id == part_id)
-			n += item_bytes(&st->items[i]);
-	return n;
+		if (st->items[i].rec != NULL)
+			ord[(*nlive)++] = i;
+	qsort_arg(ord, *nlive, sizeof(int), by_part_cmp, st->items);
+	return ord;
 }
 
 SiftColDeltaBatch
-sift_col_delta_stage_take_part(SiftColDeltaStage *st, FullTransactionId next, uint64 part_id)
+sift_col_delta_stage_take_run(SiftColDeltaStage *st, const int *ord, int lo, int hi, FullTransactionId next)
 {
 	SiftColDeltaBatch b = {0};
-	int			kept = 0;
 
-	for (int i = 0; i < st->n; i++)
-	{
-		if (st->items[i].part_id != part_id)
+	for (int k = lo; k < hi; k++)
+		if (st->items[ord[k]].rec != NULL)
 		{
-			st->items[kept++] = st->items[i];
-			continue;
+			sift_col_delta_batch_add(&b, next, st->items[ord[k]].rec);
+			sift_col_delta_stage_release(st, ord[k]);
 		}
-		sift_col_delta_batch_add(&b, next, st->items[i].rec);
-		st->bytes -= item_bytes(&st->items[i]);
-		pfree(st->items[i].rec);
-	}
-	st->n = kept;
 	return b;
+}
+
+void
+sift_col_delta_stage_clear(SiftColDeltaStage *st)
+{
+	for (int i = 0; i < st->n; i++)
+		SIFT_INVARIANT(st->items[i].rec == NULL, "a column delta stage was cleared with a record in it");
+	st->n = 0;
 }
 
 void
 sift_col_delta_stage_free(SiftColDeltaStage *st)
 {
 	for (int i = 0; i < st->n; i++)
-		pfree(st->items[i].rec);
+		if (st->items[i].rec != NULL)
+			pfree(st->items[i].rec);
 	if (st->items != NULL)
 		pfree(st->items);
+	if (st->part_bytes_tab != NULL)
+		pfree(st->part_bytes_tab);
 	memset(st, 0, sizeof(*st));
 }

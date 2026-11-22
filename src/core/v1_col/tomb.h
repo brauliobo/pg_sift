@@ -232,6 +232,8 @@ typedef struct SiftTombWalk
 	SiftSortRunCur *cur;
 	uint32		i;
 	SiftTomb	copy;
+	uint32	   *heap;			/* the runs that have an entry left, the one with the least (key, run) first */
+	uint32		nheap;
 } SiftTombWalk;
 extern void sift_tomb_walk_begin(SiftTombWalk *w, SiftTombLog *t);
 extern SiftTomb *sift_tomb_walk_next(SiftTombWalk *w);

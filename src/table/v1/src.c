@@ -478,7 +478,11 @@ add_wbuf(TblSource *t, uint32 sb)
 	cx = AllocSetContextCreate(t->cxt, "sift_table write buffer batch", ALLOCSET_DEFAULT_SIZES);
 	b = sift_tbl_wbuf_batch(t->rel, t->st, t->wbuf, t->nwbuf, sb, cx);
 	sift_col_add_batches(t->part[0].src, &b, 1);
-	t->wb = t->wb ? repalloc(t->wb, (t->nwb + 1) * sizeof(TblWbatch)) : MemoryContextAlloc(t->cxt, sizeof(TblWbatch));
+	if (t->nwb == t->wbcap)
+	{
+		t->wbcap = Max(8, t->wbcap * 2);
+		SIFT_REGROW_IN(t->cxt, t->wb, t->wbcap * sizeof(TblWbatch));
+	}
 	t->wb[t->nwb++] = (TblWbatch) {sb, cx};
 }
 

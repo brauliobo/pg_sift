@@ -255,6 +255,8 @@ typedef struct SiftLocalLock
 	bool		split_pinned;
 	bool		published;
 	SubTransactionId esc_sub;
+	struct SiftLocalLock *rel_parts;	/* of a relation: the locks of its partitions, linked by rel_next */
+	struct SiftLocalLock *rel_next;
 } SiftLocalLock;
 
 SIFT_BACKEND_LOCAL MemoryContext txn_cx = NULL;
@@ -264,6 +266,7 @@ SIFT_BACKEND_LOCAL uint32 nlocks = 0,
 			caplocks = 0,
 			ixcap = 0;
 SIFT_BACKEND_LOCAL SiftEscSubRecord *sublog = NULL;
+SIFT_BACKEND_LOCAL uint32 *sub_bucket = NULL;
 SIFT_BACKEND_LOCAL int nsub = 0,
 			capsub = 0;
 
@@ -329,15 +332,22 @@ grow_locks(void)
 static SiftLocalLock *
 lock_of(Relation rel, uint64 part_id)
 {
-	SiftLocalLock *l = find_lock(&rel->rd_locator, part_id);
+	SiftLocalLock *l = find_lock(&rel->rd_locator, part_id),
+			   *rl;
 
 	if (l != NULL)
 		return l;
+	rl = part_id == SIFT_ESC_PART_ALL ? NULL : lock_of(rel, SIFT_ESC_PART_ALL);
 	if (nlocks == caplocks)
 		grow_locks();
 	l = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(SiftLocalLock));
 	*l = (SiftLocalLock) {.loc = rel->rd_locator,.part_id = part_id,.dbid = rel->rd_lockInfo.lockRelId.dbId,
 		.relid = rel->rd_lockInfo.lockRelId.relId,.intent_mode = -1,.esc_mode = -1,.held_max = -1};
+	if (rl != NULL)
+	{
+		l->rel_next = rl->rel_parts;
+		rl->rel_parts = l;
+	}
 	locks[nlocks] = l;
 	nlocks++;
 	index_lock(nlocks - 1);
@@ -383,37 +393,74 @@ sift_esc_note_tier1_release(const RelFileLocator *loc, uint64 part_id, uint32 co
 
 /* ---- the undo log of the subtransactions ---- */
 
+/* A record of a subtransaction for a lock is found by a hash of both, in chains through the records: the records of the subtransaction that ends are the last ones, so each is the head of its chain */
+static uint32
+sub_bucket_of(SubTransactionId sub, const RelFileLocator *loc, uint64 part_id)
+{
+	return hash_combine(lock_hash(loc, part_id), sub * UINT32_C(0x9E3779B1)) & (pg_nextpower2_32(capsub * 2) - 1);
+}
+
+static void
+sub_chain_push(uint32 i)
+{
+	uint32		b = sub_bucket_of(sublog[i].subxid, &sublog[i].locator, sublog[i].part_id);
+
+	sublog[i].chain = sub_bucket[b];
+	sub_bucket[b] = i + 1;
+}
+
+static void
+sub_chain_pop(uint32 i)
+{
+	uint32		b = sub_bucket_of(sublog[i].subxid, &sublog[i].locator, sublog[i].part_id);
+
+	SIFT_INVARIANT(sub_bucket[b] == i + 1, "the record %u of the row lock undo log is not the head of its chain", i);
+	sub_bucket[b] = sublog[i].chain;
+}
+
+static SiftEscSubRecord *
+sub_find(SubTransactionId sub, const RelFileLocator *loc, uint64 part_id)
+{
+	if (sub_bucket == NULL)
+		return NULL;
+	for (uint32 c = sub_bucket[sub_bucket_of(sub, loc, part_id)]; c != 0; c = sublog[c - 1].chain)
+		if (sublog[c - 1].subxid == sub && sublog[c - 1].part_id == part_id && RelFileLocatorEquals(sublog[c - 1].locator, *loc))
+			return &sublog[c - 1];
+	return NULL;
+}
+
+/* check-memory: allow one record for each relation and partition a subtransaction changed, bounded like the locks */
+static void
+grow_sublog(void)
+{
+	capsub = Max(8, capsub * 2);
+	sublog = sublog == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftEscSubRecord) * capsub) : repalloc(sublog, sizeof(SiftEscSubRecord) * capsub);
+	if (sub_bucket != NULL)
+		pfree(sub_bucket);
+	sub_bucket = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * pg_nextpower2_32(capsub * 2));
+	for (int i = 0; i < nsub; i++)
+		sub_chain_push(i);
+}
+
 /* The record of the current subtransaction for the lock, made when the subtransaction first changes it: what it held before. The top level has none, it ends with everything */
 static void
 note_transition(const SiftLocalLock *l)
 {
 	SubTransactionId sub = GetCurrentSubTransactionId();
 
-	if (GetCurrentTransactionNestLevel() <= 1)
+	if (GetCurrentTransactionNestLevel() <= 1 || sub_find(sub, &l->loc, l->part_id) != NULL)
 		return;
-	for (int i = nsub - 1; i >= 0; i--)
-		if (sublog[i].subxid == sub && sublog[i].part_id == l->part_id && RelFileLocatorEquals(sublog[i].locator, l->loc))
-			return;
 	if (nsub == capsub)
-	{
-		/* check-memory: allow one record for each relation and partition a subtransaction changed, bounded like the locks */
-		capsub = Max(8, capsub * 2);
-		sublog = sublog == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftEscSubRecord) * capsub) :
-			repalloc(sublog, sizeof(SiftEscSubRecord) * capsub);
-	}
-	sublog[nsub++] = (SiftEscSubRecord) {.locator = l->loc,.part_id = l->part_id,.subxid = sub,.holder_xid = GetCurrentTransactionId(),
+		grow_sublog();
+	sublog[nsub] = (SiftEscSubRecord) {.locator = l->loc,.part_id = l->part_id,.subxid = sub,.holder_xid = GetCurrentTransactionId(),
 		.prev_intent = l->intent_mode,.prev_esc = l->esc_mode,.took_split_pin = false};
+	sub_chain_push(nsub++);
 }
 
 static SiftEscSubRecord *
 record_of(const SiftLocalLock *l)
 {
-	SubTransactionId sub = GetCurrentSubTransactionId();
-
-	for (int i = nsub - 1; i >= 0; i--)
-		if (sublog[i].subxid == sub && sublog[i].part_id == l->part_id && RelFileLocatorEquals(sublog[i].locator, l->loc))
-			return &sublog[i];
-	return NULL;
+	return sub_find(GetCurrentSubTransactionId(), &l->loc, l->part_id);
 }
 
 static DirArg
@@ -450,27 +497,50 @@ undo_record(const SiftEscSubRecord *r)
 		rl->split_pinned = false;
 }
 
+/* The coarse locks the subtransaction took are its parent's now */
+static void
+retag_coarse(const SiftEscSubRecord *r, SubTransactionId mysub, SubTransactionId parent)
+{
+	SiftLocalLock *l = find_lock(&r->locator, r->part_id);
+
+	if (l != NULL && l->esc_sub == mysub && l->esc_mode >= 0)
+	{
+		DirArg		a = dir_arg(l);
+
+		l->esc_sub = parent;
+		a.subxid = parent;
+		if (l->published)
+			dir_apply(DIR_RETAG, &a);
+	}
+}
+
+/* The records of the subtransaction and of those released into it are the last of the log: undone when it rolls back, the parent's when it commits (the parent's own record of a lock stands) */
 static void
 drop_sub_records(SubTransactionId mysub, SubTransactionId parent, bool abort)
 {
-	int			kept = 0;
+	int			first = nsub,
+				kept;
 
-	for (int i = nsub - 1; i >= 0; i--)
-		if (sublog[i].subxid == mysub && abort)
-			undo_record(&sublog[i]);
-	for (int i = 0; i < nsub; i++)
+	while (first > 0 && sublog[first - 1].subxid == mysub)
+		first--;
+	for (int i = nsub - 1; i >= first; i--)
 	{
-		SiftEscSubRecord *r = &sublog[i];
-		bool		parent_has = false;
+		if (abort)
+			undo_record(&sublog[i]);
+		else
+			retag_coarse(&sublog[i], mysub, parent);
+		sub_chain_pop(i);
+	}
+	kept = first;
+	for (int i = first; i < nsub && !abort; i++)
+	{
+		SiftEscSubRecord r = sublog[i];
 
-		if (r->subxid == mysub && !abort)
-			for (int j = 0; j < nsub && !parent_has; j++)
-				parent_has = sublog[j].subxid == parent && sublog[j].part_id == r->part_id &&
-					RelFileLocatorEquals(sublog[j].locator, r->locator);
-		if (r->subxid == mysub && (abort || parent_has))
+		r.subxid = parent;
+		if (sub_find(parent, &r.locator, r.part_id) != NULL)
 			continue;
-		sublog[kept] = *r;
-		sublog[kept++].subxid = r->subxid == mysub ? parent : r->subxid;
+		sublog[kept] = r;
+		sub_chain_push(kept++);
 	}
 	nsub = kept;
 }
@@ -478,21 +548,8 @@ drop_sub_records(SubTransactionId mysub, SubTransactionId parent, bool abort)
 void
 sift_esc_subxact_event(SubXactEvent event, SubTransactionId mysubid, SubTransactionId parentsubid)
 {
-	if (event != SUBXACT_EVENT_ABORT_SUB && event != SUBXACT_EVENT_COMMIT_SUB)
-		return;
-	drop_sub_records(mysubid, parentsubid, event == SUBXACT_EVENT_ABORT_SUB);
-	if (event != SUBXACT_EVENT_COMMIT_SUB)
-		return;
-	for (uint32 i = 0; i < nlocks; i++)
-		if (locks[i]->esc_sub == mysubid && locks[i]->esc_mode >= 0)
-		{
-			DirArg		a = dir_arg(locks[i]);
-
-			locks[i]->esc_sub = parentsubid;
-			a.subxid = parentsubid;
-			if (locks[i]->published)
-				dir_apply(DIR_RETAG, &a);
-		}
+	if (event == SUBXACT_EVENT_ABORT_SUB || event == SUBXACT_EVENT_COMMIT_SUB)
+		drop_sub_records(mysubid, parentsubid, event == SUBXACT_EVENT_ABORT_SUB);
 }
 
 /* ---- the locks of the lock manager ---- */
@@ -611,11 +668,9 @@ absorb_partitions(const SiftLocalLock *rl)
 {
 	SubTransactionId sub = GetCurrentSubTransactionId();
 
-	for (uint32 i = 0; i < nlocks; i++)
+	for (SiftLocalLock *l = rl->rel_parts; l != NULL; l = l->rel_next)
 	{
-		SiftLocalLock *l = locks[i];
-
-		if (l->part_id != SIFT_ESC_PART_ALL && l->published && l->esc_sub == sub && RelFileLocatorEquals(l->loc, rl->loc))
+		if (l->published && l->esc_sub == sub)
 		{
 			DirArg		a = dir_arg(l);
 
@@ -738,6 +793,7 @@ sift_esc_xact_end(XactEvent event)
 	locks = NULL;
 	lock_ix = NULL;
 	sublog = NULL;
+	sub_bucket = NULL;
 	nlocks = caplocks = ixcap = 0;
 	nsub = capsub = 0;
 	pglm = false;

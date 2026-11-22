@@ -27,6 +27,7 @@
 #include "utils/snapmgr.h"
 
 #include "table/f2/f2_lock_esc.h"
+#include "table/f2/f2_lock_int.h"
 #include "table/f2/f2_row_state.h"
 #include "table/f2/f2_spec.h"
 #include "table/f2/f2_tbl.h"
@@ -307,118 +308,11 @@ entry_for_write(Relation rel, SiftRowLockStripe *s, const SiftRowLockKey *k)
 	return e;
 }
 
-/* ---- what this transaction touched, to settle at its end ---- */
-
-typedef struct Touched
-{
-	SiftRowLockKey key;
-	uint64		part_id;		/* 0 for the entries of speculative inserts, whose partition is not known */
-	TransactionId xid;
-	SubTransactionId subxid;
-} Touched;
-
-#define TOUCHED_INDEXED_AT	32	/* entries from which a lookup by hash replaces the scan */
-
-SIFT_BACKEND_LOCAL Touched *touched = NULL;
-SIFT_BACKEND_LOCAL uint32 ntouched = 0,
-			captouched = 0,
-			ixcap = 0;
-SIFT_BACKEND_LOCAL uint32 *touched_ix = NULL;
-
-static uint32
-touched_hash(const SiftRowLockKey *k, SubTransactionId sub)
-{
-	return hash_bytes((const unsigned char *) k, sizeof(*k)) ^ (sub * UINT32_C(0x9E3779B1));
-}
-
-static void
-ix_put(uint32 i)
-{
-	uint32		p = touched_hash(&touched[i].key, touched[i].subxid) & (ixcap - 1);
-
-	while (touched_ix[p] != 0)
-		p = (p + 1) & (ixcap - 1);
-	touched_ix[p] = i + 1;
-}
-
-static void
-reindex(void)
-{
-	if (touched_ix != NULL)
-		pfree(touched_ix);
-	touched_ix = NULL;
-	ixcap = 0;
-	if (ntouched < TOUCHED_INDEXED_AT)
-		return;
-	ixcap = pg_nextpower2_32(Max(ntouched * 2, 128));
-	touched_ix = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * ixcap);
-	for (uint32 i = 0; i < ntouched; i++)
-		ix_put(i);
-}
-
-static bool
-is_touched(const SiftRowLockKey *k, SubTransactionId sub)
-{
-	if (ixcap == 0)
-	{
-		for (uint32 i = 0; i < ntouched; i++)
-			if (touched[i].subxid == sub && memcmp(&touched[i].key, k, sizeof(*k)) == 0)
-				return true;
-		return false;
-	}
-	for (uint32 p = touched_hash(k, sub) & (ixcap - 1); touched_ix[p] != 0; p = (p + 1) & (ixcap - 1))
-		if (touched[touched_ix[p] - 1].subxid == sub && memcmp(&touched[touched_ix[p] - 1].key, k, sizeof(*k)) == 0)
-			return true;
-	return false;
-}
-
-/* True when the (sub)transaction did not hold the row already: a row is one entry however many statements lock or update it */
-static bool
-remember(const SiftRowLockKey *k, uint64 part_id)
-{
-	SubTransactionId sub = GetCurrentSubTransactionId();
-
-	if (is_touched(k, sub))
-		return false;
-	if (ntouched == captouched)
-	{
-		/* check-memory: allow the rows of a transaction in tier 1 are bounded by SIFT_ROWLOCK_REL_ROW_CAP for each relation, the stripes hold no more */
-		captouched = Max(64, captouched * 2);
-		touched = touched == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(Touched) * captouched) :
-			repalloc(touched, sizeof(Touched) * captouched);
-	}
-	touched[ntouched] = (Touched) {*k, part_id, GetCurrentTransactionId(), sub};
-	ntouched++;
-	if ((ixcap == 0 && ntouched >= TOUCHED_INDEXED_AT) || (ixcap != 0 && ntouched * 4 > ixcap * 3))
-		reindex();
-	else if (ixcap != 0)
-		ix_put(ntouched - 1);
-	return true;
-}
-
-static void
-forget(const SiftRowLockKey *k)
-{
-	for (int i = (int) ntouched - 1; i >= 0; i--)
-		if (memcmp(&touched[i].key, k, sizeof(*k)) == 0)
-		{
-			touched[i] = touched[--ntouched];
-			reindex();
-			return;
-		}
-}
-
-static void
-reset_touched(void)
-{
-	touched = NULL;
-	touched_ix = NULL;
-	ntouched = captouched = ixcap = 0;
-}
+/* ---- what this transaction touched, to settle at its end (f2_lock_touched.c) ---- */
 
 /* Gives the row back: our holders go, our update is the commit's (kept for EvalPlanQual) or the abort's (forgotten); false for an entry that stays because a speculative insert is in flight */
 static bool
-settle(const Touched *t, bool commit, bool keep_speculative)
+settle(const SiftTouched *t, bool commit, bool keep_speculative)
 {
 	int			si = stripe_of(&t->key);
 	SiftRowLockStripe *s = &stripes[si];
@@ -451,7 +345,7 @@ settle(const Touched *t, bool commit, bool keep_speculative)
 }
 
 static void
-mark_prepare_held(const Touched *t)
+mark_prepare_held(const SiftTouched *t)
 {
 	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
@@ -464,7 +358,7 @@ mark_prepare_held(const Touched *t)
 }
 
 static void
-retag_holder(const Touched *t, SubTransactionId parent)
+retag_holder(const SiftTouched *t, SubTransactionId parent)
 {
 	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
@@ -481,20 +375,21 @@ retag_holder(const Touched *t, SubTransactionId parent)
 static void
 release_tier1(const RelFileLocator *loc, uint64 part_id, SubTransactionId subxid)
 {
-	uint32		kept = 0;
-
-	for (uint32 i = 0; i < ntouched; i++)
+	for (int32 i = sift_touched_sub_first(subxid); i >= 0;)
 	{
-		const Touched *t = &touched[i];
-		bool		ours = t->subxid == subxid && RelFileLocatorEquals(t->key.locator, *loc) && (part_id == SIFT_ESC_PART_ALL || t->part_id == part_id);
+		SiftTouched t = *sift_touched_at((uint32) i);
+		int32		next = sift_touched_next((uint32) i),
+					moved;
 
-		if (ours && settle(t, false, true))
-			sift_esc_note_tier1_release(loc, t->part_id, 1);
-		else
-			touched[kept++] = touched[i];
+		if (!(RelFileLocatorEquals(t.key.locator, *loc) && (part_id == SIFT_ESC_PART_ALL || t.part_id == part_id)) || !settle(&t, false, true))
+		{
+			i = next;
+			continue;
+		}
+		sift_esc_note_tier1_release(loc, t.part_id, 1);
+		moved = sift_touched_remove((uint32) i);
+		i = moved >= 0 && moved == next ? i : next;
 	}
-	ntouched = kept;
-	reindex();
 }
 
 void
@@ -505,43 +400,37 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	if (event == XACT_EVENT_PRE_PREPARE)
 	{
 		sift_esc_pre_prepare(release_tier1);
-		for (uint32 i = 0; i < ntouched; i++)
-			mark_prepare_held(&touched[i]);
+		for (uint32 i = 0; i < sift_touched_count(); i++)
+			mark_prepare_held(sift_touched_at(i));
 		return;
 	}
 	if (event != XACT_EVENT_PREPARE && !commit && event != XACT_EVENT_ABORT && event != XACT_EVENT_PARALLEL_ABORT)
 		return;
-	for (uint32 i = 0; i < ntouched && event != XACT_EVENT_PREPARE; i++)
-		settle(&touched[i], commit, false);
-	reset_touched();
+	for (uint32 i = 0; i < sift_touched_count() && event != XACT_EVENT_PREPARE; i++)
+		settle(sift_touched_at(i), commit, false);
+	sift_touched_reset();
 	sift_esc_xact_end(event);
 }
 
 void
 sift_tbl_rowlock_subxact_callback(SubXactEvent event, SubTransactionId mysubid, SubTransactionId parentsubid, void *arg pg_attribute_unused())
 {
-	uint32		kept = 0;
-
 	if (event != SUBXACT_EVENT_ABORT_SUB && event != SUBXACT_EVENT_COMMIT_SUB)
 		return;
-	for (uint32 i = 0; i < ntouched; i++)
+	if (event == SUBXACT_EVENT_COMMIT_SUB)
+		sift_touched_promote(mysubid, parentsubid, retag_holder);
+	else
 	{
-		if (touched[i].subxid != mysubid)
-			touched[kept++] = touched[i];
-		else if (event == SUBXACT_EVENT_COMMIT_SUB)
+		for (int32 i; (i = sift_touched_sub_first(mysubid)) >= 0;)
 		{
-			retag_holder(&touched[i], parentsubid);
-			touched[i].subxid = parentsubid;
-			touched[kept++] = touched[i];
+			SiftTouched t = *sift_touched_at((uint32) i);
+
+			(void) sift_touched_remove((uint32) i);
+			settle(&t, false, false);
+			sift_esc_note_tier1_release(&t.key.locator, t.part_id, 1);
 		}
-		else
-		{
-			settle(&touched[i], false, false);
-			sift_esc_note_tier1_release(&touched[i].key.locator, touched[i].part_id, 1);
-		}
+		sift_touched_sub_close(mysubid);
 	}
-	ntouched = kept;
-	reindex();
 	sift_esc_subxact_event(event, mysubid, parentsubid);
 }
 
@@ -610,7 +499,7 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	r.stripe_full = r.result == TM_Ok && e == NULL;
 	if (r.result == TM_Ok && e != NULL)
 	{
-		bool		added = remember(&k, part_id);
+		bool		added = sift_touched_add(&k, part_id);
 
 		add_holder(e, mode);
 		sift_esc_note_tier1_acquire(&rel->rd_locator, part_id, mode, added);
@@ -683,7 +572,7 @@ sift_tbl_rowlock_set_speculative(Relation rel, uint64 tid, uint32 token, bool on
 	if (e != NULL && on)
 	{
 		sift_spec_stage(e, GetTopFullTransactionId(), token);
-		remember(&k, SIFT_ESC_PART_ALL);
+		(void) sift_touched_add(&k, SIFT_ESC_PART_ALL);
 	}
 	LWLockRelease(&stripe_locks[si].lock);
 }
@@ -708,7 +597,7 @@ sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded)
 		if (idle(e))
 		{
 			remove_entry(&stripes[si], e);
-			forget(&k);
+			sift_touched_forget(&k);
 		}
 	}
 	LWLockRelease(&stripe_locks[si].lock);
@@ -866,9 +755,10 @@ lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, 
 /* The lock is held before the deltas are read: no one else can add one while the row is ours; cur is the address a wait names in the message of a row it waits on */
 static TM_Result
 lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool judge_delta,
-		 ItemPointer cur)
+		 ItemPointer cur, bool *waited)
 {
 	memset(tmfd, 0, sizeof(*tmfd));
+	*waited = false;
 	for (;;)
 	{
 		SiftRowState rs = sift_row_state_read(rel, tid);
@@ -878,19 +768,23 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 		if (res == TM_Ok)
 			res = lock_held(rel, &rs, tid, mode, wait_policy, tmfd, &reread);
 		if (res == TM_Ok && reread)
+		{
+			*waited = true;
 			continue;
+		}
 		if (res == TM_Ok && judge_delta && mode != LockTupleKeyShare)
 			res = sift_row_delta_result(rel, tid, cid, snap, tmfd);
 		if (res != TM_BeingModified || wait_policy != LockWaitBlock)
 			return res;
+		*waited = true;
 		XactLockTableWait(tmfd->xmax, rel, cur, XLTW_Lock);
 	}
 }
 
 TM_Result
-sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd)
+sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool *waited)
 {
-	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap, cid, tmfd, true, NULL);
+	return lock_row(rel, tid, mode, wait ? LockWaitBlock : LockWaitError, snap, cid, tmfd, true, NULL, waited);
 }
 
 /* ---- the callbacks ---- */
@@ -926,7 +820,8 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 	sift_stage_flush(rel);
 	for (;;)
 	{
-		TM_Result	res = lock_row(rel, sift_tbl_tid_pack(&cur), mode, wait_policy, snapshot, cid, tmfd, !at_latest, &cur);
+		bool		waited;
+		TM_Result	res = lock_row(rel, sift_tbl_tid_pack(&cur), mode, wait_policy, snapshot, cid, tmfd, !at_latest, &cur, &waited);
 
 		if (res == TM_BeingModified && wait_policy == LockWaitSkip)
 			return TM_WouldBlock;

@@ -1,0 +1,49 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2lock s1cic s3ins s3del s2unlock s2valid s2index s2point s2gone s3count
+step s2lock: SELECT pg_advisory_lock(7301);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1cic: CREATE INDEX CONCURRENTLY iso_cic_idx ON iso_cic (iso_cic_f(k)); <waiting ...>
+step s3ins: INSERT INTO iso_cic SELECT 200000 + i, 200000 + i FROM generate_series(1, 50) i;
+step s3del: DELETE FROM iso_cic WHERE id <= 10;
+step s2unlock: SELECT pg_advisory_unlock(7301);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1cic: <... completed>
+step s2valid: SELECT indisvalid, indisready FROM pg_index WHERE indexrelid = 'iso_cic_idx'::regclass;
+indisvalid|indisready
+----------+----------
+t         |t         
+(1 row)
+
+step s2index: SELECT count(*) AS indexed FROM iso_cic WHERE k >= 0 AND iso_cic_f(k) >= 0;
+indexed
+-------
+ 200040
+(1 row)
+
+step s2point: SELECT count(*) AS late_rows FROM iso_cic WHERE iso_cic_f(k) BETWEEN 200001 AND 200050;
+late_rows
+---------
+       50
+(1 row)
+
+step s2gone: SELECT count(*) AS deleted_rows FROM iso_cic WHERE iso_cic_f(k) BETWEEN 1 AND 10;
+deleted_rows
+------------
+           0
+(1 row)
+
+step s3count: SELECT count(*) AS rows_of_table FROM iso_cic;
+rows_of_table
+-------------
+       200040
+(1 row)
+

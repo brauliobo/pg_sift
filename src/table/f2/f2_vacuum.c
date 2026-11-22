@@ -25,6 +25,7 @@
 #include "core/f2/f2_progress.h"
 #include "col/f2/delvec_delta.h"
 #include "core/wal_conflict.h"
+#include "core/u64set.h"
 #include "table/f2/f2_col_delta.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_proj.h"
@@ -203,24 +204,23 @@ settle_due(const SiftPartDesc *d, FullTransactionId target_fx)
 	return d->dv_blk != InvalidBlockNumber && (d->flags & SIFT_PART_FLAG_DV_SETTLED) == 0 && FullTransactionIdPrecedes(d->dv_max_xid, target_fx);
 }
 
+/* The settled deletion vector of a part is written; the descriptor that names it is nd, and old the extent it replaces, for the commit of the partition to publish */
 static void
-settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, FullTransactionId oldest_fx)
+settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, FullTransactionId oldest_fx, SiftPartDesc *nd, SiftExtent *old)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	SiftF2PartPin *pin = sift_f2_pin_open(rel, store, cur, (uint32) e->part_id);
 	FullTransactionId stripped = InvalidFullTransactionId;
 	SiftDv	   *settled;
-	SiftExtent	old = {cur->dv_blk, cur->dv_nblocks};
-	SiftPartDesc nd = *cur;
-	SiftManifestEdit edit = {.part_id = e->part_id,.key_lo = e->key_lo,.update_parts = &nd,.expect_parts = cur,.nupdate = 1,.release = &old,.nrelease = 1};
 
+	*nd = *cur;
+	*old = (SiftExtent) {cur->dv_blk, cur->dv_nblocks};
 	PG_TRY();
 	{
 		settled = sift_dv_settle(pin->dv, oldest_fx, &stripped);
 		if (FullTransactionIdIsValid(stripped))
 			sift_wal_snapshot_conflict(rel, cur->dv_blk, stripped);
-		sift_dv_write(rel, settled, (uint32) e->part_id, &nd);
-		sift_manifest_commit(rel, &edit);
+		sift_dv_write(rel, settled, (uint32) e->part_id, nd);
 	}
 	PG_FINALLY();
 	{
@@ -229,30 +229,56 @@ settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, Fu
 	PG_END_TRY();
 }
 
-/* Settles the deletion vector of a part, or seals it, from the descriptor the manifest holds under the partition lock: a descriptor read before the lock may name blocks that a delete released since */
+/*
+ * Settles the deletion vectors of the parts of one partition that are due, or seals them, from the descriptors the manifest holds under the partition lock (a descriptor read before the lock may
+ * name blocks that a delete released since): the lock is taken, the entry and the parts read, and the partition committed once for all of them.
+ */
 static void
-settle_or_seal(Relation rel, const SiftPartitionEntry *cand, uint64 part_gen, FullTransactionId oldest_fx, FullTransactionId target_fx, SiftXidHorizonCache *hc)
+settle_or_seal_parts(Relation rel, const SiftPartitionEntry *cand, const uint64 *gens, int ngens, FullTransactionId oldest_fx, FullTransactionId target_fx, SiftXidHorizonCache *hc)
 {
 	SiftPartitionEntry e;
+	SiftU64Set	want;
+	SiftPartDesc *parts,
+			   *update,
+			   *expect;
+	SiftExtent *release;
 	int			np,
-				at;
-	SiftPartDesc *parts;
+				nupdate = 0,
+				nrelease = 0;
 
+	if (ngens == 0)
+		return;
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(cand->part_id), ExclusiveLock);
 	if (sift_manifest_find_entry(rel, cand->part_id, cand->key_lo, &e))
 	{
 		parts = sift_manifest_read_parts(rel, &e, &np);
-		for (at = 0; at < np && parts[at].part_gen != part_gen; at++)
-			;
-		if (at < np && settle_due(&parts[at], target_fx))
-			settle_dv(rel, &e, &parts[at], oldest_fx);
-		else if (at < np)
+		update = palloc(sizeof(SiftPartDesc) * ngens);
+		expect = palloc(sizeof(SiftPartDesc) * ngens);
+		release = palloc(sizeof(SiftExtent) * ngens);
+		sift_u64set_init(&want, ngens);
+		for (int i = 0; i < ngens; i++)
+			(void) sift_u64set_add(&want, gens[i]);
+		for (int i = 0; i < np; i++)
 		{
-			SiftPartDesc sealed = parts[at];
-
-			if (sift_part_try_seal(rel, (uint32) e.part_id, &sealed, hc))
-				sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e.part_id,.key_lo = e.key_lo,.update_parts = &sealed,.expect_parts = &parts[at],.nupdate = 1});
+			if (!sift_u64set_has(&want, parts[i].part_gen))
+				continue;
+			if (settle_due(&parts[i], target_fx))
+				settle_dv(rel, &e, &parts[i], oldest_fx, &update[nupdate], &release[nrelease++]);
+			else
+			{
+				update[nupdate] = parts[i];
+				if (!sift_part_try_seal(rel, (uint32) e.part_id, &update[nupdate], hc))
+					continue;
+			}
+			expect[nupdate++] = parts[i];
 		}
+		if (nupdate > 0)
+			sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e.part_id,.key_lo = e.key_lo,.update_parts = update,.expect_parts = expect,.nupdate = nupdate,.release = release,.nrelease = nrelease});
+		sift_u64set_free(&want);
+		pfree(parts);
+		pfree(update);
+		pfree(expect);
+		pfree(release);
 	}
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(cand->part_id), ExclusiveLock);
 }
@@ -273,8 +299,10 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 	SiftPartitionEntry e;
 	int			np;
 	SiftPartDesc *parts;
-	uint64	   *gens = NULL;
-	int			ngens = 0;
+	uint64	   *gens = NULL,
+			   *settle = NULL;
+	int			ngens = 0,
+				nsettle = 0;
 	SiftCompactResult res;
 	SiftXidHorizonCache hc;
 
@@ -297,8 +325,12 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 			gens[ngens++] = parts[i].part_gen;
 		}
 		else
-			settle_or_seal(rel, &e, parts[i].part_gen, oldest_fx, target_fx, &hc);
+		{
+			settle = settle == NULL ? palloc(sizeof(uint64) * np) : settle;
+			settle[nsettle++] = parts[i].part_gen;
+		}
 	}
+	settle_or_seal_parts(rel, &e, settle, nsettle, oldest_fx, target_fx, &hc);
 	if ((e.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
 		gens = gens == NULL ? palloc(sizeof(uint64) * np) : gens;
@@ -307,7 +339,7 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 	if (ngens > 0)
 		(void) sift_partition_compact_online(rel, e.part_id, e.key_lo, gens, ngens, &store->spec, PG_INT64_MIN, oldest_fx, &res);
 	if ((e.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
-		(void) sift_col_delta_gc(rel, e.part_id, oldest_fx);
+		(void) sift_col_delta_gc(rel, e.part_id, e.key_lo, oldest_fx);
 }
 
 /* The oldest transaction id any page of the table still holds: what relfrozenxid may become */

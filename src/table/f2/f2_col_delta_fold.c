@@ -8,9 +8,11 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "port/pg_bitutils.h"
 
 #include "col/f2/compact.h"
 #include "core/crash_point.h"
+#include "core/u64set.h"
 #include "core/xid_cache.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
@@ -129,7 +131,7 @@ release_wide(Relation rel, const char *ref, uint32 len, SiftExtent **release, in
 	SiftExtVec	v = {0};
 
 	sift_tbl_blob_release_ref(rel, ref, len, &v);
-	*release = repalloc(*release, sizeof(SiftExtent) * (*nrelease + v.n + 1));
+	*release = repalloc(*release, sizeof(SiftExtent) * pg_nextpower2_32(Max(16, *nrelease + v.n + 1)));
 	memcpy(*release + *nrelease, v.ext, sizeof(SiftExtent) * v.n);
 	*nrelease += v.n;
 }
@@ -313,16 +315,6 @@ sift_col_delta_fold_install(void)
 
 /* ---- the parts VACUUM sends to the compaction ---- */
 
-/* A part in object storage is not rewritten: its deltas stay in the chain and are applied when it is read */
-static bool
-is_remote_gen(const SiftPartDesc *parts, int nparts, uint64 gen)
-{
-	for (int i = 0; i < nparts; i++)
-		if (parts[i].part_gen == gen)
-			return (parts[i].ext_flags & SIFT_PART_EXT_REMOTE) != 0;
-	return false;
-}
-
 int
 sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, FullTransactionId horizon, uint64 *gens, int ngens)
 {
@@ -331,20 +323,23 @@ sift_col_delta_fold_gens(Relation rel, const SiftPartitionEntry *entry, const Si
 	SiftXidHorizonCache hc;
 	SiftColDeltaHorizon hz = {.ctx = &hc,.status = sift_col_delta_horizon_status};
 	uint64	   *live = sift_col_delta_sorted_gens(parts, nparts);
+	SiftU64Set	listed;
 
 	if (!sift_col_delta_load_chain(rel, entry, 0, &chain))
 		return ngens;
 	sift_xid_horizon_init(&hc, horizon);
 	sift_col_delta_compact_plan(&chain, live, nparts, live, nparts, &hz, UINT32_MAX, &plan);
+	/* a part in object storage is not rewritten: its deltas stay in the chain and are applied when it is read */
+	sift_u64set_init(&listed, nparts + ngens + plan.nfolds);
+	for (int k = 0; k < ngens; k++)
+		sift_u64set_add(&listed, gens[k]);
+	for (int i = 0; i < nparts; i++)
+		if (parts[i].ext_flags & SIFT_PART_EXT_REMOTE)
+			sift_u64set_add(&listed, parts[i].part_gen);
 	for (int i = 0; i < plan.nfolds; i++)
-	{
-		bool		listed = is_remote_gen(parts, nparts, plan.folds[i].part_gen);
-
-		for (int k = 0; k < ngens && !listed; k++)
-			listed = gens[k] == plan.folds[i].part_gen;
-		if (!listed)
+		if (sift_u64set_add(&listed, plan.folds[i].part_gen))
 			gens[ngens++] = plan.folds[i].part_gen;
-	}
+	sift_u64set_free(&listed);
 	sift_col_delta_compact_plan_free(&plan);
 	sift_col_delta_chain_free(&chain);
 	return ngens;

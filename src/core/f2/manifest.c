@@ -19,9 +19,6 @@
 #include "core/f2/manifest/manifest_int.h"
 #include "core/page_io.h"
 
-#define PDIR(p)		((SiftPartDirPageData *) SiftPageGetData(p))
-#define LEAF(p)		((SiftPartitionEntry *) (SiftPageGetData(p) + sizeof(SiftPartDirPageData)))
-#define INTK(p)		((SiftPartDirKey *) (SiftPageGetData(p) + sizeof(SiftPartDirPageData)))
 #define PLIST(p)	((SiftPartListPageData *) SiftPageGetData(p))
 
 void
@@ -96,75 +93,6 @@ sift_mf_read_page(Relation rel, BlockNumber blk, SiftPageType type, uint32 magic
 	if (pages != NULL)
 		(*pages)++;
 	return copy;
-}
-
-static Page
-read_dir(Relation rel, BlockNumber blk, uint16 level, int *pages)
-{
-	Page		p = sift_mf_read_page(rel, blk, SIFT_PT_PARTDIR, SIFT_PARTDIR_MAGIC, 0, 0, pages);
-	size_t		cap = level == 0 ? SIFT_PARTDIR_LEAF_CAP : SIFT_PARTDIR_INT_CAP;
-
-	if (PDIR(p)->level != level || PDIR(p)->nentries == 0 || PDIR(p)->nentries > cap)
-		SIFT_CORRUPT(rel, "Block %u: a partition directory page of level %u holds %u entries, expected level %u.", blk, PDIR(p)->level, PDIR(p)->nentries, level);
-	return p;
-}
-
-static OldNode
-read_node(Relation rel, BlockNumber blk, uint16 level, int *pages)
-{
-	Page		p = read_dir(rel, blk, level, pages);
-
-	return (OldNode) {.blk = blk,.n = PDIR(p)->nentries,.keys = INTK(p)};
-}
-
-static Tree *
-read_tree(Relation rel, const SiftColMetaPageData *meta)
-{
-	Tree	   *t = palloc0(sizeof(Tree));
-	int			total = 0;
-
-	t->meta = *meta;
-	if (meta->partdir_level == 0)
-	{
-		t->leaves = palloc(sizeof(SiftPartDirKey));
-		t->leaves[0] = (SiftPartDirKey) {.child_blk = meta->partdir_root_blk,.npartitions = meta->npartitions};
-		t->nleaves = 1;
-		return t;
-	}
-	if (meta->partdir_level == 1)
-	{
-		t->nodes = palloc(sizeof(OldNode));
-		t->nodes[t->nnodes++] = read_node(rel, meta->partdir_root_blk, 1, &t->pages);
-	}
-	else
-	{
-		t->top = read_node(rel, meta->partdir_root_blk, 2, &t->pages);
-		t->has_top = true;
-		t->nodes = palloc(t->top.n * sizeof(OldNode));
-		for (int i = 0; i < t->top.n; i++)
-			t->nodes[t->nnodes++] = read_node(rel, t->top.keys[i].child_blk, 1, &t->pages);
-	}
-	for (int i = 0; i < t->nnodes; i++)
-		total += t->nodes[i].n;
-	/* check-memory: allow the leaf references of the directory pages, at most what three levels hold */
-	t->leaves = palloc(total * sizeof(SiftPartDirKey));
-	for (int i = 0; i < t->nnodes; i++)
-	{
-		memcpy(t->leaves + t->nleaves, t->nodes[i].keys, t->nodes[i].n * sizeof(SiftPartDirKey));
-		t->nleaves += t->nodes[i].n;
-	}
-	return t;
-}
-
-/* The leaf whose range holds the key: the last leaf whose first key is not above it */
-static int
-find_leaf(const Tree *t, const uint8 *key_lo)
-{
-	int			i = 0;
-
-	while (i + 1 < t->nleaves && bound_cmp(t->leaves[i + 1].key_lo, key_lo) <= 0)
-		i++;
-	return i;
 }
 
 /*
@@ -303,38 +231,6 @@ bool
 sift_manifest_overlaps(const uint8 *lo, const uint8 *hi, const uint8 *qlo, const uint8 *qhi)
 {
 	return (qhi == NULL || bound_inf(qhi) || bound_cmp(lo, qhi) < 0) && (qlo == NULL || bound_inf(hi) || bound_cmp(hi, qlo) > 0);
-}
-
-void
-sift_mf_collect_range(Relation rel, BlockNumber blk, int level, const uint8 *lo, const uint8 *hi, SiftManifestRead *out, int *cap)
-{
-	Page		p = read_dir(rel, blk, level, &out->pages);
-
-	if (level == 0)
-	{
-		for (int i = 0; i < PDIR(p)->nentries; i++)
-		{
-			const SiftPartitionEntry *e = &LEAF(p)[i];
-
-			if (!sift_manifest_overlaps(e->key_lo, e->key_hi, lo, hi))
-				continue;
-			if (out->n == *cap)
-			{
-				*cap *= 2;
-				out->entries = repalloc(out->entries, *cap * sizeof(SiftPartitionEntry));
-			}
-			out->entries[out->n++] = *e;
-		}
-		return;
-	}
-	for (int i = 0; i < PDIR(p)->nentries; i++)
-	{
-		const SiftPartDirKey *k = &INTK(p)[i];
-		bool		last = i + 1 == PDIR(p)->nentries;
-
-		if ((hi == NULL || bound_inf(hi) || bound_cmp(k->key_lo, hi) < 0) && (lo == NULL || last || bound_cmp(INTK(p)[i + 1].key_lo, lo) > 0))
-			sift_mf_collect_range(rel, k->child_blk, level - 1, lo, hi, out, cap);
-	}
 }
 
 /* The entries of the inline summary of block 0 that overlap [lo, hi) */
@@ -546,6 +442,26 @@ write_interior(Relation rel, Tree *t, const SiftPartDirKey *r, int n, uint64 ver
 		sift_mf_blk_add(dead, t->top.blk);
 }
 
+/* The interior pages when the commit changed one leaf of the page nodes[0] and no other: that page and the one above it are written again, with the reference to the new leaf in place of the old */
+static void
+write_path(Relation rel, Tree *t, const SiftPartDirKey *leaf, int at, uint64 version, BlkVec *created, BlockNumber *root, int *level, BlkVec *dead)
+{
+	const OldNode *node = &t->nodes[0];
+	SiftPartDirKey keys[SIFT_PARTDIR_INT_CAP];
+	SiftPartDirKey upper[SIFT_PARTDIR_INT_CAP];
+	BlockNumber blk;
+
+	memcpy(keys, node->keys, node->n * sizeof(SiftPartDirKey));
+	keys[at] = *leaf;
+	blk = write_node(rel, keys, node->n, 1, version, created);
+	sift_mf_blk_add(dead, node->blk);
+	memcpy(upper, t->top.keys, t->top.n * sizeof(SiftPartDirKey));
+	upper[t->top_pos] = node_ref(blk, keys, node->n);
+	*root = write_node(rel, upper, t->top.n, 2, version, created);
+	*level = 2;
+	sift_mf_blk_add(dead, t->top.blk);
+}
+
 typedef void (*BuildFn) (Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg);
 
 static void
@@ -556,7 +472,7 @@ read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack)
 	ch->ents = palloc((span * SIFT_PARTDIR_LEAF_CAP + slack) * sizeof(SiftPartitionEntry));
 	for (int i = 0; i < span; i++)
 	{
-		Page		p = read_dir(rel, t->leaves[first + i].child_blk, 0, &t->pages);
+		Page		p = sift_mf_read_dir(rel, t->leaves[first + i].child_blk, 0, &t->pages);
 
 		memcpy(ch->ents + ch->nents, LEAF(p), PDIR(p)->nentries * sizeof(SiftPartitionEntry));
 		ch->nents += PDIR(p)->nentries;
@@ -604,15 +520,23 @@ publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 	SiftShmIndexMeta shm_meta;
 	int			first_batch;
 
-	nout =write_leaves(rel, ch->ents, ch->nents, new_version, created, out);
-	r = palloc((t->nleaves + 4) * sizeof(SiftPartDirKey));
-	memcpy(r, t->leaves, ch->first * sizeof(SiftPartDirKey));
-	nr = ch->first;
-	memcpy(r + nr, out, nout * sizeof(SiftPartDirKey));
-	nr += nout;
-	memcpy(r + nr, t->leaves + ch->first + ch->span, (t->nleaves - ch->first - ch->span) * sizeof(SiftPartDirKey));
-	nr += t->nleaves - ch->first - ch->span;
-	write_interior(rel, t, r, nr, new_version, created, &root, &level, &dead);
+	nout = write_leaves(rel, ch->ents, ch->nents, new_version, created, out);
+	if (t->partial)
+	{
+		SIFT_INVARIANT(nout == ch->span && ch->span == 1, "a change that read one path of the partition directory changed the number of its leaves");
+		write_path(rel, t, &out[0], ch->first, new_version, created, &root, &level, &dead);
+	}
+	else
+	{
+		r = palloc((t->nleaves + 4) * sizeof(SiftPartDirKey));
+		memcpy(r, t->leaves, ch->first * sizeof(SiftPartDirKey));
+		nr = ch->first;
+		memcpy(r + nr, out, nout * sizeof(SiftPartDirKey));
+		nr += nout;
+		memcpy(r + nr, t->leaves + ch->first + ch->span, (t->nleaves - ch->first - ch->span) * sizeof(SiftPartDirKey));
+		nr += t->nleaves - ch->first - ch->span;
+		write_interior(rel, t, r, nr, new_version, created, &root, &level, &dead);
+	}
 
 	rel_ext = palloc((ch->old.n + dead.n + ch->span + ch->nrelease + ch->nproj_release) * sizeof(SiftExtent));
 	for (int i = 0; i < ch->old.n; i++)
@@ -645,7 +569,7 @@ publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 	m->partdir_root_blk = root;
 	m->partdir_level = level;
 	m->npartitions += ch->d_partitions;
-	sift_col_meta_set_inline(p0, ch->ents, ch->first == 0 && ch->span == t->nleaves && ch->nents <= SIFT_META_INLINE_MAX_PARTS ? ch->nents : -1);
+	sift_col_meta_set_inline(p0, ch->ents, !t->partial && ch->first == 0 && ch->span == t->nleaves && ch->nents <= SIFT_META_INLINE_MAX_PARTS ? ch->nents : -1);
 	m->total_rows += ch->d_rows;
 	m->total_dead += ch->d_dead;
 	m->total_bytes += ch->d_bytes;
@@ -692,7 +616,7 @@ free_created(Relation rel, BlkVec *created)
 }
 
 static uint64
-run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg)
+run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void *arg, const uint8 *path_key)
 {
 	uint64		version;
 
@@ -701,7 +625,7 @@ run_change(Relation rel, const uint64 *lock_ids, int nlocks, BuildFn build, void
 	for (;;)
 	{
 		SiftColMetaPageData meta = sift_col_meta_read(rel);
-		Tree	   *t = read_tree(rel, &meta);
+		Tree	   *t = path_key != NULL ? sift_mf_read_tree_path(rel, &meta, path_key) : sift_mf_read_tree(rel, &meta);
 		Change		ch = {0};
 		BlkVec		created = {0};
 
@@ -726,34 +650,28 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 	uint64		gen;
 	int			nexpire;
 	uint64	   *expire;
+	SiftGenMap	map;
 
-	read_leaves(rel, t, find_leaf(t, e->key_lo), 1, ch, 2);
+	read_leaves(rel, t, sift_mf_find_leaf(t, e->key_lo), 1, ch, 2);
 	ent = &ch->ents[find_entry(ch, e->part_id, e->key_lo)];
 	before = *ent;
 	parts = read_parts_chain(rel, ent, &n, &ch->old, &t->pages, &anchor);
 	parts = repalloc(parts, (n + e->nadd) * sizeof(SiftPartDesc));
-	expire = sift_mf_remote_drops(parts, n, e, &nexpire);
-	for (int i = 0; i < e->ndrop; i++)
-	{
-		int			at = sift_mf_part_gen_index(parts, n, e->drop_gens[i]);
-
-		if (at < 0)
-			ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift index \"%s\": partition %llu has no part of generation %llu", RelationGetRelationName(rel),
-																   (unsigned long long) e->part_id, (unsigned long long) e->drop_gens[i])));
-		memmove(parts + at, parts + at + 1, (n - at - 1) * sizeof(SiftPartDesc));
-		n--;
-	}
-	sift_mf_apply_updates(rel, ent, parts, n, e);
+	n = sift_mf_drop_parts(rel, parts, n, e, &expire, &nexpire);
+	sift_gen_map_init(&map, parts, n, e->nadd);
+	sift_mf_apply_updates(rel, ent, parts, &map, e);
 	for (int i = 0; i < e->nadd; i++)
 	{
 		sift_mf_check_added(rel, ent, &e->add_parts[i]);
-		if (sift_mf_part_gen_index(parts, n, e->add_parts[i].part_gen) >= 0)
+		if (sift_gen_map_find(&map, e->add_parts[i].part_gen) >= 0)
 			ereport(ERROR, (errcode(ERRCODE_UNIQUE_VIOLATION), errmsg("sift index \"%s\": partition %llu already has a part of generation %llu", RelationGetRelationName(rel),
 																	  (unsigned long long) e->part_id, (unsigned long long) e->add_parts[i].part_gen)));
-		parts[n++] = e->add_parts[i];
+		parts[n] = e->add_parts[i];
+		sift_gen_map_add(&map, n++);
 		if (FullTransactionIdIsValid(e->add_parts[i].min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(e->add_parts[i].min_xid, ch->new_min_xid)))
 			ch->new_min_xid = e->add_parts[i].min_xid;
 	}
+	sift_gen_map_free(&map);
 	if (e->nupdate_scopes > 0)
 		sift_mf_build_scopes(rel, t, ch, e, created);
 	if (e->update_projs != NULL || e->ndrop > 0)
@@ -795,7 +713,7 @@ uint64
 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit)
 {
 	SIFT_F2_GATE(SIFT_F2_GATE_MANIFEST);
-	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit);
+	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit, edit->key_lo);
 }
 
 typedef struct SplitArg
@@ -814,7 +732,7 @@ build_split(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 	SiftPartDesc *parts;
 	int			n;
 
-	read_leaves(rel, t, find_leaf(t, a->key_lo), 1, ch, 2);
+	read_leaves(rel, t, sift_mf_find_leaf(t, a->key_lo), 1, ch, 2);
 	ent = &ch->ents[find_entry(ch, a->part_id, a->key_lo)];
 	if (bound_cmp(a->split_key, ent->key_lo) <= 0 || (!bound_inf(ent->key_hi) && bound_cmp(a->split_key, ent->key_hi) >= 0))
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": the split key is not inside partition %llu", RelationGetRelationName(rel),
@@ -848,7 +766,7 @@ sift_manifest_split(Relation rel, uint64 part_id, const uint8 *key_lo, const uin
 	SplitArg	a = {.part_id = part_id,.key_lo = key_lo,.split_key = split_key,.new_id = sift_manifest_new_part_id(rel)};
 	uint64		ids[2] = {part_id, a.new_id};
 
-	run_change(rel, ids, 2, build_split, &a);
+	run_change(rel, ids, 2, build_split, &a, NULL);
 	return a.new_id;
 }
 
@@ -885,8 +803,8 @@ static void
 build_merge(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 {
 	MergeArg   *a = arg;
-	int			lk = find_leaf(t, a->keep_lo),
-				ld = find_leaf(t, a->drop_lo);
+	int			lk = sift_mf_find_leaf(t, a->keep_lo),
+				ld = sift_mf_find_leaf(t, a->drop_lo);
 	SiftPartitionEntry *keep, *drop;
 
 	if (abs(lk - ld) > 1)
@@ -928,5 +846,5 @@ sift_manifest_merge(Relation rel, uint64 keep_id, const uint8 *keep_lo, uint64 d
 	MergeArg	a = {keep_id, keep_lo, drop_id, drop_lo};
 	uint64		ids[2] = {Min(keep_id, drop_id), Max(keep_id, drop_id)};
 
-	run_change(rel, ids, 2, build_merge, &a);
+	run_change(rel, ids, 2, build_merge, &a, NULL);
 }

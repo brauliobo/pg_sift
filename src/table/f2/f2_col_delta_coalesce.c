@@ -140,7 +140,7 @@ fold_into(SiftColDeltaStage *st, int i, int j)
 	memcpy(&was, st->items[i].rec, sizeof(was));
 	copy = MemoryContextAlloc(TopTransactionContext, n);
 	memcpy(copy, rec, n);
-	st->bytes = st->bytes - was.rec_bytes + n;
+	sift_col_delta_stage_book(st, &st->items[i], (int64) n - (int64) was.rec_bytes, 0);
 	pfree(st->items[i].rec);
 	st->items[i].rec = copy;
 	return true;
@@ -151,21 +151,23 @@ sift_col_delta_stage_coalesce(SiftColDeltaStage *st)
 {
 	Order	   *ord;
 	int			kept = 0,
-				folded = 0;
+				folded = 0,
+				live = 0;
 
 	if (st->n < 2)
 		return 0;
 	ord = palloc(sizeof(Order) * st->n);
 	for (int i = 0; i < st->n; i++)
-		ord[i] = order_of(st, i);
-	qsort(ord, st->n, sizeof(Order), order_cmp);
-	for (int k = 1; k < st->n; k++)
+		if (st->items[i].rec != NULL)
+			ord[live++] = order_of(st, i);
+	qsort(ord, live, sizeof(Order), order_cmp);
+	for (int k = 1; k < live; k++)
 		if (same_row(&ord[k - 1], &ord[k]) && fold_into(st, ord[k - 1].at, ord[k].at))
 		{
 			SiftColDeltaEntryHdr gone;
 
 			memcpy(&gone, st->items[ord[k].at].rec, sizeof(gone));
-			st->bytes -= gone.rec_bytes;
+			sift_col_delta_stage_book(st, &st->items[ord[k].at], -(int64) gone.rec_bytes, -1);
 			pfree(st->items[ord[k].at].rec);
 			st->items[ord[k].at].rec = NULL;
 			ord[k].at = ord[k - 1].at;

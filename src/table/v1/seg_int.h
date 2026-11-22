@@ -4,6 +4,7 @@
 #ifndef SIFT_SEG_INT_H
 #define SIFT_SEG_INT_H
 
+#include "table/v1/keyidx.h"
 #include "col/codec.h"
 #include "col/pg.h"
 #include "core/memtrack.h"
@@ -44,8 +45,12 @@ struct SiftTblGroupCache
 	int			n;
 	SchemaEnt  *ent;
 	int			cap;
+	KeyIdx		ent_gen;		/* ent by generation */
+	KeyIdx		ent_hash;		/* ent by the hash of its schema */
 	VerGroup   *vg;
 	int			nvg;
+	int			vgcap;
+	KeyIdx		vg_gen;			/* vg by generation */
 	/* serve the TID fetches while the directory and the backend's xmin stay as they were, one per superblock being fetched from */
 	SiftTblGroupScan *fetch[SIFT_TBL_FETCH_SCANS];
 	uint64		fetch_used[SIFT_TBL_FETCH_SCANS];
@@ -56,6 +61,8 @@ struct SiftTblGroupCache
 	SiftColLeafStats *pls;
 	struct PathWbuf *pwb;		/* path_wbuf_ovf: per write buffer */
 	int			npwb;
+	int			pwbcap;
+	KeyIdx		pwb_gen;		/* pwb by generation */
 };
 
 typedef struct SealWriter

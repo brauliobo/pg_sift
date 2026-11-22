@@ -56,6 +56,8 @@ typedef enum SiftPacerTier
 #define SIFT_MAINT_IDLE_NAPS		2
 #define SIFT_MAINT_DEFER_US			(5 * USECS_PER_SEC)
 #define SIFT_MAINT_TIER_DEFAULT		(-1)
+#define SIFT_MAINT_HASH_SIZE		(2 * SIFT_MAINT_SLOTS)
+#define SIFT_MAINT_FREE_WORDS		(SIFT_MAINT_SLOTS / 64)
 
 typedef enum SiftMaintKind
 {
@@ -240,6 +242,12 @@ typedef struct SiftMaintShmem
 	pg_atomic_uint32 heat[SIFT_MAINT_HEAT];	/* reads of a relation, sampled 1 in 128 */
 	uint32		khash[SIFT_MAINT_SLOTS];	/* 0 for a free slot: the dedup scan reads 2 kB, not 64 kB */
 	SiftMaintSlot slot[SIFT_MAINT_SLOTS];
+	pg_atomic_uint64 bgw_sample_ts_us;	/* when the host last counted the bgworkers that are not ours, 0 until then (the host reads it, a count is good for a second) */
+	pg_atomic_uint32 bgw_other_cached;
+	uint32		bgw_pad;
+	int16		hash_idx[SIFT_MAINT_HASH_SIZE];	/* open addressing over khash: the slot of a key, -1 where empty */
+	uint64		free_bits[SIFT_MAINT_FREE_WORDS];	/* 1 for a free slot */
+	uint8		pad5[48];
 } SiftMaintShmem;
 
 typedef struct SiftMaintRow
@@ -282,6 +290,7 @@ typedef struct SiftMaintHost
 	void		(*note_starved) (SiftPacerTier tier, TimestampTz now);
 	bool		(*should_yield) (SiftPacerTier tier, TimestampTz now);	/* the pacer: a higher tier found no worker free, this one leaves after its step */
 	int			(*bgworkers_in_use) (void);
+	int			(*effective_max) (SiftMaintShmem *m);	/* the cap on workers now, asked only when a worker is to be started; NULL: sift.max_maint_workers */
 	int			(*other_workers) (void);			/* the workers of the other pool of the server (core/worker.h): sift.max_maint_workers counts them with these */
 } SiftMaintHost;
 
@@ -316,13 +325,13 @@ extern int	sift_maint_release_pid(SiftMaintShmem *m, const SiftMaintHost *host, 
 /* The cap on workers of sift: Min(configured, max_worker_processes - Max(2, max_worker_processes / 4) - the bgworkers that are not ours); the reserve is left to parallel queries */
 extern int	sift_maint_effective_max(int configured, int max_worker_processes, int bgworkers_other);
 extern SiftMaintMode sift_maint_mode(bool async_maintenance, bool preloaded, bool table_ok, int effective_max);
-extern int	sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int effective_max);
+extern int	sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db);
 /* False when the slot was given up (its lease lapsed) and taken by another: the worker must exit */
 extern bool sift_maint_worker_started(SiftMaintShmem *m, int worker, int pid, int procno);
 extern void sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid);
-extern SiftMaintKick sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host, int effective_max);
+extern SiftMaintKick sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host);
 /* Enqueue, then start or wake what drains it as the mode says */
-extern SiftMaintEnq sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, int effective_max, const SiftMaintReq *req);
+extern SiftMaintEnq sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, const SiftMaintReq *req);
 
 extern void sift_maint_heat_note(SiftMaintShmem *m, Oid rel);
 extern uint32 sift_maint_heat(SiftMaintShmem *m, Oid rel);

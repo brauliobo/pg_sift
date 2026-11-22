@@ -385,6 +385,49 @@ count_hi_below(const SiftRange *r, const uint32_t *cand, uint32_t c, const SiftB
 	return a;
 }
 
+typedef struct ByHi
+{
+	const SiftBound *hi;
+	uint32_t	i;
+} ByHi;
+
+static int
+cmp_by_hi(const void *a, const void *b)
+{
+	const ByHi *x = a,
+			   *y = b;
+	int			c = sift_bound_cmp(x->hi, y->hi);
+
+	return c != 0 ? c : (x->i > y->i) - (x->i < y->i);
+}
+
+#define SORT_BY_INSERTION_MAX	16
+
+/* The indexes of r by the end of the range, equal ends in the order of r: an insertion for the few, a sort for the many */
+static void
+sort_by_hi(const SiftRange *r, uint32_t n, uint32_t *cand)
+{
+	ByHi	   *item;
+
+	if (n <= SORT_BY_INSERTION_MAX)
+	{
+		for (uint32_t i = 0, k; i < n; i++)
+		{
+			for (k = i; k > 0 && sift_bound_cmp(&r[cand[k - 1]].hi, &r[i].hi) > 0; k--)
+				cand[k] = cand[k - 1];
+			cand[k] = i;
+		}
+		return;
+	}
+	item = palloc(n * sizeof(ByHi));
+	for (uint32_t i = 0; i < n; i++)
+		item[i] = (ByHi) {&r[i].hi, i};
+	qsort(item, n, sizeof(ByHi), cmp_by_hi);
+	for (uint32_t i = 0; i < n; i++)
+		cand[i] = item[i].i;
+	pfree(item);
+}
+
 uint32_t
 sift_range_apart(const SiftRange *r, const uint64_t *weight, uint32_t n, uint32_t *out)
 {
@@ -394,12 +437,7 @@ sift_range_apart(const SiftRange *r, const uint64_t *weight, uint32_t n, uint32_
 	bool	   *used = palloc((n + 1) * sizeof(bool));
 	uint32_t	np = 0;
 
-	for (uint32_t i = 0, k; i < n; i++)
-	{
-		for (k = i; k > 0 && sift_bound_cmp(&r[cand[k - 1]].hi, &r[i].hi) > 0; k--)
-			cand[k] = cand[k - 1];
-		cand[k] = i;
-	}
+	sort_by_hi(r, n, cand);
 	for (uint32_t c = 0; c < n; c++)
 	{
 		before[c] = count_hi_below(r, cand, c, &r[cand[c]].lo);

@@ -290,8 +290,19 @@ extern void sift_store_clear_test_point(void);
 extern uint64 sift_store_space_written(void);
 
 /* A host's extra physical links in a copied lane page. Edits only this page; no allocation or IO. */
-typedef void (*SiftRelocatePage) (Page page, const SiftExtent *old, const SiftExtent *fresh, int n);
-extern BlockNumber sift_store_relocated_block(BlockNumber blk, const SiftExtent *old, const SiftExtent *fresh, int n);
+/* Where each block of the runs a relocation reads from goes: old[i] is copied to fresh[i], and a block is found by its place in the runs sorted by start */
+typedef struct SiftRelocMap
+{
+	int			n;
+	const SiftExtent *old;
+	const SiftExtent *fresh;
+	int		   *by_start;
+} SiftRelocMap;
+
+extern void sift_reloc_map_init(SiftRelocMap *m, const SiftExtent *old, const SiftExtent *fresh, int n);
+extern void sift_reloc_map_free(SiftRelocMap *m);
+typedef void (*SiftRelocatePage) (Page page, const SiftRelocMap *map);
+extern BlockNumber sift_store_relocated_block(BlockNumber blk, const SiftRelocMap *map);
 
 /* Copy through a tracked SHARED target into exact free runs below limit, within budget; zero if they do not fit. Publish with sift_wt_publish. */
 extern uint64 sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, const SiftExtent *old, int n,
@@ -334,6 +345,12 @@ typedef struct SiftFreeStats
 
 extern SiftFreeStats sift_store_free_stats(Relation index);
 extern int64 sift_store_free_below(Relation index, BlockNumber limit, uint32 min_run);
+
+/* The reusable runs of at least min_run blocks, read once: the bisection of the space step probes it for the blocks free below a limit without a walk of the list each time */
+typedef struct SiftFreeProfile SiftFreeProfile;
+extern SiftFreeProfile *sift_store_free_profile(Relation index, uint32 min_run);
+extern int64 sift_free_profile_below(const SiftFreeProfile *p, BlockNumber limit);
+extern void sift_free_profile_free(SiftFreeProfile *p);
 
 /*
  * Initializes metapage + empty directory (ambuild, ambuildempty) via a BULK

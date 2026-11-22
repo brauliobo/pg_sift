@@ -92,6 +92,8 @@ sift_proj_find(const SiftManifestProjRef *refs, int nrefs, const char *name)
 }
 
 /* The leaf of a projection's own directory, and the part list it names: the blocks they occupy go to blocks */
+static int part_cmp(const void *a, const void *b);
+
 static SiftPartDesc *
 read_part_list(Relation rel, const SiftManifestProjRef *ref, BlkVec *blocks, int *pages)
 {
@@ -140,11 +142,9 @@ read_proj_parts(Relation rel, const SiftManifestProjRef *ref, BlkVec *blocks, in
 			SIFT_CORRUPT(rel, "The links of projection \"%s\" are not in ascending base generation at part %llu.", ref->name, (unsigned long long) r.links[i].src_gen);
 	for (int i = 0; i < r.nlinks; i++)
 	{
-		bool		found = false;
+		SiftPartDesc key = {.part_gen = r.links[i].proj_gen};
 
-		for (int j = 0; j < r.nparts && !found; j++)
-			found = r.parts[j].part_gen == r.links[i].proj_gen;
-		if (!found)
+		if (bsearch(&key, r.parts, r.nparts, sizeof(SiftPartDesc), part_cmp) == NULL)
 			SIFT_CORRUPT(rel, "A link of projection \"%s\" names the part %llu it does not have.", ref->name, (unsigned long long) r.links[i].proj_gen);
 	}
 	return r;
@@ -345,77 +345,144 @@ gen_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-static bool
-has_gen(const uint64 *v, int n, uint64 g)
+/* A sorted copy of gens: the membership tests of one call are binary searches */
+static uint64 *
+sorted_gens(const uint64 *v, int n)
 {
-	for (int i = 0; i < n; i++)
-		if (v[i] == g)
-			return true;
-	return false;
+	/* check-memory: allow the generations of one projection delta, which a commit bounds */
+	uint64	   *s = palloc(Max(n, 1) * sizeof(uint64));
+
+	if (n > 0)
+		memcpy(s, v, n * sizeof(uint64));
+	qsort(s, n, sizeof(uint64), gen_cmp);
+	return s;
+}
+
+static bool
+sorted_has(const uint64 *v, int n, uint64 g)
+{
+	return bsearch(&g, v, n, sizeof(uint64), gen_cmp) != NULL;
+}
+
+/* The links and parts of cur are in ascending order (read_proj_parts checks it, and every apply keeps it) */
+static const SiftProjLink *
+find_link(const SiftProjParts *cur, uint64 src_gen)
+{
+	SiftProjLink key = {.src_gen = src_gen};
+
+	return bsearch(&key, cur->links, cur->nlinks, sizeof(SiftProjLink), link_cmp);
 }
 
 bool
 sift_proj_delta_applies(const SiftProjParts *cur, const SiftProjDelta *d)
 {
-	for (int i = 0; i < d->ndrop_parts; i++)
-	{
-		bool		found = false;
+	uint64	   *drops = sorted_gens(d->drop_proj_gens, d->ndrop_parts);
+	bool		ok = true;
 
-		for (int j = 0; j < cur->nparts && !found; j++)
-			found = cur->parts[j].part_gen == d->drop_proj_gens[i];
-		if (!found)
-			return false;
-	}
-	for (int i = 0; i < d->nadd_links; i++)
+	for (int i = 0; i < d->ndrop_parts && ok; i++)
 	{
-		bool		replaces = false;
+		SiftPartDesc key = {.part_gen = drops[i]};
 
-		for (int j = 0; j < cur->nlinks && !replaces; j++)
-			replaces = cur->links[j].src_gen == d->add_links[i].src_gen && has_gen(d->drop_proj_gens, d->ndrop_parts, cur->links[j].proj_gen);
-		if (!replaces)
-			return false;
+		ok = bsearch(&key, cur->parts, cur->nparts, sizeof(SiftPartDesc), part_cmp) != NULL;
 	}
-	return true;
+	for (int i = 0; i < d->nadd_links && ok; i++)
+	{
+		const SiftProjLink *l = find_link(cur, d->add_links[i].src_gen);
+
+		ok = l != NULL && sorted_has(drops, d->ndrop_parts, l->proj_gen);
+	}
+	pfree(drops);
+	return ok;
+}
+
+/* The parts of cur that are not in drops (both ascending) in out, and how many drops met a part */
+static int
+keep_parts(const SiftProjParts *cur, const uint64 *drops, int ndrops, SiftPartDesc *out, int *nout)
+{
+	int			di = 0,
+				dropped = 0;
+
+	*nout = 0;
+	for (int i = 0; i < cur->nparts; i++)
+	{
+		while (di < ndrops && drops[di] < cur->parts[i].part_gen)
+			di++;
+		if (di < ndrops && drops[di] == cur->parts[i].part_gen)
+		{
+			dropped++;
+			di++;
+		}
+		else
+			out[(*nout)++] = cur->parts[i];
+	}
+	return dropped;
+}
+
+static void
+keep_links(const SiftProjParts *cur, const SiftProjLink *adds, int nadds, const uint64 *drop_src, int ndrop_src, SiftProjLink *out, int *nout)
+{
+	int			ai = 0,
+				di = 0;
+
+	*nout = 0;
+	for (int i = 0; i < cur->nlinks; i++)
+	{
+		uint64		src = cur->links[i].src_gen;
+
+		while (ai < nadds && adds[ai].src_gen < src)
+			ai++;
+		while (di < ndrop_src && drop_src[di] < src)
+			di++;
+		if ((ai < nadds && adds[ai].src_gen == src) || (di < ndrop_src && drop_src[di] == src))
+			continue;
+		out[(*nout)++] = cur->links[i];
+	}
 }
 
 void
 sift_proj_apply_delta(const SiftProjParts *cur, const SiftProjDelta *d, SiftProjParts *out)
 {
-	SiftPartDesc *parts = palloc((cur->nparts + d->nadd_parts + 1) * sizeof(SiftPartDesc));
-	SiftProjLink *links = palloc((cur->nlinks + d->nadd_links + 1) * sizeof(SiftProjLink));
+	SiftPartDesc *kept = palloc((cur->nparts + 1) * sizeof(SiftPartDesc)),
+			   *adds = palloc((d->nadd_parts + 1) * sizeof(SiftPartDesc)),
+			   *parts = palloc((cur->nparts + d->nadd_parts + 1) * sizeof(SiftPartDesc));
+	SiftProjLink *kept_links = palloc((cur->nlinks + 1) * sizeof(SiftProjLink)),
+			   *add_links = palloc((d->nadd_links + 1) * sizeof(SiftProjLink)),
+			   *links = palloc((cur->nlinks + d->nadd_links + 1) * sizeof(SiftProjLink));
+	uint64	   *drops = sorted_gens(d->drop_proj_gens, d->ndrop_parts),
+			   *drop_src = sorted_gens(d->drop_src_gens, d->ndrop_links);
 	int			np = 0,
 				nl = 0,
-				dropped_parts = 0;
+				nk,
+				nkl,
+				dropped_parts;
 	bool	   *used;
 
-	for (int i = 0; i < cur->nparts; i++)
-		if (has_gen(d->drop_proj_gens, d->ndrop_parts, cur->parts[i].part_gen))
-			dropped_parts++;
-		else
-			parts[np++] = cur->parts[i];
+	dropped_parts = keep_parts(cur, drops, d->ndrop_parts, kept, &nk);
 	if (dropped_parts != d->ndrop_parts)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("projection %u does not have %d of the parts to drop", d->proj_id, d->ndrop_parts - dropped_parts)));
-	for (int i = 0; i < d->nadd_parts; i++)
-		parts[np++] = d->add_parts[i];
-	qsort(parts, np, sizeof(SiftPartDesc), part_cmp);
-	for (int i = 1; i < np; i++)
-		if (parts[i - 1].part_gen == parts[i].part_gen)
-			ereport(ERROR, (errcode(ERRCODE_UNIQUE_VIOLATION), errmsg("projection %u has the part %llu twice", d->proj_id, (unsigned long long) parts[i].part_gen)));
-	for (int i = 0; i < cur->nlinks; i++)
+	if (d->nadd_parts > 0)
+		memcpy(adds, d->add_parts, d->nadd_parts * sizeof(SiftPartDesc));
+	qsort(adds, d->nadd_parts, sizeof(SiftPartDesc), part_cmp);
+	for (int k = 0, a = 0; k < nk || a < d->nadd_parts;)
 	{
-		bool		replaced = false;
+		bool		from_kept = a == d->nadd_parts || (k < nk && kept[k].part_gen < adds[a].part_gen);
 
-		for (int j = 0; j < d->nadd_links && !replaced; j++)
-			replaced = d->add_links[j].src_gen == cur->links[i].src_gen;
-		if (!replaced && !has_gen(d->drop_src_gens, d->ndrop_links, cur->links[i].src_gen))
-			links[nl++] = cur->links[i];
+		parts[np++] = from_kept ? kept[k++] : adds[a++];
+		if (np > 1 && parts[np - 2].part_gen == parts[np - 1].part_gen)
+			ereport(ERROR, (errcode(ERRCODE_UNIQUE_VIOLATION), errmsg("projection %u has the part %llu twice", d->proj_id, (unsigned long long) parts[np - 1].part_gen)));
 	}
-	for (int i = 0; i < d->nadd_links; i++)
-		links[nl++] = d->add_links[i];
-	qsort(links, nl, sizeof(SiftProjLink), link_cmp);
-	for (int i = 1; i < nl; i++)
-		if (links[i - 1].src_gen == links[i].src_gen)
-			ereport(ERROR, (errcode(ERRCODE_UNIQUE_VIOLATION), errmsg("projection %u has two links of the base part %llu", d->proj_id, (unsigned long long) links[i].src_gen)));
+	if (d->nadd_links > 0)
+		memcpy(add_links, d->add_links, d->nadd_links * sizeof(SiftProjLink));
+	qsort(add_links, d->nadd_links, sizeof(SiftProjLink), link_cmp);
+	keep_links(cur, add_links, d->nadd_links, drop_src, d->ndrop_links, kept_links, &nkl);
+	for (int k = 0, a = 0; k < nkl || a < d->nadd_links;)
+	{
+		bool		from_kept = a == d->nadd_links || (k < nkl && kept_links[k].src_gen < add_links[a].src_gen);
+
+		links[nl++] = from_kept ? kept_links[k++] : add_links[a++];
+		if (nl > 1 && links[nl - 2].src_gen == links[nl - 1].src_gen)
+			ereport(ERROR, (errcode(ERRCODE_UNIQUE_VIOLATION), errmsg("projection %u has two links of the base part %llu", d->proj_id, (unsigned long long) links[nl - 1].src_gen)));
+	}
 	used = palloc0((np + 1) * sizeof(bool));
 	for (int i = 0; i < nl; i++)
 	{
@@ -430,6 +497,12 @@ sift_proj_apply_delta(const SiftProjParts *cur, const SiftProjDelta *d, SiftProj
 	if (nl != np)
 		ereport(ERROR, (errcode(ERRCODE_DATA_EXCEPTION), errmsg("projection %u would have %d parts and %d links", d->proj_id, np, nl)));
 	pfree(used);
+	pfree(kept);
+	pfree(adds);
+	pfree(kept_links);
+	pfree(add_links);
+	pfree(drops);
+	pfree(drop_src);
 	*out = (SiftProjParts) {.parts = parts,.nparts = np,.links = links,.nlinks = nl};
 }
 
@@ -461,21 +534,36 @@ dropped(const SiftManifestProjUpdate *u, uint16 id)
 }
 
 static void
+release_add(Change *ch, const SiftExtent *ext, int n)
+{
+	if (ch->nproj_release + n > ch->proj_release_cap)
+	{
+		ch->proj_release_cap = Max(Max(16, ch->proj_release_cap * 2), ch->nproj_release + n);
+		/* check-memory: allow the extents of the projection parts one commit releases, which the parts it drops bound */
+		ch->proj_release = ch->proj_release == NULL ? palloc(ch->proj_release_cap * sizeof(SiftExtent)) : repalloc(ch->proj_release, ch->proj_release_cap * sizeof(SiftExtent));
+	}
+	memcpy(ch->proj_release + ch->nproj_release, ext, n * sizeof(SiftExtent));
+	ch->nproj_release += n;
+}
+
+static void
 release_parts(Relation rel, Change *ch, const SiftProjParts *cur, const uint64 *gens, int ngens, bool all)
 {
+	uint64	   *sorted = all ? NULL : sorted_gens(gens, ngens);
+
 	for (int i = 0; i < cur->nparts; i++)
 	{
 		int			n;
 		SiftExtent *ext;
 
-		if (!all && !has_gen(gens, ngens, cur->parts[i].part_gen))
+		if (!all && !sorted_has(sorted, ngens, cur->parts[i].part_gen))
 			continue;
 		ext = sift_proj_part_extents(rel, &cur->parts[i], &n);
-		ch->proj_release = ch->proj_release == NULL ? palloc(n * sizeof(SiftExtent)) : repalloc(ch->proj_release, (ch->nproj_release + n) * sizeof(SiftExtent));
-		memcpy(ch->proj_release + ch->nproj_release, ext, n * sizeof(SiftExtent));
-		ch->nproj_release += n;
+		release_add(ch, ext, n);
 		pfree(ext);
 	}
+	if (sorted != NULL)
+		pfree(sorted);
 }
 
 static SiftManifestProjRef

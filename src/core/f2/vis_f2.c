@@ -33,17 +33,18 @@ sift_vis_f2_part(SiftVisF2Guard *g, const SiftPartitionEntry *e, const SiftPartD
 static bool
 part_unchanged(const SiftVisF2Guard *g)
 {
-	SiftManifestRead mr = sift_manifest_read_range(g->index, g->key_lo, NULL);
+	SiftPartitionEntry e;
 	int			n;
 	SiftPartDesc *parts;
+	bool		same = false;
 
-	if (mr.n == 0 || mr.entries[0].part_id != g->part_id)
+	if (!sift_manifest_find_entry(g->index, g->part_id, g->key_lo, &e))
 		return false;
-	parts = sift_manifest_read_parts(g->index, &mr.entries[0], &n);
-	for (int i = 0; i < n; i++)
-		if (parts[i].part_gen == g->part_gen)
-			return parts[i].dv_gen == g->dv_gen;
-	return false;
+	parts = sift_manifest_read_parts(g->index, &e, &n);
+	for (int i = 0; i < n && !same; i++)
+		same = parts[i].part_gen == g->part_gen && parts[i].dv_gen == g->dv_gen;
+	pfree(parts);
+	return same;
 }
 
 /* Called after the map was read: a change of the manifest that leaves the part as it was (an insert, the compaction of another part) does not void the map */

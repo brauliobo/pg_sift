@@ -134,15 +134,69 @@ wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t 
 
 /* ---- the conjuncts on wide leaves: the type's own comparison over the values of the column (no format of lanes for a table, no zone) ---- */
 
+#define WIDE_BSEARCH 4
+
+static int
+wide_cmp_datum(const void *a, const void *b, void *arg)
+{
+	return DatumGetInt32(FunctionCall2Coll((FmgrInfo *) arg, InvalidOid, *(const Datum *) a, *(const Datum *) b));
+}
+
+/* an IN / NOT IN list of many values is searched in O(log K): the distinct non-NULL values in cmp order */
+static void
+wide_sort_list(TblWide *w, MemoryContext cxt)
+{
+	int			n = 0;
+
+	w->sorted = MemoryContextAlloc(cxt, w->nvals * sizeof(Datum));
+	for (int k = 0; k < w->nvals; k++)
+	{
+		if (w->isnull[k])
+			w->hasnull = true;
+		else
+			w->sorted[n++] = w->vals[k];
+	}
+	qsort_arg(w->sorted, n, sizeof(Datum), wide_cmp_datum, w->cmp);
+	w->nsorted = 0;
+	for (int k = 0; k < n; k++)
+		if (w->nsorted == 0 || wide_cmp_datum(&w->sorted[w->nsorted - 1], &w->sorted[k], w->cmp) != 0)
+			w->sorted[w->nsorted++] = w->sorted[k];
+}
+
+static bool
+wide_list_has(const TblWide *w, Datum d)
+{
+	int			lo = 0,
+				hi = w->nsorted;
+
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+		int			c = DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->sorted[mid]));
+
+		if (c == 0)
+			return true;
+		if (c < 0)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	return false;
+}
+
 int
 tbl_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 {
 	TblSource  *tb = impl;
 
-	tb->wide = MemoryContextAlloc(tb->cxt, Max(nt, 1) * sizeof(TblWide));
+	tb->wide = MemoryContextAllocZero(tb->cxt, Max(nt, 1) * sizeof(TblWide));
 	for (int i = 0; i < nt; i++)
-		tb->wide[i] = (TblWide) {t[i].leaf, t[i].op, t[i].nvals, t[i].vals, t[i].isnull,
-			&lookup_type_cache(tb->lay->leaf[t[i].leaf].wtypid, TYPECACHE_CMP_PROC_FINFO)->cmp_proc_finfo};
+	{
+		tb->wide[i] = (TblWide) {.leaf = t[i].leaf, .op = t[i].op, .nvals = t[i].nvals, .vals = t[i].vals, .isnull = t[i].isnull,
+			.cmp = &lookup_type_cache(tb->lay->leaf[t[i].leaf].wtypid, TYPECACHE_CMP_PROC_FINFO)->cmp_proc_finfo};
+		if (t[i].op >= SIFT_COLW_IN && t[i].nvals > WIDE_BSEARCH)
+			wide_sort_list(&tb->wide[i], tb->cxt);
+	}
 	tb->nwide = nt;
 	return nt;
 }
@@ -170,6 +224,18 @@ wide_pass(const TblWide *w, bool isnull, Datum d)
 		return false;
 	if (w->op < SIFT_COLW_IN)
 		return !w->isnull[0] && cmp_holds(w->op, DatumGetInt32(FunctionCall2Coll(w->cmp, InvalidOid, d, w->vals[0])));
+	if (w->sorted)
+	{
+		if (w->op == SIFT_COLW_NOTIN && w->hasnull)
+			return false;
+		return wide_list_has(w, d) == (w->op == SIFT_COLW_IN);
+	}
+	if (w->sorted)
+	{
+		if (w->op == SIFT_COLW_NOTIN && w->hasnull)
+			return false;
+		return wide_list_has(w, d) == (w->op == SIFT_COLW_IN);
+	}
 	for (int k = 0; k < w->nvals; k++)
 	{
 		if (w->isnull[k])

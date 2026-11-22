@@ -31,17 +31,12 @@
 #include "core/progress.h"
 #include "core/meta_peek.h"
 #include "core/quarantine.h"
+#include "core/quarantine_int.h"
 #include "core/sift.h"
 #include "core/sql.h"
 #include "core/worker.h"
 
-PG_FUNCTION_INFO_V1(sift_quarantine_rows);
-PG_FUNCTION_INFO_V1(sift_meta_quarantined);
-
 #define QUAR_NAME		"sift_quarantine_1"
-#define QUAR_ENTRIES	256
-#define QUAR_LOCAL		8
-#define QUAR_REASON_LEN	SIFT_MAINT_ERRMSG_LEN
 
 /* The worker that flags a metapage is asked for again, by the next plan or write that meets the index, when this long has passed and the flag is still not there (no slot was free) */
 #define QUAR_ASK_RETRY_US		(10 * USECS_PER_SEC)
@@ -54,44 +49,12 @@ static const struct config_enum_entry on_corruption_options[] = {
 	{NULL, 0, false}
 };
 
-/* One index file. Counters are what the backend that skipped it has not handed over yet (an entry of the registry holds the totals) */
-typedef struct QuarKey
-{
-	Oid			db;
-	Oid			spc;
-	RelFileNumber rel;
-} QuarKey;
-
-typedef struct QuarEntry
-{
-	bool		used;
-	bool		confirmed;
-	bool		persisted;
-	bool		unflaggable;	/* the metapage cannot be written (it is damaged): the registry alone holds the index out of service, and no worker is asked for it again */
-	QuarKey		file;
-	Oid			indexoid;
-	TimestampTz detected_at;
-	TimestampTz asked_at;
-	int			sqlerrcode;
-	char		reason[QUAR_REASON_LEN];
-	uint32		detections;
-	uint64		skipped_writes;
-	uint64		skipped_vacuums;
-	uint64		refused_scans;
-} QuarEntry;
-
-typedef struct QuarShm
-{
-	slock_t		mutex;
-	pg_atomic_uint32 any;		/* 1 once an entry is in force: the test that costs nothing while no index was ever quarantined */
-	QuarEntry	entry[QUAR_ENTRIES];
-} QuarShm;
 
 static QuarShm *shared;
 static bool unavailable;
 static bool damage_unseen;		/* damage of a sift index was recorded since a catch last looked, and the SQLSTATE of the last */
 static int	damage_code;
-static QuarEntry local[QUAR_LOCAL];
+QuarEntry	sift_quar_local[QUAR_LOCAL];
 static bool unpublished;
 
 void
@@ -112,19 +75,20 @@ quar_init(SIFT_DSM_INIT_ARGS)
 
 	memset(q, 0, sizeof(*q));
 	SpinLockInit(&q->mutex);
-	pg_atomic_init_u32(&q->any, 0);
+	pg_atomic_init_u32(&q->active_count, 0);
+	pg_atomic_init_u64(&q->gen, 1);
 }
 
-static QuarShm *
-table(void)
+QuarShm *
+sift_quar_table(void)
 {
 	if (shared == NULL && !unavailable)
 		unavailable = (shared = sift_dsm_try(QUAR_NAME, sizeof(QuarShm), quar_init)) == NULL;
 	return shared;
 }
 
-static bool
-is_sift_index(Relation rel)
+bool
+sift_quar_is_sift_index(Relation rel)
 {
 	const SiftCatalog *cat;
 
@@ -141,8 +105,8 @@ same_file(const QuarEntry *e, const QuarKey *key)
 }
 
 /* The entries of the registry in use: the flag in the metapage of a persisted index holds it out of service when its entry is taken, an unpersisted one has only the entry */
-static int
-entries(void)
+int
+sift_quar_entries(void)
 {
 	return (int) sift_limit(quarantine_entries, QUAR_ENTRIES);
 }
@@ -172,11 +136,13 @@ slot(QuarEntry *list, int n, const QuarKey *key)
 /* Takes what src holds into the list: a first sighting, another one of the same file, or the counters of the skips since the last hand-over (src's are left zero); true if the file is in force.
  * A replay applies a record of several pages one page at a time, so damage seen during recovery is not taken for damage: only a flag the primary wrote puts an index out of service on a standby */
 static bool
-take(QuarEntry *list, int n, QuarEntry *src, bool recovery)
+take(QuarEntry *list, int n, QuarEntry *src, bool recovery, bool *changed)
 {
 	QuarEntry  *e = slot(list, n, &src->file);
+	bool		was = e->used && e->confirmed;
+	bool		replaced = !same_file(e, &src->file);
 
-	if (!same_file(e, &src->file))
+	if (replaced)
 	{
 		*e = *src;
 		e->confirmed = false;
@@ -191,6 +157,7 @@ take(QuarEntry *list, int n, QuarEntry *src, bool recovery)
 	e->confirmed |= src->confirmed || (src->detections > 0 && !recovery);
 	src->detections = 0;
 	src->skipped_writes = src->skipped_vacuums = src->refused_scans = 0;
+	*changed |= replaced ? was || e->confirmed : was != e->confirmed;
 	return e->confirmed;
 }
 
@@ -200,25 +167,40 @@ has_counts(const QuarEntry *e)
 	return e->used && (e->detections > 0 || e->skipped_writes > 0 || e->skipped_vacuums > 0 || e->refused_scans > 0);
 }
 
-/* Hands the shared registry what this backend recorded since (q NULL: it has none) */
+/* The files in force changed: the count is what the entries say now, and the generation tells every backend its copy of the set is old. The mutex is held */
 static void
-publish(QuarShm *q)
+set_changed(QuarShm *q)
+{
+	uint32		n = 0;
+
+	for (int i = 0; i < sift_quar_entries(); i++)
+		n += q->entry[i].used && q->entry[i].confirmed;
+	pg_atomic_write_u32(&q->active_count, n);
+	pg_write_barrier();
+	pg_atomic_fetch_add_u64(&q->gen, 1);
+}
+
+/* Hands the shared registry what this backend recorded since (q NULL: it has none) */
+void
+sift_quar_publish(QuarShm *q)
 {
 	bool		recovery = RecoveryInProgress();
+	bool		changed = false;
 
 	if (q == NULL || !unpublished)
 		return;
 	SpinLockAcquire(&q->mutex);
 	for (int i = 0; i < QUAR_LOCAL; i++)
-		if (has_counts(&local[i]))
+		if (has_counts(&sift_quar_local[i]))
 		{
-			QuarEntry	copy = local[i];
+			QuarEntry	copy = sift_quar_local[i];
 
-			if (take(q->entry, entries(), &copy, recovery))
-				pg_atomic_write_u32(&q->any, 1);
-			local[i].detections = 0;
-			local[i].skipped_writes = local[i].skipped_vacuums = local[i].refused_scans = 0;
+			take(q->entry, sift_quar_entries(), &copy, recovery, &changed);
+			sift_quar_local[i].detections = 0;
+			sift_quar_local[i].skipped_writes = sift_quar_local[i].skipped_vacuums = sift_quar_local[i].refused_scans = 0;
 		}
+	if (changed)
+		set_changed(q);
 	SpinLockRelease(&q->mutex);
 	unpublished = false;
 }
@@ -253,7 +235,7 @@ static bool persisting;
 static bool
 ask_due(const QuarKey *key)
 {
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 	QuarEntry  *e;
 	TimestampTz now = GetCurrentTimestamp();
 	bool		due;
@@ -261,7 +243,7 @@ ask_due(const QuarKey *key)
 	if (q == NULL)
 		return true;
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, entries(), key);
+	e = slot(q->entry, sift_quar_entries(), key);
 	due = same_file(e, key) && e->confirmed && !e->persisted && !e->unflaggable && now - e->asked_at >= QUAR_ASK_RETRY_US;
 	if (due)
 		e->asked_at = now;
@@ -275,7 +257,7 @@ quarantine_xact(XactEvent event, void *arg)
 {
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
-	publish(shared);
+	sift_quar_publish(shared);
 	for (int i = 0; i < nasks; i++)
 		if (ask_due(&asks[i].file))
 			(void) sift_maint_register_worker_oid(asks[i].index, SIFT_WK_QUARANTINE, asks[i].subject);
@@ -314,14 +296,14 @@ ask_persist(Relation index)
 static bool
 shared_persisted(const QuarKey *key)
 {
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 	QuarEntry  *e;
 	bool		done;
 
 	if (q == NULL)
 		return false;
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, entries(), key);
+	e = slot(q->entry, sift_quar_entries(), key);
 	done = same_file(e, key) && e->persisted;
 	SpinLockRelease(&q->mutex);
 	return done;
@@ -332,17 +314,19 @@ mark_persisted(Relation index)
 {
 	QuarKey		key;
 	QuarEntry  *e;
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 
 	if (q == NULL)
 		return;
 	key_of(index, &key);
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, entries(), &key);
+	e = slot(q->entry, sift_quar_entries(), &key);
 	if (!same_file(e, &key))
+	{
 		*e = (QuarEntry) {.used = true,.confirmed = true,.file = key,.indexoid = RelationGetRelid(index),.detected_at = GetCurrentTimestamp()};
+		set_changed(q);
+	}
 	e->persisted = true;
-	pg_atomic_write_u32(&q->any, 1);
 	SpinLockRelease(&q->mutex);
 }
 
@@ -355,13 +339,13 @@ stamp_flag(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg
 static void
 mark_unflaggable(const QuarKey *key)
 {
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 	QuarEntry  *e;
 
 	if (q == NULL)
 		return;
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, entries(), key);
+	e = slot(q->entry, sift_quar_entries(), key);
 	if (same_file(e, key))
 		e->unflaggable = true;
 	SpinLockRelease(&q->mutex);
@@ -414,7 +398,7 @@ sift_quarantine_main(Datum main_arg)
 	StartTransactionCommand();
 	if ((index = sift_try_open_index(indexoid, RowExclusiveLock)) != NULL)
 	{
-		if (is_sift_index(index) && overlay_has(index))
+		if (sift_quar_is_sift_index(index) && overlay_has(index))
 		{
 			QuarKey		file;
 			char	   *name = MemoryContextStrdup(cx, RelationGetRelationName(index));
@@ -456,7 +440,7 @@ sift_damage_prepare(void)
 {
 	if (sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE)
 	{
-		publish(table());
+		sift_quar_publish(sift_quar_table());
 	}
 }
 
@@ -502,9 +486,9 @@ record(Relation index)
 	if (persisting)
 		return;
 	was_out = overlay_has(index);
-	take(local, QUAR_LOCAL, &rec, RecoveryInProgress());
+	take(sift_quar_local, QUAR_LOCAL, &rec, RecoveryInProgress(), &(bool) {false});
 	unpublished = true;
-	publish(shared);
+	sift_quar_publish(shared);
 	if (!was_out && overlay_has(index))
 		log_first_cause(index, &rec);
 	ask_persist(index);
@@ -525,51 +509,100 @@ sift_damage_report(Relation index)
 		if (!scoped || !IsTransactionState() || !RelationIsValid(rel = RelationIdGetRelation(scope)))
 			return 0;
 	}
-	if (is_sift_index(rel))
+	if (sift_quar_is_sift_index(rel))
 		record(rel);
 	if (rel != index)
 		RelationClose(rel);
 	return 0;
 }
 
+/*
+ * A backend's copy of the files in force: while the generation of the registry is the one it was taken at, the answer is a probe of 512 slots, with no lock (at most 256 files, so
+ * a probe is short)
+ */
+#define QUAR_CACHE_SLOTS	512
+
+static struct
+{
+	uint64		gen;
+	QuarKey		key[QUAR_CACHE_SLOTS];
+	bool		used[QUAR_CACHE_SLOTS];
+}			confirmed_set;
+
+static uint32
+cache_slot(const QuarKey *key)
+{
+	uint64		x = (uint64) key->db * UINT64CONST(0x9E3779B97F4A7C15) ^ (uint64) key->spc * UINT64CONST(0xC2B2AE3D27D4EB4F) ^ (uint64) key->rel * UINT64CONST(0x165667B19E3779F9);
+
+	return (uint32) (x >> 40) & (QUAR_CACHE_SLOTS - 1);
+}
+
+static void
+cache_add(const QuarKey *key)
+{
+	uint32		p = cache_slot(key);
+
+	while (confirmed_set.used[p])
+		p = (p + 1) & (QUAR_CACHE_SLOTS - 1);
+	confirmed_set.used[p] = true;
+	confirmed_set.key[p] = *key;
+}
+
+static bool
+cache_has(const QuarKey *key)
+{
+	for (uint32 p = cache_slot(key); confirmed_set.used[p]; p = (p + 1) & (QUAR_CACHE_SLOTS - 1))
+		if (confirmed_set.key[p].rel == key->rel && confirmed_set.key[p].db == key->db && confirmed_set.key[p].spc == key->spc)
+			return true;
+	return false;
+}
+
+static void
+cache_refresh(QuarShm *q)
+{
+	memset(confirmed_set.used, 0, sizeof(confirmed_set.used));
+	SpinLockAcquire(&q->mutex);
+	confirmed_set.gen = pg_atomic_read_u64(&q->gen);
+	for (int i = 0; i < sift_quar_entries(); i++)
+		if (q->entry[i].used && q->entry[i].confirmed)
+			cache_add(&q->entry[i].file);
+	SpinLockRelease(&q->mutex);
+}
+
 static bool
 overlay_has(Relation index)
 {
 	QuarKey		key;
-	QuarEntry  *e;
-	bool		found;
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 
 	key_of(index, &key);
 	for (int i = 0; i < QUAR_LOCAL; i++)
-		if (same_file(&local[i], &key) && local[i].confirmed)
+		if (same_file(&sift_quar_local[i], &key) && sift_quar_local[i].confirmed)
 			return true;
-	if (q == NULL || pg_atomic_read_u32(&q->any) == 0)
+	if (q == NULL || pg_atomic_read_u32(&q->active_count) == 0)
 		return false;
-	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, entries(), &key);
-	found = same_file(e, &key) && e->confirmed;
-	SpinLockRelease(&q->mutex);
-	return found;
+	if (pg_atomic_read_u64(&q->gen) != confirmed_set.gen)
+		cache_refresh(q);
+	return cache_has(&key);
 }
 
 char *
 sift_quarantine_reason(Relation index)
 {
 	QuarKey		key;
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 	char		reason[QUAR_REASON_LEN] = "";
 
 	key_of(index, &key);
 	for (int i = 0; i < QUAR_LOCAL && reason[0] == '\0'; i++)
-		if (same_file(&local[i], &key))
-			strlcpy(reason, local[i].reason, sizeof(reason));
-	if (reason[0] == '\0' && q != NULL && pg_atomic_read_u32(&q->any) != 0)
+		if (same_file(&sift_quar_local[i], &key))
+			strlcpy(reason, sift_quar_local[i].reason, sizeof(reason));
+	if (reason[0] == '\0' && q != NULL && pg_atomic_read_u32(&q->active_count) != 0)
 	{
 		QuarEntry  *e;
 
 		SpinLockAcquire(&q->mutex);
-		e = slot(q->entry, entries(), &key);
+		e = slot(q->entry, sift_quar_entries(), &key);
 		if (same_file(e, &key))
 			strlcpy(reason, e->reason, sizeof(reason));
 		SpinLockRelease(&q->mutex);
@@ -582,15 +615,15 @@ void
 sift_quarantine_planned(Relation index)
 {
 	QuarKey		key;
-	QuarShm    *q = table();
+	QuarShm    *q = sift_quar_table();
 	QuarEntry  *e;
 	bool		unflagged;
 
-	if (q == NULL || pg_atomic_read_u32(&q->any) == 0)
+	if (q == NULL || pg_atomic_read_u32(&q->active_count) == 0)
 		return;
 	key_of(index, &key);
 	SpinLockAcquire(&q->mutex);
-	e = slot(q->entry, entries(), &key);
+	e = slot(q->entry, sift_quar_entries(), &key);
 	unflagged = same_file(e, &key) && e->confirmed && !e->persisted && !e->unflaggable;
 	SpinLockRelease(&q->mutex);
 	if (unflagged)
@@ -668,7 +701,7 @@ meta_flagged(Relation index)
 static bool
 guarded(Relation rel)
 {
-	return sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE && is_sift_index(rel) && rel->rd_index->indisready;
+	return sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE && sift_quar_is_sift_index(rel) && rel->rd_index->indisready;
 }
 
 bool
@@ -697,7 +730,7 @@ sift_quarantine_skip(Relation index, SiftQuarSkip kind)
 	QuarEntry  *e;
 
 	key_of(index, &key);
-	e = slot(local, QUAR_LOCAL, &key);
+	e = slot(sift_quar_local, QUAR_LOCAL, &key);
 	if (!same_file(e, &key))
 	{
 		*e = (QuarEntry) {.used = true,.confirmed = true,.file = key,.indexoid = RelationGetRelid(index),.detected_at = GetCurrentTimestamp()};
@@ -769,7 +802,7 @@ meta_flagged_now(Relation index)
 void
 sift_quarantine_mark(Relation index)
 {
-	if (is_sift_index(index) && overlay_has(index))
+	if (sift_quar_is_sift_index(index) && overlay_has(index))
 		flag_index(index);
 }
 
@@ -821,33 +854,6 @@ sift_quarantine_require(Relation index, const char *what)
 				 errhint("REINDEX INDEX %s puts it back in service.", sift_index_ident(index))));
 }
 
-/* The indexes of this database that the registry holds out of service, as a list of names for a hint; NULL when there is none */
-const char *
-sift_quarantine_names(void)
-{
-	QuarShm    *q = table();
-	Oid			ids[QUAR_ENTRIES];
-	int			n = 0;
-	StringInfoData names;
-
-	if (q == NULL || pg_atomic_read_u32(&q->any) == 0 || !IsTransactionState())
-		return NULL;
-	SpinLockAcquire(&q->mutex);
-	for (int i = 0; i < entries(); i++)
-		if (q->entry[i].used && q->entry[i].confirmed && q->entry[i].file.db == MyDatabaseId)
-			ids[n++] = q->entry[i].indexoid;
-	SpinLockRelease(&q->mutex);
-	initStringInfo(&names);
-	for (int i = 0; i < n; i++)
-	{
-		char	   *name = get_rel_name(ids[i]);
-
-		if (name != NULL)
-			appendStringInfo(&names, "%s\"%s\"", names.len ? ", " : "", name);
-	}
-	return names.len ? names.data : NULL;
-}
-
 void
 sift_quarantine_net(Relation index, uint32 meta_flags)
 {
@@ -866,67 +872,4 @@ sift_quarantine_net(Relation index, uint32 meta_flags)
 			(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 			 errmsg("sift index \"%s\" is out of service; the statement must be planned again", RelationGetRelationName(index)),
 			 errhint("Run the statement again: it is planned without the index. REINDEX INDEX %s puts it back in service.", sift_index_ident(index))));
-}
-
-/* sift._quarantine(): the files of this database the registry knows, one row each (the view sift.quarantine joins them to their indexes) */
-Datum
-sift_quarantine_rows(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	QuarEntry  *copy = palloc(sizeof(QuarEntry) * QUAR_ENTRIES);
-	QuarShm    *q;
-	int			n = 0;
-
-	InitMaterializedSRF(fcinfo, 0);
-	publish(table());
-	if ((q = table()) != NULL)
-	{
-		SpinLockAcquire(&q->mutex);
-		for (int i = 0; i < entries(); i++)
-			if (q->entry[i].used && q->entry[i].file.db == MyDatabaseId)
-				copy[n++] = q->entry[i];
-		SpinLockRelease(&q->mutex);
-	}
-	else
-		for (int i = 0; i < QUAR_LOCAL; i++)
-			if (local[i].used && local[i].file.db == MyDatabaseId)
-				copy[n++] = local[i];
-	for (int i = 0; i < n; i++)
-	{
-		Datum		v[11];
-		bool		nulls[11] = {false};
-
-		v[0] = ObjectIdGetDatum(copy[i].indexoid);
-		v[1] = ObjectIdGetDatum(copy[i].file.rel);
-		v[2] = TimestampTzGetDatum(copy[i].detected_at);
-		v[3] = BoolGetDatum(copy[i].confirmed);
-		v[4] = BoolGetDatum(copy[i].persisted);
-		v[5] = CStringGetTextDatum(unpack_sql_state(copy[i].sqlerrcode));
-		v[6] = CStringGetTextDatum(copy[i].reason);
-		v[7] = Int64GetDatum(copy[i].detections);
-		v[8] = Int64GetDatum((int64) copy[i].skipped_writes);
-		v[9] = Int64GetDatum((int64) copy[i].skipped_vacuums);
-		v[10] = Int64GetDatum((int64) copy[i].refused_scans);
-		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
-	}
-	return (Datum) 0;
-}
-
-/* Whether the metapage of the index flags it out of service, whatever the registry says (the rows of sift.quarantine that no backend has met since the server started); false while a REINDEX holds the index, as the inspectors answer NULL then */
-Datum
-sift_meta_quarantined(PG_FUNCTION_ARGS)
-{
-	Oid			indexoid = PG_GETARG_OID(0);
-	Relation	rel;
-	bool		flagged = false;
-
-	if (!ConditionalLockRelationOid(indexoid, AccessShareLock))
-		PG_RETURN_BOOL(false);
-	rel = try_relation_open(indexoid, NoLock);
-	if (rel != NULL && is_sift_index(rel))
-		flagged = (sift_meta_peek_format(rel).flags & SIFT_META_QUARANTINED) != 0;
-	if (rel != NULL)
-		relation_close(rel, NoLock);
-	UnlockRelationOid(indexoid, AccessShareLock);
-	PG_RETURN_BOOL(flagged);
 }

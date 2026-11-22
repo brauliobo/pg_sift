@@ -24,6 +24,7 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+#include "core/u64set.h"
 #include "core/catname.h"
 #include "core/errctx.h"
 #include "core/inspect.h"
@@ -113,15 +114,17 @@ void
 sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *arg)
 {
 	SiftMaintSwitch *sw = arg;
+	SiftU64Set	old;
 	int			n = 0;
 	int			at = -1;
 
+	sift_u64set_init(&old, sw->nold);
+	for (int k = 0; k < sw->nold; k++)
+		(void) sift_u64set_add(&old, sw->old[k]);
 	for (int i = 0; i < dir->nsegs; i++)
 	{
-		bool		replaced = false;
+		bool		replaced = sift_u64set_has(&old, dir->segs[i].gen);
 
-		for (int k = 0; k < sw->nold; k++)
-			replaced |= dir->segs[i].gen == sw->old[k];
 		if (replaced && at < 0)
 			at = n;
 		/* the entries of a scope segment (col/scope.h) are replicas of rows the other segments hold: the totals of the index count the rows once */
@@ -162,6 +165,7 @@ sift_maint_switch_segments(SiftMetaPageData *meta, SiftDirectoryData *dir, Page 
 		else
 			sift_dir_part_inherit(sw->old, sw->nold, &dir->segs[at], k);
 	}
+	sift_u64set_free(&old);
 	dir->nsegs = n;
 	meta->inserted += sw->inserted;
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
@@ -172,13 +176,19 @@ SiftMaintInputs
 sift_maint_inputs(Relation index, const SiftSegEntry *in, int n)
 {
 	SiftMaintInputs mi = {.gens = palloc(n * sizeof(uint64)),.release = palloc(0)};
+	int			cap = 0;
 
 	for (int i = 0; i < n; i++)
 	{
 		int			k;
 		const SiftExtent *ext = sift_store_immutable_extents(index, &in[i], &k);
 
-		mi.release = repalloc(mi.release, (mi.nrelease + k) * sizeof(SiftExtent));
+		if (mi.nrelease + k > cap)
+		{
+			/* check-memory: allow the extents of the segments a maintenance step reads, which the step's inputs bound */
+			cap = Max(Max(16, 2 * cap), mi.nrelease + k);
+			mi.release = repalloc(mi.release, cap * sizeof(SiftExtent));
+		}
 		memcpy(mi.release + mi.nrelease, ext, k * sizeof(SiftExtent));
 		mi.nrelease += k;
 		mi.gens[i] = in[i].gen;

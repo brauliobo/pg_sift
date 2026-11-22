@@ -14,6 +14,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "common/hashfn.h"
+#include "port/pg_bitutils.h"
 #include "miscadmin.h"
 #include "storage/ipc.h"
 #include "utils/memutils.h"
@@ -50,6 +51,7 @@ typedef struct Table
 	pg_atomic_uint64 global_epoch pg_attribute_aligned(PG_CACHE_LINE_SIZE);	/* bumped when a snapshot is retired */
 	LWLock		retire_lock;
 	dsa_pointer retired_head;	/* the snapshots retired and not freed yet, newest first (retire_lock) */
+	pg_atomic_uint64 epoch_mask[SIFT_SHM_EPOCH_SLOTS / 64];	/* the backends that have pinned in an epoch slot and not exited: all that oldest_epoch reads */
 	SiftEpochSlot epoch[SIFT_SHM_EPOCH_SLOTS];
 	SiftShmIndexSlot slot[SIFT_SHM_MANIFEST_SLOTS];
 } Table;
@@ -92,6 +94,8 @@ table_init(SIFT_DSM_INIT_ARGS)
 	t->retired_head = InvalidDsaPointer;
 	for (int i = 0; i < SIFT_SHM_EPOCH_SLOTS; i++)
 		pg_atomic_init_u64(&t->epoch[i].epoch, 0);
+	for (int i = 0; i < SIFT_SHM_EPOCH_SLOTS / 64; i++)
+		pg_atomic_init_u64(&t->epoch_mask[i], 0);
 	t->area_handle = DSA_HANDLE_INVALID;
 	pg_atomic_init_u64(&t->clock, 1);
 	pg_atomic_init_u32(&t->snaps_live, 0);
@@ -136,7 +140,22 @@ static void
 epoch_leave(int code, Datum arg)
 {
 	if ((uint32) MyProcNumber < SIFT_SHM_EPOCH_SLOTS)
+	{
 		pg_atomic_write_u64(&table->epoch[MyProcNumber].epoch, 0);
+		pg_atomic_fetch_and_u64(&table->epoch_mask[MyProcNumber / 64], ~(UINT64CONST(1) << (MyProcNumber % 64)));
+	}
+}
+
+/* The first pin of a backend puts its epoch slot where the reclaimer looks, once: the pin of every query would otherwise write a line that all backends share */
+static void
+epoch_register(Table *t)
+{
+	static bool registered;
+
+	if (registered)
+		return;
+	pg_atomic_fetch_or_u64(&t->epoch_mask[MyProcNumber / 64], UINT64CONST(1) << (MyProcNumber % 64));
+	registered = true;
 }
 
 static SiftShmIndexSlot *
@@ -231,49 +250,61 @@ oldest_epoch(Table *t)
 {
 	uint64		oldest = UINT64_MAX;
 
-	for (int i = 0; i < SIFT_SHM_EPOCH_SLOTS; i++)
-	{
-		uint64		e = pg_atomic_read_u64(&t->epoch[i].epoch);
+	for (int w = 0; w < SIFT_SHM_EPOCH_SLOTS / 64; w++)
+		for (uint64 bits = pg_atomic_read_u64(&t->epoch_mask[w]); bits != 0; bits &= bits - 1)
+		{
+			uint64		e = pg_atomic_read_u64(&t->epoch[w * 64 + pg_rightmost_one_pos64(bits)].epoch);
 
-		if (e != 0)
-			oldest = Min(oldest, e & ~SIFT_EPOCH_ACTIVE_BIT);
-	}
+			if (e != 0)
+				oldest = Min(oldest, e & ~SIFT_EPOCH_ACTIVE_BIT);
+		}
 	return oldest;
 }
 
+#define RECLAIM_BATCH	64
+
 /*
- * Frees the retired snapshots that no reader can be reading (none is in an epoch up to the one they were retired in) or holds (retire_lock held); all of them where nobody is attached any
- * more
+ * Takes off the retired list up to RECLAIM_BATCH snapshots that no reader can be reading (none is in an epoch up to the one they were retired in) or holds, all of them where nobody is
+ * attached any more (retire_lock held). Their memory is given back by reclaim_now after the lock is let go: nothing else reaches a snapshot that is off the list
  */
-static void
-reclaim(Table *t, dsa_area *a, bool everything)
+static int
+reclaim_unlink(Table *t, dsa_area *a, bool everything, dsa_pointer *batch)
 {
 	uint64		oldest = everything ? UINT64_MAX : oldest_epoch(t);
 	dsa_pointer *link = &t->retired_head;
+	int			n = 0;
 
-	while (*link != InvalidDsaPointer)
+	while (*link != InvalidDsaPointer && n < RECLAIM_BATCH)
 	{
 		SiftShmManifestSnap *snap = dsa_get_address(a, *link);
 
 		if (everything || (snap->retire_epoch < oldest && pg_atomic_read_u32(&snap->refcount) == 0))
 		{
+			batch[n++] = *link;
 			*link = snap->retire_next;
-			snap_free(a, snap);
 		}
 		else
 			link = &snap->retire_next;
 	}
+	return n;
 }
 
 static void
-reclaim_now(Table *t, dsa_area *a)
+reclaim_now(Table *t, dsa_area *a, bool everything)
 {
-	LWLockAcquire(&t->retire_lock, LW_EXCLUSIVE);
-	reclaim(t, a, false);
-	LWLockRelease(&t->retire_lock);
+	dsa_pointer batch[RECLAIM_BATCH];
+	int			n;
+
+	do
+	{
+		LWLockAcquire(&t->retire_lock, LW_EXCLUSIVE);
+		n = reclaim_unlink(t, a, everything, batch);
+		LWLockRelease(&t->retire_lock);
+		for (int i = 0; i < n; i++)
+			snap_free(a, dsa_get_address(a, batch[i]));
+	} while (n == RECLAIM_BATCH);
 }
 
-/* The registry lets go of a snapshot a slot held (it is no longer the current one of any slot): readers that counted themselves in it keep it, and the last of them frees it */
 static void
 snap_retire(Table *t, dsa_area *a, dsa_pointer dp)
 {
@@ -286,8 +317,8 @@ snap_retire(Table *t, dsa_area *a, dsa_pointer dp)
 	snap->retire_next = t->retired_head;
 	t->retired_head = dp;
 	pg_atomic_sub_fetch_u32(&snap->refcount, 1);
-	reclaim(t, a, false);
 	LWLockRelease(&t->retire_lock);
+	reclaim_now(t, a, false);
 }
 
 /* A reader lets go of its count: the last one of a retired snapshot has it freed */
@@ -297,7 +328,7 @@ snap_decref(dsa_area *a, dsa_pointer dp)
 	SiftShmManifestSnap *snap = dsa_get_address(a, dp);
 
 	if (pg_atomic_sub_fetch_u32(&snap->refcount, 1) == 0 && pg_atomic_read_u32(&snap->retired))
-		reclaim_now(table, a);
+		reclaim_now(table, a, false);
 }
 
 static void
@@ -343,9 +374,7 @@ area_leave(int code, Datum arg)
 				snap_retire(t, area, dp);
 			}
 		}
-		LWLockAcquire(&t->retire_lock, LW_EXCLUSIVE);
-		reclaim(t, area, true);
-		LWLockRelease(&t->retire_lock);
+		reclaim_now(t, area, true);
 		t->area_handle = DSA_HANDLE_INVALID;
 	}
 	dsa_detach(area);
@@ -358,46 +387,29 @@ area_leave(int code, Datum arg)
 
 /* ---------- the snapshots ---------- */
 
-static dsa_pointer
-array_alloc(dsa_area *a, Size bytes)
-{
-	return bytes == 0 ? InvalidDsaPointer : dsa_allocate_extended(a, bytes, DSA_ALLOC_ZERO | DSA_ALLOC_NO_OOM);
-}
-
-static void
-array_free(dsa_area *a, dsa_pointer dp)
-{
-	if (dp != InvalidDsaPointer)
-		dsa_free(a, dp);
-}
-
-/* The snapshot of spec, one reader (the registry); InvalidDsaPointer where the ledger or the system has no room for it */
+/*
+ * The snapshot of spec, one reader (the registry); InvalidDsaPointer where the ledger or the system has no room for it. The header, the partition entries, the scope entries and the
+ * table of lists are one allocation, so that making or freeing a snapshot takes the lock of the area once, whatever the partitions it has; the lists a query reads later are allocations of
+ * their own
+ */
 static dsa_pointer
 snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSnapSpec *spec)
 {
 	Size		entries = (Size) spec->npartitions * spec->part_entry_size;
 	Size		scopes = (Size) spec->nscopes * spec->scope_entry_size;
 	Size		lists = (Size) spec->npartitions * sizeof(pg_atomic_uint64);
-	Size		total = MAXALIGN(sizeof(SiftShmManifestSnap)) + MAXALIGN(entries) + MAXALIGN(scopes) + MAXALIGN(lists);
-	dsa_pointer self,
-				e,
-				sc,
-				l;
+	Size		entries_at = MAXALIGN(sizeof(SiftShmManifestSnap));
+	Size		scopes_at = entries_at + MAXALIGN(entries);
+	Size		lists_at = scopes_at + MAXALIGN(scopes);
+	Size		total = lists_at + MAXALIGN(lists);
+	dsa_pointer self;
 	SiftShmManifestSnap *snap;
 
 	if (!sift_shm_reserve_shared(SIFT_SHM_MANIFEST, total))
 		return InvalidDsaPointer;
-	self = dsa_allocate_extended(a, sizeof(SiftShmManifestSnap), DSA_ALLOC_ZERO | DSA_ALLOC_NO_OOM);
-	e = array_alloc(a, entries);
-	sc = array_alloc(a, scopes);
-	l = array_alloc(a, lists);
-	if (self == InvalidDsaPointer || (entries > 0 && e == InvalidDsaPointer) || (scopes > 0 && sc == InvalidDsaPointer) ||
-		(lists > 0 && l == InvalidDsaPointer))
+	self = dsa_allocate_extended(a, total, DSA_ALLOC_ZERO | DSA_ALLOC_NO_OOM);
+	if (self == InvalidDsaPointer)
 	{
-		array_free(a, self);
-		array_free(a, e);
-		array_free(a, sc);
-		array_free(a, l);
 		sift_shm_release_shared(SIFT_SHM_MANIFEST, total);
 		return InvalidDsaPointer;
 	}
@@ -411,31 +423,33 @@ snap_build(Table *t, dsa_area *a, const RelFileLocator *locator, const SiftShmSn
 	snap->nscopes = spec->nscopes;
 	snap->part_entry_size = spec->part_entry_size;
 	snap->scope_entry_size = spec->scope_entry_size;
-	snap->part_entries_dp = e;
-	snap->part_lists_dp = l;
-	snap->scopes_dp = sc;
+	snap->part_entries_dp = entries > 0 ? self + entries_at : InvalidDsaPointer;
+	snap->part_lists_dp = lists > 0 ? self + lists_at : InvalidDsaPointer;
+	snap->scopes_dp = scopes > 0 ? self + scopes_at : InvalidDsaPointer;
 	snap->self_dp = self;
 	snap->base_bytes = total;
 	pg_atomic_init_u64(&snap->snap_bytes, total);
 	if (entries > 0)
-		memcpy(dsa_get_address(a, e), spec->part_entries, entries);
+		memcpy((char *) snap + entries_at, spec->part_entries, entries);
 	if (scopes > 0)
-		memcpy(dsa_get_address(a, sc), spec->scopes, scopes);
+		memcpy((char *) snap + scopes_at, spec->scopes, scopes);
 	for (uint32 p = 0; p < spec->npartitions; p++)
-		pg_atomic_init_u64(&((pg_atomic_uint64 *) dsa_get_address(a, l))[p], InvalidDsaPointer);
+		pg_atomic_init_u64(&((pg_atomic_uint64 *) ((char *) snap + lists_at))[p], InvalidDsaPointer);
 	pg_atomic_fetch_add_u32(&t->snaps_live, 1);
 	pg_atomic_fetch_add_u64(&t->snap_bytes, total);
 	return self;
 }
 
+/* One free for the snapshot; the lists that queries installed are each an allocation, given back before it. No lock of the registry is held by the callers that matter (reclaim_now) */
 static void
 snap_free(dsa_area *a, SiftShmManifestSnap *snap)
 {
 	Table	   *t = table;
+	pg_atomic_uint64 *lists = dsa_get_address(a, snap->part_lists_dp);
 
-	for (uint32 p = 0; p < snap->npartitions; p++)
+	for (uint32 p = 0; lists != NULL && p < snap->npartitions; p++)
 	{
-		dsa_pointer lp = pg_atomic_read_u64(&((pg_atomic_uint64 *) dsa_get_address(a, snap->part_lists_dp))[p]);
+		dsa_pointer lp = pg_atomic_read_u64(&lists[p]);
 
 		if (lp != InvalidDsaPointer)
 		{
@@ -446,9 +460,6 @@ snap_free(dsa_area *a, SiftShmManifestSnap *snap)
 	sift_shm_release_shared(SIFT_SHM_MANIFEST, snap->base_bytes);
 	pg_atomic_fetch_sub_u64(&t->snap_bytes, pg_atomic_read_u64(&snap->snap_bytes));
 	pg_atomic_fetch_sub_u32(&t->snaps_live, 1);
-	array_free(a, snap->part_entries_dp);
-	array_free(a, snap->part_lists_dp);
-	array_free(a, snap->scopes_dp);
 	dsa_free(a, snap->self_dp);
 }
 
@@ -529,6 +540,7 @@ pin_in_epoch(Table *t, SiftShmIndexSlot *s, dsa_area *a)
 	SiftShmManifestSnap *snap;
 	bool		retired;
 
+	epoch_register(t);
 	do
 	{
 		snap = NULL;
@@ -630,7 +642,10 @@ sift_shm_manifest_announce_epoch(void)
 	Table	   *t = registry();
 
 	if (t != NULL && (uint32) MyProcNumber < SIFT_SHM_EPOCH_SLOTS)
+	{
+		epoch_register(t);
 		pg_atomic_write_u64(&t->epoch[MyProcNumber].epoch, pg_atomic_read_u64(&t->global_epoch) | SIFT_EPOCH_ACTIVE_BIT);
+	}
 }
 #endif
 

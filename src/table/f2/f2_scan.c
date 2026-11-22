@@ -49,31 +49,62 @@ typedef struct SiftTblF2Parallel
 	ScanUnit	units[FLEXIBLE_ARRAY_MEMBER];
 } SiftTblF2Parallel;
 
+/* The parts of a view in the order of a scan, taken one at a time: the units of a part are known once its header is read */
+typedef struct UnitCursor
+{
+	const SiftPlanSnapshot *view;
+	int			part;
+	int			next;
+} UnitCursor;
+
+typedef struct UnitList
+{
+	ScanUnit   *units;
+	uint64		n;
+	uint64		cap;
+} UnitList;
+
+/* Appends the units of the next part the range does not leave out (none with a part its address envelope excludes: that part is not even opened); false when the view has no part left */
+static bool
+cursor_take(Relation rel, SiftF2Store *store, UnitCursor *c, UnitList *out, const uint64 *tid_range)
+{
+	const SiftPlanSnapshot *v = c->view;
+	const SiftPartDesc *d;
+	SiftF2PartPin *pin;
+	uint32		ng;
+
+	while (c->part < v->npartitions && c->next >= v->partlists[c->part].nparts)
+	{
+		c->part++;
+		c->next = 0;
+	}
+	if (c->part >= v->npartitions)
+		return false;
+	d = &v->partlists[c->part].parts[c->next++];
+	if (tid_range != NULL && sift_part_tid_excludes(d, tid_range[0], tid_range[1]))
+		return true;
+	pin = sift_f2_pin_open(rel, store, d, (uint32) v->partitions[c->part].part_id);
+	ng = pin->part->hdr.ngranules;
+	sift_f2_pin_release(pin);
+	for (uint32 g = 0; g < ng; g += SIFT_TBL_SCAN_UNIT_GRANULES)
+	{
+		if (out->n == out->cap)
+			out->units = repalloc(out->units, sizeof(ScanUnit) * (out->cap *= 2));
+		out->units[out->n++] = (ScanUnit) {v->partitions[c->part], *d, g, Min(SIFT_TBL_SCAN_UNIT_GRANULES, ng - g)};
+	}
+	return true;
+}
+
 static ScanUnit *
 list_units(Relation rel, SiftF2Store *store, uint64 *nunits)
 {
-	const SiftPlanSnapshot *v = sift_f2_view(rel, store, CurrentMemoryContext);
-	ScanUnit   *units = palloc(sizeof(ScanUnit) * 16);
-	uint64		cap = 16,
-				n = 0;
+	UnitCursor	c = {.view = sift_f2_view(rel, store, CurrentMemoryContext)};
+	UnitList	l = {.units = palloc(sizeof(ScanUnit) * 16),.cap = 16};
 
-	for (int i = 0; i < v->npartitions; i++)
-		for (int j = 0; j < v->partlists[i].nparts; j++)
-		{
-			const SiftPartDesc *d = &v->partlists[i].parts[j];
-			SiftF2PartPin *pin = sift_f2_pin_open(rel, store, d, (uint32) v->partitions[i].part_id);
-			uint32		ng = pin->part->hdr.ngranules;
-
-			sift_f2_pin_release(pin);
-			for (uint32 g = 0; g < ng; g += SIFT_TBL_SCAN_UNIT_GRANULES)
-			{
-				if (n == cap)
-					units = repalloc(units, sizeof(ScanUnit) * (cap *= 2));
-				units[n++] = (ScanUnit) {v->partitions[i], *d, g, Min(SIFT_TBL_SCAN_UNIT_GRANULES, ng - g)};
-			}
-		}
-	*nunits = n;
-	return units;
+	while (cursor_take(rel, store, &c, &l, NULL))
+		;
+	*nunits = l.n;
+	return l.units;
 }
 
 typedef struct ParImage
@@ -145,8 +176,11 @@ typedef struct SiftTblF2Scan
 
 	ScanUnit   *units;
 	uint64		nunits;
+	uint64		units_cap;
 	uint64	   *prefix;
 	int64		total;
+	UnitCursor	cursor;
+	bool		units_complete;	/* the cursor has no part left: nunits and total are the scan's */
 	SiftTblF2Parallel *par;
 
 	int64		span_lo;
@@ -180,11 +214,56 @@ scan_set_units(SiftTblF2Scan *s, ScanUnit *units, uint64 n)
 {
 	s->units = units;
 	s->nunits = n;
+	s->units_cap = n;
 	s->prefix = MemoryContextAlloc(s->cx, sizeof(uint64) * (n + 1));
 	s->prefix[0] = 0;
 	for (uint64 i = 0; i < n; i++)
 		s->prefix[i + 1] = s->prefix[i] + units[i].n;
 	s->total = (int64) s->prefix[n];
+	s->units_complete = true;
+}
+
+/* The units of an ordinal scan start with none: a part is opened when the scan reaches it */
+static void
+scan_units_restart(SiftTblF2Scan *s)
+{
+	s->nunits = 0;
+	s->total = 0;
+	s->units_complete = false;
+	s->cursor.part = 0;
+	s->cursor.next = 0;
+	s->prefix[0] = 0;
+}
+
+/* The units of the next part that has any; false when the scan has no part left */
+static bool
+scan_open_next_part(SiftTblF2Scan *s)
+{
+	uint64		range[2] = {s->mintid, s->maxtid};
+	UnitList	l = {s->units, s->nunits, s->units_cap};
+	uint64		before = s->nunits;
+
+	while (!s->units_complete && l.n == before)
+		if (!cursor_take(s->base.rs_rd, s->store, &s->cursor, &l, s->has_range ? range : NULL))
+			s->units_complete = true;
+	s->units = l.units;
+	s->nunits = l.n;
+	if (l.cap > s->units_cap)
+	{
+		s->units_cap = l.cap;
+		s->prefix = repalloc(s->prefix, sizeof(uint64) * (l.cap + 1));
+	}
+	for (uint64 i = before; i < l.n; i++)
+		s->prefix[i + 1] = s->prefix[i] + s->units[i].n;
+	s->total = (int64) s->prefix[l.n];
+	return l.n > before;
+}
+
+static void
+scan_complete_units(SiftTblF2Scan *s)
+{
+	while (!s->units_complete)
+		(void) scan_open_next_part(s);
 }
 
 TableScanDesc
@@ -220,12 +299,11 @@ sift_tbl_f2_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKe
 	}
 	else if (by_ordinal)
 	{
-		MemoryContext old = MemoryContextSwitchTo(s->cx);
-		uint64		n;
-		ScanUnit   *units = list_units(rel, s->store, &n);
-
-		MemoryContextSwitchTo(old);
-		scan_set_units(s, units, n);
+		s->cursor.view = sift_f2_view(rel, s->store, s->cx);
+		s->units_cap = 16;
+		s->units = MemoryContextAlloc(s->cx, sizeof(ScanUnit) * s->units_cap);
+		s->prefix = MemoryContextAlloc(s->cx, sizeof(uint64) * (s->units_cap + 1));
+		scan_units_restart(s);
 	}
 	s->span_lo = 0;
 	s->span_hi = s->total;
@@ -323,8 +401,6 @@ load_granule(SiftTblF2Scan *s, int64 G)
 	uint16		n;
 
 	drop_granule(s);
-	if (s->has_range && sift_part_tid_excludes(&u->desc, s->mintid, s->maxtid))
-		return false;
 	pin = sift_f2_pin_open(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id);
 	if (s->has_range && (pin->tidx[g].tid_max < s->mintid || pin->tidx[g].tid_min > s->maxtid))
 	{
@@ -396,6 +472,11 @@ next_granule(SiftTblF2Scan *s, int step)
 	for (;;)
 	{
 		s->G += step;
+		while (step > 0 && s->par == NULL && s->G >= s->span_hi && !s->units_complete)
+		{
+			(void) scan_open_next_part(s);
+			s->span_hi = s->total;
+		}
 		if (s->G < s->span_lo || s->G >= s->span_hi)
 		{
 			drop_granule(s);
@@ -425,6 +506,11 @@ scan_next(SiftTblF2Scan *s, ScanDirection dir, TupleTableSlot *slot)
 	if (!s->started)
 	{
 		s->started = true;
+		if (s->par == NULL && step < 0)
+		{
+			scan_complete_units(s);
+			s->span_hi = s->total;
+		}
 		s->G = step > 0 ? s->span_lo - 1 : s->span_hi;
 		if (s->par != NULL)
 			s->span_hi = s->span_lo = 0;
@@ -436,7 +522,7 @@ scan_next(SiftTblF2Scan *s, ScanDirection dir, TupleTableSlot *slot)
 		if (r >= 0)
 		{
 			s->r = r;
-			sift_f2_slot_store(slot, s->base.rs_rd, s->gb, (uint16) r, NULL, s->rowcx);
+			sift_f2_slot_store(slot, s->base.rs_rd, s->gb, (uint16) r, NULL, NULL, s->rowcx);
 					return true;
 		}
 		if (!next_granule(s, step))
@@ -458,6 +544,11 @@ sift_tbl_f2_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointe
 	s->has_range = true;
 	s->mintid = sift_tbl_tid_pack(mintid);
 	s->maxtid = sift_tbl_tid_pack(maxtid);
+	if (s->par == NULL)
+	{
+		scan_units_restart(s);
+		s->span_hi = 0;
+	}
 }
 
 bool
@@ -471,7 +562,10 @@ sift_tbl_f2_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection directio
 uint64
 sift_tbl_f2_scan_ngranules(TableScanDesc scan)
 {
-	return (uint64) ((SiftTblF2Scan *) scan)->total;
+	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
+
+	scan_complete_units(s);
+	return (uint64) s->total;
 }
 
 bool
@@ -479,6 +573,7 @@ sift_tbl_f2_scan_goto_granule(TableScanDesc scan, uint64 ordinal)
 {
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 
+	scan_complete_units(s);
 	s->G = (int64) ordinal;
 	if (!load_granule(s, s->G))
 		return false;
@@ -496,7 +591,7 @@ sift_tbl_f2_scan_next_in_granule(TableScanDesc scan, TupleTableSlot *slot)
 	if (!s->loaded || (r = next_selected(s, 1)) < 0)
 		return false;
 	s->r = r;
-	sift_f2_slot_store(slot, s->base.rs_rd, s->gb, (uint16) r, NULL, s->rowcx);
+	sift_f2_slot_store(slot, s->base.rs_rd, s->gb, (uint16) r, NULL, NULL, s->rowcx);
 	return true;
 }
 
@@ -514,10 +609,11 @@ struct SiftTblF2Page
 {
 	uint16		n;
 	uint16		pos;
-	MemoryContext cx;			/* the patches of column deltas of the granules of the page, as the snapshot sees them */
+	MemoryContext cx;			/* holds a reference of each part map the rows of the page read their patches of column deltas from, as the snapshot sees them */
 	OffsetNumber off[SIFT_TBL_ROWS_PER_VBLOCK];
 	SiftF2GranuleBuf *gb[SIFT_TBL_ROWS_PER_VBLOCK];
 	uint16		row[SIFT_TBL_ROWS_PER_VBLOCK];
+	SiftColDeltaPartMap *pm[SIFT_TBL_ROWS_PER_VBLOCK];
 	const SiftColDeltaGranMap *gm[SIFT_TBL_ROWS_PER_VBLOCK];
 };
 
@@ -567,9 +663,11 @@ page_cb(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 	const uint64 *tids = sift_f2_gbuf_tids(gb);
 	const SiftColDeltaGranMap *gm = sift_col_delta_scan_map(pl->s->delta, entry, gb);
 
+	SiftColDeltaPartMap *pm = sift_col_delta_scan_part_map(pl->s->delta);
+
 	select_pending(pl->s, entry);
 	if (gm != NULL)
-		gm = sift_col_delta_gran_copy(gm, pg->cx);
+		sift_col_delta_part_map_hold_in(pg->cx, pm);
 	for (uint16 r = first_row_from(gb, (uint64) pl->vblock << 16); r < gb->nrows; r++)
 	{
 		OffsetNumber off = tids[r] & 0xFFFF;
@@ -584,6 +682,7 @@ page_cb(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 			continue;
 		pg->off[pg->n] = off;
 		pg->gb[pg->n] = sift_f2_gbuf_ref(gb);
+		pg->pm[pg->n] = pm;
 		pg->gm[pg->n] = gm;
 		pg->row[pg->n++] = r;
 	}
@@ -598,6 +697,7 @@ page_sort(SiftTblF2Page *pg)
 		OffsetNumber off = pg->off[i];
 		SiftF2GranuleBuf *gb = pg->gb[i];
 		uint16		row = pg->row[i];
+		SiftColDeltaPartMap *pm = pg->pm[i];
 		const SiftColDeltaGranMap *gm = pg->gm[i];
 		int			j = i - 1;
 
@@ -606,11 +706,13 @@ page_sort(SiftTblF2Page *pg)
 			pg->off[j + 1] = pg->off[j];
 			pg->gb[j + 1] = pg->gb[j];
 			pg->row[j + 1] = pg->row[j];
+			pg->pm[j + 1] = pg->pm[j];
 			pg->gm[j + 1] = pg->gm[j];
 		}
 		pg->off[j + 1] = off;
 		pg->gb[j + 1] = gb;
 		pg->row[j + 1] = row;
+		pg->pm[j + 1] = pm;
 		pg->gm[j + 1] = gm;
 	}
 }
@@ -643,7 +745,7 @@ page_emit(SiftTblF2Scan *s, TupleTableSlot *slot)
 	if (pg == NULL || pg->pos >= pg->n)
 		return false;
 	MemoryContextReset(s->rowcx);
-	sift_f2_slot_store(slot, s->base.rs_rd, pg->gb[pg->pos], pg->row[pg->pos], pg->gm[pg->pos], s->rowcx);
+	sift_f2_slot_store(slot, s->base.rs_rd, pg->gb[pg->pos], pg->row[pg->pos], pg->pm[pg->pos], pg->gm[pg->pos], s->rowcx);
 	pg->pos++;
 	return true;
 }
@@ -747,160 +849,6 @@ sift_tbl_f2_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *s
 			return page_emit(s, slot);
 	}
 	return false;
-}
-
-/* ---- fetches by TID ---- */
-
-typedef struct SiftTblF2Fetch
-{
-	IndexFetchTableData base;
-	const SiftTableFormatOps *ops;
-	SiftF2Store *store;
-	MemoryContext cx;
-	MemoryContext rowcx;
-	SiftF2GranuleBuf *gb;
-	SiftPartitionEntry entry;
-	Snapshot	vis_snap;
-	SiftTblVis	vis;
-	SiftColDeltaScan *delta;
-	SiftPendDelIndex *pdel;
-	uint64		pdel_part;
-	BlockNumber pdel_blk;
-	bool		pdel_valid;
-} SiftTblF2Fetch;
-
-StaticAssertDecl(offsetof(SiftTblF2Fetch, ops) == offsetof(SiftTblFetchHeader, ops), "a fetch starts with SiftTblFetchHeader");
-
-static SiftTblF2Fetch *
-fetch_new(Relation rel, MemoryContext parent)
-{
-	SiftTblF2Fetch *f = MemoryContextAllocZero(parent, sizeof(SiftTblF2Fetch));
-
-	f->base.rel = rel;
-	f->ops = &sift_tbl_v2_ops;
-	f->store = sift_f2_store_open(rel);
-	f->cx = parent;
-	f->delta = sift_col_delta_scan_begin(rel, &f->vis, parent);
-	f->rowcx = AllocSetContextCreate(parent, "sift f2 fetch row", ALLOCSET_SMALL_SIZES);
-	return f;
-}
-
-struct IndexFetchTableData *
-sift_tbl_f2_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
-{
-	return &fetch_new(rel, AllocSetContextCreate(CurrentMemoryContext, "sift f2 fetch", ALLOCSET_SMALL_SIZES))->base;
-}
-
-static void
-fetch_drop_granule(SiftTblF2Fetch *f)
-{
-	if (f->gb != NULL)
-		sift_f2_gbuf_unref(f->gb);
-	f->gb = NULL;
-}
-
-void
-sift_tbl_f2_index_fetch_reset(struct IndexFetchTableData *data)
-{
-	fetch_drop_granule((SiftTblF2Fetch *) data);
-}
-
-void
-sift_tbl_f2_index_fetch_end(struct IndexFetchTableData *data)
-{
-	SiftTblF2Fetch *f = (SiftTblF2Fetch *) data;
-
-	fetch_drop_granule(f);
-	MemoryContextDelete(f->cx);
-}
-
-static int
-row_in_granule(SiftF2GranuleBuf *gb, uint64 tid)
-{
-	const SiftTidIndexEntry *t = &gb->pin->tidx[gb->granule_id];
-
-	return tid < t->tid_min || tid > t->tid_max ? -1 : sift_f2_gbuf_row_of(gb, tid);
-}
-
-static void
-fetch_select_pending(SiftTblF2Fetch *f, Snapshot snapshot)
-{
-	MemoryContext prev;
-
-	if (f->pdel_valid && f->pdel_part == f->entry.part_id && f->pdel_blk == f->entry.pend_del_blk)
-		return;
-	prev = MemoryContextSwitchTo(f->cx);
-	sift_pdel_idx_free(f->pdel);
-	f->pdel = sift_tbl_f2_pending_index(f->base.rel, &f->entry, snapshot);
-	f->pdel_part = f->entry.part_id;
-	f->pdel_blk = f->entry.pend_del_blk;
-	f->pdel_valid = true;
-	MemoryContextSwitchTo(prev);
-}
-
-static bool
-fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot)
-{
-	Relation	rel = f->base.rel;
-	int			row;
-
-	if (f->vis_snap != snapshot)
-	{
-		fetch_drop_granule(f);
-		sift_tbl_f2_vis_begin(&f->vis, rel, snapshot);
-		f->vis_snap = snapshot;
-		f->pdel_valid = false;
-		sift_col_delta_scan_reset(f->delta);
-	}
-	row = f->gb != NULL ? row_in_granule(f->gb, tid) : -1;
-	ExecClearTuple(slot);
-	MemoryContextReset(f->rowcx);
-	if (row < 0)
-	{
-		SiftF2Loc	loc;
-		bool		waiting;
-
-		fetch_drop_granule(f);
-		f->store = sift_f2_store_open(rel);
-		if (!sift_tbl_f2_locate_or_wait(rel, f->store, tid, snapshot, &loc, &waiting))
-		{
-			if (waiting)
-				sift_tbl_f2_staged_stub(slot, tid);
-			return waiting;
-		}
-		f->gb = loc.gb;
-		f->entry = loc.entry;
-		row = loc.row;
-	}
-	fetch_select_pending(f, snapshot);
-	sift_tbl_f2_predicate_point(rel, tid, snapshot);
-	if (!sift_tbl_f2_vis_row(&f->vis, f->gb, (uint16) row, f->pdel))
-		return false;
-	sift_f2_slot_store(slot, rel, f->gb, (uint16) row, sift_col_delta_scan_map(f->delta, &f->entry, f->gb), f->rowcx);
-	return true;
-}
-
-bool
-sift_tbl_f2_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *call_again, bool *all_dead)
-{
-	*call_again = false;
-	if (all_dead != NULL)
-		*all_dead = false;
-	return fetch_one((SiftTblF2Fetch *) scan, sift_tbl_tid_pack(tid), snapshot, slot);
-}
-
-bool
-sift_tbl_f2_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot)
-{
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift f2 row fetch", ALLOCSET_SMALL_SIZES);
-	SiftTblF2Fetch *f = fetch_new(rel, cx);
-	bool		found = fetch_one(f, sift_tbl_tid_pack(tid), snapshot, slot);
-
-	if (found)
-		ExecMaterializeSlot(slot);
-	fetch_drop_granule(f);
-	MemoryContextDelete(cx);
-	return found;
 }
 
 bool

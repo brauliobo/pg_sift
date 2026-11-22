@@ -16,15 +16,55 @@
 /* the shortest free run a piece of a data run is moved into (fewer, longer extents in the header) */
 #define SPACE_MIN_RUN_BLOCKS	16
 
+static int
+cmp_reloc_start(const void *a, const void *b, void *arg)
+{
+	const SiftExtent *old = arg;
+
+	return pg_cmp_u32(old[*(const int *) a].start, old[*(const int *) b].start);
+}
+
+void
+sift_reloc_map_init(SiftRelocMap *m, const SiftExtent *old, const SiftExtent *fresh, int n)
+{
+	*m = (SiftRelocMap) {.n = n,.old = old,.fresh = fresh,.by_start = palloc(Max(n, 1) * sizeof(int))};
+	for (int i = 0; i < n; i++)
+		m->by_start[i] = i;
+	qsort_arg(m->by_start, n, sizeof(int), cmp_reloc_start, (void *) old);
+}
+
+void
+sift_reloc_map_free(SiftRelocMap *m)
+{
+	pfree(m->by_start);
+	m->by_start = NULL;
+}
+
 /* Remap a block while preserving its position inside the original extent. */
 BlockNumber
-sift_store_relocated_block(BlockNumber blk, const SiftExtent *old, const SiftExtent *fresh, int n)
+sift_store_relocated_block(BlockNumber blk, const SiftRelocMap *m)
 {
+	int			lo = 0,
+				hi = m->n;
+
 	if (!BlockNumberIsValid(blk))
 		return blk;
-	for (int i = 0; i < n; i++)
-		if (blk >= old[i].start && blk - old[i].start < old[i].nblocks)
-			return fresh[i].start + (blk - old[i].start);
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+
+		if (m->old[m->by_start[mid]].start <= blk)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo > 0)
+	{
+		int			i = m->by_start[lo - 1];
+
+		if (blk - m->old[i].start < m->old[i].nblocks)
+			return m->fresh[i].start + (blk - m->old[i].start);
+	}
 	SIFT_INVARIANT(false, "sift: relocation references a block outside its segment");
 	pg_unreachable();
 }
@@ -49,6 +89,7 @@ typedef struct RelocPlan
 	SiftExtent *fresh;
 	int			parts;
 	int			data_at;		/* parts before it are fixed runs (an immutable segment's LIVE and header); the data runs follow */
+	SiftRelocMap map;
 } RelocPlan;
 
 /*
@@ -131,8 +172,10 @@ relocation_plan(Relation rel, const SiftSegEntry *entry, const SiftExtent *old, 
 	{
 		pfree(plan->source);
 		pfree(plan->fresh);
+		return false;
 	}
-	return fits;
+	sift_reloc_map_init(&plan->map, plan->source, plan->fresh, plan->parts);
+	return true;
 }
 
 static SiftPageType
@@ -159,7 +202,7 @@ relocation_remap(Page page, SiftPageType type, uint64 gen, const RelocPlan *plan
 		memcpy(h->extents, plan->fresh + plan->data_at, h->nextents * sizeof(SiftExtent));
 		SiftPageSetUsed(page, offsetof(SiftSegHeaderData, extents) + h->nextents * sizeof(SiftExtent));
 		if (h->live_npages > 0)
-			h->live_first = sift_store_relocated_block(h->live_first, plan->source, plan->fresh, plan->parts);
+			h->live_first = sift_store_relocated_block(h->live_first, &plan->map);
 	}
 	else if (type == SIFT_PT_WBUFHEADER)
 	{
@@ -168,12 +211,12 @@ relocation_remap(Page page, SiftPageType type, uint64 gen, const RelocPlan *plan
 		h->gen = gen;
 		for (int k = 0; k < SIFT_LANES; k++)
 		{
-			h->lanes[k].head = sift_store_relocated_block(h->lanes[k].head, plan->source, plan->fresh, plan->parts);
-			h->lanes[k].tail = sift_store_relocated_block(h->lanes[k].tail, plan->source, plan->fresh, plan->parts);
+			h->lanes[k].head = sift_store_relocated_block(h->lanes[k].head, &plan->map);
+			h->lanes[k].tail = sift_store_relocated_block(h->lanes[k].tail, &plan->map);
 		}
 	}
 	else if (type == SIFT_PT_WBUFDATA)
-		SiftLaneHead(page)->next = sift_store_relocated_block(SiftLaneHead(page)->next, plan->source, plan->fresh, plan->parts);
+		SiftLaneHead(page)->next = sift_store_relocated_block(SiftLaneHead(page)->next, &plan->map);
 }
 
 /*
@@ -214,14 +257,15 @@ sift_store_relocate(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry
 			UnlockReleaseBuffer(buf);
 			relocation_remap(page, type, gen, &plan);
 			if (relocate_page && (entry->flags & SIFT_TBL_SEG_WBUF))
-				relocate_page(page, plan.source, plan.fresh, plan.parts);
+				relocate_page(page, &plan.map);
 			sift_wt_put_page(wt, plan.fresh[i].start + j, page);
 			CHECK_FOR_INTERRUPTS();
 		}
 	sift_wt_finish(wt);
 	*entry_new = *entry;
 	entry_new->gen = gen;
-	entry_new->header_blk = sift_store_relocated_block(entry->header_blk, plan.source, plan.fresh, plan.parts);
+	entry_new->header_blk = sift_store_relocated_block(entry->header_blk, &plan.map);
+	sift_reloc_map_free(&plan.map);
 	pfree(plan.source);
 	pfree(plan.fresh);
 	space_written += blocks;
@@ -271,6 +315,8 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 	SiftExtent *rel_ext;
 	uint64		moved = 0;
 	int			nlist = 0;
+	int		   *head,
+			   *next;
 	uint64		gen = entry->gen;
 	uint32		tail_len;
 	char		tail[SIFT_PAGE_PAYLOAD];
@@ -293,20 +339,29 @@ shift_finish(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, PGIOA
 	/* the extents the header lists now, in the order of the stream: what stayed of each, then the pieces that left it, lowest first */
 	qsort(part, nparts, sizeof(ShiftPart), cmp_part_src);
 	list = palloc((h->nextents + ndata) * sizeof(SiftExtent));
+	head = palloc(Max(h->nextents, 1) * sizeof(int));
+	next = palloc(Max(nparts, 1) * sizeof(int));
+	memset(head, -1, Max(h->nextents, 1) * sizeof(int));
+	for (int i = nparts - 1; i >= 0; i--)
+		if (part[i].ext >= 0)
+		{
+			next[i] = head[part[i].ext];
+			head[part[i].ext] = i;
+		}
 	for (int e = 0; e < (int) h->nextents; e++)
 	{
 		SiftExtent	old = h->extents[e];
 		uint32		stays = old.nblocks;
 
-		for (int i = 0; i < nparts; i++)
-			if (part[i].ext == e)
-				stays -= part[i].src.nblocks;
+		for (int i = head[e]; i >= 0; i = next[i])
+			stays -= part[i].src.nblocks;
 		if (stays > 0)
 			list[nlist++] = (SiftExtent) {old.start, stays};
-		for (int i = 0; i < nparts; i++)
-			if (part[i].ext == e)
-				sift_extent_push(list, &nlist, part[i].dst, part[i].src.nblocks);
+		for (int i = head[e]; i >= 0; i = next[i])
+			sift_extent_push(list, &nlist, part[i].dst, part[i].src.nblocks);
 	}
+	pfree(head);
+	pfree(next);
 	for (int i = 0; i < nparts; i++)
 		if (part[i].ext < 0)
 			h->live_first = part[i].dst;

@@ -71,36 +71,66 @@ ref_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
+static int
+gen_cmp(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/*
+ * The refs after the edit, ascending by part_gen in dst: refs (ascending) without the dropped parts, the ones in set put in their place or added. -1 when a drop is not in refs or is named twice,
+ * or a part is set twice. The drops and the set are sorted once and the three lists merged in one pass; a part both dropped and set is added again (the drop applies first).
+ */
 int
 sift_tier_refs_apply(SiftTierPartRef *dst, const SiftTierPartRef *refs, int n, const SiftTierPartRef *set, int nset, const uint64 *drop_gens, int ndrop)
 {
-	int			out = 0;
+	uint64		dstack[64];
+	SiftTierPartRef sstack[32];
+	uint64	   *d = ndrop <= 64 ? dstack : palloc(ndrop * sizeof(uint64));	/* check-memory: allow the drops of one tier edit */
+	SiftTierPartRef *s = nset <= 32 ? sstack : palloc(nset * sizeof(SiftTierPartRef));	/* check-memory: allow the refs one tier edit sets */
+	int			ci = 0,
+				di = 0,
+				si = 0,
+				out = 0;
+	bool		ok = true;
 
-	for (int i = 0; i < n; i++)
+	if (ndrop > 0)
+		memcpy(d, drop_gens, ndrop * sizeof(uint64));
+	if (nset > 0)
+		memcpy(s, set, nset * sizeof(SiftTierPartRef));
+	qsort(d, ndrop, sizeof(uint64), gen_cmp);
+	qsort(s, nset, sizeof(SiftTierPartRef), ref_cmp);
+	for (int i = 1; i < ndrop && ok; i++)
+		ok = d[i - 1] != d[i];
+	for (int i = 1; i < nset && ok; i++)
+		ok = s[i - 1].part_gen != s[i].part_gen;
+	while (ok && (ci < n || si < nset))
 	{
-		bool		dropped = false;
-
-		for (int k = 0; k < ndrop; k++)
-			dropped |= drop_gens[k] == refs[i].part_gen;
-		if (!dropped)
-			dst[out++] = refs[i];
-	}
-	if (out != n - ndrop)
-		return -1;
-	for (int i = 0; i < nset; i++)
-	{
-		const SiftTierPartRef *at = sift_tier_refs_find(dst, out, set[i].part_gen);
-
-		for (int k = 0; k < i; k++)
-			if (set[k].part_gen == set[i].part_gen)
-				return -1;
-		if (at != NULL)
-			dst[at - dst] = set[i];
+		while (ok && ci < n && di < ndrop && d[di] <= refs[ci].part_gen)
+		{
+			ok = d[di] == refs[ci].part_gen;
+			ci += ok;
+			di++;
+		}
+		if (!ok || (ci == n && si == nset))
+			break;
+		if (si == nset || (ci < n && refs[ci].part_gen < s[si].part_gen))
+			dst[out++] = refs[ci++];
 		else
-			dst[out++] = set[i];
+		{
+			ci += ci < n && refs[ci].part_gen == s[si].part_gen;
+			dst[out++] = s[si++];
+		}
 	}
-	qsort(dst, out, sizeof(SiftTierPartRef), ref_cmp);
-	return out;
+	ok = ok && di == ndrop;
+	if (d != dstack)
+		pfree(d);
+	if (s != sstack)
+		pfree(s);
+	return ok ? out : -1;
 }
 
 const char *

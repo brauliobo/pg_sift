@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "lib/ilist.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -27,27 +28,39 @@ typedef struct GEntry
 	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when the granule is cached */
 	SiftF2GranuleBuf *gb;
 	uint64		tick;
+	dlist_node	lru;			/* the least recently used first: the order of the ticks */
 } GEntry;
 
 #define GCACHE_FLOOR_BYTES	((Size) 8 << 20)
 
 static HTAB *gcache = NULL;
 static MemoryContext gcache_cx = NULL;
+static dlist_head gcache_lru = DLIST_STATIC_INIT(gcache_lru);
 
+/* The least recently used granule that no scan holds */
 static GEntry *
 victim(void)
 {
-	HASH_SEQ_STATUS seq;
-	GEntry	   *e,
-			   *best = NULL;
+	dlist_iter	it;
 
-	if (gcache == NULL)
-		return NULL;
-	hash_seq_init(&seq, gcache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (e->gb->refcnt == 1 && (best == NULL || e->tick < best->tick))
-			best = e;
-	return best;
+	dlist_foreach(it, &gcache_lru)
+	{
+		GEntry	   *e = dlist_container(GEntry, lru, it.cur);
+
+		if (e->gb->refcnt == 1)
+			return e;
+	}
+	return NULL;
+}
+
+static void
+drop_entry(GEntry *e)
+{
+	GKey		key = e->key;
+
+	dlist_delete(&e->lru);
+	sift_f2_gbuf_unref(e->gb);
+	hash_search(gcache, &key, HASH_REMOVE, NULL);
 }
 
 static uint64
@@ -62,13 +75,10 @@ static bool
 gcache_evict_one(void)
 {
 	GEntry	   *e = victim();
-	GKey		key;
 
 	if (e == NULL)
 		return false;
-	key = e->key;
-	sift_f2_gbuf_unref(e->gb);
-	hash_search(gcache, &key, HASH_REMOVE, NULL);
+	drop_entry(e);
 	return true;
 }
 
@@ -82,18 +92,17 @@ gcache_evict_all(void)
 static void
 gcache_invalidate(uint32 hashvalue)
 {
-	HASH_SEQ_STATUS seq;
-	GEntry	   *e;
+	dlist_mutable_iter it;
 
 	if (gcache == NULL)
 		return;
-	hash_seq_init(&seq, gcache);
-	while ((e = hash_seq_search(&seq)) != NULL)
+	dlist_foreach_modify(it, &gcache_lru)
+	{
+		GEntry	   *e = dlist_container(GEntry, lru, it.cur);
+
 		if (sift_f2_inval_hits(e->relhash, hashvalue))
-		{
-			sift_f2_gbuf_unref(e->gb);
-			hash_search(gcache, &e->key, HASH_REMOVE, NULL);
-		}
+			drop_entry(e);
+	}
 }
 
 static const SiftCacheKind gcache_kind = {"table_f2_point_cache", gcache_oldest, gcache_evict_one, gcache_evict_all};
@@ -129,12 +138,13 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	if (e != NULL)
 	{
 		e->tick = sift_cache_tick();
+		dlist_move_tail(&gcache_lru, &e->lru);
 		return sift_f2_gbuf_ref(e->gb);
 	}
 	gb = sift_f2_gbuf_load_lazy(rel, store, pin, g, CurrentMemoryContext);
-	while (hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES && gcache_evict_one())
+	while (sift_backend_cache_kb != 0 && hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES && gcache_evict_one())
 		;
-	if (pin->uncached || hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES)
+	if (pin->uncached || sift_backend_cache_kb == 0 || hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES)
 	{
 		MemoryContextSetParent(gb->cx, TopTransactionContext);
 		return gb;
@@ -145,6 +155,7 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	e->gb = sift_f2_gbuf_ref(gb);
 	e->relhash = sift_f2_rel_hash(rel);
 	e->tick = sift_cache_tick();
+	dlist_push_tail(&gcache_lru, &e->lru);
 	return gb;
 }
 
@@ -170,7 +181,9 @@ sift_f2_gcache_charge(void)
 {
 	Size		limit = sift_backend_cache_kb == 0 ? 0 : Max(GCACHE_FLOOR_BYTES, (Size) sift_backend_cache_kb * 1024 / 2);
 
-	while (gcache != NULL && MemoryContextMemAllocated(gcache_cx, true) > limit && gcache_evict_one())
+	if (gcache == NULL || hash_get_num_entries(gcache) == 0)
+		return;
+	while (MemoryContextMemAllocated(gcache_cx, true) > limit && gcache_evict_one())
 		;
 }
 

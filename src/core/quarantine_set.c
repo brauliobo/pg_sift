@@ -36,12 +36,23 @@ qset(void)
 	return q;
 }
 
+#define QSET_HASH	(2 * SIFT_QSET_SLOTS)
+
 static struct
 {
 	uint64		gen;
 	uint32		n;
 	RelFileLocator rel[SIFT_QSET_SLOTS];
+	uint16		at[QSET_HASH];	/* open addressing over rel: the index plus one, 0 where empty */
 }			mine;
+
+static uint32
+locator_slot(const RelFileLocator *loc)
+{
+	uint64		x = (uint64) loc->spcOid * UINT64CONST(0x9E3779B97F4A7C15) ^ (uint64) loc->dbOid * UINT64CONST(0xC2B2AE3D27D4EB4F) ^ (uint64) loc->relNumber * UINT64CONST(0x165667B19E3779F9);
+
+	return (uint32) (x >> 40) & (QSET_HASH - 1);
+}
 
 static int
 slot_of(const SiftQSet *q, uint32 n, const RelFileLocator *loc)
@@ -96,6 +107,15 @@ refresh(SiftQSet *q)
 	mine.n = q->n;
 	memcpy(mine.rel, q->rel, q->n * sizeof(RelFileLocator));
 	SpinLockRelease(&q->lock);
+	memset(mine.at, 0, sizeof(mine.at));
+	for (uint32 i = 0; i < mine.n; i++)
+	{
+		uint32		p = locator_slot(&mine.rel[i]);
+
+		while (mine.at[p] != 0)
+			p = (p + 1) & (QSET_HASH - 1);
+		mine.at[p] = (uint16) (i + 1);
+	}
 }
 
 bool
@@ -107,8 +127,8 @@ sift_qset_has(const RelFileLocator *loc)
 		refresh(q);
 	if (mine.n == 0)
 		return false;
-	for (uint32 i = 0; i < mine.n; i++)
-		if (RelFileLocatorEquals(mine.rel[i], *loc))
+	for (uint32 p = locator_slot(loc); mine.at[p] != 0; p = (p + 1) & (QSET_HASH - 1))
+		if (RelFileLocatorEquals(mine.rel[mine.at[p] - 1], *loc))
 			return true;
 	return false;
 }

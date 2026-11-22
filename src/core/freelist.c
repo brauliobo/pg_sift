@@ -159,3 +159,110 @@ sift_store_horizon(Relation index)
 	return sift_horizon(index);
 }
 
+
+/* ---- the free list as a profile: the probes of a bisection ---- */
+
+struct SiftFreeProfile
+{
+	int			n;
+	BlockNumber *start;			/* of the reusable runs of at least min_run blocks, ascending */
+	BlockNumber *end;
+	int64	   *before;			/* before[i]: the blocks of the runs [0, i) */
+	uint32		min_run;
+};
+
+typedef struct FreeProfileScan
+{
+	Relation	index;
+	uint32		min_run;
+	SiftFreeExtent *ext;
+	int			n;
+	int			cap;
+} FreeProfileScan;
+
+static bool
+collect_profile(BlockNumber blk, const SiftFreeListData *fl, void *arg)
+{
+	FreeProfileScan *c = arg;
+
+	for (uint32 i = 0; i < fl->n; i++)
+	{
+		if (fl->ext[i].nblocks < c->min_run || (FullTransactionIdIsValid(fl->ext[i].safexid) && !sift_store_removable(c->index, fl->ext[i].safexid)))
+			continue;
+		if (c->n == c->cap)
+		{
+			/* check-memory: allow the runs of the free list, which its pages bound and the walk holds under the metapage lock as the counting walks do */
+			c->cap = Max(64, 2 * c->cap);
+			c->ext = c->ext ? repalloc(c->ext, c->cap * sizeof(SiftFreeExtent)) : palloc(c->cap * sizeof(SiftFreeExtent));
+		}
+		c->ext[c->n++] = fl->ext[i];
+	}
+	return true;
+}
+
+static int
+cmp_run_start(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const SiftFreeExtent *) a)->start, ((const SiftFreeExtent *) b)->start);
+}
+
+/* The reusable runs of at least min_run blocks, read once: sift_free_profile_below(p, limit) is sift_store_free_below(index, limit, min_run) without the walk */
+SiftFreeProfile *
+sift_store_free_profile(Relation index, uint32 min_run)
+{
+	FreeProfileScan c = {.index = index,.min_run = min_run};
+	SiftFreeProfile *p = palloc0(sizeof(SiftFreeProfile));
+	Buffer		metabuf = lock_meta(index, BUFFER_LOCK_SHARE);
+
+	sift_freelist_walk(index, metabuf, collect_profile, &c);
+	UnlockReleaseBuffer(metabuf);
+	if (c.n > 1)
+		qsort(c.ext, c.n, sizeof(SiftFreeExtent), cmp_run_start);
+	p->n = c.n;
+	p->min_run = min_run;
+	p->start = palloc(Max(c.n, 1) * sizeof(BlockNumber));
+	p->end = palloc(Max(c.n, 1) * sizeof(BlockNumber));
+	p->before = palloc((c.n + 1) * sizeof(int64));
+	p->before[0] = 0;
+	for (int i = 0; i < c.n; i++)
+	{
+		p->start[i] = c.ext[i].start;
+		p->end[i] = c.ext[i].start + c.ext[i].nblocks;
+		p->before[i + 1] = p->before[i] + c.ext[i].nblocks;
+	}
+	if (c.ext)
+		pfree(c.ext);
+	return p;
+}
+
+/* The reusable free blocks in runs of at least min_run that lie before limit (a run across it counts the part before it, when that is a run of min_run itself) */
+int64
+sift_free_profile_below(const SiftFreeProfile *p, BlockNumber limit)
+{
+	int			lo = 0,
+				hi = p->n;
+	int64		blocks;
+
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+
+		if (p->end[mid] <= limit)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	blocks = p->before[lo];
+	if (lo < p->n && p->start[lo] < limit && limit - p->start[lo] >= p->min_run)
+		blocks += limit - p->start[lo];
+	return blocks;
+}
+
+void
+sift_free_profile_free(SiftFreeProfile *p)
+{
+	pfree(p->start);
+	pfree(p->end);
+	pfree(p->before);
+	pfree(p);
+}

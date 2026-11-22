@@ -179,18 +179,38 @@ host_bgworkers_in_use(void)
 	return n;
 }
 
+static int server_effective_max(SiftMaintShmem *m);
+
 const SiftMaintHost sift_maint_server_host = {
 	.now = host_now, .self_pid = host_self_pid, .pid_alive = host_pid_alive, .spawn = host_spawn, .wake = host_wake,
 	.defer_cold = host_defer_cold, .note_starved = host_note_starved, .should_yield = host_should_yield,
-	.bgworkers_in_use = host_bgworkers_in_use, .other_workers = host_other_workers,
+	.bgworkers_in_use = host_bgworkers_in_use, .other_workers = host_other_workers, .effective_max = server_effective_max,
 };
+
+/* The bgworkers that are not ours are counted by a walk over every backend: once a second is soon enough for a soft cap (RegisterDynamicBackgroundWorker enforces the hard one) */
+#define SIFT_BGW_SAMPLE_TTL_US	((int64) 1 * USECS_PER_SEC)
+
+static int
+cached_other_bgworkers(SiftMaintShmem *m)
+{
+	TimestampTz now = GetCurrentTimestamp();
+	TimestampTz at = (TimestampTz) pg_atomic_read_u64(&m->bgw_sample_ts_us);
+	int			other;
+
+	pg_read_barrier();
+	if (at != 0 && now >= at && now - at < SIFT_BGW_SAMPLE_TTL_US)
+		return (int) pg_atomic_read_u32(&m->bgw_other_cached);
+	other = Max(0, host_bgworkers_in_use() - (int) pg_atomic_read_u32(&m->active_workers));
+	pg_atomic_write_u32(&m->bgw_other_cached, (uint32) other);
+	pg_write_barrier();
+	pg_atomic_write_u64(&m->bgw_sample_ts_us, (uint64) now);
+	return other;
+}
 
 static int
 server_effective_max(SiftMaintShmem *m)
 {
-	int			ours = (int) pg_atomic_read_u32(&m->active_workers);
-
-	return Min(sift_maint_effective_max(cfg.max_workers, max_worker_processes, Max(0, host_bgworkers_in_use() - ours)), cfg.max_workers - host_other_workers());
+	return Min(sift_maint_effective_max(cfg.max_workers, max_worker_processes, cached_other_bgworkers(m)), cfg.max_workers - host_other_workers());
 }
 
 int
@@ -210,7 +230,7 @@ sift_maint_enqueue_here(const SiftMaintReq *req)
 
 	if (mode == SIFT_MAINT_MODE_OFF)
 		return SIFT_ENQ_UNAVAILABLE;
-	return sift_maint_request(m, &sift_maint_server_host, mode, m ? server_effective_max(m) : 0, req);
+	return sift_maint_request(m, &sift_maint_server_host, mode, req);
 }
 
 Relation
@@ -240,7 +260,7 @@ worker_exit_cb(int code, Datum arg)
 	sift_maint_release_pid(table, &sift_maint_server_host, MyProcPid, code != 0);
 	sift_maint_worker_exit(table, worker, MyProcPid);
 	if (code == 0)
-		sift_maint_kick(table, &sift_maint_server_host, server_effective_max(table));
+		sift_maint_kick(table, &sift_maint_server_host);
 }
 
 static void
@@ -335,7 +355,7 @@ sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 	before_shmem_exit(launcher_exit_cb, 0);
 	for (;;)
 	{
-		while (sift_maint_kick(m, &sift_maint_server_host, server_effective_max(m)) == SIFT_KICK_SPAWNED)
+		while (sift_maint_kick(m, &sift_maint_server_host) == SIFT_KICK_SPAWNED)
 			;
 		sift_maint_reap(m, &sift_maint_server_host);
 		sift_maint_heat_decay(m);

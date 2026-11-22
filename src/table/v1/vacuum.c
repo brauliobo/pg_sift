@@ -435,28 +435,28 @@ tomb_changes(SiftTblRel *st, VacState *v)
 
 /* The table buffer adds a virtual-to-physical page vector and overflow links to the common lane layout. */
 void
-relocate_page(Page page, const SiftExtent *old, const SiftExtent *fresh, int n)
+relocate_page(Page page, const SiftRelocMap *map)
 {
 	if (SiftPageGetOpaque(page)->type == SIFT_PT_WBUFHEADER)
 	{
 		SiftTblWbufHdr *h = TBL_WBUF_HDR(page);
 
 		for (uint32 i = 0; i < h->npages; i++)
-			h->page[i] = sift_store_relocated_block(h->page[i], old, fresh, n);
+			h->page[i] = sift_store_relocated_block(h->page[i], map);
 	}
 	else if (SiftPageGetOpaque(page)->type == SIFT_PT_WBUFDATA)
 	{
 		SiftTblPageHdr *h = TBL_PAGE(page);
 
 		if (h->flags & SIFT_TBL_PAGE_OVFDATA)
-			h->ovf_next = sift_store_relocated_block(h->ovf_next, old, fresh, n);
+			h->ovf_next = sift_store_relocated_block(h->ovf_next, map);
 		else
 			for (uint32 i = 1; i <= h->nrows; i++)
 			{
 				SiftTblRec *rec = (SiftTblRec *) sift_tbl_page_rec(page, SiftPageGetOpaque(page)->gen, i);
 
 				if (rec && (rec->flags & SIFT_TBL_REC_OVF))
-					rec->aux = sift_store_relocated_block(rec->aux, old, fresh, n);
+					rec->aux = sift_store_relocated_block(rec->aux, map);
 			}
 	}
 }

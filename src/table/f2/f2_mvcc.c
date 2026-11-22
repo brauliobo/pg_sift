@@ -129,7 +129,7 @@ sift_tbl_f2_pending_index(Relation rel, const SiftPartitionEntry *entry, Snapsho
 				ndead = 0;
 	SiftPendDelIndex *px;
 
-	if (entry->pend_del_blk == InvalidBlockNumber && nstaged == 0)
+	if ((entry->pend_del_blk == InvalidBlockNumber && nstaged == 0) || snap->snapshot_type == SNAPSHOT_ANY)
 		return NULL;
 	sift_tbl_f2_vis_begin(&v, rel, snap);
 	if (entry->pend_del_blk != InvalidBlockNumber)

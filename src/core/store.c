@@ -24,6 +24,7 @@
 #include "core/extlock.h"
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/u64set.h"
 #include "core/visibility.h"
 
 
@@ -664,6 +665,7 @@ check_dir_result(Relation index, SiftXlog *state, const SiftMetaPageData *before
 				 const SiftSegEntry *segs, int nsegs, int limit)
 {
 	const char *err = NULL;
+	SiftU64Set	seen;
 
 	if (meta->magic != before->magic || meta->high_water != before->high_water ||
 		meta->freelist_head != before->freelist_head || meta->next_gen < before->next_gen)
@@ -676,6 +678,7 @@ check_dir_result(Relation index, SiftXlog *state, const SiftMetaPageData *before
 				 errmsg("sift index \"%s\" cannot hold more than %d segments", RelationGetRelationName(index), limit),
 				 errhint("Run sift.merge() on the index.")));
 	}
+	sift_u64set_init(&seen, nsegs);
 	for (int i = 0; !err && i < nsegs; i++)
 	{
 		const SiftSegEntry *s = &segs[i];
@@ -686,10 +689,10 @@ check_dir_result(Relation index, SiftXlog *state, const SiftMetaPageData *before
 			err = "segment generation was not reserved";
 		else if (s->format > Max(Max(SIFT_FORMAT_MINOR, SIFT_COL_FORMAT_MAX_READ), SIFT_COL_FORMAT_WIDE_ROWS))	/* the column engine numbers its segment formats on its own */
 			err = "unknown segment format";
-		for (int j = 0; !err && j < i; j++)
-			if (segs[j].gen == s->gen)
-				err = "duplicate segment generation";
+		else if (!sift_u64set_add(&seen, s->gen))
+			err = "duplicate segment generation";
 	}
+	sift_u64set_free(&seen);
 	if (err)
 	{
 		sift_xlog_abort(state);

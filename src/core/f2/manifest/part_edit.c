@@ -10,21 +10,14 @@
 bool
 sift_manifest_find_entry(Relation rel, uint64 part_id, const uint8 *key_lo, SiftPartitionEntry *out)
 {
-	SiftManifestRead mr = sift_manifest_read_range(rel, key_lo, NULL);
+	SiftPartitionEntry *inl;
+	int			ninl;
+	SiftColMetaPageData meta = sift_col_meta_read_inline(rel, &inl, &ninl);
 
-	if (mr.n == 0 || mr.entries[0].part_id != part_id)
-		return false;
-	*out = mr.entries[0];
-	return true;
-}
-
-int
-sift_mf_part_gen_index(const SiftPartDesc *parts, int n, uint64 gen)
-{
-	for (int i = 0; i < n; i++)
-		if (parts[i].part_gen == gen)
-			return i;
-	return -1;
+	if (inl == NULL)
+		return sift_mf_find_entry_at(rel, &meta, part_id, key_lo, out, NULL);
+	*out = inl[sift_mf_leaf_search(inl, ninl, key_lo)];
+	return out->part_id == part_id;
 }
 
 /* A chain that patches a time column leaves the bounds of the parts unknown for it: the claim comes off every part, and the entry's bounds follow from the parts */
@@ -46,12 +39,52 @@ check_expected(Relation rel, const SiftPartDesc *now, const SiftPartDesc *expect
 				   RelationGetRelationName(rel), (unsigned long long) now->part_gen, now->header_blk, expect->header_blk, now->dv_blk, expect->dv_blk);
 }
 
+/*
+ * The parts of the edit's drop list leave parts[0..n): each is looked up by its generation in a map made once, marked, and the array is closed over them in one pass; returns the parts left. The
+ * generations among them that are in object storage are *expire (NULL when none), their refs stay, waiting for the deletion of their objects
+ */
+int
+sift_mf_drop_parts(Relation rel, SiftPartDesc *parts, int n, const SiftManifestEdit *e, uint64 **expire, int *nexpire)
+{
+	SiftGenMap	map;
+	bool	   *gone;
+	int			kept = 0;
+
+	*expire = NULL;
+	*nexpire = 0;
+	if (e->ndrop == 0)
+		return n;
+	sift_gen_map_init(&map, parts, n, 0);
+	/* check-memory: allow a flag for each part of one partition */
+	gone = palloc0(Max(n, 1) * sizeof(bool));
+	for (int i = 0; i < e->ndrop; i++)
+	{
+		int			at = sift_gen_map_find(&map, e->drop_gens[i]);
+
+		if (at < 0 || gone[at])
+			ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift index \"%s\": partition %llu has no part of generation %llu", RelationGetRelationName(rel),
+																   (unsigned long long) e->part_id, (unsigned long long) e->drop_gens[i])));
+		gone[at] = true;
+		if (parts[at].ext_flags & SIFT_PART_EXT_REMOTE)
+		{
+			*expire = *expire ? *expire : palloc(e->ndrop * sizeof(uint64));
+			(*expire)[(*nexpire)++] = e->drop_gens[i];
+		}
+	}
+	for (int i = 0; i < n; i++)
+		if (!gone[i])
+			parts[kept++] = parts[i];
+	sift_gen_map_free(&map);
+	pfree(gone);
+	return kept;
+}
+
 void
-sift_mf_apply_updates(Relation rel, const SiftPartitionEntry *ent, SiftPartDesc *parts, int n, const SiftManifestEdit *e)
+sift_mf_apply_updates(Relation rel, const SiftPartitionEntry *ent, SiftPartDesc *parts, const SiftGenMap *map, const SiftManifestEdit *e)
 {
 	for (int i = 0; i < e->nupdate; i++)
 	{
-		int			at = sift_mf_part_gen_index(parts, n, e->update_parts[i].part_gen);
+		int			at = sift_gen_map_find(map, e->update_parts[i].part_gen);
 
 		if (at < 0)
 			ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift index \"%s\": partition %llu has no part of generation %llu to update", RelationGetRelationName(rel),

@@ -199,6 +199,13 @@ sift_col_delta_hdr_tid(const SiftColDeltaEntryHdr *h)
 	return ((uint64) h->tid_blk << 16) | h->tid_off;
 }
 
+/* Whether a record patches the row of the target: the part it was written for, its granule and place in it, and its address */
+static inline bool
+sift_col_delta_rec_is_of_row(const SiftColDeltaEntryHdr *h, const SiftColDeltaTarget *t)
+{
+	return h->part_gen == t->part_gen && h->granule_id == t->granule_id && h->row_ordinal == t->row_ordinal && sift_col_delta_hdr_tid(h) == t->tid;
+}
+
 /* The bytes of a record's columns (headers and values, no padding) and the whole record (padded to 8) */
 extern uint32 sift_col_delta_payload_bytes(const SiftColDeltaCol *cols, int ncols);
 
@@ -334,11 +341,34 @@ typedef struct SiftColDeltaPartMap
 	SiftColDeltaGranMap *grans;	/* ascending by granule_id */
 	SiftColDeltaPatch *patch_pool;	/* the patches of every granule, which the maps of the granules point into */
 	char	   *page_arena;		/* the pages the strings of the patches point into */
+	MemoryContext cx;			/* of a shared map: the context that holds all of it, under the cache of core/cachebudget.h; NULL for a map one owner frees */
+	uint32		refcnt;			/* of a shared map: its holders */
 } SiftColDeltaPartMap;
 
 /* The patches of part_gen the snapshot sees; takes the pages of the chain over. NULL when it sees none (the chain freed); why is set when a record names a granule past the part */
 extern SiftColDeltaPartMap *sift_col_delta_build_part_map(SiftColDeltaChain *chain, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why);
 extern void sift_col_delta_part_map_free(SiftColDeltaPartMap *map);
+
+/* A shared map is immutable and lives in a context of its own: whoever holds a granule's patches (a scan, a slot, a page, a granule buffer) holds a reference, and the last one to give it back frees all of it at once */
+static inline SiftColDeltaPartMap *
+sift_col_delta_part_map_ref(SiftColDeltaPartMap *map)
+{
+	if (map != NULL)
+	{
+		Assert(map->refcnt > 0);
+		map->refcnt++;
+	}
+	return map;
+}
+
+extern void sift_col_delta_part_map_unref(SiftColDeltaPartMap *map);
+
+/* A reference that cx holds until it is reset or deleted, an error included */
+extern void sift_col_delta_part_map_hold_in(MemoryContext cx, SiftColDeltaPartMap *map);
+
+/* A new shared map, to build in and then publish with sift_col_delta_part_map_share: its context is a child of cx until then */
+extern MemoryContext sift_col_delta_part_map_context(MemoryContext cx);
+extern SiftColDeltaPartMap *sift_col_delta_part_map_share(MemoryContext map_cx, SiftColDeltaPartMap *map);
 
 /* The map of the granule, NULL when no patch is for it: one bit test on a clean granule */
 extern const SiftColDeltaGranMap *sift_col_delta_gran_map(const SiftColDeltaPartMap *map, uint32 granule_id);
@@ -373,7 +403,6 @@ extern int	sift_col_delta_apply_cells(SiftColDeltaCells *cells, const SiftColDel
 extern void sift_col_delta_patch_colview(ColView *view, uint16 nrows, const SiftColDeltaGranMap *gm, int16 attnum, MemoryContext cx);
 
 /* The patches of a granule on their own, in cx, to outlive the map of the part they came from */
-extern SiftColDeltaGranMap *sift_col_delta_gran_copy(const SiftColDeltaGranMap *gm, MemoryContext cx);
 
 /* A point read: the latest patch the snapshot sees of each column of one row, without a map of the part; returns how many (at most cap, the columns of the table) */
 extern int	sift_col_delta_fetch_row(const SiftColDeltaChain *chain, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops, SiftColDeltaPatch *out, int cap);
@@ -431,12 +460,24 @@ typedef struct SiftStageColDelta
 	uint8	   *rec;
 } SiftStageColDelta;
 
+typedef struct SiftCdPartBytes
+{
+	uint64		part_id;
+	uint64		bytes;
+	bool		used;
+} SiftCdPartBytes;
+
+/* The slots of items past n are the stage's own; a slot whose rec is NULL was released and is skipped by every pass */
 typedef struct SiftColDeltaStage
 {
 	SiftStageColDelta *items;
 	int			n;
 	int			cap;
 	uint64		bytes;			/* of the records staged */
+	int			sub_items;		/* the records a subtransaction staged: the events of one that staged none are free */
+	SiftCdPartBytes *part_bytes_tab;	/* the bytes of each partition: open addressing, a partition keeps its slot */
+	uint32		part_bytes_cap;
+	uint32		part_bytes_n;
 } SiftColDeltaStage;
 
 /* The record of the changes of two records of one transaction at one row: the columns of both, the later value of a column where both hold it; 0 when it does not fit a record */
@@ -458,11 +499,20 @@ extern void sift_col_delta_stage_normalize_top(SiftColDeltaStage *st, Transactio
 /* The bytes staged for a partition: what an admission counts */
 extern uint64 sift_col_delta_stage_part_bytes(const SiftColDeltaStage *st, uint64 part_id);
 
-/* Drops record i, which the row it patches left the table with (a TTL drop of its part): there is nothing left to patch */
-extern void sift_col_delta_stage_discard(SiftColDeltaStage *st, int i);
+/* Every change of a record goes through the books: the bytes of the stage and of the partition, and the records of subtransactions, follow it */
+extern void sift_col_delta_stage_book(SiftColDeltaStage *st, const SiftStageColDelta *it, int64 bytes, int items);
 
-/* The records of one partition as a batch (in the order staged), and the stage without them; the batch is built by the caller's batch_free */
-extern SiftColDeltaBatch sift_col_delta_stage_take_part(SiftColDeltaStage *st, FullTransactionId next, uint64 part_id);
+/* Drops record i, which the row it patches left the table with (a TTL drop of its part): there is nothing left to patch; its slot stays until the stage is cleared */
+extern void sift_col_delta_stage_release(SiftColDeltaStage *st, int i);
+
+/* The positions of the records of the stage by partition, each partition's in the order staged: *nlive of them, the released ones left out */
+extern int *sift_col_delta_stage_by_part(const SiftColDeltaStage *st, int *nlive);
+
+/* The records at ord[lo..hi) as a batch, in that order, and released from the stage; the batch is freed by the caller's batch_free */
+extern SiftColDeltaBatch sift_col_delta_stage_take_run(SiftColDeltaStage *st, const int *ord, int lo, int hi, FullTransactionId next);
+
+/* The stage has been written: no record is left */
+extern void sift_col_delta_stage_clear(SiftColDeltaStage *st);
 extern void sift_col_delta_stage_free(SiftColDeltaStage *st);
 
 /* ---- admission ---- */
@@ -618,13 +668,16 @@ extern void sift_col_delta_scan_attach(SiftColDeltaScan *ds, const SiftPartition
 /* The patches of the granule the scan's snapshot sees, NULL for none: the map of the part is read once for the scan and stays while its granules change; the granule is not touched */
 extern const SiftColDeltaGranMap *sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2GranuleBuf *gb);
 
+/* The map the last sift_col_delta_scan_map read from, which owns the granule map it returned: a holder that outlives the next call takes a reference of it */
+extern SiftColDeltaPartMap *sift_col_delta_scan_part_map(const SiftColDeltaScan *ds);
+
 /* A modify of the row: what its latest patch makes of it for the statement cid and the snapshot, and the acknowledgement of EvalPlanQual */
 extern SiftColDeltaVerdict sift_col_delta_modify_verdict(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid, Snapshot snap);
 extern void sift_col_delta_ack_latest(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid);
 
 /* VACUUM: the oldest writer of the chain of the entry (invalid with none), the removal of a chain that holds nothing a snapshot could need, and the check of the manifest */
 extern FullTransactionId sift_col_delta_min_xid(Relation rel, const SiftPartitionEntry *entry);
-extern bool sift_col_delta_gc(Relation rel, uint64 part_id, FullTransactionId oldest_fx);
+extern bool sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransactionId oldest_fx);
 extern void sift_col_delta_check(Relation rel, const SiftPartitionEntry *entry);
 
 

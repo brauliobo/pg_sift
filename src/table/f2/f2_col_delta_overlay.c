@@ -8,6 +8,9 @@
 
 #include "utils/memutils.h"
 
+#include "core/cachebudget.h"
+#include "core/host.h"
+#include "core/memtrack.h"
 #include "table/f2/f2_col_delta.h"
 
 /* ---- the map of a part ---- */
@@ -192,6 +195,57 @@ sift_col_delta_part_map_free(SiftColDeltaPartMap *m)
 	pfree(m);
 }
 
+static MemoryContext pm_root = NULL;
+
+MemoryContext
+sift_col_delta_part_map_context(MemoryContext cx)
+{
+	return sift_mem_allocset_create(cx, "sift cache f2 column delta part map");
+}
+
+/* The map is built in its context under cx, so that an error frees it; it moves under the cache when it is complete and takes its first reference */
+SiftColDeltaPartMap *
+sift_col_delta_part_map_share(MemoryContext map_cx, SiftColDeltaPartMap *map)
+{
+	if (map == NULL)
+	{
+		MemoryContextDelete(map_cx);
+		return NULL;
+	}
+	if (pm_root == NULL)
+		pm_root = sift_cache_create_context("sift cache f2 column delta part maps");
+	MemoryContextSetParent(map_cx, pm_root);
+	map->cx = map_cx;
+	map->refcnt = 1;
+	return map;
+}
+
+void
+sift_col_delta_part_map_unref(SiftColDeltaPartMap *map)
+{
+	if (map == NULL)
+		return;
+	SIFT_INVARIANT(map->cx != NULL && map->refcnt > 0, "a column delta part map was given back more often than it was held");
+	if (--map->refcnt == 0)
+		MemoryContextDelete(map->cx);
+}
+
+static void
+unref_callback(void *arg)
+{
+	sift_col_delta_part_map_unref(arg);
+}
+
+void
+sift_col_delta_part_map_hold_in(MemoryContext cx, SiftColDeltaPartMap *map)
+{
+	MemoryContextCallback *cb = MemoryContextAlloc(cx, sizeof(*cb));
+
+	cb->func = unref_callback;
+	cb->arg = sift_col_delta_part_map_ref(map);
+	MemoryContextRegisterResetCallback(cx, cb);
+}
+
 const SiftColDeltaGranMap *
 sift_col_delta_gran_map(const SiftColDeltaPartMap *m, uint32 granule_id)
 {
@@ -360,38 +414,7 @@ sift_col_delta_patch_colview(ColView *view, uint16 nrows, const SiftColDeltaGran
 	view->slen = slen;
 }
 
-SiftColDeltaGranMap *
-sift_col_delta_gran_copy(const SiftColDeltaGranMap *gm, MemoryContext cx)
-{
-	Size		strings = 0;
-	SiftColDeltaGranMap *c;
-	char	   *tail;
-
-	for (uint32 k = 0; k < gm->npatches; k++)
-		if (SIFT_CDCOL_KIND(gm->patches[k].flags) == SIFT_CELL_STR && !patch_is_null(&gm->patches[k]))
-			strings += gm->patches[k].vlen;
-	c = MemoryContextAlloc(cx, sizeof(*c) + sizeof(SiftColDeltaPatch) * gm->npatches + strings);
-	*c = *gm;
-	c->patches = (SiftColDeltaPatch *) (c + 1);
-	memcpy(c->patches, gm->patches, sizeof(SiftColDeltaPatch) * gm->npatches);
-	tail = (char *) (c->patches + gm->npatches);
-	for (uint32 k = 0; k < gm->npatches; k++)
-		if (SIFT_CDCOL_KIND(c->patches[k].flags) == SIFT_CELL_STR && !patch_is_null(&c->patches[k]))
-		{
-			memcpy(tail, gm->patches[k].val.s, c->patches[k].vlen);
-			c->patches[k].val.s = tail;
-			tail += c->patches[k].vlen;
-		}
-	return c;
-}
-
 /* ---- one row ---- */
-
-static bool
-record_is_of_row(const SiftColDeltaEntryHdr *h, const SiftColDeltaTarget *t)
-{
-	return h->part_gen == t->part_gen && h->granule_id == t->granule_id && h->row_ordinal == t->row_ordinal && sift_col_delta_hdr_tid(h) == t->tid;
-}
 
 static bool
 page_may_hold_row(const char *page, const SiftColDeltaTarget *t)
@@ -401,10 +424,22 @@ page_may_hold_row(const char *page, const SiftColDeltaTarget *t)
 	return (h->part_gen_bloom & sift_cd_part_bit(t->part_gen)) != 0 && (h->tid_bloom & sift_cd_tid_bit(t->tid)) != 0;
 }
 
+/*
+ * The place in out of each patched column, by its number: a table past the last call's. The slots a call sets are put back at the start of the next, so that the cost of a call follows the
+ * columns it meets, and a call that raised leaves nothing wrong behind.
+ */
+static int16 patch_slot[MaxTupleAttributeNumber + 1];
+static int16 patch_set[MaxTupleAttributeNumber + 1];
+static int	npatch_set;
+
 int
 sift_col_delta_fetch_row(const SiftColDeltaChain *chain, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops, SiftColDeltaPatch *out, int cap)
 {
 	int			n = 0;
+
+	for (int i = 0; i < npatch_set; i++)
+		patch_slot[patch_set[i]] = 0;
+	npatch_set = 0;
 
 	for (int i = 0; i < chain->npages; i++)
 	{
@@ -423,21 +458,25 @@ sift_col_delta_fetch_row(const SiftColDeltaChain *chain, const SiftColDeltaTarge
 			memcpy(&h, p, sizeof(h));
 			rend = p + h.rec_bytes;
 			p = rend;
-			if (!record_is_of_row(&h, t) || !ops->visible(ops->ctx, h.xmin, h.cid))
+			if (!sift_col_delta_rec_is_of_row(&h, t) || !ops->visible(ops->ctx, h.xmin, h.cid))
 				continue;
 			for (int k = 0; k < h.ncols; k++)
 			{
 				SiftColDeltaPatch col;
-				int			at = 0;
+				int			at;
 
 				c = sift_col_delta_decode_col(c, rend, &col);
 				SIFT_INVARIANT(c != NULL, "a column delta page was read before it was checked");
+				SIFT_INVARIANT(col.attnum >= 0 && col.attnum <= MaxTupleAttributeNumber, "a column delta patch names column %d", col.attnum);
 				col.row_ordinal = t->row_ordinal;
-				while (at < n && out[at].attnum != col.attnum)
-					at++;
-				SIFT_INVARIANT(at < cap, "a row has more patched columns than its table has");
+				if (patch_slot[col.attnum] == 0)
+				{
+					SIFT_INVARIANT(n < cap, "a row has more patched columns than its table has");
+					patch_slot[col.attnum] = (int16) ++n;
+					patch_set[npatch_set++] = col.attnum;
+				}
+				at = patch_slot[col.attnum] - 1;
 				out[at] = col;
-				n = Max(n, at + 1);
 			}
 		}
 	}
@@ -449,7 +488,7 @@ sift_col_delta_latest_for_row(const SiftColDeltaChain *chain, const SiftColDelta
 {
 	SiftColDeltaLast last = {0};
 
-	for (int i = 0; i < chain->npages; i++)
+	for (int i = chain->npages - 1; i >= 0 && !last.found; i--)
 	{
 		const char *page = sift_col_delta_chain_page(chain, i);
 		const uint8 *p = sift_col_delta_page_first(page),
@@ -463,10 +502,9 @@ sift_col_delta_latest_for_row(const SiftColDeltaChain *chain, const SiftColDelta
 
 			memcpy(&h, p, sizeof(h));
 			p += h.rec_bytes;
-			if (record_is_of_row(&h, t) && !ops->is_aborted(ops->ctx, h.xmin))
+			if (sift_col_delta_rec_is_of_row(&h, t) && !ops->is_aborted(ops->ctx, h.xmin))
 				last = (SiftColDeltaLast) {.found = true,.xid = h.xmin,.cid = h.cid};
 		}
 	}
 	return last;
 }
-

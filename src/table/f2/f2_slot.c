@@ -14,14 +14,22 @@
 #include "table/f2/f2_slot.h"
 #include "table/f2/f2_tbl.h"
 
+/* The part map a slot reads the patches of its rows from, kept across the rows of a partition: given back when the slot goes or its memory does (the holder lives in the slot's own context, which is what ends on an error) */
+typedef struct PartMapHolder
+{
+	MemoryContextCallback cb;
+	SiftColDeltaPartMap *map;
+} PartMapHolder;
+
 typedef struct SiftF2Slot
 {
 	VirtualTupleTableSlot base;
 	Relation	rel;
 	SiftF2GranuleBuf *gb;		/* referenced while attributes are still to be decoded from it */
 	uint16		row;
-	const SiftColDeltaGranMap *gm;
-	MemoryContext rowcx;		/* the values by reference and the patches of the row: reset when the slot is cleared */
+	const SiftColDeltaGranMap *gm;	/* a granule map of the part map the slot holds */
+	PartMapHolder *holder;
+	MemoryContext rowcx;		/* the values by reference: reset when the slot is cleared */
 } SiftF2Slot;
 
 static TupleTableSlotOps f2_slot_ops;
@@ -76,7 +84,8 @@ str_datum(Relation rel, const SiftF2Store *store, const SiftF2GranuleBuf *gb, in
 	return PointerGetDatum(memcpy(MemoryContextAlloc(cx, c->len), c->p, c->len));
 }
 
-static void
+/* True when the attribute made the granule decode a column that no row asked for before: only then does the cache hold more */
+static bool
 fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 row, const SiftColDeltaGranMap *gm, TupleTableSlot *slot, int a, MemoryContext cx)
 {
 	Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, a - 1);
@@ -85,11 +94,12 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 	SiftCellKind kind;
 	int			leaf,
 				phys;
+	bool		decoded;
 
 	slot->tts_isnull[a - 1] = true;
 	slot->tts_values[a - 1] = (Datum) 0;
 	if (a > store->natts || (leaf = store->att_first[a]) < 0)
-		return;
+		return false;
 	phys = map != NULL ? map->phys_col[leaf] : leaf;
 	gm = gm != NULL || phys >= 0 ? gm : gb->patch_arg;
 	p = gm != NULL ? sift_col_delta_find_row(gm, (int16) a, row) : NULL;
@@ -97,19 +107,20 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 	{
 		slot->tts_isnull[a - 1] = (p->flags & SIFT_CDCOL_IS_NULL) != 0;
 		slot->tts_values[a - 1] = slot->tts_isnull[a - 1] ? (Datum) 0 : patch_datum(att, store->kinds[leaf], store->scales[leaf], p, cx);
-		return;
+		return false;
 	}
 	if (phys < 0)
 	{
 		slot->tts_isnull[a - 1] = map->missing_null[leaf];
 		slot->tts_values[a - 1] = map->missing_val[leaf];
-		return;
+		return false;
 	}
 	kind = map == NULL ? store->kinds[leaf] : (SiftCellKind) map->phys_kind[leaf];
-	if (!gb->col_decoded[phys])
+	decoded = !gb->col_decoded[phys];
+	if (decoded)
 		sift_f2_gbuf_column(rel, gb, phys, kind, sift_tbl_extra(store)->has_wide || sift_f2_attr_may_have_exceptions(att));
 	if (gb->col_isnull[phys][row] && !is_wide_blob(gb, phys, row) && !(kind == SIFT_CELL_INT && gb->col_tag[phys] != NULL && gb->col_tag[phys][row] == SIFT_COLTAG_UNSURE))
-		return;
+		return decoded;
 	slot->tts_isnull[a - 1] = false;
 	if (kind == SIFT_CELL_INT && gb->col_isnull[phys][row])
 	{
@@ -124,6 +135,32 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 		slot->tts_values[a - 1] = att->atttypid == FLOAT4OID ? Float4GetDatum((float4) gb->col_f[phys][row]) : Float8GetDatum(gb->col_f[phys][row]);
 	else
 		slot->tts_values[a - 1] = str_datum(rel, store, gb, phys, row, att, cx);
+	return decoded;
+}
+
+static void
+holder_release(void *arg)
+{
+	PartMapHolder *h = arg;
+
+	sift_col_delta_part_map_unref(h->map);
+	h->map = NULL;
+}
+
+static void
+hold_part_map(SiftF2Slot *ss, SiftColDeltaPartMap *map)
+{
+	if (ss->holder == NULL)
+	{
+		ss->holder = MemoryContextAllocZero(ss->base.base.tts_mcxt, sizeof(PartMapHolder));
+		ss->holder->cb.func = holder_release;
+		ss->holder->cb.arg = ss->holder;
+		MemoryContextRegisterResetCallback(ss->base.base.tts_mcxt, &ss->holder->cb);
+	}
+	if (ss->holder->map == map)
+		return;
+	sift_col_delta_part_map_unref(ss->holder->map);
+	ss->holder->map = sift_col_delta_part_map_ref(map);
 }
 
 static void
@@ -146,6 +183,8 @@ slot_release(TupleTableSlot *slot)
 	SiftF2Slot *ss = (SiftF2Slot *) slot;
 
 	lazy_drop(ss);
+	if (ss->holder != NULL)
+		holder_release(ss->holder);
 	MemoryContextDelete(ss->rowcx);
 }
 
@@ -171,8 +210,7 @@ f2_slot_getsomeattrs(TupleTableSlot *slot, int natts)
 	natts = Min(natts, slot->tts_tupleDescriptor->natts);
 	for (int a = slot->tts_nvalid + 1; a <= natts; a++)
 	{
-		fill_att(ss->rel, store, ss->gb, ss->row, ss->gm, slot, a, ss->rowcx);
-		decoded = true;
+		decoded |= fill_att(ss->rel, store, ss->gb, ss->row, ss->gm, slot, a, ss->rowcx);
 	}
 	MemoryContextSwitchTo(old);
 	slot->tts_nvalid = natts;
@@ -242,7 +280,7 @@ sift_f2_slot_ops(void)
 }
 
 void
-sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uint16 row, const SiftColDeltaGranMap *gm, MemoryContext rowcx)
+sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uint16 row, SiftColDeltaPartMap *map, const SiftColDeltaGranMap *gm, MemoryContext rowcx)
 {
 	uint64		tid = sift_f2_gbuf_tids(gb)[row];
 
@@ -252,7 +290,7 @@ sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uin
 		const SiftF2Store *store = sift_f2_store_open(rel);
 
 		for (int a = 1; a <= slot->tts_tupleDescriptor->natts; a++)
-			fill_att(rel, store, gb, row, gm, slot, a, rowcx);
+			(void) fill_att(rel, store, gb, row, gm, slot, a, rowcx);
 		ExecStoreVirtualTuple(slot);
 	}
 	else
@@ -262,7 +300,9 @@ sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uin
 		ss->rel = rel;
 		ss->gb = sift_f2_gbuf_ref(gb);
 		ss->row = row;
-		ss->gm = gm != NULL ? sift_col_delta_gran_copy(gm, ss->rowcx) : NULL;
+		ss->gm = gm;
+		if (gm != NULL)
+			hold_part_map(ss, map);
 		slot->tts_flags &= ~TTS_FLAG_EMPTY;
 		slot->tts_nvalid = 0;
 	}

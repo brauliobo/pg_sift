@@ -20,6 +20,9 @@ typedef struct TblWide
 	const Datum *vals;
 	const bool *isnull;
 	FmgrInfo   *cmp;
+	Datum	   *sorted;			/* IN lists over SIFT_WIDE_BSEARCH values: the distinct non-NULL ones in cmp order */
+	int			nsorted;
+	bool		hasnull;
 } TblWide;
 
 /* The source of one column layout */
@@ -58,6 +61,7 @@ typedef struct TblSource
 	uint32		wbuf_hi;
 	struct TblWbatch *wb;		/* the superblocks of the last begin whose write buffer rows are in the source: each batch has a context of its own */
 	int			nwb;
+	int			wbcap;
 	uint32		range_hi;		/* the end of the range of the last begin, and of the window being read (win_hi): a begin reads the write buffer rows one superblock at a time */
 	uint32		win_hi;
 	const SiftSrcPrune *prune;	/* what the begin was asked with, for its next windows */

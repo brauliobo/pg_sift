@@ -284,7 +284,8 @@ sift_tbl_f2_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot 
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	uint64		packed = sift_tbl_tid_pack(tid);
-	TM_Result	res = sift_tbl_f2_lock_for_modify(rel, packed, LockTupleExclusive, wait, snapshot, cid, tmfd);
+	bool		waited;
+	TM_Result	res = sift_tbl_f2_lock_for_modify(rel, packed, LockTupleExclusive, wait, snapshot, cid, tmfd, &waited);
 	TupleTableSlot *old;
 	uint8		key[SIFT_BOUND_BYTES];
 
@@ -357,6 +358,7 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 				new_packed;
 	TupleTableSlot *old;
 	TM_Result	res;
+	bool		waited;
 	uint8		old_key[SIFT_BOUND_BYTES];
 	SiftColDeltaPlan patch;
 
@@ -364,7 +366,7 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 	if (old == NULL)
 		return TM_Deleted;
 	*lockmode = key_intact(rel, store, old, slot) ? LockTupleNoKeyExclusive : LockTupleExclusive;
-	res = sift_tbl_f2_lock_for_modify(rel, old_packed, *lockmode, wait, snapshot, cid, tmfd);
+	res = sift_tbl_f2_lock_for_modify(rel, old_packed, *lockmode, wait, snapshot, cid, tmfd, &waited);
 	if (res == TM_Ok && crosscheck != InvalidSnapshot && crosscheck_fails(rel, otid, crosscheck))
 	{
 		tmfd->ctid = *otid;
@@ -375,8 +377,11 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 		ExecDropSingleTupleTableSlot(old);
 		return res;
 	}
-	ExecDropSingleTupleTableSlot(old);
-	old = fetch_current(rel, otid);
+	if (waited)
+	{
+		ExecDropSingleTupleTableSlot(old);
+		old = fetch_current(rel, otid);
+	}
 	if (old == NULL || !plan_col_delta(rel, store, old_packed, old, slot, &patch))
 	{
 		if (old != NULL)

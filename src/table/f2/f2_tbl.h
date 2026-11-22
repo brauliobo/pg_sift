@@ -124,6 +124,8 @@ typedef struct SiftF2ColMap
 {
 	uint16		cur_ncols;
 	bool		has_missing;
+	int			phys_ncols;		/* the columns the part has */
+	int16	   *leaf_of_phys;	/* leaf_of_phys[c]: the leaf whose cells column c of the part holds, -1 where the current table has none (the inverse of phys_col) */
 	int16	   *phys_col;
 	SiftColMapMode *mode;
 	uint8	   *old_scale;
@@ -292,7 +294,8 @@ extern uint64 sift_tbl_f2_nvblocks(Relation rel);
 /* ---- locks (f2_lock.c) ---- */
 
 extern void sift_tbl_f2_locks_init(void);
-extern TM_Result sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd);
+/* *waited: the row was waited for or locked at a coarser level than its own entry, so what was read of it before the call may be old */
+extern TM_Result sift_tbl_f2_lock_for_modify(Relation rel, uint64 tid, LockTupleMode mode, bool wait, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool *waited);
 extern void sift_tbl_f2_record_update(Relation rel, uint64 old_tid, uint64 new_tid, CommandId cid);
 /* The deleter of a row on disk and whether it was found: the xmax that VACUUM and the index deletion compare with the horizon */
 extern void sift_tbl_f2_record_delete(Relation rel, uint64 tid, CommandId cid, bool changing_part);

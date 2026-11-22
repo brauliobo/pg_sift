@@ -419,6 +419,7 @@ static int
 space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *seg, int64 *gain, BlockNumber *limit)
 {
 	int			n = space_segments(rel, snap, seg);
+	SiftFreeProfile *fp = sift_store_free_profile(rel, SPACE_MIN_RUN);
 	int			best = 0,
 				step = 0;
 	uint64		moved = 0;
@@ -437,10 +438,10 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 		int64		net;
 
 		moved += seg[j - 1].blocks;
-		if (sift_store_free_below(rel, hwm, SPACE_MIN_RUN) < (int64) moved)
+		if (sift_free_profile_below(fp, hwm) < (int64) moved)
 			break;
 		/* the lowest end that holds them: the free blocks are taken from the start of the file up */
-		SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, SPACE_MIN_RUN) < (int64) moved);
+		SIFT_BISECT(BlockNumber, mid, lo, hi, sift_free_profile_below(fp, mid) < (int64) moved);
 		end = Max(end, lo);
 		net = (int64) top - (int64) end;
 		all = Max(all, net);
@@ -455,6 +456,7 @@ space_plan(Relation rel, const SiftDirSnapshot *snap, uint64 budget, SpaceSeg *s
 			*limit = end;
 		}
 	}
+	sift_free_profile_free(fp);
 	if (space_worth(*gain, hwm))
 		return best;
 	/*
@@ -679,9 +681,11 @@ shrink_fit(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, int
 {
 	BlockNumber lo = 0;
 	BlockNumber hi = snap->meta.high_water;
+	SiftFreeProfile *fp = sift_store_free_profile(rel, SPACE_MIN_RUN);
 
 	/* the runs are filled by pieces of the segments, whose ends leave the rest of a hole too short for the next: an eighth more room than blocks to move */
-	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, SPACE_MIN_RUN) < shrink_above(ext, n, mid) + shrink_above(ext, n, mid) / 8 + 4 * SPACE_MIN_RUN);
+	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_free_profile_below(fp, mid) < shrink_above(ext, n, mid) + shrink_above(ext, n, mid) / 8 + 4 * SPACE_MIN_RUN);
+	sift_free_profile_free(fp);
 	return lo;
 }
 
@@ -782,8 +786,10 @@ space_chain(Relation rel)
 	BlockNumber lo = snap->nchain > 0 && space_segments(rel, snap, seg) > 0 ? seg[0].end : 0,
 				hi = snap->nchain > 0 ? snap->meta.high_water : 0;
 	uint64		moved;
+	SiftFreeProfile *fp = sift_store_free_profile(rel, 1);
 
-	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_store_free_below(rel, mid, 1) < chain_from(snap, mid) + SPACE_CHAIN_SPARE);
+	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_free_profile_below(fp, mid) < chain_from(snap, mid) + SPACE_CHAIN_SPARE);
+	sift_free_profile_free(fp);
 	moved = shrink_chain(rel, snap, lo);
 	pfree(seg);
 	pfree(snap);

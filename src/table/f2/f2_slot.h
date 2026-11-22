@@ -15,8 +15,9 @@ extern const TupleTableSlotOps *sift_f2_slot_ops(void);
 
 /*
  * Makes slot hold row of the granule: a reference to gb is kept until the slot is cleared or overwritten. gm: the patches of column deltas the reader's snapshot sees on the granule
- * (copied; NULL for none, and for a granule whose decoded columns already hold them: the sequential scan's). A slot of another kind is filled with every attribute now.
+ * (a granule map of map, which the slot holds a reference of while it reads them; NULL for none, and for a granule whose decoded columns already hold them: the sequential scan's). A slot of
+ * another kind is filled with every attribute now.
  */
-extern void sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uint16 row, const SiftColDeltaGranMap *gm, MemoryContext rowcx);
+extern void sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uint16 row, SiftColDeltaPartMap *map, const SiftColDeltaGranMap *gm, MemoryContext rowcx);
 
 #endif							/* SIFT_TBL_F2_SLOT_H */

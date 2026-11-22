@@ -566,21 +566,23 @@ schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	struct SiftTblGroupCache *c = gcache_of(st);
 	SiftColSegment *seg;
 	SiftColSchema *schema;
+	int			at = keyidx_find(&c->ent_gen, e->gen);
 
-	for (int i = 0; i < c->n; i++)
-		if (c->ent[i].gen == e->gen)
-			return c->ent[i].schema;
+	if (at >= 0)
+		return c->ent[at].schema;
 	seg = sift_cseg_open(rel, e, st->cxt);
 	schema = (SiftColSchema *) seg->schema;
 	sift_cseg_close(seg);
-	for (int i = 0; i < c->n; i++)
-		if (c->ent[i].schema->hash == schema->hash)
-			schema = c->ent[i].schema;
+	if ((at = keyidx_find(&c->ent_hash, schema->hash)) >= 0)
+		schema = c->ent[at].schema;
+	else
+		keyidx_put(st->cxt, &c->ent_hash, schema->hash, c->n);
 	if (c->n == c->cap)
 	{
 		c->cap = Max(8, c->cap * 2);
 		SIFT_REGROW_IN(st->cxt, c->ent, c->cap * sizeof(SchemaEnt));
 	}
+	keyidx_put(st->cxt, &c->ent_gen, e->gen, c->n);
 	c->ent[c->n++] = (SchemaEnt) {e->gen, schema};
 	return schema;
 }

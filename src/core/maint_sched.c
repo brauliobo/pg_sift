@@ -115,6 +115,10 @@ sift_maint_shmem_init(SiftMaintShmem *m, int tranche_id, uint32 max_workers, uin
 	pg_atomic_init_u64(&m->fg_read_ops, 0);
 	for (int i = 0; i < SIFT_MAINT_HEAT; i++)
 		pg_atomic_init_u32(&m->heat[i], 0);
+	pg_atomic_init_u64(&m->bgw_sample_ts_us, 0);
+	pg_atomic_init_u32(&m->bgw_other_cached, 0);
+	memset(m->hash_idx, 0xFF, sizeof(m->hash_idx));
+	memset(m->free_bits, 0xFF, sizeof(m->free_bits));
 	m->naptime_ms = naptime_ms;
 	m->tranche = tranche_id;
 	m->magic = MAINT_MAGIC;
@@ -144,22 +148,62 @@ end(SiftMaintShmem *m)
 	sift_shm_unlock(&m->lock);
 }
 
+/* The slot of a key is looked up in hash_idx (open addressing, linear probing, a removal shifts its cluster back: no tombstones, so a probe never runs long) */
 static int
 find(const SiftMaintShmem *m, uint32 h, const SiftMaintReq *r)
 {
-	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
+	for (uint32 p = h & (SIFT_MAINT_HASH_SIZE - 1); m->hash_idx[p] >= 0; p = (p + 1) & (SIFT_MAINT_HASH_SIZE - 1))
+	{
+		int			i = m->hash_idx[p];
+
 		if (m->khash[i] == h && m->slot[i].db == r->db && m->slot[i].rel == r->rel && m->slot[i].kind == r->kind)
 			return i;
+	}
 	return -1;
 }
 
 static int
 first_free(const SiftMaintShmem *m)
 {
-	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->khash[i] == 0)
-			return i;
+	for (int w = 0; w < SIFT_MAINT_FREE_WORDS; w++)
+		if (m->free_bits[w] != 0)
+			return w * 64 + pg_rightmost_one_pos64(m->free_bits[w]);
 	return -1;
+}
+
+/* Takes slot i for the key of hash h */
+static void
+slot_take(SiftMaintShmem *m, int i, uint32 h)
+{
+	uint32		p = h & (SIFT_MAINT_HASH_SIZE - 1);
+
+	while (m->hash_idx[p] >= 0)
+		p = (p + 1) & (SIFT_MAINT_HASH_SIZE - 1);
+	m->hash_idx[p] = (int16) i;
+	m->khash[i] = h;
+	m->free_bits[i / 64] &= ~(UINT64CONST(1) << (i % 64));
+}
+
+/* Removes slot i from hash_idx: the entries after it in its cluster move up into the hole when their probe path crosses it */
+static void
+hash_remove(SiftMaintShmem *m, int i)
+{
+	uint32		mask = SIFT_MAINT_HASH_SIZE - 1;
+	uint32		hole = m->khash[i] & mask;
+
+	while (m->hash_idx[hole] != i)
+		hole = (hole + 1) & mask;
+	for (uint32 p = (hole + 1) & mask; m->hash_idx[p] >= 0; p = (p + 1) & mask)
+	{
+		uint32		home = m->khash[m->hash_idx[p]] & mask;
+
+		if (((p - home) & mask) >= ((p - hole) & mask))
+		{
+			m->hash_idx[hole] = m->hash_idx[p];
+			hole = p;
+		}
+	}
+	m->hash_idx[hole] = -1;
 }
 
 /* The queued request that gives way to one of score: the lowest score below it, the youngest of those */
@@ -184,8 +228,10 @@ eviction_victim(const SiftMaintShmem *m, uint32 score)
 static void
 slot_free(SiftMaintShmem *m, int i)
 {
+	hash_remove(m, i);
 	memset(&m->slot[i], 0, sizeof(SiftMaintSlot));
 	m->khash[i] = 0;
+	m->free_bits[i / 64] |= UINT64CONST(1) << (i % 64);
 }
 
 static void
@@ -252,7 +298,7 @@ enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uin
 		res = SIFT_ENQ_EVICTED;
 	}
 	s = &m->slot[i];
-	m->khash[i] = h;
+	slot_take(m, i, h);
 	s->db = r->db;
 	s->rel = r->rel;
 	s->kind = r->kind;
@@ -303,10 +349,32 @@ typedef enum PickMode
 } PickMode;
 
 static int
+active_dbs(const SiftMaintShmem *m, Oid dbs[SIFT_MAINT_MAX_WORKERS])
+{
+	int			n = 0;
+
+	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
+		if (m->worker[w].state != 0)
+			dbs[n++] = m->worker[w].db;
+	return n;
+}
+
+static bool
+served(const Oid *dbs, int ndbs, Oid db)
+{
+	for (int k = 0; k < ndbs; k++)
+		if (dbs[k] == db)
+			return true;
+	return false;
+}
+
+static int
 pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode mode)
 {
 	int			best = -1;
 	uint32		best_score = 0;
+	Oid			dbs[SIFT_MAINT_MAX_WORKERS];
+	int			ndbs = mode == PICK_UNSERVED ? active_dbs(m, dbs) : 0;
 
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
 	{
@@ -315,7 +383,7 @@ pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode
 
 		if (m->khash[i] == 0 || !runnable(s, db, allow_cold, now))
 			continue;
-		if (mode == PICK_UNSERVED && worker_for(m, s->db) >= 0)
+		if (ndbs > 0 && served(dbs, ndbs, s->db))
 			continue;
 		if (mode == PICK_FAIR)
 		{
@@ -522,12 +590,77 @@ worker_free(SiftMaintShmem *m, int w)
 	pg_atomic_fetch_sub_u32(&m->active_workers, 1);
 }
 
+typedef struct Pids
+{
+	int			n;
+	int			pid[SIFT_MAINT_SLOTS + SIFT_MAINT_MAX_WORKERS];
+} Pids;
+
+static int
+pid_order(const void *a, const void *b)
+{
+	return (*(const int *) a > *(const int *) b) - (*(const int *) a < *(const int *) b);
+}
+
+static bool
+pids_has(const Pids *p, int pid)
+{
+	if (p->n <= 4)
+	{
+		for (int k = 0; k < p->n; k++)
+			if (p->pid[k] == pid)
+				return true;
+		return false;
+	}
+	return bsearch(&pid, p->pid, p->n, sizeof(int), pid_order) != NULL;
+}
+
+/* The distinct pids that run a worker or own a claim, sorted; lapsed says a worker that never started has overstayed its lease */
+static void
+owner_pids(SiftMaintShmem *m, TimestampTz now, Pids *p, bool *lapsed, uint32 *gen_seen)
+{
+	int			n = 0;
+
+	*lapsed = false;
+	sift_shm_lock(&m->lock);
+	*gen_seen = m->next_gen;
+	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
+	{
+		*lapsed |= m->worker[w].state == 1 && m->worker[w].lease_until < now;
+		if (m->worker[w].state == 2)
+			p->pid[n++] = m->worker[w].pid;
+	}
+	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
+		if (m->slot[i].state == SIFT_SLOT_CLAIMED)
+			p->pid[n++] = m->slot[i].pid;
+	sift_shm_unlock(&m->lock);
+	qsort(p->pid, n, sizeof(int), pid_order);
+	p->n = 0;
+	for (int k = 0; k < n; k++)
+		if (p->n == 0 || p->pid[p->n - 1] != p->pid[k])
+			p->pid[p->n++] = p->pid[k];
+}
+
+/*
+ * Liveness is asked once for each distinct pid and outside the lock (the host may take locks of its own); what is given back is then taken in one pass over the table. A claim made after
+ * the owners were read (a generation past gen_seen) is never taken for the claim of a pid that is gone: the number may be a new process's.
+ */
 int
 sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
 {
 	TimestampTz now = host->now();
+	Pids		owners;
+	Pids		dead = {0};
+	bool		lapsed;
+	uint32		gen_seen;
 	int			n = 0;
 
+	owner_pids(m, now, &owners, &lapsed, &gen_seen);
+	for (int k = 0; k < owners.n; k++)
+		if (!host->pid_alive(owners.pid[k]))
+			dead.pid[dead.n++] = owners.pid[k];
+	if (dead.n == 0 && !lapsed)
+		return 0;
 	begin(m);
 	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
 	{
@@ -538,15 +671,19 @@ sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
 			worker_free(m, w);
 			m->stats.lease_lapsed++;
 		}
-		else if (ws->state == 2 && !host->pid_alive(ws->pid))
-		{
-			n += release_pid_locked(m, host, ws->pid, true);
+		else if (ws->state == 2 && pids_has(&dead, ws->pid))
 			worker_free(m, w);
-		}
 	}
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->slot[i].state == SIFT_SLOT_CLAIMED && !host->pid_alive(m->slot[i].pid))
-			n += release_pid_locked(m, host, m->slot[i].pid, true);
+		if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].gen <= gen_seen && pids_has(&dead, m->slot[i].pid))
+		{
+			m->nclaimed--;
+			m->slot[i].failures++;
+			m->slot[i].crashes++;
+			requeue(m, &m->slot[i], now + failure_backoff_us(m, m->slot[i].failures));
+			m->stats.reclaimed++;
+			n++;
+		}
 	end(m);
 	return n;
 }
@@ -602,7 +739,7 @@ reserve_locked(SiftMaintShmem *m, Oid db, TimestampTz now, int effective_max)
 static bool
 reserve_over_shared_limit(SiftMaintShmem *m, const SiftMaintHost *host, int w)
 {
-	bool		over = (int) pg_atomic_read_u32(&m->active_workers) + host->other_workers() > (int) pg_atomic_read_u32(&m->max_workers);
+	bool		over = (int) pg_atomic_read_u32(&m->active_workers) + (host->other_workers != NULL ? host->other_workers() : 0) > (int) pg_atomic_read_u32(&m->max_workers);
 
 	if (over)
 	{
@@ -613,14 +750,22 @@ reserve_over_shared_limit(SiftMaintShmem *m, const SiftMaintHost *host, int w)
 	return over;
 }
 
+/* The cap on workers, asked of the host only when a worker is to be started */
+static int
+effective_max_of(SiftMaintShmem *m, const SiftMaintHost *host)
+{
+	return host->effective_max != NULL ? host->effective_max(m) : (int) pg_atomic_read_u32(&m->max_workers);
+}
+
 int
-sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int effective_max)
+sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
 {
 	TimestampTz now = host->now();
+	int			cap = effective_max_of(m, host);
 	int			w;
 
 	begin(m);
-	w = reserve_locked(m, db, now, effective_max);
+	w = reserve_locked(m, db, now, cap);
 	end(m);
 	return w >= 0 && reserve_over_shared_limit(m, host, w) ? -1 : w;
 }
@@ -665,15 +810,16 @@ sift_maint_worker_exit(SiftMaintShmem *m, int worker, int pid)
 	end(m);
 }
 
+/* Wakes the worker of the database that has the best request waiting and starts one for a database that has none: the cap on workers is asked of the host only when that is to be done */
 SiftMaintKick
-sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host, int effective_max)
+sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 {
 	TimestampTz now = host->now();
 	bool		cold_ok = !host->defer_cold();
 	SiftPacerTier tier = SIFT_TIER_P0;
 	SiftMaintKick res = SIFT_KICK_WOKE;
 	Oid			db = InvalidOid;
-	int			i, j, w = -1, procno = -1;
+	int			i, j, w = -1, procno = -1, cap;
 
 	begin(m);
 	if ((i = pick(m, InvalidOid, cold_ok, now, PICK_BEST)) < 0)
@@ -688,9 +834,15 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host, int effective_max)
 	{
 		db = m->slot[j].db;
 		tier = (SiftPacerTier) m->slot[j].tier;
-		res = (w = reserve_locked(m, db, now, effective_max)) >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
 	}
 	end(m);
+	if (j >= 0)
+	{
+		cap = effective_max_of(m, host);
+		begin(m);
+		res = worker_for(m, db) >= 0 ? SIFT_KICK_WOKE : (w = reserve_locked(m, db, now, cap)) >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
+		end(m);
+	}
 	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, w))
 		res = SIFT_KICK_NOSLOT;
 	if (procno >= 0)
@@ -715,7 +867,7 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host, int effective_max)
 }
 
 SiftMaintEnq
-sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, int effective_max, const SiftMaintReq *req)
+sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, const SiftMaintReq *req)
 {
 	SiftMaintEnq res = sift_maint_enqueue(m, host, req);
 	uint32		launcher;
@@ -726,7 +878,7 @@ sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode m
 	if (launcher != 0)
 		host->wake((int) launcher - 1);
 	else
-		sift_maint_kick(m, host, effective_max);
+		sift_maint_kick(m, host);
 	return res;
 }
 

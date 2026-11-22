@@ -10,6 +10,7 @@
 
 #include "col/v1/seg.h"
 #include "core/lane.h"
+#include "core/u64set.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/seg_int.h"
 
@@ -140,12 +141,17 @@ path_wbuf(SiftTblRel *st, const SiftTblSeg *seg)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
 	MemoryContext old;
+	int			at = keyidx_find(&c->pwb_gen, seg->gen);
 
-	for (int i = 0; i < c->npwb; i++)
-		if (c->pwb[i].gen == seg->gen)
-			return &c->pwb[i];
+	if (at >= 0)
+		return &c->pwb[at];
 	old = MemoryContextSwitchTo(st->cxt);
-	SIFT_REGROW(c->pwb, (c->npwb + 1) * sizeof(PathWbuf));
+	if (c->npwb == c->pwbcap)
+	{
+		c->pwbcap = Max(8, c->pwbcap * 2);
+		SIFT_REGROW(c->pwb, c->pwbcap * sizeof(PathWbuf));
+	}
+	keyidx_put(st->cxt, &c->pwb_gen, seg->gen, c->npwb);
 	c->pwb[c->npwb] = (PathWbuf) {.gen = seg->gen,.seen = palloc(SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16))};
 	memset(c->pwb[c->npwb].seen, 0xFF, SIFT_TBL_MAX_WBUF_PAGES * sizeof(uint16));
 	MemoryContextSwitchTo(old);
@@ -210,6 +216,7 @@ path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf, b
 	struct SiftTblGroupCache *c = gcache_of(st);
 	MemoryContext rowcx = AllocSetContextCreate(CurrentMemoryContext, "sift_table path ovf", ALLOCSET_SMALL_SIZES);
 	PGAlignedBlock copy;
+	SiftU64Set	live;
 	int			n = 0;
 
 	for (int i = 0; i < st->nwbuf; i++)
@@ -233,18 +240,22 @@ path_wbuf_ovf(Relation rel, SiftTblRel *st, const SiftTblLayout *l, bool *ovf, b
 		}
 	}
 	MemoryContextDelete(rowcx);
+	sift_u64set_init(&live, st->nwbuf);
+	for (int k = 0; k < st->nwbuf; k++)
+		(void) sift_u64set_add(&live, st->wbuf[k].gen);
+	keyidx_clear(&c->pwb_gen);
 	for (int i = 0; i < c->npwb; i++)
 	{
-		bool		live = false;
-
-		for (int k = 0; k < st->nwbuf && !live; k++)
-			live = st->wbuf[k].gen == c->pwb[i].gen;
-		if (live)
+		if (sift_u64set_has(&live, c->pwb[i].gen))
+		{
+			keyidx_put(st->cxt, &c->pwb_gen, c->pwb[i].gen, n);
 			c->pwb[n++] = c->pwb[i];
+		}
 		else
 			pfree(c->pwb[i].seen);
 	}
 	c->npwb = n;
+	sift_u64set_free(&live);
 }
 
 void

@@ -102,6 +102,7 @@ test_pause(void)
 
 /* visibilitymap.c layout: 2 bits per heap page after the page header */
 #define VM_MAPSIZE		(BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
+#define VM_BYTE_VISIBLE	((uint8) 0x55)
 #define VM_BYTES_PER_SB	(SIFT_SB_PAGES / 4)
 
 /* Blocks of the table in TID space: a sift_table hands out virtual blocks, not pages of its relation */
@@ -245,7 +246,6 @@ sift_vis_begin(SiftVis *v, Relation heap, Snapshot snapshot, Relation index, uin
 	v->dir_version = dir_version;
 	v->use_vm = IsMVCCSnapshot(snapshot);
 	v->vmbuf = InvalidBuffer;
-	v->ndirty = -1;
 	v->mcxt = CurrentMemoryContext;
 	v->fetch = sift_table_index_fetch_begin(heap);
 	v->heap_nblocks = sift_vis_nblocks(heap);
@@ -345,83 +345,82 @@ sift_vis_sb_mask(SiftVis *v, uint32 sb, uint64 *pagemask)
 		memset(pagemask, 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
 }
 
-/* The pages of the table (first heap_nblocks) that are not all-visible, once per scan, from the map bytes */
-static void
-dirty_scan(SiftVis *v)
+/* The map page mapblk through the one buffer the scan keeps pinned (v->vmbuf); NULL past the end of the fork */
+static const uint8 *
+vm_map(SiftVis *v, BlockNumber mapblk)
 {
-	uint64		nb = v->heap_nblocks,
-				bytes = (nb + 3) / 4;
-
-	v->ndirty = 0;
-	v->dirty = MemoryContextAlloc(v->mcxt, SIFT_VIS_DIRTY_MAX * sizeof(BlockNumber));
-	if (!v->use_vm || nb == 0)
+	if (mapblk >= v->vm_nblocks)
+		return NULL;
+	if (!BufferIsValid(v->vmbuf) || BufferGetBlockNumber(v->vmbuf) != mapblk)
 	{
-		v->ndirty = -2;
-		return;
+		if (BufferIsValid(v->vmbuf))
+			ReleaseBuffer(v->vmbuf);
+		v->vmbuf = ReadBufferExtended(v->heap, VISIBILITYMAP_FORKNUM, mapblk, RBM_ZERO_ON_ERROR, NULL);
 	}
-	for (uint64 mapblk = 0; mapblk * VM_MAPSIZE < bytes; mapblk++)
-	{
-		const uint8 *map = NULL;
-		Buffer		buf = InvalidBuffer;
-		uint64		len = Min(bytes - mapblk * VM_MAPSIZE, VM_MAPSIZE);
-
-		if (mapblk < v->vm_nblocks)
-		{
-			buf = ReadBufferExtended(v->heap, VISIBILITYMAP_FORKNUM, (BlockNumber) mapblk, RBM_ZERO_ON_ERROR, NULL);
-			map = (const uint8 *) PageGetContents(BufferGetPage(buf));
-		}
-		for (uint64 i = 0; i < len; i++)
-		{
-			uint8		b = map ? map[i] : 0;
-
-			/* 32 pages at a time while all of them are all-visible: the map of a heap of tens of millions of rows is read for each statement */
-			if (map && (i & 7) == 0 && i + 8 <= len)
-			{
-				uint64		w;
-
-				memcpy(&w, map + i, sizeof(w));
-				if ((w & UINT64CONST(0x5555555555555555)) == UINT64CONST(0x5555555555555555))
-				{
-					i += 7;
-					continue;
-				}
-			}
-			if ((b & 0x55) == 0x55)
-				continue;
-			for (int k = 0; k < 4; k++)
-			{
-				uint64		x = (mapblk * VM_MAPSIZE + i) * 4 + k;
-
-				if (x >= nb || ((b >> (2 * k)) & 1))
-					continue;
-				if (v->ndirty == SIFT_VIS_DIRTY_MAX)
-				{
-					if (BufferIsValid(buf))
-						ReleaseBuffer(buf);
-					v->ndirty = -2;
-					return;
-				}
-				v->dirty[v->ndirty++] = (BlockNumber) x;
-			}
-		}
-		if (BufferIsValid(buf))
-			ReleaseBuffer(buf);
-	}
+	return (const uint8 *) PageGetContents(BufferGetPage(v->vmbuf));
 }
 
+/* The all-visible bits of the table pages [b0, b1) of a map page (numbered from its first page), all set? The first and the last byte are cut to their pages, the middle is read 32 pages at a time */
+static bool
+vm_slice_allvisible(const uint8 *map, uint64 b0, uint64 b1)
+{
+	uint64		i = b0 / 4,
+				end = (b1 + 3) / 4;
+
+	while (i < end)
+	{
+		uint8		mask = VM_BYTE_VISIBLE;
+
+		if (i == b0 / 4)
+			mask &= (uint8) (VM_BYTE_VISIBLE << (b0 % 4 * 2));
+		if (i + 1 == end && b1 % 4 != 0)
+			mask &= (uint8) (VM_BYTE_VISIBLE >> ((4 - b1 % 4) * 2));
+		if (mask == VM_BYTE_VISIBLE && i + 8 <= b1 / 4)
+		{
+			uint64		w;
+
+			memcpy(&w, map + i, sizeof(w));
+			if ((w & VM_VISIBLE_BITS) != VM_VISIBLE_BITS)
+				return false;
+			i += 8;
+			continue;
+		}
+		if ((map[i] & mask) != mask)
+			return false;
+		i++;
+	}
+	return true;
+}
+
+/*
+ * Is every page in [lo, hi] all-visible? Only the bytes of the map those pages use are read, in at most SIFT_VIS_RANGE_MAP_PAGES map pages (each covers 255 MB of a heap): a wider range says no,
+ * and the caller asks the pages it meets one by one (sift_vis_blocks_allvisible). Nothing is kept past the call, so a bit that changes is read as it is now.
+ */
 bool
 sift_vis_range_allvisible(SiftVis *v, BlockNumber lo, BlockNumber hi)
 {
-	uint32		a = 0,
-				b;
+	uint64		pages_per_map = (uint64) VM_MAPSIZE * 4,
+				from = lo,
+				to;
 
-	if (v->ndirty == -1)
-		dirty_scan(v);
-	if (v->ndirty < 0)
+	if (!v->use_vm || v->heap_nblocks == 0)
 		return false;
-	b = v->ndirty;
-	SIFT_BISECT(uint32, mid, a, b, v->dirty[mid] < lo);	/* the first dirty page >= lo */
-	return (a == (uint32) v->ndirty || v->dirty[a] > hi) && dir_current(v);
+	to = Min((uint64) hi + 1, (uint64) v->heap_nblocks);
+	if (from >= to)
+		return dir_current(v);
+	if ((to - 1) / pages_per_map - from / pages_per_map >= SIFT_VIS_RANGE_MAP_PAGES)
+		return false;
+	while (from < to)
+	{
+		uint64		mapblk = from / pages_per_map,
+					upto = Min(to, (mapblk + 1) * pages_per_map);
+		const uint8 *map = vm_map(v, (BlockNumber) mapblk);
+
+		if (map == NULL || !vm_slice_allvisible(map, from - mapblk * pages_per_map, upto - mapblk * pages_per_map))
+			return false;
+		from = upto;
+	}
+	return dir_current(v);
 }
 
 /* The all-visible bit of each of the n blocks (ascending, as a key-cut unit lists its pages) in bits, one bit per block; the same directory rule as sift_vis_sb_mask */

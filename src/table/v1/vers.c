@@ -10,6 +10,7 @@
 #include "table/v1/table_v1.h"
 #include "table/v1/seg_int.h"
 #include "core/cmp.h"
+#include "core/u64set.h"
 
 static const VerGroup *
 ver_group(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
@@ -20,13 +21,19 @@ ver_group(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 	SiftColSegment *seg;
 	VerGroup   *g;
 
-	for (int i = 0; i < c->nvg; i++)
-		if (c->vg[i].gen == e->gen)
-			return &c->vg[i];
+	int			at = keyidx_find(&c->vg_gen, e->gen);
+
+	if (at >= 0)
+		return &c->vg[at];
 	tmp = AllocSetContextCreate(CurrentMemoryContext, "sift_table versions", ALLOCSET_SMALL_SIZES);
 	seg = sift_cseg_open(rel, e, tmp);
 	old = MemoryContextSwitchTo(st->cxt);
-	SIFT_REGROW(c->vg, (c->nvg + 1) * sizeof(VerGroup));
+	if (c->nvg == c->vgcap)
+	{
+		c->vgcap = Max(8, c->vgcap * 2);
+		SIFT_REGROW(c->vg, c->vgcap * sizeof(VerGroup));
+	}
+	keyidx_put(st->cxt, &c->vg_gen, e->gen, c->nvg);
 	g = &c->vg[c->nvg++];
 	*g = (VerGroup) {.gen = e->gen,.nsb = seg->nsb,.sb = palloc(seg->nsb * sizeof(uint32)),.sum = palloc(seg->nsb * sizeof(SiftColVerSum))};
 	MemoryContextSwitchTo(old);
@@ -45,18 +52,22 @@ static void
 ver_groups_prune(SiftTblRel *st, const SiftDirSnapshot *dir)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
+	SiftU64Set	live;
 	int			n = 0;
 
+	sift_u64set_init(&live, dir->nsegs + st->dir->nsegs);
+	for (int k = 0; k < dir->nsegs; k++)
+		(void) sift_u64set_add(&live, dir->segs[k].gen);
+	for (int k = 0; k < st->dir->nsegs; k++)
+		(void) sift_u64set_add(&live, st->dir->segs[k].gen);
+	keyidx_clear(&c->vg_gen);
 	for (int i = 0; i < c->nvg; i++)
 	{
-		bool		used = false;
-
-		for (int k = 0; k < dir->nsegs && !used; k++)
-			used = dir->segs[k].gen == c->vg[i].gen;
-		for (int k = 0; k < st->dir->nsegs && !used; k++)
-			used = st->dir->segs[k].gen == c->vg[i].gen;
-		if (used)
+		if (sift_u64set_has(&live, c->vg[i].gen))
+		{
+			keyidx_put(st->cxt, &c->vg_gen, c->vg[i].gen, n);
 			c->vg[n++] = c->vg[i];
+		}
 		else
 		{
 			pfree(c->vg[i].sb);
@@ -64,6 +75,7 @@ ver_groups_prune(SiftTblRel *st, const SiftDirSnapshot *dir)
 		}
 	}
 	c->nvg = n;
+	sift_u64set_free(&live);
 }
 
 struct SiftTblVers

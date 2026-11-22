@@ -11,7 +11,9 @@
 #include "storage/procarray.h"
 #include "utils/snapmgr.h"
 
+#include "col/f2/col_meta.h"
 #include "col/f2/l0_stage.h"
+#include "table/f2/f2_chain_cache.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_row_state.h"
 #include "table/f2/f2_gcache.h"
@@ -27,22 +29,21 @@ newer_deleter(TransactionId xmax)
 static void
 pending_state(Relation rel, const SiftPartitionEntry *entry, uint64 tid, SiftRowState *rs)
 {
-	int			n;
-	SiftPendDelRec *recs;
+	const SiftPendDelLog *log = sift_pend_del_log(rel, entry);
 
-	if (entry->pend_del_blk == InvalidBlockNumber)
-		return;
-	recs = sift_pend_del_read(rel, entry->part_id, entry->pend_del_blk, &n, NULL, NULL);
-	for (int i = 0; i < n; i++)
+	for (int i = log == NULL ? -1 : sift_pend_del_log_newest(log, tid); i >= 0; i = sift_pend_del_log_prev(log, i))
 	{
-		if ((recs[i].tid & SIFT_PD_TID_SUCC) != 0 || (recs[i].tid & SIFT_PD_TID_MASK) != tid || !newer_deleter(recs[i].xmax))
+		const SiftPendDelRec *r = sift_pend_del_log_rec(log, i);
+		bool		paired = (r->tid & SIFT_PD_TID_UPDATED) != 0 && i + 1 < sift_pend_del_log_count(log) && (sift_pend_del_log_rec(log, i + 1)->tid & SIFT_PD_TID_SUCC) != 0;
+
+		if (!newer_deleter(r->xmax))
 			continue;
-		rs->xmax = recs[i].xmax;
-		rs->cmax = recs[i].cmax;
-		rs->has_succ = (recs[i].tid & SIFT_PD_TID_UPDATED) != 0 && i + 1 < n && (recs[i + 1].tid & SIFT_PD_TID_SUCC) != 0;
-		rs->succ = rs->has_succ ? recs[i + 1].tid & SIFT_PD_TID_MASK : 0;
+		rs->xmax = r->xmax;
+		rs->cmax = r->cmax;
+		rs->has_succ = paired;
+		rs->succ = paired ? sift_pend_del_log_rec(log, i + 1)->tid & SIFT_PD_TID_MASK : 0;
+		return;
 	}
-	pfree(recs);
 }
 
 static void
@@ -180,11 +181,7 @@ sift_row_delta_ack(Relation rel, uint64 tid, CommandId cid)
 uint32
 sift_row_part_count(Relation rel)
 {
-	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
-	uint32		n = (uint32) mr.n;
-
-	pfree(mr.entries);
-	return n;
+	return sift_col_meta_read(rel).npartitions;
 }
 
 /* A row the transaction staged is alive for it: nothing is written to ask the relation about it, which at every index page the btree tries to clean made a part of the stage */

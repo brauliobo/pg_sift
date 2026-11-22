@@ -9,6 +9,7 @@
 
 #include "core/store.h"
 #include "core/store_int.h"
+#include "core/u64set.h"
 #include "core/visibility.h"
 
 typedef struct BlockMap
@@ -212,8 +213,18 @@ sift_store_extent_map(Relation index, SiftExtentVisit visit, void *arg)
 	release_view(index, snap);
 }
 
+/* The generations of the segments that are not immutable: a page of one is a buffer's, linked or not yet */
+static void
+buffer_gens(const SiftDirSnapshot *snap, SiftU64Set *set)
+{
+	sift_u64set_init(set, snap->nsegs);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			(void) sift_u64set_add(set, snap->segs[i].gen);
+}
+
 static bool
-in_flight(Page page, const SiftDirSnapshot *snap)
+in_flight(Page page, const SiftDirSnapshot *snap, const SiftU64Set *buffers)
 {
 	SiftPageOpaque op;
 
@@ -231,35 +242,27 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 	 * A page of a write buffer that an appender allocated and has not linked yet carries the generation of its buffer. A page of an immutable segment that
 	 * its header does not list is the copy of a move that was killed before it was published (the shrink keeps the generation): an orphan.
 	 */
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].gen == op->gen)
-			return snap->segs[i].kind != SIFT_SEG_IMMUTABLE;
-	return false;
-}
-
-/* Whether the directory of snap lists a segment of this generation */
-static bool
-lists_gen(const SiftDirSnapshot *snap, uint64 gen)
-{
-	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].gen == gen)
-			return true;
-	return false;
+	return sift_u64set_has(buffers, op->gen);
 }
 
 Bitmapset *
 sift_store_segment_blocks_since(Relation index, const SiftDirSnapshot *snap, const SiftDirSnapshot *before)
 {
 	BlockMap	m = {index, high_water(index), NULL, NULL, NULL, false};
+	SiftU64Set	listed;
 
+	sift_u64set_init(&listed, before->nsegs);
+	for (int i = 0; i < before->nsegs; i++)
+		(void) sift_u64set_add(&listed, before->segs[i].gen);
 	for (int i = 0; i < snap->nsegs; i++)
-		if (!lists_gen(before, snap->segs[i].gen))
+		if (!sift_u64set_has(&listed, snap->segs[i].gen))
 		{
 			if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 				mark_immutable(&m, &snap->segs[i]);
 			else
 				mark_wbuf(&m, &snap->segs[i]);
 		}
+	sift_u64set_free(&listed);
 	return m.set;
 }
 
@@ -269,9 +272,11 @@ sift_store_orphans(Relation index, SiftDirSnapshot **seen)
 	SiftDirSnapshot *snap;
 	Bitmapset  *ref;
 	Bitmapset  *orphans = NULL;
+	SiftU64Set	buffers;
 
 	snap = sift_dir_read(index);
 	ref = sift_store_referenced_blocks(index, snap);
+	buffer_gens(snap, &buffers);
 	for (BlockNumber b = FIRST_DATA_BLKNO; b < snap->meta.high_water; b++)
 	{
 		Buffer		buf;
@@ -279,11 +284,12 @@ sift_store_orphans(Relation index, SiftDirSnapshot **seen)
 		if (bms_is_member(b, ref))
 			continue;
 		buf = read_locked(index, b, BUFFER_LOCK_SHARE);
-		if (!in_flight(BufferGetPage(buf), snap))
+		if (!in_flight(BufferGetPage(buf), snap, &buffers))
 			orphans = bms_add_member(orphans, b);
 		UnlockReleaseBuffer(buf);
 	}
 	bms_free(ref);
+	sift_u64set_free(&buffers);
 	if (seen != NULL)
 		*seen = orphans != NULL ? snap : NULL;
 	if (seen == NULL || orphans == NULL)
@@ -318,11 +324,13 @@ sift_store_verify(Relation index)
 {
 	SiftDirSnapshot *snap = read_view(index);
 	BlockNumber nblocks;
+	SiftU64Set	seen;
 
 	SIFT_TEST_GATE(sift_test_check_gate, 19);
 	nblocks = RelationGetNumberOfBlocks(index);
 	if (nblocks < snap->meta.high_water)
 		corrupt(index, "Relation has %u blocks, below the high-water mark %u.", nblocks, snap->meta.high_water);
+	sift_u64set_init(&seen, snap->nsegs);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
 		const SiftSegEntry *s = &snap->segs[i];
@@ -331,10 +339,10 @@ sift_store_verify(Relation index)
 			s->gen >= snap->meta.next_gen)
 			corrupt(index, "Directory entry %d has kind %u generation %llu (next %llu).",
 					i, s->kind, ULL(s->gen), ULL(snap->meta.next_gen));
-		for (int j = 0; j < i; j++)
-			if (snap->segs[j].gen == s->gen)
-				corrupt(index, "Generation %llu appears twice in the directory.", ULL(s->gen));
+		if (!sift_u64set_add(&seen, s->gen))
+			corrupt(index, "Generation %llu appears twice in the directory.", ULL(s->gen));
 	}
+	sift_u64set_free(&seen);
 	bms_free(sift_store_referenced_blocks(index, snap));
 	release_view(index, snap);
 }

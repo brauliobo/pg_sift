@@ -330,15 +330,43 @@ typedef struct Moved
 	uint16		row;
 } Moved;
 
-static bool
-moved_to(const Moved *mv, int nmv, uint64 tid, SiftColDeltaEntryHdr *h)
+/* The moves by the address they moved to, the latest of an address winning: open addressing over mv, the index plus one in each slot */
+typedef struct MovedMap
 {
-	for (int i = nmv - 1; i >= 0; i--)
-		if (mv[i].new_tid == tid)
+	Moved	   *mv;
+	int32	   *slot;
+	uint32		mask;
+	int			nmv;
+} MovedMap;
+
+static uint32
+moved_slot(const MovedMap *m, uint64 tid)
+{
+	return (uint32) ((tid * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & m->mask;
+}
+
+static void
+moved_add(MovedMap *m, const Moved *mv)
+{
+	uint32		p = moved_slot(m, mv->new_tid);
+
+	m->mv[m->nmv] = *mv;
+	while (m->slot[p] != 0 && m->mv[m->slot[p] - 1].new_tid != mv->new_tid)
+		p = (p + 1) & m->mask;
+	m->slot[p] = ++m->nmv;
+}
+
+static bool
+moved_to(const MovedMap *m, uint64 tid, SiftColDeltaEntryHdr *h)
+{
+	for (uint32 p = moved_slot(m, tid); m->slot[p] != 0; p = (p + 1) & m->mask)
+		if (m->mv[m->slot[p] - 1].new_tid == tid)
 		{
-			h->part_gen = mv[i].part_gen;
-			h->granule_id = mv[i].granule_id;
-			h->row_ordinal = mv[i].row;
+			const Moved *mv = &m->mv[m->slot[p] - 1];
+
+			h->part_gen = mv->part_gen;
+			h->granule_id = mv->granule_id;
+			h->row_ordinal = mv->row;
 			return true;
 		}
 	return false;
@@ -359,10 +387,17 @@ SiftColDeltaBatch *
 sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, FullTransactionId next, const SiftColDeltaRemap *remap, int *nbatches)
 {
 	SiftColDeltaBatch *v = NULL;
-	Moved	   *mv = palloc(sizeof(Moved) * Max(plan->ncarry, 1));
+	uint32		slots = 32;
+	MovedMap	mm = {0};
 	int			n = 0,
-				cap = 0,
-				nmv = 0;
+				cap = 0;
+
+	while (slots < 2 * (uint32) plan->ncarry)
+		slots *= 2;
+	mm.mv = palloc(sizeof(Moved) * Max(plan->ncarry, 1));
+	/* check-memory: allow a slot for each carried record of one compaction, twice over */
+	mm.slot = palloc0(slots * sizeof(int32));
+	mm.mask = slots - 1;
 
 	for (int i = 0; i < plan->ncarry; i++)
 	{
@@ -374,17 +409,19 @@ sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, FullTransactio
 		memcpy(buf, plan->carry[i].rec, h.rec_bytes);
 		if (plan->carry[i].remap)
 		{
-			if (!remap->locate(remap->ctx, sift_col_delta_hdr_tid(&h), &h.part_gen, &h.granule_id, &h.row_ordinal) && !moved_to(mv, nmv, sift_col_delta_hdr_tid(&h), &h))
+			if (!remap->locate(remap->ctx, sift_col_delta_hdr_tid(&h), &h.part_gen, &h.granule_id, &h.row_ordinal) && !moved_to(&mm, sift_col_delta_hdr_tid(&h), &h))
 				continue;
 			memcpy(buf, &h, sizeof(h));
 		}
 		new_tid = record_new_tid(buf, &h);
 		if (new_tid != 0)
-			mv[nmv++] = (Moved) {new_tid, h.part_gen, h.granule_id, h.row_ordinal};
+			moved_add(&mm, &(Moved) {new_tid, h.part_gen, h.granule_id, h.row_ordinal});
 		if (n == 0 || v[n - 1].nbytes + h.rec_bytes > SIFT_COL_DELTA_PAGE_ROOM)
 			open_batch(&v, &n, &cap);
 		sift_col_delta_batch_add(&v[n - 1], next, buf);
 	}
+	pfree(mm.mv);
+	pfree(mm.slot);
 	*nbatches = n;
 	return v;
 }

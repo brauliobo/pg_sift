@@ -107,6 +107,7 @@ typedef struct SiftEscSubRecord
 	int8		prev_intent;	/* -1: none, else a LockTupleMode */
 	int8		prev_esc;		/* -1: not held coarsely, else a LockTupleMode */
 	bool		took_split_pin;	/* this one made the transaction hold SIFT_F2_SPLIT_LOCK_BLKNO */
+	uint32		chain;			/* the next record of its bucket, plus one: the log finds a record by a hash */
 } SiftEscSubRecord;
 
 /* Tier 1 gives back the entries the (sub)transaction owns in the partition (SIFT_ESC_PART_ALL: all partitions of the relation) once a coarse lock holds them */

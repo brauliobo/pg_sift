@@ -80,33 +80,41 @@ sift_cache_register(const SiftCacheKind *kind)
 	kinds[nkinds++] = kind;
 }
 
-static Size
-freed_since(Size before)
+/* The kinds' oldest ticks, read once for a run of evictions: dropping an entry of one kind changes that kind's oldest alone */
+typedef struct EvictRun
 {
-	return before - Min(before, sift_cache_total_bytes());
+	uint64		oldest[SIFT_CACHE_MAX_KINDS];
+	Size		total;			/* sift_cache_total_bytes() after the last eviction */
+} EvictRun;
+
+static void
+evict_begin(EvictRun *run)
+{
+	for (int i = 0; i < nkinds; i++)
+		run->oldest[i] = kinds[i]->oldest();
+	run->total = sift_cache_total_bytes();
 }
 
 static bool
-evict_oldest(void)
+evict_oldest(EvictRun *run)
 {
-	const SiftCacheKind *victim = NULL;
+	int			victim = -1;
 	uint64		best = UINT64_MAX;
-	Size		before = sift_cache_total_bytes();
-	bool		evicted;
+	Size		after;
 
 	for (int i = 0; i < nkinds; i++)
-	{
-		uint64		t = kinds[i]->oldest();
-
-		if (t < best)
+		if (run->oldest[i] < best)
 		{
-			best = t;
-			victim = kinds[i];
+			best = run->oldest[i];
+			victim = i;
 		}
-	}
-	evicted = victim != NULL && victim->evict_one();
-	reclaimed += freed_since(before);
-	return evicted;
+	if (victim < 0 || !kinds[victim]->evict_one())
+		return false;
+	run->oldest[victim] = kinds[victim]->oldest();
+	after = sift_cache_total_bytes();
+	reclaimed += run->total - Min(run->total, after);
+	run->total = after;
+	return true;
 }
 
 static void
@@ -123,13 +131,22 @@ sift_cache_room(Size need)
 {
 	Size		limit = (Size) sift_backend_cache_kb * 1024;
 	bool		fits = need <= limit;
+	EvictRun	run;
 
 #ifdef SIFT_TESTING
-	while (sift_cache_stress && evict_oldest())
-		;
+	if (sift_cache_stress)
+	{
+		evict_begin(&run);
+		while (evict_oldest(&run))
+			;
+	}
 #endif
-	while (fits && sift_cache_total_bytes() + need > limit)
-		fits = evict_oldest();
+	if (fits && sift_cache_total_bytes() + need > limit)
+	{
+		evict_begin(&run);
+		while (fits && run.total + need > limit)
+			fits = evict_oldest(&run);
+	}
 	trim_reclaimed();
 	return fits;
 }
@@ -153,20 +170,24 @@ cache_xact_event(XactEvent event, void *arg)
 static void
 backend_cache_assign(int newval, void *extra)
 {
-	Size		before;
+	EvictRun	run;
 
 	if (cache_root == NULL)
 		return;
-	before = sift_cache_total_bytes();
 	if (newval == 0)
 	{
+		Size		before = sift_cache_total_bytes();
+
 		for (int i = 0; i < nkinds; i++)
 			kinds[i]->evict_all();
-		reclaimed += freed_since(before);
+		reclaimed += before - Min(before, sift_cache_total_bytes());
 	}
 	else
-		while (sift_cache_total_bytes() > (Size) newval * 1024 && evict_oldest())
+	{
+		evict_begin(&run);
+		while (run.total > (Size) newval * 1024 && evict_oldest(&run))
 			;
+	}
 	trim_reclaimed();
 }
 

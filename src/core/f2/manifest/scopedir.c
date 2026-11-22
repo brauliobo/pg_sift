@@ -92,42 +92,64 @@ write_scopedir(Relation rel, uint64 gen, uint64 version, const SiftManifestScope
 	return blks[0];
 }
 
-static int
-scope_ref_cmp(const void *a, const void *b)
+typedef struct SeqRef
 {
-	uint16		x = ((const SiftManifestScopeRef *) a)->scope_ord,
-				y = ((const SiftManifestScopeRef *) b)->scope_ord;
+	SiftManifestScopeRef ref;
+	int			seq;
+} SeqRef;
 
-	return x < y ? -1 : x > y;
+static int
+seq_ref_cmp(const void *a, const void *b)
+{
+	const SeqRef *x = a,
+			   *y = b;
+
+	if (x->ref.scope_ord != y->ref.scope_ord)
+		return x->ref.scope_ord < y->ref.scope_ord ? -1 : 1;
+	return (x->seq > y->seq) - (x->seq < y->seq);
 }
 
-/* The directory the metapage names with the refs of the edit merged in by scope_ord (a later ref of the same ord wins), written as a new chain; the pages it replaces are released with the commit */
+/*
+ * The directory the metapage names with the refs of the edit merged in by scope_ord (a later ref of the same ord wins), written as a new chain; the pages it replaces are released with the commit.
+ * The edit's refs are sorted once, and merged with the chain, which is already in scope_ord order, in one pass.
+ */
 void
 sift_mf_build_scopes(Relation rel, Tree *t, Change *ch, const SiftManifestEdit *e, BlkVec *created)
 {
 	int			n;
 	SiftManifestScopeRef *cur = read_scope_chain(rel, &t->meta, &n, &ch->old, &t->pages);
 	SiftManifestScopeRef *all = palloc((n + e->nupdate_scopes) * sizeof(SiftManifestScopeRef));
-	int			nall = n;
+	/* check-memory: allow the scope refs of one edit, which the scopes a manifest holds bound */
+	SeqRef	   *upd = palloc(Max(e->nupdate_scopes, 1) * sizeof(SeqRef));
+	int			nupd = 0,
+				nall = 0,
+				ci = 0;
 	uint64		new_version = t->meta.manifest_version + 1;
 
-	if (n > 0)
-		memcpy(all, cur, n * sizeof(SiftManifestScopeRef));
 	for (int i = 0; i < e->nupdate_scopes; i++)
 	{
-		SiftManifestScopeRef *at;
-
 		if (e->update_scopes[i].scope_ord > SIFT_SCOPE_ORD_MAX)
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift index \"%s\": scope ordinal %d is out of range", RelationGetRelationName(rel), e->update_scopes[i].scope_ord)));
-		at = nall > 0 ? bsearch(&e->update_scopes[i], all, nall, sizeof(SiftManifestScopeRef), scope_ref_cmp) : NULL;
-		if (at != NULL)
-			*at = e->update_scopes[i];
-		else
-		{
-			all[nall++] = e->update_scopes[i];
-			qsort(all, nall, sizeof(SiftManifestScopeRef), scope_ref_cmp);
-		}
+		upd[i] = (SeqRef) {e->update_scopes[i], i};
 	}
+	qsort(upd, e->nupdate_scopes, sizeof(SeqRef), seq_ref_cmp);
+	for (int ui = 0; ui < e->nupdate_scopes; ui++)
+	{
+		if (ui + 1 < e->nupdate_scopes && upd[ui + 1].ref.scope_ord == upd[ui].ref.scope_ord)
+			continue;
+		upd[nupd++] = upd[ui];
+	}
+	for (int ui = 0; ui < nupd; ui++)
+	{
+		while (ci < n && cur[ci].scope_ord < upd[ui].ref.scope_ord)
+			all[nall++] = cur[ci++];
+		if (ci < n && cur[ci].scope_ord == upd[ui].ref.scope_ord)
+			ci++;
+		all[nall++] = upd[ui].ref;
+	}
+	while (ci < n)
+		all[nall++] = cur[ci++];
+	pfree(upd);
 	ch->set_scopes = true;
 	ch->nscopes = nall;
 	ch->scope_dir_gen = sift_manifest_new_gen(rel, 1);

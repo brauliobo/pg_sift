@@ -315,16 +315,23 @@ prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrel
 
 	scan.need = n;
 	sift_freelist_walk(index, metabuf, scan_free, &scan);
-	if (scan.nhave > 0)
-		qsort(scan.have, scan.nhave, sizeof(SiftFreeExtent), cmp_free);
-	for (int i = 0, j = 0; i < n && j < scan.nhave;)
+	for (int j = 0; j < scan.nhave; j++)
 	{
-		if (plan->ext[i].start + plan->ext[i].nblocks <= scan.have[j].start)
-			i++;
-		else if (scan.have[j].start + scan.have[j].nblocks <= plan->ext[i].start)
-			j++;
-		else
-			corrupt(index, "Block %u is released twice.", Max(plan->ext[i].start, scan.have[j].start));
+		const SiftFreeExtent *h = &scan.have[j];
+		int			lo = 0,
+					hi = n;
+
+		while (lo < hi)
+		{
+			int			mid = lo + (hi - lo) / 2;
+
+			if (plan->ext[mid].start < h->start + h->nblocks)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		if (lo > 0 && plan->ext[lo - 1].start + plan->ext[lo - 1].nblocks > h->start)
+			corrupt(index, "Block %u is released twice.", Max(plan->ext[lo - 1].start, h->start));
 	}
 	if (BlockNumberIsValid(scan.room))
 		plan->flbuf = read_locked(index, scan.room, BUFFER_LOCK_EXCLUSIVE);
@@ -433,6 +440,18 @@ free_tail(const FreeChain *c, BlockNumber hwm)
 		last->start : hwm;
 }
 
+/* The records the new pages of the list used up leave it: one pass, however many there are */
+static void
+drop_empty(FreeChain *c)
+{
+	int			kept = 0;
+
+	for (int i = 0; i < c->n; i++)
+		if (c->ext[i].nblocks > 0)
+			c->ext[kept++] = c->ext[i];
+	c->n = kept;
+}
+
 /*
  * Writes the free list anew as one sorted, coalesced chain in blocks that are free now, then switches
  * the head in one record; the old chain pages become free records. A crash before the switch leaves
@@ -457,20 +476,22 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	/* New pages come from free records, never from the live old chain; a trim never extends the relation */
 	for (int i = 0, j = 0; i < k; i++)
 	{
-		while (j < c->n && FullTransactionIdIsValid(c->ext[j].safexid))
+		while (j < c->n && (FullTransactionIdIsValid(c->ext[j].safexid) || c->ext[j].nblocks == 0))
 			j++;
 		if (j == c->n && trim)
+		{
+			drop_empty(c);
 			return InvalidBlockNumber;
+		}
 		if (j == c->n)
 			blks[i] = extend(index, metabuf, 1);
 		else
 		{
 			blks[i] = c->ext[j].start++;
 			c->ext[j].nblocks--;
-			if (c->ext[j].nblocks == 0)
-				memmove(&c->ext[j], &c->ext[j + 1], (--c->n - j) * sizeof(SiftFreeExtent));
 		}
 	}
+	drop_empty(c);
 	free_own_pages(c);
 	if (trim && (newhwm = free_tail(c, hwm)) == hwm)
 		return InvalidBlockNumber;

@@ -302,7 +302,7 @@ tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
 	else
 	{
 		merge_tombs(t, &t->recent, &t->nrecent, &t->caprecent, batch, n);
-		if (t->nrecent > TOMB_RECENT_MAX)
+		if (t->nrecent > Max(TOMB_RECENT_MAX, t->nents / 4))
 			tomb_flatten(t);
 	}
 	if (t->spill && (uint64) t->nents + t->nrecent > tomb_mem_entries())
