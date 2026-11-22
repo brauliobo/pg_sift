@@ -72,7 +72,7 @@ BEGIN
 	EXECUTE format('ANALYZE pt%sk', n / 1000);
 END $$;
 
--- 2, 3, 4: the scope of a parent over its entities (8,000 and 64,000 rows: the planner reads the scope below 6,000 rows as a join): a count, and the newest 20 rows, clean and with 5% of the rows inserted and deleted and two entities moved to the parent
+-- 2, 3, 4: the scope of a parent over its entities (16,000 and 128,000 rows: the planner reads the scope below about 9,000 rows as a join, or pushes the join into the scan): a count, and the newest 20 rows, clean and with 5% of the rows inserted and deleted and two entities moved to the parent
 CREATE FUNCTION pg_temp.mk_scope(n int) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE k int := n / 1000;
 BEGIN
@@ -135,14 +135,14 @@ END $$;
 CREATE FUNCTION pg_temp.terms(k int, n int) RETURNS text LANGUAGE sql AS
 $$ SELECT format('SELECT id FROM bm%sk WHERE body @@> %L ORDER BY sift.score(ctid) DESC LIMIT 20', k, (SELECT string_agg('w' || g, ' ') FROM generate_series(0, n - 1) g)) $$;
 
-SELECT pg_temp.mk_point(2000), pg_temp.mk_point(16000), pg_temp.mk_scope(8000), pg_temp.mk_scope(64000), pg_temp.mk_table(2000), pg_temp.mk_table(16000),
+SELECT pg_temp.mk_point(2000), pg_temp.mk_point(16000), pg_temp.mk_scope(16000), pg_temp.mk_scope(128000), pg_temp.mk_table(2000), pg_temp.mk_table(16000),
        pg_temp.mk_star(2000), pg_temp.mk_star(16000), pg_temp.mk_docs(2000), pg_temp.mk_docs(16000) \gset
 
 SELECT pg_temp.gate('point lookup', 'SELECT val FROM pt2k WHERE id = 1234', 'SELECT val FROM pt16k WHERE id = 12340', 'Index Scan', 1.8);
-SELECT pg_temp.gate('scope count, clean', pg_temp.scope_count(8), pg_temp.scope_count(64), 'SiftAggV6Scope', 1.8);
-SELECT pg_temp.dirty_scope(8000), pg_temp.dirty_scope(64000) \gset
-SELECT pg_temp.gate('scope count, dirty', pg_temp.scope_count(8), pg_temp.scope_count(64), 'SiftAggV6Scope', 1.8, 'Spec 66 #2: dirty scope summary and overlay (63D-Scope)');
-SELECT pg_temp.gate('scope top 20, dirty', pg_temp.scope_top(8), pg_temp.scope_top(64), 'SiftAggV6Scope', 2.0, 'Spec 66 #3: dirty ring and added slab (63D-Scope)');
+SELECT pg_temp.gate('scope count, clean', pg_temp.scope_count(16), pg_temp.scope_count(128), 'SiftAggV6Scope', 1.8);
+SELECT pg_temp.dirty_scope(16000), pg_temp.dirty_scope(128000) \gset
+SELECT pg_temp.gate('scope count, dirty', pg_temp.scope_count(16), pg_temp.scope_count(128), 'SiftAggV6Scope', 1.8);
+SELECT pg_temp.gate('scope top 20, dirty', pg_temp.scope_top(16), pg_temp.scope_top(128), 'SiftAggV6Scope', 2.0, 'Spec 66 #3: dirty ring and added slab (63D-Scope)');
 SELECT pg_temp.gate('bulk delete', 'DELETE FROM tb2k WHERE id % 8 = 0', 'DELETE FROM tb16k WHERE id % 8 = 0', 'ModifyTable', 10.5);
 SELECT pg_temp.gate('column update', 'UPDATE tb2k SET v = v + 1 WHERE id % 8 = 0', 'UPDATE tb16k SET v = v + 1 WHERE id % 8 = 0', 'ModifyTable', 10.5);
 SELECT pg_temp.gate('in list', pg_temp.inlist(2, 2000), pg_temp.inlist(16, 16000), 'SiftAggV6', 10.0, NULL, '{"sift.agg_force = on"}', '{"sift.agg_force = on"}');
@@ -150,5 +150,5 @@ SELECT pg_temp.gate('star range join', 'SELECT d.cat, count(*), sum(f.val) FROM 
 					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'Index Scan', 11.5);
 SELECT pg_temp.gate('bm25 terms', pg_temp.terms(2, 16), pg_temp.terms(16, 128), 'SiftScan', 11.5);
 
-DROP TABLE pt2k, pt16k, ev8k, ev64k, ep8k, ep64k, tb2k, tb16k, fx2k, fx16k, dm2k, dm16k, bm2k, bm16k;
+DROP TABLE pt2k, pt16k, ev16k, ev128k, ep16k, ep128k, tb2k, tb16k, fx2k, fx16k, dm2k, dm16k, bm2k, bm16k;
 DROP EXTENSION pg_sift;

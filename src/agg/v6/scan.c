@@ -529,7 +529,7 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 		s->stats->rows += d->nrows;
 		return true;
 	}
-	*tids_unneeded = true;
+	*tids_unneeded = s->rows == NULL;
 	return false;
 }
 

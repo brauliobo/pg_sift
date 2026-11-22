@@ -248,7 +248,7 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	double		groups;
 	const Path *dim_path = j->dim->cheapest_total_path;
 
-	if (!compile_fact(root, j, out, extra, ix, &int_col, &spec, &scan_tlist))
+	if (!compile_fact(root, j, out, extra, ix, &int_col, &spec, &scan_tlist) || OidIsValid(spec.text_indexoid))
 		return;
 	foreach_node(SortGroupClause, sgc, root->processed_groupClause)
 		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));

@@ -68,3 +68,7 @@ SELECT sift._test_f2_scope_refresh('facts_s') >= 0 AS refresh_ran, key_diff('fac
 BEGIN READ ONLY;
 SELECT answer('SELECT count(*), sum(f.n) FROM facts f JOIN members s ON s.member = f.member WHERE s.panel = 5');
 COMMIT;
+DROP TABLE facts, members;
+DROP FUNCTION answer(text), counters(regclass), key_diff(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

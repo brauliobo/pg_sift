@@ -2,6 +2,8 @@
 -- run with the aggregate on and off and the rows must be the same: an inner join on a key the small side holds once, an inner join that the small side may repeat (no key: PostgreSQL's join stays),
 -- the semi-join of an IN (sub-select), grouped and not, with a filter on the fact and a HAVING, and a small side with no row. The statements the node answered are counted.
 \set ON_ERROR_STOP on
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 DROP TABLE IF EXISTS jp_ev, jp_pr CASCADE;
 CREATE TABLE jp_ev (id bigint PRIMARY KEY, entity_id int NOT NULL, event_ts timestamp NOT NULL, kind text NOT NULL, amount numeric(12,2) NOT NULL, qty int NOT NULL);
@@ -58,3 +60,4 @@ VACUUM jp_ev;
 SELECT pg_temp.check_shapes();
 SELECT shape, sum(tried) AS tried, sum(pushed) AS pushed, sum(bad) AS mismatches FROM jp_result GROUP BY shape ORDER BY shape;
 DROP TABLE jp_ev, jp_pr CASCADE;
+DROP EXTENSION pg_sift;

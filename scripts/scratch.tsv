@@ -46,7 +46,6 @@ tap-014_tbl_writepath	600
 isolation-1	580
 installcheck-batch11	570
 tap-006_truncate	570
-installcheck-col_key_cut_overlays_suite	570
 installcheck-batch6	560
 tap-shell-col_build_standby_space	530
 plan-gate-calibrate-tuned	520
@@ -68,7 +67,6 @@ tap-006_tbl	370
 tap-019_tbl_defrag	370
 tap-shell-col_build_slices_standby	360
 tap-shell-col_scope_replica	360
-installcheck-col_gorder_text_suite	410
 installcheck-batch2	350
 tap-010_tbl_settings	320
 tap-017_tbl_autodefrag	310
@@ -86,15 +84,10 @@ tap-shell-col_build_pays	230
 tap-shell-pg_upgrade_31	230
 tap-shell-tbl_load_ring	230
 hardened	220
-installcheck-agg_join_pricing_suite	330
-installcheck-agg_probe_pricing_suite	300
-installcheck-agg_lookup_dense_types_suite	230
-installcheck-agg_topn_cost_plan_suite	230
 installcheck-batch16	220
 tap-shell-col_build_slices	220
 tap-shell-col_wbuf_crash	220
 tap-shell-maint_memory	210
-installcheck-col_gorder_group_suite	220
 installcheck-tbl_bigtx	200
 installcheck-tbl_writepath	190
 tap-shell-col_auto_merge_slices	190

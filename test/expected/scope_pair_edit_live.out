@@ -231,3 +231,5 @@ DROP TABLE events;
 DROP TABLE entity_parents;
 DROP FUNCTION scope_same(text);
 DROP FUNCTION scope_queries();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

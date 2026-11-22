@@ -113,7 +113,7 @@ sift_f2_scope_snap_start(const SiftScopeMeta *cached, uint64 stamp)
 {
 	MemoryContext parent;
 	SiftF2ScopeSnap **slot = sift_f2_scope_cache_overlay(cached, &parent);
-	MemoryContext cx = sift_mem_allocset_create(parent, "sift scope settled change");
+	MemoryContext cx = sift_mem_allocset_create(parent, "sift cache scope settled change");
 	SiftF2ScopeSnap *sn = MemoryContextAllocZero(cx, sizeof(*sn));
 
 	sn->cx = cx;

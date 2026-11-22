@@ -46,3 +46,6 @@ SELECT answer(q) FROM shapes('by_time') q;
 -- the rolling window of every month boundary of the series
 SELECT answer(format('SELECT count(*), sum(f.n) FROM by_member f JOIN pairs s ON s.member = f.member WHERE s.grp = 2 AND f.at >= timestamptz %L AND f.at < timestamptz %L', d::text, (d + interval '90 days')::text))
 FROM generate_series(timestamptz '2026-01-01', timestamptz '2026-12-31', interval '47 days 7 hours') d;
+DROP TABLE pairs, by_member, by_time;
+DROP FUNCTION answer(text), shapes(text);
+DROP EXTENSION pg_sift;

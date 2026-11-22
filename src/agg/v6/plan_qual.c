@@ -58,7 +58,7 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 		case BTEqualStrategyNumber:
 			return strat;
 		case COL_STRAT_NE:
-			return sift_v6_class(col->typid) == SV6C_F64 || xtime_pair(col->typid, exprType(operand)) ? 0 : strat;
+			return sift_v6_class(col->typid) == SV6C_F64 || exprType(operand) != col->typid ? 0 : strat;
 		case COL_STRAT_LIKE:
 		case COL_STRAT_NOT_LIKE:
 			return index && text && IsA(operand, Const) && sift_v6_qual_like_exact((const Const *) operand) ? strat : 0;

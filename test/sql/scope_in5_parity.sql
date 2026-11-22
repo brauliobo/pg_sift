@@ -3,6 +3,8 @@
 -- to several keys (the join answers), clean and after edits.
 -- Each statement runs with the aggregate on and off; the rows must be the same.
 \set ON_ERROR_STOP on
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 DROP TABLE IF EXISTS in_ev, in_ev2, in_ev3, in_pr, in_pm, in_pp CASCADE;
 CREATE TABLE in_ev (id bigint PRIMARY KEY, entity_id int NOT NULL, event_ts timestamp NOT NULL, amount numeric(12,2) NOT NULL, qty int NOT NULL);
@@ -63,3 +65,4 @@ SELECT pg_temp.check_phase('vacuumed', 'in_ev2', 'in_pm');
 SELECT pg_temp.check_phase('vacuumed', 'in_ev3', 'in_pp');
 SELECT phase, pairs, tried, (served > 0) AS served, bad AS mismatches FROM in_result ORDER BY 1, 2;
 DROP TABLE in_ev, in_ev2, in_ev3, in_pr, in_pm, in_pp CASCADE;
+DROP EXTENSION pg_sift;

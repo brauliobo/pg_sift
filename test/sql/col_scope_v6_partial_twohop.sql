@@ -100,3 +100,6 @@ SELECT same(union_shape(1, 'UNION'));
 ALTER TABLE facts DISABLE ROW LEVEL SECURITY;
 DROP OWNED BY s48_reader;
 DROP ROLE s48_reader;
+DROP TABLE events, facts, grants, links, memberships;
+DROP FUNCTION left_shape(integer), one_path(), same(text), two_paths(), union_shape(integer, text);
+DROP EXTENSION pg_sift;

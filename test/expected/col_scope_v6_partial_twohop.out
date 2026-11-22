@@ -3,9 +3,6 @@
 -- (the grants a tenant has on a member and on the groups of the member) is written as a UNION of the two paths, or as a LEFT JOIN with COALESCE and DISTINCT over the polymorphic table; the facts may be
 -- in a partial index of their live rows. Each statement is asked of the summary and of the join as written, after the build and after each change of the pairs, and the two answers are compared.
 CREATE EXTENSION pg_sift;
-NOTICE:  pg_sift is not preloaded in database "s48_g": the first statement of each session is planned twice
-DETAIL:  SHOW sift.<setting> says unrecognized configuration parameter in a session until the library is loaded.
-HINT:  ALTER DATABASE s48_g SET session_preload_libraries = 'pg_sift';
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -251,3 +248,6 @@ SELECT same(union_shape(1, 'UNION'));
 ALTER TABLE facts DISABLE ROW LEVEL SECURITY;
 DROP OWNED BY s48_reader;
 DROP ROLE s48_reader;
+DROP TABLE events, facts, grants, links, memberships;
+DROP FUNCTION left_shape(integer), one_path(), same(text), two_paths(), union_shape(integer, text);
+DROP EXTENSION pg_sift;

@@ -80,8 +80,8 @@ SELECT n, label, node_of(sql) AS node, answer_on(sql) = answer_off(sql) AS same_
  11 | group by two keys, top 10               | SiftAggV6   | t
  12 | group by an expression of a timestamp   | index scan  | t
  13 | a point lookup of a user                | normal plan | t
- 14 | LIKE on a text, count                   | normal plan | t
- 15 | rows ordered by time, limit             | normal plan | t
+ 14 | LIKE on a text, count                   | SiftAggV6   | t
+ 15 | rows ordered by time, limit             | SiftAggV6   | t
  16 | date-bucketed star join                 | index scan  | t
  17 | BM25 search with a facet                | SiftAggV6   | t
 (17 rows)

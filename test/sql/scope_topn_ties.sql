@@ -1,6 +1,8 @@
 -- The newest rows of a key when many rows share a time (the cut falls inside a tie), when rows were deleted, inserted or updated since the summary (the rows it lacks are read from the slabs and the
 -- parts it does not name; each phase is checked on a new connection) and when a key has fewer rows than the limit; each answer is compared with the heap's (aggregate off), and the statements the ring answered are counted.
 \set ON_ERROR_STOP on
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 DROP TABLE IF EXISTS tt_ev, tt_pr CASCADE;
 CREATE TABLE tt_ev (id bigint PRIMARY KEY, entity_id int NOT NULL, event_ts timestamp NOT NULL, amount numeric(12,2) NOT NULL, qty int NOT NULL);
@@ -72,3 +74,4 @@ SELECT check_phase('updated and vacuumed');
 SELECT phase, tried, ring AS answered_by_ring, bad AS mismatches FROM topn_result ORDER BY 1;
 DROP TABLE tt_ev, tt_pr, topn_result CASCADE;
 DROP FUNCTION check_phase(text);
+DROP EXTENSION pg_sift;
