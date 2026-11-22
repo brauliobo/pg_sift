@@ -18,29 +18,34 @@ sift_parts_joinable(Relation rel, SiftPart *const *src, int n)
 {
 	static const uint16 same[] = {SEC_SCHEMA, SEC_DICTS};
 	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_POINT};
+	void	   *base[lengthof(same)] = {NULL};
+	uint64		blen[lengthof(same)] = {0};
+	bool		ok = true;
 
-	for (int i = 0; i < n; i++)
+	for (int t = 0; n > 1 && t < lengthof(same); t++)
+		base[t] = sift_part_read_section(rel, src[0], same[t], &blen[t]);
+	for (int i = 0; ok && i < n; i++)
 	{
 		if (src[i]->hdr.ncols != src[0]->hdr.ncols || (src[i]->hdr.flags & SIFT_PART_FLAG_UNFROZEN) || (sift_part_section(src[i], SEC_GRANULE_TSTRIDE) != NULL) != (sift_part_section(src[0], SEC_GRANULE_TSTRIDE) != NULL) ||
 			(sift_part_section(src[i], SEC_PREAGG) != NULL) != (sift_part_section(src[0], SEC_PREAGG) != NULL) ||
 			(sift_part_section(src[i], SEC_KLL) != NULL) != (sift_part_section(src[0], SEC_KLL) != NULL))
-			return false;
-		for (int t = 0; t < lengthof(never); t++)
-			if (sift_part_section(src[i], never[t]) != NULL)
-				return false;
-		for (int t = 0; i > 0 && t < lengthof(same); t++)
+			ok = false;
+		for (int t = 0; ok && t < lengthof(never); t++)
+			ok = sift_part_section(src[i], never[t]) == NULL;
+		for (int t = 0; ok && i > 0 && t < lengthof(same); t++)
 		{
-			uint64		a,
-						b;
-			void	   *x = sift_part_read_section(rel, src[0], same[t], &a),
-					   *y = sift_part_read_section(rel, src[i], same[t], &b);
-			bool		eq = (x == NULL) == (y == NULL) && a == b && (x == NULL || memcmp(x, y, a) == 0);
+			uint64		b = 0;
+			void	   *y = sift_part_read_section(rel, src[i], same[t], &b);
 
-			if (!eq)
-				return false;
+			ok = (base[t] == NULL) == (y == NULL) && blen[t] == b && (y == NULL || memcmp(base[t], y, b) == 0);
+			if (y != NULL)
+				pfree(y);
 		}
 	}
-	return true;
+	for (int t = 0; t < lengthof(same); t++)
+		if (base[t] != NULL)
+			pfree(base[t]);
+	return ok;
 }
 
 /* The bounds of the parts as one: the tier they all share and, for each time column that every one of them has, the union of the ranges */
@@ -79,6 +84,7 @@ typedef struct JoinFill
 	const SiftGranuleDesc *dir;
 	uint32		ng;
 	uint32		at;				/* the granule whose record is held */
+	int			part_idx;		/* the part it is in: the granules are asked for in ascending order, so this only moves forward */
 	char	   *rec;
 	uint64		held_max;		/* the greatest record held at once */
 } JoinFill;
@@ -112,11 +118,10 @@ join_fill(void *arg, uint64 off, uint64 n, char *out)
 			if (f->rec == NULL)
 			{
 				SiftGranuleDesc gd;
-				int			p = 0;
 
-				while (f->first[p + 1] <= f->at)
-					p++;
-				f->rec = sift_part_read_granule(f->rel, f->src[p], f->at - f->first[p], &gd);
+				while (f->first[f->part_idx + 1] <= f->at)
+					f->part_idx++;
+				f->rec = sift_part_read_granule(f->rel, f->src[f->part_idx], f->at - f->first[f->part_idx], &gd);
 				f->held_max = Max(f->held_max, gd.data_len);
 			}
 			memcpy(out, f->rec + in_rec, real);

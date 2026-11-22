@@ -4,6 +4,8 @@
  * built on demand and dropped with the relation
  */
 #include "postgres.h"
+
+#include "lib/ilist.h"
 #include "access/table.h"
 #include "commands/defrem.h"
 #include "utils/relcache.h"
@@ -51,35 +53,43 @@ typedef struct LeafEntry
 	int			ncols;
 	ClassStats	cls[2];			/* [true]: st is NULL when the index has no scope segment */
 	MemoryContext cx;			/* everything the classes hold */
-	uint64		tick;			/* sift_cache_tick() of the last read */
-}			LeafEntry;
+	uint64 tick;            /* sift_cache_tick() of the last read */
+	dlist_node lru;         /* leaf_lru: the entries in the order of their ticks, the oldest first */
+}           LeafEntry;
 
 static HTAB *leaf_cache;
+static dlist_head leaf_lru = DLIST_STATIC_INIT(leaf_lru);
 
 static void
 leaf_entry_free(LeafEntry *e)
 {
 	MemoryContextDelete(e->cx);
 	e->cx = NULL;
+	dlist_delete(&e->lru);
 }
 
-/* an entry the planning in hand read may be held by it: only the others go */
+static void
+leaf_touch(LeafEntry *e)
+{
+	e->tick = sift_cache_tick();
+	dlist_move_tail(&leaf_lru, &e->lru);
+}
+
+/* an entry the planning in hand read may be held by it: only the others go. Those it read were touched last, so the first of the list that it did not read is the oldest */
 static LeafEntry *
 leaf_victim(void)
 {
-	HASH_SEQ_STATUS seq;
-	LeafEntry  *e,
-			   *lru = NULL;
+	dlist_iter it;
 
-	if (leaf_cache == NULL)
-		return NULL;
-	hash_seq_init(&seq, leaf_cache);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if ((am_leaf_plan == 0 || e->checked != am_leaf_plan) && (lru == NULL || e->tick < lru->tick))
-			lru = e;
-	return lru;
+	dlist_foreach(it, &leaf_lru)
+	{
+		LeafEntry *e = dlist_container(LeafEntry, lru, it.cur);
+
+		if (am_leaf_plan == 0 || e->checked != am_leaf_plan)
+			return e;
+	}
+	return NULL;
 }
-
 static uint64
 leaf_oldest(void)
 {
@@ -105,8 +115,18 @@ leaf_evict_one(void)
 static void
 leaf_evict_all(void)
 {
-	while (leaf_evict_one())
-		;
+	dlist_mutable_iter it;
+
+	dlist_foreach_modify(it, &leaf_lru)
+	{
+		LeafEntry *e = dlist_container(LeafEntry, lru, it.cur);
+		Oid key = e->index;
+
+		if (am_leaf_plan != 0 && e->checked == am_leaf_plan)
+			continue;
+		leaf_entry_free(e);
+		hash_search(leaf_cache, &key, HASH_REMOVE, NULL);
+	}
 }
 
 static const SiftCacheKind leaf_kind = {"col_leaf_cache", leaf_oldest, leaf_evict_one, leaf_evict_all};
@@ -395,7 +415,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	if (dir == NULL && e != NULL && e->base == base && e->ncols == ncols && e->dirver == sift_dir_version(index))
 	{
 		e->checked = am_leaf_plan;
-		e->tick = sift_cache_tick();
+		leaf_touch(e);
 		return e;
 	}
 	sift_stat_add(SIFT_STAT_LEAF_DIR_READ, 1);
@@ -425,7 +445,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	if (e != NULL && e->stamp == stamp && e->ncols == ncols)
 	{
 		e->checked = am_leaf_plan;
-		e->tick = sift_cache_tick();
+		leaf_touch(e);
 		e->dirver = dir->version;
 		leaf_dirs_free(own, sdir);
 		return e;
@@ -441,7 +461,8 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	sift_cache_adopt(fresh.cx);
 	e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
 	*e = fresh;
-	e->tick = sift_cache_tick();
+	dlist_push_tail(&leaf_lru, &e->lru);
+	leaf_touch(e);
 	return e;
 }
 

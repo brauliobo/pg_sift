@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 #include "storage/bufmgr.h"
+#include "core/cmp.h"
 #include "core/limits.h"
 #include "core/v1_col/tomb.h"
 #include "col/v1/wbuf/wbuf_int.h"
@@ -262,22 +263,17 @@ fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 	qsort(f->held, f->nheld, sizeof(Held), held_cmp);
 }
 
-/* Where the batch of superblock sb is, or would be, in s->b */
+/* Where the batch of superblock sb is, or would be, in s->b: the rows of a record come by key, so it is the last batch or the end but for a record that is out of order */
 static int
 set_find(const BatchSet *s, uint32 sb, bool *found)
 {
 	int			lo = 0,
 				hi = s->n;
 
-	while (lo < hi)
-	{
-		int			mid = (lo + hi) / 2;
-
-		if (s->b[mid]->sb < sb)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
+	if (s->n > 0 && s->b[s->n - 1]->sb <= sb)
+		lo = s->n - (s->b[s->n - 1]->sb == sb);
+	else
+		SIFT_BISECT(int, m, lo, hi, s->b[m]->sb < sb);
 	*found = lo < s->n && s->b[lo]->sb == sb;
 	return lo;
 }

@@ -9,6 +9,7 @@
 
 #include "col/granule/granule_int.h"
 #include "col/f2/preagg_delta.h"
+#include "core/cmp.h"
 #include "core/page_io.h"
 
 SiftGranuleDesc
@@ -119,6 +120,7 @@ sift_granule_tids(const SiftGranuleView *v, uint64 *out)
 
 	sift_chunk_open(v, SIFT_COL_TID_IDX, &c);
 	sift_chunk_tids(&c, v->hdr->nrows, out);
+	sift_chunk_close(&c);
 }
 
 static void
@@ -147,6 +149,7 @@ sift_granule_ints(const SiftGranuleView *v, int col, int64 *out, bool *isnull)
 		out[i] = isnull[i] ? 0 : vals[k++];
 	}
 	pfree(vals);
+	sift_chunk_close(&c);
 }
 
 /* The nonnull index of each of the ascending rows that holds a value; false in isnull[j] for it, true for a row that holds none; returns how many hold one */
@@ -185,6 +188,7 @@ sift_granule_point_ints(const SiftGranuleView *v, int col, const uint16 *rows, u
 		out[j] = isnull[j] ? 0 : vals[k++];
 	pfree(idx);
 	pfree(vals);
+	sift_chunk_close(&c);
 }
 
 void
@@ -204,6 +208,7 @@ sift_granule_point_f8(const SiftGranuleView *v, int col, const uint16 *rows, uin
 		out[j] = isnull[j] ? 0 : vals[k++];
 	pfree(idx);
 	pfree(vals);
+	sift_chunk_close(&c);
 }
 
 void
@@ -224,6 +229,7 @@ sift_granule_f8(const SiftGranuleView *v, int col, double *out, bool *isnull)
 		out[i] = isnull[i] ? 0 : vals[k++];
 	}
 	pfree(vals);
+	sift_chunk_close(&c);
 }
 
 void
@@ -247,6 +253,9 @@ sift_granule_strs(const SiftGranuleView *v, int col, SiftStrCell *out)
 		out[i].len = out[i].isnull ? 0 : len[k];
 		k += !out[i].isnull;
 	}
+	pfree(p);
+	pfree(len);
+	sift_chunk_release_strs(&c);
 }
 
 void
@@ -273,6 +282,7 @@ sift_granule_dict_codes(const SiftGranuleView *v, int col, const uint32 *map, ui
 			out[i] = map[codes[k++]];
 	}
 	pfree(codes);
+	sift_chunk_close(&c);
 }
 
 void
@@ -290,46 +300,157 @@ sift_granule_tags(const SiftGranuleView *v, int col, uint8 *tag)
 			if (e[i].row_idx < c.nrows)
 				tag[e[i].row_idx] = e[i].reserved;
 	}
+	sift_chunk_close(&c);
 }
 
 int
 sift_granule_chunk_len(const SiftGranuleView *v, int col)
 {
 	SiftChunk	c;
+	int			n;
 
-	col_open(v, col, &c);
-	return c.nrows;
+	if (col < 0 || col + 1 >= v->hdr->nchunks)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: column %d is not in the granule", col)));
+	if (!(v->hdr->chunks[col + 1].flags & SIFT_CHUNK_ELEMS))
+		return v->hdr->nrows;
+	sift_chunk_open(v, col + 1, &c);
+	n = c.nrows;
+	sift_chunk_close(&c);
+	return n;
+}
+
+static const uint64 *
+exc_mask_of(const SiftExcHeader *h)
+{
+	return (h->flags & SIFT_EXC_MASKED) ? (const uint64 *) ((const char *) h + sizeof(SiftExcHeader)) : NULL;
+}
+
+static bool
+exc_row_maybe(const uint64 *mask, uint32 row)
+{
+	return mask == NULL || (row < SIFT_GRANULE_ROWS && ((mask[row >> 6] >> (row & 63)) & 1));
+}
+
+void
+sift_exc_reader_open(const SiftGranuleView *v, int col, SiftExcReader *er)
+{
+	*er = (SiftExcReader) {0};
+	if (col < 0 || col + 1 >= v->hdr->nchunks)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: column %d is not in the granule", col)));
+	if (!(v->hdr->chunks[col + 1].flags & (SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_HAS_KINDS)))
+		return;
+	sift_chunk_open(v, col + 1, &er->chunk);
+	er->open = true;
+	if (er->chunk.exc == NULL)
+		return;
+	er->entries = sift_exc_entries(er->chunk.exc);
+	er->n_entries = er->chunk.exc->n_entries;
+	er->payloads = (const char *) (er->entries + er->n_entries + 1);
+	er->mask = exc_mask_of(er->chunk.exc);
+}
+
+/* The entry of a row, found from the last one the reader found (a gallop ahead of it, a bisection behind it), or NULL */
+static const SiftVariantExcEntry *
+exc_seek(SiftExcReader *er, uint32 row)
+{
+	const SiftVariantExcEntry *e = er->entries;
+	uint32		n = er->n_entries,
+				lo = 0,
+				hi = n;
+
+	if (e == NULL || n == 0 || !exc_row_maybe(er->mask, row))
+		return NULL;
+	if (er->cursor < n && e[er->cursor].row_idx < row)
+	{
+		uint32		step = 1;
+
+		for (lo = er->cursor + 1; lo + step - 1 < n && e[lo + step - 1].row_idx < row; step <<= 1)
+			lo += step;
+		hi = Min(n, lo + step);
+	}
+	else if (er->cursor < n)
+		hi = er->cursor + 1;
+	SIFT_BISECT(uint32, m, lo, hi, e[m].row_idx < row);
+	er->cursor = lo;
+	if (lo >= n || e[lo].row_idx != row)
+		return NULL;
+	er->cursor = lo + 1;
+	return &e[lo];
+}
+
+const char *
+sift_exc_reader_at(SiftExcReader *er, uint32 row, uint32 *len)
+{
+	const SiftVariantExcEntry *e = exc_seek(er, row);
+
+	*len = e == NULL ? 0 : e[1].payload_off - e[0].payload_off;
+	return *len == 0 ? NULL : er->payloads + e->payload_off;
+}
+
+uint8
+sift_exc_reader_tag(SiftExcReader *er, uint32 row)
+{
+	const SiftVariantExcEntry *e = exc_seek(er, row);
+
+	return e == NULL ? 0 : e->reserved;
+}
+
+void
+sift_exc_reader_close(SiftExcReader *er)
+{
+	if (er->open)
+		sift_chunk_close(&er->chunk);
+	*er = (SiftExcReader) {0};
+}
+
+/* The exceptions of a chunk stored uncompressed, read in place of the record: no allocation and no decompression */
+static const char *
+exc_payload_stored(const SiftGranuleView *v, const SiftChunkRef *ref, int row, uint32 *len)
+{
+	uint32		vlen = sift_chunk_validity_len(ref, v->hdr->nrows);
+	const SiftExcHeader *h = (const SiftExcHeader *) (v->rec + ref->off + vlen);
+	const SiftVariantExcEntry *e = sift_exc_entries(h);
+	uint32		lo = 0,
+				hi;
+
+	if ((uint64) vlen + sizeof(SiftExcHeader) > ref->len || h->n_entries > SIFT_GRANULE_ROWS || (uint64) vlen + SIFT_EXC_BLOCK_LEN(h) > ref->len)
+		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the exceptions of a chunk do not fit it"));
+	hi = h->n_entries;
+	if ((h->flags & SIFT_EXC_KINDS_PACKED) || !exc_row_maybe(exc_mask_of(h), row))
+		return NULL;
+	SIFT_BISECT(uint32, m, lo, hi, e[m].row_idx < (uint32) row);
+	if (lo >= h->n_entries || e[lo].row_idx != row)
+		return NULL;
+	*len = e[lo + 1].payload_off - e[lo].payload_off;
+	return *len == 0 ? NULL : (const char *) (e + h->n_entries + 1) + e[lo].payload_off;
 }
 
 const char *
 sift_granule_exc_payload(const SiftGranuleView *v, int col, int i, uint32 *len)
 {
-	SiftChunk	c;
-	const SiftVariantExcEntry *e;
-	int			lo = 0,
-				hi;
+	const SiftChunkRef *ref;
+	SiftExcReader er;
+	const char *p;
 
-	col_open(v, col, &c);
 	*len = 0;
-	if (c.exc == NULL)
+	if (col < 0 || col + 1 >= v->hdr->nchunks)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: column %d is not in the granule", col)));
+	ref = &v->hdr->chunks[col + 1];
+	if (!(ref->flags & (SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_HAS_KINDS)))
 		return NULL;
-	e = sift_exc_entries(c.exc);
-	hi = c.exc->n_entries - 1;
-	while (lo <= hi)
+	if (!(ref->flags & (SIFT_CHUNK_COMPRESSED | SIFT_CHUNK_ELEMS)))
+		return exc_payload_stored(v, ref, i, len);
+	sift_exc_reader_open(v, col, &er);
+	p = sift_exc_reader_at(&er, i, len);
+	if (p != NULL && (er.chunk.owned & SIFT_CHUNK_OWN_RAW))
 	{
-		int			mid = (lo + hi) / 2;
+		char	   *copy = palloc(*len);
 
-		if (e[mid].row_idx == i)
-		{
-			*len = e[mid + 1].payload_off - e[mid].payload_off;
-			return *len == 0 ? NULL : (const char *) (e + c.exc->n_entries + 1) + e[mid].payload_off;
-		}
-		if (e[mid].row_idx < i)
-			lo = mid + 1;
-		else
-			hi = mid - 1;
+		memcpy(copy, p, *len);
+		p = copy;
 	}
-	return NULL;
+	sift_exc_reader_close(&er);
+	return p;
 }
 
 /* Writing a part from rows */

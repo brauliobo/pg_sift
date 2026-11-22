@@ -5,6 +5,7 @@
 #include "core/host.h"
 
 #include "core/limits.h"
+#include "col/v1/batch_int.h"
 #include "col/v1/enc.h"
 #include "col/v1/enc_int.h"
 
@@ -624,10 +625,8 @@ sift_cbatch_row(const SiftColBatch *b, uint32 r, SiftColRow *row)
 	row->ncols = s->ncols;
 	sift_key_to_tid(b->keys[r], &row->tid);
 	for (int id = 0; id < s->ncols; id++)
-		if (s->cols[id].kind == SIFT_COLK_GROUP)
-			for (int c = id + 1; c < s->ncols; c++)
-				if (s->cols[c].parent == id)
-					total += b->col[id].eoff[r + 1] - b->col[id].eoff[r];
+		if (SIFT_SCHEMA_NCHILD(s, id) > 0)
+			total += (Size) SIFT_SCHEMA_NCHILD(s, id) * (b->col[id].eoff[r + 1] - b->col[id].eoff[r]);
 
 	if (total > 0 && (row->elem[s->ncols] == NULL || ELEM_BLOCK(row->elem[s->ncols])->cap < total))
 	{
@@ -654,16 +653,15 @@ sift_cbatch_row(const SiftColBatch *b, uint32 r, SiftColRow *row)
 		sift_cbatch_value(b, id, r, &row->val[id]);
 		if (d->kind != SIFT_COLK_GROUP)
 			continue;
-		for (int c = id + 1; c < s->ncols; c++)
-			if (s->cols[c].parent == id)
-			{
-				uint32		first = b->col[id].eoff[r],
-							count = b->col[id].eoff[r + 1] - first;
+		SIFT_SCHEMA_FOREACH_CHILD(s, id, k, c)
+		{
+			uint32		first = b->col[id].eoff[r],
+						count = b->col[id].eoff[r + 1] - first;
 
-				row->elem[c] = next;
-				for (uint32 j = 0; j < count; j++)
-					sift_cbatch_value(b, c, first + j, next++);
-			}
+			row->elem[c] = next;
+			for (uint32 j = 0; j < count; j++)
+				sift_cbatch_value(b, c, first + j, next++);
+		}
 	}
 }
 
@@ -701,35 +699,11 @@ copy_slot(SiftColBatch *dst, const SiftColBatch *src, int id, uint32 slot)
 	}
 }
 
-/* The codes of the dictionary of one source batch in the dictionary of dst: one lookup of a string for each code, not for each row (-1: not asked yet) */
-typedef struct CodeMap
-{
-	const SiftCDict *from;
-	int64	   *to;
-} CodeMap;
-
-static int64 *
-code_map(CodeMap **maps, int *nmaps, const SiftCDict *from)
-{
-	CodeMap    *m;
-
-	for (int i = 0; i < *nmaps; i++)
-		if ((*maps)[i].from == from)
-			return (*maps)[i].to;
-	*maps = *maps ? repalloc(*maps, (*nmaps + 1) * sizeof(CodeMap)) : palloc((*nmaps + 1) * sizeof(CodeMap));
-	m = &(*maps)[(*nmaps)++];
-	m->from = from;
-	m->to = palloc(Max(from->n, 1) * sizeof(int64));
-	memset(m->to, 0xff, Max(from->n, 1) * sizeof(int64));
-	return m->to;
-}
-
 /* The slots of a string leaf of the refs' rows, as put_value makes them, each string looked up in the dictionary of dst once for each dictionary of the sources it comes from */
 static void
 copy_str_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n, int id)
 {
-	CodeMap    *maps = NULL;
-	int			nmaps = 0;
+	CodeMapTab	maps = {0};
 	const SiftColBatch *last = NULL;
 	int64	   *lto = NULL;
 
@@ -747,7 +721,7 @@ copy_str_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n
 
 		if (!isnull)
 		{
-			int64	   *to = last == src ? lto : (lto = code_map(&maps, &nmaps, src->dict[id]));
+			int64	   *to = last == src ? lto : (lto = code_map(&maps, src->dict[id]));
 
 			last = src;
 			key = to[sv->key[r]];
@@ -771,10 +745,7 @@ copy_str_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32 n
 		else
 			dst->col[id].key[dst->col[id].n++] = key;
 	}
-	for (int i = 0; i < nmaps; i++)
-		pfree(maps[i].to);
-	if (maps)
-		pfree(maps);
+	code_map_free(&maps);
 #undef REF
 }
 
@@ -859,10 +830,9 @@ batch_copy_rows(SiftColBatch *dst, const SiftColRowRef *ref, Size stride, uint32
 				first = src->col[id].eoff[r];
 				count = kept != NULL && !kept[id] ? 0 : src->col[id].eoff[r + 1] - first;
 				batch_group_end(dst, id, count);
-				for (int c = id + 1; c < s->ncols; c++)
-					if (s->cols[c].parent == id)
-						for (uint32 j = 0; j < count; j++)
-							copy_slot(dst, src, c, first + j);
+				SIFT_SCHEMA_FOREACH_CHILD(s, id, k, c)
+					for (uint32 j = 0; j < count; j++)
+						copy_slot(dst, src, c, first + j);
 			}
 	}
 	for (uint32 i = 0; i < n; i++)

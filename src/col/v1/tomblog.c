@@ -8,6 +8,7 @@
 #include "access/table.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "lib/ilist.h"
 #include "storage/lwlock.h"
 #include "storage/procarray.h"
 #include "utils/hsearch.h"
@@ -27,7 +28,9 @@ typedef struct LogEnt
 {
 	Oid			relid;			/* hash key */
 	uint32		hash;			/* of its pg_class row in the RELOID syscache, which a callback names it by */
-	bool		stale;			/* an invalidation of the index's pg_class row: has it been dropped? (reap_stale) */
+	bool		stale;			/* an invalidation of the index's pg_class row: has it been dropped? (reap_stale); the entry is then on log_stale */
+	dlist_node	lru;			/* log_lru: the entries in the order of their last read, the oldest first */
+	dlist_node	stale_node;		/* log_stale */
 	RelFileNumber relnumber;
 	bool		has_seg;		/* the index has its tombstone segment (an index does not lose it: VACUUM replaces it, a rebuild is another file) */
 	MemoryContext cxt;
@@ -45,31 +48,53 @@ typedef struct LogPin
 } LogPin;
 
 static HTAB *log_tab;
+static dlist_head log_lru = DLIST_STATIC_INIT(log_lru);
+static dlist_head log_stale = DLIST_STATIC_INIT(log_stale);
+static bool log_inval_all;		/* every entry is stale: reap_stale marks them, so that the callback that says it does no work */
+
+static void
+log_unmark(LogEnt *e)
+{
+	if (e->stale)
+		dlist_delete(&e->stale_node);
+	e->stale = false;
+}
+
+static void
+log_mark(LogEnt *e)
+{
+	if (e->stale)
+		return;
+	dlist_push_tail(&log_stale, &e->stale_node);
+	e->stale = true;
+}
 
 static void
 log_drop(LogEnt *e)
 {
 	Oid			relid = e->relid;
 
+	log_unmark(e);
+	dlist_delete(&e->lru);
 	sift_tomb_forget(&e->log);
 	MemoryContextDelete(e->cxt);
 	(void) hash_search(log_tab, &relid, HASH_REMOVE, NULL);
 }
 
+/* the entries are in the order of their last read: the first that no statement holds is the least recently used */
 static LogEnt *
 log_victim(void)
 {
-	HASH_SEQ_STATUS seq;
-	LogEnt	   *e,
-			   *lru = NULL;
+	dlist_iter	it;
 
-	if (log_tab == NULL)
-		return NULL;
-	hash_seq_init(&seq, log_tab);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (e->pins == 0 && (lru == NULL || e->tick < lru->tick))
-			lru = e;
-	return lru;
+	dlist_foreach(it, &log_lru)
+	{
+		LogEnt	   *e = dlist_container(LogEnt, lru, it.cur);
+
+		if (e->pins == 0)
+			return e;
+	}
+	return NULL;
 }
 
 static uint64
@@ -94,8 +119,15 @@ log_evict_one(void)
 static void
 log_evict_all(void)
 {
-	while (log_evict_one())
-		;
+	dlist_mutable_iter it;
+
+	dlist_foreach_modify(it, &log_lru)
+	{
+		LogEnt	   *e = dlist_container(LogEnt, lru, it.cur);
+
+		if (e->pins == 0)
+			log_drop(e);
+	}
 }
 
 static const SiftCacheKind log_kind = {"col_tomblog", log_oldest, log_evict_one, log_evict_all};
@@ -146,33 +178,44 @@ log_inval(Datum arg, int cacheid, uint32 hashvalue)
 	HASH_SEQ_STATUS seq;
 	LogEnt	   *e;
 
+	if (hashvalue == 0)
+	{
+		log_inval_all = true;
+		return;
+	}
 	hash_seq_init(&seq, log_tab);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		e->stale |= hashvalue == 0 || e->hash == hashvalue;
+		if (e->hash == hashvalue)
+			log_mark(e);
 }
 
 /* At the start of a use of the cache, where no log pointer of another index is being relied on across an invalidation of it: frees the marked entries whose index is gone */
 static void
 reap_stale(Oid keep)
 {
-	HASH_SEQ_STATUS seq;
-	LogEnt	   *e;
+	dlist_iter	all;
+	dlist_mutable_iter it;
 
 #ifdef SIFT_TESTING
 	if (sift_test_no_log_reap)
 		return;
 #endif
-	hash_seq_init(&seq, log_tab);
-	while ((e = hash_seq_search(&seq)) != NULL)
+	if (log_inval_all)
 	{
-		if (!e->stale || e->relid == keep || e->pins > 0)
+		dlist_foreach(all, &log_lru)
+			log_mark(dlist_container(LogEnt, lru, all.cur));
+		log_inval_all = false;
+	}
+	dlist_foreach_modify(it, &log_stale)
+	{
+		LogEnt	   *e = dlist_container(LogEnt, stale_node, it.cur);
+
+		if (e->relid == keep || e->pins > 0)
 			continue;
 		if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(e->relid)))
-		{
-			e->stale = false;
-			continue;
-		}
-		log_drop(e);
+			log_unmark(e);
+		else
+			log_drop(e);
 	}
 }
 
@@ -202,6 +245,8 @@ log_ent(Relation index)
 	{
 		sift_tomb_forget(&e->log);
 		MemoryContextDelete(e->cxt);
+		log_unmark(e);
+		dlist_delete(&e->lru);
 		found = false;
 	}
 	if (!found)
@@ -209,6 +254,8 @@ log_ent(Relation index)
 		e->relnumber = index->rd_locator.relNumber;
 		e->hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid));
 		e->stale = false;
+		e->tick = sift_cache_tick();
+		dlist_push_tail(&log_lru, &e->lru);
 		e->has_seg = false;
 		e->cxt = sift_cache_create_context("sift cache tombstone log");
 		e->pins = 0;
@@ -220,6 +267,7 @@ log_ent(Relation index)
 	}
 	log_pin(e);
 	e->tick = sift_cache_tick();
+	dlist_move_tail(&log_lru, &e->lru);
 	if (e->dir && e->dir->version == sift_dir_version(index))
 		return e;
 	if (e->dir)
@@ -310,7 +358,7 @@ sift_col_log_appender(Relation index)
 	Oid			relid = RelationGetRelid(index);
 	LogEnt	   *e = log_tab != NULL ? hash_search(log_tab, &relid, HASH_FIND, NULL) : NULL;
 
-	if (e != NULL && e->has_seg && !e->stale && e->relnumber == index->rd_locator.relNumber)
+	if (e != NULL && e->has_seg && !log_inval_all && !e->stale && e->relnumber == index->rd_locator.relNumber)
 		return &e->log;
 	e = log_ent(index);
 	if (sift_tomb_find_seg(e->dir) == NULL)

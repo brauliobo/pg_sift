@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 #include "miscadmin.h"
+#include "lib/ilist.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -43,25 +44,17 @@ typedef struct DeadEnt
 	SiftKey    *dead;
 	MemoryContext cx;
 	uint64		tick;
+	dlist_node	lru;			/* dead_lru: the lists in the order of their last use, the oldest first */
 } DeadEnt;
 
 static MemoryContext dead_cxt;
 static HTAB *dead_tab;
+static dlist_head dead_lru = DLIST_STATIC_INIT(dead_lru);
 
 static DeadEnt *
 dead_victim(void)
 {
-	HASH_SEQ_STATUS seq;
-	DeadEnt    *e,
-			   *lru = NULL;
-
-	if (dead_tab == NULL)
-		return NULL;
-	hash_seq_init(&seq, dead_tab);
-	while ((e = hash_seq_search(&seq)) != NULL)
-		if (lru == NULL || e->tick < lru->tick)
-			lru = e;
-	return lru;
+	return dlist_is_empty(&dead_lru) ? NULL : dlist_head_element(DeadEnt, lru, &dead_lru);
 }
 
 static uint64
@@ -77,6 +70,7 @@ dead_drop(DeadEnt *e)
 {
 	DeadKey		key = e->key;
 
+	dlist_delete(&e->lru);
 	MemoryContextDelete(e->cx);
 	hash_search(dead_tab, &key, HASH_REMOVE, NULL);
 }
@@ -95,8 +89,10 @@ dead_evict_one(void)
 static void
 dead_evict_all(void)
 {
-	while (dead_evict_one())
-		;
+	dlist_mutable_iter it;
+
+	dlist_foreach_modify(it, &dead_lru)
+		dead_drop(dlist_container(DeadEnt, lru, it.cur));
 }
 
 static const SiftCacheKind dead_kind = {"col_dead_cxt", dead_oldest, dead_evict_one, dead_evict_all};
@@ -126,6 +122,7 @@ dead_put(const DeadKey *key, uint32 stamp, const SiftKey *dead, uint32 n)
 	e->n = n;
 	e->cx = cx;
 	e->tick = sift_cache_tick();
+	dlist_push_tail(&dead_lru, &e->lru);
 	e->dead = MemoryContextAlloc(cx, Max(n, 1) * sizeof(SiftKey));
 	memcpy(e->dead, dead, n * sizeof(SiftKey));
 }
@@ -163,7 +160,10 @@ sift_cseg_unit_dead(SiftColSegment *seg, uint32 u, MemoryContext mcxt, SiftKey *
 	if (e && e->stamp != stamp)
 		e = NULL;
 	if (e)
+	{
 		e->tick = sift_cache_tick();
+		dlist_move_tail(&dead_lru, &e->lru);
+	}
 	if (e == NULL && !sift_cseg_unit_view(seg, u, &v))
 		return false;
 	if (e)

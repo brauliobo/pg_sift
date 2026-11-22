@@ -16,14 +16,17 @@ typedef struct PartSkip
 	const char *sec;
 	uint64		len;
 	const SiftSkipColDesc *desc;
-	uint32		nentries;
+	uint32 nentries;
+	uint32 cur;                 /* the entry of desc the keys asked for, in order, have got to */
+	bool sorted;                /* desc ascends by (col, kind), as the writers make it: the entries are then found by one pass over them */
 } PartSkip;
 
 typedef struct JoinKey
 {
 	uint16		col;
-	uint8		kind;
-	uint16		param;
+	uint8 kind;
+	uint16 param;
+	uint32 seq;                 /* the order the entries came in: of the entries of one (col, kind) the first one's param is kept */
 } JoinKey;
 
 static const PartSkip *
@@ -41,6 +44,9 @@ open_part(Relation rel, const SiftPart *part, PartSkip *ps)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The skipping indexes of the part do not start with their header.");
 	ps->desc = (const SiftSkipColDesc *) (ps->sec + sizeof(*h));
 	ps->nentries = h->nentries;
+	ps->sorted = true;
+	for (uint32 e = 1; e < ps->nentries && ps->sorted; e++)
+		ps->sorted = ps->desc[e - 1].col < ps->desc[e].col || (ps->desc[e - 1].col == ps->desc[e].col && ps->desc[e - 1].kind < ps->desc[e].kind);
 	return ps;
 }
 
@@ -50,12 +56,25 @@ cmp_key(const void *a, const void *b)
 	const JoinKey *x = a,
 			   *y = b;
 
-	return x->col != y->col ? (x->col > y->col) - (x->col < y->col) : (x->kind > y->kind) - (x->kind < y->kind);
+	if (x->col != y->col)
+		return (x->col > y->col) - (x->col < y->col);
+	if (x->kind != y->kind)
+		return (x->kind > y->kind) - (x->kind < y->kind);
+	return (x->seq > y->seq) - (x->seq < y->seq);
 }
 
+/* The entry of the part for a key; the keys come in ascending order, so a part whose entries ascend as well is read once from its first entry to its last */
 static const SiftSkipColDesc *
-find_desc(const PartSkip *ps, const JoinKey *k)
+find_desc(PartSkip *ps, const JoinKey *k)
 {
+	if (ps->sorted)
+	{
+		while (ps->cur < ps->nentries && (ps->desc[ps->cur].col < k->col || (ps->desc[ps->cur].col == k->col && ps->desc[ps->cur].kind < k->kind)))
+			ps->cur++;
+		if (ps->cur < ps->nentries && ps->desc[ps->cur].col == k->col && ps->desc[ps->cur].kind == k->kind && ps->desc[ps->cur].param == k->param)
+			return &ps->desc[ps->cur];
+		return NULL;
+	}
 	for (uint32 i = 0; i < ps->nentries; i++)
 		if (ps->desc[i].col == k->col && ps->desc[i].kind == k->kind && ps->desc[i].param == k->param)
 			return &ps->desc[i];
@@ -95,34 +114,37 @@ bool
 sift_skip_join(Relation rel, SiftPart *const *src, int n, StringInfo out)
 {
 	PartSkip   *ps = palloc(n * sizeof(PartSkip));
-	JoinKey    *keys = palloc(1 * sizeof(JoinKey));
-	int			nkeys = 0,
-				capk = 1;
-	uint64		ng = 0;
-	bool		any = false;
+	JoinKey    *keys;
+	int         nkeys = 0;
+	uint64      ng = 0,
+				total_entries = 0;
+	bool        any = false;
 
 	for (int i = 0; i < n; i++)
 	{
 		open_part(rel, src[i], &ps[i]);
 		ng += src[i]->hdr.ngranules;
 		any |= ps[i].sec != NULL;
+		total_entries += ps[i].nentries;
+	}
+	keys = palloc(Max(total_entries, 1) * sizeof(JoinKey));
+	for (int i = 0; i < n; i++)
 		for (uint32 e = 0; e < ps[i].nentries; e++)
 		{
-			JoinKey		k = {ps[i].desc[e].col, ps[i].desc[e].kind, ps[i].desc[e].param};
-			bool		known = false;
-
-			for (int j = 0; j < nkeys && !known; j++)
-				known = keys[j].col == k.col && keys[j].kind == k.kind;
-			if (known)
-				continue;
-			if (nkeys == capk)
-				keys = repalloc(keys, (capk *= 2) * sizeof(JoinKey));
-			keys[nkeys++] = k;
+			keys[nkeys] = (JoinKey) {ps[i].desc[e].col, ps[i].desc[e].kind, ps[i].desc[e].param, (uint32) nkeys};
+			nkeys++;
 		}
+	qsort(keys, nkeys, sizeof(JoinKey), cmp_key);
+	{
+		int         m = 0;
+
+		for (int k = 0; k < nkeys; k++)
+			if (m == 0 || keys[m - 1].col != keys[k].col || keys[m - 1].kind != keys[k].kind)
+				keys[m++] = keys[k];
+		nkeys = m;
 	}
 	if (!any)
 		return false;
-	qsort(keys, nkeys, sizeof(JoinKey), cmp_key);
 	{
 		SiftSkipIndexHeader h = {.magic = SIFT_SKIP_MAGIC,.version = SIFT_SKIP_VERSION,.nentries = nkeys,.ngranules = (uint32) ng};
 		uint32		at = sizeof(h) + nkeys * sizeof(SiftSkipColDesc),

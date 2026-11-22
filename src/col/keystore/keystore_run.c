@@ -167,23 +167,32 @@ load_run(SiftKeyStore *ks, const SiftSegEntry *e)
 
 #define KEYSTORE_PREFETCH	32	/* hashes computed, and their slots prefetched, before they are probed */
 
-static const char *
-view_string(const KeyStoreView *v, uint64 code, uint32 *len)
+/* The piece that holds a code */
+static int
+view_piece_at(const KeyStoreView *v, uint64 code)
 {
-	int			lo = 0,
-				hi = v->npiece - 1;
+	int lo = 0,
+		hi = v->npiece - 1;
 
 	Assert(code < v->total);
 	while (lo < hi)
 	{
-		int			mid = (lo + hi + 1) / 2;
+		int mid = (lo + hi + 1) / 2;
 
 		if (v->piece[mid].lo <= code)
 			lo = mid;
 		else
 			hi = mid - 1;
 	}
-	return sift_cdict_str(v->piece[lo].d, (uint32) (code - v->piece[lo].dbase), len);
+	return lo;
+}
+
+static const char *
+view_string(const KeyStoreView *v, uint64 code, uint32 *len)
+{
+	const ViewPiece *pc = &v->piece[view_piece_at(v, code)];
+
+	return sift_cdict_str(pc->d, (uint32) (code - pc->dbase), len);
 }
 
 static void
@@ -201,6 +210,7 @@ static void
 view_index(SiftKeyStore *ks)
 {
 	KeyStoreView *v = ks->view;
+	int pi = v->indexed < v->total ? view_piece_at(v, v->indexed) : 0;
 
 	if (v->slots == NULL || v->nslots < v->total * 2)
 	{
@@ -217,13 +227,17 @@ view_index(SiftKeyStore *ks)
 	}
 	for (uint64 c = v->indexed; c < v->total; c += KEYSTORE_PREFETCH)
 	{
-		uint32		n = Min(KEYSTORE_PREFETCH, v->total - c);
-		uint64		slot[KEYSTORE_PREFETCH];
+		uint32 n = Min(KEYSTORE_PREFETCH, v->total - c);
+		uint64 slot[KEYSTORE_PREFETCH];
 
 		for (uint32 j = 0; j < n; j++)
 		{
-			uint32		len;
-			const char *s = view_string(v, c + j, &len);
+			uint32 len;
+			const char *s;
+
+			while (pi + 1 < v->npiece && v->piece[pi + 1].lo <= c + j)
+				pi++;
+			s = sift_cdict_str(v->piece[pi].d, (uint32) (c + j - v->piece[pi].dbase), &len);
 
 			slot[j] = (uint64) sift_cdict_mem_hash(s, len) << 32 | (c + j + 1);
 			__builtin_prefetch(&v->slots[(uint32) (slot[j] >> 32) & (v->nslots - 1)], 1);
@@ -245,9 +259,13 @@ view_find(const KeyStoreView *v, const char *s, uint32 len, uint32 hash)
 
 		if (u == 0)
 			return -1;
-		if ((uint32) (u >> 32) == hash && (view_string(v, (uint32) u - 1, &l), l == len) &&
-			memcmp(view_string(v, (uint32) u - 1, &l), s, len) == 0)
-			return (uint32) u - 1;
+		if ((uint32) (u >> 32) == hash)
+		{
+			const char *cand = view_string(v, (uint32) u - 1, &l);
+
+			if (l == len && memcmp(cand, s, len) == 0)
+				return (uint32) u - 1;
+		}
 	}
 }
 

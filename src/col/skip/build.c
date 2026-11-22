@@ -32,7 +32,8 @@ typedef struct Builder
 	uint64		budget;
 	uint64	   *tab;			/* scratch: the distinct hashes of a granule */
 	uint32	   *tris;			/* scratch: the distinct trigrams of a granule */
-	uint32	   *tri_tab;
+	uint32     *tri_tab;
+	int        *sidx;           /* the stream of (col, kind) at col * (SIFT_SKIP_NKINDS + 1) + kind, -1: none yet */
 } Builder;
 
 #define TAB_N			16384
@@ -68,11 +69,14 @@ stream_keep(Builder *b, Stream *s)
 static Stream *
 stream_of(Builder *b, int col, SiftSkipKind kind, int param)
 {
-	for (int i = 0; i < b->ns; i++)
-		if (b->s[i]->col == col && b->s[i]->kind == kind)
-			return b->s[i];
-	stream_keep(b, stream_new(b, col, kind, param));
-	return b->s[b->ns - 1];
+	int slot = col * (SIFT_SKIP_NKINDS + 1) + kind;
+
+	if (b->sidx[slot] < 0)
+	{
+		stream_keep(b, stream_new(b, col, kind, param));
+		b->sidx[slot] = b->ns - 1;
+	}
+	return b->s[b->sidx[slot]];
 }
 
 static void
@@ -500,6 +504,8 @@ sift_skip_build(const SiftRows *rows, const int *gstart, int ng, const SiftDictE
 
 	if (b.budget == 0)
 		return false;
+	b.sidx = palloc(Max(rows->ncols, 1) * (SIFT_SKIP_NKINDS + 1) * sizeof(int));
+	memset(b.sidx, 0xFF, Max(rows->ncols, 1) * (SIFT_SKIP_NKINDS + 1) * sizeof(int));
 	b.tab = palloc(TAB_N * sizeof(uint64));
 	b.tris = palloc((SIFT_TRIGRAM_SATURATE + 1) * sizeof(uint32));
 	b.tri_tab = palloc(TRI_TAB_N * sizeof(uint32));
@@ -508,7 +514,8 @@ sift_skip_build(const SiftRows *rows, const int *gstart, int ng, const SiftDictE
 		const SiftColIn *col = &rows->cols[c];
 		bool	   *wide,
 				   *text;
-		bool		small_dict;
+		bool small_dict;
+		SiftColIn coded;
 
 		if (!col_eligible(col))
 			continue;
@@ -516,9 +523,12 @@ sift_skip_build(const SiftRows *rows, const int *gstart, int ng, const SiftDictE
 		text = palloc0(ng);
 		empty[c] = palloc0(ng);
 		small_dict = dicts != NULL && dicts[c] != NULL && dicts[c]->n <= SIFT_SKIP_DICT_MAX;
+		coded = *col;
+		if (coded.dcode == NULL && coded.pdict == NULL && dicts != NULL && dicts[c] != NULL && dicts[c]->row_codes != NULL)
+			coded.dcode = dicts[c]->row_codes;
 		for (int g = 0; g < ng; g++)
 		{
-			SiftColIn	slice = sift_colin_slice(col, gstart[g]);
+			SiftColIn slice = sift_colin_slice(&coded, gstart[g]);
 			int			n = gstart[g + 1] - gstart[g];
 
 			wide[g] = col->kind == SIFT_CELL_INT ? int_granule(&b, c, g, &slice, n, &empty[c][g]) :
@@ -538,6 +548,7 @@ sift_skip_build(const SiftRows *rows, const int *gstart, int ng, const SiftDictE
 			if (pass == 0 ? (str && cand[i].kind == SIFT_SKIP_BLOOM_SB) : pass == 1 ? (str && cand[i].kind == SIFT_SKIP_TRIGRAM_SB) : !str)
 				filter_stream(&b, rows, gstart, &cand[i]);
 		}
+	pfree(b.sidx);
 	if (b.ns == 0)
 		return false;
 	write_section(&b, (const bool *const *) empty, out);

@@ -27,6 +27,7 @@
 #include "utils/memutils.h"
 
 #include "agg/stats.h"
+#include "core/cmp.h"
 #include "core/shmbudget.h"
 #include "col/dictshm.h"
 #include "col/dictshm_int.h"
@@ -309,6 +310,35 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	return d;
 }
 
+/* The first place of the index that ends after at: the places that a record at [at, at + len) covers follow it while they begin before at + len */
+static int
+ord_first(const Dshm *s, Size at)
+{
+	int			lo = 0,
+				hi = s->nord;
+
+	SIFT_BISECT(int, m, lo, hi, s->dir[s->ord[m]].off + s->dir[s->ord[m]].len <= at);
+	return lo;
+}
+
+static void
+ord_drop(Dshm *s, int slot)
+{
+	int			i = ord_first(s, s->dir[slot].off);
+
+	if (i < s->nord && s->ord[i] == slot)
+		memmove(s->ord + i, s->ord + i + 1, (s->nord-- - i - 1) * sizeof(int16));
+}
+
+static void
+ord_add(Dshm *s, int slot)
+{
+	int			i = ord_first(s, s->dir[slot].off);
+
+	memmove(s->ord + i + 1, s->ord + i, (s->nord++ - i) * sizeof(int16));
+	s->ord[i] = (int16) slot;
+}
+
 /*
  * Takes len bytes of the ring for a record, not over the records that are pinned or being copied (under the spinlock): the next place after the head that
  * is free; the unpinned records it covers go. False when there is none.
@@ -317,15 +347,17 @@ bool
 ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted)
 {
 	Size		at = s->head + len > s->size ? 0 : s->head;
-	int			slot = -1;
+	int			slot = -1,
+				first,
+				end;
 
 	for (int tries = 0; tries < DSHM_TRIES; tries++)
 	{
 		Size		next = 0;
 
-		for (int i = 0; i < lengthof(s->dir); i++)
-			if (s->dir[i].state != E_FREE && s->dir[i].pins > 0 && s->dir[i].off < at + len && at < s->dir[i].off + s->dir[i].len)
-				next = Max(next, s->dir[i].off + s->dir[i].len);
+		for (int i = ord_first(s, at); i < s->nord && s->dir[s->ord[i]].off < at + len; i++)
+			if (s->dir[s->ord[i]].state != E_FREE && s->dir[s->ord[i]].pins > 0)
+				next = Max(next, s->dir[s->ord[i]].off + s->dir[s->ord[i]].len);
 		for (int i = 0; i < DSHM_FLIGHT; i++)
 			if (s->flight[i].len > 0 && s->flight[i].off < at + len && at < s->flight[i].off + s->flight[i].len)
 				next = Max(next, s->flight[i].off + s->flight[i].len);
@@ -342,13 +374,16 @@ ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted)
 			slot = i;
 	if (slot < 0)
 		return false;
-	for (int i = 0; i < lengthof(s->dir); i++)
-		if (s->dir[i].state != E_FREE && s->dir[i].off < at + len && at < s->dir[i].off + s->dir[i].len)
+	first = ord_first(s, at);
+	for (end = first; end < s->nord && s->dir[s->ord[end]].off < at + len; end++)
+		if (s->dir[s->ord[end]].state != E_FREE)
 		{
-			*evicted += s->dir[i].state == E_LIVE;
-			s->dir[i].state = E_FREE;
+			*evicted += s->dir[s->ord[end]].state == E_LIVE;
+			s->dir[s->ord[end]].state = E_FREE;
 			s->thrown++;
 		}
+	memmove(s->ord + first, s->ord + end, (s->nord - end) * sizeof(int16));
+	s->nord -= end - first;
 	s->flight[slot] = (DshmFlight) {.off = at, .len = len};
 	s->head = at + len;
 	*off = at;
@@ -426,7 +461,13 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		evicted += slot >= 0;
 	}
 	if (slot >= 0)
+	{
+		int			at = (int) (b - s->dir) + slot;
+
+		ord_drop(s, at);
 		b[slot] = (DshmEnt) {.state = E_LIVE, .key = *k, .off = off, .len = l.total, .asks = asks, .orows = orows, .tick = ++s->tick};
+		ord_add(s, at);
+	}
 	if (++s->writes >= DSHM_WINDOW)
 	{
 		if (s->thrown > s->found)

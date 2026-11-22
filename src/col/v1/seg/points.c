@@ -319,10 +319,11 @@ point_find_row(void *arg, uint64 slot, uint32 pos)
 	if (ph->pl->zrows)
 	{
 		uint64	   *code = seg_point_list_read(ph->seg, ph->col, ph->pl, off, SIFT_CPOINT_SEG_ROWS - 1, UINT32_MAX, &hi, NULL);
+			uint32		hi_n = hi;
 
-		for (uint32 i = 0; i < hi; i++)
-			ph->found |= code[i] == ph->row;
-		pfree(code);
+		SIFT_BISECT(uint32, m, lo, hi, code[m] < ph->row);
+			ph->found |= lo < hi_n && code[lo] == ph->row;
+			pfree(code);
 		return;
 	}
 	hi = seg_point_list_count(ph->seg, ph->col, ph->pl, off);
@@ -550,6 +551,7 @@ struct SiftPointStream
 	bool		any;
 	uint64	   *slots;
 	int			nslots;
+	int			capslots;
 	int			nlists;
 	/* a lookup of many keys (SIFT_CPOINT_CHUNK_MIN or more) is read a chunk of keys at a time: the keys not looked up yet, and the addresses of the chunk in hand */
 	int64	   *keys;			/* NULL for the places of a dictionary: the keys are the codes at places pfrom + kpos on of its byte order (sift_cseg_point_stream_open_places) */
@@ -570,8 +572,11 @@ stream_slot(void *arg, uint64 slot, uint32 pos)
 
 	if ((TID_PAYLOAD(slot) & 0xFFFF) == SIFT_CPOINT_TID_LIST && s->nlists++ == TCUR_MAX)
 		return;
-	if (s->nslots % 64 == 0)
-		s->slots = s->slots ? repalloc(s->slots, (s->nslots + 64) * sizeof(uint64)) : palloc(64 * sizeof(uint64));
+	if (s->nslots == s->capslots)
+	{
+		s->capslots = Max(64, s->capslots * 2);
+		s->slots = s->slots ? repalloc(s->slots, (Size) s->capslots * sizeof(uint64)) : palloc((Size) s->capslots * sizeof(uint64));
+	}
 	s->slots[s->nslots++] = slot;
 }
 

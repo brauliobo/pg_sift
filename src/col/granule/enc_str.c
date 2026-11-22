@@ -492,7 +492,8 @@ sift_dict_enc_build(const SiftColIn *col, int n)
 				cap = 16,
 				nd,
 				maxnd;
-	uint32	   *code;
+	uint32	   *code,
+			   *rank;
 	int		   *first,
 			   *slot,
 			   *order;
@@ -518,16 +519,17 @@ sift_dict_enc_build(const SiftColIn *col, int n)
 	slot = palloc(cap * sizeof(int));
 	nd = dict_codes(col->s, col->slen, col->isnull, n, code, first, slot, cap, maxnd);
 	pfree(slot);
-	pfree(code);
 	if (nd <= 0)
 	{
+		pfree(code);
 		pfree(first);
 		return NULL;
 	}
-	order = first;
+	order = palloc(nd * sizeof(int));
+	memcpy(order, first, nd * sizeof(int));
 	ctx = (DictSort) {col->s, col->slen};
 	qsort_arg(order, nd, sizeof(int), enc_str_cmp, &ctx);
-	d = palloc(sizeof(SiftDictEnc));
+	d = palloc0(sizeof(SiftDictEnc));
 	d->n = nd;
 	d->p = palloc(nd * sizeof(char *));
 	d->len = palloc(nd * sizeof(uint32));
@@ -536,6 +538,18 @@ sift_dict_enc_build(const SiftColIn *col, int n)
 		d->p[i] = col->s[order[i]];
 		d->len[i] = col->slen[order[i]];
 	}
+	/* the code of every row in the sorted dictionary, from the codes the rows got as they came: one search for each distinct string, none for a row */
+	rank = palloc(nd * sizeof(uint32));
+	for (int id = 0; id < nd; id++)
+		rank[id] = sift_dict_code(d, col->s[first[id]], col->slen[first[id]]);
+	/* check-memory: allow the rows of one part build, as the codes and the strings of the rows are */
+	d->row_codes = palloc(Max(n, 1) * sizeof(uint32));
+	d->nrows = n;
+	for (int i = 0, k = 0; i < n; i++)
+		d->row_codes[i] = (col->isnull != NULL && col->isnull[i]) ? 0 : rank[code[k++]];
+	pfree(rank);
+	pfree(order);
+	pfree(code);
 	pfree(first);
 	return d;
 }

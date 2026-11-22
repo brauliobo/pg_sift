@@ -200,20 +200,45 @@ emit_delta(StringInfo out, const int64 *v, uint32 n, const CcStats *st, uint32 W
 	pfree(tmp);
 }
 
-/* Distinct values ascending (palloc'd) when there are at most limit of them, else NULL; *d is their number */
-static int64 *
-distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d)
+/* out holds the distinct values in the order they came and codes the number of each value in it: sorts out, and turns the codes into the position of each value in the sorted order */
+static void
+rank_distinct(int64 *out, uint32 cnt, int64 *codes, uint32 n)
 {
-	uint32		cap = 16;
-	int64	   *tab,
-			   *out;
-	uint8	   *used;
-	uint32		cnt = 0;
+	int64 *first = palloc(sizeof(int64) * cnt);
+	uint32 *rank = palloc(sizeof(uint32) * cnt);
+
+	memcpy(first, out, sizeof(int64) * cnt);
+	sift_sort_i64(out, cnt);
+	for (uint32 j = 0; j < cnt; j++)
+	{
+		uint32 lo = 0,
+			   hi = cnt;
+
+		SIFT_BISECT(uint32, m, lo, hi, out[m] < first[j]);
+		rank[j] = lo;
+	}
+	for (uint32 i = 0; i < n; i++)
+		codes[i] = rank[codes[i]];
+	pfree(first);
+	pfree(rank);
+}
+
+/* Distinct values ascending (palloc'd) when there are at most limit of them, else NULL; *d is their number; codes (n entries) gets the position of each value among them */
+static int64 *
+distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d, int64 *codes)
+{
+	uint32 cap = 16;
+	int64 *tab,
+		  *out;
+	uint8 *used;
+	uint32 *id;
+	uint32 cnt = 0;
 
 	while (cap < limit * 2 + 2)
 		cap <<= 1;
 	tab = palloc(sizeof(int64) * cap);
 	used = palloc0(cap);
+	id = palloc(sizeof(uint32) * cap);
 	out = palloc(sizeof(int64) * (limit + 1));
 	for (uint32 i = 0; i < n; i++)
 	{
@@ -228,17 +253,21 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d)
 			{
 				pfree(tab);
 				pfree(used);
+				pfree(id);
 				pfree(out);
 				return NULL;
 			}
 			used[k] = 1;
 			tab[k] = v[i];
+			id[k] = cnt;
 			out[cnt++] = v[i];
 		}
+		codes[i] = id[k];
 	}
-	sift_sort_i64(out, cnt);
 	pfree(tab);
 	pfree(used);
+	pfree(id);
+	rank_distinct(out, cnt, codes, n);
 	*d = cnt;
 	return out;
 }
@@ -660,25 +689,18 @@ dict_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, const CcStat
 	CcW			wi = {w->pol, SIFT_CC_INT};
 	uint32		limit = n / 2 > 65536 ? 65536 : n / 2,
 				d = 0;
-	int64	   *dv = limit >= 2 ? distinct_sorted(v, n, limit, &d) : NULL;
-	int64	   *codes;
+	int64 *codes = limit >= 2 ? palloc(sizeof(int64) * n) : NULL;
+	int64 *dv = limit >= 2 ? distinct_sorted(v, n, limit, &d, codes) : NULL;
 	StringInfoData cd,
-				cc;
+				   cc;
 
 	if (!dv || sift_cc_bits_of(d - 1) >= sift_cc_bits_of(st->range))
 	{
 		if (dv)
 			pfree(dv);
+		if (codes != NULL)
+			pfree(codes);
 		return false;
-	}
-	codes = palloc(sizeof(int64) * n);
-	for (uint32 i = 0; i < n; i++)
-	{
-		uint32		lo = 0,
-					hi = d;
-
-		SIFT_BISECT(uint32, m, lo, hi, dv[m] < v[i]);
-		codes[i] = lo;
 	}
 	initStringInfo(&cd);
 	initStringInfo(&cc);

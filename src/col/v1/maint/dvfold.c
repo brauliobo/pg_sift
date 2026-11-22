@@ -11,11 +11,18 @@
 #include "utils/memutils.h"
 
 #include "col/v1/maint/maint_int.h"
+#include "core/cmp.h"
 #include "core/wal_conflict.h"
 #include "core/live.h"
 #include "core/memtrack.h"
 #include "core/ops.h"
 #include "core/v1_col/tomb_dv.h"
+
+typedef struct SegGen
+{
+	uint64		gen;
+	int			idx;			/* in the directory */
+} SegGen;
 
 struct DvSettle
 {
@@ -23,6 +30,8 @@ struct DvSettle
 	MemoryContext cxt;
 	MemoryContext segcx;			/* the segment in hand, reset when it is closed */
 	SiftDirSnapshot *dir;
+	SegGen	   *gens;			/* the immutable segments of the directory by generation */
+	int			ngens;
 	SiftColSegment *seg;			/* the segment of the generation in hand: the records come in the order of their generations */
 	uint64		gen;
 	SiftDvRec  *rec;
@@ -30,6 +39,15 @@ struct DvSettle
 	uint64	   *live;
 	uint64	   *mask;
 };
+
+static int
+seg_gen_cmp(const void *a, const void *b)
+{
+	uint64		x = ((const SegGen *) a)->gen,
+				y = ((const SegGen *) b)->gen;
+
+	return SIFT_CMP3(x, y);
+}
 
 DvSettle *
 sift_col_dv_settle_begin(Relation index)
@@ -44,6 +62,11 @@ sift_col_dv_settle_begin(Relation index)
 	old = MemoryContextSwitchTo(cxt);
 	st->dir = sift_dir_read(index);
 	MemoryContextSwitchTo(old);
+	st->gens = MemoryContextAlloc(cxt, Max(st->dir->nsegs, 1) * sizeof(SegGen));
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			st->gens[st->ngens++] = (SegGen) {st->dir->segs[i].gen, i};
+	qsort(st->gens, st->ngens, sizeof(SegGen), seg_gen_cmp);
 	st->rec = MemoryContextAlloc(cxt, sizeof(SiftDvRec));
 	st->rows = MemoryContextAlloc(cxt, SIFT_COL_UNIT_MAX_ROWS * sizeof(uint32));
 	st->live = MemoryContextAlloc(cxt, SIFT_COL_NWORDS(SIFT_COL_UNIT_MAX_ROWS) * sizeof(uint64));
@@ -64,6 +87,8 @@ static SiftColSegment *
 settle_segment(DvSettle *st, uint64 gen)
 {
 	SiftMemTracker mt_col_dv_settle;
+	int			lo = 0,
+				hi = st->ngens;
 
 	sift_mem_init_sub(&mt_col_dv_settle, "col_dv_settle", st->cxt, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	if (st->seg != NULL && st->gen == gen)
@@ -73,9 +98,9 @@ settle_segment(DvSettle *st, uint64 gen)
 	MemoryContextReset(st->segcx);
 	st->seg = NULL;
 	st->gen = gen;
-	for (int i = 0; i < st->dir->nsegs; i++)
-		if (st->dir->segs[i].kind == SIFT_SEG_IMMUTABLE && st->dir->segs[i].gen == gen)
-			st->seg = sift_cseg_open(st->index, &st->dir->segs[i], st->segcx);
+	SIFT_BISECT(int, m, lo, hi, st->gens[m].gen < gen);
+	if (lo < st->ngens && st->gens[lo].gen == gen)
+		st->seg = sift_cseg_open(st->index, &st->dir->segs[st->gens[lo].idx], st->segcx);
 	sift_mem_assert_within(&mt_col_dv_settle);
 	return st->seg;
 }
@@ -193,18 +218,33 @@ sift_col_dv_fold(Relation index, SiftTombLog *log, TransactionId horizon)
 	return cleared;
 }
 
-/* The unit the moves send (gen, unit) to: false when no move holds it */
+/* The moves by the first unit they name: the unit a record of (gen, unit) is sent to is that of the last move that begins at or before it */
+static int
+move_cmp(const void *a, const void *b)
+{
+	const SiftDvMove *x = a,
+			   *y = b;
+
+	return x->gen != y->gen ? SIFT_CMP3(x->gen, y->gen) : SIFT_CMP3(x->unit, y->unit);
+}
+
+/* The unit the moves (sorted by move_cmp) send (gen, unit) to: false when no move holds it */
 static bool
 rekey_target(const SiftDvMove *moves, int nmoves, uint64 gen, uint32 unit, uint64 *gen2, uint32 *unit2)
 {
-	for (int i = 0; i < nmoves; i++)
-		if (moves[i].gen == gen && unit >= moves[i].unit && unit - moves[i].unit < moves[i].nunits)
-		{
-			*gen2 = moves[i].gen2;
-			*unit2 = moves[i].unit2 + (unit - moves[i].unit);
-			return true;
-		}
-	return false;
+	int			lo = 0,
+				hi = nmoves;
+	const SiftDvMove *m;
+
+	SIFT_BISECT(int, i, lo, hi, moves[i].gen < gen || (moves[i].gen == gen && moves[i].unit <= unit));
+	if (lo == 0)
+		return false;
+	m = &moves[lo - 1];
+	if (m->gen != gen || unit - m->unit >= m->nunits)
+		return false;
+	*gen2 = m->gen2;
+	*unit2 = m->unit2 + (unit - m->unit);
+	return true;
 }
 
 /* The record in hand written again for the unit that holds its rows now: the old one stays in the log, as nothing names its segment after the switch, and the next rewrite of the log drops it */
@@ -258,10 +298,22 @@ sift_col_dv_rekey(Relation index, const uint64 *old, int nold, const SiftDvMove 
 	SiftTomb	buf[SIFT_TOMB_CAP];
 	SiftTomb   *e;
 	uint32		n;
+	uint64	   *named_gens = palloc(Max(nold, 1) * sizeof(uint64));
+	SiftDvMove *by_unit = palloc(Max(nmoves, 1) * sizeof(SiftDvMove));
 
+	if (nold > 0)
+		memcpy(named_gens, old, nold * sizeof(uint64));
+	qsort(named_gens, nold, sizeof(uint64), sift_cmp_u64);
+	if (nmoves > 0)
+		memcpy(by_unit, moves, nmoves * sizeof(SiftDvMove));
+	qsort(by_unit, nmoves, sizeof(SiftDvMove), move_cmp);
 	LockPage(index, SIFT_TOMB_LOCK_BLKNO, ExclusiveLock);
 	if ((log = sift_col_log(index)) == NULL || log->dvecs == 0)
+	{
+		pfree(named_gens);
+		pfree(by_unit);
 		return;
+	}
 	st = sift_col_dv_settle_begin(index);
 	sift_tomb_walk_begin(&w, log);
 	while ((e = sift_tomb_walk_next_rec(&w, buf, &n)) != NULL)
@@ -269,24 +321,26 @@ sift_col_dv_rekey(Relation index, const uint64 *old, int nold, const SiftDvMove 
 		SiftColSegment *seg;
 		uint64		gen2;
 		uint32		unit2;
-		bool		named = false;
+		int			lo = 0,
+						hi = nold;
 
-		if (n == 1)
-			continue;
-		sift_dv_decode(e, n, st->rec);
-		for (int i = 0; i < nold; i++)
-			named |= old[i] == st->rec->gen;
-		if (!named || (TransactionIdIsNormal(st->rec->xid) && sift_xid_state(st->rec->xid) == SIFT_XID_ABORTED))
+			if (n == 1)
+				continue;
+			sift_dv_decode(e, n, st->rec);
+			SIFT_BISECT(int, m, lo, hi, named_gens[m] < st->rec->gen);
+			if (lo == nold || named_gens[lo] != st->rec->gen || (TransactionIdIsNormal(st->rec->xid) && sift_xid_state(st->rec->xid) == SIFT_XID_ABORTED))
 			continue;
 		if ((seg = settle_segment(st, st->rec->gen)) == NULL || !record_live(st, seg, st->rec))
 			continue;
-		if (rekey_target(moves, nmoves, st->rec->gen, st->rec->desc.part, &gen2, &unit2))
+		if (rekey_target(by_unit, nmoves, st->rec->gen, st->rec->desc.part, &gen2, &unit2))
 			rekey_record(index, log, e, n, gen2, unit2);
 		else
 			carry_record(st, seg, index, log);
 	}
 	sift_tomb_walk_end(&w);
 	sift_col_dv_settle_end(st);
+	pfree(named_gens);
+	pfree(by_unit);
 }
 
 void

@@ -381,18 +381,18 @@ gorder_all(SiftColSource *src, int col, bool grouped, int npin, const int *pinle
 				return false;
 			if (*gleaf < 0)
 			{
+				int			m = 0,
+							u = 1;
+
 				*gleaf = gc;
 				for (int k = 0; k < npin; k++)
-				{
-					int			m = 0;
-
-					if (pinleaf[k] != gc)
-						continue;
-					while (m < *nvals && vals[m] != pinval[k])
-						m++;
-					if (m == *nvals)
-						vals[(*nvals)++] = pinval[k];
-				}
+					if (pinleaf[k] == gc)
+						vals[m++] = pinval[k];
+				sift_sort_i64(vals, m);
+				for (int k = 1; k < m; k++)
+					if (vals[k] != vals[u - 1])
+						vals[u++] = vals[k];
+				*nvals = Min(m, u);
 			}
 			if (*nvals == 0)
 				return false;

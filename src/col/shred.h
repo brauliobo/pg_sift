@@ -141,8 +141,9 @@ typedef struct SiftShredPay
 	int32		key;
 	uint32		slot;
 	uint32		off;
-	uint32		len;
-	uint8		tag;
+	uint32 len;
+	uint8 tag;
+	uint32 hslot;               /* where pay_ht holds it, while the document has one */
 } SiftShredPay;
 
 typedef struct SiftShredDoc
@@ -153,9 +154,11 @@ typedef struct SiftShredDoc
 	uint32		ntext;
 	uint32		textcap;
 	uint32		nelems;			/* list and map elements so far, against max_elems */
-	SiftShredPay *pay;			/* the payloads of the OVERFLOW slots of this document */
-	uint32		npay;
-	uint32		paycap;
+	SiftShredPay *pay;          /* the payloads of the OVERFLOW slots of this document */
+	uint32 npay;
+	uint32 paycap;
+	uint32 *pay_ht;             /* once there are more than a few: open addressing by (key, slot), 1 + the index in pay of the last payload of a pair, 0: empty */
+	uint32 pay_ht_cap;          /* a power of 2 */
 	char	   *paytext;		/* their bytes */
 	uint32		npaytext;
 	uint32		paytextcap;

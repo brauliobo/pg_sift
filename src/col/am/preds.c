@@ -6,6 +6,8 @@
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 #include <math.h>
+#include "common/hashfn.h"
+#include "port/pg_bitutils.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
@@ -13,6 +15,7 @@
 #include "col/am.h"
 #include "col/am/preds.h"
 #include "col/like_simd.h"
+#include "core/hash.h"
 
 /* The constant of a key as a predicate value of the leaf: the key's own type is an integer, date, timestamp, boolean, float, text, char(n) or uuid (numeric: numeric_preds) */
 void
@@ -395,6 +398,67 @@ same_constant(const SiftColDef *def, const SiftColValue *a, const SiftColValue *
 	return a->v.i == b->v.i;
 }
 
+static uint32
+constant_hash(const SiftColDef *def, const SiftColValue *v)
+{
+	if (def->type == SIFT_COLT_TEXT || def->type == SIFT_COLT_UUID)
+		return hash_bytes((const unsigned char *) v->v.s, v->len);
+	return (uint32) (sift_fib64((uint64) v->v.i) >> 32);
+}
+
+/* The constants of few that wide holds too, in the order of few: a table of the constants of few, probed with each of wide; false when no constant is common. Small lists are compared in a nested loop */
+static bool
+common_constants(const SiftColDef *def, const SiftColPred *few, SiftColPred *wide)
+{
+	SiftColValue *kept;
+	int m = 0;
+
+	/* check-memory: allow the constants of one predicate, bounded by the query */
+	kept = palloc(few->nvals * sizeof(SiftColValue));
+	if ((int64) few->nvals * wide->nvals <= 256)
+	{
+		for (int a = 0; a < few->nvals; a++)
+			for (int b = 0; b < wide->nvals; b++)
+				if (same_constant(def, &few->vals[a], &wide->vals[b]))
+				{
+					kept[m++] = few->vals[a];
+					break;
+				}
+	}
+	else
+	{
+		uint32 cap = pg_nextpower2_32(Max(32, (uint32) few->nvals * 2));
+		/* check-memory: allow the constants of one predicate, bounded by the query */
+		uint32 *ht = palloc0(cap * sizeof(uint32));
+		bool *emitted = palloc0((size_t) few->nvals);
+
+		for (int a = 0; a < few->nvals; a++)
+		{
+			uint32 at = constant_hash(def, &few->vals[a]) & (cap - 1);
+
+			while (ht[at] != 0)
+				at = (at + 1) & (cap - 1);
+			ht[at] = a + 1;
+		}
+		for (int b = 0; b < wide->nvals; b++)
+			for (uint32 at = constant_hash(def, &wide->vals[b]) & (cap - 1); ht[at] != 0; at = (at + 1) & (cap - 1))
+				emitted[ht[at] - 1] |= same_constant(def, &few->vals[ht[at] - 1], &wide->vals[b]);
+		for (int a = 0; a < few->nvals; a++)
+			if (emitted[a])
+				kept[m++] = few->vals[a];
+		pfree(ht);
+		pfree(emitted);
+	}
+	if (m == 0)
+	{
+		pfree(kept);
+		return false;
+	}
+	wide->nvals = m;
+	wide->vals = kept;
+	return true;
+}
+
 /*
  * An IN list of the keys of a scope and an equality on the same leaf (the planner keeps both) are one test of the constants both hold: the list is cut to them, so that a
  * unit and a buffered row are tested against one constant and not against thousands (6 ms a scan against 0.8, 4,650 keys and one). False when none is common: the keys
@@ -409,23 +473,11 @@ narrow_lists(int nkeys, ColKeys *k, SiftColPred *preds)
 			SiftColPred *wide = &preds[i];
 			const SiftColPred *few = &preds[j];
 			const SiftColDef *def = &k->defs[wide->col];
-			SiftColValue *kept;
-			int			m = 0;
 
 			if (i == j || wide->col != few->col || wide->nvals <= few->nvals || !sift_col_wbuf_lookup_ok(def, wide) || !sift_col_wbuf_lookup_ok(def, few))
 				continue;
-			kept = palloc(few->nvals * sizeof(SiftColValue));
-			for (int a = 0; a < few->nvals; a++)
-				for (int b = 0; b < wide->nvals; b++)
-					if (same_constant(def, &few->vals[a], &wide->vals[b]))
-					{
-						kept[m++] = few->vals[a];
-						break;
-					}
-			if (m == 0)
+			if (!common_constants(def, few, wide))
 				return false;
-			wide->nvals = m;
-			wide->vals = kept;
 		}
 	return true;
 }

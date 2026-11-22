@@ -53,8 +53,13 @@ read_str_dict(Relation rel, const SiftPart *part, MemoryContext cx, const char *
 		sift_cc_decode_strs(cx, (const uint8 *) sec + at + 8, hdr[0], hdr[1], hdr[1], 0, &coff, &cbytes);
 		if (used + coff[hdr[1]] > cap)
 		{
-			cap = used + coff[hdr[1]];
-			bytes = repalloc(bytes, cap);
+			uint64 need = used + coff[hdr[1]];
+
+			if (need > MaxAllocSize)
+				SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "A dictionary of the part exceeds the maximum allocation size.");
+			while (cap < need)
+				cap = cap > MaxAllocSize / 2 ? MaxAllocSize : cap * 2;
+			bytes = repalloc(bytes, (Size) cap);
 		}
 		memcpy(bytes + used, cbytes, coff[hdr[1]]);
 		for (uint32 j = 1; j <= hdr[1]; j++)
@@ -329,6 +334,101 @@ sift_part_read_nonnull_rows(Relation rel, const SiftPart *part, const SiftGranul
 	return sift_chunk_nonnull_rows(&ref, bytes, vlen, gdesc->nrows, out, cap);
 }
 
+/*
+ * What the readers of a part work out once for all its granules (the SiftPart itself is the owner of the format and has no room for it): the first row of each granule in SEC_VERS and the
+ * offsets of SEC_GRANULE_TSTRIDE. A record lives in the memory context of its part and is reached through a few slots; the reset of that context takes it out of them before its memory goes, so
+ * a part freed and another allocated at its address never find it (and the generation and the header page of the part are compared as well). A part of the same context takes a record the slots
+ * let go over, so a scan that interleaves more parts than there are slots does not pile up records.
+ */
+#define PART_AUX_SLOTS	16
+
+typedef struct PartAux
+{
+	MemoryContextCallback cb;
+	MemoryContext cx;
+	const SiftPart *part;
+	uint64		part_gen;
+	BlockNumber header_blk;
+	uint64	   *vers_base;		/* ngranules + 1: the rows of the granules before each in SEC_VERS */
+	uint32	   *tstride_off;	/* the strides before each granule; NULL until the section is read */
+	uint32		tstride_ng;
+	uint64		tstride_data;	/* where the strides start in the section */
+} PartAux;
+
+static PartAux *part_aux_tab[PART_AUX_SLOTS];
+static uint32 part_aux_next;
+
+static void
+part_aux_reset(void *arg)
+{
+	for (int i = 0; i < PART_AUX_SLOTS; i++)
+		if (part_aux_tab[i] == arg)
+			part_aux_tab[i] = NULL;
+}
+
+static void
+part_aux_drop_data(PartAux *a)
+{
+	if (a->vers_base != NULL)
+		pfree(a->vers_base);
+	if (a->tstride_off != NULL)
+		pfree(a->tstride_off);
+	a->vers_base = NULL;
+	a->tstride_off = NULL;
+}
+
+static PartAux *
+part_aux(const SiftPart *part)
+{
+	MemoryContext cx = GetMemoryChunkContext((void *) part);
+	PartAux    *a;
+	uint32		slot;
+
+	for (int i = 0; i < PART_AUX_SLOTS; i++)
+		if (part_aux_tab[i] != NULL && part_aux_tab[i]->part == part && part_aux_tab[i]->part_gen == part->hdr.part_gen && part_aux_tab[i]->header_blk == part->header_blk)
+			return part_aux_tab[i];
+	slot = part_aux_next++ % PART_AUX_SLOTS;
+	a = part_aux_tab[slot];
+	if (a != NULL && a->cx == cx)
+		part_aux_drop_data(a);
+	else
+	{
+		a = MemoryContextAllocZero(cx, sizeof(PartAux));
+		a->cb = (MemoryContextCallback) {.func = part_aux_reset,.arg = a};
+		a->cx = cx;
+		MemoryContextRegisterResetCallback(cx, &a->cb);
+		part_aux_tab[slot] = a;
+	}
+	a->part = part;
+	a->part_gen = part->hdr.part_gen;
+	a->header_blk = part->header_blk;
+	return a;
+}
+
+/* The rows of the granules before granule g that have bytes in SEC_VERS, for every g of the part: one pass over the directory for all of them */
+static uint64
+vers_before(const SiftPart *part, const SiftGranuleDesc *dir, uint32 g)
+{
+	PartAux    *a = part_aux(part);
+
+	if (a->vers_base == NULL)
+	{
+		uint32		ng = part->hdr.ngranules;
+		uint64		acc = 0;
+
+		/* check-memory: allow one entry for each granule of one part */
+		a->vers_base = MemoryContextAlloc(a->cx, ((Size) ng + 1) * sizeof(uint64));
+		for (uint32 i = 0; i < ng; i++)
+		{
+			a->vers_base[i] = acc;
+			if (!(dir[i].flags & (SIFT_GDESC_ALL_FROZEN | SIFT_GDESC_SINGLE_XACT)))
+				acc += dir[i].nrows;
+		}
+		a->vers_base[ng] = acc;
+	}
+	return a->vers_base[g];
+}
+
 SiftRowVer *
 sift_part_read_vers(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, uint32 g)
 {
@@ -348,9 +448,7 @@ sift_part_read_vers(Relation rel, const SiftPart *part, const SiftGranuleDesc *d
 	}
 	if (vs == NULL)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "Granule %u is not frozen and the part has no version section.", g);
-	for (uint32 i = 0; i < g; i++)
-		if (!(dir[i].flags & (SIFT_GDESC_ALL_FROZEN | SIFT_GDESC_SINGLE_XACT)))
-			before += dir[i].nrows;
+	before = vers_before(part, dir, g);
 	/* check-memory: allow the rows of one granule, at most SIFT_GRANULE_ROWS */
 	out = palloc(dir[g].nrows * sizeof(SiftRowVer));
 	sift_part_read_bytes(rel, part, vs->off + before * sizeof(SiftRowVer), dir[g].nrows * sizeof(SiftRowVer), out);
@@ -439,25 +537,57 @@ sift_part_read_tids_batch(Relation rel, const SiftPart *part, const SiftGranuleD
 	return out;
 }
 
+/* The bytes [at, at + len) of a section of the part */
+static void
+section_slice(Relation rel, const SiftPart *part, const SiftSecDirEntry *sec, uint64 at, uint64 len, void *dst)
+{
+	if (sec->flags & SIFT_SEC_FLAG_INLINE)
+		memcpy(dst, part->inline_payload + sec->off + at, len);
+	else
+		sift_part_read_bytes(rel, part, sec->off + at, len, dst);
+}
+
+/* The offsets of the strides of each granule of the part: the whole section is read (and its checksum compared) once, for all its granules */
+static const PartAux *
+tstride_aux(Relation rel, const SiftPart *part)
+{
+	PartAux    *a = part_aux(part);
+	uint64      len;
+	char       *sec;
+	const SiftTStrideHeader *h;
+
+	if (a->tstride_off != NULL)
+		return a;
+	sec = sift_part_read_section(rel, part, SEC_GRANULE_TSTRIDE, &len);
+	h = (const SiftTStrideHeader *) sec;
+	if (len < sizeof(*h) || len != MAXALIGN(sizeof(*h) + (h->ngranules + 1) * sizeof(uint32)) + (uint64) h->total_strides * sizeof(SiftTimeStride))
+		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The time stride index of the part does not hold its granules.");
+	/* check-memory: allow one entry for each granule of one part */
+	a->tstride_off = MemoryContextAlloc(a->cx, ((Size) h->ngranules + 1) * sizeof(uint32));
+	memcpy(a->tstride_off, sec + sizeof(*h), ((Size) h->ngranules + 1) * sizeof(uint32));
+	a->tstride_ng = h->ngranules;
+	a->tstride_data = MAXALIGN(sizeof(*h) + (h->ngranules + 1) * sizeof(uint32));
+	for (uint32 i = 0; i < h->ngranules; i++)
+		if (a->tstride_off[i + 1] < a->tstride_off[i] || a->tstride_off[i + 1] > h->total_strides)
+			SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The time stride index of the part does not hold granule %u.", i);
+	pfree(sec);
+	return a;
+}
+
 SiftTimeStride *
 sift_part_read_tstride(Relation rel, const SiftPart *part, uint32 g, int *n)
 {
-	uint64		len;
-	char	   *sec = sift_part_read_section(rel, part, SEC_GRANULE_TSTRIDE, &len);
-	const SiftTStrideHeader *h = (const SiftTStrideHeader *) sec;
-	const uint32 *off;
-	uint64		strides;
+	const SiftSecDirEntry *sec = sift_part_section(part, SEC_GRANULE_TSTRIDE);
+	const PartAux *a;
 	SiftTimeStride *out;
 
 	if (sec == NULL)
 		return NULL;
-	if (len < sizeof(*h) || g >= h->ngranules || len != MAXALIGN(sizeof(*h) + (h->ngranules + 1) * sizeof(uint32)) + (uint64) h->total_strides * sizeof(SiftTimeStride))
+	a = tstride_aux(rel, part);
+	if (g >= a->tstride_ng)
 		SIFT_SEG_CORRUPT(rel, part->hdr.part_gen, "The time stride index of the part does not hold granule %u.", g);
-	off = (const uint32 *) (sec + sizeof(*h));
-	strides = (uint64) MAXALIGN(sizeof(*h) + (h->ngranules + 1) * sizeof(uint32));
-	*n = off[g + 1] - off[g];
+	*n = a->tstride_off[g + 1] - a->tstride_off[g];
 	out = palloc(Max(*n, 1) * sizeof(SiftTimeStride));
-	memcpy(out, sec + strides + (uint64) off[g] * sizeof(SiftTimeStride), *n * sizeof(SiftTimeStride));
-	pfree(sec);
+	section_slice(rel, part, sec, a->tstride_data + (uint64) a->tstride_off[g] * sizeof(SiftTimeStride), (uint64) *n * sizeof(SiftTimeStride), out);
 	return out;
 }

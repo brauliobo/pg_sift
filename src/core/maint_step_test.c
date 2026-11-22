@@ -75,7 +75,7 @@ sift_test_maint_workers_hold(PG_FUNCTION_ARGS)
 		elog(ERROR, "the table of the queue is not there");
 	while (nheld > 0)
 		sift_maint_worker_exit(m, held[--nheld], MyProcPid);
-	while (nheld < n && nheld < SIFT_MAINT_MAX_WORKERS && (held[nheld] = sift_maint_worker_reserve(m, &sift_maint_server_host, MyDatabaseId, SIFT_MAINT_MAX_WORKERS)) >= 0)
+	while (nheld < n && nheld < SIFT_MAINT_MAX_WORKERS && (held[nheld] = sift_maint_worker_reserve(m, &sift_maint_server_host, MyDatabaseId)) >= 0)
 		(void) sift_maint_worker_started(m, held[nheld++], MyProcPid, MyProcNumber);
 	PG_RETURN_INT32(nheld);
 }

@@ -25,6 +25,12 @@ extern void sift_cfs_invert(uint64 *bits, uint32 n);
 extern void sift_cfs_ne(const char *lit, uint32 litlen, uint32 n, const char *const *p, const uint32 *len, uint64 *bits);
 
 /*
+ * The same for the values of dense_live (a bit for each value of the chunk, live_nn of them set; NULL: all): the strings of the others are not decoded or tested and their bits are not defined; the
+ * chunks of strings that sit in the bytes of the record are tested in place and allocate nothing, a block frees what it decoded, and the live strings of a FSST chunk are decoded alone when they are few
+ */
+extern bool sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *dense_live, uint32 live_nn, uint64 *dense);
+
+/*
  * The rows of a string chunk that pass a <>, LIKE '%lit%', ILIKE '%lit%' or NOT LIKE '%lit%' predicate, as one bit for each value of the chunk (SIFT_CENC_STR_FSST, _BLOCK, _INLINE and _VIEW
  * chunks, decoded once for the whole chunk). false: the predicate or the chunk is one the caller decodes row by row.
  */

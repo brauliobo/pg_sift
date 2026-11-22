@@ -17,6 +17,7 @@
 #include "port/pg_crc32c.h"
 #include "storage/spin.h"
 
+#include "core/cmp.h"
 #include "core/shmbudget.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
@@ -50,6 +51,9 @@ typedef struct Lshm
 				misses;
 	Size		size;
 	Size		head;
+	Size		used_bytes;		/* of the records of the directory */
+	int			nord;
+	int16		ord[LSHM_DIR];	/* the used entries by the place of their record: no two overlap */
 	LshmEnt		dir[LSHM_DIR];
 	char		data[FLEXIBLE_ARRAY_MEMBER];
 }			Lshm;
@@ -244,13 +248,67 @@ sift_col_leafshm_pre_read(RelFileNumber rel, bool scope, uint64 stamp, SiftColPr
 	return whole;
 }
 
+/* The first entry of the index whose record ends after at: those a record at [at, at + len) covers follow it while they begin before at + len */
+static int
+ord_first(const Lshm *s, Size at)
+{
+	int			lo = 0,
+				hi = s->nord;
+
+	SIFT_BISECT(int, m, lo, hi, s->dir[s->ord[m]].off + s->dir[s->ord[m]].len <= at);
+	return lo;
+}
+
+/* The entry of the index at position i of the order leaves the directory */
+static void
+lshm_free_at(Lshm *s, int i)
+{
+	LshmEnt    *e = &s->dir[s->ord[i]];
+
+	e->used = false;
+	s->used_bytes -= e->len;
+	memmove(s->ord + i, s->ord + i + 1, (s->nord-- - i - 1) * sizeof(int16));
+}
+
+static void
+lshm_free(Lshm *s, int slot)
+{
+	int			i = ord_first(s, s->dir[slot].off);
+
+	SIFT_INVARIANT(i < s->nord && s->ord[i] == slot, "a record of the shared statistics is not in the order of the ring");
+	lshm_free_at(s, i);
+}
+
+/* the records that [off, off + len) covers are evicted: the number of them */
+static int
+lshm_evict_range(Lshm *s, Size off, Size len)
+{
+	int			n = 0;
+
+	for (int i = ord_first(s, off); i < s->nord && s->dir[s->ord[i]].off < off + len; n++)
+		lshm_free_at(s, i);
+	return n;
+}
+
+static void
+lshm_enter(Lshm *s, int slot, const LshmEnt *e)
+{
+	int			i;
+
+	s->dir[slot] = *e;
+	i = ord_first(s, e->off);
+	memmove(s->ord + i + 1, s->ord + i, (s->nord++ - i) * sizeof(int16));
+	s->ord[i] = (int16) slot;
+	s->used_bytes += e->len;
+}
+
 /* enters rec (its header not yet filled in) into the ring as the record of the index under the stamp; it replaces the older record of the same kind and those it overlaps */
 static void
 lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmHdr h)
 {
 	Lshm	   *s = lshm_get();
 	Size		off;
-	int			slot,
+	int			slot = lshm_bucket(rel),
 				evicted = 0;
 
 	if (s == NULL || len > s->size)
@@ -262,20 +320,12 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	SpinLockAcquire(&s->mutex);
 	off = s->head + len > s->size ? 0 : s->head;
 	s->head = off + len;
-	for (int i = 0; i < LSHM_DIR; i++)
-	{
-		LshmEnt    *e = &s->dir[i];
-		bool		replaced = e->rel == rel && e->db == MyDatabaseId && e->scope == scope && e->kind == h.kind;
-
-		/* the record of the same index and kind (an older stamp) is replaced; those the new one covers are evicted */
-		if (e->used && (replaced || (e->off < off + len && off < e->off + e->len)))
-		{
-			evicted += !replaced;
-			e->used = false;
-		}
-	}
+	/* the record of the same index and kind (an older stamp) is replaced: it is in the bucket of the index; those the new one covers are evicted */
+	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].scope == scope && s->dir[i].kind == h.kind)
+			lshm_free(s, i);
+	evicted = lshm_evict_range(s, off, len);
 	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
-	slot = lshm_bucket(rel);
 	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
 		if (!s->dir[i].used || (s->dir[slot].used && s->dir[i].tick < s->dir[slot].tick))
 			slot = i;
@@ -284,7 +334,10 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 	memcpy(s->data + off, rec, len);
 	SpinLockAcquire(&s->mutex);
-	s->dir[slot] = (LshmEnt) {.used = true, .rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len, .tick = ++s->tick};
+	if (s->dir[slot].used)
+		lshm_free(s, slot);
+	(void) lshm_evict_range(s, off, len);
+	lshm_enter(s, slot, &(LshmEnt) {.used = true, .rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len, .tick = ++s->tick});
 	SpinLockRelease(&s->mutex);
 }
 
@@ -339,9 +392,7 @@ sift_col_leafshm_stat(SiftShmStat *st)
 	if (s == NULL)
 		return false;
 	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LSHM_DIR; i++)
-		if (s->dir[i].used)
-			st->used += s->dir[i].len;
+	st->used += s->used_bytes;
 	st->hits = s->hits;
 	st->misses = s->misses;
 	SpinLockRelease(&s->mutex);

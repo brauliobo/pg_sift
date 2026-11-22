@@ -112,6 +112,33 @@ text_copy(MemoryContext mcxt, const char *s)
 	return memcpy(MemoryContextAlloc(mcxt, len + 1), s, len + 1);
 }
 
+/* the leaves of each group, grouped: a count of the children of each group, the offsets of them, and each leaf placed after the earlier children of its parent */
+static void
+schema_index_children(MemoryContext mcxt, SiftColSchema *s)
+{
+	int			nchild = 0;
+	int16	   *fill = MemoryContextAllocZero(mcxt, s->ncols * sizeof(int16));
+
+	s->child_off = MemoryContextAllocZero(mcxt, (s->ncols + 1) * sizeof(int16));
+	for (int i = 0; i < s->ncols; i++)
+		if (s->cols[i].parent >= 0)
+		{
+			s->child_off[s->cols[i].parent + 1]++;
+			nchild++;
+		}
+	for (int g = 0; g < s->ncols; g++)
+		s->child_off[g + 1] += s->child_off[g];
+	s->children = MemoryContextAlloc(mcxt, Max(nchild, 1) * sizeof(int16));
+	for (int i = 0; i < s->ncols; i++)
+		if (s->cols[i].parent >= 0)
+		{
+			int			g = s->cols[i].parent;
+
+			s->children[s->child_off[g] + fill[g]++] = (int16) i;
+		}
+	pfree(fill);
+}
+
 static SiftColSchema *
 schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 {
@@ -133,6 +160,8 @@ schema_build(MemoryContext mcxt, const SiftColDef *defs, int n)
 		s->coded |= (defs[i].flags & SIFT_COLD_CODED) != 0;
 	}
 	s->hash = schema_hash(defs, n);
+	if (s->ngroups > 0)
+		schema_index_children(mcxt, s);
 	return s;
 }
 

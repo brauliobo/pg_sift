@@ -65,6 +65,8 @@ typedef struct Dshm
 				misses;
 	DshmFlight	flight[DSHM_FLIGHT];
 	DshmEnt		dir[DSHM_BUCKETS * DSHM_WAYS];
+	int			nord;
+	int16		ord[DSHM_BUCKETS * DSHM_WAYS];	/* the entries that hold a place of the ring, by the place: no two overlap; one that went free stays until its place is taken again */
 }			Dshm;
 
 /*

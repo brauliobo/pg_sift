@@ -22,8 +22,17 @@ typedef struct SiftColSchema
 	bool		coded;			/* some derived key of a scope holds store codes (SIFT_COLD_CODED): column format minor 50 (SIFT_COL_FORMAT_SCOPEKEY) */
 	bool		scoped;			/* some leaf is the derived key of a scope (SIFT_COLD_SCOPE): a segment of this schema is column format minor 45 (SIFT_COL_FORMAT_SCOPE) */
 	SiftColDef *cols;			/* [ncols], paths copied */
+	int16	   *child_off;		/* [ncols + 1]: the children of the group leaf g are children[child_off[g] .. child_off[g + 1]), in the order of their ids; NULL without groups */
+	int16	   *children;		/* [ncols - ngroups] */
 	uint32		hash;			/* of ids, kinds, stores, type OIDs, attnos, parents, paths (not flags) */
 } SiftColSchema;
+
+#define SIFT_SCHEMA_NCHILD(s, g) ((s)->child_off ? (s)->child_off[(g) + 1] - (s)->child_off[(g)] : 0)
+
+/* c is each child leaf of the group leaf g of schema s, k its place in the index */
+#define SIFT_SCHEMA_FOREACH_CHILD(s, g, k, c) \
+	for (int k = (s)->child_off ? (s)->child_off[(g)] : 0, k##_end = (s)->child_off ? (s)->child_off[(g) + 1] : 0, c = 0; \
+		 k < k##_end && ((c = (s)->children[k]), true); k++)
 
 /*
  * Copies and validates the leaf list: ids 0..n-1 in order, a child's parent is an earlier GROUP leaf, groups are top level (parent -1),

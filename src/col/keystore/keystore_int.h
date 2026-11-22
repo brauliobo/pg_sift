@@ -6,6 +6,8 @@
 
 #include "postgres.h"
 
+#include "lib/ilist.h"
+
 #include "col/v1/seg_int.h"
 
 /*
@@ -43,7 +45,9 @@ typedef struct KeyStoreView
 	int			cap;
 	uint64		total;			/* the codes the pieces cover */
 	int			pins;			/* handles open on the store: a view in use is not dropped for room */
-	uint64		used;			/* sift_cache_tick() of the last open */
+	uint64 used;            /* sift_cache_tick() of the last open */
+	dlist_node lru;         /* views_lru: the loaded views in the order of their last open, the oldest first */
+	bool on_lru;
 } KeyStoreView;
 
 /* released by sift_keystore_close, or by the memory context of the open when an error skipped it */

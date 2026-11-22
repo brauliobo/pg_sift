@@ -5,6 +5,7 @@
  */
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
+#include "core/cmp.h"
 #include "col/v1/scan_int.h"
 
 #define SIG_TEST_NVALS	64			/* a list of this many values is tested once for the statement, and the same array is the same values (the predicates are made once) */
@@ -65,6 +66,48 @@ col_count_elem(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds
 	return ok;
 }
 
+/* The ranged predicates of one leaf together, in one pass: first[i] is the first ranged predicate of the leaf of i, and l and h hold the bounds of all of them at it */
+typedef struct RangeCols
+{
+	int		   *first;
+	int64	   *l;
+	int64	   *h;
+} RangeCols;
+
+static RangeCols
+range_cols(int ncols, const SiftColPred *preds, int npreds, const bool *range, const int64 *lo, const int64 *hi)
+{
+	RangeCols	rc = {palloc(npreds * sizeof(int))};
+	int16		stk[256];
+	int16	   *slot = ncols <= lengthof(stk) ? stk : palloc(ncols * sizeof(int16));
+
+	rc.l = palloc(npreds * sizeof(int64));
+	rc.h = palloc(npreds * sizeof(int64));
+	memset(slot, 0xFF, ncols * sizeof(int16));
+	for (int i = 0; i < npreds; i++)
+	{
+		int			s;
+
+		if (!range[i])
+			continue;
+		s = slot[preds[i].col] >= 0 ? slot[preds[i].col] : (slot[preds[i].col] = (int16) i);
+		rc.first[i] = s;
+		rc.l[s] = s == i ? lo[i] : Max(rc.l[s], lo[i]);
+		rc.h[s] = s == i ? hi[i] : Min(rc.h[s], hi[i]);
+	}
+	if (slot != stk)
+		pfree(slot);
+	return rc;
+}
+
+static void
+range_cols_free(RangeCols *rc)
+{
+	pfree(rc->first);
+	pfree(rc->l);
+	pfree(rc->h);
+}
+
 /*
  * The narrowest range among the predicates (the bounds of one leaf together), in rows of the segment by the global order of its leaf: a lookup of a key that lists
  * many more rows is left to the range, which narrows it by the zones and the heap instead of decoding the list.
@@ -73,22 +116,12 @@ static uint32
 range_hint(ColCursor *c, const SiftColPred *preds, int npreds, const bool *range, const int64 *lo, const int64 *hi)
 {
 	uint32		best = UINT32_MAX;
+	RangeCols	rc = range_cols(c->seg->schema->ncols, preds, npreds, range, lo, hi);
 
 	for (int i = 0; i < npreds; i++)
-	{
-		int64		l = lo[i],
-					h = hi[i];
-
-		if (!range[i])
-			continue;
-		for (int j = 0; j < npreds; j++)
-			if (j != i && range[j] && preds[j].col == preds[i].col)
-			{
-				l = Max(l, lo[j]);
-				h = Min(h, hi[j]);
-			}
-		best = Min(best, sift_cseg_gorder_count(c->seg, preds[i].col, false, false, l, h));
-	}
+		if (range[i] && rc.first[i] == i)
+			best = Min(best, sift_cseg_gorder_count(c->seg, preds[i].col, false, false, rc.l[i], rc.h[i]));
+	range_cols_free(&rc);
 	return best;
 }
 
@@ -99,22 +132,15 @@ range_hint(ColCursor *c, const SiftColPred *preds, int npreds, const bool *range
 static void
 prune_groups(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const SiftColPred *preds, int npreds, const int64 *lo, const int64 *hi, const bool *range, uint64 *keep, bool *gdone)
 {
+	RangeCols	rc = range_cols(seg->schema->ncols, preds, npreds, range, lo, hi);
+
 	for (int i = 0; i < npreds; i++)
 	{
-		int64		l = lo[i],
-					h = hi[i];
-		bool		first = range[i];
+		bool		first = range[i] && rc.first[i] == i;
 
-		for (int j = 0; first && j < npreds; j++)
-			if (j != i && range[j] && preds[j].col == preds[i].col)
-			{
-				first &= j > i;
-				l = Max(l, lo[j]);
-				h = Min(h, hi[j]);
-			}
 		for (int e = 0; first && e < npreds; e++)
 			if (range[e] && !gdone[e] && lo[e] == hi[e] && preds[e].col != preds[i].col && sift_cseg_gorder_grouped_by(seg, preds[i].col, preds[e].col) &&
-				scan_prune_group_tids(src, c, i, preds[i].col, preds[e].col, lo[e], l, h, keep))
+				scan_prune_group_tids(src, c, i, preds[i].col, preds[e].col, lo[e], rc.l[i], rc.h[i], keep))
 			{
 				gdone[e] = true;
 				for (int j = 0; j < npreds; j++)
@@ -122,6 +148,7 @@ prune_groups(SiftColSource *src, SiftColSegment *seg, ColCursor *c, const SiftCo
 				break;
 			}
 	}
+	range_cols_free(&rc);
 }
 
 /*
@@ -657,9 +684,23 @@ sift_col_super_tests(SiftColSource *src, const SiftColSuperTest *t, int nt, int 
 {
 	if (src->suptest != NULL)
 		pfree(src->suptest);
-	src->suptest = nt > 0 ? MemoryContextAlloc(src->mcxt, nt * sizeof(SiftColSuperTest)) : NULL;
+	Size		nvals = 0;
+	int64	   *pool;
+
+	for (int k = 0; k < nt; k++)
+		nvals += t[k].nvals;
+	src->suptest = nt > 0 ? MemoryContextAlloc(src->mcxt, nt * sizeof(SiftColSuperTest) + nvals * sizeof(int64)) : NULL;
+	pool = (int64 *) (src->suptest + nt);
 	if (nt > 0)
 		memcpy(src->suptest, t, nt * sizeof(SiftColSuperTest));
+	for (int k = 0; k < nt; k++)
+		if (t[k].nvals > 1)
+		{
+			memcpy(pool, t[k].vals, t[k].nvals * sizeof(int64));
+			sift_sort_i64(pool, t[k].nvals);
+			src->suptest[k].vals = pool;
+			pool += t[k].nvals;
+		}
 	src->nsuptest = nt;
 	src->supdim = dim;
 	src->suphdim = hdim;
@@ -680,14 +721,16 @@ col_super_inside(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n
 		for (uint32 i = 0; i < n; i++)
 		{
 			SiftCZone	z;
-			bool		in = false;
+			int			a = 0,
+						b = t->nvals;
 
 			sift_cseg_zone(seg, t->leaf, first + i, &z);
 			if (z.nnull > 0 || z.nvals == 0 || z.min < t->lo || z.max > t->hi)
 				return false;
-			for (int v = 0; t->nvals > 0 && !in && v < t->nvals; v++)
-				in = z.min == z.max && t->vals[v] == z.min;
-			if (t->nvals > 0 && !in)
+			if (t->nvals == 0)
+				continue;
+			SIFT_BISECT(int, m, a, b, t->vals[m] < z.min);
+			if (z.min != z.max || a == t->nvals || t->vals[a] != z.min)
 				return false;
 		}
 	}

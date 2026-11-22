@@ -24,6 +24,7 @@
 #include "col/am.h"
 #include "col/dictshm.h"
 #include "core/cachebudget.h"
+#include "core/hash.h"
 #include "core/ring.h"
 #include "core/limits.h"
 #include "col/v1/seg_int.h"
@@ -123,11 +124,62 @@ typedef struct RetireMemo
 static RetireMemo retire_memo[RETIRE_MEMO];
 static SiftRing retire_ring;
 
-static bool
-gen_in_dir(const SiftDirSnapshot *snap, uint64 gen)
+/* the generations of the segments of a directory as an open addressing set (gen + 1 in a slot, 0: free), for a directory of more segments than a scan is cheaper than a set */
+#define GEN_SCAN_MAX	8
+
+typedef struct GenSet
 {
+	const SiftDirSnapshot *snap;
+	uint64	   *slots;
+	uint32		mask;
+	uint64		stk[256];
+} GenSet;
+
+static void
+gens_open(GenSet *g, const SiftDirSnapshot *snap)
+{
+	uint32		cap = 16;
+
+	g->snap = snap;
+	g->slots = NULL;
+	if (snap->nsegs <= GEN_SCAN_MAX)
+		return;
+	while (cap < (uint32) snap->nsegs * 2)
+		cap *= 2;
+	g->slots = cap <= lengthof(g->stk) ? g->stk : palloc(cap * sizeof(uint64));
+	g->mask = cap - 1;
+	memset(g->slots, 0, cap * sizeof(uint64));
 	for (int i = 0; i < snap->nsegs; i++)
-		if (snap->segs[i].gen == gen)
+	{
+		uint32		h = (uint32) (sift_fib64(snap->segs[i].gen) >> 40) & g->mask;
+
+		while (g->slots[h] != 0 && g->slots[h] != snap->segs[i].gen + 1)
+			h = (h + 1) & g->mask;
+		g->slots[h] = snap->segs[i].gen + 1;
+	}
+}
+
+static void
+gens_close(GenSet *g)
+{
+	if (g->slots != NULL && g->slots != g->stk)
+		pfree(g->slots);
+}
+
+static bool
+gens_has(const GenSet *g, uint64 gen)
+{
+	uint32		h;
+
+	if (g->slots == NULL)
+	{
+		for (int i = 0; i < g->snap->nsegs; i++)
+			if (g->snap->segs[i].gen == gen)
+				return true;
+		return false;
+	}
+	for (h = (uint32) (sift_fib64(gen) >> 40) & g->mask; g->slots[h] != 0; h = (h + 1) & g->mask)
+		if (g->slots[h] == gen + 1)
 			return true;
 	return false;
 }
@@ -169,6 +221,7 @@ sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
 	dlist_mutable_iter it;
 	RelEnts    *r;
 	RetireMemo *m = NULL;
+	GenSet		gens;
 
 	if (cache == NULL)
 		return;
@@ -187,13 +240,15 @@ sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
 	m->version = snap->version;
 	if ((r = hash_search(by_rel, &index->rd_locator, HASH_FIND, NULL)) == NULL)
 		return;
+	gens_open(&gens, snap);
 	dlist_foreach_modify(it, &r->ents)
 	{
 		DictEnt    *e = dlist_container(DictEnt, rnode, it.cur);
 
-		if (e->pins == 0 && !gen_in_dir(snap, e->key.gen))
+		if (e->pins == 0 && !gens_has(&gens, e->key.gen))
 			dict_drop(e);
 	}
+	gens_close(&gens);
 }
 
 

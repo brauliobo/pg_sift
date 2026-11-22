@@ -37,8 +37,10 @@ struct SiftSkipQuery
 	const SiftColPred *p;
 	bool		is_int;
 	int			ent[SIFT_SKIP_NKINDS + 1];	/* the entry of each kind that can say something of the predicate, -1 for none */
-	uint64	   *hashes;			/* the keys of an equality or IN, hashed as the writer hashed them */
-	uint32		nhashes;
+	uint64 *hashes;         /* the keys of an equality or IN, hashed as the writer hashed them, ascending */
+	uint32 nhashes;
+	int64 *ivals;           /* the integers of an IN or NOT IN list, ascending and distinct */
+	uint32 nivals;
 	uint64		tri[MAX_TRIGRAMS];
 	uint32		ntri;
 	SiftDictPredCache *dict;
@@ -140,6 +142,16 @@ sift_skip_query(const SiftSkipReader *r, const SiftColDef *def, const SiftColPre
 		if (p->op < SIFT_COLOP_EQ || p->op > SIFT_COLOP_NOTIN)
 			return NULL;
 		q->is_int = true;
+		if (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN)
+		{
+			q->ivals = palloc(Max(p->nvals, 1) * sizeof(int64));
+			for (int j = 0; j < p->nvals; j++)
+				q->ivals[j] = p->vals[j].v.i;
+			sift_sort_i64(q->ivals, p->nvals);
+			for (int j = 0; j < p->nvals; j++)
+				if (q->nivals == 0 || q->ivals[q->nivals - 1] != q->ivals[j])
+					q->ivals[q->nivals++] = q->ivals[j];
+		}
 		q->ent[SIFT_SKIP_INT_BITSET64] = find_entry(r, p->col, SIFT_SKIP_INT_BITSET64);
 		q->ent[SIFT_SKIP_EXACT_SET] = find_entry(r, p->col, SIFT_SKIP_EXACT_SET);
 		if (point)
@@ -177,6 +189,8 @@ sift_skip_query(const SiftSkipReader *r, const SiftColDef *def, const SiftColPre
 				q->ent[SIFT_SKIP_TRIGRAM_SB] = -1;
 		}
 	}
+	if (q->nhashes > 1)
+		qsort(q->hashes, q->nhashes, sizeof(uint64), sift_cmp_u64);
 	for (int k = 1; k <= SIFT_SKIP_NKINDS; k++)
 		any |= q->ent[k] >= 0;
 	return any ? q : NULL;
@@ -232,19 +246,64 @@ typedef struct Held
 	bool		all;
 } Held;
 
-static void
-held(Held *h, const SiftColPred *p, int64 v)
-{
-	bool		yes = int_holds(p, v);
 
-	h->any |= yes;
-	h->all &= yes;
-}
 
 static SiftSkipVerdict
 verdict_of(Held h, bool no_nulls)
 {
 	return !h.any ? SIFT_SKIP_PRUNE : (h.all && no_nulls ? SIFT_SKIP_ALL_MATCH : SIFT_SKIP_MAY_MATCH);
+}
+
+static bool
+ints_have(const SiftSkipQuery *q, int64 v)
+{
+	uint32 lo = 0,
+		   hi = q->nivals;
+
+	SIFT_BISECT(uint32, m, lo, hi, q->ivals[m] < v);
+	return lo < q->nivals && q->ivals[lo] == v;
+}
+
+/* The bits of the 64 values base .. base + 63 that the integer predicate holds for, by arithmetic on the position of its literals and not a test of each value */
+static uint64
+bitset_hold(const SiftSkipQuery *q, int64 base)
+{
+	const SiftColPred *p = q->p;
+	int64 c = p->nvals > 0 ? p->vals[0].v.i : 0;
+	uint64 hit = 0;
+
+	switch (p->op)
+	{
+		case SIFT_COLOP_EQ:
+		case SIFT_COLOP_NE:
+			hit = (uint64) c - (uint64) base < SIFT_SKIP_SPAN ? UINT64CONST(1) << ((uint64) c - (uint64) base) : 0;
+			return p->op == SIFT_COLOP_EQ ? hit : ~hit;
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_GE:
+		case SIFT_COLOP_LE:
+		case SIFT_COLOP_GT:
+			{
+				bool incl = p->op == SIFT_COLOP_LE || p->op == SIFT_COLOP_GT;
+				uint64 d = (uint64) c - (uint64) base,
+					   n = c < base ? 0 : d >= SIFT_SKIP_SPAN ? SIFT_SKIP_SPAN : d + incl;
+
+				if (c < base)
+					hit = 0;
+				else
+					hit = n >= SIFT_SKIP_SPAN ? ~UINT64CONST(0) : (UINT64CONST(1) << n) - 1;
+				return p->op == SIFT_COLOP_LT || p->op == SIFT_COLOP_LE ? hit : ~hit;
+			}
+		default:
+			{
+				uint32 lo = 0,
+					   hi = q->nivals;
+
+				SIFT_BISECT(uint32, m, lo, hi, q->ivals[m] < base);
+				for (; lo < q->nivals && (uint64) q->ivals[lo] - (uint64) base < SIFT_SKIP_SPAN; lo++)
+					hit |= UINT64CONST(1) << ((uint64) q->ivals[lo] - (uint64) base);
+				return p->op == SIFT_COLOP_IN ? hit : ~hit;
+			}
+	}
 }
 
 static bool
@@ -267,9 +326,12 @@ judge(const SiftSkipQuery *q, const SiftSkipColDesc *d, const uint8 *pay, uint32
 				if (len != sizeof(bs))
 					return SIFT_SKIP_MAY_MATCH;
 				memcpy(&bs, pay, sizeof(bs));
-				for (int b = 0; b < SIFT_SKIP_SPAN; b++)
-					if ((bs.bits >> b) & 1)
-						held(&h, q->p, (int64) ((uint64) bs.base + b));
+				{
+					uint64 hold = bitset_hold(q, bs.base);
+
+					h.any = (bs.bits & hold) != 0;
+					h.all = (bs.bits & ~hold) == 0;
+				}
 				return verdict_of(h, no_nulls);
 			}
 		case SIFT_SKIP_EXACT_SET:
@@ -283,14 +345,31 @@ judge(const SiftSkipQuery *q, const SiftSkipColDesc *d, const uint8 *pay, uint32
 					return SIFT_SKIP_MAY_MATCH;
 				if (q->is_int)
 				{
+					bool set_op = q->p->op == SIFT_COLOP_IN || q->p->op == SIFT_COLOP_NOTIN;
+
 					for (uint32 i = 0; i < nd; i++)
 					{
-						int64		v;
+						int64 v;
+						bool yes;
 
 						memcpy(&v, pay + 8 + (uint64) i * 8, 8);
-						held(&h, q->p, v);
+						yes = set_op ? ints_have(q, v) == (q->p->op == SIFT_COLOP_IN) : int_holds(q->p, v);
+						h.any |= yes;
+						h.all &= yes;
 					}
 					return verdict_of(h, no_nulls);
+				}
+				if (q->nhashes > nd)
+				{
+					for (uint32 i = 0; i < nd; i++)
+					{
+						uint64 gh;
+
+						memcpy(&gh, pay + 8 + (uint64) i * 8, 8);
+						if (hash_in(q->hashes, q->nhashes, gh))
+							return SIFT_SKIP_MAY_MATCH;
+					}
+					return SIFT_SKIP_PRUNE;
 				}
 				for (uint32 j = 0; j < q->nhashes; j++)
 					if (hash_in((const uint64 *) (pay + 8), nd, q->hashes[j]))

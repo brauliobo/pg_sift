@@ -57,11 +57,13 @@ sift_rows_granule_len(const SiftRows *rows, int from)
 
 /* The slice of the granule of rows [from, from + cnt) of column c: a column of elements starts at the first element of those rows */
 static SiftColIn
-granule_slice(const SiftRows *rows, int c, int from)
+granule_slice(const SiftRows *rows, int c, int from, const SiftDictEnc *dict)
 {
-	const SiftColIn *col = &rows->cols[c];
+	SiftColIn   col = rows->cols[c];
 
-	return sift_colin_slice(col, col->group1 > 0 ? (int) rows->cols[col->group1 - 1].eoff[from] : from);
+	if (col.dcode == NULL && col.pdict == NULL && dict != NULL && dict->row_codes != NULL)
+		col.dcode = dict->row_codes;
+	return sift_colin_slice(&col, col.group1 > 0 ? (int) rows->cols[col.group1 - 1].eoff[from] : from);
 }
 
 /* The values a slice holds: the rows of the granule, or the elements of the arrays of its rows */
@@ -351,7 +353,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 
 		for (int c = 0; c < nc; c++)
 			{
-				gcols[c] = granule_slice(rows, c, from);
+				gcols[c] = granule_slice(rows, c, from, dicts != NULL ? dicts[c] : NULL);
 				gcols[c].promo = promos != NULL && promos[c].kind != SIFT_PROMO_NONE ? &promos[c] : NULL;
 			}
 		for (int r = 0; r < cnt; r++)
@@ -606,6 +608,12 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	memcpy(d.key_hi, kmax, SIFT_BOUND_BYTES);
 	memcpy(d.time_min, tmin, sizeof(tmin));
 	memcpy(d.time_max, tmax, sizeof(tmax));
+	for (int c = 0; dicts != NULL && c < nc; c++)
+		if (dicts[c] != NULL && dicts[c]->row_codes != NULL && rows->cols[c].pdict == NULL)
+		{
+			pfree(dicts[c]->row_codes);
+			dicts[c]->row_codes = NULL;
+		}
 	if (codecs != NULL)
 		sift_part_codecs_free(codecs);
 	return d;

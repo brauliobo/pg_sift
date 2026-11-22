@@ -5,6 +5,7 @@
 
 #include "core/cpu.h"
 #include "core/fmv.h"
+#include "core/cmp.h"
 #include "core/popcount.h"
 
 #if defined(__x86_64__)
@@ -121,9 +122,11 @@ bounds_verdict(const SiftCfTest *t, const SiftCfBounds *b)
 	}
 	else
 	{
-		may_in = false;
-		for (uint32 i = 0; i < t->nset && !may_in; i++)
-			may_in = t->set[i] >= b->vmin && t->set[i] <= b->vmax;
+		uint32 lo = 0,
+			   hi = t->nset;
+
+		SIFT_BISECT(uint32, m, lo, hi, t->set[m] < b->vmin);
+		may_in = lo < t->nset && t->set[lo] <= b->vmax;
 		all_in = b->vmin == b->vmax && may_in;
 	}
 	if (t->kind == SIFT_CFT_RANGE || t->kind == SIFT_CFT_SET)
@@ -498,13 +501,19 @@ match_summary(const uint64 *match, uint32 dict_n, uint32 *first, uint32 *last)
 
 	*first = dict_n;
 	*last = 0;
-	for (uint32 i = 0; i < dict_n; i++)
-		if ((match[i >> 6] >> (i & 63)) & 1)
-		{
-			k++;
-			*first = Min(*first, i);
-			*last = i;
-		}
+	for (uint32 w = 0, nw = words_of(dict_n); w < nw; w++)
+	{
+		uint64 word = match[w];
+
+		if (w + 1 == nw && (dict_n & 63))
+			word &= (UINT64CONST(1) << (dict_n & 63)) - 1;
+		if (word == 0)
+			continue;
+		if (k == 0)
+			*first = (w << 6) + (uint32) __builtin_ctzll(word);
+		*last = (w << 6) + (uint32) (63 - __builtin_clzll(word));
+		k += sift_pc64(word);
+	}
 	return k;
 }
 
@@ -566,14 +575,37 @@ sift_cf_dict_match_sorted(const int64 *dict, uint32 n, const SiftCfTest *t, uint
 		case SIFT_CFT_MEMBER:
 			return sift_cf_dict_match(dict, n, t, match);
 		default:
-			for (uint32 i = 0; i < t->nset; i++)
+			if (n < 64 || t->nset > n / 8)
 			{
-				uint32		at = dict_bound(dict, n, t->set[i], false);
-
-				if (at < n && dict[at] == t->set[i] && !((match[at >> 6] >> (at & 63)) & 1))
+				for (uint32 di = 0, si = 0; di < n && si < t->nset;)
 				{
-					match[at >> 6] |= UINT64CONST(1) << (at & 63);
-					cnt++;
+					if (dict[di] < t->set[si])
+						di++;
+					else if (dict[di] > t->set[si])
+						si++;
+					else
+					{
+						match[di >> 6] |= UINT64CONST(1) << (di & 63);
+						cnt++;
+						di++;
+						si++;
+					}
+				}
+			}
+			else
+			{
+				uint32 base = 0;
+
+				for (uint32 i = 0; i < t->nset && base < n; i++)
+				{
+					uint32 at = base + dict_bound(dict + base, n - base, t->set[i], false);
+
+					base = at;
+					if (at < n && dict[at] == t->set[i] && !((match[at >> 6] >> (at & 63)) & 1))
+					{
+						match[at >> 6] |= UINT64CONST(1) << (at & 63);
+						cnt++;
+					}
 				}
 			}
 			if (t->kind == SIFT_CFT_NSET)

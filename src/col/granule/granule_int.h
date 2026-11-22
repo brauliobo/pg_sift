@@ -22,32 +22,12 @@ pad8(StringInfo s)
 		appendStringInfoChar(s, '\0');
 }
 
-/*
- * The exceptions of a chunk: a header, the mask of the rows (only when there are more entries than SIFT_EXC_SPARSE_MAX: fewer are found by a binary search of their row indexes),
- * one entry per row and the end of the payload, then the payload (all of it a multiple of 8 bytes)
- */
-typedef struct SiftExcHeader
-{
-	uint16		n_entries;
-	uint16		flags;			/* SIFT_EXC_MASKED, SIFT_EXC_KINDS_PACKED */
-	uint32		payload_bytes;
-} SiftExcHeader;
-
 #define SIFT_DICT_GRANULE_MAX	65536
 #define SIFT_ALP_RD_DICT		8
 #define SIFT_ALP_RD_MIN_LEFT	8
 #define SIFT_ALP_RD_MAX_LEFT	16
 #define SIFT_ALPRD_HAS_EXC		UINT8_C(1)
 #define SIFT_ALPRD_MAX_TZ		48
-#define SIFT_EXC_MASK_WORDS		(SIFT_GRANULE_ROWS / 64)
-#define SIFT_EXC_SPARSE_MAX		511
-#define SIFT_EXC_MASKED			UINT16_C(1)
-/* Every entry is a bare kind (no payload): the block is the header and the kind of each row of the chunk as a cascade of the codec (payload_bytes: its bytes), the entries and the mask are made when the chunk is opened */
-#define SIFT_EXC_KINDS_PACKED	UINT16_C(1 << 1)
-#define SIFT_EXC_MASK_BYTES(h)	(((h)->flags & SIFT_EXC_MASKED) ? SIFT_EXC_MASK_WORDS * 8 : 0)
-#define SIFT_EXC_PAYLOAD_PADDED(h)	(((uint64) (h)->payload_bytes + 7) & ~(uint64) 7)
-#define SIFT_EXC_BLOCK_LEN(h)	(((h)->flags & SIFT_EXC_KINDS_PACKED) ? sizeof(SiftExcHeader) + SIFT_EXC_PAYLOAD_PADDED(h) : \
-								 sizeof(SiftExcHeader) + SIFT_EXC_MASK_BYTES(h) + ((uint64) (h)->n_entries + 1) * 8 + SIFT_EXC_PAYLOAD_PADDED(h))
 
 static inline SiftVariantKind
 sift_exc_kind(uint8 tag)
@@ -61,25 +41,14 @@ sift_exc_entries(const SiftExcHeader *h)
 	return (const SiftVariantExcEntry *) ((const char *) h + sizeof(SiftExcHeader) + SIFT_EXC_MASK_BYTES(h));
 }
 
-/* A chunk of a granule as stored: the bytes (decompressed when the chunk is wrapped), where its validity bits and its body start */
-typedef struct SiftChunk
-{
-	const SiftChunkRef *ref;
-	const SiftGranuleView *view;
-	int			idx;			/* the chunk of the granule: 0 is the _tid, column c is chunk c + 1 */
-	uint16		enc;			/* ref->enc without the modifiers */
-	const char *raw;
-	const uint8 *validity;		/* NULL: every row is valid (or none, with ALL_NULL) */
-	const SiftExcHeader *exc;	/* NULL: no exceptions; the block as stored, or made of the packed kinds (exc_len is what the chunk holds of it) */
-	uint32		exc_len;
-	const SiftKeyPresentHdr *keyp;	/* NULL: no rows of a key are listed (SIFT_ENC_KEY_HAS_MASK); the list or the bitmap follows the header */
-	const char *body;
-	uint32		body_len;
-	int			nrows;
-	int			nnonnull;
-} SiftChunk;
-
 extern void sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c);
+
+/* Frees the buffers a chunk owns (idempotent); the release for strings keeps the decompressed bytes when the strings point into them */
+extern void sift_chunk_close(SiftChunk *c);
+extern void sift_chunk_release_strs(SiftChunk *c);
+
+/* How many of the rows [0, target_row) hold a value, from the state of the ascending calls before it (*cur_word, *cur_rank: start at 0; a target before the word of the state starts over) */
+extern int	sift_chunk_rank_advance(const SiftChunk *c, int *cur_word, int *cur_rank, int target_row);
 
 static inline bool
 sift_chunk_row_valid(const SiftChunk *c, int row)
@@ -99,6 +68,9 @@ extern uint16 sift_chunk_nonnull_rows(const SiftChunkRef *ref, const char *p, ui
 /* The mask of the exception rows of a chunk: the stored one, or one made from its entries (a palloc'd 1024 bytes) */
 extern const uint64 *sift_chunk_exc_mask(const SiftChunk *c);
 
+/* The cascade of an integer-class body that sift_cc_decode_sel reads (NULL for a body that is not one): closed with sift_cc_close */
+extern SiftCc *sift_chunk_cc_open(const SiftChunk *c);
+
 /* The values of the body of an integer-class chunk, nonnull indexes [k0, k1) */
 extern void sift_chunk_ints(const SiftChunk *c, int k0, int k1, int64 *out);
 extern void sift_chunk_f8(const SiftChunk *c, int k0, int k1, double *out);
@@ -108,6 +80,16 @@ extern void sift_chunk_f8_sel(const SiftChunk *c, const uint32 *idx, int m, doub
 
 /* The strings of a string-class chunk: the nonnull indexes [k0, k1) as pointers into the chunk and lengths */
 extern void sift_chunk_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len);
+
+/* The same, keeping what it allocated for the strings in own, which sift_str_own_free frees */
+extern void sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, SiftStrOwn *own);
+extern void sift_str_own_free(SiftStrOwn *own);
+
+/* The one string of nonnull index k, decoded without the others */
+extern void sift_chunk_str_one(const SiftChunk *c, int k, const char **p, uint32 *len);
+
+/* The offsets and bytes of every string of a STR_BLOCK chunk, palloc'd */
+extern void sift_chunk_block_strs_own(const SiftChunk *c, uint32 **offs, char **bytes);
 
 /* The dictionary of a DICT_CODE chunk: its strings, and where its codes are (a cascade at *codes, *codes_len bytes) */
 extern void sift_chunk_dict(const SiftChunk *c, SiftGranuleDict *d, const char **codes, uint32 *codes_len);

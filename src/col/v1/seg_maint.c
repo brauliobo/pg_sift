@@ -480,6 +480,9 @@ verify_hll(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col)
 	pfree(want.data);
 }
 
+/* a row whose list has up to this many values is checked for repeated ones by a scan; a longer one is sorted */
+#define VERIFY_DUP_SCAN	16
+
 /*
  * The point directory of the leaf lists every row of the unit that holds a value (a row once however many times it holds it, for the values of a list: grp is the
  * counts of the list), and none of a leaf with overflow values (listed counts them over the segment; a key with no list is counted by the segment)
@@ -504,30 +507,53 @@ verify_point(SiftColSegment *seg, int c, uint32 u, const SiftCPaggCol *col, cons
 	}
 	if (grp != NULL)
 	{
-		uint32		j = 0;
+		uint32		j = 0,
+					tmpcap = 0;
+		int64	   *tmp = NULL;
 
 		for (uint32 r = 0; r < seg->sbdir[u].nrows; r++)
 		{
-			uint32		n = sift_col_bit_test(grp->nulls, r) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r];
+			uint32		n = sift_col_bit_test(grp->nulls, r) || grp->key[r] < 0 ? 0 : (uint32) grp->key[r],
+						m = 0;
 
-			for (uint32 i = j; i < j + n; i++)
+			if (n > VERIFY_DUP_SCAN)
+			{
+				if (tmpcap < n)
+				{
+					tmpcap = Max(n, 2 * tmpcap);
+					tmp = tmp ? repalloc(tmp, (Size) tmpcap * sizeof(int64)) : palloc((Size) tmpcap * sizeof(int64));
+				}
+				for (uint32 i = j; i < j + n; i++)
+					if (!sift_col_bit_test(col->nulls, i))
+						tmp[m++] = col->key[i];
+				sift_sort_i64(tmp, m);
+			}
+			for (uint32 i = 0; i < (n > VERIFY_DUP_SCAN ? m : n); i++)
 			{
 				bool		dense,
 							dup = false;
+				int64		key = n > VERIFY_DUP_SCAN ? tmp[i] : col->key[j + i];
 
-				if (sift_col_bit_test(col->nulls, i))
-					continue;
-				for (uint32 k = j; k < i && !dup; k++)
-					dup = !sift_col_bit_test(col->nulls, k) && col->key[k] == col->key[i];
+				if (n > VERIFY_DUP_SCAN)
+					dup = i > 0 && tmp[i - 1] == key;
+				else
+				{
+					if (sift_col_bit_test(col->nulls, j + i))
+						continue;
+					for (uint32 k = j; k < j + i && !dup; k++)
+						dup = !sift_col_bit_test(col->nulls, k) && col->key[k] == key;
+				}
 				if (dup)
 					continue;
-				if (!sift_cseg_point_has(seg, c, col->key[i], base + r, &dense))
+				if (!sift_cseg_point_has(seg, c, key, base + r, &dense))
 					corrupt(seg, "The point directory of leaf %d does not list row %u of unit %u under its key.", c, base + r, u);
 
 				*listed += !dense;
 			}
 			j += n;
 		}
+		if (tmp)
+			pfree(tmp);
 		return;
 	}
 	for (uint32 i = 0; i < col->n; i++)

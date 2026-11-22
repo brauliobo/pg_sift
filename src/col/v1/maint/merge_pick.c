@@ -6,6 +6,7 @@
 #include "bm25/merge.h"
 #include "col/v1/maint/maint_int.h"
 #include "col/v1/point.h"
+#include "core/cmp.h"
 #include "core/memtrack.h"
 #include "core/dirpart.h"
 
@@ -62,6 +63,109 @@ sift_col_mostly_dead(Relation index, const SiftSegEntry *e)
 	return dead;
 }
 
+typedef struct SpanIv
+{
+	uint32		lo;
+	uint32		hi;
+	int			seg;
+} SpanIv;
+
+typedef struct SegShare
+{
+	int			a;
+	int			b;
+	uint64		len;
+} SegShare;
+
+static int
+span_iv_cmp(const void *x, const void *y)
+{
+	const SpanIv *a = x,
+			   *b = y;
+
+	return a->lo != b->lo ? SIFT_CMP3(a->lo, b->lo) : a->hi != b->hi ? SIFT_CMP3(a->hi, b->hi) : SIFT_CMP3(a->seg, b->seg);
+}
+
+static int
+seg_share_cmp(const void *x, const void *y)
+{
+	const SegShare *a = x,
+			   *b = y;
+
+	return a->a != b->a ? SIFT_CMP3(a->a, b->a) : SIFT_CMP3(a->b, b->b);
+}
+
+/*
+ * Do the segments share no more than `allowed` superblocks pairwise (maint_share_superblock of every pair)? The spans of all of them are swept once in the order of their first superblock, each
+ * against the spans still open; the superblocks two segments share are summed by pair after.
+ */
+static bool
+spans_apart(const SbSpans *span, int n, int allowed)
+{
+	uint32		m = 0,
+				nact = 0,
+				nshare = 0,
+				cap = 0;
+	SpanIv	   *iv;
+	uint32	   *act;
+	SegShare   *share = NULL;
+	bool		apart = true;
+
+	for (int i = 0; i < n; i++)
+		m += span[i].n;
+	iv = palloc(Max(m, 1) * sizeof(SpanIv));
+	act = palloc(Max(m, 1) * sizeof(uint32));
+	m = 0;
+	for (int i = 0; i < n; i++)
+		for (uint32 k = 0; k < span[i].n; k++)
+			iv[m++] = (SpanIv) {span[i].r[k].lo, span[i].r[k].hi, i};
+	qsort(iv, m, sizeof(SpanIv), span_iv_cmp);
+	for (uint32 k = 0; k < m && apart; k++)
+	{
+		for (uint32 q = 0; q < nact && apart;)
+		{
+			const SpanIv *a = &iv[act[q]];
+			uint64		len;
+
+			if (a->hi < iv[k].lo)
+			{
+				act[q] = act[--nact];
+				continue;
+			}
+			q++;
+			if (a->seg == iv[k].seg)
+				continue;
+			len = (uint64) Min(a->hi, iv[k].hi) - iv[k].lo + 1;
+			apart = len <= allowed;
+			if (apart && nshare == cap)
+			{
+				cap = Max(16, cap * 2);
+				share = share ? repalloc(share, cap * sizeof(SegShare)) : palloc(cap * sizeof(SegShare));
+			}
+			if (apart)
+				share[nshare++] = (SegShare) {Min(a->seg, iv[k].seg), Max(a->seg, iv[k].seg), len};
+		}
+		act[nact++] = k;
+	}
+	if (apart && nshare > 1)
+	{
+		qsort(share, nshare, sizeof(SegShare), seg_share_cmp);
+		for (uint32 s = 0, e; s < nshare && apart; s = e)
+		{
+			uint64		total = 0;
+
+			for (e = s; e < nshare && seg_share_cmp(&share[s], &share[e]) == 0; e++)
+				total += share[e].len;
+			apart = total <= allowed;
+		}
+	}
+	pfree(iv);
+	pfree(act);
+	if (share)
+		pfree(share);
+	return apart;
+}
+
 /*
  * The tier merge of segments that are clean and share at most the superblock at their edge gain a reader nothing (the same units with the same pre-aggregates, one file
  * fewer to open) and writes all their bytes: a parallel build leaves such a tier, and at 100 million rows the first VACUUM after it would rewrite the index.
@@ -96,9 +200,7 @@ clean_apart(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry *sel
 		seg[i] = sift_cseg_open(index, &sel[i], scx);
 		span[i] = maint_seg_spans(seg[i]);
 	}
-	for (int i = 0; i < n && apart; i++)
-		for (int j = i + 1; j < n && apart; j++)
-			apart = !maint_share_superblock(&span[i], &span[j], 1);
+	apart = spans_apart(span, n, 1);
 	for (int i = 0; i < n; i++)
 		sift_cseg_close(seg[i]);
 	MemoryContextSwitchTo(old);
@@ -162,7 +264,8 @@ static struct
 	int			n;
 	int			next;
 	int			cap;
-	uint64	   *gens;
+	uint64	   *gens;			/* cap of the ring, then cap of the same in order (sorted_dirty: not made since the ring changed), for the lookup of the many segments of a pick */
+	bool		sorted_dirty;
 }			settled;
 
 static SettledCut
@@ -192,12 +295,13 @@ maint_segs_settle(Relation index, const SiftSegEntry *out, int nout)
 		settled.cut = settled_cut_now();
 		settled.n = settled.next = 0;
 	}
+	settled.sorted_dirty = true;
 	for (int i = 0; i < nout; i++)
 	{
 		if (settled.n == settled.cap && settled.cap < SETTLED_MAX)
 		{
 			settled.cap = Min(Max(settled.cap * 2, 2 * SIFT_DIR_POLICY_MAX), SETTLED_MAX);
-			settled.gens = settled.gens ? repalloc(settled.gens, settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, settled.cap * sizeof(uint64));
+			settled.gens = settled.gens ? repalloc(settled.gens, 2 * settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, 2 * settled.cap * sizeof(uint64));
 		}
 		settled.gens[settled.next] = out[i].gen;
 		settled.next = (settled.next + 1) % settled.cap;
@@ -212,20 +316,32 @@ maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftS
 		maint_segs_settle(index, out, nout);
 }
 
+/* Is gen among the n sorted ones */
+static bool
+gen_sorted_has(const uint64 *sorted, int n, uint64 gen)
+{
+	int			lo = 0,
+				hi = n;
+
+	SIFT_BISECT(int, m, lo, hi, sorted[m] < gen);
+	return lo < n && sorted[lo] == gen;
+}
+
 bool
 maint_merge_settled(Relation index, const SiftSegEntry *sel, int n)
 {
 	if (!settled_for(RelationGetRelid(index), settled_cut_now()))
 		return false;
-	for (int i = 0; i < n; i++)
+	if (n > 0 && settled.sorted_dirty)
 	{
-		bool		found = false;
-
-		for (int k = 0; k < settled.n && !found; k++)
-			found = settled.gens[k] == sel[i].gen;
-		if (!found)
-			return false;
+		if (settled.n > 0)
+			memcpy(settled.gens + settled.cap, settled.gens, settled.n * sizeof(uint64));
+		qsort(settled.gens + settled.cap, settled.n, sizeof(uint64), sift_cmp_u64);
+		settled.sorted_dirty = false;
 	}
+	for (int i = 0; i < n; i++)
+		if (!gen_sorted_has(settled.gens + settled.cap, settled.n, sel[i].gen))
+			return false;
 	return true;
 }
 
@@ -250,11 +366,15 @@ all_partitioned(Relation index, const SiftDirSnapshot *snap, const SiftSegEntry 
 	SiftDirPart *part;
 	int			np = sift_dir_parts_read(index, snap, &entries, &part),
 				found = 0;
+	uint64	   *sgen = palloc(Max(n, 1) * sizeof(uint64));
 
+	for (int i = 0; i < n; i++)
+		sgen[i] = sel[i].gen;
+	qsort(sgen, n, sizeof(uint64), sift_cmp_u64);
 	for (int k = 0; k < np; k++)
 		for (uint32 e = part[k].first; e < part[k].first + part[k].n; e++)
-			for (int i = 0; i < n; i++)
-				found += entries[e].gen == sel[i].gen;
+			found += gen_sorted_has(sgen, n, entries[e].gen);
+	pfree(sgen);
 	return found == n;
 }
 
@@ -453,6 +573,17 @@ maint_merge_par_bytes(void)
 #endif
 }
 
+/* by the lowest key, the segments of one in the order they have */
+static int
+cmp_klo(const void *x, const void *y, void *arg)
+{
+	const RewriteView *v = arg;
+	int			a = *(const int *) x,
+				b = *(const int *) y;
+
+	return v->klo[a] != v->klo[b] ? SIFT_CMP3(v->klo[a], v->klo[b]) : SIFT_CMP3(a, b);
+}
+
 /*
  * One window of the rewrite of a key-cut index in partitions: the segment with the lowest key among those whose key range overlaps another's, and the ones
  * that overlap what the window covers so far, in the order of their lowest key, until they hold maint_pass_limit() bytes (at least two). The window is cut
@@ -473,17 +604,9 @@ pick_key_window(const RewriteView *v, bool *take)
 	for (int i = 0; i < v->n; i++)
 	{
 		if (maint_key_meets(v, i))
-		{
-			int			k = n++;
-
-			while (k > 0 && v->klo[order[k - 1]] > v->klo[i])
-			{
-				order[k] = order[k - 1];
-				k--;
-			}
-			order[k] = i;
-		}
+			order[n++] = i;
 	}
+	qsort_arg(order, n, sizeof(int), cmp_klo, (void *) v);
 	for (int k = 0; k < n; k++)
 	{
 		int			i = order[k];
@@ -616,9 +739,7 @@ maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *se
 		apart = maint_merge_settled(index, sel, nsel) || bytes >= maint_merge_par_bytes();
 		for (int i = 0; i < v->n && apart; i++)
 			apart = !(v->imm[i].flags & SIFT_SEG_DIRTY);
-		for (int i = 0; i < v->n && apart; i++)
-			for (int j = i + 1; j < v->n && apart; j++)
-				apart = !maint_share_superblock(&v->span[i], &v->span[j], 1);
+		apart = apart && spans_apart(v->span, v->n, 1);
 		if (apart && !refresh)
 			nsel = 0;
 	}

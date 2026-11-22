@@ -47,15 +47,46 @@ typedef struct SiftFsstNeedle
 	uint32		raw;
 } SiftFsstNeedle;
 
+/* An IN list of the needles as a set: the lengths the coded needles have and a table of their hashes, so that a chunk is read once for all of them */
+typedef struct SiftFsstHashSlot
+{
+	uint32		hash;
+	uint32		idx;			/* 1 + the needle; 0: empty */
+} SiftFsstHashSlot;
+
 /* The needles of a predicate (an equality, an IN list or a prefix) over the table of symbols of a part, made once for the part: the chunks of a part share the table */
 typedef struct SiftFsstPredCache
 {
 	const struct SiftFsst *fsst;
 	int			n;
 	SiftFsstNeedle *needles;
+	uint32		min_elen;
+	uint32		max_elen;
+	uint64		len_mask;		/* bit L: some needle is L coded bytes long (L < 64) */
+	bool		has_long;		/* some needle is 64 or more coded bytes long */
+	SiftFsstHashSlot *ht;		/* an IN or NOT IN list of more than 4 needles: open addressing, ht_mask + 1 slots; else NULL */
+	uint32		ht_mask;
 } SiftFsstPredCache;
 
 extern SiftFsstPredCache *sift_fsst_pred_prepare(const struct SiftFsst *fsst, const SiftColPred *p);
+extern void sift_fsst_pred_free(SiftFsstPredCache *fc);
+
+/* A chunk of SIFT_CENC_STR_FSST opened for a filter: the table, the coded lengths as a cascade, and (sift_fsst_chunk_offsets) as a list with the offset of each string in the coded bytes */
+typedef struct SiftFsstChunk
+{
+	const struct SiftFsst *t;
+	struct SiftFsst *own;		/* the table of the chunk when it keeps one */
+	SiftCc	   *lens;
+	const uint8 *coded;			/* the coded strings, one after the other */
+	uint32		coded_bytes;
+	uint32		raw_bytes;		/* what they decode to */
+	int64	   *clen;			/* NULL until sift_fsst_chunk_offsets */
+	uint32	   *off;			/* nn + 1 */
+} SiftFsstChunk;
+
+extern bool sift_fsst_chunk_open(const SiftChunk *c, SiftFsstChunk *f);
+extern void sift_fsst_chunk_offsets(SiftFsstChunk *f, uint32 nn);
+extern void sift_fsst_chunk_close(SiftFsstChunk *f);
 
 typedef struct SiftCfiltPred
 {
@@ -75,5 +106,11 @@ extern bool sift_cfilt_compile(SiftCfiltPred *cp, const SiftColDef *def, const S
 /* The rows of the granule that pass; out_mask: SIFT_GRANULE_ROWS / 64 words */
 #define SIFT_CFILT_WORDS		(SIFT_GRANULE_ROWS / 64)
 extern SiftCfiltResult sift_granule_filter_compressed(const SiftGranuleView *v, const SiftCfiltPred *cp, uint64 *out_mask);
+
+/*
+ * The same for the rows in live (SIFT_CFILT_WORDS words; NULL: all of them) that an earlier predicate left: the result is right for those rows (ALL_FALSE: none of them passes, ALL_TRUE: all of them
+ * pass), the bits of the others are not defined, and a chunk of strings decodes and tests the live rows only when they are few.
+ */
+extern SiftCfiltResult sift_granule_filter_compressed_live(const SiftGranuleView *v, const SiftCfiltPred *cp, const uint64 *live, uint64 *out_mask);
 
 #endif							/* SIFT_GRANULE_FILTER_H */

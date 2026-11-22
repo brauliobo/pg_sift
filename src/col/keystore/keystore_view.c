@@ -7,6 +7,7 @@
 #include "postgres.h"
 
 #include "access/table.h"
+#include "lib/ilist.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -19,6 +20,15 @@
 
 static HTAB *views;
 static bool stores_changed;
+static dlist_head views_lru = DLIST_STATIC_INIT(views_lru);
+
+static void
+view_unlink(KeyStoreView *v)
+{
+	if (v->on_lru)
+		dlist_delete(&v->lru);
+	v->on_lru = false;
+}
 
 static void
 stores_relcache_changed(Datum arg, int cacheid, uint32 hashvalue)
@@ -43,6 +53,7 @@ views_drop_gone(Oid keep)
 				stores_changed = true;
 				continue;
 			}
+			view_unlink(v);
 			MemoryContextDelete(v->cx);
 			hash_search(views, &v->key, HASH_REMOVE, NULL);
 		}
@@ -51,6 +62,7 @@ views_drop_gone(Oid keep)
 static void
 view_clear(KeyStoreView *v)
 {
+	view_unlink(v);
 	MemoryContextReset(v->cx);
 	v->slots = NULL;
 	v->nslots = 0;
@@ -61,18 +73,20 @@ view_clear(KeyStoreView *v)
 	v->loaded = false;
 }
 
+/* the loaded views are in the order of their last open: the first of them that no handle pins is the least recently used */
 static KeyStoreView *
 views_victim(void)
 {
-	HASH_SEQ_STATUS seq;
-	KeyStoreView *v,
-			   *lru = NULL;
+	dlist_iter it;
 
-	hash_seq_init(&seq, views);
-	while ((v = hash_seq_search(&seq)) != NULL)
-		if (v->pins == 0 && v->loaded && (lru == NULL || v->used < lru->used))
-			lru = v;
-	return lru;
+	dlist_foreach(it, &views_lru)
+	{
+		KeyStoreView *v = dlist_container(KeyStoreView, lru, it.cur);
+
+		if (v->pins == 0)
+			return v;
+	}
+	return NULL;
 }
 
 static uint64
@@ -97,8 +111,15 @@ views_evict_one(void)
 static void
 views_evict_all(void)
 {
-	while (views_evict_one())
-		;
+	dlist_mutable_iter it;
+
+	dlist_foreach_modify(it, &views_lru)
+	{
+		KeyStoreView *v = dlist_container(KeyStoreView, lru, it.cur);
+
+		if (v->pins == 0)
+			view_clear(v);
+	}
 }
 
 static const SiftCacheKind views_kind = {"col_keystore_view", views_oldest, views_evict_one, views_evict_all};
@@ -150,6 +171,7 @@ view_get(const ViewKey *key)
 		v->npiece = v->cap = 0;
 		v->total = 0;
 		v->pins = 0;
+		v->on_lru = false;
 	}
 	return v;
 }
@@ -165,6 +187,11 @@ kview_reset(KeyStoreView *v)
 	v->npiece = v->cap = 0;
 	v->total = 0;
 	v->loaded = true;
+	if (!v->on_lru)
+	{
+		dlist_push_tail(&views_lru, &v->lru);
+		v->on_lru = true;
+	}
 }
 
 void
@@ -189,6 +216,8 @@ kview_open(Oid store, uint64 epoch, ViewPin **pin)
 
 	v->pins++;
 	v->used = sift_cache_tick();
+	if (v->on_lru)
+		dlist_move_tail(&views_lru, &v->lru);
 	*p = (ViewPin) {{view_pin_release, p, NULL}, key, true};
 	MemoryContextRegisterResetCallback(CurrentMemoryContext, &p->cb);
 	sift_cache_commit();
@@ -213,6 +242,9 @@ sift_keystore_forget_views(void)
 		return;
 	hash_seq_init(&seq, views);
 	while ((v = hash_seq_search(&seq)) != NULL)
+	{
+		view_unlink(v);
 		v->loaded = false;
+	}
 }
 #endif

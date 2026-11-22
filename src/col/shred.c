@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "col/v1/kern.h"
+#include "core/hash.h"
 #include "core/limits.h"
 #include "core/page.h"
 #include "col/shred_int.h"
@@ -319,10 +320,71 @@ release_large(SiftShred *sh)
 	}
 }
 
+#define PAY_HT_MIN_PAYLOADS		16		/* up to this many a document finds its payloads by looking at each */
+
+static uint32
+pay_hash(int32 key, uint32 slot)
+{
+	return (uint32) (sift_fib64(((uint64) (uint32) key << 32) | slot) >> 32);
+}
+
+/* Puts payload idx in the table; a payload of a pair that has one takes its place (the last of a pair is the one found) */
+static void
+pay_ht_insert(SiftShredDoc *doc, uint32 idx)
+{
+	SiftShredPay *p = &doc->pay[idx];
+	uint32 mask = doc->pay_ht_cap - 1,
+		   at = pay_hash(p->key, p->slot) & mask;
+
+	while (doc->pay_ht[at] != 0)
+	{
+		const SiftShredPay *q = &doc->pay[doc->pay_ht[at] - 1];
+
+		if (q->key == p->key && q->slot == p->slot)
+			break;
+		at = (at + 1) & mask;
+	}
+	doc->pay_ht[at] = idx + 1;
+	p->hslot = at;
+}
+
+/* The table for the next document: its slots are emptied one by one (the document says where they are), or dropped when it grew beyond what is kept for a document */
+static void
+pay_ht_reset(SiftShredDoc *doc)
+{
+	if (doc->pay_ht == NULL)
+		return;
+	if (doc->pay_ht_cap > SIFT_SHRED_RETAIN)
+	{
+		pfree(doc->pay_ht);
+		doc->pay_ht = NULL;
+		doc->pay_ht_cap = 0;
+		return;
+	}
+	for (uint32 i = 0; i < doc->npay; i++)
+		doc->pay_ht[doc->pay[i].hslot] = 0;
+}
+
+/* The table holds every payload of the document: made when there are more than a few, and larger when it is half full */
+static void
+pay_ht_grow(SiftShred *sh, SiftShredDoc *doc)
+{
+	uint32 cap = Max(64, doc->pay_ht_cap);
+
+	while (cap < doc->npay * 2)
+		cap *= 2;
+	doc->pay_ht = regrow(sh, doc->pay_ht, (size_t) cap * sizeof(uint32));
+	doc->pay_ht_cap = cap;
+	memset(doc->pay_ht, 0, (size_t) cap * sizeof(uint32));
+	for (uint32 i = 0; i < doc->npay; i++)
+		pay_ht_insert(doc, i);
+}
+
 void
 sift_shred_begin(SiftShred *sh)
 {
 	release_large(sh);
+	pay_ht_reset(&sh->doc);
 	for (int g = 0; g < sh->spec->ngroups; g++)
 		sh->doc.grp[g].n = sh->doc.grp[g].pn = 0;
 	for (int c = 0; c < sh->spec->ncols; c++)
@@ -383,19 +445,36 @@ pay_keep(SiftShred *sh, const void *ev, int32 key, uint32 slot, uint8 tag)
 	memcpy(doc->paytext + doc->npaytext, bytes, len);
 	doc->pay[doc->npay++] = (SiftShredPay) {.key = key,.slot = slot,.off = doc->npaytext,.len = len,.tag = tag};
 	doc->npaytext += len;
+	if (doc->pay_ht == NULL ? doc->npay > PAY_HT_MIN_PAYLOADS : doc->npay * 2 > doc->pay_ht_cap)
+		pay_ht_grow(sh, doc);
+	else if (doc->pay_ht != NULL)
+		pay_ht_insert(doc, doc->npay - 1);
 }
 
 const char *
 sift_shred_pay(const SiftShredDoc *doc, int32 key, uint32 slot, uint32 *len, uint8 *tag)
 {
-	for (uint32 i = doc->npay; i-- > 0;)
-		if (doc->pay[i].key == key && doc->pay[i].slot == slot)
-		{
-			*len = doc->pay[i].len;
-			*tag = doc->pay[i].tag;
-			return doc->paytext + doc->pay[i].off;
-		}
-	return NULL;
+	uint32 i = doc->npay;
+
+	if (doc->pay_ht != NULL)
+	{
+		uint32 mask = doc->pay_ht_cap - 1;
+
+		for (uint32 at = pay_hash(key, slot) & mask; doc->pay_ht[at] != 0; at = (at + 1) & mask)
+			if (doc->pay[doc->pay_ht[at] - 1].key == key && doc->pay[doc->pay_ht[at] - 1].slot == slot)
+			{
+				i = doc->pay_ht[at] - 1;
+				break;
+			}
+	}
+	else
+		while (i-- > 0 && !(doc->pay[i].key == key && doc->pay[i].slot == slot))
+			;
+	if (i >= doc->npay)
+		return NULL;
+	*len = doc->pay[i].len;
+	*tag = doc->pay[i].tag;
+	return doc->paytext + doc->pay[i].off;
 }
 
 static void

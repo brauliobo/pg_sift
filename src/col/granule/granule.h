@@ -353,6 +353,120 @@ typedef struct SiftGranuleDict
 	bool		part;			/* the dictionary of the whole part, not of the granule */
 } SiftGranuleDict;
 
+typedef enum SiftMaskState
+{
+	SIFT_MASK_ALL_ZERO,
+	SIFT_MASK_ALL_ONE,
+	SIFT_MASK_BITS				/* out_mask holds the rows */
+} SiftMaskState;
+
+/*
+ * The exceptions of a chunk: a header, the mask of the rows (only when there are more entries than SIFT_EXC_SPARSE_MAX: fewer are found by a binary search of their row indexes),
+ * one entry per row and the end of the payload, then the payload (all of it a multiple of 8 bytes)
+ */
+typedef struct SiftExcHeader
+{
+	uint16		n_entries;
+	uint16		flags;			/* SIFT_EXC_MASKED, SIFT_EXC_KINDS_PACKED */
+	uint32		payload_bytes;
+} SiftExcHeader;
+
+#define SIFT_EXC_MASK_WORDS		(SIFT_GRANULE_ROWS / 64)
+#define SIFT_EXC_SPARSE_MAX		511
+#define SIFT_EXC_MASKED			UINT16_C(1)
+/* Every entry is a bare kind (no payload): the block is the header and the kind of each row of the chunk as a cascade of the codec (payload_bytes: its bytes), the entries and the mask are made when the chunk is opened */
+#define SIFT_EXC_KINDS_PACKED	UINT16_C(1 << 1)
+#define SIFT_EXC_MASK_BYTES(h)	(((h)->flags & SIFT_EXC_MASKED) ? SIFT_EXC_MASK_WORDS * 8 : 0)
+#define SIFT_EXC_PAYLOAD_PADDED(h)	(((uint64) (h)->payload_bytes + 7) & ~(uint64) 7)
+#define SIFT_EXC_BLOCK_LEN(h)	(((h)->flags & SIFT_EXC_KINDS_PACKED) ? sizeof(SiftExcHeader) + SIFT_EXC_PAYLOAD_PADDED(h) : \
+								 sizeof(SiftExcHeader) + SIFT_EXC_MASK_BYTES(h) + ((uint64) (h)->n_entries + 1) * 8 + SIFT_EXC_PAYLOAD_PADDED(h))
+
+/* A chunk of a granule as stored: the bytes (decompressed when the chunk is wrapped), where its validity bits and its body start; owned: the buffers sift_chunk_close frees */
+typedef struct SiftChunk
+{
+	const SiftChunkRef *ref;
+	const SiftGranuleView *view;
+	int			idx;			/* the chunk of the granule: 0 is the _tid, column c is chunk c + 1 */
+	uint16		enc;			/* ref->enc without the modifiers */
+	uint8		owned;			/* SIFT_CHUNK_OWN_* */
+	const char *raw;
+	const uint8 *validity;		/* NULL: every row is valid (or none, with ALL_NULL) */
+	const SiftExcHeader *exc;	/* NULL: no exceptions; the block as stored, or made of the packed kinds (exc_len is what the chunk holds of it) */
+	uint32		exc_len;
+	const SiftKeyPresentHdr *keyp;	/* NULL: no rows of a key are listed (SIFT_ENC_KEY_HAS_MASK); the list or the bitmap follows the header */
+	const char *body;
+	uint32		body_len;
+	int			nrows;
+	int			nnonnull;
+} SiftChunk;
+
+#define SIFT_CHUNK_OWN_RAW		UINT8_C(1)		/* raw is the decompressed chunk */
+#define SIFT_CHUNK_OWN_VALID	UINT8_C(2)		/* validity is the bitmap made of a list of rows */
+#define SIFT_CHUNK_OWN_EXC		UINT8_C(4)		/* exc is the block made of packed kinds */
+
+/*
+ * The exceptions of the rows of one column of a granule, read in ascending row order (a row before the last one asked is found by a bisection): the chunk is opened once, and a chunk that
+ * has none, or holds them as the bytes of the record, allocates nothing. The payloads point into the reader and live until sift_exc_reader_close.
+ */
+typedef struct SiftExcReader
+{
+	SiftChunk	chunk;
+	const SiftVariantExcEntry *entries;	/* NULL: the chunk has no exceptions */
+	const char *payloads;
+	const uint64 *mask;			/* SIFT_EXC_MASKED: the rows that are exceptions */
+	uint32		n_entries;
+	uint32		cursor;			/* the entry after the last one found */
+	bool		open;
+} SiftExcReader;
+
+extern void sift_exc_reader_open(const SiftGranuleView *v, int col, SiftExcReader *er);
+extern const char *sift_exc_reader_at(SiftExcReader *er, uint32 row, uint32 *len);
+/* The SIFT_COLTAG_* of the row: 0 for a row that is no exception */
+extern uint8 sift_exc_reader_tag(SiftExcReader *er, uint32 row);
+extern void sift_exc_reader_close(SiftExcReader *er);
+
+/* What the strings of a chunk were decoded into, to free with the cursor that holds them */
+typedef struct SiftStrOwn
+{
+	void	   *a[3];
+} SiftStrOwn;
+
+/*
+ * The rows of a column of one granule decoded batch after batch (sift_granule_decode_vec for each batch opens the chunk again, and decodes what it holds before the batch again): the chunk is
+ * opened once and the state of the decode (the rank of the validity, the codec, a dictionary, the strings of a block) is kept. What a batch points to (string views, dst->dict, *exc_out) lives until
+ * sift_vec_cursor_close. A cursor of the rows of a key (sift_vec_cursor_open_key_present) walks the list of rows once.
+ */
+typedef struct SiftGranVecCursor
+{
+	SiftChunk	chunk;
+	SiftVecType vtype;
+	bool		open;
+	bool		prepared;
+	bool		windowed;		/* one batch is asked of the cursor (sift_granule_decode_vec): the strings of the range are decoded, not those of the granule */
+	uint8		keyp_const;		/* 0: the chunk says; 1: no row has the key; 2: every row has it */
+	int			rank_word;
+	int			rank_sum;
+	uint32		keyp_idx;
+	struct SiftCc *cc;
+	SiftGranuleDict dict;
+	bool		dict_ready;
+	double	   *alp_all;
+	const char **str_p;			/* all the strings of a block, a symbol-table or a dictionary chunk */
+	uint32	   *str_len;
+	SiftStrOwn	str_own;
+	SiftVariantExcStream *exc;
+	uint64	   *exc_mask_own;
+	void	   *num;			/* the values of one batch */
+	const char **batch_p;
+	uint32	   *batch_len;
+} SiftGranVecCursor;
+
+extern void sift_vec_cursor_open(const SiftGranuleView *v, int col, SiftVecType vtype, SiftGranVecCursor *cur);
+extern void sift_vec_cursor_decode(SiftGranVecCursor *cur, uint16 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out);
+extern void sift_vec_cursor_open_key_present(const SiftGranuleView *v, int col, SiftGranVecCursor *cur);
+extern SiftMaskState sift_vec_cursor_key_present(SiftGranVecCursor *cur, uint16 row_off, uint16 nrows, uint64 *out_mask);
+extern void sift_vec_cursor_close(SiftGranVecCursor *cur);
+
 /* The lengths of an array column as the layout the array kernels read (one block of 64 parent rows after the other); false when the chunk is not a LIST_LEN one */
 extern bool sift_granule_array_layout(const SiftGranuleView *v, int col, SiftArrayLayout *out);
 
@@ -417,6 +531,8 @@ typedef struct SiftDictEnc
 	uint32		n;
 	const char **p;
 	uint32	   *len;
+	uint32	   *row_codes;		/* NULL, or the code of each of the nrows values in the dictionary (0 for a null): kept by sift_dict_enc_build so that no string is searched for again */
+	int			nrows;
 } SiftDictEnc;
 
 /* What SEC_DICTS holds for a column of a part: its distinct strings (the codes of its chunks), the table of symbols all its chunks are coded by, or a dictionary of zstd for the bytes of its chunks */
@@ -588,13 +704,6 @@ typedef struct SiftZone
 
 /* The value a text literal has in the type a zone's granule holds a column in (SIFT_ZONE_PROMO); false when no row of the granule can be that text of the type's spelling */
 extern bool sift_promo_literal(uint32 zone_flags, const char *s, uint32 len, int64 *v);
-
-typedef enum SiftMaskState
-{
-	SIFT_MASK_ALL_ZERO,
-	SIFT_MASK_ALL_ONE,
-	SIFT_MASK_BITS				/* out_mask holds the rows */
-} SiftMaskState;
 
 /*
  * The rows [row_off, row_off + nrows) (nrows <= SIFT_VEC_LEN) of the leaf of a key on which jsonb_exists(document, key) holds, as the words of a vector (bit i: row row_off + i; the bits past nrows

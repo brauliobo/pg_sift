@@ -332,10 +332,10 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 	uint64		slack = unit_rows / 4;
 	uint64		want = unit_rows + slack + 1;
 	SiftColBatch *out = sift_cbatch_create(cx, schema);
-	RowRef	   *win = refs ? NULL : palloc_array(RowRef, want);
+	RowRef	   *win = refs ? NULL : palloc_array(RowRef, 2 * want + 2);
 	TidPos	   *tidpos = palloc_array(TidPos, want);
 	RowRef	   *tidtmp = palloc_array(RowRef, want);
-	uint64		n = 0, pos = 0;
+	uint64		n = 0, pos = 0, whead = 0;
 	uint32		seq = seq0, num = 0;
 	bool		eof = false, split = false;
 
@@ -352,13 +352,18 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		}
 		else
 		{
+			if (whead > want)
+			{
+				memmove(win, win + whead, n * sizeof(RowRef));
+				whead = 0;
+			}
 			while (!eof && n < want)
-				if (next(state, &win[n]))
+				if (next(state, &win[whead + n]))
 					n++;
 				else
 					eof = true;
 			avail = n;
-			u = win;
+			u = win + whead;
 		}
 		if (avail == 0)
 			break;
@@ -384,7 +389,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		if (cutfn)
 		{
 			if (refs == NULL && n == end && !eof)
-				eof = !next(state, &win[n++]);
+				eof = !next(state, &u[n++]);
 			w = cutfn(cutarg, w, ctx->nleaf > 0 && (refs ? avail : n) > end && key_cmp(&u[end - 1], &u[end], ctx, 1) == 0);
 		}
 		if (refs)
@@ -393,7 +398,7 @@ cut_rows(SiftColSegWriter *w, RowRef *refs, uint64 total, RowNext next, RowDone 
 		{
 			if (done)
 				done(state, u, end);
-			memmove(win, win + end, (n - end) * sizeof(RowRef));
+			whead += end;
 			n -= end;
 		}
 		CHECK_FOR_INTERRUPTS();
@@ -467,12 +472,15 @@ typedef struct MergeChunk
 	SiftColBatch *b;
 	uint32		pins;
 	bool		held;			/* the loaded chunk of its input */
+	int			next_free;		/* the next chunk of the free list, -1 at the end; -2: not on it */
 } MergeChunk;
 
 typedef struct MergeSrc
 {
 	MergeChunk *chunk;
 	int			nchunk;
+	int			chunk_cap;
+	int			free_head;		/* the first chunk no input holds and no row of the window points into, -1: none */
 	MergeIn    *in;
 	int			n;
 	const OrderCtx *ctx;
@@ -492,22 +500,34 @@ typedef struct MergeSrc
 	SiftMemTracker *inputs;		/* the open inputs of the merge, measured when a chunk is loaded; NULL when the caller measures none */
 } MergeSrc;
 
-/* A chunk no input holds and no row of the window points into gives its arrays back: the memory of a merge is the chunks of its inputs in hand, not the largest one each slot held */
+/* A chunk no input holds and no row of the window points into gives its arrays back: the memory of a merge is the chunks of its inputs in hand, not the largest one each slot held; it is the next to be reused */
 static void
 chunk_free(MergeSrc *m, int i)
 {
-	if (m->chunk[i].pins == 0 && !m->chunk[i].held)
-		sift_cbatch_release(m->chunk[i].b);
+	if (m->chunk[i].pins != 0 || m->chunk[i].held || m->chunk[i].next_free != -2)
+		return;
+	sift_cbatch_release(m->chunk[i].b);
+	m->chunk[i].next_free = m->free_head;
+	m->free_head = i;
 }
 
 static int
 chunk_get(MergeSrc *m, const SiftColSchema *schema)
 {
-	for (int i = 0; i < m->nchunk; i++)
-		if (m->chunk[i].pins == 0 && !m->chunk[i].held)
-			return i;
-	m->chunk = m->chunk ? repalloc(m->chunk, (m->nchunk + 1) * sizeof(MergeChunk)) : MemoryContextAlloc(m->cx, sizeof(MergeChunk));
-	m->chunk[m->nchunk] = (MergeChunk) {.b = sift_cbatch_create(m->cx, schema)};
+	int			i = m->free_head;
+
+	if (i >= 0)
+	{
+		m->free_head = m->chunk[i].next_free;
+		m->chunk[i].next_free = -2;
+		return i;
+	}
+	if (m->nchunk == m->chunk_cap)
+	{
+		m->chunk_cap = Max(16, m->chunk_cap * 2);
+		m->chunk = m->chunk ? repalloc(m->chunk, m->chunk_cap * sizeof(MergeChunk)) : MemoryContextAlloc(m->cx, m->chunk_cap * sizeof(MergeChunk));
+	}
+	m->chunk[m->nchunk] = (MergeChunk) {.b = sift_cbatch_create(m->cx, schema), .next_free = -2};
 	return m->nchunk++;
 }
 
@@ -592,6 +612,7 @@ load_chunk(MergeSrc *m, MergeIn *in)
 		}
 	}
 	m->chunk[cur].held = !in->done;
+	chunk_free(m, cur);
 	if (prev >= 0)
 	{
 		m->chunk[prev].held = false;
@@ -689,12 +710,36 @@ wait_order(const MergeIn *a, const MergeIn *b)
 	return c != 0 ? c : a < b ? -1 : 1;
 }
 
+static void
+wait_up(MergeSrc *m, int i)
+{
+	MergeIn    *x = m->wait[i];
+
+	for (int p; i > 0 && wait_order(x, m->wait[p = (i - 1) / 2]) < 0; i = p)
+		m->wait[i] = m->wait[p];
+	m->wait[i] = x;
+}
+
+static void
+wait_down(MergeSrc *m, int i)
+{
+	MergeIn    *x = m->wait[i];
+
+	for (int c; (c = 2 * i + 1) < m->nwait; i = c)
+	{
+		if (c + 1 < m->nwait && wait_order(m->wait[c + 1], m->wait[c]) < 0)
+			c++;
+		if (wait_order(m->wait[c], x) >= 0)
+			break;
+		m->wait[i] = m->wait[c];
+	}
+	m->wait[i] = x;
+}
+
 /* A stream that waits: it has rows at or above its head, none below. An input with no row in the merge's slice is done without being read */
 static void
 wait_add(MergeSrc *m, MergeIn *in)
 {
-	int			at = m->nwait;
-
 	if (m->lo && in->bounded)
 		in->next_unit = sift_colk_first_unit(m->ctx, in->seg, m->lo);
 	if (in->next_unit >= in->seg->nsb)
@@ -708,10 +753,8 @@ wait_add(MergeSrc *m, MergeIn *in)
 		in->done = true;
 		return;
 	}
-	for (; at > 0 && wait_order(m->wait[at - 1], in) > 0; at--)
-		m->wait[at] = m->wait[at - 1];
-	m->wait[at] = in;
-	m->nwait++;
+	m->wait[m->nwait] = in;
+	wait_up(m, m->nwait++);
 }
 
 /* The waiting inputs the rows have reached are read: their head is not above the next row, and any when no input has one */
@@ -729,7 +772,9 @@ wake_inputs(MergeSrc *m)
 			if (sift_colk_bound_cmp(m->ctx, next->b, next->r, &in->head) < 0)
 				return;
 		}
-		memmove(m->wait, m->wait + 1, --m->nwait * sizeof(MergeIn *));
+		m->wait[0] = m->wait[--m->nwait];
+		if (m->nwait > 0)
+			wait_down(m, 0);
 		load_chunk(m, in);
 		if (!in->done)
 			heap_push(m, in);
@@ -828,7 +873,7 @@ sift_colk_merge(SiftColSegWriter *w, const SiftSegEntry *ent, SiftColSegment *co
 {
 	OrderCtx	ctx = {schema, leaf, nleaf};
 	MergeSrc	m = {.in = palloc0_array(MergeIn, n + 1), .n = n, .ctx = &ctx, .freeze = freeze, .freeze_arg = freeze_arg, .cx = cx,
-					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024, .inputs = inputs};
+					 .scratch = AllocSetContextCreate(cx, "sift_col merge unit", ALLOCSET_DEFAULT_SIZES), .budget = memory_kb * 1024, .inputs = inputs, .free_head = -1};
 	BoundKey	wlo,
 				whi;
 	uint64		loose = 0;
