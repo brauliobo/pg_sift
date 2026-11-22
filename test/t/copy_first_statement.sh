@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The first statement of a session that has not preloaded the library is a COPY .. FROM: the library loads while the COPY runs, and what it decides about that statement must not open
 # the target (a relation of the sift table access method calls the handler in the library, which is still loading). A fresh psql is a fresh backend: nothing is loaded before the COPY.
 . "$(dirname "$0")/lib.bash"

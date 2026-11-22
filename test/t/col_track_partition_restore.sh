@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Partitioned tables with a primary key and a sift_col index made through the parent (every partition's index tracks its changes, with its own triggers and those of the parent) restored from pg_dump:
 # the custom archive serially and in parallel (pg_restore -j makes the partitions, their indexes and their keys in any order), a plain dump through psql, and a dump whose indexes come before the keys.
 # Every restore must be without an error, keep every partition's index tracked with the triggers of its parent, answer as the heap does, and keep answering after updates, key changes that
@@ -13,7 +14,7 @@ LEAVES=$((N * PARTS))
 node_init r 38 "autovacuum = off"
 node_start r || bail "start failed"
 D=$(dir r)
-S=("-h" "$D/sock" "-p" "$(port r)" "-U" "postgres")
+S=("-h" "$(node_sock r)" "-p" "$(port r)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
 
@@ -36,7 +37,7 @@ TRACKED="SELECT count(*) FILTER (WHERE (SELECT track_changes FROM sift.col_track
 TRIGGERS="SELECT count(*) FROM pg_trigger WHERE tgfoid = 'sift.col_track_old_rows'::regproc"
 state() { dbq "$1" "$CHECK_FN" "SELECT differing()" "$TRACKED" "$TRIGGERS" | tail -n 3 | tr '\n' ' '; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db r)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 
 {
 	echo "CREATE EXTENSION pg_sift;"

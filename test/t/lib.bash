@@ -116,6 +116,8 @@ build_old() {
 
 dir() { echo "$TAPDIR/$1"; }
 port() { if [[ -v POOL_DB[$1] ]]; then echo "$SIFT_PORT"; else echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); fi; }
+node_db() { echo "${POOL_DB[$1]:-postgres}"; }
+node_sock() { if [[ -v POOL_DB[$1] ]]; then echo "$POOL_SOCK"; else echo "$(dir "$1")/sock"; fi; }
 
 # real_node NAME WHAT: WHAT needs a server of its own; a pooled node fails the script with the way out
 real_node() { [[ ! -v POOL_DB[$1] ]] || bail "$2 on the pooled node $1: a script that does it is no \`# tap: pooled\` script"; }
@@ -310,6 +312,8 @@ catchup() {
 	done
 	return 1
 }
+# standby_setting STANDBY GUC VALUE: a new session of the standby reads VALUE for GUC (the reload has reached it)
+standby_setting() { wait_for "[[ \$(sql $1 \"SHOW $2\") == '$3' ]]" 30; }
 
 # running NODE PATTERN: another backend of NODE is running a statement that matches the LIKE pattern PATTERN
 running() { [[ $(sql "$1" "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid <> pg_backend_pid() AND query LIKE '$2'") -ge 1 ]]; }
@@ -348,8 +352,8 @@ churn() {
 pgbench_bg() {
 	local name=$1 clients=$2 secs=$3
 	shift 3
-	pgbench -n -h "$(dir "$name")/sock" -p "$(port "$name")" -U postgres -c "$clients" -j 4 -T "$secs" "$@" \
-		postgres >"$(dir "$name")/pgbench.log" 2>&1 &
+	pgbench -n -h "$(node_sock "$name")" -p "$(port "$name")" -U postgres -c "$clients" -j 4 -T "$secs" "$@" \
+		"$(node_db "$name")" >"$(dir "$name")/pgbench.log" 2>&1 &
 	PGBENCH_PID=$!
 }
 

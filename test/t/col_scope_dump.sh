@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A sift_col index with the reloption scope (a second one with two scopes) restored from pg_dump: the custom archive serially and in parallel (eight runs), and a plain dump through psql. The text of the option is in
 # the dump, the relation of the pairs and its unique btree (and the index that journals it) are made before the index that reads them (it depends on them), and the restore ends with the same index: the same
 # options, the dependency on the btree (DROP INDEX of it is refused), the scope segments written by the restore (the scope entries are the join of the facts and the pairs), and the reads of one key, a set
@@ -12,11 +13,11 @@ plan 26
 node_init scd 51 "$TWOHOP_CONF"
 node_start scd || bail "start failed"
 D=$(dir scd)
-S=("-h" "$D/sock" "-p" "$(port scd)" "-U" "postgres")
+S=("-h" "$(node_sock scd)" "-p" "$(port scd)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db scd)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 
 # the index as a user sees it: the options, the edges to the btrees, the entries against the join, and the reads against the plain join with and without the switch
 OPTS="SELECT string_agg(o, ' ' ORDER BY o) FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'events_col' AND o LIKE 'scope=%'"

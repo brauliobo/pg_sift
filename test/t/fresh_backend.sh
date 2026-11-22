@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The fresh-backend mode of the regression tests (scripts/pgtest.sh fresh, scripts/fresh-psql.py, test/fresh/README.md): psql connects anew before every statement
 # outside a transaction block, so a statement meets none of the caches, memory contexts and shared state an earlier statement of its backend left. The shim
 # starts a connection for every statement, so it refuses to run inside itself or without the psql it stands for: a shim that found itself as that psql started
@@ -33,9 +34,8 @@ check "a fresh run does not start inside another" grep -q "do not nest" < <(FRES
 
 node_init fb 28 "autovacuum = off"
 node_start fb || bail "start failed"
-D=$(dir fb)
 RP=$(command -v psql)
-fresh() { FRESH_PSQL=$RP "$SHIM" -X -q -At -h "$D/sock" -p "$(port fb)" -U postgres -d postgres <<<"$1"; }
+fresh() { FRESH_PSQL=$RP "$SHIM" -X -q -At -h "$(node_sock fb)" -p "$(port fb)" -U postgres -d "$(node_db fb)" <<<"$1"; }
 pids=$(fresh $'SELECT pg_backend_pid();\nSELECT pg_backend_pid();' | sort -u | wc -l)
 check "two statements run in two backends" test "$pids" == 2
 pids=$(fresh $'BEGIN;\nSELECT pg_backend_pid();\nSELECT pg_backend_pid();\nCOMMIT;' | grep -E '^[0-9]+$' | sort -u | wc -l)

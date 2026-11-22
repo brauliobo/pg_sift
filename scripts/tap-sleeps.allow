@@ -1,16 +1,12 @@
 # The number of sleeps of 0.5 s or more each shell test of test/t has today (scripts/check-tap-sleeps.sh): a window in which nothing may happen, a session held open, a clock the product
 # waits on. FILE<TAB>COUNT. The number only goes down: a test that waits for a state uses wait_for (test/t/lib.bash).
-col_auto_merge_read.sh	1
-col_auto_merge_vacuum.sh	2
 col_cut_online_fallback.sh	3
 col_index_replica.sh	2
 col_online_cut.sh	5
 col_overlay_scans_durable.sh	1
-col_penalty_maintenance.sh	2
 col_shrink.sh	2
 col_supersede_source.sh	1
 col_track_revouch.sh	1
-col_vacuum_request_hold.sh	2
 col_wbuf_arena_rebuild_release.sh	1
 col_worker_identity.sh	1
 col_worker_per_vacuum.sh	2
@@ -18,8 +14,8 @@ col_worker_slots.sh	1
 extension_lifecycle.sh	1
 leakcheck_gate.sh	4
 maint_lock_order.sh	1
-maint_standby.sh	2
+maint_standby.sh	1
 quarantine_standby.sh	1
-store_replica.sh	3
+store_replica.sh	2
 tbl_defrag_scans_durable.sh	4
 vacuum_standby_cut.sh	2

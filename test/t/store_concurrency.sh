@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Concurrent writers, droppers, readers, recyclers, allocators and sweeps
 # (pgbench, 16 clients): no errors, no leaked block, every segment intact.
 # Then the horizon protocol on a primary: a reader holding an old directory

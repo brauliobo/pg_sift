@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Between a library and the SQL of its database: sift.upgrade_commands() (the RESET and the REINDEX of an index that holds an option 6.0 retired; an index that
 # another session holds locked is listed as well, the call reads the catalogs and waits for nothing; a text index is never listed, with its mark or without it) and
 # the new library over the SQL of 4.3 (the shared value store stays off, with no catalog error, until ALTER EXTENSION UPDATE).
 . "$(dirname "$0")/lib.bash"
 
-q() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir up)/sock" -p "$(port up)" -U postgres -d "$db" "${@/#/--command=}"; }
+q() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock up)" -p "$(port up)" -U postgres -d "$db" "${@/#/--command=}"; }
 
 plan 11
 node_init up 31 "autovacuum = off"
 node_start up || bail "start failed"
-q postgres "CREATE DATABASE locked" "CREATE DATABASE marked" "CREATE DATABASE oldsql" >/dev/null
+q "$(node_db up)" "CREATE DATABASE locked" "CREATE DATABASE marked" "CREATE DATABASE oldsql" >/dev/null
 
 # two column indexes that wait for a REINDEX (key_columns after units of format 6); one of them is rebuilt in a session that stays open
 q locked "CREATE EXTENSION pg_sift" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The multiplicity limit of a scope is a property of the index: CREATE INDEX records the limit it accepted the scope under in the option (max_multiplicity(n)), so a REINDEX, a restore of
 # a dump and the rebuild after pg_upgrade (which run in a session with the default setting) check that limit, not their session's, and no build is paid for a refusal. A declaration may state it.
 . "$(dirname "$0")/lib.bash"
@@ -7,11 +8,11 @@ plan 13
 node_init sl 56 "autovacuum = off"
 node_start sl || bail "start failed"
 D=$(dir sl)
-S=("-h" "$D/sock" "-p" "$(port sl)" "-U" "postgres")
+S=("-h" "$(node_sock sl)" "-p" "$(port sl)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db sl)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 OPT="SELECT string_agg(o, ' ') FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = 'ce_col' AND o LIKE 'scope=%'"
 # 5 keys for each member of 200: the entries a row are 5, over the default limit of 3
 SETUP=("CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test"

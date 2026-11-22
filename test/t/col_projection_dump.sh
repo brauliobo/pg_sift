@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A database with named projections (sift.projection_create, sift.projection_index) restored from pg_dump: the custom archive serially and in parallel and a plain dump through
 # psql. The definitions (sift.projections) are extension configuration, dumped as data; the indexes carry the names in their option projection and are created before or without
 # the data of the definitions (a restore of the schema alone is what pg_upgrade runs), so the names are resolved by sift.projection_status and never by CREATE INDEX. The status,
@@ -10,10 +11,10 @@ plan 20
 node_init r 55 "autovacuum = off"
 node_start r || bail "start failed"
 D=$(dir r)
-S=("-h" "$D/sock" "-p" "$(port r)" "-U" "postgres")
+S=("-h" "$(node_sock r)" "-p" "$(port r)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1 WITH (FORCE)" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db r)" "DROP DATABASE IF EXISTS $1 WITH (FORCE)" "CREATE DATABASE $1" >/dev/null; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
 STATUS="SELECT string_agg(projection || ':' || coalesce(index, '-') || ':' || state || ':' || coalesce(reason, ''), ',' ORDER BY projection, index) FROM sift.projection_status"
 # the rows of the three classes the projections stand for, and the index the plan reads for the first
@@ -24,7 +25,7 @@ plan_index() { dbq "$1" "SET sift.enable_agg = on" "SET max_parallel_workers_per
 	"EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM events WHERE dim_a_id < 20 GROUP BY kind" | sed -n 's/^ *Index: //p'; }
 same() { [[ $(dbq "$1" "$STATUS") == "$WANT_STATUS" && $(dbq "$1" "$ANSWERS") == "$WANT_ANSWERS" && $(plan_index "$1") == events_wide ]]; }
 
-dbq postgres "CREATE EXTENSION pg_sift" "CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, kind int, qty int, status text, created_at timestamptz)" \
+dbq "$(node_db r)" "CREATE EXTENSION pg_sift" "CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, kind int, qty int, status text, created_at timestamptz)" \
 	"INSERT INTO events SELECT i, i % 40, i % 5, i % 97, (ARRAY['new', 'open', 'held'])[1 + i % 3], timestamptz '2026-01-01' + i * interval '1 minute' FROM generate_series(1, 6000) i" \
 	"SELECT sift.projection_create('wide', 'events', ARRAY['dim_a_id', 'created_at', 'kind', '(qty / 10)', 'status', 'qty'], rollups => 'dim_a_id, kind: qty')" \
 	"SELECT sift.projection_create('by_kind', 'events', ARRAY['dim_a_id', 'kind'])" \
@@ -34,12 +35,12 @@ dbq postgres "CREATE EXTENSION pg_sift" "CREATE TABLE events (id int PRIMARY KEY
 	"SELECT sift.projection_index('events_by_kind', ARRAY['by_kind', 'by_bucket'], '{\"key_order\": \"dim_a_id, created_at\"}')" \
 	"SELECT sift.projection_index('events_open', ARRAY['open_kinds'], '{\"track_changes\": \"off\", \"key_order\": \"kind\"}')" \
 	"VACUUM (FREEZE, ANALYZE) events" >/dev/null || bail "setup failed"
-WANT_STATUS=$(dbq postgres "$STATUS")
-WANT_ANSWERS=$(dbq postgres "$ANSWERS")
+WANT_STATUS=$(dbq "$(node_db r)" "$STATUS")
+WANT_ANSWERS=$(dbq "$(node_db r)" "$ANSWERS")
 check "the source: the wide index serves two projections, a third has an index of its own, every status is ok" \
-	test "$WANT_STATUS" == "by_bucket:events_wide:ok:,by_kind:events_wide:ok:,open_kinds:events_open:ok:,wide:events_wide:ok:" -a "$(plan_index postgres)" == events_wide
-pg_dump "${S[@]}" -Fc -f "$D/src.custom" postgres
-pg_dump "${S[@]}" -Fp -f "$D/src.sql" postgres
+	test "$WANT_STATUS" == "by_bucket:events_wide:ok:,by_kind:events_wide:ok:,open_kinds:events_open:ok:,wide:events_wide:ok:" -a "$(plan_index "$(node_db r)")" == events_wide
+pg_dump "${S[@]}" -Fc -f "$D/src.custom" "$(node_db r)"
+pg_dump "${S[@]}" -Fp -f "$D/src.sql" "$(node_db r)"
 check "the dump holds the definitions as data and the names in the index statements" \
 	test "$(grep -c '^COPY sift.projections ' "$D/src.sql")" == 1 -a "$(grep -c "projection=" "$D/src.sql")" -ge 2
 
@@ -55,8 +56,8 @@ check "... the status, the answers and the plan are the source's" same r2
 
 # the order pg_upgrade works in: the schema first, the data of the definitions after
 fresh r3
-pg_dump "${S[@]}" --schema-only -Fp -f "$D/schema.sql" postgres
-pg_dump "${S[@]}" --data-only -t sift.projections -Fp -f "$D/data.sql" postgres
+pg_dump "${S[@]}" --schema-only -Fp -f "$D/schema.sql" "$(node_db r)"
+pg_dump "${S[@]}" --data-only -t sift.projections -Fp -f "$D/data.sql" "$(node_db r)"
 check "the schema alone restores without error: the indexes are created before any definition exists" test "$(psql -X -q "${S[@]}" -d r3 -f "$D/schema.sql" 2>&1 | errors)" == 0
 check "... and every projection that an index lists is broken as not defined, nothing is lost silently" \
 	test "$(dbq r3 "SELECT count(*) FILTER (WHERE reason = 'the projection is not defined') || '/' || count(*) FROM sift.projection_status")" == 4/4

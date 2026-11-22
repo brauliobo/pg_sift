@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Deletion records (core/v1_col/tomb_dv.h) under concurrent work: one session deletes scattered rows in statements large enough to write records and inserts as many, scanners compare the index with the
 # heap inside one snapshot (a REPEATABLE READ transaction asks both), and the maintenance loop runs VACUUM, the fold of the log, the promotion of the write buffer and the forced merge, which carries the
 # records of the segments it replaces to marks under the tombstone lock. No scanner may see a row the heap does not, and no statement may fail.
@@ -25,7 +26,7 @@ sql dc "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
 		RETURN a = o;
 	END \$f\$" >/dev/null || bail "setup failed"
 
-psqlq() { psql -X -At -q -h "$D/sock" -p "$(port dc)" -U postgres -d postgres "$@"; }
+psqlq() { psql -X -At -q -h "$(node_sock dc)" -p "$(port dc)" -U postgres -d "$(node_db dc)" "$@"; }
 END=$((SECONDS + SECS))
 running() { ((SECONDS < END)); }
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The merge of a sift_col index cuts the free end it leaves, and a cut that finds the index locked (a transaction that planned a query holds an AccessShareLock on every
 # index of the table until it ends) is not lost: the next call of sift.col_merge, which has nothing to merge, cuts it. Before, only a call that merged looked at the end.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -18,7 +19,7 @@ size() { sql mc "SELECT pg_relation_size('t_idx') / 8192"; }
 before=$(size)
 
 # a transaction that has planned a query on the table: its locks are held until it ends, its snapshot is not
-coproc HOLD { psql -X -q -At -h "$(dir mc)/sock" -p "$(port mc)" -U postgres -d postgres 2>&1; }
+coproc HOLD { psql -X -q -At -h "$(node_sock mc)" -p "$(port mc)" -U postgres -d "$(node_db mc)" 2>&1; }
 holder=$HOLD_PID   # bash unsets HOLD_PID when it reaps the coprocess, which is at the first wait or at its exit
 echo "BEGIN; SELECT count(*) FROM t;" >&"${HOLD[1]}"
 read -r -t 20 _ <&"${HOLD[0]}"

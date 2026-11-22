@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A child sift_col index with the reloption connect (two connections, two parents) and one that connected itself through a foreign key, restored from pg_dump: the custom archive serially and in parallel, and a plain dump through psql. The text of the option is in the dump,
 # the child index is made after the parent index (it depends on it), and the restore ends with the same connection: the dependency, the parent's journal, a stamp that is vouched and
 # the keys changed after it.
@@ -8,11 +9,11 @@ plan 9
 node_init r 37 "autovacuum = off"
 node_start r || bail "start failed"
 D=$(dir r)
-S=("-h" "$D/sock" "-p" "$(port r)" "-U" "postgres")
+S=("-h" "$(node_sock r)" "-p" "$(port r)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db r)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 
 # the connection as a user sees it: the dependency, the journal, then a stamp, one UPDATE of the parent, and the keys that changed since the stamp
 STATE="SELECT count(*) FROM pg_depend d JOIN pg_class c ON c.oid = d.objid WHERE c.relname = 'a_events_col' AND d.refobjid IN ('dim_a_col'::regclass, 'dim_b_col'::regclass) AND d.deptype = 'n'"

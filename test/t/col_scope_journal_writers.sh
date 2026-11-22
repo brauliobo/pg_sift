@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # A writer of the pairs that began after the journal of a concurrent scoped build was made records its own changes, and the validation pass records none of the pairs it adds. The wait of the build
 # for older snapshots does not wait for an idle READ COMMITTED transaction or a prepared one, so such a writer can commit after the stamp of the build, with an xid above the xmin of the stamp:
@@ -23,16 +24,16 @@ GATE=7300
 TAIL=4 JOURNAL=6 FILL=5
 
 # sess NAME opens a session, say NAME 'SQL;' sends to it, hear NAME waits for it to answer
-sess() { rm -f "$D/$1.in"; mkfifo "$D/$1.in"; psql -X -At -q -h "$D/sock" -p "$(port jw)" -U postgres -d postgres <"$D/$1.in" >"$D/$1.out" 2>&1 & eval "exec {FD_$1}>\"$D/$1.in\""; }
+sess() { rm -f "$D/$1.in"; mkfifo "$D/$1.in"; psql -X -At -q -h "$(node_sock jw)" -p "$(port jw)" -U postgres -d "$(node_db jw)" <"$D/$1.in" >"$D/$1.out" 2>&1 & eval "exec {FD_$1}>\"$D/$1.in\""; }
 say() { local v=FD_$1; echo "$2" >&"${!v}"; }
 endsess() { local v=FD_$1; eval "exec ${!v}>&-"; }
 SEQ=0
 hear() { SEQ=$((SEQ + 1)); say "$1" "\\echo sync$SEQ"; wait_for "grep -q '^sync$SEQ\$' '$D/$1.out'" 30 || bail "session $1 did not answer"; }
 
-build_event() { sql jw "SELECT coalesce(max(wait_event_type || ':' || wait_event), 'running') FROM pg_stat_activity WHERE query LIKE 'CREATE INDEX CONCURRENTLY events_col%' AND pid <> pg_backend_pid()"; }
+build_event() { sql jw "SELECT coalesce(max(wait_event_type || ':' || wait_event), 'running') FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'CREATE INDEX CONCURRENTLY events_col%' AND pid <> pg_backend_pid()"; }
 blocked() { [[ $(build_event) == Lock:virtualxid || $(build_event) == Lock:transactionid ]]; }
 at_blocked() { wait_for blocked 60 || bail "the build is at $(build_event), not blocked on a writer"; }
-at_gate() { wait_for "[[ \$(sql jw \"SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.query LIKE 'CREATE INDEX CONCURRENTLY events_col%' AND NOT l.granted AND l.locktype = 'advisory' AND l.objid = $((GATE + $1)) AND a.pid <> pg_backend_pid()\") == 1 ]]" 60 || bail "the build is not at gate $1 (it is at $(build_event))"; }
+at_gate() { wait_for "[[ \$(sql jw \"SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.datname = current_database() AND a.query LIKE 'CREATE INDEX CONCURRENTLY events_col%' AND NOT l.granted AND l.locktype = 'advisory' AND l.objid = $((GATE + $1)) AND a.pid <> pg_backend_pid()\") == 1 ]]" 60 || bail "the build is not at gate $1 (it is at $(build_event))"; }
 past_gate() { wait_for "[[ \$(build_event) != Lock:advisory ]]" 60 || bail "the build stays at a gate"; }
 gates_up() { sess H; say H "SELECT pg_advisory_lock($((GATE + TAIL))), pg_advisory_lock($((GATE + JOURNAL))), pg_advisory_lock($((GATE + FILL)));"; hear H; }
 gate_open() { say H "SELECT pg_advisory_unlock($((GATE + $1)));"; hear H; }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The real update scripts of the patch releases of 4.2 (the ones in sql/; extension_lifecycle writes empty ones of its own): a database that starts at 4.2, 4.2.1 or 4.2.2 reaches the
 # default version with the objects of a fresh install, sift.table_find_stale_versions (4.2.2: plpgsql, STABLE, SQL only) is there after every path, and the way back to 4.2.1 (through
 # the empty script back to 4.2) and forward again works: the script that adds a function runs a second time, so it replaces it.
@@ -13,7 +14,7 @@ MEMBERS="SELECT pg_describe_object(classid, objid, objsubid) || ' ' || coalesce(
 FN="SELECT p.provolatile::text || l.lanname FROM pg_proc p JOIN pg_language l ON l.oid = p.prolang WHERE p.oid = to_regprocedure('sift.table_find_stale_versions(regclass,integer)')"
 VER="SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'"
 db() { sql ext "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
-q() { local d=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir ext)/sock" -p "$(port ext)" -U postgres -d "$d" "${@/#/--command=}"; }
+q() { local d=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock ext)" -p "$(port ext)" -U postgres -d "$d" "${@/#/--command=}"; }
 
 db fresh; q fresh "CREATE EXTENSION pg_sift" >/dev/null
 fresh=$(q fresh "$MEMBERS")

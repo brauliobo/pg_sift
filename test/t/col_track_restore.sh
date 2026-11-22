@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Tables with a primary key and a sift_col index (track_changes is on by default and pg_dump writes it as the key's name) restored from pg_dump: the custom archive serially and
 # in parallel (pg_restore -j makes the index and the key in either order), a plain dump through psql, and a dump whose indexes come before the keys, the order a restore
 # for pg_upgrade has and the one the dumps of 4.0.0 hold. Every restore must be without an error, keep the indexes tracked, and answer as the heap does.
@@ -10,7 +11,7 @@ ROWS=$(knob SIFT_RESTORE_ROWS 1500 600)
 node_init r 36 "autovacuum = off"
 node_start r || bail "start failed"
 D=$(dir r)
-S=("-h" "$D/sock" "-p" "$(port r)" "-U" "postgres")
+S=("-h" "$(node_sock r)" "-p" "$(port r)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
 
@@ -31,7 +32,7 @@ END \$\$"
 TRACKED="SELECT count(*) FILTER (WHERE (SELECT track_changes FROM sift.col_tracking(c.oid))) || ',' || count(*) FILTER (WHERE (SELECT heap_free FROM sift.col_tracking(c.oid))) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'"
 state() { dbq "$1" "$CHECK_FN" "SELECT differing()" "$TRACKED" | tail -n 2 | tr '\n' ' '; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db r)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 
 {
 	echo "CREATE EXTENSION pg_sift;"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A database whose tables, columns and indexes were renamed after the sift_col indexes were built (lib_names.bash), restored from pg_dump: the custom archive serially and in parallel
 # (four runs) and a plain dump through psql. The options that name a table or a column (connect, scope with its btree and its columns, paths, key_cut, rollup_columns, the definitions of a
 # projection, the columns of a follow) are the source's after every restore, the indexes verify, and the answers with the pushdown are the plain plans' and the source's. The restored
@@ -10,10 +11,10 @@ plan 13
 node_init nd 56 "autovacuum = off"
 node_start nd || bail "start failed"
 D=$(dir nd)
-S=("-h" "$D/sock" "-p" "$(port nd)" "-U" "postgres")
+S=("-h" "$(node_sock nd)" "-p" "$(port nd)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1 WITH (FORCE)" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db nd)" "DROP DATABASE IF EXISTS $1 WITH (FORCE)" "CREATE DATABASE $1" >/dev/null; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
 verified() { dbq "$1" "$NAMES_VERIFY" >/dev/null 2>&1; }
 # the answers agree with the plain plans, and are the source's

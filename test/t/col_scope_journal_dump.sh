@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The journal index that CREATE INDEX of a scope index made (src/col/scope_make.c) through pg_dump and restore: the dump holds the journal as an index with its comment (the mark that it goes with the last scope
 # index that uses it) before the scope indexes that read it, and the restore, serial, in parallel (six runs) and through psql, ends with the same journals: the same names, comments and dependencies, none made twice, and
 # the scope indexes that read them. Dropping the restored scope indexes drops the journals, as in the source; a journal of the user's (no comment) stays. A scope of two paths (three journals) and two scope indexes that
@@ -10,11 +11,11 @@ plan 8
 node_init sjd 53 "$TWOHOP_CONF"
 node_start sjd || bail "start failed"
 D=$(dir sjd)
-S=("-h" "$D/sock" "-p" "$(port sjd)" "-U" "postgres")
+S=("-h" "$(node_sock sjd)" "-p" "$(port sjd)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db sjd)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 
 # every sift_col index of the tables of the pairs: its name, whether it has a comment, and the scope indexes that depend on it
 JOURNALS="SELECT coalesce(string_agg(c.relname || ':' || (obj_description(c.oid, 'pg_class') IS NOT NULL)::text || ':' ||

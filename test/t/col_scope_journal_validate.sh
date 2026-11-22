@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The journal that CREATE INDEX CONCURRENTLY makes for a relation of pairs that has none is made empty and filled by the validation pass (validate_index adds the pairs the journal does not
 # have). Those pairs were written before the journal began, by transactions that finished before the lock that began it, so a read whose snapshot sees the transaction that made the journal does not
@@ -39,7 +40,7 @@ HOLDER=$!
 until [[ -e $D/held ]]; do sleep 0.05; done
 sql jv "SET sift.test_phase_gate = $GATE" "CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH ($SCOPE)" >"$D/build.out" 2>&1 &
 BUILDER=$!
-validating() { sql jv "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'CREATE INDEX CONCURRENTLY events_col%' AND wait_event_type = 'Lock'" | grep -qx 1; }
+validating() { sql jv "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'CREATE INDEX CONCURRENTLY events_col%' AND wait_event_type = 'Lock'" | grep -qx 1; }
 wait_for validating 60 || bail "the build did not reach the validation of the journal"
 check "the journal is made by the statement, ready for writes and not valid while the pass waits" \
 	test "$(sql jv "SELECT count(*) FROM pg_index i WHERE i.indrelid = 'tenant_scope'::regclass AND i.indisready AND NOT i.indisvalid")" == 1
@@ -48,7 +49,7 @@ sql jv "INSERT INTO tenant_scope VALUES (1, 13), (2, 13), (3, 13)" \
 	"DELETE FROM tenant_scope WHERE (dim_a_id, tenant_id) IN (SELECT dim_a_id, min(tenant_id) FROM tenant_scope WHERE dim_a_id IN (10, 11) GROUP BY 1)" \
 	"UPDATE tenant_scope SET tenant_id = 14 WHERE (dim_a_id, tenant_id) IN (SELECT dim_a_id, min(tenant_id) FROM tenant_scope WHERE dim_a_id = 20 GROUP BY 1)" \
 	"INSERT INTO events SELECT 20000 + i, 1 + (i * 31) % 400, timestamptz '2026-02-01', i % 10 FROM generate_series(1, 500) i" >/dev/null
-sql jv "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE '%pg_sleep(600)%' AND pid <> pg_backend_pid()" >/dev/null
+sql jv "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND query LIKE '%pg_sleep(600)%' AND pid <> pg_backend_pid()" >/dev/null
 kill "$HOLDER" 2>/dev/null
 wait "$BUILDER"; built=$?
 check "the build ends beside the writers" test "$built" == 0

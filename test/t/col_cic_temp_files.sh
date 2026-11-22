@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The second pass of CREATE INDEX CONCURRENTLY of a scope index sorts the rows it replicates through temporary files, so the index keeps only the segments it ends with (the blocks of intermediate runs, and of the
 # scope segments of the first pass that the second replaces, stayed in the file until a VACUUM), and no temporary file outlives the statement, whether it ends, fails, is cancelled or its backend is terminated.
 . "$(dirname "$0")/lib.bash"
@@ -21,10 +22,10 @@ MEM="SET maintenance_work_mem = '4MB'"
 tmpfiles() { sql ct "SELECT count(*) FROM pg_ls_tmpdir()" | tail -n 1; }
 size() { sql ct "SELECT pg_relation_size('$1')" | tail -n 1; }
 cic() { sql ct "$MEM" "$@" "CREATE INDEX CONCURRENTLY ev_cc ON events USING sift_col ($COLS) WITH ($SCOPE)"; }
-bg_cic() { PGOPTIONS="-c maintenance_work_mem=4MB" psql -X -q -h "$(dir ct)/sock" -p "$(port ct)" -U postgres -d postgres -c "CREATE INDEX CONCURRENTLY ev_cc ON events USING sift_col ($COLS) WITH ($SCOPE)" >/dev/null 2>&1 & }
+bg_cic() { PGOPTIONS="-c maintenance_work_mem=4MB" psql -X -q -h "$(node_sock ct)" -p "$(port ct)" -U postgres -d "$(node_db ct)" -c "CREATE INDEX CONCURRENTLY ev_cc ON events USING sift_col ($COLS) WITH ($SCOPE)" >/dev/null 2>&1 & }
 spilling() { [[ $(tmpfiles) -gt 0 ]]; }
-settled() { [[ $(sql ct "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'CREATE INDEX CONCURRENTLY%' AND pid <> pg_backend_pid()" | tail -n 1) == 0 ]]; }
-backend() { sql ct "SELECT pid FROM pg_stat_activity WHERE query LIKE 'CREATE INDEX CONCURRENTLY%' AND pid <> pg_backend_pid()" | tail -n 1; }
+settled() { [[ $(sql ct "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'CREATE INDEX CONCURRENTLY%' AND pid <> pg_backend_pid()" | tail -n 1) == 0 ]]; }
+backend() { sql ct "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND query LIKE 'CREATE INDEX CONCURRENTLY%' AND pid <> pg_backend_pid()" | tail -n 1; }
 
 cic >/dev/null
 live=$(sql ct "SELECT sum(bytes) FROM sift.col_segments('ev_cc')" | tail -n 1)

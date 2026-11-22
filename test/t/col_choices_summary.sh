@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # What CREATE INDEX, REINDEX and REINDEX CONCURRENTLY of a sift_col index print: one summary NOTICE of a few lines, not one NOTICE with a DETAIL and a HINT for each choice. The index
 # of the test gets order arrays, key lists, key_cut, array lengths and track_changes (the 100,000 rows the order arrays ask for). The test counts the lines of each statement against
 # the limit of the table below, and proves that everything the summary names resolves: every name is a row of sift.index_choices(index), every row has its row of sift.help(slug), the
@@ -6,9 +7,8 @@
 . "$(dirname "$0")/lib.bash"
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
-SOCK=$(dir ch)/sock
 # psql FLAGS: the node, notices on (messages of every level go to the output)
-p() { PGOPTIONS="-c client_min_messages=notice" psql -X -q -h "$SOCK" -p "$(port ch)" -U postgres -d postgres "$@" 2>&1; }
+p() { PGOPTIONS="-c client_min_messages=notice" psql -X -q -h "$(node_sock ch)" -p "$(port ch)" -U postgres -d "$(node_db ch)" "$@" 2>&1; }
 # s STATEMENT...: the output of the statements, tuples only
 s() { p -At "${@/#/--command=}"; }
 
@@ -53,6 +53,6 @@ check "the order arrays of the index show their bytes a row in sift.index_choice
 check "sift.help() lists every row of docs/messages.tsv" test "$(s "SELECT count(*) FROM sift.help()")" == "$(grep -c -v -E '^(#|$)' "$REPO/docs/messages.tsv")"
 check "sift.help(slug) of an unknown slug is an error that points to the list" grep -q 'SELECT id FROM sift.help' <<<"$(s "SELECT * FROM sift.help('no-such-slug')")"
 check "the format line names the column format minor of the order arrays" grep -q -E '^NOTICE:  sift_col index "facts_sift_col" is column format minor [0-9]+, which a library before [0-9.]+ cannot read$' <<<"$summary"
-check "client_min_messages = warning hides the summary" test -z "$(PGOPTIONS='-c client_min_messages=warning' psql -X -q -h "$SOCK" -p "$(port ch)" -U postgres -d postgres -c 'REINDEX INDEX facts_sift_col' 2>&1)"
+check "client_min_messages = warning hides the summary" test -z "$(PGOPTIONS='-c client_min_messages=warning' psql -X -q -h "$(node_sock ch)" -p "$(port ch)" -U postgres -d "$(node_db ch)" -c 'REINDEX INDEX facts_sift_col' 2>&1)"
 check "a plain b-tree is refused with its name" grep -q 'is not a sift_col index' <<<"$(s "SELECT * FROM sift.index_choices('facts_pkey')")"
 finish

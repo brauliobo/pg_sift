@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # (each client works on ids of its own and no insert is speculative: the records of the write buffer name their inserters, which a build from the old index needs for the stamps of the log)
 # REINDEX of a sift_col index that tracks its changes takes the rows from the index it replaces (col/v1/build/from_index.c) while writers commit and roll back around it: the writers
 # wait for its ShareLock between statements, so every round finds the index with the rows of the writers before it in segments and the write buffer, and the table's dead versions
@@ -63,7 +64,7 @@ check "... and the index passes its check" verified
 # 2. the rounds again, each REINDEX followed by writers that roll back and commit before the next, differential after every one
 ok=1
 for _ in $(seq 1 6); do
-	pgbench -n -h "$D/sock" -p "$(port n)" -U postgres -c 8 -j 4 -t 200 -f "$D/w.sql" postgres >/dev/null 2>&1
+	pgbench -n -h "$(node_sock n)" -p "$(port n)" -U postgres -c 8 -j 4 -t 200 -f "$D/w.sql" "$(node_db n)" >/dev/null 2>&1
 	sql n "SET sift.async_maintenance = off" "REINDEX INDEX h_x" >/dev/null 2>&1
 	differential && verified || ok=0
 done

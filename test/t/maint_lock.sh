@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A long merge of the background worker stalls no inserter: the worker holds a merge (its segments claimed) while a
 # session inserts a hundred segments' worth into an index whose directory is "full" at 40 entries. With one exclusive
 # maintenance lock for promotion and merge, the inserter waited the whole merge (the 112 of 128 entries stall); now it
@@ -12,8 +13,8 @@ sift.async_maintenance = on"
 node_start lock || bail "start failed"
 D=$(dir lock)
 # per database, which the worker reads as well
-sql lock "CREATE EXTENSION pg_sift_test CASCADE" "ALTER DATABASE postgres SET sift.test_room_segments = 40" \
-	"ALTER DATABASE postgres SET sift.test_merge_gate = on" "CREATE TABLE t (id serial, body text)" \
+sql lock "CREATE EXTENSION pg_sift_test CASCADE" "ALTER DATABASE $(node_db lock) SET sift.test_room_segments = 40" \
+	"ALTER DATABASE $(node_db lock) SET sift.test_merge_gate = on" "CREATE TABLE t (id serial, body text)" \
 	"CREATE INDEX t_idx ON t USING sift (body) WITH (write_buffer_limit = 64)" >/dev/null || bail "setup failed"
 
 DOCS="INSERT INTO t (body) SELECT string_agg(md5(g::text || j::text), ' ') FROM generate_series(1, %s) g, generate_series(1, 30) j GROUP BY g"
@@ -51,7 +52,7 @@ check "no wait for the maintenance of others over 5 s" test "$(sed -n 's/^wait_m
 
 touch "$D/release"
 wait "$hp"
-sql lock "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type LIKE 'sift %'" >/dev/null
+sql lock "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND backend_type LIKE 'sift %'" >/dev/null
 verified=$(sql lock "VACUUM t" "SELECT sift.verify('t_idx', true)" 2>&1 && echo verified)
 check "VACUUM merges down, every row is indexed" test "$(tail -1 <<<"$verified")" == verified
 check "no orphan block" test "$(sql lock "SELECT sift._test_check('t_idx')")" == 0

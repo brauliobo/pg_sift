@@ -84,7 +84,7 @@ check "conflicts on, feedback off: blocks reused in place, replay waits, reader 
 
 # a short max_standby_streaming_delay cancels the reader like any standby query
 sql standby "ALTER SYSTEM SET max_standby_streaming_delay = '1s'" "SELECT pg_reload_conf()" >/dev/null
-sleep 1
+standby_setting standby max_standby_streaming_delay 1s
 recycle_race 400
 check "conflicts on, delay 1s: the reader is cancelled by the recovery conflict" \
 	test "$(head -1 "$S/reader.out")" == "ERROR:  40001: canceling statement due to conflict with recovery"

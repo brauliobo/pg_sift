@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The older names of the reloptions renamed in 4.2 (rollup is rollup_leaves, rollup_dims is rollup_columns) are kept in the catalog of an index that carries them, and pg_dump writes them
 # as they are: a restore (custom archive, plain script) must bring the index back with the same options and the same answers, ALTER INDEX SET and RESET of the old name must keep
 # working on the restored index, and REINDEX must not lose the rollups.
@@ -8,10 +9,10 @@ plan 10
 node_init a 37 "autovacuum = off"
 node_start a || bail "start failed"
 D=$(dir a)
-S=("-h" "$D/sock" "-p" "$(port a)" "-U" "postgres")
+S=("-h" "$(node_sock a)" "-p" "$(port a)" "-U" "postgres")
 export PGOPTIONS="-c client_min_messages=warning"
 dbq() { local db=$1; shift; psql -X -At -q -v ON_ERROR_STOP=1 "${S[@]}" -d "$db" "${@/#/--command=}"; }
-fresh() { dbq postgres "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
+fresh() { dbq "$(node_db a)" "DROP DATABASE IF EXISTS $1" "CREATE DATABASE $1" >/dev/null; }
 errors() { grep -c 'ERROR:\|pg_restore: error' || true; }
 OPTS="SELECT string_agg(c.relname || ':' || array_to_string(c.reloptions, ','), ' ' ORDER BY c.relname) FROM pg_class c WHERE c.relname IN ('al_old', 'al_new')"
 # the answer of a grouped read by the element of a list and by two columns, from the index and from the heap

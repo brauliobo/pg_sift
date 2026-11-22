@@ -84,7 +84,7 @@ check "conflicts off: the query gets the retryable 40001" grep -q "segment recyc
 
 # a short delay: the conflict cancels the query like any standby query
 sql standby "ALTER SYSTEM SET max_standby_streaming_delay = '1s'" "SELECT pg_reload_conf()" >/dev/null
-sleep 1
+standby_setting standby max_standby_streaming_delay 1s
 race "SELECT 1"
 release
 check "delay 1s: the query is cancelled by the recovery conflict" grep -q "conflict with recovery" "$D/count.out"

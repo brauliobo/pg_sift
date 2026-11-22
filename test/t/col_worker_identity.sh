@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # What an operator sees of the background workers of sift: a promotion worker says what it is and for which index in pg_stat_activity and in its process title
 # (backend_type "sift promote", query "sift promote of schema.index"), sift.workers keeps when the last step ended well, which job it was and how long it took,
 # and a failure counter that stays zero while the steps end well.
@@ -25,24 +26,24 @@ hold() { # a session that holds the advisory lock of the progress gate (sift.tes
 let_go() { touch "$D/release"; wait "$HOLDER"; }
 buffered() { sql wi "SELECT coalesce(sum(rows), 0) FROM sift.col_segments('facts_idx') WHERE kind <> 'immutable'"; }
 await_promotion() { for _ in $(seq 600); do [[ $(buffered) == 0 ]] && return 0; sleep 0.05; done; return 1; }
-worker_row() { sql wi "SELECT backend_type || '|' || state || '|' || query FROM pg_stat_activity WHERE backend_type LIKE 'sift%' ORDER BY backend_start DESC LIMIT 1"; }
+worker_row() { sql wi "SELECT backend_type || '|' || state || '|' || query FROM pg_stat_activity WHERE datname = current_database() AND backend_type LIKE 'sift%' ORDER BY backend_start DESC LIMIT 1"; }
 await_worker() { local i; for i in $(seq 600); do [[ -n $(worker_row) ]] && return 0; sleep 0.05; done; return 1; }
 workers() { sql wi "SELECT $1 FROM sift.workers WHERE index = 'facts_idx'::regclass"; }
 
 # 1. a maintenance worker held at the start of its promotion: its identity while it works
 hold
-sql wi "ALTER DATABASE postgres SET sift.async_maintenance = on" "ALTER DATABASE postgres SET sift.test_progress_gate = 1" >/dev/null
+sql wi "ALTER DATABASE $(node_db wi) SET sift.async_maintenance = on" "ALTER DATABASE $(node_db wi) SET sift.test_progress_gate = 1" >/dev/null
 churn 1
 sql wi "VACUUM facts" >/dev/null
 check "a worker of sift is running" await_worker
 out=$(worker_row)
 check "backend_type names the job" test "${out%%|*}" == "sift promote"
 check "its query names the job and the index" test "${out##*|}" == "sift promote of public.facts_idx"
-pid=$(sql wi "SELECT pid FROM pg_stat_activity WHERE backend_type LIKE 'sift%' LIMIT 1")
+pid=$(sql wi "SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND backend_type LIKE 'sift%' LIMIT 1")
 check "its process title names the index" bash -c "ps -o args= -p '$pid' | grep -q 'sift promote public.facts_idx'"
 let_go
 check "the promotion ends" await_promotion
-sql wi "ALTER DATABASE postgres RESET sift.test_progress_gate" >/dev/null
+sql wi "ALTER DATABASE $(node_db wi) RESET sift.test_progress_gate" >/dev/null
 
 # 2. what the worker leaves behind
 for _ in $(seq 100); do [[ -n $(workers last_ok) ]] && break; sleep 0.1; done
