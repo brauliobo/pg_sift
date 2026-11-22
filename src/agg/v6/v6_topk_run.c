@@ -26,6 +26,7 @@ struct SiftV6TopKRun
 	bool		count_desc;
 	Datum	   *values;
 	bool	   *isnull;
+	uint32		tmp_uses;
 };
 
 static int
@@ -86,22 +87,56 @@ typedef struct Cand
 	SiftV6TopKRun *r;
 	Datum	   *values;
 	bool	   *isnull;
+	uint32		keys_done;		/* the key columns already in values: the whole tuple of a candidate that stays makes only the others */
+	uint64		aggs_done;		/* the same for the aggregates (the first 64) */
 } Cand;
 
 static Datum
 cand_lazy(void *ctx, int item, bool *isnull)
 {
-	const Cand *c = ctx;
+	Cand	   *c = ctx;
 	const SiftV6Spec *spec = c->g->spec;
 	const int	pos = spec->topk_item[item].pos;
+	const int	j = pos - spec->nkeys;
 
 	if (pos < spec->nkeys)
 	{
-		v6g_key_datums(c->g, c->set, &c->set->ht, c->slot, c->values, c->isnull, pos);
+		if (!((c->keys_done >> pos) & 1))
+			v6g_key_datums(c->g, c->set, &c->set->ht, c->slot, c->values, c->isnull, UINT32_C(1) << pos);
+		c->keys_done |= UINT32_C(1) << pos;
 		*isnull = c->isnull[pos];
 		return c->values[pos];
 	}
-	return v6g_agg_datum(c->g, &spec->agg[pos - spec->nkeys], &c->acc[pos - spec->nkeys], c->set->mask, isnull);
+	if (j >= 64)
+		return v6g_agg_datum(c->g, &spec->agg[j], &c->acc[j], c->set->mask, isnull);
+	if (!((c->aggs_done >> j) & 1))
+		c->values[pos] = v6g_agg_datum(c->g, &spec->agg[j], &c->acc[j], c->set->mask, &c->isnull[pos]);
+	c->aggs_done |= UINT64CONST(1) << j;
+	*isnull = c->isnull[pos];
+	return c->values[pos];
+}
+
+/* The columns of the tuple the sort columns did not already make */
+static void
+cand_whole_tuple(const Cand *c)
+{
+	const SiftV6Spec *spec = c->g->spec;
+
+	v6g_key_datums(c->g, c->set, &c->set->ht, c->slot, c->values, c->isnull, ~c->keys_done);
+	for (int j = 0; j < spec->naggs; j++)
+		if (j >= 64 || !((c->aggs_done >> j) & 1))
+			c->values[spec->nkeys + j] = v6g_agg_datum(c->g, &spec->agg[j], &c->acc[j], c->set->mask, &c->isnull[spec->nkeys + j]);
+}
+
+/* A group is done with: its temporary Datums go with the context every 64 groups, or when it holds 64 kB */
+static inline void
+tmp_release(SiftV6TopKRun *r)
+{
+	if (++r->tmp_uses >= 64 || MemoryContextMemAllocated(r->tmp, false) > 65536)
+	{
+		MemoryContextReset(r->tmp);
+		r->tmp_uses = 0;
+	}
 }
 
 static Datum
@@ -149,9 +184,10 @@ sift_v6_topk_run_stream(SiftV6TopKRun *r, bool (*next) (void *arg, Datum *values
 	while (next(arg, r->values, r->isnull))
 	{
 		offer_whole(r, r->values, r->isnull, qual, ec, slot);
-		MemoryContextReset(r->tmp);
+		tmp_release(r);
 	}
 	MemoryContextSwitchTo(old);
+	MemoryContextReset(r->tmp);
 	sift_gtopk_finish(r->heap);
 }
 
@@ -168,9 +204,10 @@ sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprC
 		while (sift_v6_group_next(g, r->values, r->isnull))
 		{
 			offer_whole(r, r->values, r->isnull, qual, ec, slot);
-			MemoryContextReset(r->tmp);
+			tmp_release(r);
 		}
 		MemoryContextSwitchTo(old);
+		MemoryContextReset(r->tmp);
 		sift_gtopk_finish(r->heap);
 		return;
 	}
@@ -185,24 +222,20 @@ sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprC
 			(r->count_desc ? (int64) acc[r->count_agg].n < DatumGetInt64(worst) : (int64) acc[r->count_agg].n > DatumGetInt64(worst)))
 			continue;
 
+		memset(r->isnull, true, spec->nkeys * sizeof(bool));
 		if (qual != NULL)
 		{
-			memset(r->isnull, true, spec->nkeys * sizeof(bool));
-			v6g_key_datums(g, set, &set->ht, s, r->values, r->isnull, -1);
-			for (int j = 0; j < spec->naggs; j++)
-				r->values[spec->nkeys + j] = v6g_agg_datum(g, &spec->agg[j], &acc[j], set->mask, &r->isnull[spec->nkeys + j]);
+			cand_whole_tuple(&c);
 			offer_whole(r, r->values, r->isnull, qual, ec, slot);
 		}
 		else if (sift_gtopk_wants(r->heap, cand_lazy, &c))
 		{
-			memset(r->isnull, true, spec->nkeys * sizeof(bool));
-			v6g_key_datums(g, set, &set->ht, s, r->values, r->isnull, -1);
-			for (int j = 0; j < spec->naggs; j++)
-				r->values[spec->nkeys + j] = v6g_agg_datum(g, &spec->agg[j], &acc[j], set->mask, &r->isnull[spec->nkeys + j]);
+			cand_whole_tuple(&c);
 			sift_gtopk_put(r->heap, r->values, r->isnull);
 		}
-		MemoryContextReset(r->tmp);
+		tmp_release(r);
 	}
+	MemoryContextReset(r->tmp);
 	MemoryContextSwitchTo(old);
 	sift_gtopk_finish(r->heap);
 }

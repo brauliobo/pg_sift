@@ -11,10 +11,12 @@
 
 #include "col/v1/kern.h"
 #include "agg/agg_int.h"
+#include "agg/nth.h"
 #include "core/cmp.h"
 #include "core/hash.h"
 
 #define OSA_SIGN	(UINT64CONST(1) << 63)
+#define OSA_NINTHER	128
 
 /* the key of a float8 that sorts as float8_cmp does: unsigned order, -0 and 0 one key, every NaN the last */
 static inline uint64
@@ -442,13 +444,58 @@ osa_result(const SiftAggAgg *a, const OsaPick *p)
 	return r;
 }
 
+static int
+osa_slot_cmp(const void *a, const void *b, void *arg)
+{
+	const uint64 x = ((const OsaSlot *) a)->key,
+				y = ((const OsaSlot *) b)->key;
+
+	return x < y ? -1 : x > y;
+}
+
+/* the keys at the positions p[0..nt) from the slots s[lo..hi), which are in order, the first value at position base */
+static void
+osa_pick_sorted(const OsaSlot *s, int64 lo, int64 hi, uint64 base, const uint64 *p, uint64 *out, int nt)
+{
+	uint64		upto = base;
+
+	for (int64 x = lo, k = 0; k < nt; x++)
+	{
+		SIFT_INVARIANT(x < hi, "sift: ordered-set position %llu is past the values of its group", (unsigned long long) p[k]);
+		upto += s[x].cnt;
+		for (; k < nt && p[k] < upto; k++)
+			out[k] = s[x].key;
+	}
+}
+
+static uint64
+osa_med3(uint64 a, uint64 b, uint64 c)
+{
+	return a < b ? (b < c ? b : (a < c ? c : a)) : (a < c ? a : (b < c ? c : b));
+}
+
+/* the pivot of s[lo..hi): the median of three slots, and of three such medians (Tukey's ninther) from OSA_NINTHER slots on */
+static uint64
+osa_pivot(const OsaSlot *s, int64 lo, int64 hi)
+{
+	int64		n = hi - lo,
+				m = lo + n / 2,
+				d = n / 8;
+
+	if (n < OSA_NINTHER)
+		return osa_med3(s[lo].key, s[m].key, s[hi - 1].key);
+	return osa_med3(osa_med3(s[lo].key, s[lo + d].key, s[lo + 2 * d].key), osa_med3(s[m - d].key, s[m].key, s[m + d].key),
+					osa_med3(s[hi - 1 - 2 * d].key, s[hi - 1 - d].key, s[hi - 1].key));
+}
+
 /*
  * The keys at the positions p[0..nt) (0-based, ascending) of the values of a group, from its histogram slots s[lo..hi) in any order, whose first value is at
- * position base: a three-way quickselect that moves the counts with the slots and sends each position to the side it lies in, so that the two positions a
- * percentile picks (and the positions of several percentiles) share the passes until they part. A sort of the slots takes a log factor more.
+ * position base: a three-way introselect (a ninther pivot, a sort of the range when 2 log2 n rounds did not part the positions) that moves the counts with the slots and sends each
+ * position to the side it lies in, so that the two positions a percentile picks (and the positions of several percentiles) share the passes until they part. A sort of the slots takes a
+ * log factor more.
  */
 static void
-osa_select(OsaSlot *s, int64 lo, int64 hi, uint64 base, const uint64 *p, uint64 *out, int nt)
+osa_select(OsaSlot *s, int64 lo, int64 hi, uint64 base, const uint64 *p, uint64 *out, int nt, int depth)
 {
 	while (nt > 0)
 	{
@@ -456,36 +503,29 @@ osa_select(OsaSlot *s, int64 lo, int64 hi, uint64 base, const uint64 *p, uint64 
 					lt = lo,
 					i = lo,
 					gt = hi;
-		uint64		a = s[lo].key,
-					b = s[lo + n / 2].key,
-					c = s[hi - 1].key,
-					pivot = a < b ? (b < c ? b : (a < c ? c : a)) : (a < c ? a : (b < c ? c : b)),
+		uint64		pivot,
 					less = 0,
 					equal = 0;
 		int			nl = 0,
 					ne;
 
-		if (n <= 16)
+		if (n <= 16 || depth-- == 0)
 		{
-			uint64		upto = base;
+			if (n <= 16)
+				for (int64 x = lo + 1; x < hi; x++)
+					for (int64 y = x; y > lo && s[y - 1].key > s[y].key; y--)
+					{
+						OsaSlot		t = s[y];
 
-			for (int64 x = lo + 1; x < hi; x++)
-				for (int64 y = x; y > lo && s[y - 1].key > s[y].key; y--)
-				{
-					OsaSlot		t = s[y];
-
-					s[y] = s[y - 1];
-					s[y - 1] = t;
-				}
-			for (int64 x = lo, k = 0; k < nt; x++)
-			{
-				SIFT_INVARIANT(x < hi, "sift: ordered-set position %llu is past the values of its group", (unsigned long long) p[k]);
-				upto += s[x].cnt;
-				for (; k < nt && p[k] < upto; k++)
-					out[k] = s[x].key;
-			}
+						s[y] = s[y - 1];
+						s[y - 1] = t;
+					}
+			else
+				sift_nth_sort(s + lo, n, sizeof(OsaSlot), osa_slot_cmp, NULL);
+			osa_pick_sorted(s, lo, hi, base, p, out, nt);
 			return;
 		}
+		pivot = osa_pivot(s, lo, hi);
 		while (i < gt)
 		{
 			if (s[i].key < pivot)
@@ -519,7 +559,7 @@ osa_select(OsaSlot *s, int64 lo, int64 hi, uint64 base, const uint64 *p, uint64 
 		ne = nl;
 		while (ne < nt && p[ne] < base + less + equal)
 			out[ne++] = pivot;
-		osa_select(s, lo, lt, base, p, out, nl);
+		osa_select(s, lo, lt, base, p, out, nl, depth);
 		/* the positions right of the pivot's slots go on in the same loop */
 		p += ne;
 		out += ne;
@@ -589,7 +629,7 @@ osa_finish_select(AggExec *ex, int owner, const int64 *nrows)
 				pos[nt++] = (uint64) pick[ai].pos[1];
 			}
 		sift_sort_u64(pos, nt);
-		osa_select(sl, 0, m, 0, pos, key, nt);
+		osa_select(sl, 0, m, 0, pos, key, nt, sift_nth_depth(m));
 		for (int ai = 0; ai < s->naggs; ai++)
 			if (is_ordered_agg(&s->agg[ai]) && s->agg[ai].share == owner && !osa_is_mode(&s->agg[ai]))
 				for (int k = 0; k < 2; k++)

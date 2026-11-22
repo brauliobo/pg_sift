@@ -21,15 +21,15 @@ dset_insert_raw(DSet *s, uint64 pair)
 	return h;
 }
 
-/* twice the slots, the groups renumbered through remap (NULL: as they are) */
-void
-dset_grow(AggExec *ex, DSet *s, const uint32 *remap)
+/* the table of cap slots (a power of 2), the pairs of the old one in it, their groups renumbered through remap (NULL: as they are) */
+static void
+dset_resize(AggExec *ex, DSet *s, const uint32 *remap, uint64 cap)
 {
 	uint64	   *old = s->slot;
 	int64	   *ocnt = s->cnt;
 	uint64		ocap = s->cap;
 
-	s->cap = Max(ocap * 2, 1024);
+	s->cap = cap;
 	s->slot = MemoryContextAllocZero(ex->tcxt, s->cap * sizeof(uint64));
 	s->cnt = s->counted ? MemoryContextAllocZero(ex->tcxt, s->cap * sizeof(int64)) : NULL;
 	s->n = 0;
@@ -45,6 +45,23 @@ dset_grow(AggExec *ex, DSet *s, const uint32 *remap)
 		pfree(old);
 	if (ocnt)
 		pfree(ocnt);
+}
+
+/* twice the slots, the groups renumbered through remap (NULL: as they are) */
+void
+dset_grow(AggExec *ex, DSet *s, const uint32 *remap)
+{
+	dset_resize(ex, s, remap, Max(s->cap * 2, 1024));
+}
+
+/* room for npairs pairs at once (the table is half full at most), where adding them would grow it log2 times, each time moving what it holds */
+void
+dset_reserve(AggExec *ex, DSet *s, uint64 npairs)
+{
+	uint64		cap = pg_nextpower2_64(Max(npairs * 2 + 1, 1024));
+
+	if (s->cap < cap)
+		dset_resize(ex, s, NULL, cap);
 }
 
 /* the slot of a pair is read soon: the miss of a table past the caches overlaps the work in between */

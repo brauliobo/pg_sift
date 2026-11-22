@@ -49,7 +49,7 @@ ht_alloc(SiftSaltedHT *ht, uint32 capacity)
 	ht->count = 0;
 	ht->grow_at = (uint32) ((uint64) capacity * SIFT_HT_MAX_LOAD_NUM / SIFT_HT_MAX_LOAD_DEN);
 	ht->ctrl = MemoryContextAllocZero(ht->cxt, capacity + SIFT_HT_GROUP_WIDTH);
-	ht->slots = MemoryContextAllocAligned(ht->cxt, sizeof(SiftAggSlot64) * (size_t) capacity, 64, MCXT_ALLOC_ZERO);
+	ht->slots = MemoryContextAllocAligned(ht->cxt, sizeof(SiftAggSlot64) * (size_t) capacity, 64, 0);
 }
 
 void
@@ -60,6 +60,7 @@ sift_ht_init_ex(SiftSaltedHT *ht, uint32 min_slots, bool wide_key, uint32 ext_st
 	while (cap < min_slots)
 		cap <<= 1;
 	memset(ht, 0, sizeof(*ht));
+	ht->gen = 1;
 	ht->cxt = CurrentMemoryContext;
 	ht->key_is_wide = wide_key;
 	ht->ext_stride = TYPEALIGN(16, ext_stride);
@@ -118,10 +119,18 @@ sift_ht_destroy(SiftSaltedHT *ht)
 	memset(ht, 0, sizeof(*ht));
 }
 
+static inline void
+ht_new_gen(SiftSaltedHT *ht)
+{
+	if (++ht->gen == 0)
+		ht->gen = 1;
+}
+
 void
 sift_ht_clear(SiftSaltedHT *ht)
 {
 	ht_free_sets(ht);
+	ht_new_gen(ht);
 	memset(ht->ctrl, 0, ht->capacity + SIFT_HT_GROUP_WIDTH);
 	ht->count = 0;
 	ht->ext_used = 0;
@@ -158,6 +167,7 @@ ht_grow(SiftSaltedHT *ht, uint32 capacity)
 	SiftSaltedHT old = *ht;
 
 	ht_alloc(ht, capacity);
+	ht_new_gen(ht);
 	for (uint32 i = 0; i < old.capacity; i++)
 		if (old.ctrl[i] & 0x80)
 		{
@@ -278,8 +288,9 @@ ht_new_slot(SiftSaltedHT *ht, uint32 at, uint64 hash, const HtKey *k)
 	return s;
 }
 
+/* grow_on_miss: a key that is new when the load limit is reached grows the table first (a batch, whose hits grow nothing); else the caller has made room */
 static inline SiftAggSlot64 *
-ht_upsert(SiftSaltedHT *ht, uint64 hash, const HtKey *k, bool *found)
+ht_upsert(SiftSaltedHT *ht, uint64 hash, const HtKey *k, bool *found, bool grow_on_miss)
 {
 	const uint8 salt = SIFT_HASH_SALT(hash);
 	uint32		pos = (uint32) hash & ht->mask;
@@ -301,6 +312,11 @@ ht_upsert(SiftSaltedHT *ht, uint64 hash, const HtKey *k, bool *found)
 		}
 		if ((e = sift_ht_match16_fast(ht->ctrl + pos, 0)) != 0)
 		{
+			if (grow_on_miss && ht->count >= ht->grow_at)
+			{
+				ht_grow(ht, ht->capacity << 1);
+				return ht_upsert(ht, hash, k, found, false);
+			}
 			*found = false;
 			return ht_new_slot(ht, (pos + SIFT_HT_MASK_NEXT(e)) & ht->mask, hash, k);
 		}
@@ -316,7 +332,7 @@ sift_ht_upsert(SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key, bool *
 	Assert(!ht->key_is_wide);
 	if (ht->count >= ht->grow_at)
 		ht_grow(ht, ht->capacity << 1);
-	return ht_upsert(ht, hash, &k, found);
+	return ht_upsert(ht, hash, &k, found, false);
 }
 
 SiftAggSlot64 *
@@ -327,7 +343,16 @@ sift_ht_upsert_wide(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, 
 	Assert(ht->key_is_wide);
 	if (ht->count >= ht->grow_at)
 		ht_grow(ht, ht->capacity << 1);
-	return ht_upsert(ht, hash, &k, found);
+	return ht_upsert(ht, hash, &k, found, false);
+}
+
+SiftAggSlot64 *
+sift_ht_upsert_wide_lazy(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls, bool *found)
+{
+	const HtKey k = {.bytes = key, .len = len, .nulls = nulls};
+
+	Assert(ht->key_is_wide);
+	return ht_upsert(ht, hash, &k, found, true);
 }
 
 SiftAggSlot64 *
@@ -339,10 +364,51 @@ sift_ht_upsert_str(SiftSaltedHT *ht, const SiftStrView *v, bool *found)
 	return sift_ht_upsert_wide(ht, sift_hash_bytes(b, v->len), b, v->len, 0, found);
 }
 
+static inline SiftAggSlot64 *
+ht_find(const SiftSaltedHT *ht, uint64 hash, const HtKey *k)
+{
+	const uint8 salt = SIFT_HASH_SALT(hash);
+	uint32		pos = (uint32) hash & ht->mask;
+
+	for (uint32 step = SIFT_HT_GROUP_WIDTH;; step += SIFT_HT_GROUP_WIDTH)
+	{
+		SiftHtMask	m = sift_ht_match16_fast(ht->ctrl + pos, salt);
+
+		for (; m; SIFT_HT_MASK_CLEAR(m))
+		{
+			SiftAggSlot64 *s = &ht->slots[(pos + SIFT_HT_MASK_NEXT(m)) & ht->mask];
+
+			if (ht_key_eq(ht, s, k))
+				return s;
+		}
+		if (sift_ht_match16_fast(ht->ctrl + pos, 0) != 0)
+			return NULL;
+		pos = (pos + step) & ht->mask;
+	}
+}
+
+SiftAggSlot64 *
+sift_ht_find(const SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key)
+{
+	const HtKey k = {.inl = key};
+
+	return ht_find(ht, hash, &k);
+}
+
+SiftAggSlot64 *
+sift_ht_find_wide(const SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls)
+{
+	const HtKey k = {.bytes = key, .len = len, .nulls = nulls};
+
+	return ht_find(ht, hash, &k);
+}
+
 /* The probe loop of a batch */
 static void
 ht_upsert_run(SiftSaltedHT *ht, const uint64 *hashes, const SiftInlineKey16 *keys, uint32 n, SiftAggSlot64 **out)
 {
+	uint32		gen = ht->gen;
+
 	for (uint32 i = 0; i < n; i++)
 	{
 		const HtKey k = {.inl = &keys[i]};
@@ -355,7 +421,13 @@ ht_upsert_run(SiftSaltedHT *ht, const uint64 *hashes, const SiftInlineKey16 *key
 			__builtin_prefetch(ht->ctrl + ahead);
 			__builtin_prefetch(&ht->slots[ahead]);
 		}
-		out[i] = ht_upsert(ht, hashes[i], &k, &found);
+		out[i] = ht_upsert(ht, hashes[i], &k, &found, true);
+		if (ht->gen != gen)
+		{
+			for (uint32 j = 0; j < i; j++)
+				out[j] = sift_ht_find(ht, hashes[j], &keys[j]);
+			gen = ht->gen;
+		}
 	}
 }
 
@@ -365,7 +437,6 @@ sift_ht_upsert_batch(SiftSaltedHT *ht, const uint64 *hashes, const SiftInlineKey
 	const uint32 before = ht->count;
 
 	Assert(!ht->key_is_wide);
-	sift_ht_reserve(ht, n);
 	ht_upsert_run(ht, hashes, keys, n, out);
 	return ht->count - before;
 }

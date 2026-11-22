@@ -7,8 +7,8 @@
  * This node reads the rows of its child plan once and keeps what the answer needs: a hash table of the groups (the first spelling of a
  * key is the one shown, as a hash aggregate's), the counts, the states of PostgreSQL's own transition functions for sum and avg, and for
  * each count(DISTINCT x) of an integer a set of (group, x) pairs with a bit for every aggregate of the same argument that took the row
- * (they differ in their FILTER). A pair is 16 bytes: a set that outgrows hash_mem moves its pairs to a tuplesort of (group, value, bits)
- * and counts the runs of equal pairs when the rows are done, which is a sort of narrow tuples where PostgreSQL's is of the whole row.
+ * (they differ in their FILTER). A pair is 16 bytes: a set that outgrows hash_mem moves its pairs to an external sort of them (agg/rows_psort.h)
+ * and counts the runs of equal pairs when the rows are done, which is a sort of 16 byte records where PostgreSQL's is of the whole row.
  *
  * The child plan is made by the planner (agg/plan_rows.c) to return only the columns this node reads, in the order of SiftRowsSpec:
  * PostgreSQL evaluates the group expressions, the arguments and the FILTERs, and the node never runs an expression.
@@ -26,12 +26,12 @@
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/tuplesort.h"
 
 #include "agg/accum_int.h"
 #include "agg/dist_int.h"
 #include "agg/agg.h"
 #include "agg/rows.h"
+#include "agg/rows_psort.h"
 #include "agg/spill_int.h"
 #include "agg/stats.h"
 #include "agg/spec/spec.h"
@@ -119,14 +119,6 @@ sift_agg_rows_unpack(List *pack)
 }
 
 
-/* a pair of a count(DISTINCT) set: bit b of mask is set when the b-th aggregate of the set took a row of the group with the value */
-typedef struct RowsPair
-{
-	int64		v;
-	uint32		g;
-	uint32		mask;			/* 0: the slot is free */
-} RowsPair;
-
 typedef struct RowsSet
 {
 	int			argcol;
@@ -136,12 +128,11 @@ typedef struct RowsSet
 	RowsPair   *ent;
 	uint64		cap;
 	uint64		n;
-	Tuplesortstate *sort;		/* the pairs once the table outgrew its memory */
-	TupleTableSlot *put;
-	TupleTableSlot *get;
+	RowsPSort  *sort;			/* the pairs once the table outgrew its memory */
 } RowsSet;
 
 #define ROWS_PARTS		16
+#define ROWS_TAB_MIN	4096	/* the slots rows_rehash starts a table with */
 #define ROWS_DIVERT		UINT32_MAX
 
 typedef struct RowsPart
@@ -215,6 +206,32 @@ sift_agg_rows_group_bytes(const SiftRowsSpec *s)
 static void rows_rehash(RowsExec *ex);
 static void set_alloc(RowsExec *ex, RowsSet *st, uint64 cap);
 
+/*
+ * The table of a few groups empties by the slots of those groups, the last made first: a group is found from its hash through the slots of the groups made before it only, so that no
+ * probe meets a slot cleared already. A table that was grown for many groups and holds few is dropped, and the next rows_rehash makes the small one.
+ */
+static void
+rows_clear_table(RowsExec *ex)
+{
+	if (ex->tabcap > ROWS_TAB_MIN * 4 && ex->ng < ROWS_TAB_MIN / 8)
+	{
+		pfree(ex->tab);
+		ex->tab = NULL;
+		ex->tabcap = 0;
+	}
+	else if ((uint64) ex->ng * 8 >= ex->tabcap)
+		memset(ex->tab, 0, ex->tabcap * sizeof(uint32));
+	else
+		for (uint32 g = ex->ng; g-- > 0;)
+		{
+			uint64		i = ex->ghash[g] & (ex->tabcap - 1);
+
+			while (ex->tab[i] != g + 1)
+				i = (i + 1) & (ex->tabcap - 1);
+			ex->tab[i] = 0;
+		}
+}
+
 /* no groups, empty sets, the memory of the keys and of the states released: the node's start and its rescan */
 static void
 rows_reset(RowsExec *ex)
@@ -227,7 +244,7 @@ rows_reset(RowsExec *ex)
 
 		if (st->sort)
 		{
-			tuplesort_end(st->sort);
+			rows_psort_end(st->sort);
 			st->sort = NULL;
 		}
 		if (st->ent)
@@ -238,13 +255,13 @@ rows_reset(RowsExec *ex)
 	if (ex->pgstate)
 		MemoryContextReset(ex->pgstate->curaggcontext->ecxt_per_tuple_memory);
 	if (ex->tab)
-		memset(ex->tab, 0, ex->tabcap * sizeof(uint32));
+		rows_clear_table(ex);
 	for (int i = 0; i < ex->spec->naggs; i++)
 	{
 		if (ex->has[i])
-			memset(ex->has[i], 0, ex->gcap);
+			memset(ex->has[i], 0, ex->ng);
 		if (ex->cnt[i])
-			memset(ex->cnt[i], 0, ex->gcap * sizeof(int64));
+			memset(ex->cnt[i], 0, ex->ng * sizeof(int64));
 	}
 	ex->ng = ex->gpos = 0;
 	ex->nrows = ex->npairs = 0;
@@ -322,7 +339,7 @@ rows_groups_grow(RowsExec *ex)
 static void
 rows_rehash(RowsExec *ex)
 {
-	uint64		cap = Max(ex->tabcap * 2, 4096);
+	uint64		cap = Max(ex->tabcap * 2, ROWS_TAB_MIN);
 
 	if (ex->tab)
 		pfree(ex->tab);
@@ -420,31 +437,14 @@ rows_int(Oid type, Datum d)
 	return type == INT2OID ? (int64) DatumGetInt16(d) : type == INT4OID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
 }
 
-static void
-set_put_sort(RowsSet *st, uint32 g, int64 v, uint32 mask)
-{
-	TupleTableSlot *t = st->put;
-
-	ExecClearTuple(t);
-	t->tts_values[0] = Int32GetDatum((int32) g);
-	t->tts_values[1] = Int64GetDatum(v);
-	t->tts_values[2] = Int32GetDatum((int32) mask);
-	t->tts_isnull[0] = t->tts_isnull[1] = t->tts_isnull[2] = false;
-	ExecStoreVirtualTuple(t);
-	tuplesort_puttupleslot(st->sort, t);
-}
-
-/* the pairs of the table go to a tuplesort of (group, value, bits), and so do the next ones */
+/* the pairs of the table go to a sort of (group, value, bits), and so do the next ones */
 static void
 set_spill(RowsExec *ex, RowsSet *st)
 {
-	MemoryContext old = MemoryContextSwitchTo(ex->cxt);
-
-	agg_pair_sort(3, TUPLESORT_NONE, &st->sort, &st->put, &st->get);
-	MemoryContextSwitchTo(old);
+	st->sort = rows_psort_begin(ex->cxt, (uint64) work_mem * 1024);
 	for (uint64 i = 0; i < st->cap; i++)
 		if (st->ent[i].mask)
-			set_put_sort(st, st->ent[i].g, st->ent[i].v, st->ent[i].mask);
+			rows_psort_put(st->sort, st->ent[i].g, st->ent[i].v, st->ent[i].mask);
 	pfree(st->ent);
 	st->ent = NULL;
 	st->cap = st->n = 0;
@@ -466,7 +466,7 @@ set_add(RowsExec *ex, RowsSet *st, uint32 g, int64 v, uint32 mask)
 
 	if (st->sort)
 	{
-		set_put_sort(st, g, v, mask);
+		rows_psort_put(st->sort, g, v, mask);
 		return;
 	}
 	for (i = pair_hash(g, v) & (st->cap - 1); st->ent[i].mask; i = (i + 1) & (st->cap - 1))
@@ -519,33 +519,11 @@ set_finish(RowsExec *ex, RowsSet *st)
 		return;
 	}
 	{
-		bool		isnull;
-		bool		any = false;
-		uint32		pg = 0,
-					mask = 0;
-		int64		pv = 0;
+		RowsPair	p;
 
-		tuplesort_performsort(st->sort);
-		while (tuplesort_gettupleslot(st->sort, true, false, st->get, NULL))
-		{
-			uint32		g = (uint32) DatumGetInt32(slot_getattr(st->get, 1, &isnull));
-			int64		v = DatumGetInt64(slot_getattr(st->get, 2, &isnull));
-			uint32		m = (uint32) DatumGetInt32(slot_getattr(st->get, 3, &isnull));
-
-			if (any && g == pg && v == pv)
-			{
-				mask |= m;
-				continue;
-			}
-			if (any)
-				set_count(ex, st, pg, mask);
-			any = true;
-			pg = g;
-			pv = v;
-			mask = m;
-		}
-		if (any)
-			set_count(ex, st, pg, mask);
+		rows_psort_finish(st->sort);
+		while (rows_psort_next(st->sort, &p))
+			set_count(ex, st, p.g, p.mask);
 	}
 }
 
@@ -844,7 +822,7 @@ rows_end(CustomScanState *node)
 
 	for (int k = 0; k < ex->nsets; k++)
 		if (ex->set[k].sort)
-			tuplesort_end(ex->set[k].sort);
+			rows_psort_end(ex->set[k].sort);
 	rows_parts_end(ex);
 	sift_stat_add(SIFT_STAT_GROUP_SPILLS, ex->nparts > 0);
 	foreach_ptr(PlanState, child, node->custom_ps)

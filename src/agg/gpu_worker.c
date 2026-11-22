@@ -415,8 +415,7 @@ serve_resident(WorkerState *w, SiftGpuSlot *s, char *stage)
 	const SiftVkKey *keys = (const SiftVkKey *) stage;
 	uint8	   *out = (uint8 *) stage + ALIGN8((Size) s->nkeys * sizeof(SiftVkKey));
 
-	for (uint32 i = 0; i < s->nkeys; i++)
-		out[i] = sift_vk_resident_share(w->vk, &keys[i], 1) > 0.0;
+	sift_vk_resident_batch(w->vk, keys, s->nkeys, out);
 	s->status = SIFT_VK_OK;
 }
 
@@ -977,8 +976,7 @@ sift_gpu_conn_resident(SiftGpuConn *c, const SiftVkKey *keys, uint32 n, uint8 *r
 		if (c->shm != NULL)
 			resident_remote(c, keys + from, Min(per, n - from), resident + from);
 		else
-			for (uint32 k = from; k < Min(from + per, n); k++)
-				resident[k] = sift_vk_resident_share(c->vk, &keys[k], 1) > 0.0;
+			sift_vk_resident_batch(c->vk, keys + from, Min(per, n - from), resident + from);
 }
 
 #endif							/* SIFT_VULKAN */

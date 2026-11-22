@@ -61,17 +61,40 @@ extern void sift_wide_batch_upsert(SiftSaltedHT *ht, const SiftWideBatch *wb, ui
 
 /* ---- the minimum and maximum of a text column ---- */
 
-/* the state of a group: the same 32 bytes as V6Acc (agg/v6/group_int.h) */
+#define SIFT_STRMM_INLINE_MAX	16u
+#define SIFT_STRMM_INLINE_CAP	UINT32_MAX
+
+/*
+ * the state of a group: the same 32 bytes as V6Acc (agg/v6/group_int.h). A best string of at most 16 bytes is the state itself (the first 8 bytes in pfx, the rest in u.tail, cap
+ * SIFT_STRMM_INLINE_CAP); a longer one is in the slab, in a block that doubles when a longer string comes (cap bytes, which the group may overwrite), or is another state's (cap 0).
+ */
 typedef struct SiftStrMM
 {
 	int64		n;				/* the strings offered: 0 for an empty state */
 	uint64		pfx;			/* the first 8 bytes of the best, big endian, zero padded */
-	uint8	   *ptr;			/* the best, in the slab (or another state's: then cap is 0) */
+	union
+	{
+		uint8	   *ptr;		/* the best, when cap is not SIFT_STRMM_INLINE_CAP */
+		uint8		tail[8];	/* bytes 8 .. 15 of the best, when it is */
+	}			u;
 	uint32		len;
-	uint32		cap;			/* the bytes the group may overwrite at ptr */
+	uint32		cap;
 } SiftStrMM;
 
 StaticAssertDecl(sizeof(SiftStrMM) == 32, "a text minimum is 32 bytes");
+
+/* The bytes of the best string: the block of the state, or buf (16 bytes) filled from the state when it holds them */
+static inline const uint8 *
+sift_strmm_bytes(const SiftStrMM *a, uint8 *buf)
+{
+	const uint64 be = __builtin_bswap64(a->pfx);
+
+	if (a->cap != SIFT_STRMM_INLINE_CAP)
+		return a->u.ptr;
+	memcpy(buf, &be, 8);
+	memcpy(buf + 8, a->u.tail, 8);
+	return buf;
+}
 
 typedef struct SiftStrSlab SiftStrSlab;
 

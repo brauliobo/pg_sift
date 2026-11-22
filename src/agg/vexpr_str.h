@@ -126,13 +126,18 @@ typedef int (*SiftVstrCmpFn) (void *arg, const char *a, uint32 alen, const char 
 extern void sift_vstr_cmp_const(const SiftStrView *v, const uint64 *valid, const uint64 *active, uint16 n, SiftVstrCmp op, const char *c, uint32 clen,
 								SiftVstrCmpFn fn, void *fn_arg, uint64 *true_out, uint64 *known_out);
 
-/* The strings of a constant or parameter array of text, sorted and without repeats; has_null: an element is NULL */
+/* The strings of a constant or parameter array of text, sorted and without repeats; has_null: an element is NULL. From SIFT_VSTR_HASH_MIN strings on they are also in a hash table, which a lookup probes (a string whose length no element has is not even hashed): tab holds the number of a string + 1, 0 for a free slot */
+#define SIFT_VSTR_HASH_MIN	8
+
 typedef struct SiftVstrSet
 {
 	uint32		n;
 	bool		has_null;
 	SiftStrView *v;
 	char	   *bytes;
+	uint32		mask;			/* slots of tab - 1 */
+	uint32	   *tab;
+	uint64		len_mask;		/* bit (length mod 64) is set for the length of an element */
 } SiftVstrSet;
 
 extern SiftVstrSet *sift_vstr_set_build(const char *const *p, const uint32 *len, const bool *isnull, uint32 n);

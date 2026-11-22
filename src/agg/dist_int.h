@@ -127,6 +127,7 @@ bool psort_next(PairSort *s, uint64 *v);
 void psort_end(PairSort *s);
 void agg_pair_sort(int natts, int flags, Tuplesortstate **sort, TupleTableSlot **put, TupleTableSlot **get);
 void dset_grow(AggExec *ex, DSet *s, const uint32 *remap);
+void dset_reserve(AggExec *ex, DSet *s, uint64 npairs);
 bool dset_add(AggExec *ex, DSet *s, uint32 g, uint32 v);
 /* tuples ahead whose pair slot is prefetched while a loop adds: the set outgrows the caches with the groups */
 #define DSET_AHEAD	8

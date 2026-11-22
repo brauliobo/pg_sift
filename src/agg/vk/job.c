@@ -149,14 +149,14 @@ set_desc(uint32_t *d, const SiftVkChunk *c, uint32_t woff, uint32_t vw)
 }
 
 static void
-remember(Slot *s, uint32_t idx)
+remember(Slot *s, const SiftVkKey *key)
 {
 	if (s->npend == s->cappend)
 	{
 		s->cappend = s->cappend ? s->cappend * 2 : 1024;
-		s->pend = realloc(s->pend, s->cappend * sizeof(uint32_t));
+		s->pend = realloc(s->pend, s->cappend * sizeof(SiftVkKey));
 	}
-	s->pend[s->npend++] = idx;
+	s->pend[s->npend++] = *key;
 }
 
 /* the chunk staged as a decode job; false when the batch has no room for it (nothing is changed then) */
@@ -177,7 +177,7 @@ stage_chunk(SiftVk *vk, Slot *s, const SiftVkChunk *c, uint32_t *desc, Batch *b)
 	e = cache_insert(vk, &c->key, words ? words : 2, &woff);
 	if (!e)
 		return false;
-	remember(s, (uint32_t) (e - vk->ent));
+	remember(s, &c->key);
 	set_desc(e->desc, c, woff, vw);
 	memcpy(desc, e->desc, 32);
 	dj = (uint32_t *) s->dj.map + (size_t) b->njobs * SIFT_VK_DJ_WORDS;
@@ -276,7 +276,7 @@ static void
 mark_undo(SiftVk *vk, Slot *s, Batch *b, const Mark *m)
 {
 	for (uint32_t k = m->pend; k < s->npend; k++)
-		cache_remove(vk, &vk->ent[s->pend[k]]);
+		cache_remove_key(vk, &s->pend[k]);
 	s->npend = m->pend;
 	s->up = m->up;
 	s->unw = m->unw;
@@ -413,7 +413,7 @@ batch_abandon(SiftVk *vk, Batch *b)
 	Slot	   *s = b->s;
 
 	for (uint32_t k = 0; k < s->npend; k++)
-		cache_remove(vk, &vk->ent[s->pend[k]]);
+		cache_remove_key(vk, &s->pend[k]);
 	s->npend = 0;
 	vk->evict_gen++;
 }

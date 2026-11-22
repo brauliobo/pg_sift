@@ -57,10 +57,9 @@ home_of(const SiftDistSet *s, uint64 cell_value, uint32 mask)
 }
 
 static void
-dist_grow(SiftDistSet *s)
+dist_resize(SiftDistSet *s, uint32 cap)
 {
-	const uint32 cap = s->cap << 1,
-				mask = cap - 1;
+	const uint32 mask = cap - 1;
 	uint64	   *cells = MemoryContextAllocZero(s->cxt, sizeof(uint64) * cap);
 
 	for (uint32 i = 0; i < s->cap; i++)
@@ -76,6 +75,12 @@ dist_grow(SiftDistSet *s)
 	pfree(s->cells);
 	s->cells = cells;
 	s->cap = cap;
+}
+
+static void
+dist_grow(SiftDistSet *s)
+{
+	dist_resize(s, s->cap << 1);
 }
 
 static inline void
@@ -216,7 +221,11 @@ sift_dist_next_bytes(const SiftDistSet *s, uint32 *pos, const uint8 **bytes, uin
 void
 sift_dist_merge(SiftDistSet *dst, const SiftDistSet *src)
 {
+	const uint64 want = ((uint64) dst->used + src->used) * 4 / 3 + 1;
 	uint32		pos = 0;
+
+	if (want > dst->cap && want <= UINT32_MAX / 2)
+		dist_resize(dst, (uint32) pg_nextpower2_64(want));
 
 	if (src->wide)
 	{

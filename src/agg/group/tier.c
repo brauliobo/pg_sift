@@ -5,6 +5,7 @@
 
 #include "agg/group/tier.h"
 #include "core/memtrack.h"
+#include "core/popcount.h"
 
 #define DIRECT_ACC_BYTES	(4 * sizeof(int64))
 #define DIRECT_MIN_CAP		1024
@@ -124,10 +125,16 @@ upsert_key(SiftTierGroups *g, int64 key)
 static void
 promote_to_table(SiftTierGroups *g)
 {
-	table_new(g, SIFT_HT_MIN_SLOTS);
-	for (uint32 i = 0; i < g->cap; i++)
-		if ((g->seen[i >> 6] >> (i & 63)) & 1)
+	const uint32 words = (g->cap + 63) >> 6;
+	uint64		live = 0;
+
+	for (uint32 w = 0; w < words; w++)
+		live += sift_pc64(g->seen[w]);
+	table_new(g, (uint32) Min((live * SIFT_HT_MAX_LOAD_DEN) / SIFT_HT_MAX_LOAD_NUM + 1, (uint64) UINT32_MAX / 2));
+	for (uint32 w = 0; w < words; w++)
+		for (uint64 bits = g->seen[w]; bits != 0; bits &= bits - 1)
 		{
+			const uint32 i = (w << 6) + (uint32) __builtin_ctzll(bits);
 			SiftAggSlot64 *s = upsert_key(g, g->base + (int64) i);
 
 			memcpy(s->agg.i64, &g->acc[(Size) i * 4], DIRECT_ACC_BYTES);

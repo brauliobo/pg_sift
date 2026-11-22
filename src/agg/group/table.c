@@ -12,8 +12,18 @@
 #include "agg/group/int.h"
 #include "agg/plan_int.h"
 
+/* One per-group array of cap entries of size bytes, the first keep of which the caller fills: only the rest is zeroed */
+static void *
+acc_array(AggExec *ex, uint32 cap, uint32 keep, size_t size)
+{
+	char	   *p = MemoryContextAlloc(ex->tcxt, cap * size);
+
+	memset(p + (size_t) keep * size, 0, (size_t) (cap - keep) * size);
+	return p;
+}
+
 AggAcc *
-acc_alloc(AggExec *ex, uint32 cap)
+acc_alloc_keep(AggExec *ex, uint32 cap, uint32 keep)
 {
 	AggAcc	   *a = MemoryContextAllocZero(ex->tcxt, Max(ex->spec->naggs, 1) * sizeof(AggAcc));
 
@@ -21,30 +31,36 @@ acc_alloc(AggExec *ex, uint32 cap)
 	{
 		unsigned	layout = sift_agg_acc_layout(&ex->spec->agg[i], ex->lane_serial);
 
-		a[i].n = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));
+		a[i].n = acc_array(ex, cap, keep, sizeof(int64));
 		if (layout & ACCL_I)
-			a[i].i = MemoryContextAllocZero(ex->tcxt, cap * sizeof(int64));	/* SAA_GEN: the group's number among the sorted values */
+			a[i].i = acc_array(ex, cap, keep, sizeof(int64));	/* SAA_GEN: the group's number among the sorted values */
 		if (layout & ACCL_W)
-			a[i].w = MemoryContextAllocZero(ex->tcxt, cap * sizeof(sift_i128));
+			a[i].w = acc_array(ex, cap, keep, sizeof(sift_i128));
 		if (layout & ACCL_D)
-			a[i].d = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+			a[i].d = acc_array(ex, cap, keep, sizeof(double));
 		if (layout & ACCL_DT)
-			a[i].dt = MemoryContextAllocZero(ex->tcxt, cap * sizeof(double));
+			a[i].dt = acc_array(ex, cap, keep, sizeof(double));
 		if (layout & ACCL_NF)
-			a[i].nf = MemoryContextAllocZero(ex->tcxt, cap);
+			a[i].nf = acc_array(ex, cap, keep, sizeof(uint8));
 		if (layout & ACCL_V)
-			a[i].v = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
+			a[i].v = acc_array(ex, cap, keep, sizeof(Datum));
 		if (layout & ACCL_R)
-			a[i].r = MemoryContextAllocZero(ex->tcxt, cap * sizeof(Datum));
+			a[i].r = acc_array(ex, cap, keep, sizeof(Datum));
 		if (layout & ACCL_LAST)
 		{
 			a[i].last = MemoryContextAlloc(ex->tcxt, cap * sizeof(uint64));
-			memset(a[i].last, 0xff, cap * sizeof(uint64));
+			memset(a[i].last + keep, 0xff, (size_t) (cap - keep) * sizeof(uint64));
 		}
 		if (ex->lanes && sift_aggkind_float_sum(&ex->spec->agg[i]))
 			a[i].lv = MemoryContextAllocZero(ex->tcxt, SIFT_AGG_LANES * sizeof(double *));
 	}
 	return a;
+}
+
+AggAcc *
+acc_alloc(AggExec *ex, uint32 cap)
+{
+	return acc_alloc_keep(ex, cap, 0);
 }
 
 static void
@@ -118,8 +134,8 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	int64	   *nseen;
 
 	table_nospill_check(ex);
-	na = acc_alloc(ex, newcap);
-	nseen = MemoryContextAllocZero(ex->tcxt, newcap * sizeof(int64));
+	na = acc_alloc_keep(ex, newcap, remap == NULL ? oldcap : 0);
+	nseen = acc_array(ex, newcap, remap == NULL ? oldcap : 0, sizeof(int64));
 
 	/* the groups keep their numbers: copy the arrays whole, an unseen slot holds what a new one does */
 	if (remap == NULL)
@@ -382,8 +398,12 @@ direct_grow(AggExec *ex)
 	}
 	if (total > ex->direct_max || direct_past_memory(ex, total))
 	{
-		/* the existing groups keep their ids in the hash table */
-		hash_init(ex, 1024);
+		uint32		live = 0;
+
+		for (uint32 g = 0; g < oldcap; g++)
+			live += ex->seen[g] != 0;
+		/* the existing groups keep their ids in the hash table, made for all of them at once */
+		hash_init(ex, Max(1024, live));
 		for (uint32 g = 0; g < oldcap; g++)
 		{
 			uint32		ids[SIFT_AGG_MAX_KEYS] = {0};

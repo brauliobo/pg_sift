@@ -668,13 +668,13 @@ topn_case(const char *name, Case *c, const TData *d, uint32_t k)
 static void
 t6_topn(const TData *d, const TData *big)
 {
-	static const uint32_t ks[] = {10, 100, 256};
+	static const uint32_t ks[] = {10, 100, 256, 300, 1000};
 	Case		c;
 	char		name[96];
 
 	printf("T6 top N\n");
 	for (int v = 0; v < 6; v++)
-		for (int ki = 0; ki < 3; ki++)
+		for (int ki = 0; ki < 5; ki++)
 		{
 			static const char *names[] = {"int desc", "int asc", "double desc", "double asc, WHERE", "int desc nulls first", "expression desc"};
 
@@ -702,7 +702,7 @@ t6_topn(const TData *d, const TData *big)
 				snprintf(name, sizeof(name), "%s (v32*3+1)", names[v]);
 			topn_case(name, &c, d, ks[ki]);
 		}
-	for (int ki = 0; ki < 3; ki++)
+	for (int ki = 0; ki < 5; ki++)
 	{
 		case_init(&c, big, SIFT_VK_TOPN);
 		ld(&c, 0, 8, SIFT_VK_T_I64);

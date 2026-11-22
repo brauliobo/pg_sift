@@ -9,6 +9,7 @@
 #include "col/v1/gorder.h"
 #include "agg/gord.h"
 
+#define GORD_TREE_MIN	4			/* more sources than this are merged by a tournament, as many as this by the scan of their heads */
 #define GORD_PEND_MAX	(1 << 20)	/* the entries a skip leaves to the heap: the rest of a longer one is walked */
 
 /* A cursor over one source: the entries in the order of the scan, one chunk decoded at a time */

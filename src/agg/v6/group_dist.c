@@ -121,6 +121,8 @@ flat_move(SiftV6Group *g, V6Set *set, uint32 slot)
 static void
 flat_add(SiftV6Group *g, V6Set *set, uint32 slot, const uint64 *vals, uint32 n)
 {
+	uint32		done = 0;
+
 	if (set->flat == NULL)
 	{
 		set->flat = MemoryContextAllocZero(g->cx, g->ndist * sizeof(SiftDistinctU64 *));
@@ -130,14 +132,12 @@ flat_add(SiftV6Group *g, V6Set *set, uint32 slot, const uint64 *vals, uint32 n)
 	{
 		if (set->flat[slot] == NULL)
 			set->flat[slot] = sift_du64_create(g->cx, g->dist_budget / ((uint64) g->nsets * g->ndist));
-		if (sift_du64_room(set->flat[slot], n))
-		{
-			sift_du64_add(set->flat[slot], vals, n);
+		done = sift_du64_add(set->flat[slot], vals, n);
+		if (done == n)
 			return;
-		}
 		flat_move(g, set, slot);
 	}
-	for (uint32 i = 0; i < n; i++)
+	for (uint32 i = done; i < n; i++)
 		sift_distinct_add_u64(dist_of(g, set), slot, vals[i]);
 }
 
@@ -234,6 +234,7 @@ dist_finish_add(void *arg, uint32 set_idx, uint32 slot, const void *key, uint32 
 
 	sift_distinct_add(dist_of(g, &g->set[set_idx]), slot, key, len);
 }
+
 static void
 v6g_dist_flat(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *take, SiftVec *const *argvec);
 
@@ -245,6 +246,7 @@ v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *ta
 	SiftDistinct *d;
 	const uint32 slot = (uint32) g->dslot[j];
 	const bool	row_key = a->nxcols > 0 || sift_v6_class(a->arg.typid) == SV6C_F64 || sift_v6_class(a->arg.typid) == SV6C_TEXT;
+	uint32		r;
 
 	if (g->dist_put == NULL && set->nk == 0 && !row_key)
 	{
@@ -255,9 +257,9 @@ v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *ta
 
 	if (v->type == SVEC_DICT32 && a->nxcols == 0 && dict_batch(g, set, j, v, n_raw, take))
 		return;
-	for (uint16 r = 0; r < n_raw; r++)
+	V6_FOR_EACH_ROW(take, n_raw, r)
 	{
-		if (!((take[r >> 6] >> (r & 63)) & 1) || (a->nxcols == 0 && !is_valid(v, r)))
+		if (a->nxcols == 0 && !is_valid(v, r))
 			continue;
 		if (g->dist_put == NULL && !row_key)
 		{
@@ -283,8 +285,10 @@ v6g_dist_flat(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *tak
 	uint64		vals[SIFT_VEC_LEN];
 	uint32		n = 0;
 
-	for (uint16 r = 0; r < n_raw; r++)
-		if (((take[r >> 6] >> (r & 63)) & 1) && is_valid(v, r))
+	uint32		r;
+
+	V6_FOR_EACH_ROW(take, n_raw, r)
+		if (is_valid(v, r))
 			vals[n++] = (uint64) int_at(v, r);
 	if (n > 0)
 		flat_add(g, set, (uint32) g->dslot[j], vals, n);
@@ -345,6 +349,69 @@ gflat_add(SiftV6Group *g, V6Set *set, uint32 slot, int64 value)
 		return true;
 	gflat_move(g, set, slot);
 	return false;
+}
+
+/* The pairs (the group of each row of the batch from g->rkey, its value) into the grouped flat set of the slot; the index of the first pair that did not fit its budget, which the caller moves to the generic set: n when all did */
+static uint32
+gflat_batch(SiftV6Group *g, V6Set *set, uint32 slot, uint32 n, const uint64 *vals)
+{
+	V6DistBatch *b = g->dbatch;
+
+	if (set->gflat == NULL)
+	{
+		set->gflat = MemoryContextAllocZero(g->cx, g->ndist * sizeof(SiftDu64G *));
+		set->gflat_moved = MemoryContextAllocZero(g->cx, g->ndist * sizeof(bool));
+	}
+	if (set->gflat_moved[slot])
+		return 0;
+	if (set->gflat[slot] == NULL)
+		set->gflat[slot] = sift_du64g_create(g->cx, g->dist_budget / ((uint64) g->nsets * g->ndist));
+	return sift_du64g_add_batch(set->gflat[slot], (const uint8 *) b->buf.data, b->off, b->plen, vals, n);
+}
+
+/* The rows of a batch of the groups of a set, for aggregate j: the pairs of the flat kinds go to the grouped flat set a batch at a time (g->rkey says each row's group), the others one row at a time */
+void
+v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 n)
+{
+	const SiftV6Agg *a = &g->spec->agg[j];
+	const bool	flat = g->dist_put == NULL && a->nxcols == 0 && sift_v6_class(a->arg.typid) != SV6C_F64 && sift_v6_class(a->arg.typid) != SV6C_TEXT;
+	V6DistBatch *b = g->dbatch;
+	uint16		rows[SIFT_VEC_LEN];
+	uint32		m = 0,
+				done;
+
+	if (!flat)
+	{
+		for (uint16 k = 0; k < n; k++)
+			if (v6g_row_takes(g, a, g->sel[k]))
+				v6g_dist_group_row(g, set, j, argvec, g->sel[k], g->rkey[k].p, g->rkey[k].len, g->rkey[k].nulls);
+		return;
+	}
+	if (b == NULL)
+	{
+		b = g->dbatch = MemoryContextAllocZero(g->cx, sizeof(V6DistBatch));
+		initStringInfo(&b->buf);
+	}
+	resetStringInfo(&b->buf);
+	for (uint16 k = 0; k < n; k++)
+	{
+		const uint16 r = g->sel[k];
+
+		if (!v6g_row_takes(g, a, r) || !is_valid(argvec[j], r))
+			continue;
+		b->off[m] = (uint32) b->buf.len;
+		appendBinaryStringInfo(&b->buf, (const char *) &g->rkey[k].nulls, sizeof(uint64));
+		appendBinaryStringInfo(&b->buf, g->rkey[k].p, (int) g->rkey[k].len);
+		b->plen[m] = (uint32) b->buf.len - b->off[m];
+		b->val[m] = (uint64) int_at(argvec[j], r);
+		rows[m++] = k;
+	}
+	if (m == 0 || (done = gflat_batch(g, set, (uint32) g->dslot[j], m, b->val)) == m)
+		return;
+	if (set->gflat[g->dslot[j]] != NULL)
+		gflat_move(g, set, (uint32) g->dslot[j]);
+	for (uint32 i = done; i < m; i++)
+		v6g_dist_group_row(g, set, j, argvec, g->sel[rows[i]], g->rkey[rows[i]].p, g->rkey[rows[i]].len, g->rkey[rows[i]].nulls);
 }
 
 void

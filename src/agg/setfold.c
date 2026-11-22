@@ -7,6 +7,7 @@
 #include "agg/blob_int.h"
 #include "agg/group_int.h"
 #include "agg/update_int.h"
+#include "core/popcount.h"
 
 /*
  * A query whose grouping sets all lie inside one of them (ROLLUP, CUBE, and the sets of a report: (a, b), (a), (b), ()) needs the rows of the finest set only: the groups of
@@ -64,41 +65,129 @@ sets_fold_begin(AggExec *ex)
 	ex->fold = finest + 1;
 }
 
+static uint32
+groups_now(const AggExec *ex)
+{
+	return ex->hash ? ex->ngroups : ex->gcap;
+}
+
+static int
+bits_of(uint32 mask)
+{
+	return (int) sift_pc64(mask);
+}
+
+/* the smallest set among those whose groups are made (done) that contains the set c: ROLLUP and CUBE sets are folded from the next finer one, whose groups are fewer than the finest set's */
+static int
+fold_parent(const SiftAggSpec *s, int c, const bool *done)
+{
+	int			best = -1;
+
+	for (int p = 0; p < s->nsets; p++)
+		if (done[p] && (s->setmask[c] & ~s->setmask[p]) == 0 && (best < 0 || bits_of(s->setmask[p]) < bits_of(s->setmask[best])))
+			best = p;
+	return best;
+}
+
+/* the sets from the finest to the coarsest, by the keys they group by */
+static int
+fold_order_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftAggSpec *s = arg;
+	const int	x = bits_of(s->setmask[*(const int *) a]),
+				y = bits_of(s->setmask[*(const int *) b]);
+
+	return y != x ? y - x : *(const int *) a - *(const int *) b;
+}
+
 /* after the scan and the merge of the workers' tables: the groups of the other sets */
 void
 sets_fold(AggExec *ex)
 {
 	SiftAggSpec *s = ex->spec;
 	int			nk = s->nkeys;
-	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
+	uint32		n = groups_now(ex),
 			   *from,
 			   *to;
-	uint32		nf = 0;
+	uint32		nf = 0,
+				tocap = Max(n, 1);
+	int		   *order;
+	uint32	  **grp,
+			   *ngrp;
+	bool	   *done;
 
 	if (!ex->fold)
 		return;
+	order = palloc(s->nsets * sizeof(int));
+	grp = palloc0(s->nsets * sizeof(uint32 *));
+	ngrp = palloc0(s->nsets * sizeof(uint32));
+	done = palloc0(s->nsets * sizeof(bool));
 	from = palloc(Max(n, 1) * sizeof(uint32));
-	to = palloc0(Max(n, 1) * sizeof(uint32));
+	to = palloc0(tocap * sizeof(uint32));
 	for (uint32 g = 0; g < n; g++)
 		if (ex->seen[g] > 0 && key_id(ex, nk - 1, g) == (uint32) ex->fold)
 			from[nf++] = g;
+	grp[ex->fold - 1] = from;
+	ngrp[ex->fold - 1] = nf;
+	done[ex->fold - 1] = true;
 	for (int set = 0; set < s->nsets; set++)
+		order[set] = set;
+	qsort_arg(order, s->nsets, sizeof(int), fold_order_cmp, s);
+	for (int o = 0; o < s->nsets; o++)
 	{
-		if (set == ex->fold - 1)
+		const int	set = order[o];
+		const int	parent = set == ex->fold - 1 ? -1 : fold_parent(s, set, done);
+		const uint32 *src;
+		uint32		nsrc,
+					live;
+		uint64	   *marked;
+
+		if (parent < 0)
 			continue;
-		for (uint32 i = 0; i < nf; i++)
+		src = grp[parent];
+		nsrc = ngrp[parent];
+		if (groups_now(ex) > tocap)
+		{
+			const uint32 ncap = groups_now(ex);
+
+			to = repalloc(to, ncap * sizeof(uint32));
+			memset(to + tocap, 0, (ncap - tocap) * sizeof(uint32));
+			tocap = ncap;
+		}
+		for (uint32 i = 0; i < nsrc; i++)
 		{
 			uint32		ids[SIFT_AGG_MAX_KEYS];
 
 			for (int j = 0; j < nk - 1; j++)
-				ids[j] = (s->setmask[set] >> j & 1) ? key_id(ex, j, from[i]) : 0;
+				ids[j] = (s->setmask[set] >> j & 1) ? key_id(ex, j, src[i]) : 0;
 			ids[nk - 1] = set + 1;
-			to[from[i]] = ids_gid(ex, ids);
+			to[src[i]] = ids_gid(ex, ids);
 		}
 		if (ex->hash && ex->ngroups > ex->gcap)
 			groups_resize(ex, Max(ex->gcap * 2, ex->ngroups), NULL, ex->gcap);
-		blob_fold(ex, from, to, nf);
+		blob_fold(ex, src, to, nsrc);
+		live = groups_now(ex);
+		marked = palloc0(((live + 63) >> 6) * sizeof(uint64));
+		grp[set] = palloc(Max(nsrc, 1) * sizeof(uint32));
+		for (uint32 i = 0; i < nsrc; i++)
+		{
+			const uint32 g = to[src[i]];
+
+			if (!(marked[g >> 6] >> (g & 63) & 1))
+			{
+				marked[g >> 6] |= UINT64CONST(1) << (g & 63);
+				grp[set][ngrp[set]++] = g;
+			}
+		}
+		pfree(marked);
+		done[set] = true;
 	}
-	pfree(from);
+	for (int set = 0; set < s->nsets; set++)
+		if (grp[set])
+			pfree(grp[set]);
+	pfree(grp);
+	pfree(ngrp);
+	pfree(done);
+	pfree(order);
 	pfree(to);
 }

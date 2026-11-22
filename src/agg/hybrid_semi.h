@@ -12,6 +12,7 @@
 #define SIFT_HYB_ACL_PUSH_MAX		4096	/* the keys the scan takes as an IN list; a larger set filters the rows the scan hands over */
 #define SIFT_HYB_ACL_MEM_DIV		8		/* the set holds at most work_mem / 8 bytes */
 #define SIFT_HYB_ACL_BLOOM_BITS		4096
+#define SIFT_HYB_ACL_HASH_MIN		32
 
 typedef struct SiftHybridAclSet
 {
@@ -28,6 +29,8 @@ typedef struct SiftHybridAclSet
 	int64	   *ival;
 	const uint8 **sptr;
 	uint32	   *slen;
+	uint32		mask;				/* slots of tab - 1 */
+	uint32	   *tab;				/* from SIFT_HYB_ACL_HASH_MIN keys on: the number of a key + 1 by its hash, 0 for a free slot (a lookup probes it where it would search the sorted keys) */
 	uint64		bloom[SIFT_HYB_ACL_BLOOM_BITS / 64];
 } SiftHybridAclSet;
 
@@ -39,7 +42,7 @@ extern void sift_acl_end(SiftHybridAclSet *set);
 extern bool sift_acl_add_int(SiftHybridAclSet *set, int64 v);
 extern bool sift_acl_add_str(SiftHybridAclSet *set, const uint8 *p, uint32 len);
 
-/* Sorts and deduplicates, builds the Bloom filter, sets empty */
+/* Sorts and deduplicates, builds the Bloom filter and the hash table, sets empty */
 extern void sift_acl_finish(SiftHybridAclSet *set);
 
 extern bool sift_acl_has_int(const SiftHybridAclSet *set, int64 v);

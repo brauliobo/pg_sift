@@ -203,6 +203,8 @@ sift_wide_batch_build(SiftWideBatch *wb, const int *kidx, int nk, SiftVec *const
 void
 sift_wide_batch_upsert(SiftSaltedHT *ht, const SiftWideBatch *wb, uint16 n, SiftAggSlot64 **slots)
 {
+	uint32		gen = ht->gen;
+
 	for (uint16 k = 0; k < n; k++)
 	{
 		bool		found;
@@ -214,7 +216,13 @@ sift_wide_batch_upsert(SiftSaltedHT *ht, const SiftWideBatch *wb, uint16 n, Sift
 			__builtin_prefetch(&ht->ctrl[g]);
 			__builtin_prefetch(&ht->slots[g]);
 		}
-		slots[k] = sift_ht_upsert_wide(ht, wb->hash[k], wb->buf + wb->off[k], wb->len[k], wb->nulls[k], &found);
+		slots[k] = sift_ht_upsert_wide_lazy(ht, wb->hash[k], wb->buf + wb->off[k], wb->len[k], wb->nulls[k], &found);
+		if (ht->gen != gen)
+		{
+			for (uint16 j = 0; j < k; j++)
+				slots[j] = sift_ht_find_wide(ht, wb->hash[j], wb->buf + wb->off[j], wb->len[j], wb->nulls[j]);
+			gen = ht->gen;
+		}
 	}
 }
 
@@ -300,59 +308,82 @@ str_cmp(const uint8 *a, uint32 alen, const uint8 *b, uint32 blen)
 	return c != 0 ? c : (alen < blen ? -1 : alen > blen);
 }
 
+/* the string p of len bytes as the state's best: inline when it fits and the state owns no block, else in its block, made twice as large as the longest string it has had */
+static void
+strmm_put(SiftStrSlab *sl, SiftStrMM *a, uint64 pfx, const uint8 *p, uint32 len)
+{
+	const bool	owns = a->n != 0 && a->cap != 0 && a->cap != SIFT_STRMM_INLINE_CAP;
+
+	if (!owns && len <= SIFT_STRMM_INLINE_MAX)
+	{
+		memset(a->u.tail, 0, sizeof(a->u.tail));
+		if (len > 8)
+			memcpy(a->u.tail, p + 8, len - 8);
+		a->cap = SIFT_STRMM_INLINE_CAP;
+	}
+	else
+	{
+		if (!owns || len > a->cap)
+		{
+			const uint32 cap = len > (1u << 30) ? len : Max(32u, pg_nextpower2_32(len));
+
+			a->u.ptr = slab_take(sl, cap);
+			a->cap = cap;
+		}
+		if (len > 0)
+			memcpy(a->u.ptr, p, len);
+	}
+	a->len = len;
+	a->pfx = pfx;
+}
+
+/* whether the string p of len bytes (prefix pfx) comes before (is_min) or after the best of a */
+static inline bool
+strmm_better(const SiftStrMM *a, bool is_min, uint64 pfx, const uint8 *p, uint32 len)
+{
+	uint8		buf[16];
+	int			c;
+
+	if (a->n == 0)
+		return true;
+	if (pfx != a->pfx)
+		return is_min ? pfx < a->pfx : pfx > a->pfx;
+	c = str_cmp(p, len, sift_strmm_bytes(a, buf), a->len);
+	return is_min ? c < 0 : c > 0;
+}
+
 void
 sift_strmm_offer(SiftStrSlab *sl, SiftStrMM *a, bool is_min, const uint8 *p, uint32 len)
 {
 	const uint64 pfx = be_prefix(p, len);
-	bool		better;
 
-	if (a->n == 0)
-		better = true;
-	else if (pfx != a->pfx)
-		better = is_min ? pfx < a->pfx : pfx > a->pfx;
-	else
-	{
-		const int	c = str_cmp(p, len, a->ptr, a->len);
-
-		better = is_min ? c < 0 : c > 0;
-	}
+	if (strmm_better(a, is_min, pfx, p, len))
+		strmm_put(sl, a, pfx, p, len);
 	a->n++;
-	if (!better)
-		return;
-	if (len > a->cap)
-	{
-		a->ptr = slab_take(sl, len);
-		a->cap = len;
-	}
-	if (len > 0)
-		memcpy(a->ptr, p, len);
-	a->len = len;
-	a->pfx = pfx;
 }
 
 void
 sift_strmm_merge(SiftStrMM *d, const SiftStrMM *s, bool is_min)
 {
-	bool		better;
+	uint8		buf[16];
 
 	if (s->n == 0)
 		return;
-	if (d->n == 0)
-		better = true;
-	else if (s->pfx != d->pfx)
-		better = is_min ? s->pfx < d->pfx : s->pfx > d->pfx;
-	else
+	if (strmm_better(d, is_min, s->pfx, sift_strmm_bytes(s, buf), s->len))
 	{
-		const int	c = str_cmp(s->ptr, s->len, d->ptr, d->len);
-
-		better = is_min ? c < 0 : c > 0;
+		if (s->cap == SIFT_STRMM_INLINE_CAP)
+		{
+			d->pfx = s->pfx;
+			memcpy(d->u.tail, s->u.tail, sizeof(d->u.tail));
+			d->cap = SIFT_STRMM_INLINE_CAP;
+		}
+		else
+		{
+			d->pfx = s->pfx;
+			d->u.ptr = s->u.ptr;
+			d->cap = 0;
+		}
+		d->len = s->len;
 	}
 	d->n += s->n;
-	if (better)
-	{
-		d->ptr = s->ptr;
-		d->len = s->len;
-		d->pfx = s->pfx;
-		d->cap = 0;
-	}
 }

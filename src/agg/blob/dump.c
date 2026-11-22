@@ -341,6 +341,17 @@ blob_dump_with(AggExec *ex, int lane, const uint32 *gl, uint32 ng, const uint32 
 			bw_lanes(b, &ex->acc[i], gl, ng);
 }
 
+/* The groups gl[0..ng) as a blob; cidx, which holds UINT32_MAX for every group, is left as it was found (a table written to many partitions makes it once) */
+void
+blob_dump_list_in(AggExec *ex, int lane, const uint32 *gl, uint32 ng, uint32 *cidx, StringInfo b)
+{
+	for (uint32 r = 0; r < ng; r++)
+		cidx[gl[r]] = r;
+	blob_dump_with(ex, lane, gl, ng, cidx, NULL, b);
+	for (uint32 r = 0; r < ng; r++)
+		cidx[gl[r]] = UINT32_MAX;
+}
+
 void
 blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
 {
@@ -348,9 +359,7 @@ blob_dump_list(AggExec *ex, int lane, const uint32 *gl, uint32 ng, StringInfo b)
 			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
 
 	memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
-	for (uint32 r = 0; r < ng; r++)
-		cidx[gl[r]] = r;
-	blob_dump_with(ex, lane, gl, ng, cidx, NULL, b);
+	blob_dump_list_in(ex, lane, gl, ng, cidx, b);
 	pfree(cidx);
 }
 
@@ -439,13 +448,13 @@ blob_group_bytes(const AggExec *ex, uint32 g, double state)
 
 /* the groups gl[0..ng) as one blob handed to put: the sets keep the form of blob_dump_list (the bitmaps of a count(DISTINCT) go as chunks, not as pairs) */
 static void
-blob_put_slice(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, StringInfo b), void *arg, const uint32 *gl, uint32 ng)
+blob_put_slice(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, StringInfo b), void *arg, const uint32 *gl, uint32 ng, uint32 *cidx)
 {
 	StringInfoData b;
 	MemoryContext old = MemoryContextSwitchTo(tmp);
 
 	initStringInfo(&b);
-	blob_dump_list(ex, -1, gl, ng, &b);
+	blob_dump_list_in(ex, -1, gl, ng, cidx, &b);
 	put(arg, 0, &b);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(tmp);
@@ -463,13 +472,15 @@ blob_dump_chunks(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, 
 	uint32		n = ex->hash ? ex->ngroups : ex->gcap,
 				ng = 0,
 				first = 0,
-			   *gl = palloc(Max(n, 1) * sizeof(uint32));
+			   *gl = palloc(Max(n, 1) * sizeof(uint32)),
+			   *cidx = palloc(Max(n, 1) * sizeof(uint32));
 	double		state,
 				held = 0,
 				cap = (double) sift_limit(blob_bytes, BLOB_CHUNK_BYTES),
 				most = Min(4 * cap, (double) MaxAllocSize);
 	bool		splittable = blob_splittable(ex);
 
+	memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
 	(void) group_table_bytes(ex->spec, 1.0, &state);
 	dist_finish_all(ex);
 	for (uint32 g = 0; g < n; g++)
@@ -486,13 +497,14 @@ blob_dump_chunks(AggExec *ex, MemoryContext tmp, void (*put) (void *arg, int p, 
 					 errhint("Set max_parallel_workers_per_gather to 0 for this query, or sift.enable_agg to off.")));
 		if (splittable && r > first && held + w > cap)
 		{
-			blob_put_slice(ex, tmp, put, arg, gl + first, r - first);
+			blob_put_slice(ex, tmp, put, arg, gl + first, r - first, cidx);
 			first = r;
 			held = 0;
 		}
 		held += w;
 	}
-	blob_put_slice(ex, tmp, put, arg, gl + first, ng - first);
+	blob_put_slice(ex, tmp, put, arg, gl + first, ng - first, cidx);
 	dist_end_all(ex);
 	pfree(gl);
+	pfree(cidx);
 }

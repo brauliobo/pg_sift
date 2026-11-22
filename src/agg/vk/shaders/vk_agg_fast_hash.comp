@@ -12,38 +12,36 @@ layout(local_size_x = 256) in;
 
 #include "common_hash.glsl"
 
+/* the value aggregate a of row i of the tile adds: the key of a MIN or MAX, the value of a sum */
+int64_t tile_value(uint a, uint k, uint i)
+{
+	return k >= AK_MIN ? agg_cmp_key(a, k, i) : agg_value(a, i);
+}
+
+/* the rows of the subgroup that found the slot at base (the lanes of m, their number n; the lane lead adds them), row i of the tile of each */
+void row_add_lanes(uint base, uint nk, uint i, uint all_rows, bool m, bool lead, int64_t n)
+{
+	if (lead)
+		atomicAdd(ht[base + 2u + nk], n);
+	[[unroll]] for (uint a = 0u; a < SC_NAGG; a++)
+	{
+		uint k = AGG_KIND(a);
+
+		if (k == AK_COUNT_STAR)
+			continue;
+		agg_add_lanes(k, m && agg_valid(a, i), tile_value(a, k, i), base + 3u + nk + a * 3u, lead, ((all_rows >> a) & 1u) == 0u);
+	}
+}
+
 void row_add(uint base, uint nk, uint i, uint all_rows)
 {
 	atomicAdd(ht[base + 2u + nk], 1l);
 	[[unroll]] for (uint a = 0u; a < SC_NAGG; a++)
 	{
-		uint k = AGG_KIND(a), o = base + 3u + nk + a * 3u;
-		bool counted = ((all_rows >> a) & 1u) != 0u;
+		uint k = AGG_KIND(a);
 
-		if (k == AK_COUNT_STAR || !agg_valid(a, i))
-			continue;
-		if (k == AK_COUNT)
-		{
-			if (!counted)
-				atomicAdd(ht[o], 1l);
-			continue;
-		}
-		if (k == AK_SUM_I)
-		{
-			int64_t v = agg_value(a, i);
-
-			atomicAdd(ht[o], sum_lo(v));
-			if (sum_hi(v) != 0l)
-				atomicAdd(ht[o + 1u], sum_hi(v));
-		}
-		else if (k == AK_SUM_F)
-			acc_addf(o, dbl(agg_value(a, i)));
-		else if (k == AK_MIN || k == AK_MIN_F)
-			atomicMin(ht[o], agg_cmp_key(a, k, i));
-		else
-			atomicMax(ht[o], agg_cmp_key(a, k, i));
-		if (!counted)
-			atomicAdd(ht[o + 2u], 1l);
+		if (k != AK_COUNT_STAR && agg_valid(a, i))
+			agg_add_one(k, tile_value(a, k, i), base + 3u + nk + a * 3u, ((all_rows >> a) & 1u) == 0u);
 	}
 }
 
@@ -82,7 +80,13 @@ void main()
 				while (any_pending(pending))
 					if (pending)
 						probe_step(pending, slot, probes, spins, base, h, kw, SC_NKEYS, nm, SC_NAGG);
-				if (live && base != 0xFFFFFFFFu)
+				bool todo = live && base != 0xFFFFFFFFu, m, lead;
+				uint singles = 0u;
+				int64_t n;
+
+				while (slot_round(todo, base, singles, m, lead, n))
+					row_add_lanes(base, SC_NKEYS, i, all_rows, m, lead, n);
+				if (todo)
 					row_add(base, SC_NKEYS, i, all_rows);
 			}
 		}

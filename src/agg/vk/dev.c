@@ -495,8 +495,11 @@ release(SiftVk *vk)
 		drop_instance(vk);
 	free(vk->slab);
 	free(vk->ent);
+	free(vk->topn_buf);
 	vk->slab = NULL;
 	vk->ent = NULL;
+	vk->topn_buf = NULL;
+	vk->topn_cap = 0;
 }
 
 void

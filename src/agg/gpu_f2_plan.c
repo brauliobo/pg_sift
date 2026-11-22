@@ -14,6 +14,7 @@
 #include "common/hashfn.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/bufpage.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -24,16 +25,17 @@
 #include "col/f2/f2_gbuf.h"
 #include "col/f2/l0_stage.h"
 #include "col/gpu.h"
+#include "core/cmp.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
 
-#define HEAP_VM_MAX		(1u << 20)
+#define ZONE_IN_SORT_MIN	8
 
+/* The visibility map of the heap of the index, read for the blocks of a part when the part is asked about: one pinned page of it at a time */
 typedef struct HeapVm
 {
-	uint32	   *blk;			/* ascending: the heap blocks that are not all-visible */
-	uint32		n;
-	bool		overflow;
+	Relation	heap;
+	Buffer		vmbuf;
 } HeapVm;
 
 typedef struct PlanPart
@@ -54,7 +56,7 @@ typedef struct Admit
 	const SiftGpuQuery *q;
 	const SiftPartitionEntry *e;
 	const SiftPendDelIndex *pdel;	/* the pending deletes of the partition the snapshot sees, NULL for none */
-	const HeapVm *vm;
+	HeapVm	   *vm;
 	FullTransactionId xmin;
 	uint64		att_bloom;		/* of the attributes the query reads, as the column deltas keep them */
 } Admit;
@@ -72,39 +74,13 @@ typedef struct SiftGpuPlanPriv
 	uint64		manifest;		/* the manifest generation the parts were read at */
 	uint64		col_mask[4];	/* the leaves of the column slots */
 	uint64		sig;			/* the leaves in slot order, then of each part its id, generation, granules and physical columns: what the descriptors depend on */
+	int64	  **in_sorted;		/* per IN list of the query of 8 values or more: its values ascending (NULL for a shorter one) */
 	MemoryContext load_cx;
 	uint32		loaded_lo;
 	uint32		loaded_hi;
 	bool		released;
 	MemoryContextCallback cb;
 } Priv;
-
-static void
-heap_vm_build(Relation heap, HeapVm *vm)
-{
-	BlockNumber nblocks = RelationGetNumberOfBlocks(heap);
-	Buffer		vmbuf = InvalidBuffer;
-	uint32		cap = 1024;
-
-	vm->blk = palloc(cap * sizeof(uint32));
-	for (BlockNumber b = 0; b < nblocks; b++)
-	{
-		if ((b & 0xFFF) == 0)
-			CHECK_FOR_INTERRUPTS();
-		if (VM_ALL_VISIBLE(heap, b, &vmbuf))
-			continue;
-		if (vm->n == HEAP_VM_MAX)
-		{
-			vm->overflow = true;
-			break;
-		}
-		if (vm->n == cap)
-			vm->blk = repalloc(vm->blk, (cap *= 2) * sizeof(uint32));
-		vm->blk[vm->n++] = b;
-	}
-	if (BufferIsValid(vmbuf))
-		ReleaseBuffer(vmbuf);
-}
 
 static BlockNumber
 block_of(uint64 addr)
@@ -115,26 +91,52 @@ block_of(uint64 addr)
 	return ItemPointerGetBlockNumber(&tid);
 }
 
+#define VM_MAPSIZE			(BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
+#define VM_BLOCKS_PER_BYTE	4			/* 2 bits a heap block, the first of them all-visible */
+#define VM_BLOCKS_PER_PAGE	((BlockNumber) VM_MAPSIZE * VM_BLOCKS_PER_BYTE)
+#define VM_WORD_BLOCKS		32			/* the heap blocks of 8 bytes of the map */
+#define VM_VISIBLE_BITS		UINT64CONST(0x5555555555555555)
+
+/* Whether the heap blocks first .. last are all-visible: the pages of the map are read for the blocks asked, 32 blocks at a time, and the first block that is not ends it */
 static bool
-heap_vm_clean(const HeapVm *vm, const SiftPartDesc *d)
+heap_vm_clean(HeapVm *vm, BlockNumber first, BlockNumber last)
 {
-	uint32		lo = 0,
-				hi = vm->n;
-	BlockNumber first;
+	BlockNumber b = first;
 
-	if (vm->overflow || d->tid_max == 0)
-		return false;
-	first = block_of(d->tid_min);
-	while (lo < hi)
+	while (b <= last)
 	{
-		uint32		mid = lo + (hi - lo) / 2;
+		const BlockNumber page_end = Min(last, (b / VM_BLOCKS_PER_PAGE + 1) * VM_BLOCKS_PER_PAGE - 1);
+		const uint8 *map;
 
-		if (vm->blk[mid] < first)
-			lo = mid + 1;
-		else
-			hi = mid;
+		if ((b & 0xFFFF) == 0)
+			CHECK_FOR_INTERRUPTS();
+		if ((visibilitymap_get_status(vm->heap, b, &vm->vmbuf) & VISIBILITYMAP_ALL_VISIBLE) == 0 || !BufferIsValid(vm->vmbuf))
+			return false;
+		map = (const uint8 *) PageGetContents(BufferGetPage(vm->vmbuf));
+		for (; b <= page_end; b++)
+		{
+			const uint32 at = (uint32) (b % VM_BLOCKS_PER_PAGE);
+
+			if (at % VM_WORD_BLOCKS == 0 && b + VM_WORD_BLOCKS - 1 <= page_end)
+			{
+				uint64		w;
+
+				memcpy(&w, map + at / VM_BLOCKS_PER_BYTE, sizeof(w));
+				if ((w & VM_VISIBLE_BITS) != VM_VISIBLE_BITS)
+					return false;
+				b += VM_WORD_BLOCKS - 1;
+			}
+			else if (((map[at / VM_BLOCKS_PER_BYTE] >> (2 * (at % VM_BLOCKS_PER_BYTE))) & VISIBILITYMAP_ALL_VISIBLE) == 0)
+				return false;
+		}
 	}
-	return lo == vm->n || vm->blk[lo] > block_of(d->tid_max);
+	return true;
+}
+
+static bool
+part_heap_clean(HeapVm *vm, const SiftPartDesc *d)
+{
+	return d->tid_max != 0 && heap_vm_clean(vm, block_of(d->tid_min), block_of(d->tid_max));
 }
 
 static bool
@@ -242,7 +244,7 @@ admit(const Admit *a, const SiftPartDesc *d, PlanPart *pp, const char **why)
 
 	if (!sift_gpu_part_eligible(d, a->xmin, &cls, why))
 		return false;
-	if (a->vm != NULL && !heap_vm_clean(a->vm, d))
+	if (a->vm != NULL && !part_heap_clean(a->vm, d))
 		return refuse(why, "the heap blocks of the part are not all visible");
 	pin = sift_f2_pin_open(q->rel, q->store, d, (uint32) a->e->part_id);
 	pp->pin = pin;
@@ -295,8 +297,27 @@ fold_zone(SiftGpuPlan *p, int c, const SiftZone *z, uint32 nrows, SiftCellKind k
 	seen[c] = true;
 }
 
+/* the first index of the ascending vals[0 .. n-1] holding a value of at least v */
+static uint32
+lower_bound_i64(const int64 *vals, uint32 n, int64 v)
+{
+	uint32		lo = 0,
+				hi = n;
+
+	while (lo < hi)
+	{
+		const uint32 mid = lo + (hi - lo) / 2;
+
+		if (vals[mid] < v)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
 static bool
-zone_rules_out(const SiftGpuQuery *q, const PlanPart *pp, uint32 gl)
+zone_rules_out(const SiftGpuQuery *q, const Priv *pv, const PlanPart *pp, uint32 gl)
 {
 	for (int i = 0; i < q->nzone; i++)
 	{
@@ -317,8 +338,15 @@ zone_rules_out(const SiftGpuQuery *q, const PlanPart *pp, uint32 gl)
 
 		if (in->negate)
 			continue;
-		for (uint32 j = 0; j < in->n && !any; j++)
-			any = in->vals[j] >= z->min && in->vals[j] <= z->max;
+		if (pv->in_sorted[i] != NULL)
+		{
+			const uint32 at = lower_bound_i64(pv->in_sorted[i], in->n, z->min);
+
+			any = at < in->n && pv->in_sorted[i][at] <= z->max;
+		}
+		else
+			for (uint32 j = 0; j < in->n && !any; j++)
+				any = in->vals[j] >= z->min && in->vals[j] <= z->max;
 		if (!any)
 			return true;
 	}
@@ -355,7 +383,7 @@ fill_granule(SiftGpuPlan *p, const SiftGpuQuery *q, const PlanPart *pp, uint32 g
 	p->dead_rows += ndead;
 	pv->part_of[i] = (uint32) (pp - pv->part);
 	p->rows += gd->nrows - ndead;
-	if (!zone_rules_out(q, pp, gl))
+	if (!zone_rules_out(q, pv, pp, gl))
 		p->scan_rows += gd->nrows - ndead;
 	p->enc_bytes += (uint64) gd->data_len * q->ncols / Max(pp->pin->part->hdr.ncols, 1);
 	for (int c = 0; c < q->ncols; c++)
@@ -514,7 +542,7 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftGpuPlan *p = palloc0(sizeof(SiftGpuPlan));
 	Priv	   *pv = palloc0(sizeof(Priv));
-	HeapVm		vm = {0};
+	HeapVm		vm = {.vmbuf = InvalidBuffer};
 	bool		vet = false;
 	bool		seen[SIFT_VK_MAXCOLS] = {false};
 
@@ -524,6 +552,14 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 	pv->store = q->store;
 	pv->snap = q->snap;
 	memcpy(pv->leaf, q->leaf, sizeof(pv->leaf));
+	pv->in_sorted = palloc0(Max(q->nin, 1) * sizeof(int64 *));
+	for (int i = 0; i < q->nin; i++)
+		if (q->in[i].n >= ZONE_IN_SORT_MIN)
+		{
+			pv->in_sorted[i] = palloc(q->in[i].n * sizeof(int64));
+			memcpy(pv->in_sorted[i], q->in[i].vals, q->in[i].n * sizeof(int64));
+			sift_sort_i64(pv->in_sorted[i], q->in[i].n);
+		}
 	pv->load_cx = sift_mem_allocset_create(mcxt, "sift gpu chunks");
 	pv->cb = (MemoryContextCallback) {.func = release_cb,.arg = pv};
 	MemoryContextRegisterResetCallback(mcxt, &pv->cb);
@@ -544,7 +580,7 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 		else
 		{
 			if (vet)
-				heap_vm_build(q->heap, &vm);
+				vm = (HeapVm) {.heap = q->heap,.vmbuf = InvalidBuffer};
 			plan_parts(p, &(Admit) {.q = q,.vm = vet ? &vm : NULL,.xmin = sift_vis_snap_xmin(q->snap),.att_bloom = att_bloom(q)}, sift_plan_cache_get(q->rel, mcxt));
 		}
 	}
@@ -558,8 +594,8 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 	qsort(pv->gens, pv->npart, sizeof(uint64), gen_cmp);
 	fold_signature(pv, q->ncols);
 	pv->loaded_lo = p->ngran;
-	if (vm.blk != NULL)
-		pfree(vm.blk);
+	if (BufferIsValid(vm.vmbuf))
+		ReleaseBuffer(vm.vmbuf);
 	MemoryContextSwitchTo(old);
 	return p;
 }

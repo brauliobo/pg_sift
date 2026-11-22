@@ -360,6 +360,10 @@ table_write(AggExec *ex, SpillSet *set)
 	if (blob_splittable(ex))
 		blob_dump_parts(ex, set->n, order, start, fill, sp->tmp, part_put, set);
 	else
+	{
+		uint32	   *cidx = palloc(Max(n, 1) * sizeof(uint32));
+
+		memset(cidx, 0xff, Max(n, 1) * sizeof(uint32));
 		for (int p = 0; p < set->n; p++)
 		{
 			StringInfoData b;
@@ -370,11 +374,13 @@ table_write(AggExec *ex, SpillSet *set)
 				continue;
 			old = MemoryContextSwitchTo(sp->tmp);
 			initStringInfo(&b);
-			blob_dump_list(ex, -1, order + start[p], fill[p], &b);
+			blob_dump_list_in(ex, -1, order + start[p], fill[p], cidx, &b);
 			blob_write(set, p, &b);
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(sp->tmp);
 		}
+		pfree(cidx);
+	}
 	for (int i = 0; i < ex->spec->naggs; i++)
 		sp->amax[i] = Max(sp->amax[i], ex->amax[i]);
 	pfree(gl);

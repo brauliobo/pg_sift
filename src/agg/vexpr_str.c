@@ -3,6 +3,9 @@
  */
 #include "core/host.h"
 
+#include "common/hashfn.h"
+#include "port/pg_bitutils.h"
+
 #include "agg/vexpr_str.h"
 
 /* ---- the arena of the strings of a batch ---- */
@@ -400,9 +403,23 @@ sift_vstr_set_build(const char *const *p, const uint32 *len, const bool *isnull,
 			continue;
 		memcpy(at, it[i].p, it[i].len);
 		s->v[s->n++] = sift_vstr_make(at, it[i].len);
+		s->len_mask |= UINT64CONST(1) << (it[i].len & 63);
 		at += it[i].len;
 	}
 	pfree(it);
+	if (s->n >= SIFT_VSTR_HASH_MIN)
+	{
+		s->mask = (uint32) pg_nextpower2_64((uint64) s->n * 2) - 1;
+		s->tab = palloc0((Size) (s->mask + 1) * sizeof(uint32));
+		for (uint32 i = 0; i < s->n; i++)
+		{
+			uint32		h = hash_bytes((const unsigned char *) sift_vstr_bytes(&s->v[i]), (int) s->v[i].len) & s->mask;
+
+			while (s->tab[h])
+				h = (h + 1) & s->mask;
+			s->tab[h] = i + 1;
+		}
+	}
 	return s;
 }
 
@@ -411,6 +428,22 @@ sift_vstr_set_has(const SiftVstrSet *s, const char *p, uint32 len)
 {
 	uint32		lo = 0,
 				hi = s->n;
+
+	if (s->tab != NULL)
+	{
+		uint32		h;
+
+		if (!((s->len_mask >> (len & 63)) & 1))
+			return false;
+		for (h = hash_bytes((const unsigned char *) p, (int) len) & s->mask; s->tab[h]; h = (h + 1) & s->mask)
+		{
+			const SiftStrView *e = &s->v[s->tab[h] - 1];
+
+			if (e->len == len && memcmp(sift_vstr_bytes(e), p, len) == 0)
+				return true;
+		}
+		return false;
+	}
 
 	while (lo < hi)
 	{
@@ -432,6 +465,8 @@ sift_vstr_set_free(SiftVstrSet *s)
 {
 	pfree(s->v);
 	pfree(s->bytes);
+	if (s->tab)
+		pfree(s->tab);
 	pfree(s);
 }
 

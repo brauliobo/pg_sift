@@ -15,6 +15,7 @@
 #include "agg/gpu_emit.h"
 #include "agg/gpu_shm.h"
 #include "agg/gpu_v6.h"
+#include "agg/nth.h"
 #include "agg/vk/layout.h"
 #include "col/f2/f2_cache.h"
 
@@ -372,25 +373,28 @@ fold_dense(const Exec *x, SiftV6Group *g, const SiftVkResult *res)
 {
 	const SiftVkJob *j = &x->job;
 	uint32		stride = 1 + 3 * j->naggs;
+	uint32		digit[2] = {0, 0};	/* the slot of each key of gid: the digits of gid in the spans of the keys, which count up a slot at a time, so that no slot costs a division */
 
 	for (uint32 gid = 0; gid * stride < res->acc_words; gid++)
 	{
 		const int64 *w = res->acc + (uint64) gid * stride;
-		int64		key[2];
-		uint64		nulls = 0,
-					rest = gid;
 
-		if (w[0] == 0)
-			continue;
-		for (int i = (int) j->nkeys - 1; i >= 0; i--)
+		if (w[0] != 0)
 		{
-			uint64		idx = rest % j->dense_span[i];
+			int64		key[2];
+			uint64		nulls = 0;
 
-			rest /= j->dense_span[i];
-			key[i] = idx == j->dense_span[i] - 1 ? 0 : j->dense_kmin[i] + (int64) idx;
-			nulls |= (uint64) (idx == j->dense_span[i] - 1) << i;
+			for (uint32 i = 0; i < j->nkeys; i++)
+			{
+				const bool	null_slot = digit[i] == j->dense_span[i] - 1;
+
+				key[i] = null_slot ? 0 : j->dense_kmin[i] + (int64) digit[i];
+				nulls |= (uint64) null_slot << i;
+			}
+			fold_group(x, g, key, nulls, w + 1);
 		}
-		fold_group(x, g, key, nulls, w + 1);
+		for (int i = (int) j->nkeys - 1; i >= 0 && ++digit[i] == j->dense_span[i]; i--)
+			digit[i] = 0;
 		if ((gid & 0xFFF) == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
@@ -528,7 +532,11 @@ sift_gpu_v6_topn(const SiftGpuQuery *q, uint32 k, bool desc, bool nulls_first, b
 	else if ((ok = drive(&x, sift_gpu_emit_topn(x.em, q, &x.job, k, desc, nulls_first), take_cand, &t)) && t.n < k && !nulls_first && x.plan->rows > t.n)
 		ok = decline(x.run, "fewer rows than the LIMIT have a sort key, and the rows without one sort last");
 	if (ok)
-		qsort_arg(t.cand, t.n, sizeof(SiftGpuCand), cand_cmp, &t);
+	{
+		if (t.n > k && k > 0)
+			sift_nth(t.cand, t.n, sizeof(SiftGpuCand), k - 1, cand_cmp, &t);
+		sift_nth_sort(t.cand, Min(t.n, k), sizeof(SiftGpuCand), cand_cmp, &t);
+	}
 	*cand = ok ? t.cand : NULL;
 	*ncand = ok ? Min(t.n, k) : 0;
 	x.run->used = ok;

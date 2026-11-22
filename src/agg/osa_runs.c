@@ -1,17 +1,21 @@
 /*
  * agg/osa_runs.c - the values of an ordered set that outgrew work_mem: sorted runs of (group, value, count) pairs, merged when the scan has ended
  * The histogram or array of pairs (agg/osa.c) is the first run's buffer; when it is full it is sorted, equal pairs are added up and it goes to a temporary
- * file. At the end the runs are merged in the order the readers walk (group, then value). A tuplesort of the same pairs takes about ten times the
- * instructions for each value (a heap tuple formed, compared through the generic comparator and read back for every value). More than OSA_FANIN runs
- * are merged into one while the scan goes on, so that the merge holds a fixed number of read buffers.
+ * file of its own. At the end the runs are merged in the order the readers walk (group, then value) by a loser tree, a pair costing log2 of the runs compares.
+ * A tuplesort of the same pairs takes about ten times the instructions for each value (a heap tuple formed, compared through the generic comparator and read
+ * back for every value). A merge takes at most OSA_FANIN runs, so that it holds a fixed number of read buffers; more than OSA_MAX_RUNS runs while the scan goes
+ * on, and the smallest OSA_FANIN of them become one (a pair is then written about log64 of the runs times, where merging all the runs each time rewrote the
+ * biggest one every time); more than OSA_FANIN at the end, and the fewest smallest that leave OSA_FANIN do.
  */
 #include "postgres.h"
 
 #include "storage/buffile.h"
 
 #include "agg/agg_int.h"
+#include "agg/ltree.h"
 
-#define OSA_FANIN	16			/* runs merged at a time */
+#define OSA_FANIN	64			/* runs merged at a time */
+#define OSA_MAX_RUNS	256		/* runs kept while the scan goes on */
 #define OSA_RB		512			/* entries one run is read in */
 
 #define ST_SORT osa_sort_slots
@@ -22,14 +26,27 @@
 #define ST_DEFINE
 #include "lib/sort_template.h"
 
+typedef struct OsaFile
+{
+	BufFile    *file;
+	uint64		n;				/* entries */
+} OsaFile;
+
 typedef struct OsaSrc
 {
-	uint64		pos;			/* next entry to read from the file */
+	BufFile    *file;
 	uint64		left;			/* entries of the run not read yet */
 	OsaSlot    *buf;
 	uint32		nbuf;
 	uint32		at;
 } OsaSrc;
+
+typedef struct OsaMerge
+{
+	int			k;
+	OsaSrc	   *src;
+	SiftLTree	lt;
+} OsaMerge;
 
 typedef struct OsaRuns
 {
@@ -38,15 +55,10 @@ typedef struct OsaRuns
 	uint64		n;
 	uint64		cap;
 	uint64		room;			/* the most entries a buffer may hold: work_mem */
-	BufFile    *file;
-	uint64		fend;			/* entries written */
+	OsaFile    *run;
 	int			nrun;
-	uint64		rstart[OSA_FANIN];
-	uint64		rlen[OSA_FANIN];
-	/* the merge */
-	int			k;
-	OsaSrc	   *src;
-	int			cached;			/* the source with the smallest head, -2 not found yet */
+	int			run_cap;
+	OsaMerge   *merge;
 	uint64		cur;			/* the walk of a single run kept in memory */
 	bool		inmem;
 } OsaRuns;
@@ -73,92 +85,125 @@ osa_runs_begin(AggExec *ex, Osa *o)
 	o->flat = false;
 }
 
-static void
-write_entries(BufFile *f, uint64 at, const OsaSlot *e, uint64 n)
+static inline bool
+src_done(const OsaSrc *s)
 {
-	BufFileSeek(f, 0, (off_t) (at * sizeof(OsaSlot)), SEEK_SET);
-	BufFileWrite(f, e, n * sizeof(OsaSlot));
+	return s->at >= s->nbuf;
 }
 
 static void
-src_fill(OsaRuns *rs, OsaSrc *s)
+src_fill(OsaSrc *s)
 {
-	uint32		m = (uint32) Min(s->left, (uint64) OSA_RB);
-
-	BufFileSeek(rs->file, 0, (off_t) (s->pos * sizeof(OsaSlot)), SEEK_SET);
-	BufFileReadExact(rs->file, s->buf, m * sizeof(OsaSlot));
-	s->pos += m;
-	s->left -= m;
-	s->nbuf = m;
+	s->nbuf = (uint32) Min(s->left, (uint64) OSA_RB);
 	s->at = 0;
+	if (s->nbuf > 0)
+		BufFileReadExact(s->file, s->buf, s->nbuf * sizeof(OsaSlot));
+	s->left -= s->nbuf;
 }
 
-/* the runs [0, k) of the file are merged from here: one read buffer each */
-static void
-merge_open(OsaRuns *rs, int k)
+static bool
+merge_less(void *arg, int a, int b)
 {
-	if (rs->src == NULL)
-	{
-		rs->src = MemoryContextAllocZero(rs->cxt, OSA_FANIN * sizeof(OsaSrc));
-		for (int i = 0; i < OSA_FANIN; i++)
-			rs->src[i].buf = MemoryContextAlloc(rs->cxt, OSA_RB * sizeof(OsaSlot));
-	}
-	rs->k = k;
-	rs->cached = -2;
+	const OsaMerge *m = arg;
+	const OsaSrc *sa = &m->src[a],
+			   *sb = &m->src[b];
+
+	if (src_done(sa))
+		return false;
+	if (src_done(sb))
+		return true;
+	return slot_less(&sa->buf[sa->at], &sb->buf[sb->at]);
+}
+
+/* A merge of the runs run[0 .. k-1], read from their start; the files are closed when the merge ends */
+static OsaMerge *
+merge_begin(OsaRuns *rs, const OsaFile *run, int k)
+{
+	OsaMerge   *m = MemoryContextAllocZero(rs->cxt, sizeof(OsaMerge));
+
+	m->k = k;
+	m->src = MemoryContextAllocZero(rs->cxt, k * sizeof(OsaSrc));
 	for (int i = 0; i < k; i++)
 	{
-		rs->src[i].pos = rs->rstart[i];
-		rs->src[i].left = rs->rlen[i];
-		rs->src[i].nbuf = rs->src[i].at = 0;
-		if (rs->src[i].left > 0)
-			src_fill(rs, &rs->src[i]);
+		OsaSrc	   *s = &m->src[i];
+
+		s->file = run[i].file;
+		s->left = run[i].n;
+		s->buf = MemoryContextAlloc(rs->cxt, OSA_RB * sizeof(OsaSlot));
+		if (BufFileSeek(s->file, 0, 0, SEEK_SET) != 0)
+			elog(ERROR, "could not rewind a run of an ordered set");
+		src_fill(s);
 	}
-}
-
-/* the source with the smallest head, -1 when all are read */
-static int
-merge_min(OsaRuns *rs)
-{
-	int			best = -1;
-
-	if (rs->cached != -2)
-		return rs->cached;
-	for (int i = 0; i < rs->k; i++)
-		if (rs->src[i].at < rs->src[i].nbuf && (best < 0 || slot_less(&rs->src[i].buf[rs->src[i].at], &rs->src[best].buf[rs->src[best].at])))
-			best = i;
-	return rs->cached = best;
-}
-
-static void
-merge_advance(OsaRuns *rs, int i)
-{
-	OsaSrc	   *s = &rs->src[i];
-
-	if (++s->at == s->nbuf && s->left > 0)
-		src_fill(rs, s);
-	rs->cached = -2;
+	sift_ltree_init(&m->lt, k, merge_less, m);
+	return m;
 }
 
 /* the next pair of the merged runs, equal pairs of several runs added up while their count fits */
 static bool
-merge_next(OsaRuns *rs, OsaSlot *out)
+merge_next(OsaMerge *m, OsaSlot *out)
 {
-	int			m = merge_min(rs);
-
-	if (m < 0)
-		return false;
-	*out = rs->src[m].buf[rs->src[m].at];
-	merge_advance(rs, m);
-	while ((m = merge_min(rs)) >= 0)
+	for (bool first = true;; first = false)
 	{
-		const OsaSlot *h = &rs->src[m].buf[rs->src[m].at];
+		OsaSrc	   *s = &m->src[sift_ltree_head(&m->lt)];
 
-		if (h->sid1 != out->sid1 || h->key != out->key || (uint64) out->cnt + h->cnt > UINT32_MAX)
-			break;
-		out->cnt += h->cnt;
-		merge_advance(rs, m);
+		if (src_done(s))
+			return !first;
+		if (first)
+			*out = s->buf[s->at];
+		else if (s->buf[s->at].sid1 != out->sid1 || s->buf[s->at].key != out->key || (uint64) out->cnt + s->buf[s->at].cnt > UINT32_MAX)
+			return true;
+		else
+			out->cnt += s->buf[s->at].cnt;
+		if (++s->at == s->nbuf)
+			src_fill(s);
+		sift_ltree_replay(&m->lt);
 	}
-	return true;
+}
+
+static void
+merge_end(OsaMerge *m)
+{
+	for (int i = 0; i < m->k; i++)
+	{
+		BufFileClose(m->src[i].file);
+		pfree(m->src[i].buf);
+	}
+	sift_ltree_free(&m->lt);
+	pfree(m->src);
+	pfree(m);
+}
+
+static int
+run_cmp(const void *a, const void *b)
+{
+	const uint64 x = ((const OsaFile *) a)->n,
+				y = ((const OsaFile *) b)->n;
+
+	return x < y ? -1 : x > y;
+}
+
+/* the smallest k runs are merged into one, which takes the place of the last of them */
+static void
+merge_down(OsaRuns *rs, int k)
+{
+	OsaMerge   *m;
+	OsaFile		nf = {NULL, 0};
+	OsaSlot		e;
+	MemoryContext oc = MemoryContextSwitchTo(rs->cxt);
+
+	nf.file = BufFileCreateTemp(false);
+	MemoryContextSwitchTo(oc);
+	qsort(rs->run, rs->nrun, sizeof(OsaFile), run_cmp);
+	m = merge_begin(rs, rs->run, k);
+	while (merge_next(m, &e))
+	{
+		BufFileWrite(nf.file, &e, sizeof(e));
+		nf.n++;
+	}
+	merge_end(m);
+	memmove(rs->run, rs->run + k, (rs->nrun - k) * sizeof(OsaFile));
+	rs->nrun -= k;
+	rs->run[rs->nrun++] = nf;
 }
 
 /* the buffer sorted, equal pairs added up, its entries returned in place */
@@ -179,65 +224,25 @@ sort_buf(OsaRuns *rs)
 	return w;
 }
 
-/* OSA_FANIN runs are in the file: they are merged into one in a new file */
-static void
-merge_down(OsaRuns *rs)
-{
-	BufFile    *old = rs->file,
-			   *nf;
-	uint64		total = 0,
-				w = 0;
-	OsaSlot		e;
-	MemoryContext oc = MemoryContextSwitchTo(rs->cxt);
-
-	nf = BufFileCreateTemp(false);
-	MemoryContextSwitchTo(oc);
-
-	merge_open(rs, rs->nrun);
-	while (merge_next(rs, &e))
-	{
-		rs->buf[w++] = e;
-		if (w == rs->cap)
-		{
-			write_entries(nf, total, rs->buf, w);
-			total += w;
-			w = 0;
-		}
-	}
-	if (w > 0)
-	{
-		write_entries(nf, total, rs->buf, w);
-		total += w;
-	}
-	BufFileClose(old);
-	rs->file = nf;
-	rs->fend = total;
-	rs->nrun = 1;
-	rs->rstart[0] = 0;
-	rs->rlen[0] = total;
-}
-
-/* the buffer is a run of the file */
+/* the buffer is a run of its own file */
 static void
 flush_run(OsaRuns *rs)
 {
 	uint64		w = sort_buf(rs);
+	MemoryContext old = MemoryContextSwitchTo(rs->cxt);
+	BufFile    *f = BufFileCreateTemp(false);
 
-	if (rs->file == NULL)
+	MemoryContextSwitchTo(old);
+	BufFileWrite(f, rs->buf, w * sizeof(OsaSlot));
+	if (rs->nrun == rs->run_cap)
 	{
-		MemoryContext old = MemoryContextSwitchTo(rs->cxt);
-
-		rs->file = BufFileCreateTemp(false);
-		MemoryContextSwitchTo(old);
+		rs->run_cap = Max(rs->run_cap * 2, 8);
+		rs->run = rs->run ? repalloc(rs->run, rs->run_cap * sizeof(OsaFile)) : MemoryContextAlloc(rs->cxt, rs->run_cap * sizeof(OsaFile));
 	}
-	write_entries(rs->file, rs->fend, rs->buf, w);
-	rs->rstart[rs->nrun] = rs->fend;
-	rs->rlen[rs->nrun] = w;
-	rs->nrun++;
-	rs->fend += w;
+	rs->run[rs->nrun++] = (OsaFile) {f, w};
 	rs->n = 0;
-	if (rs->nrun == OSA_FANIN)
-		merge_down(rs);
+	if (rs->nrun > OSA_MAX_RUNS)
+		merge_down(rs, OSA_FANIN);
 }
 
 void
@@ -269,7 +274,7 @@ osa_runs_sort(Osa *o)
 {
 	OsaRuns    *rs = o->runs;
 
-	if (rs->file == NULL)
+	if (rs->nrun == 0)
 	{
 		rs->n = sort_buf(rs);
 		rs->inmem = true;
@@ -278,7 +283,10 @@ osa_runs_sort(Osa *o)
 	}
 	if (rs->n > 0)
 		flush_run(rs);
-	merge_open(rs, rs->nrun);
+	if (rs->nrun > OSA_FANIN)
+		merge_down(rs, rs->nrun - OSA_FANIN + 1);
+	rs->merge = merge_begin(rs, rs->run, rs->nrun);
+	rs->nrun = 0;
 }
 
 bool
@@ -293,7 +301,7 @@ osa_runs_next(Osa *o, OsaRun *r)
 			return false;
 		e = rs->buf[rs->cur++];
 	}
-	else if (!merge_next(rs, &e))
+	else if (!merge_next(rs->merge, &e))
 		return false;
 	r->sid = e.sid1 - 1;
 	r->key = e.key;
@@ -308,15 +316,13 @@ osa_runs_end(Osa *o)
 
 	if (rs == NULL)
 		return;
-	if (rs->file)
-		BufFileClose(rs->file);
+	if (rs->merge)
+		merge_end(rs->merge);
+	for (int i = 0; i < rs->nrun; i++)
+		BufFileClose(rs->run[i].file);
+	if (rs->run)
+		pfree(rs->run);
 	pfree(rs->buf);
-	if (rs->src)
-	{
-		for (int i = 0; i < OSA_FANIN; i++)
-			pfree(rs->src[i].buf);
-		pfree(rs->src);
-	}
 	pfree(rs);
 	o->runs = NULL;
 }

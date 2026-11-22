@@ -1,8 +1,11 @@
 /*
  * agg/vk/cache.c - the cache of decoded column chunks that stays on the device between queries
  * One device buffer cut in 4 MiB slabs. A decoded chunk (a column of a granule: its values and its validity) is bump-allocated inside a
- * slab and found by its key; a slab is evicted whole, least recently used first, never while a batch that uses it is in flight: the
- * epoch of the slab is bumped and every entry of the older epoch is gone at once. A part is immutable, so an entry is never stale.
+ * slab and found by its key; a slab is evicted whole, least recently used first, never while a batch that uses it is in flight, and its
+ * entries leave the table with it. The table is linear probing with deletion by shifting the entries after the hole back, so it holds no
+ * tombstone and no entry of an evicted slab: a miss ends at the first empty cell, however many slabs went through the cache. The entries
+ * of a slab are one list through the table (slab_prev and slab_next), which is what makes an eviction cost the entries of the slab. A part
+ * is immutable, so an entry is never stale.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +16,7 @@
 #ifdef SIFT_VULKAN
 
 #define ENT_PER_SLAB	1024
+#define Min(a, b)		((a) < (b) ? (a) : (b))
 
 static uint64_t
 key_hash(const SiftVkKey *k)
@@ -33,12 +37,6 @@ static bool
 key_eq(const SiftVkKey *a, const SiftVkKey *b)
 {
 	return memcmp(a, b, sizeof(*a)) == 0;
-}
-
-static bool
-ent_live(const SiftVk *vk, const Ent *e)
-{
-	return e->state == 1 && vk->slab[e->slab].epoch == e->epoch;
 }
 
 bool
@@ -70,9 +68,12 @@ make_cache(SiftVk *vk, uint64_t bytes)
 	}
 	vk->nslab = n;
 	vk->slab = calloc(n, sizeof(Slab));
+	for (uint32_t i = 0; vk->slab && i < n; i++)
+		vk->slab[i].ent_head = VK_ENT_NONE;
 	vk->nent = 4096;
-	while ((uint64_t) vk->nent < (uint64_t) n * ENT_PER_SLAB)
+	while ((uint64_t) vk->nent < (uint64_t) n * ENT_PER_SLAB * 2)
 		vk->nent <<= 1;
+	vk->used = 0;
 	vk->ent = calloc(vk->nent, sizeof(Ent));
 	if (!vk->slab || !vk->ent)
 	{
@@ -89,19 +90,18 @@ make_cache(SiftVk *vk, uint64_t bytes)
 Ent *
 cache_find(SiftVk *vk, const SiftVkKey *k)
 {
-	uint32_t	mask = vk->nent - 1,
-				i = (uint32_t) key_hash(k) & mask;
+	const uint32_t h = (uint32_t) key_hash(k),
+				mask = vk->nent - 1;
 
-	for (uint32_t n = 0; n < vk->nent; n++, i = (i + 1) & mask)
+	for (uint32_t i = h & mask;; i = (i + 1) & mask)
 	{
 		Ent		   *e = &vk->ent[i];
 
-		if (e->state == 0)
+		if (!e->used)
 			return NULL;
-		if (ent_live(vk, e) && key_eq(&e->key, k))
+		if (e->hash == h && key_eq(&e->key, k))
 			return e;
 	}
-	return NULL;
 }
 
 void
@@ -113,35 +113,138 @@ cache_touch(SiftVk *vk, Ent *e)
 	s->pin = vk->batch;
 }
 
+/* the entry at idx joins the list of the entries of its slab */
+static void
+slab_link(SiftVk *vk, uint32_t idx)
+{
+	Ent		   *e = &vk->ent[idx];
+	Slab	   *s = &vk->slab[e->slab];
+
+	e->slab_prev = VK_ENT_NONE;
+	e->slab_next = s->ent_head;
+	if (s->ent_head != VK_ENT_NONE)
+		vk->ent[s->ent_head].slab_prev = idx;
+	s->ent_head = idx;
+	s->ent_count++;
+}
+
+static void
+slab_unlink(SiftVk *vk, uint32_t idx)
+{
+	const Ent  *e = &vk->ent[idx];
+	Slab	   *s = &vk->slab[e->slab];
+
+	if (e->slab_prev != VK_ENT_NONE)
+		vk->ent[e->slab_prev].slab_next = e->slab_next;
+	else
+		s->ent_head = e->slab_next;
+	if (e->slab_next != VK_ENT_NONE)
+		vk->ent[e->slab_next].slab_prev = e->slab_prev;
+	s->ent_count--;
+}
+
+/* the entry that was at from is at to now: its neighbours in the list of its slab say so */
+static void
+slab_moved(SiftVk *vk, uint32_t from, uint32_t to)
+{
+	const Ent  *e = &vk->ent[to];
+
+	if (e->slab_prev != VK_ENT_NONE)
+		vk->ent[e->slab_prev].slab_next = to;
+	else
+		vk->slab[e->slab].ent_head = to;
+	if (e->slab_next != VK_ENT_NONE)
+		vk->ent[e->slab_next].slab_prev = to;
+	(void) from;
+}
+
+/* The entry at hole leaves the table: each entry after it in its run that its home lies at or before the hole for moves back into it, so that no entry has an empty cell between its home and itself */
+static void
+cache_delete_slot(SiftVk *vk, uint32_t hole)
+{
+	const uint32_t mask = vk->nent - 1;
+	uint32_t	cur = hole;
+
+	slab_unlink(vk, hole);
+	vk->used--;
+	for (;;)
+	{
+		const Ent  *e;
+
+		cur = (cur + 1) & mask;
+		e = &vk->ent[cur];
+		if (!e->used)
+			break;
+		if (((cur - e->hash) & mask) >= ((cur - hole) & mask))
+		{
+			vk->ent[hole] = *e;
+			slab_moved(vk, cur, hole);
+			hole = cur;
+		}
+	}
+	vk->ent[hole].used = 0;
+}
+
 void
 cache_remove(SiftVk *vk, Ent *e)
 {
-	e->state = 2;
+	cache_delete_slot(vk, (uint32_t) (e - vk->ent));
+}
+
+void
+cache_remove_key(SiftVk *vk, const SiftVkKey *k)
+{
+	Ent		   *e = cache_find(vk, k);
+
+	if (e)
+		cache_remove(vk, e);
+}
+
+/* a slab that no entry names and no byte of is in use */
+static void
+slab_evict(SiftVk *vk, int64_t si)
+{
+	Slab	   *s = &vk->slab[si];
+
+	while (s->ent_head != VK_ENT_NONE)
+		cache_delete_slot(vk, s->ent_head);
+	s->used = 0;
+	vk->evict_gen++;
+}
+
+/* the slab no batch in flight uses that was used least recently, or -1 */
+static int64_t
+slab_lru(const SiftVk *vk)
+{
+	int64_t		best = -1;
+
+	for (uint32_t i = 0; i < vk->nslab; i++)
+	{
+		const Slab *s = &vk->slab[i];
+
+		if (s->pin <= vk->done_batch && (best < 0 || s->stamp < vk->slab[best].stamp))
+			best = (int64_t) i;
+	}
+	return best;
 }
 
 /* a slab with room for words: the current one, an empty one, or the least recently used that no batch in flight uses (evicted) */
 static int64_t
 slab_for(SiftVk *vk, uint32_t words)
 {
-	int64_t		best = -1;
+	int64_t		best;
 
 	if (vk->cur >= 0 && vk->slab[vk->cur].used + words <= SLAB_WORDS)
 		return vk->cur;
 	for (uint32_t i = 0; i < vk->nslab; i++)
 	{
-		Slab	   *s = &vk->slab[i];
+		const Slab *s = &vk->slab[i];
 
 		if (s->used == 0 && s->pin <= vk->done_batch)
 			return (int64_t) i;
-		if (s->pin <= vk->done_batch && (best < 0 || s->stamp < vk->slab[best].stamp))
-			best = (int64_t) i;
 	}
-	if (best >= 0)
-	{
-		vk->slab[best].epoch++;
-		vk->slab[best].used = 0;
-		vk->evict_gen++;
-	}
+	if ((best = slab_lru(vk)) >= 0)
+		slab_evict(vk, best);
 	return best;
 }
 
@@ -149,44 +252,67 @@ slab_for(SiftVk *vk, uint32_t words)
 Ent *
 cache_insert(SiftVk *vk, const SiftVkKey *k, uint32_t words, uint32_t *woff)
 {
-	int64_t		si = slab_for(vk, words);
-	uint32_t	mask = vk->nent - 1,
-				i = (uint32_t) key_hash(k) & mask;
+	int64_t		si;
+	uint32_t	h = (uint32_t) key_hash(k),
+				mask = vk->nent - 1,
+				i;
 	Slab	   *s;
-	Ent		   *e = NULL;
+	Ent		   *e;
 
-	if (si < 0)
+	while ((uint64_t) vk->used * 4 >= (uint64_t) vk->nent * 3)
+	{
+		const int64_t lru = slab_lru(vk);
+
+		if (lru < 0)
+			return NULL;
+		slab_evict(vk, lru);
+	}
+	if ((si = slab_for(vk, words)) < 0)
 		return NULL;
 	vk->cur = si;
 	s = &vk->slab[si];
-	for (uint32_t n = 0; n < vk->nent; n++, i = (i + 1) & mask)
-		if (vk->ent[i].state != 1 || !ent_live(vk, &vk->ent[i]))
-		{
-			e = &vk->ent[i];
-			break;
-		}
-	if (!e)
-		return NULL;
+	for (i = h & mask; vk->ent[i].used; i = (i + 1) & mask)
+		;
+	e = &vk->ent[i];
 	*woff = (uint32_t) si * SLAB_WORDS + s->used;
 	s->used += words;
 	s->stamp = ++vk->clock;
 	s->pin = vk->batch;
 	memset(e, 0, sizeof(*e));
 	e->key = *k;
+	e->hash = h;
 	e->slab = (uint32_t) si;
-	e->epoch = s->epoch;
-	e->state = 1;
+	e->used = 1;
+	vk->used++;
+	slab_link(vk, i);
 	return e;
 }
 
 double
 sift_vk_resident_share(SiftVk *vk, const SiftVkKey *keys, uint32_t n)
 {
+	uint8_t		res[256];
+	uint32_t	hit = 0;
+
+	for (uint32_t base = 0; base < n; base += sizeof(res))
+		hit += sift_vk_resident_batch(vk, keys + base, Min(n - base, (uint32_t) sizeof(res)), res);
+	return n ? (double) hit / n : 0.0;
+}
+
+uint32_t
+sift_vk_resident_batch(SiftVk *vk, const SiftVkKey *keys, uint32_t n, uint8_t *resident)
+{
+	enum { AHEAD = 8 };
 	uint32_t	hit = 0;
 
 	for (uint32_t i = 0; i < n; i++)
-		hit += cache_find(vk, &keys[i]) != NULL;
-	return n ? (double) hit / n : 0.0;
+	{
+		if (i + AHEAD < n)
+			__builtin_prefetch(&vk->ent[(uint32_t) key_hash(&keys[i + AHEAD]) & (vk->nent - 1)]);
+		resident[i] = cache_find(vk, &keys[i]) != NULL;
+		hit += resident[i];
+	}
+	return hit;
 }
 
 bool

@@ -97,8 +97,30 @@ bool lz4_block(uint src, uint slen, uint dst, uint dlen)
 			w8[dst + op + i] = w8[src + litsrc + i];
 		memoryBarrierBuffer();
 		barrier();
-		for (uint j = tid; j < mlen; j += LZ_WG)
-			w8[dst + op + lit + j] = w8[dst + op + lit - moff + (j % moff)];
+		uint to = dst + op + lit, from = to - moff;
+
+		if (moff >= mlen)
+			for (uint j = tid; j < mlen; j += LZ_WG)
+				w8[to + j] = w8[from + j];
+		else if (moff == 1u)
+		{
+			uint8_t fill = w8[from];
+
+			for (uint j = tid; j < mlen; j += LZ_WG)
+				w8[to + j] = fill;
+		}
+		else
+		{
+			uint step = LZ_WG % moff, p = tid % moff;
+
+			for (uint j = tid; j < mlen; j += LZ_WG)
+			{
+				w8[to + j] = w8[from + p];
+				p += step;
+				if (p >= moff)
+					p -= moff;
+			}
+		}
 		memoryBarrierBuffer();
 		barrier();
 		if (tid == 0u)

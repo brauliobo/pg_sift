@@ -71,6 +71,7 @@ typedef struct SiftSaltedHT
 	uint32		mask;
 	uint32		count;
 	uint32		grow_at;
+	uint32		gen;			/* never 0; changes whenever the slots move or the groups go (growth, clear): what a pointer to a slot was taken at */
 	MemoryContext cxt;			/* what the table allocates in, whatever context is current when it grows */
 	bool		key_is_wide;
 	bool		key_is_text;	/* the wide keys are strings that are equal when their bytes are: made by sift_ht_init_str */
@@ -158,7 +159,16 @@ extern void sift_ht_presize(SiftSaltedHT *ht, uint32 n);
 extern SiftAggSlot64 *sift_ht_upsert(SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key, bool *found);
 /* The same for a wide-key table: the key is len bytes and its column null flags (part of the key) */
 extern SiftAggSlot64 *sift_ht_upsert_wide(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls, bool *found);
-/* out[i] = the slot of keys[i] for i < n (hashes[i]); software prefetch of the group and the slot SIFT_HT_PREFETCH rows ahead. Returns the groups created. */
+/* The same, growing the table only when the key is new and the load limit is reached (the caller finds the slots it holds again when ht->gen changes) */
+extern SiftAggSlot64 *sift_ht_upsert_wide_lazy(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls, bool *found);
+/* The slot of the key, NULL when the table has no such group; never changes the table */
+extern SiftAggSlot64 *sift_ht_find(const SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key);
+extern SiftAggSlot64 *sift_ht_find_wide(const SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls);
+/*
+ * out[i] = the slot of keys[i] for i < n (hashes[i]); software prefetch of the group and the slot SIFT_HT_PREFETCH rows ahead. The table grows only when a key is new and the
+ * load limit is reached, and the slots of the rows before it are then found again: the slots are valid when the call returns, and a batch of keys already there grows nothing.
+ * Returns the groups created.
+ */
 extern uint32 sift_ht_upsert_batch(SiftSaltedHT *ht, const uint64 *hashes, const SiftInlineKey16 *keys, uint32 n, SiftAggSlot64 **out);
 
 /* The hash of len bytes (a wide key); the same bytes give the same hash at every level and on every host */
@@ -176,9 +186,34 @@ extern SiftAggSlot64 *sift_ht_upsert_str(SiftSaltedHT *ht, const SiftStrView *v,
 
 #define SIFT_HT_PREFETCH	16
 
+/* The index of the first occupied slot at or after pos (capacity when there is none): 16 control bytes at a time, whose top bits are the occupied ones. ctrl has 16 bytes after the capacity */
+static inline uint32
+sift_ht_next_occupied(const SiftSaltedHT *ht, uint32 pos)
+{
+	while (pos < ht->capacity)
+	{
+#if defined(__x86_64__)
+		const uint32 m = (uint32) _mm_movemask_epi8(_mm_loadu_si128((const __m128i *) (ht->ctrl + pos)));
+
+		if (m != 0)
+			return Min(pos + (uint32) __builtin_ctz(m), ht->capacity);
+		pos += 16;
+#else
+		uint64		w;
+
+		memcpy(&w, ht->ctrl + pos, sizeof(w));
+		w &= UINT64CONST(0x8080808080808080);
+		if (w != 0)
+			return Min(pos + ((uint32) __builtin_ctzll(w) >> 3), ht->capacity);
+		pos += 8;
+#endif
+	}
+	return ht->capacity;
+}
+
 #define SIFT_HT_FOREACH(ht, s) \
-	for (uint32 i_ = 0; i_ < (ht)->capacity; i_++) \
-		if (((ht)->ctrl[i_] & 0x80) && ((s) = &(ht)->slots[i_], true))
+	for (uint32 i_ = sift_ht_next_occupied(ht, 0); i_ < (ht)->capacity; i_ = sift_ht_next_occupied(ht, i_ + 1)) \
+		if ((s) = &(ht)->slots[i_], true)
 
 /* The bytes of the wide key of a slot */
 static inline const uint8 *

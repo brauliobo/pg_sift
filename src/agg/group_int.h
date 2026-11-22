@@ -75,6 +75,8 @@ ids_hash(const uint32 *ids, int nk, uint32 nslot)
 
 /* group/ */
 AggAcc *acc_alloc(AggExec *ex, uint32 cap);
+/* The same for a table that grows: the first keep entries of each array are copied in by the caller, and only the rest is zeroed */
+AggAcc *acc_alloc_keep(AggExec *ex, uint32 cap, uint32 keep);
 void groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap);
 void table_nospill_check(const AggExec *ex);
 void direct_layout(AggExec *ex);

@@ -164,9 +164,13 @@ preagg_hist(AggExec *ex)
 			{
 				SiftSrcPresence p;
 
-				SIFT_INVARIANT(sift_colsrc_unit_dset(ex->src, &ex->unit, ex->pa.dim, pa_leaf(&s->agg[ai]), mc[kept[j]], &p), "key group without the id set of a calendar cell");
-				if (p.nwords > 0)
-					ex->acc[ai].n[gid[j]] += dist_or_words(ex, ex->dist[ai], gid[j], p.wbase, p.words, p.nwords);
+				/* the days of a month are one key (checked above) and one set: the set of the month goes in once, with its first day */
+				if (j == 0 || mc[kept[j]] != mc[kept[j - 1]])
+				{
+					SIFT_INVARIANT(sift_colsrc_unit_dset(ex->src, &ex->unit, ex->pa.dim, pa_leaf(&s->agg[ai]), mc[kept[j]], &p), "key group without the id set of a calendar cell");
+					if (p.nwords > 0)
+						ex->acc[ai].n[gid[j]] += dist_or_words(ex, ex->dist[ai], gid[j], p.wbase, p.words, p.nwords);
+				}
 				v[ai] = (PaVal) {0};
 				continue;
 			}

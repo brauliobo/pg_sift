@@ -57,10 +57,13 @@ typedef struct Buf
 	uint64_t	size;
 } Buf;
 
+#define VK_ENT_NONE		UINT32_MAX
+
 typedef struct Slab
 {
 	uint32_t	used;			/* words handed out */
-	uint32_t	epoch;			/* bumped when the slab is reused: the entries of the older epoch are gone */
+	uint32_t	ent_head;		/* the first of the entries the slab holds (VK_ENT_NONE: none), a list through Ent.slab_next */
+	uint32_t	ent_count;
 	uint64_t	stamp;			/* last use */
 	uint64_t	pin;			/* the batch that last used it: not evictable until that batch ended */
 } Slab;
@@ -68,10 +71,12 @@ typedef struct Slab
 typedef struct Ent
 {
 	SiftVkKey	key;
-	uint32_t	slab;
-	uint32_t	epoch;
 	uint32_t	desc[8];		/* what the shaders read of a decoded column */
-	uint8_t		state;			/* 0 free, 1 used, 2 deleted */
+	uint32_t	hash;			/* of key: where the entry belongs, which the deletion of another entry asks */
+	uint32_t	slab;
+	uint32_t	slab_prev;		/* the entries of one slab are a doubly linked list */
+	uint32_t	slab_next;
+	uint8_t		used;			/* 0 empty, 1 holds an entry: no cell is ever deleted but emptied */
 } Ent;
 
 typedef struct FastPipe
@@ -108,7 +113,7 @@ typedef struct Slot
 	uint32_t	njobs;
 	uint64_t	up;				/* bytes of the staging buffer in use */
 	uint64_t	unw;
-	uint32_t   *pend;			/* the cache entries made for the batch */
+	SiftVkKey  *pend;			/* the cache entries made for the batch, by key: an entry moves in the table when another leaves it */
 	uint32_t	npend;
 	uint32_t	cappend;
 } Slot;
@@ -152,6 +157,8 @@ struct SiftVk
 	bool		no_fast;		/* test: every job runs the expression machine */
 	Buf			arena, res, rinit, rhost, ht, out, hout;
 	uint64_t	ht_cap, out_cap, hout_cap;
+	void	   *topn_buf;		/* the candidates of the top N of the last job (16 bytes each) */
+	uint64_t	topn_cap;		/* in candidates */
 	/* the cache */
 	uint32_t	nslab;
 	Slab	   *slab;
@@ -161,7 +168,7 @@ struct SiftVk
 	uint64_t	done_batch;		/* the last batch that ended: its pins are gone */
 	Ent		   *ent;
 	uint32_t	nent;			/* power of two */
-	uint32_t	used;			/* used + deleted slots */
+	uint32_t	used;			/* the entries the cache holds */
 	SiftVkResult last;
 };
 
@@ -193,6 +200,7 @@ bool make_cache(SiftVk *vk, uint64_t bytes);
 Ent *cache_find(SiftVk *vk, const SiftVkKey *k);
 Ent *cache_insert(SiftVk *vk, const SiftVkKey *k, uint32_t words, uint32_t *woff);
 void cache_remove(SiftVk *vk, Ent *e);
+void cache_remove_key(SiftVk *vk, const SiftVkKey *k);
 void cache_touch(SiftVk *vk, Ent *e);
 
 /* tab.c */

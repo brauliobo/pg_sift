@@ -128,6 +128,38 @@ str_cmp(const void *a, const void *b)
 	return c != 0 ? c : (x->len < y->len ? -1 : x->len > y->len);
 }
 
+static inline uint32
+acl_slot(const SiftHybridAclSet *set, uint64 h)
+{
+	return (uint32) ((h * UINT64CONST(0x9E3779B97F4A7C15)) >> 32) & set->mask;
+}
+
+static inline uint64
+acl_key_hash(const SiftHybridAclSet *set, uint32 i)
+{
+	return set->is_str ? str_hash(set->sptr[i], set->slen[i]) : (uint64) set->ival[i];
+}
+
+/* the keys, sorted and distinct, in a table of at least twice their number of slots */
+static void
+acl_build_table(SiftHybridAclSet *set)
+{
+	uint32		slots = 1;
+
+	while (slots < 2 * set->nvals)
+		slots <<= 1;
+	set->mask = slots - 1;
+	set->tab = MemoryContextAllocZero(set->mcxt, (Size) slots * sizeof(uint32));
+	for (uint32 i = 0; i < set->nvals; i++)
+	{
+		uint32		h = acl_slot(set, acl_key_hash(set, i));
+
+		while (set->tab[h])
+			h = (h + 1) & set->mask;
+		set->tab[h] = i + 1;
+	}
+}
+
 void
 sift_acl_finish(SiftHybridAclSet *set)
 {
@@ -166,6 +198,8 @@ sift_acl_finish(SiftHybridAclSet *set)
 	}
 	set->nvals = m;
 	set->empty = m == 0;
+	if (m >= SIFT_HYB_ACL_HASH_MIN)
+		acl_build_table(set);
 }
 
 bool
@@ -176,6 +210,13 @@ sift_acl_has_int(const SiftHybridAclSet *set, int64 v)
 
 	if (!((set->bloom[bloom_bit((uint64) v) >> 6] >> (bloom_bit((uint64) v) & 63)) & 1))
 		return false;
+	if (set->tab != NULL)
+	{
+		for (uint32 h = acl_slot(set, (uint64) v); set->tab[h]; h = (h + 1) & set->mask)
+			if (set->ival[set->tab[h] - 1] == v)
+				return true;
+		return false;
+	}
 	while (lo < hi)
 	{
 		uint32		mid = lo + (hi - lo) / 2;
@@ -198,6 +239,13 @@ sift_acl_has_str(const SiftHybridAclSet *set, const uint8 *p, uint32 len)
 
 	if (!((set->bloom[b >> 6] >> (b & 63)) & 1))
 		return false;
+	if (set->tab != NULL)
+	{
+		for (uint32 h = acl_slot(set, str_hash(p, len)); set->tab[h]; h = (h + 1) & set->mask)
+			if (set->slen[set->tab[h] - 1] == len && memcmp(set->sptr[set->tab[h] - 1], p, len) == 0)
+				return true;
+		return false;
+	}
 	while (lo < hi)
 	{
 		uint32		mid = lo + (hi - lo) / 2;

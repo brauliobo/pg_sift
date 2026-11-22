@@ -56,6 +56,37 @@ typedef struct V6Set
 	bool	   *gflat_moved;
 } V6Set;
 
+/* The rows r < n of the bitmap mk that are set, in order, a word at a time: r is declared by the caller */
+static inline uint64
+v6_mask_word(const uint64 *mk, uint32 w, uint32 n)
+{
+	const uint32 rest = n - (w << 6);
+
+	return rest >= 64 ? mk[w] : mk[w] & ((UINT64CONST(1) << rest) - 1);
+}
+
+#define V6_FOR_EACH_ROW(mk, n, r) \
+	for (uint32 w_ = 0; w_ < (((n) + 63) >> 6); w_++) \
+		for (uint64 bits_ = v6_mask_word(mk, w_, n); bits_ != 0; bits_ &= bits_ - 1) \
+			if (((r) = (w_ << 6) + (uint32) __builtin_ctzll(bits_)), true)
+
+/* The key of the group of a row of the batch, as the bytes its COUNT(DISTINCT) pairs name it by */
+typedef struct V6RowKey
+{
+	const void *p;
+	uint32		len;
+	uint64		nulls;
+} V6RowKey;
+
+/* The pairs of a batch of one COUNT(DISTINCT), for the grouped flat set (group_dist.c) */
+typedef struct V6DistBatch
+{
+	StringInfoData buf;
+	uint32		off[SIFT_VEC_LEN];
+	uint32		plen[SIFT_VEC_LEN];
+	uint64		val[SIFT_VEC_LEN];
+} V6DistBatch;
+
 struct SiftV6Group
 {
 	const SiftV6Spec *spec;
@@ -90,13 +121,19 @@ struct SiftV6Group
 	uint64		hash[SIFT_VEC_LEN];
 	SiftInlineKey16 ikey[SIFT_VEC_LEN];
 	SiftAggSlot64 *slots[SIFT_VEC_LEN];
-	SiftAggSlot64 **code_slots;	/* the group of each code of the dictionary of a batch (code_slot) */
-	uint32		ncode_slots;
+	V6RowKey	rkey[SIFT_VEC_LEN];	/* the groups of the rows of the batch, when the aggregates count distinct values */
+	V6DistBatch *dbatch;
+	SiftAggSlot64 **code_slots;	/* the group of each code of the dictionary of a batch (code_slot), valid when its code_epoch is code_epoch_cur */
+	uint32	   *code_epoch;
+	uint32		code_cap;
+	uint32		code_epoch_cur;
 	SiftTextArena tx;			/* the winners of MIN and MAX of text (group_ext.h) */
 };
 
 /* the Datums of the keys of a slot of a set of keys (only: just key number only, -1: all), and of an aggregate of its state */
-extern void v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, int only);
+/* The key columns of a slot into values and isnull, those whose bit of want is set (V6_KEYS_ALL: all of them); a wide key is read from its start each time */
+#define V6_KEYS_ALL		UINT32_MAX
+extern void v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want);
 extern Datum v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull);
 
 static inline bool
@@ -193,6 +230,7 @@ extern void v6g_dist_init(SiftV6Group *g);
 /* The rows of take (a bitmap of n_raw rows) of the batch for the COUNT(DISTINCT) aggregate j of a set of no keys */
 extern void v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *take, SiftVec *const *argvec);
 /* One row of a set of keys: key is the bytes of its group (nulls: the bit of each NULL key) */
+extern void v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 n);
 extern void v6g_dist_group_row(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 r, const void *key, uint32 klen, uint64 nulls);
 /* A key of COUNT(DISTINCT) aggregate slot that a participant of a parallel run sent here, with the hash it carries: the bytes v6g_dist_group_row or v6g_dist_plain built */
 extern void v6g_dist_add_raw(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len, uint64 hash);

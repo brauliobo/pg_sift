@@ -211,6 +211,8 @@ extern bool sift_vk_usable(const SiftVk *vk);
 extern bool sift_vk_set_cache(SiftVk *vk, uint64_t bytes);
 /* How much of the chunks the cache holds, for the routing of the scan: the share of the n chunks that are resident, 0..1 */
 extern double sift_vk_resident_share(SiftVk *vk, const SiftVkKey *keys, uint32_t n);
+/* resident[i] = whether the chunk keys[i] is on the device, in one pass that looks ahead in the table; returns the number that are */
+extern uint32_t sift_vk_resident_batch(SiftVk *vk, const SiftVkKey *keys, uint32_t n, uint8_t *resident);
 /* delta is called with the bytes of host memory the device layer holds when that changes (SiftMemTracker); may be NULL */
 extern void sift_vk_set_account(SiftVk *vk, void (*account) (void *arg, int64_t delta), void *arg);
 /* The next run ends as the device had failed: SIFT_VK_LOST or SIFT_VK_TIMEOUT (tests of the fallback) */

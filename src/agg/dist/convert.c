@@ -73,6 +73,25 @@ dist_free_bits(Dist *d)
 	}
 }
 
+/* the pairs of a bitmap or hash structure, by population count */
+static uint64
+dist_count_pairs(const Dist *d)
+{
+	uint64		n = 0;
+
+	if (d->mode == DD_WORDS)
+		for (uint64 i = 0; i < (uint64) d->nng * d->nk; i++)
+			n += pg_popcount64(d->nw[i]);
+	else if (d->mode == DD_BITS)
+		for (uint32 g = 0; g < d->ngd; g++)
+			for (uint32 c = 0; d->gd[g] && c < d->ncd; c++)
+				for (int w = 0; d->gd[g][c] && w < DB_WORDS; w++)
+					n += pg_popcount64(d->gd[g][c][w]);
+	else if (d->mode == DD_HASH)
+		n = d->ds.n;
+	return n;
+}
+
 static void
 dist_move(void *arg, uint32 g, uint32 v)
 {
@@ -125,6 +144,8 @@ dist_convert(AggExec *ex, Dist *d, DistMode to)
 	d->arena_left = 0;
 	d->bytes = 0;
 	d->maxn = dist_hash_cap(d);
+	if (to == DD_HASH)
+		dset_reserve(ex, &d->ds, dist_count_pairs(&old));
 	/* a window is aligned to 64 values: its words go into the chunks as words, not a bit at a time */
 	if (old.mode == DD_WORDS && to == DD_BITS)
 		for (uint32 g = 0; g < old.nng; g++)

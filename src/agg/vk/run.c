@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "agg/nth.h"
 #include "agg/vk/job.h"
 
 #ifdef SIFT_VULKAN
@@ -371,7 +372,7 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 		}
 		k ^= 1;
 	}
-	return g0 == 0 && g1 == rc->job->ngran ? publish_tab(rc) : SIFT_VK_OK;
+	return SIFT_VK_OK;
 }
 
 /* the second read back: the groups or candidates the first one counted, from the device buffer of the job */
@@ -406,20 +407,29 @@ typedef struct Cand
 	uint64_t	tag;
 } Cand;
 
-static int g_desc, g_nulls_first;
+typedef struct CandOrder
+{
+	bool		desc;
+	bool		nulls_first;
+} CandOrder;
+
+static inline bool
+cand_null(const Cand *c)
+{
+	return (c->tag >> 62) & 1;
+}
 
 static int
-cand_cmp(const void *pa, const void *pb)
+cand_cmp(const void *pa, const void *pb, void *arg)
 {
 	const Cand *a = pa,
 			   *b = pb;
-	bool		na = (a->tag >> 62) & 1,
-				nb = (b->tag >> 62) & 1;
+	const CandOrder *o = arg;
 
-	if (na != nb)
-		return (na == (bool) g_nulls_first) ? -1 : 1;
-	if (!na && a->key != b->key)
-		return (a->key > b->key) == (bool) g_desc ? -1 : 1;
+	if (cand_null(a) != cand_null(b))
+		return cand_null(a) == o->nulls_first ? -1 : 1;
+	if (!cand_null(a) && a->key != b->key)
+		return (a->key > b->key) == o->desc ? -1 : 1;
 	return a->tag < b->tag ? -1 : a->tag > b->tag;
 }
 
@@ -473,90 +483,80 @@ finish_result(RunCtx *rc, SiftVkResult *res)
 	return SIFT_VK_OK;
 }
 
-static bool
-worse(int64_t a, int64_t b)
+/* the candidates c[0 .. n-1] cut to the k best, the k-th best last of them (the others in no order): the candidates left */
+static uint32_t
+keep_best(Cand *c, uint32_t n, uint32_t k, const CandOrder *o)
 {
-	return g_desc ? a < b : a > b;
+	if (n <= k)
+		return n;
+	if (k > 0)
+		sift_nth(c, n, sizeof(Cand), k - 1, cand_cmp, (void *) o);
+	return k;
 }
 
-/* the key of the k-th best candidate that has a key, false when there are fewer: a heap of the k best, the worst of them on top */
-static bool
-kth_key(const Cand *c, uint32_t n, uint32_t k, int64_t *out)
+/* the candidates of a pass that the next one keeps, in the buffer of the device, which the pass overwrites */
+static Cand *
+stash_cands(SiftVk *vk, uint32_t keep, const Cand *c, uint32_t n)
 {
-	int64_t		heap[256];
-	uint32_t	m = 0;
-
-	if (k == 0 || k > 256)
-		return false;
-	for (uint32_t i = 0; i < n; i++)
+	if (vk->topn_cap < (uint64_t) keep + n)
 	{
-		int64_t		v = c[i].key;
-		uint32_t	at;
+		void	   *b = realloc(vk->topn_buf, ((uint64_t) keep + n) * sizeof(Cand));
 
-		if ((c[i].tag >> 62) & 1)
-			continue;
-		if (m < k)
-		{
-			for (at = m++; at > 0 && worse(v, heap[(at - 1) / 2]); at = (at - 1) / 2)
-				heap[at] = heap[(at - 1) / 2];
-			heap[at] = v;
-		}
-		else if (worse(heap[0], v))
-		{
-			for (at = 0;;)
-			{
-				uint32_t	l = 2 * at + 1,
-							w = l + 1 < k && worse(heap[l + 1], heap[l]) ? l + 1 : l;
-
-				if (l >= k || !worse(heap[w], v))
-					break;
-				heap[at] = heap[w];
-				at = w;
-			}
-			heap[at] = v;
-		}
+		if (!b)
+			return NULL;
+		vk->topn_buf = b;
+		vk->topn_cap = (uint64_t) keep + n;
 	}
-	if (m < k)
-		return false;
-	*out = heap[0];
-	return true;
+	memcpy((Cand *) vk->topn_buf + keep, c, (size_t) n * sizeof(Cand));
+	return vk->topn_buf;
 }
 
+/*
+ * The top N in two passes that scan each granule once: the first granules give the k best candidates, whose k-th key bounds every row of the others that can be among the k best (the
+ * device drops the rows of the second pass that are worse), and the k best of the candidates of both passes are the answer.
+ */
 static SiftVkStatus
 run_topn(RunCtx *rc, SiftVkResult *res)
 {
+	SiftVk	   *vk = rc->vk;
 	const SiftVkJob *job = rc->job;
+	const CandOrder o = {job->topn_desc, job->topn_nulls};
+	const uint32_t k = job->topn_k;
 	uint32_t	sample = job->ngran < 8 ? job->ngran : 8;
+	uint32_t	kept = 0,
+				from = 0;
 	SiftVkStatus st;
 	Cand	   *c;
-	uint32_t	n;
 
-	g_desc = job->topn_desc;
-	g_nulls_first = job->topn_nulls;
 	if (sample < job->ngran)
 	{
+		from = sample;
 		st = run_scan(rc, 0, sample);
 		if (st == SIFT_VK_OK)
 			st = finish_result(rc, res);
 		if (st != SIFT_VK_OK)
 			return st;
-		c = (Cand *) res->cand;
-		n = res->ncand;
-		if (!job->topn_nulls && kth_key(c, n, job->topn_k, &rc->plan.theta))
+		kept = keep_best((Cand *) res->cand, res->ncand, k, &o);
+		if (!(c = stash_cands(vk, 0, (const Cand *) res->cand, kept)))
+			return SIFT_VK_FAIL;
+		if (!o.nulls_first && k > 0 && kept == k && !cand_null(&c[k - 1]))
+		{
+			rc->plan.theta = c[k - 1].key;
 			rc->plan.have_theta = true;
-		memset(&res->times, 0, sizeof(res->times));
-		res->chunks_resident = res->chunks_uploaded = res->batches = 0;
-		res->bytes_uploaded = res->bytes_lz4 = 0;
+		}
 	}
-	st = run_scan(rc, 0, job->ngran);
+	st = run_scan(rc, from, job->ngran);
 	if (st == SIFT_VK_OK)
 		st = finish_result(rc, res);
+	if (st == SIFT_VK_OK)
+		st = publish_tab(rc);
 	if (st != SIFT_VK_OK)
 		return st;
-	c = (Cand *) res->cand;
-	qsort(c, res->ncand, sizeof(Cand), cand_cmp);
-	if (res->ncand > job->topn_k)
-		res->ncand = job->topn_k;
+	if (!(c = stash_cands(vk, kept, (const Cand *) res->cand, res->ncand)))
+		return SIFT_VK_FAIL;
+	res->ncand = keep_best(c, kept + res->ncand, k, &o);
+	sift_nth_sort(c, res->ncand, sizeof(Cand), cand_cmp, (void *) &o);
+	res->cand = (const int64_t *) c;
 	return SIFT_VK_OK;
 }
 
@@ -592,6 +592,8 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		st = run_scan(rc, 0, job->ngran);
 		if (st == SIFT_VK_OK)
 			st = finish_result(rc, res);
+		if (st == SIFT_VK_OK)
+			st = publish_tab(rc);
 	}
 	if (st == SIFT_VK_OK && vk->test_lost)
 	{

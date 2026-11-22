@@ -458,6 +458,13 @@ uint blob_root(uint bb, uint nn, bool alp_ok)
 	return b + 24u;
 }
 
+/* the order-preserving key of the double whose left bits are left and whose right bits are right (rb of them), and trailing zero bits tz */
+int64_t value_key(uint64_t left, uint64_t right, uint rb, uint tz)
+{
+	return f8_key(uint64BitsToDouble(((left << rb) | right) << tz));
+}
+
+/* the values of an ALP-RD blob in two phases: every value takes the left bits of its code, then each exception (the positions are the ones that have an own left part) overwrites its value, so that no value searches the list of the exceptions */
 void alp_rd_values(uint body, uint nn)
 {
 	uint tid = gl_LocalInvocationID.x, o = slot_base(0u);
@@ -470,22 +477,14 @@ void alp_rd_values(uint body, uint nn)
 	uint exc = rights + rlen;
 
 	for (uint k = tid; k < nn; k += 64u)
+		w64[o + k] = value_key(uint64_t(u16at(body + 8u + 2u * uint(get_bits(codes, uint64_t(k) * 3ul, 3u)))), get_bits(rights, uint64_t(k) * uint64_t(rb), rb), rb, tz);
+	memoryBarrierBuffer();
+	barrier();
+	for (uint j = tid; j < n_exc; j += 64u)
 	{
-		uint code = uint(get_bits(codes, uint64_t(k) * 3ul, 3u));
-		uint64_t left = uint64_t(u16at(body + 8u + 2u * code));
-		uint l = 0u, h = n_exc;
-		while (l < h)
-		{
-			uint m = l + ((h - l) >> 1);
-			if (u16at(exc + 2u * m) < k)
-				l = m + 1u;
-			else
-				h = m;
-		}
-		if (l < n_exc && u16at(exc + 2u * l) == k)
-			left = uint64_t(u16at(exc + 2u * n_exc + 2u * l));
-		uint64_t u = (((left << rb) | get_bits(rights, uint64_t(k) * uint64_t(rb), rb)) << tz);
-		w64[o + k] = uint64_t(f8_key(uint64BitsToDouble(u)));
+		uint k = u16at(exc + 2u * j);
+
+		w64[o + k] = value_key(uint64_t(u16at(exc + 2u * n_exc + 2u * j)), get_bits(rights, uint64_t(k) * uint64_t(rb), rb), rb, tz);
 	}
 }
 

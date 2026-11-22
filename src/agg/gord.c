@@ -784,7 +784,7 @@ cand_cmp(const SiftGOrd *g, const GCur *a, const GCur *b, bool text)
 static inline bool
 text_before(const SiftGOrd *g, const GCur *a, const GCur *b)
 {
-	return a->have && (!b->have || cand_cmp(g, a, b, true) < 0);
+	return a->have && (!b->have || cand_cmp(g, a, b, g->collid != 0) < 0);
 }
 
 /* the match of leaf slot j up to the root: the winner of the others replaces it where it loses */
@@ -827,9 +827,9 @@ text_tournament(SiftGOrd *g)
 	pfree(win);
 }
 
-/* the merge of a text key: the sources are the leaves of a tournament, so a step compares strings log2(sources) times, where the scan of the sources does it once for each */
+/* the merge of many sources (a text key, or an integer key of more than GORD_TREE_MIN sources that all run to the end of the scan): the sources are the leaves of a tournament, so a step compares log2(sources) times, where the scan of the sources does it once for each */
 static pg_noinline bool
-gord_next_text(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
+gord_next_tree(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 {
 	if (!g->started)
 	{
@@ -931,8 +931,8 @@ bool
 sift_gord_next(SiftGOrd *g, int64 *key, bool *isnull, ItemPointerData *tid)
 {
 	g->repeat = false;
-	if (g->collid != 0)
-		return gord_next_text(g, key, isnull, tid);
+	if (g->collid != 0 || (g->ncur > GORD_TREE_MIN && g->in == NULL && !g->ends && !g->gm && !g->short_))
+		return gord_next_tree(g, key, isnull, tid);
 	if (!g->started)
 	{
 		for (int i = 0; i < g->ncur; i++)

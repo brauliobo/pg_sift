@@ -15,6 +15,7 @@
 
 #include "common/hashfn.h"
 #include "miscadmin.h"
+#include "port/pg_bitutils.h"
 #include "storage/dsm.h"
 #include "storage/procarray.h"
 #include "storage/spin.h"
@@ -26,7 +27,7 @@
 #include "col/dsmreg.h"
 #include "core/compat.h"
 
-#define LOOKSHM_SLOTS		64
+#define LOOKSHM_SLOTS		64			/* the bits of LookShm.live */
 /* loads in progress; a backend that finds none free loads without a claim */
 #define LOOKSHM_CLAIMS		16
 /* a backend that finds its table loaded by another waits this long at most, then loads it itself */
@@ -66,9 +67,13 @@ typedef struct LookShm
 	slock_t		mutex;
 	Size		bytes;
 	uint64		clock;
+	uint64		live;			/* bit i: ent[i] holds a table (its h is not DSM_HANDLE_INVALID) */
+	uint64		dkey[LOOKSHM_SLOTS];	/* ent[i].key of the live slots, kept apart: a lookup under the lock reads the 8 cache lines of them, not one of each entry */
 	LookShmEnt	ent[LOOKSHM_SLOTS];
 	LookShmClaim claim[LOOKSHM_CLAIMS];
 } LookShm;
+
+StaticAssertDecl(LOOKSHM_SLOTS == 64, "LookShm.live has a bit for each slot");
 
 /* the start of a segment; the offsets are from the start of the segment */
 typedef struct LookShmHead
@@ -207,8 +212,8 @@ lookshm_known(LookPool pool, const char *key)
 	bool		known = false;
 
 	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LOOKSHM_SLOTS && !known; i++)
-		known = s->ent[i].h != DSM_HANDLE_INVALID && s->ent[i].key == kh;
+	for (uint64 m = s->live; m != 0 && !known; m &= m - 1)
+		known = s->dkey[pg_rightmost_one_pos64(m)] == kh;
 	SpinLockRelease(&s->mutex);
 	return known;
 }
@@ -225,8 +230,11 @@ lookshm_stored_stamp(LookPool pool, const char *key, LookFinger *out)
 		return false;
 	s = shm_get(pool);
 	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LOOKSHM_SLOTS && !found; i++)
-		if (s->ent[i].h != DSM_HANDLE_INVALID && s->ent[i].key == kh && s->ent[i].stamped)
+	for (uint64 m = s->live; m != 0 && !found; m &= m - 1)
+	{
+		int			i = pg_rightmost_one_pos64(m);
+
+		if (s->dkey[i] == kh && s->ent[i].stamped)
 		{
 			out->rel = s->ent[i].srel;
 			out->nblocks = 2;
@@ -234,6 +242,7 @@ lookshm_stored_stamp(LookPool pool, const char *key, LookFinger *out)
 			memcpy(out->lsn, s->ent[i].sv, sizeof(s->ent[i].sv));
 			found = true;
 		}
+	}
 	SpinLockRelease(&s->mutex);
 	return found;
 }
@@ -254,11 +263,11 @@ lookshm_find(LookPool pool, const char *key, const LookFinger *f, const LookCols
 		return NULL;
 	s = shm_get(pool);
 	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LOOKSHM_SLOTS; i++)
+	for (uint64 m = s->live; m != 0; m &= m - 1)
 	{
-		LookShmEnt *e = &s->ent[i];
+		LookShmEnt *e = &s->ent[pg_rightmost_one_pos64(m)];
 
-		if (e->h == DSM_HANDLE_INVALID || e->key != kh || e->pages != ph)
+		if (s->dkey[pg_rightmost_one_pos64(m)] != kh || e->pages != ph)
 			continue;
 		*have = e->cols;
 		if (cols_cover(&e->cols, need))
@@ -287,11 +296,16 @@ shm_evict(LookShm *s, dsm_handle *drop, int *ndrop, int *nevicted)
 {
 	LookShmEnt *lru = NULL;
 
-	for (int i = 0; i < LOOKSHM_SLOTS; i++)
-		if (s->ent[i].h != DSM_HANDLE_INVALID && (lru == NULL || s->ent[i].used < lru->used))
-			lru = &s->ent[i];
+	for (uint64 m = s->live; m != 0; m &= m - 1)
+	{
+		LookShmEnt *e = &s->ent[pg_rightmost_one_pos64(m)];
+
+		if (lru == NULL || e->used < lru->used)
+			lru = e;
+	}
 	if (lru == NULL)
 		return false;
+	s->live &= ~(UINT64CONST(1) << (lru - s->ent));
 	drop[(*ndrop)++] = lru->h;
 	(*nevicted)++;
 	s->bytes -= lru->size;
@@ -380,26 +394,32 @@ lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, con
 	dsm_pin_segment(seg);
 
 	SpinLockAcquire(&s->mutex);
-	for (int i = 0; i < LOOKSHM_SLOTS; i++)
-		if (s->ent[i].h != DSM_HANDLE_INVALID && s->ent[i].key == kh)
+	for (uint64 m = s->live; m != 0; m &= m - 1)
+	{
+		int			i = pg_rightmost_one_pos64(m);
+
+		if (s->dkey[i] == kh)
 		{
 			drop[ndrop++] = s->ent[i].h;
 			s->bytes -= s->ent[i].size;
 			s->ent[i].h = DSM_HANDLE_INVALID;
+			s->live &= ~(UINT64CONST(1) << i);
 		}
+	}
 	while (s->bytes + size > budget && shm_evict(s, drop, &ndrop, &nevicted))
 		;
 	for (;;)
 	{
-		for (int i = 0; i < LOOKSHM_SLOTS && at == NULL; i++)
-			if (s->ent[i].h == DSM_HANDLE_INVALID)
-				at = &s->ent[i];
+		if (s->live != ~UINT64CONST(0))
+			at = &s->ent[pg_rightmost_one_pos64(~s->live)];
 		if (at != NULL || !shm_evict(s, drop, &ndrop, &nevicted))
 			break;
 	}
 	if (at != NULL)
 	{
 		at->h = dsm_segment_handle(seg);
+		s->live |= UINT64CONST(1) << (at - s->ent);
+		s->dkey[at - s->ent] = kh;
 		at->key = kh;
 		at->pages = pages_hash(f);
 		at->stamped = f->stamp;
