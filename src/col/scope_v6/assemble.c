@@ -186,7 +186,7 @@ join_ring(const SiftScopeMeta *old, const SiftScopeL2Root *oroot, const SiftScop
 	{
 		uint32		k = sift_scope_topk_get_ring(fresh, froot, ring, slot);
 
-		if (k == SIFT_SCOPE_TOPK_CAP)
+		if (k == SIFT_SCOPE_TOPK_CAP || (k > 0 && sift_scope_ring_present(fresh, froot, ring) && sift_scope_ring_partial(froot, ring)))
 		{
 			if (!limited || sift_newest_cmp(&slot[k - 1], &limit) > 0)
 				limit = slot[k - 1];
@@ -218,12 +218,15 @@ join_rings(const SiftScopeMeta *old, const SiftScopeL2Root *oroot, const SiftSco
 		partial |= (uint32) part << r;
 		any |= h[r].n > 0 || (nrings > 1 && part);
 	}
-	if (!any)
-		return;
-	initStringInfo(&slot);
-	sift_rings_write(h, nrings, partial, wide, &slot, &rec->root);
-	rec->topk = slot.data;
-	rec->topk_wide = wide;
+	if (any)
+	{
+		initStringInfo(&slot);
+		sift_rings_write(h, nrings, partial, wide, &slot, &rec->root);
+		rec->topk = slot.data;
+		rec->topk_wide = wide;
+	}
+	for (uint32 r = 0; r < nrings; r++)
+		sift_topk_release(&h[r]);
 }
 
 static void

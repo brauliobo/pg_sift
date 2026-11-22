@@ -868,6 +868,8 @@ tw_spec(const TWorld *w, SiftScopeBuildSpec *spec, uint32 flags)
 	memset(spec, 0, sizeof(*spec));
 	spec->shape = w->shape;
 	spec->flags = flags;
+	for (uint32 i = 0; i < w->ngran; i++)
+		spec->nrows += w->g[i].n;
 	spec->member_leaf = 0;
 	spec->time_leaf = 1;
 	spec->ntopk_rings = (uint8) (1 + w->spec.nrings);

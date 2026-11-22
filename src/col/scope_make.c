@@ -91,11 +91,8 @@ sift_scope_journal_managed(Oid index)
 static void
 pending_xact(XactEvent event, void *arg)
 {
-	if (event == XACT_EVENT_ABORT)
-	{
-		list_free(pending);
+	if (event == XACT_EVENT_ABORT || event == XACT_EVENT_COMMIT)
 		pending = NIL;
-	}
 }
 
 static IndexElem *
@@ -180,7 +177,8 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 			RegisterXactCallback(pending_xact, NULL);
 		pending_hooked = true;
 		{
-			MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+			/* MEM[MEM-SCOPE-12]: pending journal OIDs in xact context (list of OIDs; was TopMemoryContext) */
+			MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
 
 			pending = list_append_unique_oid(pending, addr.objectId);
 			MemoryContextSwitchTo(old);

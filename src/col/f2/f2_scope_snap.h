@@ -30,6 +30,7 @@ struct SiftF2ScopeSnap
 {
 	uint64		stamp;
 	MemoryContext cx;
+	MemoryContext reader;		/* the statement that holds it: where it goes when the cache has no room for it */
 	struct SiftF2ScopeSnap **slot;	/* where the cache entry holds it; NULL: it belongs to the statement */
 	struct SiftF2ScopeRowSet *added;
 	struct SiftF2ScopeRowSet *gone;

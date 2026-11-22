@@ -125,6 +125,7 @@ sift_f2_scope_snap_start(const SiftScopeMeta *cached, uint64 stamp)
 void
 sift_f2_scope_snap_keep(const SiftScopeMeta *cached, SiftF2ScopeSnap *sn)
 {
+	/* MEM[MEM-SCOPE-05]: settled-change rowsets in the entry cx, charged by snap_charge (was free) */
 	if (*sn->slot != NULL)
 		MemoryContextDelete((*sn->slot)->cx);
 	*sn->slot = sn;
@@ -138,14 +139,24 @@ sift_f2_scope_snap_drop(SiftF2ScopeSnap *sn)
 	MemoryContextDelete(sn->cx);
 }
 
-void
-sift_f2_scope_snap_grown(SiftF2ScopeSnap *sn, MemoryContext reader)
+/* It stays with the backend while it fits the cache budget and the cache is under its limit once it is counted (evicting the oldest others for it): what does not goes with the statement */
+static void
+snap_charge(SiftF2ScopeSnap *sn)
 {
-	if (sn->slot == NULL || *sn->slot != sn || sift_cache_room(MemoryContextMemAllocated(sn->cx, true)))
+	const Size	limit = (Size) sift_backend_cache_kb * 1024;
+
+	if (sn->slot == NULL || *sn->slot != sn || (MemoryContextMemAllocated(sn->cx, true) <= limit && sift_cache_commit()))
 		return;
 	*sn->slot = NULL;
 	sn->slot = NULL;
-	MemoryContextSetParent(sn->cx, reader);
+	MemoryContextSetParent(sn->cx, sn->reader);
+}
+
+void
+sift_f2_scope_snap_grown(SiftF2ScopeSnap *sn, MemoryContext reader)
+{
+	sn->reader = reader;
+	snap_charge(sn);
 }
 
 static bool
@@ -187,6 +198,7 @@ read_free(SiftF2ScopeRead *r)
 void
 sift_f2_scope_snap_remember(SiftF2ScopeSnap *sn, int64 key, const SiftScopeQueryNeeds *q, const SiftScopeEdit *ed, const SiftScopeCubeAcc *cube)
 {
+	/* MEM[MEM-SCOPE-05]: cached reads, up to 128 cubes, charged to the cache budget (was free) */
 	MemoryContext old = MemoryContextSwitchTo(sn->cx);
 	SiftF2ScopeRead *r;
 
@@ -204,4 +216,5 @@ sift_f2_scope_snap_remember(SiftF2ScopeSnap *sn, int64 key, const SiftScopeQuery
 	if (cube != NULL)
 		sift_scube_copy(&r->cube, cube);
 	MemoryContextSwitchTo(old);
+	snap_charge(sn);
 }

@@ -390,6 +390,9 @@ src_runs(void *arg, uint32 gidx, SiftEntHome *out)
 void
 sift_f2s_leaf_shape(SiftF2ScopeParts *p, int leaf, SiftF2LeafShape *sh)
 {
+	bool		has_prev = false;
+	int64		prev_min = 0;
+
 	*sh = (SiftF2LeafShape) {0};
 	for (int i = 0; i < p->n; i++)
 		for (uint32 g = 0; g < p->s[i].ng; g++)
@@ -398,11 +401,13 @@ sift_f2s_leaf_shape(SiftF2ScopeParts *p, int leaf, SiftF2LeafShape *sh)
 
 			sh->nrows += sift_f2s_slot_gdir(p, &p->s[i])[g].nrows;
 			sh->nnull += z.nnull;
-			if (g > 0 && !(z.flags & SIFT_ZONE_NONE))
-			{
-				sh->nzones++;
-				sh->nrise += z.min > sift_f2s_slot_zone(p, &p->s[i], leaf, g - 1).min;
-			}
+			if (z.flags & SIFT_ZONE_NONE)
+				continue;
+			/* STOR[STOR-SCOPE-01]: rising zones counted across parts (0 B wire; drops 12 B * k * keys rings) */
+			sh->nzones += has_prev;
+			sh->nrise += has_prev && z.min > prev_min;
+			prev_min = z.min;
+			has_prev = true;
 		}
 }
 

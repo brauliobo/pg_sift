@@ -70,6 +70,7 @@ write_scopedir(Relation rel, uint64 gen, uint64 version, const SiftManifestScope
 	PGAlignedBlock img;
 	SiftNewPageLog log = SIFT_NEWLOG_BEGIN(rel);
 
+	/* STOR[STOR-SCOPE-06]: dedicated 8 KB scope dir page vs inline meta ref (8160 B slack per single scope) */
 	for (int p = 0; p < npages; p++)
 		blks[p] = sift_mf_new_page_blk(rel, created);
 	for (int p = npages - 1; p >= 0; p--)

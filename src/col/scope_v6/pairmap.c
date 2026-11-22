@@ -23,8 +23,10 @@ SiftScopePairMap *
 sift_spm_build(SiftScopeMemberKey *pairs, uint32 n, bool multiset)
 {
 	SiftScopePairMap *pm = palloc0(sizeof(*pm));
+	/* MEM[MEM-SCOPE-03]: pair map CSR arrays at counted size (8 B * keys + 12 B * members) */
 	int64	   *keys = palloc(sizeof(int64) * Max(n, 1));
 	uint32		nk = 0,
+				nmem = 0,
 				m = 0;
 
 	qsort(pairs, n, sizeof(*pairs), pair_cmp);
@@ -38,11 +40,13 @@ sift_spm_build(SiftScopeMemberKey *pairs, uint32 n, bool multiset)
 	for (uint32 i = 0; i < n; i++)
 		if (nk == 0 || keys[nk - 1] != keys[i])
 			keys[nk++] = keys[i];
+	for (uint32 i = 0; i < n; i++)
+		nmem += i == 0 || pairs[i].member != pairs[i - 1].member;
 	pm->nkeys = nk;
-	pm->scope_keys = keys;
+	pm->scope_keys = repalloc(keys, sizeof(int64) * Max(nk, 1));
 	pm->npairs = n;
-	pm->member_ids = palloc(sizeof(int64) * Max(n, 1));
-	pm->offsets = palloc(sizeof(uint32) * (n + 1));
+	pm->member_ids = palloc(sizeof(int64) * Max(nmem, 1));
+	pm->offsets = palloc(sizeof(uint32) * (nmem + 1));
 	pm->key_ordinals = palloc(sizeof(uint32) * Max(n, 1));
 	for (uint32 i = 0; i < n; i++)
 	{

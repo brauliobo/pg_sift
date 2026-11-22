@@ -246,6 +246,7 @@ static void
 add_row(ScopeState *st, const SiftScopeCubeAcc *c, int64 key, int32 month)
 {
 	const ScopeSpec *sp = st->spec;
+	/* MEM[MEM-SCOPE-11]: scope_v6_run materialized rows (2 pallocs/row in st->rcx) */
 	Datum	   *v = palloc(Max(sp->ncols, 1) * sizeof(Datum));
 	bool	   *n = palloc0(Max(sp->ncols, 1) * sizeof(bool));
 

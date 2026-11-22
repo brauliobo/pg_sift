@@ -683,6 +683,7 @@ typedef struct SiftScopeBuildSpec
 	uint64		schema_hash;
 	uint64		meta_epoch;
 	uint64		mem_budget;		/* bytes of open accumulators; 0: SIFT_SCOPE_BUILD_MEM_DEF */
+	uint64		nrows;			/* the rows of the parts, when known (the depth of the rings follows it); 0: rings of SIFT_SCOPE_TOPK_CAP rows */
 	uint32		slice_base;		/* the number of the first level-0 slice this build writes (a refresh continues those of the object it extends) */
 	SiftScopeStampImage stamps[3];
 } SiftScopeBuildSpec;

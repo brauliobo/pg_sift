@@ -62,11 +62,14 @@ extern void sift_idix_rebuild(uint16 **ht, uint32 *cap, const void *base, Size s
 extern void sift_idix_note(uint16 *ht, uint32 cap, const void *base, Size stride, uint32 slot);
 extern int32 sift_idix_find(const uint16 *ht, uint32 cap, const void *base, Size stride, int32 id);
 
-/* the ring of a key under construction: a min-heap of the newest SIFT_SCOPE_TOPK_CAP rows */
+/* the ring of a key under construction: a min-heap of the newest depth rows (0: SIFT_SCOPE_TOPK_CAP), its array grown 4, 16, depth as the key gets rows */
 typedef struct SiftTopKHeap
 {
 	uint32		n;
-	SiftScopeNewest e[SIFT_SCOPE_TOPK_CAP];
+	uint32		cap;
+	uint32		depth;
+	bool		dropped;		/* a row went by that the heap did not keep */
+	SiftScopeNewest *e;
 } SiftTopKHeap;
 
 typedef struct SiftMonthMapEntry
@@ -91,8 +94,12 @@ typedef struct SiftMonthMapAcc
 /* newest-first order: by time, then granule, then row */
 extern int sift_newest_cmp(const SiftScopeNewest *a, const SiftScopeNewest *b);
 
-extern bool sift_topk_wants(const SiftTopKHeap *h, int64 time);
+/* Whether a row of time is kept; a row that is not marks the heap as having dropped one */
+extern bool sift_topk_wants(SiftTopKHeap *h, int64 time);
 extern void sift_topk_offer(SiftTopKHeap *h, int64 time, uint32 gidx, uint32 row_ord);
+extern void sift_topk_release(SiftTopKHeap *h);
+/* A ring that kept fewer than SIFT_SCOPE_TOPK_CAP rows and dropped one: the read must say it is partial, for a reader takes a full ring only at the cap */
+extern bool sift_topk_truncated(const SiftTopKHeap *h);
 extern void sift_topk_read(const char *slot, uint32 n, bool wide, SiftScopeNewest *out);
 /* The set entries of the ring, compact or wide, newest first, and no more bytes; returns the entries */
 extern uint32 sift_topk_write(const SiftTopKHeap *h, bool wide, StringInfo out);

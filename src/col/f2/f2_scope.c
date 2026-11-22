@@ -153,6 +153,7 @@ sift_f2s_cfg(Relation rel, const SiftF2Store *store, int ord, SiftF2ScopeCfg *sc
 		else if (sift_f2s_plain_leaf(d) && d->type == SIFT_COLT_BOOL && sc->shape.ndims < SIFT_SCOPE_DIMS_CAP)
 			sc->dim_leaf[sc->shape.ndims++] = i;
 	}
+	/* STOR[STOR-SCOPE-04]: cube measure min/max for every int/float leaf (24 months * keys * 40 B) */
 	sc->shape.minmax = true;
 }
 

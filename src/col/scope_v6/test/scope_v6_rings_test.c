@@ -552,7 +552,8 @@ rings_zipf(TCheck *t, int64 *saving, ZipfBytes *z)
 			uint32		nr = sift_scope_topk_get_ring(&m, r, ring, slot),
 						nt = truth_ring(&w, tpm, r->scope_key, ring, SIFT_SCOPE_TOPK_CAP, truth);
 
-			TCHK(t, nr == nt && memcmp(slot, truth, sizeof(*slot) * nt) == 0, "zipf: key %lld ring %u: %u entries, truth %u", (long long) r->scope_key, ring, nr, nt);
+			TCHK(t, nr <= nt && memcmp(slot, truth, sizeof(*slot) * nr) == 0 && (nr == nt || sift_scope_ring_partial(r, ring)),
+				 "zipf: key %lld ring %u: %u entries, truth %u", (long long) r->scope_key, ring, nr, nt);
 		}
 	}
 	entries = var_topk_check(t, &m, with_ring);

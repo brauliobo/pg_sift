@@ -95,6 +95,7 @@ put_payload(StringInfo out, const SiftScopeCubeAcc *a)
 
 		wire_put_u8(out, (uint8) l->zflags);
 		wire_put_var(out, l->nnull);
+		/* STOR[STOR-SCOPE-08]: cube leaf min/max/sum zigzag varints (float 9-10 B; raw 8 B deferred) */
 		wire_put_var(out, wire_zig(l->min));
 		wire_put_var(out, wire_zig(l->max));
 		wire_put_var128(out, wire_zig128(l->sum));

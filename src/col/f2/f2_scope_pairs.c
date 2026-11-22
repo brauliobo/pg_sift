@@ -85,7 +85,8 @@ copy_map(const SiftScopePairMap *pm, MemoryContext cx)
 	SiftScopePairMap *c = MemoryContextAlloc(cx, sizeof(*c));
 
 	*c = *pm;
-	c->member_ids = MemoryContextAlloc(cx, sizeof(int64) * Max(pm->npairs, 1));
+	/* MEM[MEM-SCOPE-01]: cached member_ids nmembers * 8 B (was npairs * 8 B: 20x at 20 keys/member) */
+	c->member_ids = MemoryContextAlloc(cx, sizeof(int64) * Max(pm->nmembers, 1));
 	c->offsets = MemoryContextAlloc(cx, sizeof(uint32) * (pm->nmembers + 1));
 	c->key_ordinals = MemoryContextAlloc(cx, sizeof(uint32) * Max(pm->npairs, 1));
 	c->scope_keys = MemoryContextAlloc(cx, sizeof(int64) * Max(pm->nkeys, 1));
@@ -95,6 +96,12 @@ copy_map(const SiftScopePairMap *pm, MemoryContext cx)
 	memcpy(c->scope_keys, pm->scope_keys, sizeof(int64) * pm->nkeys);
 	c->cursor = 0;
 	return c;
+}
+
+static Size
+map_bytes(const SiftScopePairMap *pm)
+{
+	return sizeof(*pm) + sizeof(int64) * (Max(pm->nmembers, 1) + Max(pm->nkeys, 1)) + sizeof(uint32) * (pm->nmembers + 1 + Max(pm->npairs, 1));
 }
 
 SiftScopePairMap *
@@ -115,6 +122,9 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 	{
 		cache_drop();
 		loaded = sift_f2s_load_pairs(heap, index, sc, snap);
+		/* MEM[MEM-SCOPE-02]: cached pair map charged to the cache budget (room, then commit) */
+		if (!sift_cache_room(map_bytes(loaded)))
+			return loaded;
 		cache.cx = sift_cache_create_context("sift cache scope pairs");
 		cache.pm = copy_map(loaded, cache.cx);
 		cache.index = RelationGetRelid(index);
@@ -127,6 +137,7 @@ sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, S
 	pin->cb = (MemoryContextCallback) {pin_release, NULL, NULL};
 	MemoryContextRegisterResetCallback(reader, &pin->cb);
 	cache.pins++;
+	(void) sift_cache_commit();
 	return cache.pm;
 }
 

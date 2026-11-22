@@ -11,6 +11,7 @@
 
 #define SCOPE_PACK_RAW	0
 #define SCOPE_PACK_ZSTD	1
+/* STOR[STOR-SCOPE-05]: scope object zstd level 19 (level 22 measured equal at 160k rows) */
 #define SCOPE_PACK_LEVEL	19
 
 typedef struct ScopePackHdr

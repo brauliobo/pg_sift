@@ -18,6 +18,21 @@
 #include "core/memtrack.h"
 #include "col/scope_v6/build_int.h"
 
+#define RING_ADAPT_KEYS		16
+#define RING_BIG_KEY_ROWS	2000
+#define RING_DEPTH_EXTRA	12
+
+/* STOR[STOR-SCOPE-02]: ring depth at keys >= 16: ring 0 32 or 16, extras 12 (12 B*depth*keys) */
+static uint32
+ring_depth(const SiftScopeBuildSpec *spec, uint32 nkeys, uint32 ring)
+{
+	if (spec->nrows == 0 || nkeys < RING_ADAPT_KEYS)
+		return SIFT_SCOPE_TOPK_CAP;
+	if (ring > 0)
+		return RING_DEPTH_EXTRA;
+	return spec->nrows / nkeys >= RING_BIG_KEY_ROWS ? 32 : 16;
+}
+
 SiftScopeBuild *
 sift_scope_build_begin(const SiftScopeBuildSpec *spec, SiftScopePairMap *pm)
 {
@@ -32,6 +47,8 @@ sift_scope_build_begin(const SiftScopeBuildSpec *spec, SiftScopePairMap *pm)
 	b->spec = *spec;
 	b->pm = pm;
 	b->nrings = Max(spec->ntopk_rings, 1);
+	for (uint32 r = 0; r < b->nrings; r++)
+		b->depth[r] = ring_depth(spec, pm->nkeys, r);
 	SIFT_INVARIANT(!(spec->flags & SIFT_SMETA_CLUSTERED_11) || !(spec->flags & SIFT_SMETA_CLUSTERED_PP), "scope build: both clusterings");
 	SIFT_INVARIANT(!(spec->flags & SIFT_SMETA_MULTISET) || !(spec->flags & SIFT_SMETA_CLUSTERED), "scope build: a multiset scope is not clustered");
 	SIFT_INVARIANT(!(spec->flags & SIFT_SMETA_NULL_FILTERED) || spec->null_filter_leaf >= 0, "scope build: a null filter on leaf %d", spec->null_filter_leaf);
@@ -133,7 +150,10 @@ key_acc(SiftScopeBuild *b, uint32 ord)
 		SiftScopeShape sh = b->spec.shape;
 
 		k = b->acc[ord] = palloc0(sizeof(*k));
+		/* MEM[MEM-SCOPE-09]: key ring heap headers only until a row arrives (nrings * 24 B; was 1,040 B) */
 		k->ring = palloc0(sizeof(SiftTopKHeap) * b->nrings);
+		for (uint32 q = 0; q < b->nrings; q++)
+			k->ring[q].depth = b->depth[q];
 		k->ord = ord;
 		k->scope_key = b->pm->scope_keys[ord];
 		sift_scube_init(&k->l1_all, sh);
@@ -776,6 +796,8 @@ sift_scope_build_end(SiftScopeBuild *b, StringInfo out, SiftScopeBuildStats *sta
 				r->topk = slot.data;
 				r->topk_wide = wide;
 			}
+			for (uint32 q = 0; q < b->nrings; q++)
+				sift_topk_release(&k->ring[q]);
 		}
 		if (k->mmap.n > 0 && final > 1)
 		{

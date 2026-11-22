@@ -95,6 +95,45 @@ pick_rings(SiftF2ScopeParts *p, SiftF2ScopeCfg *cfg, const SiftF2Store *store, S
 	pfree(cand);
 }
 
+#define CLUSTER_SAMPLE_GRANULES	16
+
+static uint32
+distinct_homes(const SiftEntHome *runs, uint32 n)
+{
+	int64	   *h = palloc(Max(n, 1) * sizeof(int64));
+	uint32		u = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		h[i] = runs[i].home;
+	qsort(h, n, sizeof(int64), sift_cmp_i64);
+	for (uint32 i = 0; i < n; i++)
+		u += i == 0 || h[i] != h[i - 1];
+	pfree(h);
+	return u;
+}
+
+/* STOR[STOR-SCOPE-03]: entity route kept only if granules are clustered (<= max 2 or keys/8 homes) */
+static uint32
+physical_clustering(SiftF2ScopeParts *p, const SiftScopePairMap *pm)
+{
+	const uint32 want = sift_spm_cluster_auto(pm);
+	const SiftScopeGranSource src = sift_f2s_source(p);
+	SiftEntHome *runs;
+	uint32		total = 0,
+				sampled = 0;
+	uint64		homes = 0;
+
+	for (int i = 0; want != 0 && i < p->n; i++)
+		total += p->s[i].ng;
+	if (want == 0 || total == 0)
+		return 0;
+	runs = palloc(sizeof(*runs) << SIFT_GRANULE_ROW_BITS);
+	for (uint32 g = 0; g < total; g += Max(total / CLUSTER_SAMPLE_GRANULES, 1), sampled++)
+		homes += distinct_homes(runs, src.runs(src.arg, g, runs));
+	pfree(runs);
+	return homes <= (uint64) sampled * Max(2, pm->nkeys / 8) ? want : 0;
+}
+
 /* A summary of a table is built over parts whose leaves of the cubes read as the table's own and no column delta of which patches what the summary reads: of an index always */
 static bool
 buildable(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg *cfg, const SiftManifestRead *mr, Snapshot snap)
@@ -130,7 +169,10 @@ build_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCfg 
 	p = sift_f2s_parts_new(rel, store, heap, &cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));
 	sift_f2s_parts_of_manifest(p, mr);
 	pick_rings(p, &cfg, store, &spec);
-	spec.flags |= sift_spm_cluster_auto(pm);
+	spec.flags |= physical_clustering(p, pm);
+	spec.nrows = 0;
+	for (int i = 0; i < p->n; i++)
+		spec.nrows += p->s[i].d.nrows;
 	b = sift_scope_build_begin(&spec, pm);
 	for (int i = 0; i < p->n; i++)
 		(void) sift_scope_build_add_part(b, p->s[i].part_gen, p->s[i].ng);

@@ -203,7 +203,8 @@ put_ring_as(StringInfo out, const SiftKeyRec *rec, bool wide, uint32 nrings)
 {
 	for (uint32 r = 0; r < nrings; r++)
 	{
-		SiftTopKHeap h = {.n = sift_ring_count(&rec->root, r)};
+		SiftScopeNewest e[SIFT_SCOPE_TOPK_CAP];
+		SiftTopKHeap h = {.n = sift_ring_count(&rec->root, r),.e = e};
 		const char *slot = rec->topk + sift_ring_start(&rec->root, r, rec->topk_wide);
 
 		sift_topk_read(slot, h.n, rec->topk_wide, h.e);
@@ -524,6 +525,7 @@ topk_unpack(SiftScopeMeta *m, bool lz4)
 	if (raw_len <= clen || raw_len / 255 > clen ||
 		raw_len > (uint64) m->hdr.nkeys * m->ntopk_rings * SIFT_SCOPE_TOPK_CAP * sizeof(SiftScopeTopKEntryWide))
 		return false;
+	/* MEM[MEM-SCOPE-08]: LZ4 ring section unpacked whole in lazy rings cx (nkeys*rings*depth*12 B) */
 	raw = palloc(raw_len);
 	if (!sift_colz_decompress(SIFT_CC_ALG_LZ4, m->topk.p + sizeof(raw_len), clen, raw, raw_len))
 	{
@@ -729,6 +731,7 @@ sift_scope_key_refs(const SiftScopeMeta *m, const SiftScopeL2Root *r, SiftScopeG
 
 static const uint32 bloom_salt[8] = {0x47b6137bU, 0x44974d91U, 0x8824ad5bU, 0xa2b7289dU, 0x705495c7U, 0x2df1424bU, 0x9efc4947U, 0x5c6bfb31U};
 
+/* STOR[STOR-SCOPE-09]: member Bloom sized by node member count (32 B blocks; no skew sizing) */
 uint32
 sift_bloom_blocks(uint32 members)
 {

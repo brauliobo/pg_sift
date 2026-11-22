@@ -16,85 +16,6 @@
  * 1. The ring
  * ------------------------------------------------------------------------- */
 
-int
-sift_newest_cmp(const SiftScopeNewest *a, const SiftScopeNewest *b)
-{
-	if (a->time != b->time)
-		return a->time < b->time ? -1 : 1;
-	if (a->gidx != b->gidx)
-		return a->gidx < b->gidx ? -1 : 1;
-	return a->row_ord < b->row_ord ? -1 : a->row_ord > b->row_ord;
-}
-
-bool
-sift_topk_wants(const SiftTopKHeap *h, int64 time)
-{
-	return h->n < SIFT_SCOPE_TOPK_CAP || time >= h->e[0].time;
-}
-
-static void
-heap_sift_down(SiftTopKHeap *h, uint32 i)
-{
-	for (;;)
-	{
-		uint32		l = 2 * i + 1,
-					r = l + 1,
-					m = i;
-
-		if (l < h->n && sift_newest_cmp(&h->e[l], &h->e[m]) < 0)
-			m = l;
-		if (r < h->n && sift_newest_cmp(&h->e[r], &h->e[m]) < 0)
-			m = r;
-		if (m == i)
-			return;
-		{
-			SiftScopeNewest t = h->e[i];
-
-			h->e[i] = h->e[m];
-			h->e[m] = t;
-		}
-		i = m;
-	}
-}
-
-void
-sift_topk_offer(SiftTopKHeap *h, int64 time, uint32 gidx, uint32 row_ord)
-{
-	SiftScopeNewest c = {time, gidx, row_ord};
-
-	if (h->n < SIFT_SCOPE_TOPK_CAP)
-	{
-		uint32		i = h->n++;
-
-		h->e[i] = c;
-		while (i > 0 && sift_newest_cmp(&h->e[i], &h->e[(i - 1) / 2]) < 0)
-		{
-			SiftScopeNewest t = h->e[i];
-
-			h->e[i] = h->e[(i - 1) / 2];
-			h->e[(i - 1) / 2] = t;
-			i = (i - 1) / 2;
-		}
-	}
-	else if (sift_newest_cmp(&c, &h->e[0]) > 0)
-	{
-		h->e[0] = c;
-		heap_sift_down(h, 0);
-	}
-}
-
-static int
-newest_desc(const void *a, const void *b)
-{
-	return -sift_newest_cmp(a, b);
-}
-
-static inline uint32
-loc_pack(uint32 gidx, uint32 row_ord)
-{
-	return (gidx << SIFT_GRANULE_ROW_BITS) | (row_ord & SIFT_GRANULE_ROW_MASK);
-}
-
 uint32
 sift_topk_entry_size(bool wide)
 {
@@ -128,34 +49,6 @@ sift_topk_read(const char *slot, uint32 n, bool wide, SiftScopeNewest *out)
 		if (i > 0)
 			out[i].time = (int64) ((uint64) out[i - 1].time - (uint64) time);
 	}
-}
-
-uint32
-sift_topk_write(const SiftTopKHeap *h, bool wide, StringInfo out)
-{
-	SiftScopeNewest s[SIFT_SCOPE_TOPK_CAP];
-
-	memcpy(s, h->e, sizeof(SiftScopeNewest) * h->n);
-	qsort(s, h->n, sizeof(SiftScopeNewest), newest_desc);
-	for (uint32 i = 0; i < h->n; i++)
-	{
-		const int64 time = i == 0 ? s[0].time : (int64) ((uint64) s[i - 1].time - (uint64) s[i].time);
-
-		SIFT_INVARIANT(wide || s[i].gidx < SIFT_TOPK_COMPACT_GRANS, "scope ring: granule %u does not fit a compact entry", s[i].gidx);
-		if (wide)
-		{
-			SiftScopeTopKEntryWide e = {time, s[i].gidx, (uint16) s[i].row_ord, 0};
-
-			appendBinaryStringInfo(out, (char *) &e, sizeof(e));
-		}
-		else
-		{
-			SiftScopeTopKEntry e = {time, loc_pack(s[i].gidx, s[i].row_ord)};
-
-			appendBinaryStringInfo(out, (char *) &e, sizeof(e));
-		}
-	}
-	return h->n;
 }
 
 uint32
@@ -197,6 +90,8 @@ sift_rings_write(const SiftTopKHeap *rings, uint32 nrings, uint32 partial, bool 
 	SiftScopeL2ExtraTopK x = {{0}, 0};
 
 	SIFT_INVARIANT(nrings >= 1 && nrings <= SIFT_SCOPE_TOPK_RINGS_CAP, "scope ring: %u rings", nrings);
+	for (uint32 r = 0; r < nrings; r++)
+		partial |= (uint32) sift_topk_truncated(&rings[r]) << r;
 	root->topk_count = (uint16) sift_topk_write(&rings[0], wide, out);
 	for (uint32 r = 1; r < nrings; r++)
 	{
@@ -668,6 +563,7 @@ scan_months(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEnt
 	refs = palloc(sizeof(*refs) * Max(sift_scope_key_refs(m, r, NULL), 1));
 	sift_scope_key_refs(m, r, refs);
 	ords = palloc(sizeof(uint32) * Max(sift_scope_monthmap_ngranules(m, r), 1));
+	/* MEM[MEM-SCOPE-11]: newest-row stride scratch per call (4 KB; ring-walk granule scratch 128 KB) */
 	rows = palloc(sizeof(*rows) * SIFT_TSTRIDE_ROWS);
 	for (uint32 i = 0; i < nb; i++)
 	{

@@ -528,7 +528,8 @@ tw_edit_round(TCheck *t, TWorld *w, StringInfoData *old, SiftScopeMeta *mold, ui
 			{
 				na = sift_scope_topk_get(&mnew, a, ra);
 				nb = sift_scope_topk_get(&mfull, b, rb);
-				TCHK(t, na <= nb && memcmp(ra, rb, sizeof(*ra) * na) == 0 && (na == nb || (a->flags & SIFT_L2_TOPK_PARTIAL)),
+				TCHK(t, memcmp(ra, rb, sizeof(*ra) * Min(na, nb)) == 0 &&
+					 (na == nb || (na < nb ? a : b)->flags & SIFT_L2_TOPK_PARTIAL),
 					 "refresh and rebuild disagree on a ring (%u, %u entries)", na, nb);
 			}
 		}

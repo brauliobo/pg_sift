@@ -98,14 +98,10 @@ DELETE FROM events WHERE id % 211 = 0;
 SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
     ord     |       dir       |           filt           |      result      | statements 
 ------------+-----------------+--------------------------+------------------+------------
- event_date | DESC            |                          | same node join 0 |          3
- event_date | DESC            |                          | same node join 1 |          6
- event_date | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
- event_date | DESC            | AND e.deleted_at IS NULL | same node join 1 |          6
- event_date | DESC NULLS LAST |                          | same node join 0 |          3
- event_date | DESC NULLS LAST |                          | same node join 1 |          6
- event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
- event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
+ event_date | DESC            |                          | same node ring 0 |          9
+ event_date | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          9
+ event_date | DESC NULLS LAST |                          | same node ring 0 |          9
+ event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          9
  spare      | DESC            |                          | same node join 0 |          3
  spare      | DESC            |                          | same node join 1 |          6
  spare      | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
@@ -114,15 +110,11 @@ SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spa
  spare      | DESC NULLS LAST |                          | same node join 1 |          6
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
- updated_at | DESC            |                          | same node join 0 |          3
- updated_at | DESC            |                          | same node join 1 |          6
- updated_at | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
- updated_at | DESC            | AND e.deleted_at IS NULL | same node join 1 |          6
- updated_at | DESC NULLS LAST |                          | same node join 0 |          3
- updated_at | DESC NULLS LAST |                          | same node join 1 |          6
- updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
- updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
-(24 rows)
+ updated_at | DESC            |                          | same node ring 0 |          9
+ updated_at | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          9
+ updated_at | DESC NULLS LAST |                          | same node ring 0 |          9
+ updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          9
+(16 rows)
 
 VACUUM events;
 SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
@@ -176,14 +168,10 @@ INSERT INTO events SELECT 30000 + i, 1 + i % 400, DATE '2026-07-01', NULL, times
 SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
     ord     |       dir       |           filt           |      result      | statements 
 ------------+-----------------+--------------------------+------------------+------------
- event_date | DESC            |                          | same node join 0 |          3
- event_date | DESC            |                          | same node join 1 |          6
- event_date | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
- event_date | DESC            | AND e.deleted_at IS NULL | same node join 1 |          6
- event_date | DESC NULLS LAST |                          | same node join 0 |          3
- event_date | DESC NULLS LAST |                          | same node join 1 |          6
- event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
- event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
+ event_date | DESC            |                          | same node ring 0 |          9
+ event_date | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          9
+ event_date | DESC NULLS LAST |                          | same node ring 0 |          9
+ event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          9
  spare      | DESC            |                          | same node join 0 |          3
  spare      | DESC            |                          | same node join 1 |          6
  spare      | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
@@ -192,28 +180,24 @@ SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spa
  spare      | DESC NULLS LAST |                          | same node join 1 |          6
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
- updated_at | DESC            |                          | same node join 0 |          3
  updated_at | DESC            |                          | same node join 1 |          6
- updated_at | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
+ updated_at | DESC            |                          | same node ring 0 |          3
  updated_at | DESC            | AND e.deleted_at IS NULL | same node join 1 |          6
- updated_at | DESC NULLS LAST |                          | same node join 0 |          3
+ updated_at | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          3
  updated_at | DESC NULLS LAST |                          | same node join 1 |          6
- updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
+ updated_at | DESC NULLS LAST |                          | same node ring 0 |          3
  updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
-(24 rows)
+ updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          3
+(20 rows)
 
 VACUUM events;
 SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
     ord     |       dir       |           filt           |      result      | statements 
 ------------+-----------------+--------------------------+------------------+------------
- event_date | DESC            |                          | same node join 0 |          3
- event_date | DESC            |                          | same node join 1 |          6
- event_date | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
- event_date | DESC            | AND e.deleted_at IS NULL | same node join 1 |          6
- event_date | DESC NULLS LAST |                          | same node join 0 |          3
- event_date | DESC NULLS LAST |                          | same node join 1 |          6
- event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
- event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
+ event_date | DESC            |                          | same node ring 0 |          9
+ event_date | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          9
+ event_date | DESC NULLS LAST |                          | same node ring 0 |          9
+ event_date | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          9
  spare      | DESC            |                          | same node join 0 |          3
  spare      | DESC            |                          | same node join 1 |          6
  spare      | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
@@ -222,15 +206,15 @@ SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spa
  spare      | DESC NULLS LAST |                          | same node join 1 |          6
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
- updated_at | DESC            |                          | same node join 0 |          3
  updated_at | DESC            |                          | same node join 1 |          6
- updated_at | DESC            | AND e.deleted_at IS NULL | same node join 0 |          3
+ updated_at | DESC            |                          | same node ring 0 |          3
  updated_at | DESC            | AND e.deleted_at IS NULL | same node join 1 |          6
- updated_at | DESC NULLS LAST |                          | same node join 0 |          3
+ updated_at | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          3
  updated_at | DESC NULLS LAST |                          | same node join 1 |          6
- updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 0 |          3
+ updated_at | DESC NULLS LAST |                          | same node ring 0 |          3
  updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          6
-(24 rows)
+ updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          3
+(20 rows)
 
 -- 3. A change of the pairs
 INSERT INTO entity_parents VALUES (1, 6), (2, 6);
@@ -298,10 +282,10 @@ SELECT * FROM topk_matrix(ARRAY[1], ARRAY['updated_at', 'spare']);
  spare      | DESC            | AND e.deleted_at IS NULL | same node join 1 |          3
  spare      | DESC NULLS LAST |                          | same node join 1 |          3
  spare      | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          3
- updated_at | DESC            |                          | same node join 1 |          3
- updated_at | DESC            | AND e.deleted_at IS NULL | same node join 1 |          3
- updated_at | DESC NULLS LAST |                          | same node join 1 |          3
- updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node join 1 |          3
+ updated_at | DESC            |                          | same node ring 0 |          3
+ updated_at | DESC            | AND e.deleted_at IS NULL | same node ring 0 |          3
+ updated_at | DESC NULLS LAST |                          | same node ring 0 |          3
+ updated_at | DESC NULLS LAST | AND e.deleted_at IS NULL | same node ring 0 |          3
 (8 rows)
 
 -- 5. The statements the ring does not serve keep the join: another order, an offset, a second order leaf, an expression, a filter on another leaf, a column of the pairs, a limit that is not a constant
@@ -324,10 +308,10 @@ SELECT probe(q) || ' ' || q FROM unnest(ARRAY[
 ]) q;
                                                                                         ?column?                                                                                        
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- node join 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
+ node ring 0 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
  normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at LIMIT 5
- normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5 OFFSET 5
- normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC, e.id DESC LIMIT 5
+ node ring 0 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5 OFFSET 5
+ node ring 0 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC, e.id DESC LIMIT 5
  normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at + interval '1 day' DESC LIMIT 5
  normal - 0 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 AND e.qty = 3 ORDER BY e.updated_at DESC LIMIT 5
  normal - 1 SELECT e.id, ep.parent_id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
@@ -335,7 +319,7 @@ SELECT probe(q) || ' ' || q FROM unnest(ARRAY[
  normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC FETCH FIRST 5 ROWS WITH TIES
  normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC
  normal - 2 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id ORDER BY e.updated_at DESC LIMIT 5
- node join 1 SELECT e.id, e.updated_at FROM events e LEFT JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
+ node ring 0 SELECT e.id, e.updated_at FROM events e LEFT JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
  normal - 1 SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT (SELECT 5)
  normal - 1 SELECT DISTINCT e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5
 (14 rows)
@@ -352,7 +336,7 @@ SET plan_cache_mode = force_custom_plan;
 SELECT probe('EXECUTE topk_p(1, 5)');
     probe    
 -------------
- node join 1
+ node ring 0
 (1 row)
 
 RESET plan_cache_mode;

@@ -37,11 +37,33 @@ sift_sbld_lru_front(SiftScopeBuild *b, KeyAcc *k)
 	k->in_lru = true;
 }
 
+/* The rings and the month map of a key: what the allocator holds for them, grown with the key's rows */
+static Size
+ring_bytes(const SiftScopeBuild *b, const KeyAcc *k)
+{
+	Size		n = (Size) b->nrings * sizeof(SiftTopKHeap);
+
+	for (uint32 q = 0; q < b->nrings; q++)
+		n += (Size) k->ring[q].cap * sizeof(SiftScopeNewest);
+	n += (Size) k->mmap.cap * sizeof(SiftMonthMapEntry) + (Size) k->mmap.ht_cap * sizeof(uint16);
+	for (uint32 i = 0; i < k->mmap.n; i++)
+		n += (Size) k->mmap.e[i].cap * sizeof(uint32);
+	return n;
+}
+
+/* MEM[MEM-SCOPE-10]: pools, nodes, slices, dict, spills added to the build budget (was 0 B) */
+static Size
+build_overhead(const SiftScopeBuild *b)
+{
+	return (Size) b->l0pool.maxlen + b->l1pool.maxlen + (Size) b->capnodes * sizeof(NodeRec) + (Size) b->capslices * sizeof(*b->slices) +
+		(Size) b->dict.cap * (sizeof(char *) + sizeof(uint32)) + (Size) b->dict.nslot * sizeof(uint32) + b->stats.l2_spill_bytes;
+}
+
 /* Brings the bytes the build counts for a key, the heap of open nodes and the list of keys with month cubes in memory up to what the key holds now */
 void
 sift_sbld_account(SiftScopeBuild *b, KeyAcc *k)
 {
-	Size		base = sizeof(*k) + (Size) b->nrings * sizeof(SiftTopKHeap) + sift_scube_bytes(&k->l2_all),
+	Size		base = sizeof(*k) + ring_bytes(b, k) + sift_scube_bytes(&k->l2_all),
 				open = sift_scube_bytes(&k->l1_all) + sift_smonth_bytes(&k->l1_months) + (Size) k->capmembers * sizeof(int64),
 				l2m = sift_smonth_bytes(&k->l2_months);
 
@@ -141,7 +163,7 @@ spill_l2(SiftScopeBuild *b, KeyAcc *k)
 void
 sift_sbld_evict_if_over(SiftScopeBuild *b)
 {
-	while (b->live > b->budget / 4 * 3)
+	while (b->live + build_overhead(b) > b->budget / 4 * 3)
 	{
 		uint32		ord = sift_mheap_top(&b->open);
 
@@ -151,7 +173,7 @@ sift_sbld_evict_if_over(SiftScopeBuild *b)
 		sift_sbld_account(b, b->acc[ord]);
 		b->stats.evictions++;
 	}
-	while (b->live > b->budget / 100 * 85 && b->lru_tail != NULL)
+	while (b->live + build_overhead(b) > b->budget / 100 * 85 && b->lru_tail != NULL)
 		spill_l2(b, b->lru_tail);
 	b->stats.peak_live = Max(b->stats.peak_live, b->live);
 }

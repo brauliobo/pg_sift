@@ -160,7 +160,6 @@ toplevel	col/am/rel.c	1
 toplevel	col/dsmreg.c	2
 toplevel	col/keystore/keystore_rel.c	1
 toplevel	col/names.c	1
-toplevel	col/scope_make.c	1
 toplevel	col/types.c	1
 toplevel	col/v1/build/build.c	3
 toplevel	col/v1/maint/merge_pick.c	1

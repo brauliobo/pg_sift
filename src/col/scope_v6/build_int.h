@@ -87,6 +87,7 @@ struct SiftScopeBuild
 	uint32	   *slot_of_key;	/* per granule scratch: slot of a key in this granule, UINT32_MAX none */
 	SiftScopeBuildStats stats;
 	uint32		nrings;
+	uint32		depth[SIFT_SCOPE_TOPK_RINGS_CAP];	/* the rows each ring keeps for a key */
 	SiftHomeSet homes;			/* the entity runs of the granule in hand and the homes of every entity so far (a scope clustered by primary key) */
 };
 

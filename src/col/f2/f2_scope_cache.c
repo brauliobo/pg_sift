@@ -35,6 +35,9 @@ typedef struct ScopeEntry
 	ScopeKey	key;			/* first: the hash key */
 	SiftScopeMeta meta;
 	MemoryContext cx;
+	MemoryContext rings_cx;		/* the unpacked rings, a child of cx the evictor drops before the entry (NULL: packed or none) */
+	const char *packed_rings;	/* the section as the object holds it, to pack the rings back when rings_cx goes */
+	uint64		packed_len;
 	struct SiftF2ScopeSnap *overlay;	/* the settled change of the summary the statements read last (f2_scope_snap.h), in cx */
 	int			pins;			/* a statement that reads it: only an entry nobody pins is dropped */
 	bool		private;		/* the cache had no room: it is the statement's own, and goes with it */
@@ -60,6 +63,17 @@ drop(ScopeEntry *e)
 	dlist_delete(&e->node);
 	MemoryContextDelete(e->cx);
 	hash_search(cache, &key, HASH_REMOVE, NULL);
+}
+
+static void
+rings_drop(ScopeEntry *e)
+{
+	MemoryContextDelete(e->rings_cx);
+	e->rings_cx = NULL;
+	e->meta.topk.p = e->packed_rings;
+	e->meta.topk.len = e->packed_len;
+	e->meta.topk_raw = NULL;
+	e->meta.topk_packed = true;
 }
 
 static ScopeEntry *
@@ -92,7 +106,10 @@ scope_evict_one(void)
 
 	if (e == NULL)
 		return false;
-	drop(e);
+	if (e->rings_cx != NULL)
+		rings_drop(e);
+	else
+		drop(e);
 	return true;
 }
 
@@ -165,16 +182,28 @@ load(Relation index, const SiftManifestScopeRef *ref, const ScopeKey *key, Memor
 {
 	ScopeEntry	fresh = {.key = *key};
 	ScopeEntry *e;
-	MemoryContext old;
+	MemoryContext old,
+				scratch;
 	uint64		len;
-	char	   *bytes;
+	char	   *obj,
+			   *bytes;
+	bool		ok;
 
-	fresh.cx = sift_mem_allocset_create(mcxt, "sift cache scope summary");
-	old = MemoryContextSwitchTo(fresh.cx);
-	bytes = sift_f2_scope_read_object(index, sift_part_open(index, ref->header_blk, ref->meta_gen, 0), &len);
-	if (bytes == NULL || !sift_scope_meta_open_ex(&fresh.meta, bytes, len, SIFT_SMETA_OPEN_LAZY_TOPK))
+	/* MEM[MEM-SCOPE-04]: entry cx with cache blocks, SiftPart dropped (1 KB first, 64 KB max) */
+	fresh.cx = sift_cache_create_context("sift cache scope summary");
+	MemoryContextSetParent(fresh.cx, mcxt);
+	scratch = sift_mem_allocset_create(mcxt, "sift scope summary open");
+	old = MemoryContextSwitchTo(scratch);
+	obj = sift_f2_scope_read_object(index, sift_part_open(index, ref->header_blk, ref->meta_gen, 0), &len);
+	if (obj == NULL)
 		SIFT_CORRUPT(index, "The summary of scope %d is damaged.", key->ord);
+	MemoryContextSwitchTo(fresh.cx);
+	bytes = memcpy(palloc(len), obj, len);
+	ok = sift_scope_meta_open_ex(&fresh.meta, bytes, len, SIFT_SMETA_OPEN_LAZY_TOPK);
 	MemoryContextSwitchTo(old);
+	MemoryContextDelete(scratch);
+	if (!ok)
+		SIFT_CORRUPT(index, "The summary of scope %d is damaged.", key->ord);
 	if (!sift_cache_room(MemoryContextMemAllocated(fresh.cx, true)))
 	{
 		e = MemoryContextAlloc(fresh.cx, sizeof(fresh));
@@ -234,11 +263,28 @@ sift_f2_scope_cache_peek(Relation index, const SiftPlanSnapshot *plan, int ord)
 bool
 sift_f2_scope_cache_rings(const SiftScopeMeta *m)
 {
-	SiftScopeMeta *entry_meta = (SiftScopeMeta *) m;
+	ScopeEntry *e = (ScopeEntry *) ((char *) m - offsetof(ScopeEntry, meta));
+	uint32		raw_len;
+	bool		ok;
 
-	if (m->topk_packed)
-		SCOPE_STAT(ring_unpacks);
-	return sift_scope_meta_ensure_topk(entry_meta);
+	if (!m->topk_packed)
+		return true;
+	SCOPE_STAT(ring_unpacks);
+	if (e->private)
+		return sift_scope_meta_ensure_topk(&e->meta);
+	/* MEM[MEM-SCOPE-04]: lazy ring unpack in evictable child cx, room then commit (was uncharged) */
+	memcpy(&raw_len, m->topk.p, sizeof(raw_len));
+	if (!sift_cache_room(raw_len))
+		return false;
+	e->packed_rings = m->topk.p;
+	e->packed_len = m->topk.len;
+	e->rings_cx = sift_mem_allocset_create(e->cx, "sift cache f2 scope rings");
+	e->meta.topk_cx = e->rings_cx;
+	ok = sift_scope_meta_ensure_topk(&e->meta);
+	if (!ok)
+		rings_drop(e);
+	(void) sift_cache_commit();
+	return ok;
 }
 
 struct SiftF2ScopeSnap **
