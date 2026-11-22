@@ -10,6 +10,7 @@
 
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_plan_rewrite.h"
 #include "core/errctx.h"
 
 static List *
@@ -78,6 +79,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	for (int k = 0; k < s->nparts; k++)
 		ints = lappend_int(ints, (int) s->part_index[k]);
 	ints = list_concat(ints, list_make3_int(s->par_strategy, s->par_workers, (int) s->text_indexoid));
+	ints = sift_v6_derive_pack(ints, s);
 	return lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL);
 }
 
@@ -137,6 +139,7 @@ sift_v6_spec_unpack(const List *l)
 	s->par_strategy = list_nth_int(ints, at++);
 	s->par_workers = list_nth_int(ints, at++);
 	s->text_indexoid = (Oid) list_nth_int(ints, at++);
+	sift_v6_derive_unpack(s, ints, at);
 	s->text_query = list_nth(l, 5) ? linitial_node(Const, (List *) list_nth(l, 5)) : NULL;
 	s->indexqual = lsecond(l);
 	s->filter = lthird(l);

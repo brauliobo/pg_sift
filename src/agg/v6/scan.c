@@ -24,6 +24,8 @@
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_vet.h"
+#include "agg/v6/v6_expr_str.h"
+#include "agg/v6/v6_rows_topn.h"
 #include "col/am.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_sink.h"
@@ -58,10 +60,20 @@ typedef struct V6Bin
 	SiftVec		vec;
 } V6Bin;
 
+/* a key or argument computed from columns (SiftV6Derive): its vector for the batch */
+typedef struct V6Derived
+{
+	const SiftV6Derive *d;
+	const SiftVec *src;
+	SiftVec    *cond[SIFT_V6_MAX_CASE];
+	SiftVxOut	out;
+} V6Derived;
+
 struct SiftV6Scan
 {
 	const SiftV6Spec *spec;
 	SiftV6Group *group;
+	SiftV6Rows *rows;			/* a row Top-N: the kept rows go here instead of the group */
 	SiftV6BatchFn emit;			/* where the batches go instead of the group: the engine of a participant of a parallel run */
 	void	   *emit_arg;
 	SiftV6ScanStats *stats;
@@ -72,6 +84,8 @@ struct SiftV6Scan
 	SiftVec   **argvec;
 	int			nbins;
 	V6Bin	   *bins;
+	int			nderived;
+	V6Derived  *derived;
 	SiftBatchSel bs;
 	MemoryContext batch_cx;
 	bool		count_only;
@@ -93,7 +107,11 @@ typedef struct SiftV6Scan V6Scan;
 static V6Col *
 col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 {
-	const int	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
+	int			leaf;
+
+	if (c.derive > 0)
+		c = s->spec->derive[c.derive - 1].src;
+	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
 
 	for (int i = 0; i < s->ncols; i++)
 		if (s->cols[i].leaf == leaf)
@@ -175,6 +193,31 @@ vec_takes_nan(const SiftV6Spec *spec, int v)
 	return v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v]);
 }
 
+/* The keys and arguments the spec computes from columns: their sources are read as values, their vectors replace the ones of the columns */
+static void
+setup_derived(V6Scan *s, const int *first)
+{
+	const SiftV6Spec *spec = s->spec;
+
+	s->derived = palloc0(Max(spec->nderive, 1) * sizeof(V6Derived));
+	for (int k = 0; k < spec->nderive; k++)
+	{
+		V6Derived  *dv = &s->derived[s->nderived++];
+
+		dv->d = &spec->derive[k];
+		dv->src = &col_for(s, first, dv->d->src, false, false)->vec;
+		for (int i = 0; i < dv->d->ncond; i++)
+			dv->cond[i] = &col_for(s, first, dv->d->cond[i], false, false)->vec;
+		sift_vx_out_init(&dv->out, CurrentMemoryContext);
+	}
+	for (int i = 0; i < spec->nkeys; i++)
+		if (spec->key[i].derive > 0)
+			s->keyvec[i] = &s->derived[spec->key[i].derive - 1].out.vec;
+	for (int j = 0; j < spec->naggs; j++)
+		if (spec->agg[j].arg.derive > 0)
+			s->argvec[j] = &s->derived[spec->agg[j].arg.derive - 1].out.vec;
+}
+
 static void
 scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 {
@@ -182,7 +225,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
 
-	s->cols = palloc0((spec->nkeys + nvec + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0)) * sizeof(V6Col));
+	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0)) * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
@@ -194,6 +237,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 	for (int d = 0; x != NULL && d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			col_for(s, first, (SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]}, false, false);
+	setup_derived(s, first);
 	s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
 	for (int i = 0; i < s->ncols; i++)
 		s->cols[i].by_code = s->cols[i].cls == SV6C_TEXT && !s->cols[i].json && read_by_code_only(spec, s->cols[i].attno);
@@ -213,6 +257,15 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 		s->cols[i].vec.type = s->cols[i].cls == SV6C_F64 ? SVEC_F64 : s->cols[i].cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
 	if (x != NULL && x->ndims > 0)
 		setup_pipe(s, first, star);
+}
+
+static void
+derive_columns(V6Scan *s)
+{
+	for (int k = 0; k < s->nderived; k++)
+		sift_vx_derive(s->derived[k].d, s->derived[k].src, s->derived[k].cond, &s->bs, &s->derived[k].out);
+	if (s->spec->affine)
+		sift_vx_affine_check(s->spec, s->keyvec[0], &s->bs);
 }
 
 /* The keys that are date_bin() of a column, for the rows of the batch: the error of PostgreSQL for a row that overflows, raised only for a row the scan keeps */
@@ -475,7 +528,7 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 
 /* The columns of the n rows from off of a batch that vet_slice kept, folded into the groups, the pipe or the caller's emit */
 static void
-fold_slice(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n)
+fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
 {
 	MemoryContextReset(s->batch_cx);
 	for (int i = 0; i < s->ncols; i++)
@@ -490,12 +543,15 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen
 		if (s->cols[i].json)
 			fill_exceptions(s, &s->cols[i], &views[s->cols[i].leaf], off, n);
 	}
+	derive_columns(s);
 	bin_keys(s);
 	s->stats->rows += s->bs.n_active;
 	if (s->emit != NULL)
 		s->emit(s->emit_arg, &s->bs, s->keyvec, s->argvec);
 	else if (s->pipe != NULL)
 		sift_v6_pipe_run(s->pipe, s->fact, &s->bs);
+	else if (s->rows != NULL)
+		sift_v6_rows_update(s->rows, &s->bs, s->keyvec, tid + off);
 	else
 		sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
 }
@@ -513,7 +569,7 @@ v6_sink(void *arg, const SiftF2Batch *b)
 		s->stats->batches++;
 		if (vet_slice(s, b->live, b->tid, visible, off, n) == 0)
 			continue;
-		fold_slice(s, b->views, NULL, b->part != NULL ? b->part->part_gen : 0, off, n);
+		fold_slice(s, b->views, NULL, b->tid, b->part != NULL ? b->part->part_gen : 0, off, n);
 	}
 }
 
@@ -586,6 +642,7 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 	s->bs.n_active = n_active;
 	s->bs.all_active = n_active == a->n;
 	s->bs.has_sel = false;
+	derive_columns(s);
 	bin_keys(s);
 	sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
 	s->stats->rows += s->bs.n_active;
@@ -638,26 +695,34 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	index_endscan(scan);
 }
 
+static void
+scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star, SiftV6ChunkFn next_chunk,
+		 void *chunk_arg)
+{
+	const SiftTidBridge *bridge = NULL;
+
+	s->count_only = s->rows == NULL && s->spec->ext == NULL && sift_v6_spec_count_only(s->spec);
+	scan_setup(s, sift_col_rel(index)->first, star);
+	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
+	if (next_chunk == NULL)
+		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
+	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
+	{
+		s->stats->chunks++;
+		s->stats->bridge_tids += bridge->ntids;
+		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
+	}
+	sift_v6_vet_end(&s->vet);
+	MemoryContextDelete(s->batch_cx);
+}
+
 void
 sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
 					 SiftV6ScanStats *stats, SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
-	const SiftTidBridge *bridge = NULL;
 
-	s.count_only = spec->ext == NULL && sift_v6_spec_count_only(spec);
-	scan_setup(&s, sift_col_rel(index)->first, star);
-	sift_v6_vet_begin(&s.vet, heap, snap, stats);
-	if (next_chunk == NULL)
-		scan_pass(&s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
-	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
-	{
-		stats->chunks++;
-		stats->bridge_tids += bridge->ntids;
-		scan_pass(&s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
-	}
-	sift_v6_vet_end(&s.vet);
-	MemoryContextDelete(s.batch_cx);
+	scan_run(&s, heap, index, keys, nkeys, snap, skip, nskip, star, next_chunk, chunk_arg);
 }
 
 SiftV6Fold *
@@ -698,7 +763,7 @@ sift_v6_fold_batch_scored(SiftV6Fold *s, const uint64 *tid, const uint64 *live, 
 		if (maybe != NULL)
 			vet_maybe(s, maybe, tid, off, n);
 		if (s->bs.n_active > 0)
-			fold_slice(s, views, score, 0, off, n);
+			fold_slice(s, views, score, tid, 0, off, n);
 	}
 }
 
@@ -816,4 +881,12 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	sift_v6_vet_end(&a.s[0].vet);
 	for (int i = 0; i < cohort->narms; i++)
 		MemoryContextDelete(a.s[i].batch_cx);
+}
+
+void
+sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats)
+{
+	V6Scan		s = {.spec = spec,.rows = rows,.stats = stats};
+
+	scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, NULL, NULL, NULL);
 }

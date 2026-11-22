@@ -31,6 +31,8 @@ measure_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, const SiftV6Agg *a, 
 	}			map[] = {{SV6_COUNT_STAR, SPM_COUNT_STAR}, {SV6_COUNT, SPM_COUNT}, {SV6_SUM, SPM_SUM}, {SV6_AVG, SPM_AVG}, {SV6_MIN, SPM_MIN}, {SV6_MAX, SPM_MAX},
 	{SV6_COUNT_DISTINCT, SPM_COUNT_DISTINCT}};
 
+	if (sift_v6_class(a->arg.typid) == SV6C_TEXT)
+		return false;
 	for (int i = 0; i < lengthof(map); i++)
 		if (map[i].kind == a->kind && a->nxcols == 0)
 		{
@@ -45,7 +47,7 @@ static bool
 query_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, SiftV6ProjQuery *q)
 {
 	*q = (SiftV6ProjQuery) {.limit = -1};
-	if (spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys == 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
+	if (spec->nderive > 0 || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys == 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 		q->group[q->ngroup++] = (SiftProjKey) {.leaf = h->store->att_first[spec->key[i].attno],.fn = SPF_COLUMN};

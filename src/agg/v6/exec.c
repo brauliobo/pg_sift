@@ -21,6 +21,12 @@
 #include "agg/v6/v6_proj_exec.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_unnest_run.h"
+#include "agg/v6/v6_qual.h"
+#include "agg/v6/v6_rows_topn.h"
+#include "agg/v6/v6_topk_run.h"
+#include "access/tableam.h"
+#include "col/am.h"
+#include "col/f2/f2.h"
 #include "agg/exec/int.h"
 #include "col/f2/f2_store_scan.h"
 #include "core/cpu.h"
@@ -51,6 +57,10 @@ typedef struct V6State
 	SiftV6Gpu	gpu;
 	SiftV6StarRun *star;		/* the dimensions of a star join */
 	uint32		star_passes;
+	SiftV6TopKRun *topk;
+	SiftV6Rows *rows;
+	IndexFetchTableData *fetch;
+	TupleTableSlot *fetch_slot;
 	bool		ran;
 	bool		explain_only;
 	SiftV6FuseArm arm;			/* in the registry of the statement: arms of one index and one set of keys scan once */
@@ -71,7 +81,7 @@ begin_index(V6State *st, CustomScanState *node, V6Source *src, Oid indexoid)
 {
 	src->index = index_open(indexoid, AccessShareLock);
 	src->heap = table_open(src->index->rd_index->indrelid, AccessShareLock);
-	ExecIndexBuildScanKeys(&node->ss.ps, src->index, st->spec->indexqual, false, &src->keys, &src->nkeys, &src->rtkeys, &src->nrt, NULL, NULL);
+	sift_v6_qual_scankeys(&node->ss.ps, src->index, st->spec->indexqual, &src->keys, &src->nkeys, &src->rtkeys, &src->nrt);
 	sift_v6_json_scankeys(st->spec, src->index, &src->keys, &src->nkeys);
 }
 
@@ -93,7 +103,8 @@ begin_star(V6State *st, CustomScanState *node, EState *estate, int eflags)
 static bool
 v6_fusable(const V6State *st)
 {
-	return st->spec->nparts == 0 && !st->spec->is_table && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid);
+	return st->spec->nparts == 0 && !st->spec->is_table && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid)
+		&& !st->spec->rows && st->spec->topk == 0;
 }
 
 static void
@@ -240,7 +251,7 @@ pass_keys(V6State *st, const SiftV6FuseCohort *c, List *quals, int *nkeys)
 
 	if (c->same_keys)
 		return (*nkeys = src->nkeys, src->keys);
-	ExecIndexBuildScanKeys(&st->css.ss.ps, src->index, quals, false, &keys, nkeys, &rtkeys, &nrt, NULL, NULL);
+	sift_v6_qual_scankeys(&st->css.ss.ps, src->index, quals, &keys, nkeys, &rtkeys, &nrt);
 	SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
 	sift_v6_json_scankeys(st->spec, src->index, &keys, nkeys);
 	return keys;
@@ -275,6 +286,46 @@ v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 		sift_v6_group_finish(arms[i].group);
 }
 
+static bool
+proj_stream_next(void *arg, Datum *values, bool *isnull)
+{
+	return sift_v6_proj_next(arg, values, isnull);
+}
+
+static void
+v6_run_rows(V6State *st, EState *estate)
+{
+	const V6Source *src = &st->sources[0];
+
+	st->rows = sift_v6_rows_new(st->gcx, st->spec);
+	sift_v6_scan_rows(st->spec, st->rows, src->heap, src->index, src->keys, src->nkeys, estate->es_snapshot, &st->stats);
+	sift_v6_rows_finish(st->rows);
+	st->fetch = sift_table_index_fetch_begin(src->heap);
+	st->fetch_slot = table_slot_create(src->heap, NULL);
+}
+
+/* the next winner of a row Top-N: its columns from the heap row at its address */
+static bool
+v6_next_row(V6State *st, TupleTableSlot *slot)
+{
+	ItemPointerData tid;
+	bool		again = false,
+				dead = false;
+	uint64		addr;
+	int			i = 0;
+
+	if (!sift_v6_rows_next(st->rows, &addr))
+		return false;
+	sift_f2_tid_set(&tid, addr);
+	SIFT_INVARIANT(table_index_fetch_tuple(st->fetch, &tid, st->css.ss.ps.state->es_snapshot, st->fetch_slot, &again, &dead), "a row the scan kept is not in the heap");
+	foreach_node(TargetEntry, te, ((CustomScan *) st->css.ss.ps.plan)->custom_scan_tlist)
+	{
+		slot->tts_values[i] = slot_getattr(st->fetch_slot, ((Var *) te->expr)->varattno, &slot->tts_isnull[i]);
+		i++;
+	}
+	return true;
+}
+
 static void
 v6_run(V6State *st, EState *estate)
 {
@@ -286,12 +337,29 @@ v6_run(V6State *st, EState *estate)
 			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->sources[k].rtkeys, st->sources[k].nrt);
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
 	st->ran = true;
+	if (st->spec->rows)
+	{
+		v6_run_rows(st, estate);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	if (v6_serve_projection(st, estate->es_snapshot))
 		sift_v6_fuse_detach(&st->arm);
 	else if (v6_fusable(st) && (c = sift_v6_fuse_lead(estate, &st->arm, false, st->explain_only)) != NULL)
 		v6_run_fused(st, c, estate);
 	else
 		v6_scan(st, estate->es_snapshot);
+	if (st->spec->topk > 0)
+	{
+		PlanState  *ps = &st->css.ss.ps;
+		TupleTableSlot *slot = st->css.ss.ss_ScanTupleSlot;
+
+		st->topk = sift_v6_topk_run_new(st->gcx, st->spec, slot->tts_tupleDescriptor);
+		if (st->proj.used)
+			sift_v6_topk_run_stream(st->topk, proj_stream_next, &st->proj, ps->qual, ps->ps_ExprContext, slot);
+		else
+			sift_v6_topk_run_groups(st->topk, st->group, ps->qual, ps->ps_ExprContext, slot);
+	}
 	MemoryContextSwitchTo(old);
 }
 
@@ -322,7 +390,8 @@ v6_next(ScanState *ss)
 		v6_run(st, ss->ps.state);
 	ExecClearTuple(slot);
 	MemoryContextSwitchTo(ss->ps.ps_ExprContext->ecxt_per_tuple_memory);
-	if (!v6_group_next(st, slot))
+	if (st->rows != NULL ? !v6_next_row(st, slot) :
+		st->topk != NULL ? !sift_v6_topk_run_next(st->topk, slot->tts_values, slot->tts_isnull) : !v6_group_next(st, slot))
 		return NULL;
 	return ExecStoreVirtualTuple(slot);
 }
@@ -344,12 +413,24 @@ v6_exec(CustomScanState *node)
 }
 
 static void
+v6_fetch_end(V6State *st)
+{
+	if (st->fetch == NULL)
+		return;
+	table_index_fetch_end(st->fetch);
+	ExecDropSingleTupleTableSlot(st->fetch_slot);
+	st->fetch = NULL;
+	st->fetch_slot = NULL;
+}
+
+static void
 v6_end(CustomScanState *node)
 {
 	V6State    *st = (V6State *) node;
 
 	if (st->par != NULL)
 		sift_v6_par_node_end(st->par);
+	v6_fetch_end(st);
 	sift_v6_gpu_end(&st->gpu);
 	if (st->group != NULL)
 		sift_v6_group_free(st->group);
@@ -373,12 +454,14 @@ v6_rescan(CustomScanState *node)
 
 	if (st->par != NULL)
 		sift_v6_par_node_end(st->par);
+	v6_fetch_end(st);
 	sift_v6_gpu_end(&st->gpu);
 	if (st->group != NULL)
 		sift_v6_group_free(st->group);
 	if (st->gcx != NULL)
 		MemoryContextDelete(st->gcx);
 	st->gcx = NULL;
+	st->rows = NULL;
 	st->gpu = (SiftV6Gpu) {0};
 	st->group = NULL;
 	st->ran = false;
@@ -389,6 +472,7 @@ v6_rescan(CustomScanState *node)
 		if (node->ss.ps.chgParam != NULL)
 			UpdateChangedParamSet(child, node->ss.ps.chgParam);
 	st->proj = (SiftV6ProjResult) {0};
+	st->topk = NULL;
 	st->stats = (SiftV6ScanStats) {0};
 	sift_v6_fuse_detach(&st->arm);
 }

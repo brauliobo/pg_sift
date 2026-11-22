@@ -182,23 +182,34 @@ sift_ht_reserve(SiftSaltedHT *ht, uint32 n)
 		ht_grow(ht, cap);
 }
 
+static void
+ext_resize(SiftSaltedHT *ht, uint32 cap)
+{
+	uint8	   *slab = MemoryContextAllocAligned(ht->cxt, (size_t) cap * ht->ext_stride, SIFT_HT_EXT_ALIGN, MCXT_ALLOC_ZERO);
+
+	if (ht->ext_slab)
+	{
+		memcpy(slab, ht->ext_slab, (size_t) ht->ext_used * ht->ext_stride);
+		pfree(ht->ext_slab);
+	}
+	ht->ext_slab = slab;
+	ht->ext_cap = cap;
+}
+
+void
+sift_ht_presize(SiftSaltedHT *ht, uint32 n)
+{
+	sift_ht_reserve(ht, n);
+	if (n > ht->ext_cap)
+		ext_resize(ht, n);
+}
+
 /* A zeroed state block for a new group */
 static uint32
 ht_ext_new(SiftSaltedHT *ht)
 {
 	if (ht->ext_used == ht->ext_cap)
-	{
-		const uint32 cap = ht->ext_cap ? ht->ext_cap << 1 : SIFT_HT_MIN_SLOTS;
-		uint8	   *slab = MemoryContextAllocAligned(ht->cxt, (size_t) cap * ht->ext_stride, SIFT_HT_EXT_ALIGN, MCXT_ALLOC_ZERO);
-
-		if (ht->ext_slab)
-		{
-			memcpy(slab, ht->ext_slab, (size_t) ht->ext_used * ht->ext_stride);
-			pfree(ht->ext_slab);
-		}
-		ht->ext_slab = slab;
-		ht->ext_cap = cap;
-	}
+		ext_resize(ht, ht->ext_cap ? ht->ext_cap << 1 : SIFT_HT_MIN_SLOTS);
 	memset(ht->ext_slab + (size_t) ht->ext_used * ht->ext_stride, 0, ht->ext_stride);
 	return ht->ext_used++;
 }

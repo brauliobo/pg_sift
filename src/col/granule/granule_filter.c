@@ -9,6 +9,7 @@
 #include "col/f2/f2_pred.h"
 #include "col/fsst.h"
 #include "col/granule/cfilt_cc.h"
+#include "col/granule/cfilt_str_simd.h"
 #include "col/granule/granule_filter.h"
 #include "col/like_simd.h"
 #include "core/cmp.h"
@@ -64,8 +65,9 @@ sift_dict_pred_prepare(const SiftColPred *p, uint32 n, const uint32 *off, const 
 	switch (p->op)
 	{
 		case SIFT_COLOP_EQ:
+		case SIFT_COLOP_NE:
 		case SIFT_COLOP_IN:
-			for (int j = 0; j < (p->op == SIFT_COLOP_EQ ? 1 : p->nvals); j++)
+			for (int j = 0; j < (p->op == SIFT_COLOP_IN ? p->nvals : 1); j++)
 			{
 				uint32		c = dict_lower(bytes, off, n, p->vals[j].v.s, p->vals[j].len);
 
@@ -103,6 +105,7 @@ sift_dict_pred_prepare(const SiftColPred *p, uint32 n, const uint32 *off, const 
 			}
 			break;
 		case SIFT_COLOP_CONTAINS:
+		case SIFT_COLOP_NOTCONTAINS:
 		case SIFT_COLOP_ICONTAINS:
 			{
 				SiftLikeNeedle nd;
@@ -134,6 +137,8 @@ sift_dict_pred_prepare(const SiftColPred *p, uint32 n, const uint32 *off, const 
 				if (sift_f2_str_pred(p, bytes + off[c], off[c + 1] - off[c]))
 					set_codes(r, c, c + 1);
 	}
+	if (p->op == SIFT_COLOP_NE || p->op == SIFT_COLOP_NOTCONTAINS)
+		sift_cfs_invert(r->bits, n);
 	r->min_match = n;
 	for (uint32 c = 0; c < n; c++)
 		if ((r->bits[c >> 6] >> (c & 63)) & 1)
@@ -587,10 +592,12 @@ sift_granule_filter_compressed(const SiftGranuleView *v, const SiftCfiltPred *cp
 		res = numeric_dense(cp, &c, dense);
 	else if (c.enc == SIFT_CENC_DICT_CODE)
 		res = dict_dense(cp, &c, dense);
-	else if (c.enc == SIFT_CENC_STR_FSST)
-		res = fsst_dense(cp, &c, dense);
 	else
-		return SIFT_CFILT_UNSUPPORTED;
+	{
+		res = c.enc == SIFT_CENC_STR_FSST ? fsst_dense(cp, &c, dense) : SIFT_CFILT_UNSUPPORTED;
+		if (res == SIFT_CFILT_UNSUPPORTED && sift_cfstr_bits(cp, &c, dense))
+			res = dense_result(dense, c.nnonnull);
+	}
 	if (res == SIFT_CFILT_UNSUPPORTED || res == SIFT_CFILT_ALL_FALSE)
 		return res;
 	if (res == SIFT_CFILT_ALL_TRUE)

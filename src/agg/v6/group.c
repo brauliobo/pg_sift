@@ -86,6 +86,13 @@ fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const
 			{
 				const bool	mn = a->kind == SV6_MIN;
 
+				if (v->type == SVEC_STRVIEW)
+				{
+					const SiftStrView *sv = &((const SiftStrView *) v->data)[r];
+
+					sift_strmm_offer(g->slab, (SiftStrMM *) acc, mn, sift_strview_bytes(sv), sv->len);
+					break;
+				}
 				if (v->type == SVEC_F64)
 				{
 					double		x = ((const double *) v->data)[r];
@@ -144,6 +151,13 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 		if (v6g_is_ext(a))
 		{
 			v6g_ext_plain(g, a, acc, v, mk, bs->n_raw);
+			continue;
+		}
+		if (v->type == SVEC_STRVIEW)
+		{
+			for (uint16 r = 0; r < bs->n_raw; r++)
+				if (((mk[r >> 6] >> (r & 63)) & 1) && is_valid(v, r))
+					fold_row(g, a, acc, v, NULL, r);
 			continue;
 		}
 		if (!v->all_valid)
@@ -237,40 +251,7 @@ append_key_str(SiftV6Group *g, const char *p, uint32 len)
 	appendBinaryStringInfo(&g->kbuf, p, len);
 }
 
-static void
-key_bytes(SiftV6Group *g, const V6Set *set, SiftVec *const *keyvec, uint16 r, uint64 *nulls)
-{
-	resetStringInfo(&g->kbuf);
-	*nulls = 0;
-	for (int i = 0; i < set->nk; i++)
-	{
-		const SiftVec *kv = keyvec[set->kidx[i]];
-
-		if (!is_valid(kv, r))
-			*nulls |= UINT64CONST(1) << i;
-		else if (kv->type == SVEC_DICT32)
-		{
-			const SiftGranuleDict *d = kv->dict;
-			const uint32 c = ((const uint32 *) kv->data)[r];
-
-			append_key_str(g, d->bytes + d->off[c], d->off[c + 1] - d->off[c]);
-		}
-		else if (kv->type == SVEC_STRVIEW)
-		{
-			const SiftStrView *s = &((const SiftStrView *) kv->data)[r];
-
-			append_key_str(g, (const char *) sift_strview_bytes(s), s->len);
-		}
-		else
-		{
-			int64		x = int_at(kv, r);
-
-			appendBinaryStringInfo(&g->kbuf, (const char *) &x, sizeof(x));
-		}
-	}
-}
-
-/* The group of each distinct code of a dictionary, found once for the batch and not for each row: set->ht holds a slot of every group the batch makes, and key_bytes gives the same bytes for a string */
+/* The group of each distinct code of a dictionary, found once for the batch and not for each row: set->ht holds a slot of every group the batch makes, with the bytes sift_wide_batch_build gives a string */
 static SiftAggSlot64 *
 code_slot(SiftV6Group *g, V6Set *set, const SiftGranuleDict *d, uint32 code)
 {
@@ -315,18 +296,28 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 	sift_ht_reserve(&set->ht, n);
 	if (coded)
 		code_slots(g, set, keyvec[set->kidx[0]], n);
-	else if (set->wide)
-		for (uint16 k = 0; k < n; k++)
-		{
-			uint64		nulls;
-			bool		found;
+	else if (set->packed)
+	{
+		SiftVec    *kvs[SIFT_PACK_MAX_KEYS];
 
-			key_bytes(g, set, keyvec, g->sel[k], &nulls);
-			g->slots[k] = sift_ht_upsert_wide(&set->ht, v6g_group_hash(set, g->kbuf.data, g->kbuf.len, nulls), g->kbuf.data, g->kbuf.len, nulls, &found);
-			for (int d = 0; d < g->ndist; d++)
+		for (int i = 0; i < set->nk; i++)
+			kvs[i] = keyvec[set->kidx[i]];
+		sift_pack_batch(&set->pack, kvs, g->sel, n, g->hash, g->ikey);
+		sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, n, g->slots);
+		for (int d = 0; d < g->ndist; d++)
+			for (uint16 k = 0; k < n; k++)
 				if (v6g_row_takes(g, &g->spec->agg[g->dagg[d]], g->sel[k]))
-					v6g_dist_group_row(g, set, g->dagg[d], argvec, g->sel[k], g->kbuf.data, g->kbuf.len, nulls);
-		}
+					v6g_dist_group_row(g, set, g->dagg[d], argvec, g->sel[k], &g->ikey[k], sizeof(SiftInlineKey16), 0);
+	}
+	else if (set->wide)
+	{
+		sift_wide_batch_build(&g->wb, set->kidx, set->nk, keyvec, g->sel, n);
+		sift_wide_batch_upsert(&set->ht, &g->wb, n, g->slots);
+		for (int d = 0; d < g->ndist; d++)
+			for (uint16 k = 0; k < n; k++)
+				if (v6g_row_takes(g, &g->spec->agg[g->dagg[d]], g->sel[k]))
+					v6g_dist_group_row(g, set, g->dagg[d], argvec, g->sel[k], g->wb.buf + g->wb.off[k], g->wb.len[k], g->wb.nulls[k]);
+	}
 	else
 	{
 		const SiftVec *kv = keyvec[set->kidx[0]];
@@ -348,9 +339,17 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 					v6g_dist_group_row(g, set, g->dagg[d], argvec, g->sel[k], &g->ikey[k].i64[0], sizeof(int64), (uint64) g->ikey[k].i64[1]);
 	}
 	for (int j = 0; j < g->spec->naggs; j++)
+	{
+		if (g->spec->agg[j].kind == SV6_COUNT_STAR && g->spec->agg[j].fclause == 0)
+		{
+			for (uint16 k = 0; k < n; k++)
+				((V6Acc *) (sift_ht_ext(&set->ht, g->slots[k]) + g->off[j]))->n++;
+			continue;
+		}
 		for (uint16 k = 0; k < n; k++)
 			if (v6g_row_takes(g, &g->spec->agg[j], g->sel[k]))
 				fold_row(g, &g->spec->agg[j], (V6Acc *) (sift_ht_ext(&set->ht, g->slots[k]) + g->off[j]), argvec[j], argvec[g->spec->naggs + j], g->sel[k]);
+	}
 }
 
 bool
@@ -393,6 +392,11 @@ merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 {
 	if (v6g_is_ext(a))
 		v6g_ext_merge(g, a, d, s);
+	else if ((a->kind == SV6_MIN || a->kind == SV6_MAX) && sift_v6_class(a->arg.typid) == SV6C_TEXT)
+	{
+		if (s->n != 0)
+			sift_strmm_merge((SiftStrMM *) d, (const SiftStrMM *) s, a->kind == SV6_MIN);
+	}
 	else
 		sift_v6_acc_combine(v6g_acc_op(a), d, s);
 }
@@ -412,6 +416,23 @@ shape_merge(const SiftRadixShape *sh, SiftAggSlot64 *dst, uint8 *dst_ext, const 
 		merge_acc(g, &spec->agg[j], (V6Acc *) dst_ext + j, (const V6Acc *) src_ext + j);
 }
 
+/* the keys of the set as fixed-width integers of at most 12 bytes in all: one inline key (v6_group_fast.h) */
+static bool
+pack_plan(const SiftV6Spec *spec, V6Set *set)
+{
+	uint8		width[SIFT_V6_MAX_KEYS];
+	bool		sign[SIFT_V6_MAX_KEYS];
+
+	for (int i = 0; i < set->nk; i++)
+	{
+		const Oid	t = spec->key[set->kidx[i]].typid;
+
+		width[i] = t == BOOLOID ? 1 : t == INT2OID ? 2 : (t == INT4OID || t == DATEOID) ? 4 : (t == INT8OID || t == TIMESTAMPOID || t == TIMESTAMPTZOID) ? 8 : 0;
+		sign[i] = t != BOOLOID;
+	}
+	return set->nk <= SIFT_PACK_MAX_KEYS && sift_pack_plan(width, sign, set->nk, &set->pack);
+}
+
 static void
 set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 {
@@ -422,7 +443,8 @@ set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 	for (int i = 0; i < spec->nkeys; i++)
 		if ((mask >> i) & 1)
 			set->kidx[set->nk++] = i;
-	set->wide = set->nk > 1 || (set->nk == 1 && sift_v6_class(spec->key[set->kidx[0]].typid) == SV6C_TEXT);
+	set->packed = pack_plan(spec, set);
+	set->wide = !set->packed && (set->nk > 1 || (set->nk == 1 && sift_v6_class(spec->key[set->kidx[0]].typid) == SV6C_TEXT));
 	set->plain_row = true;
 	if (set->nk == 0)
 		set->plain = palloc0(Max(spec->naggs, 1) * sizeof(V6Acc));
@@ -459,6 +481,21 @@ sift_v6_group_recycle(SiftV6Group *g)
 	v6g_dist_recycle(g);
 }
 
+/* the group tables for the groups the planner expects, when that many (a quarter of the memory the groups may take at most) */
+static void
+presize(SiftV6Group *g)
+{
+	const uint64 per_group = sizeof(SiftAggSlot64) + 1 + g->stride;
+	const uint64 room = (g->budget - g->dist_budget) / 4 / per_group;
+	const uint64 est = g->spec->groups_est / g->nsets;
+
+	if (est < 4 * SIFT_VEC_LEN)
+		return;
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].nk > 0)
+			sift_ht_presize(&g->set[s].ht, (uint32) Min(est, room));
+}
+
 SiftV6Group *
 sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 {
@@ -483,6 +520,13 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	initStringInfo(&g->kbuf);
 	for (int s = 0; s < g->nsets; s++)
 		set_init(g, &g->set[s], spec->nsets == 0 ? all : spec->set_mask[s]);
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].wide && g->wb.buf == NULL)
+			sift_wide_batch_init(&g->wb, cx, SIFT_VEC_LEN);
+	for (int j = 0; j < spec->naggs; j++)
+		if ((spec->agg[j].kind == SV6_MIN || spec->agg[j].kind == SV6_MAX) && sift_v6_class(spec->agg[j].arg.typid) == SV6C_TEXT && g->slab == NULL)
+			g->slab = sift_strslab_new(cx);
+	presize(g);
 	MemoryContextSwitchTo(old);
 	return g;
 }
@@ -508,7 +552,17 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const
 		SiftAggSlot64 *slot;
 
 		sift_ht_reserve(&set->ht, 1);
-		if (set->wide)
+		if (set->packed)
+		{
+			int64		x[SIFT_PACK_MAX_KEYS];
+
+			for (int i = 0; i < set->nk; i++)
+				x[i] = key[set->kidx[i]];
+			g->hash[0] = sift_pack_key(&set->pack, x, key_nulls, &g->ikey[0]);
+			sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, 1, g->slots);
+			slot = g->slots[0];
+		}
+		else if (set->wide)
 		{
 			bool		found;
 
@@ -610,6 +664,8 @@ int_datum(Oid typid, int64 x)
 			return Int32GetDatum((int32) x);
 		case BOOLOID:
 			return BoolGetDatum(x != 0);
+		case NUMERICOID:
+			return NumericGetDatum(int64_to_numeric(x));
 		default:
 			return Int64GetDatum(x);
 	}
@@ -625,8 +681,8 @@ grouping_datum(const SiftV6Func *f, uint32 mask)
 	return Int32GetDatum(v);
 }
 
-static Datum
-agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull)
+Datum
+v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull)
 {
 	const SiftV6Spec *spec = g->spec;
 
@@ -675,6 +731,8 @@ agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mas
 			*isnull = acc->n == 0;
 			if (acc->n == 0)
 				return (Datum) 0;
+			if (sift_v6_class(a->arg.typid) == SV6C_TEXT)
+				return PointerGetDatum(cstring_to_text_with_len((const char *) ((const SiftStrMM *) acc)->ptr, ((const SiftStrMM *) acc)->len));
 			if (a->arg.typid == FLOAT4OID)
 				return Float4GetDatum((float4) v6acc_f64(acc));
 			if (a->arg.typid == FLOAT8OID)
@@ -685,11 +743,25 @@ agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mas
 	}
 }
 
-static void
-key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull)
+void
+v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, int only)
 {
 	const SiftV6Spec *spec = g->spec;
 
+	if (set->packed)
+	{
+		for (int i = 0; i < set->nk; i++)
+		{
+			int64		x = 0;
+			const int	k = set->kidx[i];
+
+			if (only >= 0 && k != only)
+				continue;
+			isnull[k] = !sift_pack_get(&set->pack, &s->key, i, &x);
+			values[k] = isnull[k] ? (Datum) 0 : int_datum(spec->key[k].typid, x);
+		}
+		return;
+	}
 	if (!set->wide)
 	{
 		isnull[set->kidx[0]] = s->key.i64[1] != 0;
@@ -713,7 +785,8 @@ key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const
 				uint32		n;
 
 				memcpy(&n, p, sizeof(n));
-				values[k] = PointerGetDatum(cstring_to_text_with_len((const char *) p + sizeof(n), n));
+				if (only < 0 || k == only)
+					values[k] = PointerGetDatum(cstring_to_text_with_len((const char *) p + sizeof(n), n));
 				p += sizeof(n) + n;
 			}
 			else
@@ -721,7 +794,8 @@ key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const
 				int64		x;
 
 				memcpy(&x, p, sizeof(x));
-				values[k] = int_datum(spec->key[k].typid, x);
+				if (only < 0 || k == only)
+					values[k] = int_datum(spec->key[k].typid, x);
 				p += sizeof(x);
 			}
 		}
@@ -789,9 +863,9 @@ store_groups(SiftV6Group *g, V6Set *set, const SiftSaltedHT *ht)
 		const V6Acc *acc = (const V6Acc *) sift_ht_ext(ht, s);
 
 		memset(isnull, true, g->spec->nkeys * sizeof(bool));
-		key_datums(g, set, ht, s, values, isnull);
+		v6g_key_datums(g, set, ht, s, values, isnull, -1);
 		for (int j = 0; j < g->spec->naggs; j++)
-			values[g->spec->nkeys + j] = agg_datum(g, &g->spec->agg[j], &acc[j], set->mask, &isnull[g->spec->nkeys + j]);
+			values[g->spec->nkeys + j] = v6g_agg_datum(g, &g->spec->agg[j], &acc[j], set->mask, &isnull[g->spec->nkeys + j]);
 		tuplestore_putvalues(g->store, g->desc, values, isnull);
 		MemoryContextReset(row);
 	}
@@ -818,7 +892,7 @@ store_plain(SiftV6Group *g, V6Set *set)
 
 	memset(isnull, true, g->spec->nkeys * sizeof(bool));
 	for (int j = 0; j < g->spec->naggs; j++)
-		values[g->spec->nkeys + j] = agg_datum(g, &g->spec->agg[j], &set->plain[j], set->mask, &isnull[g->spec->nkeys + j]);
+		values[g->spec->nkeys + j] = v6g_agg_datum(g, &g->spec->agg[j], &set->plain[j], set->mask, &isnull[g->spec->nkeys + j]);
 	tuplestore_putvalues(g->store, g->desc, values, isnull);
 }
 
@@ -879,7 +953,7 @@ next_group(SiftV6Group *g, V6Set *set, Datum *values, bool *isnull)
 	if (set->emit_at >= set->ht.capacity)
 		return NULL;
 	s = &set->ht.slots[set->emit_at++];
-	key_datums(g, set, &set->ht, s, values, isnull);
+	v6g_key_datums(g, set, &set->ht, s, values, isnull, -1);
 	return (const V6Acc *) sift_ht_ext(&set->ht, s);
 }
 
@@ -913,7 +987,7 @@ sift_v6_group_next(SiftV6Group *g, Datum *values, bool *isnull)
 		if ((acc = next_group(g, set, values, isnull)) == NULL)
 			continue;
 		for (int j = 0; j < spec->naggs; j++)
-			values[spec->nkeys + j] = agg_datum(g, &spec->agg[j], &acc[j], set->mask, &isnull[spec->nkeys + j]);
+			values[spec->nkeys + j] = v6g_agg_datum(g, &spec->agg[j], &acc[j], set->mask, &isnull[spec->nkeys + j]);
 		return true;
 	}
 	return false;
@@ -946,6 +1020,10 @@ sift_v6_group_free(SiftV6Group *g)
 {
 	v6g_dist_free(g);
 	v6g_filter_free(g);
+	if (g->wb.buf != NULL)
+		sift_wide_batch_free(&g->wb);
+	if (g->slab != NULL)
+		sift_strslab_free(g->slab);
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].spill != NULL)
 			sift_gspill_free(g->set[s].spill);

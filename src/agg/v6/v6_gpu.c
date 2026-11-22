@@ -375,7 +375,7 @@ sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot 
 	SiftV6Group *groups;
 
 	*gpu = (SiftV6Gpu) {0};
-	if (sift_gpu_mode == SIFT_GPU_OFF || !device_shape(spec))
+	if (sift_gpu_mode == SIFT_GPU_OFF || spec->nderive > 0 || spec->affine || !device_shape(spec))
 		return NULL;
 	g = MemoryContextAllocZero(gcx, sizeof(GpuQuery));
 	g->cx = gcx;

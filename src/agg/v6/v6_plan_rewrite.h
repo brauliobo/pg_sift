@@ -1,0 +1,47 @@
+/*
+ * agg/v6/v6_plan_rewrite.h - what the planner of SiftAggV6 does to an aggregate query before it compiles it (CB-4):
+ *   SUM(x + C) of an int2 column x and a constant C is SUM(x) + C * COUNT(x) (NULL where COUNT(x) is 0): ninety such sums are two accumulators;
+ *   a key that is the first key plus or minus a constant (ClientIP - 1 next to ClientIP) is a function of it: the scan groups by the first and the plan's projection makes the others;
+ *   DATE_TRUNC('minute', t) of a timestamp is the date_bin of a fixed stride (the bin the scan has);
+ *   length(text), extract(minute | hour FROM timestamp), the host regexp_replace of an URL and CASE WHEN column = constant .. THEN text ELSE constant END are the keys and arguments the scan computes (SiftV6Derive).
+ */
+#ifndef SIFT_AGG_V6_PLAN_REWRITE_H
+#define SIFT_AGG_V6_PLAN_REWRITE_H
+
+#include "postgres.h"
+
+#include "nodes/pathnodes.h"
+
+#include "agg/v6/v6.h"
+
+typedef struct SiftV6Resolver
+{
+	/* e is a column of the index the scan reads: its SiftV6Col (the planner's column_of) */
+	bool		(*column) (void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out);
+	void	   *ctx;
+} SiftV6Resolver;
+
+/* a copy of expr in which every SUM(x + C) is the expression over SUM(x) and COUNT(x); the same tree gives the same copy, so that the plan can make it again */
+extern Node *sift_v6_collapse_offset_sums(Node *expr);
+
+/* e is the first key plus delta, a column of type *type (int4 or int8): the first key's Var (not copied) */
+extern const Var *sift_v6_affine_of(const Expr *e, int64 *delta, Oid *type);
+/* the range of x for which x + delta stays in the type: its bounds, tightened by the delta of one more derived key */
+extern void sift_v6_affine_range(Oid type, int64 delta, int64 *lo, int64 *hi);
+
+/* e is date_trunc(unit, timestamp column) of a unit of fixed length: its source column and the bin (key: the index the scan gives it) */
+extern bool sift_v6_date_trunc_bin(const SiftV6Resolver *rs, const Expr *e, SiftV6Col *src, int64 *stride_us);
+
+/* e is a key or an argument the scan computes: its derivation (src and the conditions are columns of the index) and the type of the vector; key: a key (else an argument) */
+extern bool sift_v6_derive_of(const SiftV6Resolver *rs, const Expr *e, bool key, SiftV6Derive *d, Oid *restype);
+
+/* The path of the grouped paths of input_rel with the order of ORDER BY .. LIMIT (v6_group_topk.h), added to output_rel (UPPERREL_ORDERED) */
+/* LIMIT + OFFSET of the query when they are constants and the statement is ordered (0: otherwise) */
+extern uint32 sift_v6_topk_of(const Query *q);
+extern void sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+
+/* The derivations, the derived key and argument columns and the affine range of a spec as ints after those of sift_v6_spec_pack, and back from position at */
+extern List *sift_v6_derive_pack(List *ints, const SiftV6Spec *s);
+extern void sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at);
+
+#endif							/* SIFT_AGG_V6_PLAN_REWRITE_H */

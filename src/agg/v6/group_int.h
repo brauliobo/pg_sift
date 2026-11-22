@@ -18,8 +18,10 @@
 #include "agg/v6/v6_acc.h"
 #include "agg/v6/v6_dictseen.h"
 #include "agg/v6/v6_distinct.h"
+#include "agg/v6/v6_distinct_u64.h"
 #include "agg/v6/v6_filter_eval.h"
 #include "agg/v6/v6_filter_pivot.h"
+#include "agg/v6/v6_group_fast.h"
 
 /* The strings of one COUNT(DISTINCT) aggregate of a set of no keys that the rows named by the codes of their part's dictionary (group_dist.c) */
 typedef struct V6DictSlot
@@ -37,6 +39,8 @@ typedef struct V6Set
 	int			nk;
 	int			kidx[SIFT_V6_MAX_KEYS];
 	bool		wide;
+	bool		packed;			/* the keys are fixed-width integers that fit one inline key (v6_group_fast.h) */
+	SiftPackSpec pack;
 	SiftSaltedHT ht;
 	V6Acc	   *plain;
 	bool		plain_row;		/* the set of no keys has a row to emit: a state of one partition of a parallel run has it only when records of the set were merged into it */
@@ -46,6 +50,10 @@ typedef struct V6Set
 	SiftGroupSpill *spill;
 	SiftDistinct *dist;			/* the COUNT(DISTINCT) of the set: one slot for each such aggregate (group_dist.c) */
 	V6DictSlot *dict;			/* a set of no keys: the strings of the dictionaries of each slot, made when a batch brings codes */
+	SiftDistinctU64 **flat;		/* a set with no keys: the flat set of each integer COUNT(DISTINCT), NULL once its values moved to dist */
+	bool	   *flat_moved;
+	SiftDu64G **gflat;			/* a set of keys: the grouped flat set of each integer COUNT(DISTINCT), NULL once its pairs moved to dist */
+	bool	   *gflat_moved;
 } V6Set;
 
 struct SiftV6Group
@@ -68,9 +76,12 @@ struct SiftV6Group
 	TupleTableSlot *mslot;
 	bool		spilled;
 	StringInfoData kbuf;
+	SiftWideBatch wb;
+	SiftStrSlab *slab;			/* the strings of the minimum and maximum of text columns */
 	SiftDistinctKey dkey;
 	SiftV6DistPut dist_put;		/* a participant of a parallel run: the rows of a COUNT(DISTINCT) go to the owner of their group instead of the set of this state */
 	void	   *dist_arg;
+	SiftDistinctKey pkey;		/* the bytes of the group of a row: its nulls and its key */
 	int			nfilters;		/* FILTER (WHERE ..): the distinct clauses of the aggregates (group_filter.c) */
 	SiftClause *clause;
 	SiftFilterMasks *fmasks;	/* their bitmaps for the batch */
@@ -83,6 +94,10 @@ struct SiftV6Group
 	uint32		ncode_slots;
 	SiftTextArena tx;			/* the winners of MIN and MAX of text (group_ext.h) */
 };
+
+/* the Datums of the keys of a slot of a set of keys (only: just key number only, -1: all), and of an aggregate of its state */
+extern void v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, int only);
+extern Datum v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull);
 
 static inline bool
 is_valid(const SiftVec *v, uint16 r)

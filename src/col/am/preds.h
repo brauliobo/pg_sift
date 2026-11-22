@@ -21,17 +21,21 @@ typedef struct ColKeys
 } ColKeys;
 
 /*
- * The strategies of the operator classes: btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@). The default class also has the
+ * The strategies of the operator classes (6 <> and 9 NOT LIKE are the aggregate scan's own: no operator class has them, agg/v6/v6_qual.c builds those keys): btree's numbers (1 <, 2 <=, 3 =, 4 >=, 5 >) and, for text, 7 LIKE and 8 starts_with (^@). The default class also has the
  * containment operators of a range (10 @>, 11 <@, 12 &&, 13 <<, 14 >>, 15 &<, 16 &>, 17 -|-, 18 @> an element) and of a network (21 <<, 22 <<=, 23 >>, 24 >>=, 25 &&),
  * in the order of SIFT_COLW_R_* and SIFT_COLW_N_* (col/col.h), and 3 = for both.
  */
 #define COL_STRAT_NE			6
+
 #define COL_STRAT_LIKE			7
 
 #define COL_STRAT_STARTS_WITH	8
 
+#define COL_STRAT_NOT_LIKE		9
+
 /* The constant of a key as a predicate value of the leaf (an integer, date, timestamp, boolean, float, text, char(n) or uuid) */
 extern void key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v);
+
 extern bool xtime_pair(Oid coltype, Oid argtype);
 
 extern int	xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v);

@@ -12,6 +12,7 @@
 #include "utils/uuid.h"
 #include "col/am.h"
 #include "col/am/preds.h"
+#include "col/like_simd.h"
 
 /* The constant of a key as a predicate value of the leaf: the key's own type is an integer, date, timestamp, boolean, float, text, char(n) or uuid (numeric: numeric_preds) */
 void
@@ -262,12 +263,14 @@ like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool in
 	}
 	if (n == 0 && infix && (run = like_longest_run(pat, len, buf)) >= SIFT_LIKE_INFIX_MIN)
 	{
+		uint32		litlen;
+
 		v->v.s = buf;
 		v->len = run;
 		p->op = SIFT_COLOP_CONTAINS;
 		p->nvals = 1;
 		p->vals = v;
-		k->recheck = true;
+		k->recheck |= !(sift_like_parse((const uint8 *) pat, len, (uint8 *) palloc(len + 1), &litlen) == SIFT_LIKE_CONTAINS && litlen == (uint32) run);
 		return;
 	}
 	if (n == 0)
@@ -282,6 +285,23 @@ like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool in
 	p->vals = v;
 	if (!starts_with && i < len && !(pat[i] == '%' && i == len - 1))
 		k->recheck = true;
+}
+
+/* NOT LIKE '%lit%' is the rows that do not hold lit, NOT LIKE 'lit' those that differ from it: the aggregate scan sends no other pattern (agg/v6/v6_qual.c) */
+static void
+not_like_pred(SiftColPred *p, SiftColValue *v)
+{
+	const char *pat = v->v.s;
+	uint8	   *lit = palloc(v->len + 1);
+	uint32		litlen;
+	const SiftLikeShape shape = sift_like_parse((const uint8 *) pat, v->len, lit, &litlen);
+
+	SIFT_INVARIANT(shape == SIFT_LIKE_CONTAINS || shape == SIFT_LIKE_EQUAL, "sift_col: a NOT LIKE pattern of the scan is a literal or %%literal%%");
+	v->v.s = (const char *) lit;
+	v->len = litlen;
+	p->op = shape == SIFT_LIKE_CONTAINS ? SIFT_COLOP_NOTCONTAINS : SIFT_COLOP_NE;
+	p->nvals = 1;
+	p->vals = v;
 }
 
 static bool
@@ -589,6 +609,11 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 			if (key->sk_strategy == COL_STRAT_LIKE || key->sk_strategy == COL_STRAT_STARTS_WITH)
 			{
 				like_pred(k, p, v, key->sk_strategy == COL_STRAT_STARTS_WITH, k->infix);
+				continue;
+			}
+			if (key->sk_strategy == COL_STRAT_NOT_LIKE)
+			{
+				not_like_pred(p, v);
 				continue;
 			}
 			p->op = strategy_op(key->sk_strategy);

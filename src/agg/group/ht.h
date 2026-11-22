@@ -152,6 +152,8 @@ sift_ht_bytes(const SiftSaltedHT *ht)
 extern void sift_ht_clear(SiftSaltedHT *ht);
 /* Room for n more groups without growing: the slots a batch of upserts returns stay valid */
 extern void sift_ht_reserve(SiftSaltedHT *ht, uint32 n);
+/* Room for n groups in the slots and in the state blocks at once, so that a scan that meets about n groups grows nothing */
+extern void sift_ht_presize(SiftSaltedHT *ht, uint32 n);
 /* The slot of the key (found = true), or a new one with the hash and key set, flags 0, ext_idx SIFT_HT_NO_EXT (a zeroed state block if the table has them) and the aggregates zero; grows when full. Inline-key tables only */
 extern SiftAggSlot64 *sift_ht_upsert(SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key, bool *found);
 /* The same for a wide-key table: the key is len bytes and its column null flags (part of the key) */

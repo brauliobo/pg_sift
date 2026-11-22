@@ -39,7 +39,9 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_cost.h"
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_plan_shape.h"
+#include "agg/v6/v6_qual.h"
 #include "col/am.h"
 #include "col/am/format_ops.h"
 #include "col/am/preds.h"
@@ -157,6 +159,39 @@ read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	return column_of(p, e, numeric_ok, out) ||
 		(p->store == NULL && (sift_v6_json_read(&rel, e, out) ||
 							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out)))));
+}
+
+static bool
+resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
+{
+	return column_of(ctx, e, numeric_ok, out);
+}
+
+static int
+add_derive(V6Plan *p, const SiftV6Derive *d)
+{
+	for (int i = 0; i < p->spec.nderive; i++)
+		if (memcmp(&p->spec.derive[i], d, sizeof(SiftV6Derive)) == 0)
+			return i + 1;
+	if (p->spec.nderive == SIFT_V6_MAX_DERIVE)
+		return 0;
+	p->spec.derive[p->spec.nderive] = *d;
+	return ++p->spec.nderive;
+}
+
+/* e is a key or argument the scan computes (v6_plan_rewrite.h): col is its column, typed as e */
+static bool
+derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
+{
+	const SiftV6Resolver rs = {resolve_column, p};
+	SiftV6Derive d;
+	Oid			restype;
+	int			at;
+
+	if (!sift_v6_derive_of(&rs, e, key, &d, &restype) || (at = add_derive(p, &d)) == 0)
+		return false;
+	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at};
+	return true;
 }
 
 static void
@@ -333,7 +368,8 @@ compile_agg(V6Plan *p, Aggref *a)
 		Expr	   *arg = list_length(a->args) > 0 ? ((TargetEntry *) linitial(a->args))->expr : NULL;
 		const bool	score = !two && g.kind != SV6_COUNT_DISTINCT && sift_v6_score_col(p, arg, &g.arg);
 
-		if (list_length(a->args) != (two ? 2 : 1) || !(score || (read_of(p, arg, !two, &g.arg) && kind_takes(g.kind, g.arg.typid))))
+		if (list_length(a->args) != (two ? 2 : 1) ||
+			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && derived_col(p, arg, false, &g.arg))) && kind_takes(g.kind, g.arg.typid))))
 			return false;
 		if (two && (!column_of(p, ((TargetEntry *) lsecond(a->args))->expr, false, &g.arg2) || sift_v6_class(g.arg2.typid) == SV6C_BOOL || sift_v6_class(g.arg2.typid) == SV6C_TEXT))
 			return false;
@@ -446,8 +482,15 @@ compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 	SiftDateBin bin;
 	const Const *stride,
 			   *origin;
+	const SiftV6Resolver rs = {resolve_column, p};
 	const char *fn;
+	int64		trunc_us;
 
+	if (sift_v6_date_trunc_bin(&rs, e, k, &trunc_us))
+	{
+		p->spec.bin[p->spec.nbins++] = (SiftV6Bin) {.key = p->spec.nkeys,.stride_us = trunc_us,.origin = 0};
+		return true;
+	}
 	if (!IsA(e, FuncExpr) || get_func_namespace(f->funcid) != PG_CATALOG_NAMESPACE)
 		return false;
 	fn = sift_func_name(f->funcid);
@@ -476,6 +519,29 @@ compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 	return true;
 }
 
+/* a key that is the first key plus a constant: a function of it, made by the projection of the plan; the first key must then stay in range (SiftV6Spec.affine) */
+static bool
+affine_key(V6Plan *p, Expr *e)
+{
+	int64		delta;
+	Oid			type;
+	const Var  *v = sift_v6_affine_of(e, &delta, &type);
+	SiftV6Col	base;
+
+	if (v == NULL || p->spec.nkeys == 0 || p->root->parse->groupingSets != NIL || !column_of(p, (Expr *) v, false, &base) || base.attno != p->spec.key[0].attno ||
+		p->spec.key[0].derive != 0 || p->spec.key[0].typid != type)
+		return false;
+	if (!p->spec.affine)
+	{
+		p->spec.affine = true;
+		p->spec.aff_type = type;
+		p->spec.aff_lo = type == INT4OID ? PG_INT32_MIN : PG_INT64_MIN;
+		p->spec.aff_hi = type == INT4OID ? PG_INT32_MAX : PG_INT64_MAX;
+	}
+	sift_v6_affine_range(type, delta, &p->spec.aff_lo, &p->spec.aff_hi);
+	return true;
+}
+
 static bool
 compile_keys(V6Plan *p, List *group_exprs)
 {
@@ -484,13 +550,17 @@ compile_keys(V6Plan *p, List *group_exprs)
 	{
 		SiftV6Col  *k = &p->spec.key[p->spec.nkeys];
 
-		if (p->spec.nkeys == SIFT_V6_MAX_KEYS || !(read_of(p, e, false, k) || compile_bin(p, e, k)) || sift_v6_class(k->typid) == SV6C_F64 ||
+		if (IsA(e, Const) && !((Const *) e)->constisnull && p->root->parse->groupingSets == NIL)
+			continue;
+		if (affine_key(p, e))
+			continue;
+		if (p->spec.nkeys == SIFT_V6_MAX_KEYS || !(read_of(p, e, false, k) || compile_bin(p, e, k) || derived_col(p, e, true, k)) || sift_v6_class(k->typid) == SV6C_F64 ||
 			(sift_v6_class(k->typid) == SV6C_TEXT && !sift_text_bytes_equal(exprCollation((Node *) e))))
 			return false;
 		p->spec.nkeys++;
 		add_scan_var(p, e);
 	}
-	return true;
+	return p->spec.nkeys > 0 || group_exprs == NIL;
 }
 
 /* a constant, or a parameter the scan reads when it starts (and again when it is rescanned) */
@@ -514,6 +584,38 @@ index_var(const Var *v, int col)
 	return (Expr *) makeVar(INDEX_VAR, col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
 }
 
+/* The strategy of a comparison of the column with a constant or parameter: of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
+static int
+compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const Node *operand)
+{
+	const bool	text = sift_v6_class(col->typid) == SV6C_TEXT;
+	const Oid	family = host_opfamily(p, col->attno);
+	const bool	index = p->store == NULL;
+	int			strat = get_op_opfamily_strategy(q->opno, family);
+
+	if (strat == 0 && index && !p->in_filter)
+		strat = sift_v6_qual_private_strategy(q->opno, family);
+	if (text && !sift_text_bytes_equal(q->inputcollid))
+		return 0;
+	switch (strat)
+	{
+		case BTLessStrategyNumber:
+		case BTLessEqualStrategyNumber:
+		case BTGreaterEqualStrategyNumber:
+		case BTGreaterStrategyNumber:
+			return text ? 0 : strat;
+		case BTEqualStrategyNumber:
+			return strat;
+		case COL_STRAT_NE:
+			return sift_v6_class(col->typid) == SV6C_F64 || xtime_pair(col->typid, exprType(operand)) ? 0 : strat;
+		case COL_STRAT_LIKE:
+		case COL_STRAT_NOT_LIKE:
+			return index && text && IsA(operand, Const) && sift_v6_qual_like_exact((const Const *) operand) ? strat : 0;
+		default:
+			return 0;
+	}
+}
+
 static Expr *
 qual_compare(V6Plan *p, OpExpr *op)
 {
@@ -521,7 +623,6 @@ qual_compare(V6Plan *p, OpExpr *op)
 			   *r;
 	OpExpr	   *q = copyObject(op);
 	SiftV6Col	col;
-	int			strat;
 
 	if (list_length(op->args) != 2)
 		return NULL;
@@ -539,12 +640,7 @@ qual_compare(V6Plan *p, OpExpr *op)
 		r = t;
 		q->args = list_make2(l, r);
 	}
-	if (!column_of(p, (Expr *) l, false, &col) || !operand_usable(p, r))
-		return NULL;
-	strat = get_op_opfamily_strategy(q->opno, host_opfamily(p, col.attno));
-	if (strat == COL_STRAT_NE ? sift_v6_class(col.typid) == SV6C_F64 : (strat < BTLessStrategyNumber || strat > BTGreaterStrategyNumber))
-		return NULL;
-	if (sift_v6_class(col.typid) == SV6C_TEXT && ((strat != BTEqualStrategyNumber && strat != COL_STRAT_NE) || !sift_text_bytes_equal(q->inputcollid)))
+	if (!column_of(p, (Expr *) l, false, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
 		return NULL;
 	linitial(q->args) = index_var((Var *) l, col.attno - 1);
 	return (Expr *) q;
@@ -714,12 +810,17 @@ reads_only_scan_tlist(const V6Plan *p, Node *e)
 bool
 sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
+	Node	   *exprs,
+			   *having;
+
 	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->store != NULL,.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
 	p->scan_tlist = NIL;
 	p->text = NULL;
-	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, (Node *) p->out->reltarget->exprs) && (extra->havingQual == NULL || compile_aggs(p, extra->havingQual)) &&
-		reads_only_scan_tlist(p, (Node *) p->out->reltarget->exprs) && (extra->havingQual == NULL || reads_only_scan_tlist(p, extra->havingQual));
+	exprs = sift_v6_collapse_offset_sums((Node *) p->out->reltarget->exprs);
+	having = sift_v6_collapse_offset_sums(extra->havingQual);
+	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, exprs) && (having == NULL || compile_aggs(p, having)) &&
+		reads_only_scan_tlist(p, exprs) && (having == NULL || reads_only_scan_tlist(p, having));
 }
 
 bool
@@ -743,6 +844,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->path.total_cost += extra_total;
 	cp->methods = &v6_path_methods;
 	cp->custom_paths = child_paths;
+	p->spec.groups_est = (uint32) Min(groups, (double) INT_MAX);
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
 	agg_force_price(&cp->path);
 	add_path(p->out, &cp->path);
@@ -755,6 +857,78 @@ sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, Lis
 {
 	p->out = output_rel;
 	sift_v6_add_join_path(p, group_exprs, having, NIL, 0, 0, p->rel->rows);
+}
+
+/* the sort columns of the query as the keys of the spec: columns of the index the scan reads whose values PostgreSQL's own comparison orders */
+static bool
+rows_keys(V6Plan *p)
+{
+	const Query *q = p->root->parse;
+
+	if (list_length(q->sortClause) > SIFT_V6_MAX_TOPK_ITEMS)
+		return false;
+	p->spec.key = palloc(list_length(q->sortClause) * sizeof(SiftV6Col));
+	foreach_node(SortGroupClause, sgc, q->sortClause)
+	{
+		const Expr *e = (const Expr *) get_sortgroupclause_expr(sgc, q->targetList);
+		SiftV6Col  *k = &p->spec.key[p->spec.nkeys];
+		const SiftV6Class cls = e != NULL && IsA(e, Var) ? sift_v6_class(((const Var *) e)->vartype) : SV6C_NONE;
+
+		if (cls == SV6C_NONE || cls == SV6C_F64 || cls == SV6C_BOOL || !column_of(p, e, false, k))
+			return false;
+		p->spec.topk_item[p->spec.ntopk++] = (SiftV6TopKItem) {.pos = p->spec.nkeys++,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
+	}
+	return true;
+}
+
+/* the columns the statement reads, which the node takes from the heap rows of the winners: plain columns of the table */
+static bool
+rows_outputs(V6Plan *p)
+{
+	p->scan_tlist = sift_v6_scan_tlist(p->out->reltarget->exprs, p->rel->relid, T_Invalid);
+	foreach_node(TargetEntry, te, p->scan_tlist)
+		if (((Var *) te->expr)->varattno <= 0)
+			return false;
+	return p->scan_tlist != NIL;
+}
+
+/* ORDER BY columns LIMIT K of the rows of one table with every qual pushed to the scan: the rows go to a heap of the best K (v6_rows_topn.h) */
+static void
+add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
+{
+	const Query *q = root->parse;
+	const uint32 k = sift_v6_topk_of(q);
+
+	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL ||
+		q->rowMarks != NIL || !sift_v6_base_rel_ok(root, input_rel) || bms_membership(root->all_baserels) != BMS_SINGLETON)
+		return;
+	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
+	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	{
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
+		Relation	irel;
+		bool		ok = false;
+
+		if (!sift_v6_index_owned(ix))
+			continue;
+		irel = index_open(ix->indexoid, NoLock);
+		p.colrel = sift_col_rel(irel);
+		p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
+		p.spec = (SiftV6Spec) {.relid = ix->indexoid,.rows = true,.topk = k};
+		ok = p.f2 != NULL && index_complete(&p) && rows_keys(&p) && rows_outputs(&p) && compile_quals(&p);
+		index_close(irel, NoLock);
+		if (!ok)
+			continue;
+		sift_v6_add_path(output_rel, &v6_path_methods, 0, cpu_tuple_cost * (0.05 * input_rel->tuples + k), Min((double) k, input_rel->rows), root->sort_pathkeys,
+						 list_make3(sift_v6_spec_pack(&p.spec), p.scan_tlist, NIL));
+		return;
+	}
+}
+
+const CustomPathMethods *
+sift_v6_group_path_methods(void)
+{
+	return &v6_path_methods;
 }
 
 /* A partitionwise aggregate plans each partition under the root of the parent: the expressions of the statement name the parent, and those of a partition its own columns */
@@ -774,7 +948,15 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	Relation	heap;
 
 	if (stage == UPPERREL_ORDERED)
+	{
 		sift_agg_v6_scope_topk_paths(root, input_rel, output_rel);
+		if (sift_enable_agg)
+		{
+			sift_v6_topk_paths(root, input_rel, output_rel);
+			add_rows_paths(root, input_rel, output_rel);
+		}
+		return;
+	}
 	if (stage != UPPERREL_GROUP_AGG)
 		return;
 	if (input_rel->reloptkind == RELOPT_JOINREL)
@@ -875,7 +1057,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	CustomScan *cs = makeNode(CustomScan);
 	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
 
-	cs->scan.plan.targetlist = tlist;
+	cs->scan.plan.targetlist = (List *) sift_v6_collapse_offset_sums((Node *) tlist);
 	cs->scan.scanrelid = 0;
 	cs->flags = best->flags;
 	collect_params((Node *) spec->indexqual, &cs->custom_exprs);
@@ -888,7 +1070,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 		cs->custom_private = sift_v6_spec_pack(spec);
 	}
 	cs->methods = &sift_agg_v6_plan_methods;
-	cs->scan.plan.qual = lthird(best->custom_private);
+	cs->scan.plan.qual = (List *) sift_v6_collapse_offset_sums((Node *) lthird(best->custom_private));
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
 	if (OidIsValid(spec->text_indexoid))
 		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->text_indexoid);

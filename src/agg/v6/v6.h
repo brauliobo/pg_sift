@@ -109,6 +109,7 @@ typedef struct SiftV6Col
 	SiftV6Src	src;
 	int			dim;			/* SV6SRC_DIM: the dimension */
 	int			slot;			/* SV6SRC_DIM: the payload column of the dimension */
+	int			derive;			/* 1 + the number of its entry in SiftV6Spec.derive when the key or argument is computed from the column (attno is then the source) */
 } SiftV6Col;
 
 struct SiftV6Ext;
@@ -146,6 +147,44 @@ typedef struct SiftV6Bin
 	int64		origin;
 } SiftV6Bin;
 
+/* A key or an argument computed from columns of the row (agg/v6/v6_expr_str.h): the vector of the batch it is is made after the columns are decoded */
+typedef enum SiftV6DeriveKind
+{
+	SVD_NONE = 0,
+	SVD_STRLEN,					/* length(text) of src: the characters (the bytes in a single-byte encoding), as the type of the key or argument says */
+	SVD_URL_HOST,				/* regexp_replace(src, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') */
+	SVD_EXTRACT,				/* extract(minute or hour FROM src), src a timestamp; aux is the unit in microseconds */
+	SVD_CASE_STR				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
+} SiftV6DeriveKind;
+
+#define SIFT_V6_MAX_DERIVE	8
+#define SIFT_V6_MAX_CASE	4
+#define SIFT_V6_ELSE_BYTES	12
+
+typedef struct SiftV6Derive
+{
+	SiftV6DeriveKind kind;
+	SiftV6Col	src;
+	int64		aux;
+	int			ncond;
+	SiftV6Col	cond[SIFT_V6_MAX_CASE];
+	int64		cval[SIFT_V6_MAX_CASE];
+	int			else_len;
+	uint8		else_bytes[SIFT_V6_ELSE_BYTES];
+	bool		utf8;			/* length counts characters of a UTF-8 string */
+} SiftV6Derive;
+
+/* ORDER BY .. LIMIT of the groups: the sort column (its position in the tuple of the node), the ordering operator, its collation and where it puts the NULLs */
+typedef struct SiftV6TopKItem
+{
+	int			pos;
+	Oid			sortop;
+	Oid			collid;
+	bool		nulls_first;
+} SiftV6TopKItem;
+
+#define SIFT_V6_MAX_TOPK_ITEMS	8
+
 typedef struct SiftV6Spec
 {
 	Oid			relid;			/* what the scan reads: the sift_col index, or the sift_table when is_table */
@@ -173,6 +212,17 @@ typedef struct SiftV6Spec
 	Const	   *text_query;
 	int			par_strategy;	/* SiftV6ParStrategy of the plan (0: serial) */
 	int			par_workers;
+	int			nderive;
+	SiftV6Derive derive[SIFT_V6_MAX_DERIVE];
+	bool		affine;			/* keys elided because they are the first key plus a constant: a first key outside [aff_lo, aff_hi] overflows one of them, an error as it is in PostgreSQL */
+	Oid			aff_type;
+	int64		aff_lo;
+	int64		aff_hi;
+	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns, topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h) */
+	uint32		groups_est;		/* the groups the planner expects (0: unknown): the group table is sized for them at the start */
+	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */
+	int			ntopk;
+	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
 } SiftV6Spec;
 
 /*
@@ -253,6 +303,8 @@ extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
 extern bool sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, IndexOptInfo *ix, GroupPathExtraData *extra, SiftV6Spec *spec, List **scan_tlist);
 /* stddev, variance, bool_or and bool_and by name and argument type (group_ext.c) */
 extern bool sift_v6_ext_kind(const char *name, Oid argtype, SiftV6Kind *kind);
+/* the methods of the path of the aggregate scan (v6_plan_rewrite.c makes the paths of its Top-K) */
+extern const CustomPathMethods *sift_v6_group_path_methods(void);
 extern List *sift_v6_spec_pack(const SiftV6Spec *s);
 extern SiftV6Spec *sift_v6_spec_unpack(const List *l);
 
@@ -356,6 +408,10 @@ extern void sift_v6_scan_plan(SiftV6Scan *s, struct SiftF2ParPlan *out);
 extern void sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
 extern void sift_v6_scan_morsel(SiftV6Scan *s, const struct SiftParPartRef *ref, uint32 first, uint32 n);
 extern void sift_v6_scan_end(SiftV6Scan *s);
+/* The rows the scan keeps go to rows (v6_rows_topn.h) instead of the groups */
+typedef struct SiftV6Rows SiftV6Rows;
+
+extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats);
 extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
 							 const uint64 *skip, int nskip, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
 
