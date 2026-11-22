@@ -1,4 +1,4 @@
-# The rows a Custom Scan (SiftAgg) kept of a joined table for the next query (sift.agg_lookup_cache_kb) serve it only while the table is what it was: a write
+# The rows a Custom Scan (SiftAgg) kept of a joined table for the next query (sift.backend_cache_kb) serve it only while the table is what it was: a write
 # that is in flight, committed or rolled back, an update, a delete, and a snapshot older than a committed write all give the rows of the normal plan.
 # requires: build col
 

@@ -46,7 +46,7 @@ sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
 # plain order chunks: the format numbers below tell the layouts apart (a default build writes seekable chunks, column format 44)
 if [[ $(sql legacy "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_limits'") == 1 ]]; then
 	sql legacy "ALTER SYSTEM SET sift.test_limits = 'gord_seek_pct=0'" "SELECT pg_reload_conf()" >/dev/null
-	sleep 1
+	wait_for "setting_is legacy sift.test_limits gord_seek_pct=0" 30
 fi
 verify() { test -z "$(sql legacy "SELECT sift.col_verify('o_col', true)" 2>&1)"; }
 check "the new library verifies the index of 3.7.1 and its ordered reads are the heap's" test "$(verify && echo ok)|$(sql legacy "$ORD")|$(sql legacy "$ORDD")" == "ok|$want|$wantd"
@@ -66,7 +66,7 @@ check "a merge writes only the codes (column format 42) and the reads are still 
 sql legacy "ALTER INDEX o_col SET (order_layout = 'compact')" >/dev/null
 if [[ $(sql legacy "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_gorder_ends'") == 1 ]]; then
 	sql legacy "ALTER SYSTEM SET sift.test_col_gorder_ends = 64" "SELECT pg_reload_conf()" >/dev/null
-	sleep 1
+	wait_for "setting_is legacy sift.test_col_gorder_ends 64" 30
 	sql legacy "SELECT sift.col_merge('o_col', true)" >/dev/null
 	check "a merge with order_layout = compact writes column format 41" test "$(sql legacy "$FORMATS")" == 41
 	check "the merged index verifies and the ordered reads are the heap's" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = off" "$ORD")|$(sql legacy "SET sift.enable_agg = off" "$ORDD")" == "ok|$(sql legacy "$ORD")|$(sql legacy "$ORDD")"

@@ -34,7 +34,6 @@ CREATE INDEX kp_off ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, 
 SET sift.col_format_minor = 9;
 CREATE INDEX kp_old0 ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_columns = 'off', write_buffer_limit = 4096);
 CREATE INDEX kp_old ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_columns = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
-RESET sift.col_format_minor;
 CREATE INDEX kp_on ON kp USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_columns = 'off', write_buffer_limit = 4096, key_columns = 'k, kn, s, d, sp, sp2');
 SELECT 'kp_off' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('kp_off')
 UNION ALL SELECT 'kp_old', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kp_old')
@@ -238,7 +237,6 @@ SET sift.col_format_minor = 9;
 INSERT INTO ka SELECT g, g % 2000, g % 1000, date '2025-02-01', repeat('x', 200) FROM generate_series(70001, 75000) g;
 SELECT sift.col_promote('ka_idx') >= 0 AS promoted;
 SELECT sift.col_merge('ka_idx', true) >= 0 AS merged;
-RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('ka_idx');
 SELECT blobs AS bitmaps FROM sift._test_col_set_damage('ka_idx', 3);
 SELECT sift.col_verify('ka_idx', true);

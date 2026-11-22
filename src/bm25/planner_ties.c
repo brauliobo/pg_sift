@@ -11,6 +11,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/plannodes.h"
 
+#include "agg/hybrid_int.h"
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "bm25/cscan_int.h"
@@ -50,6 +51,18 @@ private_int(const CustomScan *cs, int field)
 	return DatumGetInt64(((const Const *) list_nth(cs->custom_private, field))->constvalue);
 }
 
+/* A SiftHybridScan of direction A (or one that takes its direction at run time) reads hits the ranker verifies itself, as the scan above does: the ranker may hand out the group tied with the last */
+static void
+tie_hybrid_scan(CustomScan *cs, int64 rows)
+{
+	List	   *ints = linitial(cs->custom_private);
+
+	if (list_nth_int(ints, SIFT_HYBP_DIR) == SIFT_HYB_BM25_TO_COL || !list_nth_int(ints, SIFT_HYBP_RANKED) || list_nth_int(ints, SIFT_HYBP_K) <= 0)
+		return;
+	lfirst_int(list_nth_cell(ints, SIFT_HYBP_K)) = (int) Min(rows, PG_INT32_MAX);
+	lfirst_int(list_nth_cell(ints, SIFT_HYBP_TIES)) = 1;
+}
+
 static void
 tie_scan(Plan *plan, int64 rows)
 {
@@ -58,6 +71,11 @@ tie_scan(Plan *plan, int64 rows)
 	if (plan == NULL || !IsA(plan, CustomScan))
 		return;
 	cs = (CustomScan *) plan;
+	if (cs->methods == &sift_hybrid_plan_methods)
+	{
+		tie_hybrid_scan(cs, rows);
+		return;
+	}
 	/* hits the scan hands out as they are: ranked by the score alone, every quals applied by the ranker */
 	if (cs->methods != &sift_scan_plan_methods || private_int(cs, SIFT_PRIV_MODE) != SIFT_MODE_RANKED ||
 		private_int(cs, SIFT_PRIV_K) <= 0 || private_int(cs, SIFT_PRIV_LATE) != 0 ||

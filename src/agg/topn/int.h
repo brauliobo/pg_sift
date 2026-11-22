@@ -280,7 +280,7 @@ struct SiftTopN
 	bool		nogord;			/* TOPN_NOGORD: the plan counts on the heads of the sorted runs */
 	bool		gtext;			/* ... the one key is a text column, ranked in the arrays by its collation (key[0].collid) */
 	bool		gkeyout;		/* every output column is the first key, a plain integer or time column: the row of an exact entry is the entry's key, no heap row is read */
-	bool		gok;			/* every key is a plain integer or time column of the heap (col/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
+	bool		gok;			/* every key is a plain integer or time column of the heap (col/v1/gorder.h can order the first, the others are read from the heap row): gatt and gtyp are theirs */
 	int			gatt[TOP_GKEYS];
 	Oid			gtyp[TOP_GKEYS];
 	int			gscale[TOP_GKEYS];	/* a numeric key (gtyp NUMERICOID): the digits after the point, its key in the arrays is the number scaled by 10^gscale */
@@ -348,7 +348,9 @@ typedef struct WalkBase
 	uint32	   *pos;			/* the place of each superblock in ord */
 	uint32	   *tail;			/* nsb + 1: the units of ord[i ..] */
 	MemoryContext cx;
-	uint64		used;
+	uint64		used;			/* sift_cache_tick() of its last use */
+	int			refs;			/* the scans that walk it: a kept order that leaves the cache goes with the last of them */
+	bool		kept;
 } WalkBase;
 /* a row of a group of the first key: its address and the values of the keys, which the heap row gave */
 typedef struct GRow

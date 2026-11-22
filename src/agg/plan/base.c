@@ -17,10 +17,12 @@
 #include "parser/parsetree.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
-#include "utils/rls.h"
+#include "agg/plan/safety.h"
 
 #include "agg/agg.h"
 #include "agg/plan/int.h"
+#include "core/limits.h"
+#include "core/memtrack.h"
 
 /*
  * The leaf of the index that a leaf after the source's takes its values from: the value column of a member of an object, the array whose length it
@@ -240,16 +242,8 @@ agg_base_once(AggCtx *c, PlannerInfo *root, RelOptInfo *input_rel, FromScan *fs)
 		{
 			bool		part = e->inh && e->relkind == RELKIND_PARTITIONED_TABLE;
 
-			if ((e->inh && !part) || e->tablesample || e->securityQuals != NIL ||
-				(e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
+			if ((e->inh && !part) || e->tablesample || agg_rte_has_rls(root, e) || (e->relkind != RELKIND_RELATION && e->relkind != RELKIND_MATVIEW && !part))
 				return agg_refuse(TABLE_KIND);
-			/*
-			 * A table with row-level security read through a view of an owner the policies do not apply to: PostgreSQL adds no condition, and the scan,
-			 * which checks row-level security for the invoking role, would refuse the query the normal plan answers.
-			 */
-			if (e->relkind == RELKIND_RELATION && e->perminfoindex > 0 && OidIsValid(getRTEPermissionInfo(parse->rteperminfos, e)->checkAsUser) &&
-				check_enable_rls(e->relid, InvalidOid, true) == RLS_ENABLED)
-				return agg_refuse_on(TABLE_KIND, "the table has row-level security and is read through a view");
 			if (c->relid == 0 && skip == 0)
 				c->relid = rti;
 			else if (c->joinless)
@@ -421,13 +415,24 @@ agg_spec_new(AggCtx *c)
 /*
  * A set filter bound as one array parameter (`col = ANY($1)`) has no length in a generic plan: PostgreSQL assumes 10 elements and prices an
  * index or bitmap scan for them, while the scan of this node takes the whole array into a byte table when it starts and costs the same
- * for 10 or 100,000 elements. The paths that fetch the rows of such a set one by one are charged the elements sift.agg_param_set_size
+ * for 10 or 100,000 elements. The paths that fetch the rows of such a set one by one are charged the elements agg_param_set_elems
  * assumes (their cost grows with the set), and only when this node can run the query, so that a query it cannot take keeps the plan it
  * has. A custom plan sees the array and needs none of this.
  */
-int			sift_agg_param_set_size = 1000;
-int			sift_agg_lookup_max_rows = -1;
-int			sift_agg_lookup_max_kb = 256 * 1024;
+#define AGG_PARAM_SET_ELEMS		1000
+
+int
+agg_param_set_elems(void)
+{
+	return (int) Min((Size) sift_limit(param_set_elems, AGG_PARAM_SET_ELEMS), sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 2) / sizeof(int64));
+}
+
+/* the memory of the rows of a lookup table the plan lets a scan load: half of work_mem, which the scan and the lookups of a process divide (agg/lookup/load.c holds the load to it) */
+int
+agg_lookup_limit_kb(void)
+{
+	return sift_limit_or(lookup_kb, work_mem / 2);
+}
 
 int			agg_index_pick;
 int			agg_index_usable;

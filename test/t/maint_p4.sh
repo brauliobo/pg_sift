@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The extents a lazy VACUUM releases wait for the next xid (store_update, P4). A lazy VACUUM is left out of snapshots and of the xid horizon, its own xid
 # included, so a reader that began after the VACUUM took its xid has an xmin past it, and holds the directory as it was before the release. The release
 # waits at sift.test_release_gate (a testing build) once the xid is taken; the reader starts there and waits for its map (sift.test_vis_pause); the VACUUM

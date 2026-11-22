@@ -18,8 +18,12 @@ SELECT repeat('x', 100),
 FROM generate_series(1, 20000) i;
 
 -- segments of all the documents, a fourth of them then deleted (the segments keep them, dead, until a merge)
+SET client_min_messages = warning;
 CREATE INDEX m_pos ON m USING sift (body) WITH (build_segments = 4, vacuum_segments = 128);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX m_nopos ON m USING sift (body) WITH (build_segments = 4, vacuum_segments = 128, positions = off);
+RESET client_min_messages;
 DELETE FROM m WHERE id % 4 = 0;
 VACUUM m;
 SELECT count(*) AS segments, sum(dead_docs) AS dead FROM sift.segments('m_pos') WHERE kind = 'immutable';
@@ -32,8 +36,12 @@ RESET sift.test_segment_postings;
 RESET maintenance_work_mem;
 
 -- the reference: the live documents in one segment, with positions and without
+SET client_min_messages = warning;
 CREATE INDEX r_pos ON m USING sift (body);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX r_nopos ON m USING sift (body) WITH (positions = off);
+RESET client_min_messages;
 
 -- one segment without dead documents, of the sections of the reference's
 SELECT m.pos, count(*) AS segments, sum(m.dead_docs) AS dead,
@@ -56,12 +64,16 @@ SELECT sift.verify('m_pos', true), sift.verify('m_nopos', true);
 -- a segment of dead documents rewritten alone, with a term above the batch a group holds (its live postings are counted first)
 CREATE TABLE h (id serial, body text) WITH (autovacuum_enabled = off);
 INSERT INTO h (body) SELECT 'hot' || CASE WHEN i % 3 = 0 THEN ' t' || i % 7 ELSE '' END FROM generate_series(1, 140000) i;
+SET client_min_messages = warning;
 CREATE INDEX h_idx ON h USING sift (body) WITH (vacuum_segments = 128);
+RESET client_min_messages;
 DELETE FROM h WHERE id % 5 = 0;
 VACUUM h;
 SELECT count(*) AS segments, sum(dead_docs) AS dead FROM sift.segments('h_idx') WHERE kind = 'immutable';
 SELECT sift.merge('h_idx', true);
+SET client_min_messages = warning;
 CREATE INDEX hr_idx ON h USING sift (body);
+RESET client_min_messages;
 SELECT (m.ndocs, m.nterms, m.bytes, m.postings_bytes) = (r.ndocs, r.nterms, r.bytes, r.postings_bytes) AS same_sections,
        m.dead_docs, postings('h_idx') = postings('hr_idx') AS same_postings
 FROM sift.segments('h_idx') m, sift.segments('hr_idx') r WHERE m.kind = 'immutable' AND r.kind = 'immutable';

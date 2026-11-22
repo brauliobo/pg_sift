@@ -1,0 +1,212 @@
+/*
+ * col/keystore/keystore_view.c - the view a backend keeps of each scope key store it read, under the budget of sift.backend_cache_kb (core/cachebudget.h)
+ *
+ * A view keeps every string of its store. One that no open handle pins is dropped, least recently used first, when another cache needs room, and read again by
+ * the next statement that needs it; one in use is never dropped.
+ */
+#include "postgres.h"
+
+#include "access/table.h"
+#include "utils/hsearch.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
+#include "utils/syscache.h"
+
+#include "core/cachebudget.h"
+#include "col/v1/seg_int.h"
+#include "col/keystore/keystore.h"
+#include "col/keystore/keystore_int.h"
+
+static HTAB *views;
+static bool stores_changed;
+
+static void
+stores_relcache_changed(Datum arg, int cacheid, uint32 hashvalue)
+{
+	stores_changed = true;
+}
+
+/* The views of the stores that were dropped: a store is one relation, and its view holds the strings of all its codes */
+static void
+views_drop_gone(Oid keep)
+{
+	HASH_SEQ_STATUS seq;
+	KeyStoreView *v;
+
+	stores_changed = false;
+	hash_seq_init(&seq, views);
+	while ((v = hash_seq_search(&seq)) != NULL)
+		if (v->store != keep && !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(v->store)))
+		{
+			MemoryContextDelete(v->cx);
+			hash_search(views, &v->store, HASH_REMOVE, NULL);
+		}
+}
+
+static void
+view_clear(KeyStoreView *v)
+{
+	MemoryContextReset(v->cx);
+	v->slots = NULL;
+	v->nslots = 0;
+	v->indexed = 0;
+	v->piece = NULL;
+	v->npiece = v->cap = 0;
+	v->total = 0;
+	v->loaded = false;
+}
+
+static KeyStoreView *
+views_victim(void)
+{
+	HASH_SEQ_STATUS seq;
+	KeyStoreView *v,
+			   *lru = NULL;
+
+	hash_seq_init(&seq, views);
+	while ((v = hash_seq_search(&seq)) != NULL)
+		if (v->pins == 0 && v->loaded && (lru == NULL || v->used < lru->used))
+			lru = v;
+	return lru;
+}
+
+static uint64
+views_oldest(void)
+{
+	KeyStoreView *v = views_victim();
+
+	return v ? v->used : UINT64_MAX;
+}
+
+static bool
+views_evict_one(void)
+{
+	KeyStoreView *v = views_victim();
+
+	if (v == NULL)
+		return false;
+	view_clear(v);
+	return true;
+}
+
+static void
+views_evict_all(void)
+{
+	while (views_evict_one())
+		;
+}
+
+static const SiftCacheKind views_kind = {"col_keystore_view", views_oldest, views_evict_one, views_evict_all};
+
+static void
+view_unpin(Oid store)
+{
+	KeyStoreView *v = hash_search(views, &store, HASH_FIND, NULL);
+
+	if (v != NULL)
+		v->pins--;
+}
+
+static void
+view_pin_release(void *arg)
+{
+	ViewPin    *p = arg;
+
+	if (p->held)
+		view_unpin(p->store);
+	p->held = false;
+}
+
+static KeyStoreView *
+view_get(Oid store)
+{
+	bool		found;
+	KeyStoreView *v;
+
+	if (views == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(KeyStoreView), .hcxt = sift_cache_root_context()};
+
+		views = hash_create("sift scope key store views", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		CacheRegisterSyscacheCallback(RELOID, stores_relcache_changed, (Datum) 0);
+		sift_cache_register(&views_kind);
+	}
+	if (stores_changed)
+		views_drop_gone(store);
+	v = hash_search(views, &store, HASH_ENTER, &found);
+	if (!found)
+	{
+		v->cx = sift_cache_create_context("sift cache scope key store view");
+		v->slots = NULL;
+		v->nslots = 0;
+		v->indexed = 0;
+		v->loaded = false;
+		v->piece = NULL;
+		v->npiece = v->cap = 0;
+		v->total = 0;
+		v->pins = 0;
+	}
+	return v;
+}
+
+void
+kview_reset(KeyStoreView *v)
+{
+	MemoryContextReset(v->cx);
+	v->slots = NULL;
+	v->nslots = 0;
+	v->indexed = 0;
+	v->piece = NULL;
+	v->npiece = v->cap = 0;
+	v->total = 0;
+	v->loaded = true;
+}
+
+void
+kview_add(KeyStoreView *v, uint64 lo, uint64 dbase, SiftCDict *d)
+{
+	if (v->npiece == v->cap)
+	{
+		v->cap = Max(8, 2 * v->cap);
+		v->piece = v->piece ? repalloc(v->piece, v->cap * sizeof(ViewPiece)) : MemoryContextAlloc(v->cx, v->cap * sizeof(ViewPiece));
+	}
+	v->piece[v->npiece++] = (ViewPiece) {lo, dbase, d};
+	v->total = lo + d->n - (lo - dbase);
+}
+
+/* The view of a store, pinned until kview_release or the end of the current memory context, whichever comes first */
+KeyStoreView *
+kview_open(Oid store, ViewPin **pin)
+{
+	KeyStoreView *v = view_get(store);
+	ViewPin    *p = palloc(sizeof(ViewPin));
+
+	v->pins++;
+	v->used = sift_cache_tick();
+	*p = (ViewPin) {{view_pin_release, p, NULL}, store, true};
+	MemoryContextRegisterResetCallback(CurrentMemoryContext, &p->cb);
+	sift_cache_commit();
+	*pin = p;
+	return v;
+}
+
+void
+kview_release(ViewPin *pin)
+{
+	view_pin_release(pin);
+}
+
+#ifdef SIFT_TESTING
+void
+sift_keystore_forget_views(void)
+{
+	HASH_SEQ_STATUS seq;
+	KeyStoreView *v;
+
+	if (views == NULL)
+		return;
+	hash_seq_init(&seq, views);
+	while ((v = hash_seq_search(&seq)) != NULL)
+		v->loaded = false;
+}
+#endif

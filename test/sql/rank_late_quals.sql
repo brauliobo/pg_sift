@@ -9,7 +9,9 @@ CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_he
 CREATE TABLE lq (id int PRIMARY KEY, body text, cc text, n int) WITH (autovacuum_enabled = off);
 INSERT INTO lq SELECT i, 'common w' || i % 97 || ' x' || i % 7, CASE WHEN i % 1000 = 0 THEN 'rare' WHEN i % 10 = 0 THEN 'tenth' ELSE 'rest' END, i % 100
 FROM generate_series(1, 40000) i;
+SET client_min_messages = warning;
 CREATE INDEX lq_idx ON lq USING sift (body);
+RESET client_min_messages;
 ANALYZE lq;
 
 -- no qual the index does not answer: the LIMIT; a qual that keeps a tenth: about ten times as many hits; one that keeps a thousandth: the most

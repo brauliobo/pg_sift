@@ -9,31 +9,42 @@ INSERT INTO dc SELECT g, v, v, v, v, v, v FROM (SELECT g, 'label ' || (g % 500) 
 CREATE INDEX dc_idx ON dc USING sift_col (c0, c1, c2, c3, c4, c5);
 SELECT count(*) > 0 AS has_segment FROM sift.col_segments('dc_idx'::regclass) WHERE kind = 'immutable';
 
--- a cache that holds five of the six dictionaries (the backend starts with none): the least recently used goes, the answers do not change
+-- a cache that holds five of the six dictionaries (the backend starts with none): the least recently used goes, the answers do not change. The limit is half way between what the caches of the
+-- backend hold with five of the dictionaries and with six
+SET sift.backend_cache_kb = 0;
+RESET sift.backend_cache_kb;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
-SELECT bytes AS one FROM sift._test_col_dict_cache(true) \gset
-SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 5.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
-SELECT sum(rows) AS rows FROM generate_series(1, 5) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
-SELECT loads = 5 AS parsed, bytes <= :one * 5.5 AS within_the_limit FROM sift._test_col_dict_cache(true);
+SELECT bytes AS one FROM sift._test_col_dict_cache(false) \gset
+SELECT sum(rows) AS rows FROM generate_series(1, 4) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
+SELECT cache_total AS five FROM sift._test_col_dict_cache(false) \gset
+SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
+SELECT cache_total AS six FROM sift._test_col_dict_cache(false) \gset
+SET sift.backend_cache_kb = 0;
+RESET sift.backend_cache_kb;
+SELECT set_config('sift.backend_cache_kb', (((:five + :six) / 2 + 1023) / 1024)::text, false) IS NOT NULL AS sized;
+SELECT sum(rows) AS rows FROM generate_series(0, 4) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
+SELECT loads = 1 AS parsed, bytes <= :one * 5.5 AS within_the_limit FROM sift._test_col_dict_cache(true);
 SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
 SELECT loads = 1 AS first_parsed_again, hits = 2 AS the_others_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 -- one dictionary may take up to a half of the cache: a third of it is kept, one over a half is parsed for every scan, the answers do not change
 REINDEX INDEX dc_idx;
-SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 3 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT set_config('sift.backend_cache_kb', ((:one * 3 + 1023) / 1024)::int::text, false) IS NOT NULL AS sized;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT rows FROM sift._test_col_counters('dc_idx', '3:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '3:eq:label 7');
 SELECT loads = 1 AS parsed_once, hits = 1 AS found_again FROM sift._test_col_dict_cache(true);
-SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 1.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT set_config('sift.backend_cache_kb', ((:one * 1.5 + 1023) / 1024)::int::text, false) IS NOT NULL AS sized;
 SELECT rows FROM sift._test_col_counters('dc_idx', '4:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '4:eq:label 7');
 SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 -- the first scan of a segment parses a dictionary, the second finds it
 REINDEX INDEX dc_idx;
@@ -54,11 +65,11 @@ SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
 SELECT loads = 0 AS none_parsed, hits > 0 AS found FROM sift._test_col_dict_cache(true);
 
 -- a cache too small to keep a dictionary parses it every time, with the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 SELECT rows FROM sift._test_col_counters('dc_idx', '2:eq:label 7');
 SELECT rows FROM sift._test_col_counters('dc_idx', '2:eq:label 7');
 SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 DROP TABLE dc;
 
@@ -67,11 +78,11 @@ DROP TABLE dc;
 CREATE TABLE dl (id int, s text);
 INSERT INTO dl SELECT g, 'key ' || g FROM generate_series(1, 20000) g;
 CREATE INDEX dl_idx ON dl USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (point_tid_columns = 's');
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT sum(rows) AS rows, count(*) AS tests FROM generate_series(1, 100) l, LATERAL sift._test_col_counters('dl_idx', '1:eq:key ' || l * 7);
 SELECT loads <= 2 AS parsed_at_most_twice, hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 DROP TABLE dl;
 
 -- the lengths of the lists of a unit are decoded once as well (integer elements: no dictionary is involved): the second scan finds them, the answers are the same
@@ -91,14 +102,14 @@ CREATE TEMP TABLE lc_off AS :q;
 RESET sift.enable_agg;
 SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE lc_second EXCEPT TABLE lc_off) UNION ALL (TABLE lc_off EXCEPT TABLE lc_second)) d) AS differences;
 -- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 REINDEX INDEX lc_idx;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 CREATE TEMP TABLE lc_small AS :q;
 CREATE TEMP TABLE lc_small2 AS :q;
 SELECT hits = 0 AS none_found FROM sift._test_col_dict_cache(true);
 SELECT (SELECT count(*) FROM ((TABLE lc_small2 EXCEPT TABLE lc_off) UNION ALL (TABLE lc_off EXCEPT TABLE lc_small2)) d) AS differences;
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 DROP TABLE lc;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

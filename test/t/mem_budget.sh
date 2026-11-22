@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# The memory budgets of the main paths (core/membudget.h, test/mem-budgets.tsv): at the scale 1 every scope of a search index passes and is recorded by
-# sift._test_mem_highwater(); at sift.test_mem_budget_scale 0.0001 each class (build, merge, search, verify) fails with the scope, the actual number, the budget and the formula.
+# The memory trackers of the main paths (core/memtrack.h): at the scale 1 every tracker of a search index passes and is recorded by
+# sift._test_mem_highwater(); at sift.test_mem_budget_scale 0.0001 each class (build, merge, search, verify) fails with the tracker, the actual number and the budget.
 # The release build has no scope: the test needs the test build.
 . "$(dirname "$0")/lib.bash"
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-plan 21
+plan 19
 node_init mb 61 "autovacuum = off
 max_parallel_workers_per_gather = 0
 sift.col_auto_merge = off"
@@ -21,7 +20,7 @@ check "sift._test_mem_highwater names the merge scope" grep -q "^bm25_merge$" <<
 
 red() {
 	out=$(sql mb "SET sift.test_mem_budget_scale = 0.0001" "$@" 2>&1) && return 1
-	grep -qE "sift memory budget exceeded: $SCOPE: [0-9]+ > [0-9]+ bytes \(.+\)" <<<"$out"
+	grep -qE "sift memory budget exceeded: $SCOPE: [0-9]+ > [0-9]+ bytes" <<<"$out"
 }
 SCOPE=bm25_build; check "a build over its lowered budget fails naming bm25_build" red "CREATE INDEX d_red ON d USING sift (body)"
 sql mb "DROP INDEX IF EXISTS d_red" >/dev/null
@@ -62,9 +61,7 @@ check "a scan holds 2 kB of state for each partition it reads, not its source (7
 SCOPE=col_verify; check "a column verify over its lowered budget fails naming col_verify" red "SELECT sift.col_verify('c_col', true)"
 SCOPE=index_vacuum; check "a VACUUM over its lowered budget fails naming index_vacuum" red "UPDATE c SET amount = amount + 1 WHERE k < 2" "VACUUM c"
 sql mb "CREATE TABLE ct AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 300 AS txt, g::numeric AS amount FROM generate_series(1, 20000) g" >/dev/null
-SCOPE=col_build; check "a column build over its lowered budget fails naming col_build" red "CREATE INDEX ct_col ON ct USING sift_col (id, k, k2, txt, amount)"
-check "the budget table, the generated header and the docs agree" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --check"
-check "the open rows are listed for the CI report" bash -c "cd '$REPO' && python3 scripts/gen-membudget.py --open >/dev/null"
+SCOPE=col_writer_spool; check "a column build over its lowered budget fails naming the first tracker to pass it, col_writer_spool" red "CREATE INDEX ct_col ON ct USING sift_col (id, k, k2, txt, amount)"
 out=$(sql mb "SET sift.test_mem_check = off" "SET sift.test_mem_budget_scale = 0.0001" "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" 2>&1)
 check "sift.test_mem_check = off returns before the measure" test "$out" -gt 0
 check "the server log has one SIFTMEM_SCOPE line for a scope at backend exit" grep -q "SIFTMEM_SCOPE name=bm25_" "$(dir mb)/postgres.log"

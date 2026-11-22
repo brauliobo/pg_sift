@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Process helpers: the descendants of a pid, the postmasters under a directory, and the reaper of the scratch directories of dead runs.
 # Used by the selftest, the cleanup and the start of a run. Sourced by scripts/ci.sh; not a script of its own.
 # descendants PID: the processes below PID, deepest first

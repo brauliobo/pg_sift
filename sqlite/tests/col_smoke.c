@@ -8,10 +8,171 @@
 
 #include "core/host.h"
 
-#include "col/enc.h"
+#include "col/v1/enc.h"
 #include "col/codec.h"
+#include "col/v1/seg_int.h"
 
 #define NROWS 5000
+
+/*
+ * What the column engine asks of PostgreSQL and this test does not need: the caches of a segment, which is never opened here, and the hash of the sketches.
+ */
+
+/* ---------- the liveness run of a column segment (col/v1/seg/live.c): an index file of PostgreSQL; the embedded hosts keep no run to audit ---------- */
+
+void
+sift_cseg_live_verify(SiftColSegment *seg)
+{
+}
+
+/* ---------- parsed column dictionaries (col/dictcache.c): not kept between queries ---------- */
+
+SiftCDict *
+sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load)
+{
+	return load(seg, col, seg->mcxt);
+}
+
+SiftCDict *
+sift_cseg_dict_peek(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+/* nothing is counted: every dictionary that is tested is parsed whole, as it is once the backend has asked often */
+uint32
+sift_cseg_dict_asked(SiftColSegment *seg, int col)
+{
+	return UINT32_MAX;
+}
+
+/* there is no cache that could fail to hold a dictionary */
+bool
+sift_cseg_dict_nokeep(SiftColSegment *seg, int col)
+{
+	return false;
+}
+
+/* nothing is kept, so the cache has no limit to pass; a dictionary takes what its strings do */
+Size
+sift_cdict_cache_budget(void)
+{
+	return SIZE_MAX / 4;
+}
+
+Size
+sift_cdict_parsed_bytes(Size nbytes, uint32 n)
+{
+	return nbytes;
+}
+
+/* nothing is counted: a dictionary whose hash was tried is parsed at once, as with sift_cseg_dict_asked */
+uint64
+sift_cseg_dict_spent(SiftColSegment *seg, int col, uint64 add)
+{
+	return UINT64_MAX;
+}
+
+void
+sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent)
+{
+}
+
+/* ---------- segment heads, zone arrays and bisected positions (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
+
+const SegHead *
+sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHeaderData *h, MemoryContext mcxt)
+{
+	return NULL;
+}
+
+void
+sift_cdict_retire(Relation index, const SiftDirSnapshot *snap)
+{
+}
+
+void
+sift_cseg_head_keep(Relation index, const SiftSegEntry *entry, MemoryContext cx, SegHead *hd, MemoryContext mcxt)
+{
+}
+
+ZoneArrays *
+sift_cseg_zones_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_zones_keep(SiftColSegment *seg, int col, MemoryContext cx, ZoneArrays *z)
+{
+}
+
+SegPts *
+sift_cseg_pts_find(SiftColSegment *seg)
+{
+	return NULL;
+}
+
+void
+sift_cseg_pts_keep(SiftColSegment *seg, MemoryContext cx, SegPts *p)
+{
+}
+
+SegGOrdHead *
+sift_cseg_gordh_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_gordh_keep(SiftColSegment *seg, int col, MemoryContext cx, SegGOrdHead *h)
+{
+}
+
+void
+sift_cseg_gordh_grew(SiftColSegment *seg, int col, Size bytes)
+{
+}
+
+void *
+sift_cseg_sets_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+void
+sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, void *sets)
+{
+}
+
+/* no cache of the positions a dictionary search bisected: every search reads the dictionary */
+SiftCBisect *
+sift_cseg_bisect(SiftColSegment *seg, int col, uint32 n)
+{
+	return NULL;
+}
+
+SiftCBisect *
+sift_cseg_bisect_find(SiftColSegment *seg, int col)
+{
+	return NULL;
+}
+
+/* ---------- hashing (col/hll.c): the sketches of hll_columns are written by the PostgreSQL extension, whose hash they carry ---------- */
+
+uint64
+hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed)
+{
+	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the sketch of a column is built by the PostgreSQL extension only"),
+					errhint("Index the column with hll_columns in PostgreSQL.")));
+	return 0;
+}
+
+uint64
+hash_bytes_uint32_extended(uint32 k, uint64 seed)
+{
+	return hash_bytes_extended(NULL, 0, seed);
+}
 
 static void
 check(bool ok, const char *what)

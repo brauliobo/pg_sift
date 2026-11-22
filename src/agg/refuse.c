@@ -40,10 +40,10 @@
 #include "agg/refuse.h"
 #include "agg/stats.h"
 #include "core/limits.h"
+#include "core/cachebudget.h"
 
 PG_FUNCTION_INFO_V1(sift_agg_explain_why);
 PG_FUNCTION_INFO_V1(sift_agg_refusal_slugs);
-PG_FUNCTION_INFO_V1(sift_agg_refusal_actions);
 
 /* sift_explain_refusals: the sites note their reasons (the notice, sift.count_refusals or sift.explain_why asked for them); the notice is for the first */
 bool		sift_explain_refusals = false;
@@ -263,7 +263,7 @@ agg_arm_path(Path *p)
 		PathVet    *v;
 
 		if (vet_cx == NULL)
-			vet_cx = AllocSetContextCreate(TopMemoryContext, "sift cache path vets", ALLOCSET_SMALL_SIZES);
+			vet_cx = sift_cache_create_context("sift cache path vets");
 		old = MemoryContextSwitchTo(vet_cx);
 		v = palloc(sizeof(PathVet));
 		*v = (PathVet) {p->total_cost, path_vet, path_vet_pct};
@@ -355,8 +355,8 @@ emit(const ArmNote *a)
 
 	if (why_store != NULL)
 	{
-		Datum		v[6];
-		bool		n[6] = {false, false, a->used, a->used, a->paths == NIL && a->scan == 0, (a->paths == NIL && a->scan == 0) || a->normal < 0};
+		Datum		v[7];
+		bool		n[7] = {false, false, a->used, a->used, a->used, a->paths == NIL && a->scan == 0, (a->paths == NIL && a->scan == 0) || a->normal < 0};
 
 
 		scope_said |= strcmp(a->name, "scope") == 0 || (strlen(a->name) > 6 && strcmp(a->name + strlen(a->name) - 6, ":scope") == 0);
@@ -364,8 +364,9 @@ emit(const ArmNote *a)
 		v[1] = BoolGetDatum(a->used);
 		v[2] = a->used ? (Datum) 0 : CStringGetTextDatum(slug);
 		v[3] = a->used ? (Datum) 0 : CStringGetTextDatum(reason);
-		v[4] = Float8GetDatum(a->scan);
-		v[5] = Float8GetDatum(a->normal);
+		v[4] = a->used ? (Datum) 0 : CStringGetTextDatum(action);
+		v[5] = Float8GetDatum(a->scan);
+		v[6] = Float8GetDatum(a->normal);
 		tuplestore_putvalues(why_store, why_desc, v, n);
 	}
 	else if (!a->used && explaining)
@@ -973,26 +974,9 @@ sift_agg_refusal_slugs(PG_FUNCTION_ARGS)
 	InitMaterializedSRF(fcinfo, 0);
 	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
 	{
-		Datum		v[3] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
-							CStringGetTextDatum(refusals[i].text)};
-		bool		n[3] = {false, false, false};
-
-		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
-	}
-	return (Datum) 0;
-}
-
-/* sift.refusal_actions(): what to change for each slug of sift.refusal_slugs(). A function of its own: the result of refusal_slugs() cannot gain a column without dropping the function, which fails the update when a view reads it */
-Datum
-sift_agg_refusal_actions(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-
-	InitMaterializedSRF(fcinfo, 0);
-	for (int i = 1; i < AGG_REFUSE_COUNT; i++)
-	{
-		Datum		v[2] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].action)};
-		bool		n[2] = {false, false};
+		Datum		v[4] = {CStringGetTextDatum(refusals[i].slug), CStringGetTextDatum(refusals[i].limit ? "limit" : "semantic"),
+							CStringGetTextDatum(refusals[i].text), CStringGetTextDatum(refusals[i].action)};
+		bool		n[4] = {false, false, false, false};
 
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
 	}

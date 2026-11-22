@@ -1,4 +1,4 @@
--- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope segments are cut by the code of the key in the value store of the key column of the pairs, and every read
+-- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope segments are cut by the code of the key in the scope key store of the key column of the pairs, and every read
 -- (IN, EXISTS, join, ANY, a list, a parameter, a table of keys) translates the keys it is given through the map of its statement. The rows are those of the join in every state the integer
 -- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no stored unit, and its pairs are all delta), and for a key that left every pair.
 CREATE EXTENSION pg_sift;
@@ -13,8 +13,8 @@ INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, date '2025-01-01' + i
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO tenant_scope SELECT i, 'tenant-' || (1 + i % 10) FROM generate_series(1, 360) i;
 INSERT INTO tenant_scope SELECT i, 'tenant-' || (1 + (i * 3 + 1) % 10) FROM generate_series(1, 360) i WHERE i % 7 = 0 ON CONFLICT DO NOTHING;
--- keys that differ in the bytes: a case, an accent, an empty key, a long one, a key with a space
-INSERT INTO tenant_scope SELECT 100 + i, k FROM unnest(ARRAY['Tenant-4', 'tenant-4 ', 'ténant-4', '', repeat('long-', 400)]) WITH ORDINALITY t (k, i);
+-- keys that differ in the bytes: a case, an accent, an empty key, the longest one a store holds (255 bytes), a key with a space
+INSERT INTO tenant_scope SELECT 100 + i, k FROM unnest(ARRAY['Tenant-4', 'tenant-4 ', 'ténant-4', '', repeat('long-', 51)]) WITH ORDINALITY t (k, i);
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 REINDEX INDEX events_col;
@@ -33,6 +33,14 @@ CREATE TABLE uuid_events (id int PRIMARY KEY, dim_a_id int, kind text, amount in
 INSERT INTO uuid_events SELECT id, dim_a_id, kind, amount FROM events;
 CREATE INDEX uuid_events_col ON uuid_events USING sift_col (id, dim_a_id, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> uuid_scope(dim_a_id, tenant_id)');
 REINDEX INDEX uuid_events_col;
+-- a key of 256 bytes is more than a store holds: the build says so
+CREATE TABLE over_scope (dim_a_id int NOT NULL, tenant_id text NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO over_scope VALUES (1, repeat('x', 256));
+CREATE INDEX over_scope_journal ON over_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE INDEX over_col ON events USING sift_col (id, dim_a_id, created_at, kind, amount) WITH (scope = 'tenant_id: dim_a_id -> over_scope(dim_a_id, tenant_id)');
+ERROR:  a scope key of 256 bytes is longer than the 255 bytes a scope key store holds
+HINT:  Use a shorter key, or a key column of an integer type.
+DROP TABLE over_scope;
 -- the tables of keys: the tenants of a user (user 1 has three, user 2 one, user 3 none)
 CREATE TABLE my_tenants (user_id int, tenant_id text, PRIMARY KEY (user_id, tenant_id));
 INSERT INTO my_tenants VALUES (1, 'tenant-2'), (1, 'tenant-5'), (1, 'tenant-9'), (2, 'tenant-3');
@@ -47,7 +55,7 @@ INSERT INTO forms VALUES
  ('IN, a case other than the stored', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ('Tenant-4', 'TENANT-4')) GROUP BY kind$q$),
  ('IN, a space and an accent', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN ('tenant-4 ', 'ténant-4')) GROUP BY kind$q$),
  ('IN, the empty key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = '') GROUP BY kind$q$),
- ('IN, a long key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = repeat('long-', 400)) GROUP BY kind$q$),
+ ('IN, a long key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = repeat('long-', 51)) GROUP BY kind$q$),
  ('IN, a key only the pairs added later have', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 'tenant-new') GROUP BY kind$q$),
  ('IN, nested IN', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT tenant_id FROM my_tenants WHERE user_id = 1)) GROUP BY kind$q$),
  ('IN, nested IN, no keys', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (SELECT tenant_id FROM my_tenants WHERE user_id = 3)) GROUP BY kind$q$),

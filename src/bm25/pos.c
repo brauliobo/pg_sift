@@ -58,7 +58,7 @@ sift_post_has_positions(const SiftPostingCursor *c)
 	return c->poslen > 0;
 }
 
-/* Reads len bytes of the position stream at off into dst, and lets go of the page */
+/* Reads len bytes of the position stream at off into dst, and unlocks the page (its pin stays in the reader's ring for the next block) */
 static void
 pos_read(const SiftPostingCursor *c, uint64 off, size_t len, void *dst)
 {
@@ -66,7 +66,7 @@ pos_read(const SiftPostingCursor *c, uint64 off, size_t len, void *dst)
 
 	if (src != dst)
 		memcpy(dst, src, len);
-	sift_sr_release(c->sr);
+	sift_sr_unlock(c->sr);
 }
 
 #define POS_WINDOW	4096

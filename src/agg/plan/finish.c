@@ -23,16 +23,11 @@
 /* the bytes of a row of a lookup table besides its columns: the hash entry and the row's header (about 48 in all for an integer key and a text column, measured) */
 #define AGG_LOOKUP_ROW_OVERHEAD	64
 
-/*
- * Do `rows` rows of `width` bytes fit the lookup tables the scan loads when it starts? A rows limit that was set (the older form of
- * sift.agg_lookup_max_kb) is compared with the rows alone.
- */
+/* Do `rows` rows of `width` bytes fit the lookup tables the scan loads when it starts? */
 bool
 agg_lookup_fits(double rows, int width)
 {
-	if (sift_agg_lookup_max_rows >= 0)
-		return rows <= sift_agg_lookup_max_rows;
-	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) sift_agg_lookup_max_kb * 1024;
+	return rows * (width + AGG_LOOKUP_ROW_OVERHEAD) <= (double) agg_lookup_limit_kb() * 1024;
 }
 
 static bool
@@ -293,8 +288,6 @@ param_set_ratio(AggCtx *c)
 {
 	double		f = 1.0;
 
-	if (sift_agg_param_set_size <= 0)
-		return 1.0;
 	foreach_node(RestrictInfo, ri, c->rel->baserestrictinfo)
 	{
 		ScalarArrayOpExpr *sa;
@@ -311,8 +304,8 @@ param_set_ratio(AggCtx *c)
 			match_leaf(c, linitial(sa->args)) < 0)
 			continue;
 		n0 = estimate_array_length(c->root, arr);
-		if (sift_agg_param_set_size > n0)
-			f *= sift_agg_param_set_size / n0;
+		if (agg_param_set_elems() > n0)
+			f *= agg_param_set_elems() / n0;
 	}
 	return Min(f, Max(c->rel->tuples / Max(c->rel->rows, 1.0), 1.0));
 }
@@ -383,7 +376,7 @@ row_scan_of(Path *p, AggCtx *c)
 		}
 }
 
-/* the paths that fetch the rows one set element or key at a time are charged the elements of the array parameters and the keys of the lookups that sift.agg_param_set_size and lookup_set_ratio assume */
+/* the paths that fetch the rows one set element or key at a time are charged the elements of the array parameters and the keys of the lookups that agg_param_set_elems and lookup_set_ratio assume */
 static void
 param_set_penalty(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
@@ -484,7 +477,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 		agg_refused_on(GROUP_MEMORY, why);
 		return;
 	}
-	if (!child_paths(c, s))
+	if (!child_paths(c, s) || !agg_lookup_tables_fit(c, s))
 		return;
 	param_set_penalty(c, s, input_rel, output_rel);
 	nworkers = parallel_verdict(c, s,
@@ -492,6 +485,11 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	/* the table that spills is the process's alone: the workers' would each hold their own, and the leader's the sum, with the float sums of every lane */
 								table + group_lane_bytes(s, group_count(c, s)) > (double) get_hash_memory_limit() && sift_aggspec_spillable(s) ?
 								"its group table outgrows hash memory and spills, which one process does" : NULL);
+	if (nworkers > 0 && table + group_lane_bytes(s, group_count(c, s)) > sift_agg_nospill_bytes(nworkers))
+	{
+		s->serial = "its group table outgrows the share of hash memory of a process of the scan, and the tables of the workers do not spill";
+		nworkers = 0;
+	}
 	add_agg_path(c, s, input_rel, output_rel, target, scan_tlist, 0, NIL);
 	if (nworkers > 0)
 	{

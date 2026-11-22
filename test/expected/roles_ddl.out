@@ -516,7 +516,6 @@ SELECT * FROM rr_matrix(ARRAY['rrd_owner', 'rrd_reader', 'rrd_monitor', 'rrd_non
 SELECT count(*) FROM sift.col_index_status
 SELECT count(*) FROM sift.workers
 SELECT projection || ' ' || state FROM sift.projection_status
-SELECT count(*) FROM sift.col_value_store_status
 SELECT count(*) FROM sift.col_connections
 SELECT sift._may_inspect('rrd.ins')
 SELECT segments > 0 FROM sift.col_index_info('rrd.ins_col')
@@ -535,7 +534,6 @@ $$);
  SELECT count(*) FROM sift.workers                             | ok: (0)                                      | rrd_none
  SELECT projection || ' ' || state FROM sift.projection_status | ok: ("rrd_p broken")                         | rrd_owner, rrd_reader, rrd_monitor
  SELECT projection || ' ' || state FROM sift.projection_status | ok: (no rows)                                | rrd_none
- SELECT count(*) FROM sift.col_value_store_status              | ok: (0)                                      | rrd_owner, rrd_reader, rrd_monitor, rrd_none
  SELECT count(*) FROM sift.col_connections                     | ok: (0)                                      | rrd_owner, rrd_reader, rrd_monitor, rrd_none
  SELECT sift._may_inspect('rrd.ins')                           | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT sift._may_inspect('rrd.ins')                           | ok: (f)                                      | rrd_none
@@ -553,7 +551,7 @@ $$);
  SELECT segments > 0 FROM sift.worker_state('rrd.ins_col')     | ERROR: permission denied for index "ins_col" | rrd_none
  SELECT segments >= 0 FROM sift.worker_state('rrd.ins_bm')     | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT segments >= 0 FROM sift.worker_state('rrd.ins_bm')     | ERROR: permission denied for index "ins_bm"  | rrd_none
-(24 rows)
+(23 rows)
 
 -- the inspectors that read the segments or the metapage of a sift_col index, for the same four roles (col_unit_agg and col_unit_hist return values of the table: a
 -- monitor, who may look at the index but not read the table, stays out)

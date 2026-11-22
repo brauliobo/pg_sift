@@ -1,0 +1,66 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_control_flow_attributes : require
+/*
+ * vk_agg_ungrouped.comp - the aggregates of no GROUP BY, for any program: every invocation runs the program on the rows it meets, over the
+ * granules its workgroup takes, and adds them into registers (common_ungrouped.glsl reduces them). vk_agg_fast_ungrouped.comp is the same
+ * for the programs that only read columns and compare them with constants.
+ */
+#include "common_agg.glsl"
+#define AGG_KIND(a) ctl[J_AGGKIND + (a)]
+#include "common_ungrouped.glsl"
+
+layout(local_size_x = 256) in;
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint naggs = ctl[J_NAGGS], ngran = ctl[J_NGRAN];
+
+	ungrouped_init(naggs);
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		for (uint r = tid; r < g_nrows; r += WG)
+		{
+			if (!row_begin(gi, dtrow, r))
+				continue;
+			lrows++;
+			for (uint a = 0u; a < naggs; a++)
+			{
+				uint k = ctl[J_AGGKIND + a];
+
+				if (!agg_in(a))
+					continue;
+				if (k == AK_COUNT_STAR)
+					la[a * 3u] += 1l;
+				else if (!agg_vok(a))
+					continue;
+				else if (k == AK_COUNT)
+					la[a * 3u] += 1l;
+				else if (k == AK_SUM_I)
+				{
+					int64_t v = agg_v(a);
+					la[a * 3u] += sum_lo(v);
+					la[a * 3u + 1u] += sum_hi(v);
+					la[a * 3u + 2u] += 1l;
+				}
+				else if (k == AK_SUM_F)
+				{
+					lf[a] += dbl(agg_v(a));
+					la[a * 3u + 2u] += 1l;
+				}
+				else
+				{
+					int64_t v = agg_key(a, k);
+					bool mn = (k == AK_MIN || k == AK_MIN_F);
+
+					la[a * 3u] = mn ? min(la[a * 3u], v) : max(la[a * 3u], v);
+					la[a * 3u + 2u] += 1l;
+				}
+			}
+		}
+	}
+	ungrouped_finish(tid, naggs);
+}

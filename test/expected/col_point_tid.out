@@ -415,7 +415,6 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "pt_r": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_r');
-RESET sift.col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
 --------
@@ -460,7 +459,6 @@ REINDEX INDEX pt_r;
 NOTICE:  sift_col index "pt_r": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pt_r');
-RESET sift.col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
  format 
 --------

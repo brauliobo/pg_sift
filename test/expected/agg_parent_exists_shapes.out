@@ -2,6 +2,7 @@
 -- parent column is answered by the scan of the parent with the child as its lookup table when both tables have a sift_col index. The answers are those of the normal
 -- plan, for children with a NULL key, children whose parent is gone and parents with none.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

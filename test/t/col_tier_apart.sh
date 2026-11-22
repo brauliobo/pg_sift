@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The tier merge leaves clean segments that hold no superblock in common alone when they total more than sift.vacuum_rewrite_limit: the segments of a
 # parallel build and of the promotions of appended rows, whose merge gains a reader nothing and writes all their bytes. Eight such segments stay eight
 # after a VACUUM; a dead row in one of them makes the merge worth its bytes and they become one.

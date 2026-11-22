@@ -85,6 +85,7 @@ CREATE INDEX l_k ON l (l_orderkey);
 CREATE INDEX o_col ON o USING sift_col (o_orderkey, o_orderdate, o_prio);
 CREATE INDEX l_col ON l USING sift_col (l_orderkey, l_commitdate, l_receiptdate);
 VACUUM (FREEZE, ANALYZE) o, l;
+SET work_mem = '1GB';
 SELECT scan_used('SELECT o_prio, count(*) FROM o WHERE o_orderdate >= date ''1993-07-01'' AND o_orderdate < date ''1993-10-01'' AND EXISTS (SELECT 1 FROM l WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate) GROUP BY 1', 60);
  scan_used 
 -----------

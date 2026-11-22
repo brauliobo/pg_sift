@@ -11,8 +11,7 @@
 #   scripts/package.sh matrix                  the packages of PGS, FAMILIES and ARCHES as the JSON matrix of the release workflow
 #   scripts/package.sh --selftest              verify on a scratch directory; no literal major in the recipes of packaging/
 #
-# REF defaults to HEAD, OUTDIR to dist/. PGS is the list of PostgreSQL majors the release carries (17 and 18 from PGDG, 19 from its testing
-# channel until it is released). ARCHES is the list of architectures (x86_64 and aarch64, as uname -m names them): a host builds its own, the
+# REF defaults to HEAD, OUTDIR to dist/. PGS is the list of PostgreSQL majors the release carries (17, 18 and 19, all from PGDG). ARCHES is the list of architectures (x86_64 and aarch64, as uname -m names them): a host builds its own, the
 # images are the native ones, so aarch64 is built on an arm64 host (the release runs it on a hosted arm runner). Override the images with BUILD_DEB, BUILD_RPM, TEST_DEB, TEST_RPM (space-separated lists).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
@@ -35,7 +34,7 @@ TEST_AMZN=${TEST_AMZN:-amazonlinux:2023}
 
 run() { # run IMAGE OUTDIR MODE [docker args...]: packaging/container.sh MODE in a throwaway container
 	local image=$1 out=$2 mode=$3; shift 3
-	docker run --rm --cpus "$("$REPO/scripts/docker-cpus.sh")" -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/scripts/check-aarch64-baseline.sh:/check-aarch64-baseline.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
+	docker run --rm --cpus "$("$REPO/scripts/docker-cpus.sh")" -e HOST_UID="$(id -u)" -v "$REPO/packaging:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/scripts/check-aarch64-baseline.sh:/check-aarch64-baseline.sh:ro" -v "$REPO/scripts/isa_check.sh:/isa_check.sh:ro" -v "$REPO/scripts/isa-scan.sh:/isa-scan.sh:ro" -v "$out:/out" "$@" "$image" /pkg/container.sh "$mode"
 }
 
 build() {
@@ -118,8 +117,8 @@ selftest() {
 	verify "$d" 2>/dev/null && { echo "FAIL: verify accepts a set without $f"; bad=1; }
 	# the major is a placeholder (@PG@, %{pgmajor}) in the recipes, never a literal one
 	! grep -nE 'postgresql-[0-9]|pgsql-[0-9]|pg_sift_[0-9]' "$REPO"/packaging/debian/* "$REPO"/packaging/pg_sift.spec || { echo "FAIL: a literal PostgreSQL major in packaging/"; bad=1; }
-	# the smoke test of an aarch64 package scans its library for instructions above armv8-a (a -march in a distribution's flags would fail the release)
-	grep -q '/check-aarch64-baseline.sh' "$REPO/packaging/container.sh" && grep -q 'check-aarch64-baseline.sh:/check-aarch64-baseline.sh' "$REPO/scripts/package.sh" || { echo "FAIL: the smoke test does not run scripts/check-aarch64-baseline.sh"; bad=1; }
+	# the smoke test of a package scans its library for instructions above the baseline (armv8-a; x86-64 outside the multi-versioned clones) (a -march in a distribution's flags would fail the release)
+	grep -q '/check-aarch64-baseline.sh' "$REPO/packaging/container.sh" && grep -q 'check-aarch64-baseline.sh:/check-aarch64-baseline.sh' "$REPO/scripts/package.sh" && grep -q '/isa_check.sh --so' "$REPO/packaging/container.sh" && grep -q 'isa-scan.sh:/isa-scan.sh' "$REPO/scripts/package.sh" || { echo "FAIL: the smoke test does not run scripts/check-aarch64-baseline.sh and scripts/isa_check.sh"; bad=1; }
 	grep -q @PG@ "$REPO/packaging/debian/control" || { echo "FAIL: packaging/debian/control has no @PG@"; bad=1; }
 	# no architecture in the recipes either: dpkg and rpmbuild name the package after the host
 	! grep -nE 'Architecture: (amd64|arm64)|ExclusiveArch: *x86_64 *$' "$REPO/packaging/debian/control" "$REPO/packaging/pg_sift.spec" || { echo "FAIL: a single architecture in packaging/"; bad=1; }

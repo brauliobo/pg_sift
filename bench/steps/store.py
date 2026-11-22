@@ -7,8 +7,7 @@ Called by steps/store.sh, which starts the containers (one per server, equal CPU
     store.py run   --rows N --out DIR             warm latency of the ten queries on every engine, result equality, plans
     store.py cold  --rows N --out DIR             latency of the first run after a restart of the server
     store.py updates --rows N --out DIR           updates, deletes, read-after-write, reads under an update load, space (changes the data: runs last)
-    store.py merge OUT... -o bench/results/store.json
-    store.py render [--results FILE] [--readme FILE] [--benchmarks FILE]    the Markdown tables, rewritten between the bench:store markers
+    store.py merge OUT... -o docs/results/store.json
 
 Engines: pg (heap + btree + GIN), sift (heap + sift_col + sift), sift_table (column-format table + sift), es (Elasticsearch, request
 cache off), es_cached (the same with the shard request cache on), ch (ClickHouse), citus (Citus on one node, the table in the
@@ -28,7 +27,7 @@ from store_data import Rows, build_indexes, bulk_docs, cmd_datakey, cmd_gen, cmd
 from store_engine import Client, Http, Utilization, restart  # noqa: E402
 from store_lib import CH_AUTH, DEFAULT_ENGINES, UPDATE_ENGINES, container, die, load_queries, log  # noqa: E402
 from store_plan import cmd_cache_save, cmd_merge, cmd_noisy, cmd_patch, cmd_plan, cmd_planget, cmd_stable  # noqa: E402
-from store_render import cmd_compare, cmd_gap, cmd_render, cmd_table  # noqa: E402
+from store_render import cmd_compare, cmd_gap, cmd_table  # noqa: E402
 from store_run import cmd_cold, cmd_interference, cmd_run, cold_cell, evict, one_container, run_query, sample, time_cell, time_wave  # noqa: E402
 from store_section import cmd_section, cmd_section_merge  # noqa: E402
 from store_updates import Writer, churn, cmd_updates, cmd_verify, read_after_write, read_latency, update_engine, with_load  # noqa: E402
@@ -146,16 +145,8 @@ def main():
     m.add_argument('--restart-engines', type=lambda s: s.split(','), default=[])
     m.add_argument('--plan', action='append', default=[], help='a plan of the pass (repeat per size): its cached groups are read from the cache and merged in (cells of another host are refused)')
     m.add_argument('--keep', action='append', default=[], help='an earlier results file: its sets that this pass did not measure are carried over (skipped with a WARN when it was measured on another host)')
-    r = sub.add_parser('render')
-    r.add_argument('--results', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
-    r.add_argument('--readme')
-    r.add_argument('--benchmarks')
-    r.add_argument('--compression', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store-compression.json'))
-    r.add_argument('--updates', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'updates.json'), help='the update, delete and VACUUM section (store.py section): when it exists it is the README block bench:store-updates, the block bench:updates of bench/out/BENCHMARKS.md and the chart')
-    r.add_argument('--img', help='where the chart of the section is written')
-    r.add_argument('--stdout', action='store_true')
     for name in ('table', 'gap'):
-        sub.add_parser(name).add_argument('file', nargs='?', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
+        sub.add_parser(name).add_argument('file', nargs='?', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
     t = sub.add_parser('stats')
     t.add_argument('--rows', type=int, required=True)
     t.add_argument('-o', required=True)
@@ -190,7 +181,7 @@ def main():
         log(f'{args.cmd}: {part_path(args, PARTS[args.cmd])} holds the key of this command: measured before, kept')
         sys.exit(0)
     try:
-        sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'section': cmd_section, 'section-merge': cmd_section_merge, 'merge': cmd_merge, 'render': cmd_render, 'table': cmd_table,
+        sys.exit({'gen': cmd_gen, 'verify': cmd_verify, 'load': cmd_load, 'run': cmd_run, 'cold': cmd_cold, 'updates': cmd_updates, 'section': cmd_section, 'section-merge': cmd_section_merge, 'merge': cmd_merge, 'table': cmd_table,
                   'stats': cmd_stats, 'gap': cmd_gap, 'compare': cmd_compare, 'plan': cmd_plan, 'planget': cmd_planget, 'cache-save': cmd_cache_save, 'noisy': cmd_noisy, 'patch': cmd_patch,
                   'stable': cmd_stable, 'datakey': cmd_datakey, 'interference': cmd_interference}[args.cmd](args))
     except (RuntimeError, benchlib.ForeignHost) as x:

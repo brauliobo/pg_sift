@@ -1,0 +1,75 @@
+-- Format major 2 tests a set of more than 8 keys on a chunk as it is stored (frame of reference, delta, runs, dictionary), and asks the storage for the pages of the granules a scan keeps
+-- in windows ahead of it also when no predicate is on the key: a predicate that rules out most granules reads little more than it uses. Every answer is the heap's.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+-- {tests the kernels of the stored form ran, pages asked ahead} of the scans of one query
+CREATE FUNCTION run(q text, OUT parity text, OUT kernels int8, OUT prefetched int8) LANGUAGE plpgsql AS $$
+DECLARE c int8[];
+BEGIN
+	PERFORM sift._test_f2_scan_counters(true);
+	parity := f2_same(q);
+	c := sift._test_f2_scan_counters(true);
+	kernels := c[11];
+	prefetched := c[12];
+END $$;
+-- 200000 rows; none of the columns but id is in the key: w is a delta (ascending), r a column of runs, d a dictionary of 50 strings, f a frame of reference
+CREATE TABLE rp (id int, w int, r int, d text COLLATE "C", f int, pad text);
+INSERT INTO rp SELECT i, i * 3, i / 2000, 'd' || lpad((i % 50)::text, 2, '0'), 1000000 + (i * 7919) % 5000, repeat('x', 40) FROM generate_series(1, 200000) i;
+CREATE INDEX rp_idx ON rp USING sift_col (id, w, r, d, f, pad) WITH (key_order = 'id');
+SELECT sift._test_f2_check('rp_idx') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+-- Sets of up to 8 keys stay with the filters of the codec; more are tested by the kernels, on each of the shapes
+SELECT n, parity, CASE WHEN n IN (1, 3) THEN kernels > 0 END AS by_kernels FROM (VALUES
+	(1, 'SELECT id FROM rp WHERE f IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008)'),
+	(2, 'SELECT id FROM rp WHERE f IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008, 1000009)'),
+	(3, 'SELECT id FROM rp WHERE r IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99)'),
+	(4, 'SELECT id FROM rp WHERE w IN (3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 599997, 5)')
+) v(n, q), LATERAL run(q) ORDER BY n;
+ n | parity | by_kernels 
+---+--------+------------
+ 1 | same   | f
+ 2 | same   | 
+ 3 | same   | t
+ 4 | same   | 
+(4 rows)
+
+SELECT n, parity FROM (VALUES
+	(5, 'SELECT id FROM rp WHERE d IN (''d01'', ''d02'', ''d03'', ''d04'', ''d05'', ''d06'', ''d07'', ''d08'', ''d09'', ''nope'')'),
+	(6, 'SELECT id FROM rp WHERE f NOT IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008, 1000009)'),
+	(7, 'SELECT id FROM rp WHERE f IN (1000001, 1000002, 1000003, 1000004, 1000005, 1000006, 1000007, 1000008, 1000009) AND r < 40')
+) v(n, q), LATERAL run(q) ORDER BY n;
+ n | parity 
+---+--------
+ 5 | same
+ 6 | same
+ 7 | same
+(3 rows)
+
+-- A predicate that rules out most granules asks for the pages of the few it keeps, not of every granule; one that keeps all of them asks for all
+SELECT sel.parity, all_.parity AS parity_all, all_.prefetched > 0 AS full_scan_asks_ahead, sel.prefetched * 4 < all_.prefetched AS selective_asks_less
+FROM run('SELECT id FROM rp WHERE w BETWEEN 300000 AND 303000') sel, run('SELECT id FROM rp WHERE w >= 0') all_;
+ parity | parity_all | full_scan_asks_ahead | selective_asks_less 
+--------+------------+----------------------+---------------------
+ same   | same       | f                    | f
+(1 row)
+
+DROP TABLE rp;
+DROP FUNCTION f2_same(text), run(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

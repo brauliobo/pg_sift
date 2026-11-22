@@ -1,0 +1,120 @@
+-- EXT-15: Format 2.0 sift_col and sift_table on declarative partitions: the tracking triggers are on the leaves and only there, an index
+-- follows ATTACH PARTITION and DETACH PARTITION [CONCURRENTLY], rows that move between partitions and savepoints keep the answers of the
+-- heap, a SiftAgg over the parent is the heap's answer, and a pruned partition is not planned. parity() runs a query through the
+-- indexes and through the heap alone; same() runs two queries (a sift_table and its heap twin).
+
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET jit = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE FUNCTION parity(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	wrap text := 'SELECT count(*) || '':'' || coalesce(md5(string_agg(t::text, E''\n'' ORDER BY t::text)), ''-'') FROM (%s) t';
+	a text;
+	b text;
+BEGIN
+	EXECUTE format(wrap, q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true), set_config('sift.enable_col_scan', 'off', true),
+			set_config('enable_indexscan', 'off', true), set_config('enable_bitmapscan', 'off', true);
+	EXECUTE format(wrap, q) INTO b;
+	PERFORM set_config('sift.enable_agg', 'on', true), set_config('sift.enable_col_scan', 'on', true),
+			set_config('enable_indexscan', 'on', true), set_config('enable_bitmapscan', 'on', true);
+	RETURN a = b;
+END $$;
+CREATE FUNCTION same(qa text, qb text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	wrap text := 'SELECT count(*) || '':'' || coalesce(md5(string_agg(t::text, E''\n'' ORDER BY t::text)), ''-'') FROM (%s) t';
+	a text;
+	b text;
+BEGIN
+	EXECUTE format(wrap, qa) INTO a;
+	EXECUTE format(wrap, qb) INTO b;
+	RETURN a = b;
+END $$;
+CREATE FUNCTION plans(q text, rel text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%' || rel || '%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+-- RANGE partitions with a sift_col index on the parent
+CREATE TABLE events_p (id int, bucket int, code text, amount int) PARTITION BY RANGE (bucket);
+CREATE TABLE events_p1 PARTITION OF events_p FOR VALUES FROM (0) TO (100);
+CREATE TABLE events_p2 PARTITION OF events_p FOR VALUES FROM (100) TO (200);
+CREATE INDEX events_p_col ON events_p USING sift_col (bucket, code, amount);
+INSERT INTO events_p SELECT i, i % 200, 'c' || (i % 10), i * 3 FROM generate_series(1, 2000) i;
+SELECT count(*) = 0 AS zero_parent_triggers FROM pg_trigger WHERE tgrelid = 'events_p'::regclass AND tgname LIKE 'sift_track_%';
+SELECT count(*) = 2 AND bool_and(tgisinternal) AS two_internal_leaf_triggers
+FROM pg_trigger WHERE tgrelid IN ('events_p1'::regclass, 'events_p2'::regclass) AND tgname LIKE 'sift_track_%';
+SELECT count(*) = 2 AS one_index_on_each_leaf FROM pg_index WHERE indrelid IN ('events_p1'::regclass, 'events_p2'::regclass);
+SELECT parity($q$SELECT bucket / 50 AS b, count(*), sum(amount) FROM events_p GROUP BY 1$q$) AS part_initial;
+-- rows move between partitions, a savepoint rolls part of it back
+BEGIN;
+UPDATE events_p SET bucket = bucket + 100, amount = amount + 10 WHERE bucket < 20;
+SAVEPOINT sp1;
+UPDATE events_p SET bucket = bucket - 100 WHERE bucket >= 180;
+DELETE FROM events_p WHERE id % 13 = 0;
+ROLLBACK TO SAVEPOINT sp1;
+COMMIT;
+SELECT parity($q$SELECT bucket / 50 AS b, count(*), sum(amount) FROM events_p GROUP BY 1$q$) AS part_after_row_movement;
+-- ATTACH a table that has its own sift_col index
+CREATE TABLE events_p3 (LIKE events_p);
+CREATE INDEX events_p3_col ON events_p3 USING sift_col (bucket, code, amount);
+INSERT INTO events_p3 SELECT i, 200 + (i % 100), 'c' || (i % 10), i FROM generate_series(2001, 2500) i;
+ALTER TABLE events_p ATTACH PARTITION events_p3 FOR VALUES FROM (200) TO (300);
+UPDATE events_p SET amount = amount + 5 WHERE bucket >= 200 AND id % 5 = 0;
+SELECT count(*) = 1 AND bool_and(tgisinternal) AS attached_leaf_has_its_trigger FROM pg_trigger WHERE tgrelid = 'events_p3'::regclass AND tgname LIKE 'sift_track_%';
+SELECT parity($q$SELECT bucket / 100 AS b, count(*), sum(amount) FROM events_p GROUP BY 1$q$) AS part_after_attach;
+-- DETACH: the leaf keeps its index and answers alone
+ALTER TABLE events_p DETACH PARTITION events_p3;
+DELETE FROM events_p3 WHERE id % 4 = 0;
+UPDATE events_p3 SET amount = amount + 1;
+SELECT parity($q$SELECT count(*), sum(amount) FROM events_p$q$) AS part_after_detach_parent;
+SELECT parity($q$SELECT bucket, count(*), sum(amount) FROM events_p3 GROUP BY 1$q$) AS part_after_detach_leaf;
+SELECT count(*) = 1 AND bool_and(tgisinternal) AS detached_leaf_keeps_its_trigger FROM pg_trigger WHERE tgrelid = 'events_p3'::regclass AND tgname LIKE 'sift_track_%';
+-- ATTACH again, then DETACH CONCURRENTLY
+ALTER TABLE events_p ATTACH PARTITION events_p3 FOR VALUES FROM (200) TO (300);
+INSERT INTO events_p SELECT i, 200 + (i % 100), 'c' || (i % 10), i FROM generate_series(3001, 3200) i;
+SELECT parity($q$SELECT bucket / 100 AS b, count(*), sum(amount) FROM events_p GROUP BY 1$q$) AS part_after_reattach;
+ALTER TABLE events_p DETACH PARTITION events_p3 CONCURRENTLY;
+SELECT parity($q$SELECT bucket / 100 AS b, count(*), sum(amount) FROM events_p GROUP BY 1$q$) AS part_after_detach_concurrently;
+SELECT parity($q$SELECT count(*), sum(amount) FROM events_p3$q$) AS detached_concurrently_leaf;
+-- LIST partitions of sift_table and heap, and a heap twin of the same rows
+CREATE TABLE sales_p (id int, region text NOT NULL, amount int) PARTITION BY LIST (region);
+CREATE TABLE sales_a PARTITION OF sales_p FOR VALUES IN ('a') USING sift_table;
+CREATE TABLE sales_b PARTITION OF sales_p FOR VALUES IN ('b');
+CREATE TABLE sales_c PARTITION OF sales_p FOR VALUES IN ('c') USING sift_table;
+CREATE TABLE sales_heap (id int, region text NOT NULL, amount int);
+INSERT INTO sales_p SELECT i, chr(97 + i % 3), i % 100 FROM generate_series(1, 3000) i;
+INSERT INTO sales_heap SELECT * FROM sales_p;
+SELECT same($q$SELECT region, count(*), sum(amount), max(amount) FROM sales_p GROUP BY region$q$,
+	   $q$SELECT region, count(*), sum(amount), max(amount) FROM sales_heap GROUP BY region$q$) AS list_group_is_the_twins;
+UPDATE sales_p SET region = 'c' WHERE id % 10 = 1;
+UPDATE sales_heap SET region = 'c' WHERE id % 10 = 1;
+DELETE FROM sales_p WHERE id % 23 = 0;
+DELETE FROM sales_heap WHERE id % 23 = 0;
+CREATE TABLE sales_d (id int, region text NOT NULL, amount int) USING sift_table;
+INSERT INTO sales_d SELECT i, 'd', i % 100 FROM generate_series(4001, 4500) i;
+INSERT INTO sales_heap SELECT * FROM sales_d;
+ALTER TABLE sales_p ATTACH PARTITION sales_d FOR VALUES IN ('d');
+SELECT same($q$SELECT region, count(*), sum(amount), max(amount) FROM sales_p GROUP BY region$q$,
+	   $q$SELECT region, count(*), sum(amount), max(amount) FROM sales_heap GROUP BY region$q$) AS list_after_moves_and_attach;
+ALTER TABLE sales_p DETACH PARTITION sales_d CONCURRENTLY;
+DELETE FROM sales_heap WHERE region = 'd';
+SELECT same($q$SELECT region, count(*), sum(amount) FROM sales_p GROUP BY region$q$,
+	   $q$SELECT region, count(*), sum(amount) FROM sales_heap GROUP BY region$q$) AS list_after_detach_concurrently;
+SELECT count(*) = 500 AS detached_sift_table_keeps_its_rows FROM sales_d;
+-- pruning: the partitions the condition rules out are not in the plan
+SELECT NOT plans($q$SELECT sum(amount) FROM sales_p WHERE region = 'a'$q$, 'sales_b')
+	   AND NOT plans($q$SELECT sum(amount) FROM sales_p WHERE region = 'a'$q$, 'sales_c') AS list_pruning_leaves_the_others_out;
+SELECT NOT plans($q$SELECT sum(amount) FROM events_p WHERE bucket < 50$q$, 'events_p2') AS range_pruning_leaves_the_other_out;
+SELECT parity($q$SELECT code, count(*), sum(amount) FROM events_p WHERE bucket < 50 GROUP BY code$q$) AS pruned_range_is_the_heaps;
+SELECT count(*) = 0 AS sift_check_is_clean FROM sift.check();
+DROP TABLE events_p, events_p3, sales_p, sales_d, sales_heap;
+DROP FUNCTION parity(text), same(text, text), plans(text, text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

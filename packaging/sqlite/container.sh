@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Runs inside a throwaway container (scripts/package-sqlite.sh):
-#   container.sh build   build /src (sqlite/, src/, LICENSE, NOTICE of a git ref) into /out/sift-sqlite-$VER-linux-x86_64.tar.gz
+#   container.sh build   build /src (sqlite/, src/, LICENSE, NOTICE of a git ref) into /out/sift-sqlite-$VER-linux-$ARCH.tar.gz
 #   container.sh test    unpack /out/$TARBALL in a fresh directory and run the smoke test (/smoke.py) against the system SQLite
-# Env: VER, EPOCH (source date), HOST_UID (owner of the /out files), TARBALL (test).
+# Env: VER, ARCH (x86_64 or aarch64), EPOCH (source date), HOST_UID (owner of the /out files), TARBALL (test).
 set -euo pipefail
 
 command -v apt-get >/dev/null && FMT=deb || FMT=rpm
@@ -10,7 +10,7 @@ command -v apt-get >/dev/null && FMT=deb || FMT=rpm
 . /net.sh
 # shellcheck source=/dev/null
 . /etc/os-release
-NAME=sift-sqlite-$VER-linux-x86_64
+NAME=sift-sqlite-$VER-linux-$ARCH
 # the oldest glibc the build image carries is the oldest one the extension runs on; the build fails when it needs a newer one
 MAX_GLIBC=${MAX_GLIBC:-2.34}
 
@@ -33,7 +33,7 @@ build() {
 	echo "requires ${glibc:-no versioned glibc symbol}, built on $PRETTY_NAME"
 	[[ -z $glibc || $(printf '%s\n' "${glibc#GLIBC_}" "$MAX_GLIBC" | sort -V | tail -1) == "$MAX_GLIBC" ]] ||
 		{ echo "sift.so needs $glibc, newer than the supported $MAX_GLIBC" >&2; exit 1; }
-	! objdump -p build/sift.so | awk '/NEEDED/ {print $2}' | grep -Evx 'lib(m|c|pthread|dl)\.so\.[0-9]+|ld-linux-x86-64\.so\.2' ||
+	! objdump -p build/sift.so | awk '/NEEDED/ {print $2}' | grep -Evx 'lib(m|c|pthread|dl)\.so\.[0-9]+|ld-linux-(x86-64|aarch64)\.so\.[0-9]+' ||
 		{ echo "sift.so needs more than libc and libm" >&2; exit 1; }
 
 	local dir=/tmp/pkg/$NAME

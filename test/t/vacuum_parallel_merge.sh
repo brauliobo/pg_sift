@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A VACUUM that vacuums the b-trees of a table with parallel workers is in parallel mode for the cleanup of its other indexes, where no transaction id can be
 # assigned: the merge of a BM25 index there is made by one process (its merge by workers takes an id before it enters a parallel mode of its own), in that
 # VACUUM, with no failure counted and no WARNING, and leaves the answers as they were.

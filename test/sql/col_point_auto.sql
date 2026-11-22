@@ -36,7 +36,7 @@ CREATE INDEX pa_tid ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (point_tid
 SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['pa_rid', 'pa_id', 'pa_few', 'pas_rid', 'pa_off', 'pa_user', 'pa_tid']) i ORDER BY 1;
 
 -- an index cut by a key (key_cut) keeps the directory, and a rebuild keeps both: the choice of the build does not stop the cut
-CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
+CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f) WITH (order_array_columns = 'off', key_cut = 'tenant_id');
 SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';
 REINDEX INDEX pa_kc;
 SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';

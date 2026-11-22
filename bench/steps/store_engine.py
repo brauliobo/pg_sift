@@ -22,6 +22,7 @@ class Psql(pgq.Backend):
 class Http:
     def __init__(self, eid, headers=None, timeout=900):
         self.port, self.headers, self.timeout, self.conn = port(eid), headers or {}, timeout, None
+        self.summary = None   # the X-ClickHouse-Summary header of the last response
 
     def request(self, method, path, body=None, headers=None):
         for attempt in (0, 1):
@@ -31,6 +32,7 @@ class Http:
                 self.conn.request(method, path, body=body, headers={**self.headers, **(headers or {})})
                 r = self.conn.getresponse()
                 data = r.read()
+                self.summary = r.getheader('X-ClickHouse-Summary')
                 if r.status >= 400:
                     raise RuntimeError(f'{method} {path[:80]}: {r.status} {data[:300].decode(errors="replace")}')
                 return data
@@ -84,6 +86,7 @@ class Client:
     def __init__(self, eid):
         self.eid, self.busy, self.cpu = eid, 0.0, 0.0   # busy, cpu: wall seconds and container CPU seconds spent in this client's requests since the last reset
         self.cpu_ms, self.cpus = 0.0, []   # the container's CPU milliseconds of the last request, and of each timed request since the last reset (store_run.sample)
+        self.server_ms, self.servers = None, []   # ClickHouse: the elapsed_ns of its X-ClickHouse-Summary header for the last request, and for each timed request
         self.cg = container_cgroup(eid)
         self.psql = Psql(eid) if eid in PG_ENGINES else None
         self.http = None if self.psql else Http(eid, CH_AUTH if is_ch(eid) else {'Content-Type': 'application/json'})
@@ -96,7 +99,8 @@ class Client:
                 out = self.psql.run(st, capture)
                 return (time.perf_counter() - t0) * 1e3, ('\n'.join(out) + '\n' if out else '') if capture else None
             if is_ch(self.eid):
-                data = self.http.request('POST', '/?database=store&default_format=TSV', st.encode())
+                data = self.http.request('POST', '/?database=store&default_format=TSV&wait_end_of_query=1', st.encode())
+                self.server_ms = int(json.loads(self.http.summary or '{}').get('elapsed_ns', 0)) / 1e6
                 return (time.perf_counter() - t0) * 1e3, data.decode() if capture else None
             method, path, body, spec, _ = st
             data = self.http.request(method, path, body)

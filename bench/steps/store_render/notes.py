@@ -1,6 +1,7 @@
 # The sentences under a table: where the systems lose, the load and error notes, the thread and cache lines and the caveats.
 # Each reads a Results and one tier and returns lines of Markdown.
 import benchlib
+import resultfile
 import os
 import re
 from store_lib import CHUNK, LANES, PG_ENGINES
@@ -102,12 +103,11 @@ def citus_notes(R, tier):
 
 
 def duck_best(R, q, variant):
-    """the faster pg_duckdb mode on a question (bench/results/duckdb.tsv, its own run), or None"""
+    """the faster pg_duckdb mode on a question (docs/results/duckdb.tsv, its own run), or None"""
     path = os.path.join(R.dir, 'duckdb.tsv')
     if not os.path.exists(path):
         return None
-    from store_charts import read_tsv
-    rows = read_tsv(path)[1]
+    rows = resultfile.read(path)[1]
     m = 'warm_ms' if variant == 'warm' else 'cold_ms'
     v = [float(r['value']) for r in rows if r['case'].split(' ')[0] == q and r['arm'] in ('duckdb_heap', 'duckdb_parquet') and r['metric'] == m and r['value'] not in ('NA', 'error', '')]
     return min(v) if v else None

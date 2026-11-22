@@ -11,13 +11,13 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "core/ring.h"
+#include "core/cachebudget.h"
 #include "core/errctx.h"
 #include "core/sift.h"
 #include "bm25/estimate.h"
 
 #define ESTIMATE_MEMO	8
-/* A query longer than this is not kept: the answers live in TopMemoryContext for the session */
+/* A query longer than this is not kept */
 #define ESTIMATE_MEMO_MAX_KEY	8192
 
 typedef struct EstimateKey
@@ -32,10 +32,52 @@ typedef struct EstimateMemo
 	char	   *key;
 	Size		len;
 	SiftEstimate est;
+	MemoryContext cx;
+	uint64		tick;
 } EstimateMemo;
 
 static EstimateMemo estimate_memo[ESTIMATE_MEMO];
-static SiftRing estimate_memo_ring;
+static MemoryContext estimate_cx;
+
+static EstimateMemo *
+memo_victim(void)
+{
+	EstimateMemo *lru = NULL;
+
+	for (int i = 0; i < ESTIMATE_MEMO; i++)
+		if (estimate_memo[i].key != NULL && (lru == NULL || estimate_memo[i].tick < lru->tick))
+			lru = &estimate_memo[i];
+	return lru;
+}
+
+static uint64
+memo_oldest(void)
+{
+	EstimateMemo *m = memo_victim();
+
+	return m ? m->tick : UINT64_MAX;
+}
+
+static bool
+memo_evict_one(void)
+{
+	EstimateMemo *m = memo_victim();
+
+	if (m == NULL)
+		return false;
+	MemoryContextDelete(m->cx);
+	*m = (EstimateMemo) {0};
+	return true;
+}
+
+static void
+memo_evict_all(void)
+{
+	while (memo_evict_one())
+		;
+}
+
+static const SiftCacheKind estimate_kind = {"bm25_estimate", memo_oldest, memo_evict_one, memo_evict_all};
 
 static char *
 estimate_key(Relation index, const SiftQuerySrc *srcs, int nqueries, Size *len)
@@ -90,8 +132,9 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 	SiftErrCtx	ctx;
 
 	for (int i = 0; i < ESTIMATE_MEMO; i++)
-		if (estimate_memo[i].len == len && memcmp(estimate_memo[i].key, key, len) == 0)
+		if (estimate_memo[i].key != NULL && estimate_memo[i].len == len && memcmp(estimate_memo[i].key, key, len) == 0)
 		{
+			estimate_memo[i].tick = sift_cache_tick();
 			*est = estimate_memo[i].est;
 			pfree(key);
 			return;
@@ -99,15 +142,28 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 	sift_errctx_push(&ctx, RelationGetRelid(index));
 	sift_eval_estimate_src(index, srcs, nqueries, est);
 	sift_errctx_pop(&ctx);
-	if (len <= ESTIMATE_MEMO_MAX_KEY)
+	if (len <= ESTIMATE_MEMO_MAX_KEY && sift_cache_room(len + 2048))
 	{
-		m = &estimate_memo[SIFT_RING_SLOT(estimate_memo_ring, ESTIMATE_MEMO)];
-		if (m->key)
-			pfree(m->key);
-		m->key = MemoryContextAlloc(TopMemoryContext, len);
+		if (estimate_cx == NULL)
+		{
+			estimate_cx = sift_cache_create_context("sift cache estimates");
+			sift_cache_register(&estimate_kind);
+		}
+		m = NULL;
+		for (int i = 0; i < ESTIMATE_MEMO && m == NULL; i++)
+			if (estimate_memo[i].key == NULL)
+				m = &estimate_memo[i];
+		if (m == NULL)
+		{
+			m = memo_victim();
+			MemoryContextDelete(m->cx);
+		}
+		m->cx = AllocSetContextCreate(estimate_cx, "sift cache estimate", ALLOCSET_SMALL_SIZES);
+		m->key = MemoryContextAlloc(m->cx, len);
 		memcpy(m->key, key, len);
 		m->len = len;
 		m->est = *est;
+		m->tick = sift_cache_tick();
 	}
 	pfree(key);
 }

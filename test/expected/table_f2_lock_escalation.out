@@ -1,0 +1,186 @@
+-- The row locks of a sift_table at the size of a bulk statement: an UPDATE or DELETE of every row of a table holds the relation with one lock of the lock manager once a partition has more
+-- than 4,096 locked rows, and the backend keeps no entry for each row. The answers are the heap's, no statement fails with "too many row locks held", and what the backend holds for its locks does not grow with the rows.
+-- Every check raises on failure and prints one row (name, ok). SIFT_SCALE=n sets the rows (default 100000, about 8 minutes: the statements run at 1 to 3 ms for each row).
+-- Runs with no shared_preload_libraries. SIFT_DSM_FAIL=1 runs it as a server that cannot make the segment of the row locks (sift.test_dsm_fail): on a cluster that has just started, since
+-- a segment that exists is used; the answers are the same, the locks are the ones of the lock manager and no segment is made (the warning that says so is not shown).
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = error;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '3600s';
+\getenv scale SIFT_SCALE
+\if :{?scale}
+\else
+\set scale 100000
+\endif
+\getenv dsm_fail SIFT_DSM_FAIL
+\if :{?dsm_fail}
+SET sift.test_dsm_fail = 'sift_rowlock';
+\else
+\set dsm_fail ''
+\endif
+CREATE SCHEMA f2le;
+SET search_path = f2le, public;
+CREATE FUNCTION chk(name text, got anyelement, want anyelement) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
+	RETURN name || ': ok';
+END $$;
+CREATE FUNCTION relation_locks() RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(*) FROM pg_locks WHERE locktype = 'page' AND pid = pg_backend_pid() AND mode IN ('ExclusiveLock', 'AccessExclusiveLock') $$;
+CREATE FUNCTION row_lock_segments() RETURNS bigint LANGUAGE sql AS $$
+	SELECT count(*) FROM sift._test_dsm_entries() WHERE name = 'sift_rowlock' $$;
+-- the same rows twice, a sift_table and a heap: the statements run on both and the rows must agree
+CREATE TABLE t (id int PRIMARY KEY, val int, grp int) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE h (id int PRIMARY KEY, val int, grp int) USING heap;
+INSERT INTO t SELECT i, i % 1000, i % 10 FROM generate_series(1, :scale) i;
+INSERT INTO h SELECT * FROM t;
+SELECT busy FROM sift.table_maintain('t') \gset
+CREATE FUNCTION same_rows() RETURNS bool LANGUAGE sql AS $$
+	SELECT NOT EXISTS (SELECT * FROM t EXCEPT SELECT * FROM h) AND NOT EXISTS (SELECT * FROM h EXCEPT SELECT * FROM t) $$;
+SELECT chk('the library is not preloaded', position('sift' in current_setting('shared_preload_libraries')), 0);
+               chk                
+----------------------------------
+ the library is not preloaded: ok
+(1 row)
+
+SELECT chk('the rows agree to begin with', same_rows(), true);
+               chk                
+----------------------------------
+ the rows agree to begin with: ok
+(1 row)
+
+-- 1. one UPDATE of every row
+BEGIN;
+UPDATE t SET val = val + 1;
+UPDATE h SET val = val + 1;
+SELECT chk('update of every row: the heap''s rows', same_rows(), true);
+                   chk                    
+------------------------------------------
+ update of every row: the heap's rows: ok
+(1 row)
+
+SELECT chk('update of every row: held with one lock of the lock manager', relation_locks(), (:scale > 4096)::int::bigint);
+                               chk                               
+-----------------------------------------------------------------
+ update of every row: held with one lock of the lock manager: ok
+(1 row)
+
+COMMIT;
+SELECT chk('update of every row: after the commit', same_rows(), true);
+                    chk                    
+-------------------------------------------
+ update of every row: after the commit: ok
+(1 row)
+
+SELECT chk('update of every row: no lock is left', relation_locks(), 0::bigint);
+                   chk                    
+------------------------------------------
+ update of every row: no lock is left: ok
+(1 row)
+
+SELECT chk('the segment of the row locks is made where the run says', row_lock_segments(), (:'dsm_fail' = '')::int::bigint);
+                             chk                             
+-------------------------------------------------------------
+ the segment of the row locks is made where the run says: ok
+(1 row)
+
+-- 2. an UPDATE that joins every row to itself twice: a row that the statement changed is not changed again, as the heap does
+BEGIN;
+UPDATE t SET val = val + 1 FROM (SELECT id FROM t UNION ALL SELECT id FROM t) d WHERE t.id = d.id;
+UPDATE h SET val = val + 1 FROM (SELECT id FROM h UNION ALL SELECT id FROM h) d WHERE h.id = d.id;
+COMMIT;
+SELECT chk('self-join update: the heap''s rows', same_rows(), true);
+                  chk                  
+---------------------------------------
+ self-join update: the heap's rows: ok
+(1 row)
+
+SELECT chk('self-join update: every row changed once', (SELECT sum(val) FROM t), (SELECT sum(val) FROM h));
+                     chk                      
+----------------------------------------------
+ self-join update: every row changed once: ok
+(1 row)
+
+-- 3. a DELETE of half the rows, and a VACUUM
+BEGIN;
+DELETE FROM t WHERE id % 2 = 0;
+DELETE FROM h WHERE id % 2 = 0;
+SELECT chk('delete of half the rows: held with one lock of the lock manager', relation_locks(), (:scale > 8192)::int::bigint);
+                                 chk                                 
+---------------------------------------------------------------------
+ delete of half the rows: held with one lock of the lock manager: ok
+(1 row)
+
+COMMIT;
+SELECT chk('delete of half the rows: the rows left', (SELECT count(*) FROM t), (:scale - :scale / 2)::bigint);
+                    chk                     
+--------------------------------------------
+ delete of half the rows: the rows left: ok
+(1 row)
+
+SELECT chk('delete of half the rows: the heap''s rows', same_rows(), true);
+                     chk                      
+----------------------------------------------
+ delete of half the rows: the heap's rows: ok
+(1 row)
+
+VACUUM t;
+SELECT chk('after VACUUM: the heap''s rows', same_rows(), true);
+                chk                
+-----------------------------------
+ after VACUUM: the heap's rows: ok
+(1 row)
+
+SELECT chk('after VACUUM: the row locks of the transaction are gone', relation_locks(), 0::bigint);
+                             chk                             
+-------------------------------------------------------------
+ after VACUUM: the row locks of the transaction are gone: ok
+(1 row)
+
+-- 4. a transaction that updates the rows in four statements: what the backend holds for its row locks does not grow with the rows it has locked
+DROP TABLE t, h;
+CREATE TABLE t (id int PRIMARY KEY, val int, grp int) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO t SELECT i, i % 1000, i % 10 FROM generate_series(1, :scale) i;
+SELECT busy FROM sift.table_maintain('t') \gset
+BEGIN;
+UPDATE t SET val = val + 1 WHERE id <= :scale / 4;
+UPDATE t SET val = val + 1 WHERE id > :scale / 4 AND id <= :scale / 2;
+UPDATE t SET val = val + 1 WHERE id > :scale / 2 AND id <= :scale * 3 / 4;
+UPDATE t SET val = val + 1 WHERE id > :scale * 3 / 4;
+SELECT chk('the backend holds at most 256 KiB for the row locks of its four statements', (SELECT coalesce(max(total_bytes), 0) <= 256 * 1024 FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 row locks of the transaction'), true);
+                                      chk                                       
+--------------------------------------------------------------------------------
+ the backend holds at most 256 KiB for the row locks of its four statements: ok
+(1 row)
+
+SELECT chk('the transaction holds the relation with one lock of the lock manager', relation_locks(), (:scale > 4096)::int::bigint);
+                                   chk                                    
+--------------------------------------------------------------------------
+ the transaction holds the relation with one lock of the lock manager: ok
+(1 row)
+
+COMMIT;
+SELECT chk('every row updated once', (SELECT count(*) FROM t WHERE val = id % 1000 + 1), :scale::bigint);
+            chk             
+----------------------------
+ every row updated once: ok
+(1 row)
+
+SELECT chk('the backend holds at most 1 KiB for row locks after the commit', (SELECT coalesce(max(used_bytes), 0) <= 1024 FROM pg_backend_memory_contexts WHERE name = 'sift cache f2 row locks of the transaction'), true);
+                                chk                                 
+--------------------------------------------------------------------
+ the backend holds at most 1 KiB for row locks after the commit: ok
+(1 row)
+
+-- 5. no setting for the row locks
+SELECT chk('no setting for the row locks', (SELECT count(*) FROM pg_settings WHERE name LIKE 'sift.%' AND name ~ '(rowlock|escalat)'), 0::bigint);
+               chk                
+----------------------------------
+ no setting for the row locks: ok
+(1 row)
+
+DROP SCHEMA f2le CASCADE;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

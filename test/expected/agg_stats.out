@@ -174,7 +174,7 @@ SELECT reason, fixable, scans, units FROM sift.col_rollup_misses() WHERE rel = '
 (2 rows)
 
 -- a rollup that lacks a dim of the query, and units written before the index had the dim
-SET sift.agg_rollup_cost = 0; SET sift.col_rollup_worker = off; SET cpu_tuple_cost = 0.5;
+SET sift.agg_rollup_cost = 0; SET sift.async_maintenance = off; SET cpu_tuple_cost = 0.5;
 CREATE TABLE rr (id int, lines jsonb, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO rr
 SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 5, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e) FROM generate_series(1, g % 4 + 1) e), repeat('p', 300)
@@ -233,7 +233,7 @@ SELECT stat('units_no_rollup') > 0 AS units_no_rollup;
  t
 (1 row)
 
-RESET sift.agg_rollup_cost; RESET sift.col_rollup_worker; RESET cpu_tuple_cost;
+RESET sift.async_maintenance; RESET cpu_tuple_cost;
 -- the lookup tables a later query takes from the cache
 CREATE TABLE dims (id int, country int, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dims SELECT i, i % 5, 'd' || i FROM generate_series(0, 6) i;

@@ -19,7 +19,9 @@ SELECT (ARRAY['wireless','wired','portable','compact','classic'])[1 + i % 5] || 
 	   CASE WHEN i % 13 = 0 THEN NULL ELSE i % 3 = 0 END,
 	   CASE WHEN i % 19 = 0 THEN NULL ELSE ARRAY[(ARRAY['red','green','blue'])[1 + i % 3], (ARRAY['s','m','l'])[1 + i % 3], (ARRAY['red','green','blue'])[1 + i % 3]] END
 FROM generate_series(1, 12000) i;
+SET client_min_messages = warning;
 CREATE INDEX fc_bm ON fc USING sift (title);
+RESET client_min_messages;
 CREATE INDEX fc_col ON fc USING sift_col (brand, category, price, qty, added, ts, active) WITH (write_buffer_limit = 256);
 NOTICE:  sift_col index "fc_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = brand, active
@@ -213,10 +215,14 @@ SELECT (SELECT count(*) FROM regexp_matches(sift.facet_sql('fc', 'title', 'w1', 
 CREATE TABLE fcn (LIKE fc INCLUDING DEFAULTS);
 ALTER TABLE fcn ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO fcn SELECT * FROM fc;
+SET client_min_messages = warning;
 CREATE INDEX fcn_bm ON fcn USING sift (title);
+RESET client_min_messages;
 CREATE TABLE fct (LIKE fc INCLUDING DEFAULTS) USING sift_table;
 INSERT INTO fct SELECT * FROM fc;
+SET client_min_messages = warning;
 CREATE INDEX fct_bm ON fct USING sift (title);
+RESET client_min_messages;
 VACUUM (ANALYZE) fcn, fct;
 SELECT * FROM fc_stage('no column index', 'fcn');
       stage      |                         results                          
@@ -320,7 +326,6 @@ DROP OWNED BY fc_reader, fc_nobody;
 DROP ROLE fc_reader, fc_nobody;
 \set VERBOSITY default
 -- writes: each kind of change, with the facets of the table compared again
-SET sift.search_chunk_sbs = 1;
 SELECT * FROM fc_stage('chunks of one superblock');
           stage           |                         results                          
 --------------------------+----------------------------------------------------------
@@ -347,7 +352,6 @@ SELECT * FROM fc_stage('chunks of one superblock');
                           | week_ts=same/same 2 SiftAgg, 2 searching, 73 rows
 (1 row)
 
-RESET sift.search_chunk_sbs;
 INSERT INTO fc (title, brand, category, price, qty, added, ts, active, tags)
 SELECT 'wireless fresh w' || i, (ARRAY['acme', 'new', NULL])[1 + i % 3], 20 + i % 3, i % 700, i % 40, date '2025-06-01' + i % 90, timestamp '2025-06-01' + i % 90 * interval '1 day',
 	   i % 2 = 0, ARRAY['red', 'fresh']

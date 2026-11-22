@@ -118,7 +118,6 @@ CREATE INDEX su_two_col ON su_two USING sift_col (id, kind, grp, val, small, amt
 CREATE INDEX su_big_col ON su_big USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 256, cube_minmax = false);
 SET sift.col_format_minor = 7;
 CREATE INDEX su_old_col ON su_old USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
-RESET sift.col_format_minor;
 SELECT 'su' AS tbl, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('su_col') WHERE kind = 'immutable'
 UNION ALL SELECT 'su_off', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_off_col') WHERE kind = 'immutable'
 UNION ALL SELECT 'su_old', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_old_col') WHERE kind = 'immutable'

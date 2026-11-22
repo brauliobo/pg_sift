@@ -11,7 +11,7 @@ BEGIN
 	RETURN n::text;
 END $$;
 CREATE FUNCTION hits_seq(query text) RETURNS text LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
 DECLARE n bigint;
 BEGIN
 	EXECUTE 'SELECT count(*) FROM q WHERE body @@> $1' INTO n USING query;

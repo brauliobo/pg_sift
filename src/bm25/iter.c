@@ -3,6 +3,8 @@
  */
 #include "core/host.h"
 
+#include <math.h>
+
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/segment.h"
@@ -37,7 +39,7 @@ leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, const IterCurs *
 	{
 		const LeafTerm *t = &l->terms[s][i];
 
-		pc[i] = l->wide ? sift_post_open_blob(&t->info, t->blob, cx) : sift_post_open(&p->seg[s]->sr, &t->info, cx);
+		pc[i] = t->blob ? sift_post_open_blob(&t->info, t->blob, cx) : sift_post_open(&p->seg[s]->sr, &t->info, cx);
 		kid[i] = sift_post_cursor(pc[i]);
 		if (cs && !narrowed)
 			cs->posting = lappend(cs->posting, pc[i]);
@@ -112,6 +114,7 @@ sift_iter_begin(SiftPlan *plan)
 {
 	SiftMatchIter *it = MemoryContextAllocZero(plan->mcxt, sizeof(SiftMatchIter));
 
+	sift_plan_widen(plan, -INFINITY);
 	it->plan = plan;
 	it->root = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(sift_cur *));
 	it->grp = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(sift_grp *));
@@ -130,6 +133,7 @@ sift_iter_begin(SiftPlan *plan)
 											SIFT_SIMD_ALIGN, 0);
 		it->sure = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(sift_cur *));
 	}
+	sift_plan_prefetch_blobs(plan);
 	for (int s = 0; s < plan->nsegs; s++)
 	{
 		if (it->curs)

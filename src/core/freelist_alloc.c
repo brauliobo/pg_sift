@@ -3,48 +3,9 @@
  * (P2-P4 and P7 in core/store.h).
  */
 #include "freelist_int.h"
-#include "core/rowmem.h"
 #include "core/extlock.h"
 #include "core/restrict.h"
-
-/*
- * The recovery conflict with the snapshots of a standby that precede horizon, for a change they could not tell from the snapshots of the primary (blk: the block reused, if any).
- * It touches no page. Not logged when no standby can exist.
- */
-bool
-sift_wal_snapshot_conflict(Relation index, BlockNumber blk, FullTransactionId horizon)
-{
-	xl_btree_reuse_page xlrec;
-
-	if (!XLogStandbyInfoActive() || !RelationNeedsWAL(index))
-		return false;
-	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = horizon};
-	XLogBeginInsert();
-	XLogRegisterData((char *) &xlrec, SizeOfBtreeReusePage);
-	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
-	return true;
-}
-
-/*
- * Generic WAL has no recovery conflicts, so a standby's snapshot is only protected by
- * hot_standby_feedback. With sift.standby_conflicts, before blocks released with safexid are
- * reused (or their record is cleared for reuse) this logs a btree page-reuse record for the index:
- * a standby replays it as the usual recovery conflict with the snapshots older than safexid (wait for
- * them up to max_standby_streaming_delay, then cancel them), touching no page. Once per backend and
- * horizon: an older one is covered by a newer.
- */
-static void
-log_reuse(Relation index, BlockNumber blk, FullTransactionId safexid)
-{
-	static RelFileNumber last_rel = InvalidRelFileNumber;
-	static FullTransactionId last = {0};
-
-	if (!sift_standby_conflicts || (last_rel == index->rd_locator.relNumber && !FullTransactionIdPrecedes(last, safexid)) ||
-		!sift_wal_snapshot_conflict(index, blk, safexid))
-		return;
-	last_rel = index->rd_locator.relNumber;
-	last = safexid;
-}
+#include "core/wal_conflict.h"
 
 /* horizon: computed by the first record that needs it, InvalidFullTransactionId until then */
 static bool
@@ -166,7 +127,7 @@ alloc_blocks(Relation index, Buffer metabuf, uint32 want, uint32 min, uint32 *go
 				   "sift: relocation reservation no longer fits below its planned end");
 	*got = p.idx >= 0 ? Min(want, p.nblocks) : want;
 	if (p.idx >= 0 && FullTransactionIdIsValid(p.safexid) && !space_exclusive)
-		log_reuse(index, p.blk, p.safexid);
+		(void) sift_wal_snapshot_conflict(index, p.blk, p.safexid);
 	return p.idx >= 0 ? take_free(index, p.blk, p.idx, *got) : extend(index, metabuf, want);
 }
 
@@ -194,7 +155,7 @@ alloc_blocks_below(Relation index, Buffer metabuf, uint32 want, uint32 min, Bloc
 		return InvalidBlockNumber;
 	*got = Min(want, Min(p.nblocks, limit - p.start));
 	if (FullTransactionIdIsValid(p.safexid) && !space_exclusive)
-		log_reuse(index, p.blk, p.safexid);
+		(void) sift_wal_snapshot_conflict(index, p.blk, p.safexid);
 	return take_free(index, p.blk, p.idx, *got);
 }
 
@@ -328,13 +289,13 @@ prepare_free(Relation index, Buffer metabuf, const SiftExtent *release, int nrel
 			 FullTransactionId safexid, FreePlan *plan)
 {
 	SiftMetaPageData *meta = META(BufferGetPage(metabuf));
-	SiftExtent *rel = sift_rows_alloc(nrelease * sizeof(SiftExtent));
+	SiftExtent *rel = palloc(nrelease * sizeof(SiftExtent));
 	FreeScan	scan = {.room = InvalidBlockNumber};
 	int			n = 0;
 
 	memcpy(rel, release, nrelease * sizeof(SiftExtent));
 	qsort(rel, nrelease, sizeof(SiftExtent), cmp_extent);
-	plan->ext = sift_rows_alloc(nrelease * sizeof(SiftFreeExtent));
+	plan->ext = palloc(nrelease * sizeof(SiftFreeExtent));
 	for (int i = 0; i < nrelease; i++)
 	{
 		SiftFreeExtent *last = n > 0 ? &plan->ext[n - 1] : NULL;
@@ -516,7 +477,7 @@ rewrite_chain(Relation index, Buffer metabuf, FreeChain *c, bool trim)
 	if (trim)
 		c->n--;
 	if (c->cleared > 0 && !space_exclusive)
-		log_reuse(index, InvalidBlockNumber, c->newest);
+		(void) sift_wal_snapshot_conflict(index, InvalidBlockNumber, c->newest);
 	write_chain(index, blks, k, c->ext, c->n, InvalidBlockNumber);
 	state = sift_xlog_start(index);
 	meta = META(sift_xlog_register(&state, metabuf, 0));

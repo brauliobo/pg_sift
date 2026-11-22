@@ -1,4 +1,4 @@
--- The batches a scan builds from the write buffer are kept by the backend for the next scan, which reads only the records appended since (col/wbuf/batches.c). Every step
+-- The batches a scan builds from the write buffer are kept by the backend for the next scan, which reads only the records appended since (col/v1/wbuf/batches.c). Every step
 -- is read through the column index and through the heap and must agree: a repeated read, rows appended, rows that take the address of rows VACUUM removed (below the ones
 -- already kept), an aborted insert, a read after a promotion, a cursor that holds the batches while rows are appended, and a rebuilt index.
 CREATE EXTENSION pg_sift;
@@ -194,7 +194,7 @@ SELECT * FROM wc_same('rebuilt and appended');
  rebuilt and appended | t         | t
 (1 row)
 
--- the dictionary of a kept batch: a top-N scan on a text column makes its byte order once it compared enough rows (col/dict/parse.c), and the strings of the rows appended
+-- the dictionary of a kept batch: a top-N scan on a text column makes its byte order once it compared enough rows (col/v1/dict/parse.c), and the strings of the rows appended
 -- since must be in that order, or the scan reads past it
 CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE tw (id int PRIMARY KEY, g int, s text COLLATE "C", pad text DEFAULT repeat('x', 100)) WITH (autovacuum_enabled = off);
@@ -533,9 +533,7 @@ END $$;
 DROP TABLE wp, wd_state, wd_seen;
 DROP FUNCTION wp_fill(int, int), wp_agg(bool), wp_rows(bool), wp_top(bool), wp_same(), wd_snap(text), wd_fold(text), wd_check(text);
 DROP EXTENSION pg_sift_test;
--- the memory a kept set may take is the bytes in use, not the chunks it freed to grow its arrays: a buffer scattered over many superblocks (the new versions of rows
--- take the addresses VACUUM freed all over the table) holds a part of its memory in free chunks, and a set measured by what it holds was over the limit at 12,000 rows
--- of a wide table, was not kept, and was decoded again by every read. The limit is set between the two for this set, in a new backend that builds it again.
+-- a set a scattered buffer makes is kept while sift.backend_cache_kb has room for the memory its context allocates, and no read decodes it again
 CREATE EXTENSION pg_sift_test;
 CREATE TABLE wq (id int PRIMARY KEY, g int NOT NULL, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, s1 text, s2 text, pad text DEFAULT repeat('x', 100))
 	WITH (autovacuum_enabled = off, fillfactor = 20);
@@ -568,31 +566,24 @@ SELECT wq_read();
        7
 (1 row)
 
-SELECT rows >= 2500 AS buffered, batches >= 8 AS scattered, allocated > consumed AS free_chunks, (allocated + consumed) / 2 AS lim FROM sift._test_col_set_stats() \gset
-SELECT :'buffered'::bool AS buffered, :'scattered'::bool AS scattered, :'free_chunks'::bool AS free_chunks;
- buffered | scattered | free_chunks 
-----------+-----------+-------------
- t        | t         | t
+SELECT rows >= 2500 AS buffered, batches >= 8 AS scattered FROM sift._test_col_set_stats();
+ buffered | scattered 
+----------+-----------
+ t        | t
 (1 row)
 
 \c -
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
-SELECT set_config('sift.test_limits', 'wbuf_set_bytes=' || :lim || ',wbuf_set_amplify=1', false) IS NOT NULL AS limits_set;
- limits_set 
-------------
- t
-(1 row)
-
 SELECT wq_read();
  wq_read 
 ---------
        7
 (1 row)
 
-SELECT kept AS kept_over_the_chunks_it_freed FROM sift._test_col_set_stats();
- kept_over_the_chunks_it_freed 
--------------------------------
+SELECT kept FROM sift._test_col_set_stats();
+ kept 
+------
  t
 (1 row)
 

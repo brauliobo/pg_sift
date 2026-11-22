@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The index a REINDEX that takes its rows from the index it replaces (col/build/from_index.c) leaves is the one a REINDEX from the heap leaves: the same immutable segments, cut where the
+# tap: pooled
+# The index a REINDEX that takes its rows from the index it replaces (col/v1/build/from_index.c) leaves is the one a REINDEX from the heap leaves: the same immutable segments, cut where the
 # runs of a build end, and no more bytes in the file (the segments' streams take their extents as the build's do, so no hole is left between them). Two sizes of a key_cut index of wide
 # rows at the default maintenance_work_mem: one segment, and the first size that needs two.
 . "$(dirname "$0")/lib.bash"

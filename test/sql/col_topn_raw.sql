@@ -100,10 +100,10 @@ SELECT oc_check($q$SELECT id, u, b FROM oc ORDER BY u, b DESC, id LIMIT 30 OFFSE
 RESET work_mem;
 
 -- a dictionary cache that keeps almost nothing: the dictionaries of the leaves of a scan are parsed again between its units, the answers do not change
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS tiny_cache;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS tiny_cache;
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_filter', 'bytea_desc', 'two_keys') ORDER BY tag COLLATE "C";
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'bytea_asc') ORDER BY tag COLLATE "C";
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 SELECT sift.col_merge('oc_col', true) >= 0 AS merged;
 SELECT * FROM oc_stage('merged');

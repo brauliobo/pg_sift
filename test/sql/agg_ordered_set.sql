@@ -76,8 +76,10 @@ SELECT * FROM all_same();
 
 -- the histogram spills to a tuplesort: the sorted walk, not the quickselect
 SET work_mem = '64kB';
+SET hash_mem_multiplier = 1000;
 SELECT * FROM all_same();
 RESET work_mem;
+RESET hash_mem_multiplier;
 
 -- parallel workers merge their histograms
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET max_parallel_workers_per_gather = 2;

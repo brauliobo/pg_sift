@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# The SQL reference: every user-facing object of schema sift, read from the install scripts. docs/REFERENCE.md and the block of README.md between
-# the sift-reference markers are generated. Needs python3 and no PostgreSQL (a second or less); --live asks a server.
+# The SQL reference: every user-facing object of schema sift, read from the install scripts. docs/REFERENCE.md is generated from them.
+# Needs python3 and no PostgreSQL (a second or less); --live asks a server.
 #
-#   scripts/gen-reference.sh           check, then write docs/REFERENCE.md and the README block
-#   scripts/gen-reference.sh --check   check, and that both files are the generated ones (lint, scripts/ci.sh)
+#   scripts/gen-reference.sh           check, then write docs/REFERENCE.md
+#   scripts/gen-reference.sh --check   check, and that docs/REFERENCE.md is the generated one (lint, scripts/ci.sh)
 #   scripts/gen-reference.sh --live    compare the objects and the comments of a new database with the scripts (PG* in the environment; scripts/ci.sh)
 #
 # The objects are the functions, views, tables, operators and operator classes that sql/pg_sift--<default_version>.sql creates in schema sift (a name
-# starting with _, an event trigger, a handler and a support function are internal). `Since` is the first install script that creates the name.
+# starting with _, an event trigger, a handler, an @internal function and a support function are internal). `Since` is the first install script that creates the name.
 # A description is the COMMENT ON of that script, which must also be in the upgrade script into it (a fresh install and an upgrade show the same
 # \df+). The released scripts (scripts/released-sql.sha256) cannot get one: their objects take it from docs/reference-notes.tsv instead, which
 # also holds the group where the name prefix is not enough and the operator classes created by a DO block. The check fails when
 #   - an object has no description, or both a COMMENT and a note, or a note for an object of a script that is not released yet,
 #   - a note or a COMMENT names an object that does not exist, an install script and an upgrade script disagree on a COMMENT,
-#   - docs/REFERENCE.md or the README block is not what is generated.
+#   - docs/REFERENCE.md is not what is generated.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -35,16 +35,16 @@ mode = sys.argv[1]
 ROOT = os.getcwd()
 
 GROUPS = [
-    ('search', 'Search and ranking', 'The `sift` index (BM25): the operator, ranking, query helpers, facets and the inspection of the index.'),
-    ('col', 'Column index', 'The `sift_col` index: what it stores, and the operator classes that let the planner scan it.'),
-    ('table', 'Tables', 'The `sift_table` access method.'),
-    ('maint', 'Maintenance and workers', 'Promotion, merging, rewriting and the background workers, of all three.'),
-    ('diag', 'Diagnostics and upgrade', 'Session statistics, why a query kept the normal plan, what an upgrade leaves to do.'),
+    ('search', 'Search and ranking', 'The `sift` index (BM25): the operator, ranking, query helpers, facets and inspection.'),
+    ('col', 'Column index and scopes', 'The `sift_col` index: Format Major 2 inspection, scopes, projections, and operator classes.'),
+    ('table', 'Tables', 'The `sift_table` table access method.'),
+    ('maint', 'Maintenance and monitoring', 'Polymorphic promotion, merging, maintenance, and monitoring views across all access methods.'),
+    ('diag', 'Diagnostics and upgrade', 'Session statistics, refusal diagnostics, and upgrade preflight checks.'),
 ]
 GROUP_KEYS = [g[0] for g in GROUPS]
 KINDS = {'function': ('function', 'functions'), 'view': ('view', 'views'), 'table': ('table', 'tables'), 'opclass': ('operator class', 'operator classes'),
          'operator': ('operator', 'operators')}
-USAGE_SETTINGS = 'maintenance-and-operations'
+GUIDE_DOCS = ['docs/ANALYTICS.md', 'docs/SCOPES.md', 'docs/TABLES.md', 'docs/SEARCH.md', 'docs/OPERATIONS.md', 'docs/UPGRADING.md']
 
 
 # ---- SQL: statements with the comments gone and every dollar-quoted body a plain string ----
@@ -65,8 +65,11 @@ def statements(text):
             i = text.find('\n', i)
             i = n if i < 0 else i
         elif text.startswith('--', i):
-            i = text.find('\n', i)
-            i = n if i < 0 else i
+            end = text.find('\n', i)
+            end = n if end < 0 else end
+            if '@internal' in text[i:end]:
+                cur.append(' /*@internal*/ ')
+            i = end
         elif text.startswith('/*', i):
             i = text.index('*/', i) + 2
             cur.append(' ')
@@ -183,19 +186,28 @@ def scan(*paths):
     """-> objects {(kind, name): dict}, comments {(kind, name): text}, of the statements of the scripts in order"""
     objs, comments = {}, {}
     for s in [s for path in paths for s in statements(read(path))]:
-        m = re.match(r'DROP\s+FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
+        has_internal_tag = '/*@internal*/' in s
+        s_clean = s.replace('/*@internal*/', '').strip()
+        m = re.match(r'DROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?sift\.(\w+)\s*\(', s_clean, re.I)
         if m:
             objs.pop(('function', m.group(1)), None)    # dropped to be created again with another result
             first_types.pop(m.group(1), None)
             continue
-        m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+sift\.(\w+)\s*\(', s, re.I)
+        m = re.match(r'ALTER\s+FUNCTION\s+sift\.(\w+)\s*\(.*?\)\s+SET\s+SCHEMA\s+sift_internal\b', s_clean, re.I | re.S)
         if m:
-            o = function(s, m.group(1), m.end() - 1)
+            objs.pop(('function', m.group(1)), None)
+            continue
+        m = re.match(r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+sift\.(\w+)\s*\(', s_clean, re.I)
+        if m:
+            o = function(s_clean, m.group(1), m.end() - 1)
+            if has_internal_tag:
+                o['internal'] = True
             key = ('function', m.group(1))
             if first_types.setdefault(m.group(1), o['types']) != o['types']:
                 key = ('function', '%s(%s)' % (m.group(1), o['types']))   # an overload of the first one the scripts create: its own row, the plain name for the links and the groups
             objs[key] = o
             continue
+        s = s_clean
         m = re.match(r'CREATE\s+AGGREGATE\s+sift\.(\w+)\s*\(', s, re.I)
         if m:
             close = matching(s, m.end() - 1)
@@ -335,75 +347,58 @@ for name in sorted(globs):
     if g != '-':
         rows.append(dict(group=g, kind='opclass', name=name, sig='sift.' + name, ret='-', since=sn, desc=norm(d), link=None))
 
-# ---- links to docs/USAGE.md: the ## section that mentions the name most ----
-usage = read('docs/USAGE.md')
-sections, fence = [], False
-for line in usage.split('\n'):
-    if line.startswith('```'):
-        fence = not fence
-    m = re.match(r'## (.*)$', line) if not fence else None
-    if m:
-        sections.append([m.group(1).strip(), []])
-    elif sections:
-        sections[-1][1].append(line)
+# ---- links to the 6 guide docs: the ## section that mentions the name most ----
+sections = []
+for gpath in GUIDE_DOCS:
+    if not os.path.exists(os.path.join(ROOT, gpath)):
+        continue
+    gbase = os.path.basename(gpath)
+    fence = False
+    for line in read(gpath).split('\n'):
+        if line.startswith('```'):
+            fence = not fence
+        m = re.match(r'## (.*)$', line) if not fence else None
+        if m:
+            sections.append([gbase, m.group(1).strip(), []])
+        elif sections and sections[-1][0] == gbase:
+            sections[-1][2].append(line)
 
 
 def slug(title):
     return re.sub(r'\s', '-', re.sub(r'[^\w\s-]', '', title.replace('`', '').lower()))
 
 
-if USAGE_SETTINGS not in [slug(t) for t, _ in sections]:
-    err('docs/USAGE.md has no section %s (the settings table that the reference points to)' % USAGE_SETTINGS)
 for r in rows:
     if '*' in r['name']:
         continue
     pat = re.escape(r['name']) if r['kind'] == 'operator' else r'\bsift\.%s\b' % re.escape(r['name'])
-    best = max(((len(re.findall(pat, '\n'.join(b))), -i) for i, (t, b) in enumerate(sections)), default=(0, 0))
+    best = max(((len(re.findall(pat, '\n'.join(b))), -i) for i, (f, t, b) in enumerate(sections)), default=(0, 0))
     if best[0]:
-        t = sections[-best[1]][0]
-        r['link'] = '[%s](USAGE.md#%s)' % (t.replace('`', ''), slug(t))
+        f, t, _ = sections[-best[1]]
+        r['link'] = '[%s](%s#%s)' % (f[:-3], f, slug(t))
 
 
 def generate():
     n = {k: sum(1 for r in rows if r['kind'] == k and '*' not in r['name']) for k in KINDS}
     counts = ', '.join('%d %s' % (v, KINDS[k][v != 1]) for k, v in n.items() if v)
-    doc = ['# SQL reference', '',
-           'Generated by `scripts/gen-reference.sh` from the install script `sql/pg_sift--%s.sql` (a build product of the parts in `sql/%s/`, `scripts/sql-parts.sh`); do not edit by hand. Descriptions are the `COMMENT ON` of that script (`\\df+`),' % (latest, latest),
-           'or `docs/reference-notes.tsv` for the objects of the released scripts. `scripts/gen-reference.sh --check` fails when this file is stale or an object has no description.', '',
-           'Schema `sift`: %s. The first column is the signature with the defaults; Since is the first release that has the name; the section is the one of [USAGE.md](USAGE.md) that uses it most.' % counts, '',
-           'Settings (`sift.*`) are in the table of [Maintenance and operations](USAGE.md#%s); the fixed limits are in [LIMITS.md](LIMITS.md). The event triggers of the extension are listed by the view `sift.ddl_hooks` ([OPERATIONS.md](OPERATIONS.md#2-emergency)). The type `sift.tblref` (a table by its oid, with casts to `oid` and `regclass`) is the key type of `sift.table_option_values`; its input and output functions are internal.' % USAGE_SETTINGS, '']
+    doc = ['# SQL Reference', '',
+           'Generated by `scripts/gen-reference.sh` from `sql/pg_sift--%s.sql`; do not edit by hand.' % latest, '',
+           'Schema `sift`: %s. Settings live in [OPTIONS.md#server-settings](OPTIONS.md#server-settings) and limits in [LIMITS.md](LIMITS.md).' % counts, '']
     for gid, title, intro in GROUPS:
         rs = [r for r in rows if r['group'] == gid]
         if not rs:
             continue
-        doc += ['## ' + title, '', intro, '', '| Object | Kind | Returns | Since | Description |', '|---|---|---|---|---|']
+        doc += ['## ' + title, '', intro, '', '| Object | Returns | Since | Description |', '|---|---|---|---|']
         for r in sorted(rs, key=lambda r: (r['kind'] == 'opclass', r['name'])):
-            d = esc(r['desc']) + (' See [%s](%s).' % (r['link'][1:r['link'].index(']')], r['link'][r['link'].index('(') + 1:-1]) if r['link'] else '')
-            doc.append('| `%s` | %s | %s | %s | %s |' % (esc(r['sig']), KINDS[r['kind']][0], '`%s`' % esc(r['ret']) if r['ret'] != '-' else '', r['since'], d))
+            d = esc(r['desc']) + (' See %s.' % r['link'] if r['link'] else '')
+            ret = '*(%s)*' % KINDS[r['kind']][0] if r['kind'] in ('view', 'table', 'opclass') else ('`%s`' % esc(r['ret']) if r['ret'] != '-' else '')
+            doc.append('| `%s` | %s | %s | %s |' % (esc(r['sig']), ret, r['since'], d))
         doc.append('')
-    doc += ['## Internal', '', 'Not meant to be called: ' + ', '.join('`sift.%s`' % x for x in sorted(set(internal))) + '. Names starting with `_` are for the tests.', '']
-    ref = '\n'.join(doc)
-
-    rd = ['<!-- sift-reference:start -->', '## SQL reference', '',
-          'Schema `sift` has %s. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.' % counts, '']
-    for gid, title, _ in GROUPS:
-        names = sorted({r['name'] for r in rows if r['group'] == gid})
-        if names:
-            anchor = re.sub(r'\s', '-', title.lower())
-            rd.append('- **[%s](docs/REFERENCE.md#%s)**: %s' % (title, anchor, ', '.join('`%s`' % x for x in names)))
-    rd += ['', 'Settings (`sift.*`) are in the [settings table](docs/USAGE.md#%s), fixed limits in [docs/LIMITS.md](docs/LIMITS.md).' % USAGE_SETTINGS,
-           '<!-- sift-reference:end -->']
-    return ref, '\n'.join(rd)
+    doc += ['---', '', '*Internal objects:* Extension internal helpers live in schema `sift_internal` (revoked from `PUBLIC`), and PostgreSQL handler, operator-class, type, and aggregate-support functions in `sift` are tagged `-- @internal` and omitted above.', '']
+    return '\n'.join(doc)
 
 
-ref, block = generate()
-readme = read('README.md')
-m = re.search(r'<!-- sift-reference:start -->.*?<!-- sift-reference:end -->', readme, re.S)
-if not m:
-    err('README.md has no <!-- sift-reference:start --> ... <!-- sift-reference:end --> block')
-    new_readme = readme
-else:
-    new_readme = readme[:m.start()] + block + readme[m.end():]
+ref = generate()
 
 
 # ---- --live: the scripts against a new database ----
@@ -458,13 +453,9 @@ elif mode == '--check':
     have = read('docs/REFERENCE.md') if os.path.exists(os.path.join(ROOT, 'docs/REFERENCE.md')) else None
     if have != ref + '\n':
         err('docs/REFERENCE.md is not what the scripts generate: run scripts/gen-reference.sh (make reference)')
-    if new_readme != readme:
-        err('the sift-reference block of README.md is not what the scripts generate: run scripts/gen-reference.sh (make reference)')
 elif not errors:
     with open(os.path.join(ROOT, 'docs/REFERENCE.md'), 'w', encoding='utf-8') as f:
         f.write(ref + '\n')
-    with open(os.path.join(ROOT, 'README.md'), 'w', encoding='utf-8') as f:
-        f.write(new_readme)
 exit_on_errors('reference: ')
 print('reference: ok, %d objects listed, %d internal' % (len(rows), len(internal)))
 PY

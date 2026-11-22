@@ -13,6 +13,7 @@
 #include "optimizer/clauses.h"
 
 #include "agg/agg_int.h"
+#include "core/limits.h"
 
 static bool
 param_walker(Node *n, Param **found)
@@ -312,7 +313,7 @@ semi_lut_build(AggExec *ex, int ci)
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
 	ComboSt    *cs = &ex->cs[ci];
 	MapTab	   *m = cs->map;
-	const uint64 limit = (uint64) sift_agg_semi_lut_size * 1024;
+	const uint64 limit = sift_limit_or(semi_lut_bytes, agg_mem_slice(ex, SIFT_BUDGET_WORK_MEM, Max(ex->spec->ncombo, 1)));
 	int64		lo = PG_INT64_MAX,
 				hi = PG_INT64_MIN;
 	uint32		nkeys = 0;

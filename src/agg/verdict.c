@@ -45,6 +45,7 @@
 #include "utils/rel.h"
 
 #include "agg/agg_int.h"
+#include "core/shmbudget.h"
 #include "col/dsmreg.h"
 #include "agg/plan_int.h"
 #include "agg/stats.h"
@@ -77,7 +78,6 @@ typedef struct VerdictEntry
 static HTAB *cache;
 static dlist_head recent = DLIST_STATIC_INIT(recent);
 
-int			sift_verdict_cache_kb = 256;
 bool		sift_agg_verdict_cache = true;
 
 /* the table of all the backends: sets of VSHM_WAYS entries, the set of a key by its remainder; the least recently read of a full set goes */
@@ -141,20 +141,20 @@ vshm_init(SIFT_DSM_INIT_ARGS)
 
 	memset(s, 0, sizeof(*s));
 	SpinLockInit(&s->mutex);
-	s->nsets = Max(1, Min(VSHM_MAX_SETS, (int) ((Size) sift_verdict_cache_kb * 1024 / (sizeof(VerdictShmEnt) * VSHM_WAYS))));
+	s->nsets = Max(1, Min(VSHM_MAX_SETS, (int) ((Size) VSHM_KB * 1024 / (sizeof(VerdictShmEnt) * VSHM_WAYS))));
 }
 
 /* NULL where the table is off or not had */
 static VerdictShm *
 vshm_get(void)
 {
-	if (sift_verdict_cache_kb <= 0 || vshm_failed)
+	if (sift_shared_cache_kb == 0 || vshm_failed)
 		return NULL;
 	if (vshm == NULL)
 #ifdef SIFT_TESTING
-		vshm = sift_dsm_attach(VSHM_NAME, sizeof(VerdictShm), vshm_init, &vshm_failed, "the choices of the planner", "sift.verdict_cache_kb", sift_test_verdict_fail);
+		vshm = sift_dsm_attach(VSHM_NAME, sizeof(VerdictShm), vshm_init, &vshm_failed, "the choices of the planner", "sift.shared_cache_kb", sift_test_verdict_fail);
 #else
-		vshm = sift_dsm_attach(VSHM_NAME, sizeof(VerdictShm), vshm_init, &vshm_failed, "the choices of the planner", "sift.verdict_cache_kb", false);
+		vshm = sift_dsm_attach(VSHM_NAME, sizeof(VerdictShm), vshm_init, &vshm_failed, "the choices of the planner", "sift.shared_cache_kb", false);
 #endif
 	return vshm;
 }

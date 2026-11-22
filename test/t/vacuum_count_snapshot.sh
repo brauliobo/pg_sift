@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A VACUUM that runs while a count(*) of the index is between the liveness it has read and the visibility-map bits it is about to read.
 # The count must be what the snapshot of the query sees: a tuple deleted before the snapshot and removed by that VACUUM is not one of the
 # rows, however the VACUUM leaves the heap pages (all-visible) and the liveness of the segment. A VACUUM clears the index entries of the

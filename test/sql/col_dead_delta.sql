@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 

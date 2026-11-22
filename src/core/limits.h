@@ -19,15 +19,13 @@
  *
  * To lower a limit in a test: add or edit its row, replace the use at the site by sift_limit(id, MACRO) and set hooked to 1. A limit read in a
  * loop is read once before it. Outside a SIFT_TESTING build sift_limit(id, MACRO) is MACRO itself: no array, no setting, and a portable file
- * (portable.list) can use it.
+ * (portable.list) can use it. A limit that work_mem or another setting gives (the row shows its default) is read through sift_limit_or(id, derived):
+ * the setting's value, unless a test lowered the limit.
  */
 #ifndef SIFT_LIMITS_H
 #define SIFT_LIMITS_H
 
 #include <stdint.h>
-
-/* the default of array_bytes: no limit (a segment is bounded by its memory budget); a test lowers it */
-#define SIFT_ARRAY_UNLIMITED	1125899906842624
 
 #define SIFT_LIMITS(X) \
 	X(partitions, "SIFT_AGG_MAX_PARTS", "agg/part.h", SIFT_AGG_MAX_PARTS, "partitions", \
@@ -38,35 +36,34 @@
 	  "value combinations the remainders of a hash level are computed for (once per level)", "the partitions of the level are kept (not pruned)", "-", 1) \
 	X(part_key_tests, "KEYS_MAX_TESTS", "agg/part/prune.c", 20000, "tests", \
 	  "keys times range or list partitions a list of keys is tested against exactly", "only the range of the keys prunes", "-", 1) \
-	X(group_nospill_factor, "GROUP_NOSPILL_FACTOR", "agg/spec.c", 32, "times hash memory", \
-	  "group table of a scan that cannot spill (a two level aggregate, ordered on a key that is not an integer, a date or a timestamp, ordered-set aggregates and aggregates that sort their input, numeric or text min, max and sum over combos) or of the node that groups the rows of a plan, as a multiple of work_mem times hash_mem_multiplier (8 MB at least): estimated by the planner, held by the scan", \
-	  "normal plan (slug group_memory, the detail names the groups and the limit); when the table the scan holds passes it, the statement runs again as the normal plan (NOTICE; also a cursor's first fetch, a function's query with parameters, a prepared statement); a statement that cannot run again (INSERT, UPDATE, DELETE, volatile functions) gets the scan only when the most groups its source can make fit the bound (slug group_memory otherwise)", "work_mem, hash_mem_multiplier", 1) \
-	X(group_par_factor, "GROUP_PAR_FACTOR", "agg/spec.c", 2, "times hash memory", \
-	  "group table of a process of a scan with workers, which does not spill (the planner leaves a scan whose estimated table, with the float sums of its lanes, passes hash memory to one process, which does), as a multiple of work_mem times hash_mem_multiplier (8 MB at least): held by each process", \
-	  "normal plan (the statement runs again as PostgreSQL plans it, as for group_nospill_factor)", "max_parallel_workers_per_gather = 0", 1) \
 	X(group_spill_parts, "SPILL_MAX_PARTS", "agg/spill.c", 128, "partitions", \
 	  "partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8)", "a partition that does not fit is partitioned again", "work_mem, hash_mem_multiplier", 1) \
 	X(group_spill_depth, "SPILL_MAX_DEPTH", "agg/spill_int.h", 8, "levels", \
 	  "levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time)", "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 1) \
-	X(group_nospill_base, "GROUP_NOSPILL_BASE", "agg/spec.c", 8388608, "bytes", \
-	  "the hash memory group_nospill_factor is applied to when work_mem times hash_mem_multiplier is less (the memory the defaults give)", \
-	  "as group_nospill_factor", "-", 1) \
 	X(joins, "SIFT_AGG_MAX_JOINS", "agg/spec/expr.h", SIFT_AGG_MAX_JOINS, "tables", \
 	  "lookup-joined tables per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combos, "SIFT_AGG_MAX_COMBOS", "agg/spec/expr.h", SIFT_AGG_MAX_COMBOS, "combinations", \
 	  "value combinations per scan", "normal plan (slug shape_width)", "-", 1) \
 	X(combo_entries, "COMBO_MAX_ENTRIES", "agg/combo/int.h", 16777216, "entries", \
 	  "distinct input tuples of one value-combination cache", "the caches start again (re-evaluates the values they held)", "-", 1) \
-	X(combo_cache_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
-	  "memory the value-combination caches of a scan hold together, and the values of their dictionary leaves", "none outside a test: the caches hold half of hash memory at most and start again past it (re-evaluates the values they held)", "work_mem, hash_mem_multiplier", 1) \
+	X(combo_cache_bytes, "-", "agg/combo/ents.c", 4194304, "bytes", \
+	  "memory the cache of one value combination holds, and the values of its dictionary leaves: half of hash memory, shared by the participants of the scan and its combos (4 MB by default for one)", \
+	  "the cache starts again (re-evaluates the values it held)", "work_mem, hash_mem_multiplier", 1) \
 	X(join_keys, "SIFT_AGG_MAX_JKEYS", "agg/spec/expr.h", SIFT_AGG_MAX_JKEYS, "columns", \
 	  "equality columns of a lookup join", "normal plan", "-", 0) \
 	X(join_cols, "SIFT_AGG_MAX_JCOLS", "agg/spec/expr.h", SIFT_AGG_MAX_JCOLS, "columns", \
 	  "columns of the joined table that expressions read", "normal plan (slug shape_width)", "-", 1) \
 	X(join_index_eqs, "SIFT_AGG_MAX_JIDX", "agg/spec/expr.h", SIFT_AGG_MAX_JIDX, "equalities", \
 	  "equalities of a joined-table column with a value, for the index scan that loads it", "normal plan", "-", 0) \
-	X(lookup_kb, "-", "agg/plan/finish.c", 262144, "kB", \
-	  "estimated memory of the rows of a lookup table (a sub-select, VALUES list or function, a first-row child) or of a spine", "normal plan (slug join_child, spine_rows)", "sift.agg_lookup_max_kb", 0) \
+	X(merge_fanin, "MERGE_MAX_FANIN", "col/v1/maint/maint_int.h", 64, "segments", \
+	  "segments a step of a merge of sift_col segments opens at once (fewer when maintenance_work_mem holds fewer inputs of 192 kB)", "the step merges the cheapest window of them; a forced merge goes on in passes", "maintenance_work_mem", 0) \
+	X(lookup_kb, "-", "agg/plan/finish.c", 2048, "kB", \
+	  "estimated memory of the rows of a lookup table (a joined table, sub-select, VALUES list or function, a first-row child) or of a spine: half of work_mem (4 MB by default)", "normal plan (slug join_child, spine_rows)", "work_mem", 1) \
+	X(semi_lut_bytes, "-", "agg/init.c", 4194304, "bytes", \
+	  "the byte table of the keys of a semi, anti or inner join by one integer key (its range of values) or the set of its keys, for each combination of the scan: its share of work_mem", \
+	  "the scan's key filter tests the keys, else the join is evaluated row by row", "work_mem", 1) \
+	X(param_set_elems, "AGG_PARAM_SET_ELEMS", "agg/plan/base.c", 1000, "elements", \
+	  "elements a generic plan is priced for when its set filter is one array parameter (the planner assumes 10)", "the paths that fetch the rows of the set one by one are priced for the elements of the planner's guess", "work_mem", 1) \
 	X(lookup_shared_bytes, "SHARE_MAX", "agg/par/int.h", 1073741824, "bytes", \
 	  "a lookup table shared with the parallel workers through DSM", "each backend loads its own", "sift.agg_lookup_shared_kb", 0) \
 	X(lookup_shared_slots, "LOOKSHM_SLOTS", "agg/lookshm.c", 64, "tables", \
@@ -80,19 +77,19 @@
 	X(skip_pending, "GORD_PEND_MAX", "agg/gord/int.h", 1048576, "entries", \
 	  "the entries an OFFSET over a global order leaves to the heap to confirm, and the entries of one group of an order read group after group that it checks at once (12 bytes each); a longer one is walked", \
 	  "the entries the skip leaves are read one by one, as without the skip (the rows are the same)", "-", 1) \
-	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/gorder.h", 115, "percent", \
+	X(gord_seek_pct, "SIFT_CGORD_SEEK_MAX_PCT", "col/v1/gorder.h", 115, "percent", \
 	  "the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none", \
 	  "the chunk is written plain and read by the old walk (the rows are the same)", "-", 1) \
-	X(gord_pos_pct, "SIFT_CGORD_POS_MAX_PCT", "col/gorder.h", 75, "percent", \
+	X(gord_pos_pct, "SIFT_CGORD_POS_MAX_PCT", "col/v1/gorder.h", 75, "percent", \
 	  "the bytes a positional chunk of a grouped order array (its entries as positions in the plain order of the leaf, read through it) may take, against the other form of the same entries: the writer keeps the positional form of a chunk up to this; 0 writes none", \
 	  "the chunk keeps the keys and addresses of its entries (the rows are the same)", "-", 1) \
-	X(gord_pos_gap, "SIFT_CGORD_POS_MAX_GAP", "col/gorder.h", 1024, "entries", \
+	X(gord_pos_gap, "SIFT_CGORD_POS_MAX_GAP", "col/v1/gorder.h", 1024, "entries", \
 	  "the mean distance between the positions of a group in a chunk of a grouped order array that the writer keeps positional (as many entries as two chunks of the plain order): farther apart, each entry a scan reads is in a chunk of the plain order of its own", \
 	  "the chunk keeps the keys and addresses of its entries (the rows are the same)", "-", 1) \
-	X(gord_mem_rows, "SIFT_CGORD_MEM_MAX", "col/gorder.h", SIFT_CGORD_MEM_MAX, "rows", \
+	X(gord_mem_rows, "SIFT_CGORD_MEM_MAX", "col/v1/gorder.h", SIFT_CGORD_MEM_MAX, "rows", \
 	  "rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted)", \
 	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
-	X(gord_free_rows, "SIFT_CGORD_FREE_MAX", "col/gorder.h", SIFT_CGORD_FREE_MAX, "rows", \
+	X(gord_free_rows, "SIFT_CGORD_FREE_MAX", "col/v1/gorder.h", SIFT_CGORD_FREE_MAX, "rows", \
 	  "rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory once for the backend (the first scan; the next find the order kept)", \
 	  "the scan reads the units, and the planner prices no walk of the array (the rows are the same)", "-", 1) \
 	X(blob_bytes, "BLOB_CHUNK_BYTES", "agg/blob/dump.c", 268435456, "bytes", \
@@ -136,10 +133,12 @@
 	  "text conditions of a scan that prune units by prefix", "the others do not prune units", "-", 0) \
 	X(filter_set, "FILTER_MAX_SET", "agg/init_filter.c", 8, "values", \
 	  "values of an IN set sent as a zone filter", "a larger set is not used as a zone filter", "-", 0) \
-	X(merge_disk_peak, "-", "col/maint/maint.c", 2, "times the live index", \
+	X(merge_disk_peak, "-", "col/v1/maint/maint.c", 2, "times the live index", \
 	  "disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back", "the step fails with PostgreSQL's disk-full error before it replaces a segment", "-", 0) \
 	X(col_leaves, "SIFT_COL_MAX_COLS", "col/api/format.h", SIFT_COL_MAX_COLS, "leaves", \
 	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
+	X(f2_leaves, "SIFT_F2_MAX_COLS", "col/api/format.h", SIFT_F2_MAX_COLS, "leaves", \
+	  "leaf slots (columns and shredded jsonb paths) of a sift_col index of format major 2", "CREATE INDEX rejected", "-", 1) \
 	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/api/format.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 1) \
 	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/api/format.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \
@@ -150,60 +149,54 @@
 	  "longest string that is a dictionary entry", "the unit stores its strings inline", "-", 0) \
 	X(dict_bytes, "SIFT_COL_DICT_MAX_BYTES", "col/api/format.h", SIFT_COL_DICT_MAX_BYTES, "bytes", \
 	  "one segment dictionary", "the unit stores its strings inline", "-", 0) \
-	X(par_build_rows, "PAR_BUILD_ROWS", "col/build_par.c", 150000, "rows", \
+	X(par_build_rows, "PAR_BUILD_ROWS", "col/v1/build_par.c", 150000, "rows", \
 	  "rows a participant of a parallel CREATE INDEX of a sift_col index takes at the least (a worker is launched for each further 150,000 rows of the table)", \
 	  "fewer workers are launched, down to the build of the leader alone: one segment", "max_parallel_maintenance_workers, the parallel_workers option of the table", 1) \
 	X(pre_census_units, "-", "col/am/cache.c", 16, "units", \
 	  "units of each segment of an index the planner counts the pre-aggregate sections of (spread over the segment)", \
 	  "the share of the units that hold a section is that of the units counted; a segment of fewer units is counted whole", "-", 1) \
-	X(dict_cache_kb, "CDICT_CACHE_MAX_KB", "col/dictcache.c", 65536, "kB", \
-	  "parsed segment dictionaries a backend keeps for its next query, with the lookup table and the sorted order built over them", \
-	  "the least recently used unpinned dictionary is dropped; one over a half of it is kept for its scan only and searched entry by entry; a dictionary another backend parsed is copied from the shared ring (col/dictshm.c) and counts here too", "-", 1) \
-	X(segment_cache_kb, "SEGCACHE_MAX_KB", "bm25/segcache.c", 32768, "kB", \
-	  "docmap directories and term blobs of the segments that a backend keeps, in its own memory, for its next statement (one entry at most a quarter of it)", \
-	  "the least recently used entry that no cursor holds is dropped; a blob that does not fit while every entry is held is read as before and kept by nobody", "-", 1) \
-	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/seg_write/seg_write_int.h", 1024, "strings", \
+	X(dict_lookup_min, "CDICT_LOOKUP_MIN", "col/v1/seg_write/seg_write_int.h", 1024, "strings", \
 	  "strings a segment dictionary needs before it is written in blocks (and with the codes in byte order for a lookup structure), so that a fetch or a lookup reads it in place (column format minor 14)", \
 	  "the dictionary is written in the compact form and a fetch or a lookup loads it whole", "dict_lookup option", 1) \
-	X(dict_tsig_min, "CDICT_TSIG_MIN_KB", "col/seg_write/dict.c", 1024, "kB", \
+	X(dict_tsig_min, "CDICT_TSIG_MIN_KB", "col/v1/seg_write/dict.c", 1024, "kB", \
 	  "bytes of the strings a segment dictionary in blocks needs before it is written with a trigram signature of each block, once the dictionary of its leaf, scaled to the index, no longer fits the parsed ones a backend keeps (dict_cache_kb), so that a substring test reads the blocks that may hold the part and not all of them (column format minor 29)", \
 	  "no signature: a substring test reads every block of the dictionary", "-", 1) \
-	X(lst_min_units, "LST_MIN_UNITS", "col/seg_write/seg_write_int.h", 64, "units", \
+	X(lst_min_units, "LST_MIN_UNITS", "col/v1/seg_write/seg_write_int.h", 64, "units", \
 	  "units a segment needs before it keeps its leaf statistics after its sections, so that a plan reads a few pages of it, not the zone arrays of every leaf", \
 	  "no statistics block: the plan reads the zone arrays of the segment (a few pages)", "-", 1) \
-	X(mirror_bytes, "SEG_MIRROR_BYTES", "col/seg_write/seg_write_int.h", 6144, "bytes", \
+	X(mirror_bytes, "SEG_MIRROR_BYTES", "col/v1/seg_write/seg_write_int.h", 6144, "bytes", \
 	  "bytes of the header page of a segment that keep a copy of the small structures a plan and a first read of the segment open (the schema and the unit directory, the point directories, the order headers, the headers of the pre-aggregates), so that they cost no pages of their own", \
 	  "no copy: each of them is read from its own page of the segment", "-", 1) \
-	X(lst_share_div, "LST_SHARE_DIV", "col/seg_write/seg_write.c", 33, "1/n of a segment", \
+	X(lst_share_div, "LST_SHARE_DIV", "col/v1/seg_write/seg_write.c", 33, "1/n of a segment", \
 	  "the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none", \
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \
 	X(int_digits, "SIFT_COL_MAX_SCALE", "col/api/leaf.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
-	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
+	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/v1/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
 	  "precision of a numeric in a wide leaf", "ERROR 54000 at build or merge", "-", 0) \
-	X(cube_dims, "SIFT_PAGG_MAX_DIMS", "col/preagg.h", SIFT_PAGG_MAX_DIMS, "dimensions", \
+	X(cube_dims, "SIFT_PAGG_MAX_DIMS", "col/v1/preagg.h", SIFT_PAGG_MAX_DIMS, "dimensions", \
 	  "dimensions of the cube of an index", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
-	X(rollup_dims, "SIFT_PAGG_MAX_RDIMS", "col/preagg.h", SIFT_PAGG_MAX_RDIMS, "dimensions", \
+	X(rollup_dims, "SIFT_PAGG_MAX_RDIMS", "col/v1/preagg.h", SIFT_PAGG_MAX_RDIMS, "dimensions", \
 	  "dimensions of one rollup", "option rejected at CREATE or ALTER INDEX", "rollup option", 0) \
-	X(rollups, "SIFT_PAGG_MAX_ROLLUPS", "col/preagg.h", SIFT_PAGG_MAX_ROLLUPS, "rollups", \
+	X(rollups, "SIFT_PAGG_MAX_ROLLUPS", "col/v1/preagg.h", SIFT_PAGG_MAX_ROLLUPS, "rollups", \
 	  "rollups of one index", "option rejected at CREATE or ALTER INDEX", "rollup option", 0) \
-	X(cube_measures, "SIFT_PAGG_MAX_MEAS", "col/preagg.h", SIFT_PAGG_MAX_MEAS, "measures", \
+	X(cube_measures, "SIFT_PAGG_MAX_MEAS", "col/v1/preagg.h", SIFT_PAGG_MAX_MEAS, "measures", \
 	  "measures of a cube or rollup", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
-	X(cube_groups, "SIFT_PAGG_DEF_GROUPS", "col/preagg.h", SIFT_PAGG_DEF_GROUPS, "groups", \
+	X(cube_groups, "SIFT_PAGG_DEF_GROUPS", "col/v1/preagg.h", SIFT_PAGG_DEF_GROUPS, "groups", \
 	  "groups of a default cube dimension in one unit", "the unit has no histogram for the dimension (it is scanned)", "-", 0) \
-	X(calendar_groups, "SIFT_PAGG_CAL_GROUPS", "col/preagg.h", SIFT_PAGG_CAL_GROUPS, "groups", \
+	X(calendar_groups, "SIFT_PAGG_CAL_GROUPS", "col/v1/preagg.h", SIFT_PAGG_CAL_GROUPS, "groups", \
 	  "groups of a calendar dimension (days, else months, else years) in one unit", "the unit tries the next grain, then has no histogram for the dimension (it is scanned)", "-", 0) \
-	X(explicit_groups, "SIFT_PAGG_CUBE_GROUPS", "col/preagg.h", SIFT_PAGG_CUBE_GROUPS, "groups", \
+	X(explicit_groups, "SIFT_PAGG_CUBE_GROUPS", "col/v1/preagg.h", SIFT_PAGG_CUBE_GROUPS, "groups", \
 	  "groups of a dimension of an explicit cube(...) in one unit", "the unit has no histogram for the dimension (it is scanned)", "cube option", 0) \
-	X(rollup_tuples, "SIFT_PAGG_ROLLUP_TUPLES", "col/preagg.h", SIFT_PAGG_ROLLUP_TUPLES, "tuples", \
+	X(rollup_tuples, "SIFT_PAGG_ROLLUP_TUPLES", "col/v1/preagg.h", SIFT_PAGG_ROLLUP_TUPLES, "tuples", \
 	  "tuples of an explicit rollup in one unit", "the unit has no rollup (it is scanned)", "rollup option", 0) \
-	X(set_keys, "SIFT_CSET_LIMIT", "col/setsum.h", SIFT_CSET_LIMIT, "keys", \
+	X(set_keys, "SIFT_CSET_LIMIT", "col/v1/setsum.h", SIFT_CSET_LIMIT, "keys", \
 	  "distinct keys of a column of key_columns a unit keeps exactly in a summary, a bloom filter beyond", "a filter instead of the keys", "-", 0) \
-	X(set_keys_max, "SIFT_CSET_LIMIT_MAX", "col/setsum.h", SIFT_CSET_LIMIT_MAX, "keys", \
+	X(set_keys_max, "SIFT_CSET_LIMIT_MAX", "col/v1/setsum.h", SIFT_CSET_LIMIT_MAX, "keys", \
 	  "distinct keys of a stored exact summary", "the summary is a bloom filter", "-", 0) \
-	X(presence_pct, "SIFT_CSET_PRES_PCT", "col/setsum.h", SIFT_CSET_PRES_PCT, "percent", \
+	X(presence_pct, "SIFT_CSET_PRES_PCT", "col/v1/setsum.h", SIFT_CSET_PRES_PCT, "percent", \
 	  "share of a unit's bytes the key lists and bitmaps of all its key_columns may take together", "a column past the share has no key list or bitmap in the unit (it is scanned)", "key_columns option", 0) \
-	X(super_fan_max, "SIFT_SUPER_MAX_FAN", "col/preagg.h", SIFT_SUPER_MAX_FAN, "units", \
+	X(super_fan_max, "SIFT_SUPER_MAX_FAN", "col/v1/preagg.h", SIFT_SUPER_MAX_FAN, "units", \
 	  "largest value of the superunit option: units in one group summary", "option rejected at CREATE or ALTER INDEX", "superunit option", 0) \
 	X(shred_spec_bytes, "SIFT_SHRED_MAX_SPEC_BYTES", "col/shred.h", SIFT_SHRED_MAX_SPEC_BYTES, "bytes", \
 	  "size of a jsonb shredding spec", "ERROR at CREATE INDEX", "-", 0) \
@@ -221,39 +214,15 @@
 	  "list and map elements of one document a unit stores", "the value is OVERFLOW (read from the heap: the scans that need it read the whole document again, which holds it in memory as SQL does)", "-", 1) \
 	X(shred_keys, "SIFT_SHRED_DEFAULT_KEYS", "col/shred.h", SIFT_SHRED_DEFAULT_KEYS, "keys", \
 	  "distinct keys of a jsonb wildcard object per segment", "the value is OVERFLOW (read from the heap); CREATE INDEX says how many units hold one (NOTICE)", "-", 1) \
-	X(array_bytes, "SIFT_ARRAY_UNLIMITED", "core/limits.h", SIFT_ARRAY_UNLIMITED, "bytes", \
-	  "the largest array a build, merge or rewrite allocates in proportion to the rows of a segment or a run (a sort copy, the entries of a point directory or an order array)", \
-	  "none outside a test: a segment is cut at its memory budget, which counts these arrays, and one over 1 GB is allocated huge (a test lowers the limit: ERROR 54000 naming the size)", "maintenance_work_mem", 1) \
-	X(eset_rows, "SIFT_ESET_ROWS", "col/spool.h", SIFT_ESET_ROWS, "entries", \
+	X(eset_rows, "SIFT_ESET_ROWS", "col/v1/spool.h", SIFT_ESET_ROWS, "entries", \
 	  "the entries of one order array that a segment writer keeps in memory (16 bytes each, a leaf holds the entries of its values and of its NULL rows apart) before it writes them to a temp file as a sorted run", \
 	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk)", "-", 1) \
-	X(writer_min_budget, "SIFT_COLW_MIN_BUDGET", "col/seg.h", 16 * 1024 * 1024, "bytes", \
-	  "the least memory a segment writer of a build, merge or rewrite is given to hold its point arrays before it cuts the segment, whatever maintenance_work_mem is", \
-	  "none: a smaller maintenance_work_mem still writes the segments, the writer is cut at this much", "maintenance_work_mem", 1) \
-	X(window_min_bytes, "WINDOW_MIN", "col/maint/merge_window.c", 4 * 1024 * 1024, "bytes", \
-	  "the least memory the decoded units of the inputs of a column merge may hold before they are folded into one batch, whatever maintenance_work_mem is (two units at least)", \
-	  "none: the units are folded at this much", "maintenance_work_mem", 1) \
-	X(part_min_kb, "PART_MIN_KB", "col/maint/maint.c", 4096, "kB", \
-	  "the least size of a partition of a merge or rewrite, whatever maintenance_work_mem is", \
-	  "none: the partitions are of this size at least", "maintenance_work_mem", 1) \
-	X(tomb_log_kb, "SIFT_TOMB_LOG_KB", "core/tomb.h", SIFT_TOMB_LOG_KB, "kB", \
-	  "the tombstone log of a sift_table or of a sift_col index with track_changes that one backend keeps in memory (64 bytes an entry: the sorted entries, the scratch of a first look and the chain members), the entries of its own statement included; the entries past it are kept in sorted runs on temp files", \
-	  "none: past it the entries go to temp files (an error only from temp_file_limit or a full disk); a worker VACUUM is asked for at 33.5 million entries", "sift.tomb_log_limit", 0) \
-	X(wide_dict_bytes, "-", "table/wide.c", 1073741823, "bytes", \
+	X(wide_dict_bytes, "-", "table/v1/wide.c", 1073741823, "bytes", \
 	  "the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group", \
 	  "ERROR 54000 naming the column", "-", 1) \
 	X(max_segments, "SIFT_DIR_POLICY_MAX", "core/page.h", SIFT_DIR_POLICY_MAX, "segments", \
 	  "directory entries a writer of a sift or sift_col index keeps it within (a sift_table has sift.table_max_segments for a test); a directory of more is a chain of pages, which holds 32,768", \
 	  "writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE)", "-", 1) \
-	X(build_serial_budget, "SIFT_COL_BUILD_SERIAL_BUDGET", "col/build.h", 64 * 1024 * 1024, "bytes", \
-	  "the least memory the writer of the serial CREATE INDEX of a sift_col index may hold before it cuts a segment, or a run of a key_cut build, whatever maintenance_work_mem is (half of it above)", \
-	  "none: a smaller maintenance_work_mem still builds, the segments or runs are cut at this much", "maintenance_work_mem", 1) \
-	X(build_min_budget, "SIFT_COL_BUILD_MIN_BUDGET", "col/build.h", 16 * 1024 * 1024, "bytes", \
-	  "the least memory a participant of a parallel CREATE INDEX of a sift_col index may hold before it cuts a segment, whatever its share of maintenance_work_mem is", \
-	  "none: the segments are cut at this much", "maintenance_work_mem", 1) \
-	X(scope_sort_min_kb, "SCOPE_SORT_MIN_KB", "col/maint/scope.c", 16384, "kB", \
-	  "the least the sorts of a scope refill hold between them and the writer of the scope segments is given, whatever maintenance_work_mem is (half of it above)", \
-	  "none: the sorts write the rest to temp files and the segments are cut at this much", "maintenance_work_mem", 1) \
 	X(term_bytes, "SIFT_MAX_TERM_BYTES", "core/sift.h", SIFT_MAX_TERM_BYTES, "bytes", \
 	  "a BM25 token", "the token is its first 236 bytes and a hash of all of it", "-", 0) \
 	X(term_tf, "SIFT_MAX_TF", "core/sift.h", SIFT_MAX_TF, "occurrences", \
@@ -266,11 +235,7 @@
 	  "prefix_index option", "option rejected at CREATE INDEX", "prefix_index option", 0) \
 	X(write_buffer_kb, "SIFT_DEFAULT_WRITE_BUFFER_LIMIT", "core/sift.h", SIFT_DEFAULT_WRITE_BUFFER_LIMIT, "kB", \
 	  "default write buffer; a sift_table row that does not fit it is accepted with sift.table_wide_rows (on)", "ERROR 54000 for a larger sift_table row only when sift.table_wide_rows is off (on, the default: up to 1 GB)", "sift.table_wide_rows", 0) \
-	X(wbuf_set_bytes, "BATCH_SET_BYTES", "col/wbuf/batches.c", 16777216, "bytes", \
-	  "bytes in use of the batches a backend keeps of one write buffer for its next scan", "a set over it and over wbuf_set_amplify times its records is built for its scan and not kept: a read decodes the buffer again", "-", 1) \
-	X(wbuf_set_amplify, "BATCH_AMPLIFY", "col/wbuf/batches.c", 8, "times", \
-	  "bytes of a kept set of a write buffer as a multiple of the record bytes it was made from, when it is over wbuf_set_bytes", "the set is built for its scan and not kept: a read decodes the buffer again", "-", 1) \
-	X(table_vblocks, "-", "table/wbuf.c", 4294967294, "blocks", \
+	X(table_vblocks, "-", "table/v1/wbuf.c", 4294967294, "blocks", \
 	  "virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left)", "ERROR 54000, VACUUM FULL renumbers them", "-", 0) \
 	X(query_bytes, "SIFT_QUERY_MAX_BYTES", "bm25/query.h", SIFT_QUERY_MAX_BYTES, "bytes", \
 	  "length of a search query", "ERROR 54000", "-", 1) \
@@ -286,13 +251,13 @@
 	  "a regular expression of a query", "ERROR 54000", "-", 0) \
 	X(any_list_rows, "ANY_LIST_MAX_ROWS", "bm25/planner_path.c", 100000, "rows", \
 	  "rows a query list (= ANY(array)) may match in one scan", "normal plan", "-", 0) \
-	X(maint_backoff_ms, "BACKOFF_MAX_MS", "bm25/maint.c", 3600000, "ms", \
+	X(maint_backoff_ms, "BACKOFF_MAX_MS", "core/maint.c", 3600000, "ms", \
 	  "longest wait before a failing background maintenance retries", "retried once an hour", "-", 0) \
 	X(semi_set, "SIFT_SEMI_MAX_SET", "bm25/planner.h", 65536, "rows", \
 	  "rows of a table whose joined keys a ranked scan tests the INCLUDE column against (the planner offers a table of at most this many rows, the scan stops at this many keys)", "the join keeps every row the scan returns (the rows of the table are checked after it, as without INCLUDE columns)", "-", 0) \
-	X(value_store_codes, "SIFT_VSTORE_MAX_CODES", "col/vstore/vstore.h", SIFT_VSTORE_MAX_CODES, "codes", \
-	  "codes of one epoch of a shared value store (the distinct strings of a column that its sift_col indexes share)", \
-	  "ERROR 54000 before the strings are appended; sift.col_value_store_compact() begins a new epoch when codes are named by no segment", "-", 1) \
+	X(key_store_codes, "SIFT_KEYSTORE_MAX_CODES", "col/keystore/keystore.h", SIFT_KEYSTORE_MAX_CODES, "codes", \
+	  "keys of a scope key store (the distinct text, varchar or uuid values of a scope key column)", \
+	  "ERROR 54000 before the strings are appended", "-", 1) \
 	X(dict_block_bytes, "SIFT_DICT_BLOCK_MAX_BYTES", "bm25/dict.h", SIFT_DICT_BLOCK_MAX_BYTES, "bytes", \
 	  "one block of 32 terms of the dictionary of a BM25 segment, header included (a block takes about 22 kB at most: terms of 255 bytes with their inline postings and positions)", \
 	  "ERROR 54000 at build or merge", "-", 1) \
@@ -308,21 +273,36 @@
 	X(shared_tables, "DIR_ENTRIES", "col/dsmreg.c", 1024, "tables", \
 	  "named shared tables (caches and registries in dynamic shared memory) of the libraries loaded in the server at one time; a table lasts as long as a backend maps it", \
 	  "the table is not made and the backend goes without that cache (sift.shared_memory() says why)", "-", 0) \
-	X(arena_slots, "ARENA_SLOTS", "col/wbuf/arena.c", 256, "write buffers", \
+	X(arena_slots, "ARENA_SLOTS", "col/v1/wbuf/arena.c", 256, "write buffers", \
 	  "write buffers of sift_col indexes that keep the values of their rows in the shared arena at one time (the test hook is sift._test_arena_slots)", \
 	  "a row that finds no slot is written as a record that holds its values; the buffer written longest ago is sealed to give its slot back", "-", 0) \
 	X(progress_slots, "PROGRESS_SLOTS", "core/progress.c", 64, "jobs", \
 	  "maintenance jobs that report their progress at one time (sift.progress)", \
 	  "the job runs and is not listed", "-", 0) \
-	X(rollup_queue, "ROLLUP_QUEUE", "col/rollup.c", 64, "segments", \
+	X(rollup_queue, "ROLLUP_QUEUE", "col/v1/rollup.c", 64, "segments", \
 	  "segments waiting for the rollup refresh worker, for all databases (sift.col_rollup_queue)", \
 	  "the request is dropped and counted (sift.col_rollup_counters); the scan reads the units and a later scan asks again", "-", 0) \
-	X(rollup_workers, "ROLLUP_WORKERS", "col/rollup.c", 8, "databases", \
+	X(rollup_workers, "ROLLUP_WORKERS", "col/v1/rollup.c", 8, "databases", \
 	  "databases with a rollup refresh worker running", \
 	  "no worker is started for the database; its requests wait in the queue, and sift.col_rollup_refresh(index) refreshes them in a session", "-", 0) \
-	X(par_build_workers, "MAX_WORKERS", "col/build_par.c", 15, "workers", \
+	X(par_build_workers, "MAX_WORKERS", "col/v1/build_par.c", 15, "workers", \
 	  "workers of a parallel CREATE INDEX of a sift_col index besides the leader (the directory is shared by the participants and leaves 7 segments to each of 16)", \
-	  "fewer workers are launched than max_parallel_maintenance_workers allows", "max_parallel_maintenance_workers", 0)
+	  "fewer workers are launched than max_parallel_maintenance_workers allows", "max_parallel_maintenance_workers", 0) \
+	X(rank_batch_leaves, "RANK_BATCH_MAX_LEAVES", "bm25/bounds.c", 4, "terms", \
+	  "scoring leaves of a top-k query up to which the batched block-max ranking is used", \
+	  "normal plan: the query is ranked by max-score over the superblocks instead", "-", 0) \
+	X(rank_batch_units, "RANK_BATCH_MAX_UNITS", "bm25/bounds.c", 2048, "units", \
+	  "ranking units of a top-k query up to which the batched block-max ranking is used", \
+	  "normal plan: the query is ranked by max-score over the superblocks instead", "-", 0) \
+	X(prefetch_blocks, "SIFT_PREFETCH_MAX_BLKS", "core/store.h", 512, "blocks", \
+	  "blocks of segment pages one wave of the read-ahead of a ranked query asks for", \
+	  "the next wave starts after the blocks of this one", "-", 0) \
+	X(shm_epoch_slots, "SIFT_SHM_EPOCH_SLOTS", "core/shm_manifest.h", 256, "backends", \
+	  "backends whose epoch the registry of the manifests in shared memory tracks: a snapshot is pinned without a lock by the backends numbered below it", \
+	  "a backend numbered above it pins a snapshot under the lock of its slot", "-", 0) \
+	X(star_join_parts, "STAR_MAX_PARTS", "agg/v6/v6_star_run.c", 65536, "parts", \
+	  "parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts", \
+	  "ERROR 54000 naming work_mem and hash_mem_multiplier", "work_mem, hash_mem_multiplier", 0)
 
 typedef enum SiftLimitId
 {
@@ -337,8 +317,10 @@ extern const int64_t sift_limit_default[SIFT_LIM_COUNT];
 extern int64_t sift_limit_eff[SIFT_LIM_COUNT];
 extern void sift_limits_init(void);
 #define sift_limit(id, dflt) (sift_limit_eff[SIFT_LIM_##id])
+#define sift_limit_or(id, derived) (sift_limit_eff[SIFT_LIM_##id] != sift_limit_default[SIFT_LIM_##id] ? sift_limit_eff[SIFT_LIM_##id] : (int64_t) (derived))
 #else
 #define sift_limit(id, dflt) ((int64_t) (dflt))
+#define sift_limit_or(id, derived) ((int64_t) (derived))
 #endif
 
 #endif

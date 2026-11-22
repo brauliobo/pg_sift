@@ -41,7 +41,6 @@ INSERT INTO cap_bp SELECT g, repeat('x', 1000) || g FROM generate_series(132001,
 SELECT count(*), sum(id) FROM cap_bp;
 SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('cap_bp');
 SELECT count(*) AS wrong FROM cap_bp WHERE v <> repeat('x', 1000) || id;
-RESET sift.table_backpressure;
 DROP TABLE cap, cap_one, cap_cmds, cap_bp;
 DROP PROCEDURE load_cap;
 DROP EXTENSION pg_sift;

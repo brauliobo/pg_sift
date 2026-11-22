@@ -10,7 +10,9 @@ CREATE TABLE cat (id int PRIMARY KEY, region int);
 INSERT INTO cat SELECT i, i % 10 FROM generate_series(1, 200) i;
 CREATE TABLE jd (id int PRIMARY KEY, cat_id int, body text) WITH (autovacuum_enabled = off);
 INSERT INTO jd SELECT i, 1 + i % 200, 'common w' || i % 100 || ' x' || i % 7 || ' y' || i % 13 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX jd_idx ON jd USING sift (body);
+RESET client_min_messages;
 ANALYZE cat, jd;
 
 -- no restriction on the joined table: the LIMIT; a restriction that keeps a tenth of it: about ten times as many rows, never fewer

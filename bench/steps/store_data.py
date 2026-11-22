@@ -163,6 +163,18 @@ def load_ch(args, rows):
     h.close()
 
 
+def load_ch_proj(args, rows):
+    """the arm ch_proj: store.orders_proj holds the rows of store.orders and its PROJECTIONs (ch.sql section `proj`); it needs the arm ch loaded before"""
+    h = Http('ch', CH_AUTH)
+    h.request('POST', '/', b'DROP TABLE IF EXISTS store.orders_proj')
+    for stmt in sections(read('ch.sql'))['proj'].split(';\n'):
+        if stmt.strip() and not stmt.lstrip().startswith('--'):
+            timed(rows, 'ch_proj', 'rows' if stmt.lstrip().startswith('INSERT') else 'projections', lambda: h.request('POST', '/', stmt.rstrip(';').encode()))
+    size = h.request('POST', '/', b"SELECT sum(bytes_on_disk) FROM system.parts WHERE database = 'store' AND table = 'orders_proj' AND active").decode()
+    rows.add('ch_proj', '-', '-', 'size_mib', 'MiB', value=mib(size))
+    h.close()
+
+
 def bulk_docs(path, batch):
     with open(path, newline='') as f:
         buf = []
@@ -358,6 +370,8 @@ def cmd_load(args):
             load_pg(eid, args, rows)
         elif eid == 'ch':
             load_ch(args, rows)
+        elif eid == 'ch_proj':
+            load_ch_proj(args, rows)
         else:
             load_es(args, rows)
         total = sum(r['value'] for r in rows.rows if r['engine'] == eid and r['metric'] == 'load_s')

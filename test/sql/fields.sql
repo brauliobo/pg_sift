@@ -60,7 +60,7 @@ BEGIN
 	RETURN n;
 END $$;
 CREATE FUNCTION seqcnt(tbl text, q text) RETURNS bigint LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
 DECLARE n bigint;
 BEGIN
 	EXECUTE format('SELECT count(*) FROM %I WHERE sections(name, city, rest) @@> %L', tbl, q) INTO n;
@@ -93,10 +93,10 @@ SELECT cnt('ft', 'name:(alpha beta)'), cnt('ft', 'name:{alpha beta}'), cnt('ft',
 
 -- bitmap heap scans agree
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 SELECT f, q FROM fqs() q, unnest(ARRAY['name', 'city']) f WHERE cnt('ft', f || ':' || q) <> colcnt(f, q);
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 
 -- the boost of a field decides the order: equal documents differ in the section holding the word
 CREATE TABLE fr (id int PRIMARY KEY, name text, city text, rest text);
@@ -167,7 +167,7 @@ BEGIN
 	PERFORM set_config('enable_indexscan', CASE WHEN mode = 'seq' THEN 'off' ELSE 'on' END, true);
 	PERFORM set_config('enable_bitmapscan', CASE WHEN mode IN ('seq', 'scan') THEN 'off' ELSE 'on' END, true);
 	PERFORM set_config('sift.enable_scan', CASE WHEN mode IN ('seq', 'bitmap') THEN 'off' ELSE 'on' END, true);
-	PERFORM set_config('sift.enable_count', CASE WHEN mode IN ('seq', 'bitmap') THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('sift.enable_scan', CASE WHEN mode IN ('seq', 'bitmap') THEN 'off' ELSE 'on' END, true);
 	EXECUTE format('SELECT count(*) FROM %s WHERE %s', tbl, qual) INTO n;
 	RETURN n::text;
 EXCEPTION WHEN OTHERS THEN
@@ -214,11 +214,11 @@ SELECT q, plans('fm', 'sift.match_idx(name, ' || quote_literal(q) || ', ''fm_fie
 SELECT plans('fm', 'sift.match_idx(name, ''nope:alpha'', ''fm_fields''::regclass)');
 SET enable_seqscan = off;
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 SELECT plan_index('SELECT count(*) FROM fm WHERE name @@> ''name:alpha''');
 SELECT plan_index('SELECT count(*) FROM fm WHERE sift.match_idx(name, ''name:alpha'', ''fm_fields''::regclass)');
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 SET enable_bitmapscan = off;
 SELECT plan_index('SELECT count(*) FROM fm WHERE name @@> ''name:alpha''');
 SELECT plan_index('SELECT count(*) FROM fm WHERE sift.match_idx(name, ''name:alpha'', ''fm_fields''::regclass)');
@@ -255,10 +255,10 @@ ANALYZE fq;
 SELECT q, plans('fq', 'name @@> ' || quote_literal(q)) FROM unnest(ARRAY['name:alpha', 'nope:alpha', 'name alpha']) q;
 SET enable_seqscan = off;
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 SELECT plan_index('SELECT count(*) FROM fq WHERE name @@> ''name:alpha''');
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 SET enable_bitmapscan = off;
 SELECT plan_index('SELECT count(*) FROM fq WHERE name @@> ''name:alpha''');
 RESET enable_seqscan;

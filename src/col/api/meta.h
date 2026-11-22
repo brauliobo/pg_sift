@@ -49,14 +49,14 @@ typedef struct SiftColLeafStats
 	double		point_rows;		/* ... and the rows they list */
 	double		point_tid_units;	/* ... of which the units of the segments whose lists hold heap addresses */
 	double		head_units;		/* the units of the segments whose sorted runs hold heads (column format minor 18) */
-	double		gord_rows;		/* the entries of the global order of the leaf (col/gorder.h), over the segments that keep one ... */
+	double		gord_rows;		/* the entries of the global order of the leaf (col/v1/gorder.h), over the segments that keep one ... */
 	double		gord_bytes;		/* ... and their bytes */
 	double		gord_chunks;	/* ... the chunks of their blocks ... */
 	double		gord_compact_blocks;	/* ... the blocks with a compact chunk (order_layout; the chunks themselves are counted by sift_col_gorder_chunks, which reads the directories) ... */
 	double		gord_perm;		/* the blocks of a text leaf that name their strings by dictionary codes (column format minor 42) */
 	double		gord_ends_bytes;	/* ... and their bytes (gord_bytes is those of the complete blocks) */
 	double		gord_ends_rows;	/* the values of the segments whose block holds the ends of the order only (column format minor 40): gord_rows leaves them out, as a range is not counted from them */
-	double		gord_free_rows;	/* the rows of the segments that keep no order block of the leaf: a scan of the global order sorts them in memory (col/scan/gorder.c) */
+	double		gord_free_rows;	/* the rows of the segments that keep no order block of the leaf: a scan of the global order sorts them in memory (col/v1/scan/gorder.c) */
 	double		gord_grp_rows;	/* ... of which the entries of the blocks grouped by a column (order_array_group), the leaf of which is gord_gcol */
 	int			gord_gcol;
 	uint32		gord_coll;		/* the collation of the text blocks of the leaf (UINT32_MAX when they differ), 0: none is text */
@@ -101,7 +101,7 @@ typedef struct SiftColIndexMeta
 } SiftColIndexMeta;
 
 /*
- * What a value derived from another table is as of (a connected index, col/conn.h): stored with the derived structure (a segment, a map), 16 bytes. Taken
+ * What a value derived from another table is as of (a connected index, col/v1/conn.h): stored with the derived structure (a segment, a map), 16 bytes. Taken
  * BEFORE the parent's entries are read, with the snapshot it was taken for.
  */
 #define SIFT_CONN_MAX_CONNECTIONS	8		/* connections of one index */

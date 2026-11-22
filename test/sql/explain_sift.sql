@@ -35,7 +35,7 @@ SELECT * FROM sift_lines($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
 SELECT * FROM sift_lines($$SELECT id FROM d WHERE body @@> 'word9' ORDER BY sift.score(ctid) DESC LIMIT 3$$);
 BEGIN;
 SET LOCAL sift.enable_scan = off;
-SET LOCAL sift.enable_count = off;
+SET LOCAL sift.enable_scan = off;
 SET LOCAL enable_seqscan = off;
 SELECT * FROM sift_lines($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
 COMMIT;

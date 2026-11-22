@@ -1,6 +1,6 @@
 -- The fold of the marks of the tombstone log of an index clears the rows whose delete or update every snapshot sees as committed. It gathered the key of every mark into one array
--- (8 bytes a mark, however many marks the log held), and holds a chunk of them now: as many keys as sift.tomb_log_limit has bytes, the rest in a temp file in the same order, cleared a
--- chunk at a time. The scope col_fold_keys (test/mem-budgets.tsv, the limit and 64 kB) holds the same bytes at every size of the log once it passes a chunk (a per-row term of 0), and the
+-- (8 bytes a mark, however many marks the log held), and holds a chunk of them now: as many keys as sift.backend_cache_kb has bytes, the rest in a temp file in the same order, cleared a
+-- chunk at a time. The scope col_fold_keys (the limit and 64 kB) holds the same bytes at every size of the log once it passes a chunk (a per-row term of 0), and the
 -- mutant that holds the marks in one array fails its budget. The rows cleared, what is left of the log and what a scan reads are the same in one chunk (1 GB) and in many (16 kB).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -25,22 +25,22 @@ SELECT format('DELETE FROM %s WHERE id %% 4 = 0', t) FROM unnest(ARRAY['f4', 'f8
 CREATE TABLE census (rows int, peak int8, cleared int8, left_over int8);
 -- a fresh backend for each size folds the log
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f4_c') AS cleared \gset
 INSERT INTO census SELECT 4000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f4_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f8_c') AS cleared \gset
 INSERT INTO census SELECT 8000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f8_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f12_c') AS cleared \gset
 INSERT INTO census SELECT 12000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f12_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f16_c') AS cleared \gset
 INSERT INTO census SELECT 16000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f16_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
@@ -50,7 +50,7 @@ SELECT count(DISTINCT peak) = 1 AS same_bytes_at_every_size, max(peak) < 16384 +
 
 -- the same fold in one chunk: the rows cleared, what is left of the log and the rows a scan reads are the same
 \c -
-SET sift.tomb_log_limit = '1GB';
+SET sift.backend_cache_kb = '1GB';
 SELECT sift._test_col_fold_marks('f16w_c') = (SELECT cleared FROM census WHERE rows = 16000) AS same_rows_cleared_in_one_chunk;
 SELECT (SELECT count(*) FROM sift._test_col_log_entries('f16w_c')) = (SELECT left_over FROM census WHERE rows = 16000) AS same_log_left;
 SELECT md5(string_agg(id || ':' || g || ':' || v, ',' ORDER BY id)) = (SELECT md5(string_agg(id || ':' || g || ':' || v, ',' ORDER BY id)) FROM f16) AS same_rows_in_chunks FROM f16w;

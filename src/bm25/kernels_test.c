@@ -16,6 +16,7 @@
 PG_FUNCTION_INFO_V1(sift_test_kern_digest);
 PG_FUNCTION_INFO_V1(sift_test_kern_equiv);
 PG_FUNCTION_INFO_V1(sift_test_kern_attr_equiv);
+PG_FUNCTION_INFO_V1(sift_test_kern_fmv_equiv);
 PG_FUNCTION_INFO_V1(sift_test_kern_bm25);
 PG_FUNCTION_INFO_V1(sift_test_kern_bound);
 
@@ -263,6 +264,95 @@ sift_test_kern_attr_equiv(PG_FUNCTION_ARGS)
 			tabs[t]->attr_mask(got, row, width, nslots, &c);
 			bad += memcmp(got, want, sizeof(got)) != 0;
 		}
+	}
+	PG_RETURN_INT64(bad);
+}
+
+/* The tf stream as the plain loop writes it: every posting takes a rank, those with tf above 1 a bit, a nibble and, from tf 17, an escape byte */
+static void
+tf_encode_reference(uint8 *l1, uint8 *nib, uint8 *esc, SiftTfPos *pos, const uint8 *tf, uint32 count)
+{
+	for (uint32 i = 0; i < count; i++, pos->rank++)
+	{
+		uint32		n;
+
+		if (tf[i] <= 1)
+			continue;
+		l1[pos->rank >> 3] |= 1 << (pos->rank & 7);
+		n = Min(tf[i] - 2, 15);
+		nib[pos->nib >> 1] |= n << ((pos->nib & 1) * 4);
+		pos->nib++;
+		if (n == 15)
+			esc[pos->esc++] = tf[i] - 17;
+	}
+}
+
+#define TFN		2048
+#define TF_L1	(TFN / 8 + 16)
+#define TF_NIB	(TFN / 2 + 40)
+#define TF_ALL	(TF_L1 + TF_NIB + TFN + 16)
+
+/*
+ * The loops of the multi-versioned functions (core/fmv.h) against what they replaced and against their baseline body: ub_accum on random bounds, and the tf stream of postings that
+ * come in runs of tf 1 of every length up to 300 (the run skip of sift_kern_tf_encode) with the clones the CPU has and with the baseline body (sift.simd = scalar). Returns the mismatches.
+ */
+Datum
+sift_test_kern_fmv_equiv(PG_FUNCTION_ARGS)
+{
+	pg_prng_state rs;
+	const SiftSimdLevel active = sift_cpu.active;
+	int64		bad = 0;
+	float4	   *ub = palloc_aligned(256 * sizeof(float4), SIFT_SIMD_ALIGN, 0),
+			   *ref = palloc_aligned(256 * sizeof(float4), SIFT_SIMD_ALIGN, 0),
+			   *base = palloc_aligned(256 * sizeof(float4), SIFT_SIMD_ALIGN, 0);
+	uint8		bounds[256],
+				tf[TFN + SIFT_KERN_PAD];
+
+	pg_prng_seed(&rs, PG_GETARG_INT64(0));
+	for (int it = 0; it < PG_GETARG_INT32(1); it++)
+	{
+		int			n = pg_prng_uint32(&rs) % 257;
+		float4		w = (float4) (pg_prng_double(&rs) * 50);
+		uint32		count = 0;
+		uint8	   *s[3];
+		SiftTfPos	pos[3] = {{pg_prng_uint32(&rs) % 64, pg_prng_uint32(&rs) % 64, pg_prng_uint32(&rs) % 16}};
+
+		for (int i = 0; i < 256; i++)
+		{
+			bounds[i] = (uint8) pg_prng_uint32(&rs);
+			ub[i] = ref[i] = base[i] = (float4) pg_prng_double(&rs);
+		}
+		for (int i = 0; i < n; i++)
+			ref[i] += w * (float4) bounds[i];
+		sift_kern_ub_accum(ub, bounds, w, n);
+		sift_cpu.active = SIFT_SIMD_SCALAR;
+		sift_kern_ub_accum(base, bounds, w, n);
+		sift_cpu.active = active;
+		bad += memcmp(ub, ref, n * sizeof(float4)) != 0 || memcmp(base, ref, n * sizeof(float4)) != 0;
+
+		while (count < TFN)
+		{
+			uint32		run = pg_prng_uint32(&rs) % 300,
+						k = pg_prng_uint32(&rs) % 4 + 1;
+
+			for (uint32 i = 0; i < run && count < TFN; i++)
+				tf[count++] = 1;
+			for (uint32 i = 0; i < k && count < TFN; i++)
+				tf[count++] = pg_prng_uint32(&rs) % 4 ? 2 + pg_prng_uint32(&rs) % 14 : 1 + pg_prng_uint32(&rs) % 255;
+		}
+		count = pg_prng_uint32(&rs) % (TFN + 1);
+		pos[1] = pos[2] = pos[0];
+		for (int v = 0; v < 3; v++)
+			s[v] = palloc0(TF_ALL);
+		tf_encode_reference(s[0], s[0] + TF_L1, s[0] + TF_L1 + TF_NIB, &pos[0], tf, count);
+		sift_kern_tf_encode(s[1], s[1] + TF_L1, s[1] + TF_L1 + TF_NIB, &pos[1], tf, count);
+		sift_cpu.active = SIFT_SIMD_SCALAR;
+		sift_kern_tf_encode(s[2], s[2] + TF_L1, s[2] + TF_L1 + TF_NIB, &pos[2], tf, count);
+		sift_cpu.active = active;
+		bad += memcmp(s[0], s[1], TF_ALL) != 0 || memcmp(s[0], s[2], TF_ALL) != 0 ||
+			memcmp(&pos[0], &pos[1], sizeof(SiftTfPos)) != 0 || memcmp(&pos[0], &pos[2], sizeof(SiftTfPos)) != 0;
+		for (int v = 0; v < 3; v++)
+			pfree(s[v]);
 	}
 	PG_RETURN_INT64(bad);
 }

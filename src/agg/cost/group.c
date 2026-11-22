@@ -194,26 +194,21 @@ bool
 nospill_fits(const SiftAggSpec *s, bool reruns, const char **why)
 {
 	double		state,
-				mem = (double) get_hash_memory_limit(),
-				floor_bytes = mem,
-				limit = mem,
+				limit = sift_agg_nospill_bytes(s->nworkers),
 				bound = s->bound_groups > 0 ? s->bound_groups : s->est_groups,
 				groups = Min(Max(s->est_groups, 1.0), Max(bound, 1.0)),
 				table;
-	int			factor = 1;
 
 	if (sift_aggspec_spillable(s))
 		return true;
-	if (nospill_by_estimate(s, reruns))
-		limit = sift_agg_nospill_bytes(&factor, &floor_bytes);
-	else
+	if (!nospill_by_estimate(s, reruns))
 		groups = Max(bound, 1.0);
 	table = group_table_bytes(s, groups, &state);
 	if (table <= limit)
 		return true;
 	if (why)
-		*why = psprintf("%s %.0f groups need %.0f kB, a hash aggregate gets %.0f kB, and this scan cannot spill them past %d times %.0f kB%s",
-						nospill_by_estimate(s, reruns) ? "about" : "up to", groups, table / 1024.0, mem / 1024.0, factor, floor_bytes / 1024.0,
+		*why = psprintf("%s %.0f groups need %.0f kB, a process of this scan gets %.0f kB of hash memory, and this scan cannot spill them%s",
+						nospill_by_estimate(s, reruns) ? "about" : "up to", groups, table / 1024.0, limit / 1024.0,
 						nospill_by_estimate(s, reruns) ? "" : " (its statement cannot run again as PostgreSQL plans it, so the rows of the source are the groups it may have)");
 	return false;
 }

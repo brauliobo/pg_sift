@@ -62,9 +62,9 @@ FROM fk_filters f ORDER BY f.flt;
 --------------------------------------------+-------------+------------+----------
  2.5% in every page                         | pushdown    | t          | t
  10% in the first stretch of the heap       | post-filter | t          | t
- 10% in the last stretch of the heap        | pushdown    | t          | t
+ 10% in the last stretch of the heap        | post-filter | t          | t
  a late stretch and a spread filter         | pushdown    | t          | t
- 10% in a stretch in the middle of the heap | pushdown    | t          | t
+ 10% in a stretch in the middle of the heap | post-filter | t          | t
  10% in the second stretch                  | post-filter | t          | t
 (6 rows)
 

@@ -14,6 +14,7 @@
 
 #include "agg/agg.h"
 #include "agg/part.h"
+#include "agg/plan/safety.h"
 #include "agg/from/int.h"
 
 /* a partition a column index or the table itself can be read through: a heap table without row security, or a sift_table */
@@ -23,7 +24,7 @@ part_readable(AggCtx *c, RelOptInfo *leaf)
 	RangeTblEntry *rte = planner_rt_fetch(leaf->relid, c->root);
 
 	return rte->relkind == RELKIND_RELATION && (get_rel_relam(rte->relid) == HEAP_TABLE_AM_OID || sift_colsrc_can_part(get_rel_relam(rte->relid), false)) &&
-		rte->securityQuals == NIL;
+		!agg_rte_has_rls(c->root, rte);
 }
 
 static bool
@@ -35,7 +36,7 @@ part_is_table(AggCtx *c, RelOptInfo *leaf)
 static bool
 part_index_usable(const IndexOptInfo *ii)
 {
-	return sift_colsrc_can_part(ii->relam, true) && !ii->hypothetical && (ii->indpred == NIL || ii->predOK);
+	return sift_colsrc_can_part(ii->relam, true) && agg_index_complete(ii) && sift_colsrc_reads_index(ii->indexoid);
 }
 
 /* does the partition have a column index at all (a sift_table is its own source)? Only its list of indexes is looked at, nothing of the index is read */

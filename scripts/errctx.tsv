@@ -5,20 +5,30 @@
 src/agg/topn/next.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/topn/run.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/wide.c	src/agg/exec/run.c src/agg/par/worker.c
-src/bm25/dict_int.h	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/bm25/maint.c
-src/bm25/pos.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/bm25/maint.c
-src/bm25/posting.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/bm25/maint.c
-src/col/batch_unit.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/chunk.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/codec_int.h	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/codec_parse.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/ctest.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/order.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/scan/gfree.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/scan/scope_segrows.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/scan_int.h	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/types.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/unit.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/col/vstore/vstore_run.c	src/col/amscan/amscan.c src/col/amscan/cost.c src/agg/exec/run.c src/bm25/maint.c
-src/core/span.c	src/col/amscan/amscan.c src/bm25/amscan.c src/agg/exec/run.c
-src/table/wbuf.c	src/table/analyze.c src/table/fetch.c src/table/scan.c
+src/bm25/dict_int.h	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
+src/bm25/pos.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
+src/bm25/posting.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
+src/col/v1/batch_unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/chunk.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/codec_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/codec_parse.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/ctest.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/order.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/scan/gfree.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/scan/scope_segrows.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/scan_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/types.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/col/v1/unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
+src/core/span.c	src/col/v1/amscan/amscan.c src/bm25/amscan.c src/agg/exec/run.c
+src/table/v1/wbuf.c	src/table/v1/analyze.c src/table/v1/fetch.c src/table/v1/scan.c
+src/col/granule/granule.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/granule_dec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/promo.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/promo_prefix.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/tid.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/granule_vec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/f2/l0_slab.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/granule_filter.c	src/col/f2/scan/fetch.c
+src/table/f2/f2_ddl.c	-
+src/col/f2/f2_point_dir.c	src/col/f2/scan/fetch.c
+src/col/granule/granule_codes.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c

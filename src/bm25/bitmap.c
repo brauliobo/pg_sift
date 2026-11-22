@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "bm25/bitmap_kern.h"
 #include "bm25/bitmap_int.h"
+#include "core/fmv.h"
 #include "core/varint.h"
 
 const sift_kernels *sift_k = &sift_kern_scalar;
@@ -106,15 +107,35 @@ uint32_t sift_blob_n(const uint8_t *blob)
 
 /* ---- source cursors ---- */
 
-/* first index >= i with key[idx] >= v (galloping) */
+/* How many of the n sorted keys are below v: a branch-free count, which the vector clones take 8 or 16 keys at a time */
+SIFT_FMV_DEFINE(static, uint32_t, keys_below, (const uint32_t *SIFT_RESTRICT key, uint32_t n, uint32_t v), (key, n, v),
+{
+	uint32_t c = 0;
+	for (uint32_t j = 0; j < n; j++)
+		c += key[j] < v;
+	return c;
+})
+
+/* a window this small is cheaper to bisect than to hand to the clones */
+#define GALLOP_SCAN_MIN 8
+#define GALLOP_SCAN_MAX 64
+
+/* first index >= i with key[idx] >= v (galloping, the last window of at most 64 keys counted at once) */
 static uint32_t gallop32(const uint32_t *key, uint32_t n, uint32_t i, uint64_t v)
 {
-	uint32_t step = 1, lo = i, hi = i;
-	while (hi < n && key[hi] < v) lo = hi + 1, hi += step, step <<= 1;
+	uint32_t step = 1, lo = i, hi = i, t;
+	if (v > UINT32_MAX) return n;
+	t = (uint32_t)v;
+	while (hi < n && key[hi] < t) lo = hi + 1, hi += step, step <<= 1;
 	if (hi > n) hi = n;
+	while (hi - lo > GALLOP_SCAN_MAX) {
+		uint32_t mid = lo + (hi - lo) / 2;
+		if (key[mid] < t) lo = mid + 1; else hi = mid;
+	}
+	if (hi - lo > GALLOP_SCAN_MIN) return lo + keys_below(key + lo, hi - lo, t);
 	while (lo < hi) {
 		uint32_t mid = lo + (hi - lo) / 2;
-		if (key[mid] < v) lo = mid + 1; else hi = mid;
+		if (key[mid] < t) lo = mid + 1; else hi = mid;
 	}
 	return lo;
 }
@@ -537,23 +558,67 @@ void sift_cur_blob(sift_cur *c, const uint8_t *blob, size_t len, uint8_t *buf)
 #endif
 static SEEK_TLS uint32_t seek_limit = UINT32_MAX;
 
+uint32_t sift_cur_peek_gid(sift_cur *c, uint32_t target)
+{
+	if (c->seek != gr_seek) {
+		const sift_grp *g = sift_seek(c, target);
+		return g ? g->gid : UINT32_MAX;
+	}
+	if (c->state == 2) return UINT32_MAX;
+	if (c->state == 1 && c->g.gid >= target) return c->g.gid;
+	uint32_t i = gallop32(c->gr.key, c->gr.ng, c->state ? c->gr.i + 1 : 0, (uint64_t)target << 8);
+	if (i == c->gr.ng) return ended(c), UINT32_MAX;
+	c->gr.pi = i;
+	return c->gr.key[i] >> 8;
+}
+
+int sift_cur_peek_pages(const sift_cur *c, uint64_t pages_out[4])
+{
+	if (c->seek != gr_seek) return 0;
+	uint32_t i = c->gr.pi, key = c->gr.key[i], lo = c->gr.poff[i], hi = c->gr.poff[i + 1], skip;
+	if ((key & 0xff) >= PACKED_TYPE) skip = 1;
+	else if (!(key & 0x80)) skip = 0;
+	else return 0;
+	if (lo > hi || hi > c->gr.plen || hi - lo < skip + 32) return 0;
+	memcpy(pages_out, c->gr.payload + lo + skip, 32);
+	return 1;
+}
+
+/* The page mask of kid's group at gid (which sift_cur_peek_gid returned): read from the blob when the group is not decoded and has a mask there, else decoded */
+static const uint64_t *kid_pages(sift_cur *kid, uint32_t gid, uint64_t buf[4])
+{
+	if (kid->state == 1 && kid->g.gid == gid) return kid->g.pages;
+	if (sift_cur_peek_pages(kid, buf)) return buf;
+	return sift_seek(kid, gid)->pages;
+}
+
+/*
+ * Leapfrogs the kids on the gids alone (a GROUPED term is only located), then intersects the page masks the groups carry in their headers: the
+ * offsets of a group are decoded, in every kid, only once the masks meet. Misses decode nothing.
+ */
 int and_align(sift_cur **kid, int k, uint32_t *target, uint64_t m[4])
 {
 	for (;;) {
 		if (*target > seek_limit) return -1;
-		const sift_grp *g = sift_seek(kid[0], *target);
-		if (!g) return 0;
-		*target = g->gid;
-		memcpy(m, g->pages, 32);
+		uint64_t buf[4];
+		uint32_t gid = sift_cur_peek_gid(kid[0], *target);
+		if (gid == UINT32_MAX) return 0;
+		*target = gid;
+		memcpy(m, kid_pages(kid[0], gid, buf), 32);
 		int i = 1;
 		for (; i < k; i++) {
-			if (!(g = sift_seek(kid[i], *target))) return 0;
-			if (g->gid != *target) break;
-			for (int j = 0; j < 4; j++) m[j] &= g->pages[j];
+			gid = sift_cur_peek_gid(kid[i], *target);
+			if (gid == UINT32_MAX) return 0;
+			if (gid != *target) break;
+			const uint64_t *pg = kid_pages(kid[i], gid, buf);
+			for (int j = 0; j < 4; j++) m[j] &= pg[j];
 			if (pages_empty(m)) break;
 		}
-		if (i == k) return 1;
-		*target = g->gid > *target ? g->gid : *target + 1;
+		if (i == k) {
+			for (i = 0; i < k; i++) sift_seek(kid[i], *target);
+			return 1;
+		}
+		*target = gid > *target ? gid : *target + 1;
 	}
 }
 
@@ -689,7 +754,7 @@ static uint64_t cur_total(sift_cur *c)
 	return UINT64_MAX;
 }
 
-uint64_t sift_count(sift_cur *c)
+uint64_t sift_cur_count(sift_cur *c)
 {
 	uint64_t total = 0;
 	if ((c->seek == and_seek || c->seek == or_seek || c->seek == andnot_seek) && c->op.k == 2) {
@@ -744,11 +809,24 @@ const char *sift_chunk_check(const uint8_t *chunk, uint32_t len)
 	return NULL;
 }
 
+/* The bits set in the offset words of a chunk and the highest bit of a page row (at least 1): a pass over the words of every page of a superblock */
+SIFT_FMV_DEFINE_VOID(static, om_scan, (const uint64_t *SIFT_RESTRICT om, uint32_t nwords, uint32_t *SIFT_RESTRICT count, uint32_t *SIFT_RESTRICT maxbit),
+		(om, nwords, count, maxbit),
+{
+	uint32_t c = 0, hi = 1;
+	for (uint32_t k = 0; k < nwords; k++) {
+		uint32_t top = nbits(om[k]) ? (k % 8) * 64 + nbits(om[k]) : 0;
+		c += sift_pc64(om[k]);
+		hi = hi > top ? hi : top;
+	}
+	*count = c;
+	*maxbit = hi;
+})
+
 size_t sift_chunk_encode(const uint64_t pm[4], const uint64_t *om, int ctype, uint8_t *out)
 {
-	uint32_t np = pages_pc(pm), count = 0, maxbit = 1;
-	for (uint32_t k = 0; k < np * SIFT_OFFMASK_WORDS; k++)
-		if (om[k]) count += sift_pc64(om[k]), maxbit = maxbit > (k % 8) * 64 + nbits(om[k]) ? maxbit : (k % 8) * 64 + nbits(om[k]);
+	uint32_t np = pages_pc(pm), count, maxbit;
+	om_scan(om, np * SIFT_OFFMASK_WORDS, &count, &maxbit);
 	uint32_t w = sift_w_for(maxbit), es = w <= 32 ? 2 : 4;
 	int array = ctype == SIFT_CT_ARRAY || (ctype == SIFT_CT_AUTO && (size_t)count * es < 32 + (size_t)np * w);
 	size_t size = 4 + (array ? (size_t)count * es : 32 + (size_t)np * w);

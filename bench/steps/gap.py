@@ -217,14 +217,14 @@ def profile_block(P, R, tier, S):
 
 
 def cmd_render(args):
-    import readme
+    import resultfile
     R = store_render.Results(args.store)
     tiers = {R.meta['tiers'][t]['rows']: t for t in R.tiers}
     profiles = [P for P in (json.load(open(p)) for p in args.profile) if P['rows'] in tiers]   # a profile of a size the store results no longer hold is history, not rendered
     stats = {S['rows']: S for S in (json.load(open(p)) for p in args.stats)}
-    readme.replace_block(args.doc, 'gap-table', store_render.gap_table(R))
-    readme.replace_block(args.doc, 'gap-planning', sum((planning_block(P, R, tiers[P['rows']]) for P in profiles), []))
-    readme.replace_block(args.doc, 'gap-profile', sum((profile_block(P, R, tiers[P['rows']], stats.get(P['rows'])) for P in profiles), []))
+    resultfile.replace_block(args.doc, 'gap-table', store_render.gap_table(R))
+    resultfile.replace_block(args.doc, 'gap-planning', sum((planning_block(P, R, tiers[P['rows']]) for P in profiles), []))
+    resultfile.replace_block(args.doc, 'gap-profile', sum((profile_block(P, R, tiers[P['rows']], stats.get(P['rows'])) for P in profiles), []))
     return 0
 
 
@@ -239,7 +239,7 @@ def main():
     p.add_argument('--queries', type=lambda s: s.split(','), default=[])
     p.add_argument('--perf-runs', type=int, default=20)
     p = sub.add_parser('render')
-    p.add_argument('--store', default=os.path.join(HERE, '..', '..', 'bench', 'results', 'store.json'))
+    p.add_argument('--store', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'store.json'))
     p.add_argument('--profile', nargs='+', required=True)
     p.add_argument('--stats', nargs='*', default=[])
     p.add_argument('--doc', default=os.path.join(HERE, '..', '..', 'bench', 'out', 'BENCH-GAP.md'))

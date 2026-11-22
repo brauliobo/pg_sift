@@ -8,13 +8,17 @@
 #include "utils/memutils.h"
 #include "nodes/makefuncs.h"
 #include "utils/lsyscache.h"
-#include "col/point.h"
+#include "col/f2/f2.h"
+#include "col/v1/point.h"
 #include "col/hll.h"
-#include "col/gorder.h"
-#include "col/setsum.h"
+#include "col/v1/gorder.h"
+#include "col/v1/setsum.h"
 #include "core/limits.h"
+#include "core/meta_peek.h"
+#include "core/quarantine.h"
 #include "col/am/am_int.h"
-#include "col/conn.h"
+#include "core/cachebudget.h"
+#include "col/v1/conn.h"
 #include "col/scope.h"
 
 Oid			sift_col_building = InvalidOid;
@@ -33,6 +37,8 @@ sift_col_options_order_array_columns(Relation index)
 COL_OPT_STR(sift_col_options_order_layout, order_layout, "")
 
 COL_OPT_STR(sift_col_options_hll_columns, hll_columns, "")
+COL_OPT_STR(sift_col_options_sketches, sketches, "")
+COL_OPT_STR(sift_col_options_skip_index, skip_index, "")
 
 COL_OPT_STR(sift_col_options_return_columns, return_columns, "")
 
@@ -42,6 +48,153 @@ COL_OPT_STR(sift_col_options_rollup_columns, rollup_columns, "")
 
 COL_OPT_STR(sift_col_options_calendar_columns, calendar_columns, "")
 
+/* The options of the pre-aggregates, orders and key cuts of format major 1; an index of format major 2 has none of them */
+static void
+parse_v5_options(Relation index, SiftColRel *r, SiftColDef *defs, char **names, int n, int natts, TupleDesc desc)
+{
+	const char *err = sift_cpagg_spec_parse(sift_col_options_preagg(index), r->schema, (const char *const *) names, &r->pagg);
+
+	if (err)
+		sift_col_option_error("preagg", sift_col_options_preagg(index), err);
+	if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup_leaves(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+		sift_col_option_error("rollup_leaves", sift_col_options_rollup_leaves(index), err);
+	if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+		sift_col_option_error("rollup_columns", sift_col_options_rollup_columns(index), err);
+	if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+		sift_col_option_error("calendar_columns", sift_col_options_calendar_columns(index), err);
+	r->pagg.minmax = sift_col_options(index)->cube_minmax;
+	r->pagg.key_table = sift_col_options(index)->key_table;
+	if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
+		sift_col_option_error("key_columns", sift_col_options_key_columns(index), err);
+	r->pagg.super = sift_col_options(index)->superunit;
+	for (int d = 0; r->nscope > 0 && r->pagg.super >= SIFT_SUPER_MIN_FAN && d < r->pagg.ndims; d++)
+		r->pagg.dsets[r->pagg.dim[d].leaf] = !r->pagg.dim[d].cal && sift_cdsets_leaf_ok(r->schema, r->pagg.dim[d].leaf);
+	if (sift_col_options(index)->ko_n > 2)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("key_order lists %d columns, an index of format major 1 takes at most two", sift_col_options(index)->ko_n),
+						errhint("List 'group, key'.")));
+	for (int i = 0; i < sift_col_options(index)->ko_n; i++)
+		if (sift_col_options(index)->ko_flags[i] != 0)
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("key_order orders a column descending or with its NULLs first, which an index of format major 1 cannot"),
+							errhint("Take DESC and NULLS FIRST out of key_order.")));
+	for (int k = 0; k < 2 && sift_col_options(index)->ko_lead; k++)
+	{
+		const SiftColOptions *ko = sift_col_options(index);
+		const char *c = (const char *) ko + (k ? ko->ko_last : ko->ko_lead);
+		int			i = 0;
+
+		while (i < n && strcmp(names[i], c) != 0)
+			i++;
+		if (i == n)
+			sift_col_option_error("key_order", sift_col_options_key_order(index), psprintf("column \"%s\" is not a column of the index", c));
+	}
+	if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
+									"not an integer, date, timestamp, numeric or text column")) != NULL)
+		sift_col_option_error("order_array_columns", sift_col_options_order_array_columns(index), err);
+	for (int i = 0; i < n; i++)
+		if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))
+			r->pagg.gorder_coll[i] = TupleDescAttr(desc, defs[i].attno - 1)->attcollation;	/* deterministic: the operator class of a text leaf demands it */
+	if ((err = sift_cgord_layout_parse(sift_col_options_order_layout(index), r->schema, (const char *const *) names, r->pagg.glayout)) != NULL)
+		sift_col_option_error("order_layout", sift_col_options_order_layout(index), err);
+	const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
+	if (glist[0] != '\0' && strcmp(glist, "off") != 0)
+	{
+		bool		grp[SIFT_COL_MAX_COLS] = {false};
+		int			ng = 0;
+		const char *with = r->pagg.gorder_group_auto ? strchr(glist, ';') : NULL;
+		const char *only;
+
+		/* 'auto: g, a, b; c, d': the arrays that are grouped beside their plain order, after the ';' */
+		if (with != NULL)
+		{
+			if ((err = sift_cpagg_leaf_list(with + 1, r->schema, (const char *const *) names, r->pagg.gorder_with, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
+				sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
+			r->pagg.gorder_listed = true;
+			glist = pnstrdup(glist, with - glist);
+		}
+		only = r->pagg.gorder_group_auto ? strchr(glist, ',') : NULL;
+
+		/* 'auto: g, a, b': the arrays after the group keep the ends of the plain order beside the second order */
+		if (only != NULL)
+		{
+			if ((err = sift_cpagg_leaf_list(only + 1, r->schema, (const char *const *) names, r->pagg.gorder_only, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
+				sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
+			glist = pnstrdup(glist, only - glist);
+		}
+		if ((err = sift_cpagg_leaf_list(glist, r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
+										"not an integer, date or timestamp column")) != NULL)
+			sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
+		for (int i = 0; i < n; i++)
+			if (grp[i])
+			{
+				if (r->pagg.gorder[i])
+					sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), psprintf("column \"%s\" is in order_array_columns", names[i]));
+				r->pagg.gorder_group = i + 1;
+				ng++;
+			}
+		if (ng != 1)
+			sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), psprintf("one column, not %d", ng));
+	}
+	/* the second order of the second key column grouped by the first is what an ordered index-only scan of (g, k) reads group after group, and it gives exact keys (amscan/ordered.c): whole chunks unless order_layout says otherwise */
+	if (r->pagg.gorder_group > 0 && defs[r->pagg.gorder_group - 1].attno == 1)
+		for (int i = 0; i < n; i++)
+			if (defs[i].attno == 2 && r->pagg.glayout[i] == SIFT_CGORD_OL_AUTO)
+				r->pagg.glayout[i] = SIFT_CGORD_OL_WHOLE;
+	if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
+		sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), err);
+	if ((err = sift_hll_spec_parse(sift_f2_kll_hll_columns(sift_col_options_sketches(index)), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
+		sift_col_option_error("sketches", sift_col_options_sketches(index), err);
+	for (int i = 0; i < n; i++)
+		if (r->pagg.hll[i])
+		{
+			Oid			t = TupleDescAttr(desc, defs[i].attno - 1)->atttypid;
+
+			if (t != INT2OID && t != INT4OID && t != INT8OID && t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID && t != TEXTOID && t != VARCHAROID && t != UUIDOID)
+				sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" is a %s column, whose hash a unit cannot compute (char(n) and name hash differently from text)", names[i], format_type_be(t)));
+			if ((t == TEXTOID || t == VARCHAROID) && !get_collation_isdeterministic(TupleDescAttr(desc, defs[i].attno - 1)->attcollation))
+				sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" has a nondeterministic collation, whose hash is not that of its bytes", names[i]));
+			/* a column the build chose for its key list (key_columns 'auto') gives it up: a leaf has one blob a unit in the set section, and the user asked for the sketch */
+			if (r->pagg.set[i] && r->pagg.keyauto)
+				r->pagg.set[i] = r->pagg.pres[i] = false;
+			else if (r->pagg.set[i])
+				sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" is in key_columns, which keeps its distinct keys exactly", names[i]));
+		}
+	if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
+		sift_col_option_error("point_tid_columns", sift_col_options_point_tid_columns(index), err);
+	if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)
+		sift_col_option_error("count_columns", sift_col_options_count_columns(index), err);
+	for (int i = 0; i < n; i++)
+		if (r->pagg.count[i] && r->schema->cols[i].store != SIFT_COLS_STR)
+			sift_col_option_error("count_columns", sift_col_options_count_columns(index), psprintf("\"%s\" is not a text column", names[i]));
+	r->pagg.dict_hash = sift_col_options(index)->dict_lookup != SIFT_COL_DICT_OFF;
+	for (int i = 0; i < n; i++)
+		r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON || r->pagg.count[i] ||
+			(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point_tid[i]));
+	for (int a = 1; a <= natts; a++)
+		if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
+			r->pagg.lookup[r->first[a]] = true;
+	/* a text leaf whose dictionary is read in place (and would have its order, whatever it holds) also counts the rows of each string, unless the option says off */
+	if (strcmp(sift_col_options_count_columns(index), "off") != 0)
+		for (int i = 0; i < n; i++)
+			if (r->schema->cols[i].store == SIFT_COLS_STR && r->schema->cols[i].type == SIFT_COLT_TEXT && r->pagg.lookup[i])
+				r->pagg.count[i] = true;
+	{
+		for (const char *p = sift_col_options_key_cut(index); *p != '\0'; p += *p == ',')
+		{
+			char	   *tok = sift_cpagg_name_take(&p, ",");
+			int			id = -1;
+
+			for (int i = 0; i < n && id < 0; i++)
+				if (strcmp(names[i], tok) == 0)
+					id = i;
+			if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !(sift_crun_leaf_ok(r->schema, &r->schema->cols[id]) || sift_col_def_shape_start(r->schema->cols, id)))
+				sift_col_option_error("key_cut", sift_col_options_key_cut(index),
+									  psprintf("\"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX));
+			r->cut[r->ncut++] = id;
+			pfree(tok);
+		}
+	}
+}
+
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
 static SiftColRel *
 build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
@@ -50,10 +203,14 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	SiftColRel *r = palloc0(sizeof(SiftColRel));
 	TupleDesc	desc = RelationGetDescr(index);
 	int			natts = IndexRelationGetNumberOfKeyAttributes(index);
-	SiftColDef *defs = palloc0(SIFT_COL_MAX_COLS * sizeof(SiftColDef));
+	const SiftColFormatOps *ops = sift_col_ops_of_major(sift_meta_resolve_major(index));
+	bool		f2 = ops->format_major == 2;
+	int			max_leaves = f2 ? (int) sift_limit(f2_leaves, SIFT_F2_MAX_COLS) : (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS);
+	SiftColDef *defs = palloc0(max_leaves * sizeof(SiftColDef));
 	char	  **names;
 	int			n = 0;
 
+	r->hdr.ops = ops;
 	if (index->rd_index->indnatts != natts)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes do not support INCLUDE columns"),
 						errhint("List the columns in the index key: a sift_col index stores all of them.")));
@@ -80,16 +237,18 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 				sift_col_shred_set_base(r->shred, a, k0);
 		}
 		k = k0 + kshred;
-		if (isjson && k == 0)
+		if (isjson && k == 0 && f2 && sift_col_paths_unresolved(index))
+			r->paths_pending = true;
+		else if (isjson && k == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
 					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
-		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS) && r->shred && sift_col_shred_drop_present(r->shred, a))
+		if (n + k > max_leaves && r->shred && sift_col_shred_drop_present(r->shred, a))
 			k--;
-		if (n + k > sift_limit(col_leaves, SIFT_COL_MAX_COLS))
+		if (n + k > max_leaves)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							errmsg("a sift_col index holds at most %d columns", (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS)),
+							errmsg("a sift_col index holds at most %d columns", max_leaves),
 							errdetail("Column \"%s\" brings the index to %d columns and paths.", NameStr(att->attname), n + k),
 							errhint("Leave out the columns the queries do not read, or create several indexes: the planner picks among them.")));
 		r->first[a] = n;
@@ -137,140 +296,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		if (err)
 			sift_col_option_error("compression", sift_col_options_compression(index), err);
 	}
-	{
-		const char *err = sift_cpagg_spec_parse(sift_col_options_preagg(index), r->schema, (const char *const *) names, &r->pagg);
-
-		if (err)
-			sift_col_option_error("preagg", sift_col_options_preagg(index), err);
-		if ((err = sift_cpagg_rollup_apply(sift_col_options_rollup_leaves(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			sift_col_option_error("rollup_leaves", sift_col_options_rollup_leaves(index), err);
-		if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			sift_col_option_error("rollup_columns", sift_col_options_rollup_columns(index), err);
-		if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			sift_col_option_error("calendar_columns", sift_col_options_calendar_columns(index), err);
-		r->pagg.minmax = sift_col_options(index)->cube_minmax;
-		r->pagg.key_table = sift_col_options(index)->key_table;
-		if ((err = sift_cset_keys_parse(sift_col_options_key_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
-			sift_col_option_error("key_columns", sift_col_options_key_columns(index), err);
-		r->pagg.super = sift_col_options(index)->superunit;
-		for (int d = 0; r->nscope > 0 && r->pagg.super >= SIFT_SUPER_MIN_FAN && d < r->pagg.ndims; d++)
-			r->pagg.dsets[r->pagg.dim[d].leaf] = !r->pagg.dim[d].cal && sift_cdsets_leaf_ok(r->schema, r->pagg.dim[d].leaf);
-		for (int k = 0; k < 2 && sift_col_options(index)->ko_lead; k++)
-		{
-			const SiftColOptions *ko = sift_col_options(index);
-			const char *c = (const char *) ko + (k ? ko->ko_last : ko->ko_lead);
-			int			i = 0;
-
-			while (i < n && strcmp(names[i], c) != 0)
-				i++;
-			if (i == n)
-				sift_col_option_error("key_order", sift_col_options_key_order(index), psprintf("column \"%s\" is not a column of the index", c));
-		}
-		if ((err = sift_cpagg_leaf_list(sift_cpagg_auto_list(sift_col_options_order_array_columns(index), &r->pagg.gorderauto), r->schema, (const char *const *) names, r->pagg.gorder, sift_cgord_leaf_array_ok,
-										"not an integer, date, timestamp, numeric or text column")) != NULL)
-			sift_col_option_error("order_array_columns", sift_col_options_order_array_columns(index), err);
-		for (int i = 0; i < n; i++)
-			if (r->pagg.gorder[i] && sift_cgord_leaf_text(&r->schema->cols[i]))
-				r->pagg.gorder_coll[i] = TupleDescAttr(desc, defs[i].attno - 1)->attcollation;	/* deterministic: the operator class of a text leaf demands it */
-		if ((err = sift_cgord_layout_parse(sift_col_options_order_layout(index), r->schema, (const char *const *) names, r->pagg.glayout)) != NULL)
-			sift_col_option_error("order_layout", sift_col_options_order_layout(index), err);
-		const char *glist = sift_cpagg_auto_list(sift_col_options_order_array_group(index), &r->pagg.gorder_group_auto);
-		if (glist[0] != '\0' && strcmp(glist, "off") != 0)
-		{
-			bool		grp[SIFT_COL_MAX_COLS] = {false};
-			int			ng = 0;
-			const char *with = r->pagg.gorder_group_auto ? strchr(glist, ';') : NULL;
-			const char *only;
-
-			/* 'auto: g, a, b; c, d': the arrays that are grouped beside their plain order, after the ';' */
-			if (with != NULL)
-			{
-				if ((err = sift_cpagg_leaf_list(with + 1, r->schema, (const char *const *) names, r->pagg.gorder_with, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
-					sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
-				r->pagg.gorder_listed = true;
-				glist = pnstrdup(glist, with - glist);
-			}
-			only = r->pagg.gorder_group_auto ? strchr(glist, ',') : NULL;
-
-			/* 'auto: g, a, b': the arrays after the group keep the ends of the plain order beside the second order */
-			if (only != NULL)
-			{
-				if ((err = sift_cpagg_leaf_list(only + 1, r->schema, (const char *const *) names, r->pagg.gorder_only, sift_cgord_leaf_ok, "not an integer, date or timestamp column")) != NULL)
-					sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
-				glist = pnstrdup(glist, only - glist);
-			}
-			if ((err = sift_cpagg_leaf_list(glist, r->schema, (const char *const *) names, grp, sift_cgord_leaf_ok,
-											"not an integer, date or timestamp column")) != NULL)
-				sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), err);
-			for (int i = 0; i < n; i++)
-				if (grp[i])
-				{
-					if (r->pagg.gorder[i])
-						sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), psprintf("column \"%s\" is in order_array_columns", names[i]));
-					r->pagg.gorder_group = i + 1;
-					ng++;
-				}
-			if (ng != 1)
-				sift_col_option_error("order_array_group", sift_col_options_order_array_group(index), psprintf("one column, not %d", ng));
-		}
-		/* the second order of the second key column grouped by the first is what an ordered index-only scan of (g, k) reads group after group, and it gives exact keys (amscan/ordered.c): whole chunks unless order_layout says otherwise */
-		if (r->pagg.gorder_group > 0 && defs[r->pagg.gorder_group - 1].attno == 1)
-			for (int i = 0; i < n; i++)
-				if (defs[i].attno == 2 && r->pagg.glayout[i] == SIFT_CGORD_OL_AUTO)
-					r->pagg.glayout[i] = SIFT_CGORD_OL_WHOLE;
-		if ((err = sift_hll_spec_parse(sift_col_options_hll_columns(index), r->schema, (const char *const *) names, r->pagg.hll)) != NULL)
-			sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), err);
-		for (int i = 0; i < n; i++)
-			if (r->pagg.hll[i])
-			{
-				Oid			t = TupleDescAttr(desc, defs[i].attno - 1)->atttypid;
-
-				if (t != INT2OID && t != INT4OID && t != INT8OID && t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID && t != TEXTOID && t != VARCHAROID && t != UUIDOID)
-					sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" is a %s column, whose hash a unit cannot compute (char(n) and name hash differently from text)", names[i], format_type_be(t)));
-				if ((t == TEXTOID || t == VARCHAROID) && !get_collation_isdeterministic(TupleDescAttr(desc, defs[i].attno - 1)->attcollation))
-					sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" has a nondeterministic collation, whose hash is not that of its bytes", names[i]));
-				/* a column the build chose for its key list (key_columns 'auto') gives it up: a leaf has one blob a unit in the set section, and the user asked for the sketch */
-				if (r->pagg.set[i] && r->pagg.keyauto)
-					r->pagg.set[i] = r->pagg.pres[i] = false;
-				else if (r->pagg.set[i])
-					sift_col_option_error("hll_columns", sift_col_options_hll_columns(index), psprintf("\"%s\" is in key_columns, which keeps its distinct keys exactly", names[i]));
-			}
-		if ((err = sift_cpoint_spec_parse(sift_col_options_point_tid_columns(index), r->schema, (const char *const *) names, r->pagg.point_tid)) != NULL)
-			sift_col_option_error("point_tid_columns", sift_col_options_point_tid_columns(index), err);
-		if ((err = sift_cpoint_spec_parse(sift_col_options_count_columns(index), r->schema, (const char *const *) names, r->pagg.count)) != NULL)
-			sift_col_option_error("count_columns", sift_col_options_count_columns(index), err);
-		for (int i = 0; i < n; i++)
-			if (r->pagg.count[i] && r->schema->cols[i].store != SIFT_COLS_STR)
-				sift_col_option_error("count_columns", sift_col_options_count_columns(index), psprintf("\"%s\" is not a text column", names[i]));
-		r->pagg.dict_hash = sift_col_options(index)->dict_lookup != SIFT_COL_DICT_OFF;
-		for (int i = 0; i < n; i++)
-			r->pagg.lookup[i] = sift_col_options(index)->dict_lookup == SIFT_COL_DICT_ON || r->pagg.count[i] ||
-				(sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO && (r->pagg.set[i] || r->pagg.point_tid[i]));
-		for (int a = 1; a <= natts; a++)
-			if (r->ret[a] && sift_col_options(index)->dict_lookup == SIFT_COL_DICT_AUTO)
-				r->pagg.lookup[r->first[a]] = true;
-		/* a text leaf whose dictionary is read in place (and would have its order, whatever it holds) also counts the rows of each string, unless the option says off */
-		if (strcmp(sift_col_options_count_columns(index), "off") != 0)
-			for (int i = 0; i < n; i++)
-				if (r->schema->cols[i].store == SIFT_COLS_STR && r->schema->cols[i].type == SIFT_COLT_TEXT && r->pagg.lookup[i])
-					r->pagg.count[i] = true;
-		{
-			for (const char *p = sift_col_options_key_cut(index); *p != '\0'; p += *p == ',')
-			{
-				char	   *tok = sift_cpagg_name_take(&p, ",");
-				int			id = -1;
-
-				for (int i = 0; i < n && id < 0; i++)
-					if (strcmp(names[i], tok) == 0)
-						id = i;
-				if (id < 0 || r->ncut == SIFT_COL_CUT_MAX || !(sift_crun_leaf_ok(r->schema, &r->schema->cols[id]) || sift_col_def_shape_start(r->schema->cols, id)))
-					sift_col_option_error("key_cut", sift_col_options_key_cut(index),
-										  psprintf("\"%s\" is not an integer, date, timestamp, numeric or float column of the index (at most %d)", tok, SIFT_COL_CUT_MAX));
-				r->cut[r->ncut++] = id;
-				pfree(tok);
-			}
-		}
-	}
+	if (!f2)
+		parse_v5_options(index, r, defs, names, n, natts, desc);
 	if (sift_col_row_key_on(index))
 	{
 		const char *rk = sift_col_options_row_key(index);
@@ -293,11 +320,29 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	for (int i = 0; i < n; i++)
 		pfree(names[i]);
 	for (int i = r->conn_first; i < n; i++)
-		pfree(defs[i].path);
+		pfree((char *) defs[i].path);
 	pfree(names);
 	pfree(defs);
 	MemoryContextSwitchTo(old);
 	return r;
+}
+
+/* The hash of the leaf layout the index was written for and its state flags, from its metapage (false while there is none yet) */
+static bool
+stored_layout(Relation index, bool f2, uint32 *hash, uint32 *flags)
+{
+	if (f2)
+	{
+		SiftColMetaPageData meta;
+
+		if (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || RelationGetNumberOfBlocks(index) == 0)
+			return false;
+		(void) sift_col_open_meta(index, &meta);
+		*hash = meta.schema_hash;
+		*flags = (meta.state_flags & SIFT_META_FLAG_QUARANTINED) ? SIFT_META_QUARANTINED : 0;
+		return true;
+	}
+	return sift_store_meta_peek(index, hash, flags) && (*flags & SIFT_COL_META_FLAG);
 }
 
 /*
@@ -313,8 +358,7 @@ build_rel(Relation index, MemoryContext mcxt)
 	SiftColRel *r = build_rel_with(index, mcxt, layout[0]);
 	uint32		hash,
 				flags;
-	bool		stored = RelationGetRelid(index) != sift_col_building &&
-						 sift_store_meta_peek(index, &hash, &flags) && (flags & SIFT_COL_META_FLAG);
+	bool		stored = RelationGetRelid(index) != sift_col_building && stored_layout(index, r->hdr.ops->format_major == 2, &hash, &flags);
 
 	if (stored && r->schema->hash != hash && (layout[0] != layout[1] || layout[0] != layout[2]))
 		for (int i = 1; i < 3; i++)
@@ -480,12 +524,53 @@ sift_col_rel(Relation index)
 	return index->rd_amcache;
 }
 
+/* The table of the format of the relation: that of its relcache state, read from block 0 until the state is made */
+const SiftColFormatOps *
+sift_col_ops(Relation index)
+{
+	if (index->rd_amcache != NULL)
+		return ((SiftColRelHeader *) index->rd_amcache)->ops;
+	return sift_col_ops_of_major(sift_meta_resolve_major(index));
+}
+
+uint16
+sift_col_format_major(Relation index)
+{
+	return sift_col_ops(index)->format_major;
+}
+
+static uint16
+oid_format(Oid indexoid, bool serving)
+{
+	Relation	index = RelationIdGetRelation(indexoid);
+	uint16		major = 0;
+
+	if (!RelationIsValid(index))
+		return 0;
+	if (index->rd_rel->relam == sift_col_am_oid() && !(serving && sift_index_quarantined(index)))
+		major = sift_col_format_major(index);
+	RelationClose(index);
+	return major;
+}
+
+uint16
+sift_col_index_oid_format(Oid indexoid)
+{
+	return oid_format(indexoid, false);
+}
+
+uint16
+sift_col_index_oid_engine(Oid indexoid)
+{
+	return oid_format(indexoid, true);
+}
+
 /* The memory of one inserted row, in the context that holds the state: a backend that only reads an index never pays its first block */
 MemoryContext
 sift_col_rel_rowcxt(SiftColRel *r)
 {
 	if (r->rowcxt == NULL)
-		r->rowcxt = AllocSetContextCreate(GetMemoryChunkContext(r), "sift cache col insert", ALLOCSET_DEFAULT_SIZES);
+		r->rowcxt = AllocSetContextCreate(GetMemoryChunkContext(r), "sift cache col insert", ALLOCSET_SMALL_SIZES);
 	return r->rowcxt;
 }
 
@@ -626,7 +711,7 @@ sift_col_plan_memo(uint64 *plan)
 	if (am_leaf_plan == 0)
 		return NULL;
 	if (plan_memo == NULL)
-		plan_memo = AllocSetContextCreate(TopMemoryContext, "sift planning memo", ALLOCSET_DEFAULT_SIZES);
+		plan_memo = sift_cache_create_context("sift planning memo");
 	*plan = am_leaf_plan;
 	return plan_memo;
 }

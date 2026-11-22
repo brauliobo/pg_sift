@@ -1,5 +1,5 @@
--- Where the default key_cut chooses a time column, the index also gets key_order's layout for it (the order arrays of the column), so that ORDER BY ts LIMIT n over a cut
--- index does not read every unit; key_order = 'off' keeps the cut alone, a key_order or an order_array_columns of the user's is left as it is. A cut by another key has none.
+-- The order arrays of a time column (the default choice) let ORDER BY ts LIMIT n read the arrays and not every unit, with or without a key_cut of the user's;
+-- key_order = 'off' keeps a cut alone, a key_order or an order_array_columns of the user's is left as it is.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;
@@ -24,9 +24,9 @@ BEGIN
 	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN used THEN 'array' ELSE 'units' END;
 END $$;
 
-CREATE INDEX ka_auto ON ka USING sift_col (acct_id, v);
+CREATE INDEX ka_auto ON ka USING sift_col (acct_id, v) WITH (key_cut = 'acct_id');
 -- a key that is not a time column keeps the cut alone
-SELECT reloptions @> ARRAY['key_cut=auto: acct_id'] AS cut, NOT reloptions::text LIKE '%key_order%' AS no_key_order FROM pg_class WHERE relname = 'ka_auto';
+SELECT reloptions @> ARRAY['key_cut=acct_id'] AS cut, NOT reloptions::text LIKE '%key_order%' AS no_key_order FROM pg_class WHERE relname = 'ka_auto';
 -- an equality on the key of a table in arrival order is read from the one unit it is cut into, not from a heap page for each of its rows (the Index Scan was priced as if they were in heap order)
 CREATE FUNCTION ka_scan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text;
@@ -39,19 +39,19 @@ SELECT ka_scan('SELECT acct_id, v FROM ka WHERE acct_id = 7') AS key_lookup, ka_
 DROP INDEX ka_auto;
 
 CREATE INDEX kb_auto ON kb USING sift_col (t, v);
-SELECT reloptions @> ARRAY['key_cut=auto: t', 'key_order=auto: t'] AS cut_and_key_order FROM pg_class WHERE relname = 'kb_auto';
+SELECT reloptions @> ARRAY['order_array_columns=auto: t, v'] AS order_arrays FROM pg_class WHERE relname = 'kb_auto';
 SELECT ka_chk('SELECT t, v FROM kb ORDER BY t, id LIMIT 20') AS top20,
        ka_chk('SELECT t, v FROM kb ORDER BY t, id LIMIT 20 OFFSET 3000') AS offset3000,
        ka_chk('SELECT t, v FROM kb WHERE t BETWEEN ''2021-01-01'' AND ''2021-01-04'' ORDER BY t, id LIMIT 50') AS range_limit;
 -- REINDEX decides again, and gets the same
 REINDEX INDEX kb_auto;
-SELECT reloptions @> ARRAY['key_cut=auto: t', 'key_order=auto: t'] AS cut_and_key_order FROM pg_class WHERE relname = 'kb_auto';
+SELECT reloptions @> ARRAY['order_array_columns=auto: t, v'] AS order_arrays FROM pg_class WHERE relname = 'kb_auto';
 SELECT sift.col_verify('kb_auto');
 DROP INDEX kb_auto;
 
 -- off keeps the cut alone
-CREATE INDEX kb_off ON kb USING sift_col (t, v) WITH (key_order = 'off');
-SELECT reloptions @> ARRAY['key_cut=auto: t', 'key_order=off'] AS cut_kept, NOT reloptions::text LIKE '%key_order=auto%' AS no_arrays FROM pg_class WHERE relname = 'kb_off';
+CREATE INDEX kb_off ON kb USING sift_col (t, v) WITH (key_cut = 't', key_order = 'off');
+SELECT reloptions @> ARRAY['key_cut=t', 'key_order=off'] AS cut_kept, NOT reloptions::text LIKE '%key_order=auto%' AS no_arrays FROM pg_class WHERE relname = 'kb_off';
 SELECT ka_chk('SELECT t, v FROM kb ORDER BY t, id LIMIT 20') AS top20_without;
 DROP INDEX kb_off;
 
@@ -95,15 +95,15 @@ DROP TABLE kd;
 CREATE TABLE kf (id int, tenant_id int, event_date date, amount int, status int2, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO kf SELECT i, 1 + least(39, floor(40 * power((hashint4(i) & 2147483647) / 2147483647.0, 1.5)))::int, date '2022-01-01' + ((hashint4(i + 7) & 2147483647) % 730), (hashint4(i + 13) & 2147483647) % 1000, 1 + (hashint4(i + 11) & 2147483647) % 5, md5(i::text) FROM generate_series(1, 300000) i;
 VACUUM (FREEZE, ANALYZE) kf;
-CREATE INDEX kf_auto ON kf USING sift_col (tenant_id, event_date, amount, status);
-SELECT reloptions @> ARRAY['key_cut=auto: event_date'] AS cut_by_date, NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'kf_auto';
+CREATE INDEX kf_auto ON kf USING sift_col (tenant_id, event_date, amount, status) WITH (key_cut = 'event_date');
+SELECT reloptions @> ARRAY['key_cut=event_date'] AS cut_by_date, NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'kf_auto';
 DROP TABLE kf;
 -- a date cut with 730 values, no entity: runs of equal keys, a top-N with a filter reads the units the cut keeps (12 blocks), not the order of the key (441 heap fetches): the plain choice stays
 CREATE TABLE ke (id int, event_date date, status int2, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ke SELECT i, date '2022-01-01' + ((hashint4(i + 7) & 2147483647) % 730), (hashint4(i + 11) & 2147483647) % 5, (hashint4(i + 13) & 2147483647) % 1000, md5(i::text) FROM generate_series(1, 400000) i;
 VACUUM (FREEZE, ANALYZE) ke;
-CREATE INDEX ke_auto ON ke USING sift_col (event_date, status, amount);
-SELECT reloptions @> ARRAY['key_cut=auto: event_date'] AS cut_by_date, NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'ke_auto';
+CREATE INDEX ke_auto ON ke USING sift_col (event_date, status, amount) WITH (key_cut = 'event_date');
+SELECT reloptions @> ARRAY['key_cut=event_date'] AS cut_by_date, NOT reloptions::text LIKE '%key_order%' AS plain_choice_stays FROM pg_class WHERE relname = 'ke_auto';
 DROP TABLE ke;
 DROP FUNCTION ka_chk(text), ka_scan(text);
 DROP TABLE ka, kb;

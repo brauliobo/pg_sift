@@ -52,7 +52,7 @@ sift_cc_set_ones(uint64 *bits, uint32 n)
 		} \
 	}
 
-static void
+void
 forbyte_u32(const CcNode *nd, uint32 off, uint32 *dst)
 {
 	const uint8 *s = nd->words;
@@ -257,6 +257,12 @@ nd_i64(const CcNode *nd, int64 *dst)
 			nd_i64(nd->a, dst);
 			sift_cck->scale64(dst, n, nd->base, nd->mind);
 			break;
+		case SIFT_CCN_DELTA_BYTE:
+			cc_delta_byte_decode(nd, dst);
+			break;
+		case SIFT_CCN_BSS:
+			cc_bss_decode(nd, dst);
+			break;
 		case SIFT_CCN_WRAP:
 			nd_i64(nd->a, dst);
 			break;
@@ -282,6 +288,7 @@ nd_i64_head(const CcNode *nd, int64 *dst, uint32 w)
 		case SIFT_CCN_FORBIT:
 		case SIFT_CCN_FORBYTE:
 		case SIFT_CCN_DELTA:
+		case SIFT_CCN_DELTA_BYTE:
 			h = *nd;
 			h.n = w;
 			nd_i64(&h, dst);

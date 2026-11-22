@@ -23,8 +23,9 @@
 #include "bm25/analyze.h"
 #include "col/am.h"
 #include "col/pg.h"
-#include "col/vstore/vstore.h"
+#include "col/keystore/keystore.h"
 #include "core/errctx.h"
+#include "core/format_ux.h"
 #include "core/ops.h"
 #include "core/store.h"
 
@@ -58,18 +59,51 @@ elapsed_ms(TimestampTz start)
 void
 sift_log_maint(Relation index, const char *what, TimestampTz start, int64 docs, int64 bytes)
 {
-	long		ms = elapsed_ms(start);
-	StringInfoData size;
+	int64		us = GetCurrentTimestamp() - start;
+	char		took[SIFT_UX_QUANTITY],
+				count[SIFT_UX_QUANTITY],
+				size[SIFT_UX_QUANTITY];
+	StringInfoData extra;
 
-	if (sift_log_min_duration < 0 || ms < sift_log_min_duration)
+	if (sift_log_min_duration < 0 || us / 1000 < sift_log_min_duration)
 		return;
-	initStringInfo(&size);
+	initStringInfo(&extra);
 	if (docs >= 0)
-		appendStringInfo(&size, ", %lld documents", (long long) docs);
+		appendStringInfo(&extra, ", %s documents", sift_fmt_count(count, sizeof(count), docs));
 	if (bytes >= 0)
-		appendStringInfo(&size, ", %lld bytes", (long long) bytes);
+		appendStringInfo(&extra, ", %s", sift_fmt_bytes(size, sizeof(size), bytes));
 	ereport(LOG,
-			(errmsg("sift: %s index \"%s\" in %ld ms%s", what, RelationGetRelationName(index), ms, size.data)));
+			(errmsg("sift: %s index \"%s\" in %s%s", what, RelationGetRelationName(index), sift_fmt_duration(took, sizeof(took), us), extra.data)));
+}
+
+#define WARN_SLOTS	8
+
+bool
+sift_warn_due(Relation index, SiftWarnKind kind)
+{
+	static struct
+	{
+		Oid			relid;
+		TimestampTz at;
+	}			seen[SIFT_WARN_KINDS][WARN_SLOTS];
+	TimestampTz now = GetCurrentTimestamp();
+	int			at = 0;
+
+	for (int i = 0; i < WARN_SLOTS; i++)
+	{
+		if (seen[kind][i].relid == RelationGetRelid(index))
+		{
+			at = i;
+			break;
+		}
+		if (seen[kind][i].at < seen[kind][at].at)
+			at = i;
+	}
+	if (seen[kind][at].relid == RelationGetRelid(index) && now - seen[kind][at].at < USECS_PER_MINUTE)
+		return false;
+	seen[kind][at].relid = RelationGetRelid(index);
+	seen[kind][at].at = now;
+	return true;
 }
 
 void
@@ -146,7 +180,7 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
-		sift_col_track_dropping(objectId), sift_vstore_note_drop(objectId);
+		sift_col_track_dropping(objectId), sift_keystore_note_drop(objectId);
 	if (access != OAT_POST_ALTER || classId != RelationRelationId || subId != 0)
 		return;
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));
@@ -161,7 +195,7 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 		ReleaseSysCache(tuple);
 	}
 	if (table)
-		sift_vstore_follow_owner(objectId);
+		sift_keystore_follow_owner(objectId);
 	if (!ours)
 		return;
 	CommandCounterIncrement();
@@ -195,5 +229,5 @@ sift_ops_init(void)
 	prev_object_access_hook = object_access_hook;
 	object_access_hook = sift_object_access;
 	sift_col_track_init();
-	sift_vstore_init();
+	sift_keystore_init();
 }

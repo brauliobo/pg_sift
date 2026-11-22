@@ -10,7 +10,9 @@
 
 #include "core/ring.h"
 #include "col/am.h"
+#include "col/f2/f2_store.h"
 #include "col/scope.h"
+#include "core/cachebudget.h"
 
 /* [using name], when the text has it; p is after the closing parenthesis of the relation */
 static const char *
@@ -228,7 +230,7 @@ static SiftRing specs_memo_ring;
 SiftScopeSpecs *
 sift_scope_specs(Relation index)
 {
-	const char *text = sift_col_options_scope(index);
+	const char *text = index->rd_index != NULL ? sift_col_options_scope(index) : sift_f2_store_open(index)->opts.scope;
 	const char *err = NULL;
 	SiftScopeSpecs *s;
 	MemoryContext old;
@@ -243,7 +245,7 @@ sift_scope_specs(Relation index)
 	if (specs_memo[slot].cx != NULL)
 		MemoryContextDelete(specs_memo[slot].cx);
 	specs_memo[slot] = (typeof(specs_memo[0])) {0};
-	specs_memo[slot].cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope specs", ALLOCSET_SMALL_SIZES);
+	specs_memo[slot].cx = sift_cache_create_context("sift cache scope specs");
 	old = MemoryContextSwitchTo(specs_memo[slot].cx);
 	s = sift_scope_parse(text, &err);
 	if (s == NULL)

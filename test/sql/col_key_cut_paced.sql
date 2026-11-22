@@ -1,4 +1,4 @@
--- The rewrite of the overlapping runs of a build is paced: a pass (sift.col_maintain, a VACUUM's worker) rewrites about sift.col_auto_merge_pass_mb of them, a window
+-- The rewrite of the overlapping runs of a build is paced: a pass (sift.col_maintain, a VACUUM's worker) rewrites about sift.test_col_pass_kb of them, a window
 -- of the runs that meet in the key at a time, and the next pass goes on from the directory this one left. Each pass leaves the index valid and equal to the heap's,
 -- changes made between the passes are kept, and the passes end with the key range cut into partitions: a key in one unit.
 CREATE EXTENSION pg_sift;
@@ -8,8 +8,9 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.vacuum_rewrite_limit = 1;
-SET sift.col_auto_merge_pass_mb = 2;
+SET sift.test_col_pass_kb = 2048;
 SET sift.test_col_segment_kb = 7000;
+SET sift.backend_cache_kb = 65536;
 SET sift.test_col_build_runs_overlap = on;
 
 CREATE TABLE kp (id int, tenant_id int, d date, amount int, pad text) WITH (autovacuum_enabled = false);

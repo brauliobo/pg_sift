@@ -1,4 +1,4 @@
-# The rows of a joined table are shared by default (sift.agg_lookup_shared_kb = -1): 16 sessions that run the same query at the same moment load the
+# The rows of a joined table are shared by default (the default sift.shared_cache_kb): 16 sessions that run the same query at the same moment load the
 # table once, the others wait for the rows and read them in place, and every session gets the answer of the normal plan.
 use strict;
 use warnings FATAL => 'all';

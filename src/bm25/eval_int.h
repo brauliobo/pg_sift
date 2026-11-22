@@ -6,9 +6,11 @@
 
 #include "bm25/eval.h"
 #include "bm25/kernels.h"
+#include "bm25/hitspill.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
 #include "core/cmp.h"
+#include "core/tidbridge.h"
 
 typedef struct LeafTerm
 {
@@ -30,6 +32,15 @@ typedef struct EvalLeaf
 	bool		optional;		/* phrase leaf that a match need not satisfy */
 	char	   *wide;			/* prefix with more terms than sift.max_expansions: the term it reads as (indexed_leaf's) */
 	int			widelen;
+	char	   *wide_key;		/* wide: the name of the leaf for the cache of unions (NULL when too long to be one) */
+	int			wide_keylen;
+	bool		deferred;		/* wide in a ranked plan: terms are the few that can matter to a search (the largest bounds first), the others are read when a K-th score does not settle them */
+	float4		wide_w;			/* wide: the weight of the leaf */
+	bool		warm;			/* deferred, weighed from the memo (bm25/wmemo.c): its top terms are not chosen, and the search of warm_k hits reads the terms that reach warm_theta */
+	float4		warm_theta;
+	int64		warm_k;
+	uint8	   *tail_mb;		/* [nsegs] deferred: the largest bound of a term that is not in terms, 0 for none */
+	uint8	   *all_mb;			/* [nsegs] deferred: the largest bound of any term of the leaf */
 	double		tail_none;		/* estimate: P(no document has any term of the prefix past the limit) over all segments */
 	double		tail_postings;
 	double		tail_terms;
@@ -105,6 +116,7 @@ struct SiftPlan
 	uint64		wbuf_sum_dl;
 	int			nleaves;
 	int			maxleaves;
+	int			ndeferred;		/* deferred leaves (EvalLeaf.deferred) */
 	EvalLeaf   *leaves;
 	EvalNode   *root;
 	EvalNode   *sure;			/* unranked plans with a phrase: the matches the bitmaps decide alone, NULL when none */
@@ -123,6 +135,7 @@ struct SiftPlan
 	bool		capped;			/* estimate: stop expanding at the limit */
 	bool		scoring;
 	const SiftFilter *filter;	/* ranked search: the tuples worth scoring */
+	const SiftTidBridge *bridge;	/* ranked search: the tuples a structured scan kept, as page masks per superblock (a finalized bridge) */
 	const SiftAttrTest *attrs;	/* ranked search: tests of INCLUDE columns the docs of a block pass before they are scored */
 	int			nattrs;
 	SiftBm25	bm;
@@ -243,7 +256,9 @@ typedef struct RkTerm
 	int			ngb;
 	float4		ubw;				/* bound weight: ub = ubw * blk_bound */
 	float4		tub;				/* the largest ub of the term in the segment */
-	const SiftGroupBounds *bb;		/* bounds in the unit's SB */
+	const SiftGroupBounds *bb;		/* bounds in the unit's SB, NULL when the term has no posting there (valid once located) */
+	bool		located;			/* bb is known for the unit's SB */
+	bool		sought;				/* the term's group of the unit's SB was looked up: g is it, or NULL for none */
 	bool		live;				/* may lift a document over theta somewhere in the unit */
 	bool		act;				/* scores in the current block */
 	uint32		pce;				/* RankSeg.epoch the cursors are positioned in */
@@ -251,7 +266,10 @@ typedef struct RkTerm
 	const sift_grp *g;				/* NULL: no postings in this SB */
 	uint8	   *tf;
 	uint32		tfcap;
-	bool		decoded;
+	bool		based;				/* all_tf1 and base are known for the group of the unit */
+	bool		tf_whole;			/* tf holds the tf of every posting of the group */
+	int			nblk_tf;			/* blocks of the group whose tf was decoded on their own */
+	bool		all_tf1;			/* tf is 1 in the whole group: no tf stream, the scorers take NULL */
 	uint32		base[SIFT_BLKS_PER_SB + 1];	/* tf rank of each block's first posting */
 } RkTerm;
 
@@ -271,6 +289,10 @@ typedef struct RankSeg
 	int			nug;				/* the kids of the root when it is an OR, else 0 */
 	int		   *kidleaf;			/* [kid of an OR root] the scoring leaf the kid is the cursor of, -1 for none */
 	bool	   *kidskip;			/* [kid of an OR root] left out of the candidates of the block being scored */
+	bool	   *leaf_kid;			/* [leaf] some kid of the root is its cursor */
+	bool		inverted;			/* the bridge has far fewer superblocks of the segment than the leaves: its superblocks are the units, no leaf list is merged */
+	int		   *ordpos;				/* [leaf] scratch of kids_skip: its place in the leaves by bound, -1 for none */
+	struct UnitStream *stream;		/* the walk over the segment's units a streamed search makes (rank_stream.c) */
 } RankSeg;
 
 typedef struct Unit
@@ -296,6 +318,8 @@ typedef struct RankWork
 	BlockMask	tmc pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	lu pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	BlockMask	flt pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	BlockMask	cand pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	uint8		blk_tf[BLK_SLOTS + SIFT_KERN_PAD];	/* tf of the postings of one block of one term, decoded for the scorer that reads it next */
 	uint16		zero[SIFT_KERN_SLOTS];
 	const uint16 *dl[SIFT_BLK_PAGES];
 	uint8		attab[SIFT_ATTR_TABLE + 1 + SIFT_KERN_PAD];	/* the codes of a block that pass an IN test */
@@ -313,8 +337,13 @@ struct SiftRanker
 	void	   *arg;
 	MemoryContext tmpcx;
 	RankSeg    *seg;
-	Unit	   *unit;
+	Unit	   *unit;				/* the units, when a search that orders or shares them has asked for them */
 	int			nunit;
+	bool		units_built;
+	float4		floor;				/* the K-th score of the search a widened one repeats: the repeat finds hits above it only (-infinity: none) */
+	bool		deferred;			/* the plan's wide leaves read their top terms only: a search whose K-th score does not settle them widens the plan and goes again */
+	int			mode;				/* SiftRankMode */
+	bool		by_maxub;			/* unit is sorted by descending bound (else by segment, ascending gid) */
 	RankWork   *wk;
 	float4	   *leafub;				/* [leaf] scratch: its ub in the current block */
 	int		   *ord;				/* [leaf] scratch: the leaves present in the block, best bound first */
@@ -326,6 +355,10 @@ struct SiftRanker
 	int64		nhit;
 	int64		hitcap;				/* slots of hit */
 	int64		pos;
+	SiftHitSpill *spill;			/* an unbounded search that outgrew work_mem keeps its hits here, sorted, instead of in hit (nhit counts them) */
+	bool		spill_ok;			/* the search may spill: no limit, not shared with other participants, and the host has a sorter */
+	bool		spill_ready;		/* spill_head is the hit at pos */
+	SiftHit		spill_head;
 	bool		searched;
 	int64		fb_read0;			/* ... and what it had read and kept when the last search ended */
 	int64		fb_kept0;
@@ -380,6 +413,16 @@ cursor_buf(MemoryContext cx)
 extern SIFT_INTERNAL void bind_wbuf(SiftPlan *p);
 extern SIFT_INTERNAL void import_wbuf(SiftPlan *p, const SharedBind *h);
 extern SIFT_INTERNAL void bind_scoring(SiftPlan *p);
+
+/* The most terms a wide leaf reads one by one: the ones its weighing keeps, and the ones a search widens it to before it reads them as one union */
+#define WIDE_TOP_MAX	64
+
+/* bm25/eval.c: the terms of leaf l in segment s with a bound of at least min_bound; true when there are more than limit (the leaf keeps the first limit). left_out: the largest bound of the others */
+extern SIFT_INTERNAL bool expand_tail(SiftPlan *p, EvalLeaf *l, int s, int limit, int min_bound, uint8 *left_out);
+/* bm25/tail.c: wide leaves: the name of the leaf, its one union term in every segment, and its deferral */
+extern SIFT_INTERNAL void tail_wide_names(SiftPlan *p, EvalLeaf *l);
+extern SIFT_INTERNAL void tail_widen_leaf(SiftPlan *p, EvalLeaf *l);
+extern SIFT_INTERNAL void tail_defer_leaf(SiftPlan *p, EvalLeaf *l);
 extern SIFT_INTERNAL void score_wbuf(SiftPlan *p);
 extern SIFT_INTERNAL const LeafTerm *leaf_weighed(const EvalLeaf *l, const char *term, int len);
 

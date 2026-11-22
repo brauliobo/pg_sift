@@ -152,11 +152,11 @@ extern PGDLLIMPORT bool sift_agg_join_filter;
 extern PGDLLIMPORT bool sift_agg_left_lateral;
 extern PGDLLIMPORT bool sift_enable_topn;
 extern PGDLLIMPORT bool sift_topn_walk;
-extern PGDLLIMPORT int sift_agg_param_set_size;
 extern PGDLLIMPORT int sift_agg_par_min_rows;
 extern PGDLLIMPORT bool sift_agg_key_skew;
-extern PGDLLIMPORT int sift_agg_lookup_max_rows;
-extern PGDLLIMPORT int sift_agg_lookup_max_kb;
+/* the kB of a lookup table the plan lets a scan load: half of work_mem; and the elements it assumes for an array parameter of a generic plan */
+extern int agg_lookup_limit_kb(void);
+extern int agg_param_set_elems(void);
 extern bool agg_lookup_fits(double rows, int width);
 
 /* agg/first.c: does a unique index of the table hold only columns among atts */
@@ -164,6 +164,9 @@ extern bool sift_agg_unique_key(Oid relid, int nkey, int nord, const int *atts, 
 
 /* Hooks and GUCs; from _PG_init */
 extern void sift_agg_init(void);
+
+/* agg/hybrid_plan.c: registers the path hook of SiftHybridScan, after sift_planner_init: the path competes with the best paths of a scored query */
+extern void sift_hybrid_init(void);
 extern void sift_aggcte_init(void);
 extern MemoryContext sift_agg_memo_begin(void);
 extern MemoryContext sift_agg_memo_cx(void);
@@ -223,6 +226,9 @@ extern Bitmapset *sift_agg_push_raw;	/* the arms (by position) the next one leav
 /* agg/plan/paths.c: called by the upper path hook of bm25/planner.c */
 extern void sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel);
 extern void sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
+								 RelOptInfo *output_rel, void *extra);
+/* the engine of the format 1 indexes of the table; agg/plan/format_ops.c dispatches sift_agg_upper_paths to the engine of each format */
+extern void sift_agg_v1_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel,
 								 RelOptInfo *output_rel, void *extra);
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_plan_methods;

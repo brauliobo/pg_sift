@@ -16,7 +16,7 @@ max_parallel_workers_per_gather = 0
 max_parallel_maintenance_workers = 0'
 use_root up "$oldroot"
 node_start up || bail "cannot start $ref"
-BASE=("SET sift.col_auto_merge_partition_kb = 512" "SET sift.async_maintenance = off" "SET max_parallel_maintenance_workers = 0")
+BASE=("SET sift.test_col_partition_kb = 512" "SET sift.async_maintenance = off" "SET max_parallel_maintenance_workers = 0")
 sql up "CREATE EXTENSION pg_sift" "CREATE TABLE h (id int PRIMARY KEY, dim int NOT NULL, day date NOT NULL, v int, w int) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO h SELECT g, 1 + (g::bigint * 7919 % 12)::int, date '2018-01-01' + (((g::bigint * 2654435761) % 4294967296 / 65536) % 2900)::int, g % 100, (g::bigint * 40503 % 1000003)::int FROM generate_series(1, 400000) g" \
 	"${BASE[@]}" "CREATE INDEX h_c ON h USING sift_col (id, dim, day, v, w) WITH (key_cut = 'dim, day', track_changes = 'id')" "VACUUM (FREEZE, ANALYZE) h" \

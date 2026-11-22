@@ -353,7 +353,9 @@ SELECT sift.highlight(NULL, 'x') IS NULL, sift.highlight('x', NULL) IS NULL;
 CREATE TABLE big (id int, body text);
 INSERT INTO big SELECT i, CASE WHEN i <= 6000 THEN 'beta beta beta beta' ELSE 'beta' END || ' w' || i % 50
 	|| repeat(' filler', i % 13) FROM generate_series(1, 70000) i;
+SET client_min_messages = warning;
 CREATE INDEX big_idx ON big USING sift (body);
+RESET client_min_messages;
 ANALYZE big;
 SELECT j -> 'Index Searches' AS searches, (j ->> 'Blocks Scored')::int > 0 AS scored, (j ->> 'Blocks Skipped')::int > 0 AS skipped,
 	(j ->> 'Candidates')::int < 1000 AS few_candidates

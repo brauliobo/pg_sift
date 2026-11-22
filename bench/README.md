@@ -7,7 +7,7 @@ pgx-bm25 and Elasticsearch with the same rows, queries, clients and cache state.
 other, and the engines are measured **one at a time**, each with every CPU of the host to itself, interleaved in rounds (below), so host
 load drifts hit all of them alike. The CPUs are left alone: nothing is shared out or capped. Everything runs through one entry point, `bench/bench`; `bench/bench --help` is the full reference.
 One suite serves every engine: `engines.tsv` (the registry) plus `engines/<id>.sh` (the adapter), one runner (`steps/articles.sh`, `steps/places.sh`),
-one result format and one report path (`steps/tables.py`, `steps/charts.py`); gin, Tantivy and Elasticsearch
+one result format and one report path (`steps/tables.py`, `scripts/gen-docs.py`); gin, Tantivy and Elasticsearch
 run through the same pipeline (Tantivy and Elasticsearch, which are servers or libraries outside Postgres, through `xbench`); gin and Tantivy are charted
 only when the registry says so, Elasticsearch is in the default run.
 
@@ -32,7 +32,7 @@ Scale: the default is the slim tier (50,000 articles, 34,165 places of cities150
 articles and the 236,262 places of cities500 with 2-3 rounds, `--tier ab` the 150,000 article / 34,165 place tier in between. The first run also downloads and converts the datasets (about
 3 minutes, once; the later setups find the stamps of the datasets and the keys of the engines up to date and do nothing). Ratios depend on the size of the corpus.
 
-**Nothing generated is tracked.** The generators write their pages into `bench/out/` (untracked, in `.gitignore`): `BENCHMARKS.md`, `BENCH-GAP.md`, `perf/AGGREGATES.md`, the charts in `img/` and `README-blocks.md` (the blocks that used to be inside README.md). A page starts empty and each block is appended on its first write. What stays tracked is the measured data, `bench/results/`. The numbers table of the README is written by hand from `bench/out/README-blocks.md`, not generated, and no generator touches README.md or `docs/`. `bench/bench cases --check --strict` reads the pages of `bench/out/`, so the release pass runs the generators (`--docs`) before it.
+**One results directory, one renderer.** Every benchmark writes its measured data to `docs/results/` (`bench/bench ... --docs`), and `scripts/gen-docs.py` is the only thing that draws `docs/charts/*.svg` and rewrites the generated blocks of `README.md` and `docs/BENCHMARKS.md` from it (`steps/v6_readme.py`, `steps/v6_benchmarks.py`, `steps/readme_charts.py`, `steps/scope_stock_tables.py`); `scripts/gen-docs.py --check` fails when a block or a chart differs from its results. Raw runs stay in `bench/out/` (untracked, in `.gitignore`). A block whose results file is not there says it is not measured yet; the 6.0 tables and charts fall back to the committed baseline of `bench/baselines/v510.tsv` and `steps/readme_charts.py`.
 
 **Keeping the numbers fresh.** `bench/bench refresh` measures the README numbers again at this checkout (`bench final --docs --stages "updates search store"`: the update, delete and VACUUM section, articles and places, the orders dataset; about 75 minutes
 at the published size) and rewrites their blocks. It is resumable (a stage that finished with the same code, settings and host is skipped; `bench resume` continues an interrupted run), holds `SIFT_BENCH_HOST_LOCK` (a lock shared with the
@@ -41,9 +41,7 @@ other benchmarks of the host) for the run, and says in the header of each block 
 user unit and a weekly timer (Sunday 03:00, a random delay of up to an hour) that run `refresh --calm --pr`; the header of the service says what to install (a clone of its own, the environment file); nothing installs them. The cheap gate
 another MAJOR.MINOR than `pg_sift.control` (for results without a version: older than a release tag); `--strict` makes the warnings fail, `release.sh` prints them. `bench/bench refresh --prepare` builds the image and generates the data of the update, delete and VACUUM section first (nice, no host lock), so the measuring run starts at once.
 
-**One command regenerates every published number**: `bench/bench all --docs` measures the slim tier with every engine of `engines.tsv` that is installed (Elasticsearch included), and rewrites
-only those two files from the committed rows, without measuring). Nothing in them is typed by hand: `steps/readme.py` takes every figure from the rows, the engine list from the registry, and the
-wall time of the session and the size of the corpus from the `wall_s` and `corpus` rows.
+**One command regenerates every published number**: `bench/bench v6-release --docs` runs the six stages of the 6.0 pass (below) and `scripts/gen-docs.py`; `bench/bench all --docs` measures the slim tier of the search benchmark with every engine of `engines.tsv` that is installed (Elasticsearch included), writes `docs/results/articles.tsv` and `places.tsv` and runs `scripts/gen-docs.py`. Nothing in the generated blocks is typed by hand: `steps/v6_readme.py` takes every figure from the results files, the engine list from the registry, and the wall time of the session and the size of the corpus from the `wall_s` and `corpus` rows.
 rewritten (`check` produces the correctness numbers).
 
 Prerequisites: PostgreSQL 18 with its development packages and contrib (`pg_config`, PGXS, `pgbench`, `psql`, the
@@ -69,7 +67,7 @@ blocks of the docs):
 | `bench/bench run --tier T` | machine description, then the articles and places A/B on a throwaway cluster into a result directory; an engine that is not installed is skipped with a message |
 | `bench/bench report` | `results.tsv`, `builds.tsv` and `tables.md` from the result directory |
 
-The other commands: `scaling`, `charts`, `readme`, `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
+The other commands: `scaling`, `scaling-io`, `v6-core`, `v6-cases`, `v6-quick`, `v6-release` (the 6.0 pass, below), `du` (disk footprint), `clean [--cache|--build|--all]`, `cold` (cache-evicted latency of every class on every engine), `check oracle|rank [ENGINE]` (correctness against a tsvector
 oracle / pgx-bm25, every engine of `--engines` when none is named, pgx-bm25 included; `check --dataset places` against the SQL oracle of the places queries), `suite` (the standard multi-engine suite: gin, rum, pg_textsearch, pgx-bm25, ParadeDB, sift,
 Tantivy, Elasticsearch), `workload ENGINE` (one engine, timed pgbench workloads), `workers` (sift build time per
 parallel worker count), `shred` (documents per second of the sift_col jsonb shredder and elements per second of its SIMD kernels, docs/COL-SHRED.md), `remote` (the same on an ssh host), `machine`. Options: `--tier slim|ab|full` (`--full` = `--tier full`; `quick` is the old name of `slim`), `--docs`, `--keep`,
@@ -126,7 +124,7 @@ uncommitted changes, is in `machine.txt`.
 
 Adding an engine: one adapter file `engines/<name>.sh` (see Engine adapters below; for places it holds the `PLACES_*` and `P_*` statements too) and one line
 in `engines.tsv` (id, chart and Markdown labels, color, charted yes/no, in the default run yes/no, reference engine), which sets the engine list of `bench`,
-`steps/articles.sh`, `steps/places.sh`, `steps/tables.py` and `steps/charts.py` and the order of every table and chart. An engine that has to be built also needs a
+`steps/articles.sh`, `steps/places.sh`, `steps/tables.py` and `steps/readme_charts.py` and the order of every table and chart. An engine that has to be built also needs a
 `fetch_<name>` function in `steps/fetch.sh` (and its pinned version in `versions.env`).
 
 ## Datasets
@@ -244,12 +242,30 @@ operation with a 95% interval (t distribution); `--reps` rounds run for every ce
 state differs between builds (`design`: VACUUM merging further, the worker promoting the tail of a bulk load) is work done by design: its ratio is reported apart, with the segment counts, and does not gate.
 `--raw FILE` keeps every measurement (`cell build round metric value`).
 
+## The 6.0 release pass
+
+`bench/bench v6-release [--docs] [--quick] [--stages LIST] [--remeasure-all] [--budget MIN] [--dry-run]` (`steps/v6_release.sh`) runs six stages and then `scripts/gen-docs.py` and its check: about 20 to 25 minutes when the rivals come from their caches, 45 to 50 when every cache is empty (a plan with the minutes of each stage is printed first, `--dry-run` stops there).
+
+| stage | what it measures | command of its own |
+|---|---|---|
+| `store-analytics` | the orders benchmark at 1M and 10M orders, the partition scaling, pg_duckdb at 10M | `store all`, `scaling`, `duckdb` |
+| `search-bm25` | articles and places on every text engine, slim tier | `all --tier slim` |
+| `scope-stock` | the scope index against the tuned stock arms | `scope-stock` |
+| `v6-core` | the 10k, 40k, 160k ladder: memory flatness, compression, WAL, write amplification, soft delete, planning, idle memory, against `baselines/v510.tsv`; `--verify-diff` fails the run when a Q1-Q8 or F4-F8 answer differs from the heap scan (`run_round.sh`, `v6_harness.py`, `compare_rounds.py`) | `v6-core` |
+| `scaling-io` | warm compute 1 to 8 workers, cold I/O `io_uring` / `worker` / `sync`, 1 to 16 writers (`bench_scaling.sh`) | `scaling-io` |
+| `v6-cases` | the 48 cases of `cases.tsv` (the 24 headline ones and 24 of the 6.0 themes) | `v6-cases` |
+
+The engines that are not pg_sift are measured once per host, dataset, settings and adapter and then read from their caches: the cells of Elasticsearch, ClickHouse and Citus (`$S_CACHE_DIR`), the rows of the other text engines (`steps/rivals.py`) and the stock arms of `scope-stock` (`steps/scope_stock_arms.py cache-plan`), all under `$RIVAL_CACHE` or the store cache; `--remeasure-all` measures them again, `--remeasure E,E` some. `bench/bench v6-quick` (`v6-release --quick`) is the 90 second smoke: `v6-core` and `scaling-io` at 500,000 rows. `v6-core` and `scaling-io` build pg_sift from the checkout into `/tmp/sift-bench-build/ROUND` and run a cluster of their own (`BENCH_SCRATCH_ROOT` moves it to a disk: the cold I/O suite refuses tmpfs); they write `docs/results/v6-core.tsv` and `v6-scaling.tsv` with `--docs`.
+
 ## Layout
 
 | path | role |
 |---|---|
 | `bench` | the entry point: `bench/bench --help` |
 | `versions.env` | every pinned version, date and checksum |
+| `v6_harness.py`, `compare_rounds.py`, `run_round.sh` | the 6.0 scaling ladder, its comparison with `baselines/v510.tsv` and the script that runs both on a throwaway cluster (`v6-core`) |
+| `bench_scaling.sh` | the scaling suites A (workers), B (cold I/O) and C (writers) of Spec 14 (`scaling-io`) |
+| `baselines/` | the committed measurements of the previous release that `compare_rounds.py` compares a round with |
 | `engines.tsv` | the A/B engines in table order: id, chart and Markdown labels, chart color |
 | `steps/` | internal helpers, called by `bench` (below); not meant to be run directly |
 | `datasets/` | `fetch.sh`, `wiki.py`, `places.py`: download, verify, convert |
@@ -263,17 +279,19 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `articles.sh`, `places.sh` | the runs of articles and places (`run`, `cold`, `suite`, `workload`) |
 | `lanes.sh` | the lanes (a cluster per engine, the compressed cache of built lanes) |
 | `footprint.sh` | `du`, `clean`, the peak footprint of a session and the pruning of the cache of lanes |
-| `readme.py` |  |
-| `compare.py` | the README's comparison with the other systems (run by `highlights.py`): the matrix of workload classes against PostgreSQL, ClickHouse, Elasticsearch, Citus columnar and pg_duckdb (on how many questions pg_sift is faster, by how much, the losses in bold, `not measured` where no result file holds a figure), the conditions of every number, the search and port tables, and the warm milliseconds of every question at 1M and 10M orders. |
-| `limits.py` |  |
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
 | `stats.py` | the statistics of repeated measurements (median, sd, standard error), imported by `cell.py`, `tables.py` and `analytics.py` |
 | `perf.sh` | `perf_counts PID [-- CMD]`: user-space cycles, instructions and CPU time of a process by `perf stat`, one line; sourced by `ab.sh` and `bench/cpu-query.sh`, run by `analytics.py` |
 | `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `cold_table` / `cold_ms` / `cold_cell` (cold cache), `locked` (perf lock) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
+| `resultfile.py` | the results files of `docs/results/` (`# key: value` lines and a tab separated table), their reader and writer, and the replacement of the generated blocks of the pages |
+| `v6_benchmarks.py` | the `bench:v6-*` tables of docs/BENCHMARKS.md: cross-engine tables from `store-scaling.json`, `store.json`, `articles.tsv` and `duckdb-10000000.tsv`, the 6.0 tables from `v6-core.tsv` (5.1 from `baselines/v510.tsv`) and `v6-scaling.tsv`; run by `scripts/gen-docs.py` |
+| `v6_readme.py`, `readme_charts.py` | the tables of README.md and the five charts of `docs/charts` (`analytics-engines`, `search-bm25`, `storage-footprint`, `scaling-parallel-io`, `memory-flatness`), from `docs/results` or the committed baselines; run by `scripts/gen-docs.py` |
+| `v6_release.sh` | `bench/bench v6-release`: the six stages of the 6.0 pass with a plan, a budget and `scripts/gen-docs.py` at the end |
+| `v6_cluster.sh`, `scaling_io.py` | the throwaway cluster of `run_round.sh` and `bench_scaling.sh` (built from a checkout, never written into it), and the probes of the scaling suites A, B and C |
+| `rivals.py` | the cache of the rows of the engines that are not pg_sift in the search benchmark (`$RIVAL_CACHE`, default `$BENCH_STORE/cache/rivals`), keyed by host, dataset, tier, settings and adapter |
 | `regress.py` | the regression check of `results.tsv` files (`regress`) |
-| `charts.py` |  |
 | `cluster.sh` | per-tier throwaway PG18 cluster: `TIER=F steps/cluster.sh init\ | start\ | stop\ | destroy` |
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
 | `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench` (in a scratch target; only the stripped binary stays): one `$BENCH_WORK/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
@@ -290,7 +308,7 @@ state differs between builds (`design`: VACUUM merging further, the worker promo
 | `store.sh`, `store.py` |  |
 | `duckdb.sh`, `duckdb.py` |  |
 | `cases.sh`, `cases.py` | the benchmark cases of the optimizations (`cases`; `bench/cases.tsv`, `bench/cases/*.sql`): one query or load per optimization, timed on pg_sift, PostgreSQL with `sift.enable_agg = off` and pg_duckdb, the plan asserted from EXPLAIN, every answer compared; the code of `cases.py` is the package `cases/` (runcfg, registry, server, measure, run, check, main) |
-| `cases_render.py`, `cases_discover.py` |  |
+| `cases_discover.py` | candidate cases from the corpora (`cases --discover`) |
 | `analytics.sh`, `analytics.py` | the analytics benchmark of the sift_col index (`analytics`): cluster, corpus, ClickHouse and ClickBench setup; measurement of CPU time and instructions per query, result comparison, report |
 
 `bench` holds `docs(id, body, category_id, created, likes, url)`, `categories(id, name, region)` for
@@ -416,6 +434,13 @@ The timed steps take the perf lock (`/tmp/sift-perf.lock`) one at a time; loads 
 `STORE_LOAD_SECONDS` and `STORE_NAME` (container prefix) are environment variables. `steps/store.py` has the individual commands (`gen`, `load`, `verify`, `run`, `cold`, `updates`, `merge`,
 `render`); `store.sh setup|run|cold|updates` keep the containers up for development.
 
+### Setup asymmetries and what "cold" means
+
+Two things to state with any number from `store` or `duckdb` (the full list is in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md#fairness-and-setup-notes-read-before-quoting-the-table)):
+
+- **Layouts are not equal.** `sift_col` indexes a precomputed month expression and keeps pre-aggregates; the ClickHouse arm is a plain `MergeTree` with no `PROJECTION` or materialized month column; the DuckDB Parquet file is written in `id` order and read through `pg_duckdb`; the point lookup is PostgreSQL's B-tree primary key. ClickHouse is timed by the client over HTTP, and its server-side timing is not recorded.
+- **Cold is per suite.** `store` and `duckdb` empty PostgreSQL's shared buffers (`pg_buffercache_evict_all()`) and the engines' own caches, and keep the OS page cache (the Parquet lane has nothing to empty); `articles` and `places` also drop the page cache of the table files. A cold cell of `store` or `duckdb` is memory-cold, not disk-cold.
+
 ### Fair comparison: the same threads for every engine
 
 The five servers do not start the same number of threads on their own: PostgreSQL (and Citus, which is PostgreSQL) uses a process per connection and parallel workers only when the planner asks
@@ -466,13 +491,13 @@ The classes are the files of `sql/scope_stock/queries/` (a slug each; `--@ event
 
 pg_ivm is optional. `steps/fetch.sh pg_ivm` builds the release pinned in `versions.env` (`PG_IVM_VERSION`, with the sha256 of its tag tarball) with PGXS into `$BENCH_WORK/engines/pg_ivm/root`, which `scope_stock.sh` fetches when it is missing and puts in the extension path of the cluster; if it cannot be built, the `ivm` arm is skipped with a `NOTICE` on stderr and the results file says `skipped: ivm (pg_ivm not installed)`.
 
-One results file comes out of a run (`collect`, the format of `steps/extras.py`: `case`, `arm`, `metric`, `value`), the results file of the standard size for `--docs`. The tally of every rival (cells where the scope index is faster, tied or slower: a rival is faster by more than 0.1 ms **and** more than 10%, within either margin it is a tie; warm and cold), the per-class tables and the write table are functions of that file (`steps/scope_stock_tables.py`); `scripts/gen-docs.py` writes them into the blocks `scope-stock-*` of `README.md` and `docs/COL-SCOPE.md`, and `scripts/gen-docs.py --check` (part of `scripts/lint.sh`) fails when a block differs from the file. `bench/test/test_scope_stock.py` runs the classes, the collection, the tally and the blocks without a server.
+One results file comes out of a run (`collect`, the format of `steps/resultfile.py`: `case`, `arm`, `metric`, `value`), the results file of the standard size for `--docs`. The tally of every rival (cells where the scope index is faster, tied or slower: a rival is faster by more than 0.1 ms **and** more than 10%, within either margin it is a tie; warm and cold), the per-class tables and the write table are functions of that file (`steps/scope_stock_tables.py`); `scripts/gen-docs.py` writes them into the blocks `scope-stock-*` of `docs/BENCHMARKS.md`, and `scripts/gen-docs.py --check` (part of `scripts/lint.sh`) fails when a block differs from the file. `bench/test/test_scope_stock.py` runs the classes, the collection, the tally and the blocks without a server.
 
 ```sh
 bench/bench scope-stock --size quick            # minutes; prints every table, writes bench/out/scope-stock-quick-DATE.tsv
 bench/bench scope-stock --docs                  # the release size: rewrites the results file and the generated blocks
-bench/bench scope-stock --docs --arms stock_default,sift_reuse,sift_scope   # some arms only: their rows replace those of the same arms in the results file (merge; the fixture must be equal)
-bench/bench scope-stock --docs --keep --arms stock_default,sift_reuse,sift_scope --resume   # after an interrupted --keep run: the arms already saved are not measured again
+bench/bench scope-stock --docs --arms stock_default,sift_entity,sift_scope   # some arms only: their rows replace those of the same arms in the results file (merge; the fixture must be equal)
+bench/bench scope-stock --docs --keep --arms stock_default,sift_entity,sift_scope --resume   # after an interrupted --keep run: the arms already saved are not measured again
 python3 -I bench/steps/scope_stock_tables.py render   # the blocks again from the checked-in results file (no measurement; also scripts/gen-docs.py)
 ```
 
@@ -547,7 +572,7 @@ store benchmark, a parallel normal plan can beat the scan on the planner's cost 
 
 **A baseline built under older settings.** `-- base: sift.col_format_minor = 14` in the header of a case builds the tables and the index of the case a second time, in the schema `c_ID_base`, under those settings (what a lower format minor or an option turned off would have written), and adds the lane `base`: the same statements over that copy, with the aggregate scan on (`ms` and `minstr`). The second copy doubles the build of that case.
 
-**The first statement of a backend.** `-- fresh: yes` in the header of a case makes every timed statement of every lane the first of a new backend (a pooled connection that was reset, a script): the cases cluster loads `pg_sift` with `shared_preload_libraries`, so the shared table of planner verdicts (`sift.verdict_cache_kb`) exists, and a lane of the registry named `warm...` keeps its backend for the same statement as the second of one. `verdict_shared_report` (a report of 21 CTEs and 16 lateral sub-selects; lane `no_shared` is `sift.verdict_cache_kb = 0`) and `dict_first_scan` (a dictionary read from a compressed segment) is the case that uses it.
+**The first statement of a backend.** `-- fresh: yes` in the header of a case makes every timed statement of every lane the first of a new backend (a pooled connection that was reset, a script): the cases cluster loads `pg_sift` with `shared_preload_libraries`, so the shared table of planner verdicts (`sift.shared_cache_kb`) exists, and a lane of the registry named `warm...` keeps its backend for the same statement as the second of one. `verdict_shared_report` (a report of 21 CTEs and 16 lateral sub-selects; lane `no_shared` is `sift.shared_cache_kb = 0`) and `dict_first_scan` (a dictionary read from a compressed segment) is the case that uses it.
 
 **Finding the cases nobody wrote.** `bench/bench cases --discover` (`steps/cases_discover.py`) measures the statements of a corpus on PostgreSQL (`sift.enable_agg = off`) and on pg_sift, one backend, answers compared, and lists the shapes that the scan answers at least `--min-gain` (2) times faster and that no case of the registry has, ranked by weight times median gain, into `bench/out/cases-proposed.tsv`: a proposal with a draft registry row, for a person to accept (write `bench/cases/ID.sql` and the row, then `bench/bench cases --cases ID --docs`), never a case added by itself. A shape is the set of features of the SQL (aggregates, `DISTINCT`, group-by forms, top-N and its sort expressions, window, join kinds, `UNION ALL`, CTE, lateral, grouping sets, calendar), not its tables or literals. Sources: `--shapes FILE` (the layout of `test/plan/shapes.sql`, the default corpus of the plan gate, with an optional `-- weight: n`), `--fuzz SEEDS` (the query families of `test/fuzz/diff_fuzz.py`, weighted by the family), `--results FILE` (TSV `id native_ms sift_ms [weight [shape]]` or the JSONL of an application's corpus run, measured elsewhere, so a private corpus is ranked without its SQL being copied). A statement whose answer differs between the two plans is printed first and fails the run, and the losses (the scan slower than native) are listed too.
 

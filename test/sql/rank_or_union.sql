@@ -17,8 +17,12 @@ BEGIN
 END $f$;
 SET sift.grouped_min_df = 2000;
 SELECT mk('wide', 720), mk('narrow', 0);
+SET client_min_messages = warning;
 CREATE INDEX wide_idx ON wide USING sift (body);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX narrow_idx ON narrow USING sift (body);
+RESET client_min_messages;
 SELECT pg_relation_size('wide') / current_setting('block_size')::int BETWEEN 1800 AND 2300 AS eight_superblocks, pg_relation_size('narrow') / current_setting('block_size')::int < 256 AS one_superblock;
 
 CREATE TABLE words (t text);

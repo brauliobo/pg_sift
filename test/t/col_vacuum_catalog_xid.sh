@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A lazy VACUUM runs with PROC_IN_VACUUM: every snapshot leaves its transaction id out, so another session that reads a catalog row the VACUUM updated judges the
 # VACUUM's xid aborted and writes HEAP_XMAX_INVALID on the old version (and XMIN_INVALID on a new one in another page) while the VACUUM is still to commit. The row is then
 # visible twice, or its update is lost, and pruning the page raises "dead heap-only tuple (N, M) is not linked to from any HOT chain". So a VACUUM of a table with a sift_col

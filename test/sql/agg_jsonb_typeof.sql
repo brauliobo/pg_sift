@@ -300,7 +300,6 @@ INSERT INTO g_q (q) VALUES
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', i / 8.0, 's', 'v' || i % 100) FROM generate_series(1, 6000) i;
 SET sift.col_format_minor = 3;
 CREATE INDEX g_col ON g USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.s text');
-RESET sift.col_format_minor;
 SELECT fmt('g_col');
 SELECT n, t_check(q) FROM g_q ORDER BY n;
 -- strings among the numbers, written as minor 4 (the write buffer, a promoted segment, the merge of both with the minor 3 one)
@@ -318,7 +317,6 @@ SELECT sift.col_verify('g_col', true);
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END) FROM generate_series(9001, 12000) i;
 SET sift.col_format_minor = 3;
 SELECT sift.col_promote('g_col');
-RESET sift.col_format_minor;
 SELECT fmt('g_col');
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
 SELECT sift.col_merge('g_col', true);

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Copy current tracked and nonignored untracked sources without Git history.
 # The caller owns the destination and its lifecycle.
 copy_git_sources() {

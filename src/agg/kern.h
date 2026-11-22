@@ -8,7 +8,7 @@
  * level's table for tests (never NULL: a level the CPU lacks falls back downwards).
  *
  * Only what is specific to the aggregation executor lives here. Every generic operation on bit vectors, selections and
- * integer columns is a slot of the column kernel table (col/kern.h, sift_colk): range tests (the integer comparisons
+ * integer columns is a slot of the column kernel table (col/v1/kern.h, sift_colk): range tests (the integer comparisons
  * and BETWEEN, the null flags: b != 0 is the u8 range [1, 255]), dictionary code lookups (lut), and / or / andnot / count,
  * bits_to_idx (the selection vector of a mask) and gather_u32 (and the 8-byte gather, for_i64_sel[SIFT_COLW_64] with base 0).
  *

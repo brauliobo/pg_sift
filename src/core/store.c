@@ -26,7 +26,6 @@
 #include "core/store_int.h"
 #include "core/visibility.h"
 
-bool		sift_standby_conflicts = true;
 
 /* Everything inserted into the WAL so far is on disk. GetXLogInsertRecPtr is the position of the next record: when the last one ended with a page it is the one after the header of the next page, which nothing has reached and XLogFlush refuses */
 void
@@ -267,10 +266,10 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 		PAGE_CORRUPT(index, type, "Block %u has an invalid page layout (lower %u, upper %u, special %u).",
 					 blkno, ph->pd_lower, ph->pd_upper, ph->pd_special);
 	found = *SiftPageGetOpaque(page);
-	if (likely(found.type == type && found.gen == gen && found.flags == 0 && found.reserved == 0))
+	if (likely(found.type == type && found.gen == gen && found.flags == 0 && found.part_id == 0))
 		return;
 	if (found.type == type && found.gen == gen)
-		PAGE_CORRUPT(index, type, "Block %u: the page flags (%u) or reserved word (%u) of the special space are not zero.", blkno, found.flags, found.reserved);
+		PAGE_CORRUPT(index, type, "Block %u: the page flags (%u) or partition word (%u) of the special space are not zero.", blkno, found.flags, found.part_id);
 	if (RecoveryInProgress() && gen != 0)
 	{
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
@@ -329,10 +328,9 @@ check_meta(Relation index, Buffer buf)
 	if (meta->format_major != SIFT_FORMAT_MAJOR || meta->format_minor > SIFT_FORMAT_MINOR)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("sift index \"%s\" has on-disk format %u.%u, this build (pg_sift %s) reads formats %u.0 to %u.%u",
-						RelationGetRelationName(index), meta->format_major, meta->format_minor, SIFT_MODULE_VERSION,
-						SIFT_FORMAT_MAJOR, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR),
-				 errhint("Install the pg_sift release that wrote the index on every node that reads it, or REINDEX it.")));
+				 errmsg("sift index \"%s\" uses on-disk format %u.%u, newer than this pg_sift supports (up to %u.%u)",
+						RelationGetRelationName(index), meta->format_major, meta->format_minor, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR),
+				 errhint("Upgrade the pg_sift library to the release that wrote this index, on every node that reads it.")));
 	if (meta->high_water < FIRST_DATA_BLKNO)
 		corrupt(index, "High-water mark %u is below the first data block.", meta->high_water);
 }

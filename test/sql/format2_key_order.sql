@@ -1,0 +1,106 @@
+-- key_order of format major 2 names up to 8 integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) columns, each as ORDER BY writes it: ASC or DESC and NULLS FIRST or NULLS LAST (the NULLs of an ASC column
+-- last and those of a DESC column first unless it says otherwise). The rows of a part are stored in that order, the key bounds of the partitions keep it, and a scan whose conditions
+-- bound the first column reads the granules of that range from either end: the answers are the heap's and the blocks read stay a fraction of the index.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+
+CREATE FUNCTION idx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' || q INTO j;
+	RETURN (SELECT coalesce(sum(("n"->>'Shared Hit Blocks')::int + ("n"->>'Shared Read Blocks')::int), -1)
+			FROM jsonb_path_query(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') n);
+END $$;
+
+-- What CREATE INDEX says about a key_order: the error, or that it built
+CREATE FUNCTION try_order(tbl text, spec text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE INDEX try_idx ON %I USING sift_col (id, a, b, c, d, t) WITH (key_order = %L)', tbl, spec);
+	DROP INDEX try_idx;
+	RETURN 'built';
+EXCEPTION WHEN OTHERS THEN
+	RETURN sqlerrm;
+END $$;
+
+CREATE TABLE k (id int, a int, b int, c int, d bool, t text, f float8);
+INSERT INTO k SELECT i, i % 100, i % 7, i % 13, i % 2 = 0, 'x' || i, i / 3.0 FROM generate_series(1, 300) i;
+SELECT spec, try_order('k', spec) AS result
+FROM unnest(ARRAY['a', 'a ASC', 'a DESC', 'a asc nulls last', 'A DESC NULLS LAST', 'a NULLS FIRST', 'a NULLS LAST', '  a   desc   nulls   first  ', '"a" DESC', 'a DESC, b NULLS FIRST, c ASC NULLS LAST, id DESC, d',
+				'auto: a DESC', 'a DESC,b DESC,c DESC', 't DESC', 'a, t DESC NULLS FIRST']) AS s(spec);
+SELECT spec, try_order('k', spec) AS result
+FROM unnest(ARRAY['a DESCENDING', 'a NULLS', 'a NULLS MIDDLE', 'NULLS FIRST', 'a DESC DESC', 'a DESC NULLS', 'a, , b', 'a DESC,', 'nosuch DESC', 'f DESC', 'a NULLS FIRST NULLS LAST', 'a DESC b']) AS s(spec);
+-- eight columns, each of the four orders, a ninth is refused
+CREATE TABLE k8 (id int, a int, b int, c int, d bool, t text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int);
+CREATE INDEX k8_idx ON k8 USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9) WITH (key_order = 'c1 DESC, c2, c3 NULLS FIRST, c4 DESC NULLS LAST, c5, c6 DESC, c7 NULLS FIRST, c8 DESC NULLS FIRST');
+CREATE INDEX k8_nine ON k8 USING sift_col (c1, c2, c3, c4, c5, c6, c7, c8, c9) WITH (key_order = 'c1, c2, c3, c4, c5, c6, c7, c8, c9');
+
+-- Each order on one column: the granules of the parts hold the rows in that order, NULLs where it says, whatever the values (the extremes of int4 among them)
+CREATE TABLE o (id int, a int, b int, v int);
+INSERT INTO o SELECT i, CASE WHEN i % 29 = 0 THEN NULL WHEN i % 1000 = 1 THEN 2147483647 WHEN i % 1000 = 2 THEN -2147483648 ELSE ((i::bigint * 7919) % 500000 - 250000)::int END, i % 13, i % 100
+FROM generate_series(1, 150000) i;
+
+CREATE FUNCTION order_of(spec text) RETURNS TABLE(step text, result text) LANGUAGE plpgsql AS $$
+DECLARE q text; blocks int; everything int;
+BEGIN
+	EXECUTE format('CREATE INDEX o_idx ON o USING sift_col (id, a, b, v) WITH (key_order = %L)', spec);
+	step := 'keys'; result := sift._test_f2_check_keys('o_idx'); RETURN NEXT;
+	step := 'stored order'; result := sift._test_f2_order('o_idx', 1, NULL); RETURN NEXT;
+	FOREACH q IN ARRAY ARRAY['a = 12345', 'a BETWEEN -100 AND 100', 'a < -249990', 'a > 249990', 'a >= 2147483647', 'a <= -2147483648', 'a IS NULL', 'a IS NOT NULL AND b = 3 AND v = 7',
+							 'a IN (1, 99999, -250000, 2147483647)', 'a IN (5, 6, 7)', 'a > 0 AND a < 1', 'a < 0 AND a > 5', 'a >= -1 AND a <= 1 AND b = 2', 'b = 4 AND v < 3'] LOOP
+		step := q; result := f2_same('SELECT * FROM o WHERE ' || q); RETURN NEXT;
+	END LOOP;
+	blocks := idx_blocks('SELECT * FROM o WHERE a = 12345');
+	everything := idx_blocks('SELECT * FROM o WHERE a >= -2147483648');
+	step := 'a point lookup reads a third of the blocks of a full one at most'; result := (blocks * 3 < everything)::text; RETURN NEXT;
+	DROP INDEX o_idx;
+END $$;
+SELECT * FROM order_of('a');
+SELECT * FROM order_of('a DESC');
+SELECT * FROM order_of('a NULLS FIRST');
+SELECT * FROM order_of('a DESC NULLS LAST');
+
+-- Three columns of three different orders: the first two make the bound of a partition, the third only the sort
+CREATE INDEX o_idx ON o USING sift_col (id, a, b, v) WITH (key_order = 'b DESC NULLS LAST, v NULLS FIRST, a DESC');
+SELECT sift._test_f2_check_keys('o_idx');
+SELECT f2_same('SELECT * FROM o WHERE b = 5'), f2_same('SELECT * FROM o WHERE b BETWEEN 3 AND 9'), f2_same('SELECT * FROM o WHERE b >= 12 AND v < 50'), f2_same('SELECT * FROM o WHERE b IS NULL');
+
+-- What is written later is ordered the same: rows staged and flushed, deletes, and the compaction that a vacuum makes
+INSERT INTO o SELECT 200000 + i, CASE WHEN i % 5 = 0 THEN NULL ELSE i * 3 END, i % 13, i % 100 FROM generate_series(1, 30000) i;
+SELECT f2_same('SELECT * FROM o WHERE b = 5'), f2_same('SELECT * FROM o WHERE b IS NULL AND v = 9');
+DELETE FROM o WHERE id % 3 = 0 OR b = 12;
+VACUUM o;
+SELECT sift._test_f2_check_keys('o_idx') ~ ' exact$' AS keys_exact;
+SELECT f2_same('SELECT * FROM o WHERE b = 5'), f2_same('SELECT * FROM o WHERE b = 12'), f2_same('SELECT * FROM o WHERE b IN (1, 2, 3) AND v > 90');
+DROP INDEX o_idx;
+
+-- The ordered index after the inserts, one row at a time (the slab of compact batches) and then a vacuum
+CREATE TABLE s (id int, a int, v int);
+CREATE INDEX s_idx ON s USING sift_col (id, a, v) WITH (key_order = 'a DESC NULLS FIRST');
+DO $$ BEGIN
+	FOR i IN 1..300 LOOP
+		INSERT INTO s VALUES (i, CASE WHEN i % 10 = 0 THEN NULL ELSE (i * 37) % 101 END, i % 17);
+		COMMIT;
+	END LOOP;
+END $$;
+SELECT f2_same('SELECT * FROM s WHERE a = 5'), f2_same('SELECT * FROM s WHERE a IS NULL'), f2_same('SELECT * FROM s WHERE a >= 90'), f2_same('SELECT * FROM s WHERE a < 10');
+VACUUM s;
+SELECT sift._test_f2_check_keys('s_idx') AS keys, sift._test_f2_order('s_idx', 1, NULL) AS stored_order;
+SELECT f2_same('SELECT * FROM s WHERE a = 5'), f2_same('SELECT * FROM s WHERE a IS NULL'), f2_same('SELECT * FROM s WHERE a >= 90'), f2_same('SELECT * FROM s WHERE a < 10');
+
+DROP TABLE k, k8, o, s;
+DROP FUNCTION f2_same(text), idx_blocks(text), try_order(text, text), order_of(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

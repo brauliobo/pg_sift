@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # `--selftest`: checks the plan of every PostgreSQL major, the shards, the areas coverage, the loud failures and the reaper.
 # Runs instead of a suite and exits with the number of failed checks. Sourced by scripts/ci.sh; not a script of its own.
 # --plan [quick|full]: the job plan (job, suite, pool or after, command) without running anything; --selftest: checks the plan of every
@@ -47,6 +48,16 @@ if [[ $MODE == --selftest ]]; then
 			done
 		done
 	fi
+	if st_on flavors; then
+		# COMPAT_JOBS (affected.sh): what the compatibility entries of a push run is a plan with the regression batches, a crash test, a standby test, the isolation specs and the
+		# upgrade test, on each major and architecture, and every name in it is a job
+		for fl in 17 arm 19; do
+			out=$(env SIFT_CI_JOBS="$COMPAT_JOBS" SIFT_CI_PG_MAJOR="${fl/arm/18}" FLAVOUR="$fl" "$0" --plan quick | awk '{ print $1 }') || { echo "FAIL: --plan quick with COMPAT_JOBS on $fl"; bad=1; continue; }
+			for want in installcheck-batch1 isolation-1 tap-001_crash tap-002_standby tap-shell-pg_upgrade; do
+				grep -qx "$want" <<<"$out" || { echo "FAIL: COMPAT_JOBS on $fl: the plan has no $want"; bad=1; }
+			done
+		done
+	fi
 	if st_on areas-files; then
 		# scripts/areas.tsv: every tracked file is in a row, and every job of the plans (batches of short tests are cut from the tests of the areas) is in a group, so that
 		# neither a file nor a test is left out of the selection; a core file selects everything
@@ -88,7 +99,7 @@ if [[ $MODE == --selftest ]]; then
 				done
 			done <<<"$PLAN_OUT"
 		done
-		[[ $(areas_regex docs/USAGE.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
+		[[ $(areas_regex docs/ANALYTICS.md CHANGELOG.md README.md bench/README.md) == '^$' ]] || { echo "FAIL: areas: a change of documentation or benchmarks selects jobs"; bad=1; }
 		# the focus table (one file scripts/focus/NAME.tsv for each test, made by scripts/focus-gen.sh): a row for every regression test and none for a test that is gone; the lookup selects the
 		# tests that execute a function, the tests of the area for a hot function or a change outside functions
 		focus_rows=$(cat "$REPO"/scripts/focus/*.tsv | cut -f1 | grep -v '^=' | sort)
@@ -172,12 +183,12 @@ if [[ $MODE == --selftest ]]; then
 	if st_on flavors; then
 		# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
 		plan_of quick 18
-		prod=$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")
+		prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
 		for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress jobs (no test of that name, a slow or test-only one)"; bad=1; }; done
 		# one list of the tests the release build cannot run (TESTING_REGRESS): the deep plan runs on the release library every test that make runs there (scripts/release-library-check.sh
 		# without names), except the slow ones, which are jobs of their own
 		plan_of quick 18 1
-		got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")" | sort)
+		got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress ' <<<"$PLAN_OUT")" | sort)
 		# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
 		pgc=${PG_CONFIG:-pg_config}
 		if "$pgc" --version 2>/dev/null | grep -E '^PostgreSQL (1[7-9]|[2-9][0-9])' >/dev/null && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
@@ -282,12 +293,12 @@ if [[ $MODE == --selftest ]]; then
 	if st_on flavors; then
 		# the smoke of the release library (release_library_tests): each name is a test the release build runs, or the quick tier would silently drop it
 		plan_of quick 18
-		prod=$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")
+		prod=$(grep '^release-library-regress ' <<<"$PLAN_OUT")
 		for t in $STOCK_SMOKE; do [[ " $prod " == *" $t "* ]] || { echo "FAIL: $t of STOCK_SMOKE is not in the release-library-regress jobs (no test of that name, a slow or test-only one)"; bad=1; }; done
 		# one list of the tests the release build cannot run (TESTING_REGRESS): the deep plan runs on the release library every test that make runs there (scripts/release-library-check.sh
 		# without names), except the slow ones, which are jobs of their own
 		plan_of quick 18 1
-		got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress-[12] ' <<<"$PLAN_OUT")" | sort)
+		got=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /release-library-check\.sh$/) { for (j = i + 1; j <= NF; j++) print $j; next } }' <<<"$(grep '^release-library-regress ' <<<"$PLAN_OUT")" | sort)
 		# the Makefile refuses a pg_config older than 17 (the lint job of the hosted CI has none or a 16): the list is compared where there is a usable one
 		pgc=${PG_CONFIG:-pg_config}
 		if "$pgc" --version 2>/dev/null | grep -E '^PostgreSQL (1[7-9]|[2-9][0-9])' >/dev/null && [[ -r $("$pgc" --pgxs 2>/dev/null) ]]; then
@@ -449,13 +460,13 @@ if [[ $MODE == --selftest ]]; then
 		# not in the scratch directory and the shard of the run that calls this: a shard may select no job and still builds, in the directory it removes first and at its end
 		out=$(env -u SIFT_CI_TMP -u SIFT_CI_SHARD SIFT_CI_JOBS='^none$' "$0" quick 2>&1) && { echo "FAIL: ci.sh exits 0 when no job is selected"; bad=1; }
 		[[ $out == *'no test job selected'* ]] || { echo "FAIL: ci.sh does not say that no job is selected: $out"; bad=1; }
-		for f in "docs/USAGE.md false" "docs/COL-PLAN.md false" "src/agg/update/upd.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
+		for f in "docs/ANALYTICS.md false" "docs/ARCHITECTURE.md false" "src/agg/update/upd.c true" "bench/scaling/scaling.py true"; do   # a job the fast tier cannot run does not build it
 			fp=$("$0" affected --github --files ${f% *} | grep '^fastpg=')
 			[[ $fp == "fastpg=${f#* }" ]] || { echo "FAIL: affected --github for ${f% *} says '$fp', not fastpg=${f#* }"; bad=1; }
 		done
 		# the scaling gate is a job of the full tier, and of the quick tier only for the files of the geometry (scripts/areas.tsv); a col change alone does not pick it
 		[[ -z $(SIFT_CI_PG_MAJOR=18 "$0" --plan quick | grep scaling_slope) && -n $(SIFT_CI_PG_MAJOR=18 "$0" --plan full | grep scaling_slope) ]] || { echo "FAIL: tap-shell-scaling_slope is not in the full plan only"; bad=1; }
-		for f in "src/core/sift.h 1" "src/col/scan/gorder.c 0"; do
+		for f in "src/core/sift.h 1" "src/col/v1/scan/gorder.c 0"; do
 			n=$("$0" affected --list --files ${f% *} | grep -c 'tap-shell-scaling_slope')
 			[[ $n == "${f#* }" ]] || { echo "FAIL: affected for ${f% *} picks the scaling gate $n times, not ${f#* }"; bad=1; }
 		done

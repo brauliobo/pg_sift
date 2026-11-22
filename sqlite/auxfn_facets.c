@@ -5,7 +5,7 @@
  */
 #include "vtab.h"
 #include "core/cmp.h"
-#include "core/rowmem.h"
+#include "core/memtrack.h"
 
 SQLITE_EXTENSION_INIT3
 

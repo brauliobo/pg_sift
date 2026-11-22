@@ -93,14 +93,14 @@ SET sift.test_limits = 'topn_keys=1';
 SELECT * FROM tt_all() WHERE n IN (1, 7, 9, 15, 19);
 RESET sift.test_limits;
 
--- the plan is chosen by the cost: a first key that few values share gets the scan (query 18, whose first key has three values of 2,000 rows each, takes it: 'same+ties' above), and sift.enable_topn turns it off
+-- the plan is chosen by the cost: a first key that few values share gets the scan (query 18, whose first key has three values of 2,000 rows each, takes it: 'same+ties' above), and sift.enable_agg turns it off
 SET sift.enable_agg = on;
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id, k, w FROM tt ORDER BY k, w, id LIMIT 10;
 RESET enable_seqscan;
-SET sift.enable_topn = off;
+SET sift.enable_agg = off;
 EXPLAIN (COSTS OFF) SELECT id, k, w FROM tt ORDER BY k, w, id LIMIT 10;
-RESET sift.enable_topn;
+RESET sift.enable_agg;
 
 -- more than 8,192 rows on a value of the first key (two values over 20,000 rows) keep the normal plan: the keys that follow are read from the heap for every row of the tie
 CREATE TABLE tt_big AS SELECT i AS id, i % 2 AS k, (i * 7919) % 1000 AS w FROM generate_series(1, 20000) i;

@@ -28,11 +28,11 @@ size() { sql primary "SELECT pg_relation_size('t_idx')"; }
 live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
 ratio() { echo "# file $(size) live $(live)" >&2; echo $(( 100 * $(size) / $(live) )); }
 vacuum() { sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null; }
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 3; }
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; horizon_past primary standby; }
 # a layout with a hole by construction: five partitions of the key range, the first two emptied by a DELETE and rewritten by the VACUUM: the live segments of the rewrite lie behind the
 # blocks the emptied ones leave, which are free (reusable once the horizon passes them) in front of the live segments
 layout() { sql primary "SELECT 'seg', gen, kind, bytes/8192 AS blocks FROM sift.col_segments('t_idx') ORDER BY gen" "SELECT 'free', start, nblocks, start+nblocks, pending FROM sift._test_freelist('t_idx') ORDER BY start" "SELECT 'info', relation_blocks, high_water, free_blocks, reusable_blocks FROM sift.col_index_info('t_idx')" | sed 's/^/# LAYOUT /' >&2; }
-sql primary "SET max_parallel_maintenance_workers = 4" "SET min_parallel_table_scan_size = 0" "SET sift.col_auto_merge_partition_kb = 2048" \
+sql primary "SET max_parallel_maintenance_workers = 4" "SET min_parallel_table_scan_size = 0" "SET sift.test_col_partition_kb = 2048" \
 	"CREATE INDEX t_idx ON t USING sift_col (id, grp, amount, pad) WITH (key_cut = grp)" >/dev/null || bail "create failed"
 catchup primary standby
 sql primary "ALTER INDEX t_idx SET (dead_rewrite_pct = 20)" "DELETE FROM t WHERE grp < 200" >/dev/null

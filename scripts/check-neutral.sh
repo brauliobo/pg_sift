@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Neutral wording guard: this repository names no private product, machine or application domain, in a file (its name or its text), in the subject or body of a
 # commit of the branch, or in the title or body of its pull request, and keeps to the naming vocabulary of test/README.md. The vocabulary is not in the repository:
 # it is read from a private source, a file (NEUTRAL_VOCAB_FILE) or the text of a CI secret (NEUTRAL_VOCAB), with the sections

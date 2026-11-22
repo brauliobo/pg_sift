@@ -1,0 +1,118 @@
+-- COUNT(DISTINCT) of a text column read as the codes of the dictionaries of its parts (src/agg/v6/v6_dictseen.c, src/col/f2/f2_dict.c) in the serial and the parallel SiftAggV6, held to the heap's own
+-- aggregate with 0, 1, 2 and 4 workers. The columns are coded three ways: tc by a dictionary of the part (few distinct strings), tf by no dictionary (every string almost unique), tm by a dictionary
+-- in the first parts and by none in the rest; rows in the L0 slab, updated rows and deleted rows (so that the heap is asked about them) are in the data, and NULLs in every column. The data is made by
+-- arithmetic, so that the output does not depend on the version.
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers = 8;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+CREATE TABLE pd AS
+SELECT i, (i * 7919) % 9 AS k, CASE WHEN i % 23 = 0 THEN NULL ELSE (i * 40503) % 2111 END AS ti,
+       CASE WHEN i % 19 = 0 THEN NULL ELSE 'w' || (i * 7 % 311) END AS tc,
+       CASE WHEN i % 29 = 0 THEN NULL ELSE 'u' || md5(i::text) END AS tf,
+       CASE WHEN i % 17 = 0 THEN NULL WHEN i <= 200000 THEN 'm' || (i * 13 % 57) ELSE 'x' || (i * 31 % 70001) END AS tm
+FROM generate_series(1::int8, 400000::int8) AS i;
+CREATE INDEX pd_col ON pd USING sift_col (k, ti, tc, tf, tm);
+INSERT INTO pd SELECT i, i % 9, i % 3001, 'w' || (i % 400), 'u' || md5((i + 7)::text), CASE WHEN i % 5 = 0 THEN NULL ELSE 'm' || (i % 90) END FROM generate_series(400001::int8, 420000::int8) AS i;
+UPDATE pd SET tc = 'w' || (i % 977), tm = 'x' || (i % 123) WHERE i % 199 = 0;
+DELETE FROM pd WHERE i % 131 = 0;
+ANALYZE pd;
+CREATE FUNCTION parity(shape text) RETURNS TABLE (groups bigint, diff_0 bigint, diff_1 bigint, diff_2 bigint, diff_4 bigint) LANGUAGE plpgsql AS $f$
+DECLARE
+	w int;
+	n bigint;
+	d bigint[] := '{}';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+	EXECUTE format('CREATE TEMP TABLE ref_rows AS SELECT * FROM %s', shape);
+	SELECT count(*) INTO groups FROM ref_rows;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOREACH w IN ARRAY ARRAY[0, 1, 2, 4] LOOP
+		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+		EXECUTE format('CREATE TEMP TABLE got_rows AS SELECT * FROM %s', shape);
+		SELECT (SELECT count(*) FROM (SELECT * FROM ref_rows EXCEPT ALL SELECT * FROM got_rows) a) + (SELECT count(*) FROM (SELECT * FROM got_rows EXCEPT ALL SELECT * FROM ref_rows) b) INTO n;
+		d := d || n;
+		DROP TABLE got_rows;
+	END LOOP;
+	DROP TABLE ref_rows;
+	diff_0 := d[1]; diff_1 := d[2]; diff_2 := d[3]; diff_4 := d[4];
+	RETURN NEXT;
+END $f$;
+CREATE FUNCTION plan_facts(w int, q text) RETURNS TABLE (node boolean, launched int, strategy text) LANGUAGE plpgsql AS $f$
+DECLARE r text; j text := '';
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+	FOR r IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP j := j || r || E'\n'; END LOOP;
+	node := j LIKE '%SiftAggV6%';
+	launched := coalesce(substring(j FROM 'Workers Launched: (\d+)')::int, 0);
+	strategy := substring(j FROM 'strategy=(\w+)');
+	RETURN NEXT;
+END $f$;
+-- one count(DISTINCT) of a text column, alone, whatever its coding
+CREATE VIEW v_tc AS SELECT count(DISTINCT tc) AS d FROM pd;
+CREATE VIEW v_tf AS SELECT count(DISTINCT tf) AS d FROM pd;
+CREATE VIEW v_tm AS SELECT count(DISTINCT tm) AS d FROM pd;
+-- all three at once, with an integer, and with count(*) and a sum beside them
+CREATE VIEW v_all AS SELECT count(DISTINCT tc) AS dc, count(DISTINCT tf) AS df, count(DISTINCT tm) AS dm, count(DISTINCT ti) AS di, count(*) AS c, count(tc) AS ct, sum(ti) AS s FROM pd;
+-- twice the same column: two sets of strings for it
+CREATE VIEW v_twice AS SELECT count(DISTINCT tc) AS a, count(DISTINCT tc) FILTER (WHERE k < 3) AS b, count(DISTINCT tm) AS c FROM pd;
+-- the column is a key as well, or another aggregate's argument: its rows are read as strings
+CREATE VIEW v_key AS SELECT tc, count(DISTINCT tc) AS d, count(*) AS c FROM pd GROUP BY tc;
+CREATE VIEW v_minmax AS SELECT count(DISTINCT tc) AS d, min(tc) AS mn, max(tc) AS mx FROM pd;
+-- a row of two columns
+CREATE VIEW v_pair AS SELECT count(DISTINCT (ti, tc)) AS d FROM pd;
+-- a qual on the column itself (the strings are decoded for the predicate), on another one, and one that no part can rule out
+CREATE VIEW v_qual_t AS SELECT count(DISTINCT tc) AS d FROM pd WHERE tc > 'w2';
+CREATE VIEW v_qual_k AS SELECT count(DISTINCT tc) AS dc, count(DISTINCT tm) AS dm FROM pd WHERE k = 4 AND ti < 1500;
+CREATE VIEW v_qual_none AS SELECT count(DISTINCT tc) AS d FROM pd WHERE k = 99;
+-- groups
+CREATE VIEW v_grouped AS SELECT k, count(DISTINCT tc) AS dc, count(DISTINCT tf) AS df, count(DISTINCT tm) AS dm, count(*) AS c FROM pd GROUP BY k;
+CREATE VIEW v_sets AS SELECT k, GROUPING(k) AS g, count(DISTINCT tc) AS dc, count(DISTINCT tm) AS dm FROM pd GROUP BY GROUPING SETS ((k), ());
+SELECT shape, p.* FROM unnest(ARRAY['v_tc', 'v_tf', 'v_tm', 'v_all', 'v_twice', 'v_key', 'v_minmax', 'v_pair', 'v_qual_t', 'v_qual_k', 'v_qual_none', 'v_grouped', 'v_sets']) AS shape, LATERAL parity(shape) AS p;
+    shape    | groups | diff_0 | diff_1 | diff_2 | diff_4 
+-------------+--------+--------+--------+--------+--------
+ v_tc        |      1 |      0 |      0 |      0 |      0
+ v_tf        |      1 |      0 |      0 |      0 |      0
+ v_tm        |      1 |      0 |      0 |      0 |      0
+ v_all       |      1 |      0 |      0 |      0 |      0
+ v_twice     |      1 |      0 |      0 |      0 |      0
+ v_key       |    978 |      0 |      0 |      0 |      0
+ v_minmax    |      1 |      0 |      0 |      0 |      0
+ v_pair      |      1 |      0 |      0 |      0 |      0
+ v_qual_t    |      1 |      0 |      0 |      0 |      0
+ v_qual_k    |      1 |      0 |      0 |      0 |      0
+ v_qual_none |      1 |      0 |      0 |      0 |      0
+ v_grouped   |      9 |      0 |      0 |      0 |      0
+ v_sets      |     10 |      0 |      0 |      0 |      0
+(13 rows)
+
+-- the plans: the ungrouped distinct of a column runs in the node, in parallel with workers and serial without
+SELECT w, f.* FROM unnest(ARRAY[0, 2, 4]) AS w, LATERAL plan_facts(w, 'SELECT count(DISTINCT tc), count(DISTINCT tm) FROM pd') AS f;
+ w | node | launched | strategy 
+---+------+----------+----------
+ 0 | t    |        0 | 
+ 2 | t    |        2 | radix
+ 4 | t    |        4 | radix
+(3 rows)
+
+-- a statement whose budget for the distinct sets is small: the strings go to the files of the sets, and the answer is the same
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 1;
+SELECT shape, p.* FROM unnest(ARRAY['v_tf', 'v_all']) AS shape, LATERAL parity(shape) AS p;
+ shape | groups | diff_0 | diff_1 | diff_2 | diff_4 
+-------+--------+--------+--------+--------+--------
+ v_tf  |      1 |      0 |      0 |      0 |      0
+ v_all |      1 |      0 |      0 |      0 |      0
+(2 rows)
+
+RESET work_mem;
+RESET hash_mem_multiplier;
+DROP FUNCTION parity(text);
+DROP FUNCTION plan_facts(int, text);
+DROP VIEW v_all, v_grouped, v_key, v_minmax, v_pair, v_qual_k, v_qual_none, v_qual_t, v_sets, v_tc, v_tf, v_tm, v_twice;
+DROP TABLE pd;
+DROP EXTENSION pg_sift;

@@ -1,0 +1,179 @@
+/*
+ * agg/v6/v6_par_node.c - the parallel SiftAggV6 as the executor runs it: the callbacks of a parallel custom scan (estimate, initialize, reinitialize, worker, shutdown) that lay the shared block of
+ * v6_par_dsm.c out in the DSM chunk of the node, and the node's next tuple, which is the next finished group of this participant's run (v6_par.h).
+ *
+ * Every participant (the leader and each worker) returns the groups it owns and no other does, so the Gather above passes the tuples through, and the leader and the workers run the same code. A node
+ * that finds no shared block (a Gather with no workers does not make one) runs the serial path of exec.c.
+ */
+#include "postgres.h"
+
+#include "storage/dsm.h"
+#include "utils/guc.h"
+
+#include "agg/v6/group_int.h"
+#include "agg/v6/v6_par_pg.h"
+
+const char *
+sift_v6_par_strategy_name(int strategy)
+{
+	switch ((SiftV6ParStrategy) strategy)
+	{
+		case SV6P_TWO_STAGE:
+			return "two-stage";
+		case SV6P_RADIX_GROUPED:
+			return "radix";
+		case SV6P_RADIX_UNGROUPED_DIST:
+			return "radix distinct";
+		case SV6P_SERIAL:
+			break;
+	}
+	return "serial";
+}
+
+SiftV6ParNode *
+sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, MemoryContext mcx, MemoryContext tuple_cx)
+{
+	SiftV6ParNode *pn = MemoryContextAllocZero(mcx, sizeof(SiftV6ParNode));
+
+	*pn = (SiftV6ParNode) {.spec = spec,.desc = desc,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.snap = snap,.mcx = mcx,.tuple_cx = tuple_cx};
+	return pn;
+}
+
+bool
+sift_v6_par_node_attached(const SiftV6ParNode *pn)
+{
+	return pn->hdr != NULL;
+}
+
+void
+sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out)
+{
+	*out = (SiftV6ParSummary) {.strategy = sift_v6_par_strategy_name(pn->spec->par_strategy),.ran = pn->have_total,.escalated = pn->escalated,
+		.morsels_stolen = pn->total.morsels_stolen,.radix_parts = pn->radix_parts,.partial_recs = pn->ring_recs,.partial_bytes = pn->ring_bytes,
+		.grans_scanned = pn->total.grans_scanned,.heap_vet_rows = pn->total.heap_vet_rows};
+}
+
+static uint32
+count_distinct(const SiftV6Spec *spec)
+{
+	uint32		n = 0;
+
+	for (int j = 0; j < spec->naggs; j++)
+		n += spec->agg[j].kind == SV6_COUNT_DISTINCT;
+	return n;
+}
+
+/* The leader lists the units of the scan once; the block holds them for every participant */
+Size
+sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
+{
+	SiftV6ScanStats stats = {0};
+	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
+	SiftV6Scan *scan = sift_v6_scan_begin(pn->spec, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap, &stats, NULL, NULL);
+	const SiftV6Spec *spec = pn->spec;
+
+	sift_v6_scan_plan(scan, &pn->plan);
+	sift_v6_scan_end(scan);
+	pn->shape = (SiftV6ParShape) {.strategy = (SiftV6ParStrategy) spec->par_strategy,.nworkers = pcxt->nworkers,.n_parts = pn->plan.nrefs,.part_ref_bytes = sizeof(SiftParPartRef),
+		.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
+		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, (double) get_hash_memory_limit()),.radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers),
+		.plain_slot_bytes = (uint32) (sizeof(SiftV6RecHdr) + (Size) Max(spec->naggs, 1) * sizeof(V6Acc))};
+	MemoryContextSwitchTo(old);
+	return sift_v6_par_dsm_size(&pn->shape);
+}
+
+static uint32 *
+granules_of(const SiftV6ParNode *pn)
+{
+	uint32	   *g = palloc(Max(pn->plan.nrefs, 1) * sizeof(uint32));
+
+	for (uint32 i = 0; i < pn->plan.nrefs; i++)
+		g[i] = pn->plan.refs[i].ngranules;
+	return g;
+}
+
+void
+sift_v6_par_node_initialize(SiftV6ParNode *pn, ParallelContext *pcxt, void *chunk)
+{
+	SiftV6ParDsmHdr *h = sift_v6_par_dsm_init(chunk, pcxt->seg, &pn->shape, granules_of(pn));
+
+	memcpy((char *) h + h->parts_off, pn->plan.refs, (Size) pn->plan.nrefs * sizeof(SiftParPartRef));
+	memcpy((char *) h + h->staged_dead_off, pn->plan.staged_dead, (Size) pn->plan.nstaged * sizeof(uint64));
+	pn->hdr = h;
+}
+
+/* The scan starts again from the same units; the run of this process is over and so is what the participants left */
+void
+sift_v6_par_node_reinitialize(SiftV6ParNode *pn, void *chunk)
+{
+	sift_v6_par_node_end(pn);
+	pn->have_total = false;
+	pn->total = (SiftV6ParWorkerStats) {0};
+	pn->hdr = sift_v6_par_dsm_block(chunk);
+	sift_v6_par_dsm_reinit(pn->hdr, granules_of(pn));
+}
+
+void
+sift_v6_par_node_worker(SiftV6ParNode *pn, void *chunk)
+{
+	SiftV6ParDsmHdr *h = sift_v6_par_dsm_block(chunk);
+
+	SIFT_INVARIANT(h->magic == SIFT_V6_PAR_DSM_MAGIC, "the leader initialized the shared block of the parallel aggregate");
+	sift_par_worker_attach_custom(sift_v6_par_coord(h), dsm_find_mapping(h->seg_handle));
+	pn->hdr = h;
+}
+
+bool
+sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
+{
+	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
+	bool		got;
+
+	if (pn->run == NULL)
+	{
+		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap);
+		pn->run = sift_v6_par_run_new(pn->hdr, &pn->eng);
+	}
+	got = sift_v6_par_next(pn->run, values, isnull);
+	MemoryContextSwitchTo(old);
+	return got;
+}
+
+/* This process is done with the run: it leaves the barrier and publishes its counters before the segment goes away */
+void
+sift_v6_par_node_end(SiftV6ParNode *pn)
+{
+	if (pn->run == NULL)
+		return;
+	sift_v6_par_run_end(pn->run);
+	pn->run = NULL;
+	sift_v6_par_engine_end(&pn->eng);
+}
+
+static void
+add_stats(SiftV6ParWorkerStats *t, const SiftV6ParWorkerStats *s)
+{
+	uint64	   *d = (uint64 *) t;
+	const uint64 *p = (const uint64 *) s;
+
+	for (Size i = 0; i < sizeof(*t) / sizeof(uint64); i++)
+		d[i] += p[i];
+}
+
+void
+sift_v6_par_node_shutdown(SiftV6ParNode *pn)
+{
+	SiftV6ParDsmHdr *h = pn->hdr;
+
+	sift_v6_par_node_end(pn);
+	if (h == NULL || pn->have_total)
+		return;
+	for (uint32 pid = 0; pid < pg_atomic_read_u32(&h->next_pid); pid++)
+		add_stats(&pn->total, sift_v6_par_stats(h, (int) pid));
+	pn->ring_recs = pg_atomic_read_u64(&h->ring.total_recs);
+	pn->ring_bytes = pg_atomic_read_u64(&h->ring.total_bytes);
+	pn->radix_parts = h->radix_nparts;
+	pn->escalated = pg_atomic_read_u32(&h->escalated) != 0;
+	pn->have_total = true;
+	pn->hdr = NULL;
+}

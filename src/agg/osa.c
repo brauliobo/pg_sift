@@ -9,7 +9,7 @@
 #include "miscadmin.h"
 #include "utils/float.h"
 
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "agg/agg_int.h"
 #include "core/cmp.h"
 #include "core/hash.h"

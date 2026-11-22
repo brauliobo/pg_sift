@@ -62,7 +62,7 @@ if [[ -z $MASSIF ]] && (( ! ${#TESTS[@]} )); then
 	# SIFT_VALGRIND_ACCUM=1 adds the small tests of the paths that accumulate memory: merge, rewrite, fold and vacuum of a column index, the tombstone log,
 	# the scope journal, the value store, partitions, the lookup load and count(DISTINCT)
 	[[ -z ${SIFT_VALGRIND_ACCUM:-} ]] || TESTS+=(col_merge_force col_merge_levels col_merge_runs col_merge_memory col_rewrite_roll col_fold_marks col_dead_rewrite
-		col_build_merge_ends col_tomb_log col_scope_journal col_vstore_lifecycle col_vacuum_request col_track_partitions tbl_partitions tbl_maintain agg_lookup_load)
+		col_build_merge_ends col_tomb_log col_scope_journal col_track_partitions tbl_partitions tbl_maintain agg_lookup_load)
 fi
 
 BASE_IMAGE=debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858

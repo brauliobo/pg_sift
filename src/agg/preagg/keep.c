@@ -5,7 +5,7 @@
  */
 #include "postgres.h"
 
-#include "col/preagg.h"
+#include "col/v1/preagg.h"
 #include "agg/agg_int.h"
 #include "agg/preagg/int.h"
 

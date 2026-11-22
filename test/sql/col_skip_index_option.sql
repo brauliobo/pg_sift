@@ -1,0 +1,29 @@
+-- sift_col takes the skip_index option: 'column: bloom' or 'column: trigram' items. The index answers as the heap does, and a bad item is refused when the index is made.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_create_format1 = off;
+
+CREATE TABLE sk (id int, tag text, v int) WITH (autovacuum_enabled = false);
+INSERT INTO sk SELECT i, 'tag' || (i % 500), i % 100 FROM generate_series(1, 20000) i;
+CREATE INDEX sk_bloom ON sk USING sift_col (id sift.col_int4_ops, tag sift.col_text_ops, v sift.col_int4_ops) WITH (skip_index = 'tag: bloom');
+CREATE INDEX sk_trigram ON sk USING sift_col (id sift.col_int4_ops, tag sift.col_text_ops, v sift.col_int4_ops) WITH (skip_index = 'tag: trigram');
+SELECT c.relname, c.reloptions FROM pg_class c WHERE c.relname IN ('sk_bloom', 'sk_trigram') ORDER BY 1;
+
+CREATE FUNCTION sk_answer(p text, with_indexes bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text;
+BEGIN
+	PERFORM set_config(s, CASE WHEN with_indexes THEN 'on' ELSE 'off' END, true) FROM unnest(ARRAY['enable_indexscan', 'enable_indexonlyscan', 'enable_bitmapscan', 'sift.enable_agg']) s;
+	EXECUTE format('SELECT count(*) || '','' || coalesce(sum(v), 0) FROM sk WHERE %s', p) INTO a;
+	RETURN a;
+END $$;
+
+SELECT p, sk_answer(p, true) AS indexed, sk_answer(p, false) AS heap, sk_answer(p, true) = sk_answer(p, false) AS same
+FROM (VALUES ('tag = ''tag7'''), ('tag = ''none'''), ('tag LIKE ''%g12%''')) q(p);
+
+CREATE INDEX sk_bad_kind ON sk USING sift_col (id sift.col_int4_ops) WITH (skip_index = 'tag: cuckoo');
+CREATE INDEX sk_bad_item ON sk USING sift_col (id sift.col_int4_ops) WITH (skip_index = 'tag');
+
+DROP FUNCTION sk_answer(text, bool);
+DROP TABLE sk;
+DROP EXTENSION pg_sift;

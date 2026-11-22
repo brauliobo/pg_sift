@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The merge of a parallel build, by the participants, each a slice of the key range (col/build_par.c, sift_col_merge_slice): one slice for each partition the
+# The merge of a parallel build, by the participants, each a slice of the key range (col/v1/build_par.c, sift_col_merge_slice): one slice for each partition the
 # output is cut into (here of 256 kB, from segments of 64 kB). The index is the one the merge of a single process makes in what a query sees: the same rows, the units
 # a window of dates reads and the rows it scans, a segment for each slice with no unit number in two of them, the file the live bytes, and the answers the table's.
 # It leaves nothing when it stops: a slice that PANICs after writing its segment and before the directory switch takes the server down, and crash recovery finds no
@@ -17,7 +17,7 @@ sql mc "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE t (id int, dim_b_id
 	"VACUUM (FREEZE, ANALYZE) t" "ALTER TABLE t SET (parallel_workers = 4)" >/dev/null || bail "setup failed"
 OPTS="SET max_parallel_maintenance_workers = 4"
 SMALL="SET min_parallel_table_scan_size = 0"
-PART="SET sift.col_auto_merge_partition_kb = 256"
+PART="SET sift.test_col_partition_kb = 256"
 SEG="SET sift.test_col_segment_kb = 64"
 CREATE="CREATE INDEX t_idx ON t USING sift_col (dim_b_id, day, v) WITH (key_cut = 'dim_b_id, day')"
 WINDOW="SELECT dim_b_id, count(*), sum(v) FROM t WHERE day >= date '2022-03-01' AND day < date '2022-04-01' GROUP BY dim_b_id"
@@ -47,7 +47,7 @@ check "... and leaves no index" test "$(has_index)" == 0
 # the participants merge only when the output is cut into 3 partitions or more (and a key_cut build is parallel only then, col_build_pays.sh): fewer are written by one process
 slices_of() { sql mc "DROP INDEX IF EXISTS t_idx" "$@" "$OPTS" "$SMALL" "$SEG" "$CREATE" "SHOW sift.test_col_merge_slices" | tail -n 1; }
 check "an output of many partitions is merged by the participants (3 slices or more)" test "$(slices_of "$PART")" -ge 3
-check "an output of fewer than 3 partitions is merged by one process" test "$(slices_of "SET sift.col_auto_merge_partition_kb = 65536")" == 0
+check "an output of fewer than 3 partitions is merged by one process" test "$(slices_of "SET sift.test_col_partition_kb = 65536")" == 0
 sql mc "DROP INDEX IF EXISTS t_idx" >/dev/null
 build "SET sift.test_col_merge_workers = 0" || bail "the build with one merging process failed"
 read -r OSEG OUNIT OROWS OOVER OFILE <<<"$(shape)"

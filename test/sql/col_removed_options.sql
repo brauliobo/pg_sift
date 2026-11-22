@@ -7,7 +7,7 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 \set VERBOSITY terse
 
--- no string column: the later indexes would share its strings through a value store and the first would not, which is a layout of its own
+-- no string column
 CREATE TABLE ro (id int, tenant_id int, uid int, ts timestamp) WITH (autovacuum_enabled = false);
 INSERT INTO ro SELECT i, (i::bigint * 7919 % 300)::int, (i::bigint * 7919 % 40009)::int, timestamp '2026-01-01' + i * interval '1 second'
 FROM generate_series(1, 40000) i;

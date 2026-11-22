@@ -39,7 +39,7 @@ SHOW sift.gpu;
 SHOW sift.gpu_min_rows;
  sift.gpu_min_rows 
 -------------------
- 5000000
+ 1000000
 (1 row)
 
 SHOW sift.gpu_cache_mb;

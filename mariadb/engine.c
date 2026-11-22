@@ -75,6 +75,8 @@ codec_rebind(const SiftCpu *cpu)
 static void
 engine_init(void)
 {
+	int			level;
+
 	sq_mem_init();
 	sift_store_init();
 	sq_tmpdir = tmp_dir;
@@ -82,7 +84,8 @@ engine_init(void)
 	sift_init();
 	sift_cpu_register(codec_rebind);
 	sift_kernels_init();
-	sift_prefix_cache_size = 0;	/* the cache of expanded prefixes is a process-wide structure */
+	if ((level = sift_cpu_parse_level(getenv("SIFT_SIMD"))) >= 0)
+		sift_cpu_set_level(level);
 }
 
 void
@@ -296,10 +299,11 @@ do_create(const char *name, const char *dir, const char *cfg)
 	SiftIdx		ix = {0};
 	SiftRel    *sr;
 	Relation	rel;
-	Manifest	m = {.magic = MAN_MAGIC,.format = MDB_FORMAT,.sift_format = SIFT_FORMAT_ID,.page_layout = PAGE_LAYOUT_ID,
+	Manifest	m = {.format = MDB_FORMAT,.sift_format = SIFT_FORMAT_ID,.page_layout = PAGE_LAYOUT_ID,
 	.next_gen = 1};
 	int			dpp = (int) cfg_num(cfg, "dpp", 32);
 
+	memcpy(m.magic, MAN_MAGIC, sizeof(m.magic));
 	if (dpp < 1 || dpp > 256)
 		fail("sift: documents per page must be between 1 and 256");
 	if (cfg_num(cfg, "merge_fanin", 6) < 2)
@@ -364,7 +368,7 @@ unlink_dir(const char *dir)
 
 	while (d && (e = readdir(d)) != NULL)
 	{
-		char		path[600];
+		char		path[600 + sizeof(e->d_name)];
 
 		snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
 		unlink(path);

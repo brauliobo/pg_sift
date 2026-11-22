@@ -3,7 +3,7 @@
 -- set: work_mem = '256MB'; sift.agg_preagg = off
 --@ setup
 CREATE TABLE split_groups WITH (parallel_workers = 4) AS SELECT g AS id, (hashint4(g) & 2147483647) % ({rows} / 10) AS grp, g % 1000 AS v FROM generate_series(1, {rows} * 3) g;
-CREATE INDEX split_groups_col ON split_groups USING sift_col (id, grp, v) WITH (key_cut = off);
+CREATE INDEX split_groups_col ON split_groups USING sift_col (id, grp, v) WITH (key_order = 'off');
 VACUUM (FREEZE, ANALYZE) split_groups
 --@ pg
 SELECT grp, count(*), sum(v) FROM split_groups GROUP BY grp

@@ -1,0 +1,123 @@
+/*
+ * col/v1/maint/vacuum.c - VACUUM of a sift_col index: bulk delete of segments and write buffer
+ * dead rows, the overflow, the end of the file the vacuum may cut
+ */
+#include "postgres.h"
+#include "access/parallel.h"
+#include "col/v1/maint/maint_int.h"
+#include "col/scope.h"
+#include "core/live.h"
+#include "core/quarantine.h"
+
+bool
+maint_is_col(Relation index)
+{
+	return sift_col_is_index(index);
+}
+
+void
+maint_bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
+{
+	MemoryContext scx;
+	SiftColSegment *seg;
+
+	SIFT_TEST_MUTANT(3, return);
+	scx = maint_segment_cx();
+	seg = sift_cseg_open(index, e, scx);
+	sift_cseg_bulkdelete(seg, cb, cb_state, stats);
+	sift_cseg_close(seg);
+	MemoryContextDelete(scx);
+}
+
+void
+maint_bulkdelete_wbuf(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
+{
+	SIFT_TEST_MUTANT(3, return);
+	sift_cwbuf_bulkdelete(index, e, sift_col_rel(index)->schema, cb, cb_state, stats);
+}
+
+typedef struct HeapDead
+{
+	IndexFetchTableData *scan;
+	TupleTableSlot *slot;
+	BlockNumber nblocks;
+} HeapDead;
+
+/* The heap row of a TID is dead to every snapshot (or its page is gone): what an index entry may be dropped for */
+static bool
+heap_row_dead(const ItemPointerData *tid, void *arg)
+{
+	HeapDead   *h = arg;
+	ItemPointerData t = *tid;
+	bool		again = false,
+				all_dead = false;
+
+	if (ItemPointerGetBlockNumber(tid) >= h->nblocks)
+		return true;
+	table_index_fetch_tuple(h->scan, &t, SnapshotAny, h->slot, &again, &all_dead);
+	return all_dead;
+}
+
+/*
+ * VACUUM that skipped the vacuuming of the indexes (dead rows on under 2% of the heap pages) never called ambulkdelete, so the rows it
+ * dropped are live in the index, and a unit that flags an overflow value keeps the flag after the rows that held it are repaired. The
+ * rows that hold such a value are the only ones looked up in the heap here; the merge that follows rewrites the segments the flag only
+ * dead rows account for (sift_cseg_stale_ovf).
+ */
+void
+maint_reap_overflow(Relation index, Relation heap)
+{
+	const SiftColLeafStats *ls = sift_col_leaf_stats(index, false);
+	SiftDirSnapshot *snap;
+	HeapDead	h;
+	int		   *order;
+	MemoryContext scx;
+	bool		flagged = false;
+
+	for (int c = 0; c < sift_col_index_defs(index)->ncols; c++)
+		flagged |= ls[c].has_ovf;
+	if (!flagged)
+		return;
+	h = (HeapDead) {.scan = sift_table_index_fetch_begin(heap),.slot = table_slot_create(heap, NULL),.nblocks = RelationGetNumberOfBlocks(heap)};
+	snap = sift_dir_read(index);
+	order = palloc(Max(snap->nsegs, 1) * sizeof(int));
+	scx = maint_segment_cx();
+	for (int k = 0, n = sift_dir_clear_order(snap, order); k < n; k++)
+		if (snap->segs[order[k]].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[order[k]], scx);
+
+			sift_cseg_reap_overflow(seg, heap_row_dead, &h);
+			sift_cseg_close(seg);
+			MemoryContextReset(scx);
+		}
+	MemoryContextDelete(scx);
+	ExecDropSingleTupleTableSlot(h.slot);
+	table_index_fetch_end(h.scan);
+	pfree(order);
+	pfree(snap);
+}
+
+bool
+maint_vacuum_truncates(Relation index)
+{
+	return sift_col_options(index)->vacuum_truncate;
+}
+
+IndexBulkDeleteResult *
+sift_col_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state)
+{
+	/* the validation pass of a concurrent build is the only caller that asks for progress reports: VACUUM does not */
+	if (info->report_progress && sift_col_rel(info->index)->nscope > 0)
+	{
+		sift_scope_journals_validate();
+		sift_scope_stamp_concurrent(info->index);
+	}
+	return sift_mops_bulkdelete(&maint_col_ops, info, stats, callback, callback_state);
+}
+
+IndexBulkDeleteResult *
+sift_col_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+{
+	return sift_mops_vacuumcleanup(&maint_col_ops, info, stats);
+}

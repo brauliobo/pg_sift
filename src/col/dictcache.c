@@ -4,7 +4,7 @@
  * A string leaf's dictionary is one compressed blob: a scan that reads the leaf inflates and indexes all of it, however few of its
  * codes the selected rows hold (60,000 entries of a free text path: a tenth of a millisecond per thousand entries, on every query).
  * A segment never changes, so its generation names the dictionary for good: it is kept, under the relation file, generation, header
- * block, rows and leaf, up to CDICT_CACHE_BYTES per backend. A segment pins the entries it uses until its memory context goes (a
+ * block, rows and leaf, within sift.backend_cache_kb per backend. A segment pins the entries it uses until its memory context goes (a
  * callback), and eviction only takes unpinned ones, least recently used first. A dictionary that would not fit is parsed into the
  * memory of the scan, as before. The limit of one entry is half of the budget: the dictionary of a free text leaf of 150,000 rows is 18 MB, and a
  * backend that inflates it again for every statement spends most of its time there. Like the docmap directories of bm25/docdir.c.
@@ -26,10 +26,9 @@
 #include "core/cachebudget.h"
 #include "core/ring.h"
 #include "core/limits.h"
-#include "col/seg_int.h"
+#include "col/v1/seg_int.h"
 
-#define CDICT_CACHE_MAX_KB		65536
-#define CDICT_CACHE_BYTES		((Size) sift_limit(dict_cache_kb, CDICT_CACHE_MAX_KB) * 1024)
+#define CDICT_CACHE_BYTES		((Size) sift_backend_cache_kb * 1024)
 /* what a lookup adds to a code, built lazily once the dictionary has been searched a few times: the open addressing table (up to 4 slots of 4 bytes) and the sorted order (4) */
 #define CDICT_SLOT_BYTES		20
 
@@ -228,12 +227,6 @@ dict_victim(void)
 	return NULL;
 }
 
-static Size
-dict_bytes(void)
-{
-	return cache_bytes;
-}
-
 static uint64
 dict_oldest(void)
 {
@@ -242,28 +235,25 @@ dict_oldest(void)
 	return e ? e->used : UINT64_MAX;
 }
 
-static void
-dict_evict_oldest(void)
-{
-	dict_drop(dict_victim());
-}
-
-static const SiftCacheKind dict_kind = {dict_bytes, dict_oldest, dict_evict_oldest};
-
-/* Drops the least recently used entries nobody pins until need more bytes fit this cache and the backend's budget; false when they do not */
 static bool
-dict_room(Size need)
+dict_evict_one(void)
 {
-	while (cache_bytes + need > CDICT_CACHE_BYTES)
-	{
-		DictEnt    *victim = dict_victim();
+	DictEnt    *victim = dict_victim();
 
-		if (victim == NULL)
-			return false;
-		dict_drop(victim);
-	}
-	return sift_cache_room(need);
+	if (victim == NULL)
+		return false;
+	dict_drop(victim);
+	return true;
 }
+
+static void
+dict_evict_all(void)
+{
+	while (dict_evict_one())
+		;
+}
+
+static const SiftCacheKind dict_kind = {"col_dictcache", dict_oldest, dict_evict_one, dict_evict_all};
 
 static void
 dict_pin(DictEnt *e, MemoryContext mcxt)
@@ -283,7 +273,7 @@ cache_init(void)
 {
 	HASHCTL		ctl = {.keysize = sizeof(DictKey),.entrysize = sizeof(DictEnt)};
 
-	cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache dictionaries", ALLOCSET_DEFAULT_SIZES);
+	cache_cx = sift_cache_create_context("sift cache dictionaries");
 	sift_cache_register(&dict_kind);
 	ctl.hcxt = cache_cx;
 	cache = hash_create("sift column dictionaries", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
@@ -356,7 +346,7 @@ obj_keep(const DictKey *k, MemoryContext cx, void *obj, MemoryContext mcxt)
 			return;
 		dict_drop(e);
 	}
-	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	if (size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size))
 		return;
 	MemoryContextSetParent(cx, cache_cx);
 	e = hash_search(cache, k, HASH_ENTER, NULL);
@@ -583,7 +573,7 @@ dict_keep(SiftColSegment *seg, int col, const DictKey *k, MemoryContext cx, Sift
 	DictEnt    *e;
 	Size		size = MemoryContextMemAllocated(cx, true) + (Size) d->n * CDICT_SLOT_BYTES;
 
-	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	if (size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size))
 	{
 		ask_ent(seg, col)->nokeep = true;
 		return d;
@@ -745,7 +735,7 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 
 	if (cache == NULL)
 		cache_init();
-	if (size > CDICT_CACHE_BYTES / 2 || !dict_room(size))
+	if (size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size))
 		return;
 	for (uint32 i = 0; i < n; i++)
 		if (counts[i] > PG_UINT16_MAX)
@@ -798,7 +788,7 @@ sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out)
 	}
 	if (cache == NULL)
 		cache_init();
-	if (!dict_room(sizeof(*out)))
+	if (!sift_cache_room(sizeof(*out)))
 		return true;
 	cx = AllocSetContextCreate(cache_cx, "sift cache segment run head", ALLOCSET_SMALL_SIZES);
 	e = hash_search(cache, &k, HASH_ENTER, NULL);

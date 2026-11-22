@@ -223,6 +223,12 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 	return false;
 }
 
+bool
+sift_segcache_has(const SiftStreamReader *sr, int kind, uint64 id, Size size)
+{
+	return false;
+}
+
 void
 sift_segcache_ready(void *handle)
 {

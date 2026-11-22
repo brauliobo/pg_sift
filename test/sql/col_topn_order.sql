@@ -139,9 +139,7 @@ SELECT sift.col_promote('ow_col') >= 0 AS promoted;
 SELECT * FROM ow_fuzz('promoted', 14, 120);
 
 -- the same queries without the walk
-SET sift.topn_walk = off;
 SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
-RESET sift.topn_walk;
 
 DROP TABLE ow;
 DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool), ow_units_zk;

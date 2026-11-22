@@ -540,7 +540,6 @@ INSERT INTO g_q (q) VALUES
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', i / 8.0, 's', 'v' || i % 100) FROM generate_series(1, 6000) i;
 SET sift.col_format_minor = 3;
 CREATE INDEX g_col ON g USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.s text');
-RESET sift.col_format_minor;
 SELECT fmt('g_col');
  fmt 
 -----
@@ -617,7 +616,6 @@ SELECT sift.col_promote('g_col');
            1
 (1 row)
 
-RESET sift.col_format_minor;
 SELECT fmt('g_col');
  fmt  
 ------

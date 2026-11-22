@@ -1,0 +1,153 @@
+-- The scope aggregate read from the summary of the index while the table moves: rows the summary does not hold (a slab, parts written since it was built), rows it counts that
+-- the statement's snapshot does not see (pending deletes, deletions of this or of a prepared transaction), and addresses a VACUUM gave to new rows. After every change each query is run
+-- with the node and with the heap (sift.enable_agg) and the answers are compared; the first word says they agree, the second that the plan is the node's, the third where it read.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.test_create_format1 = off;
+SET TimeZone = 'UTC';
+
+CREATE TABLE entity_parents (entity_id int NOT NULL, parent_id int NOT NULL, PRIMARY KEY (entity_id, parent_id)) WITH (autovacuum_enabled = false);
+INSERT INTO entity_parents SELECT e, 1 + e % 9 FROM generate_series(1, 400) e;
+INSERT INTO entity_parents SELECT e, 1 + (e + 4) % 9 FROM generate_series(1, 400) e WHERE e % 7 = 0;
+CREATE TABLE events (id int PRIMARY KEY, entity_id int, event_date date, amount numeric(12,2), score float8, status int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, CASE WHEN i % 53 = 0 THEN NULL ELSE 1 + (i * 7919) % 400 END, DATE '2024-01-01' + i % 500, CASE WHEN i % 11 = 0 THEN NULL ELSE (i % 700) / 4.0 END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE (i % 90) * 0.5 END, i % 5 FROM generate_series(1, 12000) i;
+CREATE INDEX events_s ON events USING sift_col (id, entity_id, event_date, amount, score, status) WITH (key_order = 'entity_id, event_date', scope = 'parent_id: entity_id -> entity_parents(entity_id, parent_id)', track_changes = 'ctid');
+ANALYZE events;
+ANALYZE entity_parents;
+
+CREATE FUNCTION scope_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; plan text := ''; l text; read text := '-';
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		plan := plan || l;
+		IF l LIKE '%Scope Read: %' THEN read := trim(substr(l, position('Scope Read: ' in l) + 12)); END IF;
+	END LOOP;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN plan LIKE '%SiftAggV6Scope%' THEN 'scope' ELSE 'normal' END) || ' ' ||
+		split_part(read, ' (', 1) || ' ' || substr(q, 1, 40) || ' ... ' || right(q, 50);
+END $$;
+
+CREATE FUNCTION scope_queries() RETURNS SETOF text LANGUAGE sql AS $$ SELECT unnest(ARRAY[
+	'SELECT count(*), sum(e.amount), avg(e.score) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4',
+	'SELECT count(*), sum(e.amount), avg(e.score) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 AND e.event_date >= DATE ''2024-06-01'' AND e.event_date < DATE ''2024-07-01''',
+	'SELECT ep.parent_id, count(*), sum(e.amount), avg(e.score) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id GROUP BY ep.parent_id',
+	'SELECT e.id, e.entity_id, e.event_date, e.amount FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20',
+	'SELECT count(*), min(e.amount), max(e.score), min(e.id), max(e.status) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4',
+	'SELECT ep.parent_id, date_trunc(''month'', e.event_date), count(*), sum(e.status) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2',
+	'SELECT count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 999'
+]) $$;
+
+\set check 'SELECT scope_same(q) FROM scope_queries() q'
+
+-- clean
+:check;
+
+-- single-row inserts: a slab
+INSERT INTO events VALUES (20001, 4, DATE '2024-06-10', 10.5, 1.5, 1);
+INSERT INTO events VALUES (20002, 13, DATE '2024-06-11', 11.5, 2.5, 2);
+INSERT INTO events VALUES (20003, NULL, DATE '2024-06-12', 12.5, 3.5, 3);
+INSERT INTO events VALUES (20004, 22, NULL, 13.5, NULL, 4);
+:check;
+
+-- one statement: a part the summary does not name
+INSERT INTO events SELECT 30000 + i, 1 + (i * 31) % 400, DATE '2024-05-20' + i % 40, i % 97, (i % 31) * 0.25, i % 5 FROM generate_series(1, 700) i;
+:check;
+
+-- a handful of deletes: pending deletes of rows in the summary, in a part and in the slab
+DELETE FROM events WHERE id IN (101, 102, 103, 104, 20001, 20002, 30005, 30006);
+:check;
+
+-- many deletes and an update: deletion vectors in every kind of part
+DELETE FROM events WHERE id % 37 = 0;
+UPDATE events SET amount = amount + 1, event_date = event_date + 3 WHERE id % 19 = 0;
+:check;
+
+-- the addresses of deleted rows are given to new rows by a VACUUM of the table, and the deletes that follow are for the new rows
+DELETE FROM events WHERE id BETWEEN 5000 AND 5400;
+VACUUM events;
+INSERT INTO events SELECT 40000 + i, 1 + (i * 17) % 400, DATE '2024-07-01' + i % 20, i % 53, i * 0.5, i % 5 FROM generate_series(1, 500) i;
+:check;
+UPDATE events SET score = score + 1 WHERE id BETWEEN 40001 AND 40300;
+:check;
+DELETE FROM events WHERE id BETWEEN 40100 AND 40250;
+:check;
+
+-- a transaction prepared while it holds an insert and a delete: its rows are the snapshot's to see only after it commits
+BEGIN;
+INSERT INTO events SELECT 50000 + i, 1 + (i * 3) % 400, DATE '2024-08-01' + i % 10, 5, 5, 1 FROM generate_series(1, 120) i;
+DELETE FROM events WHERE id BETWEEN 200 AND 330;
+PREPARE TRANSACTION 'overlay_held';
+:check;
+COMMIT PREPARED 'overlay_held';
+:check;
+BEGIN;
+INSERT INTO events SELECT 60000 + i, 1 + (i * 5) % 400, DATE '2024-09-01' + i % 10, 6, 6, 2 FROM generate_series(1, 90) i;
+DELETE FROM events WHERE id BETWEEN 400 AND 520;
+PREPARE TRANSACTION 'overlay_aborted';
+:check;
+ROLLBACK PREPARED 'overlay_aborted';
+:check;
+
+-- the rows of this transaction, then a rollback and a commit
+BEGIN;
+INSERT INTO events SELECT 70000 + i, 1 + (i * 7) % 400, DATE '2024-10-01' + i % 10, 7, 7, 3 FROM generate_series(1, 150) i;
+DELETE FROM events WHERE id BETWEEN 600 AND 700;
+:check;
+ROLLBACK;
+:check;
+BEGIN;
+INSERT INTO events SELECT 70000 + i, 1 + (i * 7) % 400, DATE '2024-10-01' + i % 10, 7, 7, 3 FROM generate_series(1, 150) i;
+DELETE FROM events WHERE id BETWEEN 600 AND 700;
+COMMIT;
+:check;
+
+-- a cursor keeps the snapshot of its statement: the changes of its transaction after it are not the cursor's
+CREATE FUNCTION open_cursor() RETURNS void LANGUAGE plpgsql AS $$
+DECLARE c refcursor := 'scope_cursor';
+BEGIN
+	OPEN c FOR SELECT ep.parent_id, count(*)::bigint AS n, sum(e.amount) AS amount FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id GROUP BY ep.parent_id;
+END $$;
+CREATE FUNCTION fetch_cursor() RETURNS TABLE (parent_id int, n bigint, amount numeric) LANGUAGE plpgsql AS $$
+DECLARE c refcursor := 'scope_cursor';
+BEGIN
+	LOOP
+		FETCH c INTO parent_id, n, amount;
+		EXIT WHEN NOT FOUND;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SET sift.enable_agg = off;
+CREATE TEMP TABLE before_cursor AS SELECT ep.parent_id, count(*)::bigint AS n, sum(e.amount) AS amount FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id GROUP BY ep.parent_id;
+RESET sift.enable_agg;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT open_cursor();
+INSERT INTO events SELECT 80000 + i, 1 + (i * 11) % 400, DATE '2024-11-01' + i % 10, 8, 8, 4 FROM generate_series(1, 200) i;
+DELETE FROM events WHERE id BETWEEN 800 AND 900;
+WITH f AS MATERIALIZED (SELECT * FROM fetch_cursor()) SELECT count(*) AS cursor_differing_rows FROM ((TABLE before_cursor EXCEPT TABLE f) UNION ALL (TABLE f EXCEPT TABLE before_cursor)) d;
+ROLLBACK;
+:check;
+
+-- the pairs change: the heap answers until VACUUM builds the summary again
+INSERT INTO entity_parents SELECT e, 4 FROM generate_series(1, 400) e WHERE e % 40 = 1 ON CONFLICT DO NOTHING;
+DELETE FROM entity_parents WHERE parent_id = 4 AND entity_id % 45 = 4;
+:check;
+VACUUM events;
+:check;
+
+-- more rows leave than a read keeps for the keys to share: each key reads the granules of its own
+INSERT INTO events SELECT 100000 + i, 1 + (i * 13) % 400, DATE '2024-02-01' + i % 200, i % 61, (i % 23) * 0.5, i % 5 FROM generate_series(1, 40000) i;
+VACUUM events;
+DELETE FROM events WHERE id % 4 <> 1;
+:check;
+
+RESET TimeZone;
+DROP FUNCTION scope_same(text), scope_queries(), open_cursor(), fetch_cursor();
+DROP TABLE events, entity_parents;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

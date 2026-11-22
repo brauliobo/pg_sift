@@ -2,11 +2,12 @@
 -- (agg_lookup_dense), not from the heap row by row: a group by, a filter and a distinct count over them give the normal plan's answers, NULLs and numerics of other scales
 -- included. A column with more values than a table of classes holds is read from the heap as before.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 CREATE TABLE wd (id int PRIMARY KEY, u uuid, iv interval, big numeric(30, 4), nn numeric, b bytea, ip inet, many uuid) WITH (autovacuum_enabled = false);
 INSERT INTO wd SELECT g, CASE WHEN g % 11 = 0 THEN NULL ELSE md5((g % 7)::text)::uuid END, CASE WHEN g % 13 = 0 THEN NULL ELSE (g % 5 || ' hours')::interval END,

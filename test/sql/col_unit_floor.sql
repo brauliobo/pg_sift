@@ -8,7 +8,7 @@ CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_col_floor_sbs = 4;
@@ -58,7 +58,6 @@ UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
 SELECT fl_same();
-RESET sift.col_unit_floor;
 
 -- fewer superblocks than the least the rule needs (16, here raised to 30): a unit for each
 SET sift.test_col_floor_sbs = 30;

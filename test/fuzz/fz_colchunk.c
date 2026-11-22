@@ -24,7 +24,7 @@
 
 
 #include "col/col.h"
-#include "col/enc.h"
+#include "col/v1/enc.h"
 #include "col/codec.h"
 #include "fz_shim.h"
 #include "core/testrng.h"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # What a concurrent build may hold and whom it may make wait, with PostgreSQL's own builds (a btree and a GIN CREATE INDEX CONCURRENTLY, and REINDEX CONCURRENTLY of them) as the reference, and the
 # same assertions for sift_col (plain, tracking changes, with a scope over a table of pairs, REINDEX CONCURRENTLY). The build is held in every phase it has (an advisory lock a session holds: the

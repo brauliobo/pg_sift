@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The harness of the scripts/instr-budget*.sh budgets: a scratch cluster with one table, then callgrind instructions of a statement run by a single-user backend.
 # ib_begin NAME PORT (the script's NAME for messages, its default SIFT_PORT) starts the cluster in a directory of its own, made with mktemp under SIFT_TMP (which the callers
 # then see as SIFT_TMP, for their SQL files), over the install of SIFT_ROOT (default SIFT_TMP/root), and reads the SQL that builds the table from stdin; ib_ir SQLFILE FUNCTION...

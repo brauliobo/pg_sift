@@ -8,8 +8,16 @@
 #include "miscadmin.h"
 #include "storage/read_stream.h"
 
+#include "core/cmp.h"
 #include "core/store.h"
 #include "core/store_int.h"
+
+/* The streams whose callbacks only name blocks hand their reads to the device in batches (PostgreSQL 18 and later) */
+#if PG_VERSION_NUM >= 180000
+#define SIFT_READ_STREAM_BATCHING	READ_STREAM_USE_BATCHING
+#else
+#define SIFT_READ_STREAM_BATCHING	0
+#endif
 
 void
 sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, int nextents,
@@ -24,6 +32,7 @@ sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents, in
 	sr->nextents = nextents;
 	sr->gen = gen;
 	sr->buf = InvalidBuffer;
+	sr->bas = sift_maint_ring;
 	sr->blkno = InvalidBlockNumber;
 	sr->miss_page = -9;
 	sr->pagestart = palloc((nextents + 1) * sizeof(uint32));
@@ -107,7 +116,7 @@ sr_stream_begin(SiftStreamReader *sr, uint32 first, uint32 end, int flags)
 	sr->pf_cur = sr->cur;
 	/* a get may run in a context that is reset between units: the stream lives as long as the reader */
 	old = MemoryContextSwitchTo(sr->mcxt);
-	sr->stream = read_stream_begin_relation(flags, NULL, sr->index, MAIN_FORKNUM, sr_stream_cb, sr, sizeof(uint32));
+	sr->stream = read_stream_begin_relation(flags, sr->bas, sr->index, MAIN_FORKNUM, sr_stream_cb, sr, sizeof(uint32));
 	MemoryContextSwitchTo(old);
 }
 
@@ -154,12 +163,53 @@ static void
 sr_read_range(const SiftStreamReader *sr, uint32 first, uint32 end)
 {
 	SrRange		r = {sr, first, end, sr->cur};
-	ReadStream *stream = read_stream_begin_relation(READ_STREAM_FULL, NULL, sr->index, MAIN_FORKNUM, sr_range_cb, &r, 0);
+	ReadStream *stream = read_stream_begin_relation(READ_STREAM_FULL | SIFT_READ_STREAM_BATCHING, sr->bas, sr->index, MAIN_FORKNUM,
+													sr_range_cb, &r, 0);
 	Buffer		b;
 
 	while (BufferIsValid(b = read_stream_next_buffer(stream, NULL)))
 		ReleaseBuffer(b);
 	read_stream_end(stream);
+}
+
+/*
+ * Copies the bytes of the pages [first, end) of a get into dst, read through one stream: the pages are used as they arrive, no page is looked up twice and none
+ * can leave the buffers between its read and its copy (a range read ahead and then gotten page by page does both). The bytes of the range start at in of the first page.
+ */
+static void
+sr_copy_stream(SiftStreamReader *sr, uint32 first, uint32 end, size_t in, char *dst, size_t len)
+{
+	SrRange		r = {sr, first, end, sr->cur};
+	ReadStream *stream = read_stream_begin_relation(READ_STREAM_FULL | SIFT_READ_STREAM_BATCHING, sr->bas, sr->index, MAIN_FORKNUM,
+													sr_range_cb, &r, 0);
+	Buffer		buf;
+
+	while (BufferIsValid(buf = read_stream_next_buffer(stream, NULL)))
+	{
+		size_t		n = Min(len, SIFT_PAGE_PAYLOAD - in);
+		Page		page;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		sift_store_check_page(sr->index, buf, SIFT_PT_DATA, sr->gen);
+		page = BufferGetPage(buf);
+		if (in + n > SiftPageGetUsed(page))
+		{
+			uint32		used = SiftPageGetUsed(page);
+			BlockNumber blk = BufferGetBlockNumber(buf);
+
+			UnlockReleaseBuffer(buf);
+			read_stream_end(stream);
+			corrupt(sr->index, "Read past the %u written bytes of block %u (segment %llu).", used, blk, ULL(sr->gen));
+		}
+		memcpy(dst, SiftPageGetData(page) + in, n);
+		UnlockReleaseBuffer(buf);
+		dst += n;
+		len -= n;
+		in = 0;
+		CHECK_FOR_INTERRUPTS();
+	}
+	read_stream_end(stream);
+	sr->cur = r.cur;
 }
 
 /* The ranges of one plan, ascending by offset: the pages of each, once, in the order of the segment */
@@ -212,7 +262,7 @@ sift_sr_read_ranges(const SiftStreamReader *sr, const SiftSrRange *r, int n)
 
 	if (n == 0)
 		return 0;
-	stream = read_stream_begin_relation(READ_STREAM_FULL, NULL, sr->index, MAIN_FORKNUM, sr_plan_cb, &p, 0);
+	stream = read_stream_begin_relation(READ_STREAM_FULL | SIFT_READ_STREAM_BATCHING, sr->bas, sr->index, MAIN_FORKNUM, sr_plan_cb, &p, 0);
 	while (BufferIsValid(b = read_stream_next_buffer(stream, NULL)))
 		ReleaseBuffer(b);
 	read_stream_end(stream);
@@ -274,7 +324,7 @@ sr_fetch(SiftStreamReader *sr, uint32 lpage, BlockNumber blk)
 		SR_COUNT(sift_test_sr_ahead, sr_read_range(sr, lpage, end));
 	if (timed)
 		INSTR_TIME_SET_CURRENT(t0);
-	SR_COUNT(sift_test_sr_demand, buf = ReadBufferExtended(sr->index, MAIN_FORKNUM, blk, RBM_NORMAL, NULL));
+	SR_COUNT(sift_test_sr_demand, buf = ReadBufferExtended(sr->index, MAIN_FORKNUM, blk, RBM_NORMAL, sift_maint_ring));
 	if (pgBufferUsage.shared_blks_read != reads)
 	{
 		sr->miss_page = seq ? end - 1 : lpage;
@@ -360,7 +410,7 @@ sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 	size_t		in = SIFT_PAYLOAD_OFF(off);
 	char	   *dst = scratch;
 	uint32		last = SIFT_PAYLOAD_PAGE(off + len - 1) + 1;	/* the page past the range */
-	bool		ranged = true;
+	uint64		reads;
 
 	if (len == 0)
 		return scratch;
@@ -369,26 +419,30 @@ sift_sr_get(SiftStreamReader *sr, uint64 off, size_t len, void *scratch)
 				len, ULL(off), ULL(sr->gen));
 	if (in + len <= SIFT_PAGE_PAYLOAD)
 		return sr_bytes(sr, lpage, in, len);
+	reads = pgBufferUsage.shared_blks_read;
+	memcpy(dst, sr_bytes(sr, lpage++, in, SIFT_PAGE_PAYLOAD - in), SIFT_PAGE_PAYLOAD - in);
+	LockBuffer(sr->buf, BUFFER_LOCK_UNLOCK);
+	sr->locked = false;
+	dst += SIFT_PAGE_PAYLOAD - in;
+	len -= SIFT_PAGE_PAYLOAD - in;
+	/* the first page waited for the device, or the range is long (and no stream of the scan brings it): the rest comes in one stream and is copied from it */
+	if (sr->stream == NULL && (reads != pgBufferUsage.shared_blks_read || last - lpage >= 3))
+	{
+		sr_copy_stream(sr, lpage, last, 0, dst, len);
+		sr->miss_page = last - 1;
+		sr->ra = 0;
+		return scratch;
+	}
 	while (len > 0)
 	{
-		size_t		n = Min(len, SIFT_PAGE_PAYLOAD - in);
-		uint64		reads = pgBufferUsage.shared_blks_read;
+		size_t		n = Min(len, SIFT_PAGE_PAYLOAD);
 
-		memcpy(dst, sr_bytes(sr, lpage++, in, n), n);
+		memcpy(dst, sr_bytes(sr, lpage++, 0, n), n);
 		LockBuffer(sr->buf, BUFFER_LOCK_UNLOCK);
 		sr->locked = false;
 		CHECK_FOR_INTERRUPTS();
 		dst += n;
 		len -= n;
-		in = 0;
-		/* the first page waited for the device (and no stream of the scan brings the others): the rest of the range is read now, in the fewest reads */
-		if (ranged && reads != pgBufferUsage.shared_blks_read && sr->stream == NULL && lpage < last)
-		{
-			sr_read_range(sr, lpage, last);
-			sr->miss_page = last - 1;
-			sr->ra = 0;
-		}
-		ranged = false;
 	}
 	return scratch;
 }
@@ -449,4 +503,76 @@ sift_sr_release(SiftStreamReader *sr)
 	sift_sr_ahead(sr, NULL, NULL, 0);
 	sr->cold = false;
 	sr->slow = 0;
+}
+
+void
+sift_sr_set_strategy(SiftStreamReader *sr, BufferAccessStrategy bas)
+{
+	sr->bas = bas;
+}
+
+typedef struct MultiWave
+{
+	const BlockNumber *blks;
+	int			n;
+	int			i;
+} MultiWave;
+
+static BlockNumber
+multi_wave_cb(ReadStream *stream, void *arg, void *per_buffer_data)
+{
+	MultiWave  *w = arg;
+
+	return w->i < w->n ? w->blks[w->i++] : InvalidBlockNumber;
+}
+
+/* The blocks sorted and each once, read as one stream */
+static void
+multi_wave(const SiftStreamReader *sr, BlockNumber *blks, int n)
+{
+	MultiWave	w = {blks, 0, 0};
+	ReadStream *stream;
+	Buffer		b;
+
+	sift_sort_u32(blks, n);
+	for (int i = 0; i < n; i++)
+		if (w.n == 0 || blks[i] != blks[w.n - 1])
+			blks[w.n++] = blks[i];
+	stream = read_stream_begin_relation(READ_STREAM_FULL | SIFT_READ_STREAM_BATCHING, sr->bas, sr->index, MAIN_FORKNUM,
+										multi_wave_cb, &w, 0);
+	while (BufferIsValid(b = read_stream_next_buffer(stream, NULL)))
+		ReleaseBuffer(b);
+	read_stream_end(stream);
+}
+
+uint64
+sift_sr_prefetch_multi(const SiftMultiRange *ranges, int n)
+{
+	BlockNumber blks[SIFT_PREFETCH_MAX_BLKS];
+	int			nb = 0;
+	uint64		reads = pgBufferUsage.shared_blks_read;
+
+	for (int i = 0; i < n; i++)
+	{
+		const SiftStreamReader *sr = ranges[i].sr;
+		uint64		size = SIFT_PAYLOAD_BYTES(sr->npages);
+		uint64		len = ranges[i].len;
+		int			cur = sr->cur;
+
+		if (len == 0 || ranges[i].off >= size)
+			continue;
+		len = Min(len, size - ranges[i].off);
+		for (uint32 p = SIFT_PAYLOAD_PAGE(ranges[i].off), e = SIFT_PAYLOAD_PAGE(ranges[i].off + len - 1); p <= e; p++)
+		{
+			blks[nb++] = page_block(sr, p, &cur);
+			if (nb == SIFT_PREFETCH_MAX_BLKS)
+			{
+				multi_wave(sr, blks, nb);
+				nb = 0;
+			}
+		}
+	}
+	if (nb > 0)
+		multi_wave(ranges[0].sr, blks, nb);
+	return pgBufferUsage.shared_blks_read - reads;
 }

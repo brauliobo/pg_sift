@@ -51,7 +51,6 @@ SELECT count(*) = (SELECT count(DISTINCT grp) FROM items) AS same_groups, sum(n)
  t           | t
 (1 row)
 
-RESET sift.plan_scale;
 DROP FUNCTION costs(text, float8);
 DROP TABLE items;
 DROP EXTENSION pg_sift;

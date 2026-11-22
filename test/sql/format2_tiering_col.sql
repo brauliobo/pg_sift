@@ -1,0 +1,62 @@
+-- Object storage tiering of a sift_col index of Format 2.0: the policy is set on the index, follows its rename, is checked against the privileges of its table, a TTL is refused for it, sift.check
+-- passes, and the index answers as the heap does. The text column keeps every part larger than a page: a part that small holds its stream in its header and is never moved.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SELECT current_setting('data_directory') || '/sift_tier_regress_col' AS tierdir \gset
+\set mk 'rm -rf ' :tierdir ' && mkdir -p ' :tierdir
+COPY (SELECT 1) TO PROGRAM :'mk';
+CREATE TABLE evc (id int8, ts timestamp NOT NULL, v int, pad text);
+INSERT INTO evc SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 100, md5(i::text) FROM generate_series(1, 5000) i;
+CREATE INDEX evc_col ON evc USING sift_col (id, ts, v, pad);
+VACUUM evc;
+INSERT INTO evc SELECT 5000 + i, localtimestamp - i * interval '1 minute', i % 100, md5((5000 + i)::text) FROM generate_series(1, 5000) i;
+VACUUM evc;
+SELECT count(*) AS parts, min(level) AS min_level, max(level) AS max_level FROM sift.parts('evc_col');
+
+-- what is refused: the table itself, a TTL on an index, a caller without MAINTAIN on the table
+SELECT sift.set_tier_policy('evc', 'file://' || :'tierdir');
+SELECT sift.set_ttl('evc_col', 'ts', interval '30 days');
+SELECT sift.set_ttl('evc_col', 'ts', NULL);
+CREATE ROLE tier_probe_col;
+SET ROLE tier_probe_col;
+SELECT sift.set_tier_policy('evc_col', 'file://' || :'tierdir');
+SELECT sift.clear_tier_policy('evc_col');
+SELECT count(*) AS parts FROM sift.tier_status;
+RESET ROLE;
+DROP ROLE tier_probe_col;
+
+-- a policy on the index: set, set again, changed; filed under the OID of the index
+SELECT sift.set_tier_policy('evc_col', 'file://' || :'tierdir', '30 days') AS changed;
+SELECT sift.set_tier_policy('evc_col', 'file://' || :'tierdir', '30 days') AS changed;
+SELECT sift.set_tier_policy('evc_col', 'file://' || :'tierdir', '45 days') AS changed;
+ALTER INDEX evc_col RENAME TO evc_col_new;
+SELECT relid::regclass AS relation, move_after FROM sift.tier_policies;
+SELECT sift.set_tier_policy('evc_col_new', 'file://' || :'tierdir', '45 days') AS changed;
+
+-- the VACUUM moves the old part of the index to the store and changes no answer; the check reads the object and finds nothing
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT md5(string_agg(id || ':' || ts || ':' || v || pad, ',' ORDER BY id)) AS through_index FROM evc WHERE id > 0 \gset
+VACUUM evc;
+SELECT count(*) AS tiered, bool_and(relation = 'evc_col_new'::regclass) AS of_the_index, bool_and(location LIKE 'file:///%.siftpart') AS located FROM sift.tier_status;
+SELECT md5(string_agg(id || ':' || ts || ':' || v || pad, ',' ORDER BY id)) = :'through_index' AS unchanged_by_tiering FROM evc WHERE id > 0;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+SELECT md5(string_agg(id || ':' || ts || ':' || v || pad, ',' ORDER BY id)) = :'through_index' AS same_as_heap FROM evc;
+SELECT count(*) AS problems FROM sift.check('evc_col_new');
+SELECT count(*) AS parts FROM sift.tier_status;
+
+-- the policy cannot be cleared while a part is in the store (a changed policy keeps its location), and goes with the index
+SELECT sift.clear_tier_policy('evc_col_new') AS cleared;
+SELECT sift.set_tier_policy('evc_col_new', 'file://' || :'tierdir') AS changed;
+DROP INDEX evc_col_new;
+SELECT count(*) AS policies FROM sift.tier_policies;
+DROP TABLE evc;
+\set rm 'rm -rf ' :tierdir
+COPY (SELECT 1) TO PROGRAM :'rm';
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

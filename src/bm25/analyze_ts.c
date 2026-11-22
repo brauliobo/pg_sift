@@ -16,6 +16,7 @@
 #include "utils/memutils.h"
 #include "utils/syscache.h"
 
+#include "core/cachebudget.h"
 #include "bm25/analyze.h"
 #include "bm25/analyze_memo.h"
 
@@ -46,8 +47,47 @@ typedef struct MemoSlot
 
 static MemoSlot memo_slots[TS_MEMOS];
 static MemoryContext memo_cx;
-static uint64 memo_gen = 1,
-			memo_tick;
+static uint64 memo_gen = 1;
+
+static MemoSlot *
+slot_victim(void)
+{
+	MemoSlot   *lru = NULL;
+
+	for (int i = 0; i < TS_MEMOS; i++)
+		if (memo_slots[i].memo.mcxt != NULL && (lru == NULL || memo_slots[i].tick < lru->tick))
+			lru = &memo_slots[i];
+	return lru;
+}
+
+static uint64
+slots_oldest(void)
+{
+	MemoSlot   *s = slot_victim();
+
+	return s ? s->tick : UINT64_MAX;
+}
+
+static bool
+slots_evict_one(void)
+{
+	MemoSlot   *s = slot_victim();
+
+	if (s == NULL)
+		return false;
+	MemoryContextDelete(s->memo.mcxt);
+	*s = (MemoSlot) {.memo.max = MEMO_MAX / TS_MEMOS};
+	return true;
+}
+
+static void
+slots_evict_all(void)
+{
+	while (slots_evict_one())
+		;
+}
+
+static const SiftCacheKind slots_kind = {"bm25_analyze_ts", slots_oldest, slots_evict_one, slots_evict_all};
 
 static void
 memo_invalidate(Datum arg, int cacheid, uint32 hashvalue)
@@ -60,15 +100,15 @@ memo_init(void)
 {
 	if (memo_cx != NULL)
 		return;
-	/* a backend cache like the others: bounded by TS_MEMOS and MEMO_MAX, kept to the end of the backend (scripts/leakcheck.sh exempts "sift cache" contexts) */
-	memo_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache stem memos", ALLOCSET_DEFAULT_SIZES);
+	memo_cx = sift_cache_create_context("sift cache stem memos");
+	sift_cache_register(&slots_kind);
 	CacheRegisterSyscacheCallback(TSCONFIGOID, memo_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(TSCONFIGMAP, memo_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(TSDICTOID, memo_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(TSPARSEROID, memo_invalidate, (Datum) 0);
 	CacheRegisterSyscacheCallback(NAMESPACEOID, memo_invalidate, (Datum) 0);
 	for (int i = 0; i < TS_MEMOS; i++)
-		memo_slots[i].memo = (StemMemo) {.mcxt = memo_cx, .max = MEMO_MAX / TS_MEMOS};
+		memo_slots[i].memo = (StemMemo) {.max = MEMO_MAX / TS_MEMOS};
 }
 
 static StemMemo *
@@ -89,15 +129,18 @@ slot_memo(Oid cfg)
 		for (int i = 1; i < TS_MEMOS; i++)
 			if (memo_slots[i].tick < s->tick)
 				s = &memo_slots[i];
-		s->cfg = cfg;
-		s->gen = 0;
+		if (s->memo.mcxt != NULL)
+			MemoryContextDelete(s->memo.mcxt);
+		*s = (MemoSlot) {.cfg = cfg, .memo.max = MEMO_MAX / TS_MEMOS};
 	}
+	if (s->memo.mcxt == NULL)
+		s->memo.mcxt = AllocSetContextCreate(memo_cx, "sift cache stem memo", 8 * 1024, 8 * 1024, 64 * 1024);
 	if (s->gen != memo_gen)
 	{
 		memo_clear(&s->memo);
 		s->gen = memo_gen;
 	}
-	s->tick = ++memo_tick;
+	s->tick = sift_cache_tick();
 	return &s->memo;
 }
 

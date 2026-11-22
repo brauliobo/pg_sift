@@ -1,42 +1,9 @@
-# The commands of steps/store.py that render: render, table, compare and gap.
-# They write the blocks into the files that hold their markers.
+# The commands of steps/store.py that read the stored results: table, compare and gap (the docs blocks are rendered by scripts/gen-docs.py).
 import benchlib
-import os
 from store_lib import LANES
 from .results import Results, md_table, ms
 from .tables import QUERY_TITLES, bench_table
 from .notes import cpu_name, ratio
-from .blocks import benchmarks_block, readme_block
-from .updates import updates_benchmarks, updates_readme
-from .compression import compression_block
-
-
-def replace_blocks(args):
-    import readme  # steps/readme.py: replace_block
-    import section_render   # steps/section_render.py: imports this module
-    R = Results(args.results)
-    S = section_render.Section(args.updates) if os.path.exists(args.updates) else None
-    if args.readme:
-        readme.replace_block(args.readme, 'store', readme_block(R))
-        readme.replace_block(args.readme, 'store-updates', section_render.readme_block(S) if S else updates_readme(R))
-    if args.benchmarks:
-        readme.replace_block(args.benchmarks, 'store', benchmarks_block(R))
-        readme.replace_block(args.benchmarks, 'store-updates', updates_benchmarks(R))
-        if S:
-            readme.replace_block(args.benchmarks, 'updates', section_render.benchmarks_block(S))
-        if os.path.exists(args.compression):
-            readme.replace_block(args.benchmarks, 'store-compression', compression_block(Results(args.compression)))
-    if S and args.img:
-        section_render.write_chart(S, args.img)
-
-
-def cmd_render(args):
-    if args.stdout:
-        R = Results(args.results)
-        print('\n'.join(readme_block(R) + [''] + updates_readme(R) + [''] + benchmarks_block(R) + [''] + updates_benchmarks(R)))
-    else:
-        replace_blocks(args)
-    return 0
 
 
 def all_lanes(R, tier):

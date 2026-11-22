@@ -126,12 +126,6 @@ fuse_start(AggExec *ex)
 	engine_contexts(F, estate->es_query_cxt);
 	engine_rels(F);
 	MemoryContextSwitchTo(old);
-	run_scan(F);
-	empty_set_groups(F);
-	dist_finish_all(F);
-	dist_end_all(F);
-	mapped_finish(F);
-	list_groups(F);
 	for (int i = 0; i < n; i++)
 	{
 		AggExec    *o = list_nth(m, i);
@@ -141,6 +135,12 @@ fuse_start(AggExec *ex)
 		o->started = true;
 		r->nodes = list_delete_ptr(r->nodes, o);
 	}
+	run_scan(F);
+	empty_set_groups(F);
+	dist_finish_all(F);
+	dist_end_all(F);
+	mapped_finish(F);
+	list_groups(F);
 	return true;
 }
 

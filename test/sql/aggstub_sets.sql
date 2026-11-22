@@ -161,7 +161,7 @@ SELECT same($$SELECT grp, count(DISTINCT dense) AS dd, count(DISTINCT wide) AS d
 SELECT same($$SELECT count(DISTINCT dense) AS dd, count(DISTINCT wide) AS dw, count(DISTINCT few) AS df FROM dd$$) AS distinct_global_workers;
 SELECT same($$SELECT grp, count(DISTINCT dense * 100003) AS de FROM dd GROUP BY grp$$) AS distinct_expr_workers;
 SET work_mem = '64kB';
-SET hash_mem_multiplier = 1;
+SET hash_mem_multiplier = 8;
 SELECT same($$SELECT grp, count(DISTINCT dense) AS dd, count(DISTINCT wide) AS dw FROM dd GROUP BY grp$$) AS distinct_spilled_workers;
 RESET hash_mem_multiplier;
 RESET work_mem;

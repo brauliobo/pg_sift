@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A backend that has used the objects of an older extension keeps working across ALTER EXTENSION UPDATE, which drops and makes functions, operators and event triggers
 # under new OIDs: the pushdown, the index read, a search and the index DDL find them again in the same session (what the session remembered of the catalog is dropped
 # with the objects; test ext_recreate does the same across DROP EXTENSION and CREATE EXTENSION). The library is the one of this tree over the SQL of 4.3.

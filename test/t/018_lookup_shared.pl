@@ -1,4 +1,4 @@
-# The rows of a joined table kept in shared memory (sift.agg_lookup_shared_kb): a backend killed while it reads them takes the server through crash recovery,
+# The rows of a joined table kept in shared memory (sift.shared_cache_kb): a backend killed while it reads them takes the server through crash recovery,
 # which discards the directory and the segments, and the next queries load the table again and get the rows of the normal plan.
 use strict;
 use warnings FATAL => 'all';
@@ -8,7 +8,7 @@ use SiftTest;
 use Test::More;
 
 my $node = sift_node('lookup_shared');
-$node->append_conf('postgresql.conf', "sift.agg_lookup_shared_kb = 8192\nsift.agg_lookup_cache_kb = 0\nmax_parallel_workers_per_gather = 0\nseq_page_cost = 10000\nrandom_page_cost = 10000");
+$node->append_conf('postgresql.conf', "sift.shared_cache_kb = 40960\nsift.backend_cache_kb = 0\nmax_parallel_workers_per_gather = 0\nseq_page_cost = 10000\nrandom_page_cost = 10000");
 $node->start;
 install_sift($node);
 $node->safe_psql('postgres', <<'SQL');

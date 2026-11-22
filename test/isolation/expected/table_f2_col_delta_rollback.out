@@ -1,0 +1,49 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1big s2u s1r s2v s2n
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_rcd SET b = b + 1 WHERE id <= 6000;
+step s2u: UPDATE iso_rcd SET c = c + 10 WHERE id = 100; <waiting ...>
+step s1r: ROLLBACK;
+step s2u: <... completed>
+step s2v: SELECT id, b, c FROM iso_rcd WHERE id IN (100, 7000) ORDER BY id;
+  id|b| c
+----+-+--
+ 100|0|10
+7000|0| 0
+(2 rows)
+
+step s2n: SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_rcd;
+    n|sb|sc
+-----+--+--
+10000| 0|10
+(1 row)
+
+
+starting permutation: s1big s2u s1c s2v s2n
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_rcd SET b = b + 1 WHERE id <= 6000;
+step s2u: UPDATE iso_rcd SET c = c + 10 WHERE id = 100; <waiting ...>
+step s1c: COMMIT;
+step s2u: <... completed>
+step s2v: SELECT id, b, c FROM iso_rcd WHERE id IN (100, 7000) ORDER BY id;
+  id|b| c
+----+-+--
+ 100|1|10
+7000|0| 0
+(2 rows)
+
+step s2n: SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_rcd;
+    n|  sb|sc
+-----+----+--
+10000|6000|10
+(1 row)
+

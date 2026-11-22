@@ -133,6 +133,10 @@ nd_get(const CcNode *nd, uint32 i)
 			}
 		case SIFT_CCN_SCALE:
 			return (int64) ((uint64) nd->base + (uint64) nd->mind * (uint64) nd_get(nd->a, i));
+		case SIFT_CCN_DELTA_BYTE:
+			return cc_delta_byte_get(nd, i);
+		case SIFT_CCN_BSS:
+			return cc_bss_get(nd, i);
 		case SIFT_CCN_WRAP:
 			return nd_get(nd->a, i);
 	}
@@ -170,6 +174,19 @@ nd_range(const CcNode *nd, uint32 s, uint32 len, int64 *dst)
 
 				sift_cck->unpack32((const uint32 *) nd->words + (size_t) b * 32 * nd->W, nd->W, rows_for(upto), 0, tmp);
 				sift_cck->prefix64(tmp, upto, run, b ? (int64) get64(nd->chk + 8 * (size_t) (b - 1)) : nd->base, nd->mind);
+				memcpy(dst + i, run + lo, (upto - lo) * sizeof(int64));
+				i += upto - lo;
+			}
+			return;
+		case SIFT_CCN_DELTA_BYTE:
+			for (uint32 i = 0; i < len;)
+			{
+				uint32		b = (s + i) / 1024,
+							lo = (s + i) % 1024,
+							upto = Min(Min(1024, nd->n - b * 1024), lo + len - i);
+				int64		run[1024 + SIFT_COL_PAD / 8];
+
+				cc_delta_byte_block(nd, b, upto, run);
 				memcpy(dst + i, run + lo, (upto - lo) * sizeof(int64));
 				i += upto - lo;
 			}
@@ -248,7 +265,7 @@ sift_cc_get(const SiftCc *c, uint32 row)
 static bool
 nd_has_delta(const CcNode *nd)
 {
-	return nd != NULL && (nd->tag == SIFT_CCN_DELTA || nd_has_delta(nd->a) || nd_has_delta(nd->b));
+	return nd != NULL && (nd->tag == SIFT_CCN_DELTA || nd->tag == SIFT_CCN_DELTA_BYTE || nd_has_delta(nd->a) || nd_has_delta(nd->b));
 }
 
 /* Does nd_range cost by the rows it asks for: the nodes it decodes in blocks or runs, not row by row from the start of the chunk */
@@ -259,6 +276,7 @@ nd_range_cheap(const CcNode *nd)
 	{
 		case SIFT_CCN_FORBIT:
 		case SIFT_CCN_DELTA:
+		case SIFT_CCN_DELTA_BYTE:
 			return true;
 		case SIFT_CCN_WRAP:
 		case SIFT_CCN_SCALE:
@@ -318,6 +336,21 @@ nd_gather(const CcNode *nd, const uint32 *idx, uint32 m, int64 *dst)
 					upto = Max(upto, (idx[e] & 1023) + 1);
 				sift_cck->unpack32((const uint32 *) nd->words + (size_t) b * 32 * nd->W, nd->W, rows_for(upto), 0, tmp);
 				sift_cck->prefix64(tmp, upto, run, b ? (int64) get64(nd->chk + 8 * (size_t) (b - 1)) : nd->base, nd->mind);
+				for (; k < e; k++)
+					dst[k] = run[idx[k] & 1023];
+			}
+			return;
+		case SIFT_CCN_DELTA_BYTE:
+			for (uint32 k = 0; k < m;)
+			{
+				uint32		b = idx[k] >> 10,
+							e = k,
+							upto = 0;
+				int64		run[1024 + SIFT_COL_PAD / 8];
+
+				for (; e < m && (idx[e] >> 10) == b; e++)
+					upto = Max(upto, (idx[e] & 1023) + 1);
+				cc_delta_byte_block(nd, b, upto, run);
 				for (; k < e; k++)
 					dst[k] = run[idx[k] & 1023];
 			}
@@ -424,6 +457,8 @@ nd_order(const CcNode *nd)
 				return 1;
 			/* the packed residuals are at most 2^W - 1 above the smallest step */
 			return nd->W < 32 && nd->mind + (int64) ((UINT64CONST(1) << nd->W) - 1) <= 0 ? -1 : 2;
+		case SIFT_CCN_DELTA_BYTE:
+			return nd->mind >= 0 ? 1 : nd->mind + (int64) ((UINT64CONST(1) << (8 * nd->B)) - 1) <= 0 ? -1 : 2;
 		case SIFT_CCN_WRAP:
 		case SIFT_CCN_RLE:
 			return nd_order(nd->a);

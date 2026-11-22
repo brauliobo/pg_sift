@@ -100,7 +100,7 @@ LQ="SELECT CASE WHEN jsonb_exists(e.doc, 'resolved') THEN o.tag ELSE m.to_tag EN
  GROUP BY 1, 2 ORDER BY 1, 2"
 w=$({ echo "SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.test_child_warm = on;"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"; } | sql fs)
 woff=$({ echo "SET sift.enable_agg = off;"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"; } | sql fs)
-look=$(sql fs "SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.test_child_warm = on; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0;" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $LQ" | grep 'Lookup:')
+look=$(sql fs "SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.test_child_warm = on; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0;" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $LQ" | grep 'Lookup:')
 asked=$(sed -n 's/.* \([0-9]*\) child blocks prefetched.*/\1/p' <<<"$look")
 probes=$(sed -n 's/.* \([0-9]*\) child direct probes.*/\1/p' <<<"$look")
 diag "probes: $asked blocks asked for $probes probes of the lookup table"

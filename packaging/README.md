@@ -38,9 +38,7 @@ Pick the major of the server (`SHOW server_version`); a package of another major
 | `PG` (`scripts/package.sh build`) | none | the major of one build |
 | `BUILD_DEB`, `BUILD_RPM`, `BUILD_AMZN`, `TEST_DEB`, `TEST_RPM`, `TEST_AMZN` | Ubuntu 22.04, Rocky 9, Amazon Linux 2023; the images above | the images that build and test |
 
-The server and its development files come from PGDG in the build container: apt `trixie-pgdg` and yum `pgdgN` for 17 and 18. PostgreSQL 19 is not released yet (PGDG ships `19~rc1`), so its packages come from the apt
-component `19` of the same suite and the yum repository `pgdg19-updates-testing`, which `container.sh` enables when the stable `pgdgN` does not exist; the library is built against the release candidate and the smoke test
-runs on it. The build is the same for every major (`src/core/compat.h` holds the differences in the source). `scripts/package.sh --selftest` (in `scripts/ci.sh --selftest`) checks the guard and that no recipe names a literal major.
+The server and its development files come from PGDG in the build container: apt `<suite>-pgdg` `main` and yum `pgdgN` for 17, 18 and 19; a major PGDG has not released yet would come from the yum repository `pgdgN-updates-testing`, which `container.sh` enables when the stable `pgdgN` does not exist. The build is the same for every major (`src/core/compat.h` holds the differences in the source). `scripts/package.sh --selftest` (in `scripts/ci.sh --selftest`) checks the guard and that no recipe names a literal major.
 
 ## arm64 (aarch64)
 

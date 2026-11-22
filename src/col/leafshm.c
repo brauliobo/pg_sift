@@ -8,7 +8,7 @@
  * generations and formats) and options, and the others read them: 0.2 ms of copying. A merge, a rewrite or a REINDEX moves the stamp, and the next backend
  * to plan makes the records again.
  *
- * The table is a ring of bytes (sift.col_leaf_cache_kb, the DSM registry: nothing is allocated at postmaster start) and a directory of LSHM_DIR entries. A
+ * The table is a ring of bytes (sift.shared_cache_kb, the DSM registry: nothing is allocated at postmaster start) and a directory of LSHM_DIR entries. A
  * writer takes its place in the ring and clears the entries it covers under the spinlock, copies outside of it and enters the directory when done; a record
  * carries a checksum, so a reader that copied bytes another writer was overwriting (a ring that wrapped) finds out and plans as if there were no record.
  */
@@ -17,6 +17,7 @@
 #include "port/pg_crc32c.h"
 #include "storage/spin.h"
 
+#include "core/shmbudget.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
 
@@ -27,7 +28,6 @@
 /* the name carries the layout, as for the shared verdicts */
 #define LSHM_NAME		"sift_col_leaf_stats_6"
 
-int			sift_col_leaf_cache_kb = 16384;
 
 typedef struct LshmEnt
 {
@@ -88,17 +88,17 @@ lshm_init(SIFT_DSM_INIT_ARGS)
 
 	memset(s, 0, offsetof(Lshm, data));
 	SpinLockInit(&s->mutex);
-	s->size = (Size) sift_col_leaf_cache_kb * 1024;
+	s->size = sift_shm_pool_bytes(SIFT_SHM_COL_LEAF);
 }
 
 static Lshm *
 lshm_get(void)
 {
-	if (sift_col_leaf_cache_kb <= 0 || lshm_failed)
+	if (sift_shm_pool_bytes(SIFT_SHM_COL_LEAF) == 0 || lshm_failed)
 		return NULL;
 	if (lshm == NULL)
-		lshm = sift_dsm_attach(LSHM_NAME, offsetof(Lshm, data) + (Size) sift_col_leaf_cache_kb * 1024, lshm_init, &lshm_failed,
-							   "the statistics of the column indexes", "sift.col_leaf_cache_kb", false);
+		lshm = sift_dsm_attach(LSHM_NAME, offsetof(Lshm, data) + sift_shm_pool_bytes(SIFT_SHM_COL_LEAF), lshm_init, &lshm_failed,
+							   "the statistics of the column indexes", "sift.shared_cache_kb", false);
 	return lshm;
 }
 
@@ -250,7 +250,8 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 {
 	Lshm	   *s = lshm_get();
 	Size		off;
-	int			slot;
+	int			slot,
+				evicted = 0;
 
 	if (s == NULL || len > s->size)
 		return;
@@ -264,17 +265,23 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	for (int i = 0; i < LSHM_DIR; i++)
 	{
 		LshmEnt    *e = &s->dir[i];
+		bool		replaced = e->rel == rel && e->db == MyDatabaseId && e->scope == scope && e->kind == h.kind;
 
-		/* the record of the same index and kind (an older stamp), and those the new one covers, go */
-		if (e->used && ((e->rel == rel && e->db == MyDatabaseId && e->scope == scope && e->kind == h.kind) || (e->off < off + len && off < e->off + e->len)))
+		/* the record of the same index and kind (an older stamp) is replaced; those the new one covers are evicted */
+		if (e->used && (replaced || (e->off < off + len && off < e->off + e->len)))
+		{
+			evicted += !replaced;
 			e->used = false;
+		}
 	}
 	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
 	slot = lshm_bucket(rel);
 	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
 		if (!s->dir[i].used || (s->dir[slot].used && s->dir[i].tick < s->dir[slot].tick))
 			slot = i;
+	evicted += s->dir[slot].used;
 	SpinLockRelease(&s->mutex);
+	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 	memcpy(s->data + off, rec, len);
 	SpinLockAcquire(&s->mutex);
 	s->dir[slot] = (LshmEnt) {.used = true, .rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len, .tick = ++s->tick};

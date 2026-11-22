@@ -137,20 +137,6 @@ max_merge_avx512(float4 *scores, const float4 *other, const uint64 *mask, int np
 																	_mm512_load_ps(other + s))));
 }
 
-static SIFT_TARGET_AVX512 void
-ub_accum_avx512(float4 *ub, const uint8 *bounds, float4 w, int n)
-{
-	const __m512 vw = _mm512_set1_ps(w);
-
-	for (int i = 0; i < n; i += 16)
-	{
-		__mmask16	k = n - i >= 16 ? 0xFFFF : (__mmask16) ((1u << (n - i)) - 1);
-		__m512		b = _mm512_cvtepi32_ps(_mm512_cvtepu8_epi32(_mm_maskz_loadu_epi8(k, bounds + i)));
-
-		_mm512_mask_storeu_ps(ub + i, k, _mm512_add_ps(_mm512_maskz_loadu_ps(k, ub + i), _mm512_mul_ps(vw, b)));
-	}
-}
-
 static SIFT_TARGET_AVX512 int
 select_gt_avx512(uint16 *slot, float4 *vals, const float4 *scores, const uint64 *mask,
 				 int npages, float4 theta)
@@ -227,7 +213,7 @@ const SiftKernels sift_kernels_avx512 = {
 	.bm25_sel = bm25_sel_avx512,
 	.prune_gt = prune_gt_avx512,
 	.max_merge = max_merge_avx512,
-	.ub_accum = ub_accum_avx512,
+	.ub_accum = sift_kern_ub_accum,
 	.select_gt = select_gt_avx512,
 	.vm_allvisible = sift_kern_vm_pext,
 	.attr_mask = sift_kern_attr_mask_avx2,

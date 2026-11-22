@@ -1,0 +1,170 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_agg_fast_dense.comp - one or two dense group keys (see vk_agg_dense.comp) of a program that reads columns and compares them with
+ * constants (common_fast.glsl). The accumulators of every group are in shared memory (the job fits: the host checks), a workgroup adds
+ * into its own copy and merges it into the result once. A row adds as little as it can: the rows of the group once, the counts of the
+ * aggregates that are those rows (COUNT(*), and every count of a column without nulls: J_CNT_ROWS) are written at the merge, and the high
+ * limb of a sum only when it is not zero. A 64 bit atomic of shared memory costs about three cycles of a multiprocessor and a 32 bit one a
+ * fraction of that, and a granule has 8192 rows at most, so the counts of a granule are 32 bit words (c32: the rows of a group, then a word
+ * of each aggregate that counts) added to their 64 bit words when the granule ends.
+ */
+#include "common_fast.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(constant_id = 12) const uint SC_WORDS = 4096u;	/* the words of the accumulators of every group, rounded up to 1024, 2048 or 4096 (the host: fast.c): the shared memory a workgroup takes */
+
+shared int64_t sacc[SC_WORDS];
+shared uint c32[SC_WORDS / 2u];
+
+void acc_addf(uint i, double v)
+{
+	for (;;)
+	{
+		int64_t old = sacc[i];
+
+		if (atomicCompSwap(sacc[i], old, bitsd(dbl(old) + v)) == old)
+			break;
+	}
+}
+
+#define S_WORDS (1u + 3u * SC_NAGG)
+#define C_WORDS (1u + SC_NAGG)
+
+void row_add(uint g, uint i, uint all_rows)
+{
+	uint base = g * S_WORDS, cb = g * C_WORDS;
+
+	atomicAdd(c32[cb], 1u);
+	[[unroll]] for (uint a = 0u; a < SC_NAGG; a++)
+	{
+		uint k = AGG_KIND(a), o = base + 1u + a * 3u;
+		bool counted = ((all_rows >> a) & 1u) != 0u;
+
+		if (k == AK_COUNT_STAR || !agg_valid(a, i))
+			continue;
+		if (k == AK_COUNT)
+		{
+			if (!counted)
+				atomicAdd(c32[cb + 1u + a], 1u);
+			continue;
+		}
+		if (k == AK_SUM_I)
+		{
+			int64_t v = agg_value(a, i);
+
+			atomicAdd(sacc[o], sum_lo(v));
+			if (sum_hi(v) != 0l)
+				atomicAdd(sacc[o + 1u], sum_hi(v));
+		}
+		else if (k == AK_SUM_F)
+			acc_addf(o, dbl(agg_value(a, i)));
+		else if (k == AK_MIN || k == AK_MIN_F)
+			atomicMin(sacc[o], agg_cmp_key(a, k, i));
+		else
+			atomicMax(sacc[o], agg_cmp_key(a, k, i));
+		if (!counted)
+			atomicAdd(c32[cb + 1u + a], 1u);
+	}
+}
+
+/* the counts of the granule into their 64 bit words: the rows of a group, and for an aggregate the values of a COUNT, or the values summed, compared or counted by the others */
+void flush_counts(uint tid, uint G)
+{
+	for (uint i = tid; i < G * C_WORDS; i += WG)
+	{
+		uint g = i / C_WORDS, wd = i % C_WORDS, base = g * S_WORDS;
+
+		if (wd == 0u)
+			sacc[base] += int64_t(c32[i]);
+		else
+		{
+			uint k = AGG_KIND(wd - 1u);
+
+			if (k != AK_COUNT_STAR)
+				sacc[base + 1u + (wd - 1u) * 3u + (k == AK_COUNT ? 0u : 2u)] += int64_t(c32[i]);
+		}
+		c32[i] = 0u;
+	}
+}
+
+void merge(uint tid, uint GS, uint S, uint all_rows)
+{
+	for (uint i = tid; i < GS; i += WG)
+	{
+		uint wd = i % S;
+		int64_t v = sacc[i];
+
+		if (wd == 0u)
+		{
+			if (v != 0l)
+				atomicAdd(res[RES_ACC_OFF + i], v);
+			continue;
+		}
+		uint a = (wd - 1u) / 3u, j = (wd - 1u) % 3u, k = AGG_KIND(a);
+
+		if (j == (k <= AK_COUNT ? 0u : 2u) && (k == AK_COUNT_STAR || ((all_rows >> a) & 1u) != 0u))
+			v = sacc[i - wd];
+		if (v == acc_init(k, j))
+			continue;
+		if (j == 0u && (k == AK_MIN || k == AK_MIN_F))
+			atomicMin(res[RES_ACC_OFF + i], v);
+		else if (j == 0u && (k == AK_MAX || k == AK_MAX_F))
+			atomicMax(res[RES_ACC_OFF + i], v);
+		else if (j == 0u && k == AK_SUM_F)
+		{
+			for (;;)
+			{
+				int64_t old = res[RES_ACC_OFF + i];
+
+				if (atomicCompSwap(res[RES_ACC_OFF + i], old, bitsd(dbl(old) + dbl(v))) == old)
+					break;
+			}
+		}
+		else
+			atomicAdd(res[RES_ACC_OFF + i], v);
+	}
+}
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint ngran = ctl[J_NGRAN], G = ctl[J_DENSE_G], S = 1u + 3u * SC_NAGG, all_rows = ctl[J_CNT_ROWS];
+
+	for (uint i = tid; i < G * S; i += WG)
+	{
+		uint wd = i % S;
+
+		sacc[i] = wd == 0u ? 0l : acc_init(AGG_KIND((wd - 1u) / 3u), (wd - 1u) % 3u);
+	}
+	for (uint i = tid; i < G * C_WORDS; i += WG)
+		c32[i] = 0u;
+	barrier();
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		fast_granule(dtrow);
+		for (uint r = tid * 4u; r < g_nrows; r += WG * 4u)
+		{
+			uint pass = fast_tile(r);
+
+			[[unroll]] for (uint i = 0u; i < 4u; i++)
+			{
+				if (((pass >> i) & 1u) == 0u)
+					continue;
+				uint g = row_group(i);
+
+				if (g == NO_GROUP)
+					report_error(r + i, 8u, 0u);
+				else
+					row_add(g, i, all_rows);
+			}
+		}
+		barrier();
+		flush_counts(tid, G);
+		barrier();
+	}
+	merge(tid, G * S, S, all_rows);
+}

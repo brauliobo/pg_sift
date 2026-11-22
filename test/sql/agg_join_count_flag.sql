@@ -2,6 +2,7 @@
 -- (a column with a value in every row made a table of the size of the lookup table's rows). The aggregates that do need the ids (array_agg, count(DISTINCT); not min, max and sum, which are added tuple by tuple) of such a
 -- column cost more than those of a column of a few values. The answers are those of the normal plan, the rows of the parents with no child and the NULLs included. count(x + y) has PostgreSQL evaluate the sum for each joined tuple, which costs more than count(x).
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 

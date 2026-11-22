@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # An INSERT .. ON CONFLICT whose speculative insertion loses a race leaves no row in the index of a partition. The session that upserts is new: it loaded the library while the statement ran
 # (a partition's index is opened when the first row is routed to it), so it did not hear the statement start, and a trigger that runs SQL before the row reaches the index starts
 # statements that it does hear. The index of the partition is ahead of the unique index in the table, so its entry is made while the heap row is still speculative; then another session's

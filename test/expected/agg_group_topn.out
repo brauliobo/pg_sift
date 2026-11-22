@@ -3,6 +3,7 @@
 -- and averages of every kind, counts, ASC and DESC, NULLS FIRST and LAST, a second sort key, an OFFSET, NaN and infinities, groups that tie with the
 -- n-th (the key values of the rows must be the same, the groups among the ties may differ), and queries the pushdown must leave alone.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 -- 12 digits: the sums of floats are added in another order than the normal plan's

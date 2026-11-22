@@ -6,15 +6,15 @@
 # A fair comparison when the engines start different numbers of threads: the container only has the `--cpus N` quota (no pinning) and every
 # engine is told the same thread budget N (PostgreSQL and Citus: a leader and N-1 parallel workers; ClickHouse max_threads and its background pool N;
 # Elasticsearch node.processors and the JVM's processor count N). The timed questions run at each point of --cpus-list (1 and 3), each a result set.
-#   all       for each size: plan, containers, data, load, warm and cold runs, updates, containers removed; then store.json (and, with --docs, bench/results,
-#             the generated blocks of README.md and bench/out/BENCHMARKS.md)
+#   all       for each size: plan, containers, data, load, warm and cold runs, updates, containers removed; then store.json (and, with --docs, docs/results,
+#             the generated blocks of README.md and docs/BENCHMARKS.md)
 #   plan      one size: which servers this pass measures and which it reads from the cache of cells (plan-SIZE.json); PostgreSQL stays as the reference of the result checks
 #   setup     one size: containers up (they stay), data generated and loaded (or taken from the volume that holds it)    run, cold, updates: measure that size (updates changes the data)
 #             the load and the updates run at the largest budget (S_CPUS); run and cold at every point of S_CPUS_LIST, the engines reconfigured between them
 #   finish    the parts of the pass, the cache and the earlier results into store.json, the cells of the servers measured into the cache, the tables
 #   interference [--target E ...]   do engines that run at the same time on cores of their own change what one of them measures (store.py interference)
 #   clean     remove everything (containers, data volumes, the CSV and the load records, the image); S_CLEAN_CACHE=1 also the cache of cells
-#   report    the tables of bench/results/store.json into the generated blocks, without measuring
+#   report    the generated blocks and charts of the docs from docs/results (scripts/gen-docs.py), without measuring
 #   table [FILE], gap [FILE]  the warm medians / the gap tables (pg_sift against ClickHouse and Elasticsearch) of a results file; compare A B  two results files side by side
 # Settings come from bench/bench as S_* variables, the defaults from the preset (bench/presets.env, S_PRESET): S_SIZES (orders, comma separated), S_CPUS (the budget of the load, default
 # the largest point), S_CPUS_LIST (the budgets timed, comma separated; with S_CPUS alone just that one), S_MEMORY, S_RUNS, S_WARMUPS, S_COLD (cold runs, 0 = none), S_RESTARTS (runs of a
@@ -284,7 +284,7 @@ section() { # SIZES: the update, delete and VACUUM section (store.py section): S
     done
   done
   py section-merge "$OUT"/*/store-*-section.json -o "$OUT/updates.json" --sha "$(git -C "$REPO" rev-parse --short=12 HEAD)"
-  [[ -z ${S_DOCS:-} ]] || { cp "$OUT/updates.json" "$REPO/bench/results/updates.json"; report; }
+  [[ -z ${S_DOCS:-} ]] || { cp "$OUT/updates.json" "$REPO/docs/results/updates.json"; report; }
 }
 prepare() { # SIZES: what a pass needs before it times anything (the image with its build layers, the base images, the CSV of each size), so that the pass starts at once on a calm host
   local s
@@ -306,7 +306,7 @@ plan_args() { local f; for f in "$OUT"/*/plan.json; do [[ ! -e $f ]] || printf '
 merge() {
   local extra=()
   mapfile -t extra < <(plan_args)
-  [[ -z ${S_DOCS:-} || -n ${S_COMPRESSION:-} || ! -s $REPO/bench/results/store.json ]] || extra+=(--keep "$REPO/bench/results/store.json")   # the sizes this pass did not measure stay in the published file
+  [[ -z ${S_DOCS:-} || -n ${S_COMPRESSION:-} || ! -s $REPO/docs/results/store.json ]] || extra+=(--keep "$REPO/docs/results/store.json")   # the sizes this pass did not measure stay in the published file
   [[ -z ${S_KEEP:-} ]] || extra+=(--keep "$S_KEEP")
   py merge "$OUT"/*/store-*.json -o "$OUT/store.json" "${extra[@]}"
 }
@@ -316,10 +316,10 @@ cache_save() { # the cells of the servers this pass measured go to the cache (a 
   for f in "$OUT"/*/plan.json; do [[ ! -e $f ]] || py cache-save --plan "$f" --results "$OUT/store.json" --cache-dir "$CACHE_DIR"; done
 }
 docs() {
-  cp "$OUT/store.json" "$REPO/bench/results/store${S_COMPRESSION:+-compression}.json"
+  cp "$OUT/store.json" "$REPO/docs/results/store${S_COMPRESSION:+-compression}.json"
   report
 }
-report() { py render --readme "$REPO/bench/out/README-blocks.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --img "$REPO/bench/out/img"; }
+report() { python3 -I "$REPO/scripts/gen-docs.py"; }
 finish() {
   merge
   cache_save
@@ -382,7 +382,7 @@ case $sub in
   report) report ;;
   stats) mkdir -p "$OUT"; stats ;;
   merge) merge ;;
-  table|gap) py "$1" "${2:-$REPO/bench/results/store.json}" ;;
+  table|gap) py "$1" "${2:-$REPO/docs/results/store.json}" ;;
   compare) py compare "$2" "$3" ;;
   clean) clean ;;
   *) echo "usage: store.sh all|plan|setup|run|cold|updates|section|prepare|finish|interference|stats|report|merge|table|gap|compare|clean" >&2; exit 1 ;;

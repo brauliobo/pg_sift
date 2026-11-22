@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sift.approx_count_distinct is an opt-in: an estimate is never what a query gets without asking for it by name (docs/USAGE.md "Approximate distinct counts"). No
+# sift.approx_count_distinct is an opt-in: an estimate is never what a query gets without asking for it by name (docs/ANALYTICS.md "Approximate Distinct Counts"). No
 # measurement, no server (a grep, about a second). Fails when
 #   - a setting or a reloption of src/ turns an exact aggregate into an estimate (a DefineCustom*Variable or add_*_reloption named approx*, other than hll_columns, which only
 #     stores sketches for the aggregate that asks),
@@ -19,6 +19,6 @@ for f in agg/plan_agg.c agg/spec_dist.c $(cd "$R/src" && ls agg/plan/*.c agg/dis
 done
 grep -q 'count(DISTINCT' "$R/test/sql/col_approx.sql" && grep -q 'exact_with_option' "$R/test/sql/col_approx.sql" || fail "test/sql/col_approx.sql does not prove count(DISTINCT) exact with hll_columns on"
 for p in '0\.81%' 'not counted' 'mergeable' 'is exact in every plan'; do
-	grep -qE "$p" "$R/docs/USAGE.md" || fail "docs/USAGE.md lacks '$p' in its section on approximate distinct counts"
+	grep -qE "$p" "$R/docs/ANALYTICS.md" || fail "docs/ANALYTICS.md lacks '$p' in its section on approximate distinct counts"
 done
 exit $bad

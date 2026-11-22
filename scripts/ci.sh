@@ -10,6 +10,7 @@
 #                                     $TMPDIR/sift-ci-summary (default: all of them); fails when a skip gives no reason
 #   scripts/ci.sh --scratch [FILE...] scripts/scratch.tsv (the scratch each job measured, which the scheduler trusts) updated by retained summaries, on stdout
 #   scripts/ci.sh --plan [quick|full] the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
+#   scripts/ci.sh --toolchain [quick|full]   yes when a job of the shard (SIFT_CI_SHARD) compiles, else no: the workflow installs the compiler cache and the tag history only for yes
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
 #   release library, without the test-only functions: scripts/release-library-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
@@ -33,10 +34,13 @@
 # 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
-# SLOW_REGRESS are jobs of their own, the others run twelve to a job, installcheck-batch1...: scripts/pgtest.sh regress NAME runs one).
+# SLOW_REGRESS and the tests of roles and of the extension's recreation are jobs of their own, the others run 24 to a job, installcheck-batch1..., each one pg_regress run with one leak and
+# leftover check that names the failing test: scripts/pgtest.sh regress NAME... runs them).
 # SIFT_CI_AFFECTED, a regex on the job names, keeps the jobs that match (`affected` sets it from scripts/areas.tsv); SIFT_CI_SHARD=K/N runs the Kth of N slices of the queue.
 # `affected --focus [--list] [BASE]` narrows the regression tests of a change in src/ to the ones that execute the functions the diff touched (scripts/focus/NAME.tsv, made by
 # scripts/focus-gen.sh with gcov): a function every test executes, or a change outside functions, runs the tests of the area as in the fast tier; the other jobs only run in CI.
+# SIFT_PREBUILT_ROOT (the testing or ASan root of scripts/ci-build.sh), SIFT_PREBUILT_RELEASE and SIFT_PREBUILT_HARDENED: the staged flavors a shard installs instead of compiling (the workflow's build job
+# makes them once for every shard of a major); the jobs that check the build tree (isa-baseline, tools-build) then report what the build job recorded.
 # SIFT_CI_NO_HARNESS=1 skips the checks of the harness that shard 1 runs (the workflow sets it: its `lint` job runs them once for every run). Logs:
 # <scratch>/logs/<suite>.log, and <job>.log for each job of a split suite. Stages whose sift code has not landed are skipped, not
 # failed. Exit 1 if any suite fails.

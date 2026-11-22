@@ -1,6 +1,7 @@
--- The guard that keeps a damaged index from failing a write must never fail a healthy one: every statement kind and transaction state that writes to a table with a sift index runs
--- with a healthy index, with damage the index has not met yet, with an index that is out of service, and with sift.on_corruption = error, and the rows reach the heap each time.
--- A scenario is a row of `scenario`; a failing one ends the session (the guard once started a subtransaction where none can start) or leaves a count that is not the rows written.
+-- The check of the quarantine before a write must never fail a healthy index: every statement kind and transaction state that writes to a table with a sift index runs
+-- with a healthy index, with damage the index has not met yet, with an index that is out of service, and with sift.on_corruption = error, and the rows reach the heap each time
+-- (the statement that meets the damage fails once).
+-- A scenario is a row of `scenario`; a failing one ends the session or leaves a count that is not the rows written.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = error;
 SET check_function_bodies = off;
@@ -218,7 +219,7 @@ CALL heap_only(true);
 SELECT totals() = :'heap' AS same_rows_as_healthy;
 SELECT count(*) AS quarantined FROM sift.quarantine;
 
--- damage that appears between a write and its commit: the flush of an autocommit statement meets it inside the guard, the statement commits, the heap has the rows and the index is out of service
+-- damage that appears between a write and its commit: the flush of an autocommit statement meets it, the statement fails once with the error of the damage, and the index is out of service for the next one
 SET sift.on_corruption = quarantine;
 CALL fixtures();
 CREATE FUNCTION poke_tc() RETURNS int LANGUAGE sql AS $$ SELECT 1 FROM sift._test_poke('tc_idx', 0, 24, 0, 4) $$;
@@ -227,8 +228,7 @@ SELECT count(*) AS committed_rows FROM tc WHERE id > 80000;
 SELECT index FROM sift.quarantine;
 DROP FUNCTION poke_tc();
 
--- the same at the COMMIT of a transaction block, where PostgreSQL does not take the rollback of a subtransaction: that COMMIT fails once with the error of the damage and the transaction is
--- rolled back, the index is out of service for the next one
+-- the same at the COMMIT of a transaction block: that COMMIT fails once with the error of the damage and the transaction is rolled back, the index is out of service for the next one
 CALL fixtures();
 BEGIN;
 INSERT INTO tc SELECT 80000 + i, 1, 1 FROM generate_series(1, 50) i;

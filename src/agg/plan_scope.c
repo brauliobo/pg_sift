@@ -51,6 +51,7 @@
 #include "utils/rel.h"
 #include "utils/typcache.h"
 
+#include "agg/plan/safety.h"
 #include "agg/plan_int.h"
 #include "col/am.h"
 #include "col/scope.h"
@@ -203,16 +204,6 @@ integer_eq(Oid opno)
 	return op_in_opfamily(opno, INTEGER_BTREE_FAM_OID) && get_op_opfamily_strategy(opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber;
 }
 
-/* the equality of a scope key: the integer one, or the `=` of text (also varchar) or uuid under a deterministic collation, where the bytes of the values decide it, as the codes of the key map do */
-static bool
-key_eq(Oid opno, Oid collation)
-{
-	if (integer_eq(opno))
-		return true;
-	return (opno == lookup_type_cache(TEXTOID, TYPECACHE_EQ_OPR)->eq_opr || opno == lookup_type_cache(UUIDOID, TYPECACHE_EQ_OPR)->eq_opr) &&
-		(!OidIsValid(collation) || get_collation_isdeterministic(collation));
-}
-
 /* the relation r of a declaration is the table relid */
 static bool
 names_relation(Oid heapoid, const SiftScopeRel *r, Oid relid)
@@ -331,7 +322,7 @@ scope_item(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 		return it;
 	if (rte->rtekind == RTE_RELATION)
 	{
-		if (rte->securityQuals != NIL)
+		if (agg_rte_has_rls(root, rte))
 			it.why = "row-level security applies to the scope relation";
 		it.relid = rte->inh ? InvalidOid : rte->relid;
 	}
@@ -344,7 +335,7 @@ scope_item(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 			return it;
 		if (!plain_select(q))
 			it.why = "the sub-select over the scope relation is not a plain projection of its columns";
-		else if (q->jointree->quals != NULL || base->securityQuals != NIL)
+		else if (q->jointree->quals != NULL || agg_query_rte_has_rls(q, base))
 			it.why = "the view over the scope relation has a condition of its own";
 		else if (has_subclass(base->relid) || base->tablesample != NULL)
 			it.why = "the view over the scope relation reads its child tables or a sample of it: their rows are rows of the join, not pairs";
@@ -360,13 +351,6 @@ scope_item(AggCtx *c, const SiftScopeSpecs *specs, Index rti)
 	}
 	it.sp = OidIsValid(it.relid) ? declared_scope(c->heapoid, specs, it.relid) : NULL;
 	return it;
-}
-
-/* the column of the table that column att of the item is (InvalidAttrNumber: none) */
-AttrNumber
-item_attno(const AttrNumber *map, int nmap, AttrNumber att)
-{
-	return map == NULL ? att : att > 0 && att < nmap ? map[att] : InvalidAttrNumber;
 }
 
 /* the derived leaf of the scope the pass took out, when e is its key column (a bare Var of the item): what a group key `s.key` reads (match_leaf); -1 when it is not */
@@ -400,15 +384,6 @@ sift_agg_scope_key_codes(Node *key)
 	return (Node *) v;
 }
 
-/* n is a plain column of the item rti */
-Var *
-item_var(Node *n, Index rti)
-{
-	Node	   *v = strip_relabel(n);
-
-	return IsA(v, Var) && ((Var *) v)->varno == rti && ((Var *) v)->varlevelsup == 0 && ((Var *) v)->varnullingrels == NULL ? (Var *) v : NULL;
-}
-
 /* q equates a column of the item rti to a column of the scanned table: theirs, ours (the scanned table's Var) */
 static bool
 member_equality(AggCtx *c, Index rti, Node *q, Var **theirs, Var **ours)
@@ -425,69 +400,6 @@ member_equality(AggCtx *c, Index rti, Node *q, Var **theirs, Var **ours)
 		*ours = item_var(linitial(op->args), c->relid);
 	}
 	return *theirs != NULL && *ours != NULL;
-}
-
-/*
- * q binds the key column of the item: `key = value`, `value = key` or `key = ANY (array)` (IN (list)). The value, a Const when the statement knows it, else an expression of its
- * parameters; NULL when q is not such a condition.
- */
-Node *
-key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
-{
-	Node	   *col,
-			   *val;
-
-	if (IsA(q, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) q)->useOr && key_eq(((ScalarArrayOpExpr *) q)->opno, ((ScalarArrayOpExpr *) q)->inputcollid))
-	{
-		col = linitial(((ScalarArrayOpExpr *) q)->args);
-		val = lsecond(((ScalarArrayOpExpr *) q)->args);
-	}
-	else if (IsA(q, OpExpr) && list_length(((OpExpr *) q)->args) == 2 && key_eq(((OpExpr *) q)->opno, ((OpExpr *) q)->inputcollid))
-	{
-		col = linitial(((OpExpr *) q)->args);
-		val = lsecond(((OpExpr *) q)->args);
-		if (item_var(col, rti) == NULL)
-		{
-			Node	   *t = col;
-
-			col = val;
-			val = t;
-		}
-	}
-	else
-		return NULL;
-	if (item_var(col, rti) == NULL || item_attno(map, nmap, item_var(col, rti)->varattno) != key)
-		return NULL;
-	return strip_relabel(val);
-}
-
-/* a column of another table than the item rti (not under an outer join) */
-static Var *
-other_var(Node *n, Index rti)
-{
-	Node	   *v = strip_relabel(n);
-
-	return IsA(v, Var) && ((Var *) v)->varno != rti && ((Var *) v)->varlevelsup == 0 && ((Var *) v)->varnullingrels == NULL ? (Var *) v : NULL;
-}
-
-/* q equates the key column of the item rti to a column of another table (a table of keys): that column; NULL when q is not such a condition */
-static Var *
-key_equality(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q)
-{
-	OpExpr	   *op = (OpExpr *) q;
-	Var		   *mine,
-			   *theirs;
-
-	if (!IsA(q, OpExpr) || list_length(op->args) != 2 || !key_eq(op->opno, op->inputcollid))
-		return NULL;
-	mine = item_var(linitial(op->args), rti);
-	theirs = other_var(lsecond(op->args), rti);
-	if (mine == NULL || theirs == NULL)
-	{
-		mine = item_var(lsecond(op->args), rti);
-		theirs = other_var(linitial(op->args), rti);
-	}
-	return mine != NULL && item_attno(map, nmap, mine->varattno) == key ? theirs : NULL;
 }
 
 /* the keys a generic plan expects of an array it does not know: the estimate of PostgreSQL's own for an ANY (array parameter) */
@@ -686,7 +598,7 @@ take_item(AggCtx *c, FromScan *fs, const SiftScopeSpecs *specs, Index rti, Scope
 		{
 			if (tabq != NULL && equal(q, tabq))
 				continue;
-			if (tabq != NULL || (kvar = key_equality(rti, map, nmap, get_attnum(relid, sp->rel.b), q)) == NULL)
+			if (tabq != NULL || (kvar = scope_key_equality(rti, map, nmap, get_attnum(relid, sp->rel.b), q)) == NULL)
 				return psprintf("a condition reads the scope relation and another table (not the equality of its key to the key column of a table): %s", expr_text(c, q));
 			tabq = q;
 			continue;

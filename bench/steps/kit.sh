@@ -86,6 +86,6 @@ done
 log
 log "$rows orders in $(( t2 - t0 )) s (data $(( t1 - t0 )) s, indexes $(( t2 - t1 )) s). Table, sift_col index, BM25 index: $sizes."
 log "$(docker exec "$name" nproc) CPUs visible to the container${cpus:+ (quota $cpus)}, $(docker exec "$name" postgres --version). 'off' is the plan PostgreSQL has without SiftAgg on the same data and indexes."
-log "Numbers depend on the host; the published ones are measured on a dedicated machine at 1,000,000 orders (bench/results/store.json)."
+log "Numbers depend on the host; the published ones are measured on a dedicated machine at 1,000,000 orders (docs/results/store.json)."
 [[ -z $keep ]] || log "container $name is running: docker exec -it $name psql -U postgres -d store (docker rm -f -v $name when done)"
 (( ! fail )) || { log "kit: an answer with the pushdown differs from the one without it"; exit 3; }

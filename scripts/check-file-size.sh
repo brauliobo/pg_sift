@@ -11,9 +11,12 @@ LIMIT=1000
 # Allowed for good: the full install script of a released minor (sql/pg_sift--X.Y.sql) is frozen (scripts/released-sql.sha256) and cannot be split; a new minor adds only its update script.
 FROZEN='^sql/pg_sift--[0-9]+[.][0-9]+[.]sql$'
 
+# Allowed for good: the generated Vulkan headers (scripts/gen-aggvk-spv.sh, scripts/gen-aggvk-min.py) are rebuilt from the shaders and the Khronos header, not edited.
+GENERATED='^src/agg/vk_(spv|min)[.]h$'
+
 bad=0
 while IFS=$'\t' read -r f n; do
-	[[ $f =~ $FROZEN ]] && continue
+	[[ $f =~ $FROZEN || $f =~ $GENERATED ]] && continue
 	echo "$f: $n lines (limit $LIMIT): split it into a directory of context files"
 	bad=1
 done < <(git grep -c '' -- '*.c' '*.h' '*.sh' '*.bash' '*.py' '*.pl' '*.pm' '*.sql' '*.comp' '*.mk' '*Makefile' '*.yml' '*.yaml' |

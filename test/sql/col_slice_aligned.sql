@@ -1,4 +1,4 @@
--- The merge of a key_cut index by slices (a worker and the backend each write the rows of a slice of the key range, col/order_bound.c) cuts the slices between values of the first key leaf
+-- The merge of a key_cut index by slices (a worker and the backend each write the rows of a slice of the key range, col/v1/order_bound.c) cuts the slices between values of the first key leaf
 -- when a value that fits a slice is within the slack of the exact point: a value that fits is in one segment, and only a value bigger than the slack allows for is cut inside. The keys
 -- are of skewed sizes (the first is 29% of the rows, the second 12%), so that the exact points of the slices fall inside values; the answers and the rows never change.
 CREATE EXTENSION pg_sift;

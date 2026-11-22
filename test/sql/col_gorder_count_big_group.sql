@@ -2,7 +2,7 @@
 -- pre-aggregates net of their dead rows; the entries of the group (a liveness test each) cost more than the units here, so the count does not take them.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;

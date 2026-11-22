@@ -8,7 +8,7 @@ One engine at a time (a container, or a process for DuckDB itself), each an adap
 generates each suite with bench/sql/SUITE/gen.sql (its pg_sift index lines left out), answers every query with PostgreSQL's own plan (the arm `pg`, the reference) and with
 `duckdb.force_execution = on`, and exports the tables as CSV and their schema as JSON in --work. The other engines load that CSV and answer the same statements (a `--@ SECTION` of the case,
 the engine's dialect in bench/engines.tsv, replaces the statement where the dialects differ). A case an engine does not run is a row with value NA and the reason in `note`, never a missing row.
-Rows are `arm ms` of the warm median, like bench/results/cases.tsv; the pg_sift number of each query is the one of cases.tsv, so the comparison is made by steps/compare.py from the two files.
+Rows are `arm ms` of the warm median, like docs/results/cases.tsv; the pg_sift number of each query is the one of cases.tsv, so the two files compare directly.
 """
 import argparse
 import hashlib
@@ -54,7 +54,7 @@ def host_words():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('cmd', choices=['run', 'key'], help='key: print the inputs key and the host of a run with these options, and whether bench/results/generic.tsv carries both (exit 0) or not (exit 1)')
+    ap.add_argument('cmd', choices=['run', 'key'], help='key: print the inputs key and the host of a run with these options, and whether docs/results/generic.tsv carries both (exit 0) or not (exit 1)')
     ap.add_argument('--rows', type=int, default=1000000)
     ap.add_argument('--suites', default='tpch,hits,tseries,orders')
     ap.add_argument('--engines', help='ids of bench/engines.tsv (kind analytic); default: those with default = yes')
@@ -65,7 +65,7 @@ def main():
     ap.add_argument('--check-only', action='store_true', help='answer every query once and compare; no times')
     ap.add_argument('--work', default=os.environ.get('GENERIC_WORK', '/tmp/sift-generic'))
     ap.add_argument('--out')
-    ap.add_argument('--docs', action='store_true', help='write bench/results/generic.tsv')
+    ap.add_argument('--docs', action='store_true', help='write docs/results/generic.tsv')
     ap.add_argument('--port', type=int, default=56180)
     a = ap.parse_args()
     suites = a.suites.split(',')
@@ -77,13 +77,13 @@ def main():
     adapters = {r['id']: engines.adapter(r['id']) for r in registry if r['id'] in chosen or getattr(engines.adapter(r['id']), 'SOURCE', False)}
     order = sorted(adapters, key=lambda e: (not getattr(adapters[e], 'SOURCE', False), [r['id'] for r in registry].index(e)))   # the source first, then the registry's order
     if a.docs:
-        a.out = os.path.join(REPO, 'bench', 'results', 'generic.tsv')
+        a.out = os.path.join(REPO, 'docs', 'results', 'generic.tsv')
     os.makedirs(a.work, exist_ok=True)
     ctx = SimpleNamespace(port=a.port, cpus=a.cpus, memory=a.memory, timeout=a.timeout, work=a.work)
     cases = suite_cases(suites)
     key, host = inputs_key(a, cases, chosen), host_words()
     if a.cmd == 'key':
-        have = {l[2:].split(':', 1)[0]: l.split(':', 1)[1].strip() for l in open(os.path.join(REPO, 'bench', 'results', 'generic.tsv')) if l.startswith('# ') and ':' in l}
+        have = {l[2:].split(':', 1)[0]: l.split(':', 1)[1].strip() for l in open(os.path.join(REPO, 'docs', 'results', 'generic.tsv')) if l.startswith('# ') and ':' in l}
         print('inputs %s, host %s; the file has inputs %s, host %s, measured %s' % (key, host, have.get('inputs'), have.get('host'), have.get('date')))
         sys.exit(0 if have.get('inputs') == key and have.get('host') == host else 1)
     runs = 0 if a.check_only else a.runs

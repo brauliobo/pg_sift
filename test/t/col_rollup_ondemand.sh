@@ -54,7 +54,7 @@ SIFT_TMP=$(dir primary) leak_expect 1 'PANIC:'
 SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 6'
 node_conf primary "sift.test_col_rollup_panic = 1"
 pg_ctl -D "$(dir primary)/data" reload >/dev/null
-sleep 1
+wait_for "setting_is primary sift.test_col_rollup_panic 1" 30
 refresh_panics() { ! sql primary "SELECT sift.col_rollup_refresh('o_col')" >/dev/null 2>&1; }
 check "the refresh PANICs" refresh_panics
 for _ in $(seq 300); do [[ -f $(dir primary)/data/postmaster.pid ]] || break; sleep 0.1; done

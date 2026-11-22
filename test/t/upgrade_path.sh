@@ -37,13 +37,13 @@ check "an index without the mark is listed" test "$(q marked "SELECT command FRO
 q marked "REINDEX INDEX docs_idx" >/dev/null
 check "its REINDEX takes it off the list" test "$(q marked "SELECT count(*) FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == 0
 
-# the 5.0 library over the SQL of 4.3: a column that the value store would share (forced here) is stored in the segments, with no catalog error
+# the library over the SQL of 4.3: a string column is stored in the segments, with no catalog error
 q oldsql "CREATE EXTENSION pg_sift VERSION '4.3'" "CREATE TABLE t (id int, a text, n int)" \
 	"INSERT INTO t SELECT i, md5(i::text) || md5((i + 1)::text), i % 7 FROM generate_series(1, 3000) i" >/dev/null || bail "setup failed"
-check "an index builds with the SQL of 4.3 and no value store" test "$(q oldsql "SET sift.test_vstore_columns = 'a'" "CREATE INDEX t_one ON t USING sift_col (id, a, n)" \
+check "an index builds with the SQL of 4.3 and no value store" test "$(q oldsql "CREATE INDEX t_one ON t USING sift_col (id, a, n)" \
 	"SELECT count(*) FROM pg_class WHERE relname LIKE '%_sift_values'" | tail -n 1)" == 0
 q oldsql "ALTER EXTENSION pg_sift UPDATE" >/dev/null
-check "after the update a REINDEX shares the column through a store" test "$(q oldsql "SET sift.test_vstore_columns = 'a'" "REINDEX INDEX t_one" \
-	"SELECT count(*) FROM pg_class WHERE relname LIKE '%_sift_values'" | tail -n 1)" == 1
+check "after the update a REINDEX makes no store either" test "$(q oldsql "REINDEX INDEX t_one" \
+	"SELECT count(*) FROM pg_class WHERE relname LIKE '%_sift_values'" | tail -n 1)" == 0
 check "the index answers as the heap does" test "$(q oldsql "SELECT count(*) FROM t WHERE a = md5('7') || md5('8')")" == 1
 finish

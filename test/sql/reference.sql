@@ -30,7 +30,8 @@
 --           first), the order sift sums in: a
 --           term is one unit, a phrase one unit per distinct term (first
 --           occurrence order), an expansion leaf one unit = max over its
---           expansions. A unit counts when the document matches the query and
+--           expansions, all weighed by the leaf's blended df (blend_df). A
+--           unit counts when the document matches the query and
 --           the unit's leaf matches the document; NOT subtrees never count.
 --           Group boosts multiply into leaves, root first.
 --
@@ -687,11 +688,11 @@ $$;
 CREATE OR REPLACE FUNCTION sift_ref.stats() RETURNS TABLE (n bigint, sum_dl bigint, avgdl real, k1 real, b real)
 LANGUAGE sql AS $$ SELECT n, sum_dl, sift_ref.avgdl(sum_dl, nullif(n, 0)), k1, b FROM pg_temp.sift_ref_stat $$;
 
-CREATE OR REPLACE FUNCTION sift_ref.idf(df bigint, n bigint) RETURNS real LANGUAGE sql IMMUTABLE AS $$
-	SELECT ln(1::float8 + (n::float8 - df::float8 + 0.5::float8) / (df::float8 + 0.5::float8))::real
+CREATE OR REPLACE FUNCTION sift_ref.idf(df float8, n bigint) RETURNS real LANGUAGE sql IMMUTABLE AS $$
+	SELECT ln(1::float8 + (n::float8 - df + 0.5::float8) / (df + 0.5::float8))::real
 $$;
 
-CREATE OR REPLACE FUNCTION sift_ref.bm25(tf int, dl int, df bigint, n bigint, avgdl real, k1 real, b real, boost real)
+CREATE OR REPLACE FUNCTION sift_ref.bm25(tf int, dl int, df float8, n bigint, avgdl real, k1 real, b real, boost real)
 RETURNS real LANGUAGE sql STABLE AS $$
 	SELECT CASE WHEN sift_ref.mutant('float8_score')
 		THEN (w::float8 * t::float8 / (t::float8 + k1::float8 * (1 - b::float8 + b::float8 * dl / avgdl::float8)))::real
@@ -701,7 +702,7 @@ RETURNS real LANGUAGE sql STABLE AS $$
 		least(tf, CASE WHEN sift_ref.mutant('tf_cap15') THEN 15 ELSE 255 END)::real AS t) x
 $$;
 
--- Dictionary terms of an expansion leaf (cached per load); a leaf with more than sift.max_expansions is wide (see is_wide)
+-- Dictionary terms of an expansion leaf (cached per load)
 CREATE OR REPLACE FUNCTION sift_ref.expand(a jsonb) RETURNS text[] LANGUAGE plpgsql AS $$
 DECLARE
 	k jsonb := a - 'b' || jsonb_build_object('mutant', current_setting('sift_ref.mutant', true));
@@ -714,10 +715,13 @@ BEGIN
 	RETURN CASE WHEN sift_ref.mutant('prefix_trunc') THEN terms[1:4] ELSE terms END;
 END $$;
 
--- A leaf with more terms than sift.max_expansions (the engine's) is not scored as the max over its terms but as the
--- one term prefix_index would index for a prefix: tf the occurrences of its words, df the documents that have one
-CREATE OR REPLACE FUNCTION sift_ref.is_wide(a jsonb) RETURNS bool LANGUAGE sql STABLE AS $$
-	SELECT cardinality(sift_ref.expand(a)) > coalesce(nullif(current_setting('sift.max_expansions', true), '')::int, 512)
+-- The df an expansion leaf is weighed by, whatever sift.max_expansions: its terms' dfs as independent chances of a document
+-- having any of them, never below the largest nor above N (a single term: its own df); summed in ascending term order
+CREATE OR REPLACE FUNCTION sift_ref.blend_df(terms text[]) RETURNS float8 LANGUAGE sql STABLE AS $$
+	SELECT coalesce((SELECT CASE WHEN count(*) = 1 THEN max(f.df)::float8 WHEN max(f.df) >= s.n THEN s.n
+			ELSE least(greatest(s.n * (1 - exp(sum(ln(1 - f.df::float8 / s.n) ORDER BY f.term COLLATE "C"))), max(f.df)), s.n) END
+		FROM pg_temp.sift_ref_df f, (SELECT n::float8 AS n FROM pg_temp.sift_ref_stat) s
+		WHERE f.term = ANY (terms) AND f.df > 0 GROUP BY s.n), 0)
 $$;
 
 -- The normalized form of q: scores are defined on it (float4 sums depend on the order)
@@ -781,13 +785,7 @@ BEGIN
 				FROM (SELECT t, min(n) AS n FROM jsonb_array_elements_text(a -> 'terms') WITH ORDINALITY u(t, n) GROUP BY t) p
 				ORDER BY n);
 		WHEN 'exp' THEN
-			IF sift_ref.is_wide(a) THEN
-				RETURN ARRAY[format('SELECT r.tid, sift_ref.bm25(least(f.tf, 255)::int, d.dl, u.df, %s, %s::real) AS s FROM r
-					JOIN (SELECT tid, sum(tf) AS tf FROM pg_temp.sift_ref_tf WHERE term = ANY (%L::text[]) GROUP BY tid) f ON f.tid = r.tid
-					JOIN pg_temp.sift_ref_doc d ON d.tid = r.tid
-					CROSS JOIN (SELECT count(DISTINCT tid) AS df FROM pg_temp.sift_ref_tf WHERE term = ANY (%L::text[])) u',
-					consts, a ->> 'b', sift_ref.expand(a), sift_ref.expand(a))];
-			END IF;
+			s := format('sift_ref.bm25(f.tf, d.dl, %s::float8, %s, %s::real)', sift_ref.blend_df(sift_ref.expand(a)), consts, a ->> 'b');
 			RETURN ARRAY[format(one, CASE WHEN sift_ref.mutant('dismax_sum') THEN 'sum(' || s || ' ORDER BY f.term)'
 					ELSE 'max(' || s || ')' END,
 				format('= ANY (%L::text[])', sift_ref.expand(a)), 'GROUP BY r.tid')];

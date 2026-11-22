@@ -1,4 +1,4 @@
--- The reads count what maintenance would spare them (sift.stats), whether or not maintenance may run: rows checked in the heap price a VACUUM, rows of units with a dead row price a rewrite.
+-- The reads count what maintenance would spare them (sift.stats), whether or not maintenance may run: rows checked in the heap, rows of units with a dead row.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE TABLE rp (id int, k int, v int) WITH (autovacuum_enabled = false);
@@ -7,9 +7,9 @@ CREATE INDEX rp_c ON rp USING sift_col (id, k, v);
 VACUUM (ANALYZE, FREEZE) rp;
 UPDATE rp SET v = v + 1 WHERE id % 10 = 0;
 SET max_parallel_workers_per_gather = 0;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SELECT k, count(*), sum(v) FROM rp GROUP BY k ORDER BY k LIMIT 2;
-SELECT name, value > 0 AS counted FROM sift.stats(local => true) WHERE name IN ('rows_vetted', 'read_penalty_kinstr') ORDER BY name;
+SELECT name, value > 0 AS counted FROM sift.stats(local => true) WHERE name IN ('rows_vetted') ORDER BY name;
 SELECT name, value FROM sift.stats(local => true) WHERE name IN ('rows_dirty_units', 'maintenance_asks') ORDER BY name;
 DROP TABLE rp;
 DROP EXTENSION pg_sift;

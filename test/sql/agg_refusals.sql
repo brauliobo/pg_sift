@@ -2,6 +2,7 @@
 -- sift.explain_refusals on it names the first reason each candidate path (arm) gave up for, as a notice, and sift.explain_why plans a SELECT
 -- without running it and returns the same as rows. One table asserts the slug of every refusal shape; the setting changes no plan.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '30s';
@@ -108,9 +109,9 @@ SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM
 DROP TABLE narrow;
 
 -- a spine of 12,001 rows is used; one above the memory of the lookups is refused
-SET sift.agg_lookup_max_kb = 512;
+SET work_mem = '1MB';
 SELECT arm, used, slug FROM sift.explain_why(spine_q('(SELECT a FROM ticks)', 'm.parent_id = sp.k')) WHERE arm = 'two_level';
-RESET sift.agg_lookup_max_kb;
+SET work_mem = '64MB';
 
 -- The cost of the scan against the normal plan: with the table scans on, a probe of one key keeps its index scan.
 RESET enable_seqscan;
@@ -129,7 +130,7 @@ RESET sift.enable_agg;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SELECT arm, used, slug FROM sift.explain_why('SELECT DISTINCT ON (id) id, kind FROM events ORDER BY id, ts');
-RESET work_mem;
+SET work_mem = '64MB';
 RESET hash_mem_multiplier;
 -- only a SELECT is planned
 SELECT * FROM sift.explain_why('DELETE FROM plain');

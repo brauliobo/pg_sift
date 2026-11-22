@@ -15,6 +15,8 @@
 #include "utils/tuplestore.h"
 
 #include "col/dsmreg.h"
+#include "core/f2/manifest.h"
+#include "core/meta_peek.h"
 #include "core/progress.h"
 #include "core/sql.h"
 #include "core/store.h"
@@ -97,13 +99,31 @@ progress_xact(XactEvent event, void *arg)
 		release();
 }
 
-/* The segments of the index a phase replaces: the immutable ones, and the sealed write buffers that a promotion turns into one each */
+/* The parts of an index of format major 2: what each phase of its maintenance walks */
+static int64
+parts_total(Relation index)
+{
+	SiftManifestRead mr = sift_manifest_read_range(index, NULL, NULL);
+	int64		n = 0;
+
+	for (int i = 0; i < mr.n; i++)
+		n += mr.entries[i].nparts;
+	pfree(mr.entries);
+	return n;
+}
+
+/* The segments of the index a phase replaces: the immutable ones, and the sealed write buffers that a promotion turns into one each (the parts of an index of format major 2); 0 (not known) for a relation that keeps no directory */
 static int64
 phase_total(Relation index, const char *phase)
 {
 	SiftDirSnapshot *snap;
 	int64		n = 0;
+	SiftFormatStatus status = sift_meta_peek_format(index).status;
 
+	if (status == SIFT_FMT_V2)
+		return parts_total(index);
+	if (status != SIFT_FMT_V1)
+		return 0;
 	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 		n += strcmp(phase, "promote") == 0 ? snap->segs[i].kind == SIFT_SEG_WBUF_SEALED : snap->segs[i].kind == SIFT_SEG_IMMUTABLE;

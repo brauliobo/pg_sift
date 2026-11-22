@@ -1,60 +1,38 @@
-# Support
+# Support and Compatibility
 
-What is supported, for how long, and how to move between releases. Upgrade steps: [UPGRADING.md](UPGRADING.md); numbers written to disk: [FORMATS.md](FORMATS.md).
+Supported PostgreSQL versions, platforms, versioning policy, and on-disk format guarantees for `pg_sift` 6.0. For step-by-step upgrade procedures, see [UPGRADING.md](UPGRADING.md).
 
 ## Compatibility
 
-This table is the one place that says what is supported; the README, USAGE, CONTRIBUTING and the packaging notes link here.
-
-| PostgreSQL | pg_sift | Notes |
+| PostgreSQL | Status | Notes |
 |---|---|---|
-| 17 | supported | the oldest the build accepts (`PG_MIN_MAJOR` in the Makefile); no `extension_control_path`, so an image-volume extension ([CONTAINERS.md](CONTAINERS.md)) needs 18; no `EXPLAIN (SIFT)` (use `sift.explain_why`) |
-| 18 | supported | the reference version of the benchmarks |
-| 19 | supported | CI builds PostgreSQL 19 from its git branch and runs the same jobs as for 17 and 18; on 2026-10-22 the official `postgres:19` image tag did not exist (`19rc1` did) and PGDG packaged `postgresql-19` as `19~rc1`; the release `.deb` and `.rpm` for 19 are built and smoke-tested against PGDG's `19~rc1` packages (apt component `19`, yum `pgdg19-updates-testing`) |
-| 16 and older | not supported | the build stops with an error |
+| 17 | Supported | Minimum version (`PG_MIN_MAJOR`); no `EXPLAIN (SIFT)` (use `sift.explain_why`) or CNPG image volumes |
+| 18 | Supported | Primary benchmark and CI reference version |
+| 19 | Supported (GA) | Tested continuously against `REL_19_STABLE` and the 19.x releases; `.deb`/`.rpm` built against PGDG 19 packages; Homebrew `postgresql@19` |
+| 16 and older | Unsupported | Build stops with an error |
 
-| Platform | Support |
+| Platform / Component | Support |
 |---|---|
-| Linux x86-64 | PostgreSQL 17, 18 and 19; the whole test suite |
-| Linux arm64 (any aarch64 Linux: AWS Graviton, Ampere, Azure and Google Arm, Raspberry Pi 4/5) | PostgreSQL 17, 18 and 19 packages; tested with PostgreSQL 18 (the fast tier of a pull request in CI) |
-| macOS arm64 | PostgreSQL 17 and 18 through the Homebrew [formula](../Formula/pg_sift.rb) (no `postgresql@19` formula yet: build 19 from source); a Homebrew build, `brew test` and a few regression tests in CI |
-| Other architectures | untested |
-| Release packages | `.deb` (Debian, Ubuntu) and `.rpm` (RHEL family) for x86-64 and arm64, one file for each PostgreSQL major: take the one of your server's major `N` |
-| Container image | a recipe for PostgreSQL 17, 18 and 19; no image is published ([CONTAINERS.md](CONTAINERS.md)) |
-| SQLite port | SQLite 3.38 or newer, Linux x86-64 |
-| MariaDB port | MariaDB 10.5 to 13.x |
-| Server settings | `BLCKSZ` 8192; database encoding UTF8 or SQL_ASCII; heap and `sift_table` tables |
+| Linux `x86-64` | PG 17, 18, 19; full test, fuzz, sanitizer, and memory-slope suite; `.deb`, `.rpm`, AUR |
+| Linux `arm64` (`aarch64`) | PG 17, 18, 19 `.deb` and `.rpm` packages; NEON SIMD kernels; CI tested on PG 18 |
+| macOS `arm64` | PG 17, 18, and 19 via [Homebrew formula](../Formula/pg_sift.rb) (`postgresql@17`, `@18`, `@19`) |
+| Containers | Docker, Compose, and CloudNativePG recipes for PG 17–19 ([CONTAINERS.md](CONTAINERS.md)) |
+| Standalone search ports | [SQLite](../sqlite/README.md) (3.38+, Linux `x86-64`) and [MariaDB](../mariadb/README.md) (10.5–13.x) |
+| Server requirements | `BLCKSZ = 8192`, `UTF8` or `SQL_ASCII` encoding, heap and `sift_table` relations |
 
-## pg_sift versions
+## Versioning Policy
 
-- A release is `MAJOR.MINOR.PATCH`. The extension version (`pg_sift.control`, `SELECT extversion FROM pg_extension`) is `MAJOR.MINOR`; a patch release changes the
-  library only.
-- The newest minor line gets fixes, as patch releases of the line. Older lines get none: upgrade first.
-- Security problems are reported as [SECURITY.md](../SECURITY.md) says.
-- The SQLite and MariaDB ports have their own `CHANGELOG.md` and `VERSION` and are released with the same tag.
+- Releases use `MAJOR.MINOR.PATCH`. The PostgreSQL extension version (`pg_sift.control`) is `MAJOR.MINOR`; patch releases update only the shared library (`pg_sift.so`) with zero SQL or format changes.
+- Bug and security fixes ship as patch releases on the newest minor line. Older lines are not backported — upgrade to the current line first.
+- Security vulnerabilities are handled privately per [SECURITY.md](../SECURITY.md).
+- The SQLite and MariaDB search ports share the same release tags and maintain their own `VERSION` and `CHANGELOG.md`.
 
-## Upgrade paths
+## On-Disk Format & Downgrade Rules
 
-- `ALTER EXTENSION pg_sift UPDATE` runs the scripts `sql/pg_sift--A--B.sql` from the installed version to the default one of the control file, through every release
-  (1.0 to the current one). The scripts of a released version never change.
-- An update does not rewrite index and table files: the new library reads what older ones wrote and writes its own format from the next write.
-  `scripts/upgrade-check.sh` reports what a release can read before you install it.
-- `pg_upgrade` keeps the files as they are and needs the same pg_sift release installed for the new major.
-- A container image carries one pg_sift release: pull the new image, start it on the same data directory, then `ALTER EXTENSION pg_sift UPDATE` in each database.
+- **`sift_col` and `sift_table` (Format Major 1 and 2):** `pg_sift` 6.0 writes new relations and every `REINDEX` in Format Major 2 (`2.0`) and keeps full read and write support for Format Major 1 relations created by 5.x, so upgrading the extension never forces a rebuild. Move a 5.x relation to Format 2.0 online with `REINDEX INDEX CONCURRENTLY` (`sift_col`) or `VACUUM FULL` / `sift.upgrade_table()` (`sift_table`). A 5.x binary cannot read a Format Major 2 relation: downgrading one means converting `sift_table` to `heap` (or restoring from backup) and rebuilding `sift_col` indexes under 5.x.
+- **`sift` BM25 (Format `1.7`):** Unchanged from 5.x; existing BM25 indexes work across 5.1 → 6.0 without `REINDEX`.
+- **Standbys:** Always upgrade physical standbys before the primary so standbys understand every WAL record written by the primary.
 
-## Format minors and the downgrade rule
+## License and Warranty
 
-Each index or table file records the format it needs (the BM25 metapage minor, the column format). A library reads every format of its own release and of
-older ones, and refuses a newer one with a `REINDEX` hint. Going back to an older pg_sift is therefore not automatic:
-
-- run `sift.upgrade_check('X.Y')` on the 5.0 server, or `scripts/upgrade-check.sh --to X.Y`; every object the target release cannot read is a `blocker` row with its fix;
-- `sift_col`: `SET sift.col_format_minor` to the minor the target release reads, then `REINDEX INDEX`; `sift_table`: the same setting, then `VACUUM FULL t`; the event triggers a newer release added are `DISABLE`d for an older library; the sequence for 5.0 to 4.3 is [Going back to 4.3](UPGRADING.md#going-back-to-43), for older releases [UPGRADING.md](UPGRADING.md#4-an-older-release);
-- `sift` (BM25) index: drop it and create it again with the older release, or keep the newer library;
-- a standby that stays on the older release needs the formats the older library reads while its primary writes; when upgrading, update the standbys first, because an older library refuses a metapage a newer one has read.
-
-The first release that reads each format is in the table in [UPGRADING.md](UPGRADING.md#5-first-release-that-reads-each-format); the release notes say which formats a release writes by default.
-
-## Licence and warranty
-
-pg_sift is under the [PostgreSQL License](../LICENSE), which disclaims warranties and any obligation to provide maintenance or support; the project has
-no support contract or service level. Questions and bug reports go to the GitHub issue tracker; include `SELECT version(), sift.version()` and the `CREATE INDEX` statement.
+`pg_sift` is licensed under the [PostgreSQL License](../LICENSE) and provided without warranty or commercial SLA. File questions and bug reports on the GitHub issue tracker with `SELECT version(), sift.version()` and your `CREATE INDEX` / `CREATE TABLE` definition.

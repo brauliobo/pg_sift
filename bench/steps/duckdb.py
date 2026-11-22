@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (bench/bench duckdb, steps/duckdb.sh).
 
-    python3 -I bench/steps/duckdb.py run --sift-port P --duck-port P --out FILE --data DIR [--rows N] [--runs 3] [--timeout 30] [--version V] [--meta KEY=VALUE ...]
+    python3 -I bench/steps/duckdb.py run --sift-port P --duck-port P --out FILE --data DIR --sift-server TEXT [--duck-server TEXT] [--rows N] [--runs 3] [--timeout 30] [--version V]
+                                         [--meta KEY=VALUE ...] [--rivals-from DIR | --rivals-save DIR]
 
 Two PostgreSQL 18 servers hold the same CSV (the generator of bench/sql/store/gen.sql): the pg_sift image (a `sift_col` index and a BM25 index) and the pg_duckdb image
 (the heap with btree and GIN indexes, plus the same rows as a Parquet file that pg_duckdb writes). Four lanes run the ten questions of bench/sql/store/queries:
@@ -12,10 +13,13 @@ Two PostgreSQL 18 servers hold the same CSV (the generator of bench/sql/store/ge
     duckdb_parquet  pg_duckdb, a view over read_parquet() of the file it wrote
 
 Warm: one persistent session per lane, one untimed run, then the median of --runs (more runs, up to three times as many, while the spread of a cell is over 30% of its median). Cold: the median of --runs first runs, each in a new session right after
-pg_buffercache_evict_all() (the OS page cache stays; the Parquet lane has nothing to evict). A statement DuckDB cannot execute does not fail under force_execution:
+pg_buffercache_evict_all(), and the Parquet file leaves the OS page cache (posix_fadvise(POSIX_FADV_DONTNEED), through `dd iflag=nocache` in the container). A statement DuckDB cannot execute does not fail under force_execution:
 pg_duckdb warns and runs it on the PostgreSQL executor, so the plan decides: no `DuckDBScan` in it is "not supported". Where a question has a `--@ duck` section, that
 statement stands in for it and the row says so. Every lane's rows are compared with PostgreSQL's. A question is measured again while the host is busy (pressure stall
-information or load average above the limits). The rows go to a results file of steps/extras.py.
+information or load average above the limits). The rows go to a results file of steps/resultfile.py.
+
+The rival lanes (pg, duckdb_heap, duckdb_parquet) do not depend on the pg_sift build: --rivals-save DIR keeps their rows and metadata after a run, and --rivals-from DIR measures only the sift
+lane on a later run (the pg_duckdb container is not started), its answers compared with the stock plan of its own server (sift.enable_agg = off), and appends the kept rows.
 """
 import argparse
 import os
@@ -28,7 +32,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import benchlib  # noqa: E402  (steps/benchlib.py)
-import extras  # noqa: E402
+import resultfile  # noqa: E402
 import iolib  # noqa: E402  (the IO of a statement)
 import pgq  # noqa: E402  (steps/pgq.py)
 from store_lib import load_queries  # noqa: E402
@@ -40,6 +44,7 @@ LOAD_MAX = float(os.environ.get('D_LOAD_MAX', 12))
 SPREAD = 0.3
 # arm, server, table, duckdb.force_execution (None: no such setting on that server)
 LANES = [('pg', 'duck', 'orders', 'off'), ('sift', 'sift', 'orders', None), ('duckdb_heap', 'duck', 'orders', 'on'), ('duckdb_parquet', 'duck', 'orders_pq', 'on')]
+RIVAL_ARMS = ('pg', 'duckdb_heap', 'duckdb_parquet')
 COLUMNS = ['id', 'customer_id', 'country', 'category', 'status', 'amount', 'quantity', 'created_at', 'title']
 TYPES = ['bigint', 'int', 'text', 'text', 'text', 'numeric(10,2)', 'smallint', 'timestamp', 'text']
 ENV = {**os.environ, 'LC_ALL': 'C'}
@@ -173,17 +178,17 @@ def row(args, q, arm, metric, note, st, noisy=''):
     return dict(version=args.version, case=q, arm=arm, metric=metric, note=(note + noisy).strip(), load=open('/proc/loadavg').read().split()[0], **st)
 
 
-def measure(sessions, queries, args, boxes):
+def measure(sessions, queries, args, boxes, lanes):
     rows, used = [], {}
     for q in queries:
         for attempt in range(3):
             quiet = wait_quiet()
-            cells = {arm: cell(sessions[arm], q, arm, table, args, boxes[srv]) for arm, srv, table, _ in LANES}
+            cells = {arm: cell(sessions[arm], q, arm, table, args, boxes[srv]) for arm, srv, table, _ in lanes}
             noisy = not quiet or busy()
             if not noisy:
                 break
             log('%s: the host was busy, measuring again' % q.id)
-        for arm, _, _, _ in LANES:
+        for arm, _, _, _ in lanes:
             ms, out, note, used[q.id, arm], cpus = cells[arm]
             if ms and arm != 'pg' and cells['pg'][1] is not None:
                 if not same(out, cells['pg'][1]):
@@ -204,9 +209,14 @@ def stats(ms, note):
     return dict(value='%.3f' % statistics.median(ms), min='%.3f' % min(ms), max='%.3f' % max(ms), n=len(ms))
 
 
-def cold(queries, ports, used, args, rows, boxes):
+def forget_file(container, path):
+    """POSIX_FADV_DONTNEED on the whole file, as the container's root: the file's pages leave the page cache of the host, with no root on the host"""
+    subprocess.run(['docker', 'exec', container, 'dd', 'if=' + path, 'iflag=nocache', 'count=0', 'status=none', 'of=/dev/null'], check=True)
+
+
+def cold(queries, ports, used, args, rows, boxes, lanes):
     for q in queries:
-        for arm, srv, table, setting in LANES:
+        for arm, srv, table, setting in lanes:
             warm = next(r for r in rows if r['case'] == q.id and r['arm'] == arm and r['metric'] == 'warm_ms')
             times, cpus, mbs = [], [], []
             if warm['value'] not in ('NA', 'error'):
@@ -214,6 +224,8 @@ def cold(queries, ports, used, args, rows, boxes):
                     wait_quiet()
                     if table == 'orders':
                         psql(ports[srv], 'bench', '-c', 'SELECT pg_buffercache_evict_all()')
+                    else:
+                        forget_file(args.duck_container, PARQUET)
                     s = Session(ports[srv], args.timeout, setting)
                     cpu, disk = benchlib.cgroup_cpu(boxes[srv]), benchlib.cgroup_read(boxes[srv])
                     times.append(s.run(used[q.id, arm])[0])
@@ -262,6 +274,22 @@ def host():
     return benchlib.host_label()
 
 
+def save_rivals(dest, rows, meta):
+    """keeps the rows of the rival lanes and the metadata that describes them (the pg_duckdb server, DuckDB and its settings)"""
+    resultfile.write(os.path.join(dest, 'rivals.tsv'), 'the rival lanes of the pg_duckdb benchmark', meta, [r for r in rows if r['arm'] in RIVAL_ARMS])
+    open(os.path.join(dest, 'complete'), 'w').close()
+
+
+def load_rivals(src):
+    """(metadata, rows) kept by save_rivals"""
+    meta, rows = resultfile.read(os.path.join(src, 'rivals.tsv'))
+    return meta, [dict(r) for r in rows]
+
+
+def server_label(sift_server, duck_server):
+    return '%s, %s' % (sift_server, duck_server)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('cmd', choices=['run'])
@@ -276,45 +304,67 @@ def main():
     ap.add_argument('--timeout', type=int, default=30)
     ap.add_argument('--version', default='')
     ap.add_argument('--meta', action='append', default=[])
+    ap.add_argument('--sift-server', required=True, help='the version line of the pg_sift server')
+    ap.add_argument('--duck-server', default='', help='the version line of the pg_duckdb server (not with --rivals-from)')
+    ap.add_argument('--rivals-from', default='', help='a directory --rivals-save wrote: the rival lanes are not measured')
+    ap.add_argument('--rivals-save', default='', help='a directory to keep the rows and metadata of the rival lanes in')
     ap.add_argument('--queries', default='', help='comma separated question numbers (default all)')
     args = ap.parse_args()
     ports = {'sift': args.sift_port, 'duck': args.duck_port}
+    rival_meta, rival_rows = load_rivals(args.rivals_from) if args.rivals_from else ({}, [])
+    lanes = [lane for lane in LANES if lane[0] == 'sift'] if args.rivals_from else LANES
+    gen_port = args.sift_port if args.rivals_from else args.duck_port
 
     csv = os.path.join(args.data, 'orders-%d.csv' % args.rows)
     if not os.path.exists(csv):
         os.makedirs(args.data, exist_ok=True)
-        psql(args.duck_port, 'postgres', '-v', 'n=%d' % args.rows, '-f', os.path.join(SQL, 'gen.sql'))
+        psql(gen_port, 'postgres', '-v', 'n=%d' % args.rows, '-f', os.path.join(SQL, 'gen.sql'))
         with open(csv + '.part', 'w') as f:
-            subprocess.run(['psql', '-X', '-qAt', '-h', '127.0.0.1', '-p', str(args.duck_port), '-U', 'postgres', '-d', 'postgres', '-c', 'COPY (SELECT * FROM orders_src ORDER BY id) TO STDOUT CSV'], stdout=f, check=True, env=ENV)
+            subprocess.run(['psql', '-X', '-qAt', '-h', '127.0.0.1', '-p', str(gen_port), '-U', 'postgres', '-d', 'postgres', '-c', 'COPY (SELECT * FROM orders_src ORDER BY id) TO STDOUT CSV'], stdout=f, check=True, env=ENV)
         os.rename(csv + '.part', csv)
-        psql(args.duck_port, 'postgres', '-c', 'DROP TABLE orders_src')
+        psql(gen_port, 'postgres', '-c', 'DROP TABLE orders_src')
 
     rows = build_rows(args.sift_port, 'sift', load(args.sift_port, 'sift.sql', 'pg_sift', csv, None), args.version)
-    rows += build_rows(args.duck_port, 'pg', load(args.duck_port, 'pg.sql', 'pg_duckdb server', csv, 'pg_duckdb'), args.version)
-    t = time.time()
-    psql(args.duck_port, 'bench', '-c', "COPY orders TO '%s' (FORMAT parquet)" % PARQUET)
-    pq_s = time.time() - t
-    cols = ', '.join("r['%s']::%s AS %s" % (c, t_, c) for c, t_ in zip(COLUMNS, TYPES))
-    psql(args.duck_port, 'bench', '-c', "CREATE VIEW orders_pq AS SELECT %s FROM read_parquet('%s') r" % (cols, PARQUET))
-    pq_mib = int(psql(args.duck_port, 'bench', '-c', "SELECT size FROM pg_stat_file('%s')" % PARQUET)) / 1048576
-    rows += [dict(version=args.version, case='load', arm='duckdb_parquet', metric='load_s', value='%.1f' % pq_s), dict(version=args.version, case='load', arm='duckdb_parquet', metric='table_mib', value='%.1f' % pq_mib)]
-    settings = ', '.join('%s %s' % (n[7:], psql(args.duck_port, 'bench', '-c', 'SHOW %s' % n)) for n in ('duckdb.threads', 'duckdb.threads_for_postgres_scan', 'duckdb.max_workers_per_postgres_scan', 'duckdb.max_memory'))
-    engine = psql(args.duck_port, 'bench', '-c', "SELECT r['v'] FROM duckdb.query('SELECT version() AS v') r")
+    if args.rivals_from:
+        settings, engine = rival_meta['settings'], rival_meta['engine']
+    else:
+        rows += build_rows(args.duck_port, 'pg', load(args.duck_port, 'pg.sql', 'pg_duckdb server', csv, 'pg_duckdb'), args.version)
+        t = time.time()
+        psql(args.duck_port, 'bench', '-c', "COPY orders TO '%s' (FORMAT parquet)" % PARQUET)
+        pq_s = time.time() - t
+        cols = ', '.join("r['%s']::%s AS %s" % (c, t_, c) for c, t_ in zip(COLUMNS, TYPES))
+        psql(args.duck_port, 'bench', '-c', "CREATE VIEW orders_pq AS SELECT %s FROM read_parquet('%s') r" % (cols, PARQUET))
+        pq_mib = int(psql(args.duck_port, 'bench', '-c', "SELECT size FROM pg_stat_file('%s')" % PARQUET)) / 1048576
+        rows += [dict(version=args.version, case='load', arm='duckdb_parquet', metric='load_s', value='%.1f' % pq_s), dict(version=args.version, case='load', arm='duckdb_parquet', metric='table_mib', value='%.1f' % pq_mib)]
+        settings = ', '.join('%s %s' % (n[7:], psql(args.duck_port, 'bench', '-c', 'SHOW %s' % n)) for n in ('duckdb.threads', 'duckdb.threads_for_postgres_scan', 'duckdb.max_workers_per_postgres_scan', 'duckdb.max_memory'))
+        engine = psql(args.duck_port, 'bench', '-c', "SELECT r['v'] FROM duckdb.query('SELECT version() AS v') r")
 
     queries = [q for q in load_queries() if not args.queries or q.id in args.queries.split(',')]
-    boxes = {'sift': benchlib.cgroup_of(args.sift_container), 'duck': benchlib.cgroup_of(args.duck_container)}
-    sessions = {arm: Session(ports[srv], args.timeout, setting) for arm, srv, _, setting in LANES}
-    log('warm: %d questions in %d lanes' % (len(queries), len(LANES)))
-    measured, used = measure(sessions, queries, args, boxes)
-    rows += measured
+    boxes = {'sift': benchlib.cgroup_of(args.sift_container)}
+    if not args.rivals_from:
+        boxes['duck'] = benchlib.cgroup_of(args.duck_container)
+    sessions = {arm: Session(ports[srv], args.timeout, setting) for arm, srv, _, setting in lanes}
+    measured_lanes = lanes
+    if args.rivals_from:   # the stock plan of the pg_sift server answers for the rival rows that were not measured
+        sessions['pg'] = Session(args.sift_port, args.timeout, None)
+        sessions['pg'].run('SET sift.enable_agg = off')
+        measured_lanes = lanes + [('pg', 'sift', 'orders', None)]
+    log('warm: %d questions in %d lanes' % (len(queries), len(measured_lanes)))
+    measured, used = measure(sessions, queries, args, boxes, measured_lanes)
+    rows += [r for r in measured if not (args.rivals_from and r['arm'] == 'pg')]
     for s in sessions.values():
         s.close()
     log('cold')
-    cold(queries, ports, used, args, rows, boxes)
+    cold(queries, ports, used, args, rows, boxes, lanes)
+    rows += rival_rows
+    if args.rivals_save:
+        os.makedirs(args.rivals_save, exist_ok=True)
+        save_rivals(args.rivals_save, rows, dict(settings=settings, engine=engine, duck_server=args.duck_server))
 
     meta = dict(m.split('=', 1) for m in args.meta)
-    meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings))
-    extras.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (%d orders).' % args.rows, meta, rows)
+    meta.update(date=time.strftime('%Y-%m-%d', time.gmtime()), cpu=host(), duckdb='DuckDB %s (%s)' % (engine, settings),
+                postgresql=server_label(args.sift_server, args.duck_server or rival_meta['duck_server']))
+    resultfile.write(args.out, 'pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark (%d orders).' % args.rows, meta, rows)
     log('wrote %s' % args.out)
 
 

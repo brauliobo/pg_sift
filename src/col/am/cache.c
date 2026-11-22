@@ -12,13 +12,14 @@
 #include "core/limits.h"
 #include "core/visibility.h"
 #include "col/am/am_int.h"
+#include "core/cachebudget.h"
 
 /*
  * The leaf statistics of an index's immutable segments, memoized per backend: the key of an entry is the index and the generations of
  * its immutable segments, so a build, merge or promotion makes the next call read the zones again and nothing else does. A plan reads
- * every partition of a table (4096 at most for the pushdown), so the memo holds as many indexes, and is dropped whole when it grows past them.
+ * every partition of a table (4096 at most for the pushdown), so the memo holds as many indexes as sift.backend_cache_kb has room for: each entry is a context of its own under
+ * SiftBackendCacheContext, and the least recently used one that the planning in hand did not read goes first.
  */
-#define LEAF_STATS_CACHE	8192
 
 /*
  * The planner needs the share of the units that hold each pre-aggregate section, not the count: reading the sections of every unit costs
@@ -49,52 +50,86 @@ typedef struct LeafEntry
 	uint64		checked;		/* the planning (leaf_plan) that validated the stamp */
 	int			ncols;
 	ClassStats	cls[2];			/* [true]: st is NULL when the index has no scope segment */
+	MemoryContext cx;			/* everything the classes hold */
+	uint64		tick;			/* sift_cache_tick() of the last read */
 }			LeafEntry;
 
 static HTAB *leaf_cache;
+
+static void
+leaf_entry_free(LeafEntry *e)
+{
+	MemoryContextDelete(e->cx);
+	e->cx = NULL;
+}
+
+/* an entry the planning in hand read may be held by it: only the others go */
+static LeafEntry *
+leaf_victim(void)
+{
+	HASH_SEQ_STATUS seq;
+	LeafEntry  *e,
+			   *lru = NULL;
+
+	if (leaf_cache == NULL)
+		return NULL;
+	hash_seq_init(&seq, leaf_cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if ((am_leaf_plan == 0 || e->checked != am_leaf_plan) && (lru == NULL || e->tick < lru->tick))
+			lru = e;
+	return lru;
+}
+
+static uint64
+leaf_oldest(void)
+{
+	LeafEntry  *e = leaf_victim();
+
+	return e ? e->tick : UINT64_MAX;
+}
+
+static bool
+leaf_evict_one(void)
+{
+	LeafEntry  *e = leaf_victim();
+	Oid			key;
+
+	if (e == NULL)
+		return false;
+	key = e->index;
+	leaf_entry_free(e);
+	hash_search(leaf_cache, &key, HASH_REMOVE, NULL);
+	return true;
+}
+
+static void
+leaf_evict_all(void)
+{
+	while (leaf_evict_one())
+		;
+}
+
+static const SiftCacheKind leaf_kind = {"col_leaf_cache", leaf_oldest, leaf_evict_one, leaf_evict_all};
 
 #ifdef SIFT_TESTING
 int64		sift_col_pre_folds[2];
 #endif
 
-static void
-zones_free(SiftColZones *zs)
-{
-	for (int c = 0; c < zs->ncols; c++)
-		if (zs->lo[c] != NULL)
-			pfree(zs->lo[c]), pfree(zs->hi[c]);
-	pfree(zs->lo);
-	pfree(zs);
-}
-
-static void
-leaf_entry_free(LeafEntry *e)
-{
-	for (int k = 0; k < 2; k++)
-		if (e->cls[k].st != NULL)
-		{
-			pfree(e->cls[k].st);
-			if (e->cls[k].pre != NULL)
-				pfree(e->cls[k].pre);
-			zones_free(e->cls[k].zones);
-		}
-}
-
-/* the sample of the integer scalar leaves, in the memory that stays (TopMemoryContext) */
+/* the sample of the integer scalar leaves, in cx */
 static SiftColZones *
-zones_new(const SiftColIndexMeta *d)
+zones_new(const SiftColIndexMeta *d, MemoryContext cx)
 {
-	SiftColZones *zs = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColZones));
+	SiftColZones *zs = MemoryContextAllocZero(cx, sizeof(SiftColZones));
 
 	zs->ncols = d->ncols;
 	zs->stride = 1;
-	zs->lo = MemoryContextAllocZero(TopMemoryContext, 2 * d->ncols * sizeof(int64 *));
+	zs->lo = MemoryContextAllocZero(cx, 2 * d->ncols * sizeof(int64 *));
 	zs->hi = zs->lo + d->ncols;
 	for (int c = 0; c < d->ncols; c++)
 		if (d->cols[c].store == SIFT_COLS_INT && d->cols[c].kind != SIFT_COLK_GROUP)
 		{
-			zs->lo[c] = MemoryContextAlloc(TopMemoryContext, SIFT_COL_ZONE_SAMPLE * sizeof(int64));
-			zs->hi[c] = MemoryContextAlloc(TopMemoryContext, SIFT_COL_ZONE_SAMPLE * sizeof(int64));
+			zs->lo[c] = MemoryContextAlloc(cx, SIFT_COL_ZONE_SAMPLE * sizeof(int64));
+			zs->hi[c] = MemoryContextAlloc(cx, SIFT_COL_ZONE_SAMPLE * sizeof(int64));
 		}
 	return zs;
 }
@@ -338,6 +373,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	if (dir == NULL && e != NULL && e->base == base && e->ncols == ncols && e->dirver == sift_dir_version(index))
 	{
 		e->checked = am_leaf_plan;
+		e->tick = sift_cache_tick();
 		return e;
 	}
 	sift_stat_add(SIFT_STAT_LEAF_DIR_READ, 1);
@@ -358,14 +394,16 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	}
 	if (leaf_cache == NULL)
 	{
-		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = TopMemoryContext};
+		HASHCTL		ctl = {.keysize = sizeof(Oid), .entrysize = sizeof(LeafEntry), .hcxt = sift_cache_root_context()};
 
 		leaf_cache = hash_create("sift_col leaf statistics", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		sift_cache_register(&leaf_kind);
 	}
 	e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
 	if (e != NULL && e->stamp == stamp && e->ncols == ncols)
 	{
 		e->checked = am_leaf_plan;
+		e->tick = sift_cache_tick();
 		e->dirver = dir->version;
 		leaf_dirs_free(own, sdir);
 		return e;
@@ -375,23 +413,14 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		leaf_entry_free(e);
 		hash_search(leaf_cache, &key, HASH_REMOVE, NULL);
 	}
-	else if (hash_get_num_entries(leaf_cache) >= LEAF_STATS_CACHE)
-	{
-		HASH_SEQ_STATUS seq;
-
-		hash_seq_init(&seq, leaf_cache);
-		while ((e = hash_seq_search(&seq)) != NULL)
-		{
-			leaf_entry_free(e);
-			hash_search(leaf_cache, &e->index, HASH_REMOVE, NULL);
-		}
-	}
+	sift_cache_room((Size) 2 * ncols * (sizeof(SiftColLeafStats) + SIFT_COL_ZONE_SAMPLE * 2 * sizeof(int64)));
 	e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
 	e->stamp = stamp;
 	e->base = base;
 	e->dirver = dir->version;
 	e->checked = am_leaf_plan;
 	e->ncols = ncols;
+	e->cx = sift_cache_create_context("sift cache leaf statistics");
 	memset(e->cls, 0, sizeof(e->cls));
 	for (int k = 0; k < 2; k++)
 	{
@@ -399,11 +428,12 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 
 		if (k == 1 && d->nsegs == 0)
 			break;
-		e->cls[k].st = MemoryContextAllocZero(TopMemoryContext, ncols * sizeof(SiftColLeafStats));
-		e->cls[k].zones = zones_new(sift_col_index_defs(index));
+		e->cls[k].st = MemoryContextAllocZero(e->cx, ncols * sizeof(SiftColLeafStats));
+		e->cls[k].zones = zones_new(sift_col_index_defs(index), e->cx);
 		fold(index, d, &(Fold) {.kind = LSHM_LEAF, .scope = k == 1, .st = e->cls[k].st, .zs = e->cls[k].zones}, true, NULL);
 	}
 	leaf_dirs_free(own, sdir);
+	e->tick = sift_cache_tick();
 	return e;
 }
 
@@ -431,12 +461,13 @@ sift_col_gorder_chunks(Relation index, int leaf, uint32 flags, bool complete_onl
 const SiftColPreStats *
 sift_col_pre_stats(Relation index, bool scope)
 {
-	ClassStats *cs = &leaf_cache_entry(index, NULL)->cls[scope];
+	LeafEntry  *e = leaf_cache_entry(index, NULL);
+	ClassStats *cs = &e->cls[scope];
 
 	if (cs->pre == NULL)
 	{
 		SiftDirSnapshot *dir;
-		SiftColPreStats *pre = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
+		SiftColPreStats *pre = MemoryContextAllocZero(e->cx, sizeof(SiftColPreStats));
 
 		dir = sift_col_dir_read(index, scope);
 		fold(index, dir, &(Fold) {.kind = LSHM_PRE, .scope = scope, .pre = pre}, true, NULL);
@@ -567,9 +598,9 @@ sift_col_leaf_fold_check(Relation index, int *incremental, int *full)
 	dir = sift_col_dir_read(index, false);
 	for (int k = 0; k < 2; k++)
 	{
-		st[k] = MemoryContextAllocZero(TopMemoryContext, d->ncols * sizeof(SiftColLeafStats));
-		pre[k] = MemoryContextAllocZero(TopMemoryContext, sizeof(SiftColPreStats));
-		zs[k] = zones_new(d);
+		st[k] = palloc0(d->ncols * sizeof(SiftColLeafStats));
+		pre[k] = palloc0(sizeof(SiftColPreStats));
+		zs[k] = zones_new(d, CurrentMemoryContext);
 	}
 	fold(index, dir, &(Fold) {.kind = LSHM_LEAF, .st = st[0], .zs = zs[0]}, true, incremental);
 	fold(index, dir, &(Fold) {.kind = LSHM_LEAF, .st = st[1], .zs = zs[1]}, false, full);
@@ -580,7 +611,6 @@ sift_col_leaf_fold_check(Relation index, int *incremental, int *full)
 	{
 		pfree(st[k]);
 		pfree(pre[k]);
-		zones_free(zs[k]);
 	}
 	pfree(dir);
 	return same;

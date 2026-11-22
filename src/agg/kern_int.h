@@ -8,7 +8,7 @@
 #include <math.h>
 
 #include "agg/kern.h"
-#include "col/kern_int.h"
+#include "col/v1/kern_int.h"
 
 extern const SiftAggKernels sift_aggkern_avx2;
 extern const SiftAggKernels sift_aggkern_avx512;

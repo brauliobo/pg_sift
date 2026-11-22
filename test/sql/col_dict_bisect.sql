@@ -68,9 +68,9 @@ SELECT sift.col_verify('bs_idx', true);
 SELECT bs_check('many', 120);
 
 -- a cache of no room for the positions (one kilobyte): the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 SELECT bs_check('no room', 30);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 DROP FUNCTION bs_check(text, int);
 DROP TABLE bs;

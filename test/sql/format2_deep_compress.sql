@@ -1,0 +1,109 @@
+-- The footprint of format major 2: the text of a JSONB path that is, but for a few rows, one canonical type is held as that type (and its zones rule out granules); row addresses of an
+-- append-mostly table cost under a byte a row. (Doubles of no short decimal, bit for bit, are in format2_encodings; neighbouring partitions that merge, in format2_manifest; their parts joined
+-- by a compaction with pre-aggregates, in format2_compact.) Every value is the heap's.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET max_parallel_maintenance_workers = 0;
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
+END $$;
+
+CREATE FUNCTION enc_count(idx regclass, enc text) RETURNS int LANGUAGE sql AS $$
+	SELECT coalesce(sum(m[1]::int), 0)::int FROM regexp_matches(sift._test_f2_encs(idx, 1, NULL), '[-0-9]+:' || enc || '\*([0-9]+)', 'g') AS m $$;
+
+-- Twenty paths of a telemetry document: counters, flags, decimals, timestamps, dates, words, and a few paths whose values are other than their type in some rows
+CREATE TABLE tel (id bigint, tenant int, d jsonb);
+INSERT INTO tel
+SELECT i, i % 20,
+	jsonb_build_object('seq', i * 3, 'qty', i % 5000, 'ok', i % 3 = 0, 'flag', i % 7 = 0, 'amount', round(((i * 37) % 100000) / 100.0, 2), 'ratio', round((i % 977) / 10.0, 1),
+		'ts', to_char(timestamptz '2026-01-01' + i * interval '7 seconds', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'seen', to_char(timestamptz '2026-03-01' + i * interval '13 seconds', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+		'day', to_char(date '2026-01-01' + (i % 700), 'YYYY-MM-DD'), 'due', to_char(date '2027-01-01' + (i % 90), 'YYYY-MM-DD'),
+		'tag', 'v' || (i % 40), 'host', 'h' || (i % 300), 'zone', (ARRAY['eu', 'us', 'ap'])[1 + i % 3], 'build', 'b' || (i / 5000),
+		'c1', i % 11, 'c2', i % 13, 'c3', (i % 17) * 1000, 'c4', i % 19 = 0, 'c5', round((i % 331) / 100.0, 2), 'c6', 'k' || (i % 23))
+FROM generate_series(1, 30000) i;
+UPDATE tel SET d = d || '{"amount": "N/A"}' WHERE id % 97 = 0;
+UPDATE tel SET d = d || '{"qty": 1.5, "day": "soon"}' WHERE id % 211 = 0;
+UPDATE tel SET d = d || '{"seq": "0300", "ok": "yes"}' WHERE id % 503 = 0;
+VACUUM tel;
+CREATE INDEX tel_idx ON tel USING sift_col (id, tenant, d)
+	WITH (key_order = 'id', paths = 'd.seq astext, d.qty astext, d.ok astext, d.flag astext, d.amount astext, d.ratio astext, d.ts astext, d.seen astext, d.day astext, d.due astext, d.tag astext, d.host astext, d.zone astext, d.build astext, d.c1 astext, d.c2 astext, d.c3 astext, d.c4 astext, d.c5 astext, d.c6 astext');
+SELECT sift._test_f2_check('tel_idx') ~ '^parts=[0-9]+ ' AS consistent;
+
+-- The typed paths are chunks of their type (the numbers, flags, decimals, timestamps and dates), and a row of another shape is an exception, not a reason to hold the text
+SELECT enc_count('tel_idx', 'STR_PROMO') >= 4 * (regexp_match(sift._test_f2_check_keys('tel_idx'), 'granules=([0-9]+)'))[1]::int AS promoted_chunks;
+SELECT round(pg_relation_size('tel_idx') / 30000.0) < 40 AS index_under_40_bytes_per_row_for_20_paths;
+SELECT bytes_per_row < 1.0 AS tids_under_a_byte FROM sift.index_size_breakdown('tel_idx') WHERE category = 'granule_tid';
+
+CREATE TEMP TABLE leaves AS SELECT tid, leaf, val FROM sift._test_f2_leaves('tel_idx') WHERE leaf LIKE 'd.%';
+-- Every value of every path is the heap's text, the mixed ones (a word where a number is, a number with a leading zero, a decimal where an integer is) included
+SELECT count(*) AS paths, count(DISTINCT n) AS row_counts, min(n) > 29000 AS nearly_all, sum(differ) AS differ
+FROM (SELECT l.leaf, count(*) AS n, count(*) FILTER (WHERE l.val IS DISTINCT FROM t.d->>substr(l.leaf, 3)) AS differ
+	  FROM leaves l JOIN tel t ON t.ctid = l.tid GROUP BY l.leaf) q;
+SELECT leaf, count(*) AS other_shapes FROM leaves WHERE leaf IN ('d.amount', 'd.qty', 'd.day', 'd.seq', 'd.ok') AND val !~ '^(-?[0-9.]+|true|false|[0-9]{4}-[0-9-]+)$'
+GROUP BY leaf ORDER BY leaf;
+SELECT n, f2_same(q) AS parity FROM (VALUES
+	(1, 'SELECT count(*), sum(length(d->>''amount'')), count(DISTINCT d->>''ts'') FROM tel WHERE tenant >= 0'),
+	(2, 'SELECT id, d->>''amount'' FROM tel WHERE tenant = 3 AND d->>''amount'' = ''N/A'''),
+	(3, 'SELECT id, d->>''seq'', d->>''ok'' FROM tel WHERE tenant >= 0 AND (d->>''seq'' IN (''300003'', ''0300'', ''9'') OR d->>''ok'' = ''yes'')'),
+	(4, 'SELECT id, d->>''qty'', d->>''day'' FROM tel WHERE tenant = 11 AND (d->>''qty'' = ''1.5'' OR d->>''day'' = ''soon'')'),
+	(5, 'SELECT d->>''ok'', count(*) FROM tel WHERE tenant >= 0 GROUP BY 1')
+) v(n, q) ORDER BY n;
+
+-- The zones of a promoted path rule granules out (none/maybe/granules/flags): a literal beyond every value rules out all of them, one inside the range not; a path with a value of another
+-- shape in every granule cannot rule out a literal that value may be
+SELECT sift._test_f2_leaf_zones('tel_idx', 1, NULL, 9, 0, '2030-01-01T00:00:00Z') AS seen_beyond_all,
+	   sift._test_f2_leaf_zones('tel_idx', 1, NULL, 9, 0, '2026-03-05T00:00:00Z') AS seen_inside,
+	   sift._test_f2_leaf_zones('tel_idx', 1, NULL, 8, 0, '2030-01-01T00:00:00Z') AS ts_beyond_all,
+	   sift._test_f2_leaf_zones('tel_idx', 1, NULL, 2, 0, '700000') AS seq_with_exceptions;
+
+-- Row addresses: a table appended in order costs under a byte of address a row, also after an insert in parts of the table
+CREATE TABLE ap (id bigint, v int);
+CREATE INDEX ap_idx ON ap USING sift_col (id, v) WITH (key_order = 'id');
+INSERT INTO ap SELECT i, i % 10 FROM generate_series(1, 30000) i;
+INSERT INTO ap SELECT i, i % 10 FROM generate_series(30001, 60000) i;
+SELECT bytes_per_row < 1.0 AS tids_under_a_byte, bytes > 0 AS has_tids FROM sift.index_size_breakdown('ap_idx') WHERE category = 'granule_tid';
+SELECT f2_same('SELECT count(*), sum(v), max(id) FROM ap WHERE id > 20000') AS parity;
+
+-- Decimals of fifteen digits that are no short decimal of a fixed scale are held as the doubles they are (a promoted path of type FLOAT64) and read back as the text of the heap
+CREATE TABLE fl (id bigint, d jsonb);
+INSERT INTO fl SELECT i, jsonb_build_object('x', (i * 1.000000000000123)::float8::numeric, 'y', ((i % 97) * 0.1 + 0.000000000000007)::float8::numeric) FROM generate_series(1, 30000) i;
+CREATE INDEX fl_idx ON fl USING sift_col (id, d) WITH (key_order = 'id', paths = 'd.x astext, d.y astext');
+SELECT enc_count('fl_idx', 'STR_PROMO') >= 2 AS float_chunks_promoted;
+SELECT count(*) AS differ FROM sift._test_f2_leaves('fl_idx') l JOIN fl t ON t.ctid = l.tid WHERE l.leaf LIKE 'd.%' AND l.val IS DISTINCT FROM t.d->>substr(l.leaf, 3);
+SELECT f2_same('SELECT id, d->>''x'' FROM fl WHERE id BETWEEN 100 AND 200') AS parity;
+
+-- Parts joined by a compaction have their granules copied as they are, one at a time: what the writer holds is the metadata of the parts and a granule, not their bytes
+CREATE TABLE st (id bigint, tenant int, v float8);
+CREATE INDEX st_idx ON st USING sift_col (id, tenant, v) WITH (key_order = 'id');
+CREATE TEMP TABLE st_stats (copied bigint, writer_max bigint, rows_in bigint, rows_out bigint);
+DO $$
+DECLARE grp text; r record; copied bigint := 0; writer_max bigint := 0; rin bigint := 0; rout bigint := 0;
+BEGIN
+	FOR b IN 0 .. 11 LOOP
+		INSERT INTO st SELECT b * 16000 + i, i % 40, (i % 977) / 10.0 FROM generate_series(1, 16000) i;
+		COMMIT;
+		FOREACH grp IN ARRAY string_to_array(sift._test_f2_plan('st_idx', 1, NULL), ' / ') LOOP
+			CONTINUE WHEN grp = '';
+			SELECT * INTO r FROM sift._test_f2_compact('st_idx', 1, NULL, string_to_array(grp, ',')::int8[]);
+			copied := copied + r.granules_copied; writer_max := greatest(writer_max, r.writer_bytes); rin := rin + r.rows_in; rout := rout + r.rows_out;
+		END LOOP;
+	END LOOP;
+	INSERT INTO st_stats VALUES (copied, writer_max, rin, rout);
+END $$;
+SELECT copied > 0 AS granules_stitched, writer_max > 0 AS writer_measured, writer_max <= 8 * 1024 * 1024 AS writer_within_8mb, rows_in = rows_out AS all_rows FROM st_stats;
+SELECT sift._test_f2_check_keys('st_idx');
+SELECT f2_same('SELECT count(*), sum(tenant) FROM st WHERE id > 20000') AS parity;
+
+DROP TABLE tel, ap, fl, st;
+DROP FUNCTION f2_same(text), enc_count(regclass, text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

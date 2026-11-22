@@ -799,8 +799,6 @@ dep_walker(Node *n, PlannerInfo *root)
 		set_sa_opfuncid((ScalarArrayOpExpr *) n);
 		record_plan_function_dependency(root, ((ScalarArrayOpExpr *) n)->opfuncid);
 	}
-	else if (IsA(n, CoerceViaIO) || IsA(n, ArrayCoerceExpr) || IsA(n, Aggref))
-		;
 	return expression_tree_walker(n, dep_walker, root);
 }
 

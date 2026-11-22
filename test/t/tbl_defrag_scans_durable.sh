@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The background pass of a sift_table is weighed against the scans the table has had, and those are a count in its metapage (col/wbuf/reads.c), not the numscans of pg_stat:
+# The background pass of a sift_table is weighed against the scans the table has had, and those are a count in its metapage (core/reads.c), not the numscans of pg_stat:
 # pg_stat_reset(), a clean restart and a crash leave the decision as it was. A table nobody has read asks for no pass.
 . "$(dirname "$0")/lib.bash"
 plan 6
@@ -46,7 +46,7 @@ check "and the pass is still asked for" asked "$off"
 
 prepare restart
 scan restart 50
-sleep 1   # the WAL writer has the record in the log within wal_writer_delay (200 ms): a crash after that keeps it
+wait_for "wal_flushed td" 30
 node_stop td; node_start td || bail "restart failed"
 off=$(mark); read_once restart
 check "a clean restart leaves the decision as it was" asked "$off"

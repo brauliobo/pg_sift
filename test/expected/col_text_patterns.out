@@ -76,7 +76,7 @@ SELECT cp_check('parsed', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c},
  parsed: 204 statements, 0 differ
 (1 row)
 
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS lowered;
  lowered 
 ---------
  t
@@ -88,7 +88,7 @@ SELECT cp_check('not kept', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c
  not kept: 204 statements, 0 differ
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 INSERT INTO cp SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 4000) i;
 DELETE FROM cp WHERE id % 11 = 0;
 VACUUM cp;

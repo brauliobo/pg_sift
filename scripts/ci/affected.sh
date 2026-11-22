@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The files a change touched, mapped to the jobs it can break: `affected`, `--areas-regex`, the focus tokens and the assertions family.
 # The CI workflow and `affected` share scripts/areas.tsv through it; it never starts a suite. Sourced by scripts/ci.sh; not a script of its own.
 # ---------- scripts/areas.tsv: the files a change touched -> the jobs it can break (the CI workflow and `affected` share it)
@@ -55,13 +56,17 @@ focus_tokens() {
 # The assertions family of a pull request (the `cassert` output of `affected --github`, run on the PostgreSQL 18 built with --enable-cassert): a change of a source that starts
 # workers or handles snapshots or executor hooks (ASSERT_MARK, read from the file: no list to keep) runs the regression tests that run those paths. The `assertions` label
 # of a pull request runs the family for any change. A change reached the tip with green fast checks and failed an Assert of the server (GetActiveSnapshot) in a worker.
-# Measured (run 40164658605, 27 tests, 4 lanes): the job 8.0 min (cache 1 s, extension build 34 s, tests 7.2 min wall, scratch 435 MB); the slowest tests agg_preagg_elem_parallel 266 s,
-# agg_two_level_spine 220 s. It found an open assertion on its first run. The tests are not in the weights below: they are not sharded (one runner).
+# The family is one shard on every event: the tests that run workers or take snapshots, and the planner tests (cte, cost, scope, lateral, subplan, placeholder) whose asserts
+# (a foreach_node cast of the wrong node type) exist only in a server with assertions. The batches are cut to one for each lane (installcheck_batches), so the shard has no straggler.
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook'
-ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_)'
+ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel|cte_|plan_|nested_ctes|statement_cte|.*_cost$|.*_scope$|.*lateral|.*subplan|.*placeholder)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_)'
 # the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
 # 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
 ASSERT_SKIP='^installcheck-agg_cte_inline_(horizon|band|rows)$'
+# What a push runs on the compatibility entries (PostgreSQL 17, PostgreSQL 19, AArch64), the one shard each: what depends on the major or the architecture, the regression tests
+# (the SQL surface, the planner and executor hooks, the NEON kernels), the isolation specs, the crash, standby and upgrade tests, the corpus and the plan bands. The differential tests, the fuzzers,
+# the soaks and the slopes run on the PostgreSQL 18 x86 entry
+COMPAT_JOBS='^(installcheck-|isolation-[0-9]+$|isolation-emulated$|tap-(001_crash|002_standby|003_wal_minimal|005_parallel_crash)$|tap-shell-(pg_upgrade|replica_mixed|replication|store_crash|store_replica|index_build_crash|col_index_crash|col_index_replica|col_crash_matrix|maint_standby|leakcheck_gate|tbl_load_workers)$|plan-gate(-table)?$|corpus$|difftest-col(-tbl|-selftest)?$|isa-baseline$|tools-build$|simd-level$)'
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
@@ -103,23 +108,23 @@ if [[ $MODE == affected ]]; then
 	cassert=false
 	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
-	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$)'
+	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
-		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'
+		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$'
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl|-vstore)?(-[12])?$'
 		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn(-shapes|-vstore)?$'
 		elif [[ $f == test/fuzz/bm25_fuzz* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/fuzz/shapes_matrix* || $f == test/fuzz/surface_sweep* ]]; then FAST+='|^shapes-(matrix|surface)$'
-		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?$'; fi
+		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$'; fi
 	done
 	# a pull request builds its fast tier only when a job it can run is picked: scripts/areas.tsv may pick one of the rest, and no job selected is an error of the run
 	fastpg=false
 	for id in "${PICK[@]}"; do [[ $id =~ $FAST && ( $id == installcheck-batch* || $id =~ $FASTRE ) ]] && fastpg=true; done
 	case $OUT in
-		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos; do echo "gh:$f $(flag $f)"; done ;;
+		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos musl; do echo "gh:$f $(flag $f)"; done ;;
 		github)
 			echo "jobs=$RE"
 			echo "fast=$FAST"
@@ -127,8 +132,9 @@ if [[ $MODE == affected ]]; then
 			echo "fastpg=$fastpg"
 			echo "cassert=$cassert"
 			echo "cassertjobs=$ASSERT_JOBS"
+			echo "compat=$COMPAT_JOBS"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
-			for f in sqlite mariadb replication macos; do echo "$f=$(flag $f)"; done
+			for f in sqlite mariadb replication macos musl; do echo "$f=$(flag $f)"; done
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 3 || echo 1)"
 			echo "full=$( (( ${#PICK[@]} == ${#JOBS_ALL[@]} )) && [[ $(flag sqlite)$(flag mariadb)$(flag replication) == truetruetrue ]] && echo true || echo false)" ;;
 		pick) "$REPO/scripts/check-neutral.sh" || exit 1   # a change of any file: the wording guard is not a job of the map

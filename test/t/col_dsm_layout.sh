@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The shared tables of the server (col/dsmreg.c) are told apart by more than the size of their struct: two libraries whose struct has the same size and a
 # different layout (a field moved into padding, another meaning for a field) must not share a table, and the tables of the libraries a server has seen must
 # not pile up: a package upgrade without a restart, or a setting that sets the size, makes a table nobody maps any more.
@@ -30,7 +31,7 @@ check "the table of the layout no backend maps any more is given back" test "$ou
 bg=$(mktemp)
 sql ds "SELECT sift._test_dsm_layout(1, 'lay_live', 4096)" "SELECT pg_sleep(3)" "SELECT sift._test_dsm_layout(1, 'lay_live', 4096)" >"$bg" &
 pid=$!
-sleep 1
+wait_for "running ds '%pg_sleep(3)%'" 30
 out=$(layout 2 lay_live)
 check "a layout another backend still maps is kept when a second layout asks" test "$out" == 2000001
 out=$(layout 1 lay_live)

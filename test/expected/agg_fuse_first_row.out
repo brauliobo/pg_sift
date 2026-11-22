@@ -64,8 +64,8 @@ SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
  three arms, a key that repeats: each reads other columns       |                2 |           0
 (3 rows)
 
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
                               name                              | arms_in_one_pass | differences 
 ----------------------------------------------------------------+------------------+-------------

@@ -27,7 +27,7 @@ gen again
 skipped again || fail "a second run on the files a run left did not skip the renderers"
 [[ $(state) == "$good" ]] || fail "the skipped run changed a file"
 # a change of a file they read or write (a stale generated block): they run, and the block is as the first run made it
-n=$(awk '/<!-- bench:[a-z-]+:begin/ { f = 1; next } /<!-- bench:[a-z-]+:end/ { f = 0 } f && NF && !d { print NR; d = 1 }' "$T/README.md")
+n=$(awk '/<!-- bench:[a-z0-9-]+:begin/ { f = 1; next } /<!-- bench:[a-z0-9-]+:end/ { f = 0 } f && NF && !d { print NR; d = 1 }' "$T/README.md")
 [[ -n $n ]] || fail "README.md has no generated benchmark block to change"
 sed -i.bak "${n}s/\$/ stale/" "$T/README.md" && rm -f "$T/README.md.bak"
 [[ $(state) != "$good" ]] || fail "the change of the block did not change the files"

@@ -32,8 +32,12 @@ INSERT INTO items SELECT i, CASE WHEN i % 5 < 2 THEN repeat('honey ', 1 + i % 3)
 	|| 'w' || i % 997 || ' x' || i % 31, 'city' || i % 50, repeat('p', 60) FROM generate_series(1, 30000) i;
 CREATE TABLE items_plain (LIKE items INCLUDING ALL) WITH (autovacuum_enabled = off);
 INSERT INTO items_plain SELECT * FROM items;
+SET client_min_messages = warning;
 CREATE INDEX items_sift ON items USING sift ((name || chr(29) || city)) WITH (fields = 'name', prefix_index = 3);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX items_plain_sift ON items_plain USING sift (name);
+RESET client_min_messages;
 CREATE TABLE accounts (id serial PRIMARY KEY, tenant int, item_id int) WITH (autovacuum_enabled = off);
 INSERT INTO accounts (tenant, item_id) SELECT v.t, i FROM generate_series(1, 30000) i,
 	LATERAL (VALUES (1, i % 50 = 0), (2, i % 2 = 0), (3, i % 3000 IN (1, 100))) v(t, owns) WHERE v.owns;

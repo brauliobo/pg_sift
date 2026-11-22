@@ -7,6 +7,10 @@
 # scripts/leakcheck.sh on every node (cluster invariants, clean shutdown, log
 # scan: leak warnings, crashes, sanitizer and LeakSanitizer reports) and fails
 # the script on a finding.
+# SIFT_POOLED_CLUSTER=1 (scripts/ci.sh sets it for the scripts that say `# tap: pooled`): a node of one server that does not restart, crash, clone or read its
+# data directory lives in a database of the cluster of the lane (pool_init) instead of a cluster of its own: no initdb copy, no start, no stop. A node that
+# cannot (a setting that only a restart changes, WAL settings) is an ordinary node, and a pooled node that is crashed, stopped or cloned fails the script.
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 export LC_ALL=C
 . "$(dirname "${BASH_SOURCE[0]}")/../../scripts/leakcheck.sh"
@@ -30,10 +34,14 @@ DLSUFFIX=.so; [[ $(uname) != Darwin ]] || DLSUFFIX=.dylib   # the suffix of a Po
 NTEST=0
 NFAIL=0
 NODES=()
+declare -A POOL_DB=()   # the pooled nodes: name -> database of the cluster of the lane (pool_init)
+POOL_SCRIPT=$(basename "$0" .sh)
+POOL_SOCK=${SIFT_TMP}/sock POOL_LOG=${SIFT_TMP}/postgres.log POOL_DATA=${SIFT_TMP}/data
 trap cleanup EXIT
 
 cleanup() {
 	local name
+	pool_drop_all
 	for name in "${NODES[@]}"; do
 		pg_ctl -D "$(dir "$name")/data" -m immediate stop >/dev/null 2>&1
 		if [[ $NFAIL -eq 0 ]]; then rm -rf "$(dir "$name")"; elif [[ -z ${SIFT_TAP_KEEP:-} ]]; then rm -rf "$(dir "$name")/data"; fi
@@ -51,16 +59,21 @@ not_ok() {
 	local n
 	NTEST=$((NTEST + 1)); NFAIL=$((NFAIL + 1)); echo "not ok $NTEST - $*"
 	for n in "${NODES[@]}"; do [[ -f $(dir "$n")/postgres.log ]] && diag "log of node $n:"$'\n'"$(tail -25 "$(dir "$n")/postgres.log" | cut -c1-240)"; done
+	(( ${#POOL_DB[@]} == 0 )) || diag "log of the cluster of the lane:"$'\n'"$(tail -25 "$POOL_LOG" | cut -c1-240)"
 	return 0
 }
-# wait_for COND SECONDS: 0 as soon as the shell condition COND holds, 1 when it still does not after SECONDS; polls every 0.1 s and does not sleep after success.
-# A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes it longer. A short timeout literal needs a note (scripts/check-tap-timeouts.sh)
+# wait_for COND SECONDS: 0 as soon as the shell condition COND holds, 1 when it still does not after SECONDS; the first polls come 10, 20 and 50 ms apart, then every 50 ms,
+# and it does not sleep after success. A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes it longer. A short timeout literal needs a note (scripts/check-tap-timeouts.sh)
 wait_for() {
-	local i
-	for ((i = 0; i < $2 * 10; i++)); do eval "$1" && return 0; sleep 0.1; done
+	local i delay
+	for ((i = 0; i < $2 * 20; i++)); do
+		eval "$1" && return 0
+		case $i in 0) delay=0.01 ;; 1) delay=0.02 ;; *) delay=0.05 ;; esac
+		sleep "$delay"
+	done
 	eval "$1"
 }
-# wait_stable NODE SQL SECONDS: the background work has stopped changing what the query SQL returns: no sift worker and the same value for 10 polls
+# wait_stable NODE SQL SECONDS: the background work has stopped changing what the query SQL returns: no sift worker and the same value for 3 polls
 # in a row (progress stops; the target is checked by the test). SECONDS is a safety cap that a loaded host does not reach
 wait_stable() {
 	local node=$1 query=$2 last= same=0
@@ -69,7 +82,7 @@ wait_stable() {
 		v=$(sql "$node" "SELECT ($query), EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type LIKE 'sift %')")
 		[[ $v == *'|f' && $v == "$last" ]] && same=$((same + 1)) || same=0
 		last=$v
-		((same >= 10))
+		((same >= 3))
 	}
 	wait_for stable_poll "$3"
 }
@@ -91,7 +104,60 @@ build_old() {
 }
 
 dir() { echo "$TAPDIR/$1"; }
-port() { echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); }
+port() { if [[ -v POOL_DB[$1] ]]; then echo "$SIFT_PORT"; else echo $((SIFT_PORT + $(cat "$(dir "$1")/offset"))); fi; }
+
+# real_node NAME WHAT: WHAT needs a server of its own; a pooled node fails the script with the way out
+real_node() { [[ ! -v POOL_DB[$1] ]] || bail "$2 on the pooled node $1: a script that does it is no \`# tap: pooled\` script"; }
+pool_psql() { psql -X -At -q -v ON_ERROR_STOP=1 -h "$POOL_SOCK" -p "$SIFT_PORT" -U postgres -d postgres "$@"; }
+# pool_init NAME OFFSET [conf lines]: NAME is a database of the cluster of the lane when SIFT_POOLED_CLUSTER=1 and every setting of the conf is one a session may set
+# (ALTER DATABASE) or the value the cluster has already; 1, and the caller makes a server of its own, when one is not. One psql session decides and does it all
+# (a conf that does not fit creates nothing)
+pool_init() {
+	local db=tap_${POOL_SCRIPT}_$1 conf=${3:-} line k v want= out
+	[[ -n ${SIFT_POOLED_CLUSTER:-} && $conf != "$WAL_CONF"* && -S $POOL_SOCK/.s.PGSQL.$SIFT_PORT ]] || return 1
+	while IFS= read -r line; do
+		[[ $line == *' = '* ]] || continue
+		k=${line%% = *} v=${line#* = }
+		v=${v#\'} v=${v%\'}
+		want+="${want:+, }('${k//\'/\'\'}', '${v//\'/\'\'}')"
+	done <<<"$conf"
+	local misfit=false alter="SELECT 1 WHERE false"
+	if [[ -n $want ]]; then
+		misfit="EXISTS (WITH want(k, v) AS (VALUES $want) SELECT 1 FROM want w LEFT JOIN pg_settings s ON s.name = w.k
+			WHERE NOT (coalesce(s.context IN ('user', 'superuser'), false) OR coalesce(lower(current_setting(w.k, true)) = lower(w.v), false)))"
+		alter="WITH want(k, v) AS (VALUES $want) SELECT format('ALTER DATABASE $db SET %s = %L', w.k, w.v) FROM want w JOIN pg_settings s ON s.name = w.k
+			WHERE s.context IN ('user', 'superuser')"
+	fi
+	out=$(pool_psql <<-SQL
+		LOAD 'pg_sift';
+		SELECT $misfit AS misfit \gset
+		\if :misfit
+			\echo MISFIT
+		\else
+			DROP DATABASE IF EXISTS $db WITH (FORCE);
+			CREATE DATABASE $db;
+			$alter \gexec
+		\endif
+	SQL
+	) || return 1
+	[[ $out != MISFIT ]] || return 1
+	mkdir -p "$(dir "$1")"
+	leak_before "tap-$POOL_SCRIPT-$1" "$POOL_LOG"
+	POOL_DB[$1]=$db
+	diag "node $1 is the database $db of the cluster of the lane"
+}
+# pool_end NAME: the leak check of the work of the pooled node (the server log since pool_init, the backends of its database), then the database goes
+pool_end() {
+	local rc=0
+	leak_after "tap-$POOL_SCRIPT-$1" "$POOL_DATA" "${POOL_DB[$1]}" || rc=1
+	pool_psql -c "DROP DATABASE IF EXISTS ${POOL_DB[$1]} WITH (FORCE)" >/dev/null || rc=1
+	unset "POOL_DB[$1]"
+	return $rc
+}
+pool_drop_all() {
+	local name
+	for name in "${!POOL_DB[@]}"; do pool_psql -c "DROP DATABASE IF EXISTS ${POOL_DB[$name]} WITH (FORCE)" >/dev/null 2>&1; [[ $NFAIL -ne 0 ]] || rm -rf "$(dir "$name")"; done
+}
 
 # The settings of the tests whose point is WAL, crash recovery or replication: the checkpoint cadence, the buffer pool and the
 # 16 MB WAL segments decide how much WAL a crash replays and which pages are lost with it. Every other node is small (1 MB
@@ -106,6 +172,7 @@ shared_buffers = 128MB'
 # segments are not what a test looks at, and a recycled one is disk and memory kept for nothing)
 node_init() {
 	local name=$1 offset=$2 d kind=
+	pool_init "$@" && return
 	[[ ${3:-} != "$WAL_CONF"* ]] || kind=wal
 	d=$(dir "$name")
 	node_stop "$name"
@@ -132,6 +199,7 @@ ${3:-}"
 # (with a slot, so a churn outrunning a slow standby on a loaded CI runner cannot recycle the WAL it still needs)
 node_clone() {
 	local d
+	real_node "$1" node_clone
 	d=$(dir "$2")
 	node_stop "$2"
 	rm -rf "$d"
@@ -146,17 +214,18 @@ hot_standby = on
 ${4:-}"
 }
 
-node_promote() { pg_ctl -D "$(dir "$1")/data" -w promote >/dev/null; }
+node_promote() { real_node "$1" node_promote; pg_ctl -D "$(dir "$1")/data" -w promote >/dev/null; }
 
 # libpq connection string of a node, for CREATE SUBSCRIPTION
 conninfo() { echo "host=$(dir "$1")/sock port=$(port "$1") user=postgres dbname=postgres"; }
 
-node_conf() { printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
+node_conf() { real_node "$1" node_conf; printf '%s\n' "$2" >>"$(dir "$1")/data/postgresql.conf"; }
 # use_root NODE ROOT: NODE loads the sift installed under ROOT (a released library built by scripts/old-lib-check.sh, or $newroot, the one of this
 # tree). Only this tree defines the sift. settings scripts/pgtest.sh conf sets: a released library warns that "sift" is a reserved prefix in the first statement of a session, and the test
 # compares what the statements print.
 use_root() {
 	local conf=$(dir "$1")/data/postgresql.conf tree k
+	real_node "$1" use_root
 	ROOT=$2
 	tree=$("$(dirname "${BASH_SOURCE[0]}")/../../scripts/pgtest.sh" conf | grep -E '^sift\.[a-z_]+ = ')
 	while IFS=' ' read -r k _; do sed_i "/^${k//./\\.} = /d" "$conf"; done <<<"$tree"
@@ -165,17 +234,22 @@ use_root() {
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
 }
 node_start() {
+	[[ ! -v POOL_DB[$1] ]] || return 0
 	LD_PRELOAD=${SIFT_PRELOAD:-} pg_ctl -D "$(dir "$1")/data" -l "$(dir "$1")/postgres.log" -w -t 120 start \
 		>/dev/null 2>&1 || return
 	leak_baseline "$(dir "$1")/data"
 }
-node_stop() { [[ -f $(dir "$1")/data/postmaster.pid ]] && pg_ctl -D "$(dir "$1")/data" -m fast -w stop >/dev/null 2>&1; true; }
+node_stop() { real_node "$1" node_stop; [[ -f $(dir "$1")/data/postmaster.pid ]] && pg_ctl -D "$(dir "$1")/data" -m fast -w stop >/dev/null 2>&1; true; }
 
 # sql NAME [QUERY...]: unaligned tuples, stops at the first error (stderr
 # kept); without queries, runs the script on stdin
 sql() {
 	local name=$1
 	shift
+	if [[ -v POOL_DB[$name] ]]; then
+		PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$POOL_SOCK" -p "$SIFT_PORT" -U postgres -d "${POOL_DB[$name]}" "${@/#/--command=}"
+		return
+	fi
 	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir "$name")/sock" \
 		-p "$(port "$name")" -U postgres -d postgres "${@/#/--command=}"
 }
@@ -195,6 +269,7 @@ elem_groups() {
 # killing the postmaster: a running parallel leader otherwise observes its death and enters fatal-error cleanup.
 crash() {
 	local pm kids pid state
+	real_node "$1" crash
 	pm=$(head -1 "$(dir "$1")/data/postmaster.pid")
 	kill -STOP "$pm" 2>/dev/null
 	while [[ $(cut -d' ' -f3 "/proc/$pm/stat" 2>/dev/null) =~ ^[RSD]$ ]]; do :; done
@@ -219,6 +294,21 @@ catchup() {
 		sleep 0.1
 	done
 	return 1
+}
+
+# running NODE PATTERN: another backend of NODE is running a statement that matches the LIKE pattern PATTERN
+running() { [[ $(sql "$1" "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND pid <> pg_backend_pid() AND query LIKE '$2'") -ge 1 ]]; }
+# wal_flushed NODE: the WAL writer has flushed every record written so far, which is what a crash after it keeps
+wal_flushed() { [[ $(sql "$1" "SELECT pg_current_wal_flush_lsn() = pg_current_wal_insert_lsn()") == t ]]; }
+# setting_is NODE NAME VALUE: a new session of NODE sees the setting NAME as VALUE (a reload has reached it)
+setting_is() { [[ $(sql "$1" "SHOW $2") == "$3" ]]; }
+# pgbench_up NODE CLIENTS: the CLIENTS sessions of the pgbench of NODE are connected
+pgbench_up() { wait_for "[[ \$(sql $1 \"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pgbench'\") -ge $2 ]]" 30; }
+# horizon_past PRIMARY STANDBY: the standby replayed what PRIMARY wrote and its feedback (hot_standby_feedback) holds no horizon at or below the transaction PRIMARY just spent
+horizon_past() {
+	local xid
+	xid=$(sql "$1" "SELECT pg_current_xact_id()::text::int8")
+	catchup "$1" "$2" && wait_for "[[ \$(sql $1 \"SELECT coalesce(bool_and(backend_xmin::text::int8 > $xid), false) FROM pg_stat_replication\") == t ]]" 30
 }
 
 # churn NAME IDX MAXBYTES [name:weight:sql ...]: pgbench -f arguments for a
@@ -314,6 +404,9 @@ upgrade_failed() {
 
 finish() {
 	local name out
+	for name in "${!POOL_DB[@]}"; do
+		out=$(pool_end "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
+	done
 	for name in "${NODES[@]}"; do
 		out=$(node_leakcheck "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
 	done

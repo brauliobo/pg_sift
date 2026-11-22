@@ -1,0 +1,41 @@
+-- A sift_table read through the granule cache of the backend: point lookups, IN lists, ranges and scans give the rows of a heap with the same history, with updates and deletes between the
+-- reads and a cache that holds one granule.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE s55_tc (id int PRIMARY KEY, k int, v text, n bigint) USING sift_table;
+CREATE TABLE s55_tc_ref (id int PRIMARY KEY, k int, v text, n bigint);
+INSERT INTO s55_tc SELECT g, g % 50, 'row ' || g || repeat('x', g % 40), g::bigint * 7 FROM generate_series(1, 30000) g;
+INSERT INTO s55_tc_ref SELECT * FROM s55_tc;
+VACUUM (FREEZE, ANALYZE) s55_tc;
+UPDATE s55_tc SET v = 'upd ' || id, n = n + 1 WHERE id % 97 = 0;
+UPDATE s55_tc_ref SET v = 'upd ' || id, n = n + 1 WHERE id % 97 = 0;
+DELETE FROM s55_tc WHERE id % 211 = 0;
+DELETE FROM s55_tc_ref WHERE id % 211 = 0;
+INSERT INTO s55_tc SELECT g, g % 50, 'late ' || g, g FROM generate_series(30001, 30500) g;
+INSERT INTO s55_tc_ref SELECT g, g % 50, 'late ' || g, g FROM generate_series(30001, 30500) g;
+
+CREATE FUNCTION s55_tc_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	got text;
+	want text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO got;
+	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || replace(q, 's55_tc', 's55_tc_ref') || ') t' INTO want;
+	RETURN got IS NOT DISTINCT FROM want;
+END $$;
+
+SET sift.backend_cache_kb = 64;
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id = 97');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id = 211');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id = 30250');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id IN (1, 97, 194, 211, 5000, 29999, 30001, 30500, 99999)');
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id BETWEEN 100 AND 900');
+SELECT s55_tc_same('SELECT id, v FROM s55_tc WHERE k = 7');
+SELECT s55_tc_same('SELECT k, count(*), sum(n), max(v) FROM s55_tc GROUP BY k');
+SELECT s55_tc_same('SELECT * FROM s55_tc');
+RESET sift.backend_cache_kb;
+SELECT s55_tc_same('SELECT * FROM s55_tc WHERE id IN (97, 98, 99)');
+DROP TABLE s55_tc, s55_tc_ref;
+DROP FUNCTION s55_tc_same(text);
+DROP EXTENSION pg_sift;

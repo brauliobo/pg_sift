@@ -1,4 +1,4 @@
--- The rewrite of a sift_col index by range (sift.col_auto_merge_partition_kb): the index is kept as segments of about that size, a step of the rewrite
+-- The rewrite of a sift_col index by range (sift.test_col_partition_kb): the index is kept as segments of about that size, a step of the rewrite
 -- takes one of them, the one the churn left dirty, and the partitions it did not touch are not written at all; the small segments the promotions left over
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
@@ -58,7 +58,7 @@ END $$;
 
 -- the partition size: 128 kB, which makes about a dozen partitions of the index (the segments of 600 rows over a few units are under half of it, the overlays)
 CREATE FUNCTION pt_partition_kb(idx regclass) RETURNS bool LANGUAGE sql AS $$
-	SELECT set_config('sift.col_auto_merge_partition_kb', '128', false) IS NOT NULL $$;
+	SELECT set_config('sift.test_col_partition_kb', '128', false) IS NOT NULL $$;
 SELECT pt_partition_kb('items_col') AS partition_kb_set;
 SELECT 'built' AS step, * FROM pt_index('items_col');
 
@@ -80,7 +80,7 @@ CALL pt_churn(2, 38000, 4);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) items, items_plain;
 SELECT 'window' AS step, * FROM pt_state('items');
 SELECT segments >= 8 AS partitions, dirty > 0 AS some_dirty, dirty < 4 AS few_dirty FROM pt_index('items_col');
-SET sift.col_auto_merge_partition_kb = 0;
+SET sift.test_col_partition_kb = 0;
 SELECT sift.col_maintenance_due('items_col', false) AS due_whole_index;
 SELECT pt_partition_kb('items_col') AS partition_kb_set;
 SELECT sift.col_maintenance_due('items_col', false) AS due_by_range;
@@ -97,7 +97,7 @@ SELECT sift.col_verify('items_col', true);
 -- 3. the merge tiers leave the partitions alone: eight segments of one size are merged by the policy of an index with no partitions
 SELECT sift.col_merge('items_col') AS merged_partitions;
 SELECT segments >= 8 AS partitions FROM pt_index('items_col');
-SET sift.col_auto_merge_partition_kb = 0;
+SET sift.test_col_partition_kb = 0;
 SELECT sift.col_merge('items_col') > 0 AS merged_without_partitions;
 SELECT segments < 8 AS fewer FROM pt_index('items_col');
 SELECT sift.col_verify('items_col', true);

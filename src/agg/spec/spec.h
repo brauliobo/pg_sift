@@ -159,10 +159,10 @@ extern bool sift_aggspec_ord_range(const SiftAggSpec *s);
 extern bool sift_aggspec_spillable(const SiftAggSpec *s);
 extern bool sift_aggspec_holds_groups(const SiftAggSpec *s);
 extern bool sift_aggspec_holds_values(const SiftAggSpec *s);
+extern bool sift_aggspec_can_overflow(const SiftAggSpec *s);
 
 /* the group table of a scan that cannot spill (and of the node that groups rows) may take this much: the planner leaves the scan to the normal plan, which spills, past it, and the scan raises an error */
-extern double sift_agg_nospill_bytes(int *factor, double *floor_bytes);
-extern double sift_agg_par_bytes(void);
+extern double sift_agg_nospill_bytes(int nworkers);
 
 /* the count(DISTINCT x) a scan may stream in the order of the zone minimum of x (agg/dist/), -1: none */
 extern int sift_aggspec_dstream(const SiftAggSpec *s);
@@ -178,6 +178,9 @@ sift_aggkind_float_sum(const SiftAggAgg *a)
 
 /* a scan with a spine or a correlated child plan: workers were added for them after the release that scanned the others in lanes */
 extern bool sift_aggspec_workers_only(const SiftAggSpec *s);
+
+/* sift.agg_exact_float: the Format 2.0 scan adds float8 in the order of the rows (one process) instead of the order of the vector kernels */
+extern PGDLLIMPORT bool sift_agg_exact_float;
 
 /* a scan with a float sum, in the specs whose scan can be split in lanes */
 static inline bool

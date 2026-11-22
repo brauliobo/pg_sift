@@ -1,4 +1,4 @@
--- The temporary files of a build by key ranges (sift_col build spill.c, col/colspool.c, col/rowfile.c) take a fraction of what the rows are in memory. The bytes of the files of the last
+-- The temporary files of a build by key ranges (sift_col build spill.c, col/v1/colspool.c, col/v1/rowfile.c) take a fraction of what the rows are in memory. The bytes of the files of the last
 -- build are sift.test_col_spill_bytes, the chunk rows the plan chose sift.test_col_spool_used_rows (0: the rows were packed in blocks) and the price it told the user sift.test_col_spool_est_bytes.
 -- A row of this table packs to at most 230 bytes (8 integer or timestamp leaves of at most 6 bytes, 5 float leaves of 8 bytes, 5 short strings, the elements of the arrays) and takes about 130
 -- as an uncompressed column chunk (8 bytes for each of the 13 numeric leaves and the codes and elements of the rest). A budget that holds no chunk for each range packs the rows, in blocks that share the budget between the ranges: those must be
@@ -12,7 +12,6 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.test_col_segment_kb = 400;
 SET sift.test_col_spill_run_kb = 400;
-SET sift.col_unit_rows = 1200;
 CREATE TABLE sp_all (id int, tenant_id int, parent_id int, status smallint, created_at timestamptz, updated_at timestamptz, a_count int, counter_a int,
 	kind text, label text, body text, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO sp_all

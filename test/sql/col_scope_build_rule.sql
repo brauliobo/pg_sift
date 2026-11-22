@@ -1,6 +1,6 @@
 -- The build rule for tables shaped like a denormalised copy (CREATE TABLE AS of a join with (member, key) pairs): the first column of the index is a key of few
 -- values with many rows each, neither a foreign key nor unique, and another key-shaped column has several times its values (the foreign key the rows were copied by). CREATE INDEX
--- takes the first column for key_order and key_cut, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
+-- takes the first column for key_order, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
 -- the floor of the layout choice (GORD_AUTO_ROWS): the table here is 110,000 rows and the reason is the only one for its size.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -59,11 +59,14 @@ SELECT 'arrival' AS copy, chosen('copy_arrival_col') UNION ALL SELECT 'sorted', 
 SELECT why FROM sift.index_choices('copy_arrival_col') WHERE choice = 'key_order';
 SELECT k AS tenant, answers('copy_arrival', k) AS sums_arrival, answers('copy_sorted', k) AS sums_sorted, latest('copy_arrival', k) AS latest_arrival, latest('copy_sorted', k) AS latest_sorted
 	FROM (VALUES (1), (7), (60)) v(k);
-SELECT units_of('SELECT dim_a_id, sum(amount) FROM copy_arrival WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_arrival,
-	   units_of('SELECT dim_a_id, sum(amount) FROM copy_sorted WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_sorted;
 -- REINDEX decides again and chooses the same
 REINDEX INDEX copy_arrival_col;
 SELECT chosen('copy_arrival_col');
+-- the arrival copy reads every unit of a key unless the index is cut by it (key_cut is the user's); the sorted copy is in key order already
+DROP INDEX copy_arrival_col;
+CREATE INDEX copy_arrival_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_cut = 'tenant_id, created_at');
+SELECT units_of('SELECT dim_a_id, sum(amount) FROM copy_arrival WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_arrival,
+	   units_of('SELECT dim_a_id, sum(amount) FROM copy_sorted WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_sorted;
 DROP INDEX copy_arrival_col, copy_sorted_col;
 
 -- what the user wrote stays: a key_order of their own, 'off'

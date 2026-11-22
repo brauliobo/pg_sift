@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the reads of a scope index paid for the pairs that changed since its floor is kept in the metapage of the index (col/scope_paid.c): a restart, a crash and a backend that ends keep it, a server with
+# What the reads of a scope index paid for the pairs that changed since its floor is kept in the metapage of the index (col/v1/scope_paid.c): a restart, a crash and a backend that ends keep it, a server with
 # more scope indexes than the table of the shared memory had slots counts each of them, and the rule says `stale scope` after a burst of reads that a restart split in two, none of the halves enough alone; no worker rewrites for it.
 . "$(dirname "$0")/lib.bash"
 plan 8
@@ -29,7 +29,7 @@ due() { sql pd "SELECT coalesce(sift.col_maintenance_due('ce_col'), '-')" | tail
 paid() { sql pd "SELECT paid FROM sift._test_scope_balance('ce_col')" | tail -n 1; }
 half() { sql pd "SELECT half::int8 FROM sift._test_scope_balance('ce_col')" | tail -n 1; }
 # the WAL writer has the record in the log within wal_writer_delay (200 ms): a crash after that keeps it
-settle() { sleep 1; }
+settle() { wait_for "wal_flushed pd" 30; }
 
 G0=$(gens)
 sql pd "WITH d AS (DELETE FROM cp WHERE abs(hashtext(m || '/' || t || '/b')) % 100 < 2 RETURNING m, t) INSERT INTO cp SELECT 1 + (m + 37) % 2000, t FROM d ON CONFLICT DO NOTHING" >/dev/null

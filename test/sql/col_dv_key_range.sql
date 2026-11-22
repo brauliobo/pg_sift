@@ -1,4 +1,4 @@
--- The lookup of the dead addresses of a statement reads the units of the partitions that may hold a key of the rows it deleted (col/track_dv.c): the segments it opens are those of the keys between
+-- The lookup of the dead addresses of a statement reads the units of the partitions that may hold a key of the rows it deleted (col/v1/track_dv.c): the segments it opens are those of the keys between
 -- the least and the greatest of them, a statement that spans every key opens every segment, and rows without a key and rows that changed key end up as the heap says.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -6,7 +6,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 SET sift.test_col_segment_kb = 1024;
-SET sift.col_auto_merge_partition_kb = 16;
+SET sift.test_col_partition_kb = 16;
 SET sift.test_col_net = off;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int, counter_a int, w int, x bigint) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE (i::bigint * 7919 % 200)::int END, i, (i::bigint * 40503 % 1000003)::int, i::bigint * 2654435761 FROM generate_series(1, 100000) i;

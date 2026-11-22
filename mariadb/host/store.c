@@ -552,6 +552,57 @@ sift_sr_prefetch(SiftStreamReader *sr, uint64 off, uint64 len)
 {
 }
 
+/* no ring to read through */
+void
+sift_sr_set_strategy(SiftStreamReader *sr, struct BufferAccessStrategyData *bas)
+{
+}
+
+#define PREFETCH_MIN_RUN	(4 * BLCKSZ)
+
+static void
+prefetch_run(char *at, size_t len)
+{
+#ifdef MADV_WILLNEED
+	if (len >= PREFETCH_MIN_RUN)
+		madvise(at, len, MADV_WILLNEED);
+#endif
+}
+
+/* The pages are mapped; the runs that lie side by side are asked of the kernel in one advice each (no page is read here: 0) */
+uint64
+sift_sr_prefetch_multi(const SiftMultiRange *ranges, int n)
+{
+	char	   *run = NULL;
+	size_t		len = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		SiftStreamReader *sr = (SiftStreamReader *) ranges[i].sr;
+		uint64		size = (uint64) sr->npages * SIFT_PAGE_PAYLOAD;
+
+		if (ranges[i].len == 0 || ranges[i].off >= size)
+			continue;
+		for (uint32 p = ranges[i].off / SIFT_PAGE_PAYLOAD, e = (Min(ranges[i].off + ranges[i].len, size) - 1) / SIFT_PAGE_PAYLOAD; p <= e; p++)
+		{
+			char	   *page = (char *) sr_page(sr, p);
+
+			if (run != NULL && page == run + len)
+				len += BLCKSZ;
+			else
+			{
+				if (run != NULL)
+					prefetch_run(run, len);
+				run = page;
+				len = BLCKSZ;
+			}
+		}
+	}
+	if (run != NULL)
+		prefetch_run(run, len);
+	return 0;
+}
+
 void
 sift_sr_unlock(SiftStreamReader *sr)
 {

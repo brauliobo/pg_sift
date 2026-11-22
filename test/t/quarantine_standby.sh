@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # A sift_col index that left service on the primary is out of service on its hot standby (the flag of the metapage arrives with the WAL; the standby plans on the heap); damage that only
-# the standby meets is kept in its own registry once a second read confirms it, and when the standby is promoted the registry is written to the metapage.
+# the standby meets is raised at every read (a replay applies a record of several pages one page at a time, so what it sees may be a passing mix: it never takes an index out of service),
+# and when the standby is promoted the damage is met again as on a primary: it leaves service and the metapage is flagged.
 . "$(dirname "$0")/lib.bash"
 
 plan 9
@@ -35,12 +36,13 @@ check "the standby answers from the heap as the primary does" test "$(sql s "SEL
 
 out=$(sql s "SELECT count(*) FROM b WHERE v = 3" 2>&1) || true
 check "the standby meets the damage of b: the first read fails" grep -q 'corrupted' <<<"$out"
-confirmed() { out=$(sql s "SELECT count(*) FROM b WHERE v = 3" 2>&1) || true; [[ $out == [0-9]* ]]; }
-check "a second read, a second later, confirms it and the standby stops reading the index" wait_for confirmed 60
-check "its registry holds b_idx: not persisted, the standby cannot write the metapage" persisted s b_idx f
+sleep 2
+out=$(sql s "SELECT count(*) FROM b WHERE v = 3" 2>&1) || true
+check "a read a second later fails again: the standby does not take the index out of service" grep -q 'corrupted' <<<"$out"
+check "its registry does not hold b_idx out of service" test "$(sql s "SELECT count(*) FROM sift.quarantine WHERE index = 'b_idx'::regclass")" == 0
 
 node_promote s
 promoted() { [[ $(sql s "SELECT pg_is_in_recovery()") == f ]]; }
-writes_and_flags() { sql s "INSERT INTO b VALUES (20001, 1)" >/dev/null 2>&1 && wait_for "persisted s b_idx t" 60; }
-check "the promoted standby accepts writes and flags the index in its metapage" wait_for promoted 60 && writes_and_flags
+reads_and_flags() { sql s "SELECT count(*) FROM b WHERE v = 3" >/dev/null 2>&1; wait_for "persisted s b_idx t" 60; }
+check "the promoted standby meets the damage as a primary does and flags the index in its metapage" wait_for promoted 60 && reads_and_flags
 finish

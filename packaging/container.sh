@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside a throwaway container (scripts/package.sh): the PostgreSQL server and its development files come from PGDG (Amazon Linux 2023: from the distribution).
 #   container.sh build   build the package of /src/pg_sift-$VER.tar.gz into /out
-#   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade; on aarch64 also the instruction scan of its library), remove it
+#   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade; also the instruction scan of its library), remove it
 # /pkg is the packaging/ directory. Env: PG (the major, build; the test reads it from the package name), VER, EPOCH (source date),
 # HOST_UID (owner of /out files), PKG (test).
 set -euo pipefail
@@ -19,13 +19,12 @@ pgdg_repo() {
 		apt-get update -qq
 		apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg lsb-release postgresql-common
 		sed -i 's/^#\?create_main_cluster.*/create_main_cluster = false/' /etc/postgresql-common/createcluster.conf
-		# the component of the major too: a major still in beta or release candidate (19 today) lives only there
-		/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y -c "$PG" >/dev/null
+		/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
 	else
 		local major=${VERSION_ID%%.*}
 		dnf -y -q install "https://download.postgresql.org/pub/repos/yum/reporpms/EL-$major-$(uname -m)/pgdg-redhat-repo-latest.noarch.rpm"
 		# only the repo of the version built: a broken signature of another major's metadata must not fail the build; a major not
-		# released yet (19 today) has only its testing repo, which is enabled then
+		# released yet has only its testing repo, which is enabled then
 		local keep=pgdg$PG
 		grep -q "^\[$keep\]" /etc/yum.repos.d/pgdg-redhat-all.repo || keep=$keep-updates-testing
 		awk -v keep="[$keep]" '/^\[/ {sec = $0; off = sec != keep && sec ~ /^\[pgdg[0-9]+\]$/} /^enabled *=/ {if (sec == keep) $0 = "enabled=1"; else if (off) $0 = "enabled=0"} 1' \
@@ -76,8 +75,10 @@ test_pkg() {
 	[[ $FMT == deb ]] || { bin=/usr/pgsql-$PG/bin libdir=/usr/pgsql-$PG/lib share=/usr/pgsql-$PG/share; }
 	[[ $ID != amzn ]] || { bin=/usr/bin libdir=/usr/lib64/pgsql share=/usr/share/pgsql; }
 	export PATH=$bin:$PATH
+	# every x86_64 library must run on any x86-64 CPU, its vector levels only in multi-versioned clones (scripts/isa_check.sh --so, mounted by scripts/package.sh)
 	# every aarch64 library must run on any ARMv8-A CPU (scripts/check-aarch64-baseline.sh, mounted by scripts/package.sh); objdump is binutils
 	if [[ $(uname -m) == aarch64 ]]; then install_pkg binutils >/dev/null; /check-aarch64-baseline.sh "$libdir/pg_sift.so"; fi
+	if [[ $(uname -m) == x86_64 ]]; then install_pkg binutils >/dev/null; /isa_check.sh --so "$libdir/pg_sift.so"; fi
 	ver=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$share/extension/pg_sift.control")
 	t=$(mktemp -d) && chown postgres "$t"
 	pg() { runuser -u postgres -- env PATH="$PATH" PGHOST="$t" PGPORT=55432 "$@"; }

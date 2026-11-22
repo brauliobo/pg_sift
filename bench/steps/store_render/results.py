@@ -2,7 +2,7 @@
 # A Results reads the stored runs; ms, seconds, size and md_table make the cells.
 import json
 import os
-from store_charts import QUESTIONS, SEARCH
+from store_results import QUESTIONS, SEARCH
 
 
 class Results:

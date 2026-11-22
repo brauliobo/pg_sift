@@ -166,7 +166,8 @@ sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *c
 		if (cfg->stemmer != SIFT_STEM_NONE || cfg->prefix_len || cfg->nfields)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("analyzer = keyword cannot be combined with stemmer, prefix_index or fields")));
+					 errmsg("analyzer = keyword cannot be combined with stemmer, prefix_index or fields"),
+					 errhint("Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.")));
 		sift_analyzer_config_set_keyword(cfg, true);
 	}
 }

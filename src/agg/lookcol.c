@@ -444,7 +444,7 @@ needs_wide(const ColNeed *need, int nneed)
 static bool
 usable_index(Relation ix)
 {
-	return sift_colsrc_is_index(ix->rd_rel->relam) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
+	return sift_colsrc_reads_index(RelationGetRelid(ix)) && ix->rd_index->indisvalid && ix->rd_index->indisready &&
 		heap_attisnull(ix->rd_indextuple, Anum_pg_index_indpred, NULL) && !sift_index_quarantined(ix);
 }
 

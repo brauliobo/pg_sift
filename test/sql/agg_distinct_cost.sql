@@ -49,7 +49,6 @@ BEGIN
 		workers('SELECT count(DISTINCT cat) FROM items');
 END $$;
 SELECT * FROM workers_at(0) UNION ALL SELECT * FROM workers_at(1) UNION ALL SELECT * FROM workers_at(100) ORDER BY 1;
-RESET sift.plan_scale;
 SELECT sum_workers AS small_scan_workers FROM workers_at(1);
 -- at the default setup cost a group by key of a table priced as 5 times larger stays in one process (500,000 rows of this width: the 2 workers of the heap's size
 -- cost 4 ms to start and 11 million instructions, more than they save); priced as 40 times larger it takes them
@@ -57,7 +56,6 @@ SET sift.plan_scale = 5;
 SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_5;
 SET sift.plan_scale = 40;
 SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_40;
-RESET sift.plan_scale;
 RESET parallel_setup_cost; RESET min_parallel_table_scan_size; RESET parallel_tuple_cost; RESET sift.agg_preagg;
 
 DROP FUNCTION scan_cost(text), differences(text), workers(text), workers_at(int);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The refusal registry (src/agg/refuse.h): the slug tables of docs/USAGE.md and docs/COL-PLAN.md are generated from it, and the planner sources are
+# The refusal registry (src/agg/refuse.h): the slug table of docs/ARCHITECTURE.md is generated from it, and the planner sources are
 # checked against it. Needs python3, no PostgreSQL.
 #
 #   scripts/gen-refusals.sh           write the generated blocks (between <!-- refusals:start --> and <!-- refusals:end -->)
@@ -23,7 +23,7 @@ import re
 import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
-from genlib import errors, exit_on_errors, read
+from genlib import errors, esc, exit_on_errors, read
 
 mode = sys.argv[1]
 
@@ -37,9 +37,10 @@ if not slugs:
 
 
 def block():
-    rows = ['| slug | class | by design | the query kept the normal plan because | what to do |', '|---|---|---|---|---|']
+    rows = ['| Slug | Class | Reason | Action |', '|---|---|---|---|']
     for _, slug, text, limit, by_design, action in slugs:
-        rows.append('| `%s` | %s | %s | %s | %s |' % (slug, 'limit' if limit else 'semantic', 'yes' if by_design else '', text.replace('\\"', '"'), action.replace('\\"', '"')))
+        cls = ('limit' if limit else 'semantic') + (' (by design)' if by_design else '')
+        rows.append('| `%s` | %s | %s | %s |' % (slug, cls, esc(text.replace('\\"', '"')), esc(action.replace('\\"', '"'))))
     return '\n'.join(rows)
 
 
@@ -108,11 +109,11 @@ for d, _, fs in os.walk('docs'):
             docs += read(os.path.join(d, f))
 for label in sorted(labels):
     if label not in docs:
-        errors.append('src/: the EXPLAIN label "%s" is named in no document (a row of the table "EXPLAIN labels" in docs/COL-PLAN.md)' % label)
+        errors.append('src/: the EXPLAIN label "%s" is named in no document (add it to docs/ARCHITECTURE.md)' % label)
 
 # ---- the generated blocks ----
 START, END = '<!-- refusals:start -->', '<!-- refusals:end -->'
-DOCS = ['docs/USAGE.md', 'docs/COL-PLAN.md']
+DOCS = ['docs/ARCHITECTURE.md']
 for doc in DOCS:
     text = read(doc)
     m = re.search(re.escape(START) + r'\n(?:.*?\n)?' + re.escape(END), text, re.S)

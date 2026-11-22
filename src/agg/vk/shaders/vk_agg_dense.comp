@@ -1,0 +1,177 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_agg_dense.comp - one or two group keys whose values lie in a small known range (the zones of the granules): the group of a row is
+ * the index of its key (a slot more for NULL), the accumulators of the groups are one dense array. When the array fits shared memory
+ * every workgroup adds into its own copy and merges it into the result once, else the rows add into the result directly.
+ */
+#include "common_agg.glsl"
+
+layout(local_size_x = 256) in;
+
+#define SM_WORDS 4096u
+
+shared int64_t sacc[SM_WORDS];
+bool g_smem;
+
+void acc_add(uint i, int64_t v)
+{
+	if (g_smem)
+		atomicAdd(sacc[i], v);
+	else
+		atomicAdd(res[RES_ACC_OFF + i], v);
+}
+
+void acc_min(uint i, int64_t v)
+{
+	if (g_smem)
+		atomicMin(sacc[i], v);
+	else
+		atomicMin(res[RES_ACC_OFF + i], v);
+}
+
+void acc_max(uint i, int64_t v)
+{
+	if (g_smem)
+		atomicMax(sacc[i], v);
+	else
+		atomicMax(res[RES_ACC_OFF + i], v);
+}
+
+void acc_addf(uint i, double v)
+{
+	for (;;)
+	{
+		int64_t old = g_smem ? sacc[i] : res[RES_ACC_OFF + i];
+		int64_t nw = bitsd(dbl(old) + v);
+		int64_t got = g_smem ? atomicCompSwap(sacc[i], old, nw) : atomicCompSwap(res[RES_ACC_OFF + i], old, nw);
+
+		if (got == old)
+			break;
+	}
+}
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint naggs = ctl[J_NAGGS], ngran = ctl[J_NGRAN], nkeys = ctl[J_NKEYS], G = ctl[J_DENSE_G];
+	uint S = 1u + 3u * naggs;
+
+	g_smem = G * S <= SM_WORDS;
+	if (g_smem)
+	{
+		for (uint i = tid; i < G * S; i += WG)
+		{
+			uint wd = i % S;
+			sacc[i] = wd == 0u ? 0l : acc_init(ctl[J_AGGKIND + (wd - 1u) / 3u], (wd - 1u) % 3u);
+		}
+		barrier();
+	}
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		for (uint r = tid; r < g_nrows; r += WG)
+		{
+			if (!row_begin(gi, dtrow, r))
+				continue;
+			uint gid = 0u;
+			bool bad = false;
+
+			for (uint j = 0u; j < nkeys; j++)
+			{
+				uint kr = ctl[J_KEYREG + j], span = ctl[J_DENSE_SPAN + j];
+				uint slot = span - 1u;
+
+				if (rvalid(kr))
+				{
+					int64_t kmin = int64_t(u64of(ctl[J_DENSE_KMIN + 2u * j], ctl[J_DENSE_KMIN + 2u * j + 1u]));
+					uint64_t d = uint64_t(R[kr] - kmin);
+
+					if (d >= uint64_t(span - 1u))
+						bad = true;
+					else
+						slot = uint(d);
+				}
+				gid = gid * span + slot;
+			}
+			if (bad)
+			{
+				report_error(r, 8u, 0u);
+				continue;
+			}
+			uint base = gid * S;
+
+			acc_add(base, 1l);
+			for (uint a = 0u; a < naggs; a++)
+			{
+				uint k = ctl[J_AGGKIND + a], o = base + 1u + a * 3u;
+
+				if (!agg_in(a))
+					continue;
+				if (k == AK_COUNT_STAR)
+					acc_add(o, 1l);
+				else if (!agg_vok(a))
+					continue;
+				else if (k == AK_COUNT)
+					acc_add(o, 1l);
+				else if (k == AK_SUM_I)
+				{
+					int64_t v = agg_v(a);
+					acc_add(o, sum_lo(v));
+					acc_add(o + 1u, sum_hi(v));
+					acc_add(o + 2u, 1l);
+				}
+				else if (k == AK_SUM_F)
+				{
+					acc_addf(o, dbl(agg_v(a)));
+					acc_add(o + 2u, 1l);
+				}
+				else
+				{
+					int64_t v = agg_key(a, k);
+					if (k == AK_MIN || k == AK_MIN_F)
+						acc_min(o, v);
+					else
+						acc_max(o, v);
+					acc_add(o + 2u, 1l);
+				}
+			}
+		}
+	}
+	if (g_smem)
+	{
+		barrier();
+		for (uint i = tid; i < G * S; i += WG)
+		{
+			uint wd = i % S;
+			int64_t v = sacc[i];
+
+			if (wd == 0u)
+			{
+				if (v != 0l)
+					atomicAdd(res[RES_ACC_OFF + i], v);
+				continue;
+			}
+			uint a = (wd - 1u) / 3u, j = (wd - 1u) % 3u, k = ctl[J_AGGKIND + a];
+
+			if (v == acc_init(k, j))
+				continue;
+			if (j == 0u && (k == AK_MIN || k == AK_MIN_F))
+				atomicMin(res[RES_ACC_OFF + i], v);
+			else if (j == 0u && (k == AK_MAX || k == AK_MAX_F))
+				atomicMax(res[RES_ACC_OFF + i], v);
+			else if (j == 0u && k == AK_SUM_F)
+			{
+				for (;;)
+				{
+					int64_t old = res[RES_ACC_OFF + i];
+					if (atomicCompSwap(res[RES_ACC_OFF + i], old, bitsd(dbl(old) + dbl(v))) == old)
+						break;
+				}
+			}
+			else
+				atomicAdd(res[RES_ACC_OFF + i], v);
+		}
+	}
+}

@@ -4,6 +4,7 @@
 
 #include "bm25/kernels.h"
 #include "core/live.h"
+#include "core/memtrack.h"
 #include "core/popcount.h"
 #include "bm25/segment.h"
 
@@ -735,7 +736,7 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 {
 	SiftLive	l = seg_live(seg);
 	DocMap	   *dm = docmap(seg);
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift dead postings", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead postings");
 	MemoryContext wcx = AllocSetContextCreate(cx, "sift dead rows", ALLOCSET_DEFAULT_SIZES);
 	DeadScan	ds = {.seg = seg,.dead = dead,.nslots = h->nslots};
 	uint8	   *dirty = palloc((h->nsb + 7) / 8);

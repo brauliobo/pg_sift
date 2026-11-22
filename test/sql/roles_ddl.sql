@@ -271,7 +271,6 @@ SELECT * FROM rr_matrix(ARRAY['rrd_owner', 'rrd_reader', 'rrd_monitor', 'rrd_non
 SELECT count(*) FROM sift.col_index_status
 SELECT count(*) FROM sift.workers
 SELECT projection || ' ' || state FROM sift.projection_status
-SELECT count(*) FROM sift.col_value_store_status
 SELECT count(*) FROM sift.col_connections
 SELECT sift._may_inspect('rrd.ins')
 SELECT segments > 0 FROM sift.col_index_info('rrd.ins_col')

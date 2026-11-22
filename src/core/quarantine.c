@@ -13,6 +13,7 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/spin.h"
+#include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -20,11 +21,15 @@
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
-#include "bm25/maint.h"
+#include "core/maint.h"
 #include "col/dsmreg.h"
+#include "core/cachebudget.h"
 #include "core/errctx.h"
+#include "col/f2/col_meta.h"
+#include "core/xlog.h"
 #include "core/limits.h"
 #include "core/progress.h"
+#include "core/meta_peek.h"
 #include "core/quarantine.h"
 #include "core/sift.h"
 #include "core/sql.h"
@@ -37,9 +42,6 @@ PG_FUNCTION_INFO_V1(sift_meta_quarantined);
 #define QUAR_ENTRIES	256
 #define QUAR_LOCAL		8
 #define QUAR_REASON_LEN	SIFT_MAINT_ERRMSG_LEN
-
-/* A replay applies a record of several pages one page at a time: on a standby damage counts when it is seen again this long after it was first seen */
-#define QUAR_STANDBY_CONFIRM_US	USECS_PER_SEC
 
 /* The worker that flags a metapage is asked for again, by the next plan or write that meets the index, when this long has passed and the flag is still not there (no slot was free) */
 #define QUAR_ASK_RETRY_US		(10 * USECS_PER_SEC)
@@ -70,7 +72,6 @@ typedef struct QuarEntry
 	Oid			indexoid;
 	TimestampTz detected_at;
 	TimestampTz asked_at;
-	TimestampTz first_seen;
 	int			sqlerrcode;
 	char		reason[QUAR_REASON_LEN];
 	uint32		detections;
@@ -168,17 +169,8 @@ slot(QuarEntry *list, int n, const QuarKey *key)
 	return free ? free : oldest_persisted ? oldest_persisted : oldest;
 }
 
-static bool
-confirms(QuarEntry *e, TimestampTz now, bool recovery)
-{
-	if (!recovery)
-		return true;
-	if (e->first_seen == 0)
-		e->first_seen = now;
-	return now - e->first_seen >= QUAR_STANDBY_CONFIRM_US;
-}
-
-/* Takes what src holds into the list: a first sighting, another one of the same file, or the counters of the skips since the last hand-over (src's are left zero); true if the file is in force */
+/* Takes what src holds into the list: a first sighting, another one of the same file, or the counters of the skips since the last hand-over (src's are left zero); true if the file is in force.
+ * A replay applies a record of several pages one page at a time, so damage seen during recovery is not taken for damage: only a flag the primary wrote puts an index out of service on a standby */
 static bool
 take(QuarEntry *list, int n, QuarEntry *src, bool recovery)
 {
@@ -196,8 +188,7 @@ take(QuarEntry *list, int n, QuarEntry *src, bool recovery)
 	e->skipped_vacuums += src->skipped_vacuums;
 	e->refused_scans += src->refused_scans;
 	e->persisted |= src->persisted;
-	if (src->detections > 0 || src->confirmed)
-		e->confirmed |= src->confirmed || confirms(e, src->detected_at, recovery);
+	e->confirmed |= src->confirmed || (src->detections > 0 && !recovery);
 	src->detections = 0;
 	src->skipped_writes = src->skipped_vacuums = src->refused_scans = 0;
 	return e->confirmed;
@@ -278,28 +269,16 @@ ask_due(const QuarKey *key)
 	return due;
 }
 
-/* inside sift_quarantine_guard: its subtransaction is the caller's own, not a user's */
-static bool guarding;
-/* the transaction id of the level a guarded write was called from: what it stamps its records with, so that the guard's subtransaction needs no id of its own */
-static TransactionId guard_xid;
-/* inside sift_quarantine_unprotected: the caller runs in a state in which no subtransaction can start */
-static int	unprotected;
-
 /* What a transaction ended with is handed to the registry, and the workers asked for are started: a session that skips an index and ends (an autovacuum worker) leaves nothing behind in its own memory */
 static void
 quarantine_xact(XactEvent event, void *arg)
 {
-	if (event == XACT_EVENT_ABORT)
-	{
-		guarding = false;
-		unprotected = 0;
-	}
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
 		return;
 	publish(shared);
 	for (int i = 0; i < nasks; i++)
 		if (ask_due(&asks[i].file))
-			(void) sift_maint_register_worker_oid(asks[i].index, "sift_quarantine_main", asks[i].subject);
+			(void) sift_maint_register_worker_oid(asks[i].index, SIFT_WK_QUARANTINE, asks[i].subject);
 	nasks = 0;
 }
 
@@ -336,12 +315,14 @@ static bool
 shared_persisted(const QuarKey *key)
 {
 	QuarShm    *q = table();
+	QuarEntry  *e;
 	bool		done;
 
 	if (q == NULL)
 		return false;
 	SpinLockAcquire(&q->mutex);
-	done = same_file(slot(q->entry, entries(), key), key) && slot(q->entry, entries(), key)->persisted;
+	e = slot(q->entry, entries(), key);
+	done = same_file(e, key) && e->persisted;
 	SpinLockRelease(&q->mutex);
 	return done;
 }
@@ -386,11 +367,32 @@ mark_unflaggable(const QuarKey *key)
 	SpinLockRelease(&q->mutex);
 }
 
+/* A format 2 metapage keeps the flag in state_flags, under the checksum of its struct: one generic WAL record stamps it and seals the page again */
+static void
+flag_index_f2(Relation index)
+{
+	Buffer		buf = sift_col_meta_lock(index, BUFFER_LOCK_EXCLUSIVE);
+	SiftXlog	x = sift_xlog_start(index);
+	Page		page = sift_xlog_register(&x, buf, 0);
+	SiftColMetaPageData *m = SIFT_COL_META(page);
+
+	m->state_flags |= SIFT_META_FLAG_QUARANTINED;
+	sift_meta_seal(page, m->common.struct_size);
+	sift_xlog_done(&x);
+}
+
 static void
 flag_index(Relation index)
 {
-	if ((sift_store_meta_flags(index) & SIFT_META_QUARANTINED) == 0)
-		sift_dir_update(index, &(SiftDirChange) {.fn = stamp_flag,.extra = InvalidBuffer});
+	SiftMetaPeek peek = sift_meta_peek_format(index);
+
+	if ((peek.flags & SIFT_META_QUARANTINED) == 0)
+	{
+		if (peek.status == SIFT_FMT_V2)
+			flag_index_f2(index);
+		else
+			sift_dir_update(index, &(SiftDirChange) {.fn = stamp_flag,.extra = InvalidBuffer});
+	}
 	CacheInvalidateRelcacheByRelid(RelationGetRelid(index));
 	mark_persisted(index);
 }
@@ -551,6 +553,30 @@ overlay_has(Relation index)
 	return found;
 }
 
+char *
+sift_quarantine_reason(Relation index)
+{
+	QuarKey		key;
+	QuarShm    *q = table();
+	char		reason[QUAR_REASON_LEN] = "";
+
+	key_of(index, &key);
+	for (int i = 0; i < QUAR_LOCAL && reason[0] == '\0'; i++)
+		if (same_file(&local[i], &key))
+			strlcpy(reason, local[i].reason, sizeof(reason));
+	if (reason[0] == '\0' && q != NULL && pg_atomic_read_u32(&q->any) != 0)
+	{
+		QuarEntry  *e;
+
+		SpinLockAcquire(&q->mutex);
+		e = slot(q->entry, entries(), &key);
+		if (same_file(e, &key))
+			strlcpy(reason, e->reason, sizeof(reason));
+		SpinLockRelease(&q->mutex);
+	}
+	return reason[0] != '\0' ? pstrdup(reason) : NULL;
+}
+
 /* A plan that leaves a quarantined index out asks for the worker that flags its metapage when the registry holds it with no flag (a worker that found no slot, or damage a parallel worker found) */
 void
 sift_quarantine_planned(Relation index)
@@ -583,16 +609,89 @@ sift_index_out(Relation index, uint32 meta_flags)
 	return sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE && ((meta_flags & SIFT_META_QUARANTINED) != 0 || overlay_has(index));
 }
 
+typedef struct FlagMemo
+{
+	Oid			index;
+	bool		flagged;
+} FlagMemo;
+
+/* In the memory of the relcache entry of the index, where the relcache frees it when it invalidates the entry: the flag of the metapage is forgotten then */
+typedef struct FlagForget
+{
+	MemoryContextCallback cb;
+	Oid			index;
+} FlagForget;
+
+static HTAB *flag_memo;
+
+/*
+ * The flag of a metapage changes with a commit that invalidates the relcache entry of its index (the worker that writes it, a REINDEX), so the backend reads it once in between and not at
+ * every plan. No relcache callback for it: a backend has ten of those slots for all its libraries.
+ */
+static void
+flag_forget(void *arg)
+{
+	Oid			index = ((FlagForget *) arg)->index;
+
+	if (flag_memo != NULL)
+		hash_search(flag_memo, &index, HASH_REMOVE, NULL);
+}
+
+static bool
+meta_flagged(Relation index)
+{
+	Oid			relid = RelationGetRelid(index);
+	FlagMemo   *m;
+	FlagForget *f;
+	bool		flagged;
+
+	if (flag_memo == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(FlagMemo),.hcxt = sift_cache_create_context("sift cache quarantine flags")};
+
+		flag_memo = hash_create("sift quarantine flags", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	if ((m = hash_search(flag_memo, &relid, HASH_FIND, NULL)) != NULL)
+		return m->flagged;
+	flagged = (sift_meta_peek_format(index).flags & SIFT_META_QUARANTINED) != 0;
+	m = hash_search(flag_memo, &relid, HASH_ENTER, NULL);
+	m->flagged = flagged;
+	f = MemoryContextAlloc(index->rd_indexcxt, sizeof(FlagForget));
+	f->cb.func = flag_forget;
+	f->cb.arg = f;
+	f->index = relid;
+	MemoryContextRegisterResetCallback(index->rd_indexcxt, &f->cb);
+	return m->flagged;
+}
+
+/* The relations the quarantine is about: a sift or sift_col index in service, while sift.on_corruption says quarantine (a sift_table, or anything else, is never quarantined) */
+static bool
+guarded(Relation rel)
+{
+	return sift_on_corruption == SIFT_ON_CORRUPTION_QUARANTINE && is_sift_index(rel) && rel->rd_index->indisready;
+}
+
 bool
 sift_index_quarantined(Relation index)
 {
-	if (sift_on_corruption != SIFT_ON_CORRUPTION_QUARANTINE || !index->rd_index->indisready || !is_sift_index(index))
+	return guarded(index) && (overlay_has(index) || meta_flagged(index));
+}
+
+bool
+sift_quarantine_cost(Relation index, double index_pages, Cost *startup, Cost *total, Selectivity *selectivity, double *correlation, double *pages)
+{
+	if (!sift_index_quarantined(index))
 		return false;
-	return overlay_has(index) || sift_index_out(index, sift_store_meta_flags(index));
+	sift_quarantine_planned(index);
+	*startup = *total = 1e30;
+	*selectivity = 1.0;
+	*correlation = 0.0;
+	*pages = Max(index_pages, 1);
+	return true;
 }
 
 void
-sift_quarantine_skip(Relation index, SiftSkipKind kind)
+sift_quarantine_skip(Relation index, SiftQuarSkip kind)
 {
 	QuarKey		key;
 	QuarEntry  *e;
@@ -642,7 +741,7 @@ warn_due(Relation index)
 }
 
 static void
-warn_skipped(Relation index, SiftSkipKind kind)
+warn_skipped(Relation index, SiftQuarSkip kind)
 {
 	if (!warn_due(index))
 		return;
@@ -653,98 +752,46 @@ warn_skipped(Relation index, SiftSkipKind kind)
 			 errhint("Queries and maintenance run without it. REINDEX INDEX %s puts it back in service.", sift_index_ident(index))));
 }
 
-bool
-sift_quarantine_guarding(void)
-{
-	return guarding;
-}
-
-TransactionId
-sift_quarantine_write_xid(void)
-{
-	return guarding && TransactionIdIsValid(guard_xid) ? guard_xid : GetCurrentTransactionId();
-}
-
-/* Where the guard cannot run its subtransaction the work runs as it is: damage it finds fails the statement once, as under sift.on_corruption = error, and an index out of service is skipped */
+/*
+ * The flag of the metapage as a write or a VACUUM finds it now, not as the planner remembers it (meta_flagged): a metapage that went bad since is raised here by the reader that validates it,
+ * the damage is recorded and the statement fails once, where the work would go on and write through the state it holds
+ */
 static bool
-run_plain(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
+meta_flagged_now(Relation index)
 {
-	if (sift_index_quarantined(index))
+	SiftMetaPeek peek = sift_meta_peek_format(index);
+
+	if (peek.status == SIFT_FMT_V2 || peek.status == SIFT_FMT_OTHER)
+		return (peek.flags & SIFT_META_QUARANTINED) != 0;
+	return (sift_store_meta_flags(index) & SIFT_META_QUARANTINED) != 0;
+}
+
+void
+sift_quarantine_mark(Relation index)
+{
+	if (is_sift_index(index) && overlay_has(index))
+		flag_index(index);
+}
+
+bool
+sift_quarantine_skips(Relation index, SiftQuarSkip kind)
+{
+	if (!sift_index_quarantined(index))
+		return false;
+	sift_quarantine_stopped(index, kind);
+	return true;
+}
+
+bool
+sift_quarantine_run(Relation index, SiftQuarSkip kind, SiftGuarded fn, void *arg)
+{
+	if (guarded(index) && (overlay_has(index) || meta_flagged_now(index)))
 	{
 		sift_quarantine_stopped(index, kind);
 		return false;
 	}
 	fn(arg);
 	return true;
-}
-
-void
-sift_quarantine_unprotected(SiftGuarded fn, void *arg)
-{
-	unprotected++;
-	PG_TRY();
-	{
-		fn(arg);
-	}
-	PG_FINALLY();
-	{
-		unprotected--;
-	}
-	PG_END_TRY();
-}
-
-bool
-sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg)
-{
-	MemoryContext cx = CurrentMemoryContext;
-	ResourceOwner owner = CurrentResourceOwner;
-	volatile bool ran = false;
-
-	if (sift_on_corruption != SIFT_ON_CORRUPTION_QUARANTINE)
-	{
-		fn(arg);
-		return true;
-	}
-	if (unprotected > 0)
-		return run_plain(index, kind, fn, arg);
-	damage_unseen = false;
-	hook_xact();
-	guard_xid = kind == SIFT_SKIP_WRITE ? sift_quarantine_write_xid() : InvalidTransactionId;
-	guarding = true;
-	BeginInternalSubTransaction(NULL);
-	MemoryContextSwitchTo(cx);
-	PG_TRY();
-	{
-		if (!sift_index_quarantined(index))
-		{
-			fn(arg);
-			ran = true;
-		}
-		ReleaseCurrentSubTransaction();
-		guarding = false;
-		MemoryContextSwitchTo(cx);
-		CurrentResourceOwner = owner;
-	}
-	PG_CATCH();
-	{
-		ErrorData  *e;
-
-		MemoryContextSwitchTo(cx);
-		e = CopyErrorData();
-		FlushErrorState();
-		RollbackAndReleaseCurrentSubTransaction();
-		guarding = false;
-		MemoryContextSwitchTo(cx);
-		CurrentResourceOwner = owner;
-		if (!sift_damage_caught(e))
-			ReThrowError(e);
-		sift_progress_abort();
-		FreeErrorData(e);
-	}
-	PG_END_TRY();
-	if (!ran)
-		sift_quarantine_stopped(index, kind);
-	return ran;
 }
 
 bool
@@ -758,7 +805,7 @@ sift_damage_caught(const ErrorData *e)
 }
 
 void
-sift_quarantine_stopped(Relation index, SiftSkipKind kind)
+sift_quarantine_stopped(Relation index, SiftQuarSkip kind)
 {
 	sift_quarantine_skip(index, kind);
 	warn_skipped(index, kind);
@@ -877,7 +924,7 @@ sift_meta_quarantined(PG_FUNCTION_ARGS)
 		PG_RETURN_BOOL(false);
 	rel = try_relation_open(indexoid, NoLock);
 	if (rel != NULL && is_sift_index(rel))
-		flagged = sift_store_meta_has_flag(rel, SIFT_META_QUARANTINED);
+		flagged = (sift_meta_peek_format(rel).flags & SIFT_META_QUARANTINED) != 0;
 	if (rel != NULL)
 		relation_close(rel, NoLock);
 	UnlockRelationOid(indexoid, AccessShareLock);

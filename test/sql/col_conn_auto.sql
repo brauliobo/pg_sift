@@ -23,7 +23,6 @@ CREATE INDEX facts_named ON facts USING sift_col (id, dim_a_id, v) WITH (connect
 SET sift.col_auto_connect = off;
 CREATE INDEX facts_guc ON facts USING sift_col (id, dim_a_id, v);
 CREATE INDEX facts_asked ON facts USING sift_col (id, dim_b_id, v) WITH (connect = 'auto');
-RESET sift.col_auto_connect;
 SELECT child, ordinal, fk, declaration, automatic FROM sift.col_connections WHERE child IN ('facts_off'::regclass, 'facts_named'::regclass, 'facts_guc'::regclass, 'facts_asked'::regclass)
 ORDER BY child::text;
 -- a foreign key that does not connect: no constraint, not validated, composite, not an integer, a parent without the index, a column outside the index (said in a NOTICE when the parent has a sift_col index)

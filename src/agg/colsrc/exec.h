@@ -213,7 +213,7 @@ typedef struct SiftSrcHist
 	const double *sumf[SIFT_SRC_MAX_MEAS];		/* float measure, else NULL */
 	const int64 *min[SIFT_SRC_MAX_MEAS];		/* integer measure: the smallest and largest value of each group, NULL when the unit does not store them; meaningless where nn is 0 */
 	const int64 *max[SIFT_SRC_MAX_MEAS];
-	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/preagg.h: 1 day, 2 month, 3 year), else 0 */
+	int			grain;			/* a calendar dim: the grain of the cells (SIFT_CAL_*, in col/v1/preagg.h: 1 day, 2 month, 3 year), else 0 */
 } SiftSrcHist;
 
 /*
@@ -315,28 +315,6 @@ typedef struct SiftSrcFilter
 
 #define SIFT_COLSRC_MAX_FILTERS		64
 
-/*
- * The Vulkan path (docs/GPU.md, optional provider callbacks gpu_*): the identity of a unit whose stored chunks stand for the rows a query
- * sees, and a leaf's codec blob. The chunk cache of the device is keyed by (store, gen, unit, leaf): a segment is
- * immutable, a new generation is new storage.
- */
-typedef struct SiftSrcGpuUnit
-{
-	uint64		store;			/* database and relation file of the index */
-	uint64		gen;			/* the segment generation */
-	uint32		unit;			/* the unit's number in the segment */
-	uint32		nrows;
-} SiftSrcGpuUnit;
-
-typedef struct SiftSrcGpuChunk
-{
-	const uint8 *blob;			/* valid until the next gpu_chunk of the source; NULL for a constant chunk */
-	uint32		len;
-	uint32		n;
-	bool		is_const;		/* no bytes: every row has cval */
-	int64		cval;
-} SiftSrcGpuChunk;
-
 /* Counters for EXPLAIN ANALYZE */
 typedef struct SiftSrcCounters
 {
@@ -363,7 +341,7 @@ typedef struct SiftSrcCounters
  * `impl` is the provider's source object. The functions of the seam below dispatch to the provider that owns the relation's
  * access method.
  */
-#define SIFT_SRC_HEAD_MAX	32		/* the most entries of a run head at each end (col/runs.h SIFT_CRUN_HEAD_MAX) */
+#define SIFT_SRC_HEAD_MAX	32		/* the most entries of a run head at each end (col/v1/runs.h SIFT_CRUN_HEAD_MAX) */
 
 typedef struct SiftSrcHead
 {

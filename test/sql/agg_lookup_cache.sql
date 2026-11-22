@@ -1,6 +1,6 @@
 -- The rows a Custom Scan (SiftAgg) loads from a joined table are kept by the backend for the next query ("Cached Lookup Tables" of EXPLAIN ANALYZE) while
 -- the table is what it was: every page visible to all transactions (vacuumed) and not written to since. Every statement is run with the cache, with
--- sift.agg_lookup_cache_kb = 0 and with sift.enable_agg = off: the rows must be the same, whatever happened to the table in between.
+-- sift.backend_cache_kb = 0 and with sift.enable_agg = off: the rows must be the same, whatever happened to the table in between.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
@@ -83,10 +83,12 @@ SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
 
 -- off: nothing is kept
-SET sift.agg_lookup_cache_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
-RESET sift.agg_lookup_cache_kb;
+RESET sift.backend_cache_kb;
+RESET sift.shared_cache_kb;
 
 -- a preserved side is written to by the scan (the rows no tuple matched): it is never kept, and every run sees its own
 \set full_join_label 'SELECT coalesce(e.label, ''none'') AS nm, count(*) AS n, sum(ev.amount) AS total FROM ev FULL JOIN ents e ON e.id = ev.dim_a_id GROUP BY 1'
@@ -96,12 +98,14 @@ SELECT cached(:'full_join_label');
 SELECT * FROM same(:'full_join_label');
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_hashjoin; RESET enable_mergejoin;
 -- a table that does not fit the budget is loaded for its query alone
-SET sift.agg_lookup_cache_kb = 8;
+SET sift.backend_cache_kb = 8;
+SET sift.shared_cache_kb = 0;
 \set tier_label_lt11 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 11 GROUP BY 1, 2'
 SELECT cached(:'tier_label_lt11');
 SELECT cached(:'tier_label_lt11');
 SELECT * FROM same(:'tier_label_lt11');
-RESET sift.agg_lookup_cache_kb;
+RESET sift.backend_cache_kb;
+RESET sift.shared_cache_kb;
 -- ... and is kept once the budget is larger (the refusal is of that budget): the memory of the rows decides, not the pages of the table
 SELECT cached(:'tier_label_lt11');
 SELECT cached(:'tier_label_lt11');

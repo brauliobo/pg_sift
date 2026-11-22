@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kernel coverage: which slots of the kernel tables (agg/kern.h, col/kern.h, bm25/kernels.h) a SIMD level binds to the scalar function, and is every slot run by the
+"""Kernel coverage: which slots of the kernel tables (agg/kern.h, col/v1/kern.h, bm25/kernels.h) a SIMD level binds to the scalar function, and is every slot run by the
 equality test of its family. A slot that a level leaves scalar needs a line in scripts/kernels.allow (family, level, slot, reason: a measurement or a property of the
 operation), a line for a slot that is no longer scalar fails too, so the list is the gap list and cannot go stale.
 
@@ -10,9 +10,9 @@ import re, sys, os, collections
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAMILIES = {
-    'col': dict(header='src/col/kern.h', struct='SiftColKernels', test='src/col/kern_test.c',
-                tables={'avx2': ('src/col/kern_avx2.c', 'sift_col_kernels_avx2'), 'avx512': ('src/col/kern_avx512.c', 'sift_col_kernels_avx512'),
-                        'neon': ('src/col/kern.c', 'sift_col_kernels_neon')}),
+    'col': dict(header='src/col/v1/kern.h', struct='SiftColKernels', test='src/col/v1/kern_test.c',
+                tables={'avx2': ('src/col/v1/kern_avx2.c', 'sift_col_kernels_avx2'), 'avx512': ('src/col/v1/kern_avx512.c', 'sift_col_kernels_avx512'),
+                        'neon': ('src/col/v1/kern.c', 'sift_col_kernels_neon')}),
     'agg': dict(header='src/agg/kern.h', struct='SiftAggKernels', test='src/agg/kern_cases.h',
                 tables={'avx2': ('src/agg/kern_avx2.c', 'sift_aggkern_avx2'), 'avx512': ('src/agg/kern_avx512.c', 'sift_aggkern_avx512'),
                         'neon': ('src/agg/kern_neon.c', 'sift_aggkern_neon')}),

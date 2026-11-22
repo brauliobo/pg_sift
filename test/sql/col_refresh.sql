@@ -101,7 +101,6 @@ SELECT (SELECT remaining FROM sift.col_refresh('rf3_idx', 0)) > 0 AS stale;
 SELECT refreshed > 0 AS rewrote, remaining FROM sift.col_refresh('rf3_idx');
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('rf3_idx');
 SELECT sift.col_verify('rf3_idx', true);
-RESET sift.col_format_minor;
 DROP INDEX rf3_idx;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('rf_idx');
 SELECT sift.col_verify('rf_idx', true);

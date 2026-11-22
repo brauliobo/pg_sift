@@ -1,4 +1,4 @@
--- The table of the reads of the write buffers (col/wbuf/reads.c) lives in the DSM registry, which a backend attaches in a subtransaction, and a subtransaction's commit advances the
+-- The table of the reads of the write buffers (core/reads.c) lives in the DSM registry, which a backend attaches in a subtransaction, and a subtransaction's commit advances the
 -- command id. It was attached by the first backend that decoded the buffer, which can be the supersede of an UPDATE (aminsert reads the buffer): the id moved between two statements of
 -- one transaction and a row updated twice kept its middle version in the index (the heap-free read counted it, the heap did not). The table is attached at planning and in the
 -- worker now, never under a statement that writes. Every case runs the same aggregates through the index, with the heap-free read and with the heap checked, and through the heap

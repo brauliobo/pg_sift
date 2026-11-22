@@ -44,11 +44,13 @@ answer() { sql "$1" "LOAD 'pg_sift'" "SET sift.enable_agg = $2" "SET max_paralle
 pushdown() { sql "$1" "LOAD 'pg_sift'" "SET sift.enable_agg = on" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (COSTS OFF) $GROUPS_Q" | grep -c SiftAgg; }
 valid() { [[ $(sql primary "SELECT indisvalid AND indisready FROM pg_index WHERE indexrelid = 't_idx'::regclass") == t ]]; }
 
+written() { [[ $(sql primary "SELECT count(*) FROM t WHERE pad = 'w'") -gt $base ]]; }
 variant() { # LABEL OPTIONS
-	local before
+	local before base
+	base=$(sql primary "SELECT count(*) FROM t WHERE pad = 'w'")
 	pgbench_bg primary 4 600 -f "$(dir primary)/dml.sql@4" -f "$(dir primary)/abort.sql@1"
 	local writers=$PGBENCH_PID
-	sleep 1
+	wait_for written 30
 	before=$(sql primary "SELECT count(*) FROM t WHERE pad = 'w'")
 	sql primary "SET max_parallel_maintenance_workers = 4" "SET min_parallel_table_scan_size = 0" \
 		"CREATE INDEX CONCURRENTLY t_idx ON t USING sift_col (id, grp, amount) $2" >/dev/null 2>"$(dir primary)/cic.err"

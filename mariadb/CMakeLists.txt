@@ -54,14 +54,20 @@ set(UDF udf.c udf_host.c udf_query.c udf_drain.c)
 add_library(sift_engine OBJECT ${portable} ${HOST} ${GLUE})
 target_include_directories(sift_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/host ${CMAKE_CURRENT_SOURCE_DIR} ${SIFT_INCDIRS})
 target_compile_definitions(sift_engine PRIVATE _GNU_SOURCE SIFT_HOST_MARIADB
-  SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}"
-  # the codec's name is that of a UDF
-  sift_count=codec_count)
+  SIFT_MDB_SERVER_VERSION="${MDB_VER}" SIFT_MDB_RELEASE="${SIFT_VERSION}")
 target_compile_options(sift_engine PRIVATE -O2 -ffp-contract=off -fwrapv -fno-strict-aliasing -Wall -Wno-declaration-after-statement
   -Wno-unused-function -Wno-misleading-indentation -fvisibility=hidden)
-# the portable x86-64 baseline; -march=x86-64 is an error on other architectures
+# the portable baseline: x86-64, or armv8-a on Linux/AArch64 (NEON, no LSE or crypto); -march=x86-64 is an error on other architectures
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
   target_compile_options(sift_engine PRIVATE -march=x86-64 -mtune=generic)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|ARM64)$")
+  target_compile_options(sift_engine PRIVATE -march=armv8-a -mtune=generic)
+endif()
+
+# function multi-versioning of the hot loops (src/core/fmv.h): OFF compiles the baseline body only
+option(SIFT_FMV "Compile the hot loops as multi-versioned functions" ON)
+if(NOT SIFT_FMV)
+  target_compile_definitions(sift_engine PRIVATE SIFT_FMV_DISABLE=1)
 endif()
 
 # the UDFs include MariaDB headers and nothing of the engine

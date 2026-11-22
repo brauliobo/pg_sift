@@ -6,15 +6,22 @@
 
 #ifdef SIFT_TESTING
 
+#include "access/genam.h"
+#include "fmgr.h"
+
 #include "bm25/build.h"
+#include "bm25/eval.h"
 #include "bm25/prefix.h"
+#include "core/catname.h"
+#include "core/crash_point.h"
+#include "core/meta_peek.h"
 #include "core/progress.h"
-#include "core/tomb.h"
+#include "core/v1_col/tomb.h"
 #include "core/worker.h"
 #include "core/visibility.h"
 #include "core/parbuild.h"
 #include "col/am.h"
-#include "table/table.h"
+#include "table/v1/table_v1.h"
 #include "agg/par_int.h"
 
 void
@@ -39,6 +46,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_prefix_gather",
 							"Testing: kB of postings one pass of a wide prefix gathers (the rest is built in windows).",
 							NULL, &sift_prefix_gather_kb, 131072, 1, INT_MAX, PGC_USERSET, GUC_UNIT_KB | GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_rank_mode",
+							"Testing: how a ranked search walks its units (-1 = by the query, 0 = best bounds first in ordered batches, 1 = seeded sweep, 2 = seeded sweep of a conjunction).",
+							NULL, &sift_test_rank_mode, -1, -1, 2, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_docdir_min_sb",
 							"Testing: superblocks from which a segment's docmap directory is kept for the next query.",
 							NULL, &sift_docdir_min_sb, 128, 1, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -70,7 +80,7 @@ sift_handler_test_gucs(void)
 							"Testing: kB of rows a unit of a COPY into a sift_table holds, and the start of its workers at eight times that (0 = the write buffer limit and 16 MB).",
 							NULL, &sift_test_load_unit_bytes, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_load_segment_kb",
-							"Testing: kB of memory the writer of a segment of a serial COPY into a sift_table holds before the segment ends (0 = half of maintenance_work_mem, at least 64 MB).",
+							"Testing: kB of memory the writer of a segment of a serial COPY into a sift_table holds before the segment ends (0 = half of maintenance_work_mem).",
 							NULL, &sift_test_load_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_vacuum_batch_bytes",
 							"Testing: bytes of dead rows a VACUUM of a sift_table holds before it tells the indexes (0 = half of maintenance_work_mem).",
@@ -82,12 +92,13 @@ sift_handler_test_gucs(void)
 							"Testing: postings of the largest term of a CREATE INDEX segment (0 = by memory).",
 							NULL, &sift_test_segment_postings, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	sift_store_test_init();
+	sift_crash_point_gucs();
+	DefineCustomBoolVariable("sift.test_create_format1",
+							 "Testing: the relations made while it is on take Format 1, whatever format a new relation takes by default.",
+							 NULL, &sift_test_create_format1, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_vis_pause",
 							"Testing: the Nth visibility-map read of a scan waits for advisory lock (0x51F7, 1) first (0 = none).",
 							NULL, &sift_test_vis_pause, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.test_key_cut_unbounded",
-							 "Testing: the spools of the decision of the automatic key_cut keep every chunk in memory, whatever maintenance_work_mem (a mutant of the bound).",
-							 NULL, &sift_test_key_cut_unbounded, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_no_supersede",
 							 "Testing: an index with track_changes writes no tombstone for the entries an UPDATE replaces (a mutant of the supersede).",
 							 NULL, &sift_test_no_supersede, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -214,9 +225,9 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_progress_gate",
 							"Testing: a maintenance worker waits for the advisory lock 12 when it enters the nth phase of its job (sift.progress); 0 = never.",
 							NULL, &sift_test_progress_gate, 0, 0, 10, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomStringVariable("sift.test_worker_error",
-							   "Testing: the background worker of this job (promote, merge, rewrite, vacuum, track, rollup, orphans) fails with an error where it starts its work.",
-							   NULL, &sift_test_worker_error, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_worker_lease_ms",
+							"Testing: how long a registered background worker that is not up keeps its slot, in ms (0 = 30 seconds).",
+							NULL, &sift_test_worker_lease_ms, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_space_error",
 							 "Testing: error after publishing an open write buffer relocation.",
 							 NULL, &sift_test_space_error, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -232,6 +243,19 @@ sift_handler_test_gucs(void)
 	DefineCustomIntVariable("sift.test_build_peak",
 							"Testing: kB of memory the CREATE INDEX of this session allocated at most (set 0 before).",
 							NULL, &sift_test_build_peak, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+}
+
+PG_FUNCTION_INFO_V1(sift_test_index_format);
+
+/* The format major of the index, as its block 0 says (0: no block yet): the one answer for an index of either format */
+Datum
+sift_test_index_format(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
+	SiftMetaPeek peek = sift_meta_peek_format(index);
+
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT32(peek.status == SIFT_FMT_EMPTY ? 0 : peek.format_major);
 }
 
 #endif							/* SIFT_TESTING */

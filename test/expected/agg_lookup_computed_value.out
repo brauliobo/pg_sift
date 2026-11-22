@@ -4,8 +4,8 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET client_min_messages = warning;
 CREATE TABLE cv_dim (id int PRIMARY KEY, name text, n int) WITH (autovacuum_enabled = false);
 INSERT INTO cv_dim SELECT g, CASE g % 4 WHEN 0 THEN 'Alpha' WHEN 1 THEN 'BETA' WHEN 2 THEN 'Gamma' ELSE 'delta' END, g % 10 FROM generate_series(1, 5000) g;

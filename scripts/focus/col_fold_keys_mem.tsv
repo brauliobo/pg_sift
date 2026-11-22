@@ -1,1 +1,1 @@
-col_fold_keys_mem	src/col/maint/fold.c:fold_add src/col/maint/fold.c:fold_clear src/col/maint/fold.c:fold_next src/col/maint/fold.c:fold_push src/col/maint/fold.c:fold_spill src/col/maint/fold.c:sift_col_fold_marks src/col/test/tomblog_test.c:sift_test_col_fold_marks
+col_fold_keys_mem	src/col/v1/maint/fold.c:fold_add src/col/v1/maint/fold.c:fold_clear src/col/v1/maint/fold.c:fold_next src/col/v1/maint/fold.c:fold_push src/col/v1/maint/fold.c:fold_spill src/col/v1/maint/fold.c:sift_col_fold_marks src/col/v1/test/tomblog_test.c:sift_test_col_fold_marks

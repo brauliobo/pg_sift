@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deletion records of the tombstone log (core/tomb_dv.h) on a hot standby: the records reach the standby through the replay of the log pages, the standby reads the deleted rows as gone before
+# Deletion records of the tombstone log (core/v1_col/tomb_dv.h) on a hot standby: the records reach the standby through the replay of the log pages, the standby reads the deleted rows as gone before
 # anything is folded (one record for a unit, tested by the reader), and the fold that clears them on the primary tells the standby first, as the fold of the marks does (col_fold_marks_standby.sh).
 . "$(dirname "$0")/lib.bash"
 

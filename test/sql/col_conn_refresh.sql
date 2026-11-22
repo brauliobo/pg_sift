@@ -44,7 +44,6 @@ UPDATE dim_a SET id = id + 1000 WHERE id IN (100, 101, 102);
 SELECT sift.col_maintenance_due('events_col', false) AS due;
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wrong;
-RESET sift.col_connect_refresh_pct;
 
 -- updates of other columns of the parent rows (half of them) keep their keys, so the flags are as good as they were: nothing is due
 UPDATE dim_a SET price = price + 1 WHERE id % 2 = 0;

@@ -763,7 +763,7 @@ sift_aggspec_preagg_why(const SiftAggSpec *s, const SiftSrcLayout *lay, int nbas
 		return SPW_ARMS;
 	if (s->nsets && (s->group < 0 || s->setpred || s->setaggs))
 		return SPW_SETS;
-	/* the dedupe leaves rows out of the units of several keys (col/scan/scope.c) and those units are read row by row: such a scope read is priced without pre-aggregates; a read per pair has no dedupe */
+	/* the dedupe leaves rows out of the units of several keys (col/v1/scan/scope.c) and those units are read row by row: such a scope read is priced without pre-aggregates; a read per pair has no dedupe */
 	if (s->njoin || (s->scope && s->scope->once && s->scope->nkeys > 1))
 		return SPW_JOIN;
 	if (s->ncombo)

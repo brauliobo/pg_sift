@@ -7,7 +7,8 @@
 #   scripts/hardened.sh [TEST...]        (SIFT_HARDEN=pkg|init|1, default 1; SIFT_TMP and SIFT_PORT as scripts/pgtest.sh)
 #
 # The default tests are the decoders and the readers of stored bytes: codec, column unit, kernels at every SIMD level, shredder, term
-# blobs, corruption tests, positions, the table AM. scripts/ci.sh runs this as the job `hardened`.
+# blobs, corruption tests, positions, the table AM. scripts/ci.sh runs this as the job `hardened`. SIFT_PREBUILT_HARDENED (scripts/ci-build.sh): the staged root of
+# the hardened flavor, so that nothing is copied or compiled here.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,12 +23,19 @@ export SIFT_HARDEN=${SIFT_HARDEN:-1}
 unset SANITIZE
 
 rm -rf "$WORK" && mkdir -p "$WORK/tree"
-# a private copy: the build writes into the tree and the flavor must not disturb the checkout's own build
-copy_git_sources "$REPO" "$WORK/tree"
-cd "$WORK/tree"
-export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root
-scripts/pgtest.sh install
-drop_build "$WORK/tree"
+if [[ -n ${SIFT_PREBUILT_HARDENED:-} ]]; then
+	# the staged root of scripts/ci-build.sh: nothing is copied or compiled, the tests run from this checkout
+	cd "$REPO"
+	export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root SIFT_PREBUILT_ROOT=$SIFT_PREBUILT_HARDENED
+	scripts/pgtest.sh install
+else
+	# a private copy: the build writes into the tree and the flavor must not disturb the checkout's own build
+	copy_git_sources "$REPO" "$WORK/tree"
+	cd "$WORK/tree"
+	export SIFT_TMP=$WORK/cluster SIFT_ROOT=$WORK/root
+	scripts/pgtest.sh install
+	drop_build "$WORK/tree"
+fi
 trap 'scripts/pgtest.sh stop >/dev/null 2>&1 || true; [[ -n ${KEEP:-} ]] || rm -rf "$WORK"' EXIT
 scripts/pgtest.sh start
 scripts/pgtest.sh regress "${TESTS[@]}"

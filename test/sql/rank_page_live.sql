@@ -9,7 +9,9 @@ CREATE TABLE src AS
 SELECT g AS id, g % 10 AS counter_a, concat_ws(' ', 'common', 'w' || g % 7, 'r' || g % 500, CASE WHEN g % 1000 < 20 THEN repeat('hot ', 1 + g % 9) END, repeat('f ', g % 28)) AS body
 FROM generate_series(1, 200000) g;
 SET sift.grouped_min_df = 200;
+SET client_min_messages = warning;
 CREATE INDEX src_idx ON src USING sift (body);
+RESET client_min_messages;
 
 CREATE FUNCTION qs() RETURNS text[] LANGUAGE sql AS $$ SELECT ARRAY['common', 'hot', 'hot OR r7', 'hot OR r7 OR w3', 'r7 OR r8 OR r9', 'common AND r7', 'common AND hot',
 	'w1 OR w2 OR hot', 'hot AND NOT w3', '"hot hot"', 'r1* OR hot', 'hot~1 OR r7', 'r499 OR r498 OR zzz', 'common OR hot OR r3 OR r4 OR w5'] $$;

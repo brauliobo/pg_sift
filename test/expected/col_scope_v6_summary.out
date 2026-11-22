@@ -1,0 +1,185 @@
+-- The scope summary (src/col/scope_v6/): one object per scope that holds every scope key's aggregates once, instead of a copy of every fact row per key.
+-- sift._test_scope_v6 builds it over a synthetic entity table, plain and over cold parts, and compares every answer with a brute force over the rows:
+-- the cube of every key and month, the lookup of a key, the newest rows of a key (the ring, deletes, a filter), the dead rows taken out of a cube, the
+-- pair edits (patch at read time, refresh of the keys that changed), a member of several keys, a clustered scope, coded members, a small memory budget.
+-- The bytes: section tags, header and root sizes, the wide ring past 524,288 granules, the ring section LZ4-compressed when that saves 10%,
+-- the month map left out for a key of one granule, the strides delta-coded and bit-packed, the compressed cube with its rollups, distinct sets and extremes,
+-- the heap that picks the node to evict, the spill of month cubes under a small budget, the delta of dead rows (clean parts, the 5% rule, one granule
+-- replaced alone, only the dead rows decoded, float and distinct guards), the refresh of the nodes that changed with the reclaim of their slices,
+-- and the refresh after a compaction of entity parts.
+-- A scope clustered by the first key of its members (a few members of several keys, a skewed key size) against the layout by member, the route of an
+-- entity (SEC_SCOPE_ENT_ROUTE: one key, or several for an entity stored under more) in bytes and after a refresh, the rings of the order leaves beside
+-- the time leaf (variable-length ring bytes, evictions, deletes, ties at the cut, NULLS LAST, refresh, a damaged description) for several seeds, and the rows a deletion vector and a
+-- sparse IS NULL predicate take out together, the float8 extremes of a cube with NaN, infinities and signed zeros, and the month cells of a timestamptz
+-- under UTC and other session zones.
+-- A key that owns fewer than 32 rows of a granule has no level-0 slice (the ref says so and the rows are read when a delete asks for them), a null filter
+-- on a soft-delete column leaves the soft-deleted rows out of every cube and ring (and the header says which leaf), and a scope clustered by key or by primary key
+-- stays exact while members move, join and leave keys: refreshed without a rebuild, with the route of a primary-key scope still naming the keys the rows are stored under.
+-- Every object a scenario opens is also asked, for every ring and both NULLS orders on a leaf that may be NULL and one that never is, which ordered reads it serves.
+-- Those three run for 25 seeds.
+-- Each scenario ends with failures=0.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT temp_files AS temp_before FROM pg_stat_database WHERE datname = current_database() \gset
+SELECT s AS scenario, l AS line
+FROM unnest(ARRAY['cube', 'tstride', 'pairmap', 'build', 'lookup', 'topk', 'memory', 'robust', 'cluster', 'coded', 'delete', 'edit', 'dedupe',
+	'format', 'cubewire', 'heap', 'spill', 'delta', 'refresh', 'compact', 'primary', 'route', 'rings', 'union', 'f8', 'inline', 'nullfilter', 'mapedit'])
+	WITH ORDINALITY AS t(s, n),
+	LATERAL regexp_split_to_table(sift._test_scope_v6(s, 1), E'\n') WITH ORDINALITY AS r(l, i)
+ORDER BY n, i;
+  scenario  |                                                                                            line                                                                                            
+------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ cube       | cube rounds=60 exact_subtracts=4 stale_bounds=46 overflowed_dims=1
+ cube       | failures=0
+ tstride    | tstride bytes_per_row_x1000=36
+ tstride    | tstride sorted_raw_bytes=81168 packed_bytes=13560 granules_checked=793
+ tstride    | tstride full_granule_raw=512 day_unit_bytes=39 microsecond_bytes=106
+ tstride    | failures=0
+ pairmap    | pairmap members_found=2019 multiset_pairs=4
+ pairmap    | failures=0
+ build      | build keys=9 granules=61 pure=19 impure=36 skipped=6 slices=39 nodes=9
+ build      | build cube_reads=19 row_decodes=36 tail_reads=11 object_smaller_than_rows=yes
+ build      | failures=0
+ lookup     | lookup keys_in_object=549 fences=3
+ lookup     | failures=0
+ topk       | topk ring_only=24 spilled_after_deletes=24 filtered_reads_fewer_strides_keys=6
+ topk       | failures=0
+ memory     | memory evictions_default=0 evictions_small_budget_positive=1 more_nodes=1
+ memory     | failures=0
+ robust     | robust prefixes_refused=13240 of=13240
+ robust     | failures=0
+ cluster    | cluster slices_clustered=5 slices_unclustered=5 decodes_clustered=7 decodes_unclustered=63
+ cluster    | failures=0
+ coded      | coded exact_nodes_positive=1 bloom_nodes_positive=1 members_found=all false_positive_rate_under_10pct=yes
+ coded      | failures=0
+ delete     | delete dead_light=757 keys_checked=8 answered_from_root=8 went_to_nodes=0
+ delete     | delete dead_heavy_over_root_limit=1 keys_over_root_limit_went_to_nodes=1 float_cancellation_rebuilt=1
+ delete     | failures=0
+ edit       | edit dirty_keys=29 patched_queries=663 rescans=91
+ edit       | edit untouched_nodes_carried_over_positive=1 refresh_reads_fewer_granules=1 slice_pool_live_only=1
+ edit       | failures=0
+ dedupe     | dedupe queries_checked=6 overlapping_members_positive=1 rescans_for_minmax=6
+ dedupe     | failures=0
+ format     | format sections=8 tags=0x0401..0x0408 header=160 root=104 ring_entry_compact=12 ring_entry_wide=16
+ format     | format compact_at=524288 wide_at=524289 ring_entries_checked=384
+ format     | format refresh_keeps_wide_ring=1 refresh_past_the_switch_converts_rings=1
+ format     | failures=0
+ cubewire   | cubewire lz4_smaller=0 small_stored_as_is=1 prefixes_refused=4448 of=4448
+ cubewire   | cubewire rollups=2 distinct_sets=1 group_extremes=1 sub_marks_distinct=1
+ cubewire   | failures=0
+ heap       | heap top_is_largest=1 descending_drain=1 cost_grows_with_log_of_keys=1
+ heap       | failures=0
+ spill      | spill spilled_keys_positive=1 evictions_positive=1 peak_within_budget=1 lower_peak=1
+ spill      | failures=0
+ delta      | delta clean_parts_ask_no_granule=1 one_question_a_part=1 only_dirty_part_asked=1
+ delta      | delta only_dead_rows_decoded=1 light_not_replaced=1 heavy_replaced_alone=1
+ delta      | delta distinct_goes_to_nodes=1 group_float_guard=1 exact_subtraction_not_marked=1
+ delta      | failures=0
+ refresh    | refresh dirty_key_nodes_kept_as_they_are=1 other_keys_copied=1 dead_slices_left_pool=1
+ refresh    | refresh slices_numbered_again_when_dead_outnumber_live=1 no_orphan_slice=1 refresh_reads_fewer_granules=1
+ refresh    | failures=0
+ compact    | compact rounds=2 nodes_without_old_granules_copied=1 nodes_moved_to_new_part=1
+ compact    | compact retired_parts_keep_their_range=1 ring_and_month_map_follow=1 reads_fewer_than_all_granules=1
+ compact    | failures=0
+ primary    | primary rounds=6 pure_granules_80pct=1 slices_under_sixth_of_by_member_layout=1 decodes_under_quarter=1 multi_members_2_to_5pct=1
+ primary    | primary auto_default_75pct=ok strict_never_errors=ok
+ primary    | failures=0
+ route      | route rounds=4 entities_with_rows_checked=1 spill_entities_positive=1 pure_over_5x_spill=1
+ route      | route roundtrip_exact=1 bytes_per_entity_under_20=1 spill_in_roundtrip=1 compaction_route_exact=1 retired_homes_pruned=1
+ route      | failures=0
+ rings      | rings rounds=4 queries_checked=1 ring_only_positive=1 spilled_after_deletes_positive=1 ties_at_cut_positive=1 tie_reads_positive=1
+ rings      | rings entries_only_no_zero_slots=1 zipf_saving_75pct=1 spill_reads_fewer_granules=1 tails_read_for_few_granules=1 evictions_change_no_ring=1 damaged_description_refused=1 default_pick=ok
+ rings      | rings limit_64_from_ring=1 nulls_last_api=ok
+ rings      | rings zipf_slots_bytes=860160 entries_bytes=178596 lz4_bytes=178596
+ rings      | rings zipf_monthmap_omitted_keys=55 omitted_bytes=3136 stored_keys=225
+ rings      | failures=0
+ union      | union unit_trials=300 overlapping_lists_positive=1 caps_exact=1
+ union      | union dv_only_exact=1 dv_and_soft_union_exact=1 granules_where_a_sum_would_double_count_positive=1
+ union      | failures=0
+ f8         | f8 rounds=128 exact_subtracts=6
+ f8         | failures=0
+ inline     | inline pure_refs=1 sliced_refs=1 inline_refs=1
+ inline     | inline cubes_exact_dead_3pct=1 cubes_exact_dead_41pct=1 refresh_keeps_inline_refs_exact=1
+ inline     | failures=0
+ nullfilter | nullfilter soft_deleted_rows_left_out=1 granules_skipped_partial_pure=1 header_leaf_checked=1
+ nullfilter | nullfilter cubes_exact_dead_2pct=1 cubes_exact_dead_41pct=1 refresh_exact=1 union_counts_each_row_once=1
+ nullfilter | failures=0
+ mapedit    | mapedit members_moved=1 dirty_keys=1 untouched_nodes_carried_over_positive=1 refresh_reads_fewer_granules=1
+ mapedit    | mapedit cubes_exact_after_moves=1 route_names_stored_keys_without_rebuild=1
+ mapedit    | mapedit11 members_moved=1 dirty_keys=1 untouched_nodes_carried_over_positive=1 refresh_reads_fewer_granules=1
+ mapedit    | mapedit11 cubes_exact_after_moves=1
+ mapedit    | failures=0
+(80 rows)
+
+SELECT s AS scenario, count(*) AS seeds, count(*) FILTER (WHERE r LIKE '%failures=0') AS clean
+FROM unnest(ARRAY['inline', 'nullfilter', 'mapedit']) AS s, generate_series(1, 25) AS seed, LATERAL (SELECT sift._test_scope_v6(s, seed) AS r) x
+GROUP BY s ORDER BY s;
+  scenario  | seeds | clean 
+------------+-------+-------
+ inline     |    25 |    25
+ mapedit    |    25 |    25
+ nullfilter |    25 |    25
+(3 rows)
+
+-- float8 measures with NaN, infinities and signed zeros keep PostgreSQL's order in the extremes of a cube (NaN above +Infinity), built, merged, read back and subtracted
+-- A month cell is a UTC month: a timestamptz answers a local month from cells only in UTC, else from the cells inside it and a scan of the boundary rows
+SET TimeZone = 'UTC';
+SELECT current_setting('TimeZone') AS time_zone, regexp_split_to_table(sift._test_scope_v6('monthtz', 1), E'\n') AS line;
+ time_zone |                   line                   
+-----------+------------------------------------------
+ UTC       | monthtz zones=16 utc_zones=5 answers=192
+ UTC       | failures=0
+(2 rows)
+
+SET TimeZone = 'America/New_York';
+SELECT current_setting('TimeZone') AS time_zone, regexp_split_to_table(sift._test_scope_v6('monthtz', 1), E'\n') AS line;
+    time_zone     |                   line                   
+------------------+------------------------------------------
+ America/New_York | monthtz zones=16 utc_zones=4 answers=192
+ America/New_York | failures=0
+(2 rows)
+
+SET TimeZone = 'America/Sao_Paulo';
+SELECT current_setting('TimeZone') AS time_zone, regexp_split_to_table(sift._test_scope_v6('monthtz', 1), E'\n') AS line;
+     time_zone     |                   line                   
+-------------------+------------------------------------------
+ America/Sao_Paulo | monthtz zones=16 utc_zones=4 answers=192
+ America/Sao_Paulo | failures=0
+(2 rows)
+
+RESET TimeZone;
+-- no scenario wrote a temporary file; the counter does move when a sort spills
+SELECT pg_stat_force_next_flush() IS NOT NULL AS flushed;
+ flushed 
+---------
+ t
+(1 row)
+
+SELECT temp_files = :temp_before AS no_temp_files FROM pg_stat_database WHERE datname = current_database();
+ no_temp_files 
+---------------
+ t
+(1 row)
+
+SET work_mem = '64kB';
+SELECT count(*) FROM (SELECT g FROM generate_series(1, 200000) g ORDER BY g DESC) s;
+ count  
+--------
+ 200000
+(1 row)
+
+RESET work_mem;
+SELECT pg_stat_force_next_flush() IS NOT NULL AS flushed;
+ flushed 
+---------
+ t
+(1 row)
+
+SELECT temp_files > :temp_before AS spill_is_counted FROM pg_stat_database WHERE datname = current_database();
+ spill_is_counted 
+------------------
+ t
+(1 row)
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

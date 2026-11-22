@@ -4,7 +4,7 @@
     python3 -I bench/churn/tbl_records.py --host DIR --port N --out FILE [--rows 300000] [--deletes 1,2,4.5,10] [--reps 3] [--standby-dir D --standby-port P] [--col]
 
 The server is a plain default cluster (autovacuum on, sift.col_auto_merge on; fsync off on tmpfs is the only change). The tables set autovacuum_enabled = false, and the arms of the churned
-state run with sift.table_auto_defrag = off in the session (`maintenance` = `disabled` in those rows): the reads an arm makes are what pays for the worker's pass (`src/table/vacuum_maint.c`),
+state run with sift.table_auto_defrag = off in the session (`maintenance` = `disabled` in those rows): the reads an arm makes are what pays for the worker's pass (`src/table/v1/vacuum_maint.c`),
 so with it on the state would not be the one the churn made. The fresh and the settled states run on the defaults.
 Each state is a dataset of its own (`tbl_churn_del<share>_<state>`): a comparison is one state. Statements: Q1 a key of sixty, Q2 the grouped aggregate; the maintenance row is the VACUUM
 of the churned table (a share of the rows UPDATEd before each repetition), instructions of the whole cluster, workers included, and its WAL. `--standby-dir` also reads the churned

@@ -44,7 +44,6 @@ CREATE INDEX kt_refilled_col ON kt_refilled USING sift_col (id, tenant_id, day) 
 NOTICE:  sift_col index "kt_refilled_col": 2 advice (track_changes, key_cut)
 DETAIL:  advice: track_changes = the table has no one-column primary key; advice: key_cut = tenant_id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kt_refilled_col');
-RESET sift.col_format_minor;
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) kt_arrival, kt_clustered, kt_refilled;
 -- what the zones say of the key
@@ -110,7 +109,6 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "kt_plain_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kt_plain_col');
-RESET sift.col_format_minor;
 SELECT index::text, reason ~ 'set key_cut to the column the queries look rows up by' AS says_how, reason ~ 'key_cut = ''' AS names_key FROM sift.cluster_advice('kt_refilled', 10000) ORDER BY index::text;
       index      | says_how | names_key 
 -----------------+----------+-----------
@@ -138,7 +136,6 @@ SELECT verdict, reason FROM sift.cluster_advice('kt_arrival', 10000);
  not recommended | switched off by the setting sift.cluster_advice
 (1 row)
 
-RESET sift.cluster_advice;
 DROP TABLE kt_arrival, kt_clustered, kt_refilled;
 DROP FUNCTION kt_fill(text, text);
 DROP EXTENSION pg_sift;

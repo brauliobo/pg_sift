@@ -313,6 +313,12 @@ parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, size_t avail, uint
 		case SIFT_CCN_WRAP:
 			*used = parse_wrap(&ps, nd);
 			break;
+		case SIFT_CCN_DELTA_BYTE:
+			*used = cc_parse_delta_byte(p, avail, n, nd);
+			break;
+		case SIFT_CCN_BSS:
+			*used = cc_parse_bss(p, avail, n, nd);
+			break;
 		default:
 			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							errmsg("column chunk uses encoding %d, which this build does not know", nd->tag),

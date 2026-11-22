@@ -162,6 +162,8 @@ typedef struct SiftPostStats
 	uint64		blobs;			/* term blobs copied out of the index */
 	uint64		blob_bytes;
 	uint64		blob_hits;		/* term blobs found in the backend's cache instead */
+	uint64		group_tf;		/* groups whose tf stream was decoded whole */
+	uint64		block_tf;		/* blocks whose tf stream was decoded on their own */
 } SiftPostStats;
 extern SiftPostStats sift_post_stats;
 #endif
@@ -200,6 +202,19 @@ extern const SiftGroupBounds *sift_post_bounds(SiftPostingCursor *c, int *n);
  * the group's n entries plus SIFT_KERN_PAD bytes.
  */
 extern void sift_post_group_tf(SiftPostingCursor *c, uint8 *tf);
+
+/*
+ * tf of the blk_cnt postings that start at rank blk_rank of the cursor's current group (blk_rank + blk_cnt within the group), rank order, the same bytes
+ * sift_post_group_tf gives for them; tf needs blk_cnt entries plus SIFT_KERN_PAD bytes. A block scored on its own decodes its own postings only.
+ */
+extern void sift_post_block_tf(SiftPostingCursor *c, uint32 blk_rank, uint32 blk_cnt, uint8 *tf);
+
+/* The bytes of the term's blob in the segment's stream (false: it is inline), and whether a query kept them already */
+extern bool sift_post_blob_range(const SiftTermInfo *info, uint64 *off, uint64 *len);
+extern bool sift_post_blob_cached(const SiftStreamReader *sr, const SiftTermInfo *info);
+
+/* Is tf 1 for every posting of the cursor's current group (the scorers then take no tf stream at all) */
+extern bool sift_post_group_all_tf1(const SiftPostingCursor *c);
 
 /* Does the term carry positions */
 extern bool sift_post_has_positions(const SiftPostingCursor *c);

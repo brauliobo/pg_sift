@@ -251,7 +251,6 @@ SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
  evs |          | not recommended | switched off by the setting sift.cluster_advice
 (1 row)
 
-RESET sift.cluster_advice;
 ALTER INDEX evs_col SET (cluster_advice = off);
 SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
  tbl | order_by |     verdict     |                         reason                         

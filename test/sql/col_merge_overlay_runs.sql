@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE kr (id int, cust int, amount int, pad text) WITH (autovacuum_enabled = false);
@@ -18,14 +18,14 @@ CREATE FUNCTION kr_disjoint() RETURNS bool LANGUAGE sql AS $$
 	SELECT NOT EXISTS (SELECT 1 FROM r x JOIN r y ON x.segment < y.segment AND x.lo < y.hi AND y.lo < x.hi) $$;
 
 -- a unit is a partition at a setting under its bytes, and the sizes of the partitions differ by the key
-SET sift.col_auto_merge_partition_kb = 64;
+SET sift.test_col_partition_kb = 64;
 SELECT sift.col_merge('kr_idx', true);
 CREATE TEMP TABLE kr_before AS SELECT count(*) AS partitions FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';
 SELECT partitions > 16 AS many_partitions, kr_disjoint() AS partitions_disjoint FROM kr_before;
 
 -- all of them are overlays of the size in effect after the setting is raised; the VACUUM of a delete merges them in runs of the key
 DELETE FROM kr WHERE id % 10 = 0;
-SET sift.col_auto_merge_partition_kb = 8192;
+SET sift.test_col_partition_kb = 8192;
 VACUUM kr;
 SELECT count(*) < (SELECT partitions FROM kr_before) AS fewer_segments, sum(rows) = (SELECT count(*) FROM kr) AS rows_kept, kr_disjoint() AS disjoint_after_vacuum
 FROM sift.col_segments('kr_idx') WHERE kind = 'immutable';

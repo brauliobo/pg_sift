@@ -3,6 +3,13 @@
  */
 #include "rank_int.h"
 
+#ifdef SIFT_TESTING
+bool		sift_test_block_tf_check = true;
+#endif
+
+/* A term that scores this many blocks of a group on their own decodes the rest of the group together */
+#define BLK_TF_LAZY_MAX		3
+
 /*
  * Best-first search over (segment, SB) units ordered by their score upper
  * bound, then over the 16-page scoring blocks of a unit. A unit or block is
@@ -26,6 +33,7 @@ void
 sift_rank_end(SiftRanker *r)
 {
 	hot_forget(r);
+	rank_spill_end(r);
 	for (int s = 0; s < r->plan->nsegs; s++)
 		sift_sr_release(&r->plan->seg[s]->sr);
 	MemoryContextDelete(r->tmpcx);
@@ -54,21 +62,15 @@ term_mask(const sift_grp *g, int b, BlockMask out)
  * where that sum cannot reach theta: the kids that are those leaves add no candidates (leaf_accum gives the leaves that stay their rows)
  */
 static void
-kids_skip(const RankSeg *rs, float4 theta, int n, const int *ord, const float4 *rest)
+kids_skip(RankSeg *rs, float4 theta, int n, const int *ord, const float4 *rest)
 {
 	float4		margin = fabsf(theta) * (1.0f / 65536);
 	int			m = n;
 
 	/* a leaf that is not a kid of the root (inside an AND NOT, say) may score rows its candidates do not have: its bound would have to join the sum */
 	for (int k = 0; k < n; k++)
-	{
-		bool		kid = false;
-
-		for (int i = 0; i < rs->nug; i++)
-			kid |= rs->kidleaf[i] == ord[k];
-		if (!kid)
+		if (!rs->leaf_kid[ord[k]])
 			theta = -INFINITY;
-	}
 	if (theta > -INFINITY && n > 1)
 		for (int k = 1; k < n; k++)
 			if (rest[k - 1] + margin <= theta)
@@ -76,14 +78,12 @@ kids_skip(const RankSeg *rs, float4 theta, int n, const int *ord, const float4 *
 				m = k;
 				break;
 			}
+	for (int k = 0; k < n; k++)
+		rs->ordpos[ord[k]] = k;
 	for (int i = 0; i < rs->nug; i++)
-	{
-		bool		essential = false;
-
-		for (int k = 0; k < m; k++)
-			essential |= ord[k] == rs->kidleaf[i];
-		rs->kidskip[i] = m < n && rs->kidleaf[i] >= 0 && !essential;
-	}
+		rs->kidskip[i] = m < n && rs->kidleaf[i] >= 0 && !(rs->ordpos[rs->kidleaf[i]] >= 0 && rs->ordpos[rs->kidleaf[i]] < m);
+	for (int k = 0; k < n; k++)
+		rs->ordpos[ord[k]] = -1;
 }
 
 /* the union of the groups the kids of an OR root have in block b, on the pages of live */
@@ -128,14 +128,19 @@ kids_mask(const RankSeg *rs, int b, uint32 live, RankWork *wk)
 	}
 }
 
-/* tf of every posting of the term's group and the rank each block starts at */
+/* The rank each block of the term's group starts at, and whether the group has a tf stream at all */
 static void
-term_decode(MemoryContext cx, RkTerm *t)
+term_bases(RkTerm *t)
 {
 	const sift_grp *g = t->g;
 	const uint8 *off = g->off;
 	uint32		n = 0;
 
+	t->based = true;
+	t->tf_whole = false;
+	t->nblk_tf = 0;
+	if ((t->all_tf1 = sift_post_group_all_tf1(t->gc)))
+		return;
 	for (int b = 0; b < SIFT_BLKS_PER_SB; b++)
 	{
 		size_t		len = (size_t) pg_popcount64((g->pages[b / 4] >> (b % 4 * SIFT_BLK_PAGES)) & 0xffff) * g->w;
@@ -145,13 +150,56 @@ term_decode(MemoryContext cx, RkTerm *t)
 		off += len;
 	}
 	t->base[SIFT_BLKS_PER_SB] = n;
+}
+
+/* tf of every posting of the term's group in t->tf */
+static void
+term_decode_group(MemoryContext cx, RkTerm *t)
+{
+	uint32		n = t->base[SIFT_BLKS_PER_SB];
+
 	if (n + SIFT_KERN_PAD > t->tfcap)
 	{
 		t->tfcap = Max(n + SIFT_KERN_PAD, 2 * t->tfcap);
 		SIFT_REGROW_IN(cx, t->tf, t->tfcap);
 	}
 	sift_post_group_tf(t->gc, t->tf);
-	t->decoded = true;
+	t->tf_whole = true;
+}
+
+/*
+ * The tf of the term's postings in block b, for the scorer that reads them next (NULL: all 1). A block that is scored on its own decodes its own
+ * postings into the shared block buffer; a term that scores several blocks of the group, or a block that is a third of it, decodes the group once.
+ */
+static const uint8 *
+term_block_tf(MemoryContext cx, RkTerm *t, int b, RankWork *wk)
+{
+	uint32		rank,
+				cnt;
+
+	if (!t->based)
+		term_bases(t);
+	if (t->all_tf1)
+		return NULL;
+	rank = t->base[b];
+	cnt = t->base[b + 1] - rank;
+	if (!t->tf_whole && (t->nblk_tf >= BLK_TF_LAZY_MAX || cnt * 3 >= t->base[SIFT_BLKS_PER_SB]))
+		term_decode_group(cx, t);
+	if (t->tf_whole)
+		return t->tf + rank;
+	sift_post_block_tf(t->gc, rank, cnt, wk->blk_tf);
+	t->nblk_tf++;
+#ifdef SIFT_TESTING
+	if (sift_test_block_tf_check)
+	{
+		uint8	   *all = palloc(t->base[SIFT_BLKS_PER_SB] + SIFT_KERN_PAD);
+
+		sift_post_group_tf(t->gc, all);
+		SIFT_INVARIANT(memcmp(all + rank, wk->blk_tf, cnt) == 0, "block tf differs from the group tf at rank %u of %u", rank, cnt);
+		pfree(all);
+	}
+#endif
+	return wk->blk_tf;
 }
 
 static inline bool
@@ -277,15 +325,6 @@ block_live(SiftPlan *p, RankSeg *rs, int b, float4 theta)
 	return live;
 }
 
-/* Builds the term's mask in wk->tm, decoding its tf on first use */
-static void
-term_prepare(SiftPlan *p, RkTerm *t, int b, RankWork *wk)
-{
-	if (!t->decoded)
-		term_decode(p->mcxt, t);
-	term_mask(t->g, b, wk->tm);
-}
-
 static void
 zero_rows(float4 *buf, const uint64 *mask)
 {
@@ -342,14 +381,14 @@ leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, const uint64 *cand, float4
 
 		if (!term_in_block(&t[i], b))
 			continue;
-		term_prepare(p, &t[i], b, wk);
+		term_mask(t[i].g, b, wk->tm);
 		if (!first)
 		{
 			sift_offmask_and(wk->tmc[0], wk->tm[0], cand, SIFT_BLK_PAGES);
 			zero_rows(wk->tmp, wk->tmc[0]);
 			out = wk->tmp;
 		}
-		sift_kern->bm25_sel(out, wk->tm[0], cand, SIFT_BLK_PAGES, t[i].tf + t[i].base[b], wk->knorm, t[i].w);
+		sift_kern->bm25_sel(out, wk->tm[0], cand, SIFT_BLK_PAGES, term_block_tf(p->mcxt, &t[i], b, wk), wk->knorm, t[i].w);
 		if (!first)
 			sift_kern->max_merge(wk->leafbuf, wk->tmp, wk->tmc[0], SIFT_BLK_PAGES);
 		first = false;
@@ -368,6 +407,22 @@ filter_result(const SiftPlan *p, const SiftFilterSB *fs, int b, RankWork *wk)
 	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
 		for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
 			any |= wk->res[pg][k] &= wk->flt[pg][k];
+	return any != 0;
+}
+
+/* The result documents of block b are those of the bridge's offsets (all of a lossy page); false when none is left */
+static bool
+bridge_result(const SiftTidBridge *br, const SiftTidBridgeSB *bsb, int b, RankWork *wk)
+{
+	uint64		pages = sift_tidbridge_block_mask(br, bsb, b, wk->flt, NULL),
+				any = 0;
+
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+		if (pages >> pg & 1)
+			for (int k = 0; k < SIFT_OFFMASK_WORDS; k++)
+				any |= wk->res[pg][k] &= wk->flt[pg][k];
+		else
+			memset(wk->res[pg], 0, sizeof(wk->res[pg]));
 	return any != 0;
 }
 
@@ -565,13 +620,58 @@ prune_leaves(SiftPlan *p, RankSeg *rs, int b, float4 theta, RankWork *wk, const 
 	return true;
 }
 
+/* wk->scores of the documents of cand: the leaves added in leaf order, as the reference does */
+static void
+score_canonical(SiftPlan *p, RankSeg *rs, int b, const uint64 *cand, RankWork *wk)
+{
+	zero_rows(wk->scores, cand);
+	for (int i = 0; i < p->nleaves; i++)
+		if (p->leaves[i].scoring)
+			leaf_accum(p, rs, i, b, cand, wk->scores, wk);
+}
+
+static inline bool
+ord_is_canonical(const int *ord, int n)
+{
+	for (int k = 1; k < n; k++)
+		if (ord[k] < ord[k - 1])
+			return false;
+	return true;
+}
+
+/*
+ * The scores of a block with the candidates pruned leaf by leaf: the last leaf is added to the partial sums of the survivors, and when
+ * the leaves went in leaf order those sums are the scores (nothing is scored twice). Else the documents above theta - margin, the few
+ * the partial sums of the bound order let through, are scored again in leaf order, on their own.
+ */
+static int
+score_pruned(SiftPlan *p, RankSeg *rs, int b, float4 theta, RankWork *wk, const int *ord, const float4 *rest, int n)
+{
+	uint64	   *cand = &wk->cand[0][0];
+	int			ncand;
+
+	if (!prune_leaves(p, rs, b, theta, wk, ord, rest, n))
+		return 0;
+	leaf_accum(p, rs, ord[n - 1], b, wk->res[0], wk->part, wk);
+	if (ord_is_canonical(ord, n))
+		return sift_kern->select_gt(wk->slot, wk->vals, wk->part, wk->res[0], SIFT_BLK_PAGES, theta);
+	ncand = sift_kern->select_gt(wk->slot, wk->vals, wk->part, wk->res[0], SIFT_BLK_PAGES, theta - fabsf(theta) * (1.0f / 65536));
+	if (ncand == 0)
+		return 0;
+	memset(wk->cand, 0, sizeof(BlockMask));
+	for (int j = 0; j < ncand; j++)
+		cand[wk->slot[j] / 64] |= UINT64CONST(1) << (wk->slot[j] % 64);
+	score_canonical(p, rs, b, cand, wk);
+	return sift_kern->select_gt(wk->slot, wk->vals, wk->scores, cand, SIFT_BLK_PAGES, theta);
+}
+
 /*
  * Scores block b of the unit's SB for the group's result documents on the
  * pages of live (block_live); returns the candidates above theta in
  * wk->slot / wk->vals. ub is the bound of each leaf in the block.
  */
 int
-score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftDocChunk *dc, int b,
+score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *fs, const SiftTidBridgeSB *bsb, const SiftDocChunk *dc, int b,
 			float4 theta, const float4 *ub, uint32 live)
 {
 	SiftPlan   *p = r->plan;
@@ -593,6 +693,8 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 		if (!(live >> pg & 1))
 			memset(wk->res[pg], 0, sizeof(wk->res[pg]));
 	if (fs && !filter_result(p, fs, b, wk))
+		return 0;
+	if (bsb && !bridge_result(p->bridge, bsb, b, wk))
 		return 0;
 	if (p->nattrs && !attr_filter(p, seg, dc, b, wk))
 		return 0;
@@ -620,11 +722,8 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	if (!any)
 		return 0;
 	sift_kern->knorm(wk->knorm, wk->dl, wk->res[0], SIFT_BLK_PAGES, &p->bm);
-	if (n > 1 && theta > -INFINITY && !prune_leaves(p, rs, b, theta, wk, r->ord, r->rest, n))
-		return 0;
-	zero_rows(wk->scores, wk->res[0]);
-	for (int i = 0; i < p->nleaves; i++)
-		if (p->leaves[i].scoring)
-			leaf_accum(p, rs, i, b, wk->res[0], wk->scores, wk);
+	if (n > 1 && theta > -INFINITY)
+		return score_pruned(p, rs, b, theta, wk, r->ord, r->rest, n);
+	score_canonical(p, rs, b, wk->res[0], wk);
 	return sift_kern->select_gt(wk->slot, wk->vals, wk->scores, wk->res[0], SIFT_BLK_PAGES, theta);
 }

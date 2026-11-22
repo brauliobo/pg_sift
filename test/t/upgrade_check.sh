@@ -12,7 +12,7 @@ uc() { PGHOST=$(dir uc)/sock PGPORT=$(port uc) PGUSER=postgres "$REPO/scripts/up
 # row OUTPUT STATUS OBJECT: the finding line of an object with that status
 row() { awk -v s="$2" -v o="$3" '$1 == s && $2 == o' <<<"$1"; }
 
-plan 138
+plan 135
 # the test clusters run with sift.table_auto_defrag and sift.col_auto_merge off (scripts/pgtest.sh conf); the preflight warns about a feature switched off in the
 # server configuration, so this cluster keeps the shipped default and a clean database stays clean
 node_init uc 21 "sift.table_auto_defrag = on
@@ -45,7 +45,7 @@ for _ in $(seq 120); do
 	out=$(uc clean)
 	grep -q -E '^ok +tbl +table +format 1\.[0-9]+, column format' <<<"$out" && grep -q -E '^ok +months +table +format 1\.[0-9]+, column format' <<<"$out" && break
 	q clean "VACUUM tbl" "VACUUM months" >/dev/null
-	sleep 0.5
+	sleep 0.2
 done
 
 out=$(uc clean); rc=$?
@@ -358,16 +358,4 @@ check "... and no blocker to 4.3" test -z "$(row "$out" blocker one_col)"
 check "... and it answers like the table" test "$(q hop "SELECT sum(v) FROM one_events WHERE id < 500")" == "$(q hop "SET sift.enable_agg = off" "SELECT sum(v) FROM one_events WHERE id < 500")"
 q hop "DROP INDEX hop_col" "SET sift.col_format_minor = 14" "CREATE INDEX hop_col ON hop_events USING sift_col (id, dim_a_id, created_at, v)" >/dev/null || bail "the advised commands for a scope of two paths fail"
 check "the same for a scope of two paths: no blocker to 4.3" test -z "$(row "$(uc --to 4.3 hop)" blocker hop_col)"
-# the shared value store (column format 46) is read by 5.0 only: sift.col_value_store = off writes the strings in the segments again, which 4.3 reads, and a database that sets it off is warned
-q postgres "CREATE DATABASE vst" >/dev/null
-printf '%s;\n' "CREATE EXTENSION pg_sift" "SET sift.test_vstore_columns = 'uid,url'" "CREATE TABLE vs (id int PRIMARY KEY, tenant int, uid uuid, url text)" \
-	"INSERT INTO vs SELECT i, i % 7, md5((i % 300)::text)::uuid, 'https://example.com/p/' || md5((i % 400)::text) FROM generate_series(1, 2000) i" \
-	"CREATE INDEX vs_a ON vs USING sift_col (id, tenant, uid, url)" "CREATE INDEX vs_b ON vs USING sift_col (id, uid, url)" |
-	PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir uc)/sock" -p "$(port uc)" -U postgres -d vst -f - >/dev/null || bail "the shared value store cannot be set up"
-check "to 4.3: an index that reads its strings from the store is a blocker, and the advice is the setting and the REINDEX" grep -q -E '^blocker +vs_a .*SET sift\.col_value_store = off, then REINDEX INDEX vs_a ' <<<"$(uc --to 4.3 vst)"
-q vst "SET sift.col_value_store = off" "REINDEX INDEX vs_a" "REINDEX INDEX vs_b" >/dev/null || bail "the advised commands for the store fail"
-out=$(uc --to 4.3 vst)
-check "after the advice no index of the table is a blocker to 4.3" test -z "$(row "$out" blocker vs_a)" -a -z "$(row "$out" blocker vs_b)"
-q postgres "ALTER DATABASE vst SET sift.col_value_store = off" >/dev/null
-check "a database that sets the store off is warned" grep -q -E '^warn +sift\.col_value_store +setting +sift\.col_value_store = off, set by IN DATABASE vst' <<<"$(uc vst)"
 finish

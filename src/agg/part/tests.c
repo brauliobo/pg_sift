@@ -265,31 +265,6 @@ part_unit_rollup_miss(void *impl, const SiftSrcUnit *unit)
 	return sift_colsrc_unit_rollup_miss(cur_of(impl), unit_of(impl));
 }
 
-bool
-part_gpu_unit(void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
-{
-	return sift_colsrc_gpu_unit(cur_of(impl), unit_of(impl), g);
-}
-
-bool
-part_gpu_dense(void *impl, const SiftSrcUnit *unit, int leaf)
-{
-	return sift_colsrc_gpu_dense(cur_of(impl), unit_of(impl), leaf);
-}
-
-bool
-part_gpu_chunk(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c)
-{
-	return sift_colsrc_gpu_chunk(cur_of(impl), unit_of(impl), leaf, c);
-}
-
-void
-part_gpu_dict(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
-{
-	sift_colsrc_gpu_dict(cur_of(impl), unit_of(impl), leaf, dict);
-	*dict = *presented(impl, leaf, dict);
-}
-
 uint64 *
 part_recheck_rows(void *impl, const SiftSrcUnit *unit)
 {

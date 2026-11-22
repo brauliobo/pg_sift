@@ -105,7 +105,6 @@ SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wr
      |     0
 (1 row)
 
-RESET sift.col_connect_refresh_pct;
 -- updates of other columns of the parent rows (half of them) keep their keys, so the flags are as good as they were: nothing is due
 UPDATE dim_a SET price = price + 1 WHERE id % 2 = 0;
 SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wrong;

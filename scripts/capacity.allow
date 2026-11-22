@@ -20,26 +20,25 @@ array-append	src/bm25/runs_int.h	v[n++] = (uint8) (x | 0x80);	a varint of 64 bit
 array-append	src/bm25/runs_int.h	v[n++] = (uint8) x;	a varint of 64 bits takes at most 10 bytes
 blocknumber-sum	src/bm25/walk.c	BlockNumber blk = dm->dir[i].sb * SIFT_SB_PAGES + p;	the heap block of a page of a superblock of the segment: a heap block number, below 2^32 by PostgreSQL
 array-append	src/bm25/writer.c	offs[n++] = k * 64 + __builtin_ctzll(m) + 1;	the offsets of one page: at most MaxHeapTuplesPerPage
-array-append	src/col/am/am.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
-array-append	src/col/am/am.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
-array-append	src/col/amscan/amscan.c	tids[m++] = tids[i];	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
-cast-after-product	src/col/amscan/amscan.c	int64 fetches = so->sampled > 0 ? (int64) (so->returned * ((double) so->unseen / so->sampled)) : 0;	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
-array-append	src/col/build/run.c	pick[n++] = low;	two picks, the loop runs twice
-array-append	src/col/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
-array-append	src/col/gquant.c	pos[n++] = (uint8) i;	the loop runs over SIFT_GQ_MB positions, the array holds that many
-cast-after-product	src/col/keycols/gorder.c	if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget() * CDICT_CODES_PCT / 100.0)	ndistinct is a double estimate, the cast truncates it
-cast-after-product	src/col/maint/merge.c	live_rows = Max((uint64) (live_rows * share), 1);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
-cast-after-product	src/col/maint/merge.c	live_units += (uint64) (units * live);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
-cast-after-product	src/col/maint/merge.c	live_units = (uint64) (live_units * share);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
-cast-after-product	src/col/maint/roll.c	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
-cast-after-product	src/col/preagg/preagg.c	sumsq += (SiftCI128) (uint64) (k * k);	this branch is taken only when the zone lies within 2^31 of zero, so a square fits 62 bits
-cast-after-product	src/col/scan_unit.c	sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));	a double price, the cast truncates it
-array-append	src/col/scope_rows.c	m.pages[m.nrel++] = RelationGetNumberOfBlocks(rel);	one entry for each hop of the scope, at most 3
-cast-after-product	src/col/scope_sample.c	sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);	a double ratio of rows, the cast truncates it
-array-append	src/col/seg/points.c	s->cur[s->n++] = t;	the lists are counted first and the stream is not used when there are more than TCUR_MAX
-cast-after-product	src/col/seg_write/summary.c	unit_agg_of(&w->zones[(Size) (k * fan + i) * ncols + c], sums ? &w->lagg[(Size) (k * fan + i) * ncols + c] : NULL, &ua[i]);	the index of a unit of the segment: nsb is a 32-bit count
-cast-after-product	src/col/wbuf/arena.c	values[8] = Int64GetDatum((int64) (a->nsegs * ARENA_SEG_PAGES - a->pages_free) * ARENA_PAGE);	the pages of the arena: at most ARENA_SEGS * ARENA_SEG_PAGES
-array-append	src/col/wide.c	digits[nd++] = (char) ('0' + (int) (u % 10));	the digits of a 128-bit value: at most 39 of SIFT_COL_W128_TEXT
+array-append	src/col/v1/am_v1.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
+array-append	src/col/v1/am_v1.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
+array-append	src/col/v1/amscan/amscan.c	tids[m++] = tids[i];	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
+array-append	src/col/v1/build/run.c	pick[n++] = low;	two picks, the loop runs twice
+array-append	src/col/v1/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
+array-append	src/col/v1/gquant.c	pos[n++] = (uint8) i;	the loop runs over SIFT_GQ_MB positions, the array holds that many
+cast-after-product	src/col/v1/keycols/gorder.c	if ((double) sift_cdict_parsed_bytes((Size) (ndistinct * Min(width, 255)), (uint32) Min(ndistinct, (double) UINT32_MAX)) > (double) sift_cdict_cache_budget() * CDICT_CODES_PCT / 100.0)	ndistinct is a double estimate, the cast truncates it
+cast-after-product	src/col/v1/maint/merge.c	live_rows = Max((uint64) (live_rows * share), 1);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/v1/maint/merge.c	live_units += (uint64) (units * live);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/v1/maint/merge.c	live_units = (uint64) (live_units * share);	live units and rows are double estimates, the cast truncates them; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/v1/maint/roll.c	return (uint64) (live * Max(hi - lo, 0.0) / ((double) v->khi[i] + 1 - (double) v->klo[i]));	a double estimate, the cast truncates it; the array is the directory entries, at most SIFT_DIR_WIDE_MAX
+cast-after-product	src/col/v1/preagg/preagg.c	sumsq += (SiftCI128) (uint64) (k * k);	this branch is taken only when the zone lies within 2^31 of zero, so a square fits 62 bits
+cast-after-product	src/col/v1/scan_unit.c	sift_col_marks_note(src->index, src->hflog->gen, (uint64) (rows * COL_MARK_PREAGG_PRICE));	a double price, the cast truncates it
+array-append	src/col/v1/scope_rows.c	m.pages[m.nrel++] = RelationGetNumberOfBlocks(rel);	one entry for each hop of the scope, at most 3
+cast-after-product	src/col/v1/scope_sample.c	sift_scope_refuse(specs->s[s]->key_name, specs->s[s]->max_multiplicity, (uint64) (ratio * scaled_rows), scaled_rows, true, 0, 0);	a double ratio of rows, the cast truncates it
+array-append	src/col/v1/seg/points.c	s->cur[s->n++] = t;	the lists are counted first and the stream is not used when there are more than TCUR_MAX
+cast-after-product	src/col/v1/seg_write/summary.c	unit_agg_of(&w->zones[(Size) (k * fan + i) * ncols + c], sums ? &w->lagg[(Size) (k * fan + i) * ncols + c] : NULL, &ua[i]);	the index of a unit of the segment: nsb is a 32-bit count
+cast-after-product	src/col/v1/wbuf/arena.c	values[8] = Int64GetDatum((int64) (a->nsegs * ARENA_SEG_PAGES - a->pages_free) * ARENA_PAGE);	the pages of the arena: at most ARENA_SEGS * ARENA_SEG_PAGES
+array-append	src/col/v1/wide.c	digits[nd++] = (char) ('0' + (int) (u % 10));	the digits of a 128-bit value: at most 39 of SIFT_COL_W128_TEXT
 blocknumber-sum	src/core/live.c	BlockNumber blk = l->first + SIFT_PAYLOAD_PAGE(b);	the page index is compared with npages just below, before the page is read; sift_live_check holds npages to the bits of the run
 blocknumber-sum	src/core/live.c	BlockNumber blk = l->first + SIFT_PAYLOAD_PAGE(b);	the page index is compared with npages just below, before the page is read; sift_live_check holds npages to the bits of the run
 blocknumber-sum	src/core/live_repair.c	BlockNumber blk = l->first + i;	the loop runs over the npages of the run
@@ -49,6 +48,48 @@ blocknumber-sum	src/core/relocate.c	BlockNumber blk = plan.source[i].start + j;	
 blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 array-append	src/core/xlog.h	x->full[x->n++] = (flags & GENERIC_XLOG_FULL_IMAGE) != 0;	GenericXLogRegisterBuffer, called on the line above, raises its own error past MAX_GENERIC_XLOG_PAGES buffers
-blocknumber-sum	src/table/analyze.c	BlockNumber end = numblocks == InvalidBlockNumber ? InvalidBlockNumber : start_blockno + numblocks;	the range of blocks PostgreSQL gives the sample: its own block numbers
-blocknumber-sum	src/table/feed.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
-blocknumber-sum	src/table/promote.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
+array-append	src/col/v1/maint/maint.c	moves[n++] = (SiftDvMove) {gen, start, unit - start, gen2, start};	the cuts are the set bits of a 64-bit mask, so at most 64 moves and the last: the array holds 65
+array-append	src/col/v1/maint/maint.c	moves[n++] = (SiftDvMove) {gen, start, PG_UINT32_MAX - start, gen2, start};	the cuts are the set bits of a 64-bit mask, so at most 64 moves and the last: the array holds 65
+blocknumber-sum	src/table/v1/analyze.c	BlockNumber end = numblocks == InvalidBlockNumber ? InvalidBlockNumber : start_blockno + numblocks;	the range of blocks PostgreSQL gives the sample: its own block numbers
+blocknumber-sum	src/table/v1/feed.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
+blocknumber-sum	src/table/v1/promote.c	BlockNumber vblock = seg->vbase + p;	the virtual block of a page of a write buffer: vbase + vcap is checked against MaxBlockNumber when the buffer is made (table/wbuf.c)
+array-append	src/col/granule/part_join.c	secs[nsec++] = (SiftSecInput) {.tag = SEC_GRANULES,.flags = SIFT_SEC_FLAG_REQUIRED,.len = gtotal,.fill = join_fill,.fill_arg = &fill};	one section for each tag of a part joined, at most twelve and the third of them here
+array-append	src/col/f2/compact.c	out[n++] = (SiftExtent) {in[i].d.header_blk, 1};	at most one packed page for each of the ngens inputs, and the caller made room for 2 * ngens + 1 extents after the ones it holds
+array-append	src/col/granule/granule_enc.c	cnt[nv++] = 0;	nv counts the distinct left parts of the sn <= SIFT_F8_SAMPLE sampled values, and the arrays hold SIFT_F8_SAMPLE
+array-append	src/agg/v6/v6_card.c	d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);	the group expressions are at most SIFT_CARD_MAX_PREDS (checked above) and the array holds that many
+array-append	src/agg/v6/v6_vexpr.c	if ((n->args[n->nargs++] = args[i]) == NULL)	nargs is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, (Node *) w->expr);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, (Node *) w->result);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, (Node *) ce->defresult);	2 * the WHENs + 1 is checked against SIFT_VEXPR_MAX_ARGS before the loop
+array-append	src/agg/v6/v6_vexpr.c	args[n++] = conv(c, arg);	the arguments are at most SIFT_VEXPR_MAX_ARGS (checked before the loop)
+array-append	src/agg/v6/v6_vexpr.c	digits[n++] = (char) ('0' + (int) (cur % 10));	a 128-bit magnitude has at most 39 decimal digits and the array holds 48
+array-append	src/agg/v6/v6_vexpr.c	text[o++] = '-';	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/v6/v6_vexpr.c	text[o++] = digits[i];	the text holds the sign, at most 39 digits and a point: 64 bytes
+array-append	src/agg/v6/v6_vexpr.c	text[o++] = '.';	the text holds the sign, at most 39 digits and a point: 64 bytes
+blocknumber-sum	src/col/f2/part_format.c	BlockNumber blk = ext[e].start + b;	the extents are blocks of this relation that sift_bulk_extend has just extended it to, and PostgreSQL refuses a relation past MaxBlockNumber
+array-append	src/core/shm_combiner.c	lifo[n++] = i;	the stack holds each slot of the pool at most once and the array holds SIFT_COMB_POOL_SLOTS
+array-append	src/core/shm_combiner.c	ld->fin[ld->n++] = SIFT_COMB_RETRY;	the leader hands out the slots of one stack, at most SIFT_COMB_POOL_SLOTS, and the arrays hold that many
+blocknumber-sum	src/table/f2/f2_blob.c	BlockNumber blk = ref->ext[e].start + b;	the extents of a blob reference are blocks of this relation written by this file, and sift_blk_read refuses a block past its end
+array-append	src/agg/v6/v6_datebin_win.c	dig[nd++] = (char) ('0' + (int) (v % 10));	v is a 128-bit magnitude of at most 39 decimal digits and dig holds 1100
+cast-after-product	src/agg/vexpr_cal.c	d[i] = (int64) (q * per - bias + shift);	q is the floor of u / per, so q * per is at most u, which fits 64 bits
+cast-after-product	src/col/f2/f2_maint.c	v[3] = Int64GetDatum(autovacuum_vac_thresh + (int64) (autovacuum_vac_scale * Max(tab->live_tuples, 0)));	a double: the scale (a GUC of at most 100) times a tuple count, far below 2^63
+array-append	src/col/f2/f2_pack.c	rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};	one part is swapped and the array holds its one extent
+array-append	src/col/f2/key_plan.c	k->set[k->nset++] = vs[i];	at most SET_CAP values are taken (n > SET_CAP narrows by range instead) and the set holds SET_CAP
+array-append	src/col/f2/key_plan.c	kept[nk++] = k->set[i];	the kept values are some of the at most SET_CAP of the set and kept holds SET_CAP
+array-append	src/col/f2/key_plan.c	k->set[m++] = v;	the values kept are some of those of the set, which holds at most SET_CAP
+cast-after-product	src/agg/gpu_v6.c	x->cache_limit = caps->cache_bytes > 0 ? (uint64) (caps->cache_bytes * CACHE_USE) : (uint64) sift_gpu_cache_mb * ((uint64) 1 << 20) * 3 / 4;	the product is a double (the bytes of the device times a share) and its result is cast; the integer product is widened first
+array-append	src/col/f2/f2_proj_spec.c	name[len++] = *ps->p++;	the loop condition stops at len + 1 < sizeof(name)
+array-append	src/col/f2/f2_proj_spec.c	name[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(name)
+array-append	src/col/f2/f2_proj_spec.c	u[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(u)
+array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"host", b->host};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-content-sha256", payload_hash};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-date", date};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"x-amz-security-token", b->token};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/f2_tier_s3.c	hdrs[nh++] = (SiftSigHdr) {"range", range};	hdrs holds the five headers a request signs: host, content hash, date, token and range
+array-append	src/col/f2/f2_tier_s3.c	lines[nl++] = auth;	lines holds the authorization line and one line for each of the other four headers
+array-append	src/col/f2/f2_tier_s3.c	lines[nl++] = extra[i - 1];	lines holds the authorization line and one line for each of the other four headers
+array-append	src/col/f2/f2_col_delta_idx.c	cols[n++] = (SiftColDeltaCol) {.attnum = SIFT_CD_ATT_TID_REMAP,.kind = SIFT_CELL_INT,.cell = {.i = (int64) new_tid}};	the guard above refuses a record of more than SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR columns, the leaves and the address together
+array-append	src/col/f2/f2_col_delta_idx.c	cols[n++] = (SiftColDeltaCol) {.attnum = (int16) (leaf[i] + 1),.kind = kinds[leaf[i]],.cell = cell[i],.key_absent = key_absent != NULL && key_absent[i]};	the guard above refuses a record of more than SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR columns, the leaves and the address together
+array-append	src/col/f2/f2_proj_spec.c	t[len++] = *ps->p++;	the loop condition stops one byte short of sizeof(t), which the terminator takes
+array-append	src/col/granule/promo_prefix.c	tmp[k++] = '0' + (char) (v % 10);	a 64-bit number has at most 20 decimal digits and tmp holds 24
+array-append	src/col/f2/f2_point_dir.c	vals[m++] = c->i[r];	m counts the sampled rows, one for each of the SIFT_POINT_SAMPLE steps of the loop, and vals holds that many

@@ -85,6 +85,7 @@ SELECT sift.verify('churned_idx', true) IS NOT NULL AS verified;
 (1 row)
 
 -- the maintenance worker, which has no snapshot of its own, promotes documents whose text is stored out of line
+SET sift.async_maintenance = on;
 CREATE TABLE worker_docs (id int PRIMARY KEY, body text);
 CREATE INDEX worker_idx ON worker_docs USING sift (body);
 INSERT INTO worker_docs SELECT g, 'v1 v2 ' || (SELECT string_agg(md5(g || ':' || k), ' ') FROM generate_series(1, 300) k) FROM generate_series(1, 400) g;
@@ -107,6 +108,7 @@ SELECT count(*) AS phrase_rows FROM worker_docs WHERE body @@> '"v1 v2"';
          400
 (1 row)
 
+RESET sift.async_maintenance;
 DROP TABLE fresh, churned, phrases, worker_docs;
 DROP FUNCTION idx_bytes(regclass), heap_checks(regclass, text), top_ids(regclass, text);
 DROP EXTENSION pg_sift;

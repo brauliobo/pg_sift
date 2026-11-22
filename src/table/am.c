@@ -1,165 +1,49 @@
 /*
- * table/am.c - the table access method sift_table: handler, DML, relation lifecycle (docs/COL-TAM.md section 4).
- *
- * Row locking protocol of DELETE, UPDATE and SELECT FOR ...: LockTuple on the TID, the tombstone log brought up to date, the
- * deletion state of the row decided (sift_tbl_del_state), then the tombstone appended, all under the tuple lock, which is
- * released at the end of the call as heap_delete does. A transaction in progress that modified or locked the row is waited for
- * with XactLockTableWait outside the tuple lock.
+ * table/am.c - the table access method sift_table: the handler and the routing of its callbacks to the table of the format of the relation (table/dispatch.h).
+ * The files of a format (table/v1/) do the work; the resource manager of logical replication is next to this one (table/wal.c).
  */
 #include "postgres.h"
 
-#include <math.h>
-
-
 #include "access/heapam.h"
-#include "access/htup_details.h"
-#include "access/multixact.h"
-#include "access/tableam.h"
-#include "access/detoast.h"
-#include "access/xact.h"
-#include "catalog/storage.h"
-#include "catalog/storage_xlog.h"
-#include "optimizer/plancat.h"
-#include "pgstat.h"
-#include "storage/bufmgr.h"
-#include "storage/lmgr.h"
-#include "storage/predicate.h"
-#include "storage/smgr.h"
-#include "utils/datum.h"
-#include "utils/guc.h"
+#include "access/table.h"
+#include "catalog/pg_class.h"
+#include "fmgr.h"
+#include "utils/acl.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 
-#include "col/am.h"
-#include "table/table.h"
+#include "core/catname.h"
+#include "core/check.h"
+#include "core/meta_peek.h"
+#include "core/ops.h"
+#include "core/sql.h"
+#include "table/dispatch.h"
 
 PG_FUNCTION_INFO_V1(sift_table_handler);
 
-bool		sift_tbl_inline_promote = true;
-bool		sift_tbl_hot_update = true;
-int			sift_tbl_backpressure = 0;
-char	   *sift_tbl_compression_spec = NULL;
+static const SiftTableFormatOps *const format_ops[] = {[1] = &sift_tbl_v1_ops,[2] = &sift_tbl_v2_ops};
 
-/* The directory is half full from the first merge on (dir_pressure), so a threshold at or under that is no backpressure */
-static bool
-backpressure_check_hook(int *newval, void **extra, GucSource source)
+const SiftTableFormatOps *
+sift_tbl_ops_of_major(uint16 major)
 {
-	if (*newval > 0 && *newval <= 50)
-	{
-		GUC_check_errdetail("The value is 0 (off) or a percent above 50, where the directory is already filling.");
-		return false;
-	}
-	return true;
+	if (major >= lengthof(format_ops) || format_ops[major] == NULL)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_table has no engine for format major %u in pg_sift %s", major, SIFT_MODULE_VERSION),
+						errhint("Install the pg_sift release that wrote the table.")));
+	return format_ops[major];
 }
 
-static void
-check_compression(const char *spec)
+const SiftTableFormatOps *
+sift_tbl_ops_for_new(void)
 {
-	if (spec != NULL)
-		sift_col_validate_compression(spec);
+	return sift_tbl_ops_of_major(sift_new_relation_format_major());
 }
 
-static bool
-compression_check_hook(char **newval, void **extra, GucSource source)
+/* The relcache entry carries the table once the format has set it up; until then block 0 tells */
+const SiftTableFormatOps *
+sift_tbl_ops(Relation rel)
 {
-	check_compression(*newval);
-	return true;
-}
-
-void
-sift_tbl_define_gucs(void)
-{
-	DefineCustomIntVariable("sift.tomb_log_limit",
-							"Memory a backend keeps of the tombstone log of a sift_table or of a sift_col index with track_changes (64 bytes an entry); the entries past it are kept in sorted runs on temp files.",
-							"The log holds an entry for each row deleted or updated since the last VACUUM, those of the running statement included; a read or a statement of any length completes, and the maintenance worker is asked for at 33.5 million entries.",
-							&sift_tomb_log_limit_kb, SIFT_TOMB_LOG_KB, 16, INT_MAX,
-							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_write_buffer_limit",
-							"Size of a sift_table write buffer (row format) before it is closed, to be promoted into columns.",
-							"Rounded down to whole superblocks of 2 MB; a row has to fit one segment.",
-							&sift_tbl_write_buffer_limit, 4096, 2048, 8192,
-							PGC_USERSET, GUC_UNIT_KB, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_wide_rows",
-							 "Accepts a row of a sift_table that does not fit one write buffer (up to PostgreSQL's 1 GB), in pages beyond the buffer's table (format 11).",
-							 "Off: such a row is refused. On (the default): the write buffer that takes it is marked format 11, which a build that does not know it cannot write to; rows that fit keep the layout of earlier versions.",
-							 &sift_tbl_wide_rows, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_inline_promote",
-							 "Promotes the closed write buffers of a sift_table into columns while rows are inserted (VACUUM always does).",
-							 NULL, &sift_tbl_inline_promote, true,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_hot_update",
-							 "An UPDATE of a sift_table that keeps the columns its indexes read gets no entry in them: the entries of the old version lead to the new one (a HOT chain on the tombstone log).",
-							 "Off: every update inserts the new version into every index. Chains written while it was on are still followed.",
-							 &sift_tbl_hot_update, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_dict_lookup",
-							 "Stores the order of the strings too in the dictionary of 1,024 strings or more of the column segments written from now on, so that a test for a string reads the dictionary in place (column format minor 14); the order is 4 bytes a string, kept while the orders of a segment take at most a quarter of its chunks.",
-							 NULL, &sift_col_table_lookup, true,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_key_table",
-							 "The column segments of a sift_table written from now on keep a key table of each foreign key or *_id column (column format minor 22), so that count, sum, min and max WHERE key = x read one record of a segment instead of its units.",
-							 "On by default, where the table fits 3% of the segment. Off: segments are written without them, column format minor 15 or 18, which 3.4 reads.",
-							 &sift_col_table_key_table, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_backpressure",
-							"Percent of the directory of a sift_table from which a writer that needs a new write buffer first waits for the maintenance lock and merges.",
-							"0 (off): a writer waits only when the directory is nearly full. Above 50, the percent of the entries.",
-							&sift_tbl_backpressure, 0, 0, 99,
-							PGC_USERSET, 0, backpressure_check_hook, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_async_promote",
-							 "A backend that closes a write buffer of a sift_table asks a background worker to promote it, where it promotes it itself.",
-							 "Needs sift.async_maintenance and sift.table_inline_promote. From half of the directory on the writer promotes and merges itself.",
-							 &sift_tbl_async_promote, false, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_bulk_groups",
-							 "COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups, with no write buffer to promote.",
-							 "On by default. Only a table without a unique or exclusion index, a trigger or a foreign key, and not published; other tables keep the write buffers.",
-							 &sift_tbl_bulk_groups, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_auto_defrag",
-							 "A backend that closes a write buffer of a sift_table, or deletes, updates or reads it, asks a background worker to rewrite its mostly dead column segments and give back its free space when it is worth it, without VACUUM.",
-							 "Needs sift.async_maintenance. With sift.table_auto_defrag_indexes the worker runs a whole VACUUM when the reads of the table since the last pass have cost as much as the pass; without it the worker clears no index entry and VACUUM still has to run for those.",
-							 &sift_tbl_auto_defrag, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_free_pct",
-							"Percent of the file that is free blocks from which the background pass of a sift_table gathers and returns them.",
-							NULL, &sift_tbl_auto_defrag_free_pct, 25, 1, 100,
-							PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_delay",
-							"Cost delay of the background pass of a sift_table, in milliseconds: it sleeps this long (at most four times) each time its page accesses add up to vacuum_cost_limit, and after each segment it rewrites.",
-							"0 never waits; at most 100, the most vacuum_cost_delay allows.", &sift_tbl_auto_defrag_delay, 10, 0, 100,
-							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_budget",
-							"Megabytes of column segments one background pass of a sift_table rewrites by merging at most.",
-							"The worker passes again while the budget stopped the last one. 0 is no limit.",
-							&sift_tbl_auto_defrag_budget, 128, 0, 1048576, PGC_USERSET, GUC_UNIT_MB, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_max_active",
-							"Client backends of the database running a statement above which the background pass of a sift_table is left for a quieter moment.",
-							"The worker ends at once, also between the merges of a pass, without holding its connection; a later request asks again. 0: never waits.",
-							&sift_tbl_auto_defrag_max_active, 0, 0, 10000, PGC_SIGHUP, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_auto_defrag_wal_rate",
-							"Kilobytes of WAL per second the background pass of a sift_table may write on average.",
-							"After a step that put it ahead of that rate the worker sleeps until the rate is met. A rewritten segment makes every backend that reads it load its dictionaries again, so the rate also bounds how often that happens. 0: no limit.",
-							&sift_tbl_auto_defrag_wal_rate, 0, 0, INT_MAX, PGC_SIGHUP, GUC_UNIT_KB, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_auto_defrag_coalesce",
-							 "The background pass of a sift_table merges the small column groups next to the ones it rewrites into one group.",
-							 NULL, &sift_tbl_auto_defrag_coalesce, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.table_auto_defrag_indexes",
-							 "The background pass of a sift_table whose dead rows reach sift.table_dead_rewrite_pct is a whole VACUUM, index cleanup and tombstone rewrite included.",
-							 "Off: it only clears the dead rows of the column segments and returns space, and the tombstone log and the index entries wait for a VACUUM.",
-							 &sift_tbl_auto_defrag_indexes, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomStringVariable("sift.table_compression",
-							   "Compression of the column segments a sift_table writes: auto, none, lz4, zstd or encodings; per column: 'auto; col=zstd:9'.",
-							   NULL, &sift_tbl_compression_spec, "", PGC_USERSET, 0, compression_check_hook, NULL, NULL);
-#ifdef SIFT_TESTING
-	DefineCustomIntVariable("sift.table_max_segments", "Test only: the directory entries a sift_table may use.", NULL,
-							&sift_tbl_max_segments, SIFT_DIR_POLICY_MAX, 8, SIFT_DIR_POLICY_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_vblock_floor", "Test only: the first virtual block a new write buffer of a sift_table may take.", NULL,
-							&sift_tbl_vblock_floor, 0, 0, 1 << 30, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_init_gate", "Test only: the first write of a sift_table waits for the advisory lock of this number before it creates the tombstone segment (0 = no gate).", NULL,
-							&sift_tbl_init_gate, 0, 0, INT_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.table_seal_gate", "Test only: the writer that closed a write buffer of a sift_table waits for the advisory lock of this number before it flags the pages sealed (0 = no gate).", NULL,
-							&sift_tbl_seal_gate, 0, 0, INT_MAX, PGC_USERSET, 0, NULL, NULL, NULL);
-#endif
-	DefineCustomIntVariable("sift.table_dead_rewrite_pct",
-							"Percent of dead rows above which VACUUM rewrites a column segment of a sift_table alone to drop them.",
-							"100 never rewrites.", &sift_tbl_dead_rewrite_pct, SIFT_TBL_DEAD_PCT, 1, 100,
-							PGC_USERSET, 0, NULL, NULL, NULL);
+	if (rel->rd_amcache != NULL)
+		return ((SiftTblRelHeader *) rel->rd_amcache)->ops;
+	return sift_tbl_ops_of_major(sift_meta_resolve_major(rel));
 }
 
 static const TableAmRoutine sift_tbl_methods;
@@ -170,457 +54,290 @@ sift_tbl_routine(void)
 	return &sift_tbl_methods;
 }
 
+bool
+sift_tbl_is_table(Relation rel)
+{
+	return rel->rd_tableam == sift_tbl_routine();
+}
+
+bool
+sift_tbl_is_f2_oid(Oid relid)
+{
+	Relation	rel = table_open(relid, NoLock);
+	bool		f2 = sift_tbl_is_table(rel) && sift_meta_resolve_major(rel) == SIFT_FORMAT2_MAJOR;
+
+	table_close(rel, NoLock);
+	return f2;
+}
+
+void
+sift_tbl_require(Relation rel)
+{
+	if (!sift_tbl_is_table(rel))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table", RelationGetRelationName(rel))));
+}
+
+Relation
+sift_tbl_open_verifiable(Oid relid)
+{
+	Relation	rel = table_open(sift_rel_must_exist(relid), AccessShareLock);
+
+	sift_tbl_require(rel);
+	if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
+		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
+	return rel;
+}
+
+void
+sift_tbl_check(SiftCheck *ck, Oid relid)
+{
+	Relation	rel = sift_tbl_open_verifiable(relid);
+
+	sift_tbl_ops(rel)->check(ck, rel);
+	table_close(rel, AccessShareLock);
+}
+
+#define REL_TAM(rel)	(sift_tbl_ops(rel)->tam)
+#define SCAN_TAM(scan)	(((SiftTblScanHeader *) (scan))->ops->tam)
+#define FETCH_TAM(data)	(((SiftTblFetchHeader *) (data))->ops->tam)
+
 static const TupleTableSlotOps *
 tbl_slot_callbacks(Relation rel)
 {
-	return sift_tbl_slot_ops();
+	return REL_TAM(rel)->slot_callbacks(rel);
 }
 
-/* The values of slot: its own, or a copy with every external TOAST value expanded (no TOAST table exists for this AM) */
-static Datum *
-slot_values(TupleDesc desc, TupleTableSlot *slot)
+static TableScanDesc
+tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key, ParallelTableScanDesc pscan, uint32 flags)
 {
-	Datum	   *values;
-
-	slot_getallattrs(slot);
-	values = slot->tts_values;
-	for (int i = 0; i < desc->natts; i++)
-		if (!slot->tts_isnull[i] && TupleDescAttr(desc, i)->attlen == -1 &&
-			VARATT_IS_EXTERNAL(DatumGetPointer(values[i])))
-		{
-			if (values == slot->tts_values)
-			{
-				values = palloc(desc->natts * sizeof(Datum));
-				memcpy(values, slot->tts_values, desc->natts * sizeof(Datum));
-			}
-			values[i] = PointerGetDatum(detoast_external_attr((struct varlena *) DatumGetPointer(values[i])));
-		}
-	return values;
-}
-
-/* The row of slot as a MinimalTuple */
-static MinimalTuple
-form_mtuple(Relation rel, TupleTableSlot *slot)
-{
-	TupleDesc	desc = RelationGetDescr(rel);
-	Datum	   *values = slot_values(desc, slot);
-	MinimalTuple mtup = sift_tbl_form_minimal_tuple(desc, values, slot->tts_isnull);
-
-	if (values != slot->tts_values)
-		pfree(values);
-	return mtup;
-}
-
-static TransactionId
-insert_xmin(SiftTamOptions options)
-{
-	return (options & TABLE_INSERT_FROZEN) ? FrozenTransactionId : GetCurrentTransactionId();
+	return REL_TAM(rel)->scan_begin(rel, snapshot, nkeys, key, pscan, flags);
 }
 
 static void
-insert_one(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, uint32 token)
+tbl_scan_end(TableScanDesc scan)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
-	MinimalTuple mtup;
-	bool		logical;
-
-	sift_tbl_ensure_init(rel);
-	sift_tbl_layout_ready(rel, st);
-	logical = sift_tbl_check_publication(rel);
-	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	mtup = form_mtuple(rel, slot);
-	sift_tbl_append(rel, st, mtup, insert_xmin(options), cid, token, &slot->tts_tid);
-	slot->tts_tableOid = RelationGetRelid(rel);
-	if (logical && token == 0)
-		sift_tbl_log_change(rel, SIFT_TBL_OP_INSERT, mtup, NULL);
-	heap_free_minimal_tuple(mtup);
-	pgstat_count_heap_insert(rel, 1);
+	SCAN_TAM(scan)->scan_end(scan);
 }
 
-/* A row of COPY, CREATE TABLE AS or REFRESH MATERIALIZED VIEW (they pass a bulk insert state) goes into a column group when sift.table_bulk_groups says so */
-static bool
-insert_bulk(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
+static void
+tbl_scan_rescan(TableScanDesc scan, struct ScanKeyData *key, bool set_params, bool allow_strat, bool allow_sync, bool allow_pagemode)
 {
-	SiftTblRel *st;
-	Datum	   *values;
+	SCAN_TAM(scan)->scan_rescan(scan, key, set_params, allow_strat, allow_sync, allow_pagemode);
+}
 
-	if (bistate == NULL)
-		return false;
-	st = sift_tbl_rel(rel);
-	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_BULK_GROUPS))
-		return false;
-	sift_tbl_ensure_init(rel);
-	sift_tbl_layout_ready(rel, st);
-	if (!sift_tbl_load_wanted(rel, st, (options & TABLE_INSERT_FROZEN) != 0))
-		return false;
-	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-	values = slot_values(RelationGetDescr(rel), slot);
-	sift_tbl_load_row(rel, st, values, slot->tts_isnull, cid, &slot->tts_tid);
-	slot->tts_tableOid = RelationGetRelid(rel);
-	if (values != slot->tts_values)
-		pfree(values);
-	pgstat_count_heap_insert(rel, 1);
-	return true;
+static bool
+tbl_scan_getnextslot(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+{
+	return SCAN_TAM(scan)->scan_getnextslot(scan, direction, slot);
+}
+
+static void
+tbl_scan_set_tidrange(TableScanDesc scan, ItemPointer mintid, ItemPointer maxtid)
+{
+	SCAN_TAM(scan)->scan_set_tidrange(scan, mintid, maxtid);
+}
+
+static bool
+tbl_scan_getnextslot_tidrange(TableScanDesc scan, ScanDirection direction, TupleTableSlot *slot)
+{
+	return SCAN_TAM(scan)->scan_getnextslot_tidrange(scan, direction, slot);
+}
+
+static Size
+tbl_parallelscan_estimate(Relation rel)
+{
+	return REL_TAM(rel)->parallelscan_estimate(rel);
+}
+
+static Size
+tbl_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
+{
+	return REL_TAM(rel)->parallelscan_initialize(rel, pscan);
+}
+
+static void
+tbl_parallelscan_reinitialize(Relation rel, ParallelTableScanDesc pscan)
+{
+	REL_TAM(rel)->parallelscan_reinitialize(rel, pscan);
+}
+
+static IndexFetchTableData *
+tbl_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
+{
+	return REL_TAM(rel)->index_fetch_begin(rel SIFT_TAM_FLAGS_ARG);
+}
+
+static void
+tbl_index_fetch_reset(IndexFetchTableData *data)
+{
+	FETCH_TAM(data)->index_fetch_reset(data);
+}
+
+static void
+tbl_index_fetch_end(IndexFetchTableData *data)
+{
+	FETCH_TAM(data)->index_fetch_end(data);
+}
+
+static bool
+tbl_index_fetch_tuple(IndexFetchTableData *data, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *call_again, bool *all_dead)
+{
+	return FETCH_TAM(data)->index_fetch_tuple(data, tid, snapshot, slot, call_again, all_dead);
+}
+
+static bool
+tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot)
+{
+	return REL_TAM(rel)->tuple_fetch_row_version(rel, tid, snapshot, slot);
+}
+
+static bool
+tbl_tuple_tid_valid(TableScanDesc scan, ItemPointer tid)
+{
+	return SCAN_TAM(scan)->tuple_tid_valid(scan, tid);
+}
+
+static void
+tbl_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
+{
+	SCAN_TAM(scan)->tuple_get_latest_tid(scan, tid);
+}
+
+static bool
+tbl_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot, Snapshot snapshot)
+{
+	return REL_TAM(rel)->tuple_satisfies_snapshot(rel, slot, snapshot);
+}
+
+static TransactionId
+tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
+{
+	return REL_TAM(rel)->index_delete_tuples(rel, delstate);
 }
 
 static void
 tbl_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
-	if (!insert_bulk(rel, slot, cid, options, bistate))
-		insert_one(rel, slot, cid, options, 0);
+	REL_TAM(rel)->tuple_insert(rel, slot, cid, options, bistate);
 }
 
 static void
-tbl_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate,
-							 uint32 specToken)
+tbl_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, SiftTamOptions options, BulkInsertState bistate, uint32 specToken)
 {
-	insert_one(rel, slot, cid, options, specToken);
+	REL_TAM(rel)->tuple_insert_speculative(rel, slot, cid, options, bistate, specToken);
 }
 
 static void
 tbl_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, uint32 specToken, bool succeeded)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
-
-	/* a confirmed insertion just stops being speculative (a row that stays flagged would keep its write buffer from being promoted); a killed one must never be seen by anyone */
-	sift_tbl_rec_flag(rel, st, &slot->tts_tid, succeeded ? 0 : SIFT_TBL_REC_DEAD, succeeded ? SIFT_TBL_REC_SPEC : 0);
-	if (!succeeded)
-		pgstat_count_heap_delete(rel);
-	else if (sift_tbl_check_publication(rel))
-	{
-		MinimalTuple mtup = form_mtuple(rel, slot);
-
-		sift_tbl_log_change(rel, SIFT_TBL_OP_INSERT, mtup, NULL);
-		heap_free_minimal_tuple(mtup);
-	}
+	REL_TAM(rel)->tuple_complete_speculative(rel, slot, specToken, succeeded);
 }
 
 static void
 tbl_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, BulkInsertState bistate)
 {
-	sift_tbl_load_from_copy = true;
-	for (int i = 0; i < nslots; i++)
-		if (!insert_bulk(rel, slots[i], cid, options, bistate))
-			insert_one(rel, slots[i], cid, options, 0);
-	sift_tbl_load_from_copy = false;
+	REL_TAM(rel)->multi_insert(rel, slots, nslots, cid, options, bistate);
 }
 
-/*
- * Decides whether the version at tid may be deleted, updated or locked now. TM_Ok: the tuple lock is held, *del is the state
- * of the row, the caller appends its tombstone and releases it. Anything else: the lock is released and tmfd filled.
- */
+#if PG_VERSION_NUM >= 190000
 static TM_Result
-tomb_claim(Relation rel, SiftTblRel *st, ItemPointer tid, CommandId cid, bool wait, LockWaitPolicy policy,
-		   bool locking, TM_FailureData *tmfd, SiftTblDel *del)
+tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, uint32 options, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd)
 {
-	sift_tbl_auto_defrag_tick(rel, st);
-	for (;;)
-	{
-		SiftTblRowVer rv;
-		TransactionId waitxid;
-
-		LockTuple(rel, tid, ExclusiveLock);
-		sift_tbl_refresh(rel, st);
-		sift_tomb_sync(rel, &st->tomb);
-		if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
-		{
-			UnlockTuple(rel, tid, ExclusiveLock);
-			if (locking)
-			{
-				tmfd->ctid = *tid;
-				tmfd->xmax = InvalidTransactionId;
-				return TM_Deleted;
-			}
-			SIFT_INVARIANT(false, "attempted to modify invisible tuple (%u,%u) of \"%s\"", ItemPointerGetBlockNumberNoCheck(tid),
-						   ItemPointerGetOffsetNumberNoCheck(tid), RelationGetRelationName(rel));
-		}
-		sift_tbl_free_row(&rv);
-		sift_tbl_del_state(st, rv.key, del);
-		tmfd->ctid = *tid;
-		tmfd->xmax = del->xid;
-		tmfd->cmax = del->cid;
-		switch (del->state)
-		{
-			case SIFT_TBL_DEL_SELF:
-				UnlockTuple(rel, tid, ExclusiveLock);
-				if (del->cid >= cid || locking)
-					return TM_SelfModified;
-				SIFT_INVARIANT(false, "attempted to modify a tuple deleted by an earlier command of \"%s\"", RelationGetRelationName(rel));
-				break;
-			case SIFT_TBL_DEL_DELETED:
-				UnlockTuple(rel, tid, ExclusiveLock);
-				return TM_Deleted;
-			case SIFT_TBL_DEL_UPDATED:
-				UnlockTuple(rel, tid, ExclusiveLock);
-				sift_key_to_tid(del->succ, &tmfd->ctid);
-				return TM_Updated;
-			case SIFT_TBL_DEL_INPROGRESS:
-				waitxid = del->xid;
-				break;
-			default:
-				waitxid = del->lockxid;	/* another transaction's row lock excludes us as well (docs/COL-TAM.md section 1) */
-				break;
-		}
-		if (!TransactionIdIsValid(waitxid))
-			return TM_Ok;
-		UnlockTuple(rel, tid, ExclusiveLock);
-		tmfd->xmax = waitxid;
-		if (locking && policy == LockWaitSkip)
-			return TM_WouldBlock;
-		if (locking && policy == LockWaitError)
-			ereport(ERROR,
-					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-					 errmsg("could not obtain lock on row in relation \"%s\"", RelationGetRelationName(rel))));
-		if (!wait)
-			return TM_BeingModified;
-		XactLockTableWait(waitxid, rel, tid, locking ? XLTW_Lock : XLTW_Delete);
-	}
-}
-
-/* The logical record of a change to the row at otid; its current version is the old row (replica identity) */
-static void
-log_old_row(Relation rel, SiftTblRel *st, SiftTblOp op, ItemPointer otid, MinimalTuple newrow)
-{
-	SiftTblRowVer rv;
-
-	if (!sift_tbl_fetch_row(rel, st, otid, &rv))
-		SIFT_TBL_RETRY("could not read the old row of \"%s\" for logical decoding", RelationGetRelationName(rel));
-	sift_tbl_log_change(rel, op, newrow, rv.tuple);
-	heap_freetuple(rv.tuple);
+	return REL_TAM(rel)->tuple_delete(rel, tid, cid, options, snapshot, crosscheck, wait, tmfd);
 }
 
 static TM_Result
-tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait,
-				 TM_FailureData *tmfd, bool changingPart)
+tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, uint32 options, Snapshot snapshot, Snapshot crosscheck, bool wait,
+				 TM_FailureData *tmfd, LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
-	SiftTblDel	del;
-	TM_Result	result;
-	uint64		key = sift_key_from_tid(tid);
-	bool		logical = sift_tbl_check_publication(rel);
-
-	result = tomb_claim(rel, st, tid, cid, wait, LockWaitBlock, false, tmfd, &del);
-	if (result != TM_Ok)
-		return result;
-	if (crosscheck != InvalidSnapshot)
-	{
-		SiftTblRowVer rv;
-
-		if (sift_tbl_fetch_lazy(rel, st, tid, &rv))
-		{
-			if (!sift_tbl_visible(rel, st, crosscheck, &rv))
-				result = TM_Updated;
-			sift_tbl_free_row(&rv);
-		}
-	}
-	if (result == TM_Ok)
-	{
-		uint64		moved;
-		ItemPointerData mp;
-
-		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-		ItemPointerSetMovedPartitions(&mp);
-		moved = sift_key_from_tid(&mp);
-		sift_tomb_append(rel, &st->tomb, key, GetCurrentTransactionId(), cid,
-							 changingPart ? SIFT_TOMB_UPDATE : SIFT_TOMB_DELETE, 0, changingPart ? moved : 0);
-		if (logical)
-			log_old_row(rel, st, SIFT_TBL_OP_DELETE, tid, NULL);
-		pgstat_count_heap_delete(rel);
-	}
-	UnlockTuple(rel, tid, ExclusiveLock);
-	return result;
+	return REL_TAM(rel)->tuple_update(rel, otid, slot, cid, options, snapshot, crosscheck, wait, tmfd, lockmode, update_indexes);
 }
-
-/*
- * Does the new version keep every column an index reads, as binary datums (the heap's test): then no index gets an entry for it, its tombstone is a HOT
- * one and the old version's entries lead to it. Not with a summarizing index, which wants the new
- * version's block, nor on a table without index (nothing to save). The sift indexes are no exception: they read the columns they name, and the visibility
- * of their TIDs follows the chain (sift_tbl_filter_page).
- */
-static bool
-index_columns_kept(Relation rel, SiftTblRel *st, ItemPointer otid, MinimalTuple mtup)
+#else
+static TM_Result
+tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd, bool changingPart)
 {
-	Bitmapset  *attrs = RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_HOT_BLOCKING);
-	TupleDesc	desc = RelationGetDescr(rel);
-	HeapTupleData new = {.t_len = mtup->t_len + MINIMAL_TUPLE_OFFSET,.t_data = (HeapTupleHeader) ((char *) mtup - MINIMAL_TUPLE_OFFSET)};
-	SiftTblRowVer rv;
-	bool		same = true;
-
-	if (!sift_tbl_opt_bool(st, SIFT_TBLOPT_HOT_UPDATE) || bms_is_empty(attrs) || !bms_is_empty(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_SUMMARIZED)) ||
-		!sift_tbl_fetch_row(rel, st, otid, &rv))
-		return false;
-	for (int attr = -1; same && (attr = bms_next_member(attrs, attr)) >= 0;)
-	{
-		AttrNumber	a = attr + FirstLowInvalidHeapAttributeNumber;
-		Form_pg_attribute att;
-		bool		onull,
-					nnull;
-		Datum		old,
-					fresh;
-
-		if (a <= 0)
-		{
-			same = false;		/* a system column or the whole row */
-			break;
-		}
-		att = TupleDescAttr(desc, a - 1);
-		old = heap_getattr(rv.tuple, a, desc, &onull);
-		fresh = heap_getattr(&new, a, desc, &nnull);
-		same = onull == nnull && (onull || datumIsEqual(old, fresh, att->attbyval, att->attlen));
-	}
-	sift_tbl_free_row(&rv);
-	return same;
+	return REL_TAM(rel)->tuple_delete(rel, tid, cid, snapshot, crosscheck, wait, tmfd, changingPart);
 }
 
 static TM_Result
-tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, Snapshot snapshot,
-				 Snapshot crosscheck, bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				 TU_UpdateIndexes *update_indexes)
+tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, Snapshot snapshot, Snapshot crosscheck, bool wait,
+				 TM_FailureData *tmfd, LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
-	SiftTblDel	del;
-	TM_Result	result;
-	bool		logical = sift_tbl_check_publication(rel);
-	/* the caller may pass the address of the slot's tid, which the append of the new version rewrites: the claim, its unlock and the tombstone name the old one */
-	ItemPointerData old = *otid;
-
-	*lockmode = LockTupleExclusive;
-	*update_indexes = TU_All;
-	result = tomb_claim(rel, st, &old, cid, wait, LockWaitBlock, false, tmfd, &del);
-	if (result != TM_Ok)
-		return result;
-	if (crosscheck != InvalidSnapshot)
-	{
-		SiftTblRowVer rv;
-
-		if (sift_tbl_fetch_lazy(rel, st, &old, &rv))
-		{
-			if (!sift_tbl_visible(rel, st, crosscheck, &rv))
-				result = TM_Updated;
-			sift_tbl_free_row(&rv);
-		}
-	}
-	if (result == TM_Ok)
-	{
-		MinimalTuple mtup = form_mtuple(rel, slot);
-		bool		hot = index_columns_kept(rel, st, &old, mtup);
-
-		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
-		sift_tbl_append(rel, st, mtup, GetCurrentTransactionId(), cid, 0, &slot->tts_tid);
-		slot->tts_tableOid = RelationGetRelid(rel);
-		if (logical)
-			log_old_row(rel, st, SIFT_TBL_OP_UPDATE, &old, mtup);
-		heap_free_minimal_tuple(mtup);
-		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(&old), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
-							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
-		if (hot)
-			*update_indexes = TU_None;
-		pgstat_count_heap_update(rel, hot, false);
-	}
-	UnlockTuple(rel, &old, ExclusiveLock);
-	return result;
+	return REL_TAM(rel)->tuple_update(rel, otid, slot, cid, snapshot, crosscheck, wait, tmfd, lockmode, update_indexes);
 }
-
-SIFT_TAM_DELETE_ADAPTER(tbl_tuple_delete)
-SIFT_TAM_UPDATE_ADAPTER(tbl_tuple_update)
+#endif
 
 static TM_Result
-tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid,
-			   LockTupleMode mode, LockWaitPolicy wait_policy, uint8 flags, TM_FailureData *tmfd)
+tbl_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
+			   uint8 flags, TM_FailureData *tmfd)
 {
-	SiftTblRel *st = sift_tbl_rel(rel);
-
-	tmfd->traversed = false;
-	for (;;)
-	{
-		SiftTblDel	del;
-		SiftTblRowVer rv;
-		TM_Result	result = tomb_claim(rel, st, tid, cid, true, wait_policy, true, tmfd, &del);
-
-		if (result == TM_Updated && (flags & TUPLE_LOCK_FLAG_FIND_LAST_VERSION))
-		{
-			if (ItemPointerIndicatesMovedPartitions(&tmfd->ctid))
-				ereport(ERROR,
-						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-						 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
-			if (IsolationUsesXactSnapshot())
-				ereport(ERROR,
-						(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-						 errmsg("could not serialize access due to concurrent update")));
-			*tid = tmfd->ctid;
-			tmfd->traversed = true;
-			continue;
-		}
-		if (result != TM_Ok)
-			return result;
-		if (!del.self_locked)
-			sift_tomb_append(rel, &st->tomb, sift_key_from_tid(tid), GetCurrentTransactionId(), cid, SIFT_TOMB_LOCK, 0, 0);
-		UnlockTuple(rel, tid, ExclusiveLock);
-		if (!sift_tbl_fetch_row(rel, st, tid, &rv))
-			SIFT_TBL_RETRY("could not read the locked tuple of \"%s\"", RelationGetRelationName(rel));
-		sift_tbl_store(slot, rv.tuple);
-		return TM_Ok;
-	}
+	return REL_TAM(rel)->tuple_lock(rel, tid, snapshot, slot, cid, mode, wait_policy, flags, tmfd);
 }
 
 static void
 tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 {
-	sift_tbl_load_finish(rel);
+	REL_TAM(rel)->finish_bulk_insert(rel, options);
 }
 
+/* The storage of a new relation is the one of the format a new relation takes: the old one may be of another */
 static void
-tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
-								 TransactionId *freezeXid, MultiXactId *minmulti)
+tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence, TransactionId *freezeXid, MultiXactId *minmulti)
 {
-	SMgrRelation srel;
-
-	if (BLCKSZ != 8192)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_table needs BLCKSZ 8192"),
-				 errdetail("This server has BLCKSZ %d.", BLCKSZ),
-				 errhint("Use a PostgreSQL build with the default 8 kB block size.")));
-	sift_tbl_layout_check(rel);
-	*freezeXid = RecentXmin;
-	*minmulti = GetOldestMultiXactId();
-	srel = RelationCreateStorage(*newrlocator, persistence, true);
-	/* the layout is written by the first writer (sift_tbl_ensure_init); an unlogged table's empty init fork resets to empty */
-	if (persistence == RELPERSISTENCE_UNLOGGED)
-	{
-		smgrcreate(srel, INIT_FORKNUM, false);
-		log_smgrcreate(newrlocator, INIT_FORKNUM);
-	}
-	smgrclose(srel);
+	sift_tbl_ops_for_new()->tam->relation_set_new_filelocator(rel, newrlocator, persistence, freezeXid, minmulti);
 }
 
 static void
 tbl_relation_nontransactional_truncate(Relation rel)
 {
-	RelationTruncate(rel, 0);
-	sift_tbl_rel(rel)->invalid = true;
+	REL_TAM(rel)->relation_nontransactional_truncate(rel);
 }
 
 static void
 tbl_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 {
-	SMgrRelation dstrel = smgropen(*newrlocator, rel->rd_backend);
+	REL_TAM(rel)->relation_copy_data(rel, newrlocator);
+}
 
-	RelationCreateStorage(*newrlocator, rel->rd_rel->relpersistence, true);
-	/* the copy reads the files, not the buffers */
-	FlushRelationBuffers(rel);
-	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM, rel->rd_rel->relpersistence);
-	for (ForkNumber fork = MAIN_FORKNUM + 1; fork <= MAX_FORKNUM; fork++)
-		if (smgrexists(RelationGetSmgr(rel), fork))
-		{
-			smgrcreate(dstrel, fork, false);
-			if (rel->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT ||
-				(rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED && fork == INIT_FORKNUM))
-				log_smgrcreate(newrlocator, fork);
-			RelationCopyStorage(RelationGetSmgr(rel), dstrel, fork, rel->rd_rel->relpersistence);
-		}
-	RelationDropStorage(rel);
-	smgrclose(dstrel);
+static void
+tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort, TransactionId OldestXmin,
+							  SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed,
+							  double *tups_recently_dead)
+{
+	REL_TAM(OldTable)->relation_copy_for_cluster(OldTable, NewTable, OldIndex, use_sort, OldestXmin, SIFT_TAM_CLUSTER_SNAPSHOT_ARG xid_cutoff,
+												 multi_cutoff, num_tuples, tups_vacuumed, tups_recently_dead);
+}
+
+static void
+tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy)
+{
+	REL_TAM(rel)->relation_vacuum(rel, params, bstrategy);
+}
+
+static bool
+tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
+{
+	return SCAN_TAM(scan)->scan_analyze_next_block(scan, stream);
+}
+
+static bool
+tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows, double *deadrows, TupleTableSlot *slot)
+{
+	return SCAN_TAM(scan)->scan_analyze_next_tuple(scan, SIFT_TAM_ANALYZE_XMIN_ARG liverows, deadrows, slot);
+}
+
+static double
+tbl_index_build_range_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info, bool allow_sync, bool anyvisible, bool progress,
+						   BlockNumber start_blockno, BlockNumber numblocks, IndexBuildCallback callback, void *callback_state, TableScanDesc scan)
+{
+	return REL_TAM(table_rel)->index_build_range_scan(table_rel, index_rel, index_info, allow_sync, anyvisible, progress, start_blockno, numblocks,
+													  callback, callback_state, scan);
+}
+
+static void
+tbl_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info, Snapshot snapshot, struct ValidateIndexState *state)
+{
+	REL_TAM(table_rel)->index_validate_scan(table_rel, index_rel, index_info, snapshot, state);
 }
 
 static uint64
@@ -635,73 +352,91 @@ tbl_relation_needs_toast_table(Relation rel)
 	return false;
 }
 
-/*
- * A scan of a sift_table builds every row it returns from the columns: 1.7 times the instructions of a heap scan of the same rows
- * (the store benchmark, 1M orders, a grouped scan of two columns), whatever the size of the compressed file. The planner prices a scan
- * by pages, so it gets the pages of the rows in a heap, twice: a tenth of that (the blocks of the compressed columns) made a
- * sequential scan look a tenth as dear, and it beat the plans that read the columns instead (SiftAgg), which build no rows.
- */
-#define TBL_SCAN_WORK	2.0
-
 static void
 tbl_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber *pages, double *tuples, double *allvisfrac)
 {
-	int32		overhead = MAXALIGN(sizeof(SiftTblRec)) + sizeof(uint16);
-	double		scan_pages;
+	REL_TAM(rel)->relation_estimate_size(rel, attr_widths, pages, tuples, allvisfrac);
+}
 
-	table_block_relation_estimate_size(rel, attr_widths, pages, tuples, allvisfrac, overhead, BLCKSZ - SizeOfPageHeaderData);
-	scan_pages = ceil(*tuples * (get_rel_data_width(rel, attr_widths) + overhead) / (BLCKSZ - SizeOfPageHeaderData) * TBL_SCAN_WORK);
-	*pages = Max(*pages, (BlockNumber) Min(scan_pages, (double) MaxBlockNumber));
-	*allvisfrac = 0;
+#if PG_VERSION_NUM >= 180000
+static bool
+tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *recheck, uint64 *lossy_pages, uint64 *exact_pages)
+{
+	return SCAN_TAM(scan)->scan_bitmap_next_tuple(scan, slot, recheck, lossy_pages, exact_pages);
+}
+#else
+static bool
+tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres)
+{
+	return SCAN_TAM(scan)->scan_bitmap_next_block(scan, tbmres);
+}
+
+static bool
+tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot)
+{
+	return SCAN_TAM(scan)->scan_bitmap_next_tuple(scan, tbmres, slot);
+}
+#endif
+
+static bool
+tbl_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate)
+{
+	return SCAN_TAM(scan)->scan_sample_next_block(scan, scanstate);
+}
+
+static bool
+tbl_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate, TupleTableSlot *slot)
+{
+	return SCAN_TAM(scan)->scan_sample_next_tuple(scan, scanstate, slot);
 }
 
 static const TableAmRoutine sift_tbl_methods = {
 	.type = T_TableAmRoutine,
 	.slot_callbacks = tbl_slot_callbacks,
-	.scan_begin = sift_tbl_scan_begin,
-	.scan_end = sift_tbl_scan_end,
-	.scan_rescan = sift_tbl_scan_rescan,
-	.scan_getnextslot = sift_tbl_scan_getnextslot,
-	.scan_set_tidrange = sift_tbl_scan_set_tidrange,
-	.scan_getnextslot_tidrange = sift_tbl_scan_getnextslot,
-	.parallelscan_estimate = sift_tbl_parallelscan_estimate,
-	.parallelscan_initialize = sift_tbl_parallelscan_initialize,
-	.parallelscan_reinitialize = sift_tbl_parallelscan_reinitialize,
-	.index_fetch_begin = sift_tbl_index_fetch_begin,
-	.index_fetch_reset = sift_tbl_index_fetch_reset,
-	.index_fetch_end = sift_tbl_index_fetch_end,
-	.index_fetch_tuple = sift_tbl_index_fetch_tuple,
-	.tuple_fetch_row_version = sift_tbl_tuple_fetch_row_version,
-	.tuple_tid_valid = sift_tbl_tuple_tid_valid,
-	.tuple_get_latest_tid = sift_tbl_tuple_get_latest_tid,
-	.tuple_satisfies_snapshot = sift_tbl_tuple_satisfies_snapshot,
-	.index_delete_tuples = sift_tbl_index_delete_tuples,
+	.scan_begin = tbl_scan_begin,
+	.scan_end = tbl_scan_end,
+	.scan_rescan = tbl_scan_rescan,
+	.scan_getnextslot = tbl_scan_getnextslot,
+	.scan_set_tidrange = tbl_scan_set_tidrange,
+	.scan_getnextslot_tidrange = tbl_scan_getnextslot_tidrange,
+	.parallelscan_estimate = tbl_parallelscan_estimate,
+	.parallelscan_initialize = tbl_parallelscan_initialize,
+	.parallelscan_reinitialize = tbl_parallelscan_reinitialize,
+	.index_fetch_begin = tbl_index_fetch_begin,
+	.index_fetch_reset = tbl_index_fetch_reset,
+	.index_fetch_end = tbl_index_fetch_end,
+	.index_fetch_tuple = tbl_index_fetch_tuple,
+	.tuple_fetch_row_version = tbl_tuple_fetch_row_version,
+	.tuple_tid_valid = tbl_tuple_tid_valid,
+	.tuple_get_latest_tid = tbl_tuple_get_latest_tid,
+	.tuple_satisfies_snapshot = tbl_tuple_satisfies_snapshot,
+	.index_delete_tuples = tbl_index_delete_tuples,
 	.tuple_insert = tbl_tuple_insert,
 	.tuple_insert_speculative = tbl_tuple_insert_speculative,
 	.tuple_complete_speculative = tbl_tuple_complete_speculative,
 	.multi_insert = tbl_multi_insert,
-	.tuple_delete = SIFT_TAM(tbl_tuple_delete),
-	.tuple_update = SIFT_TAM(tbl_tuple_update),
+	.tuple_delete = tbl_tuple_delete,
+	.tuple_update = tbl_tuple_update,
 	.tuple_lock = tbl_tuple_lock,
 	.finish_bulk_insert = tbl_finish_bulk_insert,
 	.relation_set_new_filelocator = tbl_relation_set_new_filelocator,
 	.relation_nontransactional_truncate = tbl_relation_nontransactional_truncate,
 	.relation_copy_data = tbl_relation_copy_data,
-	.relation_copy_for_cluster = sift_tbl_relation_copy_for_cluster,
-	.relation_vacuum = sift_tbl_relation_vacuum,
-	.scan_analyze_next_block = sift_tbl_scan_analyze_next_block,
-	.scan_analyze_next_tuple = sift_tbl_scan_analyze_next_tuple,
-	.index_build_range_scan = sift_tbl_index_build_range_scan,
-	.index_validate_scan = sift_tbl_index_validate_scan,
+	.relation_copy_for_cluster = tbl_relation_copy_for_cluster,
+	.relation_vacuum = tbl_relation_vacuum,
+	.scan_analyze_next_block = tbl_scan_analyze_next_block,
+	.scan_analyze_next_tuple = tbl_scan_analyze_next_tuple,
+	.index_build_range_scan = tbl_index_build_range_scan,
+	.index_validate_scan = tbl_index_validate_scan,
 	.relation_size = tbl_relation_size,
 	.relation_needs_toast_table = tbl_relation_needs_toast_table,
 	.relation_estimate_size = tbl_relation_estimate_size,
 #if PG_VERSION_NUM < 180000
-	.scan_bitmap_next_block = sift_tbl_scan_bitmap_next_block,
+	.scan_bitmap_next_block = tbl_scan_bitmap_next_block,
 #endif
-	.scan_bitmap_next_tuple = sift_tbl_scan_bitmap_next_tuple,
-	.scan_sample_next_block = sift_tbl_scan_sample_next_block,
-	.scan_sample_next_tuple = sift_tbl_scan_sample_next_tuple,
+	.scan_bitmap_next_tuple = tbl_scan_bitmap_next_tuple,
+	.scan_sample_next_block = tbl_scan_sample_next_block,
+	.scan_sample_next_tuple = tbl_scan_sample_next_tuple,
 };
 
 Datum

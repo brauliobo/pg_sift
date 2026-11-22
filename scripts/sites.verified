@@ -6,32 +6,33 @@ src/agg/scope_unread.c	unread_reason	guarded	only the name of an index of the st
 src/bm25/facet.c	sift_facet_counts	guarded	the heap is the heap of the facet index, which open_index checked (sift_rel_must_exist) and holds open
 src/bm25/funcs.c	keyed_indexes	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/bm25/funcs.c	match_selectivity	guarded	the index OID is a member of the relation's index list in the planner (the relation is locked by the parser)
-src/col/advice.c	sift_col_index_advice	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/am/am.c	sift_col_flush_held	guarded	the OID is one this backend queued for a write (sift_cwbuf_pending) in a transaction that holds its lock; the pending list is cleared for an index dropped in the transaction (sift_cwbuf_discard)
+src/col/v1/am_v1.c	sift_col_v1_flush_held	guarded	the OID is one this backend queued for a write (sift_cwbuf_pending) in a transaction that holds its lock; the pending list is cleared for an index dropped in the transaction (sift_cwbuf_discard)
 src/col/am/cache.c	sift_col_index_meta	guarded	heapoid is the heap of an open index (the caller holds the index and a lock on its heap)
 src/col/am/rel.c	sift_col_index_stale	guarded	its only caller (agg/scope_unread.c) passes the OID of an index of a table of the planned statement, from RelationGetIndexList under the table's lock
-src/col/amscan/amscan.c	col_scan_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/autocut/autocut.c	sift_col_key_cut_decision	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/build/choices.c	sift_col_index_choices	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/conn_decl.c	parent_index_for	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
-src/col/conn_decl.c	sift_col_connection_list	guarded	the parent table is looked up with missing_ok true and OidIsValid tested; the parent attribute is tested for InvalidAttrNumber
-src/col/conn_decl.c	sift_col_connection_state	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/conn_decl.c	sift_conn_parent_index	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
-src/col/conn_decl.c	sift_conn_relation_oid	guarded	index_table is the OID of an open heap (an index being declared or listed): its namespace exists while it is held
-src/col/conn_fill.c	sift_conn_fill_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/conn_fill.c	sift_conn_stale_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/conn_keys.c	scan_btree_keys	guarded	btree is the pair btree found by find_recorded_btree/parent_index_for in the same statement under a lock on its table
-src/col/conn_probe.c	sift_conn_probe_begin_on	guarded	the btree OID is the one the caller just found and locked (the Assert on the lock)
-src/col/conn_probe.c	sift_conn_probe_open	guarded	the relations were locked by sift_conn_probe_begin_on and the locks are held to the end of the transaction (the Assert on the lock)
-src/col/keycols/keycols.c	write_options	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/maint/funcs.c	sift_col_maintenance_status	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/amscan/amscan.c	col_scan_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/build/choices.c	sift_col_index_choices	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/conn_decl.c	parent_index_for	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
+src/col/v1/conn_decl.c	sift_col_connection_list	guarded	the parent table is looked up with missing_ok true and OidIsValid tested; the parent attribute is tested for InvalidAttrNumber
+src/col/v1/conn_decl.c	sift_col_connection_state	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/conn_decl.c	sift_conn_parent_index	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
+src/col/v1/conn_decl.c	sift_conn_relation_oid	guarded	index_table is the OID of an open heap (an index being declared or listed): its namespace exists while it is held
+src/col/v1/conn_fill.c	sift_conn_fill_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/conn_fill.c	sift_conn_stale_begin	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/conn_keys.c	scan_btree_keys	guarded	btree is the pair btree found by find_recorded_btree/parent_index_for in the same statement under a lock on its table
+src/col/v1/conn_probe.c	sift_conn_probe_begin_on	guarded	the btree OID is the one the caller just found and locked (the Assert on the lock)
+src/col/v1/conn_probe.c	sift_conn_probe_open	guarded	the relations were locked by sift_conn_probe_begin_on and the locks are held to the end of the transaction (the Assert on the lock)
+src/col/v1/keycols/keycols.c	write_options	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/keystore/keystore_rel.c	each_store	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/keystore/keystore_rel.c	sift_col_value_store_drop_unused	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/keystore/keystore_rel.c	store_table	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/v1/maint/funcs.c	sift_col_v1_maintenance_status	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/names.c	follow_attribute	guarded	the index OID comes from RelationGetIndexList of the renamed table, which the ALTER TABLE holds with AccessExclusiveLock, or from referring_indexes() (a catalog scan whose indexes are locked here); an index dropped in between does not exist for the locked table
 src/col/names.c	follow_column	guarded	heapoid is the table being altered (event trigger of ALTER TABLE .. RENAME COLUMN) or a partition of it, under the lock of the command; its index list is read from the open relation
 src/col/names.c	follow_references	guarded	referring_indexes() is a catalog scan inside the event trigger of the command; the indexes are opened with a lock and the list is of valid index OIDs of that snapshot
 src/col/names.c	rename_attribute	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/order_units.c	sift_colk_aim_rows	guarded	SearchSysCache1 is tested (tp != NULL) in the same condition; the relation is the heap of an open index
-src/col/pagg.c	pagg_open	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/rowkey.c	sift_col_index_attno_in	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
+src/col/v1/order_units.c	sift_colk_aim_rows	guarded	SearchSysCache1 is tested (tp != NULL) in the same condition; the relation is the heap of an open index
+src/col/v1/pagg.c	pagg_open	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/rowkey.c	sift_col_index_attno_in	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
 src/col/scope_decl.c	dependent_indexes	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/scope_decl.c	find_recorded_btree	guarded	edge comes from the pg_depend scan of the scope; IndexGetRelation(edge, true) is tested against the heap before the open, and the heap is locked
 src/col/scope_decl.c	open_table	guarded	roid is the result of RangeVarGetRelid with the lock taken: the relation is locked and exists (missing_ok false raises 42P01)
@@ -50,51 +51,35 @@ src/col/shape.c	range_span	guarded	the type OID is the type of a column of an op
 src/col/shape.c	sift_col_shape_of	guarded	the type OID is the type of a column of an open relation or of an argument the executor resolved: it exists while the relation is held
 src/col/shape.c	sift_col_shape_test	guarded	the type OID is the type of a column of an open relation or of an argument the executor resolved: it exists while the relation is held
 src/col/suggest.c	sift_col_suggest_paths	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
-src/col/supersede.c	flush_slot	guarded	try_relation_open returns NULL for an index that is gone and the code tests it (if ((f.index = try_relation_open(..)) != NULL))
-src/col/tomblog.c	log_ent	guarded	GetSysCacheHashValue1 only hashes the OID of an open index for the invalidation test
-src/col/track.c	sift_col_track_lookup	guarded	GetSysCacheOid3 returns InvalidOid for a missing function and the caller tests OidIsValid
-src/col/track.c	sift_col_track_rechain	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
-src/col/track.c	sift_col_tracking	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/track.c	subscribed	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/track_drop.c	depends_index	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/track_drop.c	legacy_index	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/track_drop.c	our_triggers	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/v1/supersede.c	flush_slot	guarded	try_relation_open returns NULL for an index that is gone and the code tests it (if ((f.index = try_relation_open(..)) != NULL))
+src/col/v1/tomblog.c	log_ent	guarded	GetSysCacheHashValue1 only hashes the OID of an open index for the invalidation test
+src/col/v1/track.c	sift_col_track_lookup	guarded	GetSysCacheOid3 returns InvalidOid for a missing function and the caller tests OidIsValid
+src/col/v1/track.c	sift_col_track_rechain	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
+src/col/v1/track.c	sift_col_v1_tracking	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/track.c	subscribed	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/v1/track_drop.c	depends_index	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/v1/track_drop.c	legacy_index	unreachable	the OID is the constant of a system catalog, which cannot be dropped
+src/col/v1/track_drop.c	our_triggers	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/track_hear.c	add_parents	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/track_hear.c	create_trigger	guarded	relid is the table of an index being built or tracked, under the lock of the command (it is a member of the index's table or its partitions found by add_parents); the names go into a RangeVar for the trigger
 src/col/track_hear.c	read_trigger	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/track_hear.c	sift_col_hear_apply	guarded	the OID is the relid of an RTE of the statement being planned or executed: the parser locked the relation, so it cannot be dropped before the statement ends
 src/col/track_hear.c	sift_col_hear_find	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/track_rows.c	sift_col_track_old_rows	guarded	index_live(indexoid) tests the OID before the open; the heap is IndexGetRelation(indexoid, false) of that live index and old_rel is locked by the trigger
-src/col/track_rows.c	track_row	guarded	GetSysCacheHashValue1 only hashes the OID; the index is opened after index_live
-src/col/vstore/vstore_gc.c	open_locked	guarded	only the name in an ownership error: it follows sift_vstore_table(store) and is_store tests; a gone store gives the error of the earlier check
-src/col/vstore/vstore_gc.c	sift_col_value_store_begin	fixed	sift_rel_must_exist(heap) first; surface_null_args calls sift.col_value_store_begin through the sweep with a dropped relation
-src/col/vstore/vstore_gc.c	sift_vstore_release_left	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/vstore/vstore_live.c	sift_col_value_store_usage	fixed	sift_rel_must_exist on the argument (RED/GREEN in surface_null_args: col_value_store_usage of a dropped relation raised an error naming (null))
-src/col/vstore/vstore_live.c	sift_vstore_usage	guarded	its callers pass a store that sift_vstore_open or sift_rel_must_exist already vouched for
-src/col/vstore/vstore_live.c	store_uses	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
-src/col/vstore/vstore_rel.c	each_store	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/vstore/vstore_rel.c	index_depends_on	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/vstore/vstore_rel.c	index_uses	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/vstore/vstore_rel.c	sift_col_value_store_drop_unused	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/vstore/vstore_rel.c	sift_vstore_exists	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
-src/col/vstore/vstore_rel.c	sift_vstore_find_oid	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
-src/col/vstore/vstore_rel.c	sift_vstore_members	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/vstore/vstore_rel.c	sift_vstore_table	unreachable	the OID is the constant of a system catalog, which cannot be dropped
-src/col/vstore/vstore_rule.c	sift_col_value_store_members	guarded	its catalog scans open constant catalogs (RelationRelationId); the member indexes come from the pg_depend scan of the store under its lock and the heap is the heap of an open index; get_attname is called with missing_ok false
-src/col/vstore/vstore_rule.c	sift_vstore_left_leaves	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/vstore/vstore_rule.c	test_forced	guarded	get_attname is called with missing_ok false: an unknown attribute number raises, the relation is open
-src/col/wbuf/pending.c	check_slots_in_use	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
-src/col/wbuf/ref.c	ref_fetch	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/track_rows.c	sift_col_v1_track_old_rows	guarded	index_live(indexoid) tests the OID before the open; the heap is IndexGetRelation(indexoid, false) of that live index and old_rel is locked by the trigger
+src/col/v1/track_rows.c	track_row	guarded	GetSysCacheHashValue1 only hashes the OID; the index is opened after index_live
+src/col/v1/wbuf/pending.c	check_slots_in_use	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
+src/col/v1/wbuf/ref.c	ref_fetch	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/core/errctx.c	sift_errctx_name	guarded	get_rel_name is tested (name ? .. : NULL) and the namespace is read only when the name exists
 src/core/errctx.c	sift_index_ident	guarded	the namespace of an open index
 src/core/handler.c	sift_func	guarded	SearchSysCacheList1 returns a list that may be empty; the function loops over its members (n_members) and raises when none matches
 src/core/inspect.c	sift_require_owner	fixed	sift_rel_must_exist runs first in the same expression; the name is only for the error
 src/core/inspect.c	sift_require_select	guarded	pg_class_aclcheck raises 42P01 for a relation that is gone before the name is read; the name is only for the error
 src/core/ops.c	sift_check_maintain	guarded	heap is the heap of an index of the caller's statement, held open; the name is only for the error
-src/table/keyorder.c	sift_tbl_key_order	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
-src/table/keyorder.c	sift_tbl_key_order_check	guarded	get_attnum of an open relation: the function refuses an unknown column (InvalidAttrNumber) before reading the type; the type cache entry is of the type of a column of the open relation
-src/table/options.c	config_open	guarded	cfgid is the OID of the configuration table recorded in the table's metapage; the table is open and the configuration table dies with it (internal dependency)
-src/table/options.c	sift_tbl_opts_load	guarded	cfgid as for config_open
-src/table/seg.c	declared_paths	guarded	reloid is the OID of a table the caller opened, or the relation of the SQL function after sift_rel_must_exist
-src/table/seg.c	sift_table_ddl_check	guarded	the OIDs come from the event trigger's object list of the command and from the open table; the relation is locked by the command
-src/table/seg.c	sift_table_paths_check	fixed	the relation passes sift_rel_must_exist and is open; get_attnum is tested for InvalidAttrNumber; surface_null_args calls it with a dropped relation and NULL
+src/table/v1/keyorder.c	sift_tbl_key_order	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
+src/table/v1/keyorder.c	sift_tbl_key_order_check	guarded	get_attnum of an open relation: the function refuses an unknown column (InvalidAttrNumber) before reading the type; the type cache entry is of the type of a column of the open relation
+src/table/v1/options.c	config_open	guarded	cfgid is the OID of the configuration table recorded in the table's metapage; the table is open and the configuration table dies with it (internal dependency)
+src/table/v1/options.c	sift_tbl_opts_load	guarded	cfgid as for config_open
+src/table/v1/seg.c	declared_paths	guarded	reloid is the OID of a table the caller opened, or the relation of the SQL function after sift_rel_must_exist
+src/table/v1/seg.c	sift_table_ddl_check	guarded	the OIDs come from the event trigger's object list of the command and from the open table; the relation is locked by the command
+src/table/v1/seg.c	sift_table_paths_check	fixed	the relation passes sift_rel_must_exist and is open; get_attnum is tested for InvalidAttrNumber; surface_null_args calls it with a dropped relation and NULL
+src/col/f2/track_f2.c	ctx_make	unreachable	the call hashes a pg_class OID for the invalidation callback: it returns a hash and no pointer, whatever the OID

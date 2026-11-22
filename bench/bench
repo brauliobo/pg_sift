@@ -21,15 +21,12 @@ Commands
   run        measure: articles (full-text search on Simple English Wikipedia) and/or places (multi-field
              autocomplete on GeoNames); writes raw tables per dataset and tier into the result directory and
              prints the tables (the report) at the end
-  report     turn result directories into results.tsv (chart input), builds.tsv and tables.md
-  charts     draw the SVG charts of bench/out/img from the committed bench/results/*.tsv (stdlib python, deterministic)
+  report     turn result directories into results.tsv, builds.tsv and tables.md; with --docs also docs/results/<dataset>.tsv, then scripts/gen-docs.py draws docs/charts and the generated
+             blocks of README.md and docs/BENCHMARKS.md
   refresh    measure the README numbers again at this checkout and rewrite their blocks (`final --docs --stages "search store"`, resumable, under the host lock;
              `--calm` for a timer, `--pr BASE` opens the pull request): `refresh [--stages LIST] [--calm [S]] [--pr BASE] [--dry-run]`
-  readme     print the Benchmarks block of README.md and rewrite the generated blocks of README.md and bench/out/BENCHMARKS.md from the
-             slim tier rows of bench/results/*.tsv (`--tier T` another tier; no measurement)
   all        setup, run and report in one go (the clean-checkout reproduction). With --docs it also runs the cold-cache tables (always
-             for the ab and full tiers) and rewrites bench/results, bench/out/img, the benchmark blocks of README.md and the slim section of
-             bench/out/BENCHMARKS.md (report --docs, readme): the one command that regenerates every published number from the slim tier
+             for the ab and full tiers) and rewrites docs/results and, through scripts/gen-docs.py, docs/charts, README.md and docs/BENCHMARKS.md
   cold       like run, but every query starts with the index and heap evicted from the caches (Postgres engines)
   regress    the regression check: sift against a build of an older git ref (sift_ref, `--ref`, default v1.1.0) and sift
              `positions = off` against sift_ref, per class: new and reference values,
@@ -60,23 +57,28 @@ Commands
   compare    `compare A.json B.json`: per cell the ratio B / A of the store results with its 95% interval and a Mann-Whitney test (what changed between two runs or releases)
   kit        the laptop kit: PostgreSQL with pg_sift in one docker container (packaging/docker), 100,000 orders of the store data, the ten questions with
              and without the aggregate pushdown, every answer compared; docker is the only requirement: `kit [--rows N] [--pg MAJOR] [--runs N] [--cpus N] [--image I] [--keep]`
-  sets       the set-filter benchmark: a fact table filtered by 1k / 2k / 5k entity ids, 10k and 100k as headroom (array
-             parameter, literal list, normal plan, IN (SELECT ...) of a membership table, ClickHouse); `sets [--docs] [--ref TAG] [--reps N] [--no-clickhouse] [--keep]`
   scope-stock  the scope index against tuned stock PostgreSQL arms (the semi join, covering b-trees, copies kept by triggers, rollups, pg_ivm views, the entity index): nine classes, eight tenants,
              warm and cold, every answer md5-equal, the write cost of each arm, and the per-rival tally of cells won, tied and lost: `scope-stock [--size quick|standard] [--docs] [--arms LIST] [--keep] [--resume]` (steps/scope_stock.sh)
+  scaling-io compute, cold I/O and writer scaling of pg_sift (1 to 8 workers, io_uring / worker / sync, 1 to 16 writers) on a throwaway cluster: `scaling-io [--rows N] [--workers L] [--clients L] [--suites A,B,C] [--quick] [--control] [--docs]`
+             (bench_scaling.sh; docs/results/v6-scaling.tsv)
+  v6-core    the 6.0 scaling ladder (10k, 40k, 160k rows: memory flatness, compression, WAL, soft delete, planning, idle memory) and its comparison with bench/baselines/v510.tsv: `v6-core [--docs] [--verify-diff] [--release-scale]` (run_round.sh, about 30 s; --verify-diff checks every Q1-Q8 and F4-F8 answer against the heap scan)
+  v6-cases   the 48 cases of bench/cases.tsv (the 24 headline cases and 24 of the 6.0 themes: SIMD sums, high-cardinality groups, grouped distinct counts, jsonb, search with a column filter, semi joins, windows,
+             zone pruning), as `cases`: `v6-cases [cases options]`
+  v6-quick   `v6-release --quick`: v6-core and scaling-io at 500,000 rows on workers 1 and 4, about 90 s
+  v6-release the post-6.0 release pass, six stages (store-analytics, search-bm25, scope-stock, v6-core, scaling-io, v6-cases) from the caches of rival engines, then scripts/gen-docs.py:
+             `v6-release [--docs] [--quick] [--stages LIST] [--remeasure-all] [--budget MIN] [--dry-run]` (steps/v6_release.sh; about 20 to 25 min cached, 45 to 50 min cold)
   scaling    the aggregates of the store orders by number of partitions (1 to 4096) and parallel workers, pg_sift against the normal plan; `scaling [--docs] [--ref TAG] [--partitions N,N] [--workers N,N] [--rows N]`
   duckdb     pg_duckdb against pg_sift and PostgreSQL on the orders of the orders benchmark, in two containers with equal limits, warm and cold, the heap and a Parquet file
-             as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep]` (steps/duckdb.sh)
+             as the pg_duckdb data: `duckdb [--docs] [--rows N] [--runs N] [--cpus N] [--questions LIST] [--keep] [--remeasure-all|--no-cache]` (steps/duckdb.sh; the rival lanes come from $RIVAL_CACHE/duckdb)
+  clickbench the 43 ClickBench queries (Q0-Q42) at 10M and 100M rows on PostgreSQL, pg_sift, ClickHouse (with and without PROJECTIONs) and DuckDB, md5_equal against PostgreSQL before any time: `clickbench selftest|emit-sql|load|run|report` (steps/clickbench.py)
   generic    the generic suites (TPC-H-like, ClickBench-like, time series, the headline cases on orders) on pg_duckdb and ClickHouse, one container at a time, the answers checked against PostgreSQL's before any time: `generic [--rows N] [--suites tpch,hits,tseries] [--engines pg_duckdb,clickhouse] [--runs N] [--check-only] [--docs]` (steps/generic.py)
   cases      the benchmark cases (bench/cases.tsv, bench/cases/*.sql): each timed on pg_sift, on PostgreSQL with sift.enable_agg = off and on pg_duckdb, the plan
              asserted from EXPLAIN and every answer compared: `cases [--cases ID,ID] [--engines pg_duckdb] [--rows N] [--scales 1,10,100] [--rounds R] [--runs N] [--cpus N] [--any-plan] [--docs] [--no-wait]`,
              `cases --list` (steps/cases.sh); `cases --check [--strict] [--host-plan]` checks that every claim of the release has a case, current rows, peer rows and a block
   records     the measurement records (steps/records/README.md): `records check FILE...` refuses a set that mixes runs, table states or settings, `records report [--tsv] FILE...` writes its tables,
              `records claims FILE...` checks the CHANGELOG figures against them, `records migrate FILE...` writes a file of an older schema again in the current one
-  extras     the measurements behind the 3.1 rows the store and search passes do not make: `extras ITEM... [--docs]`, ITEM: rollup tablewrites writepath bm25size
-             leaftypes fields buildcost gpu all (steps/extras.sh)
   release    the one authoritative run after a release, every table of the docs, one command: `release [--dry-run] [--rehearsal] [--stages LIST] [--budget MIN]` (steps/release.sh;
-             bench/out/BENCHMARKS.md, "Time budget of the release pass")
+             docs/BENCHMARKS.md, "Time budget of the release pass")
   final      the release pass in stages with a total budget (`final [--size P] [--docs] [--stages LIST] [--budget MIN] [--dry-run]`)
   release-quick  the quick release profile, one command, a budget of 60 min on one slot: the cases marked `headline` at 300,000 rows and at 100,000 (a slope), the cost of the default `track_changes` at 100,000,
              and the store and updates stages from the cache of competitor cells; prints planned against measured minutes and fails over budget (`release-quick [--dry-run] [--budget MIN] [--stages LIST]`; 1M and 10M stay named runs)
@@ -87,7 +89,7 @@ analytics (steps/analytics.sh, steps/analytics.py): a deterministic orders corpu
 attributes, metrics, items and notes) on a throwaway cluster of its own (SIFT_TMP, SIFT_PORT), the seven set reports (store sets K10, K400, K4000)
 and the eight whole-table scans (`whole-*`) as plain SQL, measured as the CPU time and instructions of one backend with the baseline plan against the sift_col
 plan (an index of the access method sift_col, --col-index; without one the baseline is measured alone), optionally against flat tables
-(--flat) and a throwaway ClickHouse (--clickhouse). `analytics run` writes analytics.json (bench/results layout) and prints the table;
+(--flat) and a throwaway ClickHouse (--clickhouse). `analytics run` writes analytics.json (docs/results layout) and prints the table;
 `analytics clickbench` runs the 43 queries of ClickBench on --rows rows of hits (10,000,000).
 
 store (steps/store.sh, steps/store.py, sql/store/): a seeded `orders` table (1M and 10M rows, --sizes), the same CSV loaded into a container each of
@@ -95,7 +97,7 @@ PostgreSQL (heap, btree, GIN), PostgreSQL with pg_sift (`sift_col` + `sift`, and
 --cpus and --memory per container, the thread budget of every engine set to the CPU quota), ten queries (lookup by id, orders per country, revenue per month, top categories, an average, distinct customers
 per month, a filtered count, and three after a full-text search), the result of each checked against PostgreSQL's before it is timed, median of --runs
 (7) warm runs and --cold-runs (3) runs after a restart, load time and size per system. `store all` runs both sizes and writes store.json; with --docs also
-bench/results/store.json and the generated blocks of README.md and bench/out/BENCHMARKS.md; `store report` redraws the blocks from bench/results/store.json.
+docs/results/store.json and the generated blocks of README.md and docs/BENCHMARKS.md; `store report` redraws the blocks from docs/results/store.json.
 Needs docker, psql, python3; nothing else is installed and every container and volume is removed at the end.
 
 check, workers and the engines' databases of a run start the tier's cluster, load the corpus if needed and leave it running
@@ -106,9 +108,9 @@ Options (not every option applies to every command)
                       slim   50,000 articles, GeoNames cities15000 (34,165 places), 2-3 rounds of cells of at most 1 s that stop at a
                              relative standard error of 5%: the default, the source of the numbers of README.md; minutes of
                              measurements after the one-time setup (bench/README.md has the measured time)
-                      ab     150,000 articles, cities15000, 2-3 rounds: the intermediate tier of bench/out/BENCHMARKS.md (about 4 minutes)
+                      ab     150,000 articles, cities15000, 2-3 rounds: the intermediate tier of docs/BENCHMARKS.md (about 4 minutes)
                       full   218,058 articles (all), cities500 (236,262 places), 2-3 rounds
-  --full            same as --tier full: the full-size run (the numbers kept in bench/out/BENCHMARKS.md as history)
+  --full            same as --tier full: the full-size run (the numbers kept in docs/BENCHMARKS.md as history)
   --dataset D       articles | places | all (default all)
   --engines LIST    comma separated engine ids of bench/engines.tsv (default: the engines with default = yes: sift, sift_nopos
                     (positions = off), elasticsearch, pg_search, pg_textsearch, rum, bm25). setup: which engines to
@@ -137,16 +139,16 @@ Options (not every option applies to every command)
   --run             regress: build and measure the engines and their references first
   --out DIR         result directory (default bench/out/run-<UTC time>, gitignored; `bench/out/latest` links
                     to the last one). report: where results.tsv / builds.tsv / tables.md are written
-  --docs            report: also write bench/results/<dataset>.tsv (the committed chart input), redraw bench/out/img and rewrite the generated
-                    blocks of README.md and bench/out/BENCHMARKS.md; all: also measure the cold-cache tables, then report --docs
-  --merge           report --docs: replace only the cells of the result directories in bench/results (engine, class, variant, metric); every
+  --docs            report: also write docs/results/<dataset>.tsv (the committed chart input), then scripts/gen-docs.py redraws docs/charts and rewrites the generated
+                    blocks of README.md and docs/BENCHMARKS.md; all: also measure the cold-cache tables, then report --docs
+  --merge           report --docs: replace only the cells of the result directories in docs/results (engine, class, variant, metric); every
                     other row of the tier stays: the way to add the classes of a later run (`run --classes prefix-2,prefix-4,word-prefix-1`) to a published tier
   --no-build        setup/all: use the engines already built under $BENCH_WORK (analytics: do not build sift from this checkout)
   analytics options  --scale S (orders = 1.2M x S), --orders N, --stores N (40000), --cluster store (heap clustered by store and
                     date), --flat, --clickhouse, --runs N (5, after one warm-up), --sets K10,K400,K4000, --queries metrics-summary,whole (ids, or the first word of several),
                     --engines heap,col,flat,ch, --col-index 'DDL'|@FILE, --base-gucs / --col-gucs 'name=value ...' (default
                     sift.enable_agg=off / on), --col-plan REGEX, --timeout S, --rows N (clickbench), --docs (also copy analytics.json / clickbench.json
-                    to bench/results); SIFT_TMP, SIFT_PORT
+                    to docs/results); SIFT_TMP, SIFT_PORT
   --size P          the size of a pass for every command: smoke | quick | standard (default, the release size) | full (bench/presets.env, `bench/bench --list`); it sets
                     the orders and articles, runs, cold runs, update windows and rounds, and --docs is refused below standard
   store options     --sizes N,N (orders, default the size's), --cpus N (the CPU quota of every container and the thread budget of every engine at the load and the updates, default 3),
@@ -155,7 +157,7 @@ Options (not every option applies to every command)
                     (update rates), --update-paths E,E (engines of the update table), --load-seconds N, --probes N, --engines pg,sift,sift_table,citus,es,es_cached,ch, --queries IDS (01..10 or names),
                     --remeasure-all, --remeasure E,E, --no-cache, --cache-dir D, --cache-max-age DAYS (cells of Elasticsearch, ClickHouse and Citus come from the cache of cells unless one of these or a
                     changed key), --parallel-engines N (independent engines at once on disjoint cpusets), --max-rerun N (NOISY cells measured again), --docs, --out DIR,
-                    --compression (the pg_sift compression variants as extra lanes and the size of every system with its other settings; bench/results/store-compression.json);
+                    --compression (the pg_sift compression variants as extra lanes and the size of every system with its other settings; docs/results/store-compression.json);
                     STORE_PORT_BASE (first of five ports on 127.0.0.1, default 56280), STORE_NAME (container name prefix, default sift-store)
   final options     --stages store,compression,stats,gap,search, --budget MIN (default 96 at --size standard, 25 below it; 0 = no check), --dry-run, --no-resume, --docs; every other option goes to the stages
   --no-datasets     setup/all: do not download the datasets
@@ -178,6 +180,8 @@ Environment
                     instead, so do not compare numbers across the two). SIFT_BENCH_ROOT is the old name
   BENCH_STORE       datasets, downloads, corpus dumps and the cache of lanes (default BENCH_WORK; point it at a disk to keep them out of RAM:
                     inputs and caches only, it changes no measurement). `bench du` shows both
+  RIVAL_CACHE       the cache of the measured rows of the rival engines (default $BENCH_STORE/cache/rivals): `run` and `v6-release` measure an engine that is not a sift build once per host, dataset, tier,
+                    settings and adapter (--remeasure-all, --remeasure E,E, --no-cache measure it again)
   BENCH_CACHE_MAX   MiB of the cache of lanes kept after a session with --keep (default 4096)
   SIFT_QUIET_MAX    percent of cpu / io pressure (PSI, avg10) under which the host is quiet before a timed batch (default 10); SIFT_QUIET_TIMEOUT: seconds to
                     wait for that (default 60) before the batch runs marked NOISY; SIFT_QUIET_WINDOW avg10 | avg60 (scripts/quiet.sh)
@@ -192,23 +196,24 @@ Environment
 
 Examples
   bench/bench all                                     clean machine to tables, slim tier, about 2 minutes of measurements
-  bench/bench all --docs                              the same with the cold-cache tables, then bench/results, charts, README.md and
-                                                      the slim section of bench/out/BENCHMARKS.md: regenerates every published number
+  bench/bench all --docs                              the same with the cold-cache tables, then docs/results, charts, README.md and
+                                                      the slim section of docs/BENCHMARKS.md: regenerates every published number
   bench/bench all --full                              the full-size run (about an hour), with the cold-cache tables
   bench/bench du                                      sizes by component; bench/bench clean --all removes everything
   bench/bench setup && bench/bench run --tier full --engines sift,pg_search,bm25
   bench/bench run --dataset places --tier ab --duration 4
   bench/bench run --dataset articles --engines gin,tantivy --classes and,or,update
   bench/bench report --docs --engines sift,sift_nopos,pg_search bench/out/latest
-  bench/bench charts                                  redraw bench/out/img from bench/results
+  bench/bench v6-release --docs                       the whole post-6.0 pass, rivals from the cache, then docs/results, docs/charts, README.md and docs/BENCHMARKS.md
+  bench/bench v6-quick                                v6-core and scaling-io at a small size, about 90 s
+  bench/bench scaling-io --suites A --workers 1,2,4,8 the warm compute scaling alone
   bench/bench regress --run --ref v1.1.0              sift against the tag v1.1.0, exit 1 on a regression
   bench/bench check oracle sift 200
-  bench/bench readme                                  the README block from bench/results, without measuring
   bench/bench clean --all
   bench/bench analytics run --flat --clickhouse        the analytics corpus: baseline, flat tables and ClickHouse (+ sift_col when built)
   bench/bench analytics run --queries metrics-summary,item-summary-rollup --sets K400 --col-index @my_index.sql
   bench/bench analytics clickbench --rows 1000000      the ClickBench subset (explicit: it downloads parquet files)
-  bench/bench store all --docs                         the orders benchmark at 1M and 10M orders, then bench/results/store.json, README.md and bench/out/BENCHMARKS.md
+  bench/bench store all --docs                         the orders benchmark at 1M and 10M orders, then docs/results/store.json, README.md and docs/BENCHMARKS.md
   bench/bench store all --sizes 1000000 --cold-runs 0  one size, warm runs only
   bench/bench store all --size quick                  the development loop; `compare A.json B.json` diffs two runs, `store gap` prints the gap tables
   bench/bench final --dry-run                         the release pass: stages, budgets, total against 25 min
@@ -468,19 +473,29 @@ cmd_clean_run() { # --run-id ID: what that run started and nothing else: its pro
   echo "removed the run $run_id (its containers and $d); datasets, data volumes and the caches stay (clean --all)"
 }
 
-measure() { # [cold]: every selected dataset at the tier into $OUT, after the machine description
-  local d t0=$SECONDS suffix=${1:+-cold} e key
+rival_cache() { python3 -I "$STEPS/rivals.py" "$1" --cache "${RIVAL_CACHE:-${BENCH_STORE:-${BENCH_WORK:-/tmp/sift-bench}}/cache/rivals}" --kind "$2" --context "$3" "${@:4}"; }
+
+measure() { # [cold]: every selected dataset at the tier into $OUT, after the machine description; the rivals of an earlier run of the same host and settings come from the cache of rivals
+  local d t0=$SECONDS suffix=${1:+-cold} e key fresh cached ctx dest r
   perf_hold
   [[ -n ${PEAK_PID:-} ]] || peak_start
   [[ -n ${1:-} && -s $OUT/machine.txt ]] || "$STEPS/machine.sh" >"$OUT/machine.txt"
   e=$(selected)
   for d in $datasets; do
     echo; echo "=== $d, tier $tier${1:+, cold cache} ($(( SECONDS - t0 )) s)"
-    key=$(python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$d $tier ${1:-} $e $(class_set "$d") ${WLS:-} ${Q_DOCS:-} ${MINR:-} ${MAXR:-} ${SECS:-} ${RSE:-} ${MIN_TIME:-} ${MIN_N:-} ${CLIENTS:-}")
+    ctx="$(fingerprint) $d $tier ${1:-} $(class_set "$d") ${WLS:-} ${Q_DOCS:-} ${MINR:-} ${MAXR:-} ${SECS:-} ${RSE:-} ${MIN_TIME:-} ${MIN_N:-} ${CLIENTS:-}"
+    fresh=$e cached=''
+    [[ -n $s_remeasure_all || -n $s_no_cache ]] || { { read -r fresh; read -r cached; } < <(rival_cache plan "$d" "$ctx" --engines "$e"); }
+    for r in ${s_remeasure//,/ }; do [[ " $cached " != *" $r "* ]] || { fresh+=" $r"; cached=${cached/$r/}; }; done
+    [[ -z ${cached// /} ]] || echo "rivals from the cache: $cached"
+    key=$(python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$d $tier ${1:-} $fresh $(class_set "$d") ${WLS:-} ${Q_DOCS:-} ${MINR:-} ${MAXR:-} ${SECS:-} ${RSE:-} ${MIN_TIME:-} ${MIN_N:-} ${CLIENTS:-}")
+    dest=$OUT/$d-$tier$suffix
     case $d in
-      articles) stage_run "$d$suffix" "$key" 0 env ENGINES="$e" CLASSES="$(class_set articles)" DEST="$OUT/articles-$tier$suffix" "$STEPS/articles.sh" ${1:+cold} "$step_mode" ;;
-      places)   stage_run "$d$suffix" "$key" 0 env ENGINES="$e" CLASSES="$(class_set places)" DEST="$OUT/places-$tier$suffix" "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
+      articles) stage_run "$d$suffix" "$key" 0 env ENGINES="$fresh" CLASSES="$(class_set articles)" DEST="$dest" "$STEPS/articles.sh" ${1:+cold} "$step_mode" ;;
+      places)   stage_run "$d$suffix" "$key" 0 env ENGINES="$fresh" CLASSES="$(class_set places)" DEST="$dest" "$STEPS/places.sh" "$step_mode" ${1:+cold} ;;
     esac
+    [[ -z $cached ]] || rival_cache assemble "$d" "$ctx" --engines "$cached" --dest "$dest"
+    rival_cache save "$d" "$ctx" --engines "$fresh" --dest "$dest"
   done
   echo "wall time of the measurements $(( SECONDS - t0 )) s, at end $(cat "$OUT"/*/noisy.txt 2>/dev/null | wc -l) NOISY batches (noisy.txt of each table directory), $(quiet_report 2>&1)" | tee -a "$OUT/machine.txt"
 }
@@ -514,21 +529,11 @@ cmd_report() {
   [[ -n $out ]] || die "report with DATASET:TIER:DIR arguments needs --out DIR"
   local args=("$out")
   [[ -z $engines ]] || args+=(--engines "${engines// /,}")
-  [[ -z $docs ]] || args+=(--per-dataset "$REPO/bench/results")
+  [[ -z $docs ]] || args+=(--per-dataset "$REPO/docs/results")
   [[ -z $merge ]] || args+=(--merge)
   python3 -I "$STEPS/tables.py" "${args[@]}" "${specs[@]}"
-  echo; echo "written: $out/{results.tsv,builds.tsv,tables.md}${docs:+ and $REPO/bench/results/}"
-  [[ -z $docs || ${specs[*]} != *:slim:* ]] || { cmd_charts; cmd_readme >/dev/null; }   # the charts and the README are the slim tier's
-}
-
-cmd_charts() {
-  command -v python3 >/dev/null || die "python3 is required"
-  python3 -I "$STEPS/charts.py" --results "$REPO/bench/results" --out "$REPO/bench/out/img" --tier slim
-}
-
-cmd_readme() { # the generated blocks of README.md and bench/out/BENCHMARKS.md from the slim rows of bench/results
-  command -v python3 >/dev/null || die "python3 is required"
-  python3 -B -I "$STEPS/readme.py" --results "$REPO/bench/results" --readme "$REPO/bench/out/README-blocks.md" --benchmarks "$REPO/bench/out/BENCHMARKS.md" --tier slim
+  echo; echo "written: $out/{results.tsv,builds.tsv,tables.md}${docs:+ and $REPO/docs/results/}"
+  [[ -z $docs ]] || python3 -B -I "$REPO/scripts/gen-docs.py"
 }
 
 cmd_all() {
@@ -560,7 +565,7 @@ cmd_analytics() { # setup | run | report [DIR] | clean | clickbench | clickbench
       load_lib; new_out; export OUT
       "$STEPS/analytics.sh" "$([[ $sub == run ]] && echo setup || echo clickbench-setup)"
       perf_hold; "$STEPS/analytics.sh" "$sub"
-      [[ -z $docs ]] || { cp "$OUT/analytics.json" "$REPO/bench/results/${sub/run/analytics}.json"; echo "written: $REPO/bench/results/${sub/run/analytics}.json"; } ;;
+      [[ -z $docs ]] || { cp "$OUT/analytics.json" "$REPO/docs/results/${sub/run/analytics}.json"; echo "written: $REPO/docs/results/${sub/run/analytics}.json"; } ;;
     report) "$STEPS/analytics.sh" report "${rest[1]:-}" ;;
     *) "$STEPS/analytics.sh" "$sub" ;;
   esac
@@ -667,7 +672,7 @@ cmd_shred() { load_lib; perf_hold; "$STEPS/shred.sh"; }
 
 cmd_list() { # the commands, the sizes of a pass and the stages of the release pass
   local n
-  printf 'commands: setup run cold report charts readme all regress check suite workload workers shred remote machine du analytics store kit sets cases records compare final release release-quick resume clean\n'
+  printf 'commands: setup run cold report all regress check suite workload workers shred remote machine du analytics store kit scope-stock scaling scaling-io duckdb generic clickbench cases records compare v6-core v6-cases v6-quick v6-release final refresh release release-quick resume clean\n'
   printf '%-9s %9s %8s %5s %5s %-14s %6s %6s %9s %10s\n' size orders articles runs cold rates update min min-store min-search
   for n in $PRESETS; do
     preset "$n"
@@ -689,14 +694,18 @@ case $cmd in
   release-quick) exec "$STEPS/final.sh" --quick "$@" ;;   # the quick release profile: a budget of 60 min on one slot
   release) exec "$STEPS/release.sh" "$@" ;;   # the authoritative run: `final --size release --docs`, its own options
   scope-stock) exec "$STEPS/scope_stock.sh" "$@" ;;
-  sets) exec "$STEPS/sets.sh" "$@" ;;     # steps/sets.sh has its own options
   kit) exec "$STEPS/kit.sh" "$@" ;;       # steps/kit.sh has its own options
   scaling) exec "$STEPS/scaling.sh" "$@" ;;   # partitions and parallel workers: steps/scaling.sh has its own options
   cases) exec "$STEPS/cases.sh" "$@" ;;
   records) exec python3 -I "$STEPS/records" "$@" ;;
   generic) exec python3 -I "$STEPS/generic.py" run "$@" ;;
+  clickbench) exec python3 -I "$STEPS/clickbench.py" "$@" ;;
   duckdb) exec "$STEPS/duckdb.sh" "$@" ;;   # steps/duckdb.sh has its own options
-  extras) exec "$STEPS/extras.sh" "$@" ;; # steps/extras.sh: rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU
+  v6-core) exec "$HERE/run_round.sh" "$@" ;;            # the 6.0 scaling ladder: its own options
+  scaling-io) exec "$HERE/bench_scaling.sh" "$@" ;;     # compute, cold I/O and writer scaling: its own options
+  v6-cases) exec "$STEPS/cases.sh" "$@" ;;            # every case of the registry: the 48 of the 6.0 pass
+  v6-quick) exec "$STEPS/v6_release.sh" --quick "$@" ;;
+  v6-release) exec "$STEPS/v6_release.sh" "$@" ;;       # the six stages of the post-6.0 pass: its own options
 esac
 parse "$@"
 case $cmd in
@@ -704,7 +713,6 @@ case $cmd in
   run) cmd_run ;;
   cold) cmd_run cold ;;
   report) cmd_report ;;
-  charts) cmd_charts ;;
   all) cmd_all ;;
   regress) cmd_regress ;;
   check) cmd_check ;;
@@ -717,7 +725,6 @@ case $cmd in
   clean) load_lib; if [[ -n $run_id ]]; then cmd_clean_run; else cmd_clean; fi ;;
   resume) cmd_resume ;;
   du) load_lib; cmd_du ;;
-  readme) cmd_readme ;;
   analytics) cmd_analytics ;;
   store) cmd_store ;;
   compare) rest=(compare "${rest[@]}"); cmd_store ;;   # compare A.json B.json: the per-cell deltas with their intervals

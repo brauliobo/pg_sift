@@ -637,24 +637,25 @@ SELECT scope_same('SELECT name, v FROM s ORDER BY name, v, id LIMIT 5') AS order
 
 -- every ring that handed out slots crossed the wrap of its count
 SELECT site, wraps >= 1 AS crossed_the_wrap FROM sift._test_ring_sites() ORDER BY site;
-        site        | crossed_the_wrap 
---------------------+------------------
- btree_memo_ring    | t
- estimate_memo_ring | t
- groups_memo_ring   | t
- journal_memo_ring  | t
- legs_memo_ring     | t
- made_ring          | t
- memo->ring         | t
- retire_ring        | t
- rows_memo_ring     | t
- specs_memo_ring    | t
- src->test_ring     | t
- t->oc_ring         | t
- track_memo_ring    | t
- unit_memo_ring     | t
- written_ring       | t
-(15 rows)
+       site        | crossed_the_wrap 
+-------------------+------------------
+ btree_memo_ring   | t
+ groups_memo_ring  | t
+ journal_memo_ring | t
+ legs_memo_ring    | t
+ made_ring         | t
+ major_memo_ring   | t
+ managed_memo_ring | t
+ memo->ring        | t
+ retire_ring       | t
+ rows_memo_ring    | t
+ specs_memo_ring   | t
+ src->test_ring    | t
+ t->oc_ring        | t
+ track_memo_ring   | t
+ unit_memo_ring    | t
+ written_ring      | t
+(16 rows)
 
 SELECT sift._test_ring_start(0);
  _test_ring_start 

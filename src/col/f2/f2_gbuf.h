@@ -1,0 +1,149 @@
+/*
+ * col/f2/f2_gbuf.h - the part pin and the decoded granule of the shared Format 2.0 cache, for sift_col and sift_table alike (merged into col/f2/f2_cache.h at integration).
+ *
+ * A pin holds a part opened once (header, granule directory, TID index, dictionaries, deletion vector) and no Buffer; a granule buffer is reference counted by the scan cursor and by
+ * every slot that points into it, and is freed when the last reference goes.
+ */
+#ifndef SIFT_F2_GBUF_H
+#define SIFT_F2_GBUF_H
+
+#include "postgres.h"
+
+#include "storage/relfilelocator.h"
+
+#include "col/f2/delvec.h"
+#include "col/f2/f2_store.h"
+#include "col/f2/part_format.h"
+#include "col/granule/granule.h"
+
+typedef struct SiftF2PartPin
+{
+	RelFileLocator locator;
+	uint64		part_gen;
+	uint32		part_id;
+	uint32		refcnt;
+	bool		stale;			/* its relation was invalidated while it was held: dropped when the last holder lets go */
+	uint64		lru_tick;
+	MemoryContext cx;
+	MemoryContext dv_cx;
+
+	SiftPart   *part;
+	SiftPartDesc desc;
+	SiftGranuleDesc *gdir;
+	SiftTidIndexEntry *tidx;
+	const SiftPartDicts *dicts;
+	struct SiftF2ColMap *col_map;	/* NULL when the part has the schema of the store */
+	uint64		tid_min;
+	uint64		tid_max;
+
+	uint64		dv_gen;
+	uint32		dv_len;			/* the bytes of the vector the pin decoded, delta tail included: a delta changes them and not dv_gen */
+	SiftDv	   *dv;
+
+	/* What a scan reads of the part before a granule (f2_part_pin_scan.c), read when first asked for */
+	SiftVariantExcSummary *exc;
+	int			nexc;
+	bool		exc_read;
+	SiftZone  **zones;			/* per leaf of the part, the zones of its granules; NULL: not read */
+	struct SiftPointDir *point;	/* SEC_POINT: the header of the point directory, NULL when the part has none */
+	bool		point_read;
+} SiftF2PartPin;
+
+typedef struct SiftF2GranuleBuf
+{
+	uint32		refcnt;
+	MemoryContext cx;
+	const SiftF2Store *store;
+	SiftF2PartPin *pin;
+
+	uint32		granule_id;
+	uint16		nrows;
+	uint16		ncols;
+
+	char	   *rec;
+	SiftGranuleView view;
+	SiftGranuleDesc gdesc;
+	uint64	   *tids;
+	SiftRowVer *vers;
+	TransactionId single_xmin;
+	CommandId	single_cmin;
+	bool		is_single_xact;
+	bool		is_all_frozen;
+
+	bool	   *col_decoded;
+	int64	  **col_i;
+	double	  **col_f;
+	SiftStrCell **col_s;
+	uint8	  **col_tag;
+	bool	  **col_isnull;
+
+	/* What the host lays over a column as it is decoded: for a table the column deltas its scan's snapshot sees on this granule; NULL for none (one branch in the decode) */
+	void		(*patch) (struct SiftF2GranuleBuf *gb, int phys);
+	const void *patch_arg;
+
+	/* A granule of the point cache (sift_f2_gbuf_load_lazy): only the chunks asked for are read */
+	SiftLazyGranule *lazy;		/* NULL: rec holds every chunk */
+	bool		tids_sorted;
+	bool		cached;
+} SiftF2GranuleBuf;
+
+/* The part of the descriptor opened once (cached under sift.backend_cache_kb) and given back; the pin of a granule is held until it is released */
+extern SiftF2PartPin *sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
+extern void sift_f2_pin_release(SiftF2PartPin *pin);
+
+
+extern SiftF2GranuleBuf *sift_f2_gbuf_load(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g);
+extern SiftF2GranuleBuf *sift_f2_gbuf_ref(SiftF2GranuleBuf *gb);
+extern void sift_f2_gbuf_unref(SiftF2GranuleBuf *gb);
+extern const uint64 *sift_f2_gbuf_tids(SiftF2GranuleBuf *gb);
+
+/* The row of the granule that has the address, or -1: a binary search when the granule's addresses ascend (a lazy granule says so), else a scan */
+extern int	sift_f2_gbuf_row_of(SiftF2GranuleBuf *gb, uint64 tid);
+
+/* Column phys of the granule decoded (once): integers, floats or string cells, and for string columns that may hold wide values their tags */
+extern void sift_f2_gbuf_decode(SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, bool wide);
+
+/*
+ * The granule of the point cache: the header and the chunk table only, then _tid; the other chunks are read by sift_f2_gbuf_column when a row asks for a column of them, so a lookup
+ * of one row reads the blocks of the columns it returns, not those of the granule. parent holds the buffer (the cache's context, or one of the statement).
+ */
+extern SiftF2GranuleBuf *sift_f2_gbuf_load_lazy(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g, MemoryContext parent);
+extern void sift_f2_gbuf_column(Relation rel, SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, bool wide);
+
+/* The bytes of the buffer and what it holds, for the budget of the cache */
+extern Size sift_f2_gbuf_bytes(const SiftF2GranuleBuf *gb);
+
+/* The row at an address, if it is in the manifest read now: its granule (a reference the caller gives back with sift_f2_gbuf_unref), the row in it and its partition */
+typedef struct SiftF2Loc
+{
+	SiftPartitionEntry entry;
+	SiftF2GranuleBuf *gb;
+	uint16		row;
+} SiftF2Loc;
+
+/* The row as the relation has it: the rows the transaction staged are not looked for and its stage is not written */
+extern bool sift_f2_locate_settled(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
+
+/* The same in the parts the manifest lists, without writing the stage or the slabs: a row they hold is not found */
+extern bool sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
+
+/*
+ * Calls cb for every granule that may hold an address of [tid_lo, tid_hi], with the partition of its part; cb returns true to stop. The parts are found by the envelope of the
+ * addresses in their descriptors (SiftPartDesc.tid_min, tid_max): the ones that cannot hold an address are not opened, and a lookup of one address on parts that do not overlap
+ * is O(log parts). Of an opened part the granules are told by the TID index of the part and its bloom.
+ */
+typedef bool (*SiftF2GranuleVisit) (SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg);
+extern void sift_f2_visit_granules(Relation rel, SiftF2Store *store, uint64 tid_lo, uint64 tid_hi, SiftF2GranuleVisit cb, void *arg);
+
+/* The same, the granule of each visit made by load (a reference the visit gives back): the point cache's, which reads a granule's chunks as they are asked for */
+typedef SiftF2GranuleBuf *(*SiftF2GranuleLoader) (Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g);
+extern void sift_f2_visit_granules_via(Relation rel, SiftF2Store *store, uint64 tid_lo, uint64 tid_hi, SiftF2GranuleLoader load, SiftF2GranuleVisit cb, void *arg);
+
+/* The row at an address, each granule made by load (a reference in loc->gb); false when no part or slab holds it */
+extern bool sift_f2_locate_via(Relation rel, SiftF2Store *store, uint64 tid, SiftF2GranuleLoader load, SiftF2Loc *loc);
+
+/* The manifest as of now with the slabs written out as parts: valid until mcxt is reset */
+struct SiftPlanSnapshot;
+extern const struct SiftPlanSnapshot *sift_f2_view(Relation rel, SiftF2Store *store, MemoryContext mcxt);
+
+#endif							/* SIFT_F2_GBUF_H */

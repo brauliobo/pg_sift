@@ -18,6 +18,7 @@
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -28,14 +29,15 @@
 #include "bm25/build.h"
 #include "core/compat.h"
 #include "core/lane.h"
+#include "core/maint_pacer.h"
 #include "core/quarantine.h"
-#include "bm25/maint.h"
-#include "bm25/maint_int.h"
+#include "core/maint.h"
+#include "core/maint_int.h"
 #include "bm25/merge.h"
 #include "bm25/wbuf.h"
 #include "core/varint.h"
 #include "core/visibility.h"
-#include "core/membudget.h"
+#include "core/memtrack.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
 
@@ -91,14 +93,36 @@ stamp_failure(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	memcpy(meta->maint_errmsg, err->message, pg_mbcliplen(err->message, strlen(err->message), sizeof(meta->maint_errmsg) - 1));
 }
 
-/* The WARNING of a maintenance step that failed and is retried: kind is "sift" or "sift_col" */
+/* The WARNING of a maintenance step that failed and is retried: kind is "sift" or "sift_col", index the open index for the hint (NULL: it is gone) */
 void
-sift_maint_warn_failure(const char *kind, const char *name, ErrorData *err)
+sift_maint_warn_failure(const char *kind, const char *name, Relation index, ErrorData *err)
 {
 	ereport(WARNING,
 			(errcode(err->sqlerrcode),
 			 errmsg("%s index \"%s\": maintenance failed: %s", kind, name, err->message),
-			 errdetail("It is retried later, after a growing delay.")));
+			 errdetail("It is retried later, after a growing delay."),
+			 index ? errhint("Inspect SELECT * FROM sift.health(%s); or retry with SELECT sift.merge(%s);",
+							 quote_literal_cstr(sift_index_ident(index)), quote_literal_cstr(sift_index_ident(index))) : 0));
+}
+
+/* What a worker that failed says, from a transaction of its own (the one that failed is gone), with the index open for the hint of the warning; the index may be gone as well */
+static void
+warn_worker_failure(const char *kind, Oid indexoid, const char *name, ErrorData *err)
+{
+	Relation	index;
+
+	StartTransactionCommand();
+	index = sift_try_open_index(indexoid, AccessShareLock);
+	if (sift_damage_caught(err))
+		ereport(WARNING,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("%s index \"%s\" is quarantined; maintenance stopped", kind, name),
+				 index ? errhint("Queries and maintenance run without it. Rebuild online: REINDEX INDEX CONCURRENTLY %s;", sift_index_ident(index)) : 0));
+	else
+		sift_maint_warn_failure(kind, name, index, err);
+	if (index != NULL)
+		index_close(index, AccessShareLock);
+	CommitTransactionCommand();
 }
 
 /* A background worker whose transaction failed (sift_col steps run outside a subtransaction): its own transaction keeps the failure like run_step does */
@@ -132,16 +156,9 @@ sift_maint_worker_failed(const char *kind, Oid indexoid, const char *name, Memor
 	AbortCurrentTransaction();
 	if (ERRCODE_TO_CATEGORY(err->sqlerrcode) == ERRCODE_OPERATOR_INTERVENTION)
 		ReThrowError(err);
-	if (sift_damage_caught(err))
-		ereport(WARNING,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("%s index \"%s\" is quarantined; maintenance stopped", kind, name),
-				 errhint("Queries and maintenance run without it. REINDEX INDEX puts it back in service.")));
-	else
-	{
-		sift_maint_warn_failure(kind, name, err);
+	warn_worker_failure(kind, indexoid, name, err);
+	if (!sift_damage_caught(err))
 		sift_maint_record_failure(indexoid, err);
-	}
 	FreeErrorData(err);
 }
 
@@ -190,7 +207,7 @@ run_step(Relation index, bool propagate, StepFn fn, const void *arg)
 		FreeErrorData(err);
 		return SIFT_STEP_FAILED;
 	}
-	sift_maint_warn_failure("sift", RelationGetRelationName(index), err);
+	sift_maint_warn_failure("sift", RelationGetRelationName(index), index, err);
 	sift_dir_update(index, &(SiftDirChange) {.fn = stamp_failure,.arg = err,.extra = InvalidBuffer});
 	FreeErrorData(err);
 	return SIFT_STEP_FAILED;
@@ -248,7 +265,7 @@ static Tuplesortstate *
 sort_docs(Relation index, const SiftSegEntry *seg)
 {
 	SiftWbufReader *r = sift_wbuf_open(index, seg, CurrentMemoryContext, NULL, NULL);
-	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, maintenance_work_mem,
+	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, maintenance_work_mem / 2,
 												 NULL, TUPLESORT_NONE);
 	DocPacker	pk = {palloc(1024), 1024};
 	SiftWbufDoc	d;
@@ -315,7 +332,7 @@ next_doc(DocCursor *c)
 	}
 }
 
-/* The memory the inverted buffer may take: what the sort left of maintenance_work_mem when it kept its docs in memory */
+/* The memory the inverted buffer may take: what the sort left of maintenance_work_mem when it kept its docs in memory, the half it does not take when it spilled (the sort has half of it) */
 static Size
 inv_budget(Tuplesortstate *sort)
 {
@@ -325,6 +342,8 @@ inv_budget(Tuplesortstate *sort)
 	tuplesort_get_stats(sort, &st);
 	if (st.sortMethod == SORT_TYPE_QUICKSORT)
 		budget -= Min(budget - budget / 4, (Size) st.spaceUsed * 1024);
+	else
+		budget /= 2;
 	return budget;
 }
 
@@ -333,8 +352,12 @@ inv_budget(Tuplesortstate *sort)
  * a segment of an index with positions needs the position records of its terms: a merge keeps them only when every segment it merges has
  * them, so one segment without would take them from all.
  */
+#define DOCTEXT_SNAPSHOT_DOCS	256
+
 typedef struct DocText
 {
+	bool		snapshot;		/* a snapshot is pushed: the text of the docs of a batch may be out of line, and a worker has none */
+	uint32		batch_left;		/* the docs the snapshot serves still */
 	Relation	heap;
 	IndexInfo  *info;
 	EState	   *estate;
@@ -367,8 +390,23 @@ doctext_open(Relation index)
 	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
 	sift_analyzer_set_positions(d->an, true);
 	d->nblocks = RelationGetNumberOfBlocks(d->heap);
-	PushActiveSnapshot(GetTransactionSnapshot());	/* a worker has none, and the text may be out of line */
 	return d;
+}
+
+/* A snapshot for each DOCTEXT_SNAPSHOT_DOCS docs, not one for the whole promotion: what a promotion of a large buffer holds back is the xmin of its latest batch */
+static void
+doctext_snapshot(DocText *d)
+{
+	if (d->batch_left > 0)
+	{
+		d->batch_left--;
+		return;
+	}
+	d->batch_left = DOCTEXT_SNAPSHOT_DOCS - 1;
+	if (d->snapshot)
+		PopActiveSnapshot();
+	PushActiveSnapshot(GetTransactionSnapshot());
+	d->snapshot = true;
 }
 
 static void
@@ -376,7 +414,8 @@ doctext_close(DocText *d)
 {
 	if (d == NULL)
 		return;
-	PopActiveSnapshot();
+	if (d->snapshot)
+		PopActiveSnapshot();
 	table_index_fetch_end(d->fetch);
 	ExecDropSingleTupleTableSlot(d->slot);
 	FreeExecutorState(d->estate);
@@ -404,6 +443,7 @@ doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int 
 	bool		isnull[INDEX_MAX_KEYS];
 	text	   *t;
 
+	doctext_snapshot(d);
 	if (!doctext_fetch(d, tid))
 		return false;
 	ResetPerTupleExprContext(d->estate);
@@ -539,9 +579,11 @@ static void
 promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 {
 	const SiftSegEntry *sealed = arg;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift promote", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift promote");
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SIFT_MEM_SCOPE(bm25_promote, cx);
+	SiftMemTracker mt_bm25_promote;
+
+	sift_mem_init_sub(&mt_bm25_promote, "bm25_promote", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	Tuplesortstate *sort;
 	SiftSegEntry neu;
 	bool		any;
@@ -553,9 +595,9 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
 	sort = sort_docs(index, sealed);
-	SIFT_MEM_CHECKPOINT();
+	sift_mem_assert_within(&mt_bm25_promote);
 	any = write_docs(index, wt, sort, sift_store_new_gen(index), &neu);
-	SIFT_MEM_CHECKPOINT();
+	sift_mem_assert_within(&mt_bm25_promote);
 	tuplesort_end(sort);
 	sift_wt_finish(wt);
 	sift_maint_replace(index, wt, &sealed->gen, 1, any ? &neu : NULL, pages, npages, "promoted a sealed segment of", start, sealed->ndocs);
@@ -755,9 +797,11 @@ static void
 merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 {
 	const MergeSel *in = arg;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift merge", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift merge");
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	SIFT_MEM_SCOPE(bm25_merge, cx);
+	SiftMemTracker mt_bm25_merge;
+
+	sift_mem_init_sub(&mt_bm25_merge, "bm25_merge", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	SiftScoreRef ref = score_ref(index);
 	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
 	SiftMaintInputs mi = sift_maint_inputs(index, in->seg, in->n);
@@ -768,11 +812,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	TimestampTz start = GetCurrentTimestamp();
 
 	sift_wt_expect(wt, mi.bytes);
-	if (MyBackendType == B_BG_WORKER)
-	{
-		sift_wt_throttle(wt, sift_maintenance_cost_delay);
-		sift_wt_wal_rate(wt, sift_maintenance_wal_rate);
-	}
+	sift_wt_pace_worker(wt);
 	/* a long merge of the worker, the segments claimed */
 	SIFT_TEST_GATE(sift_test_merge_gate && MyBackendType == B_BG_WORKER, 4);
 	for (int i = 0; i < in->n; i++)
@@ -797,13 +837,13 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 			else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
 				runlist_push(&runs, run);
 			sift_seg_close(seg);
-			SIFT_MEM_CHECKPOINT();
+			sift_mem_assert_within(&mt_bm25_merge);
 		}
 		doctext_close(dt);
 		if ((written = runs.n > 0) != 0)
 			sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
 	}
-	SIFT_MEM_CHECKPOINT();
+	sift_mem_assert_within(&mt_bm25_merge);
 	sift_wt_finish(wt);
 	sift_maint_replace(index, wt, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,
 					   psprintf("merged %d segments of", in->n), start, written ? neu.ndocs : 0);

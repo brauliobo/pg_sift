@@ -29,7 +29,6 @@ difftest-fuzz-tbl	92	92	92	118
 plan-gate-table	62	63	118	57
 tap-shell-mem_idle_series	49	46	114	55
 difftest-fuzz	112	112	112	95
-tap-shell-col_vstore_drops	109	83	79	86
 difftest-col	46	108	62	75
 plan-gate	46	53	108	47
 tap-shell-mem_slope_order	55	92	101	76
@@ -54,7 +53,6 @@ tap-shell-tbl_twin_fuzz	61	61	59	49
 tap-001_crash	17	31	60	33
 tap-shell-col_online_cut	53	59	57	56
 tap-shell-store_replica	57	45	50	36
-difftest-fuzz-vstore	53	53	53	47
 difftest-mutants	34	34	34	52
 tap-shell-col_dict_shared_shm	35	44	51	36
 installcheck-col_key_cut_segment_cap	33	30	48	27
@@ -105,7 +103,6 @@ tap-shell-col_merge_flat_memory	0	22	30	25
 tap-shell-col_vacuum_space_idle	30	9	13	9
 tap-shell-vacuum_standby_cut	30	30	30	30
 installcheck-agg_preagg_rollup	16	15	29	13
-installcheck-col_key_cut_auto	13	17	29	17
 installcheck-tbl_key_table	17	16	29	17
 tap-shell-col_build_standby_space	29	10	9	9
 tap-shell-col_heapfree_replication	27	29	24	20
@@ -139,7 +136,6 @@ installcheck-tbl_preagg	11	13	23	11
 installcheck-tbl_writepath	19	20	23	18
 tap-shell-col_scope_fuzz	19	18	23	19
 tap-shell-col_scope_textkey_fuzz	21	23	23	20
-tap-shell-col_vacuum_request_hold	22	22	23	22
 installcheck-agg_first_row_lookup	10	9	22	9
 installcheck-agg_spill_contexts	12	13	22	7
 installcheck-agg_trunc_zone	16	15	22	14
@@ -149,7 +145,6 @@ tap-shell-col_scope_dump	17	15	20	22
 difftest-bm25	21	14	17	18
 difftest-fuzz-having	21	21	21	21
 difftest-nopos	20	20	20	21
-difftest-txn-vstore	14	14	14	21
 installcheck-agg_par_join_split	10	10	21	9
 installcheck-agg_partitions_many	13	10	21	9
 installcheck-batch12	14	13	21	10

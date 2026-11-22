@@ -1,6 +1,6 @@
-# The dimension map (sift.agg_dimmap_kb) that one backend read from the leaves of a dimension's index serves the queries of the others only while the table is what it was:
+# The dimension map (sift.shared_cache_kb) that one backend read from the leaves of a dimension's index serves the queries of the others only while the table is what it was:
 # a write in flight, committed or rolled back, an update, a delete, an insert, and a snapshot older than a committed write all give the rows of the normal plan; the map
-# is made again after the next VACUUM. The sessions keep nothing of their own (sift.agg_lookup_cache_kb = 0): a shared map is one another backend made.
+# is made again after the next VACUUM. The sessions keep nothing of their own (sift.backend_cache_kb = 0): a shared map is one another backend made.
 # requires: build col
 
 setup
@@ -51,12 +51,12 @@ teardown
 }
 
 session s1
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0; SET sift.agg_dimmap_kb = 8192; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0; SET sift.shared_cache_kb = 8192; }
 step s1run	{ SELECT iso_dm_run(); }
 step s1runl	{ SELECT iso_dm_runl(); }
 
 session s2
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0; SET sift.agg_dimmap_kb = 8192; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0; SET sift.shared_cache_kb = 8192; }
 step s2run	{ SELECT iso_dm_run(); }
 step s2runl	{ SELECT iso_dm_runl(); }
 step s2rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_dm_dim; }

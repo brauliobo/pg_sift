@@ -9,7 +9,7 @@ setup
 	CREATE INDEX iso_fac_body ON iso_fac USING sift (body) WITH (write_buffer_limit = 64);
 	CREATE INDEX iso_fac_cat ON iso_fac USING sift (cat) WITH (analyzer = keyword, write_buffer_limit = 64);
 	CREATE FUNCTION iso_facets_ok(q text) RETURNS bool LANGUAGE plpgsql
-		SET sift.enable_scan = off SET sift.enable_count = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
+		SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
 	DECLARE
 		got text;
 		want text;

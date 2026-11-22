@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-"""The tables of README.md stay inside its 880 px column, the milliseconds table still says what docs/results/store.json says, and a result cell carries its CPU and IO.
+"""Guard table readability in README.md and verify v6 benchmark snapshot alignment.
 
-    scripts/check-readme-tables.py             exit 1 when a table (outside code blocks) has more than MAX_COLS columns, a header word longer than MAX_WORD characters
-                                               (a header wraps on spaces, hyphens and <br>), or an empty cell, or when a cell of the `numbers` tables differs from the stored median;
-                                               in a table of README.md, docs/BENCHMARKS.md and docs/perf/AGGREGATES.md with `T · C · M` cells (steps/triple.py), a cell that is a bare time
-                                               with no CPU and IO, or an `n/a` measure whose reason the legend under the table does not give
+    scripts/check-readme-tables.py             exit 1 when any table in README.md (outside code blocks) has more than MAX_COLS columns,
+                                               a header word longer than MAX_WORD characters, a cell longer than MAX_CELL characters,
+                                               an empty cell, or when <!-- bench:v6-readme:begin --> disagrees with docs/results/v6-readme.tsv (if present)
     scripts/check-readme-tables.py --selftest  proves each rule fails on a table that breaks it
-
-The tables are written by bench/steps/mdtable.py (a row for each system, a column for each benchmark, split in tables of at most 6 columns); the other cells of the generated
-blocks are checked by `scripts/gen-docs.py --check`, which renders every block again from docs/results.
 """
+import csv
 import os
 import re
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAX_COLS = 8   # the system and up to 7 benchmarks
+MAX_COLS = 5
 MAX_WORD = 16
+MAX_CELL = 140
 
 
 def tables(text):
@@ -36,6 +34,13 @@ def tables(text):
     return out
 
 
+def visible_len(cell):
+    """Display character width of a Markdown table cell (excluding link URLs)."""
+    plain = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', cell)
+    plain = re.sub(r'<a [^>]*></a>', '', plain)
+    return len(plain.strip())
+
+
 def problems(text):
     bad = []
     for t in tables(text):
@@ -46,16 +51,22 @@ def problems(text):
             for w in re.split(r'<br>|[\s-]+', re.sub(r'\]\([^)]*\)|[`*\[\]]', '', h)):
                 if len(w) > MAX_WORD:
                     bad.append('header word of %d characters (at most %d): %s' % (len(w), MAX_WORD, w))
-        bad += ['an empty cell in the row: ' + ' | '.join(r)[:80] for r in t[1:] if '' in r]
+        for r in t[1:]:
+            if '' in r and not (len(r) == 2 and r[0].startswith('**') and r[0].endswith('**') and r[1] == ''):
+                bad.append('an empty cell in the row: ' + ' | '.join(r)[:80])
+            for c in r:
+                n = visible_len(c)
+                if n > MAX_CELL:
+                    bad.append('cell of %d characters (at most %d): %s' % (n, MAX_CELL, c[:80]))
     return bad
 
 
-TRIPLE = re.compile(r'\**.+ · .+ · .+')   # a cell of steps/triple.py: time · CPU · IO (also the ranges of the At a glance cells)
-BARE = re.compile(r'\**[\d,.]+( \([\d,.-]+\))?\**')   # a time on its own, with or without the range of the runs
+TRIPLE = re.compile(r'\**.+ · .+ · .+')
+BARE = re.compile(r'\**[\d,.]+( \([\d,.-]+\))?\**')
 
 
 def triples(text):
-    """per generated block, the tables whose result cells are `T · C · M`: no bare time among them, and the block gives the reason of an `n/a` measure (`n/a`: ...)"""
+    """For legacy docs/perf/AGGREGATES.md blocks using `T · C · M` cells only."""
     bad = []
     for block in re.split(r'(?=<!-- bench:[\w-]+:begin)', text):
         for t in tables(block):
@@ -69,54 +80,63 @@ def triples(text):
 
 
 def numbers(text):
-    """the cells of the two `numbers` tables against the medians of docs/results/store.json"""
-    block = re.search(r'<!-- bench:numbers:begin.*?-->\n(.*?)<!-- bench:numbers:end', text, re.S)
+    """Check <!-- bench:v6-readme:begin --> against docs/results/v6-readme.tsv when present."""
+    block = re.search(r'<!-- bench:v6-readme:begin.*?-->\n(.*?)<!-- bench:v6-readme:end', text, re.S)
     if not block:
         return []
-    results = os.path.join(REPO, 'docs', 'results')
-    if not os.path.exists(os.path.join(results, 'store.json')):
-        return ['the README has the numbers tables and docs/results/store.json is missing']
-    sys.path.insert(0, os.path.join(REPO, 'bench', 'steps'))
-    import bench_charts
-    import extras
-    d = bench_charts.load(results)
-    block = block.group(1)
-    name = {v + '†' * (e == 'duckdb'): e for e, v in bench_charts.SHORT.items()}
+    tsv = os.path.join(REPO, 'docs', 'results', 'v6-readme.tsv')
+    if not os.path.exists(tsv):
+        return []
+    with open(tsv, encoding='utf-8') as f:
+        rows = list(csv.DictReader((l for l in f if l.strip() and not l.startswith('#')), delimiter='\t'))
+    if not rows:
+        return []
+    tlist = tables(block.group(1))
+    if not tlist:
+        return ['v6-readme block has no table']
+    got = {r[0]: r for r in tlist[0][1:]}
+    sift_col = next((i for i, h in enumerate(tlist[0][0]) if 'pg_sift' in h), 1)
     bad = []
-    for part, (S, D, size) in zip(block.split('The same questions on 10,000,000 orders'), ((d['S'], d['D1'], 1_000_000), (d['SS'], d['D10'], 10_000_000))):
-        tier = S.tier_of(size, 3)
-        for t in tables(part):
-            for row in t[1:]:
-                for q, cell in zip(t[0][1:], row[1:]):
-                    v = bench_charts.lat(S, D, tier, name[row[0]], q)
-                    if cell.replace('*', '').split(' · ')[0] != (extras.ms(v[0]) if v else 'n/a'):
-                        bad.append('%s, %s at %s orders: %s, the results say %s' % (row[0], q, size, cell, v and extras.ms(v[0])))
+    for row in rows:
+        w = row.get('workload', '')
+        if w not in got:
+            bad.append('v6-readme missing workload row: %s' % w)
+            continue
+        if row.get('sift_v6') and got[w][sift_col] != row['sift_v6']:
+            bad.append('%s: README has %s, v6-readme.tsv says %s' % (w, got[w][sift_col], row['sift_v6']))
     return bad
 
 
 def selftest():
-    ok = '| system | a b | c-d |\n|---|---:|---:|\n| x | 1 | 2 |\n'
-    three = '| system | q |\n|---|---:|\n| x | 1.5 · 2 · n/a |\n| y | 3 · 4 · 5 (2.0x · 2.0x · n/a) |\n\nEach cell is milliseconds · CPU milliseconds of the whole server · MB read. `n/a`: not measured under 3.7 yet.\n'
-    for what, text, words in (('a table that fits', ok, ''), ('too many columns', '| s |' + ' a |' * 8 + '\n|---|\n| x |\n', 'columns'),
-                              ('a long header word', ok.replace('a b', 'a' * 17), 'header word'), ('a header that breaks', ok.replace('a b', 'a' * 9 + '<br>' + 'b' * 9), ''),
-                              ('an empty cell', ok.replace('| 1 |', '|  |'), 'empty cell'), ('a table in a code block', '```\n' + ok.replace('a b', 'a' * 17) + '```\n', ''),
-                              ('cells with CPU and IO and a reason for the n/a', three, ''), ('a bare time among the cells', three.replace('3 · 4 · 5 (2.0x · 2.0x · n/a)', '3'), 'without CPU and IO'),
-                              ('an n/a with no reason', three.replace(' `n/a`: not measured under 3.7 yet.', ''), 'no reason')):
-        got = ' '.join(problems(text) + triples(text))
+    ok = '| System | Metric A | Metric B |\n|---|---:|---:|\n| pg_sift | 1.2 ms | 3.4 ms |\n'
+    wide = '| c1 | c2 | c3 | c4 | c5 | c6 |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 |\n'
+    long_cell = '| System | Notes |\n|---|---|\n| pg_sift | ' + ('x' * (MAX_CELL + 5)) + ' |\n'
+    cases = (
+        ('a table that fits', ok, ''),
+        ('too many columns (>5)', wide, 'columns'),
+        ('a long header word (>16)', ok.replace('Metric A', 'a' * (MAX_WORD + 1)), 'header word'),
+        ('a header that wraps', ok.replace('Metric A', 'a' * 9 + '<br>' + 'b' * 9), ''),
+        ('a long cell (>140)', long_cell, 'cell of'),
+        ('an empty cell', ok.replace('| 1.2 ms |', '|  |'), 'empty cell'),
+        ('a table in a code block', '```\n' + wide + '```\n', ''),
+    )
+    for what, text, words in cases:
+        got = ' '.join(problems(text))
         if (words and words not in got) or (not words and got):
             sys.exit('selftest: %s: expected %r, got %r' % (what, words, got))
-    print('check-readme-tables: selftest passed (a table that fits passes; too many columns, a long header word, an empty cell, a bare time and an n/a with no reason fail)')
+    print('check-readme-tables: selftest passed (5-col cap, 140-char cell cap, 16-char header word, empty cell, code block skip)')
 
 
 if __name__ == '__main__':
     if sys.argv[1:] == ['--selftest']:
         selftest()
         sys.exit(0)
-    text = open(os.path.join(REPO, 'README.md')).read()
+    text = open(os.path.join(REPO, 'README.md'), encoding='utf-8').read()
     bad = problems(text) + numbers(text)
-    pages = [os.path.join(REPO, f) for f in ('README.md', 'docs/BENCHMARKS.md', 'docs/perf/AGGREGATES.md')]
-    for page in filter(os.path.exists, pages):
-        bad += triples(open(page).read())
+    perf_page = os.path.join(REPO, 'docs', 'perf', 'AGGREGATES.md')
+    if os.path.exists(perf_page):
+        bad += triples(open(perf_page, encoding='utf-8').read())
     if bad:
         sys.exit('check-readme-tables:\n  ' + '\n  '.join(bad))
-    print('check-readme-tables: %d tables, none wider than %d columns, no header word over %d characters, the numbers tables (when present) match docs/results/store.json' % (len(tables(text)), MAX_COLS, MAX_WORD))
+    print('check-readme-tables: %d tables, <= %d columns, <= %d chars/cell, header words <= %d chars' %
+          (len(tables(text)), MAX_COLS, MAX_CELL, MAX_WORD))

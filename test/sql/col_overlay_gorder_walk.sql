@@ -4,7 +4,7 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 CREATE TABLE gw (id int, g int, ts timestamp, amount int) WITH (autovacuum_enabled = off);
 INSERT INTO gw SELECT i, i % 50, TIMESTAMP '2026-01-01' + (i::bigint * 7919 % 100003) * INTERVAL '1 minute', i % 100 FROM generate_series(1, 200000) i;
 CREATE INDEX gw_ix ON gw USING sift_col (id, g, ts, amount) WITH (key_cut = 'off', order_array_columns = 'auto: ts');

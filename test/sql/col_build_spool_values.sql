@@ -6,7 +6,6 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
-SET sift.col_unit_rows = 1200;
 SET sift.test_col_segment_kb = 2000;
 SET sift.test_col_spool_share_kb = 5000;
 

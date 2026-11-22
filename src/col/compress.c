@@ -12,6 +12,7 @@
 #include <lz4hc.h>
 #endif
 #ifdef SIFT_HAVE_ZSTD
+#include <zdict.h>
 #include <zstd.h>
 #endif
 
@@ -44,10 +45,11 @@ sift_colz_bound(int alg, Size n)
 }
 
 #ifdef SIFT_HAVE_ZSTD
-/* The contexts of the backend, made once: ZSTD_compress and ZSTD_decompress make and free one for each call, which a dictionary of 200,000 strings in blocks of 64 does 3,000 times (the bytes are the same) */
-static ZSTD_CCtx *zstd_cctx;
-static ZSTD_DCtx *zstd_dctx;
+/* The contexts of the thread, made once: ZSTD_compress and ZSTD_decompress make and free one for each call, which a dictionary of 200,000 strings in blocks of 64 does 3,000 times (the bytes are the same) */
+static _Thread_local ZSTD_CCtx *zstd_cctx;
+static _Thread_local ZSTD_DCtx *zstd_dctx;
 #endif
+
 
 Size
 sift_colz_compress(int alg, int level, const void *src, Size n, void *dst, Size cap)
@@ -91,4 +93,84 @@ sift_colz_decompress(int alg, const void *src, Size clen, void *dst, Size rawlen
 	}
 #endif
 	return false;
+}
+
+Size
+sift_colz_zstd_train_dict(void *dst, Size cap, const void *samples_buf, const Size *sample_sizes, unsigned nsamples)
+{
+#ifdef SIFT_HAVE_ZSTD
+	size_t		r;
+
+	if (nsamples < SIFT_ZSTD_DICT_MIN_SAMPLES || cap < SIFT_ZSTD_DICT_MIN_BYTES)
+		return 0;
+	r = ZDICT_trainFromBuffer(dst, cap, samples_buf, sample_sizes, nsamples);
+	return ZDICT_isError(r) ? 0 : r;
+#else
+	return 0;
+#endif
+}
+
+void *
+sift_colz_zstd_create_cdict(const void *dict, Size dict_len, int level)
+{
+#ifdef SIFT_HAVE_ZSTD
+	return ZSTD_createCDict(dict, dict_len, level);
+#else
+	return NULL;
+#endif
+}
+
+void
+sift_colz_zstd_free_cdict(void *cdict)
+{
+#ifdef SIFT_HAVE_ZSTD
+	ZSTD_freeCDict(cdict);
+#endif
+}
+
+void *
+sift_colz_zstd_create_ddict(const void *dict, Size dict_len)
+{
+#ifdef SIFT_HAVE_ZSTD
+	return ZSTD_createDDict(dict, dict_len);
+#else
+	return NULL;
+#endif
+}
+
+void
+sift_colz_zstd_free_ddict(void *ddict)
+{
+#ifdef SIFT_HAVE_ZSTD
+	ZSTD_freeDDict(ddict);
+#endif
+}
+
+Size
+sift_colz_compress_zdict(const void *cdict, const void *src, Size slen, void *dst, Size dcap)
+{
+#ifdef SIFT_HAVE_ZSTD
+	size_t		r;
+
+	if (zstd_cctx == NULL)
+		zstd_cctx = ZSTD_createCCtx();
+	if (zstd_cctx == NULL)
+		return 0;
+	r = ZSTD_compress_usingCDict(zstd_cctx, dst, dcap, src, slen, cdict);
+	return ZSTD_isError(r) ? 0 : r;
+#else
+	return 0;
+#endif
+}
+
+bool
+sift_colz_decompress_zdict(const void *ddict, const void *src, Size slen, void *dst, Size dlen)
+{
+#ifdef SIFT_HAVE_ZSTD
+	if (zstd_dctx == NULL)
+		zstd_dctx = ZSTD_createDCtx();
+	return zstd_dctx != NULL && ZSTD_decompress_usingDDict(zstd_dctx, dst, dlen, src, slen, ddict) == dlen;
+#else
+	return false;
+#endif
 }

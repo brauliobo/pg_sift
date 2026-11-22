@@ -8,9 +8,11 @@
 #   scripts/release-library-check.sh --build       only the release build and its install, no cluster and no test: the gate of a change in src/ or the Makefile
 #                                                  (a compile of the flavour the testing shards never build; scripts/land-local.sh runs it)
 #
+# SIFT_PREBUILT_RELEASE (scripts/ci-build.sh): the staged root of the release library; nothing is copied or compiled, the tests run from this checkout.
+#
 # SIFT_TESTING is set, and empty, on purpose, for this script only: scripts/pgtest.sh reads ${SIFT_TESTING-1}, so unset builds the test library and empty the release one.
 # A shell that exported the empty value (a copy of the line below, a session that ran this flavour before) builds the release library when it asks for the test
-# one, and its run looks like a testing run that fails the tests that assert what only the test library does (build_pays in src/col/build_par.c). Set SIFT_TESTING=1,
+# one, and its run looks like a testing run that fails the tests that assert what only the test library does (build_pays in src/col/v1/build_par.c). Set SIFT_TESTING=1,
 # or unset it, in the command of a run that wants the test library; scripts/pgtest.sh install prints the flavour it builds.
 set -uo pipefail
 
@@ -20,14 +22,21 @@ build_only=; [[ ${1:-} != --build ]] || { build_only=1; shift; }
 base=${SIFT_TMP:-/tmp/sift-release-library}
 export SIFT_TMP=$base/run SIFT_ROOT=$base/run/root SIFT_PORT=$(( ${SIFT_PORT:-56100} + 8 )) SIFT_TESTING= SIFT_TEST_HELPERS=1
 src=$base/src
-mkdir -p "$src"
-tar -C "$REPO" --exclude=.git --exclude=bench --exclude=docs --exclude=sqlite --exclude=packaging --exclude='*.o' --exclude='*.d' \
-	--exclude='*.so' --exclude=test/results --exclude=.build-flavor -cf - . | tar -C "$src" -xf -
+prebuilt=
+[[ -z ${SIFT_PREBUILT_RELEASE:-} || -n $build_only ]] || prebuilt=1
+if [[ -n $prebuilt ]]; then
+	src=$REPO SIFT_PREBUILT_ROOT=$SIFT_PREBUILT_RELEASE
+	export SIFT_PREBUILT_ROOT
+else
+	mkdir -p "$src"
+	tar -C "$REPO" --exclude=.git --exclude=bench --exclude=docs --exclude=sqlite --exclude=packaging --exclude='*.o' --exclude='*.d' \
+		--exclude='*.so' --exclude=test/results --exclude=.build-flavor -cf - . | tar -C "$src" -xf -
+fi
 if [[ -n $build_only ]]; then
 	"$src/scripts/pgtest.sh" install >"$base/build.log" 2>&1 || { tail -n 20 "$base/build.log"; exit 1; }
 	exit 0
 fi
 rc=0
-"$src/scripts/pgtest.sh" install && drop_build "$src" && "$src/scripts/pgtest.sh" start && "$src/scripts/pgtest.sh" regress "$@" || rc=1
+"$src/scripts/pgtest.sh" install && { [[ -n $prebuilt ]] || drop_build "$src"; } && "$src/scripts/pgtest.sh" start && "$src/scripts/pgtest.sh" regress "$@" || rc=1
 "$src/scripts/pgtest.sh" stop || rc=1
 exit $rc

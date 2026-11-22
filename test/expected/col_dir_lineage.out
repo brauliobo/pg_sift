@@ -10,8 +10,8 @@ SET statement_timeout = '60s';
 CREATE TABLE t (id int, dim int, day date, v int, w int) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT g, 1 + (g::bigint * 7919 % 12)::int, date '2018-01-01' + (((g::bigint * 2654435761) % 4294967296 / 65536) % 2900)::int, g % 100, (g::bigint * 40503 % 1000003)::int FROM generate_series(1, 400000) g;
 VACUUM (FREEZE, ANALYZE) t;
-SET sift.test_col_segment_kb = 64;
-SET sift.col_auto_merge_partition_kb = 1536;
+SET sift.test_col_segment_kb = 128;
+SET sift.test_col_partition_kb = 1536;
 CREATE INDEX t_idx ON t USING sift_col (dim, day, v, w) WITH (key_cut = 'dim, day');
 SELECT sift.col_merge('t_idx', true) > 0 AS merged;
  merged 

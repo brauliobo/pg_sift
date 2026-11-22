@@ -12,7 +12,7 @@
  * asked does not churn.
  *
  * Two registry segments: the directory (small, made by the first backend that looks, and it records the size of the ring) and the ring of records (made by the
- * first backend that keeps a dictionary, at the size the directory records, whatever the setting of the others). sift.col_dict_shared_cache_kb = 0 makes and attaches
+ * first backend that keeps a dictionary, at the size the directory records, whatever the setting of the others). sift.shared_cache_kb = 0 makes and attaches
  * neither.
  */
 #include "postgres.h"
@@ -27,12 +27,12 @@
 #include "utils/memutils.h"
 
 #include "agg/stats.h"
+#include "core/shmbudget.h"
 #include "col/dictshm.h"
 #include "col/dictshm_int.h"
 #include "col/dsmreg.h"
 
 
-int			sift_col_dict_shared_cache_kb = 65536;
 
 #ifdef SIFT_TESTING
 int			sift_test_col_dict_shared = 0;
@@ -51,7 +51,7 @@ static bool dshm_failed,
 static Size
 ring_bytes(bool *capped)
 {
-	Size		bytes = TYPEALIGN(DSHM_ALIGN, (Size) sift_col_dict_shared_cache_kb * 1024);
+	Size		bytes = TYPEALIGN(DSHM_ALIGN, sift_shm_pool_bytes(SIFT_SHM_COL_DICT));
 	struct statvfs sv;
 
 	*capped = false;
@@ -78,10 +78,10 @@ ring_cap_report(void)
 
 	if (!capped)
 		return;
-	snprintf(note, sizeof(note), "capped at %zu kB, a quarter of /dev/shm (sift.col_dict_shared_cache_kb is %d kB)", bytes / 1024, sift_col_dict_shared_cache_kb);
+	snprintf(note, sizeof(note), "capped at %zu kB, a quarter of /dev/shm (the share of sift.shared_cache_kb is %zu kB)", bytes / 1024, sift_shm_pool_bytes(SIFT_SHM_COL_DICT) / 1024);
 	if (sift_shm_first(DSHM_RING_NAME, note))
 		ereport(LOG,
-				(errmsg("sift: the shared dictionaries take %zu kB, not the %d kB of sift.col_dict_shared_cache_kb: a quarter of /dev/shm", bytes / 1024, sift_col_dict_shared_cache_kb)));
+				(errmsg("sift: the shared dictionaries take %zu kB, not the %zu kB of its share of sift.shared_cache_kb: a quarter of /dev/shm", bytes / 1024, sift_shm_pool_bytes(SIFT_SHM_COL_DICT) / 1024)));
 }
 
 static void
@@ -108,12 +108,12 @@ ring_init(SIFT_DSM_INIT_ARGS)
 Dshm *
 dshm_get(void)
 {
-	if (sift_col_dict_shared_cache_kb <= 0 || dshm_failed)
+	if (sift_shm_pool_bytes(SIFT_SHM_COL_DICT) == 0 || dshm_failed)
 		return NULL;
 	if (dshm == NULL)
 	{
 		dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed,
-							   "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", TEST_MODE(2));
+							   "the parsed dictionaries of the column indexes", "sift.shared_cache_kb", TEST_MODE(2));
 		if (dshm != NULL)
 			ring_cap_report();
 	}
@@ -131,7 +131,7 @@ ring_get(Dshm *s)
 		return true;
 	if (ring_failed || (IsInParallelMode() && !s->ring_ready))
 		return false;
-	ring = sift_dsm_attach(DSHM_RING_NAME, s->size, ring_init, &ring_failed, "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", false);
+	ring = sift_dsm_attach(DSHM_RING_NAME, s->size, ring_init, &ring_failed, "the parsed dictionaries of the column indexes", "sift.shared_cache_kb", false);
 	return ring != NULL;
 }
 
@@ -149,7 +149,7 @@ sift_dictshm_prepare(void)
 void
 sift_dictshm_join(void)
 {
-	if ((dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed, "the parsed dictionaries of the column indexes", "sift.col_dict_shared_cache_kb", false)) != NULL && dshm->ring_ready)
+	if ((dshm = sift_dsm_attach(DSHM_NAME, sizeof(Dshm), dshm_init, &dshm_failed, "the parsed dictionaries of the column indexes", "sift.shared_cache_kb", false)) != NULL && dshm->ring_ready)
 		ring_get(dshm);
 }
 
@@ -314,7 +314,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
  * is free; the unpinned records it covers go. False when there is none.
  */
 bool
-ring_take(Dshm *s, Size len, Size *off, int *flight)
+ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted)
 {
 	Size		at = s->head + len > s->size ? 0 : s->head;
 	int			slot = -1;
@@ -345,6 +345,7 @@ ring_take(Dshm *s, Size len, Size *off, int *flight)
 	for (int i = 0; i < lengthof(s->dir); i++)
 		if (s->dir[i].state != E_FREE && s->dir[i].off < at + len && at < s->dir[i].off + s->dir[i].len)
 		{
+			*evicted += s->dir[i].state == E_LIVE;
 			s->dir[i].state = E_FREE;
 			s->thrown++;
 		}
@@ -369,7 +370,8 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 	uint32		asks = 0;
 	uint64		orows = 0;
 	int			slot = -1,
-				flight;
+				flight,
+				evicted = 0;
 
 	if (l.total < (TEST_MODE(1) ? 0 : DSHM_MIN_BYTES) || d->n == 0 || (s = dshm_get()) == NULL || l.total > s->size / 2 || !ring_get(s))
 		return false;
@@ -382,7 +384,7 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 			SpinLockRelease(&s->mutex);
 			return true;
 		}
-	if (s->hold > 0 || !ring_take(s, l.total, &off, &flight))
+	if (s->hold > 0 || !ring_take(s, l.total, &off, &flight, &evicted))
 	{
 		if (s->hold > 0)
 			s->hold--;
@@ -421,6 +423,7 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 			if (b[i].pins == 0 && (slot < 0 || b[i].tick < b[slot].tick))
 				slot = i;
 		s->thrown++;
+		evicted += slot >= 0;
 	}
 	if (slot >= 0)
 		b[slot] = (DshmEnt) {.state = E_LIVE, .key = *k, .off = off, .len = l.total, .asks = asks, .orows = orows, .tick = ++s->tick};
@@ -431,6 +434,7 @@ sift_dictshm_write(const DictKey *k, const SiftCDict *d)
 		s->writes = s->thrown = s->found = 0;
 	}
 	SpinLockRelease(&s->mutex);
+	sift_shm_note_eviction(SIFT_SHM_COL_DICT, evicted);
 	return slot >= 0;
 }
 

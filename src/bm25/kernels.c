@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include "bm25/kernels_int.h"
+#include "core/fmv.h"
 #include "core/popcount.h"
 
 const SiftKernels *sift_kern = &sift_kernels_scalar;
@@ -112,12 +113,12 @@ max_merge_scalar(float4 *scores, const float4 *other, const uint64 *mask, int np
 				 scores[s] = scores[s] > other[s] ? scores[s] : other[s]);
 }
 
-void
-sift_kern_ub_accum_scalar(float4 *ub, const uint8 *bounds, float4 w, int n)
+/* One body for every level: the clones the compiler makes of it are as fast as the intrinsics it replaced; the product is rounded, then the sum (-ffp-contract=off) */
+SIFT_FMV_DEFINE_VOID(, sift_kern_ub_accum, (float4 *SIFT_RESTRICT ub, const uint8 *SIFT_RESTRICT bounds, float4 w, int n), (ub, bounds, w, n),
 {
 	for (int i = 0; i < n; i++)
 		ub[i] += w * (float4) bounds[i];
-}
+})
 
 int
 sift_kern_select_gt_scalar(uint16 *slot, float4 *vals, const float4 *scores, const uint64 *mask,
@@ -195,7 +196,7 @@ const SiftKernels sift_kernels_scalar = {
 	.bm25_sel = sift_kern_bm25_sel_scalar,
 	.prune_gt = prune_gt_scalar,
 	.max_merge = max_merge_scalar,
-	.ub_accum = sift_kern_ub_accum_scalar,
+	.ub_accum = sift_kern_ub_accum,
 	.select_gt = sift_kern_select_gt_scalar,
 	.vm_allvisible = sift_kern_vm_scalar,
 	.attr_mask = sift_kern_attr_mask_scalar,
@@ -273,22 +274,49 @@ sift_kern_ub_weight(float4 w, double avgdl_now, double avgdl_ref, int nterms)
 	return (double) f < d ? nextafterf(f, INFINITY) : f;
 }
 
+/* The number of postings from tf[0] on that have tf 1 (or 0): whole blocks of 64 at the width of the clone */
+SIFT_FMV_DEFINE(static, uint32, tf_ones_run, (const uint8 *SIFT_RESTRICT tf, uint32 n), (tf, n),
+{
+	uint32		i = 0;
+
+	for (; i + 64 <= n; i += 64)
+	{
+		uint8		big = 0;
+
+		for (int j = 0; j < 64; j++)
+			big |= tf[i + j] & 0xFE;
+		if (big)
+			break;
+	}
+	while (i < n && tf[i] <= 1)
+		i++;
+	return i;
+})
+
 void
 sift_kern_tf_encode(uint8 *l1, uint8 *nib, uint8 *esc, SiftTfPos *pos,
 					const uint8 *tf, uint32 count)
 {
-	for (uint32 i = 0; i < count; i++, pos->rank++)
+	for (uint32 i = 0; i < count;)
 	{
 		uint32		n;
 
 		if (tf[i] <= 1)
+		{
+			uint32		run = count - i >= 64 && (sift_kern_ld64(tf + i) & UINT64CONST(0xFEFEFEFEFEFEFEFE)) == 0 ? tf_ones_run(tf + i, count - i) : 1;
+
+			i += run;
+			pos->rank += run;
 			continue;
+		}
 		l1[pos->rank >> 3] |= 1 << (pos->rank & 7);
 		n = Min(tf[i] - 2, 15);
 		nib[pos->nib >> 1] |= n << ((pos->nib & 1) * 4);
 		pos->nib++;
 		if (n == 15)
 			esc[pos->esc++] = tf[i] - 17;
+		i++;
+		pos->rank++;
 	}
 }
 
@@ -303,12 +331,13 @@ sift_kern_topk_init(SiftTopK *t, SiftHit *buf, int64 cap, int64 k)
 	t->ntie = t->tiecap = 0;
 	t->lazy = NULL;
 	t->nlazy = t->lazycap = 0;
+	t->floor = -INFINITY;
 }
 
 float4
 sift_kern_topk_theta(const SiftTopK *t)
 {
-	return t->n < t->k ? -INFINITY : nextafterf(t->hit[0].score, -INFINITY);
+	return t->n < t->k ? t->floor : Max(t->floor, nextafterf(t->hit[0].score, -INFINITY));
 }
 
 /*

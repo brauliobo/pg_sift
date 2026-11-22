@@ -1,4 +1,4 @@
--- The rewrite of a key_cut sift_col index by range (sift.col_auto_merge_partition_kb): the units are cut by the key, so the rewrite writes the index as segments of
+-- The rewrite of a key_cut sift_col index by range (sift.test_col_partition_kb): the units are cut by the key, so the rewrite writes the index as segments of
 -- about that size, each cut of the key, not as one segment of all the live bytes (a lone segment of the index would need the free space of the whole index to
 -- be written, and would leave it in the file when the segments it replaced are freed). The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
@@ -52,7 +52,7 @@ SELECT kpc_same();
 (1 row)
 
 -- 1. one segment of 2 MB, cut at 128 kB (the units of this table are of a few hundred kB, so a partition is a few of them): the rewrite is partitions, none of a third of the bytes
-SET sift.col_auto_merge_partition_kb = 128;
+SET sift.test_col_partition_kb = 128;
 CALL kpc_churn(1);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) kp, kp_plain;
 SELECT sift.col_maintain('kp_idx') AS rewritten;
@@ -175,7 +175,7 @@ SELECT kpc_same();
 (1 row)
 
 -- 3. with no partition size, the rewrite is one segment again
-SET sift.col_auto_merge_partition_kb = 0;
+SET sift.test_col_partition_kb = 0;
 CALL kpc_churn(3);
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING, INDEX_CLEANUP ON) kp, kp_plain;
 SELECT sift.col_maintain('kp_idx') AS rewritten;

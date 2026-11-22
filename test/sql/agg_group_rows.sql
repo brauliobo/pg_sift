@@ -5,10 +5,11 @@
 -- and of every row (within a factor of 64 of the real groups, not of the guess), so the plan above keeps the copy (Materialize) and runs its
 -- aggregate once. The estimate is not part of the price: the choice of the scan does not move. A list PostgreSQL has statistics for keeps its count.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 100;
 SET random_page_cost = 100;
-SET work_mem = '64kB';
+SET work_mem = '1MB';
 SET hash_mem_multiplier = 1;
 
 CREATE TABLE gr_facts (id int, parent_id int, kind text, ts date, amount float8) WITH (autovacuum_enabled = false);
@@ -73,7 +74,6 @@ DROP FUNCTION expr_shape(text);
 
 -- the lift is bounded: the groups of a lookup list PostgreSQL cannot count are reported up to the plan's own plus a thousand, where more only
 -- multiplies in the join above (two scans of a large table, their rows times a default join selectivity, priced the plan that keeps one of them normal)
-SET sift.plan_scale = 1000;
 CREATE FUNCTION lifted_rows(q text) RETURNS TABLE (scan_rows_within_bound boolean, join_rows_within_bound boolean) LANGUAGE plpgsql AS $$
 DECLARE
 	j jsonb;
@@ -88,7 +88,6 @@ WITH scope AS (SELECT DISTINCT d.id FROM gr_dims d WHERE d.settings ->> 'kind' =
 a AS (SELECT f.parent_id % 8 AS blk, f.kind, (f.ts - date '2024-01-01') / 7 AS bucket, sum(f.amount) AS va FROM gr_facts f WHERE f.parent_id IN (SELECT id FROM scope) GROUP BY 1, 2, 3),
 b AS (SELECT f.parent_id % 8 AS blk, f.kind, (f.ts - date '2024-01-01') / 7 AS bucket, avg(f.amount) AS vb FROM gr_facts f WHERE f.parent_id IN (SELECT id FROM scope) GROUP BY 1, 2, 3)
 SELECT a.blk, va, vb FROM a FULL JOIN b ON jsonb_build_array(a.blk, a.kind, a.bucket) = jsonb_build_array(b.blk, b.kind, b.bucket)$$);
-RESET sift.plan_scale;
 DROP FUNCTION lifted_rows(text);
 
 DROP FUNCTION shape(text), scoped_shape(text);

@@ -7,7 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.test_col_segment_kb = 1024;
-SET sift.col_auto_merge_partition_kb = 512;
+SET sift.test_col_partition_kb = 512;
 SET sift.test_col_net = off;
 SET statement_timeout = '120s';
 

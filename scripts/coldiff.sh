@@ -300,7 +300,7 @@ fixture_tables() {
 		sql -c "ALTER TABLE $t SET ACCESS METHOD sift_table" || return 1
 		case $t in orders*) set -- attributes metrics items notes ;; t_jp) set -- doc mdoc ;; t_eo) set -- doc ;; t_tags) set -- tags ;; *) continue ;; esac
 		for c in "$@"; do
-			case $t in t_jp) spec="$c[]{s text, n int4, b bool}" ;; t_eo) spec="doc[]{q int4, q8 int8, f float8}" ;; t_tags) spec="tags[] text" ;; *) spec=$(col_paths $c) ;; esac
+			case $t in t_jp) spec="${c}[]{s text, n int4, b bool}" ;; t_eo) spec="doc[]{q int4, q8 int8, f float8}" ;; t_tags) spec="tags[] text" ;; *) spec=$(col_paths $c) ;; esac
 			[[ -z $spec ]] || printf '%s\n' "SELECT sift.table_set_paths('$t', '$c', :'spec')" | sql -v spec="$spec" >/dev/null || return 1
 		done
 		sql -c "VACUUM FULL $t" || return 1

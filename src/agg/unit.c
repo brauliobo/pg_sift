@@ -10,10 +10,9 @@
 #include "miscadmin.h"
 #include "utils/rel.h"
 
-#include "agg/back.h"
 #include "agg/kern.h"
 #include "agg/sel.h"
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "agg/chunkfilter.h"
 #include "agg/topn.h"
 #include "agg/agg_int.h"
@@ -685,12 +684,6 @@ process_unit(AggExec *ex)
 	ex->n_rows += nrow;
 	if (nrow == 0)
 		return;
-	if (!ex->spec->left_lateral && sift_aggbe_run_unit(ex->be, ex->be_state, &ex->unit))
-	{
-		ex->row_base += nrow;
-		CHECK_FOR_INTERRUPTS();
-		return;
-	}
 	if (ex->topn && !topn_viable(ex))
 		return;
 	rmask = MemoryContextAlloc(ex->ucxt, ((nrow + 63) / 64 + PADW) * sizeof(uint64));

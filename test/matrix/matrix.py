@@ -9,7 +9,7 @@ named by its refusal slug (SET sift.explain_refusals) and excluded from the perc
 as by design; the rest are gaps.
 
   test/matrix/matrix.py run --label LABEL --out FILE [--tier quick|full] [--rows N] [--by-design FILE]
-  test/matrix/matrix.py tsv FILE... --build NAME         the rows of bench/results/coverage-pct.tsv
+  test/matrix/matrix.py tsv FILE... --build NAME         the rows of docs/results/coverage-pct.tsv
 
 Needs a started scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT) with the extension installable.
 """

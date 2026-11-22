@@ -128,17 +128,7 @@ SELECT tlr_most_units('SELECT count(DISTINCT cust_id) FROM tl') AS tl_lists,
        tlr_most_units('SELECT count(DISTINCT ref) FROM tf') AS tf_lists,
        tlr_most_units('SELECT count(DISTINCT cust_id) FROM tc') AS tc_lists;
 
--- under a lower setting the groups are written as before: no lists, no runs, the same answers
-SET sift.col_format_minor = 8;
-CREATE TABLE tlo USING sift_table AS SELECT * FROM tl_src ORDER BY id;
-VACUUM (FREEZE, ANALYZE) tlo;
-RESET sift.col_format_minor;
-SELECT array_agg(DISTINCT format) AS minors FROM sift.table_segments('tlo') WHERE kind = 'columns';
-SELECT tlr_most_units('SELECT count(DISTINCT cust_id) FROM tlo') AS key_list,
-       (tlr_units('SELECT id FROM tlo ORDER BY ts DESC LIMIT 10')).heads > 0 AS run_head;
-SELECT * FROM tlr_compare('tlo');
-
-DROP TABLE tlo, tc, tf, tl, tl_src, tl_ref, tlr_q;
+DROP TABLE tc, tf, tl, tl_src, tl_ref, tlr_q;
 DROP FUNCTION tlr_units(text), tlr_most_units(text), tlr_compare(text);
 DROP FUNCTION check_query(text);
 DROP EXTENSION pg_sift;

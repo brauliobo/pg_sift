@@ -15,17 +15,18 @@
 #include "bm25/wbuf.h"
 #include "col/api/format.h"
 #include "col/pg.h"
-#include "bm25/maint_int.h"
+#include "core/maint_int.h"
 #include "core/check.h"
 #include "core/errctx.h"
 #include "core/explain.h"
 #include "core/sql.h"
 #include "core/worker.h"
-#include "table/table.h"
+#include "table/dispatch.h"
+#include "table/v1/table_v1.h"
 #include "bm25/segment_sql.h"
 #include "core/catname.h"
 #include "core/inspect.h"
-#include "core/membudget.h"
+#include "core/memtrack.h"
 
 #define corrupt SIFT_CORRUPT
 
@@ -200,7 +201,7 @@ worker_open(Oid relid)
  * The error stays after a later step that ended well (failed_at, error_code and last_error are those of the last failure ever noted); the next retry is only for the failures in a row.
  */
 Datum
-sift_worker_state(PG_FUNCTION_ARGS)
+sift_worker_state_dir(PG_FUNCTION_ARGS)
 {
 	Relation	index = worker_open(PG_GETARG_OID(0));
 	SiftDirSnapshot *snap;
@@ -271,34 +272,6 @@ sift_worker_history(PG_FUNCTION_ARGS)
 	}
 	v[3] = Int64GetDatum(snap->meta.failures_total);
 	relation_close(index, AccessShareLock);
-	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
-}
-
-/*
- * sift.index_format(rel): the on-disk format of the metapage of a sift index, a sift_col index or a sift_table, the minor a build must read to
- * open it. A newer minor than this build reads is refused here as everywhere (sift.upgrade_check reports it). long_words, for a sift (BM25) index
- * only: it was built by a release that stores a word over 255 bytes as a prefix and a hash (5.0 and later; an index of an earlier build says false
- * whether it was built before 3.3 or not, and a REINDEX tells). reads, for a sift_col index or a sift_table: the column formats this build reads.
- */
-Datum
-sift_index_format(PG_FUNCTION_ARGS)
-{
-	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
-	SiftDirSnapshot *snap;
-	Datum		v[4];
-	bool		nulls[4] = {0};
-	bool		bm25 = rel->rd_rel->relam == sift_catalog()->am;
-
-	sift_inspect_expect(RelationGetRelid(rel), NULL, NULL);
-	sift_check_inspect(rel);
-	snap = sift_dir_read(rel);
-	v[0] = Int32GetDatum(snap->meta.format_major);
-	v[1] = Int32GetDatum(snap->meta.format_minor);
-	v[2] = BoolGetDatum((snap->meta.flags & SIFT_META_LONG_WORDS) != 0);
-	v[3] = CStringGetTextDatum(psprintf("%d to %d", SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MAX_READ));
-	nulls[2] = !bm25;
-	nulls[3] = bm25;
-	relation_close(rel, AccessShareLock);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
@@ -523,7 +496,6 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 			sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &dump);
 			MemoryContextSwitchTo(old);
 			sift_seg_close(seg);
-			SIFT_MEM_CHECKPOINT();
 			MemoryContextDelete(segcx);
 		}
 		else
@@ -622,7 +594,6 @@ step_segment(void *arg)
 		disjoint_from_earlier(bv, seg);
 		sift_seg_close(seg);
 	}
-	SIFT_MEM_CHECKPOINT();
 	MemoryContextDelete(segcx);
 	UnlockPage(bv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 }
@@ -644,7 +615,6 @@ step_heap(void *arg)
 	Bm25Verify *bv = arg;
 
 	verify_heap(bv->index, bv->snap, bv->snapshot, bv->nelems, bv->cxt);
-	SIFT_MEM_CHECKPOINT();
 }
 
 /*
@@ -665,7 +635,9 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 	bv->cxt = AllocSetContextCreate(old, "sift verify", ALLOCSET_DEFAULT_SIZES);
 	bv->walk = AllocSetContextCreate(bv->cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bv->cxt);
-	SIFT_MEM_SCOPE(bm25_verify, bv->cxt);
+	SiftMemTracker mt_bm25_verify;
+
+	sift_mem_init_sub(&mt_bm25_verify, "bm25_verify", bv->cxt, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	sift_errctx_push_diagnostic(&bv->errctx, RelationGetRelid(index));
 	/* registered before the directory is read, and kept: the segments of the copy stay readable while they are verified one at a time */
 	sound = listed = sift_check_step(ck, SIFT_CHECK_WHOLE, step_store, bv);
@@ -674,7 +646,7 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 		bv->seg = &bv->snap->segs[i];
 		sift_errctx_segment(&bv->errctx, bv->seg->gen);
 		sound &= sift_check_step(ck, bv->seg->gen, step_segment, bv);
-		SIFT_MEM_CHECKPOINT();
+		sift_mem_assert_within(&mt_bm25_verify);
 	}
 	sift_errctx_whole(&bv->errctx);
 	if (sound)

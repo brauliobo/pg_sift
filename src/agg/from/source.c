@@ -11,6 +11,7 @@
 #include "catalog/pg_type.h"
 
 #include "agg/part.h"
+#include "agg/plan/safety.h"
 #include "agg/from/int.h"
 #include "core/cmp.h"
 
@@ -38,7 +39,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 	*ixout = NULL;
 	if (rte->relkind == RELKIND_PARTITIONED_TABLE)
 		return part_source(c) || agg_refuse(PARTITION_SOURCE);
-	if (sift_colsrc_is_table(get_rel_relam(rte->relid)))
+	if (sift_colsrc_is_table(rte->relid))
 	{
 		rel = table_open(rte->relid, NoLock);
 		c->lay = sift_colsrc_layout(rel);
@@ -49,7 +50,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		return true;
 	}
 	foreach_node(IndexOptInfo, ii, c->rel->indexlist)
-		if (sift_colsrc_is_index(ii->relam) && !ii->hypothetical && (ii->indpred == NIL || ii->predOK) && n++ == agg_index_pick)
+		if (agg_index_complete(ii) && sift_colsrc_reads_index(ii->indexoid) && n++ == agg_index_pick)
 			*ixout = ii;
 	agg_index_usable = Max(agg_index_usable, n);
 	if (*ixout == NULL)

@@ -27,7 +27,7 @@ tight() { test "$(size)" -le "$(( $(live) * 120 / 100 ))"; }
 # the VACUUM of a table with sift.col_auto_merge on (the setting of the session is the one VACUUM reads)
 vacuum() { sql primary "SET sift.col_auto_merge = on" "VACUUM t" >/dev/null; }
 # the standby reports its horizon every second (hot_standby_feedback): a VACUUM moves what the horizon has passed
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 1.2; }
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; horizon_past primary standby; }
 vacuums=0
 vacuum_until_tight() {
 	for vacuums in $(seq 12); do

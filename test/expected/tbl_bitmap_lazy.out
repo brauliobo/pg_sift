@@ -2,7 +2,6 @@
 -- are the heap's: the same ones through updates (HOT and not), deletes not yet vacuumed, a write buffer and units of several superblocks, and a mutant that skips the snapshot test is not.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.table_inline_promote = on;
 CREATE TABLE t (id int PRIMARY KEY, k int, v int, note text, tag text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE h (id int PRIMARY KEY, k int, v int, note text, tag text) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT g, g % 500, g, 'note number ' || g, md5(g::text) FROM generate_series(1, 120000) g;

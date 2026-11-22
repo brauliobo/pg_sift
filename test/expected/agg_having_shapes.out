@@ -3,6 +3,7 @@
 -- ranking, so a group it drops never takes a place), DISTINCT, window functions over the groups that pass, and a grouped sub-query read by an outer query. `ordered` compares the rows
 -- in the order the statement returns them, where its ORDER BY is a total order.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 \ir test/agg_having_helpers.sql

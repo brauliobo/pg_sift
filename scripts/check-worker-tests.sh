@@ -13,7 +13,7 @@ ALLOW=scripts/worker-tests.allow
 ENABLES='(sift\.col_auto_merge[[:space:]]*(=|TO)[[:space:]]*(on|true)|set_config\([[:space:]]*.sift\.col_auto_merge.[[:space:]]*,[[:space:]]*.(on|true).)'
 WORKER_ON='sift\.async_maintenance[[:space:]]*(=|TO)[[:space:]]*(on|true)'
 WORKER_OFF='sift\.async_maintenance[[:space:]]*(=|TO)[[:space:]]*(off|false)'
-PRINTS='col_segments|col_maintenance_status|col_maintenance_due|col_value_store_status|relallvisible|blocked_by'
+PRINTS='col_segments|col_maintenance_status|col_maintenance_due|relallvisible|blocked_by'
 
 runs_worker() { grep -qiE "$ENABLES" "$1" && { grep -qiE "$WORKER_ON" "$1" || ! grep -qiE "$WORKER_OFF" "$1"; }; }
 prints_worker_state() { grep -qiE "$PRINTS" "$1"; }

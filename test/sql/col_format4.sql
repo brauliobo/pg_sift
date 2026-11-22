@@ -25,7 +25,6 @@ INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 30000) g;
 SET sift.col_format_minor = 3;
 CREATE INDEX f_col ON f USING sift_col (id, grp, v) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('f_col');
-RESET sift.col_format_minor;
 INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(30001, 60000) g;
 SELECT sift.col_promote('f_col');
 SELECT fmt('f_col');
@@ -46,7 +45,6 @@ SELECT sift.col_promote('f_col');
 SELECT sift.col_merge('f_col', true);
 SELECT fmt('f_col');
 SELECT sift.col_verify('f_col', true);
-RESET sift.col_format_minor;
 
 -- REINDEX writes minor 4
 REINDEX INDEX f_col;
@@ -62,7 +60,6 @@ CREATE TABLE ft (id int, grp int) USING sift_table;
 SET sift.col_format_minor = 3;
 INSERT INTO ft SELECT g, g % 9 FROM generate_series(1, 20000) g;
 VACUUM ft;
-RESET sift.col_format_minor;
 INSERT INTO ft SELECT g, g % 9 FROM generate_series(20001, 40000) g;
 VACUUM ft;
 SELECT kind, format, count(*) FROM sift.table_segments('ft') GROUP BY 1, 2 ORDER BY 1, 2;

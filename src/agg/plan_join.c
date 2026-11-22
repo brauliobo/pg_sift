@@ -115,7 +115,7 @@ add_plan_join(AggCtx *c, RangeTblEntry *e, Index rti, JoinCtx *jc, const char **
 	if ((jc->cpath = child_path(rel, false)) == NULL)
 		return agg_refuse_on(JOIN_CHILD, "the child has no plan the scan can run once");
 	if (!agg_lookup_fits(jc->cpath->rows, jc->cpath->pathtarget->width))
-		return agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "the child is estimated at %.0f rows of width %d", jc->cpath->rows, jc->cpath->pathtarget->width);
+		return agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "the child is estimated at %.0f rows of width %d", jc->cpath->rows, jc->cpath->pathtarget->width);
 	jc->j.child = 0;
 	foreach_ptr(JoinCtx, o, c->joins)
 		jc->j.child += o->cpath != NULL && o->j.params == NIL;
@@ -174,7 +174,7 @@ add_tree_join(AggCtx *c, LeftJoin *lj, JoinCtx *jc)
 	if (best == NULL)
 		return agg_refuse_on(JOIN_CHILD, "the tables on the right of the semi or anti join have no plan the scan can run once");
 	if (!agg_lookup_fits(best->rows, best->pathtarget->width))
-		return agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "the keys of the semi or anti join are estimated at %.0f rows of width %d", best->rows, best->pathtarget->width);
+		return agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "the keys of the semi or anti join are estimated at %.0f rows of width %d", best->rows, best->pathtarget->width);
 	jc->cpath = best;
 	jc->tree = true;
 	jc->j.child = 0;

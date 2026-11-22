@@ -13,3 +13,18 @@ SIFT_PGCPP := $(shell pg_config --cppflags)
 # The matching link flags: the library directories (lz4, zstd) and libintl, which the server's libpgport needs where gettext is separate (not the whole of --libs: -lnuma and
 # -lxml2 are not needed, and --ldflags may carry -flto).
 SIFT_PGLIBS := $(filter -L% -lintl,$(shell pg_config --ldflags --libs))
+# SIFT_FMV=auto (default) | off. auto compiles the hot leaf loops of core/fmv.h as IFUNC clones on glibc Linux (x86-64 GCC 11 or Clang 16; AArch64 GCC 14 or a Clang that emits
+# the resolver) and as target() functions picked from the CPU flags elsewhere; off compiles the baseline body only (-DSIFT_FMV_DISABLE).
+SIFT_FMV ?= auto
+ifeq ($(SIFT_FMV),off)
+SIFT_FMV_CPPFLAGS := -DSIFT_FMV_DISABLE=1
+else
+SIFT_FMV_CPPFLAGS :=
+# Clang on Linux/AArch64 drops target_clones without a libgcc of GCC 14 (or compiler-rt): the flag says it emitted the resolver
+ifeq ($(shell uname -s)-$(shell uname -m),Linux-aarch64)
+SIFT_FMV_CLANG_ARM64 := $(shell printf '__attribute__((target_clones("default","sve"))) int f(int x){return x;}\n' | $(CC) -O2 -fPIC -march=armv8-a -S -x c - -o - 2>/dev/null | grep -q 'f\.resolver' && echo 1)
+ifeq ($(SIFT_FMV_CLANG_ARM64),1)
+SIFT_FMV_CPPFLAGS += -DSIFT_CLANG_AARCH64_FMV=1
+endif
+endif
+endif

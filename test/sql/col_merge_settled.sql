@@ -7,7 +7,7 @@ SET sift.async_maintenance = off;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, amount int NOT NULL, pad text DEFAULT repeat('x', 1500),
 	d date) WITH (autovacuum_enabled = false);
 ALTER TABLE facts ALTER COLUMN pad SET STORAGE PLAIN;
-CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount, d) WITH (key_order = 'dim_a_id, created_at');
+CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, kind, amount, d) WITH (key_order = 'dim_a_id, created_at', key_cut = 'dim_a_id, created_at');
 DO $$ BEGIN FOR i IN 0..6 LOOP
 	INSERT INTO facts (id, dim_a_id, created_at, kind, amount, d)
 	SELECT g, 1 + g % 200, timestamptz '2024-01-01' + g * interval '1 minute', g % 7, (g * 7919) % 100000, date '2024-01-01' + g % 300 FROM generate_series(i * 2200 + 1, i * 2200 + 2200) g;

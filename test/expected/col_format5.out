@@ -33,7 +33,6 @@ SELECT fmt('g_narrow');
  3
 (1 row)
 
-RESET sift.col_format_minor;
 CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow4');
  fmt 
@@ -53,7 +52,6 @@ SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
  5   | 5   | 5   | 5
 (1 row)
 
-RESET sift.col_format_minor;
 DROP INDEX g_w, g_m, g_iv, g_n;
 -- a narrow index grows nothing of the wide minor; a mixed one is wide as a whole
 CREATE INDEX g_all ON g USING sift_col (id, grp, p, w, m, iv, any_n) WITH (cube_minmax = false, superunit = 0);
@@ -133,7 +131,6 @@ SELECT fmt('g_all');
  5
 (1 row)
 
-RESET sift.col_format_minor;
 REINDEX INDEX g_all;
 SELECT fmt('g_all');
  fmt 

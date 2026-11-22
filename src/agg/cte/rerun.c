@@ -74,6 +74,7 @@ typedef struct Stash
 	Query	   *query;
 	int			cursorOptions;
 	char	   *text;
+	List	   *scans;			/* the CustomScans of the aggregate scan in the plan */
 } Stash;
 
 static const char *
@@ -84,7 +85,7 @@ stash_text(Stash *st)
 	return st->text;
 }
 
-/* the nodes of the plan that cannot spill their groups, each given the query: called for every CustomScan of the tree */
+/* the aggregate scans of the plan (those that hold their groups, and those that a scan beside them may fuse with into one that does) and the rows nodes, each given the query */
 static void
 stash_walk(Plan *p, Stash *st)
 {
@@ -112,15 +113,7 @@ stash_walk(Plan *p, Stash *st)
 				foreach_ptr(Plan, c, cs->custom_plans)
 					stash_walk(c, st);
 				if (cs->methods == &sift_agg_plan_methods)
-				{
-					SiftAggSpec *s = sift_aggspec_unpack(cs->custom_private);
-
-					if (sift_aggspec_holds_groups(s) || sift_aggspec_holds_values(s))
-					{
-						s->rerun = (char *) stash_text(st);
-						cs->custom_private = sift_aggspec_pack(s);
-					}
-				}
+					st->scans = lappend(st->scans, cs);
 				else if (cs->methods == &sift_agg_rows_plan_methods)
 					cs->custom_private = sift_agg_rows_with_rerun(cs->custom_private, stash_text(st));
 			}
@@ -134,11 +127,21 @@ stash_walk(Plan *p, Stash *st)
 void
 sift_agg_stash_rerun(PlannedStmt *stmt, Query *query, int cursorOptions)
 {
-	Stash		st = {query, cursorOptions, NULL};
+	Stash		st = {query, cursorOptions, NULL, NIL};
 
 	stash_walk(stmt->planTree, &st);
 	foreach_ptr(Plan, p, stmt->subplans)
 		stash_walk(p, &st);
+	foreach_ptr(CustomScan, cs, st.scans)
+	{
+		SiftAggSpec *s = sift_aggspec_unpack(cs->custom_private);
+
+		if (list_length(st.scans) > 1 || sift_aggspec_can_overflow(s))
+		{
+			s->rerun = (char *) stash_text(&st);
+			cs->custom_private = sift_aggspec_pack(s);
+		}
+	}
 }
 
 /* the statement as PostgreSQL plans it, for one whose aggregate scan outgrew its memory */

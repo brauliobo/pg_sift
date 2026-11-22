@@ -706,7 +706,7 @@ runs_agg_scan(Plan *p)
 {
 	if (p == NULL)
 		return false;
-	if (IsA(p, CustomScan) && ((CustomScan *) p)->methods == &sift_agg_plan_methods)
+	if (sift_is_any_agg_scan(p))
 		return true;
 	if (IsA(p, SubqueryScan) && runs_agg_scan(((SubqueryScan *) p)->subplan))
 		return true;

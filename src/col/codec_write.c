@@ -18,8 +18,8 @@ put32(StringInfo s, uint32 x)
 	appendBinaryStringInfo(s, (const char *) &x, 4);
 }
 
-static void
-put64(StringInfo s, int64 x)
+void
+cc_put64(StringInfo s, int64 x)
 {
 	appendBinaryStringInfo(s, (const char *) &x, 8);
 }
@@ -34,8 +34,8 @@ pad8(StringInfo s)
 }
 
 /* The 8-byte node header: tag, one parameter byte, two pad bytes, one u32 */
-static void
-put_head(StringInfo s, uint8 tag, uint8 aux, uint32 f1)
+void
+cc_put_head(StringInfo s, uint8 tag, uint8 aux, uint32 f1)
 {
 	char		h[8] = {0};
 
@@ -112,8 +112,8 @@ enc_allowed(const CcW *w, int tag)
 static void
 emit_const(StringInfo out, int64 v)
 {
-	put_head(out, SIFT_CCN_CONST, 0, 0);
-	put64(out, v);
+	cc_put_head(out, SIFT_CCN_CONST, 0, 0);
+	cc_put64(out, v);
 }
 
 /* The vertical layout of the first n values of tmp (padded with zeros to whole rows) at width W into packed (sift_cc_words(n, W) words, zeroed) */
@@ -164,17 +164,17 @@ emit_forbit(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 W)
 
 	for (uint32 i = 0; i < n; i++)
 		tmp[i] = (uint32) ((uint64) v[i] - (uint64) base);
-	put_head(out, SIFT_CCN_FORBIT, (uint8) W, 0);
-	put64(out, base);
+	cc_put_head(out, SIFT_CCN_FORBIT, (uint8) W, 0);
+	cc_put64(out, base);
 	emit_words(out, tmp, n, W);
 	pfree(tmp);
 }
 
-static void
-emit_forbyte(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 B)
+void
+cc_emit_forbyte(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 B)
 {
-	put_head(out, SIFT_CCN_FORBYTE, (uint8) B, 0);
-	put64(out, base);
+	cc_put_head(out, SIFT_CCN_FORBYTE, (uint8) B, 0);
+	cc_put64(out, base);
 	for (uint32 i = 0; i < n; i++)
 	{
 		uint64		x = (uint64) v[i] - (uint64) base;
@@ -191,11 +191,11 @@ emit_delta(StringInfo out, const int64 *v, uint32 n, const CcStats *st, uint32 W
 
 	for (uint32 i = 1; i < n; i++)
 		tmp[i] = (uint32) ((uint64) v[i] - (uint64) v[i - 1] - (uint64) st->dmin);
-	put_head(out, SIFT_CCN_DELTA, (uint8) W, 0);
-	put64(out, v[0]);
-	put64(out, st->dmin);
+	cc_put_head(out, SIFT_CCN_DELTA, (uint8) W, 0);
+	cc_put64(out, v[0]);
+	cc_put64(out, st->dmin);
 	for (uint32 i = 1024; i < n; i += 1024)
-		put64(out, v[i]);
+		cc_put64(out, v[i]);
 	emit_words(out, tmp, n, W);
 	pfree(tmp);
 }
@@ -262,6 +262,7 @@ wrap_choose_keep(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZ
 				nalg = 0;
 	double		rho = role == CCR_HOT ? SIFT_CC_RHO_HOT : SIFT_CC_RHO_COLD;
 	bool		found = false;
+	Size		lz4_len = 0;
 	const SiftCcPolicy *pol = w->pol;
 
 	best->buf = NULL;
@@ -316,6 +317,10 @@ wrap_choose_keep(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZ
 		if (alg == SIFT_CC_ALG_LZ4 && pol->mode == SIFT_CCM_AUTO && role == CCR_HOT && (clen == 0 || clen > rawlen - rawlen / 7))
 			nalg = 1;
 		cost = (double) CC_RUP8(clen) + CC_NHDR + rho * rawlen * alg_ns(alg);
+		if (alg == SIFT_CC_ALG_LZ4)
+			lz4_len = clen;
+		if (alg == SIFT_CC_ALG_ZSTD && pol->fast_decode && lz4_len > 0 && clen * 100 > lz4_len * (rawlen >= SIFT_CC_ZSTD_MIN_RAW ? SIFT_CC_ZSTD_PCT : SIFT_CC_ZSTD_SMALL_PCT))
+			cost = best->cost;
 		if (clen == 0 || cost >= best->cost)
 		{
 			if (lz4 && alg == SIFT_CC_ALG_LZ4 && clen > 0)
@@ -418,29 +423,14 @@ wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *
 	return wrap_choose_keep(w, raw, rawlen, role, best, NULL);
 }
 
-static void
-emit_wrap(StringInfo out, const CcZTry *z, uint32 rawlen)
+void
+cc_emit_wrap(StringInfo out, const CcZTry *z, uint32 rawlen)
 {
-	put_head(out, SIFT_CCN_WRAP, (uint8) z->alg, rawlen);
+	cc_put_head(out, SIFT_CCN_WRAP, (uint8) z->alg, rawlen);
 	put32(out, (uint32) z->len);
 	put32(out, 0);
 	appendBinaryStringInfo(out, z->buf, (int) z->len);
 	pad8(out);
-}
-
-/* Size of the node bytes after the best wrapper (their own size when none is accepted) */
-static Size
-node_wrapped_size(const CcW *w, const uint8 *node, Size len, CcRole role)
-{
-	CcZTry		z;
-	Size		r = len;
-
-	if (wrap_choose(w, node, (uint32) len, role, &z))
-	{
-		r = CC_NHDR + CC_RUP8(z.len);
-		pfree(z.buf);
-	}
-	return r;
 }
 
 /* Replaces the leaf node at out->data[start..] by a wrapper when the policy accepts one */
@@ -454,7 +444,7 @@ maybe_wrap(const CcW *w, StringInfo out, int start, CcRole role)
 	{
 		out->len = start;
 		out->data[start] = 0;
-		emit_wrap(out, &z, rawlen);
+		cc_emit_wrap(out, &z, rawlen);
 		pfree(z.buf);
 	}
 }
@@ -579,11 +569,11 @@ alp_build(const CcW *w, StringInfo cand, const int64 *keys, uint32 n, int depth,
 	if (nexc)
 		enc_node(&wi, &cp, pos, nexc, depth - 1, CCR_COLD);
 	initStringInfo(cand);
-	put_head(cand, SIFT_CCN_ALP, (uint8) bestE, nexc);
+	cc_put_head(cand, SIFT_CCN_ALP, (uint8) bestE, nexc);
 	put32(cand, (uint32) cd.len);
 	put32(cand, (uint32) cp.len);
-	put64(cand, dmin);
-	put64(cand, dmax);
+	cc_put64(cand, dmin);
+	cc_put64(cand, dmax);
 	appendBinaryStringInfo(cand, cd.data, cd.len);
 	appendBinaryStringInfo(cand, cp.data, cp.len);
 	appendBinaryStringInfo(cand, (const char *) ekeys, (int) (sizeof(int64) * nexc));
@@ -625,7 +615,7 @@ static void
 put_pair(StringInfo cand, uint8 tag, uint32 count, StringInfo a, StringInfo b)
 {
 	initStringInfo(cand);
-	put_head(cand, tag, 0, count);
+	cc_put_head(cand, tag, 0, count);
 	put32(cand, (uint32) a->len);
 	put32(cand, (uint32) b->len);
 	appendBinaryStringInfo(cand, a->data, a->len);
@@ -740,9 +730,9 @@ scale_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, const CcSta
 	initStringInfo(&child);
 	enc_node(&wi, &child, q, n, depth - 1, role);
 	initStringInfo(cand);
-	put_head(cand, SIFT_CCN_SCALE, 0, (uint32) child.len);
-	put64(cand, st->min);
-	put64(cand, (int64) g);
+	cc_put_head(cand, SIFT_CCN_SCALE, 0, (uint32) child.len);
+	cc_put64(cand, st->min);
+	cc_put64(cand, (int64) g);
 	appendBinaryStringInfo(cand, child.data, child.len);
 	pfree(child.data);
 	pfree(q);
@@ -760,26 +750,9 @@ emit_leaf(const CcW *w, StringInfo out, const int64 *v, uint32 n, const CcStats 
 	else if (tag == SIFT_CCN_FORBIT)
 		emit_forbit(out, v, n, st->min, W);
 	else
-		emit_forbyte(out, v, n, st->min, W);
-	/* with a layer in play the byte-aligned twin of a narrow bit-packed stream is also tried, and the smaller result kept */
-	if (tag == SIFT_CCN_FORBIT && W <= 16 && (w->pol->mode == SIFT_CCM_LAYER || role == CCR_COLD))
-	{
-		StringInfoData twin;
-		Size		a = node_wrapped_size(w, (const uint8 *) out->data + start, out->len - start, role),
-					b;
-
-		initStringInfo(&twin);
-		emit_forbyte(&twin, v, n, st->min, bytes_for(st->range));
-		b = node_wrapped_size(w, (const uint8 *) twin.data, twin.len, role);
-		if (b < a)
-		{
-			out->len = start;
-			out->data[start] = 0;
-			appendBinaryStringInfo(out, twin.data, twin.len);
-			tag = SIFT_CCN_FORBYTE;
-		}
-		pfree(twin.data);
-	}
+		cc_emit_forbyte(out, v, n, st->min, W);
+	if (cc_cold_active(w, role))
+		return cc_cold_leaf(w, out, start, v, n, st->min, st->range, tag, W, role);
 	maybe_wrap(w, out, start, role);
 	return tag;
 }
@@ -809,7 +782,7 @@ enc_node(const CcW *w, StringInfo out, const int64 *v, uint32 n, int depth, CcRo
 	{
 		uint32		B = bytes_for(st.range);
 
-		emit_forbyte(out, v, n, st.min, B > 4 ? 8 : B > 2 ? 4 : B);
+		cc_emit_forbyte(out, v, n, st.min, B > 4 ? 8 : B > 2 ? 4 : B);
 		return SIFT_CCN_FORBYTE;
 	}
 	/* the leaves, whose size is a formula of the statistics */

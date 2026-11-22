@@ -3,7 +3,7 @@
  *
  * The scope segments hold the pairs (member, scope key) as of the stamps they were written under. What changed in the relations since is in their journals: a sift_col
  * index of a relation with track_changes = 'ctid' whose first column is the journaled key keeps, in its tombstone log, a record of kind KEYCHG for the key of every row an UPDATE,
- * DELETE or key change ended and one of kind KEYADD for the key of every row inserted (col/conn.c). The rule, the stamp, the verdicts and the set of changed keys are those of the
+ * DELETE or key change ended and one of kind KEYADD for the key of every row inserted (col/v1/conn.c). The rule, the stamp, the verdicts and the set of changed keys are those of the
  * connections of 4.3; this file finds the journals of a scope and applies them to each. A scope of one path has one (the pairs relation keyed by its member); one of two paths has
  * three, and a member's pairs depend on its direct rows (J1), on its rows in the via relation (J3) and on the rows of the joined relation of each of its groups (J2: its journal
  * names the groups that changed, and the members of a group are the via relation's rows of it).
@@ -23,6 +23,7 @@
 #include "core/ring.h"
 #include "col/am.h"
 #include "col/scope.h"
+#include "core/cachebudget.h"
 
 /* The relations of the journals of a scope, and the btree of the via relation that lists the members of a group, open and locked */
 typedef struct ScopeJournals
@@ -40,7 +41,7 @@ typedef struct ScopeJournals
 
 /*
  * What finding the journals of a scope asks the catalogs: the relations by their names, the btree and the journal index that cover each, the checks of the declaration (about 25,000 instructions
- * a scope). It is the same until the catalogs change, which reaches a backend as a shared invalidation message (SharedInvalidMessageCounter, as col/track.c keeps the state of the triggers of a
+ * a scope). It is the same until the catalogs change, which reaches a backend as a shared invalidation message (SharedInvalidMessageCounter, as col/v1/track.c keeps the state of the triggers of a
  * journal): the oids are kept for the counter they were found at, and not at all in a transaction with an xid, whose own DDL is not counted before it commits.
  */
 #define JOURNAL_MEMO_N 4
@@ -139,18 +140,19 @@ journals_open(Relation index, int scope, LOCKMODE lock, ScopeJournals *J)
 	if (journals_open_memo(index, scope, lock, J))
 		return true;
 	s = specs->s[scope];
-	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	heap = table_open(sift_scope_fact_oid(index), AccessShareLock);
 	for (int j = 0; j < sift_scope_njournals(s); j++)
 	{
 		AttrNumber	a,
 					b;
 		Relation	rel;
 		Oid			btree = (journal_step(), j == 0) ? sift_scope_relation_index(heap, index, s, &rel, &a, &b) : sift_scope_hop_index(heap, index, s, j, &rel, &a, &b);
-		Oid			joid = sift_scope_hop_journal(rel, j, a, b, btree);
+		Oid			joid = OidIsValid(btree) ? sift_scope_hop_journal(rel, j, a, b, btree) : InvalidOid;
 
 		if (!OidIsValid(joid))
 		{
-			table_close(rel, NoLock);
+			if (rel != NULL)
+				table_close(rel, NoLock);
 			journals_close(J);
 			table_close(heap, NoLock);
 			return false;
@@ -399,7 +401,7 @@ groups_memo_keep(const GroupTags *g, const int64 *now, uint32 n)
 		return;
 	m = &groups_memo[SIFT_RING_SLOT(groups_memo_ring, GROUPS_MEMO_N)];
 	if (m->cx == NULL)
-		m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope groups", ALLOCSET_SMALL_SIZES);
+		m->cx = sift_cache_create_context("sift cache scope groups");
 	MemoryContextReset(m->cx);
 	m->groups = NULL;
 	old = MemoryContextSwitchTo(m->cx);
@@ -426,7 +428,7 @@ groups_fill(SiftConnTags *t, void *arg)
 	}
 	else
 	{
-		Relation	heap = table_open(g->J->index->rd_index->indrelid, AccessShareLock);
+		Relation	heap = table_open(sift_scope_fact_oid(g->J->index), AccessShareLock);
 		uint32		n;
 		int64	   *now = sift_scope_groups(heap, g->J->index, g->J->scope, g->km, g->snap, g->keys, g->nkeys, &n);
 
@@ -645,7 +647,7 @@ refresh_priced(SiftScopeStale *st)
 	return (double) paid >= half;
 }
 
-/* The floor of the index (col/scope_floor.c) is not the journal's position any more: its lineage is another, or the pairs that changed since are many, or the reads have paid for the changed ones what the refresh costs (the entity segments have nothing stored: no floor is stale) */
+/* The floor of the index (col/v1/scope_floor.c) is not the journal's position any more: its lineage is another, or the pairs that changed since are many, or the reads have paid for the changed ones what the refresh costs (the entity segments have nothing stored: no floor is stale) */
 static bool
 scope_floor_stale(SiftScopeStale *st, const SiftMetaPageData *meta, int i)
 {

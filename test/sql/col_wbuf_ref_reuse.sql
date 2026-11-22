@@ -3,7 +3,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET check_function_bodies = off;
 
@@ -26,7 +26,6 @@ END $$;
 
 CREATE TABLE r (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 CREATE INDEX r_ix ON r USING sift_col (id, g, v);
-SET sift.col_wbuf_ref = on;
 INSERT INTO r SELECT i, i % 10, i, 'x' FROM generate_series(1, 2000) i;
 CREATE TEMP TABLE freed AS SELECT ctid AS tid FROM r WHERE id % 4 = 0;
 DELETE FROM r WHERE id % 4 = 0;

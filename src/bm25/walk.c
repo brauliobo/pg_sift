@@ -2,7 +2,6 @@
  * bm25/walk.c - segment inspection and verification: sift_seg_walk (sift.segments, sift.verify, tests).
  */
 #include "core/host.h"
-#include "core/rowmem.h"
 
 #include "bm25/analyze.h"
 #include "bm25/kernels.h"
@@ -194,8 +193,9 @@ verify_dead2(Walk *w)
 	sift_live2_header(&l, &h);
 	if (h.tbl_ndead == h.ndead)
 	{
-		uint32	   *have = sift_rows_alloc(Max(h.nslots, 1) * sizeof(uint32)),
-				   *want = sift_rows_alloc(Max(h.nslots, 1) * sizeof(uint32));
+		/* check-memory: allow the slots of one segment liveness header */
+		uint32	   *have = palloc(Max(h.nslots, 1) * sizeof(uint32)),
+				   *want = palloc(Max(h.nslots, 1) * sizeof(uint32));
 
 		if (w->nslots != h.nslots)
 			corrupt(seg, "The dictionary has %u terms with a slot, the table %u.", w->nslots, h.nslots);

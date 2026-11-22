@@ -19,8 +19,7 @@
 #include "core/cachebudget.h"
 #include "core/limits.h"
 
-#define SEGCACHE_MAX_KB		32768
-#define SEGCACHE_BYTES		((Size) sift_limit(segment_cache_kb, SEGCACHE_MAX_KB) * 1024)
+#define SEGCACHE_BYTES		((Size) sift_backend_cache_kb * 1024)
 
 typedef struct CacheKey
 {
@@ -93,12 +92,6 @@ ent_victim(void)
 	return NULL;
 }
 
-static Size
-ent_bytes(void)
-{
-	return cache_bytes;
-}
-
 static uint64
 ent_oldest(void)
 {
@@ -107,28 +100,26 @@ ent_oldest(void)
 	return e ? e->used : UINT64_MAX;
 }
 
-static void
-ent_evict_oldest(void)
-{
-	ent_drop(ent_victim());
-	SEGCACHE_STAT(evicted);
-}
-
-static const SiftCacheKind seg_kind = {ent_bytes, ent_oldest, ent_evict_oldest};
-
-/* Makes room for need bytes in this cache and the backend's budget by dropping the least recently used entries nobody pins; false when they do not fit */
 static bool
-ent_room(Size need)
+ent_evict_one(void)
 {
-	CacheEnt   *e;
+	CacheEnt   *e = ent_victim();
 
-	while (cache_bytes + need > SEGCACHE_BYTES && (e = ent_victim()) != NULL)
-	{
-		ent_drop(e);
-		SEGCACHE_STAT(evicted);
-	}
-	return cache_bytes + need <= SEGCACHE_BYTES && sift_cache_room(need);
+	if (e == NULL)
+		return false;
+	ent_drop(e);
+	SEGCACHE_STAT(evicted);
+	return true;
 }
+
+static void
+ent_evict_all(void)
+{
+	while (ent_evict_one())
+		;
+}
+
+static const SiftCacheKind seg_kind = {"bm25_segcache", ent_oldest, ent_evict_one, ent_evict_all};
 
 bool
 sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt, void **obj, void **handle)
@@ -138,15 +129,13 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 	Unpin	   *u;
 
 	*handle = NULL;
-	if (cache_bytes > SEGCACHE_BYTES)
-		ent_room(0);
 	if (size <= SEGCACHE_BYTES / 4)
 	{
 		if (cache == NULL)
 		{
 			HASHCTL		ctl = {.keysize = sizeof(CacheKey),.entrysize = sizeof(CacheEnt)};
 
-			cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache segments", ALLOCSET_DEFAULT_SIZES);
+			cache_cx = sift_cache_create_context("sift cache segments");
 			ctl.hcxt = cache_cx;
 			cache = hash_create("sift segment bytes", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 			sift_cache_register(&seg_kind);
@@ -160,7 +149,7 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 		e = hash_search(cache, &k, HASH_FIND, NULL);
 		if (e == NULL)
 		{
-			if (ent_room(size))
+			if (sift_cache_room(size))
 			{
 				void	   *p = MemoryContextAllocAligned(cache_cx, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 
@@ -195,6 +184,24 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 	}
 	*obj = MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 	return false;
+}
+
+bool
+sift_segcache_has(const SiftStreamReader *sr, int kind, uint64 id, Size size)
+{
+	CacheKey	k;
+	CacheEnt   *e;
+
+	if (cache == NULL)
+		return false;
+	memset(&k, 0, sizeof(k));
+	k.rel = sr->index->rd_locator;
+	k.gen = sr->gen;
+	k.id = id;
+	k.size = size;
+	k.kind = kind;
+	e = hash_search(cache, &k, HASH_FIND, NULL);
+	return e != NULL && e->ready;
 }
 
 void

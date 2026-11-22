@@ -250,9 +250,9 @@ def selftest():
             '2026-01-01 [7] LOG:  SIFTMEM stmt pid=7 db=case_a ms=5 anon_kb=9000 d_anon_kb=10 d_hwm_kb=0 top_kb=900 d_top_kb=-50 kept_kb=900 d_kept_kb=-50 cache_kb=100 d_cache_kb=0 sift_kb=0 ctx=- q="select 1"\n'
             '2026-01-01 [7] LOG:  SIFTMEM exit_peak pid=7 db=case_a statements=2 max_anon_kb=9000 max_hwm_kb=12000\n')
         open(f"{d}/vg/1.log", "w").write(
-            "==1== VALGRINDERROR-BEGIN\n==1== Invalid read of size 4\n==1==    at 0x1: memcpy (vg.c:1)\n==1==    by 0x2: merge_run (/w/src/col/maint/merge.c:10)\n==1== VALGRINDERROR-END\n"
+            "==1== VALGRINDERROR-BEGIN\n==1== Invalid read of size 4\n==1==    at 0x1: memcpy (vg.c:1)\n==1==    by 0x2: merge_run (/w/src/col/v1/maint/merge.c:10)\n==1== VALGRINDERROR-END\n"
             "==1== VALGRINDERROR-BEGIN\n==1== 100 bytes in 1 blocks are definitely lost in loss record 5 of 9\n==1==    at 0x3: malloc (vg.c:2)\n==1==    by 0x4: pg_strdup (x.c:3)\n==1== VALGRINDERROR-END\n")
-        open(f"{d}/growth_merge.csv", "w").write("case,site,small_kb,large_kb,growth_kb\nmerge,seg_write (src/col/seg_write/add.c:40),100,900,800\n")
+        open(f"{d}/growth_merge.csv", "w").write("case,site,small_kb,large_kb,growth_kb\nmerge,seg_write (src/col/v1/seg_write/add.c:40),100,900,800\n")
         rep = build([d])
         assert rep["statements"] == 2 and rep["valgrind"]["errors"] == 2, rep["valgrind"]
         assert rep["valgrind"]["with_sift_frame"][0]["frame"].endswith("merge.c:10)"), rep["valgrind"]
@@ -274,7 +274,7 @@ def selftest():
         assert gate([f"{d}/vg"]) == 1
         os.makedirs(f"{d}/leak")
         planted = lambda fn, outer: ("==4== VALGRINDERROR-BEGIN\n==4== 64 bytes in 1 blocks are definitely lost in loss record 9 of 9\n==4==    at 0x3: palloc (mcxt.c:1)\n"
-                                     f"==4==    by 0x4: {fn} (/w/src/col/rowkey.c:7)\n==4==    by 0x5: {outer} (/w/src/col/names.c:9)\n==4== VALGRINDERROR-END\n")
+                                     f"==4==    by 0x4: {fn} (/w/src/col/v1/rowkey.c:7)\n==4==    by 0x5: {outer} (/w/src/col/names.c:9)\n==4== VALGRINDERROR-END\n")
         open(f"{d}/leak/4.log", "w").write(planted("plant", "caller"))
         write_allow = lambda rows: open(f"{d}/allow", "w").write("# c\n" + "".join("\t".join(r) + "\n" for r in rows))
         write_allow([])

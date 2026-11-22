@@ -64,9 +64,9 @@ SELECT cp_check('sift_col', 'cp', 1);
 SELECT cp_check('sift_table', 'cpt', 1, shapes => 1);
 -- a dictionary parsed and kept after enough tests, and one the cache cannot keep
 SELECT cp_check('parsed', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c}, ''item'') > 0'], 1);
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS lowered;
 SELECT cp_check('not kept', 'cp', 34, ARRAY['{c} LIKE ''%.example''', 'strpos({c}, ''item'') > 0'], 1);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 INSERT INTO cp SELECT 50000 + i, 'https://shop' || (i % 50) || '.example/item/' || md5(i::text), 'k' || (i % 40), 'c' || i FROM generate_series(1, 4000) i;
 DELETE FROM cp WHERE id % 11 = 0;
 VACUUM cp;

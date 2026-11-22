@@ -1,6 +1,7 @@
 /*
  * agg/vk/mem.c - the device memory and the small helpers of the Vulkan backend
- * The error of a call, the clock, the signal mask around a driver call, the accessors of a device and its buffers.
+ * The error of a call, the clock, the signal mask around a driver call, the four classes of buffer (device, ReBAR, host, readback), the
+ * budget the driver gives (VK_EXT_memory_budget) and the accessors of a device.
  */
 #include <pthread.h>
 #include <stdio.h>
@@ -48,38 +49,48 @@ sigs_restore(const sigset_t *old)
 	pthread_sigmask(SIG_SETMASK, old, NULL);
 }
 
+void
+account(SiftVk *vk, int64_t delta)
+{
+	vk->accounted += delta;
+	if (vk->account)
+		vk->account(vk->account_arg, delta);
+}
+
 const char *
 sift_vk_error(const SiftVk *vk)
 {
 	return vk ? vk->err : "";
 }
 
-const char *
-sift_vk_device_name(const SiftVk *vk)
+const SiftVkCaps *
+sift_vk_caps(const SiftVk *vk)
 {
-	return vk->props.deviceName;
+	return &vk->caps;
 }
 
 bool
-sift_vk_is_software(const SiftVk *vk)
+sift_vk_usable(const SiftVk *vk)
 {
-	return vk->software;
+	return vk && vk->usable && !vk->lost;
 }
 
-uint64_t
-sift_vk_cache_bytes(const SiftVk *vk)
+void
+sift_vk_set_account(SiftVk *vk, void (*fn) (void *arg, int64_t delta), void *arg)
 {
-	return (uint64_t) vk->nslab * SLAB_BYTES;
+	if (vk->account && vk->accounted)
+		vk->account(vk->account_arg, -vk->accounted);
+	vk->account = fn;
+	vk->account_arg = arg;
+	if (fn && vk->accounted)
+		fn(arg, vk->accounted);
 }
 
-uint32_t
-sift_vk_max_wg(const SiftVk *vk, uint32_t groups, uint32_t nsum)
+void
+sift_vk_test_inject(SiftVk *vk, SiftVkStatus status)
 {
-	uint64_t	per = (uint64_t) (groups ? groups : 1) * (1 + 2 * nsum) * 4;
-	uint64_t	n = RES_CAP / per;
-
-	n = n < vk->props.limits.maxComputeWorkGroupCount[0] ? n : vk->props.limits.maxComputeWorkGroupCount[0];
-	return (uint32_t) (n < WG_CAP / 16 ? n : WG_CAP / 16);
+	vk->test_lost = status == SIFT_VK_LOST;
+	vk->test_timeout = status == SIFT_VK_TIMEOUT;
 }
 
 static int
@@ -93,6 +104,31 @@ memtype(const SiftVk *vk, uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPro
 			return (int) i;
 	}
 	return -1;
+}
+
+/* the bytes of the device local heap that are still free: what the driver says, else three quarters of the heap */
+uint64_t
+heap_budget_free(SiftVk *vk)
+{
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT bud = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+	VkPhysicalDeviceMemoryProperties2 mp2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &bud};
+	uint64_t	best = 0,
+				heap_size = 0;
+	uint32_t	heap = UINT32_MAX;
+
+	for (uint32_t i = 0; i < vk->mp.memoryHeapCount; i++)
+		if ((vk->mp.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && vk->mp.memoryHeaps[i].size > heap_size)
+		{
+			heap = i;
+			heap_size = vk->mp.memoryHeaps[i].size;
+		}
+	if (heap == UINT32_MAX)
+		return 0;
+	if (!vk->caps.ext_budget)
+		return heap_size / 4 * 3;
+	vk->vkGetPhysicalDeviceMemoryProperties2(vk->pd, &mp2);
+	best = bud.heapBudget[heap] > bud.heapUsage[heap] ? bud.heapBudget[heap] - bud.heapUsage[heap] : 0;
+	return best;
 }
 
 void
@@ -110,26 +146,42 @@ buf_free(SiftVk *vk, Buf *b)
 bool
 buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind)
 {
+	uint32_t	fams[2] = {vk->cf, vk->tf};
 	VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = size, .usage = usage, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
 	VkMemoryRequirements mr;
 	VkMemoryAllocateInfo ma = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
 	int			t;
 	VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+	VkMemoryPropertyFlags dl = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 	VkResult	r;
 
 	memset(b, 0, sizeof(*b));
 	b->size = size;
+	if (vk->split_queues)
+	{
+		bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
+		bi.queueFamilyIndexCount = 2;
+		bi.pQueueFamilyIndices = fams;
+	}
 	CK(vk->vkCreateBuffer(vk->dev, &bi, NULL, &b->b));
 	vk->vkGetBufferMemoryRequirements(vk->dev, b->b, &mr);
 	if (kind == K_DEVICE)
 	{
-		t = memtype(vk, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+		t = memtype(vk, mr.memoryTypeBits, dl, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 		if (t < 0)
-			t = memtype(vk, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+			t = memtype(vk, mr.memoryTypeBits, dl, 0);
+	}
+	else if (kind == K_REBAR)
+	{
+		t = memtype(vk, mr.memoryTypeBits, hv | dl, 0);
+		if (t < 0)
+			t = memtype(vk, mr.memoryTypeBits, hv, dl);
+		if (t < 0)
+			t = memtype(vk, mr.memoryTypeBits, hv, 0);
 	}
 	else if (kind == K_HOST)
 	{
-		t = memtype(vk, mr.memoryTypeBits, hv, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		t = memtype(vk, mr.memoryTypeBits, hv, dl);
 		if (t < 0)
 			t = memtype(vk, mr.memoryTypeBits, hv, 0);
 	}
@@ -137,7 +189,7 @@ buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind)
 	{
 		t = memtype(vk, mr.memoryTypeBits, hv | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
 		if (t < 0)
-			t = memtype(vk, mr.memoryTypeBits, hv, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			t = memtype(vk, mr.memoryTypeBits, hv, dl);
 		if (t < 0)
 			t = memtype(vk, mr.memoryTypeBits, hv, 0);
 	}

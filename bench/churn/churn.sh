@@ -17,7 +17,7 @@
 # CHURN_LOG: the server log file of a cluster started with sift.log_min_duration = 0; with it each step also records how many merge steps it ran and the
 # longest (churn.log merges, max_merge_ms): a step holds the maintenance lock for its merge, so that is how long VACUUM and the writers waited at most.
 # HOT=100:10 puts all the updates and deletes in the newest 10% of the ids (a retention window), the case of a rewrite by range
-# (ARM_GUC_<arm>="sift.col_auto_merge_partition_kb=256").
+# (ARM_GUC_<arm>="sift.test_col_partition_kb=256").
 #
 # arms: none = VACUUM only (the built-in policy); worker = VACUUM + the automatic rewrite of sift.col_auto_merge (the session runs the rule the server's own
 # worker applies, sift.col_maintenance_due(index, true), then the work, sift.col_maintain); force = VACUUM + sift.col_promote + sift.col_merge(index, true)

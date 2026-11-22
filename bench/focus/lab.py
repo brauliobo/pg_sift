@@ -134,7 +134,7 @@ class Cluster:
                    f"and name not in ({skip}) and name not like 'lc\\_%' and name not in ('log_timezone', 'default_text_search_config') order by 1").splitlines()
         b = s.psql("load 'pg_sift'; select name || '=' || current_setting(name) from pg_settings where name like 'sift.%' and "
                    "(source <> 'default' or name in ('sift.async_maintenance', 'sift.col_auto_merge', 'sift.col_auto_merge_wal_pct', "
-                   "'sift.col_auto_merge_partition_kb')) order by 1").splitlines()
+                   "'sift.test_col_partition_kb')) order by 1").splitlines()
         return "# settings: " + "; ".join(a + [x for x in b if x.startswith("sift.")])
 
 

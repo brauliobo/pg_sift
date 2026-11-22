@@ -121,9 +121,10 @@ SELECT sift.col_verify('sw_idx', true);
  
 (1 row)
 
--- a segment dictionary the cache cannot hold (dict_cache_kb lowered) is read, and unwrapped, by every test: its blocks take LZ4 where the formula says so, and the segment is
+-- a segment dictionary the cache cannot hold (sift.backend_cache_kb lowered) is read, and unwrapped, by every test: its blocks take LZ4 where the formula says so, and the segment is
 -- of the minor that refuses a 3.5 library
-SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1,dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SET sift.backend_cache_kb = 1;
+SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1', false) IS NOT NULL AS lowered;
  lowered 
 ---------
  t

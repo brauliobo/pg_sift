@@ -65,24 +65,19 @@ acc_free(AggAcc *a, int naggs)
 }
 
 /*
- * A table that cannot spill grows with its groups: past what the planner leaves it, it ends the scan and names what to raise. The memory of the context also holds the
- * sets and values the aggregates keep beside the table, which the bound does not name: the table is held at the bytes the planner prices its groups, and no more than the context.
- * The tables of the processes of a scan with workers do not spill (the planner leaves a scan to one process when its estimate passes hash memory): they have the bound
- * of a misestimate, group_par_factor times hash memory, with the float sums of their lanes.
+ * A table that cannot spill grows with its groups: past its share of hash memory (the processes of a scan with workers divide it), it ends the scan and names what to
+ * raise. The tables of the processes of a scan with workers do not spill (the planner leaves a scan to one process when its estimate passes hash memory).
  */
 void
 table_nospill_check(const AggExec *ex)
 {
-	bool		spills = sift_aggspec_spillable(ex->spec);
-	double		state,
-				limit,
+	double		limit,
 				held;
 
-	if (spills && ex->par == NULL && !IsParallelWorker())
+	if (sift_aggspec_spillable(ex->spec) && ex->par == NULL && !IsParallelWorker())
 		return;
-	limit = spills ? sift_agg_par_bytes() : sift_agg_nospill_bytes(NULL, NULL);
-	held = Min((double) MemoryContextMemAllocated(ex->tcxt, true),
-			   ex->gcap * (group_table_bytes(ex->spec, 1.0, &state) + (ex->lanes ? group_lane_bytes(ex->spec, 1.0) : 0)));
+	limit = sift_agg_nospill_bytes(ex->spec->nworkers);
+	held = (double) MemoryContextMemAllocated(ex->tcxt, true) - ex->tfloor;
 	if (held <= limit)
 		return;
 	par_note_overflow((AggExec *) ex);
@@ -93,16 +88,20 @@ table_nospill_check(const AggExec *ex)
 }
 
 /*
- * The strings a count(DISTINCT) interns are kept to the end of the scan, whatever its groups do: past hash memory the statement runs again as
- * PostgreSQL plans it (agg/cte/rerun.c), whose sort of the values spills at work_mem. A statement that cannot run again keeps them, as it did.
+ * The strings a count(DISTINCT) interns are kept to the end of the scan, whatever its groups do: past its share of hash memory the statement runs again as
+ * PostgreSQL plans it (agg/cte/rerun.c), whose sort of the values spills at work_mem, or, when it cannot run again (a cursor that fetched rows), ends naming what to raise.
  */
 void
 values_nospill_check(const AggExec *ex, int ai)
 {
+	int			ndistinct = 0;
 	double		held,
-				limit = (double) get_hash_memory_limit();
+				limit;
 
-	if (ex->spec->rerun == NULL || (held = ot_bytes(&ex->aot[ai])) <= limit)
+	for (int i = 0; i < ex->spec->naggs; i++)
+		ndistinct += ex->spec->agg[i].kind == SAA_COUNT_DISTINCT;
+	limit = (double) agg_mem_slice(ex, SIFT_BUDGET_HASH_MEM, Max(ndistinct, 1));
+	if ((held = ot_bytes(&ex->aot[ai])) <= limit)
 		return;
 	par_note_overflow((AggExec *) ex);
 	ereport(ERROR,
@@ -212,6 +211,7 @@ groups_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 	ex->seen = nseen;
 	ex->acc = na;
 	ex->gcap = newcap;
+	table_nospill_check(ex);
 }
 
 void

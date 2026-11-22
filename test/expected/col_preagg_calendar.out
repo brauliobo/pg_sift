@@ -29,7 +29,6 @@ SELECT cmo_fill('cmo_seven', 1, 60000);
 (1 row)
 
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo_seven;
-RESET sift.col_format_minor;
 -- the minor of the segments: 8 with calendar dims, 7 with integer min/max only (the data here spans 14 years: a unit stores months)
 SELECT 'cmo' AS tbl, array_agg(DISTINCT format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns'
 UNION ALL SELECT 'cmo_seven', array_agg(DISTINCT format) FROM sift.table_segments('cmo_seven') WHERE kind = 'columns'
@@ -84,7 +83,6 @@ SELECT cmo_fill('cmo', 60001, 90000);
 (1 row)
 
 VACUUM (DISABLE_PAGE_SKIPPING) cmo;
-RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
  minors 
 --------

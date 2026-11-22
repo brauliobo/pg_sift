@@ -42,7 +42,7 @@ teardown
 }
 
 session s1
-setup		{ SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0; }
 step s1run	{ SELECT iso_lk_run(); }
 
 session s2

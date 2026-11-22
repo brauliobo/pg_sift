@@ -1,5 +1,5 @@
 -- The parsed dictionaries of segments are shared between backends (col/dictshm.c): the first backend that parses a dictionary keeps it in shared memory, the
--- next copies it. sift.test_col_dict_shared = 1 shares every dictionary, sift.col_dict_shared_cache_kb = 0 none. Every shape must return the rows of the dictionaries parsed from the
+-- next copies it. sift.test_col_dict_shared = 1 shares every dictionary, sift.shared_cache_kb = 0 none. Every shape must return the rows of the dictionaries parsed from the
 -- segment and of the stock plan, whichever backend parsed them, and a segment a merge or VACUUM rewrote (a new generation) must never be read from the bytes
 -- of the old one. \c is a new backend.
 CREATE EXTENSION pg_sift;
@@ -56,7 +56,7 @@ END $$;
 SELECT sift._test_col_dict_shared_hold(0) IS NOT NULL AS ring_open;
 
 -- not shared: nothing is kept or found
-SET sift.col_dict_shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT snap('off');
 SELECT * FROM shared();
 
@@ -103,18 +103,21 @@ SELECT count(*) AS shapes_checked FROM (SELECT shape FROM seen WHERE label IN ('
 SET sift.test_col_dict_shared = 1;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SET work_mem = '256MB';
 SELECT snap('par_first');
 SELECT value > 0 AS workers_launched FROM sift.stats(local => true) WHERE name = 'workers_launched';
 \c
 SET sift.test_col_dict_shared = 1;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SET work_mem = '256MB';
 SELECT snap('par_second');
 SELECT hits_found AS parallel_copies FROM shared();
 \c
-SET sift.col_dict_shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+SET work_mem = '256MB';
 SELECT snap('par_off');
 SELECT shape FROM seen WHERE label IN ('stock', 'par_first', 'par_second', 'par_off') GROUP BY shape HAVING count(DISTINCT h) > 1;
 

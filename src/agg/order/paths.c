@@ -257,7 +257,7 @@ sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel)
 	foreach_ptr(Node, q, (List *) parse->jointree->quals)
 		if (IsA(q, NullTest) && ((NullTest *) q)->nulltesttype == IS_NOT_NULL && equal(((NullTest *) q)->arg, key))
 		{
-			sift_agg_upper_paths(root, UPPERREL_ORDERED, rel, rel, NULL);
+			sift_agg_v1_upper_paths(root, UPPERREL_ORDERED, rel, rel, NULL);
 			return;
 		}
 }

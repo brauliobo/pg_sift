@@ -28,7 +28,7 @@ fuzz_fn(void *a)
 
 		if (f->len >= 8)
 			memcpy(&n, f->blob + 4, sizeof(n));
-		sift_cc_decode_strs(CurrentMemoryContext, f->blob, f->len, n, &o, &b);
+		sift_cc_decode_strs(CurrentMemoryContext, f->blob, f->len, n, 0, 0, &o, &b);
 	}
 	else if (f->what == 2)
 	{

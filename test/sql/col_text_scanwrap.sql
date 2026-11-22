@@ -67,9 +67,10 @@ SELECT sw_check('promoted');
 SELECT sift.col_merge('sw_idx', true) >= 0 AS merged;
 SELECT sw_check('merged');
 SELECT sift.col_verify('sw_idx', true);
--- a segment dictionary the cache cannot hold (dict_cache_kb lowered) is read, and unwrapped, by every test: its blocks take LZ4 where the formula says so, and the segment is
+-- a segment dictionary the cache cannot hold (sift.backend_cache_kb lowered) is read, and unwrapped, by every test: its blocks take LZ4 where the formula says so, and the segment is
 -- of the minor that refuses a 3.5 library
-SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1,dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SET sift.backend_cache_kb = 1;
+SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1', false) IS NOT NULL AS lowered;
 CREATE TABLE sw_dict (id int, w text) WITH (autovacuum_enabled = off);
 INSERT INTO sw_dict SELECT i, (SELECT string_agg(substr(md5('w' || k), 1, 2 + k % 6), ' ') FROM (SELECT floor(400 * power((hashint8extended(i * 7 + g, 0) & 65535) / 65536.0, 2))::int AS k FROM generate_series(1, 12) g) x) || ' ' || i FROM generate_series(1, 20000) i;
 SET client_min_messages = notice;

@@ -29,8 +29,8 @@ class Tree:
         self.write('pg_sift.control', "default_version = '4.0'\n")
         self.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n## 3.7.0\n')
         self.write('bench/cases.tsv', '# registry\n')
-        self.write('bench/results/cases.tsv', '# results\n' + RESULT_HEAD)
-        self.write('bench/out/README-blocks.md', '# readme\n<!-- bench:faster33:begin -->\nx\n<!-- bench:faster33:end -->\n')
+        self.write('docs/results/cases.tsv', '# results\n' + RESULT_HEAD)
+        self.write('README.md', '# readme\n<!-- bench:faster33:begin -->\nx\n<!-- bench:faster33:end -->\n')
         self.write('scripts/bench-cases.allow', '# waivers\n')
         self.commit('release: 3.7.0')
         self.git('tag', 'v3.7.0')
@@ -60,7 +60,7 @@ class Tree:
 
     def rows(self, cid, arms, version='4.0', file='cases', value='4.0'):
         for arm in arms:
-            self.append('bench/results/%s.tsv' % file, '\t'.join([version, cid, arm, 'ms', value, '', '', '3', '', '']) + '\n')
+            self.append('docs/results/%s.tsv' % file, '\t'.join([version, cid, arm, 'ms', value, '', '', '3', '', '']) + '\n')
 
     def check(self, **kw):
         registry._REGISTRY.clear()   # the registry is read once per root
@@ -186,7 +186,7 @@ class Rows(Fixture):
         self.claim('generic:clickhouse')
         self.t.rows('topn_text_key', ['sift', 'native'])
         self.assertIn('generic:clickhouse', ' '.join(self.messages()))
-        self.t.write('bench/results/generic.tsv', '# generic\n' + RESULT_HEAD)
+        self.t.write('docs/results/generic.tsv', '# generic\n' + RESULT_HEAD)
         self.t.rows('topn_text_key', ['clickhouse'], file='generic')
         self.assertEqual(self.messages(), [])
 
@@ -194,30 +194,30 @@ class Rows(Fixture):
         self.claim()
         self.t.rows('topn_text_key', ['sift', 'native'])
         self.assertEqual(self.messages(), [])
-        self.t.write('bench/out/README-blocks.md', '# readme\n<!-- bench:other:begin -->\nx\n<!-- bench:other:end -->\n')
+        self.t.write('README.md', '# readme\n<!-- bench:other:begin -->\nx\n<!-- bench:other:end -->\n')
         self.assertIn('faster33', ' '.join(self.messages()))
 
     def test_pages_without_any_generated_block_are_one_note_in_warn_mode_and_one_error_when_strict(self):
         self.claim()
         self.t.rows('topn_text_key', ['sift', 'native'])
-        self.t.write('bench/out/README-blocks.md', '# readme\n')
+        self.t.write('README.md', '# readme\n')
         errors, notes = self.t.check()
         self.assertEqual(errors, [])
-        self.assertTrue(any('no generated block in bench/out/README-blocks.md' in n for n in notes))
+        self.assertTrue(any('no generated block in README.md' in n for n in notes))
         self.assertEqual(len([m for m, _ in self.t.check(strict=True)[0] if 'no generated block' in m]), 1)
 
     def test_without_results_the_row_checks_are_one_note_in_warn_mode_and_an_error_when_strict(self):
         self.claim()
-        os.remove(os.path.join(self.t.root, 'bench/results/cases.tsv'))
+        os.remove(os.path.join(self.t.root, 'docs/results/cases.tsv'))
         errors, notes = self.t.check()
         self.assertEqual(errors, [])
-        self.assertTrue(any('no bench/results/cases.tsv' in n for n in notes))
-        self.assertTrue(any('no bench/results/cases.tsv' in m for m, _ in self.t.check(strict=True)[0]))
+        self.assertTrue(any('no docs/results/cases.tsv' in n for n in notes))
+        self.assertTrue(any('no docs/results/cases.tsv' in m for m, _ in self.t.check(strict=True)[0]))
 
     def test_strict_wants_rows_measured_after_the_last_change_of_the_code(self):
         self.claim()
         build = self.t.git('rev-parse', 'HEAD').strip()
-        self.t.write('bench/results/cases.tsv', '# results\n# build: %s\n%s' % (build, RESULT_HEAD))
+        self.t.write('docs/results/cases.tsv', '# results\n# build: %s\n%s' % (build, RESULT_HEAD))
         self.t.rows('topn_text_key', ['sift', 'native'])
         self.t.commit('bench: rows')
         self.assertEqual(self.messages(strict=True), [])
@@ -279,11 +279,11 @@ class Figures(Fixture):
 
 class Pages(Fixture):
     def test_strict_fails_on_every_not_measured_footer_and_warn_mode_only_counts_them(self):
-        self.t.write('bench/out/BENCHMARKS.md', 'a\n`n/a`: not measured under 3.7 yet.\nb\n`n/a`: not measured under 3.7 yet.\n')
+        self.t.write('docs/BENCHMARKS.md', 'a\n`n/a`: not measured under 3.7 yet.\nb\n`n/a`: not measured under 3.7 yet.\n')
         errors, notes = self.t.check()
         self.assertEqual(errors, [])
         self.assertTrue(any('2 table footers say "not measured"' in n for n in notes))
-        self.assertEqual(len([m for m, _ in self.t.check(strict=True)[0] if 'bench/out/BENCHMARKS.md' in m]), 2)
+        self.assertEqual(len([m for m, _ in self.t.check(strict=True)[0] if 'docs/BENCHMARKS.md' in m]), 2)
 
 
 class HostPlan(Fixture):
@@ -300,11 +300,11 @@ class HostPlan(Fixture):
     def test_without_results_every_case_of_a_claim_is_to_be_measured(self):
         self.t.write('CHANGELOG.md', '# Changelog\n\n## Unreleased\n\n%s\n\n## 3.7.0\n' % CLAIM_LINE)
         self.t.case('topn_text_key', 'a top-N over a text key reads a tenth of the blocks')
-        os.remove(os.path.join(self.t.root, 'bench/results/cases.tsv'))
+        os.remove(os.path.join(self.t.root, 'docs/results/cases.tsv'))
         self.assertEqual(coverage.host_plan(self.t.root), ['bench/bench cases --cases topn_text_key --rows 1000000 --docs'])
 
     def test_the_footers_become_the_release_command_with_the_cells_of_the_competitors_measured_again(self):
-        self.t.write('bench/out/README-blocks.md', '`n/a`: not measured under 3.7 yet.\n')
+        self.t.write('README.md', '`n/a`: not measured under 3.7 yet.\n')
         self.assertIn('bench/bench release --remeasure-all --budget 160', coverage.host_plan(self.t.root))
 
 

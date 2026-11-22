@@ -4,7 +4,7 @@
 -- to the end: where the statement can run again as PostgreSQL plans it (a SELECT that calls no volatile function: also a cursor's first fetch, a function's query
 -- with parameters, a prepared statement, a scan with workers that failed) it does; where it cannot (an INSERT, a volatile function) the planner leaves the
 -- statement to the normal plan when the most groups the source can make would not fit hash memory.
--- A node that can spill but runs with workers does not spill (each process holds its groups): past group_par_factor times hash memory it runs again too.
+-- A node that can spill but runs with workers does not spill (each process holds its groups): past its share of hash memory it runs again too.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -20,7 +20,6 @@ INSERT INTO stale SELECT i, i, i % 100, 'a' || (i % 13), i % 1000 FROM generate_
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SET sift.agg_force = on;
-SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
 
 -- one query for each kind, with the condition lim >= 0 that every row passes; its rows are (k, n, x)
 CREATE TABLE kinds (kind text PRIMARY KEY, q text);

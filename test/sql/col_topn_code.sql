@@ -120,10 +120,10 @@ SELECT oc_check($q$SELECT id, u, b FROM oc ORDER BY u, b DESC, id LIMIT 30 OFFSE
 RESET work_mem;
 
 -- a dictionary cache that keeps almost nothing: the dictionaries of the leaves of a scan are parsed again between its units, the answers do not change
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS tiny_cache;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS tiny_cache;
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_filter', 'bytea_desc', 'text_asc', 'text_desc', 'text_same_prefix', 'two_keys', 'text_then_uuid') ORDER BY tag COLLATE "C";
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 -- a dictionary above the limit of entries an order code is made for (lowered here): the rows are compared as bytes
 SELECT set_config('sift.test_limits', 'topn_code_entries=50', false) IS NOT NULL AS low_limit;
@@ -176,7 +176,6 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN 
 INSERT INTO ot (id, g, u, s, sp) SELECT i, i % 7, md5('n' || i)::uuid, 'Zz' || md5('n' || i), 'prefix_c' || i FROM generate_series(6001, 6300) i;
 DELETE FROM ot WHERE id % 61 = 0;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-RESET sift.table_dict_lookup;
 
 -- by default the order of a dictionary that takes a quarter of the segment at most is stored: the units are ordered by exact codes
 CREATE TABLE otd (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text DEFAULT repeat('x', 1500)) USING sift_table;

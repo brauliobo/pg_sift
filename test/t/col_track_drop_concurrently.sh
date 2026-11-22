@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DROP INDEX CONCURRENTLY of a sift_col index that tracks its changes, beside writers (an update, a delete and an insert-on-conflict in each transaction), and when it fails.
-# The index depends on its two triggers and the transaction that deletes it removes them (src/col/track.c), so the drop needs no ACCESS EXCLUSIVE lock before its last step and
+# The index depends on its two triggers and the transaction that deletes it removes them (src/col/v1/track.c), so the drop needs no ACCESS EXCLUSIVE lock before its last step and
 # finds no transaction id. The writers beside it must not fail or deadlock (they skip an index the drop has marked dead, whose lock it holds), the copy of a swap must keep the
 # triggers of the index that stays, a drop that times out waiting for a writer leaves a valid-looking tracked table (the index invalid, its triggers in place) that drops on the next try,
 # and no run leaves a trigger that no index depends on.
@@ -51,7 +51,7 @@ check "... the heap-free read, the checked read and the heap give one answer" di
 # 2. the tracked index itself, under the writers: its drop ends the triggers, the writers go on
 d0=$(deadlocks)
 pgbench_bg n 8 "$((SECS / 2 + 3))" -f "$D/w.sql"
-sleep 1
+pgbench_up n 8
 sql n "DROP INDEX CONCURRENTLY h_x" >/dev/null 2>"$D/drop.err" || diag "$(cat "$D/drop.err")"
 wait "$PGBENCH_PID"
 wait_for '[[ $(ntrig) == 0 ]]' 120

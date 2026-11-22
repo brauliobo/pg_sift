@@ -29,7 +29,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT name, (same(q)).* FROM q ORDER BY name;
 RESET max_parallel_workers_per_gather;

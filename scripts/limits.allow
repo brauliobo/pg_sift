@@ -11,7 +11,6 @@ MERGE_MAX_BYTES	no caller left: delete it in a cleanup
 ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of sift.col_unit_rows (the directory of a unit is read with the head of its record)
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
 POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
-PROBE_MAX_ENTRIES	size of the table of one planner probe: an internal bound with no visible effect
 RANK_MAX_ROWS	most rows the SiftSort node ranks in memory: more go to the tuplesort, as a Sort sorts them (the rows are the same, the packed rank keys of 40 million rows are 320 MB)
 SIFT_AGG_MAX_PARAMS	derived array size of the executor parameters
 SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid input
@@ -41,12 +40,6 @@ SIFT_TBL_MAX_OFF	MaxHeapTuplesPerPage, a PostgreSQL bound
 SIFT_TBL_MAX_WBUF_PAGES	array size of the page list of one write buffer: see write_buffer_kb and tx_write_buffers
 SIFT_TBL_ROW_MAX_INLINE	a sift_table row above half a page goes to overflow pages: a layout threshold, not a limit
 SIFT_KTAB_MAX_GROUPS	the keys of a leaf in a segment beyond which the accumulator of its key table stops: a memory bound, a table that large takes more than 3% of any segment
-SIFT_VK_MAX_GROUPS	shader job layout of the opt-in Vulkan backend
-SIFT_VK_MAX_PRED	shader job layout of the opt-in Vulkan backend
-SIFT_VK_MAX_RS	shader job layout of the opt-in Vulkan backend
-SIFT_VK_MAX_SLOTS	shader job layout of the opt-in Vulkan backend
-SIFT_VK_MAX_SUM	shader job layout of the opt-in Vulkan backend
-SIFT_VK_MAX_UNITS	shader job layout of the opt-in Vulkan backend
 VK_MAX_MEMORY_HEAPS	constant of the Vulkan API
 VK_MAX_MEMORY_TYPES	constant of the Vulkan API
 VK_MAX_PHYSICAL_DEVICE_NAME_SIZE	constant of the Vulkan API
@@ -63,23 +56,175 @@ FOUND_MAX_PROBES	keys deleted or changed in a parent that a join answered from t
 CONN_TAGS_MAX_KEYS	the keys of a read past which its journal records are not filtered by their key tag (the tags of that many keys leave few records out): a cost bound, the rows are the same
 BLK_SLOTS	layout: the offsets of one scoring block, SIFT_BLK_PAGES pages of SIFT_KERN_SLOTS
 SIFT_KERN_SLOTS	layout: the offsets of one heap page in the offset mask (SIFT_OFFMASK_WORDS words of 64 bits)
-CUBE_SET_SLOTS	size of the probe table of one histogram dimension, a power of two over twice its groups (col/keycols/cube.c); the table is local to the call
+CUBE_SET_SLOTS	size of the probe table of one histogram dimension, a power of two over twice its groups (col/v1/keycols/cube.c); the table is local to the call
 ROWS_SLOTS	size of the probe table that counts the distinct pairs of a stretch, a power of two over the cells a unit may keep; it stops counting at its limit
-PAGG_SLOTS	size of the probe table of the histogram sizing of the autocut (col/autocut/size.c); the table is local to the call
 DENSE_SLOTS	size of the hash over the classes of a dense lookup table, four times DENSE_MAX_CLASSES; past DENSE_MAX_CLASSES the table is hashed row by row
 F_SLOTS	a flag bit of a shared dictionary (the slots form), not a size
 KEYS_DENSE_SLOTS	slots a key needs in a bitmap before a sorted array is used instead: a speed threshold, the keys are the same
 MEMO_SLOTS	slots of the memo of the rows of a child scan that a query shares between its workers (agg/memo.c): an entry is stored only while the table is half full and the 32 MB arena has room, the others are computed again
 NDICT_SLOTS	dictionaries an aggregate scan keeps open at one time (agg/leaf.c): the least recently used one is replaced
-PEND_SLOTS	indexes whose rows a backend buffers for one commit (col/wbuf/pending.c): the rows of another index are written to its lane at once
+PEND_SLOTS	indexes whose rows a backend buffers for one commit (col/v1/wbuf/pending.c): the rows of another index are written to its lane at once
 PROBE_AHEAD_SLOTS	slots above which the group probe prefetches (agg/group/gids.c): a speed threshold, the groups are the same
-SET_MEMO_SLOTS	entries of the memo of the ranges of one probe, replaced in turn (col/amscan/ranges.c)
-TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise append (col/supersede.c): when none is free every held buffer goes to the log and the first is reused
+SET_MEMO_SLOTS	entries of the memo of the ranges of one probe, replaced in turn (col/v1/amscan/ranges.c)
+TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise append (col/v1/supersede.c): when none is free every held buffer goes to the log and the first is reused
 SIFT_TOMB_PRESSURE_ENTRIES	the length of the tombstone log of a sift_table at which the maintenance worker is asked for: a scheduling threshold, with no effect on what a statement may do
 SIFT_TOMB_SYNC_ENTRIES	the length of the tombstone log of a sift_table past which a ticking backend leaves the count of its tombstones to the worker: a scheduling threshold, with no effect on what a statement may do
-REFILL_SAMPLE_ENTRIES	the entries of each sampled unit that go to the sample of the key ranges of a refill sort (col/maint/scope.c): the size of a sample, the ranges only come out less even from a smaller one
-SIFT_COL_BTREE_WORKERS	participants of a build through a btree on the key at most (the directory holds the segments of each): a share of the directory, not a size a table may reach (col/build/btree_par.c)
-SIM_MAX_BLOCKS	blocks the cache of the choice between the btree and the key ranges simulates at most (the cache is scaled down by a power of two to it): bounds the memory of the walk, not what a table may hold (col/build/btree_pick.c)
-COST_MIN_US	the range (microseconds) a measured cost of a read of the heap is held to by the choice between a btree on the key and the key ranges (col/build/btree_probe.c): a read of a page in the memory of the system and a seek of a disk that spins; a noise bound of the measurement, not a size a table may reach
+REFILL_SAMPLE_ENTRIES	the entries of each sampled unit that go to the sample of the key ranges of a refill sort (col/v1/maint/scope.c): the size of a sample, the ranges only come out less even from a smaller one
+SIFT_COL_BTREE_WORKERS	participants of a build through a btree on the key at most (the directory holds the segments of each): a share of the directory, not a size a table may reach (col/v1/build/btree_par.c)
+SIM_MAX_BLOCKS	blocks the cache of the choice between the btree and the key ranges simulates at most (the cache is scaled down by a power of two to it): bounds the memory of the walk, not what a table may hold (col/v1/build/btree_pick.c)
+COST_MIN_US	the range (microseconds) a measured cost of a read of the heap is held to by the choice between a btree on the key and the key ranges (col/v1/build/btree_probe.c): a read of a page in the memory of the system and a seek of a disk that spins; a noise bound of the measurement, not a size a table may reach
 COST_MAX_US	the upper end of that range
-PRICE_BYTES	bytes of rows the pricing of the key ranges' files may take (col/build/spill.c): bounds the memory of the pricing, not what a table may reach
+PRICE_BYTES	bytes of rows the pricing of the key ranges' files may take (col/v1/build/spill.c): bounds the memory of the pricing, not what a table may reach
+WORKER_SLOTS	slots of the table of running workers in shared memory (core/worker.c): the maximum of sift.max_maint_workers, which docs/OPTIONS.md lists with the setting
+SIFT_CACHE_MAX_KINDS	the table of the kinds of cache that register with the backend cache budget: one row for each cache of the source tree, fixed when the code is
+SIFT_MEM_MAX_BLOCK	the largest block (256 kB) a transient allocation of a tracked context takes, so that freeing it returns whole blocks to the allocator
+SIFT_PART_LOCK_SLOTS	the virtual page locks of the partitions of a relation (core/part_lock.h): a part id is taken modulo it, so two partitions may share a lock and wait for each other; no count is refused
+SIFT_SHM_MANIFEST_SLOTS	the slots of the manifest registry (core/shm_manifest.h): an index the registry has no slot for is read from its pages, and the least used slot is given up; no count is refused
+SIFT_F2_MAX_RANGES	key ranges of one predicate that the zones of a part prune: a speed threshold, the rows are the same
+SIFT_FSM_CLASS_QUEUE	the tag of the queue of released extents among the lists of the allocator (a list is told by it), not a bound
+SIFT_FSM_MAX_EXTENT	the largest size class of the allocator of format major 2: derived from the number of classes
+SIFT_FSM_MAX_SLABS	the metadata slabs the root page of the allocator holds (core/fsm.h): a bound of the page layout, each slab holds 256 metadata pages
+SIFT_L0_SLAB_MAX_PAGES	the pages of the L0 slab of a partition (col/l0_slab.h): a micro-part is made from the slab before it grows past it, so no table reaches it
+SIFT_NULL_SPARSE_MAX_DIV	the share of nulls from which a list of them is not written: an encoding choice with no visible effect
+SIFT_PARTDIR_MAX_LEVEL	the levels of the partition directory above its leaves (core/manifest.h): a bound of the page layout, millions of partitions away
+SIFT_PART_LOCK_SLOTS	the page locks that partitions share by their number (core/meta.h): a collision of two partitions waits, the rows are the same
+SIFT_QSET_SLOTS	the relations the shared set of quarantined indexes holds (core/quarantine_set.h): past it the quarantine is refused with a hint to REINDEX
+SIFT_FSST_MAX_PERMILLE	the share of its raw bytes a string chunk may take coded for the coding to be kept: a size choice of the writer, the strings read back are the same
+SIFT_FSST_MAX_SYMBOLS	array size of the symbol table of a string chunk: a property of the coding, not a setting
+SIFT_META_INLINE_MAX_PARTS	the parts of a partition that its manifest entry keeps inline: a layout threshold, the rows are the same either way
+SIFT_TRIGRAM_MAX_BLOCKS	the most blocks of the substring filter of one granule: a size bound of a summary, a granule that needs more keeps none and is read
+SIFT_ALP_RD_MAX_LEFT	the widest left part (bits) of a split of a double in the ALP RD coding of a granule: a property of the coding, the values read back are the same
+SIFT_MAX_PART_LEVEL	the levels of the parts of a partition above level 0 (col/f2/compact.h): a compaction policy, no part is rewritten past it and the rows are the same
+SIFT_VSTR_MAX_STEPS	array size of the steps of one text program: held by an assertion where a step is added
+SIFT_WINX_MAX_OFFSET	the largest LAG/LEAD offset the window operator reads: a window with a larger offset is not planned by it and PostgreSQL plans it, the rows are the same
+SIFT_V6_STREAM_MAX_AGGS	the aggregates one stream node folds: a statement with more is not planned by the stream and PostgreSQL plans it, the rows are the same
+SIFT_V6_STREAM_MAX_FILTERS	the FILTER clauses one stream node folds: a statement with more is not planned by the stream and PostgreSQL plans it, the rows are the same
+AK6_GID_MAX_NOSEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+BIAS_LIMIT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+DENSE_MAX_GROUPS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+DIS_MAX_LEVEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+DIST_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+F2_AUTO_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+F2_MAX_RUNS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+GJ_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+JOIN_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+MAX_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SC_LOW_SPEED_LIMIT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_ALPRD_MAX_TZ	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_APIPE_MAX_OPS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_BATCH_MAX_ROWS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_BATCH_MIN_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_CARD_MAX_PREDS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_CLAUSE_MAX_PREDS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_CLUSTER_HASH_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_CLUSTER_MAX_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_CLUSTER_MAX_NDV	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_CODEC_FSST_MAX_PCT	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_COLS_PER_REC	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_PAGES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_PAYLOAD	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_RATIO_DEN	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_RATIO_NUM	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_REC_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COL_DELTA_MAX_ROW_ORDINAL	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_COMB_POOL_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_COMPACT_LOCK_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_DEFAULTS_MAX_ATTNUM	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_DEFAULTS_MAX_VALUE	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_DISTINCT_MAX_LEVEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_DV_DELTA_MAX_MARKS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_DVG_RLE_MAX_UNIQ	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_EPQ_ACK_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_F2_DIFF_MAX_LEAVES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_F2_GCACHE_MAX_GRANULES	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_F2_KLL_MAX_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_F2_PULL_MAX_CHILD	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_F2_PULL_MAX_COLS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_F2_PULL_MAX_MASKS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_GJOIN_MAX_LEVEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_GPU_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_HORIZON_RING_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_HT_MAX_LOAD_DEN	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_HT_MAX_LOAD_NUM	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_HT_MIN_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_KEY_PLAN_MAX_RANGES	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_KLL_MAX_LEVELS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_KLL_SEC_MAX_ENTRIES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_L0_GC_MAX_BATCH	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_L0_GC_MAX_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_L0_GC_MAX_DELS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_L0_GC_MAX_REFS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_L0_GC_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_L0_HEAPREF_MAX_PAGES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_LOCK_PART_ESC_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_MAINT_BACKOFF_MAX_MS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_MAINT_MAX_WORKERS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_MAINT_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_MAX_RADIX_PARTS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_MC_MAX_BATCH	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_MC_MAX_RELEASE	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_MC_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_PACKED_MAX_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_PACKED_SLOT_MAX_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_PF_MAX_GAP_PAGES	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_PIVOT_MAX_FILTERS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_POINT_MAX_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_POINT_MAX_PCT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_POINT_MAX_VALUES	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_PROJ_MAX_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_PROJ_MAX_DIRTY_VM_BLKS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_RADIX_MQ_WIDE_WORKERS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_REMOTE_MAX_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_ROLLUP_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_ROLLUP_MAX_SETS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_ROLLUP_MAX_VALS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_SCOPE_OVERLAY_MAX_ROWS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_SHM_MAX_PROCS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_SIP_MAX_BYTES	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_SIP_MAX_FPR	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_SPILL_MAX_DEPTH	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_SPILL_MAX_PARTS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_STAR_MAX_DIMS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_STAR_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_STAR_MAX_PAY	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_STAR_MAX_PAY_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_STREAM_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_STREAM_MAX_VALS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_STREAM_NO_LIMIT	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_TAIL_MAX_MOVES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_TBL_LOG_MAX_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_TIDB_MAX_OFFSET	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_TIER_MAX_REFS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_TOURN_MAX_K	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_TOURN_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_UNIT_QUEUE_MAX_CLAIM	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_V6_FUSE_MAX_ARMS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_BOUNDS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_DCOLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_FCOLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_FILTERS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_INSETS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_V6_MAX_MASKS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_VEXPR_MAX_ARGS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_VEXPR_MAX_MASKS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_VEXPR_MAX_OPS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_VEXPR_MAX_REGS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_VK_AK_MAX_F	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_VK_DEC_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
+SIFT_VM_DIRTY_MAX_BLOOM_BLOCKS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SIFT_WIN_MAX_FUNCS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_WIN_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_WIN_MAX_OFFSET	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_WIN_NO_LIMIT	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_WINX_MAX_FILTERS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_WINX_MAX_FUNCS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_WINX_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
+SIFT_ZSTD_DICT_MAX_BYTES	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SORT_LIMIT_GUESS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+SORT_RESIDUAL_MAX_ROWS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+VK_MAX_EXTENSION_NAME_SIZE	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+VM_SCAN_MAX_BLKS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+WARN_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement

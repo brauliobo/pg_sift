@@ -5,8 +5,8 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 CREATE FUNCTION reads(q text, OUT same boolean, OUT scans text, OUT leaf_reads int, OUT heap_fetches int, OUT proofs int)
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -37,8 +37,8 @@ INSERT INTO fact SELECT i, 1 + (i::bigint * 7919) % 20000, i % 1000, i % 3 = 0 F
 CREATE INDEX fact_col ON fact USING sift_col (id, dim_id, v, ok);
 NOTICE:  sift_col index "fact_col" connected to dim(id) through foreign key "fact_dim_id_fkey"
 HINT:  connect = 'off' on the index turns it off.
-NOTICE:  sift_col index "fact_col": 4 automatic choices
-DETAIL:  key_columns = dim_id; key_cut = dim_id; order_array_columns = v; track_changes = id
+NOTICE:  sift_col index "fact_col": 3 automatic choices (key_columns, order_array_columns, track_changes)
+DETAIL:  key_columns = dim_id; order_array_columns = v (second order by dim_id: entity); track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('fact_col');
 NOTICE:  sift_col index "fact_col" is column format minor 38, which a library before 3.7 cannot read
 DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('fact_col') says how to turn each choice off.

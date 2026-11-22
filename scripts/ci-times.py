@@ -53,7 +53,7 @@ def quick_tier(job):
 
 
 def flavour(job):
-    # the column of the weights a job feeds: its PostgreSQL major, 19 (built from git) and arm64 each have their own timings
+    # the column of the weights a job feeds: its PostgreSQL major and arm64 each have their own timings
     return 'arm' if 'arm64' in job['name'] else int(PG_NAME.search(job['name'])[1])
 
 
@@ -130,7 +130,7 @@ def weights(runs, cache, floor, in_tier):
             for test, status, secs in parse(job_log(run, j['databaseId'], cache))[0]:
                 if status == 'PASS':
                     per[flavour(j)][test].append(secs)
-    print('# job\tPostgreSQL 17 lane seconds\t18\t19 (built from git)\tarm64 (18): the median of the passing jobs of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10')
+    print('# job\tPostgreSQL 17 lane seconds\t18\t19\tarm64 (18): the median of the passing jobs of runs ' + ' '.join(map(str, runs)) + ' (scripts/ci-times.py --weights; name three or more); the shards are cut by these, the other jobs weigh 10')
     rows = [(test, *(pick(per, test, f) for f in FLAVOURS)) for test in set().union(*(set(per[f]) for f in FLAVOURS))]
     for row in sorted(rows, key=lambda r: (-max(r[1:]), r[0])):
         if max(row[1:]) >= floor:

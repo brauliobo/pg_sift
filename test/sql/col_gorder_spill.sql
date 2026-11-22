@@ -1,10 +1,10 @@
--- The entries of an order array that a segment writer cannot hold are written to temp files as sorted runs and merged back in order (col/spool.c): the arrays of an index built with a run
+-- The entries of an order array that a segment writer cannot hold are written to temp files as sorted runs and merged back in order (col/v1/spool.c): the arrays of an index built with a run
 -- of a few entries are those of the build that holds them all, for every kind of leaf (integers with NULL rows, a time, a text under the C collation and under an ICU one, an array that
 -- keeps the ends only), and the runs are merged in passes of at most 64 files.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 
 CREATE TABLE gs (id int, k int, ts timestamp, sc text COLLATE "C", sf text COLLATE "en-x-icu", amount int) WITH (autovacuum_enabled = off);

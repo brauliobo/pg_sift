@@ -76,9 +76,24 @@ sift_sr_read_ranges(const SiftStreamReader *sr, const SiftSrRange *r, int n)
 	return 0;
 }
 
+/* no ring to read through */
+void
+sift_sr_set_strategy(SiftStreamReader *sr, struct BufferAccessStrategyData *bas)
+{
+}
+
+/* the pager and the page cache of SQLite bring the pages in */
+uint64
+sift_sr_prefetch_multi(const SiftMultiRange *ranges, int n)
+{
+	return 0;
+}
+
+/* the page a get returned is a pinned one, with no lock to drop: its pointer is not used after this, and a call of the extension ends with no page pinned */
 void
 sift_sr_unlock(SiftStreamReader *sr)
 {
+	sift_sr_release(sr);
 }
 
 /* nothing is read ahead */

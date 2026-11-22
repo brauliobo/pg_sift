@@ -22,7 +22,7 @@ setup
 		PERFORM set_config('sift.test_count_gate', 'off', true);
 		PERFORM set_config('enable_indexscan', 'off', true);
 		PERFORM set_config('enable_bitmapscan', 'off', true);
-		PERFORM set_config('sift.enable_count', 'off', true);
+		PERFORM set_config('sift.enable_scan', 'off', true);
 		PERFORM set_config('sift.enable_scan', 'off', true);
 		PERFORM set_config('enable_seqscan', 'on', true);
 		SELECT count(*) INTO b FROM iso_bd WHERE body ~ '(^| )express( |$)';

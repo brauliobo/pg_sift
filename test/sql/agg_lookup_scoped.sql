@@ -2,6 +2,7 @@
 -- report does not classify or load the whole table. The plans are the planner's own (nothing is forced): the report of the whole table is the scan's, the scoped ones are the
 -- scan's only when it reads the few rows of the scope, and the answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 

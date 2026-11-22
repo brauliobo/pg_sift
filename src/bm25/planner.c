@@ -19,6 +19,9 @@
 
 #include "agg/agg.h"
 #include "agg/plan_int.h"
+#include "agg/v6/v6.h"
+#include "agg/v6/v6_join.h"
+#include "agg/v6/v6_live.h"
 #include "core/compat.h"
 #include "core/visibility.h"
 #include "bm25/am.h"
@@ -242,6 +245,11 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 {
 	if (prev_join_hook)
 		prev_join_hook(root, joinrel, outerrel, innerrel, jointype, extra);
+	if (sift_v6_rels_have_index(root, joinrel->relids))
+	{
+		sift_agg_v6_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
+		sift_agg_v6_asof_paths(root, joinrel, outerrel, innerrel, jointype, extra);
+	}
 	if (!holds_all_rels(root, joinrel))
 		carry_join_scores(root, joinrel);
 }
@@ -363,7 +371,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 		ps->filter = sift_filter_bitmap_path(root, rel);
 		ps->filter_looked = true;
 	}
-	scan_est(root, rel, &c, mode, k, ps->filter, &est);
+	scan_est(root, rel, &c, mode, ps->filter, &est);
 	if (mode == SIFT_MODE_RANKED && late_quals(root, rel, &c, &est.sc, k0))
 	{
 		int64		asked = joined_limit(root, rel, k0, est.sc.pass, c.semi_rels);
@@ -413,12 +421,13 @@ publish_paths(PathSearch *ps, RangeTblEntry *rte)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
 				 errdetail("A ranked scan counts the rows that the policy hides in the scores."),
-				 errhint("A superuser can allow it for a role with sift.rls_scores = on (docs/USAGE.md, \"Row-level security\").")));
+				 errhint("A superuser can allow it for a role with sift.rls_scores = on (docs/SEARCH.md, \"Row-Level Security\"), or omit sift.score() where RLS applies.")));
 	else if (ps->only_best && is_partition(rel) && has_match_clause(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift.score() needs a sift index on every partition the query reads"),
-				 errdetail("\"%s\" has no sift index that answers the @@> condition.", get_rel_name(rte->relid))));
+				 errdetail("\"%s\" has no sift index that answers the @@> condition.", get_rel_name(rte->relid)),
+				 errhint("Create a matching USING sift index on the partitioned table or on every partition the query reads.")));
 }
 
 /*
@@ -441,6 +450,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	{
 		agg_range_join_rows(root, rel, rte);
 		sift_agg_minmax_paths(root, rel);
+		if (sift_v6_rels_have_index(root, rel->relids))
+			sift_agg_v6_rel_paths(root, rel, rti, rte);
 	}
 	if (rte->rtekind == RTE_CTE)
 		derived_cte_rows(root, rel);
@@ -528,7 +539,7 @@ count_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_
 	CustomPath *cp;
 	RangeTblEntry *rte;
 
-	if (stage != UPPERREL_GROUP_AGG || !sift_enable_count || sift_catalog()->am == InvalidOid ||
+	if (stage != UPPERREL_GROUP_AGG || !sift_enable_scan || sift_catalog()->am == InvalidOid ||
 		!parse->hasAggs || parse->groupClause != NIL || parse->groupingSets != NIL || parse->hasWindowFuncs ||
 		parse->hasTargetSRFs || parse->havingQual != NULL || parse->commandType != CMD_SELECT ||
 		root->rowMarks != NIL || input_rel->reloptkind != RELOPT_BASEREL ||
@@ -555,6 +566,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
 	count_upper_paths(root, stage, input_rel, output_rel);
 	sift_agg_upper_paths(root, stage, input_rel, output_rel, extra);
+	sift_agg_v6_live_upper_paths(root, stage, input_rel, output_rel, extra);
 	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
 	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
 		carry_join_scores(root, input_rel);
@@ -623,6 +635,10 @@ sift_planner_init(void)
 {
 	RegisterCustomScanMethods(&sift_scan_plan_methods);
 	RegisterCustomScanMethods(&sift_count_plan_methods);
+	RegisterCustomScanMethods(&sift_agg_v6_plan_methods);
+	RegisterCustomScanMethods(&sift_agg_v6_join_plan_methods);
+	RegisterCustomScanMethods(&sift_agg_v6_asof_plan_methods);
+	sift_agg_v6_live_register();
 	prev_pathlist_hook = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = sift_set_rel_pathlist;
 	prev_join_hook = set_join_pathlist_hook;

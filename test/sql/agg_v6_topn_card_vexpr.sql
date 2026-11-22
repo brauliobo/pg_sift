@@ -1,0 +1,335 @@
+-- The Top-N tournament (src/agg/topn_v6.c), the cardinality estimator (src/agg/plan/card_est.c) and the numeric, calendar and boolean programs of the
+-- expression machine (src/agg/vexpr*.c), each held to PostgreSQL's own answer over the same rows. The data is made by arithmetic, so that the output does
+-- not depend on the version.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET extra_float_digits = 1;
+SET TimeZone = 'Etc/GMT-3';
+
+-- ---------------------------------------------------------------------------------------------------------------------------------------------------
+-- Top-N tournament: the key tuples of ORDER BY .. LIMIT .. OFFSET are PostgreSQL's, for every order of the keys, with ties, over partitions of parts of
+-- granules, a slab of rows no zone describes, and 1 or 4 participants that share the bound
+-- ---------------------------------------------------------------------------------------------------------------------------------------------------
+-- float8 keys are an int64 in PostgreSQL's order: -Infinity < numbers < +Infinity < NaN, -0 = 0
+CREATE TABLE ff (x float8);
+INSERT INTO ff VALUES (0), ('-0'), (1.5), (-2.5), ('Infinity'), ('-Infinity'), ('NaN'), (1e308), (-1e308), (5e-324), (-5e-324), (1), (2);
+SELECT count(*) AS float_pairs, count(*) FILTER (WHERE (a.x < b.x) IS DISTINCT FROM (sift._test_f64_order(a.x) < sift._test_f64_order(b.x))
+                                                 OR (a.x = b.x) IS DISTINCT FROM (sift._test_f64_order(a.x) = sift._test_f64_order(b.x))) AS wrong
+FROM ff a, ff b;
+
+-- tn: NULLs in every key, many ties; tt: 500-row blocks of one value (ties across granules)
+CREATE TABLE tn AS
+SELECT g AS id, CASE WHEN g % 13 = 0 THEN NULL ELSE (g * 7919) % 40 END::int8 AS k0, CASE WHEN g % 11 = 0 THEN NULL ELSE (g * 104729) % 25 END::int8 AS k1,
+       ((g * 31) % 7)::int8 AS k2, g % 5 <> 0 AS keep
+FROM generate_series(1, 3000) AS g;
+CREATE TABLE tt AS
+SELECT g + 1 AS id, (g / 500)::int8 AS k0, (g % 3)::int8 AS k1, ((g * 7) % 5)::int8 AS k2, g % 4 <> 0 AS keep FROM generate_series(0, 2999) AS g;
+
+CREATE FUNCTION topn_diff(tbl text, nk int, d0 bool, n0 bool, d1 bool, n1 bool, d2 bool, n2 bool, lim int, off int, ties bool, workers int,
+                          gr int, gp int, pp int, slab int) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	ob text; mine text; pg text;
+BEGIN
+	ob := format('k0 %s NULLS %s', CASE WHEN d0 THEN 'DESC' ELSE 'ASC' END, CASE WHEN n0 THEN 'FIRST' ELSE 'LAST' END);
+	IF nk >= 2 THEN ob := ob || format(', k1 %s NULLS %s', CASE WHEN d1 THEN 'DESC' ELSE 'ASC' END, CASE WHEN n1 THEN 'FIRST' ELSE 'LAST' END); END IF;
+	IF nk >= 3 THEN ob := ob || format(', k2 %s NULLS %s', CASE WHEN d2 THEN 'DESC' ELSE 'ASC' END, CASE WHEN n2 THEN 'FIRST' ELSE 'LAST' END); END IF;
+	EXECUTE format('SELECT coalesce(string_agg(concat_ws('','', coalesce(k0::text, ''N''), CASE WHEN %1$s >= 2 THEN coalesce(k1::text, ''N'') END,
+	                       CASE WHEN %1$s >= 3 THEN coalesce(k2::text, ''N'') END), '';'' ORDER BY o), '''')
+	                FROM (SELECT k0, k1, k2, row_number() OVER () AS o FROM (SELECT k0, k1, k2 FROM %6$I WHERE keep ORDER BY %2$s OFFSET %3$s
+	                      FETCH FIRST %4$s ROWS %5$s) AS s) AS t', nk, ob, off, lim, CASE WHEN ties THEN 'WITH TIES' ELSE 'ONLY' END, tbl) INTO pg;
+	EXECUTE format('SELECT coalesce(string_agg(concat_ws('','', coalesce(k0::text, ''N''), CASE WHEN %1$s >= 2 THEN coalesce(k1::text, ''N'') END,
+	                       CASE WHEN %1$s >= 3 THEN coalesce(k2::text, ''N'') END), '';'' ORDER BY r.rank), '''')
+	                FROM (SELECT array_agg(k0 ORDER BY id) AS a0, array_agg(k1 ORDER BY id) AS a1, array_agg(k2 ORDER BY id) AS a2, array_agg(keep ORDER BY id) AS ak
+	                      FROM %2$I) AS arr,
+	                     LATERAL sift._test_topn(a0, CASE WHEN %1$s >= 2 THEN a1 END, CASE WHEN %1$s >= 3 THEN a2 END, ak, ARRAY[%3$L, %4$L, %5$L]::bool[],
+	                            ARRAY[%6$L, %7$L, %8$L]::bool[], %9$s, %10$s, %11$s, %12$s, %13$s, %14$s, %15$L, %16$s) AS r
+	                     JOIN %2$I ON %2$I.id = r.idx', nk, tbl, d0, d1, d2, n0, n1, n2, gr, gp, pp, slab, lim, off, ties, workers) INTO mine;
+	IF mine IS DISTINCT FROM pg THEN
+		RAISE NOTICE '% nk % % % % % % % lim % off % ties % workers %: engine % vs pg %', tbl, nk, d0, n0, d1, n1, d2, n2, lim, off, ties, workers, left(mine, 50), left(pg, 50);
+		RETURN 1;
+	END IF;
+	RETURN 0;
+END $$;
+
+-- ASC and DESC x NULLS FIRST and LAST on every key, 1 to 3 keys, offsets, WITH TIES, one and four participants, a slab of 100 rows
+SELECT count(*) AS cases, sum(topn_diff('tn', nk, d0, n0, d1, n1, true, false, lim, off, ties, w, 64, 4, 3, 100)) AS wrong
+FROM generate_series(1, 3) nk, (VALUES (true), (false)) a(d0), (VALUES (true), (false)) b(n0), (VALUES (true), (false)) c(d1), (VALUES (true), (false)) e(n1),
+     (VALUES (1, 0), (10, 0), (7, 5), (50, 25), (1, 400)) l(lim, off), (VALUES (false), (true)) t(ties), (VALUES (1), (4)) wk(w)
+WHERE nk >= 2 OR (c.d1 AND e.n1);
+
+-- blocks of 500 equal keys: WITH TIES returns the whole block of the last row, across granules and participants
+SELECT count(*) AS cases, sum(topn_diff('tt', nk, d0, true, true, false, false, false, lim, off, ties, w, 64, 4, 2, 0)) AS wrong
+FROM generate_series(1, 2) nk, (VALUES (true), (false)) a(d0), (VALUES (1, 0), (10, 0), (100, 3), (400, 50), (500, 0)) l(lim, off), (VALUES (false), (true)) t(ties),
+     (VALUES (1), (3)) wk(w);
+SELECT count(*) AS rows_with_ties, min(k0) AS the_block FROM (SELECT * FROM tt WHERE keep ORDER BY k0 DESC FETCH FIRST 10 ROWS WITH TIES) AS s;
+
+-- the units a bound rules out are not read: time-ordered rows (a part sorted by the leading key reads one frontier granule), and rows whose zones are narrow
+-- but whose granules are not sorted
+CREATE TABLE tm AS
+SELECT g + 1 AS id, ((g / 100) * 1000 + (g * 7919) % 1000)::int8 AS u, g::int8 AS ts, g % 4 <> 0 AS keep FROM generate_series(0, 19999) AS g;
+CREATE FUNCTION tm_top(col text, frontier bool, workers int, lim int8, off int8) RETURNS TABLE(rows_out bigint, scanned bigint, pruned bigint, partitions_pruned bigint,
+                                                                                            parts_pruned bigint, early bool, ok bool)
+LANGUAGE plpgsql AS $$
+DECLARE r bigint; mine text; pg text;
+BEGIN
+	EXECUTE format('SELECT count(*), string_agg(%1$I::text, '','' ORDER BY r.rank) FROM (SELECT array_agg(%1$I ORDER BY id) AS a, array_agg(keep ORDER BY id) AS k FROM tm) AS arr,
+	                LATERAL sift._test_topn(a, NULL, NULL, k, ARRAY[true], ARRAY[false], 100, 10, 4, 0, %2$s, %3$s, false, %4$s, %5$L) AS r JOIN tm ON tm.id = r.idx',
+	               col, lim, off, workers, frontier) INTO r, mine;
+	EXECUTE format('SELECT string_agg(%1$I::text, '','') FROM (SELECT %1$I FROM tm WHERE keep ORDER BY %1$I DESC OFFSET %2$s LIMIT %3$s) AS s', col, off, lim) INTO pg;
+	RETURN QUERY SELECT r, s.granules_scanned, s.granules_pruned, s.partitions_pruned, s.parts_pruned, s.early_terminated, mine = pg FROM sift._test_topn_stats() AS s;
+END $$;
+-- 200 granules of 100 rows in 20 parts of 5 partitions: LIMIT 50 reads a granule or two, and prunes the partitions and parts behind
+SELECT * FROM tm_top('u', false, 1, 50, 0);
+SELECT * FROM tm_top('ts', true, 1, 50, 0);
+SELECT * FROM tm_top('u', false, 4, 50, 25);
+SELECT rows_out, scanned <= 2 AS scanned_few, partitions_pruned >= 3 AS partitions_behind, parts_pruned >= 3 AS parts_behind, early, ok FROM tm_top('u', false, 1, 50, 0);
+-- a LIMIT as large as the table reads it all
+SELECT rows_out, scanned, early, ok FROM tm_top('u', false, 1, 20000, 0);
+
+-- limits and refusals
+SELECT count(*) FROM sift._test_topn('{1}', NULL, NULL, '{t}', ARRAY[true], ARRAY[false], 100, 10, 4, 0, 0, 0);
+SELECT count(*) FROM sift._test_topn('{1}', NULL, NULL, '{t}', ARRAY[true], ARRAY[false], 100, 10, 4, 0, 100001, 0);
+
+-- ---------------------------------------------------------------------------------------------------------------------------------------------------
+-- Cardinality estimator: the estimate of what the statistics of the index know, against the rows the predicates select
+-- ---------------------------------------------------------------------------------------------------------------------------------------------------
+-- events: a jsonb payload with a region, a tier and a flag on a quarter of the rows, in no order; deleted_at is NULL on 99.9% of them
+CREATE TABLE ev AS
+SELECT g AS id, jsonb_build_object('region', (ARRAY['EU', 'US', 'US', 'AP', 'EU', 'SA', 'US', 'AP', 'EU', 'US'])[(g * 7919) % 10 + 1], 'tier', (g * 31) % 5)
+       || CASE WHEN (g * 104729) % 4 = 0 THEN '{"flag_a": true}'::jsonb ELSE '{}'::jsonb END AS payload,
+       CASE WHEN g % 1000 = 0 THEN timestamptz '2026-01-01' END AS deleted_at
+FROM generate_series(1::int8, 120000) AS g;
+ANALYZE ev;
+CREATE TABLE ev_cols AS
+SELECT array_agg(CASE payload->>'region' WHEN 'EU' THEN 1 WHEN 'US' THEN 2 WHEN 'AP' THEN 3 ELSE 4 END::int8 ORDER BY id) AS region,
+       array_agg((payload->>'tier')::int8 ORDER BY id) AS tier, array_agg(CASE WHEN deleted_at IS NULL THEN NULL ELSE 1 END::int8 ORDER BY id) AS deleted,
+       array_agg(true ORDER BY id) AS doc, array_agg(payload ? 'flag_a' ORDER BY id) AS flag FROM ev;
+
+CREATE FUNCTION pg_rows(q text) RETURNS float8 LANGUAGE plpgsql AS $$
+DECLARE p json;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO p;
+	RETURN (p->0->'Plan'->>'Plan Rows')::float8;
+END $$;
+
+-- three jsonb predicates and a NULL test: the estimate is within 2x of the rows, where PostgreSQL's constants for a path of a jsonb are off by orders of magnitude
+SELECT a.actual, e.est_rows BETWEEN 0.5 * a.actual AND 2.0 * a.actual AS within_2x, e.confidence >= 0.7 AS trusted, NOT e.exact_zero AS nonzero,
+       abs(ln(e.est_rows / a.actual)) < abs(ln(pg_rows('SELECT * FROM ev WHERE payload->>''region'' = ''EU'' AND payload ? ''flag_a'' AND deleted_at IS NULL') / a.actual)) AS closer_than_pg
+FROM (SELECT count(*) AS actual FROM ev WHERE payload->>'region' = 'EU' AND payload ? 'flag_a' AND deleted_at IS NULL) AS a, ev_cols c,
+     LATERAL sift._test_card_est(c.region, c.tier, c.deleted, c.doc, c.flag, 'c0 = 1; doc exists; c2 isnull') AS e;
+-- the share of a key and of the NULLs is the count, not a guess
+SELECT p.pred, p.actual, round(e.est_rows) AS est, e.confidence
+FROM ev_cols c, (VALUES ('doc exists', (SELECT count(*) FROM ev WHERE payload ? 'flag_a')), ('doc absent', (SELECT count(*) FROM ev WHERE NOT payload ? 'flag_a')),
+                        ('c2 isnull', (SELECT count(*) FROM ev WHERE deleted_at IS NULL)), ('c2 notnull', (SELECT count(*) FROM ev WHERE deleted_at IS NOT NULL)),
+                        ('c0 = 2', (SELECT count(*) FROM ev WHERE payload->>'region' = 'US')), ('c0 in 1,3', (SELECT count(*) FROM ev WHERE payload->>'region' IN ('EU', 'AP'))),
+                        ('c1 between 1 2', (SELECT count(*) FROM ev WHERE (payload->>'tier')::int BETWEEN 1 AND 2))) AS p(pred, actual),
+     LATERAL sift._test_card_est(c.region, c.tier, c.deleted, c.doc, c.flag, p.pred) AS e
+ORDER BY p.pred;
+-- the distinct values of the tier under the filter (Yao): at least those of the rows, at most those of the leaf
+SELECT e.ndv_c1 BETWEEN a.ndv_actual AND 5 AS ndv_between_actual_and_total, e.ndv_c1 >= 4.99 AS ndv_all_tiers
+FROM (SELECT count(DISTINCT payload->>'tier') AS ndv_actual FROM ev WHERE payload->>'region' = 'EU' AND payload ? 'flag_a') AS a, ev_cols c, LATERAL sift._test_card_est(c.region, c.tier, c.deleted, c.doc, c.flag, 'c0 = 1; doc exists') AS e;
+
+-- two columns that always agree (a country and its currency, 10% of the rows): clustered in blocks of 4 granules, as a table sorted by time is, the zones of the granules say it; scattered,
+-- the estimate is under the rows (the square root of the second share) but never below independent columns and never above the best predicate
+CREATE TABLE cc AS
+SELECT g AS id, CASE WHEN (g / 4096) % 10 = 0 THEN 1 ELSE 2 + (g / 4096) % 9 END::int8 AS country_c, CASE WHEN (g * 7919) % 10 = 0 THEN 1 ELSE 2 + (g * 7919) % 9 END::int8 AS country_s
+FROM generate_series(0, 119999) AS g;
+CREATE TABLE cc_cols AS
+SELECT array_agg(country_c ORDER BY id) AS cl, array_agg(country_s ORDER BY id) AS sc, array_agg(NULL::int8 ORDER BY id) AS nul, array_agg(NULL::bool ORDER BY id) AS nb FROM cc;
+SELECT 'clustered' AS layout, (SELECT count(*) FROM cc WHERE country_c = 1) AS actual, round(e.est_rows) AS est,
+       e.est_rows BETWEEN 0.6 * (SELECT count(*) FROM cc WHERE country_c = 1) AND 1.6 * (SELECT count(*) FROM cc WHERE country_c = 1) AS within_range
+FROM cc_cols c, LATERAL sift._test_card_est(c.cl, c.cl, c.nul, c.nb, c.nb, 'c0 = 1; c1 = 1') AS e
+UNION ALL
+SELECT 'scattered', (SELECT count(*) FROM cc WHERE country_s = 1), round(e.est_rows),
+       e.est_rows >= 0.1 * 0.1 * 120000 AND e.est_rows <= 0.1 * 120000 * 1.001 AND e.est_rows >= 0.25 * (SELECT count(*) FROM cc WHERE country_s = 1)
+FROM cc_cols c, LATERAL sift._test_card_est(c.sc, c.sc, c.nul, c.nb, c.nb, 'c0 = 1; c1 = 1') AS e;
+
+-- a scope: the rows of each parent are the root's count, whether 20000 or 20 (Zipf), and a parent without rows is none
+CREATE TABLE sc AS
+SELECT g AS id, CASE WHEN g < 20000 THEN 1 WHEN g < 20020 THEN 2 ELSE 3 + (g % 8) END::int8 AS parent FROM generate_series(0, 21019) AS g;
+CREATE TABLE sc_cols AS SELECT array_agg(parent ORDER BY id) AS p, array_agg(NULL::int8 ORDER BY id) AS nul, array_agg(NULL::bool ORDER BY id) AS nb FROM sc;
+SELECT p.keys, (SELECT count(*) FROM sc WHERE parent = ANY (string_to_array(p.keys, ',')::int8[])) AS actual, round(e.est_rows) AS est, e.used_scope, e.exact_zero
+FROM sc_cols c, (VALUES ('1'), ('2'), ('1,2'), ('99')) AS p(keys),
+     LATERAL sift._test_card_est(c.p, c.nul, c.nul, c.nb, c.nb, 'c0 scope ' || p.keys, 256, 4) AS e
+ORDER BY p.keys;
+
+-- a value outside the range of the leaf, or a range outside it, is no row at all, and no granule is read
+SELECT p.pred, e.exact_zero, e.est_rows, e.g_eff
+FROM ev_cols c, (VALUES ('c0 = 999'), ('c1 >= 100'), ('c1 between -9 -3'), ('c0 in 7,8,9')) AS p(pred),
+     LATERAL sift._test_card_est(c.region, c.tier, c.deleted, c.doc, c.flag, p.pred) AS e
+ORDER BY p.pred;
+-- a partition window that no partition meets
+SELECT e.exact_zero, e.g_eff FROM sc_cols c, LATERAL sift._test_card_est(c.p, c.nul, c.nul, c.nb, c.nb, 'win 100 200 ; c1 isnull', 256, 4) AS e;
+
+-- a skewed leaf (a long tail): the fences of the buckets and the common values give a range its rows
+CREATE TABLE sk AS SELECT g AS id, (1000.0 / (1 + (g % 997)::float8 / 8))::int8 AS v FROM generate_series(0, 59999) AS g;
+CREATE TABLE sk_cols AS SELECT array_agg(v ORDER BY id) AS v, array_agg(NULL::int8 ORDER BY id) AS nul, array_agg(NULL::bool ORDER BY id) AS nb FROM sk;
+SELECT p.pred, p.actual, round(e.est_rows) AS est, e.est_rows BETWEEN 0.25 * p.actual AND 4.0 * p.actual AS within_4x
+FROM sk_cols c, (VALUES ('c0 >= 250', (SELECT count(*) FROM sk WHERE v >= 250)), ('c0 between 10 20', (SELECT count(*) FROM sk WHERE v BETWEEN 10 AND 20)),
+                        ('c0 <= 8', (SELECT count(*) FROM sk WHERE v <= 8)), ('c0 between 100 300', (SELECT count(*) FROM sk WHERE v BETWEEN 100 AND 300))) AS p(pred, actual),
+     LATERAL sift._test_card_est(c.v, c.nul, c.nul, c.nb, c.nb, p.pred) AS e
+ORDER BY p.pred;
+
+-- ---------------------------------------------------------------------------------------------------------------------------------------------------
+-- Expression machine: numerics, mixed integer types, calendar, booleans, and the first row's error
+-- ---------------------------------------------------------------------------------------------------------------------------------------------------
+-- 144 rows: every pair of 12 edge values of an int8 (the i and the j) and of a numeric(15, 2) (n) and a numeric(30, 3) (w), the timestamp, the date, the int4 k,
+-- the float8 x and a bool and a jsonb
+CREATE TABLE vd AS
+SELECT g + 1 AS id,
+       (ARRAY[0, 1, -1, 2, -2, 7, 100, 3037000500, 9223372036854775807, -9223372036854775808, 4611686018427387904, NULL]::int8[])[g % 12 + 1] AS i,
+       (ARRAY[0, 1, -1, 2, -2, 7, 100, 3037000500, 9223372036854775807, -9223372036854775808, 4611686018427387904, NULL]::int8[])[(g / 12) % 12 + 1] AS j,
+       (ARRAY[0, 1, -1, 2, -2, 46341, 2147483647, -2147483648, NULL]::int4[])[(g * 7) % 9 + 1] AS k,
+       (ARRAY[0, -0.0, 1.5, -2.5, 'Infinity', '-Infinity', 'NaN', NULL, 1e308, -1e308, 1e-320, 5e-324]::float8[])[(g * 5) % 12 + 1] AS x,
+       (ARRAY[0, 1, -1, 250, -250, 99999, 9999999999999.99, -9999999999999.99, 5, NULL, 100, -7]::numeric(15, 2)[])[(g * 5) % 12 + 1] AS n,
+       (ARRAY[0, 1, -1, 1000, 12345678901234567890123456.789, -12345678901234567890123456.789, 99999999999.999, NULL, 5, -2.5, 7, 31415926.535]::numeric(30, 3)[])[(g * 7 + g / 12) % 12 + 1] AS w,
+       (ARRAY['2000-01-01 00:00:00', '1999-12-31 23:59:59.999999', '2026-11-21 10:30:15.123456', '1969-12-31 23:59:59.999999', '1970-01-01', '2024-02-29 12:00:00',
+              '0001-06-01 00:00:00 BC', '4714-11-30 00:00:00 BC', 'infinity', '-infinity', '9999-12-31 23:59:59.999999', NULL, '2100-03-01 00:00:00', '1900-12-31 23:59:59']::timestamp[])[(g * 5 + g / 12) % 14 + 1] AS t,
+       (ARRAY['2000-01-01', '1999-12-31', '2026-11-21', '1970-01-01', '2024-02-29', '0001-06-01 BC', '4713-01-01 BC', 'infinity', '-infinity', '9999-12-31', NULL, '2100-03-01', '2000-12-31', '1996-12-30']::date[])[(g * 3 + g / 12) % 14 + 1] AS dt,
+       (ARRAY[true, false, NULL])[g % 3 + 1] AS m,
+       (ARRAY['{"a": 1}', '{"b": 2}', '{"a": 1, "b": 2}', '{}', NULL, '[]']::jsonb[])[(g / 3) % 6 + 1] AS d
+FROM generate_series(0, 143) AS g;
+CREATE TABLE vda AS
+SELECT array_agg(i ORDER BY id) AS i, array_agg(j ORDER BY id) AS j, array_agg(k ORDER BY id) AS k, array_agg(x ORDER BY id) AS x, array_agg(m ORDER BY id) AS m,
+       array_agg(d ORDER BY id) AS d, array_agg((n * 100)::int8 ORDER BY id) AS n, array_agg((w * 1000)::numeric(38, 0) ORDER BY id) AS w, array_agg(t ORDER BY id) AS t,
+       array_agg(dt ORDER BY id) AS dt FROM vd;
+
+CREATE FUNCTION vexpr_run(prog text, live int[]) RETURNS SETOF record LANGUAGE sql AS $$
+	SELECT e.ord, e.res FROM vda, sift._test_vexpr(prog, i, j, k, x, x, m, d,
+	       CASE WHEN live IS NULL THEN NULL ELSE (SELECT array_agg(id = ANY (live) ORDER BY id) FROM vd) END, n, w, t, dt) AS e $$;
+
+-- the number of rows, one by one and all together, where the engine and PostgreSQL differ in the result or the error
+CREATE FUNCTION vdiff(prog text, pgx text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	r int; e text; p text; bad bigint := 0; ok int[] := '{}'; n bigint; nrows int := (SELECT count(*) FROM vd);
+BEGIN
+	FOR r IN SELECT id FROM vd ORDER BY id LOOP
+		BEGIN
+			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
+		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
+		END;
+		BEGIN
+			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
+			ok := ok || r;
+		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
+		END;
+		IF e IS DISTINCT FROM p THEN
+			bad := bad + 1;
+			IF bad <= 3 THEN RAISE NOTICE '% row %: engine %, PostgreSQL %', prog, r, e, p; END IF;
+		END IF;
+	END LOOP;
+	EXECUTE format('SELECT count(*) FROM (((SELECT ord, res FROM vexpr_run(%L, %L) AS t(ord int, res text)) EXCEPT ALL (SELECT id, (%s)::text FROM vd WHERE id = ANY (%L))) UNION ALL ((SELECT id, (%s)::text FROM vd WHERE id = ANY (%L)) EXCEPT ALL (SELECT ord, res FROM vexpr_run(%L, %L) AS t(ord int, res text)))) AS d',
+	               prog, CASE WHEN cardinality(ok) = nrows THEN NULL ELSE ok END, pgx, ok, pgx, ok, prog, CASE WHEN cardinality(ok) = nrows THEN NULL ELSE ok END) INTO n;
+	RETURN bad + n;
+END $$;
+
+-- the error of the whole table: PostgreSQL's, the one of the first row that has any
+CREATE FUNCTION vexpr_error(prog text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM * FROM vexpr_run(prog, NULL) AS t(ord int, res text);
+	RETURN 'no error';
+EXCEPTION WHEN others THEN RETURN SQLERRM;
+END $$;
+CREATE FUNCTION pg_error(pgx text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('SELECT (%s)::text FROM (SELECT * FROM vd ORDER BY id) AS v', pgx);
+	RETURN 'no error';
+EXCEPTION WHEN others THEN RETURN SQLERRM;
+END $$;
+-- EXTRACT of year and epoch of an infinity is the numeric Infinity in PostgreSQL: the machine raises for it, which the scan avoids (agg/vexpr.h)
+CREATE FUNCTION inf_error() RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	RAISE EXCEPTION 'EXTRACT of an infinite value is not run by the vectorized expressions';
+END $$;
+
+CREATE TABLE vprog (prog text PRIMARY KEY, pgx text NOT NULL);
+INSERT INTO vprog VALUES
+  -- numeric(15, 2) and numeric(30, 3): + - * and the unary minus and abs, the scales of the sum and of the product, 64 bits and 128
+  ('(add n n)', 'n + n'), ('(sub n n)', 'n - n'), ('(mul n n)', 'n * n'), ('(neg n)', '-n'), ('(abs n)', 'abs(n)'), ('(add n 1n2)', 'n + 0.01'),
+  ('(sub 5n1 n)', '0.5 - n'), ('(mul n 3i4)', 'n * 3'), ('(add w w)', 'w + w'), ('(sub w w)', 'w - w'), ('(neg w)', '-w'), ('(abs w)', 'abs(w)'),
+  ('(add n w)', 'n + w'), ('(sub w n)', 'w - n'), ('(mul n (add n n))', 'n * (n + n)'), ('(add (mul n n) (mul n n))', 'n * n + n * n'),
+  ('(add w 1000N3)', 'w + 1.000'),
+  -- comparisons of numerics of two scales and widths
+  ('(eq n 250n2)', 'n = 2.50'), ('(lt n w)', 'n < w'), ('(ge w 0i4)', 'w >= 0'), ('(ne n n)', 'n <> n'), ('(le (add n n) 500n2)', 'n + n <= 5.00'),
+  ('(gt w 5000000000N3)', 'w > 5000000.000'), ('(eq n w)', 'n = w'), ('(lt (abs n) 100n2)', 'abs(n) < 1.00'),
+  -- casts: an integer to a numeric, a numeric to a larger scale, a numeric to float8
+  ('(cast_n0 k)', 'k::numeric'), ('(cast_n2 k)', 'k::numeric(15, 2)'), ('(cast_n0 i)', 'i::numeric'), ('(cast_n3 n)', 'n::numeric(30, 3)'),
+  ('(cast_f8 n)', 'n::float8'), ('(add (cast_n0 i) (cast_n0 j))', 'i::numeric + j::numeric'), ('(mul (cast_n0 k) (cast_n0 k))', 'k::numeric * k::numeric'),
+  -- an int4 with an int8, an integer with a numeric, a number with a float8
+  ('(add i k)', 'i + k'), ('(sub k i)', 'k - i'), ('(mul k i)', 'k * i'), ('(div i k)', 'i / k'), ('(lt k i)', 'k < i'), ('(eq k 2i8)', 'k = 2::int8'),
+  ('(ge i 2i4)', 'i >= 2::int4'), ('(neg (add k k))', '-(k + k)'), ('(add k n)', 'k + n'), ('(add i n)', 'i + n'), ('(lt i n)', 'i < n'),
+  ('(add x i)', 'x + i'), ('(mul k x)', 'k * x'), ('(add x n)', 'x + n'), ('(lt x k)', 'x < k'), ('(eq n x)', 'n = x'), ('(div x k)', 'x / k'),
+  ('(coalesce k i)', 'COALESCE(k, i)'), ('(coalesce k i 7i4)', 'COALESCE(k, i, 7)'), ('(case (when m k) (else i))', 'CASE WHEN m THEN k ELSE i END'),
+  ('(case (when (gt k 0i4) k) (when (lt k 0i4) i))', 'CASE WHEN k > 0 THEN k WHEN k < 0 THEN i END'), ('(coalesce n 0n2)', 'COALESCE(n, 0.00)'),
+  ('(coalesce x k)', 'COALESCE(x, k)'),
+  -- calendar: date_trunc of a timestamp to a fixed period and through the days of the calendar; infinities are kept; the first year of the range fails
+  ('(trunc second t)', 'date_trunc(''second'', t)'), ('(trunc minute t)', 'date_trunc(''minute'', t)'), ('(trunc hour t)', 'date_trunc(''hour'', t)'),
+  ('(trunc day t)', 'date_trunc(''day'', t)'), ('(trunc week t)', 'date_trunc(''week'', t)'), ('(trunc month t)', 'date_trunc(''month'', t)'),
+  ('(trunc quarter t)', 'date_trunc(''quarter'', t)'), ('(trunc year t)', 'date_trunc(''year'', t)'),
+  ('(trunctz day t)', 'date_trunc(''day'', t AT TIME ZONE ''UTC'')'), ('(trunctz month t)', 'date_trunc(''month'', t AT TIME ZONE ''UTC'')'),
+  ('(trunctz week t)', 'date_trunc(''week'', t AT TIME ZONE ''UTC'')'), ('(trunctz year t)', 'date_trunc(''year'', t AT TIME ZONE ''UTC'')'),
+  ('(eq (trunc day t) (trunc month t))', 'date_trunc(''day'', t) = date_trunc(''month'', t)'),
+  -- EXTRACT of a timestamp and of a date: numerics of scale 0, the epoch of a timestamp of scale 6; NULL for an infinity but of year and epoch
+  ('(extract month t)', 'extract(month from t)'), ('(extract day t)', 'extract(day from t)'), ('(extract quarter t)', 'extract(quarter from t)'),
+  ('(extract dow t)', 'extract(dow from t)'), ('(extract isodow t)', 'extract(isodow from t)'), ('(extract doy t)', 'extract(doy from t)'),
+  ('(extract hour t)', 'extract(hour from t)'), ('(extract minute t)', 'extract(minute from t)'), ('(extracttz hour t)', 'extract(hour from t AT TIME ZONE ''UTC'')'),
+  ('(extract year t)', 'CASE WHEN t IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(year from t)::text END'),
+  ('(extract epoch t)', 'CASE WHEN t IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(epoch from t)::text END'),
+  ('(extract month dt)', 'extract(month from dt)'), ('(extract day dt)', 'extract(day from dt)'), ('(extract quarter dt)', 'extract(quarter from dt)'),
+  ('(extract dow dt)', 'extract(dow from dt)'), ('(extract isodow dt)', 'extract(isodow from dt)'), ('(extract doy dt)', 'extract(doy from dt)'),
+  ('(extract year dt)', 'CASE WHEN dt IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(year from dt)::text END'),
+  ('(extract epoch dt)', 'CASE WHEN dt IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(epoch from dt)::text END'),
+  ('(add (extract month t) (extract day t))', 'extract(month from t) + extract(day from t)'), ('(gt (extract dow dt) 3n0)', 'extract(dow from dt) > 3'),
+  ('(mul (extract month dt) 10i4)', 'extract(month from dt) * 10'), ('(case (when (eq (extract month t) 2n0) 1i4) (else 0i4))', 'CASE WHEN extract(month from t) = 2 THEN 1 ELSE 0 END'),
+  -- boolean CASE and COALESCE, and IS NULL of a boolean
+  ('(coalesce m (has a))', 'COALESCE(m, jsonb_exists(d, ''a''))'), ('(coalesce (has a) m (has b))', 'COALESCE(jsonb_exists(d, ''a''), m, jsonb_exists(d, ''b''))'),
+  ('(case (when m (has a)) (else (has b)))', 'CASE WHEN m THEN jsonb_exists(d, ''a'') ELSE jsonb_exists(d, ''b'') END'),
+  ('(case (when (gt i 0i8) m))', 'CASE WHEN i > 0 THEN m END'),
+  ('(case (when m (has a)) (when (not m) (has b)) (else m))', 'CASE WHEN m THEN jsonb_exists(d, ''a'') WHEN NOT m THEN jsonb_exists(d, ''b'') ELSE m END'),
+  ('(coalesce (and m (has a)) (not m) false)', 'COALESCE(m AND jsonb_exists(d, ''a''), NOT m, false)'), ('(isnull m)', 'm IS NULL'),
+  ('(isnotnull (coalesce m (has a)))', '(COALESCE(m, jsonb_exists(d, ''a''))) IS NOT NULL'), ('(isnull (case (when m m)))', '(CASE WHEN m THEN m END) IS NULL'),
+  ('(and (coalesce m (has a)) (gt i 0i8))', 'COALESCE(m, jsonb_exists(d, ''a'')) AND i > 0'), ('(or (case (when (has a) m) (else (has b))) (lt j 0i8))', '(CASE WHEN jsonb_exists(d, ''a'') THEN m ELSE jsonb_exists(d, ''b'') END) OR j < 0'),
+  ('(case (when (coalesce m (has a)) (gt i 0i8)) (else (lt j 0i8)))', 'CASE WHEN COALESCE(m, jsonb_exists(d, ''a'')) THEN i > 0 ELSE j < 0 END'),
+  ('(coalesce (gt (div i j) 1i8) (has a))', 'COALESCE(i / j > 1, jsonb_exists(d, ''a''))'),
+  ('(case (when (ne j 0i8) (gt (div i j) 1i8)) (else m))', 'CASE WHEN j <> 0 THEN i / j > 1 ELSE m END'),
+  -- an error only for the rows PostgreSQL evaluates, in the types of the machine
+  ('(case (when (ne k 0i4) (div i k)) (else 0i8))', 'CASE WHEN k <> 0 THEN i / k ELSE 0 END'), ('(coalesce n (add n n))', 'COALESCE(n, n + n)'),
+  ('(add (div i j) (mul k k))', 'i / j + k * k'), ('(add (mul k k) (div i j))', 'k * k + i / j'), ('(div (add k 1i8) (sub i i))', '(k + 1::int8) / (i - i)');
+
+SELECT count(*) AS programs, count(*) FILTER (WHERE bad > 0) AS differ FROM (SELECT vdiff(prog, pgx) AS bad FROM vprog) AS t;
+
+-- the error of a batch is the one of its first row: of two rows that fail in two ways, the lower row's, as PostgreSQL meets them one after the other
+SELECT count(*) AS programs, count(*) FILTER (WHERE vexpr_error(prog) IS DISTINCT FROM pg_error(pgx)) AS differ
+FROM (VALUES ('(mul x x)', 'x * x'), ('(add (div i j) (mul k k))', 'i / j + k * k'), ('(add (mul k k) (div i j))', 'k * k + i / j'),
+             ('(mul (add k k) 2i4)', '(k + k) * 2'), ('(div (cast_f8 i) x)', 'i::float8 / x'), ('(add (mul x 1e308f8) (div i j))', 'x * 1e308 + i / j'),
+             ('(trunc year t)', 'date_trunc(''year'', t)'), ('(extract year dt)', 'CASE WHEN dt IN (''infinity'', ''-infinity'') THEN inf_error() ELSE extract(year from dt)::text END'),
+             ('(case (when m (div i j)) (else (mul k k)))', 'CASE WHEN m THEN i / j ELSE k * k END')) AS v(prog, pgx);
+SELECT prog, vexpr_error(prog) AS error
+FROM unnest(ARRAY['(mul x x)', '(add (div i j) (mul k k))', '(add (mul k k) (div i j))', '(trunc year t)', '(extract epoch dt)']) AS prog ORDER BY prog;
+
+-- the programs the machine does not run (a numeric divided, a product or a sum that may pass 38 digits, a numeric of two scales in one CASE, a numeric above 15
+-- digits as float8) and the ones it does
+SELECT prog, sift._test_vexpr_compiles(prog) AS runs
+FROM unnest(ARRAY['(div n n)', '(mul w w)', '(mul w n)', '(mul w 3i4)', '(coalesce k n)', '(cast_f8 w)', '(coalesce n k)', '(coalesce n 0n2)', '(case (when m n) (else w))', '(add n w)', '(trunc day dt)', '(extract hour dt)',
+                  '(add n m)', '(cast_n2 x)', '(trunctz day t)', '(coalesce m i)', '(case (when i m))', '(isnull (coalesce m m))']) AS prog
+ORDER BY prog;
+
+-- a tree as deep as the registers: refused, not a crash
+SELECT sift._test_vexpr_compiles(repeat('(add ', 40) || 'i' || repeat(' 1i8)', 40)) AS deep_ok,
+       sift._test_vexpr_compiles(repeat('(add ', 70) || 'i' || repeat(' 1i8)', 70)) AS too_deep;
+
+-- 2048 rows of the batch: the same answers over a full batch, and over rows the mask leaves out
+CREATE TABLE vbig AS
+SELECT g AS id, (g * 7919 % 100003 - 50000)::int8 AS i, (g % 97 - 48)::int8 AS j, (g % 5 - 2)::int4 AS k, ((g * 31) % 20001 - 10000)::int8 AS n,
+       (timestamp '1999-12-31' + (g * 7919 % 1000000) * interval '1 second' * 37)::timestamp AS t FROM generate_series(1, 2048) AS g;
+SELECT count(*) AS rows, count(*) FILTER (WHERE e.res IS DISTINCT FROM p.res) AS differ
+FROM (SELECT array_agg(i ORDER BY id) AS i, array_agg(j ORDER BY id) AS j, array_agg(k ORDER BY id) AS k, array_agg(n ORDER BY id) AS n, array_agg(t ORDER BY id) AS t,
+            array_agg(NULL::float8 ORDER BY id) AS x, array_agg(NULL::bool ORDER BY id) AS m, array_agg(NULL::jsonb ORDER BY id) AS d FROM vbig) AS a,
+     LATERAL sift._test_vexpr('(add (mul (extract day t) (cast_n2 k)) (cast_n0 j))', i, j, k, x, x, m, d, NULL, n, NULL, t, NULL) AS e(ord, res)
+     JOIN (SELECT id, (extract(day from t) * k::numeric(15, 2) + j::numeric)::text AS res FROM vbig) AS p ON p.id = e.ord;
+
+DROP TABLE ff, tn, tt, tm, ev, ev_cols, cc, cc_cols, sc, sc_cols, sk, sk_cols, vd, vda, vprog, vbig;
+DROP FUNCTION topn_diff(text, int, bool, bool, bool, bool, bool, bool, int, int, bool, int, int, int, int, int), tm_top(text, bool, int, int8, int8), pg_rows(text),
+              vexpr_run(text, int[]), vdiff(text, text), vexpr_error(text), pg_error(text), inf_error();
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

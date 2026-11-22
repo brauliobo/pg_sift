@@ -49,7 +49,6 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT sift.index_format(''sna_part_col''::regclass)'),
 	('SELECT sift.col_promote(''sna_part_col''::regclass)'),
 	('SELECT sift.promote(''sna_part_col''::regclass)'),
-	('SELECT sift.key_cut_decision(''sna_part_col''::regclass)'),
 	('SELECT sift.col_index_info(''sna_part_col''::regclass)'),
 	('SELECT sift.col_index_info((SELECT gone FROM sna_oids)::regclass)'),
 	('SELECT sift.col_verify((SELECT gone FROM sna_oids)::regclass)'),
@@ -64,8 +63,6 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT count(*) FROM sift.col_unit_hist(''sna_idx''::regclass, ''g'', NULL)'),
 	('SELECT count(*) FROM sift.col_unit_agg(''sna_idx''::regclass, NULL)'),
 	('SELECT count(*) FROM sift.col_unit_agg(NULL, ''g'')'),
-	('SELECT count(*) FROM sift.col_value_store_usage((SELECT gone FROM sna_oids)::regclass)'),
-	('SELECT count(*) FROM sift.col_value_store_usage(0::oid::regclass)'),
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''g'')'),
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''9:eq:1'')'),
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''0:bogus:1'')')

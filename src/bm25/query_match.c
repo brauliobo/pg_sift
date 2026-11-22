@@ -485,7 +485,20 @@ sift_doc_term_tf(SiftDoc *d, const char *term, int len)
 int
 sift_doc_leaf_tf(SiftDoc *d, const SiftQNode *leaf)
 {
-	return doc_count_tokens(d, leaf->field, leaf, NULL, 0);
+	int			best = 0;
+
+	doc_group(d);
+	for (int t = 0; t < d->nterms; t++)
+	{
+		int			n = 0;
+
+		if (!sift_query_leaf_match(leaf, d->tok[d->first[t]].str, d->tok[d->first[t]].len))
+			continue;
+		for (int k = d->first[t]; k >= 0; k = d->next[k])
+			n += !leaf->field || (d->sec ? d->sec[k] : 0) + 1 == leaf->field;
+		best = Max(best, n);
+	}
+	return best;
 }
 
 bool

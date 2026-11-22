@@ -1,0 +1,133 @@
+name: publish-repos
+
+# The signed APT and DNF repositories of pg_sift on GitHub Pages (docs/INSTALL-REPOS.md). When the `release` workflow of a v* tag succeeds, the .deb and .rpm assets of that
+# release and of the KEEP_RELEASES - 1 releases before it are downloaded, packaging/repo/build-apt-dnf-repo.sh builds and verifies the tree (PostgreSQL 17, 18 and 19 for
+# amd64/arm64 and x86_64/aarch64, the Amazon Linux 2023 rpm for AMZN_PGS) and the Pages site is replaced with it. A dispatch republishes the repositories of an existing tag.
+# A pull request or a push that touches the recipe only runs the self-test. Nothing is published unsigned: without the secret REPO_GPG_PRIVATE_KEY the build job fails.
+#
+# One-time setup: Settings > Pages > Source "GitHub Actions"; the secret REPO_GPG_PRIVATE_KEY (ASCII-armored private key, no expiry) and, when the key has one,
+# REPO_GPG_PASSPHRASE. The public key is published as pg_sift.asc and apt/pg_sift.gpg.
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  pull_request:
+    paths:
+      - packaging/repo/**
+      - .github/workflows/publish-repos.yml
+  push:
+    branches: [main]
+    paths:
+      - packaging/repo/**
+      - .github/workflows/publish-repos.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag whose packages are published (for example v6.0.0)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  KEEP_RELEASES: '3'
+  # the releases carry these (scripts/package.sh: PGS, ARCHES, AMZN_PGS; scripts/check-release-sync.sh keeps them equal)
+  PGS: '17 18 19'
+  ARCHES: 'x86_64 aarch64'
+  AMZN_PGS: '17 18'
+
+jobs:
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the repository tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends createrepo-c rpm dpkg-dev gnupg gpgv
+
+      - name: Build and verify a repository of empty packages with a throwaway key
+        run: packaging/repo/build-apt-dnf-repo.sh --selftest
+
+  # the tag to publish: the one a successful release workflow built, the one of a dispatch, none for a pull request or a push
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.which.outputs.tag }}
+    steps:
+      - id: which
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_OK: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+          RUN_REF: ${{ github.event.workflow_run.head_branch }}
+          INPUT: ${{ inputs.tag }}
+        run: |
+          tag=
+          if [ "$EVENT" = workflow_dispatch ]; then tag=$INPUT
+          elif [ "$EVENT" = workflow_run ] && [ "$RUN_OK" = true ] && [[ $RUN_REF == v* ]]; then tag=$RUN_REF; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "publishing: ${tag:-nothing}"
+
+  build:
+    needs: [selftest, tag]
+    if: needs.tag.outputs.tag != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: pages
+        uses: actions/configure-pages@v6
+
+      - name: Install the repository tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends createrepo-c rpm dpkg-dev gnupg gpgv
+
+      - name: Download the packages of the release and of the ones before it
+        run: |
+          mkdir pkgs
+          tags=$({ echo "$TAG"; gh release list --exclude-drafts --exclude-pre-releases --limit 20 --json tagName --jq '.[].tagName'; } | awk '!seen[$0]++' | head -n "$KEEP_RELEASES")
+          for t in $tags; do gh release download "$t" --dir pkgs --pattern '*.deb' --pattern '*.rpm' --clobber; done
+          ls pkgs | wc -l
+
+      - name: Build and verify the repositories
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.REPO_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.REPO_GPG_PASSPHRASE }}
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          [ -n "$GPG_PRIVATE_KEY" ] || { echo "the secret REPO_GPG_PRIVATE_KEY is not set: the repositories are never published unsigned" >&2; exit 1; }
+          printf '%s\n' "$GPG_PRIVATE_KEY" | gpg --batch --quiet --import
+          export GPG_KEY_ID SOURCE_DATE_EPOCH
+          GPG_KEY_ID=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr/ {print $10; exit}')
+          SOURCE_DATE_EPOCH=$(date -d "$(gh release view "$TAG" --json publishedAt --jq .publishedAt)" +%s)
+          packaging/repo/build-apt-dnf-repo.sh build pkgs site
+          packaging/repo/build-apt-dnf-repo.sh verify site
+          echo "key $GPG_KEY_ID, $(du -sh site | cut -f1) in $(find site -type f | wc -l) files"
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

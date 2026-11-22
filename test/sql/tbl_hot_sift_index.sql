@@ -9,9 +9,13 @@ CREATE TABLE h (id int PRIMARY KEY, grp int, price int, body text, v int, note t
 INSERT INTO t SELECT g, g % 20, g % 500, CASE WHEN g % 2 = 0 THEN 'order express shipping ' ELSE 'order standard shipping ' END || 'n' || g, g, 'x' FROM generate_series(1, 10000) g;
 INSERT INTO h SELECT * FROM t;
 CREATE INDEX t_grp ON t (grp, price);
+SET client_min_messages = warning;
 CREATE INDEX t_bm25 ON t USING sift (body);
+RESET client_min_messages;
 CREATE INDEX h_grp ON h (grp, price);
+SET client_min_messages = warning;
 CREATE INDEX h_bm25 ON h USING sift (body);
+RESET client_min_messages;
 SELECT sift.table_maintain('t') IS NOT NULL AS maintained;
 ANALYZE t, h;
 
@@ -22,7 +26,7 @@ DECLARE
 	modes text[] := ARRAY['enable_seqscan=on enable_indexscan=on enable_bitmapscan=on',
 						  'enable_seqscan=off enable_indexscan=on enable_bitmapscan=off',
 						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on',
-						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on sift.enable_agg=off sift.enable_count=off'];
+						  'enable_seqscan=off enable_indexscan=off enable_bitmapscan=on sift.enable_agg=off sift.enable_scan=off'];
 	m text;
 	kv text;
 	a text;
@@ -32,11 +36,11 @@ BEGIN
 	PERFORM set_config('enable_indexscan', 'off', false);
 	PERFORM set_config('enable_bitmapscan', 'off', false);
 	PERFORM set_config('sift.enable_scan', 'off', false);
-	PERFORM set_config('sift.enable_count', 'off', false);
+	PERFORM set_config('sift.enable_scan', 'off', false);
 	PERFORM set_config('sift.enable_agg', 'off', false);
 	EXECUTE format('SELECT coalesce(string_agg(x::text, ''|'' ORDER BY x::text), '''') FROM (%s) x', replace(q, '#', 'h')) INTO ref;
 	PERFORM set_config('sift.enable_scan', 'on', false);
-	PERFORM set_config('sift.enable_count', 'on', false);
+	PERFORM set_config('sift.enable_scan', 'on', false);
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	FOREACH m IN ARRAY modes LOOP
 		FOREACH kv IN ARRAY string_to_array(m, ' ') LOOP
@@ -48,7 +52,7 @@ BEGIN
 			RETURN false;
 		END IF;
 	END LOOP;
-	RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET sift.enable_scan; RESET sift.enable_count; RESET sift.enable_agg;
+	RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET sift.enable_scan; RESET sift.enable_scan; RESET sift.enable_agg;
 	RETURN true;
 END
 $$;
@@ -104,7 +108,9 @@ SELECT same_all() AS after_vacuum;
 SELECT current_database() AS orig \gset
 CREATE TABLE big (id int PRIMARY KEY, body text, v int) USING sift_table WITH (autovacuum_enabled = false);
 INSERT INTO big SELECT g, (ARRAY['smart', 'wireless', 'folding', 'premium'])[1 + g % 4] || ' item n' || g, 0 FROM generate_series(1, 100000) g;
+SET client_min_messages = warning;
 CREATE INDEX big_bm25 ON big USING sift (body);
+RESET client_min_messages;
 SELECT sift.table_maintain('big') IS NOT NULL AS big_maintained;
 ANALYZE big;
 UPDATE big SET v = v + 1 WHERE id % 50 = 0;

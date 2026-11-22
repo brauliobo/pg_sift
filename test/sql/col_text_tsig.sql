@@ -5,7 +5,8 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1,dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SET sift.backend_cache_kb = 1;
+SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1', false) IS NOT NULL AS lowered;
 \ir test/agg_rows_helpers.sql
 
 CREATE TABLE tg (id int, s text, k text) WITH (autovacuum_enabled = off);
@@ -92,6 +93,7 @@ INSERT INTO tgh SELECT i, 'https://shop' || (i % 50) || '.example/item/' || md5(
 CREATE INDEX tgh_idx ON tgh USING sift_col (id sift.col_int4_ops, s sift.col_text_ops);
 VACUUM tgh;
 SELECT set_config('sift.test_limits', 'dict_lookup_min=1,dict_tsig_min=1', false) IS NOT NULL AS cache_default;
+RESET sift.backend_cache_kb;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT count(*) FROM tgh WHERE s LIKE '%' || substr(md5('77'), 3, 12) || '%';
 SELECT count(*) FROM tgh WHERE s LIKE '%' || substr(md5('78'), 3, 12) || '%';

@@ -34,3 +34,21 @@ src/bm25/planner_plan.c	sift_plan_count	list-first	make_path builds custom_priva
 src/bm25/planner_plan.c	sift_plan_scan	list-first	make_path builds custom_private with every SIFT_PRIV_ slot, the SIFT_NPRIV query after them and the keys
 src/bm25/planner_ties.c	private_int	list-first	every caller passes a SIFT_PRIV_ slot of a scan of this extension (cs->methods is tested first), which make_path fills
 src/bm25/planner_ties.c	tie_scan	list-first	the list is read after cs->methods == &sift_scan_plan_methods: a scan of this extension, whose custom_private make_path fills
+src/agg/v6/scope_v6_run.c	scope_begin	list-first	custom_private is the packed spec that sift_agg_v6_scope_plan_path made, and custom_exprs holds the key and the window bounds exactly when the spec says it has them
+src/agg/v6/v6_star_plan.c	join_clause_keys	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
+src/agg/v6/v6_star_plan.c	try_fact	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
+src/agg/v6/v6_star_plan.c	sift_v6_star_upper_paths	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
+src/agg/v6/v6_unnest_plan.c	sift_v6_unnest_upper_paths	planner-array	a and b are the two base relations of the query (sift_v6_plan_base_relids): both have an entry
+src/agg/v6/v6_sip.c	sift_agg_v6_sip_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
+src/agg/v6/v6_stream.c	sift_agg_v6_stream_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
+src/agg/v6/v6_topn.c	sift_agg_v6_topn_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
+src/agg/v6/v6_topn.c	topn_begin	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
+src/agg/v6/v6_window.c	sift_agg_v6_window_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
+src/agg/hybrid_agg_exec.c	agg_begin	list-first	custom_private and its entries are laid out by sift_hybrid_agg_plan_path (agg/hybrid_int.h): ints, qinfo, estimate, the packed spec, the group count
+src/agg/hybrid_plan.c	init_plan_rows	list-first	plan_id of a SubPlan of root->init_plans is the 1-based position of its plan in glob->subplans, which the planner appended it to
+src/agg/hybrid_plan.c	sift_hybrid_plan_path	list-first	best->custom_private was made by add_path_of in this file with all of its entries
+src/agg/hybrid_plan.c	sift_hybrid_agg_plan_path	list-first	best->custom_private was made by add_agg_path in this file with all of its entries
+src/agg/hybrid_semi_plan.c	exists_key_set	list-first	the sub-select is an EXISTS over one table that the matcher accepted: one entry in its range table
+src/agg/hybrid_store.c	init_quals	list-first	custom_private was made by sift_hybrid_plan_path or sift_hybrid_agg_plan_path with the qinfo as its second entry
+src/agg/hybrid_store.c	sift_hybrid_open	list-first	custom_private and custom_exprs were made by sift_hybrid_plan_path or sift_hybrid_agg_plan_path: ints, qinfo, estimate; the query is the first expression
+src/bm25/planner_ties.c	tie_hybrid_scan	list-first	custom_private of a SiftHybridScan starts with its ints (agg/hybrid_int.h)

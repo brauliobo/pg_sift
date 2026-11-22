@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A REINDEX of the journal index of the pairs is another lineage: the stamps of the scope segments are of the old one, so the reads say `other lineage` (the join answers, exactly) and the
 # maintenance sees the segments as stale. No read or worker rewrites for it: the reads go on answering from the join, and the rewrite the user runs (sift.col_maintain) fills them again with
 # no REINDEX of the scope index; the answers are the join's before, during and after.

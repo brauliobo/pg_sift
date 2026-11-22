@@ -28,7 +28,7 @@ def load(errors, srcs=None, notes_text=None, released_text=None):
 
 
 def render(opts, notes, released):
-    return generate(opts, notes, released, release_label(), released_label())
+    return generate(opts, notes, released, release_label(), '')
 
 
 # ---- --live ----

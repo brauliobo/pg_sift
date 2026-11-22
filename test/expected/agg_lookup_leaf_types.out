@@ -2,10 +2,11 @@
 -- numerics and texts. The values are those of the heap, the specials of the floats included (NaN, the infinities, -0, a denormal, NULL); a column of a type the load does not decode (uuid) is read
 -- from the heap and EXPLAIN (VERBOSE) says which column and why.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_dimmap_kb = 0;
+SET sift.shared_cache_kb = 0;
 CREATE TABLE pf (id int PRIMARY KEY, f4 real, f8 float8, t time, u uuid) WITH (autovacuum_enabled = false);
 INSERT INTO pf SELECT i,
 	(ARRAY['NaN', 'Infinity', '-Infinity', '0', '-0', NULL, '1.5', '-1.5', '1e-40', '3.4e38', '0.1']::real[])[i % 11 + 1],
@@ -64,8 +65,8 @@ DECLARE s record; BEGIN
 		RETURN QUERY SELECT st, s.n, got(s.sql), answer(s.sql, true) = answer(s.sql, false);
 	END LOOP;
 END $$;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT * FROM report('serial');
  stage  | shape |                                               read                                               | same_answers 
 --------+-------+--------------------------------------------------------------------------------------------------+--------------
@@ -85,7 +86,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
   stage  | shape |                                               read                                               | same_answers 
 ---------+-------+--------------------------------------------------------------------------------------------------+--------------

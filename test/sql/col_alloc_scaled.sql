@@ -1,5 +1,4 @@
--- A table of a few hundred thousand rows behaves as one of hundreds of millions: sift.test_limits lowers array_bytes, the limit of the helper every array that follows
--- the rows of a segment goes through (core/rowmem.h), and sift.test_col_segment_kb the memory budget of a writer, so that every pass that writes a segment (CREATE INDEX,
+-- A table of a few hundred thousand rows behaves as one of hundreds of millions: sift.test_col_segment_kb lowers the memory budget of a writer, so that every pass that writes a segment (CREATE INDEX,
 -- the merge of segments, REINDEX CONCURRENTLY, the rewrite that VACUUM makes, the promotion of a write buffer) holds in memory what the budget allows and no more. An index with
 -- key_order (not cut by a key) and one with key_cut, each verified after every pass and answering as the heap does.
 CREATE EXTENSION pg_sift;
@@ -13,8 +12,7 @@ INSERT INTO sc SELECT g, (g * 7919 % 400)::int, date '2020-01-01' + (g % 2000)::
 VACUUM (FREEZE, ANALYZE) sc;
 
 SET sift.test_col_segment_kb = 2000;
--- no array of a pass may pass 4 MB: 300,000 rows of 24 bytes are 7.2 MB, the segments the budget cuts hold at most 125,000 rows
-SET sift.test_limits = 'array_bytes=4194304';
+-- the arrays of a pass stay under 4 MB: 300,000 rows of 24 bytes are 7.2 MB, the segments the budget cuts hold at most 125,000 rows
 CREATE INDEX sc_order ON sc USING sift_col (id, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date');
 CREATE INDEX sc_cut ON sc USING sift_col (id, tenant_id, event_date) WITH (key_cut = 'tenant_id');
 

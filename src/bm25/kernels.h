@@ -223,6 +223,7 @@ typedef struct SiftTopK
 	SiftLazyHit *lazy;			/* ... and the candidates that tie with it and are not verified yet: their score is exact, the verification waits for the final worst score */
 	int64		nlazy;
 	int64		lazycap;
+	float4		floor;			/* the K-th score is at least this: the K-th score of a search that read fewer terms (-infinity: none known) */
 } SiftTopK;
 
 static inline bool

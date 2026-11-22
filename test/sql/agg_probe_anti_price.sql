@@ -3,6 +3,7 @@
 -- Priced by the rows of the result they cost a hundredth of what they take and beat the load of the child's rows into a lookup table, which is the cheaper plan when most rows of the
 -- outer table go through a probe. `lookup` says the plan loads the child's rows (a `Lookup Joins:` line without `sift_probe`), `rows` that the rows are those of sift off.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ow (id int PRIMARY KEY, customer_id int NOT NULL, created_at timestamptz NOT NULL, status text NOT NULL) WITH (autovacuum_enabled = false);

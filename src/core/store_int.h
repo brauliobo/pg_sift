@@ -10,6 +10,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
 
+#include "core/maint_pacer.h"
 #include "core/store.h"
 
 #define FIRST_DATA_BLKNO	(SIFT_DIRECTORY_BLKNO + 1)
@@ -39,7 +40,8 @@ struct SiftWriteTarget
 	int			ntaken;
 	int			maxtaken;
 	uint64		expect;			/* SHARED: blocks the streams are expected to need, 0 = unknown */
-	int			delay_ms;		/* sift_wt_throttle: sleep per THROTTLE_PAGES charged, 0 = none */
+	bool		paced;			/* sift_wt_pace: sleep per THROTTLE_PAGES charged as the pacer says for tier */
+	int			tier;
 	int			wal_kbps;		/* sift_wt_wal_rate: kB of WAL this backend may write per second since wal_t0, 0 = no limit */
 	uint64		wal_base;		/* the WAL bytes of the backend (pgWalUsage) at wal_t0 */
 	TimestampTz wal_t0;
@@ -75,7 +77,7 @@ typedef struct FreeChain
 static inline Buffer
 read_locked(Relation index, BlockNumber blkno, int mode)
 {
-	Buffer		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL, NULL);
+	Buffer		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL, sift_maint_ring);
 
 	LockBuffer(buf, mode);
 	return buf;
@@ -85,7 +87,7 @@ read_locked(Relation index, BlockNumber blkno, int mode)
 static inline Buffer
 new_locked(Relation index, BlockNumber blkno)
 {
-	return ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_ZERO_AND_LOCK, NULL);
+	return ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_ZERO_AND_LOCK, sift_maint_ring);
 }
 
 static inline bool

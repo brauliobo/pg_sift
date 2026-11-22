@@ -27,7 +27,7 @@ g=$(sql conc "SELECT sift._test_seg_write('r_idx', 20000000, 11)")
 hwm=$(sql conc "SELECT value FROM sift._test_info('r_idx') WHERE key = 'high_water'")
 sql conc "SELECT sift._test_seg_read('r_idx', $g, 0, 3000)" >"$(dir conc)/reader.out" 2>&1 &
 reader=$!
-sleep 0.5
+wait_for "running conc '%_test_seg_read%'" 30
 sql conc "SELECT sift._test_seg_drop('r_idx', $g)" "SELECT sift._test_recycle('r_idx')" \
 	"SELECT sift._test_seg_write('r_idx', 20000000, 12)" >/dev/null
 pending=$(sql conc "SELECT value FROM sift._test_info('r_idx') WHERE key = 'pending_blocks'")

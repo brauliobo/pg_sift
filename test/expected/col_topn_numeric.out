@@ -227,7 +227,7 @@ SELECT nm_check($q$SELECT id, a, c FROM nm ORDER BY a, c DESC, id LIMIT 30 OFFSE
 
 RESET work_mem;
 -- a dictionary cache that keeps almost nothing: the dictionaries of the leaves of a scan are parsed again between its units, the answers do not change
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS tiny_cache;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS tiny_cache;
  tiny_cache 
 ------------
  t
@@ -243,7 +243,7 @@ SELECT tag, nm_check(q) FROM nm_q WHERE tag IN ('a_asc', 'a_filter', 'b_desc', '
  two_keys | same+topn 30
 (5 rows)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 SELECT sift.col_merge('nm_col', true) >= 0 AS merged;
  merged 
 --------

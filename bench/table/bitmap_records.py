@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The records of a bitmap heap scan and of an index scan over the same rows of a sift_table (TB-1: the bitmap scan hands the slot its rows undecoded, src/table/fetch.c).
+"""The records of a bitmap heap scan and of an index scan over the same rows of a sift_table (TB-1: the bitmap scan hands the slot its rows undecoded, src/table/v1/fetch.c).
 
     python3 -I bench/table/bitmap_records.py --host DIR --port N --out FILE [--rows 300000] [--reps 3]
 

@@ -8,14 +8,31 @@
 #include "postgres.h"
 
 #include "storage/dsm.h"
+#include "storage/lwlock.h"
 
 #if PG_VERSION_NUM >= 190000
 #define SIFT_DSM_INIT_ARGS		void *ptr, void *arg
+#define SIFT_DSM_INIT_CALL(init, ptr)	(init) ((ptr), NULL)
 #else
 #define SIFT_DSM_INIT_ARGS		void *ptr
+#define SIFT_DSM_INIT_CALL(init, ptr)	(init) (ptr)
 #endif
 
 typedef void (*SiftDsmInit) (SIFT_DSM_INIT_ARGS);
+
+/* A tranche of LWLocks: 19 names it when it is made and registers nothing, 17 and 18 register the name in every backend that uses a lock of it */
+#if PG_VERSION_NUM >= 190000
+#define sift_tranche_new(name)					LWLockNewTrancheId(name)
+#define sift_tranche_register(tranche, name)	((void) 0)
+#else
+static inline int
+sift_tranche_new(const char *name pg_attribute_unused())
+{
+	return LWLockNewTrancheId();
+}
+
+#define sift_tranche_register(tranche, name)	LWLockRegisterTranche((tranche), (name))
+#endif
 
 /*
  * The table, or NULL where it cannot be had: the directory is full, it is not the directory of this library, or the system has no memory for the segment of the table or of the
@@ -27,6 +44,8 @@ extern void *sift_dsm_try(const char *name, Size size, SiftDsmInit init);
 extern const char *sift_dsm_why(void);
 /* The table as sift_dsm_try gives it, an ERROR where that gives NULL: for sift_dsm_attach, which catches it, and the tests */
 extern void *sift_dsm_join(const char *name, Size size, SiftDsmInit init);
+/* This backend lets go of a table it maps; the backend that lets go last gives the segment back to the system */
+extern void sift_dsm_unmap(const char *name, Size size);
 /* A table of this library that exists, mapped in this backend; NULL where there is none: nothing is made. *size: what the directory records (may be NULL) */
 extern void *sift_dsm_find(const char *name, Size *size);
 /* Entry i of the tables of this library, for sift.shared_memory(): false past the last, an empty name where the entry is free or another library's */

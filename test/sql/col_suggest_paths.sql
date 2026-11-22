@@ -75,7 +75,12 @@ CREATE TABLE sp_tbl (id int, doc jsonb) USING sift_table;
 INSERT INTO sp_tbl SELECT id, doc FROM sp_heap;
 SELECT sift.suggest_paths('sp_tbl', 'doc') = sift.suggest_paths('sp_heap', 'doc') AS table_as_heap, sift.suggest_paths('sp_tbl', 'doc') IS NOT NULL AS suggested;
 
-DROP TABLE sp, sp_arr, sp_heap, sp_tbl;
+-- documents of endless distinct keys: the paths kept are bounded, and the keys past the bound name no path
+CREATE TABLE sp_wild (id int, doc jsonb);
+INSERT INTO sp_wild SELECT i, (SELECT jsonb_object_agg('k' || (i * 100 + j), j) FROM generate_series(1, 100) j) FROM generate_series(1, 100) i;
+SELECT sift.suggest_paths('sp_wild', 'doc') IS NOT NULL AS bounded_keys;
+
+DROP TABLE sp, sp_arr, sp_heap, sp_tbl, sp_wild;
 DROP FUNCTION sp_rows(text, bool), sp_pushed(text);
 DROP ROLE sp_user;
 DROP EXTENSION pg_sift_helpers;

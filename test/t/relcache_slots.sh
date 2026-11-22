@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # PostgreSQL gives a backend 10 relcache callback slots (MAX_RELCACHE_CALLBACKS) and every library loaded in it shares them; running out is a FATAL
 # that ends the session. sift must leave the others room: none of its paths takes a slot. A session first takes N slots (sift._test_relcache_burn),
 # then runs the statements of every sift path; the largest N it survives, against the one of a session that runs the same statements without sift,

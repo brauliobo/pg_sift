@@ -67,12 +67,67 @@ posctx_positions(PosCtx *c, int leaf)
 	return &c->pb[leaf];
 }
 
+/* The first index at or after j whose position is >= want (n when none): doubling steps, then a bisection of the last one */
+static inline uint32
+pos_gallop(const uint32 *v, uint32 n, uint32 j, uint32 want)
+{
+	uint32		step = 1,
+				lo;
+
+	if (j >= n || v[j] >= want)
+		return j;
+	lo = j;
+	while (lo + step < n && v[lo + step] < want)
+	{
+		lo += step;
+		step <<= 1;
+	}
+	for (uint32 hi = Min(lo + step, n); lo + 1 < hi;)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (v[mid] < want)
+			lo = mid;
+		else
+			hi = mid;
+	}
+	return lo + 1;
+}
+
+/* Two terms, the common phrase: the first start both hold decides, no list of starts is built */
+static bool
+phrase_match2(PosCtx *c, const PhraseCheck *ph)
+{
+	uint32		oa = ph->offs ? ph->offs[ph->order[0]] : ph->order[0],
+				ob = ph->offs ? ph->offs[ph->order[1]] : ph->order[1],
+				j = 0;
+	const SiftPosBuf *pa = posctx_positions(c, ph->leaf[ph->order[0]]),
+			   *pb = posctx_positions(c, ph->leaf[ph->order[1]]);
+
+	for (uint32 x = 0; x < pa->n; x++)
+	{
+		uint32		want;
+
+		if (pa->v[x] < oa)
+			continue;
+		want = pa->v[x] - oa + ob;
+		j = pos_gallop(pb->v, pb->n, j, want);
+		if (j == pb->n)
+			return false;
+		if (pb->v[j] == want)
+			return true;
+	}
+	return false;
+}
+
 /* Does the current doc hold the phrase: the starts that fit the terms read so far, narrowed term by term, rarest first */
 static bool
 phrase_match(PosCtx *c, const PhraseCheck *ph)
 {
 	uint32		n = 0;
 
+	if (ph->nterms == 2)
+		return phrase_match2(c, ph);
 	for (int k = 0; k < ph->nterms; k++)
 	{
 		uint32		i = ph->order[k],
@@ -97,8 +152,7 @@ phrase_match(PosCtx *c, const PhraseCheck *ph)
 			{
 				uint32		want = c->start[x] + o;
 
-				while (j < pb->n && pb->v[j] < want)
-					j++;
+				j = pos_gallop(pb->v, pb->n, j, want);
 				if (j == pb->n)
 					break;
 				if (pb->v[j] == want)

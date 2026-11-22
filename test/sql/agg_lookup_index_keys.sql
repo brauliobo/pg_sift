@@ -39,8 +39,8 @@ CREATE FUNCTION same(setup text, q text) RETURNS TABLE (pushed bool, lookup text
 DECLARE l text;
 BEGIN
 	EXECUTE 'SET LOCAL sift.agg_force = on';
-	EXECUTE 'SET LOCAL sift.agg_lookup_cache_kb = 0';
-	EXECUTE 'SET LOCAL sift.agg_lookup_shared_kb = 0';
+	EXECUTE 'SET LOCAL sift.backend_cache_kb = 0';
+	EXECUTE 'SET LOCAL sift.shared_cache_kb = 0';
 	EXECUTE setup;
 	pushed := false;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
@@ -53,7 +53,7 @@ BEGIN
 	SET LOCAL min_parallel_table_scan_size = 0;
 	SET LOCAL max_parallel_workers_per_gather = 2;
 	EXECUTE format('CREATE TEMP TABLE r_par ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_lookup_shared_kb = 65536;
+	SET LOCAL sift.shared_cache_kb = 65536;
 	EXECUTE format('CREATE TEMP TABLE r_shared ON COMMIT DROP AS %s', q);
 	RESET max_parallel_workers_per_gather;
 	SET LOCAL sift.enable_agg = off;
@@ -86,8 +86,8 @@ INSERT INTO cases (name, setup, q) VALUES
 	('inner, repeated key',     'SELECT 1', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
 	('inner, repeated key, no key filters', 'SET LOCAL sift.agg_join_filter = off', $$SELECT kind, count(*) AS n FROM ev JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
 	('left',                    'SELECT 1', $$SELECT kind, count(p.k) AS n FROM ev LEFT JOIN pair p ON p.k = ev.k AND p.grp = 2 GROUP BY kind$$),
-	('byte table refused',      'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
-	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.agg_semi_lut_size = 1', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$),
+	('byte table refused',      'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.test_limits = ''semi_lut_bytes=1024''', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair WHERE grp = 2) GROUP BY kind$$),
+	('byte table refused, anti', 'SET LOCAL sift.agg_join_filter = off; SET LOCAL sift.test_limits = ''semi_lut_bytes=1024''', $$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM pair p WHERE p.k = ev.k AND p.grp = 3) GROUP BY kind$$),
 	-- the shapes of the index: the rows are the join's
 	('partial index',           'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_part WHERE grp = 2 AND NOT gone) GROUP BY kind$$),
 	('partial index, predicate not asked', 'SELECT 1', $$SELECT kind, count(*) AS n FROM ev WHERE k IN (SELECT k FROM pair_part WHERE grp = 2) GROUP BY kind$$),

@@ -2,6 +2,7 @@
 -- "Join Text Filters" of EXPLAIN ANALYZE): a unit that holds none of the keys is not read, and an inline text unit never interns or hashes the strings of the other rows.
 -- Every statement is run with the filter, with sift.agg_join_filter = off and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

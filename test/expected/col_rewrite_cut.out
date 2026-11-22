@@ -5,7 +5,7 @@
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 CREATE TABLE events (id bigint PRIMARY KEY, tenant_id int, foreign_id int, kind text, value_num numeric(12,2), updated_at timestamptz)
 	WITH (autovacuum_enabled = off, fillfactor = 85);
 INSERT INTO events SELECT g, g % 20, hashint8(g * 31) % 5000, 'kind_' || g % 8, (hashint8(g * 17) % 100000) / 100.0,

@@ -30,6 +30,7 @@
 #include "utils/typcache.h"
 
 #include "agg/agg.h"
+#include "agg/plan/safety.h"
 #include "agg/plan_int.h"
 
 /* does the query level, or a statement of its CTEs, modify the table */
@@ -65,7 +66,7 @@ table_why(PlannerInfo *root, RangeTblEntry *rte)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_TABLE), errmsg("relation with OID %u does not exist", rte->relid)));
 	rls = ((Form_pg_class) GETSTRUCT(tup))->relrowsecurity;
 	ReleaseSysCache(tup);
-	if (rls || rte->securityQuals != NIL)
+	if (rls || agg_rte_has_rls(root, rte))
 		return "row-level security is enabled on the table of keys";
 	if (rte->perminfoindex > 0 && OidIsValid(getRTEPermissionInfo(root->parse->rteperminfos, rte)->checkAsUser))
 		return "the table of keys is read through a view";

@@ -4,7 +4,7 @@
 #   make test [N=2]            round trips, adversarial data, corruption fuzz, per-level kernel differential
 #   make SANITIZE=1 test       ASan + UBSan build (into $(OUT)-san)
 #   make bench                 ratios per policy and decode/filter speeds per SIMD level (under flock /tmp/sift-perf.lock)
-# The cpu module stand-in and the random generator are tools/kernels' (shim.c, harness.h); the column kernels the codec runs on are src/col/kern*.c.
+# The cpu module stand-in and the random generator are tools/kernels' (shim.c, harness.h); the column kernels the codec runs on are src/col/v1/kern*.c.
 # The chunk generators of test.c are src/col/codec_gen.h, the ones of the in-backend regress test (test/sql/colcodec_*.sql) too.
 CC      ?= gcc
 SRC      = ../../src
@@ -23,11 +23,11 @@ OUT     := $(OUT)-san
 endif
 N       ?= 1
 
-CODEC    = $(addprefix $(SRC)/,col/codec/codec.c col/codec/filter.c col/codec/get.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/codec_neon.c col/compress.c \
+CODEC    = $(addprefix $(SRC)/,col/codec/codec.c col/codec/filter.c col/codec/get.c col/codec_policy.c col/codec_write.c col/codec_parse.c col/codec_blob.c col/codec_cold.c col/codec_kern.c col/codec_avx2.c col/codec_avx512.c col/codec_neon.c col/compress.c \
                                bm25/kernels.c bm25/kernels_avx2.c bm25/kernels_avx512.c bm25/kernels_neon.c bm25/analyze.c bm25/analyze_config.c bm25/analyze_stem.c \
-                               col/kern.c col/kern_avx2.c col/kern_avx512.c col/kern_neon.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c bm25/bitmap_neon.c)
+                               col/v1/kern.c col/v1/kern_avx2.c col/v1/kern_avx512.c col/v1/kern_neon.c bm25/bitmap_scalar.c bm25/bitmap_avx2.c bm25/bitmap_avx512.c bm25/bitmap_neon.c)
 OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/%.o,$(CODEC)) $(OUT)/shim.o $(OUT)/ccshim.o $(OUT)/pgshim.o
-HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/codec/*.h $(SRC)/col/compress.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/kern*.h $(SRC)/col/col.h) ccshim.h
+HDR      = $(wildcard $(SRC)/col/codec*.h $(SRC)/col/codec/*.h $(SRC)/col/compress.h $(SRC)/bm25/kernels*.h $(SRC)/bm25/analyze*.h $(SRC)/col/v1/kern*.h $(SRC)/col/col.h) ccshim.h
 
 all: $(OUT)/test $(OUT)/bench
 

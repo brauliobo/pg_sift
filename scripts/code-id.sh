@@ -12,9 +12,9 @@ if [ "$1" = --selftest ]; then
 	[ "$base" = "$("$0" "$t/b" '-DSIFT_X')" ] || { echo "code-id: a copy of the tree has another identity"; exit 1; }
 	[ "$base" != "$("$0" "$t/a" '-DSIFT_TESTING')" ] || { echo "code-id: an option that changes the code does not change the identity"; exit 1; }
 	# two fields of a shared struct that have the same type and size swap places: the size of the struct does not change, its layout does
-	f="$t/b/src/col/wbuf/reads.c" tab=$(printf '\t')
+	f="$t/b/src/core/reads.c" tab=$(printf '\t')
 	sed -e "/^${tab}uint64${tab}${tab}gen;/{N;s/\(.*\)\n\(.*\)/\2\n\1/;}" "$f" >"$f.new" && mv "$f.new" "$f"
-	cmp -s "$t/a/src/col/wbuf/reads.c" "$f" && { echo "code-id: the selftest did not change a struct"; exit 1; }
+	cmp -s "$t/a/src/core/reads.c" "$f" && { echo "code-id: the selftest did not change a struct"; exit 1; }
 	[ "$base" != "$("$0" "$t/b" '-DSIFT_X')" ] || { echo "code-id: a field moved in a struct does not change the identity"; exit 1; }
 	echo "code-id: selftest ok"
 	exit 0

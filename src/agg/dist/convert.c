@@ -153,13 +153,14 @@ dist_chunk(AggExec *ex, Dist *d)
 	}
 	if (d->arena_left == 0)
 	{
-		uint64	   *blk = MemoryContextAllocZero(ex->tcxt, (DB_ARENA + 1) * DB_WORDS * sizeof(uint64));
+		uint32		n = Max(Min(DB_ARENA, d->budget / (DB_WORDS * sizeof(uint64)) / 4), 1);
+		uint64	   *blk = MemoryContextAllocZero(ex->tcxt, (n + 1) * DB_WORDS * sizeof(uint64));
 
 		blk[0] = (uint64) d->arena;
 		d->arena = blk;
-		d->arena_left = DB_ARENA;
+		d->arena_left = d->arena_chunks = n;
 	}
-	return d->arena + (size_t) (DB_ARENA - --d->arena_left) * DB_WORDS;
+	return d->arena + (size_t) (d->arena_chunks - --d->arena_left) * DB_WORDS;
 }
 
 /*

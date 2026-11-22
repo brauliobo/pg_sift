@@ -74,7 +74,6 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "facts_asked": 1 automatic choice (track_changes), 1 advice (foreign_keys)
 DETAIL:  advice: foreign_keys = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_asked');
-RESET sift.col_auto_connect;
 SELECT child, ordinal, fk, declaration, automatic FROM sift.col_connections WHERE child IN ('facts_off'::regclass, 'facts_named'::regclass, 'facts_guc'::regclass, 'facts_asked'::regclass)
 ORDER BY child::text;
     child    | ordinal |    fk    |      declaration      | automatic 

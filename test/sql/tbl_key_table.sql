@@ -11,8 +11,14 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '240s';
+-- the promotion of the sealed buffers writes one segment from the memory it is given: 128 MB hold the 160,000 rows of the table below in one
+SET maintenance_work_mem = '128MB';
+-- the minor of each segment: the Format 1 diagnostic behind sift.table_segments, which the alias of sift.parts() no longer gives
+CREATE FUNCTION tk_segs(tbl regclass, OUT gen int8, OUT kind text, OUT rows int8, OUT bytes int8, OUT sb_lo int, OUT sb_hi int, OUT units int, OUT dead_rows int8, OUT format int,
+	OUT unfrozen bool, OUT min_xid xid, OUT max_xid xid) RETURNS SETOF record AS '$libdir/pg_sift', 'sift_table_segments' LANGUAGE C STRICT VOLATILE;
 -- the hash of the dictionaries (minor 25) is off, so that the minors are those of the key tables alone
-SET sift.table_dict_lookup = off;
+-- a cache that holds the dictionaries whole: a dictionary that no longer fits it is written with trigram signatures (minor 29)
+SET sift.backend_cache_kb = 65536;
 
 -- 160,000 rows in segments of 25,000 and about 3 units each (a long pad: a key table of two measures fits 3% of such a segment). grp_id: 300 values over every unit (a unit's cube keeps no more than 256 groups), NULL for every 97th row; amt: a decimal with NULLs
 -- (a measure of the table); ts and d: time leaves (ts is a measure too); val: an int the table does not keep; mid_id: 3,000 values (a table of the counts fits, not their
@@ -24,19 +30,19 @@ SELECT i AS id, CASE WHEN i % 97 = 0 THEN NULL ELSE (hashint4(i) & 2147483647) %
        i % 1000 AS val, (hashint4(i + 3) & 2147483647) % 3000 AS mid_id, (hashint4(i + 4) & 2147483647) % 20000 AS many_id, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) || md5((i + 3)::text) AS pad
 FROM generate_series(1, 160000) i;
 CREATE TABLE tk (LIKE tk_src) USING sift_table;
+SELECT sift.table_set_option('tk', 'dict_lookup', 'off');
 INSERT INTO tk SELECT * FROM tk_src ORDER BY id;
 CREATE TABLE tk_off (LIKE tk_src) USING sift_table;
+SELECT sift.table_set_option('tk_off', 'dict_lookup', 'off'), sift.table_set_option('tk_off', 'key_table', 'off');
 INSERT INTO tk_off SELECT * FROM tk_src ORDER BY id;
 CREATE TABLE tk_b AS SELECT * FROM tk_src ORDER BY id;
 VACUUM (FREEZE, ANALYZE) tk;
-SET sift.table_key_table = off;
 VACUUM (FREEZE, ANALYZE) tk_off;
-RESET sift.table_key_table;
 VACUUM (FREEZE, ANALYZE) tk_b;
 
 -- the minor of the groups: 22 with the table, not with sift.table_key_table off
-SELECT 'tk' AS t, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tk') WHERE kind = 'columns'
-UNION ALL SELECT 'tk_off', array_agg(DISTINCT format ORDER BY format) FROM sift.table_segments('tk_off') WHERE kind = 'columns' ORDER BY 1;
+SELECT 'tk' AS t, array_agg(DISTINCT format ORDER BY format) AS minors FROM tk_segs('tk') WHERE kind = 'columns'
+UNION ALL SELECT 'tk_off', array_agg(DISTINCT format ORDER BY format) FROM tk_segs('tk_off') WHERE kind = 'columns' ORDER BY 1;
 SELECT sift._test_tbl_verify('tk') = 160000 AS verified, sift._test_tbl_verify('tk_off') = 160000 AS verified_off;
 -- a few percent of the table at most
 SELECT pg_relation_size('tk') > pg_relation_size('tk_off') AS table_takes_bytes, pg_relation_size('tk') < pg_relation_size('tk_off') * 1.03 AS under_3_percent;
@@ -145,19 +151,19 @@ VACUUM (FREEZE) tk;
 VACUUM (FREEZE) tk_b;
 SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
 SELECT merged >= 0 AS maintained FROM sift.table_maintain('tk');
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tk') WHERE kind = 'columns';
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM tk_segs('tk') WHERE kind = 'columns';
 SELECT sift._test_tbl_verify('tk') = (SELECT count(*) FROM tk_b) AS verified;
 SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
 
 -- the option switched off while a table is written, and on again: the segments written without a table are read from their units until a merge rewrites them with
 -- one, and the answers are the heap's all the way
-SET sift.table_key_table = off;
 CREATE TABLE ta (id int, grp_id int, amt numeric(12,2), ts timestamp, pad text) USING sift_table;
+SELECT sift.table_set_option('ta', 'dict_lookup', 'off'), sift.table_set_option('ta', 'key_table', 'off');
 INSERT INTO ta SELECT id, grp_id, amt, ts, pad FROM tk_src WHERE id <= 60000 ORDER BY id;
 VACUUM (FREEZE) ta;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('ta') WHERE kind = 'columns';
+SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM tk_segs('ta') WHERE kind = 'columns';
 SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM ta WHERE grp_id = 7')) > 0 AS no_table_scans;
-RESET sift.table_key_table;
+SELECT sift.table_reset_option('ta', 'key_table');
 INSERT INTO ta SELECT id, grp_id, amt, ts, pad FROM tk_src WHERE id > 60000 AND id <= 120000 ORDER BY id;
 VACUUM (FREEZE, ANALYZE) ta;
 CREATE TABLE ta_b AS SELECT id, grp_id, amt, ts, pad FROM tk_src WHERE id <= 120000 ORDER BY id;
@@ -165,6 +171,6 @@ SELECT tk_rows('SELECT count(*), sum(amt), min(ts), max(ts) FROM ta WHERE grp_id
 SELECT sift._test_tbl_verify('ta');
 
 DROP TABLE tk, tk_off, tk_b, ta, ta_b, tk_src, tk_q;
-DROP FUNCTION tk_rows(text, bool), tk_units(text), tk_check(text, text);
+DROP FUNCTION tk_rows(text, bool), tk_units(text), tk_check(text, text), tk_segs(regclass);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

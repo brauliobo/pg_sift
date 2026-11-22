@@ -3,7 +3,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
-SET sift.table_bulk_groups = on;
 
 CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 100, '0') AS pad FROM generate_series(1, 20000) g;
 CREATE TABLE t (id int, grp int, v text, pad text) USING sift_table;

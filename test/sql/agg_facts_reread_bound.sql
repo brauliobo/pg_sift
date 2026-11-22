@@ -1,5 +1,5 @@
 -- The facts of a partition index (layout, statistics, pre-aggregates) are read again when its stamp moves, and the earlier ones stay in "sift cache partition facts" until the cache is emptied:
--- that is bounded by sift.backend_cache_kb, not by the number of re-reads. 1000 plans with a change of the table between each leave the context under the budget; with no budget it grows with them.
+-- that is bounded by sift.backend_cache_kb, not by the number of re-reads. 1000 plans with a change of the table between each leave the context under the budget; with a budget far above what they need it grows with them.
 CREATE EXTENSION pg_sift;
 SELECT current_setting('sift.backend_cache_kb') AS default_budget;
 SET max_parallel_workers_per_gather = 0;
@@ -28,9 +28,9 @@ BEGIN
 	INSERT INTO fb_peak VALUES (budget_kb, peak);
 END $$;
 SELECT fb_cycles(1000, 1);
-SELECT fb_cycles(1000, -1);
+SELECT fb_cycles(1000, 1048576);
 SELECT budget_kb, peak_kb <= 16 AS stays_under_the_budget_and_one_plan FROM fb_peak WHERE budget_kb = 1;
-SELECT peak_kb > (SELECT peak_kb FROM fb_peak WHERE budget_kb = 1) * 4 AS grows_without_a_budget FROM fb_peak WHERE budget_kb = -1;
+SELECT peak_kb > (SELECT peak_kb FROM fb_peak WHERE budget_kb = 1) * 4 AS grows_without_a_budget FROM fb_peak WHERE budget_kb = 1048576;
 DROP FUNCTION fb_cycles(int, int), fb_facts_kb();
 DROP TABLE fb_events;
 DROP EXTENSION pg_sift;

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # merge_fanin on a live index: inserts seal a hundred small segments faster than the worker (started every 2 s) merges them, so the
 # directory reaches the 112 entries where inserters merge. Whatever the fanin (2, the minimum, and 32, the maximum, whose merges
 # take 64 segments), no insert fails, the directory never fills (128 entries), every row is indexed, and the index settles within the bounds of the policy: fewer than fanin segments per tier, and no more entries

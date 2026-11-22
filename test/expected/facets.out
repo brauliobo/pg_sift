@@ -29,7 +29,7 @@ FROM (SELECT 'd_raw' idx, * FROM sift.segments('d_raw') UNION ALL SELECT 'd_hc',
 -- the folded value of a row: the keyword index analyzer's token, NULL when the value has none. The expected counts do not depend on the
 -- limit: fac_all computes them once per query and takes the prefix of each limit
 CREATE FUNCTION fac_expected(col text, facet regclass, q text, nulls bool) RETURNS text[] LANGUAGE plpgsql
-	SET sift.enable_scan = off SET sift.enable_count = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
+	SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
 DECLARE
 	r text[];
 BEGIN
@@ -335,8 +335,10 @@ DROP TABLE e;
 -- options and errors
 CREATE INDEX bad1 ON d USING sift (cat) WITH (analyzer = keyword, stemmer = en);
 ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
+HINT:  Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.
 CREATE INDEX bad2 ON d USING sift (cat) WITH (analyzer = keyword, fields = 'a');
 ERROR:  analyzer = keyword cannot be combined with stemmer, prefix_index or fields
+HINT:  Use analyzer = 'text' for stemming, prefixes or weighted fields, or drop those options for exact keyword matching.
 CREATE INDEX bad3 ON d USING sift (cat) WITH (analyzer = nope);
 ERROR:  invalid value for enum option "analyzer": nope
 DETAIL:  Valid values are "text" and "keyword".

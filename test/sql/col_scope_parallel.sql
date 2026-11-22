@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
@@ -53,14 +52,14 @@ SET max_parallel_maintenance_workers = 2;
 
 -- the serial build, the reference
 SET max_parallel_maintenance_workers = 0;
-CREATE INDEX events_ser ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_ser ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 REINDEX INDEX events_ser;
 SELECT 'serial' AS build, current_setting('sift.test_col_workers')::int AS workers, c.* FROM check_index('events', 'events_ser') c;
 SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) AS serial_entries FROM sift._test_col_scope_entries('events_ser') \gset
 SET max_parallel_maintenance_workers = 2;
 
 -- the participants: the same entries whatever the segment boundaries
-CREATE INDEX events_par ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_par ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 SELECT 'parallel' AS build, current_setting('sift.test_col_workers')::int > 0 AS workers, c.* FROM check_index('events', 'events_par') c;
 SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) = :'serial_entries' AS same_entries_as_serial FROM sift._test_col_scope_entries('events_par');
 SELECT sift.col_verify('events_par', true);
@@ -84,7 +83,7 @@ CREATE TABLE pevents_1 PARTITION OF pevents FOR VALUES FROM (1) TO (4001) WITH (
 CREATE TABLE pevents_2 PARTITION OF pevents FOR VALUES FROM (4001) TO (8001) WITH (autovacuum_enabled = false);
 CREATE TABLE pevents_3 PARTITION OF pevents FOR VALUES FROM (8001) TO (12001) WITH (autovacuum_enabled = false);
 INSERT INTO pevents SELECT id, dim_a_id, created_at, v FROM events WHERE id <= 12000;
-CREATE INDEX pevents_col ON pevents USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX pevents_col ON pevents USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 SELECT c.relname AS partition, p.* FROM pg_class c, LATERAL check_index(c.oid, (SELECT i.indexrelid FROM pg_index i WHERE i.indrelid = c.oid)) p
 	WHERE c.relname LIKE 'pevents\_%' AND c.relkind = 'r' ORDER BY 1;
 -- the scope relation cannot go while the partitions' indexes depend on it
@@ -124,12 +123,12 @@ SET maintenance_work_mem = '128MB';
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX hop_ser ON events USING sift_col (id, dim_a_id, created_at, v)
-	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(8)');
 SELECT 'serial' AS build, current_setting('sift.test_col_workers')::int AS workers, u.same_as_join FROM union_entries('hop_ser') u;
 SELECT entries_md5 AS serial_entries FROM union_entries('hop_ser') \gset
 SET max_parallel_maintenance_workers = 2;
 CREATE INDEX hop_par ON events USING sift_col (id, dim_a_id, created_at, v)
-	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(8)');
 SELECT 'parallel' AS build, current_setting('sift.test_col_workers')::int > 0 AS workers, u.same_as_join, u.entries_md5 = :'serial_entries' AS same_entries_as_serial FROM union_entries('hop_par') u;
 REINDEX INDEX hop_par;
 SELECT 'reindex' AS build, current_setting('sift.test_col_workers')::int > 0 AS workers, u.same_as_join, u.entries_md5 = :'serial_entries' AS same_entries_as_serial FROM union_entries('hop_par') u;

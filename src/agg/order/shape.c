@@ -18,7 +18,7 @@
 #include "agg/topn.h"
 #include "agg/order/int.h"
 #include "agg/lookup_int.h"
-#include "col/gorder.h"
+#include "col/v1/gorder.h"
 
 /* Is the window the whole set of rows: no PARTITION BY and no ORDER BY (every row is a peer of every other), and a frame that is not cut (the default one ends at the last peer) */
 bool

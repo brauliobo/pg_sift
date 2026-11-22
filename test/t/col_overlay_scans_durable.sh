@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# The merge of the small overlays of a key-cut index is weighed against the scans the index has had, and those are a count in its metapage (col/wbuf/reads.c), not the numscans of pg_stat: pg_stat_reset()
+# The merge of the small overlays of a key-cut index is weighed against the scans the index has had, and those are a count in its metapage (core/reads.c), not the numscans of pg_stat: pg_stat_reset()
 # leaves the decision as it was, and so do a clean restart and a crash. An index nobody has read is not merged.
 . "$(dirname "$0")/lib.bash"
 plan 7
 
 node_init ov 82 "autovacuum = off
 sift.async_maintenance = off
-sift.col_auto_merge_partition_kb = 400
+sift.test_col_partition_kb = 400
 sift.col_auto_merge_wal_pct = 5"
 node_start ov || bail "start failed"
 sql ov "CREATE EXTENSION pg_sift" "SET max_parallel_maintenance_workers = 0" \
@@ -33,7 +33,7 @@ check "200 requests in a session that ended make the merge due" test "$D" != "no
 sql ov "SELECT pg_stat_force_next_flush()" "SELECT pg_stat_reset()" >/dev/null
 check "pg_stat_reset() leaves the decision as it was" test "$(due)" == "$D"
 check "and the numscans it zeroed were not what the decision read" test "$(sql ov "SELECT idx_scan FROM pg_stat_user_indexes WHERE indexrelname = 'ov_idx'" | tail -n 1)" -eq 0
-sleep 1   # the WAL writer has the record in the log within wal_writer_delay (200 ms): a crash after that keeps it
+wait_for "wal_flushed ov" 30
 node_stop ov; node_start ov || bail "restart failed"
 check "a clean restart leaves it as it was" test "$(due)" == "$D"
 sleep 1

@@ -1,0 +1,79 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_agg_fast_ungrouped.comp - the aggregates of no GROUP BY of a program that reads columns and compares them with constants
+ * (common_fast.glsl): four rows per invocation, the aggregates in registers, one reduction per workgroup (common_ungrouped.glsl).
+ */
+#include "common_fast.glsl"
+#include "common_ungrouped.glsl"
+
+layout(local_size_x = 256) in;
+
+void tile_add(uint pass)
+{
+	uint n = bitCount(pass);
+
+	lrows += int64_t(n);
+	[[unroll]] for (uint a = 0u; a < SC_NAGG; a++)
+	{
+		uint k = AGG_KIND(a);
+
+		if (k == AK_COUNT_STAR)
+		{
+			la[a * 3u] += int64_t(n);
+			continue;
+		}
+		uint m = agg_rows(a, pass);
+
+		if (m == 0u)
+			continue;
+		if (k == AK_COUNT)
+		{
+			la[a * 3u] += int64_t(bitCount(m));
+			continue;
+		}
+		la[a * 3u + 2u] += int64_t(bitCount(m));
+		[[unroll]] for (uint i = 0u; i < 4u; i++)
+		{
+			if (((m >> i) & 1u) == 0u)
+				continue;
+			if (k == AK_SUM_I)
+			{
+				int64_t v = agg_value(a, i);
+
+				la[a * 3u] += sum_lo(v);
+				la[a * 3u + 1u] += sum_hi(v);
+			}
+			else if (k == AK_SUM_F)
+				lf[a] += dbl(agg_value(a, i));
+			else
+			{
+				int64_t v = agg_cmp_key(a, k, i);
+
+				la[a * 3u] = (k == AK_MIN || k == AK_MIN_F) ? min(la[a * 3u], v) : max(la[a * 3u], v);
+			}
+		}
+	}
+}
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint ngran = ctl[J_NGRAN];
+
+	ungrouped_init(SC_NAGG);
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		fast_granule(dtrow);
+		for (uint r = tid * 4u; r < g_nrows; r += WG * 4u)
+		{
+			uint pass = fast_tile(r);
+
+			if (pass != 0u)
+				tile_add(pass);
+		}
+	}
+	ungrouped_finish(tid, SC_NAGG);
+}

@@ -1,4 +1,4 @@
-# The dimension map (sift.agg_dimmap_kb): the classes of the keys of a joined table, kept in shared memory. A backend killed while it reads a map takes the server
+# The dimension map (sift.shared_cache_kb): the classes of the keys of a joined table, kept in shared memory. A backend killed while it reads a map takes the server
 # through crash recovery, which discards the segments; a budget too small for a map keeps none and the answers stay those of the normal plan; sessions that ask for
 # the same map at once make it once; a hot standby makes and reads its own and gives the primary's answers.
 use strict;
@@ -11,7 +11,7 @@ use Test::More;
 
 my $sessions = 12;
 my $node = sift_node('dimmap', allows_streaming => 1);
-$node->append_conf('postgresql.conf', "sift.agg_lookup_cache_kb = 0\nsift.agg_lookup_shared_kb = 0\nmax_parallel_workers_per_gather = 0\nmax_connections = 40\nshared_buffers = 256MB");
+$node->append_conf('postgresql.conf', "max_parallel_workers_per_gather = 0\nmax_connections = 40\nshared_buffers = 256MB");
 $node->start;
 install_sift($node);
 $node->safe_psql('postgres', <<'SQL');
@@ -57,12 +57,12 @@ is($node->safe_psql('postgres', $sum), $node->safe_psql('postgres', "SET sift.en
 
 # a budget the map does not fit: nothing is kept and every query reads the classes itself
 $node->safe_psql('postgres', 'UPDATE dim SET b = 3 WHERE k = 9; VACUUM (INDEX_CLEANUP ON) dim');
-$node->safe_psql('postgres', 'ALTER SYSTEM SET sift.agg_dimmap_kb = 16');
+$node->safe_psql('postgres', 'ALTER SYSTEM SET sift.shared_cache_kb = 80');
 $node->reload;
 is($maps->($node), '0,1', 'a map larger than the budget is made for the query');
 is($maps->($node), '0,1', 'and not kept: the next query makes it again');
 is($node->safe_psql('postgres', $sum), $node->safe_psql('postgres', "SET sift.enable_agg = off; $sum"), 'the answer is the normal plan\'s');
-$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.agg_dimmap_kb');
+$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.shared_cache_kb');
 $node->reload;
 
 # sessions that ask at the same moment: one makes the map

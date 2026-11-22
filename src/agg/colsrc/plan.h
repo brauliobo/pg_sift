@@ -12,7 +12,10 @@
 
 /* Is the access method of an index (table) one a provider owns? Cheap; used by the planner on every rel */
 extern bool sift_colsrc_is_index(Oid indexrelam);
-extern bool sift_colsrc_is_table(Oid tablerelam);
+/* An index a provider reads: of its access method, and of a format it reads (an index of another format is read by its own scan) */
+extern bool sift_colsrc_reads_index(Oid indexoid);
+/* A table a provider reads: of its access method, and of a format it reads (a table of another format is read by its own scan) */
+extern bool sift_colsrc_is_table(Oid tableoid);
 
 /* The layout of an open index (table) relation; palloc'd in CurrentMemoryContext */
 extern SiftSrcLayout *sift_colsrc_layout(Relation rel);
@@ -208,30 +211,6 @@ static inline bool
 sift_colsrc_unit_hist(SiftSrcSource *src, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
 	return src->prov->unit_hist != NULL && src->prov->unit_hist(src->impl, unit, dim, need, h);
-}
-
-static inline bool
-sift_colsrc_gpu_unit(SiftSrcSource *src, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
-{
-	return src->prov->gpu_unit != NULL && src->prov->gpu_unit(src->impl, unit, g);
-}
-
-static inline bool
-sift_colsrc_gpu_dense(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf)
-{
-	return src->prov->gpu_dense != NULL && src->prov->gpu_dense(src->impl, unit, leaf);
-}
-
-static inline bool
-sift_colsrc_gpu_chunk(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c)
-{
-	return src->prov->gpu_chunk != NULL && src->prov->gpu_chunk(src->impl, unit, leaf, c);
-}
-
-static inline void
-sift_colsrc_gpu_dict(SiftSrcSource *src, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
-{
-	src->prov->gpu_dict(src->impl, unit, leaf, dict);
 }
 
 /* the tuples of the unit's rollup of the list, 0 when the unit has none or the source cannot tell */

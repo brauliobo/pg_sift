@@ -6,7 +6,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE docs (id int PRIMARY KEY, grp int NOT NULL, amount float8 NOT NULL, memo text NOT NULL);
 INSERT INTO docs SELECT g, g % 50, g % 17, (ARRAY['cable', 'wire', 'plug', 'switch'])[1 + g % 4] || ' ' || CASE WHEN g = 1 THEN 'rareword' ELSE 'relay' END FROM generate_series(1, 20000) g;
 CREATE INDEX docs_col ON docs USING sift_col (id, grp, amount);
+SET client_min_messages = warning;
 CREATE INDEX docs_memo ON docs USING sift (memo);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) docs;
 
 CREATE FUNCTION scan_cost(word text) RETURNS numeric LANGUAGE sql AS

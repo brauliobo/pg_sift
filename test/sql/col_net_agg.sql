@@ -6,7 +6,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 
@@ -95,7 +95,6 @@ SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
 SET sift.col_format_minor = 6;
 CREATE TABLE ov6 AS SELECT id, grp, kind, amount, qty FROM ov;
 CREATE INDEX ov6_col ON ov6 USING sift_col (id, grp, kind, amount, qty);
-RESET sift.col_format_minor;
 SELECT format, count(*) FROM sift.col_segments('ov6_col') GROUP BY 1;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ov6;
 DELETE FROM ov6 WHERE id % 11 = 3;

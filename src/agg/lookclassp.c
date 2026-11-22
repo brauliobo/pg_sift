@@ -233,7 +233,7 @@ gang_merge(DenseLoad *d, const ColNeed *need, ClassOut **outs, int nw, const uin
 		remap[(size_t) mix[m].w * DENSE_MAX_CLASSES + mix[m].k + 1] = cls;
 	}
 	d->cap = d->n;
-	d->lut = MemoryContextAllocHuge(d->cxt, (Size) d->n * sizeof(uint16));
+	d->lut = MemoryContextAlloc(d->cxt, (Size) d->n * sizeof(uint16));
 	for (uint32 key = 0; key < d->n; key++)
 		d->lut[key] = remap[shlut[key]];
 	pfree(mix);

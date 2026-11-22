@@ -1,0 +1,202 @@
+-- The chunk encodings of format major 2: each column of a granule is written in the encoding that holds it in the fewest bytes (or the one its owner names), read back by the maintenance
+-- decoders and by the vector decoder, and a chunk that shrinks by an eighth is wrapped in LZ4 or zstd.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+-- Integers: a constant, a dense sequence (delta), few distinct values in runs, wide values (frame of reference), small values with nulls
+SELECT kind, pattern, sift._test_f2_enc(kind, pattern, 8192, nulls) AS result
+FROM (VALUES ('int', 'const', false), ('int', 'seq', false), ('int', 'sorted', false), ('int', 'runs', false), ('int', 'wide', false), ('int', 'small', true), ('int', 'runs', true)) AS c(kind, pattern, nulls);
+ kind | pattern |                           result                            
+------+---------+-------------------------------------------------------------
+ int  | const   | enc=INT_CONST bytes=8 wrapped=f legacy=ok vec=ok tags=ok
+ int  | seq     | enc=INT_DELTA bytes=120 wrapped=f legacy=ok vec=ok tags=ok
+ int  | sorted  | enc=INT_DELTA bytes=3192 wrapped=f legacy=ok vec=ok tags=ok
+ int  | runs    | enc=RLE bytes=288 wrapped=f legacy=ok vec=ok tags=ok
+ int  | wide    | enc=INT_FOR bytes=65592 wrapped=f legacy=ok vec=ok tags=ok
+ int  | small   | enc=INT_FOR bytes=6840 wrapped=f legacy=ok vec=ok tags=ok
+ int  | runs    | enc=RLE bytes=1312 wrapped=f legacy=ok vec=ok tags=ok
+(7 rows)
+
+-- Native fixed-width types and the encodings a column is held to: numeric(p <= 18) as a scaled int64, booleans as bits, the lengths of arrays in blocks of 64 rows
+SELECT kind, pattern, sift._test_f2_enc(kind, pattern, 5000, nulls) AS result
+FROM (VALUES ('money', 'money', false), ('money', 'money', true), ('bool', 'bool', false), ('bool', 'bool', true), ('list', 'list', false), ('list', 'list', true)) AS c(kind, pattern, nulls);
+ kind  | pattern |                           result                            
+-------+---------+-------------------------------------------------------------
+ money | money   | enc=NUM64 bytes=12736 wrapped=f legacy=ok vec=ok tags=ok
+ money | money   | enc=NUM64 bytes=10808 wrapped=f legacy=ok vec=ok tags=ok
+ bool  | bool    | enc=BOOL_BITS bytes=632 wrapped=f legacy=ok vec=ok tags=ok
+ bool  | bool    | enc=BOOL_BITS bytes=1136 wrapped=f legacy=ok vec=ok tags=ok
+ list  | list    | enc=LIST_LEN bytes=2304 wrapped=f legacy=ok vec=ok tags=ok
+ list  | list    | enc=LIST_LEN bytes=2552 wrapped=f legacy=ok vec=ok tags=ok
+(6 rows)
+
+-- Doubles: decimals are scaled integers (with the others patched in); the others whose top bits take few values are split into a table code and their other bits (all bit patterns
+-- exact: -0, NaN payloads, infinities, subnormals), the rest stay as they are
+SELECT kind, pattern, sift._test_f2_enc(kind, pattern, 8192, nulls) AS result
+FROM (VALUES ('f8', 'const', false), ('f8', 'decimal', false), ('f8', 'decimal', true), ('f8', 'exceptions', false), ('f8', 'exceptions', true), ('f8', 'random', false), ('f8', 'narrow', false), ('f8', 'narrow', true), ('f8', 'special', false), ('f8', 'special', true)) AS c(kind, pattern, nulls);
+ kind |  pattern   |                          result                           
+------+------------+-----------------------------------------------------------
+ f8   | const      | enc=ALP bytes=56 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | decimal    | enc=ALP bytes=17496 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | decimal    | enc=ALP bytes=15064 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | exceptions | enc=ALP bytes=20800 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | exceptions | enc=ALP bytes=15064 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | random     | enc=ALP_RD bytes=56568 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | narrow     | enc=ALP_RD bytes=40984 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | narrow     | enc=ALP_RD bytes=33832 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | special    | enc=ALP_RD bytes=55416 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | special    | enc=ALP_RD bytes=45368 wrapped=f legacy=ok vec=ok tags=ok
+(10 rows)
+
+-- Text: a dictionary when the values repeat, inline otherwise, views when the owner reads them as views; 16-byte uuids, numerics of 38 digits and intervals as they are
+SELECT kind, pattern, sift._test_f2_enc(kind, pattern, 8192, nulls) AS result
+FROM (VALUES ('str', 'lowcard', false), ('str', 'lowcard', true), ('str', 'unique', false), ('str', 'short', true), ('str', 'mixed', false), ('view', 'mixed', false), ('view', 'unique', true),
+			 ('uuid', 'uuid', false), ('uuid', 'uuid', true), ('num128', 'num128', false), ('interval', 'interval', true)) AS c(kind, pattern, nulls);
+   kind   | pattern  |                            result                             
+----------+----------+---------------------------------------------------------------
+ str      | lowcard  | enc=DICT_CODE bytes=3328 wrapped=f legacy=ok vec=ok tags=ok
+ str      | lowcard  | enc=DICT_CODE bytes=3840 wrapped=f legacy=ok vec=ok tags=ok
+ str      | unique   | enc=STR_BLOCK bytes=196744 wrapped=f legacy=ok vec=ok tags=ok
+ str      | short    | enc=STR_BLOCK bytes=41224 wrapped=f legacy=ok vec=ok tags=ok
+ str      | mixed    | enc=STR_BLOCK bytes=250128 wrapped=f legacy=ok vec=ok tags=ok
+ view     | mixed    | enc=STR_VIEW bytes=363728 wrapped=f legacy=ok vec=ok tags=ok
+ view     | unique   | enc=STR_VIEW bytes=261440 wrapped=f legacy=ok vec=ok tags=ok
+ uuid     | uuid     | enc=UUID16 bytes=131072 wrapped=f legacy=ok vec=ok tags=ok
+ uuid     | uuid     | enc=UUID16 bytes=105888 wrapped=f legacy=ok vec=ok tags=ok
+ num128   | num128   | enc=FIXED16 bytes=131184 wrapped=f legacy=ok vec=ok tags=ok
+ interval | interval | enc=FIXED16 bytes=106000 wrapped=f legacy=ok vec=ok tags=ok
+(11 rows)
+
+-- High-cardinality text that no dictionary holds (ids, URLs, free tags) is held in a table of at most 255 symbols of 1 to 8 bytes (FSST), each string apart, when that is not a quarter
+-- larger than the codec's list; where the owner keeps compression off, or the text is long on average (64 bytes), or the table would not pay, the list stays
+SELECT pattern, nrows, wrap, nulls, sift._test_f2_enc('str', pattern, nrows, nulls, false, wrap) AS result
+FROM (VALUES ('tag', 8192, 'lz4', false), ('tag', 8192, 'zstd', true), ('tag', 8192, 'none', false), ('tag', 1000, 'lz4', false), ('tag', 500, 'lz4', false), ('tag', 1, 'lz4', false), ('unique', 8192, 'lz4', false),
+			 ('url', 5000, 'zstd', false), ('utf8', 8192, 'lz4', true), ('binary', 8192, 'lz4', false), ('onebyte', 700, 'lz4', false), ('multikb', 300, 'zstd', false), ('empty', 100, 'lz4', false),
+			 ('mixed', 8192, 'lz4', false)) AS c(pattern, nrows, wrap, nulls);
+ pattern | nrows | wrap | nulls |                            result                             
+---------+-------+------+-------+---------------------------------------------------------------
+ tag     |  8192 | lz4  | f     | enc=STR_FSST bytes=26216 wrapped=f legacy=ok vec=ok tags=ok
+ tag     |  8192 | zstd | t     | enc=STR_FSST bytes=22112 wrapped=f legacy=ok vec=ok tags=ok
+ tag     |  8192 | none | f     | enc=STR_BLOCK bytes=73776 wrapped=f legacy=ok vec=ok tags=ok
+ tag     |  1000 | lz4  | f     | enc=STR_FSST bytes=4528 wrapped=f legacy=ok vec=ok tags=ok
+ tag     |   500 | lz4  | f     | enc=STR_FSST bytes=3392 wrapped=f legacy=ok vec=ok tags=ok
+ tag     |     1 | lz4  | f     | enc=STR_BLOCK bytes=64 wrapped=f legacy=ok vec=ok tags=ok
+ unique  |  8192 | lz4  | f     | enc=STR_FSST bytes=82528 wrapped=f legacy=ok vec=ok tags=ok
+ url     |  5000 | zstd | f     | enc=STR_FSST bytes=47744 wrapped=f legacy=ok vec=ok tags=ok
+ utf8    |  8192 | lz4  | t     | enc=STR_FSST bytes=45200 wrapped=f legacy=ok vec=ok tags=ok
+ binary  |  8192 | lz4  | f     | enc=STR_BLOCK bytes=173280 wrapped=f legacy=ok vec=ok tags=ok
+ onebyte |   700 | lz4  | f     | enc=STR_BLOCK bytes=320 wrapped=f legacy=ok vec=ok tags=ok
+ multikb |   300 | zstd | f     | enc=STR_BLOCK bytes=351152 wrapped=f legacy=ok vec=ok tags=ok
+ empty   |   100 | lz4  | f     | enc=DICT_CODE bytes=112 wrapped=f legacy=ok vec=ok tags=ok
+ mixed   |  8192 | lz4  | f     | enc=STR_BLOCK bytes=99496 wrapped=f legacy=ok vec=ok tags=ok
+(14 rows)
+
+-- The symbol table on its own: every string coded and decoded alone and in a run, the table stored and read back, a string cut inside its escape refused; the empty string, a byte, UTF-8, bytes
+-- of every value (all escapes) and strings of several kilobytes. Coded sizes against the raw bytes and the LZ4 of the same strings (the ids, URLs and tags of a column are the case)
+SELECT pattern, nstrings, sift._test_f2_fsst(pattern, nstrings) AS result
+FROM (VALUES ('empty', 1), ('empty', 40), ('onebyte', 1), ('onebyte', 700), ('tag', 1), ('tag', 8192), ('url', 5000), ('utf8', 3000), ('binary', 2000), ('multikb', 200), ('mixed', 4000)) AS c(pattern, nstrings);
+ pattern | nstrings |                                     result                                     
+---------+----------+--------------------------------------------------------------------------------
+ empty   |        1 | alone=ok run=ok stored=ok symbols=0 smaller_than_raw=f smaller_than_lz4=n/a
+ empty   |       40 | alone=ok run=ok stored=ok symbols=0 smaller_than_raw=f smaller_than_lz4=n/a
+ onebyte |        1 | alone=ok run=ok stored=ok symbols=1 smaller_than_raw=f smaller_than_lz4=fsst
+ onebyte |      700 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=f smaller_than_lz4=lz4
+ tag     |        1 | alone=ok run=ok stored=ok symbols=2 smaller_than_raw=t smaller_than_lz4=fsst
+ tag     |     8192 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=t smaller_than_lz4=fsst
+ url     |     5000 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=t smaller_than_lz4=fsst
+ utf8    |     3000 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=t smaller_than_lz4=fsst
+ binary  |     2000 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=f smaller_than_lz4=fsst
+ multikb |      200 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=t smaller_than_lz4=fsst
+ mixed   |     4000 | alone=ok run=ok stored=ok symbols=255 smaller_than_raw=t smaller_than_lz4=fsst
+(11 rows)
+
+SELECT pattern, (m[2]::bigint * 10 < m[1]::bigint * 4) AS under_40_pct_of_raw, (m[2]::bigint * 10 < m[3]::bigint * 7) AS under_70_pct_of_lz4
+FROM (VALUES ('tag', 8192), ('url', 5000), ('mixed', 4000)) AS c(pattern, n),
+	 LATERAL (SELECT regexp_match(sift._test_f2_fsst(pattern, n, true), 'raw=(\d+) coded=(\d+) lz4=(\d+)') AS m) x;
+ pattern | under_40_pct_of_raw | under_70_pct_of_lz4 
+---------+---------------------+---------------------
+ tag     | t                   | t
+ url     | t                   | f
+ mixed   | t                   | t
+(3 rows)
+
+SELECT pattern, (m[2]::bigint * 10 < m[1]::bigint * 4) AS under_40_pct_of_raw
+FROM (VALUES ('utf8', 3000), ('multikb', 200)) AS c(pattern, n),
+	 LATERAL (SELECT regexp_match(sift._test_f2_fsst(pattern, n, true), 'raw=(\d+) coded=(\d+)') AS m) x;
+ pattern | under_40_pct_of_raw 
+---------+---------------------
+ utf8    | t
+ multikb | t
+(2 rows)
+
+-- Rows the column cannot hold (the shredder's overflow and JSON nulls) are nulls with a tag, kept in an exception stream of the chunk
+SELECT kind, pattern, sift._test_f2_enc(kind, pattern, 3000, true, true) AS result
+FROM (VALUES ('int', 'small'), ('f8', 'decimal'), ('str', 'lowcard'), ('str', 'unique'), ('money', 'money')) AS c(kind, pattern);
+ kind  | pattern |                            result                            
+-------+---------+--------------------------------------------------------------
+ int   | small   | enc=INT_FOR bytes=3128 wrapped=f legacy=ok vec=ok tags=ok
+ f8    | decimal | enc=ALP bytes=5848 wrapped=f legacy=ok vec=ok tags=ok
+ str   | lowcard | enc=DICT_CODE bytes=2176 wrapped=f legacy=ok vec=ok tags=ok
+ str   | unique  | enc=STR_BLOCK bytes=52992 wrapped=f legacy=ok vec=ok tags=ok
+ money | money   | enc=NUM64 bytes=6720 wrapped=f legacy=ok vec=ok tags=ok
+(5 rows)
+
+SELECT sift._test_f2_enc('int', 'const', 100, true, true);
+                        _test_f2_enc                        
+------------------------------------------------------------
+ enc=INT_CONST bytes=112 wrapped=f legacy=ok vec=ok tags=ok
+(1 row)
+
+-- Every row null (with every row tagged: a path whose every value is a JSON null): the chunk has no body; and a single row
+SELECT kind, sift._test_f2_enc(kind, 'allnull', 500, true, tags) AS result
+FROM (VALUES ('int', false), ('f8', false), ('str', false), ('int', true), ('str', true)) AS c(kind, tags);
+ kind |                          result                           
+------+-----------------------------------------------------------
+ int  | enc=ALL_NULL bytes=0 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | enc=ALL_NULL bytes=0 wrapped=f legacy=ok vec=ok tags=ok
+ str  | enc=ALL_NULL bytes=0 wrapped=f legacy=ok vec=ok tags=ok
+ int  | enc=ALL_NULL bytes=288 wrapped=f legacy=ok vec=ok tags=ok
+ str  | enc=ALL_NULL bytes=288 wrapped=f legacy=ok vec=ok tags=ok
+(5 rows)
+
+SELECT sift._test_f2_enc('int', 'const', 1, false);
+                       _test_f2_enc                       
+----------------------------------------------------------
+ enc=INT_CONST bytes=8 wrapped=f legacy=ok vec=ok tags=ok
+(1 row)
+
+SELECT sift._test_f2_enc('str', 'unique', 1, false);
+                       _test_f2_enc                        
+-----------------------------------------------------------
+ enc=STR_BLOCK bytes=72 wrapped=f legacy=ok vec=ok tags=ok
+(1 row)
+
+-- Wrapped chunks: only when the compressed bytes are at least an eighth fewer
+SELECT kind, pattern, wrap, sift._test_f2_enc(kind, pattern, 8192, false, false, wrap) AS result
+FROM (VALUES ('str', 'unique', 'lz4'), ('str', 'unique', 'zstd'), ('str', 'lowcard', 'zstd'), ('int', 'wide', 'lz4'), ('f8', 'random', 'zstd'), ('view', 'mixed', 'lz4'), ('uuid', 'uuid', 'lz4'),
+			 ('int', 'runs', 'zstd')) AS c(kind, pattern, wrap);
+ kind | pattern | wrap |                            result                            
+------+---------+------+--------------------------------------------------------------
+ str  | unique  | lz4  | enc=STR_FSST bytes=82528 wrapped=f legacy=ok vec=ok tags=ok
+ str  | unique  | zstd | enc=STR_FSST bytes=81592 wrapped=f legacy=ok vec=ok tags=ok
+ str  | lowcard | zstd | enc=DICT_CODE bytes=3240 wrapped=f legacy=ok vec=ok tags=ok
+ int  | wide    | lz4  | enc=INT_FOR bytes=65592 wrapped=f legacy=ok vec=ok tags=ok
+ f8   | random  | zstd | enc=ALP_RD bytes=56568 wrapped=f legacy=ok vec=ok tags=ok
+ view | mixed   | lz4  | enc=STR_VIEW bytes=132636 wrapped=t legacy=ok vec=ok tags=ok
+ uuid | uuid    | lz4  | enc=UUID16 bytes=131072 wrapped=f legacy=ok vec=ok tags=ok
+ int  | runs    | zstd | enc=RLE bytes=192 wrapped=f legacy=ok vec=ok tags=ok
+(8 rows)
+
+SELECT sift._test_f2_enc('str', 'unique', 3000, true, true, 'zstd');
+                        _test_f2_enc                         
+-------------------------------------------------------------
+ enc=STR_FSST bytes=22888 wrapped=f legacy=ok vec=ok tags=ok
+(1 row)
+
+-- A row count out of range is refused
+SELECT sift._test_f2_enc('int', 'seq', 8193);
+ERROR:  rows must be 1 to 8192
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

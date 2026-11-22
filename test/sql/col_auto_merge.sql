@@ -1,4 +1,4 @@
--- The rewrite of a sift_col index that churn left scattered (sift.col_auto_merge*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
+-- The rewrite of a sift_col index that churn left scattered (sift.async_maintenance*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
 -- spread over the table puts a dead row in every unit while far fewer than dead_rewrite_pct percent of the rows are dead, so VACUUM rewrites nothing
 -- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
 -- in the write buffer. Nothing starts the rewrite but sift.col_maintain; the end state after it is the one of a REINDEX of the same table, and the answers never change.
@@ -109,7 +109,7 @@ SELECT 'maintained' AS index, * FROM fa_index('facts_a_col') UNION ALL SELECT 'r
 SELECT sum(dead_rows) AS dead_rows FROM sift.col_segments('facts_a_col');
 SELECT sift.col_verify('facts_a_col', true);
 
--- sift.col_auto_merge off: VACUUM leaves facts_b as the policy does, the answers are the same as those of the rewritten and of the reindexed one
+-- sift.async_maintenance off: VACUUM leaves facts_b as the policy does, the answers are the same as those of the rewritten and of the reindexed one
 SELECT 'not rewritten' AS step, * FROM fa_state('facts_b');
 SELECT (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts_a GROUP BY kind) x)
      = (SELECT string_agg(x::text, ',' ORDER BY x::text) FROM (SELECT kind, count(*), sum(amount) FROM facts_b GROUP BY kind) x) AS same_as_not_rewritten,
@@ -155,13 +155,13 @@ SELECT 'promoted' AS step, * FROM fa_state('facts_e');
 SELECT sift.col_verify('facts_e_col', true);
 
 -- on, within 5% of the WAL, unless the server says otherwise (the test clusters turn it off and the budget away)
-SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.col_auto_merge', 'sift.col_auto_merge_wal_pct') ORDER BY name;
+SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.async_maintenance', 'sift.col_auto_merge_wal_pct') ORDER BY name;
 
 -- CREATE INDEX says what the worker does with the index and how to stop it
-SET sift.col_auto_merge = on;
+SET sift.async_maintenance = on;
 CREATE TABLE facts_f (LIKE facts_a);
 CREATE INDEX facts_f_col ON facts_f USING sift_col (id, key, kind, amount);
-RESET sift.col_auto_merge;
+RESET sift.async_maintenance;
 
 DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f, facts_g;
 DROP FUNCTION fa_state(text);

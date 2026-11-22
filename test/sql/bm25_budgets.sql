@@ -1,6 +1,6 @@
 -- What a statement holds in memory for the matches of a search follows the data, so each such structure has a budget (work_mem) and a statement past
--- it fails naming the setting, or the planner leaves the scan out when it can already tell: the values of sift.facets, the hits of a ranked search
--- without a limit, and the rows and ties of a search ordered by keys and then by score. A lowered work_mem reaches each of them on a few thousand rows.
+-- it fails naming the setting, or the planner leaves the scan out when it can already tell: the values of sift.facets and the rows and ties of a search ordered
+-- by keys and then by score (the hits of a ranked search without a limit are sorted outside memory instead). A lowered work_mem reaches each of them on a few thousand rows.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 
@@ -34,9 +34,14 @@ RESET work_mem;
 SELECT value, count FROM sift.facets('items_sift', 'items_label', 'honey', 3) ORDER BY count DESC, value;
 SELECT value, count FROM sift.facets('items_sift', 'items_tag', 'honey', 3) ORDER BY count DESC, value;
 
--- a ranked search without a limit holds a hit for every match (16 bytes): 8000 matches are 128 kB
+-- a ranked search without a limit holds a hit for every match (16 bytes): 8000 matches are 128 kB, which it sorts outside memory past half of work_mem
 SET work_mem = '64kB';
 SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY sift.score(ctid) DESC$$) AS no_limit;
+CREATE TEMP TABLE spilled AS SELECT row_number() OVER () AS n, score FROM (SELECT sift.score(ctid) AS score FROM items WHERE name @@> 'honey' ORDER BY 1 DESC) s;
+RESET work_mem;
+CREATE TEMP TABLE held AS SELECT row_number() OVER () AS n, score FROM (SELECT sift.score(ctid) AS score FROM items WHERE name @@> 'honey' ORDER BY 1 DESC) s;
+SELECT (SELECT count(*) FROM spilled) AS spilled_rows, count(*) AS held_rows, bool_and(s.score = h.score) AS same_scores FROM held h JOIN spilled s USING (n);
+SET work_mem = '64kB';
 SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY sift.score(ctid) DESC LIMIT 100$$) AS limit_100;
 SET work_mem = '256kB';
 SELECT over_budget($$SELECT id FROM items WHERE name @@> 'honey' ORDER BY sift.score(ctid) DESC$$) AS no_limit_256kb;

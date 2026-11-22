@@ -30,7 +30,8 @@
 --           first), the order sift sums in: a
 --           term is one unit, a phrase one unit per distinct term (first
 --           occurrence order), an expansion leaf one unit = max over its
---           expansions. A unit counts when the document matches the query and
+--           expansions, all weighed by the leaf's blended df (blend_df). A
+--           unit counts when the document matches the query and
 --           the unit's leaf matches the document; NOT subtrees never count.
 --           Group boosts multiply into leaves, root first.
 --
@@ -169,9 +170,9 @@ FROM unnest(ARRAY['quick', 'quick OR fox', 'quick brown', '"brown fox"', '"fox b
  "fox brown"          | 1 | 4:3.1531706                                      | t
  brown NOT quick      | 1 | 4:1.0049934                                      | t
  qu*                  | 4 | 2:1.3984553 7:1.1793582 8:1.1793582 1:0.96643496 | t
- col*r                | 1 | 9:2.3680704                                      | t
- /colou?r/            | 1 | 9:2.3680704                                      | t
- colr~1               | 1 | 9:2.3680704                                      | t
+ col*r                | 1 | 9:1.463827                                       | t
+ /colou?r/            | 1 | 9:1.809455                                       | t
+ colr~1               | 1 | 9:1.809455                                       | t
  cafe                 | 1 | 10:3.4146898                                     | t
  {dog dogs}^2 OR lazy | 2 | 3:7.104211 2:3.951867                            | t
  quick^0              | 4 | 1:0 2:0 7:0 8:0                                  | t

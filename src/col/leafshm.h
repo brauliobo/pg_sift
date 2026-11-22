@@ -1,13 +1,12 @@
 /*
  * col/leafshm.h - the statistics of a sift_col index that its leaves, zones and pre-aggregates give the planner, kept in shared memory
- * (sift.col_leaf_cache_kb) for the backends of a server.
+ * (sift.shared_cache_kb) for the backends of a server.
  */
 #ifndef SIFT_COL_LEAFSHM_H
 #define SIFT_COL_LEAFSHM_H
 
 #include "col/pg.h"
 
-extern int	sift_col_leaf_cache_kb;
 
 /* sift.shared_memory(): what the ring holds and how its reads went; false where the table is not made */
 struct SiftShmStat;

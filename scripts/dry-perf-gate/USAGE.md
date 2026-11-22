@@ -28,7 +28,7 @@
 8. The base is rebuilt/re-measured when it moves (builds, objects and the data template are cached per base sha under GATE_ROOT (default /dev/shm/sift-perf-gate); 4 builds and 3
    templates are kept; every start also removes the run directories of dead processes beyond the newest 2, and builds, ports and templates unused for a day, so the tmpfs root stays bounded; a run in flight is never touched). `scripts/dry-perf-gate.sh baseline BASE` (about 12 minutes, full registry, base against base) stores $GATE_STATE/baselines/<sha>.{json,tsv} and noise.json (default $XDG_STATE_HOME/sift-perf-gate, never in git)
    (the per-case cycles noise floor the later runs use); run it once per integration tip, not per commit.
-9. Parallel workers: the default cases run with workers 0 (deterministic). The opt-in group `par` (selected by `src/agg/par*`, `src/core/parbuild.c`, `src/col/build_par.c`, `src/bm25/parallel.c`,
+9. Parallel workers: the default cases run with workers 0 (deterministic). The opt-in group `par` (selected by `src/agg/par*`, `src/core/parbuild.c`, `src/col/v1/build_par.c`, `src/bm25/parallel.c`,
    or `--groups par`) runs `par_agg_*` (workers planned 2, checked in the plan) and `par_*_build` (2 maintenance workers); the counters are those of the leader and its workers together, and
    the workers split the work dynamically, so those cases allow instructions +1%, blocks +10% and WAL +3% (`--par-instr-pct`, `--par-blocks-pct`, `--par-wal-pct`).
    Cross-checks the gate cannot make: cold device IO (tmpfs), the background maintenance worker path, concurrent backends on the shared caches, and
@@ -39,7 +39,7 @@
    only the PostgreSQL sources define, and keep the baseline ISA. A failure names the undefined symbols (`sqlite: sift.so has undefined symbol: sift_wt_write_seghdr`) and ends the run
    with FAIL at once (a shared library links with undefined symbols; the server or the shell finds out when it loads one). Alone: `scripts/dry-perf-gate.sh portable [REF [REF2]]`, exit 1 on FAIL.
 12. Concurrent backends (opt-in group `conc`, selected by `src/col/{dsmreg,dictshm,leafshm,rollup,wbuf/reads}`, `src/core/{lane,tomb,freelist,relocate,store,visibility,live}`, the scan and
-   load code of sift_table, `src/bm25/space.c`, or `--groups conc`): `conc_*` runs a read in 3 backends at once after a warm-up each (a barrier opens the window when all are warm and
+   load code of sift_table, `src/core/space.c`, or `--groups conc`): `conc_*` runs a read in 3 backends at once after a warm-up each (a barrier opens the window when all are warm and
    closes it when all have finished their 8 to 200 executions); instructions, cycles, hits and reads are summed over the backends, so cache and lane sharing is part of the
    number. Tolerances as for `par`: instructions +1%, blocks +10%, WAL +3% (measured base against base: at most 0.05% on instructions).
 13. Background maintenance workers (opt-in group `bgw`, selected by the worker code of bm25, col and table, `core/writer.c`, or `--groups bgw`): `bgw_*` runs a statement that asks a worker

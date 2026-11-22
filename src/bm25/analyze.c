@@ -13,6 +13,8 @@
 #include "bm25/analyze.h"
 #include "bm25/analyze_memo.h"
 #include "bm25/analyze_tables.h"
+#include "core/fmv.h"
+#include "core/neon.h"
 #include "core/varint.h"
 #include "core/cmp.h"
 

@@ -4,8 +4,6 @@
 -- non-ASCII and tied strings, uuids, DML, the write buffer, promotion and a merge of segments of both forms.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
--- the strings stay in the segments (a shared value store is not what this test is about, docs/COL-VSTORE.md)
-SET sift.test_vstore_columns = '-';
 SET sift.async_maintenance = off;
 CREATE TABLE ds (id int, s text, u uuid, v varchar(40), pad text DEFAULT repeat('x', 400));
 ALTER TABLE ds ALTER COLUMN pad SET STORAGE PLAIN;
@@ -177,7 +175,6 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "ds_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ds_13');
-RESET sift.col_format_minor;
 SELECT index, min(format) AS format FROM (SELECT 'off' AS index, format FROM sift.col_segments('ds_off') WHERE kind = 'immutable'
 	UNION ALL SELECT '13', format FROM sift.col_segments('ds_13') WHERE kind = 'immutable') x GROUP BY index ORDER BY index;
  index | format 
@@ -364,7 +361,6 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 SET sift.col_format_minor = 13;
 INSERT INTO ds (id, s, u, v) SELECT i, 'older' || i % 900, md5('older' || i)::uuid, 'x' || i % 400 FROM generate_series(13001, 14000) i;
 VACUUM ds;
-RESET sift.col_format_minor;
 SELECT format, count(*) AS segments FROM sift.col_segments('ds_new') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
  format | segments 
 --------+----------
@@ -453,7 +449,7 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 (26 rows)
 
 -- a cache that holds nothing: the same answers
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS sized;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS sized;
  sized 
 -------
  t
@@ -490,7 +486,7 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
  26 | ok
 (26 rows)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 -- ALTER INDEX: the option applies to the segments written afterwards
 SELECT sum(bytes) AS with_order FROM sift.col_sections('ds_new') WHERE section = 'dict' \gset
 ALTER INDEX ds_new SET (dict_lookup = off);
@@ -658,7 +654,6 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "dw_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dw_13');
-RESET sift.col_format_minor;
 SELECT d.leaf, d.bytes <= x.bytes * 1.03 AS within_3_percent, d.bytes > x.bytes AS blocks
 FROM sift.col_sections('dw_i') d JOIN sift.col_sections('dw_13') x ON x.section = d.section AND x.leaf = d.leaf WHERE d.section = 'dict' ORDER BY d.leaf;
  leaf | within_3_percent | blocks 

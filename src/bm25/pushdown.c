@@ -12,14 +12,10 @@
 
 #include <math.h>
 
-#include "access/genam.h"
 #include "access/nbtree.h"
-#include "access/skey.h"
 #include "access/stratnum.h"
-#include "access/table.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_statistic.h"
-#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
@@ -33,7 +29,6 @@
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
 #include "core/sift.h"
@@ -84,7 +79,7 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 			   *joininfo = rel->joininfo;
 	bool		eclass_joins = rel->has_eclass_joins,
 				parallel = rel->consider_parallel;
-	BitmapHeapPath *best = NULL;
+	BitmapHeapPath *volatile best = NULL;
 	uint64		saved;
 
 	if (sift_filter_pushdown == SIFT_PUSHDOWN_OFF || !enable_bitmapscan || rel->lateral_relids != NULL ||
@@ -94,18 +89,25 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 	rel->indexlist = indexes;
 	rel->has_eclass_joins = rel->consider_parallel = false;
 	saved = sift_plain_index_scans_off(rel);
-	create_index_paths(root, rel);
-	sift_plain_index_scans_restore(rel, saved);
-	foreach_ptr(Path, p, rel->pathlist)
-		if (IsA(p, BitmapHeapPath) && p->param_info == NULL &&
-			(best == NULL || p->total_cost < best->path.total_cost))
-			best = (BitmapHeapPath *) p;
-	rel->pathlist = paths;
-	rel->partial_pathlist = partial;
-	rel->indexlist = indexlist;
-	rel->joininfo = joininfo;
-	rel->has_eclass_joins = eclass_joins;
-	rel->consider_parallel = parallel;
+	PG_TRY();
+	{
+		create_index_paths(root, rel);
+		foreach_ptr(Path, p, rel->pathlist)
+			if (IsA(p, BitmapHeapPath) && p->param_info == NULL &&
+				(best == NULL || p->total_cost < best->path.total_cost))
+				best = (BitmapHeapPath *) p;
+	}
+	PG_FINALLY();
+	{
+		sift_plain_index_scans_restore(rel, saved);
+		rel->pathlist = paths;
+		rel->partial_pathlist = partial;
+		rel->indexlist = indexlist;
+		rel->joininfo = joininfo;
+		rel->has_eclass_joins = eclass_joins;
+		rel->consider_parallel = parallel;
+	}
+	PG_END_TRY();
 	return best;
 }
 
@@ -269,108 +271,20 @@ qual_span(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, Expr *qual)
 	return span;
 }
 
-/* Most entries read from a btree while planning to find where they lie in the heap */
-#define PROBE_MAX_ENTRIES	4096
-
-/* The scan key of `col = constant` for the one column of a btree */
-static bool
-equality_key(IndexOptInfo *ii, Expr *qual, ScanKeyData *key)
-{
-	OpExpr	   *op;
-	Node	   *arg;
-	int			strategy;
-	Oid			lefttype,
-				righttype;
-
-	if (!IsA(qual, OpExpr) || list_length(((OpExpr *) qual)->args) != 2)
-		return false;
-	op = (OpExpr *) qual;
-	arg = lsecond(op->args);
-	while (IsA(arg, RelabelType))
-		arg = (Node *) ((RelabelType *) arg)->arg;
-	if (!IsA(arg, Const) || ((Const *) arg)->constisnull ||
-		get_op_opfamily_strategy(op->opno, ii->opfamily[0]) != BTEqualStrategyNumber)
-		return false;
-	get_op_opfamily_properties(op->opno, ii->opfamily[0], false, &strategy, &lefttype, &righttype);
-	ScanKeyEntryInitialize(key, 0, 1, BTEqualStrategyNumber, righttype, op->inputcollid, get_opcode(op->opno),
-						   ((Const *) arg)->constvalue);
-	return true;
-}
-
-/* The heap block of the nth entry of the scan in its direction, InvalidBlockNumber when it has fewer */
-static BlockNumber
-nth_entry_block(IndexScanDesc scan, ScanDirection dir, int64 n)
-{
-	ItemPointer tid = NULL;
-
-	for (int64 i = 0; i < n; i++)
-	{
-		if ((tid = index_getnext_tid(scan, dir)) == NULL)
-			return InvalidBlockNumber;
-		if (i % 1024 == 1023)
-			CHECK_FOR_INTERRUPTS();
-	}
-	return ItemPointerGetBlockNumber(tid);
-}
-
-/*
- * Where in the heap the entries of `col = constant` lie, read from the btree: the entries of a key are
- * in heap order, so the nth of them marks the heap position before which a scan that checks the filter
- * after the ranker verifies every match (the column's statistics cannot say: a value stored in one
- * stretch of the heap does not make the column correlated), and the last one how far they reach.
- * The same probe of the btree the planner makes for the end of a range (get_actual_variable_endpoint).
- */
-static bool
-key_span(RelOptInfo *rel, RangeTblEntry *rte, IndexPath *ip, double entries, HeapSpan *span)
-{
-	IndexOptInfo *ii = ip->indexinfo;
-	ScanKeyData key;
-	IndexClause *ic;
-	Relation	heap,
-				index;
-	IndexScanDesc scan;
-	SnapshotData snapshot;
-	BlockNumber nth,
-				last;
-
-	if (entries < 1 || entries > PROBE_MAX_ENTRIES || ii->nkeycolumns != 1 || list_length(ip->indexclauses) != 1)
-		return false;
-	ic = linitial_node(IndexClause, ip->indexclauses);
-	if (list_length(ic->indexquals) != 1 || !equality_key(ii, linitial_node(RestrictInfo, ic->indexquals)->clause, &key))
-		return false;
-	heap = table_open(rte->relid, NoLock);
-	index = index_open(ii->indexoid, NoLock);
-	InitNonVacuumableSnapshot(snapshot, GlobalVisTestFor(heap));
-	scan = sift_index_beginscan(heap, index, &snapshot, 1);
-	index_rescan(scan, &key, 1, NULL, 0);
-	last = nth_entry_block(scan, BackwardScanDirection, 1);
-	index_rescan(scan, &key, 1, NULL, 0);
-	nth = nth_entry_block(scan, ForwardScanDirection, (int64) ceil(entries));
-	index_endscan(scan);
-	index_close(index, NoLock);
-	table_close(heap, NoLock);
-	if (last == InvalidBlockNumber)
-		return false;
-	/* fewer entries than wanted: the scan never holds as many rows as it needs, whatever it meets */
-	span->hi = Min((double) last / Max(rel->pages, 1), 1.0);
-	span->lo = nth == InvalidBlockNumber ? span->hi : Min((double) nth / Max(rel->pages, 1), span->hi);
-	return true;
-}
-
 /* The heap positions of a bitmap's tuples; correlation mixes the span of a sorted column with the whole heap */
 static HeapSpan
-path_span(PlannerInfo *root, RelOptInfo *rel, Path *path, double entries)
+path_span(PlannerInfo *root, RelOptInfo *rel, Path *path)
 {
 	HeapSpan	span = whole_heap;
 
 	if (IsA(path, BitmapAndPath))
 		foreach_ptr(Path, p, ((BitmapAndPath *) path)->bitmapquals)
-			span = span_intersect(span, path_span(root, rel, p, entries));
+			span = span_intersect(span, path_span(root, rel, p));
 	else if (IsA(path, BitmapOrPath))
 	{
 		span = (HeapSpan) {1, 0};
 		foreach_ptr(Path, p, ((BitmapOrPath *) path)->bitmapquals)
-			span = span_union(span, path_span(root, rel, p, entries));
+			span = span_union(span, path_span(root, rel, p));
 	}
 	else if (IsA(path, IndexPath) && ((IndexPath *) path)->indexinfo->relam == BTREE_AM_OID &&
 			 ((IndexPath *) path)->indexinfo->indexkeys[0] != 0)
@@ -378,8 +292,6 @@ path_span(PlannerInfo *root, RelOptInfo *rel, Path *path, double entries)
 		IndexOptInfo *ii = ((IndexPath *) path)->indexinfo;
 		double		rho;
 
-		if (key_span(rel, planner_rt_fetch(rel->relid, root), (IndexPath *) path, entries, &span))
-			return span;
 		rho = index_correlation(root, rel, ii);
 
 		foreach_node(IndexClause, ic, ((IndexPath *) path)->indexclauses)
@@ -435,8 +347,7 @@ saop_saving(PlannerInfo *root, RelOptInfo *rel, Path *path)
 {
 	IndexPath  *ip;
 	Cost		startup,
-				total,
-				saved = random_page_cost;
+				total;
 	Selectivity sel;
 	double		scans = 1,
 				correlation,
@@ -459,23 +370,15 @@ saop_saving(PlannerInfo *root, RelOptInfo *rel, Path *path)
 				scans *= estimate_array_length(root, lsecond(((ScalarArrayOpExpr *) rinfo->clause)->args));
 	if (scans <= 1)
 		return 0;
-	random_page_cost = seq_page_cost;
-	PG_TRY();
-	{
-		ip->indexinfo->amcostestimate(root, ip, 1.0, &startup, &total, &sel, &correlation, &pages);
-	}
-	PG_FINALLY();
-	{
-		random_page_cost = saved;
-	}
-	PG_END_TRY();
+	ip->indexinfo->amcostestimate(root, ip, 1.0, &startup, &total, &sel, &correlation, &pages);
+	total -= pages * (random_page_cost - seq_page_cost);
 	descents = saop_descents(root, rel, ip, scans);
 	total += (descents - 1) * btree_descent_cost(ip->indexinfo) - Max(pages - descents, 0) * seq_page_cost;
 	return Max(ip->indextotalcost - total, 0);
 }
 
 void
-sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, double entries, SiftFilterEst *est)
+sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, SiftFilterEst *est)
 {
 	double		tuples,
 				pages,
@@ -501,7 +404,7 @@ sift_filter_estimate(PlannerInfo *root, RelOptInfo *rel, BitmapHeapPath *bp, dou
 	est->sel = Min(tuples / Max(rel->tuples, 1), 1.0);
 	est->sel += (Min(pages / Max(rel->pages, 1), 1.0) - est->sel) * lossy;
 	est->cost = index_cost + (tuples + Min(pages, maxentries)) * FILTER_ENTRY_COST;
-	span = path_span(root, rel, bp->bitmapqual, entries);
+	span = path_span(root, rel, bp->bitmapqual);
 	est->start = span.lo;
 	est->span = Max(span.hi - span.lo, bitmap_sel);
 }

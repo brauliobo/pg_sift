@@ -26,6 +26,7 @@
 
 #include "core/cmp.h"
 #include "core/limits.h"
+#include "core/cachebudget.h"
 #include "agg/part/int.h"
 
 #define HASH_MAX_COMBOS		1048576	/* the combinations of values the remainders of one hash level are computed for: a larger product keeps the level's partitions */
@@ -55,6 +56,31 @@ typedef struct BoundEntry
 static MemoryContext bound_cx;
 static HTAB *bound_cache;
 static bool bound_stale;
+static uint64 bound_used;		/* sift_cache_tick() of the last lookup */
+
+static uint64
+bound_oldest(void)
+{
+	return bound_cache != NULL ? bound_used : UINT64_MAX;
+}
+
+static bool
+bound_evict_one(void)
+{
+	if (bound_cache == NULL)
+		return false;
+	MemoryContextReset(bound_cx);
+	bound_cache = NULL;
+	return true;
+}
+
+static void
+bound_evict_all(void)
+{
+	bound_evict_one();
+}
+
+static const SiftCacheKind bound_kind = {"partition_bounds", bound_oldest, bound_evict_one, bound_evict_all};
 
 /* the range of values a column can take under the conditions that compare it with constants */
 typedef struct KeyRange
@@ -213,6 +239,7 @@ part_bound(PartSource *ps, int i, Oid parent)
 	QualVars	qv = {key.part, parent, true};
 	bool		found;
 
+	bound_used = sift_cache_tick();
 	if (bound_stale && bound_cache != NULL)
 		MemoryContextReset(bound_cx);
 	if (bound_stale)
@@ -235,7 +262,8 @@ part_bound(PartSource *ps, int i, Oid parent)
 
 		if (bound_cx == NULL)
 		{
-			bound_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition bounds", ALLOCSET_DEFAULT_SIZES);
+			bound_cx = sift_cache_create_context("sift cache partition bounds");
+			sift_cache_register(&bound_kind);
 			CacheRegisterSyscacheCallback(RELOID, bound_inval, (Datum) 0);
 		}
 		ctl.hcxt = bound_cx;

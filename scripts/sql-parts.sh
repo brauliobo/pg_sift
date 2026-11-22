@@ -13,10 +13,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export LC_ALL=C
 
-# the generated script of a parts directory: from the newest X.Y that a script of sql/ goes into, below the directory's version
+# the generated script of a parts directory: from the newest X.Y below the directory's version that a script goes into or another parts directory
+# builds, so the answer is the same whether the earlier generated scripts exist yet or not
 target() {
 	local v=${1#sql/} from
-	from=$(ls sql | sed -n 's/^pg_sift--\([0-9]*[.][0-9]*\)[.]sql$/\1/p; s/^pg_sift--.*--\([0-9]*[.][0-9]*\)[.]sql$/\1/p' |
+	from=$({ ls sql | sed -n 's/^pg_sift--\([0-9]*[.][0-9]*\)[.]sql$/\1/p; s/^pg_sift--.*--\([0-9]*[.][0-9]*\)[.]sql$/\1/p'; dirs | sed 's#^sql/##'; } |
 		sort -uV | awk -v v="$v" 'BEGIN { split(v, a, "."); } { split($0, b, "."); if (b[1] < a[1] || (b[1] == a[1] && b[2] < a[2])) f = $0 } END { print f }')
 	echo "sql/pg_sift--$from--$v.sql"
 }
@@ -101,6 +102,12 @@ check)
 	for t in $(scripts_targets); do
 		git ls-files --error-unmatch "$t" >/dev/null 2>&1 || git check-ignore -q "$t" || { echo "sql-parts: $t is not in .gitignore"; exit 1; }
 	done
-	echo "sql-parts: parts are numbered and unique" ;;
+	w=$(mktemp -d); trap 'rm -rf "$w"' EXIT
+	mkdir "$w/scripts"; cp scripts/sql-parts.sh scripts/upgrade_check_*.sql "$w/scripts/"; cp -r sql "$w/sql"
+	for t in $(scripts_targets); do git ls-files --error-unmatch "$t" >/dev/null 2>&1 || rm -f "$w/$t"; done
+	before=$("$w/scripts/sql-parts.sh" targets); "$w/scripts/sql-parts.sh" build
+	[[ $before == "$("$w/scripts/sql-parts.sh" targets)" ]] || { echo "sql-parts: targets name other scripts before and after build on a clean tree"; exit 1; }
+	for t in $before; do [[ -f $w/$t ]] || { echo "sql-parts: build does not write $t, which targets names (make install would not find it)"; exit 1; }; done
+	echo "sql-parts: parts are numbered and unique, targets are the files build writes" ;;
 *) sed -n '2,12p' "$0"; exit 2 ;;
 esac

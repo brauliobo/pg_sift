@@ -26,4 +26,26 @@ extern Size sift_colz_compress(int alg, int level, const void *src, Size n, void
 /* Decompresses exactly rawlen bytes into dst from clen bytes; false on any error, including a stream that does not produce exactly rawlen */
 extern bool sift_colz_decompress(int alg, const void *src, Size clen, void *dst, Size rawlen);
 
+#define SIFT_ZSTD_DICT_MIN_BYTES	1024u
+#define SIFT_ZSTD_DICT_MAX_BYTES	16384u
+#define SIFT_ZSTD_DICT_SAMPLE_CAP	(128u * 1024u)
+#define SIFT_ZSTD_DICT_MIN_SAMPLES	64u
+#define SIFT_ZSTD_L2_LEVEL			3
+
+/*
+ * A dictionary of zstd trained on the nsamples samples (sample i is sample_sizes[i] bytes, one after the other in samples_buf), into dst (cap bytes). Returns its length, or 0 when
+ * the build has no zstd, there are too few samples or the training fails. The handles below are opaque (NULL: none), made by the build that has zstd and freed by their owner.
+ */
+extern Size sift_colz_zstd_train_dict(void *dst, Size cap, const void *samples_buf, const Size *sample_sizes, unsigned nsamples);
+extern void *sift_colz_zstd_create_cdict(const void *dict, Size dict_len, int level);
+extern void sift_colz_zstd_free_cdict(void *cdict);
+extern void *sift_colz_zstd_create_ddict(const void *dict, Size dict_len);
+extern void sift_colz_zstd_free_ddict(void *ddict);
+
+/* Compresses src[0..slen) with a dictionary of zstd into dst (dcap bytes, at least sift_colz_bound of zstd); returns the compressed size, or 0 when it did not fit or failed */
+extern Size sift_colz_compress_zdict(const void *cdict, const void *src, Size slen, void *dst, Size dcap);
+
+/* Decompresses exactly dlen bytes into dst; false on any error, including a stream that does not produce exactly dlen */
+extern bool sift_colz_decompress_zdict(const void *ddict, const void *src, Size slen, void *dst, Size dlen);
+
 #endif							/* SIFT_COLZ_H */

@@ -41,7 +41,7 @@ extern SiftCheck *sift_check_begin(FunctionCallInfo fcinfo, Oid relid, int max_p
 /* The verifier of an index or sift_table by its kind; ck NULL raises */
 extern void sift_check_relation(SiftCheck *ck, Oid relid, bool heapallindexed);
 
-/* Each opens the relation, checks that the caller may maintain it and verifies it: col/verify.c, bm25/segment_sql.c, table/funcs.c */
+/* Each opens the relation, checks that the caller may maintain it and verifies it: col/v1/verify.c, bm25/segment_sql.c, table/funcs.c */
 extern void sift_col_check(SiftCheck *ck, Oid indexoid, bool heapallindexed);
 extern void sift_bm25_check(SiftCheck *ck, Oid indexoid, bool heapallindexed);
 extern void sift_tbl_check(SiftCheck *ck, Oid relid);

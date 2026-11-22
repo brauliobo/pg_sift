@@ -34,7 +34,9 @@ SELECT (SELECT array_agg(s) FROM (SELECT sift.score(o.ctid) AS s FROM ov o JOIN 
 -- more matches than the first growth holds (1024 hits, then 16384): the search grows again, by 4, and the drained order is still the ranking's
 CREATE TABLE ov_big (id int, body text);
 INSERT INTO ov_big SELECT i, repeat('alpha ', 1 + i % 7) || 'w' || i % 997 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX ov_big_body ON ov_big USING sift (body);
+RESET client_min_messages;
 CREATE TABLE ov_big_keep (id int PRIMARY KEY);
 INSERT INTO ov_big_keep SELECT i FROM generate_series(1, 20000) i WHERE i % 1000 = 0;
 VACUUM ANALYZE ov_big;

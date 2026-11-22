@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # What a scope read that found changed members is counted to have paid (col/scope.h sift_scope_ran_price, agg/scope.c read_extra) follows what its entries cost, which depends on the aggregate: a count
 # of the largest tenant takes 29 instructions an entry (and a sum 33), a sum and a count by 7 values 62, on 300,000 entries; the price of the entry was 67 for both, so a count was counted twice over and the
 # rewrite it asks for came after a quarter of the reads that pay it back. Checked as the ratio of the two, which does not depend on the speed of the host: measured, a count costs 0.53 of the group by (11.3 and 21.2

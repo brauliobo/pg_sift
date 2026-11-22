@@ -478,7 +478,7 @@ two_spine(TwoLevel *t)
 	set_pathtarget_cost_width(root, target);
 	p = (Path *) create_projection_path(root, rel, rel->cheapest_total_path, target);
 	if (!agg_lookup_fits(p->rows, p->pathtarget->width))
-		return agg_refuse_limit(SPINE_ROWS, lookup_kb, sift_agg_lookup_max_kb, "the spine is estimated at %.0f rows of width %d", p->rows, p->pathtarget->width);
+		return agg_refuse_limit(SPINE_ROWS, lookup_kb, agg_lookup_limit_kb(), "the spine is estimated at %.0f rows of width %d", p->rows, p->pathtarget->width);
 	t->ctx.spine = p;
 	sp->child = 0;
 	sp->ncol = list_length(t->spine_cols);

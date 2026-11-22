@@ -152,9 +152,19 @@ walk_plain(SiftShred *sh, JsonbValue *v, SiftShredRecheck *rc)
 	}
 }
 
+const char *
+sift_shred_pay_jsonb(const void *ev, uint32 *len)
+{
+	Jsonb	   *jb = JsonbValueToJsonb((JsonbValue *) ev);
+
+	*len = VARSIZE(jb);
+	return (const char *) jb;
+}
+
 static void
 walk_value(SiftShred *sh, JsonbValue *v, SiftShredRecheck *rc)
 {
+	sh->ev = v;
 	if (rc == NULL)
 		walk_plain(sh, v, NULL);
 	else

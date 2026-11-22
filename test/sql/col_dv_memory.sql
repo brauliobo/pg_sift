@@ -1,6 +1,6 @@
--- The memory of the deletion records, in exact bytes at four small sizes (test/mem-budgets.tsv): what a statement holds while it writes the records of the rows it deletes (col_dead_keys), what a scan
+-- The memory of the deletion records, in exact bytes at four small sizes: what a statement holds while it writes the records of the rows it deletes (col_dead_keys), what a scan
 -- holds of the rows that the records end in the units it reads (col_dv_overlay), and what a fold holds to clear them and drop them (col_dv_settle). Each size is read by a backend of its own, so
--- no size depends on the one before. The overlay is the one that follows the table: one bit for each row of a unit that holds a deleted row, and a table entry for each unit; the statement's
+-- no size depends on the one before. The overlay holds the one unit a scan asked about last, so it does not follow the table; the statement's
 -- keys follow the rows it deletes up to a million; the fold does not follow either.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -106,9 +106,8 @@ INSERT INTO census SELECT 'fold', 48000, peak FROM sift._test_mem_highwater() WH
 -- every context was entered at every size, and the fold holds the same bytes at every size
 SELECT count(*) = 12 AS every_size_measured, bool_and(peak > 0) AS every_scope_entered FROM census;
 SELECT count(DISTINCT peak) = 1 AS fold_holds_the_same_bytes_at_every_size FROM census WHERE what = 'fold';
--- the overlay of a scan grows by one bit for each row of the table (the quarter that is deleted is spread over every unit) and a block of the allocator: it is a fraction of a byte a row
-WITH s AS (SELECT what, (max(peak) FILTER (WHERE rows = 48000) - max(peak) FILTER (WHERE rows = 12000)) AS grown FROM census GROUP BY what)
-SELECT grown <= (48000 - 12000) / 8 + 16384 AS overlay_grows_by_a_bit_a_row FROM s WHERE what = 'scan';
+-- the overlay of a scan holds one unit: the same bytes at every size
+SELECT count(DISTINCT peak) = 1 AS overlay_holds_the_same_bytes_at_every_size FROM census WHERE what = 'scan';
 -- the keys of a statement grow with the rows it deletes: 8 bytes each held, as many sorted, a record slot and what the lookup holds, under 32 bytes a deleted row
 WITH s AS (SELECT what, (max(peak) FILTER (WHERE rows = 48000) - max(peak) FILTER (WHERE rows = 12000)) AS grown FROM census GROUP BY what)
 SELECT grown <= (48000 - 12000) / 4 * 32 AS statement_keys_under_32_bytes_a_deleted_row FROM s WHERE what = 'delete';

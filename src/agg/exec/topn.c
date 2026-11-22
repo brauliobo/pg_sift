@@ -7,7 +7,7 @@
 
 #include "optimizer/optimizer.h"
 
-#include "col/gorder.h"
+#include "col/v1/gorder.h"
 #include "agg/agg.h"
 #include "agg/wide.h"
 #include "agg/exec/int.h"
@@ -168,7 +168,7 @@ topn_parallel(AggExec *ex)
 static bool
 topn_plain_ok(AggExec *ex)
 {
-	return sift_aggspec_plain(ex->spec) && ex->ntype == 0 && ex->nwide == 0 && !ex->recheck && ex->be == NULL && ex->tid_sb_lo == 0 &&
+	return sift_aggspec_plain(ex->spec) && ex->ntype == 0 && ex->nwide == 0 && !ex->recheck && ex->tid_sb_lo == 0 &&
 		ex->tid_sb_hi == PG_UINT32_MAX;
 }
 

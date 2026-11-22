@@ -39,9 +39,9 @@ BEGIN
 			IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
 		END LOOP;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', q) INTO a;
-		SET LOCAL sift.enable_agg = off; SET LOCAL sift.enable_topn = off;
+		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', q) INTO b;
-		RESET sift.enable_agg; RESET sift.enable_topn;
+		RESET sift.enable_agg; RESET sift.enable_agg;
 		after_step := step; shape := r.s;
 		result := CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERENT' END || u;
 		RETURN NEXT;
@@ -82,7 +82,6 @@ SET sift.col_format_minor = 14;
 REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 SELECT * FROM kchk('lowered setting');
-RESET sift.col_format_minor;
 REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 
@@ -147,7 +146,6 @@ INSERT INTO kn SELECT i, i % 50 FROM generate_series(1, 2000) i;
 CREATE INDEX kn_idx ON kn USING sift_col (id, cust) WITH (key_cut = 'cust');
 INSERT INTO kn SELECT i, i % 50 FROM generate_series(2001, 2100) i;
 SELECT minor AS without_key_ranges FROM sift.index_format('kn_idx');
-RESET sift.col_wbuf_key_range;
 DROP TABLE kw, kn;
 
 DROP FUNCTION kchk(text), kunits(text);

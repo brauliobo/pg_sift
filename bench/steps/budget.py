@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The time budget of the release pass (block `budget`): what each stage costs and where the seconds go, per engine and per case, from bench/presets.env and the
-committed results (bench/results/store.json, articles.tsv, places.tsv, cases.tsv, cases-time.tsv), standard library only. Nothing here measures; a number that no result file holds is
+committed results (docs/results/store.json, articles.tsv, places.tsv, cases.tsv, cases-time.tsv), standard library only. Nothing here measures; a number that no result file holds is
 `not measured`.
 
-    python3 -I bench/steps/budget.py [--results DIR] [--benchmarks FILE]      (steps/highlights.py runs it)
+    python3 -I bench/steps/budget.py [--results DIR] [--benchmarks FILE]      
 """
 import argparse
 import math
@@ -14,9 +14,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import extras  # noqa: E402
-import readme  # noqa: E402  (replace_block)
-import store_charts  # noqa: E402
+import resultfile  # noqa: E402  (replace_block)
+import store_results  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 NOT = 'not measured'
@@ -42,17 +41,16 @@ BASIS = {  # where the minutes of a stage come from
 }
 SIFT_BUILD = 3  # minutes: the one step of the preparation that depends on the commit under test (the extension built into the image)
 OUTSIDE = [  # what the pass does not run: a release runs it by name when its code changed
-    ('scale', 'the slopes of the cases of the README table (bench/results/cases-scale.tsv)', '`bench cases --cases ID,ID,ID --rows 100000 --scales 1,3,10 --docs` for the cases that changed, about 5 minutes for 3 cases (measured); the stage `scale` (`--scales 1,10,100` of 200,000 orders, 20 million at the top) is hours and stays opt-in'),
-    ('sets, extras', 'the set-filter benchmark (25 min) and the release-to-release items (100 min: tags are rebuilt)', 'bench/out/BENCHMARKS.md only; `bench final --stages sets,extras`'),
+    ('scale', 'the slopes of the cases of the README table (docs/results/cases-scale.tsv)', '`bench cases --cases ID,ID,ID --rows 100000 --scales 1,3,10 --docs` for the cases that changed, about 5 minutes for 3 cases (measured); the stage `scale` (`--scales 1,10,100` of 200,000 orders, 20 million at the top) is hours and stays opt-in'),
 ]
 
 
 def sizes_seconds(results):
-    """tier -> (load, warm) wall seconds of the store questions at each size, from the parts of bench/results/store-scaling.json"""
+    """tier -> (load, warm) wall seconds of the store questions at each size, from the parts of docs/results/store-scaling.json"""
     path = os.path.join(results, 'store-scaling.json')
     if not os.path.exists(path):
         return {}
-    S = store_charts.Store(path)
+    S = store_results.Store(path)
     wall = lambda tier, part: tier['parts'].get(part, {}).get('utilization', {}).get('wall_s', 0)
     return {t: (wall(tier, 'load'), wall(tier, 'warm')) for t, tier in S.tiers.items()}
 
@@ -67,7 +65,7 @@ def window_table(results, total):
         ('store at 25,000 and 100,000 orders', '`bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none`', small, 'measured on 2026-10-22' if sz else NOT),
         ('store at 10,000,000 orders', '`bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none`', (bl + bw * 4 / 7) / 60,
          'arithmetic on the run of 2026-10-22 (load %.0f s, the ten questions %.0f s with 5 timed runs and 2 warm-ups, five of them measured again on a noisy disk): 3 timed runs and 1 warm-up scale the questions by 4/7' % (bl, bw) if sz else NOT),
-        ('pg_duckdb at 10,000,000 orders', '`bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`', 5, 'estimate'),
+        ('pg_duckdb at 10,000,000 orders', '`bench duckdb --rows 10000000 --out docs/results/duckdb-10000000.tsv`', 5, 'estimate'),
         ('the extension built into the image', 'the one step of the preparation that depends on the commit', SIFT_BUILD, 'estimate'),
     ]
     out = ['| in the window, after the stages | command | minutes | basis |', '|---|---|---:|---|']
@@ -97,7 +95,7 @@ RELEASE_WHY = {  # stage: what the release run cuts against the standard pass, a
     'search': 'two interleaved rounds for every cell (standard: 2 to 3; a cell above the error target keeps its flag instead of a third round); the engines and classes are all there, and a second run of `fuzzy` for pg_sift and Elasticsearch merged into the tier (the README cell that has no column yet: a restore and build of two engines and two interleaved rounds, about 2 minutes, under 1 GB of scratch: the 50,000-article slim tier, 72 MiB of Elasticsearch index and 30 MiB of pg_sift)',
     'cases': 'one round of 3 timed runs per lane (standard: 3 rounds of 5) and a lane budget of 4 s (10 s); NOT smaller: at 300,000 orders the median speed-up of the stored cases is 0.74x of the 1,000,000 one (only 9 of 26 cases within 25%), so the table stays at 1,000,000 orders, whose 15 minutes of table builds are the floor',
     'duckdb': 'unchanged: the ten questions, 3 warm runs, both pg_duckdb lanes',
-    'generic': 'the other engines on three generated datasets, 3 runs, the answers checked first; this stage does not run pg_sift (its numbers are the cases stage\'s), so when its inputs key (harness, adapters, generators, statements, rows, runs, the CPU, threads and memory of the host) is the one in bench/results/generic.tsv the committed numbers stand in and the plan says `carried`: 0 minutes; the first pass of a host measures them',
+    'generic': 'the other engines on three generated datasets, 3 runs, the answers checked first; this stage does not run pg_sift (its numbers are the cases stage\'s), so when its inputs key (harness, adapters, generators, statements, rows, runs, the CPU, threads and memory of the host) is the one in docs/results/generic.tsv the committed numbers stand in and the plan says `carried`: 0 minutes; the first pass of a host measures them',
     'scaling': 'partitions 1, 16, 256, 4096 and workers 0, 1, 3 (standard sweeps: 7 and 4 points), 3 runs per cell: the endpoints and the middle of each curve; the chart keeps its slope',
     'analytics': 'the 29 application shapes on 1,200,000 orders, 3 timed runs after one warm-up (5): heap, pg_sift, flat tables and ClickHouse',
     'sizes': 'as in the 3.6 window (two store runs at 25,000 and 100,000 orders and at 10,000,000, merged into store-scaling.json, and pg_duckdb at 10,000,000 orders): LAST, and only if the minutes elapsed plus these fit under 120; otherwise it is skipped with a line in the log and the two tables keep the numbers, and the date, of the release that measured them',
@@ -132,7 +130,7 @@ def engines_table(results):
     path = os.path.join(results, 'store.json')
     if not os.path.exists(path):
         return []
-    S = store_charts.Store(path)
+    S = store_results.Store(path)
     tier = S.tier_of(1_000_000, 3)
     if not tier:
         return []
@@ -142,7 +140,7 @@ def engines_table(results):
     phase = lambda e: sum((S.get(tier, e, '-', v, 'phase_s') or {}).get('value', 0) for v in ('update 1%', 'update 10%', 'delete 5%'))
     out = ['| engine | load of 1,000,000 orders (s) | the ten questions, %d timed executions each (s) | update 1%%, update 10%%, delete 5%% (s) |' % runs, '|---|---:|---:|---:|']
     for e in ('pg', 'sift', 'sift_table', 'es', 'ch', 'citus'):
-        q = [lat(e, x) for x in S.queries + list(store_charts.SEARCH)]
+        q = [lat(e, x) for x in S.queries + list(store_results.SEARCH)]
         warm = sum(v for v in q if v) * runs / 1000 if any(q) else None
         load = S.v(tier, e, metric='load_s')
         ph = phase(e) if e != 'citus' else None
@@ -195,7 +193,7 @@ def scratch_table(results):
 def cases_table(results, p):
     times = read_times(os.path.join(results, 'cases-time.tsv'))
     if not times:
-        return ['The seconds of each case are not measured yet: `bench/bench cases --docs` writes bench/results/cases-time.tsv.']
+        return ['The seconds of each case are not measured yet: `bench/bench cases --docs` writes docs/results/cases-time.tsv.']
     one = {k: v for k, v in times.items() if not k.startswith('(')}
     extra = {k: v for k, v in times.items() if k.startswith('(')}
     rows = sorted({v[0] for v in one.values()})
@@ -230,10 +228,10 @@ def block(results):
     out += ['| %s | %s | %s |' % o for o in OUTSIDE]
     e = engines_table(results)
     if e:
-        out += ['', 'By engine, from the store pass of bench/results/store.json (1,000,000 orders, 3 CPUs):', ''] + e
+        out += ['', 'By engine, from the store pass of docs/results/store.json (1,000,000 orders, 3 CPUs):', ''] + e
     s = search_table(results)
     if s:
-        out += ['', 'Search (slim tier, bench/results/articles.tsv and places.tsv):', ''] + s
+        out += ['', 'Search (slim tier, docs/results/articles.tsv and places.tsv):', ''] + s
     out += ['', 'Cases:', ''] + cases_table(results, p)
     out += [''] + scratch_table(results)
     out += ['', '#### The release run: one command', '',
@@ -261,19 +259,19 @@ def block(results):
             '4. The host is quiet: nobody works on it, no other benchmark or heavy job (CPU and IO pressure `some avg10` under 10% in `/proc/pressure`). The run holds the perf lock for the whole pass; nothing else may time on the host.', '',
             'Abort (`ssh HOST \'kill $(cat ~/release-run.pid); cd DIR && bench/bench store clean\'`) on: a `MISSING` precondition or a plan over 120 minutes (the run stops by itself); two `OVER BUDGET` stage lines in a row or more than 120 minutes of wall time; less than 5 GB free on the disk of the host; another job starting there. A stage that fails does not stop the pass: the others continue, the log ends with `FAILED stages: ...`, and `bench/bench resume` runs only those.', '',
             'It is finished when the log ends with the table of stage minutes and `release run of TAG: N min wall, exit 0` and `pgrep -f bench/steps/final.sh` finds nothing on the host. A `FAILED stages:` line or an exit other than 0 is not a clean finish.', '',
-            'The docs diff lands in the working tree of `DIR` on the host (README.md, bench/results, bench/out/img); nothing is committed there. '
+            'The docs diff lands in the working tree of `DIR` on the host (README.md, docs/results, docs/charts); nothing is committed there. '
             'The owner of the bench tables copies it (`ssh HOST \'cd DIR && git diff --binary\' | git apply` on a branch of the integration tip), runs `scripts/lint.sh readme-tables docs bench-fresh neutral` (a sentence that quotes an old number is listed there with "the results say"; the sift_table sizes and the `sift_table_ord` lane arrive in the same diff, every pg_sift cell being measured in the pass), and opens one pull request, "bench: results: the release run of TAG", which is landed with `mergeup-merge.sh` once the user has read the diff.']
     return out
 
 
 def render(results, benchmarks):
-    readme.replace_block(benchmarks, 'budget', block(results))
+    resultfile.replace_block(benchmarks, 'budget', block(results))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--results', default=os.path.join(REPO, 'bench', 'results'))
-    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
+    ap.add_argument('--results', default=os.path.join(REPO, 'docs', 'results'))
+    ap.add_argument('--benchmarks', default=os.path.join(REPO, 'docs', 'BENCHMARKS.md'))
     a = ap.parse_args()
     render(a.results, a.benchmarks)
 

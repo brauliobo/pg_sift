@@ -3,7 +3,7 @@
 -- a parallel operation"; until then the reads check the heap.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE pb (id int PRIMARY KEY, a int, b int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO pb SELECT i, i % 100, i % 7, repeat('p', 100) FROM generate_series(1, 30000) i;

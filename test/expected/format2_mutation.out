@@ -1,0 +1,335 @@
+-- The three primitives of mutation on format major 2: rows staged in memory by the transaction (nothing is written for a rollback), L0 slabs and micro-parts, and copy on write
+-- deletion vectors with a buffer of pending deletes; the visibility of the result; the subtraction of dead rows from a pre-aggregate; the compaction that drops them.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT sift._test_f2_init('t_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+-- Staged rows: a rolled-back transaction and a rolled-back savepoint write no WAL and leave no part
+SELECT pg_current_wal_insert_lsn() AS lsn0 \gset
+BEGIN;
+SELECT sift._test_f2_stage('t_idx', 500, 0, 1);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+SAVEPOINT a;
+SELECT sift._test_f2_stage('t_idx', 100, 10000, 100000);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+SELECT sift._test_f2_stage_rows('t_idx');
+ _test_f2_stage_rows 
+---------------------
+                 600
+(1 row)
+
+ROLLBACK TO a;
+SELECT sift._test_f2_stage_rows('t_idx');
+ _test_f2_stage_rows 
+---------------------
+                 500
+(1 row)
+
+ROLLBACK;
+SELECT sift._test_f2_stage_rows('t_idx');
+ _test_f2_stage_rows 
+---------------------
+                   0
+(1 row)
+
+SELECT pg_current_wal_insert_lsn() = :'lsn0' AS no_wal;
+ no_wal 
+--------
+ t
+(1 row)
+
+SELECT part_id, nparts, total_rows, has_slab FROM sift._test_f2_partitions('t_idx');
+ part_id | nparts | total_rows | has_slab 
+---------+--------+------------+----------
+       1 |      0 |          0 | f
+(1 row)
+
+-- A commit writes the rows that survived: the released savepoint's rows are kept, the rolled back ones are not
+BEGIN;
+SELECT sift._test_f2_stage('t_idx', 500, 0, 1);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+SAVEPOINT a;
+SELECT sift._test_f2_stage('t_idx', 100, 10000, 100000);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+RELEASE a;
+SAVEPOINT b;
+SELECT sift._test_f2_stage('t_idx', 50, 20000, 200000);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+ROLLBACK TO b;
+COMMIT;
+SELECT part_id, nparts, total_rows, l0_parts, has_slab FROM sift._test_f2_partitions('t_idx');
+ part_id | nparts | total_rows | l0_parts | has_slab 
+---------+--------+------------+----------+----------
+       1 |      1 |        600 |        1 | f
+(1 row)
+
+SELECT level, nrows, ndead, key_lo, key_hi FROM sift._test_f2_parts('t_idx', 1, NULL);
+ level | nrows | ndead | key_lo | key_hi 
+-------+-------+-------+--------+--------
+     0 |   600 |     0 |      0 |  10099
+(1 row)
+
+-- A small batch lands in the slab of the partition; flushing it makes a micro-part
+CREATE TABLE s (v int);
+CREATE INDEX s_idx ON s USING sift_store_test (v);
+SELECT sift._test_f2_init('s_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+BEGIN; SELECT sift._test_f2_stage('s_idx', 10, 0, 1); COMMIT;
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+SELECT nparts, total_rows, has_slab FROM sift._test_f2_partitions('s_idx');
+ nparts | total_rows | has_slab 
+--------+------------+----------
+      0 |          0 | t
+(1 row)
+
+SELECT sift._test_f2_slab('s_idx', 1, NULL);
+  _test_f2_slab  
+-----------------
+ pages=1 rows=10
+(1 row)
+
+BEGIN; SELECT sift._test_f2_stage('s_idx', 10, 100, 100); COMMIT;
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+SELECT sift._test_f2_slab('s_idx', 1, NULL);
+  _test_f2_slab  
+-----------------
+ pages=1 rows=20
+(1 row)
+
+SELECT sift._test_f2_slab_flush('s_idx', 1, NULL);
+ _test_f2_slab_flush 
+---------------------
+ t
+(1 row)
+
+SELECT nparts, total_rows, l0_parts, has_slab FROM sift._test_f2_partitions('s_idx');
+ nparts | total_rows | l0_parts | has_slab 
+--------+------------+----------+----------
+      1 |         20 |        1 | f
+(1 row)
+
+SELECT sift._test_f2_slab_flush('s_idx', 1, NULL);
+ _test_f2_slab_flush 
+---------------------
+ f
+(1 row)
+
+SELECT sift._test_f2_check('s_idx');
+             _test_f2_check              
+-----------------------------------------
+ parts=1 quarantined=3/3 meta_free=25/32
+(1 row)
+
+-- Deletes: below 64 rows they wait in the pending buffer and are subtracted when counting; more go straight to deletion vectors
+CREATE TABLE d (v int);
+CREATE INDEX d_idx ON d USING sift_store_test (v);
+SELECT sift._test_f2_init('d_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+SELECT sift._test_f2_add_part('d_idx', 1, NULL, 20000, 0, 1) > 0 AS added;
+ added 
+-------
+ t
+(1 row)
+
+SELECT min(part_gen) AS g FROM sift._test_f2_parts('d_idx', 1, NULL) \gset
+SELECT visible, judged FROM sift._test_f2_visible('d_idx', 1, NULL, :g);
+ visible |                             judged                              
+---------+-----------------------------------------------------------------
+   20000 | clean=1 settled_dv=0 granule_settled=0 per_row=0 rows_checked=0
+(1 row)
+
+SELECT sift._test_f2_delete('d_idx', 1, NULL, 1, 5, 40, 3);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT sift._test_f2_pending('d_idx', 1, NULL);
+ _test_f2_pending 
+------------------
+ recs=40 pages=1
+(1 row)
+
+SELECT ndead, has_dv FROM sift._test_f2_parts('d_idx', 1, NULL);
+ ndead | has_dv 
+-------+--------
+     0 | f
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('d_idx', 1, NULL, :g);
+ visible |                               judged                               
+---------+--------------------------------------------------------------------
+   19960 | clean=0 settled_dv=0 granule_settled=2 per_row=1 rows_checked=8192
+(1 row)
+
+SELECT sift._test_f2_candidates('d_idx', 1, NULL);
+ _test_f2_candidates 
+---------------------
+ {}
+(1 row)
+
+-- The kinds of deletion vector: a few rows (array), many (bitmap), all (all dead)
+SELECT sift._test_f2_delete('d_idx', 1, NULL, 1, 4000, 5000, 1);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT ndead, has_dv FROM sift._test_f2_parts('d_idx', 1, NULL);
+ ndead | has_dv 
+-------+--------
+  5040 | t
+(1 row)
+
+SELECT * FROM sift._test_f2_dv('d_idx', 1, NULL, :g);
+ granule |  kind  | ndead | unsettled 
+---------+--------+-------+-----------
+       0 | bitmap |  4232 | f
+       1 | bitmap |   808 | f
+(2 rows)
+
+SELECT visible, judged FROM sift._test_f2_visible('d_idx', 1, NULL, :g);
+ visible |                             judged                              
+---------+-----------------------------------------------------------------
+   14960 | clean=0 settled_dv=1 granule_settled=0 per_row=0 rows_checked=0
+(1 row)
+
+SELECT sift._test_f2_delete('d_idx', 1, NULL, 1, 16384, 3616, 1);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT * FROM sift._test_f2_dv('d_idx', 1, NULL, :g) ORDER BY granule;
+ granule |   kind   | ndead | unsettled 
+---------+----------+-------+-----------
+       0 | bitmap   |  4232 | f
+       1 | bitmap   |   808 | f
+       2 | all_dead |  3616 | f
+(3 rows)
+
+SELECT sift._test_f2_candidates('d_idx', 1, NULL);
+ _test_f2_candidates 
+---------------------
+ {1}
+(1 row)
+
+-- Compaction drops the dead rows into a new generation of the partition
+SELECT done, rows_in, rows_out, dead_dropped, aborted_dropped FROM sift._test_f2_compact('d_idx', 1, NULL, ARRAY[:g]);
+ done | rows_in | rows_out | dead_dropped | aborted_dropped 
+------+---------+----------+--------------+-----------------
+ t    |   20000 |    11344 |         8656 |               0
+(1 row)
+
+SELECT level, nrows, ndead, has_dv FROM sift._test_f2_parts('d_idx', 1, NULL);
+ level | nrows | ndead | has_dv 
+-------+-------+-------+--------
+     1 | 11344 |     0 | f
+(1 row)
+
+SELECT sift._test_f2_check('d_idx');
+              _test_f2_check               
+-------------------------------------------
+ parts=1 quarantined=14/45 meta_free=47/64
+(1 row)
+
+-- A delete by a transaction that rolled back does not hide the row; per-row visibility is used until the deleter is settled
+CREATE TABLE a (v int);
+CREATE INDEX a_idx ON a USING sift_store_test (v);
+SELECT sift._test_f2_init('a_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+SELECT sift._test_f2_add_part('a_idx', 1, NULL, 20000, 100000, 500000, 0, 1, 0) > 0 AS added;
+ added 
+-------
+ t
+(1 row)
+
+SELECT min(part_gen) AS g2 FROM sift._test_f2_parts('a_idx', 1, NULL) \gset
+BEGIN;
+SELECT txid_current() AS x \gset
+SELECT sift._test_f2_delete('a_idx', 1, NULL, 500000, 0, 200, 1, :x);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('a_idx', 1, NULL, :g2);
+ visible |                               judged                               
+---------+--------------------------------------------------------------------
+   20000 | clean=0 settled_dv=0 granule_settled=2 per_row=1 rows_checked=8192
+(1 row)
+
+ROLLBACK;
+SELECT visible FROM sift._test_f2_visible('a_idx', 1, NULL, :g2);
+ visible 
+---------
+   20000
+(1 row)
+
+SELECT granule, kind, ndead, unsettled FROM sift._test_f2_dv('a_idx', 1, NULL, :g2);
+ granule |  kind   | ndead | unsettled 
+---------+---------+-------+-----------
+       0 | array16 |   200 | t
+(1 row)
+
+SELECT sift._test_f2_check('a_idx');
+             _test_f2_check              
+-----------------------------------------
+ parts=1 quarantined=3/3 meta_free=24/32
+(1 row)
+
+DROP TABLE t;
+DROP TABLE s;
+DROP TABLE d;
+DROP TABLE a;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

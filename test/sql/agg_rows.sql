@@ -4,7 +4,6 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
-SET sift.agg_two_level = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
@@ -90,8 +89,10 @@ SET max_parallel_workers_per_gather = 0;
 
 -- more pairs than hash_mem holds: the pairs go through a sort and the answer is the same
 SET work_mem = '64kB';
+SET hash_mem_multiplier = 40;
 SELECT * FROM check_report('spill', report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a, count(DISTINCT c.id) FILTER (WHERE c.val >= 6) AS high'));
 RESET work_mem;
+RESET hash_mem_multiplier;
 
 -- what EXPLAIN ANALYZE shows of the node: its columns and distinct counts, and that the small hash_mem sent a set to the sort
 CREATE FUNCTION node_lines(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
@@ -102,8 +103,10 @@ BEGIN
 	END LOOP;
 END $$;
 SET work_mem = '64kB';
+SET hash_mem_multiplier = 40;
 SELECT * FROM node_lines(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a'));
 RESET work_mem;
+RESET hash_mem_multiplier;
 SELECT * FROM node_lines(report('count(DISTINCT c.id) AS ids, count(DISTINCT c.dim_a_id) AS dim_a'));
 
 DROP FUNCTION node_lines(text), check_report(text, text), plan_has(text, text), report(text, text, text);

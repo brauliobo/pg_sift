@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# A statement that spills its tombstone log (sift.tomb_log_limit 16 kB) and is stopped while it writes a run and while it merges two (the gates of
+# A statement that spills its tombstone log (sift.backend_cache_kb 16 kB) and is stopped while it writes a run and while it merges two (the gates of
 # sift.test_phase_gate, no sleep): by an ERROR (cancel), by the end of its backend and by an immediate shutdown. Nothing is left in pgsql_tmp (after the backend ends,
 # and after the restart), the table is as it was and verifies, and the same statement runs after. A temp_file_limit lower than the runs stops the statement with the
 # error of that setting and leaves the table as it was.
@@ -19,7 +19,7 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 for t in ht lt; do sql primary "INSERT INTO $t SELECT * FROM src" >/dev/null; done
 plan 18
 
-SMALL="SET sift.tomb_log_limit = 16"
+SMALL="SET sift.backend_cache_kb = 16"
 UPD="UPDATE lt SET amount = amount + 1"
 digest() { sql primary "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id)) FROM $1" | tail -1; }
 tmpfiles() { sql primary "SELECT count(*) FROM pg_ls_tmpdir()" | tail -1; }

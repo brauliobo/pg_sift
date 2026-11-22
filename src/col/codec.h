@@ -37,7 +37,7 @@ typedef enum SiftCcKind
 
 #define SIFT_CCF_OFF32		0x1		/* header flag: max - min < 2^32, so offsets from min fit u32 */
 
-/* Node tags (one byte). 10..31 are reserved for new encodings, 32..255 for experiments; an unknown tag is ERRCODE_FEATURE_NOT_SUPPORTED. */
+/* Node tags (one byte). 12..31 are reserved for new encodings, 32..255 for experiments; an unknown tag is ERRCODE_FEATURE_NOT_SUPPORTED. */
 #define SIFT_CCN_CONST		1
 #define SIFT_CCN_FORBIT		2
 #define SIFT_CCN_FORBYTE	3
@@ -47,11 +47,14 @@ typedef enum SiftCcKind
 #define SIFT_CCN_ALP		7
 #define SIFT_CCN_WRAP		8
 #define SIFT_CCN_SCALE		9		/* base + g * child: common divisor of the offsets from the minimum */
+#define SIFT_CCN_DELTA_BYTE	10		/* first value, smallest step, checkpoints, then the steps above the smallest in 1..4 bytes each: written under a general-purpose layer only */
+#define SIFT_CCN_BSS		11		/* base, then plane b of byte b of every offset: written under a general-purpose layer only */
 
-/* General-purpose algorithm ids of a WRAP node (the decoder is the id, the level is writer-side only). 3..15 reserved. */
+/* General-purpose algorithm ids of a WRAP node (the decoder is the id, the level is writer-side only). 4..15 reserved. */
 #define SIFT_CC_ALG_NONE	0
 #define SIFT_CC_ALG_LZ4		1
 #define SIFT_CC_ALG_ZSTD	2
+#define SIFT_CC_ALG_ZSTD_DICT	3	/* only the bytes of a string list (sift_cc_encode_strs_dict): zstd with the dictionary of the part, which the reader hands in */
 #define SIFT_CC_ALG_AUTO	0xFF	/* policy only: LZ4 or zstd, whichever the cost rule accepts */
 
 /* ---------- cost rule of the general-purpose layer ---------- */
@@ -118,7 +121,12 @@ typedef struct SiftCcPolicy
 	uint8		level;			/* algorithm level, 0 = the default (lz4 1, zstd 3) */
 	uint8		explicit_encs;	/* 1: only the encodings in encs (plus CONST and FORBYTE) */
 	uint16		encs;			/* bit (1 << tag) per allowed lightweight encoding when explicit_encs */
+	uint8		fast_decode;	/* a rule that picks: LZ4 (which decodes five times faster) unless zstd is a quarter smaller on a stream of at least SIFT_CC_ZSTD_MIN_RAW bytes, or half the size of a shorter one */
 } SiftCcPolicy;
+
+#define SIFT_CC_ZSTD_MIN_RAW	32768
+#define SIFT_CC_ZSTD_PCT		75
+#define SIFT_CC_ZSTD_SMALL_PCT	50
 
 /*
  * Parses one policy: auto | none | lz4[:N] | zstd[:N] | ENC[+ENC...][+lz4|zstd[:N]] with ENC in for, delta, rle, dict, alp, scale. Returns NULL
@@ -190,6 +198,8 @@ extern uint32 sift_cc_off32_bound(const SiftCc *c);
  */
 extern void sift_cc_filter(const SiftCc *c, int64 lo, int64 hi, uint64 *bits);
 /* Number of rows with bit set (all rows when bits is NULL) and the sum of their keys as wrapping int64; run-length and constant chunks never expand. */
+/* bits = the rows whose key is a member of the set of the integers [0, nmember) that member holds a bit for (a key outside it is none); the nodes of runs, one value and a dictionary are tested once for their runs and values, not once for each row */
+extern void sift_cc_filter_member(const SiftCc *c, const uint64 *member, uint32 nmember, uint64 *bits);
 extern uint64 sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum);
 
 /* Slots of a u32 array that takes the writes of every kernel for n values: whole rows of 32 values plus the pad (SIFT_COL_PAD bytes) */
@@ -210,8 +220,12 @@ typedef struct SiftCcScanTerms
 extern void sift_cc_scan_terms(double z, double l, double raw, SiftCcScanTerms *t);
 extern bool sift_cc_scan_lz4(Size zlen, Size llen, Size rawlen);
 extern void sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan);
+/* The same list, its bytes compressed with a dictionary of zstd (cdict: a handle of sift_colz_zstd_create_cdict) when that makes them at least a twentieth smaller; whether it did */
+extern bool sift_cc_encode_strs_dict(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, const void *cdict);
 /* The list of exactly n strings (its count is compared before anything is allocated for it); off[n + 1] and bytes palloc'd in mcxt, with room for at least min_n strings and min_bytes bytes (a caller that keeps the arrays as they are asks for the room its owner needs) */
 extern void sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off, char **bytes);
+/* A list written by sift_cc_encode_strs_dict: ddict is the decompression handle of the dictionary of its writer (NULL for a list that did not use one) */
+extern void sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off, char **bytes, const void *ddict);
 /* A bit vector of nbits: constant, raw words, or the positions of the minority bit as an integer cascade. */
 extern void sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const SiftCcPolicy *pol);
 extern void sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words);

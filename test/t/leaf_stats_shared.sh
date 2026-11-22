@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The table of the leaf statistics that backends share (col/leafshm.c, sift.col_leaf_cache_kb): the first backend that plans over a sift_col index folds the zones of
+# The table of the leaf statistics that backends share (col/leafshm.c, sift.shared_cache_kb): the first backend that plans over a sift_col index folds the zones of
 # its units into the statistics of the planner, the next backends take them from it and plan the same statement to the same plan; a rewrite of the index (a new
 # stamp) makes the next backend fold them again; the setting at 0 is the off switch; the table does not outlive a crash restart.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -39,7 +39,7 @@ check "the first backend folds the statistics" test "$(stat "$A")" == "$BUILT"
 B=$(backend primary)
 check "a backend that connects later takes them" test "$(stat "$B")" == "$SHARED"
 check "and plans to the plan of the first" test "$(plan_of "$B")" == "$(plan_of "$A")"
-C=$(backend primary "SET sift.col_leaf_cache_kb = 0")
+C=$(backend primary "SET sift.shared_cache_kb = 0")
 check "the setting at 0 folds them, to the same plan" test "$(stat "$C")|$(plan_of "$C")" == "$BUILT|$(plan_of "$A")"
 
 # a rewrite of the index moves the stamp of its segments: the statistics of the old ones are not read

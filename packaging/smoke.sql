@@ -27,6 +27,9 @@ CREATE INDEX docs_body ON docs USING sift (body);
 CALL pg_temp.check_sift();
 
 ALTER EXTENSION pg_sift UPDATE;
+SET sift.simd = 'scalar';
+CALL pg_temp.check_sift();
+RESET sift.simd;
 SET smoke.version = :'to';
 DO $$ BEGIN ASSERT (SELECT extversion FROM pg_extension WHERE extname = 'pg_sift') = current_setting('smoke.version'); END $$;
 CALL pg_temp.check_sift();

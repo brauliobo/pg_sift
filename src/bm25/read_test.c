@@ -11,13 +11,15 @@
 #include "utils/builtins.h"
 
 #include "access/genam.h"
-#include "col/wbuf.h"
+#include "col/v1/wbuf.h"
 #include "bm25/dict.h"
-#include "bm25/maint.h"
+#include "core/maint.h"
 #include "bm25/wbuf.h"
 #include "bm25/posting.h"
 #include "bm25/segment.h"
+#include "core/cachebudget.h"
 #include "bm25/prefix.h"
+#include "bm25/eval.h"
 #include "core/inspect.h"
 #include "core/store.h"
 
@@ -44,7 +46,17 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		{"blobs", sift_post_stats.blobs},
 		{"blob_bytes", sift_post_stats.blob_bytes},
 		{"blob_hits", sift_post_stats.blob_hits},
+		{"inverted_segs", sift_rank_stats.inverted_segs},
+		{"bridge_docmap_skips", sift_rank_stats.bridge_docmap_skips},
+		{"tail_settled", sift_rank_stats.tail_settled},
+		{"tail_widened", sift_rank_stats.tail_widened},
+		{"tail_direct", sift_rank_stats.tail_direct},
+		{"tail_unioned", sift_rank_stats.tail_unioned},
+		{"tail_trimmed", sift_rank_stats.tail_trimmed},
+		{"group_tf", sift_post_stats.group_tf},
+		{"block_tf", sift_post_stats.block_tf},
 		{"segcache_bytes", sift_segcache_bytes()},
+		{"cache_bytes", sift_cache_total_bytes()},
 		{"segcache_evicted", sift_segcache_stats.evicted},
 		{"segcache_refused", sift_segcache_stats.refused},
 		{"prefix_passes", sift_prefix_stats.passes},
@@ -65,6 +77,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 	{
 		memset(&sift_prefix_stats, 0, sizeof(sift_prefix_stats));
 		memset(&sift_post_stats, 0, sizeof(sift_post_stats));
+		memset(&sift_rank_stats, 0, sizeof(sift_rank_stats));
 		sift_dict_probes = 0;
 		sift_dict_scan_blocks = 0;
 		memset(&sift_docdir_stats, 0, sizeof(sift_docdir_stats));

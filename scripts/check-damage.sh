@@ -7,9 +7,9 @@ set -uo pipefail
 scan() { # DIR [SOURCE_DIR]
 	(cd "$1" && grep -rnE --include='*.c' --include='*.h' 'errcode\(ERRCODE_(INDEX|DATA)_CORRUPTED\)' "${2:-src}" | grep -v '/core/damage\.h:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/?\*|//)')
 }
-# A test that damages a read of a sound index (sift_test_seg_flip_at) is not damage of that index: only flip_refused (col/test/set_damage.c) arms the flip, inside the diagnostic scope that records nothing
+# A test that damages a read of a sound index (sift_test_seg_flip_at) is not damage of that index: only flip_refused (col/v1/test/set_damage.c) arms the flip, inside the diagnostic scope that records nothing
 flips() { # DIR [SOURCE_DIR]
-	(cd "$1" && grep -rnE --include='*.c' 'sift_test_seg_flip_at = [^U]' "${2:-src}" | grep -vE '/col/test/(set_damage|test)\.c:')
+	(cd "$1" && grep -rnE --include='*.c' 'sift_test_seg_flip_at = [^U]' "${2:-src}" | grep -vE '/col/v1/test/(set_damage|test)\.c:')
 }
 if [[ ${1:-} == --selftest ]]; then
 	d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT

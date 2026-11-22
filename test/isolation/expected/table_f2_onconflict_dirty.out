@@ -1,0 +1,62 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_begin s2_begin s1_upsert s2_upsert s1_commit s2_commit s3_read
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_upsert: INSERT INTO iso_oc VALUES (1, 10) ON CONFLICT (id) DO UPDATE SET hits = iso_oc.hits + 1, v = EXCLUDED.v;
+step s2_upsert: INSERT INTO iso_oc VALUES (1, 11) ON CONFLICT (id) DO UPDATE SET hits = iso_oc.hits + 1, v = EXCLUDED.v; <waiting ...>
+step s1_commit: COMMIT;
+step s2_upsert: <... completed>
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v, hits FROM iso_oc ORDER BY id;
+id| v|hits
+--+--+----
+ 1|11|   1
+(1 row)
+
+
+starting permutation: s1_begin s2_begin s1_upsert s2_upsert s1_abort s2_commit s3_read
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_upsert: INSERT INTO iso_oc VALUES (1, 10) ON CONFLICT (id) DO UPDATE SET hits = iso_oc.hits + 1, v = EXCLUDED.v;
+step s2_upsert: INSERT INTO iso_oc VALUES (1, 11) ON CONFLICT (id) DO UPDATE SET hits = iso_oc.hits + 1, v = EXCLUDED.v; <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_upsert: <... completed>
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v, hits FROM iso_oc ORDER BY id;
+id| v|hits
+--+--+----
+ 1|11|   0
+(1 row)
+
+
+starting permutation: s1_begin s2_begin s1_nothing s2_nothing s1_commit s2_commit s3_read
+step s1_begin: BEGIN;
+step s2_begin: BEGIN;
+step s1_nothing: INSERT INTO iso_oc VALUES (2, 20) ON CONFLICT (id) DO NOTHING;
+step s2_nothing: INSERT INTO iso_oc VALUES (2, 21) ON CONFLICT (id) DO NOTHING; <waiting ...>
+step s1_commit: COMMIT;
+step s2_nothing: <... completed>
+step s2_commit: COMMIT;
+step s3_read: SELECT id, v, hits FROM iso_oc ORDER BY id;
+id| v|hits
+--+--+----
+ 2|20|   0
+(1 row)
+
+
+starting permutation: s1_begin s1_upsert s3_read s1_commit s3_read
+step s1_begin: BEGIN;
+step s1_upsert: INSERT INTO iso_oc VALUES (1, 10) ON CONFLICT (id) DO UPDATE SET hits = iso_oc.hits + 1, v = EXCLUDED.v;
+step s3_read: SELECT id, v, hits FROM iso_oc ORDER BY id;
+id|v|hits
+--+-+----
+(0 rows)
+
+step s1_commit: COMMIT;
+step s3_read: SELECT id, v, hits FROM iso_oc ORDER BY id;
+id| v|hits
+--+--+----
+ 1|10|   0
+(1 row)
+

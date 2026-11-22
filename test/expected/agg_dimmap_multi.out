@@ -4,8 +4,6 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
 CREATE TABLE dim_a (k int PRIMARY KEY, a int, b int) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, i % 7, i % 3 FROM generate_series(0, 4999) i;
 CREATE INDEX dim_a_col ON dim_a USING sift_col (k, a, b);

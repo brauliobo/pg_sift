@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # DML of a sift_table never waits for maintenance or for a load (audit-5.0.1 locks, findings 3 and 4): while the rewrite of the tombstone log that VACUUM makes is
 # in its build (the gate of sift.test_phase_gate, no sleep), a DELETE and an UPDATE complete under a lock_timeout; while a COPY writes the groups of its run (the gate

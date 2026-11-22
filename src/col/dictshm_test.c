@@ -98,7 +98,8 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	Size		len = layout(dc->n, dc->nbytes, dc->slots != NULL && ((Size) dc->n + 1) * 2 <= dc->nslots ? F_SLOTS : 0, dc->nslots).total,
 				size,
 				off[3];
-	int			flight[3];
+	int			flight[3],
+				evicted = 0;
 	int64		records,
 				npins;
 	bool		third,
@@ -122,9 +123,9 @@ sift_test_col_dict_shared_stale(PG_FUNCTION_ARGS)
 	s->hold = 0;
 	for (int i = 0; i < lengthof(s->dir); i++)
 		s->dir[i].state = E_FREE;
-	ring_take(s, len, &off[0], &flight[0]);
-	ring_take(s, len, &off[1], &flight[1]);
-	third = ring_take(s, len, &off[2], &flight[2]);
+	ring_take(s, len, &off[0], &flight[0], &evicted);
+	ring_take(s, len, &off[1], &flight[1], &evicted);
+	third = ring_take(s, len, &off[2], &flight[2], &evicted);
 	s->flight[flight[0]].len = s->flight[flight[1]].len = 0;
 	s->head = 0;
 	SpinLockRelease(&s->mutex);

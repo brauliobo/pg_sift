@@ -3,7 +3,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE f (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
@@ -11,7 +11,6 @@ CREATE INDEX f_ix ON f USING sift_col (id, g, v);
 SET sift.col_wbuf_ref = off;
 INSERT INTO f SELECT i, i % 5, i FROM generate_series(1, 100) i;
 SELECT sift._test_wbuf_format('f_ix') AS values_only;
-SET sift.col_wbuf_ref = on;
 INSERT INTO f SELECT i, i % 5, i FROM generate_series(101, 200) i;
 SELECT sift._test_wbuf_format('f_ix') AS with_references;
 SELECT sift.col_promote('f_ix') >= 0 AS promoted;
@@ -22,7 +21,6 @@ SELECT sift._test_wbuf_format('f_ix') AS new_buffer_values_only;
 -- the rows of a transaction after its first one are batched in the backend: the first one that is a reference marks the buffer all the same
 SELECT sift.col_promote('f_ix') >= 0 AS promoted_again;
 BEGIN;
-SET LOCAL sift.col_wbuf_ref = on;
 INSERT INTO f VALUES (400, 0, 0);
 INSERT INTO f SELECT i, i % 5, i FROM generate_series(401, 410) i;
 COMMIT;

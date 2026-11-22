@@ -22,7 +22,7 @@ scope_check() { # the highest id of a row that is in an entity segment
 # a key_cut index in partitions of 512 kB whose rolling rewrite then runs at 64 kB: each partition is a step that writes its window as several pieces in one switch of the directory (statements of a setup split at @@: a VACUUM
 # cannot be in a transaction)
 ROLL="INSERT INTO docs SELECT i, i % 9, i % 100, md5(i::text) FROM generate_series(6001, 100000) i@@CREATE INDEX docs_ck ON docs USING sift_col (id, g, n, body) WITH (key_cut = 'n', dead_rewrite_pct = 100)"
-ROLL+="@@SET sift.test_col_net = off@@SET sift.col_auto_merge = on@@SET sift.col_auto_merge_partition_kb = 512@@UPDATE docs SET g = g + 1 WHERE id % 7 = 0@@VACUUM docs@@SELECT sift.col_maintain('docs_ck')@@UPDATE docs SET g = g + 1 WHERE id % 5 = 0@@VACUUM docs"
+ROLL+="@@SET sift.test_col_net = off@@SET sift.col_auto_merge = on@@SET sift.test_col_partition_kb = 512@@UPDATE docs SET g = g + 1 WHERE id % 7 = 0@@VACUUM docs@@SELECT sift.col_maintain('docs_ck')@@UPDATE docs SET g = g + 1 WHERE id % 5 = 0@@VACUUM docs"
 TBL="CREATE TABLE tbl (id int, g int, n int) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE tbl_h (id int, g int, n int)"
 
 # scenario ~ setup (after the base table and its rows) ~ the operation
@@ -39,7 +39,7 @@ SCENARIOS=(
 	"scope_refill~$SCOPE; $(scope_check 8000); $(more 6001 8000); SELECT sift.col_promote('docs_sc')~UPDATE gp SET t = t; SELECT sift.col_maintain('docs_sc')"
 	"vacuum~$BM25; $COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
 	"col_net~$COL; DELETE FROM docs WHERE id % 3 = 0; UPDATE docs SET n = n + 1 WHERE id % 7 = 0~VACUUM docs"
-	"col_roll~$ROLL~SET sift.test_col_net = off; SET sift.col_auto_merge = on; SET sift.col_auto_merge_partition_kb = 64; SELECT sift.col_maintain('docs_ck')"
+	"col_roll~$ROLL~SET sift.test_col_net = off; SET sift.col_auto_merge = on; SET sift.test_col_partition_kb = 64; SELECT sift.col_maintain('docs_ck')"
 	"tbl_seal~$TBL; INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i; DELETE FROM tbl WHERE id % 5 = 0; DELETE FROM tbl_h WHERE id % 5 = 0~VACUUM tbl"
 )
 
@@ -103,8 +103,8 @@ gate_spec() { # GATE: the gate of the phase "gate:GATE"
 		journal) adv1 7006; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
 		load) adv1 7004; GATE_SET=("SET sift.test_phase_gate = 7000" "SET max_parallel_maintenance_workers = 2" "SET maintenance_work_mem = '256MB'" "SET sift.test_load_unit_bytes = 128") ;;
 		tombrewrite) adv1 7007; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
-		tombwrite) adv1 7008; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.tomb_log_limit = 16") ;;
-		tombmerge) adv1 7009; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.tomb_log_limit = 16") ;;
+		tombwrite) adv1 7008; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.backend_cache_kb = 16") ;;
+		tombmerge) adv1 7009; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.backend_cache_kb = 16") ;;
 		alter) adv2 14; GATE_SET=("SET sift.test_alter_gate = on") ;;
 		repair_before) adv2 15; GATE_SET=("SET sift.test_repair_gate = on") ;;
 		repair_after) adv2 16; GATE_SET=("SET sift.test_repair_gate = on") ;;
@@ -116,8 +116,6 @@ op_stmts() { IFS=$'\x1f' read -ra OPS <<<"${OP[$1]//@@/$'\x1f'}"; }
 
 # the scenarios of the operations of the later rounds (they name "$D", the directory of the node)
 CIC_OPTS="WITH (write_buffer_limit = 4096)"
-VSTORE="SET sift.test_vstore_columns = 'body'@@CREATE INDEX docs_a ON docs USING sift_col (id, body)@@CREATE INDEX docs_b ON docs USING sift_col (body, id)"
-for i in $(seq 12); do VSTORE+="@@SELECT sift._test_vstore_intern('docs_body_sift_values', array['f$i', 'g$i'])"; done
 SCENARIOS+=(
 	"col_cic~~CREATE INDEX CONCURRENTLY docs_col ON docs USING sift_col (id, g, n) $CIC_OPTS"
 	"track_cic~~CREATE INDEX CONCURRENTLY docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')"
@@ -126,17 +124,14 @@ SCENARIOS+=(
 	"reindex_col~$COL~REINDEX INDEX docs_col"
 	"reindex_col_c~$COL~REINDEX INDEX CONCURRENTLY docs_col"
 	"drop_track~CREATE INDEX docs_tr ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'ctid')~DROP INDEX IF EXISTS docs_tr"
-	"vs_intern~$VSTORE~LOAD 'pg_sift'; SELECT sift._test_vstore_intern('docs_body_sift_values', array['s1a', 's1b', 'shared'])"
-	"vs_compact~$VSTORE~LOAD 'pg_sift'; SELECT sift.col_value_store_compact('docs', 'body')"
 	"tbl_tomb~$TBL@@INSERT INTO tbl SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i@@INSERT INTO tbl_h SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i~UPDATE tbl SET n = n + 1; UPDATE tbl_h SET n = n + 1"
 	"reindex_scope_c~$SCOPE~REINDEX INDEX CONCURRENTLY docs_sc"
-	"vs_gc~SET sift.test_vstore_columns = 'body'@@UPDATE docs SET body = md5(id::text)@@CREATE INDEX docs_a ON docs USING sift_col (id, body)@@CREATE INDEX docs_b ON docs USING sift_col (body, id)@@DELETE FROM docs WHERE id % 10 <> 0~SET sift.test_vstore_gc_kb = 1@@VACUUM docs"
 	"alter_refresh~$COL@@ALTER INDEX docs_col SET (cube_minmax = false)~SELECT * FROM sift.col_refresh('docs_col')"
 	"alter_reloption~$COL~ALTER INDEX docs_col SET (write_buffer_limit = 8192)"
 	"col_repair~CREATE INDEX docs_col ON docs USING sift_col (id, g, n)@@DELETE FROM docs WHERE id % 7 = 0@@VACUUM (INDEX_CLEANUP ON) docs@@SELECT sift._test_poke('docs_col', first_block, 32, 8, 1) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@SELECT sift._test_poke('docs_col', first_block, 8178, 4, 2) FROM sift.col_extents('docs_col') WHERE what = 'liveness run'@@CHECKPOINT~SELECT count(*) FROM sift.col_repair('docs_col')"
 	"tbl_copy~$TBL@@COPY (SELECT i, i % 9, i % 100 FROM generate_series(1, 9000) i) TO '$D/load.csv' CSV~COPY tbl FROM '$D/load.csv' CSV; COPY tbl_h FROM '$D/load.csv' CSV"
 )
-# deletion records (core/tomb_dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
+# deletion records (core/v1_col/tomb_dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
 DVSET="ALTER TABLE docs ADD PRIMARY KEY (id); CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'id')"
 SCENARIOS+=(
 	"dv_vacuum~$DVSET; DELETE FROM docs WHERE id % 5 = 0~VACUUM docs"

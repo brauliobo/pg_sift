@@ -353,7 +353,7 @@ static uint64_t run_query(int r, int q, int p, int op)
 	if (op == O_AND || op == O_ANDCNT) sift_cur_and(&op_c, kids, k, cb[4]);
 	else if (op == O_OR || op == O_ORCNT) sift_cur_or(&op_c, kids, 2, cb[4]);
 	else sift_cur_andnot(&op_c, kids, cb[4]);
-	return op == O_AND || op == O_OR ? sift_tids(&op_c, OUT) : sift_count(&op_c);
+	return op == O_AND || op == O_OR ? sift_tids(&op_c, OUT) : sift_cur_count(&op_c);
 }
 
 static uint64_t in_postings(int q, int op)

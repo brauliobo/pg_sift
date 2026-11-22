@@ -6,7 +6,7 @@
 
 #include <float.h>
 
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "agg/dense_int.h"
 
 /*

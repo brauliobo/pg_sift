@@ -14,6 +14,7 @@
 #define SIFT_EXTLOCK_H
 
 #include "storage/bufmgr.h"
+#include "storage/bulk_write.h"
 #include "utils/rel.h"
 
 extern void sift_extension_lock(Relation rel);
@@ -24,5 +25,25 @@ extern bool sift_extension_held(void);
 
 /* The blocks of the relation up to nblocks zeroed, the last one returned locked: ExtendBufferedRelTo, which takes the lock itself */
 extern Buffer sift_extend_zeroed_to(Relation rel, BlockNumber nblocks);
+/* The same through a buffer access strategy (a bulk write ring keeps the extension of a big build out of the shared buffers) */
+extern Buffer sift_extend_zeroed_to_bas(Relation rel, BlockNumber nblocks, BufferAccessStrategy bas);
+
+/*
+ * A run of fresh pages written with smgr_bulk_write (WAL-logged and checksummed by it) under the extension lock, which no other writer of the file holds meanwhile: the pages past the end of the file
+ * are queued in bulk memory and the file is extended once; a block that is already in the file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). A
+ * relation with local buffers (a temporary one) has no run: sift_bulk_run_begin gives NULL and its pages go through the buffers. The lock is released by sift_bulk_run_end or by the abort of the
+ * transaction.
+ */
+typedef struct SiftBulkRun SiftBulkRun;
+
+extern SiftBulkRun *sift_bulk_run_begin(Relation rel);
+extern bool sift_bulk_run_fresh(const SiftBulkRun *run, BlockNumber blk);
+
+/* A zeroed page to build, for sift_bulk_run_write */
+extern Page sift_bulk_run_page(SiftBulkRun *run);
+
+/* Seals the page (core/f2/meta.h) and queues it as block blk */
+extern void sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page);
+extern void sift_bulk_run_end(SiftBulkRun *run);
 
 #endif							/* SIFT_EXTLOCK_H */

@@ -97,8 +97,8 @@ SELECT * FROM check_query(wq());
 INSERT INTO tag_map SELECT NULL, 'z', 'tag' || t, 'sub' || s, 'n', 'n' FROM generate_series(0, 2999) t, generate_series(0, 9) s;
 VACUUM (ANALYZE) tag_map;
 CREATE FUNCTION few_keys() RETURNS text LANGUAGE sql AS $$ SELECT replace(wq(), 'e.dim_b_id <= 50', 'e.dim_b_id <= 50 AND e.id BETWEEN 100 AND 130') $$;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 CREATE TEMP TABLE few AS SELECT lookup_line(few_keys()) AS l;
 SELECT (regexp_match(l, '(\d+) child blocks prefetched'))[1]::bigint BETWEEN 1 AND (regexp_match(l, '(\d+) child direct probes'))[1]::bigint AS asked_for_the_keys_probed,
        (regexp_match(l, '(\d+) child blocks prefetched'))[1]::bigint * 4 < (pg_relation_size('tag_map') + pg_relation_size('tag_map_unique')) / 8192 AS not_the_table FROM few;

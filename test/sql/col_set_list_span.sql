@@ -12,7 +12,7 @@ SET statement_timeout = '120s';
 CREATE TABLE sl (id int PRIMARY KEY, o1 int NOT NULL, o2 int NOT NULL, o3 int NOT NULL, o4 int NOT NULL, val int, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE sl ALTER COLUMN pad SET STORAGE PLAIN;
 CREATE INDEX sl_i ON sl USING sift_col (id, o1, o2, o3, o4, val) WITH (write_buffer_limit = 4096, key_cut = 'o1', key_columns = 'o1, o2, o3, o4');
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 -- forty batches of consecutive ids, one segment each: the keys of a unit are the keys of its batch
 DO $$
 BEGIN

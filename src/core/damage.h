@@ -22,7 +22,11 @@
 
 #if defined(SIFT_HOST_SQLITE) || defined(SIFT_HOST_MARIADB)
 #define sift_damage_prepare()		((void) 0)
-#define sift_damage_report(index)	0
+static inline int
+sift_damage_report(const void *index)
+{
+	return 0;
+}
 #else
 /* Before the error is started: what the record needs that can fail (the shared registry) */
 extern void sift_damage_prepare(void);

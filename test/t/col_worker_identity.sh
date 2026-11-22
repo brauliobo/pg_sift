@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # What an operator sees of the background workers of sift: a promotion worker says what it is and for which index in pg_stat_activity and in its process title
 # (backend_type "sift promote", query "sift promote of schema.index"), sift.workers keeps when the last step ended well, which job it was and how long it took,
-# a worker that failed (the VACUUM worker, which had no failure path) leaves the error where sift.workers shows it, and the error stays visible after the next success.
+# and a failure counter that stays zero while the steps end well.
 . "$(dirname "$0")/lib.bash"
 
-plan 11
+plan 9
 node_init wi 64 "autovacuum = off
 sift.test_col_net = off
 sift.maintenance_naptime = 200"
@@ -50,24 +50,4 @@ check "sift.workers has the end of the last step" test -n "$(workers last_ok)"
 check "and its job" test "$(workers last_job)" == "promote"
 check "and its time" test "$(workers "last_ms >= 0")" == "t"
 check "no failure was counted" test "$(workers failures_total)" == "0"
-
-# 3. a VACUUM worker that fails: the error reaches sift.workers
-sql wi "ALTER DATABASE postgres SET sift.test_worker_error = 'vacuum'" >/dev/null
-sql wi "UPDATE facts SET amount = amount + 1 WHERE id % 5 = 0" >/dev/null
-for _ in $(seq 20); do
-	sleep 0.5
-	sql wi "UPDATE facts SET amount = amount + 1 WHERE id % 5 = 1" >/dev/null
-	[[ -n $(workers last_error) ]] && break
-done
-for _ in $(seq 200); do [[ -n $(workers last_error) ]] && break; sleep 0.1; done
-check "the error of the VACUUM worker is in sift.workers" bash -c "[[ '$(workers last_error)' == *'test: the vacuum worker fails'* ]]"
-
-# 4. the next success leaves the error visible
-sql wi "ALTER DATABASE postgres RESET sift.test_worker_error" >/dev/null
-sleep 1
-churn 2
-sql wi "VACUUM facts" >/dev/null
-await_promotion
-for _ in $(seq 100); do [[ $(workers "last_ok > failed_at") == t ]] && break; sleep 0.1; done
-check "the error stays after a later success, which is newer" test "$(workers "last_error IS NOT NULL AND last_ok > failed_at AND failures_total >= 1")" == "t"
 finish

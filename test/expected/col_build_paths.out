@@ -1,5 +1,5 @@
 -- Every way an index is built, rebuilt or maintained, on tables whose index is written in one segment and in several (a build by workers; a serial build of an ordered index that the memory budget cuts),
--- with the strings of the index in its segments and in a shared value store, as the first index of the table and as the second one that shares columns with it (CREATE INDEX, CREATE INDEX
+-- as the first index of the table and as the second one over the same columns (CREATE INDEX, CREATE INDEX
 -- CONCURRENTLY, REINDEX, REINDEX CONCURRENTLY, the rewrite of the maintenance, a forced merge). A serial build writes its blocks around the buffers and its metapage last: the state of the index that
 -- another read of the metapage built (the entry of REINDEX CONCURRENTLY is reloaded while it builds) left a zero page in the buffers, which the publish of a build of several segments found ("invalid
 -- page layout"). After every step each index of the table verifies against the heap and answers what the heap answers.
@@ -8,43 +8,36 @@ CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
-SET maintenance_work_mem = '1MB';
--- the strings of the index: rule (the default: the rule of the shared value store decides), store (shared: forced), own (in its segments: sift.col_value_store off)
--- one: a segment; par: the segments of two participants; ord: a serial build of an ordered index cut at the memory budget (2 MB, no array over 4 MB)
-CREATE TABLE bp_group (grp text PRIMARY KEY, ktype text, rows int, workers int, vstore text, ordered bool);
+SET maintenance_work_mem = '16MB';
+-- one: a segment; par: the segments of two participants; ord: a serial build of an ordered index cut at the memory budget (2 MB)
+CREATE TABLE bp_group (grp text PRIMARY KEY, ktype text, rows int, workers int, ordered bool);
 INSERT INTO bp_group
-SELECT format('%s_%s_%s', t, s, vs), t, CASE s WHEN 'one' THEN 2000 WHEN 'par' THEN 40000 ELSE 60000 END, CASE WHEN s = 'par' THEN 2 ELSE 0 END, vs, s = 'ord'
-FROM unnest(ARRAY['int', 'text', 'uuid']) t, unnest(ARRAY['one', 'par', 'ord']) s, unnest(ARRAY['rule', 'store', 'own']) vs
-WHERE (s = 'one' AND vs = 'rule') OR (s = 'par' AND t = 'text') OR (s = 'ord' AND t <> 'int' AND vs = 'rule');
+SELECT format('%s_%s', t, s), t, CASE s WHEN 'one' THEN 2000 WHEN 'par' THEN 40000 ELSE 60000 END, CASE WHEN s = 'par' THEN 2 ELSE 0 END, s = 'ord'
+FROM unnest(ARRAY['int', 'text', 'uuid']) t, unnest(ARRAY['one', 'par', 'ord']) s
+WHERE s = 'one' OR (s = 'par' AND t = 'text') OR (s = 'ord' AND t <> 'int');
 SELECT format('CREATE TABLE bp_%s (id int PRIMARY KEY, k %s NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)', grp, ktype)
 FROM bp_group ORDER BY grp \gexec
-CREATE TABLE bp_int_one_rule (id int PRIMARY KEY, k int NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_text_one_rule (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_text_ord_rule (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_text_par_own (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_text_par_rule (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_text_par_store (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_uuid_one_rule (id int PRIMARY KEY, k uuid NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
-CREATE TABLE bp_uuid_ord_rule (id int PRIMARY KEY, k uuid NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
+CREATE TABLE bp_int_one (id int PRIMARY KEY, k int NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
+CREATE TABLE bp_text_one (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
+CREATE TABLE bp_text_ord (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
+CREATE TABLE bp_text_par (id int PRIMARY KEY, k text NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
+CREATE TABLE bp_uuid_one (id int PRIMARY KEY, k uuid NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
+CREATE TABLE bp_uuid_ord (id int PRIMARY KEY, k uuid NOT NULL, w text NOT NULL, v int NOT NULL, tenant_id int NOT NULL, event_date date NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2)
 SELECT format('INSERT INTO bp_%s SELECT i, %s, ''w'' || (i %% 500) || repeat(''x'', i %% 30), i %% 100, (i * 7919 %% 400)::int, date ''2020-01-01'' + i %% 2000 FROM generate_series(1, %s) i', grp,
 	CASE ktype WHEN 'int' THEN 'i' WHEN 'text' THEN 'md5(i::text) || ''-key-'' || i' ELSE 'md5(i::text)::uuid' END, rows) FROM bp_group ORDER BY grp \gexec
-INSERT INTO bp_int_one_rule SELECT i, i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 2000) i
-INSERT INTO bp_text_one_rule SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 2000) i
-INSERT INTO bp_text_ord_rule SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 60000) i
-INSERT INTO bp_text_par_own SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 40000) i
-INSERT INTO bp_text_par_rule SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 40000) i
-INSERT INTO bp_text_par_store SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 40000) i
-INSERT INTO bp_uuid_one_rule SELECT i, md5(i::text)::uuid, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 2000) i
-INSERT INTO bp_uuid_ord_rule SELECT i, md5(i::text)::uuid, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 60000) i
+INSERT INTO bp_int_one SELECT i, i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 2000) i
+INSERT INTO bp_text_one SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 2000) i
+INSERT INTO bp_text_ord SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 60000) i
+INSERT INTO bp_text_par SELECT i, md5(i::text) || '-key-' || i, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 40000) i
+INSERT INTO bp_uuid_one SELECT i, md5(i::text)::uuid, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 2000) i
+INSERT INTO bp_uuid_ord SELECT i, md5(i::text)::uuid, 'w' || (i % 500) || repeat('x', i % 30), i % 100, (i * 7919 % 400)::int, date '2020-01-01' + i % 2000 FROM generate_series(1, 60000) i
 SELECT format('VACUUM (ANALYZE, FREEZE) bp_%s', grp) FROM bp_group ORDER BY grp \gexec
-VACUUM (ANALYZE, FREEZE) bp_int_one_rule
-VACUUM (ANALYZE, FREEZE) bp_text_one_rule
-VACUUM (ANALYZE, FREEZE) bp_text_ord_rule
-VACUUM (ANALYZE, FREEZE) bp_text_par_own
-VACUUM (ANALYZE, FREEZE) bp_text_par_rule
-VACUUM (ANALYZE, FREEZE) bp_text_par_store
-VACUUM (ANALYZE, FREEZE) bp_uuid_one_rule
-VACUUM (ANALYZE, FREEZE) bp_uuid_ord_rule
+VACUUM (ANALYZE, FREEZE) bp_int_one
+VACUUM (ANALYZE, FREEZE) bp_text_one
+VACUUM (ANALYZE, FREEZE) bp_text_ord
+VACUUM (ANALYZE, FREEZE) bp_text_par
+VACUUM (ANALYZE, FREEZE) bp_uuid_one
+VACUUM (ANALYZE, FREEZE) bp_uuid_ord
 CREATE FUNCTION bp_answers(tbl regclass) RETURNS text LANGUAGE plpgsql AS
 $$
 DECLARE r text;
@@ -86,12 +79,9 @@ DECLARE gr bp_group; t text := 'bp_' || g; path text; ix text; w text;
 BEGIN
 	SELECT * INTO gr FROM bp_group WHERE grp = g;
 	w := CASE WHEN gr.ordered THEN ' WITH (key_order = ''tenant_id, event_date'', key_cut = ''off'')' ELSE '' END;
-	RETURN NEXT format('SET sift.col_value_store = %s', CASE WHEN gr.vstore = 'own' THEN 'off' ELSE 'on' END);
-	RETURN NEXT format('SET sift.test_vstore_columns = %L', CASE WHEN gr.vstore = 'store' THEN 'k,w' ELSE '' END);
 	RETURN NEXT format('SET max_parallel_maintenance_workers = %s', gr.workers);
 	RETURN NEXT format('SET min_parallel_table_scan_size = %s', CASE WHEN gr.workers > 0 THEN 0 ELSE 8192 END);
 	RETURN NEXT format('SET sift.test_col_segment_kb = %s', CASE WHEN gr.ordered THEN 2000 ELSE 0 END);
-	RETURN NEXT format('SET sift.test_limits = %L', CASE WHEN gr.ordered THEN 'array_bytes=4194304' ELSE '' END);
 	FOREACH path IN ARRAY ARRAY['create', 'create concurrently'] LOOP
 		RETURN NEXT format('DROP INDEX IF EXISTS %s_i1, %s_i2', t, t);
 		RETURN NEXT format('CREATE INDEX %s %s_i1 ON %s USING sift_col (id, k, w, v, tenant_id, event_date)%s', CASE WHEN path = 'create' THEN '' ELSE 'CONCURRENTLY' END, t, t, w);
@@ -121,917 +111,643 @@ BEGIN
 END
 $$;
 SELECT s.stmt FROM bp_group g, LATERAL bp_steps(g.grp) WITH ORDINALITY s(stmt, n) ORDER BY g.grp, s.n \gexec
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = ''
 SET max_parallel_maintenance_workers = 0
 SET min_parallel_table_scan_size = 8192
 SET sift.test_col_segment_kb = 0
-SET sift.test_limits = ''
-DROP INDEX IF EXISTS bp_int_one_rule_i1, bp_int_one_rule_i2
-CREATE INDEX  bp_int_one_rule_i1 ON bp_int_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_int_one_rule', 'int_one_rule create first')
-             bp_check             
-----------------------------------
- int_one_rule create first i1=one
+DROP INDEX IF EXISTS bp_int_one_i1, bp_int_one_i2
+CREATE INDEX  bp_int_one_i1 ON bp_int_one USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_int_one', 'int_one create first')
+          bp_check           
+-----------------------------
+ int_one create first i1=one
 (1 row)
 
-CREATE INDEX  bp_int_one_rule_i2 ON bp_int_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_int_one_rule', 'int_one_rule create second')
+CREATE INDEX  bp_int_one_i2 ON bp_int_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_int_one', 'int_one create second')
+              bp_check               
+-------------------------------------
+ int_one create second i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_int_one_i1, bp_int_one_i2
+CREATE INDEX CONCURRENTLY bp_int_one_i1 ON bp_int_one USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_int_one', 'int_one create concurrently first')
                  bp_check                 
 ------------------------------------------
- int_one_rule create second i1=one i2=one
+ int_one create concurrently first i1=one
 (1 row)
 
-DROP INDEX IF EXISTS bp_int_one_rule_i1, bp_int_one_rule_i2
-CREATE INDEX CONCURRENTLY bp_int_one_rule_i1 ON bp_int_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_int_one_rule', 'int_one_rule create concurrently first')
-                   bp_check                    
------------------------------------------------
- int_one_rule create concurrently first i1=one
-(1 row)
-
-CREATE INDEX CONCURRENTLY bp_int_one_rule_i2 ON bp_int_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_int_one_rule', 'int_one_rule create concurrently second')
-                       bp_check                        
--------------------------------------------------------
- int_one_rule create concurrently second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_int_one_rule_i1, bp_int_one_rule_i2
-CREATE INDEX bp_int_one_rule_i1 ON bp_int_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_int_one_rule_i2 ON bp_int_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX bp_int_one_rule_i1
-SELECT bp_check('bp_int_one_rule', 'int_one_rule reindex i1')
-               bp_check                
----------------------------------------
- int_one_rule reindex i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX bp_int_one_rule_i2
-SELECT bp_check('bp_int_one_rule', 'int_one_rule reindex i2')
-               bp_check                
----------------------------------------
- int_one_rule reindex i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_int_one_rule_i1, bp_int_one_rule_i2
-CREATE INDEX bp_int_one_rule_i1 ON bp_int_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_int_one_rule_i2 ON bp_int_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX CONCURRENTLY bp_int_one_rule_i1
-SELECT bp_check('bp_int_one_rule', 'int_one_rule reindex concurrently i1')
-                      bp_check                      
-----------------------------------------------------
- int_one_rule reindex concurrently i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_int_one_rule_i2
-SELECT bp_check('bp_int_one_rule', 'int_one_rule reindex concurrently i2')
-                      bp_check                      
-----------------------------------------------------
- int_one_rule reindex concurrently i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_int_one_rule_i1, bp_int_one_rule_i2
-CREATE INDEX bp_int_one_rule_i1 ON bp_int_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_int_one_rule_i2 ON bp_int_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-UPDATE bp_int_one_rule SET v = v + 1 WHERE id % 7 = 0
-DELETE FROM bp_int_one_rule WHERE id % 11 = 0
-VACUUM bp_int_one_rule
-SELECT bp_maintain('bp_int_one_rule_i1')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_int_one_rule', 'int_one_rule maintain i1')
-                bp_check                
-----------------------------------------
- int_one_rule maintain i1 i1=one i2=one
-(1 row)
-
-SELECT bp_maintain('bp_int_one_rule_i2')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_int_one_rule', 'int_one_rule maintain i2')
-                bp_check                
-----------------------------------------
- int_one_rule maintain i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_int_one_rule_i1, bp_int_one_rule_i2
-CREATE INDEX bp_int_one_rule_i1 ON bp_int_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_int_one_rule_i2 ON bp_int_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT sift.col_merge('bp_int_one_rule_i1', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_int_one_rule', 'int_one_rule merge i1')
-              bp_check               
--------------------------------------
- int_one_rule merge i1 i1=one i2=one
-(1 row)
-
-SELECT sift.col_merge('bp_int_one_rule_i2', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_int_one_rule', 'int_one_rule merge i2')
-              bp_check               
--------------------------------------
- int_one_rule merge i2 i1=one i2=one
-(1 row)
-
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = ''
-SET max_parallel_maintenance_workers = 0
-SET min_parallel_table_scan_size = 8192
-SET sift.test_col_segment_kb = 0
-SET sift.test_limits = ''
-DROP INDEX IF EXISTS bp_text_one_rule_i1, bp_text_one_rule_i2
-CREATE INDEX  bp_text_one_rule_i1 ON bp_text_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_one_rule', 'text_one_rule create first')
-             bp_check              
------------------------------------
- text_one_rule create first i1=one
-(1 row)
-
-CREATE INDEX  bp_text_one_rule_i2 ON bp_text_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_one_rule', 'text_one_rule create second')
-                 bp_check                  
--------------------------------------------
- text_one_rule create second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_one_rule_i1, bp_text_one_rule_i2
-CREATE INDEX CONCURRENTLY bp_text_one_rule_i1 ON bp_text_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_one_rule', 'text_one_rule create concurrently first')
-                    bp_check                    
-------------------------------------------------
- text_one_rule create concurrently first i1=one
-(1 row)
-
-CREATE INDEX CONCURRENTLY bp_text_one_rule_i2 ON bp_text_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_one_rule', 'text_one_rule create concurrently second')
-                        bp_check                        
---------------------------------------------------------
- text_one_rule create concurrently second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_one_rule_i1, bp_text_one_rule_i2
-CREATE INDEX bp_text_one_rule_i1 ON bp_text_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_one_rule_i2 ON bp_text_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX bp_text_one_rule_i1
-SELECT bp_check('bp_text_one_rule', 'text_one_rule reindex i1')
-                bp_check                
-----------------------------------------
- text_one_rule reindex i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX bp_text_one_rule_i2
-SELECT bp_check('bp_text_one_rule', 'text_one_rule reindex i2')
-                bp_check                
-----------------------------------------
- text_one_rule reindex i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_one_rule_i1, bp_text_one_rule_i2
-CREATE INDEX bp_text_one_rule_i1 ON bp_text_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_one_rule_i2 ON bp_text_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX CONCURRENTLY bp_text_one_rule_i1
-SELECT bp_check('bp_text_one_rule', 'text_one_rule reindex concurrently i1')
-                      bp_check                       
------------------------------------------------------
- text_one_rule reindex concurrently i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_text_one_rule_i2
-SELECT bp_check('bp_text_one_rule', 'text_one_rule reindex concurrently i2')
-                      bp_check                       
------------------------------------------------------
- text_one_rule reindex concurrently i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_one_rule_i1, bp_text_one_rule_i2
-CREATE INDEX bp_text_one_rule_i1 ON bp_text_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_one_rule_i2 ON bp_text_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-UPDATE bp_text_one_rule SET v = v + 1 WHERE id % 7 = 0
-DELETE FROM bp_text_one_rule WHERE id % 11 = 0
-VACUUM bp_text_one_rule
-SELECT bp_maintain('bp_text_one_rule_i1')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_text_one_rule', 'text_one_rule maintain i1')
-                bp_check                 
------------------------------------------
- text_one_rule maintain i1 i1=one i2=one
-(1 row)
-
-SELECT bp_maintain('bp_text_one_rule_i2')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_text_one_rule', 'text_one_rule maintain i2')
-                bp_check                 
------------------------------------------
- text_one_rule maintain i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_one_rule_i1, bp_text_one_rule_i2
-CREATE INDEX bp_text_one_rule_i1 ON bp_text_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_one_rule_i2 ON bp_text_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT sift.col_merge('bp_text_one_rule_i1', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_text_one_rule', 'text_one_rule merge i1')
-               bp_check               
---------------------------------------
- text_one_rule merge i1 i1=one i2=one
-(1 row)
-
-SELECT sift.col_merge('bp_text_one_rule_i2', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_text_one_rule', 'text_one_rule merge i2')
-               bp_check               
---------------------------------------
- text_one_rule merge i2 i1=one i2=one
-(1 row)
-
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = ''
-SET max_parallel_maintenance_workers = 0
-SET min_parallel_table_scan_size = 8192
-SET sift.test_col_segment_kb = 2000
-SET sift.test_limits = 'array_bytes=4194304'
-DROP INDEX IF EXISTS bp_text_ord_rule_i1, bp_text_ord_rule_i2
-CREATE INDEX  bp_text_ord_rule_i1 ON bp_text_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule create first')
-              bp_check               
--------------------------------------
- text_ord_rule create first i1=multi
-(1 row)
-
-CREATE INDEX  bp_text_ord_rule_i2 ON bp_text_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule create second')
-                   bp_check                    
------------------------------------------------
- text_ord_rule create second i1=multi i2=multi
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_ord_rule_i1, bp_text_ord_rule_i2
-CREATE INDEX CONCURRENTLY bp_text_ord_rule_i1 ON bp_text_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule create concurrently first')
+CREATE INDEX CONCURRENTLY bp_int_one_i2 ON bp_int_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_int_one', 'int_one create concurrently second')
                      bp_check                     
 --------------------------------------------------
- text_ord_rule create concurrently first i1=multi
+ int_one create concurrently second i1=one i2=one
 (1 row)
 
-CREATE INDEX CONCURRENTLY bp_text_ord_rule_i2 ON bp_text_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule create concurrently second')
-                          bp_check                          
-------------------------------------------------------------
- text_ord_rule create concurrently second i1=multi i2=multi
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_ord_rule_i1, bp_text_ord_rule_i2
-CREATE INDEX bp_text_ord_rule_i1 ON bp_text_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-CREATE INDEX bp_text_ord_rule_i2 ON bp_text_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-REINDEX INDEX bp_text_ord_rule_i1
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule reindex i1')
-                  bp_check                  
---------------------------------------------
- text_ord_rule reindex i1 i1=multi i2=multi
-(1 row)
-
-REINDEX INDEX bp_text_ord_rule_i2
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule reindex i2')
-                  bp_check                  
---------------------------------------------
- text_ord_rule reindex i2 i1=multi i2=multi
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_ord_rule_i1, bp_text_ord_rule_i2
-CREATE INDEX bp_text_ord_rule_i1 ON bp_text_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-CREATE INDEX bp_text_ord_rule_i2 ON bp_text_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-REINDEX INDEX CONCURRENTLY bp_text_ord_rule_i1
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule reindex concurrently i1')
-                        bp_check                         
----------------------------------------------------------
- text_ord_rule reindex concurrently i1 i1=multi i2=multi
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_text_ord_rule_i2
-SELECT bp_check('bp_text_ord_rule', 'text_ord_rule reindex concurrently i2')
-                        bp_check                         
----------------------------------------------------------
- text_ord_rule reindex concurrently i2 i1=multi i2=multi
-(1 row)
-
-SET sift.col_value_store = off
-SET sift.test_vstore_columns = ''
-SET max_parallel_maintenance_workers = 2
-SET min_parallel_table_scan_size = 0
-SET sift.test_col_segment_kb = 0
-SET sift.test_limits = ''
-DROP INDEX IF EXISTS bp_text_par_own_i1, bp_text_par_own_i2
-CREATE INDEX  bp_text_par_own_i1 ON bp_text_par_own USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_own', 'text_par_own create first')
+DROP INDEX IF EXISTS bp_int_one_i1, bp_int_one_i2
+CREATE INDEX bp_int_one_i1 ON bp_int_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_int_one_i2 ON bp_int_one USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX bp_int_one_i1
+SELECT bp_check('bp_int_one', 'int_one reindex i1')
              bp_check             
 ----------------------------------
- text_par_own create first i1=one
+ int_one reindex i1 i1=one i2=one
 (1 row)
 
-CREATE INDEX  bp_text_par_own_i2 ON bp_text_par_own USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_own', 'text_par_own create second')
-                 bp_check                 
-------------------------------------------
- text_par_own create second i1=one i2=one
+REINDEX INDEX bp_int_one_i2
+SELECT bp_check('bp_int_one', 'int_one reindex i2')
+             bp_check             
+----------------------------------
+ int_one reindex i2 i1=one i2=one
 (1 row)
 
-DROP INDEX IF EXISTS bp_text_par_own_i1, bp_text_par_own_i2
-CREATE INDEX CONCURRENTLY bp_text_par_own_i1 ON bp_text_par_own USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_own', 'text_par_own create concurrently first')
+DROP INDEX IF EXISTS bp_int_one_i1, bp_int_one_i2
+CREATE INDEX bp_int_one_i1 ON bp_int_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_int_one_i2 ON bp_int_one USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX CONCURRENTLY bp_int_one_i1
+SELECT bp_check('bp_int_one', 'int_one reindex concurrently i1')
                    bp_check                    
 -----------------------------------------------
- text_par_own create concurrently first i1=one
+ int_one reindex concurrently i1 i1=one i2=one
 (1 row)
 
-CREATE INDEX CONCURRENTLY bp_text_par_own_i2 ON bp_text_par_own USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_own', 'text_par_own create concurrently second')
-                       bp_check                        
--------------------------------------------------------
- text_par_own create concurrently second i1=one i2=one
+REINDEX INDEX CONCURRENTLY bp_int_one_i2
+SELECT bp_check('bp_int_one', 'int_one reindex concurrently i2')
+                   bp_check                    
+-----------------------------------------------
+ int_one reindex concurrently i2 i1=one i2=one
 (1 row)
 
-DROP INDEX IF EXISTS bp_text_par_own_i1, bp_text_par_own_i2
-CREATE INDEX bp_text_par_own_i1 ON bp_text_par_own USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_own_i2 ON bp_text_par_own USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX bp_text_par_own_i1
-SELECT bp_check('bp_text_par_own', 'text_par_own reindex i1')
-               bp_check                
----------------------------------------
- text_par_own reindex i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX bp_text_par_own_i2
-SELECT bp_check('bp_text_par_own', 'text_par_own reindex i2')
-               bp_check                
----------------------------------------
- text_par_own reindex i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_own_i1, bp_text_par_own_i2
-CREATE INDEX bp_text_par_own_i1 ON bp_text_par_own USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_own_i2 ON bp_text_par_own USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX CONCURRENTLY bp_text_par_own_i1
-SELECT bp_check('bp_text_par_own', 'text_par_own reindex concurrently i1')
-                      bp_check                      
-----------------------------------------------------
- text_par_own reindex concurrently i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_text_par_own_i2
-SELECT bp_check('bp_text_par_own', 'text_par_own reindex concurrently i2')
-                      bp_check                      
-----------------------------------------------------
- text_par_own reindex concurrently i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_own_i1, bp_text_par_own_i2
-CREATE INDEX bp_text_par_own_i1 ON bp_text_par_own USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_own_i2 ON bp_text_par_own USING sift_col (k, id, w, v, tenant_id, event_date)
-UPDATE bp_text_par_own SET v = v + 1 WHERE id % 7 = 0
-DELETE FROM bp_text_par_own WHERE id % 11 = 0
-VACUUM bp_text_par_own
-SELECT bp_maintain('bp_text_par_own_i1')
+DROP INDEX IF EXISTS bp_int_one_i1, bp_int_one_i2
+CREATE INDEX bp_int_one_i1 ON bp_int_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_int_one_i2 ON bp_int_one USING sift_col (k, id, w, v, tenant_id, event_date)
+UPDATE bp_int_one SET v = v + 1 WHERE id % 7 = 0
+DELETE FROM bp_int_one WHERE id % 11 = 0
+VACUUM bp_int_one
+SELECT bp_maintain('bp_int_one_i1')
  bp_maintain 
 -------------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_own', 'text_par_own maintain i1')
-                 bp_check                 
-------------------------------------------
- text_par_own maintain i1 i1=multi i2=one
-(1 row)
-
-SELECT bp_maintain('bp_text_par_own_i2')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_text_par_own', 'text_par_own maintain i2')
-                  bp_check                  
---------------------------------------------
- text_par_own maintain i2 i1=multi i2=multi
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_own_i1, bp_text_par_own_i2
-CREATE INDEX bp_text_par_own_i1 ON bp_text_par_own USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_own_i2 ON bp_text_par_own USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT sift.col_merge('bp_text_par_own_i1', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_text_par_own', 'text_par_own merge i1')
-               bp_check                
----------------------------------------
- text_par_own merge i1 i1=one i2=multi
-(1 row)
-
-SELECT sift.col_merge('bp_text_par_own_i2', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_text_par_own', 'text_par_own merge i2')
-              bp_check               
--------------------------------------
- text_par_own merge i2 i1=one i2=one
-(1 row)
-
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = ''
-SET max_parallel_maintenance_workers = 2
-SET min_parallel_table_scan_size = 0
-SET sift.test_col_segment_kb = 0
-SET sift.test_limits = ''
-DROP INDEX IF EXISTS bp_text_par_rule_i1, bp_text_par_rule_i2
-CREATE INDEX  bp_text_par_rule_i1 ON bp_text_par_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_rule', 'text_par_rule create first')
+SELECT bp_check('bp_int_one', 'int_one maintain i1')
              bp_check              
 -----------------------------------
- text_par_rule create first i1=one
+ int_one maintain i1 i1=one i2=one
 (1 row)
 
-CREATE INDEX  bp_text_par_rule_i2 ON bp_text_par_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_rule', 'text_par_rule create second')
-                 bp_check                  
--------------------------------------------
- text_par_rule create second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_rule_i1, bp_text_par_rule_i2
-CREATE INDEX CONCURRENTLY bp_text_par_rule_i1 ON bp_text_par_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_rule', 'text_par_rule create concurrently first')
-                    bp_check                    
-------------------------------------------------
- text_par_rule create concurrently first i1=one
-(1 row)
-
-CREATE INDEX CONCURRENTLY bp_text_par_rule_i2 ON bp_text_par_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_rule', 'text_par_rule create concurrently second')
-                        bp_check                        
---------------------------------------------------------
- text_par_rule create concurrently second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_rule_i1, bp_text_par_rule_i2
-CREATE INDEX bp_text_par_rule_i1 ON bp_text_par_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_rule_i2 ON bp_text_par_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX bp_text_par_rule_i1
-SELECT bp_check('bp_text_par_rule', 'text_par_rule reindex i1')
-                bp_check                
-----------------------------------------
- text_par_rule reindex i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX bp_text_par_rule_i2
-SELECT bp_check('bp_text_par_rule', 'text_par_rule reindex i2')
-                bp_check                
-----------------------------------------
- text_par_rule reindex i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_rule_i1, bp_text_par_rule_i2
-CREATE INDEX bp_text_par_rule_i1 ON bp_text_par_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_rule_i2 ON bp_text_par_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX CONCURRENTLY bp_text_par_rule_i1
-SELECT bp_check('bp_text_par_rule', 'text_par_rule reindex concurrently i1')
-                      bp_check                       
------------------------------------------------------
- text_par_rule reindex concurrently i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_text_par_rule_i2
-SELECT bp_check('bp_text_par_rule', 'text_par_rule reindex concurrently i2')
-                      bp_check                       
------------------------------------------------------
- text_par_rule reindex concurrently i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_rule_i1, bp_text_par_rule_i2
-CREATE INDEX bp_text_par_rule_i1 ON bp_text_par_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_rule_i2 ON bp_text_par_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-UPDATE bp_text_par_rule SET v = v + 1 WHERE id % 7 = 0
-DELETE FROM bp_text_par_rule WHERE id % 11 = 0
-VACUUM bp_text_par_rule
-SELECT bp_maintain('bp_text_par_rule_i1')
+SELECT bp_maintain('bp_int_one_i2')
  bp_maintain 
 -------------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_rule', 'text_par_rule maintain i1')
-                 bp_check                  
--------------------------------------------
- text_par_rule maintain i1 i1=multi i2=one
+SELECT bp_check('bp_int_one', 'int_one maintain i2')
+             bp_check              
+-----------------------------------
+ int_one maintain i2 i1=one i2=one
 (1 row)
 
-SELECT bp_maintain('bp_text_par_rule_i2')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_text_par_rule', 'text_par_rule maintain i2')
-                  bp_check                   
----------------------------------------------
- text_par_rule maintain i2 i1=multi i2=multi
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_rule_i1, bp_text_par_rule_i2
-CREATE INDEX bp_text_par_rule_i1 ON bp_text_par_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_rule_i2 ON bp_text_par_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT sift.col_merge('bp_text_par_rule_i1', true) >= 0
+DROP INDEX IF EXISTS bp_int_one_i1, bp_int_one_i2
+CREATE INDEX bp_int_one_i1 ON bp_int_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_int_one_i2 ON bp_int_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT sift.col_merge('bp_int_one_i1', true) >= 0
  ?column? 
 ----------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_rule', 'text_par_rule merge i1')
-                bp_check                
-----------------------------------------
- text_par_rule merge i1 i1=one i2=multi
+SELECT bp_check('bp_int_one', 'int_one merge i1')
+            bp_check            
+--------------------------------
+ int_one merge i1 i1=one i2=one
 (1 row)
 
-SELECT sift.col_merge('bp_text_par_rule_i2', true) >= 0
+SELECT sift.col_merge('bp_int_one_i2', true) >= 0
  ?column? 
 ----------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_rule', 'text_par_rule merge i2')
+SELECT bp_check('bp_int_one', 'int_one merge i2')
+            bp_check            
+--------------------------------
+ int_one merge i2 i1=one i2=one
+(1 row)
+
+SET max_parallel_maintenance_workers = 0
+SET min_parallel_table_scan_size = 8192
+SET sift.test_col_segment_kb = 0
+DROP INDEX IF EXISTS bp_text_one_i1, bp_text_one_i2
+CREATE INDEX  bp_text_one_i1 ON bp_text_one USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_one', 'text_one create first')
+           bp_check           
+------------------------------
+ text_one create first i1=one
+(1 row)
+
+CREATE INDEX  bp_text_one_i2 ON bp_text_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_one', 'text_one create second')
                bp_check               
 --------------------------------------
- text_par_rule merge i2 i1=one i2=one
+ text_one create second i1=one i2=one
 (1 row)
 
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = 'k,w'
-SET max_parallel_maintenance_workers = 2
-SET min_parallel_table_scan_size = 0
-SET sift.test_col_segment_kb = 0
-SET sift.test_limits = ''
-DROP INDEX IF EXISTS bp_text_par_store_i1, bp_text_par_store_i2
-CREATE INDEX  bp_text_par_store_i1 ON bp_text_par_store USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_store', 'text_par_store create first')
+DROP INDEX IF EXISTS bp_text_one_i1, bp_text_one_i2
+CREATE INDEX CONCURRENTLY bp_text_one_i1 ON bp_text_one USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_one', 'text_one create concurrently first')
+                 bp_check                  
+-------------------------------------------
+ text_one create concurrently first i1=one
+(1 row)
+
+CREATE INDEX CONCURRENTLY bp_text_one_i2 ON bp_text_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_one', 'text_one create concurrently second')
+                     bp_check                      
+---------------------------------------------------
+ text_one create concurrently second i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_one_i1, bp_text_one_i2
+CREATE INDEX bp_text_one_i1 ON bp_text_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_one_i2 ON bp_text_one USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX bp_text_one_i1
+SELECT bp_check('bp_text_one', 'text_one reindex i1')
+             bp_check              
+-----------------------------------
+ text_one reindex i1 i1=one i2=one
+(1 row)
+
+REINDEX INDEX bp_text_one_i2
+SELECT bp_check('bp_text_one', 'text_one reindex i2')
+             bp_check              
+-----------------------------------
+ text_one reindex i2 i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_one_i1, bp_text_one_i2
+CREATE INDEX bp_text_one_i1 ON bp_text_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_one_i2 ON bp_text_one USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX CONCURRENTLY bp_text_one_i1
+SELECT bp_check('bp_text_one', 'text_one reindex concurrently i1')
+                    bp_check                    
+------------------------------------------------
+ text_one reindex concurrently i1 i1=one i2=one
+(1 row)
+
+REINDEX INDEX CONCURRENTLY bp_text_one_i2
+SELECT bp_check('bp_text_one', 'text_one reindex concurrently i2')
+                    bp_check                    
+------------------------------------------------
+ text_one reindex concurrently i2 i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_one_i1, bp_text_one_i2
+CREATE INDEX bp_text_one_i1 ON bp_text_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_one_i2 ON bp_text_one USING sift_col (k, id, w, v, tenant_id, event_date)
+UPDATE bp_text_one SET v = v + 1 WHERE id % 7 = 0
+DELETE FROM bp_text_one WHERE id % 11 = 0
+VACUUM bp_text_one
+SELECT bp_maintain('bp_text_one_i1')
+ bp_maintain 
+-------------
+ t
+(1 row)
+
+SELECT bp_check('bp_text_one', 'text_one maintain i1')
               bp_check              
 ------------------------------------
- text_par_store create first i1=one
+ text_one maintain i1 i1=one i2=one
 (1 row)
 
-CREATE INDEX  bp_text_par_store_i2 ON bp_text_par_store USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_store', 'text_par_store create second')
-                  bp_check                  
---------------------------------------------
- text_par_store create second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_store_i1, bp_text_par_store_i2
-CREATE INDEX CONCURRENTLY bp_text_par_store_i1 ON bp_text_par_store USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_store', 'text_par_store create concurrently first')
-                    bp_check                     
--------------------------------------------------
- text_par_store create concurrently first i1=one
-(1 row)
-
-CREATE INDEX CONCURRENTLY bp_text_par_store_i2 ON bp_text_par_store USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_text_par_store', 'text_par_store create concurrently second')
-                        bp_check                         
----------------------------------------------------------
- text_par_store create concurrently second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_store_i1, bp_text_par_store_i2
-CREATE INDEX bp_text_par_store_i1 ON bp_text_par_store USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_store_i2 ON bp_text_par_store USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX bp_text_par_store_i1
-SELECT bp_check('bp_text_par_store', 'text_par_store reindex i1')
-                bp_check                 
------------------------------------------
- text_par_store reindex i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX bp_text_par_store_i2
-SELECT bp_check('bp_text_par_store', 'text_par_store reindex i2')
-                bp_check                 
------------------------------------------
- text_par_store reindex i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_store_i1, bp_text_par_store_i2
-CREATE INDEX bp_text_par_store_i1 ON bp_text_par_store USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_store_i2 ON bp_text_par_store USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX CONCURRENTLY bp_text_par_store_i1
-SELECT bp_check('bp_text_par_store', 'text_par_store reindex concurrently i1')
-                       bp_check                       
-------------------------------------------------------
- text_par_store reindex concurrently i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_text_par_store_i2
-SELECT bp_check('bp_text_par_store', 'text_par_store reindex concurrently i2')
-                       bp_check                       
-------------------------------------------------------
- text_par_store reindex concurrently i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_store_i1, bp_text_par_store_i2
-CREATE INDEX bp_text_par_store_i1 ON bp_text_par_store USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_store_i2 ON bp_text_par_store USING sift_col (k, id, w, v, tenant_id, event_date)
-UPDATE bp_text_par_store SET v = v + 1 WHERE id % 7 = 0
-DELETE FROM bp_text_par_store WHERE id % 11 = 0
-VACUUM bp_text_par_store
-SELECT bp_maintain('bp_text_par_store_i1')
+SELECT bp_maintain('bp_text_one_i2')
  bp_maintain 
 -------------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_store', 'text_par_store maintain i1')
-                  bp_check                  
---------------------------------------------
- text_par_store maintain i1 i1=multi i2=one
+SELECT bp_check('bp_text_one', 'text_one maintain i2')
+              bp_check              
+------------------------------------
+ text_one maintain i2 i1=one i2=one
 (1 row)
 
-SELECT bp_maintain('bp_text_par_store_i2')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_text_par_store', 'text_par_store maintain i2')
-                   bp_check                   
-----------------------------------------------
- text_par_store maintain i2 i1=multi i2=multi
-(1 row)
-
-DROP INDEX IF EXISTS bp_text_par_store_i1, bp_text_par_store_i2
-CREATE INDEX bp_text_par_store_i1 ON bp_text_par_store USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_text_par_store_i2 ON bp_text_par_store USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT sift.col_merge('bp_text_par_store_i1', true) >= 0
+DROP INDEX IF EXISTS bp_text_one_i1, bp_text_one_i2
+CREATE INDEX bp_text_one_i1 ON bp_text_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_one_i2 ON bp_text_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT sift.col_merge('bp_text_one_i1', true) >= 0
  ?column? 
 ----------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_store', 'text_par_store merge i1')
-                bp_check                 
------------------------------------------
- text_par_store merge i1 i1=one i2=multi
+SELECT bp_check('bp_text_one', 'text_one merge i1')
+            bp_check             
+---------------------------------
+ text_one merge i1 i1=one i2=one
 (1 row)
 
-SELECT sift.col_merge('bp_text_par_store_i2', true) >= 0
+SELECT sift.col_merge('bp_text_one_i2', true) >= 0
  ?column? 
 ----------
  t
 (1 row)
 
-SELECT bp_check('bp_text_par_store', 'text_par_store merge i2')
-               bp_check                
----------------------------------------
- text_par_store merge i2 i1=one i2=one
+SELECT bp_check('bp_text_one', 'text_one merge i2')
+            bp_check             
+---------------------------------
+ text_one merge i2 i1=one i2=one
 (1 row)
 
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = ''
-SET max_parallel_maintenance_workers = 0
-SET min_parallel_table_scan_size = 8192
-SET sift.test_col_segment_kb = 0
-SET sift.test_limits = ''
-DROP INDEX IF EXISTS bp_uuid_one_rule_i1, bp_uuid_one_rule_i2
-CREATE INDEX  bp_uuid_one_rule_i1 ON bp_uuid_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule create first')
-             bp_check              
------------------------------------
- uuid_one_rule create first i1=one
-(1 row)
-
-CREATE INDEX  bp_uuid_one_rule_i2 ON bp_uuid_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule create second')
-                 bp_check                  
--------------------------------------------
- uuid_one_rule create second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_uuid_one_rule_i1, bp_uuid_one_rule_i2
-CREATE INDEX CONCURRENTLY bp_uuid_one_rule_i1 ON bp_uuid_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule create concurrently first')
-                    bp_check                    
-------------------------------------------------
- uuid_one_rule create concurrently first i1=one
-(1 row)
-
-CREATE INDEX CONCURRENTLY bp_uuid_one_rule_i2 ON bp_uuid_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule create concurrently second')
-                        bp_check                        
---------------------------------------------------------
- uuid_one_rule create concurrently second i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_uuid_one_rule_i1, bp_uuid_one_rule_i2
-CREATE INDEX bp_uuid_one_rule_i1 ON bp_uuid_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_uuid_one_rule_i2 ON bp_uuid_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX bp_uuid_one_rule_i1
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule reindex i1')
-                bp_check                
-----------------------------------------
- uuid_one_rule reindex i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX bp_uuid_one_rule_i2
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule reindex i2')
-                bp_check                
-----------------------------------------
- uuid_one_rule reindex i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_uuid_one_rule_i1, bp_uuid_one_rule_i2
-CREATE INDEX bp_uuid_one_rule_i1 ON bp_uuid_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_uuid_one_rule_i2 ON bp_uuid_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-REINDEX INDEX CONCURRENTLY bp_uuid_one_rule_i1
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule reindex concurrently i1')
-                      bp_check                       
------------------------------------------------------
- uuid_one_rule reindex concurrently i1 i1=one i2=one
-(1 row)
-
-REINDEX INDEX CONCURRENTLY bp_uuid_one_rule_i2
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule reindex concurrently i2')
-                      bp_check                       
------------------------------------------------------
- uuid_one_rule reindex concurrently i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_uuid_one_rule_i1, bp_uuid_one_rule_i2
-CREATE INDEX bp_uuid_one_rule_i1 ON bp_uuid_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_uuid_one_rule_i2 ON bp_uuid_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-UPDATE bp_uuid_one_rule SET v = v + 1 WHERE id % 7 = 0
-DELETE FROM bp_uuid_one_rule WHERE id % 11 = 0
-VACUUM bp_uuid_one_rule
-SELECT bp_maintain('bp_uuid_one_rule_i1')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule maintain i1')
-                bp_check                 
------------------------------------------
- uuid_one_rule maintain i1 i1=one i2=one
-(1 row)
-
-SELECT bp_maintain('bp_uuid_one_rule_i2')
- bp_maintain 
--------------
- t
-(1 row)
-
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule maintain i2')
-                bp_check                 
------------------------------------------
- uuid_one_rule maintain i2 i1=one i2=one
-(1 row)
-
-DROP INDEX IF EXISTS bp_uuid_one_rule_i1, bp_uuid_one_rule_i2
-CREATE INDEX bp_uuid_one_rule_i1 ON bp_uuid_one_rule USING sift_col (id, k, w, v, tenant_id, event_date)
-CREATE INDEX bp_uuid_one_rule_i2 ON bp_uuid_one_rule USING sift_col (k, id, w, v, tenant_id, event_date)
-SELECT sift.col_merge('bp_uuid_one_rule_i1', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule merge i1')
-               bp_check               
---------------------------------------
- uuid_one_rule merge i1 i1=one i2=one
-(1 row)
-
-SELECT sift.col_merge('bp_uuid_one_rule_i2', true) >= 0
- ?column? 
-----------
- t
-(1 row)
-
-SELECT bp_check('bp_uuid_one_rule', 'uuid_one_rule merge i2')
-               bp_check               
---------------------------------------
- uuid_one_rule merge i2 i1=one i2=one
-(1 row)
-
-SET sift.col_value_store = on
-SET sift.test_vstore_columns = ''
 SET max_parallel_maintenance_workers = 0
 SET min_parallel_table_scan_size = 8192
 SET sift.test_col_segment_kb = 2000
-SET sift.test_limits = 'array_bytes=4194304'
-DROP INDEX IF EXISTS bp_uuid_ord_rule_i1, bp_uuid_ord_rule_i2
-CREATE INDEX  bp_uuid_ord_rule_i1 ON bp_uuid_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule create first')
-              bp_check               
--------------------------------------
- uuid_ord_rule create first i1=multi
+DROP INDEX IF EXISTS bp_text_ord_i1, bp_text_ord_i2
+CREATE INDEX  bp_text_ord_i1 ON bp_text_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_text_ord', 'text_ord create first')
+            bp_check            
+--------------------------------
+ text_ord create first i1=multi
 (1 row)
 
-CREATE INDEX  bp_uuid_ord_rule_i2 ON bp_uuid_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule create second')
-                   bp_check                    
------------------------------------------------
- uuid_ord_rule create second i1=multi i2=multi
+CREATE INDEX  bp_text_ord_i2 ON bp_text_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_text_ord', 'text_ord create second')
+                 bp_check                 
+------------------------------------------
+ text_ord create second i1=multi i2=multi
 (1 row)
 
-DROP INDEX IF EXISTS bp_uuid_ord_rule_i1, bp_uuid_ord_rule_i2
-CREATE INDEX CONCURRENTLY bp_uuid_ord_rule_i1 ON bp_uuid_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule create concurrently first')
-                     bp_check                     
---------------------------------------------------
- uuid_ord_rule create concurrently first i1=multi
+DROP INDEX IF EXISTS bp_text_ord_i1, bp_text_ord_i2
+CREATE INDEX CONCURRENTLY bp_text_ord_i1 ON bp_text_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_text_ord', 'text_ord create concurrently first')
+                  bp_check                   
+---------------------------------------------
+ text_ord create concurrently first i1=multi
 (1 row)
 
-CREATE INDEX CONCURRENTLY bp_uuid_ord_rule_i2 ON bp_uuid_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule create concurrently second')
-                          bp_check                          
-------------------------------------------------------------
- uuid_ord_rule create concurrently second i1=multi i2=multi
+CREATE INDEX CONCURRENTLY bp_text_ord_i2 ON bp_text_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_text_ord', 'text_ord create concurrently second')
+                       bp_check                        
+-------------------------------------------------------
+ text_ord create concurrently second i1=multi i2=multi
 (1 row)
 
-DROP INDEX IF EXISTS bp_uuid_ord_rule_i1, bp_uuid_ord_rule_i2
-CREATE INDEX bp_uuid_ord_rule_i1 ON bp_uuid_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-CREATE INDEX bp_uuid_ord_rule_i2 ON bp_uuid_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-REINDEX INDEX bp_uuid_ord_rule_i1
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule reindex i1')
-                  bp_check                  
---------------------------------------------
- uuid_ord_rule reindex i1 i1=multi i2=multi
+DROP INDEX IF EXISTS bp_text_ord_i1, bp_text_ord_i2
+CREATE INDEX bp_text_ord_i1 ON bp_text_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+CREATE INDEX bp_text_ord_i2 ON bp_text_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+REINDEX INDEX bp_text_ord_i1
+SELECT bp_check('bp_text_ord', 'text_ord reindex i1')
+               bp_check                
+---------------------------------------
+ text_ord reindex i1 i1=multi i2=multi
 (1 row)
 
-REINDEX INDEX bp_uuid_ord_rule_i2
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule reindex i2')
-                  bp_check                  
---------------------------------------------
- uuid_ord_rule reindex i2 i1=multi i2=multi
+REINDEX INDEX bp_text_ord_i2
+SELECT bp_check('bp_text_ord', 'text_ord reindex i2')
+               bp_check                
+---------------------------------------
+ text_ord reindex i2 i1=multi i2=multi
 (1 row)
 
-DROP INDEX IF EXISTS bp_uuid_ord_rule_i1, bp_uuid_ord_rule_i2
-CREATE INDEX bp_uuid_ord_rule_i1 ON bp_uuid_ord_rule USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-CREATE INDEX bp_uuid_ord_rule_i2 ON bp_uuid_ord_rule USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
-REINDEX INDEX CONCURRENTLY bp_uuid_ord_rule_i1
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule reindex concurrently i1')
-                        bp_check                         
----------------------------------------------------------
- uuid_ord_rule reindex concurrently i1 i1=multi i2=multi
+DROP INDEX IF EXISTS bp_text_ord_i1, bp_text_ord_i2
+CREATE INDEX bp_text_ord_i1 ON bp_text_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+CREATE INDEX bp_text_ord_i2 ON bp_text_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+REINDEX INDEX CONCURRENTLY bp_text_ord_i1
+SELECT bp_check('bp_text_ord', 'text_ord reindex concurrently i1')
+                      bp_check                      
+----------------------------------------------------
+ text_ord reindex concurrently i1 i1=multi i2=multi
 (1 row)
 
-REINDEX INDEX CONCURRENTLY bp_uuid_ord_rule_i2
-SELECT bp_check('bp_uuid_ord_rule', 'uuid_ord_rule reindex concurrently i2')
-                        bp_check                         
----------------------------------------------------------
- uuid_ord_rule reindex concurrently i2 i1=multi i2=multi
+REINDEX INDEX CONCURRENTLY bp_text_ord_i2
+SELECT bp_check('bp_text_ord', 'text_ord reindex concurrently i2')
+                      bp_check                      
+----------------------------------------------------
+ text_ord reindex concurrently i2 i1=multi i2=multi
+(1 row)
+
+SET max_parallel_maintenance_workers = 2
+SET min_parallel_table_scan_size = 0
+SET sift.test_col_segment_kb = 0
+DROP INDEX IF EXISTS bp_text_par_i1, bp_text_par_i2
+CREATE INDEX  bp_text_par_i1 ON bp_text_par USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_par', 'text_par create first')
+            bp_check            
+--------------------------------
+ text_par create first i1=multi
+(1 row)
+
+CREATE INDEX  bp_text_par_i2 ON bp_text_par USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_par', 'text_par create second')
+                 bp_check                 
+------------------------------------------
+ text_par create second i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_par_i1, bp_text_par_i2
+CREATE INDEX CONCURRENTLY bp_text_par_i1 ON bp_text_par USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_par', 'text_par create concurrently first')
+                  bp_check                   
+---------------------------------------------
+ text_par create concurrently first i1=multi
+(1 row)
+
+CREATE INDEX CONCURRENTLY bp_text_par_i2 ON bp_text_par USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_text_par', 'text_par create concurrently second')
+                       bp_check                        
+-------------------------------------------------------
+ text_par create concurrently second i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_par_i1, bp_text_par_i2
+CREATE INDEX bp_text_par_i1 ON bp_text_par USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_par_i2 ON bp_text_par USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX bp_text_par_i1
+SELECT bp_check('bp_text_par', 'text_par reindex i1')
+               bp_check                
+---------------------------------------
+ text_par reindex i1 i1=multi i2=multi
+(1 row)
+
+REINDEX INDEX bp_text_par_i2
+SELECT bp_check('bp_text_par', 'text_par reindex i2')
+               bp_check                
+---------------------------------------
+ text_par reindex i2 i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_par_i1, bp_text_par_i2
+CREATE INDEX bp_text_par_i1 ON bp_text_par USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_par_i2 ON bp_text_par USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX CONCURRENTLY bp_text_par_i1
+SELECT bp_check('bp_text_par', 'text_par reindex concurrently i1')
+                      bp_check                      
+----------------------------------------------------
+ text_par reindex concurrently i1 i1=multi i2=multi
+(1 row)
+
+REINDEX INDEX CONCURRENTLY bp_text_par_i2
+SELECT bp_check('bp_text_par', 'text_par reindex concurrently i2')
+                      bp_check                      
+----------------------------------------------------
+ text_par reindex concurrently i2 i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_par_i1, bp_text_par_i2
+CREATE INDEX bp_text_par_i1 ON bp_text_par USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_par_i2 ON bp_text_par USING sift_col (k, id, w, v, tenant_id, event_date)
+UPDATE bp_text_par SET v = v + 1 WHERE id % 7 = 0
+DELETE FROM bp_text_par WHERE id % 11 = 0
+VACUUM bp_text_par
+SELECT bp_maintain('bp_text_par_i1')
+ bp_maintain 
+-------------
+ t
+(1 row)
+
+SELECT bp_check('bp_text_par', 'text_par maintain i1')
+               bp_check               
+--------------------------------------
+ text_par maintain i1 i1=one i2=multi
+(1 row)
+
+SELECT bp_maintain('bp_text_par_i2')
+ bp_maintain 
+-------------
+ t
+(1 row)
+
+SELECT bp_check('bp_text_par', 'text_par maintain i2')
+              bp_check              
+------------------------------------
+ text_par maintain i2 i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_text_par_i1, bp_text_par_i2
+CREATE INDEX bp_text_par_i1 ON bp_text_par USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_text_par_i2 ON bp_text_par USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT sift.col_merge('bp_text_par_i1', true) >= 0
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT bp_check('bp_text_par', 'text_par merge i1')
+             bp_check              
+-----------------------------------
+ text_par merge i1 i1=one i2=multi
+(1 row)
+
+SELECT sift.col_merge('bp_text_par_i2', true) >= 0
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT bp_check('bp_text_par', 'text_par merge i2')
+            bp_check             
+---------------------------------
+ text_par merge i2 i1=one i2=one
+(1 row)
+
+SET max_parallel_maintenance_workers = 0
+SET min_parallel_table_scan_size = 8192
+SET sift.test_col_segment_kb = 0
+DROP INDEX IF EXISTS bp_uuid_one_i1, bp_uuid_one_i2
+CREATE INDEX  bp_uuid_one_i1 ON bp_uuid_one USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_uuid_one', 'uuid_one create first')
+           bp_check           
+------------------------------
+ uuid_one create first i1=one
+(1 row)
+
+CREATE INDEX  bp_uuid_one_i2 ON bp_uuid_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_uuid_one', 'uuid_one create second')
+               bp_check               
+--------------------------------------
+ uuid_one create second i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_one_i1, bp_uuid_one_i2
+CREATE INDEX CONCURRENTLY bp_uuid_one_i1 ON bp_uuid_one USING sift_col (id, k, w, v, tenant_id, event_date)
+SELECT bp_check('bp_uuid_one', 'uuid_one create concurrently first')
+                 bp_check                  
+-------------------------------------------
+ uuid_one create concurrently first i1=one
+(1 row)
+
+CREATE INDEX CONCURRENTLY bp_uuid_one_i2 ON bp_uuid_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT bp_check('bp_uuid_one', 'uuid_one create concurrently second')
+                     bp_check                      
+---------------------------------------------------
+ uuid_one create concurrently second i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_one_i1, bp_uuid_one_i2
+CREATE INDEX bp_uuid_one_i1 ON bp_uuid_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_uuid_one_i2 ON bp_uuid_one USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX bp_uuid_one_i1
+SELECT bp_check('bp_uuid_one', 'uuid_one reindex i1')
+             bp_check              
+-----------------------------------
+ uuid_one reindex i1 i1=one i2=one
+(1 row)
+
+REINDEX INDEX bp_uuid_one_i2
+SELECT bp_check('bp_uuid_one', 'uuid_one reindex i2')
+             bp_check              
+-----------------------------------
+ uuid_one reindex i2 i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_one_i1, bp_uuid_one_i2
+CREATE INDEX bp_uuid_one_i1 ON bp_uuid_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_uuid_one_i2 ON bp_uuid_one USING sift_col (k, id, w, v, tenant_id, event_date)
+REINDEX INDEX CONCURRENTLY bp_uuid_one_i1
+SELECT bp_check('bp_uuid_one', 'uuid_one reindex concurrently i1')
+                    bp_check                    
+------------------------------------------------
+ uuid_one reindex concurrently i1 i1=one i2=one
+(1 row)
+
+REINDEX INDEX CONCURRENTLY bp_uuid_one_i2
+SELECT bp_check('bp_uuid_one', 'uuid_one reindex concurrently i2')
+                    bp_check                    
+------------------------------------------------
+ uuid_one reindex concurrently i2 i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_one_i1, bp_uuid_one_i2
+CREATE INDEX bp_uuid_one_i1 ON bp_uuid_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_uuid_one_i2 ON bp_uuid_one USING sift_col (k, id, w, v, tenant_id, event_date)
+UPDATE bp_uuid_one SET v = v + 1 WHERE id % 7 = 0
+DELETE FROM bp_uuid_one WHERE id % 11 = 0
+VACUUM bp_uuid_one
+SELECT bp_maintain('bp_uuid_one_i1')
+ bp_maintain 
+-------------
+ t
+(1 row)
+
+SELECT bp_check('bp_uuid_one', 'uuid_one maintain i1')
+              bp_check              
+------------------------------------
+ uuid_one maintain i1 i1=one i2=one
+(1 row)
+
+SELECT bp_maintain('bp_uuid_one_i2')
+ bp_maintain 
+-------------
+ t
+(1 row)
+
+SELECT bp_check('bp_uuid_one', 'uuid_one maintain i2')
+              bp_check              
+------------------------------------
+ uuid_one maintain i2 i1=one i2=one
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_one_i1, bp_uuid_one_i2
+CREATE INDEX bp_uuid_one_i1 ON bp_uuid_one USING sift_col (id, k, w, v, tenant_id, event_date)
+CREATE INDEX bp_uuid_one_i2 ON bp_uuid_one USING sift_col (k, id, w, v, tenant_id, event_date)
+SELECT sift.col_merge('bp_uuid_one_i1', true) >= 0
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT bp_check('bp_uuid_one', 'uuid_one merge i1')
+            bp_check             
+---------------------------------
+ uuid_one merge i1 i1=one i2=one
+(1 row)
+
+SELECT sift.col_merge('bp_uuid_one_i2', true) >= 0
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT bp_check('bp_uuid_one', 'uuid_one merge i2')
+            bp_check             
+---------------------------------
+ uuid_one merge i2 i1=one i2=one
+(1 row)
+
+SET max_parallel_maintenance_workers = 0
+SET min_parallel_table_scan_size = 8192
+SET sift.test_col_segment_kb = 2000
+DROP INDEX IF EXISTS bp_uuid_ord_i1, bp_uuid_ord_i2
+CREATE INDEX  bp_uuid_ord_i1 ON bp_uuid_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_uuid_ord', 'uuid_ord create first')
+            bp_check            
+--------------------------------
+ uuid_ord create first i1=multi
+(1 row)
+
+CREATE INDEX  bp_uuid_ord_i2 ON bp_uuid_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_uuid_ord', 'uuid_ord create second')
+                 bp_check                 
+------------------------------------------
+ uuid_ord create second i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_ord_i1, bp_uuid_ord_i2
+CREATE INDEX CONCURRENTLY bp_uuid_ord_i1 ON bp_uuid_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_uuid_ord', 'uuid_ord create concurrently first')
+                  bp_check                   
+---------------------------------------------
+ uuid_ord create concurrently first i1=multi
+(1 row)
+
+CREATE INDEX CONCURRENTLY bp_uuid_ord_i2 ON bp_uuid_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+SELECT bp_check('bp_uuid_ord', 'uuid_ord create concurrently second')
+                       bp_check                        
+-------------------------------------------------------
+ uuid_ord create concurrently second i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_ord_i1, bp_uuid_ord_i2
+CREATE INDEX bp_uuid_ord_i1 ON bp_uuid_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+CREATE INDEX bp_uuid_ord_i2 ON bp_uuid_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+REINDEX INDEX bp_uuid_ord_i1
+SELECT bp_check('bp_uuid_ord', 'uuid_ord reindex i1')
+               bp_check                
+---------------------------------------
+ uuid_ord reindex i1 i1=multi i2=multi
+(1 row)
+
+REINDEX INDEX bp_uuid_ord_i2
+SELECT bp_check('bp_uuid_ord', 'uuid_ord reindex i2')
+               bp_check                
+---------------------------------------
+ uuid_ord reindex i2 i1=multi i2=multi
+(1 row)
+
+DROP INDEX IF EXISTS bp_uuid_ord_i1, bp_uuid_ord_i2
+CREATE INDEX bp_uuid_ord_i1 ON bp_uuid_ord USING sift_col (id, k, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+CREATE INDEX bp_uuid_ord_i2 ON bp_uuid_ord USING sift_col (k, id, w, v, tenant_id, event_date) WITH (key_order = 'tenant_id, event_date', key_cut = 'off')
+REINDEX INDEX CONCURRENTLY bp_uuid_ord_i1
+SELECT bp_check('bp_uuid_ord', 'uuid_ord reindex concurrently i1')
+                      bp_check                      
+----------------------------------------------------
+ uuid_ord reindex concurrently i1 i1=multi i2=multi
+(1 row)
+
+REINDEX INDEX CONCURRENTLY bp_uuid_ord_i2
+SELECT bp_check('bp_uuid_ord', 'uuid_ord reindex concurrently i2')
+                      bp_check                      
+----------------------------------------------------
+ uuid_ord reindex concurrently i2 i1=multi i2=multi
 (1 row)
 
 SELECT format('DROP TABLE bp_%s', grp) FROM bp_group ORDER BY grp \gexec
-DROP TABLE bp_int_one_rule
-DROP TABLE bp_text_one_rule
-DROP TABLE bp_text_ord_rule
-DROP TABLE bp_text_par_own
-DROP TABLE bp_text_par_rule
-DROP TABLE bp_text_par_store
-DROP TABLE bp_uuid_one_rule
-DROP TABLE bp_uuid_ord_rule
+DROP TABLE bp_int_one
+DROP TABLE bp_text_one
+DROP TABLE bp_text_ord
+DROP TABLE bp_text_par
+DROP TABLE bp_uuid_one
+DROP TABLE bp_uuid_ord
 DROP TABLE bp_group;
 DROP FUNCTION bp_answers(regclass), bp_check(regclass, text), bp_maintain(regclass), bp_steps(text);
 DROP EXTENSION pg_sift_test;

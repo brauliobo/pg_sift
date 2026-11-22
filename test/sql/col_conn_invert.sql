@@ -5,8 +5,8 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 -- the answer under the agg scan and under the normal plan, and whether the child was counted by its keys (the distinct keys of the children, or, for the parents that lack a child, the scan of the children that keeps the parents nothing matched)
 CREATE FUNCTION invert_run(q text, OUT same boolean, OUT inverted boolean)

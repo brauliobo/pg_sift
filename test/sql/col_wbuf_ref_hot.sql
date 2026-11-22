@@ -3,7 +3,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET check_function_bodies = off;
 
@@ -26,7 +26,6 @@ END $$;
 
 CREATE TABLE h (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false, fillfactor = 50);
 CREATE INDEX h_ix ON h USING sift_col (id, g, v);
-SET sift.col_wbuf_ref = on;
 INSERT INTO h SELECT i, i % 10, i, 'x' FROM generate_series(1, 2000) i;
 SELECT rows AS buffered FROM sift.col_segments('h_ix') WHERE kind = 'buffer';
 

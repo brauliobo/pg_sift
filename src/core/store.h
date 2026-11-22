@@ -85,26 +85,10 @@
 #include "core/host.h"
 
 #include "core/page.h"
+#include "core/page_io.h"
 #include "core/range.h"
 #include "core/xlog.h"
 #include "core/damage.h"
-
-/* The index as REINDEX INDEX takes it: schema-qualified and quoted where PostgreSQL has a schema (core/errctx.c) */
-extern const char *sift_index_ident(Relation index);
-
-/* A page, record or directory of the index that the format does not allow (index: the Relation) */
-#define SIFT_CORRUPT(index, ...) \
-	SIFT_DAMAGE_INDEX(index, \
-					  errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), \
-					  errdetail(__VA_ARGS__), \
-					  errhint("REINDEX INDEX %s rebuilds it from the table.", sift_index_ident(index)))
-
-/* The same for one segment of the index (gen: its generation) */
-#define SIFT_SEG_CORRUPT(index, gen, ...) \
-	SIFT_DAMAGE_INDEX(index, \
-					  errmsg("sift index \"%s\" segment %llu is corrupted", RelationGetRelationName(index), (unsigned long long) (gen)), \
-					  errdetail(__VA_ARGS__), \
-					  errhint("REINDEX INDEX %s rebuilds it from the table.", sift_index_ident(index)))
 
 #ifdef SIFT_TESTING
 /*
@@ -118,11 +102,7 @@ extern void sift_store_test_init(void);
 #endif
 
 /* sift.standby_conflicts: reuse of released blocks is logged as a recovery conflict (log_reuse in core/freelist.c) */
-extern PGDLLIMPORT bool sift_standby_conflicts;
 extern void sift_wal_flush_inserted(void);
-
-/* Page helpers: zeroes the page, standard header, special type/gen */
-extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 
 /*
  * ERROR (ERRCODE_INDEX_CORRUPTED, or serialization failure on a standby) on
@@ -250,7 +230,7 @@ extern void sift_wt_publish(SiftWriteTarget *wt, const SiftDirChange *chg);
 
 /*
  * A change of the metapage alone, one WAL record: the directory is not touched, so its version stays and no scan that holds a copy of it is told of a change. fn changes the page and says
- * whether it did (false: nothing is logged). For what a reader keeps in the metapage that is not part of a segment switch (the scope counter, col/scope_paid.c); not for the fields a switch of the
+ * whether it did (false: nothing is logged). For what a reader keeps in the metapage that is not part of a segment switch (the scope counter, col/v1/scope_paid.c); not for the fields a switch of the
  * directory owns.
  */
 typedef bool (*SiftMetaMutator) (SiftMetaPageData *meta, void *arg);
@@ -335,7 +315,6 @@ extern void sift_store_extent_map(Relation index, SiftExtentVisit visit, void *a
 
 /* The oldest xid a snapshot may still hold, computed now: records released before it are reusable */
 extern FullTransactionId sift_store_horizon(Relation index);
-extern bool sift_wal_snapshot_conflict(Relation index, BlockNumber blk, FullTransactionId horizon);
 extern uint64 sift_store_held_blocks(Relation index);
 
 /*
@@ -442,9 +421,9 @@ extern void sift_wt_expect(SiftWriteTarget *wt, uint64 bytes);
 
 /*
  * SHARED targets: makes the I/O charged to wt (a page written through it, and what sift_wt_charge adds for pages the caller reads)
- * sleep delay_ms for every 16 pages, like vacuum_cost_delay; 0 (the default) never sleeps.
+ * sleep for every 16 pages as the pacer says for a step of tier (a SiftPacerTier, core/maint_pacer.h), like vacuum_cost_delay; a target that is not paced (the default) never sleeps.
  */
-extern void sift_wt_throttle(SiftWriteTarget *wt, int delay_ms);
+extern void sift_wt_pace(SiftWriteTarget *wt, int tier);
 extern void sift_wt_charge(SiftWriteTarget *wt, uint64 pages);
 
 /*
@@ -643,6 +622,7 @@ typedef struct SiftStreamReader
 	uint32		pf_buf_page;	/* its logical page */
 	uint32		ra;				/* the pages of the last sequential read of that kind, doubled while the reads go on in order (0: the last miss was not one) */
 	int64		miss_page;		/* the page of the last fetch that waited for the device (-9: none): a miss a page or two after it is a sequential read */
+	struct BufferAccessStrategyData *bas;	/* the ring the reads go through (the maintenance ring of the process by default: NULL outside the maintenance worker) */
 } SiftStreamReader;
 
 extern void sift_sr_init(SiftStreamReader *sr, Relation index, const SiftExtent *extents,
@@ -660,6 +640,24 @@ typedef struct SiftSrRange
 } SiftSrRange;
 
 extern uint64 sift_sr_read_ranges(const SiftStreamReader *sr, const SiftSrRange *r, int n);
+
+/* The reads of sr go through the ring bas (NULL: none); a host without shared buffers ignores it */
+extern void sift_sr_set_strategy(SiftStreamReader *sr, struct BufferAccessStrategyData *bas);
+
+/* A byte range of the stream of a segment, of the several that one prefetch covers */
+typedef struct SiftMultiRange
+{
+	const SiftStreamReader *sr;
+	uint64		off;
+	uint64		len;
+} SiftMultiRange;
+
+/*
+ * Reads the pages of ranges of segments that share one relation as one plan: the blocks, sorted and once each, in waves of SIFT_PREFETCH_MAX_BLKS, the blocks that follow each other
+ * one read. Returns the blocks it read (0: nothing is read ahead on this host).
+ */
+#define SIFT_PREFETCH_MAX_BLKS	512
+extern uint64 sift_sr_prefetch_multi(const SiftMultiRange *ranges, int n);
 
 /*
  * Reads ahead the ranges next yields, through a ReadStream, once two gets have waited for the device for their pages (every range of the
@@ -697,9 +695,11 @@ extern SiftExtent *sift_store_immutable_extents(Relation index, const SiftSegEnt
  * writer owns. A page whose gen is in the directory (an unlinked write buffer
  * page) or >= next_gen (a segment being written) is in flight, never an
  * orphan. The caller holds the maintenance lock, so the only concurrent
- * writers are write buffer appenders of published segments.
+ * writers are write buffer appenders of published segments. seen: where the directory snapshot the scan was made against is returned when there are orphans (the caller frees it), or NULL.
  */
-extern struct Bitmapset *sift_store_orphans(Relation index);
+extern struct Bitmapset *sift_store_orphans(Relation index, SiftDirSnapshot **seen);
+/* The blocks of the segments snap lists that before does not (a segment created since before was read); ERROR as sift_store_referenced_blocks */
+extern struct Bitmapset *sift_store_segment_blocks_since(Relation index, const SiftDirSnapshot *snap, const SiftDirSnapshot *before);
 extern SiftExtent *sift_store_block_extents(const struct Bitmapset *set, int *n);
 
 /*

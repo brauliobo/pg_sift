@@ -4,7 +4,6 @@
 tap-shell-mem_slope_legacy	1250
 tap-shell-col_scope_oracle	1400
 tap-shell-scaling_slope	1400
-installcheck-col_key_cut_auto	1340
 tap-shell-mem_slope-2	1330
 tap-shell-mem_idle_series	1270
 tap-shell-mem_slope-3	1270
@@ -14,7 +13,6 @@ tap-shell-col_shrink	1240
 tap-shell-mem_slope_order	1070
 tap-shell-mem_slope_exact	1070
 difftest-fuzz	950
-difftest-fuzz-vstore	930
 installcheck-col_key_cut_segment_cap	870
 installcheck-batch4	860
 tap-shell-col_unit_floor	860
@@ -35,7 +33,6 @@ tap-006_truncate	570
 plan-gate-calibrate-tuned	520
 tap-015_space	520
 plan-gate	490
-installcheck-col_key_cut_build	480
 plan-gate-calibrate	480
 installcheck-col_gorder_tiebreak	460
 plan-gate-tuned	460
@@ -78,17 +75,14 @@ installcheck-col_merge_memory	300
 installcheck-col_or_equalities	300
 installcheck-col_topn	300
 tap-shell-col_online_compact	300
-tap-shell-col_vstore_drops	300
 installcheck-agg_index_pick	290
 installcheck-agg_par_join_split	290
 installcheck-agg_probe_range_pricing	290
-installcheck-col_key_cut_cluster	290
 installcheck-col_key_cut_units	290
 installcheck-col_key_table	290
 tap-shell-col_cic_temp_files	290
 installcheck-agg_distinct_split	280
 installcheck-agg_lookup_gang	280
-installcheck-col_key_cut_growth	280
 tap-019_tbl_bulk_groups	280
 tap-shell-col_index_replica	280
 installcheck-col_alloc_scaled	270
@@ -118,7 +112,6 @@ installcheck-agg_scope_exact_share	230
 installcheck-agg_topn_deep_price	230
 installcheck-batch1	230
 installcheck-col_build_peers	230
-installcheck-col_key_cut_redecide_async	230
 installcheck-col_rewrite_roll	230
 installcheck-col_scope_build_rule	230
 installcheck-col_topn_parallel	230
@@ -142,7 +135,6 @@ tap-shell-col_wbuf_crash	220
 installcheck-agg_preagg_elem	210
 installcheck-agg_zone_or	210
 installcheck-batch7	210
-installcheck-col_key_cut_sparse	210
 installcheck-col_topn_code	210
 tap-shell-maint_memory	210
 tap-shell-pg_upgrade	210
@@ -187,7 +179,6 @@ tap-shell-replication	180
 installcheck-agg_dist_stream	170
 installcheck-agg_parent_exists_shapes	170
 installcheck-batch18	170
-installcheck-col_key_cut_redecide	170
 installcheck-insert_backpressure	170
 tap-008_tbl_promote	170
 tap-021_tbl_hot_update	170

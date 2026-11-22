@@ -90,9 +90,9 @@ SELECT iv_check($q$SELECT id, a, w FROM iv ORDER BY a, w DESC, id LIMIT 30 OFFSE
 RESET work_mem;
 
 -- a dictionary cache that keeps almost nothing: the dictionaries of the leaves of a scan are parsed again between its units, the answers do not change
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS tiny_cache;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS tiny_cache;
 SELECT tag, iv_check(q) FROM iv_q WHERE tag IN ('a_asc', 'a_filter', 'a_text', 'two_keys') ORDER BY tag COLLATE "C";
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 SELECT sift.col_merge('iv_col', true) >= 0 AS merged;
 SELECT * FROM iv_stage('merged');

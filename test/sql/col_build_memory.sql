@@ -54,7 +54,8 @@ $$ SELECT format('SET maintenance_work_mem = %s', p.mwm_kb)
    UNION ALL
    SELECT format('CREATE INDEX %s events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = %L%s)',
 				 CASE WHEN p.how = 'concurrently' THEN 'CONCURRENTLY' ELSE '' END, 'doc->a text, doc->b int, doc->c text',
-				 CASE WHEN p.scoped THEN ', scope = ' || quote_literal('tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)') ELSE '' END)
+				 CASE WHEN p.scoped THEN ', scope = ' || quote_literal('tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)') ELSE '' END ||
+				 CASE WHEN p.mwm_kb = 65536 THEN ', key_cut = ''dim_a_id''' ELSE '' END)
    UNION ALL
    SELECT 'REINDEX INDEX events_col' WHERE p.how = 'reindex'
    UNION ALL

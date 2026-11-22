@@ -32,7 +32,7 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_colsoak WITH (FORCE)" -c "CREATE DATABASE sift_colsoak"
 # The segments never stop changing, so each backend fills its cache of segment dictionaries, heads and zones (col/dictcache.c, 64 MB) all
 # through the run: a rise the leak sampler cannot tell from a leak. A small cache is full in seconds, and evicts under the writers.
-psql -X -qAt -d postgres -c "ALTER DATABASE sift_colsoak SET sift.test_limits = 'dict_cache_kb=1024'"
+psql -X -qAt -d postgres -c "ALTER DATABASE sift_colsoak SET sift.backend_cache_kb = 1024"
 q <<-'SQL'
 	CREATE EXTENSION pg_sift;
 	CREATE TABLE s (id bigserial, g int, n int, f float8, t text) WITH (autovacuum_enabled = off);

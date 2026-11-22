@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# The tombstone log of a sift_table is bounded by sift.tomb_log_limit as memory, never as a failure: past it the log is kept in sorted runs on temp files. A DELETE
+# The tombstone log of a sift_table is bounded by sift.backend_cache_kb as memory, never as a failure: past it the log is kept in sorted runs on temp files. A DELETE
 # and an UPDATE of many more rows than the limit holds (256 entries at 16 kB) complete, with the same rows as the heap twin and as the same statements with the log in
 # memory; a new backend reads them back (first look in chunks), through the b-tree too (HOT chains, whose members are spilled as well); VACUUM rewrites the spilled log; a
 # statement that fails or a server that stops in the middle of a spilling statement leaves the table as it was.
@@ -17,8 +17,8 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE INDEX lm_grp ON lm (grp)" "CREATE INDEX ls_grp ON ls (grp)" "CREATE INDEX ht_grp ON ht (grp)" >/dev/null || bail "setup failed"
 plan 11
 
-SMALL="SET sift.tomb_log_limit = 16"
-BIG="SET sift.tomb_log_limit = 8388608"
+SMALL="SET sift.backend_cache_kb = 16"
+BIG="SET sift.backend_cache_kb = 8388608"
 digest() { sql primary "$2" "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id)) FROM $1" | tail -1; }
 via_index() { sql primary "$2" "SET enable_seqscan = off" "SET enable_bitmapscan = off" "SELECT count(*) || ':' || sum(amount) FROM $1 WHERE grp BETWEEN 10 AND 40" | tail -1; }
 for t in ht lm ls; do sql primary "INSERT INTO $t SELECT * FROM src" >/dev/null; done

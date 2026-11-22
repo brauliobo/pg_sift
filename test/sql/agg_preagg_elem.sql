@@ -166,7 +166,6 @@ CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'i
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off', cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 3;
 CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('ac_col');
@@ -177,7 +176,6 @@ SET sift.col_rollup_on_demand = off;
 SELECT * FROM pa_check('ac');
 SELECT * FROM pa_check('ae') WHERE n <> 16;
 SELECT c.* FROM pa_q q, LATERAL pa_contract('ae_col', format(q.q, 'ae'), true) c WHERE q.n = 16;
-RESET sift.col_rollup_on_demand;
 SELECT * FROM pa_sum('ao');
 SELECT * FROM pa_sum('a3');
 SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26) ORDER BY 1;
@@ -213,7 +211,6 @@ SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
 SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, e.n, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1, 2', true);
 SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1', false);
 DROP TABLE ap;
-RESET sift.col_rollup_on_demand;
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
 UPDATE ac SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
@@ -261,7 +258,6 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.col_format_minor = 3;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(400001, 400500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
-RESET sift.col_format_minor;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(410001, 410500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 CALL pa_settle();

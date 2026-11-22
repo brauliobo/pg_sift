@@ -1,243 +1,383 @@
-# Operating pg_sift
+# Operating and Sizing `pg_sift`
 
-What to watch, what to switch off in an emergency, what to run after a crash, and how to read the locks and waits of the extension. The outputs below were taken from a scratch cluster (PostgreSQL 18, a 300,000-row `orders` table with a `sift_col` index and a `sift` index, the defaults of 5.0, UTC) after a bulk load, an update and a `VACUUM`; the names are generic and the figures are those of that small lab. Settings and options: [OPTIONS.md](OPTIONS.md); every function and view: [REFERENCE.md](REFERENCE.md); upgrades: [UPGRADING.md](UPGRADING.md).
+Memory budgeting, disk and WAL sizing, production monitoring, emergency switches, quarantine recovery, and crash safety for `pg_sift` 6.0. See [OPTIONS.md](OPTIONS.md) for all settings and [UPGRADING.md](UPGRADING.md) for migration procedures.
 
-Every view below shows only the objects the caller may look at: the owner of the table, a role with `SELECT` on it or with `MAINTAIN`, or a member of `pg_monitor`. Run the monitoring as such a role, not as a superuser, to see what an application role sees.
+For a first look run `SELECT * FROM sift.health();` (zero rows means nothing needs attention) and `SELECT * FROM sift.indexes;`. Every monitoring view returns only relations the caller is allowed to inspect (table owner, `SELECT` or `MAINTAIN` privilege, or `pg_monitor`). Run monitoring as a `pg_monitor` role rather than superuser.
 
-## 1. What to monitor
+## 1. The 3-Budget O(1) Memory Model
 
-Five queries cover a running server. The alert conditions are columns of the output, so they can go into any monitoring system as they are.
+Every allocation in `pg_sift` 6.0 belongs to one of three strictly enforced budgets tracked via `MemoryContextMemAllocated()` (`SiftMemTracker`) — no hardcoded floors override your PostgreSQL settings, and no operational path grows linearly with table size:
 
-**Background work: `sift.workers`.** One row for each `sift` and `sift_col` index and each `sift_table`, with its directory, whether a worker runs, and the last failure and the last success.
+| Budget | Controlled By | Default | Governs |
+|---|---|---:|---|
+| Query execution | `work_mem`, `hash_mem_multiplier` | PG defaults | `SiftAgg` hash tables, radix spills, lookup joins, Top-N heaps, set filters |
+| Maintenance & builds | `maintenance_work_mem` | PG default | `CREATE INDEX`, `REINDEX`, `VACUUM`, compaction, `sift.check(..., true)` |
+| Backend cache | `sift.backend_cache_kb` | `16384` (16 MB) | Per-backend LRU across BM25 prefixes, manifests, decoded granules, dicts |
+| Shared cache | `sift.shared_cache_kb` | `65536` (64 MB) | Server-wide DSM cap across lookup tables, dim maps, dicts, leaf stats |
 
-```
-    index    |   kind   | segments | sealed | running | failures | failed_at | next_retry | due |            last_ok            | last_job | last_ms | failures_total
--------------+----------+----------+--------+---------+----------+-----------+------------+-----+-------------------------------+----------+---------+----------------
- orders_col  | sift_col |        5 |      0 | f       |        0 |           |            |     | 2026-11-15 06:29:31.408459+00 | vacuum   |    1005 |              0
- orders_note | sift     |        2 |      0 | f       |        0 |           |            |     | 2026-11-15 06:29:30.777199+00 | promote  |      89 |              0
-```
+### Connection Pooling Math
 
-`failures` counts the failures in a row and is cleared by the next success; `failed_at`, `error_code` and `last_error` keep the last failure after a later success, and `failures_total` counts them since the index was built. `next_retry` is when the worker tries again (the delay doubles from `sift.maintenance_naptime` up to an hour). `due` is the reason a `sift_col` index waits for maintenance (`sift.col_maintenance_due`), NULL when nothing is due. `sift.workers` also has `relation` and `"table"` columns (the index and its table; for a `sift_table`, both are the table).
+Because `sift.backend_cache_kb` is a hard ceiling (`-1` unlimited is removed in 6.0), worst-case extension memory is bounded linearly by active pooled connections:
 
-**One index in detail: `sift.col_index_status`.** Sizes, directory, dead rows, the write buffer and what blocks maintenance.
+- **200 pooled backends** at default `sift.backend_cache_kb = '16MB'` and `sift.shared_cache_kb = '64MB'` stay under **~3.3 GB** cache memory (`200 × 16 MB + 64 MB`), regardless of how many tables or billions of rows each backend touches.
+- **High-connection pools (500+ connections):** Lower `sift.backend_cache_kb` to `4MB`–`8MB` at the database or role level and raise `sift.shared_cache_kb` to `128MB`–`256MB` so backends share dictionaries and lookup tables instead of duplicating them.
 
-```
- table  | index_bytes | free_bytes | segments | max_segments | dead_pct | buffer_rows | sealed_buffers | running | failures | next_retry | due | blocked_by
---------+-------------+------------+----------+--------------+----------+-------------+----------------+---------+----------+------------+-----+------------
- orders |     5627904 |      57344 |        5 |          128 |     0.00 |           0 |              0 | f       |        0 |            |     | {}
-```
+## 2. Disk, Compression, and WAL Sizing
 
-It also reports `format`, `min_segment_format`, `max_segment_format` and `library_reads` (`1.2`, `41`, `41` and `3 to 51` here), the formats the index holds against the formats this library reads, for a rollout where some nodes still run an older release.
+Format Major 2 uses two-tier adaptive compression: fast L0 micro-parts for OLTP ingestion and compact L1/L2 parts (vertical bitpacking, FOR, DELTA, RLE, ALP, FSST, ZSTD/LZ4) for analytics.
 
-**What runs now: `sift.progress`.** One row for each maintenance job that runs on an index you may look at: the merges of a `VACUUM` (in the process of the session) and the jobs of the background workers. The rows live in the shared memory of the server and go when the job ends or fails.
+| Metric (wide + JSONB workload) | Target / Typical | Notes |
+|---|---:|---|
+| `sift_col` / `sift_table` footprint | ≤ 33 B/row scoped index (≤ 16 B/row excluding a 16 B UUID) | Wide + JSONB schema; ~0.10–0.16× PostgreSQL heap size; ≥ 95% page utilization |
+| Entity-Once `scope` overhead | ≤ 5% of entity index | ≤ 1% with `cluster` (1:1); 0 B temp files during build/CIC |
+| `sift_table` bulk `COPY` (10M orders) | ≤ 14 s load, ≤ 420 MiB | Direct-to-`L2` route: one write per page, no `L0` micro-parts, no second pass ([TABLES.md](TABLES.md#direct-to-cold_l2-bulk-load)) |
+| Bulk `CREATE INDEX` WAL (`replica`) | ≤ 45 B/row | `0 B/row` under `wal_level = minimal` |
+| Single-row OLTP `INSERT` WAL | ≤ 220 B/row | Appends to partition-local `SIFT_PT_L0_SLAB` |
+| Compaction write amplification | ≤ 2.35× steady-state | Sealed slabs flush straight to `L1`; compaction reuses untouched granules as raw bytes; a part is rewritten only past `dead_rewrite_pct` |
 
-```
- pid     | index       | job     | phase   | segments_done | segments_total | bytes_written | started
----------+-------------+---------+---------+---------------+----------------+---------------+-------------------------------
- 3774914 | orders_note | vacuum  | merge   |             0 |              3 |             0 | 2026-11-15 06:29:31.267223+00
- 3774927 | orders_col  | promote | promote |             0 |              1 |             0 | 2026-11-15 06:29:30.509237+00
-```
+Throttle background maintenance I/O and WAL impact with `sift.maintenance_wal_rate` (kB/s) and `sift.maintenance_cost_delay` (ms).
 
-`job` is `promote`, `merge`, `rewrite` or `vacuum`; the `phase` of a rewrite is `rewrite` or `merge`, that of a `VACUUM` `promote`, `merge` or `space`. `CREATE INDEX` and `REINDEX` report in `pg_stat_progress_create_index` as any index build does. In `pg_stat_activity` a worker says what it is: `backend_type` is `sift <job>` (`sift promote`, `sift merge`, `sift rewrite`, `sift vacuum`, `sift track`, `sift rollup`, `sift orphans`, `sift table`), the process title is `sift <job> <schema.index>`, and a running worker has `state` `active` and the query `sift <job> of <schema.index>`:
+**Projections cost space and write work.** Each projection of a table is a second derived copy of its parts: a `SIFT_PROJ_SORT` projection with all columns roughly doubles the footprint, an `INCLUDE` list or a `SIFT_PROJ_AGG` rollup is far smaller. Base writes, flushes, compaction, and `VACUUM` refresh every projection in the same manifest commit and under the same `sift.maintenance_wal_rate` budget. Check `bytes` in `sift.secondary_projections` against the base before adding one, and `sift.drop_projection` when a query no longer needs it.
 
-```
-SELECT pid, backend_type, state, query, wait_event_type, wait_event FROM pg_stat_activity WHERE backend_type LIKE 'sift%';
- 3774914 | sift vacuum | active | sift vacuum of public.orders_col  | Timeout   | VacuumDelay
- 3774927 | sift merge  | idle   | sift merge of public.orders_col   | Extension | SiftMaintenanceNap
-```
+**Cold-tier disk and network.** A tiered part leaves the data files (`sift.space()` shows the blocks released); reads that touch it use a bounded local cache directory sized by `cache_mb` in `sift.tier_policies` (default 1,024 MB), so budget that disk and the object-store request rate for cold queries.
 
-**Shared memory: `sift.shared_memory()`.** The tables the backends of the server share and whether this backend has them.
+## 3. Observability: Four Surfaces
 
-```
-        name         | configured_bytes | mapped_bytes | used_bytes | hits | misses | shared | reason
----------------------+------------------+--------------+------------+------+--------+--------+--------
- sift_stats          |                  |         1416 |            |      |        | t      |
- sift_col_leaf_stats |         16777216 |     17006640 |       6416 |    1 |      3 | t      |
- sift_progress       |                  |         4616 |            |      |        | t      |
- sift_col_dict       |                  |        49352 |            |      |        | t      |
- sift_col_wbuf_arena |                  |       475208 |            |      |        | t      |
-```
+Four surfaces answer every operational question without joining catalogs by hand. Each returns only relations the caller may inspect (table owner, `SELECT` or `MAINTAIN` privilege, or `pg_monitor`), and none of them fails on a mixed fleet: a quarantined index, an invalid concurrent build, or a locked `REINDEX` comes back as a diagnostic row.
 
-`shared` false with a `reason` (a full `/dev/shm`, a directory with no free entry) means the table is private to each backend: nothing fails and answers are the same, only the sharing is lost. The reason is also logged once for the server.
-
-**Soundness: `sift.check()`.** Reads every index and `sift_table` the caller may maintain and returns one row for each problem; no row means sound. It never raises on damage, takes the maintenance lock one segment at a time, and works on a standby.
-
-```
-SELECT * FROM sift.check();                         -- every object you may maintain
-SELECT * FROM sift.check('orders_col', true);       -- one index, and compare its rows with the table
- index | segment | problem | detail
--------+---------+---------+--------
-(0 rows)
-```
-
-On the 300,000-row lab the check takes 0.2 s, and 0.35 s with the comparison against the table (the second argument, `heapallindexed`; it keeps a hash of each row, so give a large table `maintenance_work_mem`). A damaged segment is one row with the segment number and a message; a total of the metapage or a row count that disagrees with the table is a row without a segment. `sift.check` stops at the first problem of a segment, and the segments after a damaged one are checked.
-
-### Alert conditions
-
-| Watch | Column | Alert when | Meaning and first step |
-|---|---|---|---|
-| a worker fails | `sift.workers.failures` | `> 0` | the step failed; `last_error` and `error_code` say why; it retries at `next_retry` |
-| failures over time | `sift.workers.failures_total` | rises | the index fails now and then even if `failures` is 0 |
-| nothing finishes | `sift.workers.last_ok` | older than your window while `due` is not NULL | a worker cannot start (no slot, see below) or keeps failing |
-| maintenance is wanted | `sift.workers.due`, `sift.col_maintenance_due(index)` | not NULL for longer than a few `sift.maintenance_naptime` | the reason says what (dead rows, a full write buffer, `stale scope`, `value store epoch`); `SELECT sift.col_maintain('<index>')` applies the rule now |
-| a job that does not end | `sift.progress.started` | older than the longest job you expect | look at `pg_stat_activity` for the pid; a merge of a 2 GB index takes minutes |
-| growth of the index | `sift.col_index_status.free_bytes` against `index_bytes` | free space stays high after a `VACUUM` | `sift.col_shrink_history(index).shrink_blocked_by` says why the file was not cut: `standby`, `lock` or `snapshot` |
-| dead rows | `sift.col_index_status.dead_pct`, `dead_rows` | high and rising | the table is not vacuumed, or a snapshot holds the rows; a `VACUUM` of the table cleans the index |
-| write buffer | `sift.col_index_status.buffer_rows`, `sealed_buffers` | `sealed_buffers` stays above 0 | promotions are not running |
-| directory | `segments` against `max_segments` (128) | within a few dozen of the maximum | merges are behind; inserts wait for the worker at 112 entries |
-| format rollout | `library_reads`, `format` | a node that reads fewer formats than the index holds | see [UPGRADING.md](UPGRADING.md) |
-| shared memory | `sift.shared_memory().shared` | `false` | read `reason`; the server needs more room in `/dev/shm` or `dynamic_shared_memory_type` |
-| a quarantined index | `sift.quarantine` | any row | the index found damage and is out of service; queries run on the heap. Rebuild it as above |
-| soundness | `sift.check()` | any row | follow section 3 |
-| object state | `sift.indexes.state` | `invalid` (an interrupted `CREATE INDEX CONCURRENTLY`), `failing`, `locked` for long | `maintaining` and `ready` are normal |
-
-`sift.indexes` lists every `sift`, `sift_col` and `sift_table` object of the database with its size, segment count, format and `state` (`invalid`, `locked`, `failing`, `maintaining` or `ready`), whatever its access method; the inspectors of one access method (`sift.segments`, `sift.col_segments`) name the right function when you call them on the other kind.
-
-**Why a query did not use the index.** `EXPLAIN (SIFT)` (PostgreSQL 18 and later, with the library loaded in the session, see section 5) prints the index it used with its segments, buffered rows and dead share, or `Sift: not used: <slug>: <reason>` for each candidate it refused; `sift.explain_why(query)` returns the same refusals as rows on every version and `sift.refusal_actions()` says what to change for each slug. A refusal is recorded when the statement is planned, so the `EXPLAIN` of a cached generic plan prints none.
-
-```
-EXPLAIN (COSTS OFF, SIFT) SELECT category, count(*), sum(amount) FROM orders GROUP BY 1;
- Custom Scan (SiftAgg)
-   Index: orders_col
-   Sift Index State: 2 segments, 0 buffered rows, 0.0% dead
-   Group Keys: category
-   Pushed Aggregates: count(*), sum(orders.amount)
-```
-
-## 2. Emergency
-
-The order matters: look first (`sift.workers`, `pg_stat_activity`), then switch off the smallest thing that stops the harm.
-
-| Problem | Switch | What it stops | What it does not stop |
-|---|---|---|---|
-| a query is slow or wrong on the index | `SET sift.enable_agg = off` (a session, a role or a database; `ALTER SYSTEM` for the server) | the planner's choice of `Custom Scan (SiftAgg)`: the plan is PostgreSQL's own | the index is still written by every `INSERT`, `UPDATE` and `DELETE`, and still maintained |
-| the bitmap scan of a `sift_col` index misbehaves | `SET sift.enable_col_scan = off` | the bitmap scan on the `sift_col` operator classes | the aggregate scan (that is `enable_agg`) |
-| background maintenance hurts (slots, I/O, locks) | `ALTER SYSTEM SET sift.async_maintenance = off`, reload | every promotion, merge and rewrite in a worker, for `sift`, `sift_col` and `sift_table` | the inserting sessions promote and merge themselves when the write buffer or the directory is full (writes get slower, not wrong); `VACUUM` still merges; `sift.merge`, `sift.promote` and `sift.col_maintain` called by hand still work; the workers of the rollup refresh and of the orphan sweep (below) |
-| the incremental maintenance hurts | `ALTER SYSTEM SET sift.col_auto_merge = off`, reload | the promotion of the buffer, the merge of the small segments, the table `VACUUM` and the re-baseline of a tracked log that a `sift_col` index asks a worker for | promotion and merge of the buffer (that is `async_maintenance`); read by the worker at the server and database level only, a session `SET` has no effect. Nothing rewrites an index whole by itself |
-| a `sift_col` index is slower than it was after churn, a parent table changed its keys, or its value store has garbage | `SELECT * FROM sift.col_maintenance_status('idx')`: `rewrite_due` is the reason and `blocked_by` says `REINDEX recommended (reason)`. For a connected child index `stale connection` appears when parent keys were deleted or changed, or parent rows were inserted, since its segments were filled, by at least `sift.col_connect_refresh_pct` (10) percent of the parent rows; updates of the parent's other columns and the merges and `VACUUM` of the parent index never make it appear. Parent rows inserted since count however the parent index was merged since, a `key_cut` parent included (the stamps of the child hold the parent's insert horizon: the count of rows that came into it); a child stamped before 5.0.2 is told only by deleted or changed keys until `REINDEX` writes it again, and a rolled-back insert counts as one that came in. Nothing rewrites the index by itself, so nothing needs stopping; reads answer correctly from the rows of the units meanwhile | none: the server does not rewrite a `sift_col` index | `REINDEX INDEX CONCURRENTLY idx` in a window of your choosing (the disk holds both files until the swap, a connected index reads the keys of its parent once); `sift.col_maintain(index)` rewrites in place, holding the maintenance lock |
-| the `sift_table` pass hurts | `ALTER SYSTEM SET sift.table_auto_defrag = off`, reload | the background pass of every `sift_table` | `VACUUM` and `VACUUM FULL` of the table |
-| the rollup refresh worker | `ALTER SYSTEM SET sift.col_rollup_worker = off`, reload | the worker; its requests stay queued | `sift.col_rollup_refresh(index)` applies a queued refresh by hand; a scan that wants rollups does not wait for it |
-| event triggers break DDL (a library that does not match the SQL) | `SELECT sift.ddl_hooks_enable(false)` (a superuser) | all ten event triggers of the extension in one statement; `SELECT * FROM sift.ddl_hooks` lists them with what each does | what they checked and cleaned up is not done meanwhile (a `DROP` leaves rows in `sift.table_paths` and `sift.table_option_values`, a rename is not written into the options of an index, a `CREATE INDEX` is not serialised by the build lock); `SELECT sift.ddl_hooks_enable(true)` enables them again and sweeps what the drops left |
-
-`sift.upgrade_commands()` lists a required row of kind `hooks` for a superuser while some event triggers are disabled, so a switch left off is not forgotten.
-
-**Worker slots.** The background workers never take the last slots of `max_worker_processes`: a worker of sift starts only while `Max(2, max_worker_processes / 4)` slots stay free after it, so a parallel query or another extension still finds one. With `max_worker_processes` of 4 and the logical replication launcher running, one worker of sift runs at a time; with 2 or less none starts and the sessions do the work. What could not start says so in one line an hour for each job (`sift: no background worker for <job> of index "<schema.index>"`, with the slots in the detail and which jobs hold them; DEBUG1 in between). A worker does its pass and ends: after its work it looks twice more, at growing intervals up to a second, and leaves when both looks find nothing, so an idle worker lives well under `sift.maintenance_naptime` and writes no line to the log unless it did work that took `sift.log_min_duration` or failed; what is left is asked for again by the next read or write of the table, so `DROP DATABASE` is not held up by an idle worker.
-
-**A damaged index leaves service.** A sift or sift_col index that finds bytes its format does not allow (SQLSTATE `XX001` or `XX002`) is taken out of service, and the database keeps serving:
-
-- The statement that found the damage fails once, with the original error and `REINDEX INDEX <schema.index> rebuilds it from the table.` in the hint.
-- The index is recorded in `sift.quarantine` (`index`, `detected_at`, `persisted`, `error_code`, `reason`, `detections`, `skipped_writes`, `skipped_vacuums`, `refused_scans`) in the registry of the server at once, and in its metapage by a background worker, so a restart and the standbys keep it (`persisted` says it is there). A standby that meets damage on its own confirms it on a second read at least a second later and keeps it in its own registry. Damage that a parallel worker meets is recorded the same way, and the leader fails once with the error of the first worker that failed: the damage error, or SQLSTATE `40001` (retry) from a worker that opened the index after another had recorded the damage.
-- The server log says why, whoever catches the error: a `LOG` line `sift index "<name>" is out of service after damage` with the SQLSTATE and text of the first cause in its detail.
-- Every statement planned afterwards runs on the heap: PostgreSQL's own plans, with the answers the table gives, never a partial answer from the index. A plan made earlier gets SQLSTATE `40001` once (retry the statement) and is planned again without the index.
-- `INSERT`, `UPDATE`, `DELETE`, `VACUUM` and the background workers skip the index with a `WARNING` once a minute for each index and session. Nothing is lost by it: the index does not keep up with the table while it is out, so it leaves quarantine only by being rebuilt.
-- `REINDEX INDEX`, `REINDEX INDEX CONCURRENTLY`, `CREATE INDEX CONCURRENTLY` with `DROP INDEX`, and `sift.check` always work on a quarantined index; the rebuild gives a new file and with it a clean index.
-- A `VACUUM` that is running when another session quarantines the index stops reading it at its next segment and ends with the `WARNING`; a background worker ends at its next step.
-- `sift.workers`, `sift.col_index_status` and `sift.indexes` list the index with `quarantined`, `quarantined_since` and `quarantine_reason` (the state `quarantined` in `sift.indexes`) and read nothing from its pages, so the views that find a damaged index do not fail on it.
-- A function that has no result without the index says so: `sift.score()` and `sift.max_score()` name the quarantined index in their hint, and `sift.facets()` refuses with SQLSTATE `55000` and `REINDEX INDEX ... puts it back in service`. `sift.approx_count_distinct` and the aggregates that sift answers from a column index are plain aggregates on the heap plan, with the same results.
-- When no background worker slot is free the registry still holds the index out of service and `persisted` stays `false`: the next plan that leaves the index out asks for the worker again, at most every 10 seconds, and the line of the worker slots says why it did not start. A restart before the metapage is flagged forgets the quarantine, and the next read of the damage records it again. A metapage or directory that is damaged itself cannot be flagged: the registry alone holds the index out of service (`persisted` stays `false`, one `LOG` line says so) until REINDEX.
-
-Detect with the `WARNING`, with `SELECT * FROM sift.quarantine`, and with `sift.check()` (damage that no statement has read yet); alert on any row of `sift.quarantine`. Recover with `REINDEX INDEX CONCURRENTLY <index>`, or `CREATE INDEX CONCURRENTLY` of the same definition and `DROP INDEX` of the damaged one. The rebuild of a large index is a decision of yours, at the time you choose: sift never starts one by itself, because an unattended rebuild of a multi-gigabyte index is a load nobody planned for.
-
-Plan for slower queries while an index is out: the heap plans of a large table can take far longer than the index did, and there is no fail-fast mode. A statement that must not run that long needs `statement_timeout`, or `SET sift.on_corruption = error` (a superuser; per database or role with `ALTER DATABASE` or `ALTER ROLE`) to have every read of damage fail as in 4.3.
-
-A result that differs from the table's with no error means damage that no check in the read path can see: the structure of a page (type, generation, lengths, bounds) is checked at every read, the bytes of a posting list or of a column chunk inside a structure that is still well formed decode to other rows, and only a comparison with the heap finds them (a changed byte in the bits that count the postings of a BM25 posting list block is such a case). `sift.check(index)` reports the malformed encodings and `sift.check(index, true)` (`heapallindexed`) compares every heap row with the index; run them after a storage incident, a crash of the storage layer or a restore, and `REINDEX` an index that reports a row. The read path does not verify the bytes it does not need. PostgreSQL's data checksums (`initdb --data-checksums`) find a page that changed on disk or in transit; they do not find a change made in memory before the page was written.
-
-What it does not cover, on purpose: errors that PostgreSQL itself raises for an invalid page (`invalid page in block`, a checksum failure) are not sift's to swallow and are not recorded; a `sift_table` is the data and has no heap to fall back to; the diagnostics (`sift.check`, `sift.col_verify`, `sift.verify`) report damage and do not quarantine; a refusal of a newer format, a mismatch of options and cancellations (`57014`, `53200`, `40001`) are no damage.
-
-## 3. After a crash
-
-The index pages are logged with generic WAL, so crash recovery, a standby and PITR restore them like any relation; no sift-specific step is needed to start. After an unclean shutdown, a failed storage or a restore from a base backup:
-
-```
-SELECT * FROM sift.check();                                   -- every object you may maintain; 0 rows = sound
-SELECT * FROM sift.check(heapallindexed => true);             -- also compares each index with the table (slower)
-```
-
-then `REINDEX INDEX CONCURRENTLY <index>` for each index that has a row (`sift.check` names it in the `index` column and the damaged segment in `segment`). An interrupted `CREATE INDEX CONCURRENTLY` or `REINDEX CONCURRENTLY` leaves an invalid index (`sift.indexes.state = 'invalid'`): drop it and build it again. A `sift_table` cannot be reindexed; `sift.check` and `sift.table_verify(table)` name its damaged segment, and the table is restored from a backup. `sift.check` works on a standby, so a replica can be verified without promoting it.
-
-**Damaged liveness pages (4.2.1 to 4.3.5).** A `VACUUM` or a delete that marked rows dead in a column segment of more than 65,151 superblocks set the dirty bit of a superblock on the wrong page of the liveness bitmap: it overwrote the type, flags or generation of a page (every later read of the index failed with `sift index "<name>" is corrupted`), or the bit was lost and the deleted rows of that unit read as live, with no error. 4.3.6 and 5.0 no longer write it. An index that an older release touched is checked and restored in place, no `REINDEX` needed:
-
-```
-SELECT * FROM sift.col_verify('orders_col');            -- also sift.check(): the liveness pages of every segment, one row for each finding
-SELECT * FROM sift.col_repair('orders_col', true);      -- dry run: one row for each segment it would change, none when the index is sound
-SELECT * FROM sift.col_repair('orders_col');            -- restores them: one row for each segment changed (damaged_pages, units_fixed, ndead_before, ndead_after)
-```
-
-`sift.col_repair` takes the maintenance lock (a `VACUUM`, a merge or a rewrite of the index waits for it), writes one WAL record for each page it restores, and runs on the primary; a standby replays it. It sets the dirty bit of each unit that has a cleared liveness bit and the count of dead rows to the number of cleared bits. When it says that a page cannot be restored, `REINDEX INDEX CONCURRENTLY <index>` is the way. Run the check once on every index of a server that ran 4.2.1 to 4.3.5 with a large table.
-
-The shared memory (statistics, caches, the progress table) starts empty after a restart or a crash, and is rebuilt by use. What a scope index's reads paid for changed pairs, and the reads of the write buffer and the tombstone log, are kept in the metapage and survive a crash; a standby's reads of a scope index are not counted ([COL-SCOPE.md](COL-SCOPE.md#what-it-costs)).
-
-## 4. Locks and waits
-
-**`sift.locks`** lists the locks of pg_sift held or waited for now, named:
-
-| `kind` | `detail` | What it is |
+| Surface | Kind | Answers |
 |---|---|---|
-| `maintenance` | `block 0` | the maintenance lock of an index: a promotion, a merge, a rewrite, `sift.check` (one segment at a time) |
-| `active segment` | `block 2` | the writer of the active write buffer segment |
-| `worker` | `block 3` | held by the maintenance worker of the index while it runs |
-| `tombstones` | `block 4` | the tombstone log |
-| `load` | `block 5` | a load whose segments are written and not yet in the directory shares it; the orphan sweep tries for it exclusively |
-| `table vacuum` | | the worker that vacuums the table of a `sift_col` index (advisory lock, on the index) |
-| `orphan sweep` | | the sweep of tracked leftovers of a database (advisory lock) |
+| `sift.indexes` | view | What exists and is it healthy, at a glance |
+| `sift.status(rel)` | function | Deep storage, part tiers, maintenance, and cache numbers per relation (metadata only, no data-block reads) |
+| `sift.health(rel)` | function | What needs attention now, with the SQL that fixes it (zero rows when healthy) |
+| `sift.activity()` | function | What the maintenance workers, the pacer, and the shared-memory pools are doing right now |
 
-Columns: `relation`, `kind`, `detail`, `mode`, `granted`, `waiting_since`, `pid`. A row with `granted` false and an old `waiting_since` is a session waiting behind the holder; join `pid` to `pg_stat_activity` for the holder's query.
+### 3.1 Fleet at a Glance (`sift.indexes`)
 
-**Wait events.** A backend that waits in pg_sift says so in `pg_stat_activity.wait_event` (type `Extension`):
+One row per `sift`, `sift_col`, and `sift_table` relation (it absorbs the legacy `col_index_status` view):
 
-| `wait_event` | Who waits |
+```sql
+SELECT relation, am, format, state, health, rows, dead_pct,
+       pg_size_pretty(size_bytes) AS size, b_per_row, compression_ratio, util_pct, parts
+FROM sift.indexes
+ORDER BY size_bytes DESC;
+```
+
+| Column | Meaning |
 |---|---|
-| `SiftMaintenanceNap` | a maintenance worker between two looks at its index (normal, and it holds a worker slot) |
-| `SiftArenaWait` | a writer waits for the rebuild of a slot of the shared arena of the write buffer references |
-| `SiftParallelLeader` | the leader of a parallel aggregate scan waits for the rows of its workers |
+| `am`, `format` | `sift_col`, `sift_table`, or `sift`; on-disk format `2.0`, `1.7` (BM25), `1.x` (a 5.x columnar relation, fully supported; upgrade optional), or `empty` |
+| `state` | `ready`, `maintaining`, `quarantined`, `failing`, `invalid`, or `locked` |
+| `health` | Worst severity of `sift.health(relation)`: `ok`, `info`, `warn`, or `error` |
+| `rows`, `dead_pct`, `size_bytes`, `b_per_row` | Live and dead rows, dead share, relation size, bytes per live row |
+| `compression_ratio`, `util_pct` | Heap size over index size (`sift_col`), and page utilization (target `>= 95%`) |
+| `parts`, `scopes`, `quarantined` | Compact tier summary such as `L0:1 L1:2 L2:4`, active scope count, quarantine flag |
 
-The waits of a promotion or a merge on the maintenance lock show as `Lock` / `page` in `pg_stat_activity` and as rows of `sift.locks`.
+### 3.2 Deep Status (`sift.status()`)
 
-## 5. Pooling
+Reads block 0, the free-space map, and the part directory only, so a scrape takes milliseconds even on very large relations:
 
-A pool that gives every request a backend of its own loads the library (`dlopen`, `_PG_init`) in that backend unless it is preloaded, and plans the first statement of the session twice for an aggregate workload. Preload it:
-
-```
-ALTER DATABASE mydb SET session_preload_libraries = 'pg_sift';     -- new sessions, no restart
--- or shared_preload_libraries = 'pg_sift' in postgresql.conf       -- a restart; the postmaster loads it once
-```
-
-`CREATE EXTENSION` and `ALTER EXTENSION UPDATE` print that command when neither setting names pg_sift, and `sift.upgrade_commands()` lists it (kind `preload`, not required). Without a preload `SHOW sift.enable_agg` and `EXPLAIN (SIFT)` fail in a fresh session (`unrecognized configuration parameter`, `unrecognized EXPLAIN option "sift"`) until a statement has loaded the library. Publishing a `sift_table` under logical replication needs `shared_preload_libraries` ([USAGE.md](USAGE.md#replication)).
-
-`sift.stats()` returns the counters of the whole server, summed over its backends since it started, so a pooler that hands a session a different backend for each transaction still sees all of them; `sift.stats(local => true)` returns the session's own. The totals are a table of the shared memory (`sift.shared_memory()` lists it as `sift_stats`), start again with the server, and are not changed by `pg_stat_reset()`. A transaction pooler needs no session setting for correct answers; `SET sift.*` in a session is lost when the pool gives the connection to another client, so set a policy (`sift.enable_agg`, `sift.log_min_duration`) with `ALTER DATABASE` or `ALTER ROLE`.
-
-A session that already holds one file of pg_sift and meets another (a package upgrade replaced the file under a pool that stayed connected) fails with `this session already holds pg_sift build .. and cannot load build ..`; reconnect it. After every library install restart the server or reconnect every pool.
-
-## 6. Before and after an upgrade
-
-`SELECT * FROM sift.upgrade_check()` (a superuser) reads the catalogs and metapages and changes nothing; one row for each finding with `status` `ok`, `warn` or `blocker` and the advice. Before the update, with the files of the new release installed and the extension still at the old version, `psql -f "$(pg_config --sharedir)/extension/pg_sift_upgrade_check.sql"` runs it. `sift.upgrade_check('4.3')` asks what a target release cannot read, for a way back or a standby that stays behind. `sift.upgrade_commands()` lists what is left to do after an update: one row for each command (`reindex`, `rewrite`, `reset`, `hooks`, `preload`) with the reason and whether it is required.
-
-```
-   object    |  kind   |           detected           | status | advice
--------------+---------+------------------------------+--------+--------
- pg_sift     | version | extension 5.0, library 5.0   | ok     |
- orders_col  | index   | format 1.2, column format 41 | ok     |
- orders_note | index   | format 1.4                   | ok     |
+```sql
+SELECT relation, state, live_rows, dead_rows, dirty_rows, size_bytes, util_pct,
+       free_bytes, l0_slabs, l0_parts, l1_parts, l2_parts,
+       maint_due, maint_failures, last_maint_at, shrink_blocked_by
+FROM sift.status();                    -- or sift.status('orders_col')
 ```
 
-The steps, the order for standbys and the way back are in [UPGRADING.md](UPGRADING.md). `SELECT * FROM sift.build_info()` lists what the loaded library was built with (the version, PostgreSQL, the `lz4` and `zstd` it links, assertions): compare it across servers before moving a file-level backup, since a build without a codec cannot open chunks another server wrote with it.
+Columns come in five groups: identity (`relation`, `table_name`, `am`, `format_major`, `format_minor`, `state`, `quarantined`, `quarantine_reason`), row health (`live_rows`, `dead_rows`, `dirty_rows`, `dead_pct`), footprint (`size_bytes`, `heap_bytes`, `b_per_row`, `compression_ratio`, `util_pct`, `data_bytes`, `meta_bytes`, `scope_bytes`, `skip_bytes`, `free_bytes`, `reusable_bytes`, `slack_bytes`), structure (`partitions`, `l0_slabs`, `l0_parts`, `l1_parts`, `l2_parts`, `hot_parts`, `cold_parts`, `granules`, `scopes`, `vblocks_left`), and maintenance and shared memory (`maint_running`, `maint_due`, `maint_failures`, `last_maint_at`, `last_shrink_at`, `shrink_blocked_by`, `shm_manifest_cached`, `shm_manifest_bytes`, `shm_hit_pct`). Columns that do not apply to an access method are `NULL`. `sift.space(rel)` remains the focused extent view and `sift.index_size_breakdown(rel)` the per-codec byte breakdown.
 
-### After a rollback
+### 3.3 One-Command Advisor (`sift.health()`)
 
-Install 4.3.6 on every node (standbys first) before moving to 5.0; `sift.upgrade_check()` warns while the extension is older. A 5.0 server keeps up to 704 bytes in the metapage of an index it has read or maintained (what the reads paid, the last background step, the floor of a scope), past the 400 that 3.3 to 4.3.5 know. An older library reading such an index answers by release:
+```sql
+SELECT severity, relation, check_name, detail, action_sql FROM sift.health();
+```
 
-| Library that reads it | What it answers | Is the index damaged | What to do |
+It returns **zero rows when everything is healthy**, and every row carries a copy-pasteable `action_sql`. Rows are ordered `error`, `warn`, `info`:
+
+| `check_name` | Severity | Fires when | Typical `action_sql` |
 |---|---|---|---|
-| 3.0 to 3.2 | accepts the longer metapage and refuses a column format it does not know with the format error and the hint `Use a newer pg_sift, or REINDEX.` | no | `REINDEX` with the old files |
-| 3.3 to 4.3.5 (as released) | `sift index "x" is corrupted`, detail `Bad metapage (magic 0x53494654, 704 bytes)`: the metapage is longer than the library knows | no: `sift.check()` and `amcheck` of the old node find nothing wrong | `REINDEX INDEX CONCURRENTLY <index>` with the old files rebuilds it from the table. Do not repair it with `pg_surgery` or by editing the catalogs, which would damage a sound index. These releases check the length when they open the metapage, before any change: a read or a `VACUUM` is refused and the index file is byte for byte as it was, so the counters of 5.0 are not lost by the attempt |
-| 4.3.6 and later | keeps the bytes it does not know and reads the index, or refuses a segment in a format from 5.0 (a scope, strings in the shared store) with `index "x" has a segment of column format 1.45, this build reads 1.3 to 1.44`, hint `Use a newer pg_sift, or REINDEX.` | no | the same `REINDEX` with the old files |
+| `index_quarantined` | error | The relation is quarantined | `REINDEX INDEX CONCURRENTLY <idx>;` |
+| `index_invalid` | error | An interrupted concurrent build left an invalid index | `DROP INDEX CONCURRENTLY <idx>;` |
+| `vblocks_low` | error below 2%, warn below 10% | Virtual TID blocks of a `sift_table` are running out | `VACUUM <table>;` |
+| `worker_failing` | error from 5 failures, else warn | Background maintenance keeps failing | `SELECT * FROM sift.maintain('<rel>');` |
+| `tail_shrink_blocked` | warn | At least 4 MB and 15% of the file is free but a standby, snapshot, or lock blocks truncation | `SELECT * FROM sift.maintain('<rel>');` |
+| `high_dead_rows` | warn | Dead rows reach 25% and maintenance is off or stale | `SELECT sift.merge('<rel>');` |
+| `l0_backlog` | warn | 12 or more L0 parts or 32 or more slabs wait for compaction | `SELECT sift.promote('<rel>');` |
+| `stale_scope` | warn | More than 10% of a scope's keys are dirty | `SELECT sift.col_refresh('<idx>');` |
+| `format_upgrade_available` | info | A `sift_col` index or `sift_table` is still on Format Major 1 (works fully; Format 2.0 is smaller and faster) | `REINDEX INDEX CONCURRENTLY <idx>;` or `SELECT sift.upgrade_table('<tbl>');` |
+| `heap_visibility_low` | info | Under 50% of heap pages are all-visible, so scans vet extra heap pages | `VACUUM <table>;` |
+| `shared_cache_pressure` | info | A shared-memory pool refused a reservation or sits above 90% | `ALTER SYSTEM SET sift.shared_cache_kb = '<kb>';` |
+| `extension_not_preloaded` | info | `pg_sift` is in neither `session_preload_libraries` nor `shared_preload_libraries` | `ALTER DATABASE <db> SET session_preload_libraries = 'pg_sift';` |
 
-A published `sift_table` (`wal_level = logical`) is the one object whose WAL a 4.x server cannot read: 5.0 writes its change records under the resource manager id 152, and 4.x stops at the first of them (`FATAL: resource manager with ID 152 not registered`, in recovery after a crash and on a standby). Stop the 5.0 server with a clean shutdown before the 4.x files go back, and rebuild a standby that still has such WAL to replay from a base backup of the 4.x primary. 5.0 itself replays the records 4.x wrote (registered also under the experimental id 128 as `sift_table_legacy` in `pg_walinspect`), so the way forward needs nothing.
+### 3.4 Space, Free Extents, and `vblocks_left` (`sift.space()`)
 
-An index created by 5.0 stores options under the names of 5.0. 4.2 and later know them; 3.3 to 4.1 call `rollup_columns` `rollup_dims`, so their `REINDEX` stops at `unrecognized parameter "rollup_columns"`: with the event triggers of 5.0 disabled ([UPGRADING.md](UPGRADING.md#going-back-to-43)), run `ALTER INDEX <index> RESET (rollup_columns)` first, or drop the index and create it again.
+Unified space and shrink diagnostics across all three access methods:
 
-The steps back are in [UPGRADING.md](UPGRADING.md#going-back-to-43).
+```sql
+SELECT am, parts, rows, dead_rows, pg_size_pretty(bytes) AS size,
+       free_blocks, reusable_blocks, shrink_blocked_by, vblocks_left
+FROM sift.space('orders_col');
+```
 
-## 7. Disk
+Inspect Format Major 2 parts, granules, and scope trees directly via `sift.parts(rel)`, `sift.col_granules(rel)`, and `sift.scope_stats(idx)`. Check DSM pools via `SELECT * FROM sift.shared_memory();`.
 
-A merge or a rewrite writes its output before it frees its inputs, so plan the free space of the volume at about twice the index. `sift.col_space(index)` shows the blocks used, reusable and the point the file can be cut to (`shrink_to`); `sift.col_shrink_history(index)` says why the last cut left free blocks (`shrink_blocked_by`: `standby`, `lock` or `snapshot`, NULL when nothing blocks it) and when the file was last cut. The shared value stores (`<table>_<column>_sift_values`) grow with the strings they hold and are compacted by `VACUUM` or the maintenance worker when most of their codes are named by no segment ([COL-VSTORE.md](COL-VSTORE.md)); `SELECT * FROM sift.col_value_store_status` shows `garbage_pct`.
+### 3.5 Workers, Queue, Pacer, and Shared Memory (`sift.activity()`)
+
+One call replaces joining `sift.progress`, `sift.workers`, `sift.shared_memory()`, and `pg_stat_activity` during an incident. It returns `kind = 'worker'` (an active job), `kind = 'queued'` (a pending job), and exactly one `kind = 'summary'` row:
+
+```sql
+SELECT kind, pid, relation, job, phase, priority, progress_pct, bytes_written, wait_event
+FROM sift.activity()
+WHERE kind <> 'summary';
+
+SELECT workers_active, workers_max, pacer_mode, pacer_delay_ms, oltp_active_backends,
+       shm_used_bytes, shm_limit_bytes, shm_util_pct, shm_refusals
+FROM sift.activity()
+WHERE kind = 'summary';
+```
+
+`job` is one of `slab_flush`, `pend_del`, `compact_l1`, `compact_l2`, `split`, `merge`, `scope_refresh`, `tail_shrink`, `quarantine`, or `bm25_merge`. `wait_event` shows `SiftMaintenancePace` while a worker waits in the pacer (see [section 8](#8-self-tuning-background-maintenance)) and `SiftTailShrinkLock` while it retries a tail shrink.
+
+### 3.6 On-Disk Integrity Verification (`sift.check()`)
+
+Verifies checksums, manifest chains, granules, and deletion vectors without triggering quarantine (safe on standbys):
+
+```sql
+SELECT * FROM sift.check();                       -- all accessible sift/sift_col/sift_table relations
+SELECT * FROM sift.check('orders_col', true);     -- also cross-checks every row against heap
+```
+
+Zero rows means sound. Passing `heapallindexed => true` compares index contents against the heap within `maintenance_work_mem`.
+
+### 3.7 Companion Views
+
+- **`sift.workers`**: one row per relation with maintenance state, failures, and retry backoff (`relation, kind, running, failures, failures_total, last_ok, last_job, last_ms, due, next_retry, last_error`).
+- **`sift.progress`**: active `promote`, `merge`, `rewrite`, and `vacuum` jobs (`pid, relation, job, phase, parts_done, parts_total, bytes_written, started`).
+- **`sift.locks`**: extension locks held by sessions and workers, including the Format Major 2 partition, maintenance, load, worker, and split locks.
+- **`sift.shared_memory()`**: the 5.1 view of the shared pools, with its 8 columns unchanged (`name`, `configured_bytes`, `mapped_bytes`, `used_bytes`, `hits`, `misses`, `shared`, `reason`) and one row for each of the five pools, so monitoring written for 5.1 keeps working.
+- **`sift.shared_memory_pools()`**: the ledger of the same five pools (`manifest`, `agg_lookup`, `agg_dimmap`, `col_dict`, `col_leaf`), always five rows, with `limit_bytes`, `used_bytes`, `peak_bytes`, `util_pct`, `evictions`, `refusals`, `shared`, and `reason`. `sift.health()` and `sift.activity()` read it.
+- **`sift.quarantine`**: relations taken out of service after on-disk damage.
+
+### 3.8 Prometheus and Grafana (`postgres_exporter`)
+
+The columns are typed numbers, booleans, and enums, so no regex parsing is needed. Run the exporter as a `pg_monitor` role, not a superuser:
+
+```yaml
+pg_sift_relation_status:
+  query: |
+    SELECT relation::text AS relation, am, state,
+           COALESCE(live_rows, 0) AS live_rows, COALESCE(dead_rows, 0) AS dead_rows,
+           COALESCE(dirty_rows, 0) AS dirty_rows, size_bytes,
+           COALESCE(b_per_row, 0) AS b_per_row, COALESCE(util_pct, 0) AS util_pct,
+           COALESCE(free_bytes, 0) AS free_bytes, COALESCE(l0_slabs, 0) AS l0_slabs,
+           COALESCE(l0_parts, 0) AS l0_parts, COALESCE(l1_parts, 0) AS l1_parts,
+           COALESCE(l2_parts, 0) AS l2_parts, maint_failures,
+           CASE WHEN quarantined THEN 1 ELSE 0 END AS quarantined,
+           COALESCE(vblocks_left, -1) AS vblocks_left
+    FROM sift.status();
+  metrics:
+    - relation: { usage: "LABEL" }
+    - am: { usage: "LABEL" }
+    - state: { usage: "LABEL" }
+    - live_rows: { usage: "GAUGE", description: "Live rows in the pg_sift relation" }
+    - dead_rows: { usage: "GAUGE", description: "Dead rows pending compaction" }
+    - dirty_rows: { usage: "GAUGE", description: "Unflushed L0 slab and pending delete rows" }
+    - size_bytes: { usage: "GAUGE", description: "On-disk relation size in bytes" }
+    - b_per_row: { usage: "GAUGE", description: "Bytes per live row" }
+    - util_pct: { usage: "GAUGE", description: "Page utilization percentage (target >= 95)" }
+    - free_bytes: { usage: "GAUGE", description: "Free-space map plus quarantined bytes" }
+    - l0_slabs: { usage: "GAUGE", description: "Active L0 slab pages" }
+    - l0_parts: { usage: "GAUGE", description: "Level 0 micro-part count" }
+    - l1_parts: { usage: "GAUGE", description: "Level 1 warm part count" }
+    - l2_parts: { usage: "GAUGE", description: "Level 2 cold part count" }
+    - maint_failures: { usage: "GAUGE", description: "Consecutive background maintenance failures" }
+    - quarantined: { usage: "GAUGE", description: "1 if the relation is quarantined" }
+    - vblocks_left: { usage: "GAUGE", description: "Remaining virtual TID blocks of a sift_table (-1 for indexes)" }
+
+pg_sift_activity_summary:
+  query: |
+    SELECT workers_active, workers_max, pacer_delay_ms, oltp_active_backends,
+           shm_used_bytes, shm_limit_bytes, COALESCE(shm_util_pct, 0) AS shm_util_pct, shm_refusals
+    FROM sift.activity() WHERE kind = 'summary';
+  metrics:
+    - workers_active: { usage: "GAUGE", description: "Active maintenance workers" }
+    - workers_max: { usage: "GAUGE", description: "Effective maintenance worker cap" }
+    - pacer_delay_ms: { usage: "GAUGE", description: "Adaptive maintenance delay per 256 KB (ms)" }
+    - oltp_active_backends: { usage: "GAUGE", description: "Foreground backends sampled by the pacer" }
+    - shm_used_bytes: { usage: "GAUGE", description: "Used bytes in the shared-memory pools" }
+    - shm_limit_bytes: { usage: "GAUGE", description: "Configured sift.shared_cache_kb in bytes" }
+    - shm_util_pct: { usage: "GAUGE", description: "Shared-memory utilization percentage" }
+    - shm_refusals: { usage: "COUNTER", description: "Cumulative shared-memory reservation refusals" }
+
+pg_sift_health_alerts:
+  query: |
+    SELECT severity, check_name, count(*) AS issues FROM sift.health() GROUP BY severity, check_name;
+  metrics:
+    - severity: { usage: "LABEL" }
+    - check_name: { usage: "LABEL" }
+    - issues: { usage: "GAUGE", description: "Relations failing this pg_sift health check" }
+```
+
+Page on `severity = "error"`; open a ticket for `severity = "warn"` lasting more than 15 minutes; raise `sift.shared_cache_kb` when `shm_util_pct` stays above 90 or `shm_refusals` grows.
+
+### 3.9 `EXPLAIN (ANALYZE)` Output (Format 2.0)
+
+A scan of a Format 2.0 `sift_col` index or `sift_table` prints four to six lines under the `Custom Scan (SiftAgg)` node. Zero counters are left out unless the statement is `VERBOSE` or the counter is not zero, and sizes use the same units as the messages (`512B`, `64KB`, `2.8MB`, `1.38GB`):
+
+```text
+Custom Scan (SiftAgg) on events  (actual time=4.120..4.890 rows=48 loops=1)
+  Index: idx_events_col (Format 2.0, key_order=entity_id, event_date)
+  Group Keys: status, notes.tag  |  Aggregates: count(*), sum(amount)
+  Parts: scanned=4 pruned_key=188 pruned_time=8 l0_slabs=1
+  Granules: scanned=62 pruned_zone=410 pruned_skip=118 pruned_dict=12 preagg=48
+  Exec: SIMD=avx512 workers=4/4 cfilt=91.4% (dict=38 rle=14 forbit=8 fsst=2) late_mat_saved=18.4MB group=dict-direct
+  I/O & Mem: aio_batches=14 (112 blks) peak_mem=2.8MB/4.0MB
+```
+
+| Line | Reads as |
+|---|---|
+| `Index` | The relation scanned and its format. For a `sift_table` the line names the table and its access method, and reports `NativeMVCC`: its visibility needs no heap check |
+| `Parts` | Parts scanned, and parts skipped by `key_order` range (`pruned_key`) or by time bounds (`pruned_time`) |
+| `Granules` | Granules scanned, and skipped by zone maps, skip indexes, or dictionaries; `preagg` counts granules answered from pre-aggregates without reading rows |
+| `Exec` | SIMD level, workers launched over planned, share of filters evaluated directly on compressed data (`cfilt`) and by codec, bytes of late materialization saved |
+| `I/O & Mem` | Asynchronous read batches and the peak memory against its budget; `spills` appears only when the statement spilled |
+| `SIP Filter`, `Fallback` | A runtime join filter (its size and the share of rows it passes), and why a faster path was skipped |
+
+A scope query prints `Scope: <name> on <index> (clustered=primary_parent, keys=N)` and `Scope Exec: L2_hit=N topk_ring=N/N (0 spills, 0 heap_vet)`; a `sift` index combined with a `sift_col` index or a `sift_table` prints a `Custom Scan (SiftHybridScan)` node with `Hybrid: order=bm25_first bm25_hits=312 -> col_granules=4/1221 (pruned=99.7%)`. In `FORMAT JSON`, `YAML`, and `XML` every number is a property under `Sift` (byte counts as integers, percentages as `0..100`), so monitoring needs no text parsing.
+
+`EXPLAIN (SIFT)` (PostgreSQL 18+) adds each refused arm with its reason and the fix on the same line, so a second query is not needed. A Format 1.x relation keeps the 5.x plan output (`Units`, `Sift Segments`) with a calm state line, `Sift Index State: Format 1.51 (compat), 3 segments, 0 buffered rows, 0.2% dead`; a Format 2.0 relation prints `Sift Index State: Format 2.0, 4 parts (1 L0, 2 L1, 1 L2), 123 granules, 0.4% dead`.
+
+### 3.9a Projections, Tiers, and TTL
+
+| Surface | Reads as |
+|---|---|
+| `Projection: <name>` in `EXPLAIN (ANALYZE, SIFT)` | `SiftAgg` served the query from that secondary projection instead of the base parts |
+| `sift.secondary_projections` | One row per projection: `relation, name, kind, state, spec, rows, bytes, synced_version`. `STALE` means its definition no longer matches (never read; recreate it) |
+| `sift.tier_status()` | One row per tiered part: `relation, part_id, part_gen, location, byte_len, tiered_at, expires_at` (`expires_at` set by TTL) |
+| `sift.parts(rel)`, `sift.check(rel)` | Remote parts show as such; `sift.check` cross-checks projection and tier directories against the manifest |
+
+An unreachable object store raises a `WARNING` from `VACUUM` and the tier step ends; reads of parts already remote fail with a clean "object not found" or I/O error instead of returning wrong rows. The credentials of `s3://` and `r2://` come from the server environment only (see [TABLES.md](TABLES.md#9-cold-object-storage-tiering-and-ttl)).
+
+### 3.10 Progress of Builds, `VACUUM`, and Maintenance
+
+Every long operation reports into the standard PostgreSQL views as well as `sift.activity()`:
+
+| Operation | Where to watch | Phases and counters |
+|---|---|---|
+| `CREATE INDEX`, `REINDEX` (also `CONCURRENTLY`, serial and parallel) | `pg_stat_progress_create_index` | `sampling schema and key order`, `scanning table`, `writing parts`, `compacting parts`, `building scope summaries`, `installing change tracking`; tuples and heap blocks done, and scopes done during the scope phase |
+| `VACUUM` of a `sift_table` | `pg_stat_progress_vacuum` | Phase, parts scanned, index vacuum count, and dead-row bytes against `maintenance_work_mem` |
+| Compaction, defrag, `sift.upgrade_table`, `VACUUM` of a `sift_col` index | `sift.activity()` and `sift.progress` | Parts done over total, bytes written, start time |
+
+`sift.activity()` derives `elapsed_ms`, `progress_pct`, `throughput_mb_s`, and `eta_s` from those counters (`NULL` until the first unit of work is done), so a dashboard can show an estimate without extra shared memory. Durations are `*_ms` integers, ratios are `*_pct numeric(5,2)`, sizes are `*_bytes` integers (with `sift.indexes` also showing `size` through `pg_size_pretty`), and a `NULL` means *not applicable* where `0` means *measured zero*.
+
+## 4. Alert Conditions
+
+Alert on `sift.health()` first: it already encodes the thresholds below and returns the fix. The raw signals stay available for dashboards.
+
+| Signal | Query / Column | Alert When | First Action |
+|---|---|---|---|
+| Any health error | `sift.health()` | `severity = 'error'` | Run the row's `action_sql` |
+| Worker failing | `sift.status().maint_failures` / `sift.workers.failures` | `> 0` (page from 5) | Read `last_error` and `error_code`; retries at `next_retry` |
+| Maintenance stalled | `sift.status().maint_due` / `sift.workers.last_ok` | `maint_due IS NOT NULL` past SLA | Check `max_worker_processes` or run `SELECT sift.maintain(rel)` |
+| High dead space | `sift.indexes.dead_pct` | Rising past 20-30% | Verify autovacuum and long snapshots; run `VACUUM` on the table |
+| Write backlog | `sift.status().l0_parts` / `l0_slabs` | 12+ parts or 32+ slabs | `SELECT sift.promote(rel)` |
+| Shrink blocked | `sift.status().shrink_blocked_by` | Free space stays high | Resolve `standby`, `lock`, or the old snapshot holding tail blocks |
+| `sift_table` vblocks low | `sift.status().vblocks_left` | `< 10%` remaining | Run `VACUUM` to reclaim frozen virtual block ranges |
+| Shared cache pressure | `sift.activity()` summary `shm_util_pct`, `shm_refusals` | Above 90%, or refusals growing | Raise `sift.shared_cache_kb` |
+| Shared cache fallback | `sift.shared_memory().shared` | `false` | Inspect `reason` (`/dev/shm` space or DSM slots) |
+| Quarantined index | `sift.quarantine` / `state = 'quarantined'` | Any row | Rebuild with `REINDEX INDEX CONCURRENTLY <index>` |
+| Invalid index | `sift.indexes.state` | `'invalid'` | Drop and recreate the interrupted `CREATE INDEX CONCURRENTLY` |
+| Format 1 relation after upgrade | `sift.indexes.format` | `'1.x'` (no alert; optional) | `REINDEX INDEX CONCURRENTLY <index>` or `sift.upgrade_table(<table>)` when you want Format 2.0 ([UPGRADING.md](UPGRADING.md)) |
+| Integrity problem | `sift.check()` | Any row | `REINDEX CONCURRENTLY` the index, or restore the `sift_table` from backup |
+| Stale projection | `sift.secondary_projections.state` | `'STALE'` | `sift.drop_projection` and `sift.create_projection` again |
+| Tier backlog or errors | `sift.tier_status()`, server log `WARNING` | Parts older than `move_after` stay local, or the store is unreachable | Check the URI, credentials, and `libcurl.so.4`; `sift.maintain(rel)` retries |
+
+## 5. Emergency Switches
+
+Inspect `sift.health()`, `sift.activity()`, and `pg_stat_activity` first, then toggle the narrowest switch that stops the impact:
+
+| Incident | Switch | Effect |
+|---|---|---|
+| Query slow or suspect on `SiftAgg` | `SET sift.enable_agg = off` (or `ALTER DATABASE`/`SYSTEM`) | Forces PostgreSQL native plans immediately; writes continue |
+| Bitmap scan on `sift_col` misbehaves | `SET sift.enable_col_scan = off` | Disables `sift_col` bitmap/index scans; `SiftAgg` stays active |
+| Background workers saturate I/O or slots | `ALTER SYSTEM SET sift.async_maintenance = off` + reload | Stops all background workers; `VACUUM` and `sift.maintain()` still work |
+| Background maintenance competes with foreground load | `ALTER SYSTEM SET sift.max_maint_workers = 0` + reload | Stops new maintenance workers without disabling the scheduler; `VACUUM` and `sift.maintain()` still work |
+| Extension event triggers block DDL | `SELECT sift.ddl_hooks_enable(false)` (superuser) | Temporarily disables DDL triggers; re-enable with `true` to sweep orphans |
+
+**Worker slots:** `pg_sift` always leaves at least `Max(2, max_worker_processes / 4)` worker slots free for parallel queries and other extensions. Idle workers exit well under `sift.maintenance_naptime` so `DROP DATABASE` is never blocked.
+
+## 6. Quarantine and Corruption Recovery
+
+If a `sift` or `sift_col` index encounters corrupt bytes (`XX001`/`XX002`) under the default `sift.on_corruption = 'quarantine'`:
+
+1. The triggering statement fails once with a `REINDEX` hint and logs the cause.
+2. The index is recorded in `sift.quarantine` (in shared memory immediately and persisted to its metapage by a background worker).
+3. Subsequent queries automatically fall back to PostgreSQL heap plans; DML and `VACUUM` skip the quarantined index with a rate-limited `WARNING`.
+4. Rebuild without downtime via `REINDEX INDEX CONCURRENTLY <index>;` (or `CREATE INDEX CONCURRENTLY` + `DROP INDEX`).
+
+Set `sift.on_corruption = 'error'` if you prefer queries to fail fast rather than fall back to slower heap scans. `sift_table` relations hold primary data and cannot fall back to a heap — restore from a standby or backup if damaged.
+
+## 7. Crash Safety, Locks, and Replication
+
+- **Crash safety & PITR:** All Format Major 2 and BM25 pages use PostgreSQL WAL (`GenericXLog` / `log_newpage_range`). Recovery requires no manual extension step; run `SELECT * FROM sift.check();` after storage incidents.
+- **Locking:** Online maintenance (`promote`, `merge`, `compact`, `VACUUM`) never acquires locks conflicting with `RowExclusiveLock` on user tables, so concurrent `INSERT`, `UPDATE`, `DELETE`, and `SELECT` never wait on compaction.
+- **Physical replication:** Streaming standbys replay WAL directly. Enable `hot_standby_feedback = on` (or keep `sift.standby_conflicts = on`) to avoid retryable `40001` conflicts on long standby queries. Upgrade standbys **before** the primary (see [UPGRADING.md](UPGRADING.md)).
+- **Logical replication:** Row changes replicate normally; subscribers maintain their own indexes. Publishing a `sift_table` requires `shared_preload_libraries = 'pg_sift'` on the publisher and its standbys.
+
+### 7.1 Reading the WAL: `Btree/REUSE_PAGE` Records
+
+`pg_waldump` shows `Btree/REUSE_PAGE` records whose relation is a `sift_col`, `sift_table`, or `sift` relation, not a B-tree. They are deliberate: when a write reuses a freed extent, `pg_sift` logs the same standby conflict record PostgreSQL uses for a recycled B-tree page, so a standby cancels (`40001`) only the queries whose snapshot could still need the old page, and no others. The record is small, comes at most once per relation and backend until the conflict horizon advances, and is written only with `wal_level = replica` or higher, a WAL-logged relation, and `sift.standby_conflicts = on` (the default). It does not mean B-tree activity.
+
+### 7.2 What `VACUUM` and Compaction Give Back
+
+- **Reuse, not return:** `VACUUM` and compaction free the extents of dead rows and replaced parts to `SiftFsm`; later writes of the same relation reuse them, so a steady churn does not grow the file. The file shrinks only at its tail.
+- **Tail shrink:** The relation is truncated when the free tail is at least 4 MB and 15% of the file and no standby, snapshot, or lock blocks it (`tail_shrink_blocked` in `sift.health()`, `shrink_blocked_by` in `sift.space()`). Free extents in the middle of the file stay in the file and are reused; `pg_relation_size` does not drop for them.
+- **Cost:** Compaction writes a part only when it passes `dead_rewrite_pct` and reuses untouched granules as raw bytes, but a rewrite still writes WAL and a new part before the old one is freed, so allow transient space for the largest partition being compacted ([section 2](#2-disk-compression-and-wal-sizing)).
+
+## 8. Self-Tuning Background Maintenance
+
+Maintenance needs no `pg_cron`, no manual `sift.maintain()` calls, and no extra settings. A commit, delete, or scan that finds work due enqueues it, and up to `sift.max_maint_workers` workers drain the queue; with `shared_preload_libraries = 'pg_sift'` a launcher starts at boot, and without it workers start on demand. Workers hold no transaction or snapshot while they wait, so they never pin the cluster's oldest transaction, and a worker that dies mid-step leaves only unreferenced extents that the next `VACUUM` or maintenance pass reclaims.
+
+Work is ordered by four priority tiers, so a tiny flush never waits behind a large cold rewrite:
+
+| Tier | Work | Under heavy foreground load |
+|---|---|---|
+| P0 | Quarantine marking, `L0` slab flushes, pending-delete folds | Still runs, in micro-batches of 64 KB or less |
+| P1 | Hot `L0` to `L1` compaction, hot dead-row rewrite, scope refresh | Slowed by the pacer |
+| P2 | Part splits and merges, cold `L1` to `L2` recompression | Deferred for 5 to 30 seconds |
+| P3 | Tail shrink | Deferred; gives up if another session waits for the lock |
+
+Older P2 and P3 work gains priority with its age, so heavy P1 churn cannot starve it. The **pacer** samples the number of running foreground backends and the latency of recent `SiftAgg` scans, then moves between `full`, `moderate`, `throttled`, and `deferred` (visible as `pacer_mode` and `pacer_delay_ms` in `sift.activity()`). Maintenance reads and writes use a small private buffer ring, so they do not evict the foreground working set from `shared_buffers`. Your own settings stay in force: `sift.maintenance_cost_delay` is a floor for the pacer, `sift.maintenance_wal_rate` caps WAL, and manual `sift.maintain()`, `sift.merge(rel, true)`, and `VACUUM` bypass P2 and P3 deferral so you can always force a pass.
+
+## 9. Running Without `shared_preload_libraries`
+
+`pg_sift` works with `shared_preload_libraries` unset; nothing below needs a restart. The library loads in a session when the first statement touches one of its access methods, and background maintenance starts dynamic workers on demand instead of a launcher at postmaster start.
+
+| Capability | Without preload | With `shared_preload_libraries = 'pg_sift'` |
+|---|---|---|
+| `CREATE EXTENSION`, `sift`, `sift_col`, `sift_table`, reads, writes, `VACUUM`, WAL replay on standbys and PITR | Works | Same |
+| `SiftAgg`, `SiftHybridScan`, planner paths | Work; the first statement of a connection can plan before the library registers its hooks and keep PostgreSQL's plan (`extension_not_preloaded` in `sift.health()`); `session_preload_libraries` per database removes that | Hooks exist before the first statement |
+| Quarantine of a damaged index | The on-disk quarantine flag is checked when the planner costs the index and when a scan starts, so the first query of a session never uses a quarantined index | Same, and the in-memory registry is shared by all backends from the start |
+| Background maintenance (L0 flush, compaction, scope refresh, tail shrink) | Dynamic workers started by the commit, delete, or scan that finds work due, within `sift.max_maint_workers` and always leaving `Max(2, max_worker_processes / 4)` worker slots free; they exit after two idle naps | One launcher sleeps at postmaster start and dispatches the same workers |
+| Shared pools (`sift.shared_cache_kb`) | Allocated lazily in PostgreSQL's dynamic shared memory registry; `sift.shared_memory()` reports `shared = false` with a `reason` when DSM is unavailable | Reserved at startup |
+| Logical replication of a `sift_table` | **Not available**: the publisher's decoder needs the library at startup; `CREATE PUBLICATION` is refused with a hint | Works; subscribers need no preload |
+
+Preload when you publish a `sift_table`, run many short-lived connections that must plan on `SiftAgg` from their first statement (or use `session_preload_libraries`), or want the shared pools reserved at boot.
+
+## 10. Backup, `pg_dump`, and `pg_restore`
+
+- **Physical backups and `pg_upgrade`** copy relation files as they are: Format Major 1 and 2 relations keep their format ([UPGRADING.md](UPGRADING.md)).
+- **Logical dumps** carry rows and definitions, not pages. A `sift_table` or `sift_col` index created by the restore on 6.0 is written in Format Major 2, so a 5.x dump restored on 6.0 lands on Format 2.0 without a separate upgrade step.
+- **Per-table options** live in the extension tables `sift.table_option_values` and `sift.table_paths`, which `pg_dump` writes as data. A restore may load a table's rows before it loads these rows, so the first parts are written with default `key_order`, `compression`, and `paths`. Nothing fails and no row is lost: the options apply to new writes at once, and existing parts adopt them as compaction rewrites them. `sift.health()` reports `table_options_unapplied` for such a table, with `VACUUM FULL <table>` or `SELECT * FROM sift.maintain('<table>')` as the fix.
+- **Projections and TTL** definitions (`sift.projection_defs`, `sift.ttl_policies`) are dumped as data. Tier policies (`sift.tier_policies`) are **not**: the objects belong to the physical table, so a restored copy must set its own policy and never shares a location with the source. A logical restore rebuilds projections from the definitions; a physical backup copies them as parts, and remote objects are not part of the backup, so back up the object store with its own tooling.
+- **Options from 5.1** that 6.0 retired (the 13 hidden `sift_table` options) are accepted silently by `pg_restore`, so an old dump never aborts on them.
+- **Zero-rewrite restore** from a custom-format dump loads the option rows first:
+
+```sh
+pg_restore --section=pre-data -d target dump.fc
+pg_restore --section=data -t sift.table_option_values -t sift.table_paths -d target dump.fc
+pg_restore --section=data --exclude-table-data=sift.table_option_values \
+           --exclude-table-data=sift.table_paths -d target dump.fc
+pg_restore --section=post-data -d target dump.fc
+```
+
+A plain `pg_dump | psql` restore needs no special handling; run the `table_options_unapplied` fix afterwards.

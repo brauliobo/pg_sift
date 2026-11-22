@@ -4,6 +4,7 @@
 # LSE atomics, CRC32, dot product, FP16 arithmetic, SVE/SME, non-hint pointer authentication, and the crypto, RCpc, complex-number,
 # BF16/I8MM, FlagM, MTE and rounding extensions. The libgcc outline-atomics helpers (__aarch64_*) hold LSE instructions behind a runtime
 # check of the kernel's hardware capabilities, so they are allowed (by name, or by their shape in a stripped file: ldrb w16 of the flag, cbz w16, the instruction); PAC/BTI hint encodings (paciasp, autiasp, bti) execute as no-ops on older CPUs.
+# The SVE and SVE2 clones of core/fmv.h (name._Msve, name._Msve2, name_arm_sve, name_arm_sve2) are chosen by the resolver from the kernel's hardware capabilities and are not looked at.
 # The source has no compile-time __ARM_FEATURE_* test and no runtime detection beyond NEON, so a hit means the toolchain targeted a newer
 # architecture (-march/-mcpu, a distribution default); the flags come from pg_config's CFLAGS.
 #
@@ -25,6 +26,7 @@ re_isa='^(crc32c?[bhwx]|[su]dot|usdot|sudot|[su]smmla|usmmla|ummla|bfdot|bfmmla|
 re_pac='^((pac|aut)[id]z?[ab]|pacga|xpac[id]|(ret|bra|brb|blra|blrb|eret|ldr)a[ab]z?)$'
 re_mte='^(irg|gmi|addg|subg|ldgm?|stgm|stgp|st2g|stzg|stz2g|stzgm)$'
 re_crypto='^(aes[ed]|aes(i)?mc|sha1(c|p|m|h|su0|su1)|sha256(h2?|su0|su1)|sha512(h2?|su0|su1)|eor3|rax1|xar|bcax|sm3.*|sm4.*)$'
+re_clones='([.]_M|_arm_)sve2?([.]|$)'
 re_sve='^(rdvl|addvl|addpl|cnt[bhwd]|ptrue|ptrues|pfalse|whilel[eost]|whilerw|whilewr|rdffr|wrffr|setffr|smstart|smstop|(sq|uq)?(inc|dec)[bhwdp])$'
 
 rc=0
@@ -34,8 +36,9 @@ for so in "$@"; do
 	[[ $machine == AArch64 ]] || { echo "check-aarch64-baseline: $so: ELF machine is '$machine', not AArch64"; rc=1; continue; }
 	# the x86 SIMD kernels are compiled on x86-64 only; a symbol of one here means the wrong objects were linked
 	if readelf -sW "$so" | grep -iE 'avx(2|512)|_pdep|_pext' >/dev/null; then echo "check-aarch64-baseline: $so: x86 kernel symbols"; rc=1; fi
-	out=$("$objdump" -d --no-show-raw-insn "$so" | awk -F'\t' -v lse="$re_lse" -v isa="$re_isa" -v pac="$re_pac" -v mte="$re_mte" -v crypto="$re_crypto" -v sve="$re_sve" '
-		/^[0-9a-f]+ <.*>:$/ { fn = $0; sub(/^[0-9a-f]+ </, "", fn); sub(/>:$/, "", fn); next }
+	out=$("$objdump" -d --no-show-raw-insn "$so" | awk -F'\t' -v lse="$re_lse" -v clones="$re_clones" -v isa="$re_isa" -v pac="$re_pac" -v mte="$re_mte" -v crypto="$re_crypto" -v sve="$re_sve" '
+		/^[0-9a-f]+ <.*>:$/ { fn = $0; sub(/^[0-9a-f]+ </, "", fn); sub(/>:$/, "", fn); clone = fn ~ clones; next }
+		clone { next }
 		NF >= 2 && $1 ~ /^ *[0-9a-f]+:/ {
 			mn = $2; sub(/ .*/, "", mn); ops = $3
 			why = ""

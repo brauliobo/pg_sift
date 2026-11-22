@@ -2,6 +2,7 @@
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
+SET work_mem = '256MB';
 CREATE TABLE dim_a (id int PRIMARY KEY, labels text[], region text);
 INSERT INTO dim_a SELECT i, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN ARRAY[]::text[] WHEN 2 THEN ARRAY['one', 'one', 'two'] WHEN 3 THEN ARRAY['two', NULL] ELSE ARRAY['three'] END,
  CASE WHEN i % 4 = 0 THEN 'north' ELSE 'south' END FROM generate_series(0, 49) i;
@@ -32,12 +33,12 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT g, count(*) AS n, count(f.id) AS ids FROM facts f LEFT JOIN LATERAL generate_series(1, f.dim_a_id % 4) g ON true GROUP BY g
 $q$);
--- The rows the scan keeps are those of the child for every distinct input: more than sift.agg_lookup_max_rows estimated keep the normal plan.
-SET sift.agg_lookup_max_rows = 1000;
+-- The rows the scan keeps are those of the child for every distinct input: more than lookup_kb of rows estimated keep the normal plan.
+SET sift.test_limits = 'lookup_kb=1300';
 SELECT * FROM check_query($q$
  SELECT g, count(*) AS n FROM facts f CROSS JOIN LATERAL generate_series(1, f.dim_a_id % 4) g GROUP BY g
 $q$);
-RESET sift.agg_lookup_max_rows;
+RESET sift.test_limits;
 -- The array of a joined row fans out: duplicates stay, NULL and empty arrays and NULL elements behave as PostgreSQL does.
 SELECT * FROM check_query($q$
  SELECT label, count(*) AS n, count(DISTINCT f.id) AS ids FROM facts f JOIN dim_a e ON e.id = f.dim_a_id

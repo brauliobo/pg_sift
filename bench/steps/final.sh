@@ -6,18 +6,16 @@
 #   stats        what ClickHouse and Elasticsearch read per question
 #   gap          the pg_sift profile (private cluster under a memory cap) and bench/out/BENCH-GAP.md
 #   updates      the update, delete and VACUUM section of the README (store section): bulk changes at 200,000 and 1,000,000 orders, steady churn, inserts only, the reads around a churn
-#   search       articles and places, every engine: warm and cold tables, charts, README.md and bench/out/BENCHMARKS.md
+#   search       articles and places, every engine: warm and cold tables, charts, README.md and docs/BENCHMARKS.md
 #   cases        the cases of bench/cases.tsv at the size of the pass, on pg_sift, PostgreSQL and pg_duckdb: tables shared by the cases that read the same one, a lane stops repeating after 20 s
 #   duckdb       the ten questions of the store on pg_duckdb at 1M orders
 #   generic      the generic suites (TPC-H-like, ClickBench-like, time series) on pg_duckdb and ClickHouse at 1M rows; pg_sift and PostgreSQL are in the cases stage
 #   scope        (named only in the release pass, whose plan is 120 minutes: `--stages scope`, 37 min measured) the scope index against tuned stock PostgreSQL (steps/scope_stock.sh,
-#                the blocks of README.md and docs/COL-SCOPE.md); in the quick profile (`release-quick`) its quick size, 8 min
-#   sets the set-filter benchmark (synthetic, steps/sets.sh) on the release REF (the release of SIFT_SRC=ref:REF, else this checkout)
-#   scale        (named only, never in the default pass) the cases of bench/cases.tsv at 1x, 10x and 100x of 200,000 orders: bench/results/cases-scale.tsv, the block "Benchmark cases, by size"; 20 million orders at the largest point, for a host with the memory and the hours (`--budget 0`)
-#   extras element rollups, table writes, BM25 sizes, leaf types, facets, build cost, GPU (steps/extras.sh), the builds they compare are tags
+#                the blocks of docs/BENCHMARKS.md); in the quick profile (`release-quick`) its quick size, 8 min
+#   scale        (named only, never in the default pass) the cases of bench/cases.tsv at 1x, 10x and 100x of 200,000 orders: docs/results/cases-scale.tsv, the block "Benchmark cases, by size"; 20 million orders at the largest point, for a host with the memory and the hours (`--budget 0`)
 # The total budget is checked first (the sum of the stages that will run; exit 4 over it, --budget 0 skips the check); a stage that finished before with the same code, settings and
-# host is skipped (its key is in $STORE/final-state; --no-resume runs everything). Every other option is passed on to the stages (bench/bench --help). --docs also writes bench/results,
-# the charts, README.md and bench/out/BENCHMARKS.md (only at --size standard or full). --dry-run prints the plan, the estimate and the preconditions and starts nothing.
+# host is skipped (its key is in $STORE/final-state; --no-resume runs everything). Every other option is passed on to the stages (bench/bench --help). --docs also writes docs/results,
+# the charts, README.md and docs/BENCHMARKS.md (only at --size standard or full). --dry-run prints the plan, the estimate and the preconditions and starts nothing.
 # Competitor cells (Elasticsearch, ClickHouse, Citus) come from the cache of cells unless --remeasure-all or their key changed: the stage minutes are
 # those of a pass that measures everything, a pass with a warm cache takes less.
 set -euo pipefail
@@ -63,11 +61,11 @@ if [[ $SIZE == release || -n ${REHEARSAL:-} ]]; then ALL_STAGES="$ALL_STAGES sca
 bench() { "$BENCH/bench" "$@"; }
 s_store() { bench store all "${FWD[@]}" --run-id "final-$TAG-store" --sizes "$SIZES" ${DOCS:+--docs}; }
 s_compression() { bench store all "${FWD[@]}" --run-id "final-$TAG-compression" --compression --sizes 1000000 --cold-runs 0 --update-sizes none ${DOCS:+--docs}; }
-s_stats() { bench store stats "${FWD[@]}" --run-id "final-$TAG-stats" --sizes "$SIZES" --engines pg,sift,sift_table,es,es_cached,ch; [[ -z $DOCS ]] || cp "$BENCH"/out/latest/store-stats-*.json "$REPO/bench/results/"; }
+s_stats() { bench store stats "${FWD[@]}" --run-id "final-$TAG-stats" --sizes "$SIZES" --engines pg,sift,sift_table,es,es_cached,ch; [[ -z $DOCS ]] || cp "$BENCH"/out/latest/store-stats-*.json "$REPO/docs/results/"; }
 s_gap() {
   S_SIZES=$SIZES OUT=$GAPOUT "$STEPS/gap.sh"
-  [[ -z $DOCS ]] || { for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/bench/results/store-${f##*/}"; done
-                      python3 -I "$STEPS/gap.py" render --profile "$REPO"/bench/results/store-gap-*.json --stats "$REPO"/bench/results/store-stats-*.json; }
+  [[ -z $DOCS ]] || { for f in "$GAPOUT"/gap-*.json; do cp "$f" "$REPO/docs/results/store-${f##*/}"; done
+                      python3 -I "$STEPS/gap.py" render --profile "$REPO"/docs/results/store-gap-*.json --stats "$REPO"/docs/results/store-stats-*.json; }
 }
 s_updates() { S_REPS=${P_S_REPS:-5} S_REPS_BIG=${P_S_REPS_BIG:-3} S_CHURN_SECONDS=${P_CHURN:-20} bench store section "${FWD[@]}" --run-id "final-$TAG-updates" --sizes "${P_SECTION_SIZES:-200000,1000000}" ${DOCS:+--docs}; }
 s_search() { # the slim tier of every engine, then `fuzzy` (not a class of the reduced matrix, so a column of the README table of its own) for pg_sift and Elasticsearch, merged into the tier
@@ -77,13 +75,13 @@ s_search() { # the slim tier of every engine, then `fuzzy` (not a class of the r
 }
 s_sizes() { # the store at other sizes and pg_duckdb at the big size; a rehearsal does not write them: the smoke sizes are not the ladder the charts read
   local small="final-$TAG-sizes-small" big="final-$TAG-sizes-big" scaling=$GAPOUT/store-scaling.json duck=$GAPOUT/duckdb-big.tsv
-  if [[ -n $DOCS && -z ${REHEARSAL:-} ]]; then scaling=$REPO/bench/results/store-scaling.json duck=$REPO/bench/results/duckdb-10000000.tsv; fi
+  if [[ -n $DOCS && -z ${REHEARSAL:-} ]]; then scaling=$REPO/docs/results/store-scaling.json duck=$REPO/docs/results/duckdb-10000000.tsv; fi
   bench store all "${FWD[@]}" --run-id "$small" --sizes "$P_SIZES_SMALL" --cold-runs 0 --restart-runs 0 --update-sizes none
   bench store all "${FWD[@]}" --run-id "$big" --sizes "$P_SIZES_BIG" --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none
   bench store scaling "$scaling" "$BENCH/out/run-$small/store.json" "$BENCH/out/run-$big/store.json"
   bench duckdb --rows "$P_DUCKDB_BIG" --out "$duck"
 }
-s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out bench/results/duckdb-10000000.tsv`
+s_duckdb() { bench duckdb ${DOCS:+--docs}; }   # the ten questions of the store on pg_duckdb at 1M orders; the 10M run is `bench duckdb --rows 10000000 --out docs/results/duckdb-10000000.tsv`
 s_generic() { bench generic --rows "$P_ROWS" --runs "${P_GENERIC_RUNS:-3}" ${DOCS:+--docs}; }   # the generic suites on pg_duckdb and ClickHouse: the answers are checked against PostgreSQL's, one container at a time
 cases_memory() {   # the scratch of the cases is tmpfs charged to the memory cap of the server: reserve 3x the plan with a 40G cap when 60 GB are available, with 24G when the host has 3x the plan and 8 GB, else 2x with 16G; the plan undercounts by up to 1.6x; CASES_MEM names the cap by hand
   CASES_PLAN_GB=$("$BENCH/bench" cases --plan --rows "${1:-$P_ROWS}" 2>/dev/null | sed -n 's/.*largest point needs about \([0-9]*\) GB.*/\1/p')
@@ -107,8 +105,6 @@ s_analytics() { # shellcheck disable=SC2086  # $ch is one flag or nothing
   bench analytics run --engines heap,col,flat,ch --flat $ch ${P_ANALYTICS_ORDERS:+--orders "$P_ANALYTICS_ORDERS"} ${P_ANALYTICS_RUNS:+--runs "$P_ANALYTICS_RUNS"} ${DOCS:+--docs}; }   # the application shapes
 s_scale() { CASES_MEM=${CASES_MEM:-48G} bench cases --scales 1,10,100 --rows 200000 --timeout 1800 ${SCALE_CASES:+--cases $SCALE_CASES} ${DOCS:+--docs}; }   # CASES_TMP: a disk with 30 GB; SCALE_CASES: some cases   # opt-in: not in ALL_STAGES
 s_scope() { if [[ -n $QUICK ]]; then bench scope-stock --size quick; else bench scope-stock ${DOCS:+--docs}; fi; }   # the quick size writes nothing of the docs
-s_sets() { bench sets ${SIFT_SRC:+$([[ $SIFT_SRC == ref:* ]] && echo "--ref ${SIFT_SRC#ref:}")} ${DOCS:+--docs}; }
-s_extras() { bench extras all ${DOCS:+--docs}; }
 cache_warm() { # the cells of the servers that are not under test are in the cache (and this pass does not remeasure them): the store stage measures pg_sift alone
   [[ " ${FWD[*]} " != *" --remeasure-all "* ]] && compgen -G "$STORE_CACHE/cells/*/*.json" >/dev/null
 }
@@ -133,8 +129,6 @@ minutes() { # STAGE: the minutes it takes when everything is measured
     analytics) echo "${P_MIN_ANALYTICS:-10}" ;;
     sizes) echo "${P_MIN_SIZES:-13}" ;;
     scale) echo "${P_MIN_SCALE:-430}" ;;
-    sets) echo "${P_MIN_SETS:-25}" ;;
-    extras) echo "${P_MIN_EXTRAS:-100}" ;;
   esac
 }
 key() { python3 -I "$STEPS/benchlib.py" key "$(code_key)" "$(fingerprint)" "$1" "$SIZE" "${FWD[*]}" "$DOCS" "$SIZES"; }
@@ -217,10 +211,10 @@ CACHE_COLD=''; cache_warm || CACHE_COLD=1   # before the stages run: the store s
 T0=$SECONDS FAILED=()
 for s in $STAGES; do
   rc=0
-  [[ -z ${REHEARSAL:-} || $s != search ]] || git -C "$REPO" checkout -- bench/results/store.json bench/results/store-scaling.json   # the smoke store stages replaced the 1,000,000-order tiers that the charts and highlights read
+  [[ -z ${REHEARSAL:-} || $s != search ]] || git -C "$REPO" checkout -- docs/results/store.json docs/results/store-scaling.json   # the smoke store stages replaced the 1,000,000-order tiers that the charts and highlights read
   if why=$(carried "$s"); then log "stage $s: carried, $why"
   elif [[ $s == sizes ]] && (( BUDGET > 0 )) && (( (SECONDS - T0 + 30) / 60 + $(minutes sizes) > BUDGET )); then
-    log "stage sizes: skipped, $(( (SECONDS - T0 + 30) / 60 )) min elapsed and about $(minutes sizes) to run do not fit the budget of $BUDGET min; bench/results/store-scaling.json and bench/results/duckdb-10000000.tsv keep the numbers of the release that measured them (the date is in each file)"
+    log "stage sizes: skipped, $(( (SECONDS - T0 + 30) / 60 )) min elapsed and about $(minutes sizes) to run do not fit the budget of $BUDGET min; docs/results/store-scaling.json and docs/results/duckdb-10000000.tsv keep the numbers of the release that measured them (the date is in each file)"
   elif ! stage_done "$s" "$(key "$s")"; then
     "$0" --stage-only "$s" "${ORIG[@]}" &
     STAGE_PID=$!
@@ -237,4 +231,4 @@ log "final: $(( (SECONDS - T0 + 30) / 60 )) min (budget $BUDGET); stages:"
 [[ ! -s $STAGE_LOG ]] || awk -F'\t' '{printf "  %-12s %5.1f min (budget %s)\n", $1, $2 / 60, $3}' "$STAGE_LOG" >&2
 [[ -z $QUICK || ! -s $STAGE_LOG ]] || quick_table "$STAGE_LOG" || exit $?
 (( ${#FAILED[@]} == 0 )) || { log "FAILED stages: ${FAILED[*]}"; exit 1; }
-[[ -z $DOCS ]] || log "review git diff for README.md, bench/out/BENCH-GAP.md and bench/results/"
+[[ -z $DOCS ]] || log "review git diff for README.md, bench/out/BENCH-GAP.md and docs/results/"

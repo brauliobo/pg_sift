@@ -19,7 +19,6 @@ END $$;
 
 -- bitmap scan: 500 matches
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
 SET enable_seqscan = off;
 SELECT pg_stat_reset_single_table_counters('d_body'::regclass);
 SELECT count(*) FROM d WHERE body @@> 'word7 common';
@@ -27,7 +26,6 @@ SELECT plan_nodes($$SELECT count(*) FROM d WHERE body @@> 'word7 common'$$);
 SELECT pg_stat_force_next_flush();
 SELECT idx_scan, idx_tup_read FROM pg_stat_user_indexes WHERE indexrelname = 'd_body';
 RESET sift.enable_scan;
-RESET sift.enable_count;
 RESET enable_seqscan;
 
 -- ranked custom scan: the ties of the score on the second key are all read, 500 rows

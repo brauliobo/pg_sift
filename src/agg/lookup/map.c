@@ -3,7 +3,7 @@
  * The growth of the map, the add of a row by its key ids, the binding to a column and the
  * index over the rows of a unique map.
  */
-/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which half of work_mem bounds at plan time */
 #include "postgres.h"
 
 #include "access/genam.h"
@@ -261,11 +261,26 @@ map_add_key(AggExec *ex, MapTab *m, const SiftAggJoin *j, Datum key, bool isnull
 	m->rkey[m->nrow++] = sift_aggspec_operand_int(j->keytype[0], key);
 }
 
+/* the table is loading past the share of work_mem it may take (the plan estimated fewer rows): the statement runs again as PostgreSQL plans it where it can, else it ends naming what to raise */
+void
+lookup_overflow(AggExec *ex, const SiftMemTracker *tr)
+{
+	par_note_overflow(ex);
+	ereport(ERROR,
+			(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+			 errmsg("sift: the lookup table of a joined table holds %zu kB, past the %zu kB of work_mem it may take", tr->peak_bytes / 1024, tr->budget / 1024),
+			 errhint("Raise work_mem, or set sift.enable_agg to off.")));
+}
+
 /* a row the scan of the table returned: into the table when it holds the ON clause's own conditions (`own`, when they read no leaf: a row that fails them matches no tuple) */
 void
 map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own)
 {
 	ex->lookup_read++;
+	if (m->tr != NULL && !m->over && (m->nrow & 255) == 0)
+		m->over = sift_mem_pressure(m->tr, true) >= SIFT_MEM_HARD;
+	if (m->over)
+		return;
 	map_eval_cols(m, slot, j);
 	if (own)
 	{

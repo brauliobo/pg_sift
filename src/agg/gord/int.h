@@ -6,7 +6,7 @@
 
 #include "postgres.h"
 
-#include "col/gorder.h"
+#include "col/v1/gorder.h"
 #include "agg/gord.h"
 
 #define GORD_PEND_MAX	(1 << 20)	/* the entries a skip leaves to the heap: the rest of a longer one is walked */

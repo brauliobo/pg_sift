@@ -12,16 +12,7 @@ VACUUM ms_facts;
 CREATE FUNCTION ms_status() RETURNS TABLE (heap regclass, rewrite_due text, blocked_by text[]) LANGUAGE sql AS
 $$ SELECT s.heap, s.rewrite_due, s.blocked_by FROM sift.col_maintenance_status('ms_idx') s $$;
 
--- the setting is off, and the table opted out of autovacuum
-SET sift.col_auto_merge = off;
-SELECT * FROM ms_status();
-
--- on: the opt-out of the table is what is left
-SET sift.col_auto_merge = on;
-SELECT * FROM ms_status();
-
--- the table takes part again
-ALTER TABLE ms_facts RESET (autovacuum_enabled);
+-- nothing blocks
 SELECT * FROM ms_status();
 
 -- no worker without sift.async_maintenance
@@ -35,8 +26,8 @@ VACUUM ms_facts;
 SELECT s.rewrite_due = sift.col_maintenance_due('ms_idx') AS same_rule, s.rewrite_due IS NOT NULL AS due
 FROM sift.col_maintenance_status('ms_idx') s;
 
--- a table of 20,000 rows is vacuumed at its thousandth, not under 50 rows
-SELECT s.vacuum_at IS NULL OR s.vacuum_at = 50 AS threshold FROM sift.col_maintenance_status('ms_idx') s;
+-- a table of 20,000 rows is vacuumed by autovacuum at 50 rows and 20% of its rows
+SELECT s.vacuum_at IS NULL OR s.vacuum_at = 4050 AS threshold FROM sift.col_maintenance_status('ms_idx') s;
 
 -- not an index of sift_col
 CREATE INDEX ms_btree ON ms_facts (id);

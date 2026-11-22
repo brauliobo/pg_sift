@@ -28,8 +28,6 @@ BEGIN
 		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
 	END LOOP;
 END $$;
-CREATE FUNCTION cp_held(i regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(leaf || ':' || regexp_replace(held, ' in .*', ''), ' ' ORDER BY leaf) FROM sift.index_advice(i) WHERE held IS NOT NULL AND (kind = 'date' OR leaf IN ('l12', 'v', 'id', 'h1')) $$;
 CREATE TABLE cp_q (n int, shape text, q text);
 INSERT INTO cp_q VALUES
 	(1, 'month',            'SELECT date_trunc(''month'', d1), count(*), sum(m) FROM cp GROUP BY 1'),
@@ -43,12 +41,6 @@ NOTICE:  sift_col index "cp_col": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key;
 limit: cube = "d1", "d2", "d3", "m", "id", "h1", "h2"; rollup_columns = l1, l2; point_tid_columns = id, h1, h2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_col');
-SELECT cp_held('cp_col');
-                                 cp_held                                  
---------------------------------------------------------------------------
- d1:calendar cells d2:calendar cells d3:calendar cells l12:cube histogram
-(1 row)
-
 SELECT n, shape, cp_rows(q, true) = cp_rows(q, false) AS same, u.units, u.pre, u.scanned FROM cp_q, LATERAL cp_units(q) u ORDER BY n;
  n |      shape       | same | units | pre | scanned 
 ---+------------------+------+-------+-----+---------
@@ -65,38 +57,20 @@ NOTICE:  sift_col index "cp_col": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key;
 limit: cube = "d1", "d2", "d3", "m", "id", "h1", "h2"; rollup_columns = l1, l2; point_tid_columns = id, h1, h2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_col');
-SELECT cp_held('cp_col');
-                                 cp_held                                  
---------------------------------------------------------------------------
- d1:calendar cells d2:calendar cells d3:calendar cells l12:cube histogram
-(1 row)
-
 DROP INDEX cp_col;
 -- all fit: 9 plain columns, the 3 dates and 1 more, and the cells of the 3 dates (16): the dates' own histograms kept
 CREATE INDEX cp_fit ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, d1, d2, d3, v, m) WITH (key_columns = 'off');
 NOTICE:  sift_col index "cp_fit": 1 automatic choice, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: cube = "d3"; rollup_columns = l1, l2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_fit');
-SELECT cp_held('cp_fit');
-                        cp_held                        
--------------------------------------------------------
- d1:cube histogram d2:cube histogram d3:calendar cells
-(1 row)
-
 DROP INDEX cp_fit;
 -- a cube(...) of the user is kept as written, and calendar_columns names the dates it wants
 CREATE INDEX cp_fixed ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m) WITH (key_columns = 'off', preagg = 'cube(l1; l2; l3; l4; l5; l6; l7; l8; l9; l10; l11; l12; d1; d2; d3; v)', calendar_columns = 'off');
 NOTICE:  sift_col index "cp_fixed": 1 automatic choice (rollup_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = l1, l2
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('cp_fixed');
-SELECT cp_held('cp_fixed');
-                                          cp_held                                          
--------------------------------------------------------------------------------------------
- d1:cube histogram d2:cube histogram d3:cube histogram l12:cube histogram v:cube histogram
-(1 row)
-
 DROP INDEX cp_fixed;
 DROP TABLE cp, cp_q;
-DROP FUNCTION cp_rows(text, bool), cp_units(text), cp_held(regclass);
+DROP FUNCTION cp_rows(text, bool), cp_units(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

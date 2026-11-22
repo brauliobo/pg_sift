@@ -73,8 +73,6 @@ SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
    hint: Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.
 (1 row)
 
-RESET sift.table_wide_rows;
-RESET sift.table_write_buffer_limit;
 -- sift.explain_why takes one statement; a score outside a sift scan says where it exists
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
                                                                        expect                                                                       

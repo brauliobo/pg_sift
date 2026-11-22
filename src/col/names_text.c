@@ -5,7 +5,7 @@
  *   - the lists (key_cut, key_columns, rollup_columns, ..): a name between separators; a few of them have words of their own (order_layout: compact, whole; compression: the codecs);
  *   - the heads of paths (paths, rollup_leaves): the column that a path or the leaf of an array starts with (doc.k, doc->k, items[].kind, tags#1);
  *   - connect and scope: the column of the index that holds the key, the columns of the other table, the table with its schema, the btree a scope uses. They are parsed by the parsers
- *     of the options (col/conn_decl.c, col/scope_parse.c), changed as specs and written again, so no name is ever found by looking at text.
+ *     of the options (col/v1/conn_decl.c, col/scope_parse.c), changed as specs and written again, so no name is ever found by looking at text.
  * An unqualified table of connect or scope is in the schema of the table of the index: the table of the index that moves to another schema keeps the schema its names had.
  */
 #include "postgres.h"
@@ -20,7 +20,7 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 #include "col/names.h"
 #include "col/scope.h"
 #include "core/catname.h"
@@ -30,6 +30,7 @@ typedef enum NamesMode
 	NAMES_PLAIN,				/* every name between the separators */
 	NAMES_LAYOUT,				/* ... but the layouts: 'compact: a, b; whole: c' */
 	NAMES_COMPRESSION,			/* only the names with a codec: 'auto; a=zstd:9' */
+	NAMES_SKETCHES,				/* ... but the kinds and the parameters of the groups: 'kll(a, b(k=100)); hll(c)' */
 	NAMES_PATHS,				/* the head of each entry: 'doc.k int4, +tags[] int4' */
 	NAMES_LEAVES				/* the head of each leaf: 'items[].kind, tags#1' */
 } NamesMode;
@@ -41,7 +42,7 @@ static const struct
 }			list_options[] = {
 	{"key_cut", NAMES_PLAIN}, {"key_columns", NAMES_PLAIN}, {"rollup_columns", NAMES_PLAIN}, {"rollup_dims", NAMES_PLAIN}, {"calendar_columns", NAMES_PLAIN},
 	{"count_columns", NAMES_PLAIN}, {"point_columns", NAMES_PLAIN}, {"point_tid_columns", NAMES_PLAIN}, {"order_columns", NAMES_PLAIN}, {"order_array_columns", NAMES_PLAIN},
-	{"order_array_group", NAMES_PLAIN}, {"key_order", NAMES_PLAIN}, {"hll_columns", NAMES_PLAIN}, {"return_columns", NAMES_PLAIN}, {"track_changes", NAMES_PLAIN},
+	{"order_array_group", NAMES_PLAIN}, {"key_order", NAMES_PLAIN}, {"hll_columns", NAMES_PLAIN}, {"sketches", NAMES_SKETCHES}, {"return_columns", NAMES_PLAIN}, {"track_changes", NAMES_PLAIN},
 	{"preagg", NAMES_PLAIN}, {"order_layout", NAMES_LAYOUT}, {"compression", NAMES_COMPRESSION}, {"paths", NAMES_PATHS}, {"rollup_leaves", NAMES_LEAVES},
 	{"rollup", NAMES_LEAVES}
 };
@@ -110,7 +111,8 @@ rewrite_names(const char *text, NamesMode mode, const char *from, const char *to
 			const char *next = p + len + strspn(p + len, " \t");
 			bool		hit = len == flen && strncmp(p, from, len) == 0 && !is_word(p, len);
 
-			if ((mode == NAMES_LAYOUT && *next == ':') || (mode == NAMES_COMPRESSION && *next != '='))
+			if ((mode == NAMES_LAYOUT && *next == ':') || (mode == NAMES_COMPRESSION && *next != '=') ||
+				(mode == NAMES_SKETCHES && (*next == '=' || (len == 3 && *next == '(' && (strncmp(p, "kll", 3) == 0 || strncmp(p, "hll", 3) == 0)))))
 				hit = false;
 			if (hit)
 				appendStringInfoString(&out, quote_identifier(to));

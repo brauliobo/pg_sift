@@ -137,7 +137,7 @@ static void test_ops(set *a, set *b, set *c, sift_tid *ref, sift_tid *tmp)
 	n = sift_tids(&ca, outbuf);
 	CHECK(same(outbuf, n, a->t, a->n), "decode mode %d n %u got %zu", ma, a->n, n);
 	open_set(&ca, a, ma, 0);
-	CHECK(sift_count(&ca) == a->n, "count");
+	CHECK(sift_cur_count(&ca) == a->n, "count");
 
 	/* and / or / andnot, materialized and counted */
 	for (int op_kind = 0; op_kind < 3; op_kind++) {
@@ -148,7 +148,7 @@ static void test_ops(set *a, set *b, set *c, sift_tid *ref, sift_tid *tmp)
 			else if (op_kind == 1) sift_cur_or(&op, kids, 2, cbuf[4]), rn = ref_or(a, b, ref);
 			else sift_cur_andnot(&op, kids, cbuf[4]), rn = ref_andnot(a, b, ref);
 			if (counted) {
-				uint64_t cnt = sift_count(&op);
+				uint64_t cnt = sift_cur_count(&op);
 				CHECK(cnt == rn, "count op %d modes %d/%d: %lu vs %zu", op_kind, ma, mb, cnt, rn);
 			} else {
 				n = sift_tids(&op, outbuf);

@@ -9,7 +9,7 @@
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "agg/topn/int.h"
 
 typedef struct SegBest

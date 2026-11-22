@@ -4,6 +4,7 @@
  * the readers, the merge and the cuts are in the files next to it
  */
 #include "bm25/runs/runs_priv.h"
+#include "core/memtrack.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_run_docs = 0;
@@ -99,7 +100,7 @@ SiftRun *
 sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
 {
 	SiftRun    *out = run_new(CurrentMemoryContext, home->fileset, home->worker, home->nfiles++);
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift run merge");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	MergeOut	mo = {.run = out,.io = {.file = out->file,.buf = palloc(IO_BUF)}};
 	bool		positions;
@@ -170,7 +171,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 
 	/* more runs than readers fit the budget: merge the smallest into temporary ones first */
 	nruns = sift_shrink_runs(runs, nruns, sift_merge_fanin(budget), budget, &tmp);
-	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run merge", ALLOCSET_DEFAULT_SIZES);
+	cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift run merge");
 	old = MemoryContextSwitchTo(cxt);
 	rd = runs_open_readers(runs, nruns, budget, &positions, &ndocs);
 	/* the segment has positions when every run does */

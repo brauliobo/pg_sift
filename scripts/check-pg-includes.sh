@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A file that uses a PostgreSQL symbol includes the header that declares it, itself: a header that another one pulled in is not a promise of the server, and PostgreSQL 19 dropped one
-# (utils/timestamp.h: GetCurrentTimestamp in col/maint/net.c was an implicit declaration, an error of the hosted PostgreSQL 19 and package jobs, 2026-11-03). The table is scripts/pg-includes.tsv:
+# (utils/timestamp.h: GetCurrentTimestamp in col/v1/maint/net.c was an implicit declaration, an error of the hosted PostgreSQL 19 and package jobs, 2026-11-03). The table is scripts/pg-includes.tsv:
 # a regular expression of the symbols, TAB, the headers that declare them (any of the list satisfies the rule), one row per family; a symbol a compile against a newer server found missing is a row.
 # A header another one pulled in can also differ by flavour (the files compiled only with SIFT_TESTING or SIFT_VULKAN are empty in the release one): where the server's headers are installed,
 # each .c file is also compiled without code generation (-fsyntax-only, 4 at a time, warnings kept out of the answer, an implicit declaration an error as in the Makefile) in the release

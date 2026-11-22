@@ -15,7 +15,6 @@ FROM generate_series(1, 30000) g;
 CREATE INDEX cm_off ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 6;
 CREATE INDEX cm_six ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
-RESET sift.col_format_minor;
 CREATE INDEX cm_on ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 CREATE INDEX cm_nocube ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, preagg = 'off', superunit = 0);
 SELECT 'cm_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('cm_off')

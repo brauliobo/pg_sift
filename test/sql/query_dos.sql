@@ -7,7 +7,7 @@ GRANT USAGE ON SCHEMA sift TO sift_dos_user;
 
 SET ROLE sift_dos_user;
 SET sift.max_expansions = 1000000;
-SET sift.prefix_cache_size = 1048576;
+SET sift.backend_cache_kb = 1048576;
 SHOW sift.max_expansions;
 RESET ROLE;
 SET sift.max_expansions = 1000;

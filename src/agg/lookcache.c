@@ -25,10 +25,9 @@
 #include "core/cachebudget.h"
 #include "core/ring.h"
 
-int			sift_agg_lookup_cache_kb = 256 * 1024;
 /* the pages of a table are fingerprinted at about 0.4 microseconds each, a twentieth of what loading their rows costs: what bounds a table is the memory of its rows, and the fingerprint itself may take half the budget of the store it is for */
 #define LOOK_FINGER_BLOCKS(budget)	(Min((budget) / 2, MaxAllocSize) / sizeof(XLogRecPtr))
-#define LOOKCACHE_BYTES		((Size) sift_agg_lookup_cache_kb * 1024)
+#define LOOKCACHE_BYTES		((Size) sift_backend_cache_kb * 1024)
 /* what the pages of a table are weighed against: the larger of the caches that are on */
 #define LOOKCACHE_BUDGET	Max(LOOKCACHE_BYTES, lookshm_bytes(LOOK_ROWS))
 /* tables whose rows did not fit, by key: they are not fingerprinted again while the file is no smaller and the budget no larger */
@@ -129,7 +128,7 @@ static void
 look_refuse(const char *key, const LookFinger *f)
 {
 	LookRefused *r = NULL;
-	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+	MemoryContext old = MemoryContextSwitchTo(sift_cache_root_context());
 
 	for (int i = 0; i < nrefused; i++)
 		if (strcmp(refused[i].key, key) == 0)
@@ -202,12 +201,6 @@ look_victim(void)
 	return lru;
 }
 
-static Size
-look_bytes(void)
-{
-	return cache_bytes;
-}
-
 static uint64
 look_oldest(void)
 {
@@ -216,28 +209,25 @@ look_oldest(void)
 	return e ? e->used : UINT64_MAX;
 }
 
-static void
-look_evict_oldest(void)
-{
-	look_drop(look_victim());
-}
-
-static const SiftCacheKind look_kind = {look_bytes, look_oldest, look_evict_oldest};
-
-/* Drops the least recently used entries nobody pins until need more bytes fit this cache and the backend's budget; false when they do not */
 static bool
-look_room(Size need)
+look_evict_one(void)
 {
-	while (cache_bytes + need > LOOKCACHE_BYTES)
-	{
-		LookEnt    *lru = look_victim();
+	LookEnt    *e = look_victim();
 
-		if (lru == NULL)
-			return false;
-		look_drop(lru);
-	}
-	return sift_cache_room(need);
+	if (e == NULL)
+		return false;
+	look_drop(e);
+	return true;
 }
+
+static void
+look_evict_all(void)
+{
+	while (look_evict_one())
+		;
+}
+
+static const SiftCacheKind look_kind = {"agg_lookcache", look_oldest, look_evict_one, look_evict_all};
 
 bool
 cols_cover(const LookCols *have, const LookCols *need)
@@ -329,18 +319,18 @@ lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookC
 	while ((e = look_unpinned(key)) != NULL)
 		look_drop(e);
 	size = MemoryContextMemAllocated(cx, true) + (Size) before->nblocks * sizeof(XLogRecPtr);
-	if (size > LOOKCACHE_BYTES / 2)
+	if (size > LOOKCACHE_BYTES)
 	{
 		/* the table is refused when no cache that is on could take its rows */
 		if (shared_large)
 			look_refuse(key, before);
 		return false;
 	}
-	if (!look_room(size))
+	if (!sift_cache_room(size))
 		return false;
 	if (cache_cx == NULL)
 	{
-		cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache lookup tables", ALLOCSET_DEFAULT_SIZES);
+		cache_cx = sift_cache_create_context("sift cache lookup tables");
 		sift_cache_register(&look_kind);
 	}
 	e = MemoryContextAllocZero(cx, sizeof(LookEnt));
@@ -353,7 +343,7 @@ lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookC
 	e->map = m;
 	e->cols = *cols;
 	e->size = size;
-	old = MemoryContextSwitchTo(TopMemoryContext);
+	old = MemoryContextSwitchTo(cache_cx);
 	entries = lappend(entries, e);
 	MemoryContextSwitchTo(old);
 	/* the rows fit now: the table is not refused any more */

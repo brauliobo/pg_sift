@@ -1,5 +1,5 @@
 /*
- * agg/vk/int.h - the Vulkan backend, inside agg/vk/ (the interface is agg/vk.h, docs/GPU.md)
+ * agg/vk/int.h - the Vulkan backend, inside agg/vk/ (the interface is agg/vk.h)
  */
 #ifndef SIFT_AGG_VK_DIR_INT_H
 #define SIFT_AGG_VK_DIR_INT_H
@@ -7,14 +7,17 @@
 #include <signal.h>
 
 #include "agg/vk.h"
+#include "agg/vk/fast.h"
+#include "agg/vk/layout.h"
 
 #ifdef SIFT_VULKAN
 
 #include "agg/vk_min.h"
 
 #define VK_INSTANCE_FNS(X) \
-	X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceMemoryProperties) \
-	X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr)
+	X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties) X(vkGetPhysicalDeviceProperties2) \
+	X(vkGetPhysicalDeviceFeatures2) X(vkGetPhysicalDeviceMemoryProperties2) X(vkGetPhysicalDeviceQueueFamilyProperties) \
+	X(vkEnumerateDeviceExtensionProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr)
 
 #define VK_DEVICE_FNS(X) \
 	X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) \
@@ -23,18 +26,28 @@
 	X(vkCreateComputePipelines) X(vkDestroyPipeline) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool) X(vkAllocateDescriptorSets) \
 	X(vkUpdateDescriptorSets) X(vkCreateCommandPool) X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkBeginCommandBuffer) \
 	X(vkEndCommandBuffer) X(vkResetCommandBuffer) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch) \
-	X(vkCmdCopyBuffer) X(vkCmdPipelineBarrier) X(vkQueueSubmit) X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) \
-	X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkDeviceWaitIdle)
+	X(vkCmdCopyBuffer) X(vkCmdFillBuffer) X(vkCmdPipelineBarrier) X(vkQueueSubmit) X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) \
+	X(vkResetFences) X(vkCreateSemaphore) X(vkDestroySemaphore) X(vkCreateQueryPool) X(vkDestroyQueryPool) X(vkCmdResetQueryPool) \
+	X(vkCmdWriteTimestamp) X(vkGetQueryPoolResults) X(vkDeviceWaitIdle)
 
-#define SLAB_WORDS		SIFT_VK_CHUNK_MAX
-#define SLAB_BYTES		((uint64_t) SLAB_WORDS * 4)
+#define SLAB_BYTES		SIFT_VK_SLAB_BYTES
+#define SLAB_WORDS		((uint32_t) (SLAB_BYTES / 4))
 #define MIN_SLABS		4
-#define UP_CAP			((uint64_t) 16 << 20)		/* staging: chunks of a batch */
-#define DESC_CAP		((uint64_t) 1 << 20)		/* control tables: descriptors, workgroups */
-#define WG_CAP			((uint64_t) 1 << 20)
-#define RES_CAP			((uint64_t) 16 << 20)
-#define WAIT_SLICE_NS	5000000ull					/* the wait for the fence is cut in slices: the host looks for interrupts between them */
-#define WAIT_TOTAL_MS	10000						/* a submission that takes longer is given up */
+#define UP_CAP			((uint64_t) 16 << 20)		/* a slot: chunk bytes copied to the device */
+#define UNW_CAP			((uint64_t) 32 << 20)		/* ... and the bytes the LZ4 chunks of the batch unwrap to */
+#define SLACK			64
+#define CTL_CAP			((uint64_t) 4 << 20)		/* a slot: the control words of a batch */
+#define DJ_MAX			8192						/* decode jobs of a batch */
+#define BATCH_GRAN_MAX	2048
+#define RES_CAP_WORDS	((uint64_t) SIFT_VK_RES_ACC_OFF + ((uint64_t) 1 << 20))
+#define DEC_WGS			64							/* the workgroups of the decoder: each takes jobs one after the other */
+#define AGG_WGS_MAX		512
+#define WAIT_SLICE_NS	5000000ull
+#define WAIT_TOTAL_MS	10000
+#define NSLOT			2
+#define FAST_CACHE		32							/* pipelines of fast kernels kept */
+#define TAB_MAX			64							/* descriptor tables kept */
+#define TAB_BYTES_MAX	((uint64_t) 64 << 20)		/* ... in all */
 
 typedef struct Buf
 {
@@ -48,8 +61,8 @@ typedef struct Slab
 {
 	uint32_t	used;			/* words handed out */
 	uint32_t	epoch;			/* bumped when the slab is reused: the entries of the older epoch are gone */
-	uint64_t	stamp;			/* last use, for the least recently used choice */
-	uint64_t	pin;			/* the batch that last used it: not evictable during that batch */
+	uint64_t	stamp;			/* last use */
+	uint64_t	pin;			/* the batch that last used it: not evictable until that batch ended */
 } Slab;
 
 typedef struct Ent
@@ -57,16 +70,52 @@ typedef struct Ent
 	SiftVkKey	key;
 	uint32_t	slab;
 	uint32_t	epoch;
-	uint32_t	woff;
+	uint32_t	desc[8];		/* what the shaders read of a decoded column */
 	uint8_t		state;			/* 0 free, 1 used, 2 deleted */
 } Ent;
 
-typedef struct Copy
+typedef struct FastPipe
 {
-	uint64_t	src;
-	uint64_t	dst;
-	uint64_t	size;
-} Copy;
+	int			pl;
+	uint32_t	sc[FAST_NSC];
+	VkPipeline	pipe;
+	uint64_t	used;
+} FastPipe;
+
+/* the descriptors of the decoded columns of a range of granules (the rows dt of a batch), kept on the device while the chunks they name stay in the cache */
+typedef struct Tab
+{
+	SiftVkTabKey key;
+	uint32_t	ngran, ncols;
+	uint64_t	gen;			/* vk->evict_gen when it was made: any eviction since makes it stale */
+	uint64_t	used;			/* last use */
+	Buf			buf;			/* ngran * ncols * 8 words, as the shaders read them */
+	uint32_t   *slabs;			/* the slabs of the chunks it names, to keep them young */
+	uint32_t	nslabs;
+	uint32_t   *host;			/* tests: the table as the host built it */
+} Tab;
+
+typedef struct Slot
+{
+	Buf			stage, work, ctl, dj, rstat;
+	VkCommandBuffer tcb, ccb;
+	VkSemaphore sem;
+	VkFence		fence;
+	VkDescriptorSet ds;
+	VkQueryPool qp;
+	bool		busy;
+	bool		stamps;
+	uint32_t	njobs;
+	uint64_t	up;				/* bytes of the staging buffer in use */
+	uint64_t	unw;
+	uint32_t   *pend;			/* the cache entries made for the batch */
+	uint32_t	npend;
+	uint32_t	cappend;
+} Slot;
+
+enum { PL_LZ4, PL_DECODE, PL_UNGROUPED, PL_DENSE, PL_HASH, PL_COMPACT, PL_TOPN, PL_FAST_UNGROUPED, PL_FAST_DENSE, PL_FAST_HASH, PL_N };
+#define PL_FIXED		PL_FAST_UNGROUPED		/* the pipelines before it are built at open; the fast ones per shape */
+enum { K_DEVICE, K_REBAR, K_HOST, K_READBACK };
 
 struct SiftVk
 {
@@ -78,57 +127,84 @@ struct SiftVk
 	VkInstance	inst;
 	VkPhysicalDevice pd;
 	VkDevice	dev;
-	VkQueue		q;
-	uint32_t	qf;
+	VkQueue		cq, tq;
+	uint32_t	cf, tf;
 	VkPhysicalDeviceProperties props;
 	VkPhysicalDeviceMemoryProperties mp;
-	bool		software;
-	bool		stamps;			/* the queue has timestamps */
-	bool		lost;
-	bool		inflight;		/* a submission may still be running: settle first */
+	SiftVkCaps	caps;
+	bool		lost, inflight, stamps, split_queues, test_lost, test_timeout, usable;
 	char		err[256];
-	VkCommandPool pool;
-	VkCommandBuffer cb;
-	VkFence		fence;
-	VkQueryPool qp;
-	VkShaderModule mod;
+	void		(*account) (void *arg, int64_t delta);
+	void	   *account_arg;
+	int64_t		accounted;
+	VkCommandPool cpool, tpool;
+	VkShaderModule mod[PL_N];
 	VkDescriptorSetLayout dsl;
 	VkPipelineLayout pl;
-	VkPipeline	pipe;
+	VkPipeline	pipe[PL_N];
 	VkDescriptorPool dpool;
-	VkDescriptorSet ds;
-	Buf			arena, stage, cdesc, cwg, rdev, rhost;
+	Slot		slot[NSLOT];
+	FastPipe	fast[FAST_CACHE];
+	Tab			tab[TAB_MAX];
+	uint64_t	tab_clock;
+	uint64_t	evict_gen;		/* bumped when a decoded chunk the cache held is gone: the tables made before are stale */
+	bool		verify_tabs;	/* test: a hit is compared with the chunks */
+	bool		no_fast;		/* test: every job runs the expression machine */
+	Buf			arena, res, rinit, rhost, ht, out, hout;
+	uint64_t	ht_cap, out_cap, hout_cap;
 	/* the cache */
 	uint32_t	nslab;
 	Slab	   *slab;
 	int64_t		cur;			/* the slab being filled, -1 none */
 	uint64_t	clock;
-	uint64_t	batch;			/* the batch in preparation */
+	uint64_t	batch;			/* the batch in preparation (pins) */
+	uint64_t	done_batch;		/* the last batch that ended: its pins are gone */
 	Ent		   *ent;
 	uint32_t	nent;			/* power of two */
 	uint32_t	used;			/* used + deleted slots */
-	/* the batch in preparation */
-	Copy	   *copy;
-	uint32_t	ncopy;
-	uint32_t	capcopy;
-	uint64_t	up;				/* bytes of the staging area in use */
-	SiftVkKey  *pend;
-	uint32_t	npend;
+	SiftVkResult last;
 };
 
 #define CK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) return fail(vk, #x, r_); } while (0)
 
-enum { K_DEVICE, K_HOST, K_READBACK };
-
-/* mem.c, cache.c, run.c */
+/* mem.c */
 bool fail(SiftVk *vk, const char *what, VkResult r);
 double now_ms(void);
 void sigs_block(sigset_t *old);
 void sigs_restore(const sigset_t *old);
 void buf_free(SiftVk *vk, Buf *b);
 bool buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind);
+void account(SiftVk *vk, int64_t delta);
+uint64_t heap_budget_free(SiftVk *vk);
+
+/* pipe.c */
+bool make_pipelines(SiftVk *vk);
+void free_pipelines(SiftVk *vk);
+bool make_slots(SiftVk *vk);
+void free_slots(SiftVk *vk);
+bool bind_buffers(SiftVk *vk);
+
+/* fast.c */
+VkPipeline fast_pipeline(SiftVk *vk, int pl, const FastShape *fs);
+void free_fast(SiftVk *vk);
+
+/* cache.c */
 bool make_cache(SiftVk *vk, uint64_t bytes);
-bool settle(SiftVk *vk);
+Ent *cache_find(SiftVk *vk, const SiftVkKey *k);
+Ent *cache_insert(SiftVk *vk, const SiftVkKey *k, uint32_t words, uint32_t *woff);
+void cache_remove(SiftVk *vk, Ent *e);
+void cache_touch(SiftVk *vk, Ent *e);
+
+/* tab.c */
+Tab *tab_find(SiftVk *vk, const SiftVkJob *job);
+bool tab_store(SiftVk *vk, const SiftVkJob *job, const uint32_t *host, uint64_t gen);
+bool tab_verify(SiftVk *vk, const SiftVkJob *job, const Tab *t);
+void tab_touch(SiftVk *vk, Tab *t);
+void free_tabs(SiftVk *vk);
+
+/* run.c */
+bool settle_all(SiftVk *vk);
+bool wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void));
 
 #endif							/* SIFT_VULKAN */
 

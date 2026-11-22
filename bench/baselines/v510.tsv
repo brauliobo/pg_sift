@@ -1,0 +1,199 @@
+section	metric	scale	value	unit	notes
+meta	round	-	round0-v510	str	branch=HEAD sha=3b9197acc9
+meta	pg_sift_version	-	5.1	str	pg=18.7
+meta	build_time	-	0.00	s	make -j2
+meta	scope_multiplicity	-	1.047	x	2000 entities -> 100 parents; Zipf p1=270 top10=46.1% 1-parent=97.1% max=6 overlap=55.0%
+meta	budgets	-	maint=4MB,work=4MB	str	tight scaling budgets
+A_build_entity	time_ms	10000	50.6	ms	5.06 us/row
+A_build_entity	size_mb	10000	0.51	MB	65 blks, 53.2 B/row
+A_build_entity	wal_mb	10000	0.48	MB	50.2 B/row
+A_build_entity	temp_mb	10000	0.00	MB	0.0 B/row
+A_build_entity	peak_rss_anon_mb	10000	8.45	MB	VmHWM=34.93 MB
+A_build_scoped_plain	time_ms	10000	75.6	ms	1.49x vs entity, 7.56 us/row
+A_build_scoped_plain	ratio_vs_entity	10000	1.49	x	plain scoped / entity
+A_build_scoped_plain	size_mb	10000	1.15	MB	147 blks, +126.2% vs entity
+A_build_scoped_plain	wal_mb	10000	1.06	MB	111.5 B/row
+A_build_scoped_plain	temp_mb	10000	0.00	MB	0.0 B/row
+A_build_scoped_plain	peak_rss_anon_mb	10000	12.56	MB	VmHWM=41.10 MB
+A_build_cic	total_ms	10000	96.1	ms	9.61 us/row
+A_build_cic	pass1_ms	10000	62.0	ms	entity pass
+A_build_cic	pass2_ms	10000	34.0	ms	pass2/pass1=0.55x
+A_build_cic	size_mb	10000	1.15	MB	147 blks, +126.2% vs entity, 120.4 B/row
+A_build_cic	wal_mb	10000	1.07	MB	111.9 B/row
+A_build_cic	temp_mb	10000	0.00	MB	0.0 B/row
+A_build_cic	peak_rss_anon_mb	10000	14.00	MB	VmHWM=44.10 MB
+B_vac_after_cic	time_ms	10000	25.4	ms	status=OK
+B_vac_after_cic	peak_rss_anon_mb	10000	3.18	MB	VmHWM=20.79 MB
+B_vac_after_cic	wal_mb	10000	0.03	MB	3.0 B/row
+B_vac_after_cic	blks_touched	10000	67	blks	size_after=1.15 MB
+D_scaling	Q1_scope_whole_ms	10000	0.11	ms	blks=33 plan=SiftAgg
+D_scaling	Q1_scope_whole_blks	10000	33	blks	hit=33 read=0
+D_scaling	Q2_scope_month_ms	10000	0.16	ms	blks=17 plan=SiftAgg
+D_scaling	Q2_scope_month_blks	10000	17	blks	hit=17 read=0
+D_scaling	Q3_scope_groupby_parent_ms	10000	0.45	ms	blks=42 plan=SiftAgg
+D_scaling	Q3_scope_groupby_parent_blks	10000	42	blks	hit=42 read=0
+D_scaling	Q7_scope_top20_unfilt_ms	10000	0.10	ms	blks=36 plan=SiftAgg
+D_scaling	Q7_scope_top20_unfilt_blks	10000	36	blks	hit=36 read=0
+D_scaling	Q8_scope_top20_1pct_ms	10000	0.06	ms	blks=11 plan=SiftAgg
+D_scaling	Q8_scope_top20_1pct_blks	10000	11	blks	hit=11 read=0
+A_build_entity	time_ms	40000	228.2	ms	5.70 us/row
+A_build_entity	size_mb	40000	2.16	MB	276 blks, 56.5 B/row
+A_build_entity	wal_mb	40000	2.14	MB	56.1 B/row
+A_build_entity	temp_mb	40000	0.91	MB	23.8 B/row
+A_build_entity	peak_rss_anon_mb	40000	27.89	MB	VmHWM=66.96 MB
+A_build_scoped_plain	time_ms	40000	402.4	ms	1.76x vs entity, 10.06 us/row
+A_build_scoped_plain	ratio_vs_entity	40000	1.76	x	plain scoped / entity
+A_build_scoped_plain	size_mb	40000	4.40	MB	563 blks, +104.0% vs entity
+A_build_scoped_plain	wal_mb	40000	4.38	MB	114.7 B/row
+A_build_scoped_plain	temp_mb	40000	0.91	MB	23.8 B/row
+A_build_scoped_plain	peak_rss_anon_mb	40000	43.46	MB	VmHWM=83.21 MB
+A_build_cic	total_ms	40000	446.7	ms	11.17 us/row
+A_build_cic	pass1_ms	40000	200.1	ms	entity pass
+A_build_cic	pass2_ms	40000	246.6	ms	pass2/pass1=1.23x
+A_build_cic	size_mb	40000	4.41	MB	565 blks, +104.7% vs entity, 115.7 B/row
+A_build_cic	wal_mb	40000	4.38	MB	114.8 B/row
+A_build_cic	temp_mb	40000	0.91	MB	23.8 B/row
+A_build_cic	peak_rss_anon_mb	40000	30.09	MB	VmHWM=76.87 MB
+B_vac_after_cic	time_ms	40000	51.0	ms	status=OK
+B_vac_after_cic	peak_rss_anon_mb	40000	9.91	MB	VmHWM=46.86 MB
+B_vac_after_cic	wal_mb	40000	0.11	MB	2.9 B/row
+B_vac_after_cic	blks_touched	40000	72	blks	size_after=4.41 MB
+D_scaling	Q1_scope_whole_ms	40000	0.05	ms	blks=18 plan=SiftAgg
+D_scaling	Q1_scope_whole_blks	40000	18	blks	hit=18 read=0
+D_scaling	Q2_scope_month_ms	40000	0.09	ms	blks=19 plan=SiftAgg
+D_scaling	Q2_scope_month_blks	40000	19	blks	hit=19 read=0
+D_scaling	Q3_scope_groupby_parent_ms	40000	1.40	ms	blks=87 plan=SiftAgg
+D_scaling	Q3_scope_groupby_parent_blks	40000	87	blks	hit=87 read=0
+D_scaling	Q7_scope_top20_unfilt_ms	40000	0.24	ms	blks=36 plan=SiftAgg
+D_scaling	Q7_scope_top20_unfilt_blks	40000	36	blks	hit=36 read=0
+D_scaling	Q8_scope_top20_1pct_ms	40000	0.11	ms	blks=11 plan=SiftAgg
+D_scaling	Q8_scope_top20_1pct_blks	40000	11	blks	hit=11 read=0
+A_build_entity	time_ms	160000	1083.4	ms	6.77 us/row
+A_build_entity	size_mb	160000	8.78	MB	1124 blks, 57.5 B/row
+A_build_entity	wal_mb	160000	8.58	MB	56.2 B/row
+A_build_entity	temp_mb	160000	22.39	MB	146.7 B/row
+A_build_entity	peak_rss_anon_mb	160000	83.18	MB	VmHWM=173.03 MB
+A_build_scoped_plain	time_ms	160000	1939.3	ms	1.79x vs entity, 12.12 us/row
+A_build_scoped_plain	ratio_vs_entity	160000	1.79	x	plain scoped / entity
+A_build_scoped_plain	size_mb	160000	17.03	MB	2180 blks, +94.0% vs entity
+A_build_scoped_plain	wal_mb	160000	16.91	MB	110.8 B/row
+A_build_scoped_plain	temp_mb	160000	40.72	MB	266.9 B/row
+A_build_scoped_plain	peak_rss_anon_mb	160000	72.01	MB	VmHWM=181.59 MB
+A_build_cic_par2	total_ms	160000	1853.8	ms	maint_workers=2, 11.59 us/row
+A_build_cic_par2	pass1_ms	160000	1086.9	ms	parallel pass 1 (2 workers)
+A_build_cic_par2	pass2_ms	160000	766.8	ms	pass2/pass1=0.71x
+A_build_cic_par2	pass2_ratio	160000	0.71	x	serial pass2 / par2 pass1
+A_build_cic_par2	wal_mb	160000	17.06	MB	111.8 B/row
+A_build_cic_par2	temp_mb	160000	38.06	MB	249.5 B/row
+A_build_cic_par2	peak_rss_anon_mb	160000	81.13	MB	VmHWM=174.18 MB
+A_build_cic	total_ms	160000	2034.2	ms	12.71 us/row
+A_build_cic	pass1_ms	160000	982.6	ms	entity pass
+A_build_cic	pass2_ms	160000	1051.6	ms	pass2/pass1=1.07x
+A_build_cic	size_mb	160000	17.41	MB	2229 blks, +98.3% vs entity, 114.1 B/row
+A_build_cic	wal_mb	160000	17.06	MB	111.8 B/row
+A_build_cic	temp_mb	160000	38.06	MB	249.5 B/row
+A_build_cic	peak_rss_anon_mb	160000	82.22	MB	VmHWM=176.14 MB
+B_vac_after_cic	time_ms	160000	101.0	ms	status=OK
+B_vac_after_cic	peak_rss_anon_mb	160000	31.80	MB	VmHWM=113.71 MB
+B_vac_after_cic	wal_mb	160000	0.44	MB	2.9 B/row
+B_vac_after_cic	blks_touched	160000	83	blks	size_after=17.41 MB
+D_scaling	Q1_scope_whole_ms	160000	0.06	ms	blks=17 plan=SiftAgg
+D_scaling	Q1_scope_whole_blks	160000	17	blks	hit=17 read=0
+D_scaling	Q2_scope_month_ms	160000	0.09	ms	blks=18 plan=SiftAgg
+D_scaling	Q2_scope_month_blks	160000	18	blks	hit=18 read=0
+D_scaling	Q3_scope_groupby_parent_ms	160000	3.26	ms	blks=294 plan=SiftAgg
+D_scaling	Q3_scope_groupby_parent_blks	160000	294	blks	hit=294 read=0
+D_scaling	Q7_scope_top20_unfilt_ms	160000	0.07	ms	blks=36 plan=SiftAgg
+D_scaling	Q7_scope_top20_unfilt_blks	160000	36	blks	hit=36 read=0
+D_scaling	Q8_scope_top20_1pct_ms	160000	0.07	ms	blks=11 plan=SiftAgg
+D_scaling	Q8_scope_top20_1pct_blks	160000	11	blks	hit=11 read=0
+S_slopes	cic_rss_anon_b_per_row	10k-160k	470.81	B/row	OLS across 10k, 40k, 160k
+S_slopes	cic_vm_hwm_b_per_row	10k-160k	907.14	B/row	OLS across 10k, 40k, 160k
+S_slopes	cic_temp_b_per_row	10k-160k	282.84	B/row	OLS across 10k, 40k, 160k
+S_slopes	cic_disk_b_per_row	10k-160k	113.67	B/row	OLS across 10k, 40k, 160k
+S_slopes	cic_wal_b_per_row	10k-160k	111.55	B/row	OLS across 10k, 40k, 160k
+S_slopes	vac1_rss_anon_b_per_row	10k-160k	197.56	B/row	OLS across 10k, 40k, 160k
+S_slopes	vac1_vm_hwm_b_per_row	10k-160k	630.82	B/row	OLS across 10k, 40k, 160k
+D_analytical	Q1_scope_whole_1w_ms	160000	0.06	ms	hit=17 read=0 plan_blks=54 rss=3.2MB plan=SiftAgg
+D_analytical	Q2_scope_month_1w_ms	160000	0.09	ms	hit=18 read=0 plan_blks=48 rss=3.1MB plan=SiftAgg
+D_analytical	Q3_scope_groupby_parent_1w_ms	160000	3.26	ms	hit=294 read=0 plan_blks=55 rss=3.2MB plan=SiftAgg
+D_analytical	Q4_highcard_groupby_1w_ms	160000	17.74	ms	hit=284 read=0 plan_blks=4 rss=14.3MB plan=SiftAgg
+D_analytical	Q5_count_distinct_1w_ms	160000	7.66	ms	hit=204 read=0 plan_blks=4 rss=6.3MB plan=SiftAgg
+D_analytical	Q6_jsonb_shred_array_1w_ms	160000	2.60	ms	hit=118 read=0 plan_blks=3 rss=3.1MB plan=SiftAgg
+D_analytical	Q7_scope_top20_unfilt_1w_ms	160000	0.07	ms	hit=36 read=0 plan_blks=40 rss=3.1MB plan=SiftAgg
+D_analytical	Q8_scope_top20_1pct_1w_ms	160000	0.07	ms	hit=11 read=0 plan_blks=40 rss=3.1MB plan=SiftAgg
+D_parallel	Q4_highcard_groupby_1w_par_ms	160000	21.71	ms	work_mem=16MB plan=SiftAgg
+D_parallel	Q4_highcard_groupby_4w_ms	160000	29.55	ms	work_mem=16MB workers=4 speedup=0.73x plan=SiftAgg
+D_parallel	Q4_highcard_groupby_workers_launched	160000	4	workers	planned=4 requested=4
+D_parallel	Q4_highcard_groupby_speedup	160000	0.73	x	1w / 4w (work_mem=16MB)
+D_parallel	Q5_count_distinct_1w_par_ms	160000	10.08	ms	work_mem=16MB plan=SiftAgg
+D_parallel	Q5_count_distinct_4w_ms	160000	16.16	ms	work_mem=16MB workers=4 speedup=0.62x plan=SiftAgg
+D_parallel	Q5_count_distinct_workers_launched	160000	4	workers	planned=4 requested=4
+D_parallel	Q5_count_distinct_speedup	160000	0.62	x	1w / 4w (work_mem=16MB)
+C_oltp	insert_1000_total_ms	160000	25.9	ms	0.026 ms/row
+C_oltp	insert_1000_wal_mb	160000	0.47	MB	rss=3.6MB
+C_oltp	update_2pct_ms	160000	50.8	ms	3200 rows (73% JSONB, 13% soft-del, 14% scalar, 0% entity_id), rss=4.4MB
+C_oltp	update_2pct_wal_mb	160000	1.76	MB	73% JSONB+updated_at, 13% deleted_at, 14% scalar
+C_oltp	delete_2pct_ms	160000	76.5	ms	scattered 2%, rss=4.4MB
+C_oltp	delete_2pct_wal_mb	160000	0.30	MB	
+C_dirty	Q1_scope_whole_dirty_ratio	160000	0.92	x	clean=0.36ms dirty=0.33ms
+C_dirty	Q2_scope_month_dirty_ratio	160000	2.22	x	clean=0.11ms dirty=0.25ms
+C_dirty	Q3_scope_groupby_parent_dirty_ratio	160000	3.75	x	clean=6.92ms dirty=25.94ms
+C_dirty	Q7_scope_top20_unfilt_dirty_ratio	160000	7.27	x	clean=0.18ms dirty=1.33ms
+B_vac_post_del	time_ms	160000	75.6	ms	status=OK
+B_vac_post_del	peak_rss_anon_mb	160000	5.47	MB	VmHWM=94.35 MB
+B_vac_post_del	wal_mb	160000	0.65	MB	
+B_vac_post_del	blks_touched	160000	1321	blks	size_after=17.41 MB
+F_probes	cte6_plan_ms	160000	0.77	ms	plan_blks=79 plan=SiftAgg
+F_probes	cte6_plan_blks	160000	79	blks	plan_ms=0.77ms plan=SiftAgg
+F_probes	pair_edit_dml_ms	160000	25.37	ms	-5/+5 pairs, wal=3.1KB
+F_probes	pair_edit_q1_first_ms	160000	4.58	ms	clean=0.14ms blks=218 plan=SiftAgg
+F_probes	pair_edit_q1_med_ms	160000	0.46	ms	blks=119 plan=SiftAgg
+F_probes	jsonb_variant_exc_ms	160000	0.90	ms	0.5% str in float8, blks=142 heap_blks=0 plan=SiftAgg
+F_probes	jsonb_variant_exc_blks	160000	142	blks	hit=142 read=0
+F_probes	jsonb_variant_heap_blks	160000	0	blks	plan=SiftAgg
+F_probes	f4_soft_del_null_ms	160000	0.39	ms	blks=128 plan_blks=48 plan=SiftAgg
+F_probes	f4_soft_del_null_blks	160000	128	blks	hit=128 read=0
+F_probes	f4_soft_del_not_null_ms	160000	0.22	ms	blks=76 plan_blks=49 plan=SiftAgg
+F_probes	f4_soft_del_not_null_blks	160000	76	blks	hit=76 read=0
+F_probes	f5_single_entity_ms	160000	0.12	ms	entity=1500 blks=27 plan_blks=4 plan=SiftAgg
+F_probes	f5_single_entity_blks	160000	27	blks	hit=27 read=0
+F_probes	f5_mega_entity_ms	160000	0.14	ms	entity=1 (5% rows) blks=28 plan_blks=4 plan=SiftAgg
+F_probes	f5_mega_entity_blks	160000	28	blks	hit=28 read=0
+F_probes	f6_materialized_cte_ms	160000	0.77	ms	parent=1 blks=178 plan_blks=6 plan=SiftAgg
+F_probes	f6_materialized_cte_blks	160000	178	blks	hit=178 read=0
+F_probes	f7_jsonb_exists_ms	160000	0.24	ms	blks=68 heap_blks=0 reread_rows=0 plan_blks=49 plan=SiftAgg
+F_probes	f7_jsonb_exists_blks	160000	68	blks	hit=68 read=0
+F_probes	f7_jsonb_exists_heap_blks	160000	0	blks	reread_rows=0 plan=SiftAgg
+F_probes	f7_jsonb_exists_reread_rows	160000	0	rows	heap_blks=0 plan=SiftAgg
+F_probes	f8_updated_at_top20_ms	160000	0.25	ms	parent=1 blks=47 plan_blks=40 plan=SiftAgg
+F_probes	f8_updated_at_top20_blks	160000	47	blks	hit=47 read=0
+F_probes	plan_buffers_median	160000	40.0	blks	max=55 plan_ms_med=0.24ms across 15 queries (Q1-Q8, F4-F8)
+F_probes	plan_buffers_max	160000	55	blks	median=40.0 across 15 queries
+E_idle_backend	rss_anon_idle_mb	34	11.43	MB	cap=2MB before=3.12MB active=11.43MB delta=8.30MB hwm=57.39MB 250.1KB/idx
+E_idle_backend	rss_anon_delta_mb	34	8.30	MB	cap=2MB (250.1KB/idx)
+G_size	heap_size_mb	160000	55.52	MB	pg_table_size; rel=55.47MB total=76.38MB
+G_size	heap_b_per_row	160000	363.83	B/row	heap+TOAST via pg_table_size
+G_size	entity_b_per_row	160000	57.55	B/row	entity-only sift_col
+G_size	scoped_b_per_row	160000	114.12	B/row	scoped CIC sift_col
+G_size	scoped_to_heap_ratio	160000	0.314	x	scoped_bytes / pg_table_size(events)
+G_size	scope_overhead_pct	160000	98.31	%	scoped vs entity size overhead
+G_size	page_utilization_pct	160000	n/a	%	sift_index_size_breakdown unavailable
+G_size	dead_space_pct	160000	n/a	%	sift_index_size_breakdown unavailable
+G_size	section_bytes_granules	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_size	section_bytes_dicts	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_size	section_bytes_zones	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_size	section_bytes_preagg	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_size	section_bytes_delvec	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_size	section_bytes_scope	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_size	section_bytes_slack	160000	n/a	B/row	sift_index_size_breakdown unavailable
+G_wal	cic_wal_b_per_row	160000	111.83	B/row	17.06 MB total
+G_wal	oltp_ins1_wal_b_per_row	160000	495.73	B/row	1000x 1-row INSERT
+G_wal	update_2pct_wal_b_per_row	160000	578.33	B/row	3200 rows
+G_wal	delete_2pct_wal_b_per_row	160000	98.66	B/row	3200 rows
+G_compaction	write_amplification	40000	2.13	x	5 waves x 2% ins/del+VAC, wal=2.96MB logical=1.39MB
+G_compaction	index_growth_ratio	40000	1.032	x	init=4.40MB post=4.54MB
+G_compaction	dead_space_pct	40000	n/a	%	sift_index_size_breakdown unavailable
+G_compaction	churn_total_wal_mb	40000	2.96	MB	statuses=OK,OK,OK,OK,OK
+G_compaction	churn_elapsed_ms	40000	252.2	ms	5 waves at N=40000
+meta	bench_suite_time	-	24.68	s	end-to-end SQL telemetry

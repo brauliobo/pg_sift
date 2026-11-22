@@ -2,7 +2,7 @@
 
     python3 -I steps/regress.py [--sigmas 2] [--min 0.05] [--noise 0.15] [--all] results.tsv [more.tsv ...]
 
-Reads results.tsv files of `bench/bench report` (bench/results/<dataset>.tsv work too) and compares, per dataset, tier, class and
+Reads results.tsv files of `bench/bench report` (docs/results/<dataset>.tsv work too) and compares, per dataset, tier, class and
 variant, an engine with its reference (sift with the build of an older git ref, sift_ref) for throughput (qps), latency (p50_ms,
 cold_p50_ms), index size (index_mib) and CREATE INDEX time (build_s). A cell is a regression when the new value is worse (lower
 throughput, higher latency, size or time) by more than --min of the reference (default 5%) AND by more than --sigmas combined standard

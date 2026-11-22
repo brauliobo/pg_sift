@@ -1,6 +1,6 @@
--- The rows of a sub-select joined to the aggregate scan are bounded by memory (sift.agg_lookup_max_kb: the estimated rows times their width plus 64 bytes a row), not by a
--- row count: a sub-select the planner expects to return 2,000,000 rows (the statistics of the table are set to that) is a lookup table of the scan, and the older
--- sift.agg_lookup_max_rows, when set, still limits the rows alone. The rows are the normal plan's in every case.
+-- The rows of a sub-select joined to the aggregate scan are bounded by memory (half of work_mem: the estimated rows times their width plus 64 bytes a row), not by a
+-- row count: a sub-select the planner expects to return 2,000,000 rows (the statistics of the table are set to that) is a lookup table of the scan once work_mem allows it.
+-- The rows are the normal plan's in every case.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -30,23 +30,17 @@ BEGIN
 END $$;
 SELECT format('SELECT d.k, count(*) AS c, sum(amount) AS s FROM ev JOIN (SELECT id, k FROM bigdim LIMIT %s) d ON d.id = ev.n GROUP BY d.k', 5000000) AS q \gset
 
-SHOW sift.agg_lookup_max_kb;
+SHOW work_mem;
 SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
 SELECT same(:'q') AS default_budget;
 
--- the older setting limits the rows, whatever their width
-SET sift.agg_lookup_max_rows = 1000000;
-SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
-SELECT same(:'q') AS rows_limit;
-RESET sift.agg_lookup_max_rows;
-
--- a smaller memory budget: 2,000,000 rows of 8 bytes and the 64 of a row are 137 MB
-SET sift.agg_lookup_max_kb = 131072;
+-- 2,000,000 rows of 8 bytes and the 64 of a row are 137 MB: half of 128 MB is under them, half of 512 MB over
+SET work_mem = '128MB';
 SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
 SELECT same(:'q') AS small_budget;
-SET sift.agg_lookup_max_kb = 262144;
+SET work_mem = '512MB';
 SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
-RESET sift.agg_lookup_max_kb;
+RESET work_mem;
 
 DROP FUNCTION same(text);
 DROP TABLE ev, bigdim;

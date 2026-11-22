@@ -60,10 +60,10 @@ SELECT same($$SELECT store, sum(rate / weight) FILTER (WHERE weight <> 0) AS a, 
 			  sum(CASE WHEN weight = 0 THEN 0 ELSE price / weight END) AS c FROM items GROUP BY store$$) AS guarded_division;
 SELECT same($$SELECT count(*) FROM items WHERE weight <> 0 AND price / weight > 1$$) AS guarded_where;
 
--- a combo cache of 64 entries resets many times over thousands of distinct values
-SET sift.agg_combo_cache = 64;
+-- a combo cache of work_mem's 64 kB resets many times over thousands of distinct values
+SET work_mem = '64kB';
 SELECT same($$SELECT store, sum(price / 3) AS a, max(price % 5 + rate / 2) AS b FROM items GROUP BY store$$) AS combo_cache;
-RESET sift.agg_combo_cache;
+RESET work_mem;
 
 -- NaN stored in a numeric column: the index keeps NULL and a flag; the rows are evaluated by PostgreSQL or as it orders them (agg_numeric_nan)
 CREATE TABLE nans (id int PRIMARY KEY, g int, n numeric(12,2));

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The time the rewrite of the tombstone log holds the exclusive lock of the log (the test build logs it) follows the entries appended while the new log is built, not the
-# entries of the log: VACUUM with a transaction open that keeps every entry (so the new log is as long as the old), the log in runs on temp files (sift.tomb_log_limit 1 MB),
+# entries of the log: VACUUM with a transaction open that keeps every entry (so the new log is as long as the old), the log in runs on temp files (sift.backend_cache_kb 1 MB),
 # at N and 4 N entries; then with the build held at its gate while 300 UPDATEs append. What the hold reads under the lock is counted, not timed (the log line says how many entries it read: those appended meanwhile): a rewrite that read the log again under the lock would read N or 4 N. SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N). SIFT_TH_ROWS: N (100000 in a full run; the 1.6 M case of the measurement is 16 x N).
 . "$(dirname "$0")/lib.bash"
 
@@ -41,7 +41,7 @@ rewrite_of() { # n: the hold in microseconds
 	snap=$!
 	wait_for "[[ -e $D/snap ]]" 60 || bail "the snapshot holder did not start"
 	sql primary "DELETE FROM t WHERE id <= $n" >/dev/null
-	sql primary "SET sift.tomb_log_limit = 1024" "VACUUM t" >/dev/null
+	sql primary "SET sift.backend_cache_kb = 1024" "VACUUM t" >/dev/null
 	kill "$snap" 2>/dev/null; sql primary "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()" >/dev/null 2>&1
 	wait "$snap" 2>/dev/null
 }
@@ -59,7 +59,7 @@ check "no entry appended meanwhile: the hold reads no entry of a log of N or of 
 sql primary "DROP TABLE IF EXISTS t" "CREATE TABLE t USING sift_table AS SELECT g AS id, g AS v FROM generate_series(1, $((4 * N)) + 1000) g" "VACUUM t" >/dev/null
 sql primary "DELETE FROM t WHERE id <= $((4 * N))" >/dev/null
 hold $PH_TOMB
-sql primary "SET sift.test_phase_gate = $GATE" "SET sift.tomb_log_limit = 1024" "VACUUM t" >/dev/null 2>&1 &
+sql primary "SET sift.test_phase_gate = $GATE" "SET sift.backend_cache_kb = 1024" "VACUUM t" >/dev/null 2>&1 &
 V=$!
 check "VACUUM waits in the build of the new log" wait_for "waiting_at $PH_TOMB" 60
 for i in $(seq "$APPENDS"); do echo "UPDATE t SET v = v + 1 WHERE id = $((4 * N + 1 + i % 900));"; done | sql primary >/dev/null

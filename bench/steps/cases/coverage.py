@@ -6,15 +6,14 @@ import re
 import subprocess
 import sys
 
-import extras
+import resultfile
 
 from .registry import read_registry
 from .runcfg import HERE, REPO
 
 ALLOW = os.path.join('scripts', 'bench-cases.allow')
-RESULTS = os.path.join('bench', 'results')
-OUT = os.path.join('bench', 'out')   # the generated pages are untracked: they exist after a run of `bench/bench cases --docs`
-PAGES = (os.path.join(OUT, 'README-blocks.md'), os.path.join(OUT, 'BENCHMARKS.md'))
+RESULTS = os.path.join('docs', 'results')
+PAGES = ('README.md', os.path.join('docs', 'BENCHMARKS.md'))   # the pages scripts/gen-docs.py renders the blocks of the cases into
 VERSION = re.compile(r'\b\d+\.\d+\.\d+\b')   # a release number (`3.4.0 to 3.7.1`) is no figure of a speed
 CLAIM = re.compile(r'\d[\d,.]* ?(?:ms|us|µs|microseconds?|s)? (?:against|->|to|before|was|vs\.?) \d|\d[\d.]*x (?:faster|less|more|smaller|slower)|instructions|mispredict')
 FOOTER = re.compile(r'`n/a`: (?:a measure )?not measured under')   # steps/triple.py NOT_MEASURED, whatever the version it names
@@ -22,7 +21,7 @@ LANES = ('sift', 'native')
 COMMIT = 'commit '   # a waiver of ALLOW: `commit SHA<TAB>reason`, SHA the start of the full hash (7 characters or more: the abbreviation git prints depends on the size of the repository)
 MIN_SHA = 7
 FIGURE = 'figure '   # a waiver of ALLOW: `figure PHRASE<TAB>reason`, a CHANGELOG line that states a figure with no row in bench/claims.tsv yet
-ROWS = 1000000   # the size of the published cases (bench/results/cases.tsv)
+ROWS = 1000000   # the size of the published cases (docs/results/cases.tsv)
 
 
 def read(root, path):
@@ -74,9 +73,9 @@ def allow_list(root):
 
 
 def results(root, name):
-    """(meta, rows) of bench/results/NAME.tsv, or None"""
+    """(meta, rows) of docs/results/NAME.tsv, or None"""
     path = os.path.join(root, RESULTS, name + '.tsv')
-    return extras.read(path) if os.path.exists(path) else None
+    return resultfile.read(path) if os.path.exists(path) else None
 
 
 def version(root):

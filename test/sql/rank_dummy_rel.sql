@@ -5,7 +5,9 @@ CREATE EXTENSION pg_sift;
 
 CREATE TABLE dr (id int PRIMARY KEY, body text, n int CHECK (n >= 0)) WITH (autovacuum_enabled = off);
 INSERT INTO dr SELECT i, 'alpha beta w' || i % 50, i FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX dr_idx ON dr USING sift (body);
+RESET client_min_messages;
 ANALYZE dr;
 
 SET constraint_exclusion = on;

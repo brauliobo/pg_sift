@@ -1,4 +1,4 @@
--- The rewrite of a sift_col index that churn left scattered (sift.col_auto_merge*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
+-- The rewrite of a sift_col index that churn left scattered (sift.async_maintenance*, sift.col_maintain, sift.col_maintenance_due): a DELETE or UPDATE
 -- spread over the table puts a dead row in every unit while far fewer than dead_rewrite_pct percent of the rows are dead, so VACUUM rewrites nothing
 -- and no unit answers from its pre-aggregates. The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
 -- in the write buffer. Nothing starts the rewrite but sift.col_maintain; the end state after it is the one of a REINDEX of the same table, and the answers never change.
@@ -218,7 +218,7 @@ SELECT sift.col_verify('facts_a_col', true);
  
 (1 row)
 
--- sift.col_auto_merge off: VACUUM leaves facts_b as the policy does, the answers are the same as those of the rewritten and of the reindexed one
+-- sift.async_maintenance off: VACUUM leaves facts_b as the policy does, the answers are the same as those of the rewritten and of the reindexed one
 SELECT 'not rewritten' AS step, * FROM fa_state('facts_b');
      step      | units | from_preagg | same 
 ---------------+-------+-------------+------
@@ -340,21 +340,21 @@ SELECT sift.col_verify('facts_e_col', true);
 (1 row)
 
 -- on, within 5% of the WAL, unless the server says otherwise (the test clusters turn it off and the budget away)
-SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.col_auto_merge', 'sift.col_auto_merge_wal_pct') ORDER BY name;
+SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.async_maintenance', 'sift.col_auto_merge_wal_pct') ORDER BY name;
             name             | boot_val 
 -----------------------------+----------
- sift.col_auto_merge         | on
+ sift.async_maintenance         | on
  sift.col_auto_merge_wal_pct | 5
 (2 rows)
 
 -- CREATE INDEX says what the worker does with the index and how to stop it
-SET sift.col_auto_merge = on;
+SET sift.async_maintenance = on;
 CREATE TABLE facts_f (LIKE facts_a);
 CREATE INDEX facts_f_col ON facts_f USING sift_col (id, key, kind, amount);
 NOTICE:  sift_col index "facts_f_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_f_col');
-RESET sift.col_auto_merge;
+RESET sift.async_maintenance;
 DROP TABLE facts_a, facts_b, facts_c, facts_d, facts_e, facts_f, facts_g;
 DROP FUNCTION fa_state(text);
 DROP FUNCTION fa_index(regclass);

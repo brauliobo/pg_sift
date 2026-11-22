@@ -30,7 +30,6 @@ INSERT INTO ss_b SELECT * FROM ss ORDER BY id;
 CREATE INDEX ss_off ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 7;
 CREATE INDEX ss_seven ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_columns = 'off', write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 CREATE INDEX ss_on ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_columns = 'off', write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
 SELECT 'ss_off' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ss_off')
 UNION ALL SELECT 'ss_seven', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('ss_seven')
@@ -265,7 +264,6 @@ INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM gene
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
 SELECT sift.col_merge('sa_idx', true) >= 0 AS merged;
 SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minors FROM sift._test_col_formats('sa_idx');
-RESET sift.col_format_minor;
 SELECT sift.col_verify('sa_idx', true);
 
 -- with the rollup of the rows (minor 9) on one index: the segments are minor 10, verify, and the answers are the heap's

@@ -62,10 +62,10 @@ SELECT top('po', '"red running"', 3), top('po', '"red running" OR fox', 3);
 
 -- the same through the bitmap heap scan
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 SELECT q, cnt('po', q) AS positions, oracle('pf', q) AS oracle FROM qs() q WHERE cnt('po', q) <> oracle('pf', q);
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 
 -- a required or an optional phrase reads no heap page; positions = off and a phrase under NOT recheck
 CREATE FUNCTION heap_checks(tbl text, q text) RETURNS bigint LANGUAGE plpgsql AS $$

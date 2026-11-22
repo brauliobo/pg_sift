@@ -6,3 +6,4 @@ bench/steps/oracle.sh	the benchmark harness exports PGHOST/PGPORT of the cluster
 bench/steps/rank_check.sh	the benchmark harness exports PGHOST/PGPORT of the cluster under test
 bench/steps/xlib.sh	sourced by the benchmark steps, which export PGHOST/PGPORT of the cluster under test
 scripts/gen-reference.sh	--live asks the server of PGHOST/PGPORT that the caller names; without --live no server is reached
+scripts/docker-smoke.sh	psql runs inside the container (docker exec) on the one server of that container

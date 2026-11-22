@@ -3,7 +3,7 @@
 -- a parallel operation".
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE FUNCTION pv_opt(idx regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce(array_to_string(reloptions, ','), '') FROM pg_class WHERE oid = idx $$;

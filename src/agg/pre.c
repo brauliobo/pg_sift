@@ -6,7 +6,7 @@
 #include "utils/memutils.h"
 
 #include "agg/pre.h"
-#include "col/pagg.h"
+#include "col/v1/pagg.h"
 
 void
 sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)

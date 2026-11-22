@@ -1,0 +1,255 @@
+-- sift_col on format major 2, the default format: build, CREATE INDEX CONCURRENTLY, INSERT, UPDATE, DELETE, VACUUM, REINDEX and SELECT, with the key order, JSONB paths, NUMERIC, UUID and TEXT columns.
+-- Every query runs through the index (bitmap, no sequential scan) and again over the heap alone; the two must return the same rows.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
+END $$;
+CREATE TABLE f2 (id int, g int, v int, price numeric(12, 2), u uuid, s text, doc jsonb);
+INSERT INTO f2
+SELECT i, i % 10, i % 1000, (i % 777) / 100.0, ('00000000-0000-4000-8000-' || lpad(to_hex(i), 12, '0'))::uuid, 'str' || (i % 50),
+	   jsonb_build_object('a', i % 7, 'b', 'k' || (i % 11), 'c', CASE WHEN i % 5 = 0 THEN NULL ELSE i % 3 END)
+FROM generate_series(1, 20000) i;
+INSERT INTO f2 (id, g) VALUES (20001, NULL), (20002, 3);
+-- Format major 2 is requested by the reloption, with a key order, and is the format the index reports
+CREATE INDEX f2_idx ON f2 USING sift_col (id, g, v, price, u, s, doc) WITH (key_order = 'g', paths = 'doc.a int, doc.b text, doc.c int');
+SELECT major, npartitions >= 1 AS built FROM sift._test_f2_meta('f2_idx');
+ major | built 
+-------+-------
+     2 | t
+(1 row)
+
+SELECT sift._test_f2_check('f2_idx') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+-- Reads: equality, ranges, in-lists, nulls, text, uuid, numeric, jsonb paths, aggregates and ordering
+SELECT f2_same('SELECT id FROM f2 WHERE g = 3 AND v < 100');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE id IN (5, 77, 999, 50000)');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE g IS NULL');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE s = ''str7'' AND v BETWEEN 10 AND 400');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE price > 7.5 AND g = 2');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE u = ''00000000-0000-4000-8000-000000000a0b''');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE doc->>''b'' = ''k3'' AND g = 1');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE (doc->>''c'')::int = 2 AND v < 50');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT g, count(*), sum(v) FROM f2 WHERE v < 300 GROUP BY g');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE g = 4 ORDER BY id LIMIT 5');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT count(*), sum(id) FROM f2 WHERE g = 3 AND v < 100;
+ count |   sum   
+-------+---------
+   200 | 1909600
+(1 row)
+
+-- Writes: INSERT, UPDATE and DELETE are visible to the index at once and through the staged rows before any flush
+INSERT INTO f2 SELECT i, i % 10, i % 1000, 1.5, gen_random_uuid(), 'new', '{"a": 1}' FROM generate_series(30001, 31000) i;
+SELECT f2_same('SELECT id FROM f2 WHERE s = ''new'' AND g = 5');
+ f2_same 
+---------
+ same
+(1 row)
+
+UPDATE f2 SET v = 5000, s = 'moved' WHERE g = 3 AND v < 100;
+SELECT f2_same('SELECT id FROM f2 WHERE s = ''moved''');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE g = 3 AND v < 100');
+ f2_same 
+---------
+ same
+(1 row)
+
+DELETE FROM f2 WHERE g = 7;
+SELECT f2_same('SELECT id FROM f2 WHERE g = 7');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE v < 10');
+ f2_same 
+---------
+ same
+(1 row)
+
+BEGIN;
+DELETE FROM f2 WHERE g = 8;
+SELECT count(*) FROM f2 WHERE g = 8;
+ count 
+-------
+     0
+(1 row)
+
+ROLLBACK;
+SELECT f2_same('SELECT id FROM f2 WHERE g = 8');
+ f2_same 
+---------
+ same
+(1 row)
+
+-- VACUUM removes the dead rows from the index (deletion vectors) and compacts the partitions
+VACUUM f2;
+SELECT sift._test_f2_check('f2_idx') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE g IN (3, 7, 8) AND v < 600');
+ f2_same 
+---------
+ same
+(1 row)
+
+DELETE FROM f2 WHERE id % 2 = 0;
+VACUUM f2;
+SELECT sift._test_f2_check('f2_idx') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+SELECT f2_same('SELECT g, count(*) FROM f2 GROUP BY g');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE s = ''str9''');
+ f2_same 
+---------
+ same
+(1 row)
+
+-- REINDEX rebuilds the index with the same options; CREATE INDEX CONCURRENTLY builds the same index beside a live table
+REINDEX INDEX f2_idx;
+SELECT sift._test_f2_check('f2_idx') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE g = 1 AND v BETWEEN 100 AND 200');
+ f2_same 
+---------
+ same
+(1 row)
+
+DROP INDEX f2_idx;
+CREATE INDEX CONCURRENTLY f2_cic ON f2 USING sift_col (id, g, v, s, doc) WITH (paths = 'doc.a int, doc.b text');
+SELECT sift._test_f2_check('f2_cic') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+SELECT indisvalid FROM pg_index WHERE indexrelid = 'f2_cic'::regclass;
+ indisvalid 
+------------
+ t
+(1 row)
+
+SELECT f2_same('SELECT id FROM f2 WHERE g = 1 AND v BETWEEN 100 AND 200');
+ f2_same 
+---------
+ same
+(1 row)
+
+INSERT INTO f2 (id, g, v, s) VALUES (40001, 1, 150, 'after');
+SELECT f2_same('SELECT id FROM f2 WHERE s = ''after''');
+ f2_same 
+---------
+ same
+(1 row)
+
+-- An empty table, and a table whose rows all go
+CREATE TABLE f2_empty (id int, g int);
+CREATE INDEX f2_empty_idx ON f2_empty USING sift_col (id, g);
+SELECT f2_same('SELECT id FROM f2_empty WHERE g = 1');
+ f2_same 
+---------
+ same
+(1 row)
+
+INSERT INTO f2_empty SELECT i, i % 3 FROM generate_series(1, 100) i;
+DELETE FROM f2_empty;
+VACUUM f2_empty;
+SELECT f2_same('SELECT id FROM f2_empty WHERE g = 1');
+ f2_same 
+---------
+ same
+(1 row)
+
+SELECT sift._test_f2_check('f2_empty_idx') ~ '^parts=[0-9]+ ' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+DROP TABLE f2, f2_empty;
+DROP FUNCTION f2_same(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

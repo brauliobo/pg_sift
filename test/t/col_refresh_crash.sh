@@ -52,7 +52,7 @@ SIFT_TMP=$(dir primary) leak_expect 1 'PANIC:'
 SIFT_TMP=$(dir primary) leak_expect 1 'terminated by signal 6'
 node_conf primary "sift.test_col_rollup_panic = 1"
 pg_ctl -D "$(dir primary)/data" reload >/dev/null
-sleep 1
+wait_for "setting_is primary sift.test_col_rollup_panic 1" 30
 refresh_panics() { ! sql primary "SELECT sift.col_refresh('items_idx')" >/dev/null 2>&1; }
 check "the refresh PANICs with the new segment written" refresh_panics
 for _ in $(seq 300); do [[ -f $(dir primary)/data/postmaster.pid ]] || break; sleep 0.1; done
@@ -71,7 +71,7 @@ SIZE=$(sql primary "SELECT pg_relation_size('items_idx')")
 sql primary "ALTER INDEX items_idx SET (cube_minmax = false)" >/dev/null
 sql primary "SET sift.test_col_refresh_sleep_ms = 300" "SELECT * FROM sift.col_refresh('items_idx')" >/dev/null 2>&1 &
 BG=$!
-sleep 0.9
+wait_for '[[ $(stale) -lt $N ]]' 30
 sql primary "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query LIKE '%col_refresh(%' AND pid <> pg_backend_pid()" >/dev/null
 wait "$BG" 2>/dev/null || true
 left=$(stale)

@@ -171,6 +171,21 @@ extern void check_policy(const SiftCcPolicy *pol);
 extern bool wrap_choose(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZTry *best);
 extern bool wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftCcScan *scan);
 extern int	enc_node(const CcW *w, StringInfo out, const int64 *v, uint32 n, int depth, CcRole role);
+extern void cc_put_head(StringInfo s, uint8 tag, uint8 aux, uint32 f1);
+extern void cc_put64(StringInfo s, int64 x);
+extern void cc_emit_forbyte(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 B);
+extern void cc_emit_wrap(StringInfo out, const CcZTry *z, uint32 rawlen);
+
+/* The nodes DELTA_BYTE and BSS and the cold-tier choice of a leaf (codec_cold.c) */
+extern bool cc_cold_active(const CcW *w, CcRole role);
+extern int	cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, int64 min, uint64 range, int tag, uint32 W, CcRole role);
+extern size_t cc_parse_delta_byte(const uint8 *p, size_t avail, uint32 n, CcNode *nd);
+extern size_t cc_parse_bss(const uint8 *p, size_t avail, uint32 n, CcNode *nd);
+extern void cc_delta_byte_decode(const CcNode *nd, int64 *dst);
+extern void cc_delta_byte_block(const CcNode *nd, uint32 b, uint32 upto, int64 *run);
+extern int64 cc_delta_byte_get(const CcNode *nd, uint32 i);
+extern void cc_bss_decode(const CcNode *nd, int64 *dst);
+extern int64 cc_bss_get(const CcNode *nd, uint32 i);
 
 /* The parser of a chunk (codec_parse.c) the blobs use */
 extern void need(size_t have, size_t want);
@@ -179,6 +194,7 @@ extern CcNode *parse_node(MemoryContext cx, SiftCcKind kind, const uint8 *p, siz
 /* Decoding and the bit helpers (codec.c) the parser and the blobs use */
 extern void nd_u32(const CcNode *nd, int64 sub, uint32 *dst);
 extern void nd_i64(const CcNode *nd, int64 *dst);
+extern void forbyte_u32(const CcNode *nd, uint32 off, uint32 *dst);
 extern void sift_cc_set_ones(uint64 *bits, uint32 n);
 
 #endif							/* SIFT_COLCODEC_INT_H */

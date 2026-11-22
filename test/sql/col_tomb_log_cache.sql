@@ -59,29 +59,29 @@ UPDATE live SET v = v + 1 WHERE id <= 10;
 SELECT entries <= 2 AS reclaimed FROM sift._test_col_log_cache();
 
 -- a log of many entries: a backend that appends to it caches none, what asks only what the log vouches for reads none of its entries, and a pass over the entries (the fold
--- of the marks, VACUUM) keeps what sift.tomb_log_limit allows, the rest in sorted runs on temp files; the rows a scan reads are the same at 1 GB and at 16 kB. The setting is the
+-- of the marks, VACUUM) keeps what sift.backend_cache_kb allows, the rest in sorted runs on temp files; the rows a scan reads are the same at 1 GB and at 16 kB. The setting is the
 -- mutant of the bound: one that holds the whole log (1 GB) caches it
 CREATE TABLE big (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
 INSERT INTO big SELECT i, i % 10, i FROM generate_series(1, 30000) i;
 CREATE INDEX big_c ON big USING sift_col (id, g, v) WITH (track_changes = 'id');
 \c -
-SET sift.tomb_log_limit = '1GB';
+SET sift.backend_cache_kb = '1GB';
 UPDATE big SET v = v + 1;
 UPDATE big SET v = v + 1 WHERE id % 2 = 0;
 SELECT bytes < 100000 AS writer_caches_none FROM sift._test_col_log_cache();
 SELECT count(*) AS tracking_rows FROM sift.col_tracking('big_c');
 SELECT bytes < 100000 AS header_reads_no_entries FROM sift._test_col_log_cache();
 \c -
-SET sift.tomb_log_limit = '1GB';
+SET sift.backend_cache_kb = '1GB';
 SET enable_seqscan = off;
 SELECT count(*) AS n_whole, sum(v) AS s_whole FROM big WHERE g IN (3, 4) AND id < 20000 \gset
 SELECT bytes > 1000000 AS mutant_holds_the_log FROM sift._test_col_log_cache();
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SET enable_seqscan = off;
 SELECT count(*) = :n_whole AND sum(v) = :s_whole AS same_rows_in_runs FROM big WHERE g IN (3, 4) AND id < 20000;
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT sift._test_col_fold_marks('big_c'::regclass) >= 0 AS folded;
 SELECT bytes < 300000 AS bounded_by_the_limit FROM sift._test_col_log_cache();
 VACUUM big;

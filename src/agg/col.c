@@ -20,10 +20,9 @@
 #include "core/visibility.h"
 #include "col/am.h"
 #include "col/col.h"
-#include "col/gpu.h"
-#include "col/pagg.h"
+#include "col/v1/pagg.h"
 #include "col/pg.h"
-#include "col/runs.h"
+#include "col/v1/runs.h"
 
 #include "agg/col_int.h"
 
@@ -31,6 +30,12 @@ static bool
 col_owns_index(Oid indexrelam)
 {
 	return OidIsValid(indexrelam) && indexrelam == sift_col_am_oid();
+}
+
+static bool
+col_reads_index(Oid indexoid)
+{
+	return sift_col_index_oid_engine(indexoid) == SIFT_FORMAT_MAJOR;
 }
 
 static bool
@@ -740,7 +745,7 @@ col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 	return cz.has_ovf;
 }
 
-/* ---- pre-aggregates (src/col/pagg.c, docs/COL-PREAGG.md) ---- */
+/* ---- pre-aggregates (src/col/v1/pagg.c, docs/COL-PREAGG.md) ---- */
 
 static void
 col_preagg(Relation index, SiftSrcPreagg *pa)
@@ -802,46 +807,6 @@ col_unit_hll(void *impl, const SiftSrcUnit *unit, int leaf, const uint8 **blob)
 	return sift_col_unit_hll(&((ColSource *) impl)->unit, leaf, blob);
 }
 
-/* ---- the Vulkan path (src/col/gpu.h, docs/GPU.md) ---- */
-
-static bool
-col_gpu_unit(void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g)
-{
-	SiftColGpuUnit cg;
-
-	if (((ColSource *) impl)->sel.keep || ((ColSource *) impl)->sel.compact || !sift_col_unit_gpu(&((ColSource *) impl)->unit, &cg))
-		return false;
-	*g = (SiftSrcGpuUnit) {cg.store, cg.gen, cg.unit, cg.nrows};
-	return true;
-}
-
-static bool
-col_gpu_dense(void *impl, const SiftSrcUnit *unit, int leaf)
-{
-	return sift_col_unit_gpu_dense(&((ColSource *) impl)->unit, leaf);
-}
-
-static bool
-col_gpu_chunk(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c)
-{
-	SiftColGpuChunk cg;
-
-	if (!sift_col_unit_gpu_chunk(&((ColSource *) impl)->unit, leaf, &cg))
-		return false;
-	*c = (SiftSrcGpuChunk) {cg.blob, cg.len, cg.n, cg.is_const, cg.cval};
-	return true;
-}
-
-static void
-col_gpu_dict(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict)
-{
-	ColSource  *src = impl;
-	SiftColDict d;
-
-	sift_col_unit_gpu_dict(&src->unit, leaf, &d);
-	*dict = (SiftSrcDict) {(const void *) (uintptr_t) d.id, d.n, d.off, d.bytes};
-}
-
 static uint32
 col_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list)
 {
@@ -864,6 +829,7 @@ col_unit_rollup_miss(void *impl, const SiftSrcUnit *unit)
 
 static const SiftSrcProvider col_provider = {
 	.owns_index = col_owns_index,
+	.reads_index = col_reads_index,
 	.owns_table = col_owns_table,
 	.layout = col_layout,
 	.stats = col_stats,
@@ -965,10 +931,6 @@ static const SiftSrcProvider col_provider = {
 	.unit_presence = col_unit_presence,
 	.unit_dset = col_unit_dset,
 	.unit_hll = col_unit_hll,
-	.gpu_unit = col_gpu_unit,
-	.gpu_dense = col_gpu_dense,
-	.gpu_chunk = col_gpu_chunk,
-	.gpu_dict = col_gpu_dict,
 	.unit_rollup_tuples = col_unit_rollup_tuples,
 	.unit_rollup = col_unit_rollup,
 	.unit_rollup_miss = col_unit_rollup_miss,

@@ -1,1 +1,1 @@
-col_track_old_extension	src/col/build/choices.c:shared_columns src/col/point.c:ent_sort_cmp src/col/point.c:ent_sort_cmp_rec src/col/track.c:sift_col_tracking
+col_track_old_extension	src/col/v1/build/choices.c:shared_columns src/col/v1/track.c:sift_col_tracking

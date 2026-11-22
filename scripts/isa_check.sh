@@ -1,29 +1,20 @@
 #!/usr/bin/env bash
-# The fallback path must run on any x86-64: outside the AVX2, AVX-512 and POPCNT objects (the files named *_avx2.c, *_avx512.c, *_popcnt.c: functions
-# with the popcnt target that the cpu dispatch picks) there is no POPCNT instruction, and nothing links libgcc's __popcountdi2 (a distribution may build it with
-# POPCNT). Run after a build.
+# The fallback path must run on any x86-64: outside the functions the cpu dispatch and the multi-versioned loops of core/fmv.h pick (scripts/isa-scan.sh says which) there is no POPCNT, BMI,
+# 256 or 512 bit instruction, nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT) or libgcc_s, and no IFUNC symbol is exported. Run after a build.
 #
-#   scripts/isa_check.sh
+#   scripts/isa_check.sh                  the objects of src/ and pg_sift.so of the build tree
+#   scripts/isa_check.sh --so LIBRARY     an installed library (a package test)
+#   scripts/isa_check.sh --selftest       the check itself, on synthetic libraries
 set -eu
 cd "$(dirname "$0")/.."
 
-[[ $(uname -m) == x86_64 ]] || { echo "isa_check: skipped, the POPCNT baseline is an x86-64 rule (NEON is part of the AArch64 baseline)"; exit 0; }
+case ${1:-} in
+--selftest) exec scripts/isa-scan.sh --selftest ;;
+--so) exec scripts/isa-scan.sh --budget-kib 150 "$2" ;;
+esac
 
-bad=0 checked=0 skipped=0
-for o in src/*/*.o src/*/*/*.o; do
-	case $o in *_avx2.o | *_avx512.o | *_popcnt.o) skipped=$((skipped + 1)); continue ;; esac
-	checked=$((checked + 1))
-	insns=$(objdump -d "$o" | grep -cw popcnt || true)
-	libcalls=$(nm "$o" 2>/dev/null | grep -c ' U __popcount' || true)
-	if ((insns + libcalls)); then
-		echo "baseline object uses POPCNT: $o"
-		bad=1
-	fi
-done
-if [[ $(nm pg_sift.so | grep -ci '__popcount.i2' || true) != 0 ]]; then
-	echo "pg_sift.so links a libgcc popcount helper"
-	bad=1
-fi
-((checked)) || { echo "isa_check: no objects in src/, build first"; exit 1; }
-if ((bad)); then echo "isa_check: FAIL"; else echo "isa_check: ok, $checked baseline objects without POPCNT or libgcc popcount calls ($skipped AVX2/AVX-512/POPCNT objects skipped), pg_sift.so links no libgcc popcount helper"; fi
-exit $bad
+[[ $(uname -m) == x86_64 ]] || { echo "isa_check: skipped, the POPCNT baseline is an x86-64 rule (NEON is part of the AArch64 baseline)"; exit 0; }
+objects=(src/*/*.o src/*/*/*.o src/*/*/*/*.o)
+[[ -e ${objects[0]} ]] || { echo "isa_check: no objects in src/, build first"; exit 1; }
+scripts/isa-scan.sh --budget-kib 150 "${objects[@]}" pg_sift.so || { echo "isa_check: FAIL"; exit 1; }
+echo "isa_check: ok, ${#objects[@]} objects and pg_sift.so have no POPCNT, BMI or vector instruction outside the vector levels and the clones of core/fmv.h, no libgcc popcount helper, no libgcc_s, no exported IFUNC"

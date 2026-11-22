@@ -105,9 +105,9 @@ SELECT sift.col_verify('rs_i', true);
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 
 -- a cache that holds nothing keeps the answers
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS sized;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS sized;
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 -- the dictionary stored plain (no compression) and compact (parsed whole), under the setting 13: the same answers
 DROP INDEX rs_i;
@@ -122,7 +122,6 @@ SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 DROP INDEX rs_p;
 CREATE INDEX rs_c ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off);
-RESET sift.col_format_minor;
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 DROP INDEX rs_c;
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)

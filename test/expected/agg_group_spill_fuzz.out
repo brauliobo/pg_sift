@@ -6,6 +6,7 @@
 -- columns (5 values, and values that differ from group to group, so that a partition lists its values in another order than the table that wrote them)
 -- and negative values.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 -- the DO block of all the seeds is one statement: 35 to 67 s on the runners, 120 s was not enough on a loaded one
 SET statement_timeout = '600s';

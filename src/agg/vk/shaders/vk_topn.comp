@@ -1,0 +1,54 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_topn.comp - the candidates of an ORDER BY expression LIMIT K that no zone can prune: every live row that passes the program and is
+ * not worse than the threshold theta (the K-th best of a sample, so no row of the answer is worse) is appended, with its sort key, its
+ * granule and its row, to the candidate list; the host picks the K best. The list is cut at the capacity of the job: a scan that
+ * overflows it is run again with a tighter threshold or on the CPU.
+ */
+#include "common_agg.glsl"
+
+layout(local_size_x = 256) in;
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint ngran = ctl[J_NGRAN], fl = ctl[J_FLAGS], sreg = ctl[J_SORTREG], cap = ctl[J_CAND_CAP];
+	bool has_theta = (fl & 1u) != 0u, is_float = (fl & 2u) != 0u, nulls = (fl & 4u) != 0u, desc = ctl[J_TOPN_DESC] != 0u;
+	int64_t theta = int64_t(u64of(ctl[J_THETA], ctl[J_THETA + 1u]));
+
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		for (uint r = tid; r < g_nrows; r += WG)
+		{
+			bool pass = row_begin(gi, dtrow, r);
+			bool isnull = pass && !rvalid(sreg);
+			int64_t x = 0l;
+
+			if (pass && !isnull)
+			{
+				x = is_float ? f8_key(dbl(R[sreg])) : R[sreg];
+				if (has_theta && (desc ? x < theta : x > theta))
+					pass = false;
+			}
+			else if (isnull && !nulls)
+				pass = false;
+			uvec4 bal = subgroupBallot(pass);
+			uint cnt = subgroupBallotBitCount(bal), before = subgroupBallotExclusiveBitCount(bal);
+			uint first = 0u;
+
+			if (subgroupElect() && cnt != 0u)
+				first = uint(atomicAdd(res[RES_NCAND], int64_t(cnt)));
+			first = subgroupBroadcastFirst(first);
+			if (pass && first + before < cap)
+			{
+				uint o = (first + before) * 2u;
+
+				out64[o] = x;
+				out64[o + 1u] = int64_t((uint64_t(isnull ? 1u : 0u) << 62) | (uint64_t(g_gran_id) << 32) | uint64_t(r));
+			}
+		}
+	}
+}

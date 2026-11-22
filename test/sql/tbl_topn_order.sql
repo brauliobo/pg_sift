@@ -4,7 +4,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET sift.table_dict_lookup = on;
 SET sift.agg_force = on;
 
 CREATE TABLE tn (id int, k text) USING sift_table;

@@ -49,8 +49,8 @@ SELECT opt, val, try_option(opt, val) AS result FROM (VALUES
 	('key_order', '"Cust Id", "Order Date", amount'),
 	('key_order', '"Cust Id",')
 ) AS t(opt, val) ORDER BY opt, val;
-         opt         |               val               |                                                            result                                                            
----------------------+---------------------------------+------------------------------------------------------------------------------------------------------------------------------
+         opt         |               val               |                                                                        result                                                                         
+---------------------+---------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------
  calendar_columns    | "Order Date"                    | ok
  count_columns       | "Cust Name"                     | ok
  hll_columns         | "Cust Id"                       | ok
@@ -71,9 +71,9 @@ SELECT opt, val, try_option(opt, val) AS result FROM (VALUES
  key_cut             | Order                           | invalid key_cut option "Order": "Order" is not an integer, date, timestamp, numeric or float column of the index (at most 4)
  key_cut             | Order Date                      | ok
  key_cut             | amount, "Order Date"            | ok
- key_order           | "Cust Id",                      | invalid key_order option ""Cust Id",": at most two columns, 'group, key'
+ key_order           | "Cust Id",                      | invalid key_order option ""Cust Id",": a list of column names, each with an optional ASC or DESC and NULLS FIRST or NULLS LAST ('group, key' for two)
  key_order           | "Cust Id", "Order Date"         | ok
- key_order           | "Cust Id", "Order Date", amount | invalid key_order option ""Cust Id", "Order Date", amount": at most two columns, 'group, key'
+ key_order           | "Cust Id", "Order Date", amount | key_order lists 3 columns, an index of format major 1 takes at most two
  key_order           | "Order Date"                    | ok
  order_array_columns | "Order Date", amount            | ok
  return_columns      | "Cust Name"                     | ok

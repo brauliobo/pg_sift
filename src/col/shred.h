@@ -10,12 +10,12 @@
 #define SIFT_SHRED_H
 
 #include "core/sift.h"
-#include "col/enc.h"
+#include "col/v1/enc.h"
 #include "core/cpu.h"
 
 #define SIFT_SHRED_MAX_SPEC_BYTES	(64 * 1024)
-#define SIFT_SHRED_MAX_COLS			256
-#define SIFT_SHRED_MAX_GROUPS		64
+#define SIFT_SHRED_MAX_COLS			SIFT_F2_MAX_COLS
+#define SIFT_SHRED_MAX_GROUPS		256
 #define SIFT_SHRED_MAX_STEPS		16
 #define SIFT_SHRED_DEFAULT_TEXT		SIFT_MAX_TERM_BYTES	/* a text(N) column holds this many bytes unless declared longer */
 #define SIFT_SHRED_MAX_TEXT			(1024 * 1024)
@@ -135,6 +135,16 @@ typedef struct SiftShredGroup
 	uint32		pcap;			/* slots allocated for pn (end, lstate) */
 } SiftShredGroup;
 
+/* The value an OVERFLOW slot stood for, kept as the driver serialises it (SiftShred.pay_fn): key is the column of a leaf, -(1 + group) for a list or map, slot its element (for a list: of the parent) */
+typedef struct SiftShredPay
+{
+	int32		key;
+	uint32		slot;
+	uint32		off;
+	uint32		len;
+	uint8		tag;
+} SiftShredPay;
+
 typedef struct SiftShredDoc
 {
 	SiftShredCol *col;			/* [spec->ncols] */
@@ -143,6 +153,12 @@ typedef struct SiftShredDoc
 	uint32		ntext;
 	uint32		textcap;
 	uint32		nelems;			/* list and map elements so far, against max_elems */
+	SiftShredPay *pay;			/* the payloads of the OVERFLOW slots of this document */
+	uint32		npay;
+	uint32		paycap;
+	char	   *paytext;		/* their bytes */
+	uint32		npaytext;
+	uint32		paytextcap;
 } SiftShredDoc;
 
 typedef struct SiftShredLimits
@@ -166,6 +182,8 @@ typedef struct SiftShredFrame
 	uint32		keyid;
 	uint32		matched;
 	bool		truncated;
+	const void *ev;				/* the container this frame is, as the driver holds it */
+	uint8		evtag;
 } SiftShredFrame;
 
 typedef struct SiftShred
@@ -182,6 +200,8 @@ typedef struct SiftShred
 	int			docdepth;		/* the frames above a document: 1 for the row of the index (each jsonb column is a member of it), else 0 */
 	bool		any_length;		/* a text leaf takes a string of any length (the recheck of a row, col/shred_recheck.c): no LENGTH overflow */
 	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
+	const void *ev;				/* the value the current event delivers, as the driver holds it (NULL: the driver keeps no payloads) */
+	const char *(*pay_fn) (const void *ev, uint32 *len);	/* the bytes of that value, called only for the slot it makes OVERFLOW */
 } SiftShred;
 
 extern SiftShred *sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached);
@@ -227,6 +247,9 @@ extern void sift_shred_bool(SiftShred *sh, bool b);
 extern void sift_shred_string(SiftShred *sh, const char *s, int len);
 extern void sift_shred_number(SiftShred *sh, const char *text, int len);
 extern void sift_shred_finish(SiftShred *sh);
+
+/* The payload of the OVERFLOW slot (key: a column, or -(1 + group) for the list of a group) of this document: NULL when the driver kept none */
+extern const char *sift_shred_pay(const SiftShredDoc *doc, int32 key, uint32 slot, uint32 *len, uint8 *tag);
 
 /* parent[i] for the n elements of group g (n = doc->grp[g].n): the ordinal of the parent element each belongs to (sift_colk->expand_parents; parent has room for SIFT_COL_PAD bytes more) */
 extern void sift_shred_expand_parents(const SiftShredDoc *doc, int g, uint32 *parent);

@@ -29,7 +29,7 @@ SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) AND body @@> '10
 
 -- the same counts through the bitmap scan (one index scan per element) and through a sequential scan
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']);
 SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']);
 SELECT count(*) FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) AND body @@> 'beta';
@@ -53,7 +53,7 @@ EXPLAIN (COSTS OFF) EXECUTE any_p(ARRAY['7', 'gamma']);
 EXECUTE any_p(ARRAY['7', 'gamma']);
 EXECUTE any_p(ARRAY['nomatch']);
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 DEALLOCATE any_p;
 PREPARE any_p(text[]) AS SELECT count(*) FROM a WHERE body @@> ANY ($1);
 EXPLAIN (COSTS OFF) EXECUTE any_p(ARRAY['7', 'gamma']);

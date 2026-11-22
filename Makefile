@@ -3,9 +3,9 @@ MODULE_big = pg_sift
 SIFT_MK := $(lastword $(MAKEFILE_LIST))
 SRC = src
 include $(SRC)/areas.mk
-OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c))
+OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c))
 # The update script of the release in progress is built from sql/<version>/NN-<context>.sql (scripts/sql-parts.sh): edit a part, never the generated file.
-SIFT_UPDATE_SQL := $(shell $(dir $(SIFT_MK))scripts/sql-parts.sh targets)
+SIFT_UPDATE_SQL := $(sort $(shell $(dir $(SIFT_MK))scripts/sql-parts.sh targets))
 DATA = $(sort $(wildcard sql/pg_sift--*.sql) $(SIFT_UPDATE_SQL))
 PGFILEDESC = "pg_sift - Fast analytics for PostgreSQL: keep your queries, just add an index. Plus BM25 full-text search"
 
@@ -15,8 +15,8 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
-# -MMD records header dependencies (src/*/*.d, src/*/*/*.d) so a header edit rebuilds its users.
-PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS))
+# -MMD records header dependencies (src/*/*.d, src/*/*/*.d, src/*/*/*/*.d) so a header edit rebuilds its users.
+PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS)) $(SIFT_FMV_CPPFLAGS)
 # an implicit declaration is an error: gcc 13 only warns, and a function taken to return int cuts a pointer to 32 bits (an include dropped from a file whose code is built only with assertions did that)
 PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement -Werror=implicit-function-declaration $(SIFT_BASE_ISA)
 # PGXS inherits -flto=auto from some distributions' pg_config: a link step that starts one job per core.
@@ -35,7 +35,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = $(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
+EXTRA_CLEAN = $(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -48,8 +48,10 @@ endif
 # in its place, so that two branches adding tests merge without a conflict (scripts/check-testing-regress.sh checks it).
 TESTING_REGRESS =
 TESTING_REGRESS += agg_cal_paths
+TESTING_REGRESS += agg_child_input_bound
 TESTING_REGRESS += agg_child_warm
 TESTING_REGRESS += agg_combo_cap
+TESTING_REGRESS += agg_correlated_fanout
 TESTING_REGRESS += agg_cte_verdict_cache
 TESTING_REGRESS += agg_dict_blocks_lazy
 TESTING_REGRESS += agg_distinct_narrow
@@ -73,6 +75,7 @@ TESTING_REGRESS += agg_key_cube_fallback
 TESTING_REGRESS += agg_key_list_once
 TESTING_REGRESS += agg_limit_refusals
 TESTING_REGRESS += agg_lookup_chain
+TESTING_REGRESS += agg_lookup_index_keys
 TESTING_REGRESS += agg_mem_spill
 TESTING_REGRESS += agg_outer_walks_once
 TESTING_REGRESS += agg_par_blob_chunks
@@ -83,6 +86,7 @@ TESTING_REGRESS += agg_par_split
 TESTING_REGRESS += agg_partitions
 TESTING_REGRESS += agg_partitions_many
 TESTING_REGRESS += agg_plan_passes
+TESTING_REGRESS += agg_plan_tables
 TESTING_REGRESS += agg_planner_state_error
 TESTING_REGRESS += agg_preagg_elem
 TESTING_REGRESS += agg_preagg_minmax
@@ -93,9 +97,11 @@ TESTING_REGRESS += agg_probe_direct_race
 TESTING_REGRESS += agg_root_key_exists
 TESTING_REGRESS += agg_rows_group_memory
 TESTING_REGRESS += agg_scope_choice
+TESTING_REGRESS += agg_scope_cost
 TESTING_REGRESS += agg_scope_exact_share
 TESTING_REGRESS += agg_scope_group_key
 TESTING_REGRESS += agg_scope_key_table_choice
+TESTING_REGRESS += agg_scope_live_overlay
 TESTING_REGRESS += agg_scope_param_keys
 TESTING_REGRESS += agg_scope_preserved
 TESTING_REGRESS += agg_scope_recognition
@@ -113,6 +119,35 @@ TESTING_REGRESS += agg_topn_offset_dirty
 TESTING_REGRESS += agg_topn_offset_keyed
 TESTING_REGRESS += agg_topn_offset_ties
 TESTING_REGRESS += agg_topn_with_ties
+TESTING_REGRESS += agg_v6_adaptive_star
+TESTING_REGRESS += agg_v6_bridges
+TESTING_REGRESS += agg_v6_clickhouse_sql
+TESTING_REGRESS += agg_v6_date_trunc_dates
+TESTING_REGRESS += agg_v6_dim_shm
+TESTING_REGRESS += agg_v6_explain
+TESTING_REGRESS += agg_v6_group
+TESTING_REGRESS += agg_v6_jsonb_exists
+TESTING_REGRESS += agg_v6_morsel
+TESTING_REGRESS += agg_v6_numeric_nan
+TESTING_REGRESS += agg_v6_par
+TESTING_REGRESS += agg_v6_par_distinct_dict
+TESTING_REGRESS += agg_v6_par_distinct_dict_robust
+TESTING_REGRESS += agg_v6_parallel_2stage
+TESTING_REGRESS += agg_v6_parallel_2stage_plan
+TESTING_REGRESS += agg_v6_parallel_2stage_robust
+TESTING_REGRESS += agg_v6_parallel_col_delta
+TESTING_REGRESS += agg_v6_params_float_exec
+TESTING_REGRESS += agg_v6_parity_workload
+TESTING_REGRESS += agg_v6_scope_topk
+TESTING_REGRESS += agg_v6_sip_window_expr
+TESTING_REGRESS += agg_v6_star_jsonb_unnest
+TESTING_REGRESS += agg_v6_text_collation
+TESTING_REGRESS += agg_v6_text_intake
+TESTING_REGRESS += agg_v6_topn_card_vexpr
+TESTING_REGRESS += agg_v6_units
+TESTING_REGRESS += agg_v6_vacuum_reused_tid
+TESTING_REGRESS += agg_v6_variant_stream
+TESTING_REGRESS += agg_v6_zone_calendar
 TESTING_REGRESS += agg_vis_counts
 TESTING_REGRESS += agg_vnum_program
 TESTING_REGRESS += aggkern_%
@@ -120,6 +155,8 @@ TESTING_REGRESS += aggstub_%
 TESTING_REGRESS += analyzer_version
 TESTING_REGRESS += bm25_dead_windows
 TESTING_REGRESS += bm25_dict_block_limit
+TESTING_REGRESS += bm25_lazy_tail_maxscore
+TESTING_REGRESS += bm25_tidbridge
 TESTING_REGRESS += bm25_wbuf_read_promote
 TESTING_REGRESS += bm25_wbuf_wide_bloom
 TESTING_REGRESS += build_limits
@@ -169,6 +206,7 @@ TESTING_REGRESS += col_damage
 TESTING_REGRESS += col_dead_delta
 TESTING_REGRESS += col_dead_keys_budget
 TESTING_REGRESS += col_dead_rewrite
+TESTING_REGRESS += col_delta_scoped
 TESTING_REGRESS += col_deprecated_options
 TESTING_REGRESS += col_dict_bisect
 TESTING_REGRESS += col_dict_blocks_hash
@@ -280,6 +318,8 @@ TESTING_REGRESS += col_minmax_runs
 TESTING_REGRESS += col_option_names_bytes
 TESTING_REGRESS += col_order_layout
 TESTING_REGRESS += col_ordered_budget
+TESTING_REGRESS += col_overlay_cap
+TESTING_REGRESS += col_overlay_merge
 TESTING_REGRESS += col_overlay_unordered
 TESTING_REGRESS += col_partition_adopt
 TESTING_REGRESS += col_paths_auto
@@ -365,6 +405,7 @@ TESTING_REGRESS += col_scope_price_terms
 TESTING_REGRESS += col_scope_read
 TESTING_REGRESS += col_scope_refresh_price
 TESTING_REGRESS += col_scope_reindex_btree
+TESTING_REGRESS += col_scope_roots_vacuum
 TESTING_REGRESS += col_scope_sets
 TESTING_REGRESS += col_scope_stamp
 TESTING_REGRESS += col_scope_summaries
@@ -381,6 +422,7 @@ TESTING_REGRESS += col_scope_twohop_declare
 TESTING_REGRESS += col_scope_twohop_journal
 TESTING_REGRESS += col_scope_twohop_patch
 TESTING_REGRESS += col_scope_twohop_tags
+TESTING_REGRESS += col_scope_v6_summary
 TESTING_REGRESS += col_scope_verify
 TESTING_REGRESS += col_scope_verify_order
 TESTING_REGRESS += col_scope_workers
@@ -389,6 +431,7 @@ TESTING_REGRESS += col_seg_head
 TESTING_REGRESS += col_seg_mirror
 TESTING_REGRESS += col_set_list_span
 TESTING_REGRESS += col_set_summary
+TESTING_REGRESS += col_skip_index_option
 TESTING_REGRESS += col_slice_aligned
 TESTING_REGRESS += col_sorted_run
 TESTING_REGRESS += col_stmt_cid
@@ -464,6 +507,7 @@ TESTING_REGRESS += col_wbuf_arena_dbs
 TESTING_REGRESS += col_wbuf_arena_format
 TESTING_REGRESS += col_wbuf_arena_gc
 TESTING_REGRESS += col_wbuf_arena_relocate
+TESTING_REGRESS += col_wbuf_arena_shrink
 TESTING_REGRESS += col_wbuf_big_set
 TESTING_REGRESS += col_wbuf_cache
 TESTING_REGRESS += col_wbuf_keyrange
@@ -482,24 +526,81 @@ TESTING_REGRESS += colcodec_%
 TESTING_REGRESS += core_radix_sort
 TESTING_REGRESS += core_range
 TESTING_REGRESS += core_ring_wrap
+TESTING_REGRESS += core_tidbridge
 TESTING_REGRESS += errors_hints
 TESTING_REGRESS += ext_recreate
 TESTING_REGRESS += extlock_errors
+TESTING_REGRESS += format2_2d_prune_aio
+TESTING_REGRESS += format2_agg_live
+TESTING_REGRESS += format2_arrays
+TESTING_REGRESS += format2_build_phases
+TESTING_REGRESS += format2_build_runs
+TESTING_REGRESS += format2_cache_lifecycle
+TESTING_REGRESS += format2_col_am
+TESTING_REGRESS += format2_compact
+TESTING_REGRESS += format2_compact_slab_flush
+TESTING_REGRESS += format2_compressed_skip
+TESTING_REGRESS += format2_deep_compress
+TESTING_REGRESS += format2_encodings
+TESTING_REGRESS += format2_ext_safety
+TESTING_REGRESS += format2_fsm
+TESTING_REGRESS += format2_granule
+TESTING_REGRESS += format2_heapref_l0_wal
+TESTING_REGRESS += format2_index_format_compat
+TESTING_REGRESS += format2_inspect_sql
+TESTING_REGRESS += format2_key_order
+TESTING_REGRESS += format2_limits
+TESTING_REGRESS += format2_limits_ios
+TESTING_REGRESS += format2_manifest
+TESTING_REGRESS += format2_marks_prewhere
+TESTING_REGRESS += format2_marks_read_paths
+TESTING_REGRESS += format2_meta
+TESTING_REGRESS += format2_mutation
+TESTING_REGRESS += format2_mvcc_churn
+TESTING_REGRESS += format2_pack_16b
+TESTING_REGRESS += format2_pack_fsst_auto
+TESTING_REGRESS += format2_parallel_conc
+TESTING_REGRESS += format2_partitioned_agg_v6
+TESTING_REGRESS += format2_preagg_delta
+TESTING_REGRESS += format2_prod_opts
+TESTING_REGRESS += format2_projections
+TESTING_REGRESS += format2_prune
+TESTING_REGRESS += format2_quarantine
+TESTING_REGRESS += format2_quarantine_am
+TESTING_REGRESS += format2_scope_live
+TESTING_REGRESS += format2_scopedir
+TESTING_REGRESS += format2_size
+TESTING_REGRESS += format2_tiering_col
+TESTING_REGRESS += format2_tiering_ttl
+TESTING_REGRESS += format2_track
+TESTING_REGRESS += format2_track_ctid
+TESTING_REGRESS += format2_ux_progress
+TESTING_REGRESS += format_v1_v2_compat
 TESTING_REGRESS += fuzzy_seek
+TESTING_REGRESS += gpu_agg_v6_churn
+TESTING_REGRESS += hybrid_agg
+TESTING_REGRESS += hybrid_agg_cost
+TESTING_REGRESS += hybrid_agg_score
+TESTING_REGRESS += hybrid_multimodal_facet
+TESTING_REGRESS += hybrid_tidbridge_bm25
 TESTING_REGRESS += include_filter
 TESTING_REGRESS += include_store
 TESTING_REGRESS += index_build_postings
 TESTING_REGRESS += index_build_thresholds
 TESTING_REGRESS += index_parts
 TESTING_REGRESS += kernels_%
+TESTING_REGRESS += kll_quantiles
 TESTING_REGRESS += lang_chain
 TESTING_REGRESS += lang_memo
 TESTING_REGRESS += leak_planted
 TESTING_REGRESS += limits_registry
+TESTING_REGRESS += m4_cache_budget
 TESTING_REGRESS += maint_%
 TESTING_REGRESS += merge_heal
 TESTING_REGRESS += merge_parts
+TESTING_REGRESS += part_agg_parity
 TESTING_REGRESS += position_blocks
+TESTING_REGRESS += proj_%
 TESTING_REGRESS += quarantine_bm25
 TESTING_REGRESS += quarantine_build
 TESTING_REGRESS += quarantine_capacity
@@ -520,12 +621,22 @@ TESTING_REGRESS += quarantine_txstate
 TESTING_REGRESS += quarantine_vacuum
 TESTING_REGRESS += quarantine_views
 TESTING_REGRESS += read_%
+TESTING_REGRESS += scope_overlay_parity
 TESTING_REGRESS += segfmt_%
+TESTING_REGRESS += shm_ledger
+TESTING_REGRESS += shm_manifest
 TESTING_REGRESS += shred_%
 TESTING_REGRESS += slot_owner
 TESTING_REGRESS += store_%
 TESTING_REGRESS += store_sweep_runs
 TESTING_REGRESS += surface_null_args
+TESTING_REGRESS += table_f2_col_delta
+TESTING_REGRESS += table_f2_copy_schema_evol
+TESTING_REGRESS += table_f2_drop_parts_before
+TESTING_REGRESS += table_f2_lock_escalation
+TESTING_REGRESS += table_f2_parity
+TESTING_REGRESS += table_f2_plans
+TESTING_REGRESS += table_f2_unified_parity
 TESTING_REGRESS += tbl_bigtx
 TESTING_REGRESS += tbl_bitmap_lazy
 TESTING_REGRESS += tbl_bulk_eligible
@@ -533,6 +644,7 @@ TESTING_REGRESS += tbl_fetch_dict
 TESTING_REGRESS += tbl_hot_sift_index
 TESTING_REGRESS += tbl_key_table
 TESTING_REGRESS += tbl_limits_lowered
+TESTING_REGRESS += tbl_options
 TESTING_REGRESS += tbl_page_corrupt
 TESTING_REGRESS += tbl_preagg_calendar
 TESTING_REGRESS += tbl_tomb_legacy_header
@@ -542,8 +654,9 @@ TESTING_REGRESS += tbl_vacuum_page_rows
 TESTING_REGRESS += tbl_wide_dict_limit
 TESTING_REGRESS += tbl_wide_rows
 TESTING_REGRESS += tbl_writepath
+TESTING_REGRESS += v6_partitions_attach_detach
 TESTING_REGRESS += verify_%
-# these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/build_par.c)
+# these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/v1/build_par.c)
 TESTING_REGRESS += agg_numeric_in_list
 TESTING_REGRESS += agg_prepass_const_list
 TESTING_REGRESS += agg_shape_walks
@@ -568,6 +681,8 @@ TESTING_REGRESS += build_large_docs
 TESTING_REGRESS += list_slice_seek
 TESTING_REGRESS += rank_or_union
 TESTING_REGRESS += rank_page_live
+# sift.test_rank_mode, a setting only the testing build has
+TESTING_REGRESS += rank_modes
 # sift.table_max_segments and sift.table_vblock_floor, settings only the testing build has
 TESTING_REGRESS += tbl_bulk_groups
 TESTING_REGRESS += tbl_cap
@@ -581,6 +696,9 @@ TESTING_REGRESS += col_build_open_memory
 TESTING_REGRESS += col_build_peers
 TESTING_REGRESS += col_build_spool_memory
 TESTING_REGRESS += col_merge_memory
+# sift._test_s55_* functions, only the testing build has
+TESTING_REGRESS += s55_granule_point
+TESTING_REGRESS += s55_point_dir
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
@@ -589,7 +707,7 @@ PG_CPPFLAGS += -DSIFT_SB_SHIFT=$(SIFT_SB_SHIFT)
 endif
 ifdef SIFT_TESTING
 EXTENSION += pg_sift_test
-DATA += sql/pg_sift_test--1.0.sql
+DATA += sql/pg_sift_test--1.0.sql sql/pg_sift_test--1.0--1.1.sql
 PG_CPPFLAGS += -DSIFT_TESTING
 else
 REGRESS := $(filter-out $(TESTING_REGRESS),$(REGRESS))
@@ -653,7 +771,7 @@ $(SIFT_UPDATE_SQL): $(wildcard sql/[0-9]*/*.sql) scripts/sql-parts.sh
 update-sql: $(SIFT_UPDATE_SQL)
 all: update-sql
 
--include $(wildcard src/*/*.d src/*/*/*.d)
+-include $(wildcard src/*/*.d src/*/*/*.d src/*/*/*/*.d)
 
 # The module version the library reports (scripts/build-id.sh); build_id.h is rewritten only when the id changes, so that handler.o is rebuilt then and no other file.
 SIFT_BUILD_ID ?= $(shell $(srcdir)/scripts/build-id.sh $(or $(srcdir),.))
@@ -677,11 +795,15 @@ tapcheck:
 	scripts/tap.sh
 difftest fuzz soak:
 	scripts/$@.sh
+# the x86-64 baseline of the objects and of pg_sift.so, by symbol (scripts/isa_check.sh)
+.PHONY: isa-check
+isa-check: all
+	scripts/isa_check.sh
 # docs/LIMITS.md from the registry in src/core/limits.h (scripts/gen-limits.sh --check proves it)
 limits:
 	scripts/gen-limits.sh
 
-# Rebuilds src/agg/vk_spv.h from the shader (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
+# Rebuilds src/agg/vk_spv.h from the shaders of src/agg/vk/shaders (needs glslc) and the Vulkan declarations from /usr/include/vulkan; commit the result.
 gpu-shaders:
 	scripts/gen-aggvk-spv.sh
 	scripts/gen-aggvk-min.py

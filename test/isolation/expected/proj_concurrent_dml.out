@@ -1,0 +1,216 @@
+Parsed test spec with 3 sessions
+
+starting permutation: rb wdel ragg rsort rend rnow
+create_projection
+-----------------
+t                
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step wdel: DELETE FROM iso_p WHERE id % 10 = 0;
+step ragg: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step rsort: SELECT id FROM iso_p WHERE tenant = 2 ORDER BY amount, id LIMIT 5;
+ id
+---
+  2
+102
+202
+302
+402
+(5 rows)
+
+step rend: COMMIT;
+step rnow: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|4000|200000
+     1|5000|245000
+     2|4000|200000
+     3|5000|255000
+(4 rows)
+
+
+starting permutation: rb wupd wins ragg rend rnow
+create_projection
+-----------------
+t                
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step wupd: UPDATE iso_p SET amount = amount + 1000 WHERE id % 7 = 0;
+step wins: INSERT INTO iso_p SELECT 30000 + g, g % 4, 5, 'new' FROM generate_series(1, 500) g;
+step ragg: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step rend: COMMIT;
+step rnow: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5125|954625
+     1|5125|959625
+     2|5125|964625
+     3|5125|970625
+(4 rows)
+
+
+starting permutation: rb wdel vac ragg rsort rend rnow
+create_projection
+-----------------
+t                
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step wdel: DELETE FROM iso_p WHERE id % 10 = 0;
+step vac: VACUUM iso_p;
+step ragg: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step rsort: SELECT id FROM iso_p WHERE tenant = 2 ORDER BY amount, id LIMIT 5;
+ id
+---
+  2
+102
+202
+302
+402
+(5 rows)
+
+step rend: COMMIT;
+step rnow: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|4000|200000
+     1|5000|245000
+     2|4000|200000
+     3|5000|255000
+(4 rows)
+
+
+starting permutation: wbegin rb ragg wabort ragg rend
+create_projection
+-----------------
+t                
+(1 row)
+
+step wbegin: BEGIN; DELETE FROM iso_p WHERE tenant = 2 AND id % 3 = 0;
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step ragg: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step wabort: ROLLBACK;
+step ragg: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step rend: COMMIT;
+
+starting permutation: rb wins vac wupd ragg rsort rend rnow
+create_projection
+-----------------
+t                
+(1 row)
+
+step rb: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step wins: INSERT INTO iso_p SELECT 30000 + g, g % 4, 5, 'new' FROM generate_series(1, 500) g;
+step vac: VACUUM iso_p;
+step wupd: UPDATE iso_p SET amount = amount + 1000 WHERE id % 7 = 0;
+step ragg: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5000|240000
+     1|5000|245000
+     2|5000|250000
+     3|5000|255000
+(4 rows)
+
+step rsort: SELECT id FROM iso_p WHERE tenant = 2 ORDER BY amount, id LIMIT 5;
+ id
+---
+  2
+102
+202
+302
+402
+(5 rows)
+
+step rend: COMMIT;
+step rnow: SELECT tenant, count(*) AS n, sum(amount) AS s FROM iso_p GROUP BY tenant ORDER BY tenant;
+tenant|   n|     s
+------+----+------
+     0|5125|972625
+     1|5125|977625
+     2|5125|982625
+     3|5125|988625
+(4 rows)
+

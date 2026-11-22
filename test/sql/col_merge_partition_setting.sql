@@ -1,10 +1,10 @@
--- The partitions a forced merge of a key_cut sift_col index writes follow sift.col_auto_merge_partition_kb: as many as the live bytes make of three quarters of the
+-- The partitions a forced merge of a key_cut sift_col index writes follow sift.test_col_partition_kb: as many as the live bytes make of three quarters of the
 -- setting (a partition is cut at a unit, so a setting under the bytes of a unit is the unit), whatever their number, and the directory of those partitions is a root and
 -- one leaf, not a page for each partition.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE kn (id int, cust int, amount int) WITH (autovacuum_enabled = false);
@@ -23,7 +23,7 @@ CREATE FUNCTION merged_at(kb int) RETURNS TABLE (partitions_follow_the_setting b
 DECLARE live bigint; made int;
 BEGIN
 	SELECT sum(bytes) INTO live FROM sift.col_segments('kn_idx') WHERE kind = 'immutable';
-	PERFORM set_config('sift.col_auto_merge_partition_kb', kb::text, false);
+	PERFORM set_config('sift.test_col_partition_kb', kb::text, false);
 	PERFORM sift.col_merge('kn_idx', true);
 	SELECT count(*) INTO made FROM sift.col_segments('kn_idx') WHERE kind = 'immutable';
 	RETURN QUERY SELECT made = ceil(live / (kb * 768.0))::int, made, (SELECT chain_blocks = 2 FROM sift._test_dir_info('kn_idx')),

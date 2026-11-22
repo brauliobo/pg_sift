@@ -81,7 +81,7 @@ sift_test_check(PG_FUNCTION_ARGS)
 	if (!standby)
 		MAINT_LOCK(index, ExclusiveLock);
 	sift_store_verify(index);
-	n = bms_num_members(sift_store_orphans(index));
+	n = bms_num_members(sift_store_orphans(index, NULL));
 	if (!standby)
 		MAINT_UNLOCK(index, ExclusiveLock);
 	relation_close(index, mode);
@@ -454,7 +454,7 @@ sift_test_live_clear(PG_FUNCTION_ARGS)
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		o = SiftPageGetOpaque(BufferGetPage(buf));
-		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->reserved != 0 || o->gen != gen;
+		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->part_id != 0 || o->gen != gen;
 		UnlockReleaseBuffer(buf);
 	}
 	sift_live_dirty(&l, dirty);
@@ -511,7 +511,7 @@ sift_test_live2_clear(PG_FUNCTION_ARGS)
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		o = SiftPageGetOpaque(BufferGetPage(buf));
-		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->reserved != 0 || o->gen != l.gen;
+		damaged += o->type != SIFT_PT_LIVE || o->flags != 0 || o->part_id != 0 || o->gen != l.gen;
 		UnlockReleaseBuffer(buf);
 	}
 	sift_live2_dirty(&l, &h, dirty);

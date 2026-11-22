@@ -1,7 +1,8 @@
+# shellcheck shell=bash
 # The tier settings of a run: plan or run, cores, PostgreSQL major, lanes, scratch budget and cap, and the timeout of a job.
 # Everything below reads MODE, PLAN, LANES, BUDGET_MB, MAX_MB and JOB_TIMEOUT from here. Sourced by scripts/ci.sh; not a script of its own.
 PLAN=
-[[ $MODE != --plan ]] || { PLAN=1; MODE=${2:-quick}; }
+[[ $MODE != --plan && $MODE != --toolchain ]] || { PLAN=${MODE#--}; MODE=${2:-quick}; }
 [[ $MODE == quick || $MODE == full ]] || { usage; exit 1; }
 [[ -n $PLAN ]] || renice -n 19 $$ >/dev/null
 S=$REPO/scripts

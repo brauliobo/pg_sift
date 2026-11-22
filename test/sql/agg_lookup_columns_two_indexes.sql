@@ -3,6 +3,7 @@
 -- since give the two indexes other units, and the load reads the heap then. The answers are those of the normal plan in every case, for a filter on a column of each index,
 -- a text column of the second, a LEFT JOIN, NULLs, and rows changed after the indexes were made.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;

@@ -35,13 +35,13 @@ SELECT rows FROM sift._test_col_counters('sh_idx', '1:eq:7');
 SELECT head_loads = 0 AS none_read, head_hits > 0 AS found FROM sift._test_col_dict_cache(true);
 
 -- a cache with no room for a head reads it every time, with the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 REINDEX INDEX sh_idx;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
 SELECT rows FROM sift._test_col_counters('sh_idx', '1:eq:7');
 SELECT rows FROM sift._test_col_counters('sh_idx', '1:eq:7');
 SELECT head_loads >= 2 AS read_each_time, head_hits = 0 AS none_found, zone_loads >= 2 AS zones_read_each_time, zone_hits = 0 AS no_zones_found FROM sift._test_col_dict_cache(true);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 SELECT sift.col_verify('sh_idx', true);
 SELECT count(*) AS rows, sum(grp) AS total FROM sh WHERE grp BETWEEN 3 AND 9;

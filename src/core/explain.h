@@ -62,7 +62,7 @@ typedef struct SiftIndexStats
 	int64		dead_rows;
 } SiftIndexStats;
 
-/* the counts of an index, from its directory and the headers of its segments (bm25/segment_sql.c, col/maint/funcs.c) */
+/* the counts of an index, from its directory and the headers of its segments (bm25/segment_sql.c, col/v1/maint/funcs.c) */
 extern void sift_bm25_stats(Relation index, SiftIndexStats *st);
 extern void sift_col_stats(Relation index, SiftIndexStats *st);
 

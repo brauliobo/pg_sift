@@ -201,8 +201,8 @@ DROP TABLE sp;
 -- each step sorts the rows of the partition and the overlays that are in its window and leaves the others out
 CREATE TABLE rl (id int, cust int, a1 int, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO rl SELECT i, (i::bigint * 7919) % 600, (i * 31) % 1000, i % 100, md5(i::text) FROM generate_series(1, 60000) i;
-SET sift.col_auto_merge = on;
-SET sift.col_auto_merge_partition_kb = 256;
+SET sift.async_maintenance = on;
+SET sift.test_col_partition_kb = 256;
 SET sift.async_maintenance = off;
 SET sift.test_col_net = off;
 CREATE INDEX rl_idx ON rl USING sift_col (id, cust, a1, amount, pad) WITH (key_cut = 'cust', dict_lookup = off, dead_rewrite_pct = 100);

@@ -7,6 +7,7 @@
 
 #include <math.h>
 
+#include "catalog/index.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/planner.h"
@@ -15,6 +16,7 @@
 #include "agg/agg.h"
 #include "agg/cte/int.h"
 #include "agg/rows.h"
+#include "agg/v6/v6_live.h"
 
 static void cte_refs(PlannedStmt *stmt, Plan *plan, Bitmapset **refs);
 
@@ -54,6 +56,16 @@ child_plans(Plan *plan)
 	}
 }
 
+bool
+sift_is_any_agg_scan(const Plan *plan)
+{
+	Oid			indexoid;
+
+	return plan != NULL && ((IsA(plan, CustomScan) && (((const CustomScan *) plan)->methods == &sift_agg_plan_methods ||
+													   ((const CustomScan *) plan)->methods == &sift_agg_rows_plan_methods)) ||
+							sift_agg_v6_live_scan(plan, &indexoid));
+}
+
 /*
  * The SiftAgg nodes of the plan (they hold what is below them). The arms below a SiftAggRows node run as the sets of one pass over the index
  * (agg/fuse.c), so they cost what plan_rows.c credits them; the node's own work and the join below it are the plan above the scans, as they
@@ -62,8 +74,18 @@ child_plans(Plan *plan)
 void
 sift_agg_arms(Plan *plan, ScanArms *a)
 {
+	Oid			indexoid;
+
 	if (plan == NULL)
 		return;
+	if (sift_agg_v6_live_scan(plan, &indexoid))
+	{
+		a->total += list_member_oid(a->v6_indexes, indexoid) ? plan->total_cost * V6_FUSED_ARM_FACTOR : plan->total_cost;
+		a->first = Max(a->first, plan->total_cost);
+		a->v6_indexes = list_append_unique_oid(a->v6_indexes, indexoid);
+		a->n++;
+		return;
+	}
 	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
 	{
 		double		pct = 0;
@@ -139,8 +161,15 @@ plan_reads_scope(Plan *plan)
 void
 arm_tables(Plan *plan, List **oids)
 {
+	Oid			indexoid;
+
 	if (plan == NULL)
 		return;
+	if (sift_agg_v6_live_scan(plan, &indexoid))
+	{
+		*oids = list_append_unique_oid(*oids, IndexGetRelation(indexoid, false));
+		return;
+	}
 	if (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods)
 	{
 		SiftAggSpec *spec = sift_aggspec_unpack(((CustomScan *) plan)->custom_private);
@@ -384,7 +413,7 @@ plain_reader(PlannedStmt *stmt, Plan *plan, double loops, double bound)
 {
 	double		work = 0;
 
-	if (plan == NULL || (IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_agg_plan_methods))
+	if (plan == NULL || sift_is_any_agg_scan(plan))
 		return 0;
 	if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan))
 	{

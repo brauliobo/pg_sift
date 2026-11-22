@@ -1,4 +1,4 @@
--- A plan that scans a sift_col index under a Gather runs the scan in a worker, which has none of the rows its leader holds back (col/wbuf/pending.c: the rows a
+-- A plan that scans a sift_col index under a Gather runs the scan in a worker, which has none of the rows its leader holds back (col/v1/wbuf/pending.c: the rows a
 -- transaction inserts after its first, and the tombstones it has not logged). A plan that was made before the rows were inserted (a prepared statement) did not
 -- flush them either, and the worker's scan missed them.
 CREATE EXTENSION pg_sift;

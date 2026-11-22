@@ -1,4 +1,4 @@
-"""One psql session that runs some statements and times the last one: the helper of the benchmarks that drive a local cluster with `psql -d DB` (steps/sets.py, steps/scaling.py). Standard library only."""
+"""One psql session that runs some statements and times the last one: the helper of the benchmarks that drive a local cluster with `psql -d DB` (steps/scaling.py). Standard library only."""
 import os
 import re
 import subprocess

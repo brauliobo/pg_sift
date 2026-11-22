@@ -35,6 +35,13 @@ extern bool sift_index_quarantined(Relation index);
 extern bool sift_index_known_out(Relation index);
 /* A plan that left the index out of its index list: asks for the worker that flags the metapage when it is not flagged yet */
 extern void sift_quarantine_planned(Relation index);
+/*
+ * The amcostestimate of an index that is out of service: it is given the price no path beats and the worker that flags the metapage is asked for; false when the index is in service. PostgreSQL asks
+ * the callbacks of an access method while it plans, before a session that did not preload sift has installed the planner hook that leaves the index out of the list of its relation.
+ */
+extern bool sift_quarantine_cost(Relation index, double index_pages, Cost *startup, Cost *total, Selectivity *selectivity, double *correlation, double *pages);
+/* The first cause that this server recorded for the index being out of service (what sift.quarantine says), a copy in the current memory context; NULL when none is recorded: a flag in the metapage that no backend met */
+extern char *sift_quarantine_reason(Relation index);
 /* A function that has no result without the index (sift.facets): refused with a hint while the index is out of service */
 extern void sift_quarantine_require(Relation index, const char *what);
 /* The indexes of this database that are out of service, quoted and joined by commas, for the hint of a function that exists only inside a sift scan; NULL when none is known */
@@ -43,39 +50,30 @@ extern const char *sift_quarantine_names(void);
 extern bool sift_index_out(Relation index, uint32 meta_flags);
 
 /* What a statement that skipped a quarantined index counts for sift.quarantine */
-typedef enum SiftSkipKind
+typedef enum SiftQuarSkip
 {
 	SIFT_SKIP_WRITE,
 	SIFT_SKIP_VACUUM,
 	SIFT_SKIP_SCAN
-} SiftSkipKind;
+} SiftQuarSkip;
 
-extern void sift_quarantine_skip(Relation index, SiftSkipKind kind);
+extern void sift_quarantine_skip(Relation index, SiftQuarSkip kind);
 
 /*
- * Runs fn(arg), the work of a write or a VACUUM on the index, so that damage it finds does not fail the statement: it runs in a subtransaction, and damage of the index that
- * core/damage.h recorded rolls it back, leaves the index out of service and goes on with a WARNING (false is returned); an index that is out of service already is skipped the
- * same way. Every other error goes on. sift.on_corruption = error runs fn as it is.
+ * Runs fn(arg), the work of a write or a VACUUM on the index, unless the index is out of service: that one is skipped (false is returned, counted for sift.quarantine and said with a
+ * WARNING). There is no subtransaction around fn, as a write and a VACUUM would pay it every time: damage fn finds is recorded where it is raised and fails the statement once, and the
+ * statements that follow skip the index.
  */
 typedef void (*SiftGuarded) (void *arg);
 /* A caller that catches errors asks of each: is it the damage recorded since it last asked (it is, once). Such an error ends the work on the index, and is not a failure to retry */
 extern bool sift_damage_caught(const ErrorData *e);
 /* The work on the index ended because it is out of service: counted for sift.quarantine, and said once a minute with a WARNING */
-extern void sift_quarantine_stopped(Relation index, SiftSkipKind kind);
-extern bool sift_quarantine_guard(Relation index, SiftSkipKind kind, SiftGuarded fn, void *arg);
-/*
- * Runs fn(arg) in a state that cannot take the subtransaction of a guard: the start of a subtransaction (its callbacks run in a state that refuses a second one) and the commit of a transaction block
- * (PostgreSQL accepts a subtransaction there, but asserts against rolling one back). The guards inside it run their work as it is: damage fails the statement once, as under
- * sift.on_corruption = error, and an index that is out of service is skipped.
- */
-extern void sift_quarantine_unprotected(SiftGuarded fn, void *arg);
-/* The guard's own subtransaction is starting, running or ending: the callbacks that write the rows a transaction holds do not take it for one of the user (it is the flush that started it) */
-extern bool sift_quarantine_guarding(void);
-/*
- * The id a write stamps its records with: that of the transaction level it was called from, also inside a guard. The guard's subtransaction then takes no id of its own (it would cost the
- * assignment and a lock on it at every write); a failed write leaves records of the caller's id in an index that damage has put out of service, whose records no read uses.
- */
-extern TransactionId sift_quarantine_write_xid(void);
+extern void sift_quarantine_stopped(Relation index, SiftQuarSkip kind);
+/* The entry of a write or a VACUUM into an index of any format: true, after the work was counted and said as stopped, when the index is out of service (a plain index or a table never is) */
+extern bool sift_quarantine_skips(Relation index, SiftQuarSkip kind);
+/* The step of the queue (SIFT_MK_QUARANTINE_MARK): flags the metapage of an index the registry holds out of service, the work of the worker of core/quarantine.c, in the transaction of the caller */
+extern void sift_quarantine_mark(Relation index);
+extern bool sift_quarantine_run(Relation index, SiftQuarSkip kind, SiftGuarded fn, void *arg);
 
 /*
  * Where a scan opens, after it read the directory (meta_flags: the flags of its metapage): a plan made before the index left service is refused with SQLSTATE 40001, the one a
@@ -84,6 +82,6 @@ extern TransactionId sift_quarantine_write_xid(void);
 extern void sift_quarantine_net(Relation index, uint32 meta_flags);
 
 /* The worker that flags the metapage of an index the registry holds out of service (main_arg: the oid of the index) */
-extern PGDLLEXPORT void sift_quarantine_main(Datum main_arg);
+extern void sift_quarantine_main(Datum main_arg);
 
 #endif							/* SIFT_QUARANTINE_H */

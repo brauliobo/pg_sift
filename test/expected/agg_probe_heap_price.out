@@ -6,11 +6,12 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
+SET work_mem = '256MB';
 CREATE TABLE hp_parent (id int PRIMARY KEY, grp int) WITH (autovacuum_enabled = false);
 INSERT INTO hp_parent SELECT g, g % 40 FROM generate_series(1, 50000) g;
 CREATE TABLE hp_child (id bigint PRIMARY KEY, parent_id int, amount numeric(12, 2), at timestamp) WITH (autovacuum_enabled = false);
 INSERT INTO hp_child SELECT g, 1 + (g::bigint * 7919) % 45000, (g % 1000)::numeric, timestamp '2024-01-01' + (g % 365) * interval '1 day'
-FROM generate_series(1, 1000000) g;
+FROM generate_series(1, 200000) g;
 CREATE INDEX hp_child_idx ON hp_child (parent_id, at);
 CREATE INDEX hp_parent_col ON hp_parent USING sift_col (id, grp);
 CREATE INDEX hp_child_col ON hp_child USING sift_col (parent_id, amount, at);

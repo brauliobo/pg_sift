@@ -187,6 +187,8 @@ typedef enum SiftSegcacheKind
 
 extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt,
 							  void **obj, void **handle);
+/* Is what sift_segcache_get would return already there and filled: no entry made, nothing pinned */
+extern bool sift_segcache_has(const SiftStreamReader *sr, int kind, uint64 id, Size size);
 extern void sift_segcache_ready(void *handle);
 #ifdef SIFT_TESTING
 /* Entries dropped for room, and blobs that did not fit though a cursor held every entry (sift._test_read_stats) */

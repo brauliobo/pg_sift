@@ -29,7 +29,6 @@ INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 
 SET sift.col_format_minor = 3;
 CREATE INDEX g_narrow ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow');
-RESET sift.col_format_minor;
 CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow4');
 -- each wide type alone, under either setting
@@ -39,7 +38,6 @@ CREATE INDEX g_m ON g USING sift_col (m) WITH (cube_minmax = false, superunit = 
 CREATE INDEX g_iv ON g USING sift_col (iv) WITH (cube_minmax = false, superunit = 0);
 CREATE INDEX g_n ON g USING sift_col (any_n) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
-RESET sift.col_format_minor;
 DROP INDEX g_w, g_m, g_iv, g_n;
 
 -- a narrow index grows nothing of the wide minor; a mixed one is wide as a whole
@@ -61,7 +59,6 @@ INSERT INTO g SELECT i, i % 9, 1, i, '2.00'::money, interval '2 days', 1 FROM ge
 SELECT sift.col_promote('g_all');
 SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
-RESET sift.col_format_minor;
 REINDEX INDEX g_all;
 SELECT fmt('g_all');
 SELECT sift.col_verify('g_all', true);

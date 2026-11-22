@@ -14,7 +14,6 @@ SET sift.table_wide_rows = off;
 INSERT INTO wr VALUES (100, 0, repeat('a', 5000000));
 SELECT count(*) AS rows_after_refusal FROM wr;
 
-SET sift.table_wide_rows = on;
 -- 5 MB (beyond the default buffer) and 12 MB (beyond the largest one) next to ordinary rows
 INSERT INTO wr VALUES (100, 0, repeat('a', 5000000)), (101, 1, repeat('bc', 6000000)), (102, 2, 'short');
 SELECT id, length(v), md5(v) FROM wr WHERE id >= 100 ORDER BY id;

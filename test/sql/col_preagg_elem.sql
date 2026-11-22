@@ -177,7 +177,6 @@ RESET maintenance_work_mem;
 SET sift.col_format_minor = 3;
 INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(42001, 46000) g;
 SELECT sift.col_promote('pe_col') >= 0 AS promoted;
-RESET sift.col_format_minor;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT fmt('pe_col');
 SELECT sift.col_verify('pe_col', true);
@@ -195,7 +194,6 @@ SET sift.col_format_minor = 3;
 CREATE INDEX pe_col3 ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
         preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)', cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 SELECT fmt('pe_col3');
 SELECT sift.col_verify('pe_col3', true);
 SELECT (SELECT count(*) FROM sift.col_unit_hist('pe_col3', 'items[].k')) AS minor3_elem_groups,

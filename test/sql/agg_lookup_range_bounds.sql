@@ -3,12 +3,12 @@
 -- large share, a table without an index and a condition that is not a bound are read by the heap scan, with the same rows. Every statement is run with the pushdown, without it and with
 -- sift.enable_agg = off.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
-SET sift.agg_probe_rewrite = off;
 SET sift.enable_col_scan = off;
 
 CREATE TABLE ev (id int PRIMARY KEY, dim_id int, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);

@@ -26,13 +26,13 @@ CREATE FUNCTION check_rows(q text) RETURNS TABLE (pushed bool, first_run bigint,
 DECLARE l text;
 BEGIN
 	SET LOCAL sift.agg_force = on;
-	SET LOCAL sift.agg_lookup_cache_kb = 0;
-	SET LOCAL sift.agg_lookup_shared_kb = 0;
+	SET LOCAL sift.backend_cache_kb = 0;
+	SET LOCAL sift.shared_cache_kb = 0;
 	pushed := false;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP pushed := pushed OR l LIKE '%Custom Scan (SiftAgg)%'; END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_scan ON COMMIT DROP AS %s', q);
-	RESET sift.agg_lookup_cache_kb;
-	RESET sift.agg_lookup_shared_kb;
+	RESET sift.backend_cache_kb;
+	RESET sift.shared_cache_kb;
 	EXECUTE format('CREATE TEMP TABLE r_kept ON COMMIT DROP AS %s', q);
 	EXECUTE format('CREATE TEMP TABLE r_kept2 ON COMMIT DROP AS %s', q);
 	SET LOCAL parallel_setup_cost = 0;

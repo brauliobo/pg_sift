@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Sourced by the scripts that compare builds of sift (merge-bytes.sh, build-bench.sh, perf-gate-maint.sh): one throwaway cluster of
 # scripts/pgtest.sh for every BUILDS entry (LABEL=DIR), on the ports SIFT_PORT (default 56150) and up, removed at the end.
 #   mb_begin PREFIX      the scratch directory $BASE (/tmp/PREFIX.XXXXXX) and the clean-up of the clusters and of it on exit

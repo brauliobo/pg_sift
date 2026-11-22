@@ -138,7 +138,6 @@ installcheck-agg_lookup_set_ratio_diff	18	56
 installcheck-agg_wide_sum_dict	34	56
 installcheck-tbl_preagg	53	56
 tap-shell-store_replica	56	54
-tap-shell-col_auto_merge_vacuum	34	54
 installcheck-agg_group_order	41	52
 installcheck-agg_partitions_many	52	48
 installcheck-col_text_scanwrap	51	52
@@ -159,7 +158,6 @@ tap-shell-extension_lifecycle	46	34
 installcheck-tbl_topn	45	29
 difftest-col-analytics	44	32
 installcheck-agg_preagg_distinct	43	37
-installcheck-col_key_cut_auto	19	43
 installcheck-agg_preagg_wide_key	42	34
 installcheck-facet_counts	30	42
 tap-006_tbl	37	42
@@ -204,7 +202,6 @@ installcheck-agg_lookup_in_list	16	29
 installcheck-col_topn_float	26	29
 installcheck-col_topn	25	28
 installcheck-col_topn_order	15	28
-installcheck-col_key_cut_growth	20	27
 installcheck-col_key_cut_units	15	27
 tap-018_tbl_async_promote	25	27
 tap-019_tbl_defrag	27	26

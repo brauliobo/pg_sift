@@ -123,7 +123,7 @@ def cmd_section(args):
 
 
 def cmd_section_merge(args):
-    """the result files of every size and repetition of a section pass into one (bench/results/updates.json): the rows as they are, the meta of each file by its tier"""
+    """the result files of every size and repetition of a section pass into one (docs/results/updates.json): the rows as they are, the meta of each file by its tier"""
     runs = [json.load(open(f)) for f in sorted(args.files)]
     first = runs[0]['meta']
     out = dict(meta=dict(host=host(), sha=args.sha, date=first['date'][:10], cpus=first['cpus'], runs={r['meta']['tier']: r['meta'] for r in runs}), rows=[row for r in runs for row in r['rows']])

@@ -1,4 +1,4 @@
--- The switch contract of the deletion records (REPORT, col/wbuf.h): a step that gives a column index a segment generation in place of another writes the records that name the old one
+-- The switch contract of the deletion records (REPORT, col/v1/wbuf.h): a step that gives a column index a segment generation in place of another writes the records that name the old one
 -- again under the new one (sift_col_dv_rekey), for the units it copies as they are, and carries the records of the units it cuts again to marks. The step here is a relocation, which copies
 -- every page of a segment (the units of the new generation are those of the old with the same numbers); the hook cuts unit 1 again, as a split of a partition that re-cuts one unit does.
 -- Every state is compared with the answer of the heap: records of a statement in progress, committed ones, and after the fold.
@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET sift.col_unit_rows = 4000;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, note text) WITH (autovacuum_enabled = false, fillfactor = 60);
 INSERT INTO events SELECT i, i % 10, i, repeat('n', 150) FROM generate_series(1, 30000) i;
 CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');

@@ -105,7 +105,7 @@ def measure_mb(setup, warm, op):
         raise RuntimeError("warm: " + err)
     base = num_of(out, "BASE")
     _, err = send(p, op, "OPDONE")
-    out, hw_err = send(p, PEAK_STOP + "\nselect 'SCOPE', scope, peak from sift._test_mem_highwater();", "HWDONE")
+    out, hw_err = send(p, PEAK_STOP + "\nselect 'SCOPE', scope, peak from sift._test_mem_highwater() where parent is null;", "HWDONE")
     p.stdin.write("\\q\n")
     p.wait()
     if err or hw_err:

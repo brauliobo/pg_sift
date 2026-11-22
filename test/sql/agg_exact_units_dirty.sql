@@ -7,7 +7,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, kind_id int NOT NULL, ts date NOT NULL, amount float8 NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT g, 1 + (g::bigint * 7919) % 12, date '2024-01-01' + (g * 37 % 700), (g * 31 % 1000)::float8 FROM generate_series(1, 300000) g;
-CREATE INDEX events_col ON events USING sift_col (kind_id, ts, amount);
+CREATE INDEX events_col ON events USING sift_col (kind_id, ts, amount) WITH (key_cut = 'ts');
 VACUUM (FREEZE, ANALYZE) events;
 
 CREATE FUNCTION month_cost() RETURNS float8 LANGUAGE sql AS

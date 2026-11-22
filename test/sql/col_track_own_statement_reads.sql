@@ -28,7 +28,7 @@ DECLARE l text;
 BEGIN
 	plan := '';
 	PERFORM set_config('sift.enable_agg', (mode < 2)::text, true);
-	PERFORM set_config('sift.enable_topn', (mode < 2)::text, true);
+	PERFORM set_config('sift.enable_agg', (mode < 2)::text, true);
 	PERFORM set_config('sift.test_no_heapfree', (mode = 1)::text, true);
 	EXECUTE 'SELECT coalesce(string_agg(x::text, '';'' ORDER BY x::text), '''') FROM (' || q || ') x' INTO r;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP

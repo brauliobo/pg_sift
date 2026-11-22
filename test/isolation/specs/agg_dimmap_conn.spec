@@ -51,12 +51,12 @@ teardown
 }
 
 session s1
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0; SET sift.agg_dimmap_kb = 8192; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0; SET sift.shared_cache_kb = 8192; }
 step s1run	{ SELECT iso_dm_run(); }
 step s1runl	{ SELECT iso_dm_runl(); }
 
 session s2
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 0; SET sift.agg_dimmap_kb = 8192; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0; SET sift.shared_cache_kb = 8192; }
 step s2run	{ SELECT iso_dm_run(); }
 step s2runl	{ SELECT iso_dm_runl(); }
 step s2rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_dm_dim; }

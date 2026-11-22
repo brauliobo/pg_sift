@@ -1,0 +1,131 @@
+/*
+ * col/f2/f2_col_delta_idx.h - the column delta chain (SIFT_PT_COL_DELTA, table/f2/f2_col_delta.h) of a sift_col index (spec 49 3, 4): an UPDATE that does not change what the index holds
+ * of a row, or changes a few leaves of it, appends a record that names the row by its place in its part (part, granule, row) and holds its new heap address (SIFT_CD_ATT_TID_REMAP, a
+ * column of its own: attribute 0) and the new cells of the leaves that changed (attribute = leaf + 1), instead of ending the row's entry and writing a new one.
+ *
+ * This file holds what needs no server: the records a trigger writes, the map of the address changes a snapshot sees (what a vacuum and a delete find a row by), the patch of the views and
+ * the addresses of a granule a scan decoded, and the exceptions a patched leaf is given so that no zone, dictionary or chunk filter of the part decides for it. f2_col_delta_srv.c holds the
+ * server side: the chain read for a partition, the hooks of the scan, the locate, the stage of the transaction.
+ *
+ * What a row has at a snapshot is the part's value patched by the records the snapshot sees (the newest of each column wins): before the record commits the row has its old address and
+ * values, after it the new ones, and a rolled back writer leaves nothing. A vacuum offers the callback the newest committed address of a row, never the one it had, so that the heap
+ * reclaims the old tuple and the row stays; a delete finds a row by its newest address, and an address a row has left is no row of the index however it is reused by the heap.
+ */
+#ifndef SIFT_COL_F2_COL_DELTA_IDX_H
+#define SIFT_COL_F2_COL_DELTA_IDX_H
+
+#include "postgres.h"
+
+#include "col/f2/f2_col_diff.h"
+#include "col/f2/f2_sink.h"
+#include "col/f2/f2_vac_vm.h"
+#include "col/granule/granule.h"
+#include "core/xid_cache.h"
+#include "table/f2/f2_col_delta.h"
+
+/* ---- the records ---- */
+
+/*
+ * The record for the row at target (its address then is target->tid) whose new address is new_tid and whose leaves in leaf[0..nleaf) now hold cell[]: the bytes, 0 when they do not fit. kinds:
+ * the kind of each leaf of the index; key_absent: per changed leaf, when the leaf is of a top-level key of a document and the document has none (NULL: none is). subxid: the writer is a
+ * subtransaction; dirty_scope: a leaf a scope summary of the index reads is among them.
+ */
+extern uint32 sift_cdi_encode(uint8 *dst, uint32 cap, const SiftColDeltaTarget *target, TransactionId xmin, CommandId cid, bool subxid, bool dirty_scope, uint64 new_tid, const SiftCellKind *kinds,
+							  const int16 *leaf, const SiftCell *cell, const bool *key_absent, int nleaf);
+
+/* ---- the address changes of a chain ---- */
+
+typedef struct SiftCdRemap
+{
+	uint64		part_gen;
+	uint32		granule_id;
+	uint16		row;
+	uint64		new_tid;
+} SiftCdRemap;
+
+/* The newest address change of each row the writers the ops accept made, found by the row or by the address it has now */
+typedef struct SiftCdRemapMap
+{
+	int			n;
+	SiftCdRemap *slot;			/* ascending by (part_gen, granule, row) */
+	SiftCdRemap *by_new;		/* ascending by new_tid */
+} SiftCdRemapMap;
+
+/* NULL when the chain has none; ops->visible says which writers count (a vacuum and a delete: the committed ones and the transaction itself) */
+extern SiftCdRemapMap *sift_cd_remap_build(const SiftColDeltaChain *chain, const SiftColDeltaOps *ops);
+extern void sift_cd_remap_free(SiftCdRemapMap *m);
+
+/* The row that has the address now */
+extern const SiftCdRemap *sift_cd_remap_by_new(const SiftCdRemapMap *m, uint64 tid);
+
+/* The address the row has now, 0 when the chain moved it never */
+extern uint64 sift_cd_remap_new_tid(const SiftCdRemapMap *m, uint64 part_gen, uint32 granule_id, uint16 row);
+
+/* The row of the place has moved to an address other than raw_tid: raw_tid is no row of the index any more, and the heap may give it to another */
+extern bool sift_cd_remap_supersedes(const SiftCdRemapMap *m, uint64 part_gen, uint32 granule_id, uint16 row, uint64 raw_tid);
+
+/* The addresses a vacuum offers for the rows of a part: whether an address change of the part (of the granule) lies in a block the heap's visibility map does not say all-visible */
+extern bool sift_cd_remap_part_in_dirty(const SiftCdRemapMap *m, uint64 part_gen, const SiftVmDirtySet *ds);
+extern bool sift_cd_remap_granule_in_dirty(const SiftCdRemapMap *m, uint64 part_gen, uint32 granule_id, const SiftVmDirtySet *ds);
+
+#ifndef SIFT_S49_STANDALONE
+struct F2Scan;
+struct SiftColSchema;
+typedef struct SiftCdiScan SiftCdiScan;
+
+/*
+ * The exceptions of the part (exc, *nexc of them) as the scan of the snapshot must read them: with an exception for every granule whose leaf a predicate reads and a patch of the chain changes.
+ * Called for each part a scan reads, before its predicates are judged on its zones, dictionaries and chunks.
+ */
+extern const SiftVariantExcSummary *sift_cdi_scan_exceptions(struct F2Scan *s, Relation rel, const struct SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPart *part, Snapshot snap,
+															 const SiftVariantExcSummary *exc, int *nexc);
+
+/* The patches the snapshot sees of granule g laid over its decoded views and addresses; true when an address changed, so that the granule's range of addresses does not tell it holds no pending delete */
+extern bool sift_cdi_scan_patch(struct F2Scan *s, const struct SiftColSchema *schema, uint32 g, ColView *views, uint64 *tids, int n, MemoryContext cx);
+
+/* The addresses of granule g as the snapshot sees them, for a decision taken before any column is decoded; whether the chain moved a row of g, so that the range of addresses of g is not the range of its rows */
+extern void sift_cdi_scan_remap_tids(const struct F2Scan *s, uint32 g, uint64 *tids, int n);
+extern bool sift_cdi_scan_remaps(const struct F2Scan *s, uint32 g);
+
+/*
+ * The update of a row of the index from oldt (at old_tid) to newt as a record of the chain, when the row is in a part, none of its key or partial-index columns changed, its leaves that changed
+ * are few and the chain has room: the new version's entry, which aminsert staged, is withdrawn from the stage (it is not written) and the old version's entry stays, at the new address
+ * from the record's commit. False when the update takes the way of a tombstone and a new entry.
+ */
+extern bool sift_cdi_stage_update(const SiftF2DiffEnv *env, struct SiftTxnStage *st, HeapTuple oldt, HeapTuple newt, uint64 old_tid);
+
+/* The overlay of the part of the partition for the snapshot xc stands for, in the current memory context; NULL when the partition has no chain or the snapshot sees no patch of it (f2_col_delta_srv.c) */
+extern SiftColDeltaPartMap *sift_cdi_part_map(Relation rel, const SiftPartitionEntry *e, const SiftPart *part, SiftXidCache *xc);
+
+/* The address changes of the committed writers and the transaction itself in the partition's chain; NULL when the partition has none (f2_col_delta_srv.c) */
+extern SiftCdRemapMap *sift_cdi_remap_load(Relation rel, const SiftPartitionEntry *entry);
+#endif
+
+/* ---- what a scan lays over a part ---- */
+
+/*
+ * The cells and addresses of the n rows of a granule a scan decoded, patched with what the snapshot sees of the granule: tids[row] is the new address, the decoded leaves (views[leaf].isnull
+ * not NULL) the new cells, copied into cx before they are written (the arrays the scan decoded are not changed). ncols: the leaves of the index.
+ */
+extern void sift_cdi_patch_granule(const SiftColDeltaGranMap *gm, int ncols, ColView *views, uint64 *tids, int n, MemoryContext cx);
+
+/* Only the addresses: tids[row] is the address the chain gave the row (what a TID bridge and a pending delete name it by) */
+extern void sift_cdi_remap_tids(const SiftColDeltaGranMap *gm, uint64 *tids, int n);
+
+/*
+ * The exceptions of a part with, for every granule the map patches in a leaf of a predicate (pred_leaf[leaf]), the exception that tells a scan that the stored column cannot decide for
+ * that leaf of that granule: its zones, its dictionary, its chunk filters and its skipping indexes are left out for it. exc[nexc] is returned as it is when nothing of it is patched.
+ */
+extern const SiftVariantExcSummary *sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary *exc, int nexc, const bool *pred_leaf, int ncols, int *nout);
+
+/* Whether the leaves of an update are any of the leaves (scope_leaf[leaf]) a scope summary of the index reads */
+static inline bool
+sift_cdi_scope_dirty(const int16 *leaf, int nleaf, const bool *scope_leaf)
+{
+	for (int i = 0; i < nleaf; i++)
+		if (scope_leaf[leaf[i]])
+			return true;
+	return false;
+}
+
+#endif							/* SIFT_COL_F2_COL_DELTA_IDX_H */

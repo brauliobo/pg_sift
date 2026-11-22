@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Memory-safety patterns of src/ that a grep can decide (needs no PostgreSQL and no build), see docs/SAFETY.md "Relation cache state":
 #   - rd_amcache, the slot the relcache frees whenever it reloads the entry, is touched only by the files that own an accessor of it
-#     (col/am/rel.c sift_col_rel, bm25/wbuf.c get_hint, agg/stub_src.c, table/store.c sift_tbl_rel, which only tests it for NULL): every other file asks the accessor at the point of use;
+#     (col/am/rel.c sift_col_rel, bm25/wbuf.c get_hint, agg/stub_src.c, table/v1/store.c sift_tbl_rel, which only tests it for NULL): every other file asks the accessor at the point of use;
 #   - a local that keeps the result of the accessor, `SiftColRel *r = sift_col_rel(index)`, is a pointer into memory the relcache frees: it
 #     is read after a lock or a catalog read only if the entry was fetched again. A site says why none comes between the fetch and its last
 #     use (or takes sift_col_rel_private, which is not flagged); the earlier report, sift.col_verify and the cost estimate of a scan all kept one;
@@ -9,29 +9,47 @@
 #     the point directory ran past its array on `timestamp = 'infinity'`): count the iterations, or say why hi is bounded.
 #   A 64-bit loop whose condition also bounds the counter with `<` is fine. Any other site says `check-memory: allow <why>` in a comment on
 #   the line or the line above it. Test-only files are checked like the others.
-#   - a plain palloc/repalloc/MemoryContextAlloc (not huge, not sift_rows_alloc) whose size multiplies a count named for rows, tuples, values,
+#   - a plain palloc/repalloc/MemoryContextAlloc (not huge) whose size multiplies a count named for rows, tuples, values,
 #     documents, units, slots, keys, entries, postings or blocks: the allocation that follows the table is the one that fails a build of hundreds of millions of rows
-#     at 1 GB ("invalid memory alloc request size", 16 bytes a row in one segment). Bound it by a memory budget, take sift_rows_alloc
-#     (core/rowmem.h) or the huge allocation where the algorithm needs one array, or say what bounds the count: `check-memory: allow <why>` on the line
+#     at 1 GB ("invalid memory alloc request size", 16 bytes a row in one segment). Bound it by a memory budget, say what bounds the count: `check-memory: allow <why>` on the line
 #     or the line above, or `check-memory: allow-allocs <why>` in the first 40 lines of a file whose arrays all follow one unit, one plan or one query.
+#   - the memory budget rules of the three-budget model (core/memtrack.h, core/cachebudget.h), each counted for every file against scripts/memory-static.allow (rule, file, the
+#     sites the file has today): a file over its count, or a file with sites and no row, fails; a count above what the file has fails too, so that a clean-up lowers the row.
+#       huge: MemoryContextAllocHuge, repalloc_huge, SIFT_REGROW_HUGE_IN: an allocation of one array that follows the rows is a spill, a run or a window of a tracker's budget
+#       toplevel: TopMemoryContext, CacheMemoryContext outside core/cachebudget.c: every cache is a child of sift_cache_create_context()
+#       defaultsizes: ALLOCSET_DEFAULT_SIZES, ALLOCSET_DEFAULT_MAXSIZE: a transient context takes sift_mem_allocset_create() or sift_mem_generation_create(), whose blocks are at most 256 kB
+#       legacy: a memory setting or limit that core/memtrack.h and core/cachebudget.h replaced (no row is allowed)
 #
 #   scripts/check-memory.sh [--selftest]
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
 exec python3 -I - "$SRC" "${1:-}" <<'PY'
-import os, re, sys, tempfile
+import collections, os, re, sys, tempfile
 
-AMCACHE_FILES = {"col/am/rel.c", "bm25/wbuf.c", "agg/stub_src.c", "table/store.c"}
+AMCACHE_FILES = {"col/am/rel.c", "bm25/wbuf.c", "agg/stub_src.c", "table/v1/store.c", "table/am.c"}
 loop = re.compile(r"\bfor\s*\(\s*(?:const\s+)?(?:int64|uint64|int64_t|uint64_t)\s+(\w+)\s*=[^;]*;\s*\1\s*<=([^;]*);")
 amcache = re.compile(r"\brd_amcache\b")
 alloc = re.compile(r"\b(palloc0?|repalloc|MemoryContextAlloc(?:Zero)?|palloc_array|palloc0_array|repalloc_array)\s*\(")
 counted = re.compile(r"\b(\w*rows?|\w*ntuples?|\w*ntids?|\w*nentr\w*|\w*nvals?|\w*ndocs?|\w*nunits?|total|\w*nslots?|nstr|\w*nkeys?|\w*npost\w*|\w*ntomb\w*|\w*nblocks?)\b")
+STATIC_RULES = {
+    "huge": re.compile(r"\b(MemoryContextAllocHuge|repalloc_huge|SIFT_REGROW_HUGE_IN)\b"),
+    "toplevel": re.compile(r"\b(TopMemoryContext|CacheMemoryContext)\b"),
+    "defaultsizes": re.compile(r"\bALLOCSET_DEFAULT_(SIZES|MAXSIZE)\b"),
+    "legacy": re.compile(r"\b(sift_agg_lookup_cache_kb|sift_agg_lookup_shared_kb|sift_agg_dimmap_kb|sift_verdict_cache_kb|sift_col_dict_shared_cache_kb|sift_col_leaf_cache_kb|"
+                         r"sift_prefix_cache_size|CDICT_CACHE_MAX_KB|SEGCACHE_MAX_KB|BATCH_SET_BYTES|BATCH_AMPLIFY|WBUF_CACHE_ROWS|DEAD_BYTES|LEAF_STATS_CACHE|"
+                         r"sift_agg_semi_lut_size|sift_agg_param_set_size|sift_agg_lookup_max_kb|sift_agg_lookup_max_rows|sift_agg_combo_cache|sift_col_auto_merge_pass_mb|"
+                         r"sift_col_auto_merge_partition_kb|sift_tomb_log_limit_kb|SIFT_TOMB_LOG_KB|SIFT_COL_BUILD_SERIAL_BUDGET|SIFT_COL_BUILD_MIN_BUDGET|SIFT_COLW_MIN_BUDGET|"
+                         r"SIFT_COLW_(?:BUILD|MERGE)_(?:PCT|BASE)|WINDOW_MIN|PART_MIN_KB|SCOPE_SORT_MIN_KB|GROUP_NOSPILL_BASE|GROUP_NOSPILL_FACTOR|GROUP_PAR_FACTOR|"
+                         r"SPILL_RUN_BYTES|SIFT_ARRAY_UNLIMITED|sift_rows_alloc|sift_colw_memory|sift_colw_budget|sift_colw_row_memory|sift_colw_leaves_memory)\b"),
+}
+STATIC_EXEMPT = {"toplevel": {"core/cachebudget.c"}}
 held = re.compile(r"\bSiftColRel\s*\*\s*\w+\s*=\s*sift_col_rel\(")
 
 
-def scan(src):
+def scan(src, allow=None):
     bad, files = [], 0
+    sites = collections.Counter()
     for root, _, names in os.walk(src):
         for name in sorted(names):
             if not name.endswith((".c", ".h")):
@@ -48,6 +66,9 @@ def scan(src):
                 code = line.split("//")[0]
                 if code.lstrip().startswith(("/*", "*")):
                     continue
+                for rule, rx in STATIC_RULES.items():
+                    if rx.search(code) and rel not in STATIC_EXEMPT.get(rule, ()):
+                        sites[(rule, rel)] += 1
                 if amcache.search(code) and rel not in AMCACHE_FILES:
                     bad.append(f"{rel}:{i + 1}: rd_amcache outside its accessors ({', '.join(sorted(AMCACHE_FILES))}): the relcache frees it on every reload, ask the accessor where it is used")
                 if held.search(code):
@@ -56,11 +77,36 @@ def scan(src):
                 if m and not allocs_ok and name.endswith(".c"):
                     args = code[m.end():]
                     if ("sizeof" in args or "array" in m.group(1)) and counted.search(args):
-                        bad.append(f"{rel}:{i + 1}: allocation sized by a count of rows, values or units: a table of hundreds of millions of rows makes this one fail at 1 GB; bound it by a memory budget, use sift_rows_alloc (core/rowmem.h), or allow with what bounds the count")
+                        bad.append(f"{rel}:{i + 1}: allocation sized by a count of rows, values or units: a table of hundreds of millions of rows makes this one fail at 1 GB; bound it by a memory budget (core/memtrack.h), or allow with what bounds the count")
                 m = loop.search(code)
                 if m and not re.search(r"&&.*\b" + m.group(1) + r"\s*<[^=]|\b" + m.group(1) + r"\s*<[^=].*&&", m.group(2) + ";"):
                     bad.append(f"{rel}:{i + 1}: inclusive loop over a 64-bit counter wraps when the bound is the largest value: count the iterations, or allow with the reason the bound is small")
+    if allow is not None:
+        bad += ratchet(sites, allow)
     return bad, files
+
+
+def ratchet(sites, allow):
+    bad = []
+    for (rule, rel), n in sorted(sites.items()):
+        have = allow.get((rule, rel), 0)
+        if rule == "legacy" and n:
+            bad.append(f"{rel}: {n} site(s) of a memory setting or limit that core/memtrack.h and core/cachebudget.h replaced: use the budget it was folded into, not the old name")
+        elif n > have:
+            bad.append(f"{rel}: {n} site(s) of rule `{rule}` (scripts/memory-static.allow allows {have}): fix the allocation to take the budget of its tracker or cache, do not add a row")
+    for (rule, rel), have in sorted(allow.items()):
+        if sites.get((rule, rel), 0) < have:
+            bad.append(f"scripts/memory-static.allow: `{rule} {rel}` allows {have} and the file has {sites.get((rule, rel), 0)}: lower the row")
+    return bad
+
+
+def read_allow(path):
+    allow = {}
+    for line in open(path, encoding="utf-8"):
+        if line.strip() and not line.startswith("#"):
+            rule, rel, n = line.rstrip("\n").split("\t")
+            allow[(rule, rel)] = int(n)
+    return allow
 
 
 def selftest():
@@ -76,7 +122,7 @@ def selftest():
         "h.c": "/* check-memory: allow nothing is read between the fetch and the copy */\nSiftColRel *r = sift_col_rel(index);\n",
         "e.c": "for (uint64 w = 0; w <= m; w++) /* check-memory: allow m is a table size */\n",
         "p.c": "e = palloc(n * sizeof(PointEnt));\nq = palloc(nrows * sizeof(uint32));\n",
-        "q.c": "q = sift_rows_alloc(nrows * sizeof(uint32));\nw = MemoryContextAllocHuge(cx, nrows * 8);\nz = palloc(ncols * sizeof(int));\n",
+        "q.c": "w = MemoryContextAllocHuge(cx, nrows * 8);\nz = palloc(ncols * sizeof(int));\n",
         "r.c": "/* check-memory: allow a unit has at most 4096 rows */\nq = palloc(nrows * sizeof(uint32));\n",
         "s.c": "/* check-memory: allow-allocs every array here follows one unit */\nq = palloc0(nrows * sizeof(uint32));\nq = palloc_array(uint32, ntuples);\n",
         "t.c": "q = palloc_array(uint32, ntuples);\n",
@@ -91,13 +137,24 @@ def selftest():
     if got != want:
         print(f"check-memory selftest: flagged {sorted(got)}, wanted {sorted(want)}", file=sys.stderr)
         sys.exit(1)
+    with tempfile.TemporaryDirectory() as d:
+        for name, text in {"x.c": "p = MemoryContextAllocHuge(cx, n);\n", "y.c": "cx = AllocSetContextCreate(TopMemoryContext, \"n\", ALLOCSET_DEFAULT_SIZES);\n",
+                           "core/cachebudget.c": "cx = AllocSetContextCreate(TopMemoryContext, \"n\", 8192, 8192, 65536);\n", "z.c": "int k = sift_agg_dimmap_kb;\n"}.items():
+            os.makedirs(os.path.dirname(os.path.join(d, name)), exist_ok=True)
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        got = sorted(b.split(":")[0] for b in scan(d, {("huge", "x.c"): 1, ("toplevel", "gone.c"): 1, ("legacy", "z.c"): 1})[0])
+    want = ["scripts/memory-static.allow", "y.c", "y.c", "z.c"]
+    if got != want:
+        print(f"check-memory selftest: the memory rules flagged {got}, wanted {want}", file=sys.stderr)
+        sys.exit(1)
     print("check-memory selftest: ok")
 
 
 if sys.argv[2] == "--selftest":
     selftest()
     sys.exit(0)
-bad, files = scan(sys.argv[1])
+bad, files = scan(sys.argv[1], read_allow(os.path.join(sys.argv[1], "..", "scripts", "memory-static.allow")))
 for b in bad:
     print(b)
 if bad:

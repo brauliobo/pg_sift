@@ -138,9 +138,95 @@ append_fold(const SiftAnalyzer *a, uint16 info, const uint8 *src, int clen,
 	}
 }
 
-#ifdef __SSE2__
+#if defined(__SSE2__)
+typedef __m128i AsciiVec;
+
+static inline AsciiVec
+ascii_load(const uint8 *p)
+{
+	return _mm_loadu_si128((const __m128i *) p);
+}
+
+/* letter: 0xFF in the bytes that are ASCII letters; bit k of word: byte k is a letter or a digit, of high: its high bit is set */
+static inline void
+ascii_classify(AsciiVec v, AsciiVec *letter, uint32 *word, uint32 *high)
+{
+	__m128i		l = _mm_cmplt_epi8(_mm_add_epi8(_mm_or_si128(v, _mm_set1_epi8(0x20)), _mm_set1_epi8((char) (128 - 'a'))),
+								   _mm_set1_epi8(-128 + 26));
+	__m128i		digit = _mm_cmplt_epi8(_mm_add_epi8(v, _mm_set1_epi8((char) (128 - '0'))), _mm_set1_epi8(-128 + 10));
+
+	*letter = l;
+	*high = _mm_movemask_epi8(v);
+	*word = _mm_movemask_epi8(_mm_or_si128(l, digit));
+}
+
+static inline void
+ascii_store_fold(char *dst, AsciiVec v, AsciiVec letter, uint8 lower)
+{
+	_mm_storeu_si128((__m128i *) dst, _mm_or_si128(v, _mm_and_si128(letter, _mm_set1_epi8((char) lower))));
+}
+#elif defined(SIFT_HAVE_NEON)
+typedef uint8x16_t AsciiVec;
+
+static inline AsciiVec
+ascii_load(const uint8 *p)
+{
+	return vld1q_u8(p);
+}
+
+static inline uint32
+ascii_movemask(uint8x16_t m)
+{
+	uint8x16_t	t = vandq_u8(m, vld1q_u8(sift_neon_bit_weight));
+
+	return vaddv_u8(vget_low_u8(t)) | (uint32) vaddv_u8(vget_high_u8(t)) << 8;
+}
+
+static inline void
+ascii_classify(AsciiVec v, AsciiVec *letter, uint32 *word, uint32 *high)
+{
+	uint8x16_t	l = vcltq_u8(vsubq_u8(vorrq_u8(v, vdupq_n_u8(0x20)), vdupq_n_u8('a')), vdupq_n_u8(26));
+	uint8x16_t	digit = vcltq_u8(vsubq_u8(v, vdupq_n_u8('0')), vdupq_n_u8(10));
+
+	*letter = l;
+	*high = ascii_movemask(vcgeq_u8(v, vdupq_n_u8(0x80)));
+	*word = ascii_movemask(vorrq_u8(l, digit));
+}
+
+static inline void
+ascii_store_fold(char *dst, AsciiVec v, AsciiVec letter, uint8 lower)
+{
+	vst1q_u8((uint8 *) dst, vorrq_u8(v, vandq_u8(letter, vdupq_n_u8(lower))));
+}
+#endif
+
+#if defined(__SSE2__) || defined(SIFT_HAVE_NEON)
+#define SIFT_ASCII_FAST 1
+
 /*
- * Fast path: skips ASCII separators 16 bytes at a time and scans a token made
+ * The offset of the first block of 64 bytes of s[0..len) that holds a byte that may be part of a word (an ASCII letter or digit, or a byte
+ * from 0x80), or of the end of the whole blocks: the clones that have wide vectors skip a long run of separators (indentation, rulers, padding)
+ * at the width of the vector.
+ */
+SIFT_FMV_DEFINE(static, int, skip_separators, (const uint8 * SIFT_RESTRICT s, int len), (s, len),
+{
+	int			p = 0;
+
+	for (; p + 64 <= len; p += 64)
+	{
+		const uint8 *block = s + p;
+		uint8		any = 0;
+
+		for (int j = 0; j < 64; j++)
+			any |= (uint8) (((uint8) ((block[j] | 0x20) - 'a') < 26) | ((uint8) (block[j] - '0') < 10) | (block[j] >> 7));
+		if (any)
+			break;
+	}
+	return p;
+})
+
+/*
+ * Fast path: skips ASCII separators 16 bytes at a time (64 where a run of them is long) and scans a token made
  * only of ASCII letters and digits (any byte >= 0x80 in SQL_ASCII) into dst,
  * returning its length. Returns -1 with *i at the first byte the scalar
  * scanner must handle.
@@ -148,28 +234,29 @@ append_fold(const SiftAnalyzer *a, uint16 info, const uint8 *src, int clen,
 static inline int
 scan_ascii(const SiftAnalyzer *a, const uint8 *s, int len, int *i, int *start, char *dst)
 {
-	const __m128i lower = _mm_set1_epi8(a->cfg.case_fold ? 0x20 : 0);
+	const uint8 lower = a->cfg.case_fold ? 0x20 : 0;
 	int			p = *i,
 				st = -1;
 
 	for (; p + 16 <= len; p += 16)
 	{
-		__m128i		v = _mm_loadu_si128((const __m128i *) (s + p));
-		__m128i		letter = _mm_cmplt_epi8(_mm_add_epi8(_mm_or_si128(v, _mm_set1_epi8(0x20)),
-														 _mm_set1_epi8((char) (128 - 'a'))),
-											_mm_set1_epi8(-128 + 26));
-		__m128i		digit = _mm_cmplt_epi8(_mm_add_epi8(v, _mm_set1_epi8((char) (128 - '0'))),
-										   _mm_set1_epi8(-128 + 10));
-		uint32		high = _mm_movemask_epi8(v),
-					word = _mm_movemask_epi8(_mm_or_si128(letter, digit)) | (a->utf8 ? 0 : high),
+		AsciiVec	v = ascii_load(s + p),
+					letter;
+		uint32		high,
+					word,
 					stop;
 
+		ascii_classify(v, &letter, &word, &high);
+		word |= a->utf8 ? 0 : high;
 		if (!a->utf8)
 			high = 0;
 		if (st < 0)
 		{
 			if (!(word | high))
+			{
+				p += skip_separators(s + p + 16, len - p - 16);
 				continue;
+			}
 			st = p + pg_rightmost_one_pos32(word | high);
 			if (high & (1 << (st - p)))
 				break;
@@ -178,8 +265,7 @@ scan_ascii(const SiftAnalyzer *a, const uint8 *s, int len, int *i, int *start, c
 			continue;
 		}
 		if (p - st < TERM_CAP)
-			_mm_storeu_si128((__m128i *) (dst + p - st),
-							 _mm_or_si128(v, _mm_and_si128(letter, lower)));
+			ascii_store_fold(dst + p - st, v, letter, lower);
 		if ((stop = ~word & 0xFFFF))
 		{
 			int			e = p + pg_rightmost_one_pos32(stop);
@@ -281,7 +367,7 @@ scan_token(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char 
 		uint32		cp = 0;
 		uint16		info = 0;
 
-#ifdef __SSE2__
+#ifdef SIFT_ASCII_FAST
 		if ((n = scan_ascii(a, s, len, &i, start, dst)) >= 0)
 		{
 			if (n >= TERM_CAP && (hashed = long_word(a, s, *start, i, dst)) > 0)

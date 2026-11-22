@@ -1,4 +1,2 @@
 # Regress tests that turn the maintenance worker on and print what it changes: NAME (no .sql), a tab, the reason the output does not depend on the worker's timing (scripts/check-worker-tests.sh).
-col_maintenance_status	the subject is the blockers of the worker; what it prints is the setting and the table option, and a boolean of the status against sift.col_maintenance_due after a VACUUM of the test, which a worker's VACUUM leaves as it is
-col_vacuum_request	the subject is the worker: every positive answer waits for a condition (vr_vacuumed, vr_vacuumed_over, vr_idle) and every negative one is read after the commit that would have asked
 col_wbuf_read_priced	the subject is the worker that promotes a buffer the reads paid for: the promotion waits for a condition (wr_wait), and the table that is only written is asserted as not promoted

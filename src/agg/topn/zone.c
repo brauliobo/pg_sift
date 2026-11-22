@@ -9,6 +9,7 @@
 #include "utils/tuplesort.h"
 
 #include "agg/topn/int.h"
+#include "core/cachebudget.h"
 
 /* The superblocks by the best row they can hold, key by key: a unit whose bound on the keys so far ties with another is ordered by the next key */
 typedef struct WalkSort
@@ -21,7 +22,6 @@ static MemoryContext walk_cx;
 
 static WalkBase *walk_kept[WALK_CACHED];
 
-static uint64 walk_clock;
 
 bool
 sift_topn_wants_zones(const SiftTopN *t)
@@ -243,10 +243,92 @@ walk_find(const WalkKey *key)
 	for (int i = 0; i < WALK_CACHED; i++)
 		if (walk_kept[i] != NULL && memcmp(&walk_kept[i]->key, key, sizeof(WalkKey)) == 0)
 		{
-			walk_kept[i]->used = ++walk_clock;
+			walk_kept[i]->used = sift_cache_tick();
 			return walk_kept[i];
 		}
 	return NULL;
+}
+
+static void
+walk_drop(WalkBase *wb)
+{
+	for (int i = 0; i < WALK_CACHED; i++)
+		if (walk_kept[i] == wb)
+			walk_kept[i] = NULL;
+	wb->kept = false;
+	if (wb->refs == 0)
+		MemoryContextDelete(wb->cx);
+}
+
+static void
+walk_release(void *arg)
+{
+	WalkBase   *wb = arg;
+
+	if (--wb->refs == 0 && !wb->kept)
+		MemoryContextDelete(wb->cx);
+}
+
+/* The scan t walks wb until its context goes */
+static void
+walk_hold(SiftTopN *t, WalkBase *wb)
+{
+	MemoryContext cx = GetMemoryChunkContext(t);
+	MemoryContextCallback *cb = MemoryContextAlloc(cx, sizeof(MemoryContextCallback));
+
+	*cb = (MemoryContextCallback) {walk_release, wb, NULL};
+	MemoryContextRegisterResetCallback(cx, cb);
+	wb->refs++;
+}
+
+static WalkBase *
+walk_victim(void)
+{
+	WalkBase   *victim = NULL;
+
+	for (int i = 0; i < WALK_CACHED; i++)
+		if (walk_kept[i] != NULL && walk_kept[i]->refs == 0 && (victim == NULL || walk_kept[i]->used < victim->used))
+			victim = walk_kept[i];
+	return victim;
+}
+
+static uint64
+walk_oldest(void)
+{
+	WalkBase   *victim = walk_victim();
+
+	return victim != NULL ? victim->used : UINT64_MAX;
+}
+
+static bool
+walk_evict_one(void)
+{
+	WalkBase   *victim = walk_victim();
+
+	if (victim == NULL)
+		return false;
+	walk_drop(victim);
+	return true;
+}
+
+static void
+walk_evict_all(void)
+{
+	while (walk_evict_one())
+		;
+}
+
+static const SiftCacheKind walk_kind = {"topn_walks", walk_oldest, walk_evict_one, walk_evict_all};
+
+static MemoryContext
+walk_context(void)
+{
+	if (walk_cx == NULL)
+	{
+		walk_cx = sift_cache_create_context("sift cache topn walks");
+		sift_cache_register(&walk_kind);
+	}
+	return walk_cx;
 }
 
 /* Keeps wb, in a context of its own; the kept orders of the same file of an older version, and the least used when all places are taken, go */
@@ -260,10 +342,7 @@ walk_keep(WalkBase *wb)
 		WalkBase   *o = walk_kept[i];
 
 		if (o != NULL && o->key.st.index == wb->key.st.index && o->key.st.file == wb->key.st.file && o->key.st.version != wb->key.st.version)
-		{
-			MemoryContextDelete(o->cx);
-			walk_kept[i] = NULL;
-		}
+			walk_drop(o);
 		if (walk_kept[i] == NULL)
 			slot = i;
 	}
@@ -273,9 +352,10 @@ walk_keep(WalkBase *wb)
 		for (int i = 1; i < WALK_CACHED; i++)
 			if (walk_kept[i]->used < walk_kept[slot]->used)
 				slot = i;
-		MemoryContextDelete(walk_kept[slot]->cx);
+		walk_drop(walk_kept[slot]);
 	}
-	wb->used = ++walk_clock;
+	wb->used = sift_cache_tick();
+	wb->kept = true;
 	walk_kept[slot] = wb;
 }
 
@@ -350,12 +430,9 @@ sift_topn_walk_setup(SiftTopN *t)
 		wb = walk_find(&key);
 		if (wb == NULL)
 		{
-			/* kept as long as the backend: "sift cache" contexts are not leaks to scripts/leakcheck.sh */
-			if (walk_cx == NULL)
-				walk_cx = AllocSetContextCreate(TopMemoryContext, "sift cache topn walks", ALLOCSET_DEFAULT_SIZES);
 			if ((Size) t->nsb * (t->wkeys * sizeof(Rank) + 4 * sizeof(uint32)) <= WALK_KEEP_BYTES)
 			{
-				wb = walk_build(t, walk_cx, &key, true);
+				wb = walk_build(t, walk_context(), &key, true);
 				walk_keep(wb);
 			}
 			else
@@ -368,6 +445,8 @@ sift_topn_walk_setup(SiftTopN *t)
 		wb = walk_build(t, GetMemoryChunkContext(t), NULL, false);
 		nmem = 0;
 	}
+	if (keep)
+		walk_hold(t, wb);
 	t->wb = wb;
 	t->wkeep = keep;
 	if (nmem > 0)

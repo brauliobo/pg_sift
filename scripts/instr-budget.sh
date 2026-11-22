@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Instruction budget of reading the head of a stored unit (col/unit.c unit_parse), in callgrind instructions of a single-user backend: instructions do not move with the
+# Instruction budget of reading the head of a stored unit (col/v1/unit.c unit_parse), in callgrind instructions of a single-user backend: instructions do not move with the
 # load of the host, so the budget is a number, not a ratio. A table whose pages hold gaps (rows deleted before the index is built) has sparse page bitmaps in every unit,
 # which unit_parse validates; the aggregate below reads every unit's head. Fails when the instructions inside sift_cunit_parse_head exceed BUDGET.
 #

@@ -4,7 +4,12 @@
  * merge and segment writing of the build, and the page documents, are in build_runs.c.
  */
 #include "build_int.h"
-#include "core/membudget.h"
+
+#include "datatype/timestamp.h"
+#include "utils/timestamp.h"
+
+#include "core/format_ux.h"
+#include "core/memtrack.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_build_peak = 0;
@@ -203,9 +208,9 @@ build_begin(Relation index, Size budget)
 	bs->index = index;
 	bs->analyzer_hash = cfg.hash;
 	strlcpy(bs->analyzer_config, cfg.tsconfig, sizeof(bs->analyzer_config));
-	bs->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift build", ALLOCSET_DEFAULT_SIZES);
+	bs->cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift build");
 	old = MemoryContextSwitchTo(bs->cxt);
-	bs->tmpcxt = AllocSetContextCreate(bs->cxt, "sift build tuple", ALLOCSET_DEFAULT_SIZES);
+	bs->tmpcxt = sift_mem_allocset_create(bs->cxt, "sift build tuple");
 	bs->an = sift_analyzer_create(&cfg, bs->cxt);
 	bs->positions = sift_index_options(index)->positions && !cfg.keyword;	/* not opts: the analyzer can look up a text search configuration, which reloads the entry */
 	sift_analyzer_set_positions(bs->an, bs->positions);
@@ -341,6 +346,8 @@ hand_over_runs(BuildState *bs, SiftBuildPart *part)
 	}
 }
 
+#define BUILD_WORKER_FLOOR	((Size) 4 << 20)
+
 PGDLLEXPORT void sift_build_worker(dsm_segment *seg, shm_toc *toc);
 
 void
@@ -351,6 +358,7 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	SiftBuildPart *part;
 	BuildState *bs;
 	double		reltuples;
+	SiftMemTracker mt_bm25_build_worker;
 
 	sift_par_worker_begin(&w, toc);
 	shared = w.shared;
@@ -358,7 +366,10 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	SharedFileSetAttach(&shared->fileset, seg);
 	bs = build_begin(w.index, shared->budget);
 	bs->home = (RunHome) {.fileset = &shared->fileset,.worker = ParallelWorkerNumber};
+	/* a worker's budget is a slice of maintenance_work_mem: the floor is what its buffers (the inverted buffer, the tuple and the runs) take at their smallest */
+	sift_mem_init_sub(&mt_bm25_build_worker, "bm25_build_worker", bs->cxt, false, Max(shared->budget, BUILD_WORKER_FLOOR));
 	reltuples = build_scan(bs, w.heap, w.info, sift_table_beginscan_parallel(w.heap, SCAN_OF(shared)), false);
+	sift_mem_assert_within(&mt_bm25_build_worker);
 	hand_over_runs(bs, part);
 	add_counts(shared, reltuples, bs->indexed);
 #ifdef SIFT_TESTING
@@ -372,6 +383,22 @@ sift_build_worker(dsm_segment *seg, shm_toc *toc)
 	sift_par_worker_end(&w);
 }
 
+/* One line for a build that took a while or indexed many documents, none for the small and quick ones of a script or a test */
+static void
+say_built(Relation index, double docs, int nsegs, int64 us)
+{
+	char		count[SIFT_UX_QUANTITY],
+				took[SIFT_UX_QUANTITY],
+				size[SIFT_UX_QUANTITY];
+
+	if (!sift_ux_should_emit_build(us, (uint64) docs, false, false))
+		return;
+	ereport(NOTICE,
+			(errmsg("sift index \"%s\": built %s docs in %s (%s, %d segments, Format %u.%u)", RelationGetRelationName(index),
+					sift_fmt_count(count, sizeof(count), (uint64) docs), sift_fmt_duration(took, sizeof(took), us),
+					sift_fmt_bytes(size, sizeof(size), (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ), nsegs, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR)));
+}
+
 IndexBuildResult *
 sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
@@ -380,6 +407,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	SiftParLeader *ldr = NULL;
 	BuildState *bs;
 	MemoryContext old;
+	TimestampTz began = GetCurrentTimestamp();
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine() && !sift_tbl_is_table(heap))
 		ereport(ERROR,
@@ -397,7 +425,9 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
 	old = MemoryContextSwitchTo(bs->cxt);
-	SIFT_MEM_SCOPE(bm25_build, bs->cxt);
+	SiftMemTracker mt_bm25_build;
+
+	sift_mem_init_sub(&mt_bm25_build, "bm25_build", bs->cxt, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1, 1));
 	if (ldr == NULL)
 		init_bounds(bs, heap, sift_index_options(index)->build_segments);
 	else
@@ -422,7 +452,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_TOTAL, (int64) res->index_tuples);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, 0);
 	end_segment(bs);
-	SIFT_MEM_CHECKPOINT();
+	sift_mem_assert_within(&mt_bm25_build);
 	if (ldr)
 	{
 		sift_ranges_close(bs->shared);
@@ -433,6 +463,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_wt_finish(bs->wt);
 	if (bs->nsegs > 0)
 		sift_dir_update(index, &(SiftDirChange) {.fn = publish,.arg = bs,.nadd = bs->nsegs,.extra = InvalidBuffer});
+	say_built(index, res->index_tuples, bs->nsegs, GetCurrentTimestamp() - began);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(bs->cxt);
 	return res;

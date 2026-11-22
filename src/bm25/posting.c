@@ -50,6 +50,26 @@ blob_len(const SiftTermInfo *info)
 	return info->post_len - poslen;
 }
 
+bool
+sift_post_blob_range(const SiftTermInfo *info, uint64 *off, uint64 *len)
+{
+	if (info->flags & SIFT_TERM_INLINE)
+		return false;
+	*off = info->post_off;
+	*len = blob_len(info);
+	return true;
+}
+
+bool
+sift_post_blob_cached(const SiftStreamReader *sr, const SiftTermInfo *info)
+{
+	uint64		off,
+				len;
+
+	return sift_post_blob_range(info, &off, &len) && len >= BLOB_KEEP_MIN &&
+		sift_segcache_has(sr, SIFT_SEGCACHE_BLOB, off, len + SIFT_KERN_PAD);
+}
+
 #ifdef SIFT_TESTING
 SiftPostStats sift_post_stats;
 #define POST_STAT(f, v)		(sift_post_stats.f += (v))
@@ -381,6 +401,13 @@ tf_check(const SiftPostingCursor *c, const SiftTfPos *pos, uint32 n)
 		sift_codec_corrupt("tf stream: the escape bytes of a group are not inside the stream");
 }
 
+bool
+sift_post_group_all_tf1(const SiftPostingCursor *c)
+{
+	return c->blob != NULL &&
+		((c->info.flags & SIFT_TERM_ALL_TF1) || (c->gs && (c->gs[c->cur.gr.i].flags & SIFT_GS_ALL_TF1)));
+}
+
 void
 sift_post_group_tf(SiftPostingCursor *c, uint8 *tf)
 {
@@ -393,7 +420,7 @@ sift_post_group_tf(SiftPostingCursor *c, uint8 *tf)
 		memcpy(tf, c->info.inline_tf + g->base, n);
 		return;
 	}
-	if ((c->info.flags & SIFT_TERM_ALL_TF1) || (c->gs && (c->gs[c->cur.gr.i].flags & SIFT_GS_ALL_TF1)))
+	if (sift_post_group_all_tf1(c))
 	{
 		memset(tf, 1, n);
 		return;
@@ -405,8 +432,51 @@ sift_post_group_tf(SiftPostingCursor *c, uint8 *tf)
 	else
 		pos = c->next.rank == g->base ? c->next : list_tf_pos(c, g->base);
 	tf_check(c, &pos, n);
+	POST_STAT(group_tf, 1);
 	sift_kern->tf_decode(tf, c->l1, c->nib, c->esc, &pos, n);
 	c->next = pos;
+}
+
+void
+sift_post_block_tf(SiftPostingCursor *c, uint32 blk_rank, uint32 blk_cnt, uint8 *tf)
+{
+	const sift_grp *g = &c->cur.g;
+	uint32		n = g->n ? g->n : (uint32) sift_grp_count(g);
+	SiftTfPos	pos;
+
+	if (blk_cnt == 0)
+		return;
+	if ((uint64) blk_rank + blk_cnt > n)
+		sift_codec_corrupt("tf stream: a block lies past its group");
+	if (c->blob == NULL)
+	{
+		memcpy(tf, c->info.inline_tf + g->base + blk_rank, blk_cnt);
+		return;
+	}
+	if (sift_post_group_all_tf1(c))
+	{
+		memset(tf, 1, blk_cnt);
+		return;
+	}
+	if ((uint64) g->base + n > c->info.df)
+		sift_codec_corrupt("tf stream: a group lies past the last posting");
+	if (c->gs)
+		pos = (SiftTfPos) {g->base, c->gs[c->cur.gr.i].nib_base, c->gs[c->cur.gr.i].esc_base};
+	else
+		pos = c->next.rank == g->base ? c->next : list_tf_pos(c, g->base);
+	if (blk_rank > 0)
+	{
+		uint32		skip = l1_count(c->l1, pos.rank, blk_rank);
+
+		if (pos.nib > c->info.nnib || skip > c->info.nnib - pos.nib)
+			sift_codec_corrupt("tf stream: the nibbles before a block are not inside the stream");
+		pos.esc += escapes_from(c->nib, pos.nib, skip);
+		pos.rank += blk_rank;
+		pos.nib += skip;
+	}
+	tf_check(c, &pos, blk_cnt);
+	POST_STAT(block_tf, 1);
+	sift_kern->tf_decode(tf, c->l1, c->nib, c->esc, &pos, blk_cnt);
 }
 
 static inline uint32

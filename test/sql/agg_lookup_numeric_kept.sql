@@ -1,11 +1,12 @@
 -- The numeric values a lookup table is loaded from the leaves of its index are made for each row and copied into the table: they end with the unit that was read, so the
 -- table keeps only its rows and fits the cache that its rows fit, however many rows it has.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_shared_kb = 0;
-SET sift.agg_lookup_cache_kb = 32768;
+SET sift.shared_cache_kb = 0;
+SET sift.backend_cache_kb = 32768;
 SET sift.agg_child_first = off;
 
 CREATE TABLE nk_fact (id int, k int, v int) WITH (autovacuum_enabled = false);

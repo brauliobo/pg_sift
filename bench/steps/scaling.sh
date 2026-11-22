@@ -4,7 +4,7 @@
 # the same server (steps/scaling.py). Everything runs on a scratch cluster of its own under $SCRATCH_ROOT in a systemd scope (SCRATCH_MEM 12G, SCRATCH_CPU 400% so that 3
 # workers and the leader have a CPU each); the timed groups of cells take PERF_LOCK (default /tmp/sift-perf.lock), and the host load is recorded with every cell.
 #   --ref TAG      a release of sift built once under $EXTRAS_SRC (steps/builds.sh), instead of --build and --root
-#   --docs         also write bench/results/scaling.tsv, redraw bench/out/img and rewrite the generated blocks
+#   --docs         also write docs/results/scaling.tsv and run scripts/gen-docs.py
 set -euo pipefail
 export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -52,5 +52,6 @@ meta=(--meta "date=$(date -u +%Y-%m-%d)" --meta "cpu=$(host_label), scope ${SCRA
 python3 -I "$HERE/scaling.py" run --db scaling --out "$OUT" --rows "$ROWS" --reps "$REPS" --partitions "$PARTS" --workers "$WORKERS" "${meta[@]}"
 echo "scaling: $OUT" >&2
 if [[ -n $DOCS ]]; then
-	cp "$OUT" "$REPO/bench/results/scaling.tsv"
+	cp "$OUT" "$REPO/docs/results/scaling.tsv"
+	python3 -I "$REPO/scripts/gen-docs.py"
 fi

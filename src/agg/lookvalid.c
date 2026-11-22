@@ -4,7 +4,7 @@
  * A copy is valid for a statement when the table holds the same rows for it as when the copy was read. Two rules say so, taken before the read (lookvalid_take) and
  * asked again after it (lookvalid_holds), the same for every copy:
  *
- * - the parent index keeps a journal of its changed keys (col/conn.h, made when a child index is connected to it, on the key the join is by): the copy is
+ * - the parent index keeps a journal of its changed keys (col/v1/conn.h, made when a child index is connected to it, on the key the join is by): the copy is
  *   stamped with the horizon of the snapshot it was read under, and a statement reads it as it is when the journal vouches for its snapshot, no row was inserted
  *   into the parent since the horizon and no key was changed in it. A write to the table makes the stamp unreadable for the statements after it, which
  *   read the table again and keep a copy of their own under a later horizon; no vacuum and no limit on the pages is involved.
@@ -14,7 +14,7 @@
 #include "postgres.h"
 
 #include "col/am.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 
 #include "agg/agg_int.h"
 

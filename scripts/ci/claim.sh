@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # How a lane takes a job: tidy after a pass, and the claim of the first job that fits the scratch budget under a lock directory.
 # scripts/test-ci-claim.sh runs claim and claim_locked from this file. Sourced by scripts/ci.sh; not a script of its own.
 # tidy ID: the data of a job that passed goes at once, so that the scratch directory holds only what runs: its databases in the

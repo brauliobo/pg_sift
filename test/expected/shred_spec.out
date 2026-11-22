@@ -167,16 +167,16 @@ SELECT sift._test_shred_spec((SELECT string_agg(format('c%s int4', i), ', ') FRO
  t
 (1 row)
 
-SELECT sift._test_shred_spec((SELECT string_agg(format('c%s int4', i), ', ') FROM generate_series(1, 257) i));
-ERROR:  sift shred paths: more than 256 columns at position 2709
-SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 63) i)) IS NOT NULL AS ok63;
- ok63 
-------
+SELECT sift._test_shred_spec((SELECT string_agg(format('c%s int4', i), ', ') FROM generate_series(1, 1025) i));
+ERROR:  sift shred paths: more than 1024 columns at position 11182
+SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 255) i)) IS NOT NULL AS ok255;
+ ok255 
+-------
  t
 (1 row)
 
-SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 64) i));
-ERROR:  sift shred paths: more than 63 arrays and wildcards at position 748
+SELECT sift._test_shred_spec((SELECT string_agg(format('g%s[] int4', i), ', ') FROM generate_series(1, 256) i));
+ERROR:  sift shred paths: more than 255 arrays and wildcards at position 3208
 SELECT sift._test_shred_spec(repeat('a int4,', 20000) || 'b int4');
 ERROR:  sift shred paths: the spec has more than 65536 bytes
 HINT:  Declare fewer paths, or a wildcard path for the keys of an object.

@@ -37,7 +37,6 @@
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
-#include "agg/back.h"
 #include "core/limits.h"
 #include "agg/agg_int.h"
 #include "agg/spill/int.h"
@@ -64,7 +63,7 @@ spill_begin(AggExec *ex)
 {
 	AggSpill   *sp;
 
-	if (!sift_aggspec_spillable(ex->spec) || ex->par != NULL || part_flush_on(ex) || ex->be != &sift_agg_cpu_backend)
+	if (!sift_aggspec_spillable(ex->spec) || ex->par != NULL || part_flush_on(ex))
 		return;
 	sp = MemoryContextAllocZero(ex->cxt, sizeof(AggSpill));
 	sp->budget = get_hash_memory_limit();

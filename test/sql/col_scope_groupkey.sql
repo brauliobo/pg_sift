@@ -8,7 +8,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
@@ -23,7 +22,7 @@ CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, at timestamptz, v int, pad
 INSERT INTO facts SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 320 END,
 	timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 20000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, at, v)
-	WITH (scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id)');
+	WITH (scope = 'group_id: dim_a_id -> membership(dim_a_id, group_id) max_multiplicity(8)');
 REINDEX INDEX facts_col;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (ANALYZE) membership;
@@ -103,7 +102,7 @@ CREATE UNIQUE INDEX sd_pairs_active ON sd_pairs (dim_a_id, group_id) WHERE delet
 CREATE INDEX sd_pairs_journal ON sd_pairs USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE TABLE sd_facts (id int PRIMARY KEY, dim_a_id int, at timestamptz, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO sd_facts SELECT i, 1 + (i * 7919) % 220, timestamptz '2026-01-01' + (i % 300) * interval '1 day', i % 10, repeat('x', 100) FROM generate_series(1, 10000) i;
-CREATE INDEX sd_facts_col ON sd_facts USING sift_col (id, dim_a_id, at, v) WITH (scope = 'group_id: dim_a_id -> sd_pairs(dim_a_id, group_id)');
+CREATE INDEX sd_facts_col ON sd_facts USING sift_col (id, dim_a_id, at, v) WITH (scope = 'group_id: dim_a_id -> sd_pairs(dim_a_id, group_id) max_multiplicity(8)');
 REINDEX INDEX sd_facts_col;
 VACUUM (FREEZE, ANALYZE) sd_facts;
 

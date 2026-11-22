@@ -50,7 +50,7 @@ typedef struct DSet
 #define DB_DENSE		32				/* bits from which a chunk goes to the leader as it is rather than as pairs */
 #define DB_PREFETCH		(2 << 20)		/* bytes of bitmaps from which the cache no longer holds them */
 #define DB_BATCH		32				/* values whose bits are prefetched together */
-#define DB_ARENA		255				/* chunks per arena block; the first chunk of a block links to the previous block */
+#define DB_ARENA		255				/* chunks per arena block at most; the first chunk of a block links to the previous block */
 
 #define DIST_NARROW_WORDS	8				/* words of a group in DD_WORDS: a window of 512 values, 64 bytes, 16 times less than the smallest bitmap */
 
@@ -85,6 +85,7 @@ struct Dist
 	uint64		chk;			/* bytes from which the next look at how sparse the bitmaps are */
 	uint64	   *arena;
 	uint32		arena_left;
+	uint32		arena_chunks;	/* the chunks of the current arena block: a block takes a quarter of the budget at most */
 	uint64	   *freec;			/* chunks dist_compact gave back, linked through their first word */
 	int64		wmark;			/* a streaming scan (dist_stream_scan): no value below it will be added again; INT64_MIN: no promise */
 	/* DD_HASH */

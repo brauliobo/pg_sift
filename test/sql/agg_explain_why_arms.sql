@@ -7,7 +7,9 @@ CREATE TABLE events (id int PRIMARY KEY, ts date NOT NULL, memo text NOT NULL, d
 INSERT INTO events (id, ts, memo, deleted_at) SELECT g, date '2024-01-01' + (hashint4(g) & 1023) % 730, (ARRAY['cable', 'wire', 'plug', 'adapter', 'switch', 'panel', 'socket', 'fuse'])[1 + g % 8] || ' ' || (ARRAY['relay', 'cord', 'clamp', 'bolt', 'valve'])[1 + (g * 7) % 5],
 	CASE WHEN g % 37 = 0 THEN now() END FROM generate_series(1, 30000) g;
 CREATE INDEX events_col ON events USING sift_col (id, ts, deleted_at);
+SET client_min_messages = warning;
 CREATE INDEX events_memo ON events USING sift (memo);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) events;
 
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$

@@ -2,8 +2,8 @@
  * col/schema.c - L1 of the column engine: the schema, the leaf list of an index.
  */
 
-#include "col/enc.h"
-#include "col/enc_int.h"
+#include "col/v1/enc.h"
+#include "col/v1/enc_int.h"
 
 #define COLS_MAGIC		0x534C4F43	/* bytes 'C' 'O' 'L' 'S' */
 
@@ -33,7 +33,7 @@ schema_check(const SiftColDef *defs, int n)
 	int			nconn = 0,
 				nscope = 0;
 
-	if (n < 1 || n > SIFT_COL_MAX_COLS)
+	if (n < 1 || n > SIFT_F2_MAX_COLS)
 		return "the number of leaves is out of range";
 	for (int i = 0; i < n; i++)
 	{
@@ -148,7 +148,7 @@ sift_cschema_create(MemoryContext mcxt, const SiftColDef *defs, int n)
 	return schema_build(mcxt, defs, n);
 }
 
-/* The connections a schema has leaves for: one flag leaf "<fk>#found" each (col/conn.h) */
+/* The connections a schema has leaves for: one flag leaf "<fk>#found" each (col/v1/conn.h) */
 int
 sift_cschema_nconn(const SiftColSchema *s)
 {
@@ -194,7 +194,7 @@ sift_cschema_parse(MemoryContext mcxt, const void *data, Size len)
 	if (len < sizeof(head))
 		return NULL;
 	memcpy(head, p, sizeof(head));
-	if (head[0] != COLS_MAGIC || head[1] < 1 || head[1] > SIFT_COL_MAX_COLS)
+	if (head[0] != COLS_MAGIC || head[1] < 1 || head[1] > SIFT_F2_MAX_COLS)
 		return NULL;
 	defs = palloc0(head[1] * sizeof(SiftColDef));
 	for (uint32 i = 0; i < head[1]; i++)

@@ -1,0 +1,76 @@
+-- A declarative partitioned table with a sift_col index on each partition: the aggregates over the live partitions are one SiftAggV6 that reads the indexes of all of them into one set of
+-- groups, a partition pruned away is not read, a partition the plan cannot read keeps the plan of the table, and a point query is an index scan of the partition. Each answer is the heap's.
+\set VERBOSITY terse
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE pt (id bigint, k int NOT NULL, tenant int NOT NULL, created_at timestamptz NOT NULL, status smallint NOT NULL, amount numeric(12,2) NOT NULL) PARTITION BY RANGE (k);
+SELECT format('CREATE TABLE pt_%s PARTITION OF pt FOR VALUES FROM (%s) TO (%s)', g, g * 1000, (g + 1) * 1000) FROM generate_series(0, 7) g \gexec
+INSERT INTO pt SELECT g, g % 8000, g % 50, TIMESTAMPTZ '2024-01-01' + (g % 400) * interval '1 day', (g % 7)::smallint, ((g * 37) % 10000) / 100.0 FROM generate_series(1, 160000) g;
+CREATE INDEX pt_sift ON pt USING sift_col (id, k, tenant, created_at, status, amount);
+VACUUM ANALYZE pt;
+CREATE TABLE q (name text, sql text);
+INSERT INTO q VALUES
+ ('cross_count',        'SELECT count(*) FROM pt'),
+ ('cross_filtered_sum', 'SELECT sum(amount) FROM pt WHERE status = 3'),
+ ('cross_groupby',      'SELECT tenant, count(*), sum(amount) FROM pt GROUP BY tenant'),
+ ('cross_sum',          'SELECT sum(amount), min(k), max(k) FROM pt'),
+ ('point_k',            'SELECT id, amount FROM pt WHERE k = 4321 AND tenant = 21'),
+ ('pruned_count',       'SELECT count(*) FROM pt WHERE k >= 2000 AND k < 4000'),
+ ('pruned_groupby',     'SELECT status, sum(amount) FROM pt WHERE k >= 1000 AND k < 2000 GROUP BY status');
+CREATE FUNCTION plan_of(sqltxt text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; parts text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sqltxt LOOP
+		IF l LIKE '%Custom Scan (SiftAggV6)%' THEN parts := 'SiftAggV6'; END IF;
+		IF l LIKE '%Partitions: %' THEN parts := parts || ' ' || trim(l); END IF;
+		IF l LIKE '%Index Only Scan%' AND parts = '' THEN parts := 'Index Only Scan'; END IF;
+	END LOOP;
+	RETURN parts;
+END $$;
+CREATE FUNCTION digest(sqltxt text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (%s) t', sqltxt) INTO r;
+	RETURN r;
+END $$;
+SELECT name, plan_of(sql) AS plan FROM q ORDER BY name;
+CREATE TEMP TABLE fast AS SELECT name, digest(sql) AS d FROM q;
+SET sift.enable_agg = off;
+SET sift.enable_scan = off;
+SET sift.enable_col_scan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+CREATE TEMP TABLE heap AS SELECT name, digest(sql) AS d FROM q;
+RESET sift.enable_agg;
+RESET sift.enable_scan;
+RESET sift.enable_col_scan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+SELECT count(*) FILTER (WHERE f.d = h.d) AS same, count(*) AS queries FROM fast f JOIN heap h USING (name);
+-- partitionwise aggregation: each partition is an aggregate of its own, over its own index (their columns are not in the same order)
+CREATE TABLE pt2 (id bigint, k int NOT NULL, tenant int NOT NULL, status smallint NOT NULL, amount numeric(12,2) NOT NULL) PARTITION BY RANGE (k);
+CREATE TABLE pt2_0 PARTITION OF pt2 FOR VALUES FROM (0) TO (1000);
+CREATE TABLE pt2_1 PARTITION OF pt2 FOR VALUES FROM (1000) TO (2000);
+INSERT INTO pt2 SELECT g, g % 2000, g % 50, (g % 7)::smallint, ((g * 37) % 10000) / 100.0 FROM generate_series(1, 40000) g;
+CREATE INDEX pt2_0_i ON pt2_0 USING sift_col (id, k, tenant, status, amount);
+CREATE INDEX pt2_1_i ON pt2_1 USING sift_col (k, id, tenant, status, amount);
+VACUUM ANALYZE pt2;
+SET enable_partitionwise_aggregate = on;
+SELECT plan_of('SELECT k, count(*), sum(amount) FROM pt2 GROUP BY k') AS plan;
+SELECT digest('SELECT k, count(*), sum(amount) FROM pt2 GROUP BY k') AS fast \gset
+SET sift.enable_agg = off;
+SET sift.enable_scan = off;
+SET sift.enable_col_scan = off;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT digest('SELECT k, count(*), sum(amount) FROM pt2 GROUP BY k') = :'fast' AS same;
+RESET ALL;
+DROP TABLE pt, pt2, q CASCADE;
+DROP FUNCTION plan_of(text), digest(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

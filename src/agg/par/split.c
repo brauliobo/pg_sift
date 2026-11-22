@@ -11,6 +11,7 @@
 #include "common/hashfn.h"
 #include "optimizer/optimizer.h"
 
+#include "core/fmv.h"
 #include "core/popcount.h"
 #include "agg/par/int.h"
 
@@ -108,12 +109,6 @@ share_of(uint32 h, uint32 n)
 	return (uint32) (((uint64) (h * SPLIT_MUL) * n) >> 32);
 }
 
-#if defined(__x86_64__) && defined(__linux__) && defined(__GNUC__) && !defined(__clang__)
-#define SPLIT_CLONES __attribute__((target_clones("avx2", "default")))
-#else
-#define SPLIT_CLONES
-#endif
-
 /*
  * The rows of the 64 from `d` (the vectors are padded past their end) that are in the share, as bits. A process with one share tests the hash against
  * the range of hashes that share is (share_of is monotonic: the share of h is s when lo <= h * K < lo + w), in loops of fixed length that the
@@ -135,19 +130,17 @@ pack_flags(const uint8 *flag)
 }
 
 /* the hashes of 64 values (the vectors are padded past their end): a loop of a fixed length over arrays that cannot overlap is the one the compiler vectorizes at -O2 */
-SPLIT_CLONES static void
-hash64_i32(const int32 *restrict d, uint32 *restrict h)
+SIFT_FMV_DEFINE_VOID(static, hash64_i32, (const int32 *SIFT_RESTRICT d, uint32 *SIFT_RESTRICT h), (d, h),
 {
 	for (int b = 0; b < 64; b++)
 		h[b] = (uint32) d[b] * SPLIT_MUL;
-}
+})
 
-SPLIT_CLONES static void
-hash64_i64(const int64 *restrict d, uint32 *restrict h)
+SIFT_FMV_DEFINE_VOID(static, hash64_i64, (const int64 *SIFT_RESTRICT d, uint32 *SIFT_RESTRICT h), (d, h),
 {
 	for (int b = 0; b < 64; b++)
 		h[b] = ((uint32) d[b] ^ (uint32) ((uint64) d[b] >> 32)) * SPLIT_MUL;
-}
+})
 
 static void *
 split_scratch(AggExec *ex, Size bytes)

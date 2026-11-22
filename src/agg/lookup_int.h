@@ -41,7 +41,7 @@ typedef struct MapCol
 /* the rows of a joined table, hashed by the ids of their key values; the columns the expressions read are kept once per distinct value */
 /*
  * The keys of a semi or anti join as a membership test of the scan (semi_lut_build): a byte for each value of [lo, lo + n), or, where the keys span more than
- * sift.agg_semi_lut_size, an open-addressing set of them (PG_INT64_MIN marks a free slot; that key is has_min).
+ * its share of work_mem, an open-addressing set of them (PG_INT64_MIN marks a free slot; that key is has_min).
  */
 typedef struct SemiSet
 {
@@ -80,6 +80,8 @@ semi_set_has(const SemiSet *s, int64 k)
 
 typedef struct MapTab
 {
+	struct SiftMemTracker *tr;	/* while the table loads: what it may take (agg/lookup/load.c); map_row holds it to it */
+	bool		over;			/* the load passed it: map_row drops the rows that follow, the load ends with lookup_overflow once its scan is closed */
 	int			nkey;
 	int			ncol;
 	bool		ktext[SIFT_AGG_MAX_JKEYS];
@@ -246,6 +248,7 @@ int map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows);
 int map_find(const MapTab *m, const char **ptr, const uint32 *len, const int64 *iv, uint32 **rows);
 void map_bind(AggExec *ex, int param, const MapTab *m, uint32 row, int c);
 void map_row(AggExec *ex, MapTab *m, TupleTableSlot *slot, const SiftAggJoin *j, const SiftAggCombo *cb, ExprState *own);
+void lookup_overflow(AggExec *ex, const struct SiftMemTracker *tr);
 bool map_keys_only(const MapTab *m, const ExprState *own);
 void map_add_key(AggExec *ex, MapTab *m, const SiftAggJoin *j, Datum key, bool isnull);
 bool map_load_cols_possible(Relation rel, const SiftAggJoin *j, int *nnumeric);

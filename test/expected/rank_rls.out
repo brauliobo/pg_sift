@@ -143,7 +143,7 @@ SET ROLE sift_t_rr_user;
 SELECT id, sift.score(ctid) FROM rr_items WHERE body @@> 'alpha beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() is not available on "rr_items" while row-level security or a security barrier view applies
 DETAIL:  A ranked scan counts the rows that the policy hides in the scores.
-HINT:  A superuser can allow it for a role with sift.rls_scores = on (docs/USAGE.md, "Row-level security").
+HINT:  A superuser can allow it for a role with sift.rls_scores = on (docs/SEARCH.md, "Row-Level Security"), or omit sift.score() where RLS applies.
 \set VERBOSITY terse
 SELECT rr_plan('EXPLAIN (COSTS OFF) SELECT id FROM rr_items WHERE body @@> ''alpha beta'' ORDER BY id LIMIT 3') ~ 'Sift' AS unranked_scan;
  unranked_scan 

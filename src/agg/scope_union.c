@@ -32,6 +32,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+#include "agg/plan/safety.h"
 #include "agg/plan_int.h"
 #include "col/scope.h"
 
@@ -118,7 +119,7 @@ arm_tables_why(const Arm *a)
 
 		if (e->rtekind != RTE_RELATION || e->relkind != RELKIND_RELATION || e->tablesample != NULL || has_subclass(e->relid))
 			return "an arm of the union reads something other than a table without child tables";
-		if (e->securityQuals != NIL)
+		if (agg_query_rte_has_rls(a->q, e))
 			return "row-level security applies to the scope relation";
 	}
 	return NULL;

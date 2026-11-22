@@ -31,13 +31,13 @@ typedef enum SiftColStore
 #define SIFT_COL_META_NEXT_VBLOCK(meta)		((meta)->sum_dl)
 
 #define SIFT_COL_MAX_SCALE		18	/* numeric precision (and so scale) the INT class holds exactly */
-#define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (col/wide.h) is the same limit for a scaled 128-bit integer of two lanes */
+#define SIFT_COL_MAX_LANES		3	/* SIFT_COL_MAX_WIDE_SCALE (col/v1/wide.h) is the same limit for a scaled 128-bit integer of two lanes */
 
 #define SIFT_COLD_ASTEXT	0x0002	/* a shredded text leaf that holds the `->>` text of any scalar (astext): not the string a jsonpath or `@>` compares; set in the index definition, the segments are those of a text leaf */
 #define SIFT_COLD_NOIMAGE	0x0008	/* the image of an array that keeps its lengths is not stored: the head is NULL in every row (and lossy), the lanes and the elements hold the array; set in the index definition (option array_images) */
 #define SIFT_COLD_SHAPE		0x0004	/* a range or network head and its lanes: told from the lengths of an array, which has as many VARLENA lanes */
 #define SIFT_COLD_NET		0x0010	/* with SIFT_COLD_SHAPE: the head of a network (inet, cidr): the node of its block and the host bits inside it, a range has the start and the end */
-#define SIFT_COLD_FOUND	0x0020	/* the flag of a connection (col/conn.h, leaf "<fk>#found"): the parent row of the key was found; not a column of the table, its attno is the attribute that holds the key */
+#define SIFT_COLD_FOUND	0x0020	/* the flag of a connection (col/v1/conn.h, leaf "<fk>#found"): the parent row of the key was found; not a column of the table, its attno is the attribute that holds the key */
 #define SIFT_COLD_SCOPE	0x0040	/* the derived key of a scope (col/scope.h, leaf "<key_name>#scope"): the scope key of the row through its scope relation, an int8; NULL in every row an entity segment or the write buffer holds, filled in the scope segments; not a column of the table, its attno is the attribute that holds the member key */
 #define SIFT_COLD_CODED	0x0080	/* with SIFT_COLD_SCOPE: the scope key or the member of the scope is a text, varchar or uuid column (col/scope_keys.c): column format minor 50. A key's leaf holds its code in the value store of the key column of the scope relation, not the key */
 #define SIFT_COLD_DERIVED	(SIFT_COLD_FOUND | SIFT_COLD_SCOPE)	/* a leaf no column of the table holds: the writer of a segment fills it from another table */
@@ -164,7 +164,7 @@ sift_col_def_shape_start(const SiftColDef *defs, int i)
 	return defs[i].lane == 1 && sift_col_def_shape(&defs[i - 1]) != 0;
 }
 
-/* a leaf whose value the column engine tests on its stored lanes or image (numeric, money, interval: col/widescan.c; an image: its equality and IN, for the types the query side names) */
+/* a leaf whose value the column engine tests on its stored lanes or image (numeric, money, interval: col/v1/widescan.c; an image: its equality and IN, for the types the query side names) */
 static inline bool
 sift_col_def_lane_tested(const SiftColDef *d)
 {
@@ -210,6 +210,7 @@ sift_col_def_value_lanes(const SiftColDef *d)
 #define SIFT_COLTAG_OVF_MAX		SIFT_COLTAG_NONE	/* the last tag an overflow value has */
 #define SIFT_COLTAG_MAX			7
 #define SIFT_COLTAG_UNSURE		8		/* memory only: a legacy write-buffer slot did not preserve its kind */
+#define SIFT_COLTAG_ROOTKEY		9		/* format major 2: the document is an array or a string that holds the key of the leaf (jsonb_exists is true), the leaf has no value */
 
 /* A value of a leaf in a row, or a constant of a predicate. INT: v.i. F4/F8: v.f (float4 promoted exactly). STR: v.s with len bytes (not terminated). */
 typedef struct SiftColValue
@@ -224,6 +225,8 @@ typedef struct SiftColValue
 	int64		lo;				/* a constant of a wide integer head (lanes == 2, INT): v.i is the key of lane 0, lo the key of lane 1 (sift_col_wide_hi / _lo) */
 	bool		isnull;
 	bool		overflow;		/* the value exists but the leaf cannot hold it (the shredder's OVERFLOW): stored as NULL and flagged; isnull is also set */
+	const char *xp;				/* overflow: the value, as the shredder or the column kept it (a jsonb datum for a path, the datum of a column), NULL when none was kept */
+	uint32		xplen;
 	uint8		tag;			/* overflow: the JSON type of the value, SIFT_COLTAG_*, 0 when the writer does not know it. Otherwise 0, or what the leaf's
 								 * own type does not say: SIFT_COLTAG_JNULL for a JSON null, the type of an astext leaf's number or boolean */
 } SiftColValue;

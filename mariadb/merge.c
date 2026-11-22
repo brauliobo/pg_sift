@@ -345,7 +345,7 @@ merge_pending(SiftIdx *ix, void *arg)
 {
 	if (__atomic_exchange_n(&ix->want_merge, false, __ATOMIC_ACQ_REL))
 		if (SIFT_TRY(merge_sets(ix, false)) != 0)
-			snprintf(ix->merge_err, sizeof(ix->merge_err), "%s", sift_err_msg);
+			snprintf(ix->merge_err, sizeof(ix->merge_err), "%.*s", (int) sizeof(ix->merge_err) - 1, sift_err_msg);
 }
 
 static void *

@@ -13,7 +13,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-#include "col/build.h"
+#include "col/v1/build.h"
 #include "col/shred_pg.h"
 
 typedef enum LeafKind
@@ -174,7 +174,7 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 
 /*
  * The entry of an array column that begins with '+' ('+tags[] text, ids[] int4') keeps the image of the array beside its elements; the mark is the build's
- * choice for a column whose arrays repeat (col/keycols/keycols.c) and is stored with the paths. Returns the spec without the marks and sets ShredAttr.image.
+ * choice for a column whose arrays repeat (col/v1/keycols/keycols.c) and is stored with the paths. Returns the spec without the marks and sets ShredAttr.image.
  */
 static char *
 take_image_marks(const char *paths, ShredAttr *attr, int natts)
@@ -337,6 +337,13 @@ sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *
 		def->parent += a->attr[attno].base;
 }
 
+/* A value a leaf cannot hold is kept as the payload of its slot (SiftColValue.xp), as a jsonb datum: what a part of format major 2 keeps in the exceptions of its granules */
+void
+sift_col_shred_keep_payloads(SiftColShredAdapter *a)
+{
+	a->sh->pay_fn = sift_shred_pay_jsonb;
+}
+
 /* does the array attribute keep its image beside its elements */
 bool
 sift_col_shred_keeps_image(const SiftColShredAdapter *a, int attno)
@@ -349,6 +356,19 @@ void
 sift_col_shred_set_base(SiftColShredAdapter *a, int attno, int base)
 {
 	a->attr[attno].base = base;
+}
+
+/* What an overflowing slot stood for, copied for the row (NULL: the walk kept none) */
+static void
+keep_payload(SiftColValue *v, const SiftShredDoc *doc, int32 key, uint32 slot)
+{
+	uint8		tag;
+	const char *p = sift_shred_pay(doc, key, slot, &v->xplen, &tag);
+
+	if (p == NULL)
+		return;
+	v->xp = memcpy(palloc(v->xplen), p, v->xplen);
+	v->tag = tag;
 }
 
 static void
@@ -364,6 +384,7 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			return;
 		case SIFT_SHRED_OVERFLOW:
 			v->isnull = v->overflow = true;
+			keep_payload(v, doc, col - doc->col, i);
 			return;
 		default:
 			break;
@@ -414,6 +435,8 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 	{
 		gv->isnull = true;
 		gv->overflow = grp->lstate[0] == SIFT_SHRED_OVERFLOW;
+		if (gv->overflow)
+			keep_payload(gv, &a->sh->doc, -(1 + gleaf->group), 0);
 		return;
 	}
 	gv->v.i = n;
@@ -452,6 +475,7 @@ shred_row_fill(SiftColShredAdapter *a, const Datum *values, const bool *isnull, 
 		k = sift_shred_key(sh, a->attr[i].name, strlen(a->attr[i].name));
 		if (k == SIFT_SHRED_SKIP)
 			continue;
+		sh->ev = NULL;
 		if (a->attr[i].array)
 			sift_shred_array(sh, DatumGetArrayTypeP(values[i - 1]));
 		else

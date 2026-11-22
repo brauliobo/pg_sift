@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The memory of the serial CREATE INDEX of a sift_col index in exact bytes (scope col_build of core/membudget.h, sift._test_mem_highwater()), on the 8-page-superblock flavour
 # (scripts/scaling-gate.sh) so that a budget of a few MB fills on a few tens of thousands of rows. The floors of the budgets (sift.test_limits: build_serial_budget, writer_min_budget)
 # are lowered so that maintenance_work_mem is what cuts the runs and the segments, as it is on a table of hundreds of millions of rows at the default.
@@ -19,7 +20,7 @@ if ((rc == 77)); then echo '1..0 # SKIP the 8-page flavour needs PostgreSQL 18';
 SIZES=(40000 80000 120000)
 SLOPE_MAX=32
 MB=1048576
-LOWER="build_serial_budget=0,writer_min_budget=$MB"
+LOWER=""
 
 plan 12
 node_init cb 89 "autovacuum = off
@@ -79,10 +80,10 @@ done
 series 1 "WITH (key_cut = 'k_mid')" "$LOWER" $((12 * MB / 10 + 6 * MB))
 check "key_cut at 1 MB: every step is under 1.2 * maintenance_work_mem + 6 MB" test "$SERIES_OVER" -eq 0
 
-series 1 "WITH (key_cut = 'k_mid')" "build_serial_budget=$((2 * MB)),writer_min_budget=$MB" $((2 * 2 * MB + 6 * MB))
+series 1 "WITH (key_cut = 'k_mid')" "" $((2 * 2 * MB + 6 * MB))
 check "key_cut at 1 MB under a serial floor of 2 MB: every step is under 2 * the floor + 6 MB" test "$SERIES_OVER" -eq 0
 check "key_cut at 1 MB under a serial floor of 2 MB: the fitted per-row term is at most $SLOPE_MAX bytes" test "$SERIES_SLOPE" -le "$SLOPE_MAX"
 
-series 8 "WITH (key_cut = 'k_mid')" "writer_min_budget=$MB" $((8 * MB * 12 / 10 + 6 * MB))
-check "key_cut at 8 MB under the shipped floor of 64 MB: the bound fails (the budget does not hold the rows)" test "$SERIES_OVER" -gt 0
+series 8 "WITH (key_cut = 'k_mid')" "" $((8 * MB * 12 / 10 + 6 * MB))
+check "key_cut at 8 MB: every step is under 1.2 * maintenance_work_mem + 6 MB, with no floor above it" test "$SERIES_OVER" -eq 0
 finish

@@ -3,7 +3,7 @@
 #   container.sh build   build /src (mariadb/, src/, sqlite/host/ of a git ref) against the server headers of this image, which the
 #                        MariaDB repository of the image pins to the very version of its server, into /out/lib/$SERIES/
 #   container.sh test    unpack /out/$TARBALL and run the smoke test (/smoke.sh) against the server of this image
-# Env: SERIES (for example 11.8), VER, HOST_UID (owner of the /out files), TARBALL (test).
+# Env: SERIES (for example 11.8), VER, ARCH (x86_64 or aarch64), HOST_UID (owner of the /out files), TARBALL (test).
 set -euo pipefail
 
 . /etc/os-release
@@ -18,7 +18,7 @@ build() {
 	nice make -j4 OUT=/build/out SIFT_VERSION="$VER" /build/out/libsift_udf.so
 	make isa-check OUT=/build/out SIFT_VERSION="$VER"
 	strip --strip-unneeded /build/out/libsift_udf.so
-	! objdump -p /build/out/libsift_udf.so | awk '/NEEDED/ {print $2}' | grep -Evx 'lib(m|c|pthread|dl)\.so\.[0-9]+|ld-linux-x86-64\.so\.2' ||
+	! objdump -p /build/out/libsift_udf.so | awk '/NEEDED/ {print $2}' | grep -Evx 'lib(m|c|pthread|dl)\.so\.[0-9]+|ld-linux-(x86-64|aarch64)\.so\.[0-9]+' ||
 		{ echo "libsift_udf.so needs more than libc and libm" >&2; exit 1; }
 	local server glibc dir=/out/lib/$SERIES
 	server=$(mariadbd --version | sed -E 's/.*Ver ([^ ]*) .*/\1/')

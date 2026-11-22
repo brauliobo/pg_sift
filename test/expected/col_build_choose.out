@@ -1,4 +1,4 @@
--- Where the rows of a CREATE INDEX or REINDEX of a sift_col index come from (col/build/choose.c): the heap (with the key ranges' files for a key_cut index), the heap read in
+-- Where the rows of a CREATE INDEX or REINDEX of a sift_col index come from (col/v1/build/choose.c): the heap (with the key ranges' files for a key_cut index), the heap read in
 -- the order of a btree on the key, or the index a REINDEX replaces. Each path is priced and the cheapest taken; sift.col_build_source = heap takes the heap. Every path gives the
 -- same rows and the key in one unit; the path that reads a btree or the old index writes no temporary file, and the old index reads no block of the heap.
 -- sift.test_col_build_source_used says which path the last build took (0 the heap, 1 a btree, 2 the old index); the mutants plant a defect in the choice that a step must catch.
@@ -258,7 +258,6 @@ SELECT * FROM ch_note();
  heap | f          | t
 (1 row)
 
-RESET sift.col_format_minor;
 SELECT ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
  same_rows | col_verify 
 -----------+------------
@@ -307,7 +306,7 @@ CREATE INDEX ch_noisy_idx ON ch_noisy USING sift_col (id, k, g, note, pad) WITH 
 NOTICE:  sift_col index "ch_noisy_idx": the heap is read, which costs less than the other sources of rows
 DETAIL:  btree "ch_noisy_k": 28255 heap blocks, 26942 at random, at 80.0 us (set), no temporary files for the rows, 2.34 s with 1 process, as long as the key ranges at 4.7 us. key ranges: 551 heap blocks, 3 MB of temporary files, 0.31 s. Btrees: ch_noisy_k 28255 reads. The segment writer sorts the entries of 1 leaf (order arrays and point directories) on temporary files, from whichever path the rows come.
 HINT:  SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.
-NOTICE:  sift_col index "ch_noisy_idx": 9 key ranges, about 2.8 MB of temporary files, in chunks of 512 rows (none)
+NOTICE:  sift_col index "ch_noisy_idx": 21 key ranges, about 3.0 MB of temporary files, packed in blocks
 NOTICE:  sift_col index "ch_noisy_idx": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: rollup_columns = g, note;
 rollup_columns = g, note; point_tid_columns = k
@@ -540,7 +539,7 @@ SET client_min_messages = notice;
 \set VERBOSITY default
 REINDEX INDEX ch_spill_idx;
 NOTICE:  sift_col index "ch_spill_idx": rows taken from the index it replaces, no heap read and no row files
-DETAIL:  index it replaces: 36000 entries in 148 blocks, no heap block, no temporary files for the rows, 0.08 s. btree "ch_spill_k": 544 heap blocks, 1 at random, at 80.0 us (set), no temporary files for the rows, 0.18 s with 1 process. key ranges: 544 heap blocks, temporary files not priced. Btrees: ch_spill_k 544 reads. The segment writer sorts the entries of 1 leaf (order arrays and point directories) on temporary files, from whichever path the rows come.
+DETAIL:  index it replaces: 36000 entries in 130 blocks, no heap block, no temporary files for the rows, 0.08 s. btree "ch_spill_k": 544 heap blocks, 1 at random, at 80.0 us (set), no temporary files for the rows, 0.18 s with 1 process. key ranges: 544 heap blocks, temporary files not priced. Btrees: ch_spill_k 544 reads. The segment writer sorts the entries of 1 leaf (order arrays and point directories) on temporary files, from whichever path the rows come.
 HINT:  SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.
 NOTICE:  sift_col index "ch_spill_idx": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: rollup_columns = g, note;
@@ -558,7 +557,7 @@ CREATE INDEX ch_noisy_spill ON ch_noisy USING sift_col (id, k, g, note, pad) WIT
 NOTICE:  sift_col index "ch_noisy_spill": the heap is read, which costs less than the other sources of rows
 DETAIL:  btree "ch_noisy_k": 28255 heap blocks, 26942 at random, at 80.0 us (set), no temporary files for the rows, 2.34 s with 1 process, as long as the key ranges at 4.7 us. key ranges: 551 heap blocks, 3 MB of temporary files, 0.31 s. Btrees: ch_noisy_k 28255 reads. The segment writer sorts the entries of 1 leaf (order arrays and point directories) on temporary files, from whichever path the rows come.
 HINT:  SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.
-NOTICE:  sift_col index "ch_noisy_spill": 9 key ranges, about 2.8 MB of temporary files, in chunks of 512 rows (none)
+NOTICE:  sift_col index "ch_noisy_spill": 21 key ranges, about 3.0 MB of temporary files, packed in blocks
 NOTICE:  sift_col index "ch_noisy_spill": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: rollup_columns = g, note;
 rollup_columns = g, note; order_array_columns = note
@@ -617,7 +616,7 @@ SELECT * FROM ch_say();
  old index | f                | f
 (1 row)
 
--- order arrays on fewer rows than the writer keeps in memory
+-- order arrays on more rows than the writer keeps in memory (its budget of 1500 kB gives each set 2,400 entries): the sets write runs, whichever path gives the rows
 RESET sift.test_limits;
 CREATE TABLE ch_few (LIKE ch_sorted) WITH (autovacuum_enabled = false);
 INSERT INTO ch_few SELECT * FROM ch_sorted WHERE id <= 12000;
@@ -635,7 +634,7 @@ SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ch_say();
  path  | says_entry_files | wrote_files 
 -------+------------------+-------------
- btree | f                | f
+ btree | f                | t
 (1 row)
 
 SELECT pg_stat_force_next_flush() \gset

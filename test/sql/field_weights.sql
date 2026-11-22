@@ -80,7 +80,7 @@ BEGIN
 	RETURN n;
 END $$;
 CREATE FUNCTION fw_seq(q text) RETURNS bigint LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
 DECLARE n bigint;
 BEGIN
 	EXECUTE format('SELECT count(*) FROM fw WHERE sift.sections(title, body, tags) @@> %L', q) INTO n;

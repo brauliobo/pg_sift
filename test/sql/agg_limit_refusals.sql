@@ -48,10 +48,10 @@ END $$;
 SELECT l.id, w.used, w.slug = l.slug AS slug_ok, w.reason ~ ('the limit ' || l.id || ' is ' || split_part(l.setting, '=', 2) || '\)$') AS names_limit
 FROM limits l, LATERAL why(l.q, l.setting, l.arm) w ORDER BY l.ctid;
 
--- the budget of a lookup table is a setting, not a hooked limit: the spine of ticks is refused under 1 kB and the detail names lookup_kb
-SET sift.agg_lookup_max_kb = 1;
-SELECT w.used, w.slug, w.reason ~ 'rows of width \d+, the limit lookup_kb is 1\)$' AS names_limit FROM sift.explain_why(spine_q()) w WHERE w.arm = 'two_level';
-RESET sift.agg_lookup_max_kb;
+-- the budget of a lookup table is a setting, not a hooked limit: the spine of ticks is refused under 64 kB of work_mem and the detail names lookup_kb
+SET work_mem = '64kB';
+SELECT w.used, w.slug, w.reason ~ 'rows of width \d+, the limit lookup_kb is 32\)$' AS names_limit FROM sift.explain_why(spine_q()) w WHERE w.arm = 'two_level';
+RESET work_mem;
 
 -- the counters of the session, per slug and per limit
 SELECT sift.stats_reset();
@@ -65,9 +65,9 @@ BEGIN
 		EXECUTE 'EXPLAIN (COSTS OFF) ' || r.q;
 	END LOOP;
 	PERFORM set_config('sift.test_limits', '', false);
-	SET sift.agg_lookup_max_kb = 1;
+	SET work_mem = '64kB';
 	EXECUTE 'EXPLAIN (COSTS OFF) ' || spine_q();
-	RESET sift.agg_lookup_max_kb;
+	RESET work_mem;
 END $$;
 RESET sift.count_refusals;
 SELECT name, value > 0 AS counted FROM sift.stats(local => true) WHERE name LIKE 'limit.%' OR name IN ('refused.too_many_keys', 'refused.shape_width', 'refused.spine_rows') ORDER BY 1;
@@ -82,23 +82,23 @@ BEGIN
 	RETURN r;
 END $$;
 SELECT l.id, answer(l.q, '') = answer(l.q, l.setting) AS same_rows FROM limits l ORDER BY l.ctid;
-SET sift.agg_lookup_max_kb = 1;
+SET work_mem = '64kB';
 SELECT answer(spine_q(), '') AS small_budget \gset
-RESET sift.agg_lookup_max_kb;
+RESET work_mem;
 SELECT answer(spine_q(), '') = :'small_budget' AS spine_same_rows;
 
 -- the registry names the slug for what the limit does
 SELECT slug, class FROM sift.refusal_slugs() WHERE slug IN ('shape_width', 'too_many_keys', 'spine_rows', 'where') ORDER BY slug;
 -- and what to change: every slug has a line, and a refusal of explain_why joins to it on the slug
-SELECT count(*) = count(*) FILTER (WHERE action <> '' AND action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs() LEFT JOIN sift.refusal_actions() USING (slug);
-SET sift.agg_lookup_max_kb = 1;
+SELECT count(*) = count(*) FILTER (WHERE a.action <> '' AND a.action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs() LEFT JOIN sift.refusal_actions() a USING (slug);
+SET work_mem = '64kB';
 SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(spine_q()) w JOIN sift.refusal_slugs() r ON r.slug = w.slug JOIN sift.refusal_actions() a ON a.slug = w.slug WHERE w.arm = 'two_level';
 -- sift.help(slug) answers a refusal slug too: the reason and the action of the registry; the list of sift.help() stays the messages
 SELECT count(*) = count(*) FILTER (WHERE h.message = r.reason AND h.hint = a.action AND h.kind = 'refusal') AS every_slug_has_its_help FROM sift.refusal_slugs() r JOIN sift.refusal_actions() a USING (slug), LATERAL sift.help(r.slug) h;
 SELECT count(*) FILTER (WHERE kind = 'refusal') AS refusals_in_the_list FROM sift.help();
 SELECT kind, level, message, hint FROM sift.help('spine_rows');
 SELECT * FROM sift.help('no-such-slug');
-RESET sift.agg_lookup_max_kb;
+RESET work_mem;
 
 RESET client_min_messages;
 DROP TABLE limits, events, dims, ticks, parted;

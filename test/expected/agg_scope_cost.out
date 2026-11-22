@@ -1,7 +1,7 @@
 -- The plan the planner picks on its own costs when the keys of the scan come from a lookup whose size PostgreSQL cannot count: a list of ids read
 -- from a table by a filter on a jsonb path or an expression has no statistics, and PostgreSQL expects a row or two of it (the normal plan is
 -- a nested loop of index probes priced for that), while the lists the queries pass hold a good share of the table's parents. The normal plan's
--- price is raised for the keys the distinct parents allow (sift.agg_param_set_size = 0 turns it off); a lookup whose filter PostgreSQL has
+-- price is raised for the keys the distinct parents allow (the param_set_elems limit = 0 turns it off); a lookup whose filter PostgreSQL has
 -- statistics for keeps its estimate. Every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -127,18 +127,18 @@ SELECT * FROM same(cte_scope('d.id IN (3, 4)', 1));
 (1 row)
 
 -- the switch: the normal plan keeps the estimate
-SET sift.agg_param_set_size = 0;
+SET sift.test_limits = 'param_set_elems=0';
 SELECT (plan_of(in_scope('d.settings ->> ''tier'' = ''tier_b''', 1))).plan AS plan_off;
  plan_off 
 ----------
  normal
 (1 row)
 
-RESET sift.agg_param_set_size;
+RESET sift.test_limits;
 -- the price of the list PostgreSQL knows does not move with the switch
-SET sift.agg_param_set_size = 0;
+SET sift.test_limits = 'param_set_elems=0';
 CREATE TEMP TABLE c_est AS SELECT cost AS known FROM plan_of(in_scope('d.id IN (3, 4)', 1));
-RESET sift.agg_param_set_size;
+RESET sift.test_limits;
 SELECT (SELECT cost FROM plan_of(in_scope('d.id IN (3, 4)', 1))) = known AS known_unchanged FROM c_est;
  known_unchanged 
 -----------------

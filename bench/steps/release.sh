@@ -7,7 +7,7 @@
 # plan is over the budget), and the preconditions of the host. A stage that finished before with the same code, settings and host is skipped (`--no-resume` measures everything), and the
 # cells of the engines that are not under test are read from the cache of cells with their date and key in the table.
 # The cases stage keeps its clusters on tmpfs (CASES_TMP, default /dev/shm/sift-cases, fsync off; CASES_MEM caps the server and its tmpfs at 16G, 8G was killed by the kernel): the plan says 5 GB at 1M orders and the rehearsal peaked at 1.6x the plan, so 10 GB are reserved and about 18 GB of memory must be free; the run checks both.
-# The budget table with the reason of every stage is bench/out/BENCHMARKS.md, "Time budget of the release pass".
+# The budget table with the reason of every stage is docs/BENCHMARKS.md, "Time budget of the release pass".
 #
 #   --rehearsal  every stage at the smoke size in a throwaway worktree of this commit, with its own work and store directories, its tables rendered and checked there, then removed: a minute
 #                count per stage and the proof that the pipeline runs end to end, without touching this checkout's docs or the caches. No other option is needed.
@@ -19,8 +19,8 @@
 #   ssh HOST 'cd DIR && git fetch -q --tags && git checkout --detach TAG && BENCH_STORE=STORE bench/bench release --dry-run'              # read the plan and the preconditions
 #   ssh HOST 'cd DIR && BENCH_STORE=STORE nohup bench/bench release > ~/release-run.log 2>&1 & echo $! > ~/release-run.pid'        # the run survives the connection
 #   ssh HOST 'tail -f ~/release-run.log'                                                                         # follow it; the stage lines are `[time final] stage ...`
-# and afterwards, in the checkout: `git diff --stat` shows the regenerated README.md and bench/results.
-# What to read in the dry-run, when to abort, how a finished run looks and who commits the diff: bench/out/BENCHMARKS.md, "The go: one block and a checklist".
+# and afterwards, in the checkout: `git diff --stat` shows the regenerated README.md and docs/results.
+# What to read in the dry-run, when to abort, how a finished run looks and who commits the diff: docs/BENCHMARKS.md, "The go: one block and a checklist".
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 DIE_TAG=release
@@ -38,9 +38,9 @@ while (( $# )); do
 done
 
 if [[ -n $APPLY ]]; then
-  [[ -z $(git -C "$REPO" status --porcelain -- bench/results) ]] || die 'the results of this checkout have changes: apply the results to a clean checkout of the integration tip'
+  [[ -z $(git -C "$REPO" status --porcelain -- docs/results) ]] || die 'the results of this checkout have changes: apply the results to a clean checkout of the integration tip'
   if [[ $APPLY == - ]]; then git -C "$REPO" apply --index; else git -C "$REPO" apply --index "$APPLY"; fi
-  git -C "$REPO" add -A bench/results
+  git -C "$REPO" add -A docs/results
   git -C "$REPO" diff --cached --stat | tail -3
   "$REPO/scripts/lint.sh" neutral || die 'the lint above lists what to edit'
   log 'the results are applied and the checks pass: read git diff --cached, commit and open the pull request'
@@ -53,7 +53,7 @@ if [[ -n $REHEARSAL ]]; then
   trap 'rc=$?; (( rc )) && { echo "release: the rehearsal failed; its tree is kept for inspection: $tmp (git worktree remove --force $tmp/wt, then rm -rf)" >&2; exit "$rc"; }; git -C "$REPO" worktree remove --force "$tmp/wt" >/dev/null 2>&1 || true; rm -rf "$tmp"' EXIT
   git -C "$REPO" worktree add -q --detach "$tmp/wt" HEAD
   git -C "$REPO" diff --binary HEAD -- bench scripts | git -C "$tmp/wt" apply --allow-empty
-  rm -f "$tmp"/wt/bench/results/cases.tsv "$tmp"/wt/bench/results/cases-time.tsv   # the smoke preset runs a few cases at 50,000 orders; a cases.tsv of 1,000,000 orders refuses a partial run at another size
+  rm -f "$tmp"/wt/docs/results/cases.tsv "$tmp"/wt/docs/results/cases-time.tsv   # the smoke preset runs a few cases at 50,000 orders; a cases.tsv of 1,000,000 orders refuses a partial run at another size
   # the host is shared while it is rehearsed: own cluster directory (on disk, under the rehearsal directory: the shared tmpfs is not scratch space) and port for the cases, and no waiting for a quiet host (a rehearsal measures nothing)
   export REHEARSAL=1 BENCH_WORK=$tmp/work BENCH_STORE=$tmp/store PERF_LOCK=$tmp/perf.lock CASES_TMP=$tmp/cases CASES_PORT=56270 SIFT_QUIET_MAX=100 D_LOAD_MAX=100000
   mkdir -p "$BENCH_WORK" "$BENCH_STORE"
@@ -61,7 +61,7 @@ if [[ -n $REHEARSAL ]]; then
   "$tmp/wt/bench/bench" final --size smoke --docs --budget 0 "${ARGS[@]}"
   log "rehearsal: $(( (SECONDS - T0 + 30) / 60 )) min; checking the rendered tables"
   [[ -z ${REHEARSAL_PATCH:-} ]] || git -C "$tmp/wt" diff --binary > "$REHEARSAL_PATCH"
-  log "rehearsal: fuzzy cells in bench/results/articles.tsv: $(grep -c $'\tfuzzy\t' "$tmp/wt/bench/results/articles.tsv" || true); table heads: $(grep -h '^| engine .*| fuzzy' "$tmp/wt/bench/out/README-blocks.md" "$tmp/wt/bench/out/BENCHMARKS.md" | head -2 | tr '\n' ' ')"
+  log "rehearsal: fuzzy cells in docs/results/articles.tsv: $(grep -c $'\tfuzzy\t' "$tmp/wt/docs/results/articles.tsv" || true); table heads: $(grep -h '^| engine .*| fuzzy' "$tmp/wt/README.md" "$tmp/wt/docs/BENCHMARKS.md" | head -2 | tr '\n' ' ')"
   log "rehearsal: every stage ran and the tables render; results changed in the throwaway tree: $(git -C "$tmp/wt" diff --stat | tail -1)"
   exit 0
 fi

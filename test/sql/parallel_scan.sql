@@ -33,7 +33,7 @@ BEGIN
 	PERFORM set_config('parallel_tuple_cost', '0', true);
 	PERFORM set_config('min_parallel_index_scan_size', '0', true);
 	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
-	PERFORM set_config('sift.enable_count', (mode <> 'seq')::text, true);
+	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
 	PERFORM set_config('enable_bitmapscan', (mode = 'seq')::text, true);
 	PERFORM set_config('enable_indexscan', (mode = 'seq')::text, true);
 	PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
@@ -48,7 +48,7 @@ BEGIN
 	PERFORM set_config('parallel_tuple_cost', '0', true);
 	PERFORM set_config('min_parallel_index_scan_size', '0', true);
 	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
-	PERFORM set_config('sift.enable_count', (mode <> 'seq')::text, true);
+	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
 	PERFORM set_config('enable_bitmapscan', (mode = 'seq')::text, true);
 	PERFORM set_config('enable_indexscan', (mode = 'seq')::text, true);
 	PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);

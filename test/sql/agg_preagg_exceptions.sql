@@ -115,7 +115,6 @@ INSERT INTO ex_old SELECT * FROM ex;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ex_old;
 SET sift.col_format_minor = 14;
 CREATE INDEX ex_old_col ON ex_old USING sift_col (id, kind, grp, val, small, amt, flt, d, metrics_a, stamp) WITH (write_buffer_limit = 4096, paths = 'metrics_a.* float8', superunit = 0);
-RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('ex_old_col') WHERE kind = 'immutable';
 SELECT * FROM pa_check('ex_old');
 REINDEX INDEX ex_old_col;

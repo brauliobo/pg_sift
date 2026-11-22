@@ -11,7 +11,7 @@
  *   - the names in sift.scope_follows (the source column, the columns of the pairs), in sift.projections (the columns, the filter and the rollups of a definition) and in the options of a
  *     sift_table (sift.table_paths, sift.table_option_values) follow.
  * A table that is renamed or moved to another schema, and an index that is renamed: the options connect and scope of every sift_col index that name it follow, the definitions of
- * sift.projections, and the value stores of the table (col/vstore/vstore_rel.c), as the relations a restore adopts are found by the name the table gives them.
+ * sift.projections, and the scope key stores of the table (col/keystore/keystore_rel.c), as the relations a restore adopts are found by the name the table gives them.
  */
 #include "postgres.h"
 
@@ -40,10 +40,10 @@
 #include "utils/syscache.h"
 
 #include "col/am.h"
-#include "col/enc.h"
+#include "col/v1/enc.h"
 #include "col/names.h"
 #include "col/pg.h"
-#include "col/vstore/vstore.h"
+#include "col/keystore/keystore.h"
 #include "core/restrict.h"
 #include "core/store.h"
 #include "core/catname.h"
@@ -314,7 +314,7 @@ follow(Node *stmt)
 		{
 			if (c.kind == SIFT_NAME_TABLE)
 			{
-				sift_vstore_follow_names(c.relid);
+				sift_keystore_follow_names(c.relid);
 				follow_catalogs_table(c.relid, &c);
 			}
 			follow_references(&c);

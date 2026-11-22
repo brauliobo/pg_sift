@@ -35,7 +35,6 @@ CREATE INDEX kt_on ON kt USING sift_col (id, grp_id, ts, d, amt, val, mid_id, ma
 CREATE INDEX kt_b_off ON kt_b USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, key_table = off, order_array_columns = off);
 SET sift.col_format_minor = 14;
 CREATE INDEX kt_c_old ON kt_c USING sift_col (id, grp_id, ts, d, amt, val, mid_id, many_id, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, order_array_columns = off);
-RESET sift.col_format_minor;
 SELECT 'kt_on' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('kt_on')
 UNION ALL SELECT 'kt_b_off', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kt_b_off')
 UNION ALL SELECT 'kt_c_old', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('kt_c_old') ORDER BY 1;
@@ -135,7 +134,6 @@ ALTER TABLE ka ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2024-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(1, 60000) g;
 SET sift.col_format_minor = 14;
 CREATE INDEX ka_idx ON ka USING sift_col (id, grp_id, amt, ts, pad) WITH (dict_lookup = off, write_buffer_limit = 4096, key_order = 'off');
-RESET sift.col_format_minor;
 SELECT array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ka_idx');
 ALTER INDEX ka_idx SET (key_columns = 'grp_id');
 INSERT INTO ka SELECT g, (hashint4(g) & 2147483647) % 300, g % 1000, timestamp '2025-01-01' + g * interval '1 minute', md5(g::text) || md5(g::text || 'a') FROM generate_series(60001, 120000) g;

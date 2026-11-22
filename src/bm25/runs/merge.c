@@ -9,6 +9,8 @@
 
 static void batch_to_run(Batch *bt);
 
+#define BATCH_POS_KEEP	(256 * 1024)
+
 void
 batch_flush(Batch *bt)
 {
@@ -19,6 +21,13 @@ batch_flush(Batch *bt)
 	bt->n = 0;
 	bt->termpos += bt->poslen;
 	bt->poslen = 0;
+	/* the position records of one giant document must not stay for the rest of the merge */
+	if (bt->poscap > BATCH_POS_KEEP)
+	{
+		pfree(bt->pos);
+		bt->pos = NULL;
+		bt->poscap = 0;
+	}
 }
 
 /* rec / len: the posting's position record, ignored unless the term has positions */

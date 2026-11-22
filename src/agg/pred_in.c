@@ -5,7 +5,7 @@
 
 #include "executor/nodeAgg.h"
 
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "core/cmp.h"
 #include "core/i64set.h"
 #include "core/limits.h"

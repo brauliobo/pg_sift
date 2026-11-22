@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# When a parallel build pays (col/build_par.c, build_pays). Without key_cut the participants' segments are the index and the scan is shared; with key_cut their segments overlap
+# tap: pooled
+# When a parallel build pays (col/v1/build_par.c, build_pays). Without key_cut the participants' segments are the index and the scan is shared; with key_cut their segments overlap
 # and the merge that follows rewrites every row, in slices that each read every input again: that does not pay (1,000,000 rows of 13 columns, 4 workers: 3.8 s against 3.2 s alone),
 # so a key_cut index is built by one process (no worker launched), unless the test option sift.test_col_parallel_always asks for the participants (the tests of their merge).
 . "$(dirname "$0")/lib.bash"
@@ -18,10 +19,10 @@ SMALL="SET min_parallel_table_scan_size = 0"
 PAYS="SET sift.test_col_parallel_always = off"   # the tests of the participants build small tables in parallel whatever it costs
 # the workers launched and the slices of the merge of a build with the options in $2 ($1: SET statements)
 built() { sql mc "DROP INDEX IF EXISTS t_idx" "$OPTS" "$SMALL" "$PAYS" "SET sift.test_col_segment_kb = 64" "$1" "CREATE INDEX t_idx ON t USING sift_col (ts, v) WITH (key_cut = $2)" "SHOW sift.test_col_workers" "SHOW sift.test_col_merge_slices" | tail -n 2 | tr '\n' ' '; }
-check "key_cut, a merge that one process makes (no partitions): the build is made by one" test "$(built "SET sift.col_auto_merge_partition_kb = 0" "'ts'")" == "0 0 "
-check "no key_cut: the participants build it" test "$(built "SET sift.col_auto_merge_partition_kb = 0" "'off'" | cut -d' ' -f1)" -ge 1
-check "key_cut, a merge in 3 slices or more: the build is made by one" test "$(built "SET sift.col_auto_merge_partition_kb = 256" "'ts'")" == "0 0 "
-check "... with the test option the participants build it and merge it in the slices" test "$(built "SET sift.col_auto_merge_partition_kb = 256; SET sift.test_col_parallel_always = on" "'ts'" | cut -d' ' -f2)" -ge 3
+check "key_cut, a merge that one process makes (no partitions): the build is made by one" test "$(built "SET sift.test_col_partition_kb = 0" "'ts'")" == "0 0 "
+check "no key_cut: the participants build it" test "$(built "SET sift.test_col_partition_kb = 0" "'off'" | cut -d' ' -f1)" -ge 1
+check "key_cut, a merge in 3 slices or more: the build is made by one" test "$(built "SET sift.test_col_partition_kb = 256" "'ts'")" == "0 0 "
+check "... with the test option the participants build it and merge it in the slices" test "$(built "SET sift.test_col_partition_kb = 256; SET sift.test_col_parallel_always = on" "'ts'" | cut -d' ' -f2)" -ge 3
 out=$(sql mc "SELECT sift.col_verify('t_idx', true)" 2>&1)
 check "the index verifies" test -z "$out"
 check "it answers as the heap does" test "$(sql mc "SET enable_seqscan = off" "SELECT count(*), sum(v) FROM t WHERE ts < 1000000000")" == "$(sql mc "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*), sum(v) FROM t WHERE ts < 1000000000")"

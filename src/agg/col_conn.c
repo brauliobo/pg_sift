@@ -6,7 +6,7 @@
 #if __has_include("col/col.h")
 
 #include "col/col.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 
 #include "agg/col_int.h"
 

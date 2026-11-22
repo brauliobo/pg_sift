@@ -12,6 +12,8 @@
  */
 #include "core/host.h"
 
+#include <math.h>
+
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/prefix.h"
@@ -294,6 +296,9 @@ typedef struct Expand
 	int			n;
 	int			cap;
 	bool		over;
+	int			limit;			/* terms kept before the leaf is over */
+	int			min_bound;		/* terms with a smaller bound are left out */
+	uint8		left_out;		/* the largest bound of those */
 	double		tail_none;		/* a capped prefix: what the terms past the limit add to the estimate */
 	double		tail_postings;
 	double		tail_terms;
@@ -310,10 +315,9 @@ expand_add(Expand *e, const char *term, int len, const SiftTermInfo *info)
 		SIFT_REGROW_IN(e->plan->mcxt, e->terms, e->cap * sizeof(LeafTerm));
 	}
 	t = &e->terms[e->n++];
+	*t = (LeafTerm) {.len = len,.info = *info};
 	t->term = MemoryContextAlloc(e->plan->mcxt, len);
 	memcpy(t->term, term, len);
-	t->len = len;
-	t->info = *info;
 	if (info->flags & SIFT_TERM_INLINE && info->pos_len > 0)
 		t->info.inline_pos = memcpy(MemoryContextAlloc(e->plan->mcxt, info->pos_len), info->inline_pos, info->pos_len);
 }
@@ -333,7 +337,12 @@ expand_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (!sift_matcher_match(e->matcher, term, len) || (e->live_in && !sift_seg_term_live(e->live_in, info)))
 		return true;
 	sift_seg_term_stats(e->seg, &live);
-	if (e->n == sift_max_expansions)
+	if (live.max_bound < e->min_bound)
+	{
+		e->left_out = Max(e->left_out, live.max_bound);
+		return true;
+	}
+	if (e->n == e->limit)
 	{
 		e->over = true;
 		/* an estimate of a prefix reads on, from the dictionary only: the terms it keeps are the first ones, not the typical ones */
@@ -378,12 +387,13 @@ segment_dirty(const SiftPlan *p, int s)
 	return (p->seg[s]->entry.flags & SIFT_SEG_DIRTY) != 0;
 }
 
-/* The leaf's terms in segment s; true when they exceed sift.max_expansions */
+/* The leaf's terms in segment s with a bound of at least min_bound; true when they exceed limit */
 static bool
-expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
+expand_bounded(SiftPlan *p, EvalLeaf *l, int s, bool live_only, int limit, int min_bound, uint8 *left_out)
 {
 	SiftSegment *seg = p->seg[s];
-	Expand		e = {.plan = p, .matcher = l->m, .kind = l->node->kind, .seg = seg, .live_in = live_only ? seg : NULL, .tail_none = 1.0};
+	Expand		e = {.plan = p, .matcher = l->m, .kind = l->node->kind, .seg = seg, .live_in = live_only ? seg : NULL,
+					 .limit = limit, .min_bound = min_bound, .tail_none = 1.0};
 	SiftTermInfo info;
 
 	if (l->m == NULL)
@@ -407,7 +417,22 @@ expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only)
 	l->tail_none *= e.tail_none;
 	l->tail_postings += e.tail_postings;
 	l->tail_terms += e.tail_terms;
+	if (left_out)
+		*left_out = e.left_out;
 	return e.over;
+}
+
+/* The leaf's terms in segment s; true when they exceed sift.max_expansions */
+static bool
+expand_segment(SiftPlan *p, EvalLeaf *l, int s, bool live_only, int limit)
+{
+	return expand_bounded(p, l, s, live_only, limit, 0, NULL);
+}
+
+bool
+expand_tail(SiftPlan *p, EvalLeaf *l, int s, int limit, int min_bound, uint8 *left_out)
+{
+	return expand_bounded(p, l, s, segment_dirty(p, s), limit, min_bound, left_out);
 }
 
 /* Expands again without the terms of vacuumed docs; false when no segment has any */
@@ -419,74 +444,10 @@ expand_live(SiftPlan *p, EvalLeaf *l)
 	for (int s = 0; s < p->nsegs; s++)
 		if (segment_dirty(p, s))
 		{
-			expand_segment(p, l, s, true);
+			expand_segment(p, l, s, true, sift_max_expansions);
 			any = true;
 		}
 	return any;
-}
-
-/*
- * The term that indexed_leaf makes of a prefix of the leaf's field; the name of any other wide leaf is one
- * byte no word starts with, and its cache key (NULL when too long to be one) tells it from the others
- */
-static void
-wide_names(SiftPlan *p, EvalLeaf *l, char **ckey, int *cklen)
-{
-	const SiftQNode *n = l->node;
-	int			len = 0;
-
-	*ckey = MemoryContextAlloc(p->mcxt, n->textlen + 4);
-	if (n->kind == SQ_PREFIX)
-	{
-		if (n->field)
-			(*ckey)[len++] = SIFT_FIELD_BYTE(n->field);
-		(*ckey)[len++] = SIFT_PREFIX_SEP;
-		memcpy(*ckey + len, n->text, n->textlen);
-		l->wide = *ckey;
-		l->widelen = *cklen = len + n->textlen;
-		return;
-	}
-	l->wide = pstrdup("\xFF");
-	l->widelen = 1;
-	(*ckey)[len++] = 0xFF;
-	(*ckey)[len++] = n->kind;
-	(*ckey)[len++] = n->fuzzy;
-	(*ckey)[len++] = n->field;
-	memcpy(*ckey + len, n->text, n->textlen);
-	*cklen = len + n->textlen;
-	if (*cklen > SIFT_MAX_TERM_BYTES + 2)
-		*ckey = NULL;
-}
-
-/*
- * A leaf with more terms than the limit is not an OR of its terms, one weight each: it reads as the one
- * term that holds the documents with a word the leaf matches, tf the number of those words (for a prefix
- * the one term prefix_index would have indexed for it, bm25/prefix.c), in every segment, so that the
- * leaf is weighed alike everywhere.
- */
-static void
-widen_leaf(SiftPlan *p, EvalLeaf *l)
-{
-	SiftScoreRef ref = {(float4) p->st->dir->meta.k1, (float4) p->st->dir->meta.b, 0};
-	char	   *ckey;
-	int			cklen;
-
-	wide_names(p, l, &ckey, &cklen);
-	for (int s = 0; s < p->nsegs; s++)
-	{
-		LeafTerm   *t = MemoryContextAllocZero(p->mcxt, sizeof(LeafTerm));
-
-		for (int i = 0; i < l->nterms[s]; i++)
-			pfree(l->terms[s][i].term);
-		if (l->terms[s])
-			pfree(l->terms[s]);
-		ref.avgdl = p->seg[s]->hdr->avgdl_ref;
-		t->blob = sift_prefix_union(p->seg[s], l->m, ckey, cklen, &ref, p->scoring && l->scoring, p->mcxt, &t->info);
-		t->term = l->wide;
-		t->len = l->widelen;
-		l->nterms[s] = t->info.df > 0;
-		l->terms[s] = t;
-	}
 }
 
 /*
@@ -509,11 +470,14 @@ resolve_leaf(SiftPlan *p, EvalLeaf *l)
 	l->terms = MemoryContextAllocZero(p->mcxt, p->nsegs * sizeof(LeafTerm *));
 	l->tail_none = 1.0;
 	for (int s = 0; s < p->nsegs && !over; s++)
-		over = expand_segment(p, l, s, false) && !p->capped && (!segment_dirty(p, s) || expand_segment(p, l, s, true));
+		over = expand_segment(p, l, s, false, sift_max_expansions) && !p->capped &&
+			   (!segment_dirty(p, s) || expand_segment(p, l, s, true, sift_max_expansions));
 	over |= !p->capped && distinct_terms(p, l) > sift_max_expansions &&
 		(!expand_live(p, l) || distinct_terms(p, l) > sift_max_expansions);
-	if (over)
-		widen_leaf(p, l);
+	if (over && p->scoring && !p->recheck && p->nphr == 0 && l->scoring && l->phrase == NULL)
+		tail_defer_leaf(p, l);
+	else if (over)
+		tail_widen_leaf(p, l);
 }
 
 /*
@@ -672,6 +636,40 @@ sift_plan_bind_shared(SiftIndexState *st, SiftQuery **queries, int nqueries, int
 	return plan_bind(st, queries, nqueries, flags, shared);
 }
 
+/*
+ * Reads the term blobs of every leaf in every segment as one plan, before the cursors open them one by one: the segments of an index share
+ * its relation, so what a cold query asks of the device is one wave of reads where each (segment, term) was a wait of its own. Blobs a
+ * query kept in memory, inline terms and the terms of a wide prefix (already in memory) are left out.
+ */
+void
+sift_plan_prefetch_blobs(const SiftPlan *plan)
+{
+	SiftMultiRange *r;
+	int			n = 0,
+				cap = 0;
+
+	for (int i = 0; i < plan->nleaves; i++)
+		for (int s = 0; s < plan->nsegs; s++)
+			cap += plan->leaves[i].nterms[s];
+	if (cap < 2)
+		return;
+	r = palloc(cap * sizeof(SiftMultiRange));
+	for (int i = 0; i < plan->nleaves; i++)
+		for (int s = 0; s < plan->nsegs; s++)
+			for (int j = 0; j < plan->leaves[i].nterms[s]; j++)
+			{
+				const LeafTerm *t = &plan->leaves[i].terms[s][j];
+				uint64		off,
+							len;
+
+				if (t->blob == NULL && sift_post_blob_range(&t->info, &off, &len) && !sift_post_blob_cached(&plan->seg[s]->sr, &t->info))
+					r[n++] = (SiftMultiRange) {&plan->seg[s]->sr, off, len};
+			}
+	if (n > 1)
+		sift_sr_prefetch_multi(r, n);
+	pfree(r);
+}
+
 const SiftPlanStats *
 sift_plan_stats(const SiftPlan *plan)
 {
@@ -685,6 +683,13 @@ sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter)
 }
 
 void
+sift_plan_set_tidbridge(SiftPlan *plan, const SiftTidBridge *bridge)
+{
+	Assert(bridge == NULL || bridge->finalized);
+	plan->bridge = bridge;
+}
+
+void
 sift_plan_set_attrs(SiftPlan *plan, const SiftAttrTest *tests, int n)
 {
 	plan->attrs = tests;
@@ -695,6 +700,7 @@ typedef struct Estimate
 {
 	double		postings;
 	double		terms;
+	double		range_terms;
 } Estimate;
 
 static double
@@ -704,14 +710,18 @@ leaf_prob(const SiftPlan *p, const EvalLeaf *l, Estimate *est)
 				ndocs = Max(p->stats.ndocs, 1);
 
 	for (int s = 0; s < p->nsegs; s++)
+	{
 		for (int i = 0; i < l->nterms[s]; i++)
 		{
 			none *= 1.0 - Min(1.0, l->terms[s][i].info.ldf / ndocs);
 			est->postings += l->terms[s][i].info.ldf;
 			est->terms++;
 		}
+		est->range_terms += Max(l->nterms[s] - 1, 0);
+	}
 	est->postings += l->tail_postings;
 	est->terms += l->tail_terms;
+	est->range_terms += l->tail_terms;
 	return 1.0 - none * l->tail_none;
 }
 
@@ -770,6 +780,7 @@ sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, S
 	est->docs = node_prob(p, p->root, &e) * p->stats.ndocs;
 	est->postings = e.postings;
 	est->terms = e.terms;
+	est->range_terms = e.range_terms;
 	est->ndocs = p->stats.ndocs;
 	sift_state_close(st);
 	MemoryContextSwitchTo(old);

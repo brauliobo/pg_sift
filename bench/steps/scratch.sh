@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sourced by the benchmarks that run on a scratch PostgreSQL cluster of their own (steps/sets.sh, extras.sh): never an existing cluster or database.
+# Sourced by the benchmarks that run on a scratch PostgreSQL cluster of their own (steps/scaling.sh, scope_stock.sh): never an existing cluster or database.
 #
 #   scratch_scope "$@"     re-run the script in a systemd scope (MemoryMax SCRATCH_MEM, 12G; CPUQuota SCRATCH_CPU, 300%; no swap); returns in the scope
 #   scratch_install NAME   only the staged install of SIFT_BUILD's sift into SCRATCH_ROOT/NAME (SIFT_ROOT), for a script that makes its own cluster; scratch_port picks a free port

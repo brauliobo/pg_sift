@@ -1,5 +1,5 @@
 class PgSift < Formula
-  desc "Fast analytics for PostgreSQL: just add an index, plus BM25 full-text search"
+  desc "Columnar analytics, column tables, and BM25 full-text search for PostgreSQL"
   homepage "https://github.com/brauliobo/pg_sift"
   url "https://github.com/brauliobo/pg_sift/archive/refs/tags/v5.1.0.tar.gz"
   sha256 "1b801096edc58f16c990bab9b7436ebc9dabf111490f74ac3ea5cad26a41c23c"

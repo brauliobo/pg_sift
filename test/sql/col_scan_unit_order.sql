@@ -3,7 +3,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE uo (id int, k int, v int, pad text DEFAULT repeat('x', 100));

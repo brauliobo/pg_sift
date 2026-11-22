@@ -89,7 +89,7 @@ struct sift_cur {
 	const uint8_t *tf, *ub, *blk;  /* ub: per-group bounds, blk: 16-page block nibbles (GROUPED) */
 	uint32_t ub1;               /* term bound (LIST), 255 if unknown */
 	union {
-		struct { const uint8_t *payload; const uint32_t *key, *poff, *base; uint32_t ng, i, plen; } gr;
+		struct { const uint8_t *payload; const uint32_t *key, *poff, *base; uint32_t ng, i, plen, pi; } gr;	/* pi: the group sift_cur_peek_gid found */
 		struct {
 			const sift_tid *t;          /* raw tids, or NULL for a LIST blob */
 			const uint8_t *p;           /* next LIST block */
@@ -153,12 +153,20 @@ uint64_t sift_cur_count_in(sift_cur *c, const sift_dead_sb *dead, uint32_t lo, u
 static inline const sift_grp *sift_seek(sift_cur *c, uint32_t gid) { return c->seek(c, gid); }
 /* the group of exactly gid or NULL; operators do not look past gid, so a miss costs no leapfrogging */
 const sift_grp *sift_seek_eq(sift_cur *c, uint32_t gid);
+
+/*
+ * The gid of the first group at or after target, UINT32_MAX when there is none. A GROUPED term is only located: no offset of the group is
+ * decoded until sift_seek asks for it (any other cursor is sought, as sift_seek does).
+ */
+uint32_t sift_cur_peek_gid(sift_cur *c, uint32_t target);
+/* The 256-bit page mask of the group sift_cur_peek_gid found, read from the blob without decoding its offsets; false for a group that is an array (decode it with sift_seek) */
+int sift_cur_peek_pages(const sift_cur *c, uint64_t pages_out[4]);
 /* the kids of an OR cursor and their number, NULL for any other cursor */
 sift_cur **sift_cur_or_kids(const sift_cur *c, int *k);
 static inline const sift_grp *sift_next(sift_cur *c) { return c->seek(c, c->state ? c->g.gid + 1 : 0); }
 
 /* whole-stream helpers */
-uint64_t sift_count(sift_cur *c);                  /* 2-way AND/OR use count kernels, no materialization */
+uint64_t sift_cur_count(sift_cur *c);                  /* 2-way AND/OR use count kernels, no materialization */
 size_t sift_tids(sift_cur *c, sift_tid *out);      /* all tids in heap order */
 
 /* group kernels (dispatched); o->off = buf, buf may equal a->off (in place) for and/andnot */

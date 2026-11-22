@@ -4,7 +4,7 @@
 A VULKAN=1 build then needs no Vulkan SDK or headers (libvulkan.so.1 is opened with dlopen at run time). The declarations are the
 interface of the loader, which does not change: a Vulkan function or structure keeps its layout in every later version.
 
-    scripts/gen-aggvk-min.py [--header /usr/include/vulkan/vulkan_core.h]        regenerate the file
+    scripts/gen-aggvk-min.py [--header /usr/include/vulkan/vulkan_core.h]        regenerate the file (scripts/fetch-khr-headers.sh when the host has none)
     scripts/gen-aggvk-min.py --check                                              fail when the file differs from what the header gives
 
 The names are those agg/vk/ mentions (identifiers starting with Vk, PFN_vk or VK_), and what their declarations need.
@@ -21,7 +21,7 @@ SRC = sorted(glob.glob(os.path.join(ROOT, "src/agg/vk/*.[ch]")))
 OUT = os.path.join(ROOT, "src/agg/vk_min.h")
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--header", default="/usr/include/vulkan/vulkan_core.h")
+ap.add_argument("--header", default=os.environ.get("SIFT_VK_HEADER", os.path.join(ROOT, "build/khr-headers/vulkan_core.h") if os.path.exists(os.path.join(ROOT, "build/khr-headers/vulkan_core.h")) else "/usr/include/vulkan/vulkan_core.h"))
 ap.add_argument("--check", action="store_true")
 args = ap.parse_args()
 

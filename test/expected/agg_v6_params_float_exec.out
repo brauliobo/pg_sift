@@ -1,0 +1,177 @@
+-- SiftAggV6 against the heap, for the operands a plan reads when the scan starts: float parameters and constants (NaN and the infinities are values of the order of PostgreSQL, so the
+-- scan decides them as the heap does), and the PARAM_EXEC of a correlated scan (a lateral join, which rescans it with the value of each outer row) and of a sub-select that runs first.
+-- Every statement is run with the node (sift.enable_agg), without it, and through the index scan of the same index; the first word says the answers agree, the second the plan the node's.
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET timezone = 'UTC';
+CREATE TABLE fp (id int PRIMARY KEY, g int, f float8, h float4, n int, v bigint) WITH (autovacuum_enabled = false);
+INSERT INTO fp SELECT i, i % 5, CASE WHEN i % 997 = 0 THEN 'NaN' WHEN i % 991 = 0 THEN 'Infinity' WHEN i % 983 = 0 THEN '-Infinity' WHEN i % 89 = 0 THEN NULL ELSE (i % 500) * 0.25 - 40 END,
+	(i % 100) * 0.5, i % 100, i * 3 FROM generate_series(1, 20000) i;
+CREATE INDEX fp_col ON fp USING sift_col (g, f, h, n, id, v);
+CREATE TABLE fd (k int PRIMARY KEY, label text, region int);
+INSERT INTO fd SELECT i, 'name' || i, i % 4 FROM generate_series(0, 99) i;
+VACUUM ANALYZE fp;
+ANALYZE fd;
+CREATE FUNCTION answer(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	IF q ~* '^execute' THEN
+		EXECUTE 'CREATE TEMP TABLE same_r AS ' || q;
+		q := 'SELECT * FROM same_r';
+	END IF;
+	EXECUTE 'SELECT md5(coalesce(string_agg(r::text, ''|'' ORDER BY r::text), '''')) FROM (' || q || ') r' INTO r;
+	DROP TABLE IF EXISTS pg_temp.same_r;
+	RETURN r;
+END $$;
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; c text; l text; plan text := '';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	a := answer(q);
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	b := answer(q);
+	PERFORM set_config('enable_seqscan', 'off', true);
+	c := answer(q);
+	PERFORM set_config('enable_seqscan', 'on', true);
+	RETURN (CASE WHEN a = b AND b = c THEN 'same' ELSE 'DIFFERENT' END) || ' ' ||
+		(CASE WHEN plan LIKE '%SiftAggV6Sip%' THEN 'sip' WHEN plan LIKE '%SiftAggV6%' THEN 'node' ELSE 'normal' END) || ' ' || q;
+END $$;
+-- a float constant or parameter against a float8 and a float4 column: NaN, the infinities, NULL, a value the column holds and one it does not
+SELECT same(format('SELECT count(*), min(id), max(id) FROM fp WHERE %s %s %L::%s', col, o, v, ty))
+FROM (VALUES ('f', 'float8'), ('h', 'float4')) c(col, ty), unnest(ARRAY['=', '<', '<=', '>', '>=']) o, unnest(ARRAY['NaN', 'Infinity', '-Infinity', '0', '12.5', '-39.75']) v;
+                                        same                                        
+------------------------------------------------------------------------------------
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f = 'NaN'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h = 'NaN'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f < 'NaN'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h < 'NaN'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f <= 'NaN'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h <= 'NaN'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f > 'NaN'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h > 'NaN'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f >= 'NaN'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h >= 'NaN'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f = 'Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h = 'Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f < 'Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h < 'Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f <= 'Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h <= 'Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f > 'Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h > 'Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f >= 'Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h >= 'Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f = '-Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h = '-Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f < '-Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h < '-Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f <= '-Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h <= '-Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f > '-Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h > '-Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f >= '-Infinity'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h >= '-Infinity'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f = '0'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h = '0'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f < '0'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h < '0'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f <= '0'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h <= '0'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f > '0'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h > '0'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f >= '0'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h >= '0'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f = '12.5'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h = '12.5'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f < '12.5'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h < '12.5'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f <= '12.5'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h <= '12.5'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f > '12.5'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h > '12.5'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f >= '12.5'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h >= '12.5'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f = '-39.75'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h = '-39.75'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f < '-39.75'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h < '-39.75'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f <= '-39.75'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h <= '-39.75'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f > '-39.75'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h > '-39.75'::float4
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE f >= '-39.75'::float8
+ same node SELECT count(*), min(id), max(id) FROM fp WHERE h >= '-39.75'::float4
+(60 rows)
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE f1(float8) AS SELECT g, count(*), sum(id) FROM fp WHERE f > $1 GROUP BY g;
+PREPARE f2(float8, float8) AS SELECT count(*), min(id), max(id) FROM fp WHERE f >= $1 AND f <= $2;
+PREPARE f3(float4) AS SELECT count(*) FROM fp WHERE h < $1;
+PREPARE f4(float8) AS SELECT count(*) FROM fp WHERE f = $1;
+SELECT same(q) FROM unnest(ARRAY['EXECUTE f1(0)', 'EXECUTE f1(''NaN'')', 'EXECUTE f1(''Infinity'')', 'EXECUTE f1(''-Infinity'')', 'EXECUTE f1(-1000)', 'EXECUTE f1(NULL)',
+	'EXECUTE f2(-5, 5)', 'EXECUTE f2(''-Infinity'', ''Infinity'')', 'EXECUTE f2(''NaN'', ''NaN'')', 'EXECUTE f2(0, ''NaN'')', 'EXECUTE f3(10)', 'EXECUTE f3(''NaN'')',
+	'EXECUTE f4(0)', 'EXECUTE f4(''NaN'')', 'EXECUTE f4(''Infinity'')']) q;
+                     same                      
+-----------------------------------------------
+ same node EXECUTE f1(0)
+ same node EXECUTE f1('NaN')
+ same node EXECUTE f1('Infinity')
+ same node EXECUTE f1('-Infinity')
+ same node EXECUTE f1(-1000)
+ same node EXECUTE f1(NULL)
+ same node EXECUTE f2(-5, 5)
+ same node EXECUTE f2('-Infinity', 'Infinity')
+ same node EXECUTE f2('NaN', 'NaN')
+ same node EXECUTE f2(0, 'NaN')
+ same node EXECUTE f3(10)
+ same node EXECUTE f3('NaN')
+ same node EXECUTE f4(0)
+ same node EXECUTE f4('NaN')
+ same node EXECUTE f4('Infinity')
+(15 rows)
+
+RESET plan_cache_mode;
+-- PARAM_EXEC of a lateral join: each outer row rescans the aggregate with its own value
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE n > l.k GROUP BY g) x',
+	'SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g) x',
+	'SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g ORDER BY c DESC, g LIMIT 2) x',
+	'SELECT l.k, x.* FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM fp WHERE n > l.k GROUP BY g) x',
+	'SELECT l.k, x.label, x.c FROM generate_series(1000, 60000, 20000) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.v > l.k GROUP BY d.label) x',
+	'SELECT l.k, x.label, x.c FROM generate_series(1, 5) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.f > l.k * 10 GROUP BY d.label) x'
+]) q;
+                                                                                                    same                                                                                                     
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE n > l.k GROUP BY g) x
+ same normal SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g) x
+ same normal SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE f > l.k::float8 / 3 GROUP BY g ORDER BY c DESC, g LIMIT 2) x
+ same normal SELECT l.k, x.* FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM fp WHERE n > l.k GROUP BY g) x
+ same node SELECT l.k, x.label, x.c FROM generate_series(1000, 60000, 20000) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.v > l.k GROUP BY d.label) x
+ same sip SELECT l.k, x.label, x.c FROM generate_series(1, 5) l(k), LATERAL (SELECT d.label, count(*) c FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.f > l.k * 10 GROUP BY d.label) x
+(6 rows)
+
+-- PARAM_EXEC of a sub-select that runs before the scan
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT g, count(*) FROM fp WHERE f > (SELECT avg(f) FROM fp WHERE f < ''Infinity'') GROUP BY g',
+	'SELECT g, count(*) FROM fp WHERE n > (SELECT max(n) / 2 FROM fp) GROUP BY g ORDER BY 2 DESC, 1 LIMIT 3',
+	'SELECT d.label, count(*) FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.v > (SELECT max(v) / 2 FROM fp) GROUP BY d.label',
+	'SELECT d.label, count(*) FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.f > (SELECT avg(f) FROM fp WHERE f < ''Infinity'') GROUP BY d.label',
+	'SELECT g, count(*) FROM fp WHERE f > (SELECT f FROM fp WHERE id = 0) GROUP BY g'
+]) q;
+                                                                              same                                                                              
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT g, count(*) FROM fp WHERE f > (SELECT avg(f) FROM fp WHERE f < 'Infinity') GROUP BY g
+ same node SELECT g, count(*) FROM fp WHERE n > (SELECT max(n) / 2 FROM fp) GROUP BY g ORDER BY 2 DESC, 1 LIMIT 3
+ same node SELECT d.label, count(*) FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.v > (SELECT max(v) / 2 FROM fp) GROUP BY d.label
+ same node SELECT d.label, count(*) FROM fp f JOIN fd d ON d.k = f.n WHERE d.region = 1 AND f.f > (SELECT avg(f) FROM fp WHERE f < 'Infinity') GROUP BY d.label
+ same node SELECT g, count(*) FROM fp WHERE f > (SELECT f FROM fp WHERE id = 0) GROUP BY g
+(5 rows)
+
+DROP TABLE fp, fd;
+DROP FUNCTION same(text);
+DROP FUNCTION answer(text);

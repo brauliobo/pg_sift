@@ -20,9 +20,9 @@ BEGIN
 		IF l LIKE '%units read by sorted run%' OR l LIKE '%Units: %' THEN r := r || ' ' || trim(l); END IF;
 	END LOOP;
 	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO a;
-	SET LOCAL sift.enable_topn = off; SET LOCAL sift.enable_agg = off;
+	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO b;
-	RESET sift.enable_topn; RESET sift.enable_agg;
+	RESET sift.enable_agg; RESET sift.enable_agg;
 	RETURN format('%s |%s', CASE WHEN a IS NOT DISTINCT FROM b THEN 'same' ELSE 'DIFFERENT' END, r);
 END $$;
 

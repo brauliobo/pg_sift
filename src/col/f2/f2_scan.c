@@ -1,0 +1,831 @@
+/*
+ * col/f2/f2_scan.c - the scan of an index of format major 2: the quals are turned into predicates on leaves (col/amscan/preds.c), the partitions, parts and granules the key range and
+ * the zones rule out are not read (f2_prune.c), the rest are decoded for the leaves the predicates name only, and the TIDs of the rows that pass are returned, those the deletion
+ * vectors and the pending deletes say are dead left out. A row is returned exact when every predicate was decided on its stored values, so the heap need not test the quals again;
+ * a row a leaf could not hold (a wide number, an overflow value, a pattern the stored bytes cannot judge) is returned for the heap to decide. The heap still checks visibility.
+ */
+#include "postgres.h"
+
+#include "access/relscan.h"
+#include "access/transam.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
+#include "miscadmin.h"
+#include "portability/instr_time.h"
+#include "utils/memutils.h"
+#include "utils/snapmgr.h"
+
+#include "col/f2/scan/bridge_core.h"
+#include "col/f2/scan/par_int.h"
+#include "col/f2/f2_cache.h"
+#include "col/f2/f2_col_delta_idx.h"
+#include "col/f2/f2_part_pin_scan.h"
+#include "col/f2/f2_point_dir.h"
+#include "col/f2/f2_view.h"
+#include "col/skip/skip_index.h"
+#include "core/memtrack.h"
+#include "core/popcount.h"
+#include "core/errctx.h"
+#include "core/meta_peek.h"
+#include "col/f2/f2_vacuum_run.h"
+#include "core/quarantine.h"
+#include "col/f2/l0_stage.h"
+#include "col/f2/scan/stream.h"
+#include "col/f2/part_vis.h"
+
+#ifdef SIFT_TESTING
+SiftF2ScanStats sift_f2_scan_stats;
+#endif
+
+static void
+sink_flush(F2TbmSink *k)
+{
+	tbm_add_tuples(k->tbm, k->exact, k->ne, false);
+	tbm_add_tuples(k->tbm, k->maybe, k->nm, true);
+	k->ne = k->nm = 0;
+}
+
+static void
+sink_add(F2TbmSink *k, uint64 tid, bool maybe)
+{
+	sift_f2_tid_set(maybe ? &k->maybe[k->nm++] : &k->exact[k->ne++], tid);
+	if (k->ne == F2_TID_BATCH || k->nm == F2_TID_BATCH)
+		sink_flush(k);
+}
+
+static void
+emit(F2Scan *s, const SiftColSchema *schema, uint64 tid, Verdict v, const ColView *views, int r)
+{
+	bool		maybe = v == V_MAYBE || s->recheck_all;
+
+	if (maybe)
+		F2_STAT(recheck);
+	else
+		F2_STAT(exact);
+	if (s->tbm != NULL)
+		sink_add(s->tbm, tid, maybe);
+	else
+		sift_f2_scan_sort_put(s, schema, tid, maybe, views, r);
+	s->ntids++;
+}
+
+static bool
+has_exceptions(const SiftVariantExcSummary *ex, int nex, uint32 g, int col)
+{
+	for (int i = 0; i < nex; i++)
+		if (ex[i].granule == g && ex[i].col == col)
+			return true;
+	return false;
+}
+
+static int
+tid_cmp(const void *a, const void *b)
+{
+	uint64		x = *(const uint64 *) a,
+				y = *(const uint64 *) b;
+
+	return x < y ? -1 : x > y;
+}
+
+/* The rows of a leaf of a key of a document that hold a value of a JSON type it could not store: its value is the payload of their exception */
+static void
+decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv)
+{
+	const char **xp = NULL;
+	uint32	   *xl = NULL;
+
+	for (int r = 0; r < n; r++)
+		if (cv->isnull[r] && cv->tag[r] >= SIFT_COLTAG_STRING && cv->tag[r] <= SIFT_COLTAG_ARRAY)
+		{
+			if (xp == NULL)
+			{
+				xp = palloc0(n * sizeof(char *));
+				xl = palloc0(n * sizeof(uint32));
+			}
+			xp[r] = sift_granule_exc_payload(v, c, r, &xl[r]);
+		}
+	cv->xpay = xp;
+	cv->xplen = xl;
+}
+
+/* The zones of the leaf of every predicate from granule g0 of the part; NULL for a leaf when the part holds none */
+static const SiftZone **
+pred_zones(Relation rel, const F2Scan *s, SiftF2PartPin *pin, uint32 g0)
+{
+	const SiftZone **z = palloc0(Max(s->npreds, 1) * sizeof(SiftZone *));
+
+	for (int k = 0; k < s->npreds; k++)
+	{
+		const SiftZone *all = sift_f2_pin_zones(rel, pin, s->preds[k].col);
+
+		z[k] = all != NULL ? all + g0 : NULL;
+	}
+	return z;
+}
+
+/* The rows of n of the leaf of a key that have it, from the rows the granule keeps of it */
+static bool *
+decode_keyp(const SiftGranuleView *v, int c, int n)
+{
+	bool	   *kp = palloc0(n);
+
+	for (int off = 0; off < n; off += SIFT_VEC_LEN)
+	{
+		uint64		mask[SIFT_VEC_WORDS];
+		uint16		cnt = Min(SIFT_VEC_LEN, n - off);
+		SiftMaskState st = sift_granule_decode_key_present(v, c, off, cnt, mask);
+
+		for (int i = 0; i < cnt; i++)
+			kp[off + i] = st == SIFT_MASK_ALL_ONE || (st == SIFT_MASK_BITS && ((mask[i >> 6] >> (i & 63)) & 1));
+	}
+	return kp;
+}
+
+/* A column whose few values are listed in its chunk is not decoded for IS NOT NULL: the rows it lists are the ones to look at (at most 1/16 of the granule); -1: no predicate is of that kind */
+static int
+sparse_rows(Relation rel, const F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const SiftGranuleDesc *gd, bool exceptions[], bool *decided, uint16 *rows)
+{
+	uint16		cap = gd != NULL ? gd->nrows / SIFT_NULL_SPARSE_MAX_DIV : 0;
+
+	for (int k = 0; gd != NULL && k < s->npreds; k++)
+	{
+		const SiftColDef *d = &schema->cols[s->preds[k].col];
+		uint16		n;
+
+		if (decided[k] || s->preds[k].op != SIFT_COLOP_NOTNULL || d->parent >= 0 || d->lane > 0 || sift_col_def_is_wide(d) || exceptions[k])
+			continue;
+		n = sift_part_read_nonnull_rows(rel, part, gd, s->preds[k].col, rows, cap);
+		if (n <= cap)
+		{
+			decided[k] = true;
+			return n;
+		}
+	}
+	return -1;
+}
+
+/* What a predicate is expected to pass of its rows and to cost for each, before the granules have shown it: the order of the first granules */
+static void
+prior_of(const SiftColDef *d, const SiftColPred *p, double *pass, double *cost)
+{
+	double		unit = d->store == SIFT_COLS_STR ? 1.5 : 0.8;
+
+	switch (p->op)
+	{
+		case SIFT_COLOP_ISNULL:
+		case SIFT_COLOP_NOTNULL:
+			*pass = 0.5;
+			*cost = 0.1;
+			break;
+		case SIFT_COLOP_EQ:
+			*pass = 0.1;
+			*cost = unit;
+			break;
+		case SIFT_COLOP_IN:
+		case SIFT_COLOP_PREFIX:
+			*pass = 0.2;
+			*cost = unit;
+			break;
+		case SIFT_COLOP_NE:
+		case SIFT_COLOP_NOTIN:
+			*pass = 0.9;
+			*cost = unit;
+			break;
+		case SIFT_COLOP_CONTAINS:
+		case SIFT_COLOP_SUFFIX:
+		case SIFT_COLOP_ICONTAINS:
+			*pass = 0.2;
+			*cost = 15.0;
+			break;
+		default:
+			*pass = 0.5;
+			*cost = unit;
+	}
+}
+
+void
+compile_preds(F2Scan *s, const SiftColSchema *schema)
+{
+	SiftConjunctInit init[SIFT_AFILT_MAX];
+
+	s->cf = MemoryContextAlloc(s->cx, Max(s->npreds, 1) * sizeof(SiftCfiltPred));
+	s->cf_ok = MemoryContextAllocZero(s->cx, Max(s->npreds, 1));
+	for (int k = 0; k < s->npreds; k++)
+	{
+		const SiftColDef *d = &schema->cols[s->preds[k].col];
+
+		s->cf_ok[k] = k < SIFT_AFILT_MAX && sift_cfilt_compile(&s->cf[k], d, &s->preds[k]);
+		if (k < SIFT_AFILT_MAX)
+		{
+			init[k] = (SiftConjunctInit) {.col = s->preds[k].col};
+			prior_of(d, &s->preds[k], &init[k].pass_prior, &init[k].cpu_ns_row);
+		}
+	}
+	sift_lf_init(&s->lf, &sift_f2_granule_filter_ops, NULL, init, Min(s->npreds, SIFT_AFILT_MAX), false);
+	s->compiled = true;
+}
+
+/* False when a predicate that no string of the dictionary of the part passes, on a leaf that no row of the part holds an exception of, rules out every row of the part */
+static bool
+part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const SiftVariantExcSummary *exc, int nexc, PartPreds *pp)
+{
+	const SiftPartDicts *ds = sift_part_dicts(rel, part);
+	bool		meets = true;
+
+	pp->skip = sift_skip_open(rel, part);
+	pp->sq = palloc0(Max(s->npreds, 1) * sizeof(SiftSkipQuery *));
+	pp->cf = palloc(Max(s->npreds, 1) * sizeof(SiftCfiltPred));
+	if (s->npreds > 0)
+		memcpy(pp->cf, s->cf, s->npreds * sizeof(SiftCfiltPred));
+	for (int k = 0; k < s->npreds; k++)
+	{
+		const SiftColPred *p = &s->preds[k];
+		const SiftPartDict *dict = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_STR);
+
+		pp->sq[k] = sift_skip_query(pp->skip, &schema->cols[p->col], p, dict);
+		if (dict != NULL && (SIFT_COLOP_IS_EXT(p->op) || (s->cf_ok[k] && pp->cf[k].str)))
+		{
+			SiftDictPredCache *dc = sift_dict_pred_prepare(p, dict->n, dict->off, dict->bytes);
+			bool		has_exc = false;
+
+			for (int i = 0; i < nexc && !has_exc; i++)
+				has_exc = exc[i].col == p->col;
+			pp->cf[k].part = dc;
+			meets &= dc->n_matches + dc->n_maybe > 0 || has_exc;
+		}
+		else if (s->cf_ok[k] && pp->cf[k].str && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_PREFIX))
+		{
+			const SiftPartDict *fd = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_FSST);
+
+			if (fd != NULL)
+				pp->cf[k].fsst_part = sift_fsst_pred_prepare(fd->fsst, p);
+		}
+	}
+	return meets;
+}
+
+/* What the skipping indexes say of the predicates the zones left, for granule g: false when a predicate rules the granule out */
+static bool
+probe_skips(Relation rel, const F2Scan *s, const SiftPart *part, const PartPreds *pp, const SiftZone *const *zones, uint32 g0, uint32 g, const bool *exceptions, bool *decided)
+{
+	for (int k = 0; k < s->npreds; k++)
+	{
+		SiftSkipVerdict v;
+
+		if (pp->sq[k] == NULL || decided[k] || exceptions[k])
+			continue;
+		F2_STAT(skip_probed);
+		v = sift_skip_probe(rel, part, pp->skip, pp->sq[k], g, zones[k] != NULL && zones[k][g - g0].nnull == 0);
+		if (v == SIFT_SKIP_PRUNE)
+		{
+			F2_STAT(skip_pruned);
+			return false;
+		}
+		if (v == SIFT_SKIP_ALL_MATCH)
+			decided[k] = true;
+	}
+	return true;
+}
+
+/* The chunks the rows left by the chunks that were filtered still need: the columns of the predicates that were not decided, those an index-only scan returns, and the _tid */
+static void
+load_rest(Relation rel, const F2Scan *s, SiftLazyGranule *lg, const bool *decided)
+{
+	int		   *chunks = palloc((s->npreds + s->nret + s->nsink_leaves + 1) * sizeof(int));
+	int			nc = 0;
+
+	chunks[nc++] = SIFT_COL_TID_IDX;
+	for (int k = 0; k < s->npreds; k++)
+		if (!decided[k])
+			chunks[nc++] = s->preds[k].col + 1;
+	for (int j = 0; j < s->nret; j++)
+		chunks[nc++] = s->ret_leaf[j] + 1;
+	for (int j = 0; j < s->nsink_leaves; j++)
+		chunks[nc++] = s->sink_leaves[j] + 1;
+	sift_lazy_granule_load(rel, lg, chunks, nc);
+}
+
+/* Whether granule g is ruled out before it is read: by the tid bridge, by the zones of the predicates or by the skipping indexes; decided says which predicates they found true of every row of it */
+static bool
+granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftZone *const *zones, uint32 g0, uint32 g,
+				  const SiftVariantExcSummary *exc, int nexc, const SiftTidIndexEntry *tix, bool *decided)
+{
+	bool		bridge_miss = sift_f2_scan_bridge_granule_miss(s, g, tix);
+	bool		skip = bridge_miss;
+	bool	   *exceptions = palloc0(Max(s->npreds, 1));
+
+	for (int k = 0; k < s->npreds; k++)
+		exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+	for (int k = 0; k < s->npreds && !skip && zones[k] != NULL; k++)
+	{
+		ZoneVerdict zv = sift_f2_zone_verdict(&schema->cols[s->preds[k].col], &s->preds[k], &zones[k][g - g0], dir != NULL ? dir[g].nrows : 0, exceptions[k]);
+
+		skip = zv == Z_NONE;
+		decided[k] = zv == Z_ALL;
+	}
+	if (s->bridge_seen)
+		(*s->bridge_seen)++;
+	if (bridge_miss && s->bridge_skipped)
+		(*s->bridge_skipped)++;
+	if (skip && !bridge_miss)
+		F2_STAT(zone_skipped);
+	else if (!bridge_miss && !probe_skips(rel, s, part, pp, zones, g0, g, exceptions, decided))
+		skip = true;
+	pfree(exceptions);
+	return skip;
+}
+
+/* What a window of SIFT_PF_WINDOW_GRANULES granules of a span holds before it is read: which are ruled out, and the predicates the zones and the skipping indexes decided in the others */
+typedef struct GranuleWindow
+{
+	bool		skipped[SIFT_PF_WINDOW_GRANULES];
+	bool	   *decided;		/* SIFT_PF_WINDOW_GRANULES rows of npreds */
+} GranuleWindow;
+
+/* The granules of the window that stay are found first, and their pages are asked of the storage together (key range or not); a scan whose filter leaves most granules nothing reads no further ahead than the first window */
+static void
+prune_window(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftGranuleDesc *pf_dir, const SiftZone *const *zones,
+			 uint32 g0, uint32 wb, uint32 wn, uint32 widx, const SiftVariantExcSummary *exc, int nexc, const SiftTidIndexEntry *tix, GranuleWindow *w)
+{
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 window");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	uint32		spans[SIFT_PF_WINDOW_SPANS][2];
+	size_t		np = Max(s->npreds, 1);
+	int			ns;
+
+	memset(w->decided, 0, SIFT_PF_WINDOW_GRANULES * np);
+	for (uint32 i = 0; i < wn; i++)
+		w->skipped[i] = granule_ruled_out(rel, s, schema, part, pp, dir, zones, g0, wb + i, exc, nexc, tix, w->decided + i * np);
+	ns = sift_pf_survivor_spans(w->skipped, wb, wn, spans);
+	if (pf_dir != NULL && ns > 0 && sift_pf_window_wanted(widx, sift_afilt_dense(&s->lf.af)))
+		F2_STAT_ADD(prefetched, sift_f2_prefetch_spans(rel, part, pf_dir, (const uint32 (*)[2]) spans, ns));
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
+}
+
+/* The rows set in the bitmap, into rows (SIFT_POINT_ROWS_MAX of them): their number, or 0 when there are more */
+static int
+active_rows(const uint64 *active, int n, uint16 *rows)
+{
+	int			m = 0;
+
+	for (int w = 0; w < (n + 63) / 64; w++)
+		for (uint64 bits = active[w]; bits != 0; bits &= bits - 1)
+		{
+			if (m == SIFT_POINT_ROWS_MAX)
+				return 0;
+			rows[m++] = w * 64 + __builtin_ctzll(bits);
+		}
+	return m;
+}
+
+/* The granules [g0, g1) of a pinned part, filtered on their chunks for the predicates that can be and decoded for the leaves of the others */
+static void
+scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, uint32 g0, uint32 g1, const SiftPendDelIndex *px, Snapshot snap)
+{
+	const SiftPart *part = pin->part;
+	const SiftGranuleDesc *dir = pin->gdir;
+	const SiftDv *dv = pin->dv;
+	const SiftTidIndexEntry *tix = sift_f2_bridge_needs_tix(px != NULL, s->bridge) ? pin->tidx : NULL;
+	const SiftVariantExcSummary *exc = pp->exc;
+	int			nexc = pp->nexc;
+	const SiftZone **zones = pred_zones(rel, s, pin, g0);
+	MemoryContext gcx = sift_mem_allocset_create(s->cx, "sift f2 granule");
+	size_t		np = Max(s->npreds, 1);
+	GranuleWindow win = {.decided = palloc0((Size) SIFT_PF_WINDOW_GRANULES * np)};
+	uint16		cand[SIFT_GRANULE_ROWS / SIFT_NULL_SPARSE_MAX_DIV + 1];
+
+	for (uint32 g = g0; g < g1; g++)
+	{
+		uint32		wi = (g - g0) % SIFT_PF_WINDOW_GRANULES;
+		MemoryContext old;
+		bool	   *decided,
+				   *exceptions;
+		SiftLazyGranule lg;
+		SiftGranuleView v;
+		ColView    *views;
+		uint64	   *tids;
+		uint64		dead[SIFT_DV_MASK_WORDS],
+					active[SIFT_CFILT_WORDS + 2] = {0},
+					sink_live[SIFT_CFILT_WORDS + 2] = {0},
+					sink_maybe[SIFT_CFILT_WORDS + 2] = {0};
+		const SiftDvGran *dg = dv ? sift_dv_granule(dv, g) : NULL;
+		bool		any_dead = false,
+					few;
+		bool		pend_hit = px != NULL && sift_pdel_idx_may_hit_granule(px, &tix[g]);
+		int			n,
+					ncand,
+					nrows;
+		uint32		live;
+		uint16		arows[SIFT_POINT_ROWS_MAX];
+		const uint16 *rows;
+
+		if (wi == 0)
+			prune_window(rel, s, schema, part, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
+		if (win.skipped[wi])
+			continue;
+		if (s->survey)
+		{
+			s->survey_granules++;
+			continue;
+		}
+		old = MemoryContextSwitchTo(gcx);
+		decided = memcpy(palloc((Size) np), win.decided + (Size) wi * np, np);
+		exceptions = palloc0(np);
+		for (int k = 0; k < s->npreds; k++)
+			exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+		F2_STAT(read);
+		ncand = s->cands != NULL ? sift_point_cands_rows(s->cands, g, cand, lengthof(cand)) : sparse_rows(rel, s, schema, part, dir != NULL ? &dir[g] : NULL, exceptions, decided, cand);
+		if (ncand >= 0)
+			F2_STAT(sparse);
+		sift_lazy_granule_open_desc(rel, part, g, &dir[g], &lg);
+		v = sift_granule_open_part(rel, part, lg.rec, lg.gd.data_len, &lg.gd);
+		n = lg.gd.nrows;
+		if (ncand >= 0 && s->cands != NULL)
+		{
+			const int	chunk = s->cands->pred->col + 1;
+
+			sift_lazy_granule_load(rel, &lg, &chunk, 1);
+			ncand = sift_point_cands_verify(s->cands, &v, cand, ncand);
+			decided[s->cands->pred_idx] = true;
+		}
+		if (ncand >= 0)
+			for (int i = 0; i < ncand; i++)
+				active[cand[i] >> 6] |= UINT64CONST(1) << (cand[i] & 63);
+		else
+		{
+			memset(active, 0xFF, n / 64 * sizeof(uint64));
+			if (n & 63)
+				active[n / 64] = (UINT64CONST(1) << (n & 63)) - 1;
+		}
+		live = s->bridge != NULL && sift_f2_scan_bridge_probe(rel, s, g, &lg, &v, dg, px, pend_hit, snap, active) == 0 ? 0 : sift_f2_filter_chunks(rel, s, g, &lg, &v, pp, exceptions, decided, active);
+		if (live == 0)
+		{
+			F2_STAT(late_skipped);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(gcx);
+			continue;
+		}
+		few = s->heap_decide && s->bridge != NULL && sift_f2_scan_few_rows(active, n);
+		if (!few)
+			load_rest(rel, s, &lg, decided);
+		nrows = active_rows(active, n, arows);
+		rows = nrows > 0 ? arows : NULL;
+		views = palloc0(schema->ncols * sizeof(ColView));
+		for (int k = 0; k < s->npreds && !few; k++)
+		{
+			int			c = s->preds[k].col;
+
+			if (!decided[k] && s->preds[k].op != SIFT_COLOP_KEY_EXISTS && views[c].isnull == NULL)
+				views[c] = sift_f2_decode_view(&schema->cols[c], &v, c, n, false, rows, nrows);
+		}
+		for (int j = 0; j < s->nret && !few; j++)
+			if (views[s->ret_leaf[j]].isnull == NULL)
+				views[s->ret_leaf[j]] = sift_f2_decode_view(&schema->cols[s->ret_leaf[j]], &v, s->ret_leaf[j], n, false, rows, nrows);
+		for (int j = 0; j < s->nsink_leaves && !few; j++)
+		{
+			const int	leaf = s->sink_leaves[j];
+
+			if (views[leaf].isnull == NULL)
+				views[leaf] = sift_f2_decode_view(&schema->cols[leaf], &v, leaf, n, s->sink_dict != NULL && s->sink_dict[j], rows, nrows);
+			if (schema->cols[leaf].path[0] != '\0')
+				decode_payloads(&v, leaf, n, &views[leaf]);
+		}
+		for (int k = 0; k < s->npreds && !few; k++)
+			if (!decided[k] && s->preds[k].op == SIFT_COLOP_KEY_EXISTS && views[s->preds[k].col].keyp == NULL)
+				views[s->preds[k].col].keyp = decode_keyp(&v, s->preds[k].col, n);
+		tids = s->tids_unneeded && !pend_hit ? NULL : palloc(n * sizeof(uint64));
+		if (tids != NULL)
+			sift_granule_tids(&v, tids);
+		pend_hit |= sift_cdi_scan_patch(s, schema, g, views, tids, n, gcx) && px != NULL;
+		if (dg != NULL)
+			any_dead = sift_dv_mask64(dg, snap, dead) > 0;
+		MemoryContextSwitchTo(old);
+		if (s->sink != NULL && s->npreds == 0 && !any_dead && !pend_hit && !few)
+			memcpy(sink_live, active, (n + 63) / 64 * sizeof(uint64));
+		else
+			for (int w = 0; w < (n + 63) / 64; w++)
+				for (uint64 bits = active[w]; bits != 0; bits &= bits - 1)
+				{
+					int			r = w * 64 + __builtin_ctzll(bits);
+					Verdict		verdict;
+
+					if (any_dead && ((dead[r >> 6] >> (r & 63)) & 1))
+						continue;
+					if (pend_hit && sift_pdel_idx_has(px, tids[r]))
+						continue;
+					verdict = few ? sift_f2_heap_verdict(s, decided) : sift_f2_row_verdict(schema, s, views, decided, r);
+					if (s->sink != NULL)
+						sift_f2_sink_verdict(s, verdict, sink_live, sink_maybe, r);
+					else if (verdict != V_NO)
+						emit(s, schema, tids[r], verdict, views, r);
+				}
+		if (s->sink != NULL)
+			s->sink(s->sink_arg, &(SiftF2Batch) {.views = views,.tid = tids,.live = sink_live,.maybe = sink_maybe,.scores = s->bscores,.part = s->part,.n = n});
+		MemoryContextReset(gcx);
+	}
+	MemoryContextDelete(gcx);
+}
+
+/* The granules [lo, hi) of a pinned part: those the point directory names for a predicate when it names some, else all */
+void
+scan_span(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, uint32 lo, uint32 hi, const SiftPendDelIndex *px, Snapshot snap)
+{
+	const SiftPointCands *pc = s->cands;
+
+	if (pc == NULL)
+		scan_granules(rel, s, schema, pin, pp, lo, hi, px, snap);
+	for (uint32 g = pc != NULL ? sift_point_cands_next(pc, lo) : hi; g < hi;)
+	{
+		uint32		end = g + 1;
+
+		while (end < hi && sift_point_cands_next(pc, end) == end)
+			end++;
+		scan_granules(rel, s, schema, pin, pp, g, end, px, snap);
+		g = sift_point_cands_next(pc, end);
+	}
+}
+
+bool
+part_open(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPartitionEntry *e, SiftF2PartPin *pin, Snapshot snap, PartCx *cx)
+{
+	const bool	patched = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0;
+	const SiftPointDir *pd = s->npreds > 0 && !patched ? sift_f2_pin_point(rel, pin) : NULL;
+
+	cx->pin = pin;
+	cx->pp.exc = sift_f2_pin_exc(rel, pin, &cx->pp.nexc);
+	cx->pp.exc = sift_cdi_scan_exceptions(s, rel, schema, e, pin->part, snap, cx->pp.exc, &cx->pp.nexc);
+	if (!part_preds(rel, s, schema, pin->part, cx->pp.exc, cx->pp.nexc, &cx->pp))
+	{
+		F2_STAT(part_pruned);
+		return false;
+	}
+	sift_f2_seed_filter(rel, pin->part, &pin->desc, s->preds, Min(s->npreds, SIFT_AFILT_MAX), &s->lf.af);
+	if (s->npreds > 0 && s->part_sink != NULL)
+		s->part_sink(s->sink_arg, s->part, false, &s->tids_unneeded);
+	s->tids_unneeded &= !patched;
+	s->cands = pd != NULL && sift_point_dir_cands(rel, pin->part, pd, schema, s->preds, s->npreds, s->cx, &cx->pc) ? &cx->pc : NULL;
+	return true;
+}
+
+/* The granules of a pinned part the key ranges and the zones leave */
+static void
+scan_pinned(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px, Snapshot snap)
+{
+	uint32		spans[SIFT_F2_MAX_RANGES][2];
+	int			nspans = sift_f2_granule_spans(rel, pin->part, f, &s->keys, &s->keyplan, spans);
+	PartCx		cx;
+
+	F2_STAT(parts_read);
+	if (nspans == 0 || !part_open(rel, s, schema, e, pin, snap, &cx))
+		return;
+	for (int i = 0; i < nspans; i++)
+		scan_span(rel, s, schema, pin, &cx.pp, spans[i][0], spans[i][1], px, snap);
+	s->cands = NULL;
+}
+
+static void
+scan_part(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px, Snapshot snap)
+{
+	SiftF2PartPin *pin = sift_f2_scan_pin(rel, d, (uint32) e->part_id);
+
+	PG_TRY();
+	{
+		scan_pinned(rel, s, f, schema, e, pin, px, snap);
+	}
+	PG_FINALLY();
+	{
+		sift_f2_pin_release(pin);
+	}
+	PG_END_TRY();
+}
+
+static bool
+part_offered(F2Scan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px)
+{
+	bool		patched = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0;
+	bool		answered;
+
+	s->part = d;
+	s->tids_unneeded = false;
+	answered = s->part_sink != NULL && s->npreds == 0 && s->part_sink(s->sink_arg, d, px == NULL && s->bridge == NULL && d->dv_blk == InvalidBlockNumber && !patched, &s->tids_unneeded);
+	s->tids_unneeded &= !patched;
+	return answered;
+}
+
+void
+scan_slab(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPendDelIndex *px, Snapshot snap)
+{
+	SiftRowBuf *rb = sift_rowbuf_new(&f->spec);
+	BlockNumber *pages;
+	int			npages;
+	ColView    *views = palloc0(schema->ncols * sizeof(ColView));
+	bool	   *decided = palloc0(Max(s->npreds, 1));
+	uint64	   *live,
+			   *maybe,
+			   *bmask;
+
+	sift_l0_slab_read(rel, e->part_id, e->l0_slab_blk, rb, &f->spec, snap, &pages, &npages);
+	for (int c = 0; c < f->ncols; c++)
+		views[c] = (ColView) {.kind = rb->kinds[c],.i = rb->i[c],.f = rb->f[c],.s = (const char *const *) rb->s[c],.slen = rb->slen[c],.isnull = rb->isnull[c],.tag = rb->tag[c],.xpay = (const char *const *) rb->xpay[c],.xplen = rb->xplen[c]};
+	for (int k = 0; k < s->npreds; k++)
+		if (s->preds[k].op == SIFT_COLOP_KEY_EXISTS && views[s->preds[k].col].keyp == NULL)
+		{
+			ColView    *cv = &views[s->preds[k].col];
+			bool	   *kp = palloc(Max(rb->n, 1));
+
+			for (int r = 0; r < rb->n; r++)
+				kp[r] = sift_key_row_present(cv->isnull[r], cv->tag != NULL ? cv->tag[r] : 0);
+			cv->keyp = kp;
+		}
+	bmask = sift_f2_scan_slab_bridge(s, rb->tid, rb->n);
+	live = s->sink != NULL ? palloc0(2 * ((rb->n + 63) / 64 * sizeof(uint64) + sizeof(uint64))) : NULL;
+	maybe = live != NULL ? live + (rb->n + 63) / 64 + 1 : NULL;
+	for (int r = 0; r < rb->n; r++)
+	{
+		Verdict		verdict;
+
+		if ((px != NULL && sift_pdel_idx_has(px, rb->tid[r])) || (bmask != NULL && !((bmask[r >> 6] >> (r & 63)) & 1)))
+			continue;
+		verdict = sift_f2_row_verdict(schema, s, views, decided, r);
+		if (s->sink != NULL)
+			sift_f2_sink_verdict(s, verdict, live, maybe, r);
+		else if (verdict != V_NO)
+			emit(s, schema, rb->tid[r], verdict, views, r);
+	}
+	if (s->sink != NULL && rb->n > 0)
+		s->sink(s->sink_arg, &(SiftF2Batch) {.views = views,.tid = rb->tid,.live = live,.maybe = maybe,.scores = s->bscores,.n = rb->n});
+	sift_rowbuf_free(rb);
+}
+
+static bool
+part_skipped(const F2Scan *s, uint64 gen)
+{
+	return s->nskip_gens > 0 && bsearch(&gen, s->skip_gens, s->nskip_gens, sizeof(uint64), tid_cmp) != NULL;
+}
+
+void
+walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap, const uint64 *staged, int nstaged, bool want_px, F2UnitFn fn, void *arg)
+{
+	const uint8 *lo = s->keys.hull.has_lo ? s->keys.hull.lo : NULL,
+			   *hi = s->keys.hull.has_hi ? s->keys.hull.hi : NULL;
+
+	sift_f2_maint_note_parts(rel, plan->partitions, plan->npartitions, NULL, NULL);
+	for (int i = 0; i < plan->npartitions; i++)
+	{
+		const SiftPartitionEntry *e = &plan->partitions[i];
+		const SiftPlanPartList *list = &plan->partlists[i];
+		SiftPendDelIndex *px = NULL;
+		bool		in_window = sift_f2_entry_meets_time(e, &s->time);
+
+		if (!sift_manifest_overlaps(e->key_lo, e->key_hi, lo, hi))
+			continue;
+		if (!in_window && e->l0_slab_blk == InvalidBlockNumber)
+		{
+			F2_STAT(partitions_time_skipped);
+			F2_STAT_ADD(parts_time_skipped, list->nparts);
+			continue;
+		}
+		if (want_px)
+		{
+			int			npend;
+			uint64	   *pend = sift_f2_pending_dead(rel, e, snap, &npend);
+
+			if (nstaged > 0)
+			{
+				pend = pend != NULL ? repalloc(pend, (npend + nstaged) * sizeof(uint64)) : palloc(nstaged * sizeof(uint64));
+				memcpy(pend + npend, staged, nstaged * sizeof(uint64));
+				npend += nstaged;
+			}
+			px = npend > 0 ? sift_pdel_idx_build(pend, npend) : NULL;
+		}
+		if (e->l0_slab_blk != InvalidBlockNumber && !s->survey)
+			fn(s, rel, &(F2Unit) {e, NULL, px}, arg);
+		for (int p = 0; p < list->nparts; p++)
+		{
+			if (!sift_f2_part_overlaps(&list->parts[p], &s->keys) || part_skipped(s, list->parts[p].part_gen) || sift_f2_scan_bridge_part_skip(s, e, &list->parts[p]))
+				continue;
+			if (!in_window || !sift_f2_part_meets_time(&list->parts[p], &s->time))
+				F2_STAT(parts_time_skipped);
+			else
+				fn(s, rel, &(F2Unit) {e, &list->parts[p], px}, arg);
+		}
+	}
+}
+
+typedef struct Collect
+{
+	const SiftF2Rel *f;
+	const SiftColSchema *schema;
+	Snapshot	snap;
+} Collect;
+
+static void
+collect_unit(F2Scan *s, Relation rel, const F2Unit *u, void *arg)
+{
+	const Collect *c = arg;
+
+	if (u->d == NULL)
+		scan_slab(rel, s, c->f, c->schema, u->e, u->px, c->snap);
+	else if (!part_offered(s, u->e, u->d, u->px))
+		scan_part(rel, s, c->f, c->schema, u->e, u->d, u->px, c->snap);
+}
+
+void
+sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s)
+{
+	Relation	rel = scan->indexRelation;
+	Collect		c = {.f = sift_f2_rel(rel),.schema = sift_col_rel(rel)->schema,.snap = scan->xs_snapshot != NULL ? scan->xs_snapshot : GetActiveSnapshot()};
+	int			nstaged;
+	uint64	   *staged;
+
+	s->collected = true;
+	if (!s->possible)
+		return;
+	if (s->pinned_plan == NULL && !RecoveryInProgress() && sift_stage_has_pending(rel))
+		sift_stage_flush(rel);
+	staged = sift_stage_dead(rel, c.snap, &nstaged);
+	if (!s->compiled)
+		compile_preds(s, c.schema);
+	walk_units(rel, s, s->pinned_plan != NULL ? s->pinned_plan : sift_plan_cache_get(rel, s->cx), c.snap, staged, nstaged, true, collect_unit, &c);
+	if (s->tbm != NULL)
+		sink_flush(s->tbm);
+	else if (s->stream != NULL)
+		sift_f2_stream_finish(s);
+	else if (s->sort != NULL)
+		tuplesort_performsort(s->sort);
+}
+
+/* The attributes an index-only scan returns: those its plan node reads (every one the index can return when no node was seen), and the leaf each is held in */
+static void
+return_columns(IndexScanDesc scan, F2Scan *s)
+{
+	/* check-memory: allow nothing reads the catalog between the fetch and the keys */
+	const SiftColRel *r = sift_col_rel(scan->indexRelation);
+
+	for (int a = 1; scan->xs_want_itup && a <= r->natts; a++)
+		if ((!s->project || bms_is_member(a, s->want)) && sift_col_amcanreturn(scan->indexRelation, a))
+		{
+			s->ret_att[s->nret] = a;
+			s->ret_leaf[s->nret++] = r->first[a];
+		}
+}
+
+static int
+key_leaf(const void *f, int attno, const char *key, int len)
+{
+	return sift_f2_key_leaf(f, attno, key, len);
+}
+
+void
+sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s)
+{
+	/* check-memory: allow nothing reads the catalog between the fetch and the keys */
+	SiftColRel *r = sift_col_rel(scan->indexRelation);
+	SiftF2Rel  *f = sift_f2_rel(scan->indexRelation);
+	ColKeys		ck = {.defs = r->schema->cols,.first = r->first,.idesc = RelationGetDescr(scan->indexRelation),.infix = true,.key_leaf = key_leaf,.key_leaf_arg = f};
+	int			kept = 0;
+
+	s->preds = MemoryContextAlloc(s->cx, Max(scan->numberOfKeys + s->n_ext_preds, 1) * sizeof(SiftColPred));
+	s->npreds = scan->numberOfKeys;
+	s->possible = scan_preds(scan, &ck, s->preds);
+	for (int k = 0; s->possible && k < s->npreds; k++)
+		if (s->preds[k].col >= 0)
+			s->preds[kept++] = s->preds[k];
+	s->npreds = s->possible ? sift_f2_scan_append_ext(s, kept) : s->npreds;
+	s->possible = s->possible && sift_f2_key_set(f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
+	sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
+	s->possible = s->possible && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
+	return_columns(scan, s);
+	s->recheck_all = ck.recheck;
+	s->prepared = true;
+}
+
+IndexScanDesc
+sift_f2_ambeginscan(Relation index, int nkeys, int norderbys)
+{
+	IndexScanDesc scan = RelationGetIndexScan(index, nkeys, norderbys);
+	F2Scan	   *s = palloc0(sizeof(F2Scan));
+	bool		ordered,
+				ordpair;
+
+	sift_quarantine_net(index, sift_meta_peek_format(index).flags);
+	s->hdr.ops = &sift_col_v2_ops;
+	s->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 scan");
+	scan->opaque = s;
+	scan->xs_hitupdesc = s->itupdesc = RelationGetDescr(index);
+	s->project = sift_col_ioss_take(index, &ordered, &ordpair, &s->want);
+	return scan;
+}
+
+void
+sift_f2_amrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys, ScanKey orderbys, int norderbys)
+{
+	F2Scan	   *s = scan->opaque;
+
+	if (nscankeys > 0)
+		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
+	sift_f2_scan_sort_end(s);
+	MemoryContextReset(s->cx);
+	*s = (F2Scan) {.hdr = s->hdr,.cx = s->cx,.itupdesc = s->itupdesc,.want = s->want,.project = s->project};
+}

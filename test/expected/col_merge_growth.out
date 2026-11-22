@@ -5,7 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 SET maintenance_work_mem = '64MB';
 SET statement_timeout = '120s';

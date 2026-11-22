@@ -2,6 +2,7 @@
 -- is priced for those tuples, not for the few the join lets through. With the page cost raised for the table scan, the plan with a column as the key stays the
 -- scan and the one with the addition is the hash join, which runs in a fraction of the time. Every query gives the same rows either way.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 20;
 CREATE TABLE facts (id int, k int, v int) WITH (autovacuum_enabled = false);

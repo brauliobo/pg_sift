@@ -23,10 +23,21 @@ name(const void *a, const void *b) \
 /* -1, 0 or 1: the order of two integers or enums, as fields of a comparator (not for floats: a NaN is neither above nor below) */
 #define SIFT_CMP3(a, b) (((a) > (b)) - ((a) < (b)))
 
+SIFT_DEFINE_CMP(sift_cmp_i32, int32_t)
 SIFT_DEFINE_CMP(sift_cmp_i64, int64_t)
 SIFT_DEFINE_CMP(sift_cmp_u64, uint64_t)
 SIFT_DEFINE_CMP(sift_cmp_u32, uint32_t)
 SIFT_DEFINE_CMP(sift_cmp_f64, double)
+
+/* -1, 0 or 1 in the order of PostgreSQL's float8: a NaN is above every number, +Infinity included, and equals a NaN; -0.0 equals 0.0 */
+static inline int
+sift_f8_cmp(double a, double b)
+{
+	bool		an = a != a,
+				bn = b != b;
+
+	return an || bn ? an - bn : (a > b) - (a < b);
+}
 
 static inline int
 sift_term_cmp(const char *a, int alen, const char *b, int blen)

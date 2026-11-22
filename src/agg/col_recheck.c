@@ -14,7 +14,7 @@
 #include "agg/sel.h"
 #include "col/col.h"
 #include "col/am.h"
-#include "col/enc.h"
+#include "col/v1/enc.h"
 #include "col/pg.h"
 #include "col/shred_pg.h"
 

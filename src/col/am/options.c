@@ -6,42 +6,30 @@
 #include "postgres.h"
 #include "access/reloptions.h"
 #include "utils/varlena.h"
-#include "col/vstore/vstore.h"
 #include "col/dictshm.h"
 #include "col/dsmreg.h"
 #include "col/leafshm.h"
-#include "col/point.h"
+#include "col/v1/point.h"
 #include "col/hll.h"
-#include "col/colspool.h"
-#include "col/gorder.h"
-#include "col/setsum.h"
-#include "col/seg.h"
+#include "col/kll.h"
+#include "col/v1/colspool.h"
+#include "col/v1/gorder.h"
+#include "col/v1/setsum.h"
+#include "col/v1/seg.h"
 #include "col/am/am_int.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 #include "col/scope.h"
+#include "core/f2/io_stream.h"
 #include "core/lane.h"
+#include "core/f2/meta.h"
 #include "core/ops.h"
 
 int			sift_col_unit_rows = 0;
 
 /*
  * col/am/am.c - the sift_col index access method: handler, options, the per-relation leaf list, tuple to row conversion and
- * aminsert. The build is in col/build/build.c, VACUUM and maintenance in col/maint/maint.c, the read side in col/scan/scan.c.
+ * aminsert. The build is in col/v1/build/build.c, VACUUM and maintenance in col/v1/maint/maint.c, the read side in col/v1/scan/scan.c.
  */
-
-/* 5 is the minor of the wide leaves, which a schema takes by itself, and 11 the format of the write buffer of a table with a wide row: the setting is 3, 4, 6, 7, 8, 9, 10, 12, 13, 14 or 15 */
-static bool
-check_col_format_minor(int *newval, void **extra, GucSource source)
-{
-	if (*newval == SIFT_COL_FORMAT_WIDE || *newval == SIFT_COL_FORMAT_WIDE_ROWS)
-	{
-		GUC_check_errdetail("Column format minor %d is written for %s only, whatever the setting.", *newval,
-							*newval == SIFT_COL_FORMAT_WIDE ? "wide leaves" : "the write buffer of a table with a wide row");
-		GUC_check_errhint("Use 3 (pg_sift 3.0), 4 (pg_sift 3.1), 6, 7, 8, 9, 10, 12, 13, 14 or 15.");
-		return false;
-	}
-	return true;
-}
 
 static relopt_kind col_relopt_kind;
 
@@ -150,6 +138,7 @@ SYNTAX_VALIDATOR(order_array_group, order_array_syntax(value))
 SYNTAX_VALIDATOR(order_layout, sift_cgord_layout_parse(value, NULL, NULL, NULL))
 SYNTAX_VALIDATOR(order_array_columns, order_array_syntax(value))
 SYNTAX_VALIDATOR(hll_columns, sift_hll_syntax(value))
+SYNTAX_VALIDATOR(sketches, sift_kll_spec_parse(value, NULL, 0, &(uint32) {0}))
 SYNTAX_VALIDATOR(count_columns, sift_cpoint_syntax(value))
 SYNTAX_VALIDATOR(point_tid_columns, sift_cpoint_syntax(value))
 
@@ -165,7 +154,38 @@ row_key_syntax(const char *value)
 
 SYNTAX_VALIDATOR(track_changes, row_key_syntax(value))
 
-/* 'fk -> parent(key)', or empty or off: the names are resolved where the connection is made (col/conn_decl.c) */
+/* 'column: bloom' and 'column: trigram' items separated by commas, or empty: the columns are resolved where the index is built */
+static const char *
+skip_index_syntax(const char *value)
+{
+	const char *p = value;
+
+	while (*p != '\0')
+	{
+		pfree(sift_cpagg_name_take(&p, ":,"));
+		if (*p++ != ':')
+			return "an item is 'column: bloom' or 'column: trigram'";
+		while (isspace((unsigned char) *p))
+			p++;
+		if (strncmp(p, "bloom", 5) == 0)
+			p += 5;
+		else if (strncmp(p, "trigram", 7) == 0)
+			p += 7;
+		else
+			return "the kind of a skipping index is bloom or trigram";
+		while (isspace((unsigned char) *p))
+			p++;
+		if (*p == ',')
+			p++;
+		else if (*p != '\0')
+			return "the items are separated by commas";
+	}
+	return NULL;
+}
+
+SYNTAX_VALIDATOR(skip_index, skip_index_syntax(value))
+
+/* 'fk -> parent(key)', or empty or off: the names are resolved where the connection is made (col/v1/conn_decl.c) */
 static const char *
 connect_syntax(const char *value)
 {
@@ -207,30 +227,16 @@ projection_syntax(const char *value)
 
 SYNTAX_VALIDATOR(projection, projection_syntax(value))
 
-/* one column, or 'group, key': the names themselves are checked where the options they stand for are */
+/* one to SIFT_KEY_ORDER_MAX columns ('group, key' for two), each ordered as ORDER BY says: the names themselves are checked where the options they stand for are */
 static const char *
 key_order_syntax(const char *value)
 {
-	const char *p = value;
-	char	   *name;
+	SiftKeyOrderItem items[SIFT_KEY_ORDER_MAX];
+	int			n;
 
-	if (value[0] == '\0' || strcmp(value, "off") == 0)
+	if (value[0] == '\0' || strcmp(value, "off") == 0 || strcmp(value, "auto") == 0)
 		return NULL;
-	if (strncmp(value, "auto:", 5) == 0)
-		p += 5;
-	name = sift_cpagg_name_take(&p, ",");
-	if (*name == '\0')
-		return "a column name, or 'group, key'";
-	pfree(name);
-	if (*p == ',')
-	{
-		p++;
-		name = sift_cpagg_name_take(&p, ",");
-		if (*name == '\0' || *p != '\0')
-			return "at most two columns, 'group, key'";
-		pfree(name);
-	}
-	return NULL;
+	return sift_key_order_parse(strncmp(value, "auto:", 5) == 0 ? value + 5 : value, items, &n);
 }
 
 SYNTAX_VALIDATOR(key_order, key_order_syntax(value))
@@ -281,140 +287,20 @@ sift_col_init(void)
 	sift_col_scan_init();
 	sift_cgord_strcmp = gord_strcmp;
 	sift_cseg_probe_init();
-	DefineCustomRealVariable("sift.plan_scale",
-							 "Plans as if the tables with a sift_col index had this many times the pages and rows (1: as they are).",
-							 "The tables without one, and the statistics of the columns, stay as they are. For the planner's choice at a larger size: compare the plans of EXPLAIN and sift.explain_why at 10 and 100 without the data. PostgreSQL up to 18.",
-							 &sift_plan_scale, 1.0, 1.0, 1e6, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_rollup_on_demand",
-							 "A scan that reads units for lack of their rollups asks the background worker to rebuild them.",
-							 "Nothing is written by the query; the next one answers from the rollups. Off: the units stay as they are until a merge or REINDEX.",
-							 &sift_col_rollup_on_demand, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.cluster_advice",
-							 "sift.cluster_advice() recommends a physical order for the tables of the sift_col indexes.",
-							 "Off: it answers 'not recommended' for every index, and CREATE INDEX does not suggest key_cut. The index option cluster_advice switches one index off.",
-							 &sift_cluster_advice, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_rollup_worker",
-							 "A request for a rollup refresh starts the background worker that makes it.",
-							 "Off: the requests wait in the queue until sift.col_rollup_refresh(index) is called.",
-							 &sift_col_rollup_worker, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_auto_connect",
-							 "CREATE INDEX and REINDEX of a sift_col index connect it to the sift_col indexes of the tables its validated foreign keys reference.",
-							 "On: an index without the option connect that holds the column of a validated single column foreign key to an int2, int4 or int8 key of a heap table that has a sift_col index tracking that key "
-							 "is connected to it (the choice is written into the option as 'auto: ..', and a NOTICE names it). "
-							 "Off: only an index with connect = 'auto' or an explicit connect option is connected. The first child connected to a parent index holds the writers of the parent table out from the end of its scan to the end of the statement.",
-							 &sift_col_auto_connect, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_connect_refresh_pct",
-							"Percent of the rows of a parent table whose keys changed since the stamp of a segment of a connected sift_col index from which sift.col_maintenance_due says 'stale connection' and the status asks for a REINDEX.",
-							"A read patches the rows of the changed keys from the join, so a few changed keys cost less than the rewrite of the segment (the found flags it holds are as of its stamp). "
-							"A segment that was never filled (the first child of a parent, whose journal starts after its scan) or whose parent index was rebuilt is stale whatever the share. "
-							"Nothing rewrites the index by itself: reads keep to the join, and REINDEX INDEX CONCURRENTLY fills the flags again.",
-							&sift_col_connect_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_scope_refresh_pct",
-							"Percent of the pairs of the scope relations that changed since the stamp of the scope segments of a sift_col index from which sift.col_maintenance_due says 'stale scope' and the status asks for a REINDEX.",
-							"A read patches the members whose pairs changed from the join, so a few changed members cost less than the rewrite of the scope segments. "
-							"Scope segments never filled, or stamped under a journal a relation has since lost, are stale whatever the share. "
-							"Reads patch the changed members from the join until a REINDEX INDEX CONCURRENTLY; sift.col_connect_refresh_pct is the same rule for the connected indexes.",
-							&sift_col_scope_refresh_pct, 10, 1, 100, PGC_SUSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
 	DefineCustomBoolVariable("sift.agg_scope",
 							 "A scan of an index with the option scope answers the rows of a scope key (a join to its scope relation, or IN, EXISTS over it, by that key) from the scope segments of the index.",
 							 "Off: the planner does not recognise the scope forms, and a scan that carries one reads the entity path (the join as written).",
 							 &sift_agg_scope, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.scope_max_multiplicity",
-							 "The most scope entries for each fact row (entries of a scope over the rows of the table) that CREATE INDEX of a scope index accepts: the limit of a declaration that states no max_multiplicity(n), which the index records.",
-							 "The scope segments hold a row once for each scope key of its member, so the index grows by about 17 percent of the table and its indexes for each entry a row has (its writes cost about 16 percent more for each) "
-							 "while a read gains 2 to 9 times (a total up to 22 times) over the join: past about 3 entries a row the growth costs more than the reads gain. A scope above the limit is refused with the figure, "
-							 "and the join answers it. CREATE INDEX writes the limit it accepted the scope under into the option scope (max_multiplicity(n)), so REINDEX, a restore and pg_upgrade check that one, not the setting of their session.",
-							 &sift_scope_max_multiplicity, 3.0, 1.0, 1000000.0, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_auto_merge",
-							 "Keeps the sift_col indexes answerable after churn: a background worker vacuums the heap table, then seals the write buffer and merges the small segments the policy picks. It never rewrites an index: that is REINDEX INDEX CONCURRENTLY.",
-							 "Rows on a page the visibility map does not call all-visible (any page with an UPDATE or DELETE since the last VACUUM) are checked one by one in the heap, "
-							 "and a unit holding a dead row answers from its rows; the VACUUM sets the map, and the merges after it make the units answer from their pre-aggregates again. "
-							 "A backend that inserts a row version, or reads many rows in the heap, looks at the statistics of the table once per sift.maintenance_naptime and starts the worker "
-							 "when the rows changed since the last VACUUM are a thousandth of the table (50 rows at least, 100,000 at most). It vacuums as autovacuum does (its reloptions, cost delay, skipped when the table is locked), "
-							 "at most once per five sift.maintenance_naptime (ten times the average VACUUM of the table on PostgreSQL 18), and not a table with autovacuum_enabled = false. "
-							 "Its merges sleep as sift.maintenance_cost_delay says and are skipped when the maintenance lock is held. Needs sift.async_maintenance. "
-							 "sift.col_maintenance_status says, for the reasons only a rewrite of the whole index serves (dirty units, fragmented units, a stale connection or scope), that a REINDEX is recommended; "
-							 "sift.col_maintain(index) is that rewrite, in the session that calls it. "
-							 "A DELETE alone calls nothing and waits for a scan or an insert; a scan of a partitioned table does not ask, an insert into a partition does. "
-							 "Set it for the server or the database: the worker reads no session setting.",
-							 &sift_col_auto_merge, true, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.col_auto_merge_fragmentation",
-							 "Units listed per superblock they cover from which sift.col_maintenance_due says 'fragmented units' for a sift_col index.",
-							 "Each promotion of the write buffer adds a segment over the superblocks the churn touched.",
-							 &sift_col_auto_merge_fragmentation, 2.0, 1.1, 1000.0, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.col_auto_merge_buffer_pct",
-							 "Percent of its rows the write buffer of a sift_col index holds above which sift.col_maintenance_due says 'write buffer rows'.",
-							 "The rows of the buffer are read as one in-memory unit per superblock they touch, on every query, until a promotion.",
-							 &sift_col_auto_merge_buffer_pct, 1.0, 0.01, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomRealVariable("sift.col_auto_merge_wal_pct",
-							 "Percent of max_wal_size that one pass of the merge of the overlays of a sift_col index may write.",
-							 "A pass of sift.col_maintain(index) that merges the small segments left over the partitions of a key_cut index takes an eighth of max_wal_size at most, and this percent of it, "
-							 "so that it forces no checkpoint of its own; the next pass takes the rest. 0 does not limit the pass to a share.",
-							 &sift_col_auto_merge_wal_pct, 5.0, 0.0, 100.0, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_auto_merge_pass_mb",
-							"Megabytes of overlapping runs one pass of sift.col_maintain(index) rewrites in a sift_col index.",
-							"A build leaves runs of rows sorted by the key_cut key, each as large as a partition and overlapping its neighbours in the key; the rewrite cuts them by key, "
-							"a window of the runs that overlap at a time, and stops when a pass has written this much. The next sift.col_maintain(index) goes on, "
-							"so the WAL and the I/O of the rewrite are spread over passes (the index stays valid and equal between them). 0: one pass does all of it.",
-							&sift_col_auto_merge_pass_mb, 1024, 0, MAX_KILOBYTES / 1024, PGC_SUSET, GUC_UNIT_MB, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_auto_merge_partition_kb",
-							"Size of the segments the merges of a sift_col index write, so that sift.col_maintain(index) rewrites only the ones the churn touched; 0 rewrites the whole index into one.",
-							"A step rewrites the partition with most dirty units, or the overlays the promotions left over the partitions, "
-							"and holds the maintenance lock and needs the free space of one partition, not of the index. A segment under half of this size is an overlay; "
-							"the merge tiers leave the partitions alone. An index under half of it is rewritten whole. 0: partitions of sift.vacuum_rewrite_limit for an index over it, or of a third of maintenance_work_mem where that is less, which is what the writer of a segment holds in memory.",
-							&sift_col_auto_merge_partition_kb, 0, 0, MAX_KILOBYTES, PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_unit_floor",
-							"Rows per unit below which the rows of a sift_col promotion or overlay merge are cut by TID range, not one unit per superblock; 0 keeps a unit per superblock.",
-							"Churn puts a few dozen rows in each of the superblocks it touches, and a unit costs a scan about as much as a thousand rows however few it holds, so a promotion that reaches "
-							"16 superblocks or more with under half this many rows each is written as units of this many rows in TID order, and a merge that stays that sparse does the same. "
-							"A merge that reaches this many rows per superblock cuts by superblock again. Needs a table of 16 superblocks (4,096 pages) or more.",
-							&sift_col_unit_floor, 2048, 0, 32768, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_wbuf_ref",
-							 "A row of a heap table with a sift_col index that tracks changes goes to the write buffer as a 16 byte reference to its heap tuple, not as its values.",
-							 "The backend that inserts the row keeps its values in shared memory (1 MB segments made on demand, 128 MB for the server at most, 88 bytes a row of a 13 column table), and the reader of the buffer "
-							 "takes them from there. A server that starts again, a standby and a promoted standby have none: the first reader builds them from the heap, once for the buffer. A row that finds no room "
-							 "is written with its values (sift.col_arena_status shows how many). Records written while it was on stay references after it is turned off; a buffer that holds one is column format minor 44. "
-							 "An index without track_changes, a speculative insertion and a table that is not a heap keep the values.",
-							 &sift_col_wbuf_ref, true, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_wbuf_key_range",
-							 "The pages of the write buffers of a key_cut index with an integer key hold the range of the keys of their rows, so that a read of some keys skips the pages that hold none of them.",
-							 "A buffer opened with it on is column format minor 55: a release before 5.1 refuses the index, so upgrade every server that reads it (a standby too) before the primary opens one, or set it off first: off writes buffers of minor 51, which 5.0 reads. "
-							 "The buffers opened while it is off, and one that was open when the release was installed, keep the pages they have. A read of keys decodes the rows of the pages that meet them until it has decoded "
-							 "as many rows as the buffer holds, then keeps the whole buffer as the reads of a buffer without ranges do.",
-							 &sift_col_wbuf_key_range, true, PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_unit_rows",
-							"The rows a key-cut unit aims at, 0 for the rows of 256 average heap pages.",
-							"A smaller unit prunes finer and costs more directory per row; it applies to the units written from now on. It also gets several units out of a small table.",
-							&sift_col_unit_rows, 0, 0, 32768, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.col_value_store",
-							 "CREATE INDEX and REINDEX of a sift_col index share the strings of a column with the other indexes of the table that hold it, in a shared value store.",
-							 "On: a text, varchar or uuid leaf that another sift_col index of the table holds with the same key order, and whose sharing spares at least 5 bytes a row and a quarter of the leaf, keeps its strings in the store "
-							 "of its column (column format minor 46, which 4.3 and older refuse). Off: the build keeps the strings in its segments and makes no store, and a REINDEX of a member takes its strings back; "
-							 "change tracking and every other structure are written as usual (column format minor 44 at the most), and the setting changes no existing index.",
-							 &sift_col_value_store, true, PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_dict_shared_cache_kb",
-							"Shared memory, for all backends together, that keeps the parsed dictionaries of sift_col segments (128 kB or more each), so that a new backend or a pooled connection reads a dictionary another backend parsed in place instead of parsing it (0: off, each backend parses and keeps its own, up to the dict_cache_kb of the index).",
-							"The ring of records is allocated, at the size of this setting, by the first backend that keeps a dictionary after the server starts, and its size is recorded for the other backends: a later change turns the use of it on and off (0), never its size, which changes at the next start of the server. "
-							"The memory is in addition to shared_buffers, is taken whole when the ring is made, and with dynamic_shared_memory_type = posix comes from /dev/shm (at most a quarter of it is used, with a message in the log) and counts in the shared memory of the container. "
-							"A record is about 21 bytes for each distinct value, and 16 to 32 more with its hash table; a record over half of the ring is not kept.",
-							&sift_col_dict_shared_cache_kb, 65536, 0, 4194304,
-							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.col_leaf_cache_kb",
-							"Shared memory, for all backends together, that keeps what the zones of the units of a sift_col index say to the planner (a record for each leaf and a sample of the unit zones), so that a new backend does not read them all (0: off).",
-							"The table is allocated, at the size of this setting, by the first backend that plans a statement over a sift_col index after the server starts; a later change turns the use of it on and off (0), and a size no table has yet is a table of its own (the tables of other sizes stay until the server restarts). A record is about 33 kB for each integer leaf and 0.4 kB for the others; a record that does not fit is not kept, and the oldest goes when the table is full.",
-							&sift_col_leaf_cache_kb, 16384, 0, 262144,
-							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
+#endif
 	sift_col_build_define_gucs();
-	DefineCustomIntVariable("sift.col_format_minor",
-							"Column format minor of the segments written (15 by default; an option with a newer layout, such as key_cut or point_tid_columns, stamps its own higher minor): 6 keeps them readable by pg_sift 3.2, 4 by 3.1, 3 by 3.0.",
-							"Segments already written keep their minor; a 3.2 library refuses the ones above 6. A segment of a schema with wide leaves is minor 5 at least, and the minor 6 "
-							"of the complete kinds is written only for a schema with jsonb paths, from rows whose kinds are known. The minor 7 is written only for an index with the option cube_minmax, the minor 8 only for a sift_table with a date or timestamp column, the minor 9 only for an index with the option rollup_dims, the minor 10 only for one with the option key_columns, the minor 12 only for one with the option superunit, the minor 13 only for one with the option order_columns, the minor 14 only for one with a dictionary of 1,024 strings or more (the option dict_lookup), the minor 15 only for one whose key_columns keep a key list or a bitmap. Those above 15 are written by the options that need them, and a library older than the release that added the layout refuses the segment.",
-							&sift_col_format_minor, SIFT_COL_FORMAT_MINOR, SIFT_COL_FORMAT_MIN_READ, SIFT_COL_FORMAT_MINOR,
-							PGC_SUSET, 0, check_col_format_minor, NULL, NULL);
 #ifdef SIFT_TESTING
 	DefineCustomIntVariable("sift.test_col_rollup_panic",
 							"Testing: the rollup refresh worker PANICs after it wrote the new segment, before it replaces the old one (1 = yes). Set it in postgresql.conf: the worker reads no session setting.",
 							NULL, &sift_test_col_rollup_panic, 0, 0, 1, PGC_SIGHUP, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_io_read_stream",
+							 "Testing: off, the blocks of a part are read one ReadBuffer after another in the order a ReadStream would ask for them (the answers are the same).",
+							 NULL, &sift_test_io_read_stream, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_open_all",
 							 "Testing: a scan opens every segment of the index, not only those of the partitions that may hold the keys its conditions confine it to (the answer is the same).",
 							 NULL, &sift_test_col_open_all, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -519,10 +405,6 @@ sift_col_init(void)
 	DefineCustomBoolVariable("sift.test_col_point_unrooted",
 							 "Testing: the header and records of the point directories precede the tables (as before column format minor 37), not follow them.",
 							 NULL, &sift_test_col_point_unrooted, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomStringVariable("sift.test_vstore_columns", "testing: columns whose values the indexes built next share through a value store",
-							NULL, &sift_test_vstore_columns, "", PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_vstore_gc_kb", "Testing: the size (kB) of a shared value store from which VACUUM looks for codes that no index names.",
-							NULL, &sift_vstore_gc_kb, 8192, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_workers",
 							"Testing: parallel workers the last sift_col build of this session launched.",
 							NULL, &sift_test_col_workers, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
@@ -577,8 +459,14 @@ sift_col_init(void)
 	DefineCustomIntVariable("sift.test_col_segment_kb",
 							"Testing: kB of memory a sift_col build's segment writer holds before the segment is cut (0 = by maintenance_work_mem; a merge honors it too, but the one that ends a parallel build).",
 							NULL, &sift_test_col_segment_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_partition_kb",
+							"Testing: kB a partition of the rewrite and the merge of a sift_col index is cut at (0 = by maintenance_work_mem and sift.vacuum_rewrite_limit).",
+							NULL, &sift_test_col_partition_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
+	DefineCustomIntVariable("sift.test_col_pass_kb",
+							"Testing: kB of overlapping runs a pass of their rewrite takes (0 = sixteen times maintenance_work_mem).",
+							NULL, &sift_test_col_pass_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomIntVariable("sift.test_col_spill_run_kb",
-							"Testing: kB of memory a run of a sift_col build by key ranges may take (0 = 768 MB).",
+							"Testing: kB of memory a run of a sift_col build by key ranges may take (0 = its share of maintenance_work_mem).",
 							NULL, &sift_test_col_spill_run_kb, 0, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE | GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_col_build_runs_overlap",
 							 "Testing: a sift_col build with key_cut writes the runs of the table's order, which overlap in the key, to leave a rewrite to do.",
@@ -711,6 +599,12 @@ sift_col_init(void)
 	add_string_reloption(col_relopt_kind, "hll_columns",
 						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "sketches",
+						 "the sketches every part of a format major 2 index written from now on keeps of its columns: 'kll(latency, size(k=400)); hll(user_id)' (default none). kll keeps a quantile sketch of an int2, int4, int8, float4, float8, numeric, date, timestamp or timestamptz column (k from 64 to 1024, default 200; sift.approx_percentile and sift.approx_quantiles read one sketch a part, not the rows, when 1% or less of the rows are dead, pending or in no sketch); hll is the list of hll_columns",
+						 "", sift_col_validate_sketches, ShareUpdateExclusiveLock);
+	add_string_reloption(col_relopt_kind, "skip_index",
+						 "the columns of a format major 2 index that get a skipping index for high cardinality, written with every part from now on: 'column: bloom' (a Bloom filter of the values of each granule, for equality and IN) or 'column: trigram' (a filter of the three byte windows of a string, for LIKE and ILIKE), separated by commas (default none). The exact summaries of the columns with few distinct values are always written",
+						 "", sift_col_validate_skip_index, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_columns",
 						 "Deprecated and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working (point_tid_columns lists the heap addresses of the rows of a column)",
 						 "", NULL, ShareUpdateExclusiveLock);
@@ -772,6 +666,8 @@ static const relopt_parse_elt col_relopt_tab[] = {
 	{"order_layout", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_layout)},
 	{"order_array_group", RELOPT_TYPE_STRING, offsetof(SiftColOptions, order_array_group)},
 	{"hll_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, hll_columns)},
+	{"sketches", RELOPT_TYPE_STRING, offsetof(SiftColOptions, sketches)},
+	{"skip_index", RELOPT_TYPE_STRING, offsetof(SiftColOptions, skip_index)},
 	{"key_cut", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_cut)},
 	{"key_cut_rows", RELOPT_TYPE_INT, offsetof(SiftColOptions, key_cut_rows)},
 	{"key_columns", RELOPT_TYPE_STRING, offsetof(SiftColOptions, key_columns)},
@@ -788,6 +684,7 @@ static const relopt_parse_elt col_relopt_tab[] = {
  * The columns key_order stands for are appended to the options, where the accessors of the options it fills read them while those are not set. 'a, b' is a
  * group and a key (the group of the order arrays; key_cut is left to the build, which cuts by the group where the units read by an equality on it are many), 'a' is
  * a key (key_cut and order_array_columns; the point directory is left out, it makes the index 71 to 95% larger for lists of the key alone). The columns are trimmed: 'a,b' and 'a , b' are the same option.
+ * A column may be followed by ASC or DESC and NULLS FIRST or NULLS LAST (format major 2): ko_flags holds how each is ordered, the NULLs of a DESC column first unless it says otherwise.
  */
 static void
 key_order_expand(SiftColOptions **op)
@@ -795,41 +692,36 @@ key_order_expand(SiftColOptions **op)
 	SiftColOptions *o = *op;
 	const char *spec = (const char *) o + o->key_order;
 	bool		autochosen = strncmp(spec, "auto:", 5) == 0;
-	const char *p = autochosen ? spec + 5 : spec;
-	char	   *first,
-			   *last;
-	bool		two;
-	size_t		base = VARSIZE(o);
+	SiftKeyOrderItem items[SIFT_KEY_ORDER_MAX];
+	int			n;
+	size_t		base = VARSIZE(o),
+				need = 0;
 	char	   *dst;
 
-	if (strcmp(spec, "off") == 0)
+	if (strcmp(spec, "off") == 0 || strcmp(spec, "auto") == 0)
 		return;
-	first = last = sift_cpagg_name_take(&p, ",");
-	two = *p == ',';
-	if (two)
-	{
-		p++;
-		last = sift_cpagg_name_take(&p, ",");
-	}
-	o = repalloc(o, base + strlen(first) + strlen(last) + 4);
+	if (sift_key_order_parse(autochosen ? spec + 5 : spec, items, &n) != NULL)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid value for key_order: \"%s\"", spec)));
+	for (int i = 0; i < n; i++)
+		need += strlen(items[i].name) + 1;
+	o = repalloc(o, base + need + 1);
 	dst = (char *) o + base;
-	o->ko_lead = base;
-	dst += sprintf(dst, "%s", first) + 1;
-	if (two)
+	o->ko_n = n;
+	for (int i = 0; i < n; i++)
 	{
-		o->ko_last = dst - (char *) o;
-		dst += sprintf(dst, "%s", last) + 1;
+		o->ko_name[i] = dst - (char *) o;
+		o->ko_flags[i] = items[i].flags;
+		dst += sprintf(dst, "%s", items[i].name) + 1;
 	}
-	else
-		o->ko_last = base;
-	o->ko_group = two ? o->ko_lead : 0;
-	o->ko_key = two || autochosen ? 0 : o->ko_lead;
+	o->ko_lead = o->ko_name[0];
+	o->ko_last = o->ko_name[n - 1];
+	o->ko_group = n == 2 ? o->ko_lead : 0;
+	o->ko_key = n == 2 || autochosen ? 0 : o->ko_lead;
 	o->ko_auto = autochosen;
 	SET_VARSIZE(o, dst - (char *) o);
 	*op = o;
-	if (two)
-		pfree(last);
-	pfree(first);
+	for (int i = 0; i < n; i++)
+		pfree(items[i].name);
 }
 
 /* The older name counts when the new one is empty (the strings live in the same bytea, so the offset is shared) */

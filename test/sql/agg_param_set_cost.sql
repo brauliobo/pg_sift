@@ -1,4 +1,4 @@
--- A generic plan does not see the array of `key = ANY($1)`: its scan is priced for sift.agg_param_set_size elements, as the paths that fetch the rows
+-- A generic plan does not see the array of `key = ANY($1)`: its scan is priced for the param_set_elems limit elements, as the paths that fetch the rows
 -- one key at a time are charged them. That covers the rows the scan selects and the table the scan clears to test the list, a byte table over the range of
 -- the values (a list that is not known is taken over the whole range of the column). A scan priced for the 10 elements PostgreSQL assumes and no table took the
 -- generic plan at 256 keys over a range of a million, where the index plan is several times faster; the plan cache then keeps the custom plans.

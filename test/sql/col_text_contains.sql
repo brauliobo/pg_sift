@@ -98,9 +98,9 @@ VACUUM ct;
 SELECT ct_check('vacuumed', 'ct', 1);
 
 -- a dictionary that the cache cannot keep is read in blocks for every test, after the parse that found out
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS lowered;
 SELECT ct_check('not kept', 'ct', 5, ARRAY['%item/%', '%shop17.%', '%ab%']);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 
 -- every level of the kernels returns the same rows
 SET sift.simd = scalar;

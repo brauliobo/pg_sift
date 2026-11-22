@@ -1,10 +1,10 @@
--- sift.col_wbuf_ref: the values of a buffered row are kept in shared memory by the backend that inserted it (col/wbuf/arena.c), and every read of the buffer takes them from there: the heap is
+-- sift.col_wbuf_ref: the values of a buffered row are kept in shared memory by the backend that inserted it (col/v1/wbuf/arena.c), and every read of the buffer takes them from there: the heap is
 -- not read for them (the arena counts the rows it built from the heap: none here). The slot of a buffer is given back when the buffer is promoted. A row that finds no slot is written with its
 -- values, as a buffer without the setting does, and a buffer of both kinds of record gives the answers of the heap, before and after the promotion.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET check_function_bodies = off;
 
@@ -33,7 +33,6 @@ CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark
 
 CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 CREATE INDEX a_ix ON a USING sift_col (id, g, v);
-SET sift.col_wbuf_ref = on;
 CALL arena_mark();
 
 -- the rows go to the arena and are read from it, by the engine and by the promotion

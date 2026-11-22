@@ -1,1 +1,1 @@
-col_date_bounds	src/col/amscan/amscan.c:col_getbitmap src/col/amscan/amscan.c:col_tomb_keep src/col/amscan/amscan.c:sift_col_amgetbitmap src/col/kern_avx2.c:range_u64_avx2 src/col/seg/gorder_group.c:sift_cseg_gorder_tids_group_range
+col_date_bounds	src/col/v1/amscan/amscan.c:col_getbitmap src/col/v1/amscan/amscan.c:col_tomb_keep src/col/v1/amscan/amscan.c:sift_col_amgetbitmap src/col/v1/seg/gorder_group.c:sift_cseg_gorder_tids_group_range

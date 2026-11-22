@@ -2,6 +2,7 @@
 -- statement runs again as PostgreSQL plans it, whose sort spills. NULLs and empty strings are in the data; the rows must be the same at 64 kB and at 128 MB of
 -- work_mem, grouped or not, as the scan and as the normal plan (outcome); `scan` says whether the plan is the scan's.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
 

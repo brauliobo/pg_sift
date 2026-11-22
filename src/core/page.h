@@ -22,7 +22,7 @@
 #define SIFT_ACTIVE_LOCK_BLKNO	2	/* LockPage() target serializing active segment changes */
 #define SIFT_WORKER_LOCK_BLKNO	3	/* LockPage() target held by the maintenance worker of the index */
 #define SIFT_LOAD_LOCK_BLKNO	5	/* LockPage() target: a load whose segments are written and not yet in the directory shares it, the orphan sweep tries for it exclusive */
-#define SIFT_VSTORE_MERGE_LOCK_BLKNO	6	/* LockPage() target of a shared value store: the one session that merges its runs, tried and skipped when held (the members of a lock group share it: page locks do not conflict inside a group) */
+#define SIFT_KEYSTORE_MERGE_LOCK_BLKNO	6	/* LockPage() target of a shared value store: the one session that merges its runs, tried and skipped when held (the members of a lock group share it: page locks do not conflict inside a group) */
 
 typedef enum SiftPageType
 {
@@ -36,14 +36,34 @@ typedef enum SiftPageType
 	SIFT_PT_FREELIST,			/* free extent records */
 	SIFT_PT_FREE,				/* unused, reclaimable */
 	SIFT_PT_DIRROOT,			/* root of a chained directory (SiftChainRootData): gen = the directory version that wrote it */
-	SIFT_PT_DIRLEAF				/* run of directory entries of a chained directory (SiftChainLeafData): gen = the directory version that wrote it */
+	SIFT_PT_DIRLEAF,			/* run of directory entries of a chained directory (SiftChainLeafData): gen = the directory version that wrote it */
+	/* Format major 2 (core/meta.h): the page types of the partitioned manifest, the extent allocator and the mutation layer; META, DATA and FREE are shared with the above */
+	SIFT_PT_PARTDIR = 32,		/* level-1 partition directory node (core/manifest.h) */
+	SIFT_PT_PARTLIST,			/* level-2 part list of one partition (core/manifest.h) */
+	SIFT_PT_PARTHDR,			/* part header with its section directory (col/part_format.h) */
+	SIFT_PT_EXTLIST,			/* indirect extent list of a part (core/extent.h) */
+	SIFT_PT_DELVEC,				/* deletion vector (col/delvec.h) */
+	SIFT_PT_L0_SLAB,			/* OLTP micro-batches of one partition (col/l0_slab.h) */
+	SIFT_PT_PEND_DEL,			/* pending deletes of one partition (col/pend_del.h) */
+	SIFT_PT_FSM_META,			/* allocator root (core/fsm.h) */
+	SIFT_PT_FSM_PAGE,			/* allocator extent list (core/fsm.h) */
+	SIFT_PT_SCOPEDIR,			/* copy on write directory of the scope summary parts (core/manifest.h) */
+	SIFT_PT_COL_DELTA,			/* reserved */
+	SIFT_PT_PACKED_PART,		/* sealed container of up to 16 tiny inline parts (col/part_format.h) */
+	SIFT_PT_PROJDIR,			/* chained copy on write directory of the secondary projections of a relation ("PRJD", core/f2/proj.h) */
+	SIFT_PT_TIERDIR				/* chained copy on write directory of the remote parts of a relation and their time to live ("TRDR", core/f2/tier.h) */
 } SiftPageType;
+
+StaticAssertDecl(SIFT_PT_SCOPEDIR == 41, "SIFT_PT_SCOPEDIR is page type 41");
+StaticAssertDecl(SIFT_PT_PACKED_PART == 43, "SIFT_PT_PACKED_PART is page type 43");
+StaticAssertDecl(SIFT_PT_PROJDIR == 44, "SIFT_PT_PROJDIR is page type 44");
+StaticAssertDecl(SIFT_PT_TIERDIR == 45, "SIFT_PT_TIERDIR is page type 45");
 
 typedef struct SiftPageOpaqueData
 {
 	uint16		type;			/* SiftPageType */
 	uint16		flags;
-	uint32		reserved;
+	uint32		part_id;		/* owning partition of a format major 2 page, 0 for the pages that belong to none (meta, allocator) and for all of format major 1 */
 	uint64		gen;			/* owning segment generation; 0 for meta/dir */
 } SiftPageOpaqueData;
 
@@ -130,9 +150,9 @@ typedef struct SiftMetaPageData
 	char		analyzer_config[SIFT_TSCONFIG_BYTES];
 	/* The floor of the stamps of a scope index: for each scope its journals' stamps (lineage 0: none), the oldest journal position its scope entries and its rows with no entry are exact as of; pd_lower covers it once one is set */
 	SiftMetaStamp scope_floor[SIFT_META_STAMPS];
-	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/scope_paid.c); zero again in the switch that moves the floor */
+	/* What the reads of the server paid, for each scope, on top of the filled read, for the pairs changed since its floor, in instructions (col/v1/scope_paid.c); zero again in the switch that moves the floor */
 	uint64		scope_paid[SIFT_META_SCOPES];
-	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (col/wbuf/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks, and the scans of the index */
+	/* What the reads of the server paid for what maintenance would spare them, for the segment generation each was paid under (core/reads.c): the open write buffer's rows decoded, the instructions of the tombstone log's marks, and the scans of the index */
 	SiftMetaReads reads[SIFT_META_READS];
 	/* What the workers did last (sift.workers, sift.col_space): when and how long the last background step that ended well ran and which job it was (core/worker.h), the failures counted for good (the backoff counts the ones in a row), and the last shrink of the file with why the next one is blocked */
 	TimestampTz maint_ok_at;	/* 0: none */
@@ -169,8 +189,8 @@ typedef enum SiftSegKind
 	SIFT_SEG_IMMUTABLE = 1,
 	SIFT_SEG_WBUF_OPEN,
 	SIFT_SEG_WBUF_SEALED,
-	SIFT_SEG_TOMB,				/* the tombstone log of a heap sift_col index (core/tomb.h): a lane chain that is no write buffer */
-	SIFT_SEG_VALRUN				/* a run of values of a shared value store (col/vstore/vstore_run.c): reserved = epoch, sum_dl = first code, ndocs = values */
+	SIFT_SEG_TOMB,				/* the tombstone log of a heap sift_col index (core/v1_col/tomb.h): a lane chain that is no write buffer */
+	SIFT_SEG_VALRUN				/* a run of values of a scope key store (col/keystore/keystore_run.c): reserved = epoch, sum_dl = first code, ndocs = values */
 } SiftSegKind;
 
 #define SIFT_SEG_DIRTY	0x0001	/* some liveness bit cleared */
@@ -183,11 +203,11 @@ extern PGDLLIMPORT bool sift_test_no_roots;	/* testing: write as before the flag
 #define SIFT_SEG_KEYED	0x0800	/* a column segment whose units are cut by the range of the declared key; a segment written as column format minor 17 has no flag and is keyed too (sift_cseg_keyed) */
 #define SIFT_SEG_BYTID	0x0010	/* a keyed column segment cut by TID range (the floor's units, sift.col_unit_floor): its units follow each other in the order of the TIDs. No format minor: a reader that does not know the flag reads it as keyed */
 #define SIFT_SEG_BYKEY	0x0020	/* a keyed column segment cut by the range of a key: its units follow each other in the order of that key and each spans the heap. Neither flag: a keyed segment written before them, whose cut is the index's as far as anyone knows. Without SIFT_SEG_CUTREC the leaves are not recorded */
-#define SIFT_SEG_CUTREC	0x0080	/* with SIFT_SEG_BYKEY: the segment records the leaves it is cut by after its schema, before its stamps (col/seg_int.h SEG_CUT_MAGIC). No format minor: a reader that does not know the flag parses the schema from its start and the stamps from the end of the section, and never looks at the record */
+#define SIFT_SEG_CUTREC	0x0080	/* with SIFT_SEG_BYKEY: the segment records the leaves it is cut by after its schema, before its stamps (col/v1/seg_int.h SEG_CUT_MAGIC). No format minor: a reader that does not know the flag parses the schema from its start and the stamps from the end of the section, and never looks at the record */
 #define SIFT_SEG_LSTATS	0x1000	/* a column segment with the leaf statistics block after its last section; no format minor: a reader that does not know the flag does not look there */
-#define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/seg/net.c); no format minor: a reader that does not know the flag does not look there */
+#define SIFT_SEG_NET	0x2000	/* a column segment with the pre-aggregates of its dirty units net of their dead rows after the leaf statistics, in whole pages at the end of the stream, the last 16 bytes of which say where they start (col/v1/seg/net.c); no format minor: a reader that does not know the flag does not look there */
 #define SIFT_SEG_XSTAMP	0x4000	/* a segment of a heap sift_col index with track_changes whose entries were all inserted by transactions that committed before the xid in reserved (sift_seg_xstamp): a snapshot whose xmin is not below it sees every inserter as committed and finished; not with SIFT_SEG_VERS */
-#define SIFT_SEG_XPENDING	0x0040	/* like SIFT_SEG_XSTAMP, but some of the transactions that inserted an entry had not finished when the segment was written: reserved = the xid before which all the others committed, pad = the latest of those that had not, sum_dl = a bit for each of them (col/xstamp.h). Reads treat the segment as unstamped; maintenance turns it into a SIFT_SEG_XSTAMP segment once they have all committed. Never with SIFT_SEG_SCOPE (pad is its ordinal) */
+#define SIFT_SEG_XPENDING	0x0040	/* like SIFT_SEG_XSTAMP, but some of the transactions that inserted an entry had not finished when the segment was written: reserved = the xid before which all the others committed, pad = the latest of those that had not, sum_dl = a bit for each of them (col/v1/xstamp.h). Reads treat the segment as unstamped; maintenance turns it into a SIFT_SEG_XSTAMP segment once they have all committed. Never with SIFT_SEG_SCOPE (pad is its ordinal) */
 #define SIFT_SEG_UNIT	0x8000	/* a one-unit generation written by the unit_rewrite method of 4.1 and earlier, which is gone: merge, rewrite and the overlay still keep its allocation boundary */
 #define SIFT_SEG_VERS	0x0400	/* a column segment with unfrozen rows: reserved = the smallest xid (docs/COL-TAM.md section 7); cleared when the rows are frozen */
 
@@ -200,7 +220,7 @@ typedef struct SiftSegEntry
 	BlockNumber header_blk;		/* SEGHEADER or WBUFHEADER */
 	uint32		sb_lo;			/* SB range covered (inclusive) */
 	uint32		sb_hi;
-	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
+	uint32		reserved;		/* immutable: the owner's tag; write buffer of sift_col: the leaves that hold an overflow value (col/v1/wbuf.h); sum_dl of such a buffer: those that hold a JSON null */
 	uint32		pad;			/* 0: the alignment hole of ndocs, named so that an initializer zeroes it and a copy carries it into the page; a scope segment (SIFT_SEG_SCOPE) holds the ordinal of its scope, one with SIFT_SEG_XPENDING its latest unfinished inserter */
 	uint64		ndocs;
 	uint64		sum_dl;

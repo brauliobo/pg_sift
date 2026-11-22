@@ -5,7 +5,6 @@
 -- find the dead versions).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.table_inline_promote = on;
 CREATE TABLE t (id int, k int, grp int, v int, note text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE h (id int, k int, grp int, v int, note text) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT g, (g * 7919) % 100000, g % 97, g, 'n' || g FROM generate_series(1, 100000) g;

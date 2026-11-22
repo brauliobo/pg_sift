@@ -7,13 +7,13 @@
 # setting, reloads the relcache entries (tests cache_discard, verify_relcache). The --valgrind
 # variant adds USE_VALGRIND, which makes the memory contexts tell valgrind about every chunk (src/backend/utils/mmgr/memdebug.c).
 #
-#   scripts/pg-assert.sh [--valgrind] [--inject] [--major 17|18]     builds when missing and prints the prefix on stdout (make pg-assert)
+#   scripts/pg-assert.sh [--valgrind] [--inject] [--major 17|18|19]     builds when missing and prints the prefix on stdout (make pg-assert)
 #
 # --inject: a prefix of its own (<version>-assert-inject) built with --enable-injection-points, with the injection_points test module installed (the TAP tests that stop a
 # worker at a named point of its code, no sleeps: test/t/*inject*)
 #
 # ICU is built in (the locale tests, the "en-x-icu" collation and the nondeterministic ones need it; the prefix name has it so that a build in use keeps its own).
-# The pinned minors are the ones of the distribution server this was written against (18.6; 17.11 for the 17 branch), the tarball is
+# The pinned minors are the ones of the distribution server this was written against (18.6; 17.11 for the 17 branch, 19.0 for the 19 one), the tarball is
 # checked against the sha256 below. Prefix: $SIFT_PG_CACHE (default ${XDG_CACHE_HOME:-~/.cache}/sift/pg)/<version>-assert[-valgrind]; the
 # tarballs are kept in $SIFT_PG_CACHE/src. A build takes about five minutes (nice, 4 jobs); it is not repeated while the recipe (version,
 # flags) is the same, and concurrent callers wait for each other. The prefix has the pgxs tree, pg_regress, the TAP perl modules, the
@@ -21,8 +21,8 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
-declare -A VERSION=([18]=18.6 [17]=17.11)
-declare -A SHA256=([18.6]=555610c24d53e4316da5b7d3fc25c279d96856d5e0e23ee308c328c5fa881d9f [17.11]=dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979)
+declare -A VERSION=([19]=19.0 [18]=18.6 [17]=17.11)
+declare -A SHA256=([18.6]=555610c24d53e4316da5b7d3fc25c279d96856d5e0e23ee308c328c5fa881d9f [17.11]=dd27f2b3c59e73ed14aa3324901242bf69a032a6347805f274e6260322d42979 [19.0]=a89fd70efbad6a08c7dbed8d4872e3af30170d9e5ca9dc7906523be95b4e692d)
 CONTRIB="amcheck pg_walinspect pg_buffercache"
 
 VALGRIND=${PG_ASSERT_VALGRIND:-}

@@ -255,6 +255,8 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 RESET sift.test_conn_no_horizon;
 INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100 FROM generate_series(30001, 36000) i;
 SELECT sift.col_maintenance_due('facts_col', true) AS due, advice('facts_col') <> '-' AS advised, same_rows() AS same_rows;
+NOTICE:  sift: the aggregate scan outgrew its memory; the statement ran as PostgreSQL plans it
+HINT:  ANALYZE the table so that the planner knows how many groups it has.
  due | advised | same_rows 
 -----+---------+-----------
      | f       | t

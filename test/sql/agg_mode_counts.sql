@@ -2,6 +2,7 @@
 -- (the first value in the order of the call wins, so DESC takes the last), NULLs, groups with no value, a FILTER, collations, a NaN, one group,
 -- and when the counts outgrow work_mem and the values go to the sort (case 16: the early rows hold the winning counts, the late rows only add distinct values).
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 
 SET max_parallel_workers_per_gather = 0;
@@ -59,8 +60,11 @@ SET work_mem = '64kB';
 SELECT n, mo_same(q) AS same FROM mo_q WHERE n IN (1, 4, 10, 11, 14, 15, 16) ORDER BY n;
 SET sift.enable_agg = on;
 SET plan_cache_mode = force_generic_plan;
+SET work_mem = '64MB';
 PREPARE mo_spill AS SELECT count(a) FROM (SELECT id % 6000 AS k, mode() WITHIN GROUP (ORDER BY t) AS a FROM m GROUP BY id % 6000) q;
 EXECUTE mo_spill;
+SET work_mem = '64kB';
+SET hash_mem_multiplier = 64;
 SET client_min_messages = debug1;
 EXECUTE mo_spill;
 RESET client_min_messages;

@@ -18,7 +18,7 @@ BEGIN
 	RETURN n;
 END $$;
 CREATE FUNCTION via_seq(q text) RETURNS bigint LANGUAGE sql
-	SET sift.enable_count = off SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off
+	SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off
 	RETURN (SELECT count(*) FROM c WHERE body @@> q);
 CREATE FUNCTION same(q text) RETURNS text LANGUAGE sql
 	RETURN via_scan(q) || CASE WHEN via_scan(q) = via_seq(q) THEN ' ok' ELSE ' MISMATCH ' || via_seq(q) END;
@@ -67,9 +67,9 @@ SELECT sift_plan('SELECT grp, count(*) FROM c WHERE body @@> ''fox'' GROUP BY gr
 SELECT sift_plan('SELECT count(*) FROM c WHERE body @@> ''fox'' AND grp = 1');
 SELECT count(*) FROM c WHERE body @@> 'fox' AND grp = 1;
 SELECT count(*), count(id) FROM c WHERE body @@> 'fox';
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 SELECT sift_plan('SELECT count(*) FROM c WHERE body @@> ''fox''') !~ 'SiftCount' AS other_plan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 
 -- vacuum clears the deleted documents' bits (dirty superblocks, pages back in the visibility map), and
 -- inserted or updated rows put pages out of it again next to them

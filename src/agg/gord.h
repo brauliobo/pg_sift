@@ -1,5 +1,5 @@
 /*
- * agg/gord.h - the merge of the global order of a leaf (col/gorder.h) over the sources of a scan: the entries (key, heap address) of the stored segments and the
+ * agg/gord.h - the merge of the global order of a leaf (col/v1/gorder.h) over the sources of a scan: the entries (key, heap address) of the stored segments and the
  * rows of the write buffers, in the order of an ORDER BY on the leaf. The entries are of rows that may have died or changed since: whoever reads them has the
  * heap say which are live and what they hold.
  */
@@ -11,7 +11,7 @@
 #include "storage/itemptr.h"
 
 #include "agg/colsrc.h"
-#include "col/gorder.h"
+#include "col/v1/gorder.h"
 
 typedef struct SiftGOrd SiftGOrd;
 

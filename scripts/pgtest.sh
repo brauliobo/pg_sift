@@ -10,10 +10,11 @@
 #   scripts/pgtest.sh psql [...] psql into the test database
 #   scripts/pgtest.sh env        print exports for libpq clients (eval "$(...)")
 #   scripts/pgtest.sh conf       print the postgresql.conf lines that make sift loadable
-#   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, pg_regress runs just those,
-#                                in one database per call (contrib_regression_<first>) and an output directory $SIFT_TMP/regress/<t> per test (parallel
-#                                runs); a test that leaves objects behind fails (scripts/leftovers.sql, exceptions in scripts/leftovers.allow)
-#                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) one at a time on a quiet cluster: a session
+#   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, ONE pg_regress run for all of them in one fresh database
+#                                (contrib_regression_<first>, the output in $SIFT_TMP/regress/<first>), then one leak check of the server log and one look at what the run left in the
+#                                database (scripts/leftovers.sql, exceptions in scripts/leftovers.allow). A run with a diff, a leak or a leftover is cut in halves, each in a fresh
+#                                database, until the failing tests are named (SIFT_REGRESS_DIR: another directory of sql/ and expected/, for scripts/test-regress-batch.sh)
+#                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) on a quiet cluster: a session
 #                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
 #   scripts/pgtest.sh fresh [t...]    regress with a NEW backend for every statement outside a transaction (scripts/fresh-psql.py, test/fresh/README.md)
 #   scripts/pgtest.sh leftovers [t...]  each test alone in a database of its own; lists what it left behind (scripts/leftovers.sql)
@@ -34,6 +35,8 @@
 # functions; SIFT_TESTING= builds the release library.
 #
 # VULKAN=1 install builds the opt-in Vulkan backend (docs/GPU.md).
+# SIFT_PREBUILT_ROOT: a root a build job staged (scripts/ci-build.sh, flavor in its .flavor): install compiles nothing, and before 18 copies it into the server's directories.
+# SIFT_STAGE=1 stages the install under SIFT_ROOT on any major (the build job). SIFT_MAKE_JOBS: the compiler processes of install (default: the cores).
 # SANITIZE=1 install builds with ASan+UBSan; SIFT_HARDEN=pkg|init|1 builds with the hardening flags of scripts/harden.mk
 # (docs/SAFETY.md; SIFT_POINTER_OVERFLOW=1 adds the pointer-wrap trap); install runs make clean whenever SANITIZE, SIFT_TESTING or SIFT_HARDEN changes. start then preloads the sanitizer runtimes
 # into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
@@ -50,7 +53,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 PORT=${SIFT_PORT:-56100}
 DB=${SIFT_DB:-sift}
-ROOT=${SIFT_ROOT:-$TMP/root}
+ROOT=${SIFT_PREBUILT_ROOT:-${SIFT_ROOT:-$TMP/root}}
 export SIFT_ROOT=$ROOT
 DATA=$TMP/data
 SOCK=$TMP/sock
@@ -69,15 +72,23 @@ FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HA
 
 DLSUFFIX=.so; [[ $(uname) != Darwin ]] || DLSUFFIX=.dylib   # the suffix of a PostgreSQL module
 
+# stage_prebuilt: SIFT_PREBUILT_ROOT is a root a build job staged (scripts/ci-build.sh): nothing is compiled here. Before 18 the files go into the server's own directories
+stage_prebuilt() {
+	[[ -f $ROOT/.flavor ]] || { echo "pgtest: SIFT_PREBUILT_ROOT=$ROOT holds no staged build (.flavor is missing)" >&2; return 1; }
+	echo "pgtest: install: prebuilt root (flavor $(<"$ROOT/.flavor"))" >&2
+	(( PG_MAJOR >= 18 )) || tar -C "$ROOT" --exclude=./.flavor --exclude=./.checks -cf - . | ${SIFT_SUDO:-} tar -C / --no-overwrite-dir -xf -
+}
+
 install() {
+	[[ -z ${SIFT_PREBUILT_ROOT:-} ]] || { stage_prebuilt; return; }
 	echo "pgtest: install: $([[ -n $SIFT_TESTING ]] && echo 'test library' || echo 'release library') (flavor ${FLAVOR% })" >&2   # SIFT_TESTING set and empty is the release library: an inherited empty value builds it
 	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
 	# on the make command line: sudo resets the environment, which would install another flavor
 	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1} ${VULKAN:+VULKAN=1})
-	nice make -C "$REPO" -j4 "${flavor[@]}"
+	nice make -C "$REPO" -j"${SIFT_MAKE_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}" "${flavor[@]}"
 	"$REPO/scripts/check-undefined.sh" "$REPO/pg_sift$DLSUFFIX"
 	echo "$FLAVOR" >"$REPO/.build-flavor"
-	if (( PG_MAJOR >= 18 )); then
+	if (( PG_MAJOR >= 18 )) || [[ -n ${SIFT_STAGE:-} ]]; then
 		make -C "$REPO" "${flavor[@]}" DESTDIR="$ROOT" install >/dev/null
 	else
 		${SIFT_SUDO:-} make -C "$REPO" "${flavor[@]}" install >/dev/null
@@ -91,7 +102,8 @@ install() {
 # The clusters run with the default sift.on_corruption (quarantine), so that every write of every test goes through the guard of the quarantine; a test that asserts a corruption error says SET sift.on_corruption = error
 # the build chooser (sift.col_build_source = auto) reads the index a REINDEX replaces and says so in a notice with the seconds it took: the clusters of the regression tests read the heap, as
 # before 5.1, so that no expected output carries those seconds; the tests of the chooser say SET sift.col_build_source = auto
-TREE_CONF="sift.col_build_source = heap${SIFT_TESTING:+$'\n'sift.test_scope_patch = on}"
+# CREATE INDEX builds format major 2: the tests keep the indexes they create in format major 1 (the testing build only); the tests of format major 2 say SET sift.test_create_format1 = off
+TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_create_format1 = on}"
 # SIFT_MEMCENSUS=KB|on: every statement of every test that grows memory by KB (on: 1024) writes a SIFTMEM line to the server log
 [[ -z ${SIFT_TESTING:-} || -z ${SIFT_MEMCENSUS:-} ]] || TREE_CONF+=$'\n'"sift.test_memctx_census = $([[ $SIFT_MEMCENSUS == on ]] && echo 1024 || echo "$SIFT_MEMCENSUS")"
 tree_options() { local l; [[ -z $TREE_CONF ]] || while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }
@@ -103,11 +115,7 @@ conf() {
 	# clusters run without it as without autovacuum, and the tests of the pass switch it on
 	# CREATE EXTENSION ends with a notice that the library is not preloaded (sql/5.0/24-install-notices.sql); no expected output carries it. Not a sift. setting: any release accepts it
 	echo "pg_sift.install_notice = off"
-	echo "sift.table_auto_defrag = off"
-	# likewise the worker that vacuums the tables of sift_col indexes and merges their segments (on by default)
-	echo "sift.col_auto_merge = off"
-	# and the merge of the overlays that sift.col_maintain makes takes the share of max_wal_size it needs, not a twentieth of it
-	echo "sift.col_auto_merge_wal_pct = 0"
+	echo "sift.async_maintenance = off"
 	# the tests of the scope index patch the members that changed whatever the patch costs; the test of the price says SET sift.test_scope_patch = off
 	[[ ${1:-} == common || -z $TREE_CONF ]] || echo "$TREE_CONF"
 	# a server with LLVM compiles every plan above jit_above_cost, and the tests that force a plan with page costs of 10000 reach it: the normal plan of 1,200
@@ -206,33 +214,61 @@ clean() {
 	psql -U postgres -d postgres -X -qAt -c CHECKPOINT >/dev/null   # the WAL of the job goes with its databases (no recycling: a checkpoint removes it; scripts/ci.sh counts the cluster in the scratch of the lane)
 }
 
-# regress [TEST...]: without names, make installcheck (the Makefile's database and test list). With names, one pg_regress run per test in one
-# database for all, each followed by a look at what it left in the database (scripts/leftovers.sql): a test that leaves something fails the run,
-# unless scripts/leftovers.allow gives the object and the reason, and the next test starts in a fresh database so that the one that left it is
-# the only failure and not also those that find it there
+# regress [TEST...]: without names, make installcheck (the Makefile's database and test list). With names, ONE pg_regress run for all of them in one
+# fresh database (contrib_regression_<first>, the output in $TMP/regress/<first>), then ONE look at the server log (leak_after) and ONE at what the
+# run left in the database (scripts/leftovers.sql; scripts/leftovers.allow gives the objects a test may leave, and why). A run that finds a diff, a leak or a
+# leftover is cut in halves, each in a fresh database, until the single tests that fail are named: the green path pays the checks once for the batch,
+# and the failure path says which test is guilty, whatever an earlier test of the batch left behind.
 regress() {
 	if (( ! $# )); then make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres; return; fi
-	local db=contrib_regression_$1 t out rc=0 reuse=() before= now left
-	for t in "$@"; do
-		out=$TMP/regress/$t
-		leak_before "regress-$t" "$TMP/postgres.log"
-		if ! pg_regress "$out" "$db" "${reuse[@]}" "$t"; then
-			rc=1; cat "$out/regression.diffs" 2>/dev/null; reuse=() before=
-			leak_after "regress-$t" "$DATA" "$db" || true
-			continue
-		fi
-		leak_after "regress-$t" "$DATA" "$db" || { rc=1; reuse=() before=; echo "not ok - $t leaks memory or resources"; continue; }
-		now=$(db_left "$db")
-		left=$({ grep -vxFf <(echo "$before") <<<"$now" || true; } | { grep -vEf <(sed -n "s/^$t: \(.*[^ ]\) *# .*/\1/p" "$REPO/scripts/leftovers.allow") || true; })
-		if [[ -n $left ]]; then
-			rc=1; reuse=() before=
-			sed "s/^/LEFTOVER $t: /" <<<"$left"
-			echo "not ok - $t leaves objects behind: end it with the DROPs of what it creates (the extension last), or give the object and the reason in scripts/leftovers.allow"
-		else
-			reuse=(--use-existing) before=$now
-		fi
-	done
-	return $rc
+	batch_run "$@" && return 0
+	if (( $# == 1 )); then batch_report "$1"; return 1; fi
+	echo "pgtest: regress: the batch of $# tests starting at $1 failed; cutting it in halves to name the tests" >&2
+	local report; report=$(<"$TMP/regress/$1.report")
+	bisect_batch "$report" "$@" || true
+	return 1
+}
+
+# batch_run TEST...: the batch in one pg_regress run and its checks; the findings (diffs, leaks, leftovers) go to $TMP/regress/<first>.report, not to the terminal
+# (REGRESS_QUIET=1 also keeps the progress of pg_regress back, for the runs that cut a failed batch). 0 when every test passed and left nothing
+batch_run() {
+	local first=$1 db=contrib_regression_$1 out=$TMP/regress/$1 report pats now left rc=0
+	report=$TMP/regress/$first.report
+	mkdir -p "$TMP/regress"; : >"$report"
+	leak_before "regress-$first" "$TMP/postgres.log"
+	if ! if [[ -n ${REGRESS_QUIET:-} ]]; then pg_regress "$out" "$db" "$@" >/dev/null; else pg_regress "$out" "$db" "$@"; fi; then
+		rc=1; cat "$out/regression.diffs" >>"$report" 2>/dev/null
+	fi
+	leak_after "regress-$first" "$DATA" "$db" 2>>"$report" || { rc=1; echo "not ok - leaks memory or resources" >>"$report"; }
+	(( rc == 0 )) || return 1
+	pats=$(IFS='|'; echo "$*")
+	now=$(db_left "$db")
+	left=$(grep -vEf <(sed -n "s/^\($pats\): \(.*[^ ]\) *# .*/\2/p" "$REPO/scripts/leftovers.allow") <<<"$now" || true)
+	[[ -z $left ]] && return 0
+	{ sed "s/^/LEFTOVER: /" <<<"$left"; echo "not ok - leaves objects behind: end each test with the DROPs of what it creates (the extension last), or give the object and the reason in scripts/leftovers.allow"; } >>"$report"
+	return 1
+}
+
+# batch_report TEST: what the failed run of the single TEST found, named after it
+batch_report() { sed "s/^LEFTOVER: /LEFTOVER $1: /; s/^not ok - /not ok - $1 /" "$TMP/regress/$1.report"; }
+
+# bisect_batch REPORT TEST...: REPORT is what the batch of TEST... found. Runs each half alone; 1 as soon as a half fails (the tests that fail alone are reported by name),
+# else the tests only fail together: REPORT is all there is to say
+bisect_batch() {
+	local report=$1 half rc=0
+	shift
+	half=$(( $# / 2 ))
+	cut_batch "${@:1:half}" || rc=1
+	cut_batch "${@:half+1}" || rc=1
+	(( rc )) || { echo "pgtest: regress: no half of the batch fails alone, so it is the tests together; what the batch found:" >&2; echo "$report"; }
+	return 1
+}
+cut_batch() {
+	local report
+	REGRESS_QUIET=1 batch_run "$@" && return 0
+	if (( $# == 1 )); then batch_report "$1"; return 1; fi
+	report=$(<"$TMP/regress/$1.report")
+	bisect_batch "$report" "$@"
 }
 
 # db_left DB: what scripts/leftovers.sql finds in DB (the objects of the database, not those of the cluster)
@@ -251,7 +287,7 @@ pg_regress() {
 			FRESH_PSQL=$(command -v psql)
 			export FRESH_PSQL FRESH_STATS=$out/fresh-stats PATH=$TMP/fresh-bin:$PATH
 		fi
-		PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="$REPO/test" --outputdir="$out" --bindir= --dbname="$db" "$@"
+		PGUSER=postgres "$(dirname "$(pg_config --pgxs)")/../test/regress/pg_regress" --inputdir="${SIFT_REGRESS_DIR:-$REPO/test}" --outputdir="$out" --bindir= --dbname="$db" "$@"
 	)
 }
 

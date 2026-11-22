@@ -7,13 +7,17 @@ include $(SRC)/areas.mk
 LIB      = $(SRC)/bm25/bitmap.c $(SRC)/bm25/blob.c $(SRC)/bm25/bitmap_scalar.c $(SRC)/bm25/bitmap_avx2.c $(SRC)/bm25/bitmap_avx512.c $(SRC)/bm25/bitmap_neon.c
 HDR      = $(SRC)/bm25/bitmap.h $(SRC)/bm25/bitmap_int.h $(SRC)/bm25/bitmap_kern.h
 OUT     ?= /tmp/sift-codec
-OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o
+OBJ      = $(patsubst $(SRC)/%.c,$(OUT)/obj/%.o,$(LIB)) $(OUT)/obj/stub.o $(OUT)/obj/cpu_stub.o
 
 all: $(OUT)/test $(OUT)/bench $(OUT)/corpus $(OUT)/stats
 
 $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OUT)/obj/cpu_stub.o: cpu_stub.c $(HDR)
+	@mkdir -p $(@D)
+	$(CC) $(CFLAGS) $(SIFT_INC) -c -o $@ $<
 
 $(OUT)/obj/stub.o: stub.c $(HDR)
 	@mkdir -p $(@D)

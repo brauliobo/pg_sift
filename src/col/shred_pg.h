@@ -65,6 +65,9 @@ typedef struct SiftShredRecheck
 extern SiftShredRecheck *sift_shred_recheck_create(MemoryContext mcxt, const SiftShredSpec *spec);
 /* sift_shred_container with the recheck: rc->err is reset by the caller (sift_shred_recheck_begin) */
 extern void sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc);
+
+/* SiftShred.pay_fn of a jsonb walk: the value (a JsonbValue) as the bytes of a jsonb datum */
+extern const char *sift_shred_pay_jsonb(const void *ev, uint32 *len);
 extern void sift_shred_recheck_begin(SiftShredRecheck *rc);
 /* column col is read as the cast of the member of key to the type cast */
 extern void sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid cast);

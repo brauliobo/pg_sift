@@ -73,7 +73,7 @@ typedef struct ComboSt
 	PriorVal	pv[SIFT_AGG_MAX_CLEAVES];
 	Id64		id64[SIFT_AGG_MAX_CLEAVES];	/* 64-bit leaves (numeric, int8, timestamps, floats): the ids of their distinct values */
 	Datum		unit[SIFT_AGG_MAX_CLEAVES];	/* numeric leaves: 10^-scale with that many digits, a stored value is the integer times it */
-	MemoryContext cxt;			/* the cache: entries, outputs, values and ids of the leaves; reset when it passes sift.agg_combo_cache */
+	MemoryContext cxt;			/* the cache: entries, outputs, values and ids of the leaves; reset when it holds its share of hash memory */
 	bool		resettable;		/* no join: nothing outside the cache holds its ids but the key maps of the dictionaries (cmap_forget) */
 	MemoryContext icxt;			/* the interned values of its dictionary leaves: the cache when it is resettable, else the scan */
 	bool		by_id;			/* one 64-bit leaf, no join: the entry of a tuple is the id of its value, there is no table of entries */

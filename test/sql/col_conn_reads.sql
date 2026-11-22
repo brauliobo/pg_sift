@@ -5,8 +5,8 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 CREATE FUNCTION reads(q text, OUT same boolean, OUT scans text, OUT leaf_reads int, OUT heap_fetches int, OUT proofs int)
 LANGUAGE plpgsql AS $$

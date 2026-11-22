@@ -344,7 +344,8 @@ dense_store(DenseLoad *d, uint32 key, uint32 cls)
 
 		while (cap <= key)
 			cap *= 2;
-		d->lut = d->lut ? repalloc_huge(d->lut, (Size) cap * sizeof(uint16)) : MemoryContextAllocHuge(d->cxt, (Size) cap * sizeof(uint16));
+		cap = Min(cap, d->limit);
+		d->lut = d->lut ? repalloc(d->lut, (Size) cap * sizeof(uint16)) : MemoryContextAlloc(d->cxt, (Size) cap * sizeof(uint16));
 		memset(d->lut + d->cap, 0, (Size) (cap - d->cap) * sizeof(uint16));
 		d->cap = cap;
 	}
@@ -407,6 +408,13 @@ dense_leaves_ok(const ColNeed *need, int key, const CompCol *comp, int ncomp)
 	return need[key].lf->vtype == SCV_I32 && need[key].lf->typid == INT4OID;
 }
 
+/* the keys the array of classes may span: the lookup budget (half of work_mem) in two-byte entries, and what one allocation takes */
+static uint32
+dense_key_limit(void)
+{
+	return (uint32) Min((int64) agg_lookup_limit_kb() * 1024 / sizeof(uint16), (int64) (MaxAllocSize / sizeof(uint16)));
+}
+
 /*
  * The index of the table (open, the caller closes it) that holds the key and the columns of the join as integer leaves (map_load_dense), else NULL. bound[c], when
  * given, is how many values the index says column c of the join takes (its range and its NULLs: the index knows them, whatever the statistics of the table or of an
@@ -440,7 +448,7 @@ map_dense_index(Relation rel, const SiftAggJoin *j, double *bound, Relation *ix2
 		sift_colsrc_stats(second, &st2);
 	/* the classes are an array over the keys: a table whose keys span more than the lookup budget (a sparse key) is read as rows */
 	if ((need[key].ixn ? st2 : st).min[need[key].lf->id] < 0 ||
-		!dense_span_ok((need[key].ixn ? st2 : st).max[need[key].lf->id] + 1, st.nrows, (double) sift_agg_lookup_max_kb * 1024 / sizeof(uint16)))
+		!dense_span_ok((need[key].ixn ? st2 : st).max[need[key].lf->id] + 1, st.nrows, (double) dense_key_limit()))
 	{
 		lookcol_close(ix, second);
 		return NULL;
@@ -482,7 +490,7 @@ map_load_dense(AggExec *ex, MapTab *m, const SiftAggJoin *j, const SiftAggCombo 
 				ncomp;
 	Relation	ix,
 				ix2;
-	DenseLoad	d = {.cxt = m->cxt,.lastsb = PG_UINT32_MAX,.limit = (uint32) Min((int64) sift_agg_lookup_max_kb * 1024 / sizeof(uint16), PG_INT32_MAX)};
+	DenseLoad	d = {.cxt = m->cxt,.lastsb = PG_UINT32_MAX,.limit = dense_key_limit()};
 	TupleDesc	desc = RelationGetDescr(rel);
 	TupleTableSlot *slot;
 	bool		ok;

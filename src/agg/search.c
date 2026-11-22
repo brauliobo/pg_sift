@@ -27,6 +27,7 @@
 #include "bm25/estimate.h"
 #include "bm25/eval.h"
 #include "bm25/planner.h"
+#include "agg/plan/safety.h"
 #include "agg/search.h"
 #include "core/quarantine.h"
 
@@ -157,7 +158,7 @@ sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexo
 				   *arms = NIL;
 		Node	   *orq = NULL;
 
-		if (ii->relam != sift_catalog()->am || ii->ncolumns != 1 || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
+		if (ii->relam != sift_catalog()->am || ii->ncolumns != 1 || !agg_index_complete(ii))
 			continue;
 		foreach_ptr(Node, q, *quals)
 		{
@@ -271,9 +272,6 @@ int			sift_search_chunk_sbs = 32;
 void
 sift_search_init(void)
 {
-	DefineCustomIntVariable("sift.search_chunk_sbs", "Superblocks whose BM25 matches an aggregate scan holds at a time.",
-							"A page of matches takes 64 bytes a superblock; a smaller chunk asks the match set more often.",
-							&sift_search_chunk_sbs, 32, 1, 1 << 20, PGC_USERSET, 0, NULL, NULL, NULL);
 }
 
 struct SiftSearch;

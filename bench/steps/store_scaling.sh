@@ -5,7 +5,7 @@
 # refused (steps/store.py merge --keep).
 #   bench/bench store all --sizes 25000,100000 --cold-runs 0 --restart-runs 0 --update-sizes none
 #   bench/bench store all --sizes 10000000 --runs 3 --warmups 1 --cold-runs 0 --restart-runs 0 --update-sizes none
-#   bench/bench store scaling bench/results/store-scaling.json bench/out/run-A/store.json bench/out/run-B/store.json
+#   bench/bench store scaling docs/results/store-scaling.json bench/out/run-A/store.json bench/out/run-B/store.json
 set -euo pipefail
 STEPS=$(cd "$(dirname "$0")" && pwd)
 (( $# >= 2 )) || { sed -n '2,3p' "$0" | sed 's/^# //'; exit 2; }

@@ -10,10 +10,10 @@ CREATE FUNCTION wu_rows(n int) RETURNS void LANGUAGE sql AS $$
   INSERT INTO wu (k, kind_id, amount) SELECT 1 + (random() * 399)::int, 1 + (random() * 6)::int, round((random() * 100)::numeric, 2) FROM generate_series(1, n) $$;
 SELECT wu_rows(400000);
 CREATE INDEX wu_idx ON wu USING sift_col (id, k, kind_id, amount) WITH (key_cut = k);
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 DO $$ BEGIN FOR i IN 1..2 LOOP PERFORM wu_rows(30000); PERFORM sift.col_promote('wu_idx'); COMMIT; END LOOP; END $$;
 VACUUM (FREEZE, ANALYZE, INDEX_CLEANUP off) wu;
-RESET sift.col_auto_merge;
+RESET sift.async_maintenance;
 ALTER TABLE wu RESET (autovacuum_enabled);
 CREATE FUNCTION wu_segments() RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM sift.col_segments('wu_idx') WHERE kind = 'immutable' $$;
 CREATE FUNCTION wu_requests(n int) RETURNS void LANGUAGE plpgsql AS $$

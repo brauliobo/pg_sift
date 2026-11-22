@@ -81,7 +81,6 @@ DROP INDEX go_x;
 -- the setting 14 keeps the sorted runs and no array
 SET sift.col_format_minor = 14;
 CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_array_columns = 'id, b');
-RESET sift.col_format_minor;
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_m', 0);
 SELECT max(format) < 21 AS older_format FROM sift.col_segments('go_m') WHERE kind = 'immutable';
 DROP INDEX go_m;

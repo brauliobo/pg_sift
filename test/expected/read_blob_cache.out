@@ -1,6 +1,6 @@
 -- The blob of a dense term (8 kB or more) is kept by the backend under the segment's relation file and generation: the second
 -- query reads none of it again, and no query is ever answered with the blob of another segment, of another index of the same
--- layout, or of an index that was rebuilt. The budget (the limit segment_cache_kb) only decides what is kept: a backend that keeps
+-- layout, or of an index that was rebuilt. The budget (sift.backend_cache_kb) only decides what is kept: a backend that keeps
 -- nothing and one that keeps less than its working set (blobs evicted, others in use) answer alike.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -10,8 +10,12 @@ CREATE TABLE docs_a (id int, body text, pad text);
 CREATE TABLE docs_b (id int, body text, pad text);
 INSERT INTO docs_a SELECT g, body(g), repeat('p', 700) FROM generate_series(1, 40960) g;
 INSERT INTO docs_b SELECT 1000000 + g, body(g), repeat('p', 700) FROM generate_series(1, 40960) g;
+SET client_min_messages = warning;
 CREATE INDEX docs_a_idx ON docs_a USING sift (body);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX docs_b_idx ON docs_b USING sift (body);
+RESET client_min_messages;
 -- the 25 best of a table by score, then by id up or down
 CREATE FUNCTION top(tbl regclass, q text, up bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -26,7 +30,7 @@ CREATE FUNCTION found() RETURNS bigint LANGUAGE sql AS $$ SELECT value FROM sift
 CREATE TEMP TABLE qs (q text);
 INSERT INTO qs VALUES ('dim_a0'), ('dim_a1 OR dim_a2'), ('dim_a3 dim_a4'), ('dim_a5 OR dim_a1'), ('dim_a0 OR dim_a1 OR dim_a2 OR dim_a3 OR dim_a4 OR dim_a5');
 -- nothing kept: the reference (every pass copies all)
-SET sift.test_limits = 'segment_cache_kb=0';
+SET sift.backend_cache_kb = 0;
 CREATE TEMP TABLE ref AS SELECT t, q, up, top(t, q, up) AS a FROM qs, unnest(ARRAY['docs_a', 'docs_b']::regclass[]) t, (VALUES (true), (false)) u (up);
 SELECT found() AS found_nothing;
  found_nothing 
@@ -35,7 +39,7 @@ SELECT found() AS found_nothing;
 (1 row)
 
 SELECT copied() AS all_bytes \gset
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 -- the first pass finds what its own queries repeat, the second one copies only the blobs under 8 kB, which are not kept
 SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
@@ -84,7 +88,9 @@ SELECT t, up, a FROM ref WHERE q = 'dim_a0' ORDER BY t, up;
 (4 rows)
 
 -- a rebuilt index has a file of its own: the first pass copies again, with the same answers
+SET client_min_messages = warning;
 REINDEX INDEX docs_a_idx;
+RESET client_min_messages;
 SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
 -------
@@ -176,7 +182,18 @@ SELECT count(*) AS deleted_found FROM docs_a WHERE body @@> 'dim_a0' AND id % 3 
 -- a budget below the working set (the blobs of the six terms are 9 kB each and are kept up to a quarter of the budget, so 4 fit; the shared blob
 -- of 35 kB is not kept): blobs go out as others come in, none that a cursor holds (the query of the six terms finds the budget full of its own
 -- and copies the others for itself), and the answers are those of the backend that keeps nothing
-SET sift.test_limits = 'segment_cache_kb=40';
+SELECT t, q, up FROM ref WHERE top(t, q, up) IS DISTINCT FROM a AND t = 'docs_b'::regclass;
+ t | q | up 
+---+---+----
+(0 rows)
+
+SELECT max(value) FILTER (WHERE key = 'cache_bytes') - max(value) FILTER (WHERE key = 'segcache_bytes') AS others FROM sift._test_read_stats() \gset
+SELECT set_config('sift.backend_cache_kb', ((:others + 40 * 1024 + 1023) / 1024)::text, false) IS NOT NULL AS sized;
+ sized 
+-------
+ t
+(1 row)
+
 SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  reset 
 -------
@@ -194,14 +211,14 @@ SELECT t, q, up FROM ref WHERE top(t, q, up) IS DISTINCT FROM a AND t = 'docs_b'
 (0 rows)
 
 SELECT max(value) FILTER (WHERE key = 'blob_hits') > 0 AS found, max(value) FILTER (WHERE key = 'segcache_evicted') > 0 AS evicted,
-	   max(value) FILTER (WHERE key = 'segcache_refused') > 0 AS refused, max(value) FILTER (WHERE key = 'segcache_bytes') <= 40 * 1024 AS kept_within_budget
+	   max(value) FILTER (WHERE key = 'segcache_refused') > 0 AS refused, max(value) FILTER (WHERE key = 'cache_bytes') <= pg_size_bytes(current_setting('sift.backend_cache_kb')) AS kept_within_budget
 FROM sift._test_read_stats();
  found | evicted | refused | kept_within_budget 
 -------+---------+---------+--------------------
  t     | t       | t       | t
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 DROP TABLE docs_a;
 DROP TABLE docs_b;
 DROP FUNCTION copied();

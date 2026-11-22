@@ -9,9 +9,8 @@
 The options regions (scripts/gen-options.sh) are part of it, so `--check` covers them.
 Nothing here measures: a benchmark number comes from docs/results/ (written by `bench/bench ... --docs`, which runs this too), the rest from the tree.
 The parts:
-  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (readme.py, extras.py, store.py, highlights.py, aggregates_page.py, scope_stock_tables.py; charts.py
-                                                          draws docs/img); a block whose
-                                                          results file is missing or empty says it is not measured yet
+  <!-- bench:NAME:begin --> ... <!-- bench:NAME:end -->   the benchmark renderers of bench/steps (v6_readme.py, v6_benchmarks.py, scope_stock_tables.py; readme_charts.py draws docs/charts); a block whose
+                                                          results file is missing or empty says it is not measured yet (v6-readme: the committed baseline of readme_charts.py; the v6-* blocks of docs/BENCHMARKS.md keep their committed text without their results file, the 6.0 ones say TBD until v6-core.tsv exists)
   <!-- coverage:start --> ... <!-- coverage:end -->        scripts/coverage.sh --gen, from docs/coverage.tsv (also writes docs/COVERAGE.md)
   <!-- gen:NAME --> ... <!-- /gen:NAME -->                 gucs: the settings table (DefineCustom*Variable calls of src/); guc:sift.NAME: the default of
                                                           one setting, inline
@@ -28,12 +27,10 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-# the results file behind each bench block; a block with a missing file is not rendered, it says so
-RESULTS = {n: n + '.tsv' for n in ('sets', 'rollup', 'tablewrites', 'writepath', 'bm25size', 'leaftypes', 'fields', 'buildcost', 'gpu', 'duckdb')}
-RESULTS.update(dict.fromkeys(('scope-stock-readme', 'scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'scope-stock.tsv'))
-RESULTS.update({'store': 'store.json', 'store-updates': 'store.json', 'store-compression': 'store-compression.json',
-                'slim': 'articles.tsv', 'readme': 'articles.tsv', 'summary': 'articles.tsv'})
-BENCH_CMD = dict.fromkeys(('store', 'store-updates', 'store-compression'), 'bench/bench store all --docs') | dict.fromkeys(('slim', 'readme', 'summary'), 'bench/bench all --docs') | {'duckdb': 'bench/bench duckdb --docs'} | dict.fromkeys(('scope-stock-readme', 'scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'bench/bench scope-stock --docs')
+# the results file behind each bench block that needs one (docs/results/, written by the bench command of BENCH_CMD with --docs); a block with a missing file is not rendered, it says so; the blocks of v6_readme.py
+# (v6-readme, v6-search, v6-storage) read what exists and fall back to the committed baseline of readme_charts.py, so they are always rendered
+RESULTS = dict.fromkeys(('scope-stock-tally', 'scope-stock-geomean', 'scope-stock-costs'), 'scope-stock.tsv')
+BENCH_CMD = dict.fromkeys(RESULTS, 'bench/bench scope-stock --docs')
 
 CONTEXT = {'PGC_USERSET': 'any user', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart', 'PGC_BACKEND': 'connection', 'PGC_SU_BACKEND': 'connection'}
 # argument positions after the name: (short, long, var, boot, ...) and where the context and the bounds are
@@ -167,46 +164,6 @@ def gucs_table(root):
     return '\n'.join(rows)
 
 
-# ---- the parity of the two column engines -----------------------------------------------------------------------------------------------
-
-def providers(root):
-    """the callbacks each SiftSrcProvider initializer of the tree sets: {'sift_col': {...}, 'sift_table': {...}}"""
-    out = {}
-    for engine, path in (('sift_col', 'src/agg/col.c'), ('sift_table', 'src/table/src.c')):
-        m = re.search(r'static const SiftSrcProvider \w+ = \{(.*?)\n\};', read(os.path.join(root, path)), re.S)
-        out[engine] = set(re.findall(r'^\s*\.(\w+)\s*=', m.group(1), re.M))
-    return out
-
-
-def parity_table(root):
-    """docs/parity.tsv as a table; a status that the providers contradict (works without every callback of the row, missing with one), or a callback only sift_col sets that no row lists, stops the run"""
-    have = providers(root)
-    rows = [l.split('\t') for l in read(os.path.join(root, 'docs', 'parity.tsv')).splitlines() if l.strip() and not l.startswith('#')]
-    head, rows = rows[0], rows[1:]
-    assert head == ['feature', 'sift_col', 'sift_table', 'seam', 'note'], 'docs/parity.tsv: unexpected header'
-    out = ['| Feature | `sift_col` | `sift_table` | Note |', '|---|---|---|---|']
-    listed = set()
-    for feat, col, tbl, seam, note in rows:
-        for engine, status in (('sift_col', col), ('sift_table', tbl)):
-            if status not in ('works', 'partial', 'missing', 'n/a'):
-                sys.exit('gen-docs: docs/parity.tsv: "%s": status "%s" of %s' % (feat, status, engine))
-            cbs = [] if seam == '-' else seam.split('+')
-            for cb in cbs:
-                if cb not in have[engine] and cb not in have['sift_col'] | have['sift_table']:
-                    sys.exit('gen-docs: docs/parity.tsv: "%s": no provider sets the callback %s' % (feat, cb))
-            present = [cb for cb in cbs if cb in have[engine]]
-            if cbs and status == 'works' and len(present) != len(cbs):
-                sys.exit('gen-docs: docs/parity.tsv: "%s" is works for %s but its provider lacks %s' % (feat, engine, ', '.join(sorted(set(cbs) - set(present)))))
-            if cbs and status == 'missing' and present:
-                sys.exit('gen-docs: docs/parity.tsv: "%s" is missing for %s but its provider sets %s' % (feat, engine, ', '.join(present)))
-        listed |= set(cbs)
-        out.append('| %s | %s | %s | %s |' % (feat, col, tbl, note))
-    unlisted = sorted(have['sift_col'] - have['sift_table'] - listed)
-    if unlisted:
-        sys.exit('gen-docs: docs/parity.tsv: sift_col sets %s, which no row lists: add the feature (a callback only the index sets is a feature the table lacks)' % ', '.join(unlisted))
-    return '\n'.join(out)
-
-
 # ---- the blocks --------------------------------------------------------------------------------------------------------------------------
 
 def fill_gen_blocks(root):
@@ -216,8 +173,6 @@ def fill_gen_blocks(root):
         if name == 'gucs':
             cfg.setdefault('gucs', gucs_table(root))
             return '\n' + cfg['gucs'] + '\n'
-        if name == 'parity':
-            return '\n\n' + parity_table(root) + '\n\n'
         if name.startswith('guc:'):
             s = settings(root).get(name[4:])
             if s is None:
@@ -242,11 +197,11 @@ def have(root, name):
 def fill_missing_bench_blocks(root):
     """a bench block whose results file is missing or empty says so, instead of keeping numbers that no file backs"""
     sys.path.insert(0, os.path.join(root, 'bench', 'steps'))
-    from readme import replace_block
+    from resultfile import replace_block
     for path in docs_files(root):
         for name in re.findall(r'<!-- bench:([\w-]+):begin', read(path)):
             if name in RESULTS and not have(root, name):
-                replace_block(path, name, ['Not measured yet: `%s` writes docs/results/%s and this block.' % (BENCH_CMD.get(name, 'bench/bench extras %s --docs' % name), RESULTS[name])])
+                replace_block(path, name, ['*Not measured for 6.0 yet: `%s` writes `docs/results/%s` and populates this block.*' % (BENCH_CMD[name], RESULTS[name])])
 
 
 # what the benchmark renderers read and write (checked with strace): a tree whose files here are as a finished run left them gives the same files again, so a write skips them
@@ -268,6 +223,11 @@ def renderer_view(name, data):
     return data
 
 
+def worktree_files(root, *paths):
+    """the tracked and the new (not ignored) files of the worktree: a checkout with files not yet added renders as the commit that adds them will"""
+    return subprocess.run(['git', '-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', *paths], check=True, capture_output=True).stdout.split(b'\0')[:-1]
+
+
 def world_stamp(root):
     """the stamp of the files the renderers read and write, or None when the write is not to be cached (CI, the check, SIFT_LINT_NOCACHE, no cache directory)"""
     if root != REPO or os.environ.get('CI') or os.environ.get('SIFT_LINT_NOCACHE'):
@@ -275,7 +235,7 @@ def world_stamp(root):
     d = os.environ.get('SIFT_GEN_DOCS_CACHE') or os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'), 'pg_sift', 'gen-docs')
     try:
         os.makedirs(d, exist_ok=True)
-        names = subprocess.run(['git', '-C', root, 'ls-files', '-z', '-co', '--exclude-standard', '--', *RENDERER_WORLD], check=True, capture_output=True).stdout.split(b'\0')[:-1]
+        names = worktree_files(root, *RENDERER_WORLD)
     except (OSError, subprocess.CalledProcessError):
         return None
     h = hashlib.sha256()
@@ -302,21 +262,13 @@ def generate(root):
     if stamp and os.path.exists(stamp):
         print('gen-docs: the benchmark renderers are skipped (their files are as a run left them)', file=sys.stderr)
     else:
-        if have(root, 'slim'):
-            run(*py, os.path.join(steps, 'readme.py'))
-        if have(root, 'store'):
-            run(*py, os.path.join(steps, 'store.py'), 'render', '--readme', 'README.md', '--benchmarks', 'docs/BENCHMARKS.md')
-        run(*py, os.path.join(steps, 'extras.py'), 'render')
-        if have(root, 'scope-stock-readme'):
+        run(*py, os.path.join(steps, 'v6_readme.py'), '--root', '.')
+        run(*py, os.path.join(steps, 'v6_benchmarks.py'), '--root', '.')
+        run(*py, os.path.join(steps, 'readme_charts.py'), '--root', '.')
+        if have(root, 'scope-stock-tally'):
             run(*py, os.path.join(steps, 'scope_stock_tables.py'), 'render', '--root', '.')
-        if have(root, 'slim'):
-            run(*py, os.path.join(steps, 'charts.py'))
-        if have(root, 'store'):
-            run(*py, os.path.join(steps, 'highlights.py'))
-            run(*py, os.path.join(steps, 'aggregates_page.py'))
-        run(*py, os.path.join(steps, 'release_record.py'))
     run('bash', os.path.join('scripts', 'coverage.sh'), '--gen')
-    run('bash', os.path.join('scripts', 'gen-options.sh'))   # the options regions of README.md, docs/USAGE.md and docs/OPTIONS.md (docs/options.tsv and src/)
+    run('bash', os.path.join('scripts', 'gen-options.sh'))   # the options regions of docs/OPTIONS.md (docs/options.tsv and src/)
     fill_missing_bench_blocks(root)
     fill_gen_blocks(root)
     stamp = world_stamp(root)   # the files as this run leaves them: the next run that finds them so skips the renderers
@@ -327,31 +279,35 @@ def generate(root):
 UNPUBLISHED = ('docs/COVERAGE.md',)   # generated for the maintainers, left out of the public tree (public-repo-allowlist): a checkout without it does not compare it, and says so
 
 
-FORMAT_PAGES = ('docs/FORMATS.md', 'docs/UPGRADING.md')
+FORMAT_PAGES = ('docs/ARCHITECTURE.md', 'docs/UPGRADING.md')
 
 
 def format_docs(root):
-    """the newest column format minor the library reads (format.h) is the one FORMATS and UPGRADING state (the notes of a release say the minor it read when it was made)"""
-    h = read(os.path.join(root, 'src/col/api/format.h'))
-    defs = dict(re.findall(r'#define (SIFT_COL_FORMAT_\w+)\s+(\w+)', h))
-    top = defs['SIFT_COL_FORMAT_MAX_READ']
-    top = int(top) if top.isdigit() else int(defs[top])
+    """Verify docs/ARCHITECTURE.md and docs/UPGRADING.md agree with Format Major 2 (col_meta.h) and BM25 1.7 (sift.h)."""
     bad = []
-    for page in FORMAT_PAGES:
-        text = read(os.path.join(root, page))
-        ranges = [int(n) for n in re.findall(r'(?:minors|5\.1) 3 through (\d+)|any minor up to (\d+)', text) for n in n if n]
-        bad += ['%s says the library reads up to %d, format.h %d' % (page, n, top) for n in ranges if n != top]
-        stated = []
-        for lst in re.findall(r'minors? (\d+(?:(?:, | and )\d+)*)', text):
-            stated += [int(n) for n in re.findall(r'\d+', lst) if int(n) >= 45]
-        if page == 'docs/FORMATS.md':
-            nxt = re.search(r'^Next free column format minor: (\d+)$', text, re.M)
-            stated += [int(nxt.group(1)) - 1] if nxt else [0]
-            stated += [max(int(n) for r in re.findall(r'^\| ([\d, ]+) \|', text, re.M) for n in re.findall(r'\d+', r))]
-        if max(stated, default=0) != top:
-            bad.append('%s says %d, format.h reads up to %d' % (page, max(stated, default=0), top))
+    col_meta = os.path.join(root, 'src', 'col', 'col_meta.h')
+    if os.path.exists(col_meta):
+        h = read(col_meta)
+        maj = re.search(r'#define\s+SIFT_FORMAT2_MAJOR\s+(\d+)', h)
+        mnr = re.search(r'#define\s+SIFT_FORMAT2_MINOR\s+(\d+)', h)
+        if maj and mnr:
+            ver = '%s.%s' % (maj.group(1), mnr.group(1))
+            for page in FORMAT_PAGES:
+                text = read(os.path.join(root, page))
+                if 'Format Major %s' % maj.group(1) not in text or ver not in text:
+                    bad.append('%s does not state Format Major %s (%s)' % (page, maj.group(1), ver))
+    sift_h = os.path.join(root, 'src', 'core', 'sift.h')
+    if os.path.exists(sift_h):
+        sh = read(sift_h)
+        bm_maj = re.search(r'#define\s+SIFT_FORMAT_MAJOR\s+(\d+)', sh)
+        bm_mnr = re.search(r'#define\s+SIFT_FORMAT_MINOR\s+(\d+)', sh)
+        if bm_maj and bm_mnr:
+            bm = '%s.%s' % (bm_maj.group(1), bm_mnr.group(1))
+            for page in FORMAT_PAGES:
+                if bm not in read(os.path.join(root, page)):
+                    bad.append('%s does not state BM25 format %s' % (page, bm))
     if bad:
-        sys.exit('gen-docs: the column format minors disagree: ' + '; '.join(bad))
+        sys.exit('gen-docs: on-disk format mismatch: ' + '; '.join(bad))
 
 
 PUBLIC_TREE = os.environ.get('SIFT_PUBLIC_TREE') == 'true'
@@ -374,8 +330,7 @@ def same_page(shown, generated):
 def check():
     format_docs(REPO)
     with tempfile.TemporaryDirectory(prefix='sift-gen-docs.') as tmp:
-        files = subprocess.run(['git', '-C', REPO, 'ls-files', '-z'], check=True, capture_output=True).stdout.split(b'\0')[:-1]
-        for f in files:
+        for f in worktree_files(REPO):
             src, dst = os.path.join(REPO, os.fsdecode(f)), os.path.join(tmp, os.fsdecode(f))
             if os.path.isfile(src):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)

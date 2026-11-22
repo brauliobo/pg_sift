@@ -2,7 +2,7 @@
 """The measured case of the options of docs/OPTIONS.md: index size, build and write cost with and without an option, and the query it is for.
 
   PG* in the environment (scripts/pgtest.sh env, a cluster with sift installed)
-  bench/options_evidence.py [--rows N] [--only KEY[,KEY]] [--out bench/results/options-evidence.tsv]
+  bench/options_evidence.py [--rows N] [--only KEY[,KEY]] [--out docs/results/options-evidence.tsv]
 
 Each experiment builds two identical tables that differ in one option (or one setting), alternates the measurements between them so that a drift of the load hits
 both, and keeps the median. Small data on purpose (50,000 to 300,000 rows, one scratch cluster under 1.5 GB): the figures are ratios of one option against its

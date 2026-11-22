@@ -92,7 +92,7 @@ SELECT head_loads = 0 AS none_read, head_hits > 0 AS found FROM sift._test_col_d
 (1 row)
 
 -- a cache with no room for a head reads it every time, with the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 REINDEX INDEX sh_idx;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
@@ -118,7 +118,7 @@ SELECT head_loads >= 2 AS read_each_time, head_hits = 0 AS none_found, zone_load
  t              | t          | t                    | t
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 SELECT sift.col_verify('sh_idx', true);
  col_verify 
 ------------

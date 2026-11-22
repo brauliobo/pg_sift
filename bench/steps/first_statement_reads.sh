@@ -31,7 +31,7 @@ from generate_series(1, $ENT) e, generate_series(1, $PER) g order by random();
 create table events_n as select * from events;
 create index events_n_key on events_n (dim_a_id, event_date);
 create index events_sift on events using sift_col (id, dim_a_id, kind_id, event_date, amount, label, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, measures)
-  with (key_cut = dim_a_id, paths = 'measures.* float8');
+  with (key_order = dim_a_id, paths = 'measures.* float8');
 create table bulk (k int primary key, pad text);
 insert into bulk select g, repeat('x', 900) from generate_series(1, 24 * (select setting::int from pg_settings where name = 'shared_buffers')) g;
 vacuum (analyze) events, events_n, bulk;

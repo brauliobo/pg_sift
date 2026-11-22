@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A VACUUM that runs while a sift_col scan is open (after its snapshot and directory, before it reads the units). The scan must return exactly
 # the rows its snapshot sees: a tuple deleted before the snapshot and removed by that VACUUM is not one of them, however the VACUUM leaves
 # the heap pages (all-visible) and the liveness of the unit. Stored units, a unit that was already dirty,

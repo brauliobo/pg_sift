@@ -1,0 +1,382 @@
+-- The 6.0 Vulkan path against the CPU: sift.gpu = on (every scan the router may send to the device, no cost model) must give the rows the CPU gives, on
+-- a sift_col index and on a sift_table alike, and so must the shapes the device leaves to the CPU. The test prints only whether the two agree, so the output
+-- is the same on a build without the backend, on one without a device, and on one with a device. The WARNINGs of sift.gpu = on are not shown.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = error;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET sift.agg_exact_float = on;
+CREATE TABLE gx (id int, g int, c text, w int, q int, a bigint, n int, f float8, wide int, tz int, p numeric(12,2), d date, t timestamp)
+	WITH (autovacuum_enabled = false);
+INSERT INTO gx
+SELECT i, i % 40, (ARRAY['north', 'south', 'east', 'west', 'centre'])[1 + i % 5], (i * 7919) % 100003 - 50000, (i * 31) % 1000,
+       (i::bigint * 1000003) % 5000000000 - 2500000000, CASE WHEN i % 1000 = 0 THEN NULL ELSE i % 9 END, (i % 100) / 8.0,
+       i % 100, 7, (((i::bigint * 37) % 1000000) - 500000)::numeric / 100,
+       DATE '2000-01-01' + (i * 13) % 9000, TIMESTAMP '2000-01-01' + ((i::bigint * 7919) % 700000000) * INTERVAL '1 second'
+FROM generate_series(1, 250000) i;
+CREATE INDEX gx_col ON gx USING sift_col (id, g, c, w, q, a, n, f, wide, tz, p, d, t);
+VACUUM (FREEZE, ANALYZE) gx;
+CREATE TABLE gt (LIKE gx) USING sift_table;
+INSERT INTO gt SELECT * FROM gx;
+VACUUM (FREEZE, ANALYZE) gt;
+-- the four settings exist, take their values and refuse a bad one
+CREATE FUNCTION rejects(guc text, val text) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('SET %s = %L', guc, val);
+	EXECUTE format('RESET %s', guc);
+	RETURN false;
+EXCEPTION WHEN invalid_parameter_value THEN
+	RETURN true;
+END $$;
+SET sift.gpu = auto;
+SET sift.gpu = on;
+SET sift.gpu = off;
+SET sift.gpu_min_rows = 1;
+SET sift.gpu_device = '';
+SET sift.gpu_cache_mb = 256;
+RESET sift.gpu;
+RESET sift.gpu_min_rows;
+RESET sift.gpu_device;
+RESET sift.gpu_cache_mb;
+SELECT rejects('sift.gpu', 'sometimes') AS bad_mode_refused;
+ bad_mode_refused 
+------------------
+ t
+(1 row)
+
+SELECT rejects('sift.gpu_min_rows', '-1') AS bad_min_rows_refused;
+ bad_min_rows_refused 
+----------------------
+ t
+(1 row)
+
+-- the same rows with the device on and off, in both directions, of the table the name says
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE d bigint;
+BEGIN
+	SET sift.gpu = on;
+	SET sift.gpu_min_rows = 1;
+	EXECUTE format('CREATE TEMP TABLE r_on AS SELECT x::text AS r FROM (%s) x', q);
+	SET sift.gpu = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS SELECT x::text AS r FROM (%s) x', q);
+	RESET sift.gpu;
+	RESET sift.gpu_min_rows;
+	SELECT count(*) INTO d FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	d := d + abs((SELECT count(*) FROM r_on) - (SELECT count(*) FROM r_off));
+	DROP TABLE r_on, r_off;
+	RETURN d = 0;
+END $$;
+CREATE FUNCTION same_both(q text) RETURNS bool LANGUAGE sql AS $$
+	SELECT same(q) AND same(replace(q, ' gx', ' gt'));
+$$;
+-- no key
+SELECT same_both($$SELECT count(*), sum(w), sum(q), min(q), max(w) FROM gx$$) AS ungrouped;
+ ungrouped 
+-----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w), sum(q) FROM gx WHERE q >= 100 AND q < 600$$) AS range;
+ range 
+-------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(a), min(a), max(a) FROM gx WHERE g = 7 AND w > 0$$) AS bigint_extremes;
+ bigint_extremes 
+-----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE g IN (1, 2, 3) OR q = 5$$) AS in_or;
+ in_or 
+-------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w) FILTER (WHERE q > 500), count(n) FROM gx$$) AS filter_clause;
+ filter_clause 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE q > 100000$$) AS none_pass;
+ none_pass 
+-----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(q), sum(p), min(p), max(p) FROM gx WHERE p > 100.5 AND p <= 4000.25$$) AS numeric_range;
+ numeric_range 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), min(f), max(f) FROM gx WHERE w < 0$$) AS float_min_max;
+ float_min_max 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(f), avg(f) FROM gx$$) AS float_sum_exact;
+ float_sum_exact 
+-----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w + q), sum(w * 3 - q / 2) FROM gx WHERE q < 900$$) AS expressions;
+ expressions 
+-------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w / NULLIF(q, 0)) FROM gx$$) AS division_guarded;
+ division_guarded 
+------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), count(n), sum(n) FROM gx WHERE n IS NOT NULL OR g = 3$$) AS null_leaf;
+ null_leaf 
+-----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(EXTRACT(year FROM d)::int), sum(EXTRACT(dow FROM t)::int), min(date_trunc('week', t)) FROM gx$$) AS calendar;
+ calendar 
+----------
+ t
+(1 row)
+
+-- the columns whose chunks the device decodes (a chunk a codec wrapped in zstd is the CPU's)
+SELECT same_both($$SELECT count(*), sum(w), min(id), max(id) FROM gx WHERE w > 0 AND id < 200000$$) AS device_ungrouped;
+ device_ungrouped 
+------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(id), max(w) FROM gx WHERE id IN (5, 77, 1001, 90000, 249999)$$) AS device_in_list;
+ device_in_list 
+----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE id IS NOT NULL AND w <= 0 AND id >= 1000$$) AS device_null_test;
+ device_null_test 
+------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT w, count(*), sum(id) FROM gx WHERE id < 5000 GROUP BY w$$) AS device_hash_key;
+ device_hash_key 
+-----------------
+ t
+(1 row)
+
+-- dense keys
+SELECT same_both($$SELECT g, count(*), sum(w), sum(q) FROM gx GROUP BY g$$) AS int_key;
+ int_key 
+---------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, avg(w), min(q), max(q), count(*) FROM gx WHERE q > 10 GROUP BY g$$) AS int_key_avg;
+ int_key_avg 
+-------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT n, count(*), sum(w) FROM gx GROUP BY n$$) AS null_key;
+ null_key 
+----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT c, count(*), sum(w), sum(q) FROM gx WHERE w < 20000 GROUP BY c$$) AS dictionary_key;
+ dictionary_key 
+----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, n, count(*), sum(q) FROM gx GROUP BY g, n$$) AS two_dense_keys;
+ two_dense_keys 
+----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, count(*), sum(p), avg(p) FROM gx GROUP BY g$$) AS numeric_sum;
+ numeric_sum 
+-------------
+ t
+(1 row)
+
+-- hashed keys: many groups, several keys, a key that is an expression
+SELECT same_both($$SELECT wide, count(*), sum(w) FROM gx GROUP BY wide$$) AS key_100;
+ key_100 
+---------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id % 5000, count(*), sum(w), min(q), max(a) FROM gx GROUP BY 1$$) AS key_5000;
+ key_5000 
+----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, count(*), sum(w) FROM gx GROUP BY id$$) AS key_250000;
+ key_250000 
+------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, c, count(*), sum(w) FROM gx GROUP BY g, c$$) AS two_keys;
+ two_keys 
+----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, c, w % 7, q % 3, wide % 4, tz, n, id % 2, count(*), sum(a) FROM gx GROUP BY 1, 2, 3, 4, 5, 6, 7, 8$$) AS eight_keys;
+ eight_keys 
+------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT date_trunc('month', t)::date, count(*), sum(w) FROM gx GROUP BY 1$$) AS month_key;
+ month_key 
+-----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT d, count(*), sum(p) FROM gx WHERE q < 500 GROUP BY d$$) AS date_key;
+ date_key 
+----------
+ t
+(1 row)
+
+-- top N, unsorted input
+SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 25$$) AS top_desc;
+ top_desc 
+----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, a FROM gx WHERE g = 7 ORDER BY a LIMIT 100$$) AS top_asc_filtered;
+ top_asc_filtered 
+------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, f, w FROM gx ORDER BY w * 3 + q DESC, id LIMIT 10$$) AS top_expression;
+ top_expression 
+----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, n FROM gx ORDER BY n NULLS FIRST, id LIMIT 10$$) AS top_nulls_first;
+ top_nulls_first 
+-----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 256$$) AS top_256;
+ top_256 
+---------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 300$$) AS top_over_device_limit;
+ top_over_device_limit 
+-----------------------
+ t
+(1 row)
+
+-- shapes the device leaves to the CPU
+SELECT same_both($$SELECT g, count(DISTINCT q), sum(w) FROM gx GROUP BY g$$) AS distinct_agg;
+ distinct_agg 
+--------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, string_agg(c, ',' ORDER BY c) FROM gx WHERE id < 200 GROUP BY g$$) AS ordered_agg;
+ ordered_agg 
+-------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT c, count(*) FROM gx WHERE c LIKE 'n%' GROUP BY c$$) AS text_filter;
+ text_filter 
+-------------
+ t
+(1 row)
+
+-- an error of the query is the CPU's error, on the row the CPU meets first
+CREATE FUNCTION error_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'none';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLERRM;
+END $$;
+CREATE FUNCTION same_error(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE on_ text; off_ text;
+BEGIN
+	SET sift.gpu = on;
+	SET sift.gpu_min_rows = 1;
+	on_ := error_of(q);
+	SET sift.gpu = off;
+	off_ := error_of(q);
+	RESET sift.gpu;
+	RESET sift.gpu_min_rows;
+	RETURN on_ = off_ AND off_ <> 'none';
+END $$;
+SELECT same_error($$SELECT sum(w / q) FROM gx$$) AS division_by_zero;
+ division_by_zero 
+------------------
+ t
+(1 row)
+
+SELECT same_error($$SELECT sum(a * a * 2) FROM gx$$) AS bigint_overflow;
+ bigint_overflow 
+-----------------
+ t
+(1 row)
+
+SELECT same_error($$SELECT sum(q + 2147483000) FROM gx$$) AS int_overflow;
+ int_overflow 
+--------------
+ t
+(1 row)
+
+-- units with dead rows or pages that are not all-visible are read by the CPU in the same query
+UPDATE gx SET w = w + 1, a = a - 5 WHERE id % 97 = 0;
+DELETE FROM gx WHERE id % 1013 = 0;
+UPDATE gt SET w = w + 1, a = a - 5 WHERE id % 97 = 0;
+DELETE FROM gt WHERE id % 1013 = 0;
+SELECT same_both($$SELECT g, count(*), sum(w), sum(q) FROM gx WHERE w < 20000 GROUP BY g$$) AS dirty_grouped;
+ dirty_grouped 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE q < 500$$) AS dirty_ungrouped;
+ dirty_ungrouped 
+-----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id % 5000, count(*), sum(w) FROM gx GROUP BY 1$$) AS dirty_hashed;
+ dirty_hashed 
+--------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 25$$) AS dirty_top;
+ dirty_top 
+-----------
+ t
+(1 row)
+
+DROP FUNCTION same_both(text), same(text), same_error(text), error_of(text), rejects(text, text);
+DROP TABLE gt, gx;
+DROP EXTENSION pg_sift;

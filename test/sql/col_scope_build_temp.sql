@@ -32,10 +32,9 @@ BEGIN
 	PERFORM sift.col_verify('sb_ix', true);
 END $$;
 
-SET maintenance_work_mem = '1MB';
+SET maintenance_work_mem = '2MB';
 SET sift.test_col_segment_kb = 256;
 SET sift.test_col_spill_run_kb = 256;
-SET sift.test_limits = 'scope_sort_min_kb=4096';
 \set scope '''t: m -> sb_pairs(m, t)'''
 \set n 20000
 CREATE TABLE sb_t (id int PRIMARY KEY, m int, d timestamptz, v int, pad text) WITH (autovacuum_enabled = false);

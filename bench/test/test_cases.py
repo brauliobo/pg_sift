@@ -102,51 +102,6 @@ class Ties(unittest.TestCase):
         self.assertTrue(self.equal(ORDERING[0:1], ['9|5.0000000000001|2025-01-05|8|40.00']))
 
 
-class Takeaway(unittest.TestCase):
-    def fig(self, case, native, sift, others, plan):
-        c = type('C', (), dict(id=case, metrics=['ms']))
-        return dict(case=c, metric='ms', native=native, sift=sift, others=others, plan=plan, kept=False, noisy=False, forced=None, forced_note='')
-
-    def test_wins_ties_kept_plans_and_settings_that_do_not_help(self):
-        import cases_render as r
-        figs = [self.fig('a', 20.0, 2.0, {'scan': 5.0}, 'Top-N'), self.fig('b', 20.0, 2.0, {'zone_off': 1.9}, 'Top-N'), self.fig('c', 1.0, 1.0, {}, 'Seq Scan')]
-        figs[2]['kept'] = True
-        text = r.takeaway(figs)
-        self.assertIn('faster than PostgreSQL on the same rows (`sift.enable_agg = off`) on 2 of 2 numbers (10x to 10x)', text)
-        self.assertIn('brings no gain (its variant is as fast, within 5%) on 1: b ms `zone_off`', text)
-        self.assertIn("ran PostgreSQL's plan on 1 (no ratio for those); with the scan forced (`sift.agg_force`) it is not measured on 1 (c)", text)
-        for forced, note, want in ((0.5, '', "forced scan **2.0x**"), (2.0, '', 'forced scan 2.0x slower'), (None, '', 'forced scan not measured'), (None, 'no scan: x', 'the scan cannot run it')):
-            kept = self.fig('d', 1.0, 1.0, {}, 'Seq Scan')
-            kept.update(kept=True, forced=forced, forced_note=note)
-            self.assertIn(want, r.declined(kept))
-
-    def test_ranked_puts_losses_before_ties_and_wins(self):
-        import cases_render as r
-        win, loss, tie = self.fig('w', 20.0, 2.0, {}, 'Top-N'), self.fig('l', 1.0, 2.0, {}, 'Top-N'), self.fig('t', 1.0, 1.0, {}, 'Seq Scan')
-        slow_kept = self.fig('k', 1.0, 1.5, {}, 'Seq Scan')
-        slow_kept['kept'], slow_kept['forced'] = True, 0.5   # the planner keeps PostgreSQL's plan where the forced scan is 2x faster: a gap
-        self.assertEqual([r.ranked(f) for f in (win, loss, tie, slow_kept)], [2, 0, 1, 0])
-
-
-class Scale(unittest.TestCase):
-    def pts(self, *ratios):
-        return [dict(rows=200000 * 10 ** i, native=r, sift=1.0, kept=False, noisy=False, plan='') for i, r in enumerate(ratios)]
-
-    def test_crossover(self):
-        import cases_render as r
-        self.assertEqual(r.crossover(self.pts(3.0, 20.0)), 'wins from 200k rows')
-        self.assertEqual(r.crossover(self.pts(0.5, 2.0)), 'about 632k rows (between 200k and 2M, wins from 2M)')
-        self.assertEqual(r.crossover(self.pts(0.5, 0.4)), 'none up to 2M rows (2.5x slower at the largest, the ratio is falling)')
-        self.assertEqual(r.crossover(self.pts(2.0, 0.5, 4.0)), 'about 4.31M rows (between 2M and 20M, wins from 20M)')
-
-    def test_kept_plan_is_not_a_win(self):
-        import cases_render as r
-        pts = self.pts(1.0, 1.0)
-        for p in pts:
-            p['kept'] = True
-        self.assertEqual(r.crossover(pts), "the planner keeps PostgreSQL's plan up to 2M rows")
-
-
 class PlanShape(unittest.TestCase):
     def test_numbers_do_not_change_the_shape_but_a_node_does(self):
         a = 'HashAggregate  (cost=1 rows=2) (actual time=1 rows=3 loops=1)\n  Group Key: x\n  ->  Seq Scan on t  (cost=1)\nPlanning Time: 0.1 ms'

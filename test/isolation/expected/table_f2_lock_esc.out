@@ -1,0 +1,171 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1big s2other s2read s2ks s2c s1c s2v
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s2other: UPDATE iso_other SET val = val + 1 WHERE id = 1;
+step s2read: SELECT count(*) AS n, sum(val) AS s FROM iso_le WHERE id <= 6000;
+   n|s
+----+-
+6000|0
+(1 row)
+
+step s2ks: BEGIN; SELECT id FROM iso_le WHERE id = 100 FOR KEY SHARE;
+ id
+---
+100
+(1 row)
+
+step s2c: COMMIT;
+step s1c: COMMIT;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|   s
+-----+----
+20000|6000
+(1 row)
+
+
+starting permutation: s1big s2nowait s2skip s1r s2v
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s2nowait: SELECT id FROM iso_le WHERE id = 100 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_le"
+step s2skip: SELECT id FROM iso_le WHERE id IN (100, 9000) ORDER BY id FOR UPDATE SKIP LOCKED;
+id
+--
+(0 rows)
+
+step s1r: ROLLBACK;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|s
+-----+-
+20000|0
+(1 row)
+
+
+starting permutation: s1big s2gone s1c s2v
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s2gone: UPDATE iso_le SET val = val + 10 WHERE id = 100 AND val = 0; <waiting ...>
+step s1c: COMMIT;
+step s2gone: <... completed>
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|   s
+-----+----
+20000|6000
+(1 row)
+
+
+starting permutation: s1big s2kept s1c s2v
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s2kept: UPDATE iso_le SET val = val + 10 WHERE id = 100 AND val >= 0; <waiting ...>
+step s1c: COMMIT;
+step s2kept: <... completed>
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|   s
+-----+----
+20000|6010
+(1 row)
+
+
+starting permutation: s1big s2kept s1r s2v
+busy
+----
+f   
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s2kept: UPDATE iso_le SET val = val + 10 WHERE id = 100 AND val >= 0; <waiting ...>
+step s1r: ROLLBACK;
+step s2kept: <... completed>
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n| s
+-----+--
+20000|10
+(1 row)
+
+
+starting permutation: s2rr s1big s1c s2rrw s2e s2v
+busy
+----
+f   
+(1 row)
+
+step s2rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_le WHERE id = 100;
+n
+-
+1
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1c: COMMIT;
+step s2rrw: UPDATE iso_le SET val = 0 WHERE id = 100;
+ERROR:  could not serialize access due to concurrent update
+step s2e: ROLLBACK;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|   s
+-----+----
+20000|6000
+(1 row)
+
+
+starting permutation: s2rr s1big s1c s2rru s2e s2v
+busy
+----
+f   
+(1 row)
+
+step s2rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_le WHERE id = 100;
+n
+-
+1
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 6000;
+step s1c: COMMIT;
+step s2rru: UPDATE iso_le SET val = val + 1 WHERE id = 8000;
+step s2e: ROLLBACK;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|   s
+-----+----
+20000|6000
+(1 row)
+
+
+starting permutation: s1a s2a s1b s2b s1c s2e s2v
+busy
+----
+f   
+(1 row)
+
+step s1a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id <= 2500;
+step s2a: BEGIN; UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 10001 AND 12500;
+step s1b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 2501 AND 4200; <waiting ...>
+step s2b: UPDATE iso_le SET val = val + 1 WHERE id BETWEEN 12501 AND 14200;
+ERROR:  deadlock detected
+step s1b: <... completed>
+step s1c: COMMIT;
+step s2e: ROLLBACK;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_le;
+    n|   s
+-----+----
+20000|4200
+(1 row)
+

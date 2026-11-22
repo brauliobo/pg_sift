@@ -7,7 +7,7 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 9
-node_init primary 2
+node_init primary 2 "sift.shared_cache_kb = 262144"
 node_start primary || bail "primary start failed"
 TABLES=14
 {
@@ -52,8 +52,8 @@ SHM_KB=$(df -Pk /dev/shm | awk 'NR == 2 {print $2}')
 if ((SHM_KB <= 1048576)); then
 	BIG=$(find /dev/shm -maxdepth 1 -name 'PostgreSQL.*' -size +$((SHM_KB / 4 + 1024))k | wc -l)
 	CUT=1
-	# the default ring (64 MB) is cut to a quarter of a /dev/shm under 256 MB, and the log says so
-	((SHM_KB >= 262144)) || grep -q 'the shared dictionaries take .* kB, not the 65536 kB of sift.col_dict_shared_cache_kb' "$(dir primary)/postgres.log" || CUT=0
+	# the ring (64 MB) is cut to a quarter of a /dev/shm under 256 MB, and the log says so
+	((SHM_KB >= 262144)) || grep -q 'the shared dictionaries take .* kB, not the .* kB of its share of sift.shared_cache_kb' "$(dir primary)/postgres.log" || CUT=0
 	check "the table takes no more than a quarter of /dev/shm, and the log says when the size is cut" test "$BIG|$CUT" == "0|1"
 else
 	skip 1 "/dev/shm is $((SHM_KB / 1024)) MB: the cap of a small one is not reached"

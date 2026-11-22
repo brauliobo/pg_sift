@@ -1,6 +1,6 @@
 -- The build rule for tables shaped like a denormalised copy (CREATE TABLE AS of a join with (member, key) pairs): the first column of the index is a key of few
 -- values with many rows each, neither a foreign key nor unique, and another key-shaped column has several times its values (the foreign key the rows were copied by). CREATE INDEX
--- takes the first column for key_order and key_cut, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
+-- takes the first column for key_order, where the plain choice took the foreign key (4 to 5 times the instructions and blocks to read one key). Not below 100,000 rows,
 -- the floor of the layout choice (GORD_AUTO_ROWS): the table here is 110,000 rows and the reason is the only one for its size.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -57,9 +57,9 @@ END $$;
 CREATE INDEX copy_arrival_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
 CREATE INDEX copy_sorted_col ON copy_sorted USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
 SELECT 'arrival' AS copy, chosen('copy_arrival_col') UNION ALL SELECT 'sorted', chosen('copy_sorted_col');
-  copy   |                               chosen                               
----------+--------------------------------------------------------------------
- arrival | key_cut = tenant_id, created_at; key_order = tenant_id, created_at
+  copy   |              chosen               
+---------+-----------------------------------
+ arrival | key_order = tenant_id, created_at
  sorted  | key_order = tenant_id, created_at
 (2 rows)
 
@@ -78,6 +78,17 @@ SELECT k AS tenant, answers('copy_arrival', k) AS sums_arrival, answers('copy_so
      60 | same         | same        | same           | same
 (3 rows)
 
+-- REINDEX decides again and chooses the same
+REINDEX INDEX copy_arrival_col;
+SELECT chosen('copy_arrival_col');
+              chosen               
+-----------------------------------
+ key_order = tenant_id, created_at
+(1 row)
+
+-- the arrival copy reads every unit of a key unless the index is cut by it (key_cut is the user's); the sorted copy is in key order already
+DROP INDEX copy_arrival_col;
+CREATE INDEX copy_arrival_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_cut = 'tenant_id, created_at');
 SELECT units_of('SELECT dim_a_id, sum(amount) FROM copy_arrival WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_arrival,
 	   units_of('SELECT dim_a_id, sum(amount) FROM copy_sorted WHERE tenant_id = 7 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20') AS units_sorted;
  units_arrival | units_sorted 
@@ -85,21 +96,13 @@ SELECT units_of('SELECT dim_a_id, sum(amount) FROM copy_arrival WHERE tenant_id 
  units pruned  | units pruned
 (1 row)
 
--- REINDEX decides again and chooses the same
-REINDEX INDEX copy_arrival_col;
-SELECT chosen('copy_arrival_col');
-                               chosen                               
---------------------------------------------------------------------
- key_cut = tenant_id, created_at; key_order = tenant_id, created_at
-(1 row)
-
 DROP INDEX copy_arrival_col, copy_sorted_col;
 -- what the user wrote stays: a key_order of their own, 'off'
 CREATE INDEX copy_user_col ON copy_arrival USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount) WITH (key_order = 'dim_a_id, created_at');
 SELECT 'user' AS option, chosen('copy_user_col');
- option |                              chosen                              
---------+------------------------------------------------------------------
- user   | key_cut = dim_a_id, created_at; key_order = dim_a_id, created_at
+ option |              chosen              
+--------+----------------------------------
+ user   | key_order = dim_a_id, created_at
 (1 row)
 
 DROP INDEX copy_user_col;
@@ -115,9 +118,9 @@ DROP INDEX copy_off_col;
 CREATE TABLE copy_fresh WITH (autovacuum_enabled = false) AS SELECT * FROM copy_arrival;
 CREATE INDEX copy_fresh_col ON copy_fresh USING sift_col (tenant_id, id, dim_a_id, created_at, kind, amount);
 SELECT 'no statistics' AS copy, chosen('copy_fresh_col');
-     copy      |                               chosen                               
----------------+--------------------------------------------------------------------
- no statistics | key_cut = tenant_id, created_at; key_order = tenant_id, created_at
+     copy      |              chosen               
+---------------+-----------------------------------
+ no statistics | key_order = tenant_id, created_at
 (1 row)
 
 DROP INDEX copy_fresh_col;

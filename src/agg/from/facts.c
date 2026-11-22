@@ -100,12 +100,6 @@ facts_empty(void)
 	facts_replaced = 0;
 }
 
-static Size
-facts_bytes(void)
-{
-	return facts_cx ? MemoryContextMemAllocated(facts_cx, true) : 0;
-}
-
 /* the cache goes whole, so it is one entry: as old as the last planning that read it, and held while a plan is under way */
 static uint64
 facts_oldest(void)
@@ -113,7 +107,16 @@ facts_oldest(void)
 	return facts != NULL && part_memo_cx == NULL ? facts_used : UINT64_MAX;
 }
 
-static const SiftCacheKind facts_kind = {facts_bytes, facts_oldest, facts_empty};
+static bool
+facts_evict_one(void)
+{
+	if (facts == NULL)
+		return false;
+	facts_empty();
+	return true;
+}
+
+static const SiftCacheKind facts_kind = {"agg_facts", facts_oldest, facts_evict_one, facts_empty};
 
 static FactsWatch *
 facts_watch_of(Oid relid)
@@ -162,7 +165,7 @@ sift_agg_memo_end(MemoryContext cx)
 	if (facts != NULL)
 	{
 		facts_used = sift_cache_tick();
-		sift_cache_room(0);
+		sift_cache_commit();
 	}
 }
 
@@ -204,7 +207,7 @@ facts_init(void)
 		return;
 	if (facts_cx == NULL)
 	{
-		facts_cx = AllocSetContextCreate(CacheMemoryContext, "sift cache partition facts", ALLOCSET_DEFAULT_SIZES);
+		facts_cx = sift_cache_create_context("sift cache partition facts");
 		CacheRegisterSyscacheCallback(RELOID, facts_inval, (Datum) 0);
 		sift_cache_register(&facts_kind);
 	}

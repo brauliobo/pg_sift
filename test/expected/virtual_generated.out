@@ -1,0 +1,193 @@
+-- A virtual generated column (PostgreSQL 18, the default of GENERATED ALWAYS AS) stores nothing: the planner replaces each reference to it by its expression, so a sift_table gives the rows a heap table
+-- gives, the aggregate scan reads the columns the expression names, and no sift_col index can hold the column (PostgreSQL refuses it). Where the rows themselves are read, as sift.suggest_paths reads the
+-- documents of a jsonb column, the column is refused: its NULLs are not its values. Before 18 the same columns are stored ones, and every line below gives the same answer.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET max_parallel_workers_per_gather = 0;
+SET cpu_tuple_cost = 0.5;
+SET client_min_messages = warning;
+DO $$
+DECLARE kind text := CASE WHEN current_setting('server_version_num')::int >= 180000 THEN 'VIRTUAL' ELSE 'STORED' END;
+BEGIN
+	EXECUTE format('CREATE TABLE vg (id int, ts timestamp, v int, g int GENERATED ALWAYS AS (v %% 7) %s, lbl text GENERATED ALWAYS AS (''k'' || (v %% 5)) %s, s int GENERATED ALWAYS AS (v + 1) STORED) USING sift_table', kind, kind);
+	EXECUTE format('CREATE TABLE vgh (id int, ts timestamp, v int, g int GENERATED ALWAYS AS (v %% 7) %s, lbl text GENERATED ALWAYS AS (''k'' || (v %% 5)) %s, s int GENERATED ALWAYS AS (v + 1) STORED)', kind, kind);
+	EXECUTE format('CREATE TABLE vj (id int, doc jsonb, d2 jsonb GENERATED ALWAYS AS (doc) %s, d3 jsonb GENERATED ALWAYS AS (doc) STORED)', kind);
+END $$;
+SELECT attname, attgenerated <> '' AS generated FROM pg_attribute WHERE attrelid = 'vg'::regclass AND attnum > 0 ORDER BY attnum;
+ attname | generated 
+---------+-----------
+ id      | f
+ ts      | f
+ v       | f
+ g       | t
+ lbl     | t
+ s       | t
+(6 rows)
+
+CREATE FUNCTION vg_same(q text) RETURNS bool LANGUAGE plpgsql AS
+$$ BEGIN RETURN sift_helpers.rows_agg(replace(q, '@T', 'vg'), true) IS NOT DISTINCT FROM sift_helpers.rows_agg(replace(q, '@T', 'vgh'), false); END $$;
+-- @T is the table of a query
+CREATE TABLE vg_q (n serial, q text);
+INSERT INTO vg_q (q) VALUES
+	('SELECT g, count(*), sum(v) FROM @T GROUP BY g'),
+	('SELECT lbl, count(*), min(id) FROM @T GROUP BY lbl'),
+	('SELECT count(*) FROM @T WHERE g = 3'),
+	('SELECT v % 7, count(*) FROM @T GROUP BY 1'),
+	('SELECT g, lbl, max(s), count(*) FROM @T GROUP BY g, lbl'),
+	('SELECT date_trunc(''month'', ts)::date, g, count(*) FROM @T WHERE g <> 2 GROUP BY 1, 2'),
+	('SELECT id, g, lbl, s FROM @T WHERE id <= 50'),
+	('SELECT t FROM @T t WHERE id = 7');
+CREATE FUNCTION vg_compare(OUT n int, OUT same bool, OUT agg_scan bool) RETURNS SETOF record LANGUAGE plpgsql AS
+$$ BEGIN
+	FOR n IN SELECT vg_q.n FROM vg_q ORDER BY vg_q.n LOOP
+		same := vg_same((SELECT q FROM vg_q WHERE vg_q.n = vg_compare.n));
+		agg_scan := sift_helpers.plan_has_agg_scan(replace((SELECT q FROM vg_q WHERE vg_q.n = vg_compare.n), '@T', 'vg'));
+		RETURN NEXT;
+	END LOOP;
+END $$;
+INSERT INTO vg (id, ts, v) SELECT i, '2024-01-01'::timestamp + (i * 7 || ' hours')::interval, i FROM generate_series(1, 6000) i;
+INSERT INTO vgh (id, ts, v) SELECT id, ts, v FROM vg;
+SELECT n, same FROM vg_compare() ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+ 8 | t
+(8 rows)
+
+VACUUM vg;
+SELECT n, same FROM vg_compare() ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+ 8 | t
+(8 rows)
+
+-- the aggregate scan runs over the table whatever kind of column the query names (before 18 it reads the stored column: the answer is the same)
+SELECT bool_and(agg_scan) FILTER (WHERE n IN (1, 2, 4)) AS agg_scan_over_virtual FROM vg_compare();
+ agg_scan_over_virtual 
+-----------------------
+ t
+(1 row)
+
+-- the columns the expressions derive from change: the rows follow, in the write buffer and in the stored units
+UPDATE vg SET v = v + 2, ts = ts + interval '45 days' WHERE id % 4 = 0;
+UPDATE vgh SET v = v + 2, ts = ts + interval '45 days' WHERE id % 4 = 0;
+DELETE FROM vg WHERE id % 10 = 0;
+DELETE FROM vgh WHERE id % 10 = 0;
+SELECT n, same FROM vg_compare() ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+ 8 | t
+(8 rows)
+
+VACUUM vg;
+SELECT n, same FROM vg_compare() ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+ 8 | t
+(8 rows)
+
+-- a new expression for the column reads at once for a virtual one (no rewrite); a stored one is rewritten
+ALTER TABLE vg ALTER COLUMN g SET EXPRESSION AS (v % 11);
+ALTER TABLE vgh ALTER COLUMN g SET EXPRESSION AS (v % 11);
+SELECT n, same FROM vg_compare() ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+ 8 | t
+(8 rows)
+
+VACUUM FULL vg;
+SELECT n, same FROM vg_compare() ORDER BY n;
+ n | same 
+---+------
+ 1 | t
+ 2 | t
+ 3 | t
+ 4 | t
+ 5 | t
+ 6 | t
+ 7 | t
+ 8 | t
+(8 rows)
+
+-- COPY leaves the generated columns to the expressions
+CREATE TABLE vgc (id int, v int, g int GENERATED ALWAYS AS (v % 7) STORED) USING sift_table;
+COPY vgc (id, v) FROM stdin;
+SELECT id, v, g FROM vgc ORDER BY id;
+ id | v  | g 
+----+----+---
+  1 |  1 | 1
+  2 |  9 | 2
+  3 | 17 | 3
+(3 rows)
+
+-- no sift_col index holds a virtual column: PostgreSQL refuses it (0A000); before 18 the column is a stored one
+DO $$
+DECLARE state text := 'none';
+BEGIN
+	BEGIN
+		CREATE INDEX vgh_col ON vgh USING sift_col (id, g);
+	EXCEPTION WHEN OTHERS THEN
+		state := SQLSTATE;
+	END;
+	RAISE INFO 'sift_col index over the column refused or stored: %', current_setting('server_version_num')::int < 180000 OR state = '0A000';
+END $$;
+INFO:  sift_col index over the column refused or stored: t
+-- sift.suggest_paths reads the documents of a column from the heap: a virtual column has none there
+INSERT INTO vj SELECT i, jsonb_build_object('a', i, 'b', 'x' || i) FROM generate_series(1, 300) i;
+SELECT sift.suggest_paths('vj', 'doc') AS plain, sift.suggest_paths('vj', 'd3') AS stored;
+         plain          |        stored        
+------------------------+----------------------
+ doc.a int4, doc.b text | d3.a int4, d3.b text
+(1 row)
+
+DO $$
+DECLARE state text := 'answered';
+	msg text := '';
+BEGIN
+	BEGIN
+		PERFORM sift.suggest_paths('vj', 'd2');
+	EXCEPTION WHEN OTHERS THEN
+		GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT;
+		state := SQLSTATE;
+	END;
+	RAISE INFO 'suggest_paths over the column refused or stored: %', current_setting('server_version_num')::int < 180000 OR (state = '0A000' AND msg LIKE '%virtual generated column%');
+END $$;
+INFO:  suggest_paths over the column refused or stored: t
+DROP TABLE vg, vgh, vgc, vj, vg_q;
+DROP FUNCTION vg_same(text), vg_compare();
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

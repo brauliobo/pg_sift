@@ -9,7 +9,6 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET seq_page_cost = 10000;
 SET sift.agg_preagg = off;
-SET sift.agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 3;
 
 CREATE TABLE fl (id int, g int, h int, v float8) WITH (fillfactor = 10);

@@ -5,7 +5,7 @@
  * Layout: the entity segments are as ever. For each scope the index also holds scope segments: key-cut segments (flag SIFT_SEG_SCOPE) whose rows are the fact
  * rows replicated once per scope key of their fk, cut by (scope key, time), each entry with the heap address of its fact row. The derived leaf "<key_name>#scope"
  * (SIFT_COLD_SCOPE) holds the scope key; it is NULL in an entity segment. A read of one scope key reads the scope units of that key (not the table), less the
- * rows of the members that changed in the scope relation since the stamp, which it reads through the entity path. The rule is the one of col/conn.h.
+ * rows of the members that changed in the scope relation since the stamp, which it reads through the entity path. The rule is the one of col/v1/conn.h.
  */
 #ifndef SIFT_COL_SCOPE_H
 #define SIFT_COL_SCOPE_H
@@ -16,7 +16,7 @@
 #include "utils/snapshot.h"
 
 #include "col/col.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 
 /* A relation of a declaration and the two columns it names: (member, scope key) for the pairs, (via, scope key) for the joined path, (via, member) for the via relation */
 typedef struct SiftScopeRel
@@ -48,8 +48,10 @@ typedef struct SiftScopeSpecs
 
 /* Parses the option text without the catalog; NULL with *err set to what is wrong */
 extern SiftScopeSpecs *sift_scope_parse(const char *text, const char **err);
-/* The scopes an index declares (ERROR for text that does not parse), NULL when it declares none */
+/* The scopes an index declares, or a sift_table (its option scope as its store holds it): ERROR for text that does not parse, NULL when it declares none */
 extern SiftScopeSpecs *sift_scope_specs(Relation index);
+/* The table the scopes are over: the heap of a sift_col index, a sift_table itself. A sift_table records no btree of its pairs: sift_scope_relation_index answers the plain unique one of the rule, InvalidOid with nothing open when there is none */
+extern Oid	sift_scope_fact_oid(Relation owner);
 /*
  * The leaves a scope index adds after its own and the connection leaves: one "<key_name>#scope" per scope. Appended to defs from n; returns the new count, leaf[] the leaf of each scope,
  * kept[s][leaf]: the leaves the scope segments of scope s store values of (the others are empty in them: no chunk, no directory, no summary)
@@ -75,8 +77,6 @@ typedef enum SiftJournalMake
  * A relation of pairs without a journal index gets one
  */
 extern void sift_scope_resolve(Relation heap, Relation index, bool sticky, SiftJournalMake make);
-/* Is the value store the one of the scope key of an index (the codes of a text or uuid key): no epoch of it begins */
-extern bool sift_scope_key_store_pinned(Oid store);
 /* After ALTER INDEX of any option of a sift_col index: resolves again, so that scope = 'off' or RESET (scope) of an index with no segment removes the dependency */
 extern void sift_scope_alter(Relation index);
 /* col/scope_guard.c: what the declaration needs of its relations and journals, said when the index is made or altered */
@@ -91,6 +91,8 @@ extern bool sift_col_journal_validating;
 /* The validation pass of a concurrent build: the journals the build made empty are filled from the heap under ShareUpdateExclusiveLock, then made valid, as validate_index does for a CREATE INDEX CONCURRENTLY */
 extern void sift_scope_journals_validate(void);
 extern bool sift_scope_journal_pending(Oid index);
+/* Did CREATE INDEX of a scope index make this journal index: a key log that is no column source of an aggregate */
+extern bool sift_scope_journal_managed(Oid index);
 extern void sift_scope_journal_drop_unused(void);
 extern void sift_scope_notice_relation(const char *key_name, const char *name, Relation rel);
 extern void sift_scope_journal_alter(Relation index);
@@ -131,7 +133,7 @@ extern int	sift_scope_cut(const struct SiftColRel *r, int scope, int *cut);
 /*
  * The journal of the scope relation (col/scope_journal.c, INTERFACE.md section 5): a sift_col index of the relation with track_changes = 'ctid' whose first column is the member key and
  * that holds the scope key (the journal index; the lowest oid that qualifies). Its tombstone log keeps a KEYCHG record for the member of every pair an UPDATE, DELETE or key change ended
- * and a KEYADD record for the member of every pair inserted; the rule that reads them is the one of the connections (col/conn.h, docs/COL-CONNECT.md). The scope is the ordinal of the
+ * and a KEYADD record for the member of every pair inserted; the rule that reads them is the one of the connections (col/v1/conn.h, docs/COL-CONNECT.md). The scope is the ordinal of the
  * scope in the declaration of the fact index; a scope whose relation has no journal index vouches for nothing (SIFT_CONN_NO_JOURNAL).
  *
  * A scope of two paths depends on three journals, each with a stamp of its own (column format minor 49): J1, the pairs relation keyed by its member; J2, the joined relation keyed by its via
@@ -186,7 +188,7 @@ extern double sift_scope_refresh_half(Relation index, const struct SiftDirSnapsh
 extern void sift_scope_stale_end(SiftScopeStale *st);
 
 /*
- * The fill: the writer of a build, promotion or merge expands each batch of fact rows by the scope keys of their fk under one stamp of the scope relation (col/scope_fill.c).
+ * The fill: the writer of a build, promotion or merge expands each batch of fact rows by the scope keys of their fk under one stamp of the scope relation (col/v1/scope_fill.c).
  * expand: for the nrows of the batch, the number of scope entries of each row (out_n[row]); the pairs are then taken in order by scope_fill_keys (n entries, row[i], key[i]).
  */
 struct SiftScopeFill;
@@ -206,7 +208,7 @@ extern const int64 *sift_scope_fill_members(struct SiftScopeFill *f, int scope, 
 extern uint32 sift_scope_fill_expand(struct SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap);
 
 /*
- * The floor of the stamps of the index (col/scope_floor.c): the oldest journal positions its scope entries, and the rows that have none, are exact as of, kept in the metapage so that it does not
+ * The floor of the stamps of the index (col/v1/scope_floor.c): the oldest journal positions its scope entries, and the rows that have none, are exact as of, kept in the metapage so that it does not
  * depend on a scope segment existing. SiftScopeStamps: the stamps of a fill, for each scope its journals' (nj of them).
  */
 typedef struct SiftScopeStamps
@@ -226,7 +228,7 @@ extern void sift_scope_floor_raise(struct SiftMetaPageData *meta, const struct S
 extern void sift_scope_floor_after_build(Relation index);
 
 /*
- * The reader (col/scan/scope.c): what a scan that has a scope conjunct of nkeys keys of the scope key_name reads. A row of the scope units of the keys counts when its member
+ * The reader (col/v1/scan/scope.c): what a scan that has a scope conjunct of nkeys keys of the scope key_name reads. A row of the scope units of the keys counts when its member
  * is not in except (the members whose pairs changed since the stamp): the source leaves their stored entries out (sift_col_scope_except). The rows no scope entry describes are the delta:
  * those of the write buffers and the live rows of the entity segments of the members of patch (those of except that have a pair with a key now, read by member key), each read once
  * for each of its member's pairs with a key under the statement's snapshot (sift_col_scope_delta). With once and several keys,
@@ -251,7 +253,7 @@ typedef struct SiftScopePair
 /* Sorts the pairs by (member, key) and keeps each once: the one place that turns the rows of a scope relation, which may hold a pair in several rows, into pairs; returns how many there are */
 extern uint64 sift_scope_pairs_distinct(SiftScopePair *p, uint64 n);
 
-/* The write buffers of an index: the batches of the live rows of each, as the backend keeps them (a scan reads them the same way), and what the scan stamps their rows with (col/scan/scope_delta.c) */
+/* The write buffers of an index: the batches of the live rows of each, as the backend keeps them (a scan reads them the same way), and what the scan stamps their rows with (col/v1/scan/scope_delta.c) */
 struct SiftColBatch;
 typedef struct SiftScopeBuffer
 {
@@ -340,7 +342,7 @@ typedef struct SiftScopeRead
  * 1,003 changed members: 14 to 23% under for 30 keys, 7% over at most for one) and to 18 of 300,000 events (3,000 members of 100 rows, one key, 375 and 3,000 changed members: 25 and 127 million, the price is 20 to 40% over);
  * the reads of thousands of changed members have the members' term only. The unit term is refitted to reads of 300,000 events cut into 38 to 500 units (the members spread over all of them, 375 and 94 changed members: 10,000 to 12,000 a unit
  * for the build of 4.4 and for this one alike, 3,000 to 8,000 up to 300 units and 18,000 beyond), where 43,000 had been fitted to reads of 10 units.
- * The entity path reads a unit as a unit of the scope does (36,700), and the entity rows, the pairs and the rows kept at the figures of an earlier table (the one of col/conn.h).
+ * The entity path reads a unit as a unit of the scope does (36,700), and the entity rows, the pairs and the rows kept at the figures of an earlier table (the one of col/v1/conn.h).
  */
 #define SIFT_SCOPE_BATCH_MAX_ENTRIES	(UINT64CONST(1) << 31)	/* entries (a row and a key each) that one batch of rows expands to: the counts are 32 bits and the arrays double */
 #define SIFT_SCOPE_SETUP_INSTR		450000
@@ -476,7 +478,7 @@ sift_scope_changed_price(const SiftScopeCounts *c)
  * entries (0.84 to 1.44 an entity row) of an index of 7 columns, and 300,000 rows with 481,000 entries of one of 4: 1.64, 2.75 and 5.08 thousand million with 7 columns, 1.77 with 4 (the fit 1,500 an
  * entity row and 680 a column of an entry is within 2% of the four). The WAL is 7.0 bytes an entry the segments have (4.07 MB for 581,800 entries of 300,000 rows, 5 columns; 5.8 in an earlier run of 603,000), 4.2 G
  * instructions with the weight above for 600,000 entries. A read that finds members changed since the stamps pays for them, on top of the filled read, what it costs (agg/scope.c); the reads add that up for the index
- * (col/scope_paid.c, in its metapage), and the refresh is due when what they paid comes to half of what it costs (MAINT_HALF: the same rule as the reads that owe a rewrite): the reads that came are the reads to
+ * (col/v1/scope_paid.c, in its metapage), and the refresh is due when what they paid comes to half of what it costs (MAINT_HALF: the same rule as the reads that owe a rewrite): the reads that came are the reads to
  * come, so that a refresh is made after the delta has cost its price once.
  */
 #define SIFT_SCOPE_REFRESH_ROW_INSTR	1500
@@ -600,7 +602,7 @@ extern SiftScopeRead *sift_scope_read(Relation heap, Relation index, Snapshot sn
 									   const int *leaves, int nleaves, uint32 max_changed, bool lazy);
 extern void sift_scope_read_pairs(SiftScopeRead *rd);
 /*
- * What the reads of the server paid, on top of the filled read, for the pairs changed since the floor of scope ord (col/scope_paid.c), in the instructions of the prices of this file. The sum is in the metapage
+ * What the reads of the server paid, on top of the filled read, for the pairs changed since the floor of scope ord (col/v1/scope_paid.c), in the instructions of the prices of this file. The sum is in the metapage
  * of the index (SiftMetaPageData.scope_paid: logged, so a restart or a crash keeps it, and a standby replays it), zero again in the switch that moves the floor; the epoch is the floor a read
  * paid under (sift_scope_epoch), so that a read that ends after the refill raised the floor adds nothing to the new one. A read notes in its backend (sift_scope_paid_note) and the look of the backend
  * writes the sum (sift_scope_paid_flush: at the end of the statement, up to half the price of the refresh, never in a standby, a parallel operation or a VACUUM); sift_scope_paid is what the metapage has plus what this backend has not written yet

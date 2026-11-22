@@ -604,7 +604,9 @@ SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick'' AND other @@> '
 -- the same with parallel scans: a cutoff from below keeps the parallel ranked scan, one from above has no limit hint and runs serial
 CREATE TABLE pr (id int, body text) WITH (autovacuum_enabled = off, fillfactor = 70, parallel_workers = 2);
 INSERT INTO pr SELECT i, 'common w' || i % 50 || ' x' || i % 7 || repeat(' pad', i % 5) FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX pr_idx ON pr USING sift (body);
+RESET client_min_messages;
 ANALYZE pr;
 SELECT s AS ptie FROM (SELECT sift.score(ctid) AS s FROM pr WHERE body @@> 'w3 OR x2' ORDER BY 1 DESC, id LIMIT 1 OFFSET 700) q \gset
 SET sift.parallel_scan = on;

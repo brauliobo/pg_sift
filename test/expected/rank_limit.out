@@ -5,7 +5,9 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE TABLE rl (id int PRIMARY KEY, body text);
 INSERT INTO rl SELECT i, 'common w' || i % 100 || ' x' || i % 7 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX rl_idx ON rl USING sift (body);
+RESET client_min_messages;
 ANALYZE rl;
 CREATE FUNCTION rl_plan(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q) $$;
 -- the plan is the ranked scan with the limit as a hint

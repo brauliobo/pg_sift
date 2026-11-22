@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The SQL functions that are given the oid of a sift_col index lock the table before the index, as the statements do: DROP TABLE locks the table and then its indexes, so a
 # function that held the index and then asked for the table waited for a DROP TABLE that waited for the index, and PostgreSQL aborted one of them ("deadlock detected"; the DROP
-# when its deadlock_timeout ran out first). sift.index_advice and sift.col_tracking are held between their open and their use of the table by sift.test_col_open_gate (a testing
+# when its deadlock_timeout ran out first). sift.col_tracking is held between their open and their use of the table by sift.test_col_open_gate (a testing
 # build): the function waits for advisory lock 4251, which the test holds, and the DROP TABLE is started and seen waiting before the function is let go, so no timing is involved.
 # Before the fix the function held only the index while it waited, the DROP got the table and waited for the index; now the function holds the table, and the DROP waits for it.
 . "$(dirname "$0")/lib.bash"
@@ -13,7 +14,7 @@ D=$(dir lo)
 sql lo "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 [[ $(sql lo "LOAD 'pg_sift'" "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_col_open_gate'") == 1 ]] || { echo "1..0 # SKIP a release library has no sift.test_col_open_gate (SIFT_TESTING=1)"; exit 0; }
 
-plan 10
+plan 5
 waited() { local n; for n in $(seq 150); do [[ $(sql lo "$1") == "$2" ]] && return 0; sleep 0.1; done; return 1; }
 deadlocks() { grep -c 'deadlock detected' "$D/postgres.log" || true; }
 
@@ -50,6 +51,5 @@ site() {
 	check "$label: no deadlock" test "$(deadlocks)" == "$before"
 }
 
-site "index_advice" "SELECT count(*) FROM sift.index_advice('t_idx')"
 site "col_tracking" "SELECT * FROM sift.col_tracking('t_idx')"
 finish

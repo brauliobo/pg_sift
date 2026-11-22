@@ -80,7 +80,7 @@ SELECT ci_check('parsed', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%'
  parsed: 272 statements, 0 differ
 (1 row)
 
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS lowered;
  lowered 
 ---------
  t
@@ -92,7 +92,7 @@ SELECT ci_check('not kept', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin
  not kept: 272 statements, 0 differ
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 -- the collation of the column or of the pattern
 SELECT ci_check('C collation', 'ci', 1, NULL, 'COLLATE "C"', 1);
                ci_check               

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The scratch directory of a run: paths and ports, the watchdog on its size, the heartbeat, the cleanup on exit, and step().
 # scripts/test-ci-claim.sh runs watchdog from this file. Sourced by scripts/ci.sh; not a script of its own.
 # not /dev/shm by choice: the run needs about a gigabyte and fsync is off, so RAM buys nothing
@@ -11,7 +12,10 @@ SUMMARY_DIR=$TMPBASE/sift-ci-summary   # one line per job of the last run of eac
 BASE_PORT=${SIFT_PORT:-56130}
 # one initdb per run: every cluster starts as a copy (the shell tests and lane clusters, with 1 MB WAL segments; the
 # PostgreSQL::Test::Cluster nodes, which are all WAL tests)
-export SIFT_ROOT=$BASE/root SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPLATE=$BASE/initdb-perl PG_TEST_PORT_DIR=$BASE/ports
+# SIFT_PREBUILT_ROOT (scripts/ci-build.sh): the staged root of the testing library; only the build step of the run (scripts/ci/run.sh) may see it, the jobs that build a flavor of their own must not
+PREBUILT=${SIFT_PREBUILT_ROOT:-}
+unset SIFT_PREBUILT_ROOT
+export SIFT_ROOT=${PREBUILT:-$BASE/root} SIFT_INITDB_TEMPLATE=$BASE/initdb-shell INITDB_TEMPLATE=$BASE/initdb-perl PG_TEST_PORT_DIR=$BASE/ports
 reap_stale "$TMPBASE"
 [[ -n ${CI:-} ]] || "$S/pressure.sh" --wait || echo "ci: the box is still under pressure after the wait, starting anyway" >&2   # a shared box: the lanes would stall the others
 rm -rf "$BASE" && mkdir -p "$LOG" "$LOG/peak" "$BASE/claims" "$BASE/running" "$PG_TEST_PORT_DIR"

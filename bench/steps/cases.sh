@@ -8,9 +8,9 @@
 # plain copy of the rows; every answer is compared with PostgreSQL's. A private cluster (scripts/pgtest.sh, release build) under a CPU quota of --cpus (default 1: one backend, no
 # parallel workers, how the CHANGELOG numbers were taken, raised to the workers plus one when a case declares worker variants; 3 is the budget of the store benchmark, where a parallel normal plan can beat the scan on the planner's cost) and a memory cap; the timed part holds the
 # perf lock. Small by default (--rows 200000); the published size is `bench/bench cases --docs --rows 1000000`.
-#   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): bench/results/cases-scale.tsv and the block "Benchmark cases, by size"
+#   --scales L  every case at --rows times each number of L, the planner's plan at each size (a flip is a finding, not a failure): docs/results/cases-scale.tsv and the block "Benchmark cases, by size"
 #               with its crossover per case; 1,10,100 of 200,000 is 20 million orders (CASES_MEM, --timeout 1800 and a large host: `bench/bench refresh --stages scale --budget 0`)
-#   --docs      write bench/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and bench/out/BENCHMARKS.md
+#   --docs      write docs/results/cases.tsv (only the rows of the cases run) and the blocks of README.md and docs/BENCHMARKS.md
 #   --no-wait   do not wait for a quiet host (the rows say NOISY when it was busy)       --keep   leave the cluster and the container up
 # Settings: CASES_TMP (cluster directory, default /dev/shm/sift-cases: tmpfs, the clusters are scratch and run with fsync off; a run that needs more than 4 GB points it elsewhere), CASES_PORT (56100-56299, default 56262; pg_duckdb 56263), CASES_MEM (memory cap, default 8G).
 set -euo pipefail
@@ -55,7 +55,7 @@ export CAP_MEM=${CASES_MEM:-8G} CAP_CPU=$((CPUS * 100))%
 PGTEST=$REPO/scripts/pgtest.sh
 DUCK=sift-cases-duck DUCK_PORT=$((SIFT_PORT + 1))
 # fsync and autovacuum are off in the test cluster; wal_level and full_page_writes stay as they are: bulk_copy_wal measures the WAL a COPY writes
-# the library is loaded when the server starts: the first statement of a backend is planned with it, and the shared table of verdicts (sift.verdict_cache_kb) exists
+# the library is loaded when the server starts: the first statement of a backend is planned with it, and the shared table of verdicts (sift.shared_cache_kb) exists
 SETTINGS=(shared_preload_libraries=pg_sift max_locks_per_transaction=16384 shared_buffers=${CASES_SHARED_BUFFERS:-1GB} effective_cache_size=${CASES_CACHE_SIZE:-3GB} work_mem=64MB maintenance_work_mem=256MB max_wal_size=${CASES_MAX_WAL:-4GB} jit=off max_worker_processes=16 max_parallel_workers=16
           parallel_setup_cost=100 parallel_tuple_cost=0.01 min_parallel_table_scan_size=1MB min_parallel_index_scan_size=64kB checkpoint_timeout=30min)
 

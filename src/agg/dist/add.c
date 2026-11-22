@@ -92,7 +92,7 @@ dist_new(AggExec *ex, int ai, bool sgn)
 	d->ai = ai;
 	d->chk = DIST_SPARSE_FROM;
 	d->sgn = sgn;
-	d->budget = get_hash_memory_limit();
+	d->budget = agg_mem_slice(ex, SIFT_BUDGET_HASH_MEM, agg_dist_operators(ex->spec) + 1);
 	d->wmark = PG_INT64_MIN;
 	return d;
 }

@@ -181,7 +181,6 @@ DROP INDEX go_x;
 SET sift.col_format_minor = 14;
 CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_array_columns = 'id, b');
 NOTICE:  sift_col index "go_m": 1 advice (track_changes)
-RESET sift.col_format_minor;
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_m', 0);
  entries 
 ---------

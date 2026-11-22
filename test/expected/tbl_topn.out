@@ -159,7 +159,6 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | two_keys=same+topn 25
 (1 row)
 
-RESET sift.search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
     param     
 --------------
@@ -224,14 +223,14 @@ SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT
 (1 row)
 
 -- the GUC
-SET sift.enable_topn = off;
+SET sift.enable_agg = off;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
  no_topn_when_off 
 ------------------
  t
 (1 row)
 
-RESET sift.enable_topn;
+RESET sift.enable_agg;
 -- inserts land in the write buffer of the table, unvacuumed
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40, (ARRAY['paid','shipped'])[1 + i % 2], 20 + i % 90, date '2025-06-01' + i % 20,

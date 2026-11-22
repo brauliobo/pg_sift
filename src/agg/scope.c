@@ -25,9 +25,9 @@
 #include "core/store.h"
 #include "lib/stringinfo.h"
 #include "col/am.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 #include "col/scope.h"
-#include "col/seg.h"
+#include "col/v1/seg.h"
 #include "agg/agg_int.h"
 #include "agg/cost/model.h"
 #include "agg/lookcol_int.h"
@@ -810,7 +810,7 @@ scope_filter(AggExec *ex, int *total, List **add)
 /*
  * What the workers of a scan take from the leader for the scope conjunct. The verdict, the members that changed, the lists of the dedupe and the members listed are made from the snapshot of the
  * statement and from the pairs of the relations at that moment: a worker that made them again could find another (a pair edited in between, a code of a transient map given in another order), and the items of
- * the scan mean what the leader's directory says (col/scan/view.c). So the leader decides once and the participants read what it decided: the units of the scope segments or the entity rows of the members
+ * the scan mean what the leader's directory says (col/v1/scan/view.c). So the leader decides once and the participants read what it decided: the units of the scope segments or the entity rows of the members
  * listed (a read that runs the join as written has no scope conjunct: the workers get the spec of that join), the scope keys, and for the units the members whose stored entries the source leaves out, the drop lists and the values the
  * map of a text or uuid member has codes for, in the order of their codes. The delta (the rows of the buffers and of the changed members, copied for each pair) stays with the leader: its units are numbered after
  * those of the scope segments, which the items of the workers cover (SiftAggExec.delta_units).

@@ -348,7 +348,7 @@ normal_under_floor(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *outpu
 	if (sift_explain_refusals || sift_agg_force || root->query_level != 1 ||
 		(stage != UPPERREL_GROUP_AGG && stage != UPPERREL_ORDERED && stage != UPPERREL_DISTINCT) ||
 		root->parse->cteList != NIL || root->parse->hasSubLinks || root->init_plans != NIL || has_subquery_rte(root->parse) ||
-		/* the scan prices the elements of a set parameter it assumes (sift.agg_param_set_size), not the normal plan's guess */
+		/* the scan prices the elements of a set parameter it assumes (agg_param_set_elems), not the normal plan's guess */
 		query_tree_walker(root->parse, extern_param_walker, NULL, QTW_IGNORE_RT_SUBQUERIES))
 		return false;
 	foreach_ptr(Path, p, output_rel->pathlist)
@@ -442,7 +442,7 @@ keep_startup_paths(PlannerInfo *root, RelOptInfo *grouped, bool was)
 
 /* a table with several column indexes gets a path through each of them that gives a plan (each may hold other columns and paths, and cut its units differently): the cheapest wins */
 void
-sift_agg_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+sift_agg_v1_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	int			outer_pick = agg_index_pick,
 				outer_usable = agg_index_usable;

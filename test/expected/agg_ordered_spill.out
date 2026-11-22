@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET work_mem = '64kB';
+SET hash_mem_multiplier = 200;
 SET sift.agg_force = on;
 CREATE TABLE sp (id int, g int, x float8, d float8, b bigint, nx float8) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO sp SELECT i, i % 7,

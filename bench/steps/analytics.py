@@ -19,7 +19,7 @@ NA when perf may not count them). Per query and store set: one warm-up run, whos
 measured runs with the engines interleaved (the first one rotates every run). ClickHouse is measured the same way: its single query
 thread's CPU time from system.query_log and perf stat on the server process.
 
-Results go to DIR/analytics.json in the layout of bench/results (one row per measurement: dataset tier engine class variant metric value
+Results go to DIR/analytics.json in the layout of docs/results (one row per measurement: dataset tier engine class variant metric value
 min max unit stderr n values) and are printed as a table. A result differs from the reference when a string or integer differs, or a
 number by more than the tolerance (--tol, or the `tol:` line of the query), after sorting the rows by the `key:` columns of the query.
 """

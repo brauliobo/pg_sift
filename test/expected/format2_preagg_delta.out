@@ -1,0 +1,82 @@
+-- A pre-aggregate of a granule less its dead rows (the delta subtraction) stays exact up to 5% dead rows; past that, or when a dead row is the least or greatest of its group,
+-- the granule is read instead. Compacting rewrites the part with its pre-aggregate.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE TABLE t (v int);
+CREATE INDEX t_idx ON t USING sift_store_test (v);
+SELECT sift._test_f2_init('t_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+SELECT sift._test_f2_add_part('t_idx', 1, NULL, 20000, 0, 1, 0, 1, 0, true) > 0 AS added;
+ added 
+-------
+ t
+(1 row)
+
+SELECT min(part_gen) AS g FROM sift._test_f2_parts('t_idx', 1, NULL) \gset
+-- 64 dead rows of granule 0, none the least or greatest of its group: subtracted, and equal to the cube of the live rows
+SELECT sift._test_f2_delete('t_idx', 1, NULL, 1, 1, 64, 100);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT granule, kind, ndead, unsettled FROM sift._test_f2_dv('t_idx', 1, NULL, :g);
+ granule |  kind   | ndead | unsettled 
+---------+---------+-------+-----------
+       0 | array16 |    64 | f
+(1 row)
+
+SELECT sift._test_f2_preagg('t_idx', 1, NULL, :g, 0);
+         _test_f2_preagg         
+---------------------------------
+ delta ok=true cells=5 live=8128
+(1 row)
+
+-- 364 dead rows in the same granule are past the limit of 5% of its rows (and of 64 rows)
+SELECT sift._test_f2_delete('t_idx', 1, NULL, 1, 1000, 300, 2);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT granule, kind, ndead FROM sift._test_f2_dv('t_idx', 1, NULL, :g);
+ granule |  kind   | ndead 
+---------+---------+-------
+       0 | array16 |   364
+(1 row)
+
+SELECT sift._test_f2_preagg('t_idx', 1, NULL, :g, 0);
+             _test_f2_preagg             
+-----------------------------------------
+ fallback ndead=364 rows=8192 delta_ok=0
+(1 row)
+
+-- A part made by compaction carries its pre-aggregate
+SELECT done, rows_in, rows_out, dead_dropped FROM sift._test_f2_compact('t_idx', 1, NULL, ARRAY[:g], true);
+ done | rows_in | rows_out | dead_dropped 
+------+---------+----------+--------------
+ t    |   20000 |    20000 |            0
+(1 row)
+
+SELECT level, nrows, ndead FROM sift._test_f2_parts('t_idx', 1, NULL);
+ level | nrows | ndead 
+-------+-------+-------
+     2 | 20000 |   364
+(1 row)
+
+SELECT sift._test_f2_check('t_idx');
+              _test_f2_check               
+-------------------------------------------
+ parts=1 quarantined=11/12 meta_free=18/32
+(1 row)
+
+DROP TABLE t;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

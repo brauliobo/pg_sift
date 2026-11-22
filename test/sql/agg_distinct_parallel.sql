@@ -4,6 +4,7 @@
 -- a FILTER, a small work_mem (the sets go through a sort), the leader out of the scan, and a global aggregate. mode: parallel (workers planned
 -- in the SiftAgg node), serial (SiftAgg alone), none (the normal plan).
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;

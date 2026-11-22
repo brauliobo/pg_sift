@@ -3,7 +3,7 @@
  * and the documents of a page (sort, order check, analysis, flush).
  */
 #include "build_int.h"
-#include "core/membudget.h"
+#include "core/memtrack.h"
 
 /* Reserves the next directory entry; its generation is the entry's 1-based position */
 static SiftSegEntry *
@@ -167,6 +167,17 @@ count_groups(SiftRun **runs, int nruns, const SegLimits *lim)
 	return n;
 }
 
+/* The most postings the runs add up to: a limit of that size no longer divides them into groups */
+static uint64
+runs_df(SiftRun **runs, int nruns)
+{
+	uint64		df = 0;
+
+	for (int i = 0; i < nruns; i++)
+		df += runs[i]->maxdf;
+	return df;
+}
+
 /* After the scan the progress counts the docs of the segments written, of all that were analyzed */
 static void
 progress_written(BuildState *bs, const SiftSegEntry *entry)
@@ -212,8 +223,11 @@ end_segment(BuildState *bs)
 	 */
 	while (count_groups(bs->runs, bs->nruns, &lim) > room)
 	{
-		SIFT_INVARIANT(lim.df <= PG_INT64_MAX / 2, "sift: index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index),
-					   SIFT_DIR_POLICY_MAX);
+		if (lim.df >= runs_df(bs->runs, bs->nruns))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("index \"%s\" would need more than %d segments", RelationGetRelationName(bs->index), SIFT_DIR_POLICY_MAX),
+					 errhint("Index the table in parts, such as its partitions.")));
 		lim.df *= 2;
 	}
 	while (first < bs->nruns)
@@ -275,7 +289,6 @@ flush_page(BuildState *bs)
 	resetStringInfo(&bs->text);
 	sift_analyzer_reset(bs->an);
 	progress_docs(bs, false);
-	SIFT_MEM_CHECKPOINT();
 	CHECK_FOR_INTERRUPTS();
 }
 

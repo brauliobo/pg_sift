@@ -54,7 +54,7 @@ check "... nothing is left to rewrite" test "$(sql primary "SELECT coalesce(sift
 printf 'INSERT INTO t VALUES (-1, 7, 1, $$w$$);\n' >"$(dir primary)/w.sql"
 pgbench_bg primary 2 120 -f "$(dir primary)/w.sql"
 WRITERS=$PGBENCH_PID
-sleep 1
+wait_for '[[ $(sql primary "SELECT count(*) FROM t WHERE id = -1") -gt 0 ]]' 30
 sql primary "$OPTS" "$SMALL" "REINDEX INDEX CONCURRENTLY t_idx" >/dev/null || bail "concurrent reindex under writers failed"
 kill "$WRITERS" 2>/dev/null; wait "$WRITERS" 2>/dev/null
 # the rows the writers added since the build are in write buffers, which are live data that "live bytes" (the column segments) does not count: 0.3 to 0.5 MB at the pace

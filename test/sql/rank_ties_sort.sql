@@ -9,7 +9,9 @@ CREATE TABLE docs (id int PRIMARY KEY, body text);
 INSERT INTO docs
 SELECT g, 'tie ' || repeat('pad ', g % 6) || CASE WHEN g % 50 = 0 THEN 'rare ' ELSE '' END || CASE WHEN g % 7 = 0 THEN 'seven' ELSE 'other' END
 FROM generate_series(1, 20000) g;
+SET client_min_messages = warning;
 CREATE INDEX docs_idx ON docs USING sift (body);
+RESET client_min_messages;
 VACUUM ANALYZE docs;
 
 -- the rows of the sort of every match (no limit: one search of all of them), and the searches of the scan under the sort key

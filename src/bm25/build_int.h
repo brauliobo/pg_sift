@@ -28,7 +28,7 @@
 #include "bm25/build.h"
 #include "core/parbuild.h"
 #include "storage/condition_variable.h"
-#include "table/table.h"
+#include "table/v1/table_v1.h"
 #include "core/visibility.h"
 
 #define BATCH			1024

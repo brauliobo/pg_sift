@@ -1,0 +1,186 @@
+-- Format 2.0 sift_table column deltas: an UPDATE of a few columns of a row of a published part keeps the row's address (ctid) and writes a record to the partition's chain of
+-- SIFT_PT_COL_DELTA pages; every other UPDATE is the delete and insert it was. Every check raises on failure and prints one row (name, ok). About 20 s.
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+SET sift.test_create_format1 = off;
+SET check_function_bodies = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '240s';
+
+CREATE SCHEMA f2cd;
+SET search_path = f2cd, public;
+
+CREATE FUNCTION chk(name text, got anyelement, want anyelement) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
+	RETURN name || ': ok';
+END $$;
+
+-- the pages of the table that are of type SIFT_PT_COL_DELTA (42)
+CREATE FUNCTION delta_pages(rel regclass) RETURNS int LANGUAGE sql AS $$
+	SELECT count(*)::int FROM generate_series(0, pg_relation_size(rel) / 8192 - 1) n
+	WHERE get_byte(get_raw_page(rel::text, n::int), 8176) + 256 * get_byte(get_raw_page(rel::text, n::int), 8177) = 42 $$;
+
+-- the same table twice, a heap and a sift_table, with the same rows: the statements of a section run on both and the rows must agree
+CREATE FUNCTION make_pair(n int) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	cols text := (SELECT string_agg(format('n%s int', i), ', ') FROM generate_series(6, 32) i);
+	vals text := (SELECT string_agg('i', ', ') FROM generate_series(6, 32) i);
+BEGIN
+	EXECUTE format('CREATE TABLE o (id int PRIMARY KEY, customer_id int, region int, status int, amount int, %s, notes text) USING sift_table', cols);
+	EXECUTE format('CREATE TABLE oh (id int PRIMARY KEY, customer_id int, region int, status int, amount int, %s, notes text) USING heap', cols);
+	CREATE INDEX o_customer ON o (customer_id);
+	CREATE INDEX o_region ON o (region);
+	EXECUTE format('INSERT INTO o SELECT i, i %% 100, i %% 10, 0, i, %s, ''note '' || i FROM generate_series(1, %s) i', vals, n);
+	EXECUTE format('INSERT INTO oh SELECT * FROM o');
+END $$;
+
+CREATE FUNCTION same_rows() RETURNS bool LANGUAGE sql AS $$
+	SELECT NOT EXISTS (SELECT * FROM o EXCEPT SELECT * FROM oh) AND NOT EXISTS (SELECT * FROM oh EXCEPT SELECT * FROM o) $$;
+
+SELECT make_pair(20000);
+SELECT busy FROM sift.table_maintain('o');
+SELECT chk('rows agree to begin with', same_rows(), true);
+SELECT chk('no delta page yet', delta_pages('o'), 0);
+
+-- 1. one column and four columns of a row of a part: the address stays, a record is written
+SELECT ctid::text AS c0 FROM o WHERE id = 5 \gset
+WITH u AS (UPDATE o SET status = 7 WHERE id = 5 RETURNING ctid::text AS c) SELECT chk('one column keeps the ctid', c, :'c0') FROM u;
+UPDATE oh SET status = 7 WHERE id = 5;
+SELECT chk('a delta page was written', delta_pages('o') > 0, true);
+SELECT chk('one column value', status, 7) FROM o WHERE id = 5;
+SELECT chk('other columns as they were', amount, 5) FROM o WHERE id = 5;
+SELECT ctid::text AS c1 FROM o WHERE id = 6 \gset
+WITH u AS (UPDATE o SET status = 1, amount = amount + 1, n7 = 0, notes = 'four' WHERE id = 6 RETURNING ctid::text AS c) SELECT chk('four columns keep the ctid', c, :'c1') FROM u;
+UPDATE oh SET status = 1, amount = amount + 1, n7 = 0, notes = 'four' WHERE id = 6;
+SELECT chk('rows agree after deltas', same_rows(), true);
+SELECT chk('a delta is seen by the primary key', status, 1) FROM o WHERE id = 6;
+SET enable_seqscan = off;
+SELECT chk('a delta is seen through an index', count(*)::int, 1) FROM o WHERE customer_id = 6 AND notes = 'four';
+RESET enable_seqscan;
+
+-- 2. what falls back to the row it was: an indexed column, more than a quarter of the columns, a value over 1 KB
+SELECT ctid::text AS c2 FROM o WHERE id = 8 \gset
+WITH u AS (UPDATE o SET region = 99 WHERE id = 8 RETURNING ctid::text AS c) SELECT chk('an indexed column moves the row', c <> :'c2', true) FROM u;
+UPDATE oh SET region = 99 WHERE id = 8;
+SET enable_seqscan = off;
+SELECT chk('the index finds the moved row', count(*)::int, 1) FROM o WHERE region = 99;
+RESET enable_seqscan;
+SELECT ctid::text AS c3 FROM o WHERE id = 9 \gset
+WITH u AS (UPDATE o SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0 WHERE id = 9 RETURNING ctid::text AS c)
+SELECT chk('more than a quarter of the columns moves the row', c <> :'c3', true) FROM u;
+UPDATE oh SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0 WHERE id = 9;
+SELECT ctid::text AS c4 FROM o WHERE id = 10 \gset
+WITH u AS (UPDATE o SET notes = repeat('x', 5000) WHERE id = 10 RETURNING ctid::text AS c) SELECT chk('a value over 1 KB moves the row', c <> :'c4', true) FROM u;
+UPDATE oh SET notes = repeat('x', 5000) WHERE id = 10;
+SELECT chk('rows agree after fallbacks', same_rows(), true);
+
+-- 3. rollback and savepoints write nothing; a transaction sees its own deltas, command by command
+SELECT delta_pages('o') AS before_pages \gset
+BEGIN;
+UPDATE o SET status = 50 WHERE id = 11;
+ROLLBACK;
+SELECT chk('rollback writes no page', delta_pages('o'), :before_pages);
+SELECT chk('rollback leaves the value', status, 0) FROM o WHERE id = 11;
+BEGIN;
+SAVEPOINT a;
+UPDATE o SET status = 51 WHERE id = 12;
+ROLLBACK TO a;
+SELECT chk('rollback to savepoint leaves the value', status, 0) FROM o WHERE id = 12;
+UPDATE o SET status = 52 WHERE id = 12;
+SAVEPOINT b;
+UPDATE o SET status = status + 1 WHERE id = 12;
+RELEASE b;
+SELECT chk('chained updates in a transaction', status, 53) FROM o WHERE id = 12;
+COMMIT;
+UPDATE oh SET status = 53 WHERE id = 12;
+SELECT chk('chained updates after commit', status, 53) FROM o WHERE id = 12;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) AS n0 FROM o \gset
+UPDATE o SET status = status + 1 WHERE id = 12;
+UPDATE o SET status = status + 1 WHERE id = 12;
+SELECT chk('two updates of one row in a transaction', status, 55) FROM o WHERE id = 12;
+COMMIT;
+UPDATE oh SET status = 55 WHERE id = 12;
+SELECT chk('rows agree after transactions', same_rows(), true);
+
+-- 4. a delete after a delta
+UPDATE o SET status = 9 WHERE id = 13;
+DELETE FROM o WHERE id = 13;
+DELETE FROM oh WHERE id = 13;
+SELECT chk('a deleted row with a delta is gone', count(*)::int, 0) FROM o WHERE id = 13;
+SELECT chk('rows agree after the delete', same_rows(), true);
+
+-- 5. an AFTER UPDATE trigger sees the old and the new row: no delta, so both are exact
+CREATE TABLE trig_log (id int, old_status int, new_status int);
+CREATE FUNCTION log_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+	INSERT INTO trig_log VALUES (NEW.id, OLD.status, NEW.status);
+	RETURN NULL;
+END $$;
+CREATE TRIGGER o_after AFTER UPDATE ON o FOR EACH ROW EXECUTE FUNCTION log_update();
+SELECT ctid::text AS c5 FROM o WHERE id = 14 \gset
+WITH u AS (UPDATE o SET status = 3 WHERE id = 14 RETURNING ctid::text AS c) SELECT chk('a trigger makes the update a row update', c <> :'c5', true) FROM u;
+SELECT chk('the trigger saw both rows', (old_status, new_status) = (0, 3), true) FROM trig_log WHERE id = 14;
+DROP TRIGGER o_after ON o;
+UPDATE oh SET status = 3 WHERE id = 14;
+
+-- 6. aggregates over patched and clean columns equal the heap's
+SELECT chk('sum of a patched column', (SELECT sum(status) FROM o), (SELECT sum(status) FROM oh));
+SELECT chk('sum of a clean column', (SELECT sum(amount) FROM o), (SELECT sum(amount) FROM oh));
+SELECT chk('group by a clean column with a patched one', (SELECT array_agg(x ORDER BY region) FROM (SELECT region, sum(status) FROM o GROUP BY region) x)::text,
+		   (SELECT array_agg(x ORDER BY region) FROM (SELECT region, sum(status) FROM oh GROUP BY region) x)::text);
+
+-- 7. a column that was added after the part was written, then patched; dropped and renamed columns
+ALTER TABLE o ADD COLUMN late int DEFAULT 7;
+ALTER TABLE oh ADD COLUMN late int DEFAULT 7;
+SELECT chk('the default of an added column', count(*)::int, (SELECT count(*)::int FROM o)) FROM o WHERE late = 7;
+SELECT ctid::text AS c6 FROM o WHERE id = 15 \gset
+WITH u AS (UPDATE o SET late = 8 WHERE id = 15 RETURNING ctid::text AS c) SELECT chk('an added column keeps the ctid', c, :'c6') FROM u;
+UPDATE oh SET late = 8 WHERE id = 15;
+SELECT chk('an added column was patched', late, 8) FROM o WHERE id = 15;
+ALTER TABLE o RENAME COLUMN status TO state;
+ALTER TABLE oh RENAME COLUMN status TO state;
+UPDATE o SET state = 4 WHERE id = 16;
+UPDATE oh SET state = 4 WHERE id = 16;
+SELECT chk('a renamed column was patched', state, 4) FROM o WHERE id = 16;
+ALTER TABLE o DROP COLUMN n32;
+ALTER TABLE oh DROP COLUMN n32;
+SELECT chk('rows agree after DDL', same_rows(), true);
+
+-- 8. VACUUM folds the records into the parts: the values stay, the addresses stay, the size does not grow with the rounds
+SELECT chk('there is a chain to fold', delta_pages('o') > 0, true);
+SELECT ctid::text AS c7 FROM o WHERE id = 17 \gset
+UPDATE o SET state = 21 WHERE id = 17;
+UPDATE oh SET state = 21 WHERE id = 17;
+VACUUM (FREEZE) o;
+SELECT busy FROM sift.table_maintain('o');
+SELECT chk('a folded value', state, 21) FROM o WHERE id = 17;
+SELECT chk('a folded row keeps its ctid', ctid::text, :'c7') FROM o WHERE id = 17;
+SELECT chk('rows agree after VACUUM', same_rows(), true);
+SELECT pg_relation_size('o') AS first_size \gset
+SELECT unnest(ARRAY['UPDATE o SET state = state + 1 WHERE id BETWEEN 100 AND 200', 'UPDATE oh SET state = state + 1 WHERE id BETWEEN 100 AND 200', 'VACUUM (FREEZE) o'])
+FROM generate_series(1, 20) \gexec
+SELECT chk('twenty rounds of updates and VACUUM do not grow the table', pg_relation_size('o') <= :first_size * 2, true);
+SELECT chk('rows agree after the rounds', same_rows(), true);
+
+-- 9. the log written by an update is small: well under the row it would have been
+SELECT pg_current_wal_lsn() AS lsn0 \gset
+UPDATE o SET state = state + 1 WHERE id BETWEEN 1000 AND 1299;
+SELECT chk('WAL per patched row stays under 600 bytes', pg_wal_lsn_diff(pg_current_wal_lsn(), :'lsn0'::pg_lsn) / 300 < 600, true);
+UPDATE oh SET state = state + 1 WHERE id BETWEEN 1000 AND 1299;
+SELECT chk('rows agree at the end', same_rows(), true);
+
+-- 10. one statement updates 10000 rows: the row locks it takes escalate to the table and its memory does not grow with the rows
+CREATE TABLE big (id int PRIMARY KEY, v int) USING sift_table;
+INSERT INTO big SELECT i, 0 FROM generate_series(1, 10000) i;
+UPDATE big SET v = v + 1;
+SELECT chk('every row of a 10000 row UPDATE changed', (SELECT count(*) FROM big WHERE v = 1), 10000::bigint);
+UPDATE big SET v = v + 1 WHERE id <= 5000;
+SELECT chk('a second statement sees the first', (SELECT sum(v) FROM big), 15000::bigint);
+RESET search_path;
+DROP SCHEMA f2cd CASCADE;
+DROP EXTENSION pageinspect;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

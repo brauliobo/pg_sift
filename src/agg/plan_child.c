@@ -23,6 +23,7 @@
 #include "utils/selfuncs.h"
 
 #include "agg/agg.h"
+#include "agg/plan/safety.h"
 #include "agg/plan_int.h"
 #include "agg/plan_join_int.h"
 
@@ -439,7 +440,7 @@ first_lookup(AggCtx *c, JoinCtx *jc)
 	if (!IsA(linitial(q->jointree->fromlist), RangeTblRef) || ((RangeTblRef *) linitial(q->jointree->fromlist))->rtindex != 1)
 		return;
 	rte = linitial_node(RangeTblEntry, q->rtable);
-	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || rte->securityQuals != NIL ||
+	if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION || rte->tablesample != NULL || agg_rte_has_rls(jc->subroot, rte) ||
 		has_subclass(rte->relid) || (brel = jc->subroot->simple_rel_array[1]) == NULL || !agg_lookup_fits(brel->tuples, brel->reltarget->width))
 		return;
 	conj = IsA(q->jointree->quals, List) ? (List *) q->jointree->quals : list_make1(q->jointree->quals);
@@ -719,7 +720,7 @@ child_rows_fit(AggCtx *c, JoinCtx *jc)
 	double		inputs = Min(estimate_num_groups(c->root, jc->args, reach, NULL, NULL), reach);
 
 	return agg_lookup_fits(jc->cpath->rows * inputs, jc->cpath->pathtarget->width) ||
-		agg_refuse_limit(JOIN_CHILD, lookup_kb, sift_agg_lookup_max_kb, "%s is estimated at %.0f rows for each of %.0f distinct inputs, of width %d", rt_fetch(jc->rti, c->root->parse->rtable)->eref->aliasname, jc->cpath->rows, inputs, jc->cpath->pathtarget->width);
+		agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "%s is estimated at %.0f rows for each of %.0f distinct inputs, of width %d", rt_fetch(jc->rti, c->root->parse->rtable)->eref->aliasname, jc->cpath->rows, inputs, jc->cpath->pathtarget->width);
 }
 
 static Node *

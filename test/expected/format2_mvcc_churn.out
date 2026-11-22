@@ -1,0 +1,378 @@
+-- Format major 2: what a snapshot trusts of a part and of its deletion vector. A writer older than the snapshot has ended, not committed: only a part sealed for its inserters (all of
+-- them committed) and a deletion vector settled for its deleters are read without the version vector and the log; a part of a transaction that aborted is never sealed and is never
+-- seen. The heap's visibility map answers for the rows of a granule only while the part is current. A manifest commit takes no transaction id of its own, a VACUUM's deletes are in
+-- the manifest before the map says its pages are all-visible, and a delete the partition lost its row to does not stop a fold.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+-- Inserters: committed, aborted, and the seal (flag 512)
+CREATE TABLE v (v int);
+CREATE INDEX v_idx ON v USING sift_store_test (v);
+SELECT sift._test_f2_init('v_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+BEGIN;
+SELECT pg_current_xact_id()::text::int8 AS aborted \gset
+ROLLBACK;
+SELECT pg_current_xact_id()::text::int8 AS committed \gset
+SELECT sift._test_f2_add_part('v_idx', 1, NULL, 1000, 0, 100000, :aborted) AS ga \gset
+SELECT sift._test_f2_add_part('v_idx', 1, NULL, 1000, 5000, 200000, :committed) AS gc \gset
+SELECT sift._test_f2_add_part('v_idx', 1, NULL, 1000, 9000, 300000, 0) AS gf \gset
+SELECT pg_current_xact_id() IS NOT NULL AS later_xid;
+ later_xid 
+-----------
+ t
+(1 row)
+
+SELECT g, flags & 512 <> 0 AS sealed FROM (VALUES (:ga), (:gc), (:gf)) v(g), LATERAL (SELECT flags FROM sift._test_f2_parts('v_idx', 1, NULL) WHERE part_gen = g) p ORDER BY g;
+ g | sealed 
+---+--------
+ 1 | f
+ 3 | f
+ 5 | t
+(3 rows)
+
+SELECT visible, judged FROM sift._test_f2_visible('v_idx', 1, NULL, :ga);
+ visible |                               judged                               
+---------+--------------------------------------------------------------------
+       0 | clean=0 settled_dv=0 granule_settled=0 per_row=1 rows_checked=1000
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('v_idx', 1, NULL, :gc);
+ visible |                               judged                               
+---------+--------------------------------------------------------------------
+    1000 | clean=0 settled_dv=0 granule_settled=0 per_row=1 rows_checked=1000
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('v_idx', 1, NULL, :gf);
+ visible |                             judged                              
+---------+-----------------------------------------------------------------
+    1000 | clean=1 settled_dv=0 granule_settled=0 per_row=0 rows_checked=0
+(1 row)
+
+SELECT sealed, flags & 512 <> 0 AS has_flag FROM sift._test_f2_seal('v_idx', 1, NULL, :ga);
+ sealed | has_flag 
+--------+----------
+ f      | f
+(1 row)
+
+SELECT sealed, flags & 512 <> 0 AS has_flag FROM sift._test_f2_seal('v_idx', 1, NULL, :gc);
+ sealed | has_flag 
+--------+----------
+ t      | t
+(1 row)
+
+SELECT sealed, flags & 512 <> 0 AS has_flag FROM sift._test_f2_seal('v_idx', 1, NULL, :gc);
+ sealed | has_flag 
+--------+----------
+ f      | t
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('v_idx', 1, NULL, :ga);
+ visible |                               judged                               
+---------+--------------------------------------------------------------------
+       0 | clean=0 settled_dv=0 granule_settled=0 per_row=1 rows_checked=1000
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('v_idx', 1, NULL, :gc);
+ visible |                             judged                              
+---------+-----------------------------------------------------------------
+    1000 | clean=1 settled_dv=0 granule_settled=0 per_row=0 rows_checked=0
+(1 row)
+
+-- sealing keeps the bounds of the writers: a snapshot older than the committer does not see its rows as there
+SELECT min_xid = max_xid AND max_xid = :committed AS bounds_kept FROM sift._test_f2_part_xids('v_idx', 1, NULL, :gc);
+ bounds_kept 
+-------------
+ t
+(1 row)
+
+-- the compaction drops the rows of the writer that aborted and freezes those of the one that committed
+SELECT done, rows_in, rows_out, aborted_dropped, frozen FROM sift._test_f2_compact('v_idx', 1, NULL, ARRAY[:ga, :gc]);
+ done | rows_in | rows_out | aborted_dropped | frozen 
+------+---------+----------+-----------------+--------
+ t    |    2000 |     1000 |            1000 |   1000
+(1 row)
+
+-- Deleters: a delete that rolled back never hides a row, and its vector is not settled; one that committed does, and it is
+CREATE TABLE w (v int);
+CREATE INDEX w_idx ON w USING sift_store_test (v);
+SELECT sift._test_f2_init('w_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+SELECT sift._test_f2_add_part('w_idx', 1, NULL, 20000, 0, 100000, 0) AS gw \gset
+BEGIN;
+SELECT pg_current_xact_id()::text::int8 AS aborted_del \gset
+SELECT sift._test_f2_delete('w_idx', 1, NULL, 100000, 0, 200, 1, :aborted_del);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+ROLLBACK;
+SELECT pg_current_xact_id() IS NOT NULL AS later_xid;
+ later_xid 
+-----------
+ t
+(1 row)
+
+SELECT flags & 1024 <> 0 AS dv_settled FROM sift._test_f2_parts('w_idx', 1, NULL);
+ dv_settled 
+------------
+ f
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('w_idx', 1, NULL, :gw);
+ visible |                               judged                               
+---------+--------------------------------------------------------------------
+   20000 | clean=0 settled_dv=0 granule_settled=2 per_row=1 rows_checked=8192
+(1 row)
+
+SELECT sift._test_f2_delete('w_idx', 1, NULL, 100000, 300, 200, 1, :committed);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT flags & 1024 <> 0 AS dv_settled FROM sift._test_f2_parts('w_idx', 1, NULL);
+ dv_settled 
+------------
+ t
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('w_idx', 1, NULL, :gw);
+ visible |                             judged                              
+---------+-----------------------------------------------------------------
+   19800 | clean=0 settled_dv=1 granule_settled=0 per_row=0 rows_checked=0
+(1 row)
+
+-- the deleters that committed are gone from the vector by the first rewrite, and the dead rows with them; the one that aborted never counted
+SELECT done, rows_in, rows_out, dead_dropped FROM sift._test_f2_compact('w_idx', 1, NULL, ARRAY[:gw]);
+ done | rows_in | rows_out | dead_dropped 
+------+---------+----------+--------------
+ t    |   20000 |    20000 |            0
+(1 row)
+
+-- a vector whose deleters all committed is settled: its dead rows are dead outright
+CREATE TABLE x (v int);
+CREATE INDEX x_idx ON x USING sift_store_test (v);
+SELECT sift._test_f2_init('x_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+SELECT sift._test_f2_add_part('x_idx', 1, NULL, 1000, 0, 100000, 0) AS gz \gset
+SELECT sift._test_f2_delete('x_idx', 1, NULL, 100000, 0, 100, 1, :committed);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT flags & 1024 <> 0 AS dv_settled FROM sift._test_f2_parts('x_idx', 1, NULL);
+ dv_settled 
+------------
+ t
+(1 row)
+
+SELECT visible, judged FROM sift._test_f2_visible('x_idx', 1, NULL, :gz);
+ visible |                             judged                              
+---------+-----------------------------------------------------------------
+     900 | clean=0 settled_dv=1 granule_settled=0 per_row=0 rows_checked=0
+(1 row)
+
+-- A delete that names no row of any part of its partition (its part was compacted away) is dropped, and the fold that holds it finishes
+SELECT sift._test_f2_delete('w_idx', 1, NULL, 999999, 0, 100, 1);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT sift._test_f2_delete('w_idx', 1, NULL, 999999, 0, 10, 1);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT sift._test_f2_pending('w_idx', 1, NULL);
+ _test_f2_pending 
+------------------
+ recs=10 pages=1
+(1 row)
+
+SELECT sift._test_f2_delete('w_idx', 1, NULL, 999999, 20, 70, 1);
+ _test_f2_delete 
+-----------------
+ 
+(1 row)
+
+SELECT sift._test_f2_pending('w_idx', 1, NULL);
+ _test_f2_pending 
+------------------
+ recs=0 pages=0
+(1 row)
+
+SELECT sift._test_f2_check('w_idx') ~ '^parts=' AS consistent;
+ consistent 
+------------
+ t
+(1 row)
+
+-- A manifest commit and a reclaim take no transaction id of their own
+SELECT sift._test_f2_add_part('w_idx', 1, NULL, 100, 70000, 700000, 0) AS gx \gset
+BEGIN;
+SELECT done FROM sift._test_f2_compact('w_idx', 1, NULL, ARRAY[:gx]);
+ done 
+------
+ t
+(1 row)
+
+SELECT sift._test_f2_reclaim('w_idx') >= 0 AS reclaimed;
+ reclaimed 
+-----------
+ t
+(1 row)
+
+SELECT txid_current_if_assigned() IS NULL AS no_xid;
+ no_xid 
+--------
+ t
+(1 row)
+
+COMMIT;
+-- Subtransactions: the rows a transaction commits are written under its own transaction id, those of its savepoints included, and an aborted savepoint writes none
+CREATE TABLE s (v int);
+CREATE INDEX s_idx ON s USING sift_store_test (v);
+SELECT sift._test_f2_init('s_idx');
+ _test_f2_init 
+---------------
+ 
+(1 row)
+
+BEGIN;
+SELECT sift._test_f2_stage('s_idx', 100, 0, 1, -1);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+SAVEPOINT a;
+SELECT sift._test_f2_stage('s_idx', 100, 10000, 100000, -1);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+ROLLBACK TO a;
+SAVEPOINT b;
+SELECT sift._test_f2_stage('s_idx', 100, 20000, 200000, -1);
+ _test_f2_stage 
+----------------
+ 
+(1 row)
+
+RELEASE b;
+SELECT pg_current_xact_id()::text::int8 AS top \gset
+COMMIT;
+SELECT count(*) AS parts, bool_and(min_xid = :top AND max_xid = :top) AS under_top_xid, sum(nrows) AS rows
+	FROM sift._test_f2_parts('s_idx', 1, NULL) p, LATERAL sift._test_f2_part_xids('s_idx', 1, NULL, p.part_gen);
+ parts | under_top_xid | rows 
+-------+---------------+------
+     1 | t             |  200
+(1 row)
+
+-- The heap's visibility map: a granule of a table that VACUUM made all-visible is counted without a heap page, rows on pages that are not all-visible are asked of the heap, a part
+-- read before VACUUM removed its dead rows does not trust the map
+CREATE TABLE m (id int, v int);
+INSERT INTO m SELECT g, g % 100 FROM generate_series(1, 40000) g;
+CREATE INDEX m_idx ON m USING sift_col (id, v) WITH (key_order = 'id');
+VACUUM m;
+SELECT count(*) AS heap_rows FROM m;
+ heap_rows 
+-----------
+     40000
+(1 row)
+
+SELECT visible, heap_pages FROM sift._test_f2_vis_count('m_idx', 'm');
+ visible | heap_pages 
+---------+------------
+   40000 |          0
+(1 row)
+
+INSERT INTO m SELECT g, g % 100 FROM generate_series(40001, 40500) g;
+SELECT count(*) AS heap_rows FROM m;
+ heap_rows 
+-----------
+     40500
+(1 row)
+
+SELECT visible, heap_pages > 0 AS heap_asked, heap_pages < pg_relation_size('m') / 8192 / 4 AS few_pages FROM sift._test_f2_vis_count('m_idx', 'm');
+ visible | heap_asked | few_pages 
+---------+------------+-----------
+   40000 | t          | t
+(1 row)
+
+SET work_mem = '64kB';
+BEGIN;
+INSERT INTO m SELECT g, g % 100 FROM generate_series(50001, 56000) g;
+ROLLBACK;
+RESET work_mem;
+SELECT count(*) AS heap_rows FROM m;
+ heap_rows 
+-----------
+     40500
+(1 row)
+
+SELECT visible FROM sift._test_f2_vis_count('m_idx', 'm');
+ visible 
+---------
+   40000
+(1 row)
+
+DELETE FROM m WHERE id <= 500;
+SELECT count(*) AS heap_rows FROM m;
+ heap_rows 
+-----------
+     40000
+(1 row)
+
+SELECT visible FROM sift._test_f2_vis_count('m_idx', 'm');
+ visible 
+---------
+   39500
+(1 row)
+
+VACUUM m;
+SELECT count(*) AS heap_rows FROM m;
+ heap_rows 
+-----------
+     40000
+(1 row)
+
+SELECT visible, heap_pages FROM sift._test_f2_vis_count('m_idx', 'm');
+ visible | heap_pages 
+---------+------------
+   40000 |          0
+(1 row)
+
+SELECT visible, heap_pages > 0 AS heap_asked FROM sift._test_f2_vis_count('m_idx', 'm', true);
+ visible | heap_asked 
+---------+------------
+   40000 | t
+(1 row)
+
+DROP TABLE v;
+DROP TABLE w;
+DROP TABLE x;
+DROP TABLE s;
+DROP TABLE m;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

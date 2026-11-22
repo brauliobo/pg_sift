@@ -591,6 +591,7 @@ extern bool nospill_fits(const SiftAggSpec *s, bool reruns, const char **why);
 extern double group_table_bytes(const SiftAggSpec *s, double groups, double *state);
 extern double group_lane_bytes(const SiftAggSpec *s, double groups);
 extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
+extern bool agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s);
 
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
@@ -668,6 +669,8 @@ typedef struct ScopeItem
 } ScopeItem;
 /* the column's plain integer btree equality, a plain column of the item rti, and the value that the condition q binds the key column of the item rti to (plan_scope.c) */
 extern bool integer_eq(Oid opno);
+extern bool key_eq(Oid opno, Oid collation);
+extern Var *scope_key_equality(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q);
 extern Var *item_var(Node *n, Index rti);
 extern Node *key_operand(Index rti, const AttrNumber *map, int nmap, AttrNumber key, Node *q);
 /* a select that only projects columns of its tables and filters them: no aggregate, grouping, DISTINCT, LIMIT, ORDER BY, sub-select, CTE or lock */

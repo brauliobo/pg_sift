@@ -1,4 +1,4 @@
--- The words of a directory entry that say which transactions a segment waits for (col/xstamp.h): next:base:open, with next the xid after the latest inserter, base the latest of the
+-- The words of a directory entry that say which transactions a segment waits for (col/v1/xstamp.h): next:base:open, with next the xid after the latest inserter, base the latest of the
 -- transactions that had not finished and bit i of open the transaction i steps before it. The encoding and the union that a merge makes of two of them, on xids of the test's choosing,
 -- including a wrap of the xid counter (the special xids 0 to 2 are skipped) and the 64 xids a stamp reaches; a union that cannot say what both say says nothing.
 CREATE EXTENSION pg_sift;

@@ -1,4 +1,4 @@
-# The quantized keys of a compact chunk (src/col/gquant.c): the standalone test, against the portable host header (no backend, no SQLite library).
+# The quantized keys of a compact chunk (src/col/v1/gquant.c): the standalone test, against the portable host header (no backend, no SQLite library).
 #   make test [N=1]       round trips, bucket bounds, every SIMD level against the scalar decoder on sound and damaged blobs
 #   make SANITIZE=1 test  ASan + UBSan build
 CC      ?= gcc
@@ -13,9 +13,9 @@ CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-re
 OUT     := $(OUT)-san
 endif
 
-$(OUT)/test: test.c $(SRC)/col/gquant.c $(SRC)/col/gquant.h
+$(OUT)/test: test.c $(SRC)/col/v1/gquant.c $(SRC)/col/v1/gquant.h
 	@mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/gquant.c
+	$(CC) $(CFLAGS) -o $@ test.c $(SRC)/col/v1/gquant.c
 
 test: $(OUT)/test
 	$(OUT)/test $(N)

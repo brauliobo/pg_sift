@@ -1,0 +1,90 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_agg_fast_hash.comp - one to eight group keys of any range (see vk_agg_hash.comp) of a program that reads columns and compares them
+ * with constants (common_fast.glsl): four rows per invocation, the keys straight from the columns. A row adds as little as it can: the
+ * rows of the group once, the high limb of a sum only when it is not zero, and the counts that are the rows of the group (COUNT(*), a count
+ * of a column without nulls: J_CNT_ROWS) not at all; the compaction of the table writes them.
+ */
+#include "common_fast.glsl"
+
+layout(local_size_x = 256) in;
+
+#include "common_hash.glsl"
+
+void row_add(uint base, uint nk, uint i, uint all_rows)
+{
+	atomicAdd(ht[base + 2u + nk], 1l);
+	[[unroll]] for (uint a = 0u; a < SC_NAGG; a++)
+	{
+		uint k = AGG_KIND(a), o = base + 3u + nk + a * 3u;
+		bool counted = ((all_rows >> a) & 1u) != 0u;
+
+		if (k == AK_COUNT_STAR || !agg_valid(a, i))
+			continue;
+		if (k == AK_COUNT)
+		{
+			if (!counted)
+				atomicAdd(ht[o], 1l);
+			continue;
+		}
+		if (k == AK_SUM_I)
+		{
+			int64_t v = agg_value(a, i);
+
+			atomicAdd(ht[o], sum_lo(v));
+			if (sum_hi(v) != 0l)
+				atomicAdd(ht[o + 1u], sum_hi(v));
+		}
+		else if (k == AK_SUM_F)
+			acc_addf(o, dbl(agg_value(a, i)));
+		else if (k == AK_MIN || k == AK_MIN_F)
+			atomicMin(ht[o], agg_cmp_key(a, k, i));
+		else
+			atomicMax(ht[o], agg_cmp_key(a, k, i));
+		if (!counted)
+			atomicAdd(ht[o + 2u], 1l);
+	}
+}
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint ngran = ctl[J_NGRAN], all_rows = ctl[J_CNT_ROWS];
+
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		fast_granule(dtrow);
+		for (uint r = tid * 4u; r < g_nrows; r += WG * 4u)
+		{
+			uint pass = fast_tile(r);
+
+			[[unroll]] for (uint i = 0u; i < 4u; i++)
+			{
+				bool pending = ((pass >> i) & 1u) != 0u, live = pending;
+				int64_t kw[8];
+				int64_t nm = 0l, h = 0x9E3779B97F4A7C15l;
+
+				[[unroll]] for (uint j = 0u; j < SC_NKEYS; j++)
+				{
+					uint u = nib(SC_KCOL, j);
+					bool ok = ((g_vn[u] >> i) & 1u) != 0u;
+
+					kw[j] = ok ? g_v[u * 4u + i] : 0l;
+					nm |= ok ? 0l : (1l << j);
+					h = mix64(h ^ kw[j]);
+				}
+				h = mix64(h ^ (nm + 0x632BE59BD9B4E019l));
+				uint base = 0xFFFFFFFFu, slot = uint(h) & ctl[J_HT_MASK], probes = 0u, spins = 0u;
+
+				while (any_pending(pending))
+					if (pending)
+						probe_step(pending, slot, probes, spins, base, h, kw, SC_NKEYS, nm, SC_NAGG);
+				if (live && base != 0xFFFFFFFFu)
+					row_add(base, SC_NKEYS, i, all_rows);
+			}
+		}
+	}
+}

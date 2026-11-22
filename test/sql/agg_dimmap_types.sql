@@ -6,8 +6,6 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
 
 CREATE TABLE pd (k int PRIMARY KEY, c2 int2, c4 int4, c8 int8, cd date, cts timestamp, cb bool, ct text, cn numeric(10,2)) WITH (autovacuum_enabled = false);
 INSERT INTO pd SELECT i, i % 7, i % 11, (i % 13) * 10000000000, date '2024-01-01' + i % 17, timestamp '2024-01-01' + (i % 19) * interval '1 hour', i % 3 = 0, 't' || i % 23,
@@ -71,7 +69,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
 RESET max_parallel_workers_per_gather;
 SET max_parallel_workers_per_gather = 0;

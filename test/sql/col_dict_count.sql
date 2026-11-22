@@ -124,7 +124,6 @@ SET sift.col_format_minor = 14;
 REINDEX INDEX dc_idx;
 SELECT max(format) AS format_under_setting_14 FROM sift._test_col_formats('dc_idx'::regclass);
 SELECT dc_check('setting 14');
-RESET sift.col_format_minor;
 CREATE TABLE dcs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO dcs SELECT g, 'k' || (g % 50) FROM generate_series(1, 20000) g;
 CREATE INDEX dcs_idx ON dcs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 's');

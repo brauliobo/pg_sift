@@ -1,0 +1,49 @@
+-- the hits of a BM25 `sift` index on a sift_table are fetched by TID in the order of their score, jumping between the granules of the table: every row comes from the right
+-- granule and the rows equal those of the same table as a heap, also after changes
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE pf_heap (id bigint PRIMARY KEY, category int NOT NULL, created date NOT NULL, body text NOT NULL);
+CREATE TABLE pf_tbl (id bigint PRIMARY KEY, category int NOT NULL, created date NOT NULL, body text NOT NULL) USING sift_table;
+SELECT sift.table_set_option('pf_tbl', 'key_order', 'category, created');
+INSERT INTO pf_heap SELECT g, 1 + g % 50, DATE '2024-01-01' + g % 700,
+	concat_ws(' ', CASE WHEN g % 3 = 0 THEN 'alpha' END, CASE WHEN g % 10 = 0 THEN 'beta' END, 'w' || g % 17, repeat('pad ', g % 4))
+FROM generate_series(1, 40000) g;
+INSERT INTO pf_tbl SELECT * FROM pf_heap;
+CREATE INDEX pf_heap_bm ON pf_heap USING sift (body);
+CREATE INDEX pf_tbl_bm ON pf_tbl USING sift (body);
+VACUUM (ANALYZE) pf_heap;
+VACUUM (ANALYZE) pf_tbl;
+
+CREATE FUNCTION pf_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a text; b text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (%s) t', replace(q, 'TBL', 'pf_heap')) INTO a;
+	EXECUTE format('SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (%s) t', replace(q, 'TBL', 'pf_tbl')) INTO b;
+	RETURN a = b;
+END $$;
+
+CREATE TABLE pf_q (name text PRIMARY KEY, q text);
+INSERT INTO pf_q VALUES
+	('rows',	'SELECT id, category, created, body FROM TBL WHERE category = 7 AND body @@> ''alpha'''),
+	('wide',	'SELECT id, category FROM TBL WHERE body @@> ''beta'''),
+	('top',		'SELECT id FROM TBL WHERE body @@> ''alpha w3'' ORDER BY sift.score(ctid) DESC, id LIMIT 50'),
+	('agg',		'SELECT category, count(*), min(created), max(id) FROM TBL WHERE body @@> ''alpha'' GROUP BY category');
+SELECT name, pf_same(q) FROM pf_q ORDER BY name;
+
+DELETE FROM pf_heap WHERE id % 9 = 0;
+DELETE FROM pf_tbl WHERE id % 9 = 0;
+UPDATE pf_heap SET body = body || ' alpha', created = created + 1 WHERE id % 11 = 0;
+UPDATE pf_tbl SET body = body || ' alpha', created = created + 1 WHERE id % 11 = 0;
+SELECT name, pf_same(q) FROM pf_q ORDER BY name;
+
+BEGIN;
+UPDATE pf_tbl SET body = 'alpha own' WHERE id % 5 = 0;
+SELECT count(*) AS own_changes_seen FROM pf_tbl WHERE body @@> 'own';
+ROLLBACK;
+SELECT count(*) AS after_rollback FROM pf_tbl WHERE body @@> 'own';
+
+DROP TABLE pf_q, pf_heap, pf_tbl;
+DROP FUNCTION pf_same(text);
+DROP EXTENSION pg_sift;

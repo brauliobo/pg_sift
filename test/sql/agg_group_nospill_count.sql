@@ -20,13 +20,11 @@ SET sift.agg_force = on;
 PREPARE q AS SELECT k, string_agg(v::text, ',' ORDER BY v) AS b, count(DISTINCT w) AS c FROM events GROUP BY k;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
-SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
 
 CREATE TEMP TABLE got AS EXECUTE q;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
 
 -- the bound under the groups the table holds: the statement runs again as PostgreSQL plans it, and so does a cursor, on its first fetch
-SET sift.test_limits = 'group_nospill_factor=0';
 CREATE TEMP TABLE again AS EXECUTE q;
 SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE again) d) AS differ FROM again;
 DO $$
@@ -38,6 +36,5 @@ BEGIN
 	RAISE WARNING 'fetched % rows', n;
 END $$;
 
-RESET sift.test_limits;
 DROP TABLE events;
 DROP EXTENSION pg_sift;

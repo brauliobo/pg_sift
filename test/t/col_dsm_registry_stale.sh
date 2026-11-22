@@ -48,7 +48,7 @@ check "the rows of a joined table are read after the entries of an older release
 check "so are the dimension maps" same "SELECT dim.a, dim.b, count(*), sum(ev.v) FROM ev JOIN dim ON dim.k = ev.k GROUP BY 1, 2 ORDER BY 1, 2"
 out=$(sql ds "SET sift.col_wbuf_ref = on" "INSERT INTO ev SELECT i, 1 + i % 4000, i % 11 FROM generate_series(40001, 41000) i" "SELECT count(*) FROM ev" 2>&1)
 check "a write that keeps its rows in the arena counts them" test "$out" == 41000
-out=$(sql ds "SET sift.col_leaf_cache_kb = 2048" "SET sift.enable_agg = on" "SELECT count(*) FROM ev WHERE id <= 40000 AND k < 100" 2>&1)
+out=$(sql ds "SET sift.shared_cache_kb = 2048" "SET sift.enable_agg = on" "SELECT count(*) FROM ev WHERE id <= 40000 AND k < 100" 2>&1)
 check "a size of the leaf statistics that no table has yet is a table of its own" test "$out" == 990
 check "no backend raised the error, and no table went unshared" bash -c '! grep -E "does not match size|are not shared with other backends" "$1"' _ "$(dir ds)/postgres.log"
 finish

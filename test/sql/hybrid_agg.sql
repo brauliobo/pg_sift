@@ -1,0 +1,230 @@
+-- Spec 51 Pillar 5: SiftHybridAgg, the groups of a faceted aggregate folded from the store, with runtime Params, the adaptive direction, a tenant EXISTS, residual quals, rescans and DML.
+-- Every result is compared with the same query that the hybrid node refuses (a volatile qual is added), and the node and its direction are read from EXPLAIN.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+CREATE TABLE mm_docs (
+	id int PRIMARY KEY, tenant int NOT NULL, region int NOT NULL, amount int NOT NULL, tags text[] NOT NULL,
+	label text COLLATE "C" NOT NULL, body text NOT NULL, active boolean NOT NULL, seen timestamptz NOT NULL, note text, price numeric(12,2));
+INSERT INTO mm_docs
+SELECT i, i % 3000, i % 7, i % 100, ARRAY['t' || i % 13, 'u' || i % 5],
+	CASE WHEN i % 997 = 0 THEN E'İstanbul' WHEN i % 1009 = 0 THEN E'Kelvin' ELSE 'Name' || i % 50 END,
+	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 20 = 0 THEN 'mid' END, CASE WHEN i % 6000 = 0 THEN 'rareterm' END, CASE WHEN i <= 6000 THEN 'clustered' END, 'tok' || i % 13, 'base'),
+	i % 10 <> 0, timestamptz '2026-01-01' + i * interval '1 minute', CASE WHEN i % 11 = 0 THEN NULL ELSE 'n' || i END,
+	CASE WHEN i % 13 = 0 THEN NULL ELSE round(((i % 1000) / 8.0)::numeric, 2) END
+FROM generate_series(1, 120000) i;
+CREATE INDEX mm_text ON mm_docs USING sift (body);
+CREATE INDEX mm_col ON mm_docs USING sift_col (id, tenant, region, amount, tags, label, active, seen, price) WITH (array_lengths = on);
+CREATE TABLE mm_acl (tenant_id int NOT NULL, item_id int NOT NULL, deleted_at timestamptz);
+INSERT INTO mm_acl SELECT 1, i, CASE WHEN i % 5 = 0 THEN now() END FROM generate_series(1, 30) i;
+INSERT INTO mm_acl SELECT 2, i, NULL FROM generate_series(1, 120000, 3) i;
+INSERT INTO mm_acl SELECT 4, i, NULL FROM generate_series(100, 400) i;
+CREATE INDEX mm_acl_tenant ON mm_acl (tenant_id);
+CREATE TABLE mm_args (n int, w text);
+INSERT INTO mm_args VALUES (8, 'common'), (9, 'mid'), (20, 'tok3'), (99999, 'common'), (5, 'nosuchword');
+ANALYZE mm_docs;
+ANALYZE mm_acl;
+VACUUM mm_docs;
+RESET client_min_messages;
+SET enable_nestloop = off;
+SET effective_cache_size = '8kB';
+
+CREATE FUNCTION hy_node(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; n text := 'none';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftHybrid' THEN n := substring(l from 'Custom Scan \((SiftHybrid[A-Za-z]+)\)'); END IF;
+		IF n <> 'none' AND l ~ 'Hybrid Direction: ' THEN n := n || ' ' || substring(l from 'Hybrid Direction: (.+)$'); END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION hy_prop(q text, label text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; v text := NULL;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ ('^\s*' || label || ': ') THEN v := substring(l from ': (\S+)$'); END IF;
+	END LOOP;
+	RETURN v;
+END $$;
+
+CREATE FUNCTION hy_cmp(a text, b text, OUT rows bigint, OUT diff bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE hy_a AS ' || a;
+	EXECUTE 'CREATE TEMP TABLE hy_b AS ' || b;
+	SELECT count(*) INTO rows FROM hy_a;
+	SELECT count(*) INTO diff FROM ((TABLE hy_a EXCEPT ALL TABLE hy_b) UNION ALL (TABLE hy_b EXCEPT ALL TABLE hy_a)) d;
+	DROP TABLE hy_a, hy_b;
+END $$;
+
+CREATE FUNCTION hy_same(q text) RETURNS TABLE (rows bigint, diff bigint) LANGUAGE sql AS
+$$ SELECT * FROM hy_cmp(q, regexp_replace(q, 'WHERE ', 'WHERE random() < 2 AND ')) $$;
+
+CREATE TABLE hy_q (name text PRIMARY KEY, q text);
+INSERT INTO hy_q VALUES
+	('facet_small',	'SELECT region, count(*), sum(amount), min(amount), max(amount), avg(amount) FROM mm_docs WHERE tenant = 8 AND body @@> ''common'' GROUP BY region'),
+	('facet_wide',	'SELECT region, active, count(*), sum(amount), min(amount), max(amount), avg(amount) FROM mm_docs WHERE tenant < 300 AND body @@> ''mid'' GROUP BY region, active'),
+	('count_all',	'SELECT count(*) FROM mm_docs WHERE tenant < 3000 AND body @@> ''common'''),
+	('plain_aggs',	'SELECT count(*) AS n, count(note) AS n_note, sum(amount), min(seen), max(seen), avg(region) FROM mm_docs WHERE tenant < 600 AND body @@> ''common'''),
+	('having',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 3000 AND body @@> ''common'' GROUP BY region HAVING count(*) > 8500'),
+	('text_key',	'SELECT label, count(*) FROM mm_docs WHERE tenant < 3000 AND body @@> ''mid'' GROUP BY label'),
+	('arr_overlap',	'SELECT region, count(*) FROM mm_docs WHERE tags && ARRAY[''t3'', ''u1''] AND tenant < 900 AND body @@> ''common'' GROUP BY region'),
+	('arr_contains','SELECT region, count(*) FROM mm_docs WHERE tags @> ARRAY[''t3'', ''u3''] AND tenant < 3000 AND body @@> ''common'' GROUP BY region'),
+	('card',		'SELECT region, count(*) FROM mm_docs WHERE cardinality(tags) > 1 AND tenant < 900 AND body @@> ''mid'' GROUP BY region'),
+	('lower_like',	'SELECT region, count(*) FROM mm_docs WHERE lower(label) LIKE ''name1%'' AND tenant < 900 AND body @@> ''common'' GROUP BY region'),
+	('ilike',		'SELECT region, count(*) FROM mm_docs WHERE label ILIKE ''NAME2%'' AND tenant < 900 AND body @@> ''common'' GROUP BY region'),
+	('residual',	'SELECT region, count(*) FROM mm_docs WHERE tenant < 600 AND (amount + region) % 3 = 0 AND body @@> ''mid'' GROUP BY region'),
+	('in_list',		'SELECT region, count(*) FROM mm_docs WHERE tenant IN (8, 9, 10, 11) AND body @@> ''common'' GROUP BY region'),
+	('ne_text',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 3000 AND label <> ''Name3'' AND body @@> ''mid'' GROUP BY region'),
+	('ne_int8',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 3000 AND amount <> 7::int8 AND body @@> ''mid'' GROUP BY region'),
+	('ne_bool',		'SELECT count(*) FROM mm_docs WHERE tenant < 3000 AND active <> true AND body @@> ''common'''),
+	('num_gt',		'SELECT region, count(*), sum(price), min(price), max(price) FROM mm_docs WHERE price > 50.5 AND tenant < 3000 AND body @@> ''mid'' GROUP BY region'),
+	('num_eq',		'SELECT region, count(*) FROM mm_docs WHERE price = 12.5 AND body @@> ''common'' GROUP BY region'),
+	('num_null',	'SELECT count(*) AS n, count(price) AS n_price FROM mm_docs WHERE price IS NULL AND tenant < 3000 AND body @@> ''mid'''),
+	('phrase',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 900 AND body @@> ''"common tok3"'' GROUP BY region'),
+	('phrase_point','SELECT region, count(*) FROM mm_docs WHERE tenant = 3 AND body @@> ''"common tok3"'' GROUP BY region'),
+	('negated',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 900 AND body @@> ''common -tok3'' GROUP BY region'),
+	('empty_text',	'SELECT region, count(*) FROM mm_docs WHERE tenant < 1000 AND body @@> ''nosuchword'' GROUP BY region'),
+	('empty_group',	'SELECT count(*), sum(amount) FROM mm_docs WHERE tenant < 1000 AND body @@> ''nosuchword''');
+\echo -- what the planner chooses, and the same groups as the standard plans
+SELECT name, hy_node(q) AS node, (hy_same(q)).* FROM hy_q ORDER BY name;
+
+\echo -- the existing switches keep their meaning: no aggregate scan without sift.enable_agg, no hybrid node at all without sift.enable_scan
+SET sift.enable_agg = off;
+SELECT hy_node(q) AS agg_off FROM hy_q WHERE name = 'facet_small';
+RESET sift.enable_agg;
+SET sift.enable_scan = off;
+SELECT hy_node(q) AS scan_off FROM hy_q WHERE name = 'facet_small';
+RESET sift.enable_scan;
+
+\echo -- runtime Params: custom plans, then generic plans (the adaptive direction, chosen when the query is bound)
+PREPARE g_point(int, text) AS SELECT region, count(*), sum(amount) FROM mm_docs WHERE tenant = $1 AND body @@> $2 GROUP BY region;
+PREPARE g_point_std(int, text) AS SELECT region, count(*), sum(amount) FROM mm_docs WHERE random() < 2 AND tenant = $1 AND body @@> $2 GROUP BY region;
+PREPARE g_range(int, text) AS SELECT count(*), sum(amount), min(amount), max(amount) FROM mm_docs WHERE tenant < $1 AND body @@> $2;
+PREPARE g_range_std(int, text) AS SELECT count(*), sum(amount), min(amount), max(amount) FROM mm_docs WHERE random() < 2 AND tenant < $1 AND body @@> $2;
+SELECT hy_node('EXECUTE g_point(8, ''common'')') AS custom_point, hy_node('EXECUTE g_range(100, ''mid'')') AS custom_range;
+SET plan_cache_mode = force_generic_plan;
+SELECT hy_node('EXECUTE g_point(8, ''common'')') AS generic_point, hy_node('EXECUTE g_range(100, ''mid'')') AS generic_range;
+SELECT a.args, (hy_cmp(format('EXECUTE g_point%s', a.args), format('EXECUTE g_point_std%s', a.args))).*
+FROM (VALUES ('(8, ''common'')'), ('(9, ''mid'')'), ('(20, ''tok3'')'), ('(99999, ''common'')'), ('(5, ''nosuchword'')'), ('(1, ''base'')')) a(args);
+SELECT a.args, (hy_cmp(format('EXECUTE g_range%s', a.args), format('EXECUTE g_range_std%s', a.args))).*
+FROM (VALUES ('(100, ''mid'')'), ('(2000, ''common'')'), ('(0, ''common'')'), ('(3000, ''rareterm'')')) a(args);
+\echo -- a few hits are read from the heap, many from the store, whatever the plan assumed
+SELECT hy_prop('EXECUTE g_range(3000, ''rareterm'')', 'Heap Rows') AS rare_heap_rows, hy_prop('EXECUTE g_range(3000, ''common'')', 'Heap Rows') AS common_heap_rows;
+SELECT (hy_cmp('EXECUTE g_point(NULL, ''common'')', 'EXECUTE g_point_std(NULL, ''common'')')).*;
+SELECT (hy_cmp('EXECUTE g_point(8, NULL)', 'EXECUTE g_point_std(8, NULL)')).*;
+RESET plan_cache_mode;
+
+\echo -- correlated rescans: an aggregate per row, and a LATERAL join
+SELECT a.n, a.w, (SELECT count(*) FROM mm_docs WHERE tenant = a.n AND body @@> a.w) AS hits FROM mm_args a ORDER BY a.n;
+SELECT a.n, c.cnt FROM mm_args a, LATERAL (SELECT count(*) AS cnt, sum(amount) AS total FROM mm_docs WHERE tenant = a.n AND body @@> a.w) c ORDER BY a.n;
+SELECT count(*) AS correlated_diff FROM
+	((SELECT a.n, (SELECT count(*) FROM mm_docs WHERE tenant = a.n AND body @@> a.w) FROM mm_args a)
+	 EXCEPT ALL (SELECT a.n, (SELECT count(*) FROM mm_docs WHERE random() < 2 AND tenant = a.n AND body @@> a.w) FROM mm_args a)) d;
+SELECT hy_node('SELECT a.n, (SELECT count(*) FROM mm_docs WHERE tenant = a.n AND body @@> a.w) FROM mm_args a') AS rescan_node;
+
+\echo -- the tenant EXISTS: a key set the store takes, one it does not, an empty one, NOT EXISTS, two of them
+CREATE TABLE hy_acl (name text PRIMARY KEY, q text);
+INSERT INTO hy_acl VALUES
+	('acl_small',	'SELECT region, count(*) FROM mm_docs c WHERE c.body @@> ''common'' AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 1 AND tl.deleted_at IS NULL AND tl.item_id = c.id) GROUP BY region'),
+	('acl_mid',		'SELECT region, count(*), sum(amount) FROM mm_docs c WHERE c.body @@> ''common'' AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 4 AND tl.item_id = c.id) GROUP BY region'),
+	('acl_large',	'SELECT region, count(*) FROM mm_docs c WHERE c.body @@> ''mid'' AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 2 AND tl.item_id = c.id) GROUP BY region'),
+	('acl_empty',	'SELECT count(*) FROM mm_docs c WHERE c.body @@> ''common'' AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 3 AND tl.item_id = c.id)'),
+	('acl_arr',		'SELECT region, count(*) FROM mm_docs c WHERE c.body @@> ''common'' AND c.tags && ARRAY[''t3'', ''t4''] AND lower(c.label) LIKE ''name1%'' AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 4 AND tl.item_id = c.id) GROUP BY region'),
+	('acl_not',		'SELECT region, count(*) FROM mm_docs c WHERE c.body @@> ''mid'' AND c.tenant < 200 AND NOT EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 1 AND tl.item_id = c.id) GROUP BY region'),
+	('acl_two',		'SELECT region, count(*) FROM mm_docs c WHERE c.body @@> ''common'' AND EXISTS (SELECT 1 FROM mm_acl a WHERE a.tenant_id = 4 AND a.item_id = c.id) AND EXISTS (SELECT 1 FROM mm_acl b WHERE b.tenant_id = 2 AND b.item_id = c.id) GROUP BY region');
+SELECT name, hy_node(q) AS node, (hy_same(q)).* FROM hy_acl ORDER BY name;
+SELECT name, hy_prop(q, 'Heap Decides Rows') AS heap_decides FROM hy_acl ORDER BY name;
+
+PREPARE p_acl(int, text) AS SELECT region, count(*), sum(amount) FROM mm_docs c WHERE c.body @@> $2 AND c.tags && ARRAY['t3', 't4'] AND lower(c.label) LIKE 'name1%'
+	AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = $1 AND tl.deleted_at IS NULL AND tl.item_id = c.id) GROUP BY region;
+PREPARE p_acl_std(int, text) AS SELECT region, count(*), sum(amount) FROM mm_docs c WHERE random() < 2 AND c.body @@> $2 AND c.tags && ARRAY['t3', 't4'] AND lower(c.label) LIKE 'name1%'
+	AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = $1 AND tl.deleted_at IS NULL AND tl.item_id = c.id) GROUP BY region;
+SELECT hy_node('EXECUTE p_acl(4, ''common'')') AS custom_node;
+SELECT a.args, (hy_cmp(format('EXECUTE p_acl%s', a.args), format('EXECUTE p_acl_std%s', a.args))).*
+FROM (VALUES ('(4, ''common'')'), ('(2, ''mid'')'), ('(1, ''common'')'), ('(3, ''common'')'), ('(4, ''nosuchword'')')) a(args);
+SET plan_cache_mode = force_generic_plan;
+SELECT hy_node('EXECUTE p_acl(4, ''common'')') AS generic_node;
+SELECT a.args, (hy_cmp(format('EXECUTE p_acl%s', a.args), format('EXECUTE p_acl_std%s', a.args))).*
+FROM (VALUES ('(4, ''common'')'), ('(2, ''mid'')'), ('(1, ''common'')'), ('(3, ''common'')'), ('(4, ''nosuchword'')')) a(args);
+RESET plan_cache_mode;
+
+\echo -- the plain plan keeps its semi join when the aggregate node is not part of it
+CREATE FUNCTION hy_shape(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; hybrid boolean := false; semi boolean := false; joined boolean := false; arr boolean := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		hybrid := hybrid OR l ~ 'SiftHybrid';
+		semi := semi OR l ~ 'Semi Join';
+		joined := joined OR l ~ '(Join|Nested Loop)';
+		arr := arr OR l ~ '(InitPlan|SubPlan|ARRAY)';
+	END LOOP;
+	RETURN format('hybrid=%s joined=%s semi_join=%s array_subplan=%s', hybrid, joined, semi, arr);
+END $$;
+SELECT name, regexp_replace(hy_shape(regexp_replace(q, 'WHERE ', 'WHERE random() < 2 AND ')), ' semi_join=[tf]', '') AS refused_shape FROM hy_acl ORDER BY name;
+SELECT hy_shape('SELECT region, count(*) FROM mm_docs c WHERE c.tenant < 100 AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 4 AND tl.item_id = c.id) GROUP BY region') AS no_text_query;
+
+\echo -- rows that change: deletes, updates (HOT and not), and the own writes of a transaction
+BEGIN;
+DELETE FROM mm_docs WHERE id % 4 = 0 AND tenant < 100;
+UPDATE mm_docs SET note = 'edited' WHERE id % 6 = 0 AND tenant < 100;
+UPDATE mm_docs SET tenant = 8 WHERE id % 50 = 1 AND tenant < 100;
+INSERT INTO mm_docs VALUES (500001, 8, 1, 1, ARRAY['t3'], 'Name1', 'common fresh', true, now(), NULL, 1.5);
+SELECT name, hy_node(q) AS node, (hy_same(q)).* FROM hy_q WHERE name IN ('facet_small', 'facet_wide', 'arr_overlap', 'lower_like', 'residual', 'plain_aggs') ORDER BY name;
+SELECT count(*) AS own_row FROM mm_docs WHERE tenant = 8 AND tags && ARRAY['t3'] AND body @@> 'fresh';
+SELECT region, count(*) AS own_groups FROM mm_docs WHERE tenant = 8 AND body @@> 'fresh' GROUP BY region;
+ROLLBACK;
+SELECT name, (hy_same(q)).* FROM hy_q WHERE name IN ('facet_small', 'arr_overlap') ORDER BY name;
+
+\echo -- an aggregate inside DML
+CREATE TABLE hy_sink (region int, cnt bigint, total bigint);
+INSERT INTO hy_sink SELECT region, count(*), sum(amount) FROM mm_docs WHERE tenant < 600 AND body @@> 'mid' GROUP BY region;
+SELECT (hy_cmp('SELECT * FROM hy_sink', 'SELECT region, count(*), sum(amount) FROM mm_docs WHERE random() < 2 AND tenant < 600 AND body @@> ''mid'' GROUP BY region')).*;
+UPDATE hy_sink s SET cnt = c.cnt FROM (SELECT region, count(*) AS cnt FROM mm_docs WHERE tenant < 300 AND body @@> 'common' GROUP BY region) c WHERE c.region = s.region;
+SELECT (hy_cmp('SELECT region, cnt FROM hy_sink', 'SELECT region, count(*) FROM mm_docs WHERE random() < 2 AND tenant < 300 AND body @@> ''common'' GROUP BY region')).*;
+DELETE FROM hy_sink WHERE cnt > (SELECT count(*) FROM mm_docs WHERE tenant = 8 AND body @@> 'common');
+SELECT count(*) AS left_after_delete FROM hy_sink;
+
+\echo -- a read-only transaction, a cursor
+BEGIN READ ONLY;
+SELECT hy_node('SELECT region, count(*) FROM mm_docs WHERE tenant = 8 AND body @@> ''common'' GROUP BY region') AS read_only_node;
+DECLARE hy_cur SCROLL CURSOR FOR SELECT region, count(*) FROM mm_docs WHERE tenant < 900 AND tags && ARRAY['t3', 't4'] AND body @@> 'common' GROUP BY region ORDER BY region;
+FETCH 3 FROM hy_cur;
+FETCH BACKWARD 1 FROM hy_cur;
+FETCH ABSOLUTE 1 FROM hy_cur;
+CLOSE hy_cur;
+COMMIT;
+
+\echo -- row level security: the policy is a security qual of the table, so the standard plan serves the aggregate
+CREATE ROLE hy_agg_reader NOLOGIN;
+GRANT SELECT ON mm_docs, mm_acl TO hy_agg_reader;
+ALTER TABLE mm_docs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY hy_even ON mm_docs FOR SELECT TO hy_agg_reader USING (id % 2 = 0);
+SET ROLE hy_agg_reader;
+SELECT hy_node('SELECT region, count(*) FROM mm_docs WHERE tenant = 8 AND body @@> ''common'' GROUP BY region') AS rls_node;
+SELECT region, count(*) AS rls_rows FROM mm_docs WHERE tenant < 900 AND body @@> 'common' GROUP BY region ORDER BY region;
+RESET ROLE;
+ALTER TABLE mm_docs DISABLE ROW LEVEL SECURITY;
+DROP OWNED BY hy_agg_reader;
+DROP ROLE hy_agg_reader;
+
+\echo -- GROUPING SETS, DISTINCT arguments and FILTER clauses ride the same fold
+SELECT name, hy_node(q) AS node, (hy_same(q)).* FROM (VALUES
+	('rollup',	'SELECT region, active, count(*) FROM mm_docs WHERE tenant < 600 AND body @@> ''common'' GROUP BY ROLLUP (region, active)'),
+	('distinct','SELECT region, count(DISTINCT amount) FROM mm_docs WHERE tenant < 600 AND body @@> ''common'' GROUP BY region'),
+	('filter',	'SELECT region, count(*) FILTER (WHERE amount < 10) AS few, sum(amount) FILTER (WHERE active) AS total FROM mm_docs WHERE tenant < 600 AND body @@> ''common'' GROUP BY region')) v(name, q) ORDER BY name;
+
+\echo -- a partial index: the query has to imply the predicate
+SET client_min_messages = warning;
+CREATE TABLE mm_part (id int PRIMARY KEY, tenant int NOT NULL, live boolean NOT NULL, body text NOT NULL);
+INSERT INTO mm_part SELECT i, i % 2000, i % 3 <> 0, concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, 'base') FROM generate_series(1, 30000) i;
+CREATE INDEX mm_part_text ON mm_part USING sift (body);
+CREATE INDEX mm_part_col ON mm_part USING sift_col (id, tenant) WHERE live;
+ANALYZE mm_part;
+RESET client_min_messages;
+SELECT hy_node('SELECT tenant, count(*) FROM mm_part WHERE live AND tenant < 300 AND body @@> ''common'' GROUP BY tenant') AS implied,
+	hy_node('SELECT tenant, count(*) FROM mm_part WHERE tenant < 300 AND body @@> ''common'' GROUP BY tenant') AS not_implied;
+SELECT (hy_cmp('SELECT tenant, count(*) FROM mm_part WHERE live AND tenant < 300 AND body @@> ''common'' GROUP BY tenant', 'SELECT tenant, count(*) FROM mm_part WHERE random() < 2 AND live AND tenant < 300 AND body @@> ''common'' GROUP BY tenant')).*;
+DROP FUNCTION hy_cmp(text, text), hy_node(text), hy_prop(text, text), hy_same(text), hy_shape(text);
+DROP TABLE mm_docs, mm_part, mm_acl, mm_args, hy_acl, hy_q, hy_sink;
+DROP EXTENSION pg_sift;

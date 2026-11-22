@@ -25,7 +25,7 @@ scan() {
 	awk -v benign="^($BENIGN_OPEN)\$" '
 	function trim(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); gsub(/[ \t]+/, " ", s); return s }
 	function modeindex(call) {
-		if (call ~ /^(LockRelationOid|LockRelation|ConditionalLockRelationOid|ConditionalLockRelation|LockRelationForExtension|ConditionalLockRelationForExtension|RangeVarGetRelidExtended|LWLockAcquire|LWLockConditionalAcquire|LockAcquire|LockAcquireExtended|LockRelationIdForSession|table_open|index_open|relation_open|try_table_open|try_index_open|try_relation_open|sift_vstore_open|sift_try_open_index|sift_col_open_index)$/) return 2
+		if (call ~ /^(LockRelationOid|LockRelation|ConditionalLockRelationOid|ConditionalLockRelation|LockRelationForExtension|ConditionalLockRelationForExtension|RangeVarGetRelidExtended|LWLockAcquire|LWLockConditionalAcquire|LockAcquire|LockAcquireExtended|LockRelationIdForSession|table_open|index_open|relation_open|try_table_open|try_index_open|try_relation_open|sift_keystore_open|sift_try_open_index|sift_col_open_index)$/) return 2
 		if (call ~ /^(LockPage|ConditionalLockPage|LockTuple|ConditionalLockTuple)$/) return 3
 		if (call ~ /^(LockDatabaseObject|LockSharedObject|ConditionalLockDatabaseObject)$/) return 4
 		if (call ~ /^(UnlockRelationOid|UnlockRelation|UnlockRelationForExtension|LockRelease)$/) return 2
@@ -86,7 +86,7 @@ scan() {
 				if (call ~ /^(XactLockTableWait|ConditionalXactLockTableWait)$/) mode = "wait"
 				else mode = ARG[mi]
 				if (mode ~ /LOCKMODE/) continue
-				if (call ~ /^(table_open|index_open|relation_open|try_table_open|try_index_open|try_relation_open|sift_vstore_open|sift_try_open_index|sift_col_open_index)$/ && mode ~ benign) continue
+				if (call ~ /^(table_open|index_open|relation_open|try_table_open|try_index_open|try_relation_open|sift_keystore_open|sift_try_open_index|sift_col_open_index)$/ && mode ~ benign) continue
 				printf "row\t%s\t%s\t%s\t%s\n", file, FN[i], call, mode
 			}
 		}

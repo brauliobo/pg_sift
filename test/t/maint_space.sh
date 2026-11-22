@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The maintenance worker reuses the space of the segments it merged, step after step: 60 small
 # segments merged by the worker leave an index file of under twice the live segments (a worker that
 # kept one snapshot and transaction, and ran its steps on fragmented free space, left 2.6 times).

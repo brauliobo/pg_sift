@@ -1,0 +1,461 @@
+-- Format major 2: the marks of the whole key (SEC_KEY_MARKS) prune a scan by every column of key_order, not the first alone, and the statistics of the columns (SEC_COL_STATS) order the
+-- predicates a scan tests on the chunks; a substring test (LIKE '%x%', ILIKE '%x%') runs over the strings of a dictionary in one pass. Every answer is the heap's, through parts the
+-- build wrote, the writes after it, and the part a merge joined of them.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+-- the buffers the bitmap index scan of a query touched
+CREATE FUNCTION idx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE j jsonb;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ' || q INTO j;
+	RETURN (SELECT coalesce(sum(("n"->>'Shared Hit Blocks')::int + ("n"->>'Shared Read Blocks')::int), -1)
+			FROM jsonb_path_query(j, 'strict $.** ? (@."Node Type" == "Bitmap Index Scan")') n);
+END $$;
+-- Three key columns of 400000 rows in the order of the key: a (10 values), b (40 values with NULLs), c (500 values); v and s are not in the key
+CREATE TABLE mk (id int, a int, b int, c int, v int, s text);
+INSERT INTO mk SELECT i, (i / 20000) % 10, CASE WHEN i % 1000 = 0 THEN NULL ELSE (i / 500) % 40 END, i % 500, i % 97, 'k' || (i % 31) || CASE WHEN i % 17 = 0 THEN 'XyZ' ELSE '' END
+FROM generate_series(1, 400000) i;
+CREATE INDEX mk_idx ON mk USING sift_col (id, a, b, c, v, s) WITH (key_order = 'a, b, c');
+SELECT count(*) > 0 AS marks_and_stats_kept FROM sift.index_size_breakdown('mk_idx') WHERE category = 'zones_tstride' AND bytes > 0;
+ marks_and_stats_kept 
+----------------------
+ t
+(1 row)
+
+-- Equality on a prefix of the key, a range on the next column, IN lists, BETWEEN, NULLs
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mk WHERE a = 3',
+	'SELECT id FROM mk WHERE a = 3 AND b = 7',
+	'SELECT id FROM mk WHERE a = 3 AND b = 7 AND c = 100',
+	'SELECT id FROM mk WHERE a = 3 AND b = 7 AND c BETWEEN 10 AND 20',
+	'SELECT id FROM mk WHERE a = 3 AND b = 7 AND c > 490',
+	'SELECT id FROM mk WHERE a = 3 AND b BETWEEN 5 AND 9',
+	'SELECT id FROM mk WHERE a = 3 AND b >= 38',
+	'SELECT id FROM mk WHERE a IN (1, 5) AND b IN (3, 4) AND c < 10',
+	'SELECT id FROM mk WHERE a IN (1, 5, 7, 9) AND b = 12',
+	'SELECT id FROM mk WHERE a >= 8',
+	'SELECT id FROM mk WHERE a < 2 AND b = 0',
+	'SELECT id FROM mk WHERE a = 4 AND b IS NULL',
+	'SELECT id FROM mk WHERE a = 4 AND b IS NOT NULL AND c = 0',
+	'SELECT id FROM mk WHERE a = 4 AND b IS NULL AND c = 0',
+	'SELECT id FROM mk WHERE a = 99',
+	'SELECT id FROM mk WHERE a = 3 AND b = 7 AND c = 100 AND a = 4',
+	'SELECT id FROM mk WHERE a BETWEEN 3 AND 5 AND b = 7',
+	'SELECT id FROM mk WHERE b = 7 AND c = 100',
+	'SELECT id FROM mk WHERE c = 100',
+	'SELECT id FROM mk WHERE a = 3 AND v = 5',
+	'SELECT id FROM mk WHERE a = 3 AND b = 7 AND v < 10 AND s = ''k4''',
+	'SELECT id FROM mk WHERE v = 5 AND s = ''k4'' AND a > 2'
+]) AS t(q);
+                                q                                | f2_same 
+-----------------------------------------------------------------+---------
+ SELECT id FROM mk WHERE a = 3                                   | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7                         | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7 AND c = 100             | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7 AND c BETWEEN 10 AND 20 | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7 AND c > 490             | same
+ SELECT id FROM mk WHERE a = 3 AND b BETWEEN 5 AND 9             | same
+ SELECT id FROM mk WHERE a = 3 AND b >= 38                       | same
+ SELECT id FROM mk WHERE a IN (1, 5) AND b IN (3, 4) AND c < 10  | same
+ SELECT id FROM mk WHERE a IN (1, 5, 7, 9) AND b = 12            | same
+ SELECT id FROM mk WHERE a >= 8                                  | same
+ SELECT id FROM mk WHERE a < 2 AND b = 0                         | same
+ SELECT id FROM mk WHERE a = 4 AND b IS NULL                     | same
+ SELECT id FROM mk WHERE a = 4 AND b IS NOT NULL AND c = 0       | same
+ SELECT id FROM mk WHERE a = 4 AND b IS NULL AND c = 0           | same
+ SELECT id FROM mk WHERE a = 99                                  | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7 AND c = 100 AND a = 4   | same
+ SELECT id FROM mk WHERE a BETWEEN 3 AND 5 AND b = 7             | same
+ SELECT id FROM mk WHERE b = 7 AND c = 100                       | same
+ SELECT id FROM mk WHERE c = 100                                 | same
+ SELECT id FROM mk WHERE a = 3 AND v = 5                         | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7 AND v < 10 AND s = 'k4' | same
+ SELECT id FROM mk WHERE v = 5 AND s = 'k4' AND a > 2            | same
+(22 rows)
+
+-- A key that names the columns as they are ordered: DESC, NULLS FIRST
+CREATE TABLE mkd (id int, a int, b int, c int, d date, ts timestamptz, f bool);
+INSERT INTO mkd SELECT i, i % 50, CASE WHEN i % 41 = 0 THEN NULL ELSE i % 30 END, i % 700, date '2020-01-01' + (i % 400), timestamptz '2020-01-01' + (i % 9000) * interval '1 minute', i % 3 = 0
+FROM generate_series(1, 120000) i;
+CREATE INDEX mkd_idx ON mkd USING sift_col (id, a, b, c, d, ts, f) WITH (key_order = 'a DESC, b DESC NULLS FIRST, d, f');
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mkd WHERE a = 7',
+	'SELECT id FROM mkd WHERE a = 7 AND b = 3',
+	'SELECT id FROM mkd WHERE a = 7 AND b IS NULL',
+	'SELECT id FROM mkd WHERE a = 7 AND b < 20',
+	'SELECT id FROM mkd WHERE a > 40 AND b > 10',
+	'SELECT id FROM mkd WHERE a IN (3, 44) AND b = 5 AND d = date ''2020-03-01''',
+	'SELECT id FROM mkd WHERE a = 7 AND b = 3 AND d BETWEEN date ''2020-02-01'' AND date ''2020-06-01''',
+	'SELECT id FROM mkd WHERE a = 7 AND b = 3 AND d >= date ''2020-02-01'' AND f',
+	'SELECT id FROM mkd WHERE a = 7 AND NOT f AND ts < timestamptz ''2020-01-03''',
+	'SELECT id FROM mkd WHERE d = date ''2020-05-05'''
+]) AS t(q);
+                                               q                                                | f2_same 
+------------------------------------------------------------------------------------------------+---------
+ SELECT id FROM mkd WHERE a = 7                                                                 | same
+ SELECT id FROM mkd WHERE a = 7 AND b = 3                                                       | same
+ SELECT id FROM mkd WHERE a = 7 AND b IS NULL                                                   | same
+ SELECT id FROM mkd WHERE a = 7 AND b < 20                                                      | same
+ SELECT id FROM mkd WHERE a > 40 AND b > 10                                                     | same
+ SELECT id FROM mkd WHERE a IN (3, 44) AND b = 5 AND d = date '2020-03-01'                      | same
+ SELECT id FROM mkd WHERE a = 7 AND b = 3 AND d BETWEEN date '2020-02-01' AND date '2020-06-01' | same
+ SELECT id FROM mkd WHERE a = 7 AND b = 3 AND d >= date '2020-02-01' AND f                      | same
+ SELECT id FROM mkd WHERE a = 7 AND NOT f AND ts < timestamptz '2020-01-03'                     | same
+ SELECT id FROM mkd WHERE d = date '2020-05-05'                                                 | same
+(10 rows)
+
+-- The narrower the key predicate the fewer blocks of the index a scan touches; a predicate on a column that is not in the key touches the granules all the same
+SELECT idx_blocks('SELECT id FROM mk WHERE a = 3 AND b = 7 AND c BETWEEN 10 AND 20') * 2 < idx_blocks('SELECT id FROM mk WHERE v = 5') AS key_scan_reads_less;
+ key_scan_reads_less 
+---------------------
+ t
+(1 row)
+
+-- Substring tests on the strings of a dictionary, in the case of the heap
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mk WHERE s LIKE ''%k1%''',
+	'SELECT id FROM mk WHERE s LIKE ''%XyZ%''',
+	'SELECT id FROM mk WHERE s ILIKE ''%xyz%''',
+	'SELECT id FROM mk WHERE s ILIKE ''%K2%'' AND a = 3',
+	'SELECT id FROM mk WHERE s NOT LIKE ''%k1%''',
+	'SELECT id FROM mk WHERE s LIKE ''k1%'' AND b = 7',
+	'SELECT id FROM mk WHERE s LIKE ''%1X%''',
+	'SELECT id FROM mk WHERE s LIKE ''%k_1%''',
+	'SELECT id FROM mk WHERE s ILIKE ''%ZZ%'''
+]) AS t(q);
+                        q                         | f2_same 
+--------------------------------------------------+---------
+ SELECT id FROM mk WHERE s LIKE '%k1%'            | same
+ SELECT id FROM mk WHERE s LIKE '%XyZ%'           | same
+ SELECT id FROM mk WHERE s ILIKE '%xyz%'          | same
+ SELECT id FROM mk WHERE s ILIKE '%K2%' AND a = 3 | same
+ SELECT id FROM mk WHERE s NOT LIKE '%k1%'        | same
+ SELECT id FROM mk WHERE s LIKE 'k1%' AND b = 7   | same
+ SELECT id FROM mk WHERE s LIKE '%1X%'            | same
+ SELECT id FROM mk WHERE s LIKE '%k_1%'           | same
+ SELECT id FROM mk WHERE s ILIKE '%ZZ%'           | same
+(9 rows)
+
+-- Strings with bytes above 0x7F, and the two characters whose lower case is ASCII
+CREATE TABLE mku (id int, a int, s text);
+INSERT INTO mku SELECT i, i % 4, (ARRAY['Kelvin K', U&'\212Aelvin', 'Istanbul', U&'\0130stanbul', 'plain ascii', 'caf' || U&'\00E9', 'KK', 'ik', U&'\00FCber'])[1 + i % 9] FROM generate_series(1, 9000) i;
+CREATE INDEX mku_idx ON mku USING sift_col (id, a, s) WITH (key_order = 'a');
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mku WHERE s ILIKE ''%k%''',
+	'SELECT id FROM mku WHERE s ILIKE ''%I%''',
+	'SELECT id FROM mku WHERE s ILIKE ''%elvin%''',
+	'SELECT id FROM mku WHERE s ILIKE ''%stanbul%''',
+	'SELECT id FROM mku WHERE s LIKE ''%' || U&'\00E9' || '%''',
+	'SELECT id FROM mku WHERE s ILIKE ''%ik%'' AND a = 1'
+]) AS t(q);
+                         q                         | f2_same 
+---------------------------------------------------+---------
+ SELECT id FROM mku WHERE s ILIKE '%k%'            | same
+ SELECT id FROM mku WHERE s ILIKE '%I%'            | same
+ SELECT id FROM mku WHERE s ILIKE '%elvin%'        | same
+ SELECT id FROM mku WHERE s ILIKE '%stanbul%'      | same
+ SELECT id FROM mku WHERE s LIKE '%é%'             | same
+ SELECT id FROM mku WHERE s ILIKE '%ik%' AND a = 1 | same
+(6 rows)
+
+-- Writes after the build: new parts, deletes and updates; then a merge rewrites the parts
+INSERT INTO mk SELECT 400000 + i, (i / 2000) % 10, (i / 50) % 40, i % 500, i % 97, 'k' || (i % 31) FROM generate_series(1, 60000) i;
+DELETE FROM mk WHERE id % 13 = 0 AND a = 3;
+UPDATE mk SET b = 7, c = 100 WHERE id % 101 = 0 AND a = 5;
+CREATE TABLE after_writes (q text);
+INSERT INTO after_writes VALUES
+	('SELECT id FROM mk WHERE a = 3 AND b = 7'),
+	('SELECT id FROM mk WHERE a = 5 AND b = 7 AND c = 100'),
+	('SELECT id FROM mk WHERE a = 5 AND b = 7 AND c BETWEEN 90 AND 110'),
+	('SELECT id FROM mk WHERE a IN (0, 9) AND b IS NULL'),
+	('SELECT id FROM mk WHERE a = 2 AND s LIKE ''%k3%''');
+SELECT q, f2_same(q) FROM after_writes ORDER BY q;
+                                q                                 | f2_same 
+------------------------------------------------------------------+---------
+ SELECT id FROM mk WHERE a = 2 AND s LIKE '%k3%'                  | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7                          | same
+ SELECT id FROM mk WHERE a = 5 AND b = 7 AND c = 100              | same
+ SELECT id FROM mk WHERE a = 5 AND b = 7 AND c BETWEEN 90 AND 110 | same
+ SELECT id FROM mk WHERE a IN (0, 9) AND b IS NULL                | same
+(5 rows)
+
+SELECT sift.maintain('mk_idx') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT q, f2_same(q) FROM after_writes ORDER BY q;
+                                q                                 | f2_same 
+------------------------------------------------------------------+---------
+ SELECT id FROM mk WHERE a = 2 AND s LIKE '%k3%'                  | same
+ SELECT id FROM mk WHERE a = 3 AND b = 7                          | same
+ SELECT id FROM mk WHERE a = 5 AND b = 7 AND c = 100              | same
+ SELECT id FROM mk WHERE a = 5 AND b = 7 AND c BETWEEN 90 AND 110 | same
+ SELECT id FROM mk WHERE a IN (0, 9) AND b IS NULL                | same
+(5 rows)
+
+-- Batches whose keys do not overlap, frozen one after the other: the merge joins their granules as they are, and the marks of the part it makes are those of its inputs laid after each other
+CREATE TABLE mkj (id int, a int, b int, c int, v int, s text);
+INSERT INTO mkj SELECT i, 0, i / 1000, i % 1000, i % 97, 'k' || (i % 31) FROM generate_series(1, 20000) i;
+CREATE INDEX mkj_idx ON mkj USING sift_col (id, a, b, c, v, s) WITH (key_order = 'a, b, c');
+INSERT INTO mkj SELECT 100000 + i, 1, i / 1000, i % 1000, i % 97, 'k' || (i % 31) FROM generate_series(1, 40000) i;
+VACUUM (FREEZE) mkj;
+INSERT INTO mkj SELECT 200000 + i, 2, i / 1000, i % 1000, i % 97, 'k' || (i % 31) FROM generate_series(1, 40000) i;
+VACUUM (FREEZE) mkj;
+INSERT INTO mkj SELECT 300000 + i, 3, i / 1000, i % 1000, i % 97, 'k' || (i % 31) FROM generate_series(1, 40000) i;
+VACUUM (FREEZE) mkj;
+SELECT sift.maintain('mkj_idx') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT count(*) AS parts, sum(rows) AS rows FROM sift.parts('mkj_idx');
+ parts |  rows  
+-------+--------
+     1 | 140000
+(1 row)
+
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mkj WHERE a = 0',
+	'SELECT id FROM mkj WHERE a = 1 AND b = 5',
+	'SELECT id FROM mkj WHERE a = 2 AND b = 30 AND c BETWEEN 100 AND 200',
+	'SELECT id FROM mkj WHERE a = 3 AND b = 39 AND c = 999',
+	'SELECT id FROM mkj WHERE a IN (0, 3) AND b = 0 AND c < 50',
+	'SELECT id FROM mkj WHERE a = 1 AND b IS NULL',
+	'SELECT id FROM mkj WHERE a >= 2 AND b = 7 AND v = 3'
+]) AS t(q);
+                                  q                                  | f2_same 
+---------------------------------------------------------------------+---------
+ SELECT id FROM mkj WHERE a = 0                                      | same
+ SELECT id FROM mkj WHERE a = 1 AND b = 5                            | same
+ SELECT id FROM mkj WHERE a = 2 AND b = 30 AND c BETWEEN 100 AND 200 | same
+ SELECT id FROM mkj WHERE a = 3 AND b = 39 AND c = 999               | same
+ SELECT id FROM mkj WHERE a IN (0, 3) AND b = 0 AND c < 50           | same
+ SELECT id FROM mkj WHERE a = 1 AND b IS NULL                        | same
+ SELECT id FROM mkj WHERE a >= 2 AND b = 7 AND v = 3                 | same
+(7 rows)
+
+-- Text, uuid and numeric(p, s) in the key: text and uuid are ordered by their bytes, numeric as the scaled integer it is stored as; the key reads like an integer one, NULLs and a NaN included
+CREATE TABLE mt (id int, g text, u uuid, n numeric(12, 2), v int, s text);
+INSERT INTO mt SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE 'g' || lpad(((i / 4000) % 25)::text, 2, '0') || CASE WHEN i % 7 = 0 THEN U&'\00E9' ELSE '' END END,
+	('00000000-0000-0000-0000-' || lpad(((i / 40) % 500)::text, 12, '0'))::uuid, ((i / 200) % 60)::numeric / 4, i % 97, 'k' || (i % 31)
+FROM generate_series(1, 100000) i;
+CREATE INDEX mt_idx ON mt USING sift_col (id, g, u, n, v, s) WITH (key_order = 'g, u, n');
+CREATE TABLE mtn (id int, g text, n numeric(12, 2), v int);
+INSERT INTO mtn SELECT i, 'g' || (i / 5000), CASE WHEN i % 1000 = 0 THEN 'NaN'::numeric ELSE ((i / 100) % 50)::numeric / 4 END, i % 97 FROM generate_series(1, 50000) i;
+CREATE INDEX mtn_idx ON mtn USING sift_col (id, g, n, v) WITH (key_order = 'g, n');
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mt WHERE g = ''g03''',
+	'SELECT id FROM mt WHERE g = ''g03'' AND u = ''00000000-0000-0000-0000-000000000030''',
+	'SELECT id FROM mt WHERE g = ''g03'' AND u BETWEEN ''00000000-0000-0000-0000-000000000030'' AND ''00000000-0000-0000-0000-000000000040''',
+	'SELECT id FROM mt WHERE g = ''g03'' AND u = ''00000000-0000-0000-0000-000000000030'' AND n = 2.5',
+	'SELECT id FROM mt WHERE g = ''g03'' AND u > ''00000000-0000-0000-0000-000000000100'' AND n < 3',
+	'SELECT id FROM mt WHERE g > ''g20''',
+	'SELECT id FROM mt WHERE g >= ''g03'' AND g < ''g05''',
+	'SELECT id FROM mt WHERE g LIKE ''g0%''',
+	'SELECT id FROM mt WHERE g LIKE ''g03%'' AND u > ''00000000-0000-0000-0000-000000000200''',
+	'SELECT id FROM mt WHERE g = ''g03'' || U&''\00E9''',
+	'SELECT id FROM mt WHERE g IS NULL',
+	'SELECT id FROM mt WHERE g IS NULL AND u = ''00000000-0000-0000-0000-000000000030''',
+	'SELECT id FROM mt WHERE g IN (''g01'', ''g02'', ''g03'', ''g04'', ''g05'', ''g06'', ''g07'', ''g08'', ''g09'', ''g10'', ''g11'', ''g12'') AND n = 1.25',
+	'SELECT id FROM mt WHERE u IN (SELECT (''00000000-0000-0000-0000-'' || lpad(k::text, 12, ''0''))::uuid FROM generate_series(1, 40) k)',
+	'SELECT id FROM mt WHERE n = 2.5',
+	'SELECT id FROM mt WHERE g = ''absent''',
+	'SELECT id FROM mtn WHERE g = ''g3''',
+	'SELECT id FROM mtn WHERE g = ''g3'' AND n = 2.5',
+	'SELECT id FROM mtn WHERE g = ''g3'' AND n = ''NaN''',
+	'SELECT id FROM mtn WHERE g = ''g3'' AND n > 5',
+	'SELECT id FROM mtn WHERE n IS NULL',
+	'SELECT id FROM mtn WHERE n = ''NaN'''
+]) AS t(q);
+                                                                 q                                                                 | f2_same 
+-----------------------------------------------------------------------------------------------------------------------------------+---------
+ SELECT id FROM mt WHERE g = 'g03'                                                                                                 | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030'                                                  | same
+ SELECT id FROM mt WHERE g = 'g03' AND u BETWEEN '00000000-0000-0000-0000-000000000030' AND '00000000-0000-0000-0000-000000000040' | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030' AND n = 2.5                                      | same
+ SELECT id FROM mt WHERE g = 'g03' AND u > '00000000-0000-0000-0000-000000000100' AND n < 3                                        | same
+ SELECT id FROM mt WHERE g > 'g20'                                                                                                 | same
+ SELECT id FROM mt WHERE g >= 'g03' AND g < 'g05'                                                                                  | same
+ SELECT id FROM mt WHERE g LIKE 'g0%'                                                                                              | same
+ SELECT id FROM mt WHERE g LIKE 'g03%' AND u > '00000000-0000-0000-0000-000000000200'                                              | same
+ SELECT id FROM mt WHERE g = 'g03' || U&'\00E9'                                                                                    | same
+ SELECT id FROM mt WHERE g IS NULL                                                                                                 | same
+ SELECT id FROM mt WHERE g IS NULL AND u = '00000000-0000-0000-0000-000000000030'                                                  | same
+ SELECT id FROM mt WHERE g IN ('g01', 'g02', 'g03', 'g04', 'g05', 'g06', 'g07', 'g08', 'g09', 'g10', 'g11', 'g12') AND n = 1.25    | same
+ SELECT id FROM mt WHERE u IN (SELECT ('00000000-0000-0000-0000-' || lpad(k::text, 12, '0'))::uuid FROM generate_series(1, 40) k)  | same
+ SELECT id FROM mt WHERE n = 2.5                                                                                                   | same
+ SELECT id FROM mt WHERE g = 'absent'                                                                                              | same
+ SELECT id FROM mtn WHERE g = 'g3'                                                                                                 | same
+ SELECT id FROM mtn WHERE g = 'g3' AND n = 2.5                                                                                     | same
+ SELECT id FROM mtn WHERE g = 'g3' AND n = 'NaN'                                                                                   | same
+ SELECT id FROM mtn WHERE g = 'g3' AND n > 5                                                                                       | same
+ SELECT id FROM mtn WHERE n IS NULL                                                                                                | same
+ SELECT id FROM mtn WHERE n = 'NaN'                                                                                                | same
+(22 rows)
+
+SELECT idx_blocks('SELECT id FROM mt WHERE g = ''g03'' AND u = ''00000000-0000-0000-0000-000000000030''') * 4 < idx_blocks('SELECT id FROM mt WHERE v = 5') AS text_uuid_key_scan_reads_less;
+ text_uuid_key_scan_reads_less 
+-------------------------------
+ t
+(1 row)
+
+SELECT idx_blocks('SELECT id FROM mt WHERE g = ''g03''') * 4 < idx_blocks('SELECT id FROM mt WHERE v = 5') AS text_key_scan_reads_less;
+ text_key_scan_reads_less 
+--------------------------
+ t
+(1 row)
+
+-- Writes, a merge and a vacuum on those keys: new parts whose keys fall between and beyond the old ones, deletes, updates of the key, a NaN in a part
+INSERT INTO mt SELECT 100000 + i, 'g' || lpad(((i / 1500) % 30)::text, 2, '0'), ('00000000-0000-0000-0000-' || lpad(((i / 20) % 600)::text, 12, '0'))::uuid, ((i / 100) % 70)::numeric / 4, i % 97, 'k' || (i % 31)
+FROM generate_series(1, 30000) i;
+DELETE FROM mt WHERE id % 11 = 0 AND g = 'g03';
+UPDATE mt SET g = 'g03', u = '00000000-0000-0000-0000-000000000030', n = 2.5 WHERE id % 503 = 0;
+INSERT INTO mtn SELECT 50000 + i, 'g' || (i / 5000), CASE WHEN i % 700 = 0 THEN 'NaN'::numeric ELSE ((i / 100) % 50)::numeric / 4 END, i % 97 FROM generate_series(1, 20000) i;
+CREATE TABLE after_text_writes (q text);
+INSERT INTO after_text_writes VALUES
+	('SELECT id FROM mt WHERE g = ''g03'''),
+	('SELECT id FROM mt WHERE g = ''g03'' AND u = ''00000000-0000-0000-0000-000000000030'''),
+	('SELECT id FROM mt WHERE g = ''g03'' AND u = ''00000000-0000-0000-0000-000000000030'' AND n = 2.5'),
+	('SELECT id FROM mt WHERE g >= ''g20'' AND u < ''00000000-0000-0000-0000-000000000100'''),
+	('SELECT id FROM mt WHERE g IS NULL'),
+	('SELECT id FROM mt WHERE n BETWEEN 1 AND 2'),
+	('SELECT id FROM mtn WHERE g = ''g3'' AND n = 2.5'),
+	('SELECT id FROM mtn WHERE g = ''g5'' AND n > 5'),
+	('SELECT id FROM mtn WHERE n = ''NaN''');
+SELECT q, f2_same(q) FROM after_text_writes ORDER BY q;
+                                              q                                               | f2_same 
+----------------------------------------------------------------------------------------------+---------
+ SELECT id FROM mt WHERE g = 'g03'                                                            | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030'             | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030' AND n = 2.5 | same
+ SELECT id FROM mt WHERE g >= 'g20' AND u < '00000000-0000-0000-0000-000000000100'            | same
+ SELECT id FROM mt WHERE g IS NULL                                                            | same
+ SELECT id FROM mt WHERE n BETWEEN 1 AND 2                                                    | same
+ SELECT id FROM mtn WHERE g = 'g3' AND n = 2.5                                                | same
+ SELECT id FROM mtn WHERE g = 'g5' AND n > 5                                                  | same
+ SELECT id FROM mtn WHERE n = 'NaN'                                                           | same
+(9 rows)
+
+SELECT sift.maintain('mt_idx') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT sift.maintain('mtn_idx') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT q, f2_same(q) FROM after_text_writes ORDER BY q;
+                                              q                                               | f2_same 
+----------------------------------------------------------------------------------------------+---------
+ SELECT id FROM mt WHERE g = 'g03'                                                            | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030'             | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030' AND n = 2.5 | same
+ SELECT id FROM mt WHERE g >= 'g20' AND u < '00000000-0000-0000-0000-000000000100'            | same
+ SELECT id FROM mt WHERE g IS NULL                                                            | same
+ SELECT id FROM mt WHERE n BETWEEN 1 AND 2                                                    | same
+ SELECT id FROM mtn WHERE g = 'g3' AND n = 2.5                                                | same
+ SELECT id FROM mtn WHERE g = 'g5' AND n > 5                                                  | same
+ SELECT id FROM mtn WHERE n = 'NaN'                                                           | same
+(9 rows)
+
+VACUUM (FREEZE) mt;
+VACUUM (FREEZE) mtn;
+SELECT sift.maintain('mt_idx') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT sift.maintain('mtn_idx') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT q, f2_same(q) FROM after_text_writes ORDER BY q;
+                                              q                                               | f2_same 
+----------------------------------------------------------------------------------------------+---------
+ SELECT id FROM mt WHERE g = 'g03'                                                            | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030'             | same
+ SELECT id FROM mt WHERE g = 'g03' AND u = '00000000-0000-0000-0000-000000000030' AND n = 2.5 | same
+ SELECT id FROM mt WHERE g >= 'g20' AND u < '00000000-0000-0000-0000-000000000100'            | same
+ SELECT id FROM mt WHERE g IS NULL                                                            | same
+ SELECT id FROM mt WHERE n BETWEEN 1 AND 2                                                    | same
+ SELECT id FROM mtn WHERE g = 'g3' AND n = 2.5                                                | same
+ SELECT id FROM mtn WHERE g = 'g5' AND n > 5                                                  | same
+ SELECT id FROM mtn WHERE n = 'NaN'                                                           | same
+(9 rows)
+
+-- A key column with a collation of its own: the order of the part is the bytes', so a range or a prefix is the heap's, and an equality under a nondeterministic collation is too
+CREATE COLLATION mk_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+CREATE TABLE mc (id int, g text COLLATE "und-x-icu", h text COLLATE "C", v int);
+INSERT INTO mc SELECT i, (ARRAY['a', 'B', 'c', 'D', U&'\00E9', 'E', 'z', 'Z', 'b', 'A'])[1 + (i / 500) % 10], (ARRAY['x', 'Y', 'w', 'V'])[1 + i % 4], i % 13 FROM generate_series(1, 20000) i;
+CREATE INDEX mc_idx ON mc USING sift_col (id, g, h, v) WITH (key_order = 'g, h');
+SELECT q, f2_same(q) FROM unnest(ARRAY[
+	'SELECT id FROM mc WHERE g = ''B''',
+	'SELECT id FROM mc WHERE g = ''b''',
+	'SELECT id FROM mc WHERE g > ''b''',
+	'SELECT id FROM mc WHERE g BETWEEN ''a'' AND ''c''',
+	'SELECT id FROM mc WHERE g < ''D'' COLLATE "C"',
+	'SELECT id FROM mc WHERE g >= ''c'' COLLATE "und-x-icu"',
+	'SELECT id FROM mc WHERE g LIKE ''B%''',
+	'SELECT id FROM mc WHERE g LIKE ''b%'' COLLATE "C"',
+	'SELECT id FROM mc WHERE g = ''b'' COLLATE mk_nd',
+	'SELECT id FROM mc WHERE g > ''b'' COLLATE mk_nd',
+	'SELECT id FROM mc WHERE g IN (''a'', ''Z'')',
+	'SELECT id FROM mc WHERE g = ''B'' AND h > ''W''',
+	'SELECT id FROM mc WHERE g > ''b'' AND h = ''Y''',
+	'SELECT id FROM mc WHERE h = ''w'' AND g = ''E''',
+	'SELECT id FROM mc WHERE h < ''X'''
+]) AS t(q);
+                          q                           | f2_same 
+------------------------------------------------------+---------
+ SELECT id FROM mc WHERE g = 'B'                      | same
+ SELECT id FROM mc WHERE g = 'b'                      | same
+ SELECT id FROM mc WHERE g > 'b'                      | same
+ SELECT id FROM mc WHERE g BETWEEN 'a' AND 'c'        | same
+ SELECT id FROM mc WHERE g < 'D' COLLATE "C"          | same
+ SELECT id FROM mc WHERE g >= 'c' COLLATE "und-x-icu" | same
+ SELECT id FROM mc WHERE g LIKE 'B%'                  | same
+ SELECT id FROM mc WHERE g LIKE 'b%' COLLATE "C"      | same
+ SELECT id FROM mc WHERE g = 'b' COLLATE mk_nd        | same
+ SELECT id FROM mc WHERE g > 'b' COLLATE mk_nd        | same
+ SELECT id FROM mc WHERE g IN ('a', 'Z')              | same
+ SELECT id FROM mc WHERE g = 'B' AND h > 'W'          | same
+ SELECT id FROM mc WHERE g > 'b' AND h = 'Y'          | same
+ SELECT id FROM mc WHERE h = 'w' AND g = 'E'          | same
+ SELECT id FROM mc WHERE h < 'X'                      | same
+(15 rows)
+
+-- The marks add no setting
+SELECT count(*) AS settings FROM pg_settings WHERE name ~ '^sift\.(key_marks|col_stats|lazy|read_ahead)';
+ settings 
+----------
+        0
+(1 row)
+
+DROP TABLE mk, mkd, mku, mkj, mt, mtn, mc, after_writes, after_text_writes;
+DROP COLLATION mk_nd;
+DROP FUNCTION f2_same(text), idx_blocks(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

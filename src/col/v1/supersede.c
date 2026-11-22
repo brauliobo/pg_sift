@@ -1,0 +1,348 @@
+/*
+ * col/v1/supersede.c - the entries a new row version replaces, for an index with track_changes.
+ *
+ * An UPDATE that moves a row to a new heap address writes a new entry; the entry of the version it replaced stays in the index until VACUUM. Under the unique index
+ * the option requires, the row the key names has one live version, so the entry of the key that the new version does not own is the old one: it gets a tombstone
+ * of the transaction and command of the update (the log is voided when the transaction aborts, as the entry of an aborted transaction is). The candidates come from
+ * an ordinary scan of the index on the key, snapshot of the statement included: the version being updated is visible to it (the command's own change is not yet),
+ * a candidate that is the point directory's fingerprint of another key is dropped by comparing the key in the heap tuple.
+ */
+#include "postgres.h"
+
+#include "access/genam.h"
+#include "access/htup_details.h"
+#include "access/relation.h"
+#include "access/relscan.h"
+#include "access/skey.h"
+#include "access/stratnum.h"
+#include "access/tableam.h"
+#include "access/xact.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
+#include "executor/tuptable.h"
+#include "utils/lsyscache.h"
+#include "utils/snapmgr.h"
+#include "utils/typcache.h"
+
+#include "col/am.h"
+#include "col/v1/conn.h"
+#include "core/compat.h"
+#include "core/quarantine.h"
+#include "core/v1_col/tomb.h"
+
+#ifdef SIFT_TESTING
+bool sift_test_no_supersede = false;
+bool sift_test_tombs_at_once = false;
+bool sift_test_supersede_scan = false;
+#endif
+
+/*
+ * Is the version at newtid a speculative insertion (INSERT .. ON CONFLICT before it is confirmed)? It may be killed when the conflict is found, and the row it
+ * would replace then stays: no entry is superseded for it. The confirmed insertion of an upsert that finds no conflict replaces nothing either.
+ */
+bool
+sift_col_is_speculative(Relation heap, ItemPointer newtid)
+{
+	Buffer buf = ReadBuffer(heap, ItemPointerGetBlockNumber(newtid));
+	Page page;
+	ItemId lp;
+	bool spec = false;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	lp = PageGetItemId(page, ItemPointerGetOffsetNumber(newtid));
+	if (ItemIdIsNormal(lp))
+		spec = HeapTupleHeaderIsSpeculative((HeapTupleHeader)PageGetItem(page, lp));
+	UnlockReleaseBuffer(buf);
+	return spec;
+}
+
+/*
+ * The tombstones a statement writes are held back and go to the log by the page (sift_tomb_append_many): written before the log is read by this backend (sift_col_log), before the
+ * commit record and before a savepoint starts (col/am/am.c), dropped when the transaction or the savepoint aborts, as the rows of the write buffer are: no other backend can see
+ * what they hide before then, since the heap versions they name are of a transaction that has not committed. Each index of the table has its own buffer (an UPDATE gives every
+ * one of them its entry for each row, one after the other), so that the tombstones of a statement still go by the page whatever the number of indexes.
+ */
+#define TOMB_HOLD	2048
+#define TOMB_SLOTS	8
+
+typedef struct HeldTombs
+{
+	Oid			index;
+	RelFileNumber relnumber;
+	int			n;
+	SiftTomb   *ents;
+} HeldTombs;
+
+static HeldTombs held[TOMB_SLOTS];
+
+typedef struct TombFlush
+{
+	Relation	index;
+	SiftTomb   *ents;
+	int			n;
+} TombFlush;
+
+static void
+append_held(void *arg)
+{
+	TombFlush  *f = arg;
+
+	sift_tomb_append_many(f->index, sift_col_log_appender(f->index), f->ents, f->n);
+}
+
+static void
+flush_slot(HeldTombs *h)
+{
+	TombFlush	f = {NULL, h->ents, h->n};
+
+	if (f.n == 0)
+		return;
+	h->n = 0;
+	if ((f.index = try_relation_open(h->index, RowExclusiveLock)) != NULL)
+	{
+		/* a rebuilt index is another file with a log of its own, which holds nothing of these; one that is out of service keeps no log up to date: a rebuild takes it from the heap */
+		if (f.index->rd_locator.relNumber == h->relnumber)
+			sift_quarantine_run(f.index, SIFT_SKIP_WRITE, append_held, &f);
+		relation_close(f.index, NoLock);
+	}
+}
+
+void
+sift_col_tombs_flush(void)
+{
+	for (int i = 0; i < TOMB_SLOTS; i++)
+		flush_slot(&held[i]);
+}
+
+/* the held tombstones live in the transaction's context: at its end the slots forget them */
+void
+sift_col_tombs_end(void)
+{
+	for (int i = 0; i < TOMB_SLOTS; i++)
+		held[i].ents = NULL;
+}
+
+void
+sift_col_tombs_discard(void)
+{
+	for (int i = 0; i < TOMB_SLOTS; i++)
+		held[i].n = 0;
+}
+
+static void
+tomb_hold(Relation index, const SiftTomb *ent)
+{
+	HeldTombs  *h = NULL;
+
+	if (sift_index_known_out(index))
+		return;
+
+	for (int i = 0; i < TOMB_SLOTS && h == NULL; i++)
+		if (held[i].n > 0 && held[i].index == RelationGetRelid(index) && held[i].relnumber == index->rd_locator.relNumber)
+			h = &held[i];
+	if (h == NULL)
+	{
+		for (int i = 0; i < TOMB_SLOTS && h == NULL; i++)
+			if (held[i].n == 0)
+				h = &held[i];
+		if (h == NULL)
+		{
+			sift_col_tombs_flush();
+			h = &held[0];
+		}
+		if (h->ents == NULL)
+			h->ents = MemoryContextAlloc(TopTransactionContext, TOMB_HOLD * sizeof(SiftTomb));
+		(void) sift_col_log_appender(index);	/* the segment exists (an index that got the option later has none yet) */
+		h->index = RelationGetRelid(index);
+		h->relnumber = index->rd_locator.relNumber;
+	}
+	h->ents[h->n++] = *ent;
+	if (h->n == TOMB_HOLD
+#ifdef SIFT_TESTING
+		|| sift_test_tombs_at_once
+#endif
+		)
+		flush_slot(h);
+}
+
+/* The key journal of a connected parent (col/v1/conn.h): the key whose entry an update ended by writing a new version of the same key, held with the tombstones */
+static void
+journal_hold(Relation index, Oid keytype, Datum key)
+{
+	SiftTomb	rec;
+
+	if (sift_conn_record(index, keytype, key, true, &rec))
+		tomb_hold(index, &rec);
+}
+
+/* A journal record of a scope relation's index (col/v1/conn.h), held with the tombstones of the transaction */
+void
+sift_col_tomb_hold_rec(Relation index, const SiftTomb *rec)
+{
+	tomb_hold(index, rec);
+}
+
+/* A row trigger (track_changes = ctid): the entry at the address of a version a statement ended, held with the others of the transaction */
+void
+sift_col_tomb_hold_tid(Relation index, ItemPointer tid)
+{
+	sift_col_batch_hook();
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(tid), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .kind = SIFT_TOMB_DELETE});
+}
+
+/*
+ * The entry a new version replaces is the same for every sift index of the table that has the key column: the first one finds it with the probe of the unique index, the others
+ * of the same row version take it from here (the new address, the transaction and the command say which row version it is).
+ */
+static struct
+{
+	Oid			heap;
+	AttrNumber	att;
+	ItemPointerData newtid;
+	TransactionId xid;
+	CommandId	cid;
+	bool		found;
+	ItemPointerData old;
+} probed;
+static bool probed_found;
+static ItemPointerData probed_old;
+
+/* The key of the version in slot is the key (the point directory lists the fingerprint of a key: another key of the same fingerprint is not the row's), and the entry is not the new version's own: its tombstone */
+static bool
+tomb_replaced(Relation index, TupleTableSlot *slot, AttrNumber hatt, Form_pg_attribute att, TypeCacheEntry *tc, Datum key, ItemPointer entry,
+			  uint64 succ)
+{
+	bool isnull;
+	Datum old = slot_getattr(slot, hatt, &isnull);
+
+	if (isnull || !DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, att->attcollation, old, key)))
+		return false;
+	tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(entry), .xid = GetCurrentTransactionId(), .cid = sift_col_stmt_cid(), .succ = succ, .kind = SIFT_TOMB_UPDATE});
+	journal_hold(index, att->atttypid, key);
+	probed_found = true;
+	probed_old = *entry;
+	return true;
+}
+
+/*
+ * The addresses of the key come from the table's unique index on it, which lists every version of a row that has an entry in this one (a version that is not a HOT member
+ * has an entry in each index, and the one being updated is not dead, so neither index has dropped it): a probe of a b-tree where the index's own scan opens the
+ * segments and reads the buffers. An index scan of the access method is what finds them when the table has no such index now.
+ */
+static void
+supersede_by_unique(Relation index, Relation heap, Oid uoid, Snapshot snap, AttrNumber hatt, Form_pg_attribute att, TypeCacheEntry *tc,
+					Datum key, ItemPointer newtid, uint64 succ)
+{
+	Relation uidx = index_open(uoid, AccessShareLock);
+	Oid intype = uidx->rd_opcintype[0];
+	ScanKeyData skey;
+	IndexScanDesc scan;
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+	ScanKeyEntryInitialize(&skey, 0, 1, BTEqualStrategyNumber, InvalidOid, uidx->rd_indcollation[0],
+						   get_opcode(get_opfamily_member(uidx->rd_opfamily[0], intype, intype, BTEqualStrategyNumber)), key);
+	scan = sift_index_beginscan(heap, uidx, snap, 1);
+	index_rescan(scan, &skey, 1, NULL, 0);
+	for (ItemPointer t; (t = index_getnext_tid(scan, ForwardScanDirection)) != NULL;)
+	{
+		ItemPointerData entry = *t;
+
+		/* the unique index lets the snapshot see one version of the key: the one it finds is the one replaced, and the entries after it are of older versions that are dead */
+		if (!ItemPointerEquals(&entry, newtid) && index_fetch_heap(scan, slot) && tomb_replaced(index, slot, hatt, att, tc, key, &entry, succ))
+			break;
+	}
+	index_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	index_close(uidx, NoLock);
+}
+
+static void
+supersede_by_scan(Relation index, Relation heap, Snapshot snap, int attno, AttrNumber hatt, Form_pg_attribute att, TypeCacheEntry *tc,
+				  Datum key, ItemPointer newtid, uint64 succ)
+{
+	ScanKeyData skey;
+	IndexScanDesc scan;
+	ItemPointerData *cand = NULL;
+	int ncand = 0, capcand = 0;
+	TupleTableSlot *slot;
+	IndexFetchTableData *fetch;
+
+	/* the operator class is polymorphic: the access method reads the strategy, the function of the type's equality is for the form of the key */
+	ScanKeyInit(&skey, attno, BTEqualStrategyNumber, tc->eq_opr_finfo.fn_oid, key);
+	scan = sift_index_beginscan(heap, index, snap, 1);
+	index_rescan(scan, &skey, 1, NULL, 0);
+	for (ItemPointer t; (t = index_getnext_tid(scan, ForwardScanDirection)) != NULL;)
+	{
+		if (ncand == capcand)
+		{
+			capcand = Max(8, 2 * capcand);
+			SIFT_REGROW(cand, capcand * sizeof(ItemPointerData));
+		}
+		cand[ncand++] = *t;
+	}
+	index_endscan(scan);
+	if (ncand == 0)
+		return;
+	slot = table_slot_create(heap, NULL);
+	fetch = sift_table_index_fetch_begin(heap);
+	for (int i = 0; i < ncand; i++)
+	{
+		ItemPointerData t = cand[i];
+		bool again = false, dead = false;
+
+		if (!ItemPointerEquals(&t, newtid) && table_index_fetch_tuple(fetch, &t, snap, slot, &again, &dead))
+			tomb_replaced(index, slot, hatt, att, tc, key, &cand[i], succ);
+	}
+	table_index_fetch_end(fetch);
+	ExecDropSingleTupleTableSlot(slot);
+	pfree(cand);
+}
+
+void
+sift_col_supersede(Relation index, Relation heap, const Datum *values, ItemPointer newtid, bool speculative_stmt)
+{
+	int attno = sift_col_rel(index)->rowkey_attno;
+	AttrNumber hatt = index->rd_index->indkey.values[attno - 1];
+	Datum key = values[attno - 1];
+	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(heap), hatt - 1);
+	TypeCacheEntry *tc = lookup_type_cache(att->atttypid, TYPECACHE_EQ_OPR_FINFO);
+	Snapshot snap;
+	Oid uoid;
+	uint64 succ = sift_key_from_tid(newtid);
+
+#ifdef SIFT_TESTING
+	if (sift_test_no_supersede)
+		return;
+#endif
+	if (speculative_stmt && sift_col_is_speculative(heap, newtid))
+		return;
+	if (probed.heap == RelationGetRelid(heap) && probed.att == hatt && ItemPointerEquals(&probed.newtid, newtid) && probed.xid == GetCurrentTransactionId() &&
+		probed.cid == sift_col_stmt_cid())
+	{
+		if (probed.found)
+			tomb_hold(index, &(SiftTomb) {.key = sift_key_from_tid(&probed.old), .xid = probed.xid, .cid = probed.cid, .succ = succ, .kind = SIFT_TOMB_UPDATE});
+		return;
+	}
+	probed_found = false;
+	uoid = sift_col_row_key_unique(heap, hatt);
+	snap = RegisterSnapshot(GetLatestSnapshot());
+	snap->curcid = sift_col_stmt_cid();
+#ifdef SIFT_TESTING
+	if (sift_test_supersede_scan)
+		uoid = InvalidOid;
+#endif
+	/* the latest committed version (or the transaction's own) is the one being updated: a snapshot of now sees it, the version of this command not */
+	if (OidIsValid(uoid))
+		supersede_by_unique(index, heap, uoid, snap, hatt, att, tc, key, newtid, succ);
+	else
+		supersede_by_scan(index, heap, snap, attno, hatt, att, tc, key, newtid, succ);
+	UnregisterSnapshot(snap);
+	probed.heap = RelationGetRelid(heap);
+	probed.att = hatt;
+	probed.newtid = *newtid;
+	probed.xid = GetCurrentTransactionId();
+	probed.cid = sift_col_stmt_cid();
+	probed.found = probed_found;
+	probed.old = probed_old;
+}

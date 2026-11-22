@@ -1,5 +1,5 @@
 -- The workers of a parallel aggregate read the pages of the write buffer of a sift_col index; the rows a transaction has inserted after its first one are held back
--- in the backend until it reads the index (col/wbuf/pending.c), and a worker has none of its own to flush. With the leader not scanning, nothing flushed them: the
+-- in the backend until it reads the index (col/v1/wbuf/pending.c), and a worker has none of its own to flush. With the leader not scanning, nothing flushed them: the
 -- transaction's own rows were missing from the answer of the workers, from the second transaction of a session on (the first read of a session flushed them).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -12,7 +12,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
 SET parallel_leader_participation = off;
 -- the same aggregate, in the transaction that inserted rows, under the workers and under the heap's plan (sift.enable_agg off); three transactions, each rolled back
 BEGIN;

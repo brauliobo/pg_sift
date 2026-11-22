@@ -1,6 +1,6 @@
 /*
  * col/track_hear.c - the triggers of an index with track_changes as a set: which tables must be heard (the table of the index, and for a statement trigger every table above it), which triggers the index
- * has, what they lack, and the locks that making and dropping them take. The completeness of the log that they make is decided in col/track.c.
+ * has, what they lack, and the locks that making and dropping them take. The completeness of the log that they make is decided in col/v1/track.c (format major 1).
  */
 #include "postgres.h"
 
@@ -19,6 +19,7 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
+#include "storage/lock.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
@@ -84,7 +85,7 @@ read_trigger(Oid funcoid, Oid toid, List **trigs, bool row)
 			h->oid = toid;
 			h->relid = tg->tgrelid;
 			h->name = tg->tgname;
-			h->event = (tg->tgtype & TRIGGER_TYPE_DELETE) ? 0 : 1;
+			h->events = ((tg->tgtype & TRIGGER_TYPE_DELETE) ? HEAR_EVENT(0) : 0) | ((tg->tgtype & TRIGGER_TYPE_UPDATE) ? HEAR_EVENT(1) : 0);
 			h->witness = HeapTupleHeaderGetRawXmin(tp->t_data);
 			h->ok = shape && tg->tgenabled == TRIGGER_FIRES_ALWAYS;
 			h->origin = shape && tg->tgenabled == TRIGGER_FIRES_ON_ORIGIN;
@@ -157,7 +158,7 @@ sift_col_hear_witness(List *trigs, int event)
 
 	list_sort(sorted, trig_cmp);
 	foreach_ptr(HearTrig, t, sorted)
-		if (t->event == event)
+		if (t->events & HEAR_EVENT(event))
 		{
 			w = first ? t->witness : hash_combine(w, t->witness);
 			first = false;
@@ -172,7 +173,7 @@ sift_col_hear_all_ok(List *trigs, int event, uint32 *witness)
 	bool		ok = true;
 
 	foreach_ptr(HearTrig, t, trigs)
-		ok &= t->event != event || t->ok;
+		ok &= !(t->events & HEAR_EVENT(event)) || t->ok;
 	*witness = sift_col_hear_witness(trigs, event);
 	return ok;
 }
@@ -192,7 +193,7 @@ sift_col_hear_read(Oid heapoid, Relation index, List *trigs, Hear h[2])
 					any_origin = false;
 
 		foreach_ptr(HearTrig, t, trigs)
-			if (t->event == e)
+			if (t->events & HEAR_EVENT(e))
 				mine = lappend(mine, t);
 		whole = list_length(mine) == list_length(tables);
 		foreach_ptr(HearTrig, t, mine)
@@ -249,8 +250,21 @@ sift_col_hear_lock_all(Relation heap, Relation index)
 	return true;
 }
 
+/* An index of format major 2 has one trigger on its table for both events; any other has one for each */
+static int
+event_slots(Relation index)
+{
+	return sift_col_ops(index)->tracks_addresses ? 1 : 2;
+}
+
+static int
+slot_events(Relation index, int slot)
+{
+	return sift_col_ops(index)->tracks_addresses ? HEAR_BOTH : HEAR_EVENT(slot);
+}
+
 static void
-create_trigger(Oid relid, Relation index, bool update)
+create_trigger(Oid relid, Relation index, int events)
 {
 	CreateTrigStmt *stmt = makeNode(CreateTrigStmt);
 	TriggerTransition *tt = makeNode(TriggerTransition);
@@ -262,13 +276,13 @@ create_trigger(Oid relid, Relation index, bool update)
 	tt->name = "old_rows";
 	tt->isNew = false;
 	tt->isTable = true;
-	stmt->trigname = psprintf(update ? "sift_track_update_%s" : "sift_track_delete_%s", RelationGetRelationName(index));
+	stmt->trigname = psprintf(events == HEAR_BOTH ? "sift_track_%s" : (events & HEAR_EVENT(1)) ? "sift_track_update_%s" : "sift_track_delete_%s", RelationGetRelationName(index));
 	stmt->relation = makeRangeVar(get_namespace_name(get_rel_namespace(relid)), get_rel_name(relid), -1);
 	stmt->funcname = list_make2(makeString("sift"), makeString(HEAR_FUNCTION));
 	stmt->args = list_make1(makeString(psprintf("%u", RelationGetRelid(index))));
 	stmt->row = row;
 	stmt->timing = TRIGGER_TYPE_AFTER;
-	stmt->events = update ? TRIGGER_TYPE_UPDATE : TRIGGER_TYPE_DELETE;
+	stmt->events = ((events & HEAR_EVENT(0)) ? TRIGGER_TYPE_DELETE : 0) | ((events & HEAR_EVENT(1)) ? TRIGGER_TYPE_UPDATE : 0);
 	stmt->transitionRels = row ? NIL : list_make1(tt);
 	trig = sift_create_trigger(stmt, relid, funcoid);
 	ObjectAddressSet(idx, RelationRelationId, RelationGetRelid(index));
@@ -279,10 +293,8 @@ void
 sift_col_hear_create(Relation heap, Relation index)
 {
 	foreach_oid(tbl, sift_col_hear_tables(RelationGetRelid(heap), sift_col_track_ctid(index)))
-	{
-		create_trigger(tbl, index, false);
-		create_trigger(tbl, index, true);
-	}
+		for (int slot = 0; slot < event_slots(index); slot++)
+			create_trigger(tbl, index, slot_events(index, slot));
 }
 
 static void
@@ -309,21 +321,23 @@ sift_col_hear_plan(Relation heap, Relation index, List *trigs)
 	List	   *tables = sift_col_hear_tables(RelationGetRelid(heap), sift_col_track_ctid(index));
 
 	foreach_oid(tbl, tables)
-		for (int e = 0; e < 2; e++)
+		for (int slot = 0; slot < event_slots(index); slot++)
 		{
 			int			on = 0;
+			int			want = slot_events(index, slot);
 
 			foreach_ptr(HearTrig, t, trigs)
-				if (t->relid == tbl && t->event == e)
+				if (t->relid == tbl && (t->events & want))
 				{
 					on++;
+					plan.bad |= t->events != want;
 					if (t->origin)
 						plan.enable = lappend(plan.enable, t);
 					else
 						plan.bad |= !t->ok;
 				}
 			if (on == 0)
-				plan.make = lappend(plan.make, memcpy(palloc(sizeof(HearWant)), &(HearWant) {tbl, e}, sizeof(HearWant)));
+				plan.make = lappend(plan.make, memcpy(palloc(sizeof(HearWant)), &(HearWant) {tbl, want}, sizeof(HearWant)));
 			plan.bad |= on > 1;
 		}
 	foreach_ptr(HearTrig, t, trigs)
@@ -352,7 +366,7 @@ sift_col_hear_apply(Relation heap, Relation index, const HearPlan *plan)
 		if (!sift_col_hear_lock_briefly(t->relid, AccessExclusiveLock))
 			return false;
 	foreach_ptr(HearWant, w, plan->make)
-		create_trigger(w->relid, index, w->event == 1);
+		create_trigger(w->relid, index, w->events);
 	foreach_ptr(HearTrig, t, plan->enable)
 	{
 		Relation	rel = t->relid == RelationGetRelid(heap) ? heap : table_open(t->relid, NoLock);
@@ -367,3 +381,35 @@ sift_col_hear_apply(Relation heap, Relation index, const HearPlan *plan)
 	return true;
 }
 
+/*
+ * May the triggers be made now? REINDEX fires no event trigger, and the statement that touches the first sift_col index of a session loads the library (and its hooks) after it holds its locks. So a
+ * REINDEX asks only when no other session holds a lock that conflicts with it: one that finds another holder of ShareLock does not wait for it (that one may be waiting for this one) and leaves
+ * the triggers to the maintenance worker (sift_col_track_rearmable); both of two that must make them find the other and wait for nothing. CREATE INDEX takes the lock first (the event trigger of sql/5.0/05-index-build-lock.sql) and an index that this transaction made has no other REINDEX; ALTER INDEX
+ * holds it; a concurrent build holds ShareUpdateExclusiveLock, which two of them cannot hold. The other tables take the lock briefly (sift_col_hear_lock_all).
+ */
+bool
+sift_col_hear_may_make(Relation heap, Relation index, bool concurrent)
+{
+	LOCKTAG		tag;
+	int			holders;
+
+	if (!sift_col_hear_lock_all(heap, index))
+		return false;
+	if (concurrent || index->rd_createSubid != InvalidSubTransactionId || CheckRelationLockedByMe(heap, ShareRowExclusiveLock, true))
+		return true;
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, RelationGetRelid(heap));
+	(void) GetLockConflicts(&tag, ShareRowExclusiveLock, &holders);
+	return holders == 0;
+}
+
+/* The triggers of the index are dropped, each table held briefly: a statement that holds one, while this one holds the table of the index, may be waiting for it */
+void
+sift_col_hear_remove(Relation index)
+{
+	foreach_ptr(HearTrig, t, sift_col_hear_find(index, false))
+		if (!sift_col_hear_lock_briefly(t->relid, AccessExclusiveLock))
+			ereport(ERROR, (errcode(ERRCODE_LOCK_NOT_AVAILABLE), errmsg("could not lock table \"%s\" to remove the track_changes triggers of index \"%s\"", get_rel_name(t->relid), RelationGetRelationName(index)),
+							errdetail("A statement holds it, and this one holds the table of the index, which that statement may be waiting for."),
+							errhint("Run the statement again.")));
+	sift_col_hear_drop_all(index);
+}

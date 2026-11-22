@@ -2,8 +2,8 @@
 -- freed the most it could for the bytes it copied. A rewrite makes a new segment with the next generation, so the order of the generations of
 -- the rewritten segments is the order of the rewrites; each is told by the rows it keeps.
 CREATE EXTENSION pg_sift;
-SET sift.table_auto_defrag = off;
-SET sift.table_dead_rewrite_pct = 30;
+SET sift.async_maintenance = off;
+SET sift.dead_rewrite_pct = 30;
 CREATE TABLE od (id int, grp int, pad text) USING sift_table WITH (autovacuum_enabled = false);
 -- three segments of 1000 rows, the most dead one the largest in bytes (a rule of "smallest first" would rewrite it last)
 INSERT INTO od SELECT g, 1, repeat('a', 200) FROM generate_series(1, 1000) g;

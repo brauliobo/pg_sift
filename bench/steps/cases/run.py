@@ -182,10 +182,8 @@ def cmd_run(args):
         lines, ok = budget.check(args.budget, results)
         print('\n'.join(lines))
         failed += [] if ok else ['a case is over its instruction ceiling (%s)' % args.budget]
-    if args.docs and not failed:   # the blocks that quote bench/results/cases.tsv and cases-scale.tsv
-        import cases_render
-        cases_render.render(os.path.join(REPO, 'bench', 'results'), os.path.join(REPO, 'bench', 'out', 'README-blocks.md'), os.path.join(REPO, 'bench', 'out', 'BENCHMARKS.md'))
-        subprocess.run([sys.executable, '-I', os.path.join(HERE, 'highlights.py')], check=True, stdout=subprocess.DEVNULL)
+    if args.docs and not failed:   # docs/results/cases*.tsv is written: the blocks and charts that quote it are rendered by scripts/gen-docs.py
+        subprocess.run([sys.executable, '-I', os.path.join(REPO, 'scripts', 'gen-docs.py')], check=True, cwd=REPO)
     return 1 if failed else 0
 
 
@@ -214,7 +212,7 @@ def cmd_plan(args):
 
 
 def write_results(args, cases, results):
-    import extras
+    import resultfile
     version = re.search(r"default_version\s*=\s*'([^']*)'", open(os.path.join(REPO, 'pg_sift.control')).read()).group(1)
     sha = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD'], capture_output=True, text=True).stdout.strip()
     meta = {'orders': args.rows, 'postgresql': psql('SHOW server_version', 'postgres'), 'pg_sift': version, 'build': sha, 'date': datetime.date.today().isoformat(),
@@ -227,27 +225,27 @@ def write_results(args, cases, results):
         r['version'] = version
     path = args.out
     if args.docs:
-        path = os.path.join(REPO, 'bench', 'results', 'cases-scale.tsv' if args.scales else 'cases.tsv')
+        path = os.path.join(REPO, 'docs', 'results', 'cases-scale.tsv' if args.scales else 'cases.tsv')
         if os.path.exists(path):   # a run of some cases replaces only their rows, at the size of the others
-            old_meta, old = extras.read(path)
+            old_meta, old = resultfile.read(path)
             ran = {r['case'] for r in results}
             if not args.scales and str(args.rows) != old_meta.get('orders') and {c.id for c in cases} != {c.id for c in read_registry()}:
-                die('bench/results/cases.tsv holds %s orders: run every case at --rows %d, or these at --rows %s' % (old_meta.get('orders'), args.rows, old_meta.get('orders')))
+                die('docs/results/cases.tsv holds %s orders: run every case at --rows %d, or these at --rows %s' % (old_meta.get('orders'), args.rows, old_meta.get('orders')))
             if args.scales and str(args.rows) != old_meta.get('orders'):
-                die('bench/results/cases-scale.tsv has its 1x at %s orders: run with --rows %s' % (old_meta.get('orders'), old_meta.get('orders')))
+                die('docs/results/cases-scale.tsv has its 1x at %s orders: run with --rows %s' % (old_meta.get('orders'), old_meta.get('orders')))
             results = [r for r in old if r['case'] not in ran and str(args.rows) == old_meta.get('orders')] + results   # a run of every case at another size replaces the file
     if args.scales:
         meta['scales'] = args.scales
-    extras.write(path, 'Benchmark cases (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the orders benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
+    resultfile.write(path, 'Benchmark cases (bench/cases.tsv)%s: pg_sift against PostgreSQL and the other engines on the orders of the orders benchmark.' % (' at 1x, 10x and 100x of --rows (the case id carries the number of orders: ID@ROWS)' if args.scales else ''), meta, results)
     log('wrote %s' % path)
     if args.docs or args.times:
         write_times(args, cases)
 
 
 def write_times(args, cases):
-    """bench/results/cases-time.tsv: the seconds each case took (its build: the table, indexes and setup, zero for a case that reads a table another one built; its timed runs on every lane),
+    """docs/results/cases-time.tsv: the seconds each case took (its build: the table, indexes and setup, zero for a case that reads a table another one built; its timed runs on every lane),
     which the budget table of bench/README.md is made from; the rows of the cases that ran replace theirs"""
-    path = args.times or os.path.join(REPO, 'bench', 'results', 'cases-time-scale.tsv' if args.scales else 'cases-time.tsv')
+    path = args.times or os.path.join(REPO, 'docs', 'results', 'cases-time-scale.tsv' if args.scales else 'cases-time.tsv')
     old = {}
     if os.path.exists(path):
         for l in open(path):

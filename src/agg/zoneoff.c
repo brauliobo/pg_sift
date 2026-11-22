@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "datatype/timestamp.h"
+#include "utils/datetime.h"
 
 #include "core/host.h"
 #include "agg/zoneoff.h"
@@ -26,6 +27,7 @@ zone_open(MemoryContext cxt, const pg_tz *tz)
 	z->cxt = cxt;
 	z->lo = PG_INT64_MAX;
 	z->hi = PG_INT64_MIN;
+	z->reach = PG_INT64_MAX;
 	return z;
 }
 
@@ -48,6 +50,43 @@ zone_push(ZoneOff *z, int64 from, int64 off)
 	z->off[z->n++] = off;
 }
 
+/* the offset of the clock at the instant of unix_secs, as PostgreSQL's table and rules give it (the pieces are the boundaries of the table: they end where it does) */
+static long
+offset_at_secs(const pg_tz *tz, pg_time_t unix_secs)
+{
+	pg_time_t	at = unix_secs,
+				boundary;
+	long		before,
+				after;
+	int			bdst,
+				adst,
+				r = pg_next_dst_boundary(&at, &before, &bdst, &boundary, &after, &adst, tz);
+
+	SIFT_INVARIANT(r >= 0, "sift: no offset of the time zone at %lld", (long long) unix_secs);
+	return before;
+}
+
+/* does the offset still change after the last boundary of the table: the rule of a zone with daylight saving time is followed, but its boundaries are not given */
+static bool
+changes_after(const pg_tz *tz, pg_time_t unix_secs)
+{
+	const long	first = offset_at_secs(tz, unix_secs);
+
+	for (int quarter = 1; quarter <= 4; quarter++)
+		if (offset_at_secs(tz, unix_secs + (pg_time_t) quarter * 91 * SECS_PER_DAY) != first)
+			return true;
+	return false;
+}
+
+/* The zone has the one offset 0 at every instant (UTC, GMT and their aliases); a zone with another offset, daylight saving time or an earlier mean time does not */
+bool
+zone_is_utc(const pg_tz *tz)
+{
+	long int	off;
+
+	return pg_get_timezone_offset(tz, &off) && off == 0;
+}
+
 /* the pieces cover [lo, hi] and the margin around it (the window only grows) */
 void
 zone_cover(ZoneOff *z, int64 lo, int64 hi)
@@ -62,6 +101,7 @@ zone_cover(ZoneOff *z, int64 lo, int64 hi)
 	t = z->lo < MIN_TIMESTAMP + ZONE_MARGIN ? MIN_TIMESTAMP : z->lo - ZONE_MARGIN;
 	end = z->hi > END_TIMESTAMP - ZONE_MARGIN ? END_TIMESTAMP : z->hi + ZONE_MARGIN;
 	z->n = 0;
+	z->reach = PG_INT64_MAX;
 	for (;;)
 	{
 		pg_time_t	at = floor_secs(t) + UNIX_TO_PG_SECS,
@@ -74,6 +114,8 @@ zone_cover(ZoneOff *z, int64 lo, int64 hi)
 
 		SIFT_INVARIANT(r >= 0, "sift: no offsets of the time zone at %lld", (long long) t);
 		zone_push(z, t, (int64) before * USECS_PER_SEC);
+		if (r == 0 && changes_after(z->tz, at))
+			z->reach = t;
 		if (r == 0 || (boundary - UNIX_TO_PG_SECS) * USECS_PER_SEC > end)
 			break;
 		t = (boundary - UNIX_TO_PG_SECS) * USECS_PER_SEC;
@@ -97,6 +139,55 @@ zone_piece(const ZoneOff *z, int64 t)
 			hi = mid - 1;
 	}
 	return lo;
+}
+
+/*
+ * The offset of a local time (microseconds of the local clock since 2000-01-01): the offset of the piece that holds the instant it names, as PostgreSQL's
+ * DetermineTimeZoneOffset picks it. A local time that a clock change repeats (the fall back) names two instants, and the later piece's offset is the answer; one that
+ * it skips (the spring forward) names none, and the offset before the change is the answer. The pieces must cover the instants around it (zone_cover); a local time
+ * past their reach is asked of PostgreSQL's own function.
+ */
+static int64
+exact_local_offset(const pg_tz *tz, int64 local)
+{
+	const int64 days = local / USECS_PER_DAY - (local % USECS_PER_DAY < 0),
+				rem = local - days * USECS_PER_DAY;
+	struct pg_tm tm = {0};
+
+	j2date((int) days + POSTGRES_EPOCH_JDATE, &tm.tm_year, &tm.tm_mon, &tm.tm_mday);
+	tm.tm_hour = (int) (rem / USECS_PER_HOUR);
+	tm.tm_min = (int) (rem / USECS_PER_MINUTE % 60);
+	tm.tm_sec = (int) (rem / USECS_PER_SEC % 60);
+	return -(int64) DetermineTimeZoneOffset(&tm, (pg_tz *) tz) * USECS_PER_SEC;
+}
+
+int64
+zone_offset_at(const ZoneOff *z, int64 t)
+{
+	return t < z->reach ? z->off[zone_piece(z, t)] : (int64) offset_at_secs(z->tz, floor_secs(t) + UNIX_TO_PG_SECS) * USECS_PER_SEC;
+}
+
+int64
+zone_local_offset(const ZoneOff *z, int64 local)
+{
+	const int	near = zone_piece(z, local);
+
+	if (local + 2 * USECS_PER_DAY >= z->reach)
+		return exact_local_offset(z->tz, local);
+	int			first = Max(0, near - 2),
+				last = Min(z->n - 1, near + 2),
+				gap = near;
+
+	for (int i = last; i >= first; i--)
+	{
+		const int64 t = local - z->off[i];
+
+		if (t >= z->from[i] && (i == z->n - 1 || t < z->from[i + 1]))
+			return z->off[i];
+		if (i < z->n - 1 && t >= z->from[i + 1] && local - z->off[i + 1] < z->from[i + 1])
+			gap = i;
+	}
+	return z->off[gap];
 }
 
 /* the number of the step of us microseconds of the local clock that the instant t is in */

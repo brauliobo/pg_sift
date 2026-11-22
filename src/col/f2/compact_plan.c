@@ -1,0 +1,144 @@
+/*
+ * col/f2/compact_plan.c - what a compaction takes (col/f2/compact.h): the parts of a partition by level, the dead ones and the aged ones, from their descriptors alone.
+ */
+#include "core/host.h"
+
+#include "col/f2/compact.h"
+
+int			sift_dead_rewrite_pct = 15;
+
+static bool
+part_is_dead(const SiftPartDesc *p)
+{
+	return p->nrows > 0 && p->ndead * 100 >= p->nrows * (uint64) sift_dead_rewrite_pct;
+}
+
+uint64 *
+sift_compact_candidates(const SiftPartDesc *parts, int nparts, int *n)
+{
+	uint64	   *out = palloc(Max(nparts, 1) * sizeof(uint64));
+
+	*n = 0;
+	for (int i = 0; i < nparts; i++)
+		if (part_is_dead(&parts[i]))
+			out[(*n)++] = parts[i].part_gen;
+	return out;
+}
+
+static int
+by_size(const void *a, const void *b)
+{
+	const SiftPartDesc *x = *(const SiftPartDesc *const *) a,
+			   *y = *(const SiftPartDesc *const *) b;
+
+	return x->nbytes < y->nbytes ? -1 : x->nbytes > y->nbytes;
+}
+
+static bool
+part_is_cold(const SiftPartDesc *p)
+{
+	return (p->flags & SIFT_PART_FLAG_TIME_COLD) != 0;
+}
+
+/* A hot part whose every row is older than the cut: it is rewritten so that its rows go cold */
+static bool
+part_has_aged(const SiftPartDesc *p, int64 hot_cut)
+{
+	return (p->flags & SIFT_PART_FLAG_TIME_HOT) && (p->flags & SIFT_PART_FLAG_HAS_TIME0) && p->time_max[0] < hot_cut;
+}
+
+/* A part in object storage is never an input of a compaction: it is read by range and dropped whole (col/f2/f2_ttl.h) */
+static bool
+plannable(const SiftPartDesc *p, int level, bool cold)
+{
+	return p->level == level && !(p->ext_flags & SIFT_PART_EXT_REMOTE) && part_is_cold(p) == cold;
+}
+
+/* A part a build wrote whole: merging it again with its neighbours by count or by size rewrites rows that are in place (a dead or aged part is still rewritten) */
+static bool
+part_is_consolidated(const SiftPartDesc *d)
+{
+	return d->level > 0 && (d->flags & SIFT_PART_FLAG_BUILT) != 0;
+}
+
+/* A part the compaction merges with the other small ones: a build packs whole granules into parts that can end under the floor, and those stay as they are */
+static bool
+part_is_small(const SiftPartDesc *d)
+{
+	return !part_is_consolidated(d) && d->nbytes < SIFT_COMPACT_FLOOR_BYTES;
+}
+
+/* The bytes of the parts above level 0 of a tier: what the parts of level 0 are small beside */
+static uint64
+settled_bytes(const SiftPartDesc *parts, int nparts, bool cold)
+{
+	uint64		bytes = 0;
+
+	for (int i = 0; i < nparts; i++)
+		if (parts[i].level > 0 && plannable(&parts[i], parts[i].level, cold))
+			bytes += parts[i].nbytes;
+	return bytes;
+}
+
+static bool
+l0_due(int count, uint64 bytes, uint64 settled)
+{
+	return count >= SIFT_COMPACT_L0_MAX || bytes >= SIFT_COMPACT_L0_BYTES || (count >= SIFT_COMPACT_L0_FANOUT && bytes * SIFT_COMPACT_L0_SHARE >= settled);
+}
+
+SiftCompactGroup *
+sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, int *ngroups)
+{
+	int			maxlevel = 0;
+	SiftCompactGroup *out;
+	const SiftPartDesc **at = palloc(Max(nparts, 1) * sizeof(SiftPartDesc *));
+
+	for (int i = 0; i < nparts; i++)
+		maxlevel = Max(maxlevel, parts[i].level);
+	out = palloc(2 * (maxlevel + 1) * sizeof(SiftCompactGroup));
+	*ngroups = 0;
+	for (int tier = 0; tier < 2 * (maxlevel + 1); tier++)
+	{
+		int			level = tier / 2,
+					count = 0,
+					small = 0,
+					dead = 0,
+					aged = 0,
+					n = 0;
+		bool		cold = tier % 2;
+		uint64		bytes = 0,
+					level_bytes = 0;
+		bool		all;
+
+		for (int i = 0; i < nparts; i++)
+			if (plannable(&parts[i], level, cold))
+			{
+				count += !part_is_consolidated(&parts[i]);
+				small += part_is_small(&parts[i]);
+				level_bytes += parts[i].nbytes;
+				dead += part_is_dead(&parts[i]);
+				aged += part_has_aged(&parts[i], hot_cut);
+			}
+		all = level == 0 ? l0_due(count, level_bytes, settled_bytes(parts, nparts, cold)) : count >= SIFT_COMPACT_FANOUT;
+		if (level == 0)
+			small = 0;
+		if (!all && small < 2 && dead == 0 && aged == 0)
+			continue;
+		for (int i = 0; i < nparts; i++)
+			if (plannable(&parts[i], level, cold) &&
+				((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut) ||
+				 (small >= 2 && part_is_small(&parts[i]))))
+				at[n++] = &parts[i];
+		qsort(at, n, sizeof(SiftPartDesc *), by_size);
+		out[*ngroups].gens = palloc(n * sizeof(uint64));
+		out[*ngroups].n = 0;
+		for (int i = 0; i < n && (i == 0 || bytes + at[i]->nbytes <= budget); i++)
+		{
+			out[*ngroups].gens[out[*ngroups].n++] = at[i]->part_gen;
+			bytes += at[i]->nbytes;
+		}
+		(*ngroups)++;
+	}
+	pfree(at);
+	return out;
+}

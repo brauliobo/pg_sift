@@ -109,7 +109,6 @@ SELECT reason ~ 'all-visible' AS vm_note FROM sift.cluster_advice('evv', 10000);
 -- the two switches
 SET sift.cluster_advice = off;
 SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
-RESET sift.cluster_advice;
 ALTER INDEX evs_col SET (cluster_advice = off);
 SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
 SELECT tbl, verdict FROM sift.cluster_advice('ev', 10000);

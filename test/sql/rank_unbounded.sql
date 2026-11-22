@@ -22,7 +22,9 @@ CREATE FUNCTION limit_hint(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_he
 
 CREATE TABLE ub (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);
 INSERT INTO ub SELECT i, 'common w' || i % 100 || ' x' || i % 7 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX ub_idx ON ub USING sift (body);
+RESET client_min_messages;
 ANALYZE ub;
 
 SELECT count(*) AS matches FROM ub WHERE body @@> 'common';

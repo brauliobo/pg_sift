@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The skips of a job and the retained summary of a run: one line per job with its status, seconds, scratch peak and the reasons it skipped.
 # Used by step(), the summary of a run, `ci.sh summary` and the selftest. Sourced by scripts/ci.sh; not a script of its own.
 NO_REASON='(no reason)'

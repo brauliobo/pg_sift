@@ -88,17 +88,14 @@ DROP TABLE rw;
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
 SET sift.col_auto_merge_fragmentation = 1000;
 CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
-RESET sift.col_auto_merge_fragmentation;
 CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, c');
 CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'id, a: v');
 CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
 SET sift.col_format_minor = 8;
 CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b');
-RESET sift.col_format_minor;
 -- the rollup of a segment written under 14 has no length before each measure (minor 9); one written under the default has (minor 36): both are read
 SET sift.col_format_minor = 14;
 CREATE INDEX rm_col ON rm USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
-RESET sift.col_format_minor;
 CREATE INDEX rx_col ON rx USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
 CALL pa_settle();
 -- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
@@ -166,7 +163,6 @@ SELECT * FROM pa_sum('rx');
 SET sift.col_format_minor = 8;
 INSERT INTO rf SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
 SELECT sift.col_promote('rf_col') >= 0 AS promoted;
-RESET sift.col_format_minor;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) rf;
 SELECT sift.col_verify('rf_col', true);
 SELECT * FROM pa_sum('rf');
@@ -183,7 +179,6 @@ SET min_parallel_table_scan_size = 0;
 SET parallel_leader_participation = off;
 SET sift.col_auto_merge_fragmentation = 1000;
 REINDEX INDEX rc_col;
-RESET sift.col_auto_merge_fragmentation;
 RESET parallel_leader_participation;
 SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('rc_col');
 SELECT sift.col_verify('rc_col', true);

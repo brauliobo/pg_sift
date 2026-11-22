@@ -37,7 +37,7 @@ special_ok(Page page, uint64 gen)
 {
 	SiftPageOpaque o = special_of(page);
 
-	return o->type == SIFT_PT_LIVE && o->flags == 0 && o->reserved == 0 && o->gen == gen;
+	return o->type == SIFT_PT_LIVE && o->flags == 0 && o->part_id == 0 && o->gen == gen;
 }
 
 static bool
@@ -56,19 +56,127 @@ page_lost(const SiftLive *l, BlockNumber blk)
 					  errhint("The page cannot be restored in place: REINDEX the index."));
 }
 
-/* The bytes of the run, as its pages hold them whatever their special spaces say: the page that is not as a LIVE page of the segment is counted */
-static uint8 *
-live_load(const SiftLive *l, SiftLiveAudit *a)
+/* The first logical byte of the liveness bits, and the bytes they are */
+#define BITS_START(l)	SIFT_LIVE_START((l)->nsb)
+#define BITS_BYTES(l)	(((l)->nbits + 7) / 8)
+
+/*
+ * The audit goes over the pages one at a time. head holds what comes before the bits (the header and the dirty bitmap, at most 16 kB for 131,000 superblocks), which is
+ * what a repair rewrites; the bits themselves are counted and tested as their page goes by, and the unit that spans two pages carries its answer to the next.
+ */
+typedef struct LiveWalk
 {
-	/* check-memory: allow a bit for each row and each superblock of one segment */
-	uint8	   *run = MemoryContextAllocHuge(CurrentMemoryContext, Max(LIVE_BYTES(l), 1));
+	const SiftLive *l;
+	const SiftLiveUnit *units;
+	uint32		nunits;
+	uint32		u;				/* the unit in hand */
+	bool		u_found;		/* a cleared bit in the part of it that went by */
+	uint8	   *head;
+	uint64		live;			/* the bits set so far */
+	SiftLiveAudit *a;
+} LiveWalk;
+
+/* Is a bit of rank first to end - 1 cleared? buf holds the bits from rank buf_first (a multiple of 8) on */
+static bool
+any_cleared(const uint8 *buf, uint64 buf_first, uint64 first, uint64 end)
+{
+	for (uint64 r = first; r < end; r++)
+	{
+		uint64		at = r - buf_first;
+
+		if (r % 8 == 0 && r + 8 <= end && buf[at / 8] == 0xFF)
+			r += 7;
+		else if (!(buf[at / 8] >> (r % 8) & 1))
+			return true;
+	}
+	return false;
+}
+
+static void
+walk_unit_done(LiveWalk *w)
+{
+	const SiftLiveUnit *u = &w->units[w->u++];
+	uint8	   *dirty = w->head + sizeof(SiftLiveHeaderData);
+
+	if (!(dirty[u->sbidx / 8] >> (u->sbidx % 8) & 1) && w->u_found)
+	{
+		dirty[u->sbidx / 8] |= 1 << (u->sbidx % 8);
+		w->a->units_lost++;
+	}
+	w->u_found = false;
+}
+
+/* The bits of page i (its payload is image): counted, and tested for the units that lie over them */
+static void
+walk_bits(LiveWalk *w, uint32 i, const uint8 *image, uint32 nbytes)
+{
+	const SiftLive *l = w->l;
+	uint64		p0 = SIFT_PAYLOAD_BYTES(i),
+				s = BITS_START(l),
+				b0 = Max(p0, s) - s,
+				b1 = Min(p0 + nbytes, s + BITS_BYTES(l)) - s,
+				whole = l->nbits / 8;
+	const uint8 *bits;
+	uint64		first;
+
+	if (p0 + nbytes <= s || b1 <= b0)
+		return;
+	bits = image + (s + b0 - p0);
+	first = b0 * 8;
+	w->live += pg_popcount((const char *) bits, Min(b1, whole) > b0 ? Min(b1, whole) - b0 : 0);
+	if (b1 > whole && l->nbits % 8)
+		w->live += pg_popcount32(bits[whole - b0] & ((1 << (l->nbits % 8)) - 1));
+	while (w->u < w->nunits)
+	{
+		const SiftLiveUnit *u = &w->units[w->u];
+		uint64		ub1 = u->rank_base + u->nrows;
+
+		if (u->rank_base >= b1 * 8)
+			break;
+		w->u_found |= any_cleared(bits, first, Max(u->rank_base, first), Min(ub1, Min(b1 * 8, l->nbits)));
+		if (ub1 > b1 * 8)
+			break;
+		walk_unit_done(w);
+	}
+}
+
+static void
+walk_page(LiveWalk *w, uint32 i, const uint8 *image, uint32 nbytes)
+{
+	uint64		p0 = SIFT_PAYLOAD_BYTES(i),
+				s = BITS_START(w->l);
+
+	if (p0 < s)
+		memcpy(w->head + p0, image, Min(nbytes, s - p0));
+	walk_bits(w, i, image, nbytes);
+}
+
+/* The pages of the run, one at a time, into w: the page that is not as a LIVE page of the segment is counted. Left in w->head: the image of what comes before the bits that a repair writes */
+static void
+live_walk(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a, LiveWalk *w)
+{
+	uint8		image[SIFT_PAGE_PAYLOAD];
+	uint64		prev_end = 0;
 
 	*a = (SiftLiveAudit) {.first_damaged = InvalidBlockNumber};
+	*w = (LiveWalk) {.l = l, .units = units, .nunits = nunits, .head = palloc0(BITS_START(l)), .a = a};
+	for (uint32 i = 0; i < nunits; i++)
+	{
+		const SiftLiveUnit *u = &units[i];
+
+		if (u->sbidx >= l->nsb || u->rank_base + u->nrows > l->nbits)
+			SIFT_SEG_CORRUPT(l->index, l->gen, "Unit %u of the segment (rows %llu to %llu of %llu, superblock %u of %u) lies outside its liveness run.", i,
+							 (unsigned long long) u->rank_base, (unsigned long long) (u->rank_base + u->nrows), (unsigned long long) l->nbits, u->sbidx, l->nsb);
+		if (u->rank_base < prev_end)
+			SIFT_SEG_CORRUPT(l->index, l->gen, "Unit %u of the segment starts at row %llu, inside the unit before it.", i, (unsigned long long) u->rank_base);
+		prev_end = u->rank_base + u->nrows;
+	}
 	for (uint32 i = 0; i < l->npages; i++)
 	{
 		BlockNumber blk = l->first + i;
 		Buffer		buf = ReadBuffer(l->index, blk);
 		Page		page;
+		uint32		nbytes = page_bytes(l, i);
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
@@ -79,83 +187,45 @@ live_load(const SiftLive *l, SiftLiveAudit *a)
 			if (a->pages_damaged++ == 0)
 				a->first_damaged = blk;
 		}
-		memcpy(run + SIFT_PAYLOAD_BYTES(i), SiftPageGetData(page), page_bytes(l, i));
+		memcpy(image, SiftPageGetData(page), nbytes);
 		UnlockReleaseBuffer(buf);
+		if (i == 0)
+			a->ndead_header = ((const SiftLiveHeaderData *) image)->ndead;
+		walk_page(w, i, image, nbytes);
 	}
-	return run;
-}
-
-static uint64
-cleared_bits(const uint8 *bits, uint64 nbits)
-{
-	uint64		whole = nbits / 8,
-				live = pg_popcount((const char *) bits, whole);
-
-	if (nbits % 8)
-		live += pg_popcount32(bits[whole] & ((1 << (nbits % 8)) - 1));
-	return nbits - live;
-}
-
-static bool
-any_cleared(const uint8 *bits, uint64 first, uint64 end)
-{
-	for (uint64 r = first; r < end; r++)
-	{
-		if (r % 8 == 0 && r + 8 <= end && bits[r / 8] == 0xFF)
-			r += 7;
-		else if (!(bits[r / 8] >> (r % 8) & 1))
-			return true;
-	}
-	return false;
-}
-
-/* What the run says it is, a dirty bit set for each unit that has a cleared bit and the header's count the cleared bits: the image a repair writes */
-static void
-live_derive(const SiftLive *l, uint8 *run, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a)
-{
-	SiftLiveHeaderData *lh = (SiftLiveHeaderData *) run;
-	uint8	   *dirty = run + sizeof(SiftLiveHeaderData),
-			   *bits = run + SIFT_LIVE_START(l->nsb);
-
-	a->ndead_header = lh->ndead;
-	a->cleared = cleared_bits(bits, l->nbits);
-	for (uint32 i = 0; i < nunits; i++)
-	{
-		const SiftLiveUnit *u = &units[i];
-
-		if (u->sbidx >= l->nsb || u->rank_base + u->nrows > l->nbits)
-			SIFT_SEG_CORRUPT(l->index, l->gen, "Unit %u of the segment (rows %llu to %llu of %llu, superblock %u of %u) lies outside its liveness run.", i,
-							 (unsigned long long) u->rank_base, (unsigned long long) (u->rank_base + u->nrows), (unsigned long long) l->nbits, u->sbidx, l->nsb);
-		if (!(dirty[u->sbidx / 8] >> (u->sbidx % 8) & 1) && any_cleared(bits, u->rank_base, u->rank_base + u->nrows))
-		{
-			dirty[u->sbidx / 8] |= 1 << (u->sbidx % 8);
-			a->units_lost++;
-		}
-	}
-	lh->ndead = a->cleared;
+	while (w->u < w->nunits)
+		walk_unit_done(w);
+	a->cleared = l->nbits - w->live;
+	((SiftLiveHeaderData *) w->head)->ndead = a->cleared;
 }
 
 void
 sift_live_audit(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a)
 {
-	uint8	   *run = live_load(l, a);
+	LiveWalk	w;
 
-	live_derive(l, run, units, nunits, a);
-	pfree(run);
+	live_walk(l, units, nunits, a, &w);
+	pfree(w.head);
 }
 
 /* A page that differs is written whole, laid out as sift_live_write lays it out: nothing of a header or a special space that is damaged is kept, and a replica replays the bytes and not a change of its own copy */
 static bool
-write_page(const SiftLive *l, uint32 i, const uint8 *run)
+write_page(const SiftLive *l, uint32 i, const uint8 *head)
 {
 	Buffer		buf = ReadBuffer(l->index, l->first + i);
 	Page		page;
 	SiftXlog	x;
+	uint8		image[SIFT_PAGE_PAYLOAD];
+	uint32		nbytes = page_bytes(l, i);
+	uint64		p0 = SIFT_PAYLOAD_BYTES(i),
+				s = BITS_START(l);
 
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buf);
-	if (header_ok(l, i, page) && special_ok(page, l->gen) &&
-		memcmp(SiftPageGetData(page), run + SIFT_PAYLOAD_BYTES(i), page_bytes(l, i)) == 0)
+	memcpy(image, SiftPageGetData(page), nbytes);
+	if (p0 < s)
+		memcpy(image, head + p0, Min(nbytes, s - p0));
+	if (header_ok(l, i, page) && special_ok(page, l->gen) && memcmp(SiftPageGetData(page), image, nbytes) == 0)
 	{
 		UnlockReleaseBuffer(buf);
 		return false;
@@ -163,8 +233,8 @@ write_page(const SiftLive *l, uint32 i, const uint8 *run)
 	x = sift_xlog_start(l->index);
 	page = sift_xlog_register(&x, buf, GENERIC_XLOG_FULL_IMAGE);
 	sift_page_init(page, SIFT_PT_LIVE, l->gen);
-	memcpy(SiftPageGetData(page), run + SIFT_PAYLOAD_BYTES(i), page_bytes(l, i));
-	SiftPageSetUsed(page, page_bytes(l, i));
+	memcpy(SiftPageGetData(page), image, nbytes);
+	SiftPageSetUsed(page, nbytes);
 	sift_xlog_finish(&x);
 	UnlockReleaseBuffer(buf);
 	return true;
@@ -173,10 +243,10 @@ write_page(const SiftLive *l, uint32 i, const uint8 *run)
 void
 sift_live_repair(const SiftLive *l, const SiftLiveUnit *units, uint32 nunits, SiftLiveAudit *a)
 {
-	uint8	   *run = live_load(l, a);
+	LiveWalk	w;
 
-	live_derive(l, run, units, nunits, a);
+	live_walk(l, units, nunits, a, &w);
 	for (uint32 i = 0; i < l->npages; i++)
-		a->pages_written += write_page(l, i, run);
-	pfree(run);
+		a->pages_written += write_page(l, i, w.head);
+	pfree(w.head);
 }

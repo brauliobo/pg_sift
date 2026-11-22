@@ -6,6 +6,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
 
 CREATE VIEW heard AS SELECT tgrelid::regclass AS "table", count(*) AS triggers FROM pg_trigger WHERE tgfoid = 'sift.col_track_old_rows'::regproc GROUP BY tgrelid ORDER BY tgrelid::regclass::text;
 -- one row for each partition of t: its index tracks, the log is complete, the SiftAgg read visits no heap page, and the rows are the heap's

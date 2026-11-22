@@ -1,6 +1,6 @@
 -- The rollup option and the on-demand refresh of the rollups (docs/COL-PREAGG.md section 7). `rollup_leaves = 'leaf, leaf'` names the dims of the rollups of
 -- an index; a SELECT that scans exact units for lack of their rollup (none, other dims, a measure it lacks) queues the segment of each and does not write; the
--- queue is served by a background worker, here by sift.col_rollup_refresh (sift.col_rollup_worker off), and the next SELECT answers from the rollups.
+-- queue is served by a background worker, here by sift.col_rollup_refresh (sift.async_maintenance off), and the next SELECT answers from the rollups.
 CREATE EXTENSION pg_sift;
 SET sift.test_limits = 'par_build_rows=1';
 SET client_min_messages = warning;
@@ -8,7 +8,7 @@ SET client_min_messages = warning;
 SET sift.agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
-SET sift.col_rollup_worker = off;
+SET sift.async_maintenance = off;
 
 -- the counters and the queue are the server's (other tests ask too): the counters are read as the change since here, the queue as the requests of the index
 CREATE TEMP TABLE rr_base AS SELECT requested, refreshed, skipped FROM sift.col_rollup_state;
@@ -108,7 +108,6 @@ SELECT rr_same(q) AS same FROM rr_q ORDER BY n;
 ALTER INDEX rr_i SET (rollup_leaves = 'lines[].a, lines[].b, lines[].c, lines[].q');
 SET sift.col_rollup_on_demand = off;
 SELECT miss = units AS all_missing, queued FROM rr_plan((SELECT q FROM rr_q WHERE n = 4));
-RESET sift.col_rollup_on_demand;
 ALTER INDEX rr_i SET (rollup_on_demand = false);
 SELECT miss = units AS all_missing, queued FROM rr_plan((SELECT q FROM rr_q WHERE n = 4));
 ALTER INDEX rr_i SET (rollup_on_demand = true);

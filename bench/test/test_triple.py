@@ -53,60 +53,6 @@ class Factors(unittest.TestCase):
     def test_a_missing_or_zero_reference_has_no_factor(self):
         self.assertEqual(triple.factors((10.0, MISSING, 4.0), (2.0, 3.0, 0)), (5.0, None, None))
 
-    def test_glance_cell_counts_the_time_and_ranges_the_measures(self):
-        import compare
-        pairs = [('a', 2.0, 3.0, None), ('b', 20.0, 0.5, None), ('c', 1.0, None, None), ('d', 0.5, 1.0, None)]
-        self.assertEqual(compare.cell(pairs), '2 of 4 (2.0x to 20x · 0.5x to 3.0x · n/a), 1 tie; **slower on d 2.0x**')
-        self.assertEqual(compare.cell([('a', 3.0)]), '1 of 1 (3.0x · n/a · n/a)')
-        self.assertEqual(compare.cell([]), 'n/a')
-
-
-class CaseFig(unittest.TestCase):
-    ROWS = [dict(case='c', arm='sift', metric='cpu_ms', value='5'), dict(case='c', arm='sift', metric='buffers', value='128')]
-
-    def test_cpu_and_buffers_of_a_lane(self):
-        import cases_render
-        self.assertEqual(cases_render.case_fig(self.ROWS, 'c', 'sift', 2.0), (2.0, 5.0, 1.0))   # 128 blocks of 8 kB are 1 MB
-        got = cases_render.case_fig(self.ROWS, 'c', 'native', 2.0)
-        self.assertEqual(got[0], 2.0)
-        self.assertIsInstance(got[1], NA)
-        self.assertIsInstance(got[2], NA)
-
-    def test_instrumented_cpu_stands_in_and_the_cold_run_has_its_time_and_cpu(self):
-        import cases_render
-        rows = [dict(case='c', arm='sift', metric=m, value=v) for m, v in (('io_warm_cpu_ms', '4'), ('io_cold_ms', '9'), ('io_cold_cpu_ms', '7'))]
-        self.assertEqual(cases_render.case_fig(rows, 'c', 'sift', 2.0)[1], 4.0)
-        self.assertEqual(cases_render.cold_fig(rows, 'c', 'sift', 3.0), (9.0, 7.0, 3.0))
-        got = cases_render.cold_fig(rows, 'c', 'native', 3.0)
-        self.assertIsInstance(got[0], NA)
-        self.assertEqual(got[2], 3.0)
-
-
-class UpdatesFig(unittest.TestCase):
-    class S:
-        lanes = ['pg', 'sift']
-        sizes = [1000]
-        VALUES = {('pg', 'phase_s'): 0.5, ('pg', 'phase_cpu_ms'): 400.0, ('pg', 'wal_mib'): 10.0, ('sift', 'phase_s'): 0.25, ('sift', 'phase_cpu_ms'): 200.0, ('sift', 'wal_mib'): 5.0, ('sift', 'tps'): 500.0}
-
-        def med(self, size, lane, cls, variant, metric):
-            return self.VALUES.get((lane, metric))
-
-    def test_phase_seconds_become_milliseconds_and_missing_measures_are_reasons(self):
-        import section_render
-        S = self.S()
-        self.assertEqual(section_render.fig(S, 1000, 'sift', '-', 'u', ('phase_s', section_render.SECONDS), 'phase_cpu_ms', 'wal_mib'), (250.0, 200.0, 5.0))
-        got = section_render.fig(S, 1000, 'pg', '-', 'u', 'tps', 'phase_cpu_ms', 'wal_mib')
-        self.assertIsNone(got)
-        reason = triple.NA('a probe')
-        self.assertEqual(section_render.fig(S, 1000, 'sift', '-', 'u', ('tps', lambda v: 1e6 / v), reason, 'nothing')[1:], (reason, triple.NA(triple.NOT_MEASURED)))
-
-    def test_table_compares_postgres_with_the_best_sift_lane(self):
-        import section_render
-        lines = '\n'.join(section_render.triples(self.S(), 1000, [('update', ('-', 'u', ('phase_s', section_render.SECONDS), 'phase_cpu_ms', 'wal_mib'))])[0])
-        self.assertIn('| `sift_col` | **250 · 200 · 5.00** |', lines)
-        self.assertIn('| PostgreSQL | 500 · 400 · 10.0 (2.0x · 2.0x · 2.0x) |', lines)
-
-
 class SearchFig(unittest.TestCase):
     ROWS = [('articles', 'slim', e, 'and', '-', m, v, v, v, 'x', 'NA', '2', v) for e, m, v in (
         ('sift', 'qps', '4000'), ('sift', 'cpu_ms_query', '0.5'), ('sift', 'read_mb_query', '0.25'),

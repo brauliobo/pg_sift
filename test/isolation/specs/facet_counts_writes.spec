@@ -10,7 +10,7 @@ setup
 	CREATE INDEX iso_fcw_body ON iso_fcw USING sift (body) WITH (write_buffer_limit = 64);
 	CREATE INDEX iso_fcw_col ON iso_fcw USING sift_col (cat, price) WITH (write_buffer_limit = 64);
 	CREATE FUNCTION iso_fcw_ok(q text) RETURNS bool LANGUAGE plpgsql
-		SET sift.enable_scan = off SET sift.enable_count = off SET enable_bitmapscan = off SET enable_indexscan = off SET enable_seqscan = off AS $$
+		SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off SET enable_seqscan = off AS $$
 	DECLARE
 		got text;
 		want text;

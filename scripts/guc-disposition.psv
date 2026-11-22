@@ -1,0 +1,142 @@
+# One row per sift.* GUC the 6.0 release decision covers: name|class|target or replacement|reference
+#
+#   KEEP       the 27 release GUCs: the 23 of Spec 19 plus the 4 sift.gpu* settings the owner keeps (Vulkan stays in 6.0). Target: type;default;minimum;maximum;context (enum and string rows keep the
+#              default and the bounds empty: audit-gucs.sh compares their name and context only).
+#   PRUNE      deleted outright, or internalized as the constant or the surviving GUC named in the third column.
+#              A PRUNE name must not be registered under any guard.
+#   TEST-ONLY  moves under #ifdef SIFT_TESTING: a compile-time constant in the release library, a switch in the
+#              testing library. A TEST-ONLY name must not be registered outside SIFT_TESTING.
+#
+# Source of truth: specs/19 section 2.2 (the 23), the owner directive that keeps the 4 sift.gpu* settings, specs/07 section 1.2 and
+# specs/30 section 2.3 D (the 90 removed: the 94 of those specs without the 4 sift.gpu* settings).
+#
+# ---- KEEP (27) ----
+sift.backend_cache_kb|KEEP|int;16384;0;MAX_KILOBYTES;PGC_SUSET|Spec 19 2.2 #1
+sift.shared_cache_kb|KEEP|int;65536;0;MAX_KILOBYTES;PGC_SUSET|Spec 19 2.2 #2
+sift.max_maint_workers|KEEP|int;2;0;8;PGC_SIGHUP|Spec 19 2.2 #3
+sift.maintenance_wal_rate|KEEP|int;0;0;1048576;PGC_SUSET|Spec 19 2.2 #4
+sift.vacuum_rewrite_limit|KEEP|int;128;0;1048576;PGC_USERSET|Spec 19 2.2 #5
+sift.async_maintenance|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #6
+sift.maintenance_naptime|KEEP|int;2000;200;60000;PGC_SIGHUP|Spec 19 2.2 #7
+sift.maintenance_cost_delay|KEEP|int;0;0;100;PGC_SUSET|Spec 19 2.2 #8
+sift.dead_rewrite_pct|KEEP|int;15;1;100;PGC_USERSET|Spec 19 2.2 #9
+sift.standby_conflicts|KEEP|bool;true;;;PGC_SUSET|Spec 19 2.2 #10
+sift.on_corruption|KEEP|enum;;;;PGC_SUSET|Spec 19 2.2 #11 (quarantine, error; default quarantine)
+sift.log_min_duration|KEEP|int;1000;-1;INT_MAX;PGC_SUSET|Spec 19 2.2 #12
+sift.enable_scan|KEEP|bool;true;;;PGC_USERSET|Spec 19 2.2 #13
+sift.enable_col_scan|KEEP|bool;true;;;PGC_USERSET|Spec 19 2.2 #14
+sift.enable_agg|KEEP|bool;true;;;PGC_USERSET|Spec 19 2.2 #15
+sift.parallel_scan|KEEP|bool;true;;;PGC_USERSET|Spec 19 2.2 #16 (default flips false to true, TC-02 a)
+sift.filter_pushdown|KEEP|enum;;;;PGC_USERSET|Spec 19 2.2 #17 (off, on, force; default on)
+sift.agg_exact_float|KEEP|bool;false;;;PGC_USERSET|Spec 19 2.2 #18
+sift.explain_refusals|KEEP|bool;false;;;PGC_USERSET|Spec 19 2.2 #19
+sift.count_refusals|KEEP|bool;false;;;PGC_USERSET|Spec 19 2.2 #20
+sift.max_expansions|KEEP|int;512;1;1000000;PGC_SUSET|Spec 19 2.2 #21
+sift.rls_scores|KEEP|bool;false;;;PGC_SUSET|Spec 19 2.2 #22
+sift.simd|KEEP|enum;;;;PGC_USERSET|Spec 19 2.2 #23 (auto, scalar, avx2, avx512, neon; default auto)
+sift.gpu|KEEP|enum;;;;PGC_SUSET|Owner directive: Vulkan stays (off, auto, on; default off)
+sift.gpu_min_rows|KEEP|int;1000000;0;INT_MAX;PGC_USERSET|Owner directive: Vulkan stays
+sift.gpu_device|KEEP|string;;;;PGC_SUSET|Owner directive: Vulkan stays (default empty: the best device)
+sift.gpu_cache_mb|KEEP|int;256;16;1048576;PGC_SUSET|Owner directive: Vulkan stays
+#
+# ---- PRUNE group 1: memory and cache budgets, already removed in Stage 2 (15) ----
+sift.agg_lookup_cache_kb|PRUNE|sift.backend_cache_kb|Spec 07 1.2 G1
+sift.agg_lookup_shared_kb|PRUNE|sift.shared_cache_kb|Spec 07 1.2 G1
+sift.agg_dimmap_kb|PRUNE|sift.shared_cache_kb|Spec 07 1.2 G1
+sift.verdict_cache_kb|PRUNE|deleted: the verdict cache is removed (Spec 04)|Spec 07 1.2 G1
+sift.agg_semi_lut_size|PRUNE|work_mem through SiftMemTracker|Spec 07 1.2 G1
+sift.agg_param_set_size|PRUNE|work_mem through SiftMemTracker|Spec 07 1.2 G1
+sift.agg_lookup_max_kb|PRUNE|work_mem / 2 through SiftMemTracker|Spec 07 1.2 G1
+sift.agg_lookup_max_rows|PRUNE|deleted: deprecated alias|Spec 07 1.2 G1
+sift.agg_combo_cache|PRUNE|hash_mem through SiftMemTracker|Spec 07 1.2 G1
+sift.col_dict_shared_cache_kb|PRUNE|sift.shared_cache_kb|Spec 07 1.2 G1
+sift.col_leaf_cache_kb|PRUNE|sift.shared_cache_kb|Spec 07 1.2 G1
+sift.col_auto_merge_pass_mb|PRUNE|derived from maintenance_work_mem|Spec 07 1.2 G1
+sift.col_auto_merge_partition_kb|PRUNE|derived from maintenance_work_mem|Spec 07 1.2 G1
+sift.prefix_cache_size|PRUNE|sift.backend_cache_kb|Spec 07 1.2 G1
+sift.tomb_log_limit|PRUNE|sift.backend_cache_kb, maintenance_work_mem and the Format 2 copy-on-write deletion vectors|Spec 07 1.2 G1
+#
+# ---- PRUNE group 3: Format Major 1, scope v5 and deleted agg subsystems (20) ----
+sift.col_format_minor|PRUNE|constant SIFT_COL_FORMAT_MINOR (55) for Format 1 maintenance writes|Spec 07 1.2 G3, Spec 30 2.3 D
+sift.col_wbuf_ref|PRUNE|constant true: replaced by the L0 micro-parts in Format 2; Format 1 keeps true|Spec 07 1.2 G3
+sift.col_wbuf_key_range|PRUNE|constant true: always on through the partitioned L0|Spec 07 1.2 G3
+sift.col_unit_floor|PRUNE|constant 2048 for Format 1; Format 2 has fixed 8,192-row granules|Spec 07 1.2 G3
+sift.col_unit_rows|PRUNE|constant 0 (auto) for Format 1; Format 2 has fixed 8,192-row granules|Spec 07 1.2 G3
+sift.scope_max_multiplicity|PRUNE|constant 3.0 for Format 1 scope declarations; Entity-Once scopes have no fan-out|Spec 07 1.2 G3, Spec 30 2.3
+sift.cluster_advice|PRUNE|constant true: call sift.cluster_advice() explicitly|Spec 07 1.2 G3
+sift.plan_scale|PRUNE|deleted: the 5-parameter cost model needs no horizon knob (test hook only under SIFT_TESTING)|Spec 07 1.2 G3
+sift.agg_verdict_cache|PRUNE|deleted with verdict.c|Spec 07 1.2 G3
+sift.agg_dense|PRUNE|deleted with dense.c|Spec 07 1.2 G3
+sift.agg_two_level|PRUNE|deleted with src/agg/two/|Spec 07 1.2 G3
+sift.agg_probe_direct|PRUNE|deleted with combo/probe_bt|Spec 07 1.2 G3
+sift.agg_probe_rewrite|PRUNE|deleted with flat/probe.c|Spec 07 1.2 G3
+sift.agg_fuse|PRUNE|deleted with two/arms.c and flat/partarms.c|Spec 07 1.2 G3
+sift.agg_float_step|PRUNE|deleted with combo/fstep.c|Spec 07 1.2 G3
+sift.topn_walk|PRUNE|deleted with topn/gwalk.c|Spec 07 1.2 G3
+sift.topn_runs|PRUNE|deleted with topn/run.c|Spec 07 1.2 G3
+sift.topn_zone_keys|PRUNE|deleted with topn/zone.c|Spec 07 1.2 G3
+sift.agg_super|PRUNE|deleted: superunits are superseded by the Format 2 hierarchy|Spec 07 1.2 G3
+sift.eval_methods|TEST-ONLY|moves under #ifdef SIFT_TESTING|Spec 07 1.2 G3
+#
+# ---- TEST-ONLY group 4: diagnostic micro-switches (19): constant in release, a switch under SIFT_TESTING ----
+sift.prefetch|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.vis_page_cache|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_scope|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.col_build_source|TEST-ONLY|release constant auto|Spec 07 1.2 G4
+sift.agg_force|TEST-ONLY|release constant false|Spec 07 1.2 G4
+sift.agg_case_filter|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_child_first|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_connect_found|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_dist_stream|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_join_filter|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_key_skew|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_left_lateral|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_lookup_columns|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_lookup_pushdown|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_preagg|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_preagg_distinct|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_rows|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_semi_lut|TEST-ONLY|release constant true|Spec 07 1.2 G4
+sift.agg_share_lookups|TEST-ONLY|release constant true|Spec 07 1.2 G4
+#
+# ---- PRUNE group 5: merged into a surviving GUC (7) ----
+sift.enable_count|PRUNE|sift.enable_scan|Spec 07 1.2 G5
+sift.enable_topn|PRUNE|sift.enable_agg|Spec 07 1.2 G5
+sift.col_auto_merge_wal_pct|PRUNE|sift.maintenance_wal_rate|Spec 07 1.2 G5
+sift.col_rollup_worker|PRUNE|sift.async_maintenance|Spec 07 1.2 G5
+sift.table_auto_defrag|PRUNE|sift.async_maintenance (per table: option auto_defrag)|Spec 07 1.2 G5
+sift.table_auto_defrag_wal_rate|PRUNE|sift.maintenance_wal_rate|Spec 07 1.2 G5
+sift.table_async_promote|PRUNE|sift.async_maintenance|Spec 07 1.2 G5
+#
+# ---- PRUNE group 6: auto-tuned magic numbers and always-on flags (24), constants keep the 5.1 default ----
+sift.col_scope_refresh_pct|PRUNE|constant 10|Spec 07 1.2 G6
+sift.col_auto_connect|PRUNE|constant true|Spec 07 1.2 G6
+sift.col_connect_refresh_pct|PRUNE|constant 10|Spec 07 1.2 G6
+sift.col_auto_merge_fragmentation|PRUNE|constant 2.0|Spec 07 1.2 G6
+sift.col_auto_merge_buffer_pct|PRUNE|constant 1.0|Spec 07 1.2 G6
+sift.col_rollup_on_demand|PRUNE|constant true|Spec 07 1.2 G6
+sift.col_value_store|PRUNE|constant true: the value store is always on|Spec 07 1.2 G6
+sift.agg_dead_delta|PRUNE|constant 15, the value of sift.dead_rewrite_pct|Spec 07 1.2 G6
+sift.agg_par_min_rows|PRUNE|constant 80000, scaled by the PG parallel cost model|Spec 07 1.2 G6
+sift.agg_rollup_cost|PRUNE|constant 1.0|Spec 07 1.2 G6
+sift.agg_scale_horizon|PRUNE|constant 100.0|Spec 07 1.2 G6
+sift.search_chunk_sbs|PRUNE|constant 32|Spec 07 1.2 G6
+sift.table_auto_defrag_free_pct|PRUNE|constant 25|Spec 07 1.2 G6
+sift.table_auto_defrag_delay|PRUNE|constant 10 ms|Spec 07 1.2 G6
+sift.table_auto_defrag_budget|PRUNE|constant 128 MB|Spec 07 1.2 G6
+sift.table_auto_defrag_max_active|PRUNE|constant 0 (bounded by sift.max_maint_workers)|Spec 07 1.2 G6
+sift.table_auto_defrag_coalesce|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_auto_defrag_indexes|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_wide_rows|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_inline_promote|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_hot_update|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_bulk_groups|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_dict_lookup|PRUNE|constant true|Spec 07 1.2 G6
+sift.table_key_table|PRUNE|constant true|Spec 07 1.2 G6
+#
+# ---- PRUNE group 7: removed beyond Spec 07, by Spec 19 2.2 and Spec 30 2.3 D (5) ----
+sift.col_auto_merge|PRUNE|sift.async_maintenance|Spec 19 2.2, Spec 30 2.3 D
+sift.table_write_buffer_limit|PRUNE|constant 4096 kB, overridable per Format 1 table through sift.table_option_values|Spec 30 2.3 D
+sift.table_dead_rewrite_pct|PRUNE|sift.dead_rewrite_pct|Spec 30 2.3 D
+sift.table_backpressure|PRUNE|deleted: no backpressure ladder in Format 2|Spec 19 2.2
+sift.table_compression|PRUNE|per-table option compression (sift.set_table_option) or the automatic codec|Spec 19 2.2 note

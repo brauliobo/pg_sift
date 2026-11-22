@@ -1,0 +1,819 @@
+/*
+ * agg/v6/scan.c - the rows of the scan of an index of format major 2 or of a sift_table as batches of up to 2048 rows: the columns of the keys and the aggregates as vectors, and every batch folded
+ * into the groups. The rows of an index the heap does not show to the snapshot are left out (a page the visibility map has all-visible needs no look); a table's rows are visible by its own versions.
+ */
+/* check-memory: allow-allocs every array here follows the keys and aggregates of one statement, not the rows of the table */
+#include "postgres.h"
+
+#include "access/genam.h"
+#include "access/heapam.h"
+#include "access/tableam.h"
+#include "access/visibilitymap.h"
+#include "executor/tuptable.h"
+#include "port/pg_bitutils.h"
+#include "storage/bufmgr.h"
+#include "utils/memutils.h"
+
+#include "agg/group/ht.h"
+#include "agg/v6/v6.h"
+#include "agg/v6/v6_filter_eval.h"
+#include "agg/v6/v6_fuse.h"
+#include "agg/v6/v6_datebin_win_pg.h"
+#include "agg/v6/v6_dictseen.h"
+#include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_pipe.h"
+#include "agg/v6/v6_star_run.h"
+#include "agg/v6/v6_vet.h"
+#include "col/am.h"
+#include "col/f2/f2.h"
+#include "col/f2/f2_sink.h"
+#include "col/f2/f2_store_scan.h"
+#include "core/memtrack.h"
+
+typedef struct V6Col
+{
+	int			leaf;
+	int			attno;
+	int			scale;
+	bool		json;
+	Oid			typid;
+	SiftV6Class cls;
+	bool		nan_ok;			/* a numeric whose every use is the argument of an aggregate that folds a NaN (sift_v6_agg_takes_nan) */
+	SiftVec		vec;
+	uint64		valid[SIFT_VEC_WORDS];
+	uint64		nan[SIFT_VEC_WORDS];
+	bool		key_only;		/* a key and no argument: a text of it can stay the codes of its dictionary */
+	bool		by_code;		/* the argument of COUNT(DISTINCT) and of nothing else: a part that codes the column by a dictionary gives the codes of its rows (vec.dict is then this dict) */
+	SiftDictSrc dict;			/* the dictionary of the part, for the batch in hand when vec.type is SVEC_DICT32 */
+} V6Col;
+
+/* a key that is date_bin() of a column, or its date_trunc('month'): the batch of the column binned into out, as the vector of the key */
+typedef struct V6Bin
+{
+	int			key;
+	bool		month;
+	SiftDateBin bin;
+	const SiftVec *src;
+	int64	   *out;
+	SiftVec		vec;
+} V6Bin;
+
+struct SiftV6Scan
+{
+	const SiftV6Spec *spec;
+	SiftV6Group *group;
+	SiftV6BatchFn emit;			/* where the batches go instead of the group: the engine of a participant of a parallel run */
+	void	   *emit_arg;
+	SiftV6ScanStats *stats;
+	SiftV6Vet	vet;
+	int			ncols;
+	V6Col	   *cols;
+	SiftVec   **keyvec;
+	SiftVec   **argvec;
+	int			nbins;
+	V6Bin	   *bins;
+	SiftBatchSel bs;
+	MemoryContext batch_cx;
+	bool		count_only;
+	const SiftPartDesc *visible_part;	/* the part whose rows part_offer found all-visible: its batches are not vetted */
+	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
+	SiftVec   **fact;			/* the vectors of the columns, for the pipe */
+	const SiftClause *gate;		/* an arm of a pass over the union of the keys of its arms: the rows it takes */
+	bool		all_visible;	/* the run of granules being read is of a frozen part with no deletion: its rows need no look at the heap */
+	IndexScanDesc scan;			/* a scan that is begun apart from its run (sift_v6_scan_begin) */
+	int		   *leaves;
+	SiftV6Recheck recheck;		/* a fold: whether the heap keeps a row the stored values could not decide */
+	void	   *recheck_arg;
+	int			nstore;			/* a fold: the columns that are a column of the index; the others (the score) are the caller's */
+	SiftV6FoldCol *pub;
+};
+
+typedef struct SiftV6Scan V6Scan;
+
+static V6Col *
+col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
+{
+	const int	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
+
+	for (int i = 0; i < s->ncols; i++)
+		if (s->cols[i].leaf == leaf)
+		{
+			s->cols[i].key_only &= key;
+			s->cols[i].nan_ok &= takes_nan;
+			return &s->cols[i];
+		}
+	s->cols[s->ncols] = (V6Col) {.leaf = leaf,.attno = c.attno,.scale = c.scale,.json = c.jleaf > 0,.typid = c.typid,.cls = sift_v6_class(c.typid),.nan_ok = takes_nan,.key_only = key};
+	s->cols[s->ncols].vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	return &s->cols[s->ncols++];
+}
+
+/* the slot of a column of the pipe: a payload column of a dimension, or the column of the fact side that col_for finds */
+static int
+slot_of(V6Scan *s, const int *first, const SiftV6Col *c)
+{
+	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(s->pipe, c->dim, c->slot) : (int) (col_for(s, first, *c, false, false) - s->cols);
+}
+
+/* Whether the column is read by nothing but a COUNT(DISTINCT) of it (and so can be counted by the codes of the dictionaries of the parts): not a key, another aggregate's argument, a FILTER or a row of several columns */
+static bool
+read_by_code_only(const SiftV6Spec *spec, int attno)
+{
+	bool		distinct = false;
+
+	for (int i = 0; i < spec->nkeys; i++)
+		if (spec->key[i].attno == attno)
+			return false;
+	for (int j = 0; j < spec->naggs; j++)
+	{
+		const SiftV6Agg *a = &spec->agg[j];
+
+		for (int c = 0; c < a->nxcols; c++)
+			if (a->xcol[c].attno == attno)
+				return false;
+		if ((a->kind == SV6_ARG_MAX || a->kind == SV6_ARG_MIN) && a->arg2.attno == attno)
+			return false;
+		if (sift_v6_kind_reads_column(a->kind) && a->arg.attno == attno)
+		{
+			if (a->kind != SV6_COUNT_DISTINCT || a->nxcols > 0)
+				return false;
+			distinct = true;
+		}
+	}
+	for (int i = 0; i < spec->nfcols; i++)
+		if (spec->fcol[i].attno == attno)
+			return false;
+	return distinct;
+}
+
+static void
+setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
+{
+	const SiftV6Spec *spec = s->spec;
+	const SiftV6Ext *x = spec->ext;
+	SiftVecType *type = palloc(Max(s->ncols, 1) * sizeof(SiftVecType));
+
+	for (int i = 0; i < s->ncols; i++)
+		type[i] = s->cols[i].vec.type;
+	s->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, s->group, s->ncols, type);
+	sift_v6_star_attach(star, s->pipe);
+	for (int d = 0; d < x->ndims; d++)
+		for (int k = 0; k < x->dim[d].nkeys; k++)
+			s->pipe->fslot[d][k] = slot_of(s, first, &(SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]});
+	for (int i = 0; i < spec->nkeys; i++)
+		s->pipe->key_slot[i] = slot_of(s, first, &spec->key[i]);
+	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
+		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : slot_of(s, first, sift_v6_vec_col(spec, v));
+	s->fact = palloc(Max(s->ncols, 1) * sizeof(SiftVec *));
+	for (int i = 0; i < s->ncols; i++)
+		s->fact[i] = &s->cols[i].vec;
+}
+
+/* whether the vector v of a batch is the argument of an aggregate that folds a NaN */
+static bool
+vec_takes_nan(const SiftV6Spec *spec, int v)
+{
+	return v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v]);
+}
+
+static void
+scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
+{
+	const SiftV6Spec *spec = s->spec;
+	const SiftV6Ext *x = spec->ext;
+	const int	nvec = sift_v6_spec_nvec(spec);
+
+	s->cols = palloc0((spec->nkeys + nvec + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0)) * sizeof(V6Col));
+	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
+	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
+	for (int i = 0; i < spec->nkeys; i++)
+		if (spec->key[i].src != SV6SRC_DIM)
+			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL, false)->vec;
+	for (int v = 0; v < nvec; v++)
+		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src != SV6SRC_DIM)
+			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;
+	for (int d = 0; x != NULL && d < x->ndims; d++)
+		for (int k = 0; k < x->dim[d].nkeys; k++)
+			col_for(s, first, (SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]}, false, false);
+	s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
+	for (int i = 0; i < s->ncols; i++)
+		s->cols[i].by_code = s->cols[i].cls == SV6C_TEXT && !s->cols[i].json && read_by_code_only(spec, s->cols[i].attno);
+	s->bins = palloc0(Max(spec->nbins, 1) * sizeof(V6Bin));
+	for (int b = 0; b < spec->nbins; b++)
+	{
+		V6Bin	   *bn = &s->bins[s->nbins++];
+
+		bn->key = spec->bin[b].key;
+		bn->month = spec->bin[b].stride_us == SIFT_DATEBIN_MONTH;
+		bn->bin = (SiftDateBin) {.stride_us = spec->bin[b].stride_us,.origin = spec->bin[b].origin,.stride_status = SDB_OK};
+		bn->src = s->keyvec[bn->key];
+		bn->out = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+		s->keyvec[bn->key] = &bn->vec;
+	}
+	for (int i = 0; i < s->ncols; i++)
+		s->cols[i].vec.type = s->cols[i].cls == SV6C_F64 ? SVEC_F64 : s->cols[i].cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
+	if (x != NULL && x->ndims > 0)
+		setup_pipe(s, first, star);
+}
+
+/* The keys that are date_bin() of a column, for the rows of the batch: the error of PostgreSQL for a row that overflows, raised only for a row the scan keeps */
+static void
+bin_keys(V6Scan *s)
+{
+	for (int i = 0; i < s->nbins; i++)
+	{
+		V6Bin	   *b = &s->bins[i];
+		uint32		err_row;
+		SiftDateBinStatus st = SDB_OK;
+
+		if (b->month)
+			sift_datemonth_batch(&s->bs, b->src, b->out);
+		else
+			st = sift_datebin_batch(&b->bin, &s->bs, b->src, b->out, &err_row);
+		if (st != SDB_OK)
+			sift_datebin_raise(st);
+		b->vec = *b->src;
+		b->vec.data = b->out;
+	}
+}
+
+static SiftStrView
+strview_of(const char *p, uint32 len)
+{
+	SiftStrView v = {.len = len};
+
+	if (len == 0)
+		return v;
+	memcpy(v.prefix, p, Min(len, 4));
+	if (len <= 12)
+		memcpy(v.u.tail, p + 4, len > 4 ? len - 4 : 0);
+	else
+		v.u.ptr = p;
+	return v;
+}
+
+static bool
+any_null(const bool *isnull, int n)
+{
+	uint64		any = 0;
+	int			i = 0;
+
+	for (; i + 8 <= n; i += 8)
+	{
+		uint64		w;
+
+		memcpy(&w, isnull + i, sizeof(w));
+		any |= w;
+	}
+	for (; i < n; i++)
+		any |= isnull[i];
+	return any != 0;
+}
+
+static void
+fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen)
+{
+	SiftVec    *v = &c->vec;
+	const bool	nulls = any_null(cv->isnull + off, n);
+	const bool	numeric = c->typid == NUMERICOID && cv->tag != NULL;
+	bool		nans = false;
+
+	if (nulls)
+	{
+		memset(c->valid, 0, sizeof(c->valid));
+		for (int i = 0; i < n; i++)
+			c->valid[i >> 6] |= (uint64) !cv->isnull[off + i] << (i & 63);
+	}
+	if (nulls && numeric)
+	{
+		memset(c->nan, 0, sizeof(c->nan));
+		for (int i = 0; i < n; i++)
+		{
+			const bool	nan = cv->isnull[off + i] && cv->tag[off + i] == SIFT_COLTAG_UNSURE;
+
+			c->nan[i >> 6] |= (uint64) nan << (i & 63);
+			nans |= nan;
+		}
+	}
+	switch (c->cls)
+	{
+		case SV6C_F64:
+			v->type = SVEC_F64;
+			memcpy(v->data, cv->f + off, n * sizeof(double));
+			break;
+		case SV6C_TEXT:
+			if (cv->dcode != NULL && c->by_code && cv->dict->part)
+			{
+				v->type = SVEC_DICT32;
+				c->dict = (SiftDictSrc) {.gen = part_gen,.n = cv->dict->n,.off = cv->dict->off,.bytes = cv->dict->bytes};
+				v->dict = &c->dict;
+				memcpy(v->data, cv->dcode + off, n * sizeof(uint32));
+				break;
+			}
+			if (cv->dcode != NULL && c->by_code)
+			{
+				v->type = SVEC_STRVIEW;
+				for (int i = 0; i < n; i++)
+				{
+					const uint32 code = cv->dcode[off + i];
+
+					((SiftStrView *) v->data)[i] = cv->isnull[off + i] ? strview_of(NULL, 0) : strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
+				}
+				break;
+			}
+			if (cv->dcode != NULL)
+			{
+				v->type = SVEC_DICT32;
+				v->dict = cv->dict;
+				memcpy(v->data, cv->dcode + off, n * sizeof(uint32));
+				break;
+			}
+			v->type = SVEC_STRVIEW;
+			for (int i = 0; i < n; i++)
+				((SiftStrView *) v->data)[i] = strview_of(cv->s[off + i], cv->isnull[off + i] ? 0 : cv->slen[off + i]);
+			break;
+		default:
+			v->type = SVEC_I64;
+			memcpy(v->data, cv->i + off, n * sizeof(int64));
+			break;
+	}
+	v->valid = nulls ? c->valid : NULL;
+	v->nan = nans ? c->nan : NULL;
+	v->all_valid = !nulls;
+	v->len = n;
+	v->dense = true;
+	v->sel = NULL;
+}
+
+/* A NaN that no aggregate folds (a count of the distinct values, a filter, an argument of sift.arg_max) is not left out as a NULL would be: the statement is refused */
+static void
+refuse_nan(const V6Col *c, const SiftBatchSel *bs)
+{
+	if (c->vec.nan == NULL || c->nan_ok)
+		return;
+	for (int w = 0; w < (bs->n_raw + 63) / 64; w++)
+		if ((c->nan[w] & bs->mask[w]) != 0)
+			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a numeric NaN cannot be used by this aggregate on the stored values"),
+							errhint("Run the statement with sift.enable_agg = off.")));
+}
+
+/* A row of a leaf of a key of a document whose value the leaf could not hold has it in the payload of its exception: the rows the batch keeps are read from there, the others stay NULL */
+static void
+fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n)
+{
+	SiftVec    *v = &c->vec;
+
+	if (cv->xpay == NULL)
+		return;
+	for (int i = 0; i < n; i++)
+	{
+		const int	r = off + i;
+		const char *text = NULL;
+		uint32		tlen = 0;
+		double		f = 0;
+
+		if (!cv->isnull[r] || cv->tag[r] < SIFT_COLTAG_STRING || cv->tag[r] > SIFT_COLTAG_ARRAY || !((s->bs.mask[i >> 6] >> (i & 63)) & 1))
+			continue;
+		SIFT_INVARIANT(cv->xpay[r] != NULL, "a value a leaf of a JSON key could not hold has its payload");
+		if (!sift_v6_json_exception(c->cls, cv->xpay[r], cv->xplen[r], s->batch_cx, &text, &tlen, &f))
+			continue;
+		if (c->cls == SV6C_F64)
+			((double *) v->data)[i] = f;
+		else
+			((SiftStrView *) v->data)[i] = strview_of(text, tlen);
+		c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
+	}
+	v->valid = c->valid;
+	v->all_valid = false;
+}
+
+/* The score of each row's hit, as the double PostgreSQL makes of a real for avg() and the like */
+static void
+fill_score(V6Col *c, const float4 *score, int off, int n)
+{
+	SiftVec    *v = &c->vec;
+
+	for (int i = 0; i < n; i++)
+		((double *) v->data)[i] = score[off + i];
+	v->type = SVEC_F64;
+	v->valid = NULL;
+	v->nan = NULL;
+	v->all_valid = true;
+	v->len = n;
+	v->dense = true;
+	v->sel = NULL;
+}
+
+static uint16
+vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int off, int n)
+{
+	SiftBatchSel *bs = &s->bs;
+	const int	words = (n + 63) / 64;
+
+	memset(bs->mask, 0, sizeof(bs->mask));
+	memcpy(bs->mask, live + off / 64, words * sizeof(uint64));
+	if (n & 63)
+		bs->mask[words - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
+	return sift_v6_vet_mask(&s->vet, tid, off, visible, n, bs);
+}
+
+static bool
+batch_visible(const V6Scan *s, const SiftF2Batch *b)
+{
+	return s->vet.heap == NULL || s->all_visible || (b->part != NULL && b->part == s->visible_part);
+}
+
+/* The rows the stored values could not decide are the heap's to decide: they join the batch when the recheck keeps them */
+static uint16
+vet_maybe(V6Scan *s, const uint64 *maybe, const uint64 *tid, int off, int n)
+{
+	SiftBatchSel *bs = &s->bs;
+
+	for (int w = 0; w < (n + 63) / 64; w++)
+		for (uint64 bits = maybe[off / 64 + w] & (n - w * 64 >= 64 ? ~UINT64CONST(0) : (UINT64CONST(1) << (n - w * 64)) - 1); bits != 0; bits &= bits - 1)
+		{
+			const int	r = w * 64 + __builtin_ctzll(bits);
+
+			if (s->recheck(s->recheck_arg, tid[off + r]))
+			{
+				bs->mask[w] |= UINT64CONST(1) << (r & 63);
+				bs->n_active++;
+			}
+		}
+	bs->all_active = bs->n_active == n;
+	return bs->n_active;
+}
+
+/* Whether every heap page the addresses of a part span is all-visible: then no row of it needs the heap, and the count of its rows is the descriptor's */
+static bool
+part_all_visible(V6Scan *s, const SiftPartDesc *d)
+{
+	if (d->tid_max == 0)
+		return false;
+	for (BlockNumber b = d->tid_min >> 16; b <= (BlockNumber) (d->tid_max >> 16); b++)
+		if (!VM_ALL_VISIBLE(s->vet.heap, b, &s->vet.vmbuf))
+			return false;
+	return true;
+}
+
+static bool
+part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded)
+{
+	V6Scan	   *s = arg;
+
+	s->visible_part = part_all_visible(s, d) ? d : NULL;
+	if (s->visible_part == NULL)
+		return false;
+	if (countable && s->count_only)
+	{
+		sift_v6_group_add_rows(s->group, d->nrows);
+		s->stats->rows += d->nrows;
+		return true;
+	}
+	*tids_unneeded = true;
+	return false;
+}
+
+/* The columns of the n rows from off of a batch that vet_slice kept, folded into the groups, the pipe or the caller's emit */
+static void
+fold_slice(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n)
+{
+	MemoryContextReset(s->batch_cx);
+	for (int i = 0; i < s->ncols; i++)
+	{
+		if (s->cols[i].attno == SIFT_V6_SCORE_ATTNO)
+		{
+			fill_score(&s->cols[i], score, off, n);
+			continue;
+		}
+		fill_col(&s->cols[i], &views[s->cols[i].leaf], off, n, part_gen);
+		refuse_nan(&s->cols[i], &s->bs);
+		if (s->cols[i].json)
+			fill_exceptions(s, &s->cols[i], &views[s->cols[i].leaf], off, n);
+	}
+	bin_keys(s);
+	s->stats->rows += s->bs.n_active;
+	if (s->emit != NULL)
+		s->emit(s->emit_arg, &s->bs, s->keyvec, s->argvec);
+	else if (s->pipe != NULL)
+		sift_v6_pipe_run(s->pipe, s->fact, &s->bs);
+	else
+		sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
+}
+
+static void
+v6_sink(void *arg, const SiftF2Batch *b)
+{
+	V6Scan	   *s = arg;
+	const bool	visible = batch_visible(s, b);
+
+	for (int off = 0; off < b->n; off += SIFT_VEC_LEN)
+	{
+		const int	n = Min(SIFT_VEC_LEN, b->n - off);
+
+		s->stats->batches++;
+		if (vet_slice(s, b->live, b->tid, visible, off, n) == 0)
+			continue;
+		fold_slice(s, b->views, NULL, b->part != NULL ? b->part->part_gen : 0, off, n);
+	}
+}
+
+static int *
+scan_leaves(const V6Scan *s)
+{
+	int		   *leaves = palloc(Max(s->ncols, 1) * sizeof(int));
+
+	for (int i = 0; i < s->ncols; i++)
+		leaves[i] = s->cols[i].leaf;
+	return leaves;
+}
+
+static bool *
+scan_nan_leaves(const V6Scan *s, int nleaves)
+{
+	bool	   *nan_ok = palloc0(Max(nleaves, 1) * sizeof(bool));
+
+	for (int i = 0; i < s->ncols; i++)
+		nan_ok[s->cols[i].leaf] = s->cols[i].nan_ok;
+	return nan_ok;
+}
+
+/* ---- the arms of a cohort ---- */
+
+typedef struct V6Arms
+{
+	V6Scan	   *s;				/* [narms], the leader first */
+	SiftV6FuseCohort *cohort;
+	const SiftF2Batch *b;		/* the slice being given: its rows and the offset of the slice in the granule */
+	int			off;
+	int			n;
+	uint16		n_live;			/* the rows of the slice that are visible and live */
+	uint64		live[SIFT_VEC_WORDS];
+} V6Arms;
+
+/* the rows of the pass the arm takes: all of them when the arms have the keys of the leader, else those its gate allows */
+static uint16
+arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
+{
+	V6Arms	   *a = ctx;
+	V6Scan	   *s = &a->s[arm];
+	uint64		allowed[SIFT_VEC_WORDS];
+	uint16		n = 0;
+
+	if (s->gate == NULL)
+	{
+		memcpy(out, live, SIFT_VEC_WORDS * sizeof(uint64));
+		return a->n_live;
+	}
+	for (int i = 0; i < s->ncols; i++)
+		fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0);
+	sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
+	for (int w = 0; w < SIFT_VEC_WORDS; w++)
+		n += pg_popcount64(out[w] = live[w] & allowed[w]);
+	return n;
+}
+
+static void
+arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
+{
+	V6Arms	   *a = ctx;
+	V6Scan	   *s = &a->s[arm];
+
+	if (s->gate == NULL)
+		for (int i = 0; i < s->ncols; i++)
+			fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0);
+	memcpy(s->bs.mask, mask, SIFT_VEC_WORDS * sizeof(uint64));
+	s->bs.n_raw = a->n;
+	s->bs.n_active = n_active;
+	s->bs.all_active = n_active == a->n;
+	s->bs.has_sel = false;
+	bin_keys(s);
+	sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
+	s->stats->rows += s->bs.n_active;
+}
+
+static void
+arms_sink(void *arg, const SiftF2Batch *b)
+{
+	static const SiftV6FuseOps ops = {.arm_mask = arms_mask,.consume = arms_consume};
+	V6Arms	   *a = arg;
+	V6Scan	   *lead = &a->s[0];
+
+	for (int off = 0; off < b->n; off += SIFT_VEC_LEN)
+	{
+		const int	n = Min(SIFT_VEC_LEN, b->n - off);
+
+		lead->stats->batches++;
+		a->b = b;
+		a->off = off;
+		a->n = n;
+		a->n_live = vet_slice(lead, b->live, b->tid, batch_visible(lead, b), off, n);
+		memcpy(a->live, lead->bs.mask, sizeof(a->live));
+		sift_v6_fuse_dispatch(a->cohort, &ops, a, a->live, a->n_live);
+	}
+}
+
+static bool *
+dict_leaves(const V6Scan *s)
+{
+	bool	   *dict_leaf = palloc(Max(s->ncols, 1) * sizeof(bool));
+
+	for (int i = 0; i < s->ncols; i++)
+		dict_leaf[i] = (s->cols[i].key_only || s->cols[i].by_code) && s->cols[i].cls == SV6C_TEXT && !s->cols[i].json;
+	return dict_leaf;
+}
+
+/* One pass over the index (over the rows of the bridge, when it is one) */
+static void
+scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, const SiftTidBridge *bridge)
+{
+	IndexScanDesc scan = sift_index_beginscan(heap, index, snap, nkeys);
+
+	index_rescan(scan, keys, nkeys, NULL, 0);
+	sift_f2_scan_skip_parts(scan, skip, nskip);
+	if (bridge != NULL)
+		sift_f2_scan_set_bridge(scan, bridge, NULL, NULL);
+	sift_f2_scan_set_part_sink(scan, part_offer);
+	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
+	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
+	index_endscan(scan);
+}
+
+void
+sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
+					 SiftV6ScanStats *stats, SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg)
+{
+	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
+	const SiftTidBridge *bridge = NULL;
+
+	s.count_only = spec->ext == NULL && sift_v6_spec_count_only(spec);
+	scan_setup(&s, sift_col_rel(index)->first, star);
+	sift_v6_vet_begin(&s.vet, heap, snap, stats);
+	if (next_chunk == NULL)
+		scan_pass(&s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
+	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
+	{
+		stats->chunks++;
+		stats->bridge_tids += bridge->ntids;
+		scan_pass(&s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
+	}
+	sift_v6_vet_end(&s.vet);
+	MemoryContextDelete(s.batch_cx);
+}
+
+SiftV6Fold *
+sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, SiftV6Recheck recheck, void *recheck_arg)
+{
+	V6Scan	   *s = palloc0(sizeof(V6Scan));
+
+	s->spec = spec;
+	s->group = g;
+	s->stats = stats;
+	s->recheck = recheck;
+	s->recheck_arg = recheck_arg;
+	scan_setup(s, sift_col_rel(index)->first, NULL);
+	sift_v6_vet_begin(&s->vet, heap, snap, stats);
+	s->pub = palloc(Max(s->ncols, 1) * sizeof(SiftV6FoldCol));
+	for (int i = 0; i < s->ncols; i++)
+		if (s->cols[i].attno != SIFT_V6_SCORE_ATTNO)
+			s->pub[s->nstore++] = (SiftV6FoldCol) {s->cols[i].attno, s->cols[i].leaf, s->cols[i].cls, s->cols[i].scale};
+	return s;
+}
+
+const SiftV6FoldCol *
+sift_v6_fold_cols(const SiftV6Fold *s, int *n)
+{
+	*n = s->nstore;
+	return s->pub;
+}
+
+void
+sift_v6_fold_batch_scored(SiftV6Fold *s, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, const float4 *score, int total)
+{
+	for (int off = 0; off < total; off += SIFT_VEC_LEN)
+	{
+		const int	n = Min(SIFT_VEC_LEN, total - off);
+
+		s->stats->batches++;
+		vet_slice(s, live, tid, false, off, n);
+		if (maybe != NULL)
+			vet_maybe(s, maybe, tid, off, n);
+		if (s->bs.n_active > 0)
+			fold_slice(s, views, score, 0, off, n);
+	}
+}
+
+void
+sift_v6_fold_batch(SiftV6Fold *s, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, int total)
+{
+	sift_v6_fold_batch_scored(s, tid, live, maybe, views, NULL, total);
+}
+
+void
+sift_v6_fold_end(SiftV6Fold *s)
+{
+	sift_v6_vet_end(&s->vet);
+	MemoryContextDelete(s->batch_cx);
+}
+
+/* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit */
+SiftV6Scan *
+sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, SiftV6BatchFn emit, void *emit_arg)
+{
+	V6Scan	   *s = palloc0(sizeof(V6Scan));
+
+	s->spec = spec;
+	s->stats = stats;
+	s->emit = emit;
+	s->emit_arg = emit_arg;
+	scan_setup(s, sift_col_rel(index)->first, NULL);
+	s->leaves = scan_leaves(s);
+	sift_v6_vet_begin(&s->vet, heap, snap, stats);
+	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
+	index_rescan(s->scan, keys, nkeys, NULL, 0);
+	sift_f2_scan_set_dict_leaves(s->scan, dict_leaves(s));
+	return s;
+}
+
+void
+sift_v6_scan_plan(SiftV6Scan *s, SiftF2ParPlan *out)
+{
+	sift_f2_par_plan_build(s->scan, out);
+}
+
+void
+sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged)
+{
+	sift_f2_scan_morsel_begin(s->scan, v6_sink, s, s->leaves, s->ncols, staged_dead, nstaged);
+}
+
+void
+sift_v6_scan_morsel(SiftV6Scan *s, const SiftParPartRef *ref, uint32 first, uint32 n)
+{
+	s->all_visible = (ref->flags & SIFT_PAR_PART_ALL_VISIBLE) != 0;
+	sift_f2_scan_morsel(s->scan, ref, first, n);
+	s->all_visible = false;
+}
+
+void
+sift_v6_scan_end(SiftV6Scan *s)
+{
+	index_endscan(s->scan);
+	sift_v6_vet_end(&s->vet);
+	MemoryContextDelete(s->batch_cx);
+	pfree(s->leaves);
+	pfree(s);
+}
+
+void
+sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, SiftV6ScanStats *stats,
+				 SiftV6ChunkFn next_chunk, void *chunk_arg)
+{
+	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, stats, NULL, next_chunk, chunk_arg);
+}
+
+void
+sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip,
+				   SiftV6ScanStats *stats)
+{
+	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
+	SiftF2Store *store = sift_f2_store_open(rel);
+	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
+
+	scan_setup(&s, store->att_first, NULL);
+	o.leaves = scan_leaves(&s);
+	o.nleaves = s.ncols;
+	o.nan_leaves = scan_nan_leaves(&s, store->ncols);
+	if (quals->possible)
+		sift_f2_store_scan_sink(&o, v6_sink, &s);
+	MemoryContextDelete(s.batch_cx);
+}
+
+void
+sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap)
+{
+	V6Arms		a = {.cohort = cohort};
+	IndexScanDesc scan;
+	int		   *leaves;
+	int			nleaves = 0;
+
+	a.s = palloc0(cohort->narms * sizeof(V6Scan));
+	for (int i = 0; i < cohort->narms; i++)
+	{
+		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate};
+		scan_setup(&a.s[i], sift_col_rel(index)->first, NULL);
+		nleaves += a.s[i].ncols;
+	}
+	leaves = palloc(Max(nleaves, 1) * sizeof(int));
+	nleaves = 0;
+	for (int i = 0; i < cohort->narms; i++)
+		for (int c = 0; c < a.s[i].ncols; c++)
+			leaves[nleaves++] = a.s[i].cols[c].leaf;
+	sift_v6_vet_begin(&a.s[0].vet, heap, snap, a.s[0].stats);
+	scan = sift_index_beginscan(heap, index, snap, nkeys);
+	index_rescan(scan, keys, nkeys, NULL, 0);
+	sift_f2_scan_sink(scan, arms_sink, &a, leaves, nleaves);
+	index_endscan(scan);
+	sift_v6_vet_end(&a.s[0].vet);
+	for (int i = 0; i < cohort->narms; i++)
+		MemoryContextDelete(a.s[i].batch_cx);
+}

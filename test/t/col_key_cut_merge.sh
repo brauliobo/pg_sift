@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A key_cut build holds its rows in runs and writes one segment for each; the merge that ends it opens them all, so it keeps at most 121: it merges the runs as it writes them, so
 # CREATE INDEX (serial and parallel), CREATE INDEX CONCURRENTLY, REINDEX and REINDEX CONCURRENTLY finish with the memory they have, however many runs the table makes.
 # sift.test_col_segment_kb stands for a table too large for maintenance_work_mem: 8 runs of a superblock for this one, of which it keeps 6.

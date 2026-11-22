@@ -1,0 +1,160 @@
+-- A numeric NaN is not NULL: SiftAggV6 over a sift_col index and over a sift_table answers count(amount), sum, avg, min, max and count(DISTINCT amount) as the heap does -- NaN counts, a sum or an
+-- average that meets one is NaN, the maximum is NaN and the minimum is NaN only when no other row has a value -- ungrouped, grouped, under FILTER, ROLLUP and a WHERE that drops some of the NaN rows. A group of only
+-- NaN and NULL rows, of only NULL rows and of only NaN rows each answers as the heap. Every check prints t; plan_ok prints t when the statement ran as SiftAggV6.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET sift.test_create_format1 = off;
+CREATE TABLE nh (id int PRIMARY KEY, grp int, amount numeric(12,2), qty int) WITH (autovacuum_enabled = false);
+CREATE TABLE nc (LIKE nh INCLUDING ALL) WITH (autovacuum_enabled = false);
+CREATE TABLE nt (LIKE nh INCLUDING ALL) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO nh
+SELECT g, g % 10,
+	CASE WHEN g % 10 = 7 THEN 'NaN'::numeric								-- group 7: only NaN
+		 WHEN g % 10 = 8 THEN NULL								-- group 8: only NULL
+		 WHEN g % 10 = 9 THEN CASE WHEN g % 3 = 0 THEN 'NaN'::numeric ELSE NULL END	-- group 9: NaN and NULL
+		 WHEN g % 13 = 0 THEN NULL
+		 WHEN g % 17 = 0 THEN 'NaN'::numeric
+		 ELSE (g % 100) / 4.0 END,
+	g % 5
+FROM generate_series(1, 3000) g;
+INSERT INTO nc SELECT * FROM nh;
+INSERT INTO nt SELECT * FROM nh;
+CREATE INDEX nc_sift ON nc USING sift_col (id, grp, amount, qty);
+SELECT sift.table_maintain('nt') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE x text; y text;
+BEGIN
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
+	RETURN x = y;
+END $$;
+-- the same rows from the index, from the table and from the heap (the heap twin has no sift index, so it is the truth)
+CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
+$$ SELECT same_rows(replace(q, '@T', 'nc'), replace(q, '@T', 'nh')) AND same_rows(replace(q, '@T', 'nt'), replace(q, '@T', 'nh')) $$;
+CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text; n int := 0;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'nc') LOOP n := n + (line LIKE '%SiftAggV6%')::int; END LOOP;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'nt') LOOP n := n + (line LIKE '%SiftAggV6%')::int; END LOOP;
+	RETURN n = 2;
+END $$;
+SELECT parity('SELECT count(amount), count(*), sum(amount), avg(amount), min(amount), max(amount) FROM @T') AS ungrouped;
+ ungrouped 
+-----------
+ t
+(1 row)
+
+SELECT plan_ok('SELECT count(amount), sum(amount), avg(amount), min(amount), max(amount) FROM @T') AS ungrouped_plan;
+ ungrouped_plan 
+----------------
+ t
+(1 row)
+
+SELECT parity('SELECT count(DISTINCT amount) FROM @T') AS distinct_ungrouped;
+ distinct_ungrouped 
+--------------------
+ t
+(1 row)
+
+SELECT parity('SELECT grp, count(amount), count(*), sum(amount), avg(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS grouped;
+ grouped 
+---------
+ t
+(1 row)
+
+SELECT plan_ok('SELECT grp, count(amount), sum(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS grouped_plan;
+ grouped_plan 
+--------------
+ t
+(1 row)
+
+SELECT parity('SELECT grp, count(DISTINCT amount) FROM @T GROUP BY grp') AS distinct_grouped;
+ distinct_grouped 
+------------------
+ t
+(1 row)
+
+SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount) FROM @T WHERE qty > 2') AS where_drops_rows;
+ where_drops_rows 
+------------------
+ t
+(1 row)
+
+SELECT parity('SELECT qty, count(amount), sum(amount), min(amount), max(amount) FROM @T WHERE grp < 7 GROUP BY qty') AS where_no_nan_group;
+ where_no_nan_group 
+--------------------
+ t
+(1 row)
+
+SELECT parity('SELECT count(amount) FILTER (WHERE qty > 2), sum(amount) FILTER (WHERE qty = 1), max(amount) FILTER (WHERE grp = 9), min(amount) FILTER (WHERE grp = 9) FROM @T') AS filtered;
+ filtered 
+----------
+ t
+(1 row)
+
+SELECT parity('SELECT grp, count(amount) FILTER (WHERE qty > 2), min(amount) FILTER (WHERE qty > 2) FROM @T GROUP BY grp') AS filtered_grouped;
+ filtered_grouped 
+------------------
+ t
+(1 row)
+
+SELECT parity('SELECT grp, count(amount), max(amount) FROM @T GROUP BY ROLLUP (grp)') AS rollup;
+ rollup 
+--------
+ t
+(1 row)
+
+SELECT parity('SELECT qty, grp, count(amount), sum(amount) FROM @T GROUP BY qty, grp') AS two_keys;
+ two_keys 
+----------
+ t
+(1 row)
+
+-- a statement a NaN meets that SiftAggV6 cannot fold is refused never answered without the NaN (the heap decides with sift.enable_agg = off)
+CREATE FUNCTION refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE x text;
+BEGIN
+	EXECUTE q INTO x;
+	RETURN false;
+EXCEPTION WHEN feature_not_supported THEN RETURN true;
+END $$;
+SELECT refused('SELECT count(DISTINCT (amount, qty))::text FROM nc') AS index_distinct_pair_refused;
+ index_distinct_pair_refused 
+-----------------------------
+ t
+(1 row)
+
+SELECT refused('SELECT count(DISTINCT (amount, qty))::text FROM nt') AS table_distinct_pair_refused;
+ table_distinct_pair_refused 
+-----------------------------
+ t
+(1 row)
+
+-- rows deleted and updated: the NaN of a deleted row leaves the answer
+DELETE FROM nh WHERE id % 17 = 0 AND grp < 7;
+DELETE FROM nc WHERE id % 17 = 0 AND grp < 7;
+DELETE FROM nt WHERE id % 17 = 0 AND grp < 7;
+UPDATE nh SET amount = 'NaN' WHERE id IN (1, 2, 3);
+UPDATE nc SET amount = 'NaN' WHERE id IN (1, 2, 3);
+UPDATE nt SET amount = 'NaN' WHERE id IN (1, 2, 3);
+SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount), count(DISTINCT amount) FROM @T') AS after_dml;
+ after_dml 
+-----------
+ t
+(1 row)
+
+SELECT parity('SELECT grp, count(amount), sum(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS after_dml_grouped;
+ after_dml_grouped 
+-------------------
+ t
+(1 row)
+
+DROP TABLE nh, nc, nt;
+DROP FUNCTION refused(text), plan_ok(text), parity(text), same_rows(text, text);
+DROP EXTENSION pg_sift;

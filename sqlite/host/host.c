@@ -422,6 +422,23 @@ errhint(const char *fmt,...)
 	return 0;
 }
 
+static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local bool cache_held;
+
+void
+sift_host_cache_lock(void)
+{
+	pthread_mutex_lock(&cache_mutex);
+	cache_held = true;
+}
+
+void
+sift_host_cache_unlock(void)
+{
+	cache_held = false;
+	pthread_mutex_unlock(&cache_mutex);
+}
+
 void
 errfinish(const char *filename, int lineno, const char *funcname)
 {
@@ -432,6 +449,8 @@ errfinish(const char *filename, int lineno, const char *funcname)
 		fprintf(stderr, "sift: %s (%s:%d)\n", err_msg, filename, lineno);
 		abort();
 	}
+	if (cache_held)
+		sift_host_cache_unlock();
 	siglongjmp(sq_error_top->jmp, 1);
 }
 
@@ -467,4 +486,79 @@ sq_error_set(int code, const char *fmt,...)
 	err_code = code;
 	err_detail[0] = '\0';
 	errfinish(__FILE__, __LINE__, __func__);
+}
+
+/* the memory trackers (core/memtrack.h): this host has no settings to divide, a tracker only names its context and keeps the slice it was given */
+#include "core/memtrack.h"
+
+Size
+sift_mem_budget_bytes(SiftBudgetClass cls, int nparticipants, int noperators)
+{
+	return ((Size) 64 << 20) / ((Size) Max(nparticipants, 1) * (Size) Max(noperators, 1));
+}
+
+void
+sift_mem_init_sub(SiftMemTracker *t, const char *name, MemoryContext cx, bool owns_cx, Size slice_bytes)
+{
+	*t = (SiftMemTracker) {.name = name, .root_cx = cx, .budget = slice_bytes, .soft_limit = slice_bytes / 100 * SIFT_MEM_SOFT_PCT,
+						   .hard_limit = slice_bytes / 100 * SIFT_MEM_HARD_PCT, .owns_cx = owns_cx};
+}
+
+MemoryContext
+sift_mem_allocset_create(MemoryContext parent, const char *name)
+{
+	return AllocSetContextCreate(parent, name, ALLOCSET_DEFAULT_SIZES);
+}
+
+Size
+sift_mem_used(SiftMemTracker *t)
+{
+	Size		held = MemoryContextMemAllocated(t->root_cx, true);
+
+	t->last_used = held > t->base ? held - t->base : 0;
+	return t->last_used;
+}
+
+SiftMemPressure
+sift_mem_pressure(SiftMemTracker *t, bool exact)
+{
+	Size		used = exact ? sift_mem_used(t) : t->last_used;
+
+	return used >= t->hard_limit ? SIFT_MEM_HARD : used >= t->soft_limit ? SIFT_MEM_SOFT : SIFT_MEM_OK;
+}
+
+/* the cache budget (core/cachebudget.h): this host keeps every entry that alone fits the budget and never evicts for another */
+#include "core/cachebudget.h"
+
+int			sift_backend_cache_kb = 16 * 1024;
+
+MemoryContext
+sift_cache_create_context(const char *name)
+{
+	return AllocSetContextCreate(TopMemoryContext, name, ALLOCSET_DEFAULT_SIZES);
+}
+
+uint64
+sift_cache_tick(void)
+{
+	static uint64 clock_now;
+
+	return ++clock_now;
+}
+
+void
+sift_cache_register(const SiftCacheKind *kind)
+{
+}
+
+bool
+sift_cache_room(Size need)
+{
+	return need <= (Size) sift_backend_cache_kb * 1024;
+}
+
+bool
+sift_cache_commit(void)
+{
+	return true;
 }

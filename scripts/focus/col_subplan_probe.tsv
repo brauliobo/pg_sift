@@ -1,1 +1,1 @@
-col_subplan_probe	src/col/amscan/cost.c:probe_loops
+col_subplan_probe	src/col/v1/amscan/cost.c:probe_loops

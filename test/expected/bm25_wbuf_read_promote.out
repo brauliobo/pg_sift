@@ -48,7 +48,7 @@ SELECT walked = 109 * ndocs AS walked_109_full_buffers, due FROM sift._test_wbuf
  t                       | f
 (1 row)
 
--- the 110th query met the rule: the two that follow write nothing more to the metapage (col/wbuf/reads.c), so the sum stays where the rule was met
+-- the 110th query met the rule: the two that follow write nothing more to the metapage (core/reads.c), so the sum stays where the rule was met
 SELECT wr_read(2);
  wr_read 
 ---------

@@ -327,6 +327,29 @@ sift_dsm_join(const char *name, Size size, SiftDsmInit init)
 	return p;
 }
 
+/* This backend lets go of a table it maps; the backend that lets go last gives the segment back to the system (the directory entry is free, nothing maps it) */
+void
+sift_dsm_unmap(const char *name, Size size)
+{
+	Dir		   *d = dir_get();
+	DirEnt	   *e;
+	dsm_segment *seg;
+
+	if (d == NULL)
+		return;
+	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+	if ((e = dir_find(d, name, build_id(), size)) != NULL && (seg = dsm_find_mapping(e->handle)) != NULL)
+	{
+		dsm_detach(seg);
+		if (pg_atomic_read_u32(&e->users) == 0)
+		{
+			dsm_unpin_segment(e->handle);
+			e->handle = DSM_HANDLE_INVALID;
+		}
+	}
+	LWLockRelease(AddinShmemInitLock);
+}
+
 /* A table of this library that exists, mapped in this backend and held like the ones it asks for; NULL where there is none (nothing is made) */
 void *
 sift_dsm_find(const char *name, Size *size)

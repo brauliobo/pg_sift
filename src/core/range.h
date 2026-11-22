@@ -17,6 +17,16 @@
 #define SIFT_BOUND_BYTES	40		/* a bound as stored (core/page.h SiftChainRef.lo): the payload, zero padded */
 #define SIFT_BOUND_TID_MAX	((UINT64_C(1) << 48) - 1)
 
+/*
+ * The columns of key_order, at most SIFT_KEY_ORDER_MAX: rows are sorted by all of them, then by address. A bound holds the first SIFT_BOUND_COMPS of them (and the address only when the
+ * key has no more), so a key of more columns is shared: partitions that start at one bound are all read.
+ */
+#define SIFT_KEY_ORDER_MAX	8
+
+/* How a key column of key_order is ordered (the flags of a bound's component): DESC reverses the integers, NULLS FIRST puts the NULLs before them; none, the default of ASC: ascending, NULLs last */
+#define SIFT_KEY_DESC			1
+#define SIFT_KEY_NULLS_FIRST	2
+
 typedef struct SiftBound
 {
 	uint8_t		len;			/* bytes of the encoding in use */
@@ -34,9 +44,15 @@ typedef struct SiftRange
 } SiftRange;
 
 extern void sift_bound_clear(SiftBound *b);
-/* Add a component or the address: false (the bound unchanged) when it holds SIFT_BOUND_COMPS components, or already has an address, or the address is above SIFT_BOUND_TID_MAX */
+/*
+ * Add a component or the address: false (the bound unchanged) when it holds SIFT_BOUND_COMPS components, or already has an address, or the address is above SIFT_BOUND_TID_MAX.
+ * The _key forms put the component as its key column is ordered (SIFT_KEY_*): the integer with its bits reversed for DESC, a tag for NULLS FIRST that sorts before the integers'. The
+ * plain forms are those of ASC, NULLS LAST. A bound whose columns are ordered otherwise holds their encodings: sift_bound_comp gives the integer back for ASC only.
+ */
 extern bool sift_bound_push_i64(SiftBound *b, int64_t v);
 extern bool sift_bound_push_null(SiftBound *b);
+extern bool sift_bound_push_key_i64(SiftBound *b, int64_t v, unsigned flags);
+extern bool sift_bound_push_key_null(SiftBound *b, unsigned flags);
 extern bool sift_bound_push_tid(SiftBound *b, uint64_t tid);
 
 /*

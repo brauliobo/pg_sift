@@ -14,7 +14,7 @@ max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB
 sift.col_auto_merge = off
-sift.col_dict_shared_cache_kb = 0
+sift.shared_cache_kb = 0
 sift.async_maintenance = off"
 node_start ms || bail "start failed"
 sql ms "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"

@@ -53,7 +53,6 @@ CREATE TABLE pe_m (id int, k int, s text);
 INSERT INTO pe_m SELECT g, CASE WHEN g % 50 = 0 THEN NULL ELSE (g * 7) % 3000 END, 's' || (g * 13) % 2500 FROM generate_series(1, 12000) g;
 SET sift.col_format_minor = 14;
 CREATE INDEX pe_mi ON pe_m USING sift_col (k, s) WITH (key_cut = 'off', point_tid_columns = 'k, s', count_columns = 'off');
-RESET sift.col_format_minor;
 INSERT INTO pe_m SELECT g, (g * 7) % 3000, 's' || (g * 13) % 2500 FROM generate_series(12001, 24000) g;
 SELECT sift.col_promote('pe_mi'::regclass) >= 0 AS promoted;
 SELECT least(format, 15) AS format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
@@ -83,7 +82,6 @@ SELECT sift.col_verify('pe_mi', true);
 -- the older layout is what the setting 14 writes again, by a rebuild
 SET sift.col_format_minor = 14;
 REINDEX INDEX pe_mi;
-RESET sift.col_format_minor;
 SELECT least(format, 15) AS format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
 SELECT left(w, 36) AS w, pe_idx(w) = pe_seq(w) AS same_rows FROM pe_w ORDER BY w;
 SELECT sift.col_verify('pe_mi', true);

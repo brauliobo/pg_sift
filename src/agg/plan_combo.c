@@ -65,7 +65,7 @@ join_index_exprs(JoinCtx *jc)
 		{
 			Relation	ix = index_open(ixoid, AccessShareLock);
 
-			if (sift_colsrc_is_index(ix->rd_rel->relam))
+			if (sift_colsrc_reads_index(ixoid))
 				foreach_ptr(Node, e, RelationGetIndexExpressions(ix))
 					if (join_expr_node(e))
 						jc->iexprs = lappend(jc->iexprs, copyObject(e));

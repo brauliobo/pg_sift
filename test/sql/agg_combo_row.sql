@@ -3,6 +3,7 @@
 -- a day in two periods is in two rows, a month nothing fell in is a row of NULLs, and a cache that starts again (a small hash memory spills the groups) does not
 -- keep the entries of the rows it forgot.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -39,7 +40,7 @@ SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('current', daterang
  SELECT all_dates.period, all_dates.date, count(DISTINCT rev.id) AS n, count(DISTINCT rev.k) AS ks, sum(rev.amount) AS total
  FROM all_dates LEFT JOIN rev ON rev.bucket_period = all_dates.period AND rev.bucket_date = all_dates.date GROUP BY 1, 2$$);
 -- the same by the groups of the events as well, with the group table kept small so that it spills and the caches start again
-SET work_mem = '64kB'; SET hash_mem_multiplier = 1;
+SET work_mem = '512kB'; SET hash_mem_multiplier = 1;
 SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('current', daterange('2024-06-01', '2025-06-01', '[]'), interval '0 day'), ('previous', daterange('2023-06-01', '2024-12-31', '[]'), interval '1 year')) p (period, range, "interval")),
  all_dates AS (SELECT period, generate_series(date_trunc('month', lower(range))::date + "interval", date_trunc('month', upper(range) - 1)::date + "interval", interval '1 month')::date AS date FROM periods),
  rev AS (SELECT ev.id, ev.k, ev.amount, periods.period AS bucket_period, (date_trunc('month', ev.day)::date + periods."interval")::date AS bucket_date FROM ev JOIN periods ON ev.day <@ range)

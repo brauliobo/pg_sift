@@ -66,7 +66,6 @@ SELECT sift.col_verify('d_col', true);
 
 -- rows added under minor 4 sit in the write buffer with their types, are promoted to a minor 4 segment, and the merge with the minor 3 one
 -- gives the old overflow values no type again
-RESET sift.col_format_minor;
 INSERT INTO d SELECT g, doc(g) FROM generate_series(30001, 40000) g;
 SELECT * FROM unit_kinds('d_col');
 SELECT sift.col_promote('d_col');
@@ -92,7 +91,6 @@ $$ SELECT t.name, sum(u.matched)::int8, bool_and(u.known)
 	GROUP BY t.name, t.tag ORDER BY t.tag $$;
 SET sift.col_format_minor = 3;
 CREATE INDEX z3_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4', cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 CREATE INDEX z4_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4', cube_minmax = false, superunit = 0);
 SELECT * FROM z_types('z3_col');
 SELECT * FROM z_types('z4_col');
@@ -132,7 +130,6 @@ SET sift.col_format_minor = 3;
 SET sift.test_col_no_present = on;
 CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0);
 RESET sift.test_col_no_present;
-RESET sift.col_format_minor;
 SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
 SELECT expect($$ SELECT sift.col_verify('w3_idx', false) $$);
 

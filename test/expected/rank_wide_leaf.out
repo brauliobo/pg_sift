@@ -38,7 +38,8 @@ CREATE EXTENSION pg_sift;
 --           first), the order sift sums in: a
 --           term is one unit, a phrase one unit per distinct term (first
 --           occurrence order), an expansion leaf one unit = max over its
---           expansions. A unit counts when the document matches the query and
+--           expansions, all weighed by the leaf's blended df (blend_df). A
+--           unit counts when the document matches the query and
 --           the unit's leaf matches the document; NOT subtrees never count.
 --           Group boosts multiply into leaves, root first.
 --
@@ -185,7 +186,7 @@ SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, 
  400 |          0
 (4 rows)
 
-SET sift.prefix_cache_size = 0;
+SET sift.backend_cache_kb = 0;
 SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[5, 400]) k, rw_q GROUP BY k ORDER BY k;
   k  | mismatches 
 -----+------------
@@ -193,7 +194,7 @@ SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[5, 400]) k, rw_q GR
  400 |          0
 (2 rows)
 
-RESET sift.prefix_cache_size;
+RESET sift.backend_cache_kb;
 RESET sift.max_expansions;
 SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, rw_q GROUP BY k ORDER BY k;
   k  | mismatches 

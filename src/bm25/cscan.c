@@ -31,8 +31,6 @@
 #include "bm25/cscan_int.h"
 #include "core/quarantine.h"
 
-#include "cscan_int.h"
-
 /* The rows a keyed scan keeps in its first round when it has no hint */
 #define KEYED_INITIAL_ROWS	1024
 void
@@ -109,6 +107,28 @@ index_text(SiftScanState *ss)
 }
 
 /*
+ * Is the candidate's page all-visible, so that the candidate is visible without a fetch? Only a scan whose hits go to an incremental sort under a LIMIT (ties) asks: the sort
+ * orders the rows tied with the last by their own keys, so the ctid of the tuple a HOT chain ends in, which a fetch would tell, orders nothing, and ranked_next fetches the
+ * rows it hands out.
+ */
+static bool
+all_visible_candidate(SiftScanState *ss, ItemPointer tid)
+{
+	BlockNumber blk = ItemPointerGetBlockNumber(tid);
+	uint32		sb = sift_block_sb(blk),
+				page = blk & (SIFT_SB_PAGES - 1);
+
+	if (!ss->ties || ss->quals || !ss->vis.use_vm || ss->heap->rd_rel->relam != HEAP_TABLE_AM_OID)
+		return false;
+	if (sb != ss->vm_sb)
+	{
+		ss->vm_sb = sb;
+		sift_vis_sb_mask(&ss->vis, sb, ss->allvis);
+	}
+	return ss->allvis[page / 64] >> (page % 64) & 1;
+}
+
+/*
  * Visible, passes the residual quals, and with want_doc yields the indexed text. A late scan checks both on the rows it hands out
  * (ranked_next) and asks the ranker for more when they drop some, so a candidate that needs no text is not fetched here too.
  */
@@ -119,6 +139,8 @@ scan_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
 
 	if (ss->late && !want_doc)
+		return true;
+	if (!want_doc && all_visible_candidate(ss, tid))
 		return true;
 	if (!sift_vis_fetch(&ss->vis, tid, ss->heapslot))
 		return false;

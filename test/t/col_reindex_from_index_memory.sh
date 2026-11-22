@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The memory of the REINDEX of a key_cut sift_col index that takes its rows from the index it replaces (col/build/from_index.c), in exact kilobytes (sift.test_col_build_peak_kb: what
+# tap: pooled
+# The memory of the REINDEX of a key_cut sift_col index that takes its rows from the index it replaces (col/v1/build/from_index.c), in exact kilobytes (sift.test_col_build_peak_kb: what
 # the build held at its peak above what the backend started it with) at three sizes, beside the same REINDEX built from the heap (sift.test_col_from_index_off). The floors of the
 # budgets are lowered (sift.test_limits) so that maintenance_work_mem is what cuts the rows, as it is on a table of hundreds of millions of rows at the default. The build from the old
 # index writes the partitions the writer's memory allows, and reads each input one unit at a time: it holds no more than the build from the heap at any size, and stays under
@@ -25,7 +26,7 @@ peaks() {
 		"CREATE TABLE e WITH (autovacuum_enabled = off) AS SELECT g AS id, g AS k_hi, g % 5000 AS k_mid, g % 10 AS k_lo, (array['DE','FR','US','BR','JP','AR','CL','PE'])[1 + g % 8] AS cat,
 			'name' || (g::bigint * 7919) % 1000000 AS txt, ((g::bigint * 7919) % 29500)::numeric / 100 AS amount, timestamp '2025-01-01' + (g::bigint * 311 % 31536000) * interval '1 second' AS ts,
 			repeat('x', 400) AS p FROM generate_series(1, $1) g" "VACUUM ANALYZE e" >/dev/null || bail "setup of $1 rows failed"
-	sql cm "SET max_parallel_maintenance_workers = 0" "SET maintenance_work_mem = '${MWM}MB'" "SET sift.test_limits = 'build_serial_budget=0,writer_min_budget=1048576'" \
+	sql cm "SET max_parallel_maintenance_workers = 0" "SET maintenance_work_mem = '${MWM}MB'" \
 		"CREATE INDEX e_col ON e USING sift_col (k_hi, k_mid, k_lo, cat, txt, amount, ts) WITH (key_cut = 'k_mid', track_changes = 'off')" \
 		"SET sift.test_col_from_index_off = on" "REINDEX INDEX e_col" "SELECT current_setting('sift.test_col_build_peak_kb')" \
 		"RESET sift.test_col_from_index_off" "REINDEX INDEX e_col" "SELECT current_setting('sift.test_col_build_peak_kb'), current_setting('sift.test_col_from_index_used')" |

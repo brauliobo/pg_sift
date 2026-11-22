@@ -2,6 +2,7 @@
 -- of PostgreSQL's plan of it. A key the table can repeat is read the same way only where the rows of a key agree on the columns read, and the child runs
 -- for the other keys (test agg_first_row_dup). An order in the child, a condition that is not a comparison with a constant or a key that is not an equality keep the child.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 -- a LATERAL child can only run as a nested loop: without one the scan is the plan, with the child or its table as lookup
 SET enable_nestloop = off;

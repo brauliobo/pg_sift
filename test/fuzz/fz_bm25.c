@@ -99,7 +99,7 @@ blob_run(void *a)
 			j->digest = mix(j->digest, g->gid);
 	}
 	sift_cur_blob(&c, j->p, j->len, buf);
-	j->digest = mix(j->digest, sift_count(&c));
+	j->digest = mix(j->digest, sift_cur_count(&c));
 }
 
 static void
@@ -118,8 +118,8 @@ checked_run(void *a)
 	j->digest = drain(&c, out_tids, true);
 	cnt = j->digest;
 	sift_cur_blob(&c, j->p, j->len, buf);
-	if (sift_count(&c) > SIFT_GRP_MAXTIDS * 8)
-		fz_bad("sift_count of an accepted blob is %llu", (unsigned long long) sift_count(&c));
+	if (sift_cur_count(&c) > SIFT_GRP_MAXTIDS * 8)
+		fz_bad("sift_cur_count of an accepted blob is %llu", (unsigned long long) sift_cur_count(&c));
 	(void) n;
 	(void) cnt;
 }

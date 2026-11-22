@@ -64,9 +64,9 @@ SELECT agg_pushed('SELECT count(*) FROM ci WHERE s ILIKE ''%item/%''') AS pushed
 SELECT ci_check('sift_col', 'ci', 1);
 SELECT ci_check('sift_table', 'cit', 1, shapes => 1);
 SELECT ci_check('parsed', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%'], shapes => 1);
-SELECT set_config('sift.test_limits', 'dict_cache_kb=1', false) IS NOT NULL AS lowered;
+SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS lowered;
 SELECT ci_check('not kept', 'ci', 34, ARRAY['%item/%', '%ik%', '%KEY%', '%kelvin%'], shapes => 1);
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 -- the collation of the column or of the pattern
 SELECT ci_check('C collation', 'ci', 1, NULL, 'COLLATE "C"', 1);
 SELECT ci_check('column C', 'ci', 1, ARRAY['%ab%', '%ik%', '%k%', '%kelvin%']);

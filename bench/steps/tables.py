@@ -33,7 +33,7 @@ engine ids. Writes to OUTDIR:
   builds.tsv    dataset tier engine setup_s build_s index_bytes heap_growth_bytes (unrounded)
   tables.md     the same as Markdown tables, index size and build time next to the throughput / latency
 
---per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (bench/results/); the rows of the
+--per-dataset DIR also writes DIR/<dataset>.tsv with the rows of each dataset (docs/results/); the rows of the
 dataset/tier pairs given here replace those of the same pair in the file, the other tiers stay. With --merge only the cells of the
 directory (engine, class, variant, metric) replace the same cells of the file: every other row of the pair stays (the host, build and
 session rows too), the way to add classes measured in a later run of a tier.

@@ -20,9 +20,10 @@
 #include "col/scope.h"
 #include "core/errctx.h"
 #include "agg/exec/int.h"
-#include "core/membudget.h"
+#include "core/memtrack.h"
 
 bool		sift_enable_agg = true;
+bool		sift_agg_exact_float = false;
 bool		sift_agg_force = false;
 double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
@@ -32,7 +33,6 @@ bool		sift_agg_dense = true;
 bool		sift_agg_dist_stream = true;
 bool		sift_agg_semi_lut = true;
 bool		sift_agg_two_level_on = true;
-int		sift_agg_semi_lut_size = 4096;
 bool		sift_agg_lookup_pushdown = true;
 bool		sift_agg_lookup_columns = true;
 bool		sift_agg_join_filter = true;
@@ -45,7 +45,6 @@ bool		sift_topn_walk = true;
 #ifdef SIFT_TESTING
 bool		sift_test_agg_wait = false;
 #endif
-int		sift_agg_combo_cache = 1 << 20;
 bool		sift_agg_probe_direct = true;
 bool		sift_agg_float_step = true;
 
@@ -157,7 +156,7 @@ run_scan(AggExec *ex)
 	ex->pass_w = 0;
 	ex->pass_all = ex->pass_fixed = ex->pass_lazy = false;
 	/* a streaming count(DISTINCT) scans in the order of its zones, in one process */
-	if (!backend_begin(ex) && !none && !dist_stream_begin(ex))
+	if (!none && !dist_stream_begin(ex))
 		par_launch(ex);
 	if (ex->shared == NULL)
 	{
@@ -197,7 +196,6 @@ run_scan(AggExec *ex)
 void
 scan_tail(AggExec *ex)
 {
-	backend_finish(ex);
 	/* the rows of a preserved side that no tuple matched, and of a spine that no cell joined: after the workers told which they matched */
 	if (ex->par && (join_preserved(ex->spec) || ex->spec->spine))
 		par_finish(ex);
@@ -785,16 +783,14 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 static void
 agg_mem_checkpoint(const AggExec *ex)
 {
-	if (sift_aggspec_spillable(ex->spec))
-	{
-		SIFT_MEM_SCOPE(agg_group, ex->cxt);
-		SIFT_MEM_CHECKPOINT();
-	}
-	else
-	{
-		SIFT_MEM_SCOPE(agg_group_nospill, ex->cxt);
-		SIFT_MEM_CHECKPOINT();
-	}
+	SiftMemTracker tr;
+	bool		spillable = sift_aggspec_spillable(ex->spec);
+
+	if (ex->par != NULL || sift_agg_overflow)
+		return;
+	sift_mem_init_sub(&tr, spillable ? "agg_group" : "agg_group_nospill", ex->tcxt, false,
+					  (spillable ? agg_mem_slice(ex, SIFT_BUDGET_HASH_MEM, 1) : (Size) sift_agg_nospill_bytes(ex->spec->nworkers)) + ex->tfloor);
+	sift_mem_assert_within(&tr);
 }
 
 static TupleTableSlot *
@@ -859,8 +855,7 @@ stats_run(AggExec *c)
 	if (c->scope_note != NULL)
 		scope_paid_end(c);
 	if (OidIsValid(c->spec->indexoid))
-		/* the rows the log decided read no heap page: a VACUUM would not spare their scan anything */
-		sift_col_vacuum_tick(c->spec->indexoid, c->spec->heapoid, cc.rows_vetted - cc.rows_log, cc.dirty_rows);
+		sift_col_maint_tick(c->spec->indexoid, cc.dirty_rows);
 	sift_stat_add(SIFT_STAT_ROWS_RECHECKED, cc.rechecked);
 	sift_stat_add(SIFT_STAT_UNITS_RECHECKED, cc.recheck_units);
 	sift_stat_add(SIFT_STAT_UNITS_NO_ROLLUP, c->n_rollup_miss);

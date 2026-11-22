@@ -1,1 +1,1 @@
-core_radix_sort	src/core/cmp_test.c:radix_cmp src/core/cmp_test.c:radix_cmp_rec src/core/cmp_test.c:radix_cmp_sift src/core/cmp_test.c:radix_one src/core/cmp_test.c:radix_two src/core/cmp_test.c:sift_test_radix_sort src/core/testrng.h:sift_splitmix_next
+core_radix_sort	src/core/cmp_test.c:radix_cmp src/core/cmp_test.c:radix_one src/core/cmp_test.c:radix_two src/core/cmp_test.c:sift_test_radix_sort src/core/testrng.h:sift_splitmix_next

@@ -52,18 +52,18 @@ SELECT i AS idx, popt(i::regclass) AS point_tid_columns FROM unnest(ARRAY['pa_ri
 (7 rows)
 
 -- an index cut by a key (key_cut) keeps the directory, and a rebuild keeps both: the choice of the build does not stop the cut
-CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
+CREATE INDEX pa_kc ON pa USING sift_col (tenant_id, rid, a, b, c, d, e, f) WITH (order_array_columns = 'off', key_cut = 'tenant_id');
 SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';
-                                             reloptions                                             
-----------------------------------------------------------------------------------------------------
- {order_array_columns=off,"key_cut=auto: tenant_id","point_tid_columns=auto: rid",key_columns=auto}
+                                         reloptions                                         
+--------------------------------------------------------------------------------------------
+ {order_array_columns=off,key_cut=tenant_id,"point_tid_columns=auto: rid",key_columns=auto}
 (1 row)
 
 REINDEX INDEX pa_kc;
 SELECT reloptions FROM pg_class WHERE relname = 'pa_kc';
-                                             reloptions                                             
-----------------------------------------------------------------------------------------------------
- {order_array_columns=off,"key_cut=auto: tenant_id","point_tid_columns=auto: rid",key_columns=auto}
+                                         reloptions                                         
+--------------------------------------------------------------------------------------------
+ {order_array_columns=off,key_cut=tenant_id,"point_tid_columns=auto: rid",key_columns=auto}
 (1 row)
 
 DROP INDEX pa_kc;

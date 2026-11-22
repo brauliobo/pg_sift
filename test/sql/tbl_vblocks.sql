@@ -17,7 +17,7 @@ BEGIN
 	PERFORM set_config('enable_indexscan', 'off', true);
 	PERFORM set_config('enable_bitmapscan', 'off', true);
 	PERFORM set_config('sift.enable_scan', 'off', true);
-	PERFORM set_config('sift.enable_count', 'off', true);
+	PERFORM set_config('sift.enable_scan', 'off', true);
 	EXECUTE format('SELECT count(*) || '':'' || sum(id) FROM vb WHERE body @@> %L', q) INTO b;
 	RETURN a || CASE WHEN a = b THEN '' ELSE ' MISMATCH ' || b END;
 END $$;

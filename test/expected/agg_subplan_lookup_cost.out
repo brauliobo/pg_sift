@@ -3,6 +3,7 @@
 -- the plan costs the scan its tuple, a hash of the key and a copy of each numeric column (about 1,000 instructions a row with one numeric column, four times a count(*) over it).
 -- Seven numeric sums of a CASE over the day of the dimension took 540 ms against the normal plan's 215 ms, priced a third of it. The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

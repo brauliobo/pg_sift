@@ -2,12 +2,13 @@
 -- holds (floats, numerics, times, strings, NULLs), a table that is not one of classes (a key twice, a negative key, more than 4,096 tuples of values) is told so by the workers as by
 -- one process, and a key beyond the largest the index says (rows written since) is read by the process alone.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET jit = off;
 SET max_parallel_maintenance_workers = 0;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
-SET sift.agg_dimmap_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;

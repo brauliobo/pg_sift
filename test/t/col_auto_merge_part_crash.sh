@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A crash in the middle of the rewrite of a sift_col index by range (sift.col_auto_merge_partition_kb): the one segment is cut into partitions, and the PANIC comes
+# A crash in the middle of the rewrite of a sift_col index by range (sift.test_col_partition_kb): the one segment is cut into partitions, and the PANIC comes
 # once the first partition is written and before the directory switch that replaces the old segment with all of them. Crash recovery leaves the index consistent:
 # the segment is as it was, the answers are the heap's, the rewrite is still due (nothing else starts it), no block stays unaccounted for after the VACUUMs that sweep the orphan partition,
 # and the rewrite asked again completes into partitions. Then a second PANIC, in the rewrite of one dirty partition of those, leaves the others as they were.
@@ -14,7 +14,7 @@ sql pc "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE facts (id int, key 
 	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
 # a quarter of the index
 PART=$(sql pc "SELECT (sum(bytes) / 4096)::int FROM sift.col_segments('facts_idx')")
-sql pc "ALTER DATABASE postgres SET sift.col_auto_merge_partition_kb = $PART" "ALTER DATABASE postgres SET sift.async_maintenance = off" >/dev/null
+sql pc "ALTER DATABASE postgres SET sift.test_col_partition_kb = $PART" "ALTER DATABASE postgres SET sift.async_maintenance = off" >/dev/null
 churn() { sql pc "UPDATE facts SET amount = amount + 1 WHERE id >= $1 AND id % 100 = $2" "DELETE FROM facts WHERE id >= $1 AND id % 100 = $2 + 50" \
 	"INSERT INTO facts SELECT 1000000 * $2 + g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 150) FROM generate_series(1, 300) g" "VACUUM facts" >/dev/null; }
 churn 0 1

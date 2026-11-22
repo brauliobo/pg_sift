@@ -1,0 +1,147 @@
+/*
+ * agg/v6/v6_spill.c - the partitioned spill files (v6_spill.h).
+ */
+#include "agg/v6/v6_spill.h"
+
+typedef struct SiftSpillRecHdr
+{
+	uint64		tag;
+	uint32		len;
+	uint32		pad;
+} SiftSpillRecHdr;
+
+struct SiftSpillSet
+{
+	MemoryContext cx;
+	uint32		nparts;
+	BufFile   **file;
+	uint64	   *nrec;
+	uint64	   *nbytes;
+};
+
+uint32
+sift_spill_nparts(uint64 expect_bytes, uint64 budget_bytes)
+{
+	uint64		want = budget_bytes ? expect_bytes / budget_bytes + 1 : SIFT_SPILL_MAX_PARTS;
+	uint32		n = SIFT_SPILL_MIN_PARTS;
+
+	while (n < SIFT_SPILL_MAX_PARTS && n < want * 2)
+		n <<= 1;
+	return n;
+}
+
+SiftSpillSet *
+sift_spill_create(MemoryContext cx, uint32 nparts)
+{
+	SiftSpillSet *s;
+
+	SIFT_INVARIANT(nparts >= 2 && (nparts & (nparts - 1)) == 0, "spill: %u partitions is no power of two", nparts);
+	s = MemoryContextAllocZero(cx, sizeof(SiftSpillSet));
+	s->cx = cx;
+	s->nparts = nparts;
+	s->file = MemoryContextAllocZero(cx, sizeof(BufFile *) * nparts);
+	s->nrec = MemoryContextAllocZero(cx, sizeof(uint64) * nparts);
+	s->nbytes = MemoryContextAllocZero(cx, sizeof(uint64) * nparts);
+	return s;
+}
+
+uint32
+sift_spill_nparts_of(const SiftSpillSet *s)
+{
+	return s->nparts;
+}
+
+void
+sift_spill_put(SiftSpillSet *s, uint32 part, uint64 tag, const void *bytes, uint32 len)
+{
+	SiftSpillRecHdr h = {.tag = tag,.len = len};
+
+	if (s->file[part] == NULL)
+		s->file[part] = BufFileCreateTemp(false);
+	BufFileWrite(s->file[part], &h, sizeof(h));
+	if (len > 0)
+		BufFileWrite(s->file[part], bytes, len);
+	s->nrec[part]++;
+	s->nbytes[part] += sizeof(h) + len;
+}
+
+void
+sift_spill_rewind(SiftSpillSet *s, uint32 part)
+{
+	if (s->file[part] != NULL)
+		SIFT_INVARIANT(BufFileSeek(s->file[part], 0, 0, SEEK_SET) == 0, "spill: could not rewind the temporary file of partition %u", part);
+}
+
+bool
+sift_spill_get(SiftSpillSet *s, uint32 part, uint64 *tag, uint8 **buf, uint32 *cap, uint32 *len)
+{
+	SiftSpillRecHdr h;
+
+	if (s->file[part] == NULL || BufFileReadMaybeEOF(s->file[part], &h, sizeof(h), true) == 0)
+		return false;
+	if (h.len > *cap)
+	{
+		uint32		ncap = Max(h.len, *cap * 2);
+
+		if (*buf != NULL)
+			pfree(*buf);
+		*buf = MemoryContextAlloc(s->cx, ncap);
+		*cap = ncap;
+	}
+	if (h.len > 0)
+		BufFileReadExact(s->file[part], *buf, h.len);
+	*tag = h.tag;
+	*len = h.len;
+	return true;
+}
+
+uint64
+sift_spill_part_records(const SiftSpillSet *s, uint32 part)
+{
+	return s->nrec[part];
+}
+
+uint64
+sift_spill_part_bytes(const SiftSpillSet *s, uint32 part)
+{
+	return s->nbytes[part];
+}
+
+void
+sift_spill_drop(SiftSpillSet *s, uint32 part)
+{
+	if (s->file[part] != NULL)
+		BufFileClose(s->file[part]);
+	s->file[part] = NULL;
+}
+
+uint64
+sift_spill_total_records(const SiftSpillSet *s)
+{
+	uint64		n = 0;
+
+	for (uint32 i = 0; i < s->nparts; i++)
+		n += s->nrec[i];
+	return n;
+}
+
+uint64
+sift_spill_total_bytes(const SiftSpillSet *s)
+{
+	uint64		n = 0;
+
+	for (uint32 i = 0; i < s->nparts; i++)
+		n += s->nbytes[i];
+	return n;
+}
+
+void
+sift_spill_free(SiftSpillSet *s)
+{
+	for (uint32 i = 0; i < s->nparts; i++)
+		sift_spill_drop(s, i);
+	pfree(s->file);
+	pfree(s->nrec);
+	pfree(s->nbytes);
+	pfree(s);
+}

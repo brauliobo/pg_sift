@@ -30,9 +30,12 @@
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "bm25/pushdown.h"
+#include "core/quarantine.h"
 
 /* Dictionary pages a term lookup reads: root array hit, DICTIDX, DICT block */
 #define DICT_PAGES_PER_TERM		2.0
+/* The bytes of a term in the front-coded blocks of the dictionary, which a prefix reads in order */
+#define DICT_BYTES_PER_TERM		24.0
 /* A posting costs about a byte of codec blob, tf sidecar included */
 #define BYTES_PER_POSTING		1.0
 /* Decoding and combining postings, per posting in operator costs */
@@ -112,7 +115,8 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 	int			nsrcs;
 	double		random_cost,
 				seq_cost,
-				dict_pages;
+				lookup_pages,
+				range_pages;
 	Relation	index;
 
 	w->known = queries != NIL && const_queries(queries, &srcs, &nsrcs);
@@ -123,11 +127,23 @@ index_work(Oid indexoid, Oid tablespace, List *queries, IndexWork *w)
 	sift_estimate_cached_src(index, srcs, nsrcs, &w->est);
 	index_close(index, AccessShareLock);
 	get_tablespace_page_costs(tablespace, &random_cost, &seq_cost);
-	dict_pages = w->est.terms * DICT_PAGES_PER_TERM;
-	w->pages = dict_pages + ceil(w->est.postings * BYTES_PER_POSTING / BLCKSZ);
-	w->dict_cost = dict_pages * random_cost;
-	w->cost = w->dict_cost + (w->pages - dict_pages) * seq_cost +
+	/* the first term of each expansion is a lookup; the others follow it in the blocks of the dictionary */
+	lookup_pages = (w->est.terms - w->est.range_terms) * DICT_PAGES_PER_TERM;
+	range_pages = ceil(w->est.range_terms * DICT_BYTES_PER_TERM / BLCKSZ);
+	w->pages = lookup_pages + range_pages + ceil(w->est.postings * BYTES_PER_POSTING / BLCKSZ);
+	w->dict_cost = lookup_pages * random_cost + range_pages * seq_cost;
+	w->cost = w->dict_cost + (w->pages - lookup_pages - range_pages) * seq_cost +
 		w->est.postings * cpu_operator_cost * POSTING_CPU_FRACTION;
+}
+
+/* The dictionary lookups of the queries on the index, which the scan of any plan that reads its postings pays */
+double
+sift_dict_cost(IndexOptInfo *index, List *queries)
+{
+	IndexWork	w;
+
+	index_work(index->indexoid, index->reltablespace, queries, &w);
+	return w.dict_cost;
 }
 
 /*
@@ -143,7 +159,12 @@ sift_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 {
 	GenericCosts costs = {0};
 	IndexWork	w;
+	Relation	index = index_open(path->indexinfo->indexoid, NoLock);
+	bool		out = sift_quarantine_cost(index, path->indexinfo->pages, indexStartupCost, indexTotalCost, indexSelectivity, indexCorrelation, indexPages);
 
+	index_close(index, NoLock);
+	if (out)
+		return;
 	genericcostestimate(root, path, loop_count, &costs);
 	index_work(path->indexinfo->indexoid, path->indexinfo->reltablespace, qual_query_exprs(path), &w);
 	if (w.known)
@@ -354,12 +375,35 @@ blocks_scored(RelOptInfo *rel, double blocks, double matches)
 }
 
 /*
+ * A parallel scan pays PostgreSQL's parallel_setup_cost, the workers' start and the shared state: only a scan that has the work for it (a table of PAR_MIN_TUPLES rows, and matches
+ * to rank, or to check in the heap, that cost twice the setup) is offered one. A table the user gave parallel_workers decides for itself. Measured on 80,000 to 100,000 rows:
+ * a query of a few hundred microseconds took 0.3 to 1.1 ms more with two workers.
+ */
+#define PAR_MIN_TUPLES			250000.0
+#define PAR_MIN_SBS				8
+#define PAR_RANK_MIN_DOCS		16384.0
+#define PAR_COUNT_MIN_DOCS		200000.0
+#define PAR_COUNT_MIN_DIRTY		16384.0
+
+static bool
+parallel_pays(RelOptInfo *rel, const ScanCost *sc, SiftScanMode mode, int64 k)
+{
+	Cost		shared = (sc->idx.known ? sc->idx.cost - sc->idx.dict_cost : 0) + sc->docs * sc->tuple;
+
+	if (rel->tuples < PAR_MIN_TUPLES || shared < 2 * parallel_setup_cost)
+		return false;
+	if (mode == SIFT_MODE_COUNT)
+		return sc->docs >= PAR_COUNT_MIN_DOCS || (1.0 - rel->allvisfrac) * sc->docs >= PAR_COUNT_MIN_DIRTY;
+	return k <= 0 || sc->docs >= PAR_RANK_MIN_DOCS;
+}
+
+/*
  * Workers a parallel scan of the rel can use: the planner's rule for an index scan (reloption
- * parallel_workers, min_parallel_index_scan_size, max_parallel_workers_per_gather), and no more
- * participants than there are superblocks to hand out. 0: no parallel path.
+ * parallel_workers, min_parallel_index_scan_size, max_parallel_workers_per_gather), no more
+ * participants than there are superblocks to hand out, and the work above (parallel_pays). 0: no parallel path.
  */
 static int
-scan_workers(RelOptInfo *rel, ScanCand *c)
+scan_workers(RelOptInfo *rel, ScanCand *c, const ScanCost *sc, SiftScanMode mode, int64 k)
 {
 	int			nworkers,
 				sbs = ((int64) rel->pages + SIFT_SB_PAGES - 1) >> SIFT_SB_SHIFT;
@@ -368,7 +412,11 @@ scan_workers(RelOptInfo *rel, ScanCand *c)
 		return 0;
 	nworkers = compute_parallel_worker(rel, -1, c->index->pages, max_parallel_workers_per_gather);
 	if (rel->rel_parallel_workers == -1)
+	{
+		if (sbs < PAR_MIN_SBS || !parallel_pays(rel, sc, mode, k))
+			return 0;
 		nworkers = Min(nworkers, sbs - 1);
+	}
 	return Max(nworkers, 0);
 }
 
@@ -383,23 +431,13 @@ parallel_divisor(int nworkers)
 	return divisor;
 }
 
-/*
- * The filter's entries a post-filter ranker has to meet to hold k rows that pass: k matches at the
- * fraction of the rows the query matches
- */
-static double
-filter_entries(RelOptInfo *rel, const ScanCost *sc, int64 k)
-{
-	return k > 0 ? k * Max(rel->tuples, 1) / sc->docs : 0;
-}
-
 void
-scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, BitmapHeapPath *filter, ScanEst *est)
+scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, BitmapHeapPath *filter, ScanEst *est)
 {
 	est->fe = (SiftFilterEst) {0, 1, 0, 1};
 	scan_cost(root, rel, c, mode == SIFT_MODE_RANKED, &est->sc);
 	if (mode == SIFT_MODE_RANKED && filter)
-		sift_filter_estimate(root, rel, filter, filter_entries(rel, &est->sc, k), &est->fe);
+		sift_filter_estimate(root, rel, filter, &est->fe);
 }
 
 /*
@@ -506,7 +544,7 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *e
 			   BitmapHeapPath *filter, bool push, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
 	CustomPath *cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, push, 0);
-	int			nworkers = !push && parallel ? scan_workers(rel, c) : 0;
+	int			nworkers = !push && parallel ? scan_workers(rel, c, &est->sc, mode, k) : 0;
 
 	if (cheaper(cp, *best))
 		*best = cp;
@@ -703,13 +741,17 @@ count_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Sca
 void
 add_parallel_count(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, ScanCand *c, Oid heapoid)
 {
-	int			nworkers = scan_workers(input_rel, c);
+	ScanCost	sc;
+	int			nworkers;
 	PathTarget *partial_target = create_empty_pathtarget();
 	CustomPath *cp;
 	GatherPath *gather;
 	AggClauseCosts final_costs = {0};
-	double		rows = nworkers + 1;
+	double		rows;
 
+	scan_cost(root, input_rel, c, false, &sc);
+	nworkers = scan_workers(input_rel, c, &sc, SIFT_MODE_COUNT, 0);
+	rows = nworkers + 1;
 	if (nworkers == 0)
 		return;
 	foreach_node(Aggref, agg, output_rel->reltarget->exprs)

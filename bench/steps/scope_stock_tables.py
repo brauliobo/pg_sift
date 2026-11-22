@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """The tables of the scope index against tuned stock PostgreSQL, from the one results file of steps/scope_stock_arms.py.
 
-    python3 -I bench/steps/scope_stock_tables.py render [--results FILE] [--root DIR]   rewrite the generated blocks of README.md and docs/COL-SCOPE.md
+    python3 -I bench/steps/scope_stock_tables.py render [--results FILE] [--root DIR]   rewrite the generated blocks of docs/BENCHMARKS.md
     python3 -I bench/steps/scope_stock_tables.py report [FILE]                          print every table (the full set, all arms and tenants)
 
 No figure of those pages is typed: a block is a function of the results file, and scripts/gen-docs.py --check fails when a block differs from it. The file is
-the format of steps/extras.py (`# key: value` lines, then version, case, arm, metric, value, min, max, n, load, note); a cell of a read is the case `tTENANT:CLASS`
+the format of steps/resultfile.py (`# key: value` lines, then version, case, arm, metric, value, min, max, n, load, note); a cell of a read is the case `tTENANT:CLASS`
 with the metrics warm_ms, warm_minstr, warm_hit, cold_ms, cold_minstr, cold_hit, cold_read and md5_equal. A rival wins a cell when it is faster than the scope index
 by more than 0.1 ms and by more than 10%; within either margin the cell is a tie.
 """
@@ -16,25 +16,22 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import extras  # noqa: E402
+import resultfile  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 RESULTS = os.path.join(REPO, 'docs', 'results', 'scope-stock.tsv')
 BASE = 'sift_scope'
 TIE_MS, TIE_PCT = 0.1, 0.10
-README_ARMS = ('stock_default', 'semijoin', 'denorm_flat', 'ivm', BASE)   # the columns of the README tables; the page of the feature has all of them
-README_TENANTS = (1, 4, 8)                                                   # a large, a medium and a small tenant (49, 6 and 0.1% of the events)
 BLOCKS = {  # block name: (page, renderer)
-    'scope-stock-readme': ('README.md', lambda R: readme_block(R)),
-    'scope-stock-tally': ('docs/COL-SCOPE.md', lambda R: tally(R) + ['', tally_note(R)]),
-    'scope-stock-geomean': ('docs/COL-SCOPE.md', lambda R: geomean_table(R)),
-    'scope-stock-costs': ('docs/COL-SCOPE.md', lambda R: write_table(R, R.arms)),
+    'scope-stock-tally': ('docs/BENCHMARKS.md', lambda R: tally(R) + ['', tally_note(R)]),
+    'scope-stock-geomean': ('docs/BENCHMARKS.md', lambda R: geomean_table(R)),
+    'scope-stock-costs': ('docs/BENCHMARKS.md', lambda R: write_table(R, R.arms)),
 }
 
 
 class Results:
     def __init__(self, path):
-        self.meta, rows = extras.read(path)
+        self.meta, rows = resultfile.read(path)
         self.v = {(r['case'], r['arm'], r['metric']): float(r['value']) for r in rows if r['value'] not in ('', 'NA')}
         self.note = {(r['case'], r['arm'], r['metric']): r['note'] for r in rows if r['note']}
         self.arms = self.meta['arms'].split(',')
@@ -75,7 +72,7 @@ def fbytes(b):
 
 
 def table(head, body, align=None):
-    return extras.table(head, body, align or ['---'] + ['---:'] * (len(head) - 1))
+    return resultfile.table(head, body, align or ['---'] + ['---:'] * (len(head) - 1))
 
 
 # ---- tally ------------------------------------------------------------------------------------------------------------------------------
@@ -171,16 +168,6 @@ def fixture_line(R):
             (fcount(float(m['facts'])), fcount(float(m['member_total'])), m['tenant_total'], fcount(float(m['pairs']))))
 
 
-def readme_block(R):
-    out = ['%s; %d classes, %d tenants, warm and cold, one backend of %s on tmpfs, %s. Measured %s (`bench/bench scope-stock`).' %
-           (fixture_line(R).capitalize(), len(R.classes), len(R.tenants), R.meta.get('postgresql', '?'), R.meta.get('cpu', '?'), R.meta.get('note', R.meta.get('date', '?'))), '',
-           'Per rival, over the cells both answer:', ''] + tally(R) + ['', tally_note(R), '']
-    out += ['Each cell is warm ms / cold ms · warm M instructions · blocks hit warm / blocks read cold; `n/a`: the arm cannot answer the class.', '']
-    for t in (t for t in README_TENANTS if t in R.tenants):
-        out += ['**%s**' % tenant_label(R, t), ''] + tenant_table(R, t, [a for a in README_ARMS if a in R.arms]) + ['']
-    return out + write_table(R, [a for a in R.arms if a in README_ARMS])
-
-
 def report(R):
     out = ['# Scope index against tuned stock PostgreSQL: every table', '', fixture_line(R), '', '## Tally', ''] + tally(R) + ['', tally_note(R), '', '## Geometric mean', ''] + geomean_table(R)
     for t in R.tenants:
@@ -191,7 +178,7 @@ def report(R):
 def render(results, root):
     R = Results(results)
     for name, (page, fn) in BLOCKS.items():
-        extras.replace_block(os.path.join(root, page), name, fn(R))
+        resultfile.replace_block(os.path.join(root, page), name, fn(R))
 
 
 def main():

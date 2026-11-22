@@ -6,20 +6,38 @@
 #include "core/host.h"
 #include "core/range.h"
 
+/*
+ * A column that sorts its NULLs last (the default) has TAG_VALUE and TAG_NULL, one that sorts them first TAG_VALUE_NF and TAG_NULL_FIRST: in either pair the tags are in the order of the
+ * column, and a key column has the same pair in every bound, so tags of the two pairs are never compared. The bytes of a descending integer are those of its complement.
+ */
 enum
 {
 	TAG_VALUE = 1,				/* followed by the 8 bytes of the integer, big-endian, sign bit flipped */
 	TAG_NULL = 2,				/* alone: NULL sorts after every integer */
-	TAG_TID = 3					/* followed by the 6 bytes of the address, big-endian: after every component */
+	TAG_TID = 3,				/* followed by the 6 bytes of the address, big-endian: after every component */
+	TAG_NULL_FIRST = 4,			/* alone: NULL sorts before every integer */
+	TAG_VALUE_NF = 5			/* as TAG_VALUE, in a column whose NULLs come first */
 };
 
 #define VALUE_BYTES 8
 #define TID_BYTES	6
 
+static bool
+is_value(uint8_t tag)
+{
+	return tag == TAG_VALUE || tag == TAG_VALUE_NF;
+}
+
+static bool
+is_null(uint8_t tag)
+{
+	return tag == TAG_NULL || tag == TAG_NULL_FIRST;
+}
+
 static uint32_t
 elem_bytes(uint8_t tag)
 {
-	return tag == TAG_VALUE ? VALUE_BYTES : tag == TAG_TID ? TID_BYTES : 0;
+	return is_value(tag) ? VALUE_BYTES : tag == TAG_TID ? TID_BYTES : 0;
 }
 
 void
@@ -51,25 +69,37 @@ put_be(uint8_t *dst, uint64_t v, uint32_t n)
 }
 
 bool
-sift_bound_push_i64(SiftBound *b, int64_t v)
+sift_bound_push_key_i64(SiftBound *b, int64_t v, unsigned flags)
 {
 	if (b->ncomp >= SIFT_BOUND_COMPS || has_tid(b))
 		return false;
-	b->bytes[b->len++] = TAG_VALUE;
-	put_be(&b->bytes[b->len], (uint64_t) v ^ (UINT64_C(1) << 63), VALUE_BYTES);
+	b->bytes[b->len++] = (flags & SIFT_KEY_NULLS_FIRST) ? TAG_VALUE_NF : TAG_VALUE;
+	put_be(&b->bytes[b->len], (uint64_t) ((flags & SIFT_KEY_DESC) ? ~v : v) ^ (UINT64_C(1) << 63), VALUE_BYTES);
 	b->len += VALUE_BYTES;
 	b->ncomp++;
 	return true;
 }
 
 bool
-sift_bound_push_null(SiftBound *b)
+sift_bound_push_key_null(SiftBound *b, unsigned flags)
 {
 	if (b->ncomp >= SIFT_BOUND_COMPS || has_tid(b))
 		return false;
-	b->bytes[b->len++] = TAG_NULL;
+	b->bytes[b->len++] = (flags & SIFT_KEY_NULLS_FIRST) ? TAG_NULL_FIRST : TAG_NULL;
 	b->ncomp++;
 	return true;
+}
+
+bool
+sift_bound_push_i64(SiftBound *b, int64_t v)
+{
+	return sift_bound_push_key_i64(b, v, 0);
+}
+
+bool
+sift_bound_push_null(SiftBound *b)
+{
+	return sift_bound_push_key_null(b, 0);
 }
 
 bool
@@ -101,7 +131,7 @@ sift_bound_unpack(const uint8_t *in, SiftBound *b)
 		uint8_t		tag = in[at];
 		uint32_t	n = 1 + elem_bytes(tag);
 
-		if (tag > TAG_TID || at + n > SIFT_BOUND_PAYLOAD || (tag == TAG_TID ? has_tid(b) : b->ncomp >= SIFT_BOUND_COMPS || has_tid(b)))
+		if (tag > TAG_VALUE_NF || at + n > SIFT_BOUND_PAYLOAD || (tag == TAG_TID ? has_tid(b) : b->ncomp >= SIFT_BOUND_COMPS || has_tid(b)))
 			return false;
 		memcpy(&b->bytes[at], &in[at], n);
 		at += n;
@@ -128,7 +158,7 @@ sift_bound_comp(const SiftBound *b, uint32_t i, int64_t *v)
 		{
 			uint64_t	u = 0;
 
-			if (tag == TAG_NULL)
+			if (is_null(tag))
 				return SIFT_COMP_NULL;
 			for (uint32_t k = 0; k < VALUE_BYTES; k++)
 				u = u << 8 | b->bytes[at + 1 + k];
@@ -216,6 +246,14 @@ sift_bound_prefix_next(const SiftBound *p, SiftBound *out)
 		uint32_t	at = last_elem(out);
 		uint8_t		tag = out->bytes[at];
 
+		if (tag == TAG_NULL_FIRST)
+		{
+			out->bytes[at] = TAG_VALUE_NF;
+			out->bytes[out->len++] = 0;
+			memset(&out->bytes[out->len], 0, VALUE_BYTES - 1);
+			out->len += VALUE_BYTES - 1;
+			return true;
+		}
 		if (tag == TAG_NULL)
 		{
 			out->len = (uint8_t) at;
@@ -225,8 +263,11 @@ sift_bound_prefix_next(const SiftBound *p, SiftBound *out)
 		if (increment_be(&out->bytes[at + 1], elem_bytes(tag)))
 			return true;
 		out->len = (uint8_t) at;
-		if (tag == TAG_TID)
+		if (tag == TAG_TID || tag == TAG_VALUE_NF)
+		{
+			out->ncomp -= tag == TAG_VALUE_NF;
 			continue;
+		}
 		out->bytes[out->len++] = TAG_NULL;
 		return true;
 	}

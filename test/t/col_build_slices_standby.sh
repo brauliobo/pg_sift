@@ -20,7 +20,7 @@ node_start standby || bail "standby start failed"
 catchup primary standby || bail "the standby did not catch up"
 OPTS="SET max_parallel_maintenance_workers = 4"
 SMALL="SET min_parallel_table_scan_size = 0"
-PART="SET sift.col_auto_merge_partition_kb = 256"
+PART="SET sift.test_col_partition_kb = 256"
 SEG="SET sift.test_col_segment_kb = 64"
 CREATE="CREATE INDEX t_idx ON t USING sift_col (dim_b_id, day, v) WITH (key_cut = 'dim_b_id, day')"
 has_index() { sql "$1" "SELECT count(*) FROM pg_class WHERE relname = 't_idx'"; }

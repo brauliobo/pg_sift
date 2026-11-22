@@ -5,7 +5,6 @@ results file, the tally of cells won, tied and lost follows its margins, and the
     python3 -I bench/test/test_scope_stock.py
 """
 import argparse
-import importlib.util
 import itertools
 import os
 import sys
@@ -17,7 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 STEPS = os.path.join(HERE, '..', 'steps')
 sys.path.insert(0, STEPS)
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
-import extras  # noqa: E402
+import resultfile  # noqa: E402
 import scope_stock_arms as arms  # noqa: E402
 import scope_stock_tables as tables  # noqa: E402
 
@@ -55,11 +54,37 @@ def collected(d, reads=READS, **meta):
     return out
 
 
-def readme_rules():
-    spec = importlib.util.spec_from_file_location('check_readme_tables', os.path.join(HERE, '..', '..', 'scripts', 'check-readme-tables.py'))
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+class Cache(unittest.TestCase):
+    def ns(self, d, **kw):
+        return argparse.Namespace(**dict(dict(size='quick', cache=os.path.join(d, 'cache'), pg='PostgreSQL 18.7', ivm='1.17', facts=None, member_total=2648, tenants=None,
+                                              arms='stock_default,ivm,sift_scope', remeasure_all=False), **kw))
+
+    def plan(self, a):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            arms.cmd_cache_plan(a)
+        return out.getvalue().split('\n')[:3]
+
+    def test_a_rival_arm_is_measured_once_and_the_sift_arm_and_the_oracle_always(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(self.plan(self.ns(d)), ['stock_default,ivm,sift_scope', '', 'ivm'])
+            arms.cmd_cache_save(self.ns(d, arms='ivm', results=collected(d)))
+            self.assertEqual(self.plan(self.ns(d)), ['stock_default,sift_scope', 'ivm', ''])
+            self.assertEqual(self.plan(self.ns(d, remeasure_all=True)), ['stock_default,ivm,sift_scope', '', 'ivm'])
+            self.assertEqual(self.plan(self.ns(d, ivm='1.18')), ['stock_default,ivm,sift_scope', '', 'ivm'])
+            self.assertEqual(self.plan(self.ns(d, pg='PostgreSQL 18.8')), ['stock_default,ivm,sift_scope', '', 'ivm'])
+
+    def test_the_cached_arm_is_the_base_of_a_merge_with_the_run_of_the_others(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'full'))
+            arms.cmd_cache_save(self.ns(d, arms='ivm', results=collected(os.path.join(d, 'full'))))
+            base = os.path.join(d, 'cached.tsv')
+            arms.cmd_cache_assemble(self.ns(d, arms='ivm', out=base))
+            meta, rows = resultfile.read(base)
+            self.assertEqual({r['arm'] for r in rows} - {'fixture'}, {'ivm'})
+            self.assertEqual(meta['arms'], 'ivm')
 
 
 class Queries(unittest.TestCase):
@@ -137,9 +162,24 @@ class Merge(unittest.TestCase):
         self.assertIn('# pg_ivm: 1.17', lines)
         self.assertTrue(any(l.startswith('5.0 (def)\tt1:sum_by_month\tsift_scope\twarm_ms\t1.5') for l in lines))
 
+    def test_a_5_1_0_results_file_merges_under_the_current_arm_names(self):
+        legacy = dict(READS, sift_reuse=((4.0, 3.0), (1.0, 0.9)), sift_scope_rollup=((2.5, 0.6), (0.6, 0.4)))
+        current = dict(self.NEWER, sift_entity=((3.5, 2.5), (0.9, 0.8)))
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, 'base')), os.makedirs(os.path.join(d, 'new'))
+            out = os.path.join(d, 'merged.tsv')
+            arms.cmd_merge(argparse.Namespace(base=collected(os.path.join(d, 'base'), legacy), new=collected(os.path.join(d, 'new'), current), out=out))
+            meta, rows = resultfile.read(out)
+        self.assertEqual({r['arm'] for r in rows} - {'fixture'}, {'stock_default', 'sift_scope', 'ivm', 'sift_entity', 'sift_scope_cluster'})
+        self.assertEqual(meta['arms'], 'stock_default,ivm,sift_entity,sift_scope,sift_scope_cluster')
+        self.assertEqual([r['value'] for r in rows if r['arm'] == 'sift_entity' and r['case'] == 't1:sum_by_month' and r['metric'] == 'warm_ms'], ['3.5'])
+
+    def test_the_5_1_0_arm_names_of_a_list_are_the_current_ones(self):
+        self.assertEqual(arms.arm_list('stock_default,sift_reuse,sift_scope_rollup,ivm'), 'stock_default,sift_entity,sift_scope_cluster,ivm')
+
     def test_the_load_of_a_row_is_the_one_of_the_run_not_of_the_collect(self):
         clock = itertools.count()
-        with tempfile.TemporaryDirectory() as d, mock.patch.object(extras, 'host_load', side_effect=lambda: 'load now %s' % next(clock)):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(resultfile, 'host_load', side_effect=lambda: 'load now %s' % next(clock)):
             os.makedirs(os.path.join(d, 'a')), os.makedirs(os.path.join(d, 'b'))
             first, second = (open(collected(os.path.join(d, n))).read() for n in ('a', 'b'))
         self.assertEqual(first, second)
@@ -158,7 +198,7 @@ class Merge(unittest.TestCase):
 
 
 class Render(unittest.TestCase):
-    PAGES = {'README.md': 'scope-stock-readme', 'docs/COL-SCOPE.md': 'scope-stock-tally scope-stock-geomean scope-stock-costs'}
+    PAGES = {'docs/BENCHMARKS.md': 'scope-stock-tally scope-stock-geomean scope-stock-costs'}
 
     def tree(self, root):
         for page, names in self.PAGES.items():
@@ -166,7 +206,7 @@ class Render(unittest.TestCase):
             with open(os.path.join(root, page), 'w') as f:
                 f.write('# page\n\n' + ''.join('<!-- bench:%s:begin x -->\n<!-- bench:%s:end -->\n\n' % (n, n) for n in names.split()) + 'after\n')
 
-    def test_blocks_are_a_function_of_the_results_and_fit_the_readme_rules(self):
+    def test_blocks_are_a_function_of_the_results(self):
         with tempfile.TemporaryDirectory() as d:
             results = collected(d)
             root = os.path.join(d, 'tree')
@@ -175,13 +215,9 @@ class Render(unittest.TestCase):
             first = {p: open(os.path.join(root, p)).read() for p in self.PAGES}
             tables.render(results, root)
             self.assertEqual(first, {p: open(os.path.join(root, p)).read() for p in self.PAGES})
-        readme = first['README.md']
-        self.assertIn('| `latest_20_rows` | 250 / 500 ·', readme)   # stock_default, tenant 1: warm ms / cold ms · M instructions · blocks
-        self.assertIn('n/a', readme)
-        self.assertTrue(readme.endswith('after\n'))
-        rules = readme_rules()
-        self.assertEqual(rules.problems(readme) + rules.triples(readme), [])
-        self.assertIn('`ivm` | 2 | 0 / 1 / 1', first['docs/COL-SCOPE.md'])
+        page = first['docs/BENCHMARKS.md']
+        self.assertIn('`ivm` | 2 | 0 / 1 / 1', page)
+        self.assertTrue(page.endswith('after\n'))
 
 
 if __name__ == '__main__':

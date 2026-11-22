@@ -18,31 +18,6 @@ int			sift_max_expansions = 512;
 
 /* ---------- engine: once per process ---------- */
 
-/* bm25/prefix.c keeps one process-wide cache of wide-prefix unions: its entry point (renamed by the Makefile) runs under a lock */
-extern const uint8 *sq_real_sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen,
-											  const SiftScoreRef *ref, bool scoring, MemoryContext mcxt, SiftTermInfo *info);
-static pthread_mutex_t prefix_lock = PTHREAD_MUTEX_INITIALIZER;
-
-const uint8 *
-sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
-				  bool scoring, MemoryContext mcxt, SiftTermInfo *info)
-{
-	const uint8 *blob = NULL;
-
-	pthread_mutex_lock(&prefix_lock);
-	SQ_TRY();
-	blob = sq_real_sift_prefix_union(seg, m, key, keylen, ref, scoring, mcxt, info);
-	SQ_CATCH();
-	pthread_mutex_unlock(&prefix_lock);
-	sq_error_rethrow();
-	SQ_END();
-	pthread_mutex_unlock(&prefix_lock);
-	return blob;
-}
-
-static const char *const level_names[] = {"scalar", "avx2", "avx512"};
-
-/* The kernels (scoring, bitmaps) and the codec follow one level, capped by what the CPU has */
 static SiftSimdLevel
 set_level(SiftSimdLevel level)
 {
@@ -57,23 +32,12 @@ set_level(SiftSimdLevel level)
 	return level;
 }
 
-static int
-parse_level(const char *name)
-{
-	if (name == NULL || strcmp(name, "auto") == 0)
-		return SIFT_SIMD_AVX512;
-	for (int i = 0; i < 3; i++)
-		if (strcmp(name, level_names[i]) == 0)
-			return i;
-	return -1;
-}
-
 static pthread_once_t engine_once = PTHREAD_ONCE_INIT;
 
 static void
 engine_init(void)
 {
-	int			level = parse_level(getenv("SIFT_SIMD"));
+	int			level = sift_cpu_parse_level(getenv("SIFT_SIMD"));
 
 	sq_mem_init();
 	sift_cpu_init();
@@ -82,7 +46,7 @@ engine_init(void)
 #endif
 	sift_init();
 	sift_kernels_init();
-	set_level(level < 0 ? SIFT_SIMD_AVX512 : level);
+	set_level(level < 0 ? SIFT_SIMD_TOP : level);
 }
 
 /* ---------- SQL functions ---------- */
@@ -186,7 +150,7 @@ fn_drop_cache(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 static void
 fn_isa(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 {
-	char	   *msg = sqlite3_mprintf("%s (cpu: %s)", level_names[sift_cpu.active], level_names[sift_cpu.detected]);
+	char	   *msg = sqlite3_mprintf("%s (cpu: %s)", sift_simd_level_name(sift_cpu.active), sift_simd_level_name(sift_cpu.detected));
 
 	sqlite3_result_text(ctx, msg, -1, sqlite3_free);
 }
@@ -195,12 +159,12 @@ fn_isa(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 static void
 fn_simd(sqlite3_context *ctx, int argc, sqlite3_value **argv)
 {
-	int			level = parse_level((const char *) sqlite3_value_text(argv[0]));
+	int			level = sift_cpu_parse_level((const char *) sqlite3_value_text(argv[0]));
 
 	if (level < 0)
 		sqlite3_result_error(ctx, "sift_simd: the level is scalar, avx2, avx512 or auto", -1);
 	else
-		sqlite3_result_text(ctx, level_names[set_level(level)], -1, SQLITE_STATIC);
+		sqlite3_result_text(ctx, sift_simd_level_name(set_level(level)), -1, SQLITE_STATIC);
 }
 
 /* sift_work_mem([kB]): the memory a statement's search may hold (the hits of a ranked search without a LIMIT, a sift_facets call), for the whole process; returns it */

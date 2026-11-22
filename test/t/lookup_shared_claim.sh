@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The sessions that run one query at once load the rows of its joined table once (agg/lookshm.c): the first to ask claims the load, the others wait for its rows. A session that
 # looked for the rows before they were kept and asked for the claim after the loader dropped its own found no claim to wait for and loaded the table again: the
 # loader's claim ended between its two steps. An injection point (PostgreSQL built with --enable-injection-points: scripts/pg-assert.sh --inject) stops a session

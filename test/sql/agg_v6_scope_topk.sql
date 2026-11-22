@@ -1,0 +1,150 @@
+-- ORDER BY a leaf DESC LIMIT n over the facts of a scope key (src/agg/v6/scope_v6.c, scope_v6_run.c): the newest rows of the key are the ring of the summary the index of format major 2 keeps
+-- (col/scope_v6/topk.c), read without a row of the facts when the summary counts exactly what the heap shows the snapshot, and the join sorted, the child of the node, when it does not. Each
+-- line is a group of statements: whether the node's answer and the heap's agree (the ties of the order leaf may pick other rows: the order leaves are compared and every row must be a row of
+-- the join), what the node read (ring, or join) and the scans of the table the plan ran.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.test_create_format1 = off;
+
+CREATE TABLE entity_parents (entity_id int NOT NULL, parent_id int NOT NULL, PRIMARY KEY (entity_id, parent_id)) WITH (autovacuum_enabled = false);
+INSERT INTO entity_parents SELECT m, 1 + m % 5 FROM generate_series(1, 400) m;
+INSERT INTO entity_parents VALUES (401, 6);
+CREATE TABLE events (id bigint PRIMARY KEY, entity_id int NOT NULL, event_date date NOT NULL, deleted_at timestamptz, updated_at timestamptz NOT NULL, amount numeric(12,2) NOT NULL,
+	score float8 NOT NULL, tag text NOT NULL, qty float8 NOT NULL, spare int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 400, DATE '2026-01-01' + i % 200, CASE WHEN i % 23 = 0 THEN timestamptz '2026-02-01' END, timestamptz '2026-01-01' + (i * 17 % 12011) * interval '1 minute',
+	(i % 500) * 0.25, (i % 64) * 0.5, 'tag' || i % 9, 1 + i % 50, CASE WHEN i % 10 < 3 THEN NULL ELSE i * 13 % 1000 END FROM generate_series(1, 12000) i;
+INSERT INTO events SELECT 20000 + i, 401, DATE '2026-03-01' + i, NULL, timestamptz '2026-03-01' + i * interval '1 hour', 1, 1, 'small', i, i FROM generate_series(1, 3) i;
+CREATE INDEX events_s ON events USING sift_col (id, entity_id, event_date, deleted_at, updated_at, amount, score, tag, qty, spare)
+	WITH (scope = 'parent_id: entity_id -> entity_parents(entity_id, parent_id)', track_changes = 'ctid');
+VACUUM ANALYZE events;
+VACUUM ANALYZE entity_parents;
+SELECT sift._test_index_format('events_s') AS format_major;
+
+CREATE FUNCTION probe(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; plan text := ''; read text := '-'; scans int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		plan := plan || l;
+		IF l LIKE '%Scope Read: %' THEN read := split_part(trim(substr(l, position('Scope Read: ' in l) + 12)), ' (', 1); END IF;
+		IF l ~ 'Seq Scan|Bitmap Heap Scan' AND l NOT LIKE '%never executed%' THEN scans := scans + 1; END IF;
+	END LOOP;
+	RETURN (CASE WHEN plan LIKE '%SiftAggV6Scope%' THEN 'node ' ELSE 'normal ' END) || read || ' ' || scans;
+END $$;
+
+CREATE FUNCTION topk_check(parent int, filt text, ord text, dir text, lim int) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	q text; a text; b text; bad int; seen text;
+	cols text := 'e.id, e.entity_id, e.event_date, e.updated_at, e.amount, e.score, e.tag, e.qty, e.spare';
+	joined text := format('FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = %s %s', parent, filt);
+BEGIN
+	q := format('SELECT %s %s ORDER BY e.%I %s LIMIT %s', cols, joined, ord, dir, lim);
+	SET LOCAL sift.enable_agg = on;
+	seen := probe(q);
+	EXECUTE format('SELECT coalesce(string_agg(coalesce(to_jsonb(r) ->> %L, ''~''), '',''), '''') FROM (%s) r', ord, q) INTO a;
+	EXECUTE format('SELECT count(*) FROM (%s) r WHERE NOT EXISTS (SELECT 1 %s AND e.id = r.id AND (e.entity_id, e.event_date, e.updated_at, e.amount, e.score, e.tag, e.qty, e.spare)
+		IS NOT DISTINCT FROM (r.entity_id, r.event_date, r.updated_at, r.amount, r.score, r.tag, r.qty, r.spare))', q, joined) INTO bad;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(string_agg(coalesce(to_jsonb(r) ->> %L, ''~''), '',''), '''') FROM (%s) r', ord, q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	RETURN (CASE WHEN a IS DISTINCT FROM b OR bad > 0 THEN 'DIFFERENT' ELSE 'same' END) || ' ' || seen;
+END $$;
+
+CREATE FUNCTION topk_matrix(parents int[], ords text[]) RETURNS TABLE (ord text, dir text, filt text, result text, statements bigint) LANGUAGE sql AS $$
+	SELECT o, d, f, topk_check(p, f, o, d, l), count(*)
+	FROM unnest(parents) p, unnest(ords) o, unnest(ARRAY['DESC', 'DESC NULLS LAST']) d, unnest(ARRAY['', 'AND e.deleted_at IS NULL']) f, unnest(ARRAY[1, 20, 300]) l
+	GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4
+$$;
+
+-- 1. A clean index: the keys with many rows, a key with fewer rows than the limit, a key with one entity, and a key that is not there; the order leaves of the rings (the time leaf, two
+-- more, one that can be NULL), and a float8 leaf that has none
+SELECT * FROM topk_matrix(ARRAY[1, 2, 5, 6, 99], ARRAY['updated_at', 'event_date', 'id', 'qty', 'spare']);
+
+-- 2. Rows deleted: the summary counts what the heap shows the snapshot only after VACUUM has taken them out of the deletion vectors; the ring skips what the vectors hold
+DELETE FROM events WHERE id % 211 = 0;
+SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
+VACUUM events;
+SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
+DELETE FROM events WHERE id > 11900 OR entity_id IN (5, 10, 15, 20);
+VACUUM events;
+SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
+
+-- 2b. Order leaves that changed and rows added
+UPDATE events SET updated_at = timestamptz '2026-06-01' + id * interval '1 second' WHERE id % 307 = 1;
+UPDATE events SET spare = NULL WHERE id % 313 = 2;
+INSERT INTO events SELECT 30000 + i, 1 + i % 400, DATE '2026-07-01', NULL, timestamptz '2026-07-01' + i * interval '1 minute', 1, 1, 'late', 99, i FROM generate_series(1, 40) i;
+SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
+VACUUM events;
+SELECT * FROM topk_matrix(ARRAY[1, 2, 6], ARRAY['updated_at', 'event_date', 'spare']);
+
+-- 3. A change of the pairs
+INSERT INTO entity_parents VALUES (1, 6), (2, 6);
+DELETE FROM entity_parents WHERE entity_id = 7;
+SELECT * FROM topk_matrix(ARRAY[1, 6], ARRAY['updated_at', 'spare']);
+VACUUM events;
+SELECT * FROM topk_matrix(ARRAY[1, 6], ARRAY['updated_at', 'spare']);
+
+-- 4. The rows of this transaction, and a rollback
+BEGIN;
+INSERT INTO events SELECT 40000 + i, 1 + i % 400, DATE '2026-08-01', NULL, timestamptz '2026-08-01' + i * interval '1 minute', 1, 1, 'tx', 99, i FROM generate_series(1, 30) i;
+SELECT * FROM topk_matrix(ARRAY[1], ARRAY['updated_at', 'spare']);
+ROLLBACK;
+SELECT * FROM topk_matrix(ARRAY[1], ARRAY['updated_at', 'spare']);
+
+-- 5. The statements the ring does not serve keep the join: another order, an offset, a second order leaf, an expression, a filter on another leaf, a column of the pairs, a limit that is not a constant
+-- or past the bound, ties, and a left join the qual makes an inner join
+SELECT probe(q) || ' ' || q FROM unnest(ARRAY[
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5 OFFSET 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC, e.id DESC LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at + interval ''1 day'' DESC LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 AND e.qty = 3 ORDER BY e.updated_at DESC LIMIT 5',
+	'SELECT e.id, ep.parent_id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5000',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC FETCH FIRST 5 ROWS WITH TIES',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id ORDER BY e.updated_at DESC LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e LEFT JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5',
+	'SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT (SELECT 5)',
+	'SELECT DISTINCT e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 ORDER BY e.updated_at DESC LIMIT 5'
+]) q;
+
+PREPARE topk_p(int, int) AS SELECT e.id, e.updated_at FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = $1 ORDER BY e.updated_at DESC LIMIT $2;
+SET plan_cache_mode = force_generic_plan;
+SELECT probe('EXECUTE topk_p(1, 5)');
+SET plan_cache_mode = force_custom_plan;
+SELECT probe('EXECUTE topk_p(1, 5)');
+RESET plan_cache_mode;
+DEALLOCATE topk_p;
+
+-- 6. Every column type of the rows, a NOT NULL leaf the statement orders with the NULLs first, and a limit of one
+CREATE TABLE events_t (id int PRIMARY KEY, entity_id int NOT NULL, ts timestamptz NOT NULL, flag bool, f4 float4, f8 float8, d date, label varchar(20), amt numeric(10,3), big bigint, small smallint)
+	WITH (autovacuum_enabled = false);
+INSERT INTO events_t SELECT i, 1 + i % 400, timestamptz '2026-01-01' + i * interval '1 minute', CASE WHEN i % 5 = 0 THEN NULL ELSE i % 2 = 0 END, CASE WHEN i % 7 = 0 THEN NULL ELSE i * 0.25 END,
+	i * 0.125, DATE '2026-01-01' + i % 90, CASE WHEN i % 11 = 0 THEN NULL ELSE 'v' || i END, CASE WHEN i % 13 = 0 THEN NULL ELSE i * 0.001 END, i::bigint * 1000000000, i % 300 FROM generate_series(1, 6000) i;
+CREATE INDEX events_t_s ON events_t USING sift_col (id, entity_id, ts, flag, f4, f8, d, label, amt, big, small)
+	WITH (scope = 'parent_id: entity_id -> entity_parents(entity_id, parent_id)', track_changes = 'ctid');
+VACUUM ANALYZE events_t;
+CREATE FUNCTION typed_check(parent int, ord text, dir text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE q text; a text; b text; seen text;
+BEGIN
+	q := format('SELECT t.id, t.ts, t.flag, t.f4, t.f8, t.d, t.label, t.amt, t.big, t.small FROM events_t t JOIN entity_parents ep ON ep.entity_id = t.entity_id WHERE ep.parent_id = %s ORDER BY t.%I %s LIMIT 12', parent, ord, dir);
+	SET LOCAL sift.enable_agg = on;
+	seen := probe(q);
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (%s) r', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (%s) r', q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || seen;
+END $$;
+SELECT ord, dir, typed_check(2, ord, dir) FROM unnest(ARRAY['ts', 'id', 'big']) ord, unnest(ARRAY['DESC', 'DESC NULLS LAST']) dir ORDER BY 1, 2;
+
+DROP FUNCTION typed_check(int, text, text);
+DROP TABLE events_t;
+DROP FUNCTION probe(text), topk_check(int, text, text, text, int), topk_matrix(int[], text[]);
+DROP TABLE events;
+DROP TABLE entity_parents;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

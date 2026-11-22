@@ -55,6 +55,12 @@ extern void sift_agg_rerun_init(void);
 extern PlannedStmt *sift_replan_text(QueryDesc *qd);
 extern void sift_executor_start(QueryDesc *queryDesc, int eflags);
 
+/* An arm of a statement that reads an index of format major 2 after another arm that reads the same index costs this share of its own: the arms of a cohort of SiftV6Fuse scan once */
+#define V6_FUSED_ARM_FACTOR	0.25
+
+/* A SiftAgg or SiftAggRows node, or a node of the operators of SiftAggV6: it holds the table it reads */
+extern bool sift_is_any_agg_scan(const Plan *plan);
+
 typedef struct ScanArms
 {
 	double		total;
@@ -62,6 +68,7 @@ typedef struct ScanArms
 	double		vet;			/* of total, what the arms pay to check the heap for the pages that are not all-visible */
 	double		vet_pct;		/* and the largest share of the pages that are not */
 	int			n;
+	List	   *v6_indexes;		/* the indexes of format major 2 the arms seen read */
 } ScanArms;
 extern void sift_agg_arms(Plan *plan, ScanArms *a);
 extern void sift_agg_arms_list(List *plans, ScanArms *a);

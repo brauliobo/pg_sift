@@ -140,8 +140,8 @@ SET hash_mem_multiplier = 1;
 SELECT digest(q) = d AS same, passes(q) BETWEEN 2 AND 8 AS a_few_passes
 FROM qs JOIN want USING (name) WHERE name = 'direct arrays';
 -- the passes are read as the groups are asked for: a LIMIT stops before the last one, and the rows are groups of the table
-SELECT passes('SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b LIMIT 5') < passes('SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b') AS stops_early,
-       (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMIT 5) l) AS rows_limited,
+SELECT passes('SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b LIMIT 5') < passes('SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b') AS stops_early;
+SELECT (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMIT 5) l) AS rows_limited,
        (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMIT 5) l JOIN (SELECT a, b, count(*) n FROM dk GROUP BY a, b) g USING (a, b, n)) AS rows_in_the_table;
 RESET work_mem;
 RESET hash_mem_multiplier;

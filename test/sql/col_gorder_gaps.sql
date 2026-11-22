@@ -34,7 +34,7 @@ DROP INDEX gg_old;
 CREATE FUNCTION gg_ids(w text, o text, via_sift boolean) RETURNS bigint[] LANGUAGE plpgsql AS $$
 DECLARE r bigint[];
 BEGIN
-	PERFORM set_config('sift.enable_col_scan', via_sift::text, true), set_config('sift.enable_topn', via_sift::text, true), set_config('enable_seqscan', (NOT via_sift)::text, true),
+	PERFORM set_config('sift.enable_col_scan', via_sift::text, true), set_config('sift.enable_agg', via_sift::text, true), set_config('enable_seqscan', (NOT via_sift)::text, true),
 			set_config('enable_indexscan', via_sift::text, true), set_config('enable_bitmapscan', via_sift::text, true), set_config('enable_indexonlyscan', via_sift::text, true);
 	EXECUTE format('SELECT coalesce(array_agg(id), ''{}'') FROM (SELECT id FROM gg WHERE %s %s) z', w, o) INTO r;
 	RETURN r;

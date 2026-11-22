@@ -99,16 +99,16 @@ SELECT sift.projection_index('pev_again', ARRAY['pnarrow'], '{\"track_changes\":
 # tables and columns renamed after the indexes were built (lib_names.bash; 5.0's): their files come through pg_upgrade with the leaves named as they were written
 NAMESSQL=
 [[ -n $OLD_REF ]] || NAMESSQL=$NAMES_SETUP
-# two indexes of one table that share the value vstores of their string columns (5.0's; the sharing is forced: the table is small)
+# a scope with a text key (5.0's): the relation that holds the codes of its keys, with its own access method, and the index that depends on it
 VSSQL=
-[[ -n $OLD_REF ]] || VSSQL="SET sift.test_vstore_columns = 'uid,url';
-CREATE TABLE vs (id int PRIMARY KEY, uid uuid, url text) WITH (autovacuum_enabled = false);
-INSERT INTO vs SELECT g, md5((g % 700)::text)::uuid, 'https://example.com/' || md5((g % 900)::text) FROM generate_series(1, 6000) g;
+[[ -n $OLD_REF ]] || VSSQL="CREATE TABLE vs_pairs (dim int NOT NULL, tenant text NOT NULL, PRIMARY KEY (dim, tenant)) WITH (autovacuum_enabled = false);
+INSERT INTO vs_pairs SELECT g, 'tenant-' || (g % 9) FROM generate_series(1, 300) g;
+CREATE INDEX vs_pairs_j ON vs_pairs USING sift_col (dim, tenant) WITH (track_changes = 'ctid');
+CREATE TABLE vs (id int PRIMARY KEY, dim int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO vs SELECT g, 1 + g % 320, g % 100 FROM generate_series(1, 6000) g;
 ANALYZE vs;
-CREATE INDEX vs_a ON vs USING sift_col (id, uid, url);
-CREATE INDEX vs_b ON vs USING sift_col (uid, id, url) $TSC;
-RESET sift.test_vstore_columns;
-CREATE FUNCTION vsq() RETURNS text LANGUAGE sql RETURN (SELECT count(*) || ':' || md5(string_agg(g::text, ',' ORDER BY g)) FROM (SELECT count(*) || '/' || url || '/' || count(DISTINCT uid) AS g FROM vs WHERE id % 3 = 0 GROUP BY url) z);
+CREATE INDEX vs_a ON vs USING sift_col (id, dim, amount) WITH (scope = 'tenant: dim -> vs_pairs(dim, tenant)');
+CREATE FUNCTION vsq() RETURNS text LANGUAGE sql RETURN (SELECT count(*) || ':' || sum(amount) FROM vs WHERE dim IN (SELECT dim FROM vs_pairs WHERE tenant = 'tenant-3'));
 CREATE FUNCTION vsq_on() RETURNS text LANGUAGE sql SET sift.enable_agg = on SET cpu_tuple_cost = 0.5 RETURN vsq();
 CREATE FUNCTION vsq_off() RETURNS text LANGUAGE sql SET sift.enable_agg = off RETURN vsq();"
 # the objects: the three access methods, the types of the wide leaves and JSON paths, open write buffers and promoted segments, a tablespace
@@ -304,19 +304,19 @@ if [[ -z $OLD_REF ]]; then
 		-a "$(q new postgres "$NAMES_ANSWERS" | cut -d'|' -f1)" == t
 else skip 3 "an index of a release has no renamed workload"; fi
 
-# the value vstores: relations with their own access method, restored by pg_upgrade with their files, and the dependencies of the indexes on them
+# the scope key store: a relation with its own access method, restored by pg_upgrade with its files, and the dependency of the index on it
+stores() { echo "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_values'"; }
 if [[ -z $OLD_REF ]]; then
-	check "the two shared vstores came through pg_upgrade, each with its two peers" test "$(q new postgres "SELECT string_agg(column_name || '=' || indexes_using, ',' ORDER BY column_name) FROM sift.col_value_store_status")" == "uid=2,url=2"
-	check "the peers answer as the normal plan and verify" test "$(q new postgres "SELECT vsq_on() = vsq_off()")" == t -a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('vs_a', true), sift.col_verify('vs_b', true)) v")" == 1
-	q new postgres "DROP INDEX vs_b" >/dev/null
-	check "a dropped member leaves the other whole and the vstores in place, the last one takes them along" test "$(q new postgres "SELECT vsq_on() = vsq_off()")$(q new postgres "SELECT count(*) FROM sift.col_value_store_status")" == t2 \
-		-a "$(q new postgres "DROP INDEX vs_a" "SELECT count(*) FROM sift.col_value_store_status" | tail -n 1)" == 0
-else skip 3 "a release has no value vstores"; fi
-# a new pair of indexes of the upgraded cluster shares the strings
-q new postgres "SET sift.test_vstore_columns = 'uid,url'" "CREATE TABLE vs2 (id int PRIMARY KEY, uid uuid, url text)" "INSERT INTO vs2 SELECT g, md5((g % 70)::text)::uuid, 'https://example.com/' || md5((g % 90)::text) FROM generate_series(1, 3000) g" \
-	"ANALYZE vs2" "CREATE INDEX vs2_a ON vs2 USING sift_col (id, uid, url)" "CREATE INDEX vs2_b ON vs2 USING sift_col (uid, id, url)" >/dev/null
-check "indexes built after the upgrade share their strings and answer as the normal plan" test "$(q new postgres "SELECT string_agg(column_name || '=' || indexes_using, ',' ORDER BY column_name) FROM sift.col_value_store_status WHERE table_name = 'vs2'::regclass")" == "uid=2,url=2" \
-	-a "$(q new postgres "SELECT count(*) || ':' || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")" == "$(q new postgres "SET sift.enable_agg = off" "SELECT count(*) || ':' || sum(id) FROM vs2 WHERE url = 'https://example.com/' || md5('5')")"
+	check "the scope key store came through pg_upgrade" test "$(q new postgres "$(stores)")" == 1
+	check "its index answers as the normal plan and verifies" test "$(q new postgres "SELECT vsq_on() = vsq_off()")" == t -a "$(q new postgres "SELECT count(*) FROM (SELECT sift.col_verify('vs_a', true)) v")" == 1
+	check "the last index that uses the store takes it along" test "$(q new postgres "DROP INDEX vs_a" "$(stores)" | tail -n 1)" == 0
+else skip 3 "a release has no scope key store"; fi
+# a scope index of the upgraded cluster makes its store
+q new postgres "CREATE TABLE vs2_pairs (dim int NOT NULL, tenant text NOT NULL, PRIMARY KEY (dim, tenant))" "INSERT INTO vs2_pairs SELECT g, 'tenant-' || (g % 7) FROM generate_series(1, 200) g" \
+	"CREATE INDEX vs2_pairs_j ON vs2_pairs USING sift_col (dim, tenant) WITH (track_changes = 'ctid')" "CREATE TABLE vs2 (id int PRIMARY KEY, dim int, amount int)" "INSERT INTO vs2 SELECT g, 1 + g % 210, g % 100 FROM generate_series(1, 3000) g" \
+	"ANALYZE vs2" "CREATE INDEX vs2_a ON vs2 USING sift_col (id, dim, amount) WITH (scope = 'tenant: dim -> vs2_pairs(dim, tenant)')" >/dev/null
+check "a scope index built after the upgrade makes its store and answers as the normal plan" test "$(q new postgres "$(stores)")" == 1 \
+	-a "$(q new postgres "SELECT count(*) || ':' || sum(amount) FROM vs2 WHERE dim IN (SELECT dim FROM vs2_pairs WHERE tenant = 'tenant-3')")" == "$(q new postgres "SET sift.enable_agg = off" "SELECT count(*) || ':' || sum(amount) FROM vs2 WHERE dim IN (SELECT dim FROM vs2_pairs WHERE tenant = 'tenant-3')")"
 # the scope of two paths: the option and the edges to the three btrees and the three journals came with the dump, the reads are the join, the logs of the journals are not complete (their triggers are made
 # again, as for the connected pair) so nothing is vouched until the journals and then the scope index are rebuilt, and after that the units are read again
 if [[ -z $OLD_REF ]]; then

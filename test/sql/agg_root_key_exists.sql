@@ -9,7 +9,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET sift.agg_force = on;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 
 -- 24 shapes of a document: objects with k (a number, a JSON null, an object, an array, a string, a boolean, a JSON null beside another key), objects without it, arrays that hold the
 -- string and arrays that do not, strings that equal the key and strings that do not, a number, a boolean, a JSON null, an empty object, an empty array and a key of another case

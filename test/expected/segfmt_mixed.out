@@ -16,11 +16,19 @@ SET sift.grouped_min_df = 200;
 CREATE TABLE t2 AS SELECT * FROM src ORDER BY id;
 CREATE TABLE t3 AS SELECT * FROM src ORDER BY id;
 SET sift.test_segfmt = 2;
+SET client_min_messages = warning;
 CREATE INDEX t2_idx ON t2 USING sift (body);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX t2_off ON t2 USING sift (body) WITH (positions = off);
+RESET client_min_messages;
 SET sift.test_segfmt = 3;
+SET client_min_messages = warning;
 CREATE INDEX t3_idx ON t3 USING sift (body);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX t3_off ON t3 USING sift (body) WITH (positions = off);
+RESET client_min_messages;
 SELECT 't2_idx' AS idx, gen > 0 AS built, format FROM sift._test_segment_formats('t2_idx') WHERE kind = 'immutable'
 UNION ALL SELECT 't3_idx', gen > 0, format FROM sift._test_segment_formats('t3_idx') WHERE kind = 'immutable'
 UNION ALL SELECT 't2_idx metapage minor', true, format FROM sift._test_segment_formats('t2_idx') WHERE kind = 'metapage minor'
@@ -69,7 +77,7 @@ DECLARE
 	i int;
 BEGIN
 	PERFORM set_config('enable_indexscan', CASE WHEN heap THEN 'off' ELSE 'on' END, true), set_config('enable_bitmapscan', CASE WHEN heap THEN 'off' ELSE 'on' END, true),
-		set_config('sift.enable_scan', CASE WHEN heap THEN 'off' ELSE 'on' END, true), set_config('sift.enable_count', CASE WHEN heap THEN 'off' ELSE 'on' END, true);
+		set_config('sift.enable_scan', CASE WHEN heap THEN 'off' ELSE 'on' END, true);
 	FOR i IN 1..array_length(qs, 1) LOOP
 		q := qs[i];
 		EXECUTE format('SELECT count(*), coalesce(md5(string_agg(id::text, '','' ORDER BY id)), '''') FROM %s WHERE body @@> %L', tbl, qs[i]) INTO n, h;
@@ -138,7 +146,9 @@ DROP TABLE wd, wd2;
 -- mixed: format 2 for the first half, format 3 for the second (a promoted write buffer), then deletes, VACUUM and a merge
 CREATE TABLE tm AS SELECT * FROM src WHERE id <= 15000 ORDER BY id;
 SET sift.test_segfmt = 2;
+SET client_min_messages = warning;
 CREATE INDEX tm_idx ON tm USING sift (body) WITH (vacuum_segments = 8, dead_rewrite_pct = 100);
+RESET client_min_messages;
 SET sift.test_segfmt = 3;
 SET sift.async_maintenance = off;
 INSERT INTO tm SELECT * FROM src WHERE id > 15000 ORDER BY id;

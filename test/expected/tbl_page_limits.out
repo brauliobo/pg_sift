@@ -28,7 +28,6 @@ SELECT count(*), min(id), max(id) FROM tomb;
 (1 row)
 
 -- the largest write buffer: 1024 pages of 8 kB, the page count of its header at the limit
-SET sift.table_write_buffer_limit = 8192;
 CREATE TABLE wide (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
 INSERT INTO wide SELECT g, repeat('x', 1000) || g FROM generate_series(1, 12000) g;
 SELECT count(*), sum(length(v)) FROM wide;

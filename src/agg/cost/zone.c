@@ -16,7 +16,7 @@
 #include "access/htup_details.h"
 
 #include "agg/agg.h"
-#include "col/point.h"
+#include "col/v1/point.h"
 #include "agg/cost/int.h"
 
 /*
@@ -96,8 +96,8 @@ zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
 
 /*
  * The share of the units the point directory of a leaf leaves for a list of `keys` of its nd distinct values: the rows it lists (keys x the rows of a key)
- * lie in the units like balls in bins, a unit with one is read (and narrowed to those rows, col/scan/scan.c), and one without is not. A list the directory does not
- * answer (col/point.h: too many keys or rows) or a leaf without one keeps every unit. SiftColSource asks the directory of each segment; the units of one
+ * lie in the units like balls in bins, a unit with one is read (and narrowed to those rows, col/v1/scan/scan.c), and one without is not. A list the directory does not
+ * answer (col/v1/point.h: too many keys or rows) or a leaf without one keeps every unit. SiftColSource asks the directory of each segment; the units of one
  * that has none stay, as the share of the units that have one says (point_cover).
  */
 static double
@@ -317,7 +317,7 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 	AttrNumber *seen;
 	double	   *seen_f;
 
-	if (!sift_agg_join_filter || s->topn || sift_agg_param_set_size <= 0)
+	if (!sift_agg_join_filter || s->topn)
 		return f;
 	seen = palloc(list_length(c->joins) * sizeof(AttrNumber));
 	seen_f = palloc(list_length(c->joins) * sizeof(double));
@@ -403,7 +403,7 @@ pred_zone_kept(AggCtx *c, const SiftAggPred *p)
 }
 
 /*
- * The share of the units the small-set summaries of the leaves the conjuncts test leave (col/setsum.h): an equality or IN on the share s of the leaf's
+ * The share of the units the small-set summaries of the leaves the conjuncts test leave (col/v1/setsum.h): an equality or IN on the share s of the leaf's
  * distinct values (p->sel for an integer leaf, nvals / ndistinct for a text one) keeps a unit that holds n of them with the probability
  * 1 - (1 - n / distinct) ^ (s * distinct), about 1 - exp(-s * n); a unit without a summary stays. A summary that keeps nearly every unit is not counted:
  * the scan reads it for nothing then, as for a leaf that has none.

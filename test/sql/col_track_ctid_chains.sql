@@ -6,6 +6,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
 CREATE TABLE chains (id int NOT NULL, g int NOT NULL, w int NOT NULL, pad text NOT NULL) WITH (autovacuum_enabled = false, fillfactor = 60);
 CREATE UNIQUE INDEX chains_id ON chains (id);
 INSERT INTO chains SELECT i, i % 10, i, 'x' FROM generate_series(1, 30000) i;

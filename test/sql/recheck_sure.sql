@@ -19,7 +19,7 @@ BEGIN
 	RETURN n;
 END $$;
 CREATE FUNCTION via_rows(q text) RETURNS bigint LANGUAGE plpgsql
-	SET sift.enable_count = off SET enable_bitmapscan = off AS $$
+	SET sift.enable_scan = off SET enable_bitmapscan = off AS $$
 DECLARE
 	n bigint;
 BEGIN
@@ -27,7 +27,7 @@ BEGIN
 	RETURN n;
 END $$;
 CREATE FUNCTION via_bitmap(q text) RETURNS bigint LANGUAGE plpgsql
-	SET sift.enable_count = off SET sift.enable_scan = off SET enable_seqscan = off SET enable_indexscan = off AS $$
+	SET sift.enable_scan = off SET enable_seqscan = off SET enable_indexscan = off AS $$
 DECLARE
 	n bigint;
 BEGIN
@@ -35,7 +35,7 @@ BEGIN
 	RETURN n;
 END $$;
 CREATE FUNCTION via_seq(q text) RETURNS bigint LANGUAGE sql
-	SET sift.enable_count = off SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off
+	SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off
 	RETURN (SELECT count(*) FROM s WHERE body @@> q);
 
 -- documents the SiftCount node reads and rechecks

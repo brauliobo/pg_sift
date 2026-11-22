@@ -10,7 +10,7 @@ BEGIN
 	RETURN coalesce(r, '-');
 END $$;
 CREATE FUNCTION seq_ids(tbl regclass, q text) RETURNS text LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
 DECLARE r text;
 BEGIN
 	EXECUTE format('SELECT string_agg(id::text, '','' ORDER BY id) FROM %s WHERE body @@> %L', tbl, q) INTO r;
@@ -47,7 +47,9 @@ INSERT INTO h SELECT 1, string_agg('tok' || (g % 70000), ' ') FROM generate_seri
 INSERT INTO h SELECT 2, repeat('a', 2000000);
 INSERT INTO h SELECT 3, repeat('word ', 300000);
 INSERT INTO h VALUES (4, 'tok5 small');
+SET client_min_messages = warning;
 CREATE INDEX h_idx ON h USING sift (body);
+RESET client_min_messages;
 SELECT sift.verify('h_idx', true);
 SELECT agree('h', 'tok5'), agree('h', 'tok69999'), agree('h', 'word'), agree('h', 'tok5 AND word');
 

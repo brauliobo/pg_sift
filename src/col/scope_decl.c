@@ -3,7 +3,7 @@
  *
  *     scope = 'key_name: fk -> [schema.]relation(member, scope_key); ...'
  *
- * The text is the record of the declaration, as for connect (col/conn_decl.c): it is in pg_class.reloptions, so pg_dump writes it and a restore or REINDEX resolves it again.
+ * The text is the record of the declaration, as for connect (col/v1/conn_decl.c): it is in pg_class.reloptions, so pg_dump writes it and a restore or REINDEX resolves it again.
  * Resolving finds the btree of the scope relation on exactly (member, scope_key) and makes the index depend on it.
  */
 #include "postgres.h"
@@ -38,7 +38,7 @@
 
 #include "col/am.h"
 #include "col/scope.h"
-#include "col/vstore/vstore.h"
+#include "col/keystore/keystore.h"
 #include "core/ring.h"
 #include "core/restrict.h"
 
@@ -63,6 +63,9 @@ relation_column(Relation rel, const SiftScopeSpec *s, const SiftScopeRel *r, con
 	if (att == InvalidAttrNumber)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("scope \"%s\": relation \"%s\" has no column \"%s\"", s->key_name, r->name, name)));
 	a = TupleDescAttr(RelationGetDescr(rel), att - 1);
+	if (sift_attr_is_virtual(a))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" is a virtual generated column", s->key_name, name, r->name),
+						errhint("A virtual column stores nothing for the scope to read: name a stored column.")));
 	why = sift_keymap_column_refusal(a->atttypid, a->attcollation);
 	if (why != NULL)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": column \"%s\" of \"%s\" %s", s->key_name, name, r->name, why),
@@ -381,10 +384,55 @@ recorded_btree(Oid index, Relation rel, AttrNumber member, AttrNumber key)
 	return btree;
 }
 
+Oid
+sift_scope_fact_oid(Relation owner)
+{
+	return owner->rd_index != NULL ? owner->rd_index->indrelid : RelationGetRelid(owner);
+}
+
+/*
+ * The btree of the pairs of a scope of a sift_table. Nothing records it (dropping the btree of a relation the table reads must not drop the table), so only a btree whose rows are the pairs whichever
+ * it is can be taken: a valid immediate unique one without a predicate, the named one when the declaration names one. The relation is left open in *rel when there is one; else nothing is.
+ */
+static Oid
+table_pairs_btree(Relation fact, const SiftScopeSpec *s, Relation *rel, AttrNumber *a, AttrNumber *b)
+{
+	Oid			roid = sift_conn_relation_oid(RelationGetRelid(fact), s->rel.schema, s->rel.name, AccessShareLock, true);
+	Oid			btree = InvalidOid;
+
+	*rel = NULL;
+	if (!OidIsValid(roid) || roid == RelationGetRelid(fact))
+		return InvalidOid;
+	*rel = table_open(roid, NoLock);
+	*a = get_attnum(roid, s->rel.a);
+	*b = get_attnum(roid, s->rel.b);
+	if ((*rel)->rd_rel->relkind == RELKIND_RELATION && (*rel)->rd_rel->relam == HEAP_TABLE_AM_OID && *a > 0 && *b > 0 && *a != *b &&
+		TupleDescAttr((*rel)->rd_att, *a - 1)->attnotnull && TupleDescAttr((*rel)->rd_att, *b - 1)->attnotnull)
+		foreach_oid(ioid, RelationGetIndexList(*rel))
+		{
+			Relation	idx = index_open(ioid, AccessShareLock);
+			bool		plain = is_pair_btree(idx, *a, *b) && idx->rd_index->indisunique && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+				(s->rel.index_name == NULL || strcmp(RelationGetRelationName(idx), s->rel.index_name) == 0);
+
+			index_close(idx, AccessShareLock);
+			if (plain)
+			{
+				btree = ioid;
+				break;
+			}
+		}
+	if (!OidIsValid(btree))
+	{
+		table_close(*rel, NoLock);
+		*rel = NULL;
+	}
+	return btree;
+}
+
 /*
  * The checks of one relation of a scope (path 0: the pairs; 1, 2: the joined path and the members of its via column) and the btree of it that defines its rows: the one the index
  * records (its dependency), never one chosen again by the rule: a btree made or rebuilt after the scope segments were written must not change which rows are pairs under them.
- * CREATE INDEX and REINDEX record it (sift_scope_resolve). The relation is left open in *rel.
+ * CREATE INDEX and REINDEX record it (sift_scope_resolve). The relation is left open in *rel. A sift_table has no record: table_pairs_btree.
  */
 static Oid
 path_index(Relation heap, Relation index, const SiftScopeSpec *s, int path, Relation *rel, AttrNumber *a, AttrNumber *b)
@@ -392,6 +440,11 @@ path_index(Relation heap, Relation index, const SiftScopeSpec *s, int path, Rela
 	const SiftScopeRel *r = decl_rel(s, path);
 	Oid			btree;
 
+	if (index->rd_index == NULL)
+	{
+		*rel = NULL;
+		return path == 0 ? table_pairs_btree(heap, s, rel, a, b) : InvalidOid;
+	}
 	if (path == 0)
 		sift_scope_relation(heap, index, s, rel, a, b);
 	else
@@ -650,9 +703,9 @@ sift_scope_resolve(Relation heap, Relation index, bool sticky, SiftJournalMake m
 				check_predicate(s, rel[h], btree[h]);
 			keep = list_append_unique_oid(keep, btree[h]);
 		}
-		/* the codes of a text or uuid scope key are those of the value store of its column: the index depends on it */
+		/* the codes of a text or uuid scope key are those of the scope key store of its column: the index depends on it */
 		if (sift_keymap_type(get_atttype(RelationGetRelid(rel[0]), att[0][1])))
-			(void) sift_vstore_ensure(rel[0], index, att[0][1]);
+			(void) sift_keystore_ensure(rel[0], index, att[0][1]);
 		/* a scope needs its journal, a scope of two paths the three of its relations */
 		if (npath == 1 && OidIsValid(journal = require_journal(s, rel[0], att[0][0], att[0][1], btree[0], make)))
 			keep = list_append_unique_oid(keep, journal);
@@ -763,6 +816,9 @@ sift_scope_leaves(Relation index, SiftColDef *defs, int n, int *leaf, int *nscop
 		n++;
 		(*nscope)++;
 	}
+	if (*nscope > 0 && n > SIFT_COL_MAX_COLS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("an index with a scope holds at most %d columns", SIFT_COL_MAX_COLS),
+						errhint("Leave out the columns the queries do not read, or create several indexes.")));
 	time = sift_scope_time_leaf(defs, first);
 	for (int c = 0; c < *nscope; c++)
 		scope_kept(index, specs->s[c], leaf[c], time, defs, n, kept[c]);
@@ -808,6 +864,16 @@ sift_scope_pairs_multiset(Relation index, const SiftScopeSpec *s)
 	/* the pairs of a scope of two paths are defined as the distinct union: a read for each pair is exact whatever the relations hold */
 	if (s->joined != NULL)
 		return false;
+	if (index->rd_index == NULL)
+	{
+		AttrNumber	a,
+					b;
+
+		btree = table_pairs_btree(index, s, &rel, &a, &b);
+		if (rel != NULL)
+			table_close(rel, NoLock);
+		return !OidIsValid(btree);
+	}
 	relid = sift_conn_relation_oid(index->rd_index->indrelid, s->rel.schema, s->rel.name, AccessShareLock, false);
 	rel = table_open(relid, NoLock);
 	btree = recorded_btree(RelationGetRelid(index), rel, get_attnum(relid, s->rel.a), get_attnum(relid, s->rel.b));
@@ -819,7 +885,7 @@ int
 sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 {
 	SiftScopeSpecs *specs = sift_scope_specs(index);
-	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	Relation	heap = table_open(sift_scope_fact_oid(index), AccessShareLock);
 	const SiftScopeSpec *s;
 	Relation	rel,
 				via;
@@ -827,7 +893,17 @@ sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 
 	Assert(specs != NULL && scope >= 0 && scope < specs->n);
 	s = specs->s[scope];
+	if (index->rd_index == NULL && s->joined != NULL)
+	{
+		table_close(heap, NoLock);
+		return 0;
+	}
 	l->btree = sift_scope_relation_index(heap, index, s, &rel, &l->member, &l->key);
+	if (!OidIsValid(l->btree))
+	{
+		table_close(heap, NoLock);
+		return 0;
+	}
 	l->rel = RelationGetRelid(rel);
 	l->pred = sift_scope_index_predicate(l->btree);
 	l->via_rel = InvalidOid;
@@ -846,34 +922,4 @@ sift_scope_legs_find(Relation index, int scope, SiftScopeLeg legs[2])
 	}
 	table_close(heap, NoLock);
 	return s->joined != NULL ? 2 : 1;
-}
-
-/* Is the store the value store of the key column of a scope of an index that depends on it: its codes are cut into scope segments, which no epoch may renumber (col/vstore/vstore_gc.c) */
-bool
-sift_scope_key_store_pinned(Oid store)
-{
-	Oid			heap = sift_vstore_table(store);
-
-	foreach_oid(ioid, sift_vstore_members(store))
-	{
-		Relation	idx = try_index_open(ioid, AccessShareLock);
-		SiftScopeSpecs *specs;
-
-		if (idx == NULL)
-			continue;
-		specs = sift_col_is_index(idx) ? sift_scope_specs(idx) : NULL;
-		for (int c = 0; specs != NULL && c < specs->n; c++)
-		{
-			const SiftScopeSpec *s = specs->s[c];
-			Oid			rel = sift_conn_relation_oid(idx->rd_index->indrelid, s->rel.schema, s->rel.name, NoLock, true);
-
-			if (rel == heap && sift_vstore_find_oid(heap, get_attnum(rel, s->rel.b)) == store)
-			{
-				index_close(idx, AccessShareLock);
-				return true;
-			}
-		}
-		index_close(idx, AccessShareLock);
-	}
-	return false;
 }

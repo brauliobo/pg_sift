@@ -1,5 +1,5 @@
--- The open write buffer is promoted when the backends that read it have paid for it (maint_wbuf_read_due, col/maint/rewrite.c): each backend that reads the buffer decodes its rows
--- once (5,900 instructions a row) and the sum of the rows decoded, kept by the server for the generation of the buffer (col/wbuf/reads.c), is weighed against the promotion
+-- The open write buffer is promoted when the backends that read it have paid for it (maint_wbuf_read_due, col/v1/maint/rewrite.c): each backend that reads the buffer decodes its rows
+-- once (5,900 instructions a row) and the sum of the rows decoded, kept by the server for the generation of the buffer (core/reads.c), is weighed against the promotion
 -- (18,600 a row, once; a maintenance step counts at half). A buffer that is only written is never read and never promoted early; a buffer that is read twice by two backends is.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -96,7 +96,7 @@ SELECT * FROM wr_state('wo', 'wo_idx');
 -- with the worker on, the next backend that reads the buffer asks for its promotion: the buffer is sealed and promoted, and the new buffer has no reads
 \c -
 SET max_parallel_workers_per_gather = 0;
-SET sift.col_auto_merge = on;
+SET sift.async_maintenance = on;
 SET sift.async_maintenance = on;
 SELECT wr_agg('wr', true) = :'native' AS same_third;
  same_third 

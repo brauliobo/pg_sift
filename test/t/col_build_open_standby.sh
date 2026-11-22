@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The open units of a CREATE INDEX of a key_cut index with no room for the temporary files of the key ranges (col/build/open.c: every range of the key is an open unit, written as units as the table is read,
+# The open units of a CREATE INDEX of a key_cut index with no room for the temporary files of the key ranges (col/v1/build/open.c: every range of the key is an open unit, written as units as the table is read,
 # with no file) on a physical hot standby and under writers: the index verifies and answers as the heap on the standby; a CREATE INDEX CONCURRENTLY under inserts, updates and deletes gives an index that
 # matches the heap; a build that is cancelled, terminated or whose process dies leaves no temporary file and no index that reads wrong.
 . "$(dirname "$0")/lib.bash"

@@ -34,6 +34,8 @@ def sample(c, st, times):
     """one timed request: its milliseconds go to times, the container's CPU milliseconds of it to c.cpus"""
     times.append(c.run(st)[0])
     c.cpus.append(c.cpu_ms)
+    if c.server_ms is not None:
+        c.servers.append(c.server_ms)
 
 
 def one_container(lanes, stmts, clients, args, times):
@@ -135,6 +137,9 @@ def run_query(q, clients, args, rows):
     times = time_cell(live, stmts, clients, args)
     for e in live:
         rows.add(e, q.id, 'warm', 'latency_ms', 'ms', st=summary(times[e]))
+        if clients[e].servers:   # ClickHouse: the server's own time of the same runs
+            rows.add(e, q.id, 'warm', 'server_ms', 'ms', st=summary(clients[e].servers))
+            clients[e].servers.clear()
         rows.cost(clients[e], e, q.id, 'warm', stmts[e])
     log(f'{q.id}: ' + ' '.join(f'{e} {sorted(times[e])[len(times[e]) // 2]:.3g}' for e in live))
     return stop

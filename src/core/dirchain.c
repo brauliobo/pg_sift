@@ -70,7 +70,7 @@ check_chain_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 	if (!sift_page_layout_ok(page))
 		corrupt(index, "Block %u of the directory chain has an invalid page layout.", BufferGetBlockNumber(buf));
 	op = SiftPageGetOpaque(page);
-	if (op->type == type && op->gen == gen && op->flags == 0 && op->reserved == 0)
+	if (op->type == type && op->gen == gen && op->flags == 0 && op->part_id == 0)
 		return;
 	if (RecoveryInProgress())
 		ereport(ERROR,
@@ -323,13 +323,6 @@ typedef struct DirMemo
 
 static HTAB *memos;
 static MemoryContext memo_cx;
-static Size memo_held;
-
-static Size
-memo_bytes(void)
-{
-	return memo_held;
-}
 
 static DirMemo *
 memo_oldest_entry(void)
@@ -360,25 +353,36 @@ memo_drop(DirMemo *e)
 {
 	RelFileLocator rel = e->rel;
 
-	memo_held -= e->bytes;
 	pfree(e->data);
 	hash_search(memos, &rel, HASH_REMOVE, NULL);
 }
 
-static void
-memo_evict(void)
+static bool
+memo_evict_one(void)
 {
-	memo_drop(memo_oldest_entry());
+	DirMemo    *e = memo_oldest_entry();
+
+	if (e == NULL)
+		return false;
+	memo_drop(e);
+	return true;
 }
 
-static const SiftCacheKind memo_kind = {memo_bytes, memo_oldest, memo_evict};
+static void
+memo_evict_all(void)
+{
+	while (memo_evict_one())
+		;
+}
+
+static const SiftCacheKind memo_kind = {"core_dirchain", memo_oldest, memo_evict_one, memo_evict_all};
 
 static void
 memo_init(void)
 {
 	HASHCTL		ctl = {.keysize = sizeof(RelFileLocator),.entrysize = sizeof(DirMemo)};
 
-	memo_cx = AllocSetContextCreate(TopMemoryContext, "sift cache directories", ALLOCSET_DEFAULT_SIZES);
+	memo_cx = sift_cache_create_context("sift cache directories");
 	ctl.hcxt = memo_cx;
 	memos = hash_create("sift chained directories", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	sift_cache_register(&memo_kind);
@@ -425,7 +429,6 @@ memo_keep(Relation index, uint64 version, const SiftSegEntry *segs, int nsegs, c
 	e->chain.blocks = (BlockNumber *) at;
 	memcpy(at, chain->blocks, chain->nblocks * sizeof(BlockNumber));
 	e->chain.maxblocks = chain->nblocks;
-	memo_held += bytes;
 	return e;
 }
 

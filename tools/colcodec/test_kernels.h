@@ -186,7 +186,7 @@ test_strs(SiftRng *r, int scale)
 		sift_cc_encode_strs(&s, off, bytes, n, &pol, NULL);
 		blob = xalloc(s.len);
 		memcpy(blob, s.data, s.len);
-		sift_cc_decode_strs(CurrentMemoryContext, blob, s.len, n, &o2, &b2);
+		sift_cc_decode_strs(CurrentMemoryContext, blob, s.len, n, 0, 0, &o2, &b2);
 		CHECK(!memcmp(o2, off, 4 * (n + 1)) && !memcmp(b2, bytes, tot), "strs: round trip n=%u policy %s", n, policies[it % NPOL]);
 		free(off), free(bytes), free(blob);
 	}

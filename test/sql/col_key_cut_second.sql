@@ -1,4 +1,4 @@
--- key_cut by default also sorts the rows of a key by the first date or timestamp leaf of the index: a key with more rows than a unit is split by
+-- key_cut = 'key, date' sorts the rows of a key by the date leaf: a key with more rows than a unit is split by
 -- date and a window of dates skips the units outside it. Sums stay those of the table: exact for integers and numeric, within float rounding for float8.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -19,11 +19,10 @@ CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_hel
 CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
 
 -- chosen with the date as the second key; a key list of one column and the time leaf as the key are not extended
-CREATE INDEX kd_auto ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f);
+CREATE INDEX kd_auto ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'tenant_id, d');
 CREATE INDEX kd_key ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'tenant_id');
 CREATE INDEX kd_off ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'off');
 SELECT kopt('kd_auto'), kopt('kd_key'), kopt('kd_off');
-SELECT leaf, decision FROM sift.key_cut_decision('kd_auto');
 SELECT sift.col_verify('kd_auto', true);
 
 -- a window of dates reads fewer units of the index sorted by the date than of the one cut by the tenant alone

@@ -1,0 +1,122 @@
+-- EXT-12 and EXT-03 (PostgreSQL 18 and later: a generated column is VIRTUAL by default): an index never holds a virtual generated
+-- column (PostgreSQL refuses it, SQLSTATE 0A000); a table and an index beside virtual columns answer every query that reads them as the
+-- heap does, through sift_col, sift_table and the sift BM25 index; stored generated columns and expression indexes are indexed and
+-- written like other columns. parity() runs a query through the indexes and through the heap alone; same() runs two queries.
+
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET jit = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE FUNCTION parity(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	wrap text := 'SELECT count(*) || '':'' || coalesce(md5(string_agg(t::text, E''\n'' ORDER BY t::text)), ''-'') FROM (%s) t';
+	a text;
+	b text;
+BEGIN
+	EXECUTE format(wrap, q) INTO a;
+	PERFORM set_config('sift.enable_agg', 'off', true), set_config('sift.enable_col_scan', 'off', true),
+			set_config('enable_indexscan', 'off', true), set_config('enable_bitmapscan', 'off', true);
+	EXECUTE format(wrap, q) INTO b;
+	PERFORM set_config('sift.enable_agg', 'on', true), set_config('sift.enable_col_scan', 'on', true),
+			set_config('enable_indexscan', 'on', true), set_config('enable_bitmapscan', 'on', true);
+	RETURN a = b;
+END $$;
+CREATE FUNCTION same(qa text, qb text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+	wrap text := 'SELECT count(*) || '':'' || coalesce(md5(string_agg(t::text, E''\n'' ORDER BY t::text)), ''-'') FROM (%s) t';
+	a text;
+	b text;
+BEGIN
+	EXECUTE format(wrap, qa) INTO a;
+	EXECUTE format(wrap, qb) INTO b;
+	RETURN a = b;
+END $$;
+CREATE FUNCTION ddl_state(stmt text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE stmt;
+	RETURN 'created';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE;
+END $$;
+-- sift_col beside virtual and stored generated columns
+CREATE TABLE vg (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, code text NOT NULL,
+	v2 int GENERATED ALWAYS AS (a * 2) VIRTUAL,
+	s3 int GENERATED ALWAYS AS (a + b) STORED,
+	label text GENERATED ALWAYS AS (upper(code) || '-' || a::text) VIRTUAL);
+INSERT INTO vg (id, a, b, code) SELECT i, i % 50, i % 7, 'c' || i % 5 FROM generate_series(1, 4000) i;
+CREATE INDEX vg_col ON vg USING sift_col (id, a, b, s3, code);
+SELECT ddl_state('CREATE INDEX vg_virtual ON vg USING sift_col (id, v2)') AS virtual_key_is_refused;
+SELECT parity($q$SELECT a, count(*), sum(v2), count(DISTINCT label) FROM vg GROUP BY a$q$) AS virtual_aggregate;
+SELECT parity($q$SELECT b, count(*), sum(s3) FROM vg WHERE v2 > 40 AND label LIKE 'C1-%' GROUP BY b$q$) AS virtual_filter;
+SELECT parity($q$SELECT b, count(*), min(s3), max(s3), sum(s3) FROM vg GROUP BY b$q$) AS stored_aggregate;
+UPDATE vg SET a = a + 1 WHERE id % 9 = 0;
+DELETE FROM vg WHERE id % 17 = 0;
+INSERT INTO vg (id, a, b, code) SELECT i, i % 50, i % 7, 'c' || i % 5 FROM generate_series(4001, 4300) i;
+VACUUM (ANALYZE) vg;
+SELECT parity($q$SELECT a, count(*), sum(v2), count(DISTINCT label) FROM vg GROUP BY a$q$) AS virtual_after_writes;
+SELECT parity($q$SELECT b, count(*), min(s3), max(s3), sum(s3) FROM vg GROUP BY b$q$) AS stored_after_writes;
+SELECT count(*) = 0 AS sift_col_check_is_clean FROM sift.check('vg_col');
+-- sift_table beside virtual and stored generated columns, and its heap twin
+CREATE TABLE vgt (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, code text NOT NULL,
+	v2 int GENERATED ALWAYS AS (a * 2) VIRTUAL,
+	s3 int GENERATED ALWAYS AS (a + b) STORED,
+	label text GENERATED ALWAYS AS (upper(code) || '-' || a::text) VIRTUAL) USING sift_table;
+CREATE TABLE vgh (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, code text NOT NULL,
+	v2 int GENERATED ALWAYS AS (a * 2) VIRTUAL,
+	s3 int GENERATED ALWAYS AS (a + b) STORED,
+	label text GENERATED ALWAYS AS (upper(code) || '-' || a::text) VIRTUAL);
+INSERT INTO vgt (id, a, b, code) SELECT i, i % 50, i % 7, 'c' || i % 5 FROM generate_series(1, 4000) i;
+INSERT INTO vgh (id, a, b, code) SELECT i, i % 50, i % 7, 'c' || i % 5 FROM generate_series(1, 4000) i;
+SELECT same($q$SELECT a, count(*), sum(v2), count(DISTINCT label) FROM vgt GROUP BY a$q$,
+	   $q$SELECT a, count(*), sum(v2), count(DISTINCT label) FROM vgh GROUP BY a$q$) AS table_virtual_aggregate;
+SELECT same($q$SELECT b, count(*), sum(s3) FROM vgt WHERE v2 > 40 AND label LIKE 'C1-%' GROUP BY b$q$,
+	   $q$SELECT b, count(*), sum(s3) FROM vgh WHERE v2 > 40 AND label LIKE 'C1-%' GROUP BY b$q$) AS table_virtual_filter;
+SELECT same($q$SELECT b, count(*), min(s3), max(s3), sum(s3) FROM vgt GROUP BY b$q$,
+	   $q$SELECT b, count(*), min(s3), max(s3), sum(s3) FROM vgh GROUP BY b$q$) AS table_stored_aggregate;
+SELECT same($q$SELECT id, v2, s3, label FROM vgt WHERE id IN (7, 100, 2999)$q$,
+	   $q$SELECT id, v2, s3, label FROM vgh WHERE id IN (7, 100, 2999)$q$) AS table_virtual_projection;
+UPDATE vgt SET a = a + 1 WHERE id % 9 = 0;
+DELETE FROM vgt WHERE id % 17 = 0;
+INSERT INTO vgt (id, a, b, code) SELECT i, i % 50, i % 7, 'c' || i % 5 FROM generate_series(4001, 4300) i;
+UPDATE vgh SET a = a + 1 WHERE id % 9 = 0;
+DELETE FROM vgh WHERE id % 17 = 0;
+INSERT INTO vgh (id, a, b, code) SELECT i, i % 50, i % 7, 'c' || i % 5 FROM generate_series(4001, 4300) i;
+VACUUM (ANALYZE) vgt, vgh;
+SELECT same($q$SELECT a, count(*), sum(v2), count(DISTINCT label) FROM vgt GROUP BY a$q$,
+	   $q$SELECT a, count(*), sum(v2), count(DISTINCT label) FROM vgh GROUP BY a$q$) AS table_virtual_after_writes;
+SELECT same($q$SELECT b, count(*), sum(s3) FROM vgt GROUP BY b$q$,
+	   $q$SELECT b, count(*), sum(s3) FROM vgh GROUP BY b$q$) AS table_stored_after_writes;
+SELECT count(*) = 0 AS sift_table_check_is_clean FROM sift.check('vgt');
+-- the sift BM25 index beside a virtual and a stored generated column
+CREATE TABLE vgb (id int PRIMARY KEY, body text NOT NULL,
+	shout text GENERATED ALWAYS AS (upper(body)) VIRTUAL,
+	n int GENERATED ALWAYS AS (length(body)) STORED);
+INSERT INTO vgb (id, body) SELECT i, 'alpha w' || i % 50 || ' z' || i % 7 || ' ' || CASE WHEN i % 3 = 0 THEN 'beta' ELSE 'gamma' END FROM generate_series(1, 3000) i;
+CREATE INDEX vgb_body ON vgb USING sift (body);
+SELECT ddl_state('CREATE INDEX vgb_virtual ON vgb USING sift (shout)') AS virtual_bm25_key_is_refused;
+SELECT same($q$SELECT id, shout, n FROM vgb WHERE body @@> 'w17 AND beta'$q$,
+	   $q$SELECT id, shout, n FROM vgb WHERE string_to_array(body, ' ') @> ARRAY['w17', 'beta']$q$) AS bm25_with_virtual_columns;
+UPDATE vgb SET body = body || ' w17' WHERE id % 11 = 0;
+DELETE FROM vgb WHERE id % 19 = 0;
+VACUUM (ANALYZE) vgb;
+SELECT same($q$SELECT id, shout, n FROM vgb WHERE body @@> 'w17 AND beta'$q$,
+	   $q$SELECT id, shout, n FROM vgb WHERE string_to_array(body, ' ') @> ARRAY['w17', 'beta']$q$) AS bm25_with_virtual_columns_after_writes;
+-- expression indexes: sift_col over lower(code) and a JSONB member, beside a stored generated column
+CREATE TABLE ex (id int PRIMARY KEY, code text NOT NULL, payload jsonb NOT NULL, amount int NOT NULL,
+	double_amount int GENERATED ALWAYS AS (amount * 2) STORED);
+INSERT INTO ex (id, code, payload, amount) SELECT i, CASE WHEN i % 2 = 0 THEN 'Alpha_' || i % 5 ELSE 'beta_' || i % 5 END,
+	jsonb_build_object('region', 'r' || i % 4), i % 100 FROM generate_series(1, 3000) i;
+CREATE INDEX ex_col ON ex USING sift_col (id, (lower(code)), (payload->>'region'), amount, double_amount);
+ANALYZE ex;
+SELECT parity($q$SELECT lower(code), payload->>'region', count(*), sum(amount) FROM ex GROUP BY 1, 2$q$) AS expression_group;
+SELECT parity($q$SELECT count(*), sum(double_amount) FROM ex WHERE lower(code) = 'alpha_3' AND payload->>'region' = 'r1'$q$) AS expression_filter;
+UPDATE ex SET code = initcap(code), amount = amount + 1 WHERE id % 7 = 0;
+DELETE FROM ex WHERE id % 29 = 0;
+INSERT INTO ex (id, code, payload, amount) SELECT i, 'Gamma_' || i % 5, jsonb_build_object('region', 'r' || i % 4), i % 100 FROM generate_series(3001, 3300) i;
+VACUUM (ANALYZE) ex;
+SELECT parity($q$SELECT lower(code), payload->>'region', count(*), sum(amount), sum(double_amount) FROM ex GROUP BY 1, 2$q$) AS expression_after_writes;
+SELECT count(*) = 0 AS expression_check_is_clean FROM sift.check('ex_col');
+
+DROP TABLE vg, vgb, vgh, vgt, ex;
+DROP FUNCTION parity(text), same(text, text), ddl_state(text);
+DROP EXTENSION pg_sift;

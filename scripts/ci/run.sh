@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The run itself: the build, the harness checks of shard 1, the lanes of the pool, the jobs after it, and the leak gate.
 # Sourced by scripts/ci.sh; not a script of its own.
 # ---------- build, the pool, the leak gate ----------
@@ -16,7 +17,7 @@ else HARNESS=(); fi
 # the second is the node PostgreSQL::Test::Cluster makes, with the environment its test utilities set (untranslated messages)
 "$S/pgtest.sh" initdb-template "$SIFT_INITDB_TEMPLATE" || { failed=1; exit 1; }
 env -u LANGUAGE -u LC_ALL LC_MESSAGES=C initdb --no-sync -D "$INITDB_TEMPLATE" -A trust >/dev/null || { failed=1; exit 1; }
-step build build "$S/pgtest.sh" install || { cat "$LOG/build.log"; failed=1; exit 1; }
+step build build env ${PREBUILT:+SIFT_PREBUILT_ROOT="$PREBUILT"} "$S/pgtest.sh" install || { cat "$LOG/build.log"; failed=1; exit 1; }
 step simd-level simd-level "$S/simd_level.sh" || cat "$LOG/simd-level.log"
 # the 8-page flavour (scripts/scaling-gate.sh) is a second full build of the library, 1.1 trillion instructions: built once here, not inside the first test that asks for it and its time budget
 if (( PG_MAJOR >= 18 )); then

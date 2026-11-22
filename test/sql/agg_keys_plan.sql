@@ -3,6 +3,7 @@
 -- table and a hash probe: the normal plan at 200,000 rows of events and a table of 100,000 rows of which 90,000 are loaded). Each statement is planned as it is (no force, no parallel workers), and
 -- its rows are compared with sift.enable_agg off: with the lookup cache on, and off (the first statement of a backend).
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -39,8 +40,8 @@ INSERT INTO queries VALUES
 SELECT name, plan_of(q) AS plan, differences(q) AS differences FROM queries ORDER BY name;
 
 -- the first statement of a backend: the lookup cache and the shared lookup tables off
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT name, plan_of(q) AS plan, differences(q) AS differences FROM queries ORDER BY name;
 
 DROP TABLE queries, dim_b, keyset, ev, items;

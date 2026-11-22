@@ -17,7 +17,8 @@
 #include "utils/snapmgr.h"
 
 #include "bm25/kernels.h"
-#include "table/table.h"
+#include "table/dispatch.h"
+#include "table/v1/table_v1.h"
 #include "core/popcount.h"
 #include "core/cmp.h"
 #include "core/cpu.h"
@@ -107,7 +108,7 @@ test_pause(void)
 BlockNumber
 sift_vis_nblocks(Relation heap)
 {
-	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_nvblocks(heap) : RelationGetNumberOfBlocks(heap);
+	return sift_tbl_is_table(heap) ? (BlockNumber) sift_tbl_ops(heap)->nvblocks(heap) : RelationGetNumberOfBlocks(heap);
 }
 
 static const uint64 vm_zero_words[VM_MAPSIZE / sizeof(uint64)];
@@ -542,9 +543,9 @@ row_visible(const HeapPage *p, BlockNumber blk, OffsetNumber off)
 /*
  * A page the scan asks about again (units cut by a key, not by the heap, take a few rows of each page): the second visit computes the
  * visibility of every row of the page once and the later ones are a mask. A snapshot does not change its mind about a tuple, so the mask
- * holds for the rest of the scan. Entries are capped; a page past the cap is read every time, as before.
+ * holds for the rest of the scan. Entries are capped (4,096 pages, about 230 kB a scan) and never evicted: the read stream skips the pages the cache holds whole, so an entry it saw has to be there when the page is filtered. A page past the cap is read every time.
  */
-#define SIFT_VIS_PAGE_CACHE_MAX	(1 << 20)
+#define SIFT_VIS_PAGE_CACHE_MAX	4096
 
 typedef struct PageVis
 {
@@ -638,7 +639,7 @@ sift_vis_filter_page(SiftVis *v, BlockNumber blk, uint64 *offmask)
 		return 0;
 	}
 	if (sift_tbl_is_table(v->heap))
-		return sift_tbl_filter_page(v->fetch, v->snapshot, blk, offmask);
+		return ((SiftTblFetchHeader *) v->fetch)->ops->filter_page(v->fetch, v->snapshot, blk, offmask);
 	if (sift_vis_page_cache)
 	{
 		e = page_cache_entry(v, blk, &found);

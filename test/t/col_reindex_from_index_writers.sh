@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # (each client works on ids of its own and no insert is speculative: the records of the write buffer name their inserters, which a build from the old index needs for the stamps of the log)
-# REINDEX of a sift_col index that tracks its changes takes the rows from the index it replaces (col/build/from_index.c) while writers commit and roll back around it: the writers
+# REINDEX of a sift_col index that tracks its changes takes the rows from the index it replaces (col/v1/build/from_index.c) while writers commit and roll back around it: the writers
 # wait for its ShareLock between statements, so every round finds the index with the rows of the writers before it in segments and the write buffer, and the table's dead versions
 # no VACUUM has taken. After every round the heap-free read, the checked read and the heap give one answer and the index passes its check. REINDEX CONCURRENTLY is built from the heap
 # (its writers change the index it would read), and so are the answers it gives. The rounds force the source (sift.test_col_from_index_forced): the entries of the dead versions no VACUUM

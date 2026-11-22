@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # An index over sift.vacuum_rewrite_limit is rewritten by partitions of that size, one step each, and not skipped: with the limit at 1 MB the rewrite of a
 # 2 MB index leaves several segments (a whole-index rewrite leaves one), the index verifies, the answers are the heap's, and it is not due again. The VACUUM of
 # a table with a fifth of its rows dead, in every unit, rewrites it (the scans of the dirty units cost more than the rewrite, by a margin that a few percent of index size does not undo); with dead_rewrite_pct 50 it leaves the dead rows

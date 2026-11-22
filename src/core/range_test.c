@@ -66,16 +66,38 @@ typedef struct Counts
 				apart_bad;
 } Counts;
 
-static int
-elem_cmp(const Elem *a, const Elem *b)
+/* How the components of the keys are ordered: SIFT_KEY_* of component i in bits 2i and 2i + 1 (the checks of the plain order leave it 0) */
+static unsigned key_flags = 0;
+
+static unsigned
+comp_flags(int pos)
 {
-	if (a->kind != b->kind)
-		return a->kind < b->kind ? -1 : 1;
+	return pos < SIFT_BOUND_COMPS ? (key_flags >> (2 * pos)) & 3 : 0;
+}
+
+/* Where an element of component pos is in the order: the integers and the NULL in the order of their column, the address after them */
+static int
+elem_rank(const Elem *e, unsigned f)
+{
+	return e->kind == KIND_TID ? 2 : ((e->kind == KIND_NULL) == !(f & SIFT_KEY_NULLS_FIRST) ? 1 : 0);
+}
+
+static int
+elem_cmp(const Elem *a, const Elem *b, int pos)
+{
+	unsigned	f = comp_flags(pos);
+	int			ra = elem_rank(a, f),
+				rb = elem_rank(b, f),
+				c;
+
+	if (ra != rb)
+		return ra < rb ? -1 : 1;
 	if (a->kind == KIND_NULL)
 		return 0;
 	if (a->kind == KIND_TID)
 		return (uint64_t) a->v < (uint64_t) b->v ? -1 : (uint64_t) a->v > (uint64_t) b->v;
-	return a->v < b->v ? -1 : a->v > b->v;
+	c = a->v < b->v ? -1 : a->v > b->v;
+	return (f & SIFT_KEY_DESC) ? -c : c;
 }
 
 static int
@@ -83,7 +105,7 @@ key_cmp(const Key *a, const Key *b)
 {
 	for (int i = 0; i < a->n && i < b->n; i++)
 	{
-		int			c = elem_cmp(&a->e[i], &b->e[i]);
+		int			c = elem_cmp(&a->e[i], &b->e[i], i);
 
 		if (c != 0)
 			return c;
@@ -97,7 +119,7 @@ key_has_prefix(const Key *k, const Key *p)
 	if (p->n > k->n)
 		return false;
 	for (int i = 0; i < p->n; i++)
-		if (elem_cmp(&k->e[i], &p->e[i]) != 0)
+		if (elem_cmp(&k->e[i], &p->e[i], i) != 0)
 			return false;
 	return true;
 }
@@ -107,7 +129,7 @@ key_depth(const Key *a, const Key *b)
 {
 	uint32_t	d = 0;
 
-	while (d < (uint32_t) a->n && d < (uint32_t) b->n && a->e[d].kind != KIND_TID && b->e[d].kind != KIND_TID && elem_cmp(&a->e[d], &b->e[d]) == 0)
+	while (d < (uint32_t) a->n && d < (uint32_t) b->n && a->e[d].kind != KIND_TID && b->e[d].kind != KIND_TID && elem_cmp(&a->e[d], &b->e[d], d) == 0)
 		d++;
 	return d;
 }
@@ -119,8 +141,8 @@ encode(const Key *k, SiftBound *b)
 	for (int i = 0; i < k->n; i++)
 	{
 		const Elem *e = &k->e[i];
-		bool		ok = e->kind == KIND_INT ? sift_bound_push_i64(b, e->v) :
-			e->kind == KIND_NULL ? sift_bound_push_null(b) : sift_bound_push_tid(b, (uint64_t) e->v);
+		bool		ok = e->kind == KIND_INT ? sift_bound_push_key_i64(b, e->v, comp_flags(i)) :
+			e->kind == KIND_NULL ? sift_bound_push_key_null(b, comp_flags(i)) : sift_bound_push_tid(b, (uint64_t) e->v);
 
 		if (!ok)
 			elog(ERROR, "sift._test_range_check: a key of the test does not fit a bound");
@@ -556,7 +578,81 @@ check_apart(SiftRng *r, Counts *c)
 }
 
 /*
- * (seed int8, rounds int4) returns int8[]: for each of order, successor, span, range, depth, apart the checks made and the checks that failed, in that order: failures are 0 when the bounds are right
+ * The components of every key of the checks below are all there, then perhaps an address, as in the keys of one index: a key column has the same tags in every bound, so the address, whose
+ * tag does not depend on the column, is compared only with bounds that stop at the same place. A key of nc components: a random number of them, the address when it has them all.
+ */
+static void
+shaped_key(SiftRng *r, Key *k, int nc)
+{
+	random_key(r, k, (int) below(r, nc + 1), true, false);
+	if (k->n == nc && below(r, 2) == 0)
+		add_tid(r, k, true);
+}
+
+static void
+related_shaped(SiftRng *r, Key *k, const Key *p, int nc)
+{
+	switch (below(r, 4))
+	{
+		case 0:
+			shaped_key(r, k, nc);
+			break;
+		case 1:
+			*k = *p;
+			break;
+		case 2:
+			*k = *p;
+			if (k->n < nc || k->e[k->n - 1].kind != KIND_TID)
+			{
+				while (k->n < nc && below(r, 3) != 0)
+					add_comp(r, k, true);
+				if (k->n == nc && below(r, 2) == 0)
+					add_tid(r, k, true);
+			}
+			break;
+		default:
+			*k = *p;
+			k->n = (int) below(r, p->n + 1);
+			break;
+	}
+}
+
+/* The order of the encodings of two keys, their depth and their pack and unpack, and the successor of a prefix, with the columns ordered by key_flags, against the tuples */
+static void
+check_flagged(SiftRng *r, Counts *c, int nc)
+{
+	Key			a,
+				b;
+	SiftBound	ea,
+				eb,
+				next;
+	uint8_t		pa[SIFT_BOUND_BYTES],
+				pb[SIFT_BOUND_BYTES];
+	SiftBound	ua,
+				ub;
+	int			want;
+	bool		has_next;
+
+	shaped_key(r, &a, nc);
+	related_shaped(r, &b, &a, nc);
+	encode(&a, &ea);
+	encode(&b, &eb);
+	want = sign(key_cmp(&a, &b));
+	sift_bound_pack(&ea, pa);
+	sift_bound_pack(&eb, pb);
+	c->order++;
+	c->order_bad += sign(sift_bound_cmp(&ea, &eb)) != want || sign(memcmp(pa, pb, SIFT_BOUND_BYTES)) != want || !sift_bound_unpack(pa, &ua) || sift_bound_cmp(&ua, &ea) != 0 ||
+		ua.len != ea.len || ua.ncomp != ea.ncomp || !sift_bound_unpack(pb, &ub) || sift_bound_cmp(&ub, &eb) != 0;
+	c->depth++;
+	c->depth_bad += sift_bound_depth(&ea, &eb) != key_depth(&a, &b);
+	has_next = sift_bound_prefix_next(&ea, &next);
+	c->next++;
+	c->next_bad += key_has_prefix(&b, &a) != (sift_bound_cmp(&ea, &eb) <= 0 && (!has_next || sift_bound_cmp(&eb, &next) < 0));
+}
+
+/*
+ * (seed int8, rounds int4, flags int4) returns int8[]: for each of order, successor, span, range, depth, apart the checks made and the checks that failed, in that order: failures are 0 when the
+ * bounds are right. With flags (SIFT_KEY_* for component i at bits 2i, 2i + 1) the columns are ordered as they say and only order, successor and depth are checked.
  */
 Datum
 sift_test_range_check(PG_FUNCTION_ARGS)
@@ -564,6 +660,7 @@ sift_test_range_check(PG_FUNCTION_ARGS)
 	SiftRng		rng;
 	Counts		c = {0};
 	int32		rounds = PG_GETARG_INT32(1);
+	int32		flags = PG_NARGS() > 2 ? PG_GETARG_INT32(2) : 0;
 	Key		   *keys[SIFT_BOUND_COMPS + 1];
 	Key		   *bounds = palloc(MAX_BOUNDS * sizeof(Key));
 	int			nbounds;
@@ -571,6 +668,7 @@ sift_test_range_check(PG_FUNCTION_ARGS)
 	Datum		out[12];
 
 	sift_rng_seed(&rng, (uint64_t) PG_GETARG_INT64(0));
+	key_flags = (unsigned) flags;
 	for (int a = 1; a <= SIFT_BOUND_COMPS; a++)
 	{
 		keys[a] = palloc(MAX_KEYS * sizeof(Key));
@@ -581,12 +679,18 @@ sift_test_range_check(PG_FUNCTION_ARGS)
 	{
 		int			ncomp = 1 + (int) below(&rng, SIFT_BOUND_COMPS);
 
+		if (flags != 0)
+		{
+			check_flagged(&rng, &c, ncomp);
+			continue;
+		}
 		check_order(&rng, &c);
 		check_next(&rng, &c);
 		check_span(&rng, &c, keys[ncomp], nkeys[ncomp], ncomp);
 		check_range(&rng, &c, bounds, nbounds);
 		check_apart(&rng, &c);
 	}
+	key_flags = 0;
 	out[0] = Int64GetDatum(c.order);
 	out[1] = Int64GetDatum(c.order_bad);
 	out[2] = Int64GetDatum(c.next);

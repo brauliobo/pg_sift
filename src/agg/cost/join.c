@@ -775,6 +775,27 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 	return tuples;
 }
 
+/* does each lookup table the scan loads fit half of work_mem, which agg/lookup/load.c holds the load to? */
+bool
+agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+	{
+		double		row_cost,
+					rows;
+		int			width;
+
+		if (jc->j.params != NIL || jc->cpath != NULL || join_dense(c, s, jc))
+			continue;
+		rows = join_load_rows(c, s, jc, &row_cost);
+		width = find_base_rel(c->root, jc->rti)->reltarget->width;
+		if (!agg_lookup_fits(rows, width))
+			return agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "%s is estimated at %.0f rows of width %d",
+									planner_rt_fetch(jc->rti, c->root)->eref->aliasname, rows, width);
+	}
+	return true;
+}
+
 /* the rows of the lookup tables a parallel scan has the leader write to the shared memory (agg/lookshare.c) */
 double
 agg_share_rows(AggCtx *c, SiftAggSpec *s)

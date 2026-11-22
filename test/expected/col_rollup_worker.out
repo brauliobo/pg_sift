@@ -1,6 +1,6 @@
 -- The background worker of the on-demand rollup refresh (docs/COL-PREAGG.md section 7) serves a queue of several segments and ends: the requests a SELECT queued are
 -- refreshed by the worker and the next SELECT answers from the rollups. The worker is the only process that allocates a name for each request it serves, so this is
--- the test that runs that loop (the others serve their queue in the session, sift.col_rollup_worker off) and the one the leak gate of memcheck runs over it.
+-- the test that runs that loop (the others serve their queue in the session, sift.async_maintenance off) and the one the leak gate of memcheck runs over it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.test_limits = 'par_build_rows=1';
@@ -8,7 +8,7 @@ SET client_min_messages = warning;
 SET sift.agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
-SET sift.col_rollup_worker = off;
+SET sift.async_maintenance = off;
 CREATE TEMP TABLE rw_base AS SELECT requested, refreshed FROM sift.col_rollup_state;
 CREATE VIEW rw_state AS SELECT s.requested - b.requested AS requested, s.refreshed - b.refreshed AS refreshed FROM sift.col_rollup_state s, rw_base b;
 CREATE VIEW rw_requests AS SELECT * FROM sift.col_rollup_requests WHERE index::text IN ('rw_a_i', 'rw_b_i');

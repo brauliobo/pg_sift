@@ -28,7 +28,6 @@ SELECT load_path('t');
 TRUNCATE t;
 
 -- COPY in a transaction: the groups, the rows of the transaction its own, the same rows as the twin
-SET sift.table_bulk_groups = on;
 BEGIN;
 COPY t FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
 SELECT load_path('t'), count(*) FILTER (WHERE unfrozen) > 0 AS carry_their_writer FROM sift.table_segments('t');
@@ -149,7 +148,6 @@ CALL many_loads(60);
 SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('t');
 COMMIT;
 SELECT count(*), sum(id) FROM t;
-RESET sift.table_backpressure;
 
 DROP PROCEDURE many_loads(int);
 DROP MATERIALIZED VIEW mv;

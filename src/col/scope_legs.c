@@ -12,10 +12,11 @@
 #include "core/ring.h"
 #include "col/am.h"
 #include "col/scope.h"
+#include "core/cachebudget.h"
 
 /*
  * The legs of a scope (the relations, columns, btrees and predicates its pairs come from) are what the catalogs say, 25,000 instructions for each plan of a statement that reads the
- * scope. They are kept for the catalog state they were found at (SharedInvalidMessageCounter, as in col/track.c) and not at all in a transaction with an xid, whose own DDL is not counted
+ * scope. They are kept for the catalog state they were found at (SharedInvalidMessageCounter, as in col/v1/track.c) and not at all in a transaction with an xid, whose own DDL is not counted
  * before it commits; the predicates are copied out of the memo, which the caller may keep.
  */
 #define LEGS_MEMO_N 4
@@ -63,7 +64,7 @@ sift_scope_legs(Relation index, int scope, SiftScopeLeg legs[2])
 		return n;
 	m = &legs_memo[SIFT_RING_SLOT(legs_memo_ring, LEGS_MEMO_N)];
 	if (m->cx == NULL)
-		m->cx = AllocSetContextCreate(TopMemoryContext, "sift cache scope legs", ALLOCSET_SMALL_SIZES);
+		m->cx = sift_cache_create_context("sift cache scope legs");
 	MemoryContextReset(m->cx);
 	old = MemoryContextSwitchTo(m->cx);
 	legs_copy(m->legs, legs, n);

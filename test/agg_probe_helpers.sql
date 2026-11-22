@@ -18,7 +18,6 @@ BEGIN
   SET LOCAL sift.enable_agg = on;
   SET LOCAL sift.agg_probe_direct = on;
   EXECUTE 'CREATE TEMP TABLE r_dir ON COMMIT DROP AS ' || q;
-  SET LOCAL sift.agg_probe_direct = off;
   EXECUTE 'CREATE TEMP TABLE r_child ON COMMIT DROP AS ' || q;
   SET LOCAL sift.enable_agg = off;
   EXECUTE 'CREATE TEMP TABLE r_nat ON COMMIT DROP AS ' || q;

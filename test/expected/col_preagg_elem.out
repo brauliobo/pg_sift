@@ -326,7 +326,6 @@ SELECT sift.col_promote('pe_col') >= 0 AS promoted;
  t
 (1 row)
 
-RESET sift.col_format_minor;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
 SELECT fmt('pe_col');
    fmt   
@@ -397,7 +396,6 @@ SET sift.col_format_minor = 3;
 CREATE INDEX pe_col3 ON pe USING sift_col (id, grp, items, tags, m)
   WITH (paths = 'items[]{k text, n int4, x float8, t text, w int8}, tags[] text, m.* int4',
         preagg = 'cube(grp: id) rollup(items[].k, items[].t, items[].n: items[].x, items[].n, items[].w; tags[]; m.*#key: m.*)', cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 SELECT fmt('pe_col3');
  fmt 
 -----

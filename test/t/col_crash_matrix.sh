@@ -82,7 +82,7 @@ for n in 1 -1; do
 	sql cm "DROP TABLE IF EXISTS s, h" "$TW" >/dev/null
 	printf 'sift.test_crash_worker = on\nsift.test_crash_dir = %d\n' "$n" >"$D/data/crash.conf"
 	pg_ctl -D "$D/data" reload >/dev/null
-	sleep 1
+	wait_for "setting_is cm sift.test_crash_dir $n" 30
 	pm=$(head -1 "$D/data/postmaster.pid")
 	sql cm "$LOAD" >/dev/null 2>&1
 	if ! await_exit "$pm"; then

@@ -43,9 +43,9 @@ SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, 
 SET sift.max_expansions = 1;
 SELECT q FROM rw_q WHERE rw_count(q) <> sift_ref.count(q);
 SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, rw_q GROUP BY k ORDER BY k;
-SET sift.prefix_cache_size = 0;
+SET sift.backend_cache_kb = 0;
 SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[5, 400]) k, rw_q GROUP BY k ORDER BY k;
-RESET sift.prefix_cache_size;
+RESET sift.backend_cache_kb;
 RESET sift.max_expansions;
 SELECT k, sum(rw_diff(q, k)) AS mismatches FROM unnest(ARRAY[1, 5, 25, 400]) k, rw_q GROUP BY k ORDER BY k;
 

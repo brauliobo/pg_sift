@@ -1,21 +1,31 @@
-# Quickstart: pg_sift in five minutes
+# Quickstart: pg_sift in Five Minutes
 
-You need only Docker; everything below is removed at the end. The image is built from this repository on the official
-`postgres` image ([CONTAINERS.md](CONTAINERS.md)) and takes a few minutes the first time.
+Try `pg_sift` locally with Docker — nothing is compiled or installed on your host, and cleanup is one command. The published multi-architecture image (`linux/amd64`, `linux/arm64`) is the official `postgres` image with the extension (see [CONTAINERS.md](CONTAINERS.md)); packages for your own server are in [INSTALL-REPOS.md](INSTALL-REPOS.md).
+
+## Which Access Method?
+
+`pg_sift` has three access methods. A plain `CREATE INDEX` or `CREATE TABLE` with one of them needs no `WITH (...)` clause and no `SET`:
+
+| You need | Use | Statement | Stores |
+|---|---|---|---|
+| Fast analytics on an existing OLTP table | `sift_col` *(index)* | `CREATE INDEX ... ON tbl USING sift_col (c1, c2, ...)` | A compressed columnar copy beside the heap |
+| A native columnar table with no heap copy | `sift_table` *(table)* | `CREATE TABLE tbl (...) USING sift_table` | The columns only, compressed (see [TABLES.md](TABLES.md)) |
+| Exact BM25 full-text search | `sift` *(index)* | `CREATE INDEX ... ON tbl USING sift (body)` | An inverted index (see [SEARCH.md](SEARCH.md)) |
+
+A `sift` and a `sift_col` index on the same table work together automatically for text search plus analytics.
 
 ## 1. Start PostgreSQL with pg_sift
 
 ```sh
-packaging/docker/build.sh 18        # pg_sift:pg18 (17 works the same way)
-docker run -d --name sift-try -e POSTGRES_PASSWORD=example pg_sift:pg18
+docker run -d --name sift-try -e POSTGRES_PASSWORD=example ghcr.io/brauliobo/pg_sift:pg18
 docker exec -it sift-try psql -U postgres
 ```
 
-`CREATE EXTENSION pg_sift` has already run for the `postgres` database and `template1`, so `\dx` lists it and every new database has it.
+The container runs `CREATE EXTENSION pg_sift` in `postgres` and `template1`, so `\dx` lists it and every new database inherits it. PostgreSQL 17 and 19 work the same way.
 
-## 2. Load a small data set
+## 2. Load 100,000 Sample Orders
 
-100,000 orders built in SQL, with the two indexes pg_sift adds: `sift_col` for aggregates over the columns it lists, `sift` for BM25 search on the title.
+Create an ordinary heap table and add two `pg_sift` indexes: `sift_col` for columnar analytics and `sift` for exact BM25 full-text search.
 
 ```sql
 CREATE TABLE orders AS
@@ -25,97 +35,95 @@ SELECT g AS id,
        (ARRAY['cat_a','cat_b','cat_c','cat_d'])[1 + (g / 7) % 4] AS category,
        (ARRAY['paid','shipped','delivered','cancelled'])[1 + (g / 3) % 4] AS status,
        (5 + (g * 7919) % 29500)::numeric / 100 AS amount,
-       timestamp '2025-01-01' + (g * 311 % 31536000) * interval '1 second' AS created_at,
+       timestamp '2026-01-01' + (g * 311 % 31536000) * interval '1 second' AS created_at,
        (ARRAY['wireless','portable','compact','premium','rugged','slim','smart','classic'])[1 + g % 8] || ' ' ||
        (ARRAY['charger','speaker','headphones','keyboard','lamp','monitor','camera'])[1 + (g / 8) % 7] ||
        CASE WHEN g % 3 = 0 THEN ' with case' ELSE '' END AS title
 FROM generate_series(1, 100000) AS g;
+
 ALTER TABLE orders ADD PRIMARY KEY (id);
 CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, created_at);
 CREATE INDEX orders_title ON orders USING sift (title);
 VACUUM ANALYZE orders;
 ```
 
-## 3. BM25 search
+No `WITH (...)` is needed: `key_order = 'auto'` sorts the parts by the best grouping and time columns (here `created_at`), `preagg = 'auto'` keeps granule summaries, and `sift.parallel_scan` is `on`. Each automatic choice is reported once as a `NOTICE` and can be overridden or switched off (`key_order = 'off'`).
+
+If an indexed column is `jsonb`, `paths = 'auto'` is inferred the same way: the keys present in at least 10% of a sample of 4,096 rows (up to 64 leaves) are shredded into typed columns, and the `NOTICE` names how many. An empty table is accepted and the paths are inferred at its first compaction. Use `WITH (paths = 'off')` to keep a `jsonb` column unshredded.
+
+Check that nothing needs attention:
 
 ```sql
-SELECT id, title, round(sift.score(ctid)::numeric, 3) AS score FROM orders
-WHERE title @@> 'wireless headphones' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
---  id  |        title        | score
--- -----+---------------------+-------
---   16 | wireless headphones | 4.484
---  128 | wireless headphones | 4.484
---  184 | wireless headphones | 4.484
-
-SELECT count(*) FROM orders WHERE title @@> 'wireless headphones';      -- 1786, from the index
+SELECT * FROM sift.health();   -- zero rows when every relation is healthy
+SELECT relation, am, state, format, rows, size_bytes, util_pct FROM sift.indexes;
 ```
 
-`@@>` matches all the words; `OR`, `NOT`, `"phrases"`, `batt*`, `/regex/` and `word~1` are in [USAGE.md](USAGE.md#queries). The score is exact BM25: a longer
-title with the same words ("wireless headphones with case") scores lower.
+## 3. Run Columnar Analytics (`SiftAgg`)
 
-## 4. An aggregate and its plan
+Keep your standard SQL. PostgreSQL's planner selects `Custom Scan (SiftAgg)` on `orders_col` and prunes granules outside the date range.
 
 ```sql
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
-SELECT category, count(*), sum(amount) FROM orders
-WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;
---  Custom Scan (SiftAgg) (actual rows=4.00 loops=1)
---    Index: orders_col
---    Group Keys: category
---    Pushed Aggregates: count(*), sum(orders.amount)
---    Units: 4 read, 1 pruned
---    Rows: 77918 scanned, 11611 aggregated, 4 groups
---    Buffers: shared hit=75
+SELECT category, count(*), count(DISTINCT customer_id), sum(amount)
+FROM orders
+WHERE country = 'DE' AND created_at >= '2026-06-01'
+GROUP BY category;
 ```
 
-The aggregate ran inside the column index (`Custom Scan (SiftAgg)`); `1 pruned` is a unit skipped unread. With the pushdown off the same query
-takes the plain PostgreSQL plan and returns the same answer:
+If a query stays on the heap, ask why. `sift.explain_why()` names each candidate path, the reason, and the fix:
+
+```sql
+SELECT arm, used, slug, reason, action
+FROM sift.explain_why($$SELECT category, count(*) FROM orders WHERE country = 'DE' GROUP BY category$$);
+```
+
+Disable pushdown at any time to verify exact equivalence against PostgreSQL's native planner:
 
 ```sql
 SET sift.enable_agg = off;
--- the same EXPLAIN:   HashAggregate -> Seq Scan on orders   (Rows Removed by Filter: 88389, Buffers: shared hit=1216)
+SELECT category, count(*), count(DISTINCT customer_id), sum(amount)
+FROM orders
+WHERE country = 'DE' AND created_at >= '2026-06-01'
+GROUP BY category;
 RESET sift.enable_agg;
 ```
 
-(`EXPLAIN` lines are shortened; figures are from PostgreSQL 18.6 with default `shared_buffers`.) When a query keeps the normal plan, `SET sift.explain_refusals = on`
-says why ([USAGE.md](USAGE.md#why-a-query-kept-the-normal-plan)).
+## 4. Run Exact BM25 Full-Text Search
 
-## 5. The switches worth knowing
+```sql
+SELECT id, title, round(sift.score(ctid)::numeric, 3) AS score
+FROM orders
+WHERE title @@> 'wireless headphones'
+ORDER BY sift.score(ctid) DESC, id
+LIMIT 3;
 
-The quickstart used only defaults, and pg_sift is meant to be used with them ([TUNING.md](TUNING.md) is the page for the few options worth touching). Two short lists: what is off until you turn it on, and what is on and has the switch that gives it up (`SHOW` in a session that has used the extension prints the value; [USAGE.md](USAGE.md#maintenance-and-operations) has the full list):
+SELECT count(*) FROM orders WHERE title @@> 'wireless headphones';
+```
 
-| Off by default | What it does when you turn it on |
-|---|---|
-| `sift.parallel_scan` | let the planner add parallel BM25 scans and counts |
-| `sift.table_async_promote` | write-path variant of `sift_table` (no gain measured on a 4-client insert loop) |
-| `sift.explain_refusals` | report why a query kept the normal plan |
+`@@>` supports `AND`, `OR`, `NOT`, `"phrases"`, `prefix*`, `wild?cards`, `/regex/`, and `fuzzy~1`. See [SEARCH.md](SEARCH.md) for the full query language.
 
-| Setting | Default | What it does |
-|---|---|---|
-| `sift.enable_col_scan` | on | plan a `sift_col` index built with the `sift.col_*_ops` classes as a bitmap index scan for queries that return rows ([COL-SCAN.md](COL-SCAN.md)) |
-| `sift.col_auto_merge` | on | a background worker vacuums the table after churn, after a build or a bulk load that leaves its pages out of the visibility map, and, after the `VACUUM`, merges a `sift_col` index that churn has scattered (within 5% of the WAL the server writes; `off` stops it) |
-| `sift.table_bulk_groups` | on | `COPY`, `CREATE TABLE AS` and `REFRESH MATERIALIZED VIEW` write column groups straight away |
-| `sift.agg_lookup_shared_kb` | -1 (the smaller of the cache of a backend and 5% of `shared_buffers`) | shared memory that lets backends reuse the lookup tables a `SiftAgg` join loaded |
-| `sift.col_format_minor` | 15 | the column format the segments are written in: lower it (6 for 3.2, 4 for 3.1, 3 for 3.0) before writing what an older release must read; a 3.2 library cannot read the `sift_table` tables or the indexes with the newer options at 15 ([SUPPORT.md](SUPPORT.md#format-minors-and-the-downgrade-rule)) |
+## 5. Three Essential Switches
 
-`ALTER SYSTEM` or `ALTER DATABASE ... SET` make a setting stick; `sift.enable_agg = off` is the way back to plain PostgreSQL at any time.
+`pg_sift` is designed to work out of the box with defaults. These three settings cover day-one testing and troubleshooting (see [OPTIONS.md](OPTIONS.md) for all 27 settings):
 
-Which options are worth knowing, in one page: [TUNING.md](TUNING.md).
+| Setting | Default | When to change it |
+|---|---:|---|
+| `sift.enable_agg` | `on` | Set `off` in a session to compare results or bypass `SiftAgg` immediately |
+| `sift.explain_refusals` | `off` | Set `on` (or use `EXPLAIN (SIFT)` on PG 18+) to see why a query stayed on the heap |
+| `sift.backend_cache_kb` | `16384` (16 MB) | Lower for high connection counts; raise for analytical sessions with wide schemas |
 
-## Check the numbers on your machine
+## 6. Benchmark on Your Machine and Clean Up
+
+Run the self-contained Docker comparison kit (loads 100,000 rows, verifies answer equality, and prints a comparison table):
 
 ```sh
-bench/bench kit                      # docker only; builds the image if needed
 bench/bench kit --rows 200000 --cpus 2 --runs 3
 ```
 
-It starts a throwaway container, loads the orders data of the benchmark (100,000 orders by default), runs the ten questions with and without the pushdown, compares every
-answer, and prints a table (exit status 3 when an answer differs). It took about 25 seconds once the image existed (100,000 orders, the only size run);
-a laptop with fewer, slower cores differs in times and ratios.
-Citus, Elasticsearch and ClickHouse (about an hour).
-
-## Clean up
+Remove the quickstart container when finished:
 
 ```sh
 docker rm -f -v sift-try
 ```
+
+Next steps: [ANALYTICS.md](ANALYTICS.md), [SCOPES.md](SCOPES.md), [TABLES.md](TABLES.md), [SEARCH.md](SEARCH.md), and [OPERATIONS.md](OPERATIONS.md) for `sift.indexes`, `sift.status()`, `sift.health()`, and `sift.activity()`.

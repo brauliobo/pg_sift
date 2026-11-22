@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 SET maintenance_work_mem = '64MB';
 SET statement_timeout = '120s';
@@ -19,12 +19,12 @@ SELECT s FROM unnest(ARRAY[11264, 22528, 33536]) n, LATERAL unnest(ARRAY[
 	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'CREATE INDEX w_i ON w USING sift_col (id, k) WITH (key_cut = ''off'')',
 	format('INSERT INTO peaks SELECT ''build'', %s, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments(''w_i'') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_build'', ''col_writer_dict'', ''col_writer_points'')) m WHERE kind = ''immutable'' GROUP BY scope, peak', n),
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_build'', ''col_writer_spool'')) m WHERE kind = ''immutable'' GROUP BY scope, peak', n),
 	'RESET sift.test_col_segment_kb',
 	'SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)',
 	'SELECT sift.col_merge(''w_i'', true) > 0',
 	format('INSERT INTO peaks SELECT ''merge'', %s, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments(''w_i'') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_merge'', ''col_merge_inputs'', ''col_writer_dict'', ''col_writer_points'')) m WHERE kind = ''immutable'' GROUP BY scope, peak', n),
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN (''col_merge'', ''col_merge_inputs'', ''col_writer_spool'')) m WHERE kind = ''immutable'' GROUP BY scope, peak', n),
 	'DROP TABLE w']) WITH ORDINALITY AS t(s, k) ORDER BY n, k
 \gexec
 CREATE TABLE w (id int, k int, pad text) WITH (autovacuum_enabled = off, fillfactor = 100)
@@ -39,7 +39,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 
 CREATE INDEX w_i ON w USING sift_col (id, k) WITH (key_cut = 'off')
 INSERT INTO peaks SELECT 'build', 11264, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments('w_i') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_build', 'col_writer_dict', 'col_writer_points')) m WHERE kind = 'immutable' GROUP BY scope, peak
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_build', 'col_writer_spool')) m WHERE kind = 'immutable' GROUP BY scope, peak
 RESET sift.test_col_segment_kb
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
  reset 
@@ -54,7 +54,7 @@ SELECT sift.col_merge('w_i', true) > 0
 (1 row)
 
 INSERT INTO peaks SELECT 'merge', 11264, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments('w_i') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_merge', 'col_merge_inputs', 'col_writer_dict', 'col_writer_points')) m WHERE kind = 'immutable' GROUP BY scope, peak
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_merge', 'col_merge_inputs', 'col_writer_spool')) m WHERE kind = 'immutable' GROUP BY scope, peak
 DROP TABLE w
 CREATE TABLE w (id int, k int, pad text) WITH (autovacuum_enabled = off, fillfactor = 100)
 ALTER TABLE w ALTER COLUMN pad SET STORAGE PLAIN
@@ -68,7 +68,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 
 CREATE INDEX w_i ON w USING sift_col (id, k) WITH (key_cut = 'off')
 INSERT INTO peaks SELECT 'build', 22528, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments('w_i') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_build', 'col_writer_dict', 'col_writer_points')) m WHERE kind = 'immutable' GROUP BY scope, peak
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_build', 'col_writer_spool')) m WHERE kind = 'immutable' GROUP BY scope, peak
 RESET sift.test_col_segment_kb
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
  reset 
@@ -83,7 +83,7 @@ SELECT sift.col_merge('w_i', true) > 0
 (1 row)
 
 INSERT INTO peaks SELECT 'merge', 22528, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments('w_i') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_merge', 'col_merge_inputs', 'col_writer_dict', 'col_writer_points')) m WHERE kind = 'immutable' GROUP BY scope, peak
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_merge', 'col_merge_inputs', 'col_writer_spool')) m WHERE kind = 'immutable' GROUP BY scope, peak
 DROP TABLE w
 CREATE TABLE w (id int, k int, pad text) WITH (autovacuum_enabled = off, fillfactor = 100)
 ALTER TABLE w ALTER COLUMN pad SET STORAGE PLAIN
@@ -97,7 +97,7 @@ SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
 
 CREATE INDEX w_i ON w USING sift_col (id, k) WITH (key_cut = 'off')
 INSERT INTO peaks SELECT 'build', 33536, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments('w_i') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_build', 'col_writer_dict', 'col_writer_points')) m WHERE kind = 'immutable' GROUP BY scope, peak
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_build', 'col_writer_spool')) m WHERE kind = 'immutable' GROUP BY scope, peak
 RESET sift.test_col_segment_kb
 SELECT count(*) * 0 AS reset FROM sift._test_mem_highwater(true)
  reset 
@@ -112,7 +112,7 @@ SELECT sift.col_merge('w_i', true) > 0
 (1 row)
 
 INSERT INTO peaks SELECT 'merge', 33536, count(*), min(rows), max(rows), scope, peak FROM sift.col_segments('w_i') s,
-		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_merge', 'col_merge_inputs', 'col_writer_dict', 'col_writer_points')) m WHERE kind = 'immutable' GROUP BY scope, peak
+		(SELECT scope, peak FROM sift._test_mem_highwater(true) WHERE scope IN ('col_merge', 'col_merge_inputs', 'col_writer_spool')) m WHERE kind = 'immutable' GROUP BY scope, peak
 DROP TABLE w
 -- every segment of the build is one superblock, and the largest table makes more than the policy of the other kinds (128)
 SELECT n, segs, min_rows = 256 AND max_rows = 256 AS one_superblock_each, segs > 128 AS past_the_policy FROM peaks WHERE stage = 'build' AND scope = 'col_build' ORDER BY n;
@@ -123,17 +123,15 @@ SELECT n, segs, min_rows = 256 AND max_rows = 256 AS one_superblock_each, segs >
  33536 |  131 | t                   | t
 (3 rows)
 
--- the bytes of the writer and of the build do not follow the segments: the largest is under twice the smallest (a merge opens at most 64 inputs at a time; col_merge holds the rows of the one segment it writes: the open scope of test/mem-budgets.tsv)
+-- the bytes of the writer and of the build do not follow the segments: the largest is under twice the smallest (a merge opens at most 64 inputs at a time; col_merge holds the rows of the one segment it writes)
 SELECT stage, scope, max(peak) < 2 * min(peak) AS flat_in_segments FROM peaks WHERE scope <> 'col_merge' GROUP BY stage, scope ORDER BY stage, scope;
- stage |       scope       | flat_in_segments 
--------+-------------------+------------------
- build | col_build         | t
- build | col_writer_dict   | t
- build | col_writer_points | t
- merge | col_merge_inputs  | t
- merge | col_writer_dict   | t
- merge | col_writer_points | t
-(6 rows)
+ stage |      scope       | flat_in_segments 
+-------+------------------+------------------
+ build | col_build        | t
+ build | col_writer_spool | t
+ merge | col_merge_inputs | t
+ merge | col_writer_spool | t
+(4 rows)
 
 -- the merge of 44, 88 and 131 segments writes the one segment their rows make
 SELECT n, segs = 1 AS one_segment FROM peaks WHERE stage = 'merge' AND scope = 'col_merge' ORDER BY n;

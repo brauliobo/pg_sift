@@ -11,6 +11,7 @@
 #include "nodes/nodes.h"
 
 #include "col/col.h"
+#include "core/range.h"
 
 /*
  * The prices of the scans of sift are written in microseconds of a warm run, and the planner's unit is not one length of time: a unit is 1.75 us in the joins over the heap
@@ -130,6 +131,7 @@ extern int	sift_col_shred_nleaves(const SiftColShredAdapter *a, int attno);
 extern void sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, SiftColDef *def);
 extern void sift_col_shred_set_base(SiftColShredAdapter *a, int attno, int base);
 extern bool sift_col_shred_keeps_image(const SiftColShredAdapter *a, int attno);
+extern void sift_col_shred_keep_payloads(SiftColShredAdapter *a);
 /* All the shredded attributes of one tuple (values/isnull as the index build gives them, indexed by attribute) into row->val / row->elem, whose leaf ids start at first[attno] */
 extern void sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first, MemoryContext mcxt);
 /* The same read as the SQL of a query reads the values; rc is made by sift_col_shred_recheck_create and told how the query reads each leaf by _set (mode: SiftRecheckCol for a column, SiftRecheckGroup for a list) */
@@ -181,16 +183,18 @@ typedef struct SiftColOptions
 	int			key_cut_rows;	/* ignored since 5.0: parsed so that a stored value and a dump load, never read */
 	int			order_columns;	/* ignored since 5.0: parsed so that a stored value and a dump load, never read */
 	int			hll_columns;	/* offset of the "hll_columns" string, 0 = none */
+	int			sketches;		/* offset of the "sketches" string (format major 2: kll and hll groups), 0 = none */
+	int			skip_index;		/* offset of the "skip_index" string (format major 2: the columns that get a Bloom or trigram skipping index), 0 = none */
 	int			point_columns;	/* ignored since 5.0: parsed so that a stored value and a dump load, never read */
 	int			count_columns;	/* offset of the "count_columns" string, 0 = none */
 	int			point_tid_columns;	/* offset of the "point_tid_columns" string, 0 = none */
 	int			track_changes;		/* offset of the "track_changes" string (the column that identifies a row: the index replaces the older entries of a row when it is updated), 0 = off */
-	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/conn.h), 0 = none */
+	int			connect;		/* offset of the "connect" string (the parent index this one is connected to, col/v1/conn.h), 0 = none */
 	int			scope;			/* offset of the "scope" string (the derived keys of the index, col/scope.h), 0 = none */
 	int			projection;		/* offset of the "projection" string (the named projections the index holds or serves, sift.projection_index), 0 = none */
 	int			array_lengths;	/* SIFT_COL_ARRLEN_*: the arrays of the index keep their cardinality and array_length(x, 1) as two integer lanes */
 	int			dict_lookup;	/* SIFT_COL_DICT_*: which dictionaries of many strings are stored with the order of their strings, to be searched in place (column format minor 14) */
-	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/gorder.h), 0 = auto */
+	int			order_layout;	/* offset of the "order_layout" string (the layout of the global orders, col/v1/gorder.h), 0 = auto */
 	int			order_array_group;	/* offset of the "order_array_group" string (the column the global orders are grouped by), 0 = none */
 	int			order_array_columns;	/* offset of the "order_array_columns" string, 0 = none */
 	int			key_order;		/* offset of the "key_order" string, 0 = none */
@@ -198,6 +202,9 @@ typedef struct SiftColOptions
 	int			ko_last;		/* ... the last (order_array_columns) ... */
 	int			ko_group;		/* ... the first of 'group, key' (order_array_group; a cut by the group and its point directory made count(*) of one group 5 to 18 times dearer and a global ORDER BY .. LIMIT 4 to 12 times) ... */
 	bool		ko_auto;		/* ... all of it chosen by the build with key_cut ('auto: a[, b]'): the directory and key_cut are the build's, not key_order's */
+	int			ko_n;			/* ... and how many columns key_order lists (at most SIFT_KEY_ORDER_MAX), at offsets ko_name[0 .. ko_n) */
+	int			ko_name[SIFT_KEY_ORDER_MAX];
+	uint8		ko_flags[SIFT_KEY_ORDER_MAX];	/* how each is ordered: SIFT_KEY_DESC, SIFT_KEY_NULLS_FIRST (format major 2 only) */
 	int			ko_key;			/* ... the column of a key_order of one column (key_cut and point_tid_columns); all 0 while key_order is not set */
 	bool		cube_minmax;	/* the cube of every unit written from now on also holds min and max of each integer measure per group (column format minor 7) */
 	bool		key_table;		/* the segments written from now on keep a key table of each key_columns leaf where it fits 3% of the segment */
@@ -207,7 +214,7 @@ typedef struct SiftColOptions
 	bool		cluster_advice;	/* sift.cluster_advice() may recommend an order for the table (advice only, not part of the format) */
 } SiftColOptions;
 
-/* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of the rows of its dirty units cost more than the rewrite (rewrite_pays in col/maint/maint.c) */
+/* dead_rewrite_pct 0, the default: a lone segment is rewritten once the scans of the rows of its dirty units cost more than the rewrite (rewrite_pays in col/v1/maint/maint.c) */
 #define SIFT_COL_DEAD_AUTO	0
 /* Instructions a scan pays for each dead row of a unit (the unit answers net of them), for each row of a unit more than a tenth dead, and the scans expected between two VACUUMs */
 #define SIFT_COL_DEAD_ROW	700
@@ -236,24 +243,29 @@ extern const char *sift_col_options_order_layout(Relation index);	/* "" when not
 extern const char *sift_col_options_order_array_group(Relation index);	/* "" when none */
 extern const char *sift_col_options_key_order(Relation index);	/* "" when none */
 extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
+extern const char *sift_col_options_sketches(Relation index);	/* "" when none */
+extern const char *sift_col_options_skip_index(Relation index);	/* "" when none */
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */
-extern PGDLLEXPORT Datum sift_col_extents(PG_FUNCTION_ARGS);	/* (index regclass): where every run of blocks of the file lies */
-extern PGDLLEXPORT Datum sift_col_shrink_history(PG_FUNCTION_ARGS);	/* (index regclass): why the last cut left free blocks, and when the file was last cut */
-extern PGDLLEXPORT Datum sift_col_space(PG_FUNCTION_ARGS);	/* (index regclass): the free space of the file and what the shrink still has to move */
-extern PGDLLEXPORT Datum sift_col_segments(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_leaves(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_v1_index_info(PG_FUNCTION_ARGS);	/* (index regclass): rows, segments, bytes, units, simd level name, ... */
+extern PGDLLEXPORT Datum sift_col_v1_extents(PG_FUNCTION_ARGS);	/* (index regclass): where every run of blocks of the file lies */
+extern PGDLLEXPORT Datum sift_col_v1_shrink_history(PG_FUNCTION_ARGS);	/* (index regclass): why the last cut left free blocks, and when the file was last cut */
+extern PGDLLEXPORT Datum sift_col_v1_space(PG_FUNCTION_ARGS);	/* (index regclass): the free space of the file and what the shrink still has to move */
+extern PGDLLEXPORT Datum sift_col_v1_segments(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_v1_leaves(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_v1_sections(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_verify(PG_FUNCTION_ARGS);
+extern Datum sift_col_v1_verify(PG_FUNCTION_ARGS);
+struct SiftCheck;
+extern void sift_col_v1_check(struct SiftCheck *ck, Oid indexoid, bool heapallindexed);
+extern Datum sift_col_v1_tracking(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_repair(PG_FUNCTION_ARGS);	/* (index regclass, dry_run bool): the segments whose liveness pages it restored */
 extern PGDLLEXPORT Datum sift_col_promote(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_merge(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_maintain(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_maintenance_due(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_maintenance_status(PG_FUNCTION_ARGS);
-extern PGDLLEXPORT Datum sift_col_index_advice(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_v1_maintain(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_v1_maintenance_due(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_v1_maintenance_status(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_suggest_paths(PG_FUNCTION_ARGS);
 
 #endif							/* SIFT_COL_PG_H */

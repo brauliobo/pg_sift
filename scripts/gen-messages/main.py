@@ -12,17 +12,17 @@ from genlib import call_end, esc, norm, split_args, strip_comments, testing_line
 mode = sys.argv[1]
 ROOT = os.getcwd()
 COLS = ['id', 'group', 'level', 'source', 'message', 'detail', 'hint', 'fires', 'when', 'title', 'decision', 'default', 'gain', 'cost', 'benefit', 'tradeoff', 'switch', 'option', 'evidence', 'doc', 'kind', 'choice', 'why', 'off']
-CHOICE_KINDS = ('auto', 'advice', 'limit', 'action')    # a row of the summary of a build, derived from the index by src/col/build/choices.c (kind empty: a message raised where the source says)
+CHOICE_KINDS = ('auto', 'advice', 'limit', 'action')    # a row of the summary of a build, derived from the index by src/col/v1/build/choices.c (kind empty: a message raised where the source says)
 DERIVED_KINDS = ('auto', 'advice', 'limit')             # no emitter of its own: the summary NOTICE and sift.index_choices() are the places it appears
-CHOICES_C = 'src/col/build/choices.c'
-CHOICES_H = 'src/col/build/choices_gen.h'
+CHOICES_C = 'src/col/v1/build/choices.c'
+CHOICES_H = 'src/col/v1/build/choices_gen.h'
 LINE_MAX = 100
 GROUPS = {
-    'create': ('CREATE INDEX and REINDEX: choices and advice', 'What the build of a `sift_col` index chose by itself, and what it advises without changing anything. Each choice is made from the statistics and a sample of the table, is written into the options of the index (`auto: ...`), and is kept by a later `REINDEX`. The build says them all in one NOTICE (row `index-choices-summary`); the rows of kind CHOICE, ADVICE and LIMIT are the ones `sift.index_choices` returns, with their value on the index.'),
-    'limits': ('Limits reached by a build: units without what was asked', 'Where a cap of an option left units without a summary, a list or a dictionary, so a query scans them. The build changed no answer; it says how much of the index is affected.'),
-    'maint': ('Maintenance, VACUUM and background workers', 'What the merges, the vacuums and the background workers did or failed to do. A WARNING says a step failed and is retried; `VACUUM VERBOSE` adds the INFO lines.'),
-    'planning': ('Planning and execution', 'Why a query kept the normal plan, what the aggregate scan does when a resource it asked for is missing, and the optional GPU path.'),
-    'upgrade': ('Upgrade and format', 'Printed by `ALTER EXTENSION pg_sift UPDATE` or by a function of a released script; those scripts are frozen, so these texts do not change.'),
+    'create': ('`CREATE INDEX` and `REINDEX`: Choices and Advice', 'Automatic choices, advice, and layout notices emitted during index creation or rebuild.'),
+    'limits': ('Limits Reached During Build', 'Notices emitted when an option cap leaves granules without a summary or dictionary.'),
+    'maint': ('Maintenance, `VACUUM`, and Background Workers', 'Status, retries, quarantine skips, and `VACUUM VERBOSE` operational messages.'),
+    'planning': ('Planning and Execution', 'Refusal diagnostics, cache fallbacks, runtime execution notices, and the optional GPU path.'),
+    'upgrade': ('Upgrade and Format', 'Messages emitted during `CREATE EXTENSION`, `ALTER EXTENSION UPDATE`, or format checks.'),
 }
 LEVELS_OK = ('NOTICE', 'WARNING', 'INFO')
 REQUIRED = ['id', 'group', 'level', 'source', 'message', 'fires', 'when', 'decision', 'benefit', 'tradeoff', 'switch', 'doc']
@@ -98,7 +98,7 @@ def option_text(keys, errors, where):
 
 
 def derive_ids():
-    """the choices src/col/build/choices.c derives: the first field of each line of its table, {"id", function}"""
+    """the choices src/col/v1/build/choices.c derives: the first field of each line of its table, {"id", function}"""
     return set(re.findall(r'^\t\{"([a-z0-9-]+)", ', read(CHOICES_C), re.M))
 
 
@@ -174,17 +174,8 @@ def check(rows, emitters, errors):
             else:
                 errors.append('%s: evidence %s is not a file' % (where, p))
         have = numbers(evid)
-        for c in ('gain', 'cost', 'benefit', 'tradeoff', 'why'):
-            if not r[c]:
-                continue
-            if c == 'why':
-                for n in sorted(numbers(r[c]) - have):
-                    errors.append('%s: the number %s of why is in no row of docs/options.tsv named in option and in no file of evidence' % (where, n))
-                continue
-            for n in sorted(numbers(r[c]) - have):
-                errors.append('%s: the number %s of %s is in no row of docs/options.tsv named in option and in no file of evidence' % (where, n, c))
-            if not numbers(r[c]) and NONE not in r[c] and not r[c].startswith('n/a:'):
-                errors.append('%s: %s has no number: give one from the evidence, say "%s", or "n/a: reason"' % (where, c, NONE))
+        for n in sorted(numbers(r['why']) - have):
+            errors.append('%s: the number %s of why is in no row of docs/options.tsv named in option and in no file of evidence' % (where, n))
     code = derive_ids()
     want = {r['id'] for r in rows if r['kind']}
     for i in sorted(code - want):
@@ -231,31 +222,19 @@ def doc_link(r):
 def render(rows):
     by = {g: [r for r in rows if r['group'] == g] for g in GROUPS}
     levels = {l: sum(r['level'] == l for r in rows) for l in LEVELS_OK}
-    out = ['# Messages: every NOTICE, WARNING and INFO of pg_sift', '',
-           'Generated by `scripts/gen-messages.sh` from `docs/messages.tsv`; do not edit by hand. `scripts/gen-messages.sh --check` (lint) fails when a message of `src/` or `sql/` has no row, when a row names a message that no longer exists, when the DETAIL or HINT of a row differs from the source, and when a number of a row is in none of the measurements it cites.',
+    out = ['# Messages Reference', '',
+           'Generated by `scripts/gen-messages.sh` from `docs/messages.tsv`; do not edit by hand. Covers **%d NOTICE**, **%d WARNING**, and **%d INFO** client messages.' % (levels['NOTICE'], levels['WARNING'], levels['INFO']),
            '',
-           'pg_sift tells what it chose on its own and what it advises, in the message levels the client shows by default: **%d NOTICE**, **%d WARNING** and **%d INFO** (the lines `VACUUM VERBOSE` adds). Every message has one row below: the exact text (`%%s`, `%%d`, `%%u`, `%%.0f` are the values it fills in), where and when it appears, the decision pg_sift took, the benefit and the trade-off of that decision with a measured number, and how to change it or switch it off. A cell that says *%s* is a measurement nobody made yet.' % (levels['NOTICE'], levels['WARNING'], levels['INFO'], NONE),
-           '',
-           '- `SET client_min_messages = warning` hides the NOTICEs and the INFO lines for the session; the choice they report is made either way. `ALTER DATABASE .. SET client_min_messages = warning` or `ALTER ROLE` keeps it.',
-           '- `CREATE INDEX` and `REINDEX` of a `sift_col` index print ONE NOTICE for all the choices they made, the advice and the limits they reached: the count, the values on two lines, and a HINT that names `SELECT * FROM sift.index_choices(\'index\')`. That function returns one row of this page for each choice (the **CHOICE**, **ADVICE** and **LIMIT** rows below): its value on the index, the cost measured on it, the reason and the command that turns it off. `SELECT * FROM sift.help(\'slug\')` returns any row of this page by its anchor, and `sift.help()` all of them.',
-           '- The DETAIL and HINT of a message are listed in full [at the end](#detail-and-hint-in-full). An ERROR with its HINT is not in this table: the refusals of the aggregate scan are in [USAGE](USAGE.md#why-a-query-kept-the-normal-plan) and the limits in [LIMITS](LIMITS.md). LOG and DEBUG messages go to the server log, not to the client, and are not listed.',
-           '- Numbers are in the units of their source: instructions of one backend, milliseconds, bytes, percent of the index; the conditions (rows, columns, version) are in the cited option case of [OPTIONS](OPTIONS.md).',
-           '', '## Decisions at a glance', '',
-           '| Decision | Default | Gain | Cost | Change or switch off | Row |', '|---|---|---|---|---|---|']
-    for r in rows:
-        if r['title']:
-            out.append('| %s | %s | %s | %s | %s | [%s](#%s) |' % (esc(r['title']), esc(r['default']), esc(r['gain']), esc(r['cost']), esc(re.split(r'(?<!\.)\.\s', r['switch'])[0]), r['id'], r['id']))
+           'Silence `NOTICE`/`INFO` per session with `SET client_min_messages = warning;`. Query any row in SQL via `SELECT * FROM sift.help(\'<id>\');` or `SELECT * FROM sift.index_choices(\'<index>\');`. For `SiftAgg` plan refusals see [ARCHITECTURE.md#refusal-slugs](ARCHITECTURE.md#refusal-slugs); for limits see [LIMITS.md](LIMITS.md).']
     for g, (title, intro) in GROUPS.items():
-        out += ['', '## ' + title, '', intro, '', '| Message | Fires at, and when | Decision | Benefit | Trade-off | Change or switch off | Docs |', '|---|---|---|---|---|---|---|']
+        if not by[g]:
+            continue
+        out += ['', '## ' + title, '', intro, '', '| Message | Level | When it fires | Action / Switch |', '|---|---|---|---|']
         for r in by[g]:
-            out.append('| %s | %s. %s | %s | %s | %s | %s | %s |' % (msg_cell(r), esc(r['fires'].rstrip('.')), esc(r['when']), esc(r['decision']), esc(r['benefit']), esc(r['tradeoff']), esc(r['switch']), doc_link(r)))
-    out += ['', '## DETAIL and HINT in full', '', 'The text after the message line, as `psql` prints it (`%s`, `%d` fill in values). A DETAIL or HINT built from pieces at run time shows its fixed sentences.', '']
-    for r in rows:
-        if r['detail'] or r['hint']:
-            out.append('- **%s** (%s)' % (r['id'], r['level']))
-            for lab, c in (('DETAIL', 'detail'), ('HINT', 'hint')):
-                if r[c]:
-                    out.append('  - %s: %s' % (lab, esc(r[c].replace('%%', '%'))))
+            msg = '<a id="%s"></a>`%s`' % (r['id'], esc(r['message'].replace('%%', '%')))
+            when = ('%s: %s' % (esc(r['fires'].rstrip('.')), esc(r['when']))).strip(': ')
+            act = '%s (%s)' % (esc(r['switch']), doc_link(r)) if r['doc'] else esc(r['switch'])
+            out.append('| %s | %s | %s | %s |' % (msg, r['level'], when, act))
     return '\n'.join(out) + '\n'
 
 
@@ -264,7 +243,7 @@ def cstr(t):
 
 
 def render_header(rows):
-    """src/col/build/choices_gen.h: the rows as the table sift.help() and sift.index_choices() read, so that the text of a message is written once (docs/messages.tsv)"""
+    """src/col/v1/build/choices_gen.h: the rows as the table sift.help() and sift.index_choices() read, so that the text of a message is written once (docs/messages.tsv)"""
     out = ['/* Generated by scripts/gen-messages.sh from docs/messages.tsv; do not edit. */', '',
            'typedef struct SiftMsgRow', '{']
     out += ['\tconst char *%s;' % c for c in ('id', 'kind', 'choice', 'level', 'message', 'detail', 'hint', 'decision', 'why', 'off', 'typical', 'doc')]
@@ -291,7 +270,7 @@ def selftest():
         ('a reworded message', lambda r: [dict(r[0], message=r[0]['message'] + ' (reworded)')] + r[1:], 'stale row'),
         ('another level', lambda r: [dict(r[0], level='WARNING' if r[0]['level'] != 'WARNING' else 'NOTICE')] + r[1:], 'stale row'),
         ('a changed hint', lambda r: [dict(next(x for x in r if x['hint']), hint='another hint')] + [x for x in r if not x['hint']], 'in the source'),
-        ('an invented number', lambda r: [dict(r[0], benefit=r[0]['benefit'] + ' and 987654.321 times')] + r[1:], 'is in no row'),
+        ('an invented number', lambda r: [dict(next(x for x in r if x['why']), why='a gain of 987654.321 times')] + [x for x in r if not x['why']], 'is in no row'),
         ('an unknown option', lambda r: [dict(r[0], option='sift.no_such_setting')] + r[1:], 'has no row in docs/options.tsv'),
         ('a derived choice without a row', lambda r: [x for x in r if x['kind'] != 'auto'], 'derives'),
         ('a row with a kind that nothing derives', lambda r: r + [dict(r[0], id='nothing-derives', kind='auto', source=CHOICES_C, choice='x', why='x', off='x', message='nothing derives')], 'derives no such choice'),

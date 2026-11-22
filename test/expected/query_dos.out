@@ -7,8 +7,8 @@ GRANT USAGE ON SCHEMA sift TO sift_dos_user;
 SET ROLE sift_dos_user;
 SET sift.max_expansions = 1000000;
 ERROR:  permission denied to set parameter "sift.max_expansions"
-SET sift.prefix_cache_size = 1048576;
-ERROR:  permission denied to set parameter "sift.prefix_cache_size"
+SET sift.backend_cache_kb = 1048576;
+ERROR:  permission denied to set parameter "sift.backend_cache_kb"
 SHOW sift.max_expansions;
  sift.max_expansions 
 ---------------------

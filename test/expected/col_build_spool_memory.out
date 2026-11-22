@@ -10,7 +10,6 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
-SET sift.col_unit_rows = 1200;
 SET sift.test_col_segment_kb = 12000;
 SET sift.test_col_spool_share_kb = 10000;
 CREATE TABLE sp_all (id int, tenant_id int, parent_id int, status smallint, created_at timestamptz, updated_at timestamptz, a_count int, counter_a int,
@@ -82,9 +81,9 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN regexp_replace(SQLERRM, '\d+ > \d+', 'N > B');
 END $$;
 SELECT sp_unbounded(48000) AS unbounded_plan;
-                                   unbounded_plan                                   
-------------------------------------------------------------------------------------
- sift memory budget exceeded: col_build_spool: N > B bytes (col_build_budget + 4MB)
+                      unbounded_plan                       
+-----------------------------------------------------------
+ sift memory budget exceeded: col_build_spool: N > B bytes
 (1 row)
 
 DROP FUNCTION sp_unbounded(int);

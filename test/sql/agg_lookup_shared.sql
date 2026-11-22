@@ -1,5 +1,5 @@
--- The rows a Custom Scan (SiftAgg) loads from a joined table can be kept in shared memory (sift.agg_lookup_shared_kb) for the queries of other backends: this test
--- turns the cache of the backend off (sift.agg_lookup_cache_kb = 0), so that every "Cached Lookup Tables" is a segment of the shared cache, read in place. The rows
+-- The rows a Custom Scan (SiftAgg) loads from a joined table can be kept in shared memory (sift.shared_cache_kb) for the queries of other backends: this test
+-- turns the cache of the backend off (sift.backend_cache_kb = 0), so that every "Cached Lookup Tables" is a segment of the shared cache, read in place. The rows
 -- must be those of the normal plan, whatever happened to the table in between; the isolation spec agg_lookup_shared has the second backend.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -7,8 +7,8 @@ SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 4096;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 4096;
 
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, foreign_id int, day date, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev
@@ -23,12 +23,12 @@ VACUUM (FREEZE, ANALYZE) ents;
 CREATE FUNCTION cached(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_unshared bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-DECLARE budget text := current_setting('sift.agg_lookup_shared_kb');
+DECLARE budget text := current_setting('sift.shared_cache_kb');
 BEGIN
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_lookup_shared_kb = 0;
+	SET LOCAL sift.shared_cache_kb = 0;
 	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
-	PERFORM set_config('sift.agg_lookup_shared_kb', budget, true);
+	PERFORM set_config('sift.shared_cache_kb', budget, true);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
@@ -114,28 +114,28 @@ DROP ROLE lookshm_other;
 -- the budget is shared memory of all backends: only a superuser changes it
 CREATE ROLE lookshm_plain;
 SET ROLE lookshm_plain;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.shared_cache_kb = 0;
 RESET ROLE;
 DROP ROLE lookshm_plain;
 
 -- off: nothing is read and nothing is kept
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
-SET sift.agg_lookup_shared_kb = 4096;
+SET sift.shared_cache_kb = 4096;
 -- a table of more than half of the budget is loaded for its query alone, and kept once the budget is larger
 \set qa 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 0 GROUP BY 1, 2'
 \set qb 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 1 GROUP BY 1, 2'
 \set qc 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 2 GROUP BY 1, 2'
-SET sift.agg_lookup_shared_kb = 40;
+SET sift.shared_cache_kb = 200;
 SELECT cached(:'qa');
 SELECT cached(:'qa');
 SELECT * FROM same(:'qa');
-SET sift.agg_lookup_shared_kb = 4096;
+SET sift.shared_cache_kb = 4096;
 SELECT cached(:'qa');
 SELECT cached(:'qa');
 -- a budget for two of three tables of the same size: the one that was used least goes when another is kept
-SET sift.agg_lookup_shared_kb = 120;
+SET sift.shared_cache_kb = 600;
 SELECT cached(:'qb');
 SELECT cached(:'qc');
 SELECT cached(:'qb');
@@ -146,8 +146,8 @@ SELECT cached(:'qa');
 SELECT * FROM same(:'qa');
 SELECT * FROM same(:'qb');
 -- the cache of the backend first, when it is on: the same rows
-SET sift.agg_lookup_shared_kb = 4096;
-RESET sift.agg_lookup_cache_kb;
+SET sift.shared_cache_kb = 4096;
+RESET sift.backend_cache_kb;
 SELECT cached(:'text_key_join');
 SELECT cached(:'text_key_join');
 SELECT * FROM same(:'text_key_join');

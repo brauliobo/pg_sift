@@ -7,7 +7,6 @@
 #include "nodes/bitmapset.h"
 #include "storage/lmgr.h"
 
-#include "core/rowmem.h"
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
@@ -238,8 +237,34 @@ in_flight(Page page, const SiftDirSnapshot *snap)
 	return false;
 }
 
+/* Whether the directory of snap lists a segment of this generation */
+static bool
+lists_gen(const SiftDirSnapshot *snap, uint64 gen)
+{
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].gen == gen)
+			return true;
+	return false;
+}
+
 Bitmapset *
-sift_store_orphans(Relation index)
+sift_store_segment_blocks_since(Relation index, const SiftDirSnapshot *snap, const SiftDirSnapshot *before)
+{
+	BlockMap	m = {index, high_water(index), NULL, NULL, NULL, false};
+
+	for (int i = 0; i < snap->nsegs; i++)
+		if (!lists_gen(before, snap->segs[i].gen))
+		{
+			if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+				mark_immutable(&m, &snap->segs[i]);
+			else
+				mark_wbuf(&m, &snap->segs[i]);
+		}
+	return m.set;
+}
+
+Bitmapset *
+sift_store_orphans(Relation index, SiftDirSnapshot **seen)
 {
 	SiftDirSnapshot *snap;
 	Bitmapset  *ref;
@@ -259,7 +284,10 @@ sift_store_orphans(Relation index)
 		UnlockReleaseBuffer(buf);
 	}
 	bms_free(ref);
-	pfree(snap);
+	if (seen != NULL)
+		*seen = orphans != NULL ? snap : NULL;
+	if (seen == NULL || orphans == NULL)
+		pfree(snap);
 	return orphans;
 }
 
@@ -277,7 +305,7 @@ sift_store_block_extents(const Bitmapset *set, int *n)
 		runs += x != prev + 1;
 		prev = x;
 	}
-	ext = sift_rows_alloc((runs + 1) * sizeof(SiftExtent));
+	ext = palloc((runs + 1) * sizeof(SiftExtent));
 	x = -1;
 	*n = 0;
 	while ((x = bms_next_member(set, x)) >= 0)

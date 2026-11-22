@@ -1,5 +1,4 @@
-# The options as the C sources define them: the DefineCustom*Variable() and add_*_reloption() calls, read into one row per option.
-# Also the imports and constants every later part reads. Run into the namespace of main.py (exec), not imported; not a script of its own.
+# Options read from C sources: DefineCustom*Variable(), add_*_reloption(), and opt_desc[] (src/table/v1/options.c).
 import csv
 import functools
 import glob
@@ -16,7 +15,7 @@ from genlib import call_end, esc, norm, read, split_args, strip_comments, testin
 mode = sys.argv[1]
 ROOT = os.getcwd()
 CONST = {'INT_MAX': 2147483647, 'INT_MIN': -2147483648, 'MAX_KILOBYTES': 2147483647, 'true': 1, 'false': 0}
-KIND_AM = {'sift_relopt_kind': 'sift', 'col_relopt_kind': 'sift_col', 'stub_relopt_kind': None}     # None: the test access method
+KIND_AM = {'sift_relopt_kind': 'sift', 'col_relopt_kind': 'sift_col', 'stub_relopt_kind': None}
 APPLIES = ['all', 'BM25', 'sift_col', 'sift_table']
 CTX = {'PGC_USERSET': 'session', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart'}
 ARGS = {'Bool': ['name', 'short', 'long', 'var', 'default', 'ctx', 'flags'],
@@ -35,9 +34,8 @@ def string(a):
     return ''.join(re.sub(r'\\(.)', r'\1', s) for s in re.findall(r'"((?:\\.|[^"\\])*)"', a))
 
 
-# ---- the sources ----
 def collect(srcs):
-    """srcs: {path: text} -> (options, errors). An option: dict(key, kind, am, name, type, default, lo, hi, unit, ctx, short, long, members, testing, where)"""
+    """srcs: {path: text} -> (options, errors)."""
     errors, defs, texts = [], {}, {}
     for path, raw in sorted(srcs.items()):
         texts[path] = strip_comments(raw)
@@ -57,12 +55,11 @@ def collect(srcs):
                 return str(CONST[name])
             pick = [d for d in defs.get(name, []) if d[0] == path] or defs.get(name, [])
             if depth > 10 or not pick or len({d[1] for d in pick}) != 1:
-                raise ValueError('cannot evaluate %s (add it to CONST of scripts/gen-options.sh)' % name)
+                raise ValueError('cannot evaluate %s (add it to CONST of scripts/gen-options/sources.py)' % name)
             return '(%s)' % ev(pick[0][1], pick[0][0], depth + 1)
         return eval(re.sub(r'\b[A-Za-z_]\w*\b', sub, e), {'__builtins__': {}}, {})
 
     def enum_labels(var, path):
-        """the labels of a config_enum_entry or relopt_enum_elt_def array: [(label, constant text, hidden)]"""
         m = re.search(r'\b%s\[\]\s*=\s*\{(.*?)\n\s*\};' % re.escape(var), texts[path], re.S)
         return [(g[0], g[1].strip(), g[2].strip() == 'true') for g in re.findall(r'\{\s*"([^"]*)"\s*,\s*([^,}]+?)\s*(?:,\s*(\w+)\s*)?\}', m.group(1))] if m else None
 
@@ -76,21 +73,22 @@ def collect(srcs):
             line = text.count('\n', 0, start) + 1
             where = '%s:%d' % (path, line)
             a = split_args(text[op + 1:call_end(text, op)])
-            if what == 'guc' and not a[0].startswith('"'):      # the body of the sift_host_enum_option macro
+            if what == 'guc' and not a[0].startswith('"'):
                 continue
             try:
                 if what == 'guc' and text.startswith('sift_host_enum_option', start):
-                    a = dict(zip(['name', 'short', 'long', 'var', 'default', 'members'], a))      # sift_host_enum_option(name, short, long, var, boot, options, assign)
+                    a = dict(zip(['name', 'short', 'long', 'var', 'default', 'members'], a))
                     a['ctx'], a['flags'] = 'PGC_USERSET', ''
                 elif what == 'guc':
                     a = dict(zip(ARGS[t], a))
                 else:
                     a = dict(zip(RELARGS[t], a))
-                o = dict(kind=what, type=t.lower(), where=where, testing=line in tl or string(a['name']).startswith('sift.test_'), name=string(a['name']), short=norm(string(a['short'])),
-                         long=norm(string(a.get('long', 'NULL'))), unit='', ctx=CTX.get(a.get('ctx', ''), ''), lo=None, hi=None, am=None, members=None)
+                o = dict(kind=what, type=t.lower(), where=where, testing=line in tl or string(a['name']).startswith('sift.test_'),
+                         name=string(a['name']), short=norm(string(a['short'])), long=norm(string(a.get('long', 'NULL'))),
+                         unit='', ctx=CTX.get(a.get('ctx', ''), ''), lo=None, hi=None, am=None, members=None)
                 if what == 'rel':
                     if a['kind'] not in KIND_AM:
-                        errors.append('%s: add_%s_reloption(%s, ...): the reloption kind is none of %s (add it to KIND_AM of scripts/gen-options.sh)' % (where, t, a['kind'], ', '.join(KIND_AM)))
+                        errors.append('%s: add_%s_reloption(%s, ...): unknown reloption kind' % (where, t, a['kind']))
                         continue
                     o['am'] = KIND_AM[a['kind']]
                     if o['am'] is None:
@@ -103,12 +101,12 @@ def collect(srcs):
                 if o['type'] == 'enum':
                     labels = enum_labels(a['members'], path)
                     if labels is None:
-                        errors.append('%s: the labels %s of %s are not an array of this file' % (where, a['members'], o['name']))
+                        errors.append('%s: enum labels %s not found' % (where, a['members']))
                         continue
                     o['members'] = [l for l, _, hidden in labels if not hidden]
                     o['default'] = next((l for l, c, _ in labels if c == a['default']), None)
                     if o['default'] is None:
-                        errors.append('%s: the default %s of %s is none of the labels' % (where, a['default'], o['name']))
+                        errors.append('%s: default %s of %s not in enum labels' % (where, a['default'], o['name']))
                 elif o['type'] == 'string':
                     o['default'] = string(a['default'])
                 elif o['type'] == 'bool':
@@ -119,15 +117,35 @@ def collect(srcs):
                 opts.append(o)
             except (ValueError, KeyError, TypeError, SyntaxError, NameError) as ex:
                 errors.append('%s: %s' % (where, ex))
-    for p, text in texts.items():       # the table of build_reloptions() of every access method names the options it parses
+
+    # Parse opt_desc[] from src/table/v1/options.c for sift_table per-table options
+    guc_by_name = {o['name']: o for o in opts if o['kind'] == 'guc'}
+    tbl_text = texts.get('table/v1/options.c', '')
+    m_tbl = re.search(r'opt_desc\[[^\]]*\]\s*=\s*\{(.*?)\n\};', tbl_text, re.S)
+    if m_tbl:
+        for m in re.finditer(r'\{"(\w+)"\s*,\s*OPT_(BOOL|INT|STRING)\s*,\s*&(\w+)\s*,\s*([^}]+)\}', m_tbl.group(1)):
+            name, kind_s, var, unit_s = m.group(1), m.group(2).lower(), m.group(3), m.group(4).strip()
+            backing = guc_by_name.get('sift.table_' + name) or (guc_by_name.get('sift.async_maintenance') if name == 'auto_defrag' else None)
+            um = re.search(r'GUC_UNIT_(\w+)', unit_s)
+            unit = {'KB': 'kB', 'MB': 'MB', 'MS': 'ms'}.get(um.group(1), '') if um else (backing['unit'] if backing else '')
+            dflt = backing['default'] if backing else ('' if kind_s == 'string' else (True if kind_s == 'bool' else 0))
+            lo = backing['lo'] if backing else None
+            hi = backing['hi'] if backing else None
+            opts.append(dict(kind='tbl', am='sift_table', key='sift_table(%s)' % name, name=name, type=kind_s,
+                             default=dflt, lo=lo, hi=hi, unit=unit, ctx='table',
+                             short=backing['short'] if backing else '', long='', members=None,
+                             testing=False, where='table/v1/options.c'))
+
+    for p, text in texts.items():
         for m in re.finditer(r'relopt_parse_elt\s+\w*tab\[\]\s*=\s*\{(.*?)\};', text, re.S):
             am = {'col/am/options.c': 'sift_col', 'core/handler.c': 'sift'}.get(p)
             for e in re.findall(r'\{\s*"\w+"[^{}]*\}', m.group(1)):
                 if e.count('offsetof(') > 1:
-                    errors.append('src/%s: %s has a member after the offset: relopt_parse_elt of PostgreSQL 19 has none (isset_offset is gone)' % (p, e))
+                    errors.append('src/%s: %s has a member after the offset: PG 19 has no isset_offset' % (p, e))
             parsed = set(re.findall(r'\{\s*"(\w+)"\s*,\s*RELOPT_TYPE', m.group(1)))
             for n in sorted(parsed ^ {o['name'] for o in opts if o['kind'] == 'rel' and o['am'] == am}) if am else ():
-                errors.append('src/%s: the reloption %s of %s is %s' % (p, n, am, 'parsed but not registered' if n in parsed else 'registered but not parsed (relopt_parse_elt)'))
+                errors.append('src/%s: reloption %s of %s is %s' % (p, n, am, 'parsed but not registered' if n in parsed else 'registered but not parsed'))
+
     seen = set()
     for o in opts:
         if o['key'] in seen:

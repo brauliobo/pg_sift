@@ -26,7 +26,7 @@
 #include "agg/agg_int.h"
 #include "agg/pred_int.h"
 #include "col/am.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 
 /* the keys that changed in the parent since a stamp are bounded: more, and the join reads the parent (probing each one costs a descent of a btree) */
 #define FOUND_MAX_KEYS	16384

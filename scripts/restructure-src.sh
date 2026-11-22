@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The layout checker of src/. The move of the files into one folder per area (core/, bm25/, col/, agg/, table/) and
 # the rename of every file to its short name (x.c in bm25/, not sift_x.c) are done; this script keeps the layout from drifting. A big context of an
-# area is a folder of its own, one level down (agg/topn/run.c); a source includes it by its path from src/ (#include "agg/topn/run.h").
+# area is a folder of its own, one level down (agg/topn/run.c; col/v1/ and table/v1/ hold the Format 1 files and col/f2/ and core/f2/ the Format 2 ones, whose contexts are one level down in them); a source includes it by its path from src/ (#include "agg/topn/run.h").
 #
 #   scripts/restructure-src.sh --check    exit 1 and list: a file of src/ outside the area folders, a file of a renamed area that still has the
 #                                         sift_ prefix, a reference to a file of src/ that does not exist, a
@@ -9,7 +9,7 @@
 #   scripts/restructure-src.sh --map      the files of src/, area and name
 #
 # RENAMED lists the areas whose files have short names; the other areas are renamed one at a time (a source includes a file of a renamed area
-# by its path from src/: #include "bm25/query.h"). Not checked (history): releases/, results/, docs/releases/, bench/results/, bench/xbench/,
+# by its path from src/: #include "bm25/query.h"). Not checked (history): releases/, results/, docs/releases/, docs/results/, bench/xbench/,
 # the old renames' scripts, the design notes; of a CHANGELOG.md only the Unreleased part.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -24,14 +24,14 @@ check_layout() {
 	local f dir area name rc=0
 	while read -r f; do
 		dir=${f#src/}; area=${dir%%/*}; name=${dir#*/}
-		if [[ $dir != */* || $name == */*/* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/context/"; rc=1; continue; fi
+		if [[ $dir != */* || ( $name == */*/* && $dir != col/v1/*/* && $dir != table/v1/*/* && $dir != col/f2/*/* && $dir != core/f2/*/* ) || $dir == col/v1/*/*/* || $dir == table/v1/*/*/* || $dir == col/f2/*/*/* || $dir == core/f2/*/*/* ]] || ! grep -qw -- "$area" <<<"$AREAS"; then echo "$f: not in a folder of src/ ($AREAS), or deeper than area/context/ (col/v1/context/, table/v1/context/, col/f2/context/, core/f2/context/)"; rc=1; continue; fi
 		if grep -qw -- "$area" <<<"$RENAMED" && [[ ${name##*/} == sift_* ]]; then echo "$f: a file of $area/ still has the sift_ prefix"; rc=1; fi
 	done < <(src_files)
 	return $rc
 }
 
 # the tracked text files whose references are checked
-EXCLUDE='^(releases/|results/|bench/results/|docs/releases/|bench/results/|bench/xbench/|LICENSE$|scripts/restructure-src\.sh$|scripts/test-perf-select\.py$)'
+EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|docs/results/|bench/xbench/|LICENSE$|scripts/restructure-src\.sh$|scripts/test-perf-select\.py$)'
 files() { git grep -I -l -e '' -- . | grep -Ev "$EXCLUDE" || true; }
 
 read -r -d '' PERL <<'EOF' || true

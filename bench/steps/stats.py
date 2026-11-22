@@ -1,5 +1,5 @@
 """The statistics of repeated measurements, one implementation for steps/cell.py (the cell's error), steps/tables.py (the rounds of a cell)
-and steps/analytics.py (the runs of a query). `python3 -I` puts no directory on sys.path: the importers insert this one (steps/readme.py does the same).
+and steps/analytics.py (the runs of a query). `python3 -I` puts no directory on sys.path: the importers insert this one.
 """
 import math
 import statistics

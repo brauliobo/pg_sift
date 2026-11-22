@@ -30,7 +30,7 @@ indexes, and posix_fadvise(DONTNEED) on their files (after an fsync) empties the
 files cannot be opened the page cache stays. PostgreSQL 17 evicts buffer by buffer (`pg_buffercache_evict`); without pg_buffercache the run is warm and `how` says so (restart the server for a cold run). A cold run is the first
 run after the eviction; `measure` of the same statement right after is the warm run.
 
-The harness uses `measure` (steps/cases.py) and `metrics` / `load_metrics` for the rows of bench/results; the same function serves any other script.
+The harness uses `measure` (steps/cases.py) and `metrics` / `load_metrics` for the rows of docs/results; the same function serves any other script.
 """
 import argparse
 import glob
@@ -268,7 +268,7 @@ def measure(s, sql, tables=None, sized=None):
     return d
 
 
-# --- the rows of bench/results (steps/cases.py)
+# --- the rows of docs/results (steps/cases.py)
 
 def metrics(io):
     """{metric: value} of one measurement for a results file: io_<cache>_read_blocks, _hit_pct, the operations (pg_stat_io: _read_ops, _read_avg_kb, _write_ops, _fsyncs, _wal_write_ops; the host,

@@ -1,12 +1,12 @@
 -- The key journal of an index is read record by record: the changed keys of a read (sift_conn_changed) and the age check of VACUUM walk the records of the log, those past
--- sift.tomb_log_limit from its sorted runs, and hold one block of a run whatever the number of records. The scope of the walk (col_conn_changed) holds the same bytes at every
+-- sift.backend_cache_kb from its sorted runs, and hold one block of a run whatever the number of records. The scope of the walk (col_conn_changed) holds the same bytes at every
 -- size of the journal (the table of the distinct keys is the result's, 50 keys here), and the keys are the same in memory and in runs. A walk that gathers the records of the key
 -- into one array (sift_tomb_find) holds bytes a record: this test fails on it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 CREATE TABLE dim (id int PRIMARY KEY, c int NOT NULL, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim SELECT i, i % 10, 'l' || i FROM generate_series(1, 50) i;
 CREATE INDEX dim_col ON dim USING sift_col (id, c, label);
@@ -122,7 +122,7 @@ SELECT count(*) = 1 AS overflow_holds_the_same FROM sift._test_mem_highwater() W
 -- the same keys from the runs and from memory (a fresh backend with the whole log in memory)
 SELECT md5(string_agg(key::text, ',' ORDER BY key)) AS keys_in_runs FROM sift._test_conn_changed('dim_col', :lin, :'hor', 100) \gset
 \c -
-SET sift.tomb_log_limit = '1GB';
+SET sift.backend_cache_kb = '1GB';
 SELECT md5(string_agg(key::text, ',' ORDER BY key)) = :'keys_in_runs' AS same_keys_in_memory FROM sift._test_conn_changed('dim_col', :lin, :'hor', 100);
  same_keys_in_memory 
 ---------------------
@@ -130,7 +130,7 @@ SELECT md5(string_agg(key::text, ',' ORDER BY key)) = :'keys_in_runs' AS same_ke
 (1 row)
 
 -- VACUUM walks the journal for the records the age limit takes
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 VACUUM dim;
 SELECT count(*) AS keys_after_vacuum FROM sift._test_conn_changed('dim_col', :lin, :'hor', 100) WHERE key IS NOT NULL;
  keys_after_vacuum 

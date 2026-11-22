@@ -22,7 +22,9 @@ typedef struct SiftSrcPartCount
 typedef struct SiftSrcProvider
 {
 	bool		(*owns_index) (Oid indexrelam);
+	bool		(*reads_index) (Oid indexoid);	/* optional: of the indexes of its access method, the ones it reads (the format of an index says it); NULL: all of them */
 	bool		(*owns_table) (Oid tablerelam);
+	bool		(*reads_table) (Oid tableoid);	/* optional: of the tables of its access method, the ones it reads (the format of a table says it); NULL: all of them */
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
 	/*
@@ -45,7 +47,7 @@ typedef struct SiftSrcProvider
 	int			(*key_leaf) (Relation index);
 	/* Optional (NULL: the provider has no scope indexes, col/scope.h): open for a scan that reads the scope segments of the index and nothing else */
 	void	   *(*open_scope) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
-	/* Optional (NULL: no scope indexes), on a source of open_scope before its first begin: the rows of the write buffers the read expands by the pairs rd->delta lists are units of the source (col/scan/scope_delta.c) */
+	/* Optional (NULL: no scope indexes), on a source of open_scope before its first begin: the rows of the write buffers the read expands by the pairs rd->delta lists are units of the source (col/v1/scan/scope_delta.c) */
 	void		(*scope_delta) (void *impl, const struct SiftScopeRead *rd);
 	/* Optional (NULL: the provider has no partitioned tables, sift_colsrc_can_part): open for a partition read as part of its partitioned table, whose privileges and row security were checked */
 	void	   *(*open_part) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys);
@@ -62,7 +64,7 @@ typedef struct SiftSrcProvider
 	/* Optional: release the buffers the source keeps pinned between units; a partitioned table's scan calls it when it leaves a partition */
 	void		(*unpin) (void *impl);
 	/*
-	 * Optional (NULL: no connected index): the flag `leaf` of a connection of the index (col/conn.h) tells, for every row the source reads, whether the parent row was found when the
+	 * Optional (NULL: no connected index): the flag `leaf` of a connection of the index (col/v1/conn.h) tells, for every row the source reads, whether the parent row was found when the
 	 * row was stored: NULL with the lineage and the xid of the oldest stamp of the rows, else the reason it does not (a word for EXPLAIN).
 	 */
 	const char *(*conn_proof) (void *impl, int leaf, uint64 *lineage, uint32 *xmin, bool *clean);
@@ -194,7 +196,7 @@ typedef struct SiftSrcProvider
 	bool		(*run_info) (void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *nvals, uint32 *nnull, uint64 *id);
 	void		(*run_read) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows);
 	/*
-	 * The global order of a leaf (optional, col/gorder.h): every row's key and heap address sorted, in sources (stored segments, the rows of the write
+	 * The global order of a leaf (optional, col/v1/gorder.h): every row's key and heap address sorted, in sources (stored segments, the rows of the write
 	 * buffers). gorder_open: their number, or -1 when the order cannot answer. gorder_info: the entries of source i and how many have a value (the first ones;
 	 * the others are NULL rows by address). gorder_head: the first max(w, up to p) entries of the chunk that holds entry p, as keys and heap addresses into buf (SiftCGOrdBuf: the chunk's first entry, its entries, the count decoded). The entries are
 	 * of rows that may have died since: the caller has the heap say which are live and what they hold.
@@ -287,16 +289,6 @@ typedef struct SiftSrcProvider
 	 * slots (as filter_types does).
 	 */
 	void		(*read_jnull) (void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits);
-	/*
-	 * Optional (NULL: the Vulkan path does not run on this source). gpu_unit: the unit just returned by `next` is stored, has no dead row and
-	 * every page it has rows on is all-visible, so its chunks are the rows a query sees. gpu_dense: the leaf has no NULL and no overflowed
-	 * value in the unit (from its zone). gpu_chunk: the leaf's codec blob; false when the leaf has none (a NULL, an inline text value).
-	 * gpu_dict: the dictionary of a text leaf (the one its codes are of).
-	 */
-	bool		(*gpu_unit) (void *impl, const SiftSrcUnit *unit, SiftSrcGpuUnit *g);
-	bool		(*gpu_dense) (void *impl, const SiftSrcUnit *unit, int leaf);
-	bool		(*gpu_chunk) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcGpuChunk *c);
-	void		(*gpu_dict) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcDict *dict);
 } SiftSrcProvider;
 
 struct SiftSrcSource

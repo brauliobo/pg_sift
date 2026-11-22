@@ -1,23 +1,23 @@
 # The files that were split into a folder of files (a folder for each context): NEWFOLDER/<TAB>OLDFILE<TAB>PREFIX of the functions that a split made global.
 # scripts/focus/ and scripts/focus-pins.tsv were made for the old file names: a function of a new file is looked up under the old file too (scripts/ci/affected.sh focus_regex),
 # with and without the prefix, and scripts/restructure-src.sh accepts the old path in those two files. A table made again by scripts/focus-gen.sh names the new files and needs none of this.
-src/col/maint/	src/col/maint.c	maint_
-src/col/scan/	src/col/scan.c	scan_
-src/col/test/	src/col/test.c	ctest_
-src/col/seg_write/	src/col/seg_write.c	segw_
-src/col/seg/	src/col/seg.c	seg_
-src/table/funcs_test.c	src/table/funcs.c	
+src/col/v1/maint/	src/col/maint.c	maint_
+src/col/v1/scan/	src/col/scan.c	scan_
+src/col/v1/test/	src/col/test.c	ctest_
+src/col/v1/seg_write/	src/col/seg_write.c	segw_
+src/col/v1/seg/	src/col/seg.c	seg_
+src/table/v1/funcs_test.c	src/table/v1/funcs.c	
 src/col/dictshm_test.c	src/col/dictshm.c	
-src/col/keycols/	src/col/keycols.c	
-src/col/keycols/	src/col/keycols_cube.c	
-src/col/keycols/	src/col/keycols_gorder.c	
-src/col/keycols/	src/col/keycols_point.c	
-src/col/keycols/	src/col/keycols_stats.c	
+src/col/v1/keycols/	src/col/keycols.c	
+src/col/v1/keycols/	src/col/keycols_cube.c	
+src/col/v1/keycols/	src/col/keycols_gorder.c	
+src/col/v1/keycols/	src/col/keycols_point.c	
+src/col/v1/keycols/	src/col/keycols_stats.c	
 src/agg/expr/	src/agg/plan_expr.c	
 src/agg/plan/	src/agg/plan.c	
 src/agg/order/	src/agg/plan_order.c	
 src/agg/two/	src/agg/plan_two.c	
-src/col/wbuf/	src/col/wbuf.c	wbuf_
+src/col/v1/wbuf/	src/col/wbuf.c	wbuf_
 src/col/am/	src/col/am.c	am_
 src/agg/exec/	src/agg/agg.c	
 src/agg/topn/	src/agg/topn.c	
@@ -31,14 +31,14 @@ src/agg/update/	src/agg/update.c
 src/agg/part/	src/agg/part.c	
 src/agg/lookup/	src/agg/lookup.c	
 src/agg/combo/	src/agg/combo.c	
-src/col/build/	src/col/build.c	colb_
-src/col/preagg_read/	src/col/preagg_read.c	cpread_
+src/col/v1/build/	src/col/build.c	colb_
+src/col/v1/preagg_read/	src/col/preagg_read.c	cpread_
 src/col/codec/	src/col/codec.c	cc_
-src/col/preagg/	src/col/preagg.c	cpagg_
-src/col/dict/	src/col/dict.c	cdict_
-src/table/load/	src/table/load.c	load_
+src/col/v1/preagg/	src/col/preagg.c	cpagg_
+src/col/v1/dict/	src/col/dict.c	cdict_
+src/table/v1/load/	src/table/v1/load.c	load_
 src/col/autocut/	src/col/autocut.c	acut_
 src/agg/par/	src/agg/par.c	
 src/agg/vk/	src/agg/vk.c	
 src/bm25/runs/	src/bm25/runs.c	runs_
-src/col/maint/merge_pick.c	src/col/maint/merge.c	maint_
+src/col/v1/maint/merge_pick.c	src/col/v1/maint/merge.c	maint_

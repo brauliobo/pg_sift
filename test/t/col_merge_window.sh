@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A column merge holds the decoded units of a window, not a copy of each input: 12 inputs of about 17,000 rows at 1 MB of maintenance_work_mem keep the units of
 # the inputs, the batch they are folded into and the segments open (scope col_merge_window, test/mem-budgets.tsv) under 11 MB (13.1 MB when every input kept the arrays of
 # its largest unit), 48 inputs no more than 3 MB over that, and a merge cut by a key (the chunks of its inputs and the partition written, scope col_merge) under 44 MB

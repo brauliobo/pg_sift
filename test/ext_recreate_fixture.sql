@@ -4,7 +4,6 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
-SET sift.test_vstore_columns = 'uid,url';
 DROP TABLE IF EXISTS re_t, re_doc, re_ev, re_pairs;
 
 CREATE TABLE re_t (id int PRIMARY KEY, g int, uid uuid, url text) WITH (autovacuum_enabled = off);
@@ -34,8 +33,7 @@ SELECT g, count(*), sum(id) FROM re_t GROUP BY g ORDER BY g LIMIT 3;
 SELECT id FROM re_doc WHERE body @@> 'word3' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 SELECT p.s, count(*), sum(e.v) FROM re_ev e JOIN re_pairs p ON p.m = e.m GROUP BY p.s ORDER BY p.s;
 
--- the shared value store, the scope leaf, the projection
-SELECT store, column_name, indexes_using FROM sift.col_value_store_status WHERE table_name = 're_t'::regclass ORDER BY 1;
+-- the scope leaf, the projection
 SELECT path FROM sift.col_leaves('re_ev_col') WHERE path LIKE '%#scope';
 SELECT projection, index, state FROM sift.projection_status WHERE projection = 're_proj';
 

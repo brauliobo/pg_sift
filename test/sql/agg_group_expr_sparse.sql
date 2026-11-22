@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-SET sift.col_unit_rows = 400;
 
 -- 3,000 rows in units of 400: the first units hold a day each of 400 values over a range of 6,000 days, the last a few rows over the same range
 CREATE TABLE gs_facts (id int, d date, v int, amount int) WITH (autovacuum_enabled = false);

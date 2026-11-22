@@ -1,4 +1,4 @@
--- The key journal of a connected parent index (src/col/conn.c, docs/COL-CONNECT.md): once a child index is connected, the parent keeps a record (key, transaction) for every
+-- The key journal of a connected parent index (src/col/v1/conn.c, docs/COL-CONNECT.md): once a child index is connected, the parent keeps a record (key, transaction) for every
 -- entry an UPDATE, DELETE or key change ended, and sift_conn_changed(stamp) returns the keys of the records at or after the stamp's horizon, or says why it cannot.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

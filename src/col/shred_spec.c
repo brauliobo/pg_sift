@@ -515,8 +515,8 @@ sift_shred_spec_parse(const char *text)
 	spec = palloc0(sizeof(SiftShredSpec));
 	spec->ncols = P.ncols;
 	spec->ngroups = P.ngroups;
-	spec->cols = P.cols;
-	spec->groups = P.groups;
+	spec->cols = repalloc(P.cols, Max(P.ncols, 1) * sizeof(SiftShredColDef));
+	spec->groups = repalloc(P.groups, P.ngroups * sizeof(SiftShredGroupDef));
 	spec->root = P.root;
 	for (int g = 0; g < P.ngroups; g++)
 	{

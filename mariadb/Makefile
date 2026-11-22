@@ -18,12 +18,10 @@ SIFT_VERSION ?= $(shell cat $(HERE)/VERSION)
 MDB_VER := $(shell sed -n 's/^\#define MYSQL_SERVER_VERSION[[:space:]]*"\(.*\)"/\1/p' $(MDB_INC)/mysql_version.h)
 CC      ?= gcc
 
-# -Dsift_count: the codec's name is that of a UDF
 CFLAGS  = -O2 -g -std=gnu11 -fPIC -ffp-contract=off -fwrapv -fno-strict-aliasing -D_GNU_SOURCE -MMD -MP -Wall \
-          -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation $(SIFT_BASE_ISA) \
+          -Wno-declaration-after-statement -Wno-unused-function -Wno-misleading-indentation $(SIFT_BASE_ISA) $(SIFT_FMV_CPPFLAGS) \
           -fvisibility=hidden -DSIFT_HOST_MARIADB -I$(HERE)/host -I$(HERE) $(SIFT_INC) -DSIFT_MDB_SERVER_VERSION='"$(MDB_VER)"' \
-          -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"' \
-          -Dsift_count=codec_count
+          -DSIFT_MDB_RELEASE='"$(SIFT_VERSION)"'
 LIBS    = -lm -lpthread -ldl
 # what the UDFs take from the server process (isa-check: nothing else may stay undefined)
 SERVER_SYMBOLS = my_printf_error mysql_real_data_home sql_service_handler
@@ -81,8 +79,8 @@ mdb-inc:
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-mariadb.sh).
 isa-check: $(OUT)/libsift_udf.so
-	@HOST_SYMBOLS="$(SERVER_SYMBOLS)" sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o
+	@HOST_SYMBOLS="$(SERVER_SYMBOLS)" sh ../scripts/port-isa-check.sh $(OUT)/libsift_udf.so $(OUT)/*.o $(OUT)/*/*.o $(OUT)/*/*/*.o
 
 .PHONY: all mdb-inc isa-check
 
--include $(wildcard $(OUT)/*.d $(OUT)/*/*.d)
+-include $(wildcard $(OUT)/*.d $(OUT)/*/*.d $(OUT)/*/*/*.d)

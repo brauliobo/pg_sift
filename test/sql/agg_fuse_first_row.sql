@@ -49,8 +49,8 @@ INSERT INTO ff_cases VALUES
   SELECT 'h', f.h, count(*), sum(m.v) FROM ff_facts f LEFT JOIN LATERAL (SELECT v, w FROM ff_map WHERE ff_map.k = f.k AND f.g <> 3 LIMIT 1) m ON true GROUP BY 2 $q$);
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
 DROP FUNCTION ff_check(text);
 DROP TABLE ff_cases, ff_facts, ff_map;

@@ -1,5 +1,5 @@
 -- Every backend that reads a sift_table keeps the tombstone log of the table sorted (64 bytes an entry with the scratch of a first look) up to what
--- sift.tomb_log_limit allows, and the entries past it in sorted runs on temp files: a read and a statement of any number of rows complete, with the memory of the backend
+-- sift.backend_cache_kb allows, and the entries past it in sorted runs on temp files: a read and a statement of any number of rows complete, with the memory of the backend
 -- following the setting and not the log (test/t/tbl_tomb_spill.sh compares the rows with a heap twin). The test lowers the setting to 16 kB, 256 entries.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -11,7 +11,7 @@ DELETE FROM tl WHERE id % 4 = 0;
 SELECT count(*) AS default_limit FROM tl;
 -- a new backend reads the log from its start
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS lowered, sum(v) AS lowered_sum FROM tl WHERE id % 4 <> 0;
 SELECT count(*) AS lowered_all FROM tl;
 -- VACUUM consumes the log, whatever its length: the table reads the same
@@ -22,7 +22,7 @@ SELECT count(*) AS after_vacuum FROM tl;
 CREATE TABLE tm (id int) USING sift_table;
 INSERT INTO tm SELECT i FROM generate_series(1, 2000) i;
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 DELETE FROM tm;
 SELECT count(*) AS left_rows FROM tm;
 

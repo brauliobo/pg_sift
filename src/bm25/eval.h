@@ -17,6 +17,7 @@
 
 #include "bm25/attr.h"
 #include "core/filter.h"
+#include "core/tidbridge.h"
 #include "bm25/parallel.h"
 #include "bm25/query.h"
 #include "core/store.h"
@@ -74,12 +75,35 @@ typedef struct SiftPlan SiftPlan;
 extern SiftPlan *sift_plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags);
 
 /*
+ * A ranked plan reads a wide leaf as the few terms with the largest bounds until a search finds that the others could change a result
+ * (sift_plan_tail_settled, with the K-th score of a search of those terms); sift_plan_widen then reads the terms that could (bm25/tail.c), all of them
+ * for a theta of -infinity, which the unranked iteration and the counts need from the start (they widen the plan themselves).
+ */
+extern void sift_plan_widen(SiftPlan *plan, float4 theta);
+extern bool sift_plan_tail_settled(const SiftPlan *plan, float4 theta);
+/* The terms the plan leaves out reach the bound of those it reads: no search of them can settle it, so it is widened at once (bm25/tail.c) */
+extern bool sift_plan_tail_doomed(const SiftPlan *plan);
+/* A leaf weighed from the memo (bm25/wmemo.c) is widened to the K-th score the memo has for k hits, or gets its top terms; and a search remembers its K-th score */
+extern bool sift_plan_warm_begin(SiftPlan *plan, int64 k);
+extern void sift_plan_install_top(SiftPlan *plan);
+extern void sift_plan_remember_theta(const SiftPlan *plan, int64 k, float4 theta);
+
+/*
  * Restricts the ranked search to the tuples the filter keeps, a superset of those that pass the
  * caller's own quals: superblocks, blocks and documents it drops are never bounded, scored or
  * verified. Call before sift_rank_begin; the filter must outlive the ranker. Iteration and counts
  * ignore it.
  */
 extern void sift_plan_set_filter(SiftPlan *plan, const SiftFilter *filter);
+
+/*
+ * The same for the TIDs a structured scan kept (core/tidbridge.h), a finalized bridge that must outlive the ranker. Only its superblocks are units; a segment
+ * superblock whose docmap pages the bridge has none of is not read, and the offsets of a block are cut to the bridge's before the documents are scored. A lossy page
+ * of the bridge keeps every offset of the page: the caller's own verification stays the judge of a tuple.
+ */
+extern void sift_plan_set_tidbridge(SiftPlan *plan, const SiftTidBridge *bridge);
+/* Reads the term blobs of the plan's leaves in all its segments as one batch of reads, before the searches open them */
+extern void sift_plan_prefetch_blobs(const SiftPlan *plan);
 /* Tests of INCLUDE columns the ranker applies to the docs of a block; they must outlive the plan */
 extern void sift_plan_set_attrs(SiftPlan *plan, const SiftAttrTest *tests, int n);
 
@@ -174,6 +198,25 @@ typedef bool (*SiftVerifyFn) (void *arg, ItemPointer tid, bool want_doc, text **
 
 typedef struct SiftRanker SiftRanker;
 
+#ifdef SIFT_TESTING
+/* the walk of a ranker forced (SiftRankMode), -1: chosen by the query: the three agree on every result */
+extern PGDLLIMPORT int sift_test_rank_mode;
+extern PGDLLIMPORT bool sift_test_block_tf_check;
+
+/* What the ranker did instead of the default walk (sift._test_read_stats) */
+typedef struct SiftRankStats
+{
+	uint64		inverted_segs;	/* segments whose units are the superblocks of a bridge */
+	uint64		bridge_docmap_skips;	/* superblocks whose docmap was not read for want of a page of the bridge */
+	uint64		tail_settled;	/* searches of deferred wide leaves whose top terms decided every result */
+	uint64		tail_widened;	/* ... and those that went again on the terms that could change one */
+	uint64		tail_direct;	/* segments of a leaf that went again on those terms as they are */
+	uint64		tail_unioned;	/* ... and on the one union of them */
+	uint64		tail_trimmed;	/* ... of which left terms out */
+} SiftRankStats;
+extern SiftRankStats sift_rank_stats;
+#endif
+
 extern SiftRanker *sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg);
 extern bool sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score);
 extern float4 sift_rank_max_score(SiftRanker *r);	/* best verified score, runs the search */
@@ -240,6 +283,7 @@ typedef struct SiftEstimate
 	double		docs;
 	double		postings;
 	double		terms;
+	double		range_terms;	/* of terms: those of a leaf that expanded to several in a segment, read in order from one seek of the dictionary */
 	double		ndocs;			/* documents in the index */
 } SiftEstimate;
 

@@ -50,6 +50,7 @@ LANES = {
     'es':         ('Elasticsearch', 'es', 2, None),
     'es_cached':  ('Elasticsearch, request cache on', 'es', 2, None),
     'ch':         ('ClickHouse', 'ch', 3, None),
+    'ch_proj':    ('ClickHouse, PROJECTIONs', 'ch', 3, None),
     'ch_mut':     ('ClickHouse, ALTER UPDATE', 'ch', 3, None),
     'ch_rmt':     ('ClickHouse, ReplacingMergeTree', 'ch', 3, None),
     'citus':      ('Citus columnar', 'citus', 4, 'store'),
@@ -57,7 +58,7 @@ LANES = {
 }
 
 
-DEFAULT_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_ord', 'sift_table_maint', 'es', 'es_cached', 'ch', 'citus']
+DEFAULT_ENGINES = ['pg', 'sift', 'sift_maint', 'sift_table', 'sift_table_ord', 'sift_table_maint', 'es', 'es_cached', 'ch', 'ch_proj', 'citus']
 
 
 PG_ENGINES = ['pg', 'sift', 'sift_table', 'sift_table_ord', 'sift_maint', 'sift_table_maint', 'citus', *COMPRESSION]
@@ -74,7 +75,7 @@ MODES = {'pg': 'commit', 'sift': 'commit', 'sift_maint': 'commit', 'sift_table':
 MAINT = {'sift_maint': ('sift', ('sift.col_auto_merge',)), 'sift_table_maint': ('sift_table', ('sift.table_auto_defrag',))}
 
 
-CH_TABLE = {'ch': 'store.orders', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}
+CH_TABLE = {'ch': 'store.orders', 'ch_proj': 'store.orders_proj', 'ch_mut': 'store.orders_mut', 'ch_rmt': 'store.orders_rmt'}
 
 
 is_ch = lambda eid: eid in CH_TABLE

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and smoke-test the release tarball of the MariaDB extension (sift-mariadb-VERSION-linux-x86_64.tar.gz: libsift_udf.so for each
+# Build and smoke-test the release tarball of the MariaDB extension (sift-mariadb-VERSION-linux-ARCH.tar.gz: libsift_udf.so for each
 # supported MariaDB series, sql/functions.sql, sql/sift.sql, LICENSE, NOTICE, README.md, BUILD-INFO) for a git ref, in throwaway docker
 # containers of the stock MariaDB images. The source is `git archive REF`; the recipe (packaging/mariadb/) and the smoke test
 # (mariadb/tests/smoke.sh) come from this checkout. The version is the tag (v1.4.0 -> 1.4.0) and must equal mariadb/VERSION at the tag;
@@ -16,6 +16,7 @@
 # test. BUILD-INFO in the tarball lists the server version and the glibc each library needs.
 set -euo pipefail
 
+ARCH=$(uname -m); ARCH=${ARCH/arm64/aarch64}   # x86_64 or aarch64: the host builds the tarball of its own architecture
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SERIES=${SERIES:-10.11 11.4 11.8 12.1 13.0}
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
@@ -33,11 +34,11 @@ version() { # version REF: the tag without "v" (which must match mariadb/VERSION
 
 build() { # build REF OUTDIR
 	local ref=$1 out ver epoch src work name s; mkdir -p "$2" && out=$(cd "$2" && pwd)
-	ver=$(version "$ref"); epoch=$(git -C "$REPO" log -1 --format=%ct "$ref"); name=sift-mariadb-$ver-linux-x86_64
+	ver=$(version "$ref"); epoch=$(git -C "$REPO" log -1 --format=%ct "$ref"); name=sift-mariadb-$ver-linux-$ARCH
 	src=$(mktemp -d -p "$TMP"); work=$(mktemp -d -p "$TMP")
 	git -C "$REPO" archive "$ref" mariadb src sqlite/host scripts LICENSE NOTICE | tar x -C "$src"
 	for s in $SERIES; do
-		docker run --rm --cpus "${DOCKER_CPUS:-$("$REPO/scripts/docker-cpus.sh")}" --entrypoint bash -e SERIES="$s" -e VER="$ver" -e HOST_UID="$(id -u)" \
+		docker run --rm --cpus "${DOCKER_CPUS:-$("$REPO/scripts/docker-cpus.sh")}" --entrypoint bash -e SERIES="$s" -e VER="$ver" -e ARCH="$ARCH" -e HOST_UID="$(id -u)" \
 			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$src:/src:ro" -v "$work:/out" "mariadb:$s" /pkg/container.sh build
 	done
 	mkdir -p "$work/$name/sql" && cp -r "$work/lib" "$work/$name/lib"
@@ -52,9 +53,9 @@ build() { # build REF OUTDIR
 
 test_tarball() { # test_tarball TARBALL [SERIES...]
 	local tarball base ver s; tarball=$(realpath "$1"); shift
-	base=$(basename "$tarball" .tar.gz); ver=${base#sift-mariadb-}; ver=${ver%-linux-x86_64}
+	base=$(basename "$tarball" .tar.gz); ver=${base#sift-mariadb-}; ver=${ver%-linux-*}
 	for s in ${*:-$SERIES}; do
-		docker run --rm --entrypoint bash -e SERIES="$s" -e VER="$ver" -e TARBALL="$(basename "$tarball")" \
+		docker run --rm --entrypoint bash -e SERIES="$s" -e VER="$ver" -e ARCH="$ARCH" -e TARBALL="$(basename "$tarball")" \
 			-v "$REPO/packaging/mariadb:/pkg:ro" -v "$REPO/packaging/net.sh:/net.sh:ro" -v "$REPO/mariadb:/mdb:ro" -v "$(dirname "$tarball"):/out:ro" "mariadb:$s" /pkg/container.sh test
 	done
 }

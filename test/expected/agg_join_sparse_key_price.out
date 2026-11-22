@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
-SET sift.agg_lookup_max_kb = 64;
+SET work_mem = '128kB';
 CREATE TABLE par_dense (id int PRIMARY KEY, a int) WITH (autovacuum_enabled = false);
 INSERT INTO par_dense SELECT g, g % 7 FROM generate_series(1, 20000) g;
 CREATE TABLE par_sparse (id int PRIMARY KEY, a int) WITH (autovacuum_enabled = false);

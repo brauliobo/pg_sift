@@ -5,10 +5,11 @@
 #include "postgres.h"
 
 #include "col/am.h"
-#include "col/gorder.h"
+#include "col/v1/gorder.h"
 #include "agg/gord/int.h"
 #include "core/cmp.h"
 #include "core/limits.h"
+#include "core/cachebudget.h"
 
 #define GORD_HEAD_MIN	32
 
@@ -41,7 +42,7 @@ gbuf_get(void)
 	else
 	{
 		if (gbuf_cx == NULL)
-			gbuf_cx = AllocSetContextCreate(TopMemoryContext, "sift cache cursors", ALLOCSET_DEFAULT_SIZES);
+			gbuf_cx = sift_cache_create_context("sift cache cursors");
 		b = MemoryContextAlloc(gbuf_cx, sizeof(SiftCGOrdBuf));
 	}
 	b->at = UINT32_MAX;

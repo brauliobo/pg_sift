@@ -29,18 +29,15 @@ CREATE DATABASE arena_dbs_c TEMPLATE arena_dbs_t;
 -- a and b hold a slot each with the values of 500 rows
 \c arena_dbs_a
 SET sift.async_maintenance = off;
-SET sift.col_wbuf_ref = on;
 INSERT INTO t SELECT i, i % 10, i FROM generate_series(1, 500) i;
 \c arena_dbs_b
 SET sift.async_maintenance = off;
-SET sift.col_wbuf_ref = on;
 INSERT INTO t SELECT i, i % 10, i FROM generate_series(1, 500) i;
 -- a is dropped and every slot is taken: the first row of c has none, and a slot of a dead buffer is given back
 \c postgres
 DROP DATABASE arena_dbs_a WITH (FORCE);
 \c arena_dbs_c
 SET sift.async_maintenance = off;
-SET sift.col_wbuf_ref = on;
 SET max_parallel_workers_per_gather = 0;
 SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift.col_arena_status()));
  _test_arena_slots 

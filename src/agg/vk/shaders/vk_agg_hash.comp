@@ -1,0 +1,86 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_agg_hash.comp - one to eight group keys of any range: a lock-free open-addressed hash table in device memory. A slot is its state
+ * word (0 empty, 1 being claimed, the hash with the top bit set when ready), the key words, the NULL mask of the key, the rows of the group
+ * and three words of every aggregate; a row finds the slot of its key or claims an empty one (the winner of the compare-and-swap writes
+ * the key and the initial accumulators, then publishes the state) and adds into the accumulators with atomics. The table is cut for the
+ * groups expected; when it fills, the overflow word of the result says so and the host runs the scan again elsewhere.
+ */
+#include "common_agg.glsl"
+
+layout(local_size_x = 256) in;
+
+#include "common_hash.glsl"
+
+void main()
+{
+	uint tid = gl_LocalInvocationID.x;
+	uint naggs = ctl[J_NAGGS], ngran = ctl[J_NGRAN], nk = ctl[J_NKEYS];
+
+	for (uint gi = gl_WorkGroupID.x; gi < ngran; gi += gl_NumWorkGroups.x)
+	{
+		uint dtrow = granule_open(gi);
+
+		for (uint r = tid; r < g_nrows; r += WG)
+		{
+			bool pending = row_begin(gi, dtrow, r);
+			int64_t kw[8];
+			int64_t nm = 0l, h = 0x9E3779B97F4A7C15l;
+
+			for (uint j = 0u; j < nk && pending; j++)
+			{
+				uint kr = ctl[J_KEYREG + j];
+				bool ok = rvalid(kr);
+
+				kw[j] = ok ? R[kr] : 0l;
+				nm |= ok ? 0l : (1l << j);
+				h = mix64(h ^ kw[j]);
+			}
+			h = mix64(h ^ (nm + 0x632BE59BD9B4E019l));
+			uint base = 0xFFFFFFFFu, slot = uint(h) & ctl[J_HT_MASK], probes = 0u, spins = 0u;
+			bool live = pending;
+
+			while (any_pending(pending))
+				if (pending)
+					probe_step(pending, slot, probes, spins, base, h, kw, nk, nm, naggs);
+			if (!live || base == 0xFFFFFFFFu)
+				continue;
+			atomicAdd(ht[base + 2u + nk], 1l);
+			for (uint a = 0u; a < naggs; a++)
+			{
+				uint k = ctl[J_AGGKIND + a], o = base + 3u + nk + a * 3u;
+
+				if (!agg_in(a))
+					continue;
+				if (k == AK_COUNT_STAR)
+					atomicAdd(ht[o], 1l);
+				else if (!agg_vok(a))
+					continue;
+				else if (k == AK_COUNT)
+					atomicAdd(ht[o], 1l);
+				else if (k == AK_SUM_I)
+				{
+					int64_t v = agg_v(a);
+					atomicAdd(ht[o], sum_lo(v));
+					atomicAdd(ht[o + 1u], sum_hi(v));
+					atomicAdd(ht[o + 2u], 1l);
+				}
+				else if (k == AK_SUM_F)
+				{
+					acc_addf(o, dbl(agg_v(a)));
+					atomicAdd(ht[o + 2u], 1l);
+				}
+				else
+				{
+					int64_t v = agg_key(a, k);
+					if (k == AK_MIN || k == AK_MIN_F)
+						atomicMin(ht[o], v);
+					else
+						atomicMax(ht[o], v);
+					atomicAdd(ht[o + 2u], 1l);
+				}
+			}
+		}
+	}
+}

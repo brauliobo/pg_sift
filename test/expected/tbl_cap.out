@@ -83,7 +83,6 @@ SELECT count(*) AS wrong FROM cap_bp WHERE v <> repeat('x', 1000) || id;
      0
 (1 row)
 
-RESET sift.table_backpressure;
 DROP TABLE cap, cap_one, cap_cmds, cap_bp;
 DROP PROCEDURE load_cap;
 DROP EXTENSION pg_sift;

@@ -77,7 +77,6 @@ DROP INDEX au_off, au_named;
 -- a setting below 15 chooses nothing (the index stays readable by the release that reads that setting) and a later REINDEX does
 SET sift.col_format_minor = 6;
 CREATE INDEX au_old ON au USING sift_col (id, parent_id, set_id, region_id, val) WITH (key_cut = 'off', write_buffer_limit = 4096);
-RESET sift.col_format_minor;
 SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;
 REINDEX INDEX au_old;
 SELECT au_option('au_old') AS option, au_minors('au_old') AS minors;

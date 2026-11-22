@@ -245,7 +245,6 @@ SELECT fs_restarted('SELECT floor(x / 5) + x AS k, count(*) FROM fs_t WHERE x BE
 (1 row)
 
 -- off: the values keep their ids (the cache starts again for the values of the same range), the rows are the same
-SET sift.agg_float_step = off;
 SELECT fs_restarted('SELECT floor(x / 5) AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') > 0 AS off_restarts;
  off_restarts 
 --------------
@@ -259,7 +258,6 @@ SELECT count(*) FILTER (WHERE NOT same) AS differing, count(*) AS queries FROM f
          0 |      45
 (1 row)
 
-RESET sift.agg_float_step;
 -- rows changed after the seal
 UPDATE fs_t SET x = x + 12.3 WHERE id % 11 = 0;
 DELETE FROM fs_t WHERE id % 13 = 0;

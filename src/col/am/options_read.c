@@ -4,7 +4,7 @@
 #include "postgres.h"
 #include "access/reloptions.h"
 #include "col/am/am_int.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 #include "col/scope.h"
 #include "core/lane.h"
 #include "core/ops.h"
@@ -34,6 +34,15 @@ sift_col_paths_redecide(Relation index)
 	return false;
 }
 
+/* paths is empty or a bare 'auto': no leaf of a jsonb column is chosen yet */
+bool
+sift_col_paths_unresolved(Relation index)
+{
+	const char *opt = sift_col_options_paths_raw(index);
+
+	return opt[0] == '\0' || strcmp(opt, "auto") == 0;
+}
+
 bool
 sift_col_paths_auto(const char *opt)
 {
@@ -56,6 +65,18 @@ COL_OPT_STR(sift_col_options_compression, compression, "")
 COL_OPT_STR(sift_col_options_preagg, preagg, "")
 
 /*
+ * No key column: the triggers of each row give the address of the version it ends (a column cannot be called ctid). That is track_changes = ctid, and every tracking of an index of
+ * a format that follows addresses (format major 2): it is on unless the option says off
+ */
+bool
+sift_col_track_ctid(Relation index)
+{
+	const char *rk = sift_col_options_row_key(index);
+
+	return sift_col_ops(index)->tracks_addresses ? strcmp(rk, "off") != 0 : strcmp(rk, "ctid") == 0;
+}
+
+/*
  * An ALTER INDEX is checked by building the state the new options give; an index that has segments written under the leaf list of the old options (stale) is not left with the
  * new ones, so that it goes on serving while its replacement is built beside it (CREATE INDEX CONCURRENTLY, which writes the stamp of its scope as a REINDEX does). An index with
  * no segment has nothing to write again: its first write takes the options. paths = 'auto' without a spec (or RESET (paths)) on an index with a jsonb column has no leaf list until
@@ -66,7 +87,7 @@ sift_col_alter_check(Relation index)
 {
 	if (!sift_col_is_index(index))
 		return;
-	if (sift_col_paths_redecide(index))
+	if (sift_col_ops(index)->format_major == 1 && sift_col_paths_redecide(index))
 	{
 		SiftDirSnapshot *snap;
 
@@ -100,6 +121,13 @@ bool
 sift_col_options_key_order_auto(Relation index)
 {
 	return strncmp(sift_col_options_key_order(index), "auto:", 5) == 0;
+}
+
+/* whether key_order is a bare 'auto': the build of an index of format major 2 chooses it from the rows it reads */
+bool
+sift_col_key_order_auto_pending(Relation index)
+{
+	return strcmp(sift_col_options_key_order(index), "auto") == 0;
 }
 
 /* the column that track_changes names (am_col_amoptions took the quotes out of it) */

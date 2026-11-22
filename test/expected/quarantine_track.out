@@ -142,9 +142,9 @@ SELECT sift._test_poke('w_idx', 2, 8176, 9, 2);
 SELECT expect(format($$ %s $$, q)) AS first_write FROM unnest(ARRAY[
 	'DELETE FROM u WHERE id BETWEEN 1 AND 300', 'UPDATE u SET id = id + 100000 WHERE id BETWEEN 301 AND 310', 'INSERT INTO u VALUES (30000, 1)',
 	'DELETE FROM w WHERE id BETWEEN 1 AND 300', 'UPDATE w SET v = 9 WHERE id BETWEEN 301 AND 310', 'INSERT INTO w VALUES (30000, 1)']) q;
- first_write 
--------------
- ok
+              first_write               
+----------------------------------------
+ XX002: sift index "u_idx" is corrupted
  ok
  ok
  ok
@@ -174,7 +174,7 @@ SET sift.on_corruption = error;
 SELECT (SELECT count(*) FROM u) AS u_rows, (SELECT count(*) FROM w) AS w_rows;
  u_rows | w_rows 
 --------+--------
-  19701 |  19400
+  20001 |  19400
 (1 row)
 
 SELECT (SELECT count(*) FROM sift.check('u_idx', heapallindexed => true)) + (SELECT count(*) FROM sift.check('w_idx', heapallindexed => true)) AS check_problems;

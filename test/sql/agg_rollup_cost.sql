@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 -- from the rollups or by cost follow the layout
 SET max_parallel_maintenance_workers = 0;
 SET cpu_tuple_cost = 0.5;
-SET sift.col_rollup_worker = off;
+SET sift.async_maintenance = off;
 SET sift.col_rollup_on_demand = off;
 
 CREATE TABLE ro_lo (id int, items jsonb, pad text) WITH (autovacuum_enabled = off);

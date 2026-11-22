@@ -19,7 +19,7 @@
 #include "bm25/am.h"
 #include "core/lane.h"
 #include "core/quarantine.h"
-#include "bm25/maint.h"
+#include "core/maint.h"
 #include "bm25/wbuf.h"
 
 bool		sift_test_wbuf_narrow = false;

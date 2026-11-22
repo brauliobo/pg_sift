@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The tombstones an UPDATE writes are held in the backend until the commit record, a savepoint or a read of the log (col/supersede.c). What must not follow from a backend or a transaction
+# The tombstones an UPDATE writes are held in the backend until the commit record, a savepoint or a read of the log (col/v1/supersede.c). What must not follow from a backend or a transaction
 # that ends with them held: an entry in the log for a transaction that did not commit (a later commit of the same backend would write what the rollback left), or a sift memory
 # context that outlives the backend (the leak gate that finish runs scans the server log for it). Each case ends the transaction or the backend another way, and a later committed statement
 # writes only its own entries: a mutant that does not drop the held tombstones at abort (sift_col_tombs_discard in am.c) writes the aborted ones as well.

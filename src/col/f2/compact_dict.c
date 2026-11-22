@@ -1,0 +1,184 @@
+/*
+ * col/compact_dict.c - the string columns of a compaction whose input parts all code them by a dictionary of their part (SEC_DICTS). The dictionaries are merged once (each is in byte order,
+ * so the merge compares their entries, not the values of the rows) and the rows are read as the codes of the merged dictionary: no string of a row is copied, hashed or compared.
+ * What is written is what a build from the strings would write: the dictionary of the strings that are left (in byte order) when it pays, else the strings themselves.
+ * check-memory: allow-allocs each array follows the rows of one compaction, which its row buffer already holds in memory
+ */
+#include "core/host.h"
+
+#include "col/f2/compact.h"
+#include "col/granule/granule_int.h"
+
+bool		sift_compact_dict_remap = true;
+
+static int
+entry_cmp(const SiftPartDict *a, uint32 ia, const SiftPartDict *b, uint32 ib)
+{
+	uint32		la = a->off[ia + 1] - a->off[ia],
+				lb = b->off[ib + 1] - b->off[ib];
+	int			c = memcmp(a->bytes + a->off[ia], b->bytes + b->off[ib], Min(la, lb));
+
+	return c != 0 ? c : (la > lb) - (la < lb);
+}
+
+/* The merge of the dictionaries in[0 .. nparts) of column c into m->dict[c], and the map of the codes of each */
+static void
+merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
+{
+	uint32		total = 0;
+	uint64		nbytes = 0;
+	uint32	   *cur = palloc0(m->nparts * sizeof(uint32));
+	SiftPartDict *out = &m->dict[c];
+
+	for (int k = 0; k < m->nparts; k++)
+	{
+		total += in[k]->n;
+		nbytes += in[k]->off[in[k]->n];
+		m->map[k * m->ncols + c] = (SiftCodeMap) {palloc(in[k]->n * sizeof(uint32)), in[k]->n};
+	}
+	out->col = c;
+	out->off = palloc((total + 1) * sizeof(uint32));
+	out->bytes = palloc(Max(nbytes, 1));
+	out->off[0] = 0;
+	for (;;)
+	{
+		int			best = -1;
+		const SiftPartDict *b;
+		uint32		bi;
+
+		for (int k = 0; k < m->nparts; k++)
+			if (cur[k] < in[k]->n && (best < 0 || entry_cmp(in[k], cur[k], in[best], cur[best]) < 0))
+				best = k;
+		if (best < 0)
+			break;
+		b = in[best];
+		bi = cur[best];
+		memcpy(out->bytes + out->off[out->n], b->bytes + b->off[bi], b->off[bi + 1] - b->off[bi]);
+		out->off[out->n + 1] = out->off[out->n] + (b->off[bi + 1] - b->off[bi]);
+		for (int k = 0; k < m->nparts; k++)
+			if (cur[k] < in[k]->n && entry_cmp(in[k], cur[k], b, bi) == 0)
+				((uint32 *) m->map[k * m->ncols + c].to)[cur[k]++] = out->n;
+		out->n++;
+	}
+	pfree(cur);
+}
+
+/* A column the rows are sorted by is kept as its strings: the key of a row, which bounds the parts in the manifest, is made of them */
+static bool
+is_sort_col(const SiftPartSpec *spec, int c)
+{
+	for (int k = 0; k < spec->nsort; k++)
+		if (spec->sort_cols[k] == c)
+			return true;
+	return false;
+}
+
+SiftDictMerge *
+sift_dict_merge_plan(Relation rel, SiftPart *const *parts, int nparts, const SiftPartSpec *spec, const bool *keep_strings,
+					 const SiftColRemap *const *remaps)
+{
+	SiftDictMerge *m = palloc0(sizeof(SiftDictMerge));
+	const SiftPartDict **in = palloc(Max(nparts, 1) * sizeof(SiftPartDict *));
+
+	m->ncols = spec->ncols;
+	m->nparts = nparts;
+	m->kinds = memcpy(palloc(Max(spec->ncols, 1) * sizeof(SiftCellKind)), spec->kinds, spec->ncols * sizeof(SiftCellKind));
+	m->dict = palloc0(Max(spec->ncols, 1) * sizeof(SiftPartDict));
+	m->map = palloc0(Max(nparts * spec->ncols, 1) * sizeof(SiftCodeMap));
+	for (int c = 0; c < spec->ncols; c++)
+	{
+		bool		all = sift_compact_dict_remap && (keep_strings == NULL || !keep_strings[c]) && !is_sort_col(spec, c) && spec->kinds[c] == SIFT_CELL_STR && nparts > 0;
+
+		for (int k = 0; all && k < nparts; k++)
+		{
+			int			pc = remaps != NULL && remaps[k] != NULL ? remaps[k]->phys[c] : c;
+
+			all = pc >= 0 && (in[k] = sift_part_dict_find(sift_part_dicts(rel, parts[k]), pc, SIFT_DICT_KIND_STR)) != NULL;
+		}
+		if (!all)
+			continue;
+		merge_column(m, c, in);
+		m->kinds[c] = SIFT_CELL_INT;
+	}
+	pfree(in);
+	return m;
+}
+
+SiftPartSpec
+sift_dict_merge_spec(const SiftDictMerge *m, const SiftPartSpec *spec)
+{
+	SiftPartSpec s = *spec;
+
+	s.kinds = m->kinds;
+	return s;
+}
+
+/* The values of a merged column as codes of the dictionary of the strings that are left, or as those strings when the dictionary does not pay (what a build from them decides) */
+static void
+finish_column(const SiftDictMerge *m, const SiftRowBuf *rb, int c, SiftColIn *col, SiftCompactResult *res)
+{
+	const SiftPartDict *d = &m->dict[c];
+	uint32		nvals = sift_rowbuf_values(rb, c),
+				nn = 0,
+				nd = 0;
+	const int64 *code = rb->i[c];
+	bool	   *used = palloc0(Max(d->n, 1));
+	uint32	   *rank = palloc(Max(d->n, 1) * sizeof(uint32));
+
+	for (uint32 i = 0; i < nvals; i++)
+		if (!rb->isnull[c][i])
+		{
+			used[code[i]] = true;
+			nn++;
+		}
+	for (uint32 u = 0; u < d->n; u++)
+		rank[u] = used[u] ? nd++ : 0;
+	col->kind = SIFT_CELL_STR;
+	col->i = NULL;
+	if (nd > 0 && nd <= sift_part_dict_max(nn))
+	{
+		SiftDictEnc *pd = palloc(sizeof(SiftDictEnc));
+		uint32	   *dcode = palloc0(Max(nvals, 1) * sizeof(uint32));
+
+		pd->n = nd;
+		pd->p = palloc(nd * sizeof(char *));
+		pd->len = palloc(nd * sizeof(uint32));
+		for (uint32 u = 0, k = 0; u < d->n; u++)
+			if (used[u])
+			{
+				pd->p[k] = d->bytes + d->off[u];
+				pd->len[k++] = d->off[u + 1] - d->off[u];
+			}
+		for (uint32 i = 0; i < nvals; i++)
+			if (!rb->isnull[c][i])
+				dcode[i] = rank[code[i]];
+		col->dcode = dcode;
+		col->pdict = pd;
+		res->dict_cols_remapped++;
+		res->dict_codes_remapped += nn;
+	}
+	else
+	{
+		const char **s = palloc0(Max(nvals, 1) * sizeof(char *));
+		uint32	   *len = palloc0(Max(nvals, 1) * sizeof(uint32));
+
+		for (uint32 i = 0; i < nvals; i++)
+			if (!rb->isnull[c][i])
+			{
+				s[i] = d->bytes + d->off[code[i]];
+				len[i] = d->off[code[i] + 1] - d->off[code[i]];
+			}
+		col->s = s;
+		col->slen = len;
+	}
+	pfree(used);
+	pfree(rank);
+}
+
+void
+sift_dict_merge_finish(const SiftDictMerge *m, const SiftRowBuf *rb, SiftColIn *cols, SiftCompactResult *res)
+{
+	for (int c = 0; c < m->ncols; c++)
+		if (m->dict[c].n > 0)
+			finish_column(m, rb, c, &cols[c], res);
+}

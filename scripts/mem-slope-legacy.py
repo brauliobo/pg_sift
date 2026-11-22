@@ -12,13 +12,14 @@ so that a fix is not left unrecorded.
   scripts/mem-slope-legacy.py selftest
 
 Reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc) and an installed pg_sift. Kind `cap` runs its statements in one backend with sift.backend_cache_kb at
-the ceiling (kB) and asserts that the caches hold at most that; the same statements with the budget off must hold more, or the case measures nothing.
+the ceiling (kB) and asserts that the caches hold at most that; the same statements under a budget no case reaches must hold more, or the case measures nothing.
 """
 import functools, os, re, subprocess, sys
 
 CLEAN = 12                 # bytes a row: the noise of a 150,000-row difference is 1.8 MB
-BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
-DEFAULT_BUDGET_KB = 128 * 1024   # sift.backend_cache_kb at its default: what a normal workload holds is what -1 holds
+BOUNDED = "'sift cache unit buffers'"   # a fixed count of spare buffers (UNIT_KEEP of UNIT_KEEP_BYTES, col/v1/seg/seg.c): it grows to its 16 MB while repeats find larger units, and no further
+DEFAULT_BUDGET_KB = 16 * 1024    # sift.backend_cache_kb at its default: what a normal workload holds is what a budget far above it holds
+FREE_BUDGET_KB = 1024 * 1024     # a budget no case reaches
 IDLE_CTX_KB = 1024        # kB its contexts may grow over the same statements
 IDLE_CACHE_KB = 4096      # sift.backend_cache_kb of the idle series: at the default 256 MB the caches fill about 1 kB a statement for the whole series (+620 kB over its last 1000 statements on one host, +1052 on a hosted one), which a window of 1000 statements does not tell from a leak; at 4 MB they are full long before it
 LEAK_KB = 512              # kB the contexts of a backend may hold more after 25 repeats than after 10
@@ -171,17 +172,18 @@ def rows_at(n, budget_kb):
 
 
 def evict_case(n, a, b):
-    """statement a fills one cache, b another: with the budget off both stay; for some budget b makes a's cache give way to its own, and the rows a budget gives are those of none"""
-    free = held_by(n, a, b, -1)
+    """statement a fills one cache, b another: under a budget no case reaches both stay; for some budget b makes a's cache give way to its own, and the rows a budget gives are those of none"""
+    free = held_by(n, a, b, FREE_BUDGET_KB)
     kept = free["A"].get("tables", 0)
     if not (kept > 0 and free["B"].get("tables") == kept and free["B"].get("segments", 0) > 0):
-        return False, "the budget off did not keep both caches"
-    for pct in range(98, 80, -1):
-        got = held_by(n, a, b, kept * pct // 100)
+        return False, f"a budget no case reaches did not keep both caches: {free}"
+    for permille in range(1000, 1100, 4):
+        budget = kept * permille // 1000
+        got = held_by(n, a, b, budget)
         if got["A"].get("tables", 0) > 0 and got["B"].get("tables", 0) < got["A"]["tables"] and got["B"].get("segments", 0) > 0:
-            same = rows_at(n, 1024) == rows_at(n, -1) == rows_at(n, kept * pct // 100)
-            return same, f"budget {kept * pct // 100} kB: lookup {got['A']['tables']} -> {got['B']['tables']} kB for segments {got['B']['segments']} kB; rows {'equal' if same else 'DIFFER'}"
-    return False, "no budget made the segment cache take room from the lookup cache"
+            same = rows_at(n, 1024) == rows_at(n, FREE_BUDGET_KB) == rows_at(n, budget)
+            return same, f"budget {budget} kB: lookup {got['A']['tables']} -> {got['B']['tables']} kB for segments {got['B']['segments']} kB; rows {'equal' if same else 'DIFFER'}"
+    return False, f"no budget made the segment cache take room from the lookup cache: {free}"
 
 
 PIN_PRESSURE = ["select d.label, count(*) from {f} f join {d} d on d.id = f.k_hi group by 1 order by 2 desc, 1 limit 1;",
@@ -221,9 +223,9 @@ def run(rows, only):
                 print(f"SLOPE {name} evict {what} {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "cap":
                 script(setup.format(f=f"f{sizes[1]}", d=f"d{sizes[1]}", n=sizes[1]))
-                held, free, default = (cache_held_kb(sizes[1], op, b) for b in (ceiling, -1, DEFAULT_BUDGET_KB))
-                ok = held <= ceiling < free and default == free
-                print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB with -1 and {default} kB at the default {'PASS' if ok else 'FAIL'}", flush=True)
+                held, free, default = (cache_held_kb(sizes[1], op, b) for b in (ceiling, FREE_BUDGET_KB, DEFAULT_BUDGET_KB))
+                ok = held <= ceiling < free and default <= DEFAULT_BUDGET_KB
+                print(f"SLOPE {name} cap {held} kB held at a budget of {ceiling} kB, {free} kB with no budget reached and {default} kB at the default {'PASS' if ok else 'FAIL'}", flush=True)
             elif kind == "leakx":
                 grown = leakx_case(sizes[0], name, setup, op)
                 limit = ceiling if status == "open" else LEAK_KB

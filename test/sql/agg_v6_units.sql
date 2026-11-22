@@ -1,0 +1,34 @@
+-- 2048-row engine units (src/agg/v6_test.c): the salted hash table with its growth and its radix scatter and merge,
+-- the element mask of an array column, and the five-input cost of a SiftAgg path at the default planner costs.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+
+SELECT sift._test_salted_ht(11, 60) AS ht_failures;
+SELECT sift._test_array_elem_mask(5, 200) AS array_failures;
+
+SET seq_page_cost = 1;
+SET cpu_operator_cost = 0.0025;
+SET cpu_tuple_cost = 0.01;
+SET parallel_setup_cost = 1000;
+SET parallel_tuple_cost = 0.1;
+
+-- (g_eff, b_dec, n_groups, f_join, selectivity, is_preagg, is_streaming, max_workers): serial, parallel, answered from the
+-- granule pre-aggregates, hash table past the last-level cache, sorted streaming, and too few granules to launch a worker
+SELECT workers, round(startup::numeric, 4) AS startup, round(total::numeric, 4) AS total
+FROM (VALUES (1000, 8e7, 100, 1, 1.0, false, false, 0),
+             (1000, 8e7, 100, 1, 1.0, false, false, 4),
+             (1000, 8e7, 100, 1, 1.0, true, false, 4),
+             (1000, 8e7, 1e6, 1, 0.5, false, false, 0),
+             (1000, 8e7, 100, 1, 1.0, false, true, 0),
+             (4, 8e5, 100, 1, 1.0, false, false, 4)) AS v(g, b, n, f, s, p, st, w),
+     LATERAL sift._test_agg_cost(g, b, n, f, s, p, st, w);
+
+-- the setting of the bit-exact float8 sum: off, and settable
+SHOW sift.agg_exact_float;
+SET sift.agg_exact_float = on;
+SHOW sift.agg_exact_float;
+RESET sift.agg_exact_float;
+SHOW sift.agg_exact_float;
+
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

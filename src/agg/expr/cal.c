@@ -11,7 +11,7 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
-#include "col/preagg.h"
+#include "col/v1/preagg.h"
 #include "catalog/pg_type.h"
 
 #include "agg/expr/int.h"

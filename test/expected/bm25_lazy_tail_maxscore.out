@@ -1,0 +1,185 @@
+-- Wide leaves weigh and score the same whatever sift.max_expansions is (their terms are merged from the dictionaries, never kept): multi-term, phrase, conjunctive,
+-- disjunctive and tied queries return the same (ctid, score) sequence at every setting of 1, 4, 512, 5000 and 1000000, a score delta of exactly 0. A block that is scored
+-- alone decodes its own tf (each one is compared with the tf of its whole group by sift.test_block_tf_check).
+-- A wide leaf reads its top terms first, then settles in one of three ways: tier 0, the K-th score is out of reach of the terms left out and none is read; tier 1,
+-- only a few terms can lift a document past it and they are read as they are; tier 2, more can and they are read as one union (the others are not in it).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+CREATE TABLE lt (id int PRIMARY KEY, body text);
+INSERT INTO lt SELECT i, 'a' || lpad((i % 900)::text, 3, '0') || ' tk' || lpad((i % 700)::text, 3, '0') || ' tk' || lpad((i % 311)::text, 3, '0') || repeat(' tk' || lpad((i % 13)::text, 3, '0'), i % 5) ||
+	' w' || i % 7 || repeat(' w2', i % 4) || repeat(' pad filler words', 4 + i % 6) FROM generate_series(1, 30000) i;
+CREATE INDEX lt_idx ON lt USING sift (body);
+INSERT INTO lt SELECT i, 'tk' || lpad((i % 700)::text, 3, '0') || ' w' || i % 7 || ' a' || lpad((i % 900)::text, 3, '0') FROM generate_series(30001, 30400) i;
+ANALYZE lt;
+RESET client_min_messages;
+CREATE TABLE lt_q (q text);
+INSERT INTO lt_q VALUES ('tk*'), ('a*'), ('tk* OR w2^3'), ('tk* AND w2'), ('tk* AND w1'), ('tk* OR a*'), ('tk* AND a*'), ('tk* OR w1 OR w2'), ('tk0* OR a00*'), ('tk* AND NOT w3'),
+	('tk000 tk001'), ('tk* w1^2'), ('"pad filler"'), ('tk* OR "pad filler"'), ('tk* AND "filler words"'), ('/tk.*/'), ('tk0001~2'), ('/a0[0-4].*/ OR w2'), ('a* AND (w1 OR w2)'), ('*k01*');
+-- the (ctid, score) sequence of every query at every limit of hits and every setting
+CREATE TABLE lt_res (q text, k int, lim int, pos bigint, hit tid, score float4);
+CREATE FUNCTION lt_run(q text, k int, lim int, extra text DEFAULT 'true') RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.max_expansions', lim::text, false);
+	EXECUTE format('INSERT INTO lt_res SELECT %L, %s, %s, row_number() OVER (), ctid, score FROM
+		(SELECT ctid, sift.score(ctid) AS score FROM lt WHERE body @@> %L AND %s ORDER BY sift.score(ctid) DESC, ctid %s) t',
+		CASE WHEN extra = 'true' THEN q ELSE q || ' / ' || extra END, k, lim, q, extra, CASE WHEN k > 0 THEN 'LIMIT ' || k ELSE '' END);
+END $$;
+SET max_parallel_workers_per_gather = 0;
+SELECT key AS reset FROM sift._test_read_stats(true) WHERE key = 'tail_settled';
+    reset     
+--------------
+ tail_settled
+(1 row)
+
+SELECT count(lt_run(q, k, lim)) AS runs FROM lt_q, unnest(ARRAY[1, 10, 1000]) k, unnest(ARRAY[1, 4, 512, 5000, 1000000]) lim;
+ runs 
+------
+  300
+(1 row)
+
+-- a search of no hit limit has no K-th score: it reads every term
+SELECT count(lt_run('tk00* AND w2^2', 0, lim)) AS runs_without_a_limit FROM unnest(ARRAY[1, 4, 512, 5000, 1000000]) lim;
+ runs_without_a_limit 
+----------------------
+                    5
+(1 row)
+
+-- a qual the index does not decide filters the hits above the scan, which then asks for more of them: the leaves widen again, to more terms
+SELECT count(lt_run(q, 100, lim, extra)) AS runs_of_a_filtered_scan
+FROM (VALUES ('tk*', 'id % 5 = 0'), ('tk* OR w2^3', 'id % 7 = 3'), ('tk* AND w2', 'id % 11 = 0')) v(q, extra), unnest(ARRAY[1, 4, 512, 5000, 1000000]) lim;
+ runs_of_a_filtered_scan 
+-------------------------
+                      15
+(1 row)
+
+RESET sift.max_expansions;
+-- a wide leaf reads its top terms first: some of those searches found that no other term could change a result, the others went again on the terms that could
+SELECT key, value > 0 AS nonzero FROM sift._test_read_stats()
+WHERE key IN ('tail_settled', 'tail_widened', 'tail_direct', 'tail_unioned', 'tail_trimmed') ORDER BY key;
+     key      | nonzero 
+--------------+---------
+ tail_direct  | t
+ tail_settled | t
+ tail_trimmed | t
+ tail_unioned | t
+ tail_widened | t
+(5 rows)
+
+-- every setting returns what the unbounded expansion returns: the same rows in the same places, and a score delta of exactly 0
+SELECT r.lim, count(DISTINCT r.q) AS queries, count(*) AS rows, sum((u.hit IS DISTINCT FROM r.hit)::int) AS ctid_mismatches,
+	to_char(max(abs(r.score::float8 - u.score::float8)), 'FM0.000000') AS max_score_delta,
+	sum((r.score::text IS DISTINCT FROM u.score::text)::int) AS score_text_mismatches
+FROM lt_res r JOIN lt_res u ON u.q = r.q AND u.k = r.k AND u.pos = r.pos AND u.lim = 1000000
+WHERE r.lim <> 1000000 GROUP BY r.lim ORDER BY r.lim;
+ lim  | queries | rows  | ctid_mismatches | max_score_delta | score_text_mismatches 
+------+---------+-------+-----------------+-----------------+-----------------------
+    1 |      24 | 34427 |               0 | 0.000000        |                     0
+    4 |      24 | 34427 |               0 | 0.000000        |                     0
+  512 |      24 | 34427 |               0 | 0.000000        |                     0
+ 5000 |      24 | 34427 |               0 | 0.000000        |                     0
+(4 rows)
+
+SELECT r.lim, count(*) AS rows_without_a_twin
+FROM lt_res r WHERE r.lim <> 1000000 AND NOT EXISTS (SELECT 1 FROM lt_res u WHERE u.q = r.q AND u.k = r.k AND u.pos = r.pos AND u.lim = 1000000)
+GROUP BY r.lim ORDER BY r.lim;
+ lim | rows_without_a_twin 
+-----+---------------------
+(0 rows)
+
+SELECT l.lim, count(*) AS rows_of_the_unbounded_without_a_twin
+FROM lt_res u, (SELECT DISTINCT lim FROM lt_res WHERE lim <> 1000000) l(lim)
+WHERE u.lim = 1000000 AND NOT EXISTS (SELECT 1 FROM lt_res r WHERE r.q = u.q AND r.k = u.k AND r.pos = u.pos AND r.lim = l.lim) GROUP BY l.lim ORDER BY l.lim;
+ lim | rows_of_the_unbounded_without_a_twin 
+-----+--------------------------------------
+(0 rows)
+
+-- some queries tie hard (a score shared by many documents): the ties still fall in ctid order
+SELECT count(*) > 0 AS has_ties FROM (SELECT q, k, lim, score FROM lt_res GROUP BY q, k, lim, score HAVING count(*) > 10) t;
+ has_ties 
+----------
+ t
+(1 row)
+
+-- and none of them is empty
+SELECT q FROM lt_q WHERE NOT EXISTS (SELECT 1 FROM lt_res WHERE lt_res.q = lt_q.q AND k = 10 AND lim = 1000000);
+ q 
+---
+(0 rows)
+
+-- when the top terms decide, the terms left out are never read: no union is built
+SET sift.max_expansions = 4;
+SELECT key AS reset FROM sift._test_read_stats(true) WHERE key = 'tail_settled';
+    reset     
+--------------
+ tail_settled
+(1 row)
+
+SELECT count(*) AS hits FROM (SELECT ctid FROM lt WHERE body @@> 'tk*' ORDER BY sift.score(ctid) DESC, ctid LIMIT 3) t;
+ hits 
+------
+    3
+(1 row)
+
+SELECT key, value FROM sift._test_read_stats() WHERE key IN ('prefix_passes', 'tail_settled', 'tail_widened') ORDER BY key;
+      key      | value 
+---------------+-------
+ prefix_passes |     0
+ tail_settled  |     1
+ tail_widened  |     0
+(3 rows)
+
+RESET sift.max_expansions;
+-- what each tier read, at sift.max_expansions = 4 (the invariance of the rows above holds for each of these queries at every setting)
+CREATE FUNCTION lt_tier(q text, k int, OUT settled bool, OUT direct bool, OUT unioned bool, OUT trimmed bool) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.max_expansions', '4', false);
+	PERFORM key FROM sift._test_read_stats(true) WHERE key = 'tail_settled';
+	EXECUTE format('SELECT count(*) FROM (SELECT ctid FROM lt WHERE body @@> %L ORDER BY sift.score(ctid) DESC, ctid %s) t', q,
+		CASE WHEN k > 0 THEN 'LIMIT ' || k ELSE '' END);
+	SELECT bool_or(value > 0) FILTER (WHERE key = 'tail_settled'), bool_or(value > 0) FILTER (WHERE key = 'tail_direct'),
+		bool_or(value > 0) FILTER (WHERE key = 'tail_unioned'), bool_or(value > 0) FILTER (WHERE key = 'tail_trimmed')
+	INTO settled, direct, unioned, trimmed FROM sift._test_read_stats();
+END $$;
+SELECT t.tier, s.* FROM (VALUES ('0 top terms settle', 'tk*', 1), ('1 few terms read as they are', 'tk*', 10),
+	('2 filtered union', 'tk* OR w2^3', 10), ('no limit: every term', 'tk00* AND w2^2', 0)) t(tier, q, k), LATERAL lt_tier(t.q, t.k) s ORDER BY t.tier;
+             tier             | settled | direct | unioned | trimmed 
+------------------------------+---------+--------+---------+---------
+ 0 top terms settle           | t       | f      | f       | f
+ 1 few terms read as they are | f       | t      | f       | t
+ 2 filtered union             | f       | f      | t       | f
+ no limit: every term         | f       | f      | t       | f
+(4 rows)
+
+DROP FUNCTION lt_tier(text, int);
+RESET sift.max_expansions;
+-- the blocks scored alone decoded theirs, and their tf was the group's
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+CREATE TABLE lb AS SELECT i AS id, 'w' || i % 7 || repeat(' w2', i % 4) || repeat(' pad filler words', 4 + i % 6) AS body FROM generate_series(1, 30000) i;
+CREATE INDEX lb_idx ON lb USING sift (body);
+ANALYZE lb;
+RESET client_min_messages;
+SELECT key AS reset FROM sift._test_read_stats(true) WHERE key = 'block_tf';
+  reset   
+----------
+ block_tf
+(1 row)
+
+SELECT count(*) > 0 AS ranked FROM (SELECT ctid FROM lb WHERE body @@> 'w2 OR w1' ORDER BY sift.score(ctid) DESC LIMIT 10) t;
+ ranked 
+--------
+ t
+(1 row)
+
+SELECT key, value > 0 AS nonzero FROM sift._test_read_stats() WHERE key = 'block_tf';
+   key    | nonzero 
+----------+---------
+ block_tf | t
+(1 row)
+
+DROP TABLE lb;
+DROP FUNCTION lt_run(text, int, int, text);
+DROP TABLE lt_res, lt_q, lt;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

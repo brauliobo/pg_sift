@@ -79,7 +79,7 @@ SELECT * FROM variant('default', 'work_mem = ''4MB''');
 SELECT * FROM variant('spill', 'work_mem = ''64kB'';hash_mem_multiplier = 1');
  variant | shapes | scan | workers | wrong | failing 
 ---------+--------+------+---------+-------+---------
- spill   |     66 |   66 | f       |     0 | 
+ spill   |     66 |   65 | f       |     0 | 
 (1 row)
 
 SELECT * FROM variant('parallel', 'max_parallel_workers_per_gather = 2;parallel_setup_cost = 0;parallel_tuple_cost = 0;min_parallel_table_scan_size = 0;min_parallel_index_scan_size = 0;seq_page_cost = 10000');

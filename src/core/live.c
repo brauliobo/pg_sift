@@ -252,7 +252,7 @@ live_edit_begin(LiveEdit *e, const SiftLive *l, uint64 lo, uint64 hi, bool heade
 	if (last - first + 1 + (header && first > 0) > MAX_GENERIC_XLOG_PAGES)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("sift: the docs of one superblock span more than %d LIVE pages", MAX_GENERIC_XLOG_PAGES - 1),
+				 errmsg("sift: the documents of one block group span more than %d LIVE pages", MAX_GENERIC_XLOG_PAGES - 1),
 				 errhint("Run sift.merge() on the index to rewrite the segment without its dead documents.")));
 	if (header && first > 0)
 		e->pg[n++] = 0;

@@ -30,7 +30,7 @@
 #include "agg/agg.h"
 #include "agg/lookup/int.h"
 #include "agg/init_int.h"
-#include "core/membudget.h"
+#include "core/memtrack.h"
 
 #define LOOKUP_RESERVE_MAX	(1 << 22)	/* rows a map is sized for before the load: a table the statistics put above is grown as it is read */
 
@@ -401,7 +401,10 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	ScanKeyData keys[SIFT_AGG_MAX_JIDX];
 	Datum		val[SIFT_AGG_MAX_JIDX];
 	int			nkeys = 0;
-	SIFT_MEM_SCOPE(agg_lookup, cxt);
+	SiftMemTracker mt_agg_lookup;
+
+	sift_mem_init_sub(&mt_agg_lookup, "agg_lookup", cxt, false, agg_mem_slice(ex, SIFT_BUDGET_WORK_MEM, 2));
+	sift_mem_rebase(&mt_agg_lookup);
 	bool		none = false,
 				cond_keys = false;	/* the keys of the scan are the table's own conditions (map_index; map_probe's are the join key and trailing equalities) */
 	Relation	idx;
@@ -484,6 +487,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	}
 	MemoryContextSwitchTo(kept.cx);
 	m = map_new(&lj, filtered, kept.cx);
+	m->tr = &mt_agg_lookup;
 	m->tested = tested;
 	m->lazy = kept.cols.n == 0 && lookup_keys_only(ex->spec, ex->lay, ci, ex->nbase);
 	/* the key expressions live for the load, not in the context a cache keeps */
@@ -578,6 +582,8 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	if (j->first.hybrid)
 		map_keep_agreeing(m);
 	map_index_rows(m);
+	m->over |= sift_mem_pressure(&mt_agg_lookup, true) >= SIFT_MEM_HARD;
+	m->tr = NULL;
 	if (m->kcx)
 	{
 		FreeExprContext(m->kcx, true);
@@ -591,8 +597,10 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	map_kept_keep(ex, rel, &kept, m, cxt);
 	ExecDropSingleTupleTableSlot(slot);
 	table_close(rel, NoLock);
+	if (m->over)
+		lookup_overflow(ex, &mt_agg_lookup);
 	map_loaded(ex, m->nrow, t0);
-	SIFT_MEM_CHECKPOINT();
+	sift_mem_assert_within(&mt_agg_lookup);
 	return kept.cols.n > 0 ? map_view(m, &kept.cols, j, cxt) : m;
 }
 

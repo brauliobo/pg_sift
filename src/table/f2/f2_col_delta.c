@@ -1,0 +1,689 @@
+/*
+ * table/f2/f2_col_delta.c - the policy, the byte format, the stage and the verdict of a modify of the per-column update pages (table/f2/f2_col_delta.h).
+ *
+ * Nothing here calls the server: the transactions a record's writer may be are asked through SiftColDeltaOps, the pages come through a SiftColDeltaPageReader, so that the whole
+ * format is tested without a server (tests/col_delta_test.c).
+ */
+#include "postgres.h"
+
+#include "access/xact.h"
+#include "storage/relfilelocator.h"
+#include "utils/memutils.h"
+
+#include "table/f2/f2_col_delta.h"
+
+/* ---- the policy ---- */
+
+SiftColDeltaReason
+sift_col_delta_admit(const SiftColDeltaPolicyIn *in)
+{
+	if (!SIFT_COL_DELTA_ENABLED())
+		return SIFT_CD_DISABLED;
+	if (in->live_attrs < SIFT_COL_DELTA_MIN_LIVE_ATTRS)
+		return SIFT_CD_NARROW_TABLE;
+	if (!in->row_in_part)
+		return SIFT_CD_NOT_IN_PART;
+	if (in->after_update_triggers)
+		return SIFT_CD_AFTER_TRIGGER;
+	if (in->hits_index)
+		return SIFT_CD_INDEXED_COLUMN;
+	if (in->hits_protected)
+		return SIFT_CD_PROTECTED_COLUMN;
+	if (in->nchanged > SIFT_COL_DELTA_MAX_COLS_PER_REC || in->nchanged * SIFT_COL_DELTA_MAX_RATIO_DEN > in->live_attrs * SIFT_COL_DELTA_MAX_RATIO_NUM)
+		return SIFT_CD_TOO_MANY_COLUMNS;
+	if (in->payload_bytes > SIFT_COL_DELTA_MAX_PAYLOAD)
+		return SIFT_CD_PAYLOAD_TOO_LARGE;
+	if (in->chain_pages + in->staged_pages >= SIFT_COL_DELTA_MAX_PAGES)
+		return SIFT_CD_CHAIN_FULL;
+	return SIFT_CD_OK;
+}
+
+/* ---- the record ---- */
+
+static uint32
+varint_bytes(uint64 x)
+{
+	uint8		tmp[10];
+
+	return (uint32) (sift_put_varint(tmp, x) - tmp);
+}
+
+static uint32
+value_bytes(const SiftColDeltaCol *c)
+{
+	if (c->cell.isnull)
+		return 0;
+	if (c->kind == SIFT_CELL_INT)
+		return varint_bytes(sift_zigzag(c->cell.i));
+	if (c->kind == SIFT_CELL_F8)
+		return sizeof(double);
+	return varint_bytes(c->cell.slen) + c->cell.slen;
+}
+
+uint32
+sift_col_delta_payload_bytes(const SiftColDeltaCol *cols, int ncols)
+{
+	uint32		n = 0;
+
+	for (int k = 0; k < ncols; k++)
+		n += sizeof(SiftColDeltaColHdr) + value_bytes(&cols[k]);
+	return n;
+}
+
+static uint8 *
+put_value(uint8 *p, const SiftColDeltaCol *c)
+{
+	if (c->cell.isnull)
+		return p;
+	if (c->kind == SIFT_CELL_INT)
+		return sift_put_varint(p, sift_zigzag(c->cell.i));
+	if (c->kind == SIFT_CELL_F8)
+	{
+		memcpy(p, &c->cell.f, sizeof(double));
+		return p + sizeof(double);
+	}
+	p = sift_put_varint(p, c->cell.slen);
+	memcpy(p, c->cell.s, c->cell.slen);
+	return p + c->cell.slen;
+}
+
+uint32
+sift_col_delta_encode(uint8 *dst, uint32 cap, const SiftColDeltaTarget *t, TransactionId xmin, CommandId cid, uint8 flags, const SiftColDeltaCol *cols, int ncols)
+{
+	uint32		payload = sift_col_delta_payload_bytes(cols, ncols);
+	uint32		rec_bytes = (uint32) TYPEALIGN(8, sizeof(SiftColDeltaEntryHdr) + payload);
+	SiftColDeltaEntryHdr h = {
+		.part_gen = t->part_gen,.granule_id = t->granule_id,.tid_blk = (BlockNumber) (t->tid >> 16),.tid_off = (OffsetNumber) (t->tid & 0xFFFF),
+		.row_ordinal = t->row_ordinal,.rec_bytes = (uint16) rec_bytes,.ncols = (uint8) ncols,.flags = flags,.xmin = xmin,.cid = cid,
+	};
+	uint8	   *p;
+
+	if (ncols > ((flags & SIFT_CDENT_FLAG_LEAF_ADDR) != 0 ? SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR : SIFT_COL_DELTA_MAX_COLS_PER_REC) || rec_bytes > cap || rec_bytes > SIFT_COL_DELTA_MAX_REC_BYTES)
+		return 0;
+	memset(dst, 0, rec_bytes);
+	memcpy(dst, &h, sizeof(h));
+	p = dst + sizeof(h);
+	for (int k = 0; k < ncols; k++)
+	{
+		uint8		tag = (flags & SIFT_CDENT_FLAG_TAG_BYTE) != 0 ? cols[k].cell.tag : 0;
+		SiftColDeltaColHdr ch = {
+			.attnum = cols[k].attnum,.flags = (uint8) (SIFT_CDCOL_PACK_FLAGS(cols[k].cell.isnull, cols[k].kind) | (tag != 0 ? SIFT_CDCOL_HAS_TAG : 0) | (cols[k].key_absent ? SIFT_CDCOL_KEY_ABSENT : 0)),.pad = tag,
+		};
+
+		memcpy(p, &ch, sizeof(ch));
+		p = put_value(p + sizeof(ch), &cols[k]);
+	}
+	return rec_bytes;
+}
+
+const uint8 *
+sift_col_delta_decode_col(const uint8 *p, const uint8 *end, SiftColDeltaPatch *out)
+{
+	SiftColDeltaColHdr ch;
+	SiftCellKind kind;
+	uint64		x;
+
+	if (end - p < (ptrdiff_t) sizeof(ch))
+		return NULL;
+	memcpy(&ch, p, sizeof(ch));
+	p += sizeof(ch);
+	kind = SIFT_CDCOL_KIND(ch.flags);
+	if (ch.attnum < 0 || (ch.pad != 0) != ((ch.flags & SIFT_CDCOL_HAS_TAG) != 0) || (ch.flags & ~SIFT_CDCOL_FLAGS_KNOWN) != 0 || (kind != SIFT_CELL_INT && kind != SIFT_CELL_STR && kind != SIFT_CELL_F8) ||
+		((ch.flags & SIFT_CDCOL_KEY_ABSENT) != 0 && (ch.flags & SIFT_CDCOL_IS_NULL) == 0))
+		return NULL;
+	memset(out, 0, sizeof(*out));
+	out->attnum = ch.attnum;
+	out->flags = ch.flags;
+	out->tag = ch.pad;
+	if ((ch.flags & SIFT_CDCOL_IS_NULL) != 0)
+		return p;
+	if (kind == SIFT_CELL_INT)
+	{
+		p = sift_get_varint64_n(p, end, &x);
+		out->val.i = p != NULL ? sift_unzigzag(x) : 0;
+		return p;
+	}
+	if (kind == SIFT_CELL_F8)
+	{
+		if (end - p < (ptrdiff_t) sizeof(double))
+			return NULL;
+		memcpy(&out->val.f, p, sizeof(double));
+		return p + sizeof(double);
+	}
+	p = sift_get_varint_n(p, end, &x);
+	if (p == NULL || x > SIFT_COL_DELTA_MAX_PAYLOAD || (uint64) (end - p) < x)
+		return NULL;
+	out->vlen = (uint16) x;
+	out->val.s = (const char *) p;
+	return p + x;
+}
+
+const char *
+sift_col_delta_rec_check(const uint8 *rec, uint32 avail)
+{
+	SiftColDeltaEntryHdr h;
+	const uint8 *p,
+			   *end;
+	int16		prev = -1;
+	bool		leaf_addr;
+
+	if (avail < sizeof(h))
+		return "a record is shorter than its header";
+	memcpy(&h, rec, sizeof(h));
+	if (h.rec_bytes < sizeof(h) || h.rec_bytes > SIFT_COL_DELTA_MAX_REC_BYTES || h.rec_bytes % 8 != 0)
+		return "a record has a size the format does not allow";
+	if (h.rec_bytes > avail)
+		return "a record runs past the bytes of its page";
+	if ((h.flags & ~SIFT_CDENT_KNOWN) != 0 || h.ncols > ((h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) != 0 ? SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR : SIFT_COL_DELTA_MAX_COLS_PER_REC) ||
+		((h.flags & SIFT_CDENT_FLAG_NOOP) != 0) != (h.ncols == 0))
+		return "a record has flags or a column count the format does not allow";
+	if (h.row_ordinal >= SIFT_COL_DELTA_MAX_ROW_ORDINAL || h.tid_off == 0)
+		return "a record names a row the format does not have";
+	leaf_addr = (h.flags & SIFT_CDENT_FLAG_LEAF_ADDR) != 0;
+	p = rec + sizeof(h);
+	end = rec + h.rec_bytes;
+	for (int k = 0; k < h.ncols; k++)
+	{
+		SiftColDeltaPatch col;
+
+		p = sift_col_delta_decode_col(p, end, &col);
+		if (p == NULL)
+			return "a column of a record is not one of the format";
+		if ((col.attnum == SIFT_CD_ATT_TID_REMAP && (!leaf_addr || SIFT_CDCOL_KIND(col.flags) != SIFT_CELL_INT || (col.flags & SIFT_CDCOL_IS_NULL) != 0)) ||
+			((col.flags & SIFT_CDCOL_HAS_TAG) != 0 && (h.flags & SIFT_CDENT_FLAG_TAG_BYTE) == 0) || ((col.flags & SIFT_CDCOL_KEY_ABSENT) != 0 && !leaf_addr))
+			return "a column of a record is of a kind its flags do not allow";
+		if (col.attnum <= prev)
+			return "the columns of a record are not in ascending order of attribute";
+		prev = col.attnum;
+	}
+	if (end - p >= 8)
+		return "a record has bytes past its columns";
+	for (; p < end; p++)
+		if (*p != 0)
+			return "the padding of a record is not zero";
+	return NULL;
+}
+
+/* ---- batches and pages ---- */
+
+static void
+bloom_of_record(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h, const uint8 *rec)
+{
+	const uint8 *p = rec + sizeof(*h),
+			   *end = rec + h->rec_bytes;
+
+	b->part_gen_bloom |= sift_cd_part_bit(h->part_gen);
+	b->tid_bloom |= sift_cd_tid_bit(sift_col_delta_hdr_tid(h));
+	for (int k = 0; k < h->ncols; k++)
+	{
+		SiftColDeltaPatch col;
+
+		p = sift_col_delta_decode_col(p, end, &col);
+		SIFT_INVARIANT(p != NULL, "a column delta record was added to a batch before it was checked");
+		b->attnum_bloom |= sift_cd_att_bit(col.attnum);
+		if (col.attnum == SIFT_CD_ATT_TID_REMAP)
+			b->tid_bloom |= sift_cd_tid_bit((uint64) col.val.i);
+		else
+			b->page_flags |= SIFT_CDPG_LEAVES;
+	}
+	if ((h->flags & SIFT_CDENT_FLAG_DIRTY_SCOPE) != 0)
+		b->page_flags |= SIFT_CDPG_DIRTY_SCOPE;
+	if ((h->flags & SIFT_CDENT_FLAG_HAS_TIME0) != 0)
+		b->page_flags |= SIFT_CDPG_DIRTY_TIME0;
+	if ((h->flags & SIFT_CDENT_FLAG_HAS_TIME1) != 0)
+		b->page_flags |= SIFT_CDPG_DIRTY_TIME1;
+}
+
+static void
+widen_xids(FullTransactionId *lo, FullTransactionId *hi, FullTransactionId fx)
+{
+	if (!FullTransactionIdIsValid(*lo) || FullTransactionIdPrecedes(fx, *lo))
+		*lo = fx;
+	*hi = sift_fxid_max(*hi, fx);
+}
+
+void
+sift_col_delta_batch_add(SiftColDeltaBatch *b, FullTransactionId next, const uint8 *rec)
+{
+	SiftColDeltaEntryHdr h;
+
+	memcpy(&h, rec, sizeof(h));
+	if (b->nbytes + h.rec_bytes > b->cap)
+	{
+		b->cap = Max(b->cap * 2, (uint32) SIFT_COL_DELTA_MAX_REC_BYTES);
+		b->bytes = b->bytes != NULL ? repalloc(b->bytes, b->cap) : palloc(b->cap);
+	}
+	memcpy(b->bytes + b->nbytes, rec, h.rec_bytes);
+	b->nbytes += h.rec_bytes;
+	b->nentries++;
+	bloom_of_record(b, &h, rec);
+	widen_xids(&b->min_xid, &b->max_xid, sift_xid_fxid_at(next, h.xmin));
+}
+
+void
+sift_col_delta_batch_split(SiftColDeltaBatch *b, uint32 room, FullTransactionId next, SiftColDeltaBatch *head)
+{
+	SiftColDeltaBatch rest = {0};
+
+	memset(head, 0, sizeof(*head));
+	for (uint32 off = 0; off < b->nbytes;)
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, b->bytes + off, sizeof(h));
+		sift_col_delta_batch_add(rest.nentries == 0 && head->nbytes + h.rec_bytes <= room ? head : &rest, next, b->bytes + off);
+		off += h.rec_bytes;
+	}
+	sift_col_delta_batch_free(b);
+	*b = rest;
+}
+
+void
+sift_col_delta_batch_free(SiftColDeltaBatch *b)
+{
+	if (b->bytes != NULL)
+		pfree(b->bytes);
+	memset(b, 0, sizeof(*b));
+}
+
+void
+sift_col_delta_page_init(Page page, uint64 gen, uint32 part_id, BlockNumber prev_blk, uint16 chain_pages)
+{
+	SiftColDeltaPageData *h;
+
+	sift_page_init_part(page, SIFT_PT_COL_DELTA, gen, part_id);
+	h = (SiftColDeltaPageData *) SiftPageGetData(page);
+	memset(h, 0, sizeof(*h));
+	h->magic = SIFT_COL_DELTA_MAGIC;
+	h->version = SIFT_COL_DELTA_VERSION;
+	h->prev_blk = prev_blk;
+	h->chain_pages = chain_pages;
+	h->min_xid = h->max_xid = InvalidFullTransactionId;
+	SiftPageSetUsed(page, sizeof(*h));
+	sift_page_seal(page);
+}
+
+bool
+sift_col_delta_page_append(Page page, const SiftColDeltaBatch *b)
+{
+	SiftColDeltaPageData *h = (SiftColDeltaPageData *) SiftPageGetData(page);
+	uint32		used = SiftPageGetUsed(page);
+
+	if ((h->flags & SIFT_CDPG_SEALED) != 0 || used + b->nbytes > SIFT_PAGE_PAYLOAD)
+		return false;
+	memcpy(SiftPageGetData(page) + used, b->bytes, b->nbytes);
+	h->nentries += b->nentries;
+	h->flags |= b->page_flags;
+	h->part_gen_bloom |= b->part_gen_bloom;
+	h->attnum_bloom |= b->attnum_bloom;
+	h->tid_bloom |= b->tid_bloom;
+	if (b->nentries > 0)
+	{
+		widen_xids(&h->min_xid, &h->max_xid, b->min_xid);
+		widen_xids(&h->min_xid, &h->max_xid, b->max_xid);
+	}
+	SiftPageSetUsed(page, used + b->nbytes);
+	sift_page_seal(page);
+	return true;
+}
+
+static const char *
+check_records(const char *page, const SiftColDeltaPageData *h)
+{
+	SiftColDeltaBatch seen = {0};
+	const uint8 *p = sift_col_delta_page_first(page),
+			   *end = sift_col_delta_page_end(page);
+	int			n = 0;
+
+	for (; p < end; n++)
+	{
+		const char *why = sift_col_delta_rec_check(p, (uint32) (end - p));
+		SiftColDeltaEntryHdr rh;
+
+		if (why != NULL)
+			return why;
+		memcpy(&rh, p, sizeof(rh));
+		bloom_of_record(&seen, &rh, p);
+		p += rh.rec_bytes;
+	}
+	if (n != h->nentries)
+		return "the records of a page are not as many as its header says";
+	if ((seen.part_gen_bloom & ~h->part_gen_bloom) != 0 || (seen.attnum_bloom & ~h->attnum_bloom) != 0 || (seen.tid_bloom & ~h->tid_bloom) != 0)
+		return "a bloom filter of a page misses a record it holds";
+	if ((seen.page_flags & ~h->flags) != 0)
+		return "a record patches a time column that its page does not say";
+	if (n > 0 && (!FullTransactionIdIsValid(h->min_xid) || !FullTransactionIdIsValid(h->max_xid) || FullTransactionIdFollows(h->min_xid, h->max_xid)))
+		return "the writers of a page are not a range";
+	return NULL;
+}
+
+const char *
+sift_col_delta_page_check(const char *page)
+{
+	const SiftColDeltaPageData *h;
+
+	if (!sift_page_layout_ok(page))
+		return "a page of the chain is not laid out as a page of the index";
+	if (SiftPageGetOpaque((Page) page)->type != SIFT_PT_COL_DELTA || SiftPageGetOpaque((Page) page)->flags != 0)
+		return "a page of the chain is not a column delta page";
+	if (SiftPageGetUsed(page) < sizeof(*h) || !sift_page_sum_ok((Page) page))
+		return "a page of the chain does not match its checksum";
+	h = sift_col_delta_page_hdr(page);
+	if (h->magic != SIFT_COL_DELTA_MAGIC || h->version != SIFT_COL_DELTA_VERSION || h->pad != 0 || (h->flags & ~SIFT_CDPG_KNOWN) != 0 || h->chain_pages < 1)
+		return "a page of the chain has a header this format does not have";
+	return check_records(page, h);
+}
+
+/* ---- growing the chain ---- */
+
+static uint16
+anchor_flags_of(uint16 page_flags)
+{
+	return (uint16) (((page_flags & SIFT_CDPG_DIRTY_TIME0) != 0 ? SIFT_CDLA_DIRTY_TIME0 : 0) | ((page_flags & SIFT_CDPG_DIRTY_TIME1) != 0 ? SIFT_CDLA_DIRTY_TIME1 : 0) |
+					((page_flags & SIFT_CDPG_DIRTY_SCOPE) != 0 ? SIFT_CDLA_DIRTY_SCOPE : 0));
+}
+
+static FullTransactionId
+xid_min(FullTransactionId a, FullTransactionId b)
+{
+	return !FullTransactionIdIsValid(a) || FullTransactionIdPrecedes(b, a) ? b : a;
+}
+
+/*
+ * A bound on time the chain did not patch before is published before the record that patches it is written, so that a crash in between leaves a bound that is only too wide. The records go
+ * to the newest page while they fit and the rest to pages of their own; each new page is published with the anchor that names it, and until then no reader can reach it.
+ */
+void
+sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next)
+{
+	bool		fresh = !sift_col_delta_anchor_has_chain(a),
+				leaves = (b->page_flags & SIFT_CDPG_LEAVES) != 0;
+	uint16		flags = a->flags | anchor_flags_of(b->page_flags);
+	FullTransactionId bmin = b->min_xid,
+				bmax = b->max_xid;
+
+	if (fresh || leaves)
+		flags = leaves ? (uint16) (flags & ~SIFT_CDLA_TID_ONLY) : (uint16) (flags | SIFT_CDLA_TID_ONLY);
+	if (flags != a->flags)
+	{
+		a->flags = flags;
+		if (!fresh)
+			w->commit_anchor(w->ctx, a);
+	}
+	if (sift_col_delta_anchor_has_chain(a) && w->append_head(w->ctx, a->delta_head_blkno, b, next))
+		a->max_xid = sift_fxid_max(a->max_xid, bmax);
+	while (b->nentries > 0)
+	{
+		SiftColDeltaBatch part;
+
+		sift_col_delta_batch_split(b, (uint32) SIFT_COL_DELTA_PAGE_ROOM, next, &part);
+		a->delta_head_blkno = w->new_page(w->ctx, &part, a->delta_head_blkno, (uint16) (a->npages + 1));
+		a->npages++;
+		a->min_xid = xid_min(a->min_xid, bmin);
+		a->max_xid = sift_fxid_max(a->max_xid, bmax);
+		w->commit_anchor(w->ctx, a);
+		sift_col_delta_batch_free(&part);
+	}
+}
+
+/* ---- the chain ---- */
+
+const char *
+sift_col_delta_chain_read(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, SiftColDeltaChain *out)
+{
+	BlockNumber blk = anchor->delta_head_blkno;
+	const char *why = NULL;
+	int			n = anchor->npages;
+
+	memset(out, 0, sizeof(*out));
+	if (!sift_col_delta_anchor_sane(anchor))
+		return "the anchor of a chain is not one of this format";
+	if (!sift_col_delta_anchor_has_chain(anchor))
+		return NULL;
+	out->arena = palloc((Size) n * BLCKSZ);
+	out->blks = palloc(sizeof(BlockNumber) * n);
+	for (int i = n - 1; i >= 0 && why == NULL; i--)
+	{
+		char	   *dst = out->arena + (Size) i * BLCKSZ;
+
+		out->blks[i] = blk;
+		why = reader->read(reader->ctx, blk, dst);
+		if (why == NULL)
+			why = sift_col_delta_page_check(dst);
+		if (why == NULL && sift_col_delta_page_hdr(dst)->chain_pages != i + 1)
+			why = "a page of the chain is not as deep as the chain says";
+		if (why == NULL && ((i == 0) != (sift_col_delta_page_hdr(dst)->prev_blk == InvalidBlockNumber)))
+			why = "the chain is not as long as its anchor says";
+		blk = sift_col_delta_page_hdr(dst)->prev_blk;
+	}
+	if (why != NULL)
+	{
+		sift_col_delta_chain_free(out);
+		return why;
+	}
+	out->npages = n;
+	return NULL;
+}
+
+void
+sift_col_delta_chain_free(SiftColDeltaChain *c)
+{
+	if (c->arena != NULL)
+		pfree(c->arena);
+	if (c->blks != NULL)
+		pfree(c->blks);
+	memset(c, 0, sizeof(*c));
+}
+
+FullTransactionId
+sift_col_delta_chain_min_xid(const SiftColDeltaChain *c)
+{
+	FullTransactionId lo = InvalidFullTransactionId;
+
+	for (int i = 0; i < c->npages; i++)
+	{
+		FullTransactionId m = sift_col_delta_page_hdr(sift_col_delta_chain_page(c, i))->min_xid;
+
+		if (FullTransactionIdIsValid(m) && (!FullTransactionIdIsValid(lo) || FullTransactionIdPrecedes(m, lo)))
+			lo = m;
+	}
+	return lo;
+}
+
+/* ---- the verdict of a modify ---- */
+
+static SiftTblEpqAck epq_acks[SIFT_EPQ_ACK_SLOTS];
+static int	epq_next = 0;
+
+static bool
+ack_is(const SiftTblEpqAck *a, const RelFileLocator *loc, uint64 tid)
+{
+	return a->valid && RelFileLocatorEquals(a->locator, *loc) && a->tid == tid;
+}
+
+void
+sift_epq_ack_record(const RelFileLocator *loc, uint64 tid, CommandId cid, const SiftColDeltaLast *seen)
+{
+	SiftTblEpqAck *slot = NULL;
+
+	for (int i = 0; i < SIFT_EPQ_ACK_SLOTS && slot == NULL; i++)
+		if (ack_is(&epq_acks[i], loc, tid))
+			slot = &epq_acks[i];
+	if (slot == NULL)
+	{
+		slot = &epq_acks[epq_next];
+		epq_next = (epq_next + 1) % SIFT_EPQ_ACK_SLOTS;
+	}
+	*slot = (SiftTblEpqAck) {.locator = *loc,.tid = tid,.cid = cid,.seen_xid = seen->xid,.seen_cid = seen->cid,.valid = true};
+}
+
+void
+sift_epq_ack_clear(void)
+{
+	memset(epq_acks, 0, sizeof(epq_acks));
+	epq_next = 0;
+}
+
+static bool
+ack_consume(const RelFileLocator *loc, uint64 tid, CommandId cid, const SiftColDeltaLast *last)
+{
+	for (int i = 0; i < SIFT_EPQ_ACK_SLOTS; i++)
+	{
+		SiftTblEpqAck *a = &epq_acks[i];
+
+		if (ack_is(a, loc, tid) && a->cid == cid && a->seen_xid == last->xid && a->seen_cid == last->cid)
+		{
+			a->valid = false;
+			return true;
+		}
+	}
+	return false;
+}
+
+SiftColDeltaVerdict
+sift_col_delta_judge(const RelFileLocator *loc, uint64 tid, CommandId cid, const SiftColDeltaLast *last, const SiftColDeltaOps *ops)
+{
+	SiftColDeltaVerdict v = {.result = TM_Ok};
+
+	if (!last->found)
+		return v;
+	if (ops->is_current(ops->ctx, last->xid))
+	{
+		if (last->cid >= cid)
+			v.result = TM_SelfModified;
+	}
+	else if (ops->in_progress(ops->ctx, last->xid))
+		v.result = TM_BeingModified;
+	else if (!ops->visible(ops->ctx, last->xid, last->cid) && !ack_consume(loc, tid, cid, last))
+		v.result = TM_Updated;
+	if (v.result != TM_Ok)
+	{
+		v.xmax = last->xid;
+		v.cmax = last->cid;
+	}
+	return v;
+}
+
+/* ---- the stage of a transaction ---- */
+
+void
+sift_col_delta_stage_add(SiftColDeltaStage *st, uint64 part_id, const uint8 *key_lo, SubTransactionId subxid, const uint8 *rec)
+{
+	SiftColDeltaEntryHdr h;
+	SiftStageColDelta *it;
+
+	memcpy(&h, rec, sizeof(h));
+	if (st->n == st->cap)
+	{
+		st->cap = Max(16, st->cap * 2);
+		st->items = st->items != NULL ? repalloc(st->items, sizeof(SiftStageColDelta) * st->cap)
+			: MemoryContextAlloc(TopTransactionContext, sizeof(SiftStageColDelta) * st->cap);
+	}
+	it = &st->items[st->n++];
+	it->part_id = part_id;
+	memcpy(it->key_lo, key_lo, SIFT_BOUND_BYTES);
+	it->subxid = subxid;
+	it->rec = MemoryContextAlloc(TopTransactionContext, h.rec_bytes);
+	memcpy(it->rec, rec, h.rec_bytes);
+	st->bytes += h.rec_bytes;
+}
+
+static uint32
+item_bytes(const SiftStageColDelta *it)
+{
+	SiftColDeltaEntryHdr h;
+
+	memcpy(&h, it->rec, sizeof(h));
+	return h.rec_bytes;
+}
+
+void
+sift_col_delta_stage_discard(SiftColDeltaStage *st, int i)
+{
+	st->bytes -= item_bytes(&st->items[i]);
+	pfree(st->items[i].rec);
+	memmove(&st->items[i], &st->items[i + 1], (st->n - i - 1) * sizeof(SiftStageColDelta));
+	st->n--;
+}
+
+void
+sift_col_delta_stage_drop_sub(SiftColDeltaStage *st, SubTransactionId sub)
+{
+	int			kept = 0;
+
+	for (int i = 0; i < st->n; i++)
+	{
+		if (st->items[i].subxid != sub)
+		{
+			st->items[kept++] = st->items[i];
+			continue;
+		}
+		st->bytes -= item_bytes(&st->items[i]);
+		pfree(st->items[i].rec);
+	}
+	st->n = kept;
+}
+
+void
+sift_col_delta_stage_promote_sub(SiftColDeltaStage *st, SubTransactionId sub, SubTransactionId parent)
+{
+	for (int i = 0; i < st->n; i++)
+		if (st->items[i].subxid == sub)
+			st->items[i].subxid = parent;
+}
+
+void
+sift_col_delta_stage_normalize_top(SiftColDeltaStage *st, TransactionId top_xid)
+{
+	for (int i = 0; i < st->n; i++)
+	{
+		SiftColDeltaEntryHdr h;
+
+		memcpy(&h, st->items[i].rec, sizeof(h));
+		h.xmin = top_xid;
+		h.flags &= ~SIFT_CDENT_FLAG_SUBXID;
+		memcpy(st->items[i].rec, &h, sizeof(h));
+	}
+}
+
+uint64
+sift_col_delta_stage_part_bytes(const SiftColDeltaStage *st, uint64 part_id)
+{
+	uint64		n = 0;
+
+	for (int i = 0; i < st->n; i++)
+		if (st->items[i].part_id == part_id)
+			n += item_bytes(&st->items[i]);
+	return n;
+}
+
+SiftColDeltaBatch
+sift_col_delta_stage_take_part(SiftColDeltaStage *st, FullTransactionId next, uint64 part_id)
+{
+	SiftColDeltaBatch b = {0};
+	int			kept = 0;
+
+	for (int i = 0; i < st->n; i++)
+	{
+		if (st->items[i].part_id != part_id)
+		{
+			st->items[kept++] = st->items[i];
+			continue;
+		}
+		sift_col_delta_batch_add(&b, next, st->items[i].rec);
+		st->bytes -= item_bytes(&st->items[i]);
+		pfree(st->items[i].rec);
+	}
+	st->n = kept;
+	return b;
+}
+
+void
+sift_col_delta_stage_free(SiftColDeltaStage *st)
+{
+	for (int i = 0; i < st->n; i++)
+		pfree(st->items[i].rec);
+	if (st->items != NULL)
+		pfree(st->items);
+	memset(st, 0, sizeof(*st));
+}

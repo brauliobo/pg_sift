@@ -3,8 +3,8 @@
  * The sets of count(DISTINCT), the ordered-set values and the generic states written for the
  * groups of a dump.
  */
+/* check-memory: allow-allocs one pair for each distinct value the aggregate holds in memory, which its share of hash memory bounds */
 #include "postgres.h"
-#include "core/rowmem.h"
 
 #include "executor/executor.h"
 
@@ -105,11 +105,11 @@ blob_set(AggExec *ex, int ai, const uint32 *gl, uint32 ng, const uint32 *cidx, c
 		for (uint32 g = 0; g < n; g++)
 			if (cidx[g] != UINT32_MAX)
 				total += ex->acc[ai].n[g];
-		pg = sift_rows_alloc(Max(total, 1) * sizeof(uint32));
-		pv = sift_rows_alloc(Max(total, 1) * sizeof(uint32));
-		cg = sift_rows_alloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
-		cc = sift_rows_alloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
-		bits = sift_rows_alloc(Max(total / DB_DENSE, 1) * sizeof(uint64 *));
+		pg = palloc(Max(total, 1) * sizeof(uint32));
+		pv = palloc(Max(total, 1) * sizeof(uint32));
+		cg = palloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
+		cc = palloc(Max(total / DB_DENSE, 1) * sizeof(uint32));
+		bits = palloc(Max(total / DB_DENSE, 1) * sizeof(uint64 *));
 		np = 0;
 		for (uint32 g = 0; g < n; g++)
 			for (uint32 c = 0; d->gd[g] && cidx[g] != UINT32_MAX && c < d->ncd; c++)

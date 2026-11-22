@@ -25,7 +25,7 @@
 #include "core/compat.h"
 #include "core/errctx.h"
 #include "core/explain.h"
-#include "core/membudget.h"
+#include "core/memtrack.h"
 
 #include "cscan_int.h"
 
@@ -233,6 +233,16 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 		PredicateLockRelation(ss->heap, estate->es_snapshot);
 }
 
+/* a search holds one open segment per 165 kB of a 64 kB dictionary block, its header and its stream reader, and 8 MB of cursors, candidates and top-N besides, in work_mem */
+static void
+search_assert_within(MemoryContext cx)
+{
+	SiftMemTracker tr;
+
+	sift_mem_init_sub(&tr, "bm25_search", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1));
+	sift_mem_assert_within(&tr);
+}
+
 static TupleTableSlot *
 sift_exec(CustomScanState *node)
 {
@@ -243,20 +253,18 @@ sift_exec(CustomScanState *node)
 	slot = ExecScan(&node->ss, scan_next, scan_recheck);
 	sift_errctx_pop(&ctx);
 	if (TupIsNull(slot))
-	{
-		SIFT_MEM_SCOPE(bm25_search, ((SiftScanState *) node)->cxt);
-		SIFT_MEM_CHECKPOINT();
-	}
+		search_assert_within(((SiftScanState *) node)->cxt);
 	return slot;
 }
+
+
 
 static void
 sift_end(CustomScanState *node)
 {
 	SiftScanState *ss = (SiftScanState *) node;
-	SIFT_MEM_SCOPE(bm25_search, ss->cxt);
 
-	SIFT_MEM_CHECKPOINT();
+	search_assert_within(ss->cxt);
 	close_scan(ss);
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);

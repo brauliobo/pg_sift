@@ -32,16 +32,26 @@ typedef enum SiftColOp
 	SIFT_COLOP_NOTCONTAINS,		/* STR only: a non-NULL value that does not hold vals[0] (NOT LIKE '%abc%') */
 	SIFT_COLOP_SUFFIX,			/* STR only: vals[0] is a suffix of the value, bytewise (LIKE '%abc') */
 	SIFT_COLOP_ICONTAINS,		/* STR only: lower(value) holds vals[0], ASCII in lower case (ILIKE '%abc%'); with nvals 3, vals[1] and vals[2] are lower() of U+0130 and of U+212A, the two characters whose lower case is ASCII */
-	SIFT_COLOP_SHAPE			/* the head of a range or a network: vals[0].v.s is the SiftColWTest of a containment operator (col/shape.c), made by the access method scan */
+	SIFT_COLOP_SHAPE,			/* the head of a range or a network: vals[0].v.s is the SiftColWTest of a containment operator (col/shape.c), made by the access method scan */
+	SIFT_COLOP_KEY_EXISTS,		/* format major 2: the leaf of a top-level key of a jsonb document; the rows where jsonb_exists(document, key) holds (col -1: no leaf keeps the key, the heap decides every row) */
+	SIFT_COLOP_JSON_TYPE,		/* format major 2: the leaf of a top-level key of a jsonb document; vals[0].v.i is a set of JSON types (bit t for SIFT_COLTAG_t): the rows where jsonb_typeof(document -> key) is one of them */
+	SIFT_COLOP_IPREFIX,			/* format major 2, STR: lower(value) starts with vals[0], ASCII in lower case (lower(col) LIKE 'abc%'); vals[1].v.i is 1 when the pattern has an i or a k (col/f2/f2_pred_ext.h) */
+	SIFT_COLOP_IEQ,				/* format major 2, STR: lower(value) = vals[0], the same pattern (lower(col) = 'abc') */
+	SIFT_COLOP_ARR_OVERLAP,		/* format major 2, VARLENA image of int4[], int8[] or text[]: && the array of vals[0].v.s, a SiftArrQuery (col/f2/f2_pred_ext.h) */
+	SIFT_COLOP_ARR_CONTAINS		/* format major 2, VARLENA image of an array: @> the same */
 } SiftColOp;
 
+/* The operators of the hybrid scan (agg/hybrid.h) that no index qual makes: the scan is given them with sift_f2_scan_set_ext_preds */
+#define SIFT_COLOP_IS_EXT(op) ((op) >= SIFT_COLOP_IPREFIX)
+
 /* The STR tests that read every string of a dictionary, in code order, and not a run of its sorted order */
-#define SIFT_COLOP_SCANS(op) ((op) == SIFT_COLOP_CONTAINS || (op) == SIFT_COLOP_NOTCONTAINS || (op) == SIFT_COLOP_ICONTAINS || (op) == SIFT_COLOP_SUFFIX)
+#define SIFT_COLOP_SCANS(op) ((op) == SIFT_COLOP_CONTAINS || (op) == SIFT_COLOP_NOTCONTAINS || (op) == SIFT_COLOP_ICONTAINS || (op) == SIFT_COLOP_SUFFIX || SIFT_COLOP_IS_EXT(op))
 
 /*
  * A predicate on one leaf; the constants are SiftColValues of the leaf's store (INT: v.i, F4/F8: v.f, STR: v.s/len). Several
  * predicates in an array are ANDed. For an F4 leaf a double constant is compared as float8 against the promoted value, as PostgreSQL does.
- * Range operators on STR compare bytes (the planner only offers them for the C collation).
+ * Range operators on STR compare bytes, which is the order of the C collation only: collid is the collation of the comparison, and a leaf of format major 2 leaves the test to the heap
+ * where the bytes do not decide it (a nondeterministic collation, a range under any but the C one).
  */
 typedef struct SiftColPred
 {
@@ -49,6 +59,7 @@ typedef struct SiftColPred
 	SiftColOp	op;
 	int			nvals;
 	const SiftColValue *vals;
+	uint32		collid;			/* STR: the collation the constants are compared by; 0: the bytes */
 } SiftColPred;
 
 /* A bound of a range: the two of one leaf are tested together (a range found in a sorted run, scan_filter.c) */
@@ -312,7 +323,7 @@ extern void sift_col_add_batches(SiftColSource *src, struct SiftColBatch *const 
 /* the batches of the superblocks outside [sb_lo, sb_hi) leave the source: their owner frees them, the next begin over them feeds them again */
 extern void sift_col_drop_batches(SiftColSource *src, uint32 sb_lo, uint32 sb_hi);
 
-/* The source of the scope segments of an index (SIFT_COLO_SCOPE), before sift_col_begin: the rows of the write buffers expanded by the pairs rd->delta lists, as units of memory (col/scan/scope_delta.c); the rows were selected by the reader (sift_scope_delta_select) */
+/* The source of the scope segments of an index (SIFT_COLO_SCOPE), before sift_col_begin: the rows of the write buffers expanded by the pairs rd->delta lists, as units of memory (col/v1/scan/scope_delta.c); the rows were selected by the reader (sift_scope_delta_select) */
 struct SiftScopeRead;
 extern void sift_col_scope_delta(SiftColSource *src, const struct SiftScopeRead *rd);
 
@@ -351,7 +362,7 @@ extern ItemPointerData *sift_col_wbuf_lookup(SiftColSource *src, const SiftColPr
 extern bool sift_col_point_lazy(const SiftColSource *src);
 extern uint32 sift_col_point_next(SiftColSource *src, SiftKey *out, uint32 max);
 /*
- * The global order of leaf col (col/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
+ * The global order of leaf col (col/v1/gorder.h) as sources of sorted entries, for an ORDER BY .. LIMIT that has the heap say which rows are live: the number of
  * sources (one for each segment, one for the rows of the write buffers), or -1 when it cannot answer. _info: entries and values of source i; _head: the first w entries of
  * the chunk that holds entry p, from the entry *at, as keys and heap addresses, each SIFT_CGORD_CAP slots; the count returned.
  */
@@ -601,7 +612,7 @@ extern void sift_col_row_tids(const SiftColUnit *unit, const uint32 *ords, uint3
  * rows ascending, the rest those of the rows whose value overflowed the leaf, ascending. sift_col_run_read gives the entries [pos, pos + cnt), each a row of the unit.
  * *id names the unit among those of the scan (the generation of its segment and its place in it), so that a scan can come back to it.
  */
-/* One entry of the head of a sorted run (col/runs.h): the key of a row and its heap address (block << 16 | offset) */
+/* One entry of the head of a sorted run (col/v1/runs.h): the key of a row and its heap address (block << 16 | offset) */
 typedef struct SiftCHeadEnt
 {
 	int64		key;

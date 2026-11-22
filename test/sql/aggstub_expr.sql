@@ -30,9 +30,9 @@ SELECT same($$SELECT g, count(*) FILTER (WHERE sqrt(abs(f)) > 1) AS a, count(*) 
 -- the divisor is zero for g = 0 and b = 0, in rows the guard excludes
 SELECT same($$SELECT g, sum(id / g) FILTER (WHERE g <> 0) AS a, count(*) FILTER (WHERE b <> 0 AND 1000 / b > 2) AS b, max(CASE WHEN g = 0 THEN 0 ELSE 50 / g END) AS c FROM e GROUP BY g$$) AS guarded;
 SELECT same($$SELECT count(*) FROM e WHERE g <> 0 AND id / g > 3$$) AS guarded_where;
-SET sift.agg_combo_cache = 64;
+SET work_mem = '64kB';
 SELECT same($$SELECT g, sum(f / 3) AS a, max(b % 7 + id % 13) AS b FROM e GROUP BY g$$) AS combo_cache;
-RESET sift.agg_combo_cache;
+RESET work_mem;
 SELECT same($$SELECT g, sum(id / 2) AS a, avg(b % 4) AS b FROM e GROUP BY g$$) AS int_sums;
 
 DROP FUNCTION same(text);

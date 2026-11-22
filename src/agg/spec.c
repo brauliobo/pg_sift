@@ -19,13 +19,7 @@
 #include "agg/agg.h"
 #include "agg/plan_int.h"
 #include "core/limits.h"
-
-/* what a group table that cannot spill may be, as a multiple of hash memory, before the scan gives way to the normal plan (which spills) */
-#define GROUP_NOSPILL_FACTOR	32
-/* ... of the hash memory, or of the memory the defaults give (work_mem 4MB, hash_mem_multiplier 2) when that is more: a small work_mem is a choice for sorts */
-#define GROUP_NOSPILL_BASE		(8 * 1024 * 1024)
-/* the same for the table of a process of a scan with workers, which does not spill (the planner leaves such a scan to one process when its estimate passes hash memory): the misestimate it is given */
-#define GROUP_PAR_FACTOR		2
+#include "core/memtrack.h"
 
 sift_i128
 sift_pow10(int e)
@@ -815,28 +809,39 @@ sift_aggspec_holds_values(const SiftAggSpec *s)
 	return holds;
 }
 
-/*
- * The bytes a group table that cannot spill may take: the factor (group_nospill_factor) times the hash memory, or times the base when that is more. The planner leaves a
- * scan whose estimated table passes it to the normal plan, and the scan raises an error when its table does. *factor and *floor_bytes: the two terms, for the message.
- */
-double
-sift_agg_nospill_bytes(int *factor, double *floor_bytes)
+/* does the scan load the rows of a joined table into memory, which its plan estimated and the load may find larger? */
+static bool
+holds_lookups(const SiftAggSpec *s)
 {
-	int			f = (int) sift_limit(group_nospill_factor, GROUP_NOSPILL_FACTOR);
-	double		base = Max((double) get_hash_memory_limit(), (double) sift_limit(group_nospill_base, GROUP_NOSPILL_BASE));
-
-	if (factor)
-		*factor = f;
-	if (floor_bytes)
-		*floor_bytes = base;
-	return f * base;
+	return s->njoin > 0;
 }
 
-/* The bytes the group table of a process of a scan with workers may take: the factor (group_par_factor) times the hash memory, or times the base when that is more */
-double
-sift_agg_par_bytes(void)
+/* does the scan keep the sets of the distinct values of the groups in its table (a scan with workers, or with no key, cannot spill them)? */
+static bool
+holds_sets(const SiftAggSpec *s)
 {
-	return sift_limit(group_par_factor, GROUP_PAR_FACTOR) * Max((double) get_hash_memory_limit(), (double) sift_limit(group_nospill_base, GROUP_NOSPILL_BASE));
+	bool		holds = false;
+
+	for (int i = 0; i < s->naggs; i++)
+		holds |= s->agg[i].kind == SAA_COUNT_DISTINCT || s->agg[i].kind == SAA_M_DISTINCT || is_ordered_agg(&s->agg[i]);
+	return holds;
+}
+
+/* can the scan end past what its plan estimated it would hold, so that the statement runs again as PostgreSQL plans it? */
+bool
+sift_aggspec_can_overflow(const SiftAggSpec *s)
+{
+	return sift_aggspec_holds_groups(s) || sift_aggspec_holds_values(s) || holds_lookups(s) || (s->nkeys == 0 && holds_sets(s));
+}
+
+/*
+ * The bytes the group table of a process of a scan that cannot spill may take: its share of hash memory, which the processes of the scan (the leader and its
+ * workers) divide. The planner leaves a scan whose estimated table passes it to the normal plan, and the scan raises an error when its table does.
+ */
+double
+sift_agg_nospill_bytes(int nworkers)
+{
+	return (double) sift_mem_budget_bytes(SIFT_BUDGET_HASH_MEM, 1 + nworkers, 1);
 }
 
 /*

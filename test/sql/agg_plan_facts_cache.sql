@@ -28,7 +28,6 @@ VACUUM (FREEZE, ANALYZE) ev;
 INSERT INTO price SELECT 'after growth', scan_price();
 SET sift.plan_scale = 10;
 INSERT INTO price SELECT 'scaled', scan_price();
-RESET sift.plan_scale;
 INSERT INTO price SELECT 'unscaled again', scan_price();
 REINDEX INDEX ev_col;
 INSERT INTO price SELECT 'after reindex', scan_price();

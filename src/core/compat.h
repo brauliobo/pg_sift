@@ -14,9 +14,11 @@
 #include "nodes/plannodes.h"
 #include "nodes/tidbitmap.h"
 #include "pgtime.h"
+#include "storage/read_stream.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
+#include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
@@ -209,6 +211,9 @@ sift_plan_disabled(const Plan *plan, double *cost)
 typedef uint32 SiftTamOptions;
 
 #define SIFT_TAM_FLAGS_PARAM			, uint32 flags
+#define SIFT_TAM_FLAGS_ARG				, flags
+#define SIFT_TAM_CLUSTER_SNAPSHOT_ARG	cluster_snapshot,
+#define SIFT_TAM_ANALYZE_XMIN_ARG		/* none */
 #define SIFT_TAM_CLUSTER_SNAPSHOT		Snapshot cluster_snapshot,
 #define SIFT_TAM_ANALYZE_XMIN			/* none */
 #define SIFT_TAM_VACUUM_PARAMS			const struct VacuumParams *params
@@ -227,6 +232,9 @@ typedef uint32 SiftTamOptions;
 typedef int SiftTamOptions;
 
 #define SIFT_TAM_FLAGS_PARAM			/* none */
+#define SIFT_TAM_FLAGS_ARG				/* none */
+#define SIFT_TAM_CLUSTER_SNAPSHOT_ARG	/* none */
+#define SIFT_TAM_ANALYZE_XMIN_ARG		OldestXmin,
 #define SIFT_TAM_CLUSTER_SNAPSHOT		/* none */
 #define SIFT_TAM_ANALYZE_XMIN			TransactionId OldestXmin,
 #define SIFT_TAM_VACUUM_PARAMS			struct VacuumParams *params
@@ -243,6 +251,13 @@ typedef UniquePath SiftSortedUniquePath;
 #else
 typedef UpperUniquePath SiftSortedUniquePath;
 #define sift_is_sorted_unique_path(p)	IsA(p, UpperUniquePath)
+#endif
+
+/* A virtual generated column (18) stores nothing: the planner replaces each reference to it by its expression, so only a read of the tuples themselves finds its NULL */
+#if PG_VERSION_NUM >= 180000
+#define sift_attr_is_virtual(att)	((att)->attgenerated == ATTRIBUTE_GENERATED_VIRTUAL)
+#else
+#define sift_attr_is_virtual(att)	false
 #endif
 
 /* A tuple descriptor built by hand is finalized before its first use (19) */
@@ -283,6 +298,20 @@ typedef UpperUniquePath SiftSortedUniquePath;
 #define sift_vis_removable_xid(state, xid)	GlobalVisTestIsRemovableXid((state), (xid))
 #endif
 
+/* finish_heap_swap takes whether it rebuilds the indexes of the new heap (19), which 17 and 18 always do */
+#if PG_VERSION_NUM >= 190000
+#define SIFT_HEAP_SWAP_REINDEX_ARG	true,
+#else
+#define SIFT_HEAP_SWAP_REINDEX_ARG
+#endif
+
+/* The field of VacuumParams that holds the minimum duration of a VACUUM log line (renamed in 19) */
+#if PG_VERSION_NUM >= 190000
+#define SIFT_VACPARAM_LOG_MIN_DURATION	log_vacuum_min_duration
+#else
+#define SIFT_VACPARAM_LOG_MIN_DURATION	log_min_duration
+#endif
+
 /* The int8 value of a numeric and whether it did not fit (19 reports it through an error-saving context) */
 #if PG_VERSION_NUM >= 190000
 static inline int64
@@ -294,8 +323,19 @@ sift_numeric_int8(Numeric num, bool *err)
 	*err = esc.error_occurred;
 	return v;
 }
+
+static inline Numeric
+sift_numeric_mul(Numeric a, Numeric b, bool *err)
+{
+	ErrorSaveContext esc = {T_ErrorSaveContext};
+	Numeric		v = numeric_mul_safe(a, b, (Node *) &esc);
+
+	*err = esc.error_occurred;
+	return v;
+}
 #else
 #define sift_numeric_int8(num, err)	numeric_int8_opt_error((num), (err))
+#define sift_numeric_mul(a, b, err)	numeric_mul_opt_error((a), (b), (err))
 #endif
 
 /* pg_stat's report of a VACUUM: the relation (19) or its oid and whether it is shared, and the dead rows only from 18 */
@@ -330,7 +370,7 @@ sift_plain_index_scans_restore(RelOptInfo *rel, uint64 saved)
 #else
 
 static inline uint64
-sift_plain_index_scans_off(RelOptInfo *rel)
+sift_plain_index_scans_off(RelOptInfo *rel pg_attribute_unused())
 {
 	int			nest = NewGUCNestLevel();
 
@@ -340,7 +380,7 @@ sift_plain_index_scans_off(RelOptInfo *rel)
 }
 
 static inline void
-sift_plain_index_scans_restore(RelOptInfo *rel, uint64 saved)
+sift_plain_index_scans_restore(RelOptInfo *rel pg_attribute_unused(), uint64 saved)
 {
 	AtEOXact_GUC(true, (int) saved);
 }
@@ -477,6 +517,26 @@ eclass_member_iterator_next(EquivalenceMemberIterator *it)
 
 #endif
 
+#if PG_VERSION_NUM >= 180000
+StaticAssertDecl((int) COMPARE_LT == BTLessStrategyNumber && (int) COMPARE_GT == BTGreaterStrategyNumber, "the comparison types of an operator are the strategies of a btree");
+#endif
+
+/* The btree strategies (BTLessStrategyNumber .. BTGreaterStrategyNumber) an operator makes, one for each family it is a member of (18 also lists the other index methods' comparisons: CompareType has the strategy numbers) */
+static inline List *
+sift_op_strategies(Oid opno)
+{
+	List	   *res = NIL;
+
+#if PG_VERSION_NUM >= 180000
+	foreach_ptr(OpIndexInterpretation, oi, get_op_index_interpretation(opno))
+		res = lappend_int(res, oi->cmptype);
+#else
+	foreach_ptr(OpBtreeInterpretation, oi, get_op_btree_interpretation(opno))
+		res = lappend_int(res, oi->strategy);
+#endif
+	return res;
+}
+
 /* Does the collation order by bytes (C, POSIX)? 17 has a function for it, 18 and later a flag of the locale */
 #if PG_VERSION_NUM >= 180000
 #define sift_collate_is_c(collid) (pg_newlocale_from_collation(collid)->collate_is_c)
@@ -536,5 +596,15 @@ eclass_member_iterator_next(EquivalenceMemberIterator *it)
 
 /* The cast of a JSON null to a number or a boolean is NULL from 18 and an error before */
 #define SIFT_JSON_NULL_CAST_RAISES	(PG_VERSION_NUM < 180000)
+
+/*
+ * READ_STREAM_USE_BATCHING (18 and later) submits the reads a stream queued in batches (one io_uring submission, one hand-over to the workers); it is safe only when the stream's
+ * callback does arithmetic on memory and nothing else (core/io_stream.c does). 17 has no such flag: its stream issues each combined read with StartReadBuffers.
+ */
+#if PG_VERSION_NUM >= 180000
+#define SIFT_READ_STREAM_BATCHING	READ_STREAM_USE_BATCHING
+#else
+#define SIFT_READ_STREAM_BATCHING	0
+#endif
 
 #endif							/* SIFT_COMPAT_H */

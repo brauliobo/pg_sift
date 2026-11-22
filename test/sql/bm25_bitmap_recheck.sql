@@ -5,7 +5,6 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
 SET enable_seqscan = off;
 SET enable_indexscan = off;
 

@@ -2,7 +2,7 @@
  * bm25/rank_search.c - the ranked search: best-first over units and blocks, verification and the top-k.
  */
 #include "rank_int.h"
-#include "core/rowmem.h"
+#include "core/memtrack.h"
 
 /* Index entry of a hit whose visible tuple sits elsewhere on the page (HOT chain) */
 typedef struct HotEnt
@@ -37,6 +37,58 @@ rank_budget(const SiftTopK *tk, int64 hits)
 {
 	sift_budget_check((hits + tk->tiecap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit), work_mem,
 					  "a ranked search of the matches", "work_mem", "add a LIMIT that the search can take (a filter after the search keeps every match)");
+}
+
+/*
+ * A search without a limit holds every match, which may be more than work_mem: it keeps its hits in memory up to half of it and sorts the rest outside, in a tuplesort
+ * of the other half (bm25/hitspill.h). The hits come back from there best first, as from the heap.
+ */
+static bool
+rank_spill_flush(SiftRanker *r, SiftTopK *tk)
+{
+	if (!r->spill_ok || ((int64) Min(tk->k, 2 * tk->cap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit)) / 1024 <= work_mem / 2)
+		return false;
+	if (r->spill == NULL && (r->spill = sift_hitspill_begin(r->plan->mcxt, work_mem / 2)) == NULL)
+	{
+		r->spill_ok = false;
+		return false;
+	}
+	for (int64 i = 0; i < tk->n; i++)
+		sift_hitspill_put(r->spill, tk->hit[i].key, tk->hit[i].score);
+	r->nhit += tk->n;
+	tk->n = 0;
+	return true;
+}
+
+/* The search is over: what the heap still holds joins the sorted hits, which are all of them */
+static void
+rank_spill_finish(SiftRanker *r, SiftTopK *tk)
+{
+	for (int64 i = 0; i < tk->n; i++)
+		sift_hitspill_put(r->spill, tk->hit[i].key, tk->hit[i].score);
+	r->nhit += tk->n;
+	pfree(tk->hit);
+	sift_hitspill_sort(r->spill);
+	r->hit = NULL;
+	r->hitcap = 0;
+}
+
+/* The hit at pos, read ahead from the sorted hits */
+static const SiftHit *
+rank_spill_head(SiftRanker *r)
+{
+	if (!r->spill_ready)
+		r->spill_ready = sift_hitspill_next(r->spill, &r->spill_head.key, &r->spill_head.score);
+	return &r->spill_head;
+}
+
+void
+rank_spill_end(SiftRanker *r)
+{
+	if (r->spill)
+		sift_hitspill_end(r->spill);
+	r->spill = NULL;
+	r->spill_ready = false;
 }
 
 /* A tie-inclusive search keeps, next to the K best hits, every verified hit that ties with the worst of them (r->ties) */
@@ -121,7 +173,7 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 		bool		full = tk->n == tk->k;
 		SiftHit		out = full ? tk->hit[0] : (SiftHit) {0};
 
-		if (tk->n == tk->cap && tk->n < tk->k)
+		if (tk->n == tk->cap && tk->n < tk->k && !rank_spill_flush(r, tk))
 		{
 			rank_budget(tk, Min(tk->k, 2 * tk->cap));
 			tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
@@ -243,7 +295,8 @@ unit_terms(SiftPlan *p, RankSeg *rs, float4 theta)
 		for (int j = 0; p->leaves[i].scoring && j < nt; j++)
 		{
 			t[j].g = NULL;
-			t[j].decoded = false;
+			t[j].based = false;
+			t[j].located = t[j].sought = false;
 			t[j].live = nt == 1 || sum_ub(p, rs->lmax, i, t[j].tub) > theta;
 			if (orc && t[j].live)
 				orc->op.kid[nlive++] = term_cursor(rs, &t[j]);
@@ -277,6 +330,14 @@ term_seek(SiftPlan *p, RankSeg *rs, RkTerm *t, uint32 gid)
 	sift_cur   *tc = sift_post_cursor(t->pc);
 	const sift_grp *g;
 
+	if (!t->located)
+	{
+		t->bb = term_bound_find(t, gid);
+		t->located = true;
+	}
+	t->sought = true;
+	if (t->bb == NULL)
+		return;
 	if (tc->state == 1 && tc->g.gid == gid)
 		t->gc = t->pc;
 	else
@@ -287,11 +348,32 @@ term_seek(SiftPlan *p, RankSeg *rs, RkTerm *t, uint32 gid)
 		t->gc = t->sc;
 	}
 	g = sift_seek(sift_post_cursor(t->gc), gid);
-	if (g && g->gid == gid)
-	{
-		t->g = g;
-		t->bb = term_bound_at(t, gid);
-	}
+	Assert(g && g->gid == gid);
+	t->g = g;
+}
+
+/*
+ * The terms that have postings in block b of the unit's SB look their group up when the block is first scored: a unit whose blocks are all
+ * out of reach, and a term without postings in the blocks that are scored, cost no seek. A block bound of 0 is a block without postings.
+ */
+static void
+block_seek(SiftPlan *p, RankSeg *rs, uint32 gid, int b)
+{
+	for (int i = 0; i < p->nleaves; i++)
+		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[rs->s]; j++)
+		{
+			RkTerm	   *t = &rs->term[rs->first[i] + j];
+
+			if (!t->live || t->sought)
+				continue;
+			if (!t->located)
+			{
+				t->bb = term_bound_find(t, gid);
+				t->located = true;
+			}
+			if (t->bb && t->bb->blk_bound[b] > 0)
+				term_seek(p, rs, t, gid);
+		}
 }
 
 /*
@@ -317,6 +399,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 	SiftSegment *seg = p->seg[u->seg];
 	const sift_grp *g;
 	const SiftFilterSB *fs;
+	const SiftTidBridgeSB *bsb;
 	SiftDocChunk dc;
 	float4		theta = rank_theta(r, tk);
 	int			order[SIFT_BLKS_PER_SB],
@@ -366,6 +449,15 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 			memcpy(pages, g->pages, sizeof(pages));
 	}
 	p->stats.sb_scanned++;
+	bsb = p->bridge ? sift_tidbridge_probe_sb(p->bridge, u->gid) : NULL;
+	Assert(bsb || !p->bridge);
+	/* no page of the segment's group is one the bridge holds: the docmap of the superblock is never read */
+	if (have && bsb && !(have = sift_tidbridge_intersect_pages(bsb, pages, pages)))
+	{
+#ifdef SIFT_TESTING
+		sift_rank_stats.bridge_docmap_skips++;
+#endif
+	}
 	if (!have || !sift_seg_docs(seg, u->gid, &dc))
 	{
 		sift_sr_release(&seg->sr);
@@ -381,10 +473,10 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 		sift_sr_release(&seg->sr);
 		return;
 	}
-	for (int i = 0; i < p->nleaves; i++)
-		for (int j = 0; p->leaves[i].scoring && j < p->leaves[i].nterms[u->seg]; j++)
-			if (rs->term[rs->first[i] + j].live)
-				term_seek(p, rs, &rs->term[rs->first[i] + j], u->gid);
+	for (int k = 0; k < p->npleaf; k++)
+		for (int j = 0; j < p->leaves[p->pleaf[k]].nterms[u->seg]; j++)
+			if (rs->term[rs->first[p->pleaf[k]] + j].live && !rs->term[rs->first[p->pleaf[k]] + j].sought)
+				term_seek(p, rs, &rs->term[rs->first[p->pleaf[k]] + j], u->gid);
 	r->posok = p->nphr > 0 && rank_phrase_groups(r, rs);
 	order_blocks(order, n, u->ub);
 	for (int i = 0; i < n; i++)
@@ -394,7 +486,13 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 		uint32		live;
 
 		theta = rank_theta(r, tk);
-		if (!(u->ub[b] > theta) || !block_terms(p, rs, b, theta, r->leafub))
+		if (!(u->ub[b] > theta))
+		{
+			p->stats.blocks_skipped++;
+			continue;
+		}
+		block_seek(p, rs, u->gid, b);
+		if (!block_terms(p, rs, b, theta, r->leafub))
 		{
 			p->stats.blocks_skipped++;
 			continue;
@@ -406,7 +504,7 @@ rank_unit(SiftRanker *r, const Unit *u, SiftTopK *tk)
 			continue;
 		}
 		p->stats.blocks_scored++;
-		nsel = score_block(r, rs, g, fs, &dc, b, theta, r->leafub, live);
+		nsel = score_block(r, rs, g, fs, bsb, &dc, b, theta, r->leafub, live);
 		sift_sr_release(&seg->sr);
 		for (int j = 0; j < nsel; j++)
 		{
@@ -434,24 +532,99 @@ rank_wbuf(SiftRanker *r, SiftTopK *tk)
 	const SiftPlan *p = r->plan;
 
 	for (int64 i = 0; i < p->nmhit; i++)
-		if (p->filter == NULL || sift_filter_has(p->filter, p->mhit[i].key))
+		if ((p->filter == NULL || sift_filter_has(p->filter, p->mhit[i].key)) &&
+			(p->bridge == NULL || sift_tidbridge_probe_tid(p->bridge, p->mhit[i].key, NULL) != SIFT_TIDPROBE_NO))
 			rank_candidate(r, tk, p->mhit[i].key, p->mhit[i].score, -1);
+}
+
+#define RANK_FIRST_BATCH	4
+#define RANK_BATCH			16
+
+static inline bool
+unit_before(const Unit *a, const Unit *b)
+{
+	return a->seg != b->seg ? a->seg < b->seg : a->gid < b->gid;
+}
+
+/*
+ * BATCH_BMW: the units by descending bound, a batch at a time (the first one small, so the threshold rises at once); a batch runs in
+ * ascending (segment, gid) order, which the cursors follow forward where the order of the bounds sends them back and forth.
+ */
+static void
+rank_units_batched(SiftRanker *r, SiftTopK *tk)
+{
+	int			u = 0,
+				size = RANK_FIRST_BATCH;
+
+	rank_sort_units(r);
+	while (u < r->nunit && r->unit[u].maxub > sift_kern_topk_theta(tk))
+	{
+		const Unit *batch[RANK_BATCH];
+		int			n = 0,
+					end = Min(u + size, r->nunit);
+
+		for (; u < end; u++)
+			if (r->unit[u].maxub > sift_kern_topk_theta(tk))
+			{
+				int			j = n++;
+
+				for (; j > 0 && unit_before(&r->unit[u], batch[j - 1]); j--)
+					batch[j] = batch[j - 1];
+				batch[j] = &r->unit[u];
+			}
+			else
+				r->plan->stats.blocks_skipped += r->unit[u].nblk;
+		for (int i = 0; i < n; i++)
+		{
+			CHECK_FOR_INTERRUPTS();
+			if (batch[i]->maxub > sift_kern_topk_theta(tk))
+				rank_unit(r, batch[i], tk);
+			else
+				r->plan->stats.blocks_skipped += batch[i]->nblk;
+		}
+		size = RANK_BATCH;
+	}
+	rank_skip_units(r, u, r->nunit);
+}
+
+/*
+ * MAXSCORE_SB and CONJUNCTIVE: the units are made as they are walked, in ascending (segment, gid) order (rank_stream.c), none is kept. The best
+ * few go first, so that the threshold is near its final value before the sweep; the sweep then takes every other unit in order, and a unit
+ * whose bound is out of reach costs nothing. No unit is ordered by bound and the cursors never go back, except once at the start of the sweep.
+ */
+static void
+rank_units_streamed(SiftRanker *r, SiftTopK *tk)
+{
+	Unit		seed[RANK_SEED],
+				u;
+	int			nseed = r->k > 0 ? rank_seed_units(r, seed) : 0;
+
+	Assert(!r->by_maxub);
+	for (int i = 0; i < nseed; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (seed[i].maxub > sift_kern_topk_theta(tk))
+			rank_unit(r, &seed[i], tk);
+		else
+			r->plan->stats.blocks_skipped += seed[i].nblk;
+	}
+	for (int s = 0; s < r->plan->nsegs; s++)
+	{
+		UnitStream *st = unit_stream_open(r, s, seed, nseed);
+
+		while (st && unit_stream_next(st, tk, &u))
+			rank_unit(r, &u, tk);
+	}
 }
 
 static void
 rank_units(SiftRanker *r, SiftTopK *tk)
 {
-	int			u;
-
 	rank_wbuf(r, tk);
-	for (u = 0; u < r->nunit; u++)
-	{
-		if (!(r->unit[u].maxub > sift_kern_topk_theta(tk)))
-			break;
-		CHECK_FOR_INTERRUPTS();
-		rank_unit(r, &r->unit[u], tk);
-	}
-	rank_skip_units(r, u, r->nunit);
+	if (r->mode == SIFT_RM_BATCH_BMW || r->by_maxub)
+		rank_units_batched(r, tk);
+	else
+		rank_units_streamed(r, tk);
 }
 
 /*
@@ -536,7 +709,7 @@ rank_merge_shared(SiftRanker *r)
 
 /* Searches the K best verified hits from scratch; the heap grows with the hits found, not with K (K is unbounded without a hint: one search holds every match) */
 static void
-rank_search(SiftRanker *r)
+rank_search_once(SiftRanker *r)
 {
 	SiftPlan   *p = r->plan;
 	SiftTopK	tk;
@@ -544,12 +717,15 @@ rank_search(SiftRanker *r)
 	bool		shared = r->par && !r->searched;
 
 	hot_forget(r);
+	rank_spill_end(r);
 	if (r->hit)
 		pfree(r->hit);
+	r->spill_ok = r->K == PG_INT64_MAX && !r->ties && !shared;
+	r->nhit = 0;
 	cap = Min(r->K, RANK_INITIAL_K);
 	sift_kern_topk_init(&tk, MemoryContextAllocHuge(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
+	tk.floor = r->floor;
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
-	p->stats.searches++;
 	if (shared)
 		rank_units_shared(r, &tk);
 	else
@@ -557,14 +733,49 @@ rank_search(SiftRanker *r)
 	p->stats.theta = sift_kern_topk_theta(&tk);
 	r->complete = r->ties || tk.n < r->K;
 	rank_close_ties(r, &tk);
-	sift_kern_topk_sort(&tk);
-	rank_append_ties(&tk);
-	r->nhit = tk.n;
-	r->hit = tk.hit;
-	r->hitcap = tk.cap;
+	if (r->spill)
+		rank_spill_finish(r, &tk);
+	else
+	{
+		sift_kern_topk_sort(&tk);
+		rank_append_ties(&tk);
+		r->nhit = tk.n;
+		r->hit = tk.hit;
+		r->hitcap = tk.cap;
+	}
 	r->searched = true;
 	if (shared)
 		rank_merge_shared(r);
+}
+
+/*
+ * A plan with deferred wide leaves is searched on their top terms first: when the K-th score of that search (every result of it scores as much
+ * with every term read) is out of reach of the terms left out, its results are the plan's, and the leaves' postings were never unioned. When it is
+ * not, the leaves read the terms that can reach it and the plan is searched again; a later search of more hits has a lower K-th score and may widen it more.
+ */
+static void
+rank_search(SiftRanker *r)
+{
+	r->plan->stats.searches++;
+	rank_search_once(r);
+	if (r->deferred && sift_plan_tail_settled(r->plan, r->plan->stats.theta))
+	{
+#ifdef SIFT_TESTING
+		sift_rank_stats.tail_settled++;
+#endif
+	}
+	else if (r->deferred)
+	{
+#ifdef SIFT_TESTING
+		sift_rank_stats.tail_widened++;
+#endif
+		rank_widen(r, r->plan->stats.theta);
+		r->floor = r->par || r->plan->rescore ? -INFINITY : r->plan->stats.theta;
+		rank_search_once(r);
+		r->floor = -INFINITY;
+	}
+	if (r->K == r->k && !r->par)
+		sift_plan_remember_theta(r->plan, r->K, r->plan->stats.theta);
 }
 
 /*
@@ -640,15 +851,19 @@ sift_rank_next(SiftRanker *r, ItemPointer tid, float4 *score)
 {
 	SiftKey		key;
 	HotEnt	   *e;
+	const SiftHit *hit;
 
 	rank_ensure(r);
 	if (r->pos >= r->nhit)
 		return false;
-	key = r->hit[r->pos].key;
+	hit = r->spill ? rank_spill_head(r) : &r->hit[r->pos];
+	key = hit->key;
 	if (r->hot && (e = hash_search(r->hot, &key, HASH_FIND, NULL)) != NULL)
 		key = e->root;
 	sift_key_to_tid(key, tid);
-	*score = r->hit[r->pos++].score;
+	*score = hit->score;
+	r->pos++;
+	r->spill_ready = false;
 	return true;
 }
 
@@ -656,5 +871,7 @@ float4
 sift_rank_max_score(SiftRanker *r)
 {
 	rank_ensure(r);
-	return r->nhit > 0 ? r->hit[0].score : 0;
+	if (r->nhit == 0)
+		return 0;
+	return r->spill ? rank_spill_head(r)->score : r->hit[0].score;
 }

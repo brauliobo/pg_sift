@@ -92,10 +92,10 @@ alt_bm25_compress(float4 *scores, const uint64 *mask, int npages, const uint8 *t
 #define BELOW(m, j)	__builtin_popcount((m) & ((1 << (j)) - 1))
 #define XL(m, j)	((((m) >> (j)) & 1) ? BELOW(m, j) : 0x80)
 #define XROW(m)		{XL(m, 0), XL(m, 1), XL(m, 2), XL(m, 3), XL(m, 4), XL(m, 5), XL(m, 6), XL(m, 7)}
-#define R4(m)		XROW(m), XROW(m + 1), XROW(m + 2), XROW(m + 3)
-#define R16(m)		R4(m), R4(m + 4), R4(m + 8), R4(m + 12)
-#define R64(m)		R16(m), R16(m + 16), R16(m + 32), R16(m + 48)
-static const uint8 lut8[256][8] = {R64(0), R64(64), R64(128), R64(192)};
+#define ALT_R4(m)		XROW(m), XROW(m + 1), XROW(m + 2), XROW(m + 3)
+#define ALT_R16(m)		ALT_R4(m), ALT_R4(m + 4), ALT_R4(m + 8), ALT_R4(m + 12)
+#define ALT_R64(m)		ALT_R16(m), ALT_R16(m + 16), ALT_R16(m + 32), ALT_R16(m + 48)
+static const uint8 lut8[256][8] = {ALT_R64(0), ALT_R64(64), ALT_R64(128), ALT_R64(192)};
 
 int			alt_bm25_tfvar(float4 *scores, const uint64 *mask, int npages, const uint8 *tf,
 						   const float4 *knorm, float4 w, int var);

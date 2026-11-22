@@ -8,5 +8,10 @@ SELECT s AS seed, r[1] AS order_checks, r[2] AS order_failed, r[3] AS next_check
        r[7] AS range_checks, r[8] AS range_failed, r[9] AS depth_checks, r[10] AS depth_failed, r[11] AS apart_checks, r[12] AS apart_failed
 FROM generate_series(1, 4) s, LATERAL (SELECT sift._test_range_check(s, 400) r) x;
 
+-- The same with every key component ordered by the flags of key_order (1 = DESC, 2 = NULLS FIRST, 3 = both): the order and the successor of a prefix and the depth of the difference follow the flags (the checks of the rest read bounds of the default order)
+SELECT f AS flags, r[1] AS order_checks, r[2] AS order_failed, r[3] AS next_checks, r[4] AS next_failed, r[5] AS span_checks, r[6] AS span_failed,
+       r[7] AS range_checks, r[8] AS range_failed, r[9] AS depth_checks, r[10] AS depth_failed, r[11] AS apart_checks, r[12] AS apart_failed
+FROM generate_series(1, 3) f, LATERAL (SELECT sift._test_range_check(f, 400, f) r) x;
+
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

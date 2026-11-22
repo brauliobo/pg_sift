@@ -1,4 +1,4 @@
--- A backend that reads the tombstone log of an index (or of a sift_table) reads the entries of its pages in batches, sorts each into what it keeps (up to sift.tomb_log_limit) and
+-- A backend that reads the tombstone log of an index (or of a sift_table) reads the entries of its pages in batches, sorts each into what it keeps (up to sift.backend_cache_kb) and
 -- spills the rest to sorted runs. The batch is a quarter of the entries the limit lets it keep, and a page: the scope tomb_sync_batch (test/mem-budgets.tsv, the limit and 16 kB) holds
 -- the same bytes at every size of the log (a per-row term of 0). It had a floor of 1024 entries, so a limit under 64 kB was not kept: at the smallest limit (16 kB) the batch was 4 times
 -- the limit, and the budget fails on it. The rows a scan reads are the same at 1 GB (the whole log in one batch) and at 16 kB (in runs).
@@ -23,22 +23,22 @@ SELECT format('DELETE FROM %s WHERE id %% 4 = 0', t) FROM unnest(ARRAY['f4', 'f8
 CREATE TABLE census (rows int, peak int8);
 -- a fresh backend for each size reads the whole log
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f4_c') \gset
 INSERT INTO census SELECT 4000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f8_c') \gset
 INSERT INTO census SELECT 8000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f12_c') \gset
 INSERT INTO census SELECT 12000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
 \c -
-SET sift.tomb_log_limit = '16kB';
+SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT count(*) AS read_the_log FROM sift._test_col_log_entries('f16_c') \gset
 INSERT INTO census SELECT 16000, peak FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
@@ -47,7 +47,7 @@ SELECT count(*) = 4 AS every_size_synced, count(DISTINCT peak) = 1 AS same_bytes
 -- the rows a scan reads are the same from the runs and from the whole log in memory
 SELECT md5(string_agg(id || ':' || g || ':' || v, ',' ORDER BY id)) AS rows_in_runs FROM f16 \gset
 \c -
-SET sift.tomb_log_limit = '1GB';
+SET sift.backend_cache_kb = '1GB';
 SELECT md5(string_agg(id || ':' || g || ':' || v, ',' ORDER BY id)) = :'rows_in_runs' AS same_rows_in_memory FROM f16;
 
 DROP TABLE census, f4, f8, f12, f16;

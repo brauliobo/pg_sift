@@ -2,11 +2,11 @@
 -- of small dictionary ids must spread over the entry table (they once piled up in a few slots, a probe walked thousands of entries): the rows are
 -- the same as the normal plan's, and the node is the aggregate scan.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- the statements check the lookup tables the scan loads (the plans with probes have their own test, agg_probe_rewrite)
-SET sift.agg_probe_rewrite = off;
 
 CREATE TABLE ev (id int PRIMARY KEY, kind text, bucket text, sub text, day date, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev

@@ -1,4 +1,4 @@
--- Open units (col/build/open.c): a CREATE INDEX of a sift_col index with key_cut that has no room for the temporary files of the key ranges makes every range of the key an open unit: the rows
+-- Open units (col/v1/build/open.c): a CREATE INDEX of a sift_col index with key_cut that has no room for the temporary files of the key ranges makes every range of the key an open unit: the rows
 -- are packed in memory and written as units as they fill, and no file is written, where the build was refused before. With room for the files they are used. Every path gives the rows of the heap.
 -- sift.test_col_open_stats says what the last build did; sift.test_col_open = 1 forces the open units, and the mutants plant a defect that a step must catch.
 CREATE EXTENSION pg_sift;

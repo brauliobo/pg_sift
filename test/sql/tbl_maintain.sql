@@ -3,8 +3,8 @@
 -- less the tombstone log, which only a VACUUM that has been through the indexes can shorten; a VACUUM after it ends at the same size.
 CREATE EXTENSION pg_sift;
 -- the shipped default is on (the test clusters run with it off, as without autovacuum: a pass changes the layouts the tests count)
-SELECT boot_val AS shipped_default FROM pg_settings WHERE name = 'sift.table_auto_defrag';
-SET sift.table_auto_defrag = off;
+SELECT boot_val AS shipped_default FROM pg_settings WHERE name = 'sift.async_maintenance';
+SET sift.async_maintenance = off;
 CREATE TABLE mt (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE mv (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE mn (LIKE mt) USING sift_table WITH (autovacuum_enabled = false);

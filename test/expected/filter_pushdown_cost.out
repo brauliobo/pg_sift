@@ -66,7 +66,7 @@ FROM fc_filters f ORDER BY f.flt;
  2.5% in every page                         | pushdown    | t          | t
  a few ids at the end of the heap           | pushdown    | t          | t
  a list of 300 ids at the end of the heap   | pushdown    | t          | t
- a list of 300 ids at the start of the heap | pushdown    | t          | t
+ a list of 300 ids at the start of the heap | post-filter | t          | t
  the last 70%                               | post-filter | t          | t
  5% at the start of the heap                | post-filter | t          | t
  5% at the end of the heap                  | pushdown    | t          | t

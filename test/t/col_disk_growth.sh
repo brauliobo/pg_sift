@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# What an operator reads when the file of a sift_col index stays long, and what the worker does about the value store: sift.col_shrink_history gives shrink_blocked_by (why the last cut
-# left free blocks: a snapshot that may still read them) and last_shrink (when the file was last cut), kept in the metapage; and the maintenance worker begins a new epoch of
-# a shared value store whose codes are mostly named by no segment, with no VACUUM asking for it, and logs how long the writers of the store waited.
+# tap: pooled
+# What an operator reads when the file of a sift_col index stays long: sift.col_shrink_history gives shrink_blocked_by (why the last cut
+# left free blocks: a snapshot that may still read them) and last_shrink (when the file was last cut), kept in the metapage.
 . "$(dirname "$0")/lib.bash"
 
-plan 9
+plan 5
 node_init wg 67 "autovacuum = off
 sift.test_col_net = off
 sift.maintenance_naptime = 200
@@ -40,26 +40,4 @@ shortened() { sql wg "SELECT pg_current_xact_id()" >/dev/null; sql wg "SET sift.
 check "the file is cut and last_shrink says when" wait_for shortened 30
 check "and the file is shorter ($BEFORE blocks before)" test "$(space "relation_blocks < $BEFORE")" == t
 
-# 3. the maintenance worker begins a new epoch of a value store whose codes no segment names
-sql wg "ALTER DATABASE postgres SET sift.test_vstore_columns = 'url'" "ALTER DATABASE postgres SET sift.test_vstore_gc_kb = 1" "ALTER DATABASE postgres SET sift.col_auto_merge = on" >/dev/null
-sql wg "CREATE TABLE v (id int PRIMARY KEY, tenant int, url text) WITH (autovacuum_enabled = off)" \
-	"INSERT INTO v SELECT i, i % 5, 'https://example.com/p/' || md5(i::text) FROM generate_series(1, 20000) i" \
-	"CREATE INDEX v_idx ON v USING sift_col (id, tenant, url)" "VACUUM v" >/dev/null || bail "setup of v failed"
-epochs() { sql wg "SELECT count(DISTINCT epoch) FROM sift.col_value_store_usage('v_url_sift_values')"; }
-check "the store begins with one epoch and no garbage" test "$(epochs)/$(sql wg "SELECT coalesce(garbage_pct, 0) FROM sift.col_value_store_status WHERE table_name = 'v'::regclass")" == "1/0.0"
-# the VACUUMs of this test leave the store alone (the session sets the limit above its size): the worker is the one that looks
-vac() { sql wg "SET sift.test_vstore_gc_kb = 1000000" "VACUUM v" >/dev/null; }
-for g in q s; do
-	sql wg "UPDATE v SET url = 'https://example.com/$g/' || md5(id::text)" "SELECT sift.col_promote('v_idx')" >/dev/null
-done
-vac
-check "the store holds garbage and no new epoch yet ($(sql wg "SELECT garbage_pct FROM sift.col_value_store_status WHERE table_name = 'v'::regclass") %)" test "$(epochs)/$(sql wg "SELECT garbage_pct >= 50 FROM sift.col_value_store_status WHERE table_name = 'v'::regclass")" == "1/t"
-begun() {
-	sql wg "UPDATE v SET tenant = tenant + 1 WHERE id % 100 = 1" "DELETE FROM v WHERE id % 100 = 51" \
-		"INSERT INTO v SELECT 1000000 + i, i % 5, 'https://example.com/r/' || md5(i::text) FROM generate_series(1, 600) i ON CONFLICT DO NOTHING" >/dev/null
-	vac
-	[[ $(epochs) -ge 2 ]]
-}
-check "the worker began a new epoch" wait_for begun 90
-check "and logged how long the store was held" bash -c "grep -q 'sift: value store compaction index \"v_idx\" in [0-9]* ms' '$D/postgres.log'"
 finish

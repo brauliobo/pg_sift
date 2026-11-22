@@ -2,11 +2,12 @@
 -- table, from the leaves of its index, and the table is kept as classes of its keys by the outcomes (a few) however many tuples of values its columns take (7,000 here).
 -- The answers are those of the normal plan; a test that may raise an error, a table a preserving join leaves unmatched rows of, and the ON clause of the table stay as they were.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_dimmap_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 10500, i % 11 FROM generate_series(1, 450000) i;
@@ -89,8 +90,8 @@ SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
 
 -- the caches off: the classes are made by every statement
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SELECT * FROM report('caches off');
 
 DROP FUNCTION report(text), got(text), answer(text, bool);

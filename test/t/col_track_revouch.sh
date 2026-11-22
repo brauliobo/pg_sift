@@ -121,7 +121,7 @@ for t in $TBLS; do [[ $(state ${t}_c) == "1 false" && $(q new postgres "SELECT t
 check "after pg_upgrade the four logs have the flags 1, and the recreated triggers are not the ones they name" test "$unrepaired" -eq 4
 check "... the reads check the heap and answer as the heap (the heap-free request, the checked read)" differential $TBLS
 q new postgres "ALTER SYSTEM SET sift.col_auto_merge = on" "SELECT pg_reload_conf()" >/dev/null
-sleep 1
+wait_for '[[ $(q new postgres "SHOW sift.col_auto_merge") == on ]]' 30
 # the log is consulted by a read of rows that VACUUM has not marked all-visible: the tables hold the updates of the old cluster
 for t in $TBLS; do q new postgres "SET sift.enable_agg = on" "$(QS $t)" >/dev/null; done
 all_repaired() { local t; for t in $TBLS; do [[ $(state ${t}_c) == "3 true" ]] || return 1; done; }

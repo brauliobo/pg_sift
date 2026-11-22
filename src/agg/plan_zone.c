@@ -130,7 +130,7 @@ zone_range(AggCtx *c, const SiftAggPred *p, ZoneRange *r, bool sorted)
 
 /*
  * the span of values and the number of values of the IN list p, for the structure that tests it (agg/pred_in.c): false for an empty list, a list that is
- * not constants (but see below) and a type with no table. An array the plan cannot see (a parameter of a generic plan) has sift.agg_param_set_size values,
+ * not constants (but see below) and a type with no table. An array the plan cannot see (a parameter of a generic plan) has agg_param_set_elems() values,
  * taken over the whole range of the leaf: the keys of a list are spread over it unless the query says otherwise, and a plan that is made once must not
  * assume the narrow one.
  */
@@ -149,15 +149,14 @@ in_list_shape(AggCtx *c, const SiftAggPred *p, uint64 *span, int *nv)
 		return r.nvals > 0;
 	}
 	lf = &c->lay->leaf[p->leaf];
-	if (p->argtype == NUMERICOID || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64) || sift_agg_param_set_size <= 0 ||
-		!IsA(estimate_expression_value(c->root, (Node *) p->expr), Param) || c->stats.max[p->leaf] <= c->stats.min[p->leaf])
+	if (p->argtype == NUMERICOID || (lf->vtype != SCV_I32 && lf->vtype != SCV_I64) || 		!IsA(estimate_expression_value(c->root, (Node *) p->expr), Param) || c->stats.max[p->leaf] <= c->stats.min[p->leaf])
 		return false;
 	*span = (uint64) (c->stats.max[p->leaf] - c->stats.min[p->leaf]) + 1;
-	*nv = sift_agg_param_set_size;
+	*nv = agg_param_set_elems();
 	return true;
 }
 
-/* the elements of the IN list p: the constants of a list, sift.agg_param_set_size for a parameter; 0 when not known */
+/* the elements of the IN list p: the constants of a list, agg_param_set_elems() for a parameter; 0 when not known */
 int
 in_list_keys(AggCtx *c, const SiftAggPred *p)
 {

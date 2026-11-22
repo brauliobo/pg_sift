@@ -521,15 +521,13 @@ BEGIN
 	END LOOP;
 END $$;
 
--- agg_fuse_agrees: q with the pushdown, with sift.agg_fuse off and with the pushdown off return the same rows, and some
+-- agg_fuse_agrees: q with the pushdown, run again, and with the pushdown off return the same rows, and some
 CREATE FUNCTION sift_helpers.agg_fuse_agrees(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE d bigint; n bigint;
 BEGIN
 	SET sift.enable_agg = on;
 	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
-	SET sift.agg_fuse = off;
 	EXECUTE format('CREATE TEMP TABLE r_alone AS %s', q);
-	RESET sift.agg_fuse;
 	SET sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
 	RESET sift.enable_agg;
@@ -540,13 +538,13 @@ BEGIN
 	RETURN d = 0 AND n > 0;
 END $$;
 
--- agg_lookup_cache_differences: rows of q, how many differ without the lookup cache (sift.agg_lookup_cache_kb = 0) and from the normal plan
+-- agg_lookup_cache_differences: rows of q, how many differ without the lookup cache (sift.backend_cache_kb = 0) and from the normal plan
 CREATE FUNCTION sift_helpers.agg_lookup_cache_differences(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	SET LOCAL sift.agg_lookup_cache_kb = 0;
+	SET LOCAL sift.backend_cache_kb = 0;
 	EXECUTE format('CREATE TEMP TABLE r_gen ON COMMIT DROP AS %s', q);
-	RESET sift.agg_lookup_cache_kb;
+	RESET sift.backend_cache_kb;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
@@ -783,7 +781,7 @@ BEGIN
 	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN counted THEN 'counted' ELSE 'units' END;
 END $$;
 
--- agg_mode_scan_and_count_off: the settings of one arm: sift.enable_agg = pushed and the table scans, sift.enable_scan and sift.enable_count the opposite
+-- agg_mode_scan_and_count_off: the settings of one arm: sift.enable_agg = pushed and the table scans, sift.enable_scan the opposite
 CREATE FUNCTION sift_helpers.agg_mode_scan_and_count_off(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('sift.enable_agg', pushed::text, true);
@@ -791,7 +789,6 @@ BEGIN
 	PERFORM set_config('enable_indexscan', (NOT pushed)::text, true);
 	PERFORM set_config('enable_bitmapscan', (NOT pushed)::text, true);
 	PERFORM set_config('sift.enable_scan', (NOT pushed)::text, true);
-	PERFORM set_config('sift.enable_count', (NOT pushed)::text, true);
 END $$;
 
 -- topn_check_min_max_with_plan_scale: DIFFERS plus the query and both answers when a scalar q differs between the pushdown (sift.plan_scale 1000) and the normal plan, array when the plan has Global Order, else units

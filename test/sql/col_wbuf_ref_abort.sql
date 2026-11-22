@@ -3,7 +3,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET check_function_bodies = off;
 
@@ -26,7 +26,6 @@ END $$;
 
 CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 CREATE INDEX a_ix ON a USING sift_col (id, g, v);
-SET sift.col_wbuf_ref = on;
 INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, 1000) i;
 
 -- a transaction that rolls back, after its first row and after several statements of many rows

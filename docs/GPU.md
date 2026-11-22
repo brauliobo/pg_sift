@@ -2,6 +2,27 @@
 
 `SiftAgg` can run grouped and filtered integer counts and sums of a `sift_col` index on a Vulkan compute device. It is **off by default** twice: the library is built without it unless `make VULKAN=1`, and a build that has it runs on the CPU unless `sift.gpu` says otherwise. A query the device cannot take, a unit it cannot read and a device that fails all run on the CPU, with the same rows.
 
+**6.0 status.** Vulkan stays a first-class opt-in feature of 6.0 and its 4 `sift.gpu*` settings are part of the 27 release GUCs (no knob is added). The 6.0 device path is an overhaul for Format Major 2 and `SiftAggV6`, summarized below; the eligibility rules and limits in the sections after it describe the 5.x backend and are replaced when the 6.0 backend is integrated. The GPU-versus-CPU numbers for 6.0 are regenerated at release (`bench/gpu/bench-pg.sh`, [BENCHMARKS.md](BENCHMARKS.md#8-vulkan-gpu-versus-cpu-opt-in)); the figures marked *development host* are from the staging suite and are replaced by the integrated run.
+
+## 6.0 Overhaul Summary
+
+Why 5.x only tied one CPU core at 10M rows: the kernel took 0.34 ms of a 1.96 ms device wall time, and the rest was per-unit dispatch (364 submissions, 1,820 allocations), synchronous 16 MB staging, host-side decompression before the PCIe copy, one group key of at most 64 values, and a device context opened by every backend. The 6.0 backend removes each of those:
+
+| 5.x limit | 6.0 |
+|---|---|
+| One unit per dispatch | Whole parts and multi-granule jobs, reduced on the device into one compact result |
+| Synchronous single-buffered staging | Double-buffered transfer ring over the dedicated transfer queue and, where the device has it, resizable BAR |
+| Chunks decompressed on the host | Format Major 2 encodings (constant, frame-of-reference, delta, runs, dictionary, ALP, bit-packed booleans, LZ4) decoded on the device |
+| One key, at most 64 groups, integer sums | Multi-key and high-cardinality hash aggregation (dense, shared-memory, and global lock-free tiers chosen by estimated distinct count), `min`, `max`, `float8`, `NULL`s, `FILTER`, `IN`/`OR`, dictionary text predicates, and computed expressions |
+| A context and cache per backend | One shared device context and VRAM chunk cache, accounted by `sift.gpu_cache_mb` |
+| Leader only | Parallel workers use the shared device |
+| `sift_col` only | `sift_col` and `sift_table` through the same part reader |
+
+- **Device choice:** `sift.gpu_device = ''` ranks usable devices by type, then VRAM, then effective PCIe bandwidth (link width and speed, capped by the upstream bridge), so on a host with two identical GPUs in slots of different width the faster slot is taken.
+- **Routing:** `auto` takes a query only when the cost model says the device wins (cold uploads and tiny scans stay on the CPU); `on` takes every eligible query. A software renderer is never chosen by `auto`.
+- **Exactness and safety are unchanged:** integer sums are exact 128-bit, a float sum follows the CPU's order, a lost device, a timeout, or an overflowing hash table re-runs the scan on the CPU with identical rows, and a missing driver (`VK_DRIVER_FILES=/nonexistent`) is a notice, never an error. The checked-in SPIR-V and `dlopen("libvulkan.so.1")` keep the build free of the Vulkan SDK; the packages are built without Vulkan.
+- **Development host, standalone staging figures (2 x GeForce RTX 3060 12 GiB on a Ryzen 9 5900XT, one slot PCIe 3.0 x16 and one PCIe 2.0 x4; shared, loaded machine):** the fast kernels (specialized for the shape of the job: columns as stored, four rows per invocation, one reduction per workgroup) stream a warm ungrouped aggregation at **271-295 GB/s**, **89-97 %** of the 304 GB/s of VRAM bandwidth measured at open (before: 18-19 GB/s). With chunks resident on the device, ungrouped scans ran **4.8-6.8x** faster than 32 CPU worker processes decoding the same stored chunks and **9.5-17.9x** faster than 4; a 100-group dense aggregation 3.0-3.3x (32 workers) and 6.2-7.2x (4); a two-key hash aggregation of about 1M groups **8.2-9.5x** warm and 4.4-5.0x cold. Computed expressions and top-100 stay at 0.8-2.4x warm and a cold first query of a simple shape still loses (0.1-0.6x), so `auto` leaves it on the CPU. Results are **0 differences** against the scalar oracle on both devices (211 aggregate runs, 372 decoded chunks, with sanitizers). These come from the standalone device suite, not from a PostgreSQL run, and are replaced by the integrated PostgreSQL run of Round 5 (Stage 7); quote only the integrated run in `docs/results/`.
+
 ## Build
 
 ```sh
@@ -71,6 +92,8 @@ Custom Scan (SiftAgg)
 - **Same answers:** the regress test `gpu_agg` runs every eligible shape and the shapes left to the CPU with `sift.gpu` on and off and prints whether the rows are equal; its output is the same without Vulkan, without a device and with a device (`VK_DRIVER_FILES=/nonexistent` simulates none).
 
 ## When it helps
+
+The measurements below come from earlier releases and are kept until the 6.0 run replaces them.
 
 The CPU columns are the same build with `sift.gpu = off`; "first" is the first query of the session (device: after it is open, the compressed chunks cross PCIe), "median" is the median of nine repeats (chunks resident on the device). Milliseconds of `Execution Time`.
 

@@ -22,8 +22,8 @@ enum
  * String list: 8-byte header (magic, version, u32 n, u32 length of the lengths node), the lengths node (an integer chunk node, cold), then
  * the bytes: u32 form (0 raw, else the algorithm id), u32 rawlen, u32 clen, data padded to 8.
  */
-void
-sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan)
+static bool
+put_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan, const void *cdict)
 {
 	CcW			w = {pol, SIFT_CC_INT};
 	int64	   *lens = palloc(sizeof(int64) * (n + 1));
@@ -43,7 +43,19 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 	put32(out, (uint32) ln.len);
 	put32(out, total);
 	appendBinaryStringInfo(out, ln.data, ln.len);
-	wrapped = scan ? wrap_choose_scan(&w, src, total, &z, scan) : wrap_choose(&w, src, total, CCR_COLD, &z);
+	if (cdict != NULL)
+	{
+		Size		cap = sift_colz_bound(SIFT_CC_ALG_ZSTD, total),
+					zlen = total > 0 ? sift_colz_compress_zdict(cdict, src, total, z.buf = palloc(cap), cap) : 0;
+
+		wrapped = zlen > 0 && zlen < (uint64) total * 95 / 100;
+		z.alg = SIFT_CC_ALG_ZSTD_DICT;
+		z.len = zlen;
+		if (!wrapped && total > 0)
+			pfree(z.buf);
+	}
+	else
+		wrapped = scan ? wrap_choose_scan(&w, src, total, &z, scan) : wrap_choose(&w, src, total, CCR_COLD, &z);
 	if (wrapped)
 	{
 		put32(out, (uint32) z.alg);
@@ -60,10 +72,29 @@ sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32
 	pad8(out);
 	pfree(lens);
 	pfree(ln.data);
+	return wrapped && z.alg == SIFT_CC_ALG_ZSTD_DICT;
+}
+
+void
+sift_cc_encode_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan)
+{
+	(void) put_strs(out, off, bytes, n, pol, scan, NULL);
+}
+
+bool
+sift_cc_encode_strs_dict(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, const void *cdict)
+{
+	return put_strs(out, off, bytes, n, pol, NULL, cdict);
 }
 
 void
 sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want, uint32 min_n, Size min_bytes, uint32 **off, char **bytes)
+{
+	sift_cc_decode_strs_dict(mcxt, blob, len, want, min_n, min_bytes, off, bytes, NULL);
+}
+
+void
+sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want, uint32 min_n, Size min_bytes, uint32 **off, char **bytes, const void *ddict)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift string list", ALLOCSET_SMALL_SIZES);
 	uint32		n,
@@ -113,6 +144,11 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want
 		CC_CORRUPT("string lengths do not add up");
 	if (form == 0)
 		memcpy(b, blob + pos, total);
+	else if (form == SIFT_CC_ALG_ZSTD_DICT)
+	{
+		if (ddict == NULL || !sift_colz_decompress_zdict(ddict, blob + pos, clen, b, total))
+			CC_CORRUPT("string bytes of a part dictionary are damaged or the part has none");
+	}
 	else
 	{
 		if (!sift_colz_available((int) form))

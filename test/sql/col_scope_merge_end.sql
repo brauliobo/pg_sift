@@ -5,7 +5,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
-SET sift.scope_max_multiplicity = 8;
 SET client_min_messages = warning;
 SET sift.test_col_scope_merge_limit = 20;
 
@@ -34,7 +33,7 @@ SELECT s FROM sizes, LATERAL unnest(ARRAY[
 	format('SELECT load_events(1, %s)', n),
 	'VACUUM (FREEZE, ANALYZE) events',
 	'SET sift.test_col_scope_merges = 0',
-	'CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = ''for+delta+rle+dict+alp+scale'', scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)'')',
+	'CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = ''for+delta+rle+dict+alp+scale'', scope = ''tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'')',
 	format('SELECT %s AS rows, * FROM scope_state()', n),
 	'SET sift.test_col_scope_merges = 0',
 	'REINDEX INDEX CONCURRENTLY events_col',
@@ -47,19 +46,19 @@ RESET sift.test_col_segment_kb;
 TRUNCATE events;
 SELECT load_events(1, 30000);
 VACUUM (FREEZE, ANALYZE) events;
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = 'for+delta+rle+dict+alp+scale', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (compression = 'for+delta+rle+dict+alp+scale', scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 SELECT s FROM unnest(ARRAY[1000, 2000, 3000, 4000]) n, LATERAL unnest(ARRAY[
 	format('SELECT load_events(100000 + %s * 10, %s)', n, n),
 	'SELECT sift.col_promote(''events_col'')']) s ORDER BY n \gexec
 SET sift.test_col_scope_merges = 0;
 SELECT * FROM scope_state();
-SET sift.col_auto_merge_partition_kb = 8;
+SET sift.test_col_partition_kb = 8;
 SELECT sift.col_merge('events_col', true) AS steps;
 SELECT * FROM scope_state();
 SELECT sift.col_merge('events_col', true) AS steps;
 SELECT * FROM scope_state();
 SELECT sift.col_verify('events_col', true);
-RESET sift.col_auto_merge_partition_kb;
+RESET sift.test_col_partition_kb;
 DROP INDEX events_col;
 DROP TABLE sizes, events, tenant_scope;
 DROP FUNCTION scope_state(), load_events(int, int);

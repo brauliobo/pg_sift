@@ -7,8 +7,8 @@ CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 -- the answer under the agg scan and under the normal plan, and what the scan did: proofs used, keys outside the proof, why not, parent leaf reads and heap fetches
 CREATE FUNCTION found_run(q text, OUT same boolean, OUT proofs int, OUT keys int, OUT why text, OUT leaf_reads int, OUT heap_fetches int, OUT workers int)
@@ -68,7 +68,6 @@ SELECT * FROM phase();
 SET sift.col_connect_refresh_pct = 1;
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT * FROM phase();
-RESET sift.col_connect_refresh_pct;
 
 -- events written after the stamp are in the write buffer: a row of a parent that is there, one that is not, a NULL key, a key whose row is deleted, a row whose key changed
 INSERT INTO events VALUES (4001, 5, 1), (4002, 999, 2), (4003, NULL, 3), (4004, 7, 4), (4005, 150, 5);
@@ -90,7 +89,6 @@ SET sift.col_connect_refresh_pct = 1;
 SELECT sift.col_maintain('events_col') AS rewritten;
 -- the refresh is done once: a rewrite restamps what was stale, and the end state holds again
 SELECT sift.col_maintain('events_col') AS rewritten_again;
-RESET sift.col_connect_refresh_pct;
 SELECT * FROM phase();
 
 -- segments merged: the stamps are those of the merge

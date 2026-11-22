@@ -1,0 +1,44 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_ht_compact.comp - writes the ready slots of the hash table one after the other (without the state word) into the result buffer, so
+ * that the host reads back the groups there are and not the slots of the table. One atomic counter update per subgroup. The counts the
+ * fast kernels leave out (J_CNT_ROWS) are the rows of the group: written here.
+ */
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#include "common_decode.glsl"
+
+layout(local_size_x = 256) in;
+
+void main()
+{
+	uint mask = ctl[J_HT_MASK], stride = ctl[J_HT_STRIDE];
+	uint nslots = mask + 1u, total = gl_NumWorkGroups.x * 256u, rounds = (nslots + total - 1u) / total;
+	uint gid = gl_GlobalInvocationID.x;
+
+	for (uint it = 0u; it < rounds; it++)
+	{
+		uint s = gid + it * total;
+		bool ready = s < nslots && ht[s * stride] < 0l;
+		uvec4 bal = subgroupBallot(ready);
+		uint cnt = subgroupBallotBitCount(bal), before = subgroupBallotExclusiveBitCount(bal);
+		uint first = 0u;
+
+		if (subgroupElect() && cnt != 0u)
+			first = uint(atomicAdd(res[RES_NCOMP], int64_t(cnt)));
+		first = subgroupBroadcastFirst(first);
+		if (ready)
+		{
+			uint o = (first + before) * (stride - 1u), b = s * stride;
+
+			for (uint w = 1u; w < stride; w++)
+				out64[o + w - 1u] = ht[b + w];
+			uint cr = ctl[J_CNT_ROWS], nk = ctl[J_NKEYS];
+
+			for (uint a = 0u; cr != 0u && a < ctl[J_NAGGS]; a++)
+				if (((cr >> a) & 1u) != 0u)
+					out64[o + 2u + nk + a * 3u + (ctl[J_AGGKIND + a] <= AK_COUNT ? 0u : 2u)] = ht[b + 2u + nk];
+		}
+	}
+}

@@ -115,6 +115,9 @@ typedef struct MemoryContextData *MemoryContext;
 extern _Thread_local MemoryContext CurrentMemoryContext;
 extern MemoryContext TopMemoryContext;
 
+#define ALLOCSET_SMALL_MINSIZE		0
+#define ALLOCSET_SMALL_INITSIZE		1024
+#define ALLOCSET_DEFAULT_MAXSIZE	(8 * 1024 * 1024)
 #define ALLOCSET_DEFAULT_SIZES	0, 8192, 8 * 1024 * 1024
 #define ALLOCSET_SMALL_SIZES	0, 1024, 8192
 #define MCXT_ALLOC_HUGE			0x01
@@ -226,6 +229,10 @@ typedef struct SqErrorFrame
 	struct SqErrorFrame *prev;
 	MemoryContext cx;				/* restored on catch */
 } SqErrorFrame;
+
+/* The lock of the process-wide caches of the engine (bm25/prefix.c); an error that leaves the section that holds it releases it */
+extern void sift_host_cache_lock(void);
+extern void sift_host_cache_unlock(void);
 
 extern _Thread_local SqErrorFrame *sq_error_top;
 extern const char *sq_errmsg(void);

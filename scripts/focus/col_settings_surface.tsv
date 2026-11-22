@@ -1,1 +1,1 @@
-col_settings_surface	src/col/names.c:pg_finfo_sift_col_names_before src/col/names.c:pg_finfo_sift_names_expr src/col/names.c:pg_finfo_sift_names_exprs src/col/names.c:pg_finfo_sift_names_following src/col/names.c:pg_finfo_sift_names_option src/col/preagg_opt.c:sift_cpagg_name_take src/core/handler.c:pg_finfo_sift_worker_history src/core/handler.c:refuse_second_load
+col_settings_surface	src/col/v1/preagg_opt.c:sift_cpagg_name_take src/core/handler.c:refuse_second_load

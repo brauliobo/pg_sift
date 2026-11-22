@@ -1,427 +1,247 @@
 # pg_sift
 
-[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](docs/SUPPORT.md#compatibility) [![release](https://img.shields.io/badge/release-5.1.0-blue)](https://github.com/brauliobo/pg_sift/releases/latest) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
+[![ci](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/brauliobo/pg_sift/actions/workflows/ci.yml) [![packages](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml/badge.svg)](https://github.com/brauliobo/pg_sift/actions/workflows/release.yml) [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](docs/SUPPORT.md#compatibility) [![release](https://img.shields.io/badge/release-6.0.0-blue)](https://github.com/brauliobo/pg_sift/releases/latest) [![license](https://img.shields.io/github/license/brauliobo/pg_sift)](LICENSE)
 
-pg_sift makes analytics on PostgreSQL fast: you keep your queries and add an index. A `sift_col` index, or a `sift_table`, answers counts, sums, distinct counts, group-bys and top-N from compressed columns; the planner picks it, and a query it cannot prove equal keeps PostgreSQL's own plan. It also adds ranked BM25 full-text search (boolean, phrase, prefix, regex, fuzzy, facets) with a `sift` index, which has its own query syntax. One `CREATE EXTENSION pg_sift`: no separate analytics database, no search server, and no `shared_preload_libraries` entry is required (an aggregate workload is better with `session_preload_libraries`, see [Install](#install)).
-It is for applications that keep their data in PostgreSQL and serve dashboards, reports and search from the same rows. It supports PostgreSQL 17, 18 and 19[^pg19]; the search engine also runs as a SQLite extension and a MariaDB library.
+**pg_sift** brings columnar analytics, native column tables, and exact BM25 full-text search into PostgreSQL. Add a `sift_col` index to an existing OLTP table—or store data directly in a `sift_table`—and PostgreSQL's planner answers aggregations, filtered group-bys, top-N, and JSONB analytics through a SIMD-vectorized engine (`SiftAgg`) while keeping your existing SQL, transactions, MVCC, and replicas intact.
 
-[^pg19]: PostgreSQL 19 is tested on its release candidate (a server built from `REL_19_STABLE`, the same jobs as for 17 and 18); see [docs/SUPPORT.md](docs/SUPPORT.md#compatibility).
+One `CREATE EXTENSION pg_sift`: no separate analytics database, no search cluster, no CDC pipeline, and no `shared_preload_libraries` required.
 
-[In five minutes](#in-five-minutes) · [At a glance](#at-a-glance) · [Quick start](#quick-start) · [Features](#features) · [Compared with](#compared-with) · [SQLite and MariaDB](#sqlite-and-mariadb) · [Operations and limits](#operations-and-limits) · [SQL reference](#sql-reference) · [Docs](#docs)
+- **Best for:** Live OLTP tables serving dashboards, multi-tenant rollups, JSONB analytics, high-compression event tables, and exact BM25 search in the same transaction.
+- **Exactness guarantee:** Every `SiftAgg` plan is semantically identical to PostgreSQL's native plan (`SET sift.enable_agg = off` to verify); queries it cannot prove equal run on PostgreSQL's own planner automatically.
+- **Skip it for:** Primary-key point lookups (keep your b-tree), multi-node distributed warehouses requiring petabyte sharding, or CJK/n-gram text tokenization. See [docs/COMPARISON.md](docs/COMPARISON.md).
 
+## Use Cases
 
-## In five minutes
+### 1. Analytical Acceleration on Live OLTP Tables (`USING sift_col`)
 
-Install from source (PostgreSQL 17, 18 or 19 with server headers and a C compiler; packages and Docker are under [Install](#install)):
-
-```sh
-make USE_PGXS=1 && sudo make USE_PGXS=1 install
-psql -d mydb -c 'CREATE EXTENSION pg_sift'      # as a superuser
-psql -d mydb -c "ALTER DATABASE mydb SET session_preload_libraries = 'pg_sift'"   # for aggregate workloads; CREATE EXTENSION prints it too
-```
-
-Then, in `psql -d mydb`, a generated table of 1,000,000 orders, nothing to download:
+Keep your heap table, primary keys, foreign keys, and existing SQL—including `NUMERIC`, `UUID`, joins, and shredded `JSONB`:
 
 ```sql
-CREATE TABLE orders AS
-SELECT g AS id,
-       1 + (random() * 50000)::int AS customer_id,
-       (ARRAY['US','DE','BR','JP','IN','FR'])[1 + (random() * 5)::int] AS country,
-       (ARRAY['books','toys','garden','music'])[1 + (random() * 3)::int] AS category,
-       round((random() * 300)::numeric, 2)::numeric(10,2) AS amount,
-       timestamp '2025-01-01' + random() * interval '365 days' AS created_at
-FROM generate_series(1, 1000000) g;
-ALTER TABLE orders ADD PRIMARY KEY (id);
-CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, amount, created_at);
-VACUUM ANALYZE orders;
+CREATE INDEX orders_col ON orders
+  USING sift_col (customer_id, country, category, amount, created_at, payload)
+  WITH (key_order = 'created_at', paths = 'payload.channel text, payload.discount float8');
 
-EXPLAIN (COSTS OFF) SELECT category, count(*), sum(amount), avg(amount) FROM orders GROUP BY 1;   -- Custom Scan (SiftAgg) on orders_col
-SET sift.enable_agg = off;                                                                           -- the plan PostgreSQL has without pg_sift
+-- Keep your existing SQL: runs as Custom Scan (SiftAgg) on orders_col
+SELECT category, payload->>'channel' AS channel,
+       count(*), count(DISTINCT customer_id), sum(amount)
+FROM orders
+WHERE country = 'DE' AND created_at >= now() - interval '90 days'
+GROUP BY 1, 2
+ORDER BY 5 DESC LIMIT 10;
 ```
 
-Medians of six runs, warm, PostgreSQL 18.6 on a shared x86-64 host (2026-10-24), the same table and answers with `sift.enable_agg` on and off:
+`EXPLAIN` shows `Custom Scan (SiftAgg)`; `SET sift.enable_agg = off` runs PostgreSQL's standard plan for identical results. See [docs/ANALYTICS.md](docs/ANALYTICS.md).
 
-| system | count, sum, avg<br>by category | distinct customers<br>where country = 'DE' | top 5 customers<br>by sum | a month of orders<br>by country, category |
+### 2. Multi-Tenant & Hierarchy Scoped Analytics (`scope = ...`)
+
+Accelerate tenant and group dashboards without duplicating fact rows or maintaining trigger-driven copies. Entity-Once scopes store fact rows once and maintain a 2-level cube-merge tree and Top-K ring with 0 B temp-file I/O:
+
+```sql
+CREATE INDEX events_col ON events
+  USING sift_col (member_id, event_date, kind, score)
+  WITH (
+    key_order = 'member_id, event_date',
+    scope     = 'tenant: member_id -> tenant_members(member_id, tenant_id)'
+  );
+
+-- Standard SQL join: answered in O(1) from pre-merged scope summaries & Top-K ring
+SELECT date_trunc('month', e.event_date), count(*), avg(e.score)
+FROM events e
+JOIN tenant_members tm ON tm.member_id = e.member_id
+WHERE tm.tenant_id = 42
+GROUP BY 1;
+```
+
+Pair-table grants and revokes reconcile incrementally under your MVCC snapshot; add `cluster` for 1:1 hierarchies. See [docs/SCOPES.md](docs/SCOPES.md).
+
+### 3. Native Columnar Storage Inside PostgreSQL (`USING sift_table`)
+
+Store append-heavy or analytical tables directly in Format Major 2 compressed columns (≤ 33 B/row target on wide + JSONB schemas) with zero-refusal `COPY`, online `key_order`, native MVCC, secondary indexes, and the same scopes, pre-aggregates, skip indexes, and BM25 hybrid search as a `sift_col` index, tuned by 10 options and usually none:
+
+```sql
+CREATE TABLE events_col (
+  id         bigint,
+  tenant_id  int,
+  event_date date,
+  kind       text,
+  amount     numeric(12,2),
+  payload    jsonb
+) USING sift_table;
+
+SELECT sift.table_set_option('events_col', 'key_order', 'tenant_id, event_date');
+COPY events_col FROM '/data/events.csv' WITH (FORMAT csv);
+
+SELECT kind, count(*), sum(amount)
+FROM events_col
+WHERE tenant_id = 42 AND event_date >= '2026-01-01'
+GROUP BY 1;
+```
+
+Shares 100% of Format Major 2 with `sift_col`—same 8,192-row granules, COW deletion vectors, and `SiftAgg` engine. Point lookups cost `O(log parts)`, a single-column `UPDATE` appends a per-column delta instead of rewriting the row, and `sift.approx_percentile()` / `sift.approx_quantiles()` answer from opt-in `kll` sketches. See [docs/TABLES.md](docs/TABLES.md).
+
+6.0 adds the ClickHouse-class features, all with 0 new settings or options:
+
+```sql
+SELECT sift.create_projection('events_col', 'p_by_month',               -- secondary sort or rollup projection, chosen by SiftAgg
+       'GROUP BY date_trunc(''month'', event_date) MEASURES count(*), sum(amount)');
+SELECT sift.set_tier_policy('events_col', 's3://my-bucket/events', '30 days');   -- cold parts to S3/R2 (dlopen libcurl) or file://
+SELECT sift.set_ttl('events_col', 'event_date', '400 days');                      -- O(1) part-drop TTL
+SELECT country, sift.arg_max(user_id, amount) FROM events_col GROUP BY 1;         -- plus 64-FILTER pivots, ASOF, date_bin
+```
+
+Composite key marks and adaptive `PREWHERE` prune multi-column filters at granule level, trigram `LIKE '%...%'` runs as a SIMD pushdown, bulk `COPY` writes cold `L2` parts directly, and `ALTER TABLE ADD/DROP COLUMN` is `O(1)`. See [docs/ANALYTICS.md](docs/ANALYTICS.md) and [docs/TABLES.md](docs/TABLES.md#8-secondary-projections-siftcreate_projection).
+
+### 4. Exact BM25 Full-Text Search (`USING sift`)
+
+Ranked full-text search with boolean logic, phrases, prefix, wildcard, regex, fuzzy matching, `INCLUDE` filter pushdown, and exact facets in the same transaction as your rows:
+
+```sql
+CREATE INDEX docs_body ON docs
+  USING sift (body)
+  INCLUDE (category, published);
+
+SELECT id, title, sift.score(ctid) AS score
+FROM docs
+WHERE body @@> '(battery OR charger) AND "friendly support" NOT squeaky'
+  AND category = 1
+ORDER BY sift.score(ctid) DESC
+LIMIT 10;
+```
+
+The same BM25 search core also ships as standalone extensions for [SQLite](sqlite/README.md) and [MariaDB](mariadb/README.md). See [docs/SEARCH.md](docs/SEARCH.md).
+
+### 5. Optional Vulkan Compute (`sift.gpu`)
+
+Opt-in and off by default: build with `make VULKAN=1`, then `SET sift.gpu = auto|on` runs grouped and filtered integer and `numeric` counts and sums of a `sift_col` index on a Vulkan device. Units the device cannot take, a missing device, and a failed device all run on the CPU with identical rows. The 4 `sift.gpu*` settings are part of the 27 release GUCs; 6.0 reworks the device path for Format Major 2 (batched decode on the device, a shared VRAM cache, multi-key hash aggregation, `sift_col` and `sift_table`); GPU-versus-CPU numbers are measured at release. See [docs/GPU.md](docs/GPU.md).
+
+## Benchmarks
+
+Every benchmark verifies **exact answer equality** (`md5_equal`) against stock PostgreSQL 18 before recording timings. Numbers below are committed baseline measurements on AMD Ryzen 7 9700X (PG 18.6, `pg_sift` 3.5 baseline) and AMD Ryzen 9 5900XT (PG 18.7, `pg_sift` 5.0 scope suite); the date of each run is in the header of its file under `docs/results/`. `bench/bench v6-release --docs` regenerates charts and tables via `scripts/gen-docs.py`.
+
+### Analytical Aggregations vs ClickHouse, DuckDB & PostgreSQL
+
+10,000,000 orders, 3 CPUs & 8 GiB RAM per server, warm medians (`sift_col` vs ClickHouse 26.9, `pg_duckdb` 1.1.1 / DuckDB 1.4.3 Parquet, and PostgreSQL 18.6):
+
+![Analytical Aggregations: pg_sift vs ClickHouse, DuckDB, and PostgreSQL 18](docs/charts/analytics-engines.svg)
+
+<!-- bench:v6-readme:begin -->
+| Workload (10M orders, 3 CPUs) | `pg_sift` | ClickHouse | DuckDB | PG 18 |
 |---|---:|---:|---:|---:|
-| pg_sift | 0.14 ms | 2.5 ms | 12 ms | 20 ms |
-| PostgreSQL | 54 ms | 68 ms | 177 ms | 30 ms |
+| Count by country (`GROUP BY`) | **0.85 ms** | 9.32 ms | 8.97 ms | 188.9 ms |
+| Revenue per month (`sum`) | **0.93 ms** | 23.8 ms | 99.2 ms | 1,377 ms |
+| Top 10 categories (`LIMIT 10`) | **0.90 ms** | 21.0 ms | 26.7 ms | 370.2 ms |
+| Avg shipped order (3 filters) | 10.0 ms | **7.68 ms** | 48.9 ms | 124.2 ms |
+| Distinct customers/mo (`DISTINCT`) | **49.3 ms** | 104.5 ms | 193.7 ms | 2,334 ms |
+| Big recent orders (range count) | 10.6 ms | **4.39 ms** | 39.7 ms | 146.4 ms |
+<!-- bench:v6-readme:end -->
 
-The last column is a month of random dates, which no unit can skip: the gain is the smallest there. Declare `amount` as `numeric(10,2)`: with a bare `numeric` the scan is chosen and still wins, but 4 to 19 times less than with the precision ([known gap](#limitations-and-trade-offs)). Full-text search is [below](#try-it-full-text-search).
+*Pre-aggregated rollups and `GROUP BY` run 10–25× faster than ClickHouse and 220–1,480× faster than stock PostgreSQL 18; ClickHouse leads on selective multi-filter averages and 30-day range counts at 10M rows (`sift_table` matches `sift_col` within ~1–4 ms). Full cold-cache, `pg_duckdb` heap, and 6.0 SIMD targets are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#2-analytical-aggregations-vs-clickhouse-duckdb-and-postgresql-18).*
 
-**Use it** when the data stays in PostgreSQL and you want fast dashboards and reports from the same rows, with counts, sums, distinct counts, group-bys and top-N that do not scan the table (your queries stay as they are; you add an index), and ranked search as a second kind of index. **Do not use it** for a primary-key lookup (the btree is as fast), for update-heavy tables through `sift_table` (a write costs more than a heap write), or for warehouse-size tables that need sharding; every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs). **Versions:** PostgreSQL 17, 18 and 19 on Linux, 17 and 18 on macOS ([docs/SUPPORT.md](docs/SUPPORT.md)). **Upgrades:** `ALTER EXTENSION pg_sift UPDATE`, and a rebuild only when the on-disk format changes ([docs/UPGRADING.md](docs/UPGRADING.md)). **License:** the [PostgreSQL License](LICENSE).
+*Methodology: `sift_col` indexes a precomputed month expression and keeps pre-aggregates, while the ClickHouse arm is a plain `MergeTree` without a `PROJECTION` or materialized month column; DuckDB reads a Parquet file written in `id` order through `pg_duckdb`; ClickHouse is timed client-side over HTTP (about 1 ms included); the point lookup is PostgreSQL's B-tree primary key; cold runs empty server caches but keep the OS page cache. Details in [Fairness and setup notes](docs/BENCHMARKS.md#fairness-and-setup-notes-read-before-quoting-the-table). The 43 ClickBench queries and a `ClickHouse + PROJECTION` arm run through `bench/bench clickbench` ([docs/BENCHMARKS.md](docs/BENCHMARKS.md#25-clickbench-q0-q42)).*
 
-## At a glance
+### Exact BM25 Search vs Elasticsearch, ParadeDB & PostgreSQL
 
-**Use it** when the question reads many rows and the answer is small (your queries stay as they are; you add an index), or when ranked search should sit next to the data (it has its own query syntax):
+50,000 Simple English Wikipedia articles (8 clients, warm QPS: `sift` vs Elasticsearch 9.5.5, ParadeDB `pg_search` 0.26.1, and PG `rum` 1.3.15) plus 10M orders title search vs stock PG 18 GIN (`to_tsvector`):
 
-- **Aggregates over a filtered table:** counts, sums, distinct counts, group-bys, time buckets, top-N and window reports over hundreds of thousands to millions of rows, answered from pre-aggregates and compressed columns; the time grows slower than the rows.
-- **Ranked search next to the data:** BM25 with filters, counts and facets in the same transaction as the rows and no second system to keep in step; updates, deletes, VACUUM and replicas are PostgreSQL's.
+![Exact BM25 Full-Text Search: pg_sift vs Elasticsearch, ParadeDB, and PG rum](docs/charts/search-bm25.svg)
 
-**Do not use it** (every measured loss is in [Limitations and trade-offs](#limitations-and-trade-offs)) for:
+<!-- bench:v6-search:begin -->
+| Search Workload | `pg_sift` | Elasticsearch | ParadeDB | PG FTS |
+|---|---:|---:|---:|---:|
+| Exact `count(*)` (50K Wiki, QPS) | **29,127** | 28,105 | 2,399 | 229 *(rum)* |
+| Phrase `"a b"` (50K Wiki, QPS) | **21,794** | 19,423 | 2,332 | 184 *(rum)* |
+| Boolean `a AND b` (50K Wiki, QPS) | **21,690** | 17,476 | 2,414 | 4,909 *(rum)* |
+| Filtered top-k (50K Wiki, QPS) | 12,604 | **13,854** | 2,241 | 113 *(rum)* |
+| Boolean `a OR b` (50K Wiki, QPS) | 8,201 | **11,021** | 2,000 | 50 *(rum)* |
+| Title search count (10M orders) | **2.35 ms** | 11.6 ms | n/a | 78.5 ms *(GIN)* |
+| Search + newest 10 (10M orders) | **13.1 ms** | 13.6 ms | n/a | 141.7 ms *(GIN)* |
+<!-- bench:v6-search:end -->
 
-- a lookup by key where a btree exists: the btree is as fast or faster, and the planner keeps it;
-- a report whose whole query takes a few milliseconds over a small result: flat PostgreSQL tables are as fast or faster than the scan;
-- tables that need a warehouse: it is one PostgreSQL node, without sharding or distributed execution; ClickHouse loads faster and stores the same table in less space, and ClickHouse and Elasticsearch are ahead on some filtered averages and range counts at 10,000,000 rows;
-- text analysis beyond English stemming and one key per index, and the search classes where Elasticsearch is ahead;
-- writes, spilling distinct counts and queries that keep a few rows: slower than PostgreSQL's own plan on some shapes;
-- a shape the planner cannot prove equal: it keeps the normal plan.
+*`pg_sift` delivers 4–12× ParadeDB QPS and matches or beats Elasticsearch on `AND`, `phrase`, and exact `count(*)` inside PostgreSQL's transaction boundary, while Elasticsearch leads on `OR`, `filter`, and denormalized `join`. Cold-cache p50 (`1.0–5.5 ms` vs `3.1–4.8 ms` ES and `13–17 ms` ParadeDB) and autocomplete latencies live in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#3-exact-bm25-full-text-search-vs-elasticsearch-paradedb-and-postgresql).*
 
-### The benchmark cases
+### Storage Footprint & Multi-Tenant Scope Snapshot
 
-The 26 cases of [bench/cases.tsv](bench/cases.tsv) marked `headline`, measured on release 4.0 (tip 3c5e625d, `track_changes` on) with `bench/bench cases --rows 300000` (run 3c5e625dfb80-20261103T202442Z-8ca1): PostgreSQL 18.6, one x86-64 host, the data in memory, one backend, warm medians of 5 runs. Each cell is the time of the statement (a read: the execution time of `EXPLAIN ANALYZE`; a load: the wall time of its statements), the millions of instructions of the backend and its workers, and the buffers it touched (shared-buffer hits and reads of every relation, 8 kB each: with the data in memory, the IO of the plan in blocks). The other column is the faster of PostgreSQL's plan with the index left out (a sequential scan) and, where the table has one, the plan with its b-tree; the ratio is its time divided by pg_sift's, so a value under 1 is a statement the other plan answers faster. One case per row, as the registry lists them; reproduce one with `bench/bench cases --cases ID --rows 300000`.
+![On-Disk Storage Footprint: 10M Orders & 50K Wikipedia BM25 Index](docs/charts/storage-footprint.svg)
 
-| case | against | pg_sift: ms · M instr · blocks | the other: ms · M instr · blocks | other ÷ pg_sift |
-|---|---|---|---|---:|
-| `topn_page_totals`: A page of rows with the total of its set | heap plan | 0.61 ms · 7.69 M · 473 | 29 ms · 374 M · 4,107 | 48x |
-| `topn_coalesce`: ORDER BY coalesce(column, constant) LIMIT n | heap plan | 0.4 ms · 5.58 M · 98 | 32.1 ms · 299 M · 4,105 | 80x |
-| `key_presence_distinct`: count(DISTINCT key) of a whole table from the key lists and bitmaps of its units | heap plan | 0.14 ms · 2.09 M · 26 | 56.7 ms · 410 M · 4,105 | 405x |
-| `bulk_copy_wal`: COPY into a sift_table, written as column groups, against a heap COPY | heap plan | 422 ms · 5,210 M · 802 | 229 ms · 3,164 M · 12,061 | 0.5x |
-| `lateral_first_row`: a LIMIT 1 child with an ORDER BY, read as a first-row lookup when a unique index holds the key and the order columns | heap plan | 4.17 ms · 65.6 M · 2,973 | 1,449 ms · 25,536 M · 455,241 | 347x |
-| `cte_two_readers`: a common table expression that two aggregates read is planned inline when the scans are the cheaper part | heap plan | 2.48 ms · 25.8 M · 500 | 68.4 ms · 542 M · 13,639 | 28x |
-| `list_elements`: the elements of a jsonb array leaf counted with a filter on them (the decoded list lengths are kept for the backend) | heap plan | 3.36 ms · 35.9 M · 623 | 113 ms · 781 M · 13,639 | 34x |
-| `cte_series_arms`: three UNION ALL arms over the elements of a jsonb array, counted DISTINCT above a spine: the shared common table ... | heap plan | 8.76 ms · 133 M · 768 | 858 ms · 8,283 M · 13,731 | 98x |
-| `grouping_sets_report`: a report with four levels in one statement: GROUPING SETS over two dimensions, a date filter and three aggregates | heap plan | 2.85 ms · 38.9 M · 198 | 65.9 ms · 744 M · 4,107 | 23x |
-| `ranked_top_per_group`: the three best categories of every country by revenue: a window function over the groups of an aggregate, filtered by ... | heap plan | 2.82 ms · 33.1 M · 248 | 63.2 ms · 645 M · 4,105 | 22x |
-| `window_json_report`: a ranked report as one document per category: the rank of the category, its share of the total, and the top 3 countries ... | heap plan | 4.53 ms · 61.8 M · 298 | 71.5 ms · 724 M · 4,105 | 16x |
-| `two_level_spend`: the distribution of spend per customer: an aggregate of an aggregate, 200,000 customers at 1,000,000 orders | heap plan | 24.4 ms · 245 M · 338 | 153 ms · 748 M · 4,105 | 6.3x |
-| `group_by_id_top`: one group per row: the 10 largest orders by value, as a GROUP BY of the primary key (1,000,000 groups at 1,000,000 ... | heap plan | 13 ms · 103 M · 253 | 162 ms · 1,936 M · 4,105 | 12x |
-| `count_distinct_unique`: count(DISTINCT) of a key that is unique: the set holds one entry per row | heap plan | 1.13 ms · 14.7 M · 126 | 238 ms · 2,962 M · 4,105 | 211x |
-| `semi_exists_self`: a semi join on the same table: the orders of the customers that have a cancelled order | heap plan | 2.77 ms · 19.3 M · 4,381 | 57.2 ms · 468 M · 8,212 | 21x |
-| `anti_not_in_self`: an anti join as NOT IN (SELECT ..) on the same table: the orders of the customers that never cancelled | heap plan | 10.1 ms · 76.6 M · 4,464 | 56.1 ms · 577 M · 8,212 | 5.6x |
-| `keyset_page`: keyset pagination: the page after a (created_at, id) bar, a row comparison with a two-column order | b-tree | 0.104 ms · 0.997 M · 91 | 0.039 ms · 0.491 M · 56 | 0.4x |
-| `point_agg_fk`: a lookup of the rows of one foreign key with no btree on it: the aggregate of one customer | heap plan | 0.063 ms · 0.391 M · 95 | 10.7 ms · 121 M · 4,107 | 170x |
-| `point_agg_id`: a lookup by the primary key through the aggregate scan, against the btree of the key | b-tree | 0.035 ms · 0.339 M · 25 | 0.012 ms · 0.173 M · 5 | 0.3x |
-| `keycut_customer_agg`: a lookup of the rows of one customer when the heap is in order of arrival and the index cuts its units by the customer: ... | heap plan | 0.069 ms · 0.719 M · 34 | 10.3 ms · 121 M · 4,107 | 150x |
-| `jsonb_each_member`: one member of a JSON object read through jsonb_each: a LEFT JOIN LATERAL that keeps the rows without it | heap plan | 3.35 ms · 35.9 M · 673 | 117 ms · 916 M · 13,639 | 35x |
-| `softdel_live_groupby`: a report over the rows that are not soft-deleted: the units with no deleted row are answered from their pre-aggregates, ... | heap plan | 0.057 ms · 0.667 M · 32 | 50.8 ms · 596 M · 4,107 | 891x |
-| `point_in_100`: an IN list of 100 ids through the access method: the point directory looks each key up (up to 64 keys it did; a longer ... | heap plan | 0.076 ms · 1.07 M · 143 | 14.8 ms · 161 M · 4,107 | 195x |
-| `key_table_point`: the rows of three keys of a foreign key column (6,313 values): one record of each segment's key table, not the units of ... | heap plan | 0.075 ms · 0.748 M · 28 | 19.3 ms · 273 M · 4,107 | 257x |
-
-### Tables that change: `track_changes`
-
-`track_changes` is on by default (`'auto'`: the primary key of the table; `WITH (track_changes = 'off')` turns it off for an index). It writes a tombstone for each entry an UPDATE, a key change or a DELETE ended and installs two statement triggers (AFTER UPDATE and AFTER DELETE; one NOTICE says so).
-
-**What a table that changes ends as.** 100,000 rows, a primary key and one `sift_col` index, 10 rounds of an UPDATE of every row (1,000,000 updates) with no VACUUM, then autovacuum (naptime 1 s) and the worker of `sift.col_auto_merge`, both on as by default, until the index keeps one state for 30 s; `track_changes` as it is (the default) and `'off'` (`bench/churn/heapfree_settle.py`, run 2783fcb3884a-20261104T000858Z-444e, 3 repetitions of a grouped count of 10 tenants; the REINDEX column is the index built again over the same rows):
-
-| `track_changes` | fresh | after the updates, before the VACUUM | settled | REINDEX | settled over REINDEX | grouped count before the VACUUM: ms · M instr · heap blocks | settled |
-|---|---:|---|---|---:|---:|---|---|
-| default | 0.57 MB | 47.6 MB (999,038 entries in the log) | 0.71 MB, 1 segment | 0.63 MB | +13.0% | 14.8 ms · 161 M · 1,406 | 0.029 ms · 0.40 M · 2 |
-| `'off'` | 0.26 MB | 20.2 MB | 0.47 MB, 6 segments | 0.28 MB | +67.7% | 27.2 ms · 253 M · 10,280 | 0.043 ms · 0.50 M · 3 |
-
-So the index does not end within 1% of a rebuilt one: the settled index is 13.0% over its REINDEX with the default and 67.7% with `'off'`, the log is empty after the vacuum, and a grouped count after it reads 2 heap blocks (3 with `'off'`), as on the fresh table. The updates take 4.7 s and write 338 MB of WAL with the default, 2.7 s and 288 MB with `'off'`. At 300,000 rows (3,000,000 updates, run 2783fcb3884a-20261104T001112Z-3429) the default index was 55.7 MB 30 s after the VACUUM, its rewrite not yet run (1.8 MB after a REINDEX), and the one with `'off'` 1.39 MB (+91.0% over 0.73 MB).
-
-What it costs a write: 100,000 rows, a table with a primary key and one `sift_col` index, vacuumed, medians of 3 (`bench/churn/heapfree_default.py`, run fb9b4acd6f58-20261103T182341Z-00ce on the tree of the commit that merged the option); each cell is the time, the millions of instructions, the MB of WAL and the buffers touched:
-
-| statement | `track_changes = 'off'`: ms · M instr · WAL · blocks | default (`auto`): ms · M instr · WAL · blocks | instructions |
-|---|---|---|---:|
-| UPDATE of 1 row | 0.223 ms · 0.363 M · 0.04 MB · 39 | 0.303 ms · 0.415 M · 0.04 MB · 54 | +14.2% |
-| UPDATE of 100 rows | 0.651 ms · 3.51 M · 0.11 MB · 650 | 1.11 ms · 4.77 M · 0.12 MB · 1,061 | +35.9% |
-| UPDATE of 5% of the rows (a covered column) | 18.8 ms · 145 M · 11.06 MB · 32,079 | 27.5 ms · 208 M · 11.25 MB · 52,256 | +43.6% |
-| UPDATE of the key of 1% of the rows | 10 ms · 66.4 M · 7.98 MB · 6,936 | 12.9 ms · 86.9 M · 8.02 MB · 11,224 | +30.8% |
-| DELETE of 2% of the rows | 8.19 ms · 53.6 M · 7.78 MB · 3,871 | 9.09 ms · 72.3 M · 7.85 MB · 7,404 | +34.9% |
-| INSERT of 5% more rows | 9.29 ms · 86.5 M · 1.03 MB · 15,223 | 10.2 ms · 87 M · 1.05 MB · 15,241 | +0.6% |
-| CREATE INDEX | 44.8 ms · 672 M · 0.32 MB · 3,763 | 61.1 ms · 858 M · 0.64 MB · 104,713 | +27.8% |
-| REINDEX | 48.1 ms · 672 M · 0.26 MB · 3,763 | 58.9 ms · 858 M · 0.60 MB · 104,713 | +27.8% |
-
-
-The triggers of several indexes of one table each look the key up in the unique index: with 2 and 3 indexes an UPDATE of the key of 1% of the rows takes 99.8 and 111.9 M instructions (86.9 with one), a DELETE of 2% 88.5 and 104.9 M (72.3 with one). A table that no read touches between its writes and its `VACUUM` pays that and gains nothing, which is what `'off'` is for.
-
-**A table changed and not yet vacuumed (the case the option is for).** 300,000 rows, the recent 20% updated (`bench/churn/heapfree_churn_reads.py`): a grouped count reads 2 heap blocks instead of 1,241 (21.8 to 10.7 M instructions, 1.87 to 0.77 ms) and one tenant's rows 0.41 MB instead of 10.09 MB read cold. After a `VACUUM` no read differs, and point reads and index-only scans gain nothing either way.
-
-### Limitations and trade-offs
-
-**Known gap: the load.** A load of 1,000,000 orders (9 columns) takes 1.8 s into a `sift_table` with its primary key and BM25 index (`COPY` 1.1 s, the two indexes 0.4 s, `VACUUM (FREEZE, ANALYZE)` 0.3 s) against ClickHouse 0.7 s (2.6x) and Citus columnar 1.4 s (1.3x). ClickHouse loads without a primary key or a text index, which are 0.4 s of the 1.8 here; against the same `COPY` alone it is 1.1 s to 0.7 s. The `COPY` costs 22.7 G instructions of the backend against 12.9 G for a heap table (1.8x, the parse of the CSV is 44% of it for both) because the rows are encoded into column units, dictionaries and pre-aggregates as they come, which a heap table does at query time or never. What is left would need the encoding to leave the backend: the flush of a run is 16.6% of the instructions of the load, so a background worker could save at most that share of the wall time; handing the rows to the batch without per-row allocations saves 2.8% (measured), below what justified a change. Without workers one open segment takes the units as they fill, with no merge afterwards. Against a heap table `COPY` plus `sift.table_maintain` of 10,000,000 rows (the `bulk_copy_wal` case, one CPU) takes 13.8 s against 8.1 s (1.7x slower) and 168 G instructions against 107 G (1.6x), and writes 14 bytes of WAL a row against 84 and a table of 137 MB against 1,023 MB. What is left is the encoding itself (dictionaries, pre-aggregates, zstd), which a heap table does not do at load time; reading the table back is what it pays for. The gap to ClickHouse stays; the measurements. (The figures of the 1,000,000-row comparison with the other engines are not from records files: they were typed from the sessions of the dates in the changelog; those of the 10,000,000-row `bulk_copy_wal` runs are.)
-
-**Known gap: text ordered reads.** `ORDER BY txt LIMIT n` over a text column is served from the index when the build chose the column (the default formula, strings up to 64 bytes) or `order_array_columns` names it (`'off'` drops it), under the collation of the column, with one key and no condition: `ORDER BY title LIMIT 10` over 500,000 rows takes 0.2 M instructions and 0.10 ms against 473.7 M and 30.0 ms for PostgreSQL's plan, and a page from a bound, `WHERE code >= 'c' ORDER BY code LIMIT 20` over 500,000 32-character strings, 0.4 M instructions and 0.17 ms against 241.2 M and 16.9 ms for the same index without the array (PostgreSQL's plan 329.9 M and 22.7 ms). What the array costs is the build: `CREATE INDEX` over 500,000 distinct 26-byte strings takes 6,215 M instructions and 707 ms against 2,248 M and 273 ms for a b-tree on the column (2.8x the instructions), and the index holds 10.8 MB against the b-tree's 24.9 MB. (Cases `topn_text_key`, `order_array_text_range` and `text_order_array_size`, 500,000 rows, one process, warm medians; the two reads have no b-tree arm, so their distance to a b-tree is not stated.)
-
-**Known gap: the dictionary of a large text column.** The order array of a text column names its strings by their dictionary codes only while the dictionaries of the index, parsed and added up, take three quarters of the 64 MB cache of parsed dictionaries or less (about 700,000 distinct 32-byte strings: 800,000 hashes take 48.4 MB with the strings kept, 1,000,000 take 60.7 MB, a b-tree 59.1 MB, and 23.6 MB with codes); past that it keeps the strings, because with codes every equality parsed a dictionary again (10 to 25 ms for 0.13). The first backend after a server start parses each dictionary it meets and writes it to the shared ring (`sift.col_dict_shared_cache_kb`): 26 to 167 ms once per dictionary at 100,000 to 1,000,000 strings, and the other backends find it (1.4 to 2.8 ms for their first statement, a b-tree 2.0 to 2.7); with a ring of 0 or under twice a dictionary's record each backend parses its own once (23 to 47 ms for an equality over 500,000 to 700,000 hashes, then 0.1 ms). (The figures of this paragraph are not from records files; the cases `bigdict_point_probes`, `dict_shared_first_statement` and `dict_shared_find` hold the same shapes with records.)
-
-**Known gap: a `numeric` without precision.** `GROUP BY` two columns (16 groups) with `count`, `sum` and `avg` of a bare `numeric` column takes the scan and, since the sum runs in workers, beats PostgreSQL's plan at every size and worker count measured: 6.8 against 11.5 ms at 100,000 rows (2 workers); 23.3 against 43.4 ms at 1,000,000 (2 workers; 22.7 against 43.4 with 4) and 46.6 against 109.9 ms in one process (693 against 2,110 million instructions); 160 against 389 ms at 10,000,000 (2 workers; 112 against 248 with 4). With `numeric(10,2)` the same query takes 5.8 ms at 1,000,000 rows and 20.6 ms at 10,000,000 (2 workers), 4 to 19 times faster than with a bare `numeric`, so declare the precision of money-like columns. What remains: a bare `numeric` column of almost unique values (2,000,000 rows, 6 groups, `round(random() * 100000, 2)`) took the scan with the default 2 workers in 79.6 ms against 61.7 ms for PostgreSQL's plan (29% slower), because every unit holds its own dictionary of values there; the planner now prices the dictionaries that the workers inflate and keeps PostgreSQL's plan with 2, 4 and 8 workers (79, 62 and 62 ms), and still takes the scan without workers. (Measured 2026-10-25 on the 3.4 tip (the 79, 62 and 62 ms on the 3.5 line), PostgreSQL 18.6, an x86-64 host, `work_mem` 4GB unless said, medians of 5 runs; `sift.enable_agg = off` gives PostgreSQL's plan.) (The figures of this paragraph are not from records files; the cases `numeric_sum` and `numeric_sum_records` hold the same shapes with records, at 1,000,000 rows and one process, run d1150b9ef5ae-20261102T231942Z-f7af: a sum of a bare `numeric` by `country` takes 392.8 M instructions against 1,840.9 M for PostgreSQL's plan, and the almost unique values, 6 groups, 622.5 M against 1,925.6 M.)
-
-## Quick start
-
-### Install
-
-Release packages (x86-64 and arm64) cover PostgreSQL 17, 18 and 19: take the file of your server's major `N`. The platforms, PostgreSQL versions and ports that are supported are in the [compatibility table](docs/SUPPORT.md#compatibility).
-
-| Where | How |
-|---|---|
-| Debian 12 and 13, Ubuntu 22.04 and 24.04 (PGDG `postgresql-N`) | download `postgresql-N-pg-sift_*_amd64.deb` from the [latest release](https://github.com/brauliobo/pg_sift/releases/latest), then `sudo apt install ./postgresql-N-pg-sift_*_amd64.deb` (`_arm64.deb` on arm64) |
-| RHEL, Rocky, Alma 9 and 10 (PGDG `postgresqlN-server`) | download `pg_sift_N-*.rpm` from the latest release, then `sudo dnf install ./pg_sift_N-*.rpm` (`.x86_64.rpm` or `.aarch64.rpm`, the architecture of the server) |
-| Amazon Linux 2023 (the distribution's `postgresqlN-server`, N = 17 or 18) | download `pg_sift_N-*.amzn2023.x86_64.rpm` (or `.aarch64.rpm`) from the latest release, then `sudo dnf install ./pg_sift_N-*.amzn2023.*.rpm`; the `el9` package does not work there (the distribution keeps its PostgreSQL files in `/usr/lib64/pgsql`) |
-| Arch Linux | the AUR package `pg_sift` (recipe in [packaging/](packaging/)) |
-| Docker | `packaging/docker/build.sh 18` builds the image `pg_sift:pg18` on the official `postgres` image: [docs/QUICKSTART.md](docs/QUICKSTART.md), [docs/CONTAINERS.md](docs/CONTAINERS.md) (Docker Compose, CloudNativePG) |
-| macOS arm64 | the Homebrew formula below |
-| anything else | from source (the first snippet of [In five minutes](#in-five-minutes); needs server headers with `pg_config` on `PATH` and a C compiler; `PG_CONFIG=/path/to/pg_config` picks another installation) |
-
-Then, as a superuser, `CREATE EXTENSION pg_sift` in each database (after an upgrade: `ALTER EXTENSION pg_sift UPDATE`). `CREATE EXTENSION` and `ALTER EXTENSION UPDATE` end with a notice and the exact `ALTER DATABASE .. SET session_preload_libraries = 'pg_sift'` command when the library is not preloaded; an aggregate workload plans its first statement of a session once with it, and `SHOW sift.enable_agg` works in a new session instead of saying `unrecognized configuration parameter` until a statement has used the extension (docs/USAGE.md). Details: [docs/USAGE.md](docs/USAGE.md#install), [docs/UPGRADING.md](docs/UPGRADING.md), [docs/SUPPORT.md](docs/SUPPORT.md).
-
-<details>
-<summary>macOS with Homebrew</summary>
-
-The [formula](Formula/pg_sift.rb) builds the latest release (`brew install --HEAD` builds `main`) for Homebrew PostgreSQL 17 and 18 on macOS arm64:
-
-```sh
-brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git
-brew install brauliobo/pg_sift/pg_sift          # --HEAD for main
-brew test brauliobo/pg_sift/pg_sift
-"$(brew --prefix postgresql@18)/bin/psql" -d mydb -c 'CREATE EXTENSION pg_sift;'   # a running server, as a superuser; postgresql@17 for 17
-```
-
-CI builds the stable formula and the HEAD one, runs `brew style`, `brew audit --strict --online` and `brew test` (a BM25 smoke, an extension upgrade and a `sift_col` aggregate) on macOS arm64 with PostgreSQL 17 and 18, and runs a few regression tests there and the quick tier on Linux arm64; it was also tried by hand on Apple Silicon with 17.11 and 18.6.
-`make check` needs bash 4 or newer (`brew install bash`; the stock bash 3.2 stops with a message). A stage the host cannot run (the Perl TAP tests, which need the server's `src/test/perl`; the compatibility tests that build releases older than 3.2.0; the Python 3.12 benchmark generators) is skipped with a message.
-
-</details>
-
-### Try it: analytics
-
-Your queries stay as they are: add the index, and the planner uses it when it can prove the answer equal; otherwise PostgreSQL's own plan runs.
-
-```sql
-CREATE TABLE orders (id bigint PRIMARY KEY, customer_id int, country text, category text, status text, amount numeric(10,2), created_at timestamp);
-CREATE INDEX orders_col ON orders USING sift_col (customer_id, country, category, status, amount, created_at);
-
-SELECT category, count(*), sum(amount) FROM orders
-WHERE country = 'DE' AND created_at >= '2025-06-01' GROUP BY category;          -- Custom Scan (SiftAgg) on orders_col
-CREATE TABLE events (id bigint, kind text, price numeric(10,2), at timestamp) USING sift_table;   -- the table itself in column format
-```
-
-`SET sift.enable_agg = off` gives the plan PostgreSQL has without sift. Types, options and limits: [docs/USAGE.md](docs/USAGE.md#column-indexes-aggregates-and-sift_table).
-
-### Try it: full-text search
-
-Search has its own query syntax (`@@>`, `sift.score`): a search query is written for the `sift` index.
-
-```sql
-CREATE TABLE docs (id int PRIMARY KEY, title text, body text, published date, category int);
-INSERT INTO docs VALUES
-  (1, 'Wireless headphones', 'Battery was great and the support was friendly. The case was squeaky.', '2026-01-10', 1),
-  (2, 'Charger', 'Friendly support, no battery, but a sturdy case and clip.', '2026-02-11', 1),
-  (3, 'Resume tips', 'A good résumé is short. Cafés near the office help.', '2026-03-12', 2),
-  (4, 'Running', 'Runners were running; she runs every day.', '2026-04-13', 2),
-  (5, 'Squeaky headphones', 'The headphones were squeaky at night, squeak everywhere. Friendly support though.', '2026-05-14', 1);
-CREATE INDEX docs_body ON docs USING sift (body);
-
-SELECT id FROM docs WHERE body @@> 'battery friendly';                     -- all terms: 1, 2
-SELECT id, sift.score(ctid) FROM docs WHERE body @@> 'case OR clip' ORDER BY sift.score(ctid) DESC LIMIT 10;   -- BM25 top-10
-SELECT count(*) FROM docs WHERE body @@> 'friendly';                        -- 3, from the index
-```
-
-Words are `AND`ed; `OR`, `NOT`, `"phrases"`, `batt*`, `sq?eaky`, `/regex/`, `frendly~1` and `^3` boosts combine them: [docs/USAGE.md](docs/USAGE.md#queries).
-
-## Features
-
-- **Column engine** (`USING sift_col`, `USING sift_table`): `count`, `count(DISTINCT ...)`, `sum`, `avg`, `min`, `max` with filters and `GROUP BY` on compressed columns as `Custom Scan (SiftAgg)`; `sift_table` stores the table itself in column format.
-- **BM25 search index** (`USING sift`): boolean, phrase, prefix, wildcard, regex and fuzzy queries, exact BM25 ranking, top-k with filters applied inside the scan (the columns of `INCLUDE (...)` are tested before a document is scored, and a join with a small table adds its keys as one more test: [docs/USAGE.md](docs/USAGE.md)), counts from the index, facets, autocomplete.
-- **Pre-aggregates, top-N and lookups:** units whose rows are all visible answer from the exact count/sum/min/max stored with them (on by default); `ORDER BY ... LIMIT n` stops after the first rows of the units that can hold them; an equality or `IN` lookup on a key column reads only the units that hold it (`key_columns`, `point_tid_columns`; opt-in per index).
-- **Reading a heap table's index without the heap (`track_changes`, on by default):** `track_changes` (default `'auto'`: the primary key; `WITH (track_changes = 'off')` turns it off) keeps a log of the entries an UPDATE, a key change or a DELETE ended and installs two statement triggers on the table (one NOTICE says so), and a grouped count or top-N over rows changed and not yet vacuumed reads 2 heap blocks instead of 1,241 (300,000 rows, the recent 20% updated: 21.8 to 10.7 M instructions, 1.87 to 0.77 ms, 10.09 to 0.41 MB read cold; the top 20 2.3 to 0.8 M). After 1,000,000 updates of 100,000 rows and the vacuums the log is empty and the index 13.0% over a REINDEX (67.7% with `'off'`). It costs writes (100,000 rows: an UPDATE of 5% of the rows +44%, a key change +31%, a DELETE of 2% +35%, CREATE INDEX +187 M instructions) and gains nothing on point reads, index-only scans or after a VACUUM, so it pays when a table is read many times for each write while rows are unvacuumed ([docs/USAGE.md](docs/USAGE.md#reading-without-the-heap-track_changes)).
-- **Faster paths:**
-  - *Top-N by a float key, or by a column that follows the table:* a float sort key goes through the same min/max and compare kernels as an integer one, so units whose best value cannot pass the n-th are not read: `ORDER BY value DESC LIMIT 10` over 1,000,000 readings 47.5 to 0.80 ms (`ts_top_value`, 60x); the newest 10 rows of a time column with no btree 80.6 to 0.22 ms (`hits_latest_time`, 367x).
-  - *The first statement of a new backend:* the choices a statement needs several planner runs for are kept in shared memory (`sift.verdict_cache_kb`, [docs/USAGE.md](docs/USAGE.md)), so a new backend plans the winning form only: a report of 21 CTEs and 16 lateral sub-selects takes 29.1 ms on the first statement against 35.2 ms with the cache off (`verdict_shared_report`); 12 lateral aggregates take 45.9 ms first and 41.7 ms second against 3,507 ms on PostgreSQL (`lateral_flat_plan`, 76x).
-- **Joins from the child:** a `sift_col` index on a child table connects to the index of the parent it joins (`WITH (connect = 'fk -> parent(key)')`, made by itself for a validated integer foreign key), so `EXISTS`, `NOT EXISTS` and counting joins to the parent are answered from the child, and a `LEFT JOIN` of two indexed tables groups the child first: 1,000,000 child rows and 100,000 parents, the join count 4.3 ms against 228 ms for the normal plan and `NOT EXISTS` 2.8 ms against 244 ms ([docs/COL-CONNECT.md](docs/COL-CONNECT.md), [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md)).
-- **Reads by a key reached through a join (scope index):** `WITH (scope = '..')` on a `sift_col` index stores its rows once for each key that a table of (member, key) pairs gives them, so a read of one tenant or group reads the units of that key; the join the application writes is recognised by the planner, and a pair edit is a small journal record that a read reconciles under its own snapshot ([docs/COL-SCOPE.md](docs/COL-SCOPE.md)). The idea is old: [the prior art it is compared with](#scope-index-and-prior-art) and [the tuned stock PostgreSQL arms it is measured against](#scope-index-against-tuned-stock-postgresql) are below.
-- **Plain PostgreSQL:** MVCC, VACUUM, `CREATE INDEX CONCURRENTLY`, partitions, generic WAL (crash and replica safe), `pg_dump`; a query the planner cannot prove equal keeps its normal plan.
-- **Vulkan (experimental, opt-in):** `make VULKAN=1` and `SET sift.gpu = auto|on` run grouped and filtered integer counts and sums of a `sift_col` index on a GPU ([below](#vulkan-experimental), [docs/GPU.md](docs/GPU.md)).
-- **Ports:** [SQLite](#sqlite) and [MariaDB](#mariadb) run the same search core.
-- **A damaged index leaves service, the database keeps serving:** a `sift` or `sift_col` index that finds damage in its own bytes fails the statement that found it once, is listed in `sift.quarantine`, and every statement then runs on the heap with exact answers until `REINDEX` ([docs/OPERATIONS.md](docs/OPERATIONS.md#2-emergency)); `sift.check` finds damage before a statement does, and `sift.col_repair` restores the liveness pages that 4.2.1 to 4.3.5 could damage.
-- **Named projections and shared strings:** `sift.projection_create` defines the columns, expressions, filter, roll-ups and options of an index once, and `sift.projection_index` makes one index for one or more of those projections; the `sift_col` indexes of a table that hold the same string column store its distinct strings once ([docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md), [docs/COL-VSTORE.md](docs/COL-VSTORE.md)).
-
-## Compared with
-
-Feature facts checked against each project's own documentation on 2026-10-18; `?` is not verified. Analytics (pg_sift against PostgreSQL, Citus columnar, ClickHouse, Elasticsearch, DuckDB and TimescaleDB) and search (against PG FTS, pg_search, pg_textsearch, rum, pgx-bm25, TIN and Elasticsearch) tables, a note per row, sources and the unverified cells: [docs/COMPARISON.md](docs/COMPARISON.md).
-
-pg_sift is weaker in text analysis (one key per index; case and accent folding, a `keyword` analyzer, `term*` prefixes and the stemmers and stop words of any PostgreSQL text search configuration, `stemmer = 'german'`, are there; n-gram and CJK tokenizers are not) and where its column engine is narrow: joins are accelerated for small tables only, and `sift_table` scans the superblocks that hold a tombstone or a write buffer row instead of reading their pre-aggregates ([where it is weaker](docs/COMPARISON.md#where-pg_sift-is-weaker)).
-
-### Scope index and prior art
-
-Storing or indexing facts by a key reached through a join is not new. [docs/COL-SCOPE.md](docs/COL-SCOPE.md#prior-art-what-exists-and-what-differs) compares the scope index with seventeen systems and techniques from their own documentation (read 2026-11-13; with the sources, the version read of each, what is not new in the scope index, what is particular to it as far as those pages show, and where the others are better). The first three rows are measured on one generated fixture; the others compare mechanisms, and `not verified` marks what the documentation read does not say.
-
-| system | a pair change costs | many-to-many | the application writes |
-|---|---|---|---|
-| scope index | a 32-byte journal record; a read patches the member | yes, up to 3 entries a row | the plain join |
-| copy kept by triggers | rewrites the member's facts ([measured below](#scope-index-against-tuned-stock-postgresql)) | yes | a query on the copy |
-| pg_ivm 1.17 | updates the view in the transaction ([measured below](#scope-index-against-tuned-stock-postgresql)) | yes | the view, by name |
-| Oracle bitmap join index | not verified | no: the dimension key must be unique | the plain join |
-| Oracle, StarRocks, Doris materialized views | `ON COMMIT` refresh (Oracle) or a refresh later | joins allowed | the plain query, rewritten |
-| SQL Server indexed view | view rows updated in the DML statement | inner joins | the plain query, substituted (specific editions) |
-| PostgreSQL materialized view | nothing until `REFRESH` | any query | the view, by name |
-| ClickHouse materialized view with a join | nothing: stored rows are not updated | join allowed, the left-most table triggers | the target table |
-| Zanzibar Leopard index | update tuples in an incremental layer, merged at query time | yes | the authorization API |
-| PostgreSQL row-level security | nothing; every read pays the join | yes | the plain query |
-
-### Scope index against tuned stock PostgreSQL
-
-The table above compares mechanisms. This section measures what a database administrator would build instead of a scope index in PostgreSQL itself, on one generated fixture: events of members, and tenants that reach members directly or through groups (a member is in about 1.45 tenants). `bench/bench scope-stock` builds each arm in a copy of the fixture, runs nine read classes (sum by month, count by score, the latest 20 rows, the top 20 members, distinct members by month, a total for every member, a selective filter, a date range, count by kind) for each measured tenant, and checks every result against the plain statement by its md5. The arms:
-
-- `stock_default`: a b-tree on the member and the semi join as the application writes it.
-- `semijoin`: the same join with a covering `(member, time, id)` b-tree, a partial b-tree for the filter class and a per-member probe for the latest rows. Nothing is maintained.
-- `denorm_flat`, `denorm_part`: a copy of every event for each tenant that reaches it, as one table or a list partition by tenant, kept by triggers on the events and on the pair tables.
-- `rollup`: totals by member kept by a statement trigger, read through the same semi join (no latest rows).
-- `ivm`: [pg_ivm](https://github.com/sraoss/pg_ivm) 1.17 incremental views of the join (no latest rows); `bench/steps/fetch.sh pg_ivm` builds the pinned release, and without it the arm is skipped with a notice.
-- `sift_reuse`, `sift_scope`: the `sift_col` entity index alone, and with `WITH (scope = ..)` of two paths.
-
-<!-- bench:scope-stock-readme:begin (generated by scripts/gen-docs.py) -->
-2,400,007 events of 2,648 member keys, 32 tenants that reach member keys directly or through groups (3,612 distinct pairs); 9 classes, 8 tenants, warm and cold, one backend of PostgreSQL 18.7 on tmpfs, AMD Ryzen 9 5900XT 16-Core Processor. Measured by arm: stock_default, sift_reuse, sift_scope on 2026-11-15 at 5.0 (2db67e4748c6) on PostgreSQL 18.7; the other arms on 2026-11-15 at 5.0 (9c413aac8e62) on PostgreSQL 18.7 (`bench/bench scope-stock`).
-
-Per rival, over the cells both answer:
-
-| rival | cells | warm: sift_scope faster / tie / rival faster | cold: sift_scope faster / tie / rival faster | where the rival is faster (warm) |
+<!-- bench:v6-storage:begin -->
+| Dimension | `pg_sift` | Reference | Comparison | Notes |
 |---|---:|---:|---:|---|
-| `stock_default` | 72 | 72 / 0 / 0 | 71 / 0 / 1 | - |
-| `semijoin` | 72 | 63 / 2 / 7 | 62 / 1 / 9 | `filtered_count` 5, `latest_20_rows` 2 |
-| `denorm_flat` | 72 | 51 / 2 / 19 | 48 / 1 / 23 | `latest_20_rows` 8, `filtered_count` 8, `date_range_count` 2, `by_member` 1 |
-| `denorm_part` | 72 | 54 / 4 / 14 | 54 / 0 / 18 | `latest_20_rows` 8, `filtered_count` 4, `date_range_count` 2 |
-| `rollup` | 64 | 54 / 5 / 5 | 52 / 3 / 9 | `filtered_count` 3, `distinct_members_by_month` 2 |
-| `ivm` | 64 | 32 / 2 / 30 | 34 / 3 / 27 | `count_by_score` 8, `filtered_count` 8, `count_by_kind` 6, `distinct_members_by_month` 4, `date_range_count` 3, `sum_by_month` 1 |
-| `sift_reuse` | 72 | 70 / 1 / 1 | 68 / 3 / 1 | `filtered_count` 1 |
+| 10M orders (`sift_table`) | **457 MiB** | 1,549 MiB (PG 18) | **3.4× smaller** | vs 421 MiB ClickHouse, 1,457 MiB ES |
+| 10M orders (`sift_col`) | **1,438 MiB** | 1,549 MiB (PG 18) | **−7% vs PG** | Shares 1,023 MiB PG heap + PK |
+| 50K Wiki BM25 index | **30.2 MiB** | 54.5 MiB (ParadeDB) | **1.8× smaller** | 12.0 MiB `positions=off`; 70.5 MiB ES |
+| Scoped rollup (2.4M rows) | **2.18 ms** | 542 ms (PG 18) | **249× faster** | 72/72 warm wins vs stock PG (`v5.0`) |
+| Bounded memory (v6.0) | **16 / 64 MB** | O(1) flat RSS | **≤ 0.5 B/row** | `backend_cache_kb` / `shared_cache_kb` |
+<!-- bench:v6-storage:end -->
 
-Cells are a tenant and a class (72 of them for `sift_scope`, in warm and in cold milliseconds); a rival is faster in a cell when it is faster by more than 0.1 ms and by more than 10%, and the cell is a tie within either margin. Every answer is md5-equal to the plain statement (700 of 700 cells). Milliseconds are the executor time of `EXPLAIN (ANALYZE, TIMING OFF)`.
+Full methodology, cold-cache tables, memory flatness gates (`≤ 0.5 B/row` slope to 10M+ rows), wide+JSONB compression & WAL metrics, and 1-command Docker reproduction (`bench/bench kit`) live in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-Each cell is warm ms / cold ms · warm M instructions · blocks hit warm / blocks read cold; `n/a`: the arm cannot answer the class.
+## How It Works
 
-**tenant 1: 1,149 member keys, 49.5% of the events**
-
-| class | stock_default | semijoin | denorm_flat | ivm | sift_scope |
-|---|---:|---:|---:|---:|---:|
-| `sum_by_month` | 542 / 606 · 3,783 · 1,135 / 17,663 | 285 / 367 · 2,422 · 7,314 / 5,038 | 329 / 572 · 2,237 · 4,700 / 4,700 | 43.3 / 50.3 · 124 · 3,413 / 3,413 | 2.18 / 6.25 · 7.66 · 348 / 349 |
-| `count_by_score` | 589 / 503 · 3,230 · 1,167 / 17,663 | 258 / 340 · 2,019 · 9,307 / 6,490 | 302 / 266 · 1,696 · 7,153 / 7,153 | 0.22 / 0.29 · 0.25 · 3 / 3 | 0.38 / 1.21 · 1.92 · 77 / 68 |
-| `latest_20_rows` | 531 / 565 · 4,626 · 1,167 / 17,663 | 15.8 / 30.3 · 85.3 · 3,558 / 1,309 | 0.05 / 0.17 · 0.25 · 4 / 4 | n/a | 1.02 / 3.03 · 5.74 · 137 / 195 |
-| `top_members` | 173 / 189 · 1,683 · 4,358 / 1,348 | 264 / 283 · 2,009 · 9,307 / 6,490 | 124 / 117 · 926 · 1,042 / 1,042 | 53.8 / 85.0 · 200 · 3,413 / 3,413 | 1.09 / 2.27 · 6.01 · 134 / 178 |
-| `distinct_members_by_month` | 757 / 680 · 6,036 · 591 / 17,663 | 636 / 690 · 4,742 · 7,856 / 5,528 | 652 / 650 · 4,524 · 5,385 / 5,385 | 58.4 / 76.1 · 274 · 414 / 414 | 1.52 / 2.26 · 8.51 · 79 / 80 |
-| `by_member` | 423 / 433 · 3,375 · 1,167 / 17,663 | 264 / 324 · 2,141 · 9,307 / 6,490 | 317 / 291 · 1,772 · 7,153 / 7,153 | 55.5 / 72.6 · 211 · 3,413 / 3,413 | 1.55 / 3.65 · 8.80 · 134 / 178 |
-| `filtered_count` | 131 / 134 · 1,354 · 1,167 / 17,663 | 2.27 / 2.94 · 17.7 · 2,314 / 31 | 0.69 / 0.50 · 3.39 · 7 / 7 | 0.09 / 0.17 · 0.25 · 3 / 3 | 4.54 / 25.7 · 17.9 · 814 / 986 |
-| `date_range_count` | 116 / 136 · 1,252 · 1,167 / 17,663 | 37.9 / 60.0 · 179 · 4,014 / 1,765 | 12.6 / 15.9 · 105 · 707 / 707 | 14.4 / 30.4 · 40.4 · 3,204 / 3,200 | 0.60 / 1.83 · 2.02 · 58 / 55 |
-| `count_by_kind` | 247 / 252 · 2,160 · 1,167 / 17,663 | 146 / 247 · 997 · 5,934 / 3,685 | 89.5 / 89.1 · 815 · 3,044 / 3,044 | 0.45 / 2.91 · 0.73 · 94 / 94 | 0.71 / 2.58 · 2.29 · 80 / 79 |
-
-**tenant 4: 268 member keys, 6% of the events**
-
-| class | stock_default | semijoin | denorm_flat | ivm | sift_scope |
-|---|---:|---:|---:|---:|---:|
-| `sum_by_month` | 349 / 280 · 1,839 · 1,173 / 17,668 | 49.2 / 48.2 · 303 · 1,278 / 786 | 46.1 / 35.5 · 271 · 572 / 572 | 7.38 / 10.2 · 34.0 · 3,057 / 3,055 | 1.37 / 4.12 · 5.58 · 93 / 89 |
-| `count_by_score` | 273 / 276 · 1,694 · 1,173 / 17,668 | 28.1 / 32.8 · 252 · 1,519 / 1,004 | 24.3 / 27.7 · 206 · 870 / 870 | 0.04 / 0.15 · 0.25 · 3 / 3 | 1.01 / 4.89 · 1.78 · 71 / 68 |
-| `latest_20_rows` | 235 / 220 · 1,837 · 1,173 / 17,668 | 3.83 / 7.75 · 23.0 · 844 / 355 | 0.05 / 0.14 · 0.27 · 5 / 5 | n/a | 0.76 / 1.23 · 2.12 · 32 / 23 |
-| `top_members` | 25.2 / 41.6 · 208 · 913 / 347 | 43.8 / 50.0 · 251 · 1,519 / 1,004 | 22.3 / 16.6 · 113 · 130 / 130 | 12.2 / 19.2 · 51.3 · 3,095 / 3,095 | 3.57 / 4.94 · 2.79 · 84 / 91 |
-| `distinct_members_by_month` | 225 / 286 · 2,147 · 597 / 17,668 | 95.0 / 92.1 · 555 · 1,347 / 850 | 74.4 / 76.0 · 518 · 655 / 655 | 9.26 / 8.82 · 58.4 · 101 / 99 | 3.25 / 9.88 · 9.16 · 72 / 67 |
-| `by_member` | 198 / 242 · 1,712 · 1,173 / 17,668 | 35.1 / 56.2 · 267 · 1,519 / 1,004 | 28.5 / 26.5 · 213 · 870 / 870 | 12.7 / 14.5 · 53.6 · 3,095 / 3,095 | 3.09 / 4.45 · 3.06 · 85 / 94 |
-| `filtered_count` | 125 / 103 · 1,347 · 1,173 / 17,668 | 2.87 / 4.75 · 6.40 · 558 / 36 | 0.10 / 0.13 · 0.65 · 4 / 4 | 0.05 / 0.12 · 0.24 · 3 / 3 | 1.95 / 6.67 · 3.89 · 140 / 134 |
-| `date_range_count` | 128 / 170 · 1,176 · 1,173 / 17,668 | 8.89 / 8.66 · 26.8 · 894 / 405 | 2.11 / 2.03 · 12.9 · 88 / 88 | 2.62 / 6.15 · 11.0 · 1,474 / 1,472 | 0.43 / 1.10 · 1.97 · 43 / 37 |
-| `count_by_kind` | 154 / 141 · 1,480 · 1,173 / 17,668 | 28.5 / 44.1 · 129 · 1,113 / 624 | 13.7 / 21.5 · 98.4 · 370 / 370 | 0.19 / 0.94 · 0.71 · 86 / 86 | 0.88 / 1.75 · 2.08 · 63 / 62 |
-
-**tenant 8: 11 member keys, 0.1% of the events**
-
-| class | stock_default | semijoin | denorm_flat | ivm | sift_scope |
-|---|---:|---:|---:|---:|---:|
-| `sum_by_month` | 4.31 / 9.78 · 13.4 · 2,451 / 2,307 | 1.35 / 1.56 · 7.75 · 58 / 41 | 0.77 / 1.01 · 4.99 · 13 / 13 | 0.85 / 2.21 · 2.32 · 423 / 423 | 0.79 / 1.25 · 3.71 · 52 / 46 |
-| `count_by_score` | 4.44 / 14.6 · 11.6 · 2,451 / 2,307 | 1.67 / 1.55 · 6.69 · 63 / 46 | 0.82 / 0.93 · 3.72 · 18 / 18 | 0.07 / 0.14 · 0.25 · 3 / 3 | 0.49 / 1.07 · 1.73 · 65 / 62 |
-| `latest_20_rows` | 4.63 / 11.8 · 11.3 · 2,451 / 2,307 | 0.39 / 0.90 · 3.22 · 52 / 35 | 0.06 / 0.10 · 0.27 · 4 / 4 | n/a | 0.71 / 0.79 · 1.69 · 29 / 23 |
-| `top_members` | 1.13 / 0.74 · 5.93 · 52 / 30 | 1.84 / 1.64 · 6.80 · 63 / 46 | 0.61 / 0.56 · 2.20 · 6 / 6 | 1.21 / 3.23 · 3.36 · 741 / 741 | 0.40 / 1.25 · 2.10 · 65 / 62 |
-| `distinct_members_by_month` | 4.67 / 9.43 · 16.0 · 2,451 / 2,307 | 1.38 / 2.09 · 10.8 · 60 / 43 | 1.77 / 2.11 · 7.84 · 15 / 15 | 0.73 / 0.42 · 2.11 · 8 / 8 | 1.06 / 1.51 · 4.43 · 40 / 34 |
-| `by_member` | 2.67 / 7.03 · 12.0 · 2,451 / 2,307 | 1.31 / 2.11 · 7.01 · 63 / 46 | 0.58 / 1.06 · 3.89 · 18 / 18 | 2.31 / 6.79 · 3.38 · 741 / 741 | 1.10 / 2.32 · 1.94 · 65 / 62 |
-| `filtered_count` | 2.86 / 8.62 · 9.16 · 2,451 / 2,307 | 0.42 / 0.93 · 2.49 · 40 / 21 | 0.06 / 0.10 · 0.26 · 3 / 3 | 0.04 / 0.12 · 0.24 · 3 / 3 | 0.77 / 1.26 · 2.10 · 56 / 50 |
-| `date_range_count` | 2.27 / 8.40 · 9.06 · 2,451 / 2,307 | 0.50 / 1.07 · 2.86 · 52 / 35 | 0.12 / 0.80 · 0.55 · 5 / 5 | 0.29 / 2.43 · 0.79 · 82 / 80 | 0.43 / 0.92 · 1.87 · 38 / 32 |
-| `count_by_kind` | 3.96 / 11.3 · 10.3 · 2,451 / 2,307 | 0.96 / 1.03 · 4.60 · 55 / 38 | 0.44 / 0.68 · 1.99 · 10 / 10 | 0.41 / 1.38 · 0.72 · 88 / 88 | 0.49 / 0.73 · 1.93 · 50 / 46 |
-
-What each arm costs, as milliseconds · M instructions · WAL written of one statement (a pair edit: the mean of 10 member keys of about 400 events, and the largest member apart). `-`: the arm has no such step.
-
-| arm | build · size added | 10,000 inserts | promotion of those | pair grant | pair revoke | pair grant, largest | pair revoke, largest |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `stock_default` | 1.6 s · 17 MB | 48.4 · 188 · 2.2 MB | - | 0.93 · 0.14 · 323 B | 1.34 · 0.19 · 184 B | 2.81 · 0.12 · 312 B | 1.41 · 0.18 · 184 B |
-| `semijoin` | 2.9 s · 97 MB | 64.1 · 211 · 2.6 MB | - | 1.72 · 0.13 · 323 B | 1.09 · 0.19 · 186 B | 1.02 · 0.12 · 312 B | 0.74 · 0.18 · 184 B |
-| `denorm_flat` | 18.2 s · 453 MB | 120 · 573 · 6.3 MB | - | 6.75 · 11.8 · 105 kB | 1.55 · 1.95 · 23 kB | 135 · 603 · 7.3 MB | 11.8 · 61.0 · 1.2 MB |
-| `ivm` | 19.7 s · 55 MB | 2,714 · 11,766 · 3.9 MB | - | 105 · 510 · 77 kB | 93.6 · 494 · 62 kB | 335 · 1,263 · 99 kB | 302 · 1,159 · 103 kB |
-| `sift_scope` | 13.2 s · 68 MB | 31.9 · 150 · 1.7 MB | 32.5 · 187 · 315 kB | 1.00 · 0.20 · 899 B | 1.05 · 0.34 · 646 B | 0.94 · 0.15 · 584 B | 1.39 · 0.32 · 632 B |
-<!-- bench:scope-stock-readme:end -->
-
-**Where the scope index loses**, and why:
-
-- *Aggregates that a view stores in the shape of the question (pg_ivm).* A view that holds the answer reads a few blocks whatever the size of the tenant: count by score and the selective filter in every tenant, count by kind in some. The scope read opens the summaries of the units of the tenant's members, so its floor is a few hundred blocks for a large tenant. The view pays when data change: every inserted event and every pair edit updates the views inside the transaction (the write table), and it answers no query for rows.
-- *The latest N rows (a copy by tenant).* A `(tenant, time)` b-tree on a copy stops after N entries, while the scope read opens the tail of the units of the tenant's members; a top-N of the scope index also cannot take a changed pair, so the join as written answers until the pair is folded in. The copy pays in size and in every pair edit, which rewrites the member's events.
-- *A selective filter (the tuned semi join, the copy and the views).* A partial b-tree or a table keyed by the filter reaches the matching rows directly, and the scope read decodes the filter columns of the tenant's entries. For the tenant with about half of the events the planner prices the join as written as the cheaper plan for it (`Scope Fallback: join is cheaper for 1 key`), so there the scope index does not read the units at all.
-
-What is not measured: updates and deletes of events, concurrent writers, and a pair edit while a read is in flight for the stock arms (their triggers and indexes need more work for those, so the write table shows their cheapest case); parallel workers (one backend, `max_parallel_workers_per_gather = 0`); a data directory on a device (it is on tmpfs, so a cold read is a copy from memory and the blocks read, not the milliseconds, say how much a device would serve). The scope index refuses a member in more than 3 keys by default, and its figures are those of a generated fixture. The whole tables, all arms and all tenants, the classes the other arms answer better and the reasons in instructions: [docs/COL-SCOPE.md](docs/COL-SCOPE.md#against-tuned-stock-postgresql).
-
-## SQLite and MariaDB
-
-The search engine runs outside PostgreSQL too, with the same core and the same results; the column engine is PostgreSQL-only ([docs/COL-PORTS.md](docs/COL-PORTS.md)).
-
-### SQLite
-
-The search engine as a loadable extension, for apps that want search without a server (Linux x86-64, SQLite 3.38 or newer): exact BM25, phrase, prefix, wildcard, regex and fuzzy queries, highlights, snippets, facets; 89x, 242x and 10x the throughput of FTS5 on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles). Install, options and numbers: [sqlite/README.md](sqlite/README.md).
-
-```sql
-.load ./sift
-CREATE VIRTUAL TABLE docs USING sift(title, body);
-SELECT rowid, rank FROM docs WHERE docs MATCH 'case OR clip' ORDER BY rank LIMIT 10;   -- BM25 top-10, best first
+```text
+SQL Query ──▶ Single-Pass Planner (<2 ms) ──▶ SiftAgg (2,048-row SIMD: AVX-512 / AVX2 / NEON)
+                     │                                        │
+                     │ (falls back if not provably equal)     ▼
+                     ▼                          Format Major 2 Storage (sift_col & sift_table)
+              PostgreSQL Native Plan            • 2-level COW manifest + 8,192-row sorted granules
+                                                • Adaptive 2-tier codecs (FOR/DELTA/RLE/ALP/FSST/ZSTD)
+                                                • COW deletion vectors + O(1) [min_xid, max_xid] MVCC
 ```
 
-### MariaDB
+- **Unified Format Major 2 Storage:** new `sift_col` indexes and `sift_table` tables share one immutable, CRC32C-verified format of 8,192-row granules, partitioned manifests, copy-on-write deletion vectors, and two-tier compression (fast L0 micro-parts for OLTP writes, compact L1/L2 parts for analytics). Relations created by 5.x stay on Format Major 1 with full read and write support, so upgrading needs no rebuild; `REINDEX INDEX CONCURRENTLY` (or `VACUUM FULL` / `sift.upgrade_table()` for a `sift_table`) moves one to Format 2.0 online.
+- **Zero-Config Change Tracking:** a `sift_col` index follows deletes and updates by heap address (`track_changes = 'auto'`), so it works on any table: no primary key, a composite or `uuid` key, a partitioned table, or an index that omits the key.
+- **2,048-Row Vectorized Execution:** Native fixed-width `NUMERIC`, `UUID`, inline-prefix strings, and zero-heap-I/O JSONB variant streams flow through 64-byte salted hash tables and 2-phase radix-partitioned parallel merges.
+- **Strict O(1) Bounded Memory:** Every operation obeys PostgreSQL's `work_mem` / `maintenance_work_mem` plus two unified cache caps (`sift.backend_cache_kb = 16MB`, `sift.shared_cache_kb = 64MB`)—flat memory from 10k to 100M+ rows and hundreds of pooled backends. `sift.shared_memory()` and `sift.shared_memory_pools()` report all five shared pools.
 
-MariaDB 10.5 to 13.x, with results identical to pg_sift: `libsift_udf.so` and two SQL files, with no storage engine and no server patch; 183x to 794x faster than InnoDB FULLTEXT on top-10 `'a b'`, `'a OR b'` and `'"a b"'` (218,058 articles), with an index 1.7x smaller. Install and guide: [mariadb/README.md](mariadb/README.md).
+## Quick Install
+
+Supports PostgreSQL **17, 18, and 19** on Linux (`x86-64`, `arm64`) and macOS (`arm64`).
+
+| Platform | Install |
+|---|---|
+| Debian 12/13, Ubuntu 22.04/24.04 | Download `.deb` from [Releases][rel], then `sudo apt install ./postgresql-N-pg-sift_*.deb` |
+| RHEL/Rocky/Alma 9–10, AL2023 | Download `.rpm` from [Releases][rel], then `sudo dnf install ./pg_sift_N-*.rpm` |
+| Signed APT / DNF repositories | See [docs/INSTALL-REPOS.md](docs/INSTALL-REPOS.md): `apt install postgresql-N-pg-sift` or `dnf install pg_sift_N` after one repository line |
+| macOS / Arch / Docker | `brew tap brauliobo/pg_sift https://github.com/brauliobo/pg_sift.git && brew install pg_sift` · AUR · [Docker](docs/CONTAINERS.md) |
+| From source (PG 17–19 headers) | `make USE_PGXS=1 && sudo make USE_PGXS=1 install` |
+
+[rel]: https://github.com/brauliobo/pg_sift/releases/latest
+
+Enable in your database:
 
 ```sql
-CALL sift_attach('news', 'articles', 'id', "CONCAT_WS(' ', t.title, t.body)", 32);   -- index, queue, triggers
-SELECT sift_count('news', 'power AND plant');
+CREATE EXTENSION pg_sift;
+-- Recommended for aggregate workloads (avoids first-query re-planning; no restart needed):
+ALTER DATABASE mydb SET session_preload_libraries = 'pg_sift';
 ```
 
-## Operations and limits
+Try it in 5 minutes with Docker: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
-- **Options:** index options go in `WITH (...)` (`k1`, `b`, `analyzer`, `stemmer`, `positions`, `prefix_index`, `write_buffer_limit`, `merge_fanin`, ...); `merge_fanin` defaults to 4: an index that takes batches keeps 4.6 segments on average instead of the 6.5 of `merge_fanin = 8` and reads 4 to 10% fewer instructions and 13% fewer cold MB, for 37% more merge time and 11% more WAL while it ingests (`ALTER INDEX .. SET (merge_fanin = 8)` merges less often); `sift_table` is tuned with settings (`sift.table_*`), not per table.
-- **Maintenance** is on by default: a background worker (`sift.async_maintenance`) promotes write buffers and merges segments, `sift.col_auto_merge` vacuums and merges a `sift_col` index after churn, `sift.table_auto_defrag` clears the dead rows of a `sift_table`; VACUUM clears dead rows as usual.
-- **Large `work_mem` and unusual planner costs:** a `seq_page_cost` above `random_page_cost` moves the planner's choice between the scan and the normal plan most; the results are the same as the normal plan's either way.
-- **Inspection:** `sift.check`, `sift.quarantine`, `sift.workers`, `sift.progress`, `sift.col_index_status`, `sift.shared_memory`, `sift.index_info`, `sift.segments` and `sift.verify`; what to watch and what to do is [docs/OPERATIONS.md](docs/OPERATIONS.md).
-- **Replication:** physical replicas work through generic WAL; publishing a `sift_table` under logical replication needs `shared_preload_libraries`.
-- **One library:** the BM25 index and the column engine share one library, about twice the size of the search-only build, at a cost of at most 2% of the instructions of an operation[^lib].
-- **Platforms:** [docs/SUPPORT.md](docs/SUPPORT.md#compatibility).
-- **Planner:** what is not accelerated keeps the normal plan, and a few cases raise an error that names the rewrite.
-- **Which options to touch (about ten of 150):** [docs/TUNING.md](docs/TUNING.md).
-- **Column engine types, options and limits:** [docs/USAGE.md](docs/USAGE.md#limits); settings, maintenance and replication: [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations); disk, memory and time of a large index: [docs/SIZING.md](docs/SIZING.md).
+## Documentation
 
-[^lib]: Against 2.0.x (`bench/steps/cpu_gate.sh`, user instructions per operation) every cell is within 1.02 except three BM25 cells: the first query of a session (about 1.04 to 1.05; connection pooling amortizes it), a `VACUUM` with nothing to free (about 1.04, on 3.9M instructions) and a ranked query on a one-segment index (1.02 to 1.03).
+| Guide / Reference | Covers |
+|---|---|
+| **Guides** | |
+| [Quickstart](docs/QUICKSTART.md) | 5-minute Docker tour: 100K-row table, `sift_col`, `sift` BM25, `bench/bench kit` |
+| [Columnar Analytics](docs/ANALYTICS.md) | `sift_col`, `key_order`, key marks, `PREWHERE`, `preagg`, JSONB `paths`, joins, `arg_max`, `ASOF`, HLL |
+| [Scoped Analytics](docs/SCOPES.md) | Entity-Once `scope` for multi-tenant/hierarchy joins, Top-K rings, pair edits |
+| [Native Column Tables](docs/TABLES.md) | `sift_table` creation, 10 options, online `key_order`, direct `COPY`, MVCC, projections, S3/R2 tiering, TTL |
+| [BM25 Full-Text Search](docs/SEARCH.md) | `sift` indexes, `INCLUDE` pushdown, SiftQL, analyzers, field weights, facets, RLS |
+| **Operations & Lifecycle** | |
+| [Operations & Sizing](docs/OPERATIONS.md) | 3-budget O(1) memory, disk/WAL sizing, monitoring, alerts, emergency switches, quarantine |
+| [Vulkan Compute](docs/GPU.md) | Opt-in `make VULKAN=1` device path for `SiftAgg` integer aggregates: `sift.gpu*` settings, eligibility, residency, EXPLAIN, safety |
+| [Repositories](docs/INSTALL-REPOS.md) | Signed APT and DNF repositories for PostgreSQL 17-19 on x86-64 and arm64 |
+| [Containers](docs/CONTAINERS.md) | Docker, Docker Compose, and CloudNativePG image-volume & operand images |
+| [Upgrading](docs/UPGRADING.md) | 5.1 → 6.0 preflight, `sift.migrate_plan()`, full 5.x compatibility, optional online Format 2.0, downgrades |
+| [Support](docs/SUPPORT.md) | PostgreSQL 17–19 & OS/arch compatibility matrix, versioning, and format policy |
+| **Engineering & Reference** | |
+| [Benchmarks](docs/BENCHMARKS.md) | Methodology, hardware, analytical/scope/memory/compression/BM25 suites, reproduction |
+| [Comparison](docs/COMPARISON.md) | Honest feature matrices vs PostgreSQL, Citus, TimescaleDB, ClickHouse, DuckDB, ES |
+| [Architecture](docs/ARCHITECTURE.md) | Format Major 2 layout, codecs, SIMD `SiftAgg`, planner, refusals, EXPLAIN labels, C safety |
+| [Options & Tuning](docs/OPTIONS.md) | The 8 knobs worth touching, plus all 63 options: 27 GUCs, 26 reloptions, and 10 table options; everything strictly better is automatic |
+| [SQL Reference](docs/REFERENCE.md) | Public `sift.*` functions, views, operator classes, and `@@>` operator |
+| [Limits](docs/LIMITS.md) | Hard limits and lifted 6.0 ceilings across `sift_col`, `sift_table`, `SiftAgg`, and `sift` |
+| [Messages](docs/MESSAGES.md) | Operator reference for every `NOTICE`, `WARNING`, and `INFO` message |
 
-<!-- sift-reference:start -->
-## SQL reference
+**Standalone Search Ports:** The exact BM25 search core is also available for [SQLite (`sqlite/README.md`)](sqlite/README.md) and [MariaDB (`mariadb/README.md`)](mariadb/README.md); the columnar analytics engine is PostgreSQL-only.
 
-Schema `sift` has 97 functions, 13 views, 4 tables, 2 operator classes, 1 operator. Signatures, results, the release that added each and a line on what it does are in [docs/REFERENCE.md](docs/REFERENCE.md), generated from the SQL scripts.
-
-- **[Search and ranking](docs/REFERENCE.md#search-and-ranking)**: `@@>`, `facet_counts`, `facet_sql`, `facets`, `field_query`, `highlight`, `index_info`, `json_build_object`, `match`, `match_idx`, `max_score`, `parse_query`, `quarantine`, `score`, `sections`, `segment_postings`, `segments`, `text_ops`, `tokenize`, `verify`
-- **[Column index](docs/REFERENCE.md#column-index)**: `approx_count_distinct`, `cluster_advice`, `col_*_ops`, `col_arena_status`, `col_clustering`, `col_connection_fill`, `col_connection_list`, `col_connection_state`, `col_connections`, `col_extents`, `col_index_info`, `col_index_status`, `col_leaves`, `col_maintenance_status`, `col_ops`, `col_repair`, `col_scope_verify`, `col_sections`, `col_segments`, `col_shrink_history`, `col_space`, `col_stamps`, `col_track_convert`, `col_track_old_rows`, `col_tracking`, `col_value_store_compact`, `col_value_store_members`, `col_value_store_status`, `col_value_store_usage`, `col_verify`, `index_advice`, `index_choices`, `key_cut_decision`, `projection_create`, `projection_drop`, `projection_holds`, `projection_index`, `projection_index_sql`, `projection_indexes`, `projection_replace`, `projection_status`, `projections`, `scope_expire_pairs`, `scope_follow_pairs`, `scope_follows`, `scope_refresh_pairs`, `scope_unfollow_pairs`, `suggest_paths`
-- **[Tables](docs/REFERENCE.md#tables)**: `table_find_stale_versions`, `table_get_option`, `table_layouts`, `table_option_values`, `table_option_values_trg`, `table_options`, `table_paths`, `table_paths_maintained`, `table_reset_option`, `table_segments`, `table_set_option`, `table_set_paths`, `table_space`, `table_verify`
-- **[Maintenance and workers](docs/REFERENCE.md#maintenance-and-workers)**: `col_maintain`, `col_maintenance_due`, `col_merge`, `col_promote`, `col_refresh`, `col_rollup_counters`, `col_rollup_queue`, `col_rollup_refresh`, `col_rollup_requests`, `col_rollup_state`, `ddl_hooks_enable`, `merge`, `progress`, `promote`, `table_maintain`, `worker_history`, `worker_state`, `workers`
-- **[Diagnostics and upgrade](docs/REFERENCE.md#diagnostics-and-upgrade)**: `build_info`, `check`, `col_rollup_misses`, `ddl_hooks`, `explain_why`, `help`, `index_format`, `indexes`, `locks`, `refusal_actions`, `refusal_slugs`, `shared_memory`, `stats`, `stats_reset`, `upgrade_check`, `upgrade_commands`, `version`
-
-Settings (`sift.*`) are in the [settings table](docs/USAGE.md#maintenance-and-operations), fixed limits in [docs/LIMITS.md](docs/LIMITS.md).
-<!-- sift-reference:end -->
-
-<!-- sift-options:start -->
-## Options
-
-189 index options (`WITH (...)`), `sift.*` settings and automatic behaviors, each with its default, class (`default`, `opt-in`, `diagnostic`, `safety`, `deprecated`), measured gain and cost, and off switch, are in [docs/OPTIONS.md](docs/OPTIONS.md); types, ranges and contexts are in the tables of [docs/USAGE.md](docs/USAGE.md#maintenance-and-operations).
-<!-- sift-options:end -->
-
-Every NOTICE, WARNING and `VACUUM VERBOSE` line of the library, with the decision it reports, its benefit and trade-off in numbers, and the switch that changes it, is one row of [docs/MESSAGES.md](docs/MESSAGES.md). `CREATE INDEX` and `REINDEX` of a `sift_col` index print one short NOTICE; `SELECT * FROM sift.index_choices('index')` gives the reason, the cost and the command that turns each choice off, and `sift.help('slug')` returns the row of a message.
-
-## Vulkan (experimental)
-
-Opt-in and off by default: build with `make VULKAN=1` and `SET sift.gpu = auto|on` (`auto`: grouped aggregates on indexes of at least `sift.gpu_min_rows`, <!-- gen:guc:sift.gpu_min_rows -->5,000,000<!-- /gen:guc:sift.gpu_min_rows --> rows; `on`: also ungrouped). Grouped and filtered integer and `numeric` counts and sums of a `sift_col` index run on a Vulkan device (clean all-visible units on the device, the rest on the CPU in the same query); a missing or failed device falls back to the CPU. The compressed chunks stay on the device, so use persistent connections (each backend pays about 0.2 s to open it). Not eligible: floats, `min`/`max`, `count(DISTINCT)`, text filters, more than one key, `sift_table`. Measurements and limits: [docs/GPU.md](docs/GPU.md#when-it-helps).
-
-## Docs
-
-- [docs/USAGE.md](docs/USAGE.md): install, queries, ranking, options, settings, maintenance, replication, limits.
-- [docs/SIZING.md](docs/SIZING.md): disk, memory and time of a large index.
-- [docs/COLUMN-STORAGE.md](docs/COLUMN-STORAGE.md): what a `sift_col` index stores besides the columns (point directories, sorted arrays, key tables, dictionaries): what each is for, its default, how to turn it off and one measured figure.
-- [docs/COL-LAYOUT.md](docs/COL-LAYOUT.md): how a `sift_col` index is laid out, from the directory and segments down to units, leaves, chunks and values, and how rows get in and change.
-- [docs/COMPARISON.md](docs/COMPARISON.md): feature tables against other search and analytics systems, with sources and the date checked.
-- [docs/CONTAINMENT.md](docs/CONTAINMENT.md): range and network containment from `sift_col`, its numbers and what it does not serve.
-- [docs/FORMATS.md](docs/FORMATS.md): the on-disk format numbers (metapage minor, segment formats, flags).
-- [docs/OPERATIONS.md](docs/OPERATIONS.md): what to monitor (`sift.workers`, `sift.progress`, `sift.check()`), what to switch off in an emergency, what to run after a crash, locks and waits, pooling.
-- [docs/UPGRADING.md](docs/UPGRADING.md): the upgrade preflight (`sift.upgrade_check()`), `ALTER EXTENSION UPDATE`, `pg_upgrade` to a newer PostgreSQL major and going back to an older release.
-- [docs/INDEX-RECIPES.md](docs/INDEX-RECIPES.md): which `sift_col` indexes to create, what they cost in size and writes, and which btrees to keep.
-- [docs/COL-CONNECT.md](docs/COL-CONNECT.md): connected indexes: declaring a connection, the automatic one, what it costs and its limits.
-- [docs/COL-SCOPE.md](docs/COL-SCOPE.md): the scope index: what it is and where it pays, the declaration and the journal index, the shapes the planner answers, EXPLAIN lines and fallback reasons, size, build and WAL, its edges and limits, and why a denormalised table is not shipped.
-- [docs/GPU.md](docs/GPU.md): the experimental, opt-in Vulkan aggregate path.
-- [docs/COL-PORTS.md](docs/COL-PORTS.md): the column engine on SQLite and MariaDB; [docs/SAFETY.md](docs/SAFETY.md): memory safety in the C code.
-
-## Security and license
-
-Tests: `make check`, and `make check-full` with sanitizers, soak, fuzz and mutants ([CONTRIBUTING.md](CONTRIBUTING.md)). Report crashes, wrong results and index corruption privately as in [SECURITY.md](SECURITY.md).
-pg_sift is released under the [PostgreSQL License](LICENSE); third-party notices are in [NOTICE](NOTICE).
+**Contributing, Security & License:** See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Licensed under the [PostgreSQL License](LICENSE) (third-party notices in [NOTICE](NOTICE)).

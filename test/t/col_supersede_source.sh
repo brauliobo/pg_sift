@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The entries a new row version replaces get a tombstone when the UPDATE writes it, and the addresses of the key come from the table's unique index. What the single-session test
 # (col_supersede_source) cannot show: a row that two sessions update, one waiting for the other (the waiting statement updates the version the first wrote, whose entry the index got
 # while the first still ran), a key that one session gives up and another takes, a delete and the key coming back, and an update that is rolled back under the waiting one. After each

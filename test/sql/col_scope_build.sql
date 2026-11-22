@@ -1,4 +1,4 @@
--- The build of a scope index writes, besides the entity segments, scope segments (col/build/scope.c): key-cut segments whose entries are the fact rows replicated once for each
+-- The build of a scope index writes, besides the entity segments, scope segments (col/v1/build/scope.c): key-cut segments whose entries are the fact rows replicated once for each
 -- scope key of their member, each unit holding the rows of one scope key or the whole runs of several small ones, never an address twice. The multiset of (address, scope key) of the scope segments is the join of the fact rows with the scope relation,
 -- for members in 0..6 keys, rows with a NULL or an unknown member, skewed members; the segments of the entities are as without the scope (rows counted once). Keys of a few rows
 -- The scope relation carries its journal index (a scope index needs it); the stamps are not looked at here.
@@ -74,8 +74,9 @@ SELECT sift.col_verify('events_col', true);
 SELECT g.gen IN (SELECT gen FROM sift._test_col_scope_entries('events_col')) AS scope_segment, bool_or(s.section = 'point_dir') AS has_point_directory
 	FROM (SELECT gen FROM sift.col_segments('events_col') WHERE kind = 'immutable') g, LATERAL sift._test_col_sections('events_col', g.gen) s GROUP BY 1 ORDER BY 1;
 
--- the scope stamps are written with every segment (the journal of the scope relation, and the horizon of the snapshot the pairs were read under)
-SELECT count(*) > 0 AS stamped, count(*) FILTER (WHERE lineage <> 0) AS vouched, count(*) FILTER (WHERE horizon::text::bigint = 0) AS without_horizon
+-- the scope stamps are written with every segment (the journal of the scope relation, and the horizon of the snapshot the pairs were read under); how many segments there are is the build's:
+-- the writer of a segment is cut by the memory it holds (the 64 kB of the last shape make a segment of a few hundred entries), and the partitions of the build are the end state of the merge after it
+SELECT count(*) > 0 AS stamped, count(*) = count(*) FILTER (WHERE lineage <> 0) AS vouched, count(*) FILTER (WHERE horizon::text::bigint = 0) AS without_horizon
 	FROM sift._test_col_conn_stamps('events_col');
 
 -- a promotion writes the scope segments of its rows beside its entity segment, and the merge of everything joins them: the entries stay those of the join (col_scope_maint has the rest)
@@ -128,13 +129,11 @@ SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) F
 SET sift.col_format_minor = 14;
 REINDEX INDEX small_col;
 CREATE INDEX small_low ON small_events USING sift_col (id, dim_a_id, kind) WITH (scope = 'tenant_id: dim_a_id -> small_scope(dim_a_id, tenant_id)');
-RESET sift.col_format_minor;
 SELECT sift.col_verify('small_col', true);
 ALTER INDEX small_col RESET (scope);
 DROP INDEX small_col;
 SET sift.col_format_minor = 14;
 CREATE INDEX small_col ON small_events USING sift_col (id, dim_a_id, created_at, kind, value_num);
-RESET sift.col_format_minor;
 SELECT max((to_jsonb(s)->>'format')::int) AS column_format FROM sift.col_segments('small_col') s;
 
 DROP TABLE small_events;

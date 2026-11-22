@@ -18,7 +18,7 @@
 #include "utils/inval.h"
 #include "utils/timestamp.h"
 
-#include "bm25/maint.h"
+#include "core/maint.h"
 #include "core/store.h"
 #include "core/testrng.h"
 #include "core/sql.h"

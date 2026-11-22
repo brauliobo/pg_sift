@@ -177,7 +177,7 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 	ComboSt    *cs = &ex->cs[ci];
 	int			hits;
 
-	if (cs->resettable && (cs->nent >= (uint32) sift_agg_combo_cache || combo_bytes_full(ex, ci)) && !ex->cfree_ok[ci])
+	if (cs->resettable && combo_bytes_full(ex, ci) && !ex->cfree_ok[ci])
 		combo_reset(ex, ci);
 	if (cb->nleaves == 1 && cb->leaf[0] >= 0 && !cs->by_id && !combo_null_input(ex))
 	{

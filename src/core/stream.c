@@ -6,14 +6,6 @@
 
 #include "core/store.h"
 
-void
-sift_page_init(Page page, SiftPageType type, uint64 gen)
-{
-	PageInit(page, BLCKSZ, sizeof(SiftPageOpaqueData));
-	SiftPageGetOpaque(page)->type = type;
-	SiftPageGetOpaque(page)->gen = gen;
-}
-
 /* The header page of a segment: the fixed part of h, its n extents and the extra bytes after them; the block it went to */
 BlockNumber
 sift_wt_write_seghdr(SiftWriteTarget *wt, const SiftSegHeaderData *h, const SiftExtent *ext, uint32 n, const void *extra, uint32 extralen)

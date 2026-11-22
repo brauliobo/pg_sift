@@ -112,7 +112,7 @@ CREATE INDEX grants_by_member ON grants USING sift_col (dim_a_id, tenant_id) WIT
 CREATE INDEX grants_by_group ON grants USING sift_col (group_id, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX memberships_by_member ON memberships USING sift_col (dim_a_id, group_id) WITH (track_changes = 'ctid');
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
-	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(1)');
 SELECT 'default' AS pairs_known, * FROM entries_vs_oracle();
 SET sift.test_conn_fill = 1;
 REINDEX INDEX facts_col;
@@ -178,7 +178,7 @@ CREATE UNIQUE INDEX grants_group_rev ON grants (tenant_id, group_id) WHERE delet
 CREATE UNIQUE INDEX memberships_rev ON memberships (dim_a_id, group_id) WHERE deleted_at IS NULL;
 DROP INDEX facts_col;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
-	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_rev | grants(group_id, tenant_id) using grants_group_rev via memberships(group_id, dim_a_id) using memberships_rev');
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) using grants_direct_rev | grants(group_id, tenant_id) using grants_group_rev via memberships(group_id, dim_a_id) using memberships_rev max_multiplicity(1)');
 SELECT 'reversed btrees' AS pairs_known, * FROM entries_vs_oracle();
 SET sift.test_conn_fill = 1;
 REINDEX INDEX facts_col;
@@ -193,7 +193,7 @@ DROP INDEX grants_direct_rev, grants_group_rev, memberships_rev;
 
 -- a join to the direct relation alone is not the pair set of a scope of two paths: the planner keeps it a join and its rows are the plain ones
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
-	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
+	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(1)');
 CREATE FUNCTION direct_join() RETURNS TABLE (scope_read bool, same bool) LANGUAGE plpgsql AS $$
 DECLARE q text := 'SELECT count(*), sum(f.amount) FROM facts f JOIN grants g ON g.dim_a_id = f.dim_a_id WHERE g.tenant_id = 1 AND g.deleted_at IS NULL';
 	p jsonb; a text; b text;
@@ -213,9 +213,7 @@ DROP INDEX facts_col;
 CREATE TABLE facts_hot AS SELECT i AS id, 5 AS dim_a_id, timestamptz '2026-01-01' + i * interval '9 minutes' AS created_at, 1 AS amount FROM generate_series(1, 3000) i;
 SELECT count(*) AS paths_per_row FROM (SELECT dim_a_id AS member, tenant_id FROM grants WHERE deleted_at IS NULL AND dim_a_id IS NOT NULL
 	UNION ALL SELECT m.dim_a_id, g.tenant_id FROM grants g JOIN memberships m ON m.group_id = g.group_id WHERE g.deleted_at IS NULL AND m.deleted_at IS NULL) p WHERE member = 5;
-SET sift.scope_max_multiplicity = 1;
-SELECT try('CREATE INDEX facts_hot_col ON facts_hot USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)'')') AS within_limit;
-RESET sift.scope_max_multiplicity;
+SELECT try('CREATE INDEX facts_hot_col ON facts_hot USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = ''tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id) max_multiplicity(1)'')') AS within_limit;
 SELECT count(*) AS entries, count(DISTINCT tid) AS fact_rows FROM sift._test_col_scope_entries('facts_hot_col');
 
 DROP TABLE facts, facts_hot, grants, memberships, states CASCADE;

@@ -3,6 +3,7 @@
 -- whether a statement with an ORDER BY of its own returns its rows in another order, and why is the refusal slug (sift.explain_why) of one that keeps the normal plan.
 -- A row that is not pushed is a gap or a limit by design (docs/LIMITS.md); when a shape starts to be answered its row changes here.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE tenants (id int PRIMARY KEY, type text NOT NULL, region text);

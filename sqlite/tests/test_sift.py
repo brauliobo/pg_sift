@@ -345,17 +345,26 @@ class Oracle:
             for w in set(t):
                 self.df[w] = self.df.get(w, 0) + 1
 
-    def idf(self, w):
-        df = self.df.get(w, 0)
+    def idf(self, df):
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
-    def term_score(self, i, w):
+    def blend_df(self, ws):
+        """The df an expansion leaf is weighed by: its words' dfs as independent chances, within [max df, n]."""
+        dfs = [self.df[w] for w in sorted(ws)]
+        if len(dfs) == 1:
+            return dfs[0]
+        if max(dfs) >= self.n:
+            return self.n
+        est = self.n * (1 - math.exp(sum(math.log(1 - d / self.n) for d in dfs)))
+        return min(max(est, max(dfs)), self.n)
+
+    def term_score(self, i, w, df=None):
         t = self.docs[i]
         tf = min(t.count(w), 255)
         if tf == 0:
             return None
         k = self.k1 * (1 - self.b + self.b * len(t) / self.avgdl)
-        return self.idf(w) * (self.k1 + 1) * tf / (tf + k)
+        return self.idf(self.df[w] if df is None else df) * (self.k1 + 1) * tf / (tf + k)
 
     def has_phrase(self, i, ws):
         t = self.docs[i]
@@ -372,7 +381,9 @@ class Oracle:
             ok = self.has_phrase(i, q[1])
             return (ok, sum(self.term_score(i, w) for w in set(q[1])) if ok else 0.0)
         if kind == 'pre':
-            best = [self.term_score(i, w) for w in self.df if w.startswith(q[1]) and self.term_score(i, w)]
+            ws = [w for w in self.df if w.startswith(q[1])]
+            df = self.blend_df(ws) if ws else 0
+            best = [self.term_score(i, w, df) for w in ws if self.term_score(i, w)]
             return (bool(best), max(best) if best else 0.0)
         if kind == 'and':
             rs = [self.ev(c, i) for c in q[1] if c[0] != 'not']

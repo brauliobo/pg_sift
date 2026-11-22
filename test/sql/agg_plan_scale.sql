@@ -31,7 +31,6 @@ FROM costs('SELECT grp, count(*), sum(amount) FROM items GROUP BY grp', 1) s1, c
 -- the plan at a larger size reads the same rows
 SET sift.plan_scale = 100;
 SELECT count(*) = (SELECT count(DISTINCT grp) FROM items) AS same_groups, sum(n) = (SELECT count(*) FROM items) AS same_rows FROM (SELECT grp, count(*) AS n FROM items GROUP BY grp) x;
-RESET sift.plan_scale;
 
 DROP FUNCTION costs(text, float8);
 DROP TABLE items;

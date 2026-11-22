@@ -20,7 +20,6 @@ CREATE FUNCTION ku_units(idx regclass) RETURNS TABLE (segments_ok bool, units_st
 SET sift.col_auto_merge_fragmentation = 1000;
 SET sift.test_col_gap_blocks = 0;
 CREATE INDEX ku_key ON ku USING sift_col (id, g, v) WITH (key_cut = 'g');
-RESET sift.col_auto_merge_fragmentation;
 RESET sift.test_col_gap_blocks;
 SELECT * FROM ku_units('ku_key');
 

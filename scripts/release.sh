@@ -67,7 +67,7 @@ notes_components() {
 sed_file() { sed "$1" "$2" >"$2.new" && mv "$2.new" "$2"; }   # not sed -i: BSD sed reads the expression as the backup suffix
 # the commit of --ext-version: the update script from the control's version into VERSION, the one back to MAJOR.MINOR, the control and the library's version string
 ext_bump() {
-	local from to=$VERSION hdr
+	local from to=$VERSION
 	(( PATCH >= 1 )) || die "the extension version of $VERSION is $MM: only a patch release moves it"
 	! before_42 "$MM" || die "the $MM line keeps its extension version"
 	[[ -z $(git -C "$REPO" status --porcelain) ]] || die "the tree is not clean"
@@ -82,6 +82,8 @@ ext_bump() {
 	git -C "$REPO" commit -q -m "release: $to: the extension version" && echo "release: the extension version is $to: sql/pg_sift--$from--$to.sql and sql/pg_sift--$to--$MM.sql, committed"
 }
 lint_tree() { ( cd "$1" && GITHUB_BASE_REF=main SIFT_NEUTRAL_REQUIRED=1 SIFT_PUBLIC_TREE=true scripts/lint.sh ); }
+# SECURITY.md names the newest minor line (the table of supported versions and the sentence before it): a new minor moves them from OLD_MM.x to NEW_MM.x, a patch release leaves them
+bump_security() { sed_file "s/\([^0-9.]\)${1//./\\.}\.x/\1$2.x/g" "$3"; }   # OLD_MM NEW_MM FILE
 # The waivers of the figure lines of Unreleased (`figure LINE<TAB>reason` in scripts/bench-cases.allow) go with the section: the bump moves those lines into history, which the claims check does not
 # read, so a waiver left would fail the lint of the release commit ("matches no line that states a figure"). Other lines of the allow list stay.
 drop_figure_waivers() { awk '!/^figure /' "$1" >"$1.new" && mv "$1.new" "$1"; }   # not sed -i: BSD sed reads the expression as the backup suffix
@@ -163,9 +165,14 @@ selftest() {
 	printf '# reasons\nfigure A line\twhy\nORDER BY offset\tcase x\nfigure B line\twhy\ncommit abc\tgate\n' >"$t/allow"
 	drop_figure_waivers "$t/allow"
 	chk pass "the bump drops the figure waivers and keeps the other lines of the allow list" bash -c '[[ $(cat "$1") == $(printf "# reasons\nORDER BY offset\tcase x\ncommit abc\tgate") ]]' _ "$t/allow"
+	printf '| 5.1.x | yes |\n(5.1.x)\n| older | no |\n15.1.x 25.1.xy\n' >"$t/sec"
+	bump_security 5.1 6.0 "$t/sec"
+	chk pass "a new minor moves the supported line of SECURITY.md and nothing that only contains it" bash -c '[[ $(cat "$1") == $(printf "| 6.0.x | yes |\n(6.0.x)\n| older | no |\n15.1.x 25.1.xy") ]]' _ "$t/sec"
+	bump_security 6.0 6.0 "$t/sec"
+	chk pass "a patch release leaves it" bash -c '[[ $(head -n 1 "$1") == "| 6.0.x | yes |" ]]' _ "$t/sec"
 	chk pass "the template renders the sections of 4.1.1 to 4.1.4 byte for byte" env REPO="$REPO" bash -c "$(declare -f components)"'; for v in 4.1.1 4.1.2 4.1.3 4.1.4; do [[ $(components $v) == "$(sed -n "/^## Packages/,\$p" "$REPO/docs/releases/v$v.md")" ]] || exit 1; done'
 	((! bad)) || exit 1
-	echo "release: selftest ok (the notes sections, the vocabulary is required for a release and its lint, the bump drops the figure waivers, the extension version of a patch release)"
+	echo "release: selftest ok (the notes sections, the vocabulary is required for a release and its lint, the bump drops the figure waivers and moves SECURITY.md, the extension version of a patch release)"
 }
 [[ -z $SELFTEST ]] || { selftest; exit; }
 [[ $VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || { echo "release: the version is MAJOR.MINOR.PATCH" >&2; exit 2; }
@@ -224,6 +231,7 @@ preflight() {
 	[[ -n $RESUME ]] || sed -n '/^## Unreleased/,/^## [0-9]/p' "$R/CHANGELOG.md" | grep '^- ' >/dev/null || soft "CHANGELOG.md has nothing under Unreleased"
 	ext=$(control_version)
 	ext_version_ok "$ext" "$MM" "$PATCH" || die "pg_sift.control default_version is $ext, not the extension version of $VERSION (from 4.2 a patch release moves it: scripts/release.sh $VERSION --ext-version)"
+	sync_checks || die "the tree is not in step with its release: fix what scripts/check-versions.sh and scripts/check-release-sync.sh name"
 	[[ -f $R/sql/pg_sift--$ext.sql ]] || compgen -G "$R/sql/pg_sift--*--$ext.sql" >/dev/null || die "sql/pg_sift--$ext.sql is missing, and no update script goes into $ext"
 	PREV=$(g describe --tags --abbrev=0 --match 'v*' --exclude "$TAG" HEAD) || die "no previous release tag"
 	# the upgrade script from the previous release's version to this one (a patch release keeps the version unless it carries SQL)
@@ -236,7 +244,7 @@ preflight() {
 # ci: evidence is by content, not by commit: a green run of the workflow ci on any ref but a pull request (main, a dispatch of a branch, the nightly) whose "Full scope" step ran and whose
 # commit has the build inputs of HEAD (a rebase merge, a revert or a docs commit after it change no input). A run in progress on such a commit is waited for; with none, one is dispatched.
 check_ci() {
-	local id sha st wait prev latest dispatched='' n
+	local id sha st wait prev dispatched='' n
 	[[ -z $SKIPCI ]] || { echo "$CI_SKIPPED"; return 0; }
 	latest() { gh run list --workflow ci.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId'; }
 	while :; do
@@ -310,7 +318,8 @@ check_upgrade() {
 	else echo "no sift.col_format_minor: the previous-format check is skipped"; pgt "$W/new" "$U" $port stop >/dev/null; fi
 }
 check_package() {
-	local U=$W/package sock=$W/package/sock port=$((PORT0 + 10)) root=$W/package/root f from ver=$(control_version)
+	local U=$W/package sock=$W/package/sock port=$((PORT0 + 10)) root=$W/package/root f from ver
+	ver=$(control_version)
 	tree HEAD "$W/pkg"
 	( cd "$W/pkg" && nice make -j2 USE_PGXS=1 SIFT_TESTING= >/dev/null && make USE_PGXS=1 SIFT_TESTING= DESTDIR="$root" install >/dev/null ) || { echo "make install failed"; return 1; }
 	for f in "$R/pg_sift.control" "$R"/sql/pg_sift--*.sql "$R/sql/pg_sift_upgrade_check.sql"; do
@@ -324,6 +333,8 @@ check_package() {
 	done
 	( cd "$W/pkg" && SIFT_TMP=$U SIFT_PORT=$port scripts/pgtest.sh stop >/dev/null ) && echo "package ok: the installed files create $ver and update from 1.0"
 }
+# the tree names its release in step: scripts/check-versions.sh (the numbers) and scripts/check-release-sync.sh (what is built for them, SECURITY.md's table of supported versions)
+sync_checks() { "$R/scripts/check-versions.sh" "$R" && "$R/scripts/check-release-sync.sh" "$R"; }
 # versions: every place that names the release agrees (VERSION: the check after the bump, where the files carry it)
 check_versions() {
 	local f bad=()
@@ -368,10 +379,10 @@ bump() {
 	sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" "$R/packaging/PKGBUILD"
 	sed -i "s/release-$oldre-blue/release-$VERSION-blue/" "$R/README.md"
 	sed -i "s/$oldre/$VERSION/g" "$R/packaging/pgxman.yaml" "$R/META.json"
-	sed -i "s/\([^0-9.]\)$oldre\([^0-9]\)/\1$VERSION\2/g" "$R/docs/USAGE.md"
+	bump_security "${old%.*}" "$MM" "$R/SECURITY.md"
 	sed -i "s/^V=$oldre\$/V=$VERSION/" "$R/sqlite/README.md"
-	check_versions || return 1
-	g add CHANGELOG.md README.md docs/USAGE.md packaging/PKGBUILD packaging/pgxman.yaml META.json sqlite/README.md scripts/bench-cases.allow
+	check_versions && sync_checks || return 1
+	g add CHANGELOG.md README.md SECURITY.md packaging/PKGBUILD packaging/pgxman.yaml META.json sqlite/README.md scripts/bench-cases.allow
 	for f in sqlite mariadb; do [[ ! -f $R/$f/VERSION ]] || g add "$f/VERSION" "$f/CHANGELOG.md"; done
 	g commit -q -m "release: $VERSION"
 }
@@ -401,14 +412,16 @@ workflow() {
 	gh run watch "$id" --exit-status >/dev/null || { echo "the release workflow failed: gh run view $id --log-failed"; return 1; }
 }
 assets() { # the downloads are the files the workflow built: names with the version, every one in SHA256SUMS
-	local d=$W/assets f n
+	local d=$W/assets f n a
 	[[ -z $DRY ]] || { echo "dry run: nothing is published to download"; return 0; }
 	mkdir -p "$d" && gh release download "$TAG" -D "$d" || return 1
 	( cd "$d" && "$REPO/scripts/sha256.sh" -c SHA256SUMS ) || return 1
 	"$REPO/scripts/package.sh" verify "$d" || { ls "$d"; return 1; }
 	ls "$d"/*_"$VERSION"-*.deb "$d"/*-"$VERSION"-*.rpm >/dev/null || { echo "the packages are not those of $VERSION"; ls "$d"; return 1; }
 	for f in sqlite mariadb; do
-		[[ ! -f $R/$f/VERSION ]] || [[ -f $d/sift-$f-$VERSION-linux-x86_64.tar.gz ]] || { echo "the $f tarball of $VERSION is missing"; return 1; }
+		for a in x86_64 aarch64; do
+			[[ ! -f $R/$f/VERSION ]] || [[ -f $d/sift-$f-$VERSION-linux-$a.tar.gz ]] || { echo "the $f tarball of $VERSION for $a is missing"; return 1; }
+		done
 	done
 	for n in "$d"/*.deb "$d"/*.rpm "$d"/*.tar.gz; do grep -q "$(basename "$n")" "$d/SHA256SUMS" || { echo "$(basename "$n") is not in SHA256SUMS"; return 1; }; done
 }

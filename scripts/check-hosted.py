@@ -2,7 +2,7 @@
 """A local dry run of the hosted workflow (.github/workflows/ci.yml), for the box that has no runner: python3 -I scripts/check-hosted.py [BASE]
 
 It runs the step that builds the job matrix, with the environment each event would give it and the scope scripts/ci.sh affected --github says for BASE (default: all),
-and fails when a job the line promises is missing: PostgreSQL 17, 18 and 19 (git), AArch64, assertions and the full tier; and when the runners or the compiler cache are
+and fails when a job the line promises is missing: PostgreSQL 17, 18 and 19, AArch64, assertions and the full tier; and when the runners or the compiler cache are
 not as the line pins them. actionlint runs too when it is on PATH or in $ACTIONLINT. Needs PyYAML; without it nothing is checked and the exit status is 2.
 """
 import json, os, shutil, subprocess, sys
@@ -34,22 +34,22 @@ def scope(base):
 
 def matrix(event, sc, cipr=False, versions='', heavy=False, deep=False):
     env = dict(os.environ, EVENT=event, CIPR=str(cipr).lower(), VERSIONS=versions, HEAVY=str(heavy).lower(), DEEP=str(deep).lower(), LABEL_ASSERTIONS='false',
-               NSHARDS=sc['nshards'], PG=sc['pg'], JOBS=sc['jobs'], FAST=sc['fast'], FASTJOBS=sc['fastjobs'], FASTPG=sc['fastpg'], CASSERT=sc['cassert'], CASSERTJOBS=sc['cassertjobs'])
+               NSHARDS=sc['nshards'], PG=sc['pg'], JOBS=sc['jobs'], FAST=sc['fast'], FASTJOBS=sc['fastjobs'], FASTPG=sc['fastpg'], CASSERT=sc['cassert'], CASSERTJOBS=sc['cassertjobs'], COMPAT=sc.get('compat', ''))
     # the step appends its outputs to $GITHUB_OUTPUT and echoes them (tee): the standard output is both
     out = subprocess.run(['bash', '-c', step('changes', 'id', 'matrix')['run']], cwd=ROOT, env=dict(env, GITHUB_OUTPUT='/dev/stdout'), check=True, capture_output=True, text=True).stdout
     return json.loads(next(l for l in out.splitlines() if l.startswith('matrix='))[len('matrix='):])
 
 
 def kinds(m):
-    return {(j['pg'], j.get('tier'), 'arm' if j.get('arm') else 'git' if j.get('git') else 'assert' if j.get('cassert') else 'x86') for j in m}
+    return {(j['pg'], j.get('tier'), 'arm' if j.get('arm') else 'assert' if j.get('cassert') else 'x86') for j in m}
 
 
 base = sys.argv[1] if len(sys.argv) > 1 else 'all'
 sc = scope(base)
 runs = {
-    'push': (matrix('push', sc, versions='17 18 19'), {(17, 'quick', 'x86'), (18, 'quick', 'x86'), (19, 'quick', 'git'), (18, 'quick', 'arm'), (18, 'quick', 'assert')}),
-    'dispatch, heavy': (matrix('workflow_dispatch', sc, versions='17 18 19', heavy=True), {(17, 'full', 'x86'), (18, 'full', 'x86'), (19, 'quick', 'git'), (18, 'quick', 'arm')}),
-    'pull request, integration branch': (matrix('pull_request', sc, cipr=True), {(18, 'fast', 'x86'), (18, 'fast', 'arm'), (17, 'fast', 'x86'), (19, 'fast', 'git')}),
+    'push': (matrix('push', sc, versions='17 18 19'), {(17, 'quick', 'x86'), (18, 'quick', 'x86'), (19, 'quick', 'x86'), (18, 'quick', 'arm'), (18, 'quick', 'assert')}),
+    'dispatch, heavy': (matrix('workflow_dispatch', sc, versions='17 18 19', heavy=True), {(17, 'full', 'x86'), (18, 'full', 'x86'), (19, 'quick', 'x86'), (18, 'quick', 'arm')}),
+    'pull request, integration branch': (matrix('pull_request', sc, cipr=True), {(18, 'fast', 'x86'), (18, 'fast', 'arm'), (17, 'fast', 'x86'), (19, 'fast', 'x86')}),
 }
 for name, (m, want) in runs.items():
     have = kinds(m)
@@ -64,11 +64,11 @@ need(doc['jobs']['macos']['runs-on'] == 'macos-15', 'the macOS job is not on mac
 need('postgresql@17 postgresql@18' in step('macos', 'name', 'Install bash 5 and PostgreSQL 17 and 18')['run'], 'the macOS job does not install PostgreSQL 17 and 18')
 
 # the compiler cache: installed, on PATH, kept by pg, OS, architecture, compiler and sources (the key is made by a step), restored from the newest cache of the branch or of main, and saved by the first job to finish
-pg = doc['jobs']['postgresql']['steps']
+pg = doc['jobs']['build']['steps']
 inst = next(s for s in pg if str(s.get('name', '')).startswith('Install PostgreSQL'))
-keyer = step('postgresql', 'name', 'Key of the compiler cache')
-cache = step('postgresql', 'name', 'Cache the compiler')
-keep = step('postgresql', 'name', 'Keep the compiler cache')
+keyer = step('build', 'name', 'Key of the compiler cache')
+cache = step('build', 'name', 'Cache the compiler')
+keep = step('build', 'name', 'Keep the compiler cache')
 need(' ccache ' in inst['run'], 'the compiler cache is not installed with PostgreSQL')
 need('/usr/lib/ccache >> "$GITHUB_PATH"' in inst['run'], 'the ccache wrappers are not put on PATH')
 need(keyer and all(part in keyer['run'] for part in ('matrix.pg', 'RUNNER_OS', 'RUNNER_ARCH', 'gcc', "hashFiles('src/**'")), 'the key of the compiler cache is not made of the PostgreSQL major, the OS, the architecture, the compiler and the sources')

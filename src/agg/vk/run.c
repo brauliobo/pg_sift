@@ -1,182 +1,622 @@
 /*
- * agg/vk/run.c - the submission of a batch
- * The wait for a submission, the command buffer of a batch (copies, the kernel, the readback) and its run.
+ * agg/vk/run.c - the run of a job: the granules in batches through two slots, so that the staging and the copy of one batch (on the
+ * transfer queue when the device has one of its own) overlap the decode and the aggregation of the one before (on the compute queue);
+ * the waits, cut in slices that call the interrupt; the finish (the compaction of the hash table, the read back); the top N in two passes.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include "agg/vk/int.h"
+#include "agg/vk/job.h"
 
 #ifdef SIFT_VULKAN
 
-bool
-settle(SiftVk *vk)
+typedef struct RunCtx
 {
-	double		t0;
+	SiftVk	   *vk;
+	const SiftVkJob *job;
+	Plan		plan;
+	void		(*interrupt) (void);
+	SiftVkResult *res;
+	Batch		bt[NSLOT];
+} RunCtx;
 
-	if (!vk->inflight)
-		return !vk->lost;
-	t0 = now_ms();
+bool
+wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void))
+{
+	double		t0 = now_ms();
+	VkResult	r;
+
+	if (!s->busy)
+		return true;
 	for (;;)
 	{
-		VkResult	r = vk->vkWaitForFences(vk->dev, 1, &vk->fence, VK_TRUE, WAIT_SLICE_NS);
-
+		r = vk->vkWaitForFences(vk->dev, 1, &s->fence, VK_TRUE, WAIT_SLICE_NS);
 		if (r == VK_SUCCESS)
+			break;
+		if (r == VK_TIMEOUT)
 		{
-			vk->inflight = false;
-			return true;
+			if (interrupt)
+				interrupt();
+			if (now_ms() - t0 > WAIT_TOTAL_MS)
+			{
+				snprintf(vk->err, sizeof(vk->err), "a submission did not finish in %d ms", WAIT_TOTAL_MS);
+				vk->usable = false;
+				return false;
+			}
+			continue;
 		}
-		if (r != VK_TIMEOUT)
-		{
-			fail(vk, "vkWaitForFences", r);
-			vk->lost = true;
-			return false;
-		}
-		if (now_ms() - t0 > WAIT_TOTAL_MS)
-		{
-			snprintf(vk->err, sizeof(vk->err), "a submission did not finish in %d ms", WAIT_TOTAL_MS);
-			vk->lost = true;
-			return false;
-		}
+		s->busy = false;
+		vk->inflight = vk->slot[0].busy || vk->slot[1].busy;
+		return fail(vk, "vkWaitForFences", r);
 	}
-}
-
-static void
-barrier(SiftVk *vk, VkPipelineStageFlags src, VkAccessFlags sa, VkPipelineStageFlags dst, VkAccessFlags da)
-{
-	VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = sa, .dstAccessMask = da};
-
-	vk->vkCmdPipelineBarrier(vk->cb, src, dst, 0, 1, &mb, 0, NULL, 0, NULL);
-}
-
-static void
-stamp(SiftVk *vk, int slot, VkPipelineStageFlagBits stage)
-{
-	if (vk->stamps)
-		vk->vkCmdWriteTimestamp(vk->cb, stage, vk->qp, (uint32_t) slot);
-}
-
-static bool
-record(SiftVk *vk, const SiftVkJob *job, uint64_t desc_bytes, uint64_t wg_bytes, uint64_t res_bytes)
-{
-	VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-	uint32_t	pc[3] = {job->npred, job->nsum, job->groups};
-	VkBufferCopy r;
-
-	CK(vk->vkResetCommandBuffer(vk->cb, 0));
-	CK(vk->vkBeginCommandBuffer(vk->cb, &bi));
-	if (vk->stamps)
-		vk->vkCmdResetQueryPool(vk->cb, vk->qp, 0, 4);
-	stamp(vk, 0, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-	for (uint32_t i = 0; i < vk->ncopy; i++)
-	{
-		r = (VkBufferCopy) {vk->copy[i].src, vk->copy[i].dst, vk->copy[i].size};
-		vk->vkCmdCopyBuffer(vk->cb, vk->stage.b, vk->arena.b, 1, &r);
-	}
-	r = (VkBufferCopy) {UP_CAP, 0, desc_bytes};
-	vk->vkCmdCopyBuffer(vk->cb, vk->stage.b, vk->cdesc.b, 1, &r);
-	r = (VkBufferCopy) {UP_CAP + DESC_CAP, 0, wg_bytes};
-	vk->vkCmdCopyBuffer(vk->cb, vk->stage.b, vk->cwg.b, 1, &r);
-	barrier(vk, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-	stamp(vk, 1, VK_PIPELINE_STAGE_TRANSFER_BIT);
-	vk->vkCmdBindPipeline(vk->cb, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pipe);
-	vk->vkCmdBindDescriptorSets(vk->cb, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pl, 0, 1, &vk->ds, 0, NULL);
-	vk->vkCmdPushConstants(vk->cb, vk->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), pc);
-	vk->vkCmdDispatch(vk->cb, job->nwg, 1, 1);
-	barrier(vk, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-	stamp(vk, 2, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	r = (VkBufferCopy) {0, 0, res_bytes};
-	vk->vkCmdCopyBuffer(vk->cb, vk->rdev.b, vk->rhost.b, 1, &r);
-	barrier(vk, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
-	stamp(vk, 3, VK_PIPELINE_STAGE_TRANSFER_BIT);
-	CK(vk->vkEndCommandBuffer(vk->cb));
+	vk->vkResetFences(vk->dev, 1, &s->fence);
+	s->busy = false;
+	vk->inflight = vk->slot[0].busy || vk->slot[1].busy;
 	return true;
 }
 
-static void
-read_times(SiftVk *vk, SiftVkTimes *t)
+bool
+settle_all(SiftVk *vk)
 {
+	bool		ok = true;
+
+	for (int k = 0; k < NSLOT; k++)
+		ok = wait_slot(vk, &vk->slot[k], NULL) && ok;
+	return ok;
+}
+
+static void
+barrier(SiftVk *vk, VkCommandBuffer cb, VkPipelineStageFlags src, VkAccessFlags sa, VkPipelineStageFlags dst, VkAccessFlags da)
+{
+	VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = sa, .dstAccessMask = da};
+
+	vk->vkCmdPipelineBarrier(cb, src, dst, 0, 1, &mb, 0, NULL, 0, NULL);
+}
+
+#define CS VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+#define TR VK_PIPELINE_STAGE_TRANSFER_BIT
+#define SRW (VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT)
+
+static void
+dispatch(SiftVk *vk, VkCommandBuffer cb, VkPipeline pipe, uint32_t x, const uint32_t pc[4])
+{
+	vk->vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+	vk->vkCmdPushConstants(cb, vk->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+	vk->vkCmdDispatch(cb, x, 1, 1);
+}
+
+/* the init image of the result: no error, the accumulators of every group as a new one has them */
+static void
+write_init(RunCtx *rc)
+{
+	int64_t    *w = rc->vk->rinit.map;
+	const Plan *p = &rc->plan;
+	const SiftVkJob *job = rc->job;
+
+	memset(w, 0, (SIFT_VK_RES_ACC_OFF + p->acc_words) * 8);
+	w[SIFT_VK_RES_ERR] = INT64_MAX;
+	if (job->mode != SIFT_VK_UNGROUPED && job->mode != SIFT_VK_DENSE)
+		return;
+	for (uint32_t g = 0; g < (job->mode == SIFT_VK_DENSE ? p->groups : 1); g++)
+	{
+		int64_t    *a = w + SIFT_VK_RES_ACC_OFF + (size_t) g * (1 + 3 * job->naggs);
+
+		for (uint32_t i = 0; i < job->naggs; i++)
+		{
+			uint8_t		k = job->agg[i].kind;
+
+			a[1 + 3 * i] = (k == SIFT_VK_AK_MIN || k == SIFT_VK_AK_MIN_F) ? INT64_MAX : (k == SIFT_VK_AK_MAX || k == SIFT_VK_AK_MAX_F) ? INT64_MIN : 0;
+		}
+	}
+}
+
+static bool
+submit(SiftVk *vk, Slot *s, bool split)
+{
+	VkPipelineStageFlags wait = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkSubmitInfo ts = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &s->tcb, .signalSemaphoreCount = 1, .pSignalSemaphores = &s->sem};
+	VkSubmitInfo cs = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &s->ccb};
+	sigset_t	old;
+	VkResult	r;
+
+	if (split)
+	{
+		cs.waitSemaphoreCount = 1;
+		cs.pWaitSemaphores = &s->sem;
+		cs.pWaitDstStageMask = &wait;
+	}
+	sigs_block(&old);
+	r = split ? vk->vkQueueSubmit(vk->tq, 1, &ts, VK_NULL_HANDLE) : VK_SUCCESS;
+	if (r == VK_SUCCESS)
+		r = vk->vkQueueSubmit(vk->cq, 1, &cs, s->fence);
+	sigs_restore(&old);
+	if (r != VK_SUCCESS)
+		return fail(vk, "vkQueueSubmit", r);
+	s->busy = true;
+	vk->inflight = true;
+	return true;
+}
+
+/* the commands of a batch: the staged bytes to the device, the unwrap and the decode of the chunks missing from the cache, the kernel;
+ * the first one starts from the init image, the last one ends with the finish of the job */
+static bool
+record_batch(RunCtx *rc, Batch *b, bool first, bool last)
+{
+	SiftVk	   *vk = rc->vk;
+	const SiftVkJob *job = rc->job;
+	const Plan *p = &rc->plan;
+	Slot	   *s = b->s;
+	VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+	uint32_t	scr_u64 = (uint32_t) ((UP_CAP + UNW_CAP) / 8),
+				scr_stride = (uint32_t) (SIFT_VK_DEC_SCR_BYTES / 8),
+				ndec = b->njobs < DEC_WGS ? b->njobs : DEC_WGS;
+	uint32_t	pc_dec[4] = {b->njobs, scr_u64, scr_stride, 0},
+				pc_agg[4] = {0, 0, 0, 0};
+	uint32_t	nagg = b->ng < AGG_WGS_MAX ? b->ng : AGG_WGS_MAX;
+	VkBufferCopy cp;
+	VkCommandBuffer cb = s->ccb;
+
+	if (vk->split_queues)
+	{
+		CK(vk->vkResetCommandBuffer(s->tcb, 0));
+		CK(vk->vkBeginCommandBuffer(s->tcb, &bi));
+		if (s->up)
+		{
+			cp = (VkBufferCopy) {0, 0, (s->up + 7) & ~7ull};
+			vk->vkCmdCopyBuffer(s->tcb, s->stage.b, s->work.b, 1, &cp);
+		}
+		CK(vk->vkEndCommandBuffer(s->tcb));
+	}
+	CK(vk->vkResetCommandBuffer(cb, 0));
+	CK(vk->vkBeginCommandBuffer(cb, &bi));
+	if (s->stamps)
+		vk->vkCmdResetQueryPool(cb, s->qp, 0, 4);
+	if (!vk->split_queues && s->up)
+	{
+		cp = (VkBufferCopy) {0, 0, (s->up + 7) & ~7ull};
+		vk->vkCmdCopyBuffer(cb, s->stage.b, s->work.b, 1, &cp);
+	}
+	if (first)
+	{
+		uint64_t	n = (SIFT_VK_RES_ACC_OFF + (uint64_t) p->acc_words) * 8;
+
+		cp = (VkBufferCopy) {0, 0, n};
+		vk->vkCmdCopyBuffer(cb, vk->rinit.b, vk->res.b, 1, &cp);
+		if (job->mode == SIFT_VK_HASH)
+			vk->vkCmdFillBuffer(cb, vk->ht.b, 0, p->ht_bytes, 0);
+		barrier(vk, cb, TR, VK_ACCESS_TRANSFER_WRITE_BIT, TR, VK_ACCESS_TRANSFER_WRITE_BIT);
+	}
+	else
+		barrier(vk, cb, CS | TR, SRW | VK_ACCESS_TRANSFER_READ_BIT, TR, VK_ACCESS_TRANSFER_WRITE_BIT);
+	if (b->njobs)
+		vk->vkCmdFillBuffer(cb, vk->res.b, (uint64_t) SIFT_VK_RES_DEC_OFF * 8, (uint64_t) b->njobs * 8, 0);
+	if (b->tab_bytes)
+	{
+		cp = (VkBufferCopy) {b->tab_src, b->tab_dst, b->tab_bytes};
+		vk->vkCmdCopyBuffer(cb, b->tab_buf, s->ctl.b, 1, &cp);
+	}
+	barrier(vk, cb, TR, VK_ACCESS_TRANSFER_WRITE_BIT, CS, SRW);
+	if (s->stamps)
+		vk->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s->qp, 0);
+	vk->vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pl, 0, 1, &s->ds, 0, NULL);
+	if (b->njobs)
+	{
+		dispatch(vk, cb, vk->pipe[PL_LZ4], b->njobs, pc_dec);
+		barrier(vk, cb, CS, SRW, CS, SRW);
+		dispatch(vk, cb, vk->pipe[PL_DECODE], ndec, pc_dec);
+		barrier(vk, cb, CS, SRW, CS, SRW);
+	}
+	if (s->stamps)
+		vk->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s->qp, 1);
+	dispatch(vk, cb, p->kern, nagg, pc_agg);
+	if (s->stamps)
+		vk->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s->qp, 2);
+	barrier(vk, cb, CS, SRW, CS | TR, SRW | VK_ACCESS_TRANSFER_READ_BIT);
+	if (b->njobs)
+	{
+		cp = (VkBufferCopy) {(uint64_t) SIFT_VK_RES_DEC_OFF * 8, 0, (uint64_t) b->njobs * 8};
+		vk->vkCmdCopyBuffer(cb, vk->res.b, s->rstat.b, 1, &cp);
+	}
+	if (last)
+	{
+		if (job->mode == SIFT_VK_HASH)
+		{
+			dispatch(vk, cb, vk->pipe[PL_COMPACT], (p->ht_mask + 256) / 256 < 1024 ? (p->ht_mask + 256) / 256 : 1024, pc_agg);
+			barrier(vk, cb, CS, SRW, TR, VK_ACCESS_TRANSFER_READ_BIT);
+		}
+		cp = (VkBufferCopy) {0, 0, 64};
+		vk->vkCmdCopyBuffer(cb, vk->res.b, vk->rhost.b, 1, &cp);
+		if (p->acc_words)
+		{
+			cp = (VkBufferCopy) {(uint64_t) SIFT_VK_RES_ACC_OFF * 8, 64, (uint64_t) p->acc_words * 8};
+			vk->vkCmdCopyBuffer(cb, vk->res.b, vk->rhost.b, 1, &cp);
+		}
+	}
+	if (s->stamps)
+		vk->vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, s->qp, 3);
+	CK(vk->vkEndCommandBuffer(cb));
+	return submit(vk, s, vk->split_queues);
+}
+
+/* after the fence of a batch: its statuses, its times */
+static bool
+finish_batch(RunCtx *rc, Batch *b)
+{
+	SiftVk	   *vk = rc->vk;
+	SiftVkTimes *t = &rc->res->times;
 	uint64_t	ts[4];
 
-	if (!vk->stamps || vk->vkGetQueryPoolResults(vk->dev, vk->qp, 0, 4, sizeof(ts), ts, 8, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
-		return;
-	t->upload_ms = (double) (ts[1] - ts[0]) * vk->props.limits.timestampPeriod / 1e6;
-	t->kernel_ms = (double) (ts[2] - ts[1]) * vk->props.limits.timestampPeriod / 1e6;
-	t->readback_ms = (double) (ts[3] - ts[2]) * vk->props.limits.timestampPeriod / 1e6;
+	vk->done_batch = b->id;
+	rc->res->chunks_resident += b->chunks_resident;
+	rc->res->chunks_uploaded += b->chunks_uploaded;
+	rc->res->bytes_uploaded += b->bytes_uploaded;
+	rc->res->bytes_lz4 += b->bytes_lz4;
+	rc->res->batches++;
+	t->stage_ms += b->stage_ms;
+	if (b->s->stamps && vk->vkGetQueryPoolResults(vk->dev, b->s->qp, 0, 4, sizeof(ts), ts, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
+	{
+		double		per = vk->props.limits.timestampPeriod / 1e6;
+
+		t->decode_ms += (double) (ts[1] - ts[0]) * per;
+		t->kernel_ms += (double) (ts[2] - ts[1]) * per;
+	}
+	return batch_check(vk, b);
+}
+
+static bool
+ensure_buffers(SiftVk *vk, const Plan *p)
+{
+	const VkBufferUsageFlags u = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	bool		rebind = false;
+
+	if (p->ht_bytes > vk->ht_cap)
+	{
+		buf_free(vk, &vk->ht);
+		if (!buf_new(vk, &vk->ht, p->ht_bytes, u, K_DEVICE))
+			return false;
+		vk->ht_cap = p->ht_bytes;
+		rebind = true;
+	}
+	if (p->out_bytes > vk->out_cap)
+	{
+		buf_free(vk, &vk->out);
+		if (!buf_new(vk, &vk->out, p->out_bytes, u, K_DEVICE))
+			return false;
+		vk->out_cap = p->out_bytes;
+		rebind = true;
+	}
+	if (p->out_bytes > vk->hout_cap)
+	{
+		buf_free(vk, &vk->hout);
+		if (!buf_new(vk, &vk->hout, p->out_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK))
+			return false;
+		vk->hout_cap = p->out_bytes;
+	}
+	return !rebind || bind_buffers(vk);
+}
+
+/* the job went over every granule: its descriptor table is kept for the next job with its key (the device having no room for it is no failure of the job), or (tests) the one it used is checked */
+static SiftVkStatus
+publish_tab(RunCtx *rc)
+{
+	SiftVk	   *vk = rc->vk;
+	Plan	   *p = &rc->plan;
+
+	if (p->tab && vk->verify_tabs && !tab_verify(vk, rc->job, p->tab))
+		return SIFT_VK_FAIL;
+	if (p->tab_host && vk->evict_gen == p->gen0 && !tab_store(vk, rc->job, p->tab_host, p->gen0) && (vk->lost || !vk->usable))
+		return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+	return SIFT_VK_OK;
+}
+
+/* the granules [g0, g1) of the job through the two slots; the result words are in rhost when this returns true */
+static SiftVkStatus
+run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
+{
+	SiftVk	   *vk = rc->vk;
+	int			k = 0;
+	uint32_t	g = g0;
+	bool		first = true;
+
+	if (!ensure_buffers(vk, &rc->plan))
+		return SIFT_VK_FAIL;
+	write_init(rc);
+	while (g < g1)
+	{
+		Slot	   *s = &vk->slot[k];
+		Batch	   *b = &rc->bt[k];
+		BuildStatus bs;
+		bool		last;
+
+		if (s->busy)
+		{
+			if (!wait_slot(vk, s, rc->interrupt))
+				return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+			if (!finish_batch(rc, b))
+				return SIFT_VK_DECODE;
+		}
+		vk->batch++;
+		bs = batch_build(vk, s, rc->job, &rc->plan, g, g1, b);
+		if (bs == BUILD_NO_ROOM && vk->slot[k ^ 1].busy)
+		{
+			if (!wait_slot(vk, &vk->slot[k ^ 1], rc->interrupt))
+				return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+			if (!finish_batch(rc, &rc->bt[k ^ 1]))
+				return SIFT_VK_DECODE;
+			bs = batch_build(vk, s, rc->job, &rc->plan, g, g1, b);
+		}
+		if (bs != BUILD_OK)
+			return SIFT_VK_FAIL;
+		last = b->g0 + b->ng >= g1;
+		if (!record_batch(rc, b, first, last))
+		{
+			batch_abandon(vk, b);
+			return vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
+		}
+		first = false;
+		g += b->ng;
+		k ^= 1;
+	}
+	for (int i = 0; i < NSLOT; i++)
+	{
+		Slot	   *s = &vk->slot[k];
+
+		if (s->busy)
+		{
+			if (!wait_slot(vk, s, rc->interrupt))
+				return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+			if (!finish_batch(rc, &rc->bt[k]))
+				return SIFT_VK_DECODE;
+		}
+		k ^= 1;
+	}
+	return g0 == 0 && g1 == rc->job->ngran ? publish_tab(rc) : SIFT_VK_OK;
+}
+
+/* the second read back: the groups or candidates the first one counted, from the device buffer of the job */
+static bool
+read_out(RunCtx *rc, uint64_t bytes, void (*interrupt) (void))
+{
+	SiftVk	   *vk = rc->vk;
+	Slot	   *s = &vk->slot[0];
+	VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+	VkSubmitInfo cs = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &s->ccb};
+	VkBufferCopy cp = {0, 0, (bytes + 7) & ~7ull};
+	sigset_t	old;
+	VkResult	r;
+
+	CK(vk->vkResetCommandBuffer(s->ccb, 0));
+	CK(vk->vkBeginCommandBuffer(s->ccb, &bi));
+	vk->vkCmdCopyBuffer(s->ccb, vk->out.b, vk->hout.b, 1, &cp);
+	CK(vk->vkEndCommandBuffer(s->ccb));
+	sigs_block(&old);
+	r = vk->vkQueueSubmit(vk->cq, 1, &cs, s->fence);
+	sigs_restore(&old);
+	if (r != VK_SUCCESS)
+		return fail(vk, "vkQueueSubmit", r);
+	s->busy = true;
+	vk->inflight = true;
+	return wait_slot(vk, s, interrupt);
+}
+
+typedef struct Cand
+{
+	int64_t		key;
+	uint64_t	tag;
+} Cand;
+
+static int g_desc, g_nulls_first;
+
+static int
+cand_cmp(const void *pa, const void *pb)
+{
+	const Cand *a = pa,
+			   *b = pb;
+	bool		na = (a->tag >> 62) & 1,
+				nb = (b->tag >> 62) & 1;
+
+	if (na != nb)
+		return (na == (bool) g_nulls_first) ? -1 : 1;
+	if (!na && a->key != b->key)
+		return (a->key > b->key) == (bool) g_desc ? -1 : 1;
+	return a->tag < b->tag ? -1 : a->tag > b->tag;
+}
+
+static SiftVkStatus
+finish_result(RunCtx *rc, SiftVkResult *res)
+{
+	SiftVk	   *vk = rc->vk;
+	const SiftVkJob *job = rc->job;
+	const Plan *p = &rc->plan;
+	const int64_t *h = vk->rhost.map;
+	uint64_t	n;
+
+	if (h[SIFT_VK_RES_ERR] != INT64_MAX)
+	{
+		uint64_t	e = (uint64_t) h[SIFT_VK_RES_ERR];
+
+		res->has_err = true;
+		res->err_gran = (uint32_t) (e >> 40);
+		res->err_row = (uint32_t) ((e >> 24) & 0xFFFF);
+		res->err_op = (uint32_t) ((e >> 16) & 0xFF);
+		res->err_code = (uint32_t) (e & 0xFFFF);
+		return SIFT_VK_PROG_ERROR;
+	}
+	if (job->mode == SIFT_VK_UNGROUPED || job->mode == SIFT_VK_DENSE)
+	{
+		res->acc = h + 8;
+		res->acc_words = p->acc_words;
+		res->ngroups = job->mode == SIFT_VK_DENSE ? p->groups : 1;
+		return SIFT_VK_OK;
+	}
+	if (job->mode == SIFT_VK_HASH)
+	{
+		n = (uint64_t) h[SIFT_VK_RES_NCOMP];
+		if (h[SIFT_VK_RES_OVF] != 0 || n > p->ht_maxload + 1024)
+			return SIFT_VK_OVERFLOW;
+		res->rec_words = p->stride - 1;
+		res->ngroups = (uint32_t) n;
+		if (n && !read_out(rc, n * (p->stride - 1) * 8, rc->interrupt))
+			return SIFT_VK_FAIL;
+		res->acc = vk->hout.map;
+		res->acc_words = (uint32_t) (n * (p->stride - 1));
+		return SIFT_VK_OK;
+	}
+	n = (uint64_t) h[SIFT_VK_RES_NCAND];
+	if (n > p->cand_cap)
+		return SIFT_VK_OVERFLOW;
+	if (n && !read_out(rc, n * 16, rc->interrupt))
+		return SIFT_VK_FAIL;
+	res->cand = vk->hout.map;
+	res->ncand = (uint32_t) n;
+	return SIFT_VK_OK;
+}
+
+static bool
+worse(int64_t a, int64_t b)
+{
+	return g_desc ? a < b : a > b;
+}
+
+/* the key of the k-th best candidate that has a key, false when there are fewer: a heap of the k best, the worst of them on top */
+static bool
+kth_key(const Cand *c, uint32_t n, uint32_t k, int64_t *out)
+{
+	int64_t		heap[256];
+	uint32_t	m = 0;
+
+	if (k == 0 || k > 256)
+		return false;
+	for (uint32_t i = 0; i < n; i++)
+	{
+		int64_t		v = c[i].key;
+		uint32_t	at;
+
+		if ((c[i].tag >> 62) & 1)
+			continue;
+		if (m < k)
+		{
+			for (at = m++; at > 0 && worse(v, heap[(at - 1) / 2]); at = (at - 1) / 2)
+				heap[at] = heap[(at - 1) / 2];
+			heap[at] = v;
+		}
+		else if (worse(heap[0], v))
+		{
+			for (at = 0;;)
+			{
+				uint32_t	l = 2 * at + 1,
+							w = l + 1 < k && worse(heap[l + 1], heap[l]) ? l + 1 : l;
+
+				if (l >= k || !worse(heap[w], v))
+					break;
+				heap[at] = heap[w];
+				at = w;
+			}
+			heap[at] = v;
+		}
+	}
+	if (m < k)
+		return false;
+	*out = heap[0];
+	return true;
+}
+
+static SiftVkStatus
+run_topn(RunCtx *rc, SiftVkResult *res)
+{
+	const SiftVkJob *job = rc->job;
+	uint32_t	sample = job->ngran < 8 ? job->ngran : 8;
+	SiftVkStatus st;
+	Cand	   *c;
+	uint32_t	n;
+
+	g_desc = job->topn_desc;
+	g_nulls_first = job->topn_nulls;
+	if (sample < job->ngran)
+	{
+		st = run_scan(rc, 0, sample);
+		if (st == SIFT_VK_OK)
+			st = finish_result(rc, res);
+		if (st != SIFT_VK_OK)
+			return st;
+		c = (Cand *) res->cand;
+		n = res->ncand;
+		if (!job->topn_nulls && kth_key(c, n, job->topn_k, &rc->plan.theta))
+			rc->plan.have_theta = true;
+		memset(&res->times, 0, sizeof(res->times));
+		res->chunks_resident = res->chunks_uploaded = res->batches = 0;
+		res->bytes_uploaded = res->bytes_lz4 = 0;
+	}
+	st = run_scan(rc, 0, job->ngran);
+	if (st == SIFT_VK_OK)
+		st = finish_result(rc, res);
+	if (st != SIFT_VK_OK)
+		return st;
+	c = (Cand *) res->cand;
+	qsort(c, res->ncand, sizeof(Cand), cand_cmp);
+	if (res->ncand > job->topn_k)
+		res->ncand = job->topn_k;
+	return SIFT_VK_OK;
 }
 
 SiftVkStatus
-sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), const uint32_t **results, SiftVkTimes *times)
+sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkResult *res)
 {
-	uint32_t	nslots = job->npred + 1 + job->nsum;
-	uint64_t	desc_bytes = (uint64_t) job->nunits * nslots * 16,
-				wg_bytes = (uint64_t) job->nwg * 16,
-				res_bytes = (uint64_t) job->nwg * (job->groups ? job->groups : 1) * (1 + 2 * job->nsum) * 4;
-	VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
-	sigset_t	old;
-	VkResult	r;
-	double		t0,
-				t1;
+	RunCtx	   *rc;
+	SiftVkStatus st;
+	double		t0 = now_ms();
 
-	if (times)
-		memset(times, 0, sizeof(*times));
-	if (vk->lost || !settle(vk))
-		return vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
-	if (job->nwg == 0 || desc_bytes > DESC_CAP || wg_bytes > WG_CAP || res_bytes > RES_CAP || job->nwg > vk->props.limits.maxComputeWorkGroupCount[0])
+	memset(res, 0, sizeof(*res));
+	if (!vk || vk->lost || !vk->usable)
+		return vk && vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
+	if (vk->inflight && !settle_all(vk))
+		return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+	rc = calloc(1, sizeof(*rc));
+	if (!rc)
+		return SIFT_VK_FAIL;
+	rc->vk = vk;
+	rc->job = job;
+	rc->interrupt = interrupt;
+	rc->res = res;
+	if (!plan_job(vk, job, &rc->plan))
 	{
-		snprintf(vk->err, sizeof(vk->err), "a job of %u units and %u workgroups does not fit", job->nunits, job->nwg);
+		plan_free(&rc->plan);
+		free(rc);
 		return SIFT_VK_FAIL;
 	}
-	memcpy((char *) vk->stage.map + UP_CAP, job->desc, desc_bytes);
-	memcpy((char *) vk->stage.map + UP_CAP + DESC_CAP, job->wg, wg_bytes);
-	if (!record(vk, job, desc_bytes, wg_bytes, res_bytes))
-		return vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
-	si.commandBufferCount = 1;
-	si.pCommandBuffers = &vk->cb;
-	t0 = now_ms();
-	sigs_block(&old);
-	r = vk->vkResetFences(vk->dev, 1, &vk->fence);
-	if (r == VK_SUCCESS)
-		r = vk->vkQueueSubmit(vk->q, 1, &si, vk->fence);
-	sigs_restore(&old);
-	if (r != VK_SUCCESS)
+	if (job->mode == SIFT_VK_TOPN)
+		st = run_topn(rc, res);
+	else
 	{
-		fail(vk, "vkQueueSubmit", r);
-		return vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
+		st = run_scan(rc, 0, job->ngran);
+		if (st == SIFT_VK_OK)
+			st = finish_result(rc, res);
 	}
-	vk->inflight = true;
-	for (;;)
+	if (st == SIFT_VK_OK && vk->test_lost)
 	{
-		r = vk->vkWaitForFences(vk->dev, 1, &vk->fence, VK_TRUE, WAIT_SLICE_NS);
-		if (r == VK_SUCCESS)
-			break;
-		if (r != VK_TIMEOUT)
-		{
-			fail(vk, "vkWaitForFences", r);
-			vk->lost = true;
-			return SIFT_VK_LOST;
-		}
-		if (interrupt)
-			interrupt();
-		if (now_ms() - t0 > WAIT_TOTAL_MS)
-		{
-			snprintf(vk->err, sizeof(vk->err), "the submission did not finish in %d ms", WAIT_TOTAL_MS);
-			vk->lost = true;
-			return SIFT_VK_TIMEOUT;
-		}
+		vk->lost = true;
+		snprintf(vk->err, sizeof(vk->err), "the device was lost (injected)");
+		st = SIFT_VK_LOST;
 	}
-	t1 = now_ms();
-	vk->inflight = false;
-	vk->npend = vk->ncopy = 0;
-	vk->up = 0;
-	vk->batch++;
-	if (times)
+	if (st == SIFT_VK_OK && vk->test_timeout)
 	{
-		read_times(vk, times);
-		times->wall_ms = t1 - t0;
+		vk->usable = false;
+		snprintf(vk->err, sizeof(vk->err), "a submission did not finish in time (injected)");
+		st = SIFT_VK_TIMEOUT;
 	}
-	*results = vk->rhost.map;
-	return SIFT_VK_OK;
+	if (st != SIFT_VK_OK && st != SIFT_VK_PROG_ERROR)
+	{
+		res->acc = NULL;
+		res->cand = NULL;
+	}
+	res->fast = rc->plan.fast;
+	res->tab_hit = rc->plan.tab != NULL;
+	plan_free(&rc->plan);
+	res->times.compile_ms = rc->plan.compile_ms;
+	res->times.wall_ms = now_ms() - t0;
+	free(rc);
+	return st;
 }
 
 #endif							/* SIFT_VULKAN */

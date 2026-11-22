@@ -2,7 +2,7 @@
 """The benchmark section of the README from the results of `bench cases` (and `bench generic` for the other engines): one case for each statement class of bench/classes.tsv, its
 absolute figures with the factor beside them, a chart of the time against the rows for every class, and the cases where the baseline is ahead.
 
-    python3 -I glance.py --results bench/results [--generic FILE] [--out bench/out]
+    python3 -I glance.py --results docs/results [--generic FILE] [--out bench/out]
 
 Writes OUT/README-glance.md and OUT/img/at-a-glance.svg, slope.svg, cold-read.svg (self-contained: light and dark by prefers-color-scheme, a title and a description, no date and no host).
 Results: every cases*.tsv of the directory whose header says `# orders: N` is the run at N rows; a case in several files at one size takes the last. The representative of a class is the

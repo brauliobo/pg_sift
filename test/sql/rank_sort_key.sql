@@ -33,7 +33,9 @@ INSERT INTO items SELECT i, CASE WHEN i % 5 < 2 THEN repeat('honey ', 1 + i % 3)
 	timestamp '2024-01-01' + (i * 7919 % 10007) * interval '1 minute', repeat('p', 60) FROM generate_series(1, 20000) i;
 CREATE TABLE group_items (group_id int, item_id int) WITH (autovacuum_enabled = off);
 INSERT INTO group_items SELECT v.g, i FROM generate_series(1, 20000) i, LATERAL (VALUES (1, i % 10 = 0), (2, i % 2 = 0)) v(g, owns) WHERE v.owns;
+SET client_min_messages = warning;
 CREATE INDEX items_sift ON items USING sift (name);
+RESET client_min_messages;
 CREATE INDEX group_items_group ON group_items (group_id, item_id);
 ANALYZE items;
 ANALYZE group_items;

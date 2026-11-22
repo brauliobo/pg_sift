@@ -46,5 +46,7 @@ sql "SELECT sift_merge('news', 'full')" >/dev/null
 check "after a sync and a merge" 2,4 "$(idx '"power plant"' news)"
 "$SRV" restart
 check "after a restart" 2,4 "$(idx '"power plant"' news)"
+SIFT_SIMD=scalar "$SRV" restart
+check "after a restart with SIFT_SIMD=scalar" 2,4 "$(idx '"power plant"' news)"
 sql "CALL sift_detach('news')" >/dev/null
 finish

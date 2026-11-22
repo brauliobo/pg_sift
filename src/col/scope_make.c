@@ -34,10 +34,12 @@
 #ifdef SIFT_TESTING
 #include "bm25/build.h"
 #endif
+#include "core/meta_peek.h"
 #include "col/am.h"
-#include "col/build.h"
+#include "col/v1/build.h"
 #include "col/scope.h"
 #include "core/restrict.h"
+#include "core/ring.h"
 
 #define JOURNAL_LABEL	"sift_journal"
 #define JOURNAL_COMMENT	"Journal of the pairs of \"%s\" (%s, %s), made by CREATE INDEX of a scope index and managed by sift: it records the pairs that change, and goes with the last scope index that uses it."
@@ -57,6 +59,33 @@ bool
 sift_scope_journal_pending(Oid index)
 {
 	return list_member_oid(pending, index);
+}
+
+#define MANAGED_MEMO_N 8
+
+static struct ManagedMemo
+{
+	Oid			index;
+	uint64		gen;
+	bool		managed;
+} managed_memo[MANAGED_MEMO_N];
+static SiftRing managed_memo_ring;
+
+/* Is the index a journal that CREATE INDEX of a scope index made (its comment says so): a key log, no column source of an aggregate. Read from the catalog once for each invalidation */
+bool
+sift_scope_journal_managed(Oid index)
+{
+	const uint64 gen = SharedInvalidMessageCounter;
+	char	   *comment;
+	struct ManagedMemo *m;
+
+	for (int i = 0; i < MANAGED_MEMO_N; i++)
+		if (managed_memo[i].index == index && managed_memo[i].gen == gen)
+			return managed_memo[i].managed;
+	comment = GetComment(index, RelationRelationId, 0);
+	m = &managed_memo[SIFT_RING_SLOT(managed_memo_ring, MANAGED_MEMO_N)];
+	*m = (struct ManagedMemo) {index, gen, comment != NULL && strncmp(comment, JOURNAL_MARK, strlen(JOURNAL_MARK)) == 0};
+	return m->managed;
 }
 
 static void
@@ -131,6 +160,7 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 				 errdetail("The writers of \"%s\" wait until the build of this index ends, as for CREATE INDEX on it, for as long as it takes to read the relation. The index goes with the last scope index that uses it.", RelationGetRelationName(rel)),
 				 errhint("To build it without blocking the writers, name it, place it or keep it, make it first: %s.", journal_statement(rel, mname, kname, true))));
 	sift_col_journal_empty = make == SIFT_JOURNAL_EMPTY;
+	sift_new_format_journal = true;
 	PG_TRY();
 	{
 		addr = sift_create_index(relid, stmt);
@@ -138,6 +168,7 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 	PG_FINALLY();
 	{
 		sift_col_journal_empty = false;
+		sift_new_format_journal = false;
 	}
 	PG_END_TRY();
 	CommandCounterIncrement();

@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The plan of the quick and the full tier: which jobs are queued, in the order of the pool, and which run after it.
 # Edit here to add a job; --plan prints it and the selftest checks it. Sourced by scripts/ci.sh; not a script of its own.
 # sessions of a differential test: its parallel stages start 3 workers each and a cluster allows 8, the mutants run on the reference only
@@ -6,10 +7,14 @@ DIFF_JOBS=$(( LANES > 1 ? 2 : 1 )) MUTANT_JOBS=$(( LANES > 1 ? 4 : 1 ))
 SLOW_PERL="001_crash 004_wal_consistency"
 SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_crash store_concurrency col_wbuf_crash"
 # the memory slope gate of the quick tier in SLOPE_SHARDS jobs, each the cases whose crc32 of the name falls in its shard (the slope of a case does not depend on the others; the full tiers run the gate whole)
-SLOPE_SHARDS=3
-# the fault matrix of the quick tier in FAULT_SLICES jobs, each a balanced half of the operations (SIFT_FAULT_SLICE: the rows of an operation stay together)
-FAULT_SLICES=2
-fault_slices() { local k; for (( k = 1; k <= FAULT_SLICES; k++ )); do job "tap-shell-fault_matrix-$k" tap-shell 0 env "SIFT_FAULT_SLICE=$k/$FAULT_SLICES" "$S/pgtest.sh" tap fault_matrix; done; }
+SLOPE_SHARDS=2
+# the fault matrix of the quick tier is a smoke: the quick rows of the operations that publish the most (FAULT_SMOKE, a regex of the rows of test/t/fault_matrix.tsv) and the standby
+# matrix of two of them. The whole matrix, on every operation and with a standby on every family, runs in the full tier (the nightly run)
+FAULT_SMOKE='^(col_build|col_promote|vacuum|tbl_seal)\.' FAULT_SMOKE_STANDBY='^(col_promote|vacuum)$'
+fault_smoke() {
+	job tap-shell-fault_matrix-smoke tap-shell 0 env "SIFT_FAULT_ONLY=$FAULT_SMOKE" "$S/pgtest.sh" tap fault_matrix
+	job tap-shell-fault_matrix_standby-smoke tap-shell 0 env "SIFT_FAULT_ONLY=$FAULT_SMOKE_STANDBY" "$S/pgtest.sh" tap fault_matrix_standby
+}
 slope_shards() { local k; for (( k = 1; k <= SLOPE_SHARDS; k++ )); do job "tap-shell-mem_slope-$k" tap-shell 0 env "MEM_SLOPE_SHARD=$k/$SLOPE_SHARDS" "$S/pgtest.sh" tap mem_slope; done; }
 # shellcheck disable=SC2046,SC2086  # the names are words
 if [[ $MODE == full ]]; then
@@ -68,6 +73,13 @@ if [[ $MODE == full ]]; then
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	# the second pass of each lane at 250000 rows, the other size whose bands are recorded (half a minute each); the quick tier of the push runs the 30000 rows only
+	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
+		job plan-gate-250k plan-gate 1 "$S/plangate.sh" --runs 0 --rows 250000
+		job plan-gate-tuned-250k plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0 --rows 250000
+		job plan-gate-table-250k plan-gate-table 1 "$S/plangate.sh" --table --runs 0 --rows 250000
+		job plan-gate-table-tuned-250k plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0 --rows 250000
+	fi
 	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
@@ -109,6 +121,9 @@ if [[ $MODE == full ]]; then
 			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 		done
+		# every string column in a shared value store (docs/COL-VSTORE.md), a standing gate of the nightly run; the setting reaches the sessions through PGOPTIONS
+		job difftest-fuzz-vstore difftest-fuzz 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 40 --rows 3000 --leader-on
+		job difftest-txn-vstore difftest-txn 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6 --stop-after 2
 	fi
 	once_on_18 && job fuzz fuzz 1 "$S/fuzz.sh" --scale "$(lean_or_deep 4 10)"
 	once_on_18 && flavor_job hardened hardened "$S/hardened.sh"
@@ -116,11 +131,11 @@ if [[ $MODE == full ]]; then
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
-	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
+	installcheck_batches $(rest sql .sql $SLOW_REGRESS)
 	job isolation isolation 1 "$S/isolation.sh"
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate
-	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
-	job tools-build tools-build 0 "$S/check-tools-build.sh"
+	build_checks
+	job regress-batch regress-batch 0 "$S/test-regress-batch.sh"
 else
 	# As in the full tier, a job that exercises no code of its own major (the engine of the corpus, the fuzz harnesses, the hardened build of the decoders) runs on PostgreSQL 18 only; the
 	# builds for arm64 and for an older or newer major run the regression, TAP and pushdown differential tests
@@ -148,11 +163,8 @@ else
 			echo "$t"
 		done
 	}
-	# two jobs of every other test: each builds the library (3 s with the compiler cache warm, 60 cold) and the longer one was 283 to 406 s of a lane
-	rl=($(release_library_tests))
-	for k in 1 2; do
-		flavor_job release-library-regress-$k release-library-regress "$S/release-library-check.sh" $(for (( i = k - 1; i < ${#rl[@]}; i += 2 )); do echo "${rl[i]}"; done)
-	done
+	# one job of every other test: the staged release root (scripts/ci-build.sh) is installed, not built, so the run is the tests alone
+	flavor_job release-library-regress release-library-regress "$S/release-library-check.sh" $(release_library_tests)
 	tap_perl 004_wal_consistency   # the biggest in scratch: it starts while the budget is free
 	installcheck facets index_build_postings
 	# one pass (--budget 1) of every target: its seeds and the inputs of the fixed findings are the same, the random and exhaustive loops shorter
@@ -166,23 +178,19 @@ else
 	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
 	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
-	# each lane at 30000 rows and at 250000, the two sizes whose bands are recorded (the ratio falls with the rows: scripts/plangate.sh --rows; half a minute for the second)
-	job plan-gate plan-gate 1 bash -c '"$0" --runs 0 && "$0" --runs 0 --rows 250000' "$S/plangate.sh"
-	job plan-gate-tuned plan-gate-tuned 1 bash -c '"$0" --lane tuned --runs 0 && "$0" --lane tuned --runs 0 --rows 250000' "$S/plangate.sh"
-	job plan-gate-table plan-gate-table 1 bash -c '"$0" --table --runs 0 && "$0" --table --runs 0 --rows 250000' "$S/plangate.sh"
-	job plan-gate-table-tuned plan-gate-table-tuned 1 bash -c '"$0" --table --lane tuned --runs 0 && "$0" --table --lane tuned --runs 0 --rows 250000' "$S/plangate.sh"
-	# the ranking at 250,000 rows, where the search and spine shapes grow away from a price that does not follow their rows (6 minutes a lane)
-	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 250000
-	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 250000
-	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-4 --queries 100 --rows 3000 --leader-on
-	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-4 --queries 100 --rows 3000 --leader-on
-	once_on_18 && job difftest-fuzz-having difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-3 --queries 40 --rows 3000 --leader-on
-	# the same with every string column in a shared value store (docs/COL-VSTORE.md): a standing gate until the 5.0 release; the setting reaches the sessions through PGOPTIONS
-	once_on_18 && job difftest-fuzz-vstore difftest-fuzz 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 40 --rows 3000 --leader-on
-	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6,18 --stop-after 2
-	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-6,9,10,34 --stop-after 2
-	once_on_18 && job difftest-txn-vstore difftest-txn 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6 --stop-after 2
-	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
+	# each lane at 30000 rows, the size whose bands the plan and the ratios are recorded at; the second pass at 250000 rows (the bands of the ratio that falls with the rows) is the deep
+	# full tier's (plan-gate-250k below), and so is the ranking at 250,000 rows (6 minutes a lane, and a skip without perf)
+	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
+	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
+	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
+	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	# two seeds of each fuzzer (and the seeds of its fixed findings: 18 of txn_fuzz, 9, 10 and 34 of its shapes); the full tier runs the 12 to 400 seeds
+	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-2 --queries 100 --rows 3000 --leader-on
+	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-2 --queries 100 --rows 3000 --leader-on
+	once_on_18 && job difftest-fuzz-having difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-2 --queries 40 --rows 3000 --leader-on
+	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-2,18 --stop-after 2
+	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-2,9,10,34 --stop-after 2
+	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-2 --queries 30 --stop-after 2
 	job shapes-matrix shapes-matrix 1 python3 "$REPO/test/fuzz/shapes_matrix.py" --tier quick
 	job shapes-surface shapes-surface 1 python3 "$REPO/test/fuzz/surface_sweep.py" --tier quick
 	tap_shell leakcheck_gate
@@ -195,14 +203,14 @@ else
 	installcheck $(named $SLOW_REGRESS)
 	tap_perl $(rest t .pl $SLOW_PERL)
 	# the scaling gate (a build of the 8-page flavour of the library and 50 s of timings) is a job of the quick tier only when the run was asked for it by the diff: scripts/areas.tsv names its files
-	if [[ -n ${SIFT_CI_AFFECTED:-} && tap-shell-scaling_slope =~ $SIFT_CI_AFFECTED ]]; then tap_shell $(rest t .sh $SLOW_SHELL mem_slope fault_matrix); else tap_shell $(rest t .sh $SLOW_SHELL mem_slope fault_matrix scaling_slope); fi
+	if [[ -n ${SIFT_CI_AFFECTED:-} && tap-shell-scaling_slope =~ $SIFT_CI_AFFECTED ]]; then tap_shell $(rest t .sh $SLOW_SHELL mem_slope mem_slope_legacy fault_matrix fault_matrix_standby); else tap_shell $(rest t .sh $SLOW_SHELL mem_slope mem_slope_legacy fault_matrix fault_matrix_standby scaling_slope); fi
 	slope_shards
-	fault_slices
-	installcheck_batches 12 $(rest sql .sql $SLOW_REGRESS)
+	fault_smoke
+	installcheck_batches $(rest sql .sql $SLOW_REGRESS)
 	isolation_slices
 	job isolation-emulated isolation-emulated 1 "$S/isolation.sh" --emulate cic_insert
-	job isa-baseline isa-baseline 0 "$S/isa_check.sh"
-	job tools-build tools-build 0 "$S/check-tools-build.sh"
+	build_checks
+	job regress-batch regress-batch 0 "$S/test-regress-batch.sh"
 fi
 # opt-in lanes on a PostgreSQL built from source (scripts/pg-assert.sh, cached outside the repo; docs/SAFETY.md): queued only when
 # SIFT_CI_JOBS names them, e.g. `SIFT_CI_JOBS=assert scripts/ci.sh quick`

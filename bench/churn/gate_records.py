@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read penalty and cleanup cost of a heap table with a sift_col index after churn (CH-15): the constants of the priced maintenance gate (sift_col_vacuum_tick) and its cells.
+"""Read penalty and cleanup cost of a heap table with a sift_col index after churn (CH-15): the cells of the arms.
 
     python3 -I bench/churn/gate_records.py constants --host DIR --port N --out FILE [--rows 300000] [--shares 1,5,20] [--reps 3]
 
@@ -105,7 +105,7 @@ def constants(a):
         print(p)
 
 
-ARMS = {'stopped': ['sift.col_auto_merge = off'], 'tip': ['sift.col_auto_merge = on'], 'priced': ['sift.col_auto_merge = on', "sift.eval_methods = 'penalty_maintenance'"]}
+ARMS = {'stopped': ['sift.col_auto_merge = off'], 'tip': ['sift.col_auto_merge = on']}
 
 
 def quiet(s, limit=90):
@@ -207,7 +207,7 @@ def main():
     ap.add_argument('--reps', type=int, default=3)
     ap.add_argument('--db', default='gate_records')
     ap.add_argument('--rates', type=lambda x: [float(v) for v in x.split(',')], default=[0, 2, 20])
-    ap.add_argument('--arms', type=lambda x: x.split(','), default=['stopped', 'tip', 'priced'])
+    ap.add_argument('--arms', type=lambda x: x.split(','), default=['stopped', 'tip'])
     ap.add_argument('--seconds', type=int, default=30)
     ap.add_argument('--drain', type=int, default=60)
     a = ap.parse_args()

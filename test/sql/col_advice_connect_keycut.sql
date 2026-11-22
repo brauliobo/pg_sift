@@ -3,7 +3,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
-SET jit = off; SET sift.col_auto_merge_partition_kb = 64;
+SET jit = off; SET sift.test_col_partition_kb = 64;
 CREATE TABLE dim_a (id int PRIMARY KEY, name text, updated_at timestamptz, score int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100, md5(i::text) FROM generate_series(1, 60000) i;
 CREATE INDEX dim_a_col ON dim_a USING sift_col (id, name, score, pad) WITH (track_changes = 'id', key_cut = 'id');

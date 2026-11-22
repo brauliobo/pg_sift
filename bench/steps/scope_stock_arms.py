@@ -2,11 +2,12 @@
 """The scope index against tuned stock PostgreSQL on a real-shaped fixture: nine read classes, eight tenants, one arm at a time.
 
     python3 -I bench/steps/scope_stock_arms.py run --root PREFIX [--root PREFIX2] --dir SCRATCH --port N --out RAWDIR [--size quick|standard] [--arms a,b] [--facts N] [--tenants 1,4,8] [--resume]
-    python3 -I bench/steps/scope_stock_arms.py collect RAWDIR --out RESULTS.tsv     # the one results file, in the format of steps/extras.py
+    python3 -I bench/steps/scope_stock_arms.py collect RAWDIR --out RESULTS.tsv     # the one results file, in the format of steps/resultfile.py
     python3 -I bench/steps/scope_stock_arms.py merge BASE NEW --out BASE                             # the arms of a partial run (--arms stock_default,sift_scope) replace theirs in BASE
+    python3 -I bench/steps/scope_stock_arms.py cache-plan|cache-assemble|cache-save ...           # the cache of the rival arms (see CACHE below)
     python3 -I bench/steps/scope_stock_arms.py report [RESULTS]                                    # every table of the results file (steps/scope_stock_tables.py)
 
-`bench/bench scope-stock` runs the three (it builds pg_sift and pg_ivm, makes the cluster, and with --docs rewrites the generated blocks of README.md and docs/COL-SCOPE.md).
+`bench/bench scope-stock` runs the three (it builds pg_sift and pg_ivm, makes the cluster, and with --docs rewrites the generated blocks of docs/BENCHMARKS.md).
 The classes are bench/sql/scope_stock/queries/SLUG.sql, one file each (`--@ events` is the statement over a table of events and its predicate, `--@ lateral`, `--@ rollup` and `--@ ivm`
 the forms of the arms that read another table; a class with no section for an arm is not answerable by it).
 
@@ -20,9 +21,9 @@ dropped after its reads and writes; the fixture and the arms are on one cluster 
   denorm_part    the same copy as a list partition by tenant
   rollup         rollups by member kept by a statement trigger; the classes read them through the semi join (latest-N: not answerable)
   ivm            pg_ivm incremental views of events joined to the maintained pair table (latest-N: not answerable); skipped, with a notice, when pg_ivm is not installed under a --root
-  sift_reuse     the sift_col entity index, the pairs read through the member key
+  sift_entity    the sift_col entity index, the pairs read through the member key
   sift_scope     the same index with the scope of two paths
-  sift_scope_rollup  the same with rollup_columns of the filter class: the groups of a key keep that rollup too
+  sift_scope_cluster  the same with `cluster`: the entity parts are clustered by primary parent and the route from entity to scope key is built automatically
 The stock arms run on a server without pg_sift loaded; the sift arms on the same data directory restarted with it. Every cell: warm (median of 3 of `instructions:u` of the backend, EXPLAIN
 ANALYZE time and shared blocks hit/read) and cold (shared buffers emptied: one run), the md5 of the rows against the oracle. Writes: 10,000 inserted events (statement), a pair edit
 (grant a member to a tenant, revoke it) for 10 member keys of ~400 events and for the largest member; the sift arm adds the promotion of the write buffer. Size: bytes of what the arm adds.
@@ -142,12 +143,17 @@ ARMS = {
     'ivm': (False, sql_text('chain.sql') + sql_text('ivm.sql'), ivm_classes,
             "SELECT pg_total_relation_size('im_main') + pg_total_relation_size('im_score') + pg_total_relation_size('im_chan') + pg_total_relation_size('im_kind') "
             "+ pg_total_relation_size('pair_paths') + pg_total_relation_size('pairs') + pg_relation_size('events_dim')"),
-    'sift_reuse': (True, sql_text('sift_reuse.sql'), semi_classes, "SELECT pg_relation_size('events_col')"),
+    'sift_entity': (True, sql_text('sift_entity.sql'), semi_classes, "SELECT pg_relation_size('events_col')"),
     'sift_scope': (True, sql_text('sift_scope.sql'), semi_classes,
                    "SELECT pg_relation_size('events_col') + pg_relation_size('grants_by_member') + pg_relation_size('grants_by_group') + pg_relation_size('memberships_by_member')"),
 }
-ARMS['sift_scope_rollup'] = (True, sql_text('sift_scope_rollup.sql'), semi_classes, ARMS['sift_scope'][3])
+ARMS['sift_scope_cluster'] = (True, sql_text('sift_scope_cluster.sql'), semi_classes, ARMS['sift_scope'][3])
 ORDER = list(ARMS)
+LEGACY_ARMS = {'sift_reuse': 'sift_entity', 'sift_scope_rollup': 'sift_scope_cluster'}   # the 5.1.0 names: lists of arms and results files that still use them are read under the new ones
+
+
+def arm_list(text):
+    return ','.join(LEGACY_ARMS.get(n, n) for n in text.split(','))
 
 
 class Sess:
@@ -469,9 +475,9 @@ def cmd_run(a):
         r = run_arm(cl, a, name, load_oracle(a.out) if name != 'stock_default' else None, a.out)
         save(a.out, r)
     cl.stop()
-    import extras
+    import resultfile
     with open(os.path.join(a.out, 'run.meta'), 'w') as f:
-        f.write(''.join(f'{k}\t{v}\n' for k, v in dict(meta, load=extras.host_load()).items()))
+        f.write(''.join(f'{k}\t{v}\n' for k, v in dict(meta, load=resultfile.host_load()).items()))
 
 
 def cpu_model():
@@ -480,8 +486,8 @@ def cpu_model():
 
 
 def cmd_collect(a):
-    """the one results file of a run: every cell, build, write and read-after-write of every arm, in the format of steps/extras.py"""
-    import extras
+    """the one results file of a run: every cell, build, write and read-after-write of every arm, in the format of steps/resultfile.py"""
+    import resultfile
     raw = a.raw
     with open(os.path.join(raw, 'run.meta')) as f:
         meta = dict(l.rstrip('\n').split('\t', 1) for l in f)
@@ -521,13 +527,18 @@ def cmd_collect(a):
                 size=meta['size'], facts=meta['facts'], member_total=meta['member_total'], pairs=meta['pairs'], tenant_total=meta['tenant_total'], tenants=meta['tenants'],
                 classes=meta['classes'], arms=meta['arms'], skipped=meta['skipped'],
                 method='warm: median of 3 of instructions:u of the backend, EXPLAIN (ANALYZE, BUFFERS, TIMING OFF); cold: shared buffers emptied, one run; one backend, no parallel workers')
-    extras.write(a.out, 'The scope index against tuned stock PostgreSQL (bench/bench scope-stock)', head, rows)
+    resultfile.write(a.out, 'The scope index against tuned stock PostgreSQL (bench/bench scope-stock)', head, rows)
+
+
+def current_arm_names(meta, rows):
+    """(meta, rows) of a results file with the 5.1.0 arm names (LEGACY_ARMS) under the current ones"""
+    return dict(meta, arms=arm_list(meta['arms'])), [dict(r, arm=LEGACY_ARMS.get(r['arm'], r['arm'])) for r in rows]
 
 
 def cmd_merge(a):
     """the arms of a partial run (NEW, from collect) replace those arms in a complete results file (BASE); every other row stays as it is, the fixture must be the same"""
-    import extras
-    (base_meta, base), (new_meta, new) = extras.read(a.base), extras.read(a.new)
+    import resultfile
+    (base_meta, base), (new_meta, new) = (current_arm_names(*resultfile.read(f)) for f in (a.base, a.new))
     fixture = lambda rows: [r for r in rows if r['arm'] == 'fixture']
     key = lambda r: (r['case'], r['metric'], r['value'])
     if sorted(map(key, fixture(base))) != sorted(map(key, fixture(new))):
@@ -539,7 +550,61 @@ def cmd_merge(a):
     if any(base_meta[k] != new_meta[k] for k in ('date', 'pg_sift', 'postgresql', 'cpu')):
         meta['note'] = 'by arm: %s on %s at %s on %s; the other arms on %s at %s on %s' % (
             ', '.join(taken), new_meta['date'], new_meta['pg_sift'], new_meta['postgresql'], base_meta['date'], base_meta['pg_sift'], base_meta['postgresql'])
-    extras.write(a.out, base_meta['title'], {k: v for k, v in meta.items() if k != 'title'}, rows)
+    resultfile.write(a.out, base_meta['title'], {k: v for k, v in meta.items() if k != 'title'}, rows)
+
+
+# ---- the cache of the rival arms: a stock arm (not stock_default, the oracle of every md5, which runs each time) is measured again only when its key changes -----------------------
+# One file per arm, <cache>/scope-stock/ARM-KEY.tsv, a results file of the arm and the fixture. KEY holds the arm's SQL and classes, the fixture (size, events, tenants, base.sql), the
+# PostgreSQL release, the pg_ivm release (arm ivm) and the host; the arms of a later run that are in the cache are merged into its results (merge) with the cached date in the note.
+
+CACHE_EPOCH = 1
+
+
+def rival_arms():
+    return [n for n in ORDER if not ARMS[n][0] and n != 'stock_default']
+
+
+def arm_key(a, name):
+    import benchlib
+    size = SIZES[a.size]
+    return benchlib.key_of({'epoch': CACHE_EPOCH, 'arm': name, 'ddl': ARMS[name][1], 'classes': ARMS[name][2](), 'size': a.size, 'facts': a.facts or size['facts'],
+                            'tenants': list(a.tenants or size['tenants']), 'member_total': a.member_total, 'base': sql_text('base.sql'), 'pg': a.pg,
+                            'ivm': a.ivm if name == 'ivm' else '', 'host': benchlib.host_fingerprint()['id']})
+
+
+def cache_file(a, name):
+    return os.path.join(a.cache, 'scope-stock', f'{name}-{arm_key(a, name)}.tsv')
+
+
+def cmd_cache_plan(a):
+    """three lines: the arms to run (the sift arms, stock_default and the rival arms with no entry), the arms that come from the cache, the rival arms this run measures"""
+    arms = (a.arms or ','.join(SIZES[a.size]['arms'] or ORDER)).split(',')
+    cached = [] if a.remeasure_all else [n for n in arms if n in rival_arms() and os.path.exists(cache_file(a, n))]
+    run = [n for n in arms if n not in cached]
+    print(','.join(run))
+    print(','.join(cached))
+    print(','.join(n for n in run if n in rival_arms()))
+
+
+def cmd_cache_assemble(a):
+    """a results file of the cached arms (ARMS), the BASE of merge"""
+    import resultfile
+    meta, rows = None, []
+    for n in a.arms.split(','):
+        m, r = resultfile.read(cache_file(a, n))
+        meta = meta or m
+        rows += [x for x in r if x['arm'] == 'fixture'] * (not rows) + [x for x in r if x['arm'] == n]
+    resultfile.write(a.out, meta['title'], {k: v for k, v in dict(meta, arms=a.arms, skipped='none').items() if k != 'title'}, rows)
+
+
+def cmd_cache_save(a):
+    """the rival arms of this run's results file (RESULTS) that ARMS names, one cache file each"""
+    import resultfile
+    meta, rows = resultfile.read(a.results)
+    for n in a.arms.split(','):
+        path = cache_file(a, n)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        resultfile.write(path, meta['title'], {k: v for k, v in dict(meta, arms=n).items() if k != 'title'}, [x for x in rows if x['arm'] in ('fixture', n)])
 
 
 def cmd_report(a):
@@ -557,7 +622,7 @@ def main():
     r.add_argument('--out', required=True, help='directory of the raw per-arm tables')
     r.add_argument('--size', choices=SIZES, default='standard')
     r.add_argument('--build-id', default='unknown', help='the commit the installed pg_sift was built from, for the results file')
-    r.add_argument('--arms', help='default: every arm (quick: stock_default, semijoin, denorm_flat, ivm, sift_scope)')
+    r.add_argument('--arms', type=arm_list, help='default: every arm (quick: stock_default, semijoin, denorm_flat, ivm, sift_scope)')
     r.add_argument('--facts', type=int, help='events (default: those of --size)')
     r.add_argument('--member-total', type=int, default=2648)
     r.add_argument('--resume', action='store_true', help='an interrupted run: the arms with a saved table in --out are not measured again, the fixture database of --dir is kept')
@@ -570,10 +635,24 @@ def main():
     m.add_argument('base', help='the complete results file')
     m.add_argument('new', help='the results file of a partial run (collect); its arms replace those of BASE')
     m.add_argument('--out', required=True)
+    for name in ('cache-plan', 'cache-assemble', 'cache-save'):
+        c = sub.add_parser(name)
+        c.add_argument('--size', choices=SIZES, default='standard')
+        c.add_argument('--cache', required=True)
+        c.add_argument('--pg', required=True, help='the PostgreSQL release the arms were measured on (pg_config --version)')
+        c.add_argument('--ivm', default='', help='the pg_ivm release')
+        c.add_argument('--facts', type=int)
+        c.add_argument('--member-total', type=int, default=2648)
+        c.add_argument('--tenants', type=lambda v: [int(x) for x in v.split(',')])
+        c.add_argument('--arms', type=arm_list)
+        if name == 'cache-plan':
+            c.add_argument('--remeasure-all', action='store_true')
+        else:
+            c.add_argument('--results' if name == 'cache-save' else '--out', required=True)
     p = sub.add_parser('report')
     p.add_argument('results', nargs='?', default=os.path.join(HERE, '..', '..', 'docs', 'results', 'scope-stock.tsv'))
     a = ap.parse_args()
-    {'run': cmd_run, 'collect': cmd_collect, 'merge': cmd_merge, 'report': cmd_report}[a.cmd](a)
+    {'run': cmd_run, 'collect': cmd_collect, 'merge': cmd_merge, 'report': cmd_report, 'cache-plan': cmd_cache_plan, 'cache-assemble': cmd_cache_assemble, 'cache-save': cmd_cache_save}[a.cmd](a)
 
 
 if __name__ == '__main__':

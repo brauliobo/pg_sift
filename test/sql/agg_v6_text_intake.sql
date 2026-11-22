@@ -1,0 +1,68 @@
+-- SiftAggV6 takes the hits of a BM25 `sift` index as a TID bridge: the aggregate of a text qual and structured filters is read from the sift_col index in chunks,
+-- and the groups equal those of the standard plan (sift.enable_agg = off), also after deletes, updates and a transaction's own changes
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE ti (id int PRIMARY KEY, tenant int NOT NULL, region int NOT NULL, amount int NOT NULL, body text NOT NULL);
+INSERT INTO ti SELECT i, i % 10000, i % 7, i % 100,
+	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 20 = 0 THEN 'mid' END, CASE WHEN i % 20000 = 0 THEN 'rareterm' END, 'tok' || i % 13, 'base')
+FROM generate_series(1, 200000) i;
+CREATE INDEX ti_bm ON ti USING sift (body);
+CREATE INDEX ti_col ON ti USING sift_col (tenant, region, amount);
+VACUUM (ANALYZE) ti;
+
+CREATE FUNCTION ti_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'SiftAggV6|Text Index' THEN r := r || btrim(l) || '; '; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE TABLE ti_q (name text PRIMARY KEY, q text);
+INSERT INTO ti_q VALUES
+	('group',	'SELECT region, count(*) AS n, sum(amount) AS s FROM ti WHERE body @@> ''mid'' AND amount >= 0 GROUP BY region'),
+	('filter',	'SELECT region, count(*) AS n, min(tenant) AS lo, max(amount) AS hi FROM ti WHERE amount >= 20 AND tenant < 5000 AND body @@> ''mid'' GROUP BY region'),
+	('count',	'SELECT count(*) AS n FROM ti WHERE region < 5 AND body @@> ''mid tok3'''),
+	('rare',	'SELECT region, count(*) AS n FROM ti WHERE body @@> ''rareterm'' AND amount >= 0 GROUP BY region'),
+	('none',	'SELECT region, count(*) AS n FROM ti WHERE body @@> ''absent'' AND amount >= 0 GROUP BY region');
+
+CREATE FUNCTION ti_check(q text, OUT v6 bigint, OUT heap_only bigint, OUT v6_only bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TEMP TABLE ti_a ON COMMIT DROP AS %s', q);
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE ti_b ON COMMIT DROP AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO v6 FROM ti_a;
+	SELECT count(*) INTO heap_only FROM (SELECT * FROM ti_b EXCEPT SELECT * FROM ti_a) d;
+	SELECT count(*) INTO v6_only FROM (SELECT * FROM ti_a EXCEPT SELECT * FROM ti_b) d;
+	DROP TABLE ti_a, ti_b;
+END $$;
+
+-- the plan reads the text index through the bridge
+SELECT name, ti_plan(q) FROM ti_q WHERE name IN ('group', 'filter', 'count') ORDER BY name;
+SELECT name, (ti_check(q)).* FROM ti_q ORDER BY name;
+
+-- rows deleted, updated into and out of the text, and a transaction's own changes
+DELETE FROM ti WHERE id % 7 = 0;
+UPDATE ti SET body = body || ' mid' WHERE id % 13 = 0;
+UPDATE ti SET body = 'base' WHERE id % 11 = 0;
+SELECT name, (ti_check(q)).* FROM ti_q ORDER BY name;
+BEGIN;
+INSERT INTO ti SELECT i, 3, 4, 15, 'mid own' FROM generate_series(300001, 300050) i;
+DELETE FROM ti WHERE tenant < 1000;
+SELECT name, (ti_check(q)).* FROM ti_q WHERE name IN ('group', 'filter', 'count') ORDER BY name;
+ROLLBACK;
+
+-- a small work_mem cuts the hits into several chunks of the same result
+SET work_mem = '64kB';
+SELECT name, (ti_check(q)).* FROM ti_q WHERE name IN ('group', 'filter') ORDER BY name;
+RESET work_mem;
+
+DROP TABLE ti_q, ti;
+DROP FUNCTION ti_plan(text), ti_check(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -6,7 +6,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
@@ -39,12 +38,12 @@ $$ DECLARE hint text; BEGIN EXECUTE stmt; RETURN 'ok';
    EXCEPTION WHEN OTHERS THEN GET STACKED DIAGNOSTICS hint = PG_EXCEPTION_HINT; RETURN sqlerrm || coalesce(' [' || hint || ']', ''); END $$;
 
 -- a scope relation with no journal index: the build makes it (test col_scope_journal_auto), and it goes with the index
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 DROP INDEX events_col;
 -- the journal index leads with the member, tracks by ctid and holds the scope key: these do not qualify, and the build makes a journal of its own
 CREATE INDEX tenant_scope_wrong_order ON tenant_scope USING sift_col (tenant_id, dim_a_id) WITH (track_changes = 'ctid');
 CREATE INDEX tenant_scope_no_key ON tenant_scope USING sift_col (dim_a_id) WITH (track_changes = 'ctid');
-CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;   -- not_qualifying: a journal is made beside them
 DROP INDEX events_col;
@@ -58,7 +57,7 @@ DELETE FROM tenant_scope WHERE dim_a_id = 400;
 SELECT count(*) AS records_before_a_scope FROM sift._test_col_log_entries('tenant_scope_journal') WHERE kind IN (4, 5);
 SET client_min_messages = notice;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v)
-	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+	WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)');
 SET client_min_messages = warning;
 SELECT (SELECT string_agg(refobjid::regclass::text, ' ') FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') AS edges;
@@ -235,7 +234,6 @@ INSERT INTO tenant_scope SELECT i, 1 FROM generate_series(1, 20) i;
 SELECT name, setting, min_val, max_val FROM pg_settings WHERE name IN ('sift.col_scope_refresh_pct', 'sift.col_connect_refresh_pct') ORDER BY name;
 SET sift.col_scope_refresh_pct = 1;
 SELECT sift.col_maintenance_due('events_col', false) AS due_by_the_setting;
-RESET sift.col_scope_refresh_pct;
 REINDEX INDEX events_col;
 
 -- the journal and its records survive a VACUUM of the relation; a rewrite refills under a new stamp, so the stale rule ends

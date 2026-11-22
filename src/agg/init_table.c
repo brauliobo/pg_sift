@@ -1,7 +1,7 @@
 /*
  * agg/init_table.c - the lookup tables: the join key filters, the load of a table and its reset
  */
-/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which sift.agg_lookup_max_kb bounds at plan time */
+/* check-memory: allow-allocs every array here follows the rows of a lookup table or spine, which half of work_mem bounds at plan time */
 #include "postgres.h"
 
 #include "catalog/pg_collation_d.h"
@@ -648,6 +648,7 @@ table_init(AggExec *ex)
 		ot_init(&ex->aot[i], tc->eq_opr, a->argtype, a->collid);
 	}
 	MemoryContextSwitchTo(old);
+	ex->tfloor = Max(ex->tfloor, MemoryContextMemAllocated(ex->tcxt, true));
 	spill_floor(ex);
 }
 

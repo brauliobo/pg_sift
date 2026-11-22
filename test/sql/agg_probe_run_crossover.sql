@@ -7,8 +7,8 @@ SET client_min_messages = warning;
 SET jit = off;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 CREATE TABLE ev (id int, fk int, fku text COLLATE "und-x-icu") WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i, 'k' || i FROM generate_series(1, 20000) i;

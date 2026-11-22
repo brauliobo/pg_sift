@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "core/limits.h"
 #include "core/page.h"
 #include "col/shred_int.h"
@@ -180,7 +180,7 @@ regrow(SiftShred *sh, void *p, size_t size)
 SiftShred *
 sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached)
 {
-	MemoryContext cx = cached ? AllocSetContextCreate(CurrentMemoryContext, "sift cache shred", ALLOCSET_DEFAULT_SIZES) :
+	MemoryContext cx = cached ? AllocSetContextCreate(CurrentMemoryContext, "sift cache shred", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, ALLOCSET_DEFAULT_MAXSIZE) :
 		AllocSetContextCreate(CurrentMemoryContext, "sift shred", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftShred  *sh = palloc0(sizeof(SiftShred));
@@ -329,6 +329,9 @@ sift_shred_begin(SiftShred *sh)
 		sh->doc.col[c].ovf = 0;
 	sh->doc.ntext = 0;
 	sh->doc.nelems = 0;
+	sh->doc.npay = 0;
+	sh->doc.npaytext = 0;
+	sh->ev = NULL;
 	sh->nframes = 0;
 	sh->root_done = false;
 	sh->docdepth = 0;
@@ -356,6 +359,54 @@ list_set(SiftShred *sh, NodeP n, SiftShredState st)
 	sh->doc.grp[n->group].lstate[sh->doc.grp[n->pgroup].n - 1] = st;
 }
 
+/* Keeps the value of the current event as the payload of an OVERFLOW slot, when the driver can serialise it and the slot holds that value (not the absence of one) */
+static void
+pay_keep(SiftShred *sh, const void *ev, int32 key, uint32 slot, uint8 tag)
+{
+	SiftShredDoc *doc = &sh->doc;
+	const char *bytes;
+	uint32		len;
+
+	if (sh->pay_fn == NULL || ev == NULL || tag == SIFT_COLTAG_UNKNOWN || tag == SIFT_COLTAG_NONE)
+		return;
+	bytes = sh->pay_fn(ev, &len);
+	if (doc->npay == doc->paycap)
+	{
+		doc->paycap = Max(16, doc->paycap * 2);
+		doc->pay = regrow(sh, doc->pay, doc->paycap * sizeof(SiftShredPay));
+	}
+	if (doc->npaytext + len > doc->paytextcap)
+	{
+		doc->paytextcap = Max(Max(256, doc->paytextcap * 2), doc->npaytext + len);
+		doc->paytext = regrow(sh, doc->paytext, doc->paytextcap);
+	}
+	memcpy(doc->paytext + doc->npaytext, bytes, len);
+	doc->pay[doc->npay++] = (SiftShredPay) {.key = key,.slot = slot,.off = doc->npaytext,.len = len,.tag = tag};
+	doc->npaytext += len;
+}
+
+const char *
+sift_shred_pay(const SiftShredDoc *doc, int32 key, uint32 slot, uint32 *len, uint8 *tag)
+{
+	for (uint32 i = doc->npay; i-- > 0;)
+		if (doc->pay[i].key == key && doc->pay[i].slot == slot)
+		{
+			*len = doc->pay[i].len;
+			*tag = doc->pay[i].tag;
+			return doc->paytext + doc->pay[i].off;
+		}
+	return NULL;
+}
+
+static void
+list_overflow(SiftShred *sh, NodeP n, const void *ev, uint8 tag)
+{
+	uint32		p = sh->doc.grp[n->pgroup].n - 1;
+
+	sh->doc.grp[n->group].lstate[p] = SIFT_SHRED_OVERFLOW;
+	pay_keep(sh, ev, -(1 + n->group), p, tag);
+}
+
 static void
 leaf_set(SiftShred *sh, NodeP n, SiftShredState st, uint32 reason, uint8 tag)
 {
@@ -372,6 +423,7 @@ static void
 leaf_overflow(SiftShred *sh, NodeP n, uint32 reason, uint8 tag)
 {
 	leaf_set(sh, n, SIFT_SHRED_OVERFLOW, reason, tag);
+	pay_keep(sh, sh->ev, n->col, sh->doc.grp[n->group].n - 1, tag);
 }
 
 /* The kind of the value an ASTEXT leaf holds: its text does not say whether it was a string, a number or a boolean (a string is the leaf's own) */
@@ -412,7 +464,7 @@ mark_overflow(SiftShred *sh, NodeP n, uint32 reason, uint8 tag)
 				mark_overflow(sh, n->members[i].node, reason, SIFT_COLTAG_NONE);
 			break;
 		default:
-			list_set(sh, n, SIFT_SHRED_OVERFLOW);
+			list_overflow(sh, n, sh->ev, tag);
 			flag_leaves(sh, n->elem, reason);
 	}
 }
@@ -444,7 +496,7 @@ take_target(SiftShred *sh)
 		return NULL;
 	if (sh->doc.nelems >= sh->limits.max_elems)
 	{
-		list_set(sh, n, SIFT_SHRED_OVERFLOW);
+		list_overflow(sh, n, f->ev, f->evtag);
 		flag_leaves(sh, n->elem, SIFT_SHRED_OVF_TRUNC);
 		f->truncated = true;
 		return NULL;
@@ -503,6 +555,8 @@ sift_shred_enter(SiftShred *sh, bool is_array)
 	f->keyid = 0;
 	f->matched = 0;
 	f->truncated = false;
+	f->ev = sh->ev;
+	f->evtag = sh->evtag;
 	return true;
 }
 

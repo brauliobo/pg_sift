@@ -2,7 +2,6 @@
 -- updated or vacuumed away are not, in units with gaps in their pages (a sparse page keeps a bitmap of its offsets), across several superblocks
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.table_inline_promote = on;
 CREATE TABLE t (id int PRIMARY KEY, k int, v int, note text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE h (id int PRIMARY KEY, k int, v int, note text) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT g, g % 1000, g, 'n' || g FROM generate_series(1, 200000) g;

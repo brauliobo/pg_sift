@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A VACUUM of a loose sift_col file moves the segments down and cuts the free end itself, also when a rewrite is due: no rewrite comes by itself to write them into those
 # blocks, so the VACUUM does not leave the file loose for one (the rewrite is the user's REINDEX, and the status says so).
 . "$(dirname "$0")/lib.bash"

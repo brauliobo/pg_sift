@@ -84,7 +84,7 @@ check "a session that waited for another's update and then updated or deleted th
 
 # a crash with a transaction in flight, the WAL replayed
 (psql -X -At -q -h "$D/sock" -p "$(port p)" -U postgres -d postgres -c "BEGIN" -c "UPDATE events SET counter_a = counter_a + 7 WHERE id % 5 = 0" -c "DELETE FROM events WHERE id % 13 = 0" -c "SELECT pg_sleep(60)" >/dev/null 2>&1 &)
-sleep 1
+wait_for "running p '%pg_sleep(60)%'" 30
 sql p "UPDATE events SET counter_a = counter_a + 3 WHERE id % 9 = 0" "DELETE FROM events WHERE id % 17 = 0" "UPDATE events SET label = 'z' WHERE id % 19 = 0" >/dev/null
 before=$(ans p oracle)
 crash p

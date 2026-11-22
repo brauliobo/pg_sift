@@ -196,22 +196,6 @@ max_merge_avx2(float4 *scores, const float4 *other, const uint64 *mask, int npag
 				 _mm256_store_ps(scores + s, _mm256_blendv_ps(sc, _mm256_max_ps(sc, _mm256_load_ps(other + s)), lanes(k))));
 }
 
-static SIFT_TARGET_AVX2 void
-ub_accum_avx2(float4 *ub, const uint8 *bounds, float4 w, int n)
-{
-	const __m256 vw = _mm256_set1_ps(w);
-	int			i = 0;
-
-	for (; i + 8 <= n; i += 8)
-	{
-		__m256		b = _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) (bounds + i))));
-
-		_mm256_storeu_ps(ub + i, _mm256_add_ps(_mm256_loadu_ps(ub + i), _mm256_mul_ps(vw, b)));
-	}
-	for (; i < n; i++)
-		ub[i] += w * (float4) bounds[i];
-}
-
 static SIFT_TARGET_AVX2 int
 select_gt_avx2(uint16 *slot, float4 *vals, const float4 *scores, const uint64 *mask,
 			   int npages, float4 theta)
@@ -384,7 +368,7 @@ sift_kern_attr_mask_avx2(uint64 *mask, const uint8 *row, int width, int nslots, 
 	.bm25_sel = bm25_sel_avx2, \
 	.prune_gt = prune_gt_avx2, \
 	.max_merge = max_merge_avx2, \
-	.ub_accum = ub_accum_avx2, \
+	.ub_accum = sift_kern_ub_accum, \
 	.select_gt = select_gt_avx2, \
 	.vm_allvisible = vm_fn, \
 	.attr_mask = sift_kern_attr_mask_avx2, \

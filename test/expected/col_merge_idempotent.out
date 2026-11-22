@@ -1,11 +1,11 @@
--- sift.col_merge(index, true) merges to the minimum count of segments: the partitions the live bytes make of sift.col_auto_merge_partition_kb. An index
+-- sift.col_merge(index, true) merges to the minimum count of segments: the partitions the live bytes make of sift.test_col_partition_kb. An index
 -- that is there (every segment a partition, none dirty, no more of them than the merge would write) is left as it is, so a second force does nothing: the
 -- same segments, no WAL. A segment with a dead row, or a smaller one beside the partitions, is merged again.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
-SET sift.col_auto_merge_partition_kb = 1024;
+SET sift.test_col_partition_kb = 1024;
 CREATE TABLE items (id int, kind text, amount int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO items SELECT g, 'cat_' || (g % 8), g % 997, md5(g::text) || md5(g::text || 'b') FROM generate_series(1, 60000) g;
 SET sift.test_col_segment_kb = 512;
@@ -121,7 +121,7 @@ SELECT im_segments() = gens AS same_segments FROM before;
 -- a smaller allowance cuts the partitions again: a segment over one and a half of its size is no partition of it
 DELETE FROM before;
 INSERT INTO before SELECT im_segments(), im_lsn();
-SET sift.col_auto_merge_partition_kb = 256;
+SET sift.test_col_partition_kb = 256;
 SELECT sift.col_merge('items_col', true) > 0 AS merged;
  merged 
 --------
@@ -134,7 +134,7 @@ SELECT cardinality(im_segments()) > cardinality(gens) AS more_segments FROM befo
  t
 (1 row)
 
-SET sift.col_auto_merge_partition_kb = 1024;
+SET sift.test_col_partition_kb = 1024;
 -- the answers are those of the table
 SET sift.enable_agg = on;
 SELECT kind, count(*), sum(amount) FROM items GROUP BY kind ORDER BY kind;

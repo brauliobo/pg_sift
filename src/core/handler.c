@@ -27,31 +27,41 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include "col/f2/f2_v6_format.h"
+#include "col/f2/f2_vacuum_run.h"
+#include "col/f2/l0_stage.h"
 #include "core/cachebudget.h"
+#include "core/memtrack.h"
+#include "core/shmbudget.h"
 #include "core/sift.h"
 #include "core/explain.h"
 #include "core/limits.h"
 #include "core/quarantine.h"
+#include "core/wal_conflict.h"
+#include "core/worker.h"
+#include "core/maint.h"
+#include "core/maint_sched.h"
 #include "agg/agg.h"
+#include "agg/gpu_cfg.h"
 #include "agg/stub.h"
+#include "agg/v6/v6_proj_sort_plan.h"
 #include "bm25/am.h"
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
 #include "col/am.h"
-#include "col/kern.h"
+#include "col/v1/kern.h"
 #include "col/codec.h"
 #include "core/cpu.h"
 #include "bm25/kernels.h"
 #include "bm25/merge.h"
 #include "core/ops.h"
 #include "bm25/prefix.h"
-#include "table/table.h"
+#include "table/v1/table_v1.h"
 #include "core/visibility.h"
 #include "bm25/pushdown.h"
 #include "col/shred.h"
 #include "core/sql.h"
 #include "core/build_id.h"
-#include "core/eval.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 
@@ -94,13 +104,11 @@ PG_FUNCTION_INFO_V1(sift_col_merge);
 PG_FUNCTION_INFO_V1(sift_col_maintain);
 PG_FUNCTION_INFO_V1(sift_col_maintenance_due);
 PG_FUNCTION_INFO_V1(sift_col_maintenance_status);
-PG_FUNCTION_INFO_V1(sift_col_index_advice);
 PG_FUNCTION_INFO_V1(sift_col_suggest_paths);
 
 int			sift_max_expansions = 512;
 bool		sift_enable_scan = true;
-bool		sift_enable_count = true;
-bool		sift_parallel_scan = false;
+bool		sift_parallel_scan = true;
 bool		sift_rls_scores = false;
 bool		sift_prefetch = true;
 bool		sift_vis_page_cache = true;
@@ -114,38 +122,52 @@ static relopt_kind sift_relopt_kind;
 static SiftCatalog catalog;
 static bool catalog_valid;
 
+/* The kinds of background worker and what each one runs (sift_worker_main dispatches to them) */
+static void
+define_workers(void)
+{
+	sift_worker_init();
+	sift_worker_define(SIFT_WK_BM25_MAINT, sift_maint_worker_main);
+	sift_worker_define(SIFT_WK_BM25_READ_PROMOTE, sift_read_promote_worker_main);
+	sift_worker_define(SIFT_WK_COL_MAINT, sift_col_maint_worker_main);
+	sift_worker_define(SIFT_WK_COL_READ_PROMOTE, sift_col_read_promote_worker_main);
+	sift_worker_define(SIFT_WK_COL_TRACK, sift_col_track_worker_main);
+	sift_worker_define(SIFT_WK_COL_ROLLUP, sift_col_rollup_worker_main);
+	sift_worker_define(SIFT_WK_COL_ORPHANS, sift_col_track_orphans_main);
+	sift_worker_define(SIFT_WK_TBL_MAINT, sift_tbl_maint_worker_main);
+	sift_worker_define(SIFT_WK_TBL_SETTLE, sift_tbl_settle_worker_main);
+	sift_worker_define(SIFT_WK_QUARANTINE, sift_quarantine_main);
+	sift_maint_set_stepper(sift_maint_step);
+	if (process_shared_preload_libraries_in_progress)
+		sift_maint_launcher_register();
+}
+
 static void
 define_gucs(void)
 {
-	sift_eval_init();
 	sift_quarantine_define_gucs();
 	sift_cache_budget_define_gucs();
+	sift_stage_define_gucs();
+	sift_shm_budget_define_gucs();
 	DefineCustomIntVariable("sift.max_expansions",
 							"Maximum terms a wildcard, regex or fuzzy leaf may expand to, and a prefix may be scored over.",
 							"A prefix with more terms matches all of them and scores as the one term prefix_index would index.",
 							&sift_max_expansions, 512, 1, 1000000,
 							PGC_SUSET, 0, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.prefix_cache_size",
-							"Memory a backend keeps the postings of broad prefixes in (kB), 0 to keep none.",
-							NULL, &sift_prefix_cache_size, 8192, 0, 1048576,
-							PGC_SUSET, GUC_UNIT_KB, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.enable_scan",
 							 "Enables the sift custom scan (ranked and unordered).",
 							 NULL, &sift_enable_scan, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.enable_count",
-							 "Enables count(*) pushdown into the sift index.",
-							 NULL, &sift_enable_count, true,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.parallel_scan",
 							 "Lets the planner use parallel sift scans and counts (they pay off on large, heap-bound scans only).",
-							 NULL, &sift_parallel_scan, false,
+							 NULL, &sift_parallel_scan, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.rls_scores",
 							 "Lets a ranked scan serve a role under a row-level security policy.",
 							 "The scores count the rows the policy hides: document frequencies and field lengths come from the whole index. Off, such a role gets no ranked scan and sift.score() raises an error.",
 							 &sift_rls_scores, false,
 							 PGC_SUSET, 0, NULL, NULL, NULL);
+#ifdef SIFT_TESTING
 	DefineCustomBoolVariable("sift.prefetch",
 							 "Reads ahead the heap pages an unordered scan is about to visit.",
 							 NULL, &sift_prefetch, true,
@@ -154,6 +176,7 @@ define_gucs(void)
 							 "Keeps, for the rest of a scan, the visibility of the rows of a heap page the scan reads twice.",
 							 NULL, &sift_vis_page_cache, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+#endif
 	DefineCustomBoolVariable("sift.standby_conflicts",
 							 "Logs the reuse of released blocks as a recovery conflict, so a standby without hot_standby_feedback waits for or cancels the queries that may still read them.",
 							 "Off, such a query fails with \"segment recycled during scan, retry\" when the blocks it reads are reused.",
@@ -162,11 +185,11 @@ define_gucs(void)
 	DefineCustomBoolVariable("sift.async_maintenance",
 							 "Promotes and merges segments in a dynamic background worker.",
 							 NULL, &sift_async_maintenance, true,
-							 PGC_SUSET, 0, NULL, NULL, NULL);
+							 PGC_SUSET, 0, NULL, sift_maint_assign_async, NULL);
 	DefineCustomIntVariable("sift.maintenance_naptime",
 							"Time between background maintenance workers of an index; a worker stays this long after it starts.",
 							NULL, &sift_maintenance_naptime, 2000, 200, 60000,
-							PGC_SIGHUP, GUC_UNIT_MS, NULL, NULL, NULL);
+							PGC_SIGHUP, GUC_UNIT_MS, NULL, sift_maint_assign_naptime, NULL);
 	DefineCustomIntVariable("sift.maintenance_cost_delay",
 							"Milliseconds the maintenance worker sleeps after every 16 pages (128 kB) its merges read or write, 0 to run them at full speed.",
 							NULL, &sift_maintenance_cost_delay, 0, 0, 100,
@@ -301,22 +324,29 @@ _PG_init(void)
 	sift_init();
 	sift_cpu_register(codec_rebind);
 	sift_vis_init();
+	sift_quarantine_plan_init();
 	sift_kernels_init();
 	sift_col_kernels_init();
 	sift_col_init();
+	sift_bm25_maint_init();
+	sift_col_maint_init();
 	sift_shred_init();
 	sift_cc_kernels_init();
 	define_gucs();
-	sift_quarantine_plan_init();
+	define_workers();
 	define_reloptions();
 	sift_planner_init();
+	sift_hybrid_init();
+	sift_v6_proj_sort_plan_init();
 	sift_agg_init();
+	sift_f2_v6_format_init();
+	sift_gpu_v6_init_gucs();
 	sift_explain_init();
 	sift_tbl_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
 	sift_memcensus_init();
-	sift_membudget_init();
+	sift_memtrack_define_test_gucs();
 	sift_aggstub_init();
 	sift_limits_init();
 #endif

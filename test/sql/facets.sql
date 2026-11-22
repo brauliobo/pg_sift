@@ -25,7 +25,7 @@ FROM (SELECT 'd_raw' idx, * FROM sift.segments('d_raw') UNION ALL SELECT 'd_hc',
 -- the folded value of a row: the keyword index analyzer's token, NULL when the value has none. The expected counts do not depend on the
 -- limit: fac_all computes them once per query and takes the prefix of each limit
 CREATE FUNCTION fac_expected(col text, facet regclass, q text, nulls bool) RETURNS text[] LANGUAGE plpgsql
-	SET sift.enable_scan = off SET sift.enable_count = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
+	SET sift.enable_scan = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
 DECLARE
 	r text[];
 BEGIN

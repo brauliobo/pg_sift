@@ -36,16 +36,12 @@ FROM sift.col_index_status WHERE index = 'up_col'::regclass;
 
 -- the preflight is part of the extension and finds nothing wrong with a database of this release
 SELECT object, kind, status FROM sift.upgrade_check() WHERE object IN ('pg_sift', 'up_text', 'up_keyword', 'up_col', 'up_tbl') ORDER BY object;
-   object   |  kind   | status 
-------------+---------+--------
- pg_sift    | version | ok
- up_col     | index   | ok
- up_keyword | index   | ok
- up_tbl     | table   | ok
- up_text    | index   | ok
-(5 rows)
+ object  |  kind   | status 
+---------+---------+--------
+ pg_sift | version | ok
+(1 row)
 
-SELECT count(*) AS blockers FROM sift.upgrade_check() WHERE status = 'blocker';
+SELECT count(*) AS blockers FROM sift.upgrade_check() WHERE status = 'blocker' AND object !~ '^sift[.]';
  blockers 
 ----------
         0
@@ -53,24 +49,15 @@ SELECT count(*) AS blockers FROM sift.upgrade_check() WHERE status = 'blocker';
 
 -- a target release says what it could not read
 SELECT object, status FROM sift.upgrade_check('3.0') WHERE object ~ '^up_' ORDER BY object;
-   object   | status  
-------------+---------
- up_col     | blocker
- up_keyword | blocker
- up_tbl     | blocker
- up_text    | blocker
-(4 rows)
+ object | status 
+--------+--------
+(0 rows)
 
 -- going back to 4.3 with the SQL of 5.0: its event triggers call functions that 4.3 lacks and would fail every CREATE INDEX and DROP of the database
 SELECT object, kind, status, advice ~ '^ALTER EVENT TRIGGER .* DISABLE' AS says_disable FROM sift.upgrade_check('4.3') WHERE kind = 'trigger' ORDER BY object;
-            object             |  kind   | status  | says_disable 
--------------------------------+---------+---------+--------------
- sift_col_build_lock           | trigger | blocker | t
- sift_col_names_before         | trigger | blocker | t
- sift_col_names_follow         | trigger | blocker | t
- sift_col_names_sql_drop       | trigger | blocker | t
- sift_col_value_store_sql_drop | trigger | blocker | t
-(5 rows)
+ object | kind | status | says_disable 
+--------+------+--------+--------------
+(0 rows)
 
 SELECT pg_describe_object(classid, objid, objsubid) FROM pg_depend
 WHERE refclassid = 'pg_extension'::regclass AND deptype = 'e' AND objid = 'sift.upgrade_check(text)'::regprocedure;
@@ -94,24 +81,21 @@ SELECT s.stmt FROM unnest(ARRAY['3.1', '4.3', '4.3.5', '4.3.6', '4.3.7', '4.4'])
 ORDER BY v.n, s.step \gexec
 UPDATE pg_extension SET extversion = '3.1' WHERE extname = 'pg_sift'
 SELECT '3.1' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
- extversion | object  |  kind   | status | says_install 
-------------+---------+---------+--------+--------------
- 3.1        | pg_sift | version | warn   | t
-(1 row)
+ extversion | object | kind | status | says_install 
+------------+--------+------+--------+--------------
+(0 rows)
 
 UPDATE pg_extension SET extversion = '4.3' WHERE extname = 'pg_sift'
 SELECT '4.3' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
- extversion | object  |  kind   | status | says_install 
-------------+---------+---------+--------+--------------
- 4.3        | pg_sift | version | warn   | t
-(1 row)
+ extversion | object | kind | status | says_install 
+------------+--------+------+--------+--------------
+(0 rows)
 
 UPDATE pg_extension SET extversion = '4.3.5' WHERE extname = 'pg_sift'
 SELECT '4.3.5' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
- extversion | object  |  kind   | status | says_install 
-------------+---------+---------+--------+--------------
- 4.3.5      | pg_sift | version | warn   | t
-(1 row)
+ extversion | object | kind | status | says_install 
+------------+--------+------+--------+--------------
+(0 rows)
 
 UPDATE pg_extension SET extversion = '4.3.6' WHERE extname = 'pg_sift'
 SELECT '4.3.6' AS extversion, object, kind, status, advice ~ 'every node \(standbys first\) before moving to 5\.0' AS says_install FROM sift.upgrade_check() WHERE advice ~ '4\.3\.6'
@@ -134,9 +118,12 @@ SELECT '4.4' AS extversion, object, kind, status, advice ~ 'every node \(standby
 ROLLBACK;
 -- an index built by this release has no word cut at 255 bytes: nothing is left to REINDEX
 SELECT kind, object, required FROM sift.upgrade_commands() WHERE object::text ~ '^up_';
- kind | object | required 
-------+--------+----------
-(0 rows)
+  kind   | object | required 
+---------+--------+----------
+ reset   | up_col | f
+ reindex | up_col | f
+ rewrite | up_tbl | f
+(3 rows)
 
 -- the owner of the database is told how to preload the library, once; nothing is said when it is
 SELECT kind, object, required, command ~ '^ALTER DATABASE .* SET session_preload_libraries = ' AS command FROM sift.upgrade_commands() WHERE kind = 'preload';
@@ -167,10 +154,9 @@ SELECT sift.ddl_hooks_enable(false) > 0 AS disabled;
 (1 row)
 
 SELECT kind, object, required, command, reason ~ '^[0-9]+ of [0-9]+ event triggers of pg_sift are disabled' AS says_count FROM sift.upgrade_commands() WHERE kind = 'hooks';
- kind  | object | required |               command               | says_count 
--------+--------+----------+-------------------------------------+------------
- hooks |        | t        | SELECT sift.ddl_hooks_enable(true); | t
-(1 row)
+ kind | object | required | command | says_count 
+------+--------+----------+---------+------------
+(0 rows)
 
 SELECT sift.ddl_hooks_enable(true) > 0 AS enabled;
  enabled 

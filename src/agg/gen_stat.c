@@ -13,6 +13,7 @@
 
 #include "nodes/primnodes.h"
 #include "catalog/pg_type.h"
+#include "executor/executor.h"
 #include "fmgr.h"
 #include "utils/array.h"
 #include "utils/fmgrprotos.h"

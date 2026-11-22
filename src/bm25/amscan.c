@@ -12,10 +12,12 @@
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 
 #include "bm25/am.h"
 #include "bm25/eval.h"
 #include "core/errctx.h"
+#include "core/maint_pacer.h"
 #include "core/quarantine.h"
 
 typedef struct SiftScanOpaque
@@ -79,6 +81,7 @@ int64
 sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	SiftScanOpaque *so = scan->opaque;
+	TimestampTz began = GetCurrentTimestamp();
 	MemoryContext old = MemoryContextSwitchTo(so->cxt);
 	SiftIndexState *st = sift_state_open(scan->indexRelation, so->cxt);
 	SiftQuery **queries = palloc(scan->numberOfKeys * sizeof(SiftQuery *));
@@ -102,6 +105,7 @@ sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	sift_errctx_pop(&ctx);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(so->cxt);
+	sift_pacer_note_foreground(GetCurrentTimestamp() - began);
 	return ntids;
 }
 

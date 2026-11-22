@@ -24,8 +24,9 @@
 #include "replication/snapbuild.h"
 #include "utils/rel.h"
 
+#include "table/dispatch.h"
 #include "table/rmgr_id.h"
-#include "table/table.h"
+#include "table/wal.h"
 
 #define XLOG_SIFT_TBL_INSERT	0x00
 #define XLOG_SIFT_TBL_UPDATE	0x10
@@ -226,9 +227,9 @@ sift_tbl_init(void)
 	RmgrData	current = tbl_rmgr(SIFT_TBL_RMGR_NAME);
 	RmgrData	legacy = tbl_rmgr(SIFT_TBL_LEGACY_RMGR_NAME);
 
-	sift_tbl_define_gucs();
-	sift_tbl_slot_init();
-	sift_tbl_src_register();
+	sift_tbl_v1_init();
+	sift_tbl_v2_init();
+	sift_tbl_utility_init();
 	if (!process_shared_preload_libraries_in_progress)
 		return;
 	RegisterCustomRmgr(SIFT_TBL_RMGR_ID, &current);

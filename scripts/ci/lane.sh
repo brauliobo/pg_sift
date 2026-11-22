@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # A lane: run_job runs one job with its log, lane() takes jobs from the queue until it is empty and owns the cluster of the lane.
 # Sourced by scripts/ci.sh; not a script of its own.
 # run_job ID: the job with its output in logs/ID.log (a job without the lane's cluster gets a directory of its own)

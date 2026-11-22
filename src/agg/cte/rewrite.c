@@ -21,6 +21,8 @@
 
 #include "agg/agg.h"
 #include "agg/cte/int.h"
+#include "core/cachebudget.h"
+#include "agg/v6/v6_live.h"
 
 /*
  * The planner asks it for the same table many times in one planning (a walk of the query for each decision, and the hook plans a statement up to four times:
@@ -70,9 +72,9 @@ has_column_source(Oid relid)
 	sift_source_lookups++;
 #endif
 	rel = relation_open(relid, AccessShareLock);
-	found = sift_colsrc_is_table(rel->rd_rel->relam);
+	found = sift_colsrc_is_table(relid);
 	foreach_oid(ix, RelationGetIndexList(rel))
-		found |= sift_colsrc_is_index(get_rel_relam(ix));
+		found |= sift_colsrc_reads_index(ix) || sift_agg_v6_live_owns_index(ix);
 	relation_close(rel, AccessShareLock);
 	if (source_cache == NULL)
 	{
@@ -84,7 +86,7 @@ has_column_source(Oid relid)
 			CacheRegisterSyscacheCallback(RELOID, source_cache_inval, (Datum) 0);
 			registered = true;
 		}
-		source_cx = AllocSetContextCreate(TopMemoryContext, "sift cache column sources", ALLOCSET_SMALL_SIZES);
+		source_cx = sift_cache_create_context("sift cache column sources");
 		ctl.hcxt = source_cx;
 		source_cache = hash_create("sift cache column sources", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
@@ -112,12 +114,12 @@ column_source_reads(Oid relid, Bitmapset *attnos)
 		Relation	rel = relation_open(relid, AccessShareLock);
 		MemoryContext old = MemoryContextSwitchTo(source_cx);
 
-		e->all_read = sift_colsrc_is_table(rel->rd_rel->relam);
+		e->all_read = sift_colsrc_is_table(relid);
 		foreach_oid(ix, RelationGetIndexList(rel))
 		{
 			Relation	idx;
 
-			if (!sift_colsrc_is_index(get_rel_relam(ix)))
+			if (!sift_colsrc_reads_index(ix))
 				continue;
 			idx = index_open(ix, AccessShareLock);
 			if (sift_index_ready(idx))	/* the cache is dropped by the relcache invalidation that makes a built index ready */

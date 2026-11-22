@@ -144,7 +144,7 @@ def run_case(name, c, args, rows, sizes_override):
                     # the first plan of a fresh backend: folded from the segment's leaf statistics block (the shared table of the server is off for the session), and
                     # taken from that shared table, which the statement above has filled (the default of a server)
                     sets = [f'search_path = scal_{name}, public'] + ENGINES[eng]
-                    for label, extra in (('first-plan buffers', ['sift.col_leaf_cache_kb = 0']), ('first-plan buffers, shared', [])):
+                    for label, extra in (('first-plan buffers', ['sift.shared_cache_kb = 0']), ('first-plan buffers, shared', [])):
                         r1, _ = explain(q.sql(size), sets + extra, 0)
                         if r1 is not None and r1[3] is not None:
                             rows.setdefault((name, f'{q.name}[{label}]', eng, None if q.first_plan == 'info' else q.first_plan), []).append((size, r1[3]))

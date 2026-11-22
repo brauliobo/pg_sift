@@ -1,1 +1,1 @@
-col_ios_full_price	src/col/amscan/cost.c:probe_loops src/col/build/choices.c:add_from_caps src/col/rollup.c:leaf_label
+col_ios_full_price	src/col/v1/amscan/cost.c:probe_loops src/col/v1/build/choices.c:add_from_caps src/col/v1/rollup.c:leaf_label

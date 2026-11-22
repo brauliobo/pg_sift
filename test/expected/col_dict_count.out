@@ -302,7 +302,6 @@ SELECT dc_check('setting 14');
  setting 14: 162 counts, 0 differ
 (1 row)
 
-RESET sift.col_format_minor;
 CREATE TABLE dcs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO dcs SELECT g, 'k' || (g % 50) FROM generate_series(1, 20000) g;
 CREATE INDEX dcs_idx ON dcs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 's');

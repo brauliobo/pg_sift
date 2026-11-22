@@ -15,7 +15,10 @@ SELECT count(*) > 0 AS has_segment FROM sift.col_segments('dc_idx'::regclass) WH
  t
 (1 row)
 
--- a cache that holds five of the six dictionaries (the backend starts with none): the least recently used goes, the answers do not change
+-- a cache that holds five of the six dictionaries (the backend starts with none): the least recently used goes, the answers do not change. The limit is half way between what the caches of the
+-- backend hold with five of the dictionaries and with six
+SET sift.backend_cache_kb = 0;
+RESET sift.backend_cache_kb;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
 -------
@@ -28,20 +31,48 @@ SELECT rows FROM sift._test_col_counters('dc_idx', '0:eq:label 7');
    40
 (1 row)
 
-SELECT bytes AS one FROM sift._test_col_dict_cache(true) \gset
-SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 5.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT bytes AS one FROM sift._test_col_dict_cache(false) \gset
+SELECT sum(rows) AS rows FROM generate_series(1, 4) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
+ rows 
+------
+  160
+(1 row)
+
+SELECT cache_total AS five FROM sift._test_col_dict_cache(false) \gset
+SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
+ rows 
+------
+   40
+(1 row)
+
+SELECT cache_total AS six FROM sift._test_col_dict_cache(false) \gset
+SET sift.backend_cache_kb = 0;
+RESET sift.backend_cache_kb;
+SELECT set_config('sift.backend_cache_kb', (((:five + :six) / 2 + 1023) / 1024)::text, false) IS NOT NULL AS sized;
  sized 
 -------
  t
 (1 row)
 
-SELECT sum(rows) AS rows FROM generate_series(1, 5) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
+SELECT sum(rows) AS rows FROM generate_series(0, 4) l, LATERAL sift._test_col_counters('dc_idx', l || ':eq:label 7');
  rows 
 ------
   200
 (1 row)
 
-SELECT loads = 5 AS parsed, bytes <= :one * 5.5 AS within_the_limit FROM sift._test_col_dict_cache(true);
+SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
+ reset 
+-------
+ t
+(1 row)
+
+SELECT rows FROM sift._test_col_counters('dc_idx', '5:eq:label 7');
+ rows 
+------
+   40
+(1 row)
+
+SELECT loads = 1 AS parsed, bytes <= :one * 5.5 AS within_the_limit FROM sift._test_col_dict_cache(true);
  parsed | within_the_limit 
 --------+------------------
  t      | t
@@ -71,13 +102,13 @@ SELECT loads = 1 AS first_parsed_again, hits = 2 AS the_others_found FROM sift._
  t                  | t
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 -- one dictionary may take up to a half of the cache: a third of it is kept, one over a half is parsed for every scan, the answers do not change
 REINDEX INDEX dc_idx;
 NOTICE:  sift_col index "dc_idx": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dc_idx');
-SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 3 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT set_config('sift.backend_cache_kb', ((:one * 3 + 1023) / 1024)::int::text, false) IS NOT NULL AS sized;
  sized 
 -------
  t
@@ -107,7 +138,7 @@ SELECT loads = 1 AS parsed_once, hits = 1 AS found_again FROM sift._test_col_dic
  t           | t
 (1 row)
 
-SELECT set_config('sift.test_limits', 'dict_cache_kb=' || ((:one * 1.5 + 1023) / 1024)::int, false) IS NOT NULL AS sized;
+SELECT set_config('sift.backend_cache_kb', ((:one * 1.5 + 1023) / 1024)::int::text, false) IS NOT NULL AS sized;
  sized 
 -------
  t
@@ -131,7 +162,7 @@ SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col
  t                | t
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 -- the first scan of a segment parses a dictionary, the second finds it
 REINDEX INDEX dc_idx;
 NOTICE:  sift_col index "dc_idx": 1 advice (track_changes)
@@ -204,7 +235,7 @@ SELECT loads = 0 AS none_parsed, hits > 0 AS found FROM sift._test_col_dict_cach
 (1 row)
 
 -- a cache too small to keep a dictionary parses it every time, with the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 SELECT rows FROM sift._test_col_counters('dc_idx', '2:eq:label 7');
  rows 
 ------
@@ -223,7 +254,7 @@ SELECT loads = 2 AS parsed_each_time, hits = 0 AS none_found FROM sift._test_col
  t                | t
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 DROP TABLE dc;
 -- a dictionary of thousands of strings is searched in the stream, and parsed and kept once the backend has tested it often; when the cache cannot hold it that
 -- parse is not repeated for every test (it costs thousands of tests of the stream), and the answers do not change
@@ -236,7 +267,7 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 NOTICE:  sift_col index "dl_idx" is column format minor 33, which a library before 3.7 cannot read
 DETAIL:  The choice point_tid_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('dl_idx') says how to turn each choice off.
 HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
 -------
@@ -255,7 +286,7 @@ SELECT loads <= 2 AS parsed_at_most_twice, hits = 0 AS none_found FROM sift._tes
  t                    | t
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 DROP TABLE dl;
 -- the lengths of the lists of a unit are decoded once as well (integer elements: no dictionary is involved): the second scan finds them, the answers are the same
 CREATE TABLE lc (id int, parent_id int, parts jsonb) WITH (autovacuum_enabled = false);
@@ -292,7 +323,7 @@ SELECT (SELECT count(*) FROM lc_first) AS groups, (SELECT count(*) FROM ((TABLE 
 (1 row)
 
 -- a cache too small to keep them (of a segment written again: the older ones are still found) decodes them every time, with the same answers
-SET sift.test_limits = 'dict_cache_kb=1';
+SET sift.backend_cache_kb = 1;
 REINDEX INDEX lc_idx;
 NOTICE:  sift_col index "lc_idx": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
@@ -317,7 +348,7 @@ SELECT (SELECT count(*) FROM ((TABLE lc_small2 EXCEPT TABLE lc_off) UNION ALL (T
            0
 (1 row)
 
-RESET sift.test_limits;
+RESET sift.backend_cache_kb;
 DROP TABLE lc;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

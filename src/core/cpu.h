@@ -9,7 +9,7 @@
  * The levels are ranks within the architecture: scalar, then the vector levels in increasing order of what they ask of the CPU. x86-64 has two
  * (AVX2, AVX-512); AArch64 has one, NEON (Advanced SIMD), which every AArch64 CPU has and which needs no target attribute, so it takes the number of
  * the first level. sift_simd_level_name() names a level for the architecture the library is built for. sift.simd accepts the names of both
- * architectures, so that one configuration file serves a mixed fleet, and a name of the other architecture caps nothing. SVE is not used: Apple
+ * architectures, so that one configuration file serves a mixed fleet, and a name of the other architecture caps nothing. SVE is not a level: the loops of core/fmv.h that it speeds up pick it from the flags. Apple
  * silicon has none.
  */
 #ifndef SIFT_CPU_H
@@ -27,10 +27,17 @@ typedef enum SiftSimdLevel
 #define SIFT_CPU_BMI2			0x0002	/* PDEP/PEXT present */
 #define SIFT_CPU_BMI2_FAST		0x0004	/* ... and not microcoded (not Zen1/2) */
 #define SIFT_CPU_AVX2			0x0008
-#define SIFT_CPU_AVX512			0x0010	/* F+BW+VL+DQ */
+#define SIFT_CPU_AVX512			0x0010	/* F+BW+VL+DQ+CD (conflict detection) */
 #define SIFT_CPU_AVX512_VPOPCNT 0x0020
 #define SIFT_CPU_AVX512_VBMI2	0x0040
 #define SIFT_CPU_NEON			0x0080
+#define SIFT_CPU_AVX512_VBMI	0x0100	/* VPERMB */
+#define SIFT_CPU_X86_V3			0x0200	/* x86-64-v3: AVX2, BMI1, BMI2, FMA, LZCNT, POPCNT */
+#define SIFT_CPU_X86_V4			0x0400	/* x86-64-v4: v3 and AVX-512 F, BW, CD, DQ, VL */
+#define SIFT_CPU_ARM_CRC32		0x0800
+#define SIFT_CPU_ARM_DOTPROD	0x1000
+#define SIFT_CPU_ARM_SVE		0x2000
+#define SIFT_CPU_ARM_SVE2		0x4000
 
 typedef struct SiftCpu
 {
@@ -53,7 +60,7 @@ extern PGDLLIMPORT SiftCpu sift_cpu;
 #define SIFT_TARGET_AVX2 \
 	__attribute__((target("avx2,bmi,bmi2,popcnt")))
 #define SIFT_TARGET_AVX512 \
-	__attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx512vpopcntdq,avx512vbmi2,bmi,bmi2,popcnt")))
+	__attribute__((target("avx512f,avx512bw,avx512vl,avx512dq,avx512cd,avx512vpopcntdq,avx512vbmi,avx512vbmi2,bmi,bmi2,popcnt")))
 #endif
 
 typedef void (*SiftDispatchRebind) (const SiftCpu *cpu);
@@ -65,5 +72,11 @@ extern void sift_cpu_init(void);
 extern void sift_cpu_register(SiftDispatchRebind fn);
 
 extern const char *sift_simd_level_name(SiftSimdLevel level);
+
+/* The level a name of either architecture (or auto; NULL is auto) stands for, -1 for another word; for the hosts without a sift.simd setting (SIFT_SIMD, sift_simd()) */
+extern int	sift_cpu_parse_level(const char *name);
+
+/* Caps the active level at level (and at what the CPU has) and runs the rebinds */
+extern void sift_cpu_set_level(SiftSimdLevel level);
 
 #endif							/* SIFT_CPU_H */

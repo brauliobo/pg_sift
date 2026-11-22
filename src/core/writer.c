@@ -20,6 +20,7 @@
 #include "core/store.h"
 #include "core/store_int.h"
 #include "core/visibility.h"
+#include "core/maint_pacer.h"
 #include "core/waits.h"
 
 #define RUN_MIN				16
@@ -229,9 +230,10 @@ wt_spare(SiftWriteTarget *wt, BlockNumber start, uint32 n)
 #define THROTTLE_PAGES	16		/* pages (128 kB) of I/O that earn one delay */
 
 void
-sift_wt_throttle(SiftWriteTarget *wt, int delay_ms)
+sift_wt_pace(SiftWriteTarget *wt, int tier)
 {
-	wt->delay_ms = delay_ms;
+	wt->paced = true;
+	wt->tier = tier;
 }
 
 void
@@ -245,9 +247,7 @@ sift_wt_wal_rate(SiftWriteTarget *wt, int kb_per_sec)
 void
 sift_nap(long ms)
 {
-	(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, ms, sift_wait_event(SIFT_WAIT_NAP));
-	ResetLatch(MyLatch);
-	CHECK_FOR_INTERRUPTS();
+	sift_wait(SIFT_WAIT_NAP, ms);
 }
 
 /* Sleeps until the WAL the backend wrote since the target was limited is within what its rate allows for the time that went by */
@@ -261,29 +261,24 @@ wt_wal_wait(SiftWriteTarget *wt)
 
 		if (ahead <= 0)
 			return;
-		sift_nap(Min(ahead, 1000));
+		sift_wait(SIFT_WAIT_MAINT_PACE, Min(ahead, 1000));
 	}
 }
 
 /* pages charged since the last sleep, whatever the target: a rewrite by partitions opens a target for each, and the pages under THROTTLE_PAGES of each would never sleep */
 static uint64 charged;
 
-/* Counts pages of I/O of a throttled target and sleeps a delay for every THROTTLE_PAGES, interruptibly; a WAL rate sleeps before the page that would exceed it */
+/* Counts pages of I/O of a paced target and sleeps what the pacer says for every THROTTLE_PAGES, interruptibly; a WAL rate sleeps before the page that would exceed it */
 void
 sift_wt_charge(SiftWriteTarget *wt, uint64 pages)
 {
 	if (wt->wal_kbps > 0)
 		wt_wal_wait(wt);
-	if (wt->delay_ms == 0)
+	if (!wt->paced)
 		return;
 	charged += pages;
 	for (; charged >= THROTTLE_PAGES; charged -= THROTTLE_PAGES)
-	{
-#ifdef SIFT_TESTING
-		elog(LOG, "sift test: throttle nap");	/* maint_cost_delay counts the naps of the worker: they follow from the pages it wrote, not from the clock */
-#endif
-		sift_nap(wt->delay_ms);
-	}
+		sift_pacer_pause(wt->tier);
 }
 
 /* Writes a complete page; BULK takes ownership of a smgr_bulk_get_buf page */

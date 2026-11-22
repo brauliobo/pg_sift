@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A VACUUM that runs while a top-N scan (Custom Scan (SiftAgg) with Top-N) is open, after its snapshot and its source, before it reads the
 # units. The scan keeps the rows its snapshot sees and, at the end,
 # fetches the n winners from the heap by TID: a row of a tuple that VACUUM removed after the snapshot, on a page it made all-visible, would

@@ -1,6 +1,7 @@
 -- Correlated LIMIT 1 lookups retain native row selection and per-item weighting.
 -- Native correlated children are rescanned for each distinct indexed input tuple.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, kind text, document jsonb, payload text);
 INSERT INTO events

@@ -1,4 +1,4 @@
--- The fill of a scope index expands the member keys of a batch of fact rows by the scope keys the scope relation has for them, under one snapshot (col/scope_fill.c).
+-- The fill of a scope index expands the member keys of a batch of fact rows by the scope keys the scope relation has for them, under one snapshot (col/v1/scope_fill.c).
 -- Both ways to know the pairs (the relation read once, the btree probed per member) give the entries of the join, for members in 0..6 keys, NULL and unknown members.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

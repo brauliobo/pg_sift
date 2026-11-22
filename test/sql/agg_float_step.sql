@@ -132,11 +132,9 @@ SET sift.test_limits = 'combo_entries=64';
 SELECT fs_restarted('SELECT floor(x / 5) AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') AS step_restarts;
 SELECT fs_restarted('SELECT floor(x / 5) + x AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') > 0 AS value_restarts;
 -- off: the values keep their ids (the cache starts again for the values of the same range), the rows are the same
-SET sift.agg_float_step = off;
 SELECT fs_restarted('SELECT floor(x / 5) AS k, count(*) FROM fs_t WHERE x BETWEEN -100 AND 100 GROUP BY 1') > 0 AS off_restarts;
 RESET sift.test_limits;
 SELECT count(*) FILTER (WHERE NOT same) AS differing, count(*) AS queries FROM fs_compare();
-RESET sift.agg_float_step;
 
 -- rows changed after the seal
 UPDATE fs_t SET x = x + 12.3 WHERE id % 11 = 0;

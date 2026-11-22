@@ -339,10 +339,6 @@ const SiftSrcProvider part_provider = {
 	.unit_rollup_tuples = part_unit_rollup_tuples,
 	.unit_rollup = part_unit_rollup,
 	.unit_rollup_miss = part_unit_rollup_miss,
-	.gpu_unit = part_gpu_unit,
-	.gpu_dense = part_gpu_dense,
-	.gpu_chunk = part_gpu_chunk,
-	.gpu_dict = part_gpu_dict,
 };
 
 /* ---- planner side ---- */

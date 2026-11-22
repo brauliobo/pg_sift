@@ -24,7 +24,7 @@ PAR_SEG_KB=1024
 BOUND=$((SEG_KB * 1024 * 21 / 10 + 6 * MB))
 PAR_BOUND=$((PAR_SEG_KB * 1024 * 21 / 10 + 6 * MB))
 PICK_BUDGET=$((24 * MB))
-LOWER="build_serial_budget=0,writer_min_budget=$MB"
+LOWER=""
 
 plan 10
 node_init bm 91 "sift.col_build_source = auto

@@ -1,6 +1,6 @@
 /*
  * col/track_hear.h - the triggers of an index with track_changes as a set: one AFTER DELETE and one AFTER UPDATE on the table of the index and, for a statement trigger, on every table above it
- * (col/track_hear.c). col/track.c decides what the log may be taken for from them.
+ * (col/v1/track_hear.c). col/v1/track.c decides what the log may be taken for from them.
  */
 #ifndef SIFT_COL_TRACK_HEAR_H
 #define SIFT_COL_TRACK_HEAR_H
@@ -12,6 +12,8 @@
 #include "utils/rel.h"
 
 #define HEAR_FUNCTION	"col_track_old_rows"
+#define HEAR_EVENT(e)	(1 << (e))
+#define HEAR_BOTH		(HEAR_EVENT(0) | HEAR_EVENT(1))
 
 /*
  * The triggers of an index are the rows of pg_trigger that it depends on (NORMAL): for each table whose statements it must hear, an AFTER DELETE and an AFTER UPDATE (an internal trigger gets
@@ -28,7 +30,7 @@ typedef struct HearTrig
 	Oid			oid;
 	Oid			relid;
 	NameData	name;
-	int			event;			/* 0: AFTER DELETE, 1: AFTER UPDATE */
+	int			events;			/* HEAR_EVENT(0): AFTER DELETE, HEAR_EVENT(1): AFTER UPDATE; both for the one trigger of an index of format major 2 */
 	bool		ok;
 	bool		origin;			/* what ok says, but enabled for the origin only (ENABLE TRIGGER) */
 	uint32		witness;
@@ -51,7 +53,7 @@ typedef struct Hear
 typedef struct HearWant
 {
 	Oid			relid;
-	int			event;
+	int			events;
 } HearWant;
 
 typedef struct HearPlan
@@ -74,5 +76,8 @@ extern void sift_col_hear_drop_all(Relation index);
 extern HearPlan sift_col_hear_plan(Relation heap, Relation index, List *trigs);
 extern bool sift_col_hear_plan_empty(const HearPlan *plan);
 extern bool sift_col_hear_apply(Relation heap, Relation index, const HearPlan *plan);
+
+extern bool sift_col_hear_may_make(Relation heap, Relation index, bool concurrent);
+extern void sift_col_hear_remove(Relation index);
 
 #endif

@@ -1,4 +1,4 @@
--- The decisions CREATE INDEX makes before it reads the table (key_cut, key_order, the point directory, the arrays, the paths) read the row estimate of pg_class:
+-- The decisions CREATE INDEX makes before it reads the table (key_order, the point directory, the arrays, the paths) read the row estimate of pg_class:
 -- a table of 250 million, a billion, four billion rows and the most a float holds must decide as it does, with no failure, no allocation by rows and no product
 -- that wraps. The estimate is set on a small table (the build writes the real one back when it ends); the sampled rows are the same at every scale.
 CREATE EXTENSION pg_sift;
@@ -24,12 +24,12 @@ CREATE TABLE dj (id int PRIMARY KEY, doc jsonb, pad text) WITH (fillfactor = 10,
 INSERT INTO dj SELECT i, (SELECT jsonb_object_agg('f' || ((i * 37 + j * 51) % 5000), j) FROM generate_series(1, 100) j), repeat('x', 100) FROM generate_series(1, 6000) i;
 VACUUM (FREEZE, ANALYZE) dj;
 
-CREATE FUNCTION kscale(tbl regclass, cols text, estimate float4) RETURNS TABLE (key_cut text, key_order text, point_tid text, paths text) LANGUAGE plpgsql AS $$
+CREATE FUNCTION kscale(tbl regclass, cols text, estimate float4) RETURNS TABLE (key_order text, point_tid text, paths text) LANGUAGE plpgsql AS $$
 DECLARE ix text := 'kscale_ix';
 BEGIN
 	UPDATE pg_class SET reltuples = estimate WHERE oid = tbl;
 	EXECUTE format('CREATE INDEX %I ON %s USING sift_col (%s)', ix, tbl, cols);
-	RETURN QUERY SELECT coalesce(max(substring(o from '^key_cut=(.*)$')), ''), coalesce(max(substring(o from '^key_order=(.*)$')), ''),
+	RETURN QUERY SELECT coalesce(max(substring(o from '^key_order=(.*)$')), ''),
 		coalesce(max(substring(o from '^point_tid_columns=(.*)$')), ''), coalesce(max(substring(o from '^paths=(.*)$')), '')
 		FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = ix;
 	EXECUTE format('DROP INDEX %I', ix);
@@ -46,16 +46,6 @@ UPDATE pg_class SET reltuples = 3.4e38 WHERE relname = 'ds';
 CREATE INDEX ds_big ON ds USING sift_col (id, tenant_id) WITH (key_cut = 'off');
 DROP INDEX ds_big;
 UPDATE pg_class SET reltuples = 60000 WHERE relname = 'ds';
-
--- sift.key_cut_decision reads the estimate too: the sample is the same, the verdict is
-CREATE INDEX ds_ix ON ds USING sift_col (id, tenant_id, ref_id, d, tags, v) WITH (key_cut = 'off');
-CREATE FUNCTION kdecide(estimate float4) RETURNS TABLE (leaf text, sampled float8, scattered boolean, decision text) LANGUAGE plpgsql AS $$
-BEGIN
-	UPDATE pg_class SET reltuples = estimate WHERE relname = 'ds';
-	RETURN QUERY SELECT d.leaf, d.sampled, d.reads > d.ideal, d.decision FROM sift.key_cut_decision('ds_ix') d;
-END $$;
-SELECT e AS estimate, k.* FROM unnest(ARRAY[60000, 257000000, 1000000000, 4300000000, 3.4e38]::float4[]) e, LATERAL kdecide(e) k ORDER BY e;
-DROP FUNCTION kdecide(float4);
 
 DROP FUNCTION kscale(regclass, text, float4);
 DROP TABLE ds, dj;

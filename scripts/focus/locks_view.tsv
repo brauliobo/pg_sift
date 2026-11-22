@@ -1,1 +1,1 @@
-locks_view	src/agg/flat/pull.c:flat_plain_select src/agg/flat/pull.c:simple_subquery src/agg/two/arms.c:append_arms src/bm25/planner.c:carry_parent_scores src/col/point.c:ent_sort_cmp src/col/point.c:ent_sort_cmp_rec
+locks_view	src/agg/flat/pull.c:flat_plain_select src/agg/flat/pull.c:simple_subquery src/agg/two/arms.c:append_arms src/bm25/planner.c:carry_parent_scores

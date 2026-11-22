@@ -1,9 +1,9 @@
 /*
  * col/scope_keys.c - the keys of a scope that are not integers (text, varchar, uuid): their codes (docs/COL-SCOPE.md "Key types")
  *
- * The scope machinery identifies a scope key by an int8: the derived leaf the units are cut by, the pairs, the keys of a read. A text or uuid key reaches it as its code in the value store of the
- * key column of the pair relation (col/vstore/vstore.h): a code is the position at which the writer of a scope segment (the build, a promotion, a merge) appended the key, and it never moves,
- * because the store of a scope key is pinned (no epoch begins: sift_scope_key_store_pinned). A writer interns the keys it expands; a reader looks them up and never appends (a standby reads):
+ * The scope machinery identifies a scope key by an int8: the derived leaf the units are cut by, the pairs, the keys of a read. A text or uuid key reaches it as its code in the scope key store of the
+ * key column of the pair relation (col/keystore/keystore.h): a code is the position at which the writer of a scope segment (the build, a promotion, a merge) appended the key, and it never moves,
+ * because the store is append-only. A writer interns the keys it expands; a reader looks them up and never appends (a standby reads):
  * a key the store has no code for has no stored unit, and the reader gives it a code of its own for the length of the statement (a negative one, which no stored unit has), so that its pairs, its
  * delta and its group are those of any other key. The map of a statement is one object: every code the statement uses comes from it and goes back to a value through it.
  * The equality of the values is that of their bytes, which the btree of the pairs, the store and the planner agree on for a deterministic collation: a column of another is refused.
@@ -19,9 +19,9 @@
 #include "utils/varlena.h"
 
 #include "col/am.h"
-#include "col/conn.h"
+#include "col/v1/conn.h"
 #include "col/scope.h"
-#include "col/vstore/vstore.h"
+#include "col/keystore/keystore.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_member_hash_bits = 0;
@@ -35,7 +35,7 @@ struct SiftKeyMap
 	bool		write;
 	SiftCDict  *pending;		/* collecting: the values the store lacks, to intern together */
 	SiftCDict  *extra;			/* a reader's: the values the store lacks, as the transient codes -1, -2, ... */
-	SiftVStore *held;			/* the store, open for a loop that asks for many codes (sift_keymap_hold) */
+	SiftKeyStore *held;			/* the store, open for a loop that asks for many codes (sift_keymap_hold) */
 	int			holds;
 	MemoryContext cx;
 	SiftCcPolicy pol;
@@ -123,17 +123,17 @@ sift_member_hash_bytes(const char *s, uint32 len)
 }
 
 /* The store, open for one operation (its view is the backend's: the lock is held to the end of the transaction) */
-static SiftVStore *
+static SiftKeyStore *
 store_open(const SiftKeyMap *m)
 {
-	return m->held != NULL ? m->held : sift_vstore_open(m->store, m->write ? RowExclusiveLock : AccessShareLock);
+	return m->held != NULL ? m->held : sift_keystore_open(m->store, m->write ? RowExclusiveLock : AccessShareLock);
 }
 
 static void
-store_close(const SiftKeyMap *m, SiftVStore *vs)
+store_close(const SiftKeyMap *m, SiftKeyStore *vs)
 {
 	if (vs != m->held)
-		sift_vstore_close(vs);
+		sift_keystore_close(vs);
 }
 
 /* A loop that asks for the code of every row it reads keeps the store open: opening it for each (a lock, the catalog) costs more than the lookup */
@@ -149,7 +149,7 @@ sift_keymap_release(SiftKeyMap *m)
 {
 	if (OidIsValid(m->store) && --m->holds == 0)
 	{
-		sift_vstore_close(m->held);
+		sift_keystore_close(m->held);
 		m->held = NULL;
 	}
 }
@@ -160,13 +160,13 @@ sift_keymap_open(Relation rel, AttrNumber att, bool write)
 	Form_pg_attribute a = TupleDescAttr(RelationGetDescr(rel), att - 1);
 	Oid			store;
 	SiftKeyMap *m;
-	SiftVStore *vs;
+	SiftKeyStore *vs;
 
 	if (!sift_keymap_type(a->atttypid))
 		return NULL;
-	store = sift_vstore_find(rel, att);
+	store = sift_keystore_find(rel, att);
 	if (!OidIsValid(store))
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("column \"%s\" of \"%s\" has no value store for the codes of a scope key", NameStr(a->attname), RelationGetRelationName(rel)),
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_OBJECT), errmsg("column \"%s\" of \"%s\" has no scope key store for the codes of a scope key", NameStr(a->attname), RelationGetRelationName(rel)),
 						errhint("REINDEX the scope index that declares it.")));
 	m = palloc0(sizeof(SiftKeyMap));
 	m->cx = CurrentMemoryContext;
@@ -176,7 +176,7 @@ sift_keymap_open(Relation rel, AttrNumber att, bool write)
 	m->write = write;
 	sift_cc_policy_default(&m->pol);
 	vs = store_open(m);
-	sift_vstore_refresh(vs);
+	sift_keystore_refresh(vs);
 	store_close(m, vs);
 	return m;
 }
@@ -224,13 +224,11 @@ sift_keymap_typid(const SiftKeyMap *m)
 static void
 intern_batch(SiftKeyMap *m, SiftCDict *batch)
 {
-	SiftVStore *vs = store_open(m);
+	SiftKeyStore *vs = store_open(m);
 	uint32	   *map = palloc(Max(batch->n, 1) * sizeof(uint32));
-	uint64		epoch,
-				ncodes;
 
-	(void) sift_vstore_intern(vs, batch, &m->pol, map, &epoch, &ncodes);
-	sift_vstore_refresh(vs);
+	(void) sift_keystore_intern(vs, batch, &m->pol, map);
+	sift_keystore_refresh(vs);
 	store_close(m, vs);
 	pfree(map);
 }
@@ -259,14 +257,14 @@ sift_keymap_collect(SiftKeyMap *m, bool on)
 static int64
 stored_code(SiftKeyMap *m, const char *s, uint32 len)
 {
-	SiftVStore *vs = store_open(m);
-	int64		c = sift_vstore_find_code(vs, s, len);
+	SiftKeyStore *vs = store_open(m);
+	int64		c = sift_keystore_find_code(vs, s, len);
 
 	if (c < 0 && m->pending == NULL)
 	{
 		/* a code in a segment of the directory the statement read was appended before that segment was published: the store as it is now has it */
-		sift_vstore_refresh(vs);
-		c = sift_vstore_find_code(vs, s, len);
+		sift_keystore_refresh(vs);
+		c = sift_keystore_find_code(vs, s, len);
 	}
 	store_close(m, vs);
 	if (c < 0 && m->pending != NULL)
@@ -281,7 +279,7 @@ stored_code(SiftKeyMap *m, const char *s, uint32 len)
 		(void) sift_cdict_intern(one, s, len);
 		intern_batch(m, one);
 		vs = store_open(m);
-		c = sift_vstore_find_code(vs, s, len);
+		c = sift_keystore_find_code(vs, s, len);
 		store_close(m, vs);
 	}
 	return c;
@@ -323,9 +321,9 @@ sift_keymap_datum(SiftKeyMap *m, int64 code)
 		s = sift_cdict_str(m->extra, (uint32) (-1 - code), &len);
 	else
 	{
-		SiftVStore *vs = store_open(m);
+		SiftKeyStore *vs = store_open(m);
 
-		s = sift_vstore_string(vs, (uint32) code, &len);
+		s = sift_keystore_string(vs, (uint32) code, &len);
 		store_close(m, vs);
 	}
 	if (m->typid == UUIDOID)
@@ -352,7 +350,7 @@ sift_keymap_member_hash(SiftKeyMap *m, int64 code)
 {
 	uint32		len;
 	const char *s;
-	SiftVStore *vs;
+	SiftKeyStore *vs;
 	uint64		h;
 
 	if (code < 0)
@@ -361,7 +359,7 @@ sift_keymap_member_hash(SiftKeyMap *m, int64 code)
 		return sift_member_hash_bytes(s, len);
 	}
 	vs = store_open(m);
-	s = sift_vstore_string(vs, (uint32) code, &len);
+	s = sift_keystore_string(vs, (uint32) code, &len);
 	h = sift_member_hash_bytes(s, len);
 	store_close(m, vs);
 	return h;

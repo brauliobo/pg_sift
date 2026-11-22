@@ -14,6 +14,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
+#include "agg/plan/safety.h"
 
 typedef struct InlineCte
 {
@@ -98,11 +99,11 @@ inline_walker(Node *n, InlineSet *set)
 }
 
 static bool
-inlinable(CommonTableExpr *cte)
+inlinable(const Query *outer, CommonTableExpr *cte)
 {
 	Query	   *q = castNode(Query, cte->ctequery);
 
-	return !cte->cterecursive && cte->cterefcount == 1 && cte->ctematerialized != CTEMaterializeAlways && q->commandType == CMD_SELECT &&
+	return !outer->hasRowSecurity && !q->hasRowSecurity && !cte->cterecursive && cte->cterefcount == 1 && cte->ctematerialized != CTEMaterializeAlways && q->commandType == CMD_SELECT &&
 		!dml_or_volatile((Node *) q, NULL);
 }
 
@@ -126,7 +127,7 @@ inline_level(Node *n, void *context)
 			CommonTableExpr *cte = list_nth_node(CommonTableExpr, q->cteList, i);
 			InlineCte	c = {cte->ctename, castNode(Query, cte->ctequery)};
 
-			if (!inlinable(cte))
+			if (!inlinable(q, cte))
 			{
 				i++;
 				continue;

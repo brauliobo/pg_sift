@@ -4,7 +4,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET check_function_bodies = off;
 
@@ -31,7 +31,6 @@ CREATE TABLE t3 (LIKE t1 INCLUDING ALL) WITH (autovacuum_enabled = false);
 CREATE INDEX t1_ix ON t1 USING sift_col (id, g, v);
 CREATE INDEX t2_ix ON t2 USING sift_col (id, g, v);
 CREATE INDEX t3_ix ON t3 USING sift_col (id, g, v);
-SET sift.col_wbuf_ref = on;
 
 -- two slots: the first two buffers take them, the third has none
 SELECT sift._test_arena_gc();

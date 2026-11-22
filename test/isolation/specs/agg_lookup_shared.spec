@@ -1,6 +1,6 @@
-# The rows a Custom Scan (SiftAgg) kept of a joined table in shared memory (sift.agg_lookup_shared_kb) serve the queries of the other backends only while the table
+# The rows a Custom Scan (SiftAgg) kept of a joined table in shared memory (sift.shared_cache_kb) serve the queries of the other backends only while the table
 # is what it was: a write in flight, committed or rolled back, an update, a delete, and a snapshot older than a committed write all give the rows of the normal plan.
-# The sessions keep nothing of their own (sift.agg_lookup_cache_kb = 0): a cached table is one another backend loaded.
+# The sessions keep nothing of their own (sift.backend_cache_kb = 0): a cached table is one another backend loaded.
 # requires: build col
 
 setup
@@ -50,12 +50,12 @@ teardown
 }
 
 session s1
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 8192; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 8192; }
 step s1run	{ SELECT iso_ls_run(); }
 step s1runt	{ SELECT iso_ls_runt(); }
 
 session s2
-setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.agg_lookup_cache_kb = 0; SET sift.agg_lookup_shared_kb = 8192; }
+setup		{ SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 1000; SET random_page_cost = 1000; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 8192; }
 step s2run	{ SELECT iso_ls_run(); }
 step s2runt	{ SELECT iso_ls_runt(); }
 step s2rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_ls_dim; }

@@ -38,7 +38,7 @@ SELECT sift.table_set_option(tbl => 'ot2', name => 'wide_rows', value => 'off');
 SELECT sift.table_reset_option(tbl => 'ot2', name => 'wide_rows');
 SELECT name, value, source FROM sift.table_options('ot') WHERE source = 'table' ORDER BY name;
 
--- a value the setting refuses is refused, with the reason of the setting
+-- a value the option refuses is refused, with its reason
 SELECT sift.table_set_option('ot', 'write_buffer_limit', 'abc');
 SELECT sift.table_set_option('ot', 'write_buffer_limit', '1MB');
 SELECT sift.table_set_option('ot', 'compression', 'bogus!');
@@ -67,16 +67,22 @@ SET ROLE opt_owner;
 SELECT count(*) FROM sift.table_option_values;
 RESET ROLE;
 
--- precedence: the option of the table beats the setting, whatever its source; reset takes the table back to the setting
-SET sift.table_write_buffer_limit = '8MB';
-SELECT name, value, source FROM sift.table_options('ot2') WHERE name = 'write_buffer_limit';
-SELECT sift.table_get_option('ot', 'write_buffer_limit');
-SELECT sift.table_set_option('ot2', 'write_buffer_limit', '4MB');
-SELECT sift.table_get_option('ot2', 'write_buffer_limit');
-SELECT name, value, source FROM sift.table_options('ot2') WHERE name = 'write_buffer_limit';
-SELECT sift.table_reset_option('ot2', 'write_buffer_limit');
-SELECT sift.table_get_option('ot2', 'write_buffer_limit');
-RESET sift.table_write_buffer_limit;
+-- precedence: the option of the table beats the setting that stands for it, whatever its source; reset takes the table back to the setting (a table of Format 2.0 follows sift.dead_rewrite_pct, a table of Format 1 no setting)
+SET sift.test_create_format1 = off;
+CREATE TABLE ot3 (id int, v text) USING sift_table;
+RESET sift.test_create_format1;
+SELECT name, value, source, default_value FROM sift.table_options('ot3') WHERE name IN ('dead_rewrite_pct', 'compression') ORDER BY name;
+SET sift.dead_rewrite_pct = 25;
+SELECT name, value, source, default_value FROM sift.table_options('ot3') WHERE name = 'dead_rewrite_pct';
+SELECT name, value, source, default_value FROM sift.table_options('ot2') WHERE name = 'dead_rewrite_pct';
+SELECT sift.table_set_option('ot3', 'dead_rewrite_pct', '40');
+SELECT sift.table_get_option('ot3', 'dead_rewrite_pct');
+SELECT name, value, source, default_value FROM sift.table_options('ot3') WHERE name = 'dead_rewrite_pct';
+SELECT sift.table_reset_option('ot3', 'dead_rewrite_pct');
+SELECT sift.table_get_option('ot3', 'dead_rewrite_pct');
+RESET sift.dead_rewrite_pct;
+SELECT sift.table_get_option('ot3', 'dead_rewrite_pct');
+DROP TABLE ot3;
 
 -- the option acts: a row larger than the write buffer is refused by the table that turns wide rows off, with the setting on
 SELECT sift.table_set_option('ot', 'wide_rows', 'off');

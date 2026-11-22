@@ -44,10 +44,10 @@ SELECT count(*) AS queries, sum(cnt('px', q)) AS hits FROM qs() q;
 
 -- the same through the bitmap heap scan
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 SELECT q, cnt('px', q) AS prefixed, oracle('pn', q) AS oracle FROM qs() q WHERE cnt('px', q) <> oracle('pn', q);
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 
 -- a short prefix is not an expansion; a longer one over the limit reads as the one term it would be (no error)
 SET sift.max_expansions = 1;

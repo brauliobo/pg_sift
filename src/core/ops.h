@@ -10,7 +10,7 @@
 #include "utils/rel.h"
 
 /* The extension version this library implements (the control file's default_version) */
-#define SIFT_MODULE_VERSION		"5.1"
+#define SIFT_MODULE_VERSION		"6.0"
 
 extern int	sift_log_min_duration;
 
@@ -19,6 +19,15 @@ extern void sift_check_maintain(Relation index);
 
 /* LOG line for an operation that started at start and took at least sift.log_min_duration; docs or bytes < 0 are left out */
 extern void sift_log_maint(Relation index, const char *what, TimestampTz start, int64 docs, int64 bytes);
+
+/* Warnings that say the same of an index again and again, one for each index and a minute in a backend, whatever the statements that find it (the count of what they report is kept elsewhere) */
+typedef enum SiftWarnKind
+{
+	SIFT_WARN_QUARANTINED,
+	SIFT_WARN_BUFFER_OPEN,
+	SIFT_WARN_KINDS
+} SiftWarnKind;
+extern bool sift_warn_due(Relation index, SiftWarnKind kind);
 
 /* LOG line for an insert that spent that long making room in the directory of the index (it merges when the maintenance worker lags) */
 extern void sift_log_stall(Relation index, TimestampTz start);

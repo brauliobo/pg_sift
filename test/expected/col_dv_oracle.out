@@ -245,7 +245,6 @@ SELECT sift.col_verify('events_c', true) IS NOT NULL AS verified;
 -- blocks of each unit against its addresses; a range of ids deletes whole heap pages (many rows of a block in one unit) and a stride deletes one row of a page
 CREATE TABLE events_k (id int PRIMARY KEY, grp int NOT NULL, counter_a int, tenant_id int, label text, note text) WITH (autovacuum_enabled = false, fillfactor = 60);
 INSERT INTO events_k SELECT i, (i::bigint * 7919 % 300)::int, i, i % 10, 'x', repeat('n', 150) FROM generate_series(1, 30000) i;
-SET sift.col_unit_rows = 1200;
 CREATE INDEX events_kc ON events_k USING sift_col (id, grp, counter_a, tenant_id) WITH (key_cut = 'grp', track_changes = 'id');
 VACUUM (FREEZE) events_k;
 SELECT sum(units) > 1 AS several_units FROM sift.col_segments('events_kc') WHERE kind = 'immutable';

@@ -526,7 +526,7 @@ sweep(Relation index)
 	int64		blocks;
 
 	MAINT_LOCK(index, ExclusiveLock);
-	orphans = sift_store_orphans(index);
+	orphans = sift_store_orphans(index, NULL);
 	blocks = bms_num_members(orphans);
 	rel = sift_store_block_extents(orphans, &n);
 	if (n > 0)

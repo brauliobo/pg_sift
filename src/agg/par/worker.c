@@ -11,6 +11,8 @@
 #include "col/dictshm.h"
 #include "agg/memo.h"
 #include "agg/par/int.h"
+#include "agg/v6/v6.h"
+#include "agg/v6/v6_live.h"
 #include "core/errctx.h"
 
 static void

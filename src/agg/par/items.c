@@ -164,8 +164,8 @@ scan_units(AggExec *ex, uint32 lo, uint32 hi)
 		process_unit(ex);
 		if (ex->spill)
 			spill_check(ex);
-		if (ex->pass_stop || sift_aggbe_stopped(ex->be, ex->be_state))
-			break;				/* the scan is run again without the backend (backend_finish) */
+		if (ex->pass_stop)
+			break;
 	}
 }
 
@@ -322,7 +322,7 @@ scan_items(AggExec *ex)
 		}
 		return;
 	}
-	while (!ex->pass_stop && !sift_aggbe_stopped(ex->be, ex->be_state) && take_kept_item(ex, &item))
+	while (!ex->pass_stop && take_kept_item(ex, &item))
 	{
 		test_leader_wait(ex);
 		scan_item(ex, item);
@@ -356,5 +356,5 @@ par_note_overflow(AggExec *ex)
 bool
 par_overflowed(const AggExec *ex)
 {
-	return ex->shared != NULL && pg_atomic_read_u32(&ex->shared->overflow) != 0;
+	return ex->shared != NULL && (ex->par == NULL || ex->par->pcxt != NULL) && pg_atomic_read_u32(&ex->shared->overflow) != 0;
 }

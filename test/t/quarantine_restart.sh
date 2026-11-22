@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# An autovacuum worker that meets the damage of a sift_col index finishes its VACUUM without the index and has the metapage flagged; after a restart the flag alone keeps the index out
+# An autovacuum worker that meets the damage of a sift_col index fails once and the VACUUMs after it skip the index, and the metapage is flagged; after a restart the flag alone keeps the index out
 # of service (sift.quarantine lists it, statements run on the heap), and REINDEX puts it back.
 . "$(dirname "$0")/lib.bash"
 
@@ -18,7 +18,7 @@ check "the index is planned before the damage" uses_sift
 
 sql p "SELECT sift._test_poke('a_idx', 2, 8176, 9, 2)" "CHECKPOINT" "DELETE FROM a WHERE id <= 3000" >/dev/null || bail "damage failed"
 check "autovacuum skips the damaged index, and the worker it asked for flags the metapage" wait_for "state 'true true'" 90
-check "no autovacuum run failed with the damage" test "$(grep -c 'ERROR:  sift index' "$(dir p)/postgres.log")" == 0
+check "the autovacuum run that met the damage failed once and none after it" test "$(grep -c 'ERROR:  sift index' "$(dir p)/postgres.log")" == 1
 
 node_stop p
 node_start p || bail "restart failed"

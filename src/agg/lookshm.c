@@ -7,7 +7,7 @@
  * load and the LSN of every page of the table, taken before and after the load, with all pages visible to every transaction. A backend that
  * finds the entry with the pages it sees now attaches the segment and reads the rows in place, as a worker does; the segment holds the key and
  * the pages, which are compared in full (the directory only has their hashes). A write moves a page's LSN, so a table that was written to
- * finds no entry, and the entry of the older state goes when its key is kept again. The rows of all entries take up to sift.agg_lookup_shared_kb;
+ * finds no entry, and the entry of the older state goes when its key is kept again. The rows of all entries take up to its share of sift.shared_cache_kb;
  * the least recently used go first. A segment that is dropped from the directory lives until the backends that read it are done. A crash
  * restart discards the registry and the segments.
  */
@@ -22,11 +22,10 @@
 #include "utils/timestamp.h"
 
 #include "agg/agg_int.h"
+#include "core/shmbudget.h"
 #include "col/dsmreg.h"
 #include "core/compat.h"
 
-int			sift_agg_lookup_shared_kb = -1;
-int			sift_agg_dimmap_kb = 64 * 1024;
 #define LOOKSHM_SLOTS		64
 /* loads in progress; a backend that finds none free loads without a claim */
 #define LOOKSHM_CLAIMS		16
@@ -40,7 +39,7 @@ static bool shm_failed[LOOK_POOLS];
 /* the registry names of the pools: the directory of the rows of the joined tables, and the one of the dimension maps (agg/lookdim.c) */
 static const char *const pool_name[LOOK_POOLS] = {"sift_agg_lookup", "sift_agg_dimmap"};
 static const char *const pool_what[LOOK_POOLS] = {"the rows of the joined tables", "the dimension maps"};
-static const char *const pool_guc[LOOK_POOLS] = {"sift.agg_lookup_shared_kb", "sift.agg_dimmap_kb"};
+static const char *const pool_guc[LOOK_POOLS] = {"sift.shared_cache_kb", "sift.shared_cache_kb"};
 
 typedef struct LookShmEnt
 {
@@ -100,6 +99,12 @@ typedef struct LookShmPin
 static LookShm *shm[LOOK_POOLS];
 static List *attached;
 
+static SiftShmPoolId
+ledger_pool(LookPool pool)
+{
+	return pool == LOOK_DIM ? SIFT_SHM_AGG_DIMMAP : SIFT_SHM_AGG_LOOKUP;
+}
+
 static void
 shm_init(SIFT_DSM_INIT_ARGS)
 {
@@ -121,14 +126,7 @@ lookshm_bytes(LookPool pool)
 {
 	Size		bytes;
 
-	if (pool == LOOK_DIM)
-		bytes = shm_failed[pool] ? 0 : (Size) sift_agg_dimmap_kb * 1024;
-	else if (sift_agg_lookup_shared_kb >= 0)
-		bytes = (Size) sift_agg_lookup_shared_kb * 1024;
-	else if (shm_failed[pool])
-		bytes = 0;
-	else
-		bytes = Min((Size) sift_agg_lookup_cache_kb * 1024, (Size) NBuffers * BLCKSZ / 20);
+	bytes = shm_failed[pool] ? 0 : sift_shm_pool_bytes(ledger_pool(pool));
 	return bytes > 0 && shm_get(pool) != NULL ? bytes : 0;
 }
 
@@ -285,7 +283,7 @@ lookshm_find(LookPool pool, const char *key, const LookFinger *f, const LookCols
 
 /* removes the least recently used entry from the directory, for the caller to unpin; false when it is empty */
 static bool
-shm_evict(LookShm *s, dsm_handle *drop, int *ndrop)
+shm_evict(LookShm *s, dsm_handle *drop, int *ndrop, int *nevicted)
 {
 	LookShmEnt *lru = NULL;
 
@@ -295,6 +293,7 @@ shm_evict(LookShm *s, dsm_handle *drop, int *ndrop)
 	if (lru == NULL)
 		return false;
 	drop[(*ndrop)++] = lru->h;
+	(*nevicted)++;
 	s->bytes -= lru->size;
 	lru->h = DSM_HANDLE_INVALID;
 	return true;
@@ -311,8 +310,6 @@ segment_create(LookPool pool, Size size)
 	dsm_segment *seg = NULL;
 	MemoryContext old = CurrentMemoryContext;
 
-	if (pool == LOOK_ROWS && sift_agg_lookup_shared_kb >= 0)
-		return dsm_create(size, DSM_CREATE_NULL_IF_MAXSEGMENTS);
 	PG_TRY();
 	{
 		seg = dsm_create(size, DSM_CREATE_NULL_IF_MAXSEGMENTS);
@@ -325,11 +322,11 @@ segment_create(LookPool pool, Size size)
 		if (pool == LOOK_DIM)
 			ereport(NOTICE,
 					(errmsg("sift: no dynamic shared memory for %zu bytes, so a dimension map is not shared between backends", size),
-					 errhint("Free dynamic shared memory (the size of /dev/shm), or SET sift.agg_dimmap_kb = 0.")));
+					 errhint("Free dynamic shared memory (the size of /dev/shm), or SET sift.shared_cache_kb = 0.")));
 		else
 			ereport(NOTICE,
 					(errmsg("sift: no dynamic shared memory for %zu bytes, so a joined table is not shared between backends", size),
-					 errhint("Free dynamic shared memory (the size of /dev/shm), or SET sift.agg_lookup_shared_kb = 0.")));
+					 errhint("Free dynamic shared memory (the size of /dev/shm), or SET sift.shared_cache_kb = 0.")));
 	}
 	PG_END_TRY();
 	return seg;
@@ -348,7 +345,8 @@ lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, con
 	LookShmEnt *at = NULL;
 	dsm_segment *seg;
 	dsm_handle	drop[LOOKSHM_SLOTS + 1];
-	int			ndrop = 0;
+	int			ndrop = 0,
+				nevicted = 0;
 	Size		keylen = strlen(key),
 				lsn = MAXALIGN(sizeof(LookShmHead)) + MAXALIGN(keylen),
 				map = lsn + MAXALIGN(f->nblocks * sizeof(XLogRecPtr)),
@@ -389,14 +387,14 @@ lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, con
 			s->bytes -= s->ent[i].size;
 			s->ent[i].h = DSM_HANDLE_INVALID;
 		}
-	while (s->bytes + size > budget && shm_evict(s, drop, &ndrop))
+	while (s->bytes + size > budget && shm_evict(s, drop, &ndrop, &nevicted))
 		;
 	for (;;)
 	{
 		for (int i = 0; i < LOOKSHM_SLOTS && at == NULL; i++)
 			if (s->ent[i].h == DSM_HANDLE_INVALID)
 				at = &s->ent[i];
-		if (at != NULL || !shm_evict(s, drop, &ndrop))
+		if (at != NULL || !shm_evict(s, drop, &ndrop, &nevicted))
 			break;
 	}
 	if (at != NULL)
@@ -417,6 +415,7 @@ lookshm_keep(LookPool pool, const char *key, const LookFinger *f, MapTab *m, con
 	}
 	SpinLockRelease(&s->mutex);
 
+	sift_shm_note_eviction(ledger_pool(pool), nevicted);
 	for (int i = 0; i < ndrop; i++)
 		dsm_unpin_segment(drop[i]);
 	if (at == NULL)

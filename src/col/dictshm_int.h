@@ -97,7 +97,7 @@ typedef struct Layout
 extern Dshm  *dshm_get(void);
 extern bool ring_get(Dshm *s);
 extern Layout layout(uint32 n, uint32 nbytes, uint32 flags, uint32 nslots);
-extern bool ring_take(Dshm *s, Size len, Size *off, int *flight);
+extern bool ring_take(Dshm *s, Size len, Size *off, int *flight, int *evicted);
 extern DshmEnt *bucket(Dshm *s, const DictKey *k);
 
 #endif

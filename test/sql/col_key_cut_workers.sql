@@ -1,6 +1,6 @@
 -- A key_cut index is built by one process, whatever max_parallel_maintenance_workers says, for CREATE INDEX, REINDEX and their CONCURRENTLY forms: the participants of a parallel build would each hold
 -- every key and leave runs that overlap in it (a CONCURRENTLY build has no merge after it that cuts them: the index ended with its key in two units and nothing due), and the build by one process
--- writes the rows to files for the ranges of the key (col/build/spill.c), so the key is in one unit at every size. sift.test_col_parallel_always is off here: it is the option of the tests of
+-- writes the rows to files for the ranges of the key (col/v1/build/spill.c), so the key is in one unit at every size. sift.test_col_parallel_always is off here: it is the option of the tests of
 -- the participants' merge, which its default (on) keeps in the tests of the other builds; a release build has no participant for a key_cut index.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;

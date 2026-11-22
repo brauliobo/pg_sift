@@ -15,14 +15,17 @@
 
 #include "bm25/kernels.h"
 #include "bm25/prefix.h"
+#include "core/cachebudget.h"
 #include "core/damage.h"
-
-int			sift_prefix_cache_size = 8192;
+#include "core/fmv.h"
 
 /* A posting's slot in its superblock: page * 512 + offset - 1 */
 #define SLOT_BITS		17
 #define SLOT_OFFS		512
 #define SLOT(key)		((uint32) ((((key) >> 16) & (SIFT_SB_PAGES - 1)) * SLOT_OFFS + ((key) & 0xFFFF) - 1))
+
+/* The superblocks of a segment are kept in chunks that are made when a posting first lands in one: a sparse segment takes memory for the superblocks it has postings in, not for its span */
+#define SB_CHUNK		256
 
 /* The postings gathered for one superblock, slot << 8 | tf, in arrival order */
 typedef struct SbPostings
@@ -36,16 +39,18 @@ typedef struct SbPostings
  * One pass over the expansion's terms builds the superblocks [from, to]. A pass over the whole segment
  * gathers what it finds until it holds sift_prefix_gather_kb, then counts the postings of every superblock
  * instead, and the superblocks are built in windows that fit the budget; a window of one superblock
- * (a dense one) sums the tf of its postings as they come, so a pass holds the budget at most.
+ * (a dense one) keeps the best tf of its postings as they come, so a pass holds the budget at most.
  */
 typedef struct Union
 {
 	SiftSegment *seg;
 	SiftTermMatcher *m;
 	bool		scoring;
+	uint8		min_bound;		/* the terms with a smaller bound are left out */
+	uint8		left_out;		/* the largest bound of those */
 	MemoryContext cx;			/* the gathered postings */
 	MemoryContext tcxt;			/* the cursor of one term */
-	SbPostings *sb;				/* [sb_lo .. sb_hi] of the segment */
+	SbPostings **sb;			/* the chunks of [sb_lo .. sb_hi] of the segment, NULL where no posting landed */
 	uint64		total;			/* postings of the pass */
 	bool		any;			/* some superblock was built */
 	SiftPostingWriter *w;		/* begun by the first one */
@@ -87,6 +92,24 @@ union_check(const Union *u, uint32 gid, SiftKey key)
 		corrupt_union(u->seg, "a posting lies outside the segment's superblocks or has no offset");
 }
 
+static inline SbPostings *
+union_sb(const Union *u, uint32 gid)
+{
+	uint32		i = gid - u->seg->hdr->sb_lo;
+
+	return u->sb[i / SB_CHUNK] ? &u->sb[i / SB_CHUNK][i % SB_CHUNK] : NULL;
+}
+
+static SbPostings *
+union_sb_make(Union *u, uint32 gid)
+{
+	uint32		i = gid - u->seg->hdr->sb_lo;
+
+	if (u->sb[i / SB_CHUNK] == NULL)
+		u->sb[i / SB_CHUNK] = MemoryContextAllocZero(u->cx, SB_CHUNK * sizeof(SbPostings));
+	return &u->sb[i / SB_CHUNK][i % SB_CHUNK];
+}
+
 static inline bool
 union_direct(const Union *u)
 {
@@ -94,12 +117,12 @@ union_direct(const Union *u)
 }
 
 static inline void
-union_sum(const Union *u, uint32 slot, uint8 tf)
+union_max(const Union *u, uint32 slot, uint8 tf)
 {
-	u->acc[slot] = u->scoring ? Min(u->acc[slot] + tf, SIFT_MAX_TF) : 1;
+	u->acc[slot] = u->scoring ? Max(u->acc[slot], tf) : 1;
 }
 
-/* Gathers a posting of the window (its tf is summed on the spot in a window of one superblock) */
+/* Gathers a posting of the window (its tf is merged on the spot in a window of one superblock) */
 static void
 union_add(Union *u, uint32 gid, SiftKey key, uint8 tf)
 {
@@ -110,8 +133,8 @@ union_add(Union *u, uint32 gid, SiftKey key, uint8 tf)
 		return;
 	u->total++;
 	if (union_direct(u))
-		return union_sum(u, SLOT(key), tf);
-	b = &u->sb[gid - u->seg->hdr->sb_lo];
+		return union_max(u, SLOT(key), tf);
+	b = union_sb_make(u, gid);
 	if (b->n == b->cap)
 	{
 		b->cap = Max(64, 2 * b->cap);
@@ -127,12 +150,18 @@ union_count_from_here(Union *u)
 	uint32		nsb = u->seg->hdr->sb_hi - u->seg->hdr->sb_lo + 1;
 
 	u->count = MemoryContextAllocZero(u->cx, nsb * sizeof(uint64));
-	for (uint32 i = 0; i < nsb; i++)
+	for (uint32 c = 0; c < (nsb + SB_CHUNK - 1) / SB_CHUNK; c++)
 	{
-		u->count[i] = u->sb[i].n;
-		if (u->sb[i].e)
-			pfree(u->sb[i].e);
-		u->sb[i] = (SbPostings) {0};
+		if (u->sb[c] == NULL)
+			continue;
+		for (uint32 i = c * SB_CHUNK; i < Min(nsb, (c + 1) * SB_CHUNK); i++)
+		{
+			u->count[i] = u->sb[c][i % SB_CHUNK].n;
+			if (u->sb[c][i % SB_CHUNK].e)
+				pfree(u->sb[c][i % SB_CHUNK].e);
+		}
+		pfree(u->sb[c]);
+		u->sb[c] = NULL;
 	}
 	UNION_STAT(u->total > sift_prefix_stats.peak, peak, u->total);
 	u->total = 0;
@@ -168,6 +197,11 @@ union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 
 	if (!sift_matcher_match(u->m, term, len))
 		return true;
+	if (info->max_bound < u->min_bound)
+	{
+		u->left_out = Max(u->left_out, info->max_bound);
+		return true;
+	}
 	if (info->flags & SIFT_TERM_INLINE)
 	{
 		for (uint32 i = 0; i < info->df; i++)
@@ -245,20 +279,47 @@ union_live(Union *u, SiftKey *keys, uint8 *tf, int n)
 }
 
 /*
+ * Moves the nonzero slots of acc (the tf of every slot of a superblock) to keys and tf in slot order and zeroes them; returns their number.
+ * A block of 64 slots with none is skipped at the width of the clone: the superblock has 128 KB of them, mostly zero.
+ */
+SIFT_FMV_DEFINE(static, uint32, drain_acc, (uint8 *SIFT_RESTRICT acc, SiftKey *SIFT_RESTRICT keys, uint8 *SIFT_RESTRICT tf, SiftKey base), (acc, keys, tf, base),
+{
+	uint32		n = 0;
+
+	for (uint32 blk = 0; blk < (1 << SLOT_BITS); blk += 64)
+	{
+		uint8		any = 0;
+
+		for (int j = 0; j < 64; j++)
+			any |= acc[blk + j];
+		if (!any)
+			continue;
+		for (uint32 slot = blk; slot < blk + 64; slot++)
+		{
+			if (acc[slot] == 0)
+				continue;
+			keys[n] = base | (SiftKey) (slot / SLOT_OFFS) << 16 | (slot % SLOT_OFFS + 1);
+			tf[n++] = acc[slot];
+			acc[slot] = 0;
+		}
+	}
+	return n;
+})
+
+/*
  * Merges the superblock's postings into the writer, in key order: a document that has several words
- * sums their tf. The slots are summed in a dense array, which the scan also clears.
+ * keeps their best tf. The slots are merged in a dense array, which the scan also clears.
  */
 static void
 union_emit(Union *u, uint32 gid)
 {
-	SbPostings *b = &u->sb[gid - u->seg->hdr->sb_lo];
-	uint64	   *acc = (uint64 *) u->acc;
+	SbPostings *b = union_sb(u, gid);
 	int			n = 0;
 
 	SiftKey    *keys;
 	uint8	   *tf;
 
-	if (b->n == 0 && !union_direct(u))
+	if (b == NULL ? !union_direct(u) : b->n == 0 && !union_direct(u))
 		return;
 	if (u->keys == NULL)
 	{
@@ -268,27 +329,16 @@ union_emit(Union *u, uint32 gid)
 	}
 	keys = u->keys;
 	tf = u->mtf;
-	for (uint32 j = 0; j < b->n; j++)
-		union_sum(u, b->e[j] >> 8, b->e[j] & 0xFF);
-	if (b->e)
-		pfree(b->e);
-	b->e = NULL;
-	b->n = 0;
-	for (uint32 wd = 0; wd < (1 << SLOT_BITS) / 8; wd++)
+	if (b != NULL)
 	{
-		if (acc[wd] == 0)
-			continue;
-		for (int i = 0; i < 8; i++)
-		{
-			uint32		slot = wd * 8 + i;
-
-			if (u->acc[slot] == 0)
-				continue;
-			keys[n] = (SiftKey) gid << (SIFT_SB_SHIFT + 16) | (SiftKey) (slot / SLOT_OFFS) << 16 | (slot % SLOT_OFFS + 1);
-			tf[n++] = u->acc[slot];
-			u->acc[slot] = 0;
-		}
+		for (uint32 j = 0; j < b->n; j++)
+			union_max(u, b->e[j] >> 8, b->e[j] & 0xFF);
+		if (b->e)
+			pfree(b->e);
+		b->e = NULL;
+		b->n = 0;
 	}
+	n = drain_acc(u->acc, keys, tf, (SiftKey) gid << (SIFT_SB_SHIFT + 16));
 	if (sift_seg_sb_dirty(u->seg, gid))
 		n = union_live(u, keys, tf, n);
 	if (n == 0)
@@ -365,17 +415,18 @@ union_windows(Union *u)
 }
 
 static const uint8 *
-union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool scoring, MemoryContext mcxt,
-			SiftTermInfo *info)
+union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool scoring, int min_bound, MemoryContext mcxt,
+			SiftTermInfo *info, uint8 *left_out)
 {
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift prefix union", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Union		u = {.seg = seg,.m = m,.scoring = scoring,.cx = cx,.ref = ref,.budget = (uint64) Max(sift_prefix_gather_kb, 1) * 1024};
+	Union		u = {.seg = seg,.m = m,.scoring = scoring,.min_bound = min_bound,.cx = cx,.ref = ref,
+					 .budget = (uint64) Max(sift_prefix_gather_kb, 1) * 1024};
 	const SiftSegHeaderData *h = seg->hdr;
 	const uint8 *blob = NULL;
 
 	u.tcxt = AllocSetContextCreate(cx, "sift prefix term", ALLOCSET_DEFAULT_SIZES);
-	u.sb = palloc0((h->sb_hi - h->sb_lo + 1) * sizeof(SbPostings));
+	u.sb = palloc0(((h->sb_hi - h->sb_lo + SB_CHUNK) / SB_CHUNK) * sizeof(SbPostings *));
 	u.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	u.tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	u.acc = palloc0(1 << SLOT_BITS);
@@ -390,6 +441,8 @@ union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool 
 		blob = sift_postw_end_term_mem(u.w, info, mcxt);
 	info->ldf = info->df;		/* the union holds live docs only */
 	info->slot = -1;
+	if (left_out)
+		*left_out = u.left_out;
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return blob;
@@ -404,6 +457,7 @@ typedef struct CacheKey
 	uint64		live_ndocs;		/* the union holds live docs only: another VACUUM makes another blob */
 	uint16		keylen;
 	bool		scoring;
+	uint8		min_bound;		/* the union leaves the terms with a smaller bound out: 0 is the union of all of them */
 	char		key[SIFT_MAX_TERM_BYTES + 2];
 } CacheKey;
 
@@ -412,17 +466,20 @@ typedef struct CacheEnt
 	CacheKey	key;			/* first: the hash key */
 	SiftTermInfo info;
 	uint8	   *blob;			/* with its padding; NULL for an inline term */
+	uint8		left_out;		/* the largest bound among the terms the union left out */
 	Size		size;
-	uint64		used;
+	uint64		used;			/* sift_cache_tick() of its last use */
+	struct CacheEnt *newer;		/* the entries by use: the list ends are the newest and the oldest */
+	struct CacheEnt *older;
 } CacheEnt;
 
 static HTAB *cache;
 static MemoryContext cache_cx;
-static Size cache_bytes;
-static uint64 cache_clock;
+static CacheEnt *cache_newest;
+static CacheEnt *cache_lru;
 
 static void
-cache_key(const SiftSegment *seg, const char *key, int keylen, bool scoring, CacheKey *k)
+cache_key(const SiftSegment *seg, const char *key, int keylen, bool scoring, int min_bound, CacheKey *k)
 {
 	uint64		sum_dl;
 
@@ -433,6 +490,7 @@ cache_key(const SiftSegment *seg, const char *key, int keylen, bool scoring, Cac
 	sift_seg_live_totals((SiftSegment *) seg, &k->live_ndocs, &sum_dl);
 	k->keylen = keylen;
 	k->scoring = scoring;
+	k->min_bound = (uint8) min_bound;
 	memcpy(k->key, key, keylen);
 }
 
@@ -449,90 +507,155 @@ blob_copy(MemoryContext mcxt, const uint8 *blob, const SiftTermInfo *info)
 }
 
 static void
-cache_evict(Size need)
+cache_unlink(CacheEnt *e)
 {
-	while (cache_bytes + need > (Size) sift_prefix_cache_size * 1024 && hash_get_num_entries(cache) > 0)
-	{
-		HASH_SEQ_STATUS seq;
-		CacheEnt   *e,
-				   *lru = NULL;
-
-		hash_seq_init(&seq, cache);
-		while ((e = hash_seq_search(&seq)) != NULL)
-			if (lru == NULL || e->used < lru->used)
-				lru = e;
-		cache_bytes -= lru->size;
-		if (lru->blob)
-			pfree(lru->blob);
-		hash_search(cache, &lru->key, HASH_REMOVE, NULL);
-	}
+	if (e->newer)
+		e->newer->older = e->older;
+	else
+		cache_newest = e->older;
+	if (e->older)
+		e->older->newer = e->newer;
+	else
+		cache_lru = e->newer;
 }
 
 static void
-cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob)
+cache_link_newest(CacheEnt *e)
+{
+	e->newer = NULL;
+	e->older = cache_newest;
+	if (cache_newest)
+		cache_newest->newer = e;
+	else
+		cache_lru = e;
+	cache_newest = e;
+	e->used = sift_cache_tick();
+}
+
+static uint64
+cache_oldest(void)
+{
+	return cache_lru ? cache_lru->used : UINT64_MAX;
+}
+
+static bool
+cache_evict_one(void)
+{
+	CacheEnt   *lru = cache_lru;
+
+	if (lru == NULL)
+		return false;
+	cache_unlink(lru);
+	if (lru->blob)
+		pfree(lru->blob);
+	hash_search(cache, &lru->key, HASH_REMOVE, NULL);
+	return true;
+}
+
+static void
+cache_evict_all(void)
+{
+	while (cache_evict_one())
+		;
+}
+
+static const SiftCacheKind prefix_kind = {"bm25_prefix", cache_oldest, cache_evict_one, cache_evict_all};
+
+static void
+cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 left_out)
 {
 	Size		size = sizeof(CacheEnt) + (blob ? (Size) info->post_len + SIFT_KERN_PAD : 0);
 	CacheEnt   *e;
+	bool		found;
 
-	if (size > (Size) sift_prefix_cache_size * 1024 / 2)
-		return;
 	if (cache == NULL)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(CacheKey),.entrysize = sizeof(CacheEnt)};
 
-		cache_cx = AllocSetContextCreate(TopMemoryContext, "sift cache prefix", ALLOCSET_DEFAULT_SIZES);
+		cache_cx = sift_cache_create_context("sift cache prefix");
 		ctl.hcxt = cache_cx;
 		cache = hash_create("sift prefix cache", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		sift_cache_register(&prefix_kind);
 	}
-	cache_evict(size);
-	e = hash_search(cache, k, HASH_ENTER, NULL);
+	if (!sift_cache_room(size))
+		return;
+	e = hash_search(cache, k, HASH_ENTER, &found);
+	if (found)
+		return;
 	e->info = *info;
 	e->blob = blob_copy(cache_cx, blob, info);
+	e->left_out = left_out;
 	e->size = size;
-	e->used = ++cache_clock;
-	cache_bytes += size;
+	cache_link_newest(e);
 }
 
-/* A cached blob answers a scoring request, and the other way round only with its own kind */
+/*
+ * A cached blob answers a scoring request, and the other way round only with its own kind; the union of all the terms answers a request that leaves terms out
+ * (it holds them, which the caller's score allows), and a union that leaves terms out answers the request for the same bound only. The caller holds the cache lock.
+ */
 static CacheEnt *
-cache_find(const SiftSegment *seg, const char *key, int keylen, bool scoring)
+cache_find(const SiftSegment *seg, const char *key, int keylen, bool scoring, int min_bound)
 {
-	CacheKey	k;
+	const int	bounds[2] = {0, min_bound};
 	CacheEnt   *e = NULL;
+	CacheKey	k;
 
 	if (cache == NULL)
 		return NULL;
-	cache_key(seg, key, keylen, true, &k);
-	e = hash_search(cache, &k, HASH_FIND, NULL);
-	if (e == NULL && !scoring)
-	{
-		cache_key(seg, key, keylen, false, &k);
-		e = hash_search(cache, &k, HASH_FIND, NULL);
-	}
+	for (int b = 0; b < (min_bound > 0 ? 2 : 1) && e == NULL; b++)
+		for (int plain = 0; plain <= !scoring && e == NULL; plain++)
+		{
+			cache_key(seg, key, keylen, !plain, bounds[b], &k);
+			e = hash_search(cache, &k, HASH_FIND, NULL);
+		}
 	if (e)
-		e->used = ++cache_clock;
+	{
+		cache_unlink(e);
+		cache_link_newest(e);
+	}
 	return e;
 }
 
+/*
+ * The cache is one for all the threads of a host that has them (sift_host_cache_lock: no lock in PostgreSQL, where a backend is alone): its table, lists and
+ * copies are touched under the lock, the build of a union never is, so queries for different prefixes build at once.
+ */
 const uint8 *
 sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen, const SiftScoreRef *ref,
-				  bool scoring, MemoryContext mcxt, SiftTermInfo *info)
+				  bool scoring, int min_bound, MemoryContext mcxt, SiftTermInfo *info, uint8 *left_out)
 {
-	bool		cached = key != NULL && sift_prefix_cache_size > 0;
-	CacheEnt   *e = cached ? cache_find(seg, key, keylen, scoring) : NULL;
+	bool		cached = key != NULL && sift_backend_cache_kb > 0;
 	const uint8 *blob;
-	CacheKey	k;
+	uint8		left = 0;
 
-	if (e)
-	{
-		*info = e->info;
-		return blob_copy(mcxt, e->blob, info);
-	}
-	blob = union_build(seg, m, ref, scoring, mcxt, info);
 	if (cached)
 	{
-		cache_key(seg, key, keylen, scoring, &k);
-		cache_put(&k, info, blob);
+		CacheEnt   *e;
+
+		sift_host_cache_lock();
+		e = cache_find(seg, key, keylen, scoring, min_bound);
+		if (e)
+		{
+			*info = e->info;
+			blob = blob_copy(mcxt, e->blob, info);
+			if (left_out)
+				*left_out = e->left_out;
+			sift_host_cache_unlock();
+			return blob;
+		}
+		sift_host_cache_unlock();
 	}
+	blob = union_build(seg, m, ref, scoring, min_bound, mcxt, info, &left);
+	if (cached)
+	{
+		CacheKey	k;
+
+		cache_key(seg, key, keylen, scoring, min_bound, &k);
+		sift_host_cache_lock();
+		cache_put(&k, info, blob, left);
+		sift_host_cache_unlock();
+	}
+	if (left_out)
+		*left_out = left;
 	return blob;
 }

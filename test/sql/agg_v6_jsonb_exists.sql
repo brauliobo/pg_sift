@@ -1,0 +1,115 @@
+-- SiftAggV6 over the keys of jsonb documents (src/agg/v6/jsonb_qual.c): `doc ? 'k'`, jsonb_exists, jsonb_typeof(doc -> 'k') = 'type' and the `->>` text and float8 cast of a key
+-- are read from the leaves of the index of format major 2, a row whose value the leaf cannot hold from the payload of its exception, and the scope aggregate of a join (src/agg/v6/scope_v6.c)
+-- scans the facts of a scope key when a qual of the facts is not one the cubes tell. Every query is run with the node and without it (sift.enable_agg) and the answers are compared: the
+-- first word says they agree, the second that the plan is the node's, the third how many rows the node read again from the heap and how many scans of the table the plan runs.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET sift.test_create_format1 = off;
+
+CREATE TABLE entity_parents (entity_id int NOT NULL, parent_id int NOT NULL, PRIMARY KEY (entity_id, parent_id)) WITH (autovacuum_enabled = false);
+INSERT INTO entity_parents SELECT m, 1 + m % 5 FROM generate_series(1, 400) m;
+CREATE TABLE events (id bigint PRIMARY KEY, entity_id int NOT NULL, deleted_at timestamptz, updated_at timestamptz NOT NULL, amount numeric(12,2) NOT NULL, metrics jsonb NOT NULL, analysis jsonb NOT NULL)
+	WITH (autovacuum_enabled = false);
+INSERT INTO events
+SELECT i, 1 + i % 400, CASE WHEN i % 23 = 0 THEN timestamptz '2026-02-01' END, timestamptz '2026-01-01' + i * interval '1 minute', (i % 500) * 0.25,
+	jsonb_build_object('channel', CASE WHEN i % 61 = 0 THEN to_jsonb(12) WHEN i % 71 = 0 THEN '{"a": 1}'::jsonb ELSE to_jsonb('ch' || i % 5) END,
+		'latency', CASE WHEN i % 37 = 0 THEN to_jsonb('err'::text) WHEN i % 41 = 0 THEN 'null'::jsonb WHEN i % 47 = 0 THEN '{"a": 1}'::jsonb WHEN i % 53 = 0 THEN 'true'::jsonb
+			WHEN i % 59 = 0 THEN to_jsonb('7.5'::text) ELSE to_jsonb((i % 8) * 0.5) END) - CASE WHEN i % 43 = 0 THEN 'latency' WHEN i % 67 = 0 THEN 'channel' ELSE '' END,
+	CASE WHEN i % 3 = 0 THEN jsonb_build_object('flag', 'x' || i % 2) WHEN i % 7 = 0 THEN '{"flag": null}'::jsonb WHEN i % 11 = 0 THEN '{"items": [1, 2]}'::jsonb ELSE '{}'::jsonb END
+FROM generate_series(1, 12000) i;
+CREATE INDEX events_s ON events USING sift_col (id, entity_id, deleted_at, updated_at, amount, metrics, analysis)
+	WITH (paths = 'metrics.channel text, metrics.latency float8, analysis.flag text', scope = 'parent_id: entity_id -> entity_parents(entity_id, parent_id)', track_changes = 'ctid');
+VACUUM ANALYZE events;
+VACUUM ANALYZE entity_parents;
+SELECT sift._test_index_format('events_s') AS format_major;
+
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; l text; plan text := ''; vetted text := '0'; scans int := 0;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		plan := plan || l;
+		IF l LIKE '%Rows Vetted Against The Heap: %' THEN vetted := trim(substr(l, position('Heap: ' in l) + 6)); END IF;
+		IF l ~ 'Seq Scan|Bitmap Heap Scan' AND l NOT LIKE '%never executed%' THEN scans := scans + 1; END IF;
+	END LOOP;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO b;
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN plan LIKE '%SiftAggV6%' THEN 'node' ELSE 'normal' END) || ' ' ||
+		vetted || ' ' || scans || ' ' || q;
+END $$;
+
+CREATE FUNCTION doc_queries() RETURNS SETOF text LANGUAGE sql AS $$ SELECT unnest(ARRAY[
+	'SELECT count(*) FROM events WHERE metrics ? ''latency''',
+	'SELECT count(*) FROM events WHERE NOT (metrics ? ''latency'')',
+	'SELECT count(*) FROM events WHERE jsonb_exists(metrics, ''channel'')',
+	'SELECT count(*) FROM events WHERE metrics ? ''channel'' AND analysis ? ''flag''',
+	'SELECT count(*) FROM events WHERE analysis ? ''items''',
+	'SELECT count(*) FROM events WHERE analysis ? ''absent''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''number''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''string''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''null''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''object''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''boolean''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'') IN (''null'', ''number'')',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''channel'') IN (''string'', ''number'')',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(analysis -> ''flag'') = ''null''',
+	'SELECT metrics ->> ''channel'' AS channel, count(*), round(avg((metrics ->> ''latency'')::float8)::numeric, 6) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''number'' GROUP BY 1',
+	'SELECT count(*), round(sum((metrics ->> ''latency'')::float8)::numeric, 6) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''number'' AND jsonb_typeof(metrics -> ''channel'') = ''string''',
+	'SELECT metrics ->> ''channel'' AS channel, count(*) FROM events WHERE jsonb_typeof(metrics -> ''channel'') IN (''string'', ''number'', ''object'') GROUP BY 1',
+	'SELECT metrics ->> ''channel'' AS channel, count(*), count(metrics ->> ''latency'') FROM events WHERE metrics ? ''latency'' GROUP BY 1',
+	'SELECT analysis ->> ''flag'' AS flag, count(*) FROM events WHERE analysis ? ''flag'' GROUP BY 1',
+	'SELECT count(*), max((metrics ->> ''latency'')::float8), min((metrics ->> ''latency'')::float8) FROM events WHERE jsonb_typeof(metrics -> ''latency'') = ''number''',
+	'SELECT count(*) FROM events WHERE metrics ?| ARRAY[''latency'', ''channel'']',
+	'SELECT count(*) FROM events WHERE metrics ?& ARRAY[''latency'', ''channel'']',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics) = ''object''',
+	'SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> ''latency'' -> ''a'') = ''number'''
+]) $$;
+
+CREATE FUNCTION scoped_queries() RETURNS SETOF text LANGUAGE sql AS $$ SELECT unnest(ARRAY[
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 AND e.deleted_at IS NULL AND e.analysis ? ''flag''',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 3 AND e.metrics ? ''latency''',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 2 AND NOT (e.metrics ? ''channel'')',
+	'SELECT count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 AND e.analysis ? ''flag''',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 5 AND jsonb_typeof(e.metrics -> ''latency'') = ''string''',
+	'SELECT e.metrics ->> ''channel'' AS channel, count(*), round(avg((e.metrics ->> ''latency'')::float8)::numeric, 6) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id
+		WHERE ep.parent_id = 1 AND jsonb_typeof(e.metrics -> ''latency'') = ''number'' GROUP BY 1',
+	'SELECT count(*), min(e.id), max(e.id) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 2 AND e.deleted_at IS NULL AND e.analysis ? ''items''',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 99 AND e.analysis ? ''flag''',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 AND e.amount > 100',
+	'SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 1 AND e.analysis ? ''flag'' AND e.updated_at >= timestamptz ''2026-01-03''',
+	'SELECT ep.parent_id, count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE e.analysis ? ''flag'' GROUP BY ep.parent_id'
+]) $$;
+
+-- 1. A clean index: every form on one table, and what the leaves do not decide
+SELECT same(q) FROM doc_queries() q;
+-- 2. A join of the facts with the pairs of a scope key
+SELECT same(q) FROM scoped_queries() q;
+
+-- 3. Documents written after the index was built: the values its leaves cannot hold (a string where a number is declared, a number where a string is) and the keys dropped
+UPDATE events SET metrics = jsonb_set(metrics, '{latency}', '"oops"') WHERE id % 211 = 0;
+UPDATE events SET metrics = jsonb_set(metrics, '{channel}', '99') WHERE id % 223 = 1;
+UPDATE events SET metrics = metrics - 'latency' WHERE id % 227 = 2;
+UPDATE events SET analysis = '{"flag": "z"}' WHERE id % 229 = 3;
+DELETE FROM events WHERE id % 241 = 4;
+SELECT same(q) FROM doc_queries() q;
+SELECT same(q) FROM scoped_queries() q;
+VACUUM events;
+SELECT same(q) FROM doc_queries() q;
+SELECT same(q) FROM scoped_queries() q;
+
+-- 4. Rows of this transaction, and a rollback
+BEGIN;
+INSERT INTO events SELECT i, 1 + i % 400, NULL, timestamptz '2026-03-01', 1, '{"latency": "late", "channel": "chz"}', '{"flag": "y"}' FROM generate_series(20001, 20050) i;
+SELECT same(q) FROM doc_queries() q WHERE q LIKE '%latency%' OR q LIKE '%flag%';
+SELECT same(q) FROM scoped_queries() q WHERE q LIKE '%parent_id = 1 %';
+ROLLBACK;
+SELECT same(q) FROM scoped_queries() q WHERE q LIKE '%parent_id = 1 %';
+
+DROP FUNCTION same(text), doc_queries(), scoped_queries();
+DROP TABLE events;
+DROP TABLE entity_parents;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

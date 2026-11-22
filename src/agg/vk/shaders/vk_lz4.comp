@@ -1,0 +1,30 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_lz4.comp - the batched LZ4 unwrap of the wrapped chunks of a batch: a workgroup of 64 invocations for each job whose chunk record is
+ * an 8-byte header {algorithm, raw length} and an LZ4 block; the raw bytes (validity and body of the chunk) go to the job's place in Work.
+ */
+#define DECODE_SHADER
+#define ARENA_Q writeonly
+#include "common_decode.glsl"
+#include "common_lz4.glsl"
+
+layout(local_size_x = 64) in;
+
+#define JOB_WORDS	16u
+
+void main()
+{
+	uint job = gl_WorkGroupID.x;
+	uint b = job * JOB_WORDS;
+
+	if (job >= pc0 || (dj[b + 5u] & 1u) == 0u)
+		return;
+	uint src = dj[b], slen = dj[b + 1u], dst = dj[b + 2u], rawlen = dj[b + 3u];
+	bool ok = slen >= 8u && w32[(src >> 2) + 1u] == rawlen && w32[src >> 2] == 1u;
+
+	if (ok)
+		ok = lz4_block(src + 8u, slen - 8u, dst, rawlen);
+	if (!ok && gl_LocalInvocationID.x == 0u)
+		res[RES_DEC_OFF + job] = 1l;
+}

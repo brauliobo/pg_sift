@@ -39,9 +39,9 @@ SELECT name, context FROM rs_try() WHERE context NOT IN ('user', 'superuser', 's
 SELECT * FROM rr_run($$
 rs_user | SET sift.enable_scan = off
 rs_user | SET sift.enable_agg = off
-rs_user | SET sift.enable_count = off
-rs_user | SET sift.enable_topn = off
-rs_user | SET sift.agg_lookup_max_rows = 1000
+rs_user | SET sift.enable_scan = off
+rs_user | SET sift.enable_agg = off
+rs_user | SET sift.simd = scalar
 rs_user | SET sift.agg_rollup_cost = 2.5
 rs_user | SET sift.table_backpressure = 100
 rs_user | SET sift.enable_scan = 'maybe'
@@ -53,7 +53,7 @@ rs_user | SET sift.maintenance_naptime = 500
 rs_user | SET sift.max_expansions = 10
 rs_user | SET sift.log_min_duration = 0
 rs_user | SET sift.standby_conflicts = off
-rs_user | SET sift.col_auto_merge = on
+rs_user | SET sift.async_maintenance = on
 rs_user | SET LOCAL sift.rls_scores = on
 rs_user | SELECT set_config('sift.rls_scores', 'on', false)
 rs_user | SELECT set_config('sift.enable_scan', 'on', false)

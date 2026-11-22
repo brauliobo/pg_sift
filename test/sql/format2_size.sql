@@ -1,0 +1,79 @@
+-- The size and the write cost of an index of format major 2: where its bytes are (sift.index_size_breakdown), what a row costs in the index and in the log (the generic WAL records are the
+-- index's alone), and how the rows of one-row
+-- transactions (compact slab batches, with their NULLs, tags and arrays) read back. The byte counts are bounds with room, the rows are compared with the heap.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+CREATE EXTENSION pg_walinspect;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE FUNCTION f2_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT: ' || via_index || ' / ' || via_heap END;
+END $$;
+
+CREATE TABLE ev (id bigint, ts timestamptz, tenant int, kind int, amount numeric(12, 2), score float8, status text, name text, uid uuid, flag bool, payload jsonb);
+INSERT INTO ev
+SELECT i, timestamptz '2026-01-01' + i * interval '7 seconds', i % 50, i % 12, (i % 100000) / 100.0 + 0.01, (i % 977) / 10.0,
+	   (ARRAY['new', 'open', 'closed', 'paused', 'failed'])[1 + i % 5], 'user-' || (i::bigint * 7919 % 20000), md5(i::text)::uuid, i % 3 = 0,
+	   jsonb_build_object('a', i % 100, 'b', 'v' || (i % 40), 'c', jsonb_build_object('d', i % 7, 'e', (i % 1000) / 10.0))
+FROM generate_series(1, 400000) i;
+VACUUM ev;
+
+CREATE TEMP TABLE mark AS SELECT pg_current_wal_insert_lsn() AS lsn;
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX ev_idx ON ev USING sift_col (id, ts, tenant, kind, amount, score, status, name, uid, flag, (payload->>'a'), (payload->>'b'), ((payload->'c'->>'d')::int), ((payload->'c'->>'e')::float8))
+	WITH (key_order = 'id');
+
+RESET max_parallel_maintenance_workers;
+-- The build: bytes of the index and of the log for each row (the 16 bytes of a random uuid are the most of it)
+SELECT pg_relation_size('ev_idx') / 400000.0 < 30 AS index_bytes_per_row_ok,
+	   (SELECT combined_size / 400000.0 < 45 FROM pg_get_wal_stats((SELECT lsn FROM mark), pg_current_wal_insert_lsn()) WHERE "resource_manager/record_type" = 'Generic') AS build_wal_bytes_per_row_ok;
+
+-- The breakdown adds up to the file, and the free blocks and the slack of the pages are under 5% of it (a page utilization over 95%): of the serial build, whose parts are always the same;
+-- the parts of a parallel one depend on how the workers share the rows
+SELECT sum(bytes) = pg_relation_size('ev_idx') AS adds_up, count(*) AS categories,
+	   sum(pct_of_total) FILTER (WHERE category IN ('fsm_free', 'page_slack')) < 5 AS waste_under_5_pct,
+	   bool_and(bytes_per_row IS NOT NULL) AS per_row
+FROM sift.index_size_breakdown('ev_idx');
+SELECT category FROM sift.index_size_breakdown('ev_idx') WHERE bytes > 0 AND category LIKE 'granule%' ORDER BY category;
+
+-- One row for each transaction: the index writes the compact batch of the slab (about 180 bytes a row in the log, 680 with a granule record for each row, a little more when a checkpoint came before the page)
+CREATE TEMP TABLE mark1 AS SELECT pg_current_wal_insert_lsn() AS lsn;
+DO $$ BEGIN
+	FOR i IN 1..600 LOOP
+		INSERT INTO ev SELECT 200000 + i, now(), i % 50, i % 12, i / 100.0, i / 10.0, 'new', 'user-' || i, md5(i::text)::uuid, true,
+			jsonb_build_object('a', i % 100, 'b', 'v1', 'c', jsonb_build_object('d', 1, 'e', 1.5));
+		COMMIT;
+	END LOOP;
+END $$;
+SELECT (SELECT combined_size / 600.0 < 300 FROM pg_get_wal_stats((SELECT lsn FROM mark1), pg_current_wal_insert_lsn()) WHERE "resource_manager/record_type" = 'Generic') AS one_row_index_wal_bytes_ok;
+SELECT f2_same('SELECT id, tenant, status, name, amount FROM ev WHERE id BETWEEN 200000 AND 200600') AS slab_rows,
+	   f2_same('SELECT id FROM ev WHERE id > 200100 AND name = ''user-150''') AS slab_filter;
+
+-- NULLs, a value a column cannot hold and arrays of objects in compact batches
+CREATE TABLE nul (id int, n int, t text, f float8, d jsonb);
+CREATE INDEX nul_idx ON nul USING sift_col (id, n, t, f, d) WITH (key_order = 'id', paths = 'd.a int, d.b text, d.l[]{x int, y text}');
+DO $$ BEGIN
+	FOR i IN 1..40 LOOP
+		INSERT INTO nul VALUES (i, CASE WHEN i % 3 = 0 THEN NULL ELSE i END, CASE WHEN i % 4 = 0 THEN NULL ELSE 'text' || i END, CASE WHEN i % 5 = 0 THEN NULL ELSE i / 4.0 END,
+			CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN jsonb_build_object('a', i, 'b', 'v' || i, 'l', jsonb_build_array(jsonb_build_object('x', i, 'y', 'p'), jsonb_build_object('x', NULL, 'y', 'q')))
+			WHEN 2 THEN jsonb_build_object('a', 'not a number', 'b', 5, 'l', '[]'::jsonb) ELSE '{"a": null, "l": [{"x": 7}]}'::jsonb END);
+		COMMIT;
+	END LOOP;
+END $$;
+INSERT INTO nul SELECT 100 + i, i, 'bulk' || i, i, jsonb_build_object('a', i) FROM generate_series(1, 20) i;
+SELECT f2_same('SELECT * FROM nul WHERE id < 200') AS whole, f2_same('SELECT id, n FROM nul WHERE n IS NULL') AS nulls, f2_same('SELECT id, t FROM nul WHERE t = ''text7''') AS text,
+	   f2_same('SELECT id FROM nul WHERE d->>''a'' = ''5''') AS path, f2_same('SELECT id FROM nul WHERE f > 3') AS floats;
+SELECT sift._test_f2_check_keys('nul_idx');
+
+DROP TABLE ev, nul;
+DROP FUNCTION f2_same(text);
+DROP EXTENSION pg_walinspect;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

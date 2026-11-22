@@ -5,12 +5,12 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET check_function_bodies = off;
 
 -- the answer under the agg scan and under the normal plan, and the proofs the scan used
@@ -117,7 +117,6 @@ SET sift.col_connect_refresh_pct = 1;
 SELECT apply(2, 'a');
 SELECT apply(2, 'b');
 SELECT * FROM phase();
-RESET sift.col_connect_refresh_pct;
 
 DROP FUNCTION phase();
 DROP FUNCTION apply(int, text);

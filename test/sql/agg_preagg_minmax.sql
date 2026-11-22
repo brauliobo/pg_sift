@@ -87,7 +87,6 @@ CREATE INDEX md_col ON md USING sift_col (id, kind, grp, val, small, amt, flt) W
 CREATE INDEX mo_col ON mo USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 6;
 CREATE INDEX mf_col ON mf USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
-RESET sift.col_format_minor;
 CREATE INDEX mx_col ON mx USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CALL pa_settle();
 -- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
@@ -142,7 +141,6 @@ SELECT * FROM pa_sum('mx');
 SET sift.col_format_minor = 6;
 INSERT INTO mf SELECT g, g % 6, 'g' || (g % 30), g * 1000, g % 9, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
 SELECT sift.col_promote('mf_col') >= 0 AS promoted;
-RESET sift.col_format_minor;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) mf;
 SELECT sift.col_verify('mf_col', true);
 SELECT * FROM pa_sum('mf');

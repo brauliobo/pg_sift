@@ -1,4 +1,4 @@
--- The participants of a parallel CREATE INDEX are a weighted choice (src/col/build_par.c): the build time another participant saves, against the floor of every statement, the bytes and,
+-- The participants of a parallel CREATE INDEX are a weighted choice (src/col/v1/build_par.c): the build time another participant saves, against the floor of every statement, the bytes and,
 -- where the index has a point directory, the lookups that probe one more segment. The function is the choice itself; the default server settings allow 2 workers (3 participants).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;

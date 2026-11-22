@@ -29,8 +29,6 @@ BEGIN
 		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
 	END LOOP;
 END $$;
-CREATE FUNCTION cp_held(i regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(leaf || ':' || regexp_replace(held, ' in .*', ''), ' ' ORDER BY leaf) FROM sift.index_advice(i) WHERE held IS NOT NULL AND (kind = 'date' OR leaf IN ('l12', 'v', 'id', 'h1')) $$;
 CREATE TABLE cp_q (n int, shape text, q text);
 INSERT INTO cp_q VALUES
 	(1, 'month',            'SELECT date_trunc(''month'', d1), count(*), sum(m) FROM cp GROUP BY 1'),
@@ -41,25 +39,21 @@ INSERT INTO cp_q VALUES
 
 -- the NOTICE names what was left out; the dates keep their cells
 CREATE INDEX cp_col ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m, id, h1, h2) WITH (key_columns = 'off');
-SELECT cp_held('cp_col');
 SELECT n, shape, cp_rows(q, true) = cp_rows(q, false) AS same, u.units, u.pre, u.scanned FROM cp_q, LATERAL cp_units(q) u ORDER BY n;
 
 -- REINDEX decides the same
 REINDEX INDEX cp_col;
-SELECT cp_held('cp_col');
 DROP INDEX cp_col;
 
 -- all fit: 9 plain columns, the 3 dates and 1 more, and the cells of the 3 dates (16): the dates' own histograms kept
 CREATE INDEX cp_fit ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, d1, d2, d3, v, m) WITH (key_columns = 'off');
-SELECT cp_held('cp_fit');
 DROP INDEX cp_fit;
 
 -- a cube(...) of the user is kept as written, and calendar_columns names the dates it wants
 CREATE INDEX cp_fixed ON cp USING sift_col (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, d1, d2, d3, v, m) WITH (key_columns = 'off', preagg = 'cube(l1; l2; l3; l4; l5; l6; l7; l8; l9; l10; l11; l12; d1; d2; d3; v)', calendar_columns = 'off');
-SELECT cp_held('cp_fixed');
 DROP INDEX cp_fixed;
 
 DROP TABLE cp, cp_q;
-DROP FUNCTION cp_rows(text, bool), cp_units(text), cp_held(regclass);
+DROP FUNCTION cp_rows(text, bool), cp_units(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

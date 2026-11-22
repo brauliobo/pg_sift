@@ -40,3 +40,5 @@ __pycache__/
 /sql/pg_sift--5.0--5.1.sql
 /sql/pg_sift--5.1.sql
 /sql/pg_sift_upgrade_check.sql
+/sql/pg_sift--5.1--6.0.sql
+/sql/pg_sift--6.0.sql

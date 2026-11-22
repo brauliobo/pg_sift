@@ -8,7 +8,9 @@ CREATE EXTENSION pg_sift_test;
 CREATE TABLE rb (id int PRIMARY KEY, body text);
 INSERT INTO rb SELECT i, 'tk' || lpad((i % 700)::text, 3, '0') || ' tk' || lpad((i % 311)::text, 3, '0') || ' tkz' || (i % 3) ||
 	' w' || i % 7 || repeat(' pad filler words', i % 5) FROM generate_series(1, 40000) i;
+SET client_min_messages = warning;
 CREATE INDEX rb_idx ON rb USING sift (body);
+RESET client_min_messages;
 ANALYZE rb;
 SELECT sum(sb_hi - sb_lo + 1) > 1 AS several_superblocks FROM sift.segments('rb_idx'::regclass);
  several_superblocks 
@@ -51,7 +53,7 @@ SELECT value * 4 > 64 * 1024 AS unbounded_gathers_more FROM sift._test_read_stat
 
 -- 1 kB = 256 postings: every pass of the segment is over budget, the windows are one superblock each
 SET sift.test_prefix_gather = 1;
-SET sift.prefix_cache_size = 0;
+SET sift.backend_cache_kb = 0;
 SELECT q FROM rb_ref WHERE rb_answer(q) IS DISTINCT FROM a;
  q 
 ---

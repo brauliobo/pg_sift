@@ -1,4 +1,4 @@
-# The order of the write buffer's rows that a backend keeps with the batches it read (col/scan/gorder.c) holds for the scans that open while the buffer changes. An ordered
+# The order of the write buffer's rows that a backend keeps with the batches it read (col/v1/scan/gorder.c) holds for the scans that open while the buffer changes. An ordered
 # read opens, holds on the test gate while rows are deleted and VACUUM flags their records, the heap frees their addresses and HOT updates reuse them, or while rows are
 # inserted (and one insert rolls back); then it reads the order it kept, extended with the rows appended: the answer is that of the heap at its snapshot, and the next scan reads the changes.
 # requires: col gates

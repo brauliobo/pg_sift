@@ -92,8 +92,9 @@ extern void sift_tie_node(Plan *plan);
 
 
 /* bm25/planner_path.c */
+extern double sift_dict_cost(IndexOptInfo *index, List *queries);
 extern bool any_list_too_long(PlannerInfo *root, ScanCand *c, const ScanCost *sc);
-extern void scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, int64 k, BitmapHeapPath *filter,
+extern void scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, BitmapHeapPath *filter,
 					 ScanEst *est);
 extern bool cheaper(CustomPath *a, CustomPath *b);
 extern void add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k,

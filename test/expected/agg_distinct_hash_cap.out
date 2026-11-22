@@ -11,7 +11,7 @@ CREATE INDEX ev_col ON ev USING sift_col (grp, rep, uniq);
 NOTICE:  sift_col index "ev_col": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key; order_array_columns = rep, uniq
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
-NOTICE:  sift_col index "ev_col" is column format minor 44, which a library before 4.3 cannot read
+NOTICE:  sift_col index "ev_col" is column format minor 38, which a library before 3.7 cannot read
 DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('ev_col') says how to turn each choice off.
 HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (FREEZE, ANALYZE) ev;

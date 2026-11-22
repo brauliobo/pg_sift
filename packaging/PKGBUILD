@@ -1,9 +1,9 @@
 # Maintainer: Braulio Oliveira <brauliobo@gmail.com>
 # Release package: builds the tag v$pkgver from GitHub.
 pkgname=pg_sift
-pkgver=5.1.0
+pkgver=6.0.0
 pkgrel=1
-pkgdesc='Fast analytics for PostgreSQL: just add an index, plus BM25 full-text search'
+pkgdesc='Columnar analytics, column tables, and BM25 full-text search for PostgreSQL'
 arch=('x86_64')
 url='https://github.com/brauliobo/pg_sift'
 license=('PostgreSQL')

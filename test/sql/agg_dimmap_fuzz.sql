@@ -5,8 +5,6 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
 
 CREATE TABLE dc (k int PRIMARY KEY, a int, b int, flag bool) WITH (autovacuum_enabled = false);
 CREATE TABLE dl (LIKE dc INCLUDING ALL) WITH (autovacuum_enabled = false);

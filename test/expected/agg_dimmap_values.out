@@ -2,11 +2,10 @@
 -- numeric NaN, NULLs, the empty string, strings that differ in bytes only, a multibyte string and one longer than a dictionary entry keeps inline. The answers are those of the normal
 -- plan, and every shape is served by a map but shape 7, whose five columns take more tuples of values than a class table holds (4,096): the rows are loaded.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
 CREATE TABLE pf (k int PRIMARY KEY, f4 real, f8 float8, tm time, tx text, vc varchar(300), nm numeric(12, 3)) WITH (autovacuum_enabled = false);
 INSERT INTO pf SELECT i,
 	(ARRAY['NaN', 'Infinity', '-Infinity', '0', '-0', NULL, '1.5', '-1.5', '1e-40', '3.4e38', '0.1']::real[])[i % 11 + 1],
@@ -117,7 +116,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
   stage  | shape | same_answers | served 
 ---------+-------+--------------+--------

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A crash between the passes of the paced rewrite of overlapping runs (sift.col_auto_merge_pass_mb), and in the middle of a step of one: the PANIC comes after the
+# A crash between the passes of the paced rewrite of overlapping runs (sift.test_col_pass_kb), and in the middle of a step of one: the PANIC comes after the
 # merge wrote its new segment and before it replaced the runs. Crash recovery leaves a valid index: the first pass is there, the runs the second was to replace are
 # as they were, the answers are the heap's, and the passes asked again go on from that directory and end with a key in one unit.
 . "$(dirname "$0")/lib.bash"
@@ -9,7 +9,7 @@ node_init cr 22 "autovacuum = off
 sift.test_col_net = off
 sift.async_maintenance = off
 sift.vacuum_rewrite_limit = 1
-sift.col_auto_merge_pass_mb = 2
+sift.test_col_pass_kb = 2048
 sift.test_col_build_runs_overlap = on"
 node_start cr || bail "start failed"
 sql cr "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE kp (id int, tenant_id int, amount int, pad text) WITH (autovacuum_enabled = false)" \

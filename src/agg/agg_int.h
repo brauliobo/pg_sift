@@ -4,12 +4,14 @@
 #ifndef SIFT_AGG_AGG_INT_H
 #define SIFT_AGG_AGG_INT_H
 
+#include "commands/explain.h"
+#include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "utils/sortsupport.h"
-#include "agg/back.h"
 #include "agg/search.h"
 #include "agg/topn.h"
 #include "core/visibility.h"
+#include "core/memtrack.h"
 
 #include "agg/leaf_int.h"
 #include "agg/tup_int.h"
@@ -29,7 +31,6 @@
 #include "agg/spill_int.h"
 #include "agg/par_int.h"
 #include "agg/fuse_int.h"
-#include "agg/back_host_int.h"
 
 #define VEC			SIFT_AGG_VEC
 #define VECW		SIFT_AGG_VECW
@@ -108,6 +109,7 @@ typedef struct AggExec
 	}			vl[SIFT_AGG_MAX_VLEAVES];
 	MemoryContext cxt;			/* the scan */
 	MemoryContext tcxt;			/* the group table: keys, groups, aggregate states (reset by table_reset) */
+	Size		tfloor;			/* what the empty group table holds: the room the planner's estimate of the groups made */
 	MemoryContext ucxt;			/* one unit */
 	ExprContext *lutcx;
 	PgAgg	  **pgagg;			/* per aggregate: SAA_M_PG */
@@ -383,7 +385,7 @@ typedef struct AggExec
 	int			pa_xleaf;		/* the conjunct IS NULL on this leaf is answered as the unit net of its exceptions (-1: none; hist_net) */
 	int64		n_exc_units;	/* units answered net of their exceptions, and the units with some that were scanned (a missing dim, a float sum that cancels) */
 	int64		n_exc_scan;
-	int64		n_dead_units;	/* units answered net of their dead rows, and the units with dead rows that were scanned instead (col/delta.c) */
+	int64		n_dead_units;	/* units answered net of their dead rows, and the units with dead rows that were scanned instead (col/v1/delta.c) */
 	int64		n_dead_scan;
 	bool		pa_miss;		/* the last preagg_rollup failed for lack of a rollup, a dim or a measure (not for the values in the unit) */
 	SiftSrcRollupNeed pa_need;	/* the columns of a unit's rollup (pa.list >= 0) or the measures of its histogram the query reads */
@@ -413,8 +415,6 @@ typedef struct AggExec
 	int64		n_dense;		/* chunks aggregated from their bitmap (dense_chunk) */
 	int64		n_combo_trim;	/* times the combo caches started again at the entry limit (combo_trim) */
 	int64		n_groups;
-	const SiftAggBackend *be;	/* the backend that answers units of the scan besides the kernels below, and its state (agg/back.h) */
-	void	   *be_state;
 	/* arms that share one pass (fuse_start) */
 	struct FuseSt *fuse;
 	int			fuse_set;		/* this node's set in the fused spec */
@@ -427,21 +427,35 @@ typedef struct AggExec
 /* hidden: the build has -fno-plt, which turns a call to a function of another file into a call through the GOT */
 #pragma GCC visibility push(hidden)
 
+/* the slice of a budget one operator of a scan holds when its planned workers and its other operators share it */
+static inline Size
+agg_mem_slice(const AggExec *ex, SiftBudgetClass cls, int noperators)
+{
+	return sift_mem_budget_bytes(cls, 1 + ex->spec->nworkers, noperators);
+}
+
+/* the sets of the distinct values of a scan that share its hash memory with the group table */
+static inline int
+agg_dist_operators(const SiftAggSpec *s)
+{
+	int			n = 0;
+
+	for (int i = 0; i < s->naggs; i++)
+		n += s->agg[i].kind == SAA_COUNT_DISTINCT;
+	return n;
+}
+
 extern bool		sift_agg_dense;
 extern bool		sift_agg_semi_lut;
 extern bool		sift_agg_connect_found;
 extern bool sift_agg_connected(const AggExec *ex);
 /* The states of the node's child plans (a sub-select, VALUES list or function the joins read): started by the first read of one, not by the start of the node */
 extern List *agg_children(AggExec *ex);
-extern int		sift_agg_semi_lut_size;
 extern bool		sift_agg_lookup_pushdown;
 extern bool		sift_agg_lookup_columns;
 extern bool		sift_agg_share_lookups;
 extern bool		sift_agg_fuse;
-extern int		sift_agg_lookup_cache_kb;
-extern int		sift_agg_lookup_shared_kb;
-extern int		sift_agg_dimmap_kb;
-extern int		sift_verdict_cache_kb;
+#define VSHM_KB 256
 /* sift.shared_memory(): what the table of verdicts holds and how its reads went; false where it is not made */
 struct SiftShmStat;
 extern bool sift_verdict_shm_stat(struct SiftShmStat *st);
@@ -452,7 +466,6 @@ extern int		sift_test_fail_pick;
 extern bool		sift_test_verdict_gate;
 extern int		sift_test_direct_max;
 #endif
-extern int		sift_agg_combo_cache;
 
 /* agg.c */
 void run_scan(AggExec *ex);

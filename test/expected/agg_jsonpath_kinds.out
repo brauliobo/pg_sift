@@ -71,7 +71,6 @@ CREATE TABLE k (id int, grp int, doc jsonb);
 INSERT INTO k SELECT i, i % 7, doc(i) FROM generate_series(1, 8000) i;
 SET sift.col_format_minor = 3;
 CREATE INDEX k_col ON k USING sift_col (id, grp, doc) WITH (paths = 'doc[]{s text, n int4, b bool}');
-RESET sift.col_format_minor;
 VACUUM ANALYZE k;
 SELECT fmt('k_col');
  fmt 
@@ -177,7 +176,6 @@ SELECT n, t_check(q) FROM q ORDER BY n;
  9 | same
 (9 rows)
 
-RESET sift.col_format_minor;
 REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
@@ -222,7 +220,6 @@ SELECT n, t_check(q) FROM q ORDER BY n;
  9 | same
 (9 rows)
 
-RESET sift.col_format_minor;
 REINDEX INDEX k_col;
 SELECT fmt('k_col');
  fmt 
@@ -272,7 +269,6 @@ CREATE TABLE k (id int, grp int, doc jsonb);
 INSERT INTO k SELECT i, i % 7, doc_full(i) FROM generate_series(1, 8000) i;
 SET sift.col_format_minor = 3;
 CREATE INDEX k_col ON k USING sift_col (id, grp, doc) WITH (paths = 'doc[]{s text, n int4, b bool}');
-RESET sift.col_format_minor;
 VACUUM ANALYZE k;
 SELECT fmt('k_col');
  fmt 
@@ -308,7 +304,6 @@ SELECT sift.table_set_paths('kt', 'doc', 'doc[]{s text, n int4, b bool}');
 SET sift.col_format_minor = 3;
 INSERT INTO kt SELECT i, i % 7, doc(i) FROM generate_series(1, 8000) i;
 VACUUM kt;
-RESET sift.col_format_minor;
 SELECT tfmt('kt');
  tfmt 
 ------
@@ -410,7 +405,6 @@ SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
  9 | same
 (9 rows)
 
-RESET sift.col_format_minor;
 VACUUM FULL kt;
 SELECT tfmt('kt');
  tfmt 
@@ -440,7 +434,6 @@ CREATE TABLE k_new PARTITION OF k FOR VALUES FROM (4001) TO (9000);
 INSERT INTO k SELECT i, i % 7, doc(i) FROM generate_series(1, 8000) i;
 SET sift.col_format_minor = 4;
 CREATE INDEX k_old_col ON k_old USING sift_col (id, grp, doc) WITH (paths = 'doc[]{s text, n int4, b bool}');
-RESET sift.col_format_minor;
 CREATE INDEX k_new_col ON k_new USING sift_col (id, grp, doc) WITH (paths = 'doc[]{s text, n int4, b bool}');
 VACUUM ANALYZE k_old;
 VACUUM ANALYZE k_new;
@@ -482,7 +475,6 @@ INSERT INTO k SELECT i, CASE i % 5 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{"a":nul
                   WHEN 3 THEN '{"a":1}'::jsonb ELSE '{"a":"1"}'::jsonb END FROM generate_series(1,8000) i;
 SET sift.col_format_minor = 4;
 CREATE INDEX k_old_col ON k_old USING sift_col (id,doc) WITH (paths = 'doc->a astext');
-RESET sift.col_format_minor;
 CREATE INDEX k_new_col ON k_new USING sift_col (id,doc) WITH (paths = 'doc->a astext');
 VACUUM ANALYZE k_old;
 VACUUM ANALYZE k_new;
@@ -518,7 +510,6 @@ CREATE TABLE k (id int, grp int, doc jsonb, wide numeric(30,4));
 INSERT INTO k SELECT i, i % 7, doc(i), i * 1000000000000.0001 FROM generate_series(1, 8000) i;
 SET sift.col_format_minor = 4;
 CREATE INDEX k_col ON k USING sift_col (id, grp, doc, wide) WITH (paths = 'doc[]{s text, n int4, b bool}');
-RESET sift.col_format_minor;
 VACUUM ANALYZE k;
 SELECT fmt('k_col');
  fmt 

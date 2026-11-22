@@ -1,4 +1,4 @@
-# A backend that read a sift_table frees its cached state before its shared-memory exit (src/table/store.c cache_exit), and the transaction callback that
+# A backend that read a sift_table frees its cached state before its shared-memory exit (src/table/v1/store.c cache_exit), and the transaction callback that
 # runs after it, when the backend leaves a transaction on its way out, finds none of it. A standalone backend ends that way; with every freed chunk filled
 # (MALLOC_PERTURB_) it exits cleanly after a read and a write of the table.
 use strict;

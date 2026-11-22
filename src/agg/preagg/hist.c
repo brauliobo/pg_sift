@@ -9,7 +9,7 @@
 
 #include "agg/agg_int.h"
 #include "agg/preagg/int.h"
-#include "col/preagg.h"
+#include "col/v1/preagg.h"
 
 /* the values of a float8 leaf of the unit are finite and so small that the sum of their squares, which avg(float8) is owed to check, cannot overflow */
 #define PA_FLOAT_MAX	1e100

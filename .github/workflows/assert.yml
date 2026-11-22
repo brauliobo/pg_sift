@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: [17, 18]
+        pg: [17, 18, 19]
     steps:
       - name: Scratch directory
         run: echo "SIFT_CI_TMP=$RUNNER_TEMP/sift-ci" >> "$GITHUB_ENV"

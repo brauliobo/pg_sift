@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # The summary of the run: one line per suite from the results file, the failures with the end of their logs, and the exit status.
 # Sourced by scripts/ci.sh; not a script of its own.
 # ---------- summary ----------

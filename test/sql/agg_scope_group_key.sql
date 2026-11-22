@@ -6,7 +6,6 @@
 -- group column's type is. The refusals say their reason (sift.explain_why, slug scope).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
-SET sift.scope_max_multiplicity = 8;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
@@ -34,7 +33,7 @@ CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, at timestamptz, kind text
 INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE 1 + (i * 7919) % 210 END, timestamptz '2026-01-01' + (i % 300) * interval '1 day', 'k' || i % 3, i % 10, repeat('x', 60)
 FROM generate_series(1, 6000) i;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, at, kind, v)
-	WITH (scope = 'k2: dim_a_id -> pairs2(dim_a_id, tenant); k4: dim_a_id -> pairs4(dim_a_id, tenant); k8: dim_a_id -> pairs8(dim_a_id, tenant); kc: dim_a_id -> pairsc(dim_a_id, tenant) cols(v)');
+	WITH (scope = 'k2: dim_a_id -> pairs2(dim_a_id, tenant) max_multiplicity(8); k4: dim_a_id -> pairs4(dim_a_id, tenant) max_multiplicity(8); k8: dim_a_id -> pairs8(dim_a_id, tenant) max_multiplicity(8); kc: dim_a_id -> pairsc(dim_a_id, tenant) cols(v) max_multiplicity(8)');
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events, pairs2, pairs4, pairs8, pairsc;
 
@@ -181,7 +180,7 @@ CREATE UNIQUE INDEX sd_pairs_active ON sd_pairs (dim_a_id, tenant) WHERE deleted
 CREATE INDEX sd_pairs_journal ON sd_pairs USING sift_col (dim_a_id, tenant) WITH (track_changes = 'ctid');
 CREATE TABLE sd_events (id int PRIMARY KEY, dim_a_id int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO sd_events SELECT i, 1 + i % 150, i % 50 FROM generate_series(1, 6000) i;
-CREATE INDEX sd_events_col ON sd_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant: dim_a_id -> sd_pairs(dim_a_id, tenant)');
+CREATE INDEX sd_events_col ON sd_events USING sift_col (id, dim_a_id, v) WITH (scope = 'tenant: dim_a_id -> sd_pairs(dim_a_id, tenant) max_multiplicity(8)');
 REINDEX INDEX sd_events_col;
 CREATE VIEW sd_active AS SELECT dim_a_id, tenant FROM sd_pairs WHERE deleted_at IS NULL;
 VACUUM (FREEZE, ANALYZE) sd_events, sd_pairs;

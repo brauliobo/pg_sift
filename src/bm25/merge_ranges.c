@@ -7,6 +7,7 @@
 #include "build_int.h"
 
 #include "access/xact.h"
+#include "storage/bufmgr.h"
 #include "utils/snapmgr.h"
 
 #include "core/store.h"
@@ -32,7 +33,7 @@ sift_merge_worker(dsm_segment *seg, shm_toc *toc)
 
 /* The segments of the merge that have a live doc, opened, with what the merged segment's docs add up to */
 static int
-open_live(Relation index, const SiftSegEntry *in, int n, MemoryContext mcxt, SiftSegment **segs, uint64 *ndocs, uint64 *sum_dl)
+open_live(Relation index, const SiftSegEntry *in, int n, MemoryContext mcxt, BufferAccessStrategy bas, SiftSegment **segs, uint64 *ndocs, uint64 *sum_dl)
 {
 	int			nlive = 0;
 
@@ -42,6 +43,7 @@ open_live(Relation index, const SiftSegEntry *in, int n, MemoryContext mcxt, Sif
 		uint64		d,
 					dl;
 
+		sift_sr_set_strategy(&seg->sr, bas);
 		sift_seg_live_stats(seg, &d, &dl);
 		if (d == 0)
 		{
@@ -71,7 +73,9 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	SiftParLeader *ldr;
 	SiftBuildShared *shared;
 	SiftSegmentWriter *sw;
-	MemoryContext cxt;
+	MemoryContext cxt,
+				old;
+	BufferAccessStrategy bas;
 	uint64		ndocs = 0,
 				sum_dl = 0;
 	int			nlive,
@@ -86,7 +90,10 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 #ifdef SIFT_TESTING
 	mem_watch(cxt);
 #endif
-	nlive = open_live(index, in, n, cxt, segs, &ndocs, &sum_dl);
+	old = MemoryContextSwitchTo(cxt);
+	bas = GetAccessStrategy(BAS_BULKREAD);
+	MemoryContextSwitchTo(old);
+	nlive = open_live(index, in, n, cxt, bas, segs, &ndocs, &sum_dl);
 	if (nlive == 0)
 	{
 		MemoryContextDelete(cxt);

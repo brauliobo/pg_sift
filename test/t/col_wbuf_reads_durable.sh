@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the reads of the server paid for the open write buffer (rows decoded) and for the marks of the tombstone log is kept in the metapage of the index (col/wbuf/reads.c): a restart, a crash
+# What the reads of the server paid for the open write buffer (rows decoded) and for the marks of the tombstone log is kept in the metapage of the index (core/reads.c): a restart, a crash
 # and a backend that ends keep it, a server with more indexes than the table of the shared memory had slots counts each of them, and a rule that is met does not make every read write.
 . "$(dirname "$0")/lib.bash"
 plan 8
@@ -26,7 +26,7 @@ read_mk() { sql rd "SET max_parallel_workers_per_gather = 0" "SET sift.enable_ag
 decoded() { sql rd "SELECT decoded FROM sift._test_col_wbuf_reads('${1:-wr_idx}')" | tail -n 1; }
 marks() { sql rd "SELECT sift._test_col_marks_paid('mk_idx')" | tail -n 1; }
 # the WAL writer has the record in the log within wal_writer_delay (200 ms): a crash after that keeps it
-settle() { sleep 1; }
+settle() { wait_for "wal_flushed rd" 30; }
 
 read_wr; read_mk
 D1=$(decoded); M1=$(marks)

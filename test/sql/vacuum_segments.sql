@@ -4,7 +4,9 @@ SET enable_seqscan = off;
 CREATE TABLE vs (id serial, body text) WITH (autovacuum_enabled = off);
 INSERT INTO vs (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common word' || (i % 50) FROM generate_series(1, 30000) i;
 -- built without the option: the default
+SET client_min_messages = warning;
 CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 60);
+RESET client_min_messages;
 SELECT count(*) AS built FROM sift.segments('vs_idx');
 SELECT count(*) AS hits FROM vs WHERE body @@> 'common';
 VACUUM vs;
@@ -13,7 +15,9 @@ SELECT count(*) AS hits FROM vs WHERE body @@> 'common';
 
 -- a higher value: less merging, more segments
 DROP INDEX vs_idx;
+SET client_min_messages = warning;
 CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 60);
+RESET client_min_messages;
 ALTER INDEX vs_idx SET (vacuum_segments = 4);
 SELECT sift.verify('vs_idx');
 VACUUM vs;
@@ -39,7 +43,9 @@ SELECT sift.verify('vs_idx');
 
 -- a segment far smaller than the rest stays above the target: merging it would rewrite the whole index at every VACUUM
 DROP INDEX vs_idx;
+SET client_min_messages = warning;
 CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 1, write_buffer_limit = 64);
+RESET client_min_messages;
 INSERT INTO vs (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common word' || (i % 50) FROM generate_series(1, 400) i;
 SELECT sift.promote('vs_idx');
 CREATE TEMP TABLE small AS SELECT gen FROM sift.segments('vs_idx');
@@ -49,7 +55,9 @@ SELECT sift.verify('vs_idx', true);
 
 -- a mostly dead segment is rewritten whatever the target: with 128 the tiered merges are not for the count, the rewrite is for the garbage
 DROP INDEX vs_idx;
+SET client_min_messages = warning;
 CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 10, vacuum_segments = 128);
+RESET client_min_messages;
 SELECT count(*) AS built FROM sift.segments('vs_idx');
 SELECT sum(ndocs) AS docs FROM sift.segments('vs_idx');
 DELETE FROM vs WHERE id <= 2000;

@@ -10,8 +10,6 @@
 
 #define COMBO_MAX_ENTRIES	16777216	/* entries of one combo cache before the caches start again (combo_trim) */
 
-#define COMBO_CACHE_MIN		((Size) 256 << 10)	/* the least memory of the cache of one combo (combo_cache_bytes) */
-
 #define CMAP_UNSET	UINT32_MAX
 
 #define WIDE_AHEAD	12

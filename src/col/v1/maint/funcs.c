@@ -1,0 +1,562 @@
+/*
+ * col/v1/maint/funcs.c - the SQL functions of the maintenance: due, status, maintain,
+ * promote, merge, index info, segments and leaves
+ * what an operator calls to see or drive a sift_col index
+ */
+/* check-memory: allow-allocs a diagnostic list of the extents of one index (40 bytes each) */
+#include "postgres.h"
+#include "access/relation.h"
+#include "common/int.h"
+#include "access/htup_details.h"
+#include "catalog/pg_am_d.h"
+#include "funcapi.h"
+#include "pgstat.h"
+#include "postmaster/autovacuum.h"
+#include "utils/lsyscache.h"
+#include "utils/timestamp.h"
+#include "core/inspect.h"
+#include "core/explain.h"
+#include "core/ops.h"
+#include "core/sql.h"
+#include "col/v1/maint/maint_int.h"
+#include "core/v1_col/tomb.h"
+
+/* The index that an inspector reads, for a role that may look at its table (core/inspect.c); bm25_use: the function that does the same for a sift index */
+Relation
+sift_col_open_inspect(Oid relid, const char *bm25_use)
+{
+	Relation	index;
+
+	sift_inspect_expect(relid, "sift_col", bm25_use);
+	index = sift_mops_open(&maint_col_ops, relid, AccessShareLock);
+	sift_check_inspect(index);
+	return index;
+}
+
+/* sift.col_maintenance_due(index, automatic): why a rewrite of the index is due now (dirty units, fragmented units, write buffer rows, ..), NULL if it is not; automatic is kept for the SQL signature of 5.0 and changes nothing: no rewrite is the server's own */
+Datum
+sift_col_v1_maintenance_due(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	const char *why = maint_rewrite_due(index);
+
+	index_close(index, AccessShareLock);
+	if (why == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_TEXT_P(cstring_to_text(why));
+}
+
+/* What the statistics of the table say: the rows changed since its last VACUUM and the number at which autovacuum vacuums it; false when it has no entry */
+static bool
+table_churn(Relation heap, int64 *changed, int64 *threshold, TimestampTz *last)
+{
+	const PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(RelationGetRelid(heap));
+	const StdRdOptions *opt = heap->rd_rel->relkind == RELKIND_RELATION && heap->rd_rel->relam == HEAP_TABLE_AM_OID ? (StdRdOptions *) heap->rd_options : NULL;
+	int			base = opt != NULL && opt->autovacuum.vacuum_threshold >= 0 ? opt->autovacuum.vacuum_threshold : autovacuum_vac_thresh;
+	double		scale = opt != NULL && opt->autovacuum.vacuum_scale_factor >= 0 ? opt->autovacuum.vacuum_scale_factor : autovacuum_vac_scale;
+
+	if (tab == NULL)
+		return false;
+	*changed = (int64) Max(tab->dead_tuples, 0) + Max(tab->ins_since_vacuum, 0);
+	*threshold = (int64) (base + scale * Max(tab->live_tuples, 0));
+	*last = Max(tab->last_vacuum_time, tab->last_autovacuum_time);
+	return true;
+}
+
+/*
+ * sift.col_maintenance_status(index): where the chain stands (the table is vacuumed by autovacuum when the rows changed since its last VACUUM reach vacuum_at, the
+ * promotions and merges follow), rewrite_due: why a rewrite of the index is due, and blocked_by: what keeps a worker from merging the index, and
+ * the REINDEX that a reason asks for (nothing rewrites an index by itself), empty when nothing does.
+ */
+Datum
+sift_col_v1_maintenance_status(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	Relation	heap = relation_open(index->rd_index->indrelid, AccessShareLock);
+	SiftDirSnapshot *snap;
+	Datum		v[7],
+				blocked[6];
+	bool		nulls[7] = {0};
+	int64		changed = 0,
+				threshold = 0;
+	TimestampTz last = 0;
+	const char *why;
+	int			nblocked = 0;
+
+	snap = sift_dir_read(index);
+	why = maint_rewrite_due(index);
+	if (!sift_async_maintenance)
+		blocked[nblocked++] = CStringGetTextDatum("sift.async_maintenance is off");
+	if (RecoveryInProgress())
+		blocked[nblocked++] = CStringGetTextDatum("standby");
+	if (index->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
+		blocked[nblocked++] = CStringGetTextDatum("temporary table");
+	if (why != NULL && maint_reindex_wanted(why))
+		blocked[nblocked++] = CStringGetTextDatum(psprintf("REINDEX recommended (%s): the server does not rewrite an index by itself, REINDEX INDEX CONCURRENTLY %s does",
+														   why, sift_col_index_ref(index)));
+	v[0] = ObjectIdGetDatum(RelationGetRelid(heap));
+	nulls[1] = nulls[2] = nulls[3] = !table_churn(heap, &changed, &threshold, &last);
+	nulls[1] |= last == 0;
+	v[1] = TimestampTzGetDatum(last);
+	v[2] = Int64GetDatum(changed);
+	v[3] = Int64GetDatum(threshold);
+	nulls[4] = why == NULL;
+	if (why != NULL)
+		v[4] = CStringGetTextDatum(why);
+	nulls[5] = snap->meta.maint_requested_at == 0;
+	v[5] = TimestampTzGetDatum(snap->meta.maint_requested_at);
+	v[6] = PointerGetDatum(construct_array(blocked, nblocked, TEXTOID, -1, false, TYPALIGN_INT));
+	relation_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/*
+ * sift.col_maintain(index): the rewrite of the index that REINDEX would make over the old segments, now and in this session, whatever sift.col_auto_merge says; false when no rewrite is due or the maintenance lock is held. It writes the whole index, in one transaction of the caller's: REINDEX INDEX CONCURRENTLY
+ * is the choice for a large index, and nothing but this call starts a rewrite.
+ */
+Datum
+sift_col_v1_maintain(PG_FUNCTION_ARGS)
+{
+	Relation	index;
+	int			n;
+
+	PreventCommandIfReadOnly("sift.col_maintain()");
+	PreventCommandDuringRecovery("sift.col_maintain()");
+	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
+	n = sift_mops_rewrite(&maint_col_ops, index);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_BOOL(n >= 0);
+}
+
+/*
+ * sift.col_repair(index, dry_run): restores the liveness pages of every segment whose special space, dirty bits or count of dead rows are not what sift_live_clear keeps them
+ * (a VACUUM of 4.2.1 to 4.3.5 on a segment of more than 65,152 superblocks), under the lock of VACUUM and the merges; a row for each segment that needed it, none when nothing did.
+ * With dry_run it reads and reports and writes nothing.
+ */
+Datum
+sift_col_repair(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index;
+	bool		dry_run = PG_GETARG_BOOL(1);
+	SiftDirSnapshot *snap;
+
+	PreventCommandIfReadOnly("sift.col_repair()");
+	PreventCommandDuringRecovery("sift.col_repair()");
+	index = sift_mops_open_maintain(&maint_col_ops, PG_GETARG_OID(0));
+	InitMaterializedSRF(fcinfo, 0);
+	sift_maint_lock(index, true);
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+		SiftLiveAudit a;
+		Datum		v[5];
+		bool		nulls[5] = {0};
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		SIFT_TEST_GATE(sift_test_repair_gate, 15);
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		if (dry_run)
+			sift_cseg_live_audit(seg, &a);
+		else
+			sift_cseg_live_repair(seg, &a);
+		sift_cseg_close(seg);
+		SIFT_TEST_GATE(sift_test_repair_gate, 16);
+		if (a.pages_damaged == 0 && a.units_lost == 0 && a.ndead_header == a.cleared)
+			continue;
+		v[0] = Int64GetDatum(snap->segs[i].gen);
+		v[1] = Int32GetDatum(a.pages_damaged);
+		v[2] = Int32GetDatum(a.units_lost);
+		v[3] = Int64GetDatum(a.ndead_header);
+		v[4] = Int64GetDatum(a.cleared);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	sift_maint_unlock(index);
+	index_close(index, RowExclusiveLock);
+	return (Datum) 0;
+}
+
+Datum
+sift_col_promote(PG_FUNCTION_ARGS)
+{
+	return sift_mops_sql_promote(&maint_col_ops, fcinfo);
+}
+
+Datum
+sift_col_merge(PG_FUNCTION_ARGS)
+{
+	return sift_mops_sql_merge(&maint_col_ops, fcinfo);
+}
+
+Datum
+sift_col_v1_index_info(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), "index_info");
+	const SiftColIndexMeta *defs = sift_col_index_defs(index);
+	SiftDirSnapshot *snap;
+	SiftFreeStats fs;
+	Datum		v[16];
+	bool		nulls[16] = {0};
+	int64		rows = 0,
+				bytes = 0,
+				units = 0,
+				pagg_bytes = 0,
+				pagg_units = 0;
+	int			nwbuf = 0;
+	SiftDirSnapshot *plain;
+
+	snap = sift_col_dir_read(index, false);
+	fs = sift_store_free_stats(index);
+	plain = sift_dir_alloc(snap->nsegs);
+	for (int i = 0; i < snap->nsegs; i++)
+		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+
+			rows += (snap->segs[i].flags & SIFT_SEG_SCOPE) ? 0 : snap->segs[i].ndocs;
+			bytes += snap->segs[i].bytes;
+			pagg_bytes += sift_cseg_preagg_bytes(seg);
+			pagg_units += sift_cseg_preagg_units(seg);
+			/* the units of a key-cut segment are numbered from 0 in each segment: they are stored units, not superblocks that other segments share */
+			if (sift_cseg_keyed(&snap->segs[i]))
+				units += seg->nsb;
+			else
+				plain->segs[plain->nsegs++] = snap->segs[i];
+			sift_cseg_close(seg);
+		}
+		else if (snap->segs[i].kind != SIFT_SEG_TOMB)
+			nwbuf++;
+	units += sift_cseg_dir_units(plain);
+	pfree(plain);
+	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
+	v[1] = Int64GetDatum(snap->meta.high_water);
+	v[2] = Int64GetDatum(fs.blocks);
+	v[3] = Int64GetDatum(fs.reusable);
+	v[4] = Int64GetDatum(fs.records);
+	v[5] = Int32GetDatum(snap->nsegs);
+	v[6] = Int32GetDatum(SIFT_DIR_POLICY_MAX);
+	v[7] = Int64GetDatum(rows);
+	v[8] = Int64GetDatum(bytes);
+	v[9] = Int64GetDatum(units);
+	v[10] = Int32GetDatum(nwbuf);
+	v[11] = Int32GetDatum(defs->ncols);
+	nulls[12] = RecoveryInProgress();
+	v[12] = BoolGetDatum(!nulls[12] && sift_maintenance_busy(index));
+	v[13] = CStringGetTextDatum(sift_simd_level_name(sift_cpu.active));
+	v[14] = Int64GetDatum(pagg_bytes);
+	v[15] = Int64GetDatum(pagg_units);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* sift.col_extents: the runs the map walk reports, kept to be sorted by their first block */
+typedef struct ExtentRow
+{
+	const char *what;
+	uint64		gen;
+	BlockNumber start;
+	uint64		nblocks;
+	bool		pending;
+} ExtentRow;
+
+typedef struct ExtentRows
+{
+	ExtentRow  *row;
+	int			n;
+	int			max;
+} ExtentRows;
+
+static void
+collect_extent(void *arg, const char *what, uint64 gen, BlockNumber start, uint64 nblocks, bool pending)
+{
+	ExtentRows *r = arg;
+
+	if (r->n == r->max)
+		r->row = repalloc(r->row, (r->max *= 2) * sizeof(ExtentRow));
+	r->row[r->n++] = (ExtentRow) {what, gen, start, nblocks, pending};
+}
+
+static int
+cmp_extent_start(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const ExtentRow *) a)->start, ((const ExtentRow *) b)->start);
+}
+
+Datum
+sift_col_v1_extents(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	ExtentRows	rows = {palloc(256 * sizeof(ExtentRow)), 0, 256};
+
+	InitMaterializedSRF(fcinfo, 0);
+	sift_store_extent_map(index, collect_extent, &rows);
+	qsort(rows.row, rows.n, sizeof(ExtentRow), cmp_extent_start);
+	for (int i = 0; i < rows.n; i++)
+	{
+		Datum		v[5];
+		bool		nulls[5] = {0};
+
+		v[0] = CStringGetTextDatum(rows.row[i].what);
+		v[1] = Int64GetDatum(rows.row[i].gen);
+		nulls[1] = rows.row[i].gen == 0;
+		v[2] = Int64GetDatum(rows.row[i].start);
+		v[3] = Int64GetDatum(rows.row[i].nblocks);
+		v[4] = BoolGetDatum(rows.row[i].pending);
+		nulls[4] = strcmp(rows.row[i].what, "free extent") != 0;
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+typedef struct SpaceTally
+{
+	int64		used;
+	int64		reusable;
+	int64		pending;
+	int64		largest;
+	int			extents;
+	uint64		tail_end;
+	const char *tail_what;
+	uint64		tail_gen;
+} SpaceTally;
+
+static void
+tally_extent(void *arg, const char *what, uint64 gen, BlockNumber start, uint64 nblocks, bool pending)
+{
+	SpaceTally *t = arg;
+
+	if (strcmp(what, "free extent") == 0)
+	{
+		if (pending)
+			t->pending += nblocks;
+		else
+			t->reusable += nblocks;
+		t->extents++;
+		t->largest = Max(t->largest, (int64) nblocks);
+		return;
+	}
+	t->used += nblocks;
+	if ((uint64) start + nblocks > t->tail_end)
+	{
+		t->tail_end = (uint64) start + nblocks;
+		t->tail_what = what;
+		t->tail_gen = gen;
+	}
+}
+
+Datum
+sift_col_v1_space(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	SpaceTally	t = {0};
+	Datum		v[12];
+	bool		nulls[12] = {0};
+	int64		movable;
+	BlockNumber to;
+	SiftDirSnapshot *snap;
+
+	snap = sift_dir_read(index);
+	sift_store_extent_map(index, tally_extent, &t);
+	to = sift_maint_shrink_target(index, &movable);
+	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
+	v[1] = Int64GetDatum(snap->meta.high_water);
+	v[2] = Int64GetDatum(t.used);
+	v[3] = Int64GetDatum(t.reusable);
+	v[4] = Int64GetDatum(t.pending);
+	v[5] = Int32GetDatum(t.extents);
+	v[6] = Int64GetDatum(t.largest);
+	v[7] = CStringGetTextDatum(t.tail_what ? t.tail_what : "none");
+	v[8] = Int64GetDatum(t.tail_gen);
+	nulls[8] = t.tail_gen == 0;
+	v[9] = Int64GetDatum(t.tail_end);
+	v[10] = Int64GetDatum(to);
+	v[11] = Int64GetDatum(movable);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* sift.col_shrink_history(index): why the last cut of the file left free blocks, and when the file was last cut */
+Datum
+sift_col_v1_shrink_history(PG_FUNCTION_ARGS)
+{
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	SiftDirSnapshot *snap;
+	Datum		v[2];
+	bool		nulls[2] = {0};
+
+	snap = sift_dir_read(index);
+	nulls[0] = snap->meta.shrink_blocked == SIFT_SHRINK_OPEN;
+	v[0] = CStringGetTextDatum(sift_shrink_block_name(snap->meta.shrink_blocked));
+	nulls[1] = snap->meta.last_shrink == 0;
+	v[1] = TimestampTzGetDatum(snap->meta.last_shrink);
+	index_close(index, AccessShareLock);
+	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+Datum
+sift_col_v1_segments(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), "segments");
+	SiftDirSnapshot *snap;
+
+	InitMaterializedSRF(fcinfo, 0);
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+		Datum		v[12];
+		bool		nulls[12] = {0};
+
+		/* a log or a buffer lists its format only where it is one a 5.0 library refuses, so that the least format of the segments stays theirs */
+		v[0] = Int64GetDatum(e->gen);
+		v[1] = CStringGetTextDatum(e->kind == SIFT_SEG_IMMUTABLE ? "immutable" : e->kind == SIFT_SEG_TOMB ? "tombstones" :
+								   e->kind == SIFT_SEG_WBUF_OPEN ? "buffer" : "sealed buffer");
+		if (e->kind == SIFT_SEG_IMMUTABLE)
+		{
+			SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+
+			v[2] = Int64GetDatum(e->ndocs);
+			v[3] = Int64GetDatum(e->bytes);
+			v[4] = Int32GetDatum(e->sb_lo);
+			v[5] = Int32GetDatum(e->sb_hi);
+			v[6] = Int32GetDatum(seg->nsb);
+			v[7] = BoolGetDatum((e->flags & SIFT_SEG_DIRTY) != 0);
+			v[8] = Int64GetDatum(e->ndocs - sift_cseg_live_rows(seg));
+			v[9] = Int32GetDatum(seg->hdr->nextents);
+			v[10] = Int32GetDatum(e->format);
+			v[11] = Int64GetDatum(sift_cseg_preagg_bytes(seg));
+			sift_cseg_close(seg);
+		}
+		else if (e->kind == SIFT_SEG_TOMB)
+		{
+			v[2] = Int64GetDatum(sift_tomb_entries(index, snap));
+			nulls[3] = nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[11] = true;
+			v[10] = Int32GetDatum(e->format);
+			nulls[10] = e->format < SIFT_COL_FORMAT_M1;
+		}
+		else
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, e, &nrows, &npages);
+			v[2] = Int64GetDatum(nrows);
+			v[3] = Int64GetDatum(npages * BLCKSZ);
+			nulls[4] = nulls[5] = nulls[6] = nulls[7] = nulls[8] = nulls[9] = nulls[11] = true;
+			v[10] = Int32GetDatum(e->format);
+			nulls[10] = e->format < SIFT_COL_FORMAT_M1;
+		}
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}
+
+/* The directory of the index as EXPLAIN (SIFT) reports it (the scope segments hold copies of rows: they are not counted) */
+void
+sift_col_stats(Relation index, SiftIndexStats *st)
+{
+	SiftDirSnapshot *snap;
+
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		const SiftSegEntry *e = &snap->segs[i];
+
+		if (e->kind == SIFT_SEG_IMMUTABLE && !(e->flags & SIFT_SEG_SCOPE))
+		{
+			SiftColSegment *seg = sift_cseg_open(index, e, CurrentMemoryContext);
+
+			st->segments++;
+			st->rows += e->ndocs;
+			st->dead_rows += e->ndocs - sift_cseg_live_rows(seg);
+			sift_cseg_close(seg);
+		}
+		else if (e->kind == SIFT_SEG_WBUF_OPEN || e->kind == SIFT_SEG_WBUF_SEALED)
+		{
+			uint64		nrows,
+						npages;
+
+			sift_cwbuf_summary(index, e, &nrows, &npages);
+			st->buffered_rows += nrows;
+		}
+	}
+}
+
+/* One row per leaf: the chunks of all immutable segments by encoding, their bytes, and the dictionaries */
+Datum
+sift_col_v1_leaves(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = sift_col_open_inspect(PG_GETARG_OID(0), NULL);
+	const SiftColSchema *sc = sift_col_rel(index)->schema;
+	SiftDirSnapshot *snap;
+	int64	   *chunks = palloc0(sc->ncols * 5 * sizeof(int64)),
+			   *bytes = palloc0(sc->ncols * sizeof(int64)),
+			   *dict_n = palloc0(sc->ncols * sizeof(int64)),
+			   *dict_bytes = palloc0(sc->ncols * sizeof(int64));
+
+	InitMaterializedSRF(fcinfo, 0);
+	snap = sift_dir_read(index);
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		SiftColSegment *seg;
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		seg = sift_cseg_open(index, &snap->segs[i], CurrentMemoryContext);
+		for (uint32 u = 0; u < seg->nsb; u++)
+		{
+			SiftCUnitView v;
+			uint32		len;
+			const uint8 *rec = sift_cseg_unit(seg, u, &len);
+
+			if (!sift_cunit_parse(rec, len, sc, &v))
+				corrupt(index, "Unit %u of segment %llu does not parse.", u, (unsigned long long) snap->segs[i].gen);
+			for (int c = 0; c < sc->ncols; c++)
+			{
+				SiftCChunk	ch;
+
+				if (!sift_cunit_chunk(&v, c, &ch))
+					continue;
+				chunks[c * 5 + (ch.enc == SIFT_COLENC_ISTR ? 4 : Min(ch.enc, 3))]++;
+				bytes[c] += v.chunk_len[c];
+			}
+		}
+		for (int c = 0; c < sc->ncols; c++)
+		{
+			SiftCDict  *d = sift_cseg_dict(seg, c);
+
+			if (d)
+			{
+				dict_n[c] += d->n;
+				dict_bytes[c] += d->nbytes + (int64) (d->n + 1) * sizeof(uint32);
+			}
+		}
+		sift_cseg_close(seg);
+	}
+	for (int c = 0; c < sc->ncols; c++)
+	{
+		Datum		v[11];
+		bool		nulls[11] = {false};
+
+		v[0] = Int32GetDatum(c);
+		v[1] = CStringGetTextDatum(sc->cols[c].path[0] ? sc->cols[c].path : NameStr(TupleDescAttr(RelationGetDescr(index), sc->cols[c].attno - 1)->attname));
+		v[2] = CStringGetTextDatum(sc->cols[c].kind == SIFT_COLK_GROUP ? "group" : "scalar");
+		v[3] = CStringGetTextDatum(sc->cols[c].lane > 0 ? psprintf("%s (lane %d)", format_type_be(sift_col_def_typid(RelationGetDescr(index), &sc->cols[c])), sc->cols[c].lane) :
+								   format_type_be(sift_col_def_typid(RelationGetDescr(index), &sc->cols[c])));
+		for (int e = 0; e < 5; e++)
+			v[4 + e] = Int64GetDatum(chunks[c * 5 + e]);
+		v[9] = Int64GetDatum(bytes[c]);
+		v[10] = Int64GetDatum(dict_bytes[c]);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+	}
+	index_close(index, AccessShareLock);
+	return (Datum) 0;
+}

@@ -1,5 +1,5 @@
 -- sift.col_wbuf_key_range: the pages of a write buffer of column format 55 hold the range of one integer key leaf (the first of the key_cut of the index), and a scan that
--- asks for keys reads only the pages whose range meets them (col/wbuf/read.c, sift_cwbuf_batches_keys). The leaf is order_id (leaf 0: the id of the row, so each page holds a range of
+-- asks for keys reads only the pages whose range meets them (col/v1/wbuf/read.c, sift_cwbuf_batches_keys). The leaf is order_id (leaf 0: the id of the row, so each page holds a range of
 -- ids; the rows are small but the three of 1,000 items span pages) and then tenant_id (leaf 1: random, NULL, overflow and extreme values, so most pages meet most ranges). A read that skips
 -- pages never loses a row of the keys. A buffer that a whole read has kept is read from the kept set, and so is one whose reads of keys this backend has made have decoded what the buffer holds.
 CREATE EXTENSION pg_sift_test CASCADE;

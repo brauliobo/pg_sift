@@ -166,7 +166,6 @@ installcheck-col_point_auto	47	42
 tap-003_wal_minimal	46	47
 installcheck-agg_preagg_elem	45	46
 installcheck-agg_topn_offset_skip	46	33
-installcheck-col_key_cut_auto	46	32
 installcheck-include_filter	46	30
 difftest-col-analytics	45	44
 installcheck-batch8	44	31
@@ -242,7 +241,6 @@ tap-shell-maint_tail	21	29
 installcheck-agg_join_filter_elem_text	18	28
 installcheck-col_topn_order	28	22
 tap-012_postmaster_kill	27	28
-tap-shell-col_auto_merge_read	26	28
 tap-shell-maint_standby	27	28
 installcheck-agg_group_hash_probe	12	27
 installcheck-segfmt_mixed	27	19
@@ -252,7 +250,6 @@ tap-010_tbl_settings	25	27
 tap-shell-maint_p4	25	27
 installcheck-analyze_invariant	22	26
 installcheck-col_index_parallel	26	25
-installcheck-col_key_cut_growth	26	18
 tap-shell-col_pg_repack	19	26
 tap-shell-col_pg_squeeze	0	10
 tap-shell-maint_lock	21	26
@@ -263,7 +260,6 @@ installcheck-agg_two_level_joins	9	25
 installcheck-agg_wide_sum_records	25	20
 installcheck-col_topn_float	22	25
 installcheck-col_topn_offset	16	25
-installcheck-col_vacuum_request	25	17
 installcheck-rank_semi_join	17	25
 plan-gate-planning	25	11
 tap-shell-verdict_shared	23	25
@@ -274,7 +270,6 @@ installcheck-edge_documents	24	14
 installcheck-index_build_postings	19	24
 installcheck-maint_failure	24	18
 installcheck-tbl_analyze_thin	24	19
-tap-shell-col_vacuum_request_hold	24	24
 tap-shell-compat_2x_fixture	24	23
 tap-shell-vacuum_agg_snapshot	24	24
 installcheck-agg_group_spill_fuzz	23	23
@@ -284,7 +279,6 @@ installcheck-col_gorder_layout	23	22
 installcheck-col_preagg	23	18
 installcheck-phrase_positions	18	23
 tap-008_tbl_promote	23	18
-tap-shell-col_penalty_maintenance	23	23
 tap-shell-col_tier_apart	22	23
 tap-shell-vacuum_count_snapshot	20	23
 installcheck-agg_derived_correlation	10	22

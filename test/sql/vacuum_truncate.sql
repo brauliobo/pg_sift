@@ -11,7 +11,9 @@ CREATE FUNCTION sized(idx regclass) RETURNS bool LANGUAGE sql
 
 CREATE TABLE vt (id int, body text) WITH (autovacuum_enabled = off);
 INSERT INTO vt SELECT g, 'k' || (g % 7) || ' g' || (g % 1000) || ' common word' || (g % 50) || ' u' || g FROM generate_series(1, 100000) g;
+SET client_min_messages = warning;
 CREATE INDEX vt_idx ON vt USING sift (body) WITH (build_segments = 8);
+RESET client_min_messages;
 SELECT blocks('vt_idx') AS built \gset
 DELETE FROM vt WHERE id % 20 <> 0;
 -- one VACUUM: merged down to the two segments of vacuum_segments, which are written into the space of the old ones (the VACUUM holds the
@@ -35,7 +37,9 @@ SELECT sized('vt_idx');
 -- vacuum_truncate = false: VACUUM leaves the file alone, the next one with the default gives the end back
 CREATE TABLE vt2 (id int, body text) WITH (autovacuum_enabled = off);
 INSERT INTO vt2 SELECT g, 'k' || (g % 7) || ' g' || (g % 1000) || ' common word' || (g % 50) || ' u' || g FROM generate_series(1, 100000) g;
+SET client_min_messages = warning;
 CREATE INDEX vt2_idx ON vt2 USING sift (body) WITH (build_segments = 8, vacuum_truncate = false);
+RESET client_min_messages;
 DELETE FROM vt2 WHERE id % 20 <> 0;
 VACUUM vt2;
 SELECT pg_current_xact_id() IS NOT NULL AS xid_passed;

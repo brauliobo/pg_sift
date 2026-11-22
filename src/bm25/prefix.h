@@ -7,18 +7,18 @@
 #include "bm25/segment.h"
 
 /*
- * The term a wide leaf reads as in one segment: the documents that have a word matched by m, tf the
- * occurrences of those words (what the indexed prefix term of prefix_index holds). Returns the term blob
+ * The term a wide leaf reads as in one segment: the documents that have a word matched by m, tf the most
+ * occurrences of one of those words. Returns the term blob
  * (see sift_postw_end_term_mem; NULL for an inline term or no document) and fills info; info->df is 0 when
  * no live or dead document has such a word. key names the leaf (kind, field and text) for the cache, NULL
  * when it is not to be cached. With scoring false, tf and bounds are not computed
  * (every tf is 1), which is all a match or a count needs. Allocates the blob in mcxt.
+ * The terms with a bound below min_bound are left out (such a union is not cached); left_out is the largest bound of those, when it is not NULL.
  */
 extern const uint8 *sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen,
-									  const SiftScoreRef *ref, bool scoring, MemoryContext mcxt, SiftTermInfo *info);
+									  const SiftScoreRef *ref, bool scoring, int min_bound, MemoryContext mcxt, SiftTermInfo *info,
+									  uint8 *left_out);
 
-/* sift.prefix_cache_size (kB): the blobs this backend keeps for the next bind, 0 = none. key names the term (indexed_leaf's) */
-extern PGDLLIMPORT int sift_prefix_cache_size;
 
 /* kB of postings one pass of a wide prefix gathers: past it the superblocks are built in windows that fit (a test GUC) */
 extern PGDLLIMPORT int sift_prefix_gather_kb;

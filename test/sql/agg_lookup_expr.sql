@@ -6,9 +6,9 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.agg_lookup_cache_kb = 0;
-SET sift.agg_lookup_shared_kb = 0;
-SET sift.agg_dimmap_kb = 0;
+SET sift.backend_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 
 CREATE FUNCTION presence(a text, b text, c int) RETURNS smallint LANGUAGE sql IMMUTABLE PARALLEL SAFE AS
 $$ SELECT ((nullif(btrim(a), '') IS NOT NULL)::int + ((nullif(btrim(b), '') IS NOT NULL)::int << 1) + ((c IS NOT NULL)::int << 2))::smallint $$;
@@ -118,7 +118,6 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
 SELECT * FROM report('workers');
 
 SET sift.agg_lookup_columns = off;

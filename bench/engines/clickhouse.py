@@ -1,5 +1,6 @@
 # ClickHouse (one container, HTTP): the tables are bench/sql/SUITE/ch.sql, loaded from the CSV of the source; a case runs its pg statement unless it has a `--@ ch` section.
 import http.client
+import json
 import os
 import time
 from urllib.parse import quote
@@ -14,6 +15,7 @@ class Engine(Server):
     def __init__(self, ctx):
         super().__init__(ctx)
         self.conn = None
+        self.server_ns = 0   # the elapsed_ns of every query so far, from the X-ClickHouse-Summary header of each response
 
     def up(self):
         self.docker_run(8123, image('STORE_CH_IMAGE'), env=['CLICKHOUSE_USER=bench', 'CLICKHOUSE_PASSWORD=bench'], run_args=['--ulimit', 'nofile=262144:262144'])
@@ -32,7 +34,7 @@ class Engine(Server):
         """the server's cumulative counters of file reads (operations, bytes) and of the rows and bytes the selects chose: system.events"""
         names = {'ReadBufferFromFileDescriptorRead': 'ch_read_ops', 'ReadBufferFromFileDescriptorReadBytes': 'ch_read_bytes', 'SelectedRows': 'ch_selected_rows', 'SelectedBytes': 'ch_selected_bytes'}
         got = dict(l.split('\t') for l in self.query("SELECT event, value FROM system.events WHERE event IN (%s)" % ', '.join("'%s'" % n for n in names), db='default').splitlines())
-        return {names[k]: float(v) for k, v in got.items()}
+        return {**{names[k]: float(v) for k, v in got.items()}, 'ch_server_ms': self.server_ns / 1e6}
 
     def query(self, sql, body=None, db='bench'):
         """the response text; sql travels in the URL when a body is sent (an INSERT), else it is the body"""
@@ -40,7 +42,7 @@ class Engine(Server):
             try:
                 if self.conn is None:
                     self.conn = http.client.HTTPConnection('127.0.0.1', self.ctx.port, timeout=600)
-                path = '/?database=%s&default_format=TabSeparated&max_threads=%d&date_time_input_format=best_effort&aggregate_functions_null_for_empty=1' % (db, self.ctx.cpus)
+                path = '/?database=%s&default_format=TabSeparated&max_threads=%d&date_time_input_format=best_effort&aggregate_functions_null_for_empty=1&wait_end_of_query=1' % (db, self.ctx.cpus)
                 headers = {'X-ClickHouse-User': 'bench', 'X-ClickHouse-Key': 'bench'}
                 if body is None:
                     self.conn.request('POST', path, body=sql.encode(), headers=headers)
@@ -48,6 +50,7 @@ class Engine(Server):
                     self.conn.request('POST', path + '&query=' + quote(sql, safe=''), body=body, headers=headers)
                 r = self.conn.getresponse()
                 data = r.read().decode(errors='replace')
+                self.server_ns += int(json.loads(r.getheader('X-ClickHouse-Summary') or '{}').get('elapsed_ns', 0))
                 if r.status >= 400:
                     raise RuntimeError('ClickHouse %d: %s' % (r.status, data[:300]))
                 return data

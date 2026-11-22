@@ -470,7 +470,6 @@ SELECT sift.col_promote('pd_all'::regclass) >= 0 AS promoted;
  t
 (1 row)
 
-RESET sift.col_format_minor;
 SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY 1, 2 ORDER BY 1, 2;
    kind    | format | segments 
 -----------+--------+----------
@@ -618,7 +617,6 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "pd_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_13');
-RESET sift.col_format_minor;
 SELECT min(format) < 13 AS no_directory FROM sift.col_segments('pd_13') WHERE kind = 'immutable';
  no_directory 
 --------------

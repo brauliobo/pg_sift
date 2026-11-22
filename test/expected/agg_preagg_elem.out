@@ -158,7 +158,6 @@ CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'i
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off', cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 3;
 CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
  col_verify | col_verify | col_verify 
@@ -240,7 +239,6 @@ SELECT c.* FROM pa_q q, LATERAL pa_contract('ae_col', format(q.q, 'ae'), true) c
  t         | t       | t    | t
 (1 row)
 
-RESET sift.col_rollup_on_demand;
 SELECT * FROM pa_sum('ao');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
@@ -336,7 +334,6 @@ SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, count(*) FROM ap d CROSS JOI
 (1 row)
 
 DROP TABLE ap;
-RESET sift.col_rollup_on_demand;
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
 UPDATE ac SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
 DELETE FROM ac WHERE id BETWEEN 2500 AND 2600;
@@ -592,7 +589,6 @@ SELECT sift.col_promote('a3_col') >= 0 AS promoted;
  t
 (1 row)
 
-RESET sift.col_format_minor;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(410001, 410500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
  promoted 

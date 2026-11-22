@@ -14,7 +14,7 @@
 #include "agg/combo_int.h"
 #include "agg/wide.h"
 #include "col/am.h"
-#include "col/wide.h"
+#include "col/v1/wide.h"
 #include "core/hash.h"
 #include "core/damage.h"
 
@@ -467,7 +467,7 @@ sift_aggwide_rec(const void *arg, uint32 i)
 			}
 		}
 	}
-	else if (def->scale >= 0 && def->scale <= 38)
+	else if (def->scale <= 38)
 	{
 		*r = (DNum) {.m = sift_col_wide_join(lanes[0].i[i], lanes[1].i[i]), .scale = (int16) def->scale, .ok = true};
 		return;

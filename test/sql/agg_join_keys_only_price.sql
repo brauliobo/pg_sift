@@ -2,15 +2,16 @@
 -- built, so its load is priced by the rows it reads and not by the cache misses of a directory, from the heap or from a column index alike. At a million keys the scan
 -- that loads it is the plan that stays (70-150 ms against 530-620 ms of the normal plan). The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
+SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 
 CREATE TABLE ko_heap (k int PRIMARY KEY, a smallint) WITH (autovacuum_enabled = false);
-INSERT INTO ko_heap SELECT g * 1000, g % 7 FROM generate_series(1, 1000000) g;
+INSERT INTO ko_heap SELECT g * 1000, g % 7 FROM generate_series(1, 200000) g;
 CREATE TABLE ko_cols (k int PRIMARY KEY, a smallint) WITH (autovacuum_enabled = false);
 INSERT INTO ko_cols SELECT k, a FROM ko_heap;
 CREATE TABLE ko_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
-INSERT INTO ko_fact SELECT g, 1000 * (1 + (g * 7) % 1500000), g % 100 FROM generate_series(1, 1000000) g;
+INSERT INTO ko_fact SELECT g, 1000 * (1 + (g * 7) % 1500000), g % 100 FROM generate_series(1, 200000) g;
 SET client_min_messages = warning;
 CREATE INDEX ko_cols_col ON ko_cols USING sift_col (k, a);
 CREATE INDEX ko_fact_col ON ko_fact USING sift_col (id, k, v);

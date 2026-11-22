@@ -1,0 +1,285 @@
+-- sift_col across the two on-disk formats: CREATE INDEX writes format major 2; an index built in format major 1 (sift.test_create_format1, the testing build only) goes on reading and
+-- writing as it is, whatever the setting is afterwards; REINDEX INDEX CONCURRENTLY moves it to format major 2 with the same answers; both formats live in one database and one partitioned table.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+-- The rows of a query through the index (a bitmap scan) and over the heap alone: they must be the same
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE via_index text; via_heap text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_index;
+	SET LOCAL enable_seqscan = on; SET LOCAL enable_bitmapscan = off;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, '','' ORDER BY r::text), '''') FROM (%s) r', q) INTO via_heap;
+	RETURN CASE WHEN via_index = via_heap THEN 'same' ELSE 'DIFFERENT' END;
+END $$;
+-- The answers of a set of queries, as one digest: what REINDEX must not change
+CREATE FUNCTION answers(t regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE d text;
+BEGIN
+	SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = on;
+	EXECUTE format('SELECT md5(string_agg(x, '';'' ORDER BY x)) FROM (
+		SELECT (SELECT count(*) FROM %1$s WHERE g = 3)::text || ''/'' || (SELECT sum(v) FROM %1$s WHERE g < 4 AND v > 10)::text || ''/'' ||
+			   (SELECT string_agg(id::text, '','' ORDER BY id) FROM %1$s WHERE id BETWEEN 100 AND 130) || ''/'' ||
+			   (SELECT count(*) FROM %1$s WHERE s LIKE ''x1%%'') AS x) q', t) INTO d;
+	RETURN d;
+END $$;
+-- 1. A Format 1 index: built under the testing setting, it takes every write and every read
+CREATE TABLE c1 (id int, g int, v int, s text);
+INSERT INTO c1 SELECT i, i % 10, i % 500, 'x' || i FROM generate_series(1, 20000) i;
+SET sift.test_create_format1 = on;
+CREATE INDEX c1_idx ON c1 USING sift_col (id, g, v, s);
+SELECT sift._test_index_format('c1_idx') AS format_major;
+ format_major 
+--------------
+            1
+(1 row)
+
+SELECT same('SELECT id FROM c1 WHERE g = 3 AND v < 100') AS select_same;
+ select_same 
+-------------
+ same
+(1 row)
+
+INSERT INTO c1 SELECT i, i % 10, i % 500, 'x' || i FROM generate_series(20001, 21000) i;
+UPDATE c1 SET v = v + 1 WHERE id % 7 = 0;
+DELETE FROM c1 WHERE id % 11 = 0;
+SELECT same('SELECT id, v FROM c1 WHERE g = 3 AND v < 100') AS after_writes_same;
+ after_writes_same 
+-------------------
+ same
+(1 row)
+
+VACUUM c1;
+SELECT same('SELECT id, v FROM c1 WHERE g = 4') AS after_vacuum_same;
+ after_vacuum_same 
+-------------------
+ same
+(1 row)
+
+-- 2. The setting is off again: the index in Format 1 still reads, inserts, updates, deletes and vacuums
+SET sift.test_create_format1 = off;
+SHOW sift.test_create_format1;
+ sift.test_create_format1 
+--------------------------
+ off
+(1 row)
+
+SELECT sift._test_index_format('c1_idx') AS format_major;
+ format_major 
+--------------
+            1
+(1 row)
+
+INSERT INTO c1 SELECT i, i % 10, i % 500, 'x' || i FROM generate_series(21001, 22000) i;
+UPDATE c1 SET v = v + 2 WHERE id % 13 = 0;
+DELETE FROM c1 WHERE id % 17 = 0;
+SELECT same('SELECT id, v FROM c1 WHERE g = 3 AND v < 100') AS select_same;
+ select_same 
+-------------
+ same
+(1 row)
+
+SELECT same('SELECT id FROM c1 WHERE s LIKE ''x1%''') AS text_same;
+ text_same 
+-----------
+ same
+(1 row)
+
+VACUUM c1;
+SELECT same('SELECT id, v FROM c1 WHERE g = 5') AS after_vacuum_same;
+ after_vacuum_same 
+-------------------
+ same
+(1 row)
+
+SELECT sift._test_index_format('c1_idx') AS format_major;
+ format_major 
+--------------
+            1
+(1 row)
+
+-- 3. REINDEX INDEX CONCURRENTLY moves it to Format 2 with the same answers
+CREATE TEMP TABLE before AS SELECT answers('c1') AS digest, (SELECT count(*) FROM c1) AS n;
+REINDEX INDEX CONCURRENTLY c1_idx;
+SELECT sift._test_index_format('c1_idx') AS format_major;
+ format_major 
+--------------
+            2
+(1 row)
+
+SELECT answers('c1') = digest AS answers_kept, (SELECT count(*) FROM c1) = n AS rows_kept FROM before;
+ answers_kept | rows_kept 
+--------------+-----------
+ t            | t
+(1 row)
+
+SELECT same('SELECT id, v FROM c1 WHERE g = 3 AND v < 100') AS select_same;
+ select_same 
+-------------
+ same
+(1 row)
+
+INSERT INTO c1 SELECT i, i % 10, i % 500, 'x' || i FROM generate_series(22001, 23000) i;
+UPDATE c1 SET v = v + 3 WHERE id % 19 = 0;
+DELETE FROM c1 WHERE id % 23 = 0;
+VACUUM c1;
+SELECT same('SELECT id, v FROM c1 WHERE g = 3 AND v < 100') AS after_writes_same;
+ after_writes_same 
+-------------------
+ same
+(1 row)
+
+-- 4. Both formats in one database: a Format 1 index beside the Format 2 ones, in the same statements
+CREATE TABLE c2 (id int, g int, v int, s text);
+INSERT INTO c2 SELECT i, i % 10, i % 500, 'x' || i FROM generate_series(1, 5000) i;
+SET sift.test_create_format1 = on;
+CREATE INDEX c2_idx ON c2 USING sift_col (id, g, v, s);
+SET sift.test_create_format1 = off;
+CREATE INDEX c2_f2_idx ON c2 USING sift_col (id, g);
+SELECT sift._test_index_format('c2_idx') AS v1, sift._test_index_format('c2_f2_idx') AS v2, sift._test_index_format('c1_idx') AS reindexed;
+ v1 | v2 | reindexed 
+----+----+-----------
+  1 |  2 |         2
+(1 row)
+
+SELECT same('SELECT id FROM c2 WHERE g = 3 AND v < 100') AS one_table_two_formats_same;
+ one_table_two_formats_same 
+----------------------------
+ same
+(1 row)
+
+SELECT same('SELECT c1.id, c2.v FROM c1 JOIN c2 USING (id) WHERE c2.g = 2 AND c1.g = 2') AS join_same;
+ join_same 
+-----------
+ same
+(1 row)
+
+INSERT INTO c2 SELECT i, i % 10, i % 500, 'x' || i FROM generate_series(5001, 6000) i;
+DELETE FROM c2 WHERE id % 5 = 0;
+VACUUM c2;
+SELECT same('SELECT id FROM c2 WHERE g = 3') AS after_writes_same;
+ after_writes_same 
+-------------------
+ same
+(1 row)
+
+SELECT sift._test_index_format('c2_idx') AS v1_still, sift._test_index_format('c2_f2_idx') AS v2_still;
+ v1_still | v2_still 
+----------+----------
+        1 |        2
+(1 row)
+
+-- Format 1 holds what the new format major lifts: at most two columns in key_order and no DESC or NULLS FIRST
+SET sift.test_create_format1 = on;
+CREATE INDEX c2_v1_ko ON c2 USING sift_col (id, g, v) WITH (key_order = 'g, v, id');
+ERROR:  key_order lists 3 columns, an index of format major 1 takes at most two
+CREATE INDEX c2_v1_desc ON c2 USING sift_col (id, g, v) WITH (key_order = 'g DESC');
+ERROR:  key_order orders a column descending or with its NULLs first, which an index of format major 1 cannot
+SET sift.test_create_format1 = off;
+CREATE INDEX c2_f2_ko ON c2 USING sift_col (id, g, v) WITH (key_order = 'g DESC, v, id');
+SELECT sift._test_index_format('c2_f2_ko') AS v2;
+ v2 
+----
+  2
+(1 row)
+
+DROP INDEX c2_f2_ko;
+-- 5. A partitioned table with a Format 1 child and a Format 2 child, read and written through the parent
+CREATE TABLE pt (id int, g int, v int) PARTITION BY RANGE (id);
+CREATE TABLE pt1 PARTITION OF pt FOR VALUES FROM (0) TO (10000);
+CREATE TABLE pt2 PARTITION OF pt FOR VALUES FROM (10000) TO (20000);
+INSERT INTO pt SELECT i, i % 10, i % 500 FROM generate_series(0, 19999) i;
+SET sift.test_create_format1 = on;
+CREATE INDEX pt1_idx ON pt1 USING sift_col (id, g, v);
+SET sift.test_create_format1 = off;
+CREATE INDEX pt2_idx ON pt2 USING sift_col (id, g, v);
+SELECT sift._test_index_format('pt1_idx') AS child_1, sift._test_index_format('pt2_idx') AS child_2;
+ child_1 | child_2 
+---------+---------
+       1 |       2
+(1 row)
+
+SELECT same('SELECT id FROM pt WHERE g = 3 AND v < 100') AS partitioned_same;
+ partitioned_same 
+------------------
+ same
+(1 row)
+
+SELECT g, count(*), sum(v) FROM pt GROUP BY g ORDER BY g;
+ g | count |  sum   
+---+-------+--------
+ 0 |  2000 | 490000
+ 1 |  2000 | 492000
+ 2 |  2000 | 494000
+ 3 |  2000 | 496000
+ 4 |  2000 | 498000
+ 5 |  2000 | 500000
+ 6 |  2000 | 502000
+ 7 |  2000 | 504000
+ 8 |  2000 | 506000
+ 9 |  2000 | 508000
+(10 rows)
+
+SELECT count(*) AS grouped_through_index FROM (SELECT g, count(*) FROM pt WHERE v < 250 GROUP BY g) q;
+ grouped_through_index 
+-----------------------
+                    10
+(1 row)
+
+UPDATE pt SET v = v + 1 WHERE id % 9 = 0;
+DELETE FROM pt WHERE id % 13 = 0;
+VACUUM pt;
+SELECT same('SELECT id, v FROM pt WHERE g = 4') AS after_writes_same;
+ after_writes_same 
+-------------------
+ same
+(1 row)
+
+SELECT g, count(*), sum(v) FROM pt GROUP BY g ORDER BY g;
+ g | count |  sum   
+---+-------+--------
+ 0 |  1846 | 452675
+ 1 |  1846 | 454161
+ 2 |  1846 | 456167
+ 3 |  1846 | 458173
+ 4 |  1846 | 459659
+ 5 |  1846 | 461665
+ 6 |  1846 | 463671
+ 7 |  1847 | 465664
+ 8 |  1846 | 467164
+ 9 |  1846 | 469170
+(10 rows)
+
+-- a parent index makes its children in Format 2
+CREATE TABLE pp (id int, g int, v int) PARTITION BY RANGE (id);
+CREATE TABLE pp1 PARTITION OF pp FOR VALUES FROM (0) TO (5000);
+CREATE TABLE pp2 PARTITION OF pp FOR VALUES FROM (5000) TO (10000);
+INSERT INTO pp SELECT i, i % 10, i % 500 FROM generate_series(0, 9999) i;
+CREATE INDEX pp_idx ON pp USING sift_col (id, g, v);
+SELECT sift._test_index_format('pp1_id_g_v_idx') AS child_1, sift._test_index_format('pp2_id_g_v_idx') AS child_2;
+ child_1 | child_2 
+---------+---------
+       2 |       2
+(1 row)
+
+SELECT same('SELECT id FROM pp WHERE g = 3 AND v < 100') AS parent_index_same;
+ parent_index_same 
+-------------------
+ same
+(1 row)
+
+SELECT g, count(*) FROM pp GROUP BY g ORDER BY g LIMIT 3;
+ g | count 
+---+-------
+ 0 |  1000
+ 1 |  1000
+ 2 |  1000
+(3 rows)
+
+DROP TABLE c1, c2, pt, pp;
+DROP FUNCTION same(text), answers(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

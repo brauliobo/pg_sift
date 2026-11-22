@@ -7,7 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 
 CREATE TABLE fo (id int, ent_id int, k int, ts timestamp, dt date, sl text COLLATE "C", amount int) WITH (autovacuum_enabled = off);

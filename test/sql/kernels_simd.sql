@@ -19,6 +19,9 @@ SELECT sift._test_kern_digest(1, 300) = :scalar_digest AS auto_same;
 -- Every level the CPU supports against scalar, case by case
 SELECT sift._test_kern_equiv(42, 3000) AS mismatches;
 
+-- The loops that core/fmv.h compiles for the CPU (ub_accum, the run skip of the tf stream) against the plain loops and their baseline body
+SELECT sift._test_kern_fmv_equiv(42, 400) AS fmv_mismatches;
+
 -- The test of an INCLUDE column on a page of codes, the same
 SELECT sift._test_kern_attr_equiv(42, 3000) AS attr_mismatches;
 

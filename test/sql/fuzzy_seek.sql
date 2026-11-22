@@ -11,7 +11,7 @@ BEGIN
 	RETURN n::text;
 END $$;
 CREATE FUNCTION hits_seq(tbl regclass, query text) RETURNS text LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off SET sift.enable_count = off AS $$
+	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
 DECLARE n bigint;
 BEGIN
 	EXECUTE format('SELECT count(*) FROM %s WHERE body @@> $1', tbl) INTO n USING query;
@@ -43,7 +43,9 @@ SELECT hits('fs', 'z~1') = hits_seq('fs', 'z~1') AS single_letter;
 -- query's holds a sixteenth to a thousandth of the dictionary. Without the seeks, a query decodes every block under its first letter (about 235, twice: expansion and count).
 CREATE TABLE fl (id int, body text);
 INSERT INTO fl SELECT i, translate(substr(md5(i::text), 1, 8 + i % 5), '0123456789abcdef', 'aabbccddeeffgghh') FROM generate_series(1, 60000) i;
+SET client_min_messages = warning;
 CREATE INDEX fl_idx ON fl USING sift (body);
+RESET client_min_messages;
 ANALYZE fl;
 SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
 SELECT count(*) AS lookups, sum(n) >= 20 AS found

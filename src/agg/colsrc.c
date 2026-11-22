@@ -6,6 +6,7 @@
 
 #include "port/pg_bitutils.h"
 
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 #include "agg/kern.h"
@@ -39,9 +40,19 @@ sift_colsrc_is_index(Oid indexrelam)
 }
 
 bool
-sift_colsrc_is_table(Oid tablerelam)
+sift_colsrc_reads_index(Oid indexoid)
 {
-	return provider_of(tablerelam, false) != NULL;
+	const SiftSrcProvider *prov = provider_of(get_rel_relam(indexoid), true);
+
+	return prov != NULL && (prov->reads_index == NULL || prov->reads_index(indexoid));
+}
+
+bool
+sift_colsrc_is_table(Oid tableoid)
+{
+	const SiftSrcProvider *prov = provider_of(get_rel_relam(tableoid), false);
+
+	return prov != NULL && (prov->reads_table == NULL || prov->reads_table(tableoid));
 }
 
 /* the provider of an index or table relation */

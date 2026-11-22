@@ -1,4 +1,4 @@
--- REINDEX of a sift_col index takes the rows from the index it replaces when it can give them (col/build/from_index.c): the heap is not read, no row goes
+-- REINDEX of a sift_col index takes the rows from the index it replaces when it can give them (col/v1/build/from_index.c): the heap is not read, no row goes
 -- to a temporary file, and the answers are those of a build from the heap at every state of the table (rows inserted, deleted and updated since the index was built, in the write
 -- buffer or in segments, vacuumed or not). Whatever the old index cannot give (no key, a scope, a rewrite of the table, rows this transaction has buffered) is built from the heap.
 -- sift.test_col_from_index_used says which; sift.test_col_from_index_off forces the heap, and sift.test_col_from_index_mutant plants a defect that a step must catch.

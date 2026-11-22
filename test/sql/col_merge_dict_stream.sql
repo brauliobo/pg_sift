@@ -4,7 +4,7 @@
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
-SET sift.col_auto_merge = off;
+SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -25,7 +25,7 @@ SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS before_merge FROM ds WHERE
 -- a backend that finds no dictionary in the cache or in the ring, as a worker that merges what another session wrote
 \c
 SET client_min_messages = warning;
-SET sift.col_dict_shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET max_parallel_maintenance_workers = 0;
 SELECT parsed = 0 AS reset FROM sift._test_col_stream_dicts(true);
 SELECT sift.col_merge('ds_ix', true) >= 0 AS merged;
@@ -52,7 +52,7 @@ SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS before_merge FROM dk WHERE
 
 \c
 SET client_min_messages = warning;
-SET sift.col_dict_shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET max_parallel_maintenance_workers = 0;
 SELECT sift.col_merge('dk_ix', true) >= 0 AS merged;
 SELECT parsed = 6 AS one_for_each_input, live = 0 AS none_left, peak = 1 AS one_at_a_time FROM sift._test_col_stream_dicts(true);
@@ -70,7 +70,7 @@ BEGIN
 END $$;
 \c
 SET client_min_messages = warning;
-SET sift.col_dict_shared_cache_kb = 0;
+SET sift.shared_cache_kb = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_col_merge_eager = on;
 SELECT sift.col_merge('dk2_ix', true) >= 0 AS merged_eager;

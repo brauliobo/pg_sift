@@ -11,6 +11,8 @@
 
 #define SIFT_MAGIC				0x53494654	/* "SIFT" */
 #define SIFT_FORMAT_MAJOR		1
+#define SIFT_FORMAT2_MAJOR		2
+#define SIFT_FORMAT2_MINOR		0
 /*
  * 1.1: term blobs may end with a position stream; indexes of 1.0 are read as before
  * 1.2: segments of segment format 2 (below); segments of 1.0 and 1.1 are read as before
@@ -190,7 +192,6 @@ extern const char *sift_options_fields(const SiftOptions *opts);
 /* GUCs (defined in core/handler.c, except sift.simd in core/cpu.c) */
 extern PGDLLIMPORT int sift_max_expansions;
 extern PGDLLIMPORT bool sift_enable_scan;
-extern PGDLLIMPORT bool sift_enable_count;
 extern PGDLLIMPORT bool sift_parallel_scan;
 extern PGDLLIMPORT bool sift_rls_scores;
 extern PGDLLIMPORT bool sift_async_maintenance;
@@ -233,7 +234,6 @@ extern void sift_relopt_removed_notice(const char *name);
 #ifdef SIFT_TESTING
 extern void sift_leak_test_init(void);
 extern void sift_memcensus_init(void);
-extern void sift_membudget_init(void);
 extern void sift_handler_test_gucs(void);
 #endif
 

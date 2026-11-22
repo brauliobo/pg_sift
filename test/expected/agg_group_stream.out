@@ -18,7 +18,7 @@ CREATE INDEX gs_col ON gs USING sift_col (id, ts, d, k, v) WITH (key_cut = 'ts')
 -- the same rows in a random heap order: the zones of its superblocks overlap
 CREATE TABLE gr (LIKE gs INCLUDING STORAGE) WITH (autovacuum_enabled = false);
 INSERT INTO gr SELECT * FROM gs ORDER BY hashint4(id);
-CREATE INDEX gr_col ON gr USING sift_col (id, ts, d, k, v);
+CREATE INDEX gr_col ON gr USING sift_col (id, ts, d, k, v) WITH (key_cut = 'ts');
 -- 37,632 rows (three superblocks of 12,544 rows of 100 bytes, as pad is not plain here) a minute apart, then six superblocks whose times lie anywhere in a range of their own (all but one row of each far above the zone's
 -- start): the zones of the last ones overlap and nothing is final after the batches of the first, so the scan goes on as a spill does
 CREATE TABLE gh (LIKE gs) WITH (autovacuum_enabled = false);

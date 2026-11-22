@@ -4,6 +4,7 @@
 -- of the scan alone and of both splits, for children with a NULL key, children whose parent is gone, parents with none and keys that repeat, with the leader taking the
 -- shares of workers that did not start.
 CREATE EXTENSION pg_sift;
+SET work_mem = '64MB';
 
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;
@@ -13,10 +14,10 @@ INSERT INTO jp_parent SELECT g, g::bigint * 1000003, g % 40, (ARRAY['ca', 'ny', 
 CREATE TABLE jp_child (id int PRIMARY KEY, parent_id int, parent_big bigint, kind text, at timestamp, amount numeric(8, 2)) WITH (autovacuum_enabled = off, parallel_workers = 4);
 INSERT INTO jp_child
 SELECT g, k, k::bigint * 1000003, (ARRAY['a', 'b', 'c', 'd'])[1 + g % 4], timestamp '2024-01-01' + (g % 365) * interval '1 day', (g % 1000)::numeric
-FROM (SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 53 = 0 THEN 60000 + g % 1000 WHEN g % 11 = 0 THEN 1 + g % 5 ELSE 1 + (g::bigint * 7919) % 45000 END AS k FROM generate_series(1, 1000000) g) c;
+FROM (SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 53 = 0 THEN 60000 + g % 1000 WHEN g % 11 = 0 THEN 1 + g % 5 ELSE 1 + (g::bigint * 7919) % 45000 END AS k FROM generate_series(1, 200000) g) c;
 CREATE INDEX jp_parent_col ON jp_parent USING sift_col (id, big, grp, state, rank);
 CREATE INDEX jp_child_col ON jp_child USING sift_col (id, parent_id, parent_big, kind, at, amount);
--- ANALYZE samples 30,000 of the 1,000,000 rows and estimates between 41,100 and 42,000 of the 46,000 keys; the plan of the bigint key flips at about 42,000,
+-- ANALYZE samples 30,000 of the 200,000 rows and estimates the 46,000 keys with an error that the plan of the bigint key follows,
 -- so the real count is stated for the plans to be the same on every run
 ALTER TABLE jp_child ALTER COLUMN parent_big SET (n_distinct = 46000);
 VACUUM (FREEZE, ANALYZE) jp_parent, jp_child;

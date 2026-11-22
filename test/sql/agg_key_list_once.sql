@@ -5,7 +5,6 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_verdict_cache = off;
 CREATE TABLE kl_site (id int PRIMARY KEY);
 INSERT INTO kl_site SELECT g FROM generate_series(1, 2000) g;
 CREATE TABLE kl_event (id int PRIMARY KEY, site_id int NOT NULL REFERENCES kl_site, ts date NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);

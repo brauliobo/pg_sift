@@ -19,16 +19,15 @@
 #include "bm25/dict.h"
 #include "bm25/query.h"
 #include "col/col.h"
-#include "col/gorder.h"
-#include "col/preagg.h"
+#include "col/v1/gorder.h"
+#include "col/v1/preagg.h"
 #include "col/scope.h"
-#include "col/setsum.h"
+#include "col/v1/setsum.h"
 #include "col/shred.h"
-#include "col/vstore/vstore.h"
-#include "col/wide.h"
+#include "col/keystore/keystore.h"
+#include "col/v1/wide.h"
 #include "core/limits.h"
 #include "core/sift.h"
-#include "core/tomb.h"
 
 const int64_t sift_limit_default[SIFT_LIM_COUNT] = {
 #define X(id, macro, file, value, unit, what, behaviour, setting, hooked) [SIFT_LIM_##id] = (value),

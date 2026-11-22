@@ -1,27 +1,11 @@
 #!/usr/bin/env python3
-"""Tests of the pure parts of the duckdb benchmark: the result comparison of steps/duckdb.py and the table of steps/extras.py. Run: python3 -I bench/test/test_duckdb.py"""
-import os, sys, unittest
+"""Tests of the pure parts of the duckdb benchmark: the result comparison of steps/duckdb.py. Run: python3 -I bench/test/test_duckdb.py"""
+import os, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'steps'))
 import duckdb  # noqa: E402
-import extras  # noqa: E402
-
-CASES = ['orders-per-country', 'search-count', 'search-newest']
-META = dict(date='2026-01-01', cpu='CPU, 16 threads', postgresql='PostgreSQL 18', pg_duckdb='1.1.1', duckdb='DuckDB v1.4.3', orders='200000')
-
-
-def rows():
-    v = {('orders-per-country', 'pg'): 5, ('orders-per-country', 'sift'): 1, ('orders-per-country', 'duckdb_heap'): 2, ('orders-per-country', 'duckdb_parquet'): 3,
-         ('search-count', 'pg'): 4, ('search-count', 'sift'): 2, ('search-count', 'duckdb_heap'): 9, ('search-count', 'duckdb_parquet'): 8,
-         ('search-newest', 'pg'): 3, ('search-newest', 'sift'): 2}
-    out = []
-    for c in CASES:
-        for a in ('pg', 'sift', 'duckdb_heap', 'duckdb_parquet'):
-            ms = v.get((c, a))
-            note = 'substring LIKE form (tsvector is not supported)' if c == 'search-count' and a.startswith('duckdb') else 'not supported: x' if ms is None else ''
-            out.append(dict(version='v', case=c, arm=a, metric='warm_ms', value='NA' if ms is None else str(ms), note=note))
-    return out
+import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
 
 class Compare(unittest.TestCase):
@@ -36,29 +20,23 @@ class Compare(unittest.TestCase):
             self.assertEqual(duckdb.same(a, b), want, (a, b))
 
 
-class Render(unittest.TestCase):
-    def test_table(self):
-        text = '\n'.join(extras.duckdb_section(META, rows() + [dict(version='v', case='load', arm=a, metric='load_s', value='1') for a in ('pg', 'sift', 'duckdb_parquet')]
-                                                + [dict(version='v', case='load', arm=a, metric='table_mib', value='1') for a in ('pg', 'sift', 'duckdb_parquet')]))
-        self.assertIn('| orders-per-country |', text)
-        self.assertIn('**1.00 · n/a · n/a**', text)                              # the fastest of the row in bold
-        self.assertIn('(4.0x · n/a · n/a) †', text)                                # the substitute statement is marked
-        self.assertIn('not supported', text)                         # and what pg_duckdb cannot run is said, not left out
-        self.assertIn('pg_sift on 3 (orders-per-country, search-count, search-newest)', text)
-        self.assertIn('Not supported by pg_duckdb: search-newest', text)
-        self.assertIn('faster on 1 (orders-per-country)', text)          # the summary names who wins where
-        for line in text.split('\n'):
-            if line.startswith('|'):
-                self.assertLessEqual(line.count('|') - 1, 7, line)    # at most 7 columns: GitHub scrolls wider tables sideways
+class RivalCache(unittest.TestCase):
+    ROWS = [dict(version='v6', case=c, arm=a, metric='warm_ms', value=v, min=v, max=v, n=3, note='', load='0.1') for c, a, v in
+            (('02', 'pg', '190.5'), ('02', 'duckdb_heap', '383.0'), ('02', 'duckdb_parquet', '8.9'), ('02', 'sift', '0.8'))]
 
+    def test_only_the_rival_lanes_are_kept_and_they_come_back_with_their_metadata(self):
+        meta = dict(settings='threads 3', engine='v1.4.3', duck_server='PostgreSQL 18.1 with pg_duckdb')
+        with tempfile.TemporaryDirectory() as d:
+            self.assertFalse(os.path.exists(os.path.join(d, 'complete')))
+            duckdb.save_rivals(d, self.ROWS, meta)
+            self.assertTrue(os.path.exists(os.path.join(d, 'complete')))
+            got_meta, got = duckdb.load_rivals(d)
+        self.assertEqual({r['arm'] for r in got}, {'pg', 'duckdb_heap', 'duckdb_parquet'})
+        self.assertEqual({k: got_meta[k] for k in meta}, meta)
+        self.assertEqual([(r['case'], r['arm'], r['value']) for r in got], [('02', 'pg', '190.5'), ('02', 'duckdb_heap', '383.0'), ('02', 'duckdb_parquet', '8.9')])
 
-    def test_cpu_and_read_of_the_run_are_in_the_cells(self):
-        extra = [dict(version='v', case='orders-per-country', arm=a, metric='warm_cpu_ms', value=str(c), note='') for a, c in (('pg', 20), ('sift', 2), ('duckdb_heap', 6))]
-        extra += [dict(version='v', case='orders-per-country', arm=a, metric='warm_read_mb', value=v, note=n) for a, v, n in (('pg', '40', ''), ('sift', '4', ''), ('duckdb_parquet', 'NA', 'no bytes counted'))]
-        text = '\n'.join(extras.duck_table(rows() + extra, ['orders-per-country'], 'warm_ms'))
-        self.assertIn('5.00 · 20.0 · 40.0 (5.0x · 10x · 10x)', text)    # PostgreSQL over pg_sift of the same run
-        self.assertIn('3.00 · n/a · n/a (3.0x · n/a · n/a)', text)      # Parquet: no CPU recorded, the read has its own reason
-        self.assertIn('`n/a`: no bytes counted', text)
+    def test_the_server_line_names_both_servers(self):
+        self.assertEqual(duckdb.server_label('PostgreSQL 18.7 with pg_sift', 'PostgreSQL 18.1 with pg_duckdb'), 'PostgreSQL 18.7 with pg_sift, PostgreSQL 18.1 with pg_duckdb')
 
 
 if __name__ == '__main__':

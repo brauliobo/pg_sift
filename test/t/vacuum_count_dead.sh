@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # count(*) of one term from the segments' counts of their live postings (count_by_df, bm25/count.c): the dead-posting table a segment
 # keeps is refreshed by the cleanup of a VACUUM, long after its bulk delete cleared the liveness rows and the heap marked the pages
 # all-visible. A count that planned in between (the table is short) and finds it refreshed when it starts must not take its dfs: they

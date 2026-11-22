@@ -5,8 +5,8 @@
 
 plan 10
 node_init qs 28 "autovacuum = off
-max_worker_processes = 4
-max_parallel_workers = 4
+max_worker_processes = 3
+max_parallel_workers = 2
 sift.on_corruption = quarantine"
 node_start qs || bail "start failed"
 D=$(dir qs)
@@ -19,7 +19,7 @@ uses_sift() { sql qs "EXPLAIN (COSTS OFF) SELECT count(*) FROM a WHERE v = 3" | 
 persisted() { [[ $(sql qs "SELECT persisted FROM sift.quarantine WHERE index = 'a_idx'::regclass") == t ]]; }
 SLEEPERS="SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'parallel worker'"
 
-# two parallel workers sleep in the slots the workers of sift would need
+# two parallel workers sleep in the slots of the server that are left by its launcher: the workers of sift find none
 sql qs "SET parallel_setup_cost = 0" "SET parallel_tuple_cost = 0" "SET min_parallel_table_scan_size = 0" "SET parallel_leader_participation = off" \
 	"SET max_parallel_workers_per_gather = 2" "SELECT count(*) FROM s WHERE pg_sleep(600) IS NOT NULL" >/dev/null 2>&1 &
 holder=$!

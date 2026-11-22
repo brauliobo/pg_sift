@@ -17,7 +17,6 @@ CREATE INDEX zj_m4 ON zj USING sift_col (id, doc) WITH (paths = 'doc.a astext');
 CREATE INDEX zj_m5 ON zj USING sift_col (id, doc, amt) WITH (paths = 'doc.a astext');
 SET sift.col_format_minor = 6;
 CREATE INDEX zj_m6 ON zj USING sift_col (id, doc) WITH (paths = 'doc.a astext');
-RESET sift.col_format_minor;
 CREATE INDEX zj_dflt ON zj USING sift_col (id, doc) WITH (paths = 'doc.a astext');
 
 SELECT i AS idx, array_agg(DISTINCT format) AS minors, (f).units > 0 AS has_units, (f).jnull_units > 0 AS jnull_flag

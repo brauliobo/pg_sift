@@ -1,5 +1,5 @@
--- The units that deletion records end rows of cost the scans that read them what their fold would spare (col/scan/dvec.c): the reads pay for the fold of the records as they do for marks,
--- and the fold is due when what they paid comes to half of what it costs (col/maint/fold.c). The fold of records is priced by the rows they name, not by one mark for each record.
+-- The units that deletion records end rows of cost the scans that read them what their fold would spare (col/v1/scan/dvec.c): the reads pay for the fold of the records as they do for marks,
+-- and the fold is due when what they paid comes to half of what it costs (col/v1/maint/fold.c). The fold of records is priced by the rows they name, not by one mark for each record.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;

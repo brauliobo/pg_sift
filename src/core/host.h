@@ -65,6 +65,10 @@
 
 typedef struct config_enum_entry SiftEnumEntry;
 
+/* The lock of the process-wide caches of the engine (bm25/prefix.c): a PostgreSQL backend is alone in its process */
+#define sift_host_cache_lock()		((void) 0)
+#define sift_host_cache_unlock()	((void) 0)
+
 #define sift_host_enum_option(name, short_desc, long_desc, var, boot, options, assign) \
 	DefineCustomEnumVariable(name, short_desc, long_desc, var, boot, options, PGC_USERSET, 0, NULL, assign, NULL)
 

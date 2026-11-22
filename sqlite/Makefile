@@ -8,6 +8,8 @@
 #   make asan | tsan | tsan-run  sanitizer builds (build-asan/, build-tsan/); tsan-run also runs the C stress test on the TSan build
 #   make span-test               the unit and adversarial tests of src/core/span.h (docs/SAFETY.md); make span-test-asan under ASan+UBSan;
 #                                make SIMD=none B=build-scalar span-test with the vector-free flags
+#   make hybrid-test             the hybrid search choice and verify rules (tests/hybrid_test.c); make hybrid-test-asan under ASan+UBSan
+#   make topk-floor-test         the floor of the top-k of the ranked search (tests/topk_floor_test.c); make topk-floor-test-asan under ASan+UBSan
 #   make cross-aarch64           compiles everything for aarch64 with clang (no execution)
 # The sources of ../src listed in portable.list are compiled unmodified, against the host implementation in host/ (they include
 # only src/core/host.h, which selects it with -DSIFT_HOST_SQLITE), except one mechanical change: bm25/prefix.c's one entry point is renamed so that init.c can serialize it.
@@ -20,27 +22,30 @@ CC ?= cc
 OPT ?= -O2
 ARCH := $(firstword $(subst -, ,$(shell $(CC) -dumpmachine)))
 SIMD ?= auto
-# SIFT_ISA: the x86-64 baseline, SIMD kernels opt in per function (see src/core/cpu.h); -ffp-contract=off keeps scores bit-identical.
-# Other architectures have no vector kernels (SIMD=none): the vector levels dispatch to the scalar tables, and the x86 CPU probes
-# of bm25/bitmap.c answer "no"
+# SIFT_ISA: the portable baseline (x86-64, or armv8-a on Linux), SIMD kernels opt in per function (see src/core/cpu.h); -ffp-contract=off keeps scores
+# bit-identical. On AArch64 NEON is the vector level and the x86 vector files are left out; other architectures have no vector kernels (SIMD=none): the vector
+# levels dispatch to the scalar tables, and the x86 CPU probes of bm25/bitmap.c answer "no"
 ifeq ($(ARCH),x86_64)
 ISA := -march=x86-64 -mtune=generic
+else ifeq ($(ARCH),aarch64)
+ISA := $(if $(filter Linux,$(shell uname -s)),-march=armv8-a -mtune=generic)
+X86_SIMD_SRC := bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/kernels_avx2 bm25/kernels_avx512
 else
 SIMD := none
 CPUPROBE := '-D__builtin_cpu_init()=' '-D__builtin_cpu_supports(x)=0'
 endif
 SIMD_SRC := bm25/bitmap_avx2 bm25/bitmap_avx512 bm25/kernels_avx2 bm25/kernels_avx512
 ifeq ($(SIMD),none)
-EXTRA += -DSQ_SIMD_NONE
+EXTRA += -DSQ_SIMD_NONE -DSIFT_FMV_DISABLE=1
 ALIASES := -Dsift_kern_avx2=sift_kern_scalar -Dsift_kern_avx512=sift_kern_scalar -Dsift_kernels_avx2=sift_kernels_scalar \
 	-Dsift_kernels_avx2_nopdep=sift_kernels_scalar -Dsift_kernels_avx512=sift_kernels_scalar $(CPUPROBE)
 endif
 CFLAGS += $(OPT) -g -ffp-contract=off -fwrapv -fno-strict-aliasing -fPIC -Wall -Wno-misleading-indentation \
-	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE '-DSQ_VERSION="$(SIFT_VERSION)"' $(ISA) $(EXTRA) -DSIFT_HOST_SQLITE -Ihost $(SIFT_INC) -I.
+	-Wno-unused-function -Wno-declaration-after-statement -MMD -D_GNU_SOURCE '-DSQ_VERSION="$(SIFT_VERSION)"' $(ISA) $(SIFT_FMV_CPPFLAGS) $(EXTRA) -DSIFT_HOST_SQLITE -Ihost $(SIFT_INC) -I.
 LDLIBS := -lm -lpthread
 
 # the portable core, one list for every host and for the check (scripts/check-portable.sh); the vector files only when there are vector kernels
-PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)),$(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
+PORTABLE := $(filter-out $(if $(filter none,$(SIMD)),$(SIMD_SRC)) $(X86_SIMD_SRC),$(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable.list))))
 OWN := host container mb spool regex regex_parse regex_exec host_stubs store dir stream stubs build merge vtab content cursor write auxfn auxfn_facets pscan init
 OBJS := $(addprefix $(B)/,$(addsuffix .o,$(PORTABLE) $(OWN)))
 
@@ -52,11 +57,6 @@ $(B)/sift.so: $(OBJS)
 $(B)/bm25/bitmap.o: $(SRC)/bm25/bitmap.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(ALIASES) -c -o $@ $<
-
-# bm25/prefix.c keeps a process-wide cache of wide-prefix unions; init.c wraps the entry point in a mutex
-$(B)/bm25/prefix.o: $(SRC)/bm25/prefix.c | $(B)
-	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -Dsift_prefix_union=sq_real_sift_prefix_union -c -o $@ $<
 
 # SIMD=none: the dispatch tables of the vector levels are the scalar ones (the vector files are not built)
 $(B)/bm25/kernels.o: $(SRC)/bm25/kernels.c | $(B)
@@ -88,7 +88,7 @@ check test: all
 # The fallback path must run on any x86-64: outside the AVX2 and AVX-512 objects there is no POPCNT or 256/512-bit instruction, and
 # nothing links libgcc's __popcountdi2 (a distribution may build it with POPCNT). Release builds run this (scripts/package-sqlite.sh).
 isa-check: all
-	@sh ../scripts/port-isa-check.sh $(B)/sift.so $(B)/*.o $(B)/*/*.o
+	@sh ../scripts/port-isa-check.sh $(B)/sift.so $(B)/*.o $(B)/*/*.o $(B)/*/*/*.o
 
 # The C stress test: N threads, each with a connection, querying while one writes. The extension is linked in and
 # registered with sqlite3_auto_extension.
@@ -100,7 +100,8 @@ COLSRC := $(basename $(filter %.c,$(shell grep -v '^[\#]' $(SRC)/portable-col.li
 COLSRC := $(filter-out $(if $(filter none,$(SIMD)),$(foreach s,$(COLSRC),$(if $(filter %_avx2 %_avx512,$(s)),$(s)))),$(COLSRC))
 COLOBJS := $(addprefix $(B)/,$(addsuffix .o,$(COLSRC)))
 COLALIASES := $(if $(filter none,$(SIMD)),$(foreach l,avx2 avx512,-Dsift_col_kernels_$(l)=sift_col_kernels_scalar -Dsift_cc_kernels_$(l)=sift_cc_kernels_scalar \
-	-Dsift_shred_kernels_$(l)=sift_shred_kernels_scalar -Dsift_aggkern_$(l)=sift_aggkern_scalar))
+	-Dsift_shred_kernels_$(l)=sift_shred_kernels_scalar -Dsift_aggkern_$(l)=sift_aggkern_scalar \
+	-Dsift_aggkern6_$(l)=sift_aggkern6_scalar))
 $(COLOBJS): $(B)/%.o: $(SRC)/%.c | $(B)
 	@mkdir -p $(@D)
 	$(CC) $(CFLAGS) $(COLALIASES) -c -o $@ $<
@@ -124,6 +125,28 @@ $(B)/hash_test: tests/hash_test.c $(SRC)/core/hash.h | $(B)
 
 hash-test: $(B)/hash_test
 	$(B)/hash_test
+
+# the cost choice and the verify rules of the hybrid search, over the real core/tidbridge.c and an oracle
+$(B)/hybrid_test: tests/hybrid_test.c $(SRC)/agg/hybrid.c $(OBJS) | $(B)
+	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(SRC)/agg/hybrid.c $(OBJS) $(LDLIBS)
+
+hybrid-test: $(B)/hybrid_test
+	$(B)/hybrid_test
+
+# the floor of the top-k of bm25/kernels.c (tests/topk_floor_test.c)
+$(B)/topk_floor_test: tests/topk_floor_test.c $(OBJS) | $(B)
+	$(CC) $(CFLAGS) -Wextra -Wno-sign-compare -Wno-unused-parameter -I$(SRC) -o $@ $< $(OBJS) $(LDLIBS)
+
+topk-floor-test: $(B)/topk_floor_test
+	$(B)/topk_floor_test
+
+topk-floor-test-asan:
+	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/topk_floor_test
+	$(B)-asan/topk_floor_test
+
+hybrid-test-asan:
+	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/hybrid_test
+	$(B)-asan/hybrid_test
 
 span-test-asan:
 	$(MAKE) B=$(B)-asan EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" OPT=-O1 $(B)-asan/span_test
@@ -153,6 +176,6 @@ cross-objs: $(OBJS)
 clean:
 	rm -rf build build-asan build-tsan build-scalar build-aarch64
 
--include $(wildcard $(B)/*.d $(B)/*/*.d)
+-include $(wildcard $(B)/*.d $(B)/*/*.d $(B)/*/*/*.d)
 
-.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test
+.PHONY: FORCE all check test col-smoke isa-check clean asan tsan tsan-run cross-aarch64 cross-objs span-test span-test-asan hash-test hybrid-test hybrid-test-asan topk-floor-test topk-floor-test-asan

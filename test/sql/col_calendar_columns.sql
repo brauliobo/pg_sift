@@ -24,7 +24,6 @@ CREATE INDEX cc_all ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_b
 CREATE INDEX cc_default ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 SET sift.col_format_minor = 7;
 CREATE INDEX cc_seven ON cc USING sift_col (id, ts, d, tz, cat, amt) WITH (write_buffer_limit = 4096, calendar_columns = 'ts', cube_minmax = false, superunit = 0);
-RESET sift.col_format_minor;
 
 -- refused: a column that is no date, an unknown column, a name twice, an index with paths
 CREATE INDEX cc_bad1 ON cc USING sift_col (id, ts) WITH (calendar_columns = 'id', cube_minmax = false, superunit = 0);

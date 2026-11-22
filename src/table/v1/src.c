@@ -1,0 +1,711 @@
+/*
+ * table/v1/src.c - the column source of SiftAgg over a sift_table (agg/colsrc.h, docs/COL-PLAN.md, docs/COL-TAM.md section 12).
+ *
+ * The leaves are the columns of the table (the layout of the column groups, table/v1/seg.c). The groups are read by the engine, one
+ * source per column layout the segments were written for (a segment keeps its own after ALTER TABLE; its leaves are matched by attribute
+ * number), the rows of the write buffers are fed to the source of the table's layout as in-memory batches, one per superblock, and the
+ * rows the snapshot sees are the table's: a superblock without tombstones or write buffer rows is entirely visible, the others are filtered by
+ * sift_tbl_filter_page like every other reader of the table does.
+ *
+ * This file: layout, statistics, open and close, the filters and the provider table; the reads are in src_read.c.
+ */
+#include "postgres.h"
+
+#include <math.h>
+
+#include "access/htup_details.h"
+#include "catalog/pg_statistic.h"
+#include "catalog/pg_type.h"
+#include "commands/defrem.h"
+#include "nodes/makefuncs.h"
+#include "nodes/bitmapset.h"
+#include "pgstat.h"
+#include "optimizer/optimizer.h"
+#include "rewrite/rewriteHandler.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "utils/syscache.h"
+
+#include "core/catname.h"
+#include "core/meta_peek.h"
+#include "agg/pre.h"
+#include "agg/sel.h"
+#include "agg/wide.h"
+#include "col/col.h"
+#include "col/am.h"
+#include "col/v1/pagg.h"
+#include "col/v1/seg.h"
+#include "table/v1/table_v1.h"
+
+#include "src_int.h"
+
+static bool
+tbl_owns_index(Oid indexrelam)
+{
+	return false;
+}
+
+static bool
+tbl_owns_table(Oid tablerelam)
+{
+	Oid			am = get_am_oid("sift_table", true);
+
+	return OidIsValid(am) && tablerelam == am;
+}
+
+/* the layout keeps the tag of a type the table stores by size (money, time, enum, oid) as OTHER: an integer leaf is as wide as its column */
+static bool
+tbl_reads_table(Oid tableoid)
+{
+	Relation	rel = sift_relation_get(tableoid);
+	uint16		major = sift_meta_resolve_major(rel);
+
+	RelationClose(rel);
+	return major == SIFT_FORMAT_MAJOR;
+}
+
+static SiftSrcVecType
+leaf_vtype(const SiftColDef *def, TupleDesc desc)
+{
+	switch (def->store)
+	{
+		case SIFT_COLS_INT:
+			return def->type == SIFT_COLT_NUMERIC || TupleDescAttr(desc, def->attno - 1)->attlen == 8 ? SCV_I64 : SCV_I32;
+		case SIFT_COLS_F4:
+		case SIFT_COLS_F8:
+			return SCV_F64;
+		case SIFT_COLS_STR:
+			return SCV_CODE;
+		default:
+			return SCV_I64;
+	}
+}
+
+/* numeric of any other shape than the narrow integer leaf, money and interval: a WHERE conjunct tests them on the exact values (SAP_WIDE) */
+static bool
+leaf_tested(const SiftColDef *def, Oid typid)
+{
+	return typid == CASHOID || typid == INTERVALOID || (typid == NUMERICOID && def->store == SIFT_COLS_VAR);
+}
+
+/* a leaf the executor reads through a dictionary of the datum images (agg/wide.h): the exact image of a column the table keeps by value as a size */
+static bool
+leaf_dict(const SiftColDef *def, Oid typid)
+{
+	return sift_aggwide_type(typid) && def->store != SIFT_COLS_INT;
+}
+
+/* The expression of a stored generated column, as the planner sees it in a query: a query that writes it reads the column (always the value the row holds) */
+static Node *
+generation_expr(Relation rel, Form_pg_attribute att)
+{
+	if (att->attgenerated != ATTRIBUTE_GENERATED_STORED)
+		return NULL;
+	return (Node *) expression_planner((Expr *) build_column_default(rel, att->attnum));
+}
+
+/* A leaf of a declared path of a jsonb column, not one of the table's own columns */
+static bool
+leaf_is_path(const SiftColDef *def)
+{
+	return def->attno > 0 && def->path[0];
+}
+
+/*
+ * The planner's view of the table: a scalar leaf per column, the leaves of the declared paths after them (when every segment has them, else the
+ * normal plan reads the jsonb column); the exact datum images (SIFT_COLS_VAR) are not values the executor reads
+ */
+static SiftSrcLayout *
+tbl_layout(Relation rel)
+{
+	SiftTblRel *st = sift_tbl_rel(rel);
+	const SiftColSchema *cur = sift_tbl_layout_schema(rel, st);
+	TupleDesc	desc = RelationGetDescr(rel);
+	SiftSrcLayout *lay = palloc0(sizeof(SiftSrcLayout));
+	int			npath = 0;
+
+	lay->heapoid = RelationGetRelid(rel);
+	lay->is_table = true;
+	lay->natts = desc->natts;
+	for (int a = 1; a <= desc->natts; a++)
+	{
+		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
+
+		lay->attexprs = lappend(lay->attexprs, att->attisdropped ? NULL :
+								(Node *) makeVar(1, a, att->atttypid, att->atttypmod, att->attcollation, 0));
+		lay->attalias = lappend(lay->attalias, generation_expr(rel, att));
+	}
+	lay->nleaves = cur->ncols - 1;	/* the last leaf holds the exceptions */
+	for (int i = 0; i < lay->nleaves; i++)
+		npath += leaf_is_path(&cur->cols[i]);
+	if (npath > 0 && !sift_tbl_paths_complete(rel, st))
+		lay->nleaves -= npath;		/* the path leaves follow the columns */
+	lay->leaf = palloc0(sizeof(SiftSrcLeaf) * lay->nleaves);
+	for (int i = 0; i < lay->nleaves; i++)
+	{
+		const SiftColDef *def = &cur->cols[i];
+		Oid			typid = sift_col_def_typid(desc, def);
+		bool		wide = leaf_dict(def, typid);
+
+		if (leaf_is_path(def))
+		{
+			sift_colsrc_def_leaf(cur->cols, i, desc, &lay->leaf[i]);
+			continue;
+		}
+		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = wide ? SCV_CODE : leaf_vtype(def, desc),
+		.typid = typid,.wide = wide,.wtypid = leaf_tested(def, typid) ? typid : InvalidOid,.scale = def->scale,.lossy = !wide && def->store == SIFT_COLS_VAR};
+	}
+	return lay;
+}
+
+/*
+ * The share of the superblocks whose stored units may answer from their pre-aggregates, those with no write buffer row and no tombstone (tbl_sb_mask),
+ * estimated without reading either: a write buffer holds the superblocks of its vblock range, and each dead row the statistics count (a delete or an update
+ * leaves one tombstone) is in one superblock, so d of them touch nsb * (1 - exp(-d / nsb)) of the nsb superblocks.
+ */
+static double
+exact_share(Relation rel, SiftTblRel *st, double nsb)
+{
+	PgStat_StatTabEntry *tab = pgstat_fetch_stat_tabentry(RelationGetRelid(rel));
+	double		dead = tab ? Max((double) tab->dead_tuples, 0.0) : 0.0,
+				wbuf = 0.0;
+
+	for (int i = 0; i < st->nwbuf; i++)
+		wbuf += ceil((double) st->wbuf[i].vcap / SIFT_SB_PAGES);
+	return Max(0.0, 1.0 - (wbuf + nsb * (1.0 - exp(-dead / nsb))) / nsb);
+}
+
+static void
+tbl_stats(Relation rel, SiftSrcStats *st)
+{
+	SiftTblRel *tr = sift_tbl_rel(rel);
+	const SiftColSchema *cur = sift_tbl_layout_schema(rel, tr);
+	SiftColLeafStats ls[SIFT_COL_MAX_COLS];
+	bool		wovf[SIFT_COL_MAX_COLS],
+				wjnull[SIFT_COL_MAX_COLS];
+
+	memset(st, 0, sizeof(*st));
+	st->nrows = Max(rel->rd_rel->reltuples, 0);
+	st->nunits = SIFT_TBL_NEXT_VBLOCK(&tr->dir->meta) / SIFT_SB_PAGES + 1;
+	st->allvisible_frac = 1.0;
+	st->exact_frac = exact_share(rel, tr, st->nunits);
+	sift_tbl_path_stats(rel, tr, ls, wovf, wjnull);
+	sift_colsrc_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, wjnull, st);
+	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
+	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
+	{
+		HeapTuple	tp;
+
+		if (leaf_is_path(&cur->cols[i]))
+			continue;
+		tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(RelationGetRelid(rel)), Int16GetDatum(cur->cols[i].attno), BoolGetDatum(false));
+		if (!HeapTupleIsValid(tp))
+			continue;
+		st->ndistinct[i] = ((Form_pg_statistic) GETSTRUCT(tp))->stadistinct;
+		if (st->ndistinct[i] < 0)
+			st->ndistinct[i] *= -st->nrows;
+		ReleaseSysCache(tp);
+	}
+}
+
+/*
+ * The table's own mask, not the heap's map: an SB is plain when it holds no write buffer row and no tombstone among those synced when the source
+ * opened (tbl_open), before it read any row. A VACUUM of the table clears the liveness of rows behind tombstones, and a scan that holds
+ * those tombstones sends their SBs to the filter whatever liveness it reads later, so no read of the mask follows a liveness it should have
+ * preceded and the source needs no directory guard (sift_vis_guard).
+ */
+static void
+tbl_sb_mask(void *arg, uint32 sb, uint64 *pagemask)
+{
+	TblSource  *t = arg;
+	bool		plain = (sb < t->wbuf_lo || sb > t->wbuf_hi) &&
+		!sift_tomb_any(&t->st->tomb, (uint64) sb * (SIFT_SB_PAGES << 16), (uint64) (sb + 1) * (SIFT_SB_PAGES << 16) - 1) &&
+		sift_tbl_vers_sb(t->rel, t->snapshot, t->vers, sb) == SIFT_TBL_VER_ALL;
+
+	memset(pagemask, plain ? 0xFF : 0, SIFT_PAGEMASK_WORDS * sizeof(uint64));
+}
+
+static int
+tbl_filter_page(void *arg, BlockNumber blk, uint64 *offmask)
+{
+	TblSource  *t = arg;
+
+	return sift_tbl_filter_page_vers(t->rel, &t->ss, blk, offmask, false);
+}
+
+/* The leaf of schema that holds leaf `want` of the layout: of the table's column (a store of another kind is a column the table changed the type of) or of a declared path (its def has to be the same) */
+static int
+part_col(const TblPart *p, const SiftColDef *want)
+{
+	for (int j = 0; j < p->schema->ncols; j++)
+	{
+		const SiftColDef *have = &p->schema->cols[j];
+
+		if (have->attno != want->attno || strcmp(have->path ? have->path : "", want->path) != 0)
+			continue;
+		if (leaf_is_path(want))
+		{
+			if (have->kind == want->kind && have->store == want->store && have->type == want->type)
+				return j;
+			continue;
+		}
+		/* a uuid written before it was a dictionary is a VAR leaf of images: the segment is read through the datum, the next rewrite makes it a dictionary */
+		SIFT_INVARIANT(have->store == want->store || (have->store == SIFT_COLS_VAR && want->store == SIFT_COLS_STR), "sift_table: a segment holds column %d in another storage than the table's", want->attno);
+		return j;
+	}
+	return -1;
+}
+
+static void
+part_open(TblSource *t, TblPart *p, const SiftColSchema *schema, const SiftColSchema *cur, const SiftColVisibility *vis, uint32 sbs)
+{
+	p->schema = schema;
+	p->src = sift_col_open_table(t->rel, schema, t->dir, vis, sbs, t->cxt);
+	p->col = palloc(t->lay->nleaves * sizeof(int));
+	p->leaf_of_col = palloc(schema->ncols * sizeof(int));
+	memset(p->leaf_of_col, -1, schema->ncols * sizeof(int));
+	for (int i = 0; i < t->lay->nleaves; i++)
+	{
+		p->col[i] = part_col(p, &cur->cols[i]);
+		if (p->col[i] >= 0)
+			p->leaf_of_col[p->col[i]] = i;
+	}
+}
+
+/*
+ * What a worker opens its source on: the directory and the write buffers the leader's source read (the items of the scan are superblocks of that
+ * directory, and its tombstones are those of the log it names), so that no participant reads another table than the leader does
+ */
+typedef struct TblView
+{
+	int			nwbuf;
+	Size		dir_len;
+	char		data[FLEXIBLE_ARRAY_MEMBER];	/* the directory (dir_len bytes), then the write buffers */
+} TblView;
+
+static Size
+view_wbuf_at(Size dir_len)
+{
+	return MAXALIGN(offsetof(TblView, data) + dir_len);
+}
+
+static Size
+tbl_view_size(void *impl)
+{
+	TblSource  *t = impl;
+
+	return view_wbuf_at(sift_dir_bytes(t->dir)) + t->nwbuf * sizeof(SiftTblSeg);
+}
+
+static void
+tbl_view_export(void *impl, void *buf)
+{
+	TblSource  *t = impl;
+	TblView    *v = buf;
+
+	v->nwbuf = t->nwbuf;
+	v->dir_len = sift_dir_bytes(t->dir);
+	memcpy(v->data, t->dir, v->dir_len);
+	memcpy((char *) buf + view_wbuf_at(v->dir_len), t->wbuf, t->nwbuf * sizeof(SiftTblSeg));
+}
+
+/* The directory, write buffers and tombstones the scan reads: the leader's (view), else the table's now. Its versions follow the directory */
+static void
+tbl_load_state(TblSource *t, SiftTblRel *st, const TblView *view)
+{
+	if (view != NULL)
+	{
+		t->dir = palloc(view->dir_len);
+		memcpy(t->dir, view->data, view->dir_len);
+		t->nwbuf = view->nwbuf;
+		t->wbuf = sift_tbl_wbuf_copy((const SiftTblSeg *) ((const char *) view + view_wbuf_at(view->dir_len)), t->nwbuf, CurrentMemoryContext);
+		sift_tomb_sync_at(t->rel, &st->tomb, t->dir);
+	}
+	else
+	{
+		sift_tomb_sync(t->rel, &st->tomb);
+		t->dir = sift_dir_copy(st->dir);
+		t->nwbuf = st->nwbuf;
+		t->wbuf = sift_tbl_wbuf_copy(st->wbuf, t->nwbuf, CurrentMemoryContext);
+		for (int i = 0; i < t->nwbuf; i++)
+			sift_tbl_seg_load(t->rel, &t->wbuf[i]);
+	}
+	t->vers = sift_tbl_vers_build(t->rel, st, t->dir, t->cxt);
+	t->wbuf_lo = PG_UINT32_MAX;
+	for (int i = 0; i < t->nwbuf; i++)
+	{
+		if (t->wbuf[i].npages == 0)
+			continue;
+		t->wbuf_lo = Min(t->wbuf_lo, t->wbuf[i].vbase / SIFT_SB_PAGES);
+		t->wbuf_hi = Max(t->wbuf_hi, (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES);
+	}
+	t->ss = (SiftTblScanState) {.st = st,.wbuf = t->wbuf,.nwbuf = t->nwbuf,.vers = t->vers,.snapshot = t->snapshot};
+}
+
+static void *
+tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	TblSource  *t = palloc0(sizeof(TblSource));
+	SiftTblRel *st = sift_tbl_rel(heap);
+	const SiftColSchema *cur;
+	SiftColVisibility vis = {tbl_sb_mask, tbl_filter_page, NULL, t};
+	uint32		sbs;
+
+	t->rel = heap;
+	t->st = st;
+	t->cxt = mcxt;
+	t->snapshot = RegisterSnapshot(snapshot);
+	t->last = -1;
+	sift_aggsel_init(&t->sel, mcxt, RelationGetRelid(heap));
+	sift_aggpre_init(&t->pre, mcxt);
+	pgstat_count_heap_scan(heap);
+	sift_tbl_auto_defrag_tick(heap, st);
+	sift_tbl_refresh(heap, st);
+	sift_tbl_scan_note(heap, st);
+	tbl_load_state(t, st, view);
+	t->lay = tbl_layout(heap);
+	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
+	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
+	t->buf = palloc0(sizeof(SiftSrcLeafBuf) * t->lay->nleaves);
+	t->tol = palloc0(sizeof(bool) * t->lay->nleaves);
+	t->raw = palloc0(sizeof(bool) * t->lay->nleaves);
+	t->wcxt = palloc0(sizeof(MemoryContext) * t->lay->nleaves);
+	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
+	cur = sift_tbl_layout_schema(heap, st);
+	t->part = palloc0((t->dir->nsegs + 1) * sizeof(TblPart));
+	part_open(t, &t->part[t->nparts++], cur, cur, &vis, sbs);
+	for (int i = 0; i < t->dir->nsegs; i++)
+	{
+		const SiftColSchema *schema;
+		int			k;
+
+		if (t->dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		schema = sift_tbl_seg_schema(heap, st, &t->dir->segs[i]);
+		for (k = 0; k < t->nparts && t->part[k].schema->hash != schema->hash; k++)
+			;
+		if (k == t->nparts)
+			part_open(t, &t->part[t->nparts++], schema, cur, &vis, sbs);
+	}
+	MemoryContextSwitchTo(old);
+	SIFT_COL_OPEN_GATE();
+	return t;
+}
+
+static void
+tbl_close(void *impl)
+{
+	TblSource  *t = impl;
+
+	for (int k = 0; k < t->nparts; k++)
+		sift_col_close(t->part[k].src);
+	UnregisterSnapshot(t->snapshot);
+}
+
+static const SiftSrcLayout *
+tbl_source_layout(const void *impl)
+{
+	return ((const TblSource *) impl)->lay;
+}
+
+static uint32
+tbl_nsb(void *impl)
+{
+	return sift_col_heap_sbs(((TblSource *) impl)->part[0].src);
+}
+
+static bool
+wbuf_fed(const TblSource *t, uint32 sb)
+{
+	for (int i = 0; i < t->nwb; i++)
+		if (t->wb[i].sb == sb)
+			return true;
+	return false;
+}
+
+/* The end of the window of a begin from sb: the superblock of write buffer rows alone (its batch is the memory of the scan, and the next window frees it), or the stored ones up to the next */
+static uint32
+wbuf_window(const TblSource *t, uint32 sb)
+{
+	uint32		next = t->range_hi;
+
+	for (int i = 0; i < t->nwbuf; i++)
+	{
+		uint32		first = t->wbuf[i].vbase / SIFT_SB_PAGES;
+
+		if (sb >= first && sb <= (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES)
+			return Min(t->range_hi, sb + 1);
+		if (first > sb)
+			next = Min(next, first);
+	}
+	return next;
+}
+
+/* The batches of the write buffer rows outside [sb_lo, sb_hi) are freed: a scan holds the rows of the range it reads, and a pass over them again reads them again */
+static void
+drop_wbuf(TblSource *t, uint32 sb_lo, uint32 sb_hi)
+{
+	int			n = 0;
+
+	sift_col_drop_batches(t->part[0].src, sb_lo, sb_hi);
+	for (int i = 0; i < t->nwb; i++)
+		if (t->wb[i].sb >= sb_lo && t->wb[i].sb < sb_hi)
+			t->wb[n++] = t->wb[i];
+		else
+			MemoryContextDelete(t->wb[i].cxt);
+	t->nwb = n;
+}
+
+static bool
+wbuf_has(const TblSource *t, uint32 sb)
+{
+	for (int i = 0; i < t->nwbuf; i++)
+		if (sb >= t->wbuf[i].vbase / SIFT_SB_PAGES && sb <= (t->wbuf[i].vbase + t->wbuf[i].npages - 1) / SIFT_SB_PAGES)
+			return true;
+	return false;
+}
+
+/* The write buffer rows of superblock sb, when it holds some that the source does not hold yet, in a context of its own */
+static void
+add_wbuf(TblSource *t, uint32 sb)
+{
+	MemoryContext cx;
+	SiftColBatch *b;
+
+	if (!wbuf_has(t, sb) || wbuf_fed(t, sb))
+		return;
+	cx = AllocSetContextCreate(t->cxt, "sift_table write buffer batch", ALLOCSET_DEFAULT_SIZES);
+	b = sift_tbl_wbuf_batch(t->rel, t->st, t->wbuf, t->nwbuf, sb, cx);
+	sift_col_add_batches(t->part[0].src, &b, 1);
+	t->wb = t->wb ? repalloc(t->wb, (t->nwb + 1) * sizeof(TblWbatch)) : MemoryContextAlloc(t->cxt, sizeof(TblWbatch));
+	t->wb[t->nwb++] = (TblWbatch) {sb, cx};
+}
+
+/* The text tests join the zone pruning of every begin (a segment that lacks the column has no bound for it), and filter the rows of a unit on the encoded strings */
+static void
+tbl_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
+{
+	TblSource  *tb = impl;
+
+	for (int k = 0; k < tb->nparts; k++)
+	{
+		TblPart    *p = &tb->part[k];
+
+		p->spred = MemoryContextAlloc(tb->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
+		p->nspred = 0;
+		for (int i = 0; i < nt && p->nspred < COL_MAX_STR_PRUNE; i++)
+			if (p->col[t[i].leaf] >= 0 && !tb->lay->leaf[t[i].leaf].lossy)
+				p->spred[p->nspred++] = (SiftColPred) {p->col[t[i].leaf], t[i].op, t[i].nvals, t[i].vals};
+	}
+}
+
+static void
+filter_str_op(const SiftColUnit *cu, SiftColSel *sel, void *pred)
+{
+	sift_col_filter(cu, pred, 1, sel);
+}
+
+static void
+filter_elem_op(const SiftColUnit *cu, SiftColSel *sel, void *gp)
+{
+	sift_col_filter_group(cu, gp, sel);
+}
+
+/* a test of an element leaf keeps the rows with an element that passes (col_filter_str) */
+static bool
+tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uint64 *rows)
+{
+	TblSource  *tb = impl;
+	TblPart    *p = unit->priv;
+	int			parent = tb->lay->leaf[t->leaf].parent;
+	SiftColPred pred = {p->col[t->leaf], t->op, t->nvals, t->vals};
+
+	if (p->col[t->leaf] < 0 || tb->lay->leaf[t->leaf].lossy || (parent >= 0 && p->col[parent] < 0))
+		return false;
+	if (parent >= 0)
+	{
+		SiftColGroupPred gp = {.group = p->col[parent],.npreds = 1,.preds = &pred};
+
+		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_elem_op, &gp);
+	}
+	else
+		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
+	return true;
+}
+
+static void
+begin_window(TblSource *t, uint32 sb_lo)
+{
+	uint32		sb_hi = wbuf_window(t, sb_lo);
+
+	drop_wbuf(t, sb_lo, sb_hi);
+	add_wbuf(t, sb_lo);
+	for (int k = 0; k < t->nparts; k++)
+	{
+		TblPart    *p = &t->part[k];
+		SiftColPred preds[SIFT_AGGZONE_MAX + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
+		int			n = sift_aggzone_preds(&p->zones, t->cxt, p->col, t->prune, t->nprune, preds);
+
+		for (int i = 0; i < p->nspred; i++)
+			preds[n++] = p->spred[i];
+		for (int i = 0; i < p->flt.n; i++)
+			preds[n++] = p->flt.pred[i];
+		sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
+		p->have = sift_col_next(p->src, &p->unit);
+	}
+	t->win_hi = sb_hi;
+	t->last = -1;
+}
+
+static void
+tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
+{
+	TblSource  *t = impl;
+
+	t->range_hi = sb_hi;
+	t->prune = prune;
+	t->nprune = nprune;
+	begin_window(t, sb_lo);
+}
+
+/* The units of the sources in ascending superblock: each source holds its head, and the one returned last advances on the next call; a range is read a window at a time */
+static bool
+tbl_next(void *impl, SiftSrcUnit *unit)
+{
+	TblSource  *t = impl;
+
+	t->sel.compact = false;
+	for (;;)
+	{
+		TblPart    *best = NULL;
+		uint32		nrow;
+
+		if (t->last >= 0)
+			t->part[t->last].have = sift_col_next(t->part[t->last].src, &t->part[t->last].unit);
+		for (int k = 0; k < t->nparts; k++)
+			if (t->part[k].have && (best == NULL || t->part[k].unit.sb < best->unit.sb))
+				best = &t->part[k];
+		if (best == NULL && t->win_hi < t->range_hi)
+		{
+			begin_window(t, t->win_hi);
+			continue;
+		}
+		if (best == NULL)
+			return false;
+		t->last = best - t->part;
+		nrow = best->unit.nrows;
+		if (t->sel.keep && !sift_aggsel_unit(&t->sel, &best->unit, &nrow))
+			continue;
+		unit->sb = best->unit.sb;
+		unit->nrow = nrow;
+		unit->nsu = best->unit.nsu;
+		unit->priv = best;
+		return true;
+	}
+}
+
+/* A filter is the source's when every segment layout holds its column as an integer leaf: a segment without the column would need the catalog's default tested */
+static uint64
+tbl_set_filters(void *impl, const SiftSrcFilter *f, int nf)
+{
+	TblSource  *t = impl;
+	uint64		ok = 0;
+
+	for (int k = 0; k < t->nparts; k++)
+		t->part[k].flt = (SiftAggFilters) {0};
+	for (int i = 0; i < nf; i++)
+	{
+		bool		all = true;
+
+		for (int k = 0; k < t->nparts; k++)
+			all &= t->part[k].col[f[i].leaf] >= 0 && sift_aggfilt_int(&t->part[k].schema->cols[t->part[k].col[f[i].leaf]]);
+		if (!all)
+			continue;
+		for (int k = 0; k < t->nparts; k++)
+			sift_aggfilt_add(&t->part[k].flt, t->cxt, t->part[k].col[f[i].leaf], &f[i]);
+		ok |= UINT64CONST(1) << i;
+	}
+	return ok;
+}
+
+static bool
+tbl_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
+{
+	TblSource  *t = impl;
+	TblPart    *p = unit->priv;
+	SiftAggFiltRun run = {&p->flt, t->lay, t->tol};
+
+	sift_aggsel_stored(&t->sel, p->src, &p->unit, bits, sift_aggfilt_op, &run);
+	return sift_aggsel_rows_left(bits, unit->nrow);
+}
+
+static void
+tbl_select(void *impl, const SiftFilter *keep)
+{
+	((TblSource *) impl)->sel.keep = keep;
+}
+
+static const SiftSrcProvider tbl_provider = {
+	.owns_index = tbl_owns_index,
+	.owns_table = tbl_owns_table,
+	.reads_table = tbl_reads_table,
+	.layout = tbl_layout,
+	.stats = tbl_stats,
+	.view_size = tbl_view_size,
+	.view_export = tbl_view_export,
+	.open = tbl_open,
+	.open_part = tbl_open,
+	.close = tbl_close,
+	.source_layout = tbl_source_layout,
+	.nsb = tbl_nsb,
+	.begin = tbl_begin,
+	.next = tbl_next,
+	.read = tbl_read,
+	.live = tbl_live,
+	.vet = tbl_vet,
+	.vet_needed = tbl_vet_needed,
+	.counters = tbl_counters,
+	.select = tbl_select,
+	.tids = tbl_tids,
+	.zone = tbl_zone,
+	.zone_range = tbl_zone_range,
+	.read_rows = tbl_read_rows,
+	.preagg = tbl_preagg,
+	.unit_exact = tbl_unit_exact,
+	.unit_dead = tbl_unit_dead,
+	.whole = tbl_whole,
+	.super_align = tbl_super_align,
+	.super_span = tbl_super_span,
+	.split = tbl_split,
+	.unit_agg = tbl_unit_agg,
+	.unit_hist = tbl_unit_hist,
+	.unit_rollup_tuples = tbl_unit_rollup_tuples,
+	.unit_rollup = tbl_unit_rollup,
+	.unit_rollup_miss = tbl_unit_rollup_miss,
+	.unit_presence = tbl_unit_presence,
+	.run_info = tbl_run_info,
+	.run_heads = tbl_run_heads,
+	.run_read = tbl_run_read,
+	.read_sel = tbl_read_sel,
+	.narrow = tbl_narrow,
+	.prune_str = tbl_prune_str,
+	.filter_str = tbl_filter_str,
+	.set_filters = tbl_set_filters,
+	.filter = tbl_filter,
+	.set_wide = tbl_set_wide,
+	.filter_wide = tbl_filter_wide,
+	.overflow = tbl_overflow,
+	.tolerate_ovf = tbl_tolerate_ovf,
+	.set_raw = tbl_set_raw,
+	.filter_types = tbl_filter_types,
+	.read_types = tbl_read_types,
+	.read_jnull = tbl_read_jnull,
+};
+
+void
+sift_tbl_src_register(void)
+{
+	sift_colsrc_register(&tbl_provider);
+}
+

@@ -26,5 +26,5 @@ if [[ ${1:-} == --selftest ]]; then
 	echo "check-docs-steps: selftest ok"
 	exit 0
 fi
-git ls-files -z '*.md' | xargs -0 awk "$PROG"
+git ls-files -z '*.md' | while IFS= read -r -d '' f; do [[ -f $f ]] && printf '%s\0' "$f"; done | xargs -0 awk "$PROG"
 echo "check-docs-steps: the numbered steps of every fenced block are consecutive"

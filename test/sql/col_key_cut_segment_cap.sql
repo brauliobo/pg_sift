@@ -1,7 +1,6 @@
 -- A key_cut build of a table that makes more runs than it may open at once merges them as it scans, and the segments it ends with are the partitions of its writer: each is cut at the
--- budget of the writer (here 64 kB, 23,000 to 48,000 rows of this table) and no count of segments, the directory's or any other, shapes them. The arrays its end builds are up to 48 bytes
--- a row, so the memory of its end is bounded by the budget of a partition, never by the key or the table, and the participants of a parallel build leave the merge to slices of the same size.
--- sift.test_limits makes the arrays of the build fail over the limit, so the build itself proves the bound; a limit under it fails the build cleanly.
+-- budget of the writer (here 64 kB) and no count of segments, the directory's or any other, shapes them. The entries its end builds its arrays from wait on temp files, so the memory of its
+-- end is bounded by the budget of a partition, never by the key or the table, and the participants of a parallel build leave the merge to slices of the same size.
 -- A key with a value that holds a third of the table is cut the same way: the rows of that value are read back in runs of the memory of one, not as one.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -14,31 +13,18 @@ INSERT INTO cap SELECT g, (g::bigint * 7919 % 5000)::int, date '2020-01-01' + (g
 VACUUM (FREEZE, ANALYZE) cap;
 SET sift.test_col_segment_kb = 64;
 
--- a partition of 50,000 rows is the most the arrays may hold: 2,400,000 bytes at 48 bytes a row
-SET sift.test_limits = 'array_bytes=2400000';
+-- the entries of the arrays wait on temp files, so a segment holds the rows its writer's bytes allow: none holds an eighth of the table
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) <= 50000 AS longest_within_a_partition
+SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) < sum(rows) / 8 AS none_holds_an_eighth
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
 DROP INDEX cap_i;
-
--- a limit of half that (25,000 rows) fails the build with an error, not with a bad array
-SET sift.test_limits = 'array_bytes=1200000';
-CREATE FUNCTION cap_build_fails() RETURNS bool LANGUAGE plpgsql AS $$
-BEGIN
-	CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-	RETURN false;
-EXCEPTION WHEN program_limit_exceeded THEN
-	RETURN true;
-END $$;
-SELECT cap_build_fails() AS fails_under_a_partition;
-DROP FUNCTION cap_build_fails();
-RESET sift.test_limits;
 
 -- participants: the slices of the merge are of one size
 SET max_parallel_maintenance_workers = 3;
 SET min_parallel_table_scan_size = 0;
 SET maintenance_work_mem = 65536;
+SET sift.test_col_partition_kb = 2048;
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) <= 1.25 * sum(rows) / count(*) AS slices_even
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
@@ -52,12 +38,10 @@ SET max_parallel_maintenance_workers = 0;
 CREATE TABLE cap (id bigint, tenant_id int, d date) WITH (autovacuum_enabled = false);
 INSERT INTO cap SELECT g, CASE WHEN g % 3 = 0 THEN 1 ELSE (g::bigint * 7919 % 5000)::int END, date '2020-01-01' + (g % 2000) FROM generate_series(1, 3200000) g;
 VACUUM (FREEZE, ANALYZE) cap;
-SET sift.test_limits = 'array_bytes=2400000';
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) <= 50000 AS longest_within_a_partition
+SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) < sum(rows) / 8 AS none_holds_an_eighth
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
-RESET sift.test_limits;
 SET sift.enable_agg = on;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;

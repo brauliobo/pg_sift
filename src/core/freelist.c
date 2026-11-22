@@ -4,6 +4,7 @@
  */
 #include "freelist_int.h"
 #include "core/catname.h"
+#include "core/horizon.h"
 
 static SiftFreeListData *
 check_freelist(Relation index, Buffer buf, BlockNumber hwm)
@@ -146,36 +147,15 @@ sift_store_space_written(void)
 	return space_written;
 }
 
-/* The GlobalVis horizon is the heap's: it asserts a table, not the index. A sift_table is its own table */
 bool
 sift_store_removable(Relation index, FullTransactionId xid)
 {
-	Relation	heap;
-	bool		removable;
-
-	if (space_exclusive)
-		return true;
-	if (index->rd_rel->relkind != RELKIND_INDEX)
-		return GlobalVisCheckRemovableFullXid(index, xid);
-	heap = sift_relation_get(index->rd_index->indrelid);
-	removable = GlobalVisCheckRemovableFullXid(heap, xid);
-	RelationClose(heap);
-	return removable;
+	return space_exclusive || sift_horizon_removable(index, xid);
 }
 
-/*
- * The horizon computed anew: the one GlobalVis caches only moves when this backend takes a
- * snapshot, so a backend without one (the maintenance worker, or a merge that takes long) would not
- * see the extents it freed become reusable. Records before it are reusable.
- */
 FullTransactionId
 sift_store_horizon(Relation index)
 {
-	Relation	heap = index->rd_rel->relkind == RELKIND_INDEX ? sift_relation_get(index->rd_index->indrelid) : index;
-	TransactionId oldest = GetOldestNonRemovableTransactionId(heap);
-
-	if (heap != index)
-		RelationClose(heap);
-	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), oldest);
+	return sift_horizon(index);
 }
 

@@ -20,13 +20,13 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['omega', 's
 -- the same match set as the bitmap scan and as the OR text
 CREATE TABLE ref AS SELECT id FROM t WHERE body @@> 'omega OR sigma';
 SET sift.enable_scan = off;
-SET sift.enable_count = off;
+SET sift.enable_scan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma']);
 SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma']);
 SELECT count(*) FROM (SELECT id FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma']) EXCEPT SELECT id FROM ref) d;
 SELECT count(*) FROM (SELECT id FROM ref EXCEPT SELECT id FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma'])) d;
 RESET sift.enable_scan;
-RESET sift.enable_count;
+RESET sift.enable_scan;
 SELECT count(*) FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma']);
 SELECT count(*) FROM (SELECT id FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma']) EXCEPT SELECT id FROM ref) d;
 SELECT count(*) FROM (SELECT id FROM ref EXCEPT SELECT id FROM t WHERE body @@> ANY (ARRAY['omega', 'sigma'])) d;

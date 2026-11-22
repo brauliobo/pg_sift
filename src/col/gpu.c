@@ -1,297 +1,188 @@
 /*
- * col/gpu.c - a codec blob read as the fields a kernel decodes (col/gpu.h). The node layout is the codec's
- * (col/codec/codec.c): a 24 byte blob head (magic, version, kind, flags, u32 n, i64 min, i64 max), the root node, a check word; a node is
- * 16 bytes (tag, parameter, u32 f1, 8 bytes of fields) followed by its payload, 8-byte aligned.
+ * col/gpu.c - the chunks of a part of format major 2 as the device takes them (col/gpu.h).
  */
 #include "postgres.h"
 
-#include "col/gpu.h"
+#include "agg/vk/layout.h"
 #include "col/codec.h"
-#include "col/codec_int.h"
-#include "col/compress.h"
-#include "core/cmp.h"
+#include "col/gpu.h"
+#include "col/granule/granule_int.h"
 
-#define SIFT_CGPU_PAD	64		/* bytes after a decompressed node, as the codec leaves */
-
-static bool
-fit64(__int128 v, int64 *out)
+SiftVkKey
+sift_gpu_chunk_key(const RelFileLocator *loc, uint32 part_id, uint64 part_gen, uint32 phys, uint32 granule)
 {
-	if (v < PG_INT64_MIN || v > PG_INT64_MAX)
-		return false;
-	*out = (int64) v;
-	return true;
-}
-
-/* The leaf node at p (avail bytes, the n values of the chunk or dictionary); *size is the node's length */
-static bool
-leaf_node(const uint8 *blob, const uint8 *p, uint64 avail, uint32 n, int depth, SiftCGpuLeaf *lf, uint64 *size)
-{
-	uint32		f1;
-
-	if (avail < CC_NHDR || depth > SIFT_CC_MAXDEPTH)
-		return false;
-	f1 = get32(p + 4);
-	memset(lf, 0, sizeof(*lf));
-	lf->mul = 1;
-	switch (p[0])
-	{
-		case SIFT_CCN_CONST:
-			lf->kind = SIFT_CGL_CONST;
-			lf->base = get64(p + 8);
-			*size = CC_NHDR;
-			return true;
-		case SIFT_CCN_FORBIT:
-			lf->kind = SIFT_CGL_BIT;
-			lf->W = p[1];
-			if (lf->W < 1 || lf->W > 32)
-				return false;
-			lf->base = get64(p + 8);
-			lf->nwords = (uint32) sift_cc_words(n, lf->W);
-			*size = CC_NHDR + CC_RUP8((uint64) lf->nwords * 4);
-			lf->woff = (uint32) (p - blob) + CC_NHDR;
-			return *size <= avail;
-		case SIFT_CCN_FORBYTE:
-			lf->kind = SIFT_CGL_BYTE;
-			lf->W = p[1];
-			if (lf->W != 1 && lf->W != 2 && lf->W != 4)
-				return false;
-			lf->base = get64(p + 8);
-			lf->nwords = (uint32) (((uint64) n * lf->W + 3) / 4);
-			*size = CC_NHDR + CC_RUP8((uint64) n * lf->W);
-			lf->woff = (uint32) (p - blob) + CC_NHDR;
-			return *size <= avail;
-		case SIFT_CCN_WRAP:
-			{
-				uint32		cl = get32(p + 8);
-				uint64		isize;
-				uint8	   *buf;
-
-				*size = CC_NHDR + CC_RUP8((uint64) cl);
-				if (*size > avail || !sift_colz_available(p[1]) || f1 < CC_NHDR || (f1 & 7) || f1 > (uint64) n * 9 + 4096 + 64)
-					return false;
-				buf = palloc(f1 + SIFT_CGPU_PAD);
-				if (!sift_colz_decompress(p[1], p + CC_NHDR, cl, buf, f1) || !leaf_node(buf, buf, f1, n, depth + 1, lf, &isize) || isize != f1)
-				{
-					pfree(buf);
-					return false;
-				}
-				if (lf->kind == SIFT_CGL_CONST)
-					pfree(buf);
-				else if (lf->wbuf == NULL)
-					lf->wbuf = buf;		/* a wrapper inside this one owns the words already */
-				return true;
-			}
-		case SIFT_CCN_SCALE:
-			{
-				int64		sbase = get64(p + 8),
-							mul = get64(p + 16),
-							b,
-							m;
-				uint64		csize;
-
-				if (avail < 24 || f1 > avail - 24 || mul < 1)
-					return false;
-				if (!leaf_node(blob, p + 24, f1, n, depth + 1, lf, &csize))
-					return false;
-				if (!fit64((__int128) sbase + (__int128) mul * lf->base, &b) || !fit64((__int128) mul * lf->mul, &m))
-					return false;
-				lf->base = b;
-				lf->mul = m;
-				*size = 24 + (uint64) f1;
-				return true;
-			}
-		default:
-			return false;
-	}
-}
-
-/* Field i of the leaf (not its value) */
-static uint32
-field_of(const SiftCGpuLeaf *lf, const uint8 *blob, uint32 i)
-{
-	const uint8 *w = (lf->wbuf ? lf->wbuf : blob) + lf->woff;
-	uint32		x = 0;
-
-	switch (lf->kind)
-	{
-		case SIFT_CGL_BIT:
-			{
-				uint32		b = i / 1024,
-							r = (i % 1024) / 32,
-							l = i % 32,
-							bp = r * lf->W,
-							s = bp & 31,
-							x2;
-				size_t		o = (size_t) b * 32 * lf->W + (size_t) (bp >> 5) * 32 + l;
-
-				memcpy(&x, w + o * 4, 4);
-				x >>= s;
-				if (s + lf->W > 32)
-				{
-					memcpy(&x2, w + (o + 32) * 4, 4);
-					x |= x2 << (32 - s);
-				}
-				return lf->W < 32 ? x & ((UINT32_C(1) << lf->W) - 1) : x;
-			}
-		case SIFT_CGL_BYTE:
-			memcpy(&x, w + (size_t) i * lf->W, lf->W);
-			return x;
-		default:
-			return 0;
-	}
-}
-
-uint32
-sift_cgpu_fmax(const SiftCGpuLeaf *lf)
-{
-	switch (lf->kind)
-	{
-		case SIFT_CGL_BIT:
-			return lf->W < 32 ? (UINT32_C(1) << lf->W) - 1 : UINT32_MAX;
-		case SIFT_CGL_BYTE:
-			return lf->W < 4 ? (UINT32_C(1) << (8 * lf->W)) - 1 : UINT32_MAX;
-		default:
-			return 0;
-	}
-}
-
-void
-sift_cgpu_plan_const(int64 v, uint32 n, SiftCGpuPlan *p)
-{
-	memset(p, 0, sizeof(*p));
-	p->leaf.kind = SIFT_CGL_CONST;
-	p->leaf.base = v;
-	p->leaf.mul = 1;
-	p->n = n;
-	p->vmin = p->vmax = v;
+	return (SiftVkKey) {.spc = loc->spcOid,.db = loc->dbOid,.rel = loc->relNumber,.part_id = part_id,.col_id = phys,.part_gen = part_gen,.granule_id = granule};
 }
 
 bool
-sift_cgpu_plan(const uint8 *blob, uint32 len, SiftCGpuPlan *p)
+sift_gpu_leaf_ok(SiftCellKind kind, uint8 hint)
 {
-	const uint8 *root = blob + 24;
-	uint64		avail,
-				size;
+	if (kind == SIFT_CELL_F8)
+		return hint == SIFT_CHINT_AUTO;
+	return kind == SIFT_CELL_INT && (hint == SIFT_CHINT_AUTO || hint == SIFT_CHINT_NUM64 || hint == SIFT_CHINT_BOOL);
+}
 
-	memset(p, 0, sizeof(*p));
-	if (len < 24 + CC_NHDR || blob[0] != SIFT_CC_MAGIC || blob[1] != SIFT_CC_VERSION || blob[2] != SIFT_CC_INT)
-		return false;
-	p->n = get32(blob + 4);
-	p->vmin = get64(blob + 8);
-	p->vmax = get64(blob + 16);
-	avail = len - 24;
-	if (p->n == 0 || p->n > SIFT_CC_MAXROWS)
-		return false;
-	if (root[0] != SIFT_CCN_DICT)
-		return leaf_node(blob, root, avail, p->n, 0, &p->leaf, &size);
+bool
+sift_gpu_part_eligible(const SiftPartDesc *d, FullTransactionId snap_xmin, SiftVisClass *cls, const char **why)
+{
+	if (d->level == 0)
 	{
-		uint32		d = get32(root + 4),
-					dl = get32(root + 8),
-					cl = get32(root + 12);
-		SiftCGpuLeaf dict;
+		*why = "a level 0 part is read on the CPU";
+		return false;
+	}
+	*cls = sift_vis_part_class(d, false, snap_xmin);
+	return true;
+}
 
-		if (d < 1 || d > SIFT_CGPU_DICT_MAX || avail < CC_NHDR || (uint64) dl + cl > avail - CC_NHDR)
+bool
+sift_gpu_granule_eligible(const SiftPartDesc *d, const SiftGranuleDesc *g, FullTransactionId snap_xmin)
+{
+	return sift_vis_granule_class(d, g, InvalidFullTransactionId, false, snap_xmin) == SIFT_VIS_GRANULE_SETTLED;
+}
+
+static bool
+refuse(const char **why, const char *msg)
+{
+	*why = msg;
+	return false;
+}
+
+static bool
+enc_ok(uint16 enc)
+{
+	switch (enc)
+	{
+		case SIFT_VK_ENC_INT_FOR:
+		case SIFT_VK_ENC_INT_DELTA:
+		case SIFT_VK_ENC_INT_CONST:
+		case SIFT_VK_ENC_DICT_CODE:
+		case SIFT_VK_ENC_FLOAT_RAW:
+		case SIFT_VK_ENC_ALL_NULL:
+		case SIFT_VK_ENC_BOOL_BITS:
+		case SIFT_VK_ENC_NUM64:
+		case SIFT_VK_ENC_RLE:
+		case SIFT_VK_ENC_ALP:
+		case SIFT_VK_ENC_ALP_RD:
+			return true;
+		default:
 			return false;
-		if (!leaf_node(blob, root + CC_NHDR, dl, d, 1, &dict, &size) || !leaf_node(blob, root + CC_NHDR + dl, cl, p->n, 1, &p->leaf, &size))
-			return false;
-		p->d = d;
-		p->dval = palloc(d * sizeof(int64));
-		for (uint32 i = 0; i < d; i++)
-		{
-			if (!fit64((__int128) dict.base + (__int128) dict.mul * field_of(&dict, blob, i), &p->dval[i]) || (i > 0 && p->dval[i] <= p->dval[i - 1]))
-			{
-				pfree(p->dval);
-				p->dval = NULL;
-				return false;
-			}
-		}
-		if (dict.wbuf)
-			pfree((void *) dict.wbuf);
+	}
+}
+
+static uint32
+null_flags(const SiftChunkRef *ref)
+{
+	if (ref->flags & SIFT_CHUNK_ALL_NULL)
+		return SIFT_VK_CF_ALL_NULL;
+	if (ref->flags & SIFT_CHUNK_ALL_VALID)
+		return SIFT_VK_CF_ALL_VALID;
+	if (ref->enc & SIFT_ENC_NULL_SPARSE)
+		return SIFT_VK_CF_NULL_SPARSE;
+	return (ref->enc & SIFT_ENC_NONNULL_SPARSE) ? SIFT_VK_CF_NONNULL_SPARSE : 0;
+}
+
+static bool
+field_of(const SiftZone *z, SiftCellKind kind, bool all_null, SiftVkChunk *out)
+{
+	uint64		range;
+
+	if (all_null)
+		return true;
+	if (kind == SIFT_CELL_F8)
+	{
+		out->w = 8;
 		return true;
 	}
-}
-
-bool
-sift_cgpu_value(const SiftCGpuPlan *p, uint32 f, int64 *v)
-{
-	__int128	x = (__int128) p->leaf.base + (__int128) p->leaf.mul * f;
-
-	if (p->d == 0)
-		return fit64(x, v);
-	if (x < 0 || x >= p->d)
+	if ((z->flags & SIFT_ZONE_NONE) || z->min > z->max)
 		return false;
-	*v = p->dval[(uint32) x];
+	range = (uint64) z->max - (uint64) z->min;
+	out->base = z->min;
+	out->w = range == 0 ? 0 : range <= 0xFF ? 1 : range <= 0xFFFF ? 2 : range <= 0xFFFFFFFFu ? 4 : 8;
 	return true;
 }
 
-uint32
-sift_cgpu_fhi(const SiftCGpuPlan *p)
+static bool
+blob_enc(uint16 enc)
 {
-	__int128	top = p->d ? (__int128) p->d - 1 : (__int128) p->vmax,
-				f;
-	uint32		fmax = sift_cgpu_fmax(&p->leaf);
-
-	if (p->leaf.kind == SIFT_CGL_CONST)
-		return 0;
-	f = top - p->leaf.base;
-	if (f < 0)
-		return 0;
-	f /= p->leaf.mul;
-	return f > fmax ? fmax : (uint32) f;
+	return enc == SIFT_VK_ENC_INT_FOR || enc == SIFT_VK_ENC_INT_DELTA || enc == SIFT_VK_ENC_DICT_CODE || enc == SIFT_VK_ENC_RLE || enc == SIFT_VK_ENC_ALP || enc == SIFT_VK_ENC_NUM64;
 }
 
-/* The fields f of lf with lo <= base + mul * f <= hi, as a range of [0, fmax] */
-static SiftCGpuRange
-field_range(const SiftCGpuLeaf *lf, int64 lo, int64 hi, uint32 *fl, uint32 *fh)
+/* The chunk whose blob has a node wrapped in zstd, laid out again with the node unwrapped (the validity, the blob, what follows it); body_off is where the blob's length word is */
+static bool
+unwrap_chunk(SiftVkChunk *out, uint32 body_off, const char **why)
 {
-	__int128	a = (__int128) lo - lf->base,
-				b = (__int128) hi - lf->base,
-				l,
-				h;
-	uint32		fmax = sift_cgpu_fmax(lf);
+	const uint8 *raw = out->bytes;
+	uint32		blen,
+				tail;
+	StringInfoData blob,
+				chunk;
+	uint32		head[2];
 
-	if (lo > hi || b < 0)
-		return SIFT_CGR_NONE;
-	l = a <= 0 ? 0 : (a + lf->mul - 1) / lf->mul;
-	h = b / lf->mul;
-	if (h > fmax)
-		h = fmax;
-	if (l > h)
-		return SIFT_CGR_NONE;
-	*fl = (uint32) l;
-	*fh = (uint32) h;
-	return l == 0 && h == fmax ? SIFT_CGR_ALL : SIFT_CGR_RANGE;
+	if ((uint64) body_off + 8 > out->len)
+		return refuse(why, "a chunk is shorter than its blob");
+	memcpy(&blen, raw + body_off, sizeof(blen));
+	tail = body_off + 8 + ((blen + 7) & ~7u);
+	if (tail > out->len)
+		return refuse(why, "the blob of a chunk is longer than the chunk");
+	initStringInfo(&blob);
+	if (!sift_gpu_blob_unwrap(raw + body_off + 8, blen, &blob, why))
+		return false;
+	if (blob.len == 0)
+		return true;
+	head[0] = (uint32) blob.len;
+	head[1] = 0;
+	initStringInfo(&chunk);
+	appendBinaryStringInfo(&chunk, (const char *) raw, (int) body_off);
+	appendBinaryStringInfo(&chunk, (const char *) head, sizeof(head));
+	appendBinaryStringInfo(&chunk, blob.data, blob.len);
+	appendBinaryStringInfo(&chunk, (const char *) raw + tail, (int) (out->len - tail));
+	out->bytes = (const uint8 *) chunk.data;
+	out->len = out->rawlen = (uint32) chunk.len;
+	return true;
 }
 
-/* The first entry of the sorted values that is >= v (> v with `after`), d if none */
-static uint32
-dict_bound(const SiftCGpuPlan *p, int64 v, bool after)
+bool
+sift_gpu_chunk_fill(const SiftGranuleView *v, int phys, SiftCellKind kind, const SiftZone *z, SiftVkChunk *out, const char **why)
 {
-	uint32		l = 0,
-				h = p->d;
+	const SiftChunkRef *ref;
+	uint32		nrows = v->hdr->nrows,
+				flags;
+	uint16		enc;
 
-	SIFT_BISECT(uint32, m, l, h, after ? p->dval[m] <= v : p->dval[m] < v);
-	return l;
-}
+	if (phys < 0 || phys + 1 >= v->hdr->nchunks)
+		return refuse(why, "the column is not in the granule");
+	ref = &v->hdr->chunks[phys + 1];
+	enc = ref->enc & SIFT_ENC_MASK;
+	if ((ref->flags & (SIFT_CHUNK_HAS_KINDS | SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_ELEMS)) || (ref->enc & (SIFT_ENC_PART_DICT | SIFT_ENC_KEY_ANY)))
+		return refuse(why, "a chunk holds exceptions, elements or a dictionary of strings");
+	if (!enc_ok(enc))
+		return refuse(why, "a chunk has an encoding the device does not decode");
+	flags = null_flags(ref);
+	out->bytes = v->rec + ref->off;
+	out->len = ref->len;
+	out->rawlen = ref->len;
+	if (ref->flags & SIFT_CHUNK_COMPRESSED)
+	{
+		uint32		wrap[2];
 
-SiftCGpuRange
-sift_cgpu_range(const SiftCGpuPlan *p, int64 lo, int64 hi, uint32 *fl, uint32 *fh)
-{
-	uint32		a,
-				b;
-
-	if (lo > hi || lo > p->vmax || hi < p->vmin)
-		return SIFT_CGR_NONE;
-	if (lo <= p->vmin && hi >= p->vmax)
-		return SIFT_CGR_ALL;
-	if (p->d == 0)
-		return field_range(&p->leaf, lo, hi, fl, fh);
-	/* a dictionary: the entries inside [lo, hi] are a run of the sorted values, and their codes a range of the code field */
-	a = dict_bound(p, lo, false);
-	b = dict_bound(p, hi, true);
-	if (a >= b)
-		return SIFT_CGR_NONE;
-	if (a == 0 && b == p->d)
-		return SIFT_CGR_ALL;
-	return field_range(&p->leaf, a, (int64) b - 1, fl, fh);
+		if (ref->len < sizeof(wrap))
+			return refuse(why, "a wrapped chunk is shorter than its header");
+		memcpy(wrap, out->bytes, sizeof(wrap));
+		if (wrap[0] != SIFT_CC_ALG_LZ4)
+			return refuse(why, "a chunk is wrapped in zstd, which the device does not unwrap");
+		flags |= SIFT_VK_CF_LZ4;
+		out->rawlen = wrap[1];
+	}
+	out->enc = enc;
+	out->flags = flags;
+	out->nrows = nrows;
+	out->nnonnull = (flags & SIFT_VK_CF_ALL_NULL) ? 0 : (flags & SIFT_VK_CF_ALL_VALID) ? nrows : ref->nnonnull;
+	out->vlen = (flags & (SIFT_VK_CF_ALL_NULL | SIFT_VK_CF_ALL_VALID)) ? 0 : sift_chunk_validity_len(ref, nrows);
+	if (!(flags & SIFT_VK_CF_ALL_NULL) && !(flags & SIFT_VK_CF_LZ4) && blob_enc(enc) && !unwrap_chunk(out, out->vlen + (enc == SIFT_VK_ENC_NUM64 ? 8 : 0), why))
+		return false;
+	out->w = 0;
+	out->base = 0;
+	if (!field_of(z, kind, (flags & SIFT_VK_CF_ALL_NULL) != 0, out))
+		return refuse(why, "the zone of a column holds no range of its values");
+	return true;
 }

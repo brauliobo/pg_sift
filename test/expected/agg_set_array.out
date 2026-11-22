@@ -1,6 +1,6 @@
 -- A set filter bound as one array parameter (col = ANY($1)) on a generic plan (docs/SET-FILTERS.md): the length of the array is not known to the
 -- planner, which assumes 10 elements and prices an index or bitmap scan for them. The scan of Custom Scan (SiftAgg) reads the whole array into a
--- table when it starts, so the generic plan takes it by default (sift.agg_param_set_size), and the answers are those of the normal plan for every array.
+-- table when it starts, so the generic plan takes it by default (the param_set_elems limit), and the answers are those of the normal plan for every array.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
@@ -49,7 +49,7 @@ SELECT plan_kind('EXECUTE off_q(''{1,2,3}'')') AS enable_agg_off;
 (1 row)
 
 RESET sift.enable_agg;
--- on a column of one row per value the planner's own guess of 10 elements keeps the index scan (opening the scan costs more than 10 probes); the elements assumed by sift.agg_param_set_size move the choice
+-- on a column of one row per value the planner's own guess of 10 elements keeps the index scan (opening the scan costs more than 10 probes); the elements assumed by the param_set_elems limit move the choice
 PREPARE guess_q(int4[]) AS
 SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE ref = ANY ($1) GROUP BY kind ORDER BY kind;
 SELECT plan_kind('EXECUTE guess_q(''{1,2,3}'')') AS default_assumed;
@@ -58,7 +58,7 @@ SELECT plan_kind('EXECUTE guess_q(''{1,2,3}'')') AS default_assumed;
  SiftAgg
 (1 row)
 
-SET sift.agg_param_set_size = 0;
+SET sift.test_limits = 'param_set_elems=0';
 PREPARE guess_q0(int4[]) AS
 SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE ref = ANY ($1) GROUP BY kind ORDER BY kind;
 SELECT plan_kind('EXECUTE guess_q0(''{1,2,3}'')') AS planner_guess;
@@ -67,7 +67,7 @@ SELECT plan_kind('EXECUTE guess_q0(''{1,2,3}'')') AS planner_guess;
  normal
 (1 row)
 
-RESET sift.agg_param_set_size;
+RESET sift.test_limits;
 -- the plan shows the parameter, and a query SiftAgg cannot run keeps its plan whatever the size of the array
 EXPLAIN (COSTS OFF) EXECUTE on_q('{1,2,3}');
                        QUERY PLAN                        

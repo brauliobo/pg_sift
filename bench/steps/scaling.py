@@ -7,7 +7,7 @@ The orders table (bench/sql/store/gen.sql, `orders_src`) is split by a hash of t
 (the layout of bench/sql/store/sift.sql); the questions below are timed on it with sift.enable_agg off (what PostgreSQL does) and on, one client, `psql \\timing` of one
 statement with its planning, in random order interleaved over the cells, one untimed run first. Every pg_sift result is compared with the normal plan's. `partitions` runs
 every N with 2 parallel workers; `workers` runs the plain table with max_parallel_workers_per_gather 0 .. W. The timing holds PERF_LOCK (default /tmp/sift-perf.lock) per
-group of cells. Rows go to bench/results/scaling.tsv (columns of extras.py): case `partitions N` or `workers W`, arm `<question>_<pg|sift>`, metric median_ms.
+group of cells. Rows go to docs/results/scaling.tsv (columns of resultfile.py): case `partitions N` or `workers W`, arm `<question>_<pg|sift>`, metric median_ms.
 """
 import argparse
 import fcntl
@@ -23,7 +23,7 @@ sys.path.insert(0, HERE)
 import json  # noqa: E402
 import meter  # noqa: E402  (steps/meter.py: the CPU of the server's process tree)
 import pgq  # noqa: E402  (steps/pgq.py)
-import extras  # noqa: E402
+import resultfile  # noqa: E402
 
 BENCH = os.path.dirname(HERE)
 LOCK = os.environ.get('PERF_LOCK', '/tmp/sift-perf.lock')
@@ -96,7 +96,7 @@ def time_cells(db, cs, reps, rows):
         if not os.environ.get('PERF_LOCK_HELD'):   # a pass that holds the lock (steps/lib.sh perf_hold) would wait for itself
             print('scaling: waiting for %s' % LOCK, file=sys.stderr)
             fcntl.flock(lock, fcntl.LOCK_EX)
-        print('scaling: timing %d cells x %d reps, %s' % (len(cs), reps, extras.host_load()), file=sys.stderr)
+        print('scaling: timing %d cells x %d reps, %s' % (len(cs), reps, resultfile.host_load()), file=sys.stderr)
         for rep in range(reps + 1):
             order = cs[:]
             random.Random(rep).shuffle(order)
@@ -136,7 +136,7 @@ def run(a):
                  'method': 'psql \\timing of one statement, planning included, one client, %d timed runs after one untimed, cells interleaved in random order; jit off; partitions: 2 workers' % a.reps})
     for r in rows:
         r['version'] = version
-    extras.write(a.out, 'Aggregates by number of partitions and parallel workers on the orders of the orders benchmark (bench/steps/scaling.sh).', meta, rows)
+    resultfile.write(a.out, 'Aggregates by number of partitions and parallel workers on the orders of the orders benchmark (bench/steps/scaling.sh).', meta, rows)
 
 
 def main():

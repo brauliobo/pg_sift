@@ -5,7 +5,7 @@
 -- the first one answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use).
 -- Size, 16 s of CPU: tcy has 150000 rows (8 units in more than one segment) so that a range that cuts a day leaves some units without rows in it, which is 'some' of shapes 24, 27
 -- and 46, and tcm has them so that the dirty states leave shapes 9, 12 and 20 'none' (60000 rows of either changes those answers); tcd has 60000, which is as many units as it needs.
--- The plain plan is 38 ms a shape on 150000 rows and runs once for each of about 420 checks: 48 shapes on 3 tables, 15 in each of 7 states of tcm, 47 twice on tci and 14 in each of 3 time zones, 12 four times on tc7.
+-- The plain plan is 38 ms a shape on 150000 rows and runs once for each of about 420 checks: 48 shapes on 3 tables, 15 in each of 7 states of tcm, 47 twice on tci and 14 in each of 3 time zones.
 -- The states of the data below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -189,30 +189,12 @@ SET TimeZone = 'America/Los_Angeles';
 SELECT * FROM pm_check('tcy', 35, 48);
 RESET TimeZone;
 
--- 10. a segment written under sift.col_format_minor 7 has no calendar dim: the same table reads both, and a rewrite writes minor 8 again
-CREATE TABLE tc7 (LIKE tcd) USING sift_table;
-SET sift.col_format_minor = 7;
-SELECT pm_fill('tc7', '2020-01-15', 60, 1, 60000);
-VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) tc7;
-RESET sift.col_format_minor;
-SELECT array_agg(DISTINCT format) AS minors FROM sift.table_segments('tc7') WHERE kind = 'columns';
-SELECT no_cal > 0 AS none_have_cells, days + months + years = 0 AS no_cells FROM sift._test_tbl_cal_grains('tc7');
-SELECT * FROM pm_check('tc7', 1, 12);
-SELECT pm_fill('tc7', '2024-03-15', 60, 100001, 160000);
-VACUUM (DISABLE_PAGE_SKIPPING) tc7;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tc7') WHERE kind = 'columns';
-SELECT * FROM pm_check('tc7', 1, 12);
-VACUUM (FULL) tc7;
-SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('tc7') WHERE kind = 'columns';
-SELECT days > 0 AS has_cells FROM sift._test_tbl_cal_grains('tc7');
-SELECT * FROM pm_check('tc7', 1, 12);
-
 -- the units a plan reads, and those it answered from the cells
 SELECT * FROM pm_units('SELECT date_trunc(''month'', ts)::date, sum(amt) FROM tcd GROUP BY 1');
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcm GROUP BY 1');
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP BY 1');
 
-DROP TABLE tcd, tcm, tcy, tci, tc7;
+DROP TABLE tcd, tcm, tcy, tci;
 DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

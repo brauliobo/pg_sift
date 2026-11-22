@@ -569,6 +569,7 @@ SELECT count(*) FROM (SELECT id FROM rx WHERE body @@> 'beta' OFFSET 0) t;
 SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() needs a sift index on every partition the query reads
 DETAIL:  "rx3" has no sift index that answers the @@> condition.
+HINT:  Create a matching USING sift index on the partitioned table or on every partition the query reads.
 SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY sift.score(ctid) DESC LIMIT 3;
  id |   score    
 ----+------------
@@ -580,6 +581,7 @@ SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY 
 SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id >= 200 ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.score() needs a sift index on every partition the query reads
 DETAIL:  "rx3" has no sift index that answers the @@> condition.
+HINT:  Create a matching USING sift index on the partitioned table or on every partition the query reads.
 SELECT id, sift.score(ctid) FROM rx WHERE id < 200 ORDER BY id LIMIT 1;
 ERROR:  sift.score() must be computed by a sift scan of the same relation
 DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.

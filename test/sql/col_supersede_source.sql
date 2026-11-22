@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
 
 CREATE FUNCTION mk(t text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN

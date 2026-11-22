@@ -90,7 +90,6 @@ CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LAN
 SELECT * FROM ct_stage('build');
 SET sift.search_chunk_sbs = 1;
 SELECT * FROM ct_stage('chunks of one superblock');
-RESET sift.search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;
@@ -113,9 +112,9 @@ SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT
 	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Units') AS units_asc;
 
 -- the GUC
-SET sift.enable_topn = off;
+SET sift.enable_agg = off;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
-RESET sift.enable_topn;
+RESET sift.enable_agg;
 
 -- inserts land in the write buffer of the table, unvacuumed
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)

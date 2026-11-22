@@ -1,4 +1,4 @@
--- Where the rows of a CREATE INDEX or REINDEX of a sift_col index come from (col/build/choose.c): the heap (with the key ranges' files for a key_cut index), the heap read in
+-- Where the rows of a CREATE INDEX or REINDEX of a sift_col index come from (col/v1/build/choose.c): the heap (with the key ranges' files for a key_cut index), the heap read in
 -- the order of a btree on the key, or the index a REINDEX replaces. Each path is priced and the cheapest taken; sift.col_build_source = heap takes the heap. Every path gives the
 -- same rows and the key in one unit; the path that reads a btree or the old index writes no temporary file, and the old index reads no block of the heap.
 -- sift.test_col_build_source_used says which path the last build took (0 the heap, 1 a btree, 2 the old index); the mutants plant a defect in the choice that a step must catch.
@@ -139,7 +139,6 @@ SELECT ch_start();
 REINDEX INDEX ch_plain_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ch_note();
-RESET sift.col_format_minor;
 SELECT ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
 
 -- rows this transaction has buffered are not in the index that is replaced
@@ -305,7 +304,7 @@ SELECT ch_start();
 REINDEX INDEX ch_spill_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ch_say();
--- order arrays on fewer rows than the writer keeps in memory
+-- order arrays on more rows than the writer keeps in memory (its budget of 1500 kB gives each set 2,400 entries): the sets write runs, whichever path gives the rows
 RESET sift.test_limits;
 CREATE TABLE ch_few (LIKE ch_sorted) WITH (autovacuum_enabled = false);
 INSERT INTO ch_few SELECT * FROM ch_sorted WHERE id <= 12000;

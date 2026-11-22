@@ -1,4 +1,4 @@
--- An aggregate whose groups the planner underestimates by more than group_nospill_factor (statistics that predate a bulk load) returns the rows the
+-- An aggregate whose groups the planner underestimates by more than hash memory allows (statistics that predate a bulk load) returns the rows the
 -- normal plan returns. Where the scan can spill, the groups of its table go to partitions on disk (grouping sets, with the sets folded into the coarser ones
 -- before each table is written; a generic aggregate with a combine function); where it cannot (an ordered scan on a text key, an ordered-set aggregate, an
 -- aggregate that sorts its input) the statement is run again as PostgreSQL plans it.
@@ -18,7 +18,6 @@ INSERT INTO stale SELECT i, i, i % 100 FROM generate_series(401, 20400) i;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SET sift.agg_force = on;
-SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
 
 -- one statement: the plan it gets, whether its table spilled, and the rows of the scan against the rows of the normal plan
 CREATE FUNCTION stale_case(q text) RETURNS TABLE (shape text, spilled boolean, rows bigint, differ bigint) LANGUAGE plpgsql AS $$

@@ -28,6 +28,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "col/shred.h"
+#include "core/memtrack.h"
 #include "core/catname.h"
 
 #define SAMPLE_CHUNKS	16		/* stretches of blocks read, evenly spaced */
@@ -38,6 +39,8 @@
 #define RARE_PERMILLE	10		/* a key in fewer documents than this share is left out */
 #define MAX_COLS		256		/* limits of the spec (docs/COL-SHRED.md) */
 #define MAX_GROUPS		64
+#define MAX_KEY_BYTES	256		/* a key longer is never a path of a shredded column: it counts in the node that no path names */
+#define MAX_NODES		4096	/* the paths kept: the keys past it count in one node that no path names, so a document of endless keys cannot exhaust memory */
 
 typedef struct SNode
 {
@@ -61,16 +64,27 @@ typedef struct SNode
 typedef struct Ctx
 {
 	MemoryContext tree;
+	SiftMemTracker mt;			/* the paths are kept within work_mem, whatever the keys are */
 	int			ncols,
 				ngroups;
 	uint32		docs;
+	int			nnodes;
+	struct SNode *sink;
 } Ctx;
+
+/* No path is added: the nodes are at their limit, or the key is too long to name one, or the tree has used what work_mem gives it */
+static bool
+tree_full(Ctx *cx, int keylen)
+{
+	return cx->nnodes >= MAX_NODES || keylen > MAX_KEY_BYTES || sift_mem_pressure(&cx->mt, false) >= SIFT_MEM_SOFT;
+}
 
 static SNode *
 node_new(Ctx *cx, const char *name)
 {
 	SNode	   *n = MemoryContextAllocZero(cx->tree, sizeof(SNode));
 
+	cx->nnodes++;
 	n->name = name ? MemoryContextStrdup(cx->tree, name) : NULL;
 	return n;
 }
@@ -102,6 +116,8 @@ kid_find(Ctx *cx, SNode *n, const char *key, int len)
 		else
 			hi = mid;
 	}
+	if (tree_full(cx, len))
+		return cx->sink;
 	if (n->nkids == n->capkids)
 	{
 		n->capkids = n->capkids ? n->capkids * 2 : 8;
@@ -144,9 +160,9 @@ container(Ctx *cx, SNode *n, JsonbIterator **it, bool isobj)
 		}
 		else
 		{
-			if (n->elem == NULL)
+			if (n->elem == NULL && !tree_full(cx, 0))
 				n->elem = node_new(cx, NULL);
-			value(cx, n->elem, it, tok, &v);
+			value(cx, n->elem ? n->elem : cx->sink, it, tok, &v);
 		}
 	}
 }
@@ -382,7 +398,7 @@ emit(Ctx *cx, SNode *n, const char *prefix, bool group, StringInfo out)
 char *
 sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sample, int *ncols, int *ngroups)
 {
-	Ctx			cx = {.tree = AllocSetContextCreate(CurrentMemoryContext, "sift suggest paths", ALLOCSET_DEFAULT_SIZES), .ncols = *ncols, .ngroups = *ngroups};
+	Ctx			cx = {.tree = sift_mem_allocset_create(CurrentMemoryContext, "sift suggest paths"), .ncols = *ncols, .ngroups = *ngroups};
 	MemoryContext doc_cx = AllocSetContextCreate(CurrentMemoryContext, "sift suggest document", ALLOCSET_SMALL_SIZES);
 	SNode	   *root;
 	BlockNumber nblocks;
@@ -393,7 +409,9 @@ sift_col_suggest_spec(Relation rel, AttrNumber attno, const char *col, int sampl
 	StringInfoData out;
 	char	   *result;
 
+	sift_mem_init_sub(&cx.mt, "col_suggest", cx.tree, false, sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1));
 	root = node_new(&cx, NULL);
+	cx.sink = node_new(&cx, NULL);
 	nblocks = RelationGetNumberOfBlocks(rel);
 	/* stretches of blocks are a heap's: another table access method is read by one scan from its start, up to the sample */
 	heap = rel->rd_tableam == GetHeapamTableAmRoutine();
@@ -492,6 +510,9 @@ sift_col_suggest_paths(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("column \"%s\" does not exist", col)));
 	if (TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid != JSONBOID)
 		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("column \"%s\" is not jsonb", col)));
+	if (sift_attr_is_virtual(TupleDescAttr(RelationGetDescr(rel), attno - 1)))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("column \"%s\" is a virtual generated column: no row stores its documents", col),
+						errhint("Ask for the paths of the column it is computed from.")));
 	result = sift_col_suggest_spec(rel, attno, col, sample, &ncols, &ngroups);
 	/* the answer is a spec the option accepts: a spec the parser refuses is a bug here, not in the documents */
 	if (result != NULL)

@@ -1,12 +1,12 @@
 /*
- * tools/gquant/test.c - the quantized keys of a compact chunk (src/col/gquant.c), standalone: no backend, no SQLite library (the C library and the portable host header).
+ * tools/gquant/test.c - the quantized keys of a compact chunk (src/col/v1/gquant.c), standalone: no backend, no SQLite library (the C library and the portable host header).
  * Round trips on key shapes of every kind (scattered, ties, dates, ids, runs, bursts that force patches of every width), the bounds of the buckets, and the decoders of every SIMD level
  * the CPU runs (the scalar one, AVX2, NEON) against each other, on the blobs the writer makes and on damaged ones: the same answer and, if the blob is sound, the same keys.
  *
  *   make test [N=1]
  */
 #include "core/host.h"
-#include "col/gquant.h"
+#include "col/v1/gquant.h"
 
 #include <stdio.h>
 #include <stdlib.h>

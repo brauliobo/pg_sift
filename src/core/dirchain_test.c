@@ -6,7 +6,7 @@
  * the chain and the free list are disjoint and inside the file.
  */
 #include "store_test_int.h"
-#include "col/order_bound.h"
+#include "col/v1/order_bound.h"
 #include "core/dirpart.h"
 #include "core/store_int.h"
 #include "nodes/bitmapset.h"

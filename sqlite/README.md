@@ -17,11 +17,11 @@ Needs Linux (glibc 2.34 or newer, x86-64 for the released binary) and SQLite 3.3
 (the `sqlite3` shell always allows `.load`; Python needs `enable_load_extension(True)`). Debian 12, Ubuntu 24.04 and RHEL 10
 ship such a SQLite; RHEL 9 and Ubuntu 22.04 do not.
 
-**From a release.** Download `sift-sqlite-<version>-linux-x86_64.tar.gz` and `SHA256SUMS` from the
+**From a release.** Download `sift-sqlite-<version>-linux-x86_64.tar.gz` (or `-linux-aarch64.tar.gz`) and `SHA256SUMS` from the
 [latest release](https://github.com/brauliobo/pg_sift/releases/latest):
 
 ```sh
-V=5.1.0
+V=6.0.0
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/sift-sqlite-$V-linux-x86_64.tar.gz
 curl -LO https://github.com/brauliobo/pg_sift/releases/download/v$V/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS && tar xzf sift-sqlite-$V-linux-x86_64.tar.gz
@@ -35,8 +35,10 @@ The archive holds `sift.so`, `LICENSE`, `NOTICE` and this file. Nothing is insta
 git clone https://github.com/brauliobo/pg_sift && make -C pg_sift/sqlite      # builds pg_sift/sqlite/build/sift.so
 ```
 
-The build uses the baseline x86-64 instruction set and picks AVX2 or AVX-512 kernels at load time from the CPU (`SELECT sift_isa()`);
-other architectures build with scalar kernels only (compiled, but not tested on hardware). `sift_version()` reports the version.
+The x86-64 build uses the baseline instruction set and picks AVX2 or AVX-512 kernels at load time from the CPU (`SELECT sift_isa()`). An AArch64
+source build targets baseline ARMv8-A, where NEON is always present, and adds SVE and SVE2 clones selected at load time when the compiler supports
+function multi-versioning (GCC 13.1 or newer on glibc); on musl and macOS it runs the baseline NEON kernels. The release archive is `linux-x86_64`
+only. `SIFT_SIMD=scalar` forces the portable scalar kernels on any CPU. `sift_version()` reports the version.
 
 ## Quick start
 

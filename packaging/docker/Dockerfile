@@ -21,10 +21,14 @@ RUN make -j${JOBS} USE_PGXS=1 SIFT_LTO=1 \
 
 # server is the last stage, so a plain `docker build` makes it
 FROM scratch AS extension
+ARG VERSION=unknown
+LABEL org.opencontainers.image.version="${VERSION}"
 COPY --from=build /ext/ /
 
 FROM postgres:${PG_TAG} AS server
+ARG VERSION=unknown
 LABEL org.opencontainers.image.title="pg_sift" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.description="PostgreSQL with the pg_sift extension installed" \
       org.opencontainers.image.source="https://github.com/brauliobo/pg_sift" \
       org.opencontainers.image.licenses="PostgreSQL"

@@ -44,10 +44,12 @@ bool		sift_agg_rows = true;
 void
 sift_agg_rows_init(void)
 {
+#ifdef SIFT_TESTING
 	DefineCustomBoolVariable("sift.agg_rows",
 							 "Groups the rows of a plan that reads Custom Scan (SiftAgg) nodes with exact count(DISTINCT) in Custom Scan (SiftAggRows), without a sort of the rows.",
 							 NULL, &sift_agg_rows, true,
 							 PGC_USERSET, 0, NULL, NULL, NULL);
+#endif
 }
 
 /* the spec as lists that copyObject and the plan cache keep: [nkeys naggs], eqops, collations, [kind argcol filtercol] and [fn restype argtype collid] per aggregate */
@@ -268,7 +270,7 @@ static void
 rows_groups_check(RowsExec *ex)
 {
 	double		held = rows_held(ex),
-				limit = sift_agg_nospill_bytes(NULL, NULL);
+				limit = sift_agg_nospill_bytes(0);
 
 	if (held > limit)
 	{
@@ -284,7 +286,7 @@ static void
 rows_groups_grow(RowsExec *ex)
 {
 	SiftRowsSpec *s = ex->spec;
-	uint64		max = sift_limit(rows_groups, SIFT_ROWS_MAX_GROUPS);
+	uint64		max = Min(sift_limit(rows_groups, SIFT_ROWS_MAX_GROUPS), MaxAllocSize / sizeof(Datum) / Max(s->nkeys, 1) / 2);
 	uint32		cap = Min(Max((uint64) ex->gcap * 2, 1024), max);
 
 	rows_groups_check(ex);
@@ -297,20 +299,20 @@ rows_groups_grow(RowsExec *ex)
 				 errhint("Set sift.agg_rows to off.")));
 	}
 
-	ex->kval = ex->kval ? repalloc_huge(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
-	ex->knull = ex->knull ? repalloc_huge(ex->knull, (Size) cap * s->nkeys) : MemoryContextAllocHuge(ex->cxt, (Size) cap * s->nkeys);
-	ex->ghash = ex->ghash ? repalloc_huge(ex->ghash, cap * sizeof(uint32)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(uint32));
+	ex->kval = ex->kval ? repalloc(ex->kval, (Size) cap * s->nkeys * sizeof(Datum)) : MemoryContextAlloc(ex->cxt, (Size) cap * s->nkeys * sizeof(Datum));
+	ex->knull = ex->knull ? repalloc(ex->knull, (Size) cap * s->nkeys) : MemoryContextAlloc(ex->cxt, (Size) cap * s->nkeys);
+	ex->ghash = ex->ghash ? repalloc(ex->ghash, cap * sizeof(uint32)) : MemoryContextAlloc(ex->cxt, cap * sizeof(uint32));
 	for (int i = 0; i < s->naggs; i++)
 	{
 		if (s->agg[i].kind == SRA_PG)
 		{
-			ex->val[i] = ex->val[i] ? repalloc_huge(ex->val[i], cap * sizeof(Datum)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(Datum));
-			ex->has[i] = ex->has[i] ? repalloc_huge(ex->has[i], cap) : MemoryContextAllocHuge(ex->cxt, cap);
+			ex->val[i] = ex->val[i] ? repalloc(ex->val[i], cap * sizeof(Datum)) : MemoryContextAlloc(ex->cxt, cap * sizeof(Datum));
+			ex->has[i] = ex->has[i] ? repalloc(ex->has[i], cap) : MemoryContextAlloc(ex->cxt, cap);
 			memset(ex->has[i] + ex->gcap, 0, cap - ex->gcap);
 		}
 		else
 		{
-			ex->cnt[i] = ex->cnt[i] ? repalloc_huge(ex->cnt[i], cap * sizeof(int64)) : MemoryContextAllocHuge(ex->cxt, cap * sizeof(int64));
+			ex->cnt[i] = ex->cnt[i] ? repalloc(ex->cnt[i], cap * sizeof(int64)) : MemoryContextAlloc(ex->cxt, cap * sizeof(int64));
 			memset(ex->cnt[i] + ex->gcap, 0, (cap - ex->gcap) * sizeof(int64));
 		}
 	}
@@ -324,7 +326,7 @@ rows_rehash(RowsExec *ex)
 
 	if (ex->tab)
 		pfree(ex->tab);
-	ex->tab = MemoryContextAllocExtended(ex->cxt, cap * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	ex->tab = MemoryContextAllocZero(ex->cxt, cap * sizeof(uint32));
 	ex->tabcap = cap;
 	for (uint32 g = 0; g < ex->ng; g++)
 	{

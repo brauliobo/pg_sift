@@ -153,7 +153,7 @@ static void exercise(const uint8_t *blob, size_t len, uint32_t want_n, const uin
 			if (g && g->gid < target) BAD("seek(%u) returned group %u (kind %d, n %zu, mutated blob)", target, g->gid, sift_blob_kind(blob), n);
 		}
 		sift_cur_blob(&c, blob, len, buf[0]);
-		if (sift_count(&c) != n) BAD("isa %d: sift_count != tids", isa);
+		if (sift_cur_count(&c) != n) BAD("isa %d: sift_cur_count != tids", isa);
 		/* operators against the other blob (when it passed the check) and against a raw tid cursor */
 		if (have_o) {
 			sift_cur *kid[2] = { &a, &b2 };
@@ -165,7 +165,7 @@ static void exercise(const uint8_t *blob, size_t len, uint32_t want_n, const uin
 			sift_cur_blob(&a, blob, len, buf[0]);
 			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_and(&o, kid, 2, buf[2]);
-			if (sift_count(&o) != na) BAD("isa %d: AND count != tids", isa);
+			if (sift_cur_count(&o) != na) BAD("isa %d: AND count != tids", isa);
 			sift_cur_blob(&a, blob, len, buf[0]);
 			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_or(&o, kid, 2, buf[2]);
@@ -173,7 +173,7 @@ static void exercise(const uint8_t *blob, size_t len, uint32_t want_n, const uin
 			sift_cur_blob(&a, blob, len, buf[0]);
 			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_or(&o, kid, 2, buf[2]);
-			if (sift_count(&o) != no) BAD("isa %d: OR count != tids", isa);
+			if (sift_cur_count(&o) != no) BAD("isa %d: OR count != tids", isa);
 			sift_cur_blob(&a, blob, len, buf[0]);
 			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_andnot(&o, kid, buf[2]);
@@ -181,7 +181,7 @@ static void exercise(const uint8_t *blob, size_t len, uint32_t want_n, const uin
 			sift_cur_blob(&a, blob, len, buf[0]);
 			sift_cur_blob(&b2, oblob, olen, buf[1]);
 			sift_cur_andnot(&o, kid, buf[2]);
-			if (sift_count(&o) != nn) BAD("isa %d: ANDNOT count != tids", isa);
+			if (sift_cur_count(&o) != nn) BAD("isa %d: ANDNOT count != tids", isa);
 			if (na > no || nn > n) BAD("isa %d: AND/OR/ANDNOT sizes inconsistent", isa);
 		}
 		/* ranks of a group within itself */

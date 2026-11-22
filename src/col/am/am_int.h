@@ -5,7 +5,7 @@
 #ifndef SIFT_COL_AM_INT_H
 #define SIFT_COL_AM_INT_H
 
-#include "col/build.h"
+#include "col/v1/build.h"
 
 /* a string reloption: stored as an offset from the options struct, 0 when unset */
 #define COL_OPT_STR(fn, field, unset) \

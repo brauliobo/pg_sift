@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A VACUUM whose cut of the free end of a sift_col file waited for its lock in vain says so once, with the blocks the online cut moved and gave back instead: VACUUM VERBOSE reports it (INFO), and an
 # autovacuum that logs reports it in the server log (LOG). The reason is the lock another session holds on the table for the whole wait, and what the online cut did in its place.
 . "$(dirname "$0")/lib.bash"
@@ -24,7 +25,7 @@ loosen() {
 	sql skip "SELECT sift.col_merge('$1_idx', true)" >/dev/null
 }
 # a reader that holds the table for $2 seconds (the AccessShareLock on the index refuses the AccessExclusiveLock of the cut)
-hold() { sql skip "BEGIN" "SELECT count(*) FROM $1 WHERE id < 10" "SELECT pg_sleep($2)" "COMMIT" >/dev/null 2>&1 & HOLDER=$!; sleep 0.5; }
+hold() { sql skip "BEGIN" "SELECT count(*) FROM $1 WHERE id < 10" "SELECT pg_sleep($2)" "COMMIT" >/dev/null 2>&1 & HOLDER=$!; wait_for "running skip '%pg_sleep(%'" 30; }
 
 loosen t
 hold t 4

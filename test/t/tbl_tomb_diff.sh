@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # One workload of DELETE, UPDATE (of a column a b-tree reads: a HOT chain, and of its key), INSERT, VACUUM and reads, run on a heap table, on a sift_table with the
-# tombstone log in memory (sift.tomb_log_limit 8 GB) and on one whose log lives in runs on temp files (64 kB, 1,024 entries): after every step the three give the same
+# tombstone log in memory (sift.backend_cache_kb 8 GB) and on one whose log lives in runs on temp files (64 kB, 1,024 entries): after every step the three give the same
 # rows by a scan, by the b-tree and by an aggregate, and the store of the sift_tables verifies.
 . "$(dirname "$0")/lib.bash"
 
@@ -17,9 +17,9 @@ sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
 for t in ht lm ls; do sql primary "INSERT INTO $t SELECT * FROM src" "CREATE INDEX ${t}_grp ON $t (grp)" "VACUUM $t" >/dev/null; done
 plan $((ROUNDS * 3 + 2))
 
-SET_ht="SET sift.tomb_log_limit = 8388608"
-SET_lm="SET sift.tomb_log_limit = 8388608"
-SET_ls="SET sift.tomb_log_limit = 64"
+SET_ht="SET sift.backend_cache_kb = 8388608"
+SET_lm="SET sift.backend_cache_kb = 8388608"
+SET_ls="SET sift.backend_cache_kb = 64"
 digest() { local s=SET_$1; sql primary "${!s}" "SELECT count(*) || ':' || md5(string_agg(id || ':' || grp || ':' || amount || ':' || pad, ',' ORDER BY id)) FROM $1" | tail -1; }
 by_index() { local s=SET_$1; sql primary "${!s}" "SET enable_seqscan = off" "SET enable_bitmapscan = off" "SELECT count(*) || ':' || sum(amount) || ':' || max(id) FROM $1 WHERE grp BETWEEN 10 AND 60" | tail -1; }
 agg() { local s=SET_$1; sql primary "${!s}" "SELECT grp, count(*), sum(amount) FROM $1 GROUP BY grp ORDER BY grp" | "$(dirname "$0")/../../scripts/sha256.sh" | cut -c1-32; }

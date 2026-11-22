@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The cut of the free end of a sift_col file asks for its AccessExclusiveLock again for a few seconds, like the truncation of a heap, instead of once: a reader that
 # holds the table for a moment no longer keeps VACUUM from giving the free blocks back. lock_timeout ends the wait, and the file is cut by the next VACUUM once the reader is gone.
 . "$(dirname "$0")/lib.bash"
@@ -24,7 +25,7 @@ loosen() {
 	sql cut "SELECT sift.col_merge('t_idx', true)" >/dev/null
 }
 # a reader that holds the table for $1 seconds
-hold() { sql cut "BEGIN" "SELECT count(*) FROM t WHERE id < 10" "SELECT pg_sleep($1)" "COMMIT" >/dev/null 2>&1 & HOLDER=$!; sleep 0.5; }
+hold() { sql cut "BEGIN" "SELECT count(*) FROM t WHERE id < 10" "SELECT pg_sleep($1)" "COMMIT" >/dev/null 2>&1 & HOLDER=$!; wait_for "running cut '%pg_sleep(%'" 30; }
 live() { sql cut "SELECT bytes FROM sift.col_index_info('t_idx')"; }
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 
