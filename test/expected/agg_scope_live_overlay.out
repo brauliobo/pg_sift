@@ -313,7 +313,7 @@ DELETE FROM entity_parents WHERE parent_id = 4 AND entity_id % 45 = 4;
                                                      scope_same                                                     
 --------------------------------------------------------------------------------------------------------------------
  same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4
- same scope join SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary SELECT count(*), sum(e.amount), avg(e.sc ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope join SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join SELECT e.id, e.entity_id, e.event_date,  ... = 4 ORDER BY e.event_date DESC, e.id DESC LIMIT 20
  same scope summary SELECT count(*), min(e.amount), max(e.sc ...  ep.entity_id = e.entity_id WHERE ep.parent_id = 4

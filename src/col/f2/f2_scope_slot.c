@@ -44,13 +44,90 @@ sift_f2s_slot_of(SiftF2ScopeParts *p, uint32 gidx, uint32 *g)
 	return &p->s[lo];
 }
 
+void
+sift_f2s_gen_map_init(SiftGenMap *gm, uint32 expected)
+{
+	uint32		cap = 16;
+
+	while (cap < expected * 2)
+		cap *= 2;
+	gm->gen = palloc0((Size) cap * sizeof(uint64));
+	gm->val = palloc((Size) cap * sizeof(uint32));
+	gm->mask = cap - 1;
+}
+
+static inline uint32
+gen_slot(const SiftGenMap *gm, uint64 gen)
+{
+	return (uint32) ((gen * UINT64_C(0x9E3779B97F4A7C15)) >> 32) & gm->mask;
+}
+
+void
+sift_f2s_gen_map_put(SiftGenMap *gm, uint64 gen, uint32 val)
+{
+	uint32		at = gen_slot(gm, gen);
+
+	while (gm->gen[at] != 0 && gm->gen[at] != gen)
+		at = (at + 1) & gm->mask;
+	gm->gen[at] = gen;
+	gm->val[at] = val;
+}
+
+bool
+sift_f2s_gen_map_find(const SiftGenMap *gm, uint64 gen, uint32 *val)
+{
+	for (uint32 at = gen_slot(gm, gen); gm->gen[at] != 0; at = (at + 1) & gm->mask)
+		if (gm->gen[at] == gen)
+		{
+			*val = gm->val[at];
+			return true;
+		}
+	return false;
+}
+
+/* The first slot of a part generation: the map holds the slots seen so far and takes the ones added since (the slot array may move, the indexes do not) */
 SiftF2ScopeSlot *
 sift_f2s_slot_of_gen(SiftF2ScopeParts *p, uint64 gen)
 {
-	for (int i = 0; i < p->n; i++)
-		if (p->s[i].part_gen == gen)
-			return &p->s[i];
-	return NULL;
+	uint32		at;
+
+	if (p->gen_map_n != p->n)
+	{
+		MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(p));
+
+		if (p->gen_map.gen == NULL || (uint32) p->n * 2 > p->gen_map.mask + 1)
+		{
+			sift_f2s_gen_map_init(&p->gen_map, (uint32) p->n * 2);
+			p->gen_map_n = 0;
+		}
+		for (int i = p->gen_map_n; i < p->n; i++)
+		{
+			uint32		have;
+
+			if (p->s[i].part_gen != 0 && !sift_f2s_gen_map_find(&p->gen_map, p->s[i].part_gen, &have))
+				sift_f2s_gen_map_put(&p->gen_map, p->s[i].part_gen, (uint32) i);
+		}
+		p->gen_map_n = p->n;
+		MemoryContextSwitchTo(old);
+	}
+	return gen != 0 && sift_f2s_gen_map_find(&p->gen_map, gen, &at) ? &p->s[at] : NULL;
+}
+
+const struct SiftVariantExcSummary *
+sift_f2s_slot_exc(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 *n)
+{
+	if (!s->exc_read)
+	{
+		uint64		len;
+		MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(p));
+
+		s->exc = sift_part_read_section(p->rel, sift_f2s_slot_part(p, s), SEC_VARIANT_EXC, &len);
+		s->nexc = s->exc == NULL ? 0 : (uint32) (len / sizeof(SiftVariantExcSummary));
+		s->exc_read = true;
+		MemoryContextSwitchTo(old);
+	}
+	*n = s->nexc;
+	return s->exc;
 }
 
 const SiftGranuleDesc *

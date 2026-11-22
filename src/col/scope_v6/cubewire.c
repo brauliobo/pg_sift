@@ -27,6 +27,7 @@ put_dim(StringInfo out, const SiftScopeCubeAcc *a, uint32 i)
 	const SiftScopeDim *d = i < a->shape.ndims ? &a->dim[i] : &a->rollup[i - a->shape.ndims];
 	uint32		nk = d->nk;
 
+	sift_sdim_sort(&a->shape, (SiftScopeDim *) d);
 	if (i >= a->shape.ndims)
 	{
 		const SiftScopeRollupDef *def = &a->shape.rollup[i - a->shape.ndims];

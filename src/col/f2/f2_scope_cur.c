@@ -17,9 +17,9 @@
 
 #include "col/f2/f2_scope_int.h"
 
-/* The summary of scope ord as the directory names it, opened in *m (the caller closes it); false when the scope has none */
+/* The summary of scope ord as the directory names it, opened in *m with open_flags (the caller closes it; SIFT_SMETA_OPEN_LAZY_TOPK leaves the rings packed for a read of the header and the parts); false when the scope has none */
 bool
-sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m)
+sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m, uint32 open_flags)
 {
 	SiftColMetaPageData meta = sift_col_meta_read(rel);
 	int			n;
@@ -31,20 +31,24 @@ sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m)
 			uint64		len;
 			char	   *bytes = sift_f2_scope_read_object(rel, sift_part_open(rel, refs[i].header_blk, refs[i].meta_gen, 0), &len);
 
-			if (bytes == NULL || !sift_scope_meta_open(m, bytes, len))
+			if (bytes == NULL || !sift_scope_meta_open_ex(m, bytes, len, open_flags))
 				SIFT_CORRUPT(rel, "The summary of scope %d is damaged.", ord);
 			return true;
 		}
 	return false;
 }
 
-bool
-sift_f2s_meta_names(const SiftScopeMeta *m, uint64 part_gen)
+void
+sift_f2s_meta_map(const SiftScopeMeta *m, SiftGenMap *gm)
 {
+	sift_f2s_gen_map_init(gm, m->hdr.nparts);
 	for (uint32 e = 0; e < m->hdr.nparts; e++)
-		if (m->parts[e].part_gen == part_gen)
-			return true;
-	return false;
+	{
+		uint32		have;
+
+		if (m->parts[e].part_gen != 0 && !sift_f2s_gen_map_find(gm, m->parts[e].part_gen, &have))
+			sift_f2s_gen_map_put(gm, m->parts[e].part_gen, e);
+	}
 }
 
 /*
@@ -57,8 +61,11 @@ parts_match(Relation rel, const SiftManifestRead *manifest, const SiftScopeMeta 
 	const SiftManifestRead mr = *manifest;
 	FullTransactionId xmin = sift_vis_snap_xmin(snap);
 	uint32		named = 0,
-				found = 0;
+				found = 0,
+				at;
+	SiftGenMap	gm;
 
+	sift_f2s_meta_map(m, &gm);
 	for (uint32 e = 0; e < m->hdr.nparts; e++)
 		named += m->parts[e].part_gen != 0;
 	for (int k = 0; k < mr.n; k++)
@@ -70,7 +77,7 @@ parts_match(Relation rel, const SiftManifestRead *manifest, const SiftScopeMeta 
 			return false;
 		for (int j = 0; j < np; j++)
 		{
-			if (!sift_f2s_meta_names(m, parts[j].part_gen))
+			if (!sift_f2s_gen_map_find(&gm, parts[j].part_gen, &at))
 				return false;
 			if (settled && !sift_vis_part_inserts_settled(&parts[j], xmin))
 				return false;
@@ -163,7 +170,7 @@ scope_matches(Relation rel, const SiftF2Store *store, int ord, Snapshot snap, bo
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
 	bool		ok;
 
-	if (!sift_f2s_object(rel, ord, &m))
+	if (!sift_f2s_object(rel, ord, &m, SIFT_SMETA_OPEN_LAZY_TOPK))
 		return false;
 	ok = schema_matches(store, &m) && parts_match(rel, &mr, &m, snap, settled) && sift_f2s_pairs_unchanged(rel, ord, &m, snap) && (!settled || sift_f2s_deltas_clear(rel, store, ord, &mr));
 	sift_scope_meta_close(&m);

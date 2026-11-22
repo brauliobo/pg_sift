@@ -13,6 +13,8 @@
 #include "commands/explain_format.h"
 #include "executor/executor.h"
 #include "executor/nodeIndexscan.h"
+#include "miscadmin.h"
+#include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
@@ -33,12 +35,14 @@
 #include "col/col.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/f2_store_scan.h"
+#include "core/memtrack.h"
 #include "table/dispatch.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"
 
 /* A small side of more rows than this stays with the join: the array is a key of the scan */
 #define PUSH_ROWS_MAX	50000
+#define PUSH_RUNTIME_CHUNK (PUSH_ROWS_MAX * 2)
 
 typedef struct PushJoin
 {
@@ -109,20 +113,47 @@ find_join(PlannerInfo *root, PushJoin *j)
 	return false;
 }
 
-static bool
-pinned_to_const(const RelOptInfo *dim, AttrNumber attno, Oid opfamily)
+#define PUSH_PINNED_MAX 64
+
+typedef struct Pinned
 {
+	int			n;
+	Bitmapset  *atts;
+	AttrNumber	attno[PUSH_PINNED_MAX];
+	Oid			opno[PUSH_PINNED_MAX];
+} Pinned;
+
+/* The columns of the dim that the statement pins to a constant, with the operator that pins them: one pass over its restrictions */
+static void
+collect_pinned(const RelOptInfo *dim, Pinned *pin)
+{
+	pin->n = 0;
+	pin->atts = NULL;
 	foreach_node(RestrictInfo, ri, dim->baserestrictinfo)
 	{
 		const OpExpr *op = (const OpExpr *) ri->clause;
 		const Var  *v;
 
-		if (!IsA(op, OpExpr) || list_length(op->args) != 2 || get_op_opfamily_strategy(op->opno, opfamily) != BTEqualStrategyNumber)
+		if (pin->n == PUSH_PINNED_MAX || !IsA(op, OpExpr) || list_length(op->args) != 2)
 			continue;
 		v = linitial(op->args);
-		if (IsA(v, Var) && (Index) v->varno == dim->relid && v->varattno == attno && IsA(lsecond(op->args), Const) && !((Const *) lsecond(op->args))->constisnull)
-			return true;
+		if (IsA(v, Var) && (Index) v->varno == dim->relid && IsA(lsecond(op->args), Const) && !((Const *) lsecond(op->args))->constisnull)
+		{
+			pin->attno[pin->n] = v->varattno;
+			pin->opno[pin->n++] = op->opno;
+			pin->atts = bms_add_member(pin->atts, v->varattno);
+		}
 	}
+}
+
+static bool
+pinned_to_const(const Pinned *pin, AttrNumber attno, Oid opfamily)
+{
+	if (!bms_is_member(attno, pin->atts))
+		return false;
+	for (int i = 0; i < pin->n; i++)
+		if (pin->attno[i] == attno && get_op_opfamily_strategy(pin->opno[i], opfamily) == BTEqualStrategyNumber)
+			return true;
 	return false;
 }
 
@@ -130,12 +161,15 @@ pinned_to_const(const RelOptInfo *dim, AttrNumber attno, Oid opfamily)
 static bool
 dim_unique(const PushJoin *j)
 {
+	Pinned		pin;
+
+	collect_pinned(j->dim, &pin);
 	foreach_ptr(IndexOptInfo, ix, j->dim->indexlist)
 	{
 		bool		all = ix->unique && ix->indpred == NIL && ix->indexprs == NIL && !ix->hypothetical && ix->nkeycolumns > 0;
 
 		for (int k = 0; all && k < ix->nkeycolumns; k++)
-			all = ix->indexkeys[k] == j->dim_var->varattno || pinned_to_const(j->dim, ix->indexkeys[k], ix->opfamily[k]);
+			all = ix->indexkeys[k] == j->dim_var->varattno || pinned_to_const(&pin, ix->indexkeys[k], ix->opfamily[k]);
 		if (all)
 			return true;
 	}
@@ -329,20 +363,16 @@ datum_of(Oid typid, int64 v)
 	return typid == INT2OID ? Int16GetDatum((int16) v) : typid == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
 }
 
-/* The sorted distinct values of the join column of the small side, as an array; NULL when it holds none */
-static ArrayType *
-small_side(PushState *st)
+/* The sorted distinct values of the join column of the small side (n of them) whatever the plan estimated: the values held are bounded by work_mem */
+static int64 *
+small_side(PushState *st, int *n)
 {
 	PlanState  *child = linitial(st->css.custom_ps);
 	int64	   *v = palloc(256 * sizeof(int64));
-	int			n = 0,
-				cap = 256,
+	int			cap = 256,
 				u = 0;
-	Datum	   *d;
-	int16		len;
-	bool		byval;
-	char		align;
 
+	*n = 0;
 	for (;;)
 	{
 		TupleTableSlot *slot = ExecProcNode(child);
@@ -354,20 +384,62 @@ small_side(PushState *st)
 		x = slot_getattr(slot, st->resno, &isnull);
 		if (isnull)
 			continue;
-		if (n == cap)
+		if (*n == cap)
+		{
+			sift_budget_check((Size) cap * 2 * sizeof(int64), work_mem, "the join keys of the small side of a push", "work_mem", NULL);
 			v = repalloc(v, (cap *= 2) * sizeof(int64));
-		v[n++] = value_of(st->elemtype, x);
+		}
+		v[(*n)++] = value_of(st->elemtype, x);
 	}
-	if (n == 0)
-		return NULL;
-	qsort(v, n, sizeof(int64), sift_cmp_i64);
-	d = palloc(n * sizeof(Datum));
+	qsort(v, *n, sizeof(int64), sift_cmp_i64);
+	for (int i = 0; i < *n; i++)
+		if (u == 0 || v[i] != v[u - 1])
+			v[u++] = v[i];
+	*n = u;
+	return v;
+}
+
+/* The values v[0 .. n - 1] as the array of the list among the keys of the scan of the fact */
+static ArrayType *
+values_array(const PushState *st, const int64 *v, int n)
+{
+	Datum	   *d = palloc(n * sizeof(Datum));
+	int16		len;
+	bool		byval;
+	char		align;
+
 	for (int i = 0; i < n; i++)
-		if (i == 0 || v[i] != v[i - 1])
-			d[u++] = datum_of(st->elemtype, v[i]);
+		d[i] = datum_of(st->elemtype, v[i]);
 	get_typlenbyvalalign(st->elemtype, &len, &byval, &align);
-	st->nvalues = u;
-	return construct_array(d, u, st->elemtype, len, byval, align);
+	return construct_array(d, n, st->elemtype, len, byval, align);
+}
+
+/* One scan of the fact for the values of ids: each value is in one batch only, so the rows of the batches are the rows of the join */
+static void
+push_scan(PushState *st, EState *estate, ArrayType *ids)
+{
+	ScalarArrayOpExpr *q = copyObject(st->key);
+	List	   *quals = list_copy(st->spec->indexqual);
+	IndexRuntimeKeyInfo *rtkeys = NULL;
+	ScanKey		keys;
+	int			nkeys,
+				nrt = 0;
+
+	lsecond(q->args) = makeConst(get_array_type(st->elemtype), -1, InvalidOid, -1, PointerGetDatum(ids), false, false);
+	quals = lappend(quals, q);
+	if (st->spec->is_table)
+	{
+		SiftStoreQuals sq;
+
+		sift_f2_store_compile_quals(st->heap, sift_f2_store_open(st->heap), quals, estate->es_query_cxt, &sq);
+		sift_v6_scan_table(st->spec, st->group, st->heap, &sq, estate->es_snapshot, NULL, 0, &st->stats);
+	}
+	else
+	{
+		ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
+		SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
+		sift_v6_scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, &st->stats, NULL, NULL);
+	}
 }
 
 static void
@@ -375,37 +447,16 @@ push_run(PushState *st, EState *estate)
 {
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-	ArrayType  *ids;
+	int64	   *v;
+	int			n;
 
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 push groups");
 	st->ran = true;
-	ids = small_side(st);
+	v = small_side(st, &n);
+	st->nvalues = n;
 	st->group = sift_v6_group_new(st->spec, st->gcx, desc);
-	if (ids != NULL)
-	{
-		ScalarArrayOpExpr *q = copyObject(st->key);
-		List	   *quals = list_copy(st->spec->indexqual);
-		IndexRuntimeKeyInfo *rtkeys = NULL;
-		ScanKey		keys;
-		int			nkeys,
-					nrt = 0;
-
-		lsecond(q->args) = makeConst(get_array_type(st->elemtype), -1, InvalidOid, -1, PointerGetDatum(ids), false, false);
-		quals = lappend(quals, q);
-		if (st->spec->is_table)
-		{
-			SiftStoreQuals sq;
-
-			sift_f2_store_compile_quals(st->heap, sift_f2_store_open(st->heap), quals, estate->es_query_cxt, &sq);
-			sift_v6_scan_table(st->spec, st->group, st->heap, &sq, estate->es_snapshot, NULL, 0, &st->stats);
-		}
-		else
-		{
-			ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
-			SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
-			sift_v6_scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, &st->stats, NULL, NULL);
-		}
-	}
+	for (int from = 0; from < n; from += PUSH_RUNTIME_CHUNK)
+		push_scan(st, estate, values_array(st, v + from, Min(PUSH_RUNTIME_CHUNK, n - from)));
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }

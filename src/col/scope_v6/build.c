@@ -61,7 +61,11 @@ sift_scope_build_add_part(SiftScopeBuild *b, uint64 part_gen, uint32 ngranules)
 	uint32		base = b->total_granules;
 	IN_BUILD(b);
 
-	b->parts = b->parts == NULL ? palloc(sizeof(*b->parts) * 8) : b->nparts % 8 == 0 ? repalloc(b->parts, sizeof(*b->parts) * (b->nparts + 8)) : b->parts;
+	if (b->nparts == b->cap_parts)
+	{
+		b->cap_parts = b->cap_parts == 0 ? 16 : b->cap_parts * 2;
+		b->parts = b->parts == NULL ? palloc(sizeof(*b->parts) * b->cap_parts) : repalloc(b->parts, sizeof(*b->parts) * b->cap_parts);
+	}
 	b->parts[b->nparts++] = (SiftScopePartMapEntry) {part_gen, base, ngranules};
 	b->total_granules += ngranules;
 	OUT_BUILD();
@@ -229,6 +233,7 @@ write_l1_node(SiftScopeBuild *b, KeyAcc *k)
 	d->all_cube_off = p->len;
 	sift_scube_write(p, &k->l1_all);
 	d->all_cube_len = p->len - d->all_cube_off;
+	sift_smonth_sort(&k->l1_months);
 	d->nmonths = k->l1_months.n;
 	if (d->nmonths > 0)
 	{

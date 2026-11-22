@@ -64,47 +64,49 @@ sift_sbld_account(SiftScopeBuild *b, KeyAcc *k)
  * 1b. Eviction and spill
  * ------------------------------------------------------------------------- */
 
-/* The month cubes of level 2 of a key that went out of memory come back into its table */
+/* The month cubes of level 2 of a key that went out of memory come back into its table, a spill at a time (they are merged, so the order does not matter) */
 void
 sift_sbld_unspill(SiftScopeBuild *b, KeyAcc *k)
 {
-	uint32		n;
-	const char *dir,
-			   *cube_at;
-
-	if (k->spill == NULL)
-		return;
-	memcpy(&n, k->spill, sizeof(n));
-	dir = k->spill + sizeof(n);
-	cube_at = dir + (Size) n * 2 * sizeof(uint32);
-	for (uint32 i = 0; i < n; i++)
+	while (k->spill != NULL)
 	{
-		int32		month;
-		uint32		len;
-		SiftScopeCubeAcc cube;
+		KeySpill   *sp = k->spill;
+		uint32		n;
+		const char *dir = sp->blob + sizeof(n),
+				   *cube_at;
 
-		memcpy(&month, dir + (Size) i * 8, sizeof(month));
-		memcpy(&len, dir + (Size) i * 8 + 4, sizeof(len));
-		SIFT_INVARIANT(sift_scube_read(cube_at, len, &cube), "scope summary: a damaged spilled month cube");
-		sift_scube_merge(sift_smonth_get(&k->l2_months, month, b->spec.shape), &cube, NULL);
-		sift_scube_free(&cube);
-		cube_at += len;
+		memcpy(&n, sp->blob, sizeof(n));
+		cube_at = dir + (Size) n * 2 * sizeof(uint32);
+		for (uint32 i = 0; i < n; i++)
+		{
+			int32		month;
+			uint32		len;
+			SiftScopeCubeAcc cube;
+
+			memcpy(&month, dir + (Size) i * 8, sizeof(month));
+			memcpy(&len, dir + (Size) i * 8 + 4, sizeof(len));
+			SIFT_INVARIANT(sift_scube_read(cube_at, len, &cube), "scope summary: a damaged spilled month cube");
+			sift_smonth_merge_cube(&k->l2_months, b->spec.shape, month, &cube, NULL);
+			sift_scube_free(&cube);
+			cube_at += len;
+		}
+		k->spill = sp->next;
+		pfree(sp->blob);
+		pfree(sp);
 	}
-	pfree(k->spill);
-	k->spill = NULL;
 }
 
-/* The month cubes of level 2 of a key as bytes, and out of the accumulators: the bytes are the output's size, not the accumulator's */
+/* The month cubes of level 2 in memory as bytes, one more spill of the key, and out of the accumulators: the bytes are the output's size, not the accumulator's */
 static void
 spill_l2(SiftScopeBuild *b, KeyAcc *k)
 {
 	StringInfoData cubes;
 	uint32		n,
 			   *dir;
-	char	   *blob;
+	KeySpill   *sp = palloc(sizeof(*sp));
 	Size		len;
 
-	sift_sbld_unspill(b, k);
+	sift_smonth_sort(&k->l2_months);
 	n = k->l2_months.n;
 	initStringInfo(&cubes);
 	dir = palloc(sizeof(uint32) * 2 * Max(n, 1));
@@ -117,11 +119,12 @@ spill_l2(SiftScopeBuild *b, KeyAcc *k)
 		dir[2 * i + 1] = cubes.len - at;
 	}
 	len = sizeof(n) + (Size) n * 2 * sizeof(uint32) + cubes.len;
-	blob = palloc(len);
-	memcpy(blob, &n, sizeof(n));
-	memcpy(blob + sizeof(n), dir, (Size) n * 2 * sizeof(uint32));
-	memcpy(blob + sizeof(n) + (Size) n * 2 * sizeof(uint32), cubes.data, cubes.len);
-	k->spill = blob;
+	sp->blob = palloc(len);
+	memcpy(sp->blob, &n, sizeof(n));
+	memcpy(sp->blob + sizeof(n), dir, (Size) n * 2 * sizeof(uint32));
+	memcpy(sp->blob + sizeof(n) + (Size) n * 2 * sizeof(uint32), cubes.data, cubes.len);
+	sp->next = k->spill;
+	k->spill = sp;
 	b->stats.l2_spills++;
 	b->stats.l2_spill_bytes += len;
 	pfree(dir);

@@ -151,7 +151,7 @@ nodes_cubes(const SiftScopeBuildSpec *spec, const NodeSrc *ns, uint32 n, SiftSco
 
 			memcpy(&cell, ns[i].meta->l1.p + nd->month_dir_off + (Size) j * sizeof(cell), sizeof(cell));
 			SIFT_INVARIANT(sift_scope_node_cube(ns[i].meta, nd, cell.month_id, &c), "scope refresh: a month cube of a node that does not read");
-			sift_scube_merge(sift_smonth_get(months, cell.month_id, spec->shape), &c, NULL);
+			sift_smonth_merge_cube(months, spec->shape, cell.month_id, &c, NULL);
 			sift_scube_free(&c);
 		}
 	}
@@ -241,7 +241,7 @@ map_months(const SiftScopeMeta *m, const SiftScopeL2Root *r, const uint32 *map, 
 	nb = sift_scope_monthmap_buckets(m, r, bk, nb);
 	for (uint32 i = 0; i < nb; i++)
 	{
-		uint32		ng = sift_scope_monthmap_granules(m, r, bk[i].month_id, ords, nmap);
+		uint32		ng = sift_scope_monthmap_bucket_granules(m, r, &bk[i], ords, nmap);
 
 		for (uint32 g = 0; g < ng; g++)
 			if (ords[g] < nmap && map[ords[g]] != NO_ORD)

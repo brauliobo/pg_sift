@@ -280,6 +280,7 @@ col/f2/f2_scan.c
 col/f2/f2_par.c
 col/f2/scan/par_int.h
 col/f2/f2_scope_ent.c
+col/f2/f2_scope_ent_batch.c
 col/f2/f2_scope_int.h
 col/f2/f2_sink_ext.c
 col/f2/f2_sink_ext.h
@@ -702,10 +703,14 @@ col/f2/f2_scope.c
 col/f2/f2_scope.h
 col/f2/f2_scope_cache.c
 col/f2/f2_scope_cache.h
+col/f2/f2_scope_added.c
 col/f2/f2_scope_cells.c
 col/f2/f2_scope_delta.c
 col/f2/f2_scope_over.c
 col/f2/f2_scope_pack.c
+col/f2/f2_scope_snap.c
+col/f2/f2_scope_snap.h
+col/f2/f2_scope_twohop.c
 col/f2/f2_scope_pairs.c
 col/f2/f2_scope_test.c
 col/f2/f2_sink.h
@@ -739,6 +744,7 @@ col/scope_v6/assemble.c
 col/scope_v6/build.c
 col/scope_v6/build_int.h
 col/scope_v6/cube.c
+col/scope_v6/cube_dim.c
 col/scope_v6/cubewire.c
 col/scope_v6/delta.c
 col/scope_v6/evict.c

@@ -52,6 +52,7 @@ struct SiftF2Scope
 	Snapshot	snap;
 	uint64		max_part_gen;
 	Relation	heap;			/* the table of the index, rel itself for a table */
+	int			member_leaf;	/* the leaf of the member of the pairs */
 	int			nrings;			/* the rings of the summary: its time leaf and the order leaves; ring_col[q] is the column of ring q */
 	int			ring_col[SIFT_SCOPE_TOPK_RINGS_CAP];
 };
@@ -89,8 +90,22 @@ typedef struct SiftF2ScopeCell
 	uint8		tag;
 } SiftF2ScopeCell;
 
+/* A row the summary lacks (of a slab, or of a part it does not name) that the snapshot sees: its time leaf and where its cells are */
+typedef struct SiftF2ScopeAdded
+{
+	int64		time;
+	uint32		src;
+	uint32		g;
+	uint32		row;
+} SiftF2ScopeAdded;
+
+/* The rows of the key the summary lacks with the n newest values of the time leaf (all that share the n-th), newest first; how many, UINT32_MAX when they are more than a read keeps */
+extern uint32 sift_f2_scope_added_top(const SiftF2Scope *sc, int64 key, uint32 n, SiftF2ScopeAdded **out);
+
 /* The leaves[0 .. nleaves - 1] of the rows of the entity parts that rows (gidx, row_ord of a ring) name, as cells[k * nleaves + j]; a string is made in the current memory context */
 extern void sift_f2_scope_cells(SiftF2Scope *sc, const SiftScopeNewest *rows, int nrows, const int *leaves, int nleaves, SiftF2ScopeCell *cells);
+/* The same for rows of sift_f2_scope_added_top */
+extern void sift_f2_scope_added_cells(SiftF2Scope *sc, const SiftF2ScopeAdded *rows, int nrows, const int *leaves, int nleaves, SiftF2ScopeCell *cells);
 
 /* The refreshes this backend has made, by how: the whole summary again, the parts that changed, the keys whose pairs changed, both */
 typedef struct SiftF2ScopeRefreshes

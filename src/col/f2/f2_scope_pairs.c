@@ -20,6 +20,7 @@
 
 #include "col/f2/f2_scope_int.h"
 #include "core/cachebudget.h"
+#include "core/cmp.h"
 
 typedef struct PairsCache
 {
@@ -135,6 +136,12 @@ int_eq_proc(Oid type)
 	return type == INT2OID ? F_INT2EQ : type == INT4OID ? F_INT4EQ : F_INT8EQ;
 }
 
+static int64
+int_of(Oid type, Datum d)
+{
+	return type == INT2OID ? DatumGetInt16(d) : type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+}
+
 static Datum
 int_datum(Oid type, int64 v)
 {
@@ -150,39 +157,79 @@ index_position(const Relation ix, AttrNumber att)
 	elog(ERROR, "the pairs of the scope are read through a btree that does not have column %d", att);
 }
 
+static int
+now_cmp(const void *a, const void *b)
+{
+	const SiftScopeMemberKey *x = a,
+			   *y = b;
+
+	if (x->member != y->member)
+		return x->member < y->member ? -1 : 1;
+	return x->key < y->key ? -1 : x->key > y->key;
+}
+
+static bool
+key_asked(const int64 *keys, uint32 nkeys, int64 key)
+{
+	return bsearch(&key, keys, nkeys, sizeof(int64), sift_cmp_i64) != NULL;
+}
+
+/* The pairs now, one entry for each (member, key), ascending: the patch of the object takes them as they are */
+static SiftScopePairMap *
+patch_with(const SiftScopePairMap *object, const int64 *changed, uint32 nchanged, SiftScopeMemberKey *now, uint32 n)
+{
+	uint32		u = 0;
+	SiftScopePairMap *pm;
+
+	qsort(now, n, sizeof(*now), now_cmp);
+	for (uint32 i = 0; i < n; i++)
+		if (u == 0 || now_cmp(&now[u - 1], &now[i]) != 0)
+			now[u++] = now[i];
+	pm = sift_spm_patched(object, changed, nchanged, now, u);
+	pfree(now);
+	return pm;
+}
+
+static void
+now_add(SiftScopeMemberKey **now, uint32 *n, uint32 *cap, int64 member, int64 key)
+{
+	if (*n == *cap)
+	{
+		*cap = Max(*cap * 2, 64);
+		*now = *now == NULL ? palloc(sizeof(**now) * *cap) : repalloc(*now, sizeof(**now) * *cap);
+	}
+	(*now)[(*n)++] = (SiftScopeMemberKey) {member, key};
+}
+
 /* The pairs of a scope of two paths for the changed members and the keys asked: the pairs of both paths now, as the snapshot sees them, cut to those */
 static SiftScopePairMap *
 edited_two_paths(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
 {
 	SiftScopePairMap *all = sift_f2s_load_pairs(heap, rel, sc, snap);
-	SiftScopeMemberKey *now = palloc(sizeof(SiftScopeMemberKey) * Max(nchanged * nkeys, 1));
-	uint32		n = 0;
+	SiftScopeMemberKey *now = NULL;
+	uint32		n = 0,
+				cap = 0;
 	SiftScopePairMap *pm;
 
 	for (uint32 i = 0; i < nchanged; i++)
 	{
-		uint32		lo,
-					hi;
+		const uint32 *ords;
+		uint32		deg;
 
-		if (!sift_spm_find(all, changed[i], &lo, &hi))
-			continue;
-		for (uint32 k = 0; k < nkeys; k++)
-			for (uint32 j = lo; j < hi; j++)
-				if (all->scope_keys[all->key_ordinals[j]] == keys[k])
-				{
-					now[n++] = (SiftScopeMemberKey) {changed[i], keys[k]};
-					break;
-				}
+		if (sift_spm_slice(all, changed[i], &ords, &deg))
+			for (uint32 j = 0; j < deg; j++)
+				if (key_asked(keys, nkeys, sift_spm_key_of(all, ords[j])))
+					now_add(&now, &n, &cap, changed[i], sift_spm_key_of(all, ords[j]));
 	}
-	pm = sift_spm_patched(object, changed, nchanged, now, n);
-	pfree(now);
+	pm = patch_with(object, changed, nchanged, now == NULL ? palloc(sizeof(*now)) : now, n);
 	sift_spm_free(all);
 	return pm;
 }
 
 /*
- * The pairs of the changed members (ascending, distinct) that are now, for the scope keys the read asks for: each (member, key) is looked up in the btree that defines the pairs, as the snapshot sees it,
- * and the map of the object has them replaced (sift_spm_patched). Every other pair of the map is as it was written, because the journal names every member whose pairs changed.
+ * The pairs of the changed members (ascending, distinct) that are now, for the scope keys the read asks for (ascending, distinct), as the snapshot sees them in the btree that defines the pairs,
+ * and the patch of the object (sift_spm_patched) has them replaced. Every other pair of the map is as it was written, because the journal names every member whose pairs changed. A btree that
+ * leads with the member is read once for each changed member and its keys cut to those asked; any other is probed for each (member, key).
  */
 static SiftScopePairMap *
 edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged)
@@ -195,30 +242,42 @@ edited_one_path(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot 
 				tb = TupleDescAttr(prel->rd_att, b - 1)->atttypid;
 	const int	pa = index_position(ix, a),
 				pb = index_position(ix, b);
+	const bool	by_member = pa == 1;
 	TupleTableSlot *slot = table_slot_create(prel, NULL);
-	IndexScanDesc scan = sift_index_beginscan(prel, ix, snap, 2);
-	SiftScopeMemberKey *now = palloc(sizeof(SiftScopeMemberKey) * Max(nchanged * nkeys, 1));
-	uint32		n = 0;
-	SiftScopePairMap *pm;
+	IndexScanDesc scan = sift_index_beginscan(prel, ix, snap, by_member ? 1 : 2);
+	SiftScopeMemberKey *now = NULL;
+	uint32		n = 0,
+				cap = 0;
 
 	for (uint32 i = 0; i < nchanged; i++)
-		for (uint32 k = 0; k < nkeys; k++)
+		for (uint32 k = 0; k < (by_member ? 1 : nkeys); k++)
 		{
 			ScanKeyData sk[2];
 
 			ScanKeyInit(&sk[0], pa, BTEqualStrategyNumber, int_eq_proc(ta), int_datum(ta, changed[i]));
+			if (by_member)
+			{
+				index_rescan(scan, sk, 1, NULL, 0);
+				while (index_getnext_slot(scan, ForwardScanDirection, slot))
+				{
+					bool		isnull;
+					int64		key = int_of(tb, slot_getattr(slot, b, &isnull));
+
+					if (!isnull && key_asked(keys, nkeys, key))
+						now_add(&now, &n, &cap, changed[i], key);
+				}
+				continue;
+			}
 			ScanKeyInit(&sk[1], pb, BTEqualStrategyNumber, int_eq_proc(tb), int_datum(tb, keys[k]));
 			index_rescan(scan, sk, 2, NULL, 0);
 			if (index_getnext_slot(scan, ForwardScanDirection, slot))
-				now[n++] = (SiftScopeMemberKey) {changed[i], keys[k]};
+				now_add(&now, &n, &cap, changed[i], keys[k]);
 		}
-	pm = sift_spm_patched(object, changed, nchanged, now, n);
-	pfree(now);
 	ExecDropSingleTupleTableSlot(slot);
 	index_endscan(scan);
 	index_close(ix, NoLock);
 	table_close(prel, NoLock);
-	return pm;
+	return patch_with(object, changed, nchanged, now == NULL ? palloc(sizeof(*now)) : now, n);
 }
 
 SiftScopePairMap *

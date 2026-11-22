@@ -176,6 +176,14 @@ dim_at(const SiftScopeCubeAcc *a, uint32 i)
 	return (SiftScopeDim *) (i < a->shape.ndims ? &a->dim[i] : &a->rollup[i - a->shape.ndims]);
 }
 
+/* A cube read in key order has its tables ascending: building leaves one append-only and hashed, and reading puts it right (no change to what the cube holds) */
+static void
+sort_dims(const SiftScopeCubeAcc *a)
+{
+	for (uint32 i = 0; i < ndim_all(a); i++)
+		sift_sdim_sort(&a->shape, dim_at(a, i));
+}
+
 /* The dim of the cube that gives component j of the key of histogram i */
 static inline uint32
 comp_dim(const SiftScopeCubeAcc *a, uint32 i, uint32 j)
@@ -227,7 +235,11 @@ sift_scube_clear(SiftScopeCubeAcc *a)
 	{
 		keep[i] = *dim_at(a, i);
 		keep[i].ngroups = 0;
-		keep[i].overflow = false;
+		keep[i].overflow = keep[i].unsorted = false;
+		if (keep[i].ht != NULL)
+			pfree(keep[i].ht);
+		keep[i].ht = NULL;
+		keep[i].ht_cap = 0;
 	}
 	memcpy(sets, a->dset, sizeof(sets));
 	sift_scube_init(a, a->shape);
@@ -242,8 +254,7 @@ void
 sift_scube_free(SiftScopeCubeAcc *a)
 {
 	for (uint32 i = 0; i < ndim_all(a); i++)
-		if (dim_at(a, i)->groups != NULL)
-			pfree(dim_at(a, i)->groups);
+		sift_sdim_release(dim_at(a, i));
 	for (uint32 s = 0; s < SIFT_SCOPE_DSETS_CAP; s++)
 		if (a->dset[s] != NULL)
 		{
@@ -259,6 +270,7 @@ sift_scube_free(SiftScopeCubeAcc *a)
 void
 sift_scube_copy(SiftScopeCubeAcc *dst, const SiftScopeCubeAcc *src)
 {
+	sort_dims(src);
 	*dst = *src;
 	for (uint32 i = 0; i < ndim_all(src); i++)
 	{
@@ -267,7 +279,8 @@ sift_scube_copy(SiftScopeCubeAcc *dst, const SiftScopeCubeAcc *src)
 		Size		n = (Size) sd->ngroups * sift_rec_size(&src->shape, sd->nk);
 
 		dd->groups = NULL;
-		dd->cap = 0;
+		dd->ht = NULL;
+		dd->ht_cap = dd->cap = 0;
 		if (n > 0)
 		{
 			dd->groups = palloc(n);
@@ -291,7 +304,7 @@ sift_scube_bytes(const SiftScopeCubeAcc *a)
 	Size		n = sizeof(*a);
 
 	for (uint32 i = 0; i < ndim_all(a); i++)
-		n += (Size) dim_at(a, i)->cap * sift_rec_size(&a->shape, dim_at(a, i)->nk);
+		n += (Size) dim_at(a, i)->cap * sift_rec_size(&a->shape, dim_at(a, i)->nk) + (Size) dim_at(a, i)->ht_cap * sizeof(uint16);
 	for (uint32 s = 0; s < SIFT_SCOPE_DSETS_CAP; s++)
 		if (a->dset[s] != NULL)
 			n += sizeof(SiftScopeDSet) + (Size) a->dset[s]->cap * sizeof(uint32);
@@ -374,80 +387,6 @@ sift_scube_distinct(const SiftScopeCubeAcc *a, uint32 d)
 /* ---------------------------------------------------------------------------
  * 3. Groups
  * ------------------------------------------------------------------------- */
-
-static int
-key_cmp(const int64 *x, const int64 *y, uint32 nk)
-{
-	for (uint32 i = 0; i < nk; i++)
-		if (x[i] != y[i])
-			return x[i] < y[i] ? -1 : 1;
-	return 0;
-}
-
-/* The slot of key in d: binary search; *found tells whether the group exists, the result is where it is or goes */
-static uint32
-group_search(const SiftScopeCubeAcc *a, const SiftScopeDim *d, const int64 *key, bool *found)
-{
-	uint32		lo = 0,
-				hi = d->ngroups;
-
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-		int			c = key_cmp(sift_rec_key(sift_dim_rec(&a->shape, d, mid)), key, d->nk);
-
-		if (c == 0)
-		{
-			*found = true;
-			return mid;
-		}
-		if (c < 0)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	*found = false;
-	return lo;
-}
-
-static void
-dim_overflow(SiftScopeDim *d)
-{
-	d->overflow = true;
-	d->ngroups = 0;
-}
-
-/* The record of key in d, created empty when it is new; NULL when d has overflowed */
-static char *
-group_for(const SiftScopeCubeAcc *a, SiftScopeDim *d, const int64 *key)
-{
-	bool		found;
-	uint32		at;
-	Size		gs = sift_rec_size(&a->shape, d->nk);
-	char	   *rec;
-
-	if (d->overflow)
-		return NULL;
-	at = group_search(a, d, key, &found);
-	if (found)
-		return sift_dim_rec(&a->shape, d, at);
-	if (d->ngroups >= sift_dim_limit(d))
-	{
-		dim_overflow(d);
-		return NULL;
-	}
-	if (d->ngroups == d->cap)
-	{
-		d->cap = d->cap == 0 ? 16 : d->cap * 2;
-		d->groups = d->groups == NULL ? palloc((Size) d->cap * gs) : repalloc(d->groups, (Size) d->cap * gs);
-	}
-	memmove(d->groups + (Size) (at + 1) * gs, d->groups + (Size) at * gs, (Size) (d->ngroups - at) * gs);
-	d->ngroups++;
-	rec = sift_dim_rec(&a->shape, d, at);
-	memset(rec, 0, gs);
-	memcpy(rec, key, sizeof(int64) * d->nk);
-	return rec;
-}
 
 static inline int64
 mapped_key(const SiftScopeDictMap *map, uint32 d, int64 v)
@@ -547,7 +486,7 @@ sift_scube_add_row(SiftScopeCubeAcc *a, const SiftScopeRows *r, uint32 row, cons
 
 			key[j] = mapped_key(map, cd, r->dim[cd][row]);
 		}
-		if ((rec = group_for(a, d, key)) != NULL)
+		if ((rec = sift_sdim_group_for(&a->shape, d, key)) != NULL)
 			group_note(a, rec, d->nk, r, row, valid);
 	}
 	for (uint32 d = 0; d < s.ndsets; d++)
@@ -566,6 +505,15 @@ sift_scube_add_rows(SiftScopeCubeAcc *a, const SiftScopeRows *r, const uint32 *s
 /* ---------------------------------------------------------------------------
  * 4. Merge and subtract
  * ------------------------------------------------------------------------- */
+
+static bool
+dim_remapped(const SiftScopeCubeAcc *a, uint32 i, const SiftScopeDictMap *map)
+{
+	for (uint32 j = 0; map != NULL && j < dim_at(a, i)->nk; j++)
+		if (map->map[comp_dim(a, i, j)] != NULL)
+			return true;
+	return false;
+}
 
 static void
 group_merge(const SiftScopeCubeAcc *a, char *drec, const char *srec, uint32 nk)
@@ -629,7 +577,13 @@ sift_scube_merge(SiftScopeCubeAcc *dst, const SiftScopeCubeAcc *src, const SiftS
 
 		if (sd->overflow)
 		{
-			dim_overflow(dd);
+			sift_sdim_overflow(dd);
+			continue;
+		}
+		if (!dim_remapped(dst, i, map))
+		{
+			if (!dd->overflow)
+				sift_sdim_merge(dst, dd, (SiftScopeDim *) sd, group_merge);
 			continue;
 		}
 		for (uint32 g = 0; g < sd->ngroups; g++)
@@ -640,7 +594,7 @@ sift_scube_merge(SiftScopeCubeAcc *dst, const SiftScopeCubeAcc *src, const SiftS
 
 			for (uint32 j = 0; j < sd->nk; j++)
 				key[j] = mapped_key(map, comp_dim(dst, i, j), sift_rec_key(srec)[j]);
-			if ((drec = group_for(dst, dd, key)) == NULL)
+			if ((drec = sift_sdim_group_for(&dst->shape, dd, key)) == NULL)
 				break;
 			group_merge(dst, drec, srec, sd->nk);
 		}
@@ -717,31 +671,13 @@ sift_scube_sub(SiftScopeCubeAcc *dst, const SiftScopeCubeAcc *src)
 	{
 		SiftScopeDim *dd = dim_at(dst, i);
 		const SiftScopeDim *sd = dim_at(src, i);
-		Size		gs = sift_rec_size(&s, dd->nk);
 
 		if (dd->overflow)
 			continue;
 		if (sd->overflow)
-		{
-			dim_overflow(dd);
-			continue;
-		}
-		for (uint32 g = 0; g < sd->ngroups; g++)
-		{
-			char	   *srec = sift_dim_rec(&src->shape, sd, g);
-			bool		found;
-			uint32		at = group_search(dst, dd, sift_rec_key(srec), &found);
-			char	   *drec;
-
-			SIFT_INVARIANT(found, "scope cube subtract: a group that is not in the cube");
-			drec = sift_dim_rec(&s, dd, at);
-			mask |= group_sub(dst, drec, srec, dd->nk);
-			if (*sift_rec_cnt(drec, dd->nk) == 0)
-			{
-				memmove(dd->groups + (Size) at * gs, dd->groups + (Size) (at + 1) * gs, (Size) (dd->ngroups - at - 1) * gs);
-				dd->ngroups--;
-			}
-		}
+			sift_sdim_overflow(dd);
+		else
+			mask |= sift_sdim_sub(dst, dd, (SiftScopeDim *) sd, group_sub);
 	}
 	for (uint32 d = 0; d < s.ndsets; d++)
 		if (src->dset[d] != NULL && src->dset[d]->n > 0)
@@ -779,6 +715,8 @@ sift_scube_same(const SiftScopeCubeAcc *a, const SiftScopeCubeAcc *b, uint32 ign
 
 	if (!sift_scope_shape_equal(&s, &b->shape) || a->row_count != b->row_count || (!(ignore & SIFT_SAME_TIME) && a->has_time != b->has_time))
 		return false;
+	sort_dims(a);
+	sort_dims(b);
 	if (!(ignore & SIFT_SAME_TIME) && a->has_time && (a->time_min != b->time_min || a->time_max != b->time_max))
 		return false;
 	for (uint32 m = 0; m < s.nmeas; m++)
@@ -827,14 +765,17 @@ const SiftScopeGroup *
 sift_scube_group(const SiftScopeCubeAcc *a, uint32 dim, int64 key)
 {
 	bool		found;
-	uint32		at = group_search(a, &a->dim[dim], &key, &found);
+	uint32		at;
 
+	sift_sdim_sort(&a->shape, (SiftScopeDim *) &a->dim[dim]);
+	at = sift_sdim_search(&a->shape, &a->dim[dim], &key, &found);
 	return found ? (const SiftScopeGroup *) sift_dim_rec(&a->shape, &a->dim[dim], at) : NULL;
 }
 
 const SiftScopeGroup *
 sift_scube_group_at(const SiftScopeCubeAcc *a, uint32 dim, uint32 i)
 {
+	sift_sdim_sort(&a->shape, (SiftScopeDim *) &a->dim[dim]);
 	return (const SiftScopeGroup *) sift_dim_rec(&a->shape, &a->dim[dim], i);
 }
 
@@ -848,14 +789,18 @@ uint64
 sift_scube_rollup_rows(const SiftScopeCubeAcc *a, uint32 r, const int64 *tuple)
 {
 	bool		found;
-	uint32		at = group_search(a, &a->rollup[r], tuple, &found);
+	uint32		at;
 
+	sift_sdim_sort(&a->shape, (SiftScopeDim *) &a->rollup[r]);
+	at = sift_sdim_search(&a->shape, &a->rollup[r], tuple, &found);
 	return found ? *sift_rec_cnt(sift_dim_rec(&a->shape, &a->rollup[r], at), a->rollup[r].nk) : 0;
 }
 
 /* ---------------------------------------------------------------------------
  * 6. Month table
  * ------------------------------------------------------------------------- */
+
+#define SMONTH_SORTED_MAX 16
 
 void
 sift_smonth_init(SiftScopeMonthTable *t)
@@ -868,7 +813,9 @@ sift_smonth_clear(SiftScopeMonthTable *t)
 {
 	for (uint32 i = 0; i < t->n; i++)
 		sift_scube_free(&t->e[i].cube);
-	t->n = 0;
+	t->n = t->last = 0;
+	t->unsorted = false;
+	t->bytes = (Size) t->cap * sizeof(*t->e);
 }
 
 void
@@ -877,12 +824,32 @@ sift_smonth_free(SiftScopeMonthTable *t)
 	sift_smonth_clear(t);
 	if (t->e != NULL)
 		pfree(t->e);
-	t->e = NULL;
-	t->cap = 0;
+	if (t->ht != NULL)
+		pfree(t->ht);
+	memset(t, 0, sizeof(*t));
 }
 
-SiftScopeCubeAcc *
-sift_smonth_get(SiftScopeMonthTable *t, int32 month_id, SiftScopeShape shape)
+static int
+month_cmp(const void *x, const void *y)
+{
+	return ((const SiftScopeMonthEntry *) x)->month_id < ((const SiftScopeMonthEntry *) y)->month_id ? -1 : 1;
+}
+
+/* An appended-to table is put in month order before anything reads it in order: no change to what it holds */
+void
+sift_smonth_sort(const SiftScopeMonthTable *ct)
+{
+	SiftScopeMonthTable *t = (SiftScopeMonthTable *) ct;
+
+	if (!t->unsorted)
+		return;
+	qsort(t->e, t->n, sizeof(*t->e), month_cmp);
+	t->unsorted = false;
+	t->last = 0;
+}
+
+static uint32
+month_search(const SiftScopeMonthTable *t, int32 month_id, bool *found)
 {
 	uint32		lo = 0,
 				hi = t->n;
@@ -892,42 +859,79 @@ sift_smonth_get(SiftScopeMonthTable *t, int32 month_id, SiftScopeShape shape)
 		uint32		mid = lo + (hi - lo) / 2;
 
 		if (t->e[mid].month_id == month_id)
-			return &t->e[mid].cube;
+		{
+			*found = true;
+			return mid;
+		}
 		if (t->e[mid].month_id < month_id)
 			lo = mid + 1;
 		else
 			hi = mid;
 	}
+	*found = false;
+	return lo;
+}
+
+/* The cube of a month, empty when it is new: the last one hit, else a binary search (ascending) or the index (appended); a month out of order among many is appended */
+SiftScopeCubeAcc *
+sift_smonth_get(SiftScopeMonthTable *t, int32 month_id, SiftScopeShape shape)
+{
+	bool		found = false;
+	uint32		at;
+
+	if (t->last < t->n && t->e[t->last].month_id == month_id)
+		return &t->e[t->last].cube;
+	if (t->unsorted)
+	{
+		int32		i = sift_idix_find(t->ht, t->ht_cap, t->e, sizeof(*t->e), month_id);
+
+		found = i >= 0;
+		at = found ? (uint32) i : t->n;
+	}
+	else
+		at = month_search(t, month_id, &found);
+	if (found)
+	{
+		t->last = at;
+		return &t->e[at].cube;
+	}
 	if (t->n == t->cap)
 	{
+		Size		old = (Size) t->cap * sizeof(*t->e);
+
 		t->cap = t->cap == 0 ? 8 : t->cap * 2;
 		t->e = t->e == NULL ? palloc(t->cap * sizeof(*t->e)) : repalloc(t->e, t->cap * sizeof(*t->e));
+		t->bytes += (Size) t->cap * sizeof(*t->e) - old;
 	}
-	memmove(&t->e[lo + 1], &t->e[lo], (t->n - lo) * sizeof(*t->e));
+	if (!t->unsorted && at < t->n && t->n >= SMONTH_SORTED_MAX)
+	{
+		t->unsorted = true;
+		sift_idix_rebuild(&t->ht, &t->ht_cap, t->e, sizeof(*t->e), t->n);
+		at = t->n;
+	}
+	if (!t->unsorted)
+		memmove(&t->e[at + 1], &t->e[at], (t->n - at) * sizeof(*t->e));
 	t->n++;
-	t->e[lo].month_id = month_id;
-	sift_scube_init(&t->e[lo].cube, shape);
-	return &t->e[lo].cube;
+	t->e[at].month_id = month_id;
+	sift_scube_init(&t->e[at].cube, shape);
+	t->bytes += sift_scube_bytes(&t->e[at].cube);
+	if (t->unsorted && t->n * 2 > t->ht_cap)
+		sift_idix_rebuild(&t->ht, &t->ht_cap, t->e, sizeof(*t->e), t->n);
+	else if (t->unsorted)
+		sift_idix_note(t->ht, t->ht_cap, t->e, sizeof(*t->e), at);
+	t->last = at;
+	return &t->e[at].cube;
 }
 
 const SiftScopeCubeAcc *
 sift_smonth_find(const SiftScopeMonthTable *t, int32 month_id)
 {
-	uint32		lo = 0,
-				hi = t->n;
+	bool		found;
+	uint32		at;
 
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (t->e[mid].month_id == month_id)
-			return &t->e[mid].cube;
-		if (t->e[mid].month_id < month_id)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	return NULL;
+	sift_smonth_sort(t);
+	at = month_search(t, month_id, &found);
+	return found ? &t->e[at].cube : NULL;
 }
 
 void
@@ -938,24 +942,46 @@ sift_smonth_add_rows(SiftScopeMonthTable *t, SiftScopeShape shape, const SiftSco
 	for (uint32 i = 0; i < nsel; i++)
 	{
 		uint32		row = sel == NULL ? i : sel[i];
+		SiftScopeCubeAcc *c;
+		Size		before;
 
 		if (r->time_null != NULL && r->time_null[row])
 			continue;
-		sift_scube_add_row(sift_smonth_get(t, sift_scope_month_of(r->time[row]), shape), r, row, map);
+		c = sift_smonth_get(t, sift_scope_month_of(r->time[row]), shape);
+		before = sift_scube_bytes(c);
+		sift_scube_add_row(c, r, row, map);
+		t->bytes += sift_scube_bytes(c) - before;
 	}
+}
+
+void
+sift_smonth_merge_cube(SiftScopeMonthTable *t, SiftScopeShape shape, int32 month_id, const SiftScopeCubeAcc *src, const SiftScopeDictMap *map)
+{
+	SiftScopeCubeAcc *c = sift_smonth_get(t, month_id, shape);
+	Size		before = sift_scube_bytes(c);
+
+	sift_scube_merge(c, src, map);
+	t->bytes += sift_scube_bytes(c) - before;
 }
 
 void
 sift_smonth_merge(SiftScopeMonthTable *dst, SiftScopeShape shape, const SiftScopeMonthTable *src, const SiftScopeDictMap *map)
 {
 	for (uint32 i = 0; i < src->n; i++)
-		sift_scube_merge(sift_smonth_get(dst, src->e[i].month_id, shape), &src->e[i].cube, map);
+		sift_smonth_merge_cube(dst, shape, src->e[i].month_id, &src->e[i].cube, map);
 }
 
 Size
 sift_smonth_bytes(const SiftScopeMonthTable *t)
 {
-	Size		n = (Size) t->cap * sizeof(*t->e);
+	return t->bytes + (Size) t->ht_cap * sizeof(uint16);
+}
+
+/* What sift_smonth_bytes must equal: the sum over the cubes, for the tests of the accounting */
+Size
+sift_smonth_bytes_sum(const SiftScopeMonthTable *t)
+{
+	Size		n = (Size) t->cap * sizeof(*t->e) + (Size) t->ht_cap * sizeof(uint16);
 
 	for (uint32 i = 0; i < t->n; i++)
 		n += sift_scube_bytes(&t->e[i].cube);

@@ -296,6 +296,8 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	SiftF2ScopeCfg *cfg = palloc(sizeof(SiftF2ScopeCfg));
 	SiftF2ScopeParts *p;
 	const SiftScopeMeta *meta;
+	SiftGenMap	plan_map;
+	uint32	   *plan_where;
 	Relation	heap = sift_f2s_is_table(store) ? rel : table_open(sift_scope_fact_oid(rel), AccessShareLock);
 
 	meta = scope_object(rel, plan, ord, cx, live, &sc->meta);
@@ -311,20 +313,45 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	p = sift_f2s_parts_new(rel, store, heap, cfg, snap, NULL, sc->meta.hdr.nparts);
 	p->excl_leaf = excl_col > 0 ? store->att_first[excl_col] : -1;
+	{
+		SiftGenMap	in_plan;
+		uint32		nplan = 0;
+		uint32	   *where;
+
+		for (int k = 0; k < plan->npartitions; k++)
+			nplan += plan->partlists[k].nparts;
+		sift_f2s_gen_map_init(&in_plan, nplan);
+		where = palloc(sizeof(uint32) * Max(nplan, 1) * 2);
+		nplan = 0;
+		for (int k = 0; k < plan->npartitions; k++)
+			for (int j = 0; j < plan->partlists[k].nparts; j++, nplan++)
+			{
+				uint32		have;
+
+				where[2 * nplan] = (uint32) k;
+				where[2 * nplan + 1] = (uint32) j;
+				if (!sift_f2s_gen_map_find(&in_plan, plan->partlists[k].parts[j].part_gen, &have))
+					sift_f2s_gen_map_put(&in_plan, plan->partlists[k].parts[j].part_gen, nplan);
+			}
+		plan_where = where;
+		plan_map = in_plan;
+	}
 	for (uint32 i = 0; i < sc->meta.hdr.nparts; i++)
 	{
 		const SiftScopePartMapEntry *e = &sc->meta.parts[i];
 		bool		found = false;
+		uint32		at;
 
 		if (e->part_gen == 0)
 			continue;
-		for (int k = 0; k < plan->npartitions && !found; k++)
-			for (int j = 0; j < plan->partlists[k].nparts && !found; j++)
-				if (plan->partlists[k].parts[j].part_gen == e->part_gen)
-				{
-					(void) sift_f2s_parts_add(p, &plan->partlists[k].parts[j], plan->partitions[k].part_id, e->base_granule_idx, e->ngranules);
-					found = true;
-				}
+		if (sift_f2s_gen_map_find(&plan_map, e->part_gen, &at))
+		{
+			const int	k = (int) plan_where[2 * at],
+						j = (int) plan_where[2 * at + 1];
+
+			(void) sift_f2s_parts_add(p, &plan->partlists[k].parts[j], plan->partitions[k].part_id, e->base_granule_idx, e->ngranules);
+			found = true;
+		}
 		if (!found && live)
 			return scope_abandon(cx, old, rel, heap);
 		if (!found)
@@ -344,6 +371,8 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 		p->nchanged = sc->nchanged;
 		p->pm = sift_f2s_edited_pairs(heap, rel, cfg, snap, p->pm_object, keys, nkeys, sc->changed, sc->nchanged);
 	}
+	p->fkeys = keys;
+	p->nfkeys = nkeys;
 	if (live && !sift_f2s_overlay_open(p, &mr, &sc->meta, sc->cached))
 		return scope_abandon(cx, old, rel, heap);
 	sc->rel = rel;
@@ -353,6 +382,7 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	sc->max_part_gen = sc->meta.hdr.max_part_gen;
 	sc->entity = sift_f2s_entity(p);
 	sc->heap = heap;
+	sc->member_leaf = cfg->member_leaf;
 	sc->nrings = cfg->nrings;
 	if (cfg->nrings > 0)
 		sc->ring_col[0] = store->schema->cols[cfg->time_leaf].attno;

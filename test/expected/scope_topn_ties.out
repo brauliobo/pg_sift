@@ -71,11 +71,11 @@ SET
 ----------------------+-------+------------------+------------
  after delete         |    98 |               98 |          0
  clean                |    98 |               98 |          0
- inserted             |    98 |               28 |          0
- updated              |    98 |               14 |          0
+ inserted             |    98 |               56 |          0
+ updated              |    98 |               98 |          0
  updated and vacuumed |    98 |               98 |          0
  vacuumed             |    98 |               98 |          0
- vacuumed again       |    98 |               28 |          0
+ vacuumed again       |    98 |               56 |          0
 (7 rows)
 
 DROP TABLE

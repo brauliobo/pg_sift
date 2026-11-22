@@ -62,6 +62,7 @@ typedef struct ScopePlan
 	ScopeSpec	spec;
 	SiftV6Spec	v6;				/* a scan of the facts: its spec and the columns of its tuple */
 	List	   *v6_tlist;
+	int			cap_aggs;
 } ScopePlan;
 
 static const CustomPathMethods scope_path_methods = {"SiftAggV6Scope", sift_agg_v6_scope_plan_path, NULL};
@@ -159,7 +160,11 @@ compile_agg(ScopePlan *p, Aggref *a)
 		if (g.kind != SV6_COUNT && !is_int(g.arg.typid) && g.arg.typid != NUMERICOID && !(g.arg.typid == FLOAT8OID && !sift_agg_exact_float))
 			return false;
 	}
-	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (p->spec.naggs + 1) * sizeof(SiftV6Agg)) : palloc((p->spec.naggs + 1) * sizeof(SiftV6Agg));
+	if (p->spec.naggs == p->cap_aggs)
+	{
+		p->cap_aggs = p->cap_aggs == 0 ? 16 : p->cap_aggs * 2;
+		p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (Size) p->cap_aggs * sizeof(SiftV6Agg)) : palloc((Size) p->cap_aggs * sizeof(SiftV6Agg));
+	}
 	p->spec.agg[p->spec.naggs] = g;
 	add_col(p, (Expr *) a, p->spec.naggs++);
 	return true;
@@ -409,21 +414,27 @@ static void
 order_like_target(ScopePlan *p, const PathTarget *target)
 {
 	List	   *sorted = NIL;
+	bool		taken[SCOPE_COLS_MAX] = {false};
 	int			col[SCOPE_COLS_MAX],
 				n = 0;
 
 	foreach_ptr(Expr, e, target->exprs)
 		for (int i = 0; i < p->spec.ncols; i++)
-			if (equal(((TargetEntry *) list_nth(p->scan_tlist, i))->expr, e) && !list_member_ptr(sorted, list_nth(p->scan_tlist, i)))
+			if (equal(((TargetEntry *) list_nth(p->scan_tlist, i))->expr, e))
 			{
-				col[n++] = p->spec.col[i];
-				sorted = lappend(sorted, list_nth(p->scan_tlist, i));
+				if (!taken[i])
+				{
+					taken[i] = true;
+					col[n++] = p->spec.col[i];
+					sorted = lappend(sorted, list_nth(p->scan_tlist, i));
+				}
+				break;
 			}
-	foreach_node(TargetEntry, te, p->scan_tlist)
-		if (!list_member_ptr(sorted, te))
+	for (int i = 0; i < p->spec.ncols; i++)
+		if (!taken[i])
 		{
-			col[n++] = p->spec.col[te->resno - 1];
-			sorted = lappend(sorted, te);
+			col[n++] = p->spec.col[i];
+			sorted = lappend(sorted, list_nth(p->scan_tlist, i));
 		}
 	for (int i = 0; i < n; i++)
 		((TargetEntry *) list_nth(sorted, i))->resno = i + 1;

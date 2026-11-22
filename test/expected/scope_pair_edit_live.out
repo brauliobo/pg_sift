@@ -75,7 +75,7 @@ INSERT INTO entity_parents VALUES (1, 4), (2, 4), (4, 4), (500, 4);
  same scope summary clean SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
@@ -93,7 +93,7 @@ DELETE FROM entity_parents WHERE parent_id = 4 AND entity_id IN (9, 10, 11, 12, 
  same scope summary clean SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
@@ -112,7 +112,7 @@ INSERT INTO entity_parents VALUES (30, 12), (31, 12);
  same scope summary clean SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
@@ -130,7 +130,7 @@ INSERT INTO events VALUES (20001, 1, DATE '2024-06-10', 10.5, 1.5, 1), (20002, 3
  same scope summary delta SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
@@ -148,7 +148,7 @@ UPDATE events SET amount = amount + 1, event_date = event_date + 3 WHERE id % 19
  same scope summary delta SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
@@ -167,7 +167,7 @@ INSERT INTO entity_parents VALUES (42, 5), (43, 5);
  same scope summary delta SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2
@@ -184,7 +184,7 @@ ROLLBACK;
  same scope summary delta SELECT count(*), sum(e.amount) FROM even ... p.entity_id = e.entity_id WHERE ep.parent_id = 999
  same scope join - SELECT ep.parent_id, count(*), sum(e.amo ... N ep.entity_id = e.entity_id GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... = e.entity_id WHERE ep.parent_id = 4 GROUP BY 1, 2
- same scope join - SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
+ same scope summary delta SELECT count(*) FROM events e JOIN entit ...  '2024-06-01' AND e.event_date < DATE '2024-07-01'
  same scope summary delta SELECT count(*), sum(e.amount), min(e.sc ... _id = e.entity_id WHERE ep.parent_id IN (4, 5, 12)
  same scope summary delta SELECT ep.parent_id, count(*), sum(e.amo ... = ANY (ARRAY[4, 5, 12, 999]) GROUP BY ep.parent_id
  same scope join - SELECT ep.parent_id, date_trunc('month', ... tity_id WHERE ep.parent_id IN (4, 5) GROUP BY 1, 2

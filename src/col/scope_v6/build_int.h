@@ -38,8 +38,15 @@ typedef struct KeyAcc
 	struct KeyAcc *lru_prev;	/* the keys with month cubes of level 2 in memory, most recently touched first */
 	struct KeyAcc *lru_next;
 	bool		in_lru;
-	char	   *spill;			/* the month cubes of level 2 that went out of memory: nmonths, (month, length) for each, the cubes */
+	struct KeySpill *spill;		/* the month cubes of level 2 that went out of memory, the latest spill first */
 } KeyAcc;
+
+/* One spill: nmonths, (month, length) for each, the cubes */
+typedef struct KeySpill
+{
+	struct KeySpill *next;
+	char	   *blob;
+} KeySpill;
 
 typedef struct NodeRec
 {
@@ -74,6 +81,7 @@ struct SiftScopeBuild
 	uint32		capnodes;
 	SiftScopePartMapEntry *parts;
 	uint32		nparts;
+	uint32		cap_parts;
 	uint32		total_granules;
 	SiftScopeDict dict;
 	uint32	   *slot_of_key;	/* per granule scratch: slot of a key in this granule, UINT32_MAX none */

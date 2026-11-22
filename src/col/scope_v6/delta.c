@@ -369,52 +369,128 @@ sift_scope_months_live(const SiftScopeMeta *m, const SiftScopeL2Root *r, const S
 	return u;
 }
 
+/* The cubes of members (ascending, distinct): one pass of the entity when it has one, else a call for each; has[i] says a member has rows (out[i] is freed when it has none) */
+static void
+members_cubes(const SiftScopeEntity *e, const int64 *members, uint32 n, int32 month, SiftScopeCubeAcc *out, bool *has)
+{
+	if (e->members_cubes != NULL)
+	{
+		e->members_cubes(e->arg, members, n, month, out, has);
+		return;
+	}
+	for (uint32 i = 0; i < n; i++)
+		has[i] = e->member_cube(e->arg, members[i], month, &out[i]);
+}
+
+/* The cubes of the members of two lists as one batch: the distinct members in ascending order, cubes[i] belongs to all[i] */
+static uint32
+two_lists_cubes(const SiftScopeEntity *e, int32 month, const int64 *a, uint32 na, const int64 *b, uint32 nb, int64 **all, SiftScopeCubeAcc **cubes, bool **has)
+{
+	uint32		n = 0;
+
+	*all = palloc(sizeof(int64) * Max(na + nb, 1));
+	memcpy(*all, a, sizeof(int64) * na);
+	memcpy(*all + na, b, sizeof(int64) * nb);
+	qsort(*all, na + nb, sizeof(int64), sift_cmp_i64);
+	for (uint32 i = 0; i < na + nb; i++)
+		if (n == 0 || (*all)[n - 1] != (*all)[i])
+			(*all)[n++] = (*all)[i];
+	*cubes = palloc(sizeof(SiftScopeCubeAcc) * Max(n, 1));
+	*has = palloc(Max(n, 1));
+	members_cubes(e, *all, n, month, *cubes, *has);
+	return n;
+}
+
+static uint32
+batch_at(const int64 *all, uint32 n, int64 member)
+{
+	uint32		lo = 0,
+				hi = n;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (all[mid] < member)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
 SiftScopePatch
 sift_scope_cube_patch(SiftScopeCubeAcc *acc, const SiftScopeQueryNeeds *q, const SiftScopeEntity *e, const int64 *added, uint32 nadded, const int64 *removed, uint32 nremoved)
 {
+	int64	   *all;
+	SiftScopeCubeAcc *cubes;
+	bool	   *has;
+	uint32		n;
+	SiftScopePatch rc = SIFT_PATCH_OK;
+
 	SIFT_INVARIANT(nadded + nremoved <= SIFT_SCOPE_PATCH_MEMBERS, "scope patch: more changed members than the fast path takes");
-	for (uint32 i = 0; i < nremoved; i++)
+	n = two_lists_cubes(e, q->month, added, nadded, removed, nremoved, &all, &cubes, &has);
+	for (uint32 i = 0; i < nremoved && rc == SIFT_PATCH_OK; i++)
 	{
-		SiftScopeCubeAcc c;
-		bool		ok;
+		const uint32 at = batch_at(all, n, removed[i]);
 
-		if (!e->member_cube(e->arg, removed[i], q->month, &c))
-			continue;
-		ok = sub_guarded(acc, &c, q);
-		sift_scube_free(&c);
-		if (!ok)
-			return SIFT_PATCH_RESCAN;
+		if (has[at] && !sub_guarded(acc, &cubes[at], q))
+			rc = SIFT_PATCH_RESCAN;
 	}
-	for (uint32 i = 0; i < nadded; i++)
-	{
-		SiftScopeCubeAcc c;
+	for (uint32 i = 0; i < nadded && rc == SIFT_PATCH_OK; i++)
+		if (has[batch_at(all, n, added[i])])
+			sift_scube_merge(acc, &cubes[batch_at(all, n, added[i])], NULL);
+	for (uint32 i = 0; i < n; i++)
+		if (has[i])
+			sift_scube_free(&cubes[i]);
+	pfree(all);
+	pfree(cubes);
+	pfree(has);
+	return rc;
+}
 
-		if (!e->member_cube(e->arg, added[i], q->month, &c))
-			continue;
-		sift_scube_merge(acc, &c, NULL);
-		sift_scube_free(&c);
-	}
-	return SIFT_PATCH_OK;
+typedef struct MemberMult
+{
+	int64		member;
+	uint32		mult;
+} MemberMult;
+
+static int
+member_mult_cmp(const void *a, const void *b)
+{
+	return sift_cmp_i64(&((const MemberMult *) a)->member, &((const MemberMult *) b)->member);
 }
 
 SiftScopePatch
 sift_scope_cube_dedupe(SiftScopeCubeAcc *acc, const SiftScopeQueryNeeds *q, const SiftScopeEntity *e, const int64 *members, const uint32 *mult, uint32 n)
 {
-	for (uint32 i = 0; i < n; i++)
-	{
-		SiftScopeCubeAcc c;
+	MemberMult *dup = palloc(sizeof(*dup) * Max(n, 1));
+	int64	   *ids = palloc(sizeof(int64) * Max(n, 1));
+	SiftScopeCubeAcc *cubes = palloc(sizeof(SiftScopeCubeAcc) * Max(n, 1));
+	bool	   *has = palloc(Max(n, 1));
+	uint32		nd = 0;
+	SiftScopePatch rc = SIFT_PATCH_OK;
 
-		if (mult[i] < 2 || !e->member_cube(e->arg, members[i], q->month, &c))
-			continue;
-		for (uint32 k = 1; k < mult[i]; k++)
-			if (!sub_guarded(acc, &c, q))
-			{
-				sift_scube_free(&c);
-				return SIFT_PATCH_RESCAN;
-			}
-		sift_scube_free(&c);
+	for (uint32 i = 0; i < n; i++)
+		if (mult[i] >= 2)
+			dup[nd++] = (MemberMult) {members[i], mult[i]};
+	qsort(dup, nd, sizeof(*dup), member_mult_cmp);
+	for (uint32 i = 0; i < nd; i++)
+		ids[i] = dup[i].member;
+	members_cubes(e, ids, nd, q->month, cubes, has);
+	for (uint32 i = 0; i < nd; i++)
+	{
+		for (uint32 k = 1; has[i] && rc == SIFT_PATCH_OK && k < dup[i].mult; k++)
+			if (!sub_guarded(acc, &cubes[i], q))
+				rc = SIFT_PATCH_RESCAN;
+		if (has[i])
+			sift_scube_free(&cubes[i]);
 	}
-	return SIFT_PATCH_OK;
+	pfree(dup);
+	pfree(ids);
+	pfree(cubes);
+	pfree(has);
+	return rc;
 }
 
 void

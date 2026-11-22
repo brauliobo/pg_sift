@@ -47,6 +47,21 @@ extern bool sift_scope_shape_equal(const SiftScopeShape *a, const SiftScopeShape
 extern uint32 sift_dim_limit(const SiftScopeDim *d);
 extern void sift_dim_size(SiftScopeCubeAcc *a, SiftScopeDim *d, uint32 ngroups);
 
+/* cube_dim.c: the group tables of a cube; every reader in key order calls sift_sdim_sort first */
+typedef void (*SiftGroupFn) (const SiftScopeCubeAcc *a, char *drec, const char *srec, uint32 nk);
+typedef uint32 (*SiftGroupSubFn) (const SiftScopeCubeAcc *a, char *drec, const char *srec, uint32 nk);
+extern uint32 sift_sdim_search(const SiftScopeShape *s, const SiftScopeDim *d, const int64 *key, bool *found);
+extern char *sift_sdim_group_for(const SiftScopeShape *s, SiftScopeDim *d, const int64 *key);
+extern void sift_sdim_sort(const SiftScopeShape *s, SiftScopeDim *d);
+extern void sift_sdim_release(SiftScopeDim *d);
+extern void sift_sdim_overflow(SiftScopeDim *d);
+extern void sift_sdim_merge(const SiftScopeCubeAcc *a, SiftScopeDim *dd, SiftScopeDim *sd, SiftGroupFn fn);
+extern uint32 sift_sdim_sub(const SiftScopeCubeAcc *a, SiftScopeDim *dd, SiftScopeDim *sd, SiftGroupSubFn fn);
+/* An index of the entries of an array that start with an int32 id: slot + 1 in an open-addressed table of power-of-two cap (at most 65535 entries) */
+extern void sift_idix_rebuild(uint16 **ht, uint32 *cap, const void *base, Size stride, uint32 n);
+extern void sift_idix_note(uint16 *ht, uint32 cap, const void *base, Size stride, uint32 slot);
+extern int32 sift_idix_find(const uint16 *ht, uint32 cap, const void *base, Size stride, int32 id);
+
 /* the ring of a key under construction: a min-heap of the newest SIFT_SCOPE_TOPK_CAP rows */
 typedef struct SiftTopKHeap
 {
@@ -66,7 +81,11 @@ typedef struct SiftMonthMapAcc
 {
 	uint32		n;
 	uint32		cap;
-	SiftMonthMapEntry *e;		/* ascending month_id */
+	uint32		last;			/* the entry the last add hit */
+	bool		unsorted;		/* e is append-only and indexed by ht until sift_mmap_write */
+	uint16	   *ht;
+	uint32		ht_cap;
+	SiftMonthMapEntry *e;		/* ascending month_id unless unsorted */
 } SiftMonthMapAcc;
 
 /* newest-first order: by time, then granule, then row */

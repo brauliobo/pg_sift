@@ -178,6 +178,7 @@ sift_l2_block(StringInfo blk, SiftScopeL2Root *root, const SiftScopeCubeAcc *all
 	root->all_cube_off = blk->len;
 	sift_scube_write(blk, all);
 	root->all_cube_len = blk->len - root->all_cube_off;
+	sift_smonth_sort(months);
 	root->nmonths = months->n;
 	if (months->n > 0)
 		cells = palloc(sizeof(*cells) * months->n);
@@ -764,6 +765,36 @@ sift_bloom_has(const char *bits, uint32 len, int64 member)
 	return true;
 }
 
+/* The exact members of a node: ascending int64 */
+static inline int64
+list_at(const char *list, uint32 i)
+{
+	int64		v;
+
+	memcpy(&v, list + (uint64) i * 8, 8);
+	return v;
+}
+
+static bool
+sorted_list_has(const char *list, uint32 n, int64 member)
+{
+	uint32		lo = 0;
+
+	while (lo < n)
+	{
+		uint32		mid = lo + (n - lo) / 2;
+		int64		v = list_at(list, mid);
+
+		if (v == member)
+			return true;
+		if (v < member)
+			lo = mid + 1;
+		else
+			n = mid;
+	}
+	return false;
+}
+
 bool
 sift_scope_node_has_member(const SiftScopeMeta *m, const SiftScopeL1Node *n, int64 member)
 {
@@ -773,12 +804,44 @@ sift_scope_node_has_member(const SiftScopeMeta *m, const SiftScopeL1Node *n, int
 		return true;
 	if (n->flags & SIFT_L1_HAS_BLOOM)
 		return sift_bloom_has(m->l1.p + n->bloom_off, n->bloom_len, member);
-	for (uint32 i = 0; i < n->bloom_len / 8; i++)
-	{
-		int64		v;
+	return sorted_list_has(m->l1.p + n->bloom_off, n->bloom_len / 8, member);
+}
 
-		memcpy(&v, m->l1.p + n->bloom_off + (uint64) i * 8, 8);
-		if (v == member)
+bool
+sift_scope_node_hits_any(const SiftScopeMeta *m, const SiftScopeL1Node *n, const int64 *sorted, uint32 nm)
+{
+	uint32		lo = 0,
+				hi = nm,
+				i = 0,
+				cnt = n->bloom_len / 8;
+	const char *list = m->l1.p + n->bloom_off;
+
+	if (nm == 0 || sorted[nm - 1] < n->member_lo || sorted[0] > n->member_hi)
+		return false;
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (sorted[mid] < n->member_lo)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (n->bloom_len == 0)
+		return lo < nm && sorted[lo] <= n->member_hi;
+	for (; lo < nm && sorted[lo] <= n->member_hi; lo++)
+	{
+		if (n->flags & SIFT_L1_HAS_BLOOM)
+		{
+			if (sift_bloom_has(list, n->bloom_len, sorted[lo]))
+				return true;
+			continue;
+		}
+		while (i < cnt && list_at(list, i) < sorted[lo])
+			i++;
+		if (i == cnt)
+			return false;
+		if (list_at(list, i) == sorted[lo])
 			return true;
 	}
 	return false;

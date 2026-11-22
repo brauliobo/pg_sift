@@ -289,12 +289,7 @@ typedef struct SiftScopeL2ExtraTopK
 #define SIFT_ENT_ROUTE_MULTI		(UINT32_C(1) << 31)		/* part_ref: an index into the overflow pool, the entity has several keys */
 #define SIFT_ENT_ROUTE_FENCE		256
 
-/*
- * SEC_SCOPE_ENT_ROUTE: for each entity that has rows in the entity parts up to max_part_gen, the key (primary parent) its rows are stored under.
- * Sorted by entity; a fence every SIFT_ENT_ROUTE_FENCE entities. Body: header, home_keys[nhome_keys] (the distinct keys, ascending),
- * fences[nfences], entity_ids[nentities], part_refs[nentities] (padded to 8), overflow[noverflow] (padded to 8): an entity whose rows are
- * stored under several keys has part_ref | SIFT_ENT_ROUTE_MULTI = the offset of its record in the pool, a count and that many home_keys indexes.
- */
+/* SEC_SCOPE_ENT_ROUTE: for each entity with rows in the entity parts up to max_part_gen, the key its rows are stored under; sorted by entity with a fence every SIFT_ENT_ROUTE_FENCE; an entity stored under several keys points into the overflow pool */
 typedef struct SiftEntRouteHeader
 {
 	uint32		magic;
@@ -420,6 +415,9 @@ typedef struct SiftScopeDim
 	uint32		cap;
 	bool		overflow;
 	uint8		nk;
+	bool		unsorted;		/* groups is append-only and indexed by ht (slot + 1) until sift_sdim_sort */
+	uint16	   *ht;
+	uint32		ht_cap;
 	char	   *groups;
 } SiftScopeDim;
 
@@ -462,7 +460,12 @@ typedef struct SiftScopeMonthTable
 {
 	uint32		n;
 	uint32		cap;
-	SiftScopeMonthEntry *e;		/* ascending month_id */
+	uint32		last;			/* the entry the last get hit */
+	bool		unsorted;		/* e is append-only and indexed by ht until sift_smonth_sort */
+	uint16	   *ht;
+	uint32		ht_cap;
+	Size		bytes;			/* sift_smonth_bytes, kept as cubes are added to and merged in */
+	SiftScopeMonthEntry *e;		/* ascending month_id unless unsorted: read it in order after sift_smonth_sort */
 } SiftScopeMonthTable;
 
 /* The rows of a granule (or of a part of it): the leaves the cubes and the ring read */
@@ -488,13 +491,7 @@ typedef struct SiftScopeRows
 extern int32 sift_scope_month_of(int64 pg_timestamp);
 extern int64 sift_scope_month_start(int32 month_id);
 extern int64 sift_scope_month_end(int32 month_id);		/* the first microsecond of the next month */
-/*
- * Month cells are UTC months. A read that answers a timestamptz by month (GROUP BY date_trunc('month'), a range on month bounds) from cells asks
- * sift_scope_monthmap_tz_safe(zoned, tz_is_utc) first: zoned is true for timestamptz, tz_is_utc when the session TimeZone is fixed UTC (the host
- * tells: no offset, no DST, no history). When it is false the read takes only the cells that sift_scope_months_inside gives for the instants of
- * each local month and scans the rest, so a row in the hours around a boundary never lands in the wrong month. The ring/month map of ORDER BY ts LIMIT is
- * ordered by the instant and needs no guard.
- */
+/* Month cells are UTC months: a read by local month of a timestamptz asks sift_scope_monthmap_tz_safe(zoned, tz_is_utc) first, and when it is false takes only the cells sift_scope_months_inside gives and scans the rest. The ring/month map of ORDER BY ts LIMIT needs no guard */
 extern bool sift_scope_monthmap_tz_safe(bool zoned, bool tz_is_utc);
 extern bool sift_scope_months_inside(int64 lo, int64 hi, int32 *first, int32 *last);
 
@@ -528,9 +525,12 @@ extern void sift_smonth_free(SiftScopeMonthTable *t);
 extern void sift_smonth_clear(SiftScopeMonthTable *t);
 extern SiftScopeCubeAcc *sift_smonth_get(SiftScopeMonthTable *t, int32 month_id, SiftScopeShape shape);
 extern const SiftScopeCubeAcc *sift_smonth_find(const SiftScopeMonthTable *t, int32 month_id);
+extern void sift_smonth_sort(const SiftScopeMonthTable *t);
+extern void sift_smonth_merge_cube(SiftScopeMonthTable *t, SiftScopeShape shape, int32 month_id, const SiftScopeCubeAcc *src, const SiftScopeDictMap *map);
 extern void sift_smonth_add_rows(SiftScopeMonthTable *t, SiftScopeShape shape, const SiftScopeRows *r, const uint32 *sel, uint32 nsel, const SiftScopeDictMap *map);
 extern void sift_smonth_merge(SiftScopeMonthTable *dst, SiftScopeShape shape, const SiftScopeMonthTable *src, const SiftScopeDictMap *map);
 extern Size sift_smonth_bytes(const SiftScopeMonthTable *t);
+extern Size sift_smonth_bytes_sum(const SiftScopeMonthTable *t);
 
 /* ---------------------------------------------------------------------------
  * 3. The pair map
@@ -552,15 +552,26 @@ typedef struct SiftScopePairMap
 	uint32	   *key_ordinals;
 	int64	   *scope_keys;
 	uint32		cursor;
+	/* a patch (sift_spm_patched): own tables hold only the members of tomb_members, the rest is base's; keys past base_nkeys are extra_keys; read it through sift_spm_slice and sift_spm_key_of */
+	const struct SiftScopePairMap *base;
+	int64	   *tomb_members;
+	uint32		ntomb;
+	uint32		base_nkeys;
+	int64	   *extra_keys;
+	uint32		nextra_keys;
 } SiftScopePairMap;
 
 /* pairs is sorted in place; multiset keeps the repeated pairs (a member of the relation twice counts twice) */
 extern SiftScopePairMap *sift_spm_build(SiftScopeMemberKey *pairs, uint32 n, bool multiset);
 extern void sift_spm_free(SiftScopePairMap *pm);
-/* The map with the pairs of members (ascending, distinct) replaced by now (by member, then key); keys new to pm are appended to scope_keys, for the reads of one statement only, never for a build or refresh */
+/* A patch of pm (borrowed, never copied) with the pairs of members (ascending, distinct) replaced by now (by member, then key), for the reads of one statement only, never for a build or refresh */
 extern SiftScopePairMap *sift_spm_patched(const SiftScopePairMap *pm, const int64 *members, uint32 nm, const SiftScopeMemberKey *now, uint32 nnow);
 /* The keys of a member: the range [*lo, *hi) of key_ordinals; the cursor advances by galloping when members arrive ascending */
 extern bool sift_spm_find(SiftScopePairMap *pm, int64 member, uint32 *lo, uint32 *hi);
+/* The same for a map that may be a patch: the key ordinals of a member (ascending by key), and the key an ordinal stands for */
+extern bool sift_spm_slice(const SiftScopePairMap *pm, int64 member, const uint32 **ords, uint32 *n);
+extern int64 sift_spm_key_of(const SiftScopePairMap *pm, uint32 ord);
+extern bool sift_spm_owns_key(const SiftScopePairMap *pm, int64 member, int64 key);
 extern bool sift_spm_range_hits(const SiftScopePairMap *pm, int64 lo, int64 hi);
 extern int32 sift_spm_key_ordinal(const SiftScopePairMap *pm, int64 scope_key);
 /* A key whose pairs changed and the members that were added to it or taken out (ascending, distinct) */
@@ -631,13 +642,7 @@ typedef struct SiftScopeTail
 	uint32		row_ord;
 } SiftScopeTail;
 
-/*
- * What the build reads of a granule. head: the zones (already in the part's directory). cube: its pre-aggregate cube (a pure granule is
- * answered from it alone). tail_ring: the newest rows of the order leaf of a ring (0: the time leaf), at most max, any order, NULLs left out
- * (read only when the ring can take one). rows: the member, time and cube leaves and the order leaves asked for, decoded (read only for an
- * impure granule). runs: the entity runs of a clustered granule, (entity, key) with the entity ascending and the NULL entities left out, at most
- * one for each row (read for a scope clustered by primary key, and only for a granule of more than one entity or key).
- */
+/* What the build reads of a granule. head: the zones. cube: its pre-aggregate cube. tail_ring: the newest rows of a ring's order leaf, at most max. rows: the member, time, cube and ordered leaves, for an impure granule. runs: the (entity, key) runs of a clustered granule */
 typedef struct SiftScopeGranSource
 {
 	void	   *arg;
@@ -760,6 +765,8 @@ extern const SiftScopeL2Root *sift_scope_l2_find(const SiftScopeMeta *m, int64 s
 extern bool sift_scope_gidx_part(const SiftScopeMeta *m, uint32 gidx, uint64 *part_gen, uint32 *granule_id);
 extern uint32 sift_scope_node_refs(const SiftScopeMeta *m, const SiftScopeL1Node *n, SiftScopeGranRef *out);
 extern uint32 sift_scope_key_refs(const SiftScopeMeta *m, const SiftScopeL2Root *r, SiftScopeGranRef *out);
+/* Some member of sorted (ascending) may be in the node */
+extern bool sift_scope_node_hits_any(const SiftScopeMeta *m, const SiftScopeL1Node *n, const int64 *sorted, uint32 nm);
 extern bool sift_scope_node_has_member(const SiftScopeMeta *m, const SiftScopeL1Node *n, int64 member);
 extern const char *sift_scope_dict_get(const SiftScopeMeta *m, uint32 code, uint32 *len);
 /* The cube of a key (month SIFT_SCOPE_NO_MONTH: all time): false when the key has no rows in that month */
@@ -822,47 +829,36 @@ typedef struct SiftScopeEntity
 	uint32		(*added_months) (void *arg, int64 scope_key, const int32 **months);
 	/* the rows of the key that the object counts and the snapshot does not see, read once for all keys: their cube in a month (SIFT_SCOPE_NO_MONTH: all time) (NULL: the entity has none to hand) */
 	SiftScopeGone (*gone_cube) (void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);
+	/* how many of keys (ascending, distinct) the member belongs to, at most one when semi (NULL: owns for each key) */
+	uint32		(*owns_count) (void *arg, int64 member, const int64 *keys, uint32 nkeys, bool semi);
+	/* member_cube for members (ascending, distinct) in one pass over the granules: out[i] is initialized, and has[i] set when it holds a row (NULL: member_cube for each) */
+	void		(*members_cubes) (void *arg, const int64 *members, uint32 n, int32 month, SiftScopeCubeAcc *out, bool *has);
 } SiftScopeEntity;
 
 /* The ring of a key, decoded from the compact or the wide slot: the entries newest first in out[0..SIFT_SCOPE_TOPK_CAP), the rest zero; returns how many are set */
 extern uint32 sift_scope_topk_get(const SiftScopeMeta *m, const SiftScopeL2Root *r, SiftScopeNewest *out);
 extern uint32 sift_scope_monthmap_buckets(const SiftScopeMeta *m, const SiftScopeL2Root *r, SiftScopeMonthBucket *out, uint32 max);
-/*
- * The month map of a key, newest month first. A key of one granule has no map stored (SIFT_L2_HAS_MONTHMAP is not set): its month cells say which
- * months that granule holds, and these three answer from them as if the map were there.
- */
+/* The month map of a key, newest month first; a key of one granule has none stored and these answer from its month cells */
 extern uint32 sift_scope_monthmap_nmonths(const SiftScopeMeta *m, const SiftScopeL2Root *r);
 /* The granules the map names (0: the key has no months) */
 extern uint32 sift_scope_monthmap_ngranules(const SiftScopeMeta *m, const SiftScopeL2Root *r);
 /* The local granule ordinals of one month bucket of a key; returns how many */
 extern uint32 sift_scope_monthmap_granules(const SiftScopeMeta *m, const SiftScopeL2Root *r, int32 month, uint32 *out, uint32 max);
+/* The same for a bucket that sift_scope_monthmap_buckets returned */
+extern uint32 sift_scope_monthmap_bucket_granules(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeMonthBucket *b, uint32 *out, uint32 max);
 
-/*
- * The newest n live rows of a key, newest first. Unfiltered: from the ring, and from the month map and the strides, below the last entry the
- * ring held, when it runs out (deletes, or n larger than its entries); a query with a filter reads the month map and the strides alone.
- * *from_ring: how many came from the ring alone.
- */
+/* The newest n live rows of a key, newest first: from the ring, then the month map and strides below its last entry; a filtered query reads the month map and strides alone. *from_ring: how many came from the ring alone */
 extern uint32 sift_scope_latest(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint32 n, bool filtered, const SiftScopeEntity *e, SiftScopeNewest *out, uint32 *from_ring);
 
 /* The ring of order leaf ring (0: the time leaf) of a key: the entries largest first, the rest zero; returns how many are set */
 extern uint32 sift_scope_topk_get_ring(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint32 ring, SiftScopeNewest *out);
-/*
- * Every ring is ORDER BY leaf DESC NULLS LAST: rows without a value are in no ring and no walk returns them. PostgreSQL orders DESC NULLS FIRST
- * unless told otherwise, so a query that does not say NULLS LAST is served by a ring only when the leaf cannot be NULL (NOT NULL column, an
- * IS NOT NULL predicate, or no NULL in any granule zone of the key): that proof is the planner's, passed as leaf_not_null.
- */
+/* Every ring is ORDER BY leaf DESC NULLS LAST: a query that does not say NULLS LAST is served by a ring only when the leaf cannot be NULL (leaf_not_null, the planner's proof) */
 extern bool sift_scope_ring_nulls_last(const SiftScopeMeta *m, uint32 ring);
 extern bool sift_scope_ring_serves(const SiftScopeMeta *m, uint32 ring, bool nulls_first, bool leaf_not_null);
 /* The ring of the key is there, and whether it stopped short of the largest rows (rows were taken out of it) */
 extern bool sift_scope_ring_present(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint32 ring);
 extern bool sift_scope_ring_partial(const SiftScopeL2Root *r, uint32 ring);
-/*
- * The n live rows of a key with the largest value of the order leaf of ring, largest first (the value, then the granule and row, descending:
- * rows without a value are left out). Ring 0 is the time leaf: sift_scope_latest. An unfiltered query takes the entries of the ring and goes on with
- * the granules of the key, the largest zone maximum first, below the last of them when deletes or n ask for more. *from_ring: how many came
- * from the ring alone. tie_at_cut (may be NULL): the last row returned has the value of a live row that was not returned, so a query that breaks
- * ties by another order has to read sift_scope_ring_ties of that value.
- */
+/* The n live rows of a key with the largest value of the order leaf of ring (ring 0: sift_scope_latest), largest first; *from_ring: how many came from the ring alone; tie_at_cut (may be NULL): the last row has the value of a live row not returned, so a query that breaks ties by another order reads sift_scope_ring_ties */
 extern uint32 sift_scope_latest_ring(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint32 ring, uint32 n, bool filtered, const SiftScopeEntity *e, SiftScopeNewest *out, uint32 *from_ring, bool *tie_at_cut);
 /* Every live row of the key (that passes the filter) with this value of the leaf of ring, in no order: only the granules whose zone (ring 0: the month of the value and the strides) holds it are read; palloc'd */
 extern uint32 sift_scope_ring_ties(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint32 ring, int64 value, const SiftScopeEntity *e, SiftScopeNewest **out);
@@ -879,11 +875,7 @@ typedef struct SiftScopeRingCand
 	uint64		nnull;
 } SiftScopeRingCand;
 
-/*
- * The default rings of a scope: from the candidates (in the order of the index, the member and time leaves left out by the caller) the ones with
- * at least SIFT_SCOPE_RING_NONNULL_PCT percent of their rows set, timestamps first, then dates, then ordinals, and the more complete first; at most
- * SIFT_SCOPE_TOPK_RINGS_CAP - 1. Sets spec->ntopk_rings and spec->extra_leaf; returns the rings.
- */
+/* The default rings: of the candidates the ones with at least SIFT_SCOPE_RING_NONNULL_PCT percent of rows set (timestamps, dates, ordinals; the more complete first), at most SIFT_SCOPE_TOPK_RINGS_CAP - 1; sets spec->ntopk_rings and extra_leaf */
 extern uint32 sift_scope_rings_pick(SiftScopeBuildSpec *spec, const SiftScopeRingCand *cand, uint32 ncand);
 
 /* The route of an entity: where its rows are stored (SIFT_ROUTE_NONE: none known in the parts the object covers; PURE: under one key; SPILL: under several) */
@@ -900,10 +892,7 @@ extern SiftEntRouteKind sift_scope_ent_route(const SiftScopeMeta *m, int64 entit
 extern bool sift_scope_ent_route_gen(const SiftScopeMeta *m, uint64 *max_part_gen);
 
 extern uint32 sift_tstride_build(const int64 *time, const uint8 *time_null, uint32 nrows, SiftTimeStride *out);
-/*
- * The strides of the granules as one section body: header, byte offsets of the granules (padded to 8), then each granule's strides, delta coded
- * and bit-packed (a stride with no value is written as one, and read back as {PG_INT64_MAX, PG_INT64_MIN}); the body is padded to 8.
- */
+/* The strides of the granules as one section body: offsets (padded to 8), then each granule's strides delta coded and bit-packed */
 extern void sift_tstride_write(StringInfo out, uint32 ngranules, const uint32 *nstrides, const SiftTimeStride *const *strides);
 /* The strides of granule gidx into out[SIFT_GRANULE_STRIDES]; false when the section is not what sift_tstride_write wrote */
 extern bool sift_tstride_read(const char *p, uint64 len, uint32 gidx, SiftTimeStride *out, uint32 *n);
@@ -929,11 +918,7 @@ typedef struct SiftScopeDeltaStats
 	bool		clean;			/* no part has a deletion vector: the cube of the key was returned as it is */
 } SiftScopeDeltaStats;
 
-/*
- * The rows of a granule that leave its cube are the rows of a deletion vector, the rows that a sparse IS NULL predicate excludes (the non-NULL
- * ones), or both: the entity side counts each row once and hands the summary that number, the rows and the flags (dead_count, dead_rows,
- * granule_rows). This is the union of two ascending row lists without a row twice; it returns its length, or cap + 1 when it is longer than cap.
- */
+/* The union of two ascending row lists (a deletion vector and the rows a sparse IS NULL predicate excludes) without a row twice; its length, or cap + 1 when longer than cap */
 extern uint32 sift_scope_excl_union(const uint16 *a, uint32 na, const uint16 *b, uint32 nb, uint16 *out, uint32 cap);
 
 /* The cube of a key with the dead rows of the entity parts taken out, valid for the query's needs; false when the key has no live row in the month */
@@ -954,13 +939,7 @@ extern void sift_scope_cube_untouched(const SiftScopeMeta *m, const SiftScopeL2R
 /* A member that is in several of the queried keys is counted once: takes out (mult - 1) copies of its cube */
 extern SiftScopePatch sift_scope_cube_dedupe(SiftScopeCubeAcc *acc, const SiftScopeQueryNeeds *q, const SiftScopeEntity *e, const int64 *members, const uint32 *mult, uint32 n);
 
-/*
- * The refresh of the keys whose pairs changed (dirty, ascending by key; pm is the pair map of the new snapshot): a key with no changed member
- * of its own is copied from old in bytes; of a dirty key the level-1 nodes that hold none of its changed members, in their range, Bloom or
- * granules, are copied as they are and only the others are built again from the granules src reads, the key's root, ring and month map made
- * from the nodes. The level-0 slices that no node names any more are dropped from the pool; the others keep their numbers while the dead ones
- * are fewer than the live ones, else the slices are numbered again and the refs of every node follow.
- */
+/* The refresh of the keys whose pairs changed (dirty, ascending; pm is the new pair map): a key with no changed member is copied in bytes; of a dirty key only the level-1 nodes holding changed members are built again; unused level-0 slices are dropped or renumbered */
 extern void sift_scope_refresh_dirty(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftScopePairMap *pm, const SiftScopeDirty *dirty, uint32 ndirty, const SiftScopeGranSource *src, StringInfo out, SiftScopeBuildStats *stats);
 
 typedef struct SiftScopeNewPart
@@ -978,12 +957,7 @@ typedef struct SiftScopePartSwap
 	uint32		nadded;
 } SiftScopePartSwap;
 
-/*
- * The refresh after a compaction: pm is the pair map of the snapshot old describes. Every ref to a retired part becomes a ref to the granules
- * of the new parts that hold the rows; only the level-1 nodes with a retired ref are built again (from the new granules and the granules of
- * their other refs), the root, ring and month map of their keys follow, and every other node is copied as it is. The retired parts keep their
- * range of granule indexes in the part map (marked by part_gen 0), so no ref of another node changes.
- */
+/* The refresh after a compaction: each ref to a retired part becomes a ref to the granules of the new parts; only nodes with a retired ref are built again, every other node is copied */
 extern void sift_scope_refresh_parts(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftScopePairMap *pm, const SiftScopePartSwap *swap, const SiftScopeGranSource *src, StringInfo out, SiftScopeBuildStats *stats);
 
 /* A compaction and pair edits in one pass (sift_scope_refresh_parts): the nodes of a key with a retired ref or a changed member of dirty (ascending by key) are built again, every other node and key is copied as bytes */

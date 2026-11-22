@@ -247,10 +247,11 @@ typedef struct PartDiff
 static void
 diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, PartDiff *d)
 {
-	uint32		nman = (uint32) sift_f2s_parts_in_manifest(rel, mr),
-				npresent = 0;
-	uint64	   *present = palloc(Max(nman, 1) * sizeof(uint64));
+	uint32		nman = (uint32) sift_f2s_parts_in_manifest(rel, mr);
+	bool	   *seen = palloc0(Max(old->hdr.nparts, 1));
+	SiftGenMap	named;
 
+	sift_f2s_meta_map(old, &named);
 	*d = (PartDiff) {.retired = palloc(Max(old->hdr.nparts, 1) * sizeof(uint64)),.added = palloc(Max(nman, 1) * sizeof(SiftScopeNewPart))};
 	for (int k = 0; k < mr->n; k++)
 	{
@@ -260,29 +261,26 @@ diff_parts(Relation rel, const SiftScopeMeta *old, const SiftManifestRead *mr, P
 		for (int j = 0; j < np; j++)
 		{
 			const SiftPart *part = sift_part_open_desc(rel, &parts[j], (uint32) mr->entries[k].part_id);
+			uint32		at;
 
 			if (part->hdr.ngranules == 0)
 				continue;
-			present[npresent++] = parts[j].part_gen;
-			if (!sift_f2s_meta_names(old, parts[j].part_gen))
+			if (!sift_f2s_gen_map_find(&named, parts[j].part_gen, &at))
 			{
 				d->added[d->nadded++] = (SiftScopeNewPart) {parts[j].part_gen, part->hdr.ngranules};
 				d->added_rows += part->hdr.nrows;
 			}
 			else
+			{
+				seen[at] = true;
 				d->kept_rows += part->hdr.nrows;
+			}
 		}
 	}
 	for (uint32 e = 0; e < old->hdr.nparts; e++)
-	{
-		bool		there = false;
-
-		for (uint32 i = 0; i < npresent && !there; i++)
-			there = present[i] == old->parts[e].part_gen;
-		if (old->parts[e].part_gen != 0 && !there)
+		if (old->parts[e].part_gen != 0 && !seen[e])
 			d->retired[d->nretired++] = old->parts[e].part_gen;
-	}
-	pfree(present);
+	pfree(seen);
 }
 
 static int
@@ -300,7 +298,9 @@ refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2Scope
 {
 	SiftF2ScopeParts *p = sift_f2s_parts_new(rel, store, heap, cfg, snap, pm, sift_f2s_parts_in_manifest(rel, mr));
 	uint32		next = (uint32) old->hdr.total_granules;
+	SiftGenMap	named;
 
+	sift_f2s_meta_map(old, &named);
 	for (int k = 0; k < mr->n; k++)
 	{
 		int			np;
@@ -309,13 +309,13 @@ refresh_parts(Relation heap, Relation rel, SiftF2Store *store, const SiftF2Scope
 		for (int j = 0; j < np; j++)
 		{
 			const SiftPart *part = sift_part_open_desc(rel, &parts[j], (uint32) mr->entries[k].part_id);
-			uint32		base = next;
+			uint32		base = next,
+						at;
 
 			if (part->hdr.ngranules == 0)
 				continue;
-			for (uint32 e = 0; e < old->hdr.nparts; e++)
-				if (old->parts[e].part_gen == parts[j].part_gen)
-					base = old->parts[e].base_granule_idx;
+			if (sift_f2s_gen_map_find(&named, parts[j].part_gen, &at))
+				base = old->parts[at].base_granule_idx;
 			next += base == next ? part->hdr.ngranules : 0;
 			(void) sift_f2s_parts_add(p, &parts[j], mr->entries[k].part_id, base, part->hdr.ngranules);
 		}
@@ -388,7 +388,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 
 	if (!buildable(heap, rel, store, base, mr, snap))
 		return (SiftManifestScopeRef) {0};
-	if (!sift_f2s_object(rel, base->ord, &old))
+	if (!sift_f2s_object(rel, base->ord, &old, 0))
 	{
 		sift_f2_scope_refreshes.full++;
 		return build_one(heap, rel, store, base, mr, snap);

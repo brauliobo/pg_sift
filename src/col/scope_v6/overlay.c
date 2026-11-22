@@ -85,10 +85,7 @@ find_member(const int64 *v, uint32 n, int64 x)
 static bool
 node_touched(const SiftScopeMeta *m, const SiftScopeL1Node *nd, const SiftScopeEdit *ed)
 {
-	for (uint32 i = 0; i < ed->nchanged; i++)
-		if (sift_scope_node_has_member(m, nd, ed->changed[i]))
-			return true;
-	return false;
+	return sift_scope_node_hits_any(m, nd, ed->changed, ed->nchanged);
 }
 
 static bool
@@ -266,8 +263,11 @@ sift_scope_overlay_fold(SiftScopeCubeAcc *acc, const SiftScopeRows *r, const uin
 				(f->month != SIFT_SCOPE_NO_MONTH && sift_scope_month_of(r->time[i]) != f->month))
 				continue;
 		}
-		for (uint32 k = 0; k < f->nkeys; k++)
-			owners += e->owns(e->arg, r->member[i], f->keys[k]);
+		if (e->owns_count != NULL)
+			owners = e->owns_count(e->arg, r->member[i], f->keys, f->nkeys, f->semi);
+		else
+			for (uint32 k = 0; k < f->nkeys; k++)
+				owners += e->owns(e->arg, r->member[i], f->keys[k]);
 		for (uint32 k = 0; k < (f->semi ? Min(owners, 1) : owners); k++)
 			sift_scube_add_row(acc, r, i, NULL);
 		taken += owners > 0;

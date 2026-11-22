@@ -268,6 +268,9 @@ sift_scope_topk_get(const SiftScopeMeta *m, const SiftScopeL2Root *r, SiftScopeN
  * 2. The month map
  * ------------------------------------------------------------------------- */
 
+#define MMAP_SORTED_MAX 16
+
+/* The entry of a month: the last one hit, else a binary search of the ascending entries or the index of the appended ones; a new month goes in its place while few, else appended */
 void
 sift_mmap_add(SiftMonthMapAcc *a, int32 month_id, uint32 ordinal)
 {
@@ -275,15 +278,24 @@ sift_mmap_add(SiftMonthMapAcc *a, int32 month_id, uint32 ordinal)
 				hi = a->n;
 	SiftMonthMapEntry *e;
 
-	while (lo < hi)
+	if (a->last < a->n && a->e[a->last].month_id == month_id)
+		lo = a->last;
+	else if (a->unsorted)
 	{
-		uint32		mid = lo + (hi - lo) / 2;
+		int32		at = sift_idix_find(a->ht, a->ht_cap, a->e, sizeof(*a->e), month_id);
 
-		if (a->e[mid].month_id < month_id)
-			lo = mid + 1;
-		else
-			hi = mid;
+		lo = at < 0 ? a->n : (uint32) at;
 	}
+	else
+		while (lo < hi)
+		{
+			uint32		mid = lo + (hi - lo) / 2;
+
+			if (a->e[mid].month_id < month_id)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
 	if (lo == a->n || a->e[lo].month_id != month_id)
 	{
 		if (a->n == a->cap)
@@ -291,11 +303,23 @@ sift_mmap_add(SiftMonthMapAcc *a, int32 month_id, uint32 ordinal)
 			a->cap = a->cap == 0 ? 8 : a->cap * 2;
 			a->e = a->e == NULL ? palloc(a->cap * sizeof(*a->e)) : repalloc(a->e, a->cap * sizeof(*a->e));
 		}
-		memmove(&a->e[lo + 1], &a->e[lo], (a->n - lo) * sizeof(*a->e));
+		if (!a->unsorted && lo < a->n && a->n >= MMAP_SORTED_MAX)
+		{
+			a->unsorted = true;
+			sift_idix_rebuild(&a->ht, &a->ht_cap, a->e, sizeof(*a->e), a->n);
+			lo = a->n;
+		}
+		if (!a->unsorted)
+			memmove(&a->e[lo + 1], &a->e[lo], (a->n - lo) * sizeof(*a->e));
 		a->n++;
 		memset(&a->e[lo], 0, sizeof(*a->e));
 		a->e[lo].month_id = month_id;
+		if (a->unsorted && a->n * 2 > a->ht_cap)
+			sift_idix_rebuild(&a->ht, &a->ht_cap, a->e, sizeof(*a->e), a->n);
+		else if (a->unsorted)
+			sift_idix_note(a->ht, a->ht_cap, a->e, sizeof(*a->e), lo);
 	}
+	a->last = lo;
 	e = &a->e[lo];
 	if (e->n > 0 && e->ord[e->n - 1] == ordinal)
 		return;
@@ -307,6 +331,12 @@ sift_mmap_add(SiftMonthMapAcc *a, int32 month_id, uint32 ordinal)
 	e->ord[e->n++] = ordinal;
 }
 
+static int
+mmap_entry_cmp(const void *x, const void *y)
+{
+	return ((const SiftMonthMapEntry *) x)->month_id < ((const SiftMonthMapEntry *) y)->month_id ? -1 : 1;
+}
+
 void
 sift_mmap_free(SiftMonthMapAcc *a)
 {
@@ -315,6 +345,8 @@ sift_mmap_free(SiftMonthMapAcc *a)
 			pfree(a->e[i].ord);
 	if (a->e != NULL)
 		pfree(a->e);
+	if (a->ht != NULL)
+		pfree(a->ht);
 	memset(a, 0, sizeof(*a));
 }
 
@@ -327,6 +359,11 @@ sift_mmap_write(SiftMonthMapAcc *a, uint32 ngranules, const uint32 *remap, Strin
 	int			start = out->len;
 	uint32		data = sizeof(h) + a->n * sizeof(SiftScopeMonthBucket);
 
+	if (a->unsorted)
+	{
+		qsort(a->e, a->n, sizeof(*a->e), mmap_entry_cmp);
+		a->unsorted = false;
+	}
 	appendBinaryStringInfo(out, (char *) &h, sizeof(h));
 	appendBinaryStringInfo(out, (char *) b, a->n * sizeof(*b));
 	for (uint32 i = 0; i < a->n; i++)
@@ -442,69 +479,117 @@ sift_scope_monthmap_buckets(const SiftScopeMeta *m, const SiftScopeL2Root *r, Si
 	return n;
 }
 
+/* The local granule ordinals of one bucket: the set bits of a bitset a word at a time, or its list */
+static uint32
+bucket_granules(const char *base, const SiftScopeMonthMapHeader *h, const SiftScopeMonthBucket *b, uint32 *out, uint32 max)
+{
+	uint32		n = 0;
+
+	if (b->flags & SIFT_MMAP_BITSET)
+	{
+		uint32		nbytes = (h->ngranules + 7) / 8;
+
+		for (uint32 w = 0; (Size) w * 8 < nbytes && n < max; w++)
+		{
+			uint64		word = 0;
+
+			memcpy(&word, base + b->data_off + (Size) w * 8, Min(8, nbytes - (Size) w * 8));
+#ifdef WORDS_BIGENDIAN
+			word = pg_bswap64(word);
+#endif
+			for (; word != 0 && n < max; word &= word - 1)
+				out[n++] = w * 64 + (uint32) __builtin_ctzll(word);
+		}
+		return n;
+	}
+	if (b->flags & SIFT_MMAP_LIST16)
+		for (uint32 j = 0; j < b->count && n < max; j++)
+		{
+			uint16		v;
+
+			memcpy(&v, base + b->data_off + j * 2, 2);
+			out[n++] = v;
+		}
+	else
+		for (uint32 j = 0; j < b->count && n < max; j++)
+			memcpy(&out[n++], base + b->data_off + j * 4, 4);
+	return n;
+}
+
+uint32
+sift_scope_monthmap_bucket_granules(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeMonthBucket *b, uint32 *out, uint32 max)
+{
+	SiftScopeMonthMapHeader h;
+	const char *base = m->monthmap.p + r->monthmap_off;
+	uint32		ncells;
+
+	if (max == 0)
+		return 0;
+	if (monthmap_cells(m, r, &ncells) != NULL)
+	{
+		out[0] = 0;
+		return 1;
+	}
+	if (!(r->flags & SIFT_L2_HAS_MONTHMAP))
+		return 0;
+	memcpy(&h, base, sizeof(h));
+	return bucket_granules(base, &h, b, out, max);
+}
+
 uint32
 sift_scope_monthmap_granules(const SiftScopeMeta *m, const SiftScopeL2Root *r, int32 month, uint32 *out, uint32 max)
 {
 	SiftScopeMonthMapHeader h;
 	const char *base = m->monthmap.p + r->monthmap_off;
-	uint32		n = 0,
+	uint32		lo = 0,
+				hi,
 				ncells;
 	const SiftScopeMonthCell *cells = monthmap_cells(m, r, &ncells);
 
 	if (cells != NULL)
 	{
-		for (uint32 i = 0; i < ncells && max > 0; i++)
+		for (hi = ncells; max > 0 && lo < hi;)
 		{
+			uint32		mid = lo + (hi - lo) / 2;
 			SiftScopeMonthCell c;
 
-			memcpy(&c, &cells[i], sizeof(c));
+			memcpy(&c, &cells[mid], sizeof(c));
 			if (c.month_id == month)
 			{
 				out[0] = 0;
 				return 1;
 			}
+			if (c.month_id < month)
+				lo = mid + 1;
+			else
+				hi = mid;
 		}
 		return 0;
 	}
 	if (!(r->flags & SIFT_L2_HAS_MONTHMAP))
 		return 0;
 	memcpy(&h, base, sizeof(h));
-	for (uint32 i = 0; i < h.nmonths; i++)
+	for (hi = h.nmonths; lo < hi;)
 	{
+		uint32		mid = lo + (hi - lo) / 2;
 		SiftScopeMonthBucket b;
 
-		memcpy(&b, base + sizeof(h) + i * sizeof(b), sizeof(b));
-		if (b.month_id != month)
-			continue;
-		if (b.flags & SIFT_MMAP_BITSET)
-		{
-			for (uint32 g = 0; g < h.ngranules && n < max; g++)
-				if (base[b.data_off + g / 8] & (1 << (g % 8)))
-					out[n++] = g;
-		}
-		else if (b.flags & SIFT_MMAP_LIST16)
-		{
-			for (uint32 j = 0; j < b.count && n < max; j++)
-			{
-				uint16		v;
-
-				memcpy(&v, base + b.data_off + j * 2, 2);
-				out[n++] = v;
-			}
-		}
+		memcpy(&b, base + sizeof(h) + mid * sizeof(b), sizeof(b));
+		if (b.month_id == month)
+			return bucket_granules(base, &h, &b, out, max);
+		if (b.month_id > month)
+			lo = mid + 1;
 		else
-			for (uint32 j = 0; j < b.count && n < max; j++)
-				memcpy(&out[n++], base + b.data_off + j * 4, 4);
-		break;
+			hi = mid;
 	}
-	return n;
+	return 0;
 }
 
 /* ---------------------------------------------------------------------------
  * 3. The newest rows of a key
  * ------------------------------------------------------------------------- */
 
-/* The newest rows found so far, descending, at most cap: a sorted insertion */
+/* The newest rows found so far, at most cap: a min-heap, the oldest of them at e[0]; set_finish puts them newest first */
 typedef struct NewestSet
 {
 	SiftScopeNewest *e;
@@ -513,21 +598,58 @@ typedef struct NewestSet
 } NewestSet;
 
 static void
+heap_down(SiftScopeNewest *e, uint32 n, uint32 at)
+{
+	SiftScopeNewest v = e[at];
+
+	for (;;)
+	{
+		uint32		c = 2 * at + 1;
+
+		if (c >= n)
+			break;
+		if (c + 1 < n && sift_newest_cmp(&e[c + 1], &e[c]) < 0)
+			c++;
+		if (sift_newest_cmp(&e[c], &v) >= 0)
+			break;
+		e[at] = e[c];
+		at = c;
+	}
+	e[at] = v;
+}
+
+static void
 set_offer(NewestSet *s, const SiftScopeNewest *c)
 {
-	uint32		at = s->n;
-
-	if (s->n == s->cap && sift_newest_cmp(c, &s->e[s->n - 1]) <= 0)
-		return;
 	if (s->n < s->cap)
-		s->n++;
-	while (at > 0 && sift_newest_cmp(c, &s->e[at - 1]) > 0)
 	{
-		if (at < s->n)
-			s->e[at] = s->e[at - 1];
-		at--;
+		uint32		at = s->n++;
+
+		while (at > 0 && sift_newest_cmp(c, &s->e[(at - 1) / 2]) < 0)
+		{
+			s->e[at] = s->e[(at - 1) / 2];
+			at = (at - 1) / 2;
+		}
+		s->e[at] = *c;
 	}
-	s->e[at] = *c;
+	else if (s->n > 0 && sift_newest_cmp(c, &s->e[0]) > 0)
+	{
+		s->e[0] = *c;
+		heap_down(s->e, s->n, 0);
+	}
+}
+
+static void
+set_finish(NewestSet *s)
+{
+	for (uint32 n = s->n; n > 1; n--)
+	{
+		SiftScopeNewest top = s->e[0];
+
+		s->e[0] = s->e[n - 1];
+		heap_down(s->e, n - 1, 0);
+		s->e[n - 1] = top;
+	}
 }
 
 /* Walks the month map newest month first and fills set with the newest live rows older than bound (NULL: no bound) */
@@ -555,9 +677,9 @@ scan_months(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEnt
 
 		if (bound != NULL && mstart > bound->time)
 			continue;
-		if (set->n == set->cap && mend <= set->e[set->n - 1].time)
+		if (set->n == set->cap && mend <= set->e[0].time)
 			break;
-		ng = sift_scope_monthmap_granules(m, r, bk[i].month_id, ords, sift_scope_monthmap_ngranules(m, r));
+		ng = sift_scope_monthmap_bucket_granules(m, r, &bk[i], ords, sift_scope_monthmap_ngranules(m, r));
 		for (uint32 g = 0; g < ng; g++)
 		{
 			const SiftScopeGranRef *ref = &refs[ords[g]];
@@ -569,7 +691,7 @@ scan_months(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEnt
 				uint32		nr;
 
 				if (st[s].time_min > st[s].time_max || (bound != NULL && st[s].time_min > bound->time) || st[s].time_max < mstart ||
-					st[s].time_min >= mend || (set->n == set->cap && st[s].time_max < set->e[set->n - 1].time))
+					st[s].time_min >= mend || (set->n == set->cap && st[s].time_max < set->e[0].time))
 					continue;
 				nr = e->scan_stride(e->arg, ref->global_granule_idx, s, ref->slice_id != SIFT_SCOPE_PURE_GRANULE, r->scope_key, rows);
 				for (uint32 k = 0; k < nr; k++)
@@ -581,6 +703,7 @@ scan_months(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEnt
 			}
 		}
 	}
+	set_finish(set);
 	pfree(bk);
 	pfree(refs);
 	pfree(ords);
@@ -681,13 +804,14 @@ ring_walk(const SiftScopeMeta *m, const SiftScopeL2Root *r, uint32 ring, const S
 	{
 		uint32		nr;
 
-		if (set->n == set->cap && g[i].zmax < set->e[set->n - 1].time)
+		if (set->n == set->cap && g[i].zmax < set->e[0].time)
 			break;
 		nr = e->scan_ring(e->arg, g[i].ref.global_granule_idx, ring, g[i].ref.slice_id != SIFT_SCOPE_PURE_GRANULE, r->scope_key, INT64_MIN, INT64_MAX, rows);
 		for (uint32 k = 0; k < nr; k++)
 			if (bound == NULL || sift_newest_cmp(&rows[k], bound) < 0)
 				set_offer(set, &rows[k]);
 	}
+	set_finish(set);
 	pfree(g);
 	pfree(rows);
 }

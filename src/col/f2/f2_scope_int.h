@@ -48,9 +48,30 @@ typedef struct SiftF2ScopeSlot
 	SiftTidIndexEntry *tix;
 	bool		unseen;			/* a row of it may be one the snapshot does not see: its partition has pending deletes, or its inserters are not settled */
 	bool		px_lazy;		/* its partition has pending deletes that px does not hold yet: the first read of the rows of a granule builds it (sift_f2s_slot_px) */
+	bool		exc_read;
+	uint32		nexc;
+	const struct SiftVariantExcSummary *exc;	/* the leaves the part keeps exceptions of (SEC_VARIANT_EXC), read once */
 } SiftF2ScopeSlot;
 
-#define SIFT_F2S_MEMBER_GRANULES 8
+/* part_gen -> a small integer (the slot of the part, its index in a manifest, ...): open-addressed, load at most one half; a gen of 0 is no key */
+typedef struct SiftGenMap
+{
+	uint64	   *gen;
+	uint32	   *val;
+	uint32		mask;
+} SiftGenMap;
+
+/* The rows of a granule (of the slot of an entity part) that leave the cubes, kept for the 16 granules asked for last */
+typedef struct SiftF2ScopeExcl
+{
+	int			slot;			/* -1: none */
+	uint32		g;
+	uint32		n;
+	uint16	   *rows;
+} SiftF2ScopeExcl;
+
+#define SIFT_F2S_EXCL_SLOTS 16
+
 #define SIFT_SCOPE_OVERLAY_KEPT_PCT 60
 
 typedef struct SiftF2ScopeParts
@@ -66,14 +87,18 @@ typedef struct SiftF2ScopeParts
 	MemoryContext scx;		/* the strides of the granule asked for last: the caller reads them while it decodes the rows of others, which reset gcx */
 	MemoryContext dcx;		/* the dead rows of the granules asked for, kept for the keys that follow */
 	SiftScopeRows **dead_rows;
-	MemoryContext mcx;		/* the rows of the granules a member's cube was read from: the members of an edit are neighbours in the order of the parts, and each part holds them */
-	SiftScopeRows *mrows[SIFT_F2S_MEMBER_GRANULES];
-	uint32		mgidx[SIFT_F2S_MEMBER_GRANULES];
-	int			nm;
+	MemoryContext dcx2;		/* the member and time of the granule the stride scans decoded last: the strides of a granule are scanned one after the other */
+	SiftScopeRows dec_rows;
+	int			dec_slot;
+	uint32		dec_g;
+	SiftGenMap	gen_map;		/* part_gen -> slot of the first gen_map_n slots */
+	int			gen_map_n;
 	Snapshot	snap;
 	Relation	heap;
 	SiftScopePairMap *pm;
 	SiftScopePairMap *pm_object;	/* with edited pairs: the map of the object that pm patches, NULL: pm (or the map the read loads) is it */
+	const int64 *fkeys;			/* the keys the read asks for (ascending, distinct; none: every key): a row of the overlay whose member owns none of them is not kept, unless the rows are kept for other statements */
+	uint32		nfkeys;
 	const int64 *changed;		/* the members whose pairs changed since the summary for the keys of the read, ascending (the edits pm holds) */
 	uint32		nchanged;
 	uint64		pair_gen;		/* the generation of the object whose pairs are the current ones: the map is the backend's (f2_scope_pairs.c); 0: read it from the pair relation */
@@ -81,10 +106,8 @@ typedef struct SiftF2ScopeParts
 	SiftScopeMonthTable months;
 	bool		cube_live;
 	int			excl_leaf;		/* a query for the rows whose leaf is NULL: the leaf whose non-NULL rows leave the cubes; -1 for none */
-	SiftF2ScopeSlot *xs;		/* the granule the rows that leave the cubes were last made for */
-	uint32		xg;
-	uint32		xn;
-	uint16	   *xrows;
+	SiftF2ScopeExcl xcache[SIFT_F2S_EXCL_SLOTS];
+	uint16	   *xscratch;		/* the dead and the non-NULL rows of a granule while the rows that leave are made: 3 * SIFT_GRANULE_ROWS */
 	SiftXidCache xc;
 	struct SiftF2ScopeRowSet *added;	/* the rows of the parts and slabs the summary does not hold, as the snapshot sees them (f2_scope_over.c) */
 	struct SiftF2ScopeRowSet *gone;		/* the rows of the parts it holds that the snapshot does not see, read when the first key asks for them */
@@ -95,6 +118,37 @@ typedef struct SiftF2ScopeParts
 	bool		settled_ok;				/* the rows may be kept: the snapshot is settled for them and the read keeps no leaf out */
 	struct SiftF2ScopeSnap *settled;	/* the entry of the backend's cache that holds the rows above for the statements that follow while the parts are as they are (f2_scope_snap.h), NULL: they are the statement's own */
 } SiftF2ScopeParts;
+
+#define SIFT_F2S_SRC_PART 0x80000000U
+
+struct SiftF2ScopeRowSet
+{
+	uint32		n;
+	uint32		cap;
+	int64	   *member;
+	int64	   *time;
+	uint8	   *time_null;
+	int64	   *dim[SIFT_SCOPE_DIMS_CAP];
+	int64	   *meas[SIFT_SCOPE_MEAS_CAP];
+	uint8	   *meas_null[SIFT_SCOPE_MEAS_CAP];
+	SiftScopeRows rows;
+	uint32		nruns;
+	uint32	   *run_first;		/* the rows are ordered by member: run j is rows run_first[j] .. run_first[j + 1] - 1, those of one member */
+	uint32		nkeys;			/* the keys of the pairs of the object, ascending (key_val), each with the runs of the members that hold it: key_run[key_off[k] .. key_off[k + 1] - 1] */
+	int64	   *key_val;
+	uint32	   *key_off;
+	uint32	   *key_run;
+	SiftScopeShape shape;		/* the rows are kept for other statements: nothing here points into the one that read them */
+	const SiftF2ScopeCfg *sc;
+	uint32	   *src;			/* where the cells of the row are: SIFT_F2S_SRC_PART | slot of the entity part (then g and row: the granule and the row of it), else the index in bufs (then row) */
+	uint32	   *g;
+	uint32	   *row;
+	struct SiftRowBuf **bufs;	/* the slabs the rows were read from, kept for the cells of the rows (the context of the rows) */
+	uint32		nbufs;
+	int			cur_slot;		/* while the rows of a granule are added: its slot and its index in the part */
+	uint32		cur_g;
+	SiftF2ScopeParts *only_keys;	/* a statement's own rows: only those whose member owns one of the keys it asks for (p->fkeys) are kept */
+};
 
 static inline bool
 sift_f2s_is_table(const SiftF2Store *store)
@@ -138,6 +192,17 @@ extern SiftPart *sift_f2s_slot_part(SiftF2ScopeParts *p, SiftF2ScopeSlot *s);
 extern const SiftGranuleDesc *sift_f2s_slot_gdir(SiftF2ScopeParts *p, SiftF2ScopeSlot *s);
 extern SiftF2ScopeSlot *sift_f2s_slot_of(SiftF2ScopeParts *p, uint32 gidx, uint32 *g);
 extern SiftF2ScopeSlot *sift_f2s_slot_of_gen(SiftF2ScopeParts *p, uint64 gen);
+extern void sift_f2s_gen_map_init(SiftGenMap *gm, uint32 expected);
+extern void sift_f2s_gen_map_put(SiftGenMap *gm, uint64 gen, uint32 val);
+extern bool sift_f2s_gen_map_find(const SiftGenMap *gm, uint64 gen, uint32 *val);
+/* The part's exceptions of leaves (SEC_VARIANT_EXC), read once; NULL: none */
+extern const struct SiftVariantExcSummary *sift_f2s_slot_exc(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 *n);
+/* What a decode of a granule reads: the leaves of the member, the time, the dimensions, the measures (the rings the row asks for in want_extra) */
+enum { SIFT_F2S_NEED_MEMBER = 1, SIFT_F2S_NEED_TIME = 2, SIFT_F2S_NEED_DIMS = 4, SIFT_F2S_NEED_MEAS = 8, SIFT_F2S_NEED_ALL = 15 };
+extern void sift_f2s_decode_cols(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, uint32 nat, uint32 need, SiftScopeRows *r);
+extern bool sift_f2s_has_row(const uint16 *rows, uint32 n, uint32 row);
+extern void sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, int32 month, SiftScopeCubeAcc *out, bool *has);
+extern bool sift_f2s_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out);
 /* The chunk of the part that holds the leaf: the leaf itself in an index and in a part that has the schema of the table */
 extern int sift_f2s_slot_phys(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf);
 extern SiftZone sift_f2s_slot_zone(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf, uint32 g);
@@ -156,9 +221,12 @@ extern bool sift_f2s_overlay_open(SiftF2ScopeParts *p, const SiftManifestRead *m
 extern const SiftPendDelIndex *sift_f2s_slot_px(SiftF2ScopeParts *p, SiftF2ScopeSlot *s);
 /* The member belongs to the scope key under the pairs of the read */
 extern bool sift_f2s_owns(SiftF2ScopeParts *p, int64 member, int64 key);
+extern uint32 *sift_f2s_key_runs(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 key, uint32 *n);
+extern bool sift_f2s_owns_any(SiftF2ScopeParts *p, int64 member, const int64 *keys, uint32 nkeys);
 /* f2_scope_cur.c: the summary of scope ord as the directory names it, opened in *m (the caller closes it); false when the scope has none. Does it name the part */
-extern bool sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m);
-extern bool sift_f2s_meta_names(const SiftScopeMeta *m, uint64 part_gen);
+extern bool sift_f2s_object(Relation rel, int ord, SiftScopeMeta *m, uint32 open_flags);
+/* gm: the part generations the summary names -> their index in its part map */
+extern void sift_f2s_meta_map(const SiftScopeMeta *m, SiftGenMap *gm);
 extern bool sift_f2s_pairs_unchanged(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap);
 /* The members whose pairs of the scope keys changed since the summary, ascending, palloc'd in *out (NULL: none); false when the journals cannot name them, or they are more than a read overlays. nkeys 0: every key, and any change is false */
 extern bool sift_f2s_pair_edits(Relation rel, int ord, const SiftScopeMeta *m, Snapshot snap, const int64 *keys, uint32 nkeys, int64 **out, uint32 *nout);

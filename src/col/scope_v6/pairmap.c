@@ -57,92 +57,6 @@ sift_spm_build(SiftScopeMemberKey *pairs, uint32 n, bool multiset)
 	return pm;
 }
 
-static int32
-patched_ordinal(const SiftScopePairMap *pm, const SiftScopePairMap *out, int64 key)
-{
-	const int32 at = sift_spm_key_ordinal(pm, key);
-
-	for (uint32 i = pm->nkeys; at < 0 && i < out->nkeys; i++)
-		if (out->scope_keys[i] == key)
-			return (int32) i;
-	return at;
-}
-
-SiftScopePairMap *
-sift_spm_patched(const SiftScopePairMap *pm, const int64 *members, uint32 nm, const SiftScopeMemberKey *now, uint32 nnow)
-{
-	SiftScopePairMap *out = palloc0(sizeof(*out));
-	uint32		i = 0,
-				j = 0,
-				np = 0;
-
-	out->member_ids = palloc(sizeof(int64) * Max(pm->nmembers + nm, 1));
-	out->offsets = palloc(sizeof(uint32) * (pm->nmembers + nm + 1));
-	out->key_ordinals = palloc(sizeof(uint32) * Max(pm->npairs + nnow, 1));
-	out->scope_keys = palloc(sizeof(int64) * Max(pm->nkeys + nnow, 1));
-	memcpy(out->scope_keys, pm->scope_keys, sizeof(int64) * pm->nkeys);
-	out->nkeys = pm->nkeys;
-	for (uint32 k = 0; k < nnow; k++)
-		if (patched_ordinal(pm, out, now[k].key) < 0)
-			out->scope_keys[out->nkeys++] = now[k].key;
-	while (i < pm->nmembers || j < nnow)
-	{
-		if (j < nnow && (i >= pm->nmembers || now[j].member <= pm->member_ids[i]))
-		{
-			const int64 m = now[j].member;
-
-			out->member_ids[out->nmembers] = m;
-			out->offsets[out->nmembers++] = np;
-			for (; j < nnow && now[j].member == m; j++)
-				out->key_ordinals[np++] = (uint32) patched_ordinal(pm, out, now[j].key);
-			i += i < pm->nmembers && pm->member_ids[i] == m;
-		}
-		else if (nm > 0 && bsearch(&pm->member_ids[i], members, nm, sizeof(int64), sift_cmp_i64) != NULL)
-			i++;
-		else
-		{
-			out->member_ids[out->nmembers] = pm->member_ids[i];
-			out->offsets[out->nmembers++] = np;
-			for (uint32 q = pm->offsets[i]; q < pm->offsets[i + 1]; q++)
-				out->key_ordinals[np++] = pm->key_ordinals[q];
-			i++;
-		}
-	}
-	out->offsets[out->nmembers] = np;
-	out->npairs = np;
-	return out;
-}
-
-void
-sift_spm_free(SiftScopePairMap *pm)
-{
-	pfree(pm->member_ids);
-	pfree(pm->offsets);
-	pfree(pm->key_ordinals);
-	pfree(pm->scope_keys);
-	pfree(pm);
-}
-
-int32
-sift_spm_key_ordinal(const SiftScopePairMap *pm, int64 scope_key)
-{
-	uint32		lo = 0,
-				hi = pm->nkeys;
-
-	while (lo < hi)
-	{
-		uint32		mid = lo + (hi - lo) / 2;
-
-		if (pm->scope_keys[mid] == scope_key)
-			return (int32) mid;
-		if (pm->scope_keys[mid] < scope_key)
-			lo = mid + 1;
-		else
-			hi = mid;
-	}
-	return -1;
-}
-
 /* The first member at or after from whose id is >= member: galloping, then a binary search in the last step */
 static uint32
 member_lower_bound(const SiftScopePairMap *pm, uint32 from, int64 member)
@@ -172,6 +86,106 @@ member_lower_bound(const SiftScopePairMap *pm, uint32 from, int64 member)
 	return lo;
 }
 
+static int32
+base_ordinal(const int64 *keys, uint32 n, int64 key)
+{
+	uint32		lo = 0,
+				hi = n;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (keys[mid] == key)
+			return (int32) mid;
+		if (keys[mid] < key)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return -1;
+}
+
+int32
+sift_spm_key_ordinal(const SiftScopePairMap *pm, int64 scope_key)
+{
+	int32		at;
+
+	if (pm->base == NULL)
+		return base_ordinal(pm->scope_keys, pm->nkeys, scope_key);
+	if ((at = base_ordinal(pm->base->scope_keys, pm->base_nkeys, scope_key)) >= 0)
+		return at;
+	at = base_ordinal(pm->extra_keys, pm->nextra_keys, scope_key);
+	return at < 0 ? -1 : (int32) pm->base_nkeys + at;
+}
+
+int64
+sift_spm_key_of(const SiftScopePairMap *pm, uint32 ord)
+{
+	if (pm->base == NULL)
+		return pm->scope_keys[ord];
+	return ord < pm->base_nkeys ? pm->base->scope_keys[ord] : pm->extra_keys[ord - pm->base_nkeys];
+}
+
+/*
+ * The map of the object with the pairs of members (ascending, distinct) replaced by now (by member, then key): the edited members get a small table of their own and every other
+ * member is the object's, which is borrowed and never copied. Keys new to the object are kept apart (extra_keys) and numbered after the object's. For the reads of one statement only.
+ */
+SiftScopePairMap *
+sift_spm_patched(const SiftScopePairMap *pm, const int64 *members, uint32 nm, const SiftScopeMemberKey *now, uint32 nnow)
+{
+	SiftScopePairMap *out = palloc0(sizeof(*out));
+	int64	   *extra = palloc(sizeof(int64) * Max(nnow, 1));
+	uint32		nx = 0,
+				u = 0;
+
+	for (uint32 k = 0; k < nnow; k++)
+		if (sift_spm_key_ordinal(pm, now[k].key) < 0)
+			extra[nx++] = now[k].key;
+	qsort(extra, nx, sizeof(int64), sift_cmp_i64);
+	for (uint32 k = 0; k < nx; k++)
+		if (u == 0 || extra[u - 1] != extra[k])
+			extra[u++] = extra[k];
+	out->base = pm;
+	out->base_nkeys = pm->nkeys;
+	out->extra_keys = extra;
+	out->nextra_keys = u;
+	out->nkeys = pm->nkeys + u;
+	out->tomb_members = memcpy(palloc(sizeof(int64) * Max(nm, 1)), members, sizeof(int64) * nm);
+	out->ntomb = nm;
+	out->member_ids = palloc(sizeof(int64) * Max(nnow, 1));
+	out->offsets = palloc(sizeof(uint32) * (nnow + 1));
+	out->key_ordinals = palloc(sizeof(uint32) * Max(nnow, 1));
+	for (uint32 k = 0; k < nnow; k++)
+	{
+		if (k == 0 || now[k].member != now[k - 1].member)
+		{
+			out->member_ids[out->nmembers] = now[k].member;
+			out->offsets[out->nmembers++] = k;
+		}
+		out->key_ordinals[k] = (uint32) sift_spm_key_ordinal(out, now[k].key);
+	}
+	out->offsets[out->nmembers] = nnow;
+	out->npairs = nnow;
+	return out;
+}
+
+void
+sift_spm_free(SiftScopePairMap *pm)
+{
+	pfree(pm->member_ids);
+	pfree(pm->offsets);
+	pfree(pm->key_ordinals);
+	if (pm->base != NULL)
+	{
+		pfree(pm->tomb_members);
+		pfree(pm->extra_keys);
+	}
+	else
+		pfree(pm->scope_keys);
+	pfree(pm);
+}
+
 bool
 sift_spm_find(SiftScopePairMap *pm, int64 member, uint32 *lo, uint32 *hi)
 {
@@ -186,6 +200,49 @@ sift_spm_find(SiftScopePairMap *pm, int64 member, uint32 *lo, uint32 *hi)
 	*lo = pm->offsets[at];
 	*hi = pm->offsets[at + 1];
 	return true;
+}
+
+bool
+sift_spm_slice(const SiftScopePairMap *pm, int64 member, const uint32 **ords, uint32 *n)
+{
+	uint32		at;
+
+	if (pm->base != NULL && bsearch(&member, pm->tomb_members, pm->ntomb, sizeof(int64), sift_cmp_i64) == NULL)
+		return sift_spm_slice(pm->base, member, ords, n);
+	at = member_lower_bound(pm, 0, member);
+	if (at >= pm->nmembers || pm->member_ids[at] != member)
+		return false;
+	*ords = pm->key_ordinals + pm->offsets[at];
+	*n = pm->offsets[at + 1] - pm->offsets[at];
+	return true;
+}
+
+/* A member's keys are ascending by key (the ordinals of a plain map, the order of now of a patch): a short slice is read through, a long one is searched */
+bool
+sift_spm_owns_key(const SiftScopePairMap *pm, int64 member, int64 key)
+{
+	const uint32 *ords;
+	uint32		n,
+				lo = 0;
+
+	if (!sift_spm_slice(pm, member, &ords, &n))
+		return false;
+	while (n > 8 && lo < n)
+	{
+		uint32		mid = lo + (n - lo) / 2;
+		int64		k = sift_spm_key_of(pm, ords[mid]);
+
+		if (k == key)
+			return true;
+		if (k < key)
+			lo = mid + 1;
+		else
+			n = mid;
+	}
+	for (; lo < n; lo++)
+		if (sift_spm_key_of(pm, ords[lo]) == key)
+			return true;
+	return false;
 }
 
 bool
@@ -211,13 +268,13 @@ sift_spm_first_multi(const SiftScopePairMap *pm, int64 *member)
 int64
 sift_spm_primary_key(SiftScopePairMap *pm, int64 member, bool *multi)
 {
-	uint32		lo,
-				hi;
-	bool		found = sift_spm_find(pm, member, &lo, &hi) && lo < hi;
+	const uint32 *ords;
+	uint32		n;
+	bool		found = sift_spm_slice(pm, member, &ords, &n) && n > 0;
 
 	if (multi != NULL)
-		*multi = found && hi - lo > 1;
-	return found ? pm->scope_keys[pm->key_ordinals[lo]] : SIFT_SCOPE_UNASSIGNED_KEY;
+		*multi = found && n > 1;
+	return found ? sift_spm_key_of(pm, ords[0]) : SIFT_SCOPE_UNASSIGNED_KEY;
 }
 
 uint32
@@ -255,16 +312,6 @@ sift_spm_cluster_auto(const SiftScopePairMap *pm)
 	return pm->nmembers > 0 && sift_spm_single_pct(pm) >= SIFT_SCOPE_PP_AUTO_PCT && !pairs_repeat(pm) ? sift_spm_cluster_flags(pm) : 0;
 }
 
-static uint32
-key_count(const SiftScopePairMap *pm, uint32 at, int64 key)
-{
-	uint32		n = 0;
-
-	for (uint32 i = pm->offsets[at]; i < pm->offsets[at + 1]; i++)
-		n += pm->scope_keys[pm->key_ordinals[i]] == key;
-	return n;
-}
-
 static void
 diff_add(SiftScopeMemberKey **pairs, uint32 *n, uint32 *cap, int64 member, int64 key)
 {
@@ -276,16 +323,29 @@ diff_add(SiftScopeMemberKey **pairs, uint32 *n, uint32 *cap, int64 member, int64
 	(*pairs)[(*n)++] = (SiftScopeMemberKey) {member, key};
 }
 
-/* The pairs of member at in pm that are not held the same number of times by member bt in other (bt < 0: the member is not there) */
+/* The keys of member ia of a that b holds a different number of times (ib < 0: b does not have the member), each once: one pass over the two ascending slices, a run of a key at a time */
 static void
-diff_member(const SiftScopePairMap *pm, uint32 at, const SiftScopePairMap *other, int64 bt, SiftScopeMemberKey **pairs, uint32 *n, uint32 *cap)
+diff_member(const SiftScopePairMap *a, uint32 ia, const SiftScopePairMap *b, int64 ib, SiftScopeMemberKey **pairs, uint32 *n, uint32 *cap)
 {
-	for (uint32 i = pm->offsets[at]; i < pm->offsets[at + 1]; i++)
-	{
-		int64		key = pm->scope_keys[pm->key_ordinals[i]];
+	uint32		pa = a->offsets[ia],
+				ea = a->offsets[ia + 1],
+				pb = ib < 0 ? 0 : b->offsets[ib],
+				eb = ib < 0 ? 0 : b->offsets[ib + 1];
 
-		if (bt < 0 || key_count(pm, at, key) != key_count(other, (uint32) bt, key))
-			diff_add(pairs, n, cap, pm->member_ids[at], key);
+	while (pa < ea || pb < eb)
+	{
+		int64		ka = pa < ea ? a->scope_keys[a->key_ordinals[pa]] : 0,
+					kb = pb < eb ? b->scope_keys[b->key_ordinals[pb]] : 0,
+					key = pb >= eb || (pa < ea && ka <= kb) ? ka : kb;
+		uint32		ca = 0,
+					cb = 0;
+
+		for (; pa < ea && a->scope_keys[a->key_ordinals[pa]] == key; pa++)
+			ca++;
+		for (; pb < eb && b->scope_keys[b->key_ordinals[pb]] == key; pb++)
+			cb++;
+		if (ca != cb)
+			diff_add(pairs, n, cap, a->member_ids[ia], key);
 	}
 }
 

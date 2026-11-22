@@ -9,6 +9,7 @@
 #include "nodes/pg_list.h"
 
 #include "agg/v6/v6.h"
+#include "col/f2/f2_scope.h"
 
 /* The columns of the tuple the node leaves, in the order of its scan tlist: the scope key, the calendar month of the time leaf, or the aggregate of that number */
 #define SCOPE_COL_KEY		(-1)
@@ -55,5 +56,8 @@ typedef struct ScopeSpec
 extern bool sift_v6_plain_table(const RangeTblEntry *rte);
 extern List *sift_v6_scope_spec_pack(const ScopeSpec *s);
 extern ScopeSpec *sift_v6_scope_spec_unpack(const List *ints);
+
+/* The cells of the leaves (leaves[0 .. nleaves - 1]) of the newest rows of a key under the order of the statement, from its ring and the rows the summary lacks; false: the join answers */
+extern bool sift_v6_scope_topn(SiftF2Scope *sc, const ScopeSpec *sp, int64 key, bool no_key, int tie_leaf, const int *leaves, int nleaves, SiftF2ScopeCell **out, int *nout);
 
 #endif							/* SIFT_AGG_V6_SCOPE_INT_H */

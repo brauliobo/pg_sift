@@ -40,7 +40,10 @@ sift_f2s_parts_new(Relation rel, SiftF2Store *store, Relation heap, const SiftF2
 	p->pm = pm;
 	p->gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope granule");
 	p->scx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope strides");
-	p->mcx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope member granule");
+	p->dcx2 = sift_mem_allocset_create(CurrentMemoryContext, "sift scope stride granule");
+	p->dec_slot = -1;
+	for (int i = 0; i < SIFT_F2S_EXCL_SLOTS; i++)
+		p->xcache[i].slot = -1;
 	return p;
 }
 
@@ -131,7 +134,7 @@ phys_cfg(SiftF2ScopeParts *p, SiftF2ScopeSlot *s)
 }
 
 static void
-decode_sel(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, uint32 nat, bool member_only, SiftScopeRows *r)
+decode_sel(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, uint32 nat, uint32 need, SiftScopeRows *r)
 {
 	const SiftF2ScopeCfg ph = phys_cfg(p, s),
 			   *sc = &ph;
@@ -143,28 +146,27 @@ decode_sel(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, 
 	SiftGranuleView v;
 	RowSel		sel;
 
-	want[sc->member_leaf] = true;
+	want[sc->member_leaf] = (need & SIFT_F2S_NEED_MEMBER) != 0;
 	if (sc->time_leaf >= 0)
-		want[sc->time_leaf] = !member_only;
+		want[sc->time_leaf] = (need & SIFT_F2S_NEED_TIME) != 0;
 	for (int d = 0; d < sc->shape.ndims; d++)
-		want[sc->dim_leaf[d]] = !member_only;
+		want[sc->dim_leaf[d]] = (need & SIFT_F2S_NEED_DIMS) != 0;
 	for (int m = 0; m < sc->shape.nmeas; m++)
-		want[sc->meas_leaf[m]] = !member_only;
+		want[sc->meas_leaf[m]] = (need & SIFT_F2S_NEED_MEAS) != 0;
 	for (int q = 1; q < sc->nrings; q++)
 		want[sc->ring_leaf[q - 1]] |= (want_extra >> (q - 1) & 1) != 0;
 	rec = sift_part_read_granule_cols(p->rel, part, g, want, &gd);
 	v = sift_granule_open_part(p->rel, part, rec, gd.data_len, &gd);
 	sel = (RowSel) {at, at != NULL ? nat : gd.nrows};
 	*r = (SiftScopeRows) {.n = sel.n,.want_extra = want_extra};
-	r->member = col_ints(&v, sc->member_leaf, sel, &r->member_null);
-	if (member_only)
-		return;
-	if (sc->time_leaf >= 0)
+	if (need & SIFT_F2S_NEED_MEMBER)
+		r->member = col_ints(&v, sc->member_leaf, sel, &r->member_null);
+	if (sc->time_leaf >= 0 && (need & SIFT_F2S_NEED_TIME))
 		r->time = scaled_ints(&v, sc->time_leaf, sel, sc->time_unit, &r->time_null);
 	for (int q = 1; q < sc->nrings; q++)
 		if (want_extra >> (q - 1) & 1)
 			r->extra[q - 1] = scaled_ints(&v, sc->ring_leaf[q - 1], sel, sc->ring_unit[q - 1], &r->extra_null[q - 1]);
-	for (int d = 0; d < sc->shape.ndims; d++)
+	for (int d = 0; d < sc->shape.ndims && (need & SIFT_F2S_NEED_DIMS); d++)
 	{
 		const uint8 *nl;
 		int64	   *c = (int64 *) col_ints(&v, sc->dim_leaf[d], sel, &nl);
@@ -173,7 +175,7 @@ decode_sel(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, 
 			c[i] = nl[i] ? -1 : c[i];
 		r->dim[d] = c;
 	}
-	for (int m = 0; m < sc->shape.nmeas; m++)
+	for (int m = 0; m < sc->shape.nmeas && (need & SIFT_F2S_NEED_MEAS); m++)
 	{
 		const int	phys = sc->meas_leaf[m];
 
@@ -184,7 +186,13 @@ decode_sel(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, 
 static void
 decode_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, SiftScopeRows *r)
 {
-	decode_sel(p, s, g, NULL, 0, false, r);
+	decode_sel(p, s, g, NULL, 0, SIFT_F2S_NEED_ALL, r);
+}
+
+void
+sift_f2s_decode_cols(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, uint32 nat, uint32 need, SiftScopeRows *r)
+{
+	decode_sel(p, s, g, at, nat, need, r);
 }
 
 static SiftScopeZone
@@ -268,15 +276,30 @@ typedef struct TimeRow
 	uint32		row;
 } TimeRow;
 
-static int
-newest_first(const void *a, const void *b)
+/* newest first: the later time, then the later row */
+static inline bool
+newer(const TimeRow *a, const TimeRow *b)
 {
-	const TimeRow *x = a,
-			   *y = b;
-
-	return x->time != y->time ? (x->time < y->time ? 1 : -1) : (x->row < y->row ? 1 : x->row > y->row ? -1 : 0);
+	return a->time != b->time ? a->time > b->time : a->row > b->row;
 }
 
+static void
+oldest_down(TimeRow *h, uint32 n, uint32 at)
+{
+	TimeRow		v = h[at];
+
+	for (uint32 c; (c = 2 * at + 1) < n; at = c)
+	{
+		if (c + 1 < n && newer(&h[c], &h[c + 1]))
+			c++;
+		if (!newer(&v, &h[c]))
+			break;
+		h[at] = h[c];
+	}
+	h[at] = v;
+}
+
+/* The newest max rows of the order leaf of a granule: the leaf alone is decoded, and a heap of the newest keeps the cut in one pass */
 static uint32
 src_tail_ring(void *arg, uint32 gidx, uint32 ring, uint32 max, SiftScopeTail *out)
 {
@@ -284,26 +307,45 @@ src_tail_ring(void *arg, uint32 gidx, uint32 ring, uint32 max, SiftScopeTail *ou
 	uint32		g;
 	SiftF2ScopeSlot *s = sift_f2s_slot_of(p, gidx, &g);
 	SiftScopeRows r = {.want_extra = ring > 0 ? 1U << (ring - 1) : 0};
-	TimeRow    *t;
+	TimeRow    *h;
 	uint32		n = 0;
 	MemoryContext old;
 
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
-	decode_rows(p, s, g, &r);
+	decode_sel(p, s, g, NULL, 0, ring == 0 ? SIFT_F2S_NEED_TIME : 0, &r);
 	{
 		const int64 *val = ring == 0 ? r.time : r.extra[ring - 1];
 		const uint8 *nl = ring == 0 ? r.time_null : r.extra_null[ring - 1];
 
-		t = palloc(Max(r.n, 1) * sizeof(TimeRow));
-		for (uint32 i = 0; i < r.n; i++)
-			if (!nl[i])
-				t[n++] = (TimeRow) {val[i], i};
+		h = palloc(Max(Min(r.n, max), 1) * sizeof(TimeRow));
+		for (uint32 i = 0; i < r.n && max > 0; i++)
+		{
+			const TimeRow c = {val[i], i};
+
+			if (nl[i])
+				continue;
+			if (n < max)
+			{
+				uint32		at = n++;
+
+				for (; at > 0 && newer(&h[(at - 1) / 2], &c); at = (at - 1) / 2)
+					h[at] = h[(at - 1) / 2];
+				h[at] = c;
+			}
+			else if (newer(&c, &h[0]))
+			{
+				h[0] = c;
+				oldest_down(h, n, 0);
+			}
+		}
 	}
-	qsort(t, n, sizeof(TimeRow), newest_first);
-	n = Min(n, max);
-	for (uint32 i = 0; i < n; i++)
-		out[i] = (SiftScopeTail) {t[i].time, t[i].row};
+	for (uint32 k = n; k > 0; k--)
+	{
+		out[k - 1] = (SiftScopeTail) {h[0].time, h[0].row};
+		h[0] = h[k - 1];
+		oldest_down(h, k - 1, 0);
+	}
 	MemoryContextSwitchTo(old);
 	return n;
 }
@@ -374,13 +416,13 @@ sift_f2s_leaf_direct(SiftF2ScopeParts *p, int leaf)
 	{
 		SiftF2ScopeSlot *s = &p->s[i];
 		int			phys = sift_f2s_slot_phys(p, s, leaf);
-		uint64		len;
+		uint32		nex;
 		const SiftVariantExcSummary *ex;
 
 		if (phys < 0 || (s->map != NULL && s->map->mode[leaf] != SIFT_CMAP_DIRECT))
 			return false;
-		ex = sift_part_read_section(p->rel, sift_f2s_slot_part(p, s), SEC_VARIANT_EXC, &len);
-		for (int e = 0; ex != NULL && e < (int) (len / sizeof(SiftVariantExcSummary)); e++)
+		ex = sift_f2s_slot_exc(p, s, &nex);
+		for (uint32 e = 0; e < nex; e++)
 			if (ex[e].col == phys)
 				return false;
 	}
@@ -414,8 +456,8 @@ sift_f2s_source(SiftF2ScopeParts *p)
  * The rows of granule g that leave the cubes of the summary for the query: the rows a deletion vector holds as the snapshot sees it, and, for a query that asks for the rows whose leaf is
  * NULL (`deleted_at IS NULL`), the rows whose leaf is not. Ascending, kept for the granule last asked for.
  */
-static bool
-has_row(const uint16 *rows, uint32 n, uint32 row)
+bool
+sift_f2s_has_row(const uint16 *rows, uint32 n, uint32 row)
 {
 	uint32		lo = 0,
 				hi = n;
@@ -468,34 +510,38 @@ nonnull_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, uint16 *out)
 static uint32
 granule_excl(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 **rows)
 {
+	const int	slot = (int) (s - p->s);
+	SiftF2ScopeExcl *x = &p->xcache[(g + 5 * slot) % SIFT_F2S_EXCL_SLOTS];
 	const SiftDvGran *dg;
 	uint16	   *dead,
 			   *gone;
 	uint32		nd = 0,
 				nn = 0;
 
-	if (p->xs == s && p->xg == g)
+	if (x->slot == slot && x->g == g)
 	{
-		*rows = p->xrows;
-		return p->xn;
+		*rows = x->rows;
+		return x->n;
 	}
-	if (p->xrows == NULL)
-		p->xrows = MemoryContextAlloc(GetMemoryChunkContext(p), SIFT_GRANULE_ROWS * sizeof(uint16));
-	dead = palloc(SIFT_GRANULE_ROWS * sizeof(uint16));
-	gone = palloc(SIFT_GRANULE_ROWS * sizeof(uint16));
+	if (p->xscratch == NULL)
+		p->xscratch = MemoryContextAlloc(GetMemoryChunkContext(p), 3 * SIFT_GRANULE_ROWS * sizeof(uint16));
+	dead = p->xscratch;
+	gone = dead + SIFT_GRANULE_ROWS;
 	if ((dg = sift_f2s_slot_dv(p, s, g)) != NULL)
 		nd = sift_dv_visible_rows(dg, p->snap, dead, SIFT_GRANULE_ROWS);
 	if (p->excl_leaf >= 0)
 		nn = nonnull_rows(p, s, g, gone);
-	p->xn = sift_scope_excl_union(dead, nd, gone, nn, p->xrows, SIFT_GRANULE_ROWS);
-	SIFT_INVARIANT(p->xn <= SIFT_GRANULE_ROWS, "scope entity: %u rows leave a granule of at most %u", p->xn, (uint32) SIFT_GRANULE_ROWS);
-	p->xn = sift_f2s_unseen_rows(p, s, g, p->xrows, p->xn);
-	p->xs = s;
-	p->xg = g;
-	pfree(dead);
-	pfree(gone);
-	*rows = p->xrows;
-	return p->xn;
+	x->n = sift_scope_excl_union(dead, nd, gone, nn, gone + SIFT_GRANULE_ROWS, SIFT_GRANULE_ROWS);
+	SIFT_INVARIANT(x->n <= SIFT_GRANULE_ROWS, "scope entity: %u rows leave a granule of at most %u", x->n, (uint32) SIFT_GRANULE_ROWS);
+	x->n = sift_f2s_unseen_rows(p, s, g, gone + SIFT_GRANULE_ROWS, x->n);
+	if (x->rows != NULL)
+		pfree(x->rows);
+	x->rows = MemoryContextAlloc(GetMemoryChunkContext(p), Max(x->n, 1) * sizeof(uint16));
+	memcpy(x->rows, gone + SIFT_GRANULE_ROWS, x->n * sizeof(uint16));
+	x->slot = slot;
+	x->g = g;
+	*rows = x->rows;
+	return x->n;
 }
 
 static bool
@@ -507,7 +553,7 @@ ent_live(void *arg, uint32 gidx, uint32 row)
 	const uint16 *rows;
 	const uint32 n = granule_excl(p, s, g, &rows);
 
-	return !has_row(rows, n, row);
+	return !sift_f2s_has_row(rows, n, row);
 }
 
 static uint32
@@ -541,17 +587,7 @@ ent_strides(void *arg, uint32 gidx, const SiftTimeStride **out)
 static bool
 owns_member(SiftF2ScopeParts *p, int64 member, int64 key)
 {
-	uint32		lo,
-				hi;
-
-	SiftScopePairMap *pm = parts_pairs(p);
-
-	if (!sift_spm_find(pm, member, &lo, &hi))
-		return false;
-	for (uint32 i = lo; i < hi; i++)
-		if (pm->scope_keys[pm->key_ordinals[i]] == key)
-			return true;
-	return false;
+	return sift_spm_owns_key(parts_pairs(p), member, key);
 }
 
 static bool
@@ -560,10 +596,59 @@ ent_owns(void *arg, int64 member, int64 key)
 	return owns_member(arg, member, key);
 }
 
+/* The queried keys (ascending) a member belongs to: the shorter of its keys and the queried ones is looked up in the other */
+static uint32
+ent_owns_count(void *arg, int64 member, const int64 *keys, uint32 nkeys, bool semi)
+{
+	SiftScopePairMap *pm = parts_pairs(arg);
+	const uint32 *ords;
+	uint32		n,
+				owners = 0;
+
+	if (!sift_spm_slice(pm, member, &ords, &n))
+		return 0;
+	if (n <= nkeys)
+		for (uint32 j = 0; j < n && !(semi && owners > 0); j++)
+		{
+			int64		k = sift_spm_key_of(pm, ords[j]);
+
+			owners += bsearch(&k, keys, nkeys, sizeof(int64), sift_cmp_i64) != NULL;
+		}
+	else
+		for (uint32 j = 0; j < nkeys && !(semi && owners > 0); j++)
+			owners += sift_spm_owns_key(pm, member, keys[j]);
+	return owners;
+}
+
 bool
 sift_f2s_owns(SiftF2ScopeParts *p, int64 member, int64 key)
 {
 	return owns_member(p, member, key);
+}
+
+bool
+sift_f2s_owns_any(SiftF2ScopeParts *p, int64 member, const int64 *keys, uint32 nkeys)
+{
+	return ent_owns_count(p, member, keys, nkeys, true) > 0;
+}
+
+/* The member and the time of a granule: decoded once for all its strides, which the scans of a key ask for one after the other */
+static const SiftScopeRows *
+stride_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g)
+{
+	if (p->dec_slot != (int) (s - p->s) || p->dec_g != g)
+	{
+		MemoryContext old;
+
+		MemoryContextReset(p->dcx2);
+		old = MemoryContextSwitchTo(p->dcx2);
+		p->dec_rows = (SiftScopeRows) {0};
+		decode_sel(p, s, g, NULL, 0, SIFT_F2S_NEED_MEMBER | SIFT_F2S_NEED_TIME, &p->dec_rows);
+		MemoryContextSwitchTo(old);
+		p->dec_slot = (int) (s - p->s);
+		p->dec_g = g;
+	}
+	return &p->dec_rows;
 }
 
 static uint32
@@ -572,22 +657,15 @@ ent_scan_stride(void *arg, uint32 gidx, uint32 stride, bool impure, int64 key, S
 	SiftF2ScopeParts *p = arg;
 	uint32		g;
 	SiftF2ScopeSlot *s = sift_f2s_slot_of(p, gidx, &g);
-	SiftScopeRows r = {0};
 	const uint16 *dead;
 	uint32		n = 0,
-				end,
 				nd = granule_excl(p, s, g, &dead);
-	MemoryContext old;
+	const SiftScopeRows *r = stride_rows(p, s, g);
+	const uint32 end = Min(r->n, (stride + 1) * SIFT_TSTRIDE_ROWS);
 
-	MemoryContextReset(p->gcx);
-	old = MemoryContextSwitchTo(p->gcx);
-	r.want_extra = 0;
-	decode_rows(p, s, g, &r);
-	end = Min(r.n, (stride + 1) * SIFT_TSTRIDE_ROWS);
 	for (uint32 i = stride * SIFT_TSTRIDE_ROWS; i < end; i++)
-		if (!(r.time_null[i] || has_row(dead, nd, i) || (impure && (r.member_null[i] || !owns_member(p, r.member[i], key)))))
-			out[n++] = (SiftScopeNewest) {r.time[i], gidx, i};
-	MemoryContextSwitchTo(old);
+		if (!(r->time_null[i] || sift_f2s_has_row(dead, nd, i) || (impure && (r->member_null[i] || !owns_member(p, r->member[i], key)))))
+			out[n++] = (SiftScopeNewest) {r->time[i], gidx, i};
 	return n;
 }
 
@@ -627,15 +705,16 @@ dead_rows_of(SiftF2ScopeParts *p, uint32 gidx)
 	SiftScopeRows *r;
 	const uint16 *ords;
 	const uint32 nd = granule_excl(p, s, g, &ords);
+	const bool	few = nd * 8 < sift_f2s_slot_gdir(p, s)[g].nrows;
 	MemoryContext old;
 
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
-	decode_rows(p, s, g, &all);
+	decode_sel(p, s, g, few ? ords : NULL, few ? nd : 0, SIFT_F2S_NEED_ALL, &all);
 	MemoryContextSwitchTo(p->dcx);
 	r = palloc0(sizeof(SiftScopeRows));
 	r->n = nd;
-#define PICK(a, T) do { T *o = palloc(Max(nd, 1) * sizeof(T)); for (uint32 i = 0; i < nd; i++) o[i] = ((const T *) (all.a))[ords[i]]; r->a = o; } while (0)
+#define PICK(a, T) do { T *o = palloc(Max(nd, 1) * sizeof(T)); for (uint32 i = 0; i < nd; i++) o[i] = ((const T *) (all.a))[few ? i : ords[i]]; r->a = o; } while (0)
 	PICK(member, int64);
 	PICK(member_null, uint8);
 	if (all.time != NULL)
@@ -725,69 +804,6 @@ ent_granule_cube(void *arg, uint32 gidx, int32 month, SiftScopeCubeAcc *out, con
 	return false;
 }
 
-static SiftScopeRows *
-member_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g)
-{
-	const uint32 gidx = s->base + g;
-	MemoryContext old;
-	SiftScopeRows *r;
-
-	for (int i = 0; i < p->nm; i++)
-		if (p->mgidx[i] == gidx)
-			return p->mrows[i];
-	if (p->nm == SIFT_F2S_MEMBER_GRANULES)
-	{
-		MemoryContextReset(p->mcx);
-		p->nm = 0;
-	}
-	old = MemoryContextSwitchTo(p->mcx);
-	r = palloc0(sizeof(SiftScopeRows));
-	decode_rows(p, s, g, r);
-	MemoryContextSwitchTo(old);
-	p->mgidx[p->nm] = gidx;
-	p->mrows[p->nm++] = r;
-	return r;
-}
-
-static bool
-ent_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out)
-{
-	SiftF2ScopeParts *p = arg;
-
-	sift_scube_init(out, p->sc->shape);
-	for (int i = 0; i < p->n; i++)
-	{
-		SiftF2ScopeSlot *s = &p->s[i];
-
-		if (s->part_gen == 0)
-			continue;
-		for (uint32 g = 0; g < s->ng; g++)
-		{
-			SiftZone	z = sift_f2s_slot_zone(p, s, p->sc->member_leaf, g);
-			const uint16 *gone;
-			SiftScopeRows *r;
-			uint32		ng;
-
-			if (!(z.flags & SIFT_ZONE_NONE) && (member < z.min || member > z.max))
-				continue;
-			ng = granule_excl(p, s, g, &gone);
-			r = member_rows(p, s, g);
-			for (uint32 row = 0; row < r->n; row++)
-			{
-				if (r->member_null[row] || r->member[row] != member || has_row(gone, ng, row))
-					continue;
-				if (month != SIFT_SCOPE_NO_MONTH && (r->time_null[row] || sift_scope_month_of(r->time[row]) != month))
-					continue;
-				sift_scube_add_row(out, r, row, NULL);
-			}
-		}
-	}
-	if (out->row_count > 0)
-		return true;
-	sift_scube_free(out);
-	return false;
-}
-
 static bool
 ent_ring_zone(void *arg, uint32 gidx, uint32 ring, int64 *min, int64 *max)
 {
@@ -817,12 +833,12 @@ ent_scan_ring(void *arg, uint32 gidx, uint32 ring, bool impure, int64 key, int64
 
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
-	decode_rows(p, s, g, &r);
+	decode_sel(p, s, g, NULL, 0, impure ? SIFT_F2S_NEED_MEMBER : 0, &r);
 	for (uint32 i = 0; i < r.n; i++)
 	{
 		const int64 v = r.extra[ring - 1][i];
 
-		if (r.extra_null[ring - 1][i] || v < lo || v > hi || has_row(gone, ng, i) || (impure && (r.member_null[i] || !owns_member(p, r.member[i], key))))
+		if (r.extra_null[ring - 1][i] || v < lo || v > hi || sift_f2s_has_row(gone, ng, i) || (impure && (r.member_null[i] || !owns_member(p, r.member[i], key))))
 			continue;
 		out[n++] = (SiftScopeNewest) {v, gidx, i};
 	}
@@ -870,14 +886,14 @@ sift_f2_scope_cells(SiftF2Scope *sc, const SiftScopeNewest *rows, int nrows, con
 SiftScopeEntity
 sift_f2s_entity(SiftF2ScopeParts *p)
 {
-	return (SiftScopeEntity) {p, ent_live, ent_strides, ent_scan_stride, ent_member_cube, ent_part_dirty, ent_dead_count, ent_dead_rows, ent_granule_rows, ent_granule_cube, ent_owns,
-							  ent_ring_zone, ent_scan_ring, p->added ? sift_f2s_added_cube : NULL, p->added ? sift_f2s_added_months : NULL, sift_f2s_gone_cube};
+	return (SiftScopeEntity) {p, ent_live, ent_strides, ent_scan_stride, sift_f2s_member_cube, ent_part_dirty, ent_dead_count, ent_dead_rows, ent_granule_rows, ent_granule_cube, ent_owns,
+							  ent_ring_zone, ent_scan_ring, p->added ? sift_f2s_added_cube : NULL, p->added ? sift_f2s_added_months : NULL, sift_f2s_gone_cube, ent_owns_count, sift_f2s_members_cubes};
 }
 
 void
 sift_f2s_decode_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, uint32 nat, bool member_only, SiftScopeRows *r)
 {
-	decode_sel(p, s, g, at, nat, member_only, r);
+	decode_sel(p, s, g, at, nat, member_only ? SIFT_F2S_NEED_MEMBER : SIFT_F2S_NEED_ALL, r);
 }
 
 SiftScopePairMap *
