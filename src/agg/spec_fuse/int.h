@@ -20,6 +20,20 @@ typedef struct FuseArm
 	SiftAggSpec a;				/* the arm over the joins and combos of the pass */
 } FuseArm;
 
+/* An open-addressed set of (hash, id): the ids of the items whose hash is the one asked, in no order, for the caller to confirm with equal(). The hash of sift_list_hash only reads what equal() compares, so two equal items always share it */
+typedef struct FuseSetEnt
+{
+	uint64		hash;			/* 0: empty */
+	int			id;
+} FuseSetEnt;
+
+typedef struct FuseSet
+{
+	FuseSetEnt *tab;
+	uint32		cap;			/* a power of 2 */
+	uint32		n;
+} FuseSet;
+
 typedef struct Fuse
 {
 	int			n;
@@ -37,6 +51,13 @@ typedef struct Fuse
 	uint32	   *aggsets;		/* per aggregate: the arms that read it; NULL when every arm has the same aggregates */
 	int		  **aggmap;			/* per arm: the aggregate of the pass that is each of its aggregates */
 	List	   *owners;			/* the slots that give the ids of an aggregate's values (SlotOwn): their aggregate is the pass's when it is known */
+	List	  **join_shell;		/* per join of the pass: its shell (fuse_join), found by join_set */
+	FuseSet		join_set;
+	List	  **post_pack;		/* per conjunct over the joined rows: its pack, found by post_set */
+	FuseSet		post_set;
+	int		   *slot_cap;		/* per combo of the pass: the room of its slots, grown by doubling */
+	struct SlotOwn ***slot_own;	/* per combo, per slot: the SlotOwn of a slot that gives the ids of an aggregate's values, NULL for the others */
+	FuseSet    *slot_set;		/* per combo: its slots by hash */
 } Fuse;
 
 typedef struct SlotOwn
@@ -47,6 +68,9 @@ typedef struct SlotOwn
 	int			agg;			/* the aggregate of the arm */
 	List	   *key;			/* that aggregate, apart from the slot it reads */
 } SlotOwn;
+extern void fuse_set_add(FuseSet *t, uint64 hash, int id);
+extern int	fuse_set_next(const FuseSet *t, uint64 hash, uint32 *pos);
+extern int	fuse_set_find(const FuseSet *t, List *const *packs, const List *key);
 extern bool fuse_join(Fuse *f, FuseArm *arm, int j);
 extern SiftAggPred * pred_noid(const SiftAggPred *p);
 extern List * agg_pack(const SiftAggAgg *a);

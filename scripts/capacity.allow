@@ -94,3 +94,4 @@ array-append	src/col/f2/f2_col_delta_idx.c	cols[n++] = (SiftColDeltaCol) {.attnu
 array-append	src/col/f2/f2_proj_spec.c	t[len++] = *ps->p++;	the loop condition stops one byte short of sizeof(t), which the terminator takes
 array-append	src/col/granule/promo_prefix.c	tmp[k++] = '0' + (char) (v % 10);	a 64-bit number has at most 20 decimal digits and tmp holds 24
 array-append	src/col/f2/f2_point_dir.c	vals[m++] = c->i[r];	m counts the sampled rows, one for each of the SIFT_POINT_SAMPLE steps of the loop, and vals holds that many
+array-append	src/agg/plan/card_est.c	w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64)); /* check-memory: allow the values of one IN list of the query */	pred_vals runs once for each of the at most SIFT_CARD_MAX_PREDS predicates of an estimate and heap holds that many

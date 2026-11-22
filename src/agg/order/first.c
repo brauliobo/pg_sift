@@ -61,6 +61,9 @@ first_aggref(AggCtx *c, Node *e, List *more)
 bool
 first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts)
 {
+	Bitmapset  *seen_atts = NULL;
+	List	   *seen_exprs = NIL;
+
 	/* the normal plan evaluates a volatile function for every row, before it picks one */
 	if (contain_volatile_functions((Node *) target->exprs))
 		return agg_refuse_on(DISTINCT_ON, "the select list calls a volatile function: the normal plan evaluates it for every row before it picks one");
@@ -68,17 +71,21 @@ first_aggs(AggCtx *c, PathTarget *target, List *keys, List *more, List **firsts)
 	{
 		OutWalk		w = {keys, NIL, false};
 		Aggref	   *a;
-		bool		have = false;
+		bool		plain = IsA(e, Var) && ((Var *) e)->varno == c->relid && ((Var *) e)->varlevelsup == 0 && ((Var *) e)->varattno > 0;
 
 		out_walker(e, &w);
 		if (!w.bad)
 			continue;
+		/* the aggregate is of the expression alone (and the sort columns, which are the same for all): the same expression gives the same aggregate */
+		if (plain ? bms_is_member(((Var *) e)->varattno, seen_atts) : list_member(seen_exprs, e))
+			continue;
 		if ((a = first_aggref(c, e, more)) == NULL)
 			return agg_refuse_on(DISTINCT_ON, "an expression of the select list is not a first-row aggregate the scan computes");
-		foreach_ptr(Aggref, f, *firsts)
-			have |= equal(f, a);
-		if (!have)
-			*firsts = lappend(*firsts, a);
+		if (plain)
+			seen_atts = bms_add_member(seen_atts, ((Var *) e)->varattno);
+		else
+			seen_exprs = lappend(seen_exprs, e);
+		*firsts = lappend(*firsts, a);
 	}
 	return true;
 }

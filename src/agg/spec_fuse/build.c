@@ -14,8 +14,72 @@
 #include "postgres.h"
 
 #include "catalog/pg_operator.h"
+#include "common/hashfn.h"
 
+#include "agg/plan/node_hash.h"
 #include "agg/spec_fuse/int.h"
+
+static uint32
+fuse_set_start(uint64 hash, uint32 cap)
+{
+	return (uint32) (hash ^ (hash >> 32)) & (cap - 1);
+}
+
+void
+fuse_set_add(FuseSet *t, uint64 hash, int id)
+{
+	if ((t->n + 1) * 10 > t->cap * 7)
+	{
+		FuseSetEnt *old = t->tab;
+		const uint32 ocap = t->cap;
+
+		t->cap = ocap ? ocap * 2 : 16;
+		t->tab = palloc0(t->cap * sizeof(FuseSetEnt));
+		t->n = 0;
+		for (uint32 i = 0; i < ocap; i++)
+			if (old[i].hash != 0)
+				fuse_set_add(t, old[i].hash, old[i].id);
+	}
+	hash |= 1;
+	for (uint32 at = fuse_set_start(hash, t->cap); ; at = (at + 1) & (t->cap - 1))
+		if (t->tab[at].hash == 0)
+		{
+			t->tab[at] = (FuseSetEnt) {hash, id};
+			t->n++;
+			return;
+		}
+}
+
+/* the ids added with this hash, one a call: *pos starts at 0 */
+int
+fuse_set_next(const FuseSet *t, uint64 hash, uint32 *pos)
+{
+	hash |= 1;
+	while (t->cap > 0)
+	{
+		const FuseSetEnt *e = &t->tab[(fuse_set_start(hash, t->cap) + (*pos)++) & (t->cap - 1)];
+
+		if (e->hash == 0)
+			break;
+		if (e->hash == hash)
+			return e->id;
+	}
+	return -1;
+}
+
+/* the id of the item that equals key, among the packs the ids index: -1 when none does */
+int
+fuse_set_find(const FuseSet *t, List *const *packs, const List *key)
+{
+	const uint64 h = sift_list_hash(key);
+	uint32		pos = 0;
+	int			id;
+
+	while ((id = fuse_set_next(t, h, &pos)) >= 0)
+		if (equal(packs[id], key))
+			return id;
+	return -1;
+}
 
 /* the conjuncts of the pass: those every arm has, then the OR of what the arms have beyond them when each has some (it prunes the units and rows no arm needs); the sets' own */
 static void
@@ -48,50 +112,69 @@ fuse_preds(Fuse *f, SiftAggSpec *spec)
 			spec->setpred[i] = pred_number(f->resid[i], &f->npreds);
 }
 
+typedef struct LeafRead
+{
+	int			leaf;
+	int			seq;			/* the order the arms gave it in: the first read of a leaf is the one the others are held to */
+	uint8		recheck;
+	uint8		raw;
+} LeafRead;
+
+static int
+leaf_read_cmp(const void *a, const void *b)
+{
+	const LeafRead *x = a,
+			   *y = b;
+
+	return x->leaf != y->leaf ? (x->leaf < y->leaf ? -1 : 1) : (x->seq > y->seq) - (x->seq < y->seq);
+}
+
 /* the leaves the arms read together, and how: false when two arms read one leaf in different ways */
 static bool
 fuse_leaves(SiftAggSpec *const *m, int n, SiftAggSpec *out)
 {
 	int			total = 0,
 				k = 0;
+	LeafRead   *reads;
 	int		   *leaves;
 	uint8	   *recheck,
 			   *raw;
 
 	for (int i = 0; i < n; i++)
 		total += m[i]->nleaves;
+	reads = palloc(Max(total, 1) * sizeof(LeafRead));
 	leaves = palloc(Max(total, 1) * sizeof(int));
 	recheck = palloc0(Max(total, 1));
 	raw = palloc0(Max(total, 1));
 	out->gate = palloc0(Max(total, 1) * sizeof(uint64));
+	total = 0;
 	for (int i = 0; i < n; i++)
 		for (int j = 0; j < m[i]->nleaves; j++)
 		{
-			int			at = 0;
-
 			/* the error is raised for the rows the common conjuncts keep, which an arm's own conjuncts would drop before it in the scan of the arm */
 			if (n > 1 && m[i]->recheck[j] == SRK_CAST_TESTED)
 				return false;
 			/* the bits of a gate are the arm's aggregates */
 			if (m[i]->gate[j] != 0)
 				return false;
-			while (at < k && leaves[at] < m[i]->leaves[j])
-				at++;
-			if (at < k && leaves[at] == m[i]->leaves[j])
-			{
-				if (recheck[at] != m[i]->recheck[j])
-					return false;
-				raw[at] &= m[i]->raw[j];
-				continue;
-			}
-			memmove(&leaves[at + 1], &leaves[at], (k - at) * sizeof(int));
-			memmove(&recheck[at + 1], &recheck[at], k - at);
-			memmove(&raw[at + 1], &raw[at], k - at);
-			leaves[at] = m[i]->leaves[j];
-			recheck[at] = m[i]->recheck[j];
-			raw[at] = m[i]->raw[j];
-			k++;
+			reads[total] = (LeafRead) {m[i]->leaves[j], total, m[i]->recheck[j], m[i]->raw[j]};
+			total++;
 		}
+	qsort(reads, total, sizeof(LeafRead), leaf_read_cmp);
+	for (int r = 0; r < total; r++)
+	{
+		if (k > 0 && leaves[k - 1] == reads[r].leaf)
+		{
+			if (recheck[k - 1] != reads[r].recheck)
+				return false;
+			raw[k - 1] &= reads[r].raw;
+			continue;
+		}
+		leaves[k] = reads[r].leaf;
+		recheck[k] = reads[r].recheck;
+		raw[k] = reads[r].raw;
+		k++;
+	}
 	out->nleaves = k;
 	out->leaves = leaves;
 	out->recheck = recheck;
@@ -151,13 +234,20 @@ fuse_build(SiftAggSpec *const *m, int n, Fuse *f)
 	f->owners = NIL;
 	f->arm = palloc0(n * sizeof(FuseArm));
 	memset(&f->u, 0, sizeof(f->u));
+	f->join_set = f->post_set = (FuseSet) {0};
 	for (int i = 0; i < n; i++)
 	{
 		nj += m[i]->njoin;
 		nc += m[i]->ncombo;
 	}
-	f->u.join = palloc0(Max(Min(nj, sift_limit(joins, SIFT_AGG_MAX_JOINS)), 1) * sizeof(SiftAggJoin));
-	f->u.combo = palloc0(Max(Min(nc, sift_limit(combos, SIFT_AGG_MAX_COMBOS)), 1) * sizeof(SiftAggCombo));
+	nj = Max(Min(nj, sift_limit(joins, SIFT_AGG_MAX_JOINS)), 1);
+	nc = Max(Min(nc, sift_limit(combos, SIFT_AGG_MAX_COMBOS)), 1);
+	f->u.join = palloc0(nj * sizeof(SiftAggJoin));
+	f->u.combo = palloc0(nc * sizeof(SiftAggCombo));
+	f->join_shell = palloc0(nj * sizeof(List *));
+	f->slot_cap = palloc0(nc * sizeof(int));
+	f->slot_own = palloc0(nc * sizeof(SlotOwn **));
+	f->slot_set = palloc0(nc * sizeof(FuseSet));
 	if (!fuse_leaves(m, n, &f->u))
 		return false;
 	for (int i = 0; i < n; i++)
@@ -215,9 +305,15 @@ key_pack(const SiftAggKey *k)
 static List *
 fused_keys(const Fuse *f, int **keymap)
 {
-	List	   *packs = NIL,
-			   *first = NIL;
+	List	   *first = NIL;
+	FuseSet		seen = {0};
+	List	  **packs;
+	int			total = 0;
 
+	for (int i = 0; i < f->n; i++)
+		total += f->arm[i].a.nkeys;
+	packs = palloc(Max(total, 1) * sizeof(List *));
+	total = 0;
 	for (int i = 0; i < f->n; i++)
 	{
 		const SiftAggSpec *a = &f->arm[i].a;
@@ -227,17 +323,13 @@ fused_keys(const Fuse *f, int **keymap)
 		for (int j = 0; j < a->nkeys; j++)
 		{
 			List	   *k = key_pack(&a->key[j]);
-			int			at = 0;
+			int			at = fuse_set_find(&seen, packs, k);
 
-			foreach_ptr(List, p, packs)
+			if (at < 0)
 			{
-				if (equal(p, k))
-					break;
-				at++;
-			}
-			if (at == list_length(packs))
-			{
-				packs = lappend(packs, k);
+				at = list_length(first);
+				packs[at] = k;
+				fuse_set_add(&seen, sift_list_hash(k), at);
 				first = lappend(first, &a->key[j]);
 			}
 			if (keymap)

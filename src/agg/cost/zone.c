@@ -77,21 +77,26 @@ zone_share(AggCtx *c, int leaf, double keys, double nd)
 	return z->covered * kept / z->n + (1.0 - z->covered);
 }
 
-/* the same keys of a leaf are asked again by every path and every pricing pass of a plan, and the sum is over the sample of the zones: the last few answers are kept */
+/* the same keys of a leaf are asked again by every path and every pricing pass of a plan, and the sum is over the sample of the zones: the last few answers are kept, the least recently asked goes first */
 static double
 zone_keys_kept(AggCtx *c, int leaf, double keys, double nd)
 {
-	AggZoneMemo *m;
+	const int	n = lengthof(c->zone_memo);
+	AggZoneMemo hit;
+	int			at = 0;
 
-	for (int i = 0; i < c->nzone_memo; i++)
+	while (at < c->nzone_memo && !(c->zone_memo[at].leaf == leaf && c->zone_memo[at].keys == keys && c->zone_memo[at].nd == nd))
+		at++;
+	if (at < c->nzone_memo)
+		hit = c->zone_memo[at];
+	else
 	{
-		m = &c->zone_memo[i];
-		if (m->leaf == leaf && m->keys == keys && m->nd == nd)
-			return m->kept;
+		hit = (AggZoneMemo) {leaf, keys, nd, zone_share(c, leaf, keys, nd)};
+		at = c->nzone_memo < n ? c->nzone_memo++ : n - 1;
 	}
-	m = &c->zone_memo[c->nzone_memo < lengthof(c->zone_memo) ? c->nzone_memo++ : 0];
-	*m = (AggZoneMemo) {leaf, keys, nd, zone_share(c, leaf, keys, nd)};
-	return m->kept;
+	memmove(&c->zone_memo[1], &c->zone_memo[0], at * sizeof(AggZoneMemo));
+	c->zone_memo[0] = hit;
+	return hit.kept;
 }
 
 /*
@@ -134,6 +139,7 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 {
 	double		kept = 1.0,
 				selective = 1.0;
+	JoinDepMap	deps;
 
 	*n = 0;
 	*sel_keys = HUGE_VAL;
@@ -148,12 +154,13 @@ join_key_zone(AggCtx *c, SiftAggSpec *s, int *n, double *sel_keys, double *share
 	for (int ci = 0; ci < s->ncombo; ci++)
 		if (on_tests_tuple(s, ci))
 			return kept;
+	sift_cost_build_dep_map(c, s, &deps);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
 		const SiftAggJoin *j = &s->join[cb->join];
-		int			dkey = 0;
-		const JoinCtx *dj = dependent_join(c, s, jc, &dkey);
+		const int	dkey = deps.key[jc->combo];
+		const JoinCtx *dj = deps.dep[jc->combo];
 		double		keys = Min(lookup_rows(c, jc), dj ? lookup_rows(c, dj) : HUGE_VAL),
 					sure = Min(lookup_sure(c, jc), dj ? lookup_sure(c, dj) : HUGE_VAL);
 
@@ -299,6 +306,35 @@ column_skew(AggCtx *c, Var *v)
 	return Max(nd * sq, 1.0);
 }
 
+/* the largest share of each key column, found by its attribute number in a table that holds one slot a join (at most SIFT_AGG_MAX_JOINS, in 64 slots) and read back in the order the columns came */
+typedef struct KeyShares
+{
+	AttrNumber	att[64];
+	bool		used[64];
+	double		f[64];
+	uint8		order[64];
+	int			n;
+} KeyShares;
+
+static void
+key_share_put(KeyShares *t, AttrNumber att, double g)
+{
+	uint32		h = ((uint32) att * 2654435761u) >> 26;
+
+	while (t->used[h] && t->att[h] != att)
+		h = (h + 1) & 63;
+	if (!t->used[h])
+	{
+		Assert(t->n < 64);
+		t->used[h] = true;
+		t->att[h] = att;
+		t->f[h] = g;
+		t->order[t->n++] = (uint8) h;
+	}
+	else
+		t->f[h] = Max(t->f[h], g);
+}
+
 /*
  * How many times more keys than PostgreSQL expects the scope lists of the query hold, for the normal plan's price. A lookup join on a
  * column of the scanned table (a list of ids, the rows of a sub-select) is counted by PostgreSQL from its own rows, and those are a
@@ -313,14 +349,10 @@ double
 lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 {
 	double		f = 1.0;
-	int			nseen = 0;
-	AttrNumber *seen;
-	double	   *seen_f;
+	KeyShares	seen = {0};
 
 	if (!sift_agg_join_filter || s->topn)
 		return f;
-	seen = palloc(list_length(c->joins) * sizeof(AttrNumber));
-	seen_f = palloc(list_length(c->joins) * sizeof(double));
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
@@ -329,7 +361,6 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 					nd = 0,
 					g = 1.0;
 		Var		   *key = NULL;
-		int			at;
 
 		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0)
 			continue;
@@ -362,18 +393,10 @@ lookup_set_ratio(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, bool groups)
 		else if (nd > keys)
 			g = groups ? nd / keys : sqrt(nd / keys);
 		/* lookups on one column (a CTE of ids joined and again in an IN list) restrict the same keys: the normal plan reads them once */
-		for (at = 0; at < nseen && seen[at] != key->varattno; at++)
-			;
-		if (at == nseen)
-		{
-			seen[nseen] = key->varattno;
-			seen_f[nseen++] = g;
-		}
-		else
-			seen_f[at] = Max(seen_f[at], g);
+		key_share_put(&seen, key->varattno, g);
 	}
-	for (int i = 0; i < nseen; i++)
-		f *= seen_f[i];
+	for (int i = 0; i < seen.n; i++)
+		f *= seen.f[seen.order[i]];
 	/* the normal plan reads no more than the rows the table's own filters keep, whatever the keys */
 	return Min(f, Max(c->rel->rows / Max(input_rel->rows, 1.0), 1.0));
 }

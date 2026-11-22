@@ -20,6 +20,7 @@
 #include "col/f2/f2.h"
 
 struct SiftV6Spec;
+struct SiftV6QualSet;
 
 #define SIFT_V6_FUSE_MAX_ARMS	16
 
@@ -41,6 +42,7 @@ typedef struct SiftV6FuseArm
 	SiftF2TimeWin time_win;
 	int			lead_att;		/* the lead key column as the index numbers it, 0 when the arm has none to unite */
 	List	   *quals;			/* the quals of the scan of the arm */
+	struct SiftV6QualSet *qset;	/* the same quals by hash, with what the gate of each costs to know (v6_fuse_keys.c) */
 	const struct SiftV6Spec *spec;	/* the spec of the node */
 	bool		(*may_union) (const struct SiftV6FuseArm *lead, const struct SiftV6FuseArm *other);	/* NULL: arms of other keys fuse by their key sets alone */
 	struct SiftV6FuseCohort *cohort;
@@ -65,7 +67,7 @@ typedef struct SiftV6FuseReg
 } SiftV6FuseReg;
 
 /*
- * The union of the ranges of two key sets as at most SIFT_F2_MAX_RANGES disjoint ranges in ascending order of the leading integer, each range a half-open [ilo, ihi) of an arm; false when
+ * The union of the ranges of two key sets, each in ascending order of the leading integer, as at most SIFT_F2_MAX_RANGES disjoint ranges in that order, each range a half-open [ilo, ihi) of an arm; false when
  * they unite into more, or a range holds only NULLs (it cannot be merged with the others by its integers).
  */
 extern bool sift_v6_fuse_union_keys(const SiftF2KeySet *a, const SiftF2KeySet *b, SiftF2KeySet *out);

@@ -152,22 +152,48 @@ clause_key(RestrictInfo *ri, Index fact, StarDim *dims, int nd)
 	return d >= 0 && ri->is_pushed_down != dims[d].left && add_key(&dims[d], a, b);
 }
 
+#define SEEN_STACK	64
+
+/* adds the clause to the open-addressed set of cap slots (a power of 2, more than the clauses added); false when it was in */
+static bool
+seen_add(const RestrictInfo **tab, uint32 cap, const RestrictInfo *ri)
+{
+	uint32		at = (uint32) murmurhash64((uint64) (uintptr_t) ri) & (cap - 1);
+
+	for (; tab[at] != NULL; at = (at + 1) & (cap - 1))
+		if (tab[at] == ri)
+			return false;
+	tab[at] = ri;
+	return true;
+}
+
 static bool
 join_clause_keys(PlannerInfo *root, Relids base, Index fact, StarDim *dims, int nd)
 {
-	List	   *seen = NIL;
-	int			r = -1;
+	const RestrictInfo *stack[SEEN_STACK] = {0};
+	const RestrictInfo **seen = stack;
+	uint32		cap = SEEN_STACK;
+	int			total = 0,
+				r = -1;
+	bool		ok = true;
 
 	while ((r = bms_next_member(base, r)) >= 0)
+		total += list_length(root->simple_rel_array[r]->joininfo);
+	if (total * 2 > SEEN_STACK)
+	{
+		cap = pg_nextpower2_32(total * 2);
+		seen = palloc0(cap * sizeof(*seen));
+	}
+	for (r = -1; ok && (r = bms_next_member(base, r)) >= 0;)
 		foreach_node(RestrictInfo, ri, root->simple_rel_array[r]->joininfo)
-		{
-			if (list_member_ptr(seen, ri))
-				continue;
-			seen = lappend(seen, ri);
-			if (!clause_key(ri, fact, dims, nd))
-				return false;
-		}
-	return true;
+			if (seen_add(seen, cap, ri) && !clause_key(ri, fact, dims, nd))
+			{
+				ok = false;
+				break;
+			}
+	if (seen != stack)
+		pfree(seen);
+	return ok;
 }
 
 /* every special join of the query is a left join of one dimension */

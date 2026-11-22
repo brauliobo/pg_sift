@@ -315,36 +315,119 @@ mem_swap(const SiftTopN *t, int64 a, int64 b)
 	}
 }
 
-/* The rows of mem rearranged so that the first n are the n that sort first (in no order): quickselect, the rows differ by their TIDs */
+/* the index of the median of the rows a, b and c */
+static int64
+mem_median3(const SiftTopN *t, int64 a, int64 b, int64 c)
+{
+	const bool	ab = mem_cmp(mem_row(t, a), mem_row(t, b), (void *) t) < 0,
+				bc = mem_cmp(mem_row(t, b), mem_row(t, c), (void *) t) < 0,
+				ac = mem_cmp(mem_row(t, a), mem_row(t, c), (void *) t) < 0;
+
+	return ab == bc ? b : (ab == ac ? c : a);
+}
+
+static void
+mem_select_range(SiftTopN *t, int64 lo, int64 hi, int64 n, bool exact);
+
+/* the rows [lo, hi] put in order: a group of at most five */
+static void
+mem_insertion_sort(SiftTopN *t, int64 lo, int64 hi)
+{
+	for (int64 i = lo + 1; i - 1 < hi; i++)
+		for (int64 j = i; j > lo && mem_cmp(mem_row(t, j), mem_row(t, j - 1), t) < 0; j--)
+			mem_swap(t, j, j - 1);
+}
+
+/*
+ * The row to split [lo, hi] at: the median of nine rows spread over it (of three for a short range), which an input that is sorted, reversed or organ-piped splits in the
+ * middle; exact: the median of the medians of the groups of five, which leaves each side at least three tenths of the range whatever the input holds (the select below that
+ * runs on the medians is itself exact, so a range of n rows takes O(n)).
+ */
+static int64
+mem_pivot(SiftTopN *t, int64 lo, int64 hi, bool exact)
+{
+	const int64 n = hi - lo + 1,
+				mid = lo + n / 2;
+
+	if (!exact)
+	{
+		const int64 step = n / 8;
+
+		if (n < 64)
+			return mem_median3(t, lo, mid, hi);
+		return mem_median3(t, mem_median3(t, lo, lo + step, lo + 2 * step), mem_median3(t, mid - step, mid, mid + step),
+						   mem_median3(t, hi - 2 * step, hi - step, hi));
+	}
+	if (n <= 5)
+	{
+		mem_insertion_sort(t, lo, hi);
+		return mid;
+	}
+	{
+		int64		ng = 0;
+
+		for (int64 g = lo; g - 1 < hi; g += 5, ng++)
+		{
+			const int64 end = Min(g + 4, hi);
+
+			mem_insertion_sort(t, g, end);
+			mem_swap(t, lo + ng, g + (end - g) / 2);
+		}
+		mem_select_range(t, lo, lo + ng - 1, lo + (ng - 1) / 2, true);
+		return lo + (ng - 1) / 2;
+	}
+}
+
+/*
+ * The rows [lo, hi] rearranged so that row n is the one that sorts n-th among them, the rows before it sort first and those after it last (in no order within): introselect.
+ * Each round splits the range in three at a pivot copy (the rows that sort before it, those equal to it, those after it), so that rows that tie are done in one pass, and goes on
+ * in the side that holds n; after 2 log2(range) rounds that did not finish (an input made against the pivot rule) the pivots are exact, which bounds the rest by O(range).
+ */
+static void
+mem_select_range(SiftTopN *t, int64 lo, int64 hi, int64 n, bool exact)
+{
+	int			rounds;
+	int64		stack_pivot[64],
+			   *pv;
+
+	if (lo >= hi)
+		return;
+	rounds = 2 * (pg_leftmost_one_pos64((uint64) (hi - lo + 1)) + 1);
+	pv = t->stride <= lengthof(stack_pivot) ? stack_pivot : palloc(t->stride * sizeof(int64));
+	while (lo < hi)
+	{
+		int64		lt = lo,
+					i = lo,
+					gt = hi;
+
+		memcpy(pv, mem_row(t, mem_pivot(t, lo, hi, exact || rounds-- <= 0)), t->stride * sizeof(int64));
+		while (i <= gt)
+		{
+			const int	c = mem_cmp(mem_row(t, i), pv, t);
+
+			if (c < 0)
+				mem_swap(t, lt++, i++);
+			else if (c > 0)
+				mem_swap(t, i, gt--);
+			else
+				i++;
+		}
+		if (n < lt)
+			hi = lt - 1;
+		else if (n > gt)
+			lo = gt + 1;
+		else
+			break;
+	}
+	if (pv != stack_pivot)
+		pfree(pv);
+}
+
+/* The rows of mem rearranged so that the first n are the n that sort first (in no order), and row n the one after them: the rows differ by their TIDs, a tie of the keys is not a tie of the rows */
 static void
 mem_select(SiftTopN *t, int64 n)
 {
-	int64		lo = 0,
-				hi = t->nmem - 1;
-
-	while (lo < hi)
-	{
-		int64		mid = lo + (hi - lo) / 2,
-					at = lo;
-
-		if (mem_cmp(mem_row(t, mid), mem_row(t, lo), t) < 0)
-			mem_swap(t, mid, lo);
-		if (mem_cmp(mem_row(t, hi), mem_row(t, lo), t) < 0)
-			mem_swap(t, hi, lo);
-		if (mem_cmp(mem_row(t, hi), mem_row(t, mid), t) < 0)
-			mem_swap(t, hi, mid);
-		mem_swap(t, mid, hi);	/* the median is the pivot, at the end */
-		for (int64 j = lo; j < hi; j++)
-			if (mem_cmp(mem_row(t, j), mem_row(t, hi), t) < 0)
-				mem_swap(t, at++, j);
-		mem_swap(t, at, hi);
-		if (at == n)
-			return;
-		if (at < n)
-			lo = at + 1;
-		else
-			hi = at - 1;
-	}
+	mem_select_range(t, 0, t->nmem - 1, n, false);
 }
 
 /* mem keeps the best `keep` rows; the worst of them is the bar of the rows that come after */

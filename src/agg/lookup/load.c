@@ -41,13 +41,55 @@
  */
 typedef struct SharedMap
 {
-	EState	   *estate;
-	char	   *key;
+	LookRegEnt	ent;			/* first: the registry reads it, and the callback has the entry */
 	MapTab	   *map;
 	MemoryContextCallback cb;
 } SharedMap;
 
-static List *shared_maps = NIL;
+static LookReg shared_maps;
+
+#define LOOK_REG_BUCKETS	256
+
+static uint64
+look_reg_hash(const EState *estate, const char *key)
+{
+	return hash_combine64(hash_bytes((const unsigned char *) &estate, sizeof(estate)), hash_bytes((const unsigned char *) key, strlen(key)));
+}
+
+LookRegEnt *
+look_reg_find(const LookReg *r, const EState *estate, const char *key)
+{
+	const uint64 h = look_reg_hash(estate, key);
+
+	if (r->bucket == NULL)
+		return NULL;
+	for (LookRegEnt *e = r->bucket[h % LOOK_REG_BUCKETS]; e != NULL; e = e->next)
+		if (e->hash == h && e->estate == estate && strcmp(e->key, key) == 0)
+			return e;
+	return NULL;
+}
+
+/* the entry's estate and key are set: it goes first in its bucket; the buckets are made in cx when the first entry comes */
+void
+look_reg_add(LookReg *r, MemoryContext cx, LookRegEnt *e)
+{
+	if (r->bucket == NULL)
+		r->bucket = MemoryContextAllocZero(cx, LOOK_REG_BUCKETS * sizeof(LookRegEnt *));
+	e->hash = look_reg_hash(e->estate, e->key);
+	e->next = r->bucket[e->hash % LOOK_REG_BUCKETS];
+	r->bucket[e->hash % LOOK_REG_BUCKETS] = e;
+}
+
+void
+look_reg_del(LookReg *r, LookRegEnt *e)
+{
+	for (LookRegEnt **at = &r->bucket[e->hash % LOOK_REG_BUCKETS]; *at != NULL; at = &(*at)->next)
+		if (*at == e)
+		{
+			*at = e->next;
+			return;
+		}
+}
 
 /*
  * The keys the scan itself restricts the join's key leaf to: a top-level `leaf IN (constants)` of the row, which every tuple that reaches the join satisfies, so a
@@ -141,13 +183,13 @@ map_pilot_rows(AggExec *ex, Relation rel, Relation idx, Oid typ, const Datum *va
 
 
 static Relation
-map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const Datum *val, bool own)
+map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const Datum *val, bool own, const MapLoadHint *hint)
 {
 	const MapTab *dm = NULL;
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
 	Relation	best = NULL;
 	int			nbest = 1;
-	Oid			typ = InvalidOid;
+	Oid			typ = hint ? hint->typ : InvalidOid;
 	double		nkey,
 				rpk,
 				tuples = Max(sift_agg_table_rows(RelationGetRelid(rel)), 1.0),
@@ -156,8 +198,8 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 				allvis = rel->rd_rel->relallvisible / Max(pages, 1.0);
 	bool		heap = rel->rd_rel->relam == HEAP_TABLE_AM_OID,
 				bcov = false;
-	int			att = 0,
-				cd = map_keyed_dependent(ex, ci, &att, &typ),
+	int			att = hint ? hint->att : 0,
+				cd = hint ? hint->dep : map_keyed_dependent(ex, ci, &att, &typ),
 				nv = 0;
 	Datum	   *vals = NULL;
 	int16		typlen;
@@ -169,8 +211,10 @@ map_probe(AggExec *ex, int ci, Relation rel, ScanKeyData *key, int *nkeys, const
 	if (cd >= 0)
 		dm = ex->cs[cd].map;
 	/* the equalities of the rest of the ON clause are tested by the table's own filter on each row read */
-	else if ((j->nidx > 0 && !own) || (nv = map_in_keys(ex, ci, &att, &typ, &vals)) < 0)
+	else if ((j->nidx > 0 && !own) || (nv = hint ? hint->nv : map_in_keys(ex, ci, &att, &typ, &vals)) < 0)
 		return NULL;
+	else if (hint)
+		vals = hint->vals;
 	/* the index whose entries cost least for a key (join_keys_pay) */
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
@@ -388,7 +432,7 @@ sift_agg_dense_join(const SiftAggSpec *s, int ci, const SiftSrcLayout *lay)
 
 /* the rows of the joined table, visible to the scan's snapshot, hashed by key; from an index when its own conditions name a value of a btree, from the cache of an earlier query when the table did not change */
 MapTab *
-map_load_table(AggExec *ex, int ci, MemoryContext cxt)
+map_load_table(AggExec *ex, int ci, MemoryContext cxt, const MapLoadHint *hint)
 {
 	const SiftAggCombo *cb = &ex->spec->combo[ci];
 	const SiftAggJoin *j = &ex->spec->join[cb->join];
@@ -429,7 +473,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	ResetExprContext(ex->lutcx);
 	idx = sift_agg_lookup_pushdown && j->nidx > 0 && !none ? map_index(rel, j, val, keys, &nkeys, &cond_keys) : NULL;
 	if (idx == NULL && !none && sift_agg_lookup_pushdown)
-		idx = map_probe(ex, ci, rel, keys, &nkeys, val, own != NULL);
+		idx = map_probe(ex, ci, rel, keys, &nkeys, val, own != NULL, hint);
 	if (idx == NULL && !none && own == NULL && (m = lookdim_load(ex, ci, rel, cxt)) != NULL)
 	{
 		MemoryContextSwitchTo(old);
@@ -649,7 +693,7 @@ map_load_child(AggExec *ex, int ci)
 static void
 shared_map_forget(void *arg)
 {
-	shared_maps = list_delete_ptr(shared_maps, arg);
+	look_reg_del(&shared_maps, arg);
 }
 
 /*
@@ -715,34 +759,31 @@ look_key(AggExec *ex, int ci, bool cols, bool user)
 }
 
 static MapTab *
-map_load_shared(AggExec *ex, int ci)
+map_load_shared(AggExec *ex, int ci, const MapLoadHint *hint)
 {
 	EState	   *estate = ex->css.ss.ps.state;
 	char	   *key;
+	LookRegEnt *e;
 	SharedMap  *sm;
 	MemoryContext mcxt;
-	MemoryContext old;
 
 	if (estate == NULL)
-		return map_load_table(ex, ci, ex->cxt);
+		return map_load_table(ex, ci, ex->cxt, hint);
 	key = look_key(ex, ci, true, false);
-	foreach_ptr(SharedMap, e, shared_maps)
-		if (e->estate == estate && strcmp(e->key, key) == 0)
-		{
-			ex->nshared++;
-			return e->map;
-		}
+	if ((e = look_reg_find(&shared_maps, estate, key)) != NULL)
+	{
+		ex->nshared++;
+		return ((SharedMap *) e)->map;
+	}
 	mcxt = AllocSetContextCreate(estate->es_query_cxt, "sift agg shared lookup", ALLOCSET_DEFAULT_SIZES);
 	sm = MemoryContextAlloc(mcxt, sizeof(SharedMap));
-	sm->estate = estate;
-	sm->key = MemoryContextStrdup(mcxt, key);
-	sm->map = map_load_table(ex, ci, mcxt);
+	sm->ent.estate = estate;
+	sm->ent.key = MemoryContextStrdup(mcxt, key);
+	sm->map = map_load_table(ex, ci, mcxt, hint);
 	sm->cb.func = shared_map_forget;
 	sm->cb.arg = sm;
 	MemoryContextRegisterResetCallback(mcxt, &sm->cb);
-	old = MemoryContextSwitchTo(TopMemoryContext);
-	shared_maps = lappend(shared_maps, sm);
-	MemoryContextSwitchTo(old);
+	look_reg_add(&shared_maps, TopMemoryContext, &sm->ent);
 	return sm->map;
 }
 
@@ -751,9 +792,7 @@ MapTab *
 map_load(AggExec *ex, int ci)
 {
 	const SiftAggJoin *j = &ex->spec->join[ex->spec->combo[ci].join];
-	int			att;
-	Oid			typ;
-	Datum	   *keys;
+	MapLoadHint hint = {-1, 0, InvalidOid, -1, NULL};
 
 	if (ex->pmaps && ex->pmaps[ci])
 		return map_share_attach(ex->pmaps[ci], j, ex->cxt);
@@ -761,9 +800,10 @@ map_load(AggExec *ex, int ci)
 		return map_new(j, false, ex->cxt);
 	if (j->child >= 0)
 		return map_load_child(ex, ci);
+	if (sift_agg_lookup_pushdown && (hint.dep = map_keyed_dependent(ex, ci, &hint.att, &hint.typ)) < 0)
+		hint.nv = map_in_keys(ex, ci, &hint.att, &hint.typ, &hint.vals);
 	/* a table read for the keys of this scan alone is no other arm's table: it is not shared */
-	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) && !(sift_agg_lookup_pushdown && (map_keyed_dependent(ex, ci, &att, &typ) >= 0 || map_in_keys(ex, ci, &att, &typ, &keys) >= 0)) ?
-		map_load_shared(ex, ci) : map_load_table(ex, ci, ex->cxt);
+	return sift_agg_share_lookups && !sift_aggjoin_preserves(j->kind) && hint.dep < 0 && hint.nv < 0 ? map_load_shared(ex, ci, &hint) : map_load_table(ex, ci, ex->cxt, &hint);
 }
 
 /* does an expression read one of the first n parameters (the leaves of a combo)? */

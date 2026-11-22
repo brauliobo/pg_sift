@@ -9,6 +9,7 @@
 #include "nodes/nodeFuncs.h"
 
 #include "agg/agg.h"
+#include "agg/plan/node_hash.h"
 #include "agg/spec_fuse/int.h"
 
 static SiftAggPred *
@@ -70,14 +71,15 @@ static void
 fuse_post(Fuse *f, const SiftAggPred *p, int arm)
 {
 	List	   *k = pred_pack(p);
-	int			at = 0;
+	int			at = fuse_set_find(&f->post_set, f->post_pack, k);
 
-	while (at < f->npost && !equal(pred_pack(f->post[at]), k))
-		at++;
-	if (at == f->npost)
+	if (at < 0)
 	{
-		f->post[f->npost] = pred_number(p, &f->npreds);
-		f->postsets[f->npost++] = 0;
+		at = f->npost++;
+		f->post_pack[at] = k;
+		fuse_set_add(&f->post_set, sift_list_hash(k), at);
+		f->post[at] = pred_number(p, &f->npreds);
+		f->postsets[at] = 0;
 	}
 	f->postsets[at] |= (uint32) 1 << arm;
 }
@@ -109,6 +111,7 @@ fuse_posts(Fuse *f)
 	for (int i = 0; i < f->n; i++)
 		f->npreds = Max(f->npreds, f->arm[i].s->npreds_total);
 	f->post = palloc(Max(total, 1) * sizeof(SiftAggPred *));
+	f->post_pack = palloc(Max(total, 1) * sizeof(List *));
 	f->postsets = palloc0(Max(total, 1) * sizeof(uint32));
 	for (int i = 0; i < f->n; i++)
 	{
@@ -162,10 +165,14 @@ bool
 fuse_aggs(Fuse *f)
 {
 	const SiftAggSpec *a0 = &f->arm[0].a;
-	List	   *keys = NIL;
+	List	  **keys,
+			  **first = palloc(Max(a0->naggs, 1) * sizeof(List *));
+	FuseSet		seen = {0};
 	int			total = 0;
 	bool		same = true;
 
+	for (int k = 0; k < a0->naggs; k++)
+		first[k] = agg_pack(&a0->agg[k]);
 	f->aggmap = palloc(f->n * sizeof(int *));
 	for (int i = 0; i < f->n; i++)
 	{
@@ -177,7 +184,7 @@ fuse_aggs(Fuse *f)
 			f->aggmap[i][k] = k;
 		same &= a->naggs == a0->naggs;
 		for (int k = 0; same && k < a->naggs; k++)
-			same = equal(agg_pack(&a->agg[k]), agg_pack(&a0->agg[k]));
+			same = equal(agg_pack(&a->agg[k]), first[k]);
 	}
 	f->nagg = a0->naggs;
 	f->agg = a0->agg;
@@ -187,23 +194,24 @@ fuse_aggs(Fuse *f)
 	f->nagg = 0;
 	f->agg = palloc(Max(total, 1) * sizeof(SiftAggAgg));
 	f->aggsets = palloc0(Max(total, 1) * sizeof(uint32));
+	keys = palloc(Max(total, 1) * sizeof(List *));
 	for (int i = 0; i < f->n; i++)
 		for (int k = 0; k < f->arm[i].a.naggs; k++)
 		{
 			const SiftAggAgg *a = &f->arm[i].a.agg[k];
 			List	   *key = agg_pack(a);
-			int			at = 0;
+			int			at;
 
 			if (a->kind == SAA_PCT_CONT || a->kind == SAA_PCT_DISC || a->kind == SAA_GROUPING || (a->filter && pred_runs_plan(a->filter)))
 				return false;
-			while (at < f->nagg && !equal(list_nth(keys, at), key))
-				at++;
-			if (at == f->nagg)
+			at = fuse_set_find(&seen, keys, key);
+			if (at < 0)
 			{
-				keys = lappend(keys, key);
-				f->agg[f->nagg] = *a;
-				f->agg[f->nagg].filter = a->filter ? pred_number(a->filter, &f->npreds) : NULL;
-				f->nagg++;
+				at = f->nagg++;
+				keys[at] = key;
+				fuse_set_add(&seen, sift_list_hash(key), at);
+				f->agg[at] = *a;
+				f->agg[at].filter = a->filter ? pred_number(a->filter, &f->npreds) : NULL;
 			}
 			f->aggmap[i][k] = at;
 			f->aggsets[at] |= (uint32) 1 << i;
@@ -317,30 +325,45 @@ junction(SiftAggPredKind kind, int n, SiftAggPred **child)
 	return p;
 }
 
+/* the packs of the conjuncts of an arm, found by hash */
+typedef struct PredPacks
+{
+	List	  **pack;
+	FuseSet		set;
+} PredPacks;
+
+static void
+pred_packs_add(PredPacks *pp, int n, List *pack)
+{
+	pp->pack[n] = pack;
+	fuse_set_add(&pp->set, sift_list_hash(pack), n);
+}
+
 /* the conjuncts over the rows that every arm has, and per arm those it has beyond them: false when an arm's cannot be tested on its own set */
 bool
 fuse_split(Fuse *f)
 {
-	List	  **keys = palloc(f->n * sizeof(List *));
-	List	   *common = NIL;
+	PredPacks  *keys = palloc0(f->n * sizeof(PredPacks));
+	PredPacks	common = {palloc(Max(f->arm[0].a.npred, 1) * sizeof(List *)), {0}};
 
 	for (int i = 0; i < f->n; i++)
 	{
-		keys[i] = NIL;
+		keys[i].pack = palloc(Max(f->arm[i].a.npred, 1) * sizeof(List *));
 		for (int j = 0; j < f->arm[i].a.npred; j++)
-			keys[i] = lappend(keys[i], pred_pack(f->arm[i].a.pred[j]));
+			pred_packs_add(&keys[i], j, pred_pack(f->arm[i].a.pred[j]));
 	}
 	f->ncommon = 0;
 	f->common = palloc(Max(f->arm[0].a.npred, 1) * sizeof(SiftAggPred *));
 	for (int j = 0; j < f->arm[0].a.npred; j++)
 	{
+		List	   *key = keys[0].pack[j];
 		bool		all = true;
 
 		for (int i = 1; i < f->n; i++)
-			all &= list_member(keys[i], list_nth(keys[0], j));
+			all &= fuse_set_find(&keys[i].set, keys[i].pack, key) >= 0;
 		if (all)
 		{
-			common = lappend(common, list_nth(keys[0], j));
+			pred_packs_add(&common, f->ncommon, key);
 			f->common[f->ncommon++] = f->arm[0].a.pred[j];
 		}
 	}
@@ -352,7 +375,7 @@ fuse_split(Fuse *f)
 		int			n = 0;
 
 		for (int j = 0; j < a->npred; j++)
-			if (!list_member(common, list_nth(keys[i], j)))
+			if (fuse_set_find(&common.set, common.pack, keys[i].pack[j]) < 0)
 			{
 				if (!routable(a->pred[j]))
 					return false;

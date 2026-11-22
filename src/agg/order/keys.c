@@ -370,13 +370,28 @@ topn_fraction(AggCtx *c, Node *key, int leaf, double matches, int64 limit)
 	return Min(1.0, (8.0 + 2.0 * nsb * (double) limit / Max(matches, 1.0)) / nsb);
 }
 
+#define LOOK_BUCKETS	256
+
+/* the columns of the lookups found by their table and attribute, to ask whether one is there without reading them all */
+typedef struct LookSeen
+{
+	List	   *bucket[LOOK_BUCKETS];
+} LookSeen;
+
+static List **
+look_bucket(LookSeen *seen, const Var *v)
+{
+	return &seen->bucket[((uint32) v->varno * 31 + (uint32) v->varattno) % LOOK_BUCKETS];
+}
+
 /* column v of a joined table among the columns of the lookups, once; false when the table holds no room for it */
 static bool
-lookup_add(JoinCtx *jc, Var *v, List **lookups)
+lookup_add(JoinCtx *jc, Var *v, List **lookups, LookSeen *seen)
 {
 	TopLookup  *l;
+	List	  **b = look_bucket(seen, v);
 
-	foreach_ptr(TopLookup, x, *lookups)
+	foreach_ptr(TopLookup, x, *b)
 		if (equal(x->var, v))
 			return true;
 	l = palloc(sizeof(TopLookup));
@@ -385,7 +400,15 @@ lookup_add(JoinCtx *jc, Var *v, List **lookups)
 	if ((l->col = join_col(jc, (Node *) v)) < 0)
 		return false;
 	*lookups = lappend(*lookups, l);
+	*b = lappend(*b, l);
 	return true;
+}
+
+/* the columns of the heap the scan tuple holds: a Var of the scanned table is one place whatever the number of times the select list names it */
+static int
+att_slot(const Var *v)
+{
+	return v->varattno - FirstLowInvalidHeapAttributeNumber;
 }
 
 /*
@@ -398,9 +421,14 @@ bool
 topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List **funcs, List **lookups)
 {
 	List	   *vars;
+	Bitmapset  *held = NULL;
+	LookSeen	seen = {{NIL}};
 
 	if (contain_volatile_functions((Node *) target->exprs))
 		return agg_refuse_on(TOPN_SHAPE, "the select list calls a volatile function");
+	foreach_node(TargetEntry, te, *scan_tlist)
+		if (IsA(te->expr, Var) && ((Var *) te->expr)->varno == c->relid && ((Var *) te->expr)->varlevelsup == 0)
+			held = bms_add_member(held, att_slot((Var *) te->expr));
 	vars = pull_var_clause((Node *) target->exprs, PVC_RECURSE_PLACEHOLDERS | PVC_INCLUDE_WINDOWFUNCS);
 	foreach_ptr(Node, n, vars)
 	{
@@ -416,16 +444,17 @@ topn_columns(AggCtx *c, PathTarget *target, List **scan_tlist, int *attno, List 
 		v = castNode(Var, n);
 		if (v->varno != c->relid && (jc = join_of_var(c, n)) != NULL && jc->kind == SJ_INNER && jc->cpath == NULL)
 		{
-			if (!lookup_add(jc, v, lookups))
+			if (!lookup_add(jc, v, lookups, &seen))
 				return agg_refuse_on(TOPN_SHAPE, "the select list reads more columns of the joined tables than a scan passes on");
 			continue;
 		}
 		if (v->varno != c->relid || v->varlevelsup != 0 || v->varattno <= 0)
 			return agg_refuse_on(TOPN_SHAPE, "the select list reads a column that is not of the scanned table or of a table joined by its unique key");
-		if (list_member(*scan_tlist, v) || tlist_member((Expr *) v, *scan_tlist))
+		if (bms_is_member(att_slot(v), held))
 			continue;
 		if (list_length(*scan_tlist) >= MaxHeapAttributeNumber)
 			return agg_refuse_on(TOPN_SHAPE, "the select list reads more columns than a heap tuple holds");
+		held = bms_add_member(held, att_slot(v));
 		attno[list_length(*scan_tlist)] = v->varattno;
 		*scan_tlist = lappend(*scan_tlist, makeTargetEntry((Expr *) copyObject(v), list_length(*scan_tlist) + 1, NULL, false));
 	}

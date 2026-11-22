@@ -146,26 +146,6 @@ group_has_partition_key(AggCtx *c, List *keys)
 	return ok;
 }
 
-/* is a column of table a equal to a column of table b in the query (an equivalence class holds both)? */
-static bool
-eq_joined(PlannerInfo *root, int a, int b)
-{
-	foreach_node(EquivalenceClass, ec, root->eq_classes)
-	{
-		bool		ina = false,
-					inb = false;
-
-		foreach_node(EquivalenceMember, em, ec->ec_members)
-		{
-			ina |= bms_is_member(a, em->em_relids);
-			inb |= bms_is_member(b, em->em_relids);
-		}
-		if (ina && inb)
-			return true;
-	}
-	return false;
-}
-
 /*
  * The tables joined to the scan, those joined to the scanned table itself first: a table keyed by a column of another lookup is loaded after the
  * one it takes its keys from (a customer listed before the orders that name it is read whole, row by row, by every row of the scan).
@@ -175,9 +155,13 @@ joined_in_order(PlannerInfo *root, int scanned, List *joined)
 {
 	List	   *direct = NIL,
 			   *rest = NIL;
+	Bitmapset  *equal_rels = NULL;
 
+	foreach_node(EquivalenceClass, ec, root->eq_classes)
+		if (bms_is_member(scanned, ec->ec_relids))
+			equal_rels = bms_add_members(equal_rels, ec->ec_relids);
 	foreach_int(rti, joined)
-		if (eq_joined(root, scanned, rti))
+		if (bms_is_member(rti, equal_rels))
 			direct = lappend_int(direct, rti);
 		else
 			rest = lappend_int(rest, rti);

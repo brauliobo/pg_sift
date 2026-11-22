@@ -21,25 +21,40 @@
 #include "agg/cost/int.h"
 #include "agg/dist_int.h"
 
-/* does a predicate test the leaf? `values`: its values, not only its null flags (nor the source's own tests of its lanes), and the leaves of a combo slot */
-bool
-pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values)
+typedef bool (*LeafFn) (int leaf, void *arg);
+
+/* the leaves a predicate tests, each given to fn until it says yes; `values`: the values of them, not only their null flags (nor the source's own tests of its lanes), and the leaves of a combo slot */
+static bool
+pred_each_leaf(const SiftAggSpec *s, const SiftAggPred *p, bool values, LeafFn fn, void *arg)
 {
 	if (p == NULL)
 		return false;
 	if (values && p->kind == SAP_COMBO)
 	{
 		for (int i = 0; i < s->combo[p->leaf].nleaves; i++)
-			if (s->combo[p->leaf].leaf[i] == leaf)
+			if (fn(s->combo[p->leaf].leaf[i], arg))
 				return true;
 		return false;
 	}
-	if (p->kind != SAP_AND && p->kind != SAP_OR && (p->leaf == leaf || p->leaf2 == leaf) && !(values && (p->kind == SAP_NULL || p->kind == SAP_WIDE)))
+	if (p->kind != SAP_AND && p->kind != SAP_OR && !(values && (p->kind == SAP_NULL || p->kind == SAP_WIDE)) && (fn(p->leaf, arg) || fn(p->leaf2, arg)))
 		return true;
 	for (int i = 0; i < p->nchild; i++)
-		if (pred_uses_leaf(s, p->child[i], leaf, values))
+		if (pred_each_leaf(s, p->child[i], values, fn, arg))
 			return true;
 	return false;
+}
+
+static bool
+leaf_is(int leaf, void *arg)
+{
+	return leaf == *(int *) arg;
+}
+
+/* does a predicate test the leaf? */
+bool
+pred_uses_leaf(const SiftAggSpec *s, const SiftAggPred *p, int leaf, bool values)
+{
+	return pred_each_leaf(s, p, values, leaf_is, &leaf);
 }
 
 /* is the leaf read by something besides the text tests that run on the encoded strings? */
@@ -281,17 +296,6 @@ recheck_cost(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	return (Max(rows, k->units * flagged) + rootless) * AGG_RECHECK_ROW;
 }
 
-/* is the leaf one the source tests on its stored values (a comparison, IN list or null test of the query's WHERE): decoded for every row of a unit */
-static bool
-leaf_filtered(const SiftAggSpec *s, int leaf)
-{
-	for (int i = 0; i < s->npred; i++)
-		if ((s->pred[i]->kind == SAP_CMP || s->pred[i]->kind == SAP_IN || s->pred[i]->kind == SAP_NULL || s->pred[i]->kind == SAP_AND) &&
-			pred_uses_leaf(s, s->pred[i], leaf, false))
-			return true;
-	return false;
-}
-
 /* is every reader of the leaf a list (array_agg, string_agg), a count of its values or a group key: its dictionary entries are copied, not computed on? */
 static bool
 leaf_copy_only(const SiftAggSpec *s, int leaf, bool *sums, bool *keyed)
@@ -478,25 +482,6 @@ leaf_values_read(const SiftAggSpec *s, int leaf)
 	return leaf_values_used(s, leaf) || leaf_tested(s, leaf);
 }
 
-/* do only comparisons with constants read the leaf: the kernels test its lanes where they are, no value is decoded (0.3 ns a row measured for 3,000,000 rows of a date column) */
-static bool
-leaf_compared_only(const SiftAggSpec *s, int leaf)
-{
-	bool		tested = false;
-
-	/* a top-N orders by columns that no key or aggregate names */
-	if (s->topn || leaf_values_used(s, leaf))
-		return false;
-	for (int i = 0; i < s->npred; i++)
-		if (pred_uses_leaf(s, s->pred[i], leaf, true))
-		{
-			if (s->pred[i]->kind != SAP_CMP)
-				return false;
-			tested = true;
-		}
-	return tested;
-}
-
 /*
  * The bytes of the arrays whose entries a scan decodes and tests: a leaf a filter tests is read whole, one the query only groups or aggregates at the
  * rows that pass (sparse), and none when all it reads of the leaf are its null flags.
@@ -605,18 +590,96 @@ static int
 filter_tests(const SiftAggSpec *s)
 {
 	int			tests = 0;
+	Bitmapset  *ranged = NULL;
 
 	for (int i = 0; i < s->npred; i++)
 	{
 		const SiftAggPred *p = s->pred[i];
-		bool		bound = p->kind == SAP_CMP && p->op != SCMP_EQ && p->op != SCMP_NE,
-					seen = false;
 
-		for (int j = 0; bound && j < i; j++)
-			seen |= s->pred[j]->kind == SAP_CMP && s->pred[j]->leaf == p->leaf && s->pred[j]->op != SCMP_EQ && s->pred[j]->op != SCMP_NE;
-		tests += !seen;
+		if (p->kind == SAP_CMP && p->op != SCMP_EQ && p->op != SCMP_NE)
+		{
+			tests += !bms_is_member(p->leaf, ranged);
+			ranged = bms_add_member(ranged, p->leaf);
+		}
+		else
+			tests++;
 	}
+	bms_free(ranged);
 	return tests;
+}
+
+#define LF_FILTERED		1		/* the source tests its stored values (a comparison, IN list or null test of the WHERE) */
+#define LF_VALUES		2		/* a key, an aggregate or a combo reads its values */
+#define LF_CMP_TESTED	4		/* a comparison with a constant tests its values */
+#define LF_OTHER_TESTED	8		/* another predicate tests its values */
+
+typedef struct LeafMark
+{
+	uint8	   *flags;
+	int			nleaves;
+	uint8		bit;
+} LeafMark;
+
+static bool
+leaf_mark(int leaf, void *arg)
+{
+	LeafMark   *m = arg;
+
+	if (leaf >= 0 && leaf < m->nleaves)
+		m->flags[leaf] |= m->bit;
+	return false;
+}
+
+static void
+mark_pred(const SiftAggSpec *s, const SiftAggPred *p, bool values, LeafMark *m, uint8 bit)
+{
+	m->bit = bit;
+	pred_each_leaf(s, p, values, leaf_mark, m);
+}
+
+/* what the scan does with each leaf, from one pass over the predicates, keys, aggregates and combos (not a scan of all of them for each leaf) */
+static uint8 *
+leaf_flags(AggCtx *c, const SiftAggSpec *s)
+{
+	LeafMark	m = {palloc0(Max(c->lay->nleaves, 1)), c->lay->nleaves, LF_VALUES};	/* check-memory: allow one byte of each leaf of the index */
+
+	for (int i = 0; i < s->npred; i++)
+	{
+		const SiftAggPred *p = s->pred[i];
+
+		if (p->kind == SAP_CMP || p->kind == SAP_IN || p->kind == SAP_NULL || p->kind == SAP_AND)
+			mark_pred(s, p, false, &m, LF_FILTERED);
+		mark_pred(s, p, true, &m, p->kind == SAP_CMP ? LF_CMP_TESTED : LF_OTHER_TESTED);
+	}
+	m.bit = LF_VALUES;
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].kind != SAK_COMBO)
+			leaf_mark(s->key[i].leaf, &m);
+	for (int i = 0; i < s->naggs; i++)
+	{
+		const SiftAggAgg *a = &s->agg[i];
+		int			r = -1;
+
+		leaf_mark(a->leaf, &m);
+		while ((r = bms_next_member(a->reads, r)) >= 0)
+			leaf_mark(r, &m);
+		mark_pred(s, a->filter, true, &m, LF_VALUES);
+		if (a->kind == SAA_GEN)
+			for (int j = 0; j < a->gen->nargs; j++)
+				for (int l = 0; l < a->gen->arg[j].nleaves; l++)
+					leaf_mark(a->gen->arg[j].leaf[l], &m);
+	}
+	for (int ci = 0; ci < s->ncombo; ci++)
+		for (int p = 0; p < s->combo[ci].nleaves; p++)
+			leaf_mark(s->combo[ci].leaf[p], &m);
+	return m.flags;
+}
+
+/* do only comparisons with constants read the leaf: the kernels test its lanes where they are, no value is decoded (0.3 ns a row measured for 3,000,000 rows of a date column) */
+static bool
+compared_only(const SiftAggSpec *s, uint8 flags)
+{
+	return !s->topn && !(flags & LF_VALUES) && (flags & LF_CMP_TESTED) && !(flags & LF_OTHER_TESTED);
 }
 
 void
@@ -625,6 +688,7 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	int			nkeyfilters;
 	double		sparse,
 				tested;
+	uint8	   *flags;
 
 	k->zone_kept = zone_kept(c, s, &nkeyfilters, &k->key_share);
 	/*
@@ -636,10 +700,12 @@ cost_read(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 	/* the rows the point directory lists are the only ones the filters read and test */
 	tested = point_narrows(c, s) ? sparse : 1.0;
 	k->sparse = sparse;
+	flags = leaf_flags(c, s);
 	for (int i = 0; i < s->nleaves; i++)
-		if (!leaf_compared_only(s, s->leaves[i]))
+		if (!compared_only(s, flags[s->leaves[i]]))
 			k->scan_cost += k->rows * (leaf_level(c, s->leaves[i]) ? elems_of(c, leaf_of(c, s->leaves[i])->parent) : 1.0) * AGG_SCAN_LEAF *
-				(leaf_filtered(s, s->leaves[i]) ? tested : sparse);
+				((flags[s->leaves[i]] & LF_FILTERED) ? tested : sparse);
+	pfree(flags);
 	k->scan_cost += k->rows * (1 + (s->group >= 0 ? k->elems : 0)) * AGG_FILTER_VALUE * Max(filter_tests(s) + nkeyfilters + scope_tests(s), 1) * tested;
 	k->scan_cost += k->rows * c->elem_work * AGG_FILTER_VALUE;
 	for (int i = 0; i < s->npred; i++)
@@ -725,24 +791,28 @@ distinct_id_ops(AggCtx *c, const SiftAggSpec *s, const CostAcc *k)
 	double		units = Max(k->units, 1.0),
 				read = Max(k->zone_kept, 1.0 / units) * units,
 				ops = 0;
+	Bitmapset  *ided = NULL;
 
+	/* a leaf the keys or an earlier aggregate gave ids to has them */
+	for (int j = 0; j < s->nkeys; j++)
+		if ((s->key[j].kind == SAK_LEAF || s->key[j].kind == SAK_LUT) && s->key[j].leaf >= 0)
+			ided = bms_add_member(ided, s->key[j].leaf);
 	for (int ai = 0; ai < s->naggs; ai++)
 	{
-		double		nd = distinct_text_values(c, &s->agg[ai], k),
+		const SiftAggAgg *a = &s->agg[ai];
+		double		nd = distinct_text_values(c, a, k),
 					entries,
 					x;
-		bool		counted = false;
+		const bool	counted = a->leaf >= 0 && bms_is_member(a->leaf, ided);
 
-		/* a leaf the keys or an earlier aggregate gave ids to has them */
-		for (int j = 0; j < ai; j++)
-			counted |= s->agg[j].kind == SAA_COUNT_DISTINCT && s->agg[j].leaf == s->agg[ai].leaf;
-		for (int j = 0; j < s->nkeys; j++)
-			counted |= (s->key[j].kind == SAK_LEAF || s->key[j].kind == SAK_LUT) && s->key[j].leaf == s->agg[ai].leaf;
+		if (a->kind == SAA_COUNT_DISTINCT && a->leaf >= 0)
+			ided = bms_add_member(ided, a->leaf);
 		if (nd <= 0 || counted)
 			continue;
 		entries = nd * -expm1(-k->rows / units / nd) * read;
 		x = Min(entries, nd) / 100000.0;
 		ops += entries * AGG_DIST_ID * pow(x, x <= 1.0 ? 0.9 : 0.6);
 	}
+	bms_free(ided);
 	return ops;
 }

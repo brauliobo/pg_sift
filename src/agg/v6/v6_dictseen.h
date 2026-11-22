@@ -1,7 +1,7 @@
 /*
  * agg/v6/v6_dictseen.h - the distinct strings of a column that the parts code by a dictionary, counted without expanding a row: a row of a batch is one bit of the dictionary of its part, and when the
- * scan leaves the part the strings of the bits that are set (the dictionary is in byte order, so they come sorted) merge into the sorted set of the strings seen so far, which holds each string once
- * whatever the number of parts that name it. What reaches the exact set of v6_distinct.h is that set, a string once, not a row of the scan.
+ * scan leaves the part the strings of the bits that are set join the set of the strings seen so far (a hash table, the bytes in an arena), which holds each string once
+ * whatever the number of parts that name it and the order of their dictionaries. What reaches the exact set of v6_distinct.h is that set, a string once, not a row of the scan.
  */
 #ifndef SIFT_AGG_V6_DICTSEEN_H
 #define SIFT_AGG_V6_DICTSEEN_H
@@ -33,7 +33,7 @@ extern SiftDictSeen *sift_dictseen_create(MemoryContext cx, uint64 cap_bytes);
  */
 extern bool sift_dictseen_batch(SiftDictSeen *d, const SiftDictSrc *src, const uint32 *code, const uint64 *take, const uint64 *valid, uint16 n_raw, SiftDictSeenEmit emit, void *arg);
 
-/* Folds the part being read and hands every string seen to emit, once each, in byte order; the set is empty afterwards */
+/* Folds the part being read and hands every string seen to emit, once each, in no order; the set is empty afterwards */
 extern void sift_dictseen_drain(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg);
 
 /* The strings of the parts folded so far (the part being read holds at most the codes of its dictionary more) */

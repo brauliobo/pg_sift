@@ -114,12 +114,14 @@ group_paths_one(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel
 		return;
 	}
 	s->key = palloc0((list_length(groupClause) + 1) * sizeof(SiftAggKey));
+	const bool	has_group = parse->groupingSets == NIL && groupClause_has_nonconst(root, groupClause);
+
 	foreach_node(SortGroupClause, sgc, groupClause)
 	{
 		Node	   *e = (Node *) get_sortgroupclause_expr(sgc, root->processed_tlist);
 
 		/* a constant adds no group: the output keeps it as the constant it is (not with grouping sets, whose empty set has no key, and not alone: an empty input has no group) */
-		if (IsA(e, Const) && parse->groupingSets == NIL && groupClause_has_nonconst(root, groupClause))
+		if (IsA(e, Const) && has_group)
 			continue;
 		if (!compile_key(c, sgc, e, &s->key[s->nkeys]))
 		{

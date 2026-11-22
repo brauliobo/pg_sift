@@ -172,7 +172,35 @@ extern void map_col_put(MapTab *m, int c, Datum d, bool cnull);
 extern void first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableSlot *slot);
 extern void map_keep_first(MapTab *m, const SiftAggFirst *f, const FirstOrd *o);
 extern void map_keep_agreeing(MapTab *m);
-extern MapTab * map_load_table(AggExec *ex, int ci, MemoryContext cxt);
+/* what map_load found of the keys a table is read for (the dependent lookup, or the scan's IN list), so that map_probe does not find it again */
+typedef struct MapLoadHint
+{
+	int			dep;			/* map_keyed_dependent: the combo whose keys the table is read for, -1 none */
+	int			att;
+	Oid			typ;
+	int			nv;				/* map_in_keys: the elements of the IN list (dep < 0), -1 none */
+	Datum	   *vals;
+} MapLoadHint;
+
+/* the tables a statement shares, found by its EState and key from a table of buckets: the entries of every statement of the backend are not walked */
+typedef struct LookRegEnt
+{
+	struct LookRegEnt *next;
+	uint64		hash;
+	const EState *estate;
+	const char *key;
+} LookRegEnt;
+
+typedef struct LookReg
+{
+	LookRegEnt **bucket;
+} LookReg;
+
+extern LookRegEnt * look_reg_find(const LookReg *r, const EState *estate, const char *key);
+extern void look_reg_add(LookReg *r, MemoryContext cx, LookRegEnt *e);
+extern void look_reg_del(LookReg *r, LookRegEnt *e);
+extern int	map_find_ids_head(const MapTab *m, const uint32 *kid, uint32 *row);
+extern MapTab * map_load_table(AggExec *ex, int ci, MemoryContext cxt, const MapLoadHint *hint);
 extern void map_note_table(AggExec *ex, Relation rel);
 extern char * look_key(AggExec *ex, int ci, bool cols, bool user);
 

@@ -497,10 +497,17 @@ vet_maybe(V6Scan *s, const uint64 *maybe, const uint64 *tid, int off, int n)
 }
 
 /* Whether every heap page the addresses of a part span is all-visible: then no row of it needs the heap, and the count of its rows is the descriptor's */
+#define PART_VM_SPAN_MAX	4096	/* pages a part may span, whatever its rows, for the visibility map to be asked of each */
+
 static bool
 part_all_visible(V6Scan *s, const SiftPartDesc *d)
 {
+	const uint64 span = (uint64) (d->tid_max >> 16) - (d->tid_min >> 16) + 1;
+
 	if (d->tid_max == 0)
+		return false;
+	/* a part whose rows are spread over far more pages than rows (a handful of old tuples among millions of pages) is read row by row: asking for each of its pages costs more than its rows */
+	if (span > PART_VM_SPAN_MAX && span > 4 * (d->nrows / 16 + 64))
 		return false;
 	for (BlockNumber b = d->tid_min >> 16; b <= (BlockNumber) (d->tid_max >> 16); b++)
 		if (!VM_ALL_VISIBLE(s->vet.heap, b, &s->vet.vmbuf))

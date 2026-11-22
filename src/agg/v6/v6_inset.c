@@ -89,8 +89,12 @@ sift_v6_array_ints(MemoryContext keep, const Node *arr, Oid vartype, ParamListIn
 		if (!nulls[i])
 			v[out++] = as_int(t, el[i]);
 	qsort(v, out, sizeof(int64), cmp_int64);
+	cnt = 0;
+	for (int i = 0; i < out; i++)
+		if (cnt == 0 || v[i] != v[cnt - 1])
+			v[cnt++] = v[i];
 	*vals = v;
-	*n = out;
+	*n = cnt;
 	return true;
 }
 
@@ -111,8 +115,10 @@ sift_v6_inset_of(MemoryContext keep, const Node *clause, Index relid, ParamListI
 	if (!IsA(var, Var) || var->varno != relid || var->varlevelsup != 0 || var->varattno <= 0 ||
 		!sift_v6_array_ints(keep, lsecond(sa->args), var->vartype, params, &vals, &n))
 		return false;
-	out->slot = sift_v6_input_add_var(in, var);
+	if ((out->slot = sift_v6_input_add_var(in, var)) < 0)
+		return false;
 	out->vals = vals;
 	out->n = n;
-	return out->slot >= 0;
+	sift_v6_inset_index(keep, out);
+	return true;
 }

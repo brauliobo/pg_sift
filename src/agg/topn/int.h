@@ -235,6 +235,8 @@ struct SiftTopN
 	int			ntrunc,
 				captrunc,
 				rpos;
+	int32	   *trunc_ht;		/* the second pass, more than a few units: the last entry of trunc of each unit id, found by hash (-1 empty), NULL until the first lookup */
+	uint32		trunc_cap;		/* its size, a power of 2 */
 	ItemPointerData *tids;		/* the TIDs of the rows of a unit (sort), or of the heap rows of a unit */
 	TopEnt	   *res;			/* after sift_topn_finish: the heap in order */
 	/* the visit order */

@@ -245,6 +245,8 @@ static void
 key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
 {
 	PlannerInfo *top = root;
+	PlannerInfo *seen[32];
+	int			nseen = 0;
 	Var		   *key = NULL;
 	double		rows;
 
@@ -270,9 +272,17 @@ key_list_lift(PlannerInfo *root, RelOptInfo *rel, PlannerInfo *body)
 	{
 		int			resno = te->resno;
 		PlannerInfo *inner = cte_inner_body(body, &resno);
+		int			i = 0;
 
-		if (inner != body)
+		/* the keys of a body do not depend on the column: a body that many columns end in is asked once */
+		while (i < nseen && seen[i] != inner)
+			i++;
+		if (inner != body && i == nseen)
+		{
 			rows = Max(rows, list_keys_worth(root, inner, key));
+			if (nseen < lengthof(seen))
+				seen[nseen++] = inner;
+		}
 	}
 	while (top->parent_root)
 		top = top->parent_root;

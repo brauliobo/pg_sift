@@ -23,7 +23,52 @@ static bool real_cost_walker(Node *n, double *excess);
 static bool hashed_subplan_walker(Node *n, double *ops);
 static double combo_subplan_ops(const SiftAggCombo *cb);
 static bool calendar_cost_walker(Node *n, double *ops);
-static double reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, bool counted);
+
+/* The entries of every combo one call of combo_entries reaches: tuples and counted do not change down the recursion, so a combo is worked out once */
+typedef struct ComboMemo
+{
+	uint64		done[(SIFT_AGG_MAX_COMBOS + 63) / 64];
+	double		val[SIFT_AGG_MAX_COMBOS];
+	double	   *leaf_keys;		/* filtered_keys of every leaf, made when the first is asked */
+} ComboMemo;
+
+static double combo_entries_m(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted, ComboMemo *memo);
+
+/* the lookup join that depends on each lookup, in one pass over the joins: the first inner or semi lookup join whose key is a column of it */
+void
+sift_cost_build_dep_map(AggCtx *c, const SiftAggSpec *s, JoinDepMap *m)
+{
+	memset(m, 0, sizeof(*m));
+	foreach_ptr(JoinCtx, dj, c->joins)
+	{
+		const SiftAggCombo *cb = &s->combo[dj->combo];
+		const SiftAggJoin *j = &s->join[cb->join];
+
+		if (dj->cpath != NULL)
+		{
+			m->cpath_join[m->ncpath] = dj;
+			m->cpath_pos[m->ncpath++] = foreach_current_index(dj);
+		}
+		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL)
+			continue;
+		for (int k = 0; k < j->nkey; k++)
+		{
+			Node	   *kx = j->keyexpr[k];
+			int			pos = kx && IsA(kx, Param) ? ((Param *) kx)->paramid : -1;
+			int			ref;
+
+			if (pos < 0 || pos >= cb->nleaves || cb->leaf[pos] != -1)
+				continue;
+			ref = cb->refcombo[pos];
+			if (ref >= 0 && ref < s->ncombo && ref != dj->combo && m->dep[ref] == NULL)
+			{
+				m->dep[ref] = dj;
+				m->key[ref] = k;
+				m->pos[ref] = foreach_current_index(dj);
+			}
+		}
+	}
+}
 
 double
 num_cost(const SiftAggNum *o)
@@ -68,40 +113,54 @@ pred_num_ops(const SiftAggPred *p)
 }
 
 /*
- * The keys the inner and semi lookup joins of the query leave of a leaf (the join key filters, agg/init.c), narrowed by the join that is keyed by one of
+ * The keys the inner and semi lookup joins of the query leave of each leaf (the join key filters, agg/init.c), narrowed by the join that is keyed by one of
  * their columns (a scope list joined to the table's rows): the tuples that reach a combo hold no other value of it. A lookup PostgreSQL has no statistics
  * for is its floor of one row whatever it holds (lookup_guessed), which bounds nothing. HUGE_VAL: no such join.
  */
-static double
-filtered_keys(AggCtx *c, const SiftAggSpec *s, int leaf)
+static double *
+filtered_leaf_keys(AggCtx *c, const SiftAggSpec *s)
 {
-	double		keys = HUGE_VAL;
+	const int	nleaves = c->lay->nleaves;
+	double	   *keys = palloc(Max(nleaves, 1) * sizeof(double));	/* check-memory: allow one slot of each leaf of the index */
+	JoinDepMap	deps;
 
+	for (int i = 0; i < nleaves; i++)
+		keys[i] = HUGE_VAL;
 	if (!sift_agg_join_filter || s->topn)
 		return keys;
 	/* a rest of an ON clause that compares values of the tuple loads the tables whole: their keys are all there are (join_key_zone) */
 	for (int ci = 0; ci < s->ncombo; ci++)
 		if (on_tests_tuple(s, ci))
 			return keys;
+	sift_cost_build_dep_map(c, s, &deps);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		const SiftAggCombo *cb = &s->combo[jc->combo];
 		const SiftAggJoin *j = &s->join[cb->join];
-		int			dkey;
-		const JoinCtx *dj = dependent_join(c, s, jc, &dkey);
+		const JoinCtx *dj = deps.dep[jc->combo];
+		double		sure;
 
 		if ((j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL || cb->level != 0 || lookup_guessed(c, jc) || (dj && lookup_guessed(c, dj)))
 			continue;
+		sure = Min(lookup_sure(c, jc), dj ? lookup_sure(c, dj) : HUGE_VAL);
 		for (int k = 0; k < j->nkey; k++)
-			if (j->keypos[k] >= 0 && cb->leaf[j->keypos[k]] == leaf)
-				keys = Min(keys, Min(lookup_sure(c, jc), dj ? lookup_sure(c, dj) : HUGE_VAL));
+			if (j->keypos[k] >= 0 && cb->leaf[j->keypos[k]] >= 0 && cb->leaf[j->keypos[k]] < nleaves)
+				keys[cb->leaf[j->keypos[k]]] = Min(keys[cb->leaf[j->keypos[k]]], sure);
 	}
 	return keys;
 }
 
+static double
+filtered_keys(AggCtx *c, const SiftAggSpec *s, int leaf, ComboMemo *memo)
+{
+	if (memo->leaf_keys == NULL)
+		memo->leaf_keys = filtered_leaf_keys(c, s);
+	return memo->leaf_keys[leaf];
+}
+
 /* the rows of a lookup the tuples reach: those of the keys that reach it, the rows a key has (the table's, when it has no statistics or is a plan) */
 static double
-reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, bool counted)
+reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, bool counted, ComboMemo *memo)
 {
 	const SiftAggCombo *cb = &s->combo[jc->combo];
 	const SiftAggJoin *j = &s->join[cb->join];
@@ -112,7 +171,7 @@ reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, 
 	if (jc->cpath != NULL || j->params != NIL || j->nkey != 1 || j->tkey[0] != NULL || !OidIsValid(j->relid) ||
 		(rpk = sift_agg_rows_per_key(j->relid, j->keyatt[0], rel->tuples)) <= 0)
 		return rows;
-	return Min(rows, combo_entries(c, s, cb, tuples, counted) * rpk);
+	return Min(rows, combo_entries_m(c, s, cb, tuples, counted, memo) * rpk);
 }
 
 /*
@@ -121,8 +180,8 @@ reached_rows(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, double tuples, 
  * evaluated for the tuples but for the combinations of the values of the elements (the index counts those of each leaf) and of the column
  * of the lookup it reads. `counted` prices the elements of an unscoped lookup by those counts too, not by PostgreSQL's default.
  */
-double
-combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted)
+static double
+combo_entries_calc(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted, ComboMemo *memo)
 {
 	List	   *exprs = NIL;
 	double		entries = 1.0,
@@ -153,10 +212,10 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 						entries *= joined_distinct(c, jc, cb->refcol[p]);
 					else if (!bms_is_member(jc->combo, lookups))
 					{
-						double		rows = reached_rows(c, s, jc, tuples, counted);
+						double		rows = reached_rows(c, s, jc, tuples, counted, memo);
 
 						/* a correlated child gives its rows for each distinct input of its own combo */
-						entries *= jc->j.params != NIL ? rows * combo_entries(c, s, &s->combo[jc->combo], tuples, counted) : rows;
+						entries *= jc->j.params != NIL ? rows * combo_entries_m(c, s, &s->combo[jc->combo], tuples, counted, memo) : rows;
 					}
 					lookups = bms_add_member(lookups, jc->combo);
 				}
@@ -187,7 +246,7 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 		if (lf->attno > list_length(c->attexpr) || (e = list_nth(c->attexpr, lf->attno - 1)) == NULL)
 			return tuples;
 		if (IsA(e, Var) && (nd = column_distinct(c, (Var *) e, counted || !tested)) > 0)
-			entries *= Min(nd, filtered_keys(c, s, cb->leaf[p]));
+			entries *= Min(nd, filtered_keys(c, s, cb->leaf[p], memo));
 		else
 			exprs = lappend(exprs, e);
 	}
@@ -199,6 +258,34 @@ combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tu
 	if (cb->join >= 0 && join_dense(c, s, list_nth(c->joins, cb->join)))
 		entries = ((JoinCtx *) list_nth(c->joins, cb->join))->classes + 1;
 	return Max(Min(entries * elem_nd, tuples), 1.0);
+}
+
+static double
+combo_entries_m(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted, ComboMemo *memo)
+{
+	const int	ci = (int) (cb - s->combo);
+	double		entries;
+
+	Assert(ci >= 0 && ci < s->ncombo);
+	if (memo->done[ci >> 6] & (UINT64CONST(1) << (ci & 63)))
+		return memo->val[ci];
+	entries = combo_entries_calc(c, s, cb, tuples, counted, memo);
+	memo->val[ci] = entries;
+	memo->done[ci >> 6] |= UINT64CONST(1) << (ci & 63);
+	return entries;
+}
+
+double
+combo_entries(AggCtx *c, const SiftAggSpec *s, const SiftAggCombo *cb, double tuples, bool counted)
+{
+	ComboMemo	memo;
+	double		entries;
+
+	memset(&memo, 0, sizeof(memo));
+	entries = combo_entries_m(c, s, cb, tuples, counted, &memo);
+	if (memo.leaf_keys != NULL)
+		pfree(memo.leaf_keys);
+	return entries;
 }
 
 /* what a test of the rest of an ON clause spends beyond the price of the slot: the jsonb values it builds, in operators PostgreSQL's executor runs */

@@ -13,13 +13,12 @@
 /* the child runs of the first-row lookups of a statement that read the same table, over its arms (a worker counts its own) */
 typedef struct FirstCount
 {
-	EState	   *estate;
-	char	   *key;
+	LookRegEnt	ent;			/* first: the registry reads it, and the callback has the entry */
 	uint32		n;
 	MemoryContextCallback cb;
 } FirstCount;
 
-static List *first_counts = NIL;
+static LookReg first_counts;
 
 /* does the row a come before b in the child's ORDER BY? */
 static bool
@@ -194,7 +193,7 @@ map_load_first(AggExec *ex, int ci)
 static void
 first_count_forget(void *arg)
 {
-	first_counts = list_delete_ptr(first_counts, arg);
+	look_reg_del(&first_counts, arg);
 }
 
 static uint32 *
@@ -202,22 +201,19 @@ first_count(AggExec *ex, const char *key)
 {
 	EState	   *estate = ex->css.ss.ps.state;
 	FirstCount *fc;
-	MemoryContext old;
+	LookRegEnt *e;
 
 	if (estate == NULL)
 		return MemoryContextAllocZero(ex->cxt, sizeof(uint32));
-	foreach_ptr(FirstCount, e, first_counts)
-		if (e->estate == estate && strcmp(e->key, key) == 0)
-			return &e->n;
+	if ((e = look_reg_find(&first_counts, estate, key)) != NULL)
+		return &((FirstCount *) e)->n;
 	fc = MemoryContextAllocZero(estate->es_query_cxt, sizeof(FirstCount));
-	fc->estate = estate;
-	fc->key = MemoryContextStrdup(estate->es_query_cxt, key);
+	fc->ent.estate = estate;
+	fc->ent.key = MemoryContextStrdup(estate->es_query_cxt, key);
 	fc->cb.func = first_count_forget;
 	fc->cb.arg = fc;
 	MemoryContextRegisterResetCallback(estate->es_query_cxt, &fc->cb);
-	old = MemoryContextSwitchTo(TopMemoryContext);
-	first_counts = lappend(first_counts, fc);
-	MemoryContextSwitchTo(old);
+	look_reg_add(&first_counts, TopMemoryContext, &fc->ent);
 	return &fc->n;
 }
 
@@ -239,7 +235,7 @@ map_first_peek(AggExec *ex, int ci)
 	PG_TRY();
 	{
 		ex->cs[ci].fruns = first_count(ex, look_key(ex, ci, true, false));
-		m = map_load_table(ex, ci, ex->cxt);
+		m = map_load_table(ex, ci, ex->cxt, NULL);
 	}
 	PG_FINALLY();
 	{
@@ -262,8 +258,8 @@ map_first_row(AggExec *ex, int ci, EState *estate)
 	ComboSt    *cs = &ex->cs[ci];
 	const MapTab *fm = cs->fmap;
 	MapTab	   *m = cs->map;
-	uint32		kid[SIFT_AGG_MAX_JKEYS];
-	uint32	   *rows;
+	uint32		kid[SIFT_AGG_MAX_JKEYS],
+				row;
 	int			nm;
 
 	/* a table that is no cache's costs a pass over its rows: the child runs for the keys until that is what it costs (a few eighths of the rows), then the table is read */
@@ -298,7 +294,7 @@ map_first_row(AggExec *ex, int ci, EState *estate)
 		if (kid[k] == 0)
 			return 0;
 	}
-	nm = map_find_ids(fm, kid, &rows);
+	nm = map_find_ids_head(fm, kid, &row);
 	if (nm == 0)
 		return 0;
 	if (nm > 1)
@@ -311,7 +307,7 @@ map_first_row(AggExec *ex, int ci, EState *estate)
 	for (int c = 0; c < m->ncol; c++)
 	{
 		bool		isnull;
-		Datum		d = map_col(fm, rows[0], c, &isnull);
+		Datum		d = map_col(fm, row, c, &isnull);
 
 		map_col_put(m, c, d, isnull);
 	}

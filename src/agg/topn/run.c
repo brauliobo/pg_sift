@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "common/hashfn.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
@@ -437,6 +438,54 @@ run_ready(const SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, uint32
  * not after the n-th of the unit's or the heap's, so the rest is the same. False: the unit has no run, or the rows that pass are too few for the walk
  * to pay (it reads about n / share of the rows that pass) and the heap has no bar yet.
  */
+#define TRUNC_SCAN_MAX	16		/* units the second pass finds by a scan of the entries: more are found by hash */
+
+static void
+trunc_index_add(SiftTopN *t, int at)
+{
+	uint32		h = (uint32) murmurhash64(t->trunc[at].id) & (t->trunc_cap - 1);
+
+	while (t->trunc_ht[h] >= 0 && t->trunc[t->trunc_ht[h]].id != t->trunc[at].id)
+		h = (h + 1) & (t->trunc_cap - 1);
+	t->trunc_ht[h] = at;
+}
+
+static void
+trunc_index_build(SiftTopN *t)
+{
+	t->trunc_cap = 32;
+	while (t->trunc_cap < 2 * (uint32) t->captrunc)
+		t->trunc_cap *= 2;
+	t->trunc_ht = MemoryContextAlloc(GetMemoryChunkContext(t), t->trunc_cap * sizeof(int32));
+	memset(t->trunc_ht, 0xFF, t->trunc_cap * sizeof(int32));
+	for (int i = 0; i < t->ntrunc; i++)
+		trunc_index_add(t, i);
+}
+
+/* the entry of the unit the second pass has not finished: the one that was given out (the units come in the order of the entries), else the unit's own by hash */
+static RunTrunc *
+trunc_find(SiftTopN *t, uint64 id)
+{
+	uint32		h;
+
+	if (t->rpos < t->ntrunc && t->trunc[t->rpos].id == id && !t->trunc[t->rpos].done)
+		return &t->trunc[t->rpos];
+	if (t->ntrunc <= TRUNC_SCAN_MAX)
+	{
+		for (int i = 0; i < t->ntrunc; i++)
+			if (t->trunc[i].id == id && !t->trunc[i].done)
+				return &t->trunc[i];
+		return NULL;
+	}
+	if (t->trunc_ht == NULL)
+		trunc_index_build(t);
+	h = (uint32) murmurhash64(id) & (t->trunc_cap - 1);
+	for (; t->trunc_ht[h] >= 0; h = (h + 1) & (t->trunc_cap - 1))
+		if (t->trunc[t->trunc_ht[h]].id == id)
+			return t->trunc[t->trunc_ht[h]].done ? NULL : &t->trunc[t->trunc_ht[h]];
+	return NULL;
+}
+
 bool
 run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrcVec *key0, const uint64 *rmask, int nrow, bool lazy)
 {
@@ -458,9 +507,7 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 	if (t->revisit)
 	{
 		/* the units the first pass finished, or took no run of, are not read again */
-		for (int i = 0; i < t->ntrunc && rt == NULL; i++)
-			if (t->trunc[i].id == id && !t->trunc[i].done)
-				rt = &t->trunc[i];
+		rt = trunc_find(t, id);
 		if (rt == NULL)
 			return true;
 		w.resumed = true;
@@ -550,6 +597,16 @@ run_unit(SiftTopN *t, SiftSrcSource *src, const SiftSrcUnit *unit, const SiftSrc
 			t->trunc = grow(t, t->trunc, t->captrunc * sizeof(RunTrunc));
 		}
 		t->trunc[t->ntrunc++] = (RunTrunc) {id, unit->sb, w.next, false};
+		if (t->trunc_ht != NULL)
+		{
+			if ((uint32) t->ntrunc * 2 > t->trunc_cap)
+			{
+				pfree(t->trunc_ht);
+				trunc_index_build(t);
+			}
+			else
+				trunc_index_add(t, t->ntrunc - 1);
+		}
 	}
 	if (m > 0)
 		finish_unit(t, src, unit, m, false);

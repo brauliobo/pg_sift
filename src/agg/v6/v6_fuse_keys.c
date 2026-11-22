@@ -14,6 +14,7 @@
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
+#include "agg/plan/node_hash.h"
 #include "agg/v6/v6_filter_eval.h"
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_vexpr.h"
@@ -109,32 +110,119 @@ lead_att_of(Relation index)
 	return f->nkey >= 1 ? r->schema->cols[f->key_cols[0]].attno : 0;
 }
 
-static bool
-gateable(const Node *q, const SiftV6Spec *spec)
+typedef struct QualEnt
 {
-	SiftV6Spec	scratch = *spec;
-	SiftClause	gate;
+	uint64		hash;
+	const Node *q;
+	int8		gate;			/* whether the gate can evaluate the qual: -1 not asked yet */
+} QualEnt;
 
-	return sift_v6_clause_make(CurrentMemoryContext, list_make1((void *) q), &scratch, &gate, NULL);
+/* the quals of a list in its order, and the order of their hashes to find one by equal() in a binary search */
+typedef struct SiftV6QualSet
+{
+	int			n;
+	int		   *by_hash;
+	QualEnt		ent[FLEXIBLE_ARRAY_MEMBER];
+} SiftV6QualSet;
+
+static int
+qual_cmp(const void *x, const void *y, void *arg)
+{
+	const QualEnt *ent = arg;
+	const uint64 a = ent[*(const int *) x].hash,
+				b = ent[*(const int *) y].hash;
+
+	return a < b ? -1 : a > b;
+}
+
+static SiftV6QualSet *
+qual_set(const List *quals)
+{
+	const int	n = list_length(quals);
+	SiftV6QualSet *s = palloc(offsetof(SiftV6QualSet, ent) + n * sizeof(QualEnt) + n * sizeof(int));
+	int			i = 0;
+
+	s->n = n;
+	s->by_hash = (int *) &s->ent[n];
+	foreach_ptr(Node, q, quals)
+	{
+		s->ent[i] = (QualEnt) {.hash = sift_node_hash(q),.q = q,.gate = -1};
+		s->by_hash[i] = i;
+		i++;
+	}
+	qsort_arg(s->by_hash, n, sizeof(int), qual_cmp, s->ent);
+	return s;
+}
+
+static bool
+qual_has(const SiftV6QualSet *s, const QualEnt *e)
+{
+	int			lo = 0,
+				hi = s->n;
+
+	while (lo < hi)
+	{
+		const int	mid = lo + (hi - lo) / 2;
+
+		if (s->ent[s->by_hash[mid]].hash < e->hash)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	for (; lo < s->n && s->ent[s->by_hash[lo]].hash == e->hash; lo++)
+		if (equal(s->ent[s->by_hash[lo]].q, e->q))
+			return true;
+	return false;
+}
+
+static bool
+qual_gateable(QualEnt *e, const SiftV6Spec *spec)
+{
+	if (e->gate < 0)
+	{
+		SiftV6Spec	scratch = *spec;
+		SiftClause	gate;
+
+		e->gate = sift_v6_clause_make(CurrentMemoryContext, list_make1((void *) e->q), &scratch, &gate, NULL);
+	}
+	return e->gate;
+}
+
+/* every qual of a is one of b or one the gate of a can evaluate; common: how many are of b */
+static bool
+only_gateable(const SiftV6FuseArm *a, const SiftV6FuseArm *b, int *common)
+{
+	SiftV6QualSet *as = a->qset;
+
+	for (int i = 0; i < as->n; i++)
+		if (qual_has(b->qset, &as->ent[i]))
+			(*common)++;
+		else if (!qual_gateable(&as->ent[i], (const SiftV6Spec *) a->spec))
+			return false;
+	return true;
 }
 
 /* the arms differ in quals the gate can evaluate; the pass then needs a quals in common or the values of the lead key to be selective */
 static bool
 may_union(const SiftV6FuseArm *a, const SiftV6FuseArm *b)
 {
-	int			common = 0;
+	int			common = 0,
+				none = 0;
 
 	if (a->lead_att == 0 || a->lead_att != b->lead_att)
 		return false;
-	foreach_ptr(Node, q, a->quals)
-		if (list_member(b->quals, q))
-			common++;
-		else if (!gateable(q, (const SiftV6Spec *) a->spec))
-			return false;
-	foreach_ptr(Node, q, b->quals)
-		if (!list_member(a->quals, q) && !gateable(q, (const SiftV6Spec *) b->spec))
-			return false;
+	if (!only_gateable(a, b, &common) || !only_gateable(b, a, &none))
+		return false;
 	return common > 0 || (a->key_set.n > 0 && b->key_set.n > 0);
+}
+
+static int
+key_range_cmp(const void *x, const void *y)
+{
+	const int64 a = ((const SiftF2KeyRange *) x)->ilo,
+				b = ((const SiftF2KeyRange *) y)->ilo;
+
+	return a < b ? -1 : a > b;
 }
 
 void
@@ -145,6 +233,7 @@ sift_v6_fuse_describe(SiftV6FuseArm *arm, Relation index, const SiftV6Spec *spec
 	arm->spec = (const struct SiftV6Spec *) spec;
 	arm->lead_att = lead_att_of(index);
 	arm->quals = spec->indexqual;
+	arm->qset = qual_set(spec->indexqual);
 	arm->may_union = may_union;
 	foreach_ptr(Node, q, spec->indexqual)
 	{
@@ -157,22 +246,24 @@ sift_v6_fuse_describe(SiftV6FuseArm *arm, Relation index, const SiftV6Spec *spec
 	arm->key_set = (SiftF2KeySet) {0};
 	if (list_length(lead) != 1 || !values_of(linitial(lead), &arm->key_set))
 		arm->key_set = (SiftF2KeySet) {0};
+	qsort(arm->key_set.range, arm->key_set.n, sizeof(SiftF2KeyRange), key_range_cmp);
 }
 
 /* the quals every arm of the cohort has: the pass applies them, and no gate does */
 static List *
 common_quals(const SiftV6FuseCohort *c)
 {
+	const SiftV6QualSet *first = c->arms[0]->qset;
 	List	   *common = NIL;
 
-	foreach_ptr(Node, q, c->arms[0]->quals)
+	for (int e = 0; e < first->n; e++)
 	{
 		bool		all = true;
 
 		for (int i = 1; i < c->narms && all; i++)
-			all = list_member(c->arms[i]->quals, q);
+			all = qual_has(c->arms[i]->qset, &first->ent[e]);
 		if (all)
-			common = lappend(common, q);
+			common = lappend(common, (void *) first->ent[e].q);
 	}
 	return common;
 }
@@ -218,8 +309,12 @@ sift_v6_fuse_union_quals(const SiftV6FuseCohort *c, Relation index, List **commo
 bool
 sift_v6_fuse_gate(MemoryContext cx, const SiftV6FuseArm *arm, const List *common, const SiftV6Spec *spec, SiftV6Spec **pass_spec, struct SiftClause **gate)
 {
-	List	   *own = list_difference(arm->quals, common);
+	const SiftV6QualSet *shared = qual_set(common);
+	List	   *own = NIL;
 
+	for (int i = 0; i < arm->qset->n; i++)
+		if (!qual_has(shared, &arm->qset->ent[i]))
+			own = lappend(own, (void *) arm->qset->ent[i].q);
 	if (own == NIL)
 		return false;
 	*pass_spec = MemoryContextAlloc(cx, sizeof(SiftV6Spec));

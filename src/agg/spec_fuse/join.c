@@ -6,8 +6,10 @@
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
+#include "common/hashfn.h"
 #include "nodes/nodeFuncs.h"
 
+#include "agg/plan/node_hash.h"
 #include "agg/spec_fuse/int.h"
 
 typedef struct ColMap
@@ -106,27 +108,23 @@ bool
 fuse_join(Fuse *f, FuseArm *arm, int j)
 {
 	const SiftAggJoin *mj = &arm->s->join[j];
-	SiftAggJoin *u = NULL;
+	SiftAggJoin *u;
 	List	   *shell = join_shell(mj);
+	int			k = fuse_set_find(&f->join_set, f->join_shell, shell);
 
-	arm->join[j] = -1;
-	for (int k = 0; k < f->u.njoin; k++)
-		if (equal(join_shell(&f->u.join[k]), shell))
-		{
-			arm->join[j] = k;
-			u = &f->u.join[k];
-			break;
-		}
-	if (u == NULL)
+	arm->join[j] = k;
+	if (k < 0)
 	{
 		if (f->u.njoin == sift_limit(joins, SIFT_AGG_MAX_JOINS))
 			return false;
-		arm->join[j] = f->u.njoin;
-		u = &f->u.join[f->u.njoin++];
-		*u = *mj;
-		u->ncol = 0;
-		u->fslot = -1;
+		k = arm->join[j] = f->u.njoin++;
+		f->join_shell[k] = shell;
+		fuse_set_add(&f->join_set, sift_list_hash(shell), k);
+		f->u.join[k] = *mj;
+		f->u.join[k].ncol = 0;
+		f->u.join[k].fslot = -1;
 	}
+	u = &f->u.join[k];
 	if (mj->kind == SJ_LEFT)
 		u->kind = SJ_LEFT;
 	arm->col[j] = palloc(Max(mj->ncol, 1) * sizeof(int));
@@ -190,15 +188,6 @@ slot_agg_key(const SiftAggAgg *a)
 	return agg_pack(&x);
 }
 
-static const SlotOwn *
-slot_owner(const Fuse *f, int combo, int slot)
-{
-	foreach_ptr(SlotOwn, o, f->owners)
-		if (o->combo == combo && o->slot == slot)
-			return o;
-	return NULL;
-}
-
 /* the combo of the arm in the pass, with the slots the arm asks for added to the pass's */
 bool
 fuse_combo(Fuse *f, FuseArm *arm, int ci)
@@ -229,29 +218,43 @@ fuse_combo(Fuse *f, FuseArm *arm, int ci)
 		f->u.combo[at].slot = NULL;
 	}
 	u = &f->u.combo[at];
-	u->slot = u->slot ? repalloc(u->slot, Max(u->nslots + mc->nslots, 1) * sizeof(SiftAggSlot)) : palloc(Max(mc->nslots, 1) * sizeof(SiftAggSlot));
+	if (u->nslots + mc->nslots > f->slot_cap[at])
+	{
+		const int	cap = Max(Max(f->slot_cap[at] * 2, u->nslots + mc->nslots), 4);
+
+		u->slot = u->slot ? repalloc(u->slot, cap * sizeof(SiftAggSlot)) : palloc(cap * sizeof(SiftAggSlot));
+		f->slot_own[at] = f->slot_own[at] ? repalloc(f->slot_own[at], cap * sizeof(SlotOwn *)) : palloc(cap * sizeof(SlotOwn *));
+		f->slot_cap[at] = cap;
+	}
 	arm->combo[ci] = at;
 	arm->slot[ci] = palloc(Max(mc->nslots, 1) * sizeof(int));
 	for (int s = 0; s < mc->nslots; s++)
 	{
 		SiftAggSlot sl = mc->slot[s];
-		int			sat = 0;
 		List	   *own;
+		uint64		h;
+		uint32		pos = 0;
+		int			sat;
 
 		if (cm.col)
 			sl.expr = col_mutator(sl.expr, &cm);
 		own = sl.agg >= 0 ? slot_agg_key(&arm->s->agg[sl.agg]) : NIL;
-		while (sat < u->nslots && !(u->slot[sat].is_key == sl.is_key && u->slot[sat].direct == sl.direct && equal(u->slot[sat].expr, sl.expr) &&
-									(sl.agg < 0 ? u->slot[sat].agg < 0 : u->slot[sat].agg >= 0 && equal(slot_owner(f, at, sat)->key, own))))
-			sat++;
-		if (sat == u->nslots)
+		h = hash_combine64(hash_combine64(sl.is_key * 2 + sl.direct, sl.agg >= 0), sift_node_hash((Node *) sl.expr));
+		while ((sat = fuse_set_next(&f->slot_set[at], h, &pos)) >= 0 &&
+			   !(u->slot[sat].is_key == sl.is_key && u->slot[sat].direct == sl.direct && equal(u->slot[sat].expr, sl.expr) &&
+				 (sl.agg < 0 ? u->slot[sat].agg < 0 : u->slot[sat].agg >= 0 && equal(f->slot_own[at][sat]->key, own))))
+			;
+		if (sat < 0)
 		{
 			SlotOwn    *o = palloc(sizeof(SlotOwn));
 
+			sat = u->nslots++;
 			*o = (SlotOwn) {at, sat, arm - f->arm, sl.agg, own};
 			if (sl.agg >= 0)
 				f->owners = lappend(f->owners, o);
-			u->slot[u->nslots++] = sl;
+			f->slot_own[at][sat] = sl.agg >= 0 ? o : NULL;
+			u->slot[sat] = sl;
+			fuse_set_add(&f->slot_set[at], h, sat);
 		}
 		arm->slot[ci][s] = sat;
 	}

@@ -1,0 +1,119 @@
+-- The planner and the nodes it builds take the same answers as stock PostgreSQL where the work of a statement grows with the size of its lists: an IN list of
+-- thousands of values, the arms of a UNION ALL that read one index, an ORDER BY of a wide select list, a join to a table of periods, a count of distinct strings.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+CREATE TABLE ev (id int PRIMARY KEY, wid int NOT NULL, kind int NOT NULL, day date NOT NULL, score float8, tag text NOT NULL);
+INSERT INTO ev SELECT i, 1 + (hashint8extended(i, 3) & 1048575) % 100000, i % 17, date '2024-01-01' + i % 400, i % 97, 'tag-' || (i % 3000)
+FROM generate_series(1, 60000) i;
+CREATE INDEX ev_wid ON ev (wid);
+CREATE INDEX ev_col ON ev USING sift_col (wid, kind, day, score, tag) WITH (point_tid_columns = 'off');
+VACUUM (FREEZE, ANALYZE) ev;
+CREATE TABLE ref (id int PRIMARY KEY, grp int NOT NULL, label text NOT NULL);
+INSERT INTO ref SELECT i, i % 7, 'label-' || i FROM generate_series(1, 400) i;
+CREATE TABLE period (p_id int PRIMARY KEY, lo date NOT NULL, hi date NOT NULL);
+INSERT INTO period SELECT i, date '2024-01-01' + i * 11, date '2024-01-01' + i * 11 + 9 + i % 4 FROM generate_series(0, 36) i;
+ANALYZE ref, period;
+-- each statement runs with the library and with stock PostgreSQL, and the two answers are compared as sets
+CREATE FUNCTION same_answer(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE n_sift bigint; n_stock bigint; diff bigint;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_sift ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_stock ON COMMIT DROP AS ' || q;
+	EXECUTE 'SELECT count(*) FROM r_sift' INTO n_sift;
+	EXECUTE 'SELECT count(*) FROM r_stock' INTO n_stock;
+	EXECUTE 'SELECT count(*) FROM ((SELECT * FROM r_sift EXCEPT SELECT * FROM r_stock) UNION ALL (SELECT * FROM r_stock EXCEPT SELECT * FROM r_sift)) d' INTO diff;
+	DROP TABLE r_sift, r_stock;
+	RETURN n_sift = n_stock AND diff = 0 AND n_sift > 0;
+END $$;
+-- an IN list of 20,000 values (shuffled, with duplicates and values outside the table)
+CREATE FUNCTION in_list(n int) RETURNS text LANGUAGE sql AS $$
+	SELECT string_agg(((hashint8extended(g, 9) & 1048575) % 120000 + 1)::text, ',') FROM generate_series(1, n) g $$;
+SELECT same_answer(format('SELECT kind, count(*) AS c, sum(score) AS s FROM ev WHERE wid IN (%s) GROUP BY kind', in_list(20000))) AS in_list_20000;
+ in_list_20000 
+---------------
+ t
+(1 row)
+
+SELECT same_answer(format('SELECT kind, count(*) AS c FROM ev WHERE wid IN (%s) AND kind <> 3 GROUP BY kind', in_list(40))) AS in_list_40;
+ in_list_40 
+------------
+ t
+(1 row)
+
+SELECT same_answer(format('SELECT count(DISTINCT tag) AS d, count(*) AS c FROM ev WHERE wid IN (%s)', in_list(3000))) AS distinct_strings_in_list;
+ distinct_strings_in_list 
+--------------------------
+ t
+(1 row)
+
+-- the arms of a UNION ALL that read one index: the same aggregates over different keys, and over different values of one key
+SELECT same_answer($$SELECT * FROM (
+	SELECT 1 AS arm, count(*) AS c, sum(score) AS s FROM ev WHERE kind = 1
+	UNION ALL SELECT 2, count(*), sum(score) FROM ev WHERE kind = 2
+	UNION ALL SELECT 3, count(*), sum(score) FROM ev WHERE kind = 3
+	UNION ALL SELECT 4, count(*), sum(score) FROM ev WHERE kind IN (4, 5, 6)
+	UNION ALL SELECT 5, count(*), sum(score) FROM ev WHERE kind = 7 AND day < date '2024-06-01'
+	UNION ALL SELECT 6, count(*), sum(score) FROM ev WHERE kind = 8 AND day >= date '2024-06-01') u$$) AS union_arms;
+ union_arms 
+------------
+ t
+(1 row)
+
+SELECT same_answer($$SELECT kind, day - date '2024-01-01' AS d, count(*) AS c FROM ev WHERE kind IN (1, 2, 3) AND day < date '2024-03-01' GROUP BY 1, 2
+	UNION ALL SELECT kind, 0, count(*) FROM ev WHERE kind IN (3, 4) GROUP BY kind$$) AS union_group_keys;
+ union_group_keys 
+------------------
+ t
+(1 row)
+
+-- a top-N over a wide select list, with ties, offset and a second key
+SELECT same_answer($$SELECT id, wid, kind, day, score, tag FROM ev ORDER BY score DESC, id LIMIT 500$$) AS topn_wide;
+ topn_wide 
+-----------
+ t
+(1 row)
+
+SELECT same_answer($$SELECT id, kind FROM ev ORDER BY kind, id LIMIT 300 OFFSET 20000$$) AS topn_offset;
+ topn_offset 
+-------------
+ t
+(1 row)
+
+SELECT same_answer($$SELECT DISTINCT ON (kind) kind, id, score, tag FROM ev ORDER BY kind, score DESC, id$$) AS distinct_on;
+ distinct_on 
+-------------
+ t
+(1 row)
+
+SELECT same_answer($$SELECT id, kind, score, rank() OVER (PARTITION BY kind ORDER BY score DESC, id) AS rk FROM ev WHERE wid < 4000$$) AS ranked;
+ ranked 
+--------
+ t
+(1 row)
+
+-- a join to a table of periods and to a small table
+SELECT same_answer($$SELECT p.p_id, count(*) AS c, sum(e.score) AS s FROM ev e JOIN period p ON e.day >= p.lo AND e.day <= p.hi GROUP BY p.p_id$$) AS period_join;
+ period_join 
+-------------
+ t
+(1 row)
+
+SELECT same_answer($$SELECT p.p_id, count(*) AS c FROM ev e LEFT JOIN period p ON e.day > p.lo AND e.day < p.hi WHERE e.kind = 4 GROUP BY p.p_id$$) AS period_left_join;
+ period_left_join 
+------------------
+ t
+(1 row)
+
+SELECT same_answer($$SELECT r.grp, count(*) AS c, count(DISTINCT e.tag) AS t FROM ev e JOIN ref r ON r.id = e.wid % 400 + 1 GROUP BY r.grp$$) AS small_join;
+ small_join 
+------------
+ t
+(1 row)
+
+DROP FUNCTION same_answer(text), in_list(int);
+DROP TABLE ev, ref, period;
+DROP EXTENSION pg_sift;

@@ -19,15 +19,6 @@ typedef struct Span
 } Span;
 
 static int
-span_cmp(const void *x, const void *y)
-{
-	const Span *a = x,
-			   *b = y;
-
-	return a->lo < b->lo ? -1 : a->lo > b->lo;
-}
-
-static int
 spans_of(const SiftF2KeySet *ks, Span *out)
 {
 	static const SiftF2KeyRange everything;
@@ -44,11 +35,30 @@ spans_of(const SiftF2KeySet *ks, Span *out)
 	return n;
 }
 
+static void
+spans_merge(const Span *a, int na, const Span *b, int nb, Span *out)
+{
+	int			i = 0,
+				j = 0,
+				n = 0;
+
+	while (i < na && j < nb)
+		out[n++] = b[j].lo < a[i].lo ? b[j++] : a[i++];
+	while (i < na)
+		out[n++] = a[i++];
+	while (j < nb)
+		out[n++] = b[j++];
+}
+
 bool
 sift_v6_fuse_union_keys(const SiftF2KeySet *a, const SiftF2KeySet *b, SiftF2KeySet *out)
 {
-	Span		all[2 * SIFT_F2_MAX_RANGES + 2];
-	int			n = 0,
+	Span		sa[SIFT_F2_MAX_RANGES + 1],
+				sb[SIFT_F2_MAX_RANGES + 1],
+				all[2 * SIFT_F2_MAX_RANGES + 2];
+	int			na,
+				nb,
+				n,
 				merged = 0;
 
 	for (int i = 0; i < a->n; i++)
@@ -57,9 +67,10 @@ sift_v6_fuse_union_keys(const SiftF2KeySet *a, const SiftF2KeySet *b, SiftF2KeyS
 	for (int i = 0; i < b->n; i++)
 		if (b->range[i].null_only)
 			return false;
-	n = spans_of(a, all);
-	n += spans_of(b, all + n);
-	qsort(all, n, sizeof(Span), span_cmp);
+	na = spans_of(a, sa);
+	nb = spans_of(b, sb);
+	n = na + nb;
+	spans_merge(sa, na, sb, nb, all);
 	for (int i = 0; i < n; i++)
 	{
 		Span	   *cur = merged > 0 ? &all[merged - 1] : NULL;

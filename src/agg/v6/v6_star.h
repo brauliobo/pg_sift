@@ -86,6 +86,13 @@ typedef struct SiftStarDim
 	int64	   *lo;
 	int64	   *hi;
 	uint8	   *period_ok;
+	uint32	   *rng_ord;		/* a range join, from sift_star_dim_finish: the periods that are not NULL by (lo, hi, row): their rows (0-based) */
+	int64	   *rng_lo;			/* ... their bounds, dense, for the search */
+	int64	   *rng_hi;
+	int64	   *rng_max;		/* a segment tree over rng_hi (2 * rng_size entries): the largest hi of each span of periods */
+	uint32		nrng;
+	uint32		rng_size;		/* the leaves of the tree: nrng up to a power of 2 */
+	bool		rng_disjoint;	/* no period reaches the lo of the next: a point is in at most one */
 	int64		hull_min;
 	int64		hull_max;
 	uint32		ht_cap;
@@ -137,7 +144,13 @@ typedef struct SiftStarCursor
 	uint32		chain;
 	bool		in_row;
 	bool		matched;
+	uint32		nhit;			/* a range join: the periods (rows, ascending) that hold the point of the row, and how many were given */
+	uint32		hit_at;
+	uint32		hit[SIFT_STAR_RANGE_MAX];
 } SiftStarCursor;
+
+/* The rows (0-based, ascending) of the periods that hold x, up to cap of them: how many hold it, O(log periods + that many) */
+extern uint32 sift_star_range_hits(const SiftStarDim *d, int64 x, uint32 *out, uint32 cap);
 
 /* fact_idx[k] and dim_row[k] (0: none) of at most cap pairs; returns how many; a left join gives an unmatched row one pair with dim_row 0 */
 extern uint32 sift_star_expand(const SiftStarDim *d, const SiftStarProbe *p, const uint64 *gate, SiftStarCursor *cur, uint16 *fact_idx, uint32 *dim_row, uint32 cap);

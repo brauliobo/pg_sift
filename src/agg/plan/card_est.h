@@ -12,8 +12,8 @@
  * rows by the root of its keys. The distinct values a group by or a join key keeps under the rows left follow Yao's formula.
  *
  * What the planner gets is the estimate with how far it can be trusted (confidence: 1 when every predicate was answered by what was counted, less where a
- * default stands in), so that it replaces PostgreSQL's own only when it knows better. Nothing here allocates or reads shared memory: the structures are a view
- * of the summary the manifest keeps, and a call takes a few microseconds.
+ * default stands in), so that it replaces PostgreSQL's own only when it knows better. Nothing here reads shared memory: the structures are a view of the summary
+ * the manifest keeps, a call takes a few microseconds, and it allocates only for an IN list of more than 256 values (sorted once, a copy).
  */
 #ifndef SIFT_AGG_PLAN_CARD_EST_H
 #define SIFT_AGG_PLAN_CARD_EST_H
@@ -116,6 +116,7 @@ typedef struct SiftCardStatsView
 	const SiftCardZone *sample_zones;
 	const SiftCardScopeRoot *scope;	/* sorted by key */
 	uint32		n_scope;
+	uint64		scope_total_rows;	/* the sum of the nrows of the roots (0: not folded, the roots are summed) */
 } SiftCardStatsView;
 
 typedef enum SiftCardPredKind

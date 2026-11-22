@@ -85,7 +85,18 @@ extern bool rel_has_param_qual(RelOptInfo *rel);
 extern bool joins_counted(AggCtx *c);
 extern void cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k);
 
-extern const JoinCtx * dependent_join(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, int *key);
+/* The lookup join that depends on each lookup (a later inner or semi join keyed by one of its columns), found for all of them at once: sift_cost_build_dep_map, indexed by combo */
+typedef struct JoinDepMap
+{
+	const JoinCtx *dep[SIFT_AGG_MAX_COMBOS];
+	int			key[SIFT_AGG_MAX_COMBOS];	/* the key of dep that is the lookup's column */
+	int			pos[SIFT_AGG_MAX_COMBOS];	/* the place of dep among the joins */
+	const JoinCtx *cpath_join[SIFT_AGG_MAX_JOINS];	/* the joins whose right side is a plan, in their order */
+	int			cpath_pos[SIFT_AGG_MAX_JOINS];
+	int			ncpath;
+} JoinDepMap;
+
+extern void sift_cost_build_dep_map(AggCtx *c, const SiftAggSpec *s, JoinDepMap *m);
 extern double lookup_rows(AggCtx *c, const JoinCtx *jc);
 extern double lookup_sure(AggCtx *c, const JoinCtx *jc);
 extern bool lookup_guessed(AggCtx *c, const JoinCtx *jc);

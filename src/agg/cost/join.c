@@ -129,32 +129,6 @@ leaf_correlation(AggCtx *c, int leaf)
 	return corr;
 }
 
-/* the lookup join whose key is the earlier lookup's column `col` (a later inner or semi join: its rows are the only ones that complete a tuple); *key: that key of it */
-const JoinCtx *
-dependent_join(AggCtx *c, const SiftAggSpec *s, const JoinCtx *jc, int *key)
-{
-	foreach_ptr(JoinCtx, dj, c->joins)
-	{
-		const SiftAggCombo *cb = &s->combo[dj->combo];
-		const SiftAggJoin *j = &s->join[cb->join];
-
-		if (dj == jc || (j->kind != SJ_INNER && j->kind != SJ_SEMI) || j->params != NIL)
-			continue;
-		for (int k = 0; k < j->nkey; k++)
-		{
-			Node	   *kx = j->keyexpr[k];
-			int			pos = kx && IsA(kx, Param) ? ((Param *) kx)->paramid : -1;
-
-			if (pos >= 0 && pos < cb->nleaves && cb->leaf[pos] == -1 && cb->refcombo[pos] == jc->combo)
-			{
-				*key = k;
-				return dj;
-			}
-		}
-	}
-	return NULL;
-}
-
 /* the rows of a joined table or plan: what the scan loads */
 double
 lookup_rows(AggCtx *c, const JoinCtx *jc)
@@ -620,7 +594,7 @@ join_in_keys(AggCtx *c, SiftAggSpec *s, const JoinCtx *jc)
  * the rows PostgreSQL expects of it, taken as the geometric mean with the table's rows when it has no statistics for them (join_key_zone).
  */
 static double
-join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *entries_only)
+join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, const JoinDepMap *deps, double *rows, double *entries_only)
 {
 	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
 	const SiftAggCombo *cb = &s->combo[jc->combo];
@@ -635,19 +609,35 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *en
 	*rows = *entries_only = 0;
 	if (!sift_agg_lookup_pushdown || sift_aggjoin_preserves(j->kind) || j->params != NIL || j->first.qual != NIL || j->first.nord > 0 || cb->level != 0)
 		return 0;
-	/* the keys of a dependent lookup are those of the rows an inner or semi join keeps */
+	/* the keys of a dependent lookup are those of the rows an inner or semi join keeps: the join keyed by a column of this one, and the joins whose right side is a plan */
 	if (j->nidx == 0 && (j->kind == SJ_INNER || j->kind == SJ_SEMI))
-		foreach_ptr(JoinCtx, dj, c->joins)
+	{
+		const JoinCtx *dep = deps->dep[jc->combo],
+				   *cand[SIFT_AGG_MAX_JOINS + 1];
+		int			ncand = 0;
+		bool		dep_left = dep != NULL && dep->cpath == NULL;
+
+		for (int i = 0; i <= deps->ncpath; i++)
 		{
+			if (dep_left && (i == deps->ncpath || deps->pos[jc->combo] < deps->cpath_pos[i]))
+			{
+				cand[ncand++] = dep;
+				dep_left = false;
+			}
+			if (i < deps->ncpath)
+				cand[ncand++] = deps->cpath_join[i];
+		}
+		for (int i = 0; i < ncand; i++)
+		{
+			const JoinCtx *dj = cand[i];
 			const SiftAggCombo *cc = &s->combo[dj->combo];
 			const SiftAggJoin *d = &s->join[cc->join];
-			int			att = 0,
-						dkey;
+			int			att = 0;
 			Oid			typ = InvalidOid;
 
 			if (dj == jc || cc->level != 0 || (d->kind != SJ_INNER && d->kind != SJ_SEMI) || d->params != NIL || d->nkey != 1 || d->keynull[0])
 				continue;
-			if (dependent_join(c, s, jc, &dkey) == dj && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
+			if (dj == dep && d->keyexpr[0] != NULL && IsA(d->keyexpr[0], Param))
 			{
 				int			col = cc->refcol[((Param *) d->keyexpr[0])->paramid];
 
@@ -674,6 +664,7 @@ join_probe_keys(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *rows, double *en
 				*entries_only = only;
 			}
 		}
+	}
 	/* the conditions of the join's own are tested by the filter of the table on each row fetched (map_probe) */
 	if ((j->nidx == 0 || (sj->fslot >= 0 && !slot_reads_leaf(cb, sj->fslot))) && (keys = join_in_keys(c, s, jc)) > 0 && (best == 0 || keys < best) &&
 		join_keys_pay(c, s, jc, j->keyatt[0], keys, &found, &only))
@@ -742,7 +733,7 @@ idx_read_cost(AggCtx *c, RelOptInfo *jrel, const SiftAggJoin *j)
 
 /* the rows the scan loads of a lookup table, and what each costs: a plan is run whole; an index scan reads the rows that pass the equalities or the keys of a dependent lookup, the rest of a table is read whole */
 static double
-join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
+join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, const JoinDepMap *deps, double *row_cost)
 {
 	PlannerInfo *root = c->root;
 	RelOptInfo *jrel = find_base_rel(root, jc->rti);
@@ -766,7 +757,7 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double *row_cost)
 		*row_cost = AGG_IDX_ROW + idx_read_cost(c, jrel, &jc->j) / prows;
 		return prows;
 	}
-	if ((probes = join_probe_keys(c, s, jc, &prows, &only)) > 0)
+	if ((probes = join_probe_keys(c, s, jc, deps, &prows, &only)) > 0)
 	{
 		*row_cost = sift_agg_keyed_ops(probes, prows, jrel->pages, only, get_rel_relam(planner_rt_fetch(jc->rti, c->root)->relid) == HEAP_TABLE_AM_OID) / Max(prows, 1.0);
 		return Max(prows, 1.0);
@@ -800,6 +791,9 @@ join_table_bytes(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double rows)
 bool
 agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s)
 {
+	JoinDepMap	deps;
+
+	sift_cost_build_dep_map(c, s, &deps);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		double		row_cost,
@@ -808,7 +802,7 @@ agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s)
 
 		if (jc->j.params != NIL || jc->cpath != NULL || join_dense(c, s, jc))
 			continue;
-		rows = join_load_rows(c, s, jc, &row_cost);
+		rows = join_load_rows(c, s, jc, &deps, &row_cost);
 		bytes = join_table_bytes(c, s, jc, rows);
 		if (bytes > (double) agg_lookup_limit_kb() * 1024)
 			return agg_refuse_limit(JOIN_CHILD, lookup_kb, agg_lookup_limit_kb(), "%s is estimated at %.0f rows (%.0f kB)",
@@ -822,13 +816,15 @@ double
 agg_share_rows(AggCtx *c, SiftAggSpec *s)
 {
 	double		rows = 0;
+	JoinDepMap	deps;
 
+	sift_cost_build_dep_map(c, s, &deps);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		double		row_cost;
 
 		if (jc->j.params == NIL)
-			rows += join_load_rows(c, s, jc, &row_cost) / (join_dense(c, s, jc) ? AGG_SHARE_DENSE : 1.0);
+			rows += join_load_rows(c, s, jc, &deps, &row_cost) / (join_dense(c, s, jc) ? AGG_SHARE_DENSE : 1.0);
 	}
 	return rows;
 }
@@ -923,6 +919,9 @@ child_probe_ops(const JoinCtx *jc)
 void
 cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 {
+	JoinDepMap	deps;
+
+	sift_cost_build_dep_map(c, s, &deps);
 	foreach_ptr(JoinCtx, jc, c->joins)
 	{
 		double		rows,
@@ -957,7 +956,7 @@ cost_joins(AggCtx *c, SiftAggSpec *s, CostAcc *k)
 			}
 			continue;
 		}
-		rows = join_load_rows(c, s, jc, &row_cost);
+		rows = join_load_rows(c, s, jc, &deps, &row_cost);
 		k->load_rows += rows;
 		k->load_cost += rows * row_cost;
 		if (jc->cpath != NULL)

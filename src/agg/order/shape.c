@@ -155,7 +155,21 @@ bool
 topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, int *attno, int *nout, List **spec)
 {
 	int		   *kpos = palloc(list_length(lookups) * sizeof(int));
+	int			at_of[MaxHeapAttributeNumber - FirstLowInvalidHeapAttributeNumber + 1];
+	const int	nheap = *nout;
+	List	   *keys = NIL,
+			   *cols = NIL,
+			   *head,
+			   *tail;
 
+	memset(at_of, 0xFF, sizeof(at_of));
+	for (int i = nheap; i-- > 0;)
+	{
+		const Expr *e = list_nth_node(TargetEntry, *scan_tlist, i)->expr;
+
+		if (IsA(e, Var) && ((Var *) e)->varno == c->relid && ((Var *) e)->varlevelsup == 0)
+			at_of[((Var *) e)->varattno - FirstLowInvalidHeapAttributeNumber] = i;
+	}
 	foreach_ptr(TopLookup, l, lookups)
 	{
 		const SiftAggCombo *cb = &s->combo[l->jc->combo];
@@ -165,23 +179,23 @@ topn_lookup_cols(AggCtx *c, SiftAggSpec *s, List *lookups, List **scan_tlist, in
 
 		if (!IsA(k, Var) || ((Var *) k)->varno != c->relid || (lf->typid != INT2OID && lf->typid != INT4OID && lf->typid != INT8OID))
 			return agg_refuse_on(TOPN_SHAPE, "the key of a joined table whose columns the select list reads is not an integer column of the scanned table");
-		for (kpos[i] = 0; kpos[i] < *nout; kpos[i]++)
-			if (equal(list_nth_node(TargetEntry, *scan_tlist, kpos[i])->expr, k))
-				break;
-		if (kpos[i] == *nout)
+		if (at_of[((Var *) k)->varattno - FirstLowInvalidHeapAttributeNumber] < 0)
 		{
-			*scan_tlist = list_insert_nth(*scan_tlist, *nout, makeTargetEntry((Expr *) copyObject(k), *nout + 1, NULL, false));
+			at_of[((Var *) k)->varattno - FirstLowInvalidHeapAttributeNumber] = *nout;
+			keys = lappend(keys, makeTargetEntry((Expr *) copyObject(k), 0, NULL, false));
 			attno[(*nout)++] = ((Var *) k)->varattno;
 		}
+		kpos[i] = at_of[((Var *) k)->varattno - FirstLowInvalidHeapAttributeNumber];
 	}
 	foreach_ptr(TopLookup, l, lookups)
 	{
-		int			at = *nout + foreach_current_index(l);
-
-		*scan_tlist = list_insert_nth(*scan_tlist, at, makeTargetEntry((Expr *) copyObject(l->var), at + 1, NULL, false));
+		cols = lappend(cols, makeTargetEntry((Expr *) copyObject(l->var), 0, NULL, false));
 		*spec = lappend_int(lappend_int(lappend_int(lappend_int(*spec, l->jc->combo), l->col), kpos[foreach_current_index(l)]),
 							c->lay->leaf[s->combo[l->jc->combo].leaf[0]].typid);
 	}
+	head = list_copy_head(*scan_tlist, nheap);
+	tail = list_copy_tail(*scan_tlist, nheap);
+	*scan_tlist = list_concat(list_concat(list_concat(head, keys), cols), tail);
 	foreach_ptr(TargetEntry, te, *scan_tlist)
 		te->resno = foreach_current_index(te) + 1;
 	return true;

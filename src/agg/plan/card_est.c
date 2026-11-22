@@ -7,6 +7,22 @@
 
 #include "agg/plan/card_est.h"
 
+#define ST_SORT sort_i64
+#define ST_ELEMENT_TYPE int64
+#define ST_COMPARE(a, b) (*(a) < *(b) ? -1 : (*(a) > *(b) ? 1 : 0))
+#define ST_SCOPE static
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
+
+#define ST_SORT sort_u64
+#define ST_ELEMENT_TYPE uint64
+#define ST_COMPARE(a, b) (*(a) < *(b) ? -1 : (*(a) > *(b) ? 1 : 0))
+#define ST_SCOPE static
+#define ST_DECLARE
+#define ST_DEFINE
+#include "lib/sort_template.h"
+
 #define DEFAULT_EQ_SEL			0.005
 #define DEFAULT_KEY_SEL			0.01
 #define DEFAULT_RANGE_SEL		0.3333
@@ -18,6 +34,23 @@
 #define CONF_LINEAR				0.7
 #define CONF_NO_SAMPLE			0.8
 #define NDV_DAMPING				0.75
+
+#define VAL_STACK		256
+
+/* the values of an IN list, sorted and distinct (signed order, unsigned for hashes): the list itself when it already is, else a copy in the stack or the heap */
+typedef struct PredVals
+{
+	const uint64 *vals;
+	uint32		n;
+} PredVals;
+
+typedef struct ValArena
+{
+	uint64		stack[VAL_STACK];
+	uint32		used;
+	int			nheap;
+	uint64	   *heap[SIFT_CARD_MAX_PREDS];
+} ValArena;
 
 /* the share of a predicate alone: sel, how far to trust it, and whether it is exactly 0 from what was counted */
 typedef struct Single
@@ -71,15 +104,9 @@ mcv_find(const SiftColCardStats *cs, uint64 v, bool is_hash, double *freq)
 
 /* a value that is none of the common ones: what the common ones and the NULLs leave, over the distinct values that are not common */
 static double
-eq_sel(const SiftColCardStats *cs, uint64 v, bool is_hash, double *conf)
+eq_rest(const SiftColCardStats *cs, double *conf)
 {
-	double		freq;
-
 	*conf = 1.0;
-	if (!is_hash && (cs->flags & SIFT_CSTAT_HAS_RANGE) && ((int64) v < cs->min_i64 || (int64) v > cs->max_i64))
-		return 0;
-	if (mcv_find(cs, v, is_hash, &freq))
-		return freq;
 	if (cs->flags & SIFT_CSTAT_HAS_NDV)
 	{
 		const double rest = Max(0.0, 1.0 - mcv_sum(cs) - null_frac(cs));
@@ -91,6 +118,25 @@ eq_sel(const SiftColCardStats *cs, uint64 v, bool is_hash, double *conf)
 	}
 	*conf = CONF_DEFAULT;
 	return DEFAULT_EQ_SEL;
+}
+
+static bool
+out_of_range(const SiftColCardStats *cs, uint64 v, bool is_hash)
+{
+	return !is_hash && (cs->flags & SIFT_CSTAT_HAS_RANGE) && ((int64) v < cs->min_i64 || (int64) v > cs->max_i64);
+}
+
+static double
+eq_sel(const SiftColCardStats *cs, uint64 v, bool is_hash, double *conf)
+{
+	double		freq;
+
+	*conf = 1.0;
+	if (out_of_range(cs, v, is_hash))
+		return 0;
+	if (mcv_find(cs, v, is_hash, &freq))
+		return freq;
+	return eq_rest(cs, conf);
 }
 
 static Single
@@ -108,10 +154,64 @@ single_eq(const SiftCardPred *p, const SiftColCardStats *cs)
 	return r;
 }
 
+static bool
+vals_has(const PredVals *pv, uint32 lo, uint32 hi, uint64 v, bool is_hash)
+{
+	const uint32 end = hi;
+
+	while (lo < hi)
+	{
+		const uint32 mid = lo + (hi - lo) / 2;
+		const bool	below = is_hash ? pv->vals[mid] < v : (int64) pv->vals[mid] < (int64) v;
+
+		if (below)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo < end && pv->vals[lo] == v;
+}
+
+/* the first index whose value is not below the signed x */
+static uint32
+vals_lower_bound(const PredVals *pv, int64 x)
+{
+	uint32		lo = 0,
+				hi = pv->n;
+
+	while (lo < hi)
+	{
+		const uint32 mid = lo + (hi - lo) / 2;
+
+		if ((int64) pv->vals[mid] < x)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+/* the values of the sorted distinct list inside the range of the leaf: [first, end) */
+static void
+in_span(const SiftColCardStats *cs, const SiftCardPred *p, const PredVals *pv, uint32 *first, uint32 *end)
+{
+	*first = 0;
+	*end = pv->n;
+	if (!p->is_hash && (cs->flags & SIFT_CSTAT_HAS_RANGE))
+	{
+		*first = vals_lower_bound(pv, cs->min_i64);
+		*end = cs->max_i64 == INT64_MAX ? pv->n : vals_lower_bound(pv, cs->max_i64 + 1);
+	}
+}
+
+/* the sum of the shares of the distinct values: the common ones by their own, the others by what is left, each counted once */
 static Single
-single_in(const SiftCardPred *p, const SiftColCardStats *cs)
+single_in(const SiftCardPred *p, const SiftColCardStats *cs, const PredVals *pv)
 {
 	Single		r = {0, 1.0, false};
+	uint32		first,
+				end,
+				hits = 0;
 
 	if (p->unknown_len)
 	{
@@ -121,18 +221,20 @@ single_in(const SiftCardPred *p, const SiftColCardStats *cs)
 		r.conf = ndv > 0 ? 0.7 : CONF_DEFAULT;
 		return r;
 	}
-	for (uint32 i = 0; i < p->nvals; i++)
+	in_span(cs, p, pv, &first, &end);
+	if (cs->flags & SIFT_CSTAT_HAS_MCV)
+		for (int i = 0; i < cs->n_mcv; i++)
+			if (((cs->mcvs[i].flags & SIFT_MCV_IS_HASH) != 0) == p->is_hash && vals_has(pv, first, end, cs->mcvs[i].val_or_hash, p->is_hash))
+			{
+				r.sel += cs->mcvs[i].freq;
+				hits++;
+			}
+	if (end - first > hits)
 	{
-		bool		dup = false;
 		double		conf;
 
-		for (uint32 j = 0; j < i && !dup; j++)
-			dup = p->vals[j] == p->vals[i];
-		if (!dup)
-		{
-			r.sel += eq_sel(cs, p->vals[i], p->is_hash, &conf);
-			r.conf = Min(r.conf, conf);
-		}
+		r.sel += (end - first - hits) * eq_rest(cs, &conf);
+		r.conf = Min(r.conf, conf);
 	}
 	r.sel = Min(r.sel, 1.0 - null_frac(cs));
 	r.exact_zero = r.sel == 0 && r.conf == 1.0;
@@ -208,7 +310,7 @@ single_range(const SiftCardPred *p, const SiftColCardStats *cs)
 }
 
 static Single
-single_of(const SiftCardStatsView *s, const SiftCardPred *p)
+single_of(const SiftCardStatsView *s, const SiftCardPred *p, const PredVals *pv)
 {
 	const SiftColCardStats *cs = p->col < s->ncols ? &s->cols[p->col] : NULL;
 	Single		r = {1.0, 1.0, false};
@@ -254,7 +356,7 @@ single_of(const SiftCardStatsView *s, const SiftCardPred *p)
 		case SCP_EQ:
 			return single_eq(p, cs);
 		case SCP_IN:
-			return single_in(p, cs);
+			return single_in(p, cs, pv);
 		case SCP_RANGE:
 			return single_range(p, cs);
 		default:
@@ -281,7 +383,7 @@ outside(const SiftCardZone *z, int64 lo, int64 hi)
 }
 
 static double
-zone_sel(const SiftCardPred *p, const SiftCardZone *z, uint32 nrows, double single)
+zone_sel(const SiftCardPred *p, const PredVals *pv, const SiftCardZone *z, uint32 nrows, double single)
 {
 	const uint32 nonnull = nrows > z->nnull ? nrows - z->nnull : 0;
 	const double nn_frac = frac_of(nonnull, nrows);
@@ -302,11 +404,9 @@ zone_sel(const SiftCardPred *p, const SiftCardZone *z, uint32 nrows, double sing
 				return 0;
 			if (!p->is_hash && !p->unknown_len)
 			{
-				bool		any = false;
+				const uint32 at = vals_lower_bound(pv, z->min);
 
-				for (uint32 i = 0; i < p->nvals && !any; i++)
-					any = !outside(z, (int64) p->vals[i], (int64) p->vals[i]);
-				if (!any)
+				if (at == pv->n || (int64) pv->vals[at] > z->max)
 					return 0;
 				if (p->nvals == 1 && z->min == z->max && z->nnull == 0)
 					return 1;
@@ -376,12 +476,50 @@ skip_factor(const SiftCardStatsView *s, const SiftCardPred *preds, const Single 
 	return f;
 }
 
-void
-sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out)
+static bool
+vals_ordered(const SiftCardPred *p)
+{
+	for (uint32 i = 1; i < p->nvals; i++)
+		if (p->is_hash ? p->vals[i - 1] >= p->vals[i] : (int64) p->vals[i - 1] >= (int64) p->vals[i])
+			return false;
+	return true;
+}
+
+static PredVals
+pred_vals(ValArena *a, const SiftCardPred *p)
+{
+	PredVals	r = {p->vals, p->nvals};
+	uint64	   *w;
+	uint32		n = 1;
+
+	if ((p->kind != SCP_EQ && p->kind != SCP_IN) || p->unknown_len || p->nvals < 2 || vals_ordered(p))
+		return r;
+	if (a->used + p->nvals <= VAL_STACK)
+		w = a->stack + a->used;
+	else
+		w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64));	/* check-memory: allow the values of one IN list of the query */
+	memcpy(w, p->vals, p->nvals * sizeof(uint64));
+	if (p->is_hash)
+		sort_u64(w, p->nvals);
+	else
+		sort_i64((int64 *) w, p->nvals);
+	for (uint32 i = 1; i < p->nvals; i++)
+		if (w[i] != w[n - 1])
+			w[n++] = w[i];
+	if (w >= a->stack && w < a->stack + VAL_STACK)
+		a->used += p->nvals;
+	r.vals = w;
+	r.n = n;
+	return r;
+}
+
+static void
+estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out, ValArena *arena)
 {
 	const double n_rows = Max((double) s->total_live_rows, 1.0);
 	const uint32 np = Min(q->npreds, SIFT_CARD_MAX_PREDS);
 	Single		sg[SIFT_CARD_MAX_PREDS];
+	PredVals	pv[SIFT_CARD_MAX_PREDS];
 	double		rows_part = 0,
 				prod = 1.0,
 				min_sel = 1.0,
@@ -407,7 +545,8 @@ sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardE
 	zero = rows_part == 0 && !s->has_l0 && s->nparts > 0;
 	for (uint32 i = 0; i < np; i++)
 	{
-		sg[i] = single_of(s, &q->preds[i]);
+		pv[i] = pred_vals(arena, &q->preds[i]);
+		sg[i] = single_of(s, &q->preds[i], &pv[i]);
 		zero |= sg[i].exact_zero;
 		prod *= sg[i].sel;
 		min_sel = Min(min_sel, sg[i].sel);
@@ -448,7 +587,7 @@ sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardE
 				const SiftCardPred *pr = &q->preds[i];
 
 				pj[i] = pr->col < s->ncols && pr->kind != SCP_SCOPE_IN ?
-					zone_sel(pr, &s->sample_zones[(size_t) pr->col * s->n_sample + g], sgr->nrows, sg[i].sel) : sg[i].sel;
+					zone_sel(pr, &pv[i], &s->sample_zones[(size_t) pr->col * s->n_sample + g], sgr->nrows, sg[i].sel) : sg[i].sel;
 				if (pj[i] <= 0)
 					pg = 0;
 			}
@@ -497,6 +636,18 @@ sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardE
 		out->key_correlation = clamp01(fabs(s->cols[q->lead_col].zone_monotonicity) * (1.0 - clamp01(s->cols[q->lead_col].zone_overlap_ratio)));
 }
 
+void
+sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out)
+{
+	ValArena	arena;
+
+	arena.used = 0;
+	arena.nheap = 0;
+	estimate(s, q, out, &arena);
+	while (arena.nheap > 0)
+		pfree(arena.heap[--arena.nheap]);
+}
+
 double
 sift_card_ndv(double d, double n, double r_out)
 {
@@ -535,10 +686,11 @@ sift_card_scope_rows(const SiftCardStatsView *s, const uint64 *keys, uint32 nkey
 	*exact = nkeys <= SIFT_CARD_SCOPE_PROBES;
 	if (!*exact)
 	{
-		uint64		sum = 0;
+		uint64		sum = s->scope_total_rows;
 
-		for (uint32 i = 0; i < s->n_scope; i++)
-			sum += s->scope[i].nrows;
+		if (sum == 0)
+			for (uint32 i = 0; i < s->n_scope; i++)
+				sum += s->scope[i].nrows;
 		return s->n_scope ? (double) sum / s->n_scope * nkeys : 0;
 	}
 	for (uint32 k = 0; k < nkeys; k++)

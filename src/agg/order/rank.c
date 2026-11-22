@@ -640,7 +640,9 @@ rank_node(Sort *srt)
 			   *nf = NIL,
 			   *tlist = NIL,
 			   *scan_tlist = NIL;
-	int			resno = 1;
+	int			resno = 1,
+				max_resno = 0;
+	TargetEntry **by_resno;
 
 	for (int i = 0; i < srt->numCols; i++)
 	{
@@ -665,6 +667,12 @@ rank_node(Sort *srt)
 	 * The columns of the child, as a Sort has them (OUTER_VAR): the child is also the node's lefttree, which only EXPLAIN reads (the deparse of the
 	 * columns of the plans above goes through the node to the child), and the executor starts the custom plan alone
 	 */
+	foreach_node(TargetEntry, stle, srt->plan.targetlist)
+		max_resno = Max(max_resno, stle->resno);
+	by_resno = palloc0((max_resno + 1) * sizeof(TargetEntry *));
+	foreach_node(TargetEntry, stle, srt->plan.targetlist)
+		if (by_resno[stle->resno] == NULL)
+			by_resno[stle->resno] = stle;
 	foreach_node(TargetEntry, ctle, child->targetlist)
 	{
 		Node	   *e = (Node *) ctle->expr;
@@ -672,7 +680,7 @@ rank_node(Sort *srt)
 		int32		mod = exprTypmod(e);
 		Oid			col = exprCollation(e);
 		/* the labels (name, junk, sort group) are the Sort's: the planner sets them on the node it hands over, and the entries of the child do not always carry them (PostgreSQL 17 returned the two sort columns of a UNION ALL as results) */
-		TargetEntry *tle = get_tle_by_resno(srt->plan.targetlist, resno);
+		TargetEntry *tle = resno <= max_resno ? by_resno[resno] : NULL;
 		TargetEntry *t;
 
 		if (tle == NULL)

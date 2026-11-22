@@ -105,7 +105,9 @@ int
 map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows)
 {
 	uint32		h,
-				first[8];
+				first[8],
+				cap = lengthof(first),
+			   *out = first;
 	int			n = 0;
 
 	if (m->dcls)
@@ -118,26 +120,41 @@ map_find_ids(const MapTab *m, const uint32 *kid, uint32 **rows)
 	map_ensure((MapTab *) m);
 	h = map_hash_ids(m->nkey, kid) & (m->nslot - 1);
 	*rows = NULL;
-	/* the first matches are collected on the stack: a key has a row or a few */
+	/* the first matches are collected on the stack: a key has a row or a few; the chain is walked once */
 	for (uint32 r = m->head[h]; r != 0; r = m->next[r - 1])
 		if (map_ids_eq(m, r - 1, kid))
 		{
-			if (n < 8)
-				first[n] = r - 1;
-			n++;
+			if (n == cap)
+			{
+				cap *= 2;
+				out = out == first ? memcpy(palloc(cap * sizeof(uint32)), first, sizeof(first)) : repalloc(out, cap * sizeof(uint32));
+			}
+			out[n++] = r - 1;
 		}
 	if (n == 0)
 		return 0;
-	*rows = palloc(n * sizeof(uint32));
-	if (n <= 8)
-		memcpy(*rows, first, n * sizeof(uint32));
-	else
+	*rows = out == first ? memcpy(palloc(n * sizeof(uint32)), first, n * sizeof(uint32)) : out;
+	return n;
+}
+
+/* how many rows have the key ids kid, up to 2 (0, 1, more), and the row when it is the only one: the walk stops at the second, and nothing is allocated */
+int
+map_find_ids_head(const MapTab *m, const uint32 *kid, uint32 *row)
+{
+	int			n = 0;
+
+	if (m->dcls)
 	{
-		n = 0;
-		for (uint32 r = m->head[h]; r != 0; r = m->next[r - 1])
-			if (map_ids_eq(m, r - 1, kid))
-				(*rows)[n++] = r - 1;
+		*row = kid[0] - 1;
+		return kid[0] > 0;
 	}
+	map_ensure((MapTab *) m);
+	for (uint32 r = m->head[map_hash_ids(m->nkey, kid) & (m->nslot - 1)]; r != 0 && n < 2; r = m->next[r - 1])
+		if (map_ids_eq(m, r - 1, kid))
+		{
+			*row = r - 1;
+			n++;
+		}
 	return n;
 }
 

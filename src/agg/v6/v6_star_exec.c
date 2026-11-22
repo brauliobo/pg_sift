@@ -212,6 +212,58 @@ i64_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
+typedef struct Period
+{
+	int64		lo;
+	int64		hi;
+	uint32		row;
+} Period;
+
+static int
+period_cmp(const void *a, const void *b)
+{
+	const Period *x = a,
+			   *y = b;
+
+	if (x->lo != y->lo)
+		return x->lo < y->lo ? -1 : 1;
+	if (x->hi != y->hi)
+		return x->hi < y->hi ? -1 : 1;
+	return (x->row > y->row) - (x->row < y->row);
+}
+
+/* the periods that are not NULL sorted by their lo, with a segment tree of the largest hi over them: a point is looked up by a binary search and a descent (sift_star_range_hits) */
+static void
+range_index(SiftStarDim *d)
+{
+	Period	   *ps = palloc(Max(d->nrows, 1) * sizeof(Period));
+
+	d->nrng = 0;
+	for (uint32 i = 0; i < d->nrows; i++)
+		if (d->period_ok[i])
+			ps[d->nrng++] = (Period) {d->lo[i], d->hi[i], i};
+	qsort(ps, d->nrng, sizeof(Period), period_cmp);
+	for (d->rng_size = 1; d->rng_size < d->nrng; d->rng_size *= 2)
+		;
+	d->rng_ord = palloc(Max(d->nrng, 1) * sizeof(uint32));
+	d->rng_lo = palloc(Max(d->nrng, 1) * sizeof(int64));
+	d->rng_hi = palloc(Max(d->nrng, 1) * sizeof(int64));
+	d->rng_max = palloc(2 * d->rng_size * sizeof(int64));
+	d->rng_disjoint = true;
+	for (uint32 i = 0; i < d->rng_size; i++)
+		d->rng_max[d->rng_size + i] = i < d->nrng ? ps[i].hi : PG_INT64_MIN;
+	for (uint32 i = 0; i < d->nrng; i++)
+	{
+		d->rng_ord[i] = ps[i].row;
+		d->rng_lo[i] = ps[i].lo;
+		d->rng_hi[i] = ps[i].hi;
+		d->rng_disjoint &= i + 1 == d->nrng || ps[i].hi < ps[i + 1].lo;
+	}
+	for (uint32 i = d->rng_size; i-- > 1;)
+		d->rng_max[i] = Max(d->rng_max[2 * i], d->rng_max[2 * i + 1]);
+	pfree(ps);
+}
+
 void
 sift_star_dim_finish(SiftStarDim *d)
 {
@@ -219,6 +271,7 @@ sift_star_dim_finish(SiftStarDim *d)
 
 	if (is_range(&d->shape))
 	{
+		range_index(d);
 		d->unique_keys = false;
 		d->finished = true;
 		return;
@@ -290,6 +343,13 @@ sift_star_dim_free(SiftStarDim *d)
 		pfree(d->hi);
 	if (d->period_ok != NULL)
 		pfree(d->period_ok);
+	if (d->rng_ord != NULL)
+	{
+		pfree(d->rng_ord);
+		pfree(d->rng_lo);
+		pfree(d->rng_hi);
+		pfree(d->rng_max);
+	}
 	if (d->head != NULL)
 		pfree(d->head);
 	if (d->tail != NULL)
@@ -480,35 +540,102 @@ sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint1
 
 /* ---- the pairs ---- */
 
-/* the first period at or after from (0-based) that holds x, 1-based; 0 when none */
-static uint32
-range_from(const SiftStarDim *d, int64 x, uint32 from)
+static inline bool
+lo_holds(const SiftStarDim *d, int64 lo, int64 x)
 {
-	for (uint32 i = from; i < d->nrows; i++)
-		if (d->period_ok[i] && (x > d->lo[i] || (d->shape.lo_inc && x == d->lo[i])) && (x < d->hi[i] || (d->shape.hi_inc && x == d->hi[i])))
-			return i + 1;
-	return 0;
+	return x > lo || (d->shape.lo_inc && x == lo);
+}
+
+static inline bool
+hi_holds(const SiftStarDim *d, int64 hi, int64 x)
+{
+	return x < hi || (d->shape.hi_inc && x == hi);
+}
+
+/* the periods below position p (inclusive) of the tree's span [nl, nr] of the sorted order whose hi holds x, in that order: the descent skips a span whose largest hi does not */
+static uint32
+stab(const SiftStarDim *d, uint32 node, uint32 nl, uint32 nr, uint32 p, int64 x, uint32 *out, uint32 cap, uint32 n)
+{
+	uint32		mid;
+
+	if (nl > p || !hi_holds(d, d->rng_max[node], x))
+		return n;
+	if (nl == nr)
+	{
+		if (n < cap)
+			out[n] = d->rng_ord[nl];
+		return n + 1;
+	}
+	mid = nl + (nr - nl) / 2;
+	n = stab(d, 2 * node, nl, mid, p, x, out, cap, n);
+	return stab(d, 2 * node + 1, mid + 1, nr, p, x, out, cap, n);
+}
+
+static int
+row_cmp(const void *a, const void *b)
+{
+	const uint32 x = *(const uint32 *) a,
+				y = *(const uint32 *) b;
+
+	return (x > y) - (x < y);
+}
+
+uint32
+sift_star_range_hits(const SiftStarDim *d, int64 x, uint32 *out, uint32 cap)
+{
+	uint32		lo = 0,
+				hi = d->nrng,
+				n;
+
+	/* the periods whose lo holds x are a prefix of the sorted order */
+	while (lo < hi)
+	{
+		const uint32 mid = lo + (hi - lo) / 2;
+
+		if (lo_holds(d, d->rng_lo[mid], x))
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	if (lo == 0)
+		return 0;
+	if (d->rng_disjoint)
+	{
+		if (!hi_holds(d, d->rng_hi[lo - 1], x))
+			return 0;
+		if (cap > 0)
+			out[0] = d->rng_ord[lo - 1];
+		return 1;
+	}
+	n = stab(d, 1, 0, d->rng_size - 1, lo - 1, x, out, cap, 0);
+	qsort(out, Min(n, cap), sizeof(uint32), row_cmp);
+	return n;
+}
+
+/* the first period that holds the point of the row (the rows that hold it are kept in the cursor), 1-based; 0 when none */
+static uint32
+range_first(const SiftStarDim *d, const SiftStarProbe *p, uint32 r, SiftStarCursor *cur)
+{
+	const Cell	c = probe_cell(p->key[0], SSC_INT, r);
+
+	cur->hit_at = 0;
+	cur->nhit = c.isnull ? 0 : sift_star_range_hits(d, c.i, cur->hit, SIFT_STAR_RANGE_MAX);
+	return cur->nhit > 0 ? cur->hit[0] + 1 : 0;
 }
 
 static uint32
-first_match(const SiftStarDim *d, const SiftStarProbe *p, const uint64 *gate, uint32 r)
+first_match(const SiftStarDim *d, const SiftStarProbe *p, const uint64 *gate, uint32 r, SiftStarCursor *cur)
 {
 	if (!bit_at(gate, r))
 		return 0;
-	if (is_range(&d->shape))
-	{
-		const Cell	c = probe_cell(p->key[0], SSC_INT, r);
-
-		return c.isnull ? 0 : range_from(d, c.i, 0);
-	}
-	return hash_first(d, p, r);
+	return is_range(&d->shape) ? range_first(d, p, r, cur) : hash_first(d, p, r);
 }
 
 static uint32
-next_match(const SiftStarDim *d, const SiftStarProbe *p, uint32 r, uint32 chain)
+next_match(const SiftStarDim *d, uint32 chain, SiftStarCursor *cur)
 {
 	if (is_range(&d->shape))
-		return range_from(d, probe_cell(p->key[0], SSC_INT, r).i, chain);
+		return ++cur->hit_at < cur->nhit ? cur->hit[cur->hit_at] + 1 : 0;
 	return d->next[chain - 1];
 }
 
@@ -528,7 +655,7 @@ sift_star_expand(const SiftStarDim *d, const SiftStarProbe *p, const uint64 *gat
 		}
 		if (!cur->in_row)
 		{
-			cur->chain = first_match(d, p, gate, r);
+			cur->chain = first_match(d, p, gate, r, cur);
 			cur->in_row = true;
 			if (cur->chain == 0)
 			{
@@ -544,7 +671,7 @@ sift_star_expand(const SiftStarDim *d, const SiftStarProbe *p, const uint64 *gat
 		}
 		fact_idx[out] = (uint16) r;
 		dim_row[out++] = cur->chain;
-		cur->chain = next_match(d, p, r, cur->chain);
+		cur->chain = next_match(d, cur->chain, cur);
 		if (cur->chain == 0)
 		{
 			cur->row++;

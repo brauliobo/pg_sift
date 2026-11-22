@@ -5,7 +5,7 @@
 
 #define DICTSEEN_MIN_CAP		(256 * 1024)
 
-/* A sorted run of strings: n of them, string i is bytes[off[i] .. off[i + 1]) */
+/* A run of strings: n of them, string i is bytes[off[i] .. off[i + 1]) */
 typedef struct DictRun
 {
 	uint32		n;
@@ -14,6 +14,14 @@ typedef struct DictRun
 	uint32		off_cap;
 	Size		bytes_cap;
 } DictRun;
+
+/* A string the parts have named: its hash (never 0), and where its bytes are in the arena */
+typedef struct DictSlot
+{
+	uint64		hash;
+	uint32		off;
+	uint32		len;
+} DictSlot;
 
 struct SiftDictSeen
 {
@@ -25,19 +33,13 @@ struct SiftDictSeen
 	DictRun		part;
 	uint64	   *bits;
 	uint32		bits_cap;
-	uint32	   *used;			/* the codes of bits, ascending, while a part is folded */
-	uint32		used_cap;
-	DictRun		all;			/* the strings of the parts folded so far, sorted, each once */
-	DictRun		spare;			/* what a fold merges into: swapped with all */
+	DictSlot   *ht;				/* the strings of the parts folded so far, each once: an open-addressed table of the hashes, the bytes in arena */
+	uint32		ht_cap;			/* a power of 2, or 0 before the first string */
+	uint32		ht_used;
+	char	   *arena;
+	Size		arena_len;
+	Size		arena_cap;
 };
-
-static inline int
-str_cmp(const char *a, uint32 la, const char *b, uint32 lb)
-{
-	const int	c = memcmp(a, b, Min(la, lb));
-
-	return c != 0 ? c : (la > lb) - (la < lb);
-}
 
 /* the bits of word w of a bitmap of n rows that are rows */
 static inline uint64
@@ -50,6 +52,19 @@ static inline uint32
 run_len(const DictRun *r, uint32 i)
 {
 	return r->off[i + 1] - r->off[i];
+}
+
+static inline uint64
+str_hash(const char *p, uint32 len)
+{
+	return hash_bytes_extended((const unsigned char *) p, (int) len, 0) | 1;
+}
+
+/* the home slot of a hash in a table of cap slots: the high bits, as the lowest of a hash that is never 0 is always set */
+static inline uint32
+slot_of(uint64 hash, uint32 cap)
+{
+	return (uint32) (hash >> 32) & (cap - 1);
 }
 
 static void
@@ -88,8 +103,6 @@ sift_dictseen_create(MemoryContext cx, uint64 cap_bytes)
 
 	d->cx = cx;
 	d->cap = Max(cap_bytes, DICTSEEN_MIN_CAP);
-	run_room(d, &d->all, 0, 0);
-	d->all.off[0] = 0;
 	return d;
 }
 
@@ -117,116 +130,85 @@ part_start(SiftDictSeen *d, const SiftDictSrc *src)
 	d->n = src->n;
 }
 
-/* The codes the part has seen, ascending; false when the strings of two of them are not in increasing order (a dictionary that is not in byte order) */
-static bool
-collect_used(SiftDictSeen *d, uint32 *cnt)
+static void
+ht_grow(SiftDictSeen *d)
+{
+	DictSlot   *old = d->ht;
+	const uint32 ocap = d->ht_cap;
+
+	d->ht_cap = ocap == 0 ? 1024 : ocap * 2;
+	d->ht = MemoryContextAllocZero(d->cx, (Size) d->ht_cap * sizeof(DictSlot));
+	for (uint32 i = 0; i < ocap; i++)
+		if (old[i].hash != 0)
+		{
+			uint32		at = slot_of(old[i].hash, d->ht_cap);
+
+			while (d->ht[at].hash != 0)
+				at = (at + 1) & (d->ht_cap - 1);
+			d->ht[at] = old[i];
+		}
+	if (old != NULL)
+		pfree(old);
+}
+
+/* a string joins the set once: a hash probe, and the bytes appended to the arena; the table moves 16 bytes a string when it grows, never the bytes */
+static void
+seen_add(SiftDictSeen *d, const char *p, uint32 len)
+{
+	const uint64 h = str_hash(p, len);
+	uint32		at;
+
+	if ((d->ht_used + 1) * 10 > d->ht_cap * 7)
+		ht_grow(d);
+	for (at = slot_of(h, d->ht_cap); d->ht[at].hash != 0; at = (at + 1) & (d->ht_cap - 1))
+		if (d->ht[at].hash == h && d->ht[at].len == len && memcmp(d->arena + d->ht[at].off, p, len) == 0)
+			return;
+	if (d->arena_len + len > d->arena_cap)
+	{
+		d->arena_cap = Max(Max(2 * d->arena_cap, d->arena_len + len), 4096);
+		d->arena = d->arena == NULL ? MemoryContextAlloc(d->cx, d->arena_cap) : repalloc(d->arena, d->arena_cap);
+	}
+	memcpy(d->arena + d->arena_len, p, len);
+	d->ht[at] = (DictSlot) {h, (uint32) d->arena_len, len};
+	d->arena_len += len;
+	d->ht_used++;
+}
+
+/* every string of the set goes to emit and the set starts again, with no table and no arena */
+static void
+seen_emit(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
+{
+	for (uint32 i = 0; i < d->ht_cap; i++)
+		if (d->ht[i].hash != 0)
+			emit(arg, d->arena + d->ht[i].off, d->ht[i].len);
+	if (d->ht != NULL)
+		pfree(d->ht);
+	if (d->arena != NULL)
+		pfree(d->arena);
+	d->ht = NULL;
+	d->arena = NULL;
+	d->ht_cap = d->ht_used = 0;
+	d->arena_len = d->arena_cap = 0;
+}
+
+/* The part's seen strings join the set (a dictionary in no order is as good as one in byte order) */
+static void
+fold_part(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
 {
 	const uint32 words = (d->n + 63) / 64;
-	bool		sorted = true;
-	uint32		k = 0;
 
-	if (d->n > d->used_cap)
-	{
-		if (d->used != NULL)
-			pfree(d->used);
-		d->used_cap = Max(d->n, 2 * d->used_cap);
-		d->used = MemoryContextAlloc(d->cx, (Size) d->used_cap * sizeof(uint32));
-	}
+	if (!d->have)
+		return;
+	d->have = false;
 	for (uint32 w = 0; w < words; w++)
 		for (uint64 m = d->bits[w]; m != 0; m &= m - 1)
 		{
 			const uint32 c = w * 64 + (uint32) __builtin_ctzll(m);
 
-			if (k > 0 && sorted)
-				sorted = str_cmp(d->part.bytes + d->part.off[d->used[k - 1]], run_len(&d->part, d->used[k - 1]), d->part.bytes + d->part.off[c], run_len(&d->part, c)) < 0;
-			d->used[k++] = c;
+			seen_add(d, d->part.bytes + d->part.off[c], run_len(&d->part, c));
 		}
-	*cnt = k;
-	return sorted;
-}
-
-/* all and the used strings of the part, merged into spare (a string both have once), then swapped */
-static void
-merge_used(SiftDictSeen *d, uint32 cnt)
-{
-	Size		bytes = d->all.off[d->all.n];
-	uint32		i = 0,
-				j = 0,
-				k = 0;
-	Size		pos = 0;
-
-	for (uint32 c = 0; c < cnt; c++)
-		bytes += run_len(&d->part, d->used[c]);
-	run_room(d, &d->spare, d->all.n + cnt, bytes);
-	while (i < d->all.n || j < cnt)
-	{
-		const char *s;
-		uint32		len;
-
-		if (j < cnt)
-		{
-			const char *p = d->part.bytes + d->part.off[d->used[j]];
-			const uint32 pl = run_len(&d->part, d->used[j]);
-			const int	c = i < d->all.n ? str_cmp(d->all.bytes + d->all.off[i], run_len(&d->all, i), p, pl) : 1;
-
-			if (c < 0)
-			{
-				s = d->all.bytes + d->all.off[i];
-				len = run_len(&d->all, i++);
-			}
-			else
-			{
-				s = p;
-				len = pl;
-				j++;
-				i += c == 0;
-			}
-		}
-		else
-		{
-			s = d->all.bytes + d->all.off[i];
-			len = run_len(&d->all, i++);
-		}
-		d->spare.off[k++] = (uint32) pos;
-		memcpy(d->spare.bytes + pos, s, len);
-		pos += len;
-	}
-	d->spare.off[k] = (uint32) pos;
-	d->spare.n = k;
-	{
-		DictRun		t = d->all;
-
-		d->all = d->spare;
-		d->spare = t;
-	}
-}
-
-static void
-emit_run(DictRun *r, SiftDictSeenEmit emit, void *arg)
-{
-	for (uint32 i = 0; i < r->n; i++)
-		emit(arg, r->bytes + r->off[i], run_len(r, i));
-	r->n = 0;
-	if (r->off != NULL)
-		r->off[0] = 0;
-}
-
-/* The part's seen strings join the set; one that is not sorted goes to emit on its own */
-static void
-fold_part(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
-{
-	uint32		cnt;
-
-	if (!d->have)
-		return;
-	d->have = false;
-	if (collect_used(d, &cnt))
-		merge_used(d, cnt);
-	else
-		for (uint32 c = 0; c < cnt; c++)
-			emit(arg, d->part.bytes + d->part.off[d->used[c]], run_len(&d->part, d->used[c]));
-	if (d->all.n > 0 && (uint64) d->all.off[d->all.n] + (uint64) d->all.n * sizeof(uint32) > d->cap)
-		emit_run(&d->all, emit, arg);
+	if (d->arena_len + (uint64) d->ht_cap * sizeof(DictSlot) > d->cap)
+		seen_emit(d, emit, arg);
 }
 
 bool
@@ -254,24 +236,24 @@ void
 sift_dictseen_drain(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
 {
 	fold_part(d, emit, arg);
-	emit_run(&d->all, emit, arg);
+	seen_emit(d, emit, arg);
 }
 
 uint64
 sift_dictseen_count(const SiftDictSeen *d)
 {
-	return d->all.n;
+	return d->ht_used;
 }
 
 void
 sift_dictseen_free(SiftDictSeen *d)
 {
 	run_free(&d->part);
-	run_free(&d->all);
-	run_free(&d->spare);
 	if (d->bits != NULL)
 		pfree(d->bits);
-	if (d->used != NULL)
-		pfree(d->used);
+	if (d->ht != NULL)
+		pfree(d->ht);
+	if (d->arena != NULL)
+		pfree(d->arena);
 	pfree(d);
 }
