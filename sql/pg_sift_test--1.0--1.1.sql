@@ -257,5 +257,11 @@ CREATE FUNCTION sift._test_pend_del_reads() RETURNS int8 AS 'MODULE_PATHNAME', '
 -- src/table/f2/f2_lock_ovf.c: the entries of the row locks of a sift_table in the table of shared memory and in the chunks of the stripes that filled
 CREATE FUNCTION sift._test_rowlock_stats(OUT in_table int8, OUT in_chunks int8, OUT chunks int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_rowlock_stats' LANGUAGE C STRICT;
+
+-- The pool, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/par_test.c): threads used, runs done, groups of the last run, runs that gave a wrong number of rows or groups. cancel_at: the leader cancels the statement at its n-th unit of work (0: never).
+CREATE FUNCTION sift._test_par_group(workers int4, rows int4, groups int4, loops int4, cancel_at int4,
+									 OUT threads int4, OUT runs int4, OUT out_groups int8, OUT bad int8)
+	AS 'MODULE_PATHNAME', 'sift_test_par_group' LANGUAGE C STRICT;
+
 -- Every cube of every granule of every part of an index against the values it was made of: the parts, those with SEC_PREAGG, the cubes, the granules, the cubes that leave a granule out, the cells and the cells that differ (src/col/f2/preagg_test.c)
 CREATE FUNCTION sift._test_preagg_v2_check(index regclass, OUT parts int4, OUT with_preagg int4, OUT cubes int4, OUT granules int4, OUT skipped int4, OUT cells int8, OUT mismatched int4) RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_preagg_v2_check' LANGUAGE C STRICT;

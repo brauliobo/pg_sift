@@ -875,6 +875,7 @@ core/ops.h
 core/par/morsel.c
 core/par/morsel.h
 core/par/morsel_test.c
+core/par/par_test.c
 core/par/pool.c
 core/par/pool.h
 core/parbuild.c

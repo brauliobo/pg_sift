@@ -627,6 +627,7 @@ TESTING_REGRESS += maint_%
 TESTING_REGRESS += merge_heal
 TESTING_REGRESS += merge_parts
 TESTING_REGRESS += on_scaling_guards
+TESTING_REGRESS += par_core_pool
 TESTING_REGRESS += part_agg_parity
 TESTING_REGRESS += position_blocks
 TESTING_REGRESS += proj_%
