@@ -3,13 +3,15 @@
  * reads the share of the index they leave, decodes the columns of its filters first and the others only for the rows that survive them, and returns the addresses of the rows that pass them in the order
  * of the addresses, so that the heap is read in order. Its inputs are what PostgreSQL itself has for the quals (the statistics of the table, never the counts the parts folded of rows a role may not see),
  * and its price is in the cost parameters of PostgreSQL (col/f2/f2_cost_model.h). An index-only scan also forms a tuple of the returned columns for each row it returns (col/f2/scan/ret.c), which costs as
- * much as the executor reading a heap tuple does. An equality or a short list on an unkeyed integer column is priced by its point directory.
+ * much as the executor reading a heap tuple does. An equality or a short list on an integer, uuid or text column that is not the lead of the key is priced by its point directory (a key of several columns is asked by as many
+ * lookups as the product of their values, never fewer than its fewest column, so the cheapest column prices it).
  */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
+#include "catalog/pg_type_d.h"
 #include "optimizer/optimizer.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -89,15 +91,37 @@ filter_columns(PlannerInfo *root, const IndexPath *path, double *lead)
 	return n;
 }
 
-/* The values an equality or a short list asks of an integer column of an unkeyed index, which a point directory answers from three pages each (at most the pages of the index); 0 for any other qual */
+/* Whether the point directory keys a column of this type: an integer, a date or a time, a uuid, a text whose collation compares bytes */
+static bool
+point_type(Oid typid, Oid collid)
+{
+	switch (typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case UUIDOID:
+			return true;
+		case TEXTOID:
+		case VARCHAROID:
+			return !OidIsValid(collid) || get_collation_isdeterministic(collid);
+		default:
+			return false;
+	}
+}
+
+/* The values an equality or a short list asks of a column a point directory answers from three pages each (at most the pages of the index); 0 for any other qual */
 static int
 point_values(PlannerInfo *root, const IndexClause *ic, const IndexOptInfo *index)
 {
 	const Node *clause = (const Node *) ic->rinfo->clause;
-	Oid			typid = exprType((Node *) list_nth_node(TargetEntry, index->indextlist, ic->indexcol)->expr);
+	Node	   *expr = (Node *) list_nth_node(TargetEntry, index->indextlist, ic->indexcol)->expr;
 	int			nvals = 0;
 
-	if (typid != INT2OID && typid != INT4OID && typid != INT8OID)
+	if (!point_type(exprType(expr), exprCollation(expr)))
 		return 0;
 	if (IsA(clause, OpExpr) && get_oprrest(((const OpExpr *) clause)->opno) == F_EQSEL)
 		nvals = 1;
@@ -106,18 +130,20 @@ point_values(PlannerInfo *root, const IndexClause *ic, const IndexOptInfo *index
 	return nvals <= SIFT_POINT_MAX_VALUES ? nvals : 0;
 }
 
-/* The values the first clause a point directory answers asks of an unkeyed index, 0 when none is one */
+/* The lookups of the clause that asks the fewest values among those a point directory answers, 0 when none is one; the column that leads the key of the index (lead, or -1) has its marks instead */
 static int
-point_lookups(PlannerInfo *root, const IndexPath *path)
+point_lookups(PlannerInfo *root, const IndexPath *path, int lead)
 {
+	int			fewest = 0;
+
 	foreach_node(IndexClause, ic, path->indexclauses)
 	{
-		const int	nvals = point_values(root, ic, path->indexinfo);
+		const int	nvals = ic->indexcol == lead ? 0 : point_values(root, ic, path->indexinfo);
 
-		if (nvals > 0)
-			return nvals;
+		if (nvals > 0 && (fewest == 0 || nvals < fewest))
+			fewest = nvals;
 	}
-	return 0;
+	return fewest;
 }
 
 /* the scan reads the directory of each value, then the granules its rows are in */
@@ -146,7 +172,7 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	const double rows = Max((double) plan->total_rows - (double) plan->total_dead, 1.0),
 				f_time = time_selectivity(root, path, r, f),
 				f_mark = f->nkey > 0 ? prefix_selectivity(root, path, r->schema, f->key_cols, f->nkey) : 1.0;
-	const int	lookups = f->nkey == 0 && rows >= SIFT_POINT_MIN_ROWS ? point_lookups(root, path) : 0;
+	const int	lookups = rows >= SIFT_POINT_MIN_ROWS ? point_lookups(root, path, f->nkey > 0 ? r->schema->cols[f->key_cols[0]].attno - 1 : -1) : 0;
 	double		lead;
 	SiftScanCostIn in = {.seq_page_cost = seq_page_cost,.cpu_operator_cost = cpu_operator_cost,.cpu_index_tuple_cost = cpu_index_tuple_cost,.block_size = BLCKSZ,.total_rows = rows,
 	.total_bytes = Max((double) plan->total_bytes, 1.0),.total_granules = Max(ceil(rows / SIFT_COST_GRANULE_ROWS), 1.0),.sel = sel,.io_reuse = 1.0};
