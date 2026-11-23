@@ -429,6 +429,15 @@ update_relstats(Relation rel, FullTransactionId oldest, const struct VacuumCutof
 	sift_pgstat_report_vacuum(rel, (PgStat_Counter) live, (PgStat_Counter) meta.total_dead, GetCurrentTimestamp());
 }
 
+/* A limit that wrapped below the first xid of a young cluster (epoch 0) is before every row: the epoch before 0 would turn it into the newest xid */
+static FullTransactionId
+cutoff_fx(FullTransactionId next, TransactionId xid)
+{
+	if (EpochFromFullTransactionId(next) == 0 && xid > XidFromFullTransactionId(next))
+		return FullTransactionIdFromEpochAndXid(0, FirstNormalTransactionId);
+	return FullTransactionIdFromAllowableAt(next, xid);
+}
+
 void
 sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy)
 {
@@ -436,8 +445,8 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	struct VacuumCutoffs cutoffs;
 	bool		aggressive = vacuum_get_cutoffs(rel, params, &cutoffs);
 	FullTransactionId next = ReadNextFullTransactionId();
-	FullTransactionId oldest_fx = FullTransactionIdFromAllowableAt(next, cutoffs.OldestXmin);
-	FullTransactionId freeze_fx = FullTransactionIdFromAllowableAt(next, cutoffs.FreezeLimit);
+	FullTransactionId oldest_fx = cutoff_fx(next, cutoffs.OldestXmin);
+	FullTransactionId freeze_fx = cutoff_fx(next, cutoffs.FreezeLimit);
 	FullTransactionId target_fx = aggressive ? oldest_fx : freeze_fx;
 	VacCtx		vc = {.rel = rel,.strategy = bstrategy};
 	SiftManifestRead mr;
