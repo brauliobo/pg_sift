@@ -25,8 +25,8 @@ extern bool sift_cfstr_bits(const SiftCfiltPred *cp, const SiftChunk *c, uint64 
 
 /*
  * The strings a filter decoded whole (a block or a FSST chunk) are kept for the view of the same granule. A memo is the leader's (sift_cfstr_memo_open makes it in cx, and it is gone when cx is reset or
- * deleted; the functions without _in find it) or a worker's: a SiftStrMemo the worker owns, zeroed, passed to the *_in and *_a functions, whose strings are the arena's, so a worker zeroes it whenever it
- * rewinds the arena. sift_cfstr_memo_strs gives the strings of the rows (ascending; NULL: the first nrows rows) of column col of v from the memo, false when the filter kept nothing for the column.
+ * deleted; the functions without _in find it, and only on the backend thread) or a worker's: a SiftStrMemo the worker owns, zeroed, passed to the *_in and *_a functions, whose strings are the arena's, so a worker zeroes it whenever it
+ * rewinds the arena. sift_cfstr_memo_strs_in gives the strings of the rows (ascending; NULL: the first nrows rows) of column col of v from the memo, false when the filter kept nothing for the column.
  */
 #define SIFT_STR_MEMO_MAX	8
 
@@ -48,7 +48,6 @@ struct SiftStrMemo
 
 extern void sift_cfstr_memo_open(MemoryContext cx);
 extern SiftStrMemo *sift_cfstr_memo_active(void);
-extern bool sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out);
 extern bool sift_cfstr_memo_strs_in(const SiftStrMemo *m, const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out);
 
 /* The same filter keeping what it decodes in m (NULL: nothing is kept) */

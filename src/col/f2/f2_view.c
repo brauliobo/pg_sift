@@ -28,7 +28,7 @@ sift_f2_decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv)
 }
 
 static void
-strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView *cv)
+strs_view(const SiftStrMemo *memo, const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView *cv)
 {
 	SiftStrCell *sc;
 	const char **sp = sift_alloc(n * sizeof(char *));
@@ -47,7 +47,7 @@ strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView 
 		}
 	}
 	sc = sift_alloc(n * sizeof(SiftStrCell));
-	if (!sift_cfstr_memo_strs(v, c, NULL, n, sc))
+	if (memo == NULL || !sift_cfstr_memo_strs_in(memo, v, c, NULL, n, sc))
 		sift_granule_strs(v, c, sc);
 	for (int r = 0; r < n; r++)
 	{
@@ -78,7 +78,7 @@ sparse_codes(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nro
 
 /* The values of the rows only, placed at their rows of arrays of n */
 static void
-sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, bool *nl, ColView *cv)
+sparse_view(const SiftStrMemo *memo, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, bool *nl, ColView *cv)
 {
 	bool	   *sn = sift_alloc(nrows * sizeof(bool));
 
@@ -108,7 +108,7 @@ sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *ro
 		const char **sp = sift_alloc0(n * sizeof(char *));
 		uint32	   *sl = sift_alloc0(n * sizeof(uint32));
 
-		if (!sift_cfstr_memo_strs(v, c, rows, nrows, sv))
+		if (memo == NULL || !sift_cfstr_memo_strs_in(memo, v, c, rows, nrows, sv))
 			sift_granule_point_strs(v, c, rows, nrows, sv);
 		for (int j = 0; j < nrows; j++)
 		{
@@ -123,8 +123,8 @@ sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *ro
 		nl[rows[j]] = sn[j];
 }
 
-ColView
-sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows)
+static ColView
+decode_view(const SiftStrMemo *memo, const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows)
 {
 	ColView		cv = {0};
 	bool	   *nl = sift_alloc0(n);
@@ -132,7 +132,7 @@ sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n,
 
 	cv.kind = d->store == SIFT_COLS_INT ? SIFT_CELL_INT : (d->store == SIFT_COLS_STR || d->store == SIFT_COLS_VAR) ? SIFT_CELL_STR : SIFT_CELL_F8;
 	if (rows != NULL)
-		sparse_view(v, c, n, codes, rows, nrows, nl, &cv);
+		sparse_view(memo, v, c, n, codes, rows, nrows, nl, &cv);
 	else if (cv.kind == SIFT_CELL_INT)
 	{
 		int64	   *iv = sift_alloc(n * sizeof(int64));
@@ -148,17 +148,23 @@ sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n,
 		cv.f = fv;
 	}
 	else
-		strs_view(v, c, n, nl, codes, &cv);
+		strs_view(memo, v, c, n, nl, codes, &cv);
 	sift_granule_tags(v, c, tg);
 	cv.isnull = nl;
 	cv.tag = tg;
 	return cv;
 }
 
+ColView
+sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows)
+{
+	return decode_view(sift_cfstr_memo_active(), d, v, c, n, codes, rows, nrows);
+}
+
 bool
-sift_f2_decode_view_a(SiftArena *a, SiftErr *err, const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, ColView *out)
+sift_f2_decode_view_a(SiftArena *a, SiftErr *err, const SiftStrMemo *memo, const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, ColView *out)
 {
 	SIFT_ARENA_TRY(a, err)
-		*out = sift_f2_decode_view(d, v, c, n, codes, rows, nrows);
+		*out = decode_view(memo, d, v, c, n, codes, rows, nrows);
 	SIFT_ARENA_END
 }

@@ -276,7 +276,7 @@ verify_view(Verify *vf, int w, const FxGranule *gr, int c, Hw *hw)
 		if (codes && spec->kind != SIFT_CELL_STR)
 			continue;
 		a->high_water = a->used;
-		CHECK_A(sift_f2_decode_view_a(a, &err, &vf->fx->defs[c], &gr->view, c, FX_ROWS, codes, sparse ? gr->sel : NULL, gr->nsel, &cv));
+		CHECK_A(sift_f2_decode_view_a(a, &err, NULL, &vf->fx->defs[c], &gr->view, c, FX_ROWS, codes, sparse ? gr->sel : NULL, gr->nsel, &cv));
 		check_view(spec, &gr->ref[c], &cv, sparse ? gr->sel : NULL, gr->nsel, codes);
 		if (sparse)
 			hw->sparse = Max(hw->sparse, grown(a, m));
@@ -302,7 +302,7 @@ verify_granule_views(Verify *vf, int w, const FxGranule *gr)
 	{
 		int			c = granule_fixture_col(vf->fx, scan_cols[i]);
 
-		CHECK_A(sift_f2_decode_view_a(a, &err, &vf->fx->defs[c], &gr->view, c, FX_ROWS, true, NULL, 0, &cv));
+		CHECK_A(sift_f2_decode_view_a(a, &err, NULL, &vf->fx->defs[c], &gr->view, c, FX_ROWS, true, NULL, 0, &cv));
 		check_view(&vf->fx->cols[c], &gr->ref[c], &cv, NULL, 0, true);
 	}
 	return grown(a, m);
@@ -626,7 +626,7 @@ run_a(SiftArena *a, SiftErr *err, OpArgs *x)
 		case OP_PTAG:
 			return sift_granule_point_tag_a(a, err, v, c, x->sel[x->nsel / 2], &b->tag[0]);
 		default:
-			return sift_f2_decode_view_a(a, err, x->def, v, c, FX_ROWS, op_codes_view(x), sparse ? x->sel : NULL, x->nsel, &x->cv);
+			return sift_f2_decode_view_a(a, err, NULL, x->def, v, c, FX_ROWS, op_codes_view(x), sparse ? x->sel : NULL, x->nsel, &x->cv);
 	}
 }
 

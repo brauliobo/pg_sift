@@ -123,14 +123,6 @@ sift_cfstr_memo_strs_in(const SiftStrMemo *m, const SiftGranuleView *v, int col,
 	return found;
 }
 
-bool
-sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out)
-{
-	const SiftStrMemo *m = sift_cfstr_memo_active();
-
-	return m != NULL && sift_cfstr_memo_strs_in(m, v, col, rows, nrows, out);
-}
-
 void
 sift_cfs_invert(uint64 *bits, uint32 n)
 {
