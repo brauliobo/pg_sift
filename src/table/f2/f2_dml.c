@@ -21,6 +21,7 @@
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_tbl.h"
+#include "table/f2/f2_vm.h"
 
 /* ---- addresses ---- */
 
@@ -40,6 +41,7 @@ tid_refill(Relation rel, SiftTblTidPool *p, uint64 vblocks)
 	p->next_off = FirstOffsetNumber;
 	sift_meta_seal(p0, m->common.struct_size);
 	sift_xlog_done(&x);
+	sift_tbl_vm_lease_set(rel, p->next_vblock, p->end_vblock);
 }
 
 void
@@ -51,6 +53,7 @@ sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid)
 	{
 		/* STOR[STOR-TBL-11]: adaptive vblock TID reserve (16->1024 vblocks; tightens SEC_TID_INDEX delta width) */
 		p->refill_vblocks = Min(Max(p->refill_vblocks * 4, SIFT_TBL_VBLOCK_FIRST_RESERVE), SIFT_TBL_VBLOCK_RESERVE);
+		sift_tbl_vm_lease_open(rel);
 		tid_refill(rel, p, p->refill_vblocks);
 	}
 	ItemPointerSet(tid, (BlockNumber) p->next_vblock, p->next_off);
@@ -58,6 +61,7 @@ sift_tbl_f2_tid_next(Relation rel, SiftF2Store *store, ItemPointer tid)
 	{
 		p->next_vblock++;
 		p->next_off = FirstOffsetNumber;
+		sift_tbl_vm_lease_roll(rel, p->next_vblock);
 	}
 }
 
@@ -68,7 +72,10 @@ sift_tbl_f2_tid_ensure(Relation rel, SiftF2Store *store, uint64 nrows)
 	uint64		left = p->end_vblock > p->next_vblock ? (p->end_vblock - p->next_vblock) * SIFT_TBL_ROWS_PER_VBLOCK - (p->next_off - FirstOffsetNumber) : 0;
 
 	if (left < nrows)
+	{
+		sift_tbl_vm_lease_open(rel);
 		tid_refill(rel, p, Max(sift_batch_vblocks(nrows, SIFT_TBL_VBLOCK_RESERVE), SIFT_TBL_VBLOCK_BULK_RESERVE));
+	}
 }
 
 void
@@ -301,6 +308,7 @@ sift_tbl_f2_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot 
 	old = fetch_current(rel, tid);
 	if (old == NULL)
 		return TM_Deleted;
+	sift_tbl_vm_clear(rel, ItemPointerGetBlockNumber(tid));
 	key_of_slot(rel, store, old, packed, key);
 	sift_stage_delete(sift_stage_get(rel, &store->spec), key, packed);
 	sift_tbl_f2_record_delete(rel, packed, cid, changingPart);
@@ -390,6 +398,7 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 		return TM_Deleted;
 	}
 	sift_tbl_f2_conflict_in(rel, old_packed);
+	sift_tbl_vm_clear(rel, ItemPointerGetBlockNumber(otid));
 	if (patch.reason == SIFT_CD_OK)
 	{
 		sift_col_delta_stage_plan(rel, &patch, cid);
