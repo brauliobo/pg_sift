@@ -6,6 +6,7 @@
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = off;
+SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE th (id int PRIMARY KEY, grp int, a numeric(12,2), b numeric(12,2), c numeric(12,2), w numeric(18,4), d1 date, d2 date, n4 int, i8 bigint, f8 float8, tag text) WITH (autovacuum_enabled = false);
 CREATE TABLE tc (LIKE th INCLUDING ALL) WITH (autovacuum_enabled = false);
@@ -176,7 +177,7 @@ INSERT INTO tc SELECT * FROM th WHERE id = 900001;
 INSERT INTO tt SELECT * FROM th WHERE id = 900001;
 SELECT nan_refused('SELECT sum(a * (1 - b))::text FROM tc') AS nan_product_refused_index;
 SELECT nan_refused('SELECT sum(a * (1 - b))::text FROM tt') AS nan_product_refused_table;
-SELECT nan_refused('SELECT count(*)::text FROM tc WHERE a > 1') AS nan_qual_refused_index;
+SELECT same_rows('SELECT count(*) FROM tc WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_on_an_index;
 SELECT same_rows('SELECT count(*) FROM tt WHERE a > 1', 'SELECT count(*) FROM th WHERE a > 1') AS nan_qual_answered_by_the_executor_on_a_table;
 
 DROP FUNCTION same_rows(text, text), parity(text), plan_ok(text), plan_index(text), parity_text(text), refused(text), nan_refused(text);
