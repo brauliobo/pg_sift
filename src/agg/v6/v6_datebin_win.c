@@ -5,18 +5,9 @@
 
 #include <stdio.h>
 
+#include "agg/v6/v6_tseries_fast.h"
+
 /* ---- date_bin ---- */
-
-#define TS_MIN_VALID	INT64CONST(-211813488000000000)
-#define TS_END_VALID	INT64CONST(9223371331200000000)
-#define TS_NOBEGIN		INT64_MIN
-#define TS_NOEND		INT64_MAX
-
-static inline bool
-ts_finite(int64 t)
-{
-	return t != TS_NOBEGIN && t != TS_NOEND;
-}
 
 void
 sift_datebin_init(SiftDateBin *b, const SiftInterval16 *stride, int64 origin)
@@ -25,7 +16,7 @@ sift_datebin_init(SiftDateBin *b, const SiftInterval16 *stride, int64 origin)
 
 	b->origin = origin;
 	b->stride_us = 0;
-	if (!ts_finite(origin))
+	if (!sift_ts_finite(origin))
 		b->stride_status = SDB_ORIGIN_RANGE;
 	else if (stride->month != 0)
 		b->stride_status = SDB_STRIDE_MONTHS;
@@ -40,103 +31,17 @@ sift_datebin_init(SiftDateBin *b, const SiftInterval16 *stride, int64 origin)
 	}
 }
 
-static inline __attribute__((always_inline)) SiftDateBinStatus
-bin_row(int64 ts, int64 origin, int64 stride, int64 *out)
-{
-	int64		diff, mod, result;
-
-	if (!ts_finite(ts))
-	{
-		*out = ts;
-		return SDB_OK;
-	}
-	if (__builtin_sub_overflow(ts, origin, &diff))
-		return SDB_INTERVAL_RANGE;
-	mod = diff % stride;
-	result = origin + (diff - mod);
-	if (mod < 0 && (__builtin_sub_overflow(result, stride, &result) || result < TS_MIN_VALID || result >= TS_END_VALID))
-		return SDB_TS_RANGE;
-	*out = result;
-	return SDB_OK;
-}
-
 SiftDateBinStatus
 sift_datebin_one(const SiftDateBin *b, int64 ts, int64 *out)
 {
-	if (!ts_finite(ts))
+	if (!sift_ts_finite(ts))
 	{
 		*out = ts;
 		return SDB_OK;
 	}
 	if (b->stride_status != SDB_OK)
 		return b->stride_status;
-	return bin_row(ts, b->origin, b->stride_us, out);
-}
-
-static inline __attribute__((always_inline)) SiftDateBinStatus
-bin_loop(const SiftDateBin *b, int64 stride, const SiftBatchSel *bs, const SiftVec *in, int64 *out, uint32 *err_row)
-{
-	const int64 *x = in->data;
-	SiftBatchIter it;
-	uint32		r;
-
-	sift_batch_iter_init(&it, bs);
-	while (sift_batch_iter_next(&it, &r))
-	{
-		SiftDateBinStatus st;
-
-		if (!sift_vec_valid_at(in, r))
-			continue;
-		st = bin_row(x[r], b->origin, stride, &out[r]);
-		if (st != SDB_OK)
-		{
-			*err_row = r;
-			return st;
-		}
-	}
-	return SDB_OK;
-}
-
-#define MONTH_US_PER_DAY		INT64CONST(86400000000)
-#define MONTH_DAYS_1970_TO_2000	10957
-
-/* The first day of the month of a day counted from 2000-01-01 (the civil-from-days and days-from-civil of the proleptic Gregorian calendar, with the era as the unit) */
-static int64
-month_first_day(int64 day)
-{
-	const int64 z = day + MONTH_DAYS_1970_TO_2000 + 719468,
-				era = (z >= 0 ? z : z - 146096) / 146097;
-	const int64 doe = z - era * 146097,
-				yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365,
-				doy = doe - (365 * yoe + yoe / 4 - yoe / 100),
-				mp = (5 * doy + 2) / 153,
-				dom = doy - (153 * mp + 2) / 5 + 1;
-
-	return day - (dom - 1);
-}
-
-void
-sift_datemonth_batch(const SiftBatchSel *bs, const SiftVec *in, int64 *out)
-{
-	const int64 *x = in->data;
-	SiftBatchIter it;
-	uint32		r;
-
-	sift_batch_iter_init(&it, bs);
-	while (sift_batch_iter_next(&it, &r))
-	{
-		int64		day;
-
-		if (!sift_vec_valid_at(in, r))
-			continue;
-		if (!ts_finite(x[r]))
-		{
-			out[r] = x[r];
-			continue;
-		}
-		day = x[r] >= 0 ? x[r] / MONTH_US_PER_DAY : -((-x[r] + MONTH_US_PER_DAY - 1) / MONTH_US_PER_DAY);
-		out[r] = month_first_day(day) * MONTH_US_PER_DAY;
-	}
+	return sift_datebin_row(ts, b->origin, b->stride_us, out);
 }
 
 SiftDateBinStatus
@@ -146,48 +51,20 @@ sift_datebin_batch(const SiftDateBin *b, const SiftBatchSel *bs, const SiftVec *
 	SiftBatchIter it;
 	uint32		r;
 
-	if (b->stride_status != SDB_OK)
-	{
-		sift_batch_iter_init(&it, bs);
-		while (sift_batch_iter_next(&it, &r))
-			if (sift_vec_valid_at(in, r))
+	if (b->stride_status == SDB_OK)
+		return sift_datebin_batch_run(b, bs, in, out, err_row);
+	sift_batch_iter_init(&it, bs);
+	while (sift_batch_iter_next(&it, &r))
+		if (sift_vec_valid_at(in, r))
+		{
+			if (sift_ts_finite(x[r]))
 			{
-				if (ts_finite(x[r]))
-				{
-					*err_row = r;
-					return b->stride_status;
-				}
-				out[r] = x[r];
+				*err_row = r;
+				return b->stride_status;
 			}
-		return SDB_OK;
-	}
-	switch (b->stride_us)
-	{
-		case INT64CONST(1000000):
-			return bin_loop(b, INT64CONST(1000000), bs, in, out, err_row);
-		case INT64CONST(60000000):
-			return bin_loop(b, INT64CONST(60000000), bs, in, out, err_row);
-		case INT64CONST(300000000):
-			return bin_loop(b, INT64CONST(300000000), bs, in, out, err_row);
-		case INT64CONST(600000000):
-			return bin_loop(b, INT64CONST(600000000), bs, in, out, err_row);
-		case INT64CONST(900000000):
-			return bin_loop(b, INT64CONST(900000000), bs, in, out, err_row);
-		case INT64CONST(1800000000):
-			return bin_loop(b, INT64CONST(1800000000), bs, in, out, err_row);
-		case INT64CONST(3600000000):
-			return bin_loop(b, INT64CONST(3600000000), bs, in, out, err_row);
-		case INT64CONST(21600000000):
-			return bin_loop(b, INT64CONST(21600000000), bs, in, out, err_row);
-		case INT64CONST(43200000000):
-			return bin_loop(b, INT64CONST(43200000000), bs, in, out, err_row);
-		case INT64CONST(86400000000):
-			return bin_loop(b, INT64CONST(86400000000), bs, in, out, err_row);
-		case INT64CONST(604800000000):
-			return bin_loop(b, INT64CONST(604800000000), bs, in, out, err_row);
-		default:
-			return bin_loop(b, b->stride_us, bs, in, out, err_row);
-	}
+			out[r] = x[r];
+		}
+	return SDB_OK;
 }
 
 const char *
