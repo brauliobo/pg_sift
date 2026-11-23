@@ -365,7 +365,8 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	const SiftPartDicts *adopt = NULL;
 	const SiftF2Store *store = sift_f2_store_open(rel);
 	const SiftColRemap **remap = palloc0(Max(ngens, 1) * sizeof(SiftColRemap *));
-	bool		mapped = false;
+	bool		mapped = false,
+				retier = false;
 
 	for (int i = 0; i < ngens; i++)
 	{
@@ -375,7 +376,9 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 			mapped |= (remap[i] = store->host->build_col_remap(store, rel, src[i], CurrentMemoryContext)) != NULL;
 	}
 	res->nparts_in = ngens;
-	if (!mapped && !folds_any(fold, at, ngens) && join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, hc->horizon, rel_ext, nrel, res, &out[0]))
+	for (int i = 0; i < ngens; i++)
+		retier |= sift_part_needs_retier(at[i]);
+	if (!mapped && !retier && !folds_any(fold, at, ngens) && join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, hc->horizon, rel_ext, nrel, res, &out[0]))
 	{
 		*nout = 1;
 		return true;

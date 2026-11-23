@@ -92,6 +92,9 @@ typedef struct SiftCompactGroup
 	int			n;
 } SiftCompactGroup;
 
+/* A part a bulk insert wrote at level 1 for the cold tier to rewrite: the plan takes it in a group of its own kind, and a compaction of it never copies its granules */
+extern bool sift_part_needs_retier(const SiftPartDesc *d);
+
 /* The parts of a partition whose dead rows are at least sift.dead_rewrite_pct of their rows: their generations, in the order of the list */
 extern uint64 *sift_compact_candidates(const SiftPartDesc *parts, int nparts, int *n);
 

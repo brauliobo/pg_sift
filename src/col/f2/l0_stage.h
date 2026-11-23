@@ -93,6 +93,7 @@ typedef struct SiftTxnStage
 	SiftStageHostHolds host_holds_in;	/* whether a record the host staged is for a row of the addresses lo..hi, which a read of them must see written; NULL: any pending record may be */
 	uint32		bulk_rows;		/* a bulk insert (sift_stage_set_bulk): the rows at which the buffer of a partition is written; 0: the stage flushes at work_mem */
 	uint64		bulk_budget;	/* the bytes the buffers of all partitions may hold */
+	bool		bulk_warm;		/* a bulk insert wrote a part at level 1 (sift_part_needs_retier): the flush asks for the maintenance that rewrites it */
 	uint32		host_pending;	/* the records the host staged that the next read of the relation must see written */
 	bool		by_value;		/* the rows are not tuples of the heap (a test stages them), so no flush may hold them as references */
 } SiftTxnStage;
@@ -103,11 +104,14 @@ extern void sift_stage_define_gucs(void);
 extern SiftTxnStage *sift_stage_get(Relation rel, const SiftPartSpec *spec);
 
 /*
- * A bulk insert (COPY, CTAS, INSERT ... SELECT, col/f2/f2_batch.h): the buffer of a partition is written, as one part of the cold tier written once and whole (SIFT_TIER_COLD_L2, its pages through
- * smgr_bulk_write), when it holds flush_rows rows, and the largest buffer when all of them hold budget_bytes; a buffer of fewer rows than a granule keeps the rule of a small write. Set for the
- * rest of the transaction.
+ * A bulk insert (COPY, CTAS, INSERT ... SELECT, col/f2/f2_batch.h): the buffer of a partition is written as one part of level 1, written once and whole (the light codecs, no dictionaries or skip indexes,
+ * its pages through smgr_bulk_write, SIFT_PART_FLAG_BUILT), when it holds flush_rows rows, and the largest buffer when all of them hold budget_bytes; a buffer of fewer rows than a granule keeps the rule of
+ * a small write. The maintenance rewrites those parts as parts of the cold tier (sift_part_needs_retier), which the commit of the transaction asks for. Set for the rest of the transaction.
  */
 extern void sift_stage_set_bulk(SiftTxnStage *st, uint32 flush_rows, uint64 budget_bytes);
+
+/* The maintenance is asked to compact the partition when the transaction commits (nothing for a temporary table, on a standby or in a parallel worker) */
+extern void sift_stage_ask_retier(Relation rel, uint64 part_id);
 
 /* Stages a row: routed to its partition by key (the 40 bytes of core/range.h); flushes the stage when it is over work_mem (a bulk stage: see above) */
 extern void sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem);

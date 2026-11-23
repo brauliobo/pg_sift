@@ -70,6 +70,13 @@ part_is_consolidated(const SiftPartDesc *d)
 	return d->level > 0 && (d->flags & SIFT_PART_FLAG_BUILT) != 0;
 }
 
+/* A part a bulk insert wrote whole at level 1 (l0_stage_flush.c): rewritten once as a part of the cold tier, with its dictionaries and skip indexes, whether or not neighbours join it */
+bool
+sift_part_needs_retier(const SiftPartDesc *d)
+{
+	return d->level == SIFT_MAX_PART_LEVEL - 1 && (d->flags & SIFT_PART_FLAG_BUILT) != 0;
+}
+
 /* A part the compaction merges with the other small ones: a build packs whole granules into parts that can end under the floor, and those stay as they are */
 static bool
 part_is_small(const SiftPartDesc *d)
@@ -95,16 +102,57 @@ l0_due(int count, uint64 bytes, uint64 settled)
 	return count >= SIFT_COMPACT_L0_MAX || bytes >= SIFT_COMPACT_L0_BYTES || (count >= SIFT_COMPACT_L0_FANOUT && bytes * SIFT_COMPACT_L0_SHARE >= settled);
 }
 
+static int
+by_key_lo(const void *a, const void *b)
+{
+	return memcmp((*(const SiftPartDesc *const *) a)->key_lo, (*(const SiftPartDesc *const *) b)->key_lo, SIFT_BOUND_BYTES);
+}
+
+/* The first of the parts that fit the budget (at least one) as the next group of out; how many it took */
+static int
+append_group(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *const *at, int n, uint64 budget)
+{
+	SiftCompactGroup *g = &out[(*ngroups)++];
+	uint64		bytes = 0;
+	int			taken = 0;
+
+	g->gens = palloc(n * sizeof(uint64));
+	for (; taken < n && (taken == 0 || bytes + at[taken]->nbytes <= budget); taken++)
+	{
+		g->gens[taken] = at[taken]->part_gen;
+		bytes += at[taken]->nbytes;
+	}
+	g->n = taken;
+	return taken;
+}
+
+/* The parts of a level that a bulk insert wrote warm and that no other group of the pass takes: as many groups as the budget makes, each a part of the cold tier, side by side in key order */
+static void
+plan_retier(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *parts, int nparts, const bool *taken, int level, bool cold, uint64 budget)
+{
+	const SiftPartDesc **at = palloc(Max(nparts, 1) * sizeof(SiftPartDesc *));
+	int			n = 0;
+
+	for (int i = 0; i < nparts; i++)
+		if (!taken[i] && plannable(&parts[i], level, cold) && sift_part_needs_retier(&parts[i]))
+			at[n++] = &parts[i];
+	qsort(at, n, sizeof(SiftPartDesc *), by_key_lo);
+	for (int i = 0; i < n;)
+		i += append_group(out, ngroups, at + i, n - i, budget);
+	pfree(at);
+}
+
 SiftCompactGroup *
 sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut, int *ngroups)
 {
 	int			maxlevel = 0;
 	SiftCompactGroup *out;
 	const SiftPartDesc **at = palloc(Max(nparts, 1) * sizeof(SiftPartDesc *));
+	bool	   *taken = palloc(Max(nparts, 1) * sizeof(bool));
 
 	for (int i = 0; i < nparts; i++)
 		maxlevel = Max(maxlevel, parts[i].level);
-	out = palloc(2 * (maxlevel + 1) * sizeof(SiftCompactGroup));
+	out = palloc((2 * (maxlevel + 1) + nparts) * sizeof(SiftCompactGroup));
 	*ngroups = 0;
 	for (int tier = 0; tier < 2 * (maxlevel + 1); tier++)
 	{
@@ -116,8 +164,7 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 					chained = 0,
 					n = 0;
 		bool		cold = tier % 2;
-		uint64		bytes = 0,
-					level_bytes = 0;
+		uint64		level_bytes = 0;
 		bool		all;
 
 		for (int i = 0; i < nparts; i++)
@@ -133,23 +180,23 @@ sift_compact_plan(const SiftPartDesc *parts, int nparts, uint64 budget, int64 ho
 		all = level == 0 ? l0_due(count, level_bytes, settled_bytes(parts, nparts, cold)) : count >= SIFT_COMPACT_FANOUT;
 		if (level == 0)
 			small = 0;
-		if (!all && small < 2 && dead == 0 && aged == 0 && chained == 0)
-			continue;
-		for (int i = 0; i < nparts; i++)
-			if (plannable(&parts[i], level, cold) &&
-				((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut) || part_has_long_delta_chain(&parts[i]) ||
-				 (small >= 2 && part_is_small(&parts[i]))))
-				at[n++] = &parts[i];
-		qsort(at, n, sizeof(SiftPartDesc *), by_size);
-		out[*ngroups].gens = palloc(n * sizeof(uint64));
-		out[*ngroups].n = 0;
-		for (int i = 0; i < n && (i == 0 || bytes + at[i]->nbytes <= budget); i++)
+		memset(taken, 0, Max(nparts, 1) * sizeof(bool));
+		if (all || small >= 2 || dead > 0 || aged > 0 || chained > 0)
 		{
-			out[*ngroups].gens[out[*ngroups].n++] = at[i]->part_gen;
-			bytes += at[i]->nbytes;
+			for (int i = 0; i < nparts; i++)
+				if (plannable(&parts[i], level, cold) &&
+					((all && !part_is_consolidated(&parts[i])) || part_is_dead(&parts[i]) || part_has_aged(&parts[i], hot_cut) || part_has_long_delta_chain(&parts[i]) ||
+					 (small >= 2 && part_is_small(&parts[i]))))
+				{
+					taken[i] = true;
+					at[n++] = &parts[i];
+				}
+			qsort(at, n, sizeof(SiftPartDesc *), by_size);
+			(void) append_group(out, ngroups, at, n, budget);
 		}
-		(*ngroups)++;
+		plan_retier(out, ngroups, parts, nparts, taken, level, cold, budget);
 	}
 	pfree(at);
+	pfree(taken);
 	return out;
 }

@@ -20,6 +20,7 @@
 #include "col/f2/l0_stage_int.h"
 #include "col/f2/part_vis.h"
 #include "core/hash.h"
+#include "core/maint_sched.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/quarantine.h"
@@ -193,6 +194,40 @@ stage_of(Relation rel)
 	return NULL;
 }
 
+/* The partitions that got parts to rewrite as parts of the cold tier (sift_part_needs_retier): the maintenance is asked for them once the transaction has committed, when the worker finds the rows settled */
+typedef struct RetierAsk
+{
+	Oid			rel;
+	uint64		part_id;
+} RetierAsk;
+
+static List *retier_asks = NIL;
+
+void
+sift_stage_ask_retier(Relation rel, uint64 part_id)
+{
+	MemoryContext old;
+	RetierAsk  *ask;
+
+	if (rel->rd_rel->relpersistence == RELPERSISTENCE_TEMP || RecoveryInProgress() || IsParallelWorker())
+		return;
+	foreach_ptr(RetierAsk, have, retier_asks)
+		if (have->rel == RelationGetRelid(rel) && have->part_id == part_id)
+			return;
+	old = MemoryContextSwitchTo(TopTransactionContext);
+	ask = palloc(sizeof(RetierAsk));
+	*ask = (RetierAsk) {.rel = RelationGetRelid(rel),.part_id = part_id};
+	retier_asks = lappend(retier_asks, ask);
+	MemoryContextSwitchTo(old);
+}
+
+static void
+request_retiers(void)
+{
+	foreach_ptr(RetierAsk, ask, retier_asks)
+		(void) sift_maint_enqueue_here(&(SiftMaintReq) {.db = MyDatabaseId,.rel = ask->rel,.kind = SIFT_MK_COMPACT_PART,.tier = SIFT_MAINT_TIER_DEFAULT,.part_id = ask->part_id});
+}
+
 static void
 stage_xact(XactEvent event, void *arg)
 {
@@ -217,6 +252,9 @@ stage_xact(XactEvent event, void *arg)
 	}
 	else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_COMMIT || event == XACT_EVENT_PARALLEL_ABORT)
 	{
+		if (event == XACT_EVENT_COMMIT)
+			request_retiers();
+		retier_asks = NIL;
 		stages = NIL;
 		stage_epoch++;
 	}
