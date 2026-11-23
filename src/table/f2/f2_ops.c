@@ -89,6 +89,7 @@ const SiftTableFormatOps sift_tbl_v2_ops = {
 	.ddl_after = sift_tbl_f2_ddl_after,
 	.ddl_rename_column = sift_tbl_f2_ddl_rename_column,
 	.filter_page = sift_tbl_f2_fetch_filter_page,
+	.fetch_order = sift_tbl_f2_fetch_order,
 	.nvblocks = sift_tbl_f2_nvblocks,
 	.check = sift_f2_check_relation,
 };

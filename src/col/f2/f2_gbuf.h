@@ -50,6 +50,8 @@ typedef struct SiftF2PartPin
 	SiftZone  **zones;			/* per leaf of the part, the zones of its granules; NULL: not read */
 	struct SiftPointDir *point;	/* SEC_POINT: the header of the point directory, NULL when the part has none */
 	bool		point_read;
+	struct SiftTidDir *tdir;	/* the granule of every address of the part, made when a lookup finds the envelopes of no use (f2_tid_dir.c); lives in cx */
+	bool		tdir_denied;	/* the budget had no room for it: the lookups use the envelopes */
 } SiftF2PartPin;
 
 typedef struct SiftF2GranuleBuf
@@ -73,6 +75,7 @@ typedef struct SiftF2GranuleBuf
 	bool		is_single_xact;
 	bool		is_all_frozen;
 
+	uint16		point_reads;	/* the cells read alone from a granule of the point cache (sift_f2_gbuf_cell) */
 	bool	   *col_decoded;
 	int64	  **col_i;
 	double	  **col_f;
@@ -99,6 +102,9 @@ extern void sift_f2_gbuf_forget(Relation rel);
 extern SiftF2PartPin *sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
 extern void sift_f2_pin_release(SiftF2PartPin *pin);
 
+/* The addresses of the rows of granule g of the pin's part, ascending as the granule keeps them, in out (at most SIFT_GRANULE_ROWS of them); reads the address chunk only, in the current memory context */
+extern void sift_f2_pin_granule_tids(Relation rel, SiftF2PartPin *pin, uint32 g, uint64 *out);
+
 
 extern SiftF2GranuleBuf *sift_f2_gbuf_load(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g);
 extern SiftF2GranuleBuf *sift_f2_gbuf_ref(SiftF2GranuleBuf *gb);
@@ -120,6 +126,23 @@ extern void sift_f2_gbuf_decode(SiftF2GranuleBuf *gb, int phys, SiftCellKind kin
  */
 extern SiftF2GranuleBuf *sift_f2_gbuf_load_lazy(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g, MemoryContext parent);
 extern void sift_f2_gbuf_column(Relation rel, SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, bool wide);
+
+/* A cell of a column of the granule: the value of its kind (i, f, or s), whether it is NULL, and for a column that may hold exceptions the tag of the row */
+typedef struct SiftF2Cell
+{
+	bool		isnull;
+	uint8		tag;
+	int64		i;
+	double		f;
+	SiftStrCell s;
+} SiftF2Cell;
+
+/*
+ * The cell of row of column phys, in the current memory context. A granule of the point cache (sift_f2_gbuf_load_lazy) that has not decoded the column gives it from the column's chunk alone, a
+ * row at a time, until SIFT_F2_POINT_READS cells have been read this way, and decodes the column whole after that, as a granule that is not lazy does at once. True when it decoded the column whole.
+ */
+#define SIFT_F2_POINT_READS	64
+extern bool sift_f2_gbuf_cell(Relation rel, SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, bool wide, SiftF2Cell *cell);
 
 /* The bytes of the buffer and what it holds, for the budget of the cache */
 extern Size sift_f2_gbuf_bytes(const SiftF2GranuleBuf *gb);
@@ -152,6 +175,9 @@ extern void sift_f2_visit_granules_via(Relation rel, SiftF2Store *store, uint64 
 
 /* The row at an address, each granule made by load (a reference in loc->gb); false when no part or slab holds it */
 extern bool sift_f2_locate_via(Relation rel, SiftF2Store *store, uint64 tid, SiftF2GranuleLoader load, SiftF2Loc *loc);
+
+/* Where the row at an address lies in the parts as published, as a key whose high bits tell its part and whose low bits its granule (UINT64_MAX: in no part, a row of a slab): sorting addresses by it puts those of one granule together */
+extern uint64 sift_f2_locate_order(Relation rel, SiftF2Store *store, uint64 tid);
 
 /* The manifest as of now with the slabs written out as parts: valid until mcxt is reset */
 struct SiftPlanSnapshot;

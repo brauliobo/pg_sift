@@ -28,6 +28,8 @@ typedef struct SiftTableFormatOps
 	void		(*ddl_rename_column) (Relation rel, const char *oldname, const char *newname);
 	/* the rows of the virtual block of a table an index points into that the snapshot sees (core/visibility.c) */
 	int			(*filter_page) (IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber vblock, uint64 *offmask);
+	/* where the row at an address lies, as a key that rows of one granule share the high bits of: fetching rows in the order of it reads each granule once; NULL for a format whose fetches are not dearer by their order */
+	uint64		(*fetch_order) (IndexFetchTableData *fetch, const ItemPointerData *tid);
 	/* the virtual blocks of a table, the block space its TIDs are handed out in */
 	uint64		(*nvblocks) (Relation rel);
 	/* the sift_table side of sift.check(): the problems of an open table, a row each */

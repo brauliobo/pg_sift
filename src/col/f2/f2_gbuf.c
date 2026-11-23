@@ -435,6 +435,19 @@ sift_f2_gbuf_load(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g
 	return gbuf_make(rel, store, pin, g, TopTransactionContext, false);
 }
 
+void
+sift_f2_pin_granule_tids(Relation rel, SiftF2PartPin *pin, uint32 g, uint64 *out)
+{
+	SiftLazyGranule lg;
+	const int	tid_chunk = SIFT_COL_TID_IDX;
+	SiftGranuleView view;
+
+	sift_lazy_granule_open_desc(rel, pin->part, g, &pin->gdir[g], &lg);
+	sift_lazy_granule_load(rel, &lg, &tid_chunk, 1);
+	view = sift_granule_open_part(rel, pin->part, lg.rec, lg.gd.data_len, &lg.gd);
+	sift_granule_tids(&view, out);
+}
+
 SiftF2GranuleBuf *
 sift_f2_gbuf_load_lazy(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g, MemoryContext parent)
 {
@@ -611,6 +624,58 @@ sift_f2_gbuf_column(Relation rel, SiftF2GranuleBuf *gb, int phys, SiftCellKind k
 	}
 	sift_lazy_granule_load(rel, gb->lazy, &chunk, 1);
 	decode_column(gb, phys, kind, wide, gb->cx);
+}
+
+static void
+cell_from_column(const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, SiftF2Cell *c)
+{
+	c->isnull = gb->col_isnull[phys][row];
+	c->tag = gb->col_tag[phys] != NULL ? gb->col_tag[phys][row] : 0;
+	if (kind == SIFT_CELL_INT)
+		c->i = gb->col_i[phys][row];
+	else if (kind == SIFT_CELL_F8)
+		c->f = gb->col_f[phys][row];
+	else
+		c->s = gb->col_s[phys][row];
+}
+
+static void
+cell_alone(SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, bool wide, SiftF2Cell *c)
+{
+	if (kind == SIFT_CELL_INT)
+		sift_granule_point_ints(&gb->view, phys, &row, 1, &c->i, &c->isnull);
+	else if (kind == SIFT_CELL_F8)
+		sift_granule_point_f8(&gb->view, phys, &row, 1, &c->f, &c->isnull);
+	else
+	{
+		c->isnull = !sift_granule_point_str(&gb->view, phys, row, &c->s.p, &c->s.len);
+		c->s.isnull = c->isnull;
+	}
+	c->tag = wide ? sift_granule_point_tag(&gb->view, phys, row) : 0;
+}
+
+bool
+sift_f2_gbuf_cell(Relation rel, SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, bool wide, SiftF2Cell *cell)
+{
+	bool		decoded = false;
+
+	*cell = (SiftF2Cell) {0};
+	if (!gb->col_decoded[phys] && gb->lazy != NULL && gb->point_reads < SIFT_F2_POINT_READS)
+	{
+		const int	chunk = phys + 1;
+
+		sift_lazy_granule_load(rel, gb->lazy, &chunk, 1);
+		gb->point_reads++;
+		cell_alone(gb, phys, kind, row, wide, cell);
+		return false;
+	}
+	if (!gb->col_decoded[phys])
+	{
+		sift_f2_gbuf_column(rel, gb, phys, kind, wide);
+		decoded = true;
+	}
+	cell_from_column(gb, phys, kind, row, cell);
+	return decoded;
 }
 
 Size

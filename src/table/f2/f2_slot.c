@@ -61,27 +61,25 @@ patch_datum(Form_pg_attribute att, SiftCellKind kind, uint8 scale, const SiftCol
 }
 
 static bool
-is_wide_blob(const SiftF2GranuleBuf *gb, int phys, uint16 row)
+is_wide_blob(const SiftF2Cell *c)
 {
-	return gb->col_tag[phys] != NULL && gb->col_tag[phys][row] == SIFT_COLTAG_WIDE_BLOB;
+	return c->tag == SIFT_COLTAG_WIDE_BLOB;
 }
 
 /* A string of the granule is copied when the granule may go before the row does (the point cache's) or when its bytes are not aligned for the type */
 static Datum
-str_datum(Relation rel, const SiftF2Store *store, const SiftF2GranuleBuf *gb, int phys, uint16 row, Form_pg_attribute att, MemoryContext cx)
+str_datum(Relation rel, const SiftF2Store *store, const SiftF2GranuleBuf *gb, int phys, uint16 row, const SiftF2Cell *c, Form_pg_attribute att, MemoryContext cx)
 {
-	const SiftStrCell *c = &gb->col_s[phys][row];
-
-	if (is_wide_blob(gb, phys, row))
+	if (is_wide_blob(c))
 	{
 		uint32		len;
 		const char *ref = sift_granule_exc_payload(&gb->view, phys, row, &len);
 
 		return store->host->read_wide_blob(rel, ref, len, att->atttypid, att->attlen, cx);
 	}
-	if (gb->lazy == NULL && ((uintptr_t) c->p % align_of(att)) == 0)
-		return PointerGetDatum(c->p);
-	return PointerGetDatum(memcpy(MemoryContextAlloc(cx, c->len), c->p, c->len));
+	if (gb->lazy == NULL && ((uintptr_t) c->s.p % align_of(att)) == 0)
+		return PointerGetDatum(c->s.p);
+	return PointerGetDatum(memcpy(MemoryContextAlloc(cx, c->s.len), c->s.p, c->s.len));
 }
 
 /* True when the attribute made the granule decode a column that no row asked for before: only then does the cache hold more */
@@ -91,6 +89,7 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 	Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, a - 1);
 	const SiftF2ColMap *map = gb->pin->col_map;
 	const SiftColDeltaPatch *p;
+	SiftF2Cell	cell;
 	SiftCellKind kind;
 	int			leaf,
 				phys;
@@ -116,13 +115,11 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 		return false;
 	}
 	kind = map == NULL ? store->kinds[leaf] : (SiftCellKind) map->phys_kind[leaf];
-	decoded = !gb->col_decoded[phys];
-	if (decoded)
-		sift_f2_gbuf_column(rel, gb, phys, kind, sift_tbl_extra(store)->has_wide || sift_f2_attr_may_have_exceptions(att));
-	if (gb->col_isnull[phys][row] && !is_wide_blob(gb, phys, row) && !(kind == SIFT_CELL_INT && gb->col_tag[phys] != NULL && gb->col_tag[phys][row] == SIFT_COLTAG_UNSURE))
+	decoded = sift_f2_gbuf_cell(rel, gb, phys, kind, row, sift_tbl_extra(store)->has_wide || sift_f2_attr_may_have_exceptions(att), &cell);
+	if (cell.isnull && !is_wide_blob(&cell) && !(kind == SIFT_CELL_INT && cell.tag == SIFT_COLTAG_UNSURE))
 		return decoded;
 	slot->tts_isnull[a - 1] = false;
-	if (kind == SIFT_CELL_INT && gb->col_isnull[phys][row])
+	if (kind == SIFT_CELL_INT && cell.isnull)
 	{
 		uint32		len;
 		const char *payload = sift_granule_exc_payload(&gb->view, phys, row, &len);
@@ -130,11 +127,11 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 		slot->tts_values[a - 1] = sift_f2_num64_exception_datum(payload, len, cx);
 	}
 	else if (kind == SIFT_CELL_INT)
-		slot->tts_values[a - 1] = int_datum(att, gb->col_i[phys][row], map != NULL ? map->old_scale[leaf] : store->scales[leaf]);
+		slot->tts_values[a - 1] = int_datum(att, cell.i, map != NULL ? map->old_scale[leaf] : store->scales[leaf]);
 	else if (kind == SIFT_CELL_F8)
-		slot->tts_values[a - 1] = att->atttypid == FLOAT4OID ? Float4GetDatum((float4) gb->col_f[phys][row]) : Float8GetDatum(gb->col_f[phys][row]);
+		slot->tts_values[a - 1] = att->atttypid == FLOAT4OID ? Float4GetDatum((float4) cell.f) : Float8GetDatum(cell.f);
 	else
-		slot->tts_values[a - 1] = str_datum(rel, store, gb, phys, row, att, cx);
+		slot->tts_values[a - 1] = str_datum(rel, store, gb, phys, row, &cell, att, cx);
 	return decoded;
 }
 

@@ -161,6 +161,12 @@ sift_tbl_f2_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid,
 	return fetch_one((SiftTblF2Fetch *) scan, sift_tbl_tid_pack(tid), snapshot, slot);
 }
 
+uint64
+sift_tbl_f2_fetch_order(struct IndexFetchTableData *scan, const ItemPointerData *tid)
+{
+	return sift_f2_locate_order(scan->rel, sift_f2_store_open(scan->rel), sift_tbl_tid_pack(tid));
+}
+
 /* ---- the fetch of the transaction ---- */
 
 static SiftTblF2Fetch *tx_fetch = NULL;

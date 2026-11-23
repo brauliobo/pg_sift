@@ -156,17 +156,15 @@ sift_granule_ints(const SiftGranuleView *v, int col, int64 *out, bool *isnull)
 static int
 valid_ranks(const SiftChunk *c, const uint16 *rows, uint16 nrows, uint32 *idx, bool *isnull)
 {
-	int			k = 0,
-				at = 0,
+	int			word = 0,
+				rank = 0,
 				m = 0;
 
 	for (int j = 0; j < nrows; j++)
 	{
-		for (; at < rows[j]; at++)
-			k += sift_chunk_row_valid(c, at);
 		isnull[j] = !sift_chunk_row_valid(c, rows[j]);
 		if (!isnull[j])
-			idx[m++] = k;
+			idx[m++] = (uint32) sift_chunk_rank_advance(c, &word, &rank, rows[j]);
 	}
 	return m;
 }

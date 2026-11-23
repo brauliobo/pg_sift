@@ -17,6 +17,7 @@
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_gbuf_int.h"
 #include "col/f2/f2_slab_view.h"
+#include "col/f2/f2_tid_dir.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/l0_stage.h"
 #include "core/cachebudget.h"
@@ -99,6 +100,7 @@ typedef struct SiftGranIntervalIdx
 } SiftGranIntervalIdx;
 
 #define GRAN_INDEX_MIN_GRANULES	16
+#define GRAN_DIR_CANDIDATES		4
 
 static int
 gran_slot_cmp(const void *a, const void *b)
@@ -157,15 +159,19 @@ gid_cmp(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
-/* The granules of the part that may hold an address of [lo, hi], ascending: *gids is a palloc'd array of them (NULL for none) */
+/* The granules of the part that may hold an address of [lo, hi], ascending: *gids is a palloc'd array of them (NULL for none). The directory of the part (f2_tid_dir.h) tells those of one
+ * address when it has one, and is made for a lookup that the envelopes leave to more than GRAN_DIR_CANDIDATES granules */
 static int
-part_granules(SiftF2PartPin *pin, uint64 lo, uint64 hi, uint32 **gids)
+part_granules(Relation rel, SiftF2PartPin *pin, uint64 lo, uint64 hi, uint32 **gids)
 {
 	const SiftGranIntervalIdx *ix = gran_index(pin);
 	int			first = 0,
 				last = ix->n;
 	GranHits	h = {ix, NULL, 0};
+	int			n;
 
+	if (lo == hi && sift_f2_tid_dir_granules(rel, pin, lo, false, gids, &n))
+		return n;
 	while (first < last)
 	{
 		int			mid = first + (last - first) / 2;
@@ -177,6 +183,11 @@ part_granules(SiftF2PartPin *pin, uint64 lo, uint64 hi, uint32 **gids)
 	}
 	h.gids = palloc(Max(first, 1) * sizeof(uint32));
 	(void) tree_walk(&ix->tree, first, lo, gran_hit, &h);
+	if (lo == hi && h.n > GRAN_DIR_CANDIDATES && sift_f2_tid_dir_granules(rel, pin, lo, true, gids, &n))
+	{
+		pfree(h.gids);
+		return n;
+	}
 	qsort(h.gids, h.n, sizeof(uint32), gid_cmp);
 	*gids = h.gids;
 	return h.n;
@@ -538,7 +549,7 @@ visit_part(const TidSlot *slot, void *arg)
 		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && ng > GRAN_INDEX_MIN_GRANULES)
 		{
 			uint32	   *gids;
-			int			n = part_granules(pin, vp->lo, vp->hi, &gids);
+			int			n = part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
 
 			for (int k = 0; k < n && !stop; k++)
 				stop = visit_granule(vp, pin, entry, gids[k]);
@@ -693,6 +704,49 @@ sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc
 	tid_index_visit(tid_index_of(rel, v, pinned), tid, tid, visit_part, &vp);
 	MemoryContextDelete(pinned);
 	return a.found;
+}
+
+/* The first part that holds the address: its place in the manifest and its granule, as the key of the lookup of rows in the order they lie */
+static bool
+order_part(const TidSlot *slot, void *arg)
+{
+	VisitPart  *vp = arg;
+	SiftF2PartPin *pin = sift_f2_pin_open(vp->rel, vp->store, &vp->view->partlists[slot->partition].parts[slot->part], (uint32) vp->view->partitions[slot->partition].part_id);
+	bool		found = false;
+
+	PG_TRY();
+	{
+		uint32	   *gids = NULL;
+		const bool	in_part = pin->tid_max >= vp->lo && pin->tid_min <= vp->hi;
+		const bool	indexed = pin->part->hdr.ngranules > GRAN_INDEX_MIN_GRANULES;
+		int			n = in_part && indexed ? part_granules(vp->rel, pin, vp->lo, vp->hi, &gids) : in_part;
+
+		if (n > 0)
+		{
+			*(uint64 *) vp->arg = (uint64) slot->partition << 48 | (uint64) slot->part << 32 | (indexed ? gids[0] : 0);
+			found = true;
+		}
+	}
+	PG_FINALLY();
+	{
+		sift_f2_pin_release(pin);
+	}
+	PG_END_TRY();
+	return found;
+}
+
+uint64
+sift_f2_locate_order(Relation rel, SiftF2Store *store, uint64 tid)
+{
+	MemoryContext pinned = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 visit");
+	const SiftPlanSnapshot *v = sift_plan_cache_get(rel, pinned);
+	uint64		key = UINT64_MAX;
+	VisitPart	vp = {rel, store, v, tid, tid, true, sift_f2_gbuf_load, NULL, &key};
+
+	tid_visit_begin(pinned);
+	tid_index_visit(tid_index_of(rel, v, pinned), tid, tid, order_part, &vp);
+	MemoryContextDelete(pinned);
+	return key;
 }
 
 /* The granule of an address, each granule made by load: the parts are searched as they are, and the micro-slabs are flushed into parts only when the address is in none (it is a row of a slab), so that a point lookup of a row in a part writes nothing */
