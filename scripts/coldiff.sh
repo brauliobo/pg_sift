@@ -7,6 +7,7 @@
 #   scripts/coldiff.sh [--suite fixtures|analytics|all] [--corpus REGEX] [--rows N] [--bench] [--strict-shape] [--keep] [--format f2|f1|release]
 #   scripts/coldiff.sh [--slice K/N] [--list]   one of N disjoint slices of the corpus (the Kth of every N queries in name order); --list prints the queries the options select and stops
 #   scripts/coldiff.sh --selftest
+#   scripts/coldiff.sh --duplicates   needs no cluster: the fixtures that have the same statement and the same tags (exit 1 when there are any)
 #
 #   --suite S           fixtures: the small orders table of test/col/fixture.sql, the corpus test/col/fixtures/*.sql and the scenarios
 #                       (the DML heap states); analytics: the corpus of bench/sql/analytics (SIFT_ANALYTICS_DIR, queries --queries GLOB)
@@ -56,7 +57,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS= DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
-FORMAT=f2 VARIANTS= SCENARIOS= FAST= SIFTCHECK= SLICES= COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
+FORMAT=f2 VARIANTS= SCENARIOS= FAST= SIFTCHECK= DUPLICATES= SLICES= COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -69,7 +70,7 @@ while (( $# )); do
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --format) FORMAT=$2; shift ;; --fast) FAST=1 ;; --sift-check) SIFTCHECK=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --format) FORMAT=$2; shift ;; --fast) FAST=1 ;; --sift-check) SIFTCHECK=1 ;; --duplicates) DUPLICATES=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
 		*) sed -n '2,52p' "$0"; exit 1 ;;
 	esac
 	shift
@@ -346,6 +347,21 @@ fixture_files() {
 	if [[ -n $FAST ]]; then fast_files "${all[@]}"; else printf '%s\n' "${all[@]}"; fi
 }
 
+# duplicates: a fixture runs for nothing when another has its statement (whitespace aside) and its tags; the comment and the shape label say nothing a run reads
+duplicates() {
+	awk 'function flush(  i, j, t, k) {
+			if (name == "") return
+			for (i = 2; i <= nt; i++) { t = tag[i]; for (j = i - 1; j >= 1 && tag[j] > t; j--) tag[j + 1] = tag[j]; tag[j + 1] = t }
+			k = ""; for (i = 1; i <= nt; i++) k = k tag[i] "\n"
+			k = k body; names[k] = names[k] " " name; count[k]++
+		}
+		FNR == 1 { flush(); name = FILENAME; sub(/.*\//, "", name); nt = 0; body = "" }
+		/^-- (shape|[^:]*[^a-z_:][^:]*):/ || /^--[^@]/ && !/^-- (sets|key|tol|name|expect|scenario|guc|prepare|args|requires|wrap|error|isolation|runs):/ { next }
+		/^-- / { tag[++nt] = $0; next }
+		{ gsub(/[ \t]+/, " "); body = body $0 " " }
+		END { flush(); for (k in count) if (count[k] > 1) { n++; print "duplicates:" names[k] } exit n > 0 }' "$REPO"/test/col/fixtures/*.sql
+}
+
 # sound WHEN: sift.check finds no problem in the fixture indexes and tables
 sound() {
 	[[ -n $SIFTCHECK ]] || return 0
@@ -514,6 +530,7 @@ selftest() {
 	[[ -z ${VERBOSE:-} ]] || table -c "SELECT scenario, name, variant, left(detail, 100) FROM coldiff.results WHERE NOT ok ORDER BY id LIMIT 20"
 }
 
+if [[ -n $DUPLICATES ]]; then duplicates; exit; fi
 if [[ -n $LIST ]]; then fixture_files | xargs -r -n1 basename; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
