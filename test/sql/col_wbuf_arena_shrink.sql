@@ -10,25 +10,26 @@ CREATE TABLE s (id int PRIMARY KEY, g int NOT NULL, note text NOT NULL) WITH (au
 CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS
   $$ SELECT count(*) || ',' || sum(g) || ',' || sum(length(note)) FROM s $$;
 CREATE INDEX s_ix ON s USING sift_col (id, g, note);
-SELECT put_fallbacks AS fallbacks_before FROM sift.col_arena_status() \gset
+SET sift.test_col_wbuf_ref = on;
+SELECT put_fallbacks AS fallbacks_before FROM sift._test_col_arena_status() \gset
 
 -- a buffer of 3,000 rows of 1,280 bytes holds about four segments of pages
 INSERT INTO s SELECT i, i % 10, repeat(md5(i::text), 40) FROM generate_series(1, 3000) i;
-SELECT segments >= 4 AS pool_grew, put_fallbacks = :fallbacks_before AS none_left_out FROM sift.col_arena_status();
+SELECT segments >= 4 AS pool_grew, put_fallbacks = :fallbacks_before AS none_left_out FROM sift._test_col_arena_status();
 SELECT answers() AS buffered \gset
 SELECT :'buffered' AS buffered;
 
 -- the promotion gives every page back: every segment is given to the system in one go
 SELECT sift.col_promote('s_ix') >= 0 AS promoted;
-SELECT segments AS segments_after FROM sift.col_arena_status() \gset
+SELECT segments AS segments_after FROM sift._test_col_arena_status() \gset
 SELECT :segments_after = 0 AS pool_shrunk;
 SELECT answers() = :'buffered' AS same_promoted;
 
 -- and the pool grows again when a buffer asks for pages
 INSERT INTO s SELECT 10000 + i, i % 10, repeat(md5(i::text), 40) FROM generate_series(1, 3000) i;
-SELECT segments > :segments_after AS pool_grew_again FROM sift.col_arena_status();
+SELECT segments > :segments_after AS pool_grew_again FROM sift._test_col_arena_status();
 SELECT sift.col_promote('s_ix') >= 0 AS promoted_again;
-SELECT segments = 0 AS pool_shrunk_again FROM sift.col_arena_status();
+SELECT segments = 0 AS pool_shrunk_again FROM sift._test_col_arena_status();
 SELECT sift.col_verify('s_ix', true);
 
 DROP FUNCTION answers();

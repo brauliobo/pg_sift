@@ -193,7 +193,6 @@ sift_col_int_cut_leaf(const SiftColRel *r)
  */
 extern bool sift_col_rollup_on_demand;
 extern bool sift_cluster_advice;
-extern bool sift_col_rollup_worker;
 extern bool sift_col_rollup_request(Relation index, uint64 gen);
 /* A NOTICE for each cap of the options (cube(...) groups per unit, key_columns) that leaves 10% of the units or more without a histogram or the keys of a leaf; after a build and a refresh */
 /* What the build says about an index, in one NOTICE (col/v1/build/choices.c): the kinds of rows it derives, as bits */

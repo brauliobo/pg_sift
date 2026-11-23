@@ -81,7 +81,7 @@ static List *
 leaf_oids(Oid relid, ArmCols *cols, bool *ordered, bool *asc, Query *q)
 {
 	List	   *leaves = NIL;
-	Relation	rel = relation_open(relid, NoLock);
+	Relation	rel = relation_open(relid, AccessShareLock);
 	PartitionKey key = RelationGetPartitionKey(rel);
 	PartitionDesc desc = RelationGetPartitionDesc(rel, true);
 	SortGroupClause *first = linitial_node(SortGroupClause, q->sortClause);

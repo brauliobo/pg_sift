@@ -1,4 +1,4 @@
--- sift.col_wbuf_ref and a connected index, twin tables with the setting on and off (docs/COL-CONNECT.md): the foreign key of the child is a column of its index, so a buffered row that is a reference carries the same key as one with
+-- sift.test_col_wbuf_ref and a connected index, twin tables with the setting on and off (docs/COL-CONNECT.md): the foreign key of the child is a column of its index, so a buffered row that is a reference carries the same key as one with
 -- its values, and the fill of a promotion reads it from the same rows. The parent's journal of changed keys (the tombstone log, written by the track hook) is not a buffer row and stays
 -- as it is: a twin pair of tables takes the same statements, the child with the setting on and the child with it off, and at every step the answers of the join shapes are the normal
 -- plan's, the journal of the parent has the same records in both pairs, and the buffers hold the same rows.
@@ -30,7 +30,7 @@ END $$;
 -- the same statements on the pair of tables named by s: 'a' with the setting on, 'b' with it off
 CREATE FUNCTION apply(step int, s text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.col_wbuf_ref', CASE s WHEN 'a' THEN 'on' ELSE 'off' END, true);
+	PERFORM set_config('sift.test_col_wbuf_ref', CASE s WHEN 'a' THEN 'on' ELSE 'off' END, true);
 	IF step = 1 THEN
 		EXECUTE format('CREATE TABLE dim_%1$s (id int PRIMARY KEY, label text, region int) WITH (autovacuum_enabled = false)', s);
 		EXECUTE format('INSERT INTO dim_%1$s SELECT i, ''l'' || i, i %% 7 FROM generate_series(1, 200) i', s);
@@ -56,7 +56,7 @@ BEGIN
 END $$;
 CREATE FUNCTION apply_tx(s text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.col_wbuf_ref', CASE s WHEN 'a' THEN 'on' ELSE 'off' END, true);
+	PERFORM set_config('sift.test_col_wbuf_ref', CASE s WHEN 'a' THEN 'on' ELSE 'off' END, true);
 	BEGIN
 		EXECUTE format('INSERT INTO ev_%1$s SELECT 9000 + i, 1 + i %% 200, 1 FROM generate_series(1, 200) i', s);
 		RAISE EXCEPTION 'undo';
@@ -113,10 +113,11 @@ SELECT sift.col_promote('ev_b_col') >= 0 AS promoted_b;
 SELECT * FROM phase();
 SELECT sift.col_verify('ev_a_col', true);
 -- rewritten under a stamp after the changes
-SET sift.col_connect_refresh_pct = 1;
+SET sift.test_col_conn_refresh_pct = 1;
 SELECT apply(2, 'a');
 SELECT apply(2, 'b');
 SELECT * FROM phase();
+RESET sift.test_col_conn_refresh_pct;
 
 DROP FUNCTION phase();
 DROP FUNCTION apply(int, text);

@@ -67,10 +67,10 @@ SELECT sift.col_promote('go_n'::regclass) >= 0 AS promoted;
 SELECT count(*) FILTER (WHERE format < 21) AS old_segments, count(*) FILTER (WHERE format >= 21) AS new_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_n', 0);
 SELECT sift.col_verify('go_n');
--- sift.upgrade_commands() lists the REINDEX that gives the older segments their array
-SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
+-- sift.upgrade_commands() lists the REINDEX of an index of Format 1, and that REINDEX gives the older segments their array
+SELECT kind, object, command FROM sift.upgrade_commands() WHERE kind = 'reindex' AND object = 'go_n'::regclass;
 REINDEX INDEX go_n;
-SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
+SELECT count(*) FILTER (WHERE format < 21) AS old_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
 DROP INDEX go_n;
 
 -- an order array of one column: the other columns of the index keep none
@@ -79,8 +79,9 @@ SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entri
 DROP INDEX go_x;
 
 -- the setting 14 keeps the sorted runs and no array
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_array_columns = 'id, b');
+RESET sift.test_col_format_minor;
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_m', 0);
 SELECT max(format) < 21 AS older_format FROM sift.col_segments('go_m') WHERE kind = 'immutable';
 DROP INDEX go_m;

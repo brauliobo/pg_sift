@@ -65,9 +65,10 @@ SELECT * FROM phase();
 UPDATE dim_a SET label = 'changed' WHERE id = 9;
 SELECT * FROM phase();
 -- changed keys at the share of the setting: the segments are written again under a stamp after the changes
-SET sift.col_connect_refresh_pct = 1;
+SET sift.test_col_conn_refresh_pct = 1;
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT * FROM phase();
+RESET sift.test_col_conn_refresh_pct;
 
 -- events written after the stamp are in the write buffer: a row of a parent that is there, one that is not, a NULL key, a key whose row is deleted, a row whose key changed
 INSERT INTO events VALUES (4001, 5, 1), (4002, 999, 2), (4003, NULL, 3), (4004, 7, 4), (4005, 150, 5);
@@ -85,10 +86,11 @@ DELETE FROM dim_a WHERE id = 999;
 INSERT INTO dim_a VALUES (8, 'back', 1);
 SELECT * FROM phase();
 -- the parent rows inserted since the stamp, for a segment with orphans, reach the share of the setting
-SET sift.col_connect_refresh_pct = 1;
+SET sift.test_col_conn_refresh_pct = 1;
 SELECT sift.col_maintain('events_col') AS rewritten;
 -- the refresh is done once: a rewrite restamps what was stale, and the end state holds again
 SELECT sift.col_maintain('events_col') AS rewritten_again;
+RESET sift.test_col_conn_refresh_pct;
 SELECT * FROM phase();
 
 -- segments merged: the stamps are those of the merge
@@ -119,12 +121,14 @@ CREATE INDEX dim_big_col ON dim_big USING sift_col (id, label) WITH (order_array
 CREATE TABLE big_events (id int PRIMARY KEY, dim_big_id int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO big_events SELECT i, 1000 * (1 + i % 60000) FROM generate_series(1, 150000) i;
 SET maintenance_work_mem = '1MB';
+SET work_mem = '64MB';
 CREATE INDEX big_events_col ON big_events USING sift_col (id, dim_big_id) WITH (connect = 'dim_big_id -> dim_big(id)', key_cut = 'off', order_array_columns = 'off');
 SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
 SELECT sift.col_maintain('big_events_col') AS rewritten;
 SELECT fill FROM sift.col_connections WHERE child = 'big_events_col'::regclass;
 SELECT * FROM found_run($q$SELECT count(*) FROM big_events e JOIN dim_big d ON d.id = e.dim_big_id$q$);
 RESET maintenance_work_mem;
+RESET work_mem;
 
 -- a parent that is written all the time, and children with a parent row for every key (a foreign key keeps them so): a parent row inserted or written again after the stamp changes no flag,
 -- only the keys that ended are outside the proof

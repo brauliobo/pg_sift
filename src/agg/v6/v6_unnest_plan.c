@@ -142,7 +142,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 
 		if (ix->indexprs != NIL || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
 			continue;
-		irel = index_open(ix->indexoid, NoLock);
+		irel = index_open(ix->indexoid, AccessShareLock);
 		p.colrel = sift_col_rel(irel);
 		p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
 		if (p.f2 != NULL && seed_unnest(&p, elem_rel, array, elem, left) && sift_v6_compile_on(&p, extra, group_exprs) && p.spec.nbins == 0 && p.spec.jsonqual == NIL && !reads_json(&p.spec) &&

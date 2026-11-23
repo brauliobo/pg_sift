@@ -280,6 +280,8 @@ col/f2/f2_scope_ent.c
 col/f2/f2_scope_int.h
 col/f2/f2_sink_ext.c
 col/f2/f2_sink_ext.h
+col/f2/f2_slab_view.c
+col/f2/f2_slab_view.h
 col/f2/f2_store.c
 col/f2/f2_store.h
 col/f2/f2_tail.c
@@ -448,6 +450,7 @@ col/v1/widescan.c
 col/v1/xstamp.c
 col/v1/xstamp.h
 core/cachebudget.c
+core/cachebudget_test.c
 core/catname.h
 core/check.c
 core/check.h
@@ -472,6 +475,7 @@ core/f2/bulk_io.h
 core/f2/col_delta_anchor.h
 core/f2/extent.c
 core/f2/extent.h
+core/f2/f2_gate.h
 core/f2/fsm.c
 core/f2/fsm.h
 core/f2/fsm/check.c

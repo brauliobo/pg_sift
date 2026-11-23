@@ -60,7 +60,7 @@ BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode = 'workers' THEN '3' ELSE '0' END, true);
 	PERFORM set_config('parallel_setup_cost', CASE WHEN mode = 'workers' THEN '0' ELSE '1000' END, true);
 	PERFORM set_config('parallel_tuple_cost', CASE WHEN mode = 'workers' THEN '0' ELSE '0.1' END, true);
-	PERFORM set_config('sift.agg_par_min_rows', CASE WHEN mode = 'workers' THEN '0' ELSE '80000' END, true);
+	PERFORM set_config('sift.test_agg_par_min_rows', CASE WHEN mode = 'workers' THEN '0' ELSE '80000' END, true);
 	EXECUTE format('SELECT md5(string_agg(x::text, E''\n'' ORDER BY x::text)) FROM (SELECT * FROM (%s) y) x', q) INTO r;
 	RETURN r;
 END $$;

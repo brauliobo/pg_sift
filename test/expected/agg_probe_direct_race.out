@@ -41,7 +41,9 @@ DECLARE q text := case_query(tab, $c$k = 't' || o.n::int || repeat('x', 200)$c$)
         l text;
 BEGIN
   SET LOCAL sift.enable_agg = on;
+  SET LOCAL sift.test_agg_probe_direct = off;
   EXECUTE 'CREATE TEMP TABLE r_before ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.test_agg_probe_direct = on;
   TRUNCATE hook_log;
   PERFORM set_config('sift.test_probe_hook', hook, true);
   EXECUTE 'CREATE TEMP TABLE r_after ON COMMIT DROP AS ' || q;

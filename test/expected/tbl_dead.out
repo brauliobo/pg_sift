@@ -1,5 +1,5 @@
 -- Dead rows of the column groups: VACUUM counts live and dead rows as it does for a heap (reltuples, pg_stat_user_tables), rewrites
--- a column segment alone once more than sift.dead_rewrite_pct percent of it is dead.
+-- a column segment alone once more than the dead_rewrite_pct option percent of it is dead.
 CREATE EXTENSION pg_sift;
 -- (vacuum_truncate off: moving a segment down for the cut would also drop its dead rows)
 CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
@@ -47,7 +47,12 @@ SELECT * FROM dstat;
 (1 row)
 
 -- a lower threshold rewrites it alone, without its dead rows
-SET sift.dead_rewrite_pct = 15;
+SELECT sift.table_set_option('d', 'dead_rewrite_pct', '15');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 VACUUM d;
 SELECT * FROM dseg;
  rows  | dead_rows 
@@ -55,9 +60,19 @@ SELECT * FROM dseg;
  16000 |         0
 (1 row)
 
-RESET sift.dead_rewrite_pct;
+SELECT sift.table_reset_option('d', 'dead_rewrite_pct');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
 -- 100 never rewrites; the default then does
-SET sift.dead_rewrite_pct = 100;
+SELECT sift.table_set_option('d', 'dead_rewrite_pct', '100');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 DELETE FROM d WHERE id % 10 < 9;
 VACUUM d;
 SELECT * FROM dseg;
@@ -66,7 +81,12 @@ SELECT * FROM dseg;
  16000 |     14000
 (1 row)
 
-RESET sift.dead_rewrite_pct;
+SELECT sift.table_reset_option('d', 'dead_rewrite_pct');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
 VACUUM d;
 SELECT * FROM dseg;
  rows | dead_rows 
@@ -101,14 +121,15 @@ SELECT * FROM dstat;
          0 |          0 |          0
 (1 row)
 
-SHOW sift.dead_rewrite_pct;
- sift.dead_rewrite_pct 
------------------------------
+SELECT sift.table_get_option('d', 'dead_rewrite_pct');
+ table_get_option 
+------------------
  30
 (1 row)
 
-SET sift.dead_rewrite_pct = 0;
-ERROR:  0 is outside the valid range for parameter "sift.dead_rewrite_pct" (1 .. 100)
+SELECT sift.table_set_option('d', 'dead_rewrite_pct', '0');
+ERROR:  invalid value for the option "dead_rewrite_pct" of a sift_table: "0"
+DETAIL:  Valid values are between 1 and 100.
 -- one VACUUM merges until nothing is left to merge: 40 groups, each 40 percent dead, none above the threshold after it
 CREATE TABLE d2 (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
 \set ECHO none

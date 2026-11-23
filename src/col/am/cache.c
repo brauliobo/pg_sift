@@ -347,6 +347,27 @@ leaf_dirs_free(SiftDirSnapshot *own, SiftDirSnapshot *scope)
 	pfree(scope);
 }
 
+/* the entry of an index, built in a context of the statement: the cache holds it once it is complete */
+static LeafEntry
+leaf_build(Relation index, const SiftDirSnapshot *dir, const SiftDirSnapshot *sdir, uint64 stamp, uint64 base)
+{
+	const int	ncols = sift_col_index_defs(index)->ncols;
+	LeafEntry	b = {.index = RelationGetRelid(index), .stamp = stamp, .base = base, .dirver = dir->version, .checked = am_leaf_plan, .ncols = ncols};
+
+	b.cx = sift_cache_create_context_in(CurrentMemoryContext, "sift cache leaf statistics");
+	for (int k = 0; k < 2; k++)
+	{
+		const SiftDirSnapshot *d = k == 0 ? dir : sdir;
+
+		if (k == 1 && d->nsegs == 0)
+			break;
+		b.cls[k].st = MemoryContextAllocZero(b.cx, ncols * sizeof(SiftColLeafStats));
+		b.cls[k].zones = zones_new(sift_col_index_defs(index), b.cx);
+		fold(index, d, &(Fold) {.kind = LSHM_LEAF, .scope = k == 1, .st = b.cls[k].st, .zs = b.cls[k].zones}, true, NULL);
+	}
+	return b;
+}
+
 static LeafEntry *
 leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 {
@@ -358,6 +379,7 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 				base;
 	Oid			key = RelationGetRelid(index);
 	LeafEntry  *e;
+	LeafEntry	fresh;
 
 	if (am_leaf_plan != 0 && dir == NULL && leaf_cache != NULL)
 	{
@@ -413,26 +435,12 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 		leaf_entry_free(e);
 		hash_search(leaf_cache, &key, HASH_REMOVE, NULL);
 	}
-	sift_cache_room((Size) 2 * ncols * (sizeof(SiftColLeafStats) + SIFT_COL_ZONE_SAMPLE * 2 * sizeof(int64)));
-	e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
-	e->stamp = stamp;
-	e->base = base;
-	e->dirver = dir->version;
-	e->checked = am_leaf_plan;
-	e->ncols = ncols;
-	e->cx = sift_cache_create_context("sift cache leaf statistics");
-	memset(e->cls, 0, sizeof(e->cls));
-	for (int k = 0; k < 2; k++)
-	{
-		const SiftDirSnapshot *d = k == 0 ? dir : sdir;
-
-		if (k == 1 && d->nsegs == 0)
-			break;
-		e->cls[k].st = MemoryContextAllocZero(e->cx, ncols * sizeof(SiftColLeafStats));
-		e->cls[k].zones = zones_new(sift_col_index_defs(index), e->cx);
-		fold(index, d, &(Fold) {.kind = LSHM_LEAF, .scope = k == 1, .st = e->cls[k].st, .zs = e->cls[k].zones}, true, NULL);
-	}
+	fresh = leaf_build(index, dir, sdir, stamp, base);
 	leaf_dirs_free(own, sdir);
+	sift_cache_room((Size) 2 * ncols * (sizeof(SiftColLeafStats) + SIFT_COL_ZONE_SAMPLE * 2 * sizeof(int64)));
+	sift_cache_adopt(fresh.cx);
+	e = hash_search(leaf_cache, &key, HASH_ENTER, NULL);
+	*e = fresh;
 	e->tick = sift_cache_tick();
 	return e;
 }
@@ -462,19 +470,19 @@ const SiftColPreStats *
 sift_col_pre_stats(Relation index, bool scope)
 {
 	LeafEntry  *e = leaf_cache_entry(index, NULL);
-	ClassStats *cs = &e->cls[scope];
 
-	if (cs->pre == NULL)
+	if (e->cls[scope].pre == NULL)
 	{
-		SiftDirSnapshot *dir;
-		SiftColPreStats *pre = MemoryContextAllocZero(e->cx, sizeof(SiftColPreStats));
+		SiftColPreStats pre = {0};
+		SiftDirSnapshot *dir = sift_col_dir_read(index, scope);
 
-		dir = sift_col_dir_read(index, scope);
-		fold(index, dir, &(Fold) {.kind = LSHM_PRE, .scope = scope, .pre = pre}, true, NULL);
-		cs->pre = pre;
+		fold(index, dir, &(Fold) {.kind = LSHM_PRE, .scope = scope, .pre = &pre}, true, NULL);
 		pfree(dir);
+		e = leaf_cache_entry(index, NULL);	/* the fold read the directory and the segments: the entry may be gone */
+		e->cls[scope].pre = MemoryContextAlloc(e->cx, sizeof(pre));
+		*e->cls[scope].pre = pre;
 	}
-	return cs->pre;
+	return e->cls[scope].pre;
 }
 
 const SiftColLeafStats *

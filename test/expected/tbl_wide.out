@@ -100,7 +100,12 @@ SELECT q, long_pushed(q) AS pushed, long_rows(q, true) IS NOT DISTINCT FROM long
 DROP TABLE longtxt, long_q;
 DROP FUNCTION long_rows, long_pushed;
 -- a row that cannot fit a write buffer is refused, not corrupted
-SET sift.table_wide_rows = off;
+SELECT sift.table_set_option('wide', 'wide_rows', 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 INSERT INTO wide VALUES (0, repeat('x', 5000000));
 ERROR:  row of sift_table "wide" is too large: 5000024 bytes
 DETAIL:  A row has to fit one write buffer of 4096 kB.

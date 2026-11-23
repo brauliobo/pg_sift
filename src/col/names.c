@@ -122,7 +122,7 @@ follow_attribute(Oid indexoid, int pos, const SiftNameChange *c)
 
 	index_close(index, NoLock);
 	rename_attribute(indexoid, pos, c->to);
-	index = index_open(indexoid, NoLock);
+	index = index_open(indexoid, AccessShareLock);
 	sift_col_set_options(index, renamed);
 	if (built && !sift_col_rekey(index))
 		ereport(NOTICE,
@@ -138,7 +138,7 @@ follow_attribute(Oid indexoid, int pos, const SiftNameChange *c)
 static void
 follow_column(Oid heapoid, AttrNumber attno, const SiftNameChange *c)
 {
-	Relation	heap = table_open(heapoid, NoLock);
+	Relation	heap = table_open(heapoid, AccessShareLock);
 
 	foreach_oid(indexoid, RelationGetIndexList(heap))
 	{

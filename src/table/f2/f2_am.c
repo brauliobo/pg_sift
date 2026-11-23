@@ -29,6 +29,8 @@
 
 #include "core/shm_manifest.h"
 #include "core/compat.h"
+#include "col/f2/f2_cache.h"
+#include "table/f2/f2_gcache.h"
 #include "table/f2/f2_slot.h"
 #include "table/f2/f2_tbl.h"
 
@@ -84,9 +86,19 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 	}
 }
 
+/* The caches of the file are keyed by locator and generation, and a table made in the transaction keeps its file through a TRUNCATE: its generations start again, so a granule of the rows before would answer for the new ones */
+static void
+forget_caches(Relation rel)
+{
+	sift_plan_cache_forget(&rel->rd_locator);
+	sift_f2_gbuf_forget(&rel->rd_locator);
+	sift_f2_gcache_forget(&rel->rd_locator);
+}
+
 void
 sift_tbl_f2_relation_nontransactional_truncate(Relation rel)
 {
+	forget_caches(rel);
 	sift_stage_discard(RelationGetRelid(rel));
 	sift_fsm_cache_discard_rel(rel);
 	sift_tbl_rowlock_drop_rel(&rel->rd_locator);
@@ -101,6 +113,10 @@ sift_tbl_f2_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 {
 	SMgrRelation dstrel = smgropen(*newrlocator, rel->rd_backend);
 
+	forget_caches(rel);
+	sift_fsm_cache_discard_rel(rel);
+	sift_tbl_rowlock_drop_rel(&rel->rd_locator);
+	sift_shm_manifest_invalidate(&rel->rd_locator, false);
 	RelationCreateStorage(*newrlocator, rel->rd_rel->relpersistence, true);
 	FlushRelationBuffers(rel);
 	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM, rel->rd_rel->relpersistence);

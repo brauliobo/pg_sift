@@ -59,7 +59,7 @@ initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
 node_conf new "$("$REPO/scripts/pgtest.sh" conf)"
-LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
+LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not start"; }
 
 
 TBLS="ta tb tc td"
@@ -86,7 +86,7 @@ SQL
 )
 qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up"
 "$OLDB/pg_ctl" -D "$(dir old)/data" -m fast -w stop >/dev/null 2>&1
-LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not restart"
+LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not restart"; }
 # a new session each: the UPDATE is its first statement (the attach of the shared tables inside it); a function that runs SQL inside the UPDATE; a table written many times
 q old postgres "BEGIN" "UPDATE ta SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" "UPDATE ta SET amount = amount + 5 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i)" "COMMIT" >/dev/null
 q old postgres "BEGIN" "UPDATE tb SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" "UPDATE tb SET amount = amount + 5 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i)" "COMMIT" >/dev/null

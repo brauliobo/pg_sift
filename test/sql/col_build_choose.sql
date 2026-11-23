@@ -10,7 +10,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.test_col_segment_kb = 1500;
-SET sift.col_unit_rows = 1200;
+SET sift.test_col_unit_rows = 1200;
 SET sift.test_col_pick_cache_blocks = 64;
 SET sift.test_col_spool_layer = 4;
 
@@ -126,7 +126,7 @@ SELECT * FROM ch_note();
 SELECT ch_units('ch_plain') AS units, ch_same('ch_plain') AS same_rows, sift.col_verify('ch_plain_idx', true);
 
 -- an old index that cannot give the rows (another column format minor is asked for) is built from the heap
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 SELECT pg_stat_force_next_flush() \gset
 SELECT pg_stat_force_next_flush() \gset
 SELECT ch_start();
@@ -139,6 +139,7 @@ SELECT ch_start();
 REINDEX INDEX ch_plain_idx;
 SELECT pg_stat_force_next_flush() \gset
 SELECT * FROM ch_note();
+RESET sift.test_col_format_minor;
 SELECT ch_same('ch_sorted') AS same_rows, sift.col_verify('ch_sorted_idx', true);
 
 -- rows this transaction has buffered are not in the index that is replaced

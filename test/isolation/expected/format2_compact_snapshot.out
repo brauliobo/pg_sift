@@ -1,0 +1,74 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2lock s3begin s1vacuum s2delete s3rows s2unlock s3rows s2rows s2check s2verify s3end s1rows s2vacuum s2rows s2check
+step s2lock: SELECT pg_advisory_lock(8111);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s3begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT answer FROM iso_fc_rows();
+answer     
+-----------
+13334/39997
+(1 row)
+
+step s1vacuum: VACUUM iso_fc; <waiting ...>
+step s2delete: DELETE FROM iso_fc WHERE id % 5 = 0;
+step s3rows: SELECT answer FROM iso_fc_rows();
+answer     
+-----------
+13334/39997
+(1 row)
+
+step s2unlock: SELECT pg_advisory_unlock(8111);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1vacuum: <... completed>
+step s3rows: SELECT answer FROM iso_fc_rows();
+answer     
+-----------
+13334/39997
+(1 row)
+
+step s2rows: SELECT answer FROM iso_fc_rows();
+answer     
+-----------
+10667/31993
+(1 row)
+
+step s2check: SELECT count(*) AS problems FROM sift.check('iso_fc_idx');
+problems
+--------
+       0
+(1 row)
+
+step s2verify: SELECT sift.col_verify('iso_fc_idx');
+col_verify
+----------
+          
+(1 row)
+
+step s3end: COMMIT;
+step s1rows: SELECT answer FROM iso_fc_rows();
+answer     
+-----------
+10667/31993
+(1 row)
+
+step s2vacuum: VACUUM iso_fc;
+step s2rows: SELECT answer FROM iso_fc_rows();
+answer     
+-----------
+10667/31993
+(1 row)
+
+step s2check: SELECT count(*) AS problems FROM sift.check('iso_fc_idx');
+problems
+--------
+       0
+(1 row)
+

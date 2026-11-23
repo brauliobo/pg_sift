@@ -43,7 +43,6 @@
 #define ROLLUP_WORKERS		8		/* databases with a worker running */
 
 bool		sift_col_rollup_on_demand = true;
-bool		sift_col_rollup_worker = true;
 #ifdef SIFT_TESTING
 int			sift_test_col_rollup_panic = 0;
 int			sift_test_col_refresh_sleep_ms = 0;
@@ -727,7 +726,7 @@ sift_col_rollup_request(Relation index, uint64 gen)
 		queued = i < sh->nreq;
 	}
 	SpinLockRelease(&sh->lock);
-	if (queued && sift_col_rollup_worker)
+	if (queued && sift_async_maintenance)
 		launch_worker();
 	return queued;
 }

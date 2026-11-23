@@ -51,13 +51,23 @@ sift_spill_nparts_of(const SiftSpillSet *s)
 	return s->nparts;
 }
 
+static BufFile *
+spill_file_create(SiftSpillSet *s)
+{
+	MemoryContext old = MemoryContextSwitchTo(s->cx);
+	BufFile    *f = BufFileCreateTemp(false);
+
+	MemoryContextSwitchTo(old);
+	return f;
+}
+
 void
 sift_spill_put(SiftSpillSet *s, uint32 part, uint64 tag, const void *bytes, uint32 len)
 {
 	SiftSpillRecHdr h = {.tag = tag,.len = len};
 
 	if (s->file[part] == NULL)
-		s->file[part] = BufFileCreateTemp(false);
+		s->file[part] = spill_file_create(s);
 	BufFileWrite(s->file[part], &h, sizeof(h));
 	if (len > 0)
 		BufFileWrite(s->file[part], bytes, len);

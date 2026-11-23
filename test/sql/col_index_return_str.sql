@@ -111,7 +111,7 @@ RESET sift.backend_cache_kb;
 
 -- the dictionary stored plain (no compression) and compact (parsed whole), under the setting 13: the same answers
 DROP INDEX rs_i;
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 CREATE INDEX rs_p ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off, compression = 'none');
 SELECT min(format) < 14 AS not_in_blocks FROM sift.col_segments('rs_p'::regclass) WHERE kind = 'immutable';
@@ -122,6 +122,7 @@ SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 DROP INDEX rs_p;
 CREATE INDEX rs_c ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)
 	WITH (count_columns = 'off', return_columns = 's, u, vc', write_buffer_limit = 256, dict_lookup = off);
+RESET sift.test_col_format_minor;
 SELECT n, (rs_check(q)).* FROM rs_q ORDER BY n;
 DROP INDEX rs_c;
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)

@@ -172,7 +172,7 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 	WbufLeaf   *lf;
 	MemoryContext cx;
 	int			free_slot = -1,
-				lru = 0;
+				lru = -1;
 
 	if (wbuf_cxt == NULL)
 	{
@@ -186,7 +186,7 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 			free_slot = i;
 		else if (lf->rel == index->rd_locator.relNumber && lf->gen == entry->gen && lf->col == col)
 			return lf;
-		else if (wbuf_leaves[lru] == NULL || lf->used < wbuf_leaves[lru]->used)
+		else if (!lf->pinned && (lru < 0 || lf->used < wbuf_leaves[lru]->used))
 			lru = i;
 	}
 	for (int i = 0; i < WBUF_CACHE_LEAVES; i++)
@@ -197,6 +197,7 @@ leaf_get(Relation index, const SiftSegEntry *entry, int col)
 		}
 	if (free_slot < 0)
 	{
+		SIFT_INVARIANT(lru >= 0, "write buffer lookup: every cached leaf is being read");
 		leaf_free(wbuf_leaves[lru]);
 		free_slot = lru;
 	}
@@ -222,19 +223,32 @@ sift_cwbuf_lookup(Relation index, const SiftSegEntry *entry, const SiftColSchema
 	int			col = pred->col;
 	bool		str = schema->cols[col].store == SIFT_COLS_STR;
 	WbufLeaf   *lf = leaf_get(index, entry, col);
-	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer lookup", ALLOCSET_DEFAULT_SIZES);
-	MemoryContext old = MemoryContextSwitchTo(tmp);
-	SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
+	MemoryContext tmp,
+				old;
 	ItemPointerData *out;
 	uint32		m,
 				cap;
 
+	/* held from here: opening the buffer asks the cache for room, and a leaf that fails half read is dropped with its pin */
 	lf->used = sift_cache_tick();
 	lf->pinned = true;
-	for (int l = 0; l < SIFT_LANES; l++)
-		if (BlockNumberIsValid(r->it.head[l]))
-			wbuf_read_lane(r, r->it.head[l], &lf->lane[l], leaf_read_rec, &(LeafRead) {lf, r, schema});
-	sift_cwbuf_close(r);
+	tmp = AllocSetContextCreate(CurrentMemoryContext, "sift col write buffer lookup", ALLOCSET_DEFAULT_SIZES);
+	old = MemoryContextSwitchTo(tmp);
+	PG_TRY();
+	{
+		SiftCWbufReader *r = sift_cwbuf_open(index, entry, schema, tmp);
+
+		for (int l = 0; l < SIFT_LANES; l++)
+			if (BlockNumberIsValid(r->it.head[l]))
+				wbuf_read_lane(r, r->it.head[l], &lf->lane[l], leaf_read_rec, &(LeafRead) {lf, r, schema});
+		sift_cwbuf_close(r);
+	}
+	PG_CATCH();
+	{
+		leaf_free(lf);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
 	*rows = lf->n + lf->nover;

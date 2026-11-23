@@ -19,9 +19,9 @@ CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, tag);
 NOTICE:  sift_col index "child_col" connected to parent(id) through foreign key "child_parent_id_fkey"
 HINT:  connect = 'off' on the index turns it off.
 NOTICE:  sift_col index "child_col": 3 automatic choices (key_columns, order_array_columns, track_changes)
-DETAIL:  key_columns = parent_id; order_array_columns = parent_id, v; track_changes = id
+DETAIL:  key_columns = parent_id; order_array_columns = v (second order by parent_id: entity); track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('child_col');
-NOTICE:  sift_col index "child_col" is column format minor 38, which a library before 3.7 cannot read
+NOTICE:  sift_col index "child_col" is column format minor 44, which a library before 4.3 cannot read
 DETAIL:  The choice order_array_columns writes it; sift.col_format_minor (15) numbers the formats of 3.x only, up to 15. sift.index_choices('child_col') says how to turn each choice off.
 HINT:  A superuser can SET sift.col_format_minor = 14 before the build to skip the choices that need it.
 VACUUM (FREEZE, ANALYZE) parent, child;

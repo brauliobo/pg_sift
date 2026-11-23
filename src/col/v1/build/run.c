@@ -518,7 +518,7 @@ colb_alloc(Relation index, SiftWriteTarget *wt, Size budget, SiftSegEntry *segs,
 	b->segs = segs != NULL ? segs : MemoryContextAlloc(cxt, b->segcap * sizeof(SiftSegEntry));
 	b->shared = shared;
 	{
-		Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+		Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 		BlockNumber pages;
 		double		tuples,
 					allvisfrac;

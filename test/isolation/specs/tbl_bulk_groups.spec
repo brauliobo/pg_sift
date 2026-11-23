@@ -10,8 +10,8 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_bulk (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+	DO $$ BEGIN PERFORM sift.table_set_option('iso_bulk', 'write_buffer_limit', '2048'); END $$;
 	CREATE INDEX iso_bulk_id ON iso_bulk (id);
-	SET sift.table_bulk_groups = on;
 	-- one group per load: the directory is nearly full for a limit of 16 entries
 	DO $$
 	BEGIN
@@ -31,7 +31,7 @@ step hb		{ BEGIN; SELECT sift._test_tbl_hold_maint('iso_bulk'); }
 step hc		{ COMMIT; }
 
 session w
-step wb		{ BEGIN; SET sift.table_bulk_groups = on; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+step wb		{ BEGIN; SET sift.table_max_segments = 16; }
 step wcopy	{ COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/'''; }
 step wown	{ SELECT count(*), sum(id) FROM iso_bulk; }
 step wself	{ INSERT INTO iso_bulk SELECT id + 200000, v FROM iso_bulk WHERE id > 100000 AND id <= 100010; }

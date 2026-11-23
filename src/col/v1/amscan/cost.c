@@ -515,7 +515,7 @@ point_lookup_only(PlannerInfo *root, IndexOptInfo *ii)
 
 	if (!ok)
 		return false;
-	idx = index_open(ii->indexoid, NoLock);
+	idx = index_open(ii->indexoid, AccessShareLock);
 	/* copies: the catalog lookups below can reload the index entry, which frees its options */
 	tid_cols = pstrdup(sift_col_options_point_tid_columns(idx));
 	ord_cols = sift_col_options_order_array_columns(idx);

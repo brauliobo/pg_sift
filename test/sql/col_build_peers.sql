@@ -3,14 +3,16 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 4;
-SET sift.col_auto_merge_wal_pct = 5;
+SET sift.test_col_merge_wal_pct = 5;
+SET sift.test_col_partition_kb = 2300;
 -- the build merges its own peers (col_build_standby_space): not here, which is the state a build of 3.6.0 left
-SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_merge_frag = 1000;
 
 CREATE TABLE nk (id int, cust int, amt int, q int) WITH (autovacuum_enabled = false);
 INSERT INTO nk SELECT i, ((i::bigint * 7919) % 20000)::int, ((i::bigint * 31) % 1000)::int, i % 100 FROM generate_series(1, 1000000) i;
 VACUUM (FREEZE, ANALYZE) nk;
 CREATE INDEX nk_idx ON nk USING sift_col (id, cust, amt, q) WITH (key_cut = 'cust');
+RESET sift.test_col_merge_frag;
 
 SELECT count(*) > 1 AS peers_from_workers FROM sift.col_segments('nk_idx') WHERE kind = 'immutable';
 SELECT sift.col_maintenance_due('nk_idx', true) AS due_automatic, sift.col_maintenance_due('nk_idx', false) AS due_manual;

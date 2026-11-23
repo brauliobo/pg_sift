@@ -152,6 +152,7 @@ typedef struct MergeSlice
 	int			nmax;				/* a slice of a build: the segments out has room for (a writer cut by its memory makes several; 0: one) */
 } MergeSlice;
 
+extern bool maint_out_full(SiftColSegWriter *w, Size budget, Size inputs_held, uint64 rows_done, uint64 live_rows, bool open);
 extern int maint_merge_parts(uint64 live_bytes, uint64 live_rows, uint64 part_bytes, bool key_cut);
 extern int maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPolicy *policy, const SiftCPaggSpec *pagg, const SiftSegEntry *in, int n,
 								 int format, SiftColFreezeFn freeze, void *freeze_arg, uint64 part_bytes, int window_parts, const MergeSlice *slice);
@@ -214,6 +215,7 @@ extern int	maint_pick_merge(Relation index, const SiftDirSnapshot *snap, bool fo
 extern int	maint_pick_rewrite(Relation index, const SiftDirSnapshot *snap, SiftSegEntry *sel, bool *cut, bool *paced, RollStep *rs);
 extern bool	maint_merge_settled(Relation index, const SiftSegEntry *sel, int n);
 extern void	maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout);
+extern void	maint_segs_settle(Relation index, const SiftSegEntry *out, int nout);
 extern uint64	maint_merge_par_bytes(void);
 
 extern SiftStepResult	maint_merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint64 *busy);

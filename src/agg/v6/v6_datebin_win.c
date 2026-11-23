@@ -438,7 +438,7 @@ sift_winx_lead_bytes(const SiftWinxSpec *spec)
 SiftWinx *
 sift_winx_create(MemoryContext cx, const SiftWinxSpec *spec, SiftWinxNext next, void *src, SiftWinxEmit emit, void *emit_arg)
 {
-	SiftWinx   *w = MemoryContextAllocZero(cx, sizeof(SiftWinx));
+	SiftWinx   *w = MemoryContextAllocAligned(cx, sizeof(SiftWinx), _Alignof(SiftWinx), MCXT_ALLOC_ZERO);
 
 	SIFT_INVARIANT(spec->n_part <= SIFT_WINX_MAX_KEYS && spec->n_ord <= SIFT_WINX_MAX_KEYS && spec->nfuncs <= SIFT_WINX_MAX_FUNCS, "window: too many keys or functions");
 	w->cx = cx;
@@ -469,7 +469,7 @@ sift_winx_create(MemoryContext cx, const SiftWinxSpec *spec, SiftWinxNext next, 
 							errhint("Raise work_mem or use a smaller LEAD offset.")));
 		w->lcap = w->max_lead + 1;
 		w->ltag = MemoryContextAlloc(cx, sizeof(uint64) * w->lcap);
-		w->lres = MemoryContextAlloc(cx, sizeof(SiftWinxVal) * spec->nfuncs * w->lcap);
+		w->lres = MemoryContextAllocAligned(cx, sizeof(SiftWinxVal) * spec->nfuncs * w->lcap, _Alignof(SiftWinxVal), 0);
 		w->lcells = MemoryContextAlloc(cx, sizeof(WinxCell) * Max(w->ncells, 1) * w->lcap);
 	}
 	return w;

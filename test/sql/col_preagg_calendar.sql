@@ -1,5 +1,5 @@
 -- The calendar dim of the cube of a sift_table (column format minor 8, docs/COL-PREAGG.md section 2): the cells of its date, timestamp and timestamptz
--- columns, written under the default sift.col_format_minor and not under 7 or less, so that a 3.2 library keeps reading a table written with 7; read back
+-- columns, written under the default sift.test_col_format_minor and not under 7 or less, so that a 3.2 library keeps reading a table written with 7; read back
 -- by the decoder that refuses a damaged cube; checked against the chunks by the verify of the segments; kept by a rewrite.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -17,9 +17,10 @@ END $$;
 SELECT cmo_fill('cmo', 1, 60000);
 INSERT INTO cmo_nots SELECT g, g % 6, g / 7.0, repeat('p', 60) FROM generate_series(1, 60000) g;
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo, cmo_nots;
-SET sift.col_format_minor = 7;
+SET sift.test_col_format_minor = 7;
 SELECT cmo_fill('cmo_seven', 1, 60000);
 VACUUM (ANALYZE, DISABLE_PAGE_SKIPPING) cmo_seven;
+RESET sift.test_col_format_minor;
 
 -- the minor of the segments: 8 with calendar dims, 7 with integer min/max only (the data here spans 14 years: a unit stores months)
 SELECT 'cmo' AS tbl, array_agg(DISTINCT format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns'
@@ -43,9 +44,10 @@ FROM sift._test_tbl_cube_damage('cmo_nots', 3)
 ORDER BY 1;
 
 -- the setting 7 for the next writes, then 8 again: a table holds both, a rewrite writes the newest minor its columns ask for (18: the run heads of its ascending timestamp column, which need the setting 15)
-SET sift.col_format_minor = 7;
+SET sift.test_col_format_minor = 7;
 SELECT cmo_fill('cmo', 60001, 90000);
 VACUUM (DISABLE_PAGE_SKIPPING) cmo;
+RESET sift.test_col_format_minor;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.table_segments('cmo') WHERE kind = 'columns';
 SELECT sift._test_tbl_verify('cmo') > 0 AS ok;
 SELECT cmo_fill('cmo', 90001, 120000);

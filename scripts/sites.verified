@@ -119,3 +119,5 @@ src/col/scope_decl.c	sift_scope_legs_find	guarded	the fact table is the heap of 
 src/core/sql_status.c	all_candidates	unreachable	pg_class (RelationRelationId) always exists
 src/table/f2/f2_upgrade.c	rewrite_as_format2	guarded	newid is the table make_new_heap just created in this transaction under AccessExclusiveLock
 src/table/f2/f2_upgrade.c	upgrade	guarded	relid went through sift_rel_must_exist in open_for_upgrade and the table is held under AccessExclusiveLock until the end of the call
+src/col/f2/f2_store.c	sift_f2_rel_hash	guarded	GetSysCacheHashValue1 returns a hash value, not a tuple: the relation is open and locked by the caller (the store of a statement), and the value is kept to compare in the invalidation callback, where nothing may be looked up
+src/col/f2/f2_store.c	store_att_hashes	guarded	GetSysCacheHashValue2 returns a hash value, not a tuple: the relation is the open relation of the store being made, and the values are kept to compare in the invalidation callback, where nothing may be looked up

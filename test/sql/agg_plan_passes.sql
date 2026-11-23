@@ -50,8 +50,10 @@ SELECT bool_and(pp_passes(pp_list(format('%s,%s,%s', 3 * n + 1, 3 * n + 2, 3 * n
 SELECT pp_plan(pp_list('10,11,12')) = pp_plan(pp_list('10,11,12')) AS same_plan_again;
 
 -- with the cache off every statement is planned in full, and its plan is the same
+SET sift.test_agg_verdict_cache = off;
 SELECT pp_passes(pp_list('1,2,3')) <= 2 AS full_at_most_two;
 SELECT pp_plan(pp_list('20,21,22')) AS plan_in_full \gset
+RESET sift.test_agg_verdict_cache;
 SELECT pp_plan(pp_list('20,21,22')) = :'plan_in_full' AS same_as_in_full;
 
 -- the rows are those of the normal plan

@@ -56,7 +56,7 @@ SELECT sift.col_verify('d_col', true);
 
 -- minor 3 writes no tags: the stored values still count, an overflow value has no type
 DROP INDEX d_col;
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX d_col ON d USING sift_col (id, doc) WITH (paths = 'doc.m float8, doc.n int4, doc.s text, doc.b bool, doc.o.v int4, doc.a astext', cube_minmax = false, superunit = 0);
 SELECT fmt('d_col');
 SELECT leaf, type, idx_rows, heap_rows, allknown FROM (VALUES ('m', 1, 2), ('b', 4, 3)) k(leaf, n, own),
@@ -66,6 +66,7 @@ SELECT sift.col_verify('d_col', true);
 
 -- rows added under minor 4 sit in the write buffer with their types, are promoted to a minor 4 segment, and the merge with the minor 3 one
 -- gives the old overflow values no type again
+RESET sift.test_col_format_minor;
 INSERT INTO d SELECT g, doc(g) FROM generate_series(30001, 40000) g;
 SELECT * FROM unit_kinds('d_col');
 SELECT sift.col_promote('d_col');
@@ -89,8 +90,9 @@ CREATE FUNCTION z_types(idx regclass) RETURNS TABLE (type text, idx_rows int8, k
 $$ SELECT t.name, sum(u.matched)::int8, bool_and(u.known)
 	FROM (VALUES ('number', 2), ('none', 6), ('null', 7)) t(name, tag), LATERAL sift._test_col_types(idx, 0, 1 << t.tag, 2) u
 	GROUP BY t.name, t.tag ORDER BY t.tag $$;
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX z3_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4', cube_minmax = false, superunit = 0);
+RESET sift.test_col_format_minor;
 CREATE INDEX z4_col ON z USING sift_col (doc) WITH (paths = 'doc.m int4', cube_minmax = false, superunit = 0);
 SELECT * FROM z_types('z3_col');
 SELECT * FROM z_types('z4_col');
@@ -126,10 +128,11 @@ SELECT sift._test_poke('w_idx', 1, 41, 3, 1);
 SELECT expect($$ SELECT sift.col_verify('w_idx', false) $$);
 SELECT sift._test_poke('w_idx', 1, 41, 4, 1);
 SELECT expect($$ SELECT sift.col_verify('w_idx', true) $$);
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 SET sift.test_col_no_present = on;
 CREATE INDEX w3_idx ON w USING sift_col (doc) WITH (paths = 'doc.m float8', cube_minmax = false, superunit = 0);
 RESET sift.test_col_no_present;
+RESET sift.test_col_format_minor;
 SELECT sift._test_poke('w3_idx', 1, 41, 4, 1);
 SELECT expect($$ SELECT sift.col_verify('w3_idx', false) $$);
 

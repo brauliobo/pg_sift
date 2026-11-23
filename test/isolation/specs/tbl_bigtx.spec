@@ -9,6 +9,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_big (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+	DO $$ BEGIN PERFORM sift.table_set_option('iso_big', 'write_buffer_limit', '2048'); END $$;
 	CREATE INDEX iso_big_id ON iso_big (id);
 	INSERT INTO iso_big SELECT g, 'before' FROM generate_series(1, 10) g;
 }
@@ -19,7 +20,7 @@ teardown
 }
 
 session w
-step wb		{ BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+step wb		{ BEGIN; SET sift.table_max_segments = 16; }
 step wi		{ INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g; }
 step wloop	{ DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$; }
 step wtag	{ SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer; }

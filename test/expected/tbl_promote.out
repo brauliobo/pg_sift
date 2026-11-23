@@ -100,9 +100,19 @@ SELECT promote_compare('aborted changes');
 (1 row)
 
 -- (half dead is the threshold here: the segments keep the dead rows this counts)
-SET sift.dead_rewrite_pct = 50;
+SELECT sift.table_set_option('s', 'dead_rewrite_pct', '50');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 VACUUM s;
-RESET sift.dead_rewrite_pct;
+SELECT sift.table_reset_option('s', 'dead_rewrite_pct');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
 SELECT promote_compare('VACUUM clears the dead rows'), promote_layout();
           promote_compare          |            promote_layout            
 -----------------------------------+--------------------------------------

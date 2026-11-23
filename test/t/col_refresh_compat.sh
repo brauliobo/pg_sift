@@ -30,6 +30,9 @@ node_stop legacy
 use_root legacy "$newroot"
 node_start legacy || bail "cannot start the new library"
 sql legacy "ALTER EXTENSION pg_sift UPDATE" >/dev/null || bail "SQL update"
+# the catalog is this tree's: its sift.col_promote and sift.col_merge call 6.0 functions the 3.0.1 library lacks, so its own entry points are bound to compat_old
+sql legacy "SET check_function_bodies = off" "CREATE SCHEMA compat_old" "CREATE FUNCTION compat_old.col_promote(regclass) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_col_promote'" \
+	"CREATE FUNCTION compat_old.col_merge(regclass, bool) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_col_merge'" >/dev/null || bail "compat_old"
 check "the 3.0.1 library wrote segments of minor 3 or below" test "$(sql legacy "SELECT max(format) <= 3 FROM sift.col_segments('items_idx') WHERE kind = 'immutable'")" == t
 verify() { test -z "$(sql legacy "SELECT sift.col_verify('items_idx', true)" 2>&1)"; }
 check "the new library reads the 3.0.1 index: verify and the answer are the heap's" test "$(verify && echo ok)|$(sql legacy "SET sift.enable_agg = off" "$Q")" == "ok|$want"
@@ -52,7 +55,7 @@ node_start legacy || bail "cannot restart $ref"
 check "the 3.0.1 library verifies the refreshed index" test -z "$(sql legacy "SELECT sift.col_verify('items_idx', true)" 2>&1)"
 check "and answers as before, from the segments the new library wrote" test "$(sql legacy "SET sift.enable_agg = on" "SET seq_page_cost = 10000" "$Q")" == "$want"
 check "and takes more writes: promoted and merged with the refreshed segments" \
-	test "$(sql legacy "INSERT INTO items SELECT g, g % 6, 'g00', 1, 1, 'p' FROM generate_series(25001, 25500) g" "SELECT sift.col_promote('items_idx') >= 0" "SELECT sift.col_merge('items_idx', true) >= 0" \
+	test "$(sql legacy "INSERT INTO items SELECT g, g % 6, 'g00', 1, 1, 'p' FROM generate_series(25001, 25500) g" "SELECT compat_old.col_promote('items_idx') >= 0" "SELECT compat_old.col_merge('items_idx', true) >= 0" \
 		"SELECT sift.col_verify('items_idx', true) IS NOT NULL" | tr '\n' ' ')" == "t t t "
 node_stop legacy
 

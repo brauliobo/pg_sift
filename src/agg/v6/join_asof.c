@@ -191,7 +191,7 @@ sorted_table(const RangeTblEntry *rte, const Idiom *id)
 
 	if (!sift_v6_format()->owns_rel(rte->relid, true))
 		return false;
-	tbl = table_open(rte->relid, NoLock);
+	tbl = table_open(rte->relid, AccessShareLock);
 	sift_v6_input_init_table(&in, tbl);
 	table_close(tbl, NoLock);
 	return sorted_input(&in, id);

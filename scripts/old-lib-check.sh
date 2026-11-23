@@ -15,8 +15,7 @@
 #   scripts/old-lib-check.sh keyed                      the same for the units of a key-cut index (the chunk table after the directory; column format 34)
 #   scripts/old-lib-check.sh include                    INCLUDE columns (segment format 5, metapage minor 1.5): the older library (SIFT_OLD_REF, default v3.7.0) writes an index without them, this tree
 #                                                       reads it as it reads its own and writes beside it; an index of this tree that names INCLUDE columns is refused by the older library
-#                                                       with the format error and reported by sift.upgrade_check('3.7') as a blocker, and an index without them is read again after
-#                                                       DROP INDEX and CREATE INDEX
+#                                                       with the format error, and an index without them is read again after DROP INDEX and CREATE INDEX
 #   scripts/old-lib-check.sh track                      the logs of 4.0.0 to 4.1.1 (SIFT_OLD_REF, default v4.1.0): the older library counts row versions that statements with a moved command id left without a tombstone (three
 #                                                       tables: the first UPDATE of a session, a volatile function, a second index), this tree checks the heap for those logs and answers as the heap, and
 #                                                       re-baselines each of them, by VACUUM, by the first read of an idle table and by the maintenance worker of a write, with no other step; the older library
@@ -157,7 +156,7 @@ checks() { # LOG of the older server
 
 # a table written by a loop of single-row INSERTs in one transaction, with the directory of 16 entries: it has unfrozen groups
 load_table() { # NAME
-	"$PG" psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "SET sift.table_max_segments = 16" -c "SET sift.table_write_buffer_limit = 2048" \
+	"$PG" psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "SET sift.table_max_segments = 16" \
 		-c "CREATE TABLE $1 (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" -c "BEGIN" \
 		-c "DO \$\$ BEGIN FOR i IN 1..$ROWS LOOP INSERT INTO $1 VALUES (i, repeat('x', 1000) || i); END LOOP; END \$\$" -c "COMMIT" >/dev/null
 }
@@ -173,20 +172,20 @@ run() {
 	[[ $("$PG" psql -X -qAt -d postgres -c "SELECT count(*) FROM pg_available_extensions WHERE name = 'pg_sift_test'") == 1 ]] ||
 		skip "the build under test is not the testing build (sift.table_max_segments)"
 	"$PG" psql -X -qAt -d postgres -c "CREATE EXTENSION pg_sift" -c "CREATE EXTENSION pg_sift_test" >/dev/null
-	# sift.col_format_minor = 3: the files a 3.0.x library reads (the default minor 4 writes the type tags it does not know)
-	"$PG" psql -X -qAt -d postgres -c "SET sift.col_format_minor = 3" -c "CREATE TABLE ctl (id int, v text) USING sift_table" -c "INSERT INTO ctl SELECT g, 'c' || g FROM generate_series(1, 1000) g" \
+	# sift.test_col_format_minor = 3: the files a 3.0.x library reads (the default minor 4 writes the type tags it does not know)
+	"$PG" psql -X -qAt -d postgres -c "SET sift.test_col_format_minor = 3" -c "CREATE TABLE ctl (id int, v text) USING sift_table" -c "INSERT INTO ctl SELECT g, 'c' || g FROM generate_series(1, 1000) g" \
 		-c "VACUUM ctl" >/dev/null
 	load_table unf
 	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf') > 0") == t ]]; then pass "the loop left a table with unfrozen groups"
 	else fail "the loop left a table with unfrozen groups"; echo "tables not written by the new write path: nothing to refuse"; return 1; fi
 	# a table loaded by COPY into column groups carries the same unfrozen groups
-	"$PG" psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "SET sift.table_bulk_groups = on" -c "CREATE TABLE unf_b (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" \
+	"$PG" psql -X -qAt -v ON_ERROR_STOP=1 -d postgres -c "CREATE TABLE unf_b (id int, v text) USING sift_table WITH (autovacuum_enabled = false)" \
 		-c "COPY unf_b FROM PROGRAM 'seq 1 2000 | sed ''s/.*/&\trow &/'''" >/dev/null
 	if [[ $("$PG" psql -X -qAt -d postgres -c "SELECT sift._test_tbl_tagged('unf_b') > 0") == t ]]; then pass "a COPY into column groups left a table with unfrozen groups"
 	else fail "a COPY into column groups left a table with unfrozen groups"; fi
 	load_table unf_v
 	load_table unf_f
-	"$PG" psql -X -qAt -d postgres -c "VACUUM unf_v" -c "SET sift.col_format_minor = 3" -c "VACUUM (FULL) unf_f" >/dev/null
+	"$PG" psql -X -qAt -d postgres -c "VACUUM unf_v" -c "SET sift.test_col_format_minor = 3" -c "VACUUM (FULL) unf_f" >/dev/null
 	"$PG" stop >/dev/null || { fail "the cluster stops cleanly"; return 1; }
 	data=$SIFT_TMP/data
 	# the cluster is stopped: the socket directory and the port are free for the older server
@@ -277,7 +276,7 @@ cycle() {
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1
 	[[ $("$REPO/scripts/sha256.sh" "$file") == "$before" ]] && pass "... and it writes nothing to the index file" || fail "... and it writes nothing to the index file"
 	"$PG" start >/dev/null || { fail "the cluster of this tree starts again"; return; }
-	psql_new -c "SET sift.col_format_minor = 14" -c "REINDEX INDEX $CY_IDX" >/dev/null
+	psql_new -c "SET sift.test_col_format_minor = 14" -c "REINDEX INDEX $CY_IDX" >/dev/null
 	"$PG" stop >/dev/null
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts after the REINDEX"; return; }
 	expect_rows "the older library reads the index again after REINDEX at the setting 14, with the answers of the heap" "$(printf '%s; ' "${CY_FAST[@]}")$CY_SQL" "$old_md5"
@@ -351,10 +350,6 @@ include() {
 	PGOPTIONS='-c sift.test_wbuf_narrow=on' psql_new -c "INSERT INTO inc SELECT g, 'common dim_a' || g % 7 || ' w' || g % 30, g % 97, DATE '2026-01-01' + g % 300 FROM generate_series(30001, 40000) g" -c "SELECT sift.promote('inc_i')" >/dev/null
 	PGOPTIONS='-c sift.test_wbuf_narrow=on' psql_new -c "CREATE INDEX inc2_i ON inc2 USING sift (body) INCLUDE (category_id, created_at)" >/dev/null
 	psql_new -c "CREATE TABLE w6 AS SELECT g AS id, 'common dim_a' || g % 7 AS body FROM generate_series(1, 2000) g" -c "CREATE INDEX w6_i ON w6 USING sift (body)" -c "INSERT INTO w6 SELECT g, 'common w6' FROM generate_series(2001, 2100) g" >/dev/null
-	uc=$(PGHOST=$SIFT_TMP/sock PGPORT=$SIFT_PORT PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --to 3.7 postgres 2>&1)
-	grep -qE '^blocker +inc2_i +index +format 1\.5' <<<"$uc" && pass "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns (format 1.5) as a blocker" || fail "scripts/upgrade-check.sh --to 3.7 reports the index with INCLUDE columns as a blocker ($uc)"
-	grep -qE '^ok +inc_i +index +format 1\.4' <<<"$uc" && pass "... and the index without them, written to by this tree, as ok (format 1.4)" || fail "... and the index without them, written to by this tree, as ok ($uc)"
-	grep -qE '^blocker +w6_i +index +format 1\.6' <<<"$uc" && pass "... and an index that took an insert, whose write buffer is format 6 (1.6), as a blocker" || fail "... and an index that took an insert, whose write buffer is format 6 (1.6), as a blocker ($uc)"
 	[[ $(psql_new -c "$ids ($(printf "$want" inc2)) x") == "$OLD_MD5" ]] && pass "the index with INCLUDE columns answers as the older library's" || fail "the index with INCLUDE columns answers as the older library's"
 	"$PG" stop >/dev/null || { fail "the cluster of this tree stops cleanly"; return; }
 	old_start "$root" "$SIFT_TMP/data" "$SIFT_PORT" "$SIFT_TMP/sock" "$log" || { fail "the server with the older library starts again"; return; }
@@ -470,10 +465,6 @@ minors51() {
 		pass "this tree chains the directory of an index (metapage 1.7)" || fail "this tree chains the directory of an index (metapage 1.7)"
 	[[ $(psql_new -c "SELECT chained, format_minor FROM sift._test_dir_info('pl_ix')") == "f|2" ]] &&
 		pass "an index with none of the three stays at metapage 1.2" || fail "an index with none of the three stays at metapage 1.2"
-	[[ $(psql_new -c "SELECT string_agg(object || ':' || status, ' ' ORDER BY object) FROM sift.upgrade_check('5.0') WHERE kind = 'index'") == \
-		"ch_ix:blocker dv_ix:blocker pl_ix:ok wb_ix:blocker" ]] &&
-		pass "sift.upgrade_check('5.0') names the three indexes that 5.0 refuses and passes the other" ||
-		fail "sift.upgrade_check('5.0') names the three indexes that 5.0 refuses and passes the other"
 	want=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM pl WHERE v > 100" | tail -1)
 	want_wb=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM wb WHERE k = 3" | tail -1)
 	want_ch=$(psql_new -c "SET sift.enable_agg = off" -c "SELECT count(*) || ':' || sum(v) FROM ch WHERE v > 100" | tail -1)
@@ -626,11 +617,11 @@ track() {
 			fail "$t: this tree takes the log of the older library for incomplete, checks the heap and answers as the heap"
 	done
 	[[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('ta_c')") == 1 ]] && pass "the log of the older library has the flags 1" || fail "the log of the older library has the flags 1"
-	# 1. the next VACUUM (sift.col_auto_merge is off in this cluster)
+	# 1. the next VACUUM (sift.async_maintenance is off in this cluster)
 	psql_new -c "VACUUM tb" >/dev/null
 	[[ $(hf tb_c) == t ]] && right tb && [[ $(psql_new -c "SELECT cur_flags FROM sift._test_log_chan('tb_c')") == 3 ]] && pass "tb: the next VACUUM re-baselines the log (flags 3), and the heap-free read is the heap's" || fail "tb: the next VACUUM re-baselines the log (flags 3), and the heap-free read is the heap's"
 	# 2. a read of a table nobody writes or vacuums, with the worker on
-	psql_new -c "ALTER SYSTEM SET sift.col_auto_merge = on" -c "SELECT pg_reload_conf()" >/dev/null
+	psql_new -c "ALTER SYSTEM SET sift.async_maintenance = on" -c "SELECT pg_reload_conf()" >/dev/null
 	psql_new -c "$(q ta on)" >/dev/null
 	for _ in $(seq 1 60); do [[ $(hf ta_c) == t ]] && break; sleep 0.5; done
 	[[ $(hf ta_c) == t ]] && right ta && pass "ta: the first read of an idle table queues the re-baseline, and the heap-free read is the heap's" || fail "ta: the first read of an idle table queues the re-baseline, and the heap-free read is the heap's"
@@ -664,8 +655,9 @@ present() {
 	psql_new() { "$PG" psql -X -qAt -d postgres "$@" 2>&1; }
 	local heap="SELECT count(*) || ':' || coalesce(sum(id), 0) FROM pn WHERE NOT (doc @> '{\"b\": \"x\"}')"
 	"$PG" start >/dev/null || { echo "FAIL starting the cluster" >&2; exit 1; }
-	local minor="SELECT 1"; [[ $OLD_REF == v3.* ]] && minor="SET sift.col_format_minor = 6"	# 3.2 reads column minors up to 6
-	psql_new -c "$minor" -c "CREATE EXTENSION pg_sift" -c "CREATE TABLE pn (id int, g int, doc jsonb)" -c "CREATE TABLE pk (id int, g int, doc jsonb NOT NULL)" \
+	local minor="SELECT 1"; [[ $OLD_REF == v3.* ]] && minor="SET sift.test_col_format_minor = 6"	# 3.2 reads column minors up to 6
+	psql_new -c "$minor" -c "CREATE EXTENSION pg_sift" -c "SET check_function_bodies = off" -c "CREATE SCHEMA compat_old" \
+		-c "CREATE FUNCTION compat_old.col_promote(regclass) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_col_promote'" -c "CREATE TABLE pn (id int, g int, doc jsonb)" -c "CREATE TABLE pk (id int, g int, doc jsonb NOT NULL)" \
 		-c "INSERT INTO pn SELECT i, i % 5, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '{\"b\": \"x\"}' ELSE '{\"b\": \"y\"}' END FROM generate_series(1, 8000) i" \
 		-c "INSERT INTO pk SELECT i, i % 5, '{\"b\": \"x\"}' FROM generate_series(1, 8000) i" \
 		-c "CREATE INDEX pn_c ON pn USING sift_col (id, g, doc) WITH (paths = 'doc.b astext')" -c "CREATE INDEX pk_c ON pk USING sift_col (id, g, doc) WITH (paths = 'doc.b astext')" \
@@ -684,7 +676,7 @@ present() {
 	query "SELECT sift.col_verify('pn_c', true)"
 	((RC == 0)) && pass "the older library verifies the rewritten index" || fail "the older library verifies the rewritten index ($ERR)"
 	expect_rows "... and the index answers as the heap" "SET sift.enable_agg = on; $heap" "$want"
-	"${OLD_PSQL[@]}" -c "INSERT INTO pn SELECT 8000 + i, i % 5, '{\"b\": \"x\"}' FROM generate_series(1, 500) i" -c "SELECT sift.col_promote('pn_c')" >/dev/null &&
+	"${OLD_PSQL[@]}" -c "INSERT INTO pn SELECT 8000 + i, i % 5, '{\"b\": \"x\"}' FROM generate_series(1, 500) i" -c "SELECT compat_old.col_promote('pn_c')" >/dev/null &&
 		pass "the older library writes and promotes beside it" || fail "the older library writes and promotes beside it"
 	want=$("${OLD_PSQL[@]}" -c "SET sift.enable_agg = off" -c "$heap" | tail -1)
 	pg_ctl -D "$SIFT_TMP/data" -m fast -w stop >/dev/null 2>&1 || { fail "the older server stops cleanly"; return; }

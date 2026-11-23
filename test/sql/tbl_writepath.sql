@@ -8,7 +8,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.table_max_segments = 8;
-SET sift.table_write_buffer_limit = 2048;
 SET max_parallel_workers_per_gather = 0;
 
 -- order independent, so that no sort of the rows (about a kilobyte each) is needed
@@ -161,6 +160,7 @@ $$;
 
 -- ---------- a loop of single-row INSERTs, committed ----------
 CREATE TABLE lp_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('lp_t', 'write_buffer_limit', '2048');
 CREATE TABLE lp_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX lp_t_id ON lp_t (id);
 CREATE INDEX lp_h_id ON lp_h (id);
@@ -196,6 +196,7 @@ DROP TABLE lp_t, lp_h;
 
 -- ---------- a loop that is rolled back: nothing is left, and the space comes back after VACUUM ----------
 CREATE TABLE rb_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('rb_t', 'write_buffer_limit', '2048');
 CREATE INDEX rb_t_id ON rb_t (id);
 BEGIN;
 SELECT ins1('rb_t', 1, 10000);
@@ -247,6 +248,7 @@ DROP TABLE rb_t;
 
 -- ---------- the rows of the transaction read by the transaction itself ----------
 CREATE TABLE ow_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('ow_t', 'write_buffer_limit', '2048');
 CREATE TABLE ow_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX ow_t_id ON ow_t (id);
 CREATE INDEX ow_h_id ON ow_h (id);
@@ -315,6 +317,7 @@ BEGIN
 	RETURN NULL;
 END $$;
 CREATE TABLE tr_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('tr_t', 'write_buffer_limit', '2048');
 CREATE TABLE tr_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE TRIGGER tr_t_read AFTER INSERT ON tr_t FOR EACH ROW EXECUTE FUNCTION tr_fn();
 CREATE TRIGGER tr_h_read AFTER INSERT ON tr_h FOR EACH ROW EXECUTE FUNCTION tr_fn();
@@ -329,6 +332,7 @@ DROP TABLE ow_t, ow_h, tr_t, tr_h, tr_log;
 
 -- ---------- UPDATE and DELETE of rows the transaction wrote a few commands before, and of rows that are already promoted ----------
 CREATE TABLE ud_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('ud_t', 'write_buffer_limit', '2048');
 CREATE TABLE ud_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX ud_t_id ON ud_t (id);
 CREATE INDEX ud_h_id ON ud_h (id);
@@ -365,6 +369,7 @@ DROP TABLE ud_t, ud_h;
 
 -- ---------- savepoints: rows of a rolled back savepoint go, the ones around them stay ----------
 CREATE TABLE sp_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('sp_t', 'write_buffer_limit', '2048');
 CREATE TABLE sp_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX sp_t_id ON sp_t (id);
 BEGIN;
@@ -414,6 +419,7 @@ DROP TABLE sp_t, sp_h;
 
 -- ---------- one subtransaction per row (a block with an exception handler): half of them roll back, or none ----------
 CREATE TABLE sx_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('sx_t', 'write_buffer_limit', '2048');
 CREATE TABLE sx_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX sx_t_id ON sx_t (id);
 BEGIN;
@@ -450,6 +456,7 @@ DROP TABLE sx_t, sx_h;
 
 -- ---------- SELECT FOR UPDATE of rows that are promoted: by the writer, and after it committed ----------
 CREATE TABLE fu_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('fu_t', 'write_buffer_limit', '2048');
 CREATE TABLE fu_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX fu_t_id ON fu_t (id);
 CREATE INDEX fu_h_id ON fu_h (id);
@@ -481,6 +488,7 @@ DROP TABLE fu_t, fu_h;
 
 -- ---------- the isolation levels ----------
 CREATE TABLE il_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('il_t', 'write_buffer_limit', '2048');
 CREATE TABLE il_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX il_t_id ON il_t (id);
 CREATE INDEX il_h_id ON il_h (id);
@@ -511,6 +519,7 @@ DROP TABLE il_t, il_h;
 
 -- ---------- ON CONFLICT of a row per command, against rows that are promoted ----------
 CREATE TABLE oc_t (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('oc_t', 'write_buffer_limit', '2048');
 CREATE TABLE oc_h (id int PRIMARY KEY, v text) WITH (autovacuum_enabled = false);
 BEGIN;
 SELECT upsert('oc_t', 1, 7500, false);
@@ -546,6 +555,7 @@ DROP TABLE oc_t, oc_h;
 
 -- ---------- a duplicate key is found among the rows of the transaction itself, and among the ones that are committed or frozen ----------
 CREATE TABLE uq_t (id int PRIMARY KEY, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('uq_t', 'write_buffer_limit', '2048');
 BEGIN;
 SELECT ins1('uq_t', 1, 10000);
 INSERT INTO uq_t VALUES (5, 'again');
@@ -564,6 +574,7 @@ DROP TABLE uq_t;
 
 -- ---------- parallel plans and the aggregate pushdown over a table written by a loop, before and after the groups are frozen ----------
 CREATE TABLE par_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('par_t', 'write_buffer_limit', '2048');
 CREATE TABLE par_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX par_t_id ON par_t (id);
 CREATE INDEX par_h_id ON par_h (id);

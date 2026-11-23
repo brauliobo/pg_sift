@@ -30,13 +30,9 @@ CREATE OR REPLACE FUNCTION sift.col_merge(index regclass, force bool DEFAULT fal
 	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
 BEGIN PERFORM sift_internal.require_am(index, 'sift_col'); RETURN sift.merge(index, force); END $$;
 
--- @deprecated sift.maintain; true when the step did something
+-- @deprecated sift.maintain: the entry point of 5.1, which answers for Format 1 (true when the index was rewritten) and Format 2.0
 CREATE OR REPLACE FUNCTION sift.col_maintain(index regclass) RETURNS bool
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN
-	PERFORM sift_internal.require_am(index, 'sift_col');
-	RETURN (SELECT NOT m.busy AND m.promoted + m.merged > 0 FROM sift.maintain(index) m);
-END $$;
+	AS 'MODULE_PATHNAME', 'sift_col_maintain' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.maintain
 CREATE OR REPLACE FUNCTION sift.table_maintain(tbl regclass, OUT busy bool, OUT dead_rows int8, OUT promoted int4, OUT merged int4,
@@ -61,22 +57,12 @@ BEGIN
 	FROM sift.space(index) s;
 END $$;
 
--- @deprecated sift.space, sift.parts; max_segments and leaves are NULL, rows leave out the write buffers, buffers counts the level 0 parts, simd is the setting
+-- @deprecated sift.space, sift.parts: the entry point of 5.1, which answers for Format 1 (the sidecar sizes, preagg_units) and Format 2.0
 CREATE OR REPLACE FUNCTION sift.col_index_info(index regclass, OUT relation_blocks int8, OUT high_water int8, OUT free_blocks int8, OUT reusable_blocks int8,
 											   OUT free_extents int8, OUT segments int4, OUT max_segments int4, OUT rows int8, OUT bytes int8, OUT units int8,
 											   OUT buffers int4, OUT leaves int4, OUT maintenance_busy bool, OUT simd text, OUT preagg_bytes int8,
 											   OUT preagg_units int8) RETURNS record
-	LANGUAGE plpgsql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN
-	SELECT s.relation_blocks, s.high_water, s.free_blocks, s.reusable_blocks, s.free_extents, s.parts, NULL::int4, s.rows - p.buffer_rows, s.bytes,
-		   p.granules, p.buffers, NULL::int4, s.maintenance_busy, current_setting('sift.simd', true), p.preagg_bytes, NULL::int8
-	INTO col_index_info.relation_blocks, col_index_info.high_water, col_index_info.free_blocks, col_index_info.reusable_blocks, col_index_info.free_extents,
-		 col_index_info.segments, col_index_info.max_segments, col_index_info.rows, col_index_info.bytes, col_index_info.units, col_index_info.buffers,
-		 col_index_info.leaves, col_index_info.maintenance_busy, col_index_info.simd, col_index_info.preagg_bytes, col_index_info.preagg_units
-	FROM sift.space(index) s
-	CROSS JOIN (SELECT coalesce(sum(g.rows) FILTER (WHERE g.kind <> 'immutable'), 0)::int8 AS buffer_rows, coalesce(sum(g.granules), 0)::int8 AS granules, count(*) FILTER (WHERE g.level = 0)::int4 AS buffers,
-					   coalesce(sum(g.preagg_bytes), 0)::int8 AS preagg_bytes FROM sift.parts(index) g) p;
-END $$;
+	AS 'MODULE_PATHNAME', 'sift_col_index_info' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.space; the entry point of 5.1, which answers for Format 1 (tail and shrink target) and Format 2.0
 CREATE OR REPLACE FUNCTION sift.col_space(index regclass, OUT relation_blocks int8, OUT high_water int8, OUT used_blocks int8, OUT reusable_blocks int8,
@@ -143,6 +129,7 @@ BEGIN
 	RETURN QUERY SELECT CASE f.kind WHEN 'index' THEN 'reindex' WHEN 'table' THEN 'rewrite' ELSE 'reset' END, f.object::regclass, f.advice, f.action_sql, false
 				 FROM sift_internal.upgrade_findings('6.0') f
 				 WHERE f.phase IN ('post_optional_upgrade', 'post_cleanup') AND f.action_sql IS NOT NULL
+				   AND has_table_privilege(coalesce((SELECT i.indrelid FROM pg_index i WHERE i.indexrelid = f.object::regclass), f.object::regclass), 'MAINTAIN')
 				 ORDER BY f.ord, f.object;
 	RETURN QUERY SELECT 'preload', NULL::regclass, 'the first statement of each session is planned twice until the library is preloaded', sift_internal.preload_hint(), false
 				 WHERE sift_internal.preload_hint() IS NOT NULL;
@@ -168,31 +155,23 @@ BEGIN
 	END IF;
 END $$;
 
--- @deprecated: the triggers of track_changes were converted to dependents of their index in 4.2.1; nothing is left to convert
+-- @deprecated: the entry point of 4.2.1, which makes an index of Format 1 made by an earlier release the dependent of its two triggers
 CREATE OR REPLACE FUNCTION sift.col_track_convert() RETURNS integer
-	LANGUAGE sql VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$ SELECT 0 $$;
+	AS 'MODULE_PATHNAME', 'sift_col_track_convert' LANGUAGE C VOLATILE;
 
 -- @deprecated sift.status, sift.health: the entry point of 5.1, which answers for Format 1 and Format 2.0
 CREATE OR REPLACE FUNCTION sift.col_tracking(index regclass, OUT track_changes bool, OUT triggers bool, OUT complete bool, OUT heap_free bool) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_col_tracking' LANGUAGE C STRICT VOLATILE;
 
--- @deprecated sift.col_granules: a unit is a granule
+-- @deprecated sift.col_granules: the entry point of 5.1, which answers for Format 1 (the pre-aggregates of each unit)
 CREATE OR REPLACE FUNCTION sift.col_unit_agg(index regclass, leaf text, OUT segment int8, OUT sb int4, OUT rows int4, OUT exact bool, OUT nvals int8,
 											 OUT nnull int8, OUT min text, OUT max text, OUT sum numeric, OUT sumsq numeric, OUT sum_float float8) RETURNS SETOF record
-	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN
-	PERFORM sift_internal.require_am(index, 'sift_col');
-	PERFORM sift._require_select((SELECT indrelid FROM pg_index WHERE indexrelid = index));
-END $$;
+	AS 'MODULE_PATHNAME', 'sift_col_unit_aggs_sql' LANGUAGE C VOLATILE;
 
--- @deprecated sift.col_granules
+-- @deprecated sift.col_granules: the entry point of 5.1, which answers for Format 1 (the histogram of each unit)
 CREATE OR REPLACE FUNCTION sift.col_unit_hist(index regclass, dim text, measure text DEFAULT NULL, OUT segment int8, OUT sb int4, OUT exact bool, OUT key text,
 											  OUT n int8, OUT nn int8, OUT sum numeric, OUT sum_float float8) RETURNS SETOF record
-	LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-BEGIN
-	PERFORM sift_internal.require_am(index, 'sift_col');
-	PERFORM sift._require_select((SELECT indrelid FROM pg_index WHERE indexrelid = index));
-END $$;
+	AS 'MODULE_PATHNAME', 'sift_col_unit_hists_sql' LANGUAGE C VOLATILE;
 
 -- @deprecated sift.activity: pre-aggregates are rewritten by the maintenance step, no request queue is kept
 CREATE OR REPLACE FUNCTION sift.col_rollup_counters(OUT requested int8, OUT refreshed int8, OUT skipped int8, OUT dropped int8, OUT queued int4,
@@ -211,11 +190,9 @@ $$;
 CREATE OR REPLACE FUNCTION sift.col_rollup_refresh(index regclass) RETURNS int4
 	LANGUAGE sql STRICT VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$ SELECT 0 $$;
 
--- @deprecated sift.explain_why
+-- @deprecated sift.explain_why: the scans of this session the pre-aggregates did not answer
 CREATE OR REPLACE FUNCTION sift.col_rollup_misses(OUT rel regclass, OUT reason text, OUT fixable bool, OUT scans int8, OUT units int8) RETURNS SETOF record
-	LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, sift AS $$
-	SELECT NULL::regclass, NULL::text, NULL::bool, NULL::int8, NULL::int8 WHERE false
-$$;
+	AS 'MODULE_PATHNAME', 'sift_col_rollup_misses' LANGUAGE C STRICT VOLATILE;
 
 -- @deprecated sift.space
 CREATE OR REPLACE FUNCTION sift.col_shrink_history(index regclass, OUT shrink_blocked_by text, OUT last_shrink timestamptz) RETURNS record
@@ -263,27 +240,27 @@ COMMENT ON FUNCTION sift.col_verify(regclass, bool) IS 'Deprecated: sift.check. 
 COMMENT ON FUNCTION sift.table_verify(regclass) IS 'Deprecated: sift.check. Raises the first problem of the table and returns its live rows.';
 COMMENT ON FUNCTION sift.col_promote(regclass) IS 'Deprecated: sift.promote.';
 COMMENT ON FUNCTION sift.col_merge(regclass, bool) IS 'Deprecated: sift.merge.';
-COMMENT ON FUNCTION sift.col_maintain(regclass) IS 'Deprecated: sift.maintain. True when the step promoted or merged something.';
+COMMENT ON FUNCTION sift.col_maintain(regclass) IS 'Deprecated: sift.maintain. True when the index was rewritten.';
 COMMENT ON FUNCTION sift.table_maintain(regclass) IS 'Deprecated: sift.maintain.';
 COMMENT ON FUNCTION sift.index_info(regclass) IS 'Deprecated: sift.space and sift.status. max_segments and sum_dl are NULL.';
-COMMENT ON FUNCTION sift.col_index_info(regclass) IS 'Deprecated: sift.space and sift.parts. max_segments and leaves are NULL.';
+COMMENT ON FUNCTION sift.col_index_info(regclass) IS 'Deprecated: sift.space and sift.parts. max_segments, maintenance_busy and the preagg columns are NULL for Format 2.0.';
 COMMENT ON FUNCTION sift.col_space(regclass) IS 'Deprecated: sift.space. The tail and the shrink target are NULL for Format 2.0.';
 COMMENT ON FUNCTION sift.table_space(regclass) IS 'Deprecated: sift.space.';
 COMMENT ON FUNCTION sift.col_segments(regclass) IS 'Deprecated: sift.parts. Format 2.0 has no superblock range: NULL.';
 COMMENT ON FUNCTION sift.table_segments(regclass) IS 'Deprecated: sift.parts. Format 2.0 has no superblock range: NULL.';
 COMMENT ON FUNCTION sift.refusal_actions() IS 'Deprecated: sift.refusal_slugs, which has the action column.';
 COMMENT ON FUNCTION sift.stats() IS 'Deprecated: sift.stats(false), the totals of the server; sift.stats(true) has the figures of this session.';
-COMMENT ON FUNCTION sift.upgrade_commands() IS 'Deprecated: sift.migrate_plan and sift.upgrade_check. Nothing is required after the update; the rows are the optional steps.';
+COMMENT ON FUNCTION sift.upgrade_commands() IS 'Deprecated: sift.migrate_plan and sift.upgrade_check. Nothing is required after the update; the rows are the optional steps, for the indexes and tables the caller owns or may maintain.';
 COMMENT ON FUNCTION sift.col_arena_status() IS 'Deprecated: the arena of write buffers is gone; all zero.';
 COMMENT ON FUNCTION sift.col_stamps(regclass) IS 'Deprecated: the segment stamps of Format 1; no rows for Format 2.0.';
-COMMENT ON FUNCTION sift.col_track_convert() IS 'Deprecated: nothing is left to convert; 0.';
+COMMENT ON FUNCTION sift.col_track_convert() IS 'Deprecated: the number of indexes of Format 1 whose triggers were made their dependents; 0 when none is left.';
 COMMENT ON FUNCTION sift.col_tracking(regclass) IS 'Deprecated: sift.status and sift.health. Whether the log is complete and read without the heap.';
-COMMENT ON FUNCTION sift.col_unit_agg(regclass, text) IS 'Deprecated: sift.col_granules. No rows.';
-COMMENT ON FUNCTION sift.col_unit_hist(regclass, text, text) IS 'Deprecated: sift.col_granules. No rows.';
+COMMENT ON FUNCTION sift.col_unit_agg(regclass, text) IS 'Deprecated: sift.col_granules. The units of Format 1; no rows for Format 2.0.';
+COMMENT ON FUNCTION sift.col_unit_hist(regclass, text, text) IS 'Deprecated: sift.col_granules. The units of Format 1; no rows for Format 2.0.';
 COMMENT ON FUNCTION sift.col_rollup_counters() IS 'Deprecated: sift.activity. All zero.';
 COMMENT ON FUNCTION sift.col_rollup_queue() IS 'Deprecated: sift.activity. No rows.';
 COMMENT ON FUNCTION sift.col_rollup_refresh(regclass) IS 'Deprecated: sift.maintain. 0.';
-COMMENT ON FUNCTION sift.col_rollup_misses() IS 'Deprecated: sift.explain_why. No rows.';
+COMMENT ON FUNCTION sift.col_rollup_misses() IS 'Deprecated: sift.explain_why. The scans of this session the pre-aggregates did not answer.';
 COMMENT ON FUNCTION sift.col_shrink_history(regclass) IS 'Deprecated: sift.space.';
 COMMENT ON FUNCTION sift.index_advice(regclass) IS 'Deprecated: sift.index_choices. No rows.';
 COMMENT ON FUNCTION sift.key_cut_decision(regclass) IS 'Deprecated: key_order = ''auto'' and sift.index_choices. Decision none.';

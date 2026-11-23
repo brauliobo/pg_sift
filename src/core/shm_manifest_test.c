@@ -145,9 +145,11 @@ sift_test_shm_manifest_read(PG_FUNCTION_ARGS)
 	whole = snap_whole(snap);
 	if (part >= 0)
 	{
-		made = sift_shm_snap_part_list(snap, part) == NULL;
-		if (sift_shm_snap_part_list_install(snap, part, PG_GETARG_INT64(2)) == NULL)
-			made = false;
+		Size		bytes = PG_GETARG_INT64(2);
+		char	   *list = palloc0(bytes);
+
+		made = sift_shm_snap_part_list(snap, part) == NULL && sift_shm_snap_part_list_install(snap, part, list, bytes);
+		pfree(list);
 	}
 	sift_shm_snap_unpin(snap);
 	PG_RETURN_TEXT_P(cstring_to_text(psprintf(UINT64_FORMAT " %s %s", version, whole ? "whole" : "damaged", made ? "made" : "not made")));

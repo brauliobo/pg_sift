@@ -235,6 +235,12 @@ sift_maint_online_fallback(bool on)
 		cut_busy = false;
 }
 
+static const char *
+cut_what(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
+}
+
 /* The lock of a cut of the file, only if it is free right now and no standby would stall on it: the mode taken, which the caller releases (cut_lock can change while the cut runs); NoLock when not taken */
 static LOCKMODE
 lock_for_cut(Relation rel, const char *what, int elevel)
@@ -271,7 +277,7 @@ lock_for_cut(Relation rel, const char *what, int elevel)
 static BlockNumber
 online_cut(Relation index, int elevel)
 {
-	BlockNumber freed = 0;
+	BlockNumber volatile freed = 0;
 	BlockNumber tail;
 
 	cut_why = SIFT_SHRINK_OPEN;
@@ -534,7 +540,7 @@ space_shift_round(Relation rel, const SiftDirSnapshot *snap, const SpaceSeg *seg
 static void
 space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 {
-	SiftDirSnapshot *snap;
+	SiftDirSnapshot *snap = NULL;
 	SpaceSeg   *seg = NULL;
 
 	while (budget > 0)
@@ -587,7 +593,8 @@ space_relocate(Relation rel, uint64 budget, SiftRelocatePage relocate_page)
 done:
 	if (seg)
 		pfree(seg);
-	pfree(snap);
+	if (snap)
+		pfree(snap);
 }
 
 /*
@@ -872,12 +879,11 @@ sift_maint_space(Relation rel, SiftRelocatePage relocate_page, int elevel)
 static BlockNumber
 cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budget)
 {
-	const char *what = rel->rd_rel->relkind == RELKIND_INDEX ? "index" : "table";
-	BlockNumber freed = 0;
+	BlockNumber volatile freed = 0;
 	LOCKMODE	held;
 
 	cut_why = SIFT_SHRINK_OPEN;
-	if ((held = lock_for_cut(rel, what, elevel)) == NoLock)
+	if ((held = lock_for_cut(rel, cut_what(rel), elevel)) == NoLock)
 	{
 		sift_maint_note_shrink(rel, cut_why, false);
 		return 0;
@@ -902,7 +908,7 @@ cut_locked(Relation rel, SiftRelocatePage relocate_page, int elevel, uint64 budg
 	UnlockRelation(rel, held);
 	sift_maint_note_shrink(rel, SIFT_SHRINK_OPEN, freed > 0);
 	if (freed > 0)
-		sift_cut_say_truncated(rel, what, elevel, freed, false);
+		sift_cut_say_truncated(rel, cut_what(rel), elevel, freed, false);
 	return freed;
 }
 

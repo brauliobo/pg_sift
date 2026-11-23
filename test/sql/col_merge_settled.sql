@@ -16,7 +16,7 @@ END LOOP; END $$;
 SELECT count(*) AS segments, sum(rows) AS rows FROM sift.col_segments('facts_col') WHERE kind = 'immutable';
 
 SET sift.test_col_segment_kb = 64;
-SET sift.col_unit_rows = 600;
+SET sift.test_col_unit_rows = 600;
 SET statement_timeout = '3s';
 SELECT sift.col_merge('facts_col', true) <= 2 AS merge_ends;
 SELECT count(*) > 16 AS cut_in_more, sum(rows) AS rows FROM sift.col_segments('facts_col') WHERE kind = 'immutable';

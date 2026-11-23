@@ -23,6 +23,7 @@ typedef struct SiftF2PartPin
 	uint32		part_id;
 	uint32		refcnt;
 	bool		stale;			/* its relation was invalidated while it was held: dropped when the last holder lets go */
+	bool		uncached;		/* not in the cache (forgotten while held, or the pin of a micro-slab a standby made): the last release deletes it */
 	uint64		lru_tick;
 	MemoryContext cx;
 	MemoryContext dv_cx;
@@ -86,6 +87,9 @@ typedef struct SiftF2GranuleBuf
 	bool		tids_sorted;
 	bool		cached;
 } SiftF2GranuleBuf;
+
+/* What a TRUNCATE of a table made in the transaction leaves: the file stays and its generations start again. The pins and the address index of the file are dropped (the ones a lookup or a granule holds go when it is done) */
+extern void sift_f2_gbuf_forget(const RelFileLocator *locator);
 
 /* The part of the descriptor opened once (cached under sift.backend_cache_kb) and given back; the pin of a granule is held until it is released */
 extern SiftF2PartPin *sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);

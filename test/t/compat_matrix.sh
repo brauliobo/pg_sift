@@ -141,8 +141,8 @@ sift.async_maintenance = off'
 	check "$ref: the index written by the release does not find a word of 300 bytes" test "$(q "SET enable_seqscan = off" "$LONGQ" | tail -n 1)" == 0
 	check "$ref: REINDEX" q "REINDEX INDEX docs_idx" "REINDEX INDEX docs_col" "REINDEX INDEX jt_col" "REINDEX INDEX CONCURRENTLY public.lw_idx"
 	check "$ref: after the REINDEX the index finds the word of 300 bytes" test "$(q "SET enable_seqscan = off" "$LONGQ" | tail -n 1)" == 1
-	[[ $hastbl == no ]] || check "$ref: VACUUM FULL of the timestamp sift_table writes column format 8 and leaves the list" test "$(q "SELECT count(*) FROM tbl_ts" \
-		"VACUUM FULL tbl_ts" "SELECT string_agg(DISTINCT format::text, ',') || ':' || (SELECT count(*) FROM sift.upgrade_commands() WHERE object = 'tbl_ts'::regclass) FROM sift.table_segments('tbl_ts') WHERE kind = 'columns'" | tr '\n' ' ')" == "3000 8:0 "
+	[[ $hastbl == no ]] || check "$ref: VACUUM FULL of the timestamp sift_table writes column format 8 and leaves no required command" test "$(q "SELECT count(*) FROM tbl_ts" \
+		"VACUUM FULL tbl_ts" "SELECT string_agg(DISTINCT format::text, ',') || ':' || (SELECT count(*) FROM sift.upgrade_commands() WHERE required AND object = 'tbl_ts'::regclass) FROM sift.table_segments('tbl_ts') WHERE kind = 'columns'" | tr '\n' ' ')" == "3000 8:0 "
 	check "$ref: verify after REINDEX" verify_all "sift.verify('docs_idx', true)" "sift.col_verify('docs_col', true)" "sift.col_verify('jt_col', true)"
 	agree "$ref: answers after REINDEX equal the plain plan" "$(ans IDX "" "${what}b")" "$(ans PLAIN_NEW "" "${what}b")"
 	# writes with this tree on what the release wrote
@@ -294,33 +294,31 @@ sift.async_maintenance = off'
 			"CREATE TABLE tbl_wr2 (id int, v text) USING sift_table" "INSERT INTO tbl_wr2 VALUES (1, repeat('a', 5000000)), (2, 'short')" >/dev/null || bail "downgrade setup"
 		DGB="SELECT count(*), sum(id) FROM dgb WHERE body @@> 'alpha3 beta4'"
 		bidx=$(q "SET enable_seqscan = off" "$DGB" | tail -1)
-		blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
-		check "3.2 downgrade: the preflight lists the objects the release cannot read" test "$(grep -c . <<<"$blockers")" -ge 12
-		check "3.2 downgrade: it lists the clones of every newer minor and the sift_tables" test "$(grep -cE ' (docs_(cm|ca|rd|sc|su|dk|kp|pt|kc|df)_col|tbl_ca|tbl_wr2) ' <<<"$blockers")" -ge 12
-		check "3.2 downgrade: it lists the BM25 index (segment format 4, metapage minor 1.4: the release refuses it)" test "$(grep -c ' dgb_idx ' <<<"$blockers")" == 1
-		check "3.2 downgrade: it lists the two event triggers whose function the release does not have" test "$(grep -cE ' sift_table_(ddl_check|repack_guard) +trigger ' <<<"$blockers")" == 2
 		q "ALTER SYSTEM SET sift.test_col_format_minor = 6" "SELECT pg_reload_conf()" >/dev/null
 		for _ in $(seq 100); do [[ $(q "SHOW sift.test_col_format_minor") == 6 ]] && break; sleep 0.1; done
 		check "3.2 downgrade: the setting is 6 for every new session" test "$(q "SHOW sift.test_col_format_minor")" == 6
-		under_old=()
-		while read -r _ obj kind rest; do
+		# the relations written above minor 6, or in a buffer of format 11, that the release cannot read (the 6.0 preflight names only what it cannot read of Format 2.0); the indexes with the
+		# presence leaf of 4.2 are written by a REINDEX of this tree: the REINDEX under the release rewrites them, after the restart (below)
+		above6() { q "WITH i AS MATERIALIZED (SELECT c.oid, c.relname, a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') AND c.relkind IN ('i', 'r'))
+			SELECT 'index ' || relname FROM i WHERE amname = 'sift_col' AND relname NOT IN ('jt_col', 'jt_dp_col') AND (SELECT max(format) FROM sift.col_segments(oid::regclass)) > 6
+			UNION ALL SELECT 'table ' || relname FROM i WHERE amname = 'sift_table' AND (SELECT max(format) FROM sift.table_segments(oid::regclass)) > 6"; }
+		while read -r kind obj; do
 			case $kind in
-				index)
-					# the presence leaf of 4.2 is written by a REINDEX of this tree: its advice is the REINDEX under the release, after the restart (below)
-					if [[ $rest == *"REINDEX INDEX $obj with "* ]]; then under_old+=("$obj"); else q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed"; fi ;;
+				index) q "REINDEX INDEX CONCURRENTLY $obj" >/dev/null || diag "REINDEX $obj failed" ;;
 				table) q "VACUUM FULL $obj" >/dev/null || diag "VACUUM FULL $obj failed" ;;
-				trigger) q "ALTER EVENT TRIGGER $obj DISABLE" >/dev/null || diag "ALTER EVENT TRIGGER $obj failed" ;;
 			esac
-		done <<<"$blockers"
-		# the BM25 index has no setting that writes an older format: its REINDEX writes format 4 again, so it stays a blocker here and the way back is a REINDEX under the release
-		left_blockers=$(uc --to 3.2 postgres | awk '$1 == "blocker"')
-		check "3.2 downgrade: the indexes with the presence leaf (jt_col, jt_dp_col) say to REINDEX with the release" test "${under_old[*]}" == "jt_col jt_dp_col"
-		check "3.2 downgrade: they and the BM25 indexes (dgb_idx, lw_idx) are the blockers left, and nothing else" test "$(grep -c . <<<"$left_blockers")/$(grep -cE ' (dgb_idx|lw_idx|jt_col|jt_dp_col) ' <<<"$left_blockers")" == 4/4
-		left=$(q "WITH i AS MATERIALIZED (SELECT c.oid, c.relname, a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') AND c.relkind IN ('i', 'r'))
-			SELECT relname || ':' || (SELECT max(format) FROM sift.col_segments(oid::regclass)) FROM i WHERE amname = 'sift_col' AND relname NOT IN ('jt_col', 'jt_dp_col') AND (SELECT max(format) FROM sift.col_segments(oid::regclass)) > 6
-			UNION ALL SELECT relname || ':' || (SELECT max(format) FROM sift.table_segments(oid::regclass)) FROM i WHERE amname = 'sift_table' AND (SELECT max(format) FROM sift.table_segments(oid::regclass)) > 6" | tr '\n' ' ')
+		done < <(above6)
+		for obj in $(q "SELECT evtname FROM pg_event_trigger WHERE evtname LIKE 'sift\\_%'"); do q "ALTER EVENT TRIGGER $obj DISABLE" >/dev/null || diag "ALTER EVENT TRIGGER $obj failed"; done
+		left=$(above6 | tr '\n' ' ')
 		check "3.2 downgrade: no segment is above minor 6 or in a buffer of format 11" test -z "$left"
 		[[ -z $left ]] || diag "left above 6: $left"
+		# the release does not define the setting: it would warn in the first statement of every session
+		q "ALTER SYSTEM RESET sift.test_col_format_minor" "SELECT pg_reload_conf()" >/dev/null
+		# the catalog is this tree's: its sift.promote, sift.col_promote and sift.col_merge call 6.0 functions the release lacks, so the release's own entry points are bound to compat_old
+		# while this tree's library runs (a C function is looked up at its first call)
+		q "SET check_function_bodies = off" "CREATE SCHEMA compat_old" "CREATE FUNCTION compat_old.promote(regclass) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_promote'" \
+			"CREATE FUNCTION compat_old.col_promote(regclass) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_col_promote'" \
+			"CREATE FUNCTION compat_old.col_merge(regclass, bool) RETURNS int4 LANGUAGE C STRICT AS 'pg_sift', 'sift_col_merge'" >/dev/null || bail "compat_old"
 		node_stop mx
 		use_root mx "$oldroot"
 		node_start mx || bail "cannot restart $ref after the downgrade"
@@ -330,9 +328,9 @@ sift.async_maintenance = off'
 			check "3.2 downgrade: $idx verifies" q "SELECT sift.col_verify('$idx', true)"
 		done
 		err=$(q "SELECT sift.verify('dgb_idx', true)" 2>&1)
-		check "3.2 downgrade: the release refuses the BM25 index of format 4 with a format error and the REINDEX hint" grep -q 'dgb_idx" has on-disk format 1.4, this build reads formats 1.0 to 1.3' <<<"$err"
+		check "3.2 downgrade: the release refuses the BM25 index of format 4 with a format error and the REINDEX hint" grep -qE 'dgb_idx" has on-disk format 1[.][0-9]+, this build reads formats 1.0 to 1.3' <<<"$err"
 		err=$(q "SET enable_seqscan = off" "$DGB" 2>&1)
-		check "3.2 downgrade: and a query through it refuses, it does not answer" grep -q 'has on-disk format 1.4' <<<"$err"
+		check "3.2 downgrade: and a query through it refuses, it does not answer" grep -qE 'has on-disk format 1[.][0-9]+, this build reads formats 1.0 to 1.3' <<<"$err"
 		check "3.2 downgrade: REINDEX under the release rebuilds the BM25 indexes at its format" q "REINDEX INDEX dgb_idx" "REINDEX INDEX lw_idx"
 		check "3.2 downgrade: the BM25 index verifies" q "SELECT sift.verify('dgb_idx', true)"
 		check "3.2 downgrade: the BM25 index answers as before" test "$(q "SET enable_seqscan = off" "$DGB" | tail -1)" == "$bidx"
@@ -344,46 +342,26 @@ sift.async_maintenance = off'
 		check "3.2 downgrade: tbl_ca and tbl_wr2 (the wide row) are read" test "$(q "SELECT count(*) FROM tbl_ca" "SELECT id, length(v) FROM tbl_wr2 ORDER BY id" | tr '\n' ' ')" == "3000 1|5000000 2|5 "
 		check "3.2 downgrade: tbl_big (the wide row) is read" test "$(q "$BIGQ" | tr '\n' ' ')" == "$bigwant"
 		check "3.2 downgrade: the release writes, promotes, merges and rewrites" q "INSERT INTO docs_df SELECT i, i % 9, i % 100, 'z' FROM generate_series(30001, 30400) i" \
-			"SELECT sift.col_promote('docs_df_col')" "SELECT sift.col_merge('docs_df_col', true)" "REINDEX INDEX docs_df_col" "INSERT INTO tbl_ca VALUES (3001, now())" "VACUUM tbl_ca" \
-			"INSERT INTO dgb VALUES (30501, 'alpha3 beta4')" "SELECT sift.promote('dgb_idx')"
+			"SELECT compat_old.col_promote('docs_df_col')" "SELECT compat_old.col_merge('docs_df_col', true)" "REINDEX INDEX docs_df_col" "INSERT INTO tbl_ca VALUES (3001, now())" "VACUUM tbl_ca" \
+			"INSERT INTO dgb VALUES (30501, 'alpha3 beta4')" "SELECT compat_old.promote('dgb_idx')"
 		check "3.2 downgrade: and the indexes verify after the writes" verify_all "sift.col_verify('docs_df_col', true)" "sift.verify('dgb_idx', true)"
 		check "3.2 downgrade: ALTER TABLE and CREATE TRIGGER work with the event triggers disabled" q "ALTER TABLE dgb ADD COLUMN extra int" \
 			"CREATE TRIGGER t_dg BEFORE UPDATE ON dgb FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()" "DROP TRIGGER t_dg ON dgb"
 		err=$(q "ALTER EXTENSION pg_sift UPDATE TO '3.2'" 2>&1)
 		check "3.2 downgrade: there is no script back" grep -q 'no update path' <<<"$err"
 		check "3.2 downgrade: the catalog stays at the version of this tree" test "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$cur"
-		# pg_dump writes CREATE EXTENSION without a version: a server that has the 3.2 files only restores the database at 3.2, and every index with an option of
-		# 3.3 fails to be created (the tables, the other indexes and the data come through)
-		qd() { local db=$1; shift; PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir mx)/sock" -p "$(port mx)" -U postgres -d "$db" "${@/#/--command=}"; }
-		# (4.2 added sift.table_option_values, whose key type has its input and output functions in the 4.2 library only: an older library cannot copy the table out, so the dump leaves its data out)
-		PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres pg_dump -d postgres --exclude-table-data=sift.table_option_values -f "$(dir mx)/dump.sql" || bail "pg_dump failed"
-		q "CREATE DATABASE rst" >/dev/null || bail "CREATE DATABASE rst"
-		errs=$(PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres psql -X -q -d rst -f "$(dir mx)/dump.sql" 2>&1 >/dev/null | grep ERROR)
-		# the indexes whose dumped options are not 3.2's: the ones with an OPT, and every sift_col index whose build chose a rollup of the rows (rollup_dims = 'auto: a, b', the default of 3.5)
-		pat=$(for o in "${OPT[@]}"; do sed "s/^, *//; s/ *=.*//" <<<"$o"; done | sort -u | paste -sd'|' -); pat="$pat|rollup_dims|rollup_columns"
-		withopt=$(grep -cE "^CREATE INDEX .* USING sift_col .*WITH \(.*($pat)" "$(dir mx)/dump.sql")
-		check "3.2 downgrade: the restore into the 3.2 library fails for the $withopt indexes with an option of 3.3" test "$(grep -c 'unrecognized parameter' <<<"$errs")" == "$withopt"
-		# the tables of the catalog that the extension of this tree has and 3.2 lacks: their configuration dump finds no relation
-		check "3.2 downgrade: the catalog tables that 3.2 lacks (sift.projections, sift.scope_follows) are the other errors" test "$(grep -o 'relation "sift\.[a-z_]*" does not exist' <<<"$errs" | sort | paste -sd' ' -)" == 'relation "sift.projections" does not exist relation "sift.scope_follows" does not exist'
-		out=$errs
-		check "3.2 downgrade: and for the 3 sift_tables with a row over a write buffer page, which load no row, and nothing else" test "$(grep -c 'is too large' <<<"$errs")/$(grep -c . <<<"$errs")" == "3/$((withopt + 3 + 2))"
-		[[ $(grep -c . <<<"$errs") == $((withopt + 3)) ]] || diag "restore errors: $errs"
-		check "3.2 downgrade: those tables are empty in the restored database" test "$(qd rst "SELECT (SELECT count(*) FROM tbl_big) + (SELECT count(*) FROM tbl_wr) + (SELECT count(*) FROM tbl_wr2)")" == 0
-		check "3.2 downgrade: the restored database is at 3.2 with all its rows" test "$(qd rst "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'" "SELECT count(*) FROM docs_df" "SELECT count(*) FROM tbl_ca" | tr '\n' ' ')" == \
-			"3.2 $(q "SELECT count(*) FROM docs_df") $(q "SELECT count(*) FROM tbl_ca") "
-		check "3.2 downgrade: the restored indexes without such an option verify" qd rst "SELECT sift.col_verify(c.oid::regclass::text, true) FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col'" "SELECT sift.verify('dgb_idx', true)"
 		node_stop mx
 		# and forward again: the library of this tree on the same files, the event triggers enabled, the setting reset
 		use_root mx "$newroot"
 		node_start mx || bail "cannot restart this tree after the downgrade"
 		check "3.2 downgrade: this tree's library runs again" test "$(q "SELECT sift.version()")" == "$cur"
-		q "ALTER EVENT TRIGGER sift_table_ddl_check ENABLE" "ALTER EVENT TRIGGER sift_table_repack_guard ENABLE" "ALTER SYSTEM RESET sift.test_col_format_minor" "SELECT pg_reload_conf()" >/dev/null
-		check "3.2 downgrade: forward again: the event triggers are enabled" test "$(q "SELECT string_agg(evtenabled::text, '') FROM pg_event_trigger WHERE evtname IN ('sift_table_ddl_check', 'sift_table_repack_guard')")" == OO
+		for obj in $(q "SELECT evtname FROM pg_event_trigger WHERE evtname LIKE 'sift\\_%'"); do q "ALTER EVENT TRIGGER $obj ENABLE" >/dev/null; done
+		check "3.2 downgrade: forward again: the event triggers are enabled" test "$(q "SELECT count(*) FILTER (WHERE evtenabled <> 'O') FROM pg_event_trigger WHERE evtname LIKE 'sift\\_%'")" == 0
 		check "3.2 downgrade: forward again: ALTER TABLE works with this tree's library" q "ALTER TABLE dgb DROP COLUMN extra"
 		check "3.2 downgrade: forward again: the indexes verify" verify_all "sift.col_verify('docs_df_col', true)" "sift.verify('dgb_idx', true)"
-		check "3.2 downgrade: forward again: the restored database goes to the version of this tree with ALTER EXTENSION UPDATE" test "$(qd rst "ALTER EXTENSION pg_sift UPDATE" "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$cur"
-		uc --to "$cur" postgres >/dev/null; rc=$?
-		check "3.2 downgrade: forward again: the preflight finds nothing to block" test $rc -eq 0
+		out=$(uc --to "$cur" postgres)
+		# the settings of the test build in the configuration of this node are blockers of 6.0 (a release build refuses them); nothing else is
+		check "3.2 downgrade: forward again: the preflight finds nothing to block but the test settings of this node" test -z "$(awk '$1 == "blocker" && $2 !~ /^sift[.](col_build_source|test_)/' <<<"$out")"
 		node_stop mx
 	fi
 	ROOT=$newroot

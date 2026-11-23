@@ -14,9 +14,9 @@ BEGIN
 	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (dim_a_id, tenant_id) WITH (track_changes = ''ctid'')', rel || '_journal', rel);
 END $$;
 -- the message with its figures masked: what the sample or the build said is told by "from a sample"
-CREATE FUNCTION try(rel text) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION try(rel text, mult int DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
-	EXECUTE format('CREATE INDEX %I ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> %I(dim_a_id, tenant_id) max_multiplicity(8)'')', 'events_' || rel, rel);
+	EXECUTE format('CREATE INDEX %I ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> %I(dim_a_id, tenant_id)%s'')', 'events_' || rel, rel, CASE WHEN mult IS NULL THEN '' ELSE format(' max_multiplicity(%s)', mult) END);
 	RETURN 'built';
 EXCEPTION WHEN OTHERS THEN RETURN regexp_replace(sqlerrm, '[0-9][0-9.,]*[kMG]?', 'N', 'g'); END $$;
 SELECT make_scope('pairs_6', 6, 6, 50), make_scope('pairs_mixed_30', 1, 5, 50), make_scope('pairs_mixed_32', 1, 5, 45), make_scope('pairs_1', 1, 1, 50);
@@ -31,10 +31,10 @@ SELECT 'sampled: below the limit builds' AS step, try('pairs_1');
 SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY indexrelid::regclass::text;
 
 -- the override builds what the sample refused
-SELECT 'override' AS step, try('pairs_6');
+SELECT 'override' AS step, try('pairs_6', 8);
 SELECT sift.col_verify('events_pairs_6'::regclass, true) AS verify_6;
 RESET sift.test_scope_sample_blocks;
 DROP TABLE events;
 DROP TABLE pairs_6, pairs_mixed_30, pairs_mixed_32, pairs_1;
-DROP FUNCTION make_scope(text, int, int, int), try(text);
+DROP FUNCTION make_scope(text, int, int, int), try(text, int);
 DROP EXTENSION pg_sift;

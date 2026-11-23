@@ -1,6 +1,6 @@
 -- The dictionary of a string leaf stored to be read in place: the strings in blocks, and with the option
 -- dict_lookup the codes in byte order too, so that an equality, an IN list and a prefix or range test of a stored segment read it from the stream and
--- the backend parses none. The answers are those of the compact form (sift.col_format_minor 13), of the blocks without the order (dict_lookup off) and of the heap, over NULLs, empty, long (inline),
+-- the backend parses none. The answers are those of the compact form (sift.test_col_format_minor 13), of the blocks without the order (dict_lookup off) and of the heap, over NULLs, empty, long (inline),
 -- non-ASCII and tied strings, uuids, DML, the write buffer, promotion and a merge of segments of both forms.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.async_maintenance = off;
@@ -75,8 +75,9 @@ SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 
 -- the option off (blocks for the dictionaries that pay, without the order) and the compact form (the setting 13): the same answers, the dictionaries are parsed
 CREATE INDEX ds_off ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = off);
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 CREATE INDEX ds_13 ON ds USING sift_col (s sift.col_text_ops, u sift.col_uuid_ops, v sift.col_text_ops, id sift.col_int4_ops) WITH (count_columns = 'off', write_buffer_limit = 256, dict_lookup = on);
+RESET sift.test_col_format_minor;
 SELECT index, min(format) AS format FROM (SELECT 'off' AS index, format FROM sift.col_segments('ds_off') WHERE kind = 'immutable'
 	UNION ALL SELECT '13', format FROM sift.col_segments('ds_13') WHERE kind = 'immutable') x GROUP BY index ORDER BY index;
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
@@ -117,9 +118,10 @@ INSERT INTO ds (id, s, u, v) SELECT i, 'late' || i % 700, md5('late' || i)::uuid
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 VACUUM ds;
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 INSERT INTO ds (id, s, u, v) SELECT i, 'older' || i % 900, md5('older' || i)::uuid, 'x' || i % 400 FROM generate_series(13001, 14000) i;
 VACUUM ds;
+RESET sift.test_col_format_minor;
 SELECT format, count(*) AS segments FROM sift.col_segments('ds_new') WHERE kind = 'immutable' GROUP BY format ORDER BY format;
 SELECT n, ds_cmp('ds_new', preds, heapwhere) FROM ds_q ORDER BY n;
 SELECT sift.col_merge('ds_new'::regclass, true) >= 0 AS merged;
@@ -167,8 +169,9 @@ CREATE TABLE dw AS SELECT i AS id, md5((i % 5000)::text)::uuid AS u,
 FROM generate_series(1, 20000) i;
 -- (dict_lookup = 'off': the blocks alone, the hash they carry by default is 5 bytes a string more: col_dict_blocks_hash)
 CREATE INDEX dw_i ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off', dict_lookup = 'off');
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 CREATE INDEX dw_13 ON dw USING sift_col (id sift.col_int4_ops, u sift.col_uuid_ops, w sift.col_text_ops) WITH (count_columns = 'off');
+RESET sift.test_col_format_minor;
 SELECT d.leaf, d.bytes <= x.bytes * 1.03 AS within_3_percent, d.bytes > x.bytes AS blocks
 FROM sift.col_sections('dw_i') d JOIN sift.col_sections('dw_13') x ON x.section = d.section AND x.leaf = d.leaf WHERE d.section = 'dict' ORDER BY d.leaf;
 SELECT sift.col_verify('dw_i', true), sift.col_verify('dw_13', true);

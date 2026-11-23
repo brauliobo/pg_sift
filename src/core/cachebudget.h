@@ -11,7 +11,7 @@
 
 #include "core/host.h"
 
-#define SIFT_CACHE_MAX_KINDS 32
+#define SIFT_CACHE_MAX_KINDS 48
 
 typedef struct SiftCacheKind
 {
@@ -23,9 +23,21 @@ typedef struct SiftCacheKind
 
 extern PGDLLIMPORT int sift_backend_cache_kb;
 
+#ifdef SIFT_TESTING
+/* sift._test_cache_stress: every ask for room first drops all that nobody pins, the worst order of evictions a budget can make */
+extern PGDLLIMPORT bool sift_cache_stress;
+#endif
+
 extern void sift_cache_budget_define_gucs(void);
 extern MemoryContext sift_cache_root_context(void);
 extern MemoryContext sift_cache_create_context(const char *name);
+
+/*
+ * An entry is built where an error frees it and where no eviction reaches it: its context is made under parent (sift_cache_create_context_in), filled, and only then adopted by
+ * the budget, whole, together with the table slot that names it. An entry that is in the table is complete.
+ */
+extern MemoryContext sift_cache_create_context_in(MemoryContext parent, const char *name);
+extern void sift_cache_adopt(MemoryContext cx);
 extern uint64 sift_cache_tick(void);
 
 /* whether an entry last used at tick was used since the last transaction ended: a statement of this transaction may hold it, so a cache that keeps no count of its users does not evict it before the transaction does */

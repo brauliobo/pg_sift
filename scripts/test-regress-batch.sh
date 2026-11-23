@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `scripts/pgtest.sh regress` runs a batch of tests in one pg_regress run with one leak and one leftover check, and names the guilty test when the batch fails: a batch
 # of 20 tests with one that leaves a table behind, one whose output differs and one that leaves a table another test creates must each name exactly those tests,
-# and a clean batch passes. The tests are small fixtures in a directory of their own (SIFT_REGRESS_DIR) on a cluster of this script's own.
+# and a clean batch passes; a batch of many reds is cut only until SIFT_BISECT_REDS of them are named. The tests are small fixtures in a directory of their own (SIFT_REGRESS_DIR) on a cluster of this script's own.
 #
 #   scripts/test-regress-batch.sh        (SIFT_PORT in 56100-56299, default 56100 + 7)
 set -uo pipefail
@@ -64,6 +64,24 @@ printf 'CREATE TABLE tbl_t06 (a int);\n' >>"$SIFT_REGRESS_DIR/expected/t05.out"
 "$pg" regress "${names[@]}" >"$tmp/out" 2>&1 && { echo "FAIL: a batch with a test that leaves another's table passed"; fail=1; }
 grep -q 'LEFTOVER t05: .*tbl_t06' "$tmp/out" || { echo "FAIL: the leftover is not attributed to t05"; tail -n 20 "$tmp/out"; fail=1; }
 ! grep -qE '^not ok - t06|LEFTOVER t06' "$tmp/out" || { echo "FAIL: t06 is blamed for the table t05 left"; fail=1; }
+
+# six tests print something else: the cuts name SIFT_BISECT_REDS of them and stop, the batch is red, and the tests they did not run alone are listed
+printf 'CREATE TABLE tbl_t05 (a int);\nINSERT INTO tbl_t05 VALUES (1);\nSELECT a FROM tbl_t05;\nDROP TABLE tbl_t05;\n' >"$SIFT_REGRESS_DIR/sql/t05.sql"
+printf 'CREATE TABLE tbl_t05 (a int);\nINSERT INTO tbl_t05 VALUES (1);\nSELECT a FROM tbl_t05;\n a \n---\n 1\n(1 row)\n\nDROP TABLE tbl_t05;\n' >"$SIFT_REGRESS_DIR/expected/t05.out"
+for t in t02 t04 t06 t08 t10 t12; do
+	printf 'SELECT 2 AS two;\n' >>"$SIFT_REGRESS_DIR/sql/$t.sql"
+	printf 'SELECT 3 AS two;\n two \n-----\n   3\n(1 row)\n\n' >>"$SIFT_REGRESS_DIR/expected/$t.out"
+done
+SIFT_BISECT_REDS=2 "$pg" regress "${names[@]}" >"$tmp/out" 2>&1 && { echo "FAIL: a batch with six diffs passed"; fail=1; }
+named=$(grep -cE '^diff .*/expected/t[0-9]+\.out' "$tmp/out")
+[[ $named == 2 ]] || { echo "FAIL: the cuts named $named tests with SIFT_BISECT_REDS=2, want 2"; tail -n 20 "$tmp/out"; fail=1; }
+grep -q 'not cutting further; not run alone: ' "$tmp/out" || { echo "FAIL: the cuts that stopped do not list the tests they did not run alone"; tail -n 20 "$tmp/out"; fail=1; }
+named=$("$pg" regress "${names[@]}" 2>&1 | grep -cE '^diff .*/expected/t[0-9]+\.out')
+[[ $named == 4 ]] || { echo "FAIL: the cuts named $named tests at the default SIFT_BISECT_REDS, want 4"; fail=1; }
+for t in t02 t04 t06 t08 t10 t12; do
+	printf 'CREATE TABLE tbl_%s (a int);\nINSERT INTO tbl_%s VALUES (1);\nSELECT a FROM tbl_%s;\nDROP TABLE tbl_%s;\n' "$t" "$t" "$t" "$t" >"$SIFT_REGRESS_DIR/sql/$t.sql"
+	printf 'CREATE TABLE tbl_%s (a int);\nINSERT INTO tbl_%s VALUES (1);\nSELECT a FROM tbl_%s;\n a \n---\n 1\n(1 row)\n\nDROP TABLE tbl_%s;\n' "$t" "$t" "$t" "$t" >"$SIFT_REGRESS_DIR/expected/$t.out"
+done
 
 # the server is gone (the watchdog of the run stopped it at its cap): the cut says so once and stops, it does not run every half into a refused connection
 "$pg" stop >/dev/null 2>&1

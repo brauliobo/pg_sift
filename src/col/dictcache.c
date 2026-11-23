@@ -330,6 +330,21 @@ sift_cseg_head_find(Relation index, const SiftSegEntry *entry, const SiftSegHead
 	return hd;
 }
 
+/* Room under k for an entry that is about to be added: the entry of k that nobody pins goes (a header that has changed since, or a read that came back), one that is pinned stays and false is given. An entry
+ * of a key that is in the table would be linked into the lists twice */
+static bool
+dict_vacate(const DictKey *k)
+{
+	DictEnt    *e = hash_search(cache, k, HASH_FIND, NULL);
+
+	if (e == NULL)
+		return true;
+	if (e->pins > 0)
+		return false;
+	dict_drop(e);
+	return true;
+}
+
 /* Keeps obj, made in cx (a child of mcxt: it stays there when the cache has no room), under k, and pins it for mcxt; an entry of k that nobody pins is replaced */
 static void
 obj_keep(const DictKey *k, MemoryContext cx, void *obj, MemoryContext mcxt)
@@ -339,14 +354,7 @@ obj_keep(const DictKey *k, MemoryContext cx, void *obj, MemoryContext mcxt)
 
 	if (cache == NULL)
 		cache_init();
-	if ((e = hash_search(cache, k, HASH_FIND, NULL)) != NULL)
-	{
-		/* the entry of a header that has changed since */
-		if (e->pins > 0)
-			return;
-		dict_drop(e);
-	}
-	if (size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size))
+	if (!dict_vacate(k) || size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size))
 		return;
 	MemoryContextSetParent(cx, cache_cx);
 	e = hash_search(cache, k, HASH_ENTER, NULL);
@@ -735,12 +743,12 @@ sift_cseg_lens_keep(SiftColSegment *seg, uint32 unit, int col, uint32 n, const u
 
 	if (cache == NULL)
 		cache_init();
-	if (size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size))
+	dict_key(&k, seg, col, unit);
+	if (size > CDICT_CACHE_BYTES / 2 || !sift_cache_room(size) || !dict_vacate(&k))
 		return;
 	for (uint32 i = 0; i < n; i++)
 		if (counts[i] > PG_UINT16_MAX)
 			return;
-	dict_key(&k, seg, col, unit);
 	cx = AllocSetContextCreate(cache_cx, "sift cache segment lengths", ALLOCSET_SMALL_SIZES);
 	l = MemoryContextAlloc(cx, size);
 	kept = (uint16 *) (l + 1);
@@ -788,7 +796,7 @@ sift_cseg_sbhead(SiftColSegment *seg, uint32 u, int col, SiftCSbHead *out)
 	}
 	if (cache == NULL)
 		cache_init();
-	if (!sift_cache_room(sizeof(*out)))
+	if (!sift_cache_room(sizeof(*out)) || !dict_vacate(&k))
 		return true;
 	cx = AllocSetContextCreate(cache_cx, "sift cache segment run head", ALLOCSET_SMALL_SIZES);
 	e = hash_search(cache, &k, HASH_ENTER, NULL);

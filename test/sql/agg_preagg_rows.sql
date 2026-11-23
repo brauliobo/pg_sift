@@ -5,12 +5,12 @@
 -- none for an index without the option, a unit written before it, a unit with more cells than the cap, a query the cells cannot answer.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
-SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
+SET sift.test_agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 -- the cells are the rollup's, not the cost model's: the tests take them for every exact unit
-SET sift.agg_rollup_cost = 0;
+SET sift.test_agg_rollup_cost = 0;
 -- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts of
 -- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 7
 SET max_parallel_maintenance_workers = 0;
@@ -86,16 +86,19 @@ INSERT INTO rx SELECT * FROM rw;
 INSERT INTO rm SELECT * FROM rw;
 DROP TABLE rw;
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
-SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_merge_frag = 1000;
 CREATE INDEX rc_col ON rc USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
+RESET sift.test_col_merge_frag;
 CREATE INDEX rd_col ON rd USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, c');
 CREATE INDEX rh_col ON rh USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'id, a: v');
 CREATE INDEX ro_col ON ro USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
-SET sift.col_format_minor = 8;
+SET sift.test_col_format_minor = 8;
 CREATE INDEX rf_col ON rf USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b');
+RESET sift.test_col_format_minor;
 -- the rollup of a segment written under 14 has no length before each measure (minor 9); one written under the default has (minor 36): both are read
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX rm_col ON rm USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, d: v, w, c');
+RESET sift.test_col_format_minor;
 CREATE INDEX rx_col ON rx USING sift_col (id, a, b, c, d, v, w, f) WITH (write_buffer_limit = 4096);
 CALL pa_settle();
 -- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
@@ -160,9 +163,10 @@ SELECT sift.col_merge('rx_col', true) >= 0 AS merged;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) rx;
 SELECT sift.col_verify('rx_col', true);
 SELECT * FROM pa_sum('rx');
-SET sift.col_format_minor = 8;
+SET sift.test_col_format_minor = 8;
 INSERT INTO rf SELECT g, g % 12, 'b0' || (g % 8), g % 5, date '2024-02-01', g * 1000, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
 SELECT sift.col_promote('rf_col') >= 0 AS promoted;
+RESET sift.test_col_format_minor;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) rf;
 SELECT sift.col_verify('rf_col', true);
 SELECT * FROM pa_sum('rf');
@@ -177,8 +181,9 @@ SELECT * FROM pa_sum('rx');
 SET max_parallel_maintenance_workers = 2;
 SET min_parallel_table_scan_size = 0;
 SET parallel_leader_participation = off;
-SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_merge_frag = 1000;
 REINDEX INDEX rc_col;
+RESET sift.test_col_merge_frag;
 RESET parallel_leader_participation;
 SELECT segments > 1 AS parallel_segments FROM sift.col_index_info('rc_col');
 SELECT sift.col_verify('rc_col', true);

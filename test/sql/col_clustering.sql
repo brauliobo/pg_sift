@@ -66,7 +66,9 @@ SELECT * FROM predicted('grp', ARRAY[0, 7, 31]);
 
 -- NULL leaves and errors
 SELECT count(*) FILTER (WHERE zoned_units IS NULL) AS leaves_without_zones FROM sift.col_clustering('ev_col');
+SET client_min_messages = warning;
 CREATE INDEX ev_bm25 ON ev USING sift (lbl);
+RESET client_min_messages;
 SELECT * FROM sift.col_clustering('ev_bm25');
 SELECT * FROM sift.col_clustering('ev_col', 101);
 CREATE TABLE empty_t (id int);
@@ -106,9 +108,7 @@ ANALYZE evv;
 SELECT reason ~ 'VACUUM \(ANALYZE\) public.evv first' AS vm_note FROM sift.cluster_advice('evv', 10000);
 VACUUM evv;
 SELECT reason ~ 'all-visible' AS vm_note FROM sift.cluster_advice('evv', 10000);
--- the two switches
-SET sift.cluster_advice = off;
-SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
+-- the switch of the index
 ALTER INDEX evs_col SET (cluster_advice = off);
 SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
 SELECT tbl, verdict FROM sift.cluster_advice('ev', 10000);

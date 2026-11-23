@@ -326,7 +326,7 @@ colb_btree_best(Relation heap, Relation index, IndexInfo *info, List *cands, uin
 	MemoryContextSwitchTo(pcx);
 	foreach(lc, cands)
 	{
-		Relation	bt = index_open(lfirst_oid(lc), NoLock);
+		Relation	bt = index_open(lfirst_oid(lc), AccessShareLock);
 
 		if (walkable(heap, bt))
 		{

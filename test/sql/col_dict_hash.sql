@@ -69,8 +69,9 @@ SELECT sift.col_verify('dh_idx', true);
 SELECT dh_round(10);
 
 -- segments of an older minor have no hash, and answer the same
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX dh_idx;
+RESET sift.test_col_format_minor;
 SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
 SELECT dh_round(10);
 

@@ -52,12 +52,12 @@ GROUP BY 1 ORDER BY 1;
 SELECT gg_chk('SELECT id, k FROM gg ORDER BY k, id LIMIT 10') AS no_group, gg_chk('SELECT id, k FROM gg WHERE g > 3 ORDER BY k, id LIMIT 10') AS group_range,
 	   gg_chk('SELECT id, k FROM gg WHERE g = 3 OR g = 4 ORDER BY k, id LIMIT 10') AS two_groups, gg_chk('SELECT id, k FROM gg WHERE g = 3 AND t > TIMESTAMP ''2000-01-02'' ORDER BY k, id LIMIT 10') AS other_column;
 
--- the planner prices the read of the array as what it is: with the units dear to read (sift.plan_scale), a shape the array answers costs about the start of the scan, any other the
+-- the planner prices the read of the array as what it is: with the units dear to read (sift.test_plan_scale), a shape the array answers costs about the start of the scan, any other the
 -- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'MISPRICED' a read priced as the array that the scan did not do
 CREATE FUNCTION gg_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
 BEGIN
-	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
+	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
 		agg := agg OR pl LIKE '%Custom Scan (SiftAgg)%';
 		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
@@ -81,7 +81,16 @@ DROP FUNCTION gg_plan(text);
 
 -- min(k) and max(k) of a group: PostgreSQL plans them as the first row of the group in the order of k that is not NULL, and the scan reads the array for it (an empty group, a group of NULL
 -- keys, ties, a range, deleted and updated rows and a write buffer give the heap's answer)
-CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_min_max_with_plan_scale(q) $$;
+CREATE FUNCTION gg_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE q INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
+	EXECUTE q INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
+END $$;
 CREATE FUNCTION gg_mm_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gg_mm(format('SELECT %s(%s) FROM gg WHERE %s', f, c, w)), count(*)
    FROM unnest(ARRAY['min', 'max']) f, unnest(ARRAY['k', 't']) c,

@@ -331,7 +331,7 @@ walk_context(void)
 	return walk_cx;
 }
 
-/* Keeps wb, in a context of its own; the kept orders of the same file of an older version, and the least used when all places are taken, go */
+/* Keeps wb, built in a context of the query, in one of the cache's own; the kept orders of the same file of an older version, and the least used when all places are taken, go */
 static void
 walk_keep(WalkBase *wb)
 {
@@ -354,6 +354,7 @@ walk_keep(WalkBase *wb)
 				slot = i;
 		walk_drop(walk_kept[slot]);
 	}
+	MemoryContextSetParent(wb->cx, walk_context());
 	wb->used = sift_cache_tick();
 	wb->kept = true;
 	walk_kept[slot] = wb;
@@ -432,7 +433,7 @@ sift_topn_walk_setup(SiftTopN *t)
 		{
 			if ((Size) t->nsb * (t->wkeys * sizeof(Rank) + 4 * sizeof(uint32)) <= WALK_KEEP_BYTES)
 			{
-				wb = walk_build(t, walk_context(), &key, true);
+				wb = walk_build(t, GetMemoryChunkContext(t), &key, true);
 				walk_keep(wb);
 			}
 			else

@@ -244,7 +244,7 @@ SET sift.explain_refusals = on;
 SELECT kind, count(*) FROM plain GROUP BY 1 ORDER BY 1 LIMIT 1;
 NOTICE:  SiftAgg not used: no_source: no sift_col index or sift_table covers the table
 DETAIL:  arm: single
-HINT:  CREATE INDEX .. USING sift_col on the table; sift.index_choices shows what it would hold.
+HINT:  Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>);
  kind | count 
 ------+-------
  k0   |   400
@@ -253,7 +253,7 @@ HINT:  CREATE INDEX .. USING sift_col on the table; sift.index_choices shows wha
 EXPLAIN (COSTS OFF) SELECT kind, count(*) FROM plain GROUP BY 1;
 NOTICE:  SiftAgg not used: no_source: no sift_col index or sift_table covers the table
 DETAIL:  arm: single
-HINT:  CREATE INDEX .. USING sift_col on the table; sift.index_choices shows what it would hold.
+HINT:  Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>);
        QUERY PLAN        
 -------------------------
  HashAggregate

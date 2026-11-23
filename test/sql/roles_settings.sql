@@ -42,11 +42,11 @@ rs_user | SET sift.enable_agg = off
 rs_user | SET sift.enable_scan = off
 rs_user | SET sift.enable_agg = off
 rs_user | SET sift.simd = scalar
-rs_user | SET sift.agg_rollup_cost = 2.5
-rs_user | SET sift.table_backpressure = 100
+rs_user | SET sift.dead_rewrite_pct = 25
+rs_user | SET sift.dead_rewrite_pct = 101
 rs_user | SET sift.enable_scan = 'maybe'
 rs_user | SET sift.rls_scores = on
-rs_user | SET sift.col_format_minor = 4
+rs_user | SET sift.maintenance_wal_rate = 1024
 rs_user | SET sift.async_maintenance = off
 rs_user | SET sift.maintenance_cost_delay = 0
 rs_user | SET sift.maintenance_naptime = 500
@@ -60,7 +60,7 @@ rs_user | SELECT set_config('sift.enable_scan', 'on', false)
 rs_user | RESET sift.rls_scores
 rs_user | RESET sift.enable_scan
 rs_user | SHOW sift.rls_scores
-rs_user | SELECT current_setting('sift.col_format_minor') IS NOT NULL
+rs_user | SELECT current_setting('sift.maintenance_wal_rate') IS NOT NULL
 rs_user | ALTER ROLE rs_user SET sift.enable_scan = off
 rs_user | ALTER ROLE rs_user SET sift.rls_scores = on
 rs_user | ALTER ROLE rs_user RESET ALL
@@ -69,10 +69,10 @@ rs_user | ALTER DATABASE postgres SET sift.enable_scan = off
 $$);
 
 -- GRANT SET ON PARAMETER hands a restricted setting to one role
-GRANT SET ON PARAMETER sift.rls_scores, sift.col_format_minor TO rs_grant;
+GRANT SET ON PARAMETER sift.rls_scores, sift.maintenance_wal_rate TO rs_grant;
 SELECT * FROM rr_run($$
 rs_grant | SET sift.rls_scores = on
-rs_grant | SET sift.col_format_minor = 4
+rs_grant | SET sift.maintenance_wal_rate = 1024
 rs_grant | SET sift.async_maintenance = off
 rs_grant | RESET sift.rls_scores
 rs_user | SET sift.rls_scores = on

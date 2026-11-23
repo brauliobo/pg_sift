@@ -384,7 +384,7 @@ sift_cset_build_pres(const SiftCPaggCol *c, Size max_bytes, StringInfo out)
 				cap;
 	uint8		w;
 	uint64	   *bits,
-			   *off;
+			   *off = NULL;
 	bool		bitmap_fits;
 
 	for (uint32 i = 0; i < c->n; i++)

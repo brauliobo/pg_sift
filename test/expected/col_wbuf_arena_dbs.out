@@ -1,4 +1,4 @@
--- sift.col_wbuf_ref: the arena is shared by the databases of the server. The slot of a buffer of a database that is dropped is given back by the first row that finds none, in another database,
+-- sift.test_col_wbuf_ref: the arena is shared by the databases of the server. The slot of a buffer of a database that is dropped is given back by the first row that finds none, in another database,
 -- and when every slot is a live buffer of another database the one written longest ago gives its slot: its rows that lost their values are read from the heap again.
 -- The answers are the heap's throughout.
 CREATE DATABASE arena_dbs_t TEMPLATE template0;
@@ -14,10 +14,10 @@ BEGIN
   EXECUTE q INTO sift;
   RETURN native = sift;
 END $$;
-CREATE TABLE mark AS SELECT * FROM sift.col_arena_status();
+CREATE TABLE mark AS SELECT * FROM sift._test_col_arena_status();
 CREATE FUNCTION arena_delta(OUT slots_used int, OUT stored int8, OUT not_stored int8) LANGUAGE sql AS $$
-  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks FROM sift.col_arena_status() s, mark m $$;
-CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift.col_arena_status() $$;
+  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks FROM sift._test_col_arena_status() s, mark m $$;
+CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift._test_col_arena_status() $$;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
 CREATE TABLE u (LIKE t INCLUDING ALL) WITH (autovacuum_enabled = false);
 CREATE INDEX t_ix ON t USING sift_col (id, g, v);
@@ -29,17 +29,20 @@ CREATE DATABASE arena_dbs_c TEMPLATE arena_dbs_t;
 -- a and b hold a slot each with the values of 500 rows
 \c arena_dbs_a
 SET sift.async_maintenance = off;
+SET sift.test_col_wbuf_ref = on;
 INSERT INTO t SELECT i, i % 10, i FROM generate_series(1, 500) i;
 \c arena_dbs_b
 SET sift.async_maintenance = off;
+SET sift.test_col_wbuf_ref = on;
 INSERT INTO t SELECT i, i % 10, i FROM generate_series(1, 500) i;
 -- a is dropped and every slot is taken: the first row of c has none, and a slot of a dead buffer is given back
 \c postgres
 DROP DATABASE arena_dbs_a WITH (FORCE);
 \c arena_dbs_c
 SET sift.async_maintenance = off;
+SET sift.test_col_wbuf_ref = on;
 SET max_parallel_workers_per_gather = 0;
-SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift.col_arena_status()));
+SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift._test_col_arena_status()));
  _test_arena_slots 
 -------------------
  
@@ -67,7 +70,7 @@ SELECT sift.col_promote('t_ix') >= 0 AS promoted_t;
  t
 (1 row)
 
-SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift.col_arena_status()));
+SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift._test_col_arena_status()));
  _test_arena_slots 
 -------------------
  

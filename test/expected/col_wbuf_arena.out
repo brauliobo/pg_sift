@@ -1,4 +1,4 @@
--- sift.col_wbuf_ref: the values of a buffered row are kept in shared memory by the backend that inserted it (col/v1/wbuf/arena.c), and every read of the buffer takes them from there: the heap is
+-- sift.test_col_wbuf_ref: the values of a buffered row are kept in shared memory by the backend that inserted it (col/v1/wbuf/arena.c), and every read of the buffer takes them from there: the heap is
 -- not read for them (the arena counts the rows it built from the heap: none here). The slot of a buffer is given back when the buffer is promoted. A row that finds no slot is written with its
 -- values, as a buffer without the setting does, and a buffer of both kinds of record gives the answers of the heap, before and after the promotion.
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -24,12 +24,13 @@ BEGIN
   RETURN native = sift;
 END $$;
 -- what the arena did since the last call of arena_delta('mark')
-CREATE TABLE mark AS SELECT * FROM sift.col_arena_status();
+CREATE TABLE mark AS SELECT * FROM sift._test_col_arena_status();
 CREATE FUNCTION arena_delta(OUT slots_used int, OUT stored int8, OUT not_stored int8, OUT rebuilt int8, OUT forced int8) LANGUAGE sql AS $$
-  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks, s.rows_rebuilt - m.rows_rebuilt, s.seals_forced - m.seals_forced FROM sift.col_arena_status() s, mark m $$;
-CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift.col_arena_status() $$;
+  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks, s.rows_rebuilt - m.rows_rebuilt, s.seals_forced - m.seals_forced FROM sift._test_col_arena_status() s, mark m $$;
+CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift._test_col_arena_status() $$;
 CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);
 CREATE INDEX a_ix ON a USING sift_col (id, g, v);
+SET sift.test_col_wbuf_ref = on;
 CALL arena_mark();
 -- the rows go to the arena and are read from it, by the engine and by the promotion
 INSERT INTO a SELECT i, i % 10, i, 'x' FROM generate_series(1, 3000) i;

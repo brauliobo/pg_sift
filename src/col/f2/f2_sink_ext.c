@@ -231,7 +231,7 @@ decode_children(SiftF2Pull *p)
 		SiftVec		tmp = {.type = spec->child[c].type,.scale = spec->child[c].scale};
 		uint64		tv[SIFT_VEC_WORDS];
 
-		tmp.data = palloc(SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD);
+		tmp.data = palloc_aligned(SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		tmp.valid = tv;
 		p->child_data[c] = palloc(Max((Size) p->n_elems * es, 1) + SIFT_VEC_PAD);
 		p->child_valid[c] = palloc0(words * sizeof(uint64));

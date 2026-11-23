@@ -391,7 +391,7 @@ sift_vstr_set_build(const char *const *p, const uint32 *len, const bool *isnull,
 		}
 	}
 	qsort(it, m, sizeof(SetItem), item_cmp);
-	s->v = palloc(Max(m, 1) * sizeof(SiftStrView));
+	s->v = MemoryContextAllocAligned(CurrentMemoryContext, Max(m, 1) * sizeof(SiftStrView), _Alignof(SiftStrView), 0);
 	s->bytes = palloc(Max(total, 1));
 	at = s->bytes;
 	for (uint32 i = 0; i < m; i++)

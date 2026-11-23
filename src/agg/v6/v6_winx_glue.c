@@ -374,7 +374,7 @@ void
 sift_v6_winx_run(MemoryContext cx, const SiftV6Winx *w, const int *part_slot, const int *ord_slot, SiftV6Source *src, const SiftV6Vexpr *filters, SiftWinxEmit emit, void *emit_arg,
 				 SiftWinxStats *stats)
 {
-	Feed	   *fd = MemoryContextAllocZero(cx, sizeof(Feed));
+	Feed	   *fd = MemoryContextAllocAligned(cx, sizeof(Feed), _Alignof(Feed), MCXT_ALLOC_ZERO);
 	SiftWinx   *wx;
 
 	fd->src = src;

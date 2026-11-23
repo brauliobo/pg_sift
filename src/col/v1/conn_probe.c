@@ -122,8 +122,8 @@ key_datum(const SiftConnProbe *p, int64 k, Datum *d, RegProcedure *eq)
 void
 sift_conn_probe_open(SiftConnProbe *p, SiftConnProbeScan *s)
 {
-	s->heap = table_open(p->parent, NoLock);
-	s->idx = index_open(p->index, NoLock);
+	s->heap = table_open(p->parent, AccessShareLock);
+	s->idx = index_open(p->index, AccessShareLock);
 	Assert(CheckRelationLockedByMe(s->heap, AccessShareLock, true) && CheckRelationLockedByMe(s->idx, AccessShareLock, true));
 	s->scan = sift_index_beginscan(s->heap, s->idx, p->snap, 1);
 	s->slot = table_slot_create(s->heap, NULL);

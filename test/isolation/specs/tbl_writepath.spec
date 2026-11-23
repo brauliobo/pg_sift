@@ -10,6 +10,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_wp (id int PRIMARY KEY, v text, w int) USING sift_table WITH (autovacuum_enabled = false);
+	DO $$ BEGIN PERFORM sift.table_set_option('iso_wp', 'write_buffer_limit', '2048'); END $$;
 	INSERT INTO iso_wp SELECT g, 'before', g % 100 FROM generate_series(1, 10) g;
 }
 
@@ -20,7 +21,7 @@ teardown
 
 # the three writers: ids from 100001 (A), 200001 (B) and 300001 (C), a chunk of 6000 rows at a time (each chunk starts 10000 above the one before), each row a command
 session a
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step ab		{ BEGIN; }
 step a1		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (100000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
 step a2		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (110000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
@@ -32,7 +33,7 @@ step ac		{ COMMIT; }
 step aa		{ ROLLBACK; }
 
 session b
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step bb		{ BEGIN; }
 step b1		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (200000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
 step b2		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (210000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
@@ -40,7 +41,7 @@ step b3		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (220000 +
 step ba		{ ROLLBACK; }
 
 session c
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step cb		{ BEGIN; }
 step c1		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (300000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
 step c2		{ DO $$ BEGIN FOR i IN 1..6000 LOOP INSERT INTO iso_wp VALUES (310000 + i, repeat('x', 1000), i % 100); END LOOP; END $$; }
@@ -50,7 +51,7 @@ step ca		{ ROLLBACK; }
 
 # read committed: every step takes a new snapshot; g is 0 for the rows from before, 1 for A, 2 for B and 3 for C
 session r
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step rscan	{ SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_wp; }
 step ridx	{ SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_wp WHERE id > 0; }
 step rbm	{ SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_wp WHERE id > 0; }
@@ -64,25 +65,25 @@ step frozen	{ SELECT sift._test_tbl_tagged('iso_wp') = 0 AS frozen; }
 
 # a snapshot taken once and kept
 session rr
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step rrb	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wp; }
 step rrscan	{ SELECT id / 100000 AS g, count(*) FROM iso_wp GROUP BY 1 ORDER BY 1; }
 step rrupd	{ UPDATE iso_wp SET v = 'rr' WHERE id = 100002; }
 step rre	{ COMMIT; }
 
 session rs
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step rsb	{ BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_wp; }
 step rsscan	{ SELECT id / 100000 AS g, count(*) FROM iso_wp GROUP BY 1 ORDER BY 1; }
 step rse	{ COMMIT; }
 
 session v
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step v		{ VACUUM iso_wp; }
 
 # a unique inserter, on the key of a row of A (the first chunk is promoted by the time the others are written)
 session u
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step ub		{ BEGIN; }
 step u1		{ INSERT INTO iso_wp VALUES (100003, 'dup', 3); }
 step u2		{ INSERT INTO iso_wp VALUES (100003, 'dup', 3) ON CONFLICT (id) DO NOTHING; }
@@ -90,7 +91,7 @@ step uc		{ COMMIT; }
 step ur		{ ROLLBACK; }
 
 session i
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
+setup		{ SET sift.table_max_segments = 16; }
 step ci		{ CREATE INDEX iso_wp_w ON iso_wp (w); }
 step cic	{ CREATE INDEX CONCURRENTLY iso_wp_w ON iso_wp (w); }
 

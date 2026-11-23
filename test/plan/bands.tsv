@@ -742,7 +742,7 @@ tuned	not_exists_element	scan	0.0028	0.011
 tuned	not_exists_in_table	scan	0.027	0.11
 tuned	one_day	either	0.46	1.9
 tuned	one_key	scan	0.018	0.072
-tuned	one_parent_narrow	scan	0.44	1.8
+tuned	one_parent_narrow	either	0.44	1.8
 tuned	output_lookup_subselect	scan	0.045	0.18
 tuned	parent_key	scan	0.018	0.072
 tuned	partition_pruned	either	0.32	1.3

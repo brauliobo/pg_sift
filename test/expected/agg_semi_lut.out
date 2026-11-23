@@ -1,5 +1,5 @@
 -- A semi or anti join (IN (SELECT ..), EXISTS, NOT EXISTS) on an integer leaf of Custom Scan (SiftAgg) is answered from a byte table over the
--- keys of the joined table, built when the scan starts (sift.agg_semi_lut, sift.agg_semi_lut_size; docs/SET-FILTERS.md). Every statement
+-- keys of the joined table, built when the scan starts (sift.agg_semi_lut, a share of work_mem; docs/SET-FILTERS.md). Every statement
 -- is run with the table, with sift.agg_semi_lut = off (the generic lookup join) and with sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
@@ -8,6 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 -- page costs that keep the pushed plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement only
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- the statements check the lookup tables the scan loads (the plans with probes have their own test, agg_probe_rewrite)
+SET sift.test_agg_probe_rewrite = off;
 -- the scan's key filter tests every key of a semi join the table would test (agg_join_key_types): left out, the table is built and used
 SET sift.agg_join_filter = off;
 -- the ordered index-only scan of the key joined by a memoized lookup costs few pages and would take the plan over from the pushed one at these page costs: the statements check the pushed plan
@@ -223,14 +224,14 @@ SELECT * FROM same($$SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id
  SiftAgg semi tables 1 |          60 |               0 |              0
 (1 row)
 
--- the span of the keys is bounded by sift.agg_semi_lut_size: wider keys are a hash set of them while that fits the same memory, else the generic join; the answer is the same
+-- the span of the keys is bounded by the memory of the table (sift.test_limits semi_lut_bytes, a share of work_mem): wider keys are a hash set of them while that fits the same memory, else the generic join; the answer is the same
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_default;
     span_3m_default    
 -----------------------
  SiftAgg semi tables 1
 (1 row)
 
-SET sift.agg_semi_lut_size = 1024;
+SET sift.test_limits = 'semi_lut_bytes=1048576';
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_1mb;
       span_3m_1mb      
 -----------------------
@@ -249,14 +250,14 @@ SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM
  SiftAgg semi tables 1
 (1 row)
 
-SET sift.agg_semi_lut_size = 0;
+SET sift.test_limits = 'semi_lut_bytes=0';
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS size_0;
  size_0  
 ---------
  SiftAgg
 (1 row)
 
-RESET sift.agg_semi_lut_size;
+RESET sift.test_limits;
 SET sift.agg_semi_lut = off;
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS lut_off;
  lut_off 

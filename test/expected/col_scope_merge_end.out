@@ -48,7 +48,7 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 SELECT 6000 AS rows, * FROM scope_state()
  rows | merges | segments | largest_rows | live_kb 
 ------+--------+----------+--------------+---------
- 6000 |      0 |        2 |         7427 |     128
+ 6000 |      0 |        4 |         6000 |     176
 (1 row)
 
 SET sift.test_col_scope_merges = 0
@@ -56,7 +56,7 @@ REINDEX INDEX CONCURRENTLY events_col
 SELECT 6000 AS rows, * FROM scope_state()
  rows | merges | segments | largest_rows | live_kb 
 ------+--------+----------+--------------+---------
- 6000 |      0 |        2 |         7427 |     128
+ 6000 |      0 |        4 |         6000 |     176
 (1 row)
 
 DROP INDEX events_col
@@ -73,7 +73,7 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 SELECT 12000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 12000 |      0 |        3 |        12000 |     224
+ 12000 |      1 |        7 |         7904 |     280
 (1 row)
 
 SET sift.test_col_scope_merges = 0
@@ -81,7 +81,7 @@ REINDEX INDEX CONCURRENTLY events_col
 SELECT 12000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 12000 |      0 |        3 |        12000 |     224
+ 12000 |      1 |        7 |         7904 |     280
 (1 row)
 
 DROP INDEX events_col
@@ -98,7 +98,7 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 SELECT 18000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 18000 |      1 |        4 |        12288 |     296
+ 18000 |      1 |       12 |         5712 |     448
 (1 row)
 
 SET sift.test_col_scope_merges = 0
@@ -106,7 +106,7 @@ REINDEX INDEX CONCURRENTLY events_col
 SELECT 18000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 18000 |      1 |        4 |        12288 |     296
+ 18000 |      1 |       12 |         5712 |     448
 (1 row)
 
 DROP INDEX events_col
@@ -123,7 +123,7 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 SELECT 24000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 24000 |      1 |        5 |        12288 |     352
+ 24000 |      1 |       20 |         7616 |     616
 (1 row)
 
 SET sift.test_col_scope_merges = 0
@@ -131,7 +131,7 @@ REINDEX INDEX CONCURRENTLY events_col
 SELECT 24000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 24000 |      1 |        5 |        12288 |     352
+ 24000 |      1 |       20 |         7616 |     616
 (1 row)
 
 DROP INDEX events_col
@@ -148,7 +148,7 @@ CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, cre
 SELECT 30000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 30000 |      1 |        5 |        12288 |     408
+ 30000 |      1 |       22 |         5424 |     752
 (1 row)
 
 SET sift.test_col_scope_merges = 0
@@ -156,7 +156,7 @@ REINDEX INDEX CONCURRENTLY events_col
 SELECT 30000 AS rows, * FROM scope_state()
  rows  | merges | segments | largest_rows | live_kb 
 -------+--------+----------+--------------+---------
- 30000 |      1 |        5 |        12288 |     408
+ 30000 |      1 |       22 |         5424 |     752
 (1 row)
 
 DROP INDEX events_col

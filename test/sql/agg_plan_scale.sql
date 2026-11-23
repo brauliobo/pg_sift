@@ -1,4 +1,4 @@
--- sift.plan_scale plans as if the tables with a sift_col index had that many times the pages and rows, to see the choice of the planner at a larger size
+-- sift.test_plan_scale plans as if the tables with a sift_col index had that many times the pages and rows, to see the choice of the planner at a larger size
 -- without the data: the cost of the scan and of the normal plan, each by the model's own terms (a hash aggregate that stops fitting work_mem grows faster
 -- than the rows, a scan of units does not). Only the plan changes: the rows are those of the table.
 CREATE EXTENSION pg_sift;
@@ -13,11 +13,11 @@ VACUUM (FREEZE, ANALYZE) items;
 
 CREATE FUNCTION costs(q text, scale float8) RETURNS TABLE (scan numeric, normal numeric) LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.plan_scale', scale::text, true);
+	PERFORM set_config('sift.test_plan_scale', scale::text, true);
 	RETURN QUERY SELECT e.scan_cost::numeric, e.normal_cost::numeric FROM sift.explain_why(q) e LIMIT 1;
 END $$;
 
-SELECT current_setting('sift.plan_scale') AS default_scale;
+SELECT current_setting('sift.test_plan_scale') AS default_scale;
 
 -- 100 groups: the normal plan grows with the rows (8 to 12 times for 10 times the table), the scan less (a fixed start-up, and the pre-aggregates answer a unit whatever its rows)
 SELECT s10.normal / s1.normal BETWEEN 8 AND 12 AS normal_linear, s100.scan / s1.scan < 80 AS scan_flatter
@@ -29,8 +29,9 @@ SELECT s100.normal / s1.normal > 110 AS normal_superlinear, s100.scan / s1.scan 
 FROM costs('SELECT grp, count(*), sum(amount) FROM items GROUP BY grp', 1) s1, costs('SELECT grp, count(*), sum(amount) FROM items GROUP BY grp', 100) s100;
 
 -- the plan at a larger size reads the same rows
-SET sift.plan_scale = 100;
+SET sift.test_plan_scale = 100;
 SELECT count(*) = (SELECT count(DISTINCT grp) FROM items) AS same_groups, sum(n) = (SELECT count(*) FROM items) AS same_rows FROM (SELECT grp, count(*) AS n FROM items GROUP BY grp) x;
+RESET sift.test_plan_scale;
 
 DROP FUNCTION costs(text, float8);
 DROP TABLE items;

@@ -50,8 +50,8 @@ unit_emit(SiftColBatch *dst, SiftCDict *const *dicts, UnitLeaf *lf, int col, uin
 		to = &lf->remap[key];
 		if (*to == PG_UINT32_MAX)
 		{
-			const char *str = dicts[col]->bytes + dicts[col]->off[key];
-			uint32		len = cdict_len(dicts[col], (uint32) key);
+			uint32		len;
+			const char *str = sift_cdict_get(dicts[col], (uint32) key, &len);
 
 			if (!leaf_fits(dst, col, str, len))
 			{

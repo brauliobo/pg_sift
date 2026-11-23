@@ -1,5 +1,5 @@
 -- The rollup of the rows of a unit (column format minor 9, docs/COL-PREAGG.md section 2): written only for an index with the reloption rollup_columns and a
--- setting sift.col_format_minor of 9, so that a 3.2 library keeps reading what an index without it writes; read back by the same decoder that refuses a
+-- setting sift.test_col_format_minor of 9, so that a 3.2 library keeps reading what an index without it writes; read back by the same decoder that refuses a
 -- damaged rollup; checked against the chunks by sift.col_verify; kept by promotion, merge and VACUUM; bounded by the cap of cells a unit may hold.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
@@ -14,8 +14,9 @@ FROM generate_series(1, 30000) g;
 
 -- the minor of the segments of an index: 4 without the option (this schema has no jsonb paths), under the setting 8 with it, 9 with it, 9 with both options
 CREATE INDEX cr_off ON cr USING sift_col (id, a, b, c, v, w, f) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-SET sift.col_format_minor = 8;
+SET sift.test_col_format_minor = 8;
 CREATE INDEX cr_seven ON cr USING sift_col (id, a, b, c, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b', cube_minmax = false, superunit = 0);
+RESET sift.test_col_format_minor;
 CREATE INDEX cr_on ON cr USING sift_col (id, a, b, c, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b', cube_minmax = false, superunit = 0);
 CREATE INDEX cr_both ON cr USING sift_col (id, a, b, c, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b, c: v, w', cube_minmax = true, superunit = 0);
 CREATE INDEX cr_nocube ON cr USING sift_col (id, a, b, c, v, w, f) WITH (write_buffer_limit = 4096, rollup_columns = 'a, b', preagg = 'off', cube_minmax = false, superunit = 0);

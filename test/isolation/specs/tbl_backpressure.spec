@@ -8,6 +8,7 @@ setup
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_bp (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+	DO $$ BEGIN PERFORM sift.table_set_option('iso_bp', 'write_buffer_limit', '2048'); END $$;
 }
 
 teardown
@@ -20,8 +21,8 @@ step hb		{ BEGIN; SELECT sift._test_tbl_hold_maint('iso_bp'); }
 step hc		{ COMMIT; }
 
 session w
-step wb		{ BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; }
-step wbp	{ SET LOCAL sift.table_backpressure = 75; }
+step wb		{ BEGIN; SET sift.table_max_segments = 16; }
+step wbp	{ DO $$ BEGIN PERFORM sift.table_set_option('iso_bp', 'backpressure', '75'); END $$; }
 step wi		{ INSERT INTO iso_bp SELECT g, repeat('x', 1000) FROM generate_series(1, 40000) g; }
 step wc		{ COMMIT; }
 

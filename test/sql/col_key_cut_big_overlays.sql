@@ -8,7 +8,7 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.vacuum_rewrite_limit = 1;
 SET sift.test_col_partition_kb = 512;
-SET sift.col_auto_merge_wal_pct = 5;
+SET sift.test_col_merge_wal_pct = 5;
 SET sift.test_col_segment_kb = 7000;
 SET sift.test_col_build_runs_overlap = on;
 

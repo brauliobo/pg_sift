@@ -194,5 +194,7 @@ SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELE
            0
 (1 row)
 
+SET sift.test_col_format_minor = 13;
+RESET sift.test_col_format_minor;
 DROP TABLE tf, tf_heap;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

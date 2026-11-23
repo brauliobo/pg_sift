@@ -78,6 +78,7 @@ static HTAB *facts_watch;
 static uint32 facts_all;		/* bumped by an invalidation of every row */
 static uint64 facts_used;		/* sift_cache_tick() of the last planning */
 static int	facts_replaced;		/* entries read again since the cache was emptied: their old facts stay until it is */
+static int	facts_pins;			/* the reads in hand (src_entry) that enter an entry before they fill it: the cache is not emptied under them */
 
 /* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries, and sixty-four for the syscaches */
 static void
@@ -100,23 +101,37 @@ facts_empty(void)
 	facts_replaced = 0;
 }
 
+/* a plan under way holds the facts it was given (part_memo_cx) and a read in hand holds its entry */
+static bool
+facts_held(void)
+{
+	return part_memo_cx != NULL || facts_pins > 0;
+}
+
 /* the cache goes whole, so it is one entry: as old as the last planning that read it, and held while a plan is under way */
 static uint64
 facts_oldest(void)
 {
-	return facts != NULL && part_memo_cx == NULL ? facts_used : UINT64_MAX;
+	return facts != NULL && !facts_held() ? facts_used : UINT64_MAX;
 }
 
 static bool
 facts_evict_one(void)
 {
-	if (facts == NULL)
+	if (facts == NULL || facts_held())
 		return false;
 	facts_empty();
 	return true;
 }
 
-static const SiftCacheKind facts_kind = {"agg_facts", facts_oldest, facts_evict_one, facts_empty};
+static void
+facts_evict_all(void)
+{
+	if (!facts_held())
+		facts_empty();
+}
+
+static const SiftCacheKind facts_kind = {"agg_facts", facts_oldest, facts_evict_one, facts_evict_all};
 
 static FactsWatch *
 facts_watch_of(Oid relid)
@@ -338,12 +353,12 @@ facts_check(Relation rel, SrcFacts *e, bool found)
 	}
 }
 
-void
-index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
+static void
+src_fill(Relation rel)
 {
 	Oid			indexoid = RelationGetRelid(rel);
-	SrcFacts   *e;
 	bool		found;
+	SrcFacts   *e;
 
 	facts_init();
 	e = hash_search(src_facts, &indexoid, HASH_ENTER, &found);
@@ -353,6 +368,33 @@ index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
 		facts_check(rel, e, found);
 		e->memo_seq = part_memo_cx != NULL ? memo_seq : 0;
 	}
+}
+
+/* the facts of an index, read where stale; good until the next cache operation. Reading them can ask the cache for room, which must not empty it under the entry being filled */
+static const SrcFacts *
+src_entry(Relation rel)
+{
+	Oid			indexoid = RelationGetRelid(rel);
+
+	facts_used = sift_cache_tick();
+	facts_pins++;
+	PG_TRY();
+	{
+		src_fill(rel);
+	}
+	PG_FINALLY();
+	{
+		facts_pins--;
+	}
+	PG_END_TRY();
+	return hash_search(src_facts, &indexoid, HASH_FIND, NULL);
+}
+
+void
+index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
+{
+	const SrcFacts *e = src_entry(rel);
+
 	/* the context of a plan is zero until its first source (a second source of the same context, by another index, is the exception) */
 	if (st->nrows != 0 || st->nunits != 0 || st->bytes != 0 || st->zones != NULL)
 		memset(st, 0, sizeof(*st));
@@ -370,8 +412,7 @@ index_facts(Relation rel, int nleaves, SiftSrcStats *st, SiftSrcPreagg *pa)
 void
 index_facts_scope(Relation rel, int nleaves, SiftSrcStats *st)
 {
-	const SrcFacts *e = hash_search(src_facts, &(Oid) {RelationGetRelid(rel)}, HASH_FIND, NULL);
-	const SiftSrcStats *src = e->scope_stats;
+	const SiftSrcStats *src = src_entry(rel)->scope_stats;
 	size_t		d = Min(nleaves, SIFT_COLSRC_MAX_LEAVES) * sizeof(double);
 
 	if (src == NULL)			/* a scope declared and not built: no scope unit to read */

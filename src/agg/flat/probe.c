@@ -103,7 +103,7 @@ typedef struct Probe
 static bool
 btree_on(Oid relid, AttrNumber att, Index rti, List *quals)
 {
-	Relation	rel = relation_open(relid, NoLock);
+	Relation	rel = relation_open(relid, AccessShareLock);
 	bool		found = false;
 
 	foreach_oid(ioid, RelationGetIndexList(rel))

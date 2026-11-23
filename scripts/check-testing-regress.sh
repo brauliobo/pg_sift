@@ -15,7 +15,7 @@ bad=0
 grep -nE '^TESTING_REGRESS \+?= .* ' Makefile && { echo "TESTING_REGRESS: one name or pattern for each line"; bad=1; }
 dups=$(printf '%s\n' "${pats[@]}" | sort | uniq -d)
 [[ -z $dups ]] || { echo "TESTING_REGRESS: listed twice: $dups"; bad=1; }
-unsorted=$(awk '/^TESTING_REGRESS \+= / { if (prev != "" && $3 < prev) print $3 " after " prev; prev = $3; next } { prev = "" }' Makefile | LC_ALL=C sort)
+unsorted=$(LC_ALL=C awk '/^TESTING_REGRESS \+= / { if (prev != "" && $3 < prev) print $3 " after " prev; prev = $3; next } { prev = "" }' Makefile | LC_ALL=C sort)
 [[ -z $unsorted ]] || { echo "TESTING_REGRESS: not in byte order (LC_ALL=C sort): $unsorted"; bad=1; }
 needs_testing() {
 	grep -q -i -E 'sift\._test_|^create extension (if not exists )?pg_sift_test' "$1" ||

@@ -1,4 +1,4 @@
--- As col_conn_relocate, with sift.col_wbuf_ref on and a write buffer of reference records (the rows of the buffer are the arena's, not the heap's) while the segments move: the stamps and the fill
+-- As col_conn_relocate, with sift.test_col_wbuf_ref on and a write buffer of reference records (the rows of the buffer are the arena's, not the heap's) while the segments move: the stamps and the fill
 -- state are the same before and after, and the answers are the normal plan's, with the buffered rows in them.
 -- The stamps of a connected index are in the schema of each segment, so what writes the segment's header again without writing its rows keeps them (docs/COL-CONNECT.md): VACUUM writing a
 -- net pre-aggregate sidecar, and the space step shifting the runs of a large segment down into free blocks. The segments keep their generation, their stamps and the fill state, and the
@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
+SET sift.test_col_wbuf_ref = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -55,7 +56,7 @@ SELECT sift.col_merge('ev_col', true) > 0 AS merged;
  t
 (1 row)
 
-CREATE TEMP TABLE kept AS SELECT rows_stored FROM sift.col_arena_status();
+CREATE TEMP TABLE kept AS SELECT rows_stored FROM sift._test_col_arena_status();
 INSERT INTO ev SELECT i, 1 + i % 500, i % 100, 'buffered' FROM generate_series(120001, 123000) i;
 SELECT rows AS buffered FROM sift.col_segments('ev_col') WHERE kind = 'buffer';
  buffered 
@@ -63,7 +64,7 @@ SELECT rows AS buffered FROM sift.col_segments('ev_col') WHERE kind = 'buffer';
      3000
 (1 row)
 
-SELECT (SELECT rows_stored FROM sift.col_arena_status()) - (SELECT rows_stored FROM kept) AS rows_in_the_arena;
+SELECT (SELECT rows_stored FROM sift._test_col_arena_status()) - (SELECT rows_stored FROM kept) AS rows_in_the_arena;
  rows_in_the_arena 
 -------------------
               3000

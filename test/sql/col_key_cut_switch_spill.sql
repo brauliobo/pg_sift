@@ -49,8 +49,12 @@ SELECT sift._test_col_cut_sorts_reset();
 SELECT sift.col_merge('sp_fit', true) > 0 AS merged;
 SELECT sift._test_col_cut_sort_rows() = 0 AS sort_not_used;
 SET maintenance_work_mem = '1MB';
+SET sift.test_col_segment_kb = 16384;
+SET sift.test_col_partition_kb = 12288;
 SELECT sift.col_merge('sp_spill', true) > 0 AS merged;
 RESET maintenance_work_mem;
+RESET sift.test_col_segment_kb;
+RESET sift.test_col_partition_kb;
 SELECT sift._test_col_cut_sort_rows() > 25000 AS rows_sorted, sift._test_col_cut_sort_disk_kb() > 0 AS on_disk;
 SELECT * FROM sp_check('sp_fit');
 SELECT * FROM sp_check('sp_spill');
@@ -61,6 +65,8 @@ SELECT count(*) AS different_segments FROM (SELECT * FROM sp_segments('sp_fit') 
 -- so that the segments the last merge cut by a1 and the older ones, cut by tenant_id, are all read through one sort
 DROP INDEX sp_fit;
 SET maintenance_work_mem = '1MB';
+SET sift.test_col_segment_kb = 16384;
+SET sift.test_col_partition_kb = 12288;
 SELECT sp_churn(200000);
 VACUUM sp;
 SELECT sift.col_maintain('sp_spill') IS NOT NULL AS maintained;
@@ -81,6 +87,8 @@ SELECT sp_churn(500000);
 SELECT sift.col_merge('sp_spill', true) > 0 AS merged;
 SELECT * FROM sp_check('sp_spill');
 RESET maintenance_work_mem;
+RESET sift.test_col_segment_kb;
+RESET sift.test_col_partition_kb;
 SELECT sift._test_col_cut_sort_rows() > 100000 AS rows_sorted, sift._test_col_cut_sort_disk_kb() > 0 AS on_disk;
 
 DROP TABLE sp;

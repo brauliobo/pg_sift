@@ -1,6 +1,6 @@
 -- The summary of the keys of a leaf in every unit: an index with the option key_columns keeps, per unit and
 -- leaf that is not an int2, int4, int8 or date column (those keep a key list or bitmap: col_key_presence), the distinct keys exactly up to 32 and as a bloom filter beyond, so an equality, IN or range test skips the units that cannot hold a
--- match where the zone (a minimum and a maximum) cannot tell. Written only under sift.col_format_minor = 10 and for the leaves of the option, so that
+-- match where the zone (a minimum and a maximum) cannot tell. Written only under sift.test_col_format_minor = 10 and for the leaves of the option, so that
 -- an older library keeps reading what an index without it, or under a lower setting, writes; read back by the decoder that refuses a damaged summary;
 -- recomputed by sift.col_verify; kept by promotion, merge and VACUUM; counted in EXPLAIN.
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -27,8 +27,9 @@ ALTER TABLE ss_b ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ss_b SELECT * FROM ss ORDER BY id;
 -- the minor of the segments: 4 (this schema has no jsonb paths) without the option or under a lower setting, 10 with both, and the option writes nothing else
 CREATE INDEX ss_off ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-SET sift.col_format_minor = 7;
+SET sift.test_col_format_minor = 7;
 CREATE INDEX ss_seven ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_columns = 'off', write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
+RESET sift.test_col_format_minor;
 CREATE INDEX ss_on ON ss USING sift_col (id, kind, parent_id, cat, big, val) WITH (rollup_columns = 'off', write_buffer_limit = 4096, key_columns = 'kind, parent_id, cat, big', cube_minmax = false, superunit = 0);
 SELECT 'ss_off' AS idx, array_agg(DISTINCT least(format, 15)) AS minors FROM sift._test_col_formats('ss_off')
 UNION ALL SELECT 'ss_seven', array_agg(DISTINCT least(format, 15)) FROM sift._test_col_formats('ss_seven')
@@ -506,7 +507,7 @@ SELECT sift.col_verify('sa_idx', true);
 (1 row)
 
 ALTER INDEX sa_idx SET (key_columns = 'kind, parent_id');
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 INSERT INTO sa SELECT g, g % 60, g % 5000, g % 1000, repeat('x', 1500) FROM generate_series(28001, 30000) g;
 SELECT sift.col_promote('sa_idx') >= 0 AS promoted;
  promoted 
@@ -526,6 +527,7 @@ SELECT array_agg(DISTINCT least(format, 15) ORDER BY least(format, 15)) AS minor
  {4}
 (1 row)
 
+RESET sift.test_col_format_minor;
 SELECT sift.col_verify('sa_idx', true);
  col_verify 
 ------------

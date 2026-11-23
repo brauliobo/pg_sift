@@ -19,10 +19,18 @@ SELECT 1 + (hashint4(i) & 2147483647) % 40,
 	   CASE WHEN i % 991 = 0 THEN 'NaN'::float8 WHEN i % 37 = 0 THEN NULL WHEN i % 41 = 0 THEN -0.0 ELSE ((hashint4(i + 13) & 2147483647) % 100000) / 7.0 END,
 	   CASE WHEN i % 41 = 0 THEN NULL ELSE ct_words(i) END
 FROM generate_series(1, 24000) i;
+SET client_min_messages = warning;
 CREATE INDEX ct_bm ON ct USING sift (memo);
+RESET client_min_messages;
 VACUUM (ANALYZE) ct;
 
 CREATE FUNCTION ct_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
+CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' ELSE 'other' END;
+END $$;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
 CREATE FUNCTION ct_check(q text, arg text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
@@ -88,8 +96,9 @@ CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LAN
 	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag COLLATE "C") FROM ct_q $$;
 
 SELECT * FROM ct_stage('build');
-SET sift.search_chunk_sbs = 1;
+SET sift.test_search_chunk_sbs = 1;
 SELECT * FROM ct_stage('chunks of one superblock');
+RESET sift.test_search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;
@@ -112,8 +121,9 @@ SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT
 	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Units') AS units_asc;
 
 -- the GUC
+SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') = 'top-n' AS topn_when_on;
 SET sift.enable_agg = off;
-SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
+SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') <> 'top-n' AS no_topn_when_off;
 RESET sift.enable_agg;
 
 -- inserts land in the write buffer of the table, unvacuumed
@@ -171,6 +181,6 @@ VACUUM ct;
 SELECT * FROM ct_stage('added columns, vacuumed');
 
 DROP TABLE ct_q, ct;
-DROP FUNCTION ct_words(int), ct_mode(bool), ct_check(text, text), ct_stat(text, text), ct_stage(text);
+DROP FUNCTION ct_plan(text), ct_words(int), ct_mode(bool), ct_check(text, text), ct_stat(text, text), ct_stage(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

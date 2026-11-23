@@ -366,7 +366,7 @@ sift_agg_probe_pays(double keys, double entries, double pages, double entries_on
 double
 sift_agg_table_rows(Oid relid)
 {
-	Relation	rel = relation_open(relid, NoLock);
+	Relation	rel = relation_open(relid, AccessShareLock);
 	BlockNumber pages;
 	double		tuples,
 				allvis;
@@ -450,7 +450,7 @@ join_dense(AggCtx *c, const SiftAggSpec *s, JoinCtx *jc)
 		jc->dense = 2;
 		if (jc->cpath == NULL && sift_agg_dense_join(s, jc->combo, c->lay))
 		{
-			Relation	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, NoLock);
+			Relation	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, AccessShareLock);
 			double		bound[SIFT_AGG_MAX_JCOLS] = {0};
 			bool		ok = map_load_dense_possible(rel, &jc->j, bound);
 
@@ -517,7 +517,7 @@ join_whole_ops(AggCtx *c, SiftAggSpec *s, JoinCtx *jc)
 			ntests += jc->j.colexpr[col] != NULL;
 		return Max(jrel->tuples, 1.0) * (AGG_LOAD_DENSE + ntests * AGG_LOAD_TEST);
 	}
-	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, NoLock);
+	rel = relation_open(planner_rt_fetch(jc->rti, c->root)->relid, AccessShareLock);
 	cols = map_load_cols_possible(rel, &jc->j, &nnum);
 	relation_close(rel, NoLock);
 	keys_only = join_keys_only(c, s, jc);

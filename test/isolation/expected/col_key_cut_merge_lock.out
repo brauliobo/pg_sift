@@ -17,10 +17,10 @@ merged
 t     
 (1 row)
 
-step b_option: SELECT reloptions::text ~ 'key_cut=auto' AS cut_chosen FROM pg_class WHERE relname = 'iso_kc_idx';
-cut_chosen
-----------
-t         
+step b_option: SELECT reloptions::text ~ 'point_tid_columns=auto: id' AS point_tid_chosen FROM pg_class WHERE relname = 'iso_kc_idx';
+point_tid_chosen
+----------------
+t               
 (1 row)
 
 step b_verify: SELECT 1 AS verified FROM (SELECT sift.col_verify('iso_kc_idx', true)) v;

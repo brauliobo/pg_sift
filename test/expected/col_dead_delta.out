@@ -1,4 +1,4 @@
--- sift.agg_dead_delta: a unit with dead rows (a VACUUM cleared their liveness bits) whose pages are all-visible answers from its pre-aggregates minus the cube of its dead
+-- sift.test_agg_dead_delta: a unit with dead rows (a VACUUM cleared their liveness bits) whose pages are all-visible answers from its pre-aggregates minus the cube of its dead
 -- rows: counts and integer or numeric sums exact, NULLs counted; a minimum, a maximum, a distinct count, a float sum and a unit with a page that is not all-visible are scanned.
 -- The answers never change: with the setting on, off and with the scan planner off they are the same.
 CREATE EXTENSION pg_sift;
@@ -29,9 +29,9 @@ END $$;
 CREATE FUNCTION dd_same(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text; c text;
 BEGIN
-	SET LOCAL sift.agg_dead_delta = 25;
+	SET LOCAL sift.test_agg_dead_delta = 25;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO a;
-	SET LOCAL sift.agg_dead_delta = 0;
+	SET LOCAL sift.test_agg_dead_delta = 0;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO b;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO c;
@@ -127,23 +127,23 @@ SELECT kind, count(*) FROM dd GROUP BY kind ORDER BY kind;
 (6 rows)
 
 -- the setting off scans every dirty unit
-SET sift.agg_dead_delta = 0;
+SET sift.test_agg_dead_delta = 0;
 SELECT dd_net('SELECT grp, count(*), sum(amount) FROM dd GROUP BY grp') AS net_off;
  net_off 
 ---------
        0
 (1 row)
 
-SET sift.agg_dead_delta = 25;
+SET sift.test_agg_dead_delta = 25;
 -- more dead rows than the share: the unit scans
-SET sift.agg_dead_delta = 1;
+SET sift.test_agg_dead_delta = 1;
 SELECT dd_net('SELECT grp, count(*), sum(amount) FROM dd GROUP BY grp') AS net_over_share;
  net_over_share 
 ----------------
               0
 (1 row)
 
-SET sift.agg_dead_delta = 25;
+SET sift.test_agg_dead_delta = 25;
 -- a page that is not all-visible: the unit scans and the answer is the heap's
 UPDATE dd SET qty = qty + 1 WHERE id % 1000 = 5;
 SELECT n, dd_same(q) AS same FROM dd_q WHERE n IN (1, 2, 3, 9) ORDER BY n;

@@ -511,7 +511,7 @@ sift_col_track_rechain(Oid relid)
 		return;
 	foreach_oid(tbl, find_all_inheritors(relid, NoLock, NULL))
 	{
-		Relation	heap = try_relation_open(tbl, NoLock);
+		Relation	heap = try_relation_open(tbl, AccessShareLock);
 
 		if (heap == NULL)
 			continue;

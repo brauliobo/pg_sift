@@ -150,11 +150,12 @@ SELECT dh_round(10);
 (1 row)
 
 -- segments of an older minor have no hash, and answer the same
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX dh_idx;
 NOTICE:  sift_col index "dh_idx": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('dh_idx');
+RESET sift.test_col_format_minor;
 SELECT least(min(format), 15) AS format FROM sift.col_segments('dh_idx') WHERE kind = 'immutable';
  format 
 --------

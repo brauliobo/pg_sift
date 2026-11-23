@@ -7,6 +7,16 @@
 -- phase says where a finding lands in the runbook: pre_guc, pre_dep, upgrade_ext, post_optional_upgrade, post_cleanup.
 CREATE SCHEMA IF NOT EXISTS sift_internal;
 
+-- The sift.* lines of the configuration files, for the roles that may read pg_file_settings (superusers and pg_read_all_settings); any other role gets no rows, not a permission error.
+CREATE OR REPLACE FUNCTION sift_internal.file_settings() RETURNS TABLE (name text, setting text, sourcefile text, sourceline int4)
+LANGUAGE plpgsql STABLE SECURITY INVOKER SET search_path = pg_catalog AS $fn$
+BEGIN
+	IF pg_has_role(current_user, 'pg_read_all_settings', 'USAGE') THEN
+		RETURN QUERY SELECT f.name, f.setting, f.sourcefile, f.sourceline FROM pg_file_settings f WHERE f.name LIKE 'sift.%';
+	END IF;
+END
+$fn$;
+
 CREATE OR REPLACE FUNCTION sift_internal.upgrade_findings(target text DEFAULT NULL)
 RETURNS TABLE (ord int, phase text, object text, kind text, detected text, status text, advice text, action_sql text, size_bytes int8)
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, sift AS $fn$
@@ -148,6 +158,7 @@ DECLARE
 	maj int;
 	mnr int;
 	reload boolean := false;
+	preload text;
 BEGIN
 	IF target IS NOT NULL AND target !~ '^[0-9]+\.[0-9]+' THEN
 		RAISE EXCEPTION 'upgrade_check: target must be a release such as 5.1 or 6.0, not "%"', target USING ERRCODE = 'invalid_parameter_value';
@@ -177,7 +188,7 @@ BEGIN
 				   UNION ALL
 				   SELECT f.name, f.setting, 'file ' || f.sourcefile || ':' || f.sourceline,
 						  CASE WHEN f.sourcefile LIKE '%postgresql.auto.conf' THEN format('ALTER SYSTEM RESET %s;', f.name) END
-				   FROM pg_file_settings f WHERE f.name LIKE 'sift.%' AND NOT EXISTS (SELECT 1 FROM pg_settings p WHERE p.name = f.name)
+				   FROM sift_internal.file_settings() f WHERE NOT EXISTS (SELECT 1 FROM pg_settings p WHERE p.name = f.name)
 				   UNION ALL
 				   SELECT split_part(c, '=', 1), substr(c, strpos(c, '=') + 1),
 						  concat_ws(' ', CASE WHEN d.setrole <> 0 THEN 'ALTER ROLE ' || quote_ident(ro.rolname) END, CASE WHEN d.setdatabase <> 0 THEN 'IN DATABASE ' || quote_ident(db.datname) END),
@@ -232,7 +243,8 @@ BEGIN
 			END IF;
 		END LOOP;
 	END LOOP;
-	IF to_regclass('sift.table_option_values') IS NOT NULL THEN
+	-- the rows of sift.table_option_values are for the roles that may read the table (superusers): any other role is told nothing of them, not refused
+	IF has_table_privilege(to_regclass('sift.table_option_values'), 'SELECT') THEN
 		FOR r IN SELECT c.oid::regclass::text AS rel, v.name, pg_relation_size(c.oid) AS bytes
 				 FROM sift.table_option_values v JOIN pg_class c ON c.oid = v.rel::oid WHERE v.name = ANY (tbl_removed) ORDER BY 3, 1, 2
 		LOOP
@@ -324,8 +336,9 @@ BEGIN
 		RETURN NEXT;
 	END LOOP;
 
-	-- 6. replication: a published sift_table needs the library at start-up, for the WAL it decodes
-	IF NOT EXISTS (SELECT 1 FROM unnest(string_to_array(current_setting('shared_preload_libraries'), ',')) l
+	-- 6. replication: a published sift_table needs the library at start-up, for the WAL it decodes (a role that may not read shared_preload_libraries, NULL here, is told nothing)
+	preload := (SELECT s.setting FROM pg_settings s WHERE s.name = 'shared_preload_libraries');
+	IF preload IS NOT NULL AND NOT EXISTS (SELECT 1 FROM unnest(string_to_array(preload, ',')) l
 				   WHERE regexp_replace(regexp_replace(btrim(l, E' \t"'), '^.*/', ''), '[.](so|dylib|dll)$', '') = 'pg_sift') THEN
 		FOR r IN SELECT format('%I.%I', t.schemaname, t.tablename) AS rel
 				 FROM pg_publication_tables t

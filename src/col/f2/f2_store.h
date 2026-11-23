@@ -175,12 +175,14 @@ extern void sift_f2_cell_of_datum(Form_pg_attribute att, Datum d, MemoryContext 
 /*
  * The relation invalidations of the Format 2.0 caches (the stores, the part pins, the address indexes, the granules): the backend takes one syscache callback on RELOID, whose
  * slots are its own (relcache callback slots are shared with every library, and running out is a FATAL), and it runs the invalidators registered here. An invalidator gets the
- * hash value of the relation that changed or was dropped, 0 for all of them, and asks sift_f2_inval_hits whether a relation of its cache is meant.
+ * hash value of the relation that changed or was dropped, 0 for all of them, and asks sift_f2_inval_hits whether a relation of its cache is meant. The RELOID hash value of a
+ * relation is taken when its cache entry is made (sift_f2_rel_hash) and kept: a syscache callback runs outside a transaction and must not look anything up.
  */
 typedef void (*SiftF2Invalidator) (uint32 hashvalue);
 
 extern void sift_f2_invalidator_register(SiftF2Invalidator fn);
-extern bool sift_f2_inval_hits(Oid relid, uint32 hashvalue);
+extern uint32 sift_f2_rel_hash(Relation rel);
+extern bool sift_f2_inval_hits(uint32 relhash, uint32 hashvalue);
 
 extern PGDLLIMPORT const SiftF2HostOps sift_col_host_ops;
 extern PGDLLIMPORT const SiftF2HostOps sift_tbl_host_ops;

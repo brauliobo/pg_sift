@@ -647,7 +647,52 @@ SELECT count(*) FROM sift.check('s_idx', false, 100);
      0
 (1 row)
 
-DROP TABLE p, s, w;
+-- A sift_table of Format 2.0 takes a projection as an index does, while it is empty and once it has parts; one of Format 1 is refused
+CREATE TABLE tp (id int, d date, v int) USING sift_table;
+SELECT sift.create_projection('tp', 'by_v', 'ORDER BY v DESC');
+ create_projection 
+-------------------
+ t
+(1 row)
+
+SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'tp'::regclass;
+ name | kind | state | rows 
+------+------+-------+------
+ by_v | sort | ready |    0
+(1 row)
+
+INSERT INTO tp SELECT i, date '2026-01-01' + i % 10, i FROM generate_series(1, 1000) i;
+VACUUM tp;
+SELECT name, kind, state, rows FROM sift.projection_list() WHERE relation = 'tp'::regclass;
+ name | kind | state | rows 
+------+------+-------+------
+ by_v | sort | ready | 1000
+(1 row)
+
+SELECT p_uses('SELECT id, v FROM tp ORDER BY v DESC LIMIT 5', 'by_v');
+ p_uses 
+--------
+ t
+(1 row)
+
+SELECT p_same_order('SELECT id, v FROM tp ORDER BY v DESC LIMIT 5', 'SELECT id, v FROM tp ORDER BY v + 0 DESC LIMIT 5');
+ p_same_order 
+--------------
+ same
+(1 row)
+
+SELECT sift.drop_projection('tp', 'by_v');
+ drop_projection 
+-----------------
+ t
+(1 row)
+
+SET sift.test_create_format1 = on;
+CREATE TABLE tp1 (id int, v int) USING sift_table;
+SELECT sift.create_projection('tp1', 'by_v', 'ORDER BY v');
+ERROR:  "tp1" is not a sift index or a sift_table of format major 2
+SET sift.test_create_format1 = off;
+DROP TABLE p, s, w, tp, tp1;
 DROP FUNCTION p_same(text), p_same_order(text, text), p_skipped(text), p_uses(text, text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -261,8 +261,9 @@ single_xact(const SiftRows *rows, int from, int cnt)
 	return true;
 }
 
-SiftPartDesc
-sift_part_write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftCompressTier tier, const SiftRows *rows)
+/* The part of rows, written; with memory, kept in memory instead and written nowhere */
+static SiftPartDesc
+write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftCompressTier tier, const SiftRows *rows, SiftPart **memory)
 {
 	int			n = rows->nrows,
 				ng = 0,
@@ -596,7 +597,10 @@ sift_part_write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level
 	in.nsections = nsec;
 	in.inline_extent_cap = -1;
 	in.bulk_tail = rows->bulk_tail;
-	d = sift_part_write(rel, &in);
+	if (memory != NULL)
+		*memory = sift_part_in_memory(rel, &in, &d);
+	else
+		d = sift_part_write(rel, &in);
 	d.ext_flags = (marks != NULL ? SIFT_PART_EXT_KEY_MARKS : 0) | (stats_in ? SIFT_PART_EXT_COL_STATS : 0);
 	memcpy(d.key_lo, kmin, SIFT_BOUND_BYTES);
 	memcpy(d.key_hi, kmax, SIFT_BOUND_BYTES);
@@ -605,6 +609,21 @@ sift_part_write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level
 	if (codecs != NULL)
 		sift_part_codecs_free(codecs);
 	return d;
+}
+
+SiftPartDesc
+sift_part_write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftCompressTier tier, const SiftRows *rows)
+{
+	return write_rows(rel, part_id, part_gen, level, tier, rows, NULL);
+}
+
+SiftPart *
+sift_part_rows_in_memory(Relation rel, uint32 part_id, SiftCompressTier tier, const SiftRows *rows, SiftPartDesc *d)
+{
+	SiftPart   *part;
+
+	*d = write_rows(rel, part_id, 0, 0, tier, rows, &part);
+	return part;
 }
 
 void

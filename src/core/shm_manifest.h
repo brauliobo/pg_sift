@@ -160,11 +160,11 @@ extern const void *sift_shm_snap_part_entries(const SiftShmManifestSnap *snap);
 extern const void *sift_shm_snap_scopes(const SiftShmManifestSnap *snap);
 
 /*
- * The list of partition p of a pinned snapshot: NULL until sift_shm_snap_part_list_install makes it. Install makes a zeroed list of bytes (charged to the pool and counted in the snapshot) and
- * returns the one that is there if another backend was first.
+ * The list of partition p of a pinned snapshot: NULL until sift_shm_snap_part_list_install publishes one. A published list is never written again, so a reader needs no lock and no check
+ * of its own. Install copies bytes of data into a list of the pool (charged to the pool and counted in the snapshot) and publishes it whole; false when another backend published one first or the pool has no room.
  */
-extern void *sift_shm_snap_part_list(const SiftShmManifestSnap *snap, uint32 p);
-extern void *sift_shm_snap_part_list_install(const SiftShmManifestSnap *snap, uint32 p, Size bytes);
+extern const void *sift_shm_snap_part_list(const SiftShmManifestSnap *snap, uint32 p);
+extern bool sift_shm_snap_part_list_install(const SiftShmManifestSnap *snap, uint32 p, const void *data, Size bytes);
 
 extern void sift_shm_manifest_stats(SiftShmManifestStats *stats);
 

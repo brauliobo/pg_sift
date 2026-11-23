@@ -139,7 +139,7 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	IndexOptInfo *index = path->indexinfo;
 	List	   *quals = get_quals_from_indexclauses(path->indexclauses);
 	Selectivity sel = quals == NIL ? 1.0 : clauselist_selectivity(root, quals, index->rel->relid, JOIN_INNER, NULL);
-	Relation	rel = index_open(index->indexoid, NoLock);
+	Relation	rel = index_open(index->indexoid, AccessShareLock);
 	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
 	const SiftColRel *r = sift_col_rel_private(rel, CurrentMemoryContext);
 	const SiftF2Rel *f = sift_f2_rel(rel);

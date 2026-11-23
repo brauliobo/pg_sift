@@ -110,7 +110,7 @@ group_has_partition_key(AggCtx *c, List *keys)
 
 	if (c->nparts == 0)
 		return false;
-	rel = table_open(c->heapoid, NoLock);
+	rel = table_open(c->heapoid, AccessShareLock);
 	/* the partition descriptor lists the direct partitions in one read, the catalog scan of get_partition_parent costs 12,000 instructions each;
 	 * not omit_detached: a partition the snapshot still sees may be mid-DETACH CONCURRENTLY */
 	{

@@ -52,8 +52,8 @@ SELECT layout, budget_kb, ins, outs, outs <= 12 AS a_unit_each_at_most, outs <= 
 --------+-----------+-----+------+---------------------+---------------
  coarse |         0 |   7 |    1 | t                   | t
  coarse |         1 |   7 |   12 | t                   | t
- coarse |         4 |   7 |    6 | t                   | t
- coarse |        16 |   7 |    3 | t                   | t
+ coarse |         4 |   7 |   11 | t                   | t
+ coarse |        16 |   7 |    6 | t                   | t
  coarse |        64 |   7 |    1 | t                   | t
 (5 rows)
 

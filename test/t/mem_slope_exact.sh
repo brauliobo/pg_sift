@@ -32,16 +32,16 @@ sql mx "CREATE TABLE control AS SELECT * FROM f30000" "CREATE INDEX control_col 
 built=$(segments m30000_col)
 control=$(segments control_col)
 
-row merge probe 1000 exact open >"$(dir mx)/probe.tsv"
+row merge_col probe 1000 exact open >"$(dir mx)/probe.tsv"
 probe=$(slope "$(dir mx)/probe.tsv" | grep '^SLOPE probe ')
 exact=$(sed -E 's/.*memory scopes (-?[0-9.]+) B\/row.*/\1/' <<<"$probe")
 at=$(awk -v e="$exact" 'BEGIN { a = e * 0.15; if (a < 2) a = 2; x = e + a; print (x == int(x)) ? x : int(x) + 1 }')
 under=$(awk -v e="$exact" 'BEGIN { a = e * 0.15; if (a < 2) a = 2; print int(e - a) }')
 
 {
-	row merge merge_at "$at" exact open
-	row merge merge_under "$under" exact open
-	row merge merge_clean 12 exact clean
+	row merge_col merge_at "$at" exact open
+	row merge_col merge_under "$under" exact open
+	row merge_col merge_clean 12 exact clean
 	row update_all update_flat 12 exact clean
 } >"$(dir mx)/cases.tsv"
 out=$(slope "$(dir mx)/cases.tsv")

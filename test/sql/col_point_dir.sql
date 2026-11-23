@@ -206,9 +206,10 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
 VACUUM pd;
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w ORDER BY n;
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 INSERT INTO pd (id, k, s, u, v) SELECT i, i % 9000, 'old' || i % 500, md5(i::text)::uuid, i FROM generate_series(30101, 31100) i;
 SELECT sift.col_promote('pd_all'::regclass) >= 0 AS promoted;
+RESET sift.test_col_format_minor;
 SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w ORDER BY n;
@@ -219,8 +220,9 @@ SELECT n, pd_cmp('pd_all', preds, heapwhere) FROM pd_q ORDER BY n;
 SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitmap_scan FROM pd_w ORDER BY n;
 
 -- an index written at the setting 13 has no directory and is read as before; ALTER INDEX applies to the segments written afterwards
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k, v');
+RESET sift.test_col_format_minor;
 SELECT min(format) < 13 AS no_directory FROM sift.col_segments('pd_13') WHERE kind = 'immutable';
 SELECT n, pd_cmp('pd_13', preds, heapwhere) FROM pd_qk ORDER BY n;
 SELECT sift.col_verify('pd_13', true);

@@ -84,8 +84,9 @@ SELECT format, count(*) AS segments FROM sift.col_segments('tz_i') WHERE kind = 
 SELECT sift.col_verify('tz_i');
 
 -- a format minor below the one that has the order array writes none
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX tp_i;
+RESET sift.test_col_format_minor;
 SELECT format FROM sift.col_segments('tp_i') WHERE kind = 'immutable';
 
 DROP FUNCTION tp_chk(text), tp_all(text), tp_range(text), tp_str(int);

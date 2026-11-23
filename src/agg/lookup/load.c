@@ -534,6 +534,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 	{
 		/* the heap tests `column = value` on the page, before it makes a tuple of a row; another access method ignores the keys, the filter holds them too */
 		bool		heap = rel->rd_tableam == GetHeapamTableAmRoutine();
+		MemoryContext scan_cx = sift_mem_allocset_create(old, "sift agg lookup scan");
 
 		TableScanDesc scan;
 
@@ -549,7 +550,9 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 		for (int k = 0; heap && sift_agg_lookup_pushdown && k < j->nidx; k++)
 			if (!j->idxany[k])
 				ScanKeyEntryInitialize(&keys[nkeys++], 0, j->idxatt[k], BTEqualStrategyNumber, InvalidOid, j->idxcoll[k], get_opcode(j->idxop[k]), val[k]);
+		MemoryContextSwitchTo(scan_cx);
 		scan = sift_table_beginscan(rel, ex->snap, nkeys, keys);
+		MemoryContextSwitchTo(kept.cx);
 
 		/* a first-row lookup of a child that tests more than its key: the rows it would not return are not loaded */
 		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
@@ -572,6 +575,7 @@ map_load_table(AggExec *ex, int ci, MemoryContext cxt)
 			}
 		}
 		table_endscan(scan);
+		MemoryContextDelete(scan_cx);
 		ex->lookup_hscan += m->nrow;
 	}
 	if (ord.cx)

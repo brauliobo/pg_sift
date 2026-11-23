@@ -123,7 +123,7 @@ ordered_prefix(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, RelOptInfo *out
 
 	foreach_node(PathKey, pk, pathkeys)
 	{
-		Oid			sortop;
+		Oid			sortop = InvalidOid;
 		int			j = pathkey_key(pk, keys, &sortop);
 
 		if (j < 0 || n >= SIFT_AGG_MAX_KEYS)

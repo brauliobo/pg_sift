@@ -7,7 +7,8 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 6
-node_init lock 9 "autovacuum = off"
+node_init lock 9 "autovacuum = off
+sift.async_maintenance = on"
 node_start lock || bail "start failed"
 D=$(dir lock)
 # per database, which the worker reads as well

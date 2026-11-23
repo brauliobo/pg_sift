@@ -7,6 +7,7 @@
 plan 11
 node_init qc 27 "autovacuum = off
 sift.on_corruption = quarantine
+sift.async_maintenance = on
 sift.maintenance_naptime = 1000"
 node_start qc || bail "start failed"
 D=$(dir qc)

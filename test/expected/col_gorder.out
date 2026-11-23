@@ -147,8 +147,8 @@ SELECT sift.col_verify('go_n');
  
 (1 row)
 
--- sift.upgrade_commands() lists the REINDEX that gives the older segments their array
-SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
+-- sift.upgrade_commands() lists the REINDEX of an index of Format 1, and that REINDEX gives the older segments their array
+SELECT kind, object, command FROM sift.upgrade_commands() WHERE kind = 'reindex' AND object = 'go_n'::regclass;
   kind   | object |                 command                 
 ---------+--------+-----------------------------------------
  reindex | go_n   | REINDEX INDEX CONCURRENTLY public.go_n;
@@ -157,10 +157,10 @@ SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'order_
 REINDEX INDEX go_n;
 NOTICE:  sift_col index "go_n": 1 automatic choice (order_array_columns), 1 advice (track_changes)
 NOTICE:  sift_col index "go_n" is column format minor 44, which a library before 4.3 cannot read
-SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'order_array';
- commands 
-----------
-        0
+SELECT count(*) FILTER (WHERE format < 21) AS old_segments FROM sift.col_segments('go_n') WHERE kind = 'immutable';
+ old_segments 
+--------------
+            0
 (1 row)
 
 DROP INDEX go_n;
@@ -178,9 +178,10 @@ SELECT leaf, (SELECT count(*) FROM sift._test_col_gorder('go_x', leaf)) AS entri
 
 DROP INDEX go_x;
 -- the setting 14 keeps the sorted runs and no array
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX go_m ON go USING sift_col (id sift.col_int4_ops, b sift.col_int4_ops) WITH (order_array_columns = 'id, b');
 NOTICE:  sift_col index "go_m": 1 advice (track_changes)
+RESET sift.test_col_format_minor;
 SELECT count(*) AS entries FROM sift._test_col_gorder('go_m', 0);
  entries 
 ---------

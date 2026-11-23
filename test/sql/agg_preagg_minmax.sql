@@ -1,7 +1,7 @@
 -- min() and max() of an integer measure per group of the cube: an index with the option cube_minmax stores them in every group of every unit (column
 -- format minor 7), and the units that are exact answer them from the groups. Every query runs three ways, which must give the same rows (text): from
 -- the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
--- answered from metadata: none for an index that does not store them, a unit written before the option, or one written under sift.col_format_minor = 6.
+-- answered from metadata: none for an index that does not store them, a unit written before the option, or one written under sift.test_col_format_minor = 6.
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET default_statistics_target = 10000;
@@ -85,8 +85,9 @@ CREATE INDEX mc_col ON mc USING sift_col (id, kind, grp, val, small, amt, flt)
 	WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, preagg = 'cube(kind: val, small, amt, flt; grp: val, small, amt)', superunit = 0);
 CREATE INDEX md_col ON md USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 CREATE INDEX mo_col ON mo USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 CREATE INDEX mf_col ON mf USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+RESET sift.test_col_format_minor;
 CREATE INDEX mx_col ON mx USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CALL pa_settle();
 -- FREEZE: a page whose buffer another backend has pinned is passed by a VACUUM that has nothing to freeze there, and stays out of the visibility map
@@ -138,9 +139,10 @@ SELECT sift.col_merge('mx_col', true) >= 0 AS merged;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) mx;
 SELECT sift.col_verify('mx_col', true);
 SELECT * FROM pa_sum('mx');
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 INSERT INTO mf SELECT g, g % 6, 'g' || (g % 30), g * 1000, g % 9, g / 7.0, g / 3.0, repeat('p', 200) FROM generate_series(300001, 310000) g;
 SELECT sift.col_promote('mf_col') >= 0 AS promoted;
+RESET sift.test_col_format_minor;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) mf;
 SELECT sift.col_verify('mf_col', true);
 SELECT * FROM pa_sum('mf');

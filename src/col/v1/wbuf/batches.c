@@ -578,7 +578,8 @@ set_new(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, 
 		sets_cxt = sift_cache_create_context("sift cache write buffer batches");
 		sift_cache_register(&sets_kind);
 	}
-	cx = AllocSetContextCreate(sets_cxt, "sift cache write buffer batch set", 8 * 1024, 8 * 1024, 64 * 1024);
+	/* in the context of the read until it is filled (set_current): a read that fails leaves no set under the cache */
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift cache write buffer batch set", 8 * 1024, 8 * 1024, 64 * 1024);
 	s = MemoryContextAllocZero(cx, sizeof(BatchSet));
 	s->cx = cx;
 	s->schema = schema;
@@ -786,6 +787,7 @@ rebuild:
 	if (!set_fill(s, r, &f))
 		SIFT_CORRUPT(index, "A write buffer record of segment %llu repeats an address.", (unsigned long long) entry->gen);
 	sift_cwbuf_decoded_note(index, entry->gen, f.nheld);
+	MemoryContextSetParent(s->cx, sets_cxt);
 	return s;
 }
 

@@ -18,6 +18,10 @@
 
 int			sift_backend_cache_kb = 16 * 1024;
 
+#ifdef SIFT_TESTING
+bool		sift_cache_stress;
+#endif
+
 static MemoryContext cache_root;
 static const SiftCacheKind *kinds[SIFT_CACHE_MAX_KINDS];
 static int	nkinds;
@@ -34,9 +38,21 @@ sift_cache_root_context(void)
 }
 
 MemoryContext
+sift_cache_create_context_in(MemoryContext parent, const char *name)
+{
+	return AllocSetContextCreateInternal(parent, name, ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, CACHE_BLOCK_MAX);
+}
+
+MemoryContext
 sift_cache_create_context(const char *name)
 {
-	return AllocSetContextCreateInternal(sift_cache_root_context(), name, ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, CACHE_BLOCK_MAX);
+	return sift_cache_create_context_in(sift_cache_root_context(), name);
+}
+
+void
+sift_cache_adopt(MemoryContext cx)
+{
+	MemoryContextSetParent(cx, sift_cache_root_context());
 }
 
 Size
@@ -108,6 +124,10 @@ sift_cache_room(Size need)
 	Size		limit = (Size) sift_backend_cache_kb * 1024;
 	bool		fits = need <= limit;
 
+#ifdef SIFT_TESTING
+	while (sift_cache_stress && evict_oldest())
+		;
+#endif
 	while (fits && sift_cache_total_bytes() + need > limit)
 		fits = evict_oldest();
 	trim_reclaimed();

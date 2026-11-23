@@ -44,7 +44,7 @@ BEGIN
 	PERFORM set_config('parallel_setup_cost', '0', true);
 	PERFORM set_config('parallel_tuple_cost', '0', true);
 	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+	PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
 END $$;
 
 CREATE FUNCTION sp_plan(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
@@ -70,12 +70,12 @@ END $$;
 
 SELECT n, sp_plan(sql, 'groups') AS plan_groups, sp_plan(sql, 'rows') AS plan_rows FROM sp_q ORDER BY n;
 
--- the plan of the default settings for the table priced as larger (sift.plan_scale): the groups of a large table are split by their key, a handful of groups are not
+-- the plan of the default settings for the table priced as larger (sift.test_plan_scale): the groups of a large table are split by their key, a handful of groups are not
 -- (the rows are split), and a table of this size keeps one process
 CREATE FUNCTION sp_default(q text, scale int) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan';
 BEGIN
-	PERFORM set_config('sift.plan_scale', scale::text, true);
+	PERFORM set_config('sift.test_plan_scale', scale::text, true);
 	PERFORM set_config('max_parallel_workers_per_gather', '4', true);
 	PERFORM set_config('min_parallel_table_scan_size', '0', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP

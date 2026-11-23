@@ -333,7 +333,10 @@ sift_tier_refs(Relation rel, int *n)
 		return cached.refs;
 	refs = sift_manifest_read_tier(rel, &meta, n);
 	if (cached.refs != NULL)
+	{
 		pfree(cached.refs);
+		cached.refs = NULL;
+	}
 	cached = (CachedRefs) {.locator = rel->rd_locator,.gen = meta.tier_dir_gen,.n = *n,.refs = MemoryContextAlloc(policy_context(), *n * sizeof(SiftTierPartRef))};
 	memcpy(cached.refs, refs, *n * sizeof(SiftTierPartRef));
 	pfree(refs);

@@ -138,7 +138,7 @@ sift_pivot_create(MemoryContext cx, int nfilters, int naggs, const SiftPivotAgg 
 		if (aggs[j].kind == SFP_COUNT_DISTINCT)
 			p->dist[j] = sift_distinct_create(cx, distinct_budget / (uint64) ndist, 0);
 	p->fm = sift_fmasks_create(cx, nfilters);
-	p->sub = MemoryContextAlloc(cx, sizeof(SiftBatchSel));
+	p->sub = MemoryContextAllocAligned(cx, sizeof(SiftBatchSel), _Alignof(SiftBatchSel), 0);
 	return p;
 }
 
@@ -164,7 +164,7 @@ pivot_groups(SiftPivot *p, uint32 ngroups)
 		return;
 	{
 		uint32		n = Max(Max(p->ngroups * 2, ngroups), 16);
-		PivotAcc   *a = MemoryContextAllocZero(p->cx, sizeof(PivotAcc) * n * (uint32) Max(p->naggs, 1));
+		PivotAcc   *a = MemoryContextAllocAligned(p->cx, sizeof(PivotAcc) * n * (uint32) Max(p->naggs, 1), _Alignof(PivotAcc), MCXT_ALLOC_ZERO);
 
 		if (p->acc != NULL)
 		{

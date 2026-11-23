@@ -1,6 +1,6 @@
 -- The sidecar of a segment with dead rows (docs/COL-PREAGG.md section 13): VACUUM writes the pre-aggregates of each dirty unit net of its dead rows after the segment's own
 -- stream, and a unit whose pages are all-visible and whose dead rows are the ones the sidecar was made for answers from them, whatever the aggregate a cube can give: a minimum and a
--- maximum too, where sift.agg_dead_delta takes the dead rows off counts and integer sums only. The answers never change: from the sidecar, from the units' rows (sift.agg_preagg off)
+-- maximum too, where sift.test_agg_dead_delta takes the dead rows off counts and integer sums only. The answers never change: from the sidecar, from the units' rows (sift.agg_preagg off)
 -- and with the scan planner off they are the same. Shapes 9, 13, 14 and 18 are not answered from the pre-aggregates of this index at all (a ctid range, a float sum, a calendar rollup it lacks):
 -- they scan with or without dead rows; 12 is a distinct count, which reads key lists that still hold the dead rows' values.
 CREATE EXTENSION pg_sift;
@@ -92,9 +92,10 @@ VACUUM (DISABLE_PAGE_SKIPPING) ov;
 SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
 
 -- an index written at an older column format minor (no minima and maxima in the cube, no calendar cells) gets the sidecar too, and verifies
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 CREATE TABLE ov6 AS SELECT id, grp, kind, amount, qty FROM ov;
 CREATE INDEX ov6_col ON ov6 USING sift_col (id, grp, kind, amount, qty);
+RESET sift.test_col_format_minor;
 SELECT format, count(*) FROM sift.col_segments('ov6_col') GROUP BY 1;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ov6;
 DELETE FROM ov6 WHERE id % 11 = 3;

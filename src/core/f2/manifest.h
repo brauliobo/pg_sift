@@ -134,6 +134,7 @@ StaticAssertDecl(sizeof(SiftPartDirPageData) == 24, "SiftPartDirPageData header 
 #define SIFT_PART_EXT_KEY_MARKS		(UINT8_C(1) << 1)	/* the part carries SEC_KEY_MARKS (col/f2/part_format.h) */
 #define SIFT_PART_EXT_COL_STATS		(UINT8_C(1) << 2)	/* the part carries SEC_COL_STATS (col/f2/part_format.h) */
 #define SIFT_PART_EXT_EXPIRED		(UINT8_C(1) << 3)	/* the time to live of the part is over; a manifest commit drops it */
+#define SIFT_PART_EXT_SLAB			(UINT8_C(1) << 4)	/* of a descriptor made in memory, never stored: the micro-slab at header_blk of nrows rows, as a part a standby reads (col/f2/f2_slab_view.h) */
 
 typedef struct SiftPartDesc
 {

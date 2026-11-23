@@ -1,5 +1,5 @@
 -- Column format minor 5: only a segment of an index with wide leaves (lanes, money, interval) is written as minor 5,
--- whatever sift.col_format_minor says; an index of the older types keeps writing the setting's minor, so 3.1 still opens it. fmt lists the
+-- whatever sift.test_col_format_minor says; an index of the older types keeps writing the setting's minor, so 3.1 still opens it. fmt lists the
 -- minors of the segments, oldest first.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -19,25 +19,27 @@ BEGIN
 END $$;
 
 -- the wide minor is a property of the schema, not a GUC setting
-SET sift.col_format_minor = 5;
+SET sift.test_col_format_minor = 5;
 
 CREATE TABLE g (id int, grp int, p numeric(18, 2), w numeric(30, 4), m money, iv interval, any_n numeric);
 INSERT INTO g SELECT i, i % 9, i % 1000 / 8.0, i * 1000000000000.0001, (i % 977 || '.25')::money, make_interval(days => i % 40, mins => i % 7),
 	   CASE WHEN i % 11 = 0 THEN 'NaN' ELSE i / 3.0 END FROM generate_series(1, 30000) i;
 
 -- narrow only (numeric(18, 2) is one INT leaf): the setting's minor, as in 3.1
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX g_narrow ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow');
+RESET sift.test_col_format_minor;
 CREATE INDEX g_narrow4 ON g USING sift_col (id, grp, p) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_narrow4');
 -- each wide type alone, under either setting
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX g_w ON g USING sift_col (w) WITH (cube_minmax = false, superunit = 0);
 CREATE INDEX g_m ON g USING sift_col (m) WITH (cube_minmax = false, superunit = 0);
 CREATE INDEX g_iv ON g USING sift_col (iv) WITH (cube_minmax = false, superunit = 0);
 CREATE INDEX g_n ON g USING sift_col (any_n) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('g_w'), fmt('g_m'), fmt('g_iv'), fmt('g_n');
+RESET sift.test_col_format_minor;
 DROP INDEX g_w, g_m, g_iv, g_n;
 
 -- a narrow index grows nothing of the wide minor; a mixed one is wide as a whole
@@ -54,11 +56,12 @@ SELECT fmt('g_all'), fmt('g_narrow');
 SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
 SELECT sift.col_verify('g_all', true), sift.col_verify('g_narrow', true);
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 INSERT INTO g SELECT i, i % 9, 1, i, '2.00'::money, interval '2 days', 1 FROM generate_series(60001, 70000) i;
 SELECT sift.col_promote('g_all');
 SELECT sift.col_merge('g_all', true);
 SELECT fmt('g_all');
+RESET sift.test_col_format_minor;
 REINDEX INDEX g_all;
 SELECT fmt('g_all');
 SELECT sift.col_verify('g_all', true);

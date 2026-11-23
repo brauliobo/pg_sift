@@ -49,13 +49,13 @@ DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
 	PERFORM set_config('max_parallel_workers_per_gather', workers::text, true);
-	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+	PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
 	BEGIN
 		EXECUTE format('SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (%s) t', q) INTO r;
 	EXCEPTION WHEN OTHERS THEN r := 'ERROR: ' || SQLERRM;
 	END;
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-	PERFORM set_config('sift.agg_par_min_rows', '80000', true);
+	PERFORM set_config('sift.test_agg_par_min_rows', '80000', true);
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	RETURN r;
 END $$;
@@ -64,7 +64,7 @@ CREATE FUNCTION init_launched(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; r int := 0;
 BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', '3', true);
-	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+	PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
 	PERFORM set_config('parallel_setup_cost', '0', true);
 	PERFORM set_config('parallel_tuple_cost', '0', true);
 	PERFORM set_config('min_parallel_table_scan_size', '0', true);
@@ -76,7 +76,7 @@ BEGIN
 	EXCEPTION WHEN OTHERS THEN r := 0;
 	END;
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
-	PERFORM set_config('sift.agg_par_min_rows', '80000', true);
+	PERFORM set_config('sift.test_agg_par_min_rows', '80000', true);
 	PERFORM set_config('parallel_setup_cost', '1000', true);
 	PERFORM set_config('parallel_tuple_cost', '0.1', true);
 	PERFORM set_config('min_parallel_table_scan_size', '8MB', true);

@@ -36,7 +36,7 @@ CREATE FUNCTION kr_units(ix regclass) RETURNS numeric LANGUAGE sql AS $$
 
 -- the runs of the table's order: a unit in each run for a key
 SET sift.test_col_build_runs_overlap = on;
-SET sift.col_unit_rows = 1200;
+SET sift.test_col_unit_rows = 1200;
 CREATE INDEX kr_runs ON kr USING sift_col (id, tenant_id, note, price, score, flag, d, tags, pad) WITH (key_cut = 'tenant_id');
 SELECT count(*) > 3 AS several_runs FROM sift.col_segments('kr_runs') WHERE kind = 'immutable';
 SELECT kr_units('kr_runs') > 3 AS units_in_every_run;

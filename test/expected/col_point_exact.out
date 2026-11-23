@@ -1,5 +1,5 @@
 -- The slot count of a point directory: ceil(keys * 4 / 3) slots of 8 bytes, a key starts at the position its hash scales to, not a power of
--- two with a mask. Every key of every size is found and an absent one lists no address, a segment of the older layout (sift.col_format_minor 14, tables of a power of two) is read
+-- two with a mask. Every key of every size is found and an absent one lists no address, a segment of the older layout (sift.test_col_format_minor 14, tables of a power of two) is read
 -- as before, and a merge of both writes the new one.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -16,9 +16,9 @@ DECLARE slots int; b bigint; step int := greatest(n / 400, 1); lost bigint; extr
 BEGIN
 	EXECUTE 'DROP TABLE IF EXISTS pe_t';
 	EXECUTE format('CREATE TABLE pe_t AS SELECT g AS id, g * 7919 AS k FROM generate_series(1, %s) g', n);
-	PERFORM set_config('sift.col_format_minor', minor::text, true);
+	PERFORM set_config('sift.test_col_format_minor', minor::text, true);
 	EXECUTE 'CREATE INDEX pe_i ON pe_t USING sift_col (k) WITH (key_cut = ''off'', point_tid_columns = ''k'')';
-	PERFORM set_config('sift.col_format_minor', '15', true);
+	PERFORM set_config('sift.test_col_format_minor', '15', true);
 	slots := CASE WHEN minor >= 33 OR minor = 15 THEN greatest(16, ceil(n * 4 / 3.0)::int) ELSE greatest(16, (2 ^ ceil(log(2, n * 4 / 3.0)))::int) END;
 	SELECT sum(s.bytes) INTO b FROM sift.col_sections('pe_i') s WHERE s.section IN ('dict_other', 'point_dir', 'order_arrays');
 	SELECT count(*) INTO lost FROM generate_series(1, n, step) g
@@ -104,8 +104,9 @@ SELECT * FROM pe_probe(12289, 14);
 -- a merge of segments of both layouts, with duplicate keys (lists) and NULLs: the answers are the heap's, and the merged segment is the new layout
 CREATE TABLE pe_m (id int, k int, s text);
 INSERT INTO pe_m SELECT g, CASE WHEN g % 50 = 0 THEN NULL ELSE (g * 7) % 3000 END, 's' || (g * 13) % 2500 FROM generate_series(1, 12000) g;
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX pe_mi ON pe_m USING sift_col (k, s) WITH (key_cut = 'off', point_tid_columns = 'k, s', count_columns = 'off');
+RESET sift.test_col_format_minor;
 INSERT INTO pe_m SELECT g, (g * 7) % 3000, 's' || (g * 13) % 2500 FROM generate_series(12001, 24000) g;
 SELECT sift.col_promote('pe_mi'::regclass) >= 0 AS promoted;
  promoted 
@@ -196,8 +197,9 @@ SELECT sift.col_verify('pe_mi', true);
 (1 row)
 
 -- the older layout is what the setting 14 writes again, by a rebuild
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX pe_mi;
+RESET sift.test_col_format_minor;
 SELECT least(format, 15) AS format, count(*) AS segments FROM sift.col_segments('pe_mi') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;
  format | segments 
 --------+----------

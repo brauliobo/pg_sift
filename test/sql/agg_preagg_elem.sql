@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 -- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
-SET sift.agg_rollup_cost = 0;
+SET sift.test_agg_rollup_cost = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 -- workers divide the heap blocks among themselves as they run, so a parallel build lays the rows out in other units from run to run, and the counts
@@ -26,7 +26,7 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	-- a unit that lacks its rollup asks for one (the request queue) and a background worker replaces the segment that holds it; a statement that began on the old segment
 	-- then scans all its units (segments_current), so the counts of a statement that follows would depend on the worker's timing. The statements counted here make no request.
-	PERFORM set_config('sift.col_rollup_on_demand', 'off', true);
+	PERFORM set_config('sift.test_col_rollup_on_demand', 'off', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
@@ -98,7 +98,7 @@ END $$;
 -- Function-local settings also restore the changes made by pa_rows on return.
 CREATE FUNCTION pa_contract(idx regclass, q text, two_keys bool)
 RETURNS TABLE (inventory bool, visible bool, used bool, same bool) LANGUAGE plpgsql
-SET sift.agg_preagg = on SET sift.enable_agg = on SET sift.col_rollup_on_demand = off SET enable_seqscan = off AS $$
+SET sift.agg_preagg = on SET sift.enable_agg = on SET sift.test_col_rollup_on_demand = off SET enable_seqscan = off AS $$
 DECLARE
 	stored bigint; eligible bigint; planned int; answered int; l text; siftagg bool := false;
 	a text; b text; c text;
@@ -164,18 +164,20 @@ CREATE INDEX ac_col ON ac USING sift_col (id, grp, items, tags)
 	      preagg = 'cube(grp: id) rollup(items[].kind, items[].n: items[].n, items[].score; tags[])', cube_minmax = false, superunit = 0);
 CREATE INDEX ab_col ON ab USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
 CREATE INDEX ao_col ON ao USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, preagg = 'off', cube_minmax = false, superunit = 0);
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX a3_col ON a3 USING sift_col (id, grp, items, tags) WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
+RESET sift.test_col_format_minor;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ae, ac, ao, a3, ab;	-- waits for the cleanup lock: a page another session has pinned (the checkpointer) would stay not all-visible
 SELECT sift.col_verify('ae_col', true), sift.col_verify('ac_col', true), sift.col_verify('a3_col', true);
 SELECT units > 2 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('ac_col');
 
 -- 1. built, every page all-visible
 -- Freeze automatic rollup selection before any query can enqueue a refresh of ae.
-SET sift.col_rollup_on_demand = off;
+SET sift.test_col_rollup_on_demand = off;
 SELECT * FROM pa_check('ac');
 SELECT * FROM pa_check('ae') WHERE n <> 16;
 SELECT c.* FROM pa_q q, LATERAL pa_contract('ae_col', format(q.q, 'ae'), true) c WHERE q.n = 16;
+RESET sift.test_col_rollup_on_demand;
 SELECT * FROM pa_sum('ao');
 SELECT * FROM pa_sum('a3');
 SELECT * FROM pa_check('ab', 1, 1) UNION ALL SELECT * FROM pa_check('ab', 26, 26) ORDER BY 1;
@@ -185,7 +187,7 @@ FROM sift.col_unit_hist('ab_col', 'items[].kind', 'items[].n');
 CALL pa_settle();
 -- Small automatic cubes: both dimensions fit; 65 distinct n values exceed the 64-key preselection cap.
 -- The only element leaves are kind and n; short text/small integers leave ample encoding room.
-SET sift.col_rollup_on_demand = off;
+SET sift.test_col_rollup_on_demand = off;
 CREATE TABLE ap (id int, items jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ap SELECT 1, jsonb_agg(jsonb_build_object('kind', k, 'n', n) ORDER BY k, n)
 FROM unnest(ARRAY['a', 'b']) k CROSS JOIN generate_series(1, 2) n;
@@ -211,6 +213,7 @@ SELECT (SELECT units FROM sift.col_index_info('ap_col')) = 1 AS one_unit,
 SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, e.n, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1, 2', true);
 SELECT * FROM pa_contract('ap_col', 'SELECT e.kind, count(*) FROM ap d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int) GROUP BY 1', false);
 DROP TABLE ap;
+RESET sift.test_col_rollup_on_demand;
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
 UPDATE ac SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id BETWEEN 100 AND 200;
@@ -255,9 +258,10 @@ SELECT * FROM pa_check('ac');
 SET max_parallel_maintenance_workers = 0;
 
 -- 7. a minor 3 index that gets default segments (minor 15 or more, shown as 15) (rows inserted and sealed after the format changed): the units of each answer by what they hold
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(400001, 400500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
+RESET sift.test_col_format_minor;
 INSERT INTO a3 SELECT g, g % 7, jsonb_build_array(jsonb_build_object('kind', 'k' || g % 5, 'n', g % 9, 'score', g * 0.25)), '["t1"]', repeat('p', 3000) FROM generate_series(410001, 410500) g;
 SELECT sift.col_promote('a3_col') >= 0 AS promoted;
 CALL pa_settle();

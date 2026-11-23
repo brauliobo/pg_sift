@@ -12,11 +12,13 @@
 
 #include "col/am.h"
 #include "col/v1/preagg.h"
+#include "col/v1/seg_int.h"
 #include "col/v1/test/test_int.h"
 #include "core/catname.h"
 
 PG_FUNCTION_INFO_V1(sift_test_row_key_bytes);
 PG_FUNCTION_INFO_V1(sift_test_option_syntax_bytes);
+PG_FUNCTION_INFO_V1(sift_test_unit_room_failure);
 
 /* the bytes left allocated in a context of its own by n calls of ask(arg) */
 static int64
@@ -81,5 +83,38 @@ sift_test_option_syntax_bytes(PG_FUNCTION_ARGS)
 	else
 		elog(ERROR, "unknown option \"%s\"", option);
 	PG_RETURN_INT64(held_by(PG_GETARG_INT32(2), ask_syntax, &ask));
+}
+
+/*
+ * sift._test_unit_room_failure(): a segment asks for a unit buffer no allocation can give (more than 1 GB), the error is caught and the segment's context ends, as a query that fails does;
+ * the next segment then takes its buffer, which must be a whole one: it is written to its end
+ */
+Datum
+sift_test_unit_room_failure(PG_FUNCTION_ARGS)
+{
+	MemoryContext outer = CurrentMemoryContext;
+	MemoryContext failed = AllocSetContextCreate(outer, "sift test failed segment", ALLOCSET_SMALL_SIZES);
+	SiftColSegment fseg = {.mcxt = failed};
+	SegPriv		fpv = {0};
+	MemoryContext next = AllocSetContextCreate(outer, "sift test next segment", ALLOCSET_SMALL_SIZES);
+	SiftColSegment nseg = {.mcxt = next};
+	SegPriv		npv = {0};
+	const uint32 len = 100000;
+
+	PG_TRY();
+	{
+		sift_cseg_unit_room(&fseg, &fpv, UINT32_C(1) << 31);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(outer);
+		FlushErrorState();
+	}
+	PG_END_TRY();
+	MemoryContextDelete(failed);
+	sift_cseg_unit_room(&nseg, &npv, len);
+	memset(npv.unitbuf, 0x5a, npv.unitcap);
+	MemoryContextDelete(next);
+	PG_RETURN_BOOL(npv.unitcap >= len + SIFT_COL_PAD);
 }
 #endif

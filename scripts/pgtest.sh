@@ -13,7 +13,7 @@
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, ONE pg_regress run for all of them in one fresh database
 #                                (contrib_regression_<first>, the output in $SIFT_TMP/regress/<first>), then one leak check of the server log and one look at what the run left in the
 #                                database (scripts/leftovers.sql, exceptions in scripts/leftovers.allow). A run with a diff, a leak or a leftover is cut in halves, each in a fresh
-#                                database, until the failing tests are named (SIFT_REGRESS_DIR: another directory of sql/ and expected/, for scripts/test-regress-batch.sh)
+#                                database, until the failing tests are named, at most SIFT_BISECT_REDS (4) of them (SIFT_REGRESS_DIR: another directory of sql/ and expected/, for scripts/test-regress-batch.sh)
 #                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) on a quiet cluster: a session
 #                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
 #   scripts/pgtest.sh fresh [t...]    regress with a NEW backend for every statement outside a transaction (scripts/fresh-psql.py, test/fresh/README.md)
@@ -227,6 +227,7 @@ regress() {
 	batch_run "$@" && return 0
 	if (( $# == 1 )); then batch_report "$1" "$1"; return 1; fi
 	echo "pgtest: regress: the batch of $# tests starting at $1 failed; cutting it in halves to name the tests" >&2
+	BISECT_NAMED=0
 	bisect_batch "$(<"$TMP/regress/$1.report")" "$@" || true
 	return 1
 }
@@ -268,6 +269,9 @@ batch_checks() {
 # batch_report KEY TEST: what the failed run of the single TEST (output KEY) found, named after it
 batch_report() { sed "s/^LEFTOVER: /LEFTOVER $2: /; s/^not ok - /not ok - $2 /" "$TMP/regress/$1.report"; }
 
+# the failing tests the cuts of one batch have named: a batch is red with 4 named as with 20, and the cuts of 20 reds ran past CI_JOB_TIMEOUT, so they stop at SIFT_BISECT_REDS (4)
+BISECT_NAMED=0
+
 # bisect_batch REPORT TEST...: REPORT is what the batch of TEST... found. Runs each half alone; 1 as soon as a half fails (the tests that fail alone are reported by name),
 # else the tests only fail together: REPORT is all there is to say. 2 when the server is gone: no half can run
 bisect_batch() {
@@ -283,9 +287,10 @@ bisect_batch() {
 }
 cut_batch() {
 	local REGRESS_CUT=1
+	(( BISECT_NAMED < ${SIFT_BISECT_REDS:-4} )) || { echo "pgtest: regress: $BISECT_NAMED failing tests are named (SIFT_BISECT_REDS), not cutting further; not run alone: $*" >&2; return 1; }
 	ready || { echo "pgtest: regress: the server is gone, so the batch of $# tests starting at $1 was not run" >&2; return 2; }
 	batch_run "$@" && return 0
-	if (( $# == 1 )); then batch_report "$(batch_key "$@")" "$1"; return 1; fi
+	if (( $# == 1 )); then BISECT_NAMED=$(( BISECT_NAMED + 1 )); batch_report "$(batch_key "$@")" "$1"; return 1; fi
 	bisect_batch "$(<"$TMP/regress/$(batch_key "$@").report")" "$@"
 }
 

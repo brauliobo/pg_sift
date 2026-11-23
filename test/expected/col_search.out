@@ -108,7 +108,7 @@ SELECT * FROM cs_stage('build');
        | wildcard=same+search 5
 (1 row)
 
-SET sift.search_chunk_sbs = 1;
+SET sift.test_search_chunk_sbs = 1;
 SELECT * FROM cs_stage('chunks of one superblock');
           stage           |         results         
 --------------------------+-------------------------
@@ -140,6 +140,7 @@ SELECT * FROM cs_stage('chunks of one superblock');
                           | wildcard=same+search 5
 (1 row)
 
+RESET sift.test_search_chunk_sbs;
 SELECT cs_check('SELECT status, count(*) AS n FROM cs WHERE memo @@> $1 GROUP BY status ORDER BY status', 'cable wire') AS param;
      param     
 ---------------

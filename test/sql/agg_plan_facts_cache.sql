@@ -1,6 +1,6 @@
 -- The statistics of a column index that a plan reads are kept by the backend between plans, as of the state of the index (its directory version, the
 -- pages of the table and those all-visible, the catalog entries of the index and the table). A plan after a change of any of these prices the scan
--- with the new facts, and sift.plan_scale, applied to the copy a plan takes, changes the price without a change of the index.
+-- with the new facts, and sift.test_plan_scale, applied to the copy a plan takes, changes the price without a change of the index.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = off;
@@ -26,8 +26,9 @@ INSERT INTO price SELECT 'same', scan_price();
 INSERT INTO ev SELECT i, i % 50, i % 7 FROM generate_series(20001, 400000) i;
 VACUUM (FREEZE, ANALYZE) ev;
 INSERT INTO price SELECT 'after growth', scan_price();
-SET sift.plan_scale = 10;
+SET sift.test_plan_scale = 10;
 INSERT INTO price SELECT 'scaled', scan_price();
+RESET sift.test_plan_scale;
 INSERT INTO price SELECT 'unscaled again', scan_price();
 REINDEX INDEX ev_col;
 INSERT INTO price SELECT 'after reindex', scan_price();

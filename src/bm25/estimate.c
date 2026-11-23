@@ -149,6 +149,11 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 			estimate_cx = sift_cache_create_context("sift cache estimates");
 			sift_cache_register(&estimate_kind);
 		}
+		/* built where an error frees it, and given to the cache when whole: the slot it takes is not touched before */
+		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift cache estimate", ALLOCSET_SMALL_SIZES);
+		char	   *kept = MemoryContextAlloc(cx, len);
+
+		memcpy(kept, key, len);
 		m = NULL;
 		for (int i = 0; i < ESTIMATE_MEMO && m == NULL; i++)
 			if (estimate_memo[i].key == NULL)
@@ -158,9 +163,9 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 			m = memo_victim();
 			MemoryContextDelete(m->cx);
 		}
-		m->cx = AllocSetContextCreate(estimate_cx, "sift cache estimate", ALLOCSET_SMALL_SIZES);
-		m->key = MemoryContextAlloc(m->cx, len);
-		memcpy(m->key, key, len);
+		MemoryContextSetParent(cx, estimate_cx);
+		m->cx = cx;
+		m->key = kept;
 		m->len = len;
 		m->est = *est;
 		m->tick = sift_cache_tick();

@@ -1,5 +1,5 @@
 -- The rewrite that keeps the found flags of a connected index near their parents (docs/COL-CONNECT.md): a segment is rewritten when it was never filled, when its parent index was
--- rebuilt, or when the keys changed since its stamp are sift.col_connect_refresh_pct percent of the parent's rows; a few changed keys are left to the reads.
+-- rebuilt, or when the keys changed since its stamp are sift.test_col_conn_refresh_pct percent of the parent's rows; a few changed keys are left to the reads.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
@@ -39,11 +39,12 @@ SELECT sift.col_maintenance_due('events_col', false) AS due, found_filled() AS f
 SELECT count(*) AS segments, count(*) FILTER (WHERE lineage <> 0) AS stamped FROM sift._test_col_conn_stamps('events_col');
 
 -- a lower share
-SET sift.col_connect_refresh_pct = 1;
+SET sift.test_col_conn_refresh_pct = 1;
 UPDATE dim_a SET id = id + 1000 WHERE id IN (100, 101, 102);
 SELECT sift.col_maintenance_due('events_col', false) AS due;
 SELECT sift.col_maintain('events_col') AS rewritten;
 SELECT sift.col_maintenance_due('events_col', false) AS due, found_wrong() AS wrong;
+RESET sift.test_col_conn_refresh_pct;
 
 -- updates of other columns of the parent rows (half of them) keep their keys, so the flags are as good as they were: nothing is due
 UPDATE dim_a SET price = price + 1 WHERE id % 2 = 0;

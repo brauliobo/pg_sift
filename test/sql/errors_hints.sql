@@ -39,8 +39,8 @@ SELECT expect(format('CREATE INDEX ON docs USING sift_col (id, payload) WITH (pa
 SELECT expect(format('CREATE INDEX ON many USING sift_col (id) WITH (paths = %L)', repeat('a int4,', 20000) || 'b int4'));
 
 -- a row of a sift_table over the write buffer
-SET sift.table_write_buffer_limit = 2048;
-SET sift.table_wide_rows = off;
+SELECT sift.table_set_option('tbl', 'write_buffer_limit', '2048');
+SELECT sift.table_set_option('tbl', 'wide_rows', 'off');
 SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
 
 -- sift.explain_why takes one statement; a score outside a sift scan says where it exists

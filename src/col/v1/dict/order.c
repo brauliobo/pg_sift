@@ -328,3 +328,9 @@ sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len)
 	*len = cdict_len(d, code);
 	return d->bytes + d->off[code];
 }
+
+const char *
+sift_cdict_get(const SiftCDict *d, uint32 code, uint32 *len)
+{
+	return d->look != NULL ? d->look->str(d->look, code, len) : sift_cdict_str(d, code, len);
+}

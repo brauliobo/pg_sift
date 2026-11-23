@@ -176,7 +176,10 @@ reap_stale(Oid keep)
 	}
 }
 
-/* The cache entry of index, with its directory read now; its log is synced by the caller that needs the entries */
+/*
+ * The cache entry of index, held by the context of the caller before its directory is read: the read asks the cache budget for room, which must not evict the entry it fills.
+ * Its log is synced by the caller that needs the entries
+ */
 static LogEnt *
 log_ent(Relation index)
 {
@@ -215,6 +218,8 @@ log_ent(Relation index)
 		sift_tomb_init(&e->log, e->cxt, &e->dir);
 		e->log.spill = true;
 	}
+	log_pin(e);
+	e->tick = sift_cache_tick();
 	if (e->dir && e->dir->version == sift_dir_version(index))
 		return e;
 	if (e->dir)
@@ -259,8 +264,6 @@ log_synced(Relation index, bool entries)
 	/* the tombstones this backend holds back reach the log before it is read (supersede.c) */
 	sift_col_tombs_flush();
 	e = log_ent(index);
-	log_pin(e);
-	e->tick = sift_cache_tick();
 	SiftMemTracker mt_col_tomb_log;
 
 	sift_mem_init_sub(&mt_col_tomb_log, "col_tomb_log", e->cxt, false, (Size) sift_backend_cache_kb * 1024 + SIFT_MEM_MIN_QUERY_BYTES);
@@ -508,7 +511,7 @@ maint_bulkdelete_tomb(Relation index, const SiftSegEntry *e, IndexBulkDeleteCall
 void
 maint_vacuum_log(Relation index)
 {
-	Relation	heap = table_open(index->rd_index->indrelid, NoLock);	/* VACUUM holds ShareUpdateExclusiveLock on it */
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 
 	/*
 	 * the addresses this VACUUM left dead (it skipped the indexes) get their tombstones here, and the entries it freed lose theirs below; a VACUUM with parallel workers for the b-trees

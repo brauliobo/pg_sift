@@ -15,6 +15,9 @@
 /* The lazy granule of the part pin, from the cache or read now; a reference the caller gives back with sift_f2_gbuf_unref */
 extern SiftF2GranuleBuf *sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g);
 
+/* The granules of a relation file whose part generations start again (a TRUNCATE of a table made in the transaction): the ones a lookup holds go when it is done */
+extern void sift_f2_gcache_forget(const RelFileLocator *locator);
+
 /* The columns decoded since the granule was handed out count against the budget: whatever is not pinned and is older than it goes if the cache is over */
 extern void sift_f2_gcache_charge(void);
 

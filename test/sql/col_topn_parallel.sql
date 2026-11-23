@@ -133,12 +133,12 @@ SELECT q, (pw_check(q)).* FROM (VALUES
 SELECT * FROM pw_fuzz('build', 21, 30);
 
 -- a first key that ties between units (k_mix: 50 values and NULLs in every unit) is decided by the zone of the next key (id follows the table), for
--- the workers as for the serial walk: the units read with and without sift.topn_zone_keys (the count of the workers depends on who takes what: a bound)
+-- the workers as for the serial walk: the units read with and without sift.test_topn_zone_keys (the count of the workers depends on who takes what: a bound)
 CREATE FUNCTION pw_units(q text, workers int, zk bool) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE line text; n int;
 BEGIN
 	PERFORM pw_mode(true, workers);
-	PERFORM set_config('sift.topn_zone_keys', zk::text, true);
+	PERFORM set_config('sift.test_topn_zone_keys', zk::text, true);
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF line ~ '^ *Units: ' THEN n := substring(line from '^ *Units: (\d+)')::int; END IF;
 	END LOOP;

@@ -181,7 +181,7 @@ BEGIN
 		                    FROM pa WHERE id BETWEEN k.lo AND k.hi) h
 	$q$, idx, leaf, typ, withsum, CASE WHEN withsum THEN format('sum(%I)::numeric', leaf) ELSE 'NULL::numeric' END);
 END $f$;
-SET sift.col_unit_rows = 3000;
+SET sift.test_col_unit_rows = 3000;
 CREATE INDEX pa_cut ON pa USING sift_col (id, i2, i4, n, d, b, s) WITH (key_cut = 'id');
 -- the parallel build already merged its own peers: one segment, so a manual merge has nothing to do; after the DML below it has
 SELECT segments, units FROM sift.col_index_info('pa_cut');

@@ -3,6 +3,7 @@
  */
 #include "core/host.h"
 
+#include "access/xlog.h"
 #include "lib/stringinfo.h"
 #include "storage/lmgr.h"
 
@@ -735,6 +736,7 @@ sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sift
 	BlockNumber *pages;
 	int			npages;
 
+	SIFT_INVARIANT(!RecoveryInProgress(), "sift: a micro-slab is flushed on a primary, a standby reads it in memory (col/f2/f2_slab_view.h)");
 	if (sift_l0_href_flush(rel, part_id, key_lo, spec))
 		return true;
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);

@@ -15,7 +15,7 @@
 #                                                                  (col/v1/maint/merge.c), up to 4 F for these rows (a partition is sized by its bytes, 12 to 42 for each row of the inputs), and the
 #                                                                  allocator holds up to 1.5 of the writer's estimate
 #   spool, order <= 4 * F                                          the order arrays: a buffer of eset_rows entries (16 bytes each) for each leaf and region, the rest spilled to files
-#   dicts   <= 3 * the bytes of the k largest inputs               the parsed dictionaries of the string leaves of the open inputs, each given back at its last unit: none is left at the end of the merge
+#   dicts   <= 2 * the bytes of the k largest inputs               the parsed dictionaries of the string leaves of the open inputs, each given back at its last unit: none is left at the end of the merge
 #   inputs  <= dicts + n * 32 kB                                   the scope col_merge_inputs: the dictionaries and the open segments (header, unit directory and zones) of the inputs
 #   tree    <= window + chunks + writer + dicts + n * 32 kB + 1 MB the whole tree of col_merge at its largest, the sum of the above and the state of the inputs
 # What the terms do not do is follow the rows merged: every kind but the dictionaries is flat once each input has a unit (the fit starts at the first size at which each promoted input holds a unit of U rows: SATURATED), and the
@@ -32,7 +32,7 @@ if ((rc == 77)); then echo '1..0 # SKIP the 8-page flavour needs PostgreSQL 18';
 ((rc == 0)) || { echo '1..1'; echo 'not ok 1 - build of the 8-page flavour'; exit 1; }
 
 SIZES=(12000 36000 60000 96000 132000 168000)
-declare -A SATURATED=([plain]=36000 [cut]=60000 [disjoint]=36000)
+declare -A SATURATED=([plain]=36000 [cut]=60000 [disjoint]=132000)
 INPUTS=12
 STR_LEAVES=3
 SB_PAGES=8 TUPLES_PAGE=291
@@ -40,7 +40,7 @@ F=262144 WMIN=65536 PMIN=64 MWM_KB=1024
 RB=128
 SLOPE_MAX=8
 ESET=1024
-LIMITS="writer_min_budget=$F,window_min_bytes=$WMIN,part_min_kb=$PMIN,eset_rows=$ESET"
+LIMITS="eset_rows=$ESET"
 
 plan 20
 node_init mf 90 "autovacuum = off
@@ -78,7 +78,7 @@ table() {
 # merge_run [EAGER]: "key value" lines of one forced merge: the inputs, the dictionaries held at once, the peaks of the scopes, the tree of col_merge by kind and the trace of its bytes
 # along the merge in percent; EAGER on: sift.test_col_merge_eager
 merge_run() {
-	sql mf "SET maintenance_work_mem = '1MB'" "SET max_parallel_maintenance_workers = 0" "SET sift.test_limits = '$LIMITS'" "SET sift.test_mem_kinds = on" "SET sift.test_mem_trace = on" \
+	sql mf "SET maintenance_work_mem = '1MB'" "SET max_parallel_maintenance_workers = 0" "SET sift.test_limits = '$LIMITS'" "SET sift.test_col_partition_kb = $PMIN" "SET sift.test_mem_kinds = on" "SET sift.test_mem_trace = on" \
 		"SET sift.test_col_merge_eager = ${1:-off}" \
 		"SELECT 'inputs ' || count(*) || E'\nbytes ' || sum(bytes) FROM sift.col_segments('e_col') WHERE kind = 'immutable'" \
 		"SELECT 'inb ' || bytes FROM sift.col_segments('e_col') WHERE kind = 'immutable' ORDER BY bytes DESC" \
@@ -114,7 +114,7 @@ U=$((SB_PAGES * TUPLES_PAGE))
 for mode in plain cut disjoint; do
 	cut=off; [[ $mode == plain ]] || cut=k_mid
 	# 13 segments of 0.5 to 1.5 partitions, apart in the key, are the minimum a forced merge leaves (the merge writes nothing): the disjoint steps are all past it
-	sizes=("${SIZES[@]}"); [[ $mode != disjoint ]] || sizes=(36000 132000 168000 204000 240000)
+	sizes=("${SIZES[@]}"); [[ $mode != disjoint ]] || sizes=(132000 168000 204000 240000 276000)
 	open_max=$((INPUTS + 1)); [[ $mode != disjoint ]] || open_max=1; [[ $mode != plain ]] || open_max=2
 	flat="" dictfit="" over="" tail_ok=1 total_bad=0 win_bad=0 chunk_bad=0 part_bad=0 spool_bad=0 dict_bad=0 dlast_bad=0 segs_bad=0 open_bad=0
 	for n in "${sizes[@]}"; do
@@ -126,7 +126,7 @@ for mode in plain cut disjoint; do
 		unit=$((inputs * U * RB))
 		win_max=$((MWM_KB * 1024 / 4 > WMIN ? MWM_KB * 1024 / 4 : WMIN)); win_max=$((win_max + 2 * unit))
 		chunk_max=$(((2 * open_max + 4) * U * RB)); [[ $mode != plain ]] || chunk_max=$((512 * 1024))
-		part_max=$((6 * F)); spool_max=$((4 * F)); dict_max=$((3 * $(top "$out" "$open_max")))
+		part_max=$((6 * F)); spool_max=$((4 * F)); dict_max=$((2 * $(top "$out" "$open_max")))
 		in_max=$((dict_max + inputs * 32768))
 		tree_max=$((win_max + chunk_max + part_max + dict_max + inputs * 32768 + 1048576))
 		diag "$mode $n rows, $inputs inputs of $inbytes bytes: tree $tree (window $win, chunks $chunks, writer $part (its dictionaries $wdict), dictionaries $dict, spool $spool, order $order), scope col_merge_inputs $(val "$out" col_merge_inputs) of at most $in_max, segments after $(val "$out" segs)"

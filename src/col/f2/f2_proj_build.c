@@ -57,7 +57,9 @@ sift_proj_columns_of_store(Relation rel, const SiftF2Store *store)
 		int			attno = store->leaf_attno[l];
 		bool		own = attno >= 1 && attno <= td->natts;
 		Form_pg_attribute att = TupleDescAttr(td, own ? attno - 1 : 0);
-		bool		plain = own && !store->key_leaf[l] && store->parent[l] < 0 && att->atttypid != JSONBOID && !type_is_array(att->atttypid);
+		bool		keyed = store->key_leaf != NULL && store->key_leaf[l];
+		bool		grouped = store->parent != NULL && store->parent[l] >= 0;
+		bool		plain = own && !keyed && !grouped && att->atttypid != JSONBOID && !type_is_array(att->atttypid);
 
 		col[l].name = plain ? pstrdup(NameStr(att->attname)) : psprintf("#%d", l);
 		col[l].kind = store->kinds[l];

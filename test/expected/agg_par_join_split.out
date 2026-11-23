@@ -40,7 +40,7 @@ BEGIN
 	PERFORM set_config('parallel_setup_cost', '0', true);
 	PERFORM set_config('parallel_tuple_cost', '0', true);
 	PERFORM set_config('min_parallel_table_scan_size', '0', true);
-	PERFORM set_config('sift.agg_par_min_rows', '0', true);
+	PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
 	PERFORM set_config('sift.agg_force', (mode <> 'normal')::text, true);
 END $$;
 CREATE FUNCTION jp_plan(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$

@@ -1,5 +1,5 @@
 -- Dead rows of the column groups: VACUUM counts live and dead rows as it does for a heap (reltuples, pg_stat_user_tables), rewrites
--- a column segment alone once more than sift.dead_rewrite_pct percent of it is dead.
+-- a column segment alone once more than the dead_rewrite_pct option percent of it is dead.
 CREATE EXTENSION pg_sift;
 -- (vacuum_truncate off: moving a segment down for the cut would also drop its dead rows)
 CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
@@ -19,17 +19,17 @@ SELECT * FROM dseg;
 SELECT * FROM dstat;
 
 -- a lower threshold rewrites it alone, without its dead rows
-SET sift.dead_rewrite_pct = 15;
+SELECT sift.table_set_option('d', 'dead_rewrite_pct', '15');
 VACUUM d;
 SELECT * FROM dseg;
-RESET sift.dead_rewrite_pct;
+SELECT sift.table_reset_option('d', 'dead_rewrite_pct');
 
 -- 100 never rewrites; the default then does
-SET sift.dead_rewrite_pct = 100;
+SELECT sift.table_set_option('d', 'dead_rewrite_pct', '100');
 DELETE FROM d WHERE id % 10 < 9;
 VACUUM d;
 SELECT * FROM dseg;
-RESET sift.dead_rewrite_pct;
+SELECT sift.table_reset_option('d', 'dead_rewrite_pct');
 VACUUM d;
 SELECT * FROM dseg;
 SELECT * FROM dstat;
@@ -40,8 +40,8 @@ DELETE FROM d;
 VACUUM d;
 SELECT count(*) AS segments FROM dseg;
 SELECT * FROM dstat;
-SHOW sift.dead_rewrite_pct;
-SET sift.dead_rewrite_pct = 0;
+SELECT sift.table_get_option('d', 'dead_rewrite_pct');
+SELECT sift.table_set_option('d', 'dead_rewrite_pct', '0');
 
 -- one VACUUM merges until nothing is left to merge: 40 groups, each 40 percent dead, none above the threshold after it
 CREATE TABLE d2 (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);

@@ -14,6 +14,7 @@
 
 #include "col/f2/col_meta.h"
 #include "col/f2/part_format.h"
+#include "core/f2/f2_gate.h"
 #include "core/f2/manifest.h"
 #include "core/f2/manifest/manifest_int.h"
 #include "core/page_io.h"
@@ -793,6 +794,7 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 uint64
 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit)
 {
+	SIFT_F2_GATE(SIFT_F2_GATE_MANIFEST);
 	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit);
 }
 

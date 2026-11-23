@@ -17,7 +17,9 @@ RESET sift.max_expansions;
 -- 300k distinct terms
 CREATE TABLE dos (id int PRIMARY KEY, body text);
 INSERT INTO dos SELECT i, 'x' || md5(i::text) || ' y' || md5((i * 7)::text) FROM generate_series(1, 150000) i;
+SET client_min_messages = warning;
 CREATE INDEX dos_idx ON dos USING sift (body);
+RESET client_min_messages;
 ANALYZE dos;
 
 -- back-references are refused (a pattern like (a*)*\1 takes exponential time)

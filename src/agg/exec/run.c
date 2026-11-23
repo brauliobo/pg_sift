@@ -40,7 +40,6 @@ bool		sift_agg_left_lateral = true;
 bool		sift_agg_key_skew = true;
 bool		sift_agg_share_lookups = true;
 bool		sift_agg_fuse = true;
-bool		sift_enable_topn = true;
 bool		sift_topn_walk = true;
 #ifdef SIFT_TESTING
 bool		sift_test_agg_wait = false;

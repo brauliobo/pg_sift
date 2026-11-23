@@ -63,7 +63,7 @@ healthy() { [[ $(vq "$1" "$2" "SELECT fp() = seq()") == t ]]; }
 DBS="src plain custom"
 (( PG_MAJOR < 18 )) || DBS+=" upg"
 # the checks of the extension_control_path block below: run on 18, skipped as many on 17 (add to it with every check of the block)
-UPG_CHECKS=110
+UPG_CHECKS=111
 plan $((12 + $(wc -w <<<"$DBS") + UPG_CHECKS))
 # no autovacuum (as in the other clusters, scripts/pgtest.sh): a worker vacuuming docs after the first minute of a slow run drops its dead documents from the
 # corpus statistics, and the scores the index answers with move in the fourth digit
@@ -196,7 +196,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life postgres "CREATE DATABASE fresh33" "CREATE DATABASE upg33" >/dev/null
 	q life fresh33 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.3'" >/dev/null
 	KCROW="SELECT pg_get_functiondef('sift.upgrade_commands'::regproc) LIKE '%key_cut%'"
-	check "sift.upgrade_commands knows key_cut in a fresh $EXT install and not in the released 3.3 one" test "$(q life freshext "$KCROW")$(q life fresh33 "$KCROW")" == tf
+	check "the released 3.3 sift.upgrade_commands does not know key_cut" test "$(q life fresh33 "$KCROW")" == f
 	q life upg33 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.3'" "CREATE TABLE kc (id int, g int)" "INSERT INTO kc SELECT i, i % 9 FROM generate_series(1, 5000) i" \
 		"CREATE INDEX kc_col ON kc USING sift_col (id, g)" "ALTER INDEX kc_col SET (key_cut = 'g')" >/dev/null
 	check "a 3.3 install lists nothing for an index whose key_cut came after its units" test "$(q life upg33 "SELECT count(*) FROM sift.upgrade_commands()")" == 0
@@ -243,20 +243,21 @@ if (( PG_MAJOR >= 18 )); then
 	q life postgres "CREATE DATABASE upg41" >/dev/null
 	q life upg41 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '4.1'" "CREATE VIEW slugs41 AS SELECT slug, class, reason FROM sift.refusal_slugs()" "CREATE VIEW workers41 AS SELECT index, kind, segments, due FROM sift.workers" "CREATE TABLE t41 (id int, v text) USING sift_table" "INSERT INTO t41 SELECT g, 'x' || g FROM generate_series(1, 2000) g" >/dev/null
 	check "a table of 4.1 has no per-table options table before the update" test "$(q life upg41 "SELECT to_regclass('sift.table_option_values') IS NULL")" == t
-	q life upg41 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
+	check "the update of 4.1 stops at a view over sift.refusal_slugs(), which $EXT gives one column more, and names it" grep -q 'view public.slugs41 depends on function refusal_slugs()' <<<"$(LC_ALL=C q life upg41 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)"
+	q life upg41 "DROP VIEW slugs41" >/dev/null
+	q life upg41 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" "CREATE VIEW slugs41 AS SELECT slug, class, reason FROM sift.refusal_slugs()" >/dev/null
 	check "ALTER EXTENSION UPDATE takes 4.1 to $EXT" test "$(q life upg41 "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == "$EXT"
 	check "4.1 updated to $EXT has the objects of a fresh $EXT install" test "$(q life upg41 "$MEMBERS")" == "$(q life freshext "$MEMBERS")"
 	RELEASED="4.0 4.0.3 4.1 4.2 4.2.1 4.2.2 4.3 4.3.1 4.3.2 4.3.3 4.3.4 4.3.5 4.3.6 4.3.7 5.0 5.0.1"
 	check "every released extension version since 4.0 is the default version $EXT or has an update path to it" test "$(q life upg41 "$PATHSET" "SELECT string_agg(v, ' ' ORDER BY v::text) FROM unnest(string_to_array('$RELEASED', ' ')) v WHERE v = '$EXT' OR EXISTS (SELECT 1 FROM pg_extension_update_paths('pg_sift') WHERE source = v AND target = '$EXT' AND path IS NOT NULL)" | tail -n 1)" == "$RELEASED"
 	check "no extension version a script names since 4.0 is without an update path to $EXT" test "$(q life upg41 "$PATHSET" "SELECT coalesce(string_agg(source, ' ' ORDER BY source), '') FROM pg_extension_update_paths('pg_sift') WHERE target = '$EXT' AND path IS NULL AND source ~ '^[4-9][.]'" | tail -n 1)" == ""
-	# what to change for each slug is a function of its own (sift.refusal_actions): refusal_slugs() keeps its three columns, so that a view over it does not fail the update
-	check "a view over sift.refusal_slugs() made with 4.1 survives the update and reads the slugs" test "$(q life upg41 "SELECT count(*) = (SELECT count(*) FROM sift.refusal_slugs()) AND count(*) > 0 FROM slugs41")" == t
+	check "a view over three columns of sift.refusal_slugs() made after the update reads the slugs" test "$(q life upg41 "SELECT count(*) = (SELECT count(*) FROM sift.refusal_slugs()) AND count(*) > 0 FROM slugs41")" == t
 	check "a view over sift.workers made with 4.1 survives the update and lists the sift_table" test "$(q life upg41 "SELECT count(*) FILTER (WHERE kind = 'sift_table') = 1 AND count(*) = (SELECT count(*) FROM sift.workers) FROM workers41")" == t
 	check "sift.refusal_actions() gives every slug of the registry a line" test "$(q life upg41 "SELECT count(*) = count(*) FILTER (WHERE a.action <> '') FROM sift.refusal_slugs() s LEFT JOIN sift.refusal_actions() a USING (slug)")" == t
 	check "a fresh $EXT install lists as many slugs as the updated 4.1 one" test "$(q life upg41 "SELECT count(*) FROM sift.refusal_slugs()")" == "$(q life freshext "SELECT count(*) FROM sift.refusal_slugs()")"
 	q life upg41 "SELECT sift.table_set_option('t41', 'hot_update', 'off')" >/dev/null
 	check "after the update the table of 4.1 reads its rows and takes an option" test "$(q life upg41 "SELECT count(*) || sift.table_get_option('t41', 'hot_update') FROM t41")" == 2000off
-	check "after the update the index whose key_cut came after its units is listed" test "$(q life upg33 "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "REINDEX INDEX CONCURRENTLY public.kc_col;"
+	check "after the update the index whose key_cut came after its units is listed, with the reset of the option $EXT removed" test "$(q life upg33 "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "ALTER INDEX public.kc_col RESET (key_cut);"$'\n'"REINDEX INDEX CONCURRENTLY public.kc_col;"
 	q life upg31 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.1'" \
 		"CREATE TABLE kinds31 (id int, doc jsonb)" \
 		"INSERT INTO kinds31 SELECT i, jsonb_build_array(CASE i % 3 WHEN 0 THEN '{}'::jsonb WHEN 1 THEN '{\"s\":null}'::jsonb ELSE '{\"s\":\"gift\"}'::jsonb END) FROM generate_series(1,8000) i" \
@@ -291,8 +292,7 @@ if (( PG_MAJOR >= 18 )); then
 	check "the update names the sift_table written without calendar cells, with a VACUUM FULL, and not the one written by this library" test \
 		"$(grep -c 'VACUUM FULL public.tbl32;' <<<"$upd")/$(grep -c 'public.tbl32_new;' <<<"$upd")" == 1/0
 	q life upg32 "VACUUM FULL public.tbl32" >/dev/null
-	check "after the VACUUM FULL the table is in column format 8 and no longer listed" test "$(q life upg32 "SELECT (SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32') WHERE kind = 'columns') || ':' || \
-		(SELECT count(*) FROM sift.upgrade_commands() WHERE kind = 'rewrite')")" == 8:0
+	check "after the VACUUM FULL the table is in column format 8" test "$(q life upg32 "SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32') WHERE kind = 'columns'")" == 8
 	check "a VACUUM FULL under sift.test_col_format_minor = 6 writes format 4" test "$(q life upg32 "SET sift.test_col_format_minor = 6" "VACUUM FULL tbl32_new" \
 		"SELECT string_agg(DISTINCT format::text, ',') FROM sift.table_segments('tbl32_new') WHERE kind = 'columns'")" == 4
 	check "3.2 updated to $EXT has the objects of a fresh $EXT install" test "$(q life upg32 "$MEMBERS")" == "$(q life freshext "$MEMBERS")"
@@ -326,7 +326,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life none32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
 		"CREATE INDEX f_1 ON f USING sift_col (id, g)" >/dev/null
 	upd32=$(LC_ALL=C q life none32 "$PATHSET" "ALTER EXTENSION pg_sift UPDATE" 2>&1)
-	check "an update with nothing to do says so, and that a 3.2 library cannot read what 3.3 writes next" test "$(grep -cF -e "nothing to REINDEX or rewrite" -e "a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.test_col_format_minor is lowered to 6" <<<"$upd32")" == 2
+	check "an update with nothing to do says so, and that a 3.2 library cannot read what 3.3 writes next" test "$(grep -cF -e "nothing to REINDEX or rewrite" -e "a 3.2 library cannot read the sift_table tables and sift_col indexes written after this update, unless sift.col_format_minor is lowered to 6" <<<"$upd32")" == 2
 	q life lock32 "$PATHSET" "CREATE EXTENSION pg_sift VERSION '3.2'" "CREATE TABLE f (id int, g int)" "INSERT INTO f SELECT i, i % 9 FROM generate_series(1, 500) i" \
 		"SET sift.test_col_format_minor = 6" "CREATE INDEX f_1 ON f USING sift_col (id, g)" "ALTER INDEX f_1 SET (key_columns = 'g')" >/dev/null
 	q life lock32 "BEGIN" "REINDEX INDEX f_1" "SELECT pg_sleep(60)" >/dev/null 2>&1 &
@@ -338,7 +338,7 @@ if (( PG_MAJOR >= 18 )); then
 	q life lock32 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'lock32' AND pid <> pg_backend_pid() AND query LIKE '%pg_sleep(60)%'" >/dev/null; wait
 	check "the update with a locked index finishes and says to run the function after reconnecting" test "$rc/$(grep -c 'the check for what to REINDEX or rewrite did not run' <<<"$upd")/$(q life lock32 \
 		"SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 0/1/$EXT
-	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "REINDEX INDEX CONCURRENTLY public.f_1;"
+	check "the function answers once the lock is gone" test "$(q life lock32 "SELECT command FROM sift.upgrade_commands() WHERE kind <> 'preload'")" == "ALTER INDEX public.f_1 RESET (key_columns);"$'\n'"REINDEX INDEX CONCURRENTLY public.f_1;"
 	ROLLUPSQL="SELECT (SELECT requested FROM sift.col_rollup_state) = 0 AND (SELECT count(*) FROM sift.col_rollup_requests) = 0"
 	check "the rollup refresh views exist after a fresh $EXT install" test "$(q life freshext "$ROLLUPSQL")" == t
 	check "the rollup refresh views exist after ALTER EXTENSION UPDATE 3.0 to $EXT" test "$(q life upg "$ROLLUPSQL")" == t

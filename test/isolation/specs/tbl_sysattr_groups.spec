@@ -9,6 +9,7 @@ setup
 {
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE sg (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+	DO $$ BEGIN PERFORM sift.table_set_option('sg', 'write_buffer_limit', '2048'); END $$;
 	CREATE TABLE sg_inserters (n int, x xid);
 }
 
@@ -18,7 +19,7 @@ teardown
 }
 
 session writer
-setup		{ SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048; SET max_parallel_workers_per_gather = 0; }
+setup		{ SET sift.table_max_segments = 16; SET max_parallel_workers_per_gather = 0; }
 step wbegin	{ BEGIN; INSERT INTO sg_inserters SELECT 1, pg_current_xact_id()::xid; }
 step wins1	{ INSERT INTO sg SELECT x, repeat('x', 1000) || x FROM generate_series(1, 40000) x; }
 step wins2	{ INSERT INTO sg SELECT x, repeat('y', 1000) || x FROM generate_series(40001, 80000) x; }

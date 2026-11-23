@@ -6,6 +6,7 @@
 #include "postgres.h"
 #ifdef SIFT_TESTING
 #include "col/am.h"
+#include "utils/array.h"
 #include "col/v1/pagg.h"
 #include "core/errctx.h"
 #include "core/sql.h"
@@ -16,6 +17,8 @@
 
 #ifdef SIFT_TESTING
 PG_FUNCTION_INFO_V1(sift_test_col_set_damage);
+
+PG_FUNCTION_INFO_V1(sift_test_col_set_budget);
 
 PG_FUNCTION_INFO_V1(sift_test_col_super_damage);
 
@@ -196,6 +199,22 @@ sift_test_col_set_damage(PG_FUNCTION_ARGS)
 	v[10] = Int64GetDatum(accepted);
 	v[11] = Int64GetDatum(missed);
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
+}
+
+/* sift._test_col_set_budget(keys int8[], max_bytes int4) returns int4: the bytes of the key presence summary of the keys when it fits max_bytes, else -1 */
+Datum
+sift_test_col_set_budget(PG_FUNCTION_ARGS)
+{
+	ArrayType  *a = PG_GETARG_ARRAYTYPE_P(0);
+	uint32		n = ArrayGetNItems(ARR_NDIM(a), ARR_DIMS(a));
+	uint64	   *none = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+	SiftCPaggCol col = {.key = (const int64 *) ARR_DATA_PTR(a),.nulls = none,.ovf = none,.n = n,.ready = true};
+	StringInfoData out;
+
+	if (ARR_HASNULL(a))
+		elog(ERROR, "sift test: keys has a NULL");
+	initStringInfo(&out);
+	PG_RETURN_INT32(sift_cset_build_pres(&col, PG_GETARG_INT32(1), &out) ? out.len : -1);
 }
 
 static void

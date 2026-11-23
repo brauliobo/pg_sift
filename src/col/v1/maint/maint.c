@@ -271,7 +271,7 @@ rebaseline_step(Oid indexoid, MemoryContext cx, const char *volatile *name)
 		{
 			TimestampTz start = GetCurrentTimestamp();
 
-			heap = table_open(heapoid, NoLock);
+			heap = table_open(heapoid, AccessShareLock);
 			/* triggers enabled for the origin only: the lock that ENABLE TRIGGER takes, if it is free this instant (held for a catalog row, never waited for), and the re-baseline in the next transaction */
 			if (sift_col_track_rearmable(index, heap) && ConditionalLockRelationOid(heapoid, ShareRowExclusiveLock))
 			{

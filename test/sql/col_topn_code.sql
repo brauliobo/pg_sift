@@ -164,8 +164,8 @@ INSERT INTO ox (id, g, u, s, sp) SELECT i, i % 7, md5('m' || i)::uuid, 'Zy' || m
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
 
 -- a sift_table without the stored order (sift.table_dict_lookup off): its dictionaries get the prefix code
-SET sift.table_dict_lookup = off;
 CREATE TABLE ot (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text DEFAULT repeat('x', 1500)) USING sift_table;
+SELECT sift.table_set_option('ot', 'dict_lookup', 'off');
 INSERT INTO ot (id, g, u, s, sp)
 SELECT i, i % 7, CASE WHEN i % 17 = 0 THEN NULL ELSE md5('u' || i)::uuid END, CASE WHEN i % 19 = 0 THEN NULL ELSE md5('s' || i) END,
 	   CASE WHEN i % 11 = 0 THEN NULL ELSE 'prefix_c' || md5('p' || i) END

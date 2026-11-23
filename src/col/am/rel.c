@@ -4,6 +4,7 @@
  * and the hash a plan is keyed by
  */
 #include "postgres.h"
+#include "access/relation.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "nodes/makefuncs.h"
@@ -474,10 +475,10 @@ sift_col_rekey(Relation index)
 bool
 sift_col_index_keyed(Oid indexoid)
 {
-	Relation	index = index_open(indexoid, NoLock);
+	Relation	index = index_open(indexoid, AccessShareLock);
 	bool		keyed = sift_col_is_index(index) && sift_col_rel(index)->ncut > 0;
 
-	index_close(index, NoLock);
+	index_close(index, AccessShareLock);
 	return keyed;
 }
 
@@ -485,10 +486,10 @@ sift_col_index_keyed(Oid indexoid)
 bool
 sift_col_index_stale(Oid indexoid)
 {
-	Relation	index = index_open(indexoid, NoLock);
+	Relation	index = index_open(indexoid, AccessShareLock);
 	bool		stale = sift_col_is_index(index) && sift_col_rel(index)->stale;
 
-	index_close(index, NoLock);
+	index_close(index, AccessShareLock);
 	return stale;
 }
 
@@ -542,14 +543,14 @@ sift_col_format_major(Relation index)
 static uint16
 oid_format(Oid indexoid, bool serving)
 {
-	Relation	index = RelationIdGetRelation(indexoid);
+	Relation	index = try_relation_open(indexoid, AccessShareLock);
 	uint16		major = 0;
 
-	if (!RelationIsValid(index))
+	if (index == NULL)
 		return 0;
 	if (index->rd_rel->relam == sift_col_am_oid() && !(serving && sift_index_quarantined(index)))
 		major = sift_col_format_major(index);
-	RelationClose(index);
+	relation_close(index, AccessShareLock);
 	return major;
 }
 

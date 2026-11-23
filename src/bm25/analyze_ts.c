@@ -258,10 +258,10 @@ ts_stem(SiftTsStem *ts, char *w, int n)
 	bool		digit = false,
 				alpha = false,
 				ascii = true;
-	char	   *r;
-	int			m,
+	char	   *r = NULL;
+	int			m = 0,
 				type,
-				res;
+				res = LEX_UNKNOWN;
 
 	for (int i = 0; i < n; i++)
 	{

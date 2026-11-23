@@ -58,12 +58,12 @@ CREATE FUNCTION gt_off(offs int[]) RETURNS TABLE (result text, n bigint) LANGUAG
 $$ SELECT gt_chk(c, d, nl, 10, '', o), 1::bigint FROM unnest(ARRAY['id', 'b', 'c', 't']) c, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(offs) o $$;
 SELECT result, count(*) FROM gt_off(ARRAY[1, 7, 40, 3000]) GROUP BY 1 ORDER BY 1;
 
--- the planner prices the read of the array as what it is: with the units dear to read (sift.plan_scale), a shape the array answers costs about the start of the scan, any other the
+-- the planner prices the read of the array as what it is: with the units dear to read (sift.test_plan_scale), a shape the array answers costs about the start of the scan, any other the
 -- units it reads; 'array' is a priced read that the scan did, 'units' a scan priced as one, 'walked' a scan priced as the units that read the array (a filter on another column is tested on the heap row of each entry, which the price does not know), 'MISPRICED' a read priced as the array that the scan did not do
 CREATE FUNCTION gt_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE pl text; cheap bool := false; used bool := false; agg bool := false;
 BEGIN
-	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.plan_scale = 1000;
+	SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS on, TIMING off, SUMMARY off) ' || q LOOP
 		agg := agg OR pl LIKE '%Custom Scan (SiftAgg)%';
 		IF pl LIKE '%Custom Scan (SiftAgg)%' THEN cheap := substring(pl from 'cost=([0-9.]+)\.\.')::float8 < 5000; END IF;
@@ -87,7 +87,16 @@ DROP FUNCTION gt_plan(text);
 
 -- min(x) and max(x) are the first row, in the order of x, of the rows where x is not NULL: the scan reads the array for it, and the answer is the heap's whatever the type, the
 -- NULLs, the ties, a range or a filter on another column (tested on the heap row of each entry)
-CREATE FUNCTION gt_mm(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_min_max_with_plan_scale(q) $$;
+CREATE FUNCTION gt_mm(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE pl text; used bool := false; ra text; rb text;
+BEGIN
+	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_seqscan = off; SET LOCAL sift.test_plan_scale = 1000;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
+	EXECUTE q INTO ra;
+	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on;
+	EXECUTE q INTO rb;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q || ' ' || coalesce(ra, 'null') || ' vs ' || coalesce(rb, 'null') WHEN used THEN 'array' ELSE 'units' END;
+END $$;
 CREATE FUNCTION gt_mm_all() RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gt_mm(format('SELECT %s(%s) FROM gt WHERE %s', f, c, w)), count(*)
    FROM unnest(ARRAY['min', 'max']) f, unnest(ARRAY['id', 'a', 'b', 'c', 'd', 't', 'z']) c,

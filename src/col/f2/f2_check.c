@@ -187,7 +187,8 @@ tid_cmp(const void *a, const void *b)
 static void
 sorted(TidList *l)
 {
-	qsort(l->tid, l->n, sizeof(uint64), tid_cmp);
+	if (l->n > 1)
+		qsort(l->tid, l->n, sizeof(uint64), tid_cmp);
 }
 
 static void

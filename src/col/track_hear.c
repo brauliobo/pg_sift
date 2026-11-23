@@ -369,7 +369,7 @@ sift_col_hear_apply(Relation heap, Relation index, const HearPlan *plan)
 		create_trigger(w->relid, index, w->events);
 	foreach_ptr(HearTrig, t, plan->enable)
 	{
-		Relation	rel = t->relid == RelationGetRelid(heap) ? heap : table_open(t->relid, NoLock);
+		Relation	rel = t->relid == RelationGetRelid(heap) ? heap : table_open(t->relid, AccessShareLock);
 
 		EnableDisableTrigger(rel, NameStr(t->name), InvalidOid, TRIGGER_FIRES_ALWAYS, false, false, ShareRowExclusiveLock);
 		if (rel != heap)

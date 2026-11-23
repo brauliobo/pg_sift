@@ -21,7 +21,9 @@ SELECT 1 + (hashint4(i) & 2147483647) % 40,
 	   CASE WHEN i % 991 = 0 THEN 'NaN'::float8 WHEN i % 37 = 0 THEN NULL WHEN i % 41 = 0 THEN -0.0 ELSE ((hashint4(i + 13) & 2147483647) % 100000) / 7.0 END,
 	   CASE WHEN i % 41 = 0 THEN NULL ELSE ct_words(i) END
 FROM generate_series(1, 24000) i;
+SET client_min_messages = warning;
 CREATE INDEX ct_bm ON ct USING sift (memo);
+RESET client_min_messages;
 CREATE INDEX ct_col ON ct USING sift_col (id, store, status, amount, placed, ts, seq, f) WITH (write_buffer_limit = 256);
 VACUUM (ANALYZE) ct;
 
@@ -128,8 +130,9 @@ CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LAN
 	SELECT name, string_agg(tag || '=' || ct_check(q), E'\n' ORDER BY tag COLLATE "C") FROM ct_q $$;
 
 SELECT * FROM ct_stage('build');
-SET sift.search_chunk_sbs = 1;
+SET sift.test_search_chunk_sbs = 1;
 SELECT * FROM ct_stage('chunks of one superblock');
+RESET sift.test_search_chunk_sbs;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10', 'cable wire') AS param;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;
@@ -193,7 +196,7 @@ SELECT ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id L
 	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 100001') AS limit_past_cap;
 -- the GUC
 SET sift.enable_agg = off;
-SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') NOT LIKE '%+topn%' AS no_topn_when_off;
+SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') <> 'top-n' AS no_topn_when_off;
 RESET sift.enable_agg;
 
 -- inserts land in the write buffers of both indexes, unvacuumed
@@ -250,7 +253,9 @@ SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''fast'' ORDER BY ts DESC L
 -- a sift_table gives the TIDs of its rows itself: the same top-N (test tbl_topn)
 CREATE TABLE ct_t (id serial, store int, ts timestamp, memo text) USING sift_table;
 INSERT INTO ct_t (store, ts, memo) SELECT store, ts, memo FROM ct ORDER BY id;
+SET client_min_messages = warning;
 CREATE INDEX ct_t_bm ON ct_t USING sift (memo);
+RESET client_min_messages;
 SELECT ct_check('SELECT id, ts FROM ct_t WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') AS tbl;
 
 -- The top-N opens the match set whole (the posting lists of the words), whatever part of the table it reads: on a table of 41 superblocks
@@ -261,7 +266,9 @@ SELECT ct_check('SELECT id, ts FROM ct_t WHERE memo @@> ''gift'' ORDER BY ts DES
 CREATE TABLE cb (id serial PRIMARY KEY, ts timestamp, memo text) WITH (fillfactor = 10);
 INSERT INTO cb (ts, memo) SELECT timestamp '2024-01-01' + (hashint4(i + 11) & 2147483647) % 60000000 * interval '1 second', ct_words(i)
 FROM generate_series(1, 100000) i;
+SET client_min_messages = warning;
 CREATE INDEX cb_bm ON cb USING sift (memo);
+RESET client_min_messages;
 CREATE INDEX cb_col ON cb USING sift_col (id, ts) WITH (order_array_columns = off);
 VACUUM (ANALYZE) cb;
 SELECT $q$SELECT id, ts FROM cb WHERE memo @@> 'fast OR late OR damaged OR refund OR gift OR invoice OR exchange OR missing OR perfect OR broken OR express OR pickup OR thanks OR wrong OR size OR color OR cable OR wire OR box OR label' ORDER BY id DESC LIMIT 10$q$ AS q \gset

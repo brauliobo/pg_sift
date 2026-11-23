@@ -8,7 +8,12 @@ SET cpu_tuple_cost = 0.5;
 CREATE TABLE wr (id int, g int, v text) USING sift_table;
 INSERT INTO wr SELECT i, i % 3, repeat(md5(i::text), 100) FROM generate_series(1, 50) i;
 -- off: the row is refused, and the hint names the setting
-SET sift.table_wide_rows = off;
+SELECT sift.table_set_option('wr', 'wide_rows', 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 INSERT INTO wr VALUES (100, 0, repeat('a', 5000000));
 ERROR:  row of sift_table "wr" is too large: 5000028 bytes
 DETAIL:  A row has to fit one write buffer of 4096 kB.
@@ -17,6 +22,12 @@ SELECT count(*) AS rows_after_refusal FROM wr;
  rows_after_refusal 
 --------------------
                  50
+(1 row)
+
+SELECT sift.table_set_option('wr', 'wide_rows', 'on');
+ table_set_option 
+------------------
+ 
 (1 row)
 
 -- 5 MB (beyond the default buffer) and 12 MB (beyond the largest one) next to ordinary rows

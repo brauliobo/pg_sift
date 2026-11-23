@@ -63,12 +63,6 @@ moment_final(SiftV6Kind kind)
 	return SMF_VAR_POP;
 }
 
-static inline bool
-is_text_extreme(const SiftV6Agg *a)
-{
-	return sift_v6_class(a->arg.typid) == SV6C_TEXT;
-}
-
 void
 v6g_ext_fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, uint16 r)
 {
@@ -124,7 +118,7 @@ v6g_ext_merge(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 Datum
 v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, bool *isnull)
 {
-	double		x;
+	double		x = 0.0;
 
 	*isnull = acc->n == 0;
 	if (*isnull)
@@ -144,10 +138,10 @@ v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, bool *
 			return BoolGetDatum(((const SiftBoolAcc *) acc)->v != 0);
 		default:
 			{
-				uint32		len;
+				uint32		len = 0;
 				const char *p = sift_tslot_bytes(&g->tx, (const SiftTextSlot *) acc, &len);
 
-				Assert(is_text_extreme(a));
+				Assert(sift_v6_class(a->arg.typid) == SV6C_TEXT);
 				return PointerGetDatum(cstring_to_text_with_len(p, len));
 			}
 	}

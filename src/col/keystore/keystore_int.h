@@ -24,8 +24,11 @@ typedef struct ViewPiece
 typedef struct ViewKey
 {
 	Oid			store;
+	uint32		pad;			/* the hash key is these bytes: no byte of it is padding */
 	uint64		epoch;
 } ViewKey;
+
+StaticAssertDecl(sizeof(ViewKey) == offsetof(ViewKey, epoch) + sizeof(uint64), "ViewKey has no padding");
 
 typedef struct KeyStoreView
 {

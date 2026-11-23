@@ -120,10 +120,11 @@ SELECT max(format) AS format_without_the_option FROM sift._test_col_formats('dc_
 SELECT dc_check('option off');
 SELECT dc_rows_scanned($$SELECT count(*) FROM dc WHERE s COLLATE "C" LIKE 'key 0%'$$) > 0 AS option_off_scans;
 ALTER INDEX dc_idx SET (count_columns = 's');
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX dc_idx;
 SELECT max(format) AS format_under_setting_14 FROM sift._test_col_formats('dc_idx'::regclass);
 SELECT dc_check('setting 14');
+RESET sift.test_col_format_minor;
 CREATE TABLE dcs (id int, s text) WITH (autovacuum_enabled = off);
 INSERT INTO dcs SELECT g, 'k' || (g % 50) FROM generate_series(1, 20000) g;
 CREATE INDEX dcs_idx ON dcs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (count_columns = 's');

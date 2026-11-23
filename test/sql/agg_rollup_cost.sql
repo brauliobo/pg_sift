@@ -1,4 +1,4 @@
--- A unit that has a rollup is answered from it only when its tuples cost less than its elements (sift.agg_rollup_cost scales the cost of a tuple, 0: always the
+-- A unit that has a rollup is answered from it only when its tuples cost less than its elements (sift.test_agg_rollup_cost scales the cost of a tuple, 0: always the
 -- rollup). Two tables hold the same documents: ro_lo has a rollup of one dim (a few tuples a unit against thousands of elements), ro_hi a rollup of three
 -- dims whose tuples are a large share of the elements. The answers never change; the units answered from the rollups and the units scanned by cost do.
 CREATE EXTENSION pg_sift;
@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET cpu_tuple_cost = 0.5;
 SET sift.async_maintenance = off;
-SET sift.col_rollup_on_demand = off;
+SET sift.test_col_rollup_on_demand = off;
 
 CREATE TABLE ro_lo (id int, items jsonb, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO ro_lo
@@ -32,7 +32,7 @@ SELECT units > 20 AS many_units FROM sift.col_index_info('ro_big_col');
 CREATE FUNCTION rc_rows(q text, cost text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.agg_rollup_cost', cost, true);
+	PERFORM set_config('sift.test_agg_rollup_cost', cost, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
@@ -41,7 +41,7 @@ END $$;
 CREATE FUNCTION rc_units(q text, cost text, OUT units int, OUT pre int, OUT by_cost int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
-	PERFORM set_config('sift.agg_rollup_cost', cost, true);
+	PERFORM set_config('sift.test_agg_rollup_cost', cost, true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
@@ -56,7 +56,7 @@ INSERT INTO rc_q VALUES
 	(3, 'counts only',     'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, band int4, seen text, score float8, qty int4) GROUP BY 1');
 
 -- the default cost, no cost (always the rollup) and a cost that scans every unit: the same rows
-SELECT t.tbl, q.n, q.shape, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '0') AS same_always, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '1000') AS same_never
+SELECT t.tbl, q.n, q.shape, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '0') AS same_always, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '100') AS same_never
 FROM (VALUES ('ro_lo'), ('ro_hi'), ('ro_big')) t(tbl), rc_q q ORDER BY 1, 2;
 
 -- how the units were answered at the default cost: from the rollups, by cost, or both
@@ -69,7 +69,7 @@ SELECT 'ro_hi' AS tbl, * FROM rc_how('ro_hi', '1');
 SELECT 'ro_big' AS tbl, * FROM rc_how('ro_big', '1');
 -- no cost: the rollups answer every unit; a cost that is never worth it: every unit scans
 SELECT 'ro_hi' AS tbl, * FROM rc_how('ro_hi', '0');
-SELECT 'ro_lo' AS tbl, * FROM rc_how('ro_lo', '1000');
+SELECT 'ro_lo' AS tbl, * FROM rc_how('ro_lo', '100');
 
 DROP TABLE ro_lo, ro_hi, ro_big, rc_q;
 DROP FUNCTION rc_rows(text, text), rc_units(text, text), rc_how(text, text, int, int);

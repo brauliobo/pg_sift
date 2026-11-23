@@ -207,13 +207,19 @@ out_finish(MergeOut *o)
 	MemoryContextDelete(o->pcx);
 }
 
-/* Do the rows still to come make a short last segment (under the slack of the one in hand)? They then join it: a merge writes no stub that the next one has to merge again */
-static bool
-out_tail_is_short(const MergeOut *o, SiftColSegWriter *w)
+/*
+ * Is the segment in hand of a merge done by what it holds: SIFT_CPOINT_BUILD_ROWS rows, or the memory of its writer (the budget less what the inputs hold, a little later where a value of the first key
+ * leaf would be split) unless the rows still to come (live_rows is an estimate for a slice, which may be passed) make a short last segment (under the slack of the one in hand): they then join it, so that a merge writes no stub that the next one has to merge again
+ */
+bool
+maint_out_full(SiftColSegWriter *w, Size budget, Size inputs_held, uint64 rows_done, uint64 live_rows, bool open)
 {
-	uint64		held = o->rows_done + sift_colw_rows(w);
+	uint64		rows = sift_colw_rows(w),
+				held = rows_done + rows;
 
-	return o->live_rows > held && (o->live_rows - held) * 100 <= (uint64) sift_colw_rows(w) * SIFT_SLICE_SLACK_PCT;
+	return rows >= SIFT_CPOINT_BUILD_ROWS ||
+		(sift_colk_cut_near(sift_colw_held(w), budget - Min(inputs_held, budget / 2), SIFT_SLICE_SLACK_PCT, open) &&
+		 ((int64) live_rows - (int64) held) * 100 > (int64) rows * SIFT_SLICE_SLACK_PCT);
 }
 
 /* After each unit: the partition in hand is done when it holds its share; the writer of the next one is begun when a unit asks for it */
@@ -237,8 +243,7 @@ out_next(void *arg, SiftColSegWriter *w, bool open)
 	 * of a merge whose budget is below them are written as many as they were read, not one more for the rows a cut at a unit leaves over)
 	 */
 	if ((o->nneu + 1 < o->parts && sift_colk_cut_near(sift_colw_bytes(w), o->units_left / (o->parts - o->nneu), SIFT_SLICE_SLACK_PCT, open))
-		|| (o->by_budget && (sift_colw_rows(w) >= SIFT_CPOINT_BUILD_ROWS
-							 || (sift_colk_cut_near(sift_colw_held(w), o->budget - Min(o->held, o->budget / 2), SIFT_SLICE_SLACK_PCT, open) && !out_tail_is_short(o, w)))))
+		|| (o->by_budget && maint_out_full(w, o->budget, o->held, o->rows_done, o->live_rows, open)))
 	{
 		o->units_left -= Min(sift_colw_bytes(w), o->units_left);
 		o->rows_done += sift_colw_rows(w);
@@ -378,7 +383,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 #endif
 	o.parts = part && part->win && part_bytes == 0 ? window_parts :
 		maint_merge_parts(live_bytes, live_rows, build ? (uint64) (o.budget / MAINT_MEM_RATIO) : part_bytes, key_cut);
-	o.live_rows = live_rows;
+	o.live_rows = part && !part->win ? live_rows / part->nslices : live_rows;
 	o.by_budget = true;
 	o.build = build;
 	/* the output of a merge of overlays is an overlay too: lean, as the promotion of one (maint_is_overlay) */
@@ -407,7 +412,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 	{
 		/* the cut is copied: the merge takes locks, which reload the cached state of the index and free what it holds */
 		ncut = scope ? sift_scope_cut(sift_col_rel(index), o.scope, cut) : key_cut ? sift_col_rel(index)->ncut : 0;
-		if (!scope)
+		if (ncut > 0 && !scope)
 			memcpy(cut, sift_col_rel(index)->cut, ncut * sizeof(int));
 		/* an index that is not cut by a key now (ALTER INDEX switched it off) merges by the TIDs, unless a keyed input is not in their order */
 		by_key = sift_colk_streams(stream, seg, n, cut, ncut, cx);

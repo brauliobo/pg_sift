@@ -29,6 +29,7 @@
 #include "col/pg.h"
 #include "core/catname.h"
 #include "core/inspect.h"
+#include "core/meta_peek.h"
 #include "core/restrict.h"
 #include "table/dispatch.h"
 
@@ -164,12 +165,20 @@ check_acl(Relation rel, AclMode mode)
 		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 }
 
+static bool
+is_f2_target(Relation rel)
+{
+	if (rel->rd_rel->relkind == RELKIND_INDEX)
+		return sift_col_is_index(rel) && sift_col_format_major(rel) == SIFT_FORMAT2_MAJOR;
+	return sift_tbl_is_table(rel) && sift_meta_resolve_major(rel) == SIFT_FORMAT2_MAJOR;
+}
+
 static Relation
 open_target(Oid relid, LOCKMODE lock)
 {
 	Relation	rel = relation_open(sift_rel_must_exist(relid), lock);
 
-	if (rel->rd_rel->relkind == RELKIND_INDEX ? !(sift_col_is_index(rel) && sift_col_format_major(rel) == SIFT_FORMAT2_MAJOR) : !sift_tbl_is_table(rel))
+	if (!is_f2_target(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift index or a sift_table of format major 2", RelationGetRelationName(rel)),
 						errhint("Projections belong to a relation of format major 2.")));
 	return rel;

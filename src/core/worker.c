@@ -299,7 +299,7 @@ sift_worker_test_hold(int n)
 	static bool exit_hook;
 
 	if (!exit_hook)
-		on_shmem_exit(held_release, 0);
+		before_shmem_exit(held_release, 0);
 	exit_hook = true;
 	while (nheld > 0)
 	{

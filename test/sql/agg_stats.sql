@@ -59,7 +59,7 @@ SELECT grp, count(*) FROM ev GROUP BY grp ORDER BY 1 LIMIT 1;
 SELECT reason, fixable, scans, units FROM sift.col_rollup_misses() WHERE rel = 'ev_col'::regclass ORDER BY scans DESC, reason;
 
 -- a rollup that lacks a dim of the query, and units written before the index had the dim
-SET sift.agg_rollup_cost = 0; SET sift.async_maintenance = off; SET cpu_tuple_cost = 0.5;
+SET sift.test_agg_rollup_cost = 0; SET sift.async_maintenance = off; SET cpu_tuple_cost = 0.5;
 CREATE TABLE rr (id int, lines jsonb, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO rr
 SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 5, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e) FROM generate_series(1, g % 4 + 1) e), repeat('p', 300)
@@ -75,6 +75,7 @@ SELECT sift.stats_reset();
 SELECT e.a, e.b, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, q int4) GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 1;
 SELECT reason, fixable, scans, units > 0 AS units FROM sift.col_rollup_misses() WHERE rel = 'rr_i'::regclass;
 SELECT stat('units_no_rollup') > 0 AS units_no_rollup;
+RESET sift.test_agg_rollup_cost; RESET sift.async_maintenance; RESET cpu_tuple_cost;
 RESET sift.async_maintenance; RESET cpu_tuple_cost;
 
 -- the lookup tables a later query takes from the cache

@@ -201,7 +201,8 @@ subtest 'the pass keeps to a WAL rate' => sub {
 	$node->safe_psql('postgres', 'SELECT count(*) FROM w');
 	ok(fired($offset), 'a worker started and finished');
 	my $wal = $node->safe_psql('postgres', "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '$lsn')");
-	my ($ms) = slurp_file($node->logfile, $offset) =~ /table maintenance worker finished index "w" in (\d+) ms/;
+	my ($took, $unit) = slurp_file($node->logfile, $offset) =~ /table maintenance worker finished index "w" in ([\d.]+) (ms|s),/;
+	my $ms = $unit eq 's' ? $took * 1000 : $took;
 	$node->safe_psql('postgres', 'ALTER SYSTEM RESET sift.maintenance_wal_rate; SELECT pg_reload_conf()');
 	# the last step is not paid for, so only part of the time the whole WAL would need at 512 kB/s is certain
 	cmp_ok($ms, '>=', 0.3 * $wal / 512 / 1024 * 1000, "the pass of $wal bytes took $ms ms at 512 kB/s");

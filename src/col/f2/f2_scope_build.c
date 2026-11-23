@@ -11,6 +11,7 @@
 #include "col/f2/f2_scope.h"
 #include "col/f2/part_vis.h"
 #include "col/scope.h"
+#include "core/f2/f2_gate.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 
@@ -193,6 +194,7 @@ commit_scopes(Relation rel, const SiftManifestRead *mr, SiftManifestScopeRef *re
 			memcpy(release + nrel, ext, nb * sizeof(SiftExtent));
 			nrel += nb;
 		}
+	SIFT_F2_GATE(SIFT_F2_GATE_SCOPE);
 	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr->entries[0].part_id,.key_lo = mr->entries[0].key_lo,.update_scopes = refs,.nupdate_scopes = nscope,
 	.release = release,.nrelease = nrel});
 }

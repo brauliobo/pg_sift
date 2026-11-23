@@ -678,16 +678,19 @@ list_payload(dsa_pointer lp)
 	return (char *) dsa_get_address(area, lp) + sizeof(ListHdr);
 }
 
-void *
+const void *
 sift_shm_snap_part_list(const SiftShmManifestSnap *snap, uint32 p)
 {
 	dsa_pointer lp = pg_atomic_read_u64(part_list_slot(snap, p));
 
-	return lp == InvalidDsaPointer ? NULL : list_payload(lp);
+	if (lp == InvalidDsaPointer)
+		return NULL;
+	pg_read_barrier();
+	return list_payload(lp);
 }
 
-void *
-sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, Size bytes)
+bool
+sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, const void *data, Size bytes)
 {
 	SiftShmManifestSnap *snap = (SiftShmManifestSnap *) snapshot;
 	pg_atomic_uint64 *slot = part_list_slot(snap, p);
@@ -695,26 +698,25 @@ sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, S
 	dsa_pointer lp = pg_atomic_read_u64(slot),
 				mine;
 
-	if (lp != InvalidDsaPointer)
-		return list_payload(lp);
-	if (!sift_shm_reserve_shared(SIFT_SHM_MANIFEST, total))
-		return NULL;
-	mine = dsa_allocate_extended(area, total, DSA_ALLOC_ZERO | DSA_ALLOC_NO_OOM);
+	if (lp != InvalidDsaPointer || !sift_shm_reserve_shared(SIFT_SHM_MANIFEST, total))
+		return false;
+	mine = dsa_allocate_extended(area, total, DSA_ALLOC_NO_OOM);
 	if (mine == InvalidDsaPointer)
 	{
 		sift_shm_release_shared(SIFT_SHM_MANIFEST, total);
-		return NULL;
+		return false;
 	}
 	((ListHdr *) dsa_get_address(area, mine))->bytes = total;
+	memcpy(list_payload(mine), data, bytes);
 	if (pg_atomic_compare_exchange_u64(slot, &lp, mine))
 	{
 		pg_atomic_fetch_add_u64(&snap->snap_bytes, total);
 		pg_atomic_fetch_add_u64(&table->snap_bytes, total);
-		return list_payload(mine);
+		return true;
 	}
 	dsa_free(area, mine);
 	sift_shm_release_shared(SIFT_SHM_MANIFEST, total);
-	return list_payload(lp);
+	return false;
 }
 
 /* ---------- writers ---------- */

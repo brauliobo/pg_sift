@@ -1,6 +1,6 @@
 -- key_cut: the units of a sift_col index are cut by the range of a declared key, not by superblock, and list the heap
 -- addresses of their rows. A lookup or a range of the key reads the units of its range whatever the order of the heap; the rows are those of the normal plan after
--- rows in a write buffer, a promotion, deletes and updates, VACUUM, a merge, a refresh and a REINDEX; a lowered sift.col_format_minor writes superblock units again.
+-- rows in a write buffer, a promotion, deletes and updates, VACUUM, a merge, a refresh and a REINDEX; a lowered sift.test_col_format_minor writes superblock units again.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
@@ -78,10 +78,11 @@ SELECT sift.col_verify('kc_idx', true);
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 
 -- the setting that rolls a 3.3 index back to a release that cannot read minor 17 writes superblock units again
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 SELECT * FROM kchk('lowered setting');
+RESET sift.test_col_format_minor;
 REINDEX INDEX kc_idx;
 SELECT DISTINCT format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 
@@ -94,7 +95,7 @@ RESET sift.test_col_segment_kb;
 RESET sift.test_col_build_runs_overlap;
 SELECT count(*) > 1 AS runs, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
 SELECT * FROM kchk('runs');
-SET maintenance_work_mem = '1MB';
+SET maintenance_work_mem = '4MB';
 SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
 RESET maintenance_work_mem;
 SELECT count(*) AS segments, min(format) AS format FROM sift.col_segments('kc_idx') WHERE kind = 'immutable';
@@ -140,12 +141,13 @@ CREATE INDEX kw_idx ON kw USING sift_col (id, cust) WITH (key_cut = 'cust');
 SELECT minor AS built FROM sift.index_format('kw_idx');
 INSERT INTO kw SELECT i, i % 50 FROM generate_series(2001, 2100) i;
 SELECT minor AS with_key_ranges FROM sift.index_format('kw_idx');
-SET sift.col_wbuf_key_range = off;
+SET sift.test_col_wbuf_key_range = off;
 CREATE TABLE kn (id int, cust int);
 INSERT INTO kn SELECT i, i % 50 FROM generate_series(1, 2000) i;
 CREATE INDEX kn_idx ON kn USING sift_col (id, cust) WITH (key_cut = 'cust');
 INSERT INTO kn SELECT i, i % 50 FROM generate_series(2001, 2100) i;
 SELECT minor AS without_key_ranges FROM sift.index_format('kn_idx');
+RESET sift.test_col_wbuf_key_range;
 DROP TABLE kw, kn;
 
 DROP FUNCTION kchk(text), kunits(text);

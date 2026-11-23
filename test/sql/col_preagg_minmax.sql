@@ -1,5 +1,5 @@
 -- The min and max of the integer measures in the cube (column format minor 7, docs/COL-PREAGG.md section 2): written only for an index with the option
--- cube_minmax and a setting sift.col_format_minor of 7, so that a 3.2 library keeps reading what an index without it writes; read back by the same
+-- cube_minmax and a setting sift.test_col_format_minor of 7, so that a 3.2 library keeps reading what an index without it writes; read back by the same
 -- decoder that refuses a damaged cube; checked against the chunks by sift.col_verify; kept by promotion, merge and VACUUM.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
@@ -13,8 +13,9 @@ FROM generate_series(1, 30000) g;
 
 -- the minor of the segments of an index: 6 without the option, under the setting 6 with it, 7 with both
 CREATE INDEX cm_off ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0);
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 CREATE INDEX cm_six ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
+RESET sift.test_col_format_minor;
 CREATE INDEX cm_on ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, superunit = 0);
 CREATE INDEX cm_nocube ON cm USING sift_col (id, kind, grp, val, small, amt, flt) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = true, preagg = 'off', superunit = 0);
 SELECT 'cm_off' AS idx, array_agg(DISTINCT format) AS minors FROM sift._test_col_formats('cm_off')

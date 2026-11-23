@@ -11,7 +11,7 @@ SET sift.agg_preagg = off;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
+SET sift.test_agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 2;
 SET sift.test_par_leader_wait = on;
 
@@ -165,6 +165,7 @@ SELECT * FROM state('promoted and merged');
 SELECT sift.col_verify('events_col', true), sift.col_verify('gevents_col', true), sift.col_verify('t_events_col', true), sift.col_verify('u_events_col', true);
 
 -- a small read keeps one process: the units of a key of a few rows are not worth the workers
+RESET sift.test_agg_par_min_rows;
 SELECT (launched($q$SELECT kind, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$)).workers = 0 AS small_read_has_no_workers;
 
 DROP FUNCTION state(text), run_form(text), launched(text), rows_md5(text);

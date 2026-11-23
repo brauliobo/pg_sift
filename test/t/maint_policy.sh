@@ -88,14 +88,14 @@ sql mp "INSERT INTO events SELECT 500000 + i, 1 + i % 2000, i, 'w' FROM generate
 check "the rows of the write buffer are promoted by the worker" wait_for '[[ $(sql mp "SELECT coalesce(sum(rows), 0) FROM sift.col_segments('"'"'events_col'"'"') WHERE kind = '"'"'write_buffer'"'"'") == 0 ]]' 60
 check "and still no rewrite was made" test "$(rewrites)" == 0
 
-# (e) no slot
+# (e) no slot: the session holds every slot of sift.max_maint_workers, so the worker its VACUUM asks for is refused, and the message says how many slots sift has and how many are running
 node_init ms 73 "autovacuum = off
-max_worker_processes = 2
 sift.test_col_net = off
 sift.async_maintenance = on"
 node_start ms || bail "start of ms failed"
-sql ms "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, k int) WITH (autovacuum_enabled = false)" "INSERT INTO t SELECT g, g % 10 FROM generate_series(1, 2000) g" \
-	"CREATE INDEX t_idx ON t USING sift_col (id, k)" "ALTER DATABASE postgres SET sift.vacuum_rewrite_limit = 0" \
-	"INSERT INTO t SELECT g, g % 10 FROM generate_series(2001, 4000) g" "VACUUM t" >/dev/null || bail "setup of ms failed"
-check "a worker the server has no slot for names who holds the slots" wait_for 'grep -q "slots are held, [0-9]* of them by sift workers (none)" "$(dir ms)/postgres.log"' 60
+sql ms "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE TABLE t (id int, k int) WITH (autovacuum_enabled = false)" "INSERT INTO t SELECT g, g % 10 FROM generate_series(1, 2000) g" \
+	"CREATE INDEX t_idx ON t USING sift_col (id, k)" "ALTER DATABASE postgres SET sift.vacuum_rewrite_limit = 0" >/dev/null || bail "setup of ms failed"
+sql ms "SELECT sift._test_worker_slots(8)" "INSERT INTO t SELECT g, g % 10 FROM generate_series(2001, 4000) g" "VACUUM t" >/dev/null || bail "VACUUM of ms failed"
+refused() { grep -q 'no background worker for promote of index "public.t_idx"' "$(dir ms)/postgres.log" && grep -q 'DETAIL:  sift.max_maint_workers is 2 and 2 are running; max_worker_processes is 8' "$(dir ms)/postgres.log"; }
+check "a worker the server has no slot for names who holds the slots" refused
 finish

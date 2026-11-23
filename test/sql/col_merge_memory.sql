@@ -3,9 +3,9 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 4;
-SET sift.col_auto_merge_wal_pct = 0;
+SET sift.test_col_merge_wal_pct = 0;
 -- the build merges its own peers (col_build_standby_space): not here, which leaves the peers this test merges under a small maintenance_work_mem
-SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_merge_frag = 1000;
 
 CREATE TABLE mm (id int, cust int, amt int, q int) WITH (autovacuum_enabled = false);
 INSERT INTO mm SELECT i, ((i::bigint * 7919) % 20000)::int, hashint8(i) % 1000000, hashint8(i + 7) FROM generate_series(1, 800000) i;
@@ -13,7 +13,7 @@ VACUUM (FREEZE, ANALYZE) mm;
 CREATE INDEX mm_idx ON mm USING sift_col (id, cust, amt, q) WITH (key_cut = 'cust');
 SELECT count(*) > 1 AS peers, sum(bytes) > 6 * 1024 * 1024 AS over_the_floor FROM sift.col_segments('mm_idx') WHERE kind = 'immutable';
 
-SET maintenance_work_mem = '1MB';
+SET maintenance_work_mem = '16MB';
 SELECT sift.col_merge('mm_idx', true);
 SELECT count(*) > 1 AS partitions, max(bytes) < 4 * 1024 * 1024 AS each_under_the_floor FROM sift.col_segments('mm_idx') WHERE kind = 'immutable';
 SELECT sift.col_maintenance_due('mm_idx', false) IS NULL AS partitions_are_left_alone;

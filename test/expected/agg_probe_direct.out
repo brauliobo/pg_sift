@@ -1,6 +1,6 @@
 -- A correlated lookup child (a LEFT JOIN LATERAL .. LIMIT 1 into a table with a btree) is probed by the aggregate scan in the btree itself, the keys of a chunk together
 -- (combo/probe.c), instead of running the child's plan for each key. Each case runs the query three ways, the plan of the database (sift.enable_agg off), the scan with
--- the child's plan for every key (sift.agg_probe_direct off) and the scan with the direct probe, and prints how many rows differ from the direct probe's; `direct` says the
+-- the child's plan for every key (sift.test_agg_probe_direct off) and the scan with the direct probe, and prints how many rows differ from the direct probe's; `direct` says the
 -- probe ran (shapes and indexes it does not take leave the keys to the child). The lookup tables carry what the index must get right: dead versions that stay in the
 -- index until a VACUUM, HOT chains, duplicate keys (the first visible entry in index order is the match), NULL keys, rows of the transaction itself, pages that were emptied.
 CREATE EXTENSION pg_sift;

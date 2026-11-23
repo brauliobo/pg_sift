@@ -129,7 +129,9 @@ SELECT count(*) FILTER (WHERE zoned_units IS NULL) AS leaves_without_zones FROM 
                     1
 (1 row)
 
+SET client_min_messages = warning;
 CREATE INDEX ev_bm25 ON ev USING sift (lbl);
+RESET client_min_messages;
 SELECT * FROM sift.col_clustering('ev_bm25');
 ERROR:  "ev_bm25" is a sift index
 SELECT * FROM sift.col_clustering('ev_col', 101);
@@ -243,14 +245,7 @@ SELECT reason ~ 'all-visible' AS vm_note FROM sift.cluster_advice('evv', 10000);
  f
 (1 row)
 
--- the two switches
-SET sift.cluster_advice = off;
-SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
- tbl | order_by |     verdict     |                     reason                      
------+----------+-----------------+-------------------------------------------------
- evs |          | not recommended | switched off by the setting sift.cluster_advice
-(1 row)
-
+-- the switch of the index
 ALTER INDEX evs_col SET (cluster_advice = off);
 SELECT tbl, order_by, verdict, reason FROM sift.cluster_advice('evs', 10000);
  tbl | order_by |     verdict     |                         reason                         

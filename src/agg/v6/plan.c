@@ -787,7 +787,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 		return;
 	}
 	rte = planner_rt_fetch(input_rel->relid, root);
-	heap = table_open(rte->relid, NoLock);
+	heap = table_open(rte->relid, AccessShareLock);
 	if (sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops)
 	{
 		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.store = sift_f2_store_open(heap)};
@@ -803,7 +803,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 
 			if (!sift_v6_index_owned(ix))
 				continue;
-			irel = index_open(ix->indexoid, NoLock);
+			irel = index_open(ix->indexoid, AccessShareLock);
 			p.colrel = sift_col_rel(irel);
 			p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
 			if (p.f2 != NULL && sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
@@ -828,7 +828,7 @@ sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, Index
 {
 	V6Plan		p = {.root = root,.rel = fact,.out = out,.relid = ix->indexoid,.index = ix};
 	List	   *group_exprs = sift_v6_group_exprs_of(root);
-	Relation	irel = index_open(ix->indexoid, NoLock);
+	Relation	irel = index_open(ix->indexoid, AccessShareLock);
 	bool		ok;
 
 	p.colrel = sift_col_rel(irel);

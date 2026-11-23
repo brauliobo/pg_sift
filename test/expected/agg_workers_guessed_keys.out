@@ -1,7 +1,7 @@
 -- The workers of a scan are priced for the keys a lookup may hold, not for the one key PostgreSQL guesses. A CTE of ids it has no statistics for (the id of
 -- a table filtered by an array it builds, 9 rows here) is expected to hold a few keys, which the units of the index leave at a handful of its units, where the
 -- keys it holds are tens of the 40 of the column and the scan reads most units: a scan priced for the guess alone costs less than the workers' start, and the
--- statement ran in one process (a 171-unit index on a large table, the lookup of 32 keys guessed at 1: 3 units priced, 122 read). sift.plan_scale
+-- statement ran in one process (a 171-unit index on a large table, the lookup of 32 keys guessed at 1: 3 units priced, 122 read). sift.test_plan_scale
 -- plans the table at a size where the scan is long enough for the workers to pay; the fixture is too small to tell the two prices apart, it keeps the plan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 4;
@@ -28,7 +28,7 @@ $q$);
 CREATE FUNCTION w_planned(scale float8) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
-	PERFORM set_config('sift.plan_scale', scale::text, true);
+	PERFORM set_config('sift.test_plan_scale', scale::text, true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || (SELECT q FROM w_q) LOOP
 		IF l ~ 'Workers Planned: [0-9]' THEN n := substring(l FROM 'Workers Planned: ([0-9]+)')::int; END IF;
 	END LOOP;

@@ -166,6 +166,9 @@ LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l
 # its count back when it detaches its segments, after it left pg_stat_activity, so the read repeats while any is above 0. Needs the test library
 # (pg_sift_test): a cluster without the extension (a released library, whose build still ships the helper extension; a stock node that never loads pg_sift) has no counts to read.
 # A standby cannot create the probe database: it reads the counts in the database that replicated the extension, and has none to read without it
+# The maintenance launcher of a preloaded server (a child of the postmaster in DATA) maps the tables of its scheduler for as long as it lives: that is its mapping, not a session's
+LEAK_LAUNCHER_TABLES='{sift_maint_v6,sift_workers_2,sift_pacer_1}'
+leak_launchers() { pgrep -P "$(head -1 "$1/postmaster.pid")" -f 'sift maintenance launcher' | wc -l; }
 leak_shared_tables() {
 	local out db=leakcheck_probe
 	[[ -n ${SIFT_TESTING-1} ]] || return 0
@@ -180,7 +183,7 @@ leak_shared_tables() {
 	fi
 	for _ in $(seq 100); do
 		out=$(leak_psql -d "$db" -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
-			FROM sift._test_dsm_entries() WHERE users > 0")
+			FROM sift._test_dsm_entries() WHERE users > CASE WHEN name = ANY ('$LEAK_LAUNCHER_TABLES') THEN $(leak_launchers "$1") ELSE 0 END")
 		[[ -n $out ]] || break
 		sleep 0.05
 	done
@@ -199,7 +202,7 @@ leak_cluster() {
 		SELECT 'prepared transaction ' || gid FROM pg_prepared_xacts;
 	SQL
 	)
-	while read -r line; do [[ -z $line ]] || { leak_finding "$line"; bad=1; }; done < <(leak_shared_tables)
+	while read -r line; do [[ -z $line ]] || { leak_finding "$line"; bad=1; }; done < <(leak_shared_tables "$data")
 	while read -r pid start kb name; do
 		[[ -r /proc/$pid/stat && $(cut -d' ' -f22 "/proc/$pid/stat") == "$start" ]] || continue
 		now=$(leak_anon_kb "$pid")

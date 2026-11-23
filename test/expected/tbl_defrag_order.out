@@ -3,8 +3,13 @@
 -- the rewritten segments is the order of the rewrites; each is told by the rows it keeps.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
-SET sift.dead_rewrite_pct = 30;
 CREATE TABLE od (id int, grp int, pad text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('od', 'dead_rewrite_pct', '30');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 -- three segments of 1000 rows, the most dead one the largest in bytes (a rule of "smallest first" would rewrite it last)
 INSERT INTO od SELECT g, 1, repeat('a', 200) FROM generate_series(1, 1000) g;
 VACUUM od;

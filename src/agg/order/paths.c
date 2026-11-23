@@ -249,7 +249,7 @@ sift_agg_minmax_paths(PlannerInfo *root, RelOptInfo *rel)
 	Query	   *parse = root->parse;
 	Node	   *key;
 
-	if (!sift_enable_agg || !sift_enable_topn || rel->reloptkind != RELOPT_BASEREL || root->parent_root == NULL || root->parent_root->parent_root != NULL || root->upper_targets[UPPERREL_ORDERED] != NULL || parse->limitOffset != NULL ||
+	if (!sift_enable_agg || rel->reloptkind != RELOPT_BASEREL || root->parent_root == NULL || root->parent_root->parent_root != NULL || root->upper_targets[UPPERREL_ORDERED] != NULL || parse->limitOffset != NULL ||
 		parse->limitCount == NULL || !IsA(parse->limitCount, Const) || list_length(parse->sortClause) != 1 || parse->hasAggs || parse->jointree->quals == NULL ||
 		!IsA(parse->jointree->quals, List))
 		return;
@@ -307,7 +307,7 @@ topn_paths_one(PlannerInfo *root, RelOptInfo *window_rel, RelOptInfo *output_rel
 
 	c->topn_target = target;
 	c->scope_pass = scope;
-	if (!sift_enable_agg || !sift_enable_topn || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || parse->limitCount == NULL ||
+	if (!sift_enable_agg || target == NULL || parse->commandType != CMD_SELECT || nkey == 0 || parse->limitCount == NULL ||
 		root->sort_pathkeys == NIL || parse->hasAggs || parse->groupClause || parse->groupingSets || parse->havingQual)
 		return;
 	agg_arm_candidate();

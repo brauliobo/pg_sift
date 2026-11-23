@@ -1,8 +1,7 @@
 -- The scope units replicate a row for each scope key of its member; past about 3 entries a row their growth costs more than their reads gain (docs/COL-SCOPE.md "Break-even"), so CREATE INDEX and
--- REINDEX refuse a scope above sift.scope_max_multiplicity (default 3) with its figure, and the setting is the override. The limit is on the average of the rows of the table.
+-- REINDEX refuse a scope above max_multiplicity (default 3) with its figure, and max_multiplicity(N) in the scope is the override. The limit is on the average of the rows of the table.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
-SHOW sift.scope_max_multiplicity;
 CREATE TABLE events (id int, dim_a_id int, created_at timestamptz, kind int, value_num numeric);
 INSERT INTO events SELECT i, i % 2000 + 1, timestamptz '2026-01-01' + (i || ' min')::interval, i % 5, i FROM generate_series(1, 20000) i;
 -- a scope relation whose members are in n keys (n = keys): 2000 members, so every row of the events has n entries
@@ -21,14 +20,11 @@ FROM (VALUES ('25'), ('30'), ('35'), ('60')) v(n) ORDER BY n;
 SELECT indexrelid::regclass AS built FROM pg_index WHERE indrelid = 'events'::regclass ORDER BY indexrelid::regclass::text;
 
 -- the override builds the refused ones, and a lowered limit refuses what was accepted (a figure on the limit is accepted: the limit is the most)
-SET sift.scope_max_multiplicity = 6;
-SELECT try('CREATE INDEX events_35 ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_35(dim_a_id, tenant_id)'')') AS override_6;
-SELECT try('CREATE INDEX events_60 ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_60(dim_a_id, tenant_id)'')') AS override_6_at_6;
+SELECT try('CREATE INDEX events_35 ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_35(dim_a_id, tenant_id) max_multiplicity(6)'')') AS override_6;
+SELECT try('CREATE INDEX events_60 ON events USING sift_col (id, dim_a_id, created_at, kind, value_num) WITH (scope = ''tenant_id: dim_a_id -> pairs_60(dim_a_id, tenant_id) max_multiplicity(6)'')') AS override_6_at_6;
 -- CREATE INDEX records the limit the scope was accepted under in the option: REINDEX checks that one, whatever its session says
 SELECT c.relname, o AS recorded FROM pg_class c, unnest(c.reloptions) o WHERE c.relname IN ('events_25', 'events_35', 'events_60') AND o LIKE 'scope=%' ORDER BY 1;
 SELECT try('REINDEX INDEX events_35') AS reindex_recorded_6;
-SET sift.scope_max_multiplicity = 2;
-SELECT try('REINDEX INDEX events_25') AS reindex_session_lowered;
 -- a declaration that states a lower limit is checked at it
 ALTER INDEX events_25 SET (scope = 'tenant_id: dim_a_id -> pairs_25(dim_a_id, tenant_id) max_multiplicity(2)');
 SELECT try('REINDEX INDEX events_25') AS reindex_declared_2;

@@ -15,8 +15,9 @@ FROM generate_series(1, 60000) i;
 
 -- the minors of the groups: 7 or more, and none under the setting 6 (which a 3.2 library reads)
 CREATE TABLE tm USING sift_table AS SELECT * FROM tm_src ORDER BY id;
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 CREATE TABLE tm_six USING sift_table AS SELECT * FROM tm_src ORDER BY id;
+RESET sift.test_col_format_minor;
 VACUUM (FREEZE, ANALYZE) tm;
 VACUUM (FREEZE, ANALYZE) tm_six;
 SELECT t, min(format) >= 7 AS minmax_minor, max(format) <= 6 AS old_minor

@@ -298,8 +298,9 @@ INSERT INTO g_q (q) VALUES
 	('SELECT grp, count(*) FROM g WHERE jsonb_typeof(attrs->''s'') = ''string'' GROUP BY grp');
 -- numbers only
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', i / 8.0, 's', 'v' || i % 100) FROM generate_series(1, 6000) i;
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX g_col ON g USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.s text');
+RESET sift.test_col_format_minor;
 SELECT fmt('g_col');
 SELECT n, t_check(q) FROM g_q ORDER BY n;
 -- strings among the numbers, written as minor 4 (the write buffer, a promoted segment, the merge of both with the minor 3 one)
@@ -315,8 +316,9 @@ SELECT n, t_check(q) FROM g_q ORDER BY n;
 SELECT sift.col_verify('g_col', true);
 -- strings among the numbers under minor 3, and the merge with a minor 4 unit
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END) FROM generate_series(9001, 12000) i;
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 SELECT sift.col_promote('g_col');
+RESET sift.test_col_format_minor;
 SELECT fmt('g_col');
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
 SELECT sift.col_merge('g_col', true);

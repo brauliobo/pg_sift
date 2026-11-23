@@ -7,6 +7,7 @@ SET sift.agg_force = on;
 SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 -- the statements check the keyed load (the plans with probes have their own test, agg_probe_rewrite)
+SET sift.test_agg_probe_rewrite = off;
 
 CREATE TABLE ev (id int, fk int, v int, d date) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 1000, i % 7, date '2026-01-01' + i % 300 FROM generate_series(1, 60000) i;

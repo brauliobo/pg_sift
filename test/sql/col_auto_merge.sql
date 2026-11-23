@@ -4,7 +4,7 @@
 -- in the write buffer. Nothing starts the rewrite but sift.col_maintain; the end state after it is the one of a REINDEX of the same table, and the answers never change.
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
-SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
+SET sift.test_agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -45,7 +45,7 @@ CREATE FUNCTION fa_index(idx regclass) RETURNS TABLE (segments int, buffer_rows 
 -- the reason for the rewrite under the two thresholds (units per superblock, percent of rows in the buffer)
 CREATE FUNCTION fa_due(idx regclass, frag numeric, buf numeric) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.col_auto_merge_fragmentation', frag::text, true), set_config('sift.col_auto_merge_buffer_pct', buf::text, true);
+	PERFORM set_config('sift.test_col_merge_frag', frag::text, true), set_config('sift.test_col_merge_buf_pct', buf::text, true);
 	RETURN coalesce(sift.col_maintenance_due(idx, false), 'not due');
 END $$;
 
@@ -155,7 +155,7 @@ SELECT 'promoted' AS step, * FROM fa_state('facts_e');
 SELECT sift.col_verify('facts_e_col', true);
 
 -- on, within 5% of the WAL, unless the server says otherwise (the test clusters turn it off and the budget away)
-SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.async_maintenance', 'sift.col_auto_merge_wal_pct') ORDER BY name;
+SELECT name, boot_val FROM pg_settings WHERE name IN ('sift.async_maintenance', 'sift.test_col_merge_wal_pct') ORDER BY name;
 
 -- CREATE INDEX says what the worker does with the index and how to stop it
 SET sift.async_maintenance = on;

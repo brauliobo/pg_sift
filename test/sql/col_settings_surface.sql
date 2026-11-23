@@ -4,14 +4,14 @@
 CREATE EXTENSION pg_sift;
 
 SELECT name, context, short_desc LIKE 'Testing%' OR short_desc LIKE '%(test only)' AS says_test
-FROM pg_settings WHERE name IN ('sift.col_unit_rows', 'sift.search_chunk_sbs') ORDER BY name;
+FROM pg_settings WHERE name IN ('sift.test_col_unit_rows', 'sift.test_search_chunk_sbs') ORDER BY name;
 SELECT name, context FROM pg_settings
 WHERE name IN ('sift.table_auto_defrag_delay', 'sift.table_auto_defrag_max_active', 'sift.table_auto_defrag_wal_rate') ORDER BY name;
 SELECT count(*) AS table_key_order_settings FROM pg_settings WHERE name = 'sift.table_key_order';
 
-SET sift.col_unit_rows = 512;
-SET sift.search_chunk_sbs = 8;
-SELECT current_setting('sift.col_unit_rows'), current_setting('sift.search_chunk_sbs');
+SET sift.test_col_unit_rows = 512;
+SET sift.test_search_chunk_sbs = 8;
+SELECT current_setting('sift.test_col_unit_rows'), current_setting('sift.test_search_chunk_sbs');
 SET sift.table_auto_defrag_delay = 5;
 SET sift.table_key_order = 'k';
 

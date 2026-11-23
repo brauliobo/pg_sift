@@ -1,4 +1,4 @@
--- sift.col_unit_floor: the rows of a promotion that reach many superblocks with few rows in each are cut by TID range into units of that many rows, not one unit
+-- sift.test_col_unit_floor: the rows of a promotion that reach many superblocks with few rows in each are cut by TID range into units of that many rows, not one unit
 -- per superblock, and a merge that stays that sparse does the same; a merge that reaches the floor in every superblock cuts by superblock again, whatever the
 -- cut of its inputs. The answers never change and the index verifies after every step. 40,000 rows of 1 kB are 22 superblocks; the least number of
 -- superblocks the rule needs is lowered from 16 to 4 for the test.
@@ -67,7 +67,7 @@ SELECT sift.col_verify('fl_col', true);
 (1 row)
 
 -- the floor off: a unit for each superblock reached
-SET sift.col_unit_floor = 0;
+SET sift.test_col_unit_floor = 0;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 1;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) fl;
 SELECT * FROM fl_newest();
@@ -82,6 +82,7 @@ SELECT fl_same();
  t
 (1 row)
 
+RESET sift.test_col_unit_floor;
 -- fewer superblocks than the least the rule needs (16, here raised to 30): a unit for each
 SET sift.test_col_floor_sbs = 30;
 UPDATE fl SET amount = amount + 1 WHERE id % 10 = 2;

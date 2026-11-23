@@ -6,6 +6,7 @@
 
 plan 7
 node_init busy 47 "autovacuum = off
+sift.async_maintenance = on
 sift.maintenance_naptime = 10000"
 node_start busy || bail "start failed"
 D=$(dir busy)

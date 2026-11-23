@@ -243,6 +243,9 @@ typedef struct SiftPart
 /* Reads and checks the header page of a part and its extent list; ERROR for a section the build does not know that is marked required */
 extern SiftPart *sift_part_open(Relation rel, BlockNumber header_blk, uint64 part_gen, uint32 part_id);
 
+/* The part sift_part_write would write, kept in memory and written nowhere (a standby makes the part of a micro-slab so, for the statement that reads it); d gets what sift_part_write fills, with no header block */
+extern SiftPart *sift_part_in_memory(Relation rel, const SiftPartIn *in, SiftPartDesc *d);
+
 /* The same for a part named by its descriptor: a packed part finds its slot by the index the flags hold, a part in object storage (SIFT_PART_EXT_REMOTE) is opened from its object */
 extern SiftPart *sift_part_open_desc(Relation rel, const SiftPartDesc *d, uint32 part_id);
 

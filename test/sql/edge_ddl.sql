@@ -1,6 +1,7 @@
 -- DDL around sift indexes: partitioned tables, ALTER INDEX options and the analyzer mismatch ("REINDEX required"),
 -- REINDEX (also CONCURRENTLY), RENAME, unsupported index shapes, partial and expression indexes, temp tables, DROP EXTENSION
 CREATE EXTENSION pg_sift;
+\set SHOW_CONTEXT never
 
 CREATE FUNCTION ids(tbl regclass, q text) RETURNS text LANGUAGE plpgsql SET enable_seqscan = off AS $$
 DECLARE r text;

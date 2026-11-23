@@ -95,15 +95,21 @@ sift_cseg_dict(SiftColSegment *seg, int col)
 	return pv->dict[col];
 }
 
+/* The parsed dictionaries of the inputs of a merge are all in memory at once: one over this many bytes stays in the segment, and the strings of the rows of a unit are read from it (sift_cdict_get) */
+#define DICT_STREAM_PARSE_MAX	((Size) 1 << 20)
+
 SiftCDict *
 sift_cseg_dict_stream(SiftColSegment *seg, int col)
 {
 	SegPriv    *pv = PRIV(seg);
+	DictLook   *l;
 
 	if (seg->schema->cols[col].store != SIFT_COLS_STR)
 		return NULL;
 	if (pv->dict[col] == NULL)
 		pv->dict[col] = sift_cseg_dict_peek(seg, col);
+	if (pv->dict[col] == NULL && (l = seg_dict_look(seg, col)) != NULL && (Size) l->nbytes + ((Size) l->n + 1) * sizeof(uint32) > DICT_STREAM_PARSE_MAX)
+		return &l->stub;
 	if (pv->dict[col] == NULL)
 	{
 		pv->stream_cx[col] = AllocSetContextCreate(seg->mcxt, "sift_col stream dictionary", ALLOCSET_DEFAULT_SIZES);
@@ -311,6 +317,14 @@ look_find_hash(DictLook *l, const char *s, uint32 len)
 	return -1;
 }
 
+static const char *
+look_str(const SiftCDictLook *look, uint32 code, uint32 *len)
+{
+	DictLook   *l = (DictLook *) look;
+
+	return look_code_str(l, code, len, l->buf);
+}
+
 int64
 seg_look_find(const SiftCDictLook *look, const char *s, uint32 len)
 {
@@ -494,7 +508,7 @@ look_from_head(SiftColSegment *seg, int col, SiftCBisect *bc)
 	l->blkno = UINT32_MAX;
 	l->sig_at = bc->head.sig_at;
 	l->sig_lg = bc->head.sig_lg;
-	l->look = (SiftCDictLook) {seg_look_find, look_match};
+	l->look = (SiftCDictLook) {seg_look_find, look_match, look_str};
 	l->stub.n = l->n;
 	l->stub.look = &l->look;
 	l->searchable = true;
@@ -596,7 +610,7 @@ sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bis
 				end = l->hash_at + (uint64) SIFT_CDICT_HASH_SLOTS(l->n) * sizeof(uint32);
 			}
 			look_sig(l, off, len, end);
-			l->look = (SiftCDictLook) {seg_look_find, look_match};
+			l->look = (SiftCDictLook) {seg_look_find, look_match, look_str};
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 			l->searchable = true;
@@ -622,10 +636,16 @@ sift_cseg_look_at(SiftColSegment *seg, int col, uint64 off, uint64 len, bool bis
 			}
 			look_sig(l, off, len, end);
 			/* without the hash, form 3 is searched only by a substring test (sift_cseg_dict_search): that stub has no find */
-			l->look = (SiftCDictLook) {hashed ? seg_look_find : NULL, hashed ? look_match_blocks : look_match};
+			l->look = (SiftCDictLook) {hashed ? seg_look_find : NULL, hashed ? look_match_blocks : look_match, look_str};
 			l->stub.n = l->n;
 			l->stub.look = &l->look;
 		}
+	}
+	if (!l->blocked)
+	{
+		l->look = (SiftCDictLook) {NULL, NULL, look_str};
+		l->stub.n = l->n;
+		l->stub.look = &l->look;
 	}
 	return l;
 }

@@ -41,7 +41,7 @@
 bool
 sift_col_ordered_whole(Oid indexoid)
 {
-	Relation	irel = index_open(indexoid, NoLock);
+	Relation	irel = index_open(indexoid, AccessShareLock);
 	int			leaf = sift_col_rel(irel)->first[1];
 	bool		whole = leaf >= 0 && sift_col_rel(irel)->pagg.glayout[leaf] == SIFT_CGORD_OL_WHOLE;
 
@@ -97,7 +97,7 @@ column_not_null(Oid relid, AttrNumber attno)
 int
 sift_col_ordered_pair_mode(Oid indexoid, double tuples)
 {
-	Relation	irel = index_open(indexoid, NoLock);
+	Relation	irel = index_open(indexoid, AccessShareLock);
 	const int  *first = sift_col_rel(irel)->first;
 	const SiftColLeafStats *ls = sift_col_leaf_stats(irel, false);
 	int			mode = 0;

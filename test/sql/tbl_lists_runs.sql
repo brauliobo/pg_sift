@@ -128,6 +128,8 @@ SELECT tlr_most_units('SELECT count(DISTINCT cust_id) FROM tl') AS tl_lists,
        tlr_most_units('SELECT count(DISTINCT ref) FROM tf') AS tf_lists,
        tlr_most_units('SELECT count(DISTINCT cust_id) FROM tc') AS tc_lists;
 
+SET sift.test_col_format_minor = 8;
+RESET sift.test_col_format_minor;
 DROP TABLE tc, tf, tl, tl_src, tl_ref, tlr_q;
 DROP FUNCTION tlr_units(text), tlr_most_units(text), tlr_compare(text);
 DROP FUNCTION check_query(text);

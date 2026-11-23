@@ -215,7 +215,7 @@ read_key(HeapTuple old, const ItemPointerData *tid, uint8 *key)
 static bool
 staged_as_delta(TriggerData *td, const ItemPointerData *tid)
 {
-	Relation	index = index_open(ctx.index, NoLock);
+	Relation	index = index_open(ctx.index, AccessShareLock);
 	SiftF2DiffEnv env = {.heap = td->tg_relation,.index = index,.f = (SiftF2Rel *) ctx.f,.direct = ctx.plain,.info = ctx.info,.estate = ctx.estate,.slot = ctx.slot,.pred = ctx.pred,
 		.cx = CurrentMemoryContext};
 	bool		staged = sift_cdi_stage_update(&env, ctx.stage, td->tg_trigtuple, td->tg_newtuple, sift_f2_tid(tid));

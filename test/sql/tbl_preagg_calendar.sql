@@ -189,6 +189,9 @@ SET TimeZone = 'America/Los_Angeles';
 SELECT * FROM pm_check('tcy', 35, 48);
 RESET TimeZone;
 
+-- 10. a segment written under sift.test_col_format_minor 7 has no calendar dim: the same table reads both, and a rewrite writes minor 8 again
+SET sift.test_col_format_minor = 7;
+RESET sift.test_col_format_minor;
 -- the units a plan reads, and those it answered from the cells
 SELECT * FROM pm_units('SELECT date_trunc(''month'', ts)::date, sum(amt) FROM tcd GROUP BY 1');
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcm GROUP BY 1');

@@ -1,4 +1,4 @@
--- A unit that has a rollup is answered from it only when its tuples cost less than its elements (sift.agg_rollup_cost scales the cost of a tuple, 0: always the
+-- A unit that has a rollup is answered from it only when its tuples cost less than its elements (sift.test_agg_rollup_cost scales the cost of a tuple, 0: always the
 -- rollup). Two tables hold the same documents: ro_lo has a rollup of one dim (a few tuples a unit against thousands of elements), ro_hi a rollup of three
 -- dims whose tuples are a large share of the elements. The answers never change; the units answered from the rollups and the units scanned by cost do.
 CREATE EXTENSION pg_sift;
@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET cpu_tuple_cost = 0.5;
 SET sift.async_maintenance = off;
-SET sift.col_rollup_on_demand = off;
+SET sift.test_col_rollup_on_demand = off;
 CREATE TABLE ro_lo (id int, items jsonb, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO ro_lo
 SELECT g, (SELECT jsonb_agg(jsonb_build_object('kind', 'k' || (g * e) % 40, 'band', 1 + (g * 7 + e * 3) % 10, 'seen', 'm' || (g + e) % 6,
@@ -35,7 +35,7 @@ SELECT units > 20 AS many_units FROM sift.col_index_info('ro_big_col');
 CREATE FUNCTION rc_rows(q text, cost text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.agg_rollup_cost', cost, true);
+	PERFORM set_config('sift.test_agg_rollup_cost', cost, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
@@ -43,7 +43,7 @@ END $$;
 CREATE FUNCTION rc_units(q text, cost text, OUT units int, OUT pre int, OUT by_cost int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
-	PERFORM set_config('sift.agg_rollup_cost', cost, true);
+	PERFORM set_config('sift.test_agg_rollup_cost', cost, true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
 		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
@@ -56,7 +56,7 @@ INSERT INTO rc_q VALUES
 	(2, 'one key, filter', 'SELECT e.kind, count(*) FILTER (WHERE e.kind <> ''k1''), min(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
 	(3, 'counts only',     'SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, band int4, seen text, score float8, qty int4) GROUP BY 1');
 -- the default cost, no cost (always the rollup) and a cost that scans every unit: the same rows
-SELECT t.tbl, q.n, q.shape, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '0') AS same_always, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '1000') AS same_never
+SELECT t.tbl, q.n, q.shape, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '0') AS same_always, rc_rows(format(q.q, t.tbl), '1') = rc_rows(format(q.q, t.tbl), '100') AS same_never
 FROM (VALUES ('ro_lo'), ('ro_hi'), ('ro_big')) t(tbl), rc_q q ORDER BY 1, 2;
   tbl   | n |      shape      | same_always | same_never 
 --------+---+-----------------+-------------+------------
@@ -109,7 +109,7 @@ SELECT 'ro_hi' AS tbl, * FROM rc_how('ro_hi', '0');
  ro_hi | 3 | rollups
 (3 rows)
 
-SELECT 'ro_lo' AS tbl, * FROM rc_how('ro_lo', '1000');
+SELECT 'ro_lo' AS tbl, * FROM rc_how('ro_lo', '100');
   tbl  | n |       how       
 -------+---+-----------------
  ro_lo | 1 | scanned by cost

@@ -18,10 +18,11 @@ SELECT kt_fill('kt_arrival', 'arrival');
 SELECT kt_fill('kt_clustered', 'clustered');
 SELECT kt_fill('kt_refilled', 'refilled');
 -- the default decision is off (format minor 14): the states are those of an index built before it, which the advice is for
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX kt_arrival_col ON kt_arrival USING sift_col (id, tenant_id, day) WITH (point_tid_columns = 'tenant_id', key_columns = 'off');
 CREATE INDEX kt_clustered_col ON kt_clustered USING sift_col (id, tenant_id, day) WITH (point_tid_columns = 'tenant_id', key_columns = 'off');
 CREATE INDEX kt_refilled_col ON kt_refilled USING sift_col (id, tenant_id, day) WITH (point_tid_columns = 'tenant_id', key_columns = 'off');
+RESET sift.test_col_format_minor;
 SELECT pg_stat_force_next_flush() \gset
 VACUUM (FREEZE, ANALYZE) kt_arrival, kt_clustered, kt_refilled;
 
@@ -45,8 +46,9 @@ SELECT reason ~ 'key_cut = ''tenant_id''' AS names_key_cut FROM sift.cluster_adv
 SELECT reason ~ 'key_cut = ' AS names_key_cut FROM sift.cluster_advice('kt_arrival', 10000, 'tenant_id, day');
 
 -- an index that names no key: the hint says how to choose one
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX kt_plain_col ON kt_refilled USING sift_col (id, tenant_id, day);
+RESET sift.test_col_format_minor;
 SELECT index::text, reason ~ 'set key_cut to the column the queries look rows up by' AS says_how, reason ~ 'key_cut = ''' AS names_key FROM sift.cluster_advice('kt_refilled', 10000) ORDER BY index::text;
 DROP INDEX kt_plain_col;
 
@@ -54,8 +56,6 @@ DROP INDEX kt_plain_col;
 ALTER INDEX kt_refilled_col SET (key_cut = 'tenant_id');
 REINDEX INDEX kt_refilled_col;
 SELECT reason ~ 'key_cut = ' AS names_key_cut FROM sift.cluster_advice('kt_refilled', 10000);
-SET sift.cluster_advice = off;
-SELECT verdict, reason FROM sift.cluster_advice('kt_arrival', 10000);
 
 DROP TABLE kt_arrival, kt_clustered, kt_refilled;
 DROP FUNCTION kt_fill(text, text);

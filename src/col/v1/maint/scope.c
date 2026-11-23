@@ -303,6 +303,19 @@ refill_sample(Relation index, const SiftColRel *r, const SiftSegEntry *ents, int
 		sift_colsort_sample_end(sorter[s], (uint64) ((double) entries[s] * rows / sampled));
 }
 
+/* The segments of scope s among those of the directory, and the partitions their bytes make */
+static SiftDirSnapshot *
+scope_family(Relation index, const SiftDirSnapshot *all, int s)
+{
+	SiftDirSnapshot *fam = sift_dir_alloc(all->nsegs);
+
+	for (int i = 0; i < all->nsegs; i++)
+		if (sift_seg_is_scope(&all->segs[i]) && sift_seg_scope_ordinal(&all->segs[i]) == s)
+			fam->segs[fam->nsegs++] = all->segs[i];
+	maint_use_partitions(index, fam);
+	return fam;
+}
+
 /* The segments a refill writes of one scope: the rows come sorted, and a segment is done when its writer holds its budget of memory */
 typedef struct ScopeOut
 {
@@ -312,6 +325,8 @@ typedef struct ScopeOut
 	int			format;
 	uint64		index_rows;
 	Size		budget;
+	uint64		live_rows;		/* the entries of the scope, and those of the segments written so far */
+	uint64		rows_done;
 	bool		roots;			/* every entity segment the rows come from has SIFT_SEG_ROOTS */
 	SiftColFill *fill;
 	SiftCPaggSpec pagg;
@@ -372,15 +387,36 @@ scope_out_next(void *arg, SiftColSegWriter *w, bool open)
 	{
 		o->pcx = AllocSetContextCreate(o->cx, "sift_col scope refill segment", ALLOCSET_DEFAULT_SIZES);
 		o->wt = sift_wt_begin(o->index, SIFT_WRITE_SHARED);
+		if (o->n > 0)
+			sift_wt_expect(o->wt, o->out[o->n - 1].bytes);
 		o->w = sift_colw_begin(o->wt, sift_store_new_gen(o->index), o->r->schema, o->r->policy, o->format, o->pcx, o->budget);
 		sift_colw_set_fill(o->w, o->fill);
 		sift_colw_set_index_rows(o->w, o->index_rows);
 		sift_colw_set_preagg(o->w, &o->pagg);
 		sift_colw_set_keyed(o->w, sift_colk_aim_rows(o->index), o->cut, o->ncut);
 	}
-	else if (sift_colw_full(w))
+	else if (maint_out_full(w, o->budget, 0, o->rows_done, o->live_rows, open))
+	{
+		o->rows_done += sift_colw_rows(w);
 		scope_out_finish(o);
+	}
 	return o->w;
+}
+
+/* The scope segments a refill wrote were cut as a merge cuts them (maint_out_full): a merge of them writes them again as they are */
+static void
+refill_settle(Relation index, int nscope)
+{
+	SiftDirSnapshot *all = sift_dir_read(index);
+
+	for (int s = 0; s < nscope; s++)
+	{
+		SiftDirSnapshot *fam = scope_family(index, all, s);
+
+		maint_segs_settle(index, fam->segs, fam->nsegs);
+		pfree(fam);
+	}
+	pfree(all);
 }
 
 /*
@@ -481,7 +517,7 @@ maint_scope_refill(Relation index, bool report)
 	{
 		MemoryContext mcx = AllocSetContextCreate(cx, "sift_col scope refill merge", ALLOCSET_DEFAULT_SIZES);
 		ScopeOut	o = {.index = index, .cx = mcx, .r = r, .scope = s, .format = sift_col_format_minor, .index_rows = rows, .fill = fill, .pagg = r->pagg,
-					 .budget = scope_out_budget(), .roots = maint_segs_roots(ents, nents)};
+					 .budget = scope_out_budget(), .live_rows = count[s], .roots = maint_segs_roots(ents, nents)};
 
 		if (count[s] == 0)
 		{
@@ -509,6 +545,7 @@ maint_scope_refill(Relation index, bool report)
 	mi = sift_maint_inputs(index, scopes, nscopes);
 	rf = (Refill) {mi.gens, nscopes, out, nout, egen, nents, &stamps};
 	sift_dir_update(index, &(SiftDirChange) {.fn = refill_switch,.arg = &rf,.release = mi.release,.nrelease = mi.nrelease,.nadd = nout,.extra = InvalidBuffer});
+	refill_settle(index, r->nscope);
 	sift_log_maint(index, "refilled the scope segments of", start, rows, 0);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
@@ -596,21 +633,16 @@ scope_apart(Relation index, const SiftSegEntry *sel, int n, int s)
 static int
 scope_pick(Relation index, const SiftDirSnapshot *all, int s, bool force, SiftSegEntry *sel)
 {
-	SiftDirSnapshot *fam;
+	SiftDirSnapshot *fam = scope_family(index, all, s);
 	SiftMergePolicy pol = {.tier_base = (uint64) sift_col_options(index)->write_buffer_limit * 1024, .fanin = SIFT_MERGE_FANIN, .mostly_dead = sift_col_mostly_dead};
 	int			n;
 
-	fam = sift_dir_alloc(all->nsegs);
-	for (int i = 0; i < all->nsegs; i++)
-		if (sift_seg_is_scope(&all->segs[i]) && sift_seg_scope_ordinal(&all->segs[i]) == s)
-			fam->segs[fam->nsegs++] = all->segs[i];
-	maint_use_partitions(index, fam);
 	if (!force)
 		maint_keep_overlays(fam);
 	n = sift_merge_pick(index, &pol, fam, force, sel);
 	pfree(fam);
 	if (force)
-		return n > 1 && scope_apart(index, sel, n, s) ? 0 : n;
+		return n > 1 && (maint_merge_settled(index, sel, n) || scope_apart(index, sel, n, s)) ? 0 : n;
 	return n > 1 && maint_merge_settled(index, sel, n) ? sift_merge_pick_dead(index, &pol, fam, sel) : n;
 }
 

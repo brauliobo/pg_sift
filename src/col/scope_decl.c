@@ -190,7 +190,7 @@ open_table(Relation heap, const SiftScopeSpec *s, const SiftScopeRel *r, Relatio
 	if (roid == RelationGetRelid(heap))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": the scope relation is the table of the index", s->key_name),
 						errhint("Name the table of (member, scope key) pairs.")));
-	*rel = table_open(roid, NoLock);
+	*rel = table_open(roid, AccessShareLock);
 	if ((*rel)->rd_rel->relkind != RELKIND_RELATION || (*rel)->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("scope \"%s\": \"%s\" is not a plain heap table", s->key_name, r->name),
 						errhint("The scope relation is a heap table that is not partitioned: a view or a partitioned table is not supported.")));
@@ -403,7 +403,7 @@ table_pairs_btree(Relation fact, const SiftScopeSpec *s, Relation *rel, AttrNumb
 	*rel = NULL;
 	if (!OidIsValid(roid) || roid == RelationGetRelid(fact))
 		return InvalidOid;
-	*rel = table_open(roid, NoLock);
+	*rel = table_open(roid, AccessShareLock);
 	*a = get_attnum(roid, s->rel.a);
 	*b = get_attnum(roid, s->rel.b);
 	if ((*rel)->rd_rel->relkind == RELKIND_RELATION && (*rel)->rd_rel->relam == HEAP_TABLE_AM_OID && *a > 0 && *b > 0 && *a != *b &&
@@ -875,7 +875,7 @@ sift_scope_pairs_multiset(Relation index, const SiftScopeSpec *s)
 		return !OidIsValid(btree);
 	}
 	relid = sift_conn_relation_oid(index->rd_index->indrelid, s->rel.schema, s->rel.name, AccessShareLock, false);
-	rel = table_open(relid, NoLock);
+	rel = table_open(relid, AccessShareLock);
 	btree = recorded_btree(RelationGetRelid(index), rel, get_attnum(relid, s->rel.a), get_attnum(relid, s->rel.b));
 	table_close(rel, NoLock);
 	return !OidIsValid(btree) || !btree_unique(btree);

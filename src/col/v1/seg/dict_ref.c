@@ -33,12 +33,14 @@ seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryCon
 		uint32		slen;
 		const char *s = sift_keystore_string(ks, sift_ckeyed_get(packed, nbytes + sizeof(uint64), (uint64) i * head[2], head[2]), &slen);
 
+		if ((uint64) all.len + slen > MaxAllocSize)
+			corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 		d->off[i] = (uint32) all.len;
 		appendBinaryStringInfo(&all, s, slen);
 	}
 	d->off[head[1]] = (uint32) all.len;
 	sift_keystore_close(ks);
-	if (all.len > UINT32_MAX || !sift_cdict_plain_bytes(d, mcxt, all.len))
+	if (!sift_cdict_plain_bytes(d, mcxt, all.len))
 		corrupt(seg, "The dictionary of leaf %d is malformed.", col);
 	memcpy(d->bytes, all.data, all.len);
 	if (!sift_cdict_plain_valid(d))

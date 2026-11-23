@@ -236,6 +236,7 @@ part_bound(PartSource *ps, int i, Oid parent)
 	BoundKey	key = {ps->heapoid[i], parent};
 	BoundEntry *e;
 	BoundEntry	fresh;
+	List	   *bound;
 	QualVars	qv = {key.part, parent, true};
 	bool		found;
 
@@ -269,9 +270,10 @@ part_bound(PartSource *ps, int i, Oid parent)
 		ctl.hcxt = bound_cx;
 		bound_cache = hash_create("sift partition bounds", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
+	bound = bound_copy(fresh.bound);
 	e = hash_search(bound_cache, &key, HASH_ENTER, &found);
 	e->ok = fresh.ok;
-	e->bound = bound_copy(fresh.bound);
+	e->bound = bound;
 	return e;
 }
 

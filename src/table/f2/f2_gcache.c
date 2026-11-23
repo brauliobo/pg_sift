@@ -24,7 +24,7 @@ typedef struct GKey
 typedef struct GEntry
 {
 	GKey		key;
-	Oid			relid;
+	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when the granule is cached */
 	SiftF2GranuleBuf *gb;
 	uint64		tick;
 } GEntry;
@@ -89,7 +89,7 @@ gcache_invalidate(uint32 hashvalue)
 		return;
 	hash_seq_init(&seq, gcache);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		if (sift_f2_inval_hits(e->relid, hashvalue))
+		if (sift_f2_inval_hits(e->relhash, hashvalue))
 		{
 			sift_f2_gbuf_unref(e->gb);
 			hash_search(gcache, &e->key, HASH_REMOVE, NULL);
@@ -125,7 +125,7 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	key.header_blk = pin->desc.header_blk;
 	key.granule_id = g;
 	key.schema_hash = store->schema_hash;
-	e = hash_search(gcache, &key, HASH_FIND, NULL);
+	e = pin->uncached ? NULL : hash_search(gcache, &key, HASH_FIND, NULL);
 	if (e != NULL)
 	{
 		e->tick = sift_cache_tick();
@@ -134,7 +134,7 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	gb = sift_f2_gbuf_load_lazy(rel, store, pin, g, CurrentMemoryContext);
 	while (hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES && gcache_evict_one())
 		;
-	if (hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES)
+	if (pin->uncached || hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES)
 	{
 		MemoryContextSetParent(gb->cx, TopTransactionContext);
 		return gb;
@@ -143,9 +143,26 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	gb->cached = true;
 	e = hash_search(gcache, &key, HASH_ENTER, NULL);
 	e->gb = sift_f2_gbuf_ref(gb);
-	e->relid = RelationGetRelid(rel);
+	e->relhash = sift_f2_rel_hash(rel);
 	e->tick = sift_cache_tick();
 	return gb;
+}
+
+void
+sift_f2_gcache_forget(const RelFileLocator *locator)
+{
+	HASH_SEQ_STATUS seq;
+	GEntry	   *e;
+
+	if (gcache == NULL)
+		return;
+	hash_seq_init(&seq, gcache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (RelFileLocatorEquals(e->key.locator, *locator))
+		{
+			sift_f2_gbuf_unref(e->gb);
+			hash_search(gcache, &e->key, HASH_REMOVE, NULL);
+		}
 }
 
 void

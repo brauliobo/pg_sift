@@ -63,8 +63,18 @@ SELECT expect(format('CREATE INDEX ON many USING sift_col (id) WITH (paths = %L)
 (1 row)
 
 -- a row of a sift_table over the write buffer
-SET sift.table_write_buffer_limit = 2048;
-SET sift.table_wide_rows = off;
+SELECT sift.table_set_option('tbl', 'write_buffer_limit', '2048');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('tbl', 'wide_rows', 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
                                                                            expect                                                                            
 -------------------------------------------------------------------------------------------------------------------------------------------------------------

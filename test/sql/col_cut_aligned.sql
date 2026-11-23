@@ -19,7 +19,8 @@ INSERT INTO ca SELECT g, CASE WHEN g % 5 = 0 THEN 0 ELSE 1 + (g::bigint * 7919 %
 FROM generate_series(1, 400000) g;
 VACUUM (FREEZE, ANALYZE) ca;
 SET sift.test_col_segment_kb = 2048;
-SET sift.col_unit_rows = 1024;
+SET sift.test_col_partition_kb = 650;
+SET sift.test_col_unit_rows = 1024;
 CREATE INDEX ca_idx ON ca USING sift_col (dim, day, v, w) WITH (key_cut = 'dim, day');
 SELECT count(*) AS runs FROM sift.col_segments('ca_idx') WHERE kind = 'immutable';
 SELECT sift.col_merge('ca_idx', true) > 0 AS merged;
@@ -32,8 +33,8 @@ SELECT count(*) > 10 AS partitions, sum(rows) = 400000 AS all_rows FROM ca_segs;
 SELECT count(*) AS split_values_that_fit FROM ca_segs s JOIN ca_vals v ON v.dim = s.hi WHERE s.hi >= s.next_lo AND v.n * 100 <= 12 * (SELECT avg(rows) FROM ca_segs);
 -- the value of 20% of the rows is bigger: it is cut inside, in as many segments as its rows make, and each is within the budget and its slack (a segment is never one value of the whole)
 SELECT count(*) > 2 AS big_value_in_segments, max(rows) < 40000 AS none_holds_the_whole_value FROM ca_segs WHERE lo = 0;
--- a segment holds at most the budget plus the slack and the unit that took it past: 12% and a unit (25 of them) are under 25% of the median
-SELECT max(bytes) <= 1.25 * percentile_cont(0.5) WITHIN GROUP (ORDER BY bytes) AS within_the_slack FROM sift.col_segments('ca_idx') WHERE kind = 'immutable';
+-- a segment holds at most the budget (three quarters of the partition size) plus the slack and the unit that took it past: 12% and a unit are under 25% of it
+SELECT max(bytes) <= 1.25 * 650 * 1024 * 3 / 4 AS within_the_slack FROM sift.col_segments('ca_idx') WHERE kind = 'immutable';
 SELECT sift.col_verify('ca_idx', true);
 
 SET enable_seqscan = off;

@@ -49,7 +49,7 @@ sift.async_maintenance = off${pconf:+
 $pconf}"
 	use_root "$p" "$proot"
 	node_start "$p" || bail "$dir: primary start failed"
-	[[ $dir == down ]] && FMT=("SET sift.test_segfmt = 3" "SET sift.test_wbuf_narrow = on")
+	[[ $dir == down ]] && FMT=("SET sift.test_segfmt = 3" "SET sift.test_wbuf_narrow = on" "SET sift.test_col_format_minor = 6")
 	sql "$p" "CREATE EXTENSION pg_sift" "${FMT[@]}" \
 		"CREATE TABLE docs (id int PRIMARY KEY, g int, n int, body text)" \
 		"INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha' || i % 5 || ' beta' || i % 11 FROM generate_series(1, 12000) i" \
@@ -81,5 +81,5 @@ wal_receiver_status_interval = 1s"
 }
 
 run up "$oldroot" "$newroot"
-run down "$newroot" "$oldroot" "sift.test_col_format_minor = 6"
+run down "$newroot" "$oldroot"
 finish

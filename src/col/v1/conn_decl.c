@@ -310,7 +310,7 @@ sift_conn_parent_index(Relation heap, Relation index, const SiftConnSpec *s, Rel
 	if (poid == RelationGetRelid(heap))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: the parent table is the table of the index"),
 						errhint("Name the table that this table joins.")));
-	*parent = table_open(poid, NoLock);
+	*parent = table_open(poid, AccessShareLock);
 	if ((*parent)->rd_rel->relkind != RELKIND_RELATION || (*parent)->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("connect: \"%s\" is not a heap table", s->parent_table),
 						errhint("The parent is a plain heap table.")));

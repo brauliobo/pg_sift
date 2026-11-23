@@ -22,6 +22,7 @@
 
 #include "col/f2/col_meta.h"
 #include "core/crash_point.h"
+#include "core/f2/f2_gate.h"
 #include "core/f2/fsm.h"
 #include "core/page_io.h"
 #include "core/part_lock.h"
@@ -620,6 +621,7 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		if (b.nentries > 0)
 			append_locked(rel, &e, &b, next);
 		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
+		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 		sift_col_delta_batch_free(&b);
 		pfree(parts);

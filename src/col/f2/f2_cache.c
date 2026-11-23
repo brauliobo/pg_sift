@@ -79,6 +79,20 @@ sift_plan_cache_evict_all(void)
 		;
 }
 
+/* The snapshot of a relation file whose generations start again: one a statement still pins cannot go, it only stops matching any manifest */
+void
+sift_plan_cache_forget(const RelFileLocator *locator)
+{
+	SiftPlanSnapshot *s = cache != NULL ? hash_search(cache, locator, HASH_FIND, NULL) : NULL;
+
+	if (s == NULL)
+		return;
+	if (s->pins == 0)
+		drop(s);
+	else
+		s->manifest_version = s->scope_dir_gen = UINT64_MAX;
+}
+
 static const SiftCacheKind plan_kind = {"col_f2_part_cache", plan_oldest, plan_evict_one, sift_plan_cache_evict_all};
 
 static void
@@ -149,9 +163,8 @@ shm_list_get(const SiftShmManifestSnap *shm, int i, const SiftPartitionEntry *e,
 {
 	const ShmPartList *l = sift_shm_snap_part_list(shm, i);
 
-	if (l == NULL || e->nparts == 0 || ((const volatile ShmPartList *) l)->manifest_gen != e->manifest_gen)
+	if (l == NULL || e->nparts == 0 || l->manifest_gen != e->manifest_gen)
 		return false;
-	pg_read_barrier();
 	out->nparts = l->nparts;
 	out->parts = palloc(l->nparts * sizeof(SiftPartDesc));
 	memcpy(out->parts, l->parts, l->nparts * sizeof(SiftPartDesc));
@@ -161,14 +174,14 @@ shm_list_get(const SiftShmManifestSnap *shm, int i, const SiftPartitionEntry *e,
 static void
 shm_list_put(const SiftShmManifestSnap *shm, int i, const SiftPlanPartList *list)
 {
-	ShmPartList *l = sift_shm_snap_part_list_install(shm, i, offsetof(ShmPartList, parts) + list->nparts * sizeof(SiftPartDesc));
+	Size		bytes = offsetof(ShmPartList, parts) + list->nparts * sizeof(SiftPartDesc);
+	ShmPartList *l = palloc0(bytes);
 
-	if (l == NULL || ((volatile ShmPartList *) l)->manifest_gen == list->manifest_gen)
-		return;
-	memcpy(l->parts, list->parts, list->nparts * sizeof(SiftPartDesc));
+	l->manifest_gen = list->manifest_gen;
 	l->nparts = list->nparts;
-	pg_write_barrier();
-	((volatile ShmPartList *) l)->manifest_gen = list->manifest_gen;
+	memcpy(l->parts, list->parts, list->nparts * sizeof(SiftPartDesc));
+	(void) sift_shm_snap_part_list_install(shm, i, l, bytes);
+	pfree(l);
 }
 
 /* The part list of one partition in dst, exactly sized; the page copies of the read are the caller's scratch in src and go with it */

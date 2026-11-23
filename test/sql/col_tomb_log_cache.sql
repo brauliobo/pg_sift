@@ -88,6 +88,32 @@ VACUUM big;
 SELECT count(*) = :n_whole AND sum(v) = :s_whole AS same_rows_after_vacuum FROM big WHERE g IN (3, 4) AND id < 20000;
 DROP TABLE big;
 
+-- the entry of a log is held while its directory is read: the read of a chained directory asks the budget of the caches for room, and that must not take the entry it is filling.
+-- Each VACUUM is the first use of the log in a backend of its own, with a budget from one that holds hardly anything to one that holds the directory
+CREATE TABLE chained (id int PRIMARY KEY, g int NOT NULL, pad text) WITH (autovacuum_enabled = false);
+SET client_min_messages = warning;
+SET sift.test_dir_flat_max = 1;
+SET sift.test_col_segment_kb = 16;
+INSERT INTO chained SELECT i, i % 50, md5(i::text) FROM generate_series(1, 20000) i;
+CREATE INDEX chained_c ON chained USING sift_col (id, g, pad) WITH (track_changes = 'ctid');
+SELECT chained, nsegs > 1 AS segments FROM sift._test_dir_info('chained_c');
+\c -
+SET sift.backend_cache_kb = '8kB';
+DELETE FROM chained WHERE id % 7 = 0;
+VACUUM chained;
+\c -
+SET sift.backend_cache_kb = '24kB';
+DELETE FROM chained WHERE id % 7 = 1;
+VACUUM chained;
+\c -
+SET sift.backend_cache_kb = '64kB';
+DELETE FROM chained WHERE id % 7 = 2;
+VACUUM chained;
+\c -
+SELECT quarantined FROM sift.status('chained_c');
+SELECT count(*) AS rows_left FROM chained WHERE id > 0;
+DROP TABLE chained;
+
 DROP TABLE live;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

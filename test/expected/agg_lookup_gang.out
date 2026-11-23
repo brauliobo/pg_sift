@@ -13,7 +13,7 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
+SET sift.test_agg_par_min_rows = 0;
 CREATE TABLE pg (k int PRIMARY KEY, f8 float8, tm time, tx text, nm numeric(12, 3), n int) WITH (autovacuum_enabled = false);
 INSERT INTO pg SELECT i,
 	(ARRAY['NaN', 'Infinity', '-0', '0', NULL, '1.5', '0.1']::float8[])[i % 7 + 1],

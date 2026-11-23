@@ -476,7 +476,7 @@ rq_own | SELECT count(*) FROM rq.docs
 $$);
  n |  role  |                                                stmt                                                |                  result                  
 ---+--------+----------------------------------------------------------------------------------------------------+------------------------------------------
- 1 | rq_rd  | EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rq.docs WHERE body @@> 'five' | ok: plan Bitmap Index Scan on docs_idx
+ 1 | rq_rd  | EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM rq.docs WHERE body @@> 'five' | ok: plan Custom Scan (SiftScan)
  2 | rq_rd  | EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT g, count(*) FROM rq.facts GROUP BY g  | ok: plan Custom Scan (SiftAgg)
  3 | rq_rd  | EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) UPDATE rq.facts SET val = 0                  | ERROR: permission denied for table facts
  4 | rq_rd  | EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) DELETE FROM rq.docs                          | ERROR: permission denied for table docs

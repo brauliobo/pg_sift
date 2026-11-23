@@ -35,7 +35,7 @@ sift_meta_peek_format(Relation rel)
 	Buffer		buf;
 	Page		page;
 
-	if (RelationGetNumberOfBlocks(rel) == 0)
+	if (!RELKIND_HAS_STORAGE(rel->rd_rel->relkind) || RelationGetNumberOfBlocks(rel) == 0)
 		return peek;
 	buf = ReadBuffer(rel, SIFT_METAPAGE_BLKNO);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);

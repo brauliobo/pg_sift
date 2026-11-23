@@ -461,7 +461,7 @@ SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE c
  tenant_scope_pkey
 (2 rows)
 
--- refresh: as many changed members as sift.col_scope_refresh_pct percent of the pairs are refreshed whatever the reads ('stale scope'); a few are left to the reads, which ask for the rewrite
+-- refresh: as many changed members as sift.test_col_scope_refresh_pct percent of the pairs are refreshed whatever the reads ('stale scope'); a few are left to the reads, which ask for the rewrite
 -- when what they paid for them comes to half of what it costs (col_scope_stale_price: no read, no rewrite)
 REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_filled;
@@ -508,20 +508,21 @@ SELECT sift.col_maintenance_due('events_col', false) AS due_refilled;
 
 INSERT INTO tenant_scope SELECT i, 1 FROM generate_series(1, 20) i;
 -- the setting of the scope index is its own: the one of the connected indexes keeps its meaning
-SELECT name, setting, min_val, max_val FROM pg_settings WHERE name IN ('sift.col_scope_refresh_pct', 'sift.col_connect_refresh_pct') ORDER BY name;
-             name             | setting | min_val | max_val 
-------------------------------+---------+---------+---------
- sift.col_connect_refresh_pct | 10      | 1       | 100
- sift.col_scope_refresh_pct   | 10      | 1       | 100
+SELECT name, setting, min_val, max_val FROM pg_settings WHERE name IN ('sift.test_col_scope_refresh_pct', 'sift.test_col_conn_refresh_pct') ORDER BY name;
+              name               | setting | min_val | max_val 
+---------------------------------+---------+---------+---------
+ sift.test_col_conn_refresh_pct  | 10      | 0       | 100
+ sift.test_col_scope_refresh_pct | 10      | 0       | 100
 (2 rows)
 
-SET sift.col_scope_refresh_pct = 1;
+SET sift.test_col_scope_refresh_pct = 1;
 SELECT sift.col_maintenance_due('events_col', false) AS due_by_the_setting;
  due_by_the_setting 
 --------------------
  stale scope
 (1 row)
 
+RESET sift.test_col_scope_refresh_pct;
 REINDEX INDEX events_col;
 -- the journal and its records survive a VACUUM of the relation; a rewrite refills under a new stamp, so the stale rule ends
 SELECT lineage AS lin, horizon AS hor FROM sift._test_scope_take('events_col', 0) \gset

@@ -256,6 +256,17 @@ CREATE FUNCTION sift._test_pacer_reset() RETURNS void
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;
 
+-- the room of the table of cache kinds (core/cachebudget.h), and n kinds that hold nothing registered with the budget (src/core/cachebudget_test.c)
+CREATE FUNCTION sift._test_cache_kinds_max() RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_cache_kinds_max' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cache_stress(on_ bool) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_cache_stress' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_cache_register_dummies(n int4) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_cache_register_dummies' LANGUAGE C STRICT;
+-- a unit buffer that cannot be made leaves nothing for the next segment (src/col/v1/test/alloc_test.c): true when the next segment reads and writes its whole buffer
+CREATE FUNCTION sift._test_unit_room_failure() RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_unit_room_failure' LANGUAGE C STRICT;
+
 -- n log lines, each reported under the error context of an index (test/mem-slope.tsv leak_errctx_report): the memory they leave in the backend
 CREATE FUNCTION sift._test_errctx_report(rel regclass, n int) RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_errctx_report' LANGUAGE C STRICT;
@@ -476,6 +487,10 @@ CREATE FUNCTION sift._test_col_pre_folds(OUT built int8, OUT shared int8) RETURN
 CREATE FUNCTION sift._test_col_set_damage(index regclass, units int4, OUT blobs int8, OUT exact int8, OUT bloom int8, OUT intact int8, OUT matching int8, OUT cut int8,
 										  OUT cut_accepted int8, OUT named int8, OUT named_accepted int8, OUT damaged int8, OUT accepted int8, OUT missed int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_set_damage' LANGUAGE C STRICT;
+
+-- the bytes of the key presence summary of an array of keys when it fits a budget, -1 when it does not (src/col/v1/test/set_damage.c)
+CREATE FUNCTION sift._test_col_set_budget(keys int8[], max_bytes int4) RETURNS int4
+	AS 'MODULE_PATHNAME', 'sift_test_col_set_budget' LANGUAGE C STRICT;
 
 CREATE FUNCTION sift._test_col_super_damage(index regclass, OUT supers int8, OUT damaged int8, OUT refused int8, OUT unnoticed int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_col_super_damage' LANGUAGE C STRICT;

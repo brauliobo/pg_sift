@@ -211,7 +211,7 @@ col_index(RelOptInfo *rel)
 static bool
 pick_store(HybridPlan *h, RangeTblEntry *rte)
 {
-	Relation	heap = table_open(rte->relid, NoLock);
+	Relation	heap = table_open(rte->relid, AccessShareLock);
 
 	if (sift_tbl_is_table(heap))
 		h->store.table = sift_tbl_ops(heap) == &sift_tbl_v2_ops ? sift_f2_store_open(heap) : NULL;

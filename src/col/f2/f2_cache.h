@@ -37,6 +37,7 @@ typedef struct SiftPlanSnapshot
 	SiftManifestScopeRef *scopes;	/* ascending by scope_ord */
 	struct SiftCardStatsView *card_view;	/* the statistics folded for the planner (f2_v6_card.c), one allocation in cx; NULL until built, and again when the directory is read anew */
 	bool		card_built;		/* a build was tried for this version of the manifest (it may have left no view) */
+	bool		slabs_in_memory;	/* a copy made for a statement of a standby: its partitions list their micro-slabs as parts (col/f2/f2_slab_view.h), so nothing is kept of it */
 	MemoryContext cx;
 	Size		size;
 	int			pins;
@@ -54,6 +55,9 @@ extern void sift_plan_card_put(const SiftPlanSnapshot *snap, struct SiftCardStat
 
 /* Drops every snapshot nobody pins */
 extern void sift_plan_cache_evict_all(void);
+
+/* What a TRUNCATE of a table made in the transaction leaves: the file stays and its manifest versions start again, so a snapshot of it must not be taken for one of the new rows */
+extern void sift_plan_cache_forget(const RelFileLocator *locator);
 
 /* The entry of the partition in the snapshot; an ERROR when it has none */
 extern const SiftPartitionEntry *sift_plan_entry(const SiftPlanSnapshot *snap, uint64 part_id);

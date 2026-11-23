@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.col_unit_rows = 100;
+SET sift.test_col_unit_rows = 100;
 
 -- key 1 holds ids 1 to 60 (several hundred rows of each), key 2 ids 61 to 66, key 3 id 67 only
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
@@ -68,11 +68,11 @@ BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
 	hit_on := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
-	PERFORM set_config('sift.agg_super', 'off', true);
+	PERFORM set_config('sift.test_agg_super', 'off', true);
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
 	hit_off := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
-	PERFORM set_config('sift.agg_super', 'on', true);
+	PERFORM set_config('sift.test_agg_super', 'on', true);
 	RETURN hit_on <= hit_off + slack;
 END $$;
 SELECT probe_blocks('SELECT count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 AND kind = ''k1''') AS two_columns,

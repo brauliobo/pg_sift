@@ -61,8 +61,9 @@ SELECT * FROM pk_probe('dense', 1, 'point_tid_columns = ''k''');
 -- segments of every layout in one index, then merged: the slots of the older minors, the packed table, the packed table with its header first (minor 35) and last (minor 37), and the answers are the heap's
 CREATE TABLE pk_m (id int, k int8, s text);
 INSERT INTO pk_m SELECT g, (g * 7919) % 5000, 's' || (g * 13) % 2500 FROM generate_series(1, 12000) g;
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX pk_mi ON pk_m USING sift_col (k, s) WITH (key_cut = 'off', point_tid_columns = 'k, s', count_columns = 'off');
+RESET sift.test_col_format_minor;
 SET sift.test_col_point_unpacked = on;
 SET sift.test_col_point_unrooted = on;
 INSERT INTO pk_m SELECT g, (g * 7919) % 5000, 's' || (g * 13) % 2500 FROM generate_series(12001, 24000) g;
@@ -98,8 +99,9 @@ SELECT least(format, 15) AS format, format >= 35 AS packed, format >= 37 AS root
 SELECT left(w, 36) AS w, pk_idx(w) = pk_seq(w) AS same_rows FROM pk_w ORDER BY w;
 SELECT sift.col_verify('pk_mi', true);
 -- the older layout is what the setting 14 writes again, by a rebuild
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX pk_mi;
+RESET sift.test_col_format_minor;
 SELECT least(format, 15) AS format, format >= 35 AS packed, format >= 37 AS rooted, count(*) AS segments FROM sift.col_segments('pk_mi') WHERE kind = 'immutable' GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 SELECT left(w, 36) AS w, pk_idx(w) = pk_seq(w) AS same_rows FROM pk_w ORDER BY w;
 SELECT sift.col_verify('pk_mi', true);

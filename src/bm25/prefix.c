@@ -566,7 +566,7 @@ cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 
 {
 	Size		size = sizeof(CacheEnt) + (blob ? (Size) info->post_len + SIFT_KERN_PAD : 0);
 	CacheEnt   *e;
-	bool		found;
+	uint8	   *copy;
 
 	if (cache == NULL)
 	{
@@ -577,13 +577,12 @@ cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 
 		cache = hash_create("sift prefix cache", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		sift_cache_register(&prefix_kind);
 	}
-	if (!sift_cache_room(size))
+	if (!sift_cache_room(size) || hash_search(cache, k, HASH_FIND, NULL) != NULL)
 		return;
-	e = hash_search(cache, k, HASH_ENTER, &found);
-	if (found)
-		return;
+	copy = blob_copy(cache_cx, blob, info);
+	e = hash_search(cache, k, HASH_ENTER, NULL);
 	e->info = *info;
-	e->blob = blob_copy(cache_cx, blob, info);
+	e->blob = copy;
 	e->left_out = left_out;
 	e->size = size;
 	cache_link_newest(e);

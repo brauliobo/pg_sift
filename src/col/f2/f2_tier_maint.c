@@ -16,6 +16,7 @@
 #include "col/f2/f2_tier_host.h"
 #include "col/f2/part_format.h"
 #include "core/crash_point.h"
+#include "core/f2/f2_gate.h"
 #include "core/part_lock.h"
 #include "core/wal_conflict.h"
 
@@ -270,6 +271,7 @@ tier_one(const Step *s, const TierRun *t, const SiftPartitionEntry *e, const Sif
 		return false;
 	}
 	SIFT_CRASH_POINT(f2_tier_upload_post_remote_pre_commit);
+	SIFT_F2_GATE(SIFT_F2_GATE_TIER);
 	commit_tiered(s, e, &ref);
 	return true;
 }

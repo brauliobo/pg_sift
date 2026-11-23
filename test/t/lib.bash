@@ -246,10 +246,12 @@ use_root() {
 	node_conf "$1" "extension_control_path = '$ROOT$(pg_config --sharedir):\$system'
 dynamic_library_path = '$ROOT$(pg_config --pkglibdir):\$libdir'"
 }
+# start_failed NODE: the tail of the log of a server that did not start (a test keeps what it prints, not the data directory)
+start_failed() { diag "the server of $1 did not start; the end of its log:"$'\n'"$(tail -n 30 "$(dir "$1")/postgres.log" 2>&1 | cut -c1-240)"; return 1; }
 node_start() {
 	[[ ! -v POOL_DB[$1] ]] || return 0
 	LD_PRELOAD=${SIFT_PRELOAD:-} pg_ctl -D "$(dir "$1")/data" -l "$(dir "$1")/postgres.log" -w -t 120 start \
-		>/dev/null 2>&1 || return
+		>/dev/null 2>&1 || start_failed "$1" || return
 	leak_baseline "$(dir "$1")/data"
 }
 node_stop() { real_node "$1" node_stop; [[ -f $(dir "$1")/data/postmaster.pid ]] && pg_ctl -D "$(dir "$1")/data" -m fast -w stop >/dev/null 2>&1; true; }
@@ -317,11 +319,11 @@ wal_flushed() { [[ $(sql "$1" "SELECT pg_current_wal_flush_lsn() = pg_current_wa
 setting_is() { [[ $(sql "$1" "SHOW $2") == "$3" ]]; }
 # pgbench_up NODE CLIENTS: the CLIENTS sessions of the pgbench of NODE are connected
 pgbench_up() { wait_for "[[ \$(sql $1 \"SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pgbench'\") -ge $2 ]]" 30; }
-# horizon_past PRIMARY STANDBY: the standby replayed what PRIMARY wrote and its feedback (hot_standby_feedback) holds no horizon at or below the transaction PRIMARY just spent
+# horizon_past PRIMARY STANDBY: the standby replayed what PRIMARY wrote and its feedback (hot_standby_feedback) holds no horizon below the next transaction id of PRIMARY: the slot of the standby, which is named after its node, has an xmin at it or past it, or none
 horizon_past() {
-	local xid
-	xid=$(sql "$1" "SELECT pg_current_xact_id()::text::int8")
-	catchup "$1" "$2" && wait_for "[[ \$(sql $1 \"SELECT coalesce(bool_and(backend_xmin::text::int8 > $xid), false) FROM pg_stat_replication\") == t ]]" 30
+	local next
+	next=$(sql "$1" "SELECT pg_snapshot_xmin(pg_current_snapshot())::text::int8")
+	catchup "$1" "$2" && wait_for "[[ \$(sql $1 \"SELECT coalesce(xmin::text::int8 >= $next, true) FROM pg_replication_slots WHERE slot_name = '$2'\") == t ]]" 30
 }
 
 # churn NAME IDX MAXBYTES [name:weight:sql ...]: pgbench -f arguments for a

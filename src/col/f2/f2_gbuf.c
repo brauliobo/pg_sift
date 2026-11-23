@@ -5,12 +5,14 @@
  */
 #include "postgres.h"
 
+#include "access/xlog.h"
 #include "catalog/pg_class_d.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
 #include "col/f2/f2_cache.h"
+#include "col/f2/f2_slab_view.h"
 #include "col/f2/delvec_delta.h"
 #include "col/f2/f2_gbuf.h"
 #include "col/f2/l0_slab.h"
@@ -31,7 +33,7 @@ typedef struct PinKey
 typedef struct PinEntry
 {
 	PinKey		key;
-	Oid			relid;
+	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when the pin is made */
 	SiftF2PartPin *pin;
 } PinEntry;
 
@@ -109,12 +111,32 @@ pins_invalidate(uint32 hashvalue)
 
 	hash_seq_init(&seq, pin_cache);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		if (sift_f2_inval_hits(e->relid, hashvalue))
+		if (sift_f2_inval_hits(e->relhash, hashvalue))
 		{
 			if (e->pin->refcnt == 0)
 				pin_drop(e);
 			else
 				e->pin->stale = true;
+		}
+}
+
+static void
+pins_forget(const RelFileLocator *locator)
+{
+	HASH_SEQ_STATUS seq;
+	PinEntry   *e;
+
+	hash_seq_init(&seq, pin_cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (RelFileLocatorEquals(e->key.locator, *locator))
+		{
+			if (e->pin->refcnt == 0)
+				pin_drop(e);
+			else
+			{
+				e->pin->uncached = true;
+				hash_search(pin_cache, &e->key, HASH_REMOVE, NULL);
+			}
 		}
 }
 
@@ -175,7 +197,7 @@ pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_i
 	pin->part_id = part_id;
 	pin->cx = cx;
 	pin->dv_cx = AllocSetContextCreateInternal(cx, "sift cache f2 part pin dv", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
-	pin->part = sift_part_open_desc(rel, d, part_id);
+	pin->part = sift_f2_slab_desc(d) ? sift_f2_slab_part(rel, store, d, part_id) : sift_part_open_desc(rel, d, part_id);
 	pin->zones = palloc0(pin->part->hdr.ncols * sizeof(SiftZone *));
 	pin->gdir = sift_part_granule_dir(rel, pin->part);
 	pin->tidx = sift_part_read_section(rel, pin->part, SEC_TID_INDEX, &len);
@@ -194,6 +216,19 @@ pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_i
 	return pin;
 }
 
+/* The part of a micro-slab is made for the statement from the rows the slab holds now, so no other statement may find it: it lives until it is released, out of the cache */
+static SiftF2PartPin *
+slab_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+{
+	SiftF2PartPin *pin = pin_build(rel, store, d, part_id);
+
+	MemoryContextSetParent(pin->cx, TopTransactionContext);
+	pin->uncached = true;
+	pin->refcnt = 1;
+	pin->lru_tick = sift_cache_tick();
+	return pin;
+}
+
 SiftF2PartPin *
 sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
@@ -204,6 +239,8 @@ sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32
 
 	if (pin_cache == NULL)
 		pin_cache_init();
+	if (sift_f2_slab_desc(d))
+		return slab_pin_open(rel, store, d, part_id);
 	key.locator = rel->rd_locator;
 	key.part_gen = d->part_gen;
 	key.header_blk = d->header_blk;
@@ -218,7 +255,7 @@ sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32
 		pin = pin_build(rel, store, d, part_id);
 		e = hash_search(pin_cache, &key, HASH_ENTER, &found);
 		e->pin = pin;
-		e->relid = RelationGetRelid(rel);
+		e->relhash = sift_f2_rel_hash(rel);
 		built = true;
 	}
 	e->pin->stale = false;
@@ -237,7 +274,11 @@ void
 sift_f2_pin_release(SiftF2PartPin *pin)
 {
 	Assert(pin->refcnt > 0);
-	if (--pin->refcnt == 0 && (pin->stale || sift_backend_cache_kb == 0))
+	if (--pin->refcnt > 0)
+		return;
+	if (pin->uncached)
+		MemoryContextDelete(pin->cx);
+	else if (pin->stale || sift_backend_cache_kb == 0)
 		pin_drop_unwanted(pin);
 }
 
@@ -460,7 +501,7 @@ typedef struct TidSlot
 typedef struct TidIndex
 {
 	RelFileLocator locator;		/* first: the hash key */
-	Oid			relid;
+	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when the index is made */
 	uint64		manifest_version;
 	uint64		tick;			/* sift_cache_tick() of its last use */
 	MemoryContext cx;			/* holds slots and loose */
@@ -474,7 +515,17 @@ typedef struct TidIndex
 
 static HTAB *tid_indexes = NULL;
 static MemoryContext tid_cx = NULL;
+static MemoryContext tid_retired = NULL;	/* the indexes replaced or forgotten while a lookup walks one: deleted when the last lookup is done */
 static int	tid_visits = 0;		/* lookups that walk an index now: it is not evicted under them */
+
+static void
+tid_index_free(TidIndex *ix)
+{
+	if (tid_visits > 0)
+		MemoryContextSetParent(ix->cx, tid_retired);
+	else
+		MemoryContextDelete(ix->cx);
+}
 
 static int
 slot_cmp(const void *a, const void *b)
@@ -514,7 +565,7 @@ tid_index_drop(TidIndex *ix)
 {
 	RelFileLocator locator = ix->locator;
 
-	MemoryContextDelete(ix->cx);
+	tid_index_free(ix);
 	hash_search(tid_indexes, &locator, HASH_REMOVE, NULL);
 }
 
@@ -539,7 +590,7 @@ tid_indexes_invalidate(uint32 hashvalue)
 		return;
 	hash_seq_init(&seq, tid_indexes);
 	while ((ix = hash_seq_search(&seq)) != NULL)
-		if (sift_f2_inval_hits(ix->relid, hashvalue))
+		if (sift_f2_inval_hits(ix->relhash, hashvalue))
 			tid_index_drop(ix);
 }
 
@@ -552,6 +603,21 @@ gbuf_invalidate(uint32 hashvalue)
 		tid_indexes_invalidate(hashvalue);
 }
 
+void
+sift_f2_gbuf_forget(const RelFileLocator *locator)
+{
+	TidIndex   *ix = tid_indexes != NULL ? hash_search(tid_indexes, locator, HASH_FIND, NULL) : NULL;
+
+	if (pin_cache != NULL)
+		pins_forget(locator);
+	if (ix == NULL)
+		return;
+	if (tid_visits > 0)
+		ix->manifest_version = UINT64_MAX;
+	else
+		tid_index_drop(ix);
+}
+
 static void
 tid_index_evict_all(void)
 {
@@ -562,14 +628,14 @@ tid_index_evict_all(void)
 static const SiftCacheKind tid_index_kind = {"f2_tid_indexes", tid_index_oldest, tid_index_evict_one, tid_index_evict_all};
 
 static TidIndex
-tid_index_build(const SiftPlanSnapshot *v)
+tid_index_build(const SiftPlanSnapshot *v, MemoryContext parent)
 {
 	TidIndex	ix = {.locator = v->locator,.manifest_version = v->manifest_version};
 	int			total = 0;
 
 	for (int i = 0; i < v->npartitions; i++)
 		total += v->partlists[i].nparts;
-	ix.cx = AllocSetContextCreateInternal(tid_cx, "sift cache f2 tid index", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
+	ix.cx = AllocSetContextCreateInternal(parent, "sift cache f2 tid index", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
 	ix.slots = MemoryContextAlloc(ix.cx, sizeof(TidSlot) * Max(total, 1));
 	ix.loose = MemoryContextAlloc(ix.cx, sizeof(TidSlot) * Max(total, 1));
 	for (int i = 0; i < v->npartitions; i++)
@@ -589,8 +655,9 @@ tid_index_build(const SiftPlanSnapshot *v)
 	return ix;
 }
 
+/* The index of the version of the manifest the view has, kept for the next lookup; one of a view that lists micro-slabs is made for the lookup, in mcxt */
 static const TidIndex *
-tid_index_of(Relation rel, const SiftPlanSnapshot *v)
+tid_index_of(Relation rel, const SiftPlanSnapshot *v, MemoryContext mcxt)
 {
 	TidIndex   *e;
 	TidIndex	built;
@@ -600,9 +667,17 @@ tid_index_of(Relation rel, const SiftPlanSnapshot *v)
 		HASHCTL		ctl = {.keysize = sizeof(RelFileLocator),.entrysize = sizeof(TidIndex),.hcxt = sift_cache_create_context("sift cache f2 tid indexes")};
 
 		tid_cx = ctl.hcxt;
+		tid_retired = AllocSetContextCreate(tid_cx, "sift cache f2 tid indexes dropped", ALLOCSET_SMALL_SIZES);
 		tid_indexes = hash_create("sift cache f2 tid indexes", TID_INDEX_MAX, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		sift_cache_register(&tid_index_kind);
 		sift_f2_invalidator_register(gbuf_invalidate);
+	}
+	if (v->slabs_in_memory)
+	{
+		TidIndex   *own = MemoryContextAlloc(mcxt, sizeof(TidIndex));
+
+		*own = tid_index_build(v, mcxt);
+		return own;
 	}
 	e = hash_search(tid_indexes, &v->locator, HASH_FIND, NULL);
 	if (e != NULL && e->manifest_version == v->manifest_version)
@@ -610,11 +685,11 @@ tid_index_of(Relation rel, const SiftPlanSnapshot *v)
 		e->tick = sift_cache_tick();
 		return e;
 	}
-	built = tid_index_build(v);
-	built.relid = RelationGetRelid(rel);
+	built = tid_index_build(v, tid_cx);
+	built.relhash = sift_f2_rel_hash(rel);
 	built.tick = sift_cache_tick();
 	if (e != NULL)
-		MemoryContextDelete(e->cx);
+		tid_index_free(e);
 	else if (hash_get_num_entries(tid_indexes) >= TID_INDEX_MAX)
 		tid_index_evict_one();
 	e = hash_search(tid_indexes, &v->locator, HASH_ENTER, NULL);
@@ -650,9 +725,9 @@ tid_index_visit(const TidIndex *ix, uint64 lo, uint64 hi, TidSlotVisit visit, vo
 
 /* A visit reads the index of the relation while it opens pins, which may ask the budget for room: the index is not dropped until the visit ends */
 static void
-tid_visit(Relation rel, const SiftPlanSnapshot *v, uint64 lo, uint64 hi, TidSlotVisit visit, void *arg)
+tid_visit(Relation rel, const SiftPlanSnapshot *v, MemoryContext mcxt, uint64 lo, uint64 hi, TidSlotVisit visit, void *arg)
 {
-	const TidIndex *ix = tid_index_of(rel, v);
+	const TidIndex *ix = tid_index_of(rel, v, mcxt);
 
 	tid_visits++;
 	PG_TRY();
@@ -661,19 +736,18 @@ tid_visit(Relation rel, const SiftPlanSnapshot *v, uint64 lo, uint64 hi, TidSlot
 	}
 	PG_FINALLY();
 	{
-		tid_visits--;
+		if (--tid_visits == 0)
+			MemoryContextReset(tid_retired);
 	}
 	PG_END_TRY();
 }
 
 /* ---- the manifest ---- */
 
-/* The view and what writing the slabs takes are mcxt's: a statement that locates a row for each of its rows does not keep them in its executor context */
+/* The slabs of the partitions written out as parts; a standby writes nothing, so its view lists them as parts made in memory */
 static const SiftPlanSnapshot *
-view_slabs_flushed(Relation rel, SiftF2Store *store, MemoryContext mcxt)
+slabs_flushed(Relation rel, SiftF2Store *store, const SiftPlanSnapshot *snap, MemoryContext mcxt)
 {
-	MemoryContext caller = MemoryContextSwitchTo(mcxt);
-	const SiftPlanSnapshot *snap = sift_plan_cache_get(rel, mcxt);
 	bool		flushed = false;
 
 	for (int i = 0; i < snap->npartitions; i++)
@@ -682,8 +756,17 @@ view_slabs_flushed(Relation rel, SiftF2Store *store, MemoryContext mcxt)
 			sift_l0_slab_flush(rel, snap->partitions[i].part_id, snap->partitions[i].key_lo, &store->spec);
 			flushed = true;
 		}
-	if (flushed)
-		snap = sift_plan_cache_get(rel, mcxt);
+	return flushed ? sift_plan_cache_get(rel, mcxt) : snap;
+}
+
+/* The view and what writing the slabs takes are mcxt's: a statement that locates a row for each of its rows does not keep them in its executor context */
+static const SiftPlanSnapshot *
+view_slabs_flushed(Relation rel, SiftF2Store *store, MemoryContext mcxt)
+{
+	MemoryContext caller = MemoryContextSwitchTo(mcxt);
+	const SiftPlanSnapshot *snap = sift_plan_cache_get(rel, mcxt);
+
+	snap = RecoveryInProgress() ? sift_f2_slab_view(rel, store, snap, mcxt) : slabs_flushed(rel, store, snap, mcxt);
 	MemoryContextSwitchTo(caller);
 	return snap;
 }
@@ -760,7 +843,7 @@ visit_view(Relation rel, SiftF2Store *store, uint64 lo, uint64 hi, SiftF2Granule
 	v = flush ? view_slabs_flushed(rel, store, pins) : sift_plan_cache_get(rel, pins);
 	slabs_left = !flush && has_slab(v);
 	vp = (VisitPart) {rel, store, v, lo, hi, (lo >> 16) == (hi >> 16), load, cb, arg};
-	tid_visit(rel, v, lo, hi, visit_part, &vp);
+	tid_visit(rel, v, pins, lo, hi, visit_part, &vp);
 	MemoryContextDelete(pins);
 	return slabs_left;
 }
@@ -858,7 +941,7 @@ sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc
 	const SiftPlanSnapshot *v = sift_plan_cache_get(rel, pins);
 	VisitPart	vp = {rel, store, v, tid, tid, true, sift_f2_gbuf_load, locate_cb, &a};
 
-	tid_visit(rel, v, tid, tid, visit_part, &vp);
+	tid_visit(rel, v, pins, tid, tid, visit_part, &vp);
 	MemoryContextDelete(pins);
 	return a.found;
 }

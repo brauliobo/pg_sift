@@ -1,4 +1,4 @@
--- sift.plan_scale plans as if the tables with a sift_col index had that many times the pages and rows, to see the choice of the planner at a larger size
+-- sift.test_plan_scale plans as if the tables with a sift_col index had that many times the pages and rows, to see the choice of the planner at a larger size
 -- without the data: the cost of the scan and of the normal plan, each by the model's own terms (a hash aggregate that stops fitting work_mem grows faster
 -- than the rows, a scan of units does not). Only the plan changes: the rows are those of the table.
 CREATE EXTENSION pg_sift;
@@ -17,10 +17,10 @@ CREATE INDEX items_col ON items USING sift_col (id, grp, part, amount);
 VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION costs(q text, scale float8) RETURNS TABLE (scan numeric, normal numeric) LANGUAGE plpgsql AS $$
 BEGIN
-	PERFORM set_config('sift.plan_scale', scale::text, true);
+	PERFORM set_config('sift.test_plan_scale', scale::text, true);
 	RETURN QUERY SELECT e.scan_cost::numeric, e.normal_cost::numeric FROM sift.explain_why(q) e LIMIT 1;
 END $$;
-SELECT current_setting('sift.plan_scale') AS default_scale;
+SELECT current_setting('sift.test_plan_scale') AS default_scale;
  default_scale 
 ---------------
  1
@@ -44,13 +44,14 @@ FROM costs('SELECT grp, count(*), sum(amount) FROM items GROUP BY grp', 1) s1, c
 (1 row)
 
 -- the plan at a larger size reads the same rows
-SET sift.plan_scale = 100;
+SET sift.test_plan_scale = 100;
 SELECT count(*) = (SELECT count(DISTINCT grp) FROM items) AS same_groups, sum(n) = (SELECT count(*) FROM items) AS same_rows FROM (SELECT grp, count(*) AS n FROM items GROUP BY grp) x;
  same_groups | same_rows 
 -------------+-----------
  t           | t
 (1 row)
 
+RESET sift.test_plan_scale;
 DROP FUNCTION costs(text, float8);
 DROP TABLE items;
 DROP EXTENSION pg_sift;

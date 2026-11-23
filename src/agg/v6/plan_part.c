@@ -105,7 +105,7 @@ compile_alike(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, GroupPathE
 		if (ix == NULL)
 			return false;
 		p = (V6Plan) {.root = root,.rel = parent,.out = out,.relid = ix->indexoid,.index = ix};
-		irel = index_open(ix->indexoid, NoLock);
+		irel = index_open(ix->indexoid, AccessShareLock);
 		p.colrel = sift_col_rel(irel);
 		ok = !p.colrel->stale && sift_v6_compile_on(&p, extra, group_exprs);
 		index_close(irel, NoLock);

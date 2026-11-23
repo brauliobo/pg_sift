@@ -1,5 +1,5 @@
 -- CREATE INDEX and REINDEX connect a sift_col index to the sift_col indexes its validated foreign keys reference (docs/COL-CONNECT.md): the choice is written into the option as 'auto: ..',
--- named in a NOTICE, and turned off by connect = 'off' or sift.col_auto_connect.
+-- named in a NOTICE, and turned off by connect = 'off' or sift.test_col_auto_connect.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, price numeric(10, 2), notes text, tags text[]) WITH (autovacuum_enabled = false);
@@ -20,9 +20,10 @@ SELECT DISTINCT format FROM sift.col_segments('facts_col') WHERE kind = 'immutab
 -- the option wins: off, a named connection, and the setting
 CREATE INDEX facts_off ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'off');
 CREATE INDEX facts_named ON facts USING sift_col (id, dim_a_id, v) WITH (connect = 'dim_a_id -> dim_a(id)');
-SET sift.col_auto_connect = off;
+SET sift.test_col_auto_connect = off;
 CREATE INDEX facts_guc ON facts USING sift_col (id, dim_a_id, v);
 CREATE INDEX facts_asked ON facts USING sift_col (id, dim_b_id, v) WITH (connect = 'auto');
+RESET sift.test_col_auto_connect;
 SELECT child, ordinal, fk, declaration, automatic FROM sift.col_connections WHERE child IN ('facts_off'::regclass, 'facts_named'::regclass, 'facts_guc'::regclass, 'facts_asked'::regclass)
 ORDER BY child::text;
 -- a foreign key that does not connect: no constraint, not validated, composite, not an integer, a parent without the index, a column outside the index (said in a NOTICE when the parent has a sift_col index)

@@ -97,7 +97,7 @@ jobs:
           mkdir pkgs
           tags=$({ echo "$TAG"; gh release list --exclude-drafts --exclude-pre-releases --limit 20 --json tagName --jq '.[].tagName'; } | awk '!seen[$0]++' | head -n "$KEEP_RELEASES")
           for t in $tags; do gh release download "$t" --dir pkgs --pattern '*.deb' --pattern '*.rpm' --clobber; done
-          ls pkgs | wc -l
+          find pkgs -type f | wc -l
 
       - name: Build and verify the repositories
         env:

@@ -80,6 +80,7 @@ typedef struct SiftCDictLook
 {
 	int64		(*find) (const struct SiftCDictLook *look, const char *s, uint32 len);
 	uint32		(*match) (const struct SiftCDictLook *look, SiftColOp op, const SiftColValue *c, int nvals, uint64 *lut);
+	const char *(*str) (const struct SiftCDictLook *look, uint32 code, uint32 *len);	/* the string of a code, read in place: held until the next call */
 } SiftCDictLook;
 
 extern SiftCDict *sift_cdict_create(MemoryContext mcxt);
@@ -126,6 +127,8 @@ extern uint32 sift_csorted_bound(const SiftCSorted *s, const SiftColValue *c, bo
 extern void sift_csorted_range(const SiftCSorted *s, SiftColOp op, const SiftColValue *c, uint32 *from, uint32 *to);
 /* The bytes and length of a code < d->n */
 extern const char *sift_cdict_str(const SiftCDict *d, uint32 code, uint32 *len);
+/* The same of a dictionary that stays in the stream (d->look), whose string is held until the next call for any code of it */
+extern const char *sift_cdict_get(const SiftCDict *d, uint32 code, uint32 *len);
 #define DICT_PLAIN		0
 #define DICT_STRS		1
 #define DICT_LOOKUP		2

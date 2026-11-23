@@ -462,7 +462,7 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
  17 | k = 4321 OR s = 's77'                                                                 | t          | t
 (17 rows)
 
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 INSERT INTO pd (id, k, s, u, v) SELECT i, i % 9000, 'old' || i % 500, md5(i::text)::uuid, i FROM generate_series(30101, 31100) i;
 SELECT sift.col_promote('pd_all'::regclass) >= 0 AS promoted;
  promoted 
@@ -470,6 +470,7 @@ SELECT sift.col_promote('pd_all'::regclass) >= 0 AS promoted;
  t
 (1 row)
 
+RESET sift.test_col_format_minor;
 SELECT kind, (CASE WHEN format > 15 THEN 15 ELSE format END) AS format, count(*) AS segments FROM sift.col_segments('pd_all') GROUP BY 1, 2 ORDER BY 1, 2;
    kind    | format | segments 
 -----------+--------+----------
@@ -610,13 +611,14 @@ SELECT n, w, pd_idx(w) = pd_seq(w) AS index_scan, pd_bmp(w) = pd_seq(w) AS bitma
 (17 rows)
 
 -- an index written at the setting 13 has no directory and is read as before; ALTER INDEX applies to the segments written afterwards
-SET sift.col_format_minor = 13;
+SET sift.test_col_format_minor = 13;
 CREATE INDEX pd_13 ON pd USING sift_col (k sift.col_int4_ops, v sift.col_int8_ops, id sift.col_int4_ops) WITH (point_tid_columns = 'k, v');
 NOTICE:  sift_col index "pd_13" stores columns k, v, id of index "pd_k", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
 NOTICE:  sift_col index "pd_13": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pd_13');
+RESET sift.test_col_format_minor;
 SELECT min(format) < 13 AS no_directory FROM sift.col_segments('pd_13') WHERE kind = 'immutable';
  no_directory 
 --------------

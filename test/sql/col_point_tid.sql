@@ -140,19 +140,20 @@ SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused = damaged AS all
 SELECT runs > 0 AS has_sections, damaged > 100 AS many, refused > 0 AS some_refused FROM sift._test_col_point_file_damage('pt_t', 9973);
 
 -- the setting 14 writes the directory of rows (minor 14), the index of the rows is read as before, and a REINDEX with the option lists the addresses
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX pt_r ON pt USING sift_col (k sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, id sift.col_int4_ops) WITH (count_columns = 'off', point_tid_columns = 'k, s, u');
+RESET sift.test_col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
 DROP INDEX pt_t;
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX pt_r;
+RESET sift.test_col_format_minor;
 SELECT least(max(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;
-SELECT kind, object, command FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
+SELECT kind, object, command FROM sift.upgrade_commands() WHERE kind = 'reindex' AND object = 'pt_r'::regclass;
 REINDEX INDEX pt_r;
-SELECT count(*) AS commands FROM sift.upgrade_commands() WHERE reason ~ 'point_tid_columns';
 SELECT least(min(format), 15) AS format FROM sift.col_segments('pt_r') WHERE kind = 'immutable';
 SELECT sift.col_verify('pt_r', true);
 SELECT n, left(w, 60) AS w, pt_idx(w) = pt_seq(w) AS index_scan, pt_bmp(w) = pt_seq(w) AS bitmap_scan FROM pt_w ORDER BY n;

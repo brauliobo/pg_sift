@@ -149,6 +149,8 @@ load_run(SiftKeyStore *ks, const SiftSegEntry *e)
 	SiftCDict  *run;
 	Size		used;
 
+	if (e->bytes < sizeof(VRunHead))
+		ks_corrupt(ks->rel, "a run is shorter than its header");
 	sift_cache_room(e->bytes);
 	sift_sr_init(&sr, ks->rel, ext, next, e->gen);
 	head = sift_sr_get(&sr, 0, e->bytes, scratch);

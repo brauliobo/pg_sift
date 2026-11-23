@@ -80,8 +80,9 @@ CREATE FUNCTION ps_same(q text) RETURNS TABLE (query text, n bigint, count_ok te
 			FROM unnest(ARRAY[1, 7, 100, 3000, 20000]) k) THEN 'ok' ELSE 'MISMATCH' END
 $$;
 
--- off by default: whatever the parallel costs, the planner considers no parallel sift path
+-- on by default, off here: whatever the parallel costs, the planner considers no parallel sift path
 SHOW sift.parallel_scan;
+SET sift.parallel_scan = off;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

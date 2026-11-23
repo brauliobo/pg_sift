@@ -1,5 +1,5 @@
 -- The superunit block (column format minor 12, docs/COL-PREAGG.md section 10): written only for an index with the option superunit and a setting
--- sift.col_format_minor of 12, so that a 3.2 library keeps reading what an index without it writes; checked against the units by sift.col_verify; and every
+-- sift.test_col_format_minor of 12, so that a 3.2 library keeps reading what an index without it writes; checked against the units by sift.col_verify; and every
 -- byte of it damaged, one bit at a time, is refused by the reader or by the check, never read outside the block.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -16,10 +16,11 @@ VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) cs;
 
 -- the minor of the segments of an index: without the option, under the setting 7 with it, and with both
 CREATE INDEX cs_off ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
-SET sift.col_format_minor = 7;
+SET sift.test_col_format_minor = 7;
 CREATE INDEX cs_seven ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 3, cube_minmax = false);
-SET sift.col_format_minor = 6;
+SET sift.test_col_format_minor = 6;
 CREATE INDEX cs_six ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 3, cube_minmax = false);
+RESET sift.test_col_format_minor;
 CREATE INDEX cs_on ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 3, cube_minmax = false);
 CREATE INDEX cs_nocube ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 3, preagg = 'off', cube_minmax = false);
 CREATE INDEX cs_mm ON cs USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 4, cube_minmax = true);

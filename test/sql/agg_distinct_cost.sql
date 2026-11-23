@@ -27,13 +27,13 @@ SELECT groups,
        differences(format('SELECT %s, count(*) AS n, count(DISTINCT cat) AS d FROM items GROUP BY %s', g, g)) AS differences
 FROM (VALUES ('2500 groups', 'half'), ('5000 groups', 'grp'), ('100 groups', 'part')) v(groups, g) ORDER BY groups;
 
--- workers planned for the scan of a table priced as 100 times larger (sift.plan_scale): a sum scales with them, a count(DISTINCT) does not (the leader merges
+-- workers planned for the scan of a table priced as 100 times larger (sift.test_plan_scale): a sum scales with them, a count(DISTINCT) does not (the leader merges
 -- every pair), and a start that costs 3 ms keeps a scan of a few milliseconds serial whatever the setup cost; 0 asks for the workers
 CREATE FUNCTION workers(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
 	-- the table scans off, as for runs_in_scan: the workers are the scan's, not those of a parallel plan of the server's own (PostgreSQL 19 plans one for a count(DISTINCT)).
-	-- PostgreSQL 19 has no hook for sift.plan_scale to scale the table the scan is compared with: its expected file (_1) has the sum serial at the setup costs above 0
+	-- PostgreSQL 19 has no hook for sift.test_plan_scale to scale the table the scan is compared with: its expected file (_1) has the sum serial at the setup costs above 0
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	RETURN coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
@@ -41,7 +41,7 @@ END $$;
 SET min_parallel_table_scan_size = 0;
 SET parallel_tuple_cost = 0;
 SET sift.agg_preagg = off;
-SET sift.plan_scale = 100;
+SET sift.test_plan_scale = 100;
 CREATE FUNCTION workers_at(setup int) RETURNS TABLE (setup_cost int, sum_workers int, grouped_distinct_workers int, global_distinct_workers int) LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config('parallel_setup_cost', setup::text, true);
@@ -49,13 +49,15 @@ BEGIN
 		workers('SELECT count(DISTINCT cat) FROM items');
 END $$;
 SELECT * FROM workers_at(0) UNION ALL SELECT * FROM workers_at(1) UNION ALL SELECT * FROM workers_at(100) ORDER BY 1;
+RESET sift.test_plan_scale;
 SELECT sum_workers AS small_scan_workers FROM workers_at(1);
 -- at the default setup cost a group by key of a table priced as 5 times larger stays in one process (500,000 rows of this width: the 2 workers of the heap's size
 -- cost 4 ms to start and 11 million instructions, more than they save); priced as 40 times larger it takes them
-SET sift.plan_scale = 5;
+SET sift.test_plan_scale = 5;
 SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_5;
-SET sift.plan_scale = 40;
+SET sift.test_plan_scale = 40;
 SELECT workers('SELECT grp, count(*) AS n, sum(amount) AS s FROM items GROUP BY grp') AS workers_at_40;
+RESET sift.test_plan_scale;
 RESET parallel_setup_cost; RESET min_parallel_table_scan_size; RESET parallel_tuple_cost; RESET sift.agg_preagg;
 
 DROP FUNCTION scan_cost(text), differences(text), workers(text), workers_at(int);

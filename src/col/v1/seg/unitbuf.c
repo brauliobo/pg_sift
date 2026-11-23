@@ -53,6 +53,8 @@ unit_release(void *arg)
 {
 	SegPriv    *pv = arg;
 
+	if (pv->unitbuf == NULL)
+		return;
 	if (nunit_spare < UNIT_KEEP && pv->unitcap <= UNIT_KEEP_BYTES)
 	{
 		unit_spare[nunit_spare++] = (typeof(unit_spare[0])) {pv->unitbuf, pv->unitcap};
@@ -90,7 +92,9 @@ sift_cseg_unit_room(SiftColSegment *seg, SegPriv *pv, uint32 len)
 	}
 	if (len + SIFT_COL_PAD > pv->unitcap)
 	{
-		pv->unitcap = Max(len + SIFT_COL_PAD, 2 * pv->unitcap);
-		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, pv->unitcap) : MemoryContextAlloc(unit_spare_cx, pv->unitcap);
+		Size		cap = Max(len + SIFT_COL_PAD, 2 * pv->unitcap);
+
+		pv->unitbuf = pv->unitbuf ? repalloc_huge(pv->unitbuf, cap) : MemoryContextAlloc(unit_spare_cx, cap);
+		pv->unitcap = cap;
 	}
 }

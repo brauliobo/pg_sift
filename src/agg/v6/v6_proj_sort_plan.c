@@ -537,7 +537,7 @@ sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (!shape_ok(root, rel, rte))
 		return;
-	heap = table_open(rte->relid, NoLock);
+	heap = table_open(rte->relid, AccessShareLock);
 	if (sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops)
 	{
 		p.owner = heap;
@@ -551,7 +551,7 @@ sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 
 			if ((ix->indpred != NIL && !ix->predOK) || ix->indexprs != NIL || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
 				continue;
-			irel = index_open(ix->indexoid, NoLock);
+			irel = index_open(ix->indexoid, AccessShareLock);
 			p.ix = ix;
 			p.owner = irel;
 			if (!sift_col_rel(irel)->stale && compile_on(&p))

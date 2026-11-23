@@ -235,9 +235,9 @@ SELECT (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) F
  t
 (1 row)
 
--- a lowered sift.col_format_minor cannot write the scope segments (the REINDEX that the rollback advice used to give for a scope failed on a duplicate segment generation): it is refused,
+-- a lowered sift.test_col_format_minor cannot write the scope segments (the REINDEX that the rollback advice used to give for a scope failed on a duplicate segment generation): it is refused,
 -- the index stays as it was, and the advice that works is a replacement without the scope (RESET (scope) is refused on an index that has segments)
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 REINDEX INDEX small_col;
 ERROR:  sift_col index "small_col" has a scope, which sift.col_format_minor 14 cannot write
 DETAIL:  A scope needs the units cut by key, written at sift.col_format_minor 15 or more, and a release before 5.0 cannot read it.
@@ -246,6 +246,7 @@ CREATE INDEX small_low ON small_events USING sift_col (id, dim_a_id, kind) WITH 
 ERROR:  sift_col index "small_low" has a scope, which sift.col_format_minor 14 cannot write
 DETAIL:  A scope needs the units cut by key, written at sift.col_format_minor 15 or more, and a release before 5.0 cannot read it.
 HINT:  Build it at the normal setting, or build the index without the scope, which an older library reads.
+RESET sift.test_col_format_minor;
 SELECT sift.col_verify('small_col', true);
  col_verify 
 ------------
@@ -257,8 +258,9 @@ ERROR:  cannot change the column definitions of index "small_col" while it holds
 DETAIL:  Its segments were written with the options it has now: reads and writes on its table would fail until a REINDEX writes them again.
 HINT:  CREATE INDEX CONCURRENTLY a new index with the options, then DROP INDEX public.small_col: no scan is lost while it is built.
 DROP INDEX small_col;
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE INDEX small_col ON small_events USING sift_col (id, dim_a_id, created_at, kind, value_num);
+RESET sift.test_col_format_minor;
 SELECT max((to_jsonb(s)->>'format')::int) AS column_format FROM sift.col_segments('small_col') s;
  column_format 
 ---------------

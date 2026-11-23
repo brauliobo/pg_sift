@@ -48,7 +48,7 @@ sift_col_flush_held(void)
 static bool
 format1_only(Relation index)
 {
-	Relation	heap = table_open(index->rd_index->indrelid, NoLock);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	bool		only = sift_col_options_connect(index)[0] != '\0' || sift_conn_children(RelationGetRelid(index)) != NIL || !sift_f2s_index_summarizable(heap, index);
 
 	table_close(heap, NoLock);
@@ -134,7 +134,7 @@ static void
 route_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *startup, Cost *total, Selectivity *selectivity, double *correlation,
 					 double *pages)
 {
-	Relation	index = index_open(path->indexinfo->indexoid, NoLock);
+	Relation	index = index_open(path->indexinfo->indexoid, AccessShareLock);
 	const SiftColFormatOps *ops;
 
 	if (sift_quarantine_cost(index, path->indexinfo->pages, startup, total, selectivity, correlation, pages))

@@ -34,7 +34,7 @@ setup
 		PERFORM set_config('parallel_setup_cost', '0', true);
 		PERFORM set_config('parallel_tuple_cost', '0', true);
 		PERFORM set_config('min_parallel_table_scan_size', '0', true);
-		PERFORM set_config('sift.agg_par_min_rows', '0', true);
+		PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
 		parallel := false;
 		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 			parallel := parallel OR l ~ 'Workers Planned: ';

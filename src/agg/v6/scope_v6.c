@@ -476,7 +476,7 @@ scope_matches(ScopePlan *p, int ord)
 static Relation
 scope_rel_open(const ScopePlan *p)
 {
-	return relation_open(p->index == NULL ? planner_rt_fetch(p->fact->relid, p->root)->relid : p->index->indexoid, NoLock);
+	return relation_open(p->index == NULL ? planner_rt_fetch(p->fact->relid, p->root)->relid : p->index->indexoid, AccessShareLock);
 }
 
 static void
@@ -523,7 +523,7 @@ table_usable(PlannerInfo *root, const RelOptInfo *fact)
 
 	if (!ok)
 		return false;
-	rel = table_open(relid, NoLock);
+	rel = table_open(relid, AccessShareLock);
 	ok = sift_f2_scoped(rel);
 	table_close(rel, NoLock);
 	return ok;
@@ -537,7 +537,7 @@ index_usable(const IndexOptInfo *ix)
 
 	if (!ok)
 		return false;
-	irel = index_open(ix->indexoid, NoLock);
+	irel = index_open(ix->indexoid, AccessShareLock);
 	ok = sift_f2_scoped(irel) && sift_col_rel(irel)->track && !sift_col_rel(irel)->stale;
 	index_close(irel, NoLock);
 	return ok;

@@ -3,10 +3,10 @@
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
-SET sift.agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
+SET sift.test_agg_dead_delta = 0;	-- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
 SET sift.async_maintenance = off;
--- the overlays are cut by superblock here: the units a TID-range overlay (sift.col_unit_floor, col_unit_floor) lists are no fragmentation to fold
-SET sift.col_unit_floor = 0;
+-- the overlays are cut by superblock here: the units a TID-range overlay (sift.test_col_unit_floor, col_unit_floor) lists are no fragmentation to fold
+SET sift.test_col_unit_floor = 0;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 
@@ -124,8 +124,8 @@ INSERT INTO items_plain SELECT 2000000 + g, g % 1000, 'cat_' || (g % 8), g % 997
 SELECT sift.col_promote('items_col') > 0 AS promoted;
 CREATE TEMP TABLE before3 AS SELECT gen FROM sift.col_segments('items_col') WHERE kind = 'immutable';
 SELECT (SELECT sum(units) FROM sift.col_segments('items_col')) > (SELECT units FROM sift.col_index_info('items_col')) AS listed_twice;
-SET sift.col_auto_merge_buffer_pct = 100;
-SELECT set_config('sift.col_auto_merge_fragmentation', (SELECT floor(100.0 * (SELECT sum(units) FROM sift.col_segments('items_col')) / (SELECT units FROM sift.col_index_info('items_col'))) / 100)::text, false) IS NOT NULL AS fragmentation_set;
+SET sift.test_col_merge_buf_pct = 100;
+SELECT set_config('sift.test_col_merge_frag', (SELECT floor(100.0 * (SELECT sum(units) FROM sift.col_segments('items_col')) / (SELECT units FROM sift.col_index_info('items_col'))) / 100)::text, false) IS NOT NULL AS fragmentation_set;
 SELECT sift.col_maintenance_due('items_col', false) AS due;
 SELECT sift.col_maintain('items_col') AS rewritten;
 SELECT (SELECT sum(units) FROM sift.col_segments('items_col')) = (SELECT units FROM sift.col_index_info('items_col')) AS none_listed_twice;

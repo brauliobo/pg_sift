@@ -16,15 +16,16 @@ DECLARE l text;
 BEGIN
   -- the direct probe goes first: the entries of dead versions are not yet marked dead by a scan of the index (the two other runs mark them)
   SET LOCAL sift.enable_agg = on;
-  SET LOCAL sift.agg_probe_direct = on;
+  SET LOCAL sift.test_agg_probe_direct = on;
   EXECUTE 'CREATE TEMP TABLE r_dir ON COMMIT DROP AS ' || q;
+  SET LOCAL sift.test_agg_probe_direct = off;
   EXECUTE 'CREATE TEMP TABLE r_child ON COMMIT DROP AS ' || q;
   SET LOCAL sift.enable_agg = off;
   EXECUTE 'CREATE TEMP TABLE r_nat ON COMMIT DROP AS ' || q;
   SELECT count(*) INTO vs_child FROM ((TABLE r_child EXCEPT ALL TABLE r_dir) UNION ALL (TABLE r_dir EXCEPT ALL TABLE r_child)) d;
   SELECT count(*) INTO vs_native FROM ((TABLE r_nat EXCEPT ALL TABLE r_dir) UNION ALL (TABLE r_dir EXCEPT ALL TABLE r_nat)) d;
   SET LOCAL sift.enable_agg = on;
-  SET LOCAL sift.agg_probe_direct = on;
+  SET LOCAL sift.test_agg_probe_direct = on;
   pushed := false;
   direct := false;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP

@@ -68,5 +68,7 @@ SELECT s, v FROM tf WHERE id = 7005;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf EXCEPT SELECT id, s, v, n FROM tf_heap) d;
 SELECT count(*) AS differences FROM (SELECT id, s, v, n FROM tf_heap EXCEPT SELECT id, s, v, n FROM tf) d;
 
+SET sift.test_col_format_minor = 13;
+RESET sift.test_col_format_minor;
 DROP TABLE tf, tf_heap;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

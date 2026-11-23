@@ -1,4 +1,4 @@
--- sift.col_wbuf_ref: the arena has a few slots, one for each buffer in use, and a row that finds none is written with its values. The buffer that was written longest ago is asked back by the
+-- sift.test_col_wbuf_ref: the arena has a few slots, one for each buffer in use, and a row that finds none is written with its values. The buffer that was written longest ago is asked back by the
 -- row that found no slot (it is sealed and promoted as any buffer is), its slot is free when it is promoted and the next rows of the other buffer are kept in the arena. The slot of an index
 -- that is dropped is given back too. The answers are the heap's throughout.
 CREATE EXTENSION pg_sift_test CASCADE;
@@ -17,10 +17,10 @@ BEGIN
   EXECUTE q INTO sift;
   RETURN native = sift;
 END $$;
-CREATE TABLE mark AS SELECT * FROM sift.col_arena_status();
+CREATE TABLE mark AS SELECT * FROM sift._test_col_arena_status();
 CREATE FUNCTION arena_delta(OUT slots_used int, OUT stored int8, OUT not_stored int8, OUT rebuilt int8, OUT forced int8) LANGUAGE sql AS $$
-  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks, s.rows_rebuilt - m.rows_rebuilt, s.seals_forced - m.seals_forced FROM sift.col_arena_status() s, mark m $$;
-CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift.col_arena_status() $$;
+  SELECT s.slots_in_use, s.rows_stored - m.rows_stored, s.put_fallbacks - m.put_fallbacks, s.rows_rebuilt - m.rows_rebuilt, s.seals_forced - m.seals_forced FROM sift._test_col_arena_status() s, mark m $$;
+CREATE PROCEDURE arena_mark() LANGUAGE sql AS $$ TRUNCATE mark; INSERT INTO mark SELECT * FROM sift._test_col_arena_status() $$;
 CREATE FUNCTION kinds(ix regclass) RETURNS text LANGUAGE sql AS $$
   SELECT coalesce(string_agg(kind || ' ' || rows, ', ' ORDER BY kind), 'none') FROM sift.col_segments(ix) WHERE kind <> 'tombstones' $$;
 CREATE TABLE t1 (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
@@ -29,6 +29,7 @@ CREATE TABLE t3 (LIKE t1 INCLUDING ALL) WITH (autovacuum_enabled = false);
 CREATE INDEX t1_ix ON t1 USING sift_col (id, g, v);
 CREATE INDEX t2_ix ON t2 USING sift_col (id, g, v);
 CREATE INDEX t3_ix ON t3 USING sift_col (id, g, v);
+SET sift.test_col_wbuf_ref = on;
 -- two slots: the first two buffers take them, the third has none
 SELECT sift._test_arena_gc();
  _test_arena_gc 
@@ -36,7 +37,7 @@ SELECT sift._test_arena_gc();
  
 (1 row)
 
-SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift.col_arena_status()) + 2);
+SELECT sift._test_arena_slots((SELECT slots_in_use FROM sift._test_col_arena_status()) + 2);
  _test_arena_slots 
 -------------------
  
@@ -123,7 +124,7 @@ SELECT same_as_heap('t3') AS same_t3_promoted;
 (1 row)
 
 -- an index that is dropped gives its slot back
-CREATE TEMP TABLE before AS SELECT slots_in_use FROM sift.col_arena_status();
+CREATE TEMP TABLE before AS SELECT slots_in_use FROM sift._test_col_arena_status();
 DROP INDEX t2_ix;
 SELECT sift._test_arena_gc();
  _test_arena_gc 
@@ -131,7 +132,7 @@ SELECT sift._test_arena_gc();
  
 (1 row)
 
-SELECT (SELECT slots_in_use FROM sift.col_arena_status()) < (SELECT slots_in_use FROM before) AS slot_given_back;
+SELECT (SELECT slots_in_use FROM sift._test_col_arena_status()) < (SELECT slots_in_use FROM before) AS slot_given_back;
  slot_given_back 
 -----------------
  t

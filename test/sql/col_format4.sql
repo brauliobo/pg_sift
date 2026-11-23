@@ -1,4 +1,4 @@
--- Column format minor 4 beside minor 3: an index reads the segments of both, whatever sift.col_format_minor is
+-- Column format minor 4 beside minor 3: an index reads the segments of both, whatever sift.test_col_format_minor is
 -- when they are written, and a merge or a VACUUM rewrite writes the setting's minor. fmt lists the minors of the segments, oldest first.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
@@ -16,15 +16,16 @@ BEGIN
 	RETURN a IS NOT DISTINCT FROM b;
 END $$;
 
-SHOW sift.col_format_minor;
-SET sift.col_format_minor = 2;
-SET sift.col_format_minor = 5;
+SHOW sift.test_col_format_minor;
+SET sift.test_col_format_minor = 2;
+SET sift.test_col_format_minor = 5;
 
 CREATE TABLE f (id int, grp int, v numeric(10,2));
 INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(1, 30000) g;
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 CREATE INDEX f_col ON f USING sift_col (id, grp, v) WITH (cube_minmax = false, superunit = 0);
 SELECT fmt('f_col');
+RESET sift.test_col_format_minor;
 INSERT INTO f SELECT g, g % 9, g % 1000 / 8.0 FROM generate_series(30001, 60000) g;
 SELECT sift.col_promote('f_col');
 SELECT fmt('f_col');
@@ -39,12 +40,13 @@ SELECT same('SELECT grp, count(*), sum(v) FROM f GROUP BY grp') AS merged_agg;
 SELECT sift.col_verify('f_col', true);
 
 -- 3.0 compatibility: a merge under minor 3 writes minor 3 again
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 INSERT INTO f SELECT g, g % 9, 1 FROM generate_series(60001, 90000) g;
 SELECT sift.col_promote('f_col');
 SELECT sift.col_merge('f_col', true);
 SELECT fmt('f_col');
 SELECT sift.col_verify('f_col', true);
+RESET sift.test_col_format_minor;
 
 -- REINDEX writes minor 4
 REINDEX INDEX f_col;
@@ -57,9 +59,10 @@ INSERT INTO f SELECT g, g % 9, 1 FROM generate_series(90001, 90010) g;
 SELECT kind, format FROM sift.col_segments('f_col') WHERE kind <> 'immutable';
 SELECT preagg_bytes > 0 AS has_sidecar FROM sift.col_segments('f_col') WHERE kind = 'immutable';
 CREATE TABLE ft (id int, grp int) USING sift_table;
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 INSERT INTO ft SELECT g, g % 9 FROM generate_series(1, 20000) g;
 VACUUM ft;
+RESET sift.test_col_format_minor;
 INSERT INTO ft SELECT g, g % 9 FROM generate_series(20001, 40000) g;
 VACUUM ft;
 SELECT kind, format, count(*) FROM sift.table_segments('ft') GROUP BY 1, 2 ORDER BY 1, 2;

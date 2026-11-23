@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET sift.agg_force = on;
-SET sift.col_unit_rows = 100;
+SET sift.test_col_unit_rows = 100;
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO tenant_scope SELECT d, CASE WHEN d <= 60 THEN 1 WHEN d <= 66 THEN 2 ELSE 3 END FROM generate_series(1, 67) d;
 CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');

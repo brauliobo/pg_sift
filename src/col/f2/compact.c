@@ -15,6 +15,7 @@
 #include "col/f2/f2_kll.h"
 #include "col/f2/f2_store.h"
 #include "core/crash_point.h"
+#include "core/f2/f2_gate.h"
 #include "core/page_io.h"
 #include "core/wal_conflict.h"
 #include "core/xid_cache.h"
@@ -548,6 +549,7 @@ sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo,
 		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
 	}
+	SIFT_F2_GATE(SIFT_F2_GATE_COMPACT);
 #ifdef SIFT_TESTING
 	if (sift_test_compact_delete > 0)
 		test_delete_meanwhile(rel, part_id, key_lo, &in[0], spec);

@@ -43,7 +43,9 @@ CREATE FUNCTION statement(t int) RETURNS text LANGUAGE sql AS
 	$$ SELECT format('SELECT kind, count(*), sum(amount) FROM facts WHERE dim_a_id IN (SELECT dim_a_id FROM scope_pairs WHERE tenant_id = %s) GROUP BY kind', t) $$;
 -- the plan of each size, the scan's own and the one with the probe rewrite off, and the answers
 SELECT c.ids, plan_joins(statement(c.tenant_id)) AS joins, answers(statement(c.tenant_id)) AS answers FROM cases c ORDER BY c.ids;
+SET sift.test_agg_probe_rewrite = off;
 SELECT c.ids, plan_joins(statement(c.tenant_id)) AS joins_without_the_rewrite FROM cases c ORDER BY c.ids;
+RESET sift.test_agg_probe_rewrite;
 -- an EXISTS and a join over the same table are the same plans
 SELECT plan_joins('SELECT kind, count(*) FROM facts f WHERE EXISTS (SELECT 1 FROM scope_pairs p WHERE p.dim_a_id = f.dim_a_id AND p.tenant_id = 4) GROUP BY kind') AS exists_joins;
 SELECT plan_joins('SELECT kind, count(*) FROM facts f JOIN scope_pairs p ON p.dim_a_id = f.dim_a_id WHERE p.tenant_id = 3 GROUP BY kind') AS join_joins;

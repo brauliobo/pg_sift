@@ -59,8 +59,8 @@ initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
 node_conf new "$("$REPO/scripts/pgtest.sh" conf)"
-[[ -n $OLD_REF ]] || node_conf old "$("$REPO/scripts/pgtest.sh" conf)"
-LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || bail "the old cluster does not start"
+[[ -n $OLD_REF ]] || node_conf old "$("$REPO/scripts/pgtest.sh" conf | grep -E '^(pg_)?sift\.')"   # the settings of the test build only: the old major has not every setting of this one (extension_control_path)
+LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not start"; }
 
 # a tablespace needs two catalog versions (pg_upgrade refuses the same one)
 TSDDL=; TSC=
@@ -199,7 +199,7 @@ HOPSTATE="SELECT string_agg(o, ' ') FROM pg_class c, unnest(c.reloptions) o WHER
 	UNION ALL SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'hop_col'::regclass
 	AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i'"
 if [[ -z $OLD_REF ]]; then
-	printf '%s;\n' "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]//$TWOHOP_SCOPE/$TWOHOP_SCOPE max_multiplicity(8)}" | qs old postgres >/dev/null || bail "the scope of two paths cannot be set up"
+	printf '%s;\n' "${TWOHOP_BASE[@]}" "${TWOHOP_INDEX[@]//max_multiplicity\(64\)/max_multiplicity(8)}" | qs old postgres >/dev/null || bail "the scope of two paths cannot be set up"
 	HOP_BEFORE=$(HOPQ old "$HOPSTATE")
 fi
 # stored settings of the database and of a role in it (settings both releases have): pg_upgrade carries them in the globals

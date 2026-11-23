@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 -- the node under test: a LEFT JOIN of the arms to the spine is a two-level aggregate by default (agg_two_level_spine), which has no rows to group
+SET sift.test_agg_two_level = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 

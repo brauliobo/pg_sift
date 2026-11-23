@@ -257,14 +257,14 @@ SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_
  {7}
 (1 row)
 
-SET sift.col_format_minor = 4;
+SET sift.test_col_format_minor = 4;
 SELECT * FROM sift.col_refresh('rf_idx', 0);
  refreshed | remaining 
 -----------+-----------
          0 |         0
 (1 row)
 
-SET sift.col_format_minor = 3;
+SET sift.test_col_format_minor = 3;
 SELECT * FROM sift.col_refresh('rf_idx');
  refreshed | remaining 
 -----------+-----------
@@ -303,6 +303,7 @@ SELECT sift.col_verify('rf3_idx', true);
  
 (1 row)
 
+RESET sift.test_col_format_minor;
 DROP INDEX rf3_idx;
 SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift._test_col_formats('rf_idx');
  minors 

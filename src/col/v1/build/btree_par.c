@@ -153,7 +153,7 @@ IndexBuildResult *
 colb_btree_build_par(Relation heap, Relation index, IndexInfo *info, const BtPlan *plan, int nworkers)
 {
 	const FormData_pg_attribute *att;
-	Relation	bt = index_open(plan->btree, NoLock);
+	Relation	bt = index_open(plan->btree, AccessShareLock);
 	SiftParLeader *ldr;
 	BtShared   *sh;
 	IndexBuildResult *res;

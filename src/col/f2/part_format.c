@@ -216,6 +216,27 @@ tid_envelope(const SiftPartIn *in, SiftPartDesc *d)
 	}
 }
 
+/* The descriptor of a part written from in, but for the sort key range */
+static SiftPartDesc
+part_desc(const SiftPartIn *in, BlockNumber header_blk, uint64 nbytes)
+{
+	SiftPartDesc d = {0};
+
+	d.part_gen = in->part_gen;
+	d.level = in->level;
+	d.flags = (uint16) in->flags;
+	d.header_blk = header_blk;
+	d.dv_blk = InvalidBlockNumber;
+	d.col_delta_blk = InvalidBlockNumber;
+	tid_envelope(in, &d);
+	d.min_xid = in->min_xid;
+	d.max_xid = in->max_xid;
+	d.dv_max_xid = InvalidFullTransactionId;
+	d.nrows = in->nrows;
+	d.nbytes = nbytes;
+	return d;
+}
+
 SiftPartDesc
 sift_part_write(Relation rel, const SiftPartIn *in)
 {
@@ -237,7 +258,6 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 				fixed;
 	BlockNumber extlist = InvalidBlockNumber;
 	SiftXlog	x;
-	SiftPartDesc d = {0};
 	BlockNumber hdr_blk;
 
 	memcpy(secs, in->sections, nsec * sizeof(SiftSecInput));
@@ -335,19 +355,61 @@ sift_part_write(Relation rel, const SiftPartIn *in)
 	memcpy(sift_xlog_register(&x, sift_blk_new(rel, hdr_blk), GENERIC_XLOG_FULL_IMAGE), page, BLCKSZ);
 	sift_xlog_done(&x);
 
-	d.part_gen = in->part_gen;
-	d.level = in->level;
-	d.flags = (uint16) in->flags;
-	d.header_blk = hdr_blk;
-	d.dv_blk = InvalidBlockNumber;
-	d.col_delta_blk = InvalidBlockNumber;
-	tid_envelope(in, &d);
-	d.min_xid = in->min_xid;
-	d.max_xid = in->max_xid;
-	d.dv_max_xid = InvalidFullTransactionId;
-	d.nrows = in->nrows;
-	d.nbytes = inline_stream ? fixed + inline_bytes : stream_bytes;
-	return d;
+	return part_desc(in, hdr_blk, inline_stream ? fixed + inline_bytes : stream_bytes);
+}
+
+static SiftPart *parse_part(Relation rel, char *payload, uint32 used, BlockNumber header_blk, uint64 part_gen, uint32 part_id, bool remote);
+
+/* The part of in with every section inline in an image of its own, as a slot of a packed page is, and nothing written: its descriptor names no block */
+SiftPart *
+sift_part_in_memory(Relation rel, const SiftPartIn *in, SiftPartDesc *d)
+{
+	int			nsec = in->nsections;
+	SiftSecInput *secs = palloc(Max(nsec, 1) * sizeof(SiftSecInput));
+	SiftSecDirEntry *dir = palloc0(Max(nsec, 1) * sizeof(SiftSecDirEntry));
+	uint32		fixed = sizeof(SiftPartHeaderData) + nsec * sizeof(SiftSecDirEntry),
+				inline_bytes = 0;
+	char	   *image;
+	SiftPartHeaderData *h;
+
+	memcpy(secs, in->sections, nsec * sizeof(SiftSecInput));
+	qsort(secs, nsec, sizeof(SiftSecInput), secin_cmp);
+	for (int i = 0; i < nsec; i++)
+	{
+		if (secs[i].fill != NULL || (i > 0 && secs[i].tag == secs[i - 1].tag))
+			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: a part in memory takes its sections as they are, once each")));
+		dir[i].tag = secs[i].tag;
+		dir[i].flags = secs[i].flags | SIFT_SEC_FLAG_INLINE;
+		dir[i].len = secs[i].len;
+		dir[i].crc32c = (secs[i].flags & SIFT_SEC_FLAG_NO_CRC) ? 0 : sift_crc32c(secs[i].data, secs[i].len);
+		dir[i].off = fixed + inline_bytes;
+		inline_bytes += MAXALIGN(secs[i].len);
+	}
+	image = palloc0(fixed + inline_bytes);
+	h = (SiftPartHeaderData *) image;
+	h->magic = SIFT_PARTHDR_MAGIC;
+	h->version = SIFT_PARTHDR_VERSION;
+	h->nsec = nsec;
+	h->flags = in->flags | SIFT_PART_FLAG_INLINE_STREAM;
+	h->part_gen = in->part_gen;
+	h->part_id = in->part_id;
+	h->level = in->level;
+	h->ncols = in->ncols;
+	h->nrows = in->nrows;
+	h->ngranules = in->ngranules;
+	h->granule_rows = in->granule_rows;
+	h->min_xid = in->min_xid;
+	h->max_xid = in->max_xid;
+	h->extlist_blk = InvalidBlockNumber;
+	h->secdir_off = sizeof(SiftPartHeaderData);
+	h->extents_off = fixed;
+	h->inline_meta_off = inline_bytes > 0 ? fixed : 0;
+	h->inline_meta_len = inline_bytes;
+	memcpy(image + h->secdir_off, dir, nsec * sizeof(SiftSecDirEntry));
+	for (int i = 0; i < nsec; i++)
+		memcpy(image + dir[i].off, secs[i].data, secs[i].len);
+	*d = part_desc(in, InvalidBlockNumber, fixed + inline_bytes);
+	return parse_part(rel, image, fixed + inline_bytes, InvalidBlockNumber, in->part_gen, in->part_id, false);
 }
 
 static Page

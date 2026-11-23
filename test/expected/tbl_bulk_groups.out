@@ -1,7 +1,6 @@
 -- sift.table_bulk_groups: COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups
 -- (no write buffer, nothing to promote). Every load is compared with a heap twin, and the segments say which path wrote it.
 CREATE EXTENSION pg_sift;
-SET sift.table_write_buffer_limit = 2048;
 SET sift.table_max_segments = 24;
 CREATE FUNCTION digest(tbl regclass) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -16,10 +15,21 @@ CREATE FUNCTION load_path(tbl regclass) RETURNS text LANGUAGE sql AS $$
 	FROM sift.table_segments(tbl) $$;
 CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 300, '0') AS pad FROM generate_series(1, 40000) g;
 CREATE TABLE t (id int, grp int, v text, pad text) USING sift_table;
+SELECT sift.table_set_option('t', 'write_buffer_limit', '2048');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 CREATE INDEX t_grp ON t (grp);
 CREATE INDEX t_v ON t USING sift (v);
 -- off: the write buffers
-SET sift.table_bulk_groups = off;
+SELECT sift.table_set_option('t', 'bulk_groups', 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 COPY t FROM PROGRAM 'seq 1 2000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
 SELECT load_path('t');
    load_path   
@@ -28,6 +38,12 @@ SELECT load_path('t');
 (1 row)
 
 TRUNCATE t;
+SELECT sift.table_set_option('t', 'bulk_groups', 'on');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 -- COPY in a transaction: the groups, the rows of the transaction its own, the same rows as the twin
 BEGIN;
 COPY t FROM PROGRAM 'seq 1 40000 | awk ''{ printf "%d\t%d\trow %d\t%0300d\n", $1, $1 % 7, $1, $1 }''';
@@ -293,7 +309,12 @@ SELECT count(*), sum(id) FROM t;
 (1 row)
 
 TRUNCATE t;
-SET sift.table_backpressure = 75;
+SELECT sift.table_set_option('t', 'backpressure', '75');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 BEGIN;
 CALL many_loads(60);
 SELECT count(*) < 24 AS within_the_limit FROM sift.table_segments('t');

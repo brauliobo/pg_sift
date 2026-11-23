@@ -16,7 +16,7 @@ sift.async_maintenance = off
 max_parallel_maintenance_workers = 0'
 use_root sk "$newroot"
 node_start sk || bail "cannot start this tree"
-sql sk "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE au (id int, g int, ts timestamp, pad text)" \
+sql sk "CREATE EXTENSION pg_sift_test CASCADE" "SET sift.test_create_format1 = on" "CREATE TABLE au (id int, g int, ts timestamp, pad text)" \
 	"INSERT INTO au SELECT i, i % 50, timestamp '2026-01-01' + (i::bigint * 7919 % 100003) * interval '1 minute', md5(i::text) FROM generate_series(1, 60000) i" \
 	"CREATE INDEX au_ix ON au USING sift_col (id, g, ts, pad) WITH (key_cut = 'off', order_array_columns = 'auto: ts')" \
 	"SET sift.test_limits = 'gord_seek_pct=0'" \

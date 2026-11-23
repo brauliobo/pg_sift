@@ -1,7 +1,7 @@
 -- Superunits (column format minor 12, docs/COL-PREAGG.md section 10): an index with the option superunit stores, per group of consecutive units of a segment, the
 -- merged sums and cube of the group, and a SiftAgg scan answers a group whose units are all exact (clean, every page all-visible) and all inside the
 -- predicate from that one summary. Every query runs three ways, which must give the same rows (text): with the superunits, from the units' own
--- pre-aggregates (sift.agg_super off), and by the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata and `sup` whether
+-- pre-aggregates (sift.test_agg_super off), and by the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata and `sup` whether
 -- a group of them did: none for an index without the option, a group some page of which was written since the last VACUUM, or a shape the summary lacks.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -13,7 +13,7 @@ SET max_parallel_maintenance_workers = 0;
 CREATE FUNCTION pa_rows(q text, sup bool, pre bool, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	PERFORM set_config('sift.agg_super', sup::text, true);
+	PERFORM set_config('sift.test_agg_super', sup::text, true);
 	PERFORM set_config('sift.agg_preagg', pre::text, true);
 	PERFORM set_config('sift.enable_agg', push::text, true);
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
@@ -27,7 +27,7 @@ CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT sup int) LANGUA
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('sift.agg_super', 'on', true);
+	PERFORM set_config('sift.test_agg_super', 'on', true);
 	PERFORM set_config('sift.agg_preagg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
@@ -124,8 +124,9 @@ CREATE INDEX su_col ON su USING sift_col (id, kind, grp, val, small, amt, flt, d
 CREATE INDEX su_off_col ON su_off USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, cube_minmax = false, superunit = 0, calendar_columns = 'off');
 CREATE INDEX su_two_col ON su_two USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 2, cube_minmax = false);
 CREATE INDEX su_big_col ON su_big USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 256, cube_minmax = false);
-SET sift.col_format_minor = 7;
+SET sift.test_col_format_minor = 7;
 CREATE INDEX su_old_col ON su_old USING sift_col (id, kind, grp, val, small, amt, flt, d) WITH (rollup_columns = 'off', write_buffer_limit = 4096, superunit = 4, cube_minmax = false);
+RESET sift.test_col_format_minor;
 SELECT 'su' AS tbl, array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segments('su_col') WHERE kind = 'immutable'
 UNION ALL SELECT 'su_off', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_off_col') WHERE kind = 'immutable'
 UNION ALL SELECT 'su_old', array_agg(DISTINCT format ORDER BY format) FROM sift.col_segments('su_old_col') WHERE kind = 'immutable'

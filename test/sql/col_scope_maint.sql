@@ -121,7 +121,7 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged_after_vacuum;
 SELECT * FROM state('merged after vacuum');
 SELECT sift.col_verify('events_col', true);
 
--- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.col_scope_refresh_pct of
+-- a rewrite fills the entries again when they are stale (the journal says that members changed since their stamp: the edit below changes half of them, over sift.test_col_scope_refresh_pct of
 -- the pairs) and when the index has no floor of the stamps (one built before it existed): the read falls back meanwhile, exact, and the rewrite sets it
 SELECT sift._test_col_scope_unfill('events_col');
 SELECT state, covered, same, stored, why FROM state('floor lost');

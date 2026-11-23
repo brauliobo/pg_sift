@@ -9,7 +9,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET sift.agg_force = on;
-SET sift.col_unit_rows = 100;
+SET sift.test_col_unit_rows = 100;
 
 -- key 1 holds members 1 to 60 (about 40 units of 100 rows), key 2 members 61 to 66, key 3 member 67 only; a few members in two keys
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
@@ -36,7 +36,7 @@ INSERT INTO cases VALUES
 	(6, 'count by kind, small key', 'SELECT kind, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY 1');
 
 -- a table of units of a few thousand rows, a day holds about 55 rows of a key: the rows tied on the day with the last row taken run into hundreds
-SET sift.col_unit_rows = 4000;
+SET sift.test_col_unit_rows = 4000;
 CREATE TABLE events_t (id int PRIMARY KEY, dim_a_id int, created_at date, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events_t SELECT i, 1 + (i * 7919) % 67, date '2020-01-01' + (i / 60), i % 500 FROM generate_series(1, 60000) i;
 CREATE INDEX events_t_col ON events_t USING sift_col (id, dim_a_id, created_at, amount)

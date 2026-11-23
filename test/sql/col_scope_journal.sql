@@ -209,7 +209,7 @@ SELECT * FROM verdict();
 SELECT edge FROM (SELECT refobjid::regclass::text AS edge FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'events_col'::regclass AND refclassid = 'pg_class'::regclass
 	AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i') e ORDER BY 1;
 
--- refresh: as many changed members as sift.col_scope_refresh_pct percent of the pairs are refreshed whatever the reads ('stale scope'); a few are left to the reads, which ask for the rewrite
+-- refresh: as many changed members as sift.test_col_scope_refresh_pct percent of the pairs are refreshed whatever the reads ('stale scope'); a few are left to the reads, which ask for the rewrite
 -- when what they paid for them comes to half of what it costs (col_scope_stale_price: no read, no rewrite)
 REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_filled;
@@ -231,9 +231,10 @@ REINDEX INDEX events_col;
 SELECT sift.col_maintenance_due('events_col', false) AS due_refilled;
 INSERT INTO tenant_scope SELECT i, 1 FROM generate_series(1, 20) i;
 -- the setting of the scope index is its own: the one of the connected indexes keeps its meaning
-SELECT name, setting, min_val, max_val FROM pg_settings WHERE name IN ('sift.col_scope_refresh_pct', 'sift.col_connect_refresh_pct') ORDER BY name;
-SET sift.col_scope_refresh_pct = 1;
+SELECT name, setting, min_val, max_val FROM pg_settings WHERE name IN ('sift.test_col_scope_refresh_pct', 'sift.test_col_conn_refresh_pct') ORDER BY name;
+SET sift.test_col_scope_refresh_pct = 1;
 SELECT sift.col_maintenance_due('events_col', false) AS due_by_the_setting;
+RESET sift.test_col_scope_refresh_pct;
 REINDEX INDEX events_col;
 
 -- the journal and its records survive a VACUUM of the relation; a rewrite refills under a new stamp, so the stale rule ends

@@ -49,11 +49,12 @@ SELECT sift.col_verify('ap_i', true), sift.col_verify('ap_o', true);
 SELECT count(*) FILTER (WHERE section = 'sketches') > 0 AS has_sketches FROM sift.col_sections('ap_i');
 SELECT count(*) FILTER (WHERE section = 'sketches') AS off_has_none FROM sift.col_sections('ap_o');
 -- under the setting of 3.2 no segment has the sketch
-SET sift.col_format_minor = 14;
+SET sift.test_col_format_minor = 14;
 CREATE TABLE ap_old (LIKE ap) WITH (autovacuum_enabled = off);
 ALTER TABLE ap_old ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO ap_old SELECT * FROM ap ORDER BY id;
 CREATE INDEX ap_old_i ON ap_old USING sift_col (id, k, b, t, d, ts, tz, u, s, v, pad) WITH (write_buffer_limit = 4096, superunit = 0, hll_columns = 'k, b, t, d, ts, tz, u, s, v');
+RESET sift.test_col_format_minor;
 SELECT count(*) FILTER (WHERE section = 'sketches') AS old_has_none, pg_relation_size('ap_old_i') = pg_relation_size('ap_o') AS old_is_off_size FROM sift.col_sections('ap_old_i');
 
 -- the number is the one of the normal plan, from the sketches of the units, from the rows of the units and from workers; count(DISTINCT) beside it is exact

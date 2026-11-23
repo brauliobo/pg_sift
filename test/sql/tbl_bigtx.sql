@@ -5,7 +5,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.table_max_segments = 8;
-SET sift.table_write_buffer_limit = 2048;
 SET max_parallel_workers_per_gather = 0;
 
 -- a heap twin takes the same statements: the answers must be the same
@@ -33,6 +32,7 @@ BEGIN
 END $$;
 
 CREATE TABLE ins_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('ins_t', 'write_buffer_limit', '2048');
 CREATE TABLE ins_h (id int, v text) WITH (autovacuum_enabled = false);
 
 -- INSERT ... SELECT
@@ -59,6 +59,7 @@ SELECT count(*), sum(id) FROM ins_h WHERE id BETWEEN 100 AND 7500;
 
 -- COPY
 CREATE TABLE copy_t (id int, v text, pad text DEFAULT repeat('p', 1000)) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('copy_t', 'write_buffer_limit', '2048');
 BEGIN;
 COPY copy_t (id, v) FROM PROGRAM 'seq 1 10000 | awk ''{ print $1 "\tv" $1 }''';
 SELECT count(*), sum(id), count(*) FILTER (WHERE v <> 'v' || id OR pad <> repeat('p', 1000)) AS wrong FROM copy_t;
@@ -71,6 +72,7 @@ SELECT count(*), sum(id), count(*) FILTER (WHERE v <> 'v' || id OR pad <> repeat
 
 -- ROLLBACK: nothing is left, and the space comes back after VACUUM
 CREATE TABLE rb_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('rb_t', 'write_buffer_limit', '2048');
 CREATE INDEX rb_t_id ON rb_t (id);
 BEGIN;
 INSERT INTO rb_t SELECT g, repeat('x', 1000) || g FROM generate_series(1, 10000) g;
@@ -93,6 +95,7 @@ RESET enable_seqscan;
 
 -- a savepoint rolled back in the middle: its rows go, the ones around it stay
 CREATE TABLE sp_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('sp_t', 'write_buffer_limit', '2048');
 CREATE TABLE sp_h (id int, v text) WITH (autovacuum_enabled = false);
 BEGIN;
 SELECT load('sp_t', 1, 3750);
@@ -118,6 +121,7 @@ SELECT count(*) FROM sp_t;
 
 -- UPDATE and DELETE of the rows of the transaction itself
 CREATE TABLE ud_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('ud_t', 'write_buffer_limit', '2048');
 CREATE TABLE ud_h (id int, v text) WITH (autovacuum_enabled = false);
 CREATE INDEX ud_t_id ON ud_t (id);
 CREATE INDEX ud_h_id ON ud_h (id);
@@ -156,6 +160,7 @@ SELECT same('ud_t', 'ud_h') AS the_twin_agrees_after_vacuum;
 
 -- parallel plans, before and after the groups are frozen
 CREATE TABLE par_t (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('par_t', 'write_buffer_limit', '2048');
 BEGIN;
 SELECT load('par_t', 1, 10000);
 COMMIT;

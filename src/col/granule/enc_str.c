@@ -293,7 +293,7 @@ put_part_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 static void
 put_view(StringInfo s, const char *const *p, const uint32 *len, const bool *isnull, int n, int nn)
 {
-	SiftStrView *views = palloc0(nn * sizeof(SiftStrView));
+	SiftStrView *views = sift_palloc0_aligned(SiftStrView, nn);
 	StringInfoData heap;
 	int			k = 0;
 

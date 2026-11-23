@@ -26,7 +26,7 @@ stores_relcache_changed(Datum arg, int cacheid, uint32 hashvalue)
 	stores_changed = true;
 }
 
-/* The views of the stores that were dropped: a store is one relation, and its view holds the strings of all its codes */
+/* The views of the stores that were dropped: a store is one relation, and its view holds the strings of all its codes; one a handle pins stays, and the next call looks again */
 static void
 views_drop_gone(Oid keep)
 {
@@ -38,6 +38,11 @@ views_drop_gone(Oid keep)
 	while ((v = hash_seq_search(&seq)) != NULL)
 		if (v->key.store != keep && !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(v->key.store)))
 		{
+			if (v->pins > 0)
+			{
+				stores_changed = true;
+				continue;
+			}
 			MemoryContextDelete(v->cx);
 			hash_search(views, &v->key, HASH_REMOVE, NULL);
 		}
@@ -178,7 +183,7 @@ kview_add(KeyStoreView *v, uint64 lo, uint64 dbase, SiftCDict *d)
 KeyStoreView *
 kview_open(Oid store, uint64 epoch, ViewPin **pin)
 {
-	ViewKey		key = {.store = store,.epoch = epoch};
+	ViewKey		key = {.store = store,.pad = 0,.epoch = epoch};
 	KeyStoreView *v = view_get(&key);
 	ViewPin    *p = palloc(sizeof(ViewPin));
 

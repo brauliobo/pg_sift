@@ -548,7 +548,11 @@ run_add_partition(SiftStoreScan *s, int i)
 	s->pxs = lappend(s->pxs, px);
 	for (int j = 0; j < list->nparts; j++)
 		if (part_wanted(s, &list->parts[j], dirty))
-			s->run = lappend(s->run, part_new(s, e, &list->parts[j], px));
+		{
+			SiftStorePart *p = part_new(s, e, &list->parts[j], px);
+
+			s->run = lappend(s->run, p);
+		}
 }
 
 static void

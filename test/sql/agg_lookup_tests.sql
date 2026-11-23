@@ -86,7 +86,7 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SET sift.agg_par_min_rows = 0;
+SET sift.test_agg_par_min_rows = 0;
 SELECT * FROM report('workers');
 
 -- the caches off: the classes are made by every statement

@@ -1,7 +1,7 @@
 Parsed test spec with 2 sessions
 
 starting permutation: wb wi wtag wown rscan ridx rbm ragg wc rscan ridx rbm ragg
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wi: INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g;
 step wtag: SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer;
 carries_its_writer
@@ -70,7 +70,7 @@ g|count|      sum
 
 
 starting permutation: wb wi wtag rscan wa rscan ridx rv rscan
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wi: INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g;
 step wtag: SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer;
 carries_its_writer
@@ -112,7 +112,7 @@ count
    10
 (1 row)
 
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wi: INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g;
 step wc: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
@@ -152,7 +152,7 @@ count
    10
 (1 row)
 
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wi: INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g;
 step wc: COMMIT;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
@@ -170,7 +170,7 @@ count|      sum
 
 
 starting permutation: wb wi rv rscan ragg wtag wc rscan ragg wv rscan ragg
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wi: INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g;
 step rv: VACUUM iso_big;
 step rscan: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big;
@@ -225,7 +225,7 @@ g|count|      sum
 
 
 starting permutation: wb wloop wtag wown rscan ridx rbm ragg wc rscan ridx rbm ragg
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wloop: DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$;
 step wtag: SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer;
 carries_its_writer
@@ -294,7 +294,7 @@ g|count|      sum
 
 
 starting permutation: wb wloop wtag rscan wa rscan ridx rv rscan
-step wb: BEGIN; SET sift.table_max_segments = 16; SET sift.table_write_buffer_limit = 2048;
+step wb: BEGIN; SET sift.table_max_segments = 16;
 step wloop: DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$;
 step wtag: SELECT sift._test_tbl_tagged('iso_big') > 0 AS carries_its_writer;
 carries_its_writer

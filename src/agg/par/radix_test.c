@@ -296,8 +296,15 @@ collect(void *arg, const void *rec, uint32 len)
 	Assert(len == sizeof(OutRec));
 	if (c->n == c->cap)
 	{
+		OutRec	   *grown = palloc_aligned(sizeof(OutRec) * (c->cap ? c->cap * 2 : 1024), _Alignof(OutRec), 0);
+
+		if (c->recs != NULL)
+		{
+			memcpy(grown, c->recs, sizeof(OutRec) * c->n);
+			pfree(c->recs);
+		}
+		c->recs = grown;
 		c->cap = c->cap ? c->cap * 2 : 1024;
-		c->recs = c->recs ? repalloc(c->recs, sizeof(OutRec) * c->cap) : palloc(sizeof(OutRec) * c->cap);
 	}
 	memcpy(&c->recs[c->n++], rec, sizeof(OutRec));
 }

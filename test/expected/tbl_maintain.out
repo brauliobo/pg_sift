@@ -2,6 +2,7 @@
 -- maintained keeps every row and answer, drops the dead rows from its segments and gives the space back like the table that is vacuumed,
 -- less the tombstone log, which only a VACUUM that has been through the indexes can shorten; a VACUUM after it ends at the same size.
 CREATE EXTENSION pg_sift;
+\set SHOW_CONTEXT never
 -- the shipped default is on (the test clusters run with it off, as without autovacuum: a pass changes the layouts the tests count)
 SELECT boot_val AS shipped_default FROM pg_settings WHERE name = 'sift.async_maintenance';
  shipped_default 
@@ -207,13 +208,14 @@ SELECT sift.table_maintain('mh');
 ERROR:  "mh" is not a sift_table
 BEGIN READ ONLY;
 SELECT sift.table_maintain('mt');
-ERROR:  cannot execute sift.table_maintain() in a read-only transaction
+ERROR:  cannot execute sift.maintain() in a read-only transaction
 ROLLBACK;
 CREATE ROLE tbl_maintain_user;
 GRANT USAGE ON SCHEMA sift TO tbl_maintain_user;
 SET ROLE tbl_maintain_user;
 SELECT sift.table_maintain('mt');
-ERROR:  permission denied for table mt
+ERROR:  permission denied for table "mt"
+DETAIL:  Only a role that can read table "mt", maintain it, or is a member of pg_monitor can do this.
 RESET ROLE;
 GRANT MAINTAIN ON mt TO tbl_maintain_user;
 SET ROLE tbl_maintain_user;

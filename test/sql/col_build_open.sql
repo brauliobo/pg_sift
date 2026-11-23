@@ -8,7 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.col_build_source = auto;
-SET sift.col_unit_rows = 100;
+SET sift.test_col_unit_rows = 100;
 SET sift.test_col_segment_kb = 4000;
 
 -- op_m: four values of the key hold 38% of the rows (38 units each), 3000 the rest; the heap order is not the key's

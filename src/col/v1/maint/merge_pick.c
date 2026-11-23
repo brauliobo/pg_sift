@@ -182,11 +182,10 @@ settled_for(Oid index, SettledCut cut)
 	return settled.index == index && memcmp(&settled.cut, &cut, sizeof(SettledCut)) == 0;
 }
 
+/* The segments are the end state of the cut that wrote them: a merge of them writes them as they are */
 void
-maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout)
+maint_segs_settle(Relation index, const SiftSegEntry *out, int nout)
 {
-	if (nout < nin)
-		return;
 	if (!settled_for(RelationGetRelid(index), settled_cut_now()))
 	{
 		settled.index = RelationGetRelid(index);
@@ -204,6 +203,13 @@ maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftS
 		settled.next = (settled.next + 1) % settled.cap;
 		settled.n = Min(settled.n + 1, settled.cap);
 	}
+}
+
+void
+maint_merge_settles(Relation index, const SiftSegEntry *in, int nin, const SiftSegEntry *out, int nout)
+{
+	if (nout >= nin)
+		maint_segs_settle(index, out, nout);
 }
 
 bool

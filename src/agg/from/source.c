@@ -41,7 +41,7 @@ find_source(AggCtx *c, IndexOptInfo **ixout)
 		return part_source(c) || agg_refuse(PARTITION_SOURCE);
 	if (sift_colsrc_is_table(rte->relid))
 	{
-		rel = table_open(rte->relid, NoLock);
+		rel = table_open(rte->relid, AccessShareLock);
 		c->lay = sift_colsrc_layout(rel);
 		stats_scaled(rel, &c->stats);
 		sift_colsrc_preagg(rel, &c->pa);

@@ -34,7 +34,7 @@ FROM unnest(ARRAY[20, 300]) k_below;
 -- a configuration that prices a sequential page above a random one (seq_page_cost 100, random_page_cost 4) prices the check of those pages as the random fetch
 -- of them, not at the sequential price: the scan of a table too large to be cached costs the same at 100 as at 4, and more than at 1
 CREATE TABLE page_costs (seq float8, cost float8);
-SET sift.plan_scale = 1000;
+SET sift.test_plan_scale = 1000;
 DO $$ DECLARE s float8; BEGIN
 	FOREACH s IN ARRAY ARRAY[1, 4, 100]::float8[] LOOP
 		PERFORM set_config('seq_page_cost', s::text, false);
@@ -42,6 +42,7 @@ DO $$ DECLARE s float8; BEGIN
 	END LOOP;
 END $$;
 RESET seq_page_cost;
+RESET sift.test_plan_scale;
 SELECT (SELECT cost FROM page_costs WHERE seq = 100) = (SELECT cost FROM page_costs WHERE seq = 4) AS capped_at_random,
 	(SELECT cost FROM page_costs WHERE seq = 1) < (SELECT cost FROM page_costs WHERE seq = 4) AS cheaper_when_sequential_is;
 DROP TABLE page_costs;
@@ -66,8 +67,10 @@ BEGIN
 END $$;
 \set q 'WITH r AS (SELECT * FROM ordered WHERE k < 28) SELECT a.v, a.n, b.s FROM (SELECT v, count(*) AS n FROM r GROUP BY v) a JOIN (SELECT v, sum(k) AS s FROM r GROUP BY v) b ON a.v = b.v'
 -- a statement planned from its cached verdict has no arms of the variants
+SET sift.test_agg_verdict_cache = off;
 SELECT arm, used, slug, CASE WHEN arm = 'cte_inline' THEN round(normal_cost::numeric, 2) = round(plain_total(:'q')::numeric, 2) END AS against_plain
 FROM sift.explain_why(:'q') WHERE arm ~ 'inline' ORDER BY arm, scan_cost;
+RESET sift.test_agg_verdict_cache;
 DROP FUNCTION plain_total(text);
 -- no way out is promised when the shared plan pays the heap check too: a VACUUM would cut both
 SELECT * FROM cte_why('WITH c AS (SELECT v, count(*) AS n, sum(k) AS s FROM ordered WHERE k < 28 GROUP BY v) SELECT a.v, a.n, b.s FROM c a JOIN c b ON a.v = b.v');

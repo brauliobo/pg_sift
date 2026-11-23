@@ -3,8 +3,13 @@
 -- the only merge). The limit is lowered here (a testing setting) to reach it with a few dozen segments.
 CREATE EXTENSION pg_sift;
 SET sift.table_max_segments = 24;
-SET sift.table_write_buffer_limit = 2048;
 CREATE TABLE cap (id int, v text) USING sift_table;
+SELECT sift.table_set_option('cap', 'write_buffer_limit', '2048');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 CREATE PROCEDURE load_cap(t regclass, batches int) LANGUAGE plpgsql AS $$
 BEGIN
 	FOR i IN 1 .. batches LOOP
@@ -35,6 +40,12 @@ SELECT count(*) AS wrong FROM cap WHERE v <> repeat('x', 1000) || id;
 -- one transaction does not stop at the limit either: the write buffers that one command wrote become column groups that carry their
 -- writer while it runs (tbl_bigtx)
 CREATE TABLE cap_one (id int, v text) USING sift_table;
+SELECT sift.table_set_option('cap_one', 'write_buffer_limit', '2048');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 INSERT INTO cap_one SELECT g, repeat('x', 1000) || g FROM generate_series(1, 60 * 2200) g;
 SELECT count(*), sum(length(v)) FROM cap_one;
  count  |    sum    
@@ -44,6 +55,12 @@ SELECT count(*), sum(length(v)) FROM cap_one;
 
 -- the rows of many commands wait for the transaction in groups that carry the version of each row: the loop writes all of it
 CREATE TABLE cap_cmds (id int, v text) USING sift_table;
+SELECT sift.table_set_option('cap_cmds', 'write_buffer_limit', '2048');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 DO $$
 BEGIN
 	FOR i IN 1 .. 60 * 2200 LOOP
@@ -58,11 +75,22 @@ SELECT count(*), sum(id) FROM cap_cmds;
 
 -- sift.table_backpressure is 0 (off) or a percent above 50 of the directory, from which a writer waits for the maintenance lock and merges
 -- before it opens another write buffer: loads that need no wait give the same rows
-SET sift.table_backpressure = 40;
-ERROR:  invalid value for parameter "sift.table_backpressure": 40
-DETAIL:  The value is 0 (off) or a percent above 50, where the directory is already filling.
-SET sift.table_backpressure = 75;
 CREATE TABLE cap_bp (id int, v text) USING sift_table;
+SELECT sift.table_set_option('cap_bp', 'write_buffer_limit', '2048');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('cap_bp', 'backpressure', '40');
+ERROR:  invalid value for the option "backpressure" of a sift_table: "40"
+DETAIL:  The value is 0 (off) or a percent above 50, where the directory is already filling.
+SELECT sift.table_set_option('cap_bp', 'backpressure', '75');
+ table_set_option 
+------------------
+ 
+(1 row)
+
 CALL load_cap('cap_bp', 60);
 INSERT INTO cap_bp SELECT g, repeat('x', 1000) || g FROM generate_series(132001, 264000) g;
 SELECT count(*), sum(id) FROM cap_bp;

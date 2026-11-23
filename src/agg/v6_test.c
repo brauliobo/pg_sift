@@ -124,7 +124,7 @@ ht_case(void)
 	const uint32 n = 1 + rnd() % 30000,
 				pool = 1 + rnd() % (rnd() % 4 == 0 ? 3 : n);
 	Row		   *rows = palloc(sizeof(Row) * n);
-	SiftAggSlot64 *ref = palloc(sizeof(SiftAggSlot64) * n);
+	SiftAggSlot64 *ref = palloc_aligned(sizeof(SiftAggSlot64) * n, _Alignof(SiftAggSlot64), 0);
 	SiftSaltedHT ht[3];
 	uint32		nref;
 	bool		ok = true;

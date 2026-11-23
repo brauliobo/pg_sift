@@ -17,9 +17,10 @@ CREATE FUNCTION ku_units(idx regclass) RETURNS TABLE (segments_ok bool, units_st
 
 -- key cut, several segments
 -- the segments of the workers, which the build merges when nothing says otherwise (col_build_standby_space): the layout a build of 3.6.0 left, which an older index still has
-SET sift.col_auto_merge_fragmentation = 1000;
+SET sift.test_col_merge_frag = 1000;
 SET sift.test_col_gap_blocks = 0;
 CREATE INDEX ku_key ON ku USING sift_col (id, g, v) WITH (key_cut = 'g');
+RESET sift.test_col_merge_frag;
 RESET sift.test_col_gap_blocks;
 SELECT * FROM ku_units('ku_key');
 

@@ -1,5 +1,5 @@
 -- A semi or anti join (IN (SELECT ..), EXISTS, NOT EXISTS) on an integer leaf of Custom Scan (SiftAgg) is answered from a byte table over the
--- keys of the joined table, built when the scan starts (sift.agg_semi_lut, work_mem; docs/SET-FILTERS.md). Every statement
+-- keys of the joined table, built when the scan starts (sift.agg_semi_lut, a share of work_mem; docs/SET-FILTERS.md). Every statement
 -- is run with the table, with sift.agg_semi_lut = off (the generic lookup join) and with sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
@@ -8,6 +8,7 @@ SET max_parallel_workers_per_gather = 0;
 -- page costs that keep the pushed plan the cheaper one whenever it is generated: the plan then depends on the shape of the statement only
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- the statements check the lookup tables the scan loads (the plans with probes have their own test, agg_probe_rewrite)
+SET sift.test_agg_probe_rewrite = off;
 -- the scan's key filter tests every key of a semi join the table would test (agg_join_key_types): left out, the table is built and used
 SET sift.agg_join_filter = off;
 -- the ordered index-only scan of the key joined by a memoized lookup costs few pages and would take the plan over from the pushed one at these page costs: the statements check the pushed plan
@@ -109,13 +110,15 @@ SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FRO
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM dims d WHERE d.id = ev.dim_a_id AND d.tier = ev.small_id % 5) GROUP BY kind$$);
 SELECT * FROM same($$SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE ev.dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 4) GROUP BY d.country$$);
 
--- the span of the keys is bounded by work_mem: wider keys are a hash set of them while that fits the same memory, else the generic join; the answer is the same
+-- the span of the keys is bounded by the memory of the table (sift.test_limits semi_lut_bytes, a share of work_mem): wider keys are a hash set of them while that fits the same memory, else the generic join; the answer is the same
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_default;
-SET work_mem = '1MB';
+SET sift.test_limits = 'semi_lut_bytes=1048576';
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$) AS span_3m_1mb;
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse)$$);
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS span_2000_1mb;
-RESET work_mem;
+SET sift.test_limits = 'semi_lut_bytes=0';
+SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS size_0;
+RESET sift.test_limits;
 SET sift.agg_semi_lut = off;
 SELECT plan_of($$SELECT count(*) FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM sparse WHERE dim_a_id < 2000)$$) AS lut_off;
 RESET sift.agg_semi_lut;

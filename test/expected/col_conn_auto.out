@@ -1,5 +1,5 @@
 -- CREATE INDEX and REINDEX connect a sift_col index to the sift_col indexes its validated foreign keys reference (docs/COL-CONNECT.md): the choice is written into the option as 'auto: ..',
--- named in a NOTICE, and turned off by connect = 'off' or sift.col_auto_connect.
+-- named in a NOTICE, and turned off by connect = 'off' or sift.test_col_auto_connect.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, price numeric(10, 2), notes text, tags text[]) WITH (autovacuum_enabled = false);
@@ -59,7 +59,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "facts_named": 2 automatic choices, 1 advice
 DETAIL:  advice: foreign_keys = dim_b_id; key_columns = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_named');
-SET sift.col_auto_connect = off;
+SET sift.test_col_auto_connect = off;
 CREATE INDEX facts_guc ON facts USING sift_col (id, dim_a_id, v);
 NOTICE:  sift_col index "facts_guc" stores columns id, dim_a_id, v of index "facts_col", which has the same layout
 HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
@@ -74,6 +74,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "facts_asked": 1 automatic choice (track_changes), 1 advice (foreign_keys)
 DETAIL:  advice: foreign_keys = dim_a_id; track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_asked');
+RESET sift.test_col_auto_connect;
 SELECT child, ordinal, fk, declaration, automatic FROM sift.col_connections WHERE child IN ('facts_off'::regclass, 'facts_named'::regclass, 'facts_guc'::regclass, 'facts_asked'::regclass)
 ORDER BY child::text;
     child    | ordinal |    fk    |      declaration      | automatic 

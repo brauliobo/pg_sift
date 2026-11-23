@@ -76,7 +76,7 @@ CREATE FUNCTION ow_units(q text, walk bool) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE line text; n int;
 BEGIN
 	PERFORM ow_mode(true);
-	PERFORM set_config('sift.topn_walk', walk::text, true);
+	PERFORM set_config('sift.test_topn_walk', walk::text, true);
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF line ~ '^ *Units: ' THEN n := substring(line from '^ *Units: (\d+)')::int; END IF;
 	END LOOP;
@@ -91,7 +91,7 @@ CREATE FUNCTION ow_units_zk(q text, zk bool) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE line text; n int;
 BEGIN
 	PERFORM ow_mode(true);
-	PERFORM set_config('sift.topn_zone_keys', zk::text, true);
+	PERFORM set_config('sift.test_topn_zone_keys', zk::text, true);
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF line ~ '^ *Units: ' THEN n := substring(line from '^ *Units: (\d+)')::int; END IF;
 	END LOOP;
@@ -106,7 +106,7 @@ CREATE FUNCTION ow_cost(q text, walk bool) RETURNS float8 LANGUAGE plpgsql AS $$
 DECLARE j json;
 BEGIN
 	PERFORM ow_mode(true);
-	PERFORM set_config('sift.topn_walk', walk::text, true);
+	PERFORM set_config('sift.test_topn_walk', walk::text, true);
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	RETURN (j->0->'Plan'->>'Total Cost')::float8;
 END $$;
@@ -139,7 +139,9 @@ SELECT sift.col_promote('ow_col') >= 0 AS promoted;
 SELECT * FROM ow_fuzz('promoted', 14, 120);
 
 -- the same queries without the walk
+SET sift.test_topn_walk = off;
 SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
+RESET sift.test_topn_walk;
 
 DROP TABLE ow;
 DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool), ow_units_zk;

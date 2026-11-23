@@ -172,8 +172,8 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 		}
 		if (e)
 		{
-			e->pins++;
 			u = MemoryContextAlloc(mcxt, sizeof(Unpin));
+			e->pins++;
 			u->cb = (MemoryContextCallback) {ent_unpin, u, NULL};
 			u->key = k;
 			MemoryContextRegisterResetCallback(mcxt, &u->cb);

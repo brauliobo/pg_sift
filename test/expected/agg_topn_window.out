@@ -124,15 +124,15 @@ INSERT INTO pw_r VALUES
 	('first_value',  $q$SELECT id, first_value(n) OVER () AS c FROM pw WHERE n < 100 ORDER BY id LIMIT 5$q$),
 	('distinct',     $q$SELECT DISTINCT count(*) OVER () AS c FROM pw WHERE n < 100 ORDER BY 1 LIMIT 5$q$);
 SELECT tag, pw_check(q) AS result, pw_why(q) AS why FROM pw_r ORDER BY tag;
-     tag     | result |                                                                                                        why                                                                                                         
--------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- distinct    | same 1 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the query has DISTINCT or a set operation)
- excluding   | same 5 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
- first_value | same 5 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (first_value() OVER is not an aggregate: only aggregates over the whole set are computed with the top-N)
- ordered     | same 5 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
- partition   | same 5 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
- row_number  | same 5 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
- rows_frame  | same 5 | topn_shape: the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
+     tag     | result |                                                                                                         why                                                                                                          
+-------------+--------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ distinct    | same 1 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the query has DISTINCT or a set operation)
+ excluding   | same 5 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
+ first_value | same 5 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (first_value() OVER is not an aggregate: only aggregates over the whole set are computed with the top-N)
+ ordered     | same 5 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
+ partition   | same 5 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
+ row_number  | same 5 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
+ rows_frame  | same 5 | topn_shape: the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (a window has PARTITION BY, ORDER BY or a frame that is not all the rows)
 (7 rows)
 
 -- LIMIT and OFFSET by parameter of a generic plan: the scan reads their values when it starts

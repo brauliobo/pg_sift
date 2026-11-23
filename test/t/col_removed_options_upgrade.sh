@@ -56,8 +56,9 @@ check "the dump names the options as kept" test "$(grep -c -E 'key_cut_rows|poin
 sql us "ALTER EXTENSION pg_sift UPDATE" >/dev/null 2>"$TAPDIR/upd.err"
 check "ALTER EXTENSION UPDATE from $ref (to $(sql us "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'"))" \
 	test "$(sql us "SELECT count(*) FROM pg_extension WHERE extname = 'pg_sift' AND extversion = '$ext'")" == 1
-check "after the update sift.upgrade_commands() lists a RESET for each index that holds one and no REINDEX for them" \
-	test "$(sql us "SELECT string_agg(object::text || ':' || kind, ' ' ORDER BY object::text) FROM sift.upgrade_commands() WHERE object::text ~ '^ev_'")" == "ev_all:reset ev_kcr:reset ev_oc:reset ev_pc:reset"
+check "after the update sift.upgrade_commands() lists a RESET for each index that holds one, and requires nothing" \
+	test "$(sql us "SELECT string_agg(DISTINCT object::text, ' ' ORDER BY object::text) FROM sift.upgrade_commands() WHERE kind = 'reset' AND object::text ~ '^ev_'" \
+		"SELECT count(*) FROM sift.upgrade_commands() WHERE required" | tr '\n' ' ')" == "ev_all ev_kcr ev_oc ev_pc 0 "
 check "after the update: the indexes answer as the heap and the writes go on" \
 	test "$(sql us "INSERT INTO ev SELECT i, now(), i % 50, i % 1000 FROM generate_series(30001, 30100) i" "VACUUM ev" >/dev/null 2>&1; echo $?)|$(ans on)" == "0|$(ans off)"
 

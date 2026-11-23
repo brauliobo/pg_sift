@@ -40,22 +40,55 @@ typedef struct SourceEntry
 
 static HTAB *source_cache;
 static MemoryContext source_cx;	/* the hash and the bitmaps of its entries: deleted together */
+static uint64 source_gen;		/* counts the drops of the cache: an answer read across one is not kept */
+static uint64 source_tick;
 
 #ifdef SIFT_TESTING
 int64		sift_prepass_nodes;	/* the nodes the rewrite passes visited (sift._test_prepass_nodes) */
 int64		sift_source_lookups;	/* the asks the cache could not answer (sift._test_source_lookups) */
 #endif
 
-/* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries (scripts/check-relcache-slots.sh) */
 static void
-source_cache_inval(Datum arg, int cacheid, uint32 hashvalue)
+source_drop(void)
 {
 	if (source_cache != NULL)
 	{
 		MemoryContextDelete(source_cx);
 		source_cache = NULL;
+		source_cx = NULL;
 	}
+	source_gen++;
 }
+
+/* a syscache callback, not a relcache one: a backend has ten relcache callback slots for all its libraries (scripts/check-relcache-slots.sh) */
+static void
+source_cache_inval(Datum arg, int cacheid, uint32 hashvalue)
+{
+	source_drop();
+}
+
+static uint64
+source_oldest(void)
+{
+	return source_cache != NULL ? source_tick : UINT64_MAX;
+}
+
+static bool
+source_evict_one(void)
+{
+	bool		had = source_cache != NULL;
+
+	source_drop();
+	return had;
+}
+
+static void
+source_evict_all(void)
+{
+	source_drop();
+}
+
+static const SiftCacheKind source_kind = {"agg_cte_sources", source_oldest, source_evict_one, source_evict_all};
 
 /* a table the aggregate scan reads: a sift_table, or a heap table with a column index */
 bool
@@ -67,7 +100,10 @@ has_column_source(Oid relid)
 				seen;
 
 	if (source_cache != NULL && (e = hash_search(source_cache, &relid, HASH_FIND, NULL)) != NULL)
+	{
+		source_tick = sift_cache_tick();
 		return e->found;
+	}
 #ifdef SIFT_TESTING
 	sift_source_lookups++;
 #endif
@@ -84,17 +120,41 @@ has_column_source(Oid relid)
 		if (!registered)
 		{
 			CacheRegisterSyscacheCallback(RELOID, source_cache_inval, (Datum) 0);
+			sift_cache_register(&source_kind);
 			registered = true;
 		}
 		source_cx = sift_cache_create_context("sift cache column sources");
 		ctl.hcxt = source_cx;
 		source_cache = hash_create("sift cache column sources", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
+	source_tick = sift_cache_tick();
 	e = hash_search(source_cache, &relid, HASH_ENTER, &seen);
 	e->found = found;
 	e->reads_known = false;
 	e->reads = NULL;
 	return found;
+}
+
+/* the columns that some column index of the table holds; opens the relations, which can drop the cache */
+static Bitmapset *
+source_reads(Oid relid)
+{
+	Relation	rel = relation_open(relid, AccessShareLock);
+	Bitmapset  *reads = NULL;
+
+	foreach_oid(ix, RelationGetIndexList(rel))
+	{
+		Relation	idx;
+
+		if (!sift_colsrc_reads_index(ix))
+			continue;
+		idx = index_open(ix, AccessShareLock);
+		if (sift_index_ready(idx))	/* the cache is dropped by the relcache invalidation that makes a built index ready */
+			pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &reads);
+		index_close(idx, AccessShareLock);
+	}
+	relation_close(rel, AccessShareLock);
+	return reads;
 }
 
 /*
@@ -105,32 +165,29 @@ bool
 column_source_reads(Oid relid, Bitmapset *attnos)
 {
 	SourceEntry *e;
+	uint64		gen;
+	bool		all_read;
+	Bitmapset  *reads;
 
 	if (!has_column_source(relid))
 		return false;
 	e = hash_search(source_cache, &relid, HASH_FIND, NULL);
-	if (!e->reads_known)
+	if (e->reads_known)
+		return e->all_read || bms_is_subset(attnos, e->reads);
+	gen = source_gen;
+	all_read = sift_colsrc_is_table(relid);
+	reads = source_reads(relid);
+	if (gen == source_gen)
 	{
-		Relation	rel = relation_open(relid, AccessShareLock);
 		MemoryContext old = MemoryContextSwitchTo(source_cx);
 
-		e->all_read = sift_colsrc_is_table(relid);
-		foreach_oid(ix, RelationGetIndexList(rel))
-		{
-			Relation	idx;
-
-			if (!sift_colsrc_reads_index(ix))
-				continue;
-			idx = index_open(ix, AccessShareLock);
-			if (sift_index_ready(idx))	/* the cache is dropped by the relcache invalidation that makes a built index ready */
-				pull_varattnos((Node *) sift_colsrc_layout(idx)->attexprs, 1, &e->reads);
-			index_close(idx, AccessShareLock);
-		}
-		MemoryContextSwitchTo(old);
-		relation_close(rel, AccessShareLock);
+		e = hash_search(source_cache, &relid, HASH_FIND, NULL);
+		e->all_read = all_read;
+		e->reads = bms_copy(reads);
 		e->reads_known = true;
+		MemoryContextSwitchTo(old);
 	}
-	return e->all_read || bms_is_subset(attnos, e->reads);
+	return all_read || bms_is_subset(attnos, reads);
 }
 
 /*

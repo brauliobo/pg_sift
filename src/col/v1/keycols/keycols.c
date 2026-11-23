@@ -392,7 +392,7 @@ sift_col_auto_redecide(Relation index)
 	/* the lock and the reasons of sift_col_auto_keys_merge: the merge holds the metapage, a VACUUM the heap */
 	if (!ConditionalLockRelationOid(index->rd_index->indrelid, ShareUpdateExclusiveLock))
 		return;
-	heap = table_open(index->rd_index->indrelid, NoLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	if (!ActiveSnapshotSet())
 	{
 		PushActiveSnapshot(GetTransactionSnapshot());
@@ -471,7 +471,7 @@ sift_col_auto_keys_merge(Relation index, const SiftSegEntry *in, int n)
 		MemoryContextReset(cx);
 	}
 	MemoryContextDelete(cx);
-	heap = table_open(index->rd_index->indrelid, NoLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	initStringInfo(&list);
 	for (int c = 0; c < rel->schema->ncols; c++)
 	{

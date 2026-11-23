@@ -10,17 +10,16 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE stale (id int, g int, v int, t text, dim_id int);
 ALTER TABLE stale SET (autovacuum_enabled = false);
-INSERT INTO stale SELECT i, i % 10, i % 100, 'a' || (i % 13), i % 1000 FROM generate_series(1, 400) i;
+INSERT INTO stale SELECT i, i % 10, i % 100, 'a' || (i % 13), i % 250 FROM generate_series(1, 400) i;
 CREATE TABLE dims (id int PRIMARY KEY, name text);
-INSERT INTO dims SELECT i, 'n' || (i % 50) FROM generate_series(0, 999) i;
+INSERT INTO dims SELECT i, 'n' || (i % 50) FROM generate_series(0, 249) i;
 CREATE INDEX stale_col ON stale USING sift_col (id, g, v, t, dim_id);
 VACUUM (FREEZE, ANALYZE) stale;
 ANALYZE dims;
-INSERT INTO stale SELECT i, i, i % 100, 'a' || (i % 13), i % 1000 FROM generate_series(401, 20400) i;
+INSERT INTO stale SELECT i, i, i % 100, 'a' || (i % 13), i % 250 FROM generate_series(401, 20400) i;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SET sift.agg_force = on;
-SET sift.test_limits = 'group_nospill_factor=1,group_nospill_base=65536';
 -- one query for each kind, with the condition lim >= 0 that every row passes; its rows are (k, n, x)
 CREATE TABLE kinds (kind text PRIMARY KEY, q text);
 INSERT INTO kinds VALUES
