@@ -4,7 +4,6 @@
 #include "core/par/radix.h"
 
 #define BLOCK_FIRST		4096
-#define BLOCK_MAX		65536
 
 void
 sift_radix_init(SiftRadixOut *o, SiftArena *a)
@@ -22,7 +21,7 @@ stream_reserve(SiftRadixOut *o, uint32 p, uint32 len)
 
 	if (b == NULL || b->cap - b->used < len)
 	{
-		const uint32 cap = Max(len, b == NULL ? BLOCK_FIRST : Min(BLOCK_MAX, b->cap * 2));
+		const uint32 cap = Max(len, b == NULL ? BLOCK_FIRST : Min(SIFT_RADIX_BLOCK_MAX, b->cap * 2));
 		SiftRadixBlock *nb = sift_arena_alloc(o->arena, sizeof(SiftRadixBlock) + cap, SIFT_ARENA_ALIGN);
 
 		if (nb == NULL)

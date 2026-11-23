@@ -11,6 +11,7 @@
 #define SIFT_RADIX_BITS		6
 #define SIFT_RADIX_PARTS	(1 << SIFT_RADIX_BITS)
 #define SIFT_RADIX_LINE		64
+#define SIFT_RADIX_BLOCK_MAX	65536
 
 typedef struct SiftRadixBlock
 {
@@ -43,6 +44,13 @@ sift_radix_part(uint64 h)
 }
 
 extern void sift_radix_init(SiftRadixOut *o, SiftArena *a);
+
+/* Whether the arena holds bytes of records, whichever of the partitions they go to: each of the streams may open one more block of up to SIFT_RADIX_BLOCK_MAX bytes */
+static inline bool
+sift_radix_fits(const SiftRadixOut *o, uint64 bytes)
+{
+	return o->arena->cap - o->arena->used >= bytes + SIFT_RADIX_PARTS * (SIFT_RADIX_BLOCK_MAX + sizeof(SiftRadixBlock) + SIFT_ARENA_ALIGN);
+}
 
 /* Room for a record of len bytes in partition p, to be written before the next call on o; NULL when the arena has none (nothing is reserved) */
 extern void *sift_radix_reserve(SiftRadixOut *o, uint32 p, uint32 len);
