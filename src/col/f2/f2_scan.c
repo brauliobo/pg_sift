@@ -607,6 +607,55 @@ scan_span(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *p
 	}
 }
 
+#define SIFT_DICT_TEST_NS	0.25	/* a code looked up in the bits of the strings of the dictionary that pass */
+
+/* What an equality on an integer passes of the rows of the part at most: one of the values its zones span */
+static double
+eq_pass(Relation rel, SiftF2PartPin *pin, int col)
+{
+	const SiftZone *z = sift_f2_pin_zones(rel, pin, col);
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	if (z == NULL || pin->part->hdr.ngranules == 0)
+		return 1.0;
+	for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
+	{
+		if (z[g].flags & SIFT_ZONE_NONE)
+			return 1.0;
+		lo = Min(lo, z[g].min);
+		hi = Max(hi, z[g].max);
+	}
+	return Max(1e-5, 1.0 / ((double) ((uint64) hi - (uint64) lo) + 1.0));
+}
+
+/* The order of the first granules, before any was measured: a predicate on a dictionary of the part costs a bit test and passes the share of its strings that match, an equality on an integer passes the
+ * share its value takes of the range the zones span */
+static void
+price_filter(Relation rel, const F2Scan *s, SiftF2PartPin *pin, const PartPreds *pp, const SiftColSchema *schema, SiftAdaptiveFilter *af)
+{
+	SiftConjunctInit init[SIFT_AFILT_MAX];
+	const int	n = Min(s->npreds, SIFT_AFILT_MAX);
+
+	if (af->granules_seen > 0 || n == 0)
+		return;
+	for (int k = 0; k < n; k++)
+	{
+		const SiftConjunctState *st = &af->st[k];
+		const SiftDictPredCache *dc = pp->cf[k].part;
+
+		init[k] = (SiftConjunctInit) {.col = st->col,.barrier_group = st->barrier_group,.pass_prior = st->pass,.cpu_ns_row = st->cpu,.io_bytes_row = st->io};
+		if (dc != NULL)
+		{
+			init[k].cpu_ns_row = SIFT_DICT_TEST_NS;
+			init[k].pass_prior = (double) (dc->n_matches + dc->n_maybe) / Max(dc->dict_n, 1);
+		}
+		else if (s->preds[k].op == SIFT_COLOP_EQ && schema->cols[s->preds[k].col].store == SIFT_COLS_INT)
+			init[k].pass_prior = Min(st->pass, eq_pass(rel, pin, s->preds[k].col));
+	}
+	sift_afilt_init(af, init, n, af->io_cold);
+}
+
 bool
 part_open(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPartitionEntry *e, SiftF2PartPin *pin, Snapshot snap, PartCx *cx)
 {
@@ -622,6 +671,7 @@ part_open(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPartit
 		return false;
 	}
 	sift_f2_seed_filter(rel, pin->part, &pin->desc, s->preds, Min(s->npreds, SIFT_AFILT_MAX), &s->lf.af);
+	price_filter(rel, s, pin, &cx->pp, schema, &s->lf.af);
 	if (s->npreds > 0 && s->part_sink != NULL)
 		s->part_sink(s->sink_arg, s->part, false, &s->tids_unneeded);
 	s->tids_unneeded &= !patched;
