@@ -544,6 +544,27 @@ class Methodology(unittest.TestCase):
                 gate.elapsed(Conn(),case,2,math.inf)
             self.assertEqual(calls,['RESET',case.sql,'RESET',case.sql])
 
+    def test_the_aggregate_plan_is_the_whole_provider_family_and_nothing_else(self):
+        case = next(c for c in gate.CASES if c.plan=='SiftAgg')
+        for provider in ('SiftAgg','SiftAggV6','SiftAggHybrid'):
+            gate.require_plan([{'Plan':{'Node Type':'Custom Scan','Custom Plan Provider':provider}}],case)
+        for node in ({'Node Type':'Custom Scan','Custom Plan Provider':'SiftScan'},{'Node Type':'Seq Scan'},
+                     {'Node Type':'Custom Scan','Custom Plan Provider':'XSiftAgg'},{'Node Type':'Aggregate','Custom Plan Provider':'SiftAggV6'}):
+            with self.assertRaises(gate.PlanAbsent):
+                gate.require_plan([{'Plan':node}],case)
+
+    def test_a_text_case_accepts_every_sift_node_that_reads_its_text_index(self):
+        case = next(c for c in gate.CASES if c.name=='bm25_filtered_count')
+        for node in ({'Custom Plan Provider':'SiftScan','Index':'docs_bm25'},{'Custom Plan Provider':'SiftCount','Index':'docs_bm25'},
+                     {'Custom Plan Provider':'SiftAggV6','Index':'docs_col','Text Index':'docs_bm25'},
+                     {'Custom Plan Provider':'SiftHybridScan','Relation Name':'docs'},{'Custom Plan Provider':'SiftHybridAgg','Text Index':'docs_bm25'}):
+            gate.require_plan([{'Plan':dict(node,**{'Node Type':'Custom Scan'})}],case)
+        for node in ({'Node Type':'Custom Scan','Custom Plan Provider':'SiftAggV6','Index':'docs_col'},
+                     {'Node Type':'Custom Scan','Custom Plan Provider':'SiftAggV6','Text Index':'other_bm25'},
+                     {'Node Type':'Custom Scan','Custom Plan Provider':'Other','Text Index':'docs_bm25'},{'Node Type':'Seq Scan','Text Index':'docs_bm25'}):
+            with self.assertRaises(gate.PlanAbsent):
+                gate.require_plan([{'Plan':node}],case)
+
     def test_structured_plan_rejects_unrelated_marker(self):
         fake = [{'Plan':{'Node Type':'Seq Scan','Filter':'docs_bm25'}}]
         with self.assertRaises(ValueError):

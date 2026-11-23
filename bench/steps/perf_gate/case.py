@@ -37,16 +37,25 @@ def workers(plan):
 
 
 def topology(plan):
-    return [{k:n[k] for k in ('Node Type','Custom Plan Provider','Index Name','Index','Relation Name','Parent Relationship') if k in n}
+    return [{k:n[k] for k in ('Node Type','Custom Plan Provider','Index Name','Index','Text Index','Relation Name','Parent Relationship') if k in n}
             for n in plan_nodes(plan)]
+
+
+SIFT_PROVIDERS = ('SiftScan','SiftCount','SiftHybrid','SiftAgg')
+
+
+def sift_provider(node):
+    return node.get('Node Type')=='Custom Scan' and node.get('Custom Plan Provider','').startswith(SIFT_PROVIDERS)
 
 
 def require_plan(plan,case):
     nodes = plan_nodes(plan)
     if case.plan=='SiftAgg':
-        valid = any(n.get('Node Type')=='Custom Scan' and n.get('Custom Plan Provider')=='SiftAgg' for n in nodes)
+        valid = any(sift_provider(n) and n['Custom Plan Provider'].startswith('SiftAgg') for n in nodes)
     else:
-        valid = any((n.get('Node Type') in ('Index Scan','Index Only Scan','Bitmap Index Scan') and n.get('Index Name')==case.plan) or (case.plan=='docs_bm25' and n.get('Node Type')=='Custom Scan' and n.get('Custom Plan Provider') in ('SiftScan','SiftCount') and n.get('Index')==case.plan) for n in nodes)
+        valid = any((n.get('Node Type') in ('Index Scan','Index Only Scan','Bitmap Index Scan') and n.get('Index Name')==case.plan) or
+                    # a hybrid scan names no index: it is the text index and the column store of its relation together
+                    (sift_provider(n) and (n['Custom Plan Provider'].startswith('SiftHybrid') or case.plan in (n.get('Index'),n.get('Text Index')))) for n in nodes)
     if not valid:
         raise PlanAbsent(f'{case.name}: required structured plan {case.plan} absent: {topology(plan)}')
 
