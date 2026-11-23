@@ -6,8 +6,7 @@
  */
 #include "postgres.h"
 
-#include "core/cpu.h"
-#include "core/damage.h"
+#include "core/par/arena.h"
 
 #include "col/fsst.h"
 #include "col/f2/f2_pred.h"
@@ -16,26 +15,14 @@
 #include "col/like_simd.h"
 #include "utils/memutils.h"
 
-#define STR_MEMO_MAX	8
-
-typedef struct StrMemoEnt
-{
-	const char *rec;
-	int			col;
-	const uint32 *offs;
-	const char *bytes;
-	const uint64 *live;			/* the ranks that were decoded (the others are empty in offs), NULL: all */
-} StrMemoEnt;
-
-typedef struct StrMemo
+/* The memo of the leader: the context it lives in drops it with the callback, which a worker's memo (SiftStrMemo.cx NULL, in the arena) has no use for */
+typedef struct PgMemo
 {
 	MemoryContextCallback gone;
-	MemoryContext cx;
-	int			n;
-	StrMemoEnt	e[STR_MEMO_MAX];
-} StrMemo;
+	SiftStrMemo m;
+} PgMemo;
 
-static StrMemo *memo_active;
+static PgMemo *memo_active;
 
 static void
 memo_gone(void *arg)
@@ -47,40 +34,50 @@ memo_gone(void *arg)
 void
 sift_cfstr_memo_open(MemoryContext cx)
 {
-	StrMemo    *m = MemoryContextAllocZero(cx, sizeof(StrMemo));
+	PgMemo	   *pm = MemoryContextAllocZero(cx, sizeof(PgMemo));
 
-	m->cx = cx;
-	m->gone = (MemoryContextCallback) {.func = memo_gone,.arg = m};
-	MemoryContextRegisterResetCallback(cx, &m->gone);
-	memo_active = m;
+	pm->m.cx = cx;
+	pm->gone = (MemoryContextCallback) {.func = memo_gone,.arg = pm};
+	MemoryContextRegisterResetCallback(cx, &pm->gone);
+	memo_active = pm;
 }
 
-/* The decoded strings of chunk c (those of the ranks in live only, when it is given: owned by the memo's context as well), which the caller allocated in the current context: kept when the memo is of that context, else freed */
-static void
-memo_keep(const SiftChunk *c, uint32 *offs, char *bytes, const uint64 *live)
+SiftStrMemo *
+sift_cfstr_memo_active(void)
 {
-	StrMemo    *m = memo_active;
+	return memo_active != NULL ? &memo_active->m : NULL;
+}
 
-	if (m != NULL && m->n < STR_MEMO_MAX && GetMemoryChunkContext(offs) == m->cx && GetMemoryChunkContext(bytes) == m->cx)
-		m->e[m->n++] = (StrMemoEnt) {.rec = c->view->rec,.col = c->idx - 1,.offs = offs,.bytes = bytes,.live = live};
+static bool
+memo_owns(const SiftStrMemo *m, void *p)
+{
+	return m->cx == NULL || GetMemoryChunkContext(p) == m->cx;
+}
+
+/* The decoded strings of chunk c (those of the ranks in live only, when it is given), which the caller allocated in the current context or arena: kept when the memo owns them, else freed */
+static void
+memo_keep(SiftStrMemo *m, const SiftChunk *c, uint32 *offs, char *bytes, const uint64 *live)
+{
+	if (m != NULL && m->n < SIFT_STR_MEMO_MAX && memo_owns(m, offs) && memo_owns(m, bytes))
+		m->e[m->n++] = (SiftStrMemoEnt) {.rec = c->view->rec,.col = c->idx - 1,.offs = offs,.bytes = bytes,.live = live};
 	else
 	{
-		pfree(offs);
-		pfree(bytes);
+		sift_free(offs);
+		sift_free(bytes);
 		if (live != NULL)
-			pfree((void *) live);
+			sift_free((void *) live);
 	}
 }
 
 static bool
-memo_has(const StrMemoEnt *e, int rank)
+memo_has(const SiftStrMemoEnt *e, int rank)
 {
 	return e->live == NULL || ((e->live[rank >> 6] >> (rank & 63)) & 1);
 }
 
 /* The strings of the rows from one entry: false when a row's string is not among those it decoded */
 static bool
-memo_fill(const StrMemoEnt *e, const SiftChunk *c, const uint16 *rows, uint16 nrows, SiftStrCell *out)
+memo_fill(const SiftStrMemoEnt *e, const SiftChunk *c, const uint16 *rows, uint16 nrows, SiftStrCell *out)
 {
 	int			word = 0,
 				rank = 0;
@@ -104,15 +101,15 @@ memo_fill(const StrMemoEnt *e, const SiftChunk *c, const uint16 *rows, uint16 nr
 }
 
 bool
-sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out)
+sift_cfstr_memo_strs_in(const SiftStrMemo *m, const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out)
 {
 	SiftChunk	c;
 	bool		opened = false,
 				found = false;
 
-	for (int i = memo_active != NULL ? memo_active->n : 0; i-- > 0 && !found;)
+	for (int i = m->n; i-- > 0 && !found;)
 	{
-		const StrMemoEnt *e = &memo_active->e[i];
+		const SiftStrMemoEnt *e = &m->e[i];
 
 		if (e->rec != v->rec || e->col != col)
 			continue;
@@ -126,93 +123,12 @@ sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint
 	return found;
 }
 
-#if defined(__x86_64__)
-#include <immintrin.h>
-
-SIFT_TARGET_AVX2 static uint32
-len_nonzero_avx2(const uint32 *len, uint32 n, uint64 *bits)
-{
-	const __m256i zero = _mm256_setzero_si256();
-	uint32		i = 0;
-
-	for (; i + 8 <= n; i += 8)
-	{
-		const __m256i v = _mm256_loadu_si256((const __m256i *) (len + i));
-		const uint32 eq = (uint32) _mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(v, zero)));
-
-		bits[i >> 6] |= (uint64) (~eq & 0xFF) << (i & 63);
-	}
-	return i;
-}
-#endif
-
-void
-sift_cfs_len_nonzero(const uint32 *len, uint32 n, uint64 *bits)
-{
-	uint32		i = 0;
-
-	memset(bits, 0, ((n + 63) / 64) * sizeof(uint64));
-#if defined(__x86_64__)
-	if (sift_cpu.active >= SIFT_SIMD_AVX2 && (sift_cpu.flags & SIFT_CPU_AVX2))
-		i = len_nonzero_avx2(len, n, bits);
-#endif
-	for (; i < n; i++)
-		bits[i >> 6] |= (uint64) (len[i] != 0) << (i & 63);
-}
-
 bool
-sift_cfs_slab(const char *const *p, const uint32 *len, uint32 n, uint32 *off, const char **base)
+sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out)
 {
-	uint64		at = 0;
+	const SiftStrMemo *m = sift_cfstr_memo_active();
 
-	off[0] = 0;
-	*base = NULL;
-	for (uint32 i = 0; i < n; i++)
-	{
-		if (len[i] > 0 && *base == NULL)
-			*base = p[i];
-		if (len[i] > 0 && p[i] != *base + at)
-			return false;
-		at += len[i];
-		if (at > UINT32_MAX)
-			return false;
-		off[i + 1] = (uint32) at;
-	}
-	return true;
-}
-
-static uint32
-contains_each(const SiftLikeNeedle *nd, uint32 n, const char *const *p, const uint32 *len, uint64 *bits)
-{
-	uint32		found = 0;
-
-	for (uint32 i = 0; i < n; i++)
-		if (sift_like_find(nd, (const uint8 *) p[i], len[i]) >= 0)
-		{
-			bits[i >> 6] |= UINT64CONST(1) << (i & 63);
-			found++;
-		}
-	return found;
-}
-
-uint32
-sift_cfs_contains(const SiftLikeNeedle *nd, uint32 n, const char *const *p, const uint32 *len, uint64 *bits)
-{
-	uint32      stk[1025];
-	uint32     *off = n < lengthof(stk) ? stk : palloc(((size_t) n + 1) * sizeof(uint32));
-	const char *base;
-	uint32      found;
-
-	if (sift_cfs_slab(p, len, n, off, &base))
-		found = sift_like_dict(nd, n, off, (const uint8 *) (base != NULL ? base : (const char *) off), bits, NULL);
-	else
-	{
-		memset(bits, 0, ((n + 63) / 64) * sizeof(uint64));
-		found = contains_each(nd, n, p, len, bits);
-	}
-	if (off != stk)
-		pfree(off);
-	return found;
+	return m != NULL && sift_cfstr_memo_strs_in(m, v, col, rows, nrows, out);
 }
 
 void
@@ -222,19 +138,6 @@ sift_cfs_invert(uint64 *bits, uint32 n)
 		bits[w] = ~bits[w];
 	if (n & 63)
 		bits[n >> 6] &= (UINT64CONST(1) << (n & 63)) - 1;
-}
-
-void
-sift_cfs_ne(const char *lit, uint32 litlen, uint32 n, const char *const *p, const uint32 *len, uint64 *bits)
-{
-	if (litlen == 0)
-	{
-		sift_cfs_len_nonzero(len, n, bits);
-		return;
-	}
-	memset(bits, 0, ((n + 63) / 64) * sizeof(uint64));
-	for (uint32 i = 0; i < n; i++)
-		bits[i >> 6] |= (uint64) (len[i] != litlen || memcmp(p[i], lit, litlen) != 0) << (i & 63);
 }
 
 static bool
@@ -310,21 +213,21 @@ src_bits(const StrOp *o, const StrSrc *src, uint32 nn, const uint64 *dense_live,
 
 /* The live strings of an FSST chunk, decoded one after the other into one buffer and tested: the memo keeps it with the ranks it holds, for the view of the same granule */
 static void
-fsst_live(const StrOp *o, const SiftChunk *c, const SiftFsstChunk *f, const uint64 *live, uint64 *dense)
+fsst_live(SiftStrMemo *m, const StrOp *o, const SiftChunk *c, const SiftFsstChunk *f, const uint64 *live, uint64 *dense)
 {
 	const uint32 nn = c->nnonnull,
 				words = (nn + 63) / 64;
 	uint64		cap = SIFT_FSST_SLACK,
 				at = 0;
-	uint32	   *outoff = palloc(((size_t) nn + 1) * sizeof(uint32)),
+	uint32	   *outoff = sift_alloc(((size_t) nn + 1) * sizeof(uint32)),
 				next = 0;
-	uint64	   *kept = memcpy(palloc(words * sizeof(uint64)), live, words * sizeof(uint64));
+	uint64	   *kept = memcpy(sift_alloc(words * sizeof(uint64)), live, words * sizeof(uint64));
 	uint8	   *out;
 
 	for (uint32 w = 0; w < words; w++)
 		for (uint64 bits = live[w]; bits != 0; bits &= bits - 1)
 			cap += 8 * (uint64) f->clen[(w << 6) + (uint32) __builtin_ctzll(bits)];
-	out = palloc(cap);
+	out = sift_alloc(cap);
 	memset(dense, 0, words * sizeof(uint64));
 	for (uint32 w = 0; w < words; w++)
 		for (uint64 bits = live[w]; bits != 0; bits &= bits - 1)
@@ -336,44 +239,44 @@ fsst_live(const StrOp *o, const SiftChunk *c, const SiftFsstChunk *f, const uint
 				outoff[next] = at;
 			len = sift_fsst_decode(f->t, f->coded + f->off[k], (uint32) f->clen[k], out + at);
 			if (len == UINT32_MAX)
-				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
+				SIFT_FAIL_CORRUPT("sift: a coded string does not decode");
 			dense[w] |= (uint64) row_hit(o, (const char *) out + at, len) << (k & 63);
 			at += len;
 		}
 	for (; next <= nn; next++)
 		outoff[next] = at;
-	memo_keep(c, outoff, (char *) out, kept);
+	memo_keep(m, c, outoff, (char *) out, kept);
 }
 
 /* FSST: the live strings are decoded and tested, when they are few; else the chunk is decoded to one slab */
 static void
-fsst_bits(const StrOp *o, const SiftChunk *c, const uint64 *dense_live, uint64 *dense)
+fsst_bits(SiftStrMemo *m, const StrOp *o, const SiftChunk *c, const uint64 *dense_live, uint64 *dense)
 {
 	SiftFsstChunk f;
 	uint32		nn = c->nnonnull;
 
 	if (!sift_fsst_chunk_open(c, &f))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the symbol table of a string chunk is damaged"));
+		SIFT_FAIL_CORRUPT("sift: the symbol table of a string chunk is damaged");
 	sift_fsst_chunk_offsets(&f, nn);
 	if (dense_live != NULL)
-		fsst_live(o, c, &f, dense_live, dense);
+		fsst_live(m, o, c, &f, dense_live, dense);
 	else
 	{
 		uint64		cap = Min((uint64) f.raw_bytes, (uint64) 8 * f.coded_bytes) + SIFT_FSST_SLACK;
-		uint8	   *out = palloc(cap);
-		uint32	   *outoff = palloc(((size_t) nn + 1) * sizeof(uint32));
+		uint8	   *out = sift_alloc(cap);
+		uint32	   *outoff = sift_alloc(((size_t) nn + 1) * sizeof(uint32));
 		StrSrc		src = {.offs = outoff,.bytes = out};
 
 		if (!sift_fsst_decode_strs(f.t, f.coded, f.off, nn, out, cap, outoff))
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
+			SIFT_FAIL_CORRUPT("sift: a coded string does not decode");
 		src_bits(o, &src, nn, NULL, dense);
-		memo_keep(c, outoff, (char *) out, NULL);
+		memo_keep(m, c, outoff, (char *) out, NULL);
 	}
 	sift_fsst_chunk_close(&f);
 }
 
 bool
-sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *dense_live, uint32 live_nn, uint64 *dense)
+sift_cfstr_bits_live_in(SiftStrMemo *m, const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *dense_live, uint32 live_nn, uint64 *dense)
 {
 	const SiftColPred *pr = cp->pred;
 	const SiftColValue *v = &pr->vals[0];
@@ -406,14 +309,20 @@ sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *
 				sift_chunk_block_strs_own(c, &offs, &bytes);
 				src = (StrSrc) {.offs = offs,.bytes = (const uint8 *) bytes};
 				src_bits(&o, &src, nn, live, dense);
-				memo_keep(c, offs, bytes, NULL);
+				memo_keep(m, c, offs, bytes, NULL);
 			}
 			break;
 		default:
-			fsst_bits(&o, c, live, dense);
+			fsst_bits(m, &o, c, live, dense);
 			break;
 	}
 	return true;
+}
+
+bool
+sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *dense_live, uint32 live_nn, uint64 *dense)
+{
+	return sift_cfstr_bits_live_in(sift_cfstr_memo_active(), cp, c, dense_live, live_nn, dense);
 }
 
 bool

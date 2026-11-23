@@ -5,8 +5,9 @@
 
 #include "col/codec_int.h"
 #include "col/granule/cfilt_cc.h"
+#include "core/par/arena.h"
 
-SiftCfCcStats sift_cf_cc_stats;
+_Thread_local SiftCfCcStats sift_cf_cc_stats;
 
 static SiftCfResult cf_node(const CcNode *nd, const SiftCfTest *t, const SiftCfBounds *bnd, uint64 *out);
 
@@ -19,16 +20,16 @@ is_range(const SiftCfTest *t)
 static SiftCfResult
 cf_rle(const CcNode *nd, const SiftCfTest *t, uint64 *out)
 {
-	int64	   *vals = palloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
-	uint32	   *lens = palloc(sizeof(uint32) * nd->nruns);
+	int64	   *vals = sift_alloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
+	uint32	   *lens = sift_alloc(sizeof(uint32) * nd->nruns);
 	SiftCfResult res;
 
 	nd_i64(nd->a, vals);
 	for (uint32 r = 0; r < nd->nruns; r++)
 		lens[r] = nd->rstart[r + 1] - nd->rstart[r];
 	res = sift_cf_rle(&(SiftCfRle) {.nruns = nd->nruns,.n = nd->n,.vals = vals,.lens = lens}, t, out);
-	pfree(vals);
-	pfree(lens);
+	sift_free(vals);
+	sift_free(lens);
 	return res;
 }
 
@@ -66,12 +67,12 @@ cf_codes(const CcNode *nd, uint32 dict_n, const uint64 *match, uint64 *out)
 static SiftCfResult
 cf_dict(const CcNode *nd, const SiftCfTest *t, uint64 *out)
 {
-	uint64	   *match = palloc0(sizeof(uint64) * ((nd->d + 63) / 64 + 1));
+	uint64	   *match = sift_alloc0(sizeof(uint64) * ((nd->d + 63) / 64 + 1));
 	SiftCfResult res;
 
 	sift_cf_dict_match_sorted(nd->dict, nd->d, t, match);
 	res = cf_codes(nd->b, nd->d, match, out);
-	pfree(match);
+	sift_free(match);
 	return res;
 }
 
@@ -95,7 +96,7 @@ static SiftCfResult
 cf_scale_set(const CcNode *nd, const SiftCfTest *t, uint64 *out)
 {
 	uint64		g = (uint64) nd->mind;
-	int64	   *codes = palloc(sizeof(int64) * Max(t->nset, 1));
+	int64	   *codes = sift_alloc(sizeof(int64) * Max(t->nset, 1));
 	uint32		n = 0;
 	SiftCfResult res;
 
@@ -106,7 +107,7 @@ cf_scale_set(const CcNode *nd, const SiftCfTest *t, uint64 *out)
 		res = t->kind == SIFT_CFT_SET ? SIFT_CF_FALSE : SIFT_CF_TRUE;
 	else
 		res = cf_node(nd->a, &(SiftCfTest) {.kind = t->kind,.set = codes,.nset = n}, &(SiftCfBounds) {0}, out);
-	pfree(codes);
+	sift_free(codes);
 	return res;
 }
 

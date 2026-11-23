@@ -12,8 +12,8 @@
 #include "col/granule/cfilt_str_simd.h"
 #include "col/granule/granule_filter.h"
 #include "col/like_simd.h"
+#include "core/par/arena.h"
 #include "core/cmp.h"
-#include "core/damage.h"
 #include "core/f2/bitscatter.h"
 #include "core/popcount.h"
 #include "port/pg_bitutils.h"
@@ -75,7 +75,7 @@ set_equal_codes(SiftDictPredCache *r, const SiftColPred *p, int m, uint32 n, con
 		return;
 	}
 	/* check-memory: allow the values of one predicate, bounded by the query */
-	sorted = palloc(m * sizeof(*sorted));
+	sorted = sift_alloc(m * sizeof(*sorted));
 	for (int j = 0; j < m; j++)
 		sorted[j] = &p->vals[j];
 	qsort(sorted, m, sizeof(*sorted), value_cmp);
@@ -89,7 +89,7 @@ set_equal_codes(SiftDictPredCache *r, const SiftColPred *p, int m, uint32 n, con
 		if (j < (uint32) m && sift_f2_str_cmp(s, len, sorted[j]->v.s, sorted[j]->len) == 0)
 			set_codes(r, c, c + 1);
 	}
-	pfree(sorted);
+	sift_free(sorted);
 }
 
 static bool
@@ -101,12 +101,12 @@ has_prefix(const char *bytes, const uint32 *off, uint32 c, const char *s, uint32
 SiftDictPredCache *
 sift_dict_pred_prepare(const SiftColPred *p, uint32 n, const uint32 *off, const char *bytes)
 {
-	SiftDictPredCache *r = palloc0(sizeof(SiftDictPredCache));
+	SiftDictPredCache *r = sift_alloc0(sizeof(SiftDictPredCache));
 	const SiftColValue *v = &p->vals[0];
 
 	r->dict_n = n;
 	r->nwords64 = (n + 1 + 63) / 64;
-	r->bits = palloc0((r->nwords64 + 1) * sizeof(uint64));
+	r->bits = sift_alloc0((r->nwords64 + 1) * sizeof(uint64));
 	switch (p->op)
 	{
 		case SIFT_COLOP_EQ:
@@ -158,7 +158,7 @@ sift_dict_pred_prepare(const SiftColPred *p, uint32 n, const uint32 *off, const 
 		case SIFT_COLOP_IEQ:
 		case SIFT_COLOP_ARR_OVERLAP:
 		case SIFT_COLOP_ARR_CONTAINS:
-			r->maybe_bits = palloc0((r->nwords64 + 1) * sizeof(uint64));
+			r->maybe_bits = sift_alloc0((r->nwords64 + 1) * sizeof(uint64));
 			for (uint32 c = 0; c < n; c++)
 			{
 				SiftLikeVerdict lv = sift_f2_str_verdict(p, bytes + off[c], off[c + 1] - off[c]);
@@ -278,13 +278,13 @@ cascade_set(const SiftCc *cc, const SiftCTest *t, uint32 nn, uint64 *dense)
 		memset(dense + (nn + 63) / 64, 0, sizeof(uint64) * (DENSE_WORDS - (nn + 63) / 64));
 	else
 	{
-		int64	   *keys = palloc(sizeof(int64) * ((size_t) nn + SIFT_COL_PAD / 8));
+		int64	   *keys = sift_alloc(sizeof(int64) * ((size_t) nn + SIFT_COL_PAD / 8));
 
 		sift_cc_decode(cc, keys);
 		memset(dense, 0, sizeof(uint64) * DENSE_WORDS);
 		for (uint32 i = 0; i < nn; i++)
 			dense[i >> 6] |= (uint64) (bsearch(&keys[i], t->set, t->nset, sizeof(int64), sift_cmp_i64) != NULL) << (i & 63);
-		pfree(keys);
+		sift_free(keys);
 	}
 }
 
@@ -411,13 +411,13 @@ dict_dense(const SiftCfiltPred *cp, const SiftChunk *c, uint64 *dense)
 	}
 	if (own != NULL)
 	{
-		pfree(own->bits);
-		pfree(own);
+		sift_free(own->bits);
+		sift_free(own);
 	}
 	if (!d.part)
 	{
-		pfree((void *) d.off);
-		pfree((void *) d.bytes);
+		sift_free((void *) d.off);
+		sift_free((void *) d.bytes);
 	}
 	return res;
 }
@@ -430,7 +430,7 @@ static void
 free_if(void *p)
 {
 	if (p != NULL)
-		pfree(p);
+		sift_free(p);
 }
 
 /* The chunk's table: the part's (the chunk keeps none) or the one it holds ahead of its strings */
@@ -454,7 +454,7 @@ sift_fsst_chunk_open(const SiftChunk *c, SiftFsstChunk *f)
 	}
 	else
 	{
-		f->t = f->own = palloc(sizeof(SiftFsst));
+		f->t = f->own = sift_alloc(sizeof(SiftFsst));
 		at = sift_fsst_read_table(f->own, body, avail);
 		if (at == 0)
 			return false;
@@ -480,14 +480,14 @@ sift_fsst_chunk_offsets(SiftFsstChunk *f, uint32 nn)
 {
 	if (f->off != NULL)
 		return;
-	f->clen = palloc(sizeof(int64) * ((size_t) nn + SIFT_COL_PAD / 8));
-	f->off = palloc(sizeof(uint32) * ((size_t) nn + 1));
+	f->clen = sift_alloc(sizeof(int64) * ((size_t) nn + SIFT_COL_PAD / 8));
+	f->off = sift_alloc(sizeof(uint32) * ((size_t) nn + 1));
 	sift_cc_decode(f->lens, f->clen);
 	f->off[0] = 0;
 	for (uint32 k = 0; k < nn; k++)
 	{
 		if (f->clen[k] < 0 || (uint64) f->clen[k] > f->coded_bytes - f->off[k])
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string is past the end of its chunk"));
+			SIFT_FAIL_CORRUPT("sift: a coded string is past the end of its chunk");
 		f->off[k + 1] = f->off[k] + (uint32) f->clen[k];
 	}
 }
@@ -507,7 +507,7 @@ fsst_needle(const SiftFsst *t, const SiftColPred *p, int j, SiftFsstNeedle *nd)
 	const char *needle = p->vals[j].v.s;
 	uint32		nlen = p->vals[j].len;
 
-	nd->enc = palloc(2 * (size_t) nlen + 2);
+	nd->enc = sift_alloc(2 * (size_t) nlen + 2);
 	nd->raw = nlen;
 	nd->elen = p->op == SIFT_COLOP_PREFIX ? sift_fsst_encode_safe_prefix(t, needle, nlen, nd->enc, &nd->raw) : sift_fsst_encode(t, needle, nlen, nd->enc);
 }
@@ -525,13 +525,13 @@ fsst_hash(const uint8 *s, uint32 len)
 SiftFsstPredCache *
 sift_fsst_pred_prepare(const SiftFsst *fsst, const SiftColPred *p)
 {
-	SiftFsstPredCache *fc = palloc0(sizeof(SiftFsstPredCache));
+	SiftFsstPredCache *fc = sift_alloc0(sizeof(SiftFsstPredCache));
 	bool		set = p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN;
 
 	fc->fsst = fsst;
 	fc->n = set ? p->nvals : 1;
 	/* check-memory: allow the values of one predicate, bounded by the query */
-	fc->needles = palloc(fc->n * sizeof(SiftFsstNeedle));
+	fc->needles = sift_alloc(fc->n * sizeof(SiftFsstNeedle));
 	fc->min_elen = UINT32_MAX;
 	for (int j = 0; j < fc->n; j++)
 	{
@@ -550,7 +550,7 @@ sift_fsst_pred_prepare(const SiftFsst *fsst, const SiftColPred *p)
 		uint32		cap = pg_nextpower2_32(Max(16, (uint32) fc->n * 2));
 
 		/* check-memory: allow the values of one predicate, bounded by the query */
-		fc->ht = palloc0(cap * sizeof(SiftFsstHashSlot));
+		fc->ht = sift_alloc0(cap * sizeof(SiftFsstHashSlot));
 		fc->ht_mask = cap - 1;
 		for (int j = 0; j < fc->n; j++)
 		{
@@ -569,10 +569,10 @@ void
 sift_fsst_pred_free(SiftFsstPredCache *fc)
 {
 	for (int j = 0; j < fc->n; j++)
-		pfree(fc->needles[j].enc);
-	pfree(fc->needles);
+		sift_free(fc->needles[j].enc);
+	sift_free(fc->needles);
 	free_if(fc->ht);
-	pfree(fc);
+	sift_free(fc);
 }
 
 static bool
@@ -657,7 +657,7 @@ fsst_each_dense(const SiftCfiltPred *cp, SiftFsstChunk *f, uint32 nn, const uint
 			any |= fsst_rows(f, nd->enc, nd->elen, nn, probe, dense, (const uint8 *) p->vals[j].v.s + nd->raw, p->vals[j].len - nd->raw);
 		}
 		if (fc == NULL)
-			pfree(own.enc);
+			sift_free(own.enc);
 	}
 	return any;
 }
@@ -709,7 +709,7 @@ fsst_dense(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *dense_live
 	if (p->op != SIFT_COLOP_EQ && p->op != SIFT_COLOP_NE && p->op != SIFT_COLOP_IN && p->op != SIFT_COLOP_NOTIN && p->op != SIFT_COLOP_PREFIX)
 		return SIFT_CFILT_UNSUPPORTED;
 	if (!sift_fsst_chunk_open(c, &f))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the symbol table of a string chunk is damaged"));
+		SIFT_FAIL_CORRUPT("sift: the symbol table of a string chunk is damaged");
 	memset(dense, 0, sizeof(uint64) * DENSE_WORDS);
 	any = set ? fsst_set_dense(cp, &f, nn, dense_live, dense) : fsst_each_dense(cp, &f, nn, dense_live, dense);
 	sift_fsst_chunk_close(&f);
@@ -794,7 +794,7 @@ nulltest_rows(const SiftCfiltPred *cp, const SiftChunk *c, uint64 *out_mask)
 
 /* The predicate on the values of an opened chunk, as one bit for each of them; UNSUPPORTED: the chunk or the predicate is one the decoder takes */
 static SiftCfiltResult
-dense_rows(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, uint64 *dense)
+dense_rows(SiftStrMemo *memo, const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, uint64 *dense)
 {
 	uint64		dense_live[DENSE_WORDS];
 	uint32		live_nn = 0;
@@ -811,13 +811,13 @@ dense_rows(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, uint
 			return SIFT_CFILT_ALL_FALSE;
 	}
 	res = c->enc == SIFT_CENC_STR_FSST ? fsst_dense(cp, c, live != NULL ? dense_live : NULL, dense) : SIFT_CFILT_UNSUPPORTED;
-	if (res == SIFT_CFILT_UNSUPPORTED && sift_cfstr_bits_live(cp, c, live != NULL ? dense_live : NULL, live_nn, dense))
+	if (res == SIFT_CFILT_UNSUPPORTED && sift_cfstr_bits_live_in(memo, cp, c, live != NULL ? dense_live : NULL, live_nn, dense))
 		res = dense_result(dense, c->nnonnull);
 	return res;
 }
 
 static SiftCfiltResult
-filter_opened(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, uint64 *out_mask)
+filter_opened(SiftStrMemo *memo, const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, uint64 *out_mask)
 {
 	uint64		dense[DENSE_WORDS];
 	uint64		valid[SIFT_CFILT_WORDS + 1];
@@ -828,7 +828,7 @@ filter_opened(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, u
 		return cp->pred->op == SIFT_COLOP_ISNULL ? SIFT_CFILT_ALL_TRUE : SIFT_CFILT_ALL_FALSE;
 	if (cp->nulltest)
 		return nulltest_rows(cp, c, out_mask);
-	res = dense_rows(cp, c, live, dense);
+	res = dense_rows(memo, cp, c, live, dense);
 	if (res == SIFT_CFILT_UNSUPPORTED || res == SIFT_CFILT_ALL_FALSE)
 		return res;
 	if (res == SIFT_CFILT_ALL_TRUE)
@@ -851,6 +851,12 @@ filter_opened(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *live, u
 SiftCfiltResult
 sift_granule_filter_compressed_live(const SiftGranuleView *v, const SiftCfiltPred *cp, const uint64 *live, uint64 *out_mask)
 {
+	return sift_granule_filter_in(sift_cfstr_memo_active(), v, cp, live, out_mask);
+}
+
+SiftCfiltResult
+sift_granule_filter_in(SiftStrMemo *memo, const SiftGranuleView *v, const SiftCfiltPred *cp, const uint64 *live, uint64 *out_mask)
+{
 	int			col = cp->pred->col;
 	SiftChunk	c;
 	SiftCfiltResult res;
@@ -858,7 +864,7 @@ sift_granule_filter_compressed_live(const SiftGranuleView *v, const SiftCfiltPre
 	if (col < 0 || col + 1 >= v->hdr->nchunks || (v->hdr->chunks[col + 1].flags & (SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_HAS_KINDS | SIFT_CHUNK_ELEMS)))
 		return SIFT_CFILT_UNSUPPORTED;
 	sift_chunk_open(v, col + 1, &c);
-	res = filter_opened(cp, &c, live, out_mask);
+	res = filter_opened(memo, cp, &c, live, out_mask);
 	sift_chunk_close(&c);
 	return res;
 }

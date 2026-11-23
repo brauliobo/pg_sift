@@ -572,6 +572,7 @@ col/granule/granule_dec.c
 col/granule/granule_enc.c
 col/granule/granule_put.c
 col/granule/granule_filter.c
+col/granule/granule_filter_a.c
 col/granule/granule_filter.h
 col/granule/granule_int.h
 col/granule/framed_chunk_test.c
