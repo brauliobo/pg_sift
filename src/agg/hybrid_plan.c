@@ -201,7 +201,7 @@ static IndexOptInfo *
 col_index(RelOptInfo *rel)
 {
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		if ((ix->indpred == NIL || ix->predOK) && ix->indexprs == NIL && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns &&
+		if ((ix->indpred == NIL || ix->predOK) && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns &&
 			sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
 			return ix;
 	return NULL;

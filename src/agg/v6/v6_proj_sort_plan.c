@@ -550,7 +550,7 @@ sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 		{
 			Relation	irel;
 
-			if ((ix->indpred != NIL && !ix->predOK) || ix->indexprs != NIL || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
+			if ((ix->indpred != NIL && !ix->predOK) || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
 				continue;
 			irel = index_open(ix->indexoid, AccessShareLock);
 			p.ix = ix;

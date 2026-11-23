@@ -300,7 +300,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 		Cost		xs = 0,
 					xt = 0;
 
-		if (ix->indexprs != NIL || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
+		if (ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
 			continue;
 		irel = index_open(ix->indexoid, AccessShareLock);
 		p.colrel = sift_col_rel(irel);

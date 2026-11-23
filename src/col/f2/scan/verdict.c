@@ -6,6 +6,27 @@
 #include "col/f2/scan/scan_int.h"
 #include "core/popcount.h"
 
+/* a numeric NaN is above every number and equals itself, whatever constant (a number) a comparison holds */
+static Verdict
+numeric_nan_verdict(SiftColOp op)
+{
+	switch (op)
+	{
+		case SIFT_COLOP_GT:
+		case SIFT_COLOP_GE:
+		case SIFT_COLOP_NOTNULL:
+			return V_YES;
+		case SIFT_COLOP_EQ:
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+		case SIFT_COLOP_IN:
+		case SIFT_COLOP_ISNULL:
+			return V_NO;
+		default:
+			return V_MAYBE;
+	}
+}
+
 static Verdict
 pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColView *cv, int r)
 {
@@ -20,6 +41,8 @@ pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColVi
 
 		return type == SIFT_COLTAG_UNSURE ? V_MAYBE : (p->vals[0].v.i >> type) & 1 ? V_YES : V_NO;
 	}
+	if (isnull && cv->tag != NULL && cv->tag[r] == SIFT_COLTAG_UNSURE && d->type == SIFT_COLT_NUMERIC)
+		return numeric_nan_verdict(p->op);
 	if (isnull && cv->tag != NULL && cv->tag[r] != 0)
 		return V_MAYBE;
 	if (p->op == SIFT_COLOP_ISNULL)

@@ -35,6 +35,14 @@ index_var(const Var *v, int col)
 	return (Expr *) makeVar(INDEX_VAR, col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
 }
 
+/* A numeric column of an index decides a comparison with a constant of its scale range on the scaled integers; a NaN row is decided by the scan (col/f2/scan/verdict.c) */
+static bool
+numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Node *operand)
+{
+	return p->store == NULL && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
+		sift_col_numeric_key_fits(col->scale, ((const Const *) operand)->constvalue);
+}
+
 /* The strategy of a comparison of the column with a constant or parameter: of the operator class, or, on an index, <> and NOT LIKE '%literal%' (agg/v6/v6_qual.h) that only a scan outside a FILTER clause has; 0: not one the scan decides */
 static int
 compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const Node *operand)
@@ -47,6 +55,8 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 	if (strat == 0 && index && !p->in_filter)
 		strat = sift_v6_qual_private_strategy(q->opno, family);
 	if (text && !sift_text_bytes_equal(q->inputcollid))
+		return 0;
+	if (col->typid == NUMERICOID && !numeric_exact(p, strat, col, operand))
 		return 0;
 	switch (strat)
 	{
@@ -91,7 +101,7 @@ qual_compare(V6Plan *p, OpExpr *op)
 		r = t;
 		q->args = list_make2(l, r);
 	}
-	if (!sift_v6_plan_column(p, (Expr *) l, false, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
+	if (!sift_v6_plan_column(p, (Expr *) l, true, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
 		return NULL;
 	linitial(q->args) = index_var((Var *) l, col.attno - 1);
 	return (Expr *) q;

@@ -202,7 +202,7 @@ sorted_index(const IndexOptInfo *ix, const Idiom *id)
 {
 	SiftV6Input in;
 
-	if (ix->hypothetical || ix->indpred != NIL || ix->indexprs != NIL || !sift_v6_format()->owns_rel(ix->indexoid, false))
+	if (ix->hypothetical || ix->indpred != NIL || !sift_v6_format()->owns_rel(ix->indexoid, false))
 		return false;
 	sift_v6_input_init_info(&in, ix);
 	return sorted_input(&in, id);

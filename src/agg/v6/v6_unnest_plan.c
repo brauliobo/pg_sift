@@ -140,7 +140,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 		V6Plan		p = {.root = root,.rel = fact,.out = output_rel,.relid = ix->indexoid,.index = ix};
 		Relation	irel;
 
-		if (ix->indexprs != NIL || ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
+		if (ix->hypothetical || !sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid))
 			continue;
 		irel = index_open(ix->indexoid, AccessShareLock);
 		p.colrel = sift_col_rel(irel);
