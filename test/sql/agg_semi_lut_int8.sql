@@ -1,5 +1,5 @@
 -- The byte table of a semi, anti or inner join by an integer key (agg_semi_lut) is also made for a key that is an int8 leaf of the rows, over the span of the
--- keys of the joined table (up to a share of work_mem), where the join was answered by a hash probe of every tuple. Each statement: the answer of the scan
+-- keys of the joined table (up to work_mem), where the join was answered by a hash probe of every tuple. Each statement: the answer of the scan
 -- against the normal plan's and against the generic join (sift.agg_semi_lut = off), and whether the byte table was used.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -7,6 +7,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET sift.test_agg_probe_rewrite = off;
+SET work_mem = '64MB';
 SET sift.enable_col_scan = off;
 
 -- the same keys as an int4 leaf and as an int8 leaf, a key beyond int32 in the int8 one, NULLs
@@ -95,16 +96,14 @@ SELECT run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp =
 SELECT run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)', true) = run('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)', false) AS int8_leaf_again;
 SELECT run('SELECT count(*) FROM ev WHERE k4 IN (SELECT k FROM keys8 WHERE grp = 2)', true) = run('SELECT count(*) FROM ev WHERE k4 IN (SELECT k FROM keys8 WHERE grp = 2)', false) AS int4_leaf_after;
 
--- the memory of the test is bounded (sift.test_limits semi_lut_bytes, a share of work_mem): a byte table over the span of the keys, else a hash set of them, else the generic join
+-- the memory of the test is bounded by work_mem: a byte table over the span of the keys, else a hash set of them, else the generic join
 SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 3)') AS window_default;
-SET sift.test_limits = 'semi_lut_bytes=1024';
-SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 3)') AS window_1kb;
-SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 1)') AS set_2000_keys_1kb;
-SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)') AS set_6_keys_1kb;
-SELECT run(sql, true) = run(sql, false) AS same_1kb FROM q WHERE n IN (1, 3, 5, 8, 19);
-SET sift.test_limits = 'semi_lut_bytes=0';
-SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 3)') AS size_0;
-RESET sift.test_limits;
+SET work_mem = '512kB';
+SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 3)') AS window_64kb;
+SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 1)') AS set_2000_keys_64kb;
+SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)') AS set_6_keys_64kb;
+SELECT run(sql, true) = run(sql, false) AS same_64kb FROM q WHERE n IN (1, 3, 5, 8, 19);
+SET work_mem = '64MB';
 
 -- from workers
 ALTER TABLE ev SET (parallel_workers = 2);
