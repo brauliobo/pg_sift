@@ -25,7 +25,8 @@ typedef enum SiftPredOp
 	SPO_GE,
 	SPO_IN,						/* equal to one of the constants */
 	SPO_IS_NULL,
-	SPO_NOT_NULL
+	SPO_NOT_NULL,
+	SPO_NOT_IN					/* equal to none of the constants (no NULL among them) */
 } SiftPredOp;
 
 typedef enum SiftPredKind

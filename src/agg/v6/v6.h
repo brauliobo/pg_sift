@@ -158,7 +158,8 @@ typedef enum SiftV6DeriveKind
 	SVD_URL_HOST,				/* regexp_replace(src, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') */
 	SVD_EXTRACT,				/* extract(minute or hour FROM src), src a timestamp; aux is the unit in microseconds */
 	SVD_CASE_STR,				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
-	SVD_ARITH					/* + - * of float8 columns (src, cond[0..]) and a constant (aux): the postfix tokens in cval, v6_plan_rewrite.h; the batches of an unnest only */
+	SVD_ARITH,					/* + - * of float8 columns (src, cond[0..]) and a constant (aux): the postfix tokens in cval, v6_plan_rewrite.h; the batches of an unnest only */
+	SVD_NUM_EXPR				/* the exact scaled-integer product of up to three affine factors of numeric columns (agg/v6/v6_expr_num.h) */
 } SiftV6DeriveKind;
 
 #define SIFT_V6_MAX_DERIVE	8
@@ -211,6 +212,7 @@ typedef struct SiftV6Spec
 	int			nbins;
 	SiftV6Bin	bin[SIFT_V6_MAX_KEYS];
 	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/v6/jsonb_qual.c) */
+	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/v6/v6_bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
 	Oid			text_indexoid;	/* a sift index whose text query (a Const, text_query) keeps the rows: its hits go to the scan as bridges (v6_text.c); InvalidOid without one */
 	Const	   *text_query;

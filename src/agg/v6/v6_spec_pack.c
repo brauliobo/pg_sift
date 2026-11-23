@@ -99,7 +99,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 		ints = lappend_int(ints, (int) s->part_index[k]);
 	ints = list_concat(ints, list_make3_int(s->par_strategy, s->par_workers, (int) s->text_indexoid));
 	ints = sift_v6_derive_pack(ints, s);
-	return lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL);
+	return lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual);
 }
 
 SiftV6Spec *
@@ -165,6 +165,7 @@ sift_v6_spec_unpack(const List *l)
 	s->filter = lthird(l);
 	s->nfilters = list_length(s->filter);
 	s->jsonqual = lfourth(l);
+	s->vqual = list_nth(l, 6);
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
 	return s;
 }

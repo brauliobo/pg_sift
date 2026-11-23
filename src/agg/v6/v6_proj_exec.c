@@ -50,7 +50,7 @@ query_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, SiftV6ProjQuery *q)
 	*q = (SiftV6ProjQuery) {.limit = -1};
 	if (h->heap != NULL && h->npreds == 0 && sift_v6_spec_whole_parts(spec))
 		return false;
-	if (spec->nderive > 0 || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
+	if (spec->nderive > 0 || spec->vqual != NIL || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 		q->group[q->ngroup++] = (SiftProjKey) {.leaf = h->store->att_first[spec->key[i].attno],.fn = SPF_COLUMN};

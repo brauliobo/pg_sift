@@ -76,10 +76,11 @@ eval_int(const SiftPred *p, const SiftVec *v, uint32 n, uint64 *out)
 
 		if (!sift_vec_valid_at(v, r))
 			continue;
-		if (p->op == SPO_IN)
+		if (p->op == SPO_IN || p->op == SPO_NOT_IN)
 		{
 			for (uint32 k = 0; k < p->nin && !hit; k++)
 				hit = x == p->in_i[k];
+			hit ^= p->op == SPO_NOT_IN;
 		}
 		else
 			hit = op_holds(p->op, cmp_i64(x, p->i));
@@ -98,10 +99,11 @@ eval_f64(const SiftPred *p, const SiftVec *v, uint32 n, uint64 *out)
 
 		if (!sift_vec_valid_at(v, r))
 			continue;
-		if (p->op == SPO_IN)
+		if (p->op == SPO_IN || p->op == SPO_NOT_IN)
 		{
 			for (uint32 k = 0; k < p->nin && !hit; k++)
 				hit = sift_f8_cmp(d[r], p->in_f[k]) == 0;
+			hit ^= p->op == SPO_NOT_IN;
 		}
 		else
 			hit = op_holds(p->op, sift_f8_cmp(d[r], p->f));
@@ -120,10 +122,11 @@ eval_str(const SiftPred *p, const SiftVec *v, uint32 n, uint64 *out)
 
 		if (!sift_vec_valid_at(v, r))
 			continue;
-		if (p->op == SPO_IN)
+		if (p->op == SPO_IN || p->op == SPO_NOT_IN)
 		{
 			for (uint32 k = 0; k < p->nin && !hit; k++)
 				hit = str_equal(&s[r], p->in_s[k].bytes, p->in_s[k].len);
+			hit ^= p->op == SPO_NOT_IN;
 		}
 		else
 			hit = str_equal(&s[r], p->s.bytes, p->s.len) == (p->op == SPO_EQ);

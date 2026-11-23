@@ -30,6 +30,7 @@ typedef struct V6Plan
 	Bitmapset  *scan_vars;		/* the entries of scan_tlist that are plain columns (a Var), by varno */
 	SiftFilterReg *freg;		/* the distinct FILTER clauses of the statement */
 	bool		in_filter;		/* compiling a FILTER clause: its operands are constants, which the clause folds into its bitmaps at plan time */
+	bool		batch_ok;		/* the quals no scan key says may be run over the batches of the scan (SiftV6Spec.vqual): the scan of one relation that no other operator reads the rows of */
 	struct SiftV6Ext *xseed;	/* the dimensions or the unnest the join of the statement makes of its relations (v6_ext.h); NULL for a scan of the fact relation alone */
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */
 	RelOptInfo *elem_rel;		/* the relation of the unnest */

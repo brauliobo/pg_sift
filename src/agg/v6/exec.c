@@ -106,7 +106,7 @@ begin_star(V6State *st, CustomScanState *node, EState *estate, int eflags)
 static bool
 v6_fusable(const V6State *st)
 {
-	return st->spec->nparts == 0 && !st->spec->is_table && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid)
+	return st->spec->nparts == 0 && !st->spec->is_table && st->spec->vqual == NIL && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid)
 		&& !st->spec->rows && st->spec->topk == 0;
 }
 
