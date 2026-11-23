@@ -290,7 +290,7 @@ mark_cmp(const void *a, const void *b)
 	return (int) x->row - (int) y->row;
 }
 
-/* The marks, ascending, as the granules of a delta: rows is the array they point into */
+/* The marks, ascending, as the chunks of a delta, a granule in as many chunks as SIFT_DV_DELTA_MAX_MARKS asks: rows is the array they point into */
 static int
 delta_grans(SiftDvMark *marks, int nm, SiftDvDeltaGran *gran, uint16 *rows)
 {
@@ -300,7 +300,7 @@ delta_grans(SiftDvMark *marks, int nm, SiftDvDeltaGran *gran, uint16 *rows)
 	for (int i = 0; i < nm; i++)
 	{
 		rows[i] = marks[i].row;
-		if (i == 0 || marks[i].granule != marks[i - 1].granule)
+		if (i == 0 || marks[i].granule != marks[i - 1].granule || gran[ng - 1].nrows == SIFT_DV_DELTA_MAX_MARKS)
 			gran[ng++] = (SiftDvDeltaGran) {.granule_id = marks[i].granule,.rows = rows + i};
 		gran[ng - 1].nrows++;
 	}
