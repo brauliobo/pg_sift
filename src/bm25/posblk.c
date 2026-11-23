@@ -57,7 +57,7 @@ bw_unary(BitWriter *w, uint32 q)
 static int
 rice_param(uint32 n, uint64 sum, uint64 *bits)
 {
-	int			lo = Max(pg_leftmost_one_pos64(sum / n + 1) - 1, 0),
+	int			lo = Min(Max(pg_leftmost_one_pos64(sum / n + 1) - 1, 0), RICE_MAX),
 				best = lo;
 
 	for (int kr = lo; kr <= Min(lo + 2, RICE_MAX); kr++)
