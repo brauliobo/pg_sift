@@ -258,7 +258,7 @@ class InsertTrajectory(unittest.TestCase):
                 return dict(gate.interval([(1,1.3 if args[4] else 1)]*count),
                             visits=[[{'check_seconds':.001},{'check_seconds':.001}]]*count)
             args = ['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--verify-control',
-                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true']
+                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true']
             with patch.object(gate,'Revision',Revision), patch.object(gate,'refresh_report_cost'), patch.object(gate,'prepare_control_costs',side_effect=lambda revs,report,output:report.update(cpu_calibration={})), patch.object(gate,'churn_sizes',return_value={'state':'churn_vacuum','status':'pass','relations':[]}), patch.object(gate,'exact_sha'), \
                  patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
                  patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \

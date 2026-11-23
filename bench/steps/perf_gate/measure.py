@@ -155,6 +155,11 @@ def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None
             result['space_status'] = result['validation']['size_checks']['status']
             if result['space_status']=='regression':
                 result['status'] = 'regression'
+        if PERF_AVAILABLE and case.lifecycle=='read':
+            result['instructions'] = measure_instructions(revisions,case,fixture_rows(revisions[0].conn),deadline)
+        kind = regression_kind(result['status'],result.get('instructions'))
+        if kind:
+            result['regression_kind'] = kind
         result['complete'],result['phase'] = True,'complete'
         return result
     finally:

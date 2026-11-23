@@ -112,6 +112,13 @@ def _write_report(output, report):
                          ('operations','histories','desired_histories','history_cap','predicted_observation_sql_seconds',
                           'target_attained_prediction','internal_order_policy','limitations')})+'`.',
                          'Actual achieved windows: `'+json.dumps(case.get('achieved_windows',{}))+'`. All histories contribute client SQL sums to one observation; n counts observations only. Per-operation Python/encoding/deadline/libpq/autocommit overhead retained, with all ordinal spikes. No bias-correction or sqrt(K) precision claim.'])
+    lines.extend(['', '| Case | Mode | Event | Base instructions/row | Head instructions/row | Ratio | Regression kind |', '|---|---|---|---:|---:|---:|---|'])
+    for case in report['cases']:
+        if 'instructions' in case:
+            i = case['instructions']
+            lines.append(f"| {case['name']} | {case['mode']} | {i['event']} | {i['baseline_per_row']:.1f} | {i['candidate_per_row']:.1f} | {i['ratio']:.3f} | {case.get('regression_kind','-')} |")
+    if not report['config'].get('perf_instructions'):
+        lines.append('INFO: perf stat instructions:u unavailable; elapsed time, plans, workers and sizes only.')
     lines.extend(['', 'Physical schedule: `'+report.get('physical_schedule_version','normal catalog order')+'`.',
                   'Measured phase ledger (nested phases are explanatory): `phase_ledger` in results.json; final closed-writer accounting: `terminal-accounting.json`.',
                   'Same-invocation future cost estimates: `'+json.dumps(report.get('post_control_costs',{}))+'`. Estimates are not bounds.',

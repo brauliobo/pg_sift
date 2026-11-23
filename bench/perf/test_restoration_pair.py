@@ -443,7 +443,7 @@ class PairedRestoration(unittest.TestCase):
             return dict(blocks[len(seen)-1],pairs=[self.clean_observation(role='verdict') for _ in range(6)])
         with tempfile.TemporaryDirectory() as tmp:
             args = ['--insert-feasibility','--baseline-ref','a'*40,'--candidate-ref','a'*40,
-                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true',
+                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true',
                     '--budget-seconds','180','--cleanup-report-reserve-seconds','30',*extra]
             with patch.object(gate,'Revision',side_effect=Rev) as revision, patch.object(gate,'exact_sha'), patch.object(gate,'command',return_value='PostgreSQL 18.6'), patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), patch.object(gate,'insert_identity',return_value=IDENTITY), patch.object(gate,'calibrate_insert',side_effect=calibration) as pilot, patch.object(gate,'validate_insert',side_effect=validation), patch.object(gate,'block',side_effect=block), patch.object(gate,'validate_case') as other, patch.object(gate,'churn_sizes') as churn, patch.object(gate,'size_snapshot') as broad_size, patch.object(gate,'install_insert_control') as fault, patch.object(gate,'reduce_report') as normal_reducer, contextlib.redirect_stdout(io.StringIO()):
                 code = gate.main(args)

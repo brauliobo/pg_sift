@@ -357,7 +357,7 @@ class InsertThroughput(unittest.TestCase):
             if 'terminal_accounting_file' in report: clock[0]+=final_writer_delay
         with tempfile.TemporaryDirectory() as tmp:
             args=['--verify-control','--baseline-ref','a'*40,'--candidate-ref','a'*40,
-                  '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true',
+                  '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true',
                   '--budget-seconds','100','--cleanup-report-reserve-seconds','30']
             with patch.object(gate.time,'monotonic',side_effect=lambda:clock[0]), patch.object(gate,'Revision',Rev), patch.object(gate,'exact_sha'), patch.object(gate,'command',return_value='PostgreSQL 18.6'), patch.object(gate,'table_geometry',return_value={'units':3,'column_segments':1,'relation_blocks':256}), patch.object(gate,'sizes',return_value=[]), patch.object(gate,'size_snapshot',side_effect=size), patch.object(gate,'validate_case',side_effect=validate), patch.object(gate,'churn_sizes',side_effect=churn), patch.object(gate,'prepare_control_costs',side_effect=producer), patch.object(gate,'measure',side_effect=measure), patch.object(gate,'_write_report',side_effect=write), contextlib.redirect_stdout(__import__('io').StringIO()):
                 code=gate.main(args)

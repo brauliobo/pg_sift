@@ -189,7 +189,7 @@ class Methodology(unittest.TestCase):
                 def stop(self,output): events.append('stop '+self.name)
             with tempfile.TemporaryDirectory() as tmp:
                 args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
-                        '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true']
+                        '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true']
                 with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
                      patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
                      contextlib.redirect_stdout(io.StringIO()):
@@ -227,7 +227,7 @@ class Methodology(unittest.TestCase):
         values += [1,1,1,1,gate.BudgetExpired('confirmation exhausted')]
         with tempfile.TemporaryDirectory() as tmp:
             args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
-                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true']
+                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true']
             with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
                  patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
                  patch.object(gate,'table_geometry',return_value={'column_segments':1,'units':3,'relation_blocks':256}), \
@@ -288,7 +288,7 @@ class Methodology(unittest.TestCase):
                     def stop(*args):
                         if phase=='cleanup': raise RuntimeError('cleanup failed')
                     args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
-                            '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true']
+                            '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true']
                     with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
                          patch.object(gate,'command',return_value='PostgreSQL 18.6'), \
                          patch.object(gate,'select',return_value=gate.CASES[:2]), \
@@ -340,7 +340,7 @@ class Methodology(unittest.TestCase):
         for expiry,coverage,ineffective_insert in ((False,False,False),(True,True,False),(False,True,False),(False,True,True)):
             with tempfile.TemporaryDirectory() as tmp:
                 args = ['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--verify-control',
-                        '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--pg-config','/bin/true']
+                        '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--pg-config','/bin/true']
                 def size_snapshot(revisions,state):
                     return {'state':state,'status':'regression' if state.startswith('control_') else 'pass','relations':[]}
                 with patch.object(gate,'Revision',Revision), patch.object(gate,'exact_sha'), \
@@ -371,7 +371,7 @@ class Methodology(unittest.TestCase):
     def test_exhausted_workflow_budget_reports_exit_two_without_setup(self):
         with tempfile.TemporaryDirectory() as tmp:
             args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
-                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--workflow-start-seconds','1',
+                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf','--workflow-start-seconds','1',
                     '--cleanup-report-reserve-seconds','30']
             with patch.object(gate,'Revision') as revision, patch.object(gate,'exact_sha') as identity, \
                  contextlib.redirect_stdout(io.StringIO()):
@@ -581,7 +581,7 @@ class Methodology(unittest.TestCase):
     def test_report_exit_error_and_budget_inconclusive(self):
         with tempfile.TemporaryDirectory() as tmp:
             args = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,
-                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded']
+                    '--output',tmp,'--scratch-root',tmp,'--allow-loaded','--no-perf']
             with patch.object(gate,'exact_sha'), contextlib.redirect_stdout(io.StringIO()):
                 code = gate.main(args+['--groups','typo'])
             self.assertEqual(code,3)
