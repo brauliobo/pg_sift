@@ -110,6 +110,7 @@ typedef struct SiftCPaggSpec
 	bool		off;					/* no cube (the exact leaf sums are still written: they cost 40 bytes per integer leaf and unit) */
 	bool		fixed;					/* cube(...): exactly these dims and measures, no byte budget */
 	bool		rfixed;					/* rollup(...): exactly these dims (all or none per unit), no byte budget */
+	char	   *skipped;				/* the leaves a rollup option names that no rollup holds, with why ("a" (not a low-cardinality leaf), ...): the build says them; NULL when none */
 	bool		measlen;				/* the rollups are written with the length of each measure (column format minor 36) */
 	bool		cal_all;				/* every date and timestamp leaf was asked for (calendar_columns = 'all', or its default): the ones past the dimension cap have no calendar dim (sift_cpagg_cal_missing) */
 	bool		table;					/* the default of a sift_table (table/seg.c): no exception cubes, which its source does not read, and runs only where they fit the share of the unit that key lists take */

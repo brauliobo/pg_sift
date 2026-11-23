@@ -258,9 +258,9 @@ ERROR:  invalid rollup_columns option "a": rollup_columns needs at least two col
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, nosuch', cube_minmax = false, superunit = 0);
 ERROR:  invalid rollup_columns option "a, nosuch": "nosuch" is not a column of the index
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, f', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option "a, f": "f" must be a boolean, integer, date, numeric or text column
+DROP INDEX IF EXISTS cr_bad;
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, a', cube_minmax = false, superunit = 0);
-ERROR:  invalid rollup_columns option "a, a": "a" is named twice
+DROP INDEX IF EXISTS cr_bad;
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, b: f', cube_minmax = false, superunit = 0);
 ERROR:  invalid rollup_columns option "a, b: f": measure "f" must be a smallint, integer, bigint or numeric column
 CREATE INDEX cr_bad ON cr USING sift_col (id, a, b, f) WITH (rollup_columns = 'a, b: nosuch', cube_minmax = false, superunit = 0);

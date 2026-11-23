@@ -233,12 +233,35 @@ RESET max_parallel_maintenance_workers;
 -- options: the names of the lists' leaves, a measure of another list, a list inside a list
 CREATE INDEX pe_bad1 ON pe USING sift_col (id, items, tags) WITH (paths = 'items[]{k text, x float8}, tags[] text', preagg = 'rollup(items[].k: tags[])', cube_minmax = false, superunit = 0);
 CREATE INDEX pe_bad2 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'cube(id: items[].x)', cube_minmax = false, superunit = 0);
-CREATE INDEX pe_bad3 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].x)', cube_minmax = false, superunit = 0);
 CREATE INDEX pe_bad4 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].nosuch)', cube_minmax = false, superunit = 0);
 CREATE INDEX pe_bad5 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[]: items[].x)', cube_minmax = false, superunit = 0);
 CREATE INDEX pe_bad6 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].k: ');
--- a list inside a list is not an index (the cubes are depth 1 because the index is)
+-- a list inside a list is one leaf of the list that holds it (the cubes are depth 1 because the index is)
 CREATE INDEX pe_nest ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, sub[]{z int4}}', cube_minmax = false, superunit = 0);
+SELECT sift.col_verify('pe_nest', true);
+DROP INDEX pe_nest;
+
+-- the rollup options leave out what no rollup can hold and say so when the index is built; a name that is no leaf is still refused
+SET client_min_messages = notice;
+-- a name given twice is one dimension: nothing is left out
+CREATE INDEX pe_r1 ON pe USING sift_col (id, grp, items) WITH (paths = 'items[]{k text, t text, n int4, x float8}', rollup_leaves = 'items[].k, items[].k, items[].t', cube_minmax = false, superunit = 0);
+-- a float leaf is no dimension, and the columns of the table named with the leaves are the rollup of the rows
+CREATE INDEX pe_r2 ON pe USING sift_col (id, grp, items) WITH (paths = 'items[]{k text, t text, n int4, x float8}', rollup_leaves = 'items[].k, items[].x, grp, id', cube_minmax = false, superunit = 0);
+-- one column of the table is not a rollup of the rows: the cube answers it
+CREATE INDEX pe_r3 ON pe USING sift_col (id, grp, items) WITH (paths = 'items[]{k text, t text, n int4, x float8}', rollup_leaves = 'items[].k, grp', cube_minmax = false, superunit = 0);
+-- the seventh dimension of a list and a leaf of the entry form that is no dimension
+CREATE INDEX pe_r4 ON pe USING sift_col (id, items) WITH (paths = 'items[]{a text, b text, c text, d text, e text, f text, g text, h text}',
+	rollup_leaves = 'items[].a, items[].b, items[].c, items[].d, items[].e, items[].f, items[].g, items[].h', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_r5 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text, x float8}', preagg = 'rollup(items[].k, items[].x)', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_r6 ON pe USING sift_col (id, grp, items) WITH (paths = 'items[]{k text}', rollup_columns = 'grp, grp, id', cube_minmax = false, superunit = 0);
+SET client_min_messages = warning;
+SELECT c.relname, sift.col_verify(c.oid::regclass, true) FROM pg_class c WHERE c.relname ~ '^pe_r[1-6]$' ORDER BY 1;
+SELECT c.relname, (SELECT count(*) FROM sift.col_unit_hist(c.relname::regclass, 'items[].k')) > 0 AS has_k_rollup
+FROM pg_class c WHERE c.relname IN ('pe_r1', 'pe_r2', 'pe_r5') ORDER BY 1;
+DROP INDEX pe_r1, pe_r2, pe_r3, pe_r4, pe_r5, pe_r6;
+-- a name that is no leaf is a typo and stays refused, whichever option has it
+CREATE INDEX pe_typo1 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text}', rollup_leaves = 'items[].k, items[].nosuch', cube_minmax = false, superunit = 0);
+CREATE INDEX pe_typo2 ON pe USING sift_col (id, grp, items) WITH (paths = 'items[]{k text}', rollup_columns = 'grp, nosuch', cube_minmax = false, superunit = 0);
 
 DROP TABLE pe;
 DROP FUNCTION pe_hist(regclass, regclass, text, text, text, text, text, bool), pe_battery(regclass), units_with(regclass, text, text),

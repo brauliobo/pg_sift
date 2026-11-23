@@ -40,9 +40,6 @@ ERROR:  invalid key_columns option "auto: nope": "nope" is not a column of the i
 ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
 ERROR:  invalid rollup_columns option "nope, pid": "nope" is not a column of the index
 \c
-ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
-ERROR:  invalid rollup_columns option "f, pid": "f" must be a boolean, integer, date, numeric or text column
-\c
 ALTER INDEX ao_paths SET (return_columns = 'nope');
 ERROR:  invalid return_columns option "nope": "nope" is not a column of the index
 \c

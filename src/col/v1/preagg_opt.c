@@ -384,6 +384,65 @@ cmp_rollup_list(const void *a, const void *b)
 	return ((const SiftCPaggRollup *) a)->list - ((const SiftCPaggRollup *) b)->list;
 }
 
+/* What no rollup can hold is left out of it: a typo is an error, a leaf that is too many or of a kind a rollup does not group by is said when the index is built */
+static void
+rollup_say_skip(SiftCPaggSpec *spec, char *what)
+{
+	spec->skipped = spec->skipped ? psprintf("%s, %s", spec->skipped, what) : what;
+}
+
+static void
+rollup_skip(SiftCPaggSpec *spec, const char *name, const char *why)
+{
+	rollup_say_skip(spec, psprintf("\"%s\" (%s)", name, why));
+}
+
+static void
+rollup_skip_rows(SiftCPaggSpec *spec, const char *why)
+{
+	rollup_say_skip(spec, psprintf("the columns of the rows (%s)", why));
+}
+
+#define SKIP_ROWS_TWO	"a rollup of the rows needs two columns, the cube answers one"
+
+#define SKIP_NOT_DIM	"not a low-cardinality leaf: a boolean, integer, date, numeric or text one is"
+
+/* The leaf as a dimension of the rollup, once: a name given twice is the same dimension, the seventh is left out */
+static void
+rollup_add_dim(SiftCPaggSpec *spec, SiftCPaggRollup *ru, int leaf, const char *name)
+{
+	for (int j = 0; j < ru->ndims; j++)
+		if (ru->dim[j] == leaf)
+			return;
+	if (ru->ndims == SIFT_PAGG_MAX_RDIMS)
+		rollup_skip(spec, name, psprintf("a rollup holds at most %d dimensions", SIFT_PAGG_MAX_RDIMS));
+	else
+		ru->dim[ru->ndims++] = leaf;
+}
+
+/* a measure of the rows' rollup: an integer or numeric top-level leaf (a float sum depends on the order of the additions, so none is stored) */
+static bool
+rows_meas_ok(const SiftColSchema *s, const SiftColDef *m)
+{
+	return meas_in(s, m, -1) && m->store == SIFT_COLS_INT;
+}
+
+/* The measures of a rollup of the rows of a unit when none are named: the integer and numeric columns that are not dims, decimals first */
+static void
+rows_default_measures(const SiftColSchema *s, SiftCPaggRollup *ru)
+{
+	for (int pass = 0; pass < 2; pass++)
+		for (int m = 0; m < s->ncols && ru->nmeas < SIFT_PAGG_MAX_MEAS; m++)
+		{
+			bool		dim = false;
+
+			for (int j = 0; j < ru->ndims; j++)
+				dim |= ru->dim[j] == m;
+			if (!dim && rows_meas_ok(s, &s->cols[m]) && (s->cols[m].type == SIFT_COLT_NUMERIC) == (pass == 0))
+				ru->meas[ru->nmeas++] = m;
+		}
+}
+
 /* "rollup(" was read: entries "d1, d2: m1, m2" of the leaves of one list each, separated by ; */
 static const char *
 parse_rollup(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
@@ -405,21 +464,27 @@ parse_rollup(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCP
 			leaf = find_scalar(s, names, dn);
 			if (leaf < 0)
 				return psprintf("rollup dimension \"%s\" is not a column of the index", dn);
-			if (s->cols[leaf].parent < 0 || !sift_cpagg_dim_ok(s, &s->cols[leaf]))
-				return psprintf("rollup dimension \"%s\" must be an integer, date, numeric or text leaf of a list", dn);
+			if (s->cols[leaf].parent < 0)
+				return psprintf("rollup dimension \"%s\" must be a leaf of a list", dn);
+			if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
+			{
+				rollup_skip(spec, dn, SKIP_NOT_DIM);
+				continue;
+			}
 			if (ru == NULL)
 			{
 				if ((ru = rollup_of(spec, s->cols[leaf].parent)) == NULL)
-					return "a rollup option holds at most 8 lists";
+				{
+					rollup_skip(spec, dn, "a rollup option holds at most 8 lists");
+					continue;
+				}
 				if (ru->ndims > 0)
 					return psprintf("the list of \"%s\" has a rollup already", dn);
 				first = dn;
 			}
 			else if (ru->list != s->cols[leaf].parent)
 				return psprintf("rollup dimension \"%s\" is not a column of the same list as \"%s\"", dn, first);
-			if (ru->ndims == SIFT_PAGG_MAX_RDIMS)
-				return "a rollup holds at most 6 dimensions";
-			ru->dim[ru->ndims++] = leaf;
+			rollup_add_dim(spec, ru, leaf, dn);
 		} while (eat(c, ','));
 		if (eat(c, ':'))
 		{
@@ -430,7 +495,7 @@ parse_rollup(OptCur *c, const SiftColSchema *s, const char *const *names, SiftCP
 
 				if (*mn == '\0')
 					return "a measure name is missing";
-				if (!s)
+				if (!s || ru == NULL)
 					continue;
 				m = find_scalar(s, names, mn);
 				if (m < 0)
@@ -592,6 +657,31 @@ parse_option(OptCur *c, const char *opt, const SiftColSchema *s, const char *con
 	return NULL;
 }
 
+/* The measures of the rollups the dims named: the plain columns named among them are the rollup of the rows of a unit, which needs two of them (the cube answers one) */
+static void
+finish_rollups(const SiftColSchema *s, SiftCPaggSpec *spec)
+{
+	int			n = 0;
+
+	for (int i = 0; i < spec->nrollups; i++)
+	{
+		SiftCPaggRollup *ru = &spec->rollup[i];
+
+		if (ru->list < 0 && ru->ndims < 2)
+		{
+			rollup_skip_rows(spec, SKIP_ROWS_TWO);
+			continue;
+		}
+		if (ru->list < 0)
+			rows_default_measures(s, ru);
+		else
+			rollup_measures(s, ru->list, ru);
+		spec->rollup[n++] = *ru;
+	}
+	spec->nrollups = n;
+	qsort(spec->rollup, spec->nrollups, sizeof(SiftCPaggRollup), cmp_rollup_list);
+}
+
 /* "off", or the dims "name, name, ..." (the measures are the numeric leaves of their lists) */
 static const char *
 parse_rollup_dims(OptCur *c, const char *opt, const SiftColSchema *s, const char *const *names, SiftCPaggSpec *spec)
@@ -617,35 +707,18 @@ parse_rollup_dims(OptCur *c, const char *opt, const SiftColSchema *s, const char
 			continue;
 		if ((leaf = find_scalar(s, names, dn)) < 0)
 			return psprintf("\"%s\" is not a leaf declared in paths", dn);
-		if (s->cols[leaf].parent < 0)
-			return psprintf("\"%s\" is not a leaf of an array element or a map value", dn);
 		if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
-			return psprintf("\"%s\" is not a low-cardinality leaf: it must be a boolean, integer, date, numeric or text leaf", dn);
-		if ((ru = rollup_of(spec, s->cols[leaf].parent)) == NULL)
-			return "a rollup holds at most 8 lists";
-		if (ru->ndims == SIFT_PAGG_MAX_RDIMS)
-			return psprintf("the list of \"%s\" has more than %d rollup leaves", dn, SIFT_PAGG_MAX_RDIMS);
-		for (int j = 0; j < ru->ndims; j++)
-			if (ru->dim[j] == leaf)
-				return psprintf("\"%s\" is named twice", dn);
-		ru->dim[ru->ndims++] = leaf;
+			rollup_skip(spec, dn, SKIP_NOT_DIM);
+		else if ((ru = rollup_of(spec, s->cols[leaf].parent)) == NULL)
+			rollup_skip(spec, dn, "a rollup option holds at most 8 lists");
+		else
+			rollup_add_dim(spec, ru, leaf, dn);
 	} while (eat(c, ','));
 	if (*c->p)
 		return psprintf("unexpected \"%s\"", c->p);
 	if (s)
-	{
-		for (int i = 0; i < spec->nrollups; i++)
-			rollup_measures(s, spec->rollup[i].list, &spec->rollup[i]);
-		qsort(spec->rollup, spec->nrollups, sizeof(SiftCPaggRollup), cmp_rollup_list);
-	}
+		finish_rollups(s, spec);
 	return NULL;
-}
-
-/* a measure of the rows' rollup: an integer or numeric top-level leaf (a float sum depends on the order of the additions, so none is stored) */
-static bool
-rows_meas_ok(const SiftColSchema *s, const SiftColDef *m)
-{
-	return meas_in(s, m, -1) && m->store == SIFT_COLS_INT;
 }
 
 /* "a, b" or "a, b: m1, m2" (dims, then measures) of the rows of a unit: the rollup of list -1 (column format minor 8); "off" and "" name none */
@@ -676,13 +749,9 @@ parse_rows(OptCur *c, const char *opt, const SiftColSchema *s, const char *const
 		if (s->cols[leaf].parent >= 0)
 			return psprintf("\"%s\" is a leaf of a list: name it in rollup", dn);
 		if (!sift_cpagg_dim_ok(s, &s->cols[leaf]))
-			return psprintf("\"%s\" must be a boolean, integer, date, numeric or text column", dn);
-		for (int j = 0; j < ru.ndims; j++)
-			if (ru.dim[j] == leaf)
-				return psprintf("\"%s\" is named twice", dn);
-		if (ru.ndims == SIFT_PAGG_MAX_RDIMS)
-			return psprintf("a rollup of the rows holds at most %d columns", SIFT_PAGG_MAX_RDIMS);
-		ru.dim[ru.ndims++] = leaf;
+			rollup_skip(spec, dn, SKIP_NOT_DIM);
+		else
+			rollup_add_dim(spec, &ru, leaf, dn);
 	} while (eat(c, ','));
 	if (nrows < 2)
 		return "rollup_columns needs at least two columns (the cube answers one)";
@@ -708,24 +777,14 @@ parse_rows(OptCur *c, const char *opt, const SiftColSchema *s, const char *const
 		} while (eat(c, ','));
 	}
 	else if (!named && s)
-	{
-		/* no measures named: the integer and numeric columns that are not dims, decimals first */
-		for (int pass = 0; pass < 2; pass++)
-			for (int m = 0; m < s->ncols && ru.nmeas < SIFT_PAGG_MAX_MEAS; m++)
-			{
-				bool		dim = false;
-
-				for (int j = 0; j < ru.ndims; j++)
-					dim |= ru.dim[j] == m;
-				if (!dim && rows_meas_ok(s, &s->cols[m]) && (s->cols[m].type == SIFT_COLT_NUMERIC) == (pass == 0))
-					ru.meas[ru.nmeas++] = m;
-			}
-	}
+		rows_default_measures(s, &ru);
 	if (*c->p)
 		return psprintf("unexpected \"%s\"", c->p);
-	if (s && spec->nrollups == SIFT_PAGG_MAX_ROLLUPS)
-		return "a rollup option holds at most 8 lists";
-	if (s)
+	if (s && ru.ndims < 2)
+		rollup_skip_rows(spec, SKIP_ROWS_TWO);
+	else if (s && spec->nrollups == SIFT_PAGG_MAX_ROLLUPS)
+		rollup_skip_rows(spec, "a rollup option holds at most 8 lists");
+	else if (s)
 	{
 		memmove(spec->rollup + 1, spec->rollup, spec->nrollups * sizeof(SiftCPaggRollup));	/* ascending list order: the rows' -1 first */
 		spec->rollup[0] = ru;

@@ -40,8 +40,6 @@ ALTER INDEX ao_paths SET (key_columns = 'auto: nope');
 \c
 ALTER INDEX ao_paths SET (rollup_columns = 'nope, pid');
 \c
-ALTER INDEX ao_paths SET (rollup_columns = 'f, pid');
-\c
 ALTER INDEX ao_paths SET (return_columns = 'nope');
 \c
 ALTER INDEX ao_paths SET (return_columns = 'pid');

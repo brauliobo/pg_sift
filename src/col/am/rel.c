@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/relation.h"
+#include "access/xact.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "nodes/makefuncs.h"
@@ -49,6 +50,27 @@ COL_OPT_STR(sift_col_options_rollup_columns, rollup_columns, "")
 
 COL_OPT_STR(sift_col_options_calendar_columns, calendar_columns, "")
 
+/* The leaves the rollup options left out, said once by the statement that builds the index (its state is made again at every step of the build) */
+static void
+say_rollup_skips(Relation index, const SiftCPaggSpec *pagg)
+{
+	static struct
+	{
+		Oid			relid;
+		TransactionId xid;
+	}			said;
+	TransactionId xid;
+
+	if (pagg->skipped == NULL || RelationGetRelid(index) != sift_col_building)
+		return;
+	xid = GetTopTransactionIdIfAny();
+	if (said.relid == sift_col_building && said.xid == xid)
+		return;
+	said.relid = sift_col_building;
+	said.xid = xid;
+	ereport(NOTICE, (errmsg("sift_col index \"%s\": left out of the rollups: %s", RelationGetRelationName(index), pagg->skipped)));
+}
+
 /* The options of the pre-aggregates, orders and key cuts of format major 1; an index of format major 2 has none of them */
 static void
 parse_v5_options(Relation index, SiftColRel *r, SiftColDef *defs, char **names, int n, int natts, TupleDesc desc)
@@ -61,6 +83,7 @@ parse_v5_options(Relation index, SiftColRel *r, SiftColDef *defs, char **names, 
 		sift_col_option_error("rollup_leaves", sift_col_options_rollup_leaves(index), err);
 	if ((err = sift_cpagg_rows_apply(sift_col_options_rollup_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 		sift_col_option_error("rollup_columns", sift_col_options_rollup_columns(index), err);
+	say_rollup_skips(index, &r->pagg);
 	if ((err = sift_cpagg_calendar_apply(sift_col_options_calendar_columns(index), r->schema, (const char *const *) names, &r->pagg)) != NULL)
 		sift_col_option_error("calendar_columns", sift_col_options_calendar_columns(index), err);
 	r->pagg.minmax = sift_col_options(index)->cube_minmax;
