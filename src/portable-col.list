@@ -8,6 +8,7 @@ agg/kern.c
 agg/kern.h
 agg/kern6.c
 agg/kern6.h
+agg/kern6_hash.c
 agg/kern6_avx2.c
 agg/kern6_avx2.h
 agg/kern6_avx2_agg.c

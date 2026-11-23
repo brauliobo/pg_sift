@@ -5,12 +5,10 @@
  * one another), and the three 32-bit lanes and the length are mixed by sift_aggk6_hash1. The value is that of the function, whatever runs it: the CRC32C instruction where the CPU has it (SSE4.2 on x86-64,
  * the function that holds it is picked at run time, the rest of the library stays baseline), else the same CRC32C by tables (AArch64 stays on the tables: its baseline check allows no CRC32 instruction).
  */
-#include "postgres.h"
-
 #include "agg/kern6.h"
 
 #if defined(__x86_64__)
-#include <nmmintrin.h>
+#include <immintrin.h>
 #define SIFT_CRC_X86	1
 #define SIFT_CRC_TARGET	__attribute__((target("sse4.2")))
 #define CRC_HW(c, w)	((uint32) _mm_crc32_u64((c), (w)))

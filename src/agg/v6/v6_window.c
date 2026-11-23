@@ -667,10 +667,8 @@ window_try(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Ind
 {
 	WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.mode = SWIN_MODE_WINDOW,.part_mode = mode};
 
-	if (!frame_ok(wc, &p.range))
-		return false;
-	if (mode == WIN_EXACT ? !(vars_of(&p, wc->partitionClause, false, &p.part) && vars_of(&p, wc->orderClause, false, &p.ord) && int_vars(p.part) && int_vars(p.ord)) :
-		(wc->partitionClause == NIL || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags) || (mode == WIN_REGROUP && !int_vars(p.part))))
+	if (!frame_ok(wc, &p.range) || (mode == WIN_EXACT ? !(vars_of(&p, wc->partitionClause, false, &p.part) && vars_of(&p, wc->orderClause, false, &p.ord) && int_vars(p.part) && int_vars(p.ord)) :
+		(wc->partitionClause == NIL || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags) || (mode == WIN_REGROUP && !int_vars(p.part)))))
 		return false;
 	return collect_funcs(&p, wc) && run_condition(&p) && window_finish(&p, mode == WIN_REGROUP ? NIL : root->window_pathkeys, input_rel->rows);
 }

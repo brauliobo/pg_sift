@@ -295,73 +295,6 @@ spec_room(V6Plan *p, bool func)
 		SIFT_REGROW(p->spec.agg, (Size) *cap * sizeof(SiftV6Agg));
 }
 
-bool
-sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind)
-{
-	const char *name = get_func_name(a->aggfnoid);
-	const bool	catalog = get_func_namespace(a->aggfnoid) == PG_CATALOG_NAMESPACE;
-	const int	argdir = sift_argext_aggref_dir(a);
-
-	if (argdir >= 0)
-	{
-		*kind = argdir == SIFT_ARG_MAX ? SV6_ARG_MAX : SV6_ARG_MIN;
-		return a->aggfilter == NULL;
-	}
-	if (!catalog || name == NULL || a->aggfilter != NULL || a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL || a->aggvariadic)
-		return false;
-	if (strcmp(name, "count") == 0)
-		*kind = a->aggstar ? SV6_COUNT_STAR : a->aggdistinct != NIL ? SV6_COUNT_DISTINCT : SV6_COUNT;
-	else if (a->aggdistinct != NIL)
-		return false;
-	else if (strcmp(name, "sum") == 0)
-		*kind = SV6_SUM;
-	else if (strcmp(name, "avg") == 0)
-		*kind = SV6_AVG;
-	else if (strcmp(name, "min") == 0)
-		*kind = SV6_MIN;
-	else if (strcmp(name, "max") == 0)
-		*kind = SV6_MAX;
-	else if (list_length(a->aggargtypes) != 1 || !sift_v6_ext_kind(name, linitial_oid(a->aggargtypes), kind))
-		return false;
-	return true;
-}
-
-static bool
-kind_takes(SiftV6Kind kind, Oid typid)
-{
-	const SiftV6Class cls = sift_v6_class(typid);
-
-	switch (kind)
-	{
-		case SV6_COUNT:
-			return cls != SV6C_NONE;
-		case SV6_COUNT_DISTINCT:
-			return cls != SV6C_NONE;
-		case SV6_SUM:
-			return typid != FLOAT4OID && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64);
-		case SV6_AVG:
-			return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64;
-		case SV6_MIN:
-		case SV6_MAX:
-			return cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64 || cls == SV6C_TEXT;
-		case SV6_STDDEV_POP:
-		case SV6_STDDEV_SAMP:
-		case SV6_VAR_POP:
-		case SV6_VAR_SAMP:
-			return cls == SV6C_F64;
-		case SV6_BOOL_OR:
-		case SV6_BOOL_AND:
-			return cls == SV6C_BOOL;
-		case SV6_PCT_CONT:
-			return typid == FLOAT8OID;
-		case SV6_ARG_MAX:
-		case SV6_ARG_MIN:
-			return cls == SV6C_I32 || cls == SV6C_I64;
-		default:
-			return true;
-	}
-}
-
 /* FILTER (WHERE ..): a conjunction of the quals of a scan, over the columns of the index; the same clause of two aggregates is one clause (at most 64 of them: a bit of the mask of a row each) */
 static bool
 compile_filter(V6Plan *p, Expr *filter, int *fclause)
@@ -405,7 +338,7 @@ compile_distinct_row(V6Plan *p, const RowExpr *row, SiftV6Agg *g)
 	{
 		SiftV6Col  *col = n == 0 ? &g->arg : &g->xcol[n - 1];
 
-		if (!column_of(p, e, true, col) || !kind_takes(SV6_COUNT_DISTINCT, col->typid) ||
+		if (!column_of(p, e, true, col) || !sift_v6_kind_takes(SV6_COUNT_DISTINCT, col->typid) ||
 			(sift_v6_class(col->typid) == SV6C_TEXT && !sift_text_bytes_equal(exprCollation((Node *) e))))
 			return false;
 		n++;
@@ -450,7 +383,7 @@ compile_agg(V6Plan *p, Aggref *a)
 		const bool	score = !two && g.kind != SV6_COUNT_DISTINCT && sift_v6_score_col(p, arg, &g.arg);
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
-			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && derived_col(p, arg, false, &g.arg))) && kind_takes(g.kind, g.arg.typid))))
+			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && derived_col(p, arg, false, &g.arg))) && sift_v6_kind_takes(g.kind, g.arg.typid))))
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_NUM_EXPR && g.kind != SV6_SUM && g.kind != SV6_AVG && g.kind != SV6_COUNT)
 			return false;

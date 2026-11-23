@@ -307,6 +307,7 @@ extern bool sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls);
 struct SiftF2Store;
 extern bool sift_v6_table_leaf_holds(const struct SiftF2Store *store, int att, SiftV6Class cls);
 extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
+extern bool sift_v6_kind_takes(SiftV6Kind kind, Oid typid);
 /* The aggregate of the facts of a join as a scan of the index (the tuple of its scan tlist): false when a key, an aggregate or a qual of the facts is not one the scan decides (scope_v6.c adds the members of a scope key) */
 extern bool sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, IndexOptInfo *ix, GroupPathExtraData *extra, SiftV6Spec *spec, List **scan_tlist);
 /* stddev, variance, bool_or and bool_and by name and argument type (group_ext.c) */
