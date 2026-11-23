@@ -2,10 +2,11 @@
 # The corpus gate (test/corpus/README.md): the statements of test/corpus/cases.sql on the lab of test/corpus/lab.sql (20000 events), each in a new backend with sift off
 # and on, the rows equal, and the plan slug of each (the Custom Scan (Sift...) nodes and the verdict of sift.explain_why per arm) the one pinned in test/corpus/plans.tsv.
 #
-#   scripts/corpus.sh [--format f2|f1|release] [--only GLOB] [--rows N] [--update] [--keep]
+#   scripts/corpus.sh [--format f2|f1|release] [--table] [--only GLOB] [--rows N] [--update] [--keep]
 #
 #   --format F    the format of the indexes the lab creates: f2 (default: Format 2.0 on the testing library), f1 (Format 1 on the testing library, the pins of plans-f1.tsv) or release
 #                 (the release library, Format 2.0, no test setting: refused on a testing library, so that the run is the one of the binary users install)
+#   --table       the base tables of the lab as sift_table (test/corpus/table.sql): the rows must agree as ever, the plans are not pinned
 #   --only GLOB   only the statements whose slug matches (a focused run: the lab is loaded as ever)
 #   --rows N      events of the lab (default 20000, the size the plans are pinned at: another size checks the rows only)
 #   --update      rewrites the pins of the format (test/corpus/plans.tsv, plans-f1.tsv for f1) from this run: read the diff, a statement that left the engaged set is a regression unless the change says so
@@ -14,11 +15,11 @@
 # Runs on the cluster of scripts/pgtest.sh (SIFT_TMP, SIFT_PORT; installed and started) like scripts/exec-budget.sh; scripts/corpus-local.sh brings its own.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-ROWS=20000 ONLY='*' UPDATE= KEEP= FORMAT=f2
+ROWS=20000 ONLY='*' UPDATE= KEEP= FORMAT=f2 TABLE=
 while (( $# )); do
 	case $1 in
-		--only) ONLY=$2; shift ;; --rows) ROWS=$2; shift ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --format) FORMAT=$2; shift ;;
-		*) sed -n 2,14p "$0"; exit 1 ;;
+		--only) ONLY=$2; shift ;; --rows) ROWS=$2; shift ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --format) FORMAT=$2; shift ;; --table) TABLE=1 ;;
+		*) sed -n 2,16p "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -28,6 +29,7 @@ case $FORMAT in
 	release) CREATE_FORMAT1= PLANS=plans.tsv ;;
 	*) echo "corpus: unknown format $FORMAT (f2, f1 or release)" >&2; exit 1 ;;
 esac
+[[ -z $TABLE || -z $UPDATE ]] || { echo "corpus: --table pins no plans, --update has nothing to record" >&2; exit 1; }
 eval "$("$REPO/scripts/pgtest.sh" env)"
 export PGUSER=postgres PGDATABASE=postgres
 pg_isready -q -t 2 || { echo "corpus: no server at SIFT_TMP=$SIFT_TMP SIFT_PORT=${SIFT_PORT:-} (scripts/corpus-local.sh installs and starts a throwaway one)" >&2; exit 1; }
@@ -46,10 +48,10 @@ elif [[ $FORMAT != release && $testing != t ]]; then
 	echo "corpus: --format $FORMAT needs the testing library (scripts/pgtest.sh install), this cluster has the release one" >&2; exit 1
 fi
 [[ -z $CREATE_FORMAT1 ]] || export PGOPTIONS="$PGOPTIONS -c sift.test_create_format1=$CREATE_FORMAT1"
-psql -X -q -v ON_ERROR_STOP=1 -v n_events="$ROWS" -f "$REPO/test/corpus/lab.sql" >/dev/null
-echo "corpus: lab of $ROWS events ($FORMAT) loaded in $((SECONDS - t0)) s" >&2
+psql -X -q -v ON_ERROR_STOP=1 -v n_events="$ROWS" -f "$REPO/test/corpus/lab.sql" ${TABLE:+-f "$REPO/test/corpus/table.sql"} >/dev/null
+echo "corpus: lab of $ROWS events (${FORMAT}${TABLE:+, sift_table}) loaded in $((SECONDS - t0)) s" >&2
 t1=$SECONDS
-args=(--only "$ONLY" --plans "$PLANS"); [[ -z $UPDATE ]] || args+=(--update); [[ $ROWS == 20000 ]] || args+=(--no-plans)
+args=(--only "$ONLY" --plans "$PLANS"); [[ -z $UPDATE ]] || args+=(--update); [[ $ROWS == 20000 && -z $TABLE ]] || args+=(--no-plans)
 rc=0
 python3 -I "$REPO/test/corpus/run.py" "${args[@]}" || rc=$?
 echo "corpus: statements run in $((SECONDS - t1)) s" >&2

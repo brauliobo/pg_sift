@@ -17,13 +17,14 @@ A row `slug@19` pins the plan of that statement on PostgreSQL 19 where the major
 
 ## Formats and tables
 
-The corpus runs on the format of the library, with one set of statements:
+The corpus runs on the format of the library and on both storages, with one set of statements:
 
 | command | library | indexes of the lab | plans pinned in |
 |---|---|---|---|
 | `scripts/corpus.sh` (`--format f2`) | testing | Format 2.0 | `plans.tsv` |
 | `scripts/corpus.sh --format release` | release (no test setting; refused on a testing library) | Format 2.0 | `plans.tsv` |
 | `scripts/corpus.sh --format f1` | testing | Format 1 | `plans-f1.tsv` |
+| `scripts/corpus.sh --table` (with any of the formats) | as above | the base tables are `sift_table` (`table.sql`), no `sift_col` index | rows only |
 
 The plan slug names the `Custom Scan (Sift...)` nodes whole (`SiftAgg` of Format 1, `SiftAggV6`, `SiftAggV6Sip`, ... of Format 2.0): a statement that moves from one node to another of the family is a change of the plan and fails until the pins say so.
 
