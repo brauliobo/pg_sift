@@ -25,7 +25,7 @@ extern bool sift_bm25_unique_key(Relation index, const Datum *values, const bool
  * the document's length; but a length of 0 is no document (a live posting has one), so a text without a token has length 1 to have its key.
  * The result is valid until the next call.
  */
-extern int	sift_bm25_unique_terms(const SiftTermFreq *terms, int nterms, uint64 key, uint32 *dl, SiftTermFreq **out);
+extern int	sift_bm25_unique_terms(SiftAnalyzer *an, const SiftTermFreq *terms, int nterms, uint64 key, uint32 *dl, SiftTermFreq **out);
 
 /* The terms of the document of one row (with its unique key's term); false for a row that has no document. *len is the bytes of the text */
 extern bool sift_bm25_row_terms(SiftAnalyzer *an, Relation index, const Datum *values, const bool *isnull,

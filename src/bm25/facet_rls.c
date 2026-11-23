@@ -121,10 +121,8 @@ readable_versions(SiftFacetRls *r, const uint64 *seen, int nfound, int *nreadabl
 			n++;
 		}
 	arg = PointerGetDatum(construct_array(elems, n, TIDOID, sizeof(ItemPointerData), false, TYPALIGN_SHORT));
-	if (SPI_connect() != SPI_OK_CONNECT)
-		elog(ERROR, "sift.facets: SPI_connect failed");
-	if (SPI_execute_with_args(r->query, 1, &argtype, &arg, NULL, true, 0) != SPI_OK_SELECT)
-		elog(ERROR, "sift.facets: the row-level security read failed");
+	SIFT_INVARIANT(SPI_connect() == SPI_OK_CONNECT, "sift.facets: SPI_connect failed");
+	SIFT_INVARIANT(SPI_execute_with_args(r->query, 1, &argtype, &arg, NULL, true, 0) == SPI_OK_SELECT, "sift.facets: the row-level security read failed");
 	*nreadable = (int) SPI_processed;
 	readable = MemoryContextAlloc(r->mcxt, Max(*nreadable, 1) * sizeof(uint64));
 	for (uint64 i = 0; i < SPI_processed; i++)

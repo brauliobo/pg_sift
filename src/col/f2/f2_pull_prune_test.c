@@ -530,7 +530,7 @@ groups_text(Test *t)
 Datum
 sift_test_f2_pull(PG_FUNCTION_ARGS)
 {
-	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	index = index_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	const char *mode = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	Test	   *t = palloc0(sizeof(Test));
 	SiftF2Pull *pull;

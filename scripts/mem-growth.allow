@@ -71,7 +71,7 @@ lifetime	table/v1/store.c	rel->rd_amcache = MemoryContextAlloc(CacheMemoryContex
 lifetime	core/cachebudget.c	cache_root = AllocSetContextCreate(TopMemoryContext, "SiftBackendCacheContext", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, CACHE_BLOCK_MAX);	bounded: the root of every cache of the backend: sift.backend_cache_kb, the oldest entry nobody holds goes first (sift_cache_room)
 lifetime	col/v1/maint/merge_pick.c	settled.gens = settled.gens ? repalloc(settled.gens, 2 * settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, 2 * settled.cap * sizeof(uint64));	bounded: the generations of the segments the last merges of one index wrote, at most 2 * SETTLED_MAX (a ring)
 loop	agg/lookcol.c	for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)	bounded: walks the set bits of a member bitmap into pairs under sift.agg_lookup_kb
-loop	bm25/cscan_exec.c	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
+loop	bm25/cscan_exec.c	while (nset != SIFT_SEMI_OVER && table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
 loop	bm25/liveness.c	for (; i < dm->nsb && used < rows; i++)	bounded: used < rows bounds the loop by the rows asked for
 loop	col/skip/build.c	for (int c = 0; c < rows->ncols; c++)	bounded: walks the columns of the schema, not rows
 loop	col/scope_v6/build.c	for (uint32 r = 0; r < rows.n; r++)	bounded: the row lists of one granule's keys, at most SIFT_GRANULE_ROW_BITS rows (8192) a key and freed when the granule is cut

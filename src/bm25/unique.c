@@ -275,6 +275,7 @@ typedef struct KeyEntry
 {
 	uint64		key;
 	int			ntids;
+	int			cap;
 	ItemPointerData *tids;
 } KeyEntry;
 
@@ -305,7 +306,7 @@ sift_unique_build_add(SiftUniqueBuild *ub, ItemPointer tid, uint64 key, const Da
 
 	if (!found)
 	{
-		e->ntids = 0;
+		e->ntids = e->cap = 0;
 		e->tids = NULL;
 	}
 	for (int i = 0; i < e->ntids; i++)
@@ -316,8 +317,11 @@ sift_unique_build_add(SiftUniqueBuild *ub, ItemPointer tid, uint64 key, const Da
 		if (probe_row(&ub->p, &e->tids[i], values, isnull, &xwait, &token) != PROBE_FREE)
 			duplicate(ub->p.heap, ub->p.index, values, isnull, true);
 	}
-	e->tids = e->tids ? repalloc(e->tids, (e->ntids + 1) * sizeof(ItemPointerData))
-		: MemoryContextAlloc(ub->cx, sizeof(ItemPointerData));
+	if (e->ntids == e->cap)
+	{
+		e->cap = e->cap ? e->cap * 2 : 1;
+		SIFT_REGROW_IN(ub->cx, e->tids, (Size) e->cap * sizeof(ItemPointerData));
+	}
 	e->tids[e->ntids++] = *tid;
 }
 

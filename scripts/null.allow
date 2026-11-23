@@ -35,7 +35,6 @@ src/agg/v6/v6_plan_rewrite.c	sift_v6_topk_paths	list-first	cp is a CustomPath of
 src/bm25/analyze_config.c	sift_analyze_validate_fields	null-result	the fields were validated as comma separated before the loop, so every field before s ends with a comma
 src/bm25/cscan_exec.c	sift_begin	list-first	custom_private is built by make_path with every SIFT_PRIV_ slot and custom_exprs by sift_plan_scan with its five lists
 src/bm25/cscan_exec.c	sift_explain	list-first	custom_exprs is built by sift_plan_scan and sift_plan_count with five lists, the first being the queries
-src/bm25/planner_match.c	sift_index_matches_key	list-first	indexkeys[0] == 0 marks an expression column, which has an entry in indexprs
 src/bm25/planner_plan.c	sift_plan_count	list-first	make_path builds custom_private with every SIFT_PRIV_ slot, the SIFT_NPRIV query after them and the keys
 src/bm25/planner_plan.c	sift_plan_scan	list-first	make_path builds custom_private with every SIFT_PRIV_ slot, the SIFT_NPRIV query after them and the keys
 src/bm25/planner_ties.c	private_int	list-first	every caller passes a SIFT_PRIV_ slot of a scan of this extension (cs->methods is tested first), which make_path fills

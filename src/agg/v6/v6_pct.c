@@ -32,9 +32,10 @@ sift_v6_pct_cont_of(const Aggref *a, double *frac)
 	const Const *c;
 	const TargetEntry *te;
 	const SortGroupClause *sgc;
+	const char *name = get_func_name(a->aggfnoid);
 
 	if (a->aggkind != AGGKIND_ORDERED_SET || a->aggfilter != NULL || a->aggdistinct != NIL || a->aggvariadic || list_length(a->aggdirectargs) != 1 || list_length(a->args) != 1 ||
-		list_length(a->aggorder) != 1 || strcmp(get_func_name(a->aggfnoid), "percentile_cont") != 0 || list_length(a->aggargtypes) != 2 || linitial_oid(a->aggargtypes) != FLOAT8OID ||
+		list_length(a->aggorder) != 1 || name == NULL || strcmp(name, "percentile_cont") != 0 || list_length(a->aggargtypes) != 2 || linitial_oid(a->aggargtypes) != FLOAT8OID ||
 		lsecond_oid(a->aggargtypes) != FLOAT8OID)
 		return false;
 	c = linitial(a->aggdirectargs);

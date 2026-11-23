@@ -146,7 +146,7 @@ sift_gpu_key_strings(const SiftGpuQuery *q, const SiftGpuPlan *p, const SiftGpuU
 		return NULL;
 	memset(str, 0, SIFT_VK_MAXKEYS * sizeof(*str));
 	for (uint32 i = 0; i < nkeys; i++)
-		if (sift_gpu_slot_is_text(q, key_slot[i]) && !((nulls >> i) & 1) && !sift_gpu_unit_str(p, u, key_slot[i], key[i], &str[i]))
-			elog(ERROR, "sift gpu: the code %lld of a text key is in no dictionary of its part", (long long) key[i]);
+		if (sift_gpu_slot_is_text(q, key_slot[i]) && !((nulls >> i) & 1))
+			SIFT_INVARIANT(sift_gpu_unit_str(p, u, key_slot[i], key[i], &str[i]), "sift gpu: the code %lld of a text key is in no dictionary of its part", (long long) key[i]);
 	return str;
 }

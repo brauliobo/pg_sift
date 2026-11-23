@@ -111,37 +111,27 @@ sift_bm25_unique_key(Relation index, const Datum *values, const bool *isnull, ui
 	return true;
 }
 
-/* The scratch of sift_bm25_unique_terms, one per backend: the terms and the bytes of the key's term */
-static struct
-{
-	SiftTermFreq *terms;
-	int			cap;
-	char		key[UNIQUE_KEY_BYTES];
-}			scratch;
+/* The bytes of the term of the key, one per backend: the terms of a doc and this one are the analyzer's spare terms */
+static char unique_key[UNIQUE_KEY_BYTES];
 
 int
-sift_bm25_unique_terms(const SiftTermFreq *terms, int nterms, uint64 key, uint32 *dl, SiftTermFreq **out)
+sift_bm25_unique_terms(SiftAnalyzer *an, const SiftTermFreq *terms, int nterms, uint64 key, uint32 *dl, SiftTermFreq **out)
 {
-	SiftTermFreq k = {.term = scratch.key, .len = UNIQUE_KEY_BYTES, .tf = 1};
+	SiftTermFreq k = {.term = unique_key, .len = UNIQUE_KEY_BYTES, .tf = 1};
+	SiftTermFreq *merged = sift_analyzer_spare_terms(an, nterms + 1);
 	int			at = 0;
 
-	if (scratch.cap < nterms + 1)
-	{
-		scratch.terms = scratch.terms ? repalloc(scratch.terms, (nterms + 1) * sizeof(SiftTermFreq))
-			: MemoryContextAlloc(TopMemoryContext, (nterms + 1) * sizeof(SiftTermFreq));
-		scratch.cap = nterms + 1;
-	}
-	scratch.key[0] = '\0';
+	unique_key[0] = '\0';
 	for (int i = 0; i < 8; i++)
-		scratch.key[1 + i] = (char) (key >> (56 - 8 * i));
+		unique_key[1 + i] = (char) (key >> (56 - 8 * i));
 	k.hash = sift_term_hash(k.term, k.len);
 	while (at < nterms && (terms[at].hash < k.hash || (terms[at].hash == k.hash && memcmp(terms[at].term, k.term, Min(terms[at].len, k.len)) < 0)))
 		at++;
-	memcpy(scratch.terms, terms, at * sizeof(SiftTermFreq));
-	scratch.terms[at] = k;
-	memcpy(scratch.terms + at + 1, terms + at, (nterms - at) * sizeof(SiftTermFreq));
+	memcpy(merged, terms, at * sizeof(SiftTermFreq));
+	merged[at] = k;
+	memcpy(merged + at + 1, terms + at, (nterms - at) * sizeof(SiftTermFreq));
 	*dl = Max(*dl, 1);
-	*out = scratch.terms;
+	*out = merged;
 	return nterms + 1;
 }
 
@@ -157,6 +147,6 @@ sift_bm25_row_terms(SiftAnalyzer *an, Relation index, const Datum *values, const
 	*len = VARSIZE_ANY_EXHDR(t);
 	*nterms = sift_analyze_doc(an, VARDATA_ANY(t), *len, terms, dl);
 	if (sift_bm25_unique_key(index, values, isnull, &key))
-		*nterms = sift_bm25_unique_terms(*terms, *nterms, key, dl, terms);
+		*nterms = sift_bm25_unique_terms(an, *terms, *nterms, key, dl, terms);
 	return true;
 }

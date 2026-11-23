@@ -78,7 +78,6 @@ memmove-in-loop	src/core/jsonbuild.c	1	a bounded array shifted in a cold path
 qsort-in-loop	src/agg/dist/psort.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/agg/rows_psort.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/build_runs.c	1	one sort of a fresh temporary array per outer bucket
-qsort-in-loop	src/bm25/cscan_exec.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/eval.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/facet.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/runs/runs.c	1	one sort of a fresh temporary array per outer bucket

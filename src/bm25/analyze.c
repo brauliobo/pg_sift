@@ -77,6 +77,8 @@ struct SiftAnalyzer
 	size_t		bagcap;
 	SiftTermFreq *terms;
 	size_t		termcap;
+	SiftTermFreq *spare;		/* the terms of a doc and one more: sift_analyzer_spare_terms */
+	size_t		sparecap;
 
 	bool		positions;		/* the bag also carries the occurrences of the word terms */
 	int32	   *tokidx;			/* token -> bag index */
@@ -234,6 +236,7 @@ sift_analyzer_reset(SiftAnalyzer *a)
 	DROP_BIG(a->toks, a->tokcap, sizeof(SiftToken));
 	DROP_BIG(a->bag, a->bagcap, sizeof(BagTerm));
 	DROP_BIG(a->terms, a->termcap, sizeof(SiftTermFreq));
+	DROP_BIG(a->spare, a->sparecap, sizeof(SiftTermFreq));
 	DROP_BIG(a->slots, a->slotcap, sizeof(int32));
 	DROP_BIG(a->tokidx, a->tokidxcap, sizeof(int32));
 	DROP_BIG(a->tokpos, a->tokposcap, sizeof(uint32));
@@ -501,6 +504,14 @@ analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint
 	*dl = Min(ntok, SIFT_MAX_DL);
 	*out = a->terms;
 	return nterms;
+}
+
+/* room for n terms that the analyzer keeps for its caller: valid until the next call with a larger n */
+SiftTermFreq *
+sift_analyzer_spare_terms(SiftAnalyzer *a, size_t n)
+{
+	ENSURE(a, spare, sparecap, n);
+	return a->spare;
 }
 
 /* ts: the analyzer's stop words keep a position, so each token has its own; the loop is compiled for both so the others pay nothing */

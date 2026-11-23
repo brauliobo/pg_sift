@@ -348,6 +348,7 @@ sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x)
 		f->type[c] = x->elem.col_type[c];
 		c++;
 	}
+	sift_tupdesc_finalize(f->desc);
 	BlessTupleDesc(f->desc);
 	fmgr_info(F_JSONB_TO_RECORDSET, &f->flinfo);
 	f->econtext = CreateStandaloneExprContext();

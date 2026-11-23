@@ -234,7 +234,7 @@ find_row(UniqueKey *k, Relation index, Relation heap, IndexInfo *info, const Dat
 	for (int i = 0; i < k->n; i++)
 		ScanKeyEntryInitialize(&keys[i], isnull[i] ? SK_ISNULL | SK_SEARCHNULL : 0, i + 1, BTEqualStrategyNumber, k->subtype[i], k->collation[i], isnull[i] ? InvalidOid : k->eq[i].fn_oid,
 							   isnull[i] ? (Datum) 0 : values[i]);
-	scan = index_beginscan(heap, index, &dirty, NULL, k->n, 0);
+	scan = sift_index_beginscan(heap, index, &dirty, k->n);
 	index_rescan(scan, keys, k->n, NULL, 0);
 	while (found == FOUND_NONE && index_getnext_slot(scan, ForwardScanDirection, slot))
 	{

@@ -350,7 +350,7 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	}
 	n = sift_analyze_doc(an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
 	if (keyed)
-		n = sift_bm25_unique_terms(terms, n, key, &dl, &terms);
+		n = sift_bm25_unique_terms(an, terms, n, key, &dl, &terms);
 	if (sift_wbuf_append(index, heap_tid, terms, n, dl))
 		sift_maint_after_seal(index);
 	sift_analyzer_reset(an);

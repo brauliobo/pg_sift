@@ -47,7 +47,9 @@ key_column_is(Node *expr, Index relid, int attno, Node *keyexpr)
 static bool
 is_sift_sections(Oid funcid)
 {
-	return get_func_namespace(funcid) == get_namespace_oid("sift", true) && strcmp(get_func_name(funcid), "sections") == 0;
+	const char *name = get_func_name(funcid);
+
+	return name != NULL && get_func_namespace(funcid) == get_namespace_oid("sift", true) && strcmp(name, "sections") == 0;
 }
 
 /* The elements of sift.sections(a, b, ...), a call, or its definition as the planner inlines it, array_to_string(ARRAY[a, b, ...], chr(29), ''); NIL for another expression */

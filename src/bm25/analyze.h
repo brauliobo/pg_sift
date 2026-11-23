@@ -142,7 +142,9 @@ extern void sift_analyze_validate_fields(const char *names);
 /* Default config: folding on, no stemming */
 extern void sift_analyzer_config_default(SiftAnalyzerConfig *cfg);
 extern void sift_analyzer_config_from_options(const SiftOptions *opts, SiftAnalyzerConfig *cfg);
+extern SiftTermFreq *sift_analyzer_spare_terms(SiftAnalyzer *a, size_t n);
 extern void sift_analyzer_config_from_index(Relation index, SiftAnalyzerConfig *cfg);
+extern void sift_analyzer_config_with_fields(const SiftOptions *opts, const char *fields, SiftAnalyzerConfig *cfg);
 
 /*
  * Stemmer by name: "" or "none", "en" / "english" / "english_stem". Raises

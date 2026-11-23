@@ -205,7 +205,7 @@ analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len, const ui
 	int			n = sift_analyze_doc(bs->an, text, len, &terms, &dl);
 
 	if (key)
-		n = sift_bm25_unique_terms(terms, n, *key, &dl, &terms);
+		n = sift_bm25_unique_terms(bs->an, terms, n, *key, &dl, &terms);
 	if (len >= bs->small_doc && !sift_inv_empty(bs->inv) && !sift_inv_fits(bs->inv, n, len))
 		spill(bs);
 	bs->indexed++;

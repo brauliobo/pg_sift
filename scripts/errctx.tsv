@@ -23,6 +23,7 @@ src/core/span.c	src/col/v1/amscan/amscan.c src/bm25/amscan.c src/agg/exec/run.c
 src/table/v1/wbuf.c	src/table/v1/analyze.c src/table/v1/fetch.c src/table/v1/scan.c
 src/col/granule/granule.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/granule_dec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
+src/col/granule/point_decode.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/promo.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/promo_prefix.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/tid.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
