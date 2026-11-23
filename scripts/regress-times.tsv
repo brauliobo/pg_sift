@@ -85,6 +85,7 @@ agg_distinct_cost	0.81
 agg_distinct_hash_cap	2.71
 agg_distinct_narrow	5.20
 agg_distinct_on	2.53
+agg_distinct_on_spill	6.00
 agg_distinct_one_group	0.35
 agg_distinct_ordered	0.41
 agg_distinct_parallel	7.36
@@ -973,11 +974,13 @@ col_topn_gorder_filter_safe	2.02
 col_topn_gorder_filter_text	1.70
 col_topn_gorder_suite	9.01
 col_topn_interval	1.41
+col_topn_keytypes	3.00
 col_topn_join	11.11
 col_topn_minmax_sublink	4.42
 col_topn_moved	0.78
 col_topn_numeric	2.21
 col_topn_offset	5.46
+col_topn_or_arms	3.00
 col_topn_order	7.59
 col_topn_parallel	6.74
 col_topn_param	4.87

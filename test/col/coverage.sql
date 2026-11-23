@@ -79,6 +79,21 @@ BEGIN
 	RETURN p LIKE '%Custom Scan (SiftAgg)%' AND a = b;
 END $$;
 
+-- coverage.same(q) with the settings gucs ("name=value") in force for it only
+CREATE FUNCTION coverage.same_with(gucs text[], q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE g text; old text[] := '{}'; r boolean;
+BEGIN
+	FOREACH g IN ARRAY gucs LOOP
+		old := old || (split_part(g, '=', 1) || '=' || current_setting(split_part(g, '=', 1)));
+		PERFORM set_config(split_part(g, '=', 1), split_part(g, '=', 2), true);
+	END LOOP;
+	r := coverage.same(q);
+	FOREACH g IN ARRAY old LOOP
+		PERFORM set_config(split_part(g, '=', 1), substr(g, length(split_part(g, '=', 1)) + 2), true);
+	END LOOP;
+	RETURN r;
+END $$;
+
 -- the DML statements run, q is the same as with sift off, then they roll back: the transaction's own uncommitted changes
 CREATE FUNCTION coverage.in_tx(stmts text[], q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE s text; ok boolean;
