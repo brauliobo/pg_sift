@@ -238,7 +238,7 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 		carry_join_scores(root, joinrel);
 }
 
-/* A RETURNING list is computed from the new row version, which no scan scored */
+/* A MERGE action's RETURNING is computed from the row its action wrote, which no scan scored */
 static void
 reject_returning_scores(PlannerInfo *root, RelOptInfo *rel)
 {
@@ -248,7 +248,7 @@ reject_returning_scores(PlannerInfo *root, RelOptInfo *rel)
 	if (refs.found != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.score() is not available in RETURNING"),
+				 errmsg("sift.score() is not available in the RETURNING of MERGE"),
 				 errhint("Select the score in a subquery or a WITH query of the statement, and change the rows it returns by key.")));
 }
 
@@ -278,7 +278,7 @@ scannable(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
 		sift_catalog()->am == InvalidOid)
 		return false;
-	if (root->parse->returningList != NIL)
+	if (root->parse->returningList != NIL && root->parse->commandType == CMD_MERGE)
 		reject_returning_scores(root, rel);
 	if (rte->inh)
 	{
@@ -563,6 +563,23 @@ merge_score_outputs(Query *parse)
 }
 
 /*
+ * The scores the RETURNING of an UPDATE or DELETE reads are those of the rows its scan matched, which the scan computes: they are entered in the target list of
+ * the statement as junk columns, named by the order of the scores in RETURNING, and the finished plan reads them from there (sift_returning_scores)
+ */
+static void
+returning_score_outputs(Query *parse)
+{
+	List	   *found = NIL;
+
+	if (parse->returningList == NIL || (parse->commandType != CMD_UPDATE && parse->commandType != CMD_DELETE))
+		return;
+	collect_scores((Node *) parse->returningList, &found);
+	foreach_ptr(Node, e, found)
+		parse->targetList = lappend(parse->targetList, makeTargetEntry((Expr *) copyObject(e), list_length(parse->targetList) + 1,
+																	   psprintf(SIFT_RETURNING_SCORE "%d", foreach_current_index(e)), true));
+}
+
+/*
  * A subquery or CTE of a statement that changes or locks rows that reads the score is planned apart, as written with OFFSET 0 or
  * MATERIALIZED (PostgreSQL pulls up neither), so that its scan ranks the rows it returns and not the statement's
  */
@@ -583,6 +600,14 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 				cte->ctematerialized = CTEMaterializeAlways;
 		if (parse->commandType == CMD_MERGE)
 			merge_score_outputs(parse);
+
+	}
+	if (sift_catalog()->am != InvalidOid)
+	{
+		returning_score_outputs(parse);
+		foreach_node(CommonTableExpr, cte, parse->cteList)
+			if (IsA(cte->ctequery, Query))
+				returning_score_outputs(castNode(Query, cte->ctequery));
 	}
 	sift_agg_walks_forget();
 	sift_vis_scope(true);

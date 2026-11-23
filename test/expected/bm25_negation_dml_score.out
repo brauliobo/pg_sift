@@ -409,17 +409,17 @@ SELECT count(*) AS merged, count(*) FILTER (WHERE d.t = round(r.s::numeric, 3)::
      85 |         85
 (1 row)
 
--- what stays refused names what to write
+-- RETURNING reads the score of the matched row
 SELECT nd_err('UPDATE sd_u1 SET s = 0 WHERE body @@> ''wire'' RETURNING sift.score(ctid)');
-                      nd_err                      
---------------------------------------------------
- 0A000 sift.score() is not available in RETURNING
+ nd_err 
+--------
+ ok
 (1 row)
 
 SELECT nd_err('DELETE FROM sd_u1 WHERE body @@> ''wire'' RETURNING sift.score(ctid)');
-                      nd_err                      
---------------------------------------------------
- 0A000 sift.score() is not available in RETURNING
+ nd_err 
+--------
+ ok
 (1 row)
 
 -- 4. a table no sift index serves: the same rows without an index, scored as the index scores them

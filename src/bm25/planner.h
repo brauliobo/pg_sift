@@ -86,6 +86,9 @@ extern bool sift_match_clause(Node *clause, IndexOptInfo *index, Expr **query);
 /* Does the index answer queries as the analyzer of index `analyzer` (InvalidOid: the default one) does? */
 extern bool sift_index_serves(Oid indexoid, Oid analyzer);
 
+/* The name of the junk column of an UPDATE or DELETE that carries a score its RETURNING reads, followed by the order of the score in RETURNING */
+#define SIFT_RETURNING_SCORE	"sift_returning_score_"
+
 /* bm25/planner_post.c: the finished plan, node by node (scans: the ones of the planner hook too; a plan made without the hook only has the first kind of fix) */
 extern void sift_finish_plan(PlannedStmt *stmt, bool scans);
 

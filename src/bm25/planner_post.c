@@ -2,10 +2,12 @@
  * bm25/planner_post.c - the finished plan, looked at once the planner is done.
  *
  * Facts of the plan as a whole, which no path knows: the scans under an incremental sort and a LIMIT (planner_ties.c), and the matches that a
- * bitmap heap scan checks again on every row it fetches although the index gave them exactly.
+ * bitmap heap scan checks again on every row it fetches although the index gave them exactly, and the scores that the RETURNING of an UPDATE or DELETE reads.
  */
 #include "postgres.h"
 
+#include "nodes/nodeFuncs.h"
+#include "nodes/makefuncs.h"
 #include "nodes/plannodes.h"
 
 #include "bm25/planner.h"
@@ -52,12 +54,81 @@ bitmap_recheck(Plan *plan)
 		}
 }
 
+typedef struct ReturningScores
+{
+	ModifyTable *modify;
+	List	   *seen;			/* the scores met in RETURNING, in order: the order of the junk columns (SIFT_RETURNING_SCORE) */
+} ReturningScores;
+
+/* The junk column of the statement's plan that holds the score of the n-th one of RETURNING */
+static TargetEntry *
+score_column(const ModifyTable *mt, int n)
+{
+	char	   *name = psprintf(SIFT_RETURNING_SCORE "%d", n);
+
+	foreach_node(TargetEntry, tle, mt->plan.lefttree->targetlist)
+		if (tle->resjunk && tle->resname != NULL && strcmp(tle->resname, name) == 0)
+			return tle;
+	elog(ERROR, "sift: the score %d of a RETURNING list is not in the plan of its statement", n);
+	return NULL;
+}
+
+/* A score of RETURNING is the column of the plan that the scan computed it in: the score of the row that the statement changes */
+static Node *
+returning_mutator(Node *node, ReturningScores *rs)
+{
+	const SiftCatalog *cat = sift_catalog();
+
+	if (node == NULL)
+		return NULL;
+	if (IsA(node, FuncExpr) && (((FuncExpr *) node)->funcid == cat->score_func || ((FuncExpr *) node)->funcid == cat->max_score_func))
+	{
+		int			n = 0;
+
+		foreach_ptr(Node, met, rs->seen)
+		{
+			if (equal(met, node))
+				break;
+			n++;
+		}
+		if (n == list_length(rs->seen))
+			rs->seen = lappend(rs->seen, node);
+		return (Node *) makeVar(OUTER_VAR, score_column(rs->modify, n)->resno, FLOAT4OID, -1, InvalidOid, 0);
+	}
+	return expression_tree_mutator(node, returning_mutator, rs);
+}
+
+static void
+returning_scores(ModifyTable *mt)
+{
+	List	   *lists = NIL;
+
+	foreach_ptr(List, rlist, mt->returningLists)
+	{
+		ReturningScores rs = {mt, NIL};
+
+		lists = lappend(lists, expression_tree_mutator((Node *) rlist, returning_mutator, &rs));
+	}
+	mt->returningLists = lists;
+}
+
+static bool
+has_score_column(const ModifyTable *mt)
+{
+	foreach_node(TargetEntry, tle, mt->plan.lefttree->targetlist)
+		if (tle->resjunk && tle->resname != NULL && strncmp(tle->resname, SIFT_RETURNING_SCORE, strlen(SIFT_RETURNING_SCORE)) == 0)
+			return true;
+	return false;
+}
+
 static void
 finish_walk(Plan *plan, bool scans)
 {
 	if (plan == NULL)
 		return;
 	bitmap_recheck(plan);
+	if (IsA(plan, ModifyTable) && ((ModifyTable *) plan)->returningLists != NIL && has_score_column((ModifyTable *) plan))
+		returning_scores((ModifyTable *) plan);
 	if (scans)
 		sift_tie_node(plan);
 	finish_walk(plan->lefttree, scans);

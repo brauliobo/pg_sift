@@ -235,11 +235,13 @@ SELECT count(*), max(sift.score(ctid)) FROM ss_items;
   2000 |   0
 (1 row)
 
--- the new row version of RETURNING has no score: it says how to write it
+-- the RETURNING of an UPDATE returns the score of the row the scan matched (the row of id 10 matches nothing)
 \set VERBOSITY default
 UPDATE ss_dst SET s = 0 WHERE id = 10 RETURNING sift.score(ctid);
-ERROR:  sift.score() is not available in RETURNING
-HINT:  Select the score in a subquery or a WITH query of the statement, and change the rows it returns by key.
+ score 
+-------
+(0 rows)
+
 DROP VIEW ss_scored, ss_ref;
 DROP TABLE ss_items, ss_other, ss_dst;
 DROP FUNCTION ss_same(text, text), ss_rows(text), ss_plan(text);

@@ -66,10 +66,17 @@ SELECT id FROM pc WHERE body @@> 'zzz' ORDER BY sift.score(ctid) DESC LIMIT 1 FO
 
 UPDATE pc SET owner = owner WHERE body @@> 'zzz';
 UPDATE pc SET owner = owner WHERE body @@> 'zzz' RETURNING sift.score(ctid);
-ERROR:  sift.score() is not available in RETURNING
+   score   
+-----------
+ 5.9751616
+(1 row)
+
 UPDATE pc SET id = id WHERE body @@> 'zzz' AND sift.score(ctid) > 0;
 DELETE FROM pc WHERE body @@> 'nothing here' RETURNING sift.score(ctid);
-ERROR:  sift.score() is not available in RETURNING
+ score 
+-------
+(0 rows)
+
 -- ranking in a SELECT and changing the rows by key works
 UPDATE pc SET owner = owner WHERE ctid = (SELECT ctid FROM pc WHERE body @@> 'zzz' ORDER BY sift.score(ctid) DESC LIMIT 1);
 -- LIMIT and OFFSET of a generic plan are read by the scan when it starts

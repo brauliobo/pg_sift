@@ -189,7 +189,7 @@ MERGE INTO sd_tgt d USING sd_m s ON d.id = s.id AND s.body @@> 'wire OR cable'
 	WHEN MATCHED THEN UPDATE SET t = round(sift.score(s.ctid)::numeric, 3)::text;
 SELECT count(*) AS merged, count(*) FILTER (WHERE d.t = round(r.s::numeric, 3)::text) AS same_score FROM sd_tgt d JOIN sd_ref r USING (id) WHERE d.t <> 'old';
 
--- what stays refused names what to write
+-- RETURNING reads the score of the matched row
 SELECT nd_err('UPDATE sd_u1 SET s = 0 WHERE body @@> ''wire'' RETURNING sift.score(ctid)');
 SELECT nd_err('DELETE FROM sd_u1 WHERE body @@> ''wire'' RETURNING sift.score(ctid)');
 

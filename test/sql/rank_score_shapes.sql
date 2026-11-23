@@ -113,7 +113,7 @@ INSERT INTO ss_dst SELECT id, sift.score(ctid) FROM ss_items WHERE body @@> 'alp
 SELECT count(*) AS inserted FROM ss_dst WHERE id > 1990;
 -- a score outside a match is 0
 SELECT count(*), max(sift.score(ctid)) FROM ss_items;
--- the new row version of RETURNING has no score: it says how to write it
+-- the RETURNING of an UPDATE returns the score of the row the scan matched (the row of id 10 matches nothing)
 \set VERBOSITY default
 UPDATE ss_dst SET s = 0 WHERE id = 10 RETURNING sift.score(ctid);
 
