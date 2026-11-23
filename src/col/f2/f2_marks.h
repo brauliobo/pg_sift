@@ -20,6 +20,9 @@
 extern bool sift_f2_key_spec(const SiftCellKind *kinds, const uint8 *hints, const uint8 *flags, int n, SiftKeySpec *spec);
 extern bool sift_f2_rel_key_spec(const SiftF2Rel *f, SiftKeySpec *spec);
 
+/* The relation as the shared functions of the index scan read it: leaves, kinds, the key and the time columns, all of the store's */
+extern SiftF2Rel sift_f2_store_rel(const struct SiftF2Store *s);
+
 /*
  * The section for the part whose rows are in order, granule g being rows [gstart[g], gstart[g + 1]): NULL when the part gets none (a NaN is among the floats, a number overflowed its scale, the rows
  * are not sorted by the key or the marks do not ascend). The section is palloc'd.

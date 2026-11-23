@@ -36,17 +36,6 @@ typedef enum Verdict
 	V_MAYBE
 } Verdict;
 
-/* The relation as the shared functions of the index scan read it: leaves, kinds, the key and the time columns, all of the store's */
-static SiftF2Rel
-rel_of(const SiftF2Store *s)
-{
-	SiftF2Rel	f = {.ncols = s->ncols,.kinds = s->kinds,.hints = s->hints,.scales = s->scales,.nkey = s->nkey,.parent = s->parent,.key_leaf = s->key_leaf,.spec = s->spec};
-
-	memcpy(f.key_cols, s->key_cols, sizeof(f.key_cols));
-	memcpy(f.time_unit, s->time_unit, sizeof(f.time_unit));
-	return f;
-}
-
 /* What decides, per host, which rows of a granule are there for the snapshot: granule (when not NULL) is called when the granule is loaded, row for each of its rows */
 typedef struct RowVis
 {
@@ -607,7 +596,7 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	s->store = o->store;
 	s->cx = cx;
 	s->vis = table ? &table_vis : &index_vis;
-	s->f = rel_of(o->store);
+	s->f = sift_f2_store_rel(o->store);
 	s->want = MemoryContextAllocZero(cx, sizeof(bool) * o->store->ncols);
 	s->psets = sift_f2_pred_sets_new(cx, o->npreds);
 	s->wide = table && sift_tbl_extra(o->store)->has_wide;

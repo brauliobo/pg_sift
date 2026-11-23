@@ -6,6 +6,7 @@
 #include "utils/memutils.h"
 
 #include "col/f2/f2_marks.h"
+#include "col/f2/f2_store.h"
 #include "col/f2/f2_pred.h"
 #include "col/granule/part_int.h"
 #include "core/page_io.h"
@@ -57,6 +58,16 @@ sift_f2_rel_key_spec(const SiftF2Rel *f, SiftKeySpec *spec)
 		hints[k] = f->hints[f->key_cols[k]];
 	}
 	return sift_f2_key_spec(kinds, hints, f->spec.sort_flags, f->nkey, spec);
+}
+
+SiftF2Rel
+sift_f2_store_rel(const SiftF2Store *s)
+{
+	SiftF2Rel	f = {.ncols = s->ncols,.kinds = s->kinds,.hints = s->hints,.scales = s->scales,.nkey = s->nkey,.parent = s->parent,.key_leaf = s->key_leaf,.spec = s->spec};
+
+	memcpy(f.key_cols, s->key_cols, sizeof(f.key_cols));
+	memcpy(f.time_unit, s->time_unit, sizeof(f.time_unit));
+	return f;
 }
 
 /* ---- the writer ---- */
