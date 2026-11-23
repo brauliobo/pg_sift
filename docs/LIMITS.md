@@ -183,4 +183,5 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | `4,294,967,294 blocks` | ERROR 54000, VACUUM FULL renumbers them | — | `table/v1/wbuf.c` |
 | frames of 256 values of the strings and doubles of sift_table the cache of a backend keeps | `512 frames` | the oldest frame is dropped and inflated again when a row asks for it | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_FRAMES` |
 | decoded granules of sift_table the cache of a backend keeps | `64 granules` | the oldest granule is dropped and read again when needed | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_GRANULES` |
+| decoded row pack blocks of 64 rows of sift_table the cache of a backend keeps | `256 blocks` | the oldest block is dropped and read again when a row asks for it | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_BLOCKS` |
 

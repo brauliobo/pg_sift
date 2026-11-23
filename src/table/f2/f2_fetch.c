@@ -3,6 +3,9 @@
  *
  * The granule of the last row stays with the fetch, so that the rows of one granule in a row of calls cost one lookup; what the snapshot sees of the pending deletes and the patches of
  * column deltas is read again for each call that is not of SnapshotAny, the stage of the transaction being part of it.
+ *
+ * A row of a part that has a row pack (f2_row_pack.h) is found by the address hash of the part and read from its block, with no granule: when its granule needs no version (frozen, settled for the
+ * snapshot, or the rows of one transaction) and holds no deleted row. A part with a column delta reads the granule too, for the map of the patches. Any other row is read from its granule.
  */
 #include "postgres.h"
 
@@ -13,6 +16,8 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/col_meta.h"
+#include "col/f2/part_vis.h"
+#include "core/damage.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_slot.h"
@@ -108,6 +113,91 @@ fetch_select_pending(SiftTblF2Fetch *f, Snapshot snapshot)
 	MemoryContextSwitchTo(prev);
 }
 
+typedef struct PackedFetch
+{
+	SiftTblF2Fetch *f;
+	Snapshot	snapshot;
+	TupleTableSlot *slot;
+	uint64		tid;
+	bool		found;			/* the row is in the slot */
+} PackedFetch;
+
+/* Whether the snapshot sees the insert of the rows of the granule without a version of each: a frozen granule, a part whose inserters are all settled, or the rows of one transaction */
+static bool
+packed_inserted(SiftTblF2Fetch *f, const SiftF2PartPin *pin, const SiftGranuleDesc *gd)
+{
+	TransactionId xmin = XidFromFullTransactionId(gd->min_xid);
+
+	if ((gd->flags & SIFT_GDESC_ALL_FROZEN) || (FullTransactionIdIsValid(f->vis.snap_xmin) && sift_vis_part_inserts_settled(&pin->desc, f->vis.snap_xmin)))
+		return true;
+	return (gd->flags & SIFT_GDESC_SINGLE_XACT) && (!TransactionIdIsNormal(xmin) || sift_vis_inserted_cached(&f->vis.xc, xmin, gd->single_cmin));
+}
+
+/* Whether the row is there for the snapshot, as sift_tbl_f2_vis_row decides it for a row of a granule that has no versions of its own */
+static bool
+packed_visible(SiftTblF2Fetch *f, const SiftF2PartPin *pin, const SiftPartitionEntry *entry, uint32 granule_id, uint64 tid, Snapshot snapshot)
+{
+	if (!packed_inserted(f, pin, &pin->gdir[granule_id]) || (pin->dv != NULL && sift_dv_granule(pin->dv, granule_id) != NULL))
+		return false;
+	f->entry = *entry;
+	fetch_select_pending(f, snapshot);
+	return f->pdel == NULL || !sift_pdel_idx_has(f->pdel, tid);
+}
+
+static void
+packed_store(PackedFetch *p, SiftF2PartPin *pin, const SiftPartitionEntry *entry, const SiftTidHashHit *hit)
+{
+	SiftTblF2Fetch *f = p->f;
+	Relation	rel = f->base.rel;
+	SiftF2GranuleBuf *gb = NULL;
+	const SiftColDeltaGranMap *gm = NULL;
+
+	sift_tbl_f2_predicate_point(rel, p->tid, p->snapshot);
+	if (!packed_visible(f, pin, entry, hit->granule_id, p->tid, p->snapshot))
+		return;
+	if (entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA)
+	{
+		gb = sift_f2_gcache_get(rel, f->store, pin, hit->granule_id);
+		gm = sift_col_delta_scan_map(f->delta, entry, gb);
+	}
+	sift_f2_slot_store_packed(p->slot, rel, pin, hit->granule_id, (uint16) (hit->row_idx - pin->gdir[hit->granule_id].row_base), sift_f2_gcache_row_pack_block(rel, pin, hit->row_idx / SIFT_ROW_PACK_ROWS),
+							  hit->row_idx % SIFT_ROW_PACK_ROWS, p->tid, gb, sift_col_delta_scan_part_map(f->delta), gm, f->rowcx);
+	if (gb != NULL)
+		sift_f2_gbuf_unref(gb);
+	p->found = true;
+}
+
+/* The row of the address among the rows the hash names: true when it is one of them, whether or not the snapshot sees it (the granule path decides that again) */
+static bool
+packed_hit(SiftF2PartPin *pin, const SiftPartitionEntry *entry, const SiftTidHashHit *hits, int nhits, void *arg)
+{
+	PackedFetch *p = arg;
+	Relation	rel = p->f->base.rel;
+
+	for (int i = 0; i < nhits; i++)
+	{
+		const SiftTidHashHit *h = &hits[i];
+		const SiftRowPackBlk *blk;
+
+		blk = sift_f2_gcache_row_pack_block(rel, pin, h->row_idx / SIFT_ROW_PACK_ROWS);
+		if (sift_row_pack_holds(blk, h->row_idx % SIFT_ROW_PACK_ROWS, p->tid))
+		{
+			packed_store(p, pin, entry, h);
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
+fetch_packed(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot)
+{
+	PackedFetch p = {.f = f,.snapshot = snapshot,.slot = slot,.tid = tid};
+
+	f->store = sift_f2_store_open(f->base.rel);
+	return sift_f2_locate_packed(f->base.rel, f->store, tid, packed_hit, &p) && p.found;
+}
+
 static bool
 fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot)
 {
@@ -131,6 +221,8 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 		SiftF2Loc	loc;
 		bool		waiting;
 
+		if (snapshot->snapshot_type == SNAPSHOT_MVCC && fetch_packed(f, tid, snapshot, slot))
+			return true;
 		fetch_drop_granule(f);
 		f->store = sift_f2_store_open(rel);
 		if (!sift_tbl_f2_locate_or_wait(rel, f->store, tid, snapshot, &loc, &waiting))

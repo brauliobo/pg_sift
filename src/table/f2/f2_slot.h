@@ -10,6 +10,7 @@
 
 #include "col/f2/f2_gbuf.h"
 #include "table/f2/f2_col_delta.h"
+#include "table/f2/f2_row_pack.h"
 
 extern const TupleTableSlotOps *sift_f2_slot_ops(void);
 
@@ -19,5 +20,15 @@ extern const TupleTableSlotOps *sift_f2_slot_ops(void);
  * another kind is filled with every attribute now.
  */
 extern void sift_f2_slot_store(TupleTableSlot *slot, Relation rel, SiftF2GranuleBuf *gb, uint16 row, SiftColDeltaPartMap *map, const SiftColDeltaGranMap *gm, MemoryContext rowcx);
+
+/*
+ * The same for row blk_row of a block of the row pack of a part (copied now, so blk may go after the call): its cells are read from it, and a cell that is not in it from the granule (the slot
+ * takes a reference of gb, or reads the granule through the cache when it has none). The slot keeps a reference of pin while it is lazy. row: the row in its granule; tid: its address.
+ */
+extern void sift_f2_slot_store_packed(TupleTableSlot *slot, Relation rel, SiftF2PartPin *pin, uint32 granule_id, uint16 row, const SiftRowPackBlk *blk, uint32 blk_row, uint64 tid, SiftF2GranuleBuf *gb,
+									  SiftColDeltaPartMap *map, const SiftColDeltaGranMap *gm, MemoryContext rowcx);
+
+/* Attribute attnum of the row alone, without the attributes before it: the others are decoded when a read of the leading attributes reaches them (PostgreSQL's callbacks ask for a number of leading ones) */
+extern Datum sift_f2_slot_getattr_single(TupleTableSlot *slot, int attnum, bool *isnull);
 
 #endif							/* SIFT_TBL_F2_SLOT_H */

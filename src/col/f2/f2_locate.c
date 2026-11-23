@@ -23,6 +23,7 @@
 #include "col/f2/l0_stage.h"
 #include "core/cachebudget.h"
 #include "core/memtrack.h"
+#include "table/f2/f2_gcache.h"
 
 /*
  * Intervals [min, max] kept sorted by min with the greatest max of each subtree in a complete binary tree over them (leaf i is node leaves + i, a node holds the greater of its two): the
@@ -518,6 +519,9 @@ typedef struct VisitPart
 	SiftF2GranuleLoader load;
 	SiftF2GranuleVisit cb;
 	void	   *arg;
+	SiftF2PackedHit packed;		/* offered the rows of a part with a row pack before its granules are visited; NULL: none is */
+	void	   *packed_arg;
+	bool		packed_taken;
 } VisitPart;
 
 /* Whether the visit of the granule stops */
@@ -528,7 +532,7 @@ visit_granule(const VisitPart *vp, SiftF2PartPin *pin, const SiftPartitionEntry 
 	SiftF2GranuleBuf *gb;
 	bool		stop;
 
-	if (t->tid_max < vp->lo || t->tid_min > vp->hi || (vp->one_block && (t->blk_bloom & sift_tid_block_bit(vp->lo)) == 0))
+	if (vp->load == NULL || t->tid_max < vp->lo || t->tid_min > vp->hi || (vp->one_block && (t->blk_bloom & sift_tid_block_bit(vp->lo)) == 0))
 		return false;
 	gb = vp->load(vp->rel, vp->store, pin, g);
 	stop = vp->cb(gb, entry, vp->arg);
@@ -536,9 +540,9 @@ visit_granule(const VisitPart *vp, SiftF2PartPin *pin, const SiftPartitionEntry 
 	return stop;
 }
 
-/* The granules the address hash of the part names for the address, ascending (n of them) */
+/* The granules the address hash of the part names for the address, ascending (n of them); a part with a row pack first offers the rows to the caller's hit, which stops the visit when it takes one */
 static int
-hashed_granules(VisitPart *vp, SiftF2PartPin *pin, uint32 **gids)
+hashed_granules(VisitPart *vp, SiftF2PartPin *pin, const SiftPartitionEntry *entry, uint32 **gids)
 {
 	SiftTidHashHit *hits;
 	int			nhits = sift_tid_hash_find(vp->rel, pin->part, pin->desc.nrows, vp->lo, &hits),
@@ -547,11 +551,13 @@ hashed_granules(VisitPart *vp, SiftF2PartPin *pin, uint32 **gids)
 	for (int i = 0; i < nhits; i++)
 	{
 		const SiftTidHashHit *h = &hits[i];
+		const bool	has_row = h->row_idx != SIFT_TID_HASH_NO_ROW;
 
-		if (h->granule_id >= pin->part->hdr.ngranules ||
-			(h->row_idx != SIFT_TID_HASH_NO_ROW && (h->row_idx < pin->gdir[h->granule_id].row_base || h->row_idx - pin->gdir[h->granule_id].row_base >= pin->gdir[h->granule_id].nrows)))
+		if (h->granule_id >= pin->part->hdr.ngranules || (!has_row && (pin->desc.ext_flags & SIFT_PART_EXT_ROW_PACK)) ||
+			(has_row && (h->row_idx < pin->gdir[h->granule_id].row_base || h->row_idx - pin->gdir[h->granule_id].row_base >= pin->gdir[h->granule_id].nrows)))
 			SIFT_DAMAGE_DATA(vp->rel, errmsg("sift: an address hash entry names a row outside its granule"));
 	}
+	vp->packed_taken = vp->packed != NULL && (pin->desc.ext_flags & SIFT_PART_EXT_ROW_PACK) && vp->packed(pin, entry, hits, nhits, vp->packed_arg);
 	*gids = palloc(Max(nhits, 1) * sizeof(uint32));
 	for (int i = 0; i < nhits; i++)
 		if (n == 0 || (*gids)[n - 1] != hits[i].granule_id)
@@ -573,11 +579,12 @@ visit_part(const TidSlot *slot, void *arg)
 	{
 		bool		hashed = vp->lo == vp->hi && sift_part_section(pin->part, SEC_TID_HASH) != NULL;
 
-		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && (hashed || ng > GRAN_INDEX_MIN_GRANULES))
+		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && (hashed || (vp->load != NULL && ng > GRAN_INDEX_MIN_GRANULES)))
 		{
 			uint32	   *gids;
-			int			n = hashed ? hashed_granules(vp, pin, &gids) : part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
+			int			n = hashed ? hashed_granules(vp, pin, entry, &gids) : part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
 
+			stop = vp->packed_taken;
 			for (int k = 0; k < n && !stop; k++)
 				stop = visit_granule(vp, pin, entry, gids[k]);
 			pfree(gids);
@@ -731,6 +738,24 @@ sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc
 	tid_index_visit(tid_index_of(rel, v, pinned), tid, tid, visit_part, &vp);
 	MemoryContextDelete(pinned);
 	return a.found;
+}
+
+bool
+sift_f2_locate_packed(Relation rel, SiftF2Store *store, uint64 tid, SiftF2PackedHit hit, void *arg)
+{
+	MemoryContext pinned;
+	const SiftPlanSnapshot *v;
+	VisitPart	vp;
+
+	if (sift_stage_holds_in(rel, tid, tid))
+		return false;
+	pinned = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 visit");
+	tid_visit_begin(pinned);
+	v = sift_plan_cache_get(rel, pinned);
+	vp = (VisitPart) {.rel = rel,.store = store,.view = v,.lo = tid,.hi = tid,.one_block = true,.packed = hit,.packed_arg = arg};
+	tid_index_visit(tid_index_of(rel, v, pinned), tid, tid, visit_part, &vp);
+	MemoryContextDelete(pinned);
+	return vp.packed_taken;
 }
 
 /* The first part that holds the address: its place in the manifest and its granule, as the key of the lookup of rows in the order they lie */

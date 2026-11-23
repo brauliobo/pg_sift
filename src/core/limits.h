@@ -416,6 +416,9 @@
 	X(gcache_granules, "SIFT_F2_GCACHE_MAX_GRANULES", "table/f2/f2_gcache.h", SIFT_F2_GCACHE_MAX_GRANULES, "granules", \
 	  "decoded granules of sift_table the cache of a backend keeps", \
 	  "the oldest granule is dropped and read again when needed", "-", 0) \
+	X(gcache_blocks, "SIFT_F2_GCACHE_MAX_BLOCKS", "table/f2/f2_gcache.h", SIFT_F2_GCACHE_MAX_BLOCKS, "blocks", \
+	  "decoded row pack blocks of 64 rows of sift_table the cache of a backend keeps", \
+	  "the oldest block is dropped and read again when a row asks for it", "-", 0) \
 	X(zstd_dict_bytes, "SIFT_ZSTD_DICT_MAX_BYTES", "col/compress.h", SIFT_ZSTD_DICT_MAX_BYTES, "bytes", \
 	  "the dictionary of the zstd compression of a part", \
 	  "a larger dictionary is not written; the part is compressed without it", "-", 0) \
