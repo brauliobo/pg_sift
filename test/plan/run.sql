@@ -12,6 +12,8 @@ CREATE SCHEMA plangate;
 CREATE TABLE plangate.results (
 	name text PRIMARY KEY, shape text, plan text, chosen text, ratio float8, lo float8, hi float8, native_ms float8, scan_ms float8,
 	verdict text,               -- the scan against native: win, tie, lose (more than 1 ms and 20% slower); miss: not chosen, but wins on both counts
+	workers int,                -- the most workers a node (Gather, Gather Merge) plans, of the plan chosen: what the parallel lanes (stock4t, tuned) let it use
+	native_workers int,         -- the same of the plan PostgreSQL has without sift
 	problems text[] NOT NULL DEFAULT '{}');
 -- the expectation of a shape in a lane other than stock (test/plan/bands.tsv, the lane in the setting plangate.lane): its plan and band replace the tag of the shape.
 -- A band is a factor of 2 around the ratio at 30000 rows, the size of the full CI tier: the ratio falls with the rows (plangate.sh --rows), so another size has bands of its own, the lane `LANE@ROWS`
@@ -21,14 +23,15 @@ CREATE FUNCTION plangate.path(p text) RETURNS void LANGUAGE sql AS $$
 	SELECT set_config('sift.enable_agg', (p <> 'native')::text, false), set_config(s, (p <> 'scan')::text, false)
 	FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s $$;
 
--- whether the plan has Custom Scan (SiftAgg), and its total cost. Before PostgreSQL 18 a disabled node adds 1e10 to the cost: taken off.
-CREATE FUNCTION plangate.cost(q text, OUT siftagg boolean, OUT cost float8) LANGUAGE plpgsql AS $$
+-- whether the plan has Custom Scan (SiftAgg), its total cost and the most workers a node of it plans. Before PostgreSQL 18 a disabled node adds 1e10 to the cost: taken off.
+CREATE FUNCTION plangate.cost(q text, OUT siftagg boolean, OUT cost float8, OUT workers int) LANGUAGE plpgsql AS $$
 DECLARE j jsonb; c float8;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	c := (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
 	siftagg := j::text LIKE '%"SiftAgg"%';
 	cost := c - 1e10 * floor(c / 1e10);
+	workers := coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
 END $$;
 
 CREATE FUNCTION plangate.ms(q text, runs int) RETURNS float8 LANGUAGE plpgsql AS $$
@@ -99,7 +102,7 @@ BEGIN
 						WHEN native_ms > scan_ms + 1 AND native_ms > scan_ms * 1.2 THEN CASE WHEN chosen = 'scan' THEN 'win' ELSE 'miss' END
 						ELSE 'tie' END;
 	END IF;
-	INSERT INTO plangate.results VALUES (nm, h ->> 'shape', plan, chosen, ratio, nullif(band[1], '-')::float8, band[2]::float8, native_ms, scan_ms, verdict, problems);
+	INSERT INTO plangate.results VALUES (nm, h ->> 'shape', plan, chosen, ratio, nullif(band[1], '-')::float8, band[2]::float8, native_ms, scan_ms, verdict, ch.workers, native.workers, problems);
 	DROP TABLE IF EXISTS pg_temp.pg_native, pg_temp.pg_chosen, pg_temp.pg_scan;
 END $$;
 

@@ -3,7 +3,7 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--lane stock|tuned] [--table] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--lane stock|stock-4t|tuned] [--table] [--warn-time] [--update] [--keep]
 #   scripts/plangate.sh --calibrate [--rows N] [--lane stock|tuned] [--shapes REGEX]   the ranking of the estimates against the instructions (below)
 #   scripts/plangate.sh --planning [--rows N] [--shapes REGEX] [--update]   the instructions to plan each shape, scan on and off, against test/plan/planning.tsv (below)
 #
@@ -16,6 +16,9 @@
 #                 shapes that ran and keeps the others, and writes nothing when none ran
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
 #                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
+#   --lane stock-4t   the stock planner costs of the stock lane with up to 4 parallel workers per gather (the stock parallel costs and thresholds untouched, no suppression of Gather):
+#                 the lane `stock4t` of test/plan/bands.tsv holds the plan and the band of each shape, so a parallel plan that the scan loses to, or a scan that PostgreSQL's parallel plan beats,
+#                 fails as in the other lanes. Not with --table, --calibrate and --planning (those need serial plans)
 #   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
 #                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
@@ -43,7 +46,7 @@ while (( $# )); do
 		--warn-time) WARN=1 ;; --calibrate) CAL=1 ;; --planning) CAL=1 PLAN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
 		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --lane) LANE=$2; shift ;;
 		--selftest) SELFTEST=1 ;;
-		*) sed -n 2,27p "$0"; exit 1 ;;
+		*) sed -n 2,30p "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -208,11 +211,14 @@ settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_
 case $LANE in
 	stock) ;;
 	tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
-	*) log "unknown lane $LANE (stock or tuned)"; exit 1 ;;
+	stock-4t) settings=(max_parallel_workers_per_gather=4 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=64MB) ;;
+	*) log "unknown lane $LANE (stock, stock-4t or tuned)"; exit 1 ;;
 esac
-# the lane of the bands of test/plan/bands.tsv: none for stock on the heap, else table, tuned or tabletuned
-LK=${TABLE:+table}$([[ $LANE != tuned ]] || echo tuned)
+[[ $LANE != stock-4t || ( -z $TABLE && -z $CAL ) ]] || { log "--lane stock-4t has no --table bands, and --calibrate and --planning count the instructions of serial plans"; exit 1; }
+# the lane of the bands of test/plan/bands.tsv: none for stock on the heap, else table, tuned, tabletuned or stock4t
+LK=${TABLE:+table}$(case $LANE in tuned) echo tuned ;; stock-4t) echo stock4t ;; esac)
 [[ $ROWS == 30000 ]] || LK=${LK:-stock}@$ROWS
+[[ $LANE == stock ]] || PARALLEL=1
 [[ -z $LK ]] || settings+=("plangate.lane=$LK")
 [[ -z $CAL ]] || settings+=(max_parallel_workers_per_gather=0)
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
@@ -253,7 +259,7 @@ hard=true
 (( $(sql -qAt -c 'SHOW server_version_num') / 10000 == 18 )) || hard="p !~ '^(plan|ratio):'"
 sql -q -P footer=off <<-SQL
 	SELECT name AS shape, chosen, plan AS expected, round(ratio::numeric, 3) AS cost_ratio, concat_ws(' ', lo, hi) AS band,
-		   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict,
+		   round(native_ms::numeric, 1) AS native_ms, round(scan_ms::numeric, 1) AS scan_ms, verdict, ${PARALLEL:+native_workers || '/' || workers AS workers,}
 		   CASE WHEN EXISTS (SELECT 1 FROM unnest(problems) p WHERE $hard) THEN 'FAIL' END AS check
 	FROM plangate.results ORDER BY name
 SQL
