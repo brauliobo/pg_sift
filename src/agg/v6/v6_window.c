@@ -27,18 +27,28 @@
 #include "agg/plan/safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_window.h"
+#include "agg/v6/v6_win_carry.h"
+#include "agg/v6/v6_win_par.h"
 #include "agg/v6/v6_win_partsort.h"
 #include "agg/v6/v6_winx_glue.h"
 
 enum
 {
-	PRIV_INTS = 0,				/* indexoid, rti, mode, run condition function (-1: none), range frame, sorts partitions, then per order key desc | nulls_first << 1 */
+	PRIV_INTS = 0,				/* indexoid, rti, mode, run condition function (-1: none), range frame, how the partitions are made (WIN_EXACT, WIN_PARTSORT, WIN_REGROUP), then per order key desc | nulls_first << 1 */
 	PRIV_TLIST = 1,				/* the scan tlist: sift_v6_plan_scan reads it from here */
 	PRIV_PART = 2,
 	PRIV_ORD = 3,
 	PRIV_FUNCS = 4,
 	PRIV_BOUND = 5				/* the run condition bound: (a Const int8 or an external Param, a Const 1 when the condition is strict) or NIL */
 };
+
+/* How the rows of a partition reach the engine: the parts are sorted by the keys and the order, by the keys only (each partition is sorted), or by neither (the partitions are put together, then sorted) */
+typedef enum WinPartMode
+{
+	WIN_EXACT,
+	WIN_PARTSORT,
+	WIN_REGROUP
+} WinPartMode;
 
 static bool
 is_key_type(const SiftV6InCol *c)
@@ -77,6 +87,37 @@ add_keys(SiftV6Input *in, const List *vars, int *slots, uint8 *n, bool partsort)
 	return true;
 }
 
+/* the integer an int2, int4, date, int8, timestamp or timestamptz Datum holds, and the Datum of such an integer */
+static int64
+datum_int(Oid typid, Datum d)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(d);
+		case INT4OID:
+		case DATEOID:
+			return DatumGetInt32(d);
+		default:
+			return DatumGetInt64(d);
+	}
+}
+
+static Datum
+int_datum(Oid typid, int64 v)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return Int16GetDatum((int16) v);
+		case INT4OID:
+		case DATEOID:
+			return Int32GetDatum((int32) v);
+		default:
+			return Int64GetDatum(v);
+	}
+}
+
 static bool
 lag_value(const Node *n, Oid typid, SiftWinFuncSpec *fs)
 {
@@ -87,12 +128,10 @@ lag_value(const Node *n, Oid typid, SiftWinFuncSpec *fs)
 	if (c->constisnull)
 		return true;
 	fs->has_default = true;
-	if (typid == INT4OID)
-		fs->default_val.i = DatumGetInt32(c->constvalue);
-	else if (typid == INT8OID)
-		fs->default_val.i = DatumGetInt64(c->constvalue);
-	else
+	if (typid == FLOAT8OID)
 		fs->default_val.f = DatumGetFloat8(c->constvalue);
+	else
+		fs->default_val.i = datum_int(typid, c->constvalue);
 	return true;
 }
 
@@ -129,11 +168,31 @@ result_type(SiftWinFuncKind kind, Oid arg)
 		case SWIN_COUNT:
 			return INT8OID;
 		case SWIN_SUM:
-			return arg == INT4OID ? INT8OID : arg == INT8OID ? NUMERICOID : FLOAT8OID;
+			return arg == INT2OID || arg == INT4OID ? INT8OID : arg == INT8OID ? NUMERICOID : FLOAT8OID;
 		case SWIN_AVG:
 			return arg == FLOAT8OID ? FLOAT8OID : NUMERICOID;
 		default:
 			return arg;
+	}
+}
+
+/* the argument types of a function: numbers for all of them, and for the functions that only compare or hand back a value a date or a timestamp too (an integer here) */
+static bool
+arg_type_ok(SiftWinFuncKind kind, Oid typid)
+{
+	switch (typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+		case FLOAT8OID:
+			return true;
+		case DATEOID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+			return kind != SWIN_SUM && kind != SWIN_AVG;
+		default:
+			return kind == SWIN_COUNT;
 	}
 }
 
@@ -162,7 +221,7 @@ func_spec(SiftV6Input *in, const WindowFunc *wf, bool range, SiftV6WindowSpec *s
 		s->arg_slot[f] = slot;
 		s->arg_typid[f] = in->col[slot].typid;
 		fs->arg_type = in->col[slot].type;
-		if (kind != SWIN_COUNT && in->col[slot].typid != INT4OID && in->col[slot].typid != INT8OID && in->col[slot].typid != FLOAT8OID)
+		if (!arg_type_ok(kind, in->col[slot].typid))
 			return false;
 	}
 	if (kind >= SWIN_COUNT_STAR)
@@ -226,10 +285,11 @@ sift_v6_window_spec(const List *priv, SiftV6Input *in, ParamListInfo params, Sif
 	const List *funcs = list_nth(priv, PRIV_FUNCS);
 	const List *bound = list_nth(priv, PRIV_BOUND);
 	const int	topk_func = list_nth_int(ints, 3);
-	const bool	ps = list_nth_int(ints, 5) != 0;
+	const int	mode = list_nth_int(ints, 5);
+	const bool	ps = mode != WIN_EXACT;
 	int			f = 0;
 
-	*out = (SiftV6WindowSpec) {.indexoid = (Oid) list_nth_int(ints, 0),.rti = (Index) list_nth_int(ints, 1),.partsort = ps};
+	*out = (SiftV6WindowSpec) {.indexoid = (Oid) list_nth_int(ints, 0),.rti = (Index) list_nth_int(ints, 1),.partsort = ps,.regroup = mode == WIN_REGROUP};
 	out->win.mode = (SiftWinMode) list_nth_int(ints, 2);
 	out->win.limit = SIFT_WIN_NO_LIMIT;
 	if (sift_v6_winx_wanted(funcs))
@@ -316,7 +376,7 @@ sift_v6_window_datum(const SiftV6WindowSpec *s, int f, const SiftWinVal *v)
 		case SWIN_LAG:
 		case SWIN_LEAD:
 		case SWIN_FIRST_VALUE:
-			return s->arg_typid[f] == INT4OID ? Int32GetDatum((int32) v->i) : s->arg_typid[f] == INT8OID ? Int64GetDatum(v->i) : Float8GetDatum(v->f);
+			return s->arg_typid[f] == FLOAT8OID ? Float8GetDatum(v->f) : int_datum(s->arg_typid[f], v->i);
 		default:
 			return Int64GetDatum(v->i);
 	}
@@ -326,6 +386,7 @@ typedef struct Feed
 {
 	SiftV6Source *src;
 	const SiftV6WindowSpec *spec;
+	SiftWinCarry *carry;
 	SiftV6Batch b;
 } Feed;
 
@@ -337,6 +398,8 @@ feed_next(void *p, SiftWinBatch *out)
 
 	if (!fd->src->next(fd->src, &fd->b))
 		return false;
+	if (fd->carry != NULL)
+		sift_win_carry_put(fd->carry, &fd->b);
 	*out = (SiftWinBatch) {.n = fd->b.n,.tag = fd->b.tag,.mask = fd->b.mask};
 	for (int i = 0; i < s->win.n_part; i++)
 		out->part[i] = &fd->b.col[s->part_slot[i]];
@@ -356,9 +419,9 @@ feed_skip(void *p, const int64 *part_key, uint8 part_nulls)
 }
 
 void
-sift_v6_window_run(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, SiftWinEmit emit, void *emit_arg, SiftWinStats *stats)
+sift_v6_window_run(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg, SiftWinStats *stats)
 {
-	Feed		fd = {.src = src,.spec = spec};
+	Feed		fd = {.src = src,.spec = spec,.carry = carry};
 	SiftWindowExec *w = sift_window_create(cxt, &spec->win, (uint64) work_mem * 1024 / 4, feed_next, src->skip != NULL ? feed_skip : NULL, &fd, emit, emit_arg);
 
 	sift_window_run(w);
@@ -384,7 +447,7 @@ typedef struct WinPlan
 	int			mode;
 	int			topk_func;
 	int			range;
-	bool		partsort;
+	WinPartMode part_mode;
 	List	   *ord_flags;		/* with partsort: of each order key, desc | nulls_first << 1 */
 } WinPlan;
 
@@ -487,7 +550,7 @@ run_condition(WinPlan *p)
 static List *
 private_of(const WinPlan *p)
 {
-	List	   *ints = lappend_int(list_make5_int((int) p->index->indexoid, (int) p->rel->relid, p->mode, p->topk_func, p->range), p->partsort);
+	List	   *ints = lappend_int(list_make5_int((int) p->index->indexoid, (int) p->rel->relid, p->mode, p->topk_func, p->range), p->part_mode);
 
 	ints = list_concat(ints, list_copy(p->ord_flags));
 	return lappend(list_make5(ints, p->scan_tlist, p->part, p->ord, p->funcs), p->bound);
@@ -496,6 +559,18 @@ private_of(const WinPlan *p)
 static const CustomPathMethods window_path_methods = {"SiftAggV6Window", sift_agg_v6_window_plan_path, NULL};
 
 /* the engine runs the plan and the parts are sorted by the keys: the path is added */
+/* the Vars of the scan tlist: the columns the node gives back */
+static List *
+vars_of_tlist(const List *tlist)
+{
+	List	   *vars = NIL;
+
+	foreach_node(TargetEntry, te, (List *) tlist)
+		if (IsA(te->expr, Var))
+			vars = lappend(vars, te->expr);
+	return vars;
+}
+
 static bool
 window_finish(WinPlan *p, List *pathkeys, double rows)
 {
@@ -522,14 +597,17 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		return false;
 	for (int i = 0; i < spec.win.n_part; i++)
 		atts[n++] = in.col[spec.part_slot[i]].attno;
-	for (int i = 0; !p->partsort && i < spec.win.n_ord; i++)
+	for (int i = 0; p->part_mode == WIN_EXACT && i < spec.win.n_ord; i++)
 		atts[n++] = in.col[spec.ord_slot[i]].attno;
-	if (!sift_v6_format()->sorted_by(p->index->indexoid, atts, n))
+	if (p->part_mode == WIN_REGROUP ? !sift_win_regroup_fits(&in, vars_of_tlist(p->scan_tlist), p->rel->rows, estimate_num_groups(p->root, p->part, p->rel->rows, NULL, NULL), (uint64) work_mem * 1024) :
+		!sift_v6_format()->sorted_by(p->index->indexoid, atts, n))
 		return false;
 	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &total);
 	total += cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
-	if (p->partsort)
+	if (p->part_mode != WIN_EXACT)
 		total += cpu_operator_cost * p->rel->rows * 2.0 * (1 + spec.win.n_ord);
+	if (p->part_mode == WIN_REGROUP)
+		total += cpu_operator_cost * p->rel->rows * 4.0;
 	sift_v6_add_path(p->out, &window_path_methods, open, total, rows, pathkeys, lappend(list_copy(priv), p->quals));
 	return true;
 }
@@ -580,6 +658,23 @@ vars_any(WinPlan *p, const List *clauses, List **vars, List **flags)
 	return true;
 }
 
+/*
+ * The window over the index with the partitions made as mode says: from the parts that are sorted by the keys and the order (integer keys, no sort), by the keys (each partition is sorted), or by
+ * neither (the rows of a partition are put together first, and the rows leave in no order: a path with no pathkeys, so that PostgreSQL sorts them when the statement wants them sorted).
+ */
+static bool
+window_try(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, IndexOptInfo *ix, const WindowClause *wc, WinPartMode mode)
+{
+	WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.mode = SWIN_MODE_WINDOW,.part_mode = mode};
+
+	if (!frame_ok(wc, &p.range))
+		return false;
+	if (mode == WIN_EXACT ? !(vars_of(&p, wc->partitionClause, false, &p.part) && vars_of(&p, wc->orderClause, false, &p.ord) && int_vars(p.part) && int_vars(p.ord)) :
+		(wc->partitionClause == NIL || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags) || (mode == WIN_REGROUP && !int_vars(p.part))))
+		return false;
+	return collect_funcs(&p, wc) && run_condition(&p) && window_finish(&p, mode == WIN_REGROUP ? NIL : root->window_pathkeys, input_rel->rows);
+}
+
 static void
 window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
@@ -591,23 +686,11 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	wc = linitial(q->windowClause);
 	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
 	{
-		WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.mode = SWIN_MODE_WINDOW};
-
-		if (!agg_index_complete(ix) || !sift_v6_format()->owns_rel(ix->indexoid, false) || !frame_ok(wc, &p.range) || wc->orderClause == NIL)
+		if (!agg_index_complete(ix) || !sift_v6_format()->owns_rel(ix->indexoid, false) || wc->orderClause == NIL)
 			continue;
-		p.partsort = !(vars_of(&p, wc->partitionClause, false, &p.part) && vars_of(&p, wc->orderClause, false, &p.ord) && int_vars(p.part) && int_vars(p.ord));
-		if (p.partsort)
-		{
-			p.part = p.ord = NIL;
-			if (wc->partitionClause == NIL || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags))
-				continue;
-		}
-		if (!collect_funcs(&p, wc))
-			continue;
-		if (!run_condition(&p))
-			continue;
-		if (window_finish(&p, root->window_pathkeys, input_rel->rows))
-			return;
+		for (WinPartMode mode = WIN_EXACT; mode <= WIN_REGROUP; mode++)
+			if (window_try(root, input_rel, output_rel, ix, wc, mode))
+				return;
 	}
 }
 
@@ -673,6 +756,10 @@ typedef struct WindowState
 	SiftV6Store out;
 	SiftV6Vexpr *filters;		/* SiftWinx: the program of each FILTER clause */
 	AttrNumber *attnos;			/* the columns fetched for a row: the Vars of the scan tlist */
+	const Var **attvar;
+	Datum	   *fetched;
+	bool	   *fnull;
+	SiftWinCarry *carry;		/* the columns of the rows the batches held, so that no row is fetched */
 	int			nattrs;
 	int		   *entry;			/* of each entry of the scan tlist: its place among attnos, or -1 - f for the result of function f */
 	Datum	   *vals;
@@ -692,6 +779,9 @@ window_begin(CustomScanState *node, EState *estate, int eflags)
 	st->spec = palloc_aligned(sizeof(SiftV6WindowSpec), _Alignof(SiftV6WindowSpec), MCXT_ALLOC_ZERO);
 	st->quals = list_length(cs->custom_private) > PRIV_BOUND + 1 ? list_nth(cs->custom_private, PRIV_BOUND + 1) : NIL;
 	st->attnos = palloc(list_length(tlist) * sizeof(AttrNumber));
+	st->attvar = palloc(list_length(tlist) * sizeof(Var *));
+	st->fetched = palloc(list_length(tlist) * sizeof(Datum));
+	st->fnull = palloc(list_length(tlist) * sizeof(bool));
 	st->entry = palloc(list_length(tlist) * sizeof(int));
 	st->vals = palloc(list_length(tlist) * sizeof(Datum));
 	st->nulls = palloc(list_length(tlist) * sizeof(bool));
@@ -702,6 +792,7 @@ window_begin(CustomScanState *node, EState *estate, int eflags)
 		st->entry[i] = -1;
 		if (IsA(te->expr, Var))
 		{
+			st->attvar[st->nattrs] = (Var *) te->expr;
 			st->attnos[st->nattrs] = ((Var *) te->expr)->varattno;
 			st->entry[i] = st->nattrs++;
 		}
@@ -725,11 +816,11 @@ window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 {
 	const List *tlist = lsecond(((CustomScan *) st->css.ss.ps.plan)->custom_private);
 	MemoryContext old = MemoryContextSwitchTo(st->out.row_cx);
-	bool		have;
-	Datum	   *fetched = palloc(Max(st->nattrs, 1) * sizeof(Datum));
-	bool	   *fnull = palloc(Max(st->nattrs, 1) * sizeof(bool));
+	Datum	   *fetched = st->fetched;
+	bool	   *fnull = st->fnull;
+	const bool	have = st->nattrs == 0 || (st->carry != NULL && sift_win_carry_take(st->carry, tag, fetched, fnull)) ||
+		st->src->fetch(st->src, tag, st->attnos, st->nattrs, fetched, fnull);
 
-	have = st->nattrs == 0 || st->src->fetch(st->src, tag, st->attnos, st->nattrs, fetched, fnull);
 	SIFT_INVARIANT(have, "a row of the window scan of index %u has no columns to fetch", st->spec->indexoid);
 	for (int i = 0; i < list_length(tlist); i++)
 	{
@@ -788,6 +879,9 @@ window_release(WindowState *st)
 	if (st->src != NULL)
 		st->src->close(st->src);
 	st->src = NULL;
+	if (st->carry != NULL)
+		sift_win_carry_free(st->carry);
+	st->carry = NULL;
 	sift_v6_store_end(&st->out);
 }
 
@@ -812,7 +906,10 @@ window_run(WindowState *st, EState *estate)
 		st->out.ran = true;
 		return;
 	}
-	st->src = sift_v6_format()->open(estate, &in, st->quals == NIL ? NULL : &quals, true);
+	st->carry = st->spec->winx != NULL ? NULL : sift_win_carry_open(st->out.cx, &in, st->attvar, st->nattrs, (uint64) work_mem * 1024 / 4);
+	st->src = sift_v6_format()->open(estate, &in, st->quals == NIL ? NULL : &quals, !st->spec->regroup);
+	if (st->spec->regroup)
+		st->src = sift_win_regroup_over(st->out.cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
 	if (st->spec->partsort)
 	{
 		sift_v6_window_partsort(st->spec, &in);
@@ -826,7 +923,7 @@ window_run(WindowState *st, EState *estate)
 		st->stats = (SiftWinStats) {.rows_in = wx.rows,.rows_out = wx.rows,.max_pending = wx.max_pending};
 	}
 	else
-		sift_v6_window_run(st->out.cx, st->spec, st->src, window_emit, st, &st->stats);
+		sift_v6_window_run(st->out.cx, st->spec, st->src, st->carry, window_emit, st, &st->stats);
 	st->out.ran = true;
 }
 

@@ -1,7 +1,7 @@
 /*
  * agg/v6/v6_window.h - window functions (UPPERREL_WINDOW) and DISTINCT ON (UPPERREL_DISTINCT) of one table over the sorted parts of an index of format major 2, as a SiftAggV6Window node: when
  * the partition keys and then the order keys of the one window are a prefix of the sort key of the parts, agg/window.h computes the functions in the memory of one partition, with no sort and
- * no tuplestore of the input; when only the partition keys are, each partition is sorted by the order of the window in memory (any direction, NULLs first or last, int, float, numeric or C text keys). A WHERE rn <= K over ROW_NUMBER, RANK or DENSE_RANK (the run condition PostgreSQL gives the window) stops a partition at its K-th row; DISTINCT ON is the same with
+ * no tuplestore of the input; when only the partition keys are, each partition is sorted by the order of the window in memory (any direction, NULLs first or last, int, float, numeric or C text keys); when no key is, the rows of a table of integers, dates, timestamps and float8 that fits work_mem are put together by partition first. A WHERE rn <= K over ROW_NUMBER, RANK or DENSE_RANK (the run condition PostgreSQL gives the window) stops a partition at its K-th row; DISTINCT ON is the same with
  * K = 1, or the last row of each partition when ORDER BY reverses the order of the parts. The rows leave in the order of the parts, one tuple for each row the engine emits.
  * What is not taken stays with PostgreSQL's WindowAgg: another sort order, a frame other than from the start of the partition to the current row, a function the engine does not have.
  *
@@ -20,6 +20,7 @@
 #include "agg/v6/v6_vexpr.h"
 
 struct SiftV6Winx;
+struct SiftWinCarry;
 
 typedef struct SiftV6WindowSpec
 {
@@ -33,6 +34,7 @@ typedef struct SiftV6WindowSpec
 	Oid			res_typid[SIFT_WIN_MAX_FUNCS];
 	struct SiftV6Winx *winx;	/* a function has a FILTER or a numeric argument: SiftWinx runs the window (v6_winx_glue.h), win has only its keys and the number of functions */
 	bool		partsort;		/* the parts are sorted by the PARTITION BY keys only: each partition is sorted by the window order as it is read (v6_win_partsort.h) */
+	bool		regroup;		/* with partsort: the parts are not sorted by the keys either: the rows of each partition are put together first (v6_win_par.h) */
 	bool		empty;			/* the run condition of this execution lets no row pass */
 	SiftWinPsSpec ps;
 } SiftV6WindowSpec;
@@ -56,6 +58,6 @@ extern void sift_v6_window_partsort(SiftV6WindowSpec *spec, const SiftV6Input *i
 extern Datum sift_v6_window_datum(const SiftV6WindowSpec *spec, int f, const SiftWinVal *v);
 
 /* The engine over the source (which gives the rows that pass the WHERE clauses, sorted by the keys): every row it emits goes to emit */
-extern void sift_v6_window_run(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, SiftWinEmit emit, void *emit_arg, SiftWinStats *stats);
+extern void sift_v6_window_run(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, struct SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg, SiftWinStats *stats);
 
 #endif							/* SIFT_AGG_V6_WINDOW_H */
