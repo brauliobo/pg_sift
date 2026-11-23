@@ -428,8 +428,13 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.ref = *ref;
 	w.ref.avgdl = seg->hdr->avgdl_ref;
 	w.verify = verify;
-	w.stops = seg->index && (sift_analyze_stemmer(sift_options_stemmer(sift_index_options(seg->index))) == SIFT_STEM_TS ||
-							 *sift_options_fields(sift_index_options(seg->index)) != '\0');
+	if (seg->index)
+	{
+		SiftAnalyzerConfig cfg;
+
+		sift_analyzer_config_from_index(seg->index, &cfg);
+		w.stops = cfg.stemmer == SIFT_STEM_TS || cfg.nfields > 0;
+	}
 	w.st = st;
 	w.visit = visit;
 	w.arg = arg;
