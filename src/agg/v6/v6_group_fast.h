@@ -13,6 +13,7 @@
 #include "postgres.h"
 
 #include "agg/group/ht.h"
+#include "agg/kern6.h"
 #include "agg/vec.h"
 #include "core/scan_types.h"
 
@@ -43,7 +44,11 @@ extern void sift_pack_batch(const SiftPackSpec *ps, SiftVec *const *kv, const ui
 /* Key i of a packed key: false when it is NULL */
 extern bool sift_pack_get(const SiftPackSpec *ps, const SiftInlineKey16 *k, int i, int64 *x);
 /* The hash of a packed key */
-extern uint64 sift_pack_hash(const SiftInlineKey16 *k);
+static inline uint64
+sift_pack_hash(const SiftInlineKey16 *k)
+{
+	return sift_aggk6_hash1(k->u64[0] ^ sift_aggk6_hash1(k->u64[1]));
+}
 /* The packed key of the values (a NULL key has bit i of nulls set and its value ignored), and its hash */
 extern uint64 sift_pack_key(const SiftPackSpec *ps, const int64 *x, uint64 nulls, SiftInlineKey16 *k);
 
