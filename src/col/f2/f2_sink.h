@@ -6,6 +6,8 @@
 
 #include "access/relscan.h"
 
+#include "col/col.h"
+#include "col/f2/delvec.h"
 #include "col/granule/granule.h"
 #include "core/scan_types.h"
 #include "core/f2/manifest.h"
@@ -49,6 +51,34 @@ extern void sift_f2_scan_set_part_sink(IndexScanDesc scan, SiftF2PartSink part_s
  */
 typedef bool (*SiftF2PartDictSink) (void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts);
 extern void sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSink sink);
+
+/*
+ * A granule the scan is about to read, offered to the consumer before a byte of it is decoded (the pruning, the zones and the skipping indexes have left it): its place, the predicates of the scan, which of
+ * them the zones or the indexes found true of every row (decided[k]) and the zone of the leaf of each (NULL: none), whether a value the zone holds is one the leaf could not keep (exceptions[k]), its deletion
+ * vector for the snapshot and whether a pending delete may be in it. A consumer that answers the granule from what it stores returns true and the granule is not read.
+ */
+typedef struct SiftF2GranOffer
+{
+	Relation	rel;
+	const SiftPart *part;
+	const SiftPartDesc *desc;
+	const struct SiftColSchema *schema;
+	uint32		g;
+	const SiftGranuleDesc *gd;
+	const SiftDvGran *dead;
+	Snapshot	snap;
+	const SiftColPred *preds;
+	int			npreds;
+	const bool *decided;
+	const SiftZone *const *zones;
+	const bool *exceptions;
+	bool		pend_hit;		/* a pending delete may be in the granule */
+	bool		patched;		/* the part has column deltas */
+} SiftF2GranOffer;
+
+typedef bool (*SiftF2GranSink) (void *arg, const SiftF2GranOffer *offer);
+/* The consumer of sift_f2_scan_sink offered the granules too; the argument is the one of the sink */
+extern void sift_f2_scan_set_gran_sink(IndexScanDesc scan, SiftF2GranSink gran_sink, void *gran_arg);
 
 /*
  * The least and the greatest value of each sink leaf over the granules of a part that no key, predicate, deletion vector, pending delete, bridge, column delta or

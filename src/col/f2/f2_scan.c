@@ -455,6 +455,8 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 	size_t		np = Max(s->npreds, 1);
 	GranuleWindow win = {.decided = palloc0((Size) SIFT_PF_WINDOW_GRANULES * np)};
 	uint16		cand[SIFT_GRANULE_ROWS / SIFT_NULL_SPARSE_MAX_DIV + 1];
+	const SiftZone **offer_zones = palloc0(np * sizeof(SiftZone *));
+	bool	   *offer_exc = palloc0(np);
 
 	for (uint32 g = g0; g < g1; g++)
 	{
@@ -489,6 +491,17 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 		{
 			s->survey_granules++;
 			continue;
+		}
+		if (s->gran_sink != NULL && s->bridge == NULL && s->cands == NULL)
+		{
+			for (int k = 0; k < s->npreds; k++)
+			{
+				offer_zones[k] = zones[k] != NULL ? &zones[k][g - g0] : NULL;
+				offer_exc[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
+			}
+			if (s->gran_sink(s->gran_arg, &(SiftF2GranOffer) {.rel = rel,.part = part,.desc = s->part,.schema = schema,.g = g,.gd = &dir[g],.dead = dg,.snap = snap,.preds = s->preds,.npreds = s->npreds,
+							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g)}))
+				continue;
 		}
 		old = MemoryContextSwitchTo(gcx);
 		sift_cfstr_memo_open(gcx);

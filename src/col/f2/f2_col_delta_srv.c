@@ -175,6 +175,12 @@ sift_cdi_scan_remap_tids(const F2Scan *s, uint32 g, uint64 *tids, int n)
 }
 
 bool
+sift_cdi_scan_granule_patched(const F2Scan *s, uint32 g)
+{
+	return scan_granule_map(s, g) != NULL;
+}
+
+bool
 sift_cdi_scan_remaps(const F2Scan *s, uint32 g)
 {
 	return sift_cdi_gran_remaps(scan_granule_map(s, g));
