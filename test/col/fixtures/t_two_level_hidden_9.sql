@@ -1,6 +1,6 @@
--- trap: nine cell keys beyond the id, one more than the limit: the outer aggregate stays in the normal plan (the arms may run in the scan, which is as fast or faster, so the tag is any)
--- shape: trap
--- expect: any
+-- nine cell keys beyond the id (the masks hold 32): the outer aggregate runs in the scan
+-- shape: item-summary-rollup
+-- expect: agg
 -- key: -
 -- scenario: yes
 WITH base AS (

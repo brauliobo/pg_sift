@@ -58,6 +58,7 @@ agg_cte_preinline	0.15
 agg_cte_scalar_consumers	0.67
 agg_cte_scope_lineage	8.14
 agg_cte_stock_rows	0.12
+agg_cte_two_level_fuse	0.23
 agg_cte_verdict_cache	0.64
 agg_cte_verdict_keys	1.83
 agg_cte_verdict_sizes	0.64
@@ -178,6 +179,7 @@ agg_join_filter_text	1.97
 agg_join_filter_uuid	3.50
 agg_join_key_types	4.21
 agg_join_none	0.26
+agg_join_on_true	0.18
 agg_join_order	1.76
 agg_join_pricing_suite	10.09
 agg_join_table_key	0.41
@@ -439,6 +441,7 @@ agg_topn_window	1.98
 agg_transparent_shapes	0.32
 agg_trunc_zone	15.35
 agg_two_level_arm_where	2.29
+agg_two_level_cell_qual	0.26
 agg_two_level_inner_child	0.63
 agg_two_level_inner_minmax	0.80
 agg_two_level_joins	2.87

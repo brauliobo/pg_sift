@@ -1,6 +1,6 @@
--- trap: an OR of an inner aggregate and a group column is evaluated per inner group, which needs the column's value there: the outer aggregate stays in the normal plan (the inner one may still run in the scan)
--- shape: trap
--- expect: any
+-- an OR of an inner aggregate and a group column is evaluated for each inner group on its aggregates and keys: the outer aggregate runs in the scan
+-- shape: item-summary-rollup
+-- expect: agg
 -- key: -
 SELECT category, kind, avg(avg_price) AS value, count(DISTINCT order_id) AS orders
 FROM (SELECT o.id AS order_id, i.category, i.kind, avg(i.price) AS avg_price

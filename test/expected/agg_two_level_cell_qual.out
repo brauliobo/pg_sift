@@ -1,0 +1,108 @@
+-- The per-order form (an inner aggregate for each order, category and kind, then an outer one over them) with a condition of the outer query that is not a
+-- comparison of one inner aggregate: an OR of an aggregate and a group column, a NOT, two group columns. PostgreSQL evaluates it for each inner group
+-- (cell), so the scan does too, with the values of the cell's aggregates and keys, and the outer aggregate stays in the same scan. The rows are those
+-- of the normal plan.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+CREATE TABLE orders (id int PRIMARY KEY, tenant_id int, source text, lang text, status text, country text, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO orders
+SELECT i, 1 + i % 30, (ARRAY['web', 'ios', 'api'])[1 + i % 3], (ARRAY['en', 'es'])[1 + i % 2], (ARRAY['open', 'paid', 'void'])[1 + i % 3], 'c' || i % 5,
+       (SELECT jsonb_agg(jsonb_build_object('category', 'cat' || (i + j) % 4, 'kind', (ARRAY['express', 'gift', 'pickup'])[1 + (i * j) % 3], 'qty', (i + j) % 7, 'price', 10 + (i * j) % 50))
+        FROM generate_series(1, 1 + i % 4) j)
+FROM generate_series(1, 4000) i;
+CREATE INDEX orders_col ON orders USING sift_col (id, tenant_id, source, lang, status, country, items) WITH (paths = 'items[]{category text, kind text, qty int4, price float8}');
+NOTICE:  sift_col index "orders_col": 1 automatic choice (track_changes)
+DETAIL:  track_changes = id
+HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('orders_col');
+VACUUM (FREEZE, ANALYZE) orders;
+-- the rows of the query with the extension on and off, how many differ, and the scans of the index in the plan (a two-level scan is one node, over no CTE scan)
+CREATE FUNCTION check_query(q text) RETURNS TABLE (n bigint, diff bigint, scans int, outer_agg bool) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO diff FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	SELECT count(*) INTO n FROM r_off;
+	SET LOCAL sift.enable_agg = on;
+	scans := 0;
+	outer_agg := false;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg' THEN scans := scans + 1; END IF;
+		IF l ~ 'Pushed Aggregates: .*count\(DISTINCT row\)' THEN outer_agg := true; END IF;
+	END LOOP;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+CREATE FUNCTION arm() RETURNS text LANGUAGE sql AS $$ SELECT $q$SELECT o.id AS order_id, i.category, i.kind, sum(i.qty) AS units FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE o.tenant_id < 20 GROUP BY o.id, i.category, i.kind$q$ $$;
+-- an OR of an aggregate and a group column, the same with the group column on the other side of the OR, a NOT, two group columns, AND with a simple condition
+SELECT * FROM check_query($q$SELECT category, kind, sum(units) AS u, count(DISTINCT order_id) AS orders FROM ($q$ || arm() || $q$) x WHERE units > 4 OR kind = 'express' GROUP BY category, kind$q$);
+ n  | diff | scans | outer_agg 
+----+------+-------+-----------
+ 12 |    0 |     1 | t
+(1 row)
+
+SELECT * FROM check_query($q$SELECT category, sum(units) AS u, count(DISTINCT order_id) AS orders FROM ($q$ || arm() || $q$) x WHERE kind = 'gift' OR units < 2 GROUP BY category$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 4 |    0 |     1 | t
+(1 row)
+
+SELECT * FROM check_query($q$SELECT category, sum(units) AS u, count(DISTINCT order_id) AS orders FROM ($q$ || arm() || $q$) x WHERE NOT (units > 3 AND kind <> 'pickup') GROUP BY category$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 4 |    0 |     1 | t
+(1 row)
+
+SELECT * FROM check_query($q$SELECT kind, sum(units) AS u, count(DISTINCT order_id) AS orders FROM ($q$ || arm() || $q$) x WHERE category = 'cat1' OR kind = 'gift' OR units = 0 GROUP BY kind$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 3 |    0 |     1 | t
+(1 row)
+
+SELECT * FROM check_query($q$SELECT category, sum(units) AS u, count(DISTINCT order_id) AS orders FROM ($q$ || arm() || $q$) x WHERE (units > 4 OR kind = 'express') AND units <> 3 GROUP BY category$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 4 |    0 |     1 | t
+(1 row)
+
+-- a group column that is NULL in some cells
+SELECT * FROM check_query($q$SELECT category, sum(units) AS u, count(DISTINCT order_id) AS orders FROM ($q$ || arm() || $q$) x WHERE kind IS NULL OR units > 5 GROUP BY category$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 4 |    0 |     1 | t
+(1 row)
+
+-- more than 8 keys of the cells: nine beyond the order, in arms of two shapes
+SELECT * FROM check_query($q$WITH base AS (
+  SELECT o.id AS order_id, o.source AS src, o.lang AS lng, o.status AS st, o.country AS cc, o.tenant_id AS sid, i.category AS mc, i.kind AS mk, i.qty
+  FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8)
+  WHERE o.tenant_id < 20)
+SELECT count(DISTINCT order_id) AS orders, count(*) AS cells, sum(units) AS units
+FROM (SELECT order_id, src, lng, st, cc, sid, mc, mk, qty, sum(qty) AS units FROM base GROUP BY order_id, src, lng, st, cc, sid, mc, mk, qty
+      UNION ALL
+      SELECT order_id, src, lng, st, cc, sid, mc, NULL::text, NULL::int, sum(qty) FROM base GROUP BY order_id, src, lng, st, cc, sid, mc) x$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 1 |    0 |     1 | t
+(1 row)
+
+-- the same, with the OR of an aggregate and a key among them
+SELECT * FROM check_query($q$WITH base AS (
+  SELECT o.id AS order_id, o.source AS src, o.lang AS lng, o.status AS st, o.country AS cc, o.tenant_id AS sid, i.category AS mc, i.kind AS mk, i.qty
+  FROM orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8)
+  WHERE o.tenant_id < 20)
+SELECT st, count(DISTINCT order_id) AS orders, sum(units) AS units
+FROM (SELECT order_id, src, lng, st, cc, sid, mc, mk, qty, sum(qty) AS units FROM base GROUP BY order_id, src, lng, st, cc, sid, mc, mk, qty) x
+WHERE units > 3 OR mk = 'gift' GROUP BY st$q$);
+ n | diff | scans | outer_agg 
+---+------+-------+-----------
+ 3 |    0 |     1 | t
+(1 row)
+
+DROP FUNCTION check_query(text), arm();
+DROP TABLE orders;
+DROP EXTENSION pg_sift;
