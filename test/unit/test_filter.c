@@ -532,7 +532,7 @@ trials_run(Trials *ts, size_t arena_bytes)
 {
 	for (int w = 0; w < WORKERS; w++)
 		ts->arena[w] = sift_arena_create(CurrentMemoryContext, arena_bytes);
-	unit_run_workers(getenv("FILTER_DEV") ? 1 : WORKERS, trial_worker, ts);
+	unit_run_workers(WORKERS, trial_worker, ts);
 }
 
 static void
@@ -556,7 +556,7 @@ test_damage(const Suite *s)
 		Trial	   *t = &ts.t[i];
 		bool		backend_ok = pgshim_try(trial_backend, t);
 
-		for (int w = 0; w < (getenv("FILTER_DEV") ? 1 : WORKERS); w++)
+		for (int w = 0; w < (WORKERS); w++)
 		{
 			CHECK(t->ok[w] == backend_ok);
 			if (!backend_ok)
@@ -583,7 +583,7 @@ test_arena_full(const Suite *s)
 	{
 		const Trial *t = &ts.t[i];
 
-		for (int w = 0; w < (getenv("FILTER_DEV") ? 1 : WORKERS); w++)
+		for (int w = 0; w < (WORKERS); w++)
 		{
 			if (t->ok[w])
 				check_same_mask(t->job, t->res[w], t->mask[w], t->job->want, t->job->mask);
@@ -778,9 +778,9 @@ test_cc_kernels(void)
 	for (int i = 0; i < nlv; i++)
 	{
 		level_use(lv[i]);
-		unit_run_workers(getenv("FILTER_DEV") ? 1 : WORKERS, cc_worker, &s);
+		unit_run_workers(WORKERS, cc_worker, &s);
 	}
-	CHECK(sift_test_trap_count() == traps || getenv("FILTER_DEV"));
+	CHECK(sift_test_trap_count() == traps);
 	printf("test_filter: %d chunks of the codec x %d tests, %d read by the kernels\n", s.n, CC_TESTS, handled);
 }
 
@@ -858,8 +858,8 @@ test_str_kernel(const Suite *s)
 	CHECK(ss.n > 0 && kept > 0);
 	for (int w = 0; w < WORKERS; w++)
 		ss.arena[w] = sift_arena_create(CurrentMemoryContext, ARENA_BYTES);
-	unit_run_workers(getenv("FILTER_DEV") ? 1 : WORKERS, str_worker, &ss);
-	CHECK(sift_test_trap_count() == traps || getenv("FILTER_DEV"));
+	unit_run_workers(WORKERS, str_worker, &ss);
+	CHECK(sift_test_trap_count() == traps);
 	printf("test_filter: %d string chunks on the kernel, %d keep their strings\n", ss.n, kept);
 }
 
@@ -873,10 +873,12 @@ test_levels(Suite *s)
 	for (int i = 0; i < nlv; i++)
 	{
 		level_use(lv[i]);
-		unit_run_workers(getenv("FILTER_DEV") ? 1 : WORKERS, filter_worker, s);
+		unit_run_workers(WORKERS, filter_worker, s);
 		printf("test_filter: level %d: %d filters x %d workers\n", (int) lv[i], s->njobs, WORKERS);
 	}
-	CHECK(sift_test_trap_count() == traps || getenv("FILTER_DEV"));
+	CHECK(sift_test_trap_count() == traps);
+	for (int w = 0; w < WORKERS; w++)
+		CHECK(s->arena[w]->high_water > 0 && s->arena[w]->high_water < ARENA_BYTES);
 }
 
 int
@@ -887,7 +889,6 @@ main(void)
 				kept = 0;
 
 	granule_fixture_init();
-	sift_test_trap_soft = getenv("FILTER_DEV") != NULL;
 	s.fx = granule_fixture_build(GRANULES, 7);
 	for (int w = 0; w < WORKERS; w++)
 		s.arena[w] = sift_arena_create(CurrentMemoryContext, ARENA_BYTES);
@@ -901,10 +902,10 @@ main(void)
 	CHECK((encs_filtered & ENCS_REQUIRED) == ENCS_REQUIRED);
 	printf("test_filter: %d filters (%d masks, %d keep strings)\n", s.njobs, bits, kept);
 	test_levels(&s);
+	printf("test_filter: high water of the 2 MB arena: %zu bytes\n", s.arena[0]->high_water);
 	test_cc_kernels();
 	test_str_kernel(&s);
-	if (!getenv("FILTER_DEV"))
-		test_damage(&s);
+	test_damage(&s);
 	test_arena_full(&s);
 	sift_colz_thread_fini();
 	granule_fixture_free((GranuleFixture *) s.fx);
