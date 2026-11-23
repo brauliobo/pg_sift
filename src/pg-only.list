@@ -516,6 +516,9 @@ col/f2/pend_del.h
 col/f2/preagg_delta.c
 col/f2/preagg_delta.h
 col/f2/preagg_test.c
+col/f2/preagg_v2.c
+col/f2/preagg_v2.h
+col/f2/preagg_v2_read.c
 col/f2/rowbuf.c
 col/f2/rowbuf.h
 col/f2/rowbuf_cluster.c
