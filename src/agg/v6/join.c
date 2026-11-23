@@ -5,8 +5,9 @@
  * The path takes the cheapest unparameterized paths of the two sides as its children (PostgreSQL plans them, with every scan and filter of its own), the outer side is probed and the inner one built. The
  * keys are plain columns of the children, which the node encodes as the exact bytes of v6_distinct_pg.h (the integer types are one key type, the float types another: two columns of other types are no
  * key); a join clause that is anything else is no join for this node and the path is not offered. Each child tuple is the payload of its row, a minimal tuple the node stores in the join's files and
- * reads back, so the join holds no more than its share of work_mem whatever the rows. The rows it makes go to a tuplestore (SiftV6Store) as the tuple of the scan the planner asked for: the columns of
- * the outer child and then those of the inner one, the inner ones NULL for a probe row of a left join that matched nothing.
+ * reads back, so the join holds no more than its share of work_mem whatever the rows. The rows it makes are the tuple of the scan the planner asked for: the columns of the outer child and then those of
+ * the inner one, the inner ones NULL for a probe row of a left join that matched nothing. They are given as they are made: the node reads the probe side a row at a time and hands out the rows of each
+ * row before it reads the next (what the partitions that went to files join is given after the last probe row), so a join of many rows holds a batch of them, not all.
  */
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the tables */
 #include "postgres.h"
@@ -24,6 +25,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
+#include "utils/tuplestore.h"
 
 #include "agg/agg.h"
 #include "agg/v6/v6_distinct_pg.h"
@@ -280,7 +282,17 @@ typedef struct V6Join
 	PlanState  *ips;
 	TupleTableSlot *oslot;
 	TupleTableSlot *islot;
-	SiftV6Store out;
+	MemoryContext cx;			/* one run of the join: its table, its keys and its queue */
+	MemoryContext row_cx;		/* what one output tuple takes to be built */
+	Tuplestorestate *wr;		/* the rows made, filling */
+	Tuplestorestate *rd;		/* the rows being given: the batch that was full before it */
+	uint64		nwr;
+	bool		started;		/* the build side is in */
+	bool		probed;			/* the probe side is read and the partitions that went to files are joined */
+	MinimalTuple pbuf;			/* the probe and build tuples of an output row, rebuilt in place for each row */
+	MinimalTuple bbuf;
+	Size		pcap;
+	Size		bcap;
 	SiftDistinctKey kb;
 	SiftGraceJoin *gj;
 	SiftGraceStats stats;
@@ -322,13 +334,17 @@ join_begin(CustomScanState *node, EState *estate, int eflags)
 	st->nulls = palloc(Max(st->nout, 1) * sizeof(bool));
 }
 
+/* the tuple of a side of an output row, copied to the buffer (aligned, grown when a tuple is longer) the slot reads it from */
 static void
-load_side(TupleTableSlot *slot, const uint8 *bytes, uint32 len)
+load_side(MemoryContext cx, TupleTableSlot *slot, MinimalTuple *buf, Size *cap, const uint8 *bytes, uint32 len)
 {
-	MinimalTuple mt = palloc(len);
-
-	memcpy(mt, bytes, len);
-	ExecStoreMinimalTuple(mt, slot, false);
+	if (len > *cap)
+	{
+		*cap = Max((Size) len, *cap * 2);
+		*buf = *buf == NULL ? MemoryContextAlloc(cx, *cap) : repalloc(*buf, *cap);
+	}
+	memcpy(*buf, bytes, len);
+	ExecStoreMinimalTuple(*buf, slot, false);
 	slot_getallattrs(slot);
 }
 
@@ -336,11 +352,11 @@ static void
 join_emit(void *arg, const uint8 *probe, uint32 plen, const uint8 *build, uint32 blen)
 {
 	V6Join	   *st = arg;
-	MemoryContext old = MemoryContextSwitchTo(st->out.row_cx);
+	MemoryContext old = MemoryContextSwitchTo(st->row_cx);
 
-	load_side(st->oslot, probe, plen);
+	load_side(st->cx, st->oslot, &st->pbuf, &st->pcap, probe, plen);
 	if (build != NULL)
-		load_side(st->islot, build, blen);
+		load_side(st->cx, st->islot, &st->bbuf, &st->bcap, build, blen);
 	for (int i = 0; i < st->nout; i++)
 	{
 		const TupleTableSlot *s = st->inner[i] ? st->islot : st->oslot;
@@ -349,7 +365,9 @@ join_emit(void *arg, const uint8 *probe, uint32 plen, const uint8 *build, uint32
 		st->vals[i] = st->nulls[i] ? (Datum) 0 : s->tts_values[st->resno[i] - 1];
 	}
 	MemoryContextSwitchTo(old);
-	sift_v6_store_put(&st->out, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
+	tuplestore_putvalues(st->wr, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
+	MemoryContextReset(st->row_cx);
+	st->nwr++;
 }
 
 /* the key of the tuple in the slot as bytes: true when a column of it is NULL, which no key equals */
@@ -375,47 +393,85 @@ key_of(V6Join *st, TupleTableSlot *slot, const AttrNumber *cols)
 	return any_null;
 }
 
+/* the tuple of the child as a row of the join: the build side into the table, the probe side joined to it (what it matches is made into rows by join_emit); the key and the copy of the tuple die with the row, what the join allocates (the files of its partitions) lives with the join */
 static void
-feed(V6Join *st, PlanState *ps, const AttrNumber *cols, bool build)
+take_row(V6Join *st, TupleTableSlot *slot, const AttrNumber *cols, bool build)
 {
-	for (;;)
-	{
-		TupleTableSlot *slot = ExecProcNode(ps);
-		MemoryContext old;
-		MinimalTuple mt;
-		bool		free_mt,
-					key_null;
+	MemoryContext old = MemoryContextSwitchTo(st->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
+	bool		free_mt;
+	const bool	key_null = key_of(st, slot, cols);
+	MinimalTuple mt = ExecFetchSlotMinimalTuple(slot, &free_mt);
 
-		if (TupIsNull(slot))
-			return;
-		CHECK_FOR_INTERRUPTS();
-		old = MemoryContextSwitchTo(st->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
-		key_null = key_of(st, slot, cols);
-		mt = ExecFetchSlotMinimalTuple(slot, &free_mt);
-		if (build)
-			sift_gjoin_build(st->gj, st->kb.buf, st->kb.len, key_null, mt, mt->t_len);
-		else
-			sift_gjoin_probe(st->gj, st->kb.buf, st->kb.len, key_null, mt, mt->t_len);
-		MemoryContextSwitchTo(old);
-		ResetExprContext(st->css.ss.ps.ps_ExprContext);
-	}
+	MemoryContextSwitchTo(st->cx);
+	if (build)
+		sift_gjoin_build(st->gj, st->kb.buf, st->kb.len, key_null, mt, mt->t_len);
+	else
+		sift_gjoin_probe(st->gj, st->kb.buf, st->kb.len, key_null, mt, mt->t_len);
+	MemoryContextSwitchTo(old);
+	ResetExprContext(st->css.ss.ps.ps_ExprContext);
+}
+
+static Tuplestorestate *
+queue_begin(EState *estate)
+{
+	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+	Tuplestorestate *q = tuplestore_begin_heap(false, false, work_mem);
+
+	MemoryContextSwitchTo(old);
+	return q;
 }
 
 static void
-join_run(V6Join *st, EState *estate)
+join_start(V6Join *st, EState *estate)
 {
-	sift_v6_store_start(&st->out, estate);
-	sift_dkey_init(&st->kb, st->out.cx);
-	st->gj = sift_gjoin_create(st->out.cx, st->type, (uint64) work_mem * 1024, st->est_build_bytes, join_emit, st);
-	feed(st, st->ips, st->ikey, true);
+	TupleTableSlot *slot = NULL;
+
+	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 join");
+	st->row_cx = AllocSetContextCreate(st->cx, "sift agg v6 join tuple", ALLOCSET_SMALL_SIZES);
+	st->wr = queue_begin(estate);
+	sift_dkey_init(&st->kb, st->cx);
+	st->gj = sift_gjoin_create(st->cx, st->type, (uint64) work_mem * 1024, st->est_build_bytes, join_emit, st);
+	for (slot = ExecProcNode(st->ips); !TupIsNull(slot); slot = ExecProcNode(st->ips))
+	{
+		CHECK_FOR_INTERRUPTS();
+		take_row(st, slot, st->ikey, true);
+	}
 	sift_gjoin_build_done(st->gj);
-	feed(st, st->ops, st->okey, false);
+	st->started = true;
+}
+
+static void
+join_probe_done(V6Join *st)
+{
 	sift_gjoin_finish(st->gj);
 	st->stats = *sift_gjoin_stats(st->gj);
 	sift_gjoin_free(st->gj);
 	st->gj = NULL;
 	sift_dkey_free(&st->kb);
-	st->out.ran = true;
+	st->probed = true;
+}
+
+/* the rows of probe rows until JOIN_BATCH of them are made (or the probe side ends) are the next batch to give */
+#define JOIN_BATCH	1024
+
+static void
+join_fill(V6Join *st)
+{
+	while (st->nwr < JOIN_BATCH && !st->probed)
+	{
+		TupleTableSlot *slot = ExecProcNode(st->ops);
+
+		if (TupIsNull(slot))
+			join_probe_done(st);
+		else
+		{
+			CHECK_FOR_INTERRUPTS();
+			take_row(st, slot, st->okey, false);
+		}
+	}
+	st->rd = st->wr;
+	st->wr = st->probed ? NULL : queue_begin(st->css.ss.ps.state);
+	st->nwr = 0;
 }
 
 static TupleTableSlot *
@@ -423,9 +479,19 @@ join_next(ScanState *ss)
 {
 	V6Join	   *st = (V6Join *) ss;
 
-	if (!st->out.ran)
-		join_run(st, ss->ps.state);
-	return sift_v6_store_get(&st->out, ss->ss_ScanTupleSlot);
+	if (!st->started)
+		join_start(st, ss->ps.state);
+	for (;;)
+	{
+		if (st->rd != NULL && tuplestore_gettupleslot(st->rd, true, false, ss->ss_ScanTupleSlot))
+			return ss->ss_ScanTupleSlot;
+		if (st->rd != NULL)
+			tuplestore_end(st->rd);
+		st->rd = NULL;
+		if (st->wr == NULL)
+			return NULL;
+		join_fill(st);
+	}
 }
 
 static bool
@@ -441,32 +507,51 @@ join_exec(CustomScanState *node)
 }
 
 static void
+join_reset(V6Join *st)
+{
+	if (st->rd != NULL)
+		tuplestore_end(st->rd);
+	if (st->wr != NULL)
+		tuplestore_end(st->wr);
+	if (st->gj != NULL)
+		sift_gjoin_free(st->gj);
+	if (st->cx != NULL)
+		MemoryContextDelete(st->cx);
+	st->rd = st->wr = NULL;
+	st->gj = NULL;
+	st->cx = st->row_cx = NULL;
+	st->pbuf = st->bbuf = NULL;
+	st->pcap = st->bcap = 0;
+	st->nwr = 0;
+	st->started = st->probed = false;
+}
+
+static void
 join_end(CustomScanState *node)
 {
 	V6Join	   *st = (V6Join *) node;
 
-	sift_v6_store_end(&st->out);
+	join_reset(st);
 	ExecDropSingleTupleTableSlot(st->oslot);
 	ExecDropSingleTupleTableSlot(st->islot);
 	ExecEndNode(st->ops);
 	ExecEndNode(st->ips);
 }
 
-/* the same parameters give the same rows: a scan again reads them from their start; other parameters make the join run again over children that are scanned again */
+/* a scan again runs the join again over children that are scanned again: the rows are given as they are made and are not kept */
 static void
 join_rescan(CustomScanState *node)
 {
 	V6Join	   *st = (V6Join *) node;
-	const bool	changed = node->ss.ps.chgParam != NULL;
 
-	if (changed)
-		foreach_ptr(PlanState, child, node->custom_ps)
-		{
+	foreach_ptr(PlanState, child, node->custom_ps)
+	{
+		if (node->ss.ps.chgParam != NULL)
 			UpdateChangedParamSet(child, node->ss.ps.chgParam);
-			if (child->chgParam == NULL)
-				ExecReScan(child);
-		}
-	sift_v6_store_rescan(&st->out, changed);
+		if (child->chgParam == NULL)
+			ExecReScan(child);
+	}
+	join_reset(st);
 }
 
 static void
@@ -476,7 +561,7 @@ join_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	static const char *const names[] = {"Inner", "Left", "Semi", "Anti"};
 
 	ExplainPropertyText("Join Type", names[st->type], es);
-	if (st->out.ran)
+	if (st->started)
 	{
 		sift_v6_explain_count(es, "Build Rows", (int64) st->stats.build_rows);
 		sift_v6_explain_count(es, "Probe Rows", (int64) st->stats.probe_rows);
