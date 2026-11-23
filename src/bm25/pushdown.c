@@ -77,8 +77,7 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 			   *partial = rel->partial_pathlist,
 			   *indexlist = rel->indexlist,
 			   *joininfo = rel->joininfo;
-	bool		eclass_joins = rel->has_eclass_joins,
-				parallel = rel->consider_parallel;
+	bool		eclass_joins = rel->has_eclass_joins;
 	BitmapHeapPath *volatile best = NULL;
 	uint64		saved;
 
@@ -87,7 +86,7 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 		return NULL;
 	rel->pathlist = rel->partial_pathlist = rel->joininfo = NIL;
 	rel->indexlist = indexes;
-	rel->has_eclass_joins = rel->consider_parallel = false;
+	rel->has_eclass_joins = false;
 	saved = sift_plain_index_scans_off(rel);
 	PG_TRY();
 	{
@@ -105,7 +104,6 @@ sift_filter_bitmap_path(PlannerInfo *root, RelOptInfo *rel)
 		rel->indexlist = indexlist;
 		rel->joininfo = joininfo;
 		rel->has_eclass_joins = eclass_joins;
-		rel->consider_parallel = parallel;
 	}
 	PG_END_TRY();
 	return best;

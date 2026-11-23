@@ -346,7 +346,7 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 		if (ps->filter == NULL || sift_filter_pushdown != SIFT_PUSHDOWN_FORCE)
 			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, ps->filter, false, parallel, ps->only_best, &ps->best, &ps->best_partial);
 		if (ps->filter)
-			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, ps->filter, true, false, ps->only_best, &ps->best, &ps->best_partial);
+			add_scan_paths(root, rel, &c, &est, mode, k, pathkeys, ps->filter, true, parallel, ps->only_best, &ps->best, &ps->best_partial);
 	}
 }
 

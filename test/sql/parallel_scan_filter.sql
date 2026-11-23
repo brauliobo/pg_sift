@@ -1,0 +1,136 @@
+-- Parallel SiftScan with a pushed down filter, and over partitions: a ranked scan whose other quals are a bitmap of a btree runs in workers that each build the bitmap from the same snapshot,
+-- and every shape returns what the serial plan returns (rows, scores, ties by id), under write buffers, dead rows, a lossy bitmap and a rescanned Gather. A partitioned table is scanned
+-- by Parallel Append of its partitions' scans; a ranked scan over partitions is a Merge Append that keeps the order of the ties.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE pfl (id int PRIMARY KEY, g int NOT NULL, body text, pad text) WITH (autovacuum_enabled = off, fillfactor = 70, parallel_workers = 3);
+ALTER TABLE pfl ALTER COLUMN pad SET STORAGE PLAIN;
+CREATE FUNCTION pfl_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT (ARRAY['quick brown fox', 'lazy dog', 'the quick fox jumps', 'brown dog runs fast', 'fox'])[1 + i % 5] || ' w' || i % 7 || ' x' || i % 101 || repeat(' filler', i % 4) $$;
+INSERT INTO pfl SELECT i, i % 10, pfl_doc(i), repeat('x', 1500) FROM generate_series(1, 6000) i;
+CREATE INDEX pfl_idx ON pfl USING sift (body) WITH (write_buffer_limit = 64);
+CREATE INDEX pfl_g ON pfl (g);
+INSERT INTO pfl SELECT i, i % 10, pfl_doc(i), repeat('x', 1500) FROM generate_series(6001, 9000) i;
+SELECT sift.promote('pfl_idx') IS NOT NULL AS promoted;
+INSERT INTO pfl SELECT i, i % 10, pfl_doc(i), repeat('x', 1500) FROM generate_series(9001, 10000) i;
+DELETE FROM pfl WHERE id % 10 = 3 AND id % 4 = 0;
+VACUUM pfl;
+DELETE FROM pfl WHERE id % 10 = 6 AND id % 3 = 0;
+UPDATE pfl SET pad = repeat('y', 1500) WHERE id % 17 = 0;
+UPDATE pfl SET body = body || ' moved' WHERE id % 19 = 0;
+UPDATE pfl SET g = 3 WHERE id % 23 = 0;
+ANALYZE pfl;
+
+-- serial: no pushdown, no worker; push: the filter pushed down, no worker; par: the filter pushed down, workers
+CREATE FUNCTION pfl_set(mode text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('max_parallel_workers_per_gather', CASE WHEN mode = 'par' THEN '3' ELSE '0' END, true);
+	PERFORM set_config('parallel_setup_cost', '0', true);
+	PERFORM set_config('parallel_tuple_cost', '0', true);
+	PERFORM set_config('min_parallel_index_scan_size', '0', true);
+	PERFORM set_config('sift.parallel_scan', (mode = 'par')::text, true);
+	PERFORM set_config('sift.filter_pushdown', CASE WHEN mode = 'serial' THEN 'off' ELSE 'force' END, true);
+	PERFORM set_config('sift.enable_scan', (mode <> 'seq')::text, true);
+	PERFORM set_config('enable_bitmapscan', (mode <> 'seq')::text, true);
+	PERFORM set_config('enable_indexscan', (mode = 'seq')::text, true);
+	PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
+END $$;
+
+-- the top k by score and id of the rows of a g range that match q, with their scores
+CREATE FUNCTION pfl_top(q text, lo int, hi int, k int, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	r text;
+BEGIN
+	PERFORM pfl_set(mode);
+	SELECT string_agg(id || ':' || round(s::numeric, 4), ',' ORDER BY s DESC, id) INTO r
+	FROM (SELECT id, sift.score(ctid) AS s FROM pfl WHERE body @@> q AND g BETWEEN lo AND hi ORDER BY 2 DESC, id LIMIT k) t;
+	RETURN r;
+END $$;
+
+-- every row that matches
+CREATE FUNCTION pfl_ids(q text, lo int, hi int, mode text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pfl_set(mode);
+	RETURN md5((SELECT coalesce(string_agg(id::text, ',' ORDER BY id), '') FROM pfl WHERE body @@> q AND g BETWEEN lo AND hi));
+END $$;
+
+CREATE FUNCTION pfl_plan(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	r text := '';
+BEGIN
+	PERFORM pfl_set(mode);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r || l || E'\n';
+	END LOOP;
+	RETURN r;
+END $$;
+
+CREATE TABLE pfl_q (name text PRIMARY KEY, q text, lo int, hi int, k int);
+INSERT INTO pfl_q VALUES
+	('one_g',		'fox', 3, 3, 10),
+	('moved_g',		'quick fox', 3, 3, 25),
+	('range',		'brown OR lazy', 2, 4, 40),
+	('rare_k1',		'dog w3', 0, 9, 1),
+	('phrase',		'"quick fox"', 5, 7, 15),
+	('wide_k',		'fox', 0, 9, 500),
+	('no_match',	'nosuchword', 3, 3, 10);
+
+\echo -- the plan: a Gather Merge over a parallel scan that carries the bitmap of the filter
+SELECT pfl_plan('SELECT id FROM pfl WHERE body @@> ''fox'' AND g = 3 ORDER BY sift.score(ctid) DESC LIMIT 10', 'par') ~ 'Gather Merge' AS gather_merge,
+	pfl_plan('SELECT id FROM pfl WHERE body @@> ''fox'' AND g = 3 ORDER BY sift.score(ctid) DESC LIMIT 10', 'par') ~ 'Parallel Custom Scan \(SiftScan\)' AS parallel_scan,
+	pfl_plan('SELECT id FROM pfl WHERE body @@> ''fox'' AND g = 3 ORDER BY sift.score(ctid) DESC LIMIT 10', 'par') ~ 'Bitmap Index Scan on pfl_g' AS pushed_bitmap;
+
+\echo -- the top rows, the scores and the ties of the parallel scan are those of the serial plan
+SELECT name, pfl_top(q, lo, hi, k, 'serial') IS NOT DISTINCT FROM pfl_top(q, lo, hi, k, 'push') AS push_equals_serial,
+	pfl_top(q, lo, hi, k, 'serial') IS NOT DISTINCT FROM pfl_top(q, lo, hi, k, 'par') AS par_equals_serial, pfl_top(q, lo, hi, k, 'par') IS NOT NULL AS has_rows
+FROM pfl_q ORDER BY name;
+
+\echo -- the matches of the parallel scan are those of sequential evaluation
+SELECT name, pfl_ids(q, lo, hi, 'seq') = pfl_ids(q, lo, hi, 'par') AS par_equals_seq FROM pfl_q ORDER BY name;
+
+\echo -- a bitmap that does not fit work_mem is lossy: the scan still returns the serial answer
+SET work_mem = '64kB';
+SELECT name, pfl_top(q, lo, hi, k, 'serial') IS NOT DISTINCT FROM pfl_top(q, lo, hi, k, 'par') AS par_equals_serial FROM pfl_q ORDER BY name;
+RESET work_mem;
+
+\echo -- rows deleted and inserted by the open transaction
+BEGIN;
+DELETE FROM pfl WHERE g = 3 AND id % 2 = 0;
+INSERT INTO pfl SELECT i, 3, 'fox late ' || i, repeat('z', 100) FROM generate_series(20001, 20300) i;
+SELECT name, pfl_top(q, lo, hi, k, 'serial') IS NOT DISTINCT FROM pfl_top(q, lo, hi, k, 'par') AS par_equals_serial FROM pfl_q ORDER BY name;
+SELECT pfl_ids('fox', 3, 3, 'seq') = pfl_ids('fox', 3, 3, 'par') AS par_equals_seq;
+ROLLBACK;
+
+\echo -- partitions: a scan of each partition under a Parallel Append, a Merge Append for the ranked scan
+CREATE TABLE ppl (id int, g int, body text) PARTITION BY RANGE (g);
+CREATE TABLE ppl0 PARTITION OF ppl FOR VALUES FROM (0) TO (5) WITH (parallel_workers = 2, autovacuum_enabled = off);
+CREATE TABLE ppl1 PARTITION OF ppl FOR VALUES FROM (5) TO (10) WITH (parallel_workers = 2, autovacuum_enabled = off);
+INSERT INTO ppl SELECT i, i % 10, pfl_doc(i) FROM generate_series(1, 20000) i;
+CREATE INDEX ppl_idx ON ppl USING sift (body);
+DELETE FROM ppl WHERE id % 13 = 0;
+UPDATE ppl SET body = body || ' moved' WHERE id % 29 = 0;
+ANALYZE ppl;
+SELECT pfl_plan('SELECT id FROM ppl WHERE body @@> ''fox''', 'par') ~ 'Parallel Append' AS parallel_append,
+	pfl_plan('SELECT count(*) FROM ppl WHERE body @@> ''fox''', 'par') ~ 'Parallel Append' AS parallel_count,
+	pfl_plan('SELECT id FROM ppl WHERE body @@> ''fox'' ORDER BY sift.score(ctid) DESC LIMIT 10', 'par') ~ 'Merge Append' AS merge_append;
+CREATE FUNCTION ppl_ids(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pfl_set(mode);
+	RETURN md5((SELECT string_agg(id::text, ',' ORDER BY id) FROM ppl WHERE body @@> q));
+END $$;
+SELECT q, ppl_ids(q, 'seq') = ppl_ids(q, 'par') AS par_equals_seq FROM (VALUES ('fox'), ('quick moved'), ('dog OR lazy')) v(q) ORDER BY q;
+CREATE FUNCTION ppl_top(q text, mode text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pfl_set(mode);
+	RETURN (SELECT string_agg(id || ':' || round(s::numeric, 4), ',' ORDER BY s DESC, id) FROM (SELECT id, sift.score(ctid) AS s FROM ppl WHERE body @@> q ORDER BY 2 DESC, id LIMIT 30) t);
+END $$;
+SELECT q, ppl_top(q, 'serial') = ppl_top(q, 'par') AS par_equals_serial FROM (VALUES ('fox'), ('quick moved'), ('dog OR lazy')) v(q) ORDER BY q;
+
+DROP FUNCTION ppl_top(text, text), ppl_ids(text, text);
+DROP TABLE ppl;
+DROP TABLE pfl_q;
+DROP FUNCTION pfl_plan(text, text), pfl_ids(text, int, int, text), pfl_top(text, int, int, int, text), pfl_set(text), pfl_doc(int);
+DROP TABLE pfl;
+DROP EXTENSION pg_sift;

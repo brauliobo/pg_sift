@@ -471,8 +471,9 @@ scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, Bit
  * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
  * the verification are shared out. With a pushed down filter the ranker only meets the matches its
  * bitmap keeps (the fraction fe.sel of them, at least those that pass the quals), at the price of
- * building the bitmap first; the bitmap is built by one backend, so a pushed down scan is never
- * parallel (nworkers 0). Without the push the bitmap only tells where the rows that pass lie.
+ * building the bitmap first; every participant of a parallel scan builds the bitmap of its own from the
+ * same snapshot (the cost of building it is part of what each pays, as the dictionary lookups are).
+ * Without the push the bitmap only tells where the rows that pass lie.
  */
 static CustomPath *
 scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
@@ -490,7 +491,6 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, S
 				postings,
 				startup;
 
-	Assert(!push || nworkers == 0);
 	/* a pushed down filter has the ranker meet only rows that pass, and parallel workers share a threshold of k rows that did */
 	if (push || nworkers > 0)
 		plain.late_k = 0;
@@ -503,7 +503,7 @@ scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, S
 	 * a ranked partition under a Parallel Append would reach a Sort that loses the scan's tie order:
 	 * MergeAppend keeps it; and a ranked scan in a join under a Gather would not pass its score on
 	 */
-	cp->path.parallel_safe = parallel_ok(rel) &&
+	cp->path.parallel_safe = parallel_ok(rel) && (!push || filter->path.parallel_safe) &&
 		!(mode == SIFT_MODE_RANKED && (is_partition(rel) || bms_membership(root->all_baserels) != BMS_SINGLETON));
 	cp->path.parallel_aware = nworkers > 0;
 	cp->path.parallel_workers = nworkers;
@@ -559,9 +559,9 @@ cheaper(CustomPath *a, CustomPath *b)
 }
 
 /*
- * Adds the serial path, and a parallel one next to it unless the filter is pushed down: the bitmap of a
- * filter is built by one backend, so a pushed down scan stays serial and competes with the parallel one
- * on cost. The filter bitmap, when there is one, also prices the scan that does not push it down. With
+ * Adds the serial path, and a parallel one next to it (a pushed down filter needs a bitmap path that is
+ * safe in a worker: each participant builds the bitmap). The filter bitmap, when there is one, also
+ * prices the scan that does not push it down. With
  * only_best the paths are not added: the caller replaces the rel's paths with the best ones, and
  * add_path would free a path it rejects or dominates (a seq scan of an empty table) that best still
  * points to.
@@ -571,7 +571,7 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *e
 			   BitmapHeapPath *filter, bool push, bool parallel, bool only_best, CustomPath **best, CustomPath **best_partial)
 {
 	CustomPath *cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, push, 0);
-	int			nworkers = !push && parallel ? scan_workers(rel, c, &est->sc, mode, k) : 0;
+	int			nworkers = parallel && (!push || filter->path.parallel_safe) ? scan_workers(rel, c, &est->sc, mode, k) : 0;
 
 	if (cheaper(cp, *best))
 		*best = cp;
@@ -579,7 +579,7 @@ add_scan_paths(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *e
 		add_path(rel, &cp->path);
 	if (nworkers > 0)
 	{
-		cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, false, nworkers);
+		cp = scan_path(root, rel, c, est, mode, k, pathkeys, filter, push, nworkers);
 		if (cheaper(cp, *best_partial))
 			*best_partial = cp;
 		if (!only_best)
