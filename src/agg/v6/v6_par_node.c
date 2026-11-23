@@ -14,6 +14,7 @@
 
 #include "agg/cost.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_par_dist.h"
 #include "agg/v6/v6_par_pg.h"
 
 #define SIFT_PAR_MIN_POOL_BYTES	(4 << 20)
@@ -69,8 +70,9 @@ count_distinct(const SiftV6Spec *spec)
 }
 
 /*
- * What the partitions of the run take at most before their records go to files: the records the participants hand over, each group once for every participant that saw it (all the rows
- * when a COUNT(DISTINCT) sends its values). The block is made of that and not of work_mem: the operating system fills every byte of a segment when it is created.
+ * What the partitions of the run take at most before their records go to files: the records the participants hand over, each group once for every participant that saw it. A COUNT(DISTINCT) sends
+ * its values too: those of a query of no keys that its participants dedup first (v6_par_dist.h; a third of the rows is what the benchmark table needs), every row of a GROUP BY. The block is made of
+ * that and not of work_mem: the operating system fills every byte of a segment when it is created.
  */
 static double
 chunk_budget(const SiftV6ParNode *pn, int nparticipants)
@@ -78,14 +80,21 @@ chunk_budget(const SiftV6ParNode *pn, int nparticipants)
 	const SiftV6Spec *spec = pn->spec;
 	double		rows = 0;
 	const double groups = Max((double) spec->groups_est, 1.0);
-	const bool	values = count_distinct(spec) > 0;
-	double		records;
+	double		group_recs;
+	double		bytes;
 
 	for (uint32 i = 0; i < pn->plan.nrefs; i++)
 		rows += (double) pn->plan.refs[i].ngranules * SIFT_GRANULE_ROWS;
-	records = values ? rows : nparticipants * groups * (1.0 - exp(-rows / nparticipants / groups));
-
-	return Min((double) get_hash_memory_limit(), Max(records * (double) (sizeof(SiftV6RecHdr) + (values ? 32 : (Size) spec->naggs * sizeof(V6Acc) + 32)), (double) SIFT_PAR_MIN_POOL_BYTES));
+	group_recs = nparticipants * groups * (1.0 - exp(-rows / nparticipants / groups));
+	if (count_distinct(spec) == 0)
+		bytes = group_recs * (sizeof(SiftV6RecHdr) + (Size) spec->naggs * sizeof(V6Acc) + 32);
+	else if (!sift_v6_par_dist_lean(spec))
+		bytes = rows * (sizeof(SiftV6RecHdr) + 32);
+	else if (spec->nkeys == 0)
+		bytes = rows * SIFT_PAR_DIST_FLAT_SHARE * (sizeof(SiftV6DistRec) + 8);
+	else
+		bytes = rows * (sizeof(SiftV6DistRec) + 8 * (spec->nkeys + 2)) + group_recs * (sizeof(SiftV6RecHdr) + (Size) spec->naggs * sizeof(V6Acc) + 32);
+	return Min((double) get_hash_memory_limit(), Max(bytes, (double) SIFT_PAR_MIN_POOL_BYTES));
 }
 
 /* The leader lists the units of the scan once; the block holds them for every participant */

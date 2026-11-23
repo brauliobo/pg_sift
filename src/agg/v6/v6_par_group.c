@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_par_dist.h"
 #include "agg/v6/v6_par_pg.h"
 #include "core/memtrack.h"
 
@@ -36,6 +37,7 @@ typedef struct ParEnv
 	SiftV6ScanStats seen;
 	V6AccOp    *op;
 	struct ParLocal *cur;
+	bool		lean;			/* the COUNT(DISTINCT) aggregates are those of v6_par_dist.h */
 } ParEnv;
 
 static inline bool
@@ -53,6 +55,8 @@ typedef struct ParLocal
 	SiftDistinct *seen;			/* the distinct values of the rows scanned since the last hand over, by (set, aggregate) */
 	uint8	   *rec;
 	Size		rec_cap;
+	SiftV6ParDistOut *dist_out;	/* a participant that scans: its COUNT(DISTINCT) rows (v6_par_dist.h) */
+	SiftV6ParDist *dist;		/* the owner of a partition: the values of its COUNT(DISTINCT) aggregates (v6_par_dist.h) */
 } ParLocal;
 
 /* The bytes after the accumulators of a record that a text state needs: its winner when it does not fit the 8 bytes of the state itself (the offsets of an arena mean nothing to another participant) */
@@ -115,14 +119,6 @@ combine_accs(ParLocal *l, V6Acc *dst, const V6Acc *src, const char *tail)
 			sift_v6_acc_combine(e->op[j], &dst[j], &src[j]);
 }
 
-static void
-check_record_size(uint32 rlen)
-{
-	if (rlen > SIFT_RADIX_PAYLOAD)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a group key or a COUNT(DISTINCT) value is too large for the parallel aggregate"),
-						errhint("Set max_parallel_workers_per_gather to 0 for this query.")));
-}
-
 /* The hash the group has in its table: the key of the group is in the bytes after [plen][nulls]; a set of no keys is hashed by the value */
 static uint64
 dist_record_hash(const ParLocal *l, uint32 set_idx, const uint8 *bytes, uint32 len)
@@ -157,7 +153,7 @@ put_dist_record(ParLocal *l, uint32 set_idx, uint32 slot, const void *bytes, uin
 	SiftV6RecHdr h = {.len = rlen,.set_idx = (uint16) set_idx,.flags = V6REC_DIST,.hash64 = hash};
 	uint8	   *rec;
 
-	check_record_size(rlen);
+	sift_v6_par_check_record_size(rlen);
 	rec = record_room(l, rlen);
 	h.key.i64[0] = slot;
 	h.key.i64[1] = len;
@@ -260,8 +256,13 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 		MemoryContext old = MemoryContextSwitchTo(l->cx);
 
 		l->scanning = true;
-		l->seen = seen_new(l);
-		sift_v6_group_scan_sink(l->g, park_dist, l);
+		if (e->lean)
+			l->dist_out = sift_v6_par_dist_out_new(l->g);
+		else
+		{
+			l->seen = seen_new(l);
+			sift_v6_group_scan_sink(l->g, park_dist, l);
+		}
 		MemoryContextSwitchTo(old);
 	}
 	e->cur = l;
@@ -277,7 +278,10 @@ static uint64
 par_local_load(const void *local)
 {
 	const ParLocal *l = local;
-	uint64		n = l->scanning ? sift_distinct_bytes(l->seen) / SEEN_ENTRY_BYTES + v6g_dist_dict_load(l->g) : 0;
+	uint64		n = 0;
+
+	if (l->scanning)
+		n = l->env->lean ? sift_v6_par_dist_load(l->dist_out) : sift_distinct_bytes(l->seen) / SEEN_ENTRY_BYTES + v6g_dist_dict_load(l->g);
 
 	for (int s = 0; s < l->g->nsets; s++)
 		n += l->g->set[s].nk > 0 ? l->g->set[s].ht.count : 0;
@@ -293,7 +297,7 @@ export_plain(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 	uint8	   *rec = record_room(l, len);
 	SiftV6RecHdr h = {.len = (uint32) len,.set_idx = (uint16) s,.flags = V6REC_PLAIN};
 
-	check_record_size((uint32) len);
+	sift_v6_par_check_record_size((uint32) len);
 	memcpy(rec, &h, sizeof(h));
 	memcpy(rec + sizeof(h), set->plain, accs);
 	memset(rec + sizeof(h) + accs, 0, len - sizeof(h) - accs);
@@ -319,7 +323,7 @@ export_groups(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 		uint8	   *rec;
 		SiftV6RecHdr h = {.len = rlen,.set_idx = (uint16) s,.flags = set->wide ? V6REC_WIDE : 0,.hash64 = slot->hash64,.key = slot->key};
 
-		check_record_size(rlen);
+		sift_v6_par_check_record_size(rlen);
 		rec = record_room(l, rlen);
 		memset(rec + base + klen, 0, rlen - base - klen);
 		if (set->wide)
@@ -341,7 +345,9 @@ par_local_export(void *local, SiftV6RecPut put, void *arg)
 {
 	ParLocal   *l = local;
 
-	if (l->scanning)
+	if (l->scanning && l->env->lean)
+		sift_v6_par_dist_export(l->dist_out, put, arg);
+	else if (l->scanning)
 	{
 		ExportArg	x = {l, put, arg};
 
@@ -363,13 +369,22 @@ par_local_merge(void *local, const uint8 *rec)
 	ParLocal   *l = local;
 	SiftV6Group *g = l->g;
 	const SiftV6RecHdr *h = (const SiftV6RecHdr *) rec;
-	V6Set	   *set = &g->set[h->set_idx];
+	V6Set	   *set;
 	const V6Acc *accs = (const V6Acc *) (rec + sizeof(*h));
 	const uint8 *key_bytes = rec + sizeof(*h) + (Size) l->env->spec->naggs * sizeof(V6Acc);
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
 	SiftAggSlot64 *slot;
 	bool		found;
 
+	if (h->flags & V6REC_DIST_INT)
+	{
+		if (l->dist == NULL)
+			l->dist = sift_v6_par_dist_new(g);
+		sift_v6_par_dist_add(l->dist, rec);
+		MemoryContextSwitchTo(old);
+		return;
+	}
+	set = &g->set[h->set_idx];
 	if (h->flags & V6REC_DIST)
 	{
 		const uint8 *key = rec + sizeof(*h);
@@ -397,7 +412,13 @@ par_local_merge(void *local, const uint8 *rec)
 static void
 par_local_finish(void *local)
 {
-	sift_v6_group_finish(((ParLocal *) local)->g);
+	ParLocal   *l = local;
+	MemoryContext old = MemoryContextSwitchTo(l->g->cx);
+
+	if (l->dist != NULL)
+		sift_v6_par_dist_flush(l->dist);
+	MemoryContextSwitchTo(old);
+	sift_v6_group_finish(l->g);
 }
 
 static bool
@@ -414,9 +435,10 @@ par_local_next(void *local, Datum *values, bool *isnull)
 static uint64
 par_local_dist_count(const void *local, uint32 slot)
 {
-	SiftV6Group *g = ((const ParLocal *) local)->g;
+	const ParLocal *l = local;
+	SiftV6Group *g = l->g;
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
-	const uint64 n = v6g_dist_count(g, slot);
+	const uint64 n = l->dist != NULL ? sift_v6_par_dist_count(l->dist, slot) : v6g_dist_count(g, slot);
 
 	MemoryContextSwitchTo(old);
 	return n;
@@ -425,8 +447,12 @@ par_local_dist_count(const void *local, uint32 slot)
 static void
 par_local_reset(void *local)
 {
-	sift_v6_group_recycle(((ParLocal *) local)->g);
-	((ParLocal *) local)->g->tx.used = 0;
+	ParLocal   *l = local;
+
+	if (l->dist != NULL)
+		sift_v6_par_dist_reset(l->dist);
+	sift_v6_group_recycle(l->g);
+	l->g->tx.used = 0;
 }
 
 static void
@@ -454,6 +480,7 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	e->keys = keys;
 	e->nkeys = nkeys;
 	e->snap = snap;
+	e->lean = sift_v6_par_dist_lean(spec);
 	e->op = MemoryContextAlloc(cx, Max(spec->naggs, 1) * sizeof(V6AccOp));
 	for (int j = 0; j < spec->naggs; j++)
 		e->op[j] = v6g_acc_op(&spec->agg[j]);

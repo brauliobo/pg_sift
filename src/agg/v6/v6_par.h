@@ -42,6 +42,7 @@
 #define SIFT_PAR_RING_MAX_BYTES		((Size) 16 << 20)	/* the chunks of the two-stage strategy */
 #define SIFT_PAR_LOCAL_GROUPS		65536U			/* the table of a participant of the radix strategy: it folds a group of up to this many keys before it is scattered */
 #define SIFT_PAR_MAX_DIST			32
+#define SIFT_PAR_DIST_FLAT_SHARE	0.3			/* the share of the rows whose values a participant of a query of no keys hands over: it dedups them first */
 
 typedef enum SiftV6ParStrategy
 {
@@ -98,6 +99,21 @@ typedef struct SiftV6RecHdr
 } SiftV6RecHdr;
 
 StaticAssertDecl(offsetof(SiftV6RecHdr, hash64) == 8 && sizeof(SiftV6RecHdr) == 32, "the hash is where the partitions read it");
+
+#define V6REC_DIST_INT		0x0008		/* a value of an integer COUNT(DISTINCT), see SiftV6DistRec */
+#define V6REC_DIST_SLOT(f)	((uint32) (f) >> 8)
+
+/* A value of an integer COUNT(DISTINCT) (v6_par_dist.h): the slot of its aggregate is in the bits of flags above V6REC_DIST_INT, the plen bytes of its group (its nulls and its key) follow it */
+typedef struct SiftV6DistRec
+{
+	uint32		len;
+	uint16		plen;
+	uint16		flags;
+	uint64		hash64;
+	int64		value;
+} SiftV6DistRec;
+
+StaticAssertDecl(offsetof(SiftV6DistRec, hash64) == offsetof(SiftV6RecHdr, hash64) && offsetof(SiftV6DistRec, flags) == offsetof(SiftV6RecHdr, flags), "a record of a value has the head of every record");
 
 typedef void (*SiftV6RecPut) (void *arg, const uint8 *rec, uint32 len);
 
