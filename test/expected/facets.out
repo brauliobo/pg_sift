@@ -422,8 +422,11 @@ ALTER TABLE d ENABLE ROW LEVEL SECURITY;
 CREATE POLICY fac_p ON d FOR SELECT USING (id % 2 = 0);
 SET ROLE fac_user;
 SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 1);
-ERROR:  sift.facets does not support tables with row-level security
-HINT:  Use sift.facet_counts, which has no such limit.
+ value | count 
+-------+-------
+ alpha |   919
+(1 row)
+
 RESET ROLE;
 DROP POLICY fac_p ON d;
 ALTER TABLE d DISABLE ROW LEVEL SECURITY;

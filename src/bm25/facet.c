@@ -29,11 +29,11 @@
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/rls.h"
 #include "utils/snapmgr.h"
 
 #include "bm25/eval.h"
 #include "bm25/bm25_doc.h"
+#include "bm25/facet_rls.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
 #include "core/quarantine.h"
@@ -126,6 +126,7 @@ typedef struct Facets
 	IndexInfo  *iinfo;
 	TupleTableSlot *slot;
 	EState	   *estate;
+	SiftFacetRls *rls;			/* the matches the caller's row-level security policies show; NULL: no policy */
 } Facets;
 
 /* What the matches, the values and the results hold must fit work_mem: nothing here spills, and the values follow the keyword index */
@@ -166,6 +167,15 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 	memcpy(f->rows[f->nrows++], offmask, ROW_BYTES);
 }
 
+/* The matches of a page that pass the policies, or all of them where there is none */
+static void
+queue_page(void *arg, BlockNumber blk, const uint64 *offmask)
+{
+	Facets	   *f = arg;
+
+	sift_facet_rls_page(f->rls, blk, offmask);
+}
+
 /* Visibility and the indexed text of a candidate, for the plan's phrase recheck */
 static bool
 facet_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
@@ -198,7 +208,10 @@ collect_matches(Facets *f, const char *query, int len)
 	f->iinfo = BuildIndexInfo(f->index);
 	f->slot = table_slot_create(f->heap, NULL);
 	sift_vis_begin(&f->vis, f->heap, snapshot, f->index, sift_plan_dir_version(plan));
-	f->total = sift_eval_pages(plan, &f->vis, facet_verify, f, add_page, f);
+	f->rls = sift_facet_rls_begin(f->heap, snapshot, f->mcxt, add_page, f);
+	f->total = sift_eval_pages(plan, &f->vis, facet_verify, f, f->rls ? queue_page : add_page, f);
+	if (f->rls)
+		f->total = sift_facet_rls_finish(f->rls);
 	sift_vis_end(&f->vis);
 	sift_state_close(st);
 	ExecDropSingleTupleTableSlot(f->slot);
@@ -768,11 +781,6 @@ check_indexes(Facets *f)
 	if (pg_class_aclcheck(RelationGetRelid(f->heap), GetUserId(), ACL_SELECT) != ACLCHECK_OK)
 		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(f->heap->rd_rel->relkind),
 					   RelationGetRelationName(f->heap));
-	if (check_enable_rls(RelationGetRelid(f->heap), InvalidOid, false) == RLS_ENABLED)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.facets does not support tables with row-level security"),
-				 errhint("Use sift.facet_counts, which has no such limit.")));
 }
 
 static void
