@@ -287,16 +287,33 @@ bind_scan(SiftScanState *ss)
  * The bitmap of the tuples the other quals keep becomes the masks the ranker restricts itself to. Its
  * node runs in the executor's context like any child; no tuple in it, no rows.
  */
-static void
-build_filter(SiftScanState *ss)
+static SiftFilter *
+run_bitmap(SiftScanState *ss)
 {
 	EState	   *estate = ss->css.ss.ps.state;
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	TIDBitmap  *tbm = (TIDBitmap *) MultiExecProcNode(ss->bitmap);
+	SiftFilter *filter;
 
 	MemoryContextSwitchTo(old);
-	ss->filter = sift_filter_build(tbm, (Size) work_mem * 1024, ss->cxt);
+	filter = sift_filter_build(tbm, (Size) work_mem * 1024, ss->cxt);
 	tbm_free(tbm);
+	return filter;
+}
+
+/* The participants of a parallel scan share one filter: the first builds and publishes it, the others read it */
+static void
+build_filter(SiftScanState *ss)
+{
+	if (!ss->par.sh)
+		ss->filter = run_bitmap(ss);
+	else if (sift_par_filter_claim(&ss->par))
+	{
+		ss->filter = run_bitmap(ss);
+		sift_par_filter_publish(&ss->par, ss->filter);
+	}
+	else
+		ss->filter = sift_par_filter_attach(&ss->par, ss->cxt);
 	ss->empty = sift_filter_empty(ss->filter);
 }
 

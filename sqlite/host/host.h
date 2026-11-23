@@ -493,6 +493,8 @@ static inline void pg_atomic_init_u64(pg_atomic_uint64 *p, uint64 x) { atomic_in
 static inline uint32 pg_atomic_read_u32(const pg_atomic_uint32 *p) { return atomic_load_explicit((_Atomic uint32 *) &p->v, memory_order_acquire); }
 static inline uint64 pg_atomic_read_u64(const pg_atomic_uint64 *p) { return atomic_load_explicit((_Atomic uint64 *) &p->v, memory_order_acquire); }
 static inline uint64 pg_atomic_fetch_add_u64(pg_atomic_uint64 *p, int64 n) { return atomic_fetch_add(&p->v, n); }
+static inline uint32 pg_atomic_read_membarrier_u32(pg_atomic_uint32 *p) { return atomic_load(&p->v); }
+static inline void pg_atomic_write_membarrier_u32(pg_atomic_uint32 *p, uint32 x) { atomic_store(&p->v, x); }
 static inline bool pg_atomic_compare_exchange_u32(pg_atomic_uint32 *p, uint32 *expected, uint32 x)
 {
 	return atomic_compare_exchange_strong(&p->v, expected, x);
@@ -502,6 +504,16 @@ typedef pthread_mutex_t slock_t;
 #define SpinLockInit(l)		pthread_mutex_init((l), NULL)
 #define SpinLockAcquire(l)	pthread_mutex_lock(l)
 #define SpinLockRelease(l)	pthread_mutex_unlock(l)
+
+/* The waiter holds the mutex from PrepareToSleep to CancelSleep and checks its condition under it; Broadcast takes it, so no wake-up is lost */
+typedef struct { pthread_mutex_t m; pthread_cond_t c; } ConditionVariable;
+#define WAIT_EVENT_PARALLEL_FINISH	0
+static inline void ConditionVariableInit(ConditionVariable *cv) { pthread_mutex_init(&cv->m, NULL); pthread_cond_init(&cv->c, NULL); }
+static __thread ConditionVariable *sift_cv_prepared;
+static inline void ConditionVariablePrepareToSleep(ConditionVariable *cv) { pthread_mutex_lock(&cv->m); sift_cv_prepared = cv; }
+static inline void ConditionVariableSleep(ConditionVariable *cv, uint32 wait_event) { pthread_cond_wait(&cv->c, &cv->m); }
+static inline void ConditionVariableCancelSleep(void) { pthread_mutex_unlock(&sift_cv_prepared->m); sift_cv_prepared = NULL; }
+static inline void ConditionVariableBroadcast(ConditionVariable *cv) { pthread_mutex_lock(&cv->m); pthread_cond_broadcast(&cv->c); pthread_mutex_unlock(&cv->m); }
 
 typedef struct dsa_area dsa_area;
 typedef uint64 dsa_pointer;

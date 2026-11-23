@@ -51,6 +51,9 @@ sift_par_init(SiftParShared *sh, int nworkers, uint32 nsb)
 	sh->morsel = morsel_size(nsb, sh->nplanned);
 	pg_atomic_init_u64(&sh->next, 0);
 	pg_atomic_init_u32(&sh->theta, float_bits(-INFINITY));
+	pg_atomic_init_u32(&sh->filter_state, SIFT_PAR_FILTER_NONE);
+	ConditionVariableInit(&sh->filter_cv);
+	sh->filter_bm = InvalidDsaPointer;
 	SpinLockInit(&sh->mutex);
 	sh->nattached = sh->nfinished = 0;
 	sh->emitter_taken = sh->wbuf_taken = sh->units_set = false;
@@ -70,6 +73,8 @@ sift_par_reinit(SiftParShared *sh, dsa_area *area, int nworkers, uint32 nsb)
 			dsa_free(area, sh->slot[i].hits);
 	if (DsaPointerIsValid(sh->bind))
 		dsa_free(area, sh->bind);
+	if (DsaPointerIsValid(sh->filter_bm))
+		dsa_free(area, sh->filter_bm);
 	sift_par_init(sh, nworkers, nsb);
 }
 
@@ -161,6 +166,69 @@ sift_par_claim_wbuf(SiftPar *par)
 	sh->wbuf_taken = true;
 	SpinLockRelease(&sh->mutex);
 	return mine;
+}
+
+/* The filter in the area: this header, the SiftFilterSB of each superblock, then the offset mask rows */
+typedef struct SiftParFilterHdr
+{
+	int64		nsb;
+	int64		nrow;
+	int64		exact_pages;
+	int64		lossy_pages;
+	int64		tuples;
+} SiftParFilterHdr;
+
+StaticAssertDecl(sizeof(SiftParFilterHdr) % MAXIMUM_ALIGNOF == 0 && sizeof(SiftFilterSB) % MAXIMUM_ALIGNOF == 0,
+				 "the arrays of a published filter must stay aligned");
+
+bool
+sift_par_filter_claim(SiftPar *par)
+{
+	uint32		none = SIFT_PAR_FILTER_NONE;
+
+	return pg_atomic_compare_exchange_u32(&par->sh->filter_state, &none, SIFT_PAR_FILTER_BUILDING);
+}
+
+void
+sift_par_filter_publish(SiftPar *par, const SiftFilter *f)
+{
+	SiftParShared *sh = par->sh;
+	Size		sbbytes = (Size) f->nsb * sizeof(SiftFilterSB),
+				rowbytes = (Size) f->nrow * sizeof(f->row[0]);
+	char	   *dst;
+	SiftParFilterHdr hdr = {f->nsb, f->nrow, f->exact_pages, f->lossy_pages, f->tuples};
+
+	sh->filter_bm = dsa_allocate_extended(par->area, sizeof(hdr) + sbbytes + rowbytes, DSA_ALLOC_HUGE);
+	dst = dsa_get_address(par->area, sh->filter_bm);
+	memcpy(dst, &hdr, sizeof(hdr));
+	memcpy(dst + sizeof(hdr), f->sb, sbbytes);
+	memcpy(dst + sizeof(hdr) + sbbytes, f->row, rowbytes);
+	pg_atomic_write_membarrier_u32(&sh->filter_state, SIFT_PAR_FILTER_READY);
+	ConditionVariableBroadcast(&sh->filter_cv);
+}
+
+SiftFilter *
+sift_par_filter_attach(SiftPar *par, MemoryContext mcxt)
+{
+	SiftParShared *sh = par->sh;
+	SiftFilter *f = MemoryContextAllocZero(mcxt, sizeof(SiftFilter));
+	const SiftParFilterHdr *hdr;
+
+	ConditionVariablePrepareToSleep(&sh->filter_cv);
+	while (pg_atomic_read_membarrier_u32(&sh->filter_state) != SIFT_PAR_FILTER_READY)
+		ConditionVariableSleep(&sh->filter_cv, WAIT_EVENT_PARALLEL_FINISH);
+	ConditionVariableCancelSleep();
+	hdr = dsa_get_address(par->area, sh->filter_bm);
+	f->sb = (SiftFilterSB *) (hdr + 1);
+	f->nsb = hdr->nsb;
+	f->row = (uint64 (*)[SIFT_OFFMASK_WORDS]) (f->sb + hdr->nsb);
+	f->nrow = hdr->nrow;
+	f->exact_pages = hdr->exact_pages;
+	f->lossy_pages = hdr->lossy_pages;
+	f->tuples = hdr->tuples;
+	f->capsb = hdr->nsb;
+	f->caprow = hdr->nrow;
+	return f;
 }
 
 float4

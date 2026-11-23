@@ -1,16 +1,17 @@
 -- Filter pushdown (sift.filter_pushdown) and parallel scans (sift.parallel_scan) together: the bitmap of a pushed-down
--- filter is built by one backend, so a ranked scan with a bitmap child is never parallel-aware; the parallel path is
--- planned without a filter and competes with it on cost. Every combination of the two GUCs answers what both off answer.
+-- filter is built once by the first participant of a parallel ranked scan and shared by the others (bm25_par_dsm_part).
+-- Every combination of the two GUCs answers what both off answer.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 
 CREATE FUNCTION pp_plan(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q) $$;
--- the SiftScan with a bitmap child, a Gather over a SiftScan, a serial SiftScan or another plan
+-- a SiftScan with a bitmap child (under a Gather or not), a Gather over a SiftScan, a serial SiftScan or another plan
 CREATE FUNCTION pp_kind(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	p text := pp_plan(q);
 BEGIN
-	RETURN CASE WHEN p !~ 'SiftScan' THEN 'other' WHEN p ~ 'Bitmap Index Scan' THEN 'pushdown' WHEN p ~ 'Gather' THEN 'parallel' ELSE 'serial' END;
+	RETURN CASE WHEN p !~ 'SiftScan' THEN 'other' WHEN p ~ 'Bitmap Index Scan' THEN CASE WHEN p ~ 'Gather' THEN 'parallel pushdown' ELSE 'pushdown' END
+	            WHEN p ~ 'Gather' THEN 'parallel' ELSE 'serial' END;
 END $$;
 
 -- tenant spreads over every page; three superblocks to hand out
@@ -38,8 +39,7 @@ $$;
 CREATE TABLE pp_modes (par text, push text);
 INSERT INTO pp_modes VALUES ('off', 'off'), ('off', 'on'), ('off', 'force'), ('on', 'off'), ('on', 'on'), ('on', 'force');
 
--- the plan kind where the cost model leaves no choice: a SiftScan with a bitmap child is serial, also with both on, and
--- the parallel path appears only without the pushdown
+-- the plan kind where the cost model leaves no choice: forced, the SiftScan has a bitmap child and is parallel when parallel scans are on
 CREATE FUNCTION pp_kinds(par text, push text, OUT ranked_filtered text, OUT ranked text) LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM pp_set(par, push);
@@ -105,21 +105,8 @@ FROM (VALUES ('common', 'tenant = 7'), ('common w3', 'tenant = 7'), ('common w3 
 	('common NOT w3', 'tenant BETWEEN 10 AND 12'), ('w1*', 'tenant = 7 OR tenant = 8'), ('common', 'tenant < 250'),
 	('common w3', 'id % 3 = 0 AND tenant < 100'), ('moved', 'tenant < 400'), ('nothing', 'tenant = 7')) v(q, flt);
 
--- both on: whichever path the costs choose, a bitmap child never sits under a Gather, and a parallel scan has no child
-CREATE FUNCTION pp_shape_ok(q text) RETURNS bool LANGUAGE plpgsql AS $$
-DECLARE
-	p text;
-BEGIN
-	PERFORM pp_set('on', 'on');
-	p := pp_plan(q);
-	RETURN NOT (p ~ 'Gather' AND p ~ 'SiftScan' AND p ~ 'Bitmap Index Scan on pp_tenant');
-END $$;
-SELECT pp_shape_ok(format('SELECT sift.score(ctid) FROM pp WHERE body @@> ''common w3'' AND tenant < %s ORDER BY sift.score(ctid) DESC LIMIT %s', t, k)) AS shape_ok,
-	count(*)
-FROM unnest(ARRAY[1, 7, 50, 250, 500]) t, unnest(ARRAY[1, 10, 1000]) k GROUP BY 1;
-
 DROP TABLE pp;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
 DROP TABLE pp_modes;
-DROP FUNCTION pp_check(text,text), pp_count(text,text,text,text), pp_ids(text,text,text,text), pp_kind(text), pp_kinds(text,text), pp_plan(text), pp_set(text,text), pp_shape_ok(text), pp_top(text,text,integer,text,text);
+DROP FUNCTION pp_check(text,text), pp_count(text,text,text,text), pp_ids(text,text,text,text), pp_kind(text), pp_kinds(text,text), pp_plan(text), pp_set(text,text), pp_top(text,text,integer,text,text);

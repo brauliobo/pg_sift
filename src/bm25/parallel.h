@@ -9,10 +9,14 @@
  * publishes the k-th best score it holds (any participant's is a lower bound
  * of the final k-th best, so the maximum prunes for all), and the last one to
  * finish merges the published hits and emits them; the others return none.
+ *
+ * A filter the scan pushes down (the bitmap of the other quals) is built once, by the first participant that needs it, and published
+ * in the area as the arrays of its masks, which every other participant reads in place.
  */
 #ifndef SIFT_PARALLEL_H
 #define SIFT_PARALLEL_H
 
+#include "core/filter.h"
 #include "core/sift.h"
 
 /* A ranked hit as exchanged between participants */
@@ -29,6 +33,11 @@ typedef struct SiftParSlot
 	int64		nhits;
 } SiftParSlot;
 
+/* The state of the pushed down filter: nobody has claimed it, a participant builds it, it is published */
+#define SIFT_PAR_FILTER_NONE		0
+#define SIFT_PAR_FILTER_BUILDING	1
+#define SIFT_PAR_FILTER_READY		2
+
 typedef struct SiftParShared
 {
 	int			nplanned;		/* participants the plan counts on: workers + leader */
@@ -37,6 +46,9 @@ typedef struct SiftParShared
 	uint32		morsel;			/* range scans: superblocks per claim */
 	pg_atomic_uint64 next;		/* next morsel */
 	pg_atomic_uint32 theta;		/* ranked: float bits of the threshold */
+	pg_atomic_uint32 filter_state;	/* SIFT_PAR_FILTER_* */
+	ConditionVariable filter_cv;	/* signalled when the filter is ready */
+	dsa_pointer filter_bm;		/* the published filter (SiftParFilterHdr, its superblocks, its rows) */
 	slock_t		mutex;			/* guards what follows */
 	int			nattached;
 	int			nfinished;
@@ -86,6 +98,12 @@ extern int64 sift_par_units_claimed(const SiftPar *par, int64 nunit);
 
 /* Ranked: true for the one participant that scores the write buffers' matches */
 extern bool sift_par_claim_wbuf(SiftPar *par);
+
+/* The pushed down filter: true for the one participant that must build it and publish it; the others attach to it */
+extern bool sift_par_filter_claim(SiftPar *par);
+extern void sift_par_filter_publish(SiftPar *par, const SiftFilter *filter);
+/* Waits for the published filter; its masks stay in the area (the filter is read only) */
+extern SiftFilter *sift_par_filter_attach(SiftPar *par, MemoryContext mcxt);
 
 extern float4 sift_par_theta(const SiftPar *par);
 extern void sift_par_raise_theta(SiftPar *par, float4 theta);

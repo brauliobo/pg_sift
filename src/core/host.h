@@ -13,7 +13,7 @@
  *   hashing      hash_bytes_extended, hash_bytes_uint32_extended (PostgreSQL's own functions: a stored sketch of col/hll.c must hash as the SQL aggregate does; the embedded hosts write no sketch and refuse)
  *   strings      StringInfo, List (pointers), HTAB (fixed-size keys), text/varlena (len + bytes), UTF-8 helpers (pg_mb*)
  *   regex        pg_regcomp/pg_regexec/pg_regfree over pg_wchar
- *   bits, atomics, spin locks, dsa_*: the primitives of bm25/parallel.c, which a host without shared memory implements
+ *   bits, atomics, spin locks, condition variables, dsa_*: the primitives of bm25/parallel.c, which a host without shared memory implements
  *                with threads and malloc
  *   temp files   BufFile (the sorted runs of bm25/runs/runs.c), SharedFileSet (only the PostgreSQL parallel build asks for one), binaryheap
  *   storage      the page/extent store of core/store.h: Relation, Buffer, ReadBuffer/ReleaseBuffer, GenericXLog and the
@@ -54,10 +54,12 @@
 #include "port/pg_bitutils.h"
 #include "regex/regex.h"
 #include "storage/buffile.h"
+#include "storage/condition_variable.h"
 #include "storage/s_lock.h"
 #include "storage/sharedfileset.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/wait_event.h"
 #include "utils/memutils.h"
 
 /* the PostgreSQL 17..19 differences (and the planner and executor headers only the PostgreSQL host needs) */

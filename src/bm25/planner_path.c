@@ -471,9 +471,8 @@ scan_est(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, SiftScanMode mode, Bit
  * Every participant of a parallel scan pays for the dictionary lookups; the postings, the heap and
  * the verification are shared out. With a pushed down filter the ranker only meets the matches its
  * bitmap keeps (the fraction fe.sel of them, at least those that pass the quals), at the price of
- * building the bitmap first; every participant of a parallel scan builds the bitmap of its own from the
- * same snapshot (the cost of building it is part of what each pays, as the dictionary lookups are).
- * Without the push the bitmap only tells where the rows that pass lie.
+ * building the bitmap first, once for all participants (the first builds it, the others wait for it,
+ * so its cost is not shared out). Without the push the bitmap only tells where the rows that pass lie.
  */
 static CustomPath *
 scan_path(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, const ScanEst *est, SiftScanMode mode, int64 k, List *pathkeys,
@@ -559,9 +558,8 @@ cheaper(CustomPath *a, CustomPath *b)
 }
 
 /*
- * Adds the serial path, and a parallel one next to it (a pushed down filter needs a bitmap path that is
- * safe in a worker: each participant builds the bitmap). The filter bitmap, when there is one, also
- * prices the scan that does not push it down. With
+ * Adds the serial path, and a parallel one next to it that pushes the filter down too: the participants
+ * share the one bitmap, so its path must be safe in a worker. The filter bitmap, when there is one, also prices the scan that does not push it down. With
  * only_best the paths are not added: the caller replaces the rel's paths with the best ones, and
  * add_path would free a path it rejects or dominates (a seq scan of an empty table) that best still
  * points to.
