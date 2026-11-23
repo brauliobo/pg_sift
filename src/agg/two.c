@@ -374,7 +374,9 @@ cond_holds(const SiftAggCond *c, double dv, int64 iv)
 	return false;
 }
 
-/* the arm's HAVING that is not `inner aggregate op constant`, evaluated by PostgreSQL on the values of the cell */
+static inline uint32 cell_key(AggExec *ex, int k, uint32 g, int j);
+
+/* the arm's HAVING that is not `inner aggregate op constant`, evaluated by PostgreSQL on the values of the cell: its aggregates and its group keys */
 static bool
 cell_having(AggExec *ex, int k, uint32 g)
 {
@@ -384,12 +386,22 @@ cell_having(AggExec *ex, int k, uint32 g)
 
 	for (int j = 0; j < sa->nhp; j++)
 	{
-		SiftAggAgg *ia = &sa->inner[sa->hsrc[j]];
-		double		dv = 0;
-		int64		iv = 0;
-		bool		notnull = cell_value(&ex->arm[k], ia, sa->hsrc[j], g, &dv, &iv);
+		if (sa->hsrc[j] < 0)
+		{
+			int			key = SIFT_AGG_HSRC_KEY_OF(sa->hsrc[j]);
 
-		bind_param(ex, j, ia->restype == FLOAT8OID ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
+			d = key_id_datum(ex, key, cell_key(ex, k, g, key), &isnull);
+			bind_param(ex, j, d, isnull);
+		}
+		else
+		{
+			SiftAggAgg *ia = &sa->inner[sa->hsrc[j]];
+			double		dv = 0;
+			int64		iv = 0;
+			bool		notnull = cell_value(&ex->arm[k], ia, sa->hsrc[j], g, &dv, &iv);
+
+			bind_param(ex, j, ia->restype == FLOAT8OID ? Float8GetDatum(dv) : Int64GetDatum(iv), !notnull);
+		}
 	}
 	d = ExecEvalExprSwitchContext(ex->arm[k].hstate, ex->lutcx, &isnull);
 	ResetExprContext(ex->lutcx);

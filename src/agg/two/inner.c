@@ -107,6 +107,15 @@ having_mutator(Node *n, HavingSub *h)
 		h->src = lappend_int(h->src, ai);
 		return (Node *) p;
 	}
+	if (!IsA(n, Const) && !equal(n, h->in->id) && list_member(h->in->group, n))
+	{
+		Param	   *p = exec_param(list_length(h->src), exprType(n), exprTypmod(n), exprCollation(n));
+
+		h->bad |= list_length(h->src) >= SIFT_AGG_MAX_PARAMS;
+		h->in->hkeys = lappend(h->in->hkeys, n);
+		h->src = lappend_int(h->src, SIFT_AGG_HSRC_PENDING);
+		return (Node *) p;
+	}
 	if (IsA(n, Var) || (IsA(n, Param) && ((Param *) n)->paramkind == PARAM_EXEC) || IsA(n, SubPlan) || IsA(n, WindowFunc) || IsA(n, GroupingFunc))
 		h->bad = true;
 	return expression_tree_mutator(n, having_mutator, h);
@@ -254,6 +263,29 @@ outer_agg(AggCtx *c, SiftAggSpec *s, Aggref *oa, Index srti, ArmIn *arms, int na
 	return true;
 }
 
+/* the keys of the scan that the group expressions read by the arms' HAVING are, once every key is known */
+static bool
+having_keys(ArmIn *arms, int narms)
+{
+	for (int k = 0; k < narms; k++)
+	{
+		SiftAggArm *a = arms[k].out;
+		int			next = 0;
+
+		for (int j = 0; j < a->nhp; j++)
+		{
+			int			key;
+
+			if (a->hsrc[j] != SIFT_AGG_HSRC_PENDING)
+				continue;
+			if ((key = arm_key_of(&arms[k], list_nth(arms[k].hkeys, next++))) < 0)
+				return agg_refuse_f(TWO_ARMS, "the HAVING of arm %d reads a group expression that is not a key of the scan", k + 1);
+			a->hsrc[j] = SIFT_AGG_HSRC_KEY(key);
+		}
+	}
+	return true;
+}
+
 /*
  * A cell is an inner group, the share of one row in one group of an arm. When an arm groups by more than the outer keys and its id, one
  * row has several cells in an outer group, so the group expressions that are no outer key are keys of the cells: one key each, shared by
@@ -299,7 +331,7 @@ hidden_keys(AggCtx *c, SiftAggSpec *s, ArmIn *arms, int narms, List **scan_tlist
 			arms[k].kidx = lappend_int(arms[k].kidx, nouter + pos);
 		}
 	s->nhidden = s->nkeys - nouter;
-	return true;
+	return having_keys(arms, narms);
 }
 
 /*

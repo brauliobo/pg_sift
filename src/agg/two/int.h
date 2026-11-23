@@ -25,6 +25,7 @@ typedef struct ArmIn
 	List	   *kexpr;			/* the group expressions that are a key of the scan (outer or hidden) ... */
 	List	   *kidx;			/* ... and their keys */
 	List	   *quals;			/* its WHERE, when it reads a common table expression */
+	List	   *hkeys;			/* the group expressions that its HAVING reads, in the order of the Params that stand for them */
 	Node	   *id;				/* the group expression that is unique per row */
 	SiftAggArm *out;
 } ArmIn;

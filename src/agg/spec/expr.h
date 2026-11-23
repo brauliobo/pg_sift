@@ -388,13 +388,18 @@ typedef struct SiftAggArm
 	int			nhaving;		/* the arm's HAVING, ANDed: `inner aggregate (cond.col) op constant`; a cell that fails is no group of the arm */
 	SiftAggCond *having;
 	Node	   *hexpr;			/* the rest of the arm's HAVING (what is not `inner aggregate op constant`): a boolean expression of Params ... */
-	int			nhp;			/* ... Param i being the inner aggregate hsrc[i] */
+	int			nhp;			/* ... Param i being the inner aggregate hsrc[i], or the key SIFT_AGG_HSRC_KEY(hsrc[i]) when it is negative */
 	int		   *hsrc;
 	int			ncol;			/* columns of the arm */
 	int		   *colsrc;			/* per column: its inner aggregate, -1 for the id, a key or a constant */
 } SiftAggArm;
 
 #define SIFT_AGG_MAX_ARMS	16
+
+/* hsrc of a Param that is a group key of the arm: -1 until the keys are known, then -2 - the key */
+#define SIFT_AGG_HSRC_PENDING	(-1)
+#define SIFT_AGG_HSRC_KEY(key)	(-2 - (key))
+#define SIFT_AGG_HSRC_KEY_OF(h)	(-2 - (h))
 
 /*
  * The spine of a two level aggregate: the rows of a small plan (a VALUES list, a series, a table of buckets) that the arms are joined to
