@@ -17,7 +17,7 @@ bool
 sift_parts_joinable(Relation rel, SiftPart *const *src, int n)
 {
 	static const uint16 same[] = {SEC_SCHEMA, SEC_DICTS};
-	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_POINT};
+	static const uint16 never[] = {SEC_VERS, SEC_PREAGG_SUPER, SEC_PREAGG_ROLLUP, SEC_PREAGG_EXCEPT, SEC_SETS, SEC_HLL, SEC_KTAB, SEC_RUNS, SEC_POINT, SEC_TID_HASH};
 	void	   *base[lengthof(same)] = {NULL};
 	uint64		blen[lengthof(same)] = {0};
 	bool		ok = true;

@@ -18,6 +18,7 @@
 #include "col/f2/f2_gbuf_int.h"
 #include "col/f2/f2_slab_view.h"
 #include "col/f2/f2_tid_dir.h"
+#include "col/f2/f2_tid_hash.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/l0_stage.h"
 #include "core/cachebudget.h"
@@ -546,10 +547,12 @@ visit_part(const TidSlot *slot, void *arg)
 
 	PG_TRY();
 	{
-		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && ng > GRAN_INDEX_MIN_GRANULES)
+		bool		hashed = vp->lo == vp->hi && sift_part_section(pin->part, SEC_TID_HASH) != NULL;
+
+		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && (hashed || ng > GRAN_INDEX_MIN_GRANULES))
 		{
 			uint32	   *gids;
-			int			n = part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
+			int			n = hashed ? sift_tid_hash_granules(vp->rel, pin->part, pin->desc.nrows, vp->lo, &gids) : part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
 
 			for (int k = 0; k < n && !stop; k++)
 				stop = visit_granule(vp, pin, entry, gids[k]);
