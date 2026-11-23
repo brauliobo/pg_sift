@@ -56,10 +56,8 @@ release_part(const SiftPart *part, SiftExtent **rel_ext, int *nrel)
 {
 	int			nb;
 	SiftExtent *blocks = sift_part_blocks(part, &nb);
-	int			have = (int) (GetMemoryChunkSpace(*rel_ext) / sizeof(SiftExtent));
 
-	if (*nrel + nb + 1 > have)
-		*rel_ext = repalloc(*rel_ext, Max(2 * have, *nrel + nb + 16) * sizeof(SiftExtent));
+	*rel_ext = repalloc(*rel_ext, sizeof(SiftExtent) * pg_nextpower2_32(Max(16, *nrel + nb + 1)));
 	memcpy(*rel_ext + *nrel, blocks, nb * sizeof(SiftExtent));
 	*nrel += nb;
 }
