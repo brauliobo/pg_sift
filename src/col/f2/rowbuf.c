@@ -177,28 +177,9 @@ column_cap(const SiftRowBuf *rb, int c)
 	return sift_rowbuf_is_child(rb, c) ? rb->ecap[rb->parent[c]] : (uint32) rb->max;
 }
 
-/* Value idx of column c: a row, or an element of the arrays of a column of elements */
 static void
-set_cell(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
+set_payload(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
 {
-	rb->isnull[c][idx] = cell->isnull;
-	rb->tag[c][idx] = cell->tag;
-	if (rb->kinds[c] == SIFT_CELL_INT)
-		rb->i[c][idx] = cell->isnull ? 0 : cell->i;
-	else if (rb->kinds[c] == SIFT_CELL_F8)
-		rb->f[c][idx] = cell->isnull ? 0 : cell->f;
-	else
-	{
-		char	   *copy = NULL;
-
-		if (!cell->isnull)
-		{
-			copy = sift_str_arena_copy(&rb->strs, cell->s, cell->slen);
-			rb->mem_bytes += cell->slen + 1;
-		}
-		rb->s[c][idx] = copy;
-		rb->slen[c][idx] = cell->isnull ? 0 : cell->slen;
-	}
 	if (cell->xplen > 0)
 	{
 		char	   *copy = MemoryContextAlloc(rb->cx, cell->xplen);
@@ -218,6 +199,53 @@ set_cell(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
 		rb->xpay[c][idx] = NULL;
 		rb->xplen[c][idx] = 0;
 	}
+}
+
+static inline void
+set_int(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
+{
+	rb->i[c][idx] = cell->isnull ? 0 : cell->i;
+}
+
+static inline void
+set_f8(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
+{
+	rb->f[c][idx] = cell->isnull ? 0 : cell->f;
+}
+
+static inline void
+set_str(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
+{
+	if (cell->isnull)
+	{
+		rb->s[c][idx] = NULL;
+		rb->slen[c][idx] = 0;
+		return;
+	}
+	rb->s[c][idx] = sift_str_arena_copy(&rb->strs, cell->s, cell->slen);
+	rb->slen[c][idx] = cell->slen;
+	rb->mem_bytes += cell->slen + 1;
+}
+
+/* Value idx of column c: a row, or an element of the arrays of a column of elements */
+static void
+set_cell(SiftRowBuf *rb, int idx, int c, const SiftCell *cell)
+{
+	rb->isnull[c][idx] = cell->isnull;
+	rb->tag[c][idx] = cell->tag;
+	switch (rb->kinds[c])
+	{
+		case SIFT_CELL_INT:
+			set_int(rb, idx, c, cell);
+			break;
+		case SIFT_CELL_F8:
+			set_f8(rb, idx, c, cell);
+			break;
+		default:
+			set_str(rb, idx, c, cell);
+	}
+	if (cell->xplen > 0 || rb->xpay[c] != NULL)
+		set_payload(rb, idx, c, cell);
 }
 
 SiftCell
@@ -784,59 +812,13 @@ sift_rowbuf_drop_at(SiftRowBuf *rb, int row)
 	rb->n--;
 }
 
-typedef struct SortCtx
-{
-	const SiftRowBuf *rb;
-	const uint16 *cols;
-	const uint8 *flags;
-	int			ncols;
-} SortCtx;
-
-int
-sift_rowbuf_cmp_val(const SiftRowBuf *rb, int c, int r1, int r2)
-{
-	if (rb->kinds[c] == SIFT_CELL_INT)
-		return rb->i[c][r1] < rb->i[c][r2] ? -1 : rb->i[c][r1] > rb->i[c][r2];
-	if (rb->kinds[c] == SIFT_CELL_F8)
-		return rb->f[c][r1] < rb->f[c][r2] ? -1 : rb->f[c][r1] > rb->f[c][r2];
-	{
-		int			m = memcmp(rb->s[c][r1], rb->s[c][r2], Min(rb->slen[c][r1], rb->slen[c][r2]));
-
-		return m != 0 ? (m < 0 ? -1 : 1) : (rb->slen[c][r1] < rb->slen[c][r2] ? -1 : rb->slen[c][r1] > rb->slen[c][r2]);
-	}
-}
-
-static int
-row_cmp(const void *a, const void *b, void *arg)
-{
-	const SortCtx *x = arg;
-	const SiftRowBuf *rb = x->rb;
-	int			r1 = *(const int *) a,
-				r2 = *(const int *) b;
-
-	for (int k = 0; k < x->ncols; k++)
-	{
-		int			c = x->cols[k];
-		bool		n1 = rb->isnull[c][r1],
-					n2 = rb->isnull[c][r2];
-		int			cmp = 0;
-
-		if (n1 || n2)
-			cmp = n1 == n2 ? 0 : ((n1 ? 1 : -1) * ((x->flags[k] & SIFT_KEY_NULLS_FIRST) ? -1 : 1));
-		else
-			cmp = sift_rowbuf_cmp_val(rb, c, r1, r2) * ((x->flags[k] & SIFT_KEY_DESC) ? -1 : 1);
-		if (cmp != 0)
-			return cmp;
-	}
-	return rb->tid[r1] < rb->tid[r2] ? -1 : rb->tid[r1] > rb->tid[r2];
-}
-
+/* Column by column, each array gathered once into a new one that replaces it */
 #define PERMUTE(arr, T) \
 	do { \
-		T *tmp = palloc(rb->n * sizeof(T)); \
-		for (int r = 0; r < rb->n; r++) tmp[r] = (arr)[perm[r]]; \
-		memcpy((arr), tmp, rb->n * sizeof(T)); \
-		pfree(tmp); \
+		T *to = MemoryContextAlloc(rb->cx, Max(rb->max, 1) * sizeof(T)); \
+		for (int r = 0; r < rb->n; r++) to[r] = (arr)[perm[r]]; \
+		pfree(arr); \
+		(arr) = to; \
 	} while (0)
 
 void
@@ -849,12 +831,12 @@ sift_rowbuf_permute(SiftRowBuf *rb, const int *perm)
 	PERMUTE(rb->cmin, uint32);
 	PERMUTE(rb->subxid, SubTransactionId);
 	{
-		uint8	  (*tmp)[SIFT_BOUND_BYTES] = palloc((Size) rb->n * SIFT_BOUND_BYTES);
+		uint8	  (*to)[SIFT_BOUND_BYTES] = MemoryContextAlloc(rb->cx, Max(rb->max, 1) * (Size) SIFT_BOUND_BYTES);
 
 		for (int r = 0; r < rb->n; r++)
-			memcpy(tmp[r], rb->keys[perm[r]], SIFT_BOUND_BYTES);
-		memcpy(rb->keys, tmp, rb->n * SIFT_BOUND_BYTES);
-		pfree(tmp);
+			memcpy(to[r], rb->keys[perm[r]], SIFT_BOUND_BYTES);
+		pfree(rb->keys);
+		rb->keys = to;
 	}
 	for (int c = 0; c < rb->ncols; c++)
 	{
@@ -877,19 +859,6 @@ sift_rowbuf_permute(SiftRowBuf *rb, const int *perm)
 			PERMUTE(rb->xplen[c], uint32);
 		}
 	}
-}
-
-void
-sift_rowbuf_sort(SiftRowBuf *rb, const SiftPartSpec *spec)
-{
-	SortCtx		ctx = {rb, spec->sort_cols, spec->sort_flags, spec->nsort};
-	int		   *perm = palloc(Max(rb->n, 1) * sizeof(int));
-
-	for (int r = 0; r < rb->n; r++)
-		perm[r] = r;
-	qsort_arg(perm, rb->n, sizeof(int), row_cmp, &ctx);
-	sift_rowbuf_permute(rb, perm);
-	pfree(perm);
 }
 
 SiftRows
