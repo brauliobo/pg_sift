@@ -332,7 +332,33 @@ any_null(const bool *isnull, int n)
 }
 
 static void
-fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen)
+text_view_at(SiftStrView *out, const ColView *cv, int off, int i)
+{
+	const uint32 code = cv->dcode != NULL ? cv->dcode[off + i] : 0;
+
+	if (cv->isnull[off + i])
+		out[i] = strview_of(NULL, 0);
+	else if (cv->dcode != NULL)
+		out[i] = strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
+	else
+		out[i] = strview_of(cv->s[off + i], cv->slen[off + i]);
+}
+
+/* The views of the strings of the rows of mask (all n rows when it is NULL): a batch that keeps few rows makes the views of those */
+static void
+text_views(SiftStrView *out, const ColView *cv, int off, int n, const uint64 *mask)
+{
+	if (mask == NULL)
+		for (int i = 0; i < n; i++)
+			text_view_at(out, cv, off, i);
+	else
+		for (int w = 0; w < (n + 63) / 64; w++)
+			for (uint64 bits = mask[w]; bits != 0; bits &= bits - 1)
+				text_view_at(out, cv, off, w * 64 + __builtin_ctzll(bits));
+}
+
+static void
+fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask)
 {
 	SiftVec    *v = &c->vec;
 	const bool	nulls = any_null(cv->isnull + off, n);
@@ -374,12 +400,7 @@ fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen)
 			if (cv->dcode != NULL && c->by_code)
 			{
 				v->type = SVEC_STRVIEW;
-				for (int i = 0; i < n; i++)
-				{
-					const uint32 code = cv->dcode[off + i];
-
-					((SiftStrView *) v->data)[i] = cv->isnull[off + i] ? strview_of(NULL, 0) : strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
-				}
+				text_views(v->data, cv, off, n, mask);
 				break;
 			}
 			if (cv->dcode != NULL)
@@ -391,8 +412,7 @@ fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen)
 				break;
 			}
 			v->type = SVEC_STRVIEW;
-			for (int i = 0; i < n; i++)
-				((SiftStrView *) v->data)[i] = strview_of(cv->s[off + i], cv->isnull[off + i] ? 0 : cv->slen[off + i]);
+			text_views(v->data, cv, off, n, mask);
 			break;
 		default:
 			v->type = SVEC_I64;
@@ -556,7 +576,7 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 			fill_score(&s->cols[i], score, off, n);
 			continue;
 		}
-		fill_col(&s->cols[i], &views[s->cols[i].leaf], off, n, part_gen);
+		fill_col(&s->cols[i], &views[s->cols[i].leaf], off, n, part_gen, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
 		refuse_nan(&s->cols[i], &s->bs);
 		if (s->cols[i].json)
 			fill_exceptions(s, &s->cols[i], &views[s->cols[i].leaf], off, n);
@@ -639,7 +659,7 @@ arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 		return a->n_live;
 	}
 	for (int i = 0; i < s->ncols; i++)
-		fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0);
+		fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0, NULL);
 	sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
 	for (int w = 0; w < SIFT_VEC_WORDS; w++)
 		n += pg_popcount64(out[w] = live[w] & allowed[w]);
@@ -654,7 +674,7 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 
 	if (s->gate == NULL)
 		for (int i = 0; i < s->ncols; i++)
-			fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0);
+			fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0, NULL);
 	memcpy(s->bs.mask, mask, SIFT_VEC_WORDS * sizeof(uint64));
 	s->bs.n_raw = a->n;
 	s->bs.n_active = n_active;

@@ -36,4 +36,11 @@ extern bool sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, co
  */
 extern bool sift_cfstr_bits(const SiftCfiltPred *cp, const SiftChunk *c, uint64 *dense);
 
+/*
+ * The strings a filter decoded whole (a block or a FSST chunk) are kept for the view of the same granule: sift_cfstr_memo_open makes the memo of the granule in cx and it is gone when cx is reset or
+ * deleted; sift_cfstr_memo_strs gives the strings of the rows (ascending; NULL: the first nrows rows) of column col of v from it, false when the filter kept nothing for the column.
+ */
+extern void sift_cfstr_memo_open(MemoryContext cx);
+extern bool sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out);
+
 #endif							/* SIFT_GRANULE_CFILT_STR_SIMD_H */

@@ -12,7 +12,93 @@
 #include "col/fsst.h"
 #include "col/f2/f2_pred.h"
 #include "col/granule/cfilt_str_simd.h"
+#include "col/granule/granule_int.h"
 #include "col/like_simd.h"
+#include "utils/memutils.h"
+
+#define STR_MEMO_MAX	8
+
+typedef struct StrMemoEnt
+{
+	const char *rec;
+	int			col;
+	const uint32 *offs;
+	const char *bytes;
+} StrMemoEnt;
+
+typedef struct StrMemo
+{
+	MemoryContextCallback gone;
+	MemoryContext cx;
+	int			n;
+	StrMemoEnt	e[STR_MEMO_MAX];
+} StrMemo;
+
+static StrMemo *memo_active;
+
+static void
+memo_gone(void *arg)
+{
+	if (memo_active == arg)
+		memo_active = NULL;
+}
+
+void
+sift_cfstr_memo_open(MemoryContext cx)
+{
+	StrMemo    *m = MemoryContextAllocZero(cx, sizeof(StrMemo));
+
+	m->cx = cx;
+	m->gone = (MemoryContextCallback) {.func = memo_gone,.arg = m};
+	MemoryContextRegisterResetCallback(cx, &m->gone);
+	memo_active = m;
+}
+
+/* The decoded strings of chunk c, which the caller allocated in the current context: kept when the memo is of that context, else freed */
+static void
+memo_keep(const SiftChunk *c, uint32 *offs, char *bytes)
+{
+	StrMemo    *m = memo_active;
+
+	if (m != NULL && m->n < STR_MEMO_MAX && GetMemoryChunkContext(offs) == m->cx && GetMemoryChunkContext(bytes) == m->cx)
+		m->e[m->n++] = (StrMemoEnt) {.rec = c->view->rec,.col = c->idx - 1,.offs = offs,.bytes = bytes};
+	else
+	{
+		pfree(offs);
+		pfree(bytes);
+	}
+}
+
+bool
+sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out)
+{
+	const StrMemoEnt *e = NULL;
+	SiftChunk	c;
+	int			word = 0,
+				rank = 0;
+
+	for (int i = 0; memo_active != NULL && i < memo_active->n; i++)
+		if (memo_active->e[i].rec == v->rec && memo_active->e[i].col == col)
+			e = &memo_active->e[i];
+	if (e == NULL)
+		return false;
+	sift_chunk_open(v, col + 1, &c);
+	for (int j = 0; j < nrows; j++)
+	{
+		const int	row = rows != NULL ? rows[j] : j;
+
+		out[j] = (SiftStrCell) {.isnull = !sift_chunk_row_valid(&c, row)};
+		if (!out[j].isnull)
+		{
+			const int	k = sift_chunk_rank_advance(&c, &word, &rank, row);
+
+			out[j].p = e->bytes + e->offs[k];
+			out[j].len = e->offs[k + 1] - e->offs[k];
+		}
+	}
+	sift_chunk_close(&c);
+	return true;
+}
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -244,8 +330,7 @@ fsst_bits(const StrOp *o, const SiftChunk *c, const uint64 *dense_live, uint64 *
 		if (!sift_fsst_decode_strs(f.t, f.coded, f.off, nn, out, cap, outoff))
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
 		src_bits(o, &src, nn, NULL, dense);
-		pfree(out);
-		pfree(outoff);
+		memo_keep(c, outoff, (char *) out);
 	}
 	sift_fsst_chunk_close(&f);
 }
@@ -284,8 +369,7 @@ sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *
 				sift_chunk_block_strs_own(c, &offs, &bytes);
 				src = (StrSrc) {.offs = offs,.bytes = (const uint8 *) bytes};
 				src_bits(&o, &src, nn, live, dense);
-				pfree(offs);
-				pfree(bytes);
+				memo_keep(c, offs, bytes);
 			}
 			break;
 		default:

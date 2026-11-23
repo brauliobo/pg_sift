@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "col/f2/f2_view.h"
+#include "col/granule/cfilt_str_simd.h"
 
 static void
 strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView *cv)
@@ -27,7 +28,8 @@ strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView 
 		}
 	}
 	sc = palloc(n * sizeof(SiftStrCell));
-	sift_granule_strs(v, c, sc);
+	if (!sift_cfstr_memo_strs(v, c, NULL, n, sc))
+		sift_granule_strs(v, c, sc);
 	for (int r = 0; r < n; r++)
 	{
 		sp[r] = sc[r].p;
@@ -70,7 +72,8 @@ sparse_view(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrow
 		const char **sp = palloc0(n * sizeof(char *));
 		uint32	   *sl = palloc0(n * sizeof(uint32));
 
-		sift_granule_point_strs(v, c, rows, nrows, sv);
+		if (!sift_cfstr_memo_strs(v, c, rows, nrows, sv))
+			sift_granule_point_strs(v, c, rows, nrows, sv);
 		for (int j = 0; j < nrows; j++)
 		{
 			sp[rows[j]] = sv[j].p;

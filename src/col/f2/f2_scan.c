@@ -23,6 +23,7 @@
 #include "col/f2/f2_point_dir.h"
 #include "col/f2/f2_scope_route.h"
 #include "col/f2/f2_view.h"
+#include "col/granule/cfilt_str_simd.h"
 #include "col/skip/skip_index.h"
 #include "core/memtrack.h"
 #include "core/popcount.h"
@@ -441,6 +442,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			continue;
 		}
 		old = MemoryContextSwitchTo(gcx);
+		sift_cfstr_memo_open(gcx);
 		decided = memcpy(palloc((Size) np), win.decided + (Size) wi * np, np);
 		exceptions = palloc0(np);
 		for (int k = 0; k < s->npreds; k++)
