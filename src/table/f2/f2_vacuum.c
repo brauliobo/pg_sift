@@ -3,7 +3,8 @@
  *
  * The steps are those of a heap VACUUM in the order the heap keeps: the aged slabs and pending deletes are written out and folded, the addresses of the rows that are dead for every
  * snapshot (a delete that committed before the horizon, an insert that aborted) are given to the indexes in batches that fit maintenance_work_mem, then the parts that hold such
- * rows are compacted and the deletion vectors settled, and last the oldest transaction id any page of the table still holds is computed again and becomes relfrozenxid.
+ * rows are compacted and the deletion vectors settled (a crash between the two leaves rows with an index entry and no address to find it by, so no part is rewritten before the indexes
+ * let go of its dead rows), and last the oldest transaction id any page of the table still holds is computed again and becomes relfrozenxid.
  */
 #include "postgres.h"
 
@@ -313,20 +314,14 @@ slab_flush_due(Relation rel, const SiftPartitionEntry *cand, FullTransactionId o
 	return FullTransactionIdPrecedes(cand->min_xid, oldest_fx) && sift_l0_slab_rows(rel, cand->part_id, cand->l0_slab_blk) >= SIFT_VAC_L0_FLUSH_ROWS;
 }
 
+/* First pass of a partition: what is written out and folded, and the addresses of the rows that are dead for everyone, queued for the indexes */
 static void
-freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive)
+collect_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand, const struct VacuumCutoffs *cutoffs, FullTransactionId oldest_fx, bool aggressive)
 {
 	Relation	rel = vc->rel;
 	SiftPartitionEntry e;
 	int			np;
 	SiftPartDesc *parts;
-	uint64	   *gens = NULL,
-			   *settle = NULL;
-	int			ngens = 0,
-				nsettle = 0;
-	SiftCompactResult res;
-	SiftXidHorizonCache hc;
-	int			dead_pct = store->opts.dead_rewrite_pct > 0 ? store->opts.dead_rewrite_pct : sift_dead_rewrite_pct;
 
 	/* STOR[STOR-TBL-03]: L0 slab + pend_del vacuum horizon (40B+96B+raw rows / 16B/del; oldest_fx vs freeze_fx) */
 	if (slab_flush_due(rel, cand, oldest_fx, aggressive))
@@ -339,11 +334,32 @@ freeze_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand,
 	if (!sift_manifest_find_entry(rel, cand->part_id, cand->key_lo, &e))
 		return;
 	parts = sift_manifest_read_parts(rel, &e, &np);
+	for (int i = 0; i < np; i++)
+		if (parts[i].ndead > 0 || (parts[i].flags & SIFT_PART_FLAG_UNFROZEN) != 0)
+			collect_part(vc, store, &e, &parts[i], cutoffs->OldestXmin);
+}
+
+/* Second pass, once the indexes have given up the addresses of the first: the deletion vectors are settled, the parts sealed and the ones with dead or old rows compacted, which drops the rows the indexes no longer point at */
+static void
+settle_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *cand, FullTransactionId oldest_fx, FullTransactionId target_fx, bool aggressive)
+{
+	SiftPartitionEntry e;
+	int			np;
+	SiftPartDesc *parts;
+	uint64	   *gens = NULL,
+			   *settle = NULL;
+	int			ngens = 0,
+				nsettle = 0;
+	SiftCompactResult res;
+	SiftXidHorizonCache hc;
+	int			dead_pct = store->opts.dead_rewrite_pct > 0 ? store->opts.dead_rewrite_pct : sift_dead_rewrite_pct;
+
+	if (!sift_manifest_find_entry(rel, cand->part_id, cand->key_lo, &e))
+		return;
+	parts = sift_manifest_read_parts(rel, &e, &np);
 	sift_xid_horizon_init(&hc, oldest_fx);
 	for (int i = 0; i < np; i++)
 	{
-		if (parts[i].ndead > 0 || (parts[i].flags & SIFT_PART_FLAG_UNFROZEN) != 0)
-			collect_part(vc, store, &e, &parts[i], cutoffs->OldestXmin);
 		if (needs_compaction(&parts[i], target_fx, dead_pct))
 		{
 			gens = gens == NULL ? palloc(sizeof(uint64) * np) : gens;
@@ -467,10 +483,12 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_f2_vacuum_progress_total(rel);
 	for (int i = 0; i < mr.n; i++)
 	{
-		freeze_partition(&vc, store, &mr.entries[i], &cutoffs, oldest_fx, target_fx, aggressive);
+		collect_partition(&vc, store, &mr.entries[i], &cutoffs, oldest_fx, aggressive);
 		sift_f2_vacuum_progress_scanned(i + 1, mr.n);
 	}
 	flush_batch(&vc);
+	for (int i = 0; i < mr.n; i++)
+		settle_partition(rel, store, &mr.entries[i], oldest_fx, target_fx, aggressive);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
 	sift_f2_vacuum_progress_indexes(vc.nindexes, 0);
