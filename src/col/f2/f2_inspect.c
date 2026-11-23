@@ -11,8 +11,10 @@
 #include "utils/rel.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/f2_cache.h"
 #include "col/granule/granule_int.h"
 #include "core/catname.h"
+#include "core/explain.h"
 #include "core/f2/manifest.h"
 #include "core/f2/meta.h"
 
@@ -260,4 +262,16 @@ sift_index_size_breakdown(PG_FUNCTION_ARGS)
 	}
 	index_close(rel, AccessShareLock);
 	return (Datum) 0;
+}
+
+/* The counts of an index of Format 2.0 as EXPLAIN (SIFT) reports them: its parts and the rows and dead rows its manifest holds */
+void
+sift_f2_index_stats(Relation index, SiftIndexStats *st)
+{
+	const SiftPlanSnapshot *v = sift_plan_cache_get(index, CurrentMemoryContext);
+
+	for (int i = 0; i < v->npartitions; i++)
+		st->segments += v->partlists[i].nparts;
+	st->rows = (int64) v->total_rows;
+	st->dead_rows = (int64) v->total_dead;
 }

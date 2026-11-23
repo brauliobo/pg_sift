@@ -11,6 +11,7 @@
 #include "utils/rel.h"
 
 #include "agg/refuse.h"
+#include "col/am.h"
 #include "col/pg.h"
 #include "core/explain.h"
 #include "core/sift.h"
@@ -180,6 +181,8 @@ sift_explain_index(ExplainState *es, Oid indexoid)
 	index = index_open(indexoid, AccessShareLock);
 	if (index->rd_rel->relam == sift_catalog()->am)
 		sift_bm25_stats(index, &st);
+	else if (sift_col_is_index(index) && sift_col_format_major(index) == SIFT_FORMAT2_MAJOR)
+		sift_f2_index_stats(index, &st);
 	else if (sift_col_is_index(index))
 		sift_col_stats(index, &st);
 	else
