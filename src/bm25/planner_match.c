@@ -19,6 +19,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/paths.h"
 #include "optimizer/restrictinfo.h"
+#include "utils/array.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
@@ -165,6 +166,66 @@ sift_match_any_clause(Node *clause, IndexOptInfo *index, Expr **array)
 	return true;
 }
 
+/*
+ * `key @@> 'a' OR key @@> 'b'` of the index: the OR of its branches' queries, which the scan evaluates as one query, so that
+ * sift.score() of a row is the score of the query `a OR b` and the one scan ranks it. At most SIFT_OR_BRANCHES branches, each a plain
+ * match of the index. *array is the text array of the queries: a constant when every branch is one, else the array of their operands.
+ */
+#define SIFT_OR_BRANCHES	16
+
+static bool
+sift_match_or_clause(Node *clause, IndexOptInfo *index, Expr **array)
+{
+	List	   *queries = NIL;
+	bool		consts = true;
+
+	if (IsA(clause, RestrictInfo))
+	{
+		if (!restriction_is_securely_promotable((RestrictInfo *) clause, index->rel))
+			return false;
+		clause = (Node *) ((RestrictInfo *) clause)->clause;
+	}
+	if (!is_orclause(clause) || list_length(((BoolExpr *) clause)->args) > SIFT_OR_BRANCHES)
+		return false;
+	foreach_ptr(Node, branch, ((BoolExpr *) clause)->args)
+	{
+		Expr	   *q;
+		Node	   *arg;
+
+		if (!sift_match_clause(branch, index, &q))
+			return false;
+		for (arg = (Node *) q; IsA(arg, RelabelType); arg = (Node *) ((RelabelType *) arg)->arg)
+			;
+		if (exprType(arg) != TEXTOID)
+			return false;
+		consts &= IsA(arg, Const) && !((Const *) arg)->constisnull;
+		queries = lappend(queries, arg);
+	}
+	if (consts)
+	{
+		Datum	   *texts = palloc(list_length(queries) * sizeof(Datum));
+		int			n = 0;
+
+		foreach_ptr(Const, c, queries)
+			texts[n++] = c->constvalue;
+		*array = (Expr *) makeConst(TEXTARRAYOID, -1, ((Const *) linitial(queries))->constcollid, -1,
+									PointerGetDatum(construct_array(texts, n, TEXTOID, -1, false, TYPALIGN_INT)), false, false);
+	}
+	else
+	{
+		ArrayExpr  *ae = makeNode(ArrayExpr);
+
+		ae->array_typeid = TEXTARRAYOID;
+		ae->array_collid = exprCollation(linitial(queries));
+		ae->element_typeid = TEXTOID;
+		ae->elements = queries;
+		ae->multidims = false;
+		ae->location = -1;
+		*array = (Expr *) ae;
+	}
+	return true;
+}
+
 /* Do quals of a policy or a security barrier view, which the rel's other quals must not run before, sit on the rel? */
 bool
 rel_secured(PlannerInfo *root, RelOptInfo *rel)
@@ -190,7 +251,8 @@ scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ran
 			return false;
 		clause = (Node *) ((RestrictInfo *) clause)->clause;
 	}
-	return sift_match_clause(clause, index, query) || sift_match_any_clause(clause, index, query);
+	return sift_match_clause(clause, index, query) || sift_match_any_clause(clause, index, query) ||
+		sift_match_or_clause(clause, index, query);
 }
 
 bool
