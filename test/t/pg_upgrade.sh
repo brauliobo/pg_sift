@@ -326,7 +326,7 @@ if [[ -z $OLD_REF ]]; then
 	check "its reads are the join, whatever the verdict (the read says $(twohop_why new))" test "$(twohop_reads new)" == same
 	HOPQ new "UPDATE grants SET deleted_at = now() WHERE group_id = 3 AND deleted_at IS NULL" "INSERT INTO memberships (group_id, dim_a_id) VALUES (3, 150) ON CONFLICT DO NOTHING" \
 		"UPDATE grants SET deleted_at = now() WHERE dim_a_id % 17 = 0" >/dev/null
-	HOPQ new "REINDEX INDEX grants_by_member" "REINDEX INDEX grants_by_group" "REINDEX INDEX memberships_by_member" "REINDEX INDEX hop_col" >/dev/null
+	HOPQ new "SET sift.test_create_format1 = on" "REINDEX INDEX grants_by_member" "REINDEX INDEX grants_by_group" "REINDEX INDEX memberships_by_member" "REINDEX INDEX hop_col" >/dev/null
 	check "after writes to the three tables and a REINDEX of the three journals and of the scope index the reads are the join, the units are read, and the indexes verify" test "$(twohop_reads new)|$(twohop_why new)" == "same|stored" \
 		-a -z "$(HOPQ new "SELECT sift.col_verify('hop_col', true)" "SELECT sift.col_verify('grants_by_member', true)" "SELECT sift.col_verify('grants_by_group', true)" "SELECT sift.col_verify('memberships_by_member', true)" 2>&1)"
 else skip 3 "an index of a release has no scope of two paths"; fi
