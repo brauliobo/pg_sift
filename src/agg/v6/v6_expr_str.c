@@ -26,6 +26,24 @@ utf8_len_avx2(const uint8 *p, uint32 len)
 }
 #endif
 
+static inline bool
+is_ascii(const uint8 *p, uint32 len)
+{
+	uint64		any = 0;
+	uint32		i = 0;
+
+	for (; i + 8 <= len; i += 8)
+	{
+		uint64		w;
+
+		memcpy(&w, p + i, 8);
+		any |= w;
+	}
+	for (; i < len; i++)
+		any |= p[i];
+	return (any & UINT64CONST(0x8080808080808080)) == 0;
+}
+
 uint32
 sift_vx_utf8_len(const uint8 *p, uint32 len)
 {
@@ -35,6 +53,8 @@ sift_vx_utf8_len(const uint8 *p, uint32 len)
 	if (len >= 32 && sift_cpu.active >= SIFT_SIMD_AVX2 && (sift_cpu.flags & SIFT_CPU_AVX2))
 		return utf8_len_avx2(p, len);
 #endif
+	if (is_ascii(p, len))
+		return len;
 	for (uint32 i = 0; i < len; i++)
 		cont += (p[i] & 0xC0) == 0x80;
 	return len - cont;
@@ -132,10 +152,11 @@ set_valid(SiftVxOut *o, uint16 r, bool valid)
 }
 
 /* extract of the unit and period of the call: the divisions are by constants, which the compiler turns into multiplications when it inlines this for the common units */
-static inline __attribute__((always_inline)) void
+static inline __attribute__((always_inline)) bool
 extract_rows(const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o, int64 unit_us, int64 mod)
 {
 	int64	   *oi = o->data;
+	bool		all_ok = true;
 
 	FOR_ACTIVE(bs, r)
 	{
@@ -144,18 +165,20 @@ extract_rows(const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o, int64 uni
 
 		oi[r] = x;
 		set_valid(o, r, ok);
+		all_ok &= ok;
 	}
+	return all_ok;
 }
 
-static void
+/* whether every active row has a value */
+static bool
 extract_batch(const SiftV6Derive *d, const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o)
 {
 	if (d->aux == 60000000)
-		extract_rows(src, bs, o, 60000000, 60);
-	else if (d->aux == INT64CONST(3600000000))
-		extract_rows(src, bs, o, INT64CONST(3600000000), 24);
-	else
-		extract_rows(src, bs, o, d->aux, 24);
+		return extract_rows(src, bs, o, 60000000, 60);
+	if (d->aux == INT64CONST(3600000000))
+		return extract_rows(src, bs, o, INT64CONST(3600000000), 24);
+	return extract_rows(src, bs, o, d->aux, 24);
 }
 
 void
@@ -177,7 +200,7 @@ sift_vx_derive(const SiftV6Derive *d, const SiftVec *src, SiftVec *const *cond, 
 				oi[r] = ok ? (d->utf8 ? sift_vx_utf8_len(sift_strview_bytes(&sv[r]), sv[r].len) : sv[r].len) : 0;
 				set_valid(o, r, ok);
 			}
-			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = false,.dense = true,.type = SVEC_I64};
+			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = src->all_valid,.dense = true,.type = SVEC_I64};
 			break;
 		case SVD_URL_HOST:
 			FOR_ACTIVE(bs, r)
@@ -192,11 +215,10 @@ sift_vx_derive(const SiftV6Derive *d, const SiftVec *src, SiftVec *const *cond, 
 					ov[r] = sv[r];
 				set_valid(o, r, ok);
 			}
-			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = false,.dense = true,.type = SVEC_STRVIEW};
+			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = src->all_valid,.dense = true,.type = SVEC_STRVIEW};
 			break;
 		case SVD_EXTRACT:
-			extract_batch(d, src, bs, o);
-			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = false,.dense = true,.type = SVEC_I64};
+			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = extract_batch(d, src, bs, o),.dense = true,.type = SVEC_I64};
 			break;
 		case SVD_CASE_STR:
 			FOR_ACTIVE(bs, r)
@@ -208,7 +230,7 @@ sift_vx_derive(const SiftV6Derive *d, const SiftVec *src, SiftVec *const *cond, 
 				ov[r] = hold ? sv[r] : else_view;
 				set_valid(o, r, !hold || valid_at(src, r));
 			}
-			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = false,.dense = true,.type = SVEC_STRVIEW};
+			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = src->all_valid,.dense = true,.type = SVEC_STRVIEW};
 			break;
 		default:
 			break;
