@@ -718,6 +718,13 @@ StaticAssertDecl(sizeof(SiftZone) == 24, "SiftZone must be 24 bytes");
 #define SIFT_ZONE_PROMO_EXC		(UINT32_C(1) << 4)
 #define SIFT_ZONE_FLOAT			(UINT32_C(1) << 5)	/* fmin/fmax valid over non-null non-NaN doubles */
 #define SIFT_ZONE_HAS_NAN		(UINT32_C(1) << 6)	/* at least one non-null value in granule is NaN */
+
+/* Whether min and max hold the least and the greatest integer of the column (and not the doubles of fmin and fmax, or nothing) */
+static inline bool
+sift_zone_has_int_range(const SiftZone *z)
+{
+	return !(z->flags & (SIFT_ZONE_NONE | SIFT_ZONE_FLOAT));
+}
 #define SIFT_ZONE_PROMO_KIND(f)	(((f) >> 8) & 0xF)
 #define SIFT_ZONE_PROMO_PARAM(f) (((f) >> 12) & 0xF)
 #define SIFT_ZONE_PROMO_FLAGS(f) (((f) >> 16) & 0xFF)

@@ -55,7 +55,7 @@ static const SiftTournBound unknown_bound;
 static SiftTournBound
 zone_bound(const SiftZone *z, uint32 nrows)
 {
-	if (z == NULL || (z->flags & SIFT_ZONE_NONE))
+	if (z == NULL || !sift_zone_has_int_range(z))
 		return unknown_bound;
 	return sift_f2_range_bound(z->min, z->max, z->nnull > 0, z->nnull >= nrows);
 }

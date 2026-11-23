@@ -17,6 +17,52 @@
 #include "core/memtrack.h"
 #include "core/page_io.h"
 
+static void
+zone_add_float(SiftZone *z, double v)
+{
+	z->flags |= SIFT_ZONE_FLOAT;
+	if (isnan(v))
+		z->flags |= SIFT_ZONE_HAS_NAN;
+	else if (z->flags & SIFT_ZONE_NONE)
+	{
+		z->fmin = z->fmax = v == 0 ? 0.0 : v;
+		z->flags &= ~SIFT_ZONE_NONE;
+	}
+	else
+	{
+		z->fmin = Min(z->fmin, v == 0 ? 0.0 : v);
+		z->fmax = Max(z->fmax, v == 0 ? 0.0 : v);
+	}
+}
+
+/* The least and the greatest of the integers of a column over nv values, the same of its floats (a NaN is no bound: it only sets SIFT_ZONE_HAS_NAN, and -0 is 0), and how many values are null */
+static void
+zone_of_values(SiftZone *z, const SiftColIn *col, int nv)
+{
+	const bool	is_float = col->kind == SIFT_CELL_F8;
+
+	z->flags = SIFT_ZONE_NONE;
+	for (int r = 0; r < nv; r++)
+	{
+		if (col->isnull && col->isnull[r])
+			z->nnull++;
+		else if (is_float)
+			zone_add_float(z, col->f[r]);
+		else if (col->kind != SIFT_CELL_INT)
+			continue;
+		else if (z->flags & SIFT_ZONE_NONE)
+		{
+			z->min = z->max = col->i[r];
+			z->flags &= ~SIFT_ZONE_NONE;
+		}
+		else
+		{
+			z->min = Min(z->min, col->i[r]);
+			z->max = Max(z->max, col->i[r]);
+		}
+	}
+}
+
 /* The least and the greatest time of each run of SIFT_TSTRIDE_ROWS rows of a granule */
 static void
 put_strides(StringInfo out, const SiftColIn *time, int cnt)
@@ -407,24 +453,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 
 			const SiftChunkRef *ref = &((const SiftGranuleHeader *) (gdata.data + dir[g].data_off))->chunks[c + 1];
 
-			z->flags = SIFT_ZONE_NONE;
-			for (int r = 0; r < nv; r++)
-			{
-				if (gcols[c].isnull && gcols[c].isnull[r])
-					z->nnull++;
-				else if (gcols[c].kind != SIFT_CELL_INT)
-					continue;
-				else if (z->flags & SIFT_ZONE_NONE)
-				{
-					z->min = z->max = gcols[c].i[r];
-					z->flags &= ~SIFT_ZONE_NONE;
-				}
-				else
-				{
-					z->min = Min(z->min, gcols[c].i[r]);
-					z->max = Max(z->max, gcols[c].i[r]);
-				}
-			}
+			zone_of_values(z, &gcols[c], nv);
 			if (gcols[c].promo != NULL && gcols[c].promo->kind != SIFT_PROMO_PREFIX_INT && (ref->enc & SIFT_ENC_MASK) == SIFT_CENC_STR_PROMO)
 				sift_promo_zone(gcols[c].promo, &gcols[c], cnt, z);
 			if (ref->enc & SIFT_ENC_KEY_ALL_ABSENT)

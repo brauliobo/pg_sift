@@ -143,7 +143,7 @@ part_zones(Relation index, const CardPart *p, int leaf)
 static SiftCardZone
 card_zone(const SiftZone *z)
 {
-	if (z->flags & SIFT_ZONE_NONE)
+	if (!sift_zone_has_int_range(z))
 		return (SiftCardZone) {.min = INT64_MIN,.max = INT64_MAX,.nnull = z->nnull};
 	return (SiftCardZone) {.min = z->min,.max = z->max,.nnull = z->nnull,
 	.flags = (z->flags & SIFT_ZONE_KEY_ALL_ABSENT ? SIFT_CZONE_KEY_NONE : 0) | (z->flags & SIFT_ZONE_KEY_ALL_PRESENT ? SIFT_CZONE_KEY_ALL : 0)};
@@ -181,8 +181,8 @@ fold_leaf(Relation index, const CardPart *parts, int nparts, int leaf, LeafFold 
 
 			lf->z[lf->n] = card_zone(&z[g]);
 			lf->nrows[lf->n++] = nr;
-			lf->ints &= !(z[g].flags & SIFT_ZONE_NONE) || z[g].nnull >= nr;
-			if (z[g].flags & SIFT_ZONE_NONE)
+			lf->ints &= sift_zone_has_int_range(&z[g]) || z[g].nnull >= nr;
+			if (!sift_zone_has_int_range(&z[g]))
 				zf->rows += nr, zf->null_rows += Min(z[g].nnull, nr);
 			else
 				sift_f2_zone_fold_add(zf, &lf->z[lf->n - 1], nr);
