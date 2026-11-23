@@ -44,17 +44,13 @@ int	agg/leaf.c	char *data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAll
 int	agg/leaf.c	v->data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, n * esz + SIFT_AGG_PAD * esz + SIFT_SIMD_ALIGN));	bounded: nrow is a unit's rows (SIFT_COL_UNIT_ROWS at most) times esz of 4 or 8: far below 4 GB
 int	agg/sel.c	b->data = MemoryContextAlloc(cxt, b->cap * 8);	bounded: cap is a size_t of the rows of a unit
 int	bm25/facet.c	rows = MemoryContextAlloc(f->mcxt, n * ROW_BYTES);	bounded: n is the pages of a superblock (SIFT_PAGEMASK_WORDS * 64) times ROW_BYTES
-int	bm25/livestream.c	dc->dead = MemoryContextAlloc(mcxt, (SIFT_SB_PAGES * MAXOFF + 7) / 8);	bounded: constants of a superblock
 int	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: size is the length of one posting block
 lifetime	core/cachebudget.c	cache_root = AllocSetContextCreate(TopMemoryContext, "SiftBackendCacheContext", 8 * 1024, 8 * 1024, CACHE_BLOCK_MAX);	bounded: the root of every cache of the backend: sift.backend_cache_kb, the oldest entry nobody holds goes first (sift_cache_room)
 lifetime	agg/cost/cte.c	priced = MemoryContextAlloc(TopMemoryContext, PRICED_MAX * sizeof(PricedList));	bounded: PRICED_MAX entries
 lifetime	agg/expr/walk.c	walk_memo = MemoryContextAlloc(TopMemoryContext, WALK_MEMO_MAX * sizeof(WalkMemo));	bounded: WALK_MEMO_MAX entries
 lifetime	agg/fuse.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one registration per executor state of the statement in flight, removed with it
 lifetime	agg/fuse.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one registration per executor state of the statement in flight, removed with it
-lifetime	agg/lookshm.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one attach record per shared lookup table in use (sift.agg_lookup_shared_kb)
 lifetime	agg/par/stats.c	s = MemoryContextAllocZero(TopMemoryContext, sizeof(ParStats));	bounded: one struct per backend
-lifetime	agg/verdict.c	HASHCTL ctl = {.keysize = sizeof(uint64), .entrysize = sizeof(VerdictEntry), .hcxt = TopMemoryContext};	bounded: VERDICT_MAX entries, least recently used evicted (a few hundred bytes each)
-lifetime	agg/verdict.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: VERDICT_MAX entries, least recently used evicted (a few hundred bytes each)
 lifetime	col/am/rel.c	memset(MemoryContextAlloc(CacheMemoryContext, sz), 0x7f, sz);	bounded: one planning memo per backend, reset when the catalog changes; the 0x7f fill is a leak canary of a test
 lifetime	col/am/ioss.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: emptied at the end of the transaction (ioss_pending)
 lifetime	col/dsmreg.c	cx = MemoryContextSwitchTo(TopMemoryContext);	bounded: one record per attached dynamic shared memory segment, with its settings

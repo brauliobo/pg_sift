@@ -334,7 +334,7 @@ term_get(SiftInvBuf *b, const SiftTermFreq *tf)
 	}
 	if (b->tlen + tf->len > b->tcap)
 	{
-		b->tcap *= 2;
+		b->tcap = Min(b->tcap * 2, INV_MAX_BUDGET);
 		b->tbytes = repalloc(b->tbytes, b->tcap);
 	}
 	t = &b->terms[b->nterms];

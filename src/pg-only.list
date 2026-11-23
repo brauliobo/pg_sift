@@ -485,6 +485,7 @@ core/explain.h
 core/extlock.c
 core/extlock.h
 core/extver.c
+core/f2/f2_gate.h
 core/f2/bulk_io.c
 core/f2/bulk_io.h
 core/f2/col_delta_anchor.h
@@ -640,6 +641,7 @@ agg/gpu_dead.h
 agg/gpu_emit.c
 agg/gpu_emit.h
 agg/gpu_f2_plan.c
+agg/gpu_local.c
 agg/gpu_shm.h
 agg/gpu_v6.c
 agg/gpu_v6.h
@@ -836,6 +838,8 @@ core/f2/fsm/release_guard.c
 core/f2/manifest/part_edit.c
 core/f2/manifest/tree_io.c
 col/f2/f2_scope_slot.c
+col/f2/f2_slab_view.c
+col/f2/f2_slab_view.h
 col/f2/f2_drop_parts.c
 col/f2/f2_drop_parts.h
 col/f2/f2_drop_plan.c

@@ -227,3 +227,6 @@ SIFT_V6_MAX_CASE	arms of a CASE of a derived column of a SiftAggV6 scan (agg/v6/
 SIFT_V6_MAX_DERIVE	derived columns of one SiftAggV6 scan (agg/v6/v6.h): a statement with more keeps the normal plan and the rows are the same
 SIFT_V6_MAX_TOPK_ITEMS	sort items of the Top-K of a SiftAggV6 scan (agg/v6/v6.h): a statement with more keeps the normal plan and the rows are the same
 SNAP_MAX_READS	the cubes of keys a scope snapshot keeps for one statement (col/f2/f2_scope_snap.c), a ring: the oldest read is dropped and a key asked for again is read again, the rows are the same
+INV_MAX_BUDGET	the bytes the bm25 build buffer holds before it spills to a run (bm25/inv.c), a performance threshold: the index is the same
+ROUTE_MAX_SHARE_PCT	the share of granules above which a scope router is not built (col/f2/f2_scope_route.c), a cost threshold: the rows are the same
+SET_INIT_SLOTS	the slots a group set starts with (agg/v6/group.c), it grows by doubling: no result depends on it

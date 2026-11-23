@@ -109,7 +109,7 @@ Passed in `CREATE INDEX ... WITH (...)` or modified with `ALTER INDEX ... SET (.
 | `b` | `0.75` | `0.0..1.0` | Okapi BM25 document length normalization factor ([SEARCH.md](SEARCH.md#5-analyzers-stemmers-and-prefixes)) |
 | `build_segments` | `0` | `0..64` | Segments written by CREATE INDEX (0: one per build participant); a diagnostic that turns the parallel build off ([SEARCH.md](SEARCH.md#1-creating-a-sift-index-and-include-filters)) |
 | `case_folding` | `true` | `true`, `false` | Lowercase tokens during indexing and querying ([SEARCH.md](SEARCH.md#5-analyzers-stemmers-and-prefixes)) |
-| `dead_rewrite_pct` | `50` | `1..100` | Dead-document percentage triggering segment rewrite during VACUUM ([SEARCH.md](SEARCH.md#5-analyzers-stemmers-and-prefixes)) |
+| `dead_rewrite_pct` | `25` | `1..100` | Dead-document percentage triggering segment rewrite during VACUUM ([SEARCH.md](SEARCH.md#5-analyzers-stemmers-and-prefixes)) |
 | `fields` | `''` | comma-separated field names | Named sections for sift.sections() and sift.field_query() ([SEARCH.md](SEARCH.md#6-weighted-fields-siftsections-and-siftfield_query)) |
 | `k1` | `1.2` | `0.0..1000.0` | Okapi BM25 term-frequency saturation factor ([SEARCH.md](SEARCH.md#5-analyzers-stemmers-and-prefixes)) |
 | `merge_fanin` | `4` | `2..64` | Number of BM25 segments merged per compaction pass ([OPERATIONS.md](OPERATIONS.md#2-disk-compression-and-wal-sizing)) |

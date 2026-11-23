@@ -48,7 +48,7 @@ sbdocs_build(DocCache *dc, int64 at)
 	if (dc->rows == NULL)
 	{
 		dc->rows = MemoryContextAlloc(dc->mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-		dc->dead = MemoryContextAlloc(dc->mcxt, (SIFT_SB_PAGES * MAXOFF + 7) / 8);
+		dc->dead = MemoryContextAlloc(dc->mcxt, ((Size) SIFT_SB_PAGES * MAXOFF + 7) / 8);
 	}
 	sift_seg_docs(seg, docmap(seg)->dir[at].sb, &ch);
 	dirty_everywhere(seg, &ch);
