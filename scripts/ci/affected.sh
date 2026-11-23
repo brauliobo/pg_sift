@@ -3,6 +3,7 @@
 # The CI workflow and `affected` share scripts/areas.tsv through it; it never starts a suite. Sourced by scripts/ci.sh; not a script of its own.
 # ---------- scripts/areas.tsv: the files a change touched -> the jobs it can break (the CI workflow and `affected` share it)
 source "$REPO/scripts/areas.sh"
+source "$REPO/scripts/ci/focus.sh"
 areas_load "$REPO/scripts/areas.tsv"
 # Static map API, also used by parity fixtures; never starts a suite.
 if [[ $MODE == --areas-regex ]]; then
@@ -28,13 +29,7 @@ focus_regex() {
 		[[ $f =~ ^src/(agg|col|table|bm25)/([^/]+/)?[^/]+\.[ch]$ ]] || { rest+=("$f"); continue; }
 		[[ $t != *:'*' ]] || star+=("$f")
 	done
-	sel=$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
-		$1 == "=hot" { n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { split(h[i], p, ":"); print "H " p[1] }; next }
-		{ n = split($2, h, " "); for (i = 1; i <= n; i++) if (h[i] in want) { print "T " $1; break } }' "$REPO"/scripts/focus/*.tsv)
-	# the tests pinned to a file (scripts/focus-pins.tsv): they print numbers of its functions, which a function every test executes (the =hot row) does not name
-	sel+=$'\n'$(awk -F'\t' -v toks="$*" 'BEGIN { n = split(toks, a, " "); for (i = 1; i <= n; i++) { split(a[i], p, ":"); want[p[1]] = 1 } }
-		/^#/ { next }
-		$1 in want { n = split($2, t, " "); for (i = 1; i <= n; i++) print "T " t[i] }' "$REPO/scripts/focus-pins.tsv")
+	sel=$(focus_select "$@")
 	names=$(sed -n 's/^T //p' <<<"$sel" | paste -sd'|' -)
 	star+=($(sed -n 's/^H //p' <<<"$sel" | sort -u))
 	{ echo '^(coverage|isolation-emulated)$'
@@ -42,16 +37,6 @@ focus_regex() {
 	  (( ! ${#star[@]} )) || areas_fast_regex "${star[@]}"
 	  (( ! ${#rest[@]} )) || areas_regex "${rest[@]}"
 	} | paste -sd'|' -
-}
-# focus_tokens BASE: FILE:FUNCTION of every hunk of the diff against BASE in src/; the function is the last line at column 0 that starts like a definition before the hunk
-focus_tokens() {
-	local f l
-	for f in $(cd "$REPO" && git diff --name-only --no-renames "$1" -- src); do
-		[[ -f $REPO/$f ]] || continue
-		git -C "$REPO" diff -U0 --no-renames "$1" -- "$f" | sed -n '/^@@ -0,0 /d; s/^@@ [^+]*+\([0-9]*\).*/\1/p' | while read -r l; do
-			awk -v f="$f" -v l="$l" 'NR <= l && /^[A-Za-z_][A-Za-z0-9_]*\(/ { n = $0; sub(/\(.*/, "", n) } END { print f ":" (n == "" ? "*" : n) }' "$REPO/$f"
-		done
-	done | sort -u
 }
 # The assertions family of a pull request (the `cassert` output of `affected --github`, run on the PostgreSQL 18 built with --enable-cassert): a change of a source that starts
 # workers or handles snapshots or executor hooks (ASSERT_MARK, read from the file: no list to keep) runs the regression tests that run those paths. The `assertions` label
