@@ -79,6 +79,8 @@ v1_may_plan(PlannerInfo *root, RelOptInfo *input_rel)
 		RangeTblEntry *rte = planner_rt_fetch(relid, root);
 		RelOptInfo *rel = root->simple_rel_array[relid];
 
+		if (rte->rtekind == RTE_FUNCTION)
+			continue;
 		if (rte->rtekind != RTE_RELATION || rel == NULL)
 			return true;
 		if (rte->inh && !rel_has_v1_source(root, rel, v1))
