@@ -2,7 +2,8 @@
  * col/jsonb.c - the jsonb attributes of a sift_col index: the "paths" reloption is parsed by the shredder
  * (col/shred.h), whose columns and groups become the index's leaves, and every tuple's jsonb values are shredded into the rows the engine
  * stores. One level of arrays and objects is held: a list (key[]) or map (key.*) group becomes a GROUP leaf with the group's columns as
- * children; a map also gets the member name as a text child.
+ * children; a map also gets the member name as a text child. A path inside an array inside another (a[].b[].c) is no leaf: it stays in the
+ * jsonb column, which a query that reads it takes from the heap with the normal plan.
  */
 #include "postgres.h"
 
@@ -156,11 +157,6 @@ add_group(const SiftColShredAdapter *a, ShredAttr *at, int g)
 	int			gid = at->n;
 	ShredLeaf  *l;
 
-	if (gd->parent != 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift_col holds one level of arrays and objects: \"%s\" is nested in another", gd->name),
-				 errhint("Declare the nested path as an astext or jsonb leaf, or keep the inner array in a table of its own.")));
 	l = add_leaf(at, LEAF_GROUP, -1, SIFT_COLK_GROUP, pstrdup(gd->name), -1, g);
 	l->def.store = SIFT_COLS_INT;
 	l->def.type = SIFT_COLT_INT8;
@@ -233,7 +229,7 @@ sift_col_shred_create_for(MemoryContext mcxt, TupleDesc desc, int natts, const c
 			a->attr[i].array = array;
 		}
 	}
-	a->spec = sift_shred_spec_parse(take_image_marks(paths, a->attr, a->natts));
+	a->spec = sift_shred_spec_parse_one_level(take_image_marks(paths, a->attr, a->natts));
 	spec = a->spec;
 	SIFT_INVARIANT(spec->ngroups >= 1 && spec->groups[0].kind == SIFT_SHRED_ROOT, "sift_col: the shredder spec has no root group");
 	for (int i = 1; i <= a->natts; i++)
@@ -256,7 +252,7 @@ sift_col_shred_create(MemoryContext mcxt, Relation index, uint32 present)
 	if (paths[0] == '\0')
 		return NULL;
 	paths = pstrdup(paths);
-	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfKeyAttributes(index), paths);
+	a = sift_col_shred_create_for(mcxt, RelationGetDescr(index), IndexRelationGetNumberOfAttributes(index), paths);
 	for (int i = 1; i <= a->natts; i++)
 		if (a->attr[i].n > 0 && !a->attr[i].array && (present >> i & 1))
 		{
@@ -301,7 +297,7 @@ sift_col_present_attrs(Relation index, SiftColPresent which)
 	if (which == SIFT_COL_PRESENT_NULLABLE && sift_test_col_no_present)
 		return 0;
 #endif
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index) && i < 31; i++)
+	for (int i = 0; i < IndexRelationGetNumberOfAttributes(index) && i < 31; i++)
 	{
 		AttrNumber	col = index->rd_index->indkey.values[i];
 		bool		nullable = true;

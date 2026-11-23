@@ -102,6 +102,8 @@ typedef struct SiftShredSpec
 
 /* Parses and validates; raises ERRCODE_SYNTAX_ERROR (with the 1-based position), INVALID_PARAMETER_VALUE or PROGRAM_LIMIT_EXCEEDED. */
 extern SiftShredSpec *sift_shred_spec_parse(const char *text);
+/* The same for a host that holds one level of arrays and wildcards: a path inside one that is inside another (a[].b[].c) is declared as the astext leaf of the member that holds it (a[].b), whose arrays and objects overflow with their exact bytes */
+extern SiftShredSpec *sift_shred_spec_parse_one_level(const char *text);
 extern const char *sift_shred_spec_deparse(const SiftShredSpec *spec);
 extern const char *sift_shred_type_name(SiftShredType t);
 

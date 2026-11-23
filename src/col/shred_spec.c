@@ -57,6 +57,7 @@ typedef struct Parser
 	int			ncols;
 	SiftShredGroupDef *groups;
 	int			ngroups;
+	bool		one_level;
 	StringInfoData canonical;
 } Parser;
 
@@ -280,6 +281,7 @@ typedef struct Add
 	uint32		maxlen;
 	bool		explicit_len;
 	int			g;				/* group of the element the path is in */
+	bool		collapsed;		/* the member of a nested path: a leaf that is there already stands for it */
 	StringInfoData flat;		/* the path so far, canonical */
 } Add;
 
@@ -291,6 +293,8 @@ child_at(Parser *P, SiftShredNode **slot, NodeKind kind, Add *a, const Step *at)
 
 	if (n)
 	{
+		if (n->kind == N_LEAF && kind == N_LEAF && a->collapsed)
+			return n;
 		if (n->kind == N_LEAF && kind == N_LEAF)
 			SPEC_INVALID(at->loc, "path \"%s\" is declared twice", a->flat.data);
 		if (n->kind != kind)
@@ -451,6 +455,18 @@ parse_type(Parser *P, Add *a)
 	}
 }
 
+/* The steps a one level host keeps of a path: all of them, or up to the member that holds a second array or wildcard (a[].b of a[].b[].c); none when a list is directly in a list (a[][]) */
+static int
+one_level_steps(const Step *st, int n)
+{
+	int			groups = 0;
+
+	for (int i = 0; i < n; i++)
+		if (st[i].kind != S_KEY && ++groups == 2)
+			return st[i - 1].kind == S_KEY ? i : 0;
+	return n;
+}
+
 /* item {, item}: an item is a path and a type, or a path ending in [] or * and a group of items relative to its element */
 static void
 parse_items(Parser *P, const Step *prefix, int nprefix)
@@ -476,11 +492,20 @@ parse_items(Parser *P, const Step *prefix, int nprefix)
 		else
 		{
 			Add			a;
+			int			keep = P->one_level ? one_level_steps(st, n) : n;
 
 			a.g = 0;
+			a.collapsed = keep != n;
 			initStringInfo(&a.flat);
 			parse_type(P, &a);
-			add_path(P, st, n, &a);
+			if (a.collapsed)
+			{
+				a.type = SIFT_SHRED_ASTEXT;
+				a.maxlen = SIFT_SHRED_DEFAULT_TEXT;
+				a.explicit_len = false;
+			}
+			if (keep > 0)
+				add_path(P, st, keep, &a);
 		}
 		if (P->tok != T_COMMA)
 			return;
@@ -488,8 +513,8 @@ parse_items(Parser *P, const Step *prefix, int nprefix)
 	}
 }
 
-SiftShredSpec *
-sift_shred_spec_parse(const char *text)
+static SiftShredSpec *
+parse_spec(const char *text, bool one_level)
 {
 	Parser		P;
 	SiftShredSpec *spec;
@@ -499,6 +524,7 @@ sift_shred_spec_parse(const char *text)
 						errmsg("sift shred paths: the spec has more than %d bytes", SIFT_SHRED_MAX_SPEC_BYTES),
 						errhint("Declare fewer paths, or a wildcard path for the keys of an object.")));
 	memset(&P, 0, sizeof(P));
+	P.one_level = one_level;
 	P.src = text;
 	P.root = new_node(N_OBJ, 0);
 	P.cols = palloc0(SIFT_SHRED_MAX_COLS * sizeof(SiftShredColDef));
@@ -548,6 +574,18 @@ sift_shred_spec_parse(const char *text)
 	spec->canonical = P.canonical.data;
 	spec->fingerprint = sift_term_hash64(P.canonical.data, P.canonical.len);
 	return spec;
+}
+
+SiftShredSpec *
+sift_shred_spec_parse(const char *text)
+{
+	return parse_spec(text, false);
+}
+
+SiftShredSpec *
+sift_shred_spec_parse_one_level(const char *text)
+{
+	return parse_spec(text, true);
 }
 
 const char *

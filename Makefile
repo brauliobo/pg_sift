@@ -306,6 +306,7 @@ TESTING_REGRESS += col_overlay_merge
 TESTING_REGRESS += col_overlay_unordered
 TESTING_REGRESS += col_partition_adopt
 TESTING_REGRESS += col_paths_auto
+TESTING_REGRESS += col_paths_nested
 TESTING_REGRESS += col_peers_dead_scan
 TESTING_REGRESS += col_point_chunks
 TESTING_REGRESS += col_point_dense
