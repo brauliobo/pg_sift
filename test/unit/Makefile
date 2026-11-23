@@ -20,7 +20,8 @@ TESTS   = test_arena par_core
 BENCHES = bench_arena
 LIB_test_arena  = core/par/arena.c col/compress.c
 LIB_bench_arena = core/par/arena.c
-LIB_par_core    = core/par/arena.c core/par/radix.c core/par/topk.c
+LIB_par_core    = core/par/arena.c core/par/morsel.c core/par/pool.c core/par/radix.c core/par/topk.c
+FX_par_core     = $(B)/par_host.o
 
 OPT_plain = -O2
 OPT_asan  = -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined

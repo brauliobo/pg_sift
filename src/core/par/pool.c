@@ -8,7 +8,6 @@
 
 #include <pthread.h>
 #include <signal.h>
-#include <stdatomic.h>
 
 #include "access/parallel.h"
 #include "miscadmin.h"
@@ -36,7 +35,6 @@ typedef struct SiftParPool
 	int			active_n;
 	int			finished_n;
 	bool		busy;
-	atomic_uint cancel;
 	SiftParThreadFini fini[POOL_FINI_MAX];
 	int			nfini;
 } SiftParPool;
@@ -104,7 +102,6 @@ pool_drain(int code, Datum arg)
 {
 	if (!pool.busy)
 		return;
-	sift_par_pool_cancel();
 	pool.stop(pool.ctx);
 	sift_par_pool_wait();
 }
@@ -156,7 +153,6 @@ sift_par_pool_start(int nthreads, SiftParJobFn fn, SiftParStopFn stop, void *ctx
 	Assert(sift_par_pool_usable() && !pool.busy && nthreads >= 2 && nthreads <= SIFT_PAR_MAX_THREADS);
 	if (pool.nspawned < nthreads - 1)
 		pool_spawn(nthreads - 1);
-	atomic_store(&pool.cancel, 0);
 	pthread_mutex_lock(&pool.mu);
 	pool.fn = fn;
 	pool.stop = stop;
@@ -183,16 +179,4 @@ bool
 sift_par_pool_busy(void)
 {
 	return pool.busy;
-}
-
-void
-sift_par_pool_cancel(void)
-{
-	atomic_store_explicit(&pool.cancel, 1, memory_order_relaxed);
-}
-
-bool
-sift_par_pool_cancelled(void)
-{
-	return atomic_load_explicit(&pool.cancel, memory_order_relaxed) != 0;
 }

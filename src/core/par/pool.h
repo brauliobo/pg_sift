@@ -17,7 +17,7 @@
 
 /* Runs on helper thread worker (1 .. nthreads - 1) */
 typedef void (*SiftParJobFn) (int worker, void *ctx);
-/* Makes every fn of the job return: the backend calls it, and waits for the job, when it exits in the middle of one */
+/* Makes every fn of the job return, at its next unit of work: the backend calls it, and waits for the job, when it exits in the middle of one */
 typedef void (*SiftParStopFn) (void *ctx);
 /* Runs on a helper thread when it ends, for what the thread holds that only it can free (the decompression contexts of its thread) */
 typedef void (*SiftParThreadFini) (void);
@@ -34,8 +34,5 @@ extern void sift_par_pool_start(int nthreads, SiftParJobFn fn, SiftParStopFn sto
 /* Returns when every helper of the job has returned from fn: none touches the job's memory after that */
 extern void sift_par_pool_wait(void);
 extern bool sift_par_pool_busy(void);
-/* What a thread of the job reads before each unit of work: set by the backend thread when the statement is cancelled or fails */
-extern void sift_par_pool_cancel(void);
-extern bool sift_par_pool_cancelled(void);
 
 #endif							/* SIFT_CORE_PAR_POOL_H */

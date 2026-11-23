@@ -20,13 +20,18 @@
  * sift_morsel_stop ends it for all.
  *
  * The queue is in shared memory, allocated with sift_morsel_size() bytes aligned to a cache line, and has no pointer: it is valid at any address.
+ *
+ * The same queue hands the items of an operator to the threads of the pool: sift_par_run (below) is the one driver of every parallel operator of a backend. An operator is the functions of a
+ * SiftParOps, and every one of them but the two that say so runs on any thread with no call to the server.
  */
 #ifndef SIFT_CORE_PAR_MORSEL_H
 #define SIFT_CORE_PAR_MORSEL_H
 
 #include "port/atomics.h"
 
+#include "core/par/arena.h"
 #include "core/par/topk.h"
+#include "core/par/pool.h"
 
 /* the most granules of a claim: 8 * 8192 rows */
 #define SIFT_MORSEL_MAX			8
@@ -78,5 +83,58 @@ extern void sift_morsel_theta_raise(SiftMorselQueue *q, uint64 bits);
 extern void sift_morsel_stop(SiftMorselQueue *q);
 /* The run of the next claim of a list with `left` granules left (the guided size) */
 extern uint32 sift_morsel_run(uint32 left, uint32 n_participants);
+
+/* ---- the driver of the threads of a backend ---- */
+
+/* The memory of each thread, made by the leader before the run and freed with its context */
+typedef struct SiftParArenas
+{
+	uint32		n;
+	struct
+	{
+		SiftArena	scratch;	/* one morsel's decode: rewound before each */
+		SiftArena	state;		/* what phase 1 leaves for phase 2: the partition streams, the table of a thread, its K best */
+		SiftArena	work;		/* phase 2: rewound after each partition */
+	}			w[SIFT_PAR_MAX_THREADS];
+} SiftParArenas;
+
+extern SiftParArenas *sift_par_arenas_create(MemoryContext cx, uint32 nthreads, size_t scratch_bytes, size_t state_bytes, size_t work_bytes);
+
+typedef struct SiftParRange
+{
+	uint32		lo;
+	uint32		hi;
+} SiftParRange;
+
+/* A run: the items [0, items) are split in morsels, and phase 2 has the partitions that seal returns */
+typedef struct SiftParCfg
+{
+	uint32		nthreads;		/* 1: every phase runs on the leader, with no wakeup of the pool */
+	uint32		items;
+} SiftParCfg;
+
+typedef struct SiftParOps
+{
+	/*
+	 * Thread `worker`: the items [lo, hi). false, with err filled, when it stops before the end: *done is the number of items from lo that are in. SIFT_ERR_WORK_MEM is the memory of the
+	 * thread: the others stop, and overflow_drain follows.
+	 */
+	bool		(*phase1) (void *ctx, int worker, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *done, SiftErr *err);
+	/* The leader, after every thread has left phase 1: the partitions of phase 2 (0: the answer is done). May call the server */
+	bool		(*seal) (void *ctx, uint32 *nparts, SiftErr *err);
+	/* Thread `worker`: partition `part`; work is rewound after it */
+	bool		(*phase2) (void *ctx, int worker, uint32 part, SiftArena *work, SiftErr *err);
+	/* The leader, when every phase is done: merges the threads' results and emits them. May call the server */
+	void		(*finish) (void *ctx);
+	/* The leader, after SIFT_ERR_WORK_MEM: delivers everything that is folded, and the items that are not (left) are for the serial path. May call the server */
+	void		(*overflow_drain) (void *ctx, const SiftParRange *left, uint32 nleft);
+} SiftParOps;
+
+/*
+ * Runs the operator on cfg->nthreads threads: the leader is thread 0. A thread of the pool is started in PG_TRY and waited for in PG_FINALLY, so that an error, a cancel or a statement timeout of
+ * the leader leaves none running; every thread reads sift_par_pool_cancelled between its units of work. The first error of a thread is raised on the leader as the backend path raises it
+ * (rel: its index, or NULL), except SIFT_ERR_WORK_MEM, which hands the operator to overflow_drain and returns false: the caller goes on with the items in left on the serial path.
+ */
+extern bool sift_par_run(const SiftParCfg *cfg, const SiftParOps *ops, void *ctx, SiftParArenas *arenas, Relation rel);
 
 #endif							/* SIFT_CORE_PAR_MORSEL_H */

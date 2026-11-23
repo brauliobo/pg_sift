@@ -6,8 +6,13 @@
 #include <math.h>
 
 #include "core/hash.h"
+#include "core/par/morsel.h"
+#include "core/par/pool.h"
 #include "core/par/radix.h"
 #include "core/par/topk.h"
+#include "miscadmin.h"
+#include "par_host.h"
+#include "pgshim.h"
 #include "unit.h"
 
 #define WORKERS		4
@@ -291,9 +296,396 @@ test_bound_keys(void)
 	CHECK(sift_bound_load(&b) == 11);
 }
 
+/* ---- pool: jobs on helper threads that have every signal blocked, cancel, the drain of a FATAL exit, the end of the threads ---- */
+
+extern int	max_parallel_workers_per_gather;
+extern bool IsUnderPostmaster;
+extern int	ParallelWorkerNumber;
+
+typedef struct PoolJob
+{
+	atomic_int	ran[SIFT_PAR_MAX_THREADS];
+	atomic_int	stop;
+	atomic_int	started;
+	atomic_int	blocked;
+} PoolJob;
+
+static void
+job_count(int worker, void *ctx)
+{
+	PoolJob    *j = ctx;
+	sigset_t	cur;
+
+	sift_test_in_worker = true;
+	pthread_sigmask(SIG_BLOCK, NULL, &cur);
+	if (sigismember(&cur, SIGINT) && sigismember(&cur, SIGTERM) && sigismember(&cur, SIGUSR1) && sigismember(&cur, SIGALRM))
+		atomic_fetch_add(&j->blocked, 1);
+	atomic_fetch_add(&j->ran[worker], 1);
+}
+
+static void
+job_spin(int worker, void *ctx)
+{
+	PoolJob    *j = ctx;
+
+	sift_test_in_worker = true;
+	atomic_fetch_add(&j->started, 1);
+	while (!atomic_load(&j->stop))
+		;
+	atomic_fetch_add(&j->ran[worker], 1);
+}
+
+static void
+job_stop(void *ctx)
+{
+	atomic_store(&((PoolJob *) ctx)->stop, 1);
+}
+
+static int	fini_calls;
+
+static void
+count_fini(void)
+{
+	__atomic_fetch_add(&fini_calls, 1, __ATOMIC_RELAXED);
+}
+
+static void
+test_pool_threads(void)
+{
+	max_parallel_workers_per_gather = 3;
+	CHECK(sift_par_pool_usable() && sift_par_pool_threads() == 4);
+	max_parallel_workers_per_gather = 0;
+	CHECK(sift_par_pool_threads() == 1);
+	max_parallel_workers_per_gather = 40;
+	CHECK(sift_par_pool_threads() == SIFT_PAR_MAX_THREADS);
+	ParallelWorkerNumber = 0;
+	CHECK(!sift_par_pool_usable() && sift_par_pool_threads() == 1);
+	ParallelWorkerNumber = -1;
+	IsUnderPostmaster = false;
+	CHECK(!sift_par_pool_usable() && sift_par_pool_threads() == 1);
+	IsUnderPostmaster = true;
+	max_parallel_workers_per_gather = 3;
+}
+
+static void
+test_pool_jobs(void)
+{
+	static PoolJob j;
+	sigset_t	cur;
+
+	sift_par_pool_on_thread_exit(count_fini);
+	sift_par_pool_on_thread_exit(count_fini);
+	for (int round = 0; round < 2000; round++)
+	{
+		const int	n = 2 + round % 3;
+
+		memset(&j, 0, sizeof(j));
+		sift_par_pool_start(n, job_count, job_stop, &j);
+		CHECK(sift_par_pool_busy());
+		sift_par_pool_wait();
+		CHECK(!sift_par_pool_busy());
+		CHECK(atomic_load(&j.ran[0]) == 0);
+		for (int w = 1; w < SIFT_PAR_MAX_THREADS; w++)
+			CHECK(atomic_load(&j.ran[w]) == (w < n ? 1 : 0));
+		CHECK(atomic_load(&j.blocked) == n - 1);
+	}
+	pthread_sigmask(SIG_BLOCK, NULL, &cur);
+	CHECK(!sigismember(&cur, SIGINT) && !sigismember(&cur, SIGTERM));
+}
+
+static void
+test_pool_stop(void)
+{
+	static PoolJob j;
+
+	for (int round = 0; round < 200; round++)
+	{
+		memset(&j, 0, sizeof(j));
+		sift_par_pool_start(4, job_spin, job_stop, &j);
+		while (atomic_load(&j.started) < 3)
+			;
+		job_stop(&j);
+		sift_par_pool_wait();
+		CHECK(atomic_load(&j.ran[1]) == 1 && atomic_load(&j.ran[2]) == 1 && atomic_load(&j.ran[3]) == 1);
+		memset(&j, 0, sizeof(j));
+		sift_par_pool_start(4, job_count, job_stop, &j);
+		sift_par_pool_wait();
+		CHECK(atomic_load(&j.ran[3]) == 1);
+	}
+}
+
+static void
+test_pool_exit(void)
+{
+	static PoolJob j;
+
+	memset(&j, 0, sizeof(j));
+	sift_par_pool_start(4, job_spin, job_stop, &j);
+	while (atomic_load(&j.started) < 3)
+		;
+	par_host_before_shmem_exit();
+	CHECK(!sift_par_pool_busy() && atomic_load(&j.stop) == 1 && atomic_load(&j.ran[1]) == 1 && atomic_load(&j.ran[3]) == 1);
+	par_host_proc_exit();
+	CHECK(__atomic_load_n(&fini_calls, __ATOMIC_RELAXED) == 3);
+}
+
+/* ---- driver: every item scatters into the partitions in phase 1, each partition is summed in phase 2; a failure, an overflow and a cancel in the middle of a run ---- */
+
+#define ITEMS		(1u << 21)
+
+typedef struct SumCtx
+{
+	SiftParArenas *ar;
+	SiftRadixOut out[SIFT_PAR_MAX_THREADS];
+	uint64		psum[SIFT_RADIX_PARTS];
+	uint64		pcnt[SIFT_RADIX_PARTS];
+	uint64		wfold[SIFT_PAR_MAX_THREADS];
+	atomic_int	ran[SIFT_PAR_MAX_THREADS];
+	uint32		fail_at;
+	uint32		fail_part;
+	SiftErrCode fail_code;
+	uint32		cancel_at;
+	uint32		leader_morsels;
+	uint32		drain_at;
+	bool		finished;
+	bool		drained;
+	uint64		left_items;
+} SumCtx;
+
+static bool
+sum_phase1(void *vc, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *done, SiftErr *err)
+{
+	SumCtx	   *c = vc;
+
+	sift_test_in_worker = t != 0;
+	atomic_store(&c->ran[t], 1);
+	CHECK(scratch->used == 0);
+	for (uint32 i = lo; i < hi; i++)
+	{
+		const uint64 v = mix(i);
+
+		if (i == c->fail_at)
+		{
+			*done = i - lo;
+			sift_err_fill(err, c->fail_code, i, 0, "phase 1 failed");
+			return false;
+		}
+		CHECK(sift_radix_put(&c->out[t], sift_radix_part(v), &v, 8));
+		c->wfold[t]++;
+	}
+	CHECK(sift_arena_alloc(scratch, 100, 8) != NULL);
+	if (t == 0 && ++c->leader_morsels == c->cancel_at)
+		InterruptPending = QueryCancelPending = true;
+	if (t == 0 && c->leader_morsels == c->drain_at)
+		par_host_before_shmem_exit();
+	return true;
+}
+
+static bool
+sum_seal(void *vc, uint32 *nparts, SiftErr *err)
+{
+	*nparts = SIFT_RADIX_PARTS;
+	return true;
+}
+
+static bool
+sum_chunk(void *arg, const uint8 *data, uint32 len)
+{
+	SumCtx	   *c = arg;
+	uint64		v;
+
+	for (uint32 off = 0; off < len; off += 8)
+	{
+		memcpy(&v, data + off, 8);
+		c->psum[sift_radix_part(v)] += v;
+		c->pcnt[sift_radix_part(v)]++;
+	}
+	return true;
+}
+
+static bool
+sum_phase2(void *vc, int t, uint32 part, SiftArena *work, SiftErr *err)
+{
+	SumCtx	   *c = vc;
+
+	sift_test_in_worker = t != 0;
+	CHECK(work->used == 0 && sift_arena_alloc(work, 1000, 8) != NULL);
+	if (part == c->fail_part)
+	{
+		sift_err_fill(err, SIFT_ERR_WORK_MEM, part, 0, "phase 2 failed");
+		return false;
+	}
+	for (int v = 0; v < c->ar->n; v++)
+		CHECK(sift_radix_scan(&c->out[v], part, sum_chunk, c));
+	return true;
+}
+
+static void
+sum_finish(void *vc)
+{
+	((SumCtx *) vc)->finished = true;
+}
+
+static void
+sum_drain(void *vc, const SiftParRange *left, uint32 nleft)
+{
+	SumCtx	   *c = vc;
+
+	c->drained = true;
+	for (uint32 i = 0; i < nleft; i++)
+		c->left_items += left[i].hi - left[i].lo;
+}
+
+static const SiftParOps sum_ops = {.phase1 = sum_phase1,.seal = sum_seal,.phase2 = sum_phase2,.finish = sum_finish,.overflow_drain = sum_drain};
+
+static void
+sum_setup(SumCtx *c, uint32 nthreads)
+{
+	pgshim_reset();
+	memset(c, 0, sizeof(*c));
+	c->fail_at = c->cancel_at = c->drain_at = c->fail_part = UINT32_MAX;
+	c->ar = sift_par_arenas_create(CurrentMemoryContext, nthreads, 64 << 10, (size_t) ITEMS * 16 + (1 << 20), 1 << 20);
+	for (uint32 t = 0; t < nthreads; t++)
+		sift_radix_init(&c->out[t], &c->ar->w[t].state);
+}
+
+static uint64
+sum_folded(const SumCtx *c)
+{
+	uint64		n = 0;
+
+	for (uint32 t = 0; t < c->ar->n; t++)
+		n += c->wfold[t];
+	return n;
+}
+
+typedef struct RunArgs
+{
+	SumCtx	   *c;
+	SiftParCfg	cfg;
+	bool		ok;
+} RunArgs;
+
+static void
+run_it(void *arg)
+{
+	RunArgs    *a = arg;
+
+	a->ok = sift_par_run(&a->cfg, &sum_ops, a->c, a->c->ar, NULL);
+}
+
+static void
+test_run_sums(void)
+{
+	uint64		expect = 0;
+
+	for (uint32 i = 0; i < ITEMS; i++)
+		expect += mix(i);
+	for (uint32 w = 1; w <= 4; w++)
+	{
+		static SumCtx c;
+		RunArgs		a = {.c = &c,.cfg = {.nthreads = w,.items = ITEMS}};
+		uint64		sum = 0,
+					cnt = 0;
+
+		sum_setup(&c, w);
+		run_it(&a);
+		CHECK(a.ok && c.finished && !c.drained && !sift_par_pool_busy());
+		for (int p = 0; p < SIFT_RADIX_PARTS; p++)
+		{
+			sum += c.psum[p];
+			cnt += c.pcnt[p];
+		}
+		CHECK(cnt == ITEMS && sum == expect && sum_folded(&c) == ITEMS);
+		for (uint32 t = w; t < SIFT_PAR_MAX_THREADS; t++)
+			CHECK(!atomic_load(&c.ran[t]));
+	}
+}
+
+static void
+test_run_failures(void)
+{
+	static SumCtx c;
+	RunArgs		a = {.c = &c,.cfg = {.nthreads = 4,.items = ITEMS}};
+
+	sum_setup(&c, 4);
+	c.fail_at = ITEMS / 2;
+	c.fail_code = SIFT_ERR_CORRUPT;
+	CHECK(!pgshim_try(run_it, &a) && pgshim_sqlstate != 0 && !c.finished && !sift_par_pool_busy());
+
+	sum_setup(&c, 4);
+	c.fail_at = ITEMS / 3;
+	c.fail_code = SIFT_ERR_WORK_MEM;
+	run_it(&a);
+	CHECK(!a.ok && c.drained && !c.finished && !sift_par_pool_busy());
+	CHECK(sum_folded(&c) + c.left_items == ITEMS && c.left_items > 0);
+
+	sum_setup(&c, 4);
+	c.fail_part = 5;
+	run_it(&a);
+	CHECK(!a.ok && c.drained && c.left_items == 0 && sum_folded(&c) == ITEMS && !sift_par_pool_busy());
+
+	sum_setup(&c, 1);
+	a.cfg.nthreads = 1;
+	c.fail_at = ITEMS / 5;
+	c.fail_code = SIFT_ERR_WORK_MEM;
+	run_it(&a);
+	CHECK(!a.ok && c.drained && sum_folded(&c) + c.left_items == ITEMS);
+}
+
+/* the exit of a backend (FATAL) in the middle of a run: the pool is stopped and waited for where the leader stands */
+static void
+test_run_drain(void)
+{
+	static SumCtx c;
+	RunArgs		a = {.c = &c,.cfg = {.nthreads = 4,.items = ITEMS}};
+
+	for (int round = 0; round < 50; round++)
+	{
+		sum_setup(&c, 4);
+		c.drain_at = 1000 * (1 + round % 4);
+		run_it(&a);
+		CHECK(!sift_par_pool_busy() && sum_folded(&c) < ITEMS);
+	}
+}
+
+/* ThreadSanitizer does not follow siglongjmp (PG_TRY): the cancel of the leader is run by the other builds */
+#ifndef __SANITIZE_THREAD__
+static void
+test_run_cancel(void)
+{
+	static SumCtx c;
+	RunArgs		a = {.c = &c,.cfg = {.nthreads = 4,.items = ITEMS}};
+
+	for (int round = 0; round < 50; round++)
+	{
+		bool		caught = false;
+
+		sum_setup(&c, 4);
+		c.cancel_at = 1000 * (1 + round % 4);
+		PG_TRY();
+		{
+			run_it(&a);
+		}
+		PG_CATCH();
+		{
+			caught = true;
+		}
+		PG_END_TRY();
+		CHECK(caught);
+		CHECK(!c.finished && !sift_par_pool_busy());
+		CHECK(sum_folded(&c) < ITEMS);
+	}
+	sum_setup(&c, 4);
+	run_it(&a);
+	CHECK(a.ok && c.finished);
+}
+#endif
+
 int
 main(void)
 {
+	pgshim_keep();
 	test_radix_scatter();
 	test_radix_full_arena();
 	test_bound_keys();
@@ -301,6 +693,16 @@ main(void)
 	test_topk(200000, 1000);
 	test_topk(300, 1000);
 	test_topk(5000, 1);
+	test_pool_threads();
+	test_pool_jobs();
+	test_pool_stop();
+	test_run_sums();
+	test_run_failures();
+	test_run_drain();
+#ifndef __SANITIZE_THREAD__
+	test_run_cancel();
+#endif
+	test_pool_exit();
 	puts("par_core: ok");
 	return 0;
 }
