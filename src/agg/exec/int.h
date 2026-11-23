@@ -28,7 +28,7 @@ extern TupleTableSlot * topn_next(AggExec *ex, TupleTableSlot *slot);
 typedef struct SiftExplainStatsV6
 {
 	uint64		parts_scanned, parts_pruned_key, parts_pruned_time, l0_slabs_read;
-	uint64		grans_scanned, grans_pruned_zone, grans_pruned_skip, grans_pruned_dict, grans_preagg;
+	uint64		grans_scanned, grans_pruned_zone, grans_pruned_skip, grans_pruned_dict, grans_preagg, grans_preagg_delta;
 	uint64		cfilt_grans_total, cfilt_grans_hit;
 	uint64		cfilt_dict, cfilt_rle, cfilt_forbit, cfilt_delta, cfilt_fsst, cfilt_alp;
 	uint64		late_mat_early_exits, late_mat_saved_bytes, sparse_decodes, adapt_reorders;

@@ -106,7 +106,8 @@ SELECT sift._test_explain_v6(4, 'json');
          "Pruned By Zone Map": 68,                                                     +
          "Pruned By Skip Index": 84,                                                   +
          "Pruned By Dictionary": 0,                                                    +
-         "Answered By Pre-aggregate": 0                                                +
+         "Answered By Pre-aggregate": 0,                                               +
+         "Corrected For Dead Rows": 0                                                  +
        },                                                                              +
        "SIP Filter": {                                                                 +
          "Filter Size": 65536,                                                         +

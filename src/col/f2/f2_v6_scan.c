@@ -26,6 +26,7 @@
 #include "agg/v6/v6_dictseen.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_pipe.h"
+#include "agg/v6/v6_preagg.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_vet.h"
 #include "agg/v6/v6_bqual.h"
@@ -694,6 +695,8 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	sift_f2_scan_set_zone_sink(scan, zone_offer);
 	if (s->rows != NULL && s->group == NULL && sift_v6_rows_bound(s->rows) != NULL)
 		sift_f2_scan_set_bound(scan, rows_bound_leaf(s), sift_v6_rows_bound(s->rows));
+	if (s->preagg != NULL)
+		sift_f2_scan_set_gran_sink(scan, sift_v6_preagg_try_granule, s->preagg);
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
 	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
 	index_endscan(scan);
@@ -713,6 +716,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
 	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0 && !s->spec->tid_range)
 		s->stat = sift_v6_colstat_begin(s->spec, s->group, index, sift_col_rel(index)->first, CurrentMemoryContext);
+	if (s->emit == NULL && s->rows == NULL && s->pipe == NULL && s->gate == NULL && next_chunk == NULL && s->group != NULL)
+		s->preagg = sift_v6_preagg_begin(s->spec, s->group, sift_col_rel(index)->first, &s->vet, s->stats);
 	if (next_chunk == NULL)
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
@@ -727,6 +732,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		sift_v6_colstat_end(s->stat);
 	sift_v6_vis_free(&s->vis);
 	sift_v6_vet_end(&s->vet);
+	if (s->preagg != NULL)
+		sift_v6_preagg_end(s->preagg);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 }

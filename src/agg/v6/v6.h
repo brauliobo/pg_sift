@@ -431,6 +431,8 @@ typedef struct SiftV6ScanStats
 	uint64		rows;
 	uint64		heap_vet_rows;
 	uint64		heap_rows_dead;
+	uint64		grans_preagg;	/* granules answered from their pre-aggregates (agg/v6/v6_preagg.h) */
+	uint64		grans_preagg_delta;	/* ... of them, those corrected for dead rows */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
 	uint64		bridge_tids;
 } SiftV6ScanStats;

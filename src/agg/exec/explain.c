@@ -637,6 +637,7 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 		xl_int(&l, "Pruned By Skip Index", "pruned_skip", st->grans_pruned_skip, true);
 		xl_int(&l, "Pruned By Dictionary", "pruned_dict", st->grans_pruned_dict, false);
 		xl_int(&l, "Answered By Pre-aggregate", "preagg", st->grans_preagg, false);
+		xl_int(&l, "Corrected For Dead Rows", "preagg_delta", st->grans_preagg_delta, false);
 		xl_end(&l);
 	}
 	if (st->sip_probes > 0)

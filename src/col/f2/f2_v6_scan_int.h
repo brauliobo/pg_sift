@@ -16,6 +16,7 @@
 #include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_pipe.h"
+#include "agg/v6/v6_preagg.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_vet.h"
 #include "col/f2/f2_scope_route.h"
@@ -77,6 +78,7 @@ struct SiftV6Scan
 	void	   *emit_arg;
 	SiftV6ScanStats *stats;
 	SiftV6Vet	vet;
+	SiftV6Preagg *preagg;		/* the cubes of the granules a part keeps (v6_preagg.h) */
 	int			ncols;
 	V6Col	   *cols;
 	SiftVec   **keyvec;

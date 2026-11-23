@@ -672,6 +672,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	sift_v6_gpu_explain(&st->gpu, es);
 	ex.heap_vet_rows = st->stats.heap_vet_rows;
 	ex.grans_scanned = st->stats.batches;
+	ex.grans_preagg = st->stats.grans_preagg;
+	ex.grans_preagg_delta = st->stats.grans_preagg_delta;
 	if (st->par != NULL)
 		explain_par(st->par, &ex);
 	sift_agg_explain_v6(es, &ex, sift_simd_level_name(sift_cpu.active), 0, 0);
