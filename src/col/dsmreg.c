@@ -213,9 +213,26 @@ dir_find(Dir *d, const char *name, const char *build, Size size)
 	return NULL;
 }
 
-/* A free entry, after the tables of another library, and the ones of the name at another size, that no backend maps are given back; else an unmapped table is; NULL when all are mapped */
+/* Gives back the tables that no backend maps and that this request makes stale: the ones of another library, and the ones of the name at another size (sift.shared_cache_kb changed) */
+static void
+dir_reap(Dir *d, const char *name, const char *build, Size size)
+{
+	for (int i = 0; i < DIR_ENTRIES; i++)
+	{
+		DirEnt	   *e = &d->ent[i];
+
+		if (e->handle != DSM_HANDLE_INVALID && pg_atomic_read_u32(&e->users) == 0 &&
+			(strcmp(e->build, build) != 0 || (strcmp(e->name, name) == 0 && e->size != size)))
+		{
+			dsm_unpin_segment(e->handle);
+			e->handle = DSM_HANDLE_INVALID;
+		}
+	}
+}
+
+/* A free entry, else an unmapped table is given back; NULL when all are mapped */
 static DirEnt *
-dir_claim(Dir *d, const char *name, const char *build)
+dir_claim(Dir *d)
 {
 	DirEnt	   *free = NULL;
 	DirEnt	   *idle = NULL;
@@ -224,12 +241,6 @@ dir_claim(Dir *d, const char *name, const char *build)
 	{
 		DirEnt	   *e = &d->ent[i];
 
-		if (e->handle != DSM_HANDLE_INVALID && pg_atomic_read_u32(&e->users) == 0 &&
-			(strcmp(e->build, build) != 0 || strcmp(e->name, name) == 0))
-		{
-			dsm_unpin_segment(e->handle);
-			e->handle = DSM_HANDLE_INVALID;
-		}
 		if (free == NULL && e->handle == DSM_HANDLE_INVALID)
 			free = e;
 		if (idle == NULL && e->handle != DSM_HANDLE_INVALID && pg_atomic_read_u32(&e->users) == 0)
@@ -273,6 +284,7 @@ sift_dsm_try(const char *name, Size size, SiftDsmInit init)
 	SIFT_INVARIANT(strlen(name) < sizeof(e->name) && strlen(build) < sizeof(e->build), "sift: the name or the build of the shared table %s is too long", name);
 	cx = MemoryContextSwitchTo(TopMemoryContext);
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
+	dir_reap(d, name, build, size);
 	if ((e = dir_find(d, name, build, size)) != NULL)
 	{
 		/* a mapping is a table this backend holds already */
@@ -285,7 +297,7 @@ sift_dsm_try(const char *name, Size size, SiftDsmInit init)
 	}
 	else
 	{
-		if ((e = dir_claim(d, name, build)) == NULL)
+		if ((e = dir_claim(d)) == NULL)
 		{
 			why = "the directory of the shared tables is full";
 			why_hint = "Every table is mapped by a backend; the tables are given back when their sessions end.";

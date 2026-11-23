@@ -102,6 +102,11 @@ test/expected/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sif
 test/expected/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
 test/expected/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
 test/expected/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
+test/expected/format2_limits_ios_1.out	1e907d3890cd64d040f6cb4c12b9ac4986c17dc8	17	suggest_stored_doc
+test/expected/format2_limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	17	ERROR:  column "vdoc" is a virtual generated column: no row stores its documents
+test/expected/format2_limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
+test/expected/format2_limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
+test/expected/format2_limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
 test/expected/table_f2_parity_1.out	29ab438535f80cdb3c37f8ebd6f3673fb2a69b65	17	chk
 test/expected/table_f2_parity_1.out	55872b3b89fc20bd60611e6fb677b34f022bd1a9	17	chk
 test/expected/table_f2_parity_1.out	62fa207ae7b3d7158de6c589eb89609f6dc058bf	17	chk
@@ -118,7 +123,6 @@ test/expected/v6_virtual_generated_1.out	49b7cfd8f69a385001696e5e88ac298d7532bf8
 test/expected/v6_virtual_generated_1.out	4cf4796d1fc21c9dfc06ffab453a24fd4cc04241	17	ERROR:  relation "vgb" does not exist
 test/expected/v6_virtual_generated_1.out	539cd1e580aed7cc0cfaf187021be1bab62ec856	17	bm25_with_virtual_columns
 test/expected/v6_virtual_generated_1.out	588deceb6f8444a7409791f2f668d46bc9842b4a	17	ERROR:  relation "vg" does not exist
-test/expected/v6_virtual_generated_1.out	59d6e79cc84af5bf3de70e2a0b42957490660269	17	ERROR:  cannot drop extension pg_sift because other objects depend on it
 test/expected/v6_virtual_generated_1.out	5e2a6ac16d827ca768a2fc096ad56228f1b46d9e	17	virtual_after_writes
 test/expected/v6_virtual_generated_1.out	630ca907bac824038e4a0c476814977b736b581b	17	ERROR:  table "vg" does not exist
 test/expected/v6_virtual_generated_1.out	654c072bd52474919b85ac8dfa0587f44feb4689	17	table_virtual_filter

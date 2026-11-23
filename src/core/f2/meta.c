@@ -62,7 +62,7 @@ sift_blk_new(Relation rel, BlockNumber blk)
 {
 	Buffer		buf;
 
-	if (blk < RelationGetNumberOfBlocks(rel))
+	if (blk < sift_main_nblocks(rel))
 	{
 		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blk, RBM_ZERO_AND_LOCK, sift_maint_ring);
 		return buf;

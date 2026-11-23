@@ -323,7 +323,7 @@ approx_quantile(FunctionCallInfo fcinfo, bool scalar)
 
 			for (uint32 i = 0; i < np; i++)
 				d[i] = Float8GetDatum(out[i]);
-			PG_RETURN_ARRAYTYPE_P(construct_array_builtin(d, (int) np, FLOAT8OID));
+			PG_RETURN_ARRAYTYPE_P(sift_construct_float8_array(d, (int) np));
 		}
 	}
 	if (!exact_answer(&t, where ? where : "true", scalar, PG_GETARG_DATUM(2), &exact))

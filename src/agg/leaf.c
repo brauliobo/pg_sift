@@ -27,14 +27,6 @@
 #include "col/am.h"
 #include "core/hash.h"
 
-static bool
-collation_deterministic(Oid collid)
-{
-	pg_locale_t loc = pg_newlocale_from_collation(collid);
-
-	return loc == NULL || loc->deterministic;
-}
-
 void
 ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 {
@@ -53,7 +45,7 @@ ot_init(OutTable *t, Oid eqop, Oid typid, Oid collid)
 	}
 	fmgr_info(lhs, &t->hashfn);
 	fmgr_info(get_opcode(eqop), &t->eqfn);
-	t->text = get_opcode(eqop) == F_TEXTEQ && (!OidIsValid(collid) || collation_deterministic(collid));
+	t->text = get_opcode(eqop) == F_TEXTEQ && (!OidIsValid(collid) || sift_collation_deterministic(collid));
 	get_typlenbyval(typid, &t->len, &t->byval);
 	t->collid = collid;
 	t->nslot = 64;

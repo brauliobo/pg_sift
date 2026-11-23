@@ -51,7 +51,7 @@ sift_test_f2_scope_keys(PG_FUNCTION_ARGS)
 		v[1] = Int64GetDatum((int64) cube.row_count);
 		v[2] = Int64GetDatum(cube.has_time ? cube.time_min : 0);
 		v[3] = Int64GetDatum(cube.has_time ? cube.time_max : 0);
-		v[4] = PointerGetDatum(construct_array_builtin(sums, cube.shape.nmeas, FLOAT8OID));
+		v[4] = PointerGetDatum(sift_construct_float8_array(sums, cube.shape.nmeas));
 		n[2] = n[3] = !cube.has_time;
 		f2t_srf_put(rsi, v, n);
 		sift_scube_free(&cube);

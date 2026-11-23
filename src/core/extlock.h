@@ -15,6 +15,7 @@
 
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
+#include "storage/smgr.h"
 #include "utils/rel.h"
 
 extern void sift_extension_lock(Relation rel);
@@ -22,6 +23,13 @@ extern void sift_extension_unlock(Relation rel);
 
 /* Whether this backend holds the lock taken by sift_extension_lock now (an error or a rolled back subtransaction released it without a call to the unlock) */
 extern bool sift_extension_held(void);
+
+/* The blocks of the main fork, of a fake relcache entry too (RelationGetNumberOfBlocks asserts the relkind, which a fake entry has not) */
+static inline BlockNumber
+sift_main_nblocks(Relation rel)
+{
+	return smgrnblocks(RelationGetSmgr(rel), MAIN_FORKNUM);
+}
 
 /* The blocks of the relation up to nblocks zeroed, the last one returned locked: ExtendBufferedRelTo, which takes the lock itself */
 extern Buffer sift_extend_zeroed_to(Relation rel, BlockNumber nblocks);

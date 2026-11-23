@@ -278,12 +278,8 @@ SELECT count(*) = 0 AS expression_check_is_clean FROM sift.check('ex_col');
  t
 (1 row)
 
-DROP TABLE vg, vgb, vgh, vgt, ex;
+DROP TABLE vg, vgb, vgh, vgt;
 ERROR:  table "vg" does not exist
+DROP TABLE ex;
 DROP FUNCTION parity(text), same(text, text), ddl_state(text);
 DROP EXTENSION pg_sift;
-ERROR:  cannot drop extension pg_sift because other objects depend on it
-DETAIL:  trigger sift_track_delete_ex_col_211780 on table ex depends on function sift.col_track_old_rows()
-trigger sift_track_update_ex_col_211781 on table ex depends on function sift.col_track_old_rows()
-index ex_col depends on trigger sift_track_update_ex_col_211781 on table ex
-HINT:  Use DROP ... CASCADE to drop the dependent objects too.

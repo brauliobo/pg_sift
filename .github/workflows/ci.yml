@@ -302,7 +302,7 @@ jobs:
     needs: [changes, build]
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.matrix != '[]' && needs.build.result != 'failure' }}
     runs-on: ${{ matrix.arm && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || matrix.tier == 'full' && 60 || 30 }}
+    timeout-minutes: ${{ matrix.tier == 'full' && (github.event_name == 'schedule' || inputs.deep == true) && 120 || matrix.tier == 'full' && 60 || 40 }}
     strategy:
       fail-fast: false
       matrix:

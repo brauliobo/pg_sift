@@ -7,9 +7,17 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE FUNCTION m4_named(n text) RETURNS bigint LANGUAGE sql AS
 $$ SELECT count(*) FROM pg_backend_memory_contexts WHERE name = n $$;
+SELECT current_setting('server_version_num')::int >= 180000 AS pg18 \gset
+\if :pg18
 CREATE FUNCTION m4_under_root(n text) RETURNS bigint LANGUAGE sql AS
 $$ SELECT count(*) FROM pg_backend_memory_contexts c
    WHERE c.name = n AND c.path @> (SELECT path FROM pg_backend_memory_contexts WHERE name = 'SiftBackendCacheContext') $$;
+\else
+CREATE FUNCTION m4_under_root(n text) RETURNS bigint LANGUAGE sql AS
+$$ WITH RECURSIVE t AS (SELECT name, parent FROM pg_backend_memory_contexts WHERE name = 'SiftBackendCacheContext'
+                        UNION SELECT c.name, c.parent FROM pg_backend_memory_contexts c JOIN t ON c.parent = t.name)
+   SELECT count(*) FROM t WHERE name = n $$;
+\endif
 -- a scan that fails holds no pin afterwards: with the cache emptied no part pin is left
 CREATE TABLE m4_t (id int, v int) USING sift_table;
 INSERT INTO m4_t SELECT i, i % 97 FROM generate_series(1, 20000) i;

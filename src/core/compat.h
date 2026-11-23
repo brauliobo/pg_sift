@@ -544,6 +544,15 @@ sift_op_strategies(Oid opno)
 #define sift_collate_is_c(collid) lc_collate_is_c(collid)
 #endif
 
+/* Is the collation deterministic? 17 gives no locale (NULL) for the default collation of the libc provider, 18 and later always one */
+static inline bool
+sift_collation_deterministic(Oid collid)
+{
+	pg_locale_t loc = pg_newlocale_from_collation(collid);
+
+	return loc == NULL || loc->deterministic;
+}
+
 /* ReplaceVarsFromTargetList takes the result relation (18) */
 #if PG_VERSION_NUM >= 180000
 #define sift_replace_vars_from_targetlist(n, varno, rte, tlist) \
@@ -605,6 +614,13 @@ sift_op_strategies(Oid opno)
 #define SIFT_READ_STREAM_BATCHING	READ_STREAM_USE_BATCHING
 #else
 #define SIFT_READ_STREAM_BATCHING	0
+#endif
+
+/* construct_array_builtin knows float8 from 18 on */
+#if PG_VERSION_NUM >= 180000
+#define sift_construct_float8_array(elems, n)	construct_array_builtin((elems), (n), FLOAT8OID)
+#else
+#define sift_construct_float8_array(elems, n)	construct_array((elems), (n), FLOAT8OID, sizeof(float8), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE)
 #endif
 
 #endif							/* SIFT_COMPAT_H */

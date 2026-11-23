@@ -41,7 +41,7 @@ sift_distinct_type_ok(Oid typid)
 bool
 sift_distinct_collation_ok(Oid collid)
 {
-	return !OidIsValid(collid) || pg_newlocale_from_collation(collid)->deterministic;
+	return !OidIsValid(collid) || sift_collation_deterministic(collid);
 }
 
 static void

@@ -153,7 +153,7 @@ sift_col_meta_init(Relation rel, SiftAmKind am, uint64 compat_flags, uint32 sche
 				p2;
 	BlockNumber high_water = (BlockNumber) ((uint64) SIFT_FIRST_SLAB_BLKNO + SIFT_FIRST_SLAB_BLOCKS);
 
-	if (RelationGetNumberOfBlocks(rel) < high_water)
+	if (sift_main_nblocks(rel) < high_water)
 		UnlockReleaseBuffer(sift_extend_zeroed_to(rel, high_water));
 	x = sift_xlog_start(rel);
 	p0 = sift_xlog_register(&x, sift_blk_new(rel, SIFT_METAPAGE_BLKNO), GENERIC_XLOG_FULL_IMAGE);

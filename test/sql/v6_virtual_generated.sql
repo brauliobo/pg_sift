@@ -117,6 +117,7 @@ VACUUM (ANALYZE) ex;
 SELECT parity($q$SELECT lower(code), payload->>'region', count(*), sum(amount), sum(double_amount) FROM ex GROUP BY 1, 2$q$) AS expression_after_writes;
 SELECT count(*) = 0 AS expression_check_is_clean FROM sift.check('ex_col');
 
-DROP TABLE vg, vgb, vgh, vgt, ex;
+DROP TABLE vg, vgb, vgh, vgt;
+DROP TABLE ex;
 DROP FUNCTION parity(text), same(text, text), ddl_state(text);
 DROP EXTENSION pg_sift;
