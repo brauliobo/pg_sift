@@ -486,7 +486,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_fsm_reclaim(rel);
 	if (truncate)
 	{
-		sift_f2_tail_relocate(rel, store, oldest_fx, PG_INT64_MIN);
+		sift_f2_tail_relocate(rel, sift_f2_store_open(rel), oldest_fx, PG_INT64_MIN);
 		(void) sift_fsm_tail_shrink(rel);
 	}
 	meta = sift_col_meta_read(rel);
