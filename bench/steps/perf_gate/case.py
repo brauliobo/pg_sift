@@ -7,7 +7,7 @@ def reset(conn, case):
 
 
 def configure(conn, case):
-    conn.script('SET sift.agg_preagg=on; SET sift.enable_agg=on')
+    conn.script(MODE_SETTINGS[case.mode])
     if case.settings:
         conn.script(case.settings)
 

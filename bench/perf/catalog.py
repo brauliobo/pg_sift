@@ -2,7 +2,7 @@
 
 A case with gate=False is measured and reported but does not decide the verdict: its operation takes under a millisecond, and on hosted runners it
 was 37 of the 52 non-pass verdicts of 439 runs (storage_insert 25, storage_point_lookup 12) without one confirmed regression."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class Case:
     gate: bool = True
     lifecycle: str = 'read'
     workload_version: str = 'v1'
+    mode: str = '1T'
 
     def statements(self, seed_max, operations):
         if self.lifecycle != 'insert_trajectory':

@@ -1,4 +1,5 @@
 """Focused methodology tests: python3 -m unittest discover -s bench/perf -v."""
+import dataclasses
 import importlib.util
 from pathlib import Path
 import math
@@ -631,6 +632,27 @@ class Methodology(unittest.TestCase):
         result = gate.validate_case([Rev(first),Rev(second)],gate.CASES[0])
         self.assertTrue(result['plan_changed'])
         self.assertEqual(result['results'][0],result['results'][1])
+
+    def test_stock_planner_settings_force_no_plan(self):
+        forced = ('enable_seqscan','enable_indexscan','enable_bitmapscan','cpu_tuple_cost','seq_page_cost','random_page_cost',
+                  'parallel_setup_cost','parallel_tuple_cost','min_parallel_table_scan_size')
+        for mode,workers in (('1T',0),('4T',4)):
+            with self.subTest(mode=mode):
+                script = gate.MODE_SETTINGS[mode]
+                self.assertIn(f'SET max_parallel_workers_per_gather={workers};',script+';')
+                self.assertEqual([g for g in forced if g in script],[])
+        self.assertEqual(gate.SETTINGS,gate.MODE_SETTINGS['1T'])
+        source = (Path(gate.__file__).parent/'perf_gate/prelude.py').read_text()
+        self.assertNotRegex(source,r'enable_seqscan=off|cpu_tuple_cost=0\.5')
+
+    def test_every_prepare_applies_the_profile_of_its_mode(self):
+        class Capture:
+            def __init__(self): self.scripts = []
+            def script(self,text): self.scripts.append(text)
+        for mode in ('1T','4T'):
+            conn = Capture()
+            gate.configure(conn,dataclasses.replace(gate.CASES[0],mode=mode))
+            self.assertEqual(conn.scripts,[gate.MODE_SETTINGS[mode]])
 
 
 if __name__=='__main__':

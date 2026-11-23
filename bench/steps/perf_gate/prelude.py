@@ -52,6 +52,10 @@ INSERT_HISTORY_CAP = 5
 CPU_PILOT_ROWS = 32
 CPU_PILOT_ITERATIONS = 16
 CPU_ITERATION_CAP = 1024
-SETTINGS = '''SET statement_timeout='30s'; SET max_parallel_workers_per_gather=0;
-SET max_parallel_maintenance_workers=0; SET jit=off; SET sift.async_maintenance=off;
-SET sift.table_write_buffer_limit=2048; SET cpu_tuple_cost=0.5; SET enable_seqscan=off; SET sift.enable_agg=on; SET sift.agg_preagg=on'''
+SETTINGS_COMMON = ("SET statement_timeout='30s'; SET jit=off; SET work_mem='64MB'; SET sift.async_maintenance=off; "
+                   "SET sift.enable_agg=on; SET sift.enable_col_scan=on; SET sift.enable_scan=on")
+# The stock planner decides every plan: only the number of workers differs between the two profiles; no cost or enable_* GUC is forced.
+SETTINGS_1T = SETTINGS_COMMON+'; SET max_parallel_workers_per_gather=0; SET max_parallel_maintenance_workers=0'
+SETTINGS_4T = SETTINGS_COMMON+'; SET max_parallel_workers_per_gather=4; SET max_parallel_maintenance_workers=4'
+MODE_SETTINGS = {'1T':SETTINGS_1T,'4T':SETTINGS_4T}
+SETTINGS = SETTINGS_1T

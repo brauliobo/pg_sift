@@ -55,13 +55,14 @@ listen_addresses=''
 unix_socket_directories='{self.socket}'
 extension_control_path='{sharedir}:$system'
 dynamic_library_path='{pkglib}:$libdir'
-shared_buffers='64MB'
+shared_buffers='256MB'
+max_worker_processes=12
+max_parallel_workers=8
 max_wal_size='48MB'
 min_wal_size='32MB'
 fsync=off
 full_page_writes=off
 autovacuum=off
-max_parallel_workers_per_gather=0
 max_parallel_maintenance_workers=0
 jit=off
 """
