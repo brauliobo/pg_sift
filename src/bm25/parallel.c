@@ -24,24 +24,6 @@ sift_par_estimate(int nworkers)
 	return add_size(offsetof(SiftParShared, slot), mul_size(nworkers + 1, sizeof(SiftParSlot)));
 }
 
-static uint32
-float_bits(float4 f)
-{
-	uint32		b;
-
-	memcpy(&b, &f, sizeof(b));
-	return b;
-}
-
-static float4
-bits_float(uint32 b)
-{
-	float4		f;
-
-	memcpy(&f, &b, sizeof(f));
-	return f;
-}
-
 void
 sift_par_init(SiftParShared *sh, int nworkers, uint32 nsb)
 {
@@ -50,7 +32,7 @@ sift_par_init(SiftParShared *sh, int nworkers, uint32 nsb)
 	sh->nsb = nsb;
 	sh->morsel = morsel_size(nsb, sh->nplanned);
 	pg_atomic_init_u64(&sh->next, 0);
-	pg_atomic_init_u32(&sh->theta, float_bits(-INFINITY));
+	sift_bound_init(&sh->theta, sift_bound_key_f32(-INFINITY));
 	pg_atomic_init_u32(&sh->filter_state, SIFT_PAR_FILTER_NONE);
 	ConditionVariableInit(&sh->filter_cv);
 	sh->filter_bm = InvalidDsaPointer;
@@ -234,17 +216,14 @@ sift_par_filter_attach(SiftPar *par, MemoryContext mcxt)
 float4
 sift_par_theta(const SiftPar *par)
 {
-	return bits_float(pg_atomic_read_u32(&par->sh->theta));
+	return sift_bound_f32(sift_bound_load(&par->sh->theta));
 }
 
 void
 sift_par_raise_theta(SiftPar *par, float4 theta)
 {
-	uint32		cur = pg_atomic_read_u32(&par->sh->theta);
-
-	while (theta > bits_float(cur))
-		if (pg_atomic_compare_exchange_u32(&par->sh->theta, &cur, float_bits(theta)))
-			break;
+	if (theta > sift_par_theta(par))
+		sift_bound_raise(&par->sh->theta, sift_bound_key_f32(theta));
 }
 
 void

@@ -17,6 +17,7 @@
 #define SIFT_PARALLEL_H
 
 #include "core/filter.h"
+#include "core/par/topk.h"
 #include "core/sift.h"
 
 /* A ranked hit as exchanged between participants */
@@ -45,7 +46,7 @@ typedef struct SiftParShared
 	uint32		nsb;			/* range scans: superblocks [0, nsb) */
 	uint32		morsel;			/* range scans: superblocks per claim */
 	pg_atomic_uint64 next;		/* next morsel */
-	pg_atomic_uint32 theta;		/* ranked: float bits of the threshold */
+	SiftAtomicBound theta;		/* ranked: the threshold */
 	pg_atomic_uint32 filter_state;	/* SIFT_PAR_FILTER_* */
 	ConditionVariable filter_cv;	/* signalled when the filter is ready */
 	dsa_pointer filter_bm;		/* the published filter (SiftParFilterHdr, its superblocks, its rows) */

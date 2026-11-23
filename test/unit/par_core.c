@@ -3,8 +3,11 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "core/hash.h"
 #include "core/par/radix.h"
+#include "core/par/topk.h"
 #include "unit.h"
 
 #define WORKERS		4
@@ -142,11 +145,162 @@ test_radix_full_arena(void)
 	CHECK(sift_radix_scan(&o, 0, radix_stop, NULL));
 }
 
+/* ---- top-K: the K best by metric, then by the key (a total order), from four heaps, equal to the first K of a sort of everything ---- */
+
+typedef struct TkElem
+{
+	int64		metric;
+	uint64		key;
+	char	   *txt;
+	uint32		len;
+} TkElem;
+
+typedef struct TkJob
+{
+	SiftParTopK tk[WORKERS];
+	SiftArena	arena[WORKERS];
+	SiftAtomicBound bound;
+	uint32		n;
+	uint32		k;
+} TkJob;
+
+static bool
+tk_better(const void *a, const void *b, const void *ctx)
+{
+	const TkElem *x = a,
+			   *y = b;
+
+	if (x->metric != y->metric)
+		return x->metric > y->metric;
+	return x->key < y->key;
+}
+
+static bool
+tk_store(void *dst, const void *cand, SiftArena *str, const void *ctx)
+{
+	const TkElem *c = cand;
+	TkElem	   *d = dst;
+	char	   *buf = sift_arena_alloc(str, c->len, 1);
+
+	if (buf == NULL)
+		return false;
+	memcpy(buf, c->txt, c->len);
+	*d = *c;
+	d->txt = buf;
+	return true;
+}
+
+static void
+tk_value(uint64 i, TkElem *e, char *txt)
+{
+	const uint64 v = mix(i);
+
+	e->metric = (int64) (v % 50);
+	e->key = i;
+	e->len = 1 + v % 12;
+	memset(txt, 'a' + (int) (i % 26), e->len);
+	e->txt = txt;
+}
+
+static void
+tk_offer(void *arg, int t)
+{
+	TkJob	   *j = arg;
+
+	for (uint32 i = t; i < j->n; i += WORKERS)
+	{
+		TkElem		e;
+		char		txt[16];
+
+		tk_value(i, &e, txt);
+		if (sift_bound_key_i64(e.metric, true) < sift_bound_load(&j->bound))
+			continue;
+		CHECK(sift_par_topk_offer(&j->tk[t], &e));
+		if (sift_par_topk_worst(&j->tk[t]) != NULL)
+			sift_bound_raise(&j->bound, sift_bound_key_i64(((const TkElem *) sift_par_topk_worst(&j->tk[t]))->metric, true));
+	}
+}
+
+static int
+tk_cmp_ref(const void *a, const void *b)
+{
+	return tk_better(a, b, NULL) ? -1 : tk_better(b, a, NULL) ? 1 : 0;
+}
+
+static void
+test_topk(uint32 n, uint32 k)
+{
+	static TkJob job;
+	static uint8 slab[WORKERS][1 << 20] __attribute__((aligned(SIFT_ARENA_ALIGN)));
+	SiftArena	out;
+	static uint8 outslab[1 << 20] __attribute__((aligned(SIFT_ARENA_ALIGN)));
+	SiftParTopK *heaps[WORKERS];
+	TkElem	   *ref = malloc(sizeof(TkElem) * n);
+	const void **sorted;
+	uint32		got;
+
+	job.n = n;
+	job.k = k;
+	sift_bound_init(&job.bound, 0);
+	for (int t = 0; t < WORKERS; t++)
+	{
+		sift_arena_init(&job.arena[t], slab[t], sizeof(slab[t]));
+		CHECK(sift_par_topk_init(&job.tk[t], &job.arena[t], k, sizeof(TkElem), 64 << 10, tk_better, tk_store, NULL));
+		heaps[t] = &job.tk[t];
+	}
+	unit_run_workers(WORKERS, tk_offer, &job);
+	for (uint32 i = 0; i < n; i++)
+	{
+		static char txt[1 << 16][16];
+
+		tk_value(i, &ref[i], txt[i % (1 << 16)]);
+		ref[i].txt = NULL;
+	}
+	qsort(ref, n, sizeof(TkElem), tk_cmp_ref);
+	sift_arena_init(&out, outslab, sizeof(outslab));
+	CHECK(sift_par_topk_merge(heaps, WORKERS, &out, &sorted, &got));
+	CHECK(got == Min(k, n));
+	for (uint32 i = 0; i < got; i++)
+	{
+		const TkElem *e = sorted[i];
+
+		CHECK(e->metric == ref[i].metric && e->key == ref[i].key);
+		CHECK(e->len == 1 + mix(e->key) % 12 && e->txt[0] == 'a' + (int) (e->key % 26));
+	}
+	free(ref);
+}
+
+static void
+test_bound_keys(void)
+{
+	static const int64 vals[] = {INT64_MIN, -5, -1, 0, 1, 7, INT64_MAX};
+	static const float fl[] = {-INFINITY, -1e30f, -2.5f, -0.0f, 0.0f, 1e-30f, 3.5f, 1e30f, INFINITY};
+	SiftAtomicBound b;
+
+	for (int i = 1; i < 7; i++)
+		CHECK(sift_bound_key_i64(vals[i - 1], true) < sift_bound_key_i64(vals[i], true) &&
+			  sift_bound_key_i64(vals[i - 1], false) > sift_bound_key_i64(vals[i], false));
+	for (int i = 1; i < 9; i++)
+		CHECK(sift_bound_key_f32(fl[i - 1]) <= sift_bound_key_f32(fl[i]));
+	for (int i = 0; i < 9; i++)
+		CHECK(sift_bound_f32(sift_bound_key_f32(fl[i])) == fl[i]);
+	sift_bound_init(&b, 10);
+	sift_bound_raise(&b, 5);
+	CHECK(sift_bound_load(&b) == 10);
+	sift_bound_raise(&b, 11);
+	CHECK(sift_bound_load(&b) == 11);
+}
+
 int
 main(void)
 {
 	test_radix_scatter();
 	test_radix_full_arena();
+	test_bound_keys();
+	test_topk(200000, 10);
+	test_topk(200000, 1000);
+	test_topk(300, 1000);
+	test_topk(5000, 1);
 	puts("par_core: ok");
 	return 0;
 }
