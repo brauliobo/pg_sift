@@ -1,4 +1,4 @@
--- The corpus: 364 typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
+-- The corpus: typified statements of test/corpus/lab.sql (aggregates, joins and key sets, windows and top-N, time series, predicates, access patterns, archetypes), run by
 -- test/corpus/run.py (scripts/corpus.sh), each in a new backend with sift off and on. Format:
 --   -- @case slug | family | note
 --   -- @pre   <one line of SQL run before the statement in every session>   (zero or more)
@@ -973,3 +973,68 @@ select status, count(*), sum(amount) from scope_events where dim_a_id = any (arr
 -- @case scope_array_or | join | the members as = ANY (ARRAY(SELECT ..)) under OR are no semi join: the join as written, with its reason
 select status, count(*), sum(amount) from scope_events where dim_a_id = any (array(select dim_a_id from scope_pairs where tenant_id = 1 + @K@ % 50)) or amount = 7 group by 1;
 
+
+-- ===================== regressions of the weeks before 6.0: the shapes the bugs of the Format 2.0 work were found in
+-- @case sip_materialize_nl | join | an aggregate read as the inner side of a nested loop: the planner materializes it and rescans the Materialize
+-- @pre set enable_hashjoin = off; set enable_mergejoin = off;
+select a.id, s.n, s.total from dim_a a join (select dim_a_id, count(*) n, sum(amount) total from events group by 1) s on s.dim_a_id = a.id where a.id <= 40;
+-- @case sip_materialize_twice | join | the same aggregate twice, rescanned under two nested loops
+-- @pre set enable_hashjoin = off; set enable_mergejoin = off;
+with s as (select dim_a_id, count(*) n, max(amount) top from events where d >= date '2025-01-01' group by 1) select a.id, s1.n, s2.top from dim_a a join s s1 on s1.dim_a_id = a.id join s s2 on s2.dim_a_id = a.id where a.id <= 30;
+-- @case sip_materialize_semi | join | a materialized aggregate under a semi join read by a nested loop
+-- @pre set enable_hashjoin = off; set enable_mergejoin = off;
+select a.id from dim_a a where a.id <= 60 and a.id in (select dim_a_id from events group by 1 having count(*) > 20);
+-- @case param_rescan_scalar | subq | a correlated scalar sub-select: one rescan of the aggregate for each outer row, with the entity as a Param
+select a.id, (select count(*) from events v where v.dim_a_id = a.id and v.status = 'paid') from dim_a a where a.id <= 150;
+-- @case param_rescan_max | subq | the same with max and a date bound that is a Param too
+select a.id, (select max(amount) from events v where v.dim_a_id = a.id and v.d >= date '2025-01-01' + (a.id % 30)) from dim_a a where a.id <= 150;
+-- @case param_rescan_exists | subq | a correlated EXISTS over a grouped sub-select
+select a.id from dim_a a where a.id <= 150 and exists (select 1 from events v where v.dim_a_id = a.id group by v.kind_id having count(*) > 4);
+-- @case param_rescan_lateral_group | subq | a LATERAL group by whose filter is the Param of the outer row
+select a.id, x.status, x.c, x.s from dim_a a cross join lateral (select status, count(*) c, sum(amount) s from events v where v.dim_a_id = a.id group by 1) x where a.id <= 60;
+-- @case param_rescan_having | subq | a sub-select with the Param in its HAVING and a LIMIT
+select a.id from dim_a a where a.id <= 150 and (select count(*) from events v where v.dim_a_id = a.id group by v.kind_id order by 1 desc limit 1) > 5;
+-- @case tbl_keyset_desc_first | access | the first page of a keyset pagination, newest first, of a sift_table whose rows are in the write stage
+-- @pre set enable_seqscan = off; set enable_indexscan = off; set enable_bitmapscan = off;
+select id, ts, amount from tbl_log order by ts desc, id desc limit 25;
+-- @case tbl_keyset_desc_next | access | the next page after a (ts, id) key
+-- @pre set enable_seqscan = off; set enable_indexscan = off; set enable_bitmapscan = off;
+select id, ts, amount from tbl_log where (ts, id) < (timestamptz '2026-01-10', 100 + @K@) order by ts desc, id desc limit 25;
+-- @case tbl_keyset_desc_entity | access | the pages of one entity, newest first, with a filter
+-- @pre set enable_seqscan = off; set enable_indexscan = off; set enable_bitmapscan = off;
+select id, ts, amount from tbl_log where dim_a_id <= 40 and status = 'paid' and (ts, id) < (timestamptz '2026-01-20', 100 + @K@) order by ts desc, id desc limit 25;
+-- @case tbl_group_write_stage | agg | an aggregate of a sift_table with all rows in the write stage
+-- @pre set enable_seqscan = off; set enable_indexscan = off; set enable_bitmapscan = off;
+select status, count(*), sum(amount), avg(amount) from tbl_log group by 1;
+-- @case tbl_pk_range | access | a primary key range of the sift_table
+-- @pre set enable_seqscan = off; set enable_indexscan = off; set enable_bitmapscan = off;
+select count(*), sum(amount), max(ts) from tbl_log where id between 100 and 400 + @K@;
+-- @case search_join_star | join | BM25 text of one table joined to a dimension and grouped by it
+select a.type, count(*) from docs x join dim_a a on a.id = x.dim_a_id where x.body @@> 'plug' group by 1;
+-- @case search_join_tenant | join | BM25 text with a date filter, grouped by tenant
+select x.tenant_id, count(*) from docs x join tenants t on t.id = x.tenant_id where x.body @@> 'cable OR relay' and x.created_at >= date '2025-01-01' group by 1;
+-- @case search_join_topk | join | BM25 text with a join and a total order, limited
+select x.id, a.region from docs x join dim_a a on a.id = x.dim_a_id where x.body @@> 'socket' order by x.id limit 30;
+-- @case distinct_dict_text | agg | count(DISTINCT) of a text column of 50,000 values or less, per tenant
+select tenant_id, count(distinct label) from events group by 1;
+-- @case distinct_dict_global | agg | count(DISTINCT) of the same column over all rows
+select count(distinct label), count(distinct status) from events;
+-- @case distinct_wide_types | agg | count(DISTINCT) of uuid, numeric, text, a wide text, date and float4 columns per group
+select g, count(distinct u), count(distinct n), count(distinct t), count(distinct long_t), count(distinct d), count(distinct f4) from typed group by 1;
+-- @case distinct_wide_filter | agg | count(DISTINCT) of the wide types under a filter on a boolean and a timestamp
+select b, count(distinct u), count(distinct long_t), count(distinct i8) from typed where ts >= timestamptz '2025-02-01' group by 1;
+-- @case lateral_jsonb_unnest | join | LATERAL jsonb_array_elements of an indexed document array, grouped by an element field
+select i ->> 'kind' as kind, count(*), sum((i ->> 'score')::float8) from jdocs d cross join lateral jsonb_array_elements(d.doc -> 'items') i group by 1;
+-- @case lateral_jsonb_unnest_filter | join | the same under a filter on a field of the document and on the entity
+select d.doc ->> 'channel', i ->> 'kind', count(*) from jdocs d cross join lateral jsonb_array_elements(d.doc -> 'items') i where d.dim_a_id <= 500 and d.doc ->> 'channel' <> 'shop' group by 1, 2;
+-- @case lateral_jsonb_unnest_exists | join | EXISTS over the elements of the document array
+select d.doc ->> 'channel', count(*) from jdocs d where exists (select 1 from jsonb_array_elements(d.doc -> 'items') i where (i ->> 'score')::float8 >= 8) group by 1;
+-- @case rls_heap_fetch | scope | row level security as another role: a column that no index holds is fetched from the heap for the rows that pass the policy
+-- @pre set role corpus_rls; set corpus.tenant = '3';
+select dim_a_id, count(*), max(payload) from rls_items group by 1;
+-- @case rls_indexed_agg | scope | row level security as another role: an aggregate of indexed columns
+-- @pre set role corpus_rls; set corpus.tenant = '2';
+select dim_a_id, count(*), sum(amount) from rls_items where dim_a_id <= 800 group by 1;
+-- @case rls_join_dim | scope | row level security as another role with a join to a dimension the role may read
+-- @pre set role corpus_rls; set corpus.tenant = '4';
+select a.type, count(*), sum(r.amount) from rls_items r join dim_a a on a.id = r.dim_a_id group by 1;
