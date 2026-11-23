@@ -25,6 +25,7 @@
 #include "core/sift.h"
 
 #define GRANULE_ROWS	8192.0
+#define SIFT_DICT_MAX_VALUES	65536.0
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
 
@@ -37,18 +38,23 @@ extern PGDLLIMPORT bool sift_agg_exact_float;
 #define PAR_TUPLE_NS		15.0	/* the rows the scan reads */
 #define PAR_TEXT_QUAL_NS	30.0	/* a text column a qual reads, for every row of the table */
 #define PAR_INT_KEY_NS		10.0
-#define PAR_TEXT_KEY_NS		120.0
+#define PAR_TEXT_KEY_NS		120.0	/* a text key of many values: its strings are decoded and hashed */
+#define PAR_DICT_QUAL_NS	5.0		/* a qual on a column the query groups by, which the parts hold by dictionary codes */
+#define PAR_DICT_DISTINCT_NS	4.0		/* a COUNT(DISTINCT) of a text column held by dictionary codes: a bit of the code */
+#define PAR_DICT_KEY_NS		30.0	/* a text key of at most SIFT_DICT_MAX values: the parts hold it by dictionary codes (b_dec is a code read) */
 #define PAR_DERIVE_NS		40.0
 #define PAR_AGG_NS			8.0
 #define PAR_VECTOR_AGG_NS	2.0		/* an aggregate of a query with no keys is a vector kernel over the batch */
-#define PAR_DISTINCT_NS		60.0
+#define PAR_DISTINCT_NS		12.0	/* a COUNT(DISTINCT) of no keys: the flat set of the values */
+#define PAR_GROUP_DISTINCT_NS	150.0	/* of a GROUP BY: the set of its (group, value) pairs */
 #define PAR_TEXT_AGG_NS		80.0
 #define PAR_COLD_GROUPS		400000.0	/* from this many groups the table of a serial run no longer fits the caches ... */
 #define PAR_COLD_NS			250.0		/* ... and each row waits for memory (a participant of a parallel run keeps a table of SIFT_PAR_LOCAL_GROUPS) */
 #define PAR_RECORD_NS		250.0	/* a record: made, routed, merged */
-#define PAR_VALUE_NS		500.0	/* a distinct value: made, routed, added to the set of its group */
-#define PAR_LAUNCH_MS		28.0
-#define PAR_PER_WORKER_MS	3.0
+#define PAR_VALUE_NS		60.0	/* a distinct value: its record routed and added to the set of its group at the owner */
+#define PAR_LAUNCH_MS		17.0	/* the workers join 5 to 6 ms after the leader starts, and the Gather waits for them to leave: measured on the 1M-row table */
+#define PAR_PER_WORKER_MS	1.0
+#define PAR_MIN_GAIN		0.78	/* a parallel plan is added when it takes at most this share of the serial time: the model is not finer than that */
 
 typedef struct CostPick
 {
@@ -59,6 +65,7 @@ typedef struct CostPick
 	double		groups;
 	uint32		topk;
 	bool		values;			/* a count(DISTINCT): every row sends its value */
+	int			nkeys;
 	Cost		startup;
 	Cost		total;
 } CostPick;
@@ -72,28 +79,57 @@ col_ns(const SiftV6Spec *spec, const SiftV6Col *c, double text_ns, double number
 	return (c->derive > 0 ? PAR_DERIVE_NS : 0.0) + (c->attno > 0 && sift_v6_class(type) == SV6C_TEXT ? text_ns : number_ns);
 }
 
-/* the text columns the quals of the scan read: their strings are decoded for every row, whether or not it passes */
-static int
-text_quals(const SiftV6Spec *spec)
+static bool
+is_key_column(const SiftV6Spec *spec, int attno)
+{
+	for (int i = 0; i < spec->nkeys; i++)
+		if (spec->key[i].attno == attno && spec->key[i].derive == 0)
+			return true;
+	return false;
+}
+
+/* the ns of a row for the text columns the quals of the scan read: their strings are decoded for every row, whether or not it passes; a column the query groups by (of few groups) is read as codes */
+static double
+text_qual_ns(const SiftV6Spec *spec, double groups)
 {
 	Bitmapset  *cols = NULL;
+	double		ns = 0;
 
 	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
-		if (sift_v6_class(v->vartype) == SV6C_TEXT)
+		if (sift_v6_class(v->vartype) == SV6C_TEXT && !bms_is_member(v->varattno, cols))
+		{
 			cols = bms_add_member(cols, v->varattno);
-	return bms_num_members(cols);
+			ns += groups <= SIFT_DICT_MAX_VALUES && is_key_column(spec, v->varattno) ? PAR_DICT_QUAL_NS : PAR_TEXT_QUAL_NS;
+		}
+	return ns;
+}
+
+/* the rows of the granules the scan reads: those the quals accept, unless one of them is on a text column that is not a key (a LIKE keeps every granule of the zone maps and decodes it) */
+static double
+scan_rows(const SiftV6Spec *spec, const RelOptInfo *rel)
+{
+	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
+		if (sift_v6_class(v->vartype) == SV6C_TEXT && !is_key_column(spec, v->varattno))
+			return rel->tuples;
+	return rel->rows;
 }
 
 static double
-scan_ms(const SiftV6Spec *spec, double tuples, double rows)
+scan_ms(const SiftV6Spec *spec, double tuples, double rows, double groups)
 {
+	const double text_key_ns = groups <= SIFT_DICT_MAX_VALUES ? PAR_DICT_KEY_NS : PAR_TEXT_KEY_NS;
 	double		ns = 0;
 
 	for (int i = 0; i < spec->nkeys; i++)
-		ns += col_ns(spec, &spec->key[i], PAR_TEXT_KEY_NS, PAR_INT_KEY_NS);
+		ns += col_ns(spec, &spec->key[i], text_key_ns, PAR_INT_KEY_NS);
 	for (int j = 0; j < spec->naggs; j++)
-		ns += col_ns(spec, &spec->agg[j].arg, PAR_TEXT_AGG_NS, spec->nkeys == 0 ? PAR_VECTOR_AGG_NS : PAR_AGG_NS) + (spec->agg[j].kind == SV6_COUNT_DISTINCT ? PAR_DISTINCT_NS : 0.0);
-	return (tuples * (PAR_TUPLE_NS + text_quals(spec) * PAR_TEXT_QUAL_NS) + rows * ns) / 1e6;
+	{
+		const bool	distinct = spec->agg[j].kind == SV6_COUNT_DISTINCT;
+
+		ns += col_ns(spec, &spec->agg[j].arg, distinct ? PAR_DICT_DISTINCT_NS : PAR_TEXT_AGG_NS, spec->nkeys == 0 ? PAR_VECTOR_AGG_NS : PAR_AGG_NS) +
+			(distinct ? (spec->nkeys == 0 ? PAR_DISTINCT_NS : PAR_GROUP_DISTINCT_NS) : 0.0);
+	}
+	return (tuples * (PAR_TUPLE_NS + text_qual_ns(spec, groups)) + rows * ns) / 1e6;
 }
 
 static double
@@ -108,7 +144,7 @@ parallel_ms(const CostPick *c, int nworkers)
 {
 	const double p = nworkers + 1;
 	const double groups = Max(c->groups, 1.0);
-	const double records = c->values ? c->rows : p * groups * (1.0 - exp(-c->rows / p / groups));
+	const double records = c->values ? c->rows * (c->nkeys == 0 ? 0.3 : 1.0) : p * groups * (1.0 - exp(-c->rows / p / groups));
 	const double launch = (PAR_LAUNCH_MS + PAR_PER_WORKER_MS * nworkers) * parallel_setup_cost / DEFAULT_PARALLEL_SETUP_COST;
 	const double hand_over = records * (c->values ? PAR_VALUE_NS : PAR_RECORD_NS) / 1e6 / p * parallel_tuple_cost / DEFAULT_PARALLEL_TUPLE_COST;
 
@@ -121,7 +157,7 @@ pick_workers(void *arg, int max_by_granules)
 	CostPick   *c = arg;
 	const double par = parallel_ms(c, max_by_granules);
 
-	if (par >= c->serial_ms * SIFT_PAR_MIN_GAIN)
+	if (par >= c->serial_ms * PAR_MIN_GAIN)
 		return 0;
 	c->startup = c->total = c->serial_total * par / Max(c->serial_ms, 1e-6);
 	return max_by_granules;
@@ -158,7 +194,7 @@ static SiftV6ParInput
 par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
 	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.parallel_ok = rel->consider_parallel && root->glob->parallelModeOK,.max_workers = max_parallel_workers_per_gather,
-		.exact_float = sift_agg_exact_float,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = rel->rows / GRANULE_ROWS + 1.0,
+		.exact_float = sift_agg_exact_float,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.scan_rows = scan_rows(spec, rel),.g_eff = scan_rows(spec, rel) / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		slot_text = false;
@@ -204,12 +240,15 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	GatherPath *gather;
 	double		total_groups;
 
+	if (!equal(sift_v6_collapse_offset_sums((Node *) output_rel->reltarget->exprs), output_rel->reltarget->exprs))
+		return;
 	set_topk(root, &spec, scan_tlist, having);
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;
-	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows);
+	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows, groups);
 	pick.serial_ms = pick.scan_ms + (groups >= PAR_COLD_GROUPS ? rel->rows * PAR_COLD_NS / 1e6 : 0.0);
 	pick.values = false;
+	pick.nkeys = spec.nkeys;
 	for (int j = 0; j < spec.naggs; j++)
 		pick.values |= spec.agg[j].kind == SV6_COUNT_DISTINCT;
 	in = par_input(root, rel, output_rel, &spec, having, groups, &pick);

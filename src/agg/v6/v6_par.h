@@ -68,7 +68,8 @@ typedef struct SiftV6ParInput
 	int			nsets;
 	int			naggs;
 	double		est_rows;			/* rows the scan accepts */
-	double		g_eff;				/* granules left by the zone maps and the primary index */
+	double		scan_rows;			/* rows of the granules it reads: the zone maps and the primary index leave them, and a text qual that is not a key prunes none */
+	double		g_eff;				/* the granules that are */
 	double		est_groups;			/* output groups of all the sets of keys, >= 1 */
 	double		state_bytes;		/* of one group: its key and accumulators */
 	double		hash_limit;			/* get_hash_memory_limit() */

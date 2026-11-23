@@ -14,7 +14,7 @@ static bool
 serial_gate(const SiftV6ParInput *in)
 {
 	return !in->parallel_scan || in->max_workers <= 0 || !in->parallel_ok || in->has_rls || in->parallel_hazard ||
-		(in->exact_float && in->float_sum_avg) || in->est_rows < SIFT_PAR_MIN_ROWS || in->g_eff < (double) SIFT_PAR_MIN_GRANULES_PER_W;
+		(in->exact_float && in->float_sum_avg) || in->scan_rows < SIFT_PAR_MIN_ROWS || in->g_eff < (double) SIFT_PAR_MIN_GRANULES_PER_W;
 }
 
 SiftV6ParStrategy
