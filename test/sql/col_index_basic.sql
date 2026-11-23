@@ -28,6 +28,7 @@ CREATE TABLE orders (
 
 CREATE INDEX o_numeric ON orders USING sift_col (total);
 CREATE INDEX o_jsonb ON orders USING sift_col (payload);
+-- INCLUDE columns and UNIQUE are held by format major 2 alone: this test builds format major 1 (col_unique_include builds them in format major 2)
 CREATE INDEX o_include ON orders USING sift_col (tenant_id) INCLUDE (qty);
 CREATE UNIQUE INDEX o_unique ON orders USING sift_col (tenant_id);
 CREATE INDEX o_paths ON orders USING sift_col (tenant_id) WITH (paths = 'tenant_id int4');

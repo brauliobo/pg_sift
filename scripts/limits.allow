@@ -80,6 +80,7 @@ WORKER_SLOTS	slots of the table of running workers in shared memory (core/worker
 SIFT_CACHE_MAX_KINDS	the table of the kinds of cache that register with the backend cache budget: one row for each cache of the source tree, fixed when the code is
 SIFT_MEM_MAX_BLOCK	the largest block (256 kB) a transient allocation of a tracked context takes, so that freeing it returns whole blocks to the allocator
 SIFT_PART_LOCK_SLOTS	the virtual page locks of the partitions of a relation (core/part_lock.h): a part id is taken modulo it, so two partitions may share a lock and wait for each other; no count is refused
+SIFT_UNIQUE_LOCK_SLOTS	the virtual page locks of the keys of a unique index (core/part_lock.h): the hash of a key is taken modulo it, so two keys may share a lock and wait for each other; no count is refused
 SIFT_SHM_MANIFEST_SLOTS	the slots of the manifest registry (core/shm_manifest.h): an index the registry has no slot for is read from its pages, and the least used slot is given up; no count is refused
 SIFT_F2_MAX_RANGES	key ranges of one predicate that the zones of a part prune: a speed threshold, the rows are the same
 SIFT_FSM_CLASS_QUEUE	the tag of the queue of released extents among the lists of the allocator (a list is told by it), not a bound

@@ -146,7 +146,7 @@ follow_column(Oid heapoid, AttrNumber attno, const SiftNameChange *c)
 		List	   *positions = NIL;
 
 		if (index->rd_rel->relam == sift_col_am_oid())
-			for (int pos = 0; pos < IndexRelationGetNumberOfKeyAttributes(index); pos++)
+			for (int pos = 0; pos < IndexRelationGetNumberOfAttributes(index); pos++)
 				if (index->rd_index->indkey.values[pos] == attno && strcmp(NameStr(TupleDescAttr(RelationGetDescr(index), pos)->attname), c->to) != 0)
 					positions = lappend_int(positions, pos);
 		index_close(index, NoLock);

@@ -203,7 +203,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftColRel *r = palloc0(sizeof(SiftColRel));
 	TupleDesc	desc = RelationGetDescr(index);
-	int			natts = IndexRelationGetNumberOfKeyAttributes(index);
+	int			natts = IndexRelationGetNumberOfAttributes(index);
 	const SiftColFormatOps *ops = sift_col_ops_of_major(sift_meta_resolve_major(index));
 	bool		f2 = ops->format_major == 2;
 	int			max_leaves = f2 ? (int) sift_limit(f2_leaves, SIFT_F2_MAX_COLS) : (int) sift_limit(col_leaves, SIFT_COL_MAX_COLS);
@@ -212,10 +212,10 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 	int			n = 0;
 
 	r->hdr.ops = ops;
-	if (index->rd_index->indnatts != natts)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes do not support INCLUDE columns"),
-						errhint("List the columns in the index key: a sift_col index stores all of them.")));
 	r->natts = natts;
+	r->nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	r->attlen = palloc((natts + 1) * sizeof(int16));
+	r->attbyval = palloc((natts + 1) * sizeof(bool));
 	r->first = palloc((natts + 1) * sizeof(int));
 	r->nleaves = palloc((natts + 1) * sizeof(int));
 	r->json = palloc0((natts + 1) * sizeof(bool));
@@ -253,6 +253,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 							errdetail("Column \"%s\" brings the index to %d columns and paths.", NameStr(att->attname), n + k),
 							errhint("Leave out the columns the queries do not read, or create several indexes: the planner picks among them.")));
 		r->first[a] = n;
+		r->attlen[a] = att->attlen;
+		r->attbyval[a] = att->attbyval;
 		r->json[a] = isjson;
 		r->name[a] = att->atttypid == NAMEOID;
 		r->nleaves[a] = k;

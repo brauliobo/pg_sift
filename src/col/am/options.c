@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 #include "access/reloptions.h"
+#include "utils/lsyscache.h"
 #include "utils/varlena.h"
 #include "col/dictshm.h"
 #include "col/dsmreg.h"
@@ -76,8 +77,8 @@ am_return_walk(const char *opt, SiftColRel *r, TupleDesc desc)
 					a = i;
 			if (a == 0)
 				return psprintf("\"%s\" is not a column of the index", name);
-			if (!sift_col_returns_str(desc, a, r->nleaves[a], r->json[a]))
-				return "not a text, varchar or uuid column";
+			if (!sift_col_returns_str(desc, a, r->nleaves[a], r->json[a]) && !(r->nleaves[a] == 1 && !r->json[a] && sift_col_type_of_oid(getBaseType(TupleDescAttr(desc, a - 1)->atttypid)) == SIFT_COLT_OTHER))
+				return "not a text, varchar, uuid or opaque-type column";
 			r->ret[a] = true;
 		}
 		if (*p == '\0')

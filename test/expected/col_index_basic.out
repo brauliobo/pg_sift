@@ -27,10 +27,13 @@ CREATE INDEX o_numeric ON orders USING sift_col (total);
 CREATE INDEX o_jsonb ON orders USING sift_col (payload);
 ERROR:  the jsonb column "payload" of a sift_col index needs paths
 HINT:  Declare them with the paths option: WITH (paths = 'payload.* float4'), or REINDEX to read them from the documents.
+-- INCLUDE columns and UNIQUE are held by format major 2 alone: this test builds format major 1 (col_unique_include builds them in format major 2)
 CREATE INDEX o_include ON orders USING sift_col (tenant_id) INCLUDE (qty);
-ERROR:  access method "sift_col" does not support included columns
+ERROR:  a sift_col index of format major 1 has no INCLUDE columns
+HINT:  Leave out the connect option and the scopes the engine of format major 2 does not summarize: the index is then built in format major 2.
 CREATE UNIQUE INDEX o_unique ON orders USING sift_col (tenant_id);
-ERROR:  access method "sift_col" does not support unique indexes
+ERROR:  a sift_col index of format major 1 has no UNIQUE
+HINT:  Leave out the connect option and the scopes the engine of format major 2 does not summarize: the index is then built in format major 2.
 CREATE INDEX o_paths ON orders USING sift_col (tenant_id) WITH (paths = 'tenant_id int4');
 ERROR:  the paths option names "tenant_id", which is not a jsonb column of the index
 HINT:  A path starts with the name of an indexed jsonb column.

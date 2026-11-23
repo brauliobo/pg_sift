@@ -300,17 +300,18 @@ vis_pend_deleted(void *ctx, const SiftL0HeapRef *ref)
 void
 sift_href_rows(Relation index, Snapshot snap, const SiftPendDelIndex *px, SiftL0HeapRef *refs, uint32 n, SiftRowBuf *rb)
 {
-	VisCtx		vc = {.snapshot = snap != NULL,.px = px};
+	bool		mvcc = snap != NULL && snap->snapshot_type == SNAPSHOT_MVCC;	/* a dirty snapshot sees the rows of a running transaction: only an aborted one's are dropped, as for a flush */
+	VisCtx		vc = {.snapshot = mvcc,.px = px};
 	SiftHrefVis vis = {.ctx = &vc,.xid_status = vis_status,.pend_deleted = vis_pend_deleted};
 	HrefCursor *c;
 	SiftHrefHeap heap;
 
-	if (snap != NULL)
+	if (mvcc)
 		sift_xid_cache_init(&vc.xc, snap);
 	else
 		sift_xid_horizon_init(&vc.hc, InvalidFullTransactionId);
 	n = sift_href_sort_dedup(refs, n);
-	n = sift_href_prefilter(refs, n, &vis, snap != NULL);
+	n = sift_href_prefilter(refs, n, &vis, mvcc);
 	if (n == 0)
 		return;
 	c = cursor_open(index, snap, refs, n, rb);

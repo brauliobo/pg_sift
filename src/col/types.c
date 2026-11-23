@@ -248,11 +248,11 @@ sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 				return make_lanes(att, defs, 1);
 			}
 	}
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("sift_col does not support the type %s of column \"%s\"", format_type_be(att->atttypid), NameStr(att->attname)),
-			 errhint("Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.")));
-	return 0;
+	/* every other type is an opaque image of its datum: held and returned as it is, never decided by the leaf (the heap decides every qual on it) */
+	defs[0].type = SIFT_COLT_OTHER;
+	defs[0].store = SIFT_COLS_STR;
+	defs[0].flags = SIFT_COLD_LOSSY;
+	return make_lanes(att, defs, 1);
 }
 
 /* 10^scale as a numeric, for the lifetime of the backend */
@@ -461,9 +461,40 @@ sift_col_lanes_interval(int64 hi, int64 lo, int64 md)
 	return iv;
 }
 
-/* Every lane of one datum: v[0 .. max(lanes, 1)) are the values of the head and of the leaves after it */
+/* The image of a datum of a type with no leaf of its own: the bytes the datum is (a value by value is copied out of the Datum, a varlena is detoasted whole) */
+static void
+opaque_image(int16 attlen, bool attbyval, Datum d, SiftColValue *v)
+{
+	if (attbyval)
+	{
+		char	   *buf = palloc(attlen);
+
+		store_att_byval(buf, d, attlen);
+		v->v.s = buf;
+		v->len = attlen;
+	}
+	else if (attlen > 0)
+	{
+		v->v.s = DatumGetPointer(d);
+		v->len = attlen;
+	}
+	else if (attlen == -2)
+	{
+		v->v.s = DatumGetCString(d);
+		v->len = strlen(v->v.s) + 1;
+	}
+	else
+	{
+		struct varlena *image = pg_detoast_datum((struct varlena *) DatumGetPointer(d));
+
+		v->v.s = (const char *) image;
+		v->len = VARSIZE(image);
+	}
+}
+
+/* Every lane of one datum: v[0 .. max(lanes, 1)) are the values of the head and of the leaves after it; attlen and attbyval are those of the attribute (an opaque leaf reads them) */
 void
-sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v)
+sift_col_datum_values_att(const SiftColDef *def, int16 attlen, bool attbyval, Datum d, bool name, SiftColValue *v)
 {
 	int			lanes = Max(def->lanes, 1);
 
@@ -568,6 +599,9 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 		case SIFT_COLT_FLOAT8:
 			v->v.f = DatumGetFloat8(d);
 			break;
+		case SIFT_COLT_OTHER:
+			opaque_image(attlen, attbyval, d, v);
+			break;
 		default:
 			if (name)
 			{
@@ -582,4 +616,12 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 				v->len = VARSIZE_ANY_EXHDR(t);
 			}
 	}
+}
+
+/* The values of a datum of a type that has a leaf of its own (an opaque leaf needs the length of its attribute: sift_col_datum_values_att) */
+void
+sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v)
+{
+	SIFT_INVARIANT(def->type != SIFT_COLT_OTHER, "sift_col: the image of an opaque leaf is read with the length of its attribute");
+	sift_col_datum_values_att(def, 0, false, d, name, v);
 }

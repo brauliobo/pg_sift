@@ -51,13 +51,18 @@ CREATE INDEX w_expr ON w USING sift_col ((n3::numeric(25, 5)), (id::numeric));
 CREATE INDEX w_time ON w USING sift_col (tm);
 CREATE INDEX w_uuid ON w USING sift_col (u);
 CREATE INDEX w_bytea ON w USING sift_col (b);
--- the types that stay refused
-CREATE TABLE refused (a xml, b point, c json, d tsvector);
-CREATE INDEX r_xml ON refused USING sift_col (a);
-CREATE INDEX r_point ON refused USING sift_col (b);
-CREATE INDEX r_json ON refused USING sift_col (c);
-CREATE INDEX r_tsvector ON refused USING sift_col (d);
-DROP TABLE refused;
+-- the types with no leaf of their own are held as the image of the datum: the index is built, and what it returns is what was written
+CREATE TABLE opaque (a xml, b point, c json, d tsvector);
+INSERT INTO opaque VALUES ('<a/>', point(1, 2), '{"k": 1}', to_tsvector('simple', 'x y')), (NULL, NULL, NULL, NULL);
+CREATE INDEX r_xml ON opaque USING sift_col (a);
+CREATE INDEX r_point ON opaque USING sift_col (b);
+CREATE INDEX r_json ON opaque USING sift_col (c);
+CREATE INDEX r_tsvector ON opaque USING sift_col (d);
+SET enable_seqscan = off;
+SELECT a, b, c, d FROM opaque WHERE a IS NOT NULL OR b IS NOT NULL OR c IS NOT NULL OR d IS NOT NULL;
+SELECT count(*) FROM opaque WHERE b IS NULL;
+RESET enable_seqscan;
+DROP TABLE opaque;
 SELECT indexrelid::regclass AS idx, (SELECT count(*) FROM sift.col_leaves(indexrelid)) AS leaves
 FROM pg_index WHERE indrelid = 'w'::regclass AND indexrelid::regclass::text <> 'w_expr' ORDER BY 1;
 SELECT leaf, path, kind, type FROM sift.col_leaves('w_iv') ORDER BY leaf;

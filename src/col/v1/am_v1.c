@@ -44,7 +44,9 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 	const int  *first = r->first,
 			   *nleaves = r->nleaves;
 	const bool *json = r->json,
-			   *name = r->name;
+			   *name = r->name,
+			   *attbyval = r->attbyval;
+	const int16 *attlen = r->attlen;
 	SiftColShredAdapter *shred = r->shred;
 	int			natts = r->natts,
 				conn_first = r->conn_first,
@@ -64,7 +66,7 @@ sift_col_make_row_rc(SiftColRel *r, ItemPointer tid, const Datum *values, const 
 			for (int k = 0; k < nleaves[a]; k++)
 				row->val[def->id + k].isnull = true;
 		else
-			sift_col_datum_values(def, values[a - 1], name[a], &row->val[def->id]);
+			sift_col_datum_values_att(def, attlen[a], attbyval[a], values[a - 1], name[a], &row->val[def->id]);
 	}
 	if (shred)
 		sift_col_shred_row_rc(shred, values, isnull, row, first, mcxt, rc);

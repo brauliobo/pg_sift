@@ -13,6 +13,7 @@
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_col_delta_idx.h"
+#include "col/f2/f2_unique.h"
 #include "col/f2/f2_vac_vm.h"
 #include "col/f2/f2_vacuum_run.h"
 #include "col/f2/compact.h"
@@ -35,8 +36,8 @@
 #include "core/xid_cache.h"
 
 
-bool
-sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
+void
+sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemPointer heap_tid)
 {
 	SiftF2Rel  *f = sift_f2_rel(index);
 	MemoryContext rowcxt = sift_col_rel_rowcxt(sift_col_rel(index));
@@ -50,6 +51,14 @@ sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_t
 	MemoryContextReset(rowcxt);
 	pfree(elem);
 	pfree(cells);
+}
+
+bool
+sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
+{
+	if (checkUnique != UNIQUE_CHECK_NO)
+		return sift_f2_unique_insert(index, heap, values, isnull, heap_tid, checkUnique, indexInfo);
+	sift_f2_stage_row(index, values, isnull, heap_tid);
 	return false;
 }
 

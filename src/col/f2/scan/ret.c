@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 
+#include "access/tupmacs.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
@@ -11,12 +12,14 @@
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 
+#include "col/am.h"
 #include "col/f2/scan/scan_int.h"
 #include "col/f2/scan/stream.h"
+#include "core/quarantine.h"
 
 /* The value of row r of a leaf the index returns (sift_col_amcanreturn); false when it is NULL. The NaN of a numeric is stored as a NULL with a tag, the only value such a leaf cannot hold */
 static bool
-view_datum(const SiftColDef *d, const ColView *cv, int r, Datum *value)
+view_datum(const SiftColDef *d, const ColView *cv, int r, Datum *value, const FormData_pg_attribute *att)
 {
 	if (cv->isnull[r])
 	{
@@ -56,10 +59,38 @@ view_datum(const SiftColDef *d, const ColView *cv, int r, Datum *value)
 			SIFT_INVARIANT(cv->slen[r] == UUID_LEN, "sift_col: the uuid of a leaf holds %u bytes", cv->slen[r]);
 			*value = UUIDPGetDatum(memcpy(palloc(UUID_LEN), cv->s[r], UUID_LEN));
 			break;
+		case SIFT_COLT_OTHER:
+			if (att->attbyval)
+			{
+				int64		image = 0;
+
+				memcpy(&image, cv->s[r], att->attlen);
+				*value = fetch_att(&image, true, att->attlen);
+			}
+			else
+				*value = PointerGetDatum(memcpy(palloc(cv->slen[r]), cv->s[r], cv->slen[r]));
+			break;
 		default:
 			*value = Float8GetDatum(cv->f[r]);
 	}
 	return true;
+}
+
+/* An opaque leaf is returned when return_columns names it, as a text one is: its image is the whole datum, read for every row returned */
+bool
+sift_f2_amcanreturn(Relation index, int attno)
+{
+	/* check-memory: allow reads the definitions only, no call that locks */
+	const SiftColRel *r;
+	const SiftColDef *d;
+
+	if (sift_index_known_out(index))
+		return false;
+	r = sift_col_rel(index);
+	d = &r->meta.cols[r->first[attno]];
+	if (d->type == SIFT_COLT_OTHER)
+		return r->ret[attno] && r->nleaves[attno] == 1 && d->path[0] == '\0';
+	return sift_col_amcanreturn(index, attno);
 }
 
 static void
@@ -129,7 +160,7 @@ sift_f2_scan_sort_put(F2Scan *s, const SiftColSchema *schema, uint64 tid, bool m
 		const ColView *cv = &views[s->ret_leaf[j]];
 
 		slot->tts_values[j + 1] = (Datum) 0;
-		slot->tts_isnull[j + 1] = !view_datum(&schema->cols[s->ret_leaf[j]], cv, r, &slot->tts_values[j + 1]);
+		slot->tts_isnull[j + 1] = !view_datum(&schema->cols[s->ret_leaf[j]], cv, r, &slot->tts_values[j + 1], TupleDescAttr(s->itupdesc, s->ret_att[j] - 1));
 	}
 	sort_put_slot(s, slot);
 	MemoryContextSwitchTo(old);

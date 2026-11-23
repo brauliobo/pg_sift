@@ -75,7 +75,7 @@ SELECT * FROM dm_scans();
 -- the constraint stays the table's: a value it refuses never reaches the index
 INSERT INTO dm (id, a) VALUES (99999, 0);
 
--- a domain over a type the engine does not store, and an array of a domain
+-- a domain over a type with no leaf of its own (held as an image), and an array of a domain
 CREATE TABLE dm_pt (id int, p dom_pt);
 CREATE INDEX dm_pt_col ON dm_pt USING sift_col (id, p);
 CREATE TABLE dm_arr (id int, arr dom_pos[]);

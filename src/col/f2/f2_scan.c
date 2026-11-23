@@ -784,7 +784,7 @@ return_columns(IndexScanDesc scan, F2Scan *s)
 	const SiftColRel *r = sift_col_rel(scan->indexRelation);
 
 	for (int a = 1; scan->xs_want_itup && a <= r->natts; a++)
-		if ((!s->project || bms_is_member(a, s->want)) && sift_col_amcanreturn(scan->indexRelation, a))
+		if ((!s->project || bms_is_member(a, s->want)) && sift_f2_amcanreturn(scan->indexRelation, a))
 		{
 			s->ret_att[s->nret] = a;
 			s->ret_leaf[s->nret++] = r->first[a];

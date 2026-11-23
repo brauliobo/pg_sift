@@ -158,11 +158,9 @@ SELECT * FROM dm_scans();
 -- the constraint stays the table's: a value it refuses never reaches the index
 INSERT INTO dm (id, a) VALUES (99999, 0);
 ERROR:  value for domain dom_pos violates check constraint "dom_pos_check"
--- a domain over a type the engine does not store, and an array of a domain
+-- a domain over a type with no leaf of its own (held as an image), and an array of a domain
 CREATE TABLE dm_pt (id int, p dom_pt);
 CREATE INDEX dm_pt_col ON dm_pt USING sift_col (id, p);
-ERROR:  sift_col does not support the type public.dom_pt of column "p"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 CREATE TABLE dm_arr (id int, arr dom_pos[]);
 INSERT INTO dm_arr SELECT i, ARRAY[1 + i % 5, 2] FROM generate_series(1, 200) i;
 CREATE INDEX dm_arr_col ON dm_arr USING sift_col (id, arr);

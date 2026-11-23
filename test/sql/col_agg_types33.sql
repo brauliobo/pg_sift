@@ -128,12 +128,14 @@ SELECT kind, format, count(*) FROM sift.table_segments('tt') GROUP BY 1, 2 ORDER
 SELECT count(DISTINCT ip) AS ips, count(DISTINCT cd) AS cds, max(ip)::text AS mx, min(tz)::text AS mn FROM tt;
 DROP TABLE tt, ot;
 
--- CREATE INDEX still refuses what has no leaf form (the point column above is simply left out of nt_col)
+-- a type with no leaf form is held as an image: CREATE INDEX builds, and the aggregate over the column is the heap's
 CREATE TABLE rt (id int, p point, tv tsvector, x xml, j json);
+INSERT INTO rt SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE point(i, i) END, to_tsvector('simple', 'w' || i), CASE WHEN i % 4 = 0 THEN NULL ELSE ('<r>' || i || '</r>')::xml END, CASE WHEN i % 5 = 0 THEN NULL ELSE json_build_object('i', i) END FROM generate_series(1, 60) i;
 CREATE INDEX rt_p ON rt USING sift_col (id, p);
 CREATE INDEX rt_t ON rt USING sift_col (id, tv);
 CREATE INDEX rt_x ON rt USING sift_col (id, x);
 CREATE INDEX rt_j ON rt USING sift_col (id, j);
+SELECT chk($$SELECT id % 7 AS g, count(p) AS p, count(tv) AS tv, count(x) AS x, count(j) AS j, count(*) AS n FROM rt GROUP BY 1$$) AS opaque_counts;
 DROP TABLE rt;
 
 DROP TABLE nt;

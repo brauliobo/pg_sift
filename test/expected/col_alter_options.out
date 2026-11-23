@@ -47,7 +47,7 @@ ALTER INDEX ao_paths SET (return_columns = 'nope');
 ERROR:  invalid return_columns option "nope": "nope" is not a column of the index
 \c
 ALTER INDEX ao_paths SET (return_columns = 'pid');
-ERROR:  invalid return_columns option "pid": not a text, varchar or uuid column
+ERROR:  invalid return_columns option "pid": not a text, varchar, uuid or opaque-type column
 \c
 ALTER INDEX ap_plain SET (calendar_columns = 'id');
 ERROR:  invalid calendar_columns option "id": "id" must be a date, timestamp or timestamptz column

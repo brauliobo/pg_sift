@@ -31,7 +31,10 @@ typedef struct SiftColRel
 	SiftColSchema *schema;
 	SiftColIndexMeta meta;		/* cols point into schema->cols; stats zero */
 	bool		out;			/* the metapage said the index is out of service when this state was made (core/quarantine.h); the invalidation of the worker that sets the flag makes it again */
-	int			natts;
+	int			natts;			/* the attributes of the index, the INCLUDE columns after the key ones */
+	int			nkeyatts;		/* the key attributes: the ones the scan keys, the unique check and key_order's automatic choice read */
+	int16	   *attlen;			/* [natts + 1] typlen and typbyval of each attribute: the image of an opaque leaf is cut by them */
+	bool	   *attbyval;
 	int			conn_first;	/* the leaves from this id on are the found flags of the connections (SIFT_COLD_FOUND); none when it is ncols */
 	int			nconn;			/* connections of the index (col/v1/conn.h) and the leaves of each */
 	int			conn_found[SIFT_CONN_MAX_CONNECTIONS];	/* the leaf of the found flag of each connection */
@@ -325,6 +328,7 @@ extern bool sift_col_is_array_type(Oid typid);
 extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr);
 /* The values of one datum for the leaf def and the leaves after it (its lanes): v[0 .. max(def->lanes, 1)); strings are palloc'd or point into the datum */
 extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v);
+extern void sift_col_datum_values_att(const SiftColDef *def, int16 attlen, bool attbyval, Datum d, bool name, SiftColValue *v);
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);

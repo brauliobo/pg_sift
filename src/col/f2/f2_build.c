@@ -19,6 +19,7 @@
 #include "col/f2/compact.h"
 #include "col/f2/delete.h"
 #include "col/f2/f2_scope.h"
+#include "col/f2/f2_unique.h"
 #include "col/f2/l0_stage.h"
 #include "col/scope.h"
 #include "core/f2/f2_progress.h"
@@ -49,6 +50,7 @@ struct SiftF2Build
 	uint64		budget;
 	uint64		rows;
 	SiftF2RowTicker tick;
+	SiftF2UniqueBuild *unique;	/* the rows of a unique index by key, to find two of one key (NULL: the index is not unique) */
 };
 typedef struct SiftF2Build BuildState;
 
@@ -151,6 +153,8 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool tupl
 	TransactionId xmin = FrozenTransactionId;
 	CommandId	cmin = 0;
 
+	if (bs->unique != NULL && tupleIsAlive)
+		sift_f2_unique_build_add(bs->unique, values, isnull);
 	sift_f2_row(index, bs->f, bs->rowcxt, tid, values, isnull, bs->cells, bs->elem, key);
 	if (!tupleIsAlive)
 		add_ended(bs, tid, &xmin, &cmin);
@@ -188,6 +192,7 @@ sift_f2_build_begin(Relation heap, Relation index, int nparticipants)
 	bs->slot = table_slot_create(heap, NULL);
 	bs->runcx = sift_mem_allocset_create(bs->cx, "sift f2 build run");
 	bs->budget = sift_f2_build_budget(nparticipants);
+	bs->unique = sift_f2_unique_build_begin(heap, index);
 	return bs;
 }
 
@@ -196,6 +201,9 @@ sift_f2_build_scan(SiftF2Build *bs, IndexInfo *info, TableScanDesc scan, bool pr
 {
 	double		reltuples = table_index_build_scan(bs->heap, bs->index, info, true, progress, build_cb, bs, scan);
 
+	if (bs->unique != NULL)
+		sift_f2_unique_build_end(bs->unique);
+	bs->unique = NULL;
 	sift_f2_progress_rows_flush(&bs->tick);
 	write_run(bs);
 	commit_written(bs);
@@ -247,6 +255,8 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
 						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
+	if (info->ii_Unique)
+		info->ii_ParallelWorkers = 0;	/* the rows of one key may be in the shares of two participants */
 	sift_stage_discard(RelationGetRelid(index));
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
 	choices = sift_f2_choices(index);

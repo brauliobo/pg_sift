@@ -279,6 +279,8 @@ sift_f2_undecided(const SiftColDef *d, const SiftColPred *p)
 {
 	if (SIFT_COLOP_IS_EXT(p->op))
 		return !ext_decided(d, p);
+	if (d->type == SIFT_COLT_OTHER)
+		return p->op != SIFT_COLOP_ISNULL && p->op != SIFT_COLOP_NOTNULL;	/* the image of a datum says whether it is NULL and nothing else */
 	return sift_col_def_is_wide(d) || (d->lane > 0 && !sift_f2_card_lane(d)) || (d->flags & SIFT_COLD_LOSSY) || d->type == SIFT_COLT_VARLENA || d->type == SIFT_COLT_TIMETZ || p->op == SIFT_COLOP_SHAPE ||
 		(p->op == SIFT_COLOP_ICONTAINS && (p->collid == InvalidOid || !sift_collate_is_c(p->collid))) || (d->store == SIFT_COLS_STR && sift_f2_collation_undecided(p));
 }

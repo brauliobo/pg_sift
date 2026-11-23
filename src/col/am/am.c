@@ -55,6 +55,18 @@ format1_only(Relation index)
 	return only;
 }
 
+/* INCLUDE columns and UNIQUE are held by the engine of format major 2 alone: the index that the build routes to format major 1 is refused them */
+static const SiftColFormatOps *
+ops_for_build(Relation index)
+{
+	const SiftColFormatOps *ops = sift_col_ops_for_build();
+
+	if (ops->format_major != SIFT_FORMAT2_MAJOR && (index->rd_index->indisunique || IndexRelationGetNumberOfAttributes(index) != IndexRelationGetNumberOfKeyAttributes(index)))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a sift_col index of format major 1 has no %s", index->rd_index->indisunique ? "UNIQUE" : "INCLUDE columns"),
+						errhint("Leave out the connect option and the scopes the engine of format major 2 does not summarize: the index is then built in format major 2.")));
+	return ops;
+}
+
 static IndexBuildResult *
 route_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
@@ -65,7 +77,7 @@ route_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
 	PG_TRY();
 	{
-		result = sift_col_ops_for_build()->ambuild(heap, index, info);
+		result = ops_for_build(index)->ambuild(heap, index, info);
 	}
 	PG_FINALLY();
 	{
@@ -85,7 +97,7 @@ route_ambuildempty(Relation index)
 		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
 	PG_TRY();
 	{
-		sift_col_ops_for_build()->ambuildempty(index);
+		ops_for_build(index)->ambuildempty(index);
 	}
 	PG_FINALLY();
 	{
@@ -213,6 +225,21 @@ col_amvalidate(Oid opclassoid)
 	return true;
 }
 
+#if PG_VERSION_NUM >= 180000
+/* The strategies of the operator classes are btree's (col/am/preds.h): the planner and the executor name a comparison by its number */
+static CompareType
+col_translatestrategy(StrategyNumber strategy, Oid opfamily)
+{
+	return strategy >= BTLessStrategyNumber && strategy <= BTGreaterStrategyNumber ? (CompareType) strategy : COMPARE_INVALID;
+}
+
+static StrategyNumber
+col_translatecmptype(CompareType cmptype, Oid opfamily)
+{
+	return cmptype >= COMPARE_LT && cmptype <= COMPARE_GT ? (StrategyNumber) cmptype : InvalidStrategy;
+}
+#endif
+
 Datum
 sift_col_handler(PG_FUNCTION_ARGS)
 {
@@ -236,6 +263,12 @@ sift_col_handler(PG_FUNCTION_ARGS)
 	am->amcanreturn = route_amcanreturn;
 	am->amendscan = route_amendscan;
 	am->amsearcharray = am->amsearchnulls = true;
+	am->amcaninclude = true;
+	am->amcanunique = true;
+#if PG_VERSION_NUM >= 180000
+	am->amtranslatestrategy = col_translatestrategy;
+	am->amtranslatecmptype = col_translatecmptype;
+#endif
 
 	PG_RETURN_POINTER(am);
 }

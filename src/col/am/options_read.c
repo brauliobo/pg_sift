@@ -28,7 +28,7 @@ sift_col_paths_redecide(Relation index)
 
 	if (opt[0] != '\0' && !(sift_col_paths_auto(opt) && opt[4] == '\0'))
 		return false;
-	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	for (int i = 0; i < IndexRelationGetNumberOfAttributes(index); i++)
 		if (TupleDescAttr(RelationGetDescr(index), i)->atttypid == JSONBOID)
 			return true;
 	return false;

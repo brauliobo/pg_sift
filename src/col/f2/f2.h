@@ -184,6 +184,8 @@ extern char *sift_f2_check_keys(Relation index);
 
 extern IndexBuildResult *sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info);
 extern void sift_f2_ambuildempty(Relation index);
+/* The row of a heap tuple in the stage of the transaction (col/f2/l0_stage.h) */
+extern void sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemPointer heap_tid);
 extern bool sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo);
 extern IndexBulkDeleteResult *sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulkDeleteCallback callback, void *callback_state);
 extern IndexBulkDeleteResult *sift_f2_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
@@ -196,6 +198,7 @@ extern IndexScanDesc sift_f2_ambeginscan(Relation index, int nkeys, int norderby
 extern void sift_f2_amrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys, ScanKey orderbys, int norderbys);
 extern int64 sift_f2_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern bool sift_f2_amgettuple(IndexScanDesc scan, ScanDirection dir);
+extern bool sift_f2_amcanreturn(Relation index, int attno);
 extern void sift_f2_amendscan(IndexScanDesc scan);
 
 #endif							/* SIFT_F2_H */

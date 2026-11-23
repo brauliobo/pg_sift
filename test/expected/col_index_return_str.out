@@ -17,11 +17,11 @@ SELECT i,
 FROM generate_series(1, 12000) i;
 -- the option: columns of other types and unknown names are refused
 CREATE INDEX rs_bad1 ON rs USING sift_col (id sift.col_int4_ops) WITH (return_columns = 'id');
-ERROR:  invalid return_columns option "id": not a text, varchar or uuid column
+ERROR:  invalid return_columns option "id": not a text, varchar, uuid or opaque-type column
 CREATE INDEX rs_bad2 ON rs USING sift_col (id sift.col_int4_ops) WITH (return_columns = 'nope');
 ERROR:  invalid return_columns option "nope": "nope" is not a column of the index
 CREATE INDEX rs_bad3 ON rs USING sift_col (id sift.col_int4_ops, c sift.col_bpchar_ops) WITH (return_columns = 'c');
-ERROR:  invalid return_columns option "c": not a text, varchar or uuid column
+ERROR:  invalid return_columns option "c": not a text, varchar, uuid or opaque-type column
 CREATE INDEX rs_bad4 ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops) WITH (return_columns = 's,');
 ERROR:  invalid return_columns option "s,": empty column name
 CREATE INDEX rs_i ON rs USING sift_col (id sift.col_int4_ops, s sift.col_text_ops, u sift.col_uuid_ops, vc sift.col_text_ops, c sift.col_bpchar_ops)

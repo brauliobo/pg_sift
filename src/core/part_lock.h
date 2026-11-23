@@ -7,7 +7,7 @@
  * The block numbers of every virtual lock of a format 2 relation are at the top of the block number space, 0xFFFFE000 and up, above any block a relation has (the 32 bit block number of a
  * relation ends at 0xFFFFFFFE, the relation size limit of the server is far below 0xFFFF0000), so none of them is a block of the relation.
  *
- * The order of acquisition, ascending, never back: the relation-wide F2 locks (maintenance, split), the stripe or page lock of a partition (two partitions in ascending stripe order,
+ * The order of acquisition, ascending, never back: the key lock of a unique index (the page lock of the hash of the key, never held while waiting for a transaction), the relation-wide F2 locks (maintenance, split), the stripe or page lock of a partition (two partitions in ascending stripe order,
  * sift_part_lock_pair), the build lock of the manifest registry slot, block 0, block 1, leaf, slab and data buffers.
  */
 #ifndef SIFT_PART_LOCK_H
@@ -26,6 +26,9 @@
 #define SIFT_LOCK_PART_ESC_SLOTS	4095U
 #define SIFT_LOCK_PART_ESC_BLKNO(part_id) (SIFT_LOCK_PART_ESC_BASE + (BlockNumber) ((part_id) % SIFT_LOCK_PART_ESC_SLOTS))
 
+#define SIFT_UNIQUE_LOCK_BASE		0xFFFF8000U		/* the rows of one key of a unique index, one of SIFT_UNIQUE_LOCK_SLOTS by the hash of the key: held from the lookup of a key to the write of its row (f2_unique.c) */
+#define SIFT_UNIQUE_LOCK_SLOTS		16384U
+
 #define SIFT_PART_LOCK_BASE			0xFFFFF000U
 #define SIFT_PART_LOCK_SLOTS		1024U
 #define SIFT_PART_LOCK_STRIPES		256U
@@ -41,6 +44,8 @@
 #define SIFT_PART_LOCK_BLKNO(part_id)	(SIFT_PART_LOCK_BASE + ((part_id) & (SIFT_PART_LOCK_SLOTS - 1)))
 #define SIFT_COMPACT_LOCK_BLKNO(part_id) (SIFT_COMPACT_LOCK_BASE + (BlockNumber) ((part_id) % SIFT_COMPACT_LOCK_SLOTS))
 
+StaticAssertDecl(SIFT_UNIQUE_LOCK_BASE >= 0xFFFF0000U, "the unique key locks are above the blocks of a relation");
+StaticAssertDecl(SIFT_UNIQUE_LOCK_BASE + SIFT_UNIQUE_LOCK_SLOTS <= SIFT_LOCK_REL_BULK_BLKNO, "the unique key locks end before the row lock escalation blocks");
 StaticAssertDecl(SIFT_LOCK_REL_BULK_BLKNO >= 0xFFFF0000U, "the row lock escalation blocks are above the blocks of a relation");
 StaticAssertDecl(SIFT_LOCK_PART_ESC_BASE == SIFT_LOCK_REL_BULK_BLKNO + 1U, "the partition escalation blocks follow the relation's");
 StaticAssertDecl(SIFT_LOCK_PART_ESC_BASE + SIFT_LOCK_PART_ESC_SLOTS <= SIFT_PART_LOCK_BASE, "the escalation blocks end before the page locks of the partitions");

@@ -243,20 +243,19 @@ SELECT count(DISTINCT ip) AS ips, count(DISTINCT cd) AS cds, max(ip)::text AS mx
 (1 row)
 
 DROP TABLE tt, ot;
--- CREATE INDEX still refuses what has no leaf form (the point column above is simply left out of nt_col)
+-- a type with no leaf form is held as an image: CREATE INDEX builds, and the aggregate over the column is the heap's
 CREATE TABLE rt (id int, p point, tv tsvector, x xml, j json);
+INSERT INTO rt SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE point(i, i) END, to_tsvector('simple', 'w' || i), CASE WHEN i % 4 = 0 THEN NULL ELSE ('<r>' || i || '</r>')::xml END, CASE WHEN i % 5 = 0 THEN NULL ELSE json_build_object('i', i) END FROM generate_series(1, 60) i;
 CREATE INDEX rt_p ON rt USING sift_col (id, p);
-ERROR:  sift_col does not support the type point of column "p"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 CREATE INDEX rt_t ON rt USING sift_col (id, tv);
-ERROR:  sift_col does not support the type tsvector of column "tv"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 CREATE INDEX rt_x ON rt USING sift_col (id, x);
-ERROR:  sift_col does not support the type xml of column "x"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
 CREATE INDEX rt_j ON rt USING sift_col (id, j);
-ERROR:  sift_col does not support the type json of column "j"
-HINT:  Supported: smallint, integer, bigint, boolean, date, time, timetz, timestamp, timestamptz, interval, numeric, money, real, double precision, text, varchar, char(n), name, bytea, uuid, inet, cidr, macaddr, macaddr8, bit, varbit, enums, arrays, ranges and jsonb with paths.
+SELECT chk($$SELECT id % 7 AS g, count(p) AS p, count(tv) AS tv, count(x) AS x, count(j) AS j, count(*) AS n FROM rt GROUP BY 1$$) AS opaque_counts;
+ opaque_counts 
+---------------
+ plain same
+(1 row)
+
 DROP TABLE rt;
 DROP TABLE nt;
 DROP FUNCTION chk(text), shapes(text);
