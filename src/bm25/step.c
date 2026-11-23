@@ -39,6 +39,7 @@
 #include "core/varint.h"
 #include "core/visibility.h"
 #include "core/memtrack.h"
+#include "table/dispatch.h"
 
 #define CLAIM_TRIES			8		/* picks of a step whose segments others replaced meanwhile */
 
@@ -267,7 +268,7 @@ sort_docs(Relation index, const SiftSegEntry *seg)
 {
 	SiftWbufReader *r = sift_wbuf_open(index, seg, CurrentMemoryContext, NULL, NULL);
 	Tuplesortstate *sort = tuplesort_begin_datum(BYTEAOID, ByteaLessOperator, InvalidOid, false, maintenance_work_mem / 2,
-												 NULL, TUPLESORT_NONE);
+												 NULL, TUPLESORT_RANDOMACCESS);
 	DocPacker	pk = {palloc(1024), 1024};
 	SiftWbufDoc	d;
 	uint32		seq = 0;
@@ -354,6 +355,8 @@ inv_budget(Tuplesortstate *sort)
  * them, so one segment without would take them from all.
  */
 #define DOCTEXT_SNAPSHOT_DOCS	256
+#define DOCTEXT_WINDOW			16384
+#define DOCTEXT_WINDOW_FIRST	256
 
 typedef struct DocText
 {
@@ -367,6 +370,13 @@ typedef struct DocText
 	IndexFetchTableData *fetch;
 	SiftAnalyzer *an;
 	BlockNumber nblocks;
+	/* a table whose rows lie in an order of their own: the texts of the next docs read in that order (doctext_prime), and handed out in the order of the docs */
+	MemoryContext wcx;
+	SiftKey    *wkey;
+	text	  **wtext;
+	uint32		nwin;
+	uint32		wpos;
+	uint32		wmax;			/* the docs of the next window: it doubles while the texts of a window take less than half of what they may, and halves when they take more */
 } DocText;
 
 static DocText *
@@ -393,6 +403,13 @@ doctext_open(Relation index)
 	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
 	sift_analyzer_set_positions(d->an, true);
 	d->nblocks = RelationGetNumberOfBlocks(d->heap);
+	if (index->rd_index->indnkeyatts == 1 && sift_tbl_is_table(d->heap) && ((SiftTblFetchHeader *) d->fetch)->ops->fetch_order != NULL)
+	{
+		d->wcx = sift_mem_allocset_create(CurrentMemoryContext, "sift doctext window");
+		d->wkey = palloc(DOCTEXT_WINDOW * sizeof(SiftKey));
+		d->wtext = palloc(DOCTEXT_WINDOW * sizeof(text *));
+		d->wmax = DOCTEXT_WINDOW_FIRST;
+	}
 	return d;
 }
 
@@ -420,6 +437,8 @@ doctext_close(DocText *d)
 	if (d->snapshot)
 		PopActiveSnapshot();
 	table_index_fetch_end(d->fetch);
+	if (d->wcx != NULL)
+		MemoryContextDelete(d->wcx);
 	ExecDropSingleTupleTableSlot(d->slot);
 	FreeExecutorState(d->estate);
 	table_close(d->heap, AccessShareLock);
@@ -438,13 +457,104 @@ doctext_fetch(DocText *d, const ItemPointerData *tid)
 	return table_index_fetch_tuple(d->fetch, &t, SnapshotAny, d->slot, &again, &all_dead);
 }
 
+/* The text of the doc at tid, detoasted, valid until the next call; NULL when its row or its text is gone */
+static text *
+doctext_read(DocText *d, const ItemPointerData *tid)
+{
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+
+	doctext_snapshot(d);
+	if (!doctext_fetch(d, tid))
+		return NULL;
+	ResetPerTupleExprContext(d->estate);
+	GetPerTupleExprContext(d->estate)->ecxt_scantuple = d->slot;
+	FormIndexDatum(d->info, d->slot, d->estate, values, isnull);
+	return isnull[0] ? NULL : DatumGetTextPP(values[0]);
+}
+
+typedef struct DocLoc
+{
+	uint64		loc;
+	uint32		doc;
+} DocLoc;
+
+static int
+docloc_cmp(const void *a, const void *b)
+{
+	const DocLoc *x = a,
+			   *y = b;
+
+	return x->loc != y->loc ? (x->loc > y->loc) - (x->loc < y->loc) : (x->doc > y->doc) - (x->doc < y->doc);
+}
+
+/*
+ * The texts of the next docs of the cursor, read in the order the rows lie in the table and kept for the docs in their own order: a table whose rows are laid out by a key and not by their
+ * address (a sift_table) reads a granule for each doc when the docs come by address, and each granule once when they come by where the rows are.
+ */
+static void
+doctext_prime(DocText *d, DocCursor *c)
+{
+	const SiftKey key = c->key;
+	const bool	any = c->any;
+	const Size	limit = (Size) maintenance_work_mem * 1024 / 4;
+	Size		bytes = 0;
+	DocLoc	   *order;
+	uint32		n = 0;
+
+	MemoryContextReset(d->wcx);
+	tuplesort_markpos(c->sort);
+	while (n < d->wmax && next_doc(c))
+		d->wkey[n++] = c->key;
+	tuplesort_restorepos(c->sort);
+	c->key = key;
+	c->any = any;
+	d->nwin = n;
+	d->wpos = 0;
+	order = MemoryContextAlloc(d->wcx, Max(n, 1) * sizeof(DocLoc));
+	for (uint32 i = 0; i < n; i++)
+	{
+		ItemPointerData tid;
+
+		sift_key_to_tid(d->wkey[i], &tid);
+		order[i] = (DocLoc) {((SiftTblFetchHeader *) d->fetch)->ops->fetch_order(d->fetch, &tid), i};
+	}
+	qsort(order, n, sizeof(DocLoc), docloc_cmp);
+	for (uint32 i = 0; i < n; i++)
+	{
+		ItemPointerData tid;
+		text	   *t;
+
+		CHECK_FOR_INTERRUPTS();
+		sift_key_to_tid(d->wkey[order[i].doc], &tid);
+		t = doctext_read(d, &tid);
+		d->wtext[order[i].doc] = t == NULL ? NULL : MemoryContextAlloc(d->wcx, VARSIZE_ANY(t));
+		if (t != NULL)
+		{
+			memcpy(d->wtext[order[i].doc], t, VARSIZE_ANY(t));
+			bytes += VARSIZE_ANY(t);
+		}
+	}
+	d->wmax = bytes > limit ? Max(DOCTEXT_WINDOW_FIRST / 4, d->wmax / 2) : bytes < limit / 2 ? Min(DOCTEXT_WINDOW, d->wmax * 2) : d->wmax;
+}
+
 /* The terms of the doc at tid with their position records, as a build analyzes it; false when its row or its text is gone */
 static bool
 doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int *nterms, uint32 *dl, int *len)
 {
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
+	text	   *t;
 
+	if (d->wcx != NULL)
+	{
+		t = d->wtext[d->wpos++];
+		if (t == NULL)
+			return false;
+		*len = VARSIZE_ANY_EXHDR(t);
+		*nterms = sift_analyze_doc(d->an, VARDATA_ANY(t), *len, terms, dl);
+		return true;
+	}
 	doctext_snapshot(d);
 	if (!doctext_fetch(d, tid))
 		return false;
@@ -492,14 +602,22 @@ write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen
 	RunList		runs = {.run = palloc(sizeof(SiftRun *)),.max = 1};
 	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
 
-	while (next_doc(&c))
+	for (;;)
 	{
 		ItemPointerData tid;
-		SiftTermFreq *terms = c.terms;
-		int			nterms = c.nterms,
+		SiftTermFreq *terms;
+		int			nterms,
 					len = 0;
-		uint32		dl = c.dl;
+		uint32		dl;
 
+		if (dt != NULL && dt->wcx != NULL && dt->wpos == dt->nwin)
+			doctext_prime(dt, &c);
+		if (!next_doc(&c))
+			break;
+		CHECK_FOR_INTERRUPTS();
+		terms = c.terms;
+		nterms = c.nterms;
+		dl = c.dl;
 		sift_key_to_tid(c.key, &tid);
 		if (dt != NULL && !doctext_terms(dt, &tid, &terms, &nterms, &dl, &len))
 			continue;
