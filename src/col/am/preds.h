@@ -5,6 +5,7 @@
 #define SIFT_COL_PREDS_H
 
 #include "access/relscan.h"
+#include "catalog/pg_type_d.h"
 
 #include "col/col.h"
 
@@ -37,6 +38,13 @@ typedef struct ColKeys
 extern void key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v);
 
 extern bool xtime_pair(Oid coltype, Oid argtype);
+
+/* Both are integer types, whose stored values are int64 whatever the width: a comparison across them is exact */
+static inline bool
+sift_int_pair(Oid coltype, Oid argtype)
+{
+	return (coltype == INT2OID || coltype == INT4OID || coltype == INT8OID) && (argtype == INT2OID || argtype == INT4OID || argtype == INT8OID);
+}
 
 extern int	xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v);
 

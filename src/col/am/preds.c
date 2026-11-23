@@ -565,7 +565,7 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 			p->vals = v;
 		}
 		else if (key->sk_strategy >= COL_STRAT_RANGE_FIRST || (key->sk_strategy == BTEqualStrategyNumber && type_is_range(getBaseType(att->atttypid))) ||
-				 (key->sk_strategy == COL_STRAT_NE && (argtype != att->atttypid || k->defs[leaf].type == SIFT_COLT_NUMERIC)))
+				 (key->sk_strategy == COL_STRAT_NE && ((argtype != att->atttypid && !sift_int_pair(att->atttypid, argtype)) || k->defs[leaf].type == SIFT_COLT_NUMERIC)))
 			key_any(p, k);			/* a containment operator or = on a range the lanes do not cover (numrange, a range of a user type): the heap decides */
 		else if (k->defs[leaf].type == SIFT_COLT_NUMERIC)
 		{
