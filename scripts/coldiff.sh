@@ -13,6 +13,10 @@
 #                       on its generator (--rows orders, default 20000, --stores N); all (default) runs both
 #   --format F          the format of the indexes of the test databases: f2 (default: Format 2.0), f1 (Format 1, the testing build) or release (the
 #                       release build, which defines no test setting: nothing test-only is set or read; test/col/format.sh)
+#   --fast              the smoke tier of one engine (sift_col, or sift_table with --table), in about 17 s: the fixtures suite on one fixture per shape and
+#                       table of its FROM (fast_files), the variants on and on-par, the scenarios dml, abort and vacuum (--variants and --scenarios say
+#                       otherwise), 1500 fixture rows, --scenario-slices 3 and --sift-check
+#   --sift-check        sift.check finds no problem in the fixture indexes and tables after the dml and vacuum scenarios
 #   --fail-fast         a stage that failed ends the run after its own report (the full tier: a red slice does not run the scenarios after it)
 #   --corpus REGEX      only the queries whose file name matches (name@K400 is the query on the set K400)
 #   --variants LIST     comma separated: off-par on on-par on-scalar on-par-scalar (the reference "off" always runs; default all five)
@@ -51,8 +55,8 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
-SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
-FORMAT=f2 VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
+SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS= DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
+FORMAT=f2 VARIANTS= SCENARIOS= FAST= SIFTCHECK= SLICES= COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -61,18 +65,20 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 while (( $# )); do
 	case $1 in
 		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; --list) LIST=1 ;; -v|--verbose) VERBOSE=1 ;;
-		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,46p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
+		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,52p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --format) FORMAT=$2; shift ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
-		*) sed -n '2,46p' "$0"; exit 1 ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --format) FORMAT=$2; shift ;; --fast) FAST=1 ;; --sift-check) SIFTCHECK=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		*) sed -n '2,52p' "$0"; exit 1 ;;
 	esac
 	shift
 done
-[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,46p' "$0"; exit 1; }
+[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,52p' "$0"; exit 1; }
 . "$REPO/test/col/format.sh"
-format_valid "$FORMAT" || { sed -n '2,46p' "$0"; exit 1; }
+format_valid "$FORMAT" || { sed -n '2,52p' "$0"; exit 1; }
+[[ -z $FAST ]] || { : "${VARIANTS:=on,on-par}" "${SCENARIOS:=dml,abort,vacuum}" "${FIXROWS:=1500}" "${SLICES:=3}"; SIFTCHECK=1; [[ $SUITE != all ]] || SUITE=fixtures; }
+: "${VARIANTS:=off-par,on,on-par,on-scalar,on-par-scalar}" "${SCENARIOS:=all}" "${FIXROWS:=4000}" "${SLICES:=1}"
 [[ -n $STORES ]] || STORES=$(( ROWS / 30 > 100 ? ROWS / 30 : 100 ))
 QUERIES=${QUERIES:-$ANALYTICS_DIR/queries/*.sql}
 # a variant list as a PostgreSQL array literal: the reference always runs
@@ -322,6 +328,32 @@ fixture_col_indexes() {
 	done
 }
 
+# fast_files FILES...: the fixtures of --fast, one per shape and table of its FROM clause (the first in name order that runs the scenarios, else the first)
+fast_files() {
+	awk 'function emit(  k) { k = shape SUBSEP tbl; if (name != "" && (!(k in pick) || (scen && !hot[k]))) { pick[k] = name; hot[k] = scen } }
+		FNR == 1 { emit(); name = FILENAME; shape = ""; tbl = "?"; scen = 0 }
+		/^-- shape:/ { shape = $3 }
+		/^-- scenario: yes/ { scen = 1 }
+		!/^--/ && tbl == "?" && match(tolower($0), /from +[a-z_0-9]+/) { tbl = substr(tolower($0), RSTART + 5, RLENGTH - 5); sub(/^ +/, "", tbl) }
+		END { emit(); for (k in pick) print pick[k] }' "$@" | sort
+}
+
+# fixture_files: the fixtures of --corpus and --slice, and of them the ones of --fast
+fixture_files() {
+	local all
+	mapfile -t all < <(files "$REPO"/test/col/fixtures/*.sql)
+	(( ${#all[@]} )) || return 0
+	if [[ -n $FAST ]]; then fast_files "${all[@]}"; else printf '%s\n' "${all[@]}"; fi
+}
+
+# sound WHEN: sift.check finds no problem in the fixture indexes and tables
+sound() {
+	[[ -n $SIFTCHECK ]] || return 0
+	local found
+	found=$(sql -c "SELECT string_agg(r::text, E'\n') FROM sift.check() r")
+	[[ -z $found ]] || { FAILED=1; log "FAIL sift.check after $1:"; printf '%s\n' "$found" >&2; }
+}
+
 scenario_files() { local f; for f in "$@"; do grep -q '^-- scenario: yes' "$f" && echo "$f"; done; }
 
 # wait_for FILE: until a script of this harness announces itself (60 s)
@@ -342,7 +374,7 @@ scenarios() {
 	if named dml; then
 		log "scenario dml: 20% new orders, indexed updates, hard and soft deletes, no VACUUM"
 		sql -c "SELECT coldiff.sc_insert(0.2)" -c "SELECT coldiff.sc_update_indexed(0.03)" -c "SELECT coldiff.sc_delete(0.03)" >/dev/null
-		slice; check scenario-dml "${SLICED[@]}"; stop_early && return 0
+		slice; check scenario-dml "${SLICED[@]}"; sound dml; stop_early && return 0
 	fi
 	if want insert; then log "scenario insert: 20% new orders, no VACUUM"; sql -c "SELECT coldiff.sc_insert(0.2)" >/dev/null; slice; check scenario-insert "${SLICED[@]}"; stop_early && return 0; fi
 	if want update; then log "scenario update: indexed columns and jsonb"; sql -c "SELECT coldiff.sc_update_indexed(0.03)" >/dev/null; slice; check scenario-update "${SLICED[@]}"; stop_early && return 0; fi
@@ -355,7 +387,7 @@ scenarios() {
 		slice; check scenario-abort "${SLICED[@]}"; stop_early && return 0
 	fi
 	stop_early && return 0
-	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders" -c "VACUUM (ANALYZE) t_part"; slice; check scenario-vacuum "${SLICED[@]}"; fi
+	if want vacuum; then log "scenario vacuum"; sql -c "VACUUM (ANALYZE) orders" -c "VACUUM (ANALYZE) t_part"; slice; check scenario-vacuum "${SLICED[@]}"; sound vacuum; fi
 	stop_early && return 0
 	if want hot && [[ -z $TBL ]]; then
 		sql -c "SELECT coldiff.sc_hot(0.05)" >/dev/null
@@ -426,7 +458,7 @@ fixtures_suite() {
 	fixture_indexes
 	if [[ -n $TBL ]]; then fixture_tables || return 0; elif [[ -z $NOINDEX ]]; then fixture_col_indexes || return 0; fi
 	sql -c "VACUUM (FREEZE, ANALYZE)" >/dev/null
-	mapfile -t fl < <(files "$REPO"/test/col/fixtures/*.sql)
+	mapfile -t fl < <(fixture_files)
 	(( ${#fl[@]} )) || { log "fixtures: no query matches --corpus"; return 0; }
 	REPORT_FULL=full check fixtures "${fl[@]}"
 	stop_early && return 0
@@ -482,7 +514,7 @@ selftest() {
 	[[ -z ${VERBOSE:-} ]] || table -c "SELECT scenario, name, variant, left(detail, 100) FROM coldiff.results WHERE NOT ok ORDER BY id LIMIT 20"
 }
 
-if [[ -n $LIST ]]; then files "$REPO"/test/col/fixtures/*.sql | xargs -r -n1 basename; exit 0; fi
+if [[ -n $LIST ]]; then fixture_files | xargs -r -n1 basename; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
 [[ $SUITE == fixtures ]] || { stop_early && exit $FAILED; analytics_suite; }
