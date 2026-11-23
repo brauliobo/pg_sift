@@ -46,7 +46,8 @@ DECLARE
 	want text := (SELECT string_agg(g || ':' || c || ':' || s, ',' ORDER BY g) FROM (SELECT i % 7 AS g, count(*) AS c, sum(i) AS s FROM generate_series(1, 4000) i GROUP BY 1) x);
 	tbl text; got text;
 BEGIN
-	SET LOCAL sift.agg_force = on;
+	SET LOCAL cpu_tuple_cost = 0.5;
+	SET LOCAL max_parallel_workers_per_gather = 0;
 	FOREACH tbl IN ARRAY ARRAY['facts', 'tfacts'] LOOP
 		ASSERT (SELECT string_agg(l, E'\n') FROM pg_temp.explain(format('SELECT g, count(*), sum(v) FROM %s GROUP BY g', tbl)) l) ~ 'Custom Scan \(SiftAgg', tbl;
 		EXECUTE format('SELECT string_agg(g || '':'' || c || '':'' || s, '','' ORDER BY g) FROM (SELECT g, count(*) AS c, sum(v) AS s FROM %s GROUP BY g) x', tbl) INTO got;
