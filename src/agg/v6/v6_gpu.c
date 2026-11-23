@@ -15,6 +15,7 @@
 #include "agg/gpu_v6.h"
 #include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_topn.h"
+#include "core/compat.h"
 
 typedef struct GpuQuery
 {
@@ -572,14 +573,14 @@ device_topk(const SiftV6Spec *s, bool having)
 		const int	agg = it->pos - s->nkeys;
 		Oid			opfamily,
 					opcintype;
-		CompareType cmptype;
+		SiftCmpStrategy cmptype;
 		bool		is_agg = agg >= 0;
 
 		if (is_agg ? agg >= s->naggs || (s->agg[agg].kind != SV6_COUNT_STAR && s->agg[agg].kind != SV6_COUNT) : it->pos < 0 || sift_v6_class(s->key[it->pos].typid) == SV6C_TEXT)
 			break;
 		if (!get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype))
 			break;
-		t.comp[t.ncomp++] = (uint32) is_agg | (uint32) (is_agg ? agg : it->pos) << 1 | (uint32) (cmptype == COMPARE_GT) << 9 | (uint32) it->nulls_first << 10;
+		t.comp[t.ncomp++] = (uint32) is_agg | (uint32) (is_agg ? agg : it->pos) << 1 | (uint32) (cmptype == SIFT_CMP_GT) << 9 | (uint32) it->nulls_first << 10;
 	}
 	t.k = t.ncomp > 0 ? s->topk : 0;
 	t.cover = (int) t.ncomp == s->ntopk;

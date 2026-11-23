@@ -142,10 +142,10 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	{
 		Oid			opfamily,
 					opcintype;
-		CompareType	cmptype;
+		SiftCmpStrategy	cmptype;
 
 		get_ordering_op_properties(spec->topk_item[0].sortop, &opfamily, &opcintype, &cmptype);
-		r->desc = cmptype == COMPARE_GT;
+		r->desc = cmptype == SIFT_CMP_GT;
 		r->bound = (SiftF2Bound) {.desc = r->desc,.nulls_first = spec->topk_item[0].nulls_first};
 	}
 	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 rows");
