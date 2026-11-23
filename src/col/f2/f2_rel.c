@@ -162,7 +162,7 @@ sift_f2_rel(Relation index)
 	if (r->shred != NULL)
 		sift_col_shred_keep_payloads(r->shred);
 	f->spec = (SiftPartSpec) {.ncols = n,.kinds = f->kinds,.nsort = f->nkey,.sort_cols = f->key_cols,.hints = f->hints,.scales = f->scales,.key_leaf = f->has_keys ? f->key_leaf : NULL,
-	.parent = f->has_groups ? f->parent : NULL};
+	.parent = f->has_groups ? f->parent : NULL,.preagg = pg_strcasecmp(sift_col_options_preagg(index), "off") != 0,.preagg_dim = -1,.preagg_measure = -1};
 	memcpy(f->spec.sort_flags, o->ko_flags, sizeof(f->spec.sort_flags));
 	SiftF2KllCols kll;
 

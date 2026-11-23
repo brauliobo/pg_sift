@@ -257,3 +257,5 @@ CREATE FUNCTION sift._test_pend_del_reads() RETURNS int8 AS 'MODULE_PATHNAME', '
 -- src/table/f2/f2_lock_ovf.c: the entries of the row locks of a sift_table in the table of shared memory and in the chunks of the stripes that filled
 CREATE FUNCTION sift._test_rowlock_stats(OUT in_table int8, OUT in_chunks int8, OUT chunks int8) RETURNS record
 	AS 'MODULE_PATHNAME', 'sift_test_rowlock_stats' LANGUAGE C STRICT;
+-- Every cube of every granule of every part of an index against the values it was made of: the parts, those with SEC_PREAGG, the cubes, the granules, the cubes that leave a granule out, the cells and the cells that differ (src/col/f2/preagg_test.c)
+CREATE FUNCTION sift._test_preagg_v2_check(index regclass, OUT parts int4, OUT with_preagg int4, OUT cubes int4, OUT granules int4, OUT skipped int4, OUT cells int8, OUT mismatched int4) RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_preagg_v2_check' LANGUAGE C STRICT;

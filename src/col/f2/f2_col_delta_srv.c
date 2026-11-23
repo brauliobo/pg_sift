@@ -369,7 +369,7 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 	uint8		rec[SIFT_COL_DELTA_MAX_REC_BYTES];
 	uint32		len;
 
-	if (f->spec.preagg || sift_proj_relation_has(env->index) || env->index->rd_index->indisunique)
+	if (sift_proj_relation_has(env->index) || env->index->rd_index->indisunique)
 		return false;
 	if (index_unchanged)
 		res = (SiftF2DiffResult) {.pred = SIFT_PRED_BOTH};

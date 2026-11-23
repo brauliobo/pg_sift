@@ -826,7 +826,7 @@ SELECT f2_same('SELECT * FROM tk WHERE id BETWEEN 1 AND 60000');
 SELECT parts, granules, with_dead > 0 AS has_dead, corrected = with_dead - rescanned AS accounted, mismatched FROM sift._test_f2_preagg_index('tk_i', 1, 2);
  parts | granules | has_dead | accounted | mismatched 
 -------+----------+----------+-----------+------------
-     2 |        6 | t        | t         |          0
+     2 |        5 | t        | t         |          0
 (1 row)
 
 CREATE TABLE pa (id int, g int, v int);

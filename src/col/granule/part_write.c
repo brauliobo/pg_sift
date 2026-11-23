@@ -13,7 +13,7 @@
 #include "col/f2/f2_point_dir.h"
 #include "col/f2/f2_tid_hash.h"
 #include "col/f2/f2_marks.h"
-#include "col/f2/preagg_delta.h"
+#include "col/f2/preagg_v2.h"
 #include "col/skip/skip_index.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -339,8 +339,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 				pmax = InvalidFullTransactionId;
 	bool		unfrozen = false;
 	bool		want_preagg = rows->preagg && level > 0;
-	uint32	   *pa_first;
-	StringInfoData pa_cells;
+	SiftPreaggPlan pa_plan;
+	SiftPreaggBuild *pa = NULL;
 	SiftSecInput secs[20];
 	StringInfoData tstride,
 				excs;
@@ -384,12 +384,10 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	dir = palloc(ng * sizeof(SiftGranuleDesc));
 	tix = palloc0(ng * sizeof(SiftTidIndexEntry));
 	zones = palloc0(Max(nc, 1) * ng * sizeof(SiftZone));
-	pa_first = palloc((ng + 1) * sizeof(uint32));
 	tstride_off = palloc((ng + 1) * sizeof(uint32));
 	initStringInfo(&gdata);
 	initStringInfo(&vers);
 	initStringInfo(&schema);
-	initStringInfo(&pa_cells);
 	initStringInfo(&tstride);
 	initStringInfo(&excs);
 	initStringInfo(&dictsec);
@@ -402,6 +400,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		if (dicts != NULL || codecs->nentries > 0)
 			put_dicts(rows, tier, dicts, codecs, &dictsec);
 	}
+	if (want_preagg && sift_preagg_v2_plan(rows, (const SiftDictEnc *const *) dicts, &pa_plan))
+		pa = sift_preagg_v2_begin(&pa_plan, ng);
 	stats = sift_col_stats_begin((uint16) nc);
 	granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift part granule encode");
 	for (int g = 0; g < ng; g++)
@@ -442,16 +442,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(granule_cx);
 		}
-		pa_first[g] = pa_cells.len / sizeof(SiftPreaggCell);
-		if (want_preagg)
-		{
-			SiftGranuleView gv = sift_granule_open(rel, gdata.data + dir[g].data_off, dir[g].data_len, &dir[g]);
-			int			ncells;
-			SiftPreaggCell *cells = sift_preagg_build(&gv, rows->preagg_dim, rows->preagg_measure, &ncells);
-
-			appendBinaryStringInfo(&pa_cells, (char *) cells, ncells * sizeof(SiftPreaggCell));
-			dir[g].flags |= SIFT_GDESC_HAS_PREAGG;
-		}
+		if (pa != NULL)
+			dir[g].flags |= SIFT_GDESC_HAS_PREAGG | (sift_preagg_v2_add_granule(pa, g, gcols, cnt, (const SiftDictEnc *const *) dicts, gdata.len) ? 0 : SIFT_GDESC_PREAGG_SKIP);
 		if (!FullTransactionIdIsValid(pmin) || FullTransactionIdPrecedes(gi.min_xid, pmin))
 			pmin = gi.min_xid;
 		if (!FullTransactionIdIsValid(pmax) || FullTransactionIdFollows(gi.max_xid, pmax))
@@ -576,18 +568,12 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	if (vers.len > 0)
 		sift_part_add_section(secs, &nsec, SEC_VERS, SIFT_SEC_FLAG_REQUIRED, vers.data, vers.len, false);
 	sift_part_add_section(secs, &nsec, SEC_TID_INDEX, 0, tix, ng * sizeof(SiftTidIndexEntry), false);
-	if (want_preagg)
+	if (pa != NULL)
 	{
-		StringInfoData pa;
-		uint32		hdrlen = MAXALIGN((ng + 1) * sizeof(uint32));
+		uint64		pa_len;
+		void	   *pa_sec = sift_preagg_v2_finish(pa, &pa_len);
 
-		pa_first[ng] = pa_cells.len / sizeof(SiftPreaggCell);
-		initStringInfo(&pa);
-		appendBinaryStringInfo(&pa, (char *) pa_first, (ng + 1) * sizeof(uint32));
-		while (pa.len < hdrlen)
-			appendStringInfoChar(&pa, '\0');
-		appendBinaryStringInfo(&pa, pa_cells.data, pa_cells.len);
-		sift_part_add_section(secs, &nsec, SEC_PREAGG, 0, pa.data, pa.len, false);
+		sift_part_add_section(secs, &nsec, SEC_PREAGG, 0, pa_sec, pa_len, false);
 	}
 	sift_part_add_section(secs, &nsec, SEC_ZONES, 0, zones, nc * ng * sizeof(SiftZone), false);
 	if (rows->time_col > 0)
@@ -668,7 +654,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		*memory = sift_part_in_memory(rel, &in, &d);
 	else
 		d = sift_part_write(rel, &in);
-	d.ext_flags = (marks != NULL ? SIFT_PART_EXT_KEY_MARKS : 0) | (stats_in ? SIFT_PART_EXT_COL_STATS : 0) | (has_tid_hash ? SIFT_PART_EXT_TID_HASH : 0) | (has_row_pack ? SIFT_PART_EXT_ROW_PACK : 0);
+	d.ext_flags = (marks != NULL ? SIFT_PART_EXT_KEY_MARKS : 0) | (stats_in ? SIFT_PART_EXT_COL_STATS : 0) | (has_tid_hash ? SIFT_PART_EXT_TID_HASH : 0) | (has_row_pack ? SIFT_PART_EXT_ROW_PACK : 0) | (pa != NULL ? SIFT_PART_EXT_PREAGG : 0);
 	memcpy(d.key_lo, kmin, SIFT_BOUND_BYTES);
 	memcpy(d.key_hi, kmax, SIFT_BOUND_BYTES);
 	memcpy(d.time_min, tmin, sizeof(tmin));

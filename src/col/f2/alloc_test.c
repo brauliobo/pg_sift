@@ -34,7 +34,6 @@ PG_FUNCTION_INFO_V1(sift_test_f2_delete);
 PG_FUNCTION_INFO_V1(sift_test_f2_pending);
 PG_FUNCTION_INFO_V1(sift_test_f2_dv);
 PG_FUNCTION_INFO_V1(sift_test_f2_visible);
-PG_FUNCTION_INFO_V1(sift_test_f2_preagg);
 
 /* The spec the rows of the relation are made with: a heap-reference slab holds the index's own, whatever a test makes up */
 static SiftPartSpec
@@ -536,68 +535,6 @@ sift_test_f2_visible(PG_FUNCTION_ARGS)
 										st.granules_settled, st.granules_per_row, (unsigned long long) st.rows_checked));
 	index_close(rel, NoLock);
 	return f2t_record_result(fcinfo, v, nl);
-}
-
-/* (index, part_id, partition lower key, generation, granule): the stored cube less the dead rows against the cube of the live rows */
-Datum
-sift_test_f2_preagg(PG_FUNCTION_ARGS)
-{
-	Relation	rel = f2t_open_index(fcinfo, AccessShareLock);
-	SiftPartitionEntry entry;
-	int			n,
-				ncells,
-				nlive = 0;
-	SiftPartDesc *parts = f2t_find_parts(rel, fcinfo, 1, 2, &n, &entry);
-	SiftPartDesc *d = f2t_find_gen(parts, n, PG_GETARG_INT64(3));
-	uint32		g = PG_GETARG_INT32(4);
-	SiftPart   *p = sift_part_open(rel, d->header_blk, d->part_gen, (uint32) entry.part_id);
-	SiftPreaggCell *cells = sift_part_read_preagg(rel, p, g, &ncells);
-	SiftDv	   *dv = d->dv_blk != InvalidBlockNumber ? sift_dv_read(rel, d, (uint32) entry.part_id, f2t_dir_rows(rel, p)) : NULL;
-	const SiftDvGran *dg = dv ? sift_dv_granule(dv, g) : NULL;
-	SiftGranuleDesc gd;
-	char	   *rec = sift_part_read_granule(rel, p, g, &gd);
-	SiftGranuleView v = sift_granule_open_part(rel, p, rec, gd.data_len, &gd);
-	int			nr = gd.nrows;
-	int64	   *dim = palloc(nr * sizeof(int64)),
-			   *val = palloc(nr * sizeof(int64));
-	bool	   *dn = palloc(nr),
-			   *vn = palloc(nr);
-	char	   *res;
-	int			expect[5] = {0};
-	int64		esum[5] = {0};
-	bool		fallback;
-
-	if (cells == NULL || dg == NULL)
-		elog(ERROR, "the part has no pre-aggregate or no dead rows in granule %u", g);
-	sift_granule_ints(&v, 3, dim, dn);
-	sift_granule_ints(&v, 2, val, vn);
-	fallback = !sift_preagg_subtract(&v, 3, 2, dg, cells, &ncells);
-	if (fallback)
-		res = psprintf("fallback ndead=%d rows=%d delta_ok=%d", dg->ndead, nr, sift_preagg_delta_ok(nr, dg->ndead));
-	else
-	{
-		int			mismatches = 0;
-
-		for (int r = 0; r < nr; r++)
-		{
-			bool		dead;
-
-			(void) sift_dv_find(dg, r, &dead);
-			if (dead || dn[r])
-				continue;
-			nlive++;
-			if (!vn[r])
-			{
-				expect[dim[r]]++;
-				esum[dim[r]] += val[r];
-			}
-		}
-		for (int c = 0; c < ncells; c++)
-			mismatches += (int) cells[c].count != expect[cells[c].key] || cells[c].sum != esum[cells[c].key];
-		res = psprintf("delta ok=%s cells=%d live=%d", mismatches == 0 ? "true" : "false", ncells, nlive);
-	}
-	index_close(rel, NoLock);
-	PG_RETURN_TEXT_P(cstring_to_text(res));
 }
 
 /* (index): packs the tiny parts of the index into shared pages; the parts moved */

@@ -9,7 +9,7 @@
 #include "col/granule/part_int.h"
 #include "col/f2/f2_kll.h"
 #include "col/f2/f2_marks.h"
-#include "col/f2/preagg_delta.h"
+#include "col/f2/preagg_v2.h"
 #include "col/skip/skip_index.h"
 #include "core/page_io.h"
 
@@ -141,10 +141,8 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 {
 	StringInfoData excs,
 				tstrides,
-				skipsec,
-				pa_cells;
-	uint32	   *pa_first,
-			   *first;
+				skipsec;
+	uint32	   *first;
 	uint64		gtotal = 0;
 	JoinFill	fill;
 	uint32		ng = 0,
@@ -180,8 +178,6 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	tix = palloc(ng * sizeof(SiftTidIndexEntry));
 	zones = palloc0(Max(nc, 1) * ng * sizeof(SiftZone));
 	tstride_off = palloc((ng + 1) * sizeof(uint32));
-	pa_first = palloc((ng + 1) * sizeof(uint32));
-	initStringInfo(&pa_cells);
 	first = palloc((n + 1) * sizeof(uint32));
 	initStringInfo(&excs);
 	initStringInfo(&tstrides);
@@ -230,19 +226,6 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 			appendBinaryStringInfo(&tstrides, pts + first, (uint64) h->total_strides * sizeof(SiftTimeStride));
 			tstride_total += h->total_strides;
 		}
-		if (has_preagg)
-		{
-			char	   *ppa = sift_part_read_section(rel, p, SEC_PREAGG, &len);
-			const uint32 *pf = (const uint32 *) ppa;
-			uint32		base = pa_cells.len / sizeof(SiftPreaggCell),
-						hdrlen = MAXALIGN((uint64) (pg + 1) * sizeof(uint32));
-
-			if (ppa == NULL || len < hdrlen || len - hdrlen != (uint64) pf[pg] * sizeof(SiftPreaggCell))
-				SIFT_SEG_CORRUPT(rel, p->hdr.part_gen, "The pre-aggregate of a part does not fit its granules.");
-			for (uint32 g = 0; g < pg; g++)
-				pa_first[goff + g] = base + pf[g];
-			appendBinaryStringInfo(&pa_cells, ppa + hdrlen, (uint64) pf[pg] * sizeof(SiftPreaggCell));
-		}
 		if (!FullTransactionIdIsValid(pmin) || FullTransactionIdPrecedes(p->hdr.min_xid, pmin))
 			pmin = p->hdr.min_xid;
 		if (!FullTransactionIdIsValid(pmax) || FullTransactionIdFollows(p->hdr.max_xid, pmax))
@@ -265,15 +248,12 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	sift_part_add_section(secs, &nsec, SEC_ZONES, 0, zones, nc * ng * sizeof(SiftZone), false);
 	if (has_preagg)
 	{
-		StringInfoData pa;
+		uint64		pa_len;
+		void	   *pa_sec = sift_preagg_v2_join(rel, (SiftPart *const *) src, n, &pa_len);
 
-		pa_first[ng] = pa_cells.len / sizeof(SiftPreaggCell);
-		initStringInfo(&pa);
-		appendBinaryStringInfo(&pa, (char *) pa_first, (ng + 1) * sizeof(uint32));
-		while (pa.len < MAXALIGN((uint64) (ng + 1) * sizeof(uint32)))
-			appendStringInfoChar(&pa, '\0');
-		appendBinaryStringInfo(&pa, pa_cells.data, pa_cells.len);
-		sift_part_add_section(secs, &nsec, SEC_PREAGG, 0, pa.data, pa.len, false);
+		if (pa_sec != NULL)
+			sift_part_add_section(secs, &nsec, SEC_PREAGG, 0, pa_sec, pa_len, false);
+		has_preagg = pa_sec != NULL;
 	}
 	if (has_tstride)
 	{
@@ -311,7 +291,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	in.nsections = nsec;
 	in.inline_extent_cap = -1;
 	d = sift_part_write(rel, &in);
-	d.ext_flags = ext_flags;
+	d.ext_flags = ext_flags | (has_preagg ? SIFT_PART_EXT_PREAGG : 0);
 	if (fill.rec != NULL)
 		pfree(fill.rec);
 	*writer_bytes = fill.held_max + SIFT_PAGE_PAYLOAD;
