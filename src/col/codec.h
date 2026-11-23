@@ -21,6 +21,7 @@
 #include "core/sift.h"
 #include "core/cpu.h"
 #include "col/col.h"
+#include "core/arena.h"
 
 #define SIFT_CC_MAGIC		0xC5
 #define SIFT_CC_VERSION		1
@@ -230,6 +231,29 @@ extern void sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size
 extern void sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const SiftCcPolicy *pol);
 extern void sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words);
 
+/*
+ * The same reads for a worker (col/codec_a.c): the memory is the arena, a failure is false with the SiftErr (SIFT_ERR_CORRUPT, SIFT_ERR_UNSUPPORTED, SIFT_ERR_ARENA_FULL), and the
+ * result goes through the last pointers. A chunk opened here lives in the arena until the caller rewinds it; the other calls rewind their scratch, and a failed call leaves its scratch to the caller.
+ */
+extern bool sift_cc_open_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, bool verify, SiftCc **cc);
+extern bool sift_cc_open_rows_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, bool verify, uint32 nrows, SiftCc **cc);
+extern bool sift_cc_decode_a(SiftArena *a, SiftErr *err, const SiftCc *c, int64 *dst);
+extern bool sift_cc_decode_head_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 w, int64 *dst);
+extern bool sift_cc_decode_u32_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 *dst);
+extern bool sift_cc_decode_f8_a(SiftArena *a, SiftErr *err, const SiftCc *c, double *dst);
+extern bool sift_cc_decode_sel_a(SiftArena *a, SiftErr *err, const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst);
+extern bool sift_cc_get_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 row, int64 *key);
+/* *fits: whether sift_cc_decode_off32 wrote dst */
+extern bool sift_cc_decode_off32_a(SiftArena *a, SiftErr *err, const SiftCc *c, uint32 *dst, bool *fits);
+extern bool sift_cc_filter_a(SiftArena *a, SiftErr *err, const SiftCc *c, int64 lo, int64 hi, uint64 *bits);
+extern bool sift_cc_filter_member_a(SiftArena *a, SiftErr *err, const SiftCc *c, const uint64 *member, uint32 nmember, uint64 *bits);
+/* *count and *sum: what sift_cc_sum returns and writes */
+extern bool sift_cc_sum_a(SiftArena *a, SiftErr *err, const SiftCc *c, const uint64 *bits, int64 *sum, uint64 *count);
+/* off[n + 1 or min_n + 1] and bytes are in the arena */
+extern bool sift_cc_decode_strs_dict_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, uint32 n, uint32 min_n, Size min_bytes, uint32 **off,
+									   char **bytes, const void *ddict);
+extern bool sift_cc_decode_bits_a(SiftArena *a, SiftErr *err, const uint8 *blob, Size len, uint32 nbits, uint64 *words);
+
 /* ---------- kernels ---------- */
 
 /*
@@ -261,6 +285,7 @@ typedef struct SiftCcKernels
 	void		(*alp_f4) (double *dst, const uint32 *u, uint32 n, int64 dbase, float div);
 } SiftCcKernels;
 
+/* Rebound by the cpu module on the backend, never while a worker decodes: workers read it as a constant */
 extern PGDLLIMPORT const SiftCcKernels *sift_cck;
 /* A level's table, for tests; never NULL, falls back downwards for a level the CPU lacks */
 extern const SiftCcKernels *sift_cc_kernels_for(SiftSimdLevel level);

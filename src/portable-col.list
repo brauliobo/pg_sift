@@ -53,6 +53,7 @@ col/codec/codec.c
 col/codec/decode_int.h
 col/codec/filter.c
 col/codec/get.c
+col/codec_a.c
 col/codec_avx2.c
 col/codec_avx512.c
 col/codec_blob.c

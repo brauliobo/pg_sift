@@ -97,7 +97,7 @@ sift_cc_decode_strs(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want
 void
 sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32 want, uint32 min_n, Size min_bytes, uint32 **off, char **bytes, const void *ddict)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift string list", ALLOCSET_SMALL_SIZES);
+	MemoryContext cx = cc_cx_open(NULL);
 	uint32		n,
 				ll,
 				total,
@@ -131,8 +131,8 @@ sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32
 		CC_CORRUPT("raw string bytes length does not match");
 	lens = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 	nd_u32(nd, 0, lens);
-	o = MemoryContextAlloc(mcxt, sizeof(uint32) * ((size_t) Max(n, min_n) + 1));
-	b = MemoryContextAlloc(mcxt, Max((size_t) total + 1, min_bytes));
+	o = cc_alloc(mcxt, sizeof(uint32) * ((size_t) Max(n, min_n) + 1));
+	b = cc_alloc(mcxt, Max((size_t) total + 1, min_bytes));
 	o[0] = 0;
 	for (uint32 i = 0; i < n; i++)
 	{
@@ -153,9 +153,7 @@ sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32
 	else
 	{
 		if (!sift_colz_available((int) form))
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg("string list uses compression algorithm %u, which this build does not provide", form),
-							errhint("Install, on every node that reads the index, the pg_sift release that wrote it (built with lz4 and zstd when a compression algorithm is missing).")));
+			SIFT_FAIL_UNSUPPORTED(CC_UPGRADE_HINT, "string list uses compression algorithm %u, which this build does not provide", form);
 		if (!sift_colz_decompress((int) form, blob + pos, clen, b, total))
 			CC_CORRUPT("compressed string bytes are damaged");
 	}
@@ -163,7 +161,7 @@ sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32
 	*off = o;
 	*bytes = b;
 	sift_free(lens);
-	MemoryContextDelete(cx);
+	cc_cx_close(cx);
 }
 
 /*
@@ -261,7 +259,7 @@ sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words)
 		case CCB_SET:
 		case CCB_CLEAR:
 			{
-				MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift bit vector", ALLOCSET_SMALL_SIZES);
+				MemoryContext cx = cc_cx_open(NULL);
 				uint32		npos,
 							nl;
 				CcNode	   *nd;
@@ -290,7 +288,7 @@ sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words)
 						words[pos[i] / 64] &= ~(UINT64CONST(1) << (pos[i] % 64));
 				}
 				sift_free(pos);
-				MemoryContextDelete(cx);
+				cc_cx_close(cx);
 				break;
 			}
 		default:

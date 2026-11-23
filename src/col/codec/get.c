@@ -211,7 +211,7 @@ nd_range(const CcNode *nd, uint32 s, uint32 len, int64 *dst)
 				r0 = lo;
 				for (r1 = r0; r1 + 1 < nd->nruns && nd->rstart[r1 + 1] < s + len; r1++)
 					;
-				rv = palloc(sizeof(int64) * (r1 - r0 + 1 + SIFT_COL_PAD / 8));
+				rv = sift_alloc(sizeof(int64) * (r1 - r0 + 1 + SIFT_COL_PAD / 8));
 				nd_range(nd->a, r0, r1 - r0 + 1, rv);
 				for (uint32 i = 0, r = r0; i < len; i++)
 				{
@@ -219,7 +219,7 @@ nd_range(const CcNode *nd, uint32 s, uint32 len, int64 *dst)
 						r++;
 					dst[i] = rv[r - r0];
 				}
-				pfree(rv);
+				sift_free(rv);
 				return;
 			}
 		case SIFT_CCN_DICT:
@@ -254,10 +254,17 @@ nd_range(const CcNode *nd, uint32 s, uint32 len, int64 *dst)
 	}
 }
 
+static inline void
+check_row(const SiftCc *c, uint32 row)
+{
+	if (unlikely(row >= c->n))
+		CC_CORRUPT("row %u is past the end of a chunk of %u rows", row, c->n);
+}
+
 int64
 sift_cc_get(const SiftCc *c, uint32 row)
 {
-	SIFT_INVARIANT(row < c->n, "row %u is past the end of a column chunk of %u rows", row, c->n);
+	check_row(c, row);
 	return nd_get(c->root, row);
 }
 
@@ -392,22 +399,23 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 			k++;
 		if (k == m)
 		{
-			SIFT_INVARIANT(idx[m - 1] < c->n, "row %u is past the end of a column chunk of %u rows", idx[m - 1], c->n);
+			check_row(c, idx[0]);
+			check_row(c, idx[m - 1]);
 			nd_range(c->root, idx[0], m, dst);
 			return;
 		}
 	}
 	if ((uint64) m * (nd_has_delta(c->root) ? 256 : 8) > c->n)
 	{
-		int64	   *all = palloc(sizeof(int64) * ((size_t) c->n + SIFT_COL_PAD / 8));
+		int64	   *all = sift_alloc(sizeof(int64) * ((size_t) c->n + SIFT_COL_PAD / 8));
 
 		nd_i64(c->root, all);
 		for (uint32 k = 0; k < m; k++)
 		{
-			SIFT_INVARIANT(idx[k] < c->n, "row %u is past the end of a column chunk of %u rows", idx[k], c->n);
+			check_row(c, idx[k]);
 			dst[k] = all[idx[k]];
 		}
-		pfree(all);
+		sift_free(all);
 		return;
 	}
 	{
@@ -422,7 +430,7 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 		if (!runs)
 		{
 			for (uint32 k = 0; k < m; k++)
-				SIFT_INVARIANT(idx[k] < c->n, "row %u is past the end of a column chunk of %u rows", idx[k], c->n);
+				check_row(c, idx[k]);
 			nd_gather(c->root, idx, m, dst);
 			return;
 		}
@@ -433,7 +441,7 @@ sift_cc_decode_sel(const SiftCc *c, const uint32 *idx, uint32 m, int64 *dst)
 
 		while (e < m && idx[e] == idx[e - 1] + 1)
 			e++;
-		SIFT_INVARIANT(idx[e - 1] < c->n, "row %u is past the end of a column chunk of %u rows", idx[e - 1], c->n);
+		check_row(c, idx[e - 1]);
 		if (e - k > 1)
 			nd_range(c->root, idx[k], e - k, dst + k);
 		else

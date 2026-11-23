@@ -162,11 +162,11 @@ emit_runs(const CcNode *nd, const uint64 *rb, uint64 *bits)
 static void
 filter_rle(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint64 *bits)
 {
-	uint64	   *rb = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
+	uint64	   *rb = sift_alloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
 
 	nd_filter(nd->a, lo, hi, sub, off32, rb);
 	emit_runs(nd, rb, bits);
-	pfree(rb);
+	sift_free(rb);
 }
 
 static void
@@ -240,11 +240,11 @@ filter_delta(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
 	uint32		nblks = (nd->n + 1023) / 1024;
 	bool		asc = nd->mind >= 0,
 				desc = !asc && nd->W < 32 && nd->mind + (int64) ((UINT64CONST(1) << nd->W) - 1) <= 0;
-	int64	   *first = palloc(sizeof(int64) * nblks);
+	int64	   *first = sift_alloc(sizeof(int64) * nblks);
 
 	if (!asc && !desc)
 	{
-		pfree(first);
+		sift_free(first);
 		return false;
 	}
 	first[0] = nd->base;
@@ -253,7 +253,7 @@ filter_delta(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
 		first[b] = get64(nd->chk + 8 * (size_t) (b - 1));
 		if (asc ? first[b] < first[b - 1] : first[b] > first[b - 1])
 		{
-			pfree(first);
+			sift_free(first);
 			return false;
 		}
 	}
@@ -285,7 +285,7 @@ filter_delta(const CcNode *nd, int64 lo, int64 hi, uint64 *bits)
 			sift_colk->range[3](run, cnt, (uint64) lo, (uint64) hi - (uint64) lo, bits + from / 64);
 		}
 	}
-	pfree(first);
+	sift_free(first);
 	return true;
 }
 
@@ -299,7 +299,7 @@ filter_decoded(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint
 
 	if (off32)
 	{
-		uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(n));
+		uint32	   *tmp = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 
 		if (!off_range(sub, 0xFFFFFFFFu, lo, hi, &l, &span))
 			set_zeros(bits, n);
@@ -308,15 +308,15 @@ filter_decoded(const CcNode *nd, int64 lo, int64 hi, int64 sub, bool off32, uint
 			nd_u32(nd, sub, tmp);
 			sift_colk->range[2](tmp, n, l, span, bits);
 		}
-		pfree(tmp);
+		sift_free(tmp);
 	}
 	else
 	{
-		int64	   *tmp = palloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
+		int64	   *tmp = sift_alloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
 
 		nd_i64(nd, tmp);
 		sift_colk->range[3](tmp, n, (uint64) lo, (uint64) hi - (uint64) lo, bits);
-		pfree(tmp);
+		sift_free(tmp);
 	}
 }
 
@@ -400,33 +400,33 @@ nd_member(const CcNode *nd, const uint64 *m, uint32 nm, uint64 *bits)
 			return;
 		case SIFT_CCN_RLE:
 			{
-				uint64	   *rb = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
+				uint64	   *rb = sift_alloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->nruns));
 
 				nd_member(nd->a, m, nm, rb);
 				emit_runs(nd, rb, bits);
-				pfree(rb);
+				sift_free(rb);
 				return;
 			}
 		case SIFT_CCN_DICT:
 			{
-				uint64	   *cb = palloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->d));
+				uint64	   *cb = sift_alloc0(sizeof(uint64) * SIFT_COL_NWORDS(nd->d));
 
 				for (uint32 i = 0; i < nd->d; i++)
 					if (is_member(m, nm, nd->dict[i]))
 						cb[i / 64] |= UINT64CONST(1) << (i % 64);
 				nd_member(nd->b, cb, nd->d, bits);
-				pfree(cb);
+				sift_free(cb);
 				return;
 			}
 		default:
 			{
-				int64	   *tmp = palloc(sizeof(int64) * ((size_t) nd->n + SIFT_COL_PAD / 8));
+				int64	   *tmp = sift_alloc(sizeof(int64) * ((size_t) nd->n + SIFT_COL_PAD / 8));
 
 				nd_i64(nd, tmp);
 				set_zeros(bits, nd->n);
 				for (uint32 i = 0; i < nd->n; i++)
 					bits[i / 64] |= (uint64) is_member(m, nm, tmp[i]) << (i % 64);
-				pfree(tmp);
+				sift_free(tmp);
 			}
 	}
 }
@@ -460,22 +460,22 @@ sift_cc_sum(const SiftCc *c, const uint64 *bits, int64 *sum)
 		s = cnt * (uint64) nd->base;
 	else if (nd->tag == SIFT_CCN_RLE)
 	{
-		int64	   *rv = palloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
+		int64	   *rv = sift_alloc(sizeof(int64) * (nd->nruns + SIFT_COL_PAD / 8));
 
 		nd_i64(nd->a, rv);
 		for (uint32 r = 0; r < nd->nruns; r++)
 			s += (uint64) rv[r] * (bits ? count_range(bits, nd->rstart[r], nd->rstart[r + 1]) : nd->rstart[r + 1] - nd->rstart[r]);
-		pfree(rv);
+		sift_free(rv);
 	}
 	else
 	{
-		int64	   *all = palloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
+		int64	   *all = sift_alloc(sizeof(int64) * ((size_t) n + SIFT_COL_PAD / 8));
 
 		nd_i64(nd, all);
 		for (uint32 i = 0; i < n; i++)
 			if (!bits || ((bits[i / 64] >> (i % 64)) & 1))
 				s += (uint64) all[i];
-		pfree(all);
+		sift_free(all);
 	}
 	*sum = (int64) s;
 	return cnt;
