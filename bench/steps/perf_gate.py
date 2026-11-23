@@ -4,7 +4,7 @@ import os
 import sys
 
 # The code is in bench/steps/perf_gate/, a part for each responsibility, run in the namespace of this file in this order: the tests patch the names of this module.
-PARTS = ('prelude', 'verdict', 'process', 'revision', 'sizes', 'case', 'insert_control', 'insert_pair', 'insert_cost', 'measure', 'report', 'run')
+PARTS = ('prelude', 'verdict', 'process', 'quiet', 'revision', 'sizes', 'case', 'insert_control', 'insert_pair', 'insert_cost', 'measure', 'report', 'run')
 PART_FILES = tuple('bench/steps/perf_gate/%s.py' % name for name in PARTS)
 for _name in PARTS:
     _path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'perf_gate', _name + '.py')

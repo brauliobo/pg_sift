@@ -7,7 +7,7 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
     start = time.monotonic()
     pairs = []
     saved = sink if sink is not None else {}
-    saved.update(samples=pairs,expected_pairs=pair_count,started_at=utc_now())
+    saved.update(samples=pairs,expected_pairs=pair_count,started_at=utc_now(),noisy=not QUIET.settle(deadline))
     if case.lifecycle=='insert_trajectory':
         saved['pairs'] = []
     try:

@@ -30,6 +30,8 @@ def interval(pairs):
 
 
 def verdict(block, confirmation=False):
+    if block.get('noisy'):
+        return 'inconclusive'
     if block['upper'] <= MATERIAL:
         return 'pass'
     if confirmation and block['lower'] > MATERIAL:

@@ -15,6 +15,9 @@ def parser():
     p.add_argument('--scratch-root',type=Path,required=True,help='owned DB/build scratch filesystem (dedicated test partition on shared local host)')
     p.add_argument('--pg-config',default=shutil.which('pg_config'))
     p.add_argument('--port-base',type=int,default=56240)
+    p.add_argument('--allow-loaded',action='store_true',help='smoke/dev only: time without waiting for a quiet host; a real gate waits (scripts/quiet.sh)')
+    p.add_argument('--quiet-max',type=float,default=QUIET_MAX_PERCENT,help='CPU and IO pressure (some avg10, percent) below which the host is quiet')
+    p.add_argument('--quiet-timeout',type=float,default=QUIET_TIMEOUT_SECONDS,help='seconds to wait for a quiet host before a block; a block timed after the timeout is noisy')
     p.add_argument('--budget-seconds',type=float,default=300,help='global budget including builds/setup; exhaustion is inconclusive')
     p.add_argument('--workflow-start-seconds',type=float,help='workflow Unix start timestamp; prior elapsed time is deducted from the budget')
     p.add_argument('--cleanup-report-reserve-seconds',type=float,default=0,help='allowance deducted before builds/measurement; not a hard cleanup deadline')
@@ -30,7 +33,7 @@ def new_report(args):
                               read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
                               supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
                               insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
-                              insert_history_cap=INSERT_HISTORY_CAP,modes=sorted({m for c in CASES for m in c.modes}),cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
+                              insert_history_cap=INSERT_HISTORY_CAP,modes=sorted({m for c in CASES for m in c.modes}),cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,quiet_host_guard=not args.allow_loaded,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
 
 
@@ -141,8 +144,9 @@ def check_fixture(revisions,report):
 
 
 def main(argv=None):
-    global DEADLINE, BATCH_WALL_LIMIT
+    global DEADLINE, BATCH_WALL_LIMIT, QUIET
     args = parser().parse_args(argv)
+    QUIET = QuietGuard(not args.allow_loaded,args.quiet_max,args.quiet_timeout)
     pr_wall_limit = BATCH_WALL_LIMIT
     if args.tier=='nightly':
         BATCH_WALL_LIMIT = NIGHTLY_BATCH_WALL_LIMIT
@@ -280,6 +284,7 @@ def main(argv=None):
             end=time.monotonic()
         write_terminal(report,args,start,end)
     BATCH_WALL_LIMIT = pr_wall_limit
+    QUIET = QuietGuard(False)
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3,
             'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]

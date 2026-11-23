@@ -67,6 +67,7 @@ def reduce_insert_feasibility(report):
 
 
 def write_report(output, report):
+    report['quiet_host'] = QUIET.summary()
     with run_phase(report,'report_write') as phase:
         _write_report(output,report)
         phase['artifact_bytes']={name:(output/name).stat().st_size for name in ('results.json','summary.md')}
@@ -80,6 +81,7 @@ def _write_report(output, report):
              f"Baseline: `{report['baseline_ref']}`. Candidate: `{report['candidate_ref']}`.",
              f"PostgreSQL: {report.get('postgresql','unknown')}. CPU: {report['cpu']}; CPUs: {report['cpus']}.",
              f"Runner: {report['runner']}. Load: {report['load']}.",
+             'Quiet host: `'+json.dumps(report['quiet_host'])+'`. A block timed on a noisy host is inconclusive.',
              'Metric: monotonic elapsed persistent SQL end-to-end, including planning and result receipt.',
              'Six initial alternating warmed pairs; one fresh confirmation: 16 read pairs or 6 mutation pairs; a confirmation still inconclusive takes one fresh 16-pair extension when the budget covers it and the cases after it. Ordinary cases confirm suspects; controlled INSERT and INSERT feasibility always confirm and never extend. Fixed common operations; 95% Student-t log-ratio CI; material ratio 1.10.',
              '']
@@ -94,7 +96,7 @@ def _write_report(output, report):
         for phase in ('initial','confirmation','extension'):
             if phase in case and 'n' in case[phase]:
                 b = case[phase]
-                lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']} |")
+                lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']}{' (noisy block)' if b.get('noisy') else ''} |")
     lines.extend(['', '| Case / workload | Mode | Phase | Complete | Timing | Combined | Seed / first ID / N | Workers planned/launched base, head |',
                   '|---|---|---|---|---|---|---|---|'])
     for case in report['cases']:

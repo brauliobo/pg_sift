@@ -194,7 +194,7 @@ class Launcher(unittest.TestCase):
                     if log: (rev.base/'server.log').write_text('synthetic failed-start evidence\n')
                     rev.start()
                 args=['--baseline-ref','a'*40,'--candidate-ref','a'*40,'--output',str(output),
-                      '--scratch-root',str(scratch),'--pg-config','/bin/true']
+                      '--scratch-root',str(scratch),'--allow-loaded','--pg-config','/bin/true']
                 copy_context=patch.object(gate.shutil,'copyfile',side_effect=OSError('cannot preserve log')) if copy_failure else contextlib.nullcontext()
                 with patch.object(gate,'command',side_effect=command), patch.object(gate,'exact_sha'), patch.object(gate.tarfile,'open',return_value=MagicMock()), patch.object(gate.Revision,'setup',autospec=True,side_effect=setup), patch.object(gate.os,'getloadavg',return_value=(0,0,0)), copy_context, contextlib.redirect_stdout(__import__('io').StringIO()):
                     code=gate.main(args)
