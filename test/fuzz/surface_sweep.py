@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SQL surface sweep: no call of the sift schema may crash the backend or raise an internal error, whatever its arguments.
 
-  test/fuzz/surface_sweep.py [--tier quick|full] [--only RE] [--budget SEC] [--db NAME] [--list] [--role]
+  test/fuzz/surface_sweep.py [--format f2|f1|release] [--tier quick|full] [--only RE] [--budget SEC] [--db NAME] [--list] [--role]
 
 Every function, procedure, aggregate, window function, ordered-set aggregate and trigger function of the extensions pg_sift, pg_sift_test and pg_sift_helpers (the
 sift schema and the objects of the extensions) must be exercised in each of three modes: as a superuser, inside a rolled-back savepoint and as an unprivileged role. "Exercised"
@@ -14,6 +14,8 @@ a table of another schema, a 1 MB text, a nested array, ...) while the others ar
 runs in a plpgsql block with an EXCEPTION clause (a subtransaction) that reports the SQLSTATE; a sample also runs after a ROLLBACK TO SAVEPOINT, and as an unprivileged
 role (--role). A part then creates every index and table option with hostile values on tables of every kind of contents (empty, NULLs, all NULL, one row, dropped columns).
 A failure is a signal (the session ends), SQLSTATE XX000 or an internal message, and a timeout. Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT).
+The fixture holds a sift_table that went through ADD COLUMN, DROP COLUMN and ADD PRIMARY KEY, so every function that takes a table sees an evolved schema. --format f2 (default)
+sweeps Format 2.0 on the test library, --format f1 Format 1, --format release the release library (the extension pg_sift_test does not exist there: test/fuzz/fmt.py).
 """
 import argparse
 import os
@@ -26,6 +28,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fmt  # noqa: E402
 import shapes_matrix  # noqa: E402
 from shapes_matrix import ENV, Crash, Session, wait_ready, log_mark, log_scan  # noqa: E402
 
@@ -54,8 +57,12 @@ CREATE INDEX t2_bm ON fx.t2 USING sift (body);
 CREATE TABLE fx.trg (id int, g int);
 CREATE TABLE fx.heap (id int, g int);
 INSERT INTO fx.heap SELECT i, i % 5 FROM generate_series(1, 20) i;
-CREATE TABLE fx.tbl (id int, g int, v int) USING sift_table;
-INSERT INTO fx.tbl SELECT i, i % 5, i FROM generate_series(1, 50) i;
+CREATE TABLE fx.tbl (id int, g int, v int, junk text) USING sift_table;
+INSERT INTO fx.tbl SELECT i, i % 5, i, 'j' || i FROM generate_series(1, 30) i;
+ALTER TABLE fx.tbl ADD COLUMN extra int DEFAULT 7;
+ALTER TABLE fx.tbl DROP COLUMN junk;
+ALTER TABLE fx.tbl ADD PRIMARY KEY (id);
+INSERT INTO fx.tbl SELECT i, i % 5, i, i * 2 FROM generate_series(31, 50) i;
 CREATE VIEW fx.vw AS SELECT * FROM fx.t;
 CREATE MATERIALIZED VIEW fx.mv AS SELECT id, g FROM fx.t;
 CREATE TABLE fx.part (id int, g int) PARTITION BY RANGE (id);
@@ -370,6 +377,7 @@ def bad(state, msg):
 
 def parse():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    fmt.add_argument(ap)
     ap.add_argument('--tier', default='quick', choices=['quick', 'full'])
     ap.add_argument('--only', default='')
     ap.add_argument('--budget', type=int, default=0)
@@ -385,9 +393,13 @@ def parse():
 
 def _sweep(a):
     db = a.db
+    lib = fmt.Lib(a.format, env=ENV)
+    ENV['PGOPTIONS'] = f'{shapes_matrix.CLIENT_OPTIONS} {lib.pgoptions}'.strip()
+    if a.with_test_extension and not lib.testing:
+        sys.exit('--with-test-extension needs the test library: pg_sift_test does not exist in the release library')
     subprocess.run(['psql', '-X', '-q', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {db}', '-c', f'CREATE DATABASE {db}'], env=ENV, check=True, capture_output=True)
     subprocess.run(['psql', '-X', '-q', '-d', db, '-c', 'CREATE EXTENSION pg_sift'], env=ENV, check=True, capture_output=True)
-    for ext in ('pg_sift_test', 'pg_sift_helpers'):
+    for ext in ('pg_sift_test', 'pg_sift_helpers') if lib.testing else ('pg_sift_helpers',):
         subprocess.run(['psql', '-X', '-q', '-d', db, '-c', f'CREATE EXTENSION IF NOT EXISTS {ext}'], env=ENV, capture_output=True)
     sess = Session(db)
     sess.run(INIT)
@@ -570,7 +582,7 @@ def _sweep(a):
     up = wait_ready(db, 10)
     sig = log_scan(mark)
     nonstrict = [o['name'] for o in obs if not o['strict'] and o['args']]
-    print(f'surface: tier={a.tier} functions={stats["functions"]} calls={stats["calls"]} ok={stats["ok"]} clean_errors={stats["errors_clean"]} crashes={stats["crashes"]} '
+    print(f'surface: format={a.format} tier={a.tier} functions={stats["functions"]} calls={stats["calls"]} ok={stats["ok"]} clean_errors={stats["errors_clean"]} crashes={stats["crashes"]} '
           f'failures={len(fails)} seconds={time.time() - t0:.0f} server_up={up} log_signals={sig}')
     print('sqlstates: ' + ' '.join(f'{k}={v}' for k, v in sorted(states.items(), key=lambda x: -x[1])[:14]))
     print(f'not strict ({len(nonstrict)}): ' + ', '.join(sorted(set(nonstrict))[:40]))
@@ -706,7 +718,7 @@ def main():
     root = os.environ.get('SIFT_ROOT') or os.path.join(shapes_matrix.TMP, 'root')
     scratch = tempfile.mkdtemp(prefix='sift-surface-', dir=os.environ.get('TMPDIR') or '/dev/shm')
     port = free_port(int(os.environ.get('SIFT_PORT', '56100')) + 1)
-    env = dict(os.environ, SIFT_TMP=scratch, SIFT_ROOT=root, SIFT_PORT=str(port))
+    env = dict(os.environ, SIFT_TMP=scratch, SIFT_ROOT=root, SIFT_PORT=str(port), SIFT_TESTING='' if a.format == 'release' else '1')
     started = subprocess.run([PGTEST, 'start'], env=env, capture_output=True, text=True)
     if started.returncode != 0:
         shutil.rmtree(scratch, ignore_errors=True)
