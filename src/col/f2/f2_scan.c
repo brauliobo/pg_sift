@@ -337,10 +337,13 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const Si
 
 	for (int k = 0; k < s->npreds; k++)
 		exceptions[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
-	for (int k = 0; k < s->npreds && !skip && zones[k] != NULL; k++)
+	for (int k = 0; k < s->npreds && !skip; k++)
 	{
-		ZoneVerdict zv = sift_f2_zone_verdict(&schema->cols[s->preds[k].col], &s->preds[k], &zones[k][g - g0], dir != NULL ? dir[g].nrows : 0, exceptions[k]);
+		ZoneVerdict zv;
 
+		if (zones[k] == NULL)
+			continue;
+		zv = sift_f2_zone_verdict(&schema->cols[s->preds[k].col], &s->preds[k], &zones[k][g - g0], dir != NULL ? dir[g].nrows : 0, exceptions[k]);
 		skip = zv == Z_NONE;
 		decided[k] = zv == Z_ALL;
 	}
