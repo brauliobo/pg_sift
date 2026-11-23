@@ -14,6 +14,7 @@
 #include "executor/nodeIndexscan.h"
 #include "executor/tuptable.h"
 #include "nodes/execnodes.h"
+#include "storage/buffile.h"
 
 #include "agg/hybrid_int.h"
 #include "agg/hybrid_quals.h"
@@ -129,6 +130,8 @@ typedef struct HybridState
 	bool		chunks_done;
 	uint64		granules_seen,
 				granules_skipped;
+	BufFile    *or_keys;		/* SIFT_HYB_OR: the keys the structured quals took, read back before the matches */
+	bool		or_matches;		/* SIFT_HYB_OR: the keys are all read */
 	bool		point;			/* B with at most SIFT_TIDB_POINT_MAX hits: no store scan */
 	uint64		point_verifies;
 	SiftHybridStats stats;
@@ -162,6 +165,9 @@ extern void sift_hybrid_finish(HybridState *st);
 extern bool sift_hybrid_verify_a(void *arg, ItemPointer tid, bool want_doc, text **doc);
 extern bool sift_hybrid_verify_b(void *arg, ItemPointer tid, bool want_doc, text **doc);
 extern bool sift_hybrid_verify_point(void *arg, ItemPointer tid, bool want_doc, text **doc);
+extern bool sift_hybrid_verify_rest(void *arg, ItemPointer tid, bool want_doc, text **doc);
+/* SIFT_HYB_OR: the heap shows the version of tid (kept in the heap slot) and the structured quals do not take it: the match alone does */
+extern bool sift_hybrid_rest_row(HybridState *st, ItemPointer tid);
 extern bool sift_hybrid_next_hit(void *arg, SiftKey *key, float4 *score);
 extern bool sift_hybrid_heap_check(void *arg, SiftKey key, bool quals);
 extern bool sift_hybrid_visible_only(void *arg, SiftKey key, bool quals);

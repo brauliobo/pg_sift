@@ -1,0 +1,167 @@
+-- SiftHybridScan with SIFT_HYB_OR: a text match ORed with structured quals that the store decides (a sift_col index of a heap, the store of a sift_table). The rows the quals take come
+-- from one scan of the store and the matches they do not take follow, so no index on the other column is needed. Every result is compared with the same query that the hybrid node refuses
+-- (a volatile qual is added) and the node is read from EXPLAIN. The statements run on tables with committed, updated, inserted and deleted rows, and again in the transaction that changed them.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+CREATE TABLE oc_col (id int PRIMARY KEY, tenant int NOT NULL, category int NOT NULL, region text NOT NULL, body text NOT NULL);
+INSERT INTO oc_col
+SELECT i, 1 + i % 400, 1 + i % 20, 'r' || (i % 6),
+	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 7 = 0 THEN 'seven' END, CASE WHEN i % 5000 = 0 THEN 'rareterm' END, CASE WHEN i % 3 = 0 THEN 'three three' END, 'tok' || i % 11)
+FROM generate_series(1, 40000) i;
+CREATE INDEX oc_col_text ON oc_col USING sift (body);
+CREATE INDEX oc_col_col ON oc_col USING sift_col (tenant, id, category, region);
+ANALYZE oc_col;
+VACUUM (FREEZE) oc_col;
+CREATE TABLE oc_tbl (id int PRIMARY KEY, tenant int NOT NULL, category int NOT NULL, region text NOT NULL, body text NOT NULL) USING sift_table;
+INSERT INTO oc_tbl SELECT * FROM oc_col;
+CREATE INDEX oc_tbl_text ON oc_tbl USING sift (body);
+ANALYZE oc_tbl;
+RESET client_min_messages;
+SET effective_cache_size = '8kB';
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE FUNCTION oc_node(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; n text := 'none';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Hybrid Direction: OR' THEN n := 'SiftHybridScan OR'; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+CREATE FUNCTION oc_cmp(a text, b text, OUT rows bigint, OUT diff bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE oc_a AS ' || a;
+	EXECUTE 'CREATE TEMP TABLE oc_b AS ' || b;
+	SELECT count(*) INTO rows FROM oc_a;
+	SELECT count(*) INTO diff FROM ((TABLE oc_a EXCEPT ALL TABLE oc_b) UNION ALL (TABLE oc_b EXCEPT ALL TABLE oc_a)) d;
+	DROP TABLE oc_a, oc_b;
+END $$;
+CREATE FUNCTION oc_same(q text) RETURNS TABLE (node text, rows bigint, diff bigint) LANGUAGE sql AS
+$$ SELECT oc_node(q), c.rows, c.diff FROM oc_cmp(q, regexp_replace(q, 'WHERE ', 'WHERE random() < 2 AND ')) c $$;
+CREATE TABLE oc_q (n int, tbl text, body text);
+INSERT INTO oc_q SELECT n, t, 'SELECT id, tenant, category FROM ' || t || ' WHERE ' || w
+FROM (VALUES
+	(1, '(body @@> ''rareterm'' OR tenant = 5)'),
+	(2, '(body @@> ''seven'' OR tenant = 5)'),
+	(3, '(tenant = 5 OR body @@> ''rareterm'')'),
+	(4, '(body @@> ''rareterm'' OR (tenant = 5 AND category < 3))'),
+	(5, '((body @@> ''rareterm'' OR tenant < 3) AND category < 2)'),
+	(6, '(body @@> ''"three three"'' OR tenant = 9)'),
+	(7, '(body @@> ''nomatchword'' OR tenant = 5)'),
+	(8, '(body @@> ''rareterm'' OR tenant = -1)'),
+	(9, '(body @@> ''common seven'' OR category IN (3, 4) AND tenant > 390)'),
+	(10, '(body @@> ''rareterm'' OR tenant BETWEEN 7 AND 9) AND id % 2 = 0')
+) w(n, w), (VALUES ('oc_col'), ('oc_tbl')) t(t);
+INSERT INTO oc_q VALUES (11, 'oc_col', 'SELECT id, tenant, category FROM oc_col WHERE (body @@> ''rareterm'' OR region = ''r2'')');
+-- the plan and the rows of every statement, on the committed rows
+SELECT n, tbl, s.* FROM oc_q, LATERAL oc_same(body) s ORDER BY n, tbl;
+ n  |  tbl   |       node        | rows  | diff 
+----+--------+-------------------+-------+------
+  1 | oc_col | SiftHybridScan OR |   108 |    0
+  1 | oc_tbl | SiftHybridScan OR |   108 |    0
+  2 | oc_col | SiftHybridScan OR |  5800 |    0
+  2 | oc_tbl | SiftHybridScan OR |  5800 |    0
+  3 | oc_col | SiftHybridScan OR |   108 |    0
+  3 | oc_tbl | SiftHybridScan OR |   108 |    0
+  4 | oc_col | SiftHybridScan OR |     8 |    0
+  4 | oc_tbl | SiftHybridScan OR |     8 |    0
+  5 | oc_col | SiftHybridScan OR |   104 |    0
+  5 | oc_tbl | SiftHybridScan OR |   104 |    0
+  6 | oc_col | SiftHybridScan OR | 13400 |    0
+  6 | oc_tbl | SiftHybridScan OR | 13400 |    0
+  7 | oc_col | SiftHybridScan OR |   100 |    0
+  7 | oc_tbl | SiftHybridScan OR |   100 |    0
+  8 | oc_col | SiftHybridScan OR |     8 |    0
+  8 | oc_tbl | SiftHybridScan OR |     8 |    0
+  9 | oc_col | SiftHybridScan OR |  2857 |    0
+  9 | oc_tbl | none              |  2857 |    0
+ 10 | oc_col | SiftHybridScan OR |   208 |    0
+ 10 | oc_tbl | none              |   208 |    0
+ 11 | oc_col | SiftHybridScan OR |  6672 |    0
+(21 rows)
+
+-- what the node does not take: three branches, two matches, a qual a sift_table's store does not decide
+SELECT oc_node('SELECT id FROM oc_col WHERE body @@> ''rareterm'' OR tenant = 5 OR category = 2') AS three_branches,
+	oc_node('SELECT id FROM oc_col WHERE body @@> ''rareterm'' OR body @@> ''seven''') AS two_matches,
+	oc_node('SELECT id FROM oc_tbl WHERE body @@> ''rareterm'' OR region = ''r2''') AS text_qual_of_a_table;
+ three_branches | two_matches | text_qual_of_a_table 
+----------------+-------------+----------------------
+ none           | none        | none
+(1 row)
+
+-- an aggregate and a limit over the node
+SELECT n, s.* FROM (VALUES
+	(1, 'SELECT tenant, count(*) FROM oc_col WHERE (body @@> ''seven'' OR tenant < 4) GROUP BY tenant'),
+	(2, 'SELECT category, count(*), sum(id) FROM oc_tbl WHERE (body @@> ''seven'' OR tenant < 4) GROUP BY category'),
+	(3, 'SELECT id FROM (SELECT id FROM oc_tbl WHERE (body @@> ''rareterm'' OR tenant = 5) ORDER BY id LIMIT 5) l')
+) a(n, body), LATERAL oc_same(body) s ORDER BY n;
+ n |       node        | rows | diff 
+---+-------------------+------+------
+ 1 | SiftHybridScan OR |  400 |    0
+ 2 | SiftHybridScan OR |   20 |    0
+ 3 | SiftHybridScan OR |    5 |    0
+(3 rows)
+
+-- rows that changed: moved into and out of the quals and the match, inserted and deleted
+UPDATE oc_col SET tenant = 5 WHERE id % 1000 = 1;
+UPDATE oc_tbl SET tenant = 5 WHERE id % 1000 = 1;
+UPDATE oc_col SET body = body || ' rareterm' WHERE id % 999 = 0;
+UPDATE oc_tbl SET body = body || ' rareterm' WHERE id % 999 = 0;
+UPDATE oc_col SET tenant = 6 WHERE id % 400 = 5;
+UPDATE oc_tbl SET tenant = 6 WHERE id % 400 = 5;
+DELETE FROM oc_col WHERE id % 500 = 2;
+DELETE FROM oc_tbl WHERE id % 500 = 2;
+INSERT INTO oc_col SELECT 40000 + i, 5, 1, 'r1', 'rareterm fresh' FROM generate_series(1, 30) i;
+INSERT INTO oc_tbl SELECT * FROM oc_col WHERE id > 40000;
+SELECT n, tbl, s.* FROM oc_q, LATERAL oc_same(body) s ORDER BY n, tbl;
+ n  |  tbl   |       node        | rows  | diff 
+----+--------+-------------------+-------+------
+  1 | oc_col | SiftHybridScan OR |   218 |    0
+  1 | oc_tbl | SiftHybridScan OR |   218 |    0
+  2 | oc_col | SiftHybridScan OR |  5853 |    0
+  2 | oc_tbl | SiftHybridScan OR |  5853 |    0
+  3 | oc_col | SiftHybridScan OR |   218 |    0
+  3 | oc_tbl | SiftHybridScan OR |   218 |    0
+  4 | oc_col | SiftHybridScan OR |   118 |    0
+  4 | oc_tbl | SiftHybridScan OR |   118 |    0
+  5 | oc_col | SiftHybridScan OR |   136 |    0
+  5 | oc_tbl | SiftHybridScan OR |   136 |    0
+  6 | oc_col | SiftHybridScan OR | 13374 |    0
+  6 | oc_tbl | SiftHybridScan OR | 13374 |    0
+  7 | oc_col | SiftHybridScan OR |   170 |    0
+  7 | oc_tbl | SiftHybridScan OR |   170 |    0
+  8 | oc_col | SiftHybridScan OR |    78 |    0
+  8 | oc_tbl | SiftHybridScan OR |    78 |    0
+  9 | oc_col | SiftHybridScan OR |  2846 |    0
+  9 | oc_tbl | none              |  2846 |    0
+ 10 | oc_col | SiftHybridScan OR |   243 |    0
+ 10 | oc_tbl | none              |   243 |    0
+ 11 | oc_col | SiftHybridScan OR |  6715 |    0
+(21 rows)
+
+-- in the transaction that changes them
+BEGIN;
+UPDATE oc_col SET tenant = 5, body = 'rareterm moved' WHERE id % 777 = 3;
+UPDATE oc_tbl SET tenant = 5, body = 'rareterm moved' WHERE id % 777 = 3;
+DELETE FROM oc_col WHERE id % 333 = 1;
+DELETE FROM oc_tbl WHERE id % 333 = 1;
+INSERT INTO oc_col VALUES (50001, 5, 2, 'r0', 'inside'), (50002, 1, 2, 'r0', 'rareterm inside');
+INSERT INTO oc_tbl VALUES (50001, 5, 2, 'r0', 'inside'), (50002, 1, 2, 'r0', 'rareterm inside');
+SELECT n, tbl, s.* FROM oc_q, LATERAL oc_same(body) s WHERE n IN (1, 2, 5, 6) ORDER BY n, tbl;
+ n |  tbl   |       node        | rows  | diff 
+---+--------+-------------------+-------+------
+ 1 | oc_col | SiftHybridScan OR |   271 |    0
+ 1 | oc_tbl | SiftHybridScan OR |   271 |    0
+ 2 | oc_col | SiftHybridScan OR |  5888 |    0
+ 2 | oc_tbl | SiftHybridScan OR |  5888 |    0
+ 5 | oc_col | SiftHybridScan OR |   139 |    0
+ 5 | oc_tbl | SiftHybridScan OR |   139 |    0
+ 6 | oc_col | SiftHybridScan OR | 13322 |    0
+ 6 | oc_tbl | SiftHybridScan OR | 13322 |    0
+(8 rows)
+
+ROLLBACK;
+DROP TABLE oc_q, oc_col, oc_tbl;
+DROP FUNCTION oc_node, oc_cmp, oc_same;
+DROP EXTENSION pg_sift;

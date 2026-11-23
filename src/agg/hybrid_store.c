@@ -132,6 +132,24 @@ sift_hybrid_verify_point(void *arg, ItemPointer tid, bool want_doc, text **doc)
 }
 
 bool
+sift_hybrid_rest_row(HybridState *st, ItemPointer tid)
+{
+	ExprContext *econtext = st->qual_econtext;
+
+	if (!sift_vis_fetch(&st->vis, tid, st->heapslot))
+		return false;
+	ResetExprContext(econtext);
+	econtext->ecxt_scantuple = st->heapslot;
+	return !ExecQual(st->heap_quals, econtext);
+}
+
+bool
+sift_hybrid_verify_rest(void *arg, ItemPointer tid, bool want_doc, text **doc)
+{
+	return sift_hybrid_rest_row(arg, tid) && with_text(arg, tid, want_doc, doc);
+}
+
+bool
 sift_hybrid_verify_b(void *arg, ItemPointer tid, bool want_doc, text **doc)
 {
 	return with_text(arg, tid, want_doc, doc);
@@ -559,6 +577,9 @@ sift_hybrid_finish(HybridState *st)
 	if (st->matches.it)
 		sift_iter_end(st->matches.it);
 	st->matches = (SiftMatchKeys) {0};
+	if (st->or_keys)
+		BufFileClose(st->or_keys);
+	st->or_keys = NULL;
 	if (st->run)
 	{
 		st->stats = st->run->stats;

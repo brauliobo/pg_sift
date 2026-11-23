@@ -62,7 +62,9 @@ typedef struct HybridPlan
 	IndexOptInfo *text;
 	SiftHybridStoreRef store;
 	Relation	colrel;			/* the sift_col index, open */
-	RestrictInfo *match;
+	RestrictInfo *match;		/* the clause of the match, or the OR of it with the structured quals */
+	Expr	   *match_expr;		/* the match itself */
+	bool		disjunct;		/* match OR quals: quals are the OR's other branch */
 	Expr	   *query;
 	List	   *quals;			/* the quals the store decides, the column on the left */
 	List	   *qinfo;			/* of each three integers: SiftHybQualKind, the column of the store's index, whether the pattern folds */
@@ -254,6 +256,7 @@ find_match(HybridPlan *h)
 					return false;
 				found = ri;
 				h->query = q;
+				h->match_expr = ri->clause;
 			}
 		if (found)
 		{
@@ -266,11 +269,11 @@ find_match(HybridPlan *h)
 }
 
 static bool
-no_score(HybridPlan *h, RestrictInfo *ri)
+no_score(HybridPlan *h, Expr *clause)
 {
 	ScoreRefs	refs = {h->rel->relid, NIL};
 
-	score_walker((Node *) ri->clause, &refs);
+	score_walker((Node *) clause, &refs);
 	return refs.found == NIL;
 }
 
@@ -304,7 +307,7 @@ classify_table_quals(HybridPlan *h)
 
 		if (ri == h->match)
 			continue;
-		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri) || (q = table_qual(&h->store, ri->clause)) == NULL)
+		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri->clause) || (q = table_qual(&h->store, ri->clause)) == NULL)
 			return false;
 		h->quals = lappend(h->quals, q);
 		h->qinfo = lappend_int(lappend_int(lappend_int(h->qinfo, SHQ_STD), 0), 0);
@@ -326,7 +329,7 @@ classify_quals(HybridPlan *h)
 
 		if (ri == h->match)
 			continue;
-		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri))
+		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri->clause))
 			return false;
 		if (implied_by_index(h->store.index, ri->clause))
 			continue;
@@ -354,6 +357,61 @@ classify_quals(HybridPlan *h)
 		}
 	}
 	return true;
+}
+
+/* One branch of the OR of the match: its conjuncts, each a qual the store decides and none reading a score; the quals and their qinfo are added */
+static bool
+or_branch(HybridPlan *h, Expr *branch, List **quals, List **qinfo)
+{
+	foreach_ptr(Expr, c, is_andclause((Node *) branch) ? ((BoolExpr *) branch)->args : list_make1(branch))
+	{
+		SiftHybQual q = {SHQ_STD, 0, false};
+		Expr	   *norm;
+
+		if (contain_mutable_functions((Node *) c) || !no_score(h, c))
+			return false;
+		if (h->store.table != NULL)
+			norm = table_qual(&h->store, c);
+		else if (!sift_hybrid_qual_pushable(h->store.index, h->colrel, c, &q, &norm))
+			norm = NULL;
+		if (norm == NULL)
+			return false;
+		*quals = lappend(*quals, norm);
+		*qinfo = lappend_int(lappend_int(lappend_int(*qinfo, q.kind), q.col), q.fold);
+	}
+	return true;
+}
+
+/* A text match ORed with structured quals the store decides (the match is a constant query): the OR is the scan's match, the other branch its quals */
+static bool
+find_or_match(HybridPlan *h)
+{
+	foreach_ptr(IndexOptInfo, ix, h->rel->indexlist)
+	{
+		if (ix->relam != sift_catalog()->am || ix->hypothetical)
+			continue;
+		foreach_node(RestrictInfo, ri, h->rel->baserestrictinfo)
+		{
+			List	   *args = is_orclause((Node *) ri->clause) ? ((BoolExpr *) ri->clause)->args : NIL;
+
+			if (list_length(args) != 2 || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause))
+				continue;
+			for (int side = 0; side < 2; side++)
+			{
+				Expr	   *m = list_nth(args, side),
+						   *q;
+				List	   *quals = NIL,
+						   *qinfo = NIL;
+
+				if (!sift_match_clause((Node *) m, ix, &q) || !IsA(q, Const) || ((Const *) q)->constisnull || !or_branch(h, list_nth(args, 1 - side), &quals, &qinfo))
+					continue;
+				*h = (HybridPlan) {.root = h->root,.rel = h->rel,.text = ix,.store = h->store,.colrel = h->colrel,.match = ri,.match_expr = m,.disjunct = true,
+					.query = q,.quals = quals,.qinfo = qinfo};
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 /* The store gives a column of the query's rows back: of a type it decodes, or an array whose image it keeps */
@@ -435,7 +493,7 @@ estimate(HybridPlan *h, SiftHybridEst *e)
 		.host = h->store.table != NULL ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL,.rows = rows,.granules = granules,
 		.col_granules = granules * sift_hybrid_granule_hit(sel_col, rows / granules),
 		.heap_fetch = cpu_tuple_cost + random_page_cost * cold,.sel_col = sel_col,
-		.sel_bm25 = clause_selectivity(h->root, (Node *) h->match->clause, rel->relid, JOIN_INNER, NULL),
+		.sel_bm25 = clause_selectivity(h->root, (Node *) h->match_expr, rel->relid, JOIN_INNER, NULL),
 		.limit = h->k,.hit_budget = work_mem * 1024.0,.ranked = h->ranked,.has_col_quals = h->quals != NIL,.covered = store_covers(h),
 		.sel_acl = 1.0,.has_residual = h->residual,.bm25_dict_cost = sift_dict_cost(h->text, list_make1(h->query)),.allvisfrac = rel->allvisfrac
 	};
@@ -469,8 +527,8 @@ add_path_of(HybridPlan *h, const SiftHybridEst *e, SiftHybridDir dir, double cos
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = h->rel;
 	cp->path.pathtarget = h->rel->reltarget;
-	cp->path.rows = clamp_row_est(e->rows * e->sel_bm25 * e->sel_col);
-	cp->path.startup_cost = dir == SIFT_HYB_COL_TO_BM25 ? cost : cost * 0.5;
+	cp->path.rows = clamp_row_est(e->rows * (dir == SIFT_HYB_OR ? e->sel_bm25 + e->sel_col - e->sel_bm25 * e->sel_col : e->sel_bm25 * e->sel_col));
+	cp->path.startup_cost = dir == SIFT_HYB_COL_TO_BM25 || dir == SIFT_HYB_OR ? cost : cost * 0.5;
 	cp->path.total_cost = cost;
 	cp->path.pathkeys = h->ranked ? list_make1(h->pk) : NIL;
 	cp->path.parallel_safe = false;
@@ -491,29 +549,74 @@ cheapest_total(RelOptInfo *rel)
 	return best;
 }
 
-static void
-sift_hybrid_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+/* match OR quals: a constant query, the quals that are all the OR's other branch and no other, no score read, no order wanted */
+static bool
+or_ok(HybridPlan *h)
 {
-	HybridPlan	h = {.root = root,.rel = rel};
+	foreach_node(RestrictInfo, ri, h->rel->baserestrictinfo)
+		if (ri != h->match && is_orclause((Node *) ri->clause))
+			return false;
+	return classify_quals(h) && h->keyset == NULL && !h->params && score_exprs(h->root, h->rel) == NIL;
+}
+
+static bool
+has_or_clause(RelOptInfo *rel)
+{
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (is_orclause((Node *) ri->clause))
+			return true;
+	return false;
+}
+
+static void
+add_or_path(HybridPlan *h)
+{
+	SiftHybridEst e;
+
+	estimate(h, &e);
+	add_path_of(h, &e, SIFT_HYB_OR, sift_hybrid_or_cost(&e));
+}
+
+static void
+add_choice_paths(HybridPlan *h)
+{
 	SiftHybridEst e;
 	SiftHybridCosts costs;
 	SiftHybridDir dir;
 
+	h->ranked = sorted_by_score(h->root, h->rel, &h->pk);
+	h->k = h->ranked && !h->residual ? scan_limit(h->root, true) : 0;
+	estimate(h, &e);
+	dir = sift_hybrid_choose(&e, &costs);
+	if (h->params && sift_hybrid_both_apply(&e))
+		add_path_of(h, &e, SIFT_HYB_ADAPTIVE, Min(Min(costs.col_to_bm25, costs.bm25_to_col), cheapest_total(h->rel) * SIFT_HYB_WIN));
+	else if (dir != SIFT_HYB_NONE)
+		add_path_of(h, &e, h->store.table == NULL && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col);
+}
+
+static void
+sift_hybrid_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
+{
+	HybridPlan	h = {.root = root,.rel = rel};
+	bool		anded;
+
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (!shape_ok(root, rel, rte) || !find_match(&h) || !pick_store(&h, rte))
+	if (!shape_ok(root, rel, rte))
 		return;
-	if (classify_quals(&h) && h.quals != NIL)
+	anded = find_match(&h);
+	if (!(anded ? pick_store(&h, rte) : has_or_clause(rel) && pick_store(&h, rte) && find_or_match(&h)))
 	{
-		h.ranked = sorted_by_score(root, rel, &h.pk);
-		h.k = h.ranked && !h.residual ? scan_limit(root, true) : 0;
-		estimate(&h, &e);
-		dir = sift_hybrid_choose(&e, &costs);
-		if (h.params && sift_hybrid_both_apply(&e))
-			add_path_of(&h, &e, SIFT_HYB_ADAPTIVE, Min(Min(costs.col_to_bm25, costs.bm25_to_col), cheapest_total(rel) * SIFT_HYB_WIN));
-		else if (dir != SIFT_HYB_NONE)
-			add_path_of(&h, &e, h.store.table == NULL && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col);
+		close_store(&h);
+		return;
 	}
+	if (h.disjunct)
+	{
+		if (or_ok(&h))
+			add_or_path(&h);
+	}
+	else if (classify_quals(&h) && h.quals != NIL)
+		add_choice_paths(&h);
 	close_store(&h);
 }
 

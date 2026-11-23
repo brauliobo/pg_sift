@@ -17,6 +17,7 @@
 #define HYB_BRIDGE_ADD		0.0005		/* one TID into the bridge */
 #define HYB_BM25_DOC		0.002		/* one matched document, scored */
 #define HYB_BM25_UNSCORED	0.35		/* the fraction of it that an unordered match costs: no term frequency is decoded, nothing scored, no queue */
+#define HYB_TABLE_ROW		0.01		/* a row of a sift_table read by its TID */
 #define HYB_POINT_TID		0.01		/* a TID read directly (bridge of at most SIFT_TIDB_POINT_MAX) */
 #define HYB_TIX_GRANULE		0.00002		/* the TID index test of a granule */
 #define HYB_TID_DECODE		0.00005		/* the _tid of a row of a surviving granule */
@@ -142,7 +143,18 @@ sift_hybrid_pick(const SiftHybridEst *e)
 const char *
 sift_hybrid_dir_name(SiftHybridDir dir)
 {
-	return dir == SIFT_HYB_COL_TO_BM25 ? "A" : dir == SIFT_HYB_BM25_TO_COL ? "B" : "none";
+	return dir == SIFT_HYB_COL_TO_BM25 ? "A" : dir == SIFT_HYB_BM25_TO_COL ? "B" : dir == SIFT_HYB_OR ? "OR" : "none";
+}
+
+double
+sift_hybrid_or_cost(const SiftHybridEst *e)
+{
+	double		rpg = e->rows / Max(e->granules, 1.0),
+				kept = e->rows * e->sel_col,
+				matched = e->rows * e->sel_bm25,
+				kept_fetch = e->host == SIFT_HYB_HOST_TABLE ? HYB_TABLE_ROW : e->heap_fetch;
+
+	return e->bm25_dict_cost + e->col_granules * rpg * HYB_F2_ROW + kept * (HYB_BRIDGE_ADD + kept_fetch) + matched * (HYB_BM25_DOC * HYB_BM25_UNSCORED + e->heap_fetch);
 }
 
 SiftHybridRun *

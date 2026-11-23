@@ -256,7 +256,40 @@ unscored_plan(HybridState *st)
 }
 
 static void
-start_scan(HybridState *st)
+or_sink(void *arg, const SiftHybridBatch *b)
+{
+	HybridState *st = arg;
+
+	for (int r = 0; r < b->n; r++)
+		if (b->live == NULL || b->live[r / 64] >> (r % 64) & 1)
+			BufFileWrite(st->or_keys, &b->tid[r], sizeof(SiftKey));
+}
+
+/* The rows the structured quals take are spooled by key, in the order of the store; the matches follow in heap order, each when the quals do not take it */
+static void
+start_or(HybridState *st)
+{
+	EState	   *estate = st->css.ss.ps.state;
+	MemoryContext old = MemoryContextSwitchTo(st->cxt);
+
+	if (sift_hybrid_bind(st))
+	{
+		sift_vis_begin(&st->vis, st->heap, estate->es_snapshot, st->text_index, sift_plan_dir_version(st->plan));
+		st->vis_open = true;
+		st->or_keys = BufFileCreateTemp(false);
+		st->store.scan_quals(st->store.arg, or_sink, st);
+		BufFileSeek(st->or_keys, 0, 0, SEEK_SET);
+		unscored_plan(st);
+		if (sift_plan_recheck_needed(st->plan))
+			st->rank = sift_rank_begin(st->plan, 0, sift_hybrid_verify_rest, st);
+		else
+			st->matches.it = sift_iter_begin(st->plan);
+	}
+	MemoryContextSwitchTo(old);
+}
+
+static void
+start_directed(HybridState *st)
 {
 	EState	   *estate = st->css.ss.ps.state;
 	MemoryContext old = MemoryContextSwitchTo(st->cxt);
@@ -304,6 +337,15 @@ start_scan(HybridState *st)
 			st->matches.it = sift_iter_begin(st->plan);
 	}
 	MemoryContextSwitchTo(old);
+}
+
+static void
+start_scan(HybridState *st)
+{
+	if (st->dir == SIFT_HYB_OR)
+		start_or(st);
+	else
+		start_directed(st);
 }
 
 static void
@@ -364,6 +406,50 @@ next_b(HybridState *st, TupleTableSlot *slot)
 }
 
 static TupleTableSlot *
+next_or_key(HybridState *st, TupleTableSlot *slot)
+{
+	SiftKey		key;
+
+	while (BufFileReadMaybeEOF(st->or_keys, &key, sizeof(key), true))
+		if (sift_hybrid_heap_check(st, key, true))
+		{
+			store_row(st, slot, NULL, &st->fetched_tid, 0);
+			return slot;
+		}
+	st->or_matches = true;
+	return NULL;
+}
+
+static TupleTableSlot *
+next_or_match(HybridState *st, TupleTableSlot *slot)
+{
+	SiftKey		key;
+	float4		score;
+	ItemPointerData tid;
+
+	if (st->rank)
+		return next_a(st, slot);
+	while (sift_match_keys_next(&st->matches, &key, &score))
+	{
+		tid = sift_hybrid_tid_of(key);
+		if (sift_hybrid_rest_row(st, &tid))
+		{
+			store_row(st, slot, NULL, &tid, 0);
+			return slot;
+		}
+	}
+	return NULL;
+}
+
+static TupleTableSlot *
+next_or(HybridState *st, TupleTableSlot *slot)
+{
+	TupleTableSlot *keyed = st->or_matches ? NULL : next_or_key(st, slot);
+
+	return keyed ? keyed : next_or_match(st, slot);
+}
+
+static TupleTableSlot *
 hybrid_next(ScanState *ss)
 {
 	HybridState *st = (HybridState *) ss;
@@ -375,6 +461,8 @@ hybrid_next(ScanState *ss)
 	CHECK_FOR_INTERRUPTS();
 	if (st->empty)
 		return NULL;
+	if (st->dir == SIFT_HYB_OR)
+		return next_or(st, slot);
 	return st->dir == SIFT_HYB_COL_TO_BM25 || st->point ? next_a(st, slot) : next_b(st, slot);
 }
 
@@ -399,7 +487,7 @@ hybrid_rescan(CustomScanState *node)
 	MemoryContextReset(st->cxt);
 	st->nrows = st->pos = st->rows_cap = 0;
 	st->rows = NULL;
-	st->chunks_done = false;
+	st->chunks_done = st->or_matches = false;
 	st->granules_seen = st->granules_skipped = st->parts_skipped = st->point_verifies = 0;
 	st->empty = false;
 	ExecScanReScan(&node->ss);

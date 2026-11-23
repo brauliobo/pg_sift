@@ -23,7 +23,8 @@ typedef enum SiftHybridDir
 	SIFT_HYB_NONE = 0,					/* the standard plan wins */
 	SIFT_HYB_COL_TO_BM25,
 	SIFT_HYB_BM25_TO_COL,
-	SIFT_HYB_ADAPTIVE					/* a parameter leaves the selectivities unknown: the executor takes the cheaper direction (sift_hybrid_pick) once the query is bound; never a direction of a run */
+	SIFT_HYB_ADAPTIVE,					/* a parameter leaves the selectivities unknown: the executor takes the cheaper direction (sift_hybrid_pick) once the query is bound; never a direction of a run */
+	SIFT_HYB_OR							/* the query is ORed with structured quals: their rows, then the matches they do not take; not a direction of a run */
 } SiftHybridDir;
 
 typedef enum SiftHybridHost
@@ -72,6 +73,9 @@ extern bool sift_hybrid_beats(double cost, const SiftHybridCosts *costs);
 
 /* The direction that beats the standard plan by the margin of SIFT_HYB_WIN, SIFT_HYB_NONE when none does; costs (when not NULL) tells why */
 extern SiftHybridDir sift_hybrid_choose(const SiftHybridEst *est, SiftHybridCosts *costs);
+
+/* SIFT_HYB_OR: the store scan of the structured quals, a heap fetch of each row it keeps, and the unordered match with a fetch of each of its rows */
+extern double sift_hybrid_or_cost(const SiftHybridEst *est);
 
 /* Both directions apply: the plan cannot tell which is cheaper before the query is bound */
 extern bool sift_hybrid_both_apply(const SiftHybridEst *est);
