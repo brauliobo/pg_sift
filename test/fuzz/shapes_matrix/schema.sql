@@ -36,10 +36,12 @@ CREATE TABLE ps_events_scope (LIKE ps_events_none);
 CREATE TABLE ps_events_connect (LIKE ps_events_none);
 CREATE TABLE ps_events_proj (LIKE ps_events_none);
 CREATE TABLE ps_events_bm25 (LIKE ps_events_none);
+CREATE TABLE ps_events_tbl (LIKE ps_events_none) USING sift_table;
+CREATE TABLE ps_events_tbl_bm25 (LIKE ps_events_none) USING sift_table;
 CREATE TABLE ps_events_inh (LIKE ps_events_none);
 CREATE TABLE ps_events_inh_child () INHERITS (ps_events_inh);
 SELECT ps_fill(t) FROM unnest(ARRAY['ps_events_none', 'ps_events_btree', 'ps_events_partial', 'ps_events_expr', 'ps_events_cover', 'ps_events_scope',
-	'ps_events_connect', 'ps_events_proj', 'ps_events_bm25', 'ps_events_inh']::regclass[]) t;
+	'ps_events_connect', 'ps_events_proj', 'ps_events_bm25', 'ps_events_tbl', 'ps_events_tbl_bm25', 'ps_events_inh']::regclass[]) t;
 INSERT INTO ps_events_inh_child SELECT id + 1000, dim_a_id, tenant_id, created_at, kind, amount, qty, score, tags, flag, attrs, body FROM ps_events_none WHERE id <= 60;
 
 CREATE TABLE ps_events_part (LIKE ps_events_none) PARTITION BY HASH (id);
@@ -60,8 +62,6 @@ CREATE INDEX ON ps_events_cover (dim_a_id) INCLUDE (amount, tenant_id);
 CREATE INDEX ON ps_events_scope USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag)
 	WITH (scope = 'pair_tenant: dim_a_id -> ps_pairs(dim_a_id, tenant_id)');
 CREATE INDEX ON ps_events_scope (dim_a_id);
-CREATE INDEX ON ps_events_connect USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag)
-	WITH (connect = 'dim_a_id -> ps_entities(id)');
 CREATE INDEX ON ps_events_connect (dim_a_id);
 CREATE INDEX ON ps_events_proj USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag)
 	WITH (key_cut = 'dim_a_id', rollup_columns = 'tenant_id, kind: amount', calendar_columns = 'created_at', track_changes = 'ctid');
@@ -69,6 +69,9 @@ CREATE INDEX ON ps_events_proj (dim_a_id);
 CREATE INDEX ON ps_events_bm25 USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag);
 CREATE INDEX ON ps_events_bm25 USING sift (body);
 CREATE INDEX ON ps_events_bm25 (dim_a_id);
+CREATE INDEX ON ps_events_tbl (dim_a_id);
+CREATE INDEX ON ps_events_tbl_bm25 USING sift (body);
+CREATE INDEX ON ps_events_tbl_bm25 (dim_a_id);
 CREATE INDEX ON ps_events_inh USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag);
 CREATE INDEX ON ps_events_inh (dim_a_id);
 CREATE INDEX ON ps_events_inh_child USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag);

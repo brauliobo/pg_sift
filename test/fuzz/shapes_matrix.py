@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Planner shape matrix: no statement shape may crash the backend, raise an internal error or return other rows than the plain plan.
 
-  test/fuzz/shapes_matrix.py [--tier quick|full] [--chunk K/N] [--only RE] [--budget SEC] [--list] [--show N] [--facts a,b] [--no-schema]
+  test/fuzz/shapes_matrix.py [--format f2|f1|release] [--tier quick|full] [--chunk K/N] [--only RE] [--budget SEC] [--list] [--show N] [--facts a,b] [--no-schema]
 
 The statements are enumerated (no randomness) over test/fuzz/shapes_matrix/schema.sql: a fact table of every index availability on the join column (none, btree,
-partial, expression, covering, sift_col with scope, connect and projection options, BM25, inheritance parent, partitioned), joined to a source (table,
+partial, expression, covering, sift_col with scope, connect and projection options, BM25, inheritance parent, partitioned, sift_table, sift_table with BM25), joined to a source (table,
 CTE, subquery, outer-join subquery with a COALESCE key, VALUES, function scan, view, outer-join range table, pairs) by every join type and key form, then
-crossed in rotation with the output shapes (grouping, DISTINCT, windows, ordering, LIMIT), the predicates and the planner settings. Each statement runs
+crossed in rotation with the output shapes (grouping, DISTINCT, windows, ordering, LIMIT, DESC top-N), the predicates and the planner settings; the fact table
+also sits inside a correlated LATERAL, a correlated subquery and a Materialize (a Param rescan of the pushdown). Each statement runs
 as EXPLAIN (COSTS OFF) and for real under its settings, and its rows are compared with the rows under sift.enable_scan = off, sift.enable_agg = off
 (the ordered md5 of the rows when the statement has a total order, else the sorted rows). Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT).
+--format release runs on the release library: a sift.test_* / sift.agg_* setting the library lacks is left out of the configurations (test/fuzz/fmt.py).
 Exit 1 on a signal, an internal error (XX000, "cache lookup failed", "unrecognized node", "could not find", "sift.score() must be computed", "plan ... failed"),
 an error the plain plan does not raise, a timeout or other rows; the failure names the statement number (--show N prints it), the settings and the first differing row.
 """
@@ -23,21 +25,30 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import fmt  # noqa: E402
+
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
-ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
-           PGOPTIONS='-c client_min_messages=warning -c lc_messages=C')
+CLIENT_OPTIONS = '-c client_min_messages=warning -c lc_messages=C'
+ENV = fmt.libpq_env(dict(PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres', PGOPTIONS=CLIENT_OPTIONS))
+LIB = None
+# the indexes whose declaration a format may refuse: a refusal is printed (UNSUPPORTED) and the fact table keeps its other indexes, so that the rest of the matrix runs
+OPTIONAL_INDEXES = {'connect': "CREATE INDEX ON ps_events_connect USING sift_col (id, dim_a_id, tenant_id, created_at, kind, amount, qty, score, flag) "
+                               "WITH (connect = 'dim_a_id -> ps_entities(id)')"}
 # the limit of one statement of the matrix; a sanitizer build runs the reference plan several times slower, so it gets six times as long (SIFT_STATEMENT_TIMEOUT, in seconds, sets it)
 STATEMENT_SECS = int(os.environ.get('SIFT_STATEMENT_TIMEOUT') or (120 if os.environ.get('SANITIZE') else 20))
 READ_TIMEOUT = float(STATEMENT_SECS + 100)
 BAD = re.compile(r'cache lookup failed|unrecognized|could not find|must be computed|plan .* failed|invalid memory|could not open relation|'
                  r'variable not found|no relation entry|negative bitmapset|was not found|bogus|unsupported (node|path)')
-FACTS = ['none', 'btree', 'partial', 'expr', 'cover', 'scope', 'connect', 'proj', 'bm25', 'inh', 'part']
+FACTS = ['none', 'btree', 'partial', 'expr', 'cover', 'scope', 'connect', 'proj', 'bm25', 'inh', 'part', 'tbl', 'tbl_bm25']
 FACT_TABLE = {f: f'ps_events_{f}' for f in FACTS}
+BM25_FACTS = {'bm25', 'tbl_bm25'}
 PAR = ['max_parallel_workers_per_gather=2', 'parallel_setup_cost=0', 'parallel_tuple_cost=0', 'min_parallel_table_scan_size=0',
        'min_parallel_index_scan_size=0']
 ENABLES = ['nestloop', 'hashjoin', 'mergejoin', 'indexscan', 'bitmapscan', 'seqscan', 'indexonlyscan', 'sort', 'hashagg', 'material', 'memoize',
            'gathermerge', 'incremental_sort', 'tidscan', 'partitionwise_join', 'partitionwise_aggregate', 'parallel_hash', 'async_append',
            'presorted_aggregate', 'group_by_reordering', 'self_join_elimination']
+NESTLOOP = ['enable_hashjoin=off', 'enable_mergejoin=off']
 BASELINE = ['sift.enable_scan=off', 'sift.enable_agg=off', 'max_parallel_workers_per_gather=0']
 BASELINE_SCORE = ['sift.enable_agg=off', 'max_parallel_workers_per_gather=0']
 
@@ -210,6 +221,10 @@ TAILS = [
     T('f.id, unnest(f.tags) AS t', order='f.id, t', limit='LIMIT 30', total=True),
     T('f.id, generate_series(1, f.qty % 3) AS g', order='f.id, g', limit='LIMIT 30', total=True),
     T('f.id, f.amount', order='f.amount DESC, f.id', limit='LIMIT 10 OFFSET 5', total=True),
+    T('f.id, f.amount', order='f.id DESC', limit='LIMIT 12', total=True),
+    T('f.id, f.created_at', order='f.created_at DESC, f.id DESC', limit='LIMIT 20 OFFSET 3', total=True),
+    T('f.kind, f.id', order='f.kind DESC, f.id DESC', limit='LIMIT 9', total=True),
+    T('f.tenant_id, max(f.amount), count(*)', 'f.tenant_id', order='2 DESC NULLS LAST, 1', limit='LIMIT 3', total=True),
     T('f.id, f.kind', order='f.kind', limit='FETCH FIRST 5 ROWS WITH TIES'),
     T('f.id, f.amount', order='f.dim_a_id NULLS FIRST, f.id', limit='LIMIT 15', total=True),
     T('f.id', order='f.id', limit='LIMIT 20', total=True),
@@ -227,8 +242,8 @@ TAILS = [
     T('f.id, {K}, {K2}', order='f.id, 2, 3', limit='LIMIT 20', s=True, total=True),
     T('f.tenant_id, count(*)', 'f.tenant_id', having='count(DISTINCT {K}) > 1', order='1', s=True, total=True),
     T('f.kind, sum({K}) FILTER (WHERE {G} > 1)', 'f.kind', order='1', s=True, total=True),
-    T('f.id, sift.score(f.ctid) AS sc', order='sc DESC, f.id', limit='LIMIT 10', total=True, only='bm25'),
-    T('f.kind, count(*), max(sift.score(f.ctid))', 'f.kind', order='1', total=True, only='bm25'),
+    T('f.id, sift.score(f.ctid) AS sc', order='sc DESC, f.id', limit='LIMIT 10', total=True, only=BM25_FACTS),
+    T('f.kind, count(*), max(sift.score(f.ctid))', 'f.kind', order='1', total=True, only=BM25_FACTS),
 ]
 
 PREDS = [
@@ -258,7 +273,19 @@ def server_enables(sess):
 
 
 def configs(sess):
+    """the named setting lists this library accepts; a list that the library reduces to another one (or to none) is not run twice"""
+    c = {name: LIB.sets(sets) for name, sets in all_configs(sess).items()}
+    seen, out = set(), {}
+    for name, sets in c.items():
+        if name == 'default' or (sets and tuple(sets) not in seen):
+            out[name] = sets
+            seen.add(tuple(sets))
+    return out
+
+
+def all_configs(sess):
     c = {'default': [], 'force': ['sift.agg_force=on'], 'w2': PAR, 'force_w2': ['sift.agg_force=on'] + PAR,
+         'nl': NESTLOOP, 'nl_force': NESTLOOP + ['sift.agg_force=on'], 'nl_nomat': NESTLOOP + ['enable_material=off', 'sift.agg_force=on'],
          'generic': ['plan_cache_mode=force_generic_plan'], 'custom': ['plan_cache_mode=force_custom_plan'],
          'generic_force_w2': ['plan_cache_mode=force_generic_plan', 'sift.agg_force=on'] + PAR,
          'noscan': ['sift.enable_scan=off'], 'noagg': ['sift.enable_agg=off'], 'nocolscan': ['sift.enable_col_scan=off', 'sift.agg_force=on'],
@@ -294,10 +321,10 @@ def statement(F, jt, src, form, tail, pred, wrap):
     prefix, frm, jwhere, expo = j
     if expo is None and tail['s']:
         return None
-    if tail['only'] and tail['only'] != F:
+    if tail['only'] and F not in tail['only']:
         return None
     pname, ptext = pred
-    if pname in BM25_PREDS and F != 'bm25':
+    if pname in BM25_PREDS and F not in BM25_FACTS:
         return None
     if wrap == 'union_all' and F in ('part', 'inh'):
         return None
@@ -327,6 +354,33 @@ def statement(F, jt, src, form, tail, pred, wrap):
         sql, ordered = f'SELECT * FROM ({sql}) w', False
     prepared = '$1' in sql or '$2' in sql
     return sql, ordered, prepared
+
+
+# the fact table inside the statement, re-read for every row of the outer relation: a correlated LATERAL, a correlated subquery or EXISTS (a Param rescan of the
+# pushdown) and a Materialize node (the nested loop with the inner side kept). {F} is the fact table; every one has a total order
+INNER = {
+    'lat_agg':      'SELECT s.id, l.n, l.t FROM ps_entities s CROSS JOIN LATERAL (SELECT count(*) AS n, sum(f.amount) AS t FROM {F} f WHERE f.dim_a_id = s.id) l ORDER BY s.id',
+    'lat_left_grp': 'SELECT s.id, l.kind, l.c FROM ps_entities s LEFT JOIN LATERAL (SELECT f.kind, count(*) AS c FROM {F} f WHERE f.dim_a_id = s.id GROUP BY f.kind '
+                    'ORDER BY c DESC, f.kind LIMIT 2) l ON true ORDER BY s.id, l.kind',
+    'lat_topn':     'SELECT s.id, l.id, l.amount FROM ps_entities s CROSS JOIN LATERAL (SELECT f.id, f.amount FROM {F} f WHERE f.tenant_id = s.tenant_id AND f.qty > s.grp '
+                    'ORDER BY f.amount DESC, f.id DESC LIMIT 3) l WHERE s.id < 25 ORDER BY s.id, l.amount DESC, l.id DESC',
+    'lat_distinct': 'SELECT s.id, l.d FROM ps_entities s CROSS JOIN LATERAL (SELECT count(DISTINCT f.kind) AS d FROM {F} f WHERE f.dim_a_id <= s.id) l WHERE s.id < 30 ORDER BY s.id',
+    'param_scalar': 'SELECT s.id, (SELECT count(*) FROM {F} f WHERE f.dim_a_id = s.id AND f.qty > s.grp), (SELECT max(f.amount) FROM {F} f WHERE f.tenant_id = s.tenant_id) '
+                    'FROM ps_entities s ORDER BY s.id',
+    'param_exists': "SELECT s.id FROM ps_entities s WHERE EXISTS (SELECT 1 FROM {F} f WHERE f.dim_a_id = s.id AND f.kind = 'k' || (s.grp % 7)) ORDER BY s.id",
+    'param_notin':  'SELECT s.id FROM ps_entities s WHERE s.id NOT IN (SELECT f.dim_a_id FROM {F} f WHERE f.dim_a_id IS NOT NULL AND f.tenant_id = s.tenant_id) ORDER BY s.id',
+    'param_having': 'SELECT s.id, (SELECT sum(f.amount) FROM {F} f WHERE f.dim_a_id = s.id GROUP BY f.tenant_id HAVING count(*) > 2 ORDER BY 1 DESC LIMIT 1) '
+                    'FROM ps_entities s ORDER BY s.id',
+    'mat_cte':      "WITH m AS MATERIALIZED (SELECT f.kind, count(*) AS c, sum(f.amount) AS t FROM {F} f GROUP BY f.kind) SELECT s.id, m.c, m.t FROM ps_entities s "
+                    "JOIN m ON m.kind = 'k' || (s.grp % 7) ORDER BY s.id",
+    'mat_nl':       'SELECT s.id, count(*), sum(x.amount) FROM ps_entities s JOIN (SELECT f.dim_a_id, f.amount FROM {F} f OFFSET 0) x ON x.dim_a_id < s.id WHERE s.id < 20 '
+                    'GROUP BY s.id ORDER BY s.id',
+    'mat_agg_nl':   'SELECT s.id, x.c FROM ps_entities s JOIN (SELECT f.tenant_id, count(*) AS c FROM {F} f GROUP BY f.tenant_id) x ON x.tenant_id <= s.tenant_id '
+                    'WHERE s.id < 20 ORDER BY s.id, x.c',
+    'desc_keyset':  'SELECT f.id, f.amount FROM {F} f WHERE f.id < 200 ORDER BY f.id DESC LIMIT 10',
+    'desc_cursor':  'SELECT f.id, f.created_at FROM {F} f WHERE (f.created_at, f.id) < (timestamptz \'2026-04-01\', 120) ORDER BY f.created_at DESC, f.id DESC LIMIT 15',
+}
+INNER_CFGS = ['default', 'force', 'nl_force', 'nl_nomat', 'force_w2', 'generic_force_w2']
 
 
 class Item:
@@ -365,6 +419,14 @@ def enumerate_items(tier, cfg_names, facts):
         items.append(it)
         k += 1
 
+    def add_inner(F, name, sql, cfgs):
+        nonlocal k
+        it = Item()
+        it.n, it.F, it.jt, it.src, it.form, it.tail, it.pred, it.wrap = k, F, 'inner', name, 'param', None, 'none', 'plain'
+        it.sql, it.ordered, it.prepared, it.cfgs = sql, True, False, cfgs
+        items.append(it)
+        k += 1
+
     def pick(i, stride, n=2, names=None):
         names = names or cfg_main
         return ['default'] + [names[(i * stride + j * 7) % len(names)] for j in range(n)]
@@ -391,7 +453,11 @@ def enumerate_items(tier, cfg_names, facts):
                 add(F, jt, src, form, pi * 5, pi, pi + ri, pick(pi, 13, 1))
         for ti in range(len(tails)):
             add(F, 'inner', 'ent', 'plain', ti, 0, 0, pick(ti, 3, 1))
-    # 4. the whole planner setting list on a reference set of statements
+    # 4. the fact table inside a correlated LATERAL, a correlated subquery and a Materialize, on every fact table
+    for F in facts:
+        for name, text in INNER.items():
+            add_inner(F, name, text.replace('{F}', FACT_TABLE[F]), [c for c in INNER_CFGS if c == 'default' or c in cfg_names])
+    # 5. the whole planner setting list on a reference set of statements
     ref_items = [it for it in items if it.jt in ('inner', 'left', 'semi_exists') and it.src in ('cte_oj', 'ent', 'oj_left') and it.F == 'btree']
     stride = max(1, len(ref_items) // (30 if tier == 'full' else 6))
     for it in ref_items[::stride]:
@@ -461,6 +527,7 @@ def first_diff(a, b, ordered):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    fmt.add_argument(ap)
     ap.add_argument('--tier', default='quick', choices=['quick', 'full'])
     ap.add_argument('--chunk', default='0/1')
     ap.add_argument('--only', default='')
@@ -472,6 +539,9 @@ def main():
     ap.add_argument('--no-schema', action='store_true')
     ap.add_argument('--keep', action='store_true')
     a = ap.parse_args()
+    global LIB
+    LIB = fmt.Lib(a.format, env=ENV)
+    ENV['PGOPTIONS'] = f'{CLIENT_OPTIONS} {LIB.pgoptions}'.strip()
     db = a.db
     subprocess.run(['psql', '-X', '-q', '-d', 'postgres', '-c', f'DROP DATABASE IF EXISTS {db}', '-c', f'CREATE DATABASE {db}'] if not a.no_schema else ['true'],
                    env=ENV, check=True, capture_output=True)
@@ -479,6 +549,10 @@ def main():
         r = subprocess.run(['psql', '-X', '-q', '-d', db, '-v', 'ON_ERROR_STOP=1', '-f', os.path.join(HERE, 'shapes_matrix', 'schema.sql')], env=ENV, capture_output=True, text=True)
         if r.returncode:
             sys.exit('schema: ' + r.stderr)
+        for fact, ddl in OPTIONAL_INDEXES.items():
+            r = subprocess.run(['psql', '-X', '-q', '-d', db, '-v', 'ON_ERROR_STOP=1', '-c', ddl, '-c', 'ANALYZE'], env=ENV, capture_output=True, text=True)
+            if r.returncode:
+                print(f'UNSUPPORTED index of fact {fact} on --format {a.format}: {r.stderr.strip().splitlines()[0]}', flush=True)
     sess = Session(db)
     cfgs = configs(sess)
     cfgs['baseline'] = BASELINE
@@ -556,7 +630,7 @@ def main():
     sess.close()
     ok = wait_ready(db, 10)
     crashed_log = log_scan(log_start)
-    print(f'shapes: tier={a.tier} chunk={a.chunk} statements={stats["statements"]} runs={stats["runs"]} sift_plans={stats["sift_plans"]} '
+    print(f'shapes: format={a.format} tier={a.tier} chunk={a.chunk} statements={stats["statements"]} runs={stats["runs"]} sift_plans={stats["sift_plans"]} '
           f'invalid_in_both={stats["invalid"]} crashes={stats["crashes"]} skipped_for_budget={stats["skipped_budget"]} failures={len(fails)} '
           f'seconds={elapsed:.0f} server_up={ok} log_signals={crashed_log}')
     print('sift plans by fact: ' + ' '.join(f'{k}={v}' for k, v in sorted(sift_by_fact.items())))
