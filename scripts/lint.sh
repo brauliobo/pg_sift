@@ -99,6 +99,8 @@ CHECKS+=(
 	'pipefail-grep	scripts/check-pipefail-grep.sh --selftest && scripts/check-pipefail-grep.sh'
 	'pg-bare	scripts/check-pg-bare.sh --selftest && scripts/check-pg-bare.sh'
 	'scaling-triggers	scripts/check-scaling-triggers.sh'
+	'perf-select	python3 -I scripts/test-perf-select.py'
+	'perf-gate	python3 -I scripts/perf/selftest.py'
 	'scratch	scripts/check-scratch.sh --selftest && scripts/check-scratch.sh'
 	'no-raw-dsm-registry	! git grep -n "GetNamedDSMSegment" -- src ":!src/col/dsmreg.c" ":!src/col/dictshm_test.c"'
 	'test-settings	scripts/check-test-settings.sh && scripts/check-test-settings.sh --selftest'

@@ -89,7 +89,7 @@ areas_fast_regex() {
 	local IFS='|'
 	echo "^\$${out[*]:+|${out[*]}}"
 }
-# One batch: jobs on NUL-delimited stdin, paths in argv, owner keys before --.
+# One batch: jobs on NUL-delimited stdin, paths in argv, owner keys before --. The owners of each path are printed one a line, then a line `--`.
 areas_owners() {
 	local -a AREA_OWNERS=() AREA_CAPTURES JOBS=()
 	local f row value g job hit live AREA_JOBS AREA_OWNER_MODE=1
@@ -108,13 +108,14 @@ areas_owners() {
 			if [[ $value == . ]]; then echo '*'; continue; fi
 			for g in "${AREA_OWNERS[@]}"; do [[ $value == *"{$g}"* ]] && echo "$g"; done
 			areas_expand "$value"
-			for job in "${JOBS[@]}"; do
+			for job in ${JOBS[@]+"${JOBS[@]}"}; do
 				areas_match "$job" "$AREA_JOBS" || continue
 				for g in "${AREA_OWNERS[@]}"; do areas_match "$job" "${GROUP[$g]}" && echo "$g"; done
 			done
 		done
 		[[ -z $hit ]] && echo '*'
 		[[ -n $hit && -z $live ]] && echo '-'
+		echo --
 	done
 	return 0
 }
