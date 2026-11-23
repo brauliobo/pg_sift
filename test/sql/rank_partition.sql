@@ -143,8 +143,8 @@ SELECT id, sift.score(ctid) FROM re WHERE body @@> 'rare' LIMIT 1;
 SELECT id, sift.score(ctid) FROM re WHERE body @@> 'rare' ORDER BY sift.score(ctid) DESC LIMIT 1;
 DROP TABLE re;
 
--- sift.score() outside a ranked scan raises its usual error, and sift.max_score() is refused through the parent
-SELECT sift.score(ctid) FROM rp;
+-- sift.score() of rows no match qualifies is 0, and sift.max_score() is refused through the parent
+SELECT count(*), max(sift.score(ctid)) FROM rp;
 SELECT sift.score(ctid) FROM rp WHERE id = 5;
 SELECT id, sift.max_score(ctid) FROM rp WHERE body @@> 'rare' ORDER BY sift.score(ctid) DESC LIMIT 3;
 SELECT id, sift.max_score(ctid) FROM rp WHERE body @@> 'rare' AND id < 1000 LIMIT 3;
@@ -228,7 +228,7 @@ ANALYZE ri;
 SELECT id, sift.score(ctid) FROM ri WHERE body @@> 'rare' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 DROP TABLE ri CASCADE;
 
--- a partition without a sift index: matching and count(*) work, ranking says what is missing
+-- a partition without a sift index: matching and count(*) work, and the heap scores its rows
 CREATE TABLE rx (id int, body text) PARTITION BY RANGE (id);
 CREATE TABLE rx1 PARTITION OF rx FOR VALUES FROM (0) TO (100);
 CREATE TABLE rx2 PARTITION OF rx FOR VALUES FROM (100) TO (200);
@@ -239,9 +239,9 @@ CREATE INDEX rx2_body ON rx2 USING sift (body);
 ANALYZE rx;
 SELECT count(*) FROM rx WHERE body @@> 'beta';
 SELECT count(*) FROM (SELECT id FROM rx WHERE body @@> 'beta' OFFSET 0) t;
-SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
-SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY sift.score(ctid) DESC LIMIT 3;
-SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id >= 200 ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id >= 200 ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 SELECT id, sift.score(ctid) FROM rx WHERE id < 200 ORDER BY id LIMIT 1;
 DROP TABLE rx;
 

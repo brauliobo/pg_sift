@@ -137,13 +137,17 @@ SELECT rr_set('count', 'SELECT count(*) AS n FROM rr_items WHERE body @@> ''alph
  
 (1 row)
 
--- 1. off, the default: the role gets no ranked scan, the score raises an error, and a role cannot switch the setting on
+-- 1. off, the default: the role gets no ranked scan, its scores come from the rows it sees, and a role cannot switch the setting on
 SET ROLE sift_t_rr_user;
 \set VERBOSITY default
-SELECT id, sift.score(ctid) FROM rr_items WHERE body @@> 'alpha beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() is not available on "rr_items" while row-level security or a security barrier view applies
-DETAIL:  A ranked scan counts the rows that the policy hides in the scores.
-HINT:  A superuser can allow it for a role with sift.rls_scores = on (docs/SEARCH.md, "Row-Level Security"), or omit sift.score() where RLS applies.
+SELECT id, sift.score(ctid) FROM rr_items WHERE body @@> 'alpha beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id  |   score    
+-----+------------
+  60 | 0.46210608
+ 140 | 0.46210608
+ 220 | 0.46210608
+(3 rows)
+
 \set VERBOSITY terse
 SELECT rr_plan('EXPLAIN (COSTS OFF) SELECT id FROM rr_items WHERE body @@> ''alpha beta'' ORDER BY id LIMIT 3') ~ 'Sift' AS unranked_scan;
  unranked_scan 

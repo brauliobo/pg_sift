@@ -27,7 +27,8 @@ rel_index(RelOptInfo *rel, Oid indexoid)
 static List *
 scan_tlist(PlannerInfo *root, RelOptInfo *rel, List *residual, List *keys, List *cuts)
 {
-	List	   *vars = pull_var_clause((Node *) list_concat(list_concat_copy(rel->reltarget->exprs, residual), list_copy(keys)),
+	List	   *vars = pull_var_clause((Node *) list_concat(list_concat(list_concat_copy(rel->reltarget->exprs, residual), list_copy(keys)),
+															list_copy(cuts)),
 									   PVC_RECURSE_PLACEHOLDERS),
 			   *exprs = NIL,
 			   *tlist = NIL;
@@ -90,7 +91,7 @@ sift_plan_scan(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 
 		if (scan_match_clause(root, (Node *) rinfo, ii, ranked, &q))
 			continue;
-		if (score_cutoff((Node *) rinfo->clause, rel->relid, NULL))
+		if (reads_score_of((Node *) rinfo->clause, rel->relid))
 			cuts = lappend(cuts, rinfo);
 		else
 			residual = lappend(residual, rinfo);

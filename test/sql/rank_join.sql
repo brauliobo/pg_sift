@@ -151,12 +151,12 @@ SET sift.filter_pushdown = on;
 SELECT join_check(r) FROM unnest(ARRAY['jd', 'jp', 'ji']) r;
 RESET sift.filter_pushdown;
 
--- a score that no sift scan produces keeps the error
-SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id < 100;
-SELECT d.id FROM jd d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id WHERE d.id < 100 ORDER BY sift.score(d.ctid) DESC;
-SELECT o.id, sift.score(o.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey';
+-- a score of a table no match qualifies is 0, and with sift.enable_scan off the heap scores the matches
+SELECT count(*), max(sift.score(d.ctid)) FROM jd d JOIN jo o ON o.id = d.id WHERE d.id < 100;
+SELECT d.id FROM jd d JOIN jo o ON o.id = d.id JOIN jt t ON t.id = d.id WHERE d.id < 100 ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 3;
+SELECT count(*), max(sift.score(o.ctid)) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey';
 SET sift.enable_scan = off;
-SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey' ORDER BY sift.score(d.ctid) DESC LIMIT 3;
+SELECT d.id, sift.score(d.ctid) FROM jd d JOIN jo o ON o.id = d.id WHERE d.body @@> 'honey' ORDER BY sift.score(d.ctid) DESC, d.id LIMIT 3;
 RESET sift.enable_scan;
 
 DROP FUNCTION join_check(text), join_shapes(text), sift_plan(text);

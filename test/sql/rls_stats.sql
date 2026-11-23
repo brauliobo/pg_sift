@@ -45,10 +45,11 @@ SELECT replace(rls_plan('SELECT id FROM rls_a WHERE body @@> ''needle'' ORDER BY
 	 = replace(rls_plan('SELECT id FROM rls_b WHERE body @@> ''needle'' ORDER BY id LIMIT 5'), 'rls_b', 'rls_x') AS same_plan_and_estimates;
 SELECT replace(rls_plan('SELECT id FROM rls_a WHERE body @@> ''needle OR visible'''), 'rls_a', 'rls_x')
 	 = replace(rls_plan('SELECT id FROM rls_b WHERE body @@> ''needle OR visible'''), 'rls_b', 'rls_x') AS same_plan_and_estimates_or;
--- a score would be computed from the hidden rows too
-SELECT id FROM rls_a WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
-SELECT id FROM rls_b WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
+-- a score is computed from the rows the role sees
+SELECT id FROM rls_a WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+SELECT id FROM rls_b WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 SELECT sift.score(ctid) FROM rls_a WHERE body @@> 'needle' LIMIT 1;
+SELECT (SELECT sift.score(ctid) FROM rls_a WHERE body @@> 'needle' ORDER BY id LIMIT 1) = (SELECT sift.score(ctid) FROM rls_b WHERE body @@> 'needle' ORDER BY id LIMIT 1) AS scores_ignore_hidden_rows;
 RESET ROLE;
 
 -- a security barrier view is the same
@@ -83,8 +84,8 @@ SELECT replace(rls_plan('SELECT id FROM rls_pt WHERE body @@> ''zebrazebra'''), 
 	 = replace(rls_plan('SELECT id FROM rls_pt WHERE body @@> ''qwertyuiop'''), 'qwertyuiop', 'x') AS partitions_estimate_the_same_word_held_by_no_visible_row;
 SELECT replace(rls_plan('SELECT id FROM rls_inh WHERE body @@> ''zebrazebra'''), 'zebrazebra', 'x')
 	 = replace(rls_plan('SELECT id FROM rls_inh WHERE body @@> ''qwertyuiop'''), 'qwertyuiop', 'x') AS inheritance_children_the_same;
-SELECT id FROM rls_pt WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
-SELECT id FROM rls_inh WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id FROM rls_pt WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+SELECT id FROM rls_inh WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 RESET ROLE;
 
 DROP VIEW rls_v;

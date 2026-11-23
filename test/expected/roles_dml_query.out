@@ -119,16 +119,16 @@ SELECT count(*) FROM rq.rdocs WHERE body @@> 'five'
 SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3
 EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'
 $$);
-                                                        stmt                                                         |                                                   result                                                    |        by_role        
----------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+-----------------------
- SELECT count(*) FROM rq.rdocs WHERE body @@> 'alpha'                                                                | ok: (300)                                                                                                   | rq_own, rq_byp, rq_rd
- SELECT count(*) FROM rq.rdocs WHERE body @@> 'alpha'                                                                | ok: (100)                                                                                                   | rq_rls
- SELECT count(*) FROM rq.rdocs WHERE body @@> 'five'                                                                 | ok: (60)                                                                                                    | rq_own, rq_byp, rq_rd
- SELECT count(*) FROM rq.rdocs WHERE body @@> 'five'                                                                 | ok: (20)                                                                                                    | rq_rls
- SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3 | ok: (5,1.457) ; (10,1.457) ; (15,1.457)                                                                     | rq_own, rq_byp, rq_rd
- SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3 | ERROR: sift.score() is not available on "rdocs" while row-level security or a security barrier view applies | rq_rls
- EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Custom Scan (SiftScan)                                                                             | rq_own, rq_byp, rq_rd
- EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Bitmap Index Scan on rdocs_col                                                                     | rq_rls
+                                                        stmt                                                         |                  result                  |        by_role        
+---------------------------------------------------------------------------------------------------------------------+------------------------------------------+-----------------------
+ SELECT count(*) FROM rq.rdocs WHERE body @@> 'alpha'                                                                | ok: (300)                                | rq_own, rq_byp, rq_rd
+ SELECT count(*) FROM rq.rdocs WHERE body @@> 'alpha'                                                                | ok: (100)                                | rq_rls
+ SELECT count(*) FROM rq.rdocs WHERE body @@> 'five'                                                                 | ok: (60)                                 | rq_own, rq_byp, rq_rd
+ SELECT count(*) FROM rq.rdocs WHERE body @@> 'five'                                                                 | ok: (20)                                 | rq_rls
+ SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3 | ok: (5,1.457) ; (10,1.457) ; (15,1.457)  | rq_own, rq_byp, rq_rd
+ SELECT id, round(sift.score(ctid)::numeric, 3) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC, 1 LIMIT 3 | ok: (10,1.451) ; (25,1.451) ; (40,1.451) | rq_rls
+ EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Custom Scan (SiftScan)          | rq_own, rq_byp, rq_rd
+ EXPLAIN SELECT id FROM rq.rdocs WHERE body @@> 'five'                                                               | ok: plan Bitmap Index Scan on rdocs_col  | rq_rls
 (8 rows)
 
 -- with USAGE on the schema sift taken back from PUBLIC: the operator needs none, the ranking function does
@@ -448,7 +448,6 @@ ROLLBACK;
 BEGIN;
 SET LOCAL SESSION AUTHORIZATION rq_rls;
 DECLARE c4 CURSOR FOR SELECT id, sift.score(ctid) FROM rq.rdocs WHERE body @@> 'alpha five' ORDER BY 2 DESC;
-ERROR:  sift.score() is not available on "rdocs" while row-level security or a security barrier view applies
 ROLLBACK;
 BEGIN;
 SET LOCAL SESSION AUTHORIZATION rq_rls;

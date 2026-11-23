@@ -97,15 +97,25 @@ CREATE VIEW ss_scored AS SELECT id, sift.score(ctid) AS s FROM ss_items WHERE bo
 UPDATE ss_dst d SET s = v.s FROM ss_scored v WHERE d.id = v.id;
 SELECT ss_rows('SELECT id, s FROM ss_dst ORDER BY id') = ss_rows('SELECT d.id, r.s::float4 AS s FROM ss_dst d JOIN ss_ref r USING (id) ORDER BY id') AS update_from_view;
 
--- 5. what stays an error says how to write it
-\set VERBOSITY default
-UPDATE ss_dst SET s = sift.score(ctid) WHERE id = 10;
+-- 5. the statements that change or lock the rows read the score of their own scan
+TRUNCATE ss_dst;
+INSERT INTO ss_dst SELECT id, -1 FROM ss_items WHERE id % 10 = 0;
+UPDATE ss_dst SET s = sift.score(ctid) WHERE id = (SELECT min(id) FROM ss_dst);
+SELECT count(*) FILTER (WHERE s < 0) = count(*) - 1 AS one_row_scored, count(*) FILTER (WHERE s = 0) AS scored_zero FROM ss_dst;
+UPDATE ss_dst SET s = -1;
 UPDATE ss_dst d SET s = sift.score(i.ctid) FROM ss_items i WHERE i.body @@> 'alpha' AND i.id = d.id;
-DELETE FROM ss_dst d USING ss_items i WHERE i.body @@> 'alpha' AND i.id = d.id AND sift.score(i.ctid) > 1;
-SELECT i.id FROM ss_items i JOIN ss_other o USING (id) WHERE i.body @@> 'alpha' ORDER BY sift.score(i.ctid) DESC LIMIT 2 FOR UPDATE OF o;
-INSERT INTO ss_dst SELECT id, sift.score(ctid) FROM ss_items WHERE body @@> 'alpha' FOR UPDATE;
--- a score outside any scan keeps its error
-SELECT sift.score(ctid) FROM ss_items;
+SELECT ss_rows('SELECT id, s FROM ss_dst ORDER BY id') = ss_rows('SELECT d.id, r.s::float4 AS s FROM ss_dst d JOIN ss_ref r USING (id) ORDER BY id') AS update_from_join;
+WITH gone AS (DELETE FROM ss_dst d USING ss_items i WHERE i.body @@> 'alpha' AND i.id = d.id AND sift.score(i.ctid) > 0.00028 RETURNING d.id)
+SELECT count(*) > 0 AS deleted_some, count(*) = (SELECT count(*) FROM ss_ref WHERE id % 10 = 0 AND s > 0.00028) AS deleted_the_above FROM gone;
+SELECT count(*) = (SELECT count(*) FROM ss_ref WHERE id % 10 = 0 AND s <= 0.00028) AS others_kept FROM ss_dst;
+SELECT i.id FROM ss_items i JOIN ss_other o USING (id) WHERE i.body @@> 'alpha' ORDER BY sift.score(i.ctid) DESC, i.id LIMIT 2 FOR UPDATE OF o;
+INSERT INTO ss_dst SELECT id, sift.score(ctid) FROM ss_items WHERE body @@> 'alpha' AND id > 1990 FOR UPDATE;
+SELECT count(*) AS inserted FROM ss_dst WHERE id > 1990;
+-- a score outside a match is 0
+SELECT count(*), max(sift.score(ctid)) FROM ss_items;
+-- the new row version of RETURNING has no score: it says how to write it
+\set VERBOSITY default
+UPDATE ss_dst SET s = 0 WHERE id = 10 RETURNING sift.score(ctid);
 
 DROP VIEW ss_scored, ss_ref;
 DROP TABLE ss_items, ss_other, ss_dst;

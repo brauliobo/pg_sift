@@ -1,0 +1,133 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2b s2m s1ui s2c s1r
+parse_query
+-----------
+wire       
+(1 row)
+
+step s2b: BEGIN;
+step s2m: UPDATE epq_idx SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+			  UPDATE epq_raw SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+step s1ui: UPDATE epq_idx SET s = sift.score(ctid) WHERE body @@> 'wire'; <waiting ...>
+step s2c: COMMIT;
+step s1ui: <... completed>
+step s1r: SELECT tbl, count(*) AS updated, count(*) FILTER (WHERE s > 0.9) AS best, bool_or(id = 1) AS first_row
+			  FROM (SELECT 'idx' AS tbl, id, s FROM epq_idx UNION ALL SELECT 'raw', id, s FROM epq_raw) t WHERE s IS NOT NULL GROUP BY tbl ORDER BY tbl;
+tbl|updated|best|first_row
+---+-------+----+---------
+idx|     19|   1|f        
+(1 row)
+
+
+starting permutation: s2b s2m s1ur s2c s1r
+parse_query
+-----------
+wire       
+(1 row)
+
+step s2b: BEGIN;
+step s2m: UPDATE epq_idx SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+			  UPDATE epq_raw SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+step s1ur: UPDATE epq_raw SET s = sift.score(ctid) WHERE body @@> 'wire'; <waiting ...>
+step s2c: COMMIT;
+step s1ur: <... completed>
+step s1r: SELECT tbl, count(*) AS updated, count(*) FILTER (WHERE s > 0.9) AS best, bool_or(id = 1) AS first_row
+			  FROM (SELECT 'idx' AS tbl, id, s FROM epq_idx UNION ALL SELECT 'raw', id, s FROM epq_raw) t WHERE s IS NOT NULL GROUP BY tbl ORDER BY tbl;
+tbl|updated|best|first_row
+---+-------+----+---------
+raw|     19|   1|f        
+(1 row)
+
+
+starting permutation: s2b s2m s1uc s2c s1r
+parse_query
+-----------
+wire       
+(1 row)
+
+step s2b: BEGIN;
+step s2m: UPDATE epq_idx SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+			  UPDATE epq_raw SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+step s1uc: UPDATE epq_raw SET s = sift.score(ctid) WHERE body @@> 'wire' AND sift.score(ctid) < 0.9; <waiting ...>
+step s2c: COMMIT;
+step s1uc: <... completed>
+step s1r: SELECT tbl, count(*) AS updated, count(*) FILTER (WHERE s > 0.9) AS best, bool_or(id = 1) AS first_row
+			  FROM (SELECT 'idx' AS tbl, id, s FROM epq_idx UNION ALL SELECT 'raw', id, s FROM epq_raw) t WHERE s IS NOT NULL GROUP BY tbl ORDER BY tbl;
+tbl|updated|best|first_row
+---+-------+----+---------
+raw|     18|   0|f        
+(1 row)
+
+
+starting permutation: s2b s2m s1li s2c
+parse_query
+-----------
+wire       
+(1 row)
+
+step s2b: BEGIN;
+step s2m: UPDATE epq_idx SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+			  UPDATE epq_raw SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+step s1li: SELECT id, sift.score(ctid) > 0.9 AS best FROM epq_idx WHERE body @@> 'wire' ORDER BY id FOR UPDATE; <waiting ...>
+step s2c: COMMIT;
+step s1li: <... completed>
+id|best
+--+----
+ 2|t   
+ 5|f   
+ 6|f   
+ 9|f   
+10|f   
+13|f   
+14|f   
+17|f   
+18|f   
+21|f   
+22|f   
+25|f   
+26|f   
+29|f   
+30|f   
+33|f   
+34|f   
+37|f   
+38|f   
+(19 rows)
+
+
+starting permutation: s2b s2m s1lr s2c
+parse_query
+-----------
+wire       
+(1 row)
+
+step s2b: BEGIN;
+step s2m: UPDATE epq_idx SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+			  UPDATE epq_raw SET body = CASE id WHEN 1 THEN 'cable' ELSE 'wire wire wire wire' END WHERE id IN (1, 2);
+step s1lr: SELECT id, sift.score(ctid) > 0.9 AS best FROM epq_raw WHERE body @@> 'wire' ORDER BY id FOR UPDATE; <waiting ...>
+step s2c: COMMIT;
+step s1lr: <... completed>
+id|best
+--+----
+ 2|t   
+ 5|f   
+ 6|f   
+ 9|f   
+10|f   
+13|f   
+14|f   
+17|f   
+18|f   
+21|f   
+22|f   
+25|f   
+26|f   
+29|f   
+30|f   
+33|f   
+34|f   
+37|f   
+38|f   
+(19 rows)
+

@@ -70,13 +70,35 @@ SELECT replace(rls_plan('SELECT id FROM rls_a WHERE body @@> ''needle OR visible
  t
 (1 row)
 
--- a score would be computed from the hidden rows too
-SELECT id FROM rls_a WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() is not available on "rls_a" while row-level security or a security barrier view applies
-SELECT id FROM rls_b WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() is not available on "rls_b" while row-level security or a security barrier view applies
+-- a score is computed from the rows the role sees
+SELECT id FROM rls_a WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id 
+----
+  1
+  2
+  3
+(3 rows)
+
+SELECT id FROM rls_b WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id 
+----
+  1
+  2
+  3
+(3 rows)
+
 SELECT sift.score(ctid) FROM rls_a WHERE body @@> 'needle' LIMIT 1;
-ERROR:  sift.score() is not available on "rls_a" while row-level security or a security barrier view applies
+   score    
+------------
+ 0.02409755
+(1 row)
+
+SELECT (SELECT sift.score(ctid) FROM rls_a WHERE body @@> 'needle' ORDER BY id LIMIT 1) = (SELECT sift.score(ctid) FROM rls_b WHERE body @@> 'needle' ORDER BY id LIMIT 1) AS scores_ignore_hidden_rows;
+ scores_ignore_hidden_rows 
+---------------------------
+ t
+(1 row)
+
 RESET ROLE;
 -- a security barrier view is the same
 CREATE VIEW rls_v WITH (security_barrier) AS SELECT * FROM rls_a WHERE owner = 'sift_t_rls';
@@ -124,10 +146,22 @@ SELECT replace(rls_plan('SELECT id FROM rls_inh WHERE body @@> ''zebrazebra'''),
  t
 (1 row)
 
-SELECT id FROM rls_pt WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() is not available on "rls_pt1" while row-level security or a security barrier view applies
-SELECT id FROM rls_inh WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() is not available on "rls_inh" while row-level security or a security barrier view applies
+SELECT id FROM rls_pt WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id 
+----
+  2
+  4
+  6
+(3 rows)
+
+SELECT id FROM rls_inh WHERE body @@> 'needle' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id 
+----
+  2
+  4
+  6
+(3 rows)
+
 RESET ROLE;
 DROP VIEW rls_v;
 DROP FUNCTION rls_plan(text);

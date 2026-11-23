@@ -124,6 +124,7 @@ typedef struct SiftScanState
 				kheld,				/* the best keys' rows the current round keeps, besides the ties of the last */
 				kpasses;			/* rounds so far */
 	bool		kcomplete;			/* the round holds every match */
+	bool		(*epq_score) (struct SiftScanState *ss, float4 *score);	/* the score of the row version of an EvalPlanQual recheck; NULL: from the index's plan */
 } SiftScanState;
 
 extern void load_semi(SiftScanState *ss);
@@ -143,5 +144,7 @@ extern SiftPlan * bind_queries(SiftScanState *ss, SiftIndexState *st, const void
 extern bool gated(const SiftScanState *ss);
 extern TupleTableSlot * scan_next(ScanState *node);
 extern bool scan_recheck(ScanState *node, TupleTableSlot *slot);
+extern bool epq_substituted(const SiftScanState *ss);
+extern TupleTableSlot *epq_next(SiftScanState *ss);
 
 #endif

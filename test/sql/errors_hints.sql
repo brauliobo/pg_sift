@@ -43,9 +43,9 @@ SELECT sift.table_set_option('tbl', 'write_buffer_limit', '2048');
 SELECT sift.table_set_option('tbl', 'wide_rows', 'off');
 SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
 
--- sift.explain_why takes one statement; a score outside a sift scan says where it exists
+-- sift.explain_why takes one statement; a score of a ctid that is no column of a table says where it exists
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
-SELECT expect('SELECT sift.score(ctid) FROM many');
+SELECT expect('SELECT sift.score(q.c) FROM (SELECT ctid AS c FROM many OFFSET 0) q');
 
 -- an ALTER INDEX that changes what the segments were written with is refused once the index holds a segment, and the table goes on working;
 -- an index with no segment takes it, and the first write uses the new options

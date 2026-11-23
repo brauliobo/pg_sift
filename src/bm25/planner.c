@@ -28,6 +28,7 @@
 #include "bm25/am.h"
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
+#include "bm25/score_fallback.h"
 #include "bm25/pushdown.h"
 
 static set_rel_pathlist_hook_type prev_pathlist_hook;
@@ -69,14 +70,14 @@ split_quals(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, bool ranked, S
 	return c->queries != NIL;
 }
 
-/* The restrictions of the rel that are cutoffs of the score */
+/* The restrictions of the rel that read the score: a cutoff, or any other expression of it, which the scan evaluates on the row it scored */
 static List *
 score_cutoffs(RelOptInfo *rel)
 {
 	List	   *cuts = NIL;
 
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-		if (score_cutoff((Node *) rinfo->clause, rel->relid, NULL))
+		if (reads_score_of((Node *) rinfo->clause, rel->relid))
 			cuts = lappend(cuts, rinfo);
 	return cuts;
 }
@@ -90,25 +91,6 @@ reads_max_score(RelOptInfo *rel, List *scores)
 	foreach_ptr(Node, e, scores)
 		if (sift_is_score_expr(e, rel->relid, &is_max) && is_max)
 			return true;
-	return false;
-}
-
-/* Does the rel have a restriction that is a sift match, of whichever index? */
-static bool
-has_match_clause(RelOptInfo *rel)
-{
-	const SiftCatalog *cat = sift_catalog();
-
-	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-	{
-		Node	   *clause = (Node *) rinfo->clause;
-
-		if ((IsA(clause, OpExpr) && ((OpExpr *) clause)->opno == cat->match_op) ||
-			(IsA(clause, ScalarArrayOpExpr) && ((ScalarArrayOpExpr *) clause)->opno == cat->match_op) ||
-			(IsA(clause, FuncExpr) && (((FuncExpr *) clause)->funcid == cat->match_func ||
-									   ((FuncExpr *) clause)->funcid == cat->match_idx_func)))
-			return true;
-	}
 	return false;
 }
 
@@ -138,7 +120,8 @@ scans_only(Path *path)
 	while (IsA(path, ProjectionPath))
 		path = ((ProjectionPath *) path)->subpath;
 	if (IsA(path, CustomPath))
-		return ((CustomPath *) path)->methods == &sift_scan_path_methods;
+		return ((CustomPath *) path)->methods == &sift_scan_path_methods ||
+			((CustomPath *) path)->methods == &sift_fallback_path_methods;
 	if (IsA(path, AppendPath))
 		subpaths = ((AppendPath *) path)->subpaths;
 	else if (IsA(path, MergeAppendPath))
@@ -255,36 +238,18 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 		carry_join_scores(root, joinrel);
 }
 
-/* The statement that has no SiftScan to rank its rows: the ones that lock or change them re-check each row, which a scan cannot */
-static const char *
-unranked_statement(PlannerInfo *root)
-{
-	switch (root->parse->commandType)
-	{
-		case CMD_UPDATE:
-			return "UPDATE";
-		case CMD_DELETE:
-			return "DELETE";
-		case CMD_MERGE:
-			return "MERGE";
-		default:
-			return "FOR UPDATE and FOR SHARE";
-	}
-}
-
+/* A RETURNING list is computed from the new row version, which no scan scored */
 static void
-reject_scores(PlannerInfo *root, RelOptInfo *rel)
+reject_returning_scores(PlannerInfo *root, RelOptInfo *rel)
 {
 	ScoreRefs	refs = {rel->relid, score_exprs(root, rel)};
 
 	score_walker((Node *) root->parse->returningList, &refs);
-	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-		score_walker((Node *) rinfo->clause, &refs);
 	if (refs.found != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.score() is not available in %s", unranked_statement(root)),
-				 errhint("Rank the rows in a subquery or a WITH query of the statement, and change or lock the rows it returns by key.")));
+				 errmsg("sift.score() is not available in RETURNING"),
+				 errhint("Select the score in a subquery or a WITH query of the statement, and change the rows it returns by key.")));
 }
 
 /* what the paths of a relation are chosen from: the shape of the query, the filter bitmap, and the best path of each kind so far */
@@ -305,42 +270,22 @@ typedef struct PathSearch
 			   *best_keyed;
 } PathSearch;
 
-/* true when the relation is one a sift scan can serve; a statement that cannot rank, and an inheritance parent, only record its scores */
+/* true when the relation is one a sift scan can serve; an inheritance parent only records its scores */
 static bool
 scannable(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
-	if (!sift_enable_scan || rte->rtekind != RTE_RELATION || rte->tablesample ||
+	if (rte->rtekind != RTE_RELATION || rte->tablesample ||
 		(rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) ||
 		sift_catalog()->am == InvalidOid)
 		return false;
-	/* the rows of an INSERT ... SELECT are read, not re-checked: only the statements that change or lock the rows they read reject scores */
-	if ((root->parse->commandType != CMD_SELECT && root->parse->commandType != CMD_INSERT) || root->rowMarks != NIL)
-	{
-		reject_scores(root, rel);
-		return false;
-	}
+	if (root->parse->returningList != NIL)
+		reject_returning_scores(root, rel);
 	if (rte->inh)
 	{
-		if (!holds_all_rels(root, rel))
-			carry_parent_scores(root, rel);
+		carry_parent_scores(root, rel);
 		return false;
 	}
 	return rte->relkind == RELKIND_RELATION || rte->relkind == RELKIND_MATVIEW;
-}
-
-/* true when a restriction other than a score cutoff reads the score: only a scan that computes it can serve those */
-static bool
-score_in_filter(RelOptInfo *rel, Index rti, List *cuts)
-{
-	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
-	{
-		ScoreRefs	refs = {rti, NIL};
-
-		score_walker((Node *) rinfo->clause, &refs);
-		if (refs.found != NIL && !list_member_ptr(cuts, rinfo))
-			return true;
-	}
-	return false;
 }
 
 /* the paths one index offers, kept when they beat the best so far */
@@ -360,8 +305,9 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	 * only the scan can compute the score, so nothing may sit between it and the query's
 	 * target list: not a Gather below a join, which would not pass the score on
 	 */
-	bool		parallel = mode == SIFT_MODE_UNORDERED ||
-		(ps->ranked && k > 0 && bms_membership(root->all_baserels) == BMS_SINGLETON);
+	bool		parallel = (mode == SIFT_MODE_UNORDERED ||
+							(ps->ranked && k > 0 && bms_membership(root->all_baserels) == BMS_SINGLETON)) &&
+		root->parse->commandType == CMD_SELECT && root->rowMarks == NIL;
 
 	if (!split_quals(root, rel, ii, ps->only_best, &c))
 		return;
@@ -404,9 +350,9 @@ consider_index(PathSearch *ps, IndexOptInfo *ii, Index rti)
 	}
 }
 
-/* the best paths replace the others when a score is read; a score that no path can serve is an error */
+/* the best paths replace the others when a score is read; the scan that scores the heap rows stands in where no index scan serves it */
 static void
-publish_paths(PathSearch *ps, RangeTblEntry *rte)
+publish_paths(PathSearch *ps)
 {
 	RelOptInfo *rel = ps->rel;
 
@@ -417,18 +363,8 @@ publish_paths(PathSearch *ps, RangeTblEntry *rte)
 			rel->pathlist = lappend(rel->pathlist, ps->best_keyed);
 		rel->partial_pathlist = ps->best_partial ? list_make1(ps->best_partial) : NIL;
 	}
-	else if (ps->only_best && (rte->securityQuals != NIL || rel_secured(ps->root, rel)) && !sift_rls_scores)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
-				 errdetail("A ranked scan counts the rows that the policy hides in the scores."),
-				 errhint("A superuser can allow it for a role with sift.rls_scores = on (docs/SEARCH.md, \"Row-Level Security\"), or omit sift.score() where RLS applies.")));
-	else if (ps->only_best && is_partition(rel) && has_match_clause(rel))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("sift.score() needs a sift index on every partition the query reads"),
-				 errdetail("\"%s\" has no sift index that answers the @@> condition.", get_rel_name(rte->relid)),
-				 errhint("Create a matching USING sift index on the partitioned table or on every partition the query reads.")));
+	else if (ps->only_best)
+		sift_fallback_publish(ps->root, rel);
 }
 
 /*
@@ -473,7 +409,9 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	 */
 	ps.keyed = ps.only_best && !ps.ranked && ps.cuts == NIL && !is_partition(rel) && !reads_max_score(rel, scores) &&
 		(query_limit(root) > 0 || param_limits(root) != NIL) && !rel_secured(root, rel) && keyed_order(root, rel, &ps.ko);
-	if (score_in_filter(rel, rti, ps.cuts))
+	/* a statement that changes or locks the rows it reads is served only where it reads a score: its other scans stay the planner's */
+	if (!ps.only_best && (root->parse->commandType == CMD_UPDATE || root->parse->commandType == CMD_DELETE ||
+						  root->parse->commandType == CMD_MERGE || root->rowMarks != NIL))
 		return;
 	if (sift_rls_scores && reads_max_score(rel, scores) && rel_secured(root, rel))
 		ereport(ERROR,
@@ -481,9 +419,10 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 				 errmsg("sift.max_score() is not available on \"%s\" while row-level security or a security barrier view applies", get_rel_name(rte->relid)),
 				 errdetail("It is the best score of all the matches, the rows that the policy hides included."),
 				 errhint("Use sift.score(), which is that of a row the role may see.")));
-	foreach_node(IndexOptInfo, ii, rel->indexlist)
-		consider_index(&ps, ii, rti);
-	publish_paths(&ps, rte);
+	if (sift_enable_scan)
+		foreach_node(IndexOptInfo, ii, rel->indexlist)
+			consider_index(&ps, ii, rti);
+	publish_paths(&ps);
 }
 
 /* count(*) and count(<constant>) without DISTINCT, FILTER or ORDER BY */
@@ -594,10 +533,38 @@ reads_score(Node *node, void *context)
 	return expression_tree_walker(node, reads_score, context);
 }
 
+static bool
+collect_scores(Node *node, List **found)
+{
+	const SiftCatalog *cat = sift_catalog();
+
+	if (node == NULL)
+		return false;
+	if (IsA(node, FuncExpr) && (((FuncExpr *) node)->funcid == cat->score_func || ((FuncExpr *) node)->funcid == cat->max_score_func))
+	{
+		*found = list_append_unique(*found, node);
+		return false;
+	}
+	return expression_tree_walker(node, collect_scores, found);
+}
+
 /*
- * A statement that changes or locks rows re-checks each row it reads, which a scan that computes the score cannot do. A subquery or
- * CTE of it that reads the score is planned apart, as written with OFFSET 0 or MATERIALIZED (PostgreSQL pulls up neither),
- * rather than flattened into the statement and refused there.
+ * A MERGE action is evaluated by the ModifyTable node from the row its plan outputs, which holds no score: the scores the actions read are
+ * entered in the target list of the statement as junk columns, so that the scans compute them and the action finds them there
+ */
+static void
+merge_score_outputs(Query *parse)
+{
+	List	   *found = NIL;
+
+	collect_scores((Node *) parse->mergeActionList, &found);
+	foreach_ptr(Node, e, found)
+		parse->targetList = lappend(parse->targetList, makeTargetEntry((Expr *) copyObject(e), list_length(parse->targetList) + 1, NULL, true));
+}
+
+/*
+ * A subquery or CTE of a statement that changes or locks rows that reads the score is planned apart, as written with OFFSET 0 or
+ * MATERIALIZED (PostgreSQL pulls up neither), so that its scan ranks the rows it returns and not the statement's
  */
 static PlannedStmt *
 sift_score_planner(SIFT_PLANNER_PARAMS)
@@ -614,6 +581,8 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 		foreach_node(CommonTableExpr, cte, parse->cteList)
 			if (cte->ctematerialized == CTEMaterializeDefault && reads_score(cte->ctequery, NULL))
 				cte->ctematerialized = CTEMaterializeAlways;
+		if (parse->commandType == CMD_MERGE)
+			merge_score_outputs(parse);
 	}
 	sift_agg_walks_forget();
 	sift_vis_scope(true);
@@ -636,6 +605,7 @@ sift_planner_init(void)
 {
 	RegisterCustomScanMethods(&sift_scan_plan_methods);
 	RegisterCustomScanMethods(&sift_count_plan_methods);
+	RegisterCustomScanMethods(&sift_fallback_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_join_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_asof_plan_methods);

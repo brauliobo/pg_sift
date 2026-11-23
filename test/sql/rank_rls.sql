@@ -80,10 +80,10 @@ SELECT rr_set('top5_user_s', 'SELECT id, s FROM rr_ranked WHERE tenant = ''sift_
 SELECT rr_set('top5_all', 'SELECT id, s FROM rr_ranked ORDER BY s DESC, c LIMIT 5');
 SELECT rr_set('count', 'SELECT count(*) AS n FROM rr_items WHERE body @@> ''alpha beta'' AND tenant = ''sift_t_rr_user''');
 
--- 1. off, the default: the role gets no ranked scan, the score raises an error, and a role cannot switch the setting on
+-- 1. off, the default: the role gets no ranked scan, its scores come from the rows it sees, and a role cannot switch the setting on
 SET ROLE sift_t_rr_user;
 \set VERBOSITY default
-SELECT id, sift.score(ctid) FROM rr_items WHERE body @@> 'alpha beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id, sift.score(ctid) FROM rr_items WHERE body @@> 'alpha beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 \set VERBOSITY terse
 SELECT rr_plan('EXPLAIN (COSTS OFF) SELECT id FROM rr_items WHERE body @@> ''alpha beta'' ORDER BY id LIMIT 3') ~ 'Sift' AS unranked_scan;
 SET sift.rls_scores = on;

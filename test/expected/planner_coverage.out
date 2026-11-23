@@ -59,14 +59,17 @@ SELECT id FROM pc WHERE body @@> 'zzz' FOR UPDATE;
 (1 row)
 
 SELECT id FROM pc WHERE body @@> 'zzz' ORDER BY sift.score(ctid) DESC LIMIT 1 FOR UPDATE;
-ERROR:  sift.score() is not available in FOR UPDATE and FOR SHARE
+  id  
+------
+ 5000
+(1 row)
+
 UPDATE pc SET owner = owner WHERE body @@> 'zzz';
 UPDATE pc SET owner = owner WHERE body @@> 'zzz' RETURNING sift.score(ctid);
-ERROR:  sift.score() is not available in UPDATE
+ERROR:  sift.score() is not available in RETURNING
 UPDATE pc SET id = id WHERE body @@> 'zzz' AND sift.score(ctid) > 0;
-ERROR:  sift.score() is not available in UPDATE
 DELETE FROM pc WHERE body @@> 'nothing here' RETURNING sift.score(ctid);
-ERROR:  sift.score() is not available in DELETE
+ERROR:  sift.score() is not available in RETURNING
 -- ranking in a SELECT and changing the rows by key works
 UPDATE pc SET owner = owner WHERE ctid = (SELECT ctid FROM pc WHERE body @@> 'zzz' ORDER BY sift.score(ctid) DESC LIMIT 1);
 -- LIMIT and OFFSET of a generic plan are read by the scan when it starts
@@ -179,7 +182,13 @@ SELECT id FROM pc WHERE body @@> 'beta' ORDER BY id LIMIT 3;
 
 -- the scan would count the hidden rows in the score and the estimates: no scan, no score
 SELECT id FROM pc WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
-ERROR:  sift.score() is not available on "pc" while row-level security or a security barrier view applies
+ id 
+----
+  4
+ 14
+ 24
+(3 rows)
+
 EXPLAIN (COSTS OFF) SELECT count(*) FROM pc WHERE body @@> 'beta';
                               QUERY PLAN                              
 ----------------------------------------------------------------------

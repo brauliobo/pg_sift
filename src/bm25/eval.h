@@ -144,6 +144,9 @@ typedef struct SiftPlanStats
 
 extern const SiftPlanStats *sift_plan_stats(const SiftPlan *plan);
 
+/* Does the text of one document match every query of the plan, and what does it score (a plan bound with SIFT_BIND_SCORE), by the text alone: the tuple of an EvalPlanQual recheck */
+extern bool sift_plan_eval_doc(SiftPlan *plan, text *doc, float4 *score);
+
 /* Phrase recheck of a heap-order candidate's text; needed when the plan has a phrase */
 extern bool sift_plan_recheck(SiftPlan *plan, text *doc);
 extern bool sift_plan_recheck_needed(const SiftPlan *plan);

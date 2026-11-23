@@ -227,6 +227,16 @@ score_walker(Node *node, ScoreRefs *refs)
 	return expression_tree_walker(node, score_walker, refs);
 }
 
+/* Does the expression read the score of the rel (sift.score or sift.max_score of its ctid)? */
+bool
+reads_score_of(Node *node, Index relid)
+{
+	ScoreRefs	refs = {relid, NIL};
+
+	score_walker(node, &refs);
+	return refs.found != NIL;
+}
+
 /* The score in an operand of a comparison: sift.score(rel.ctid), or the float8 PostgreSQL makes of it */
 static bool
 score_operand(Node *arg, Index relid)
@@ -277,7 +287,7 @@ cuts_from_above(List *cuts, Index relid)
 	{
 		bool		lower;
 
-		if (score_cutoff((Node *) rinfo->clause, relid, &lower) && !lower)
+		if (!score_cutoff((Node *) rinfo->clause, relid, &lower) || !lower)
 			return true;
 	}
 	return false;

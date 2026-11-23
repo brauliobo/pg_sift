@@ -221,6 +221,8 @@ bm25/planner_ties.c
 bm25/pushdown.c
 bm25/pushdown.h
 bm25/read_test.c
+bm25/score_fallback.c
+bm25/score_fallback.h
 bm25/segcache.c
 bm25/segment_sql.c
 bm25/segment_sql.h

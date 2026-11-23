@@ -1,0 +1,590 @@
+-- A query that is only a NOT, the limits on a query's size, and sift.score() in the statements that change or lock rows and on a table no sift
+-- index serves. NOT x matches every row with a text that x does not: through the count, the unordered scan, the ranked scan and the sequential
+-- evaluation alike, across the write buffer, deletes, VACUUM and a merge. A score is the one the index gives: the statements read it from the
+-- scan that matched the row, and a scan of the heap computes it from the rows that pass the security quals.
+CREATE EXTENSION pg_sift;
+\set VERBOSITY terse
+CREATE FUNCTION nd_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	l text;
+	r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		r := r || l || E'\n';
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION nd_err(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'ok';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE || ' ' || SQLERRM;
+END $$;
+-- the ids a query returns: sequentially ('seq'), by a scan without an order ('scan'), by the ranked scan ('rank')
+CREATE FUNCTION nd_ids(q text, how text) RETURNS int[] LANGUAGE plpgsql AS $$
+DECLARE
+	r int[];
+BEGIN
+	PERFORM set_config('sift.enable_scan', CASE how WHEN 'seq' THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('enable_seqscan', CASE how WHEN 'seq' THEN 'on' ELSE 'off' END, true);
+	PERFORM set_config('enable_bitmapscan', CASE how WHEN 'seq' THEN 'off' ELSE 'on' END, true);
+	PERFORM set_config('enable_indexscan', CASE how WHEN 'seq' THEN 'off' ELSE 'on' END, true);
+	EXECUTE format(CASE how WHEN 'rank' THEN 'SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM nd_docs WHERE body @@> %L ORDER BY sift.score(ctid) DESC) x'
+						ELSE 'SELECT array_agg(id ORDER BY id) FROM nd_docs WHERE body @@> %L' END, q) INTO r;
+	RETURN coalesce(r, '{}');
+END $$;
+CREATE FUNCTION nd_count(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE
+	n bigint;
+BEGIN
+	EXECUTE 'SELECT count(*) FROM nd_docs WHERE body @@> $1' INTO n USING q;
+	RETURN n;
+END $$;
+-- the query's matches, by every path, against the rows a predicate written with the positive operator keeps
+CREATE FUNCTION nd_check(q text, ref text, OUT matches int, OUT scan boolean, OUT rank boolean, OUT counted boolean, OUT reference boolean)
+LANGUAGE plpgsql AS $$
+DECLARE
+	r int[];
+BEGIN
+	PERFORM set_config('sift.enable_scan', 'off', true);
+	PERFORM set_config('enable_bitmapscan', 'off', true);
+	EXECUTE 'SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM nd_docs WHERE ' || ref INTO r;
+	matches := cardinality(nd_ids(q, 'seq'));
+	scan := nd_ids(q, 'seq') = nd_ids(q, 'scan');
+	rank := nd_ids(q, 'seq') = nd_ids(q, 'rank');
+	counted := nd_count(q) = matches;
+	reference := nd_ids(q, 'seq') = r;
+END $$;
+CREATE TABLE nd_docs (id int PRIMARY KEY, body text);
+INSERT INTO nd_docs SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 13 = 0 THEN '' WHEN i % 11 = 0 THEN 'the'
+	ELSE concat_ws(' ', CASE WHEN i % 3 = 0 THEN 'wire' END, CASE WHEN i % 5 = 0 THEN 'fraud' END, CASE WHEN i % 7 = 0 THEN 'cable' END, 'doc' || i % 9) END
+	FROM generate_series(1, 3000) i;
+CREATE INDEX nd_docs_body ON nd_docs USING sift (body);
+VACUUM ANALYZE nd_docs;
+CREATE FUNCTION nd_report() RETURNS TABLE (q text, matches int, scan boolean, rank boolean, counted boolean, reference boolean) LANGUAGE sql AS $$
+	SELECT v.q, c.* FROM (VALUES
+		('NOT wire', 'body IS NOT NULL AND NOT (body @@> ''wire'')'),
+		('NOT (wire OR fraud)', 'body IS NOT NULL AND NOT (body @@> ''wire OR fraud'')'),
+		('NOT wire NOT fraud', 'body IS NOT NULL AND NOT (body @@> ''wire OR fraud'')'),
+		('NOT (wire fraud)', 'body IS NOT NULL AND NOT (body @@> ''wire fraud'')'),
+		('NOT "wire fraud"', 'body IS NOT NULL AND NOT (body @@> ''"wire fraud"'')'),
+		('NOT wire*', 'body IS NOT NULL AND NOT (body @@> ''wire*'')'),
+		('NOT the', 'body IS NOT NULL AND NOT (body @@> ''the'')'),
+		('NOT (NOT wire)', 'body @@> ''wire'''),
+		('wire OR NOT fraud', 'body IS NOT NULL AND (body @@> ''wire'' OR NOT (body @@> ''fraud''))'),
+		('cable AND NOT (wire OR NOT fraud)', 'body @@> ''cable'' AND NOT (body @@> ''wire'' OR NOT (body @@> ''fraud''))'))
+		v(q, ref), LATERAL nd_check(v.q, v.ref) c
+$$;
+-- 1. a query of only NOTs
+SELECT * FROM nd_report();
+                 q                 | matches | scan | rank | counted | reference 
+-----------------------------------+---------+------+------+---------+-----------
+ NOT wire                          |    2033 | t    | t    | t       | t
+ NOT (wire OR fraud)               |    1717 | t    | t    | t       | t
+ NOT wire NOT fraud                |    1717 | t    | t    | t       | t
+ NOT (wire fraud)                  |    2666 | t    | t    | t       | t
+ NOT "wire fraud"                  |    2666 | t    | t    | t       | t
+ NOT wire*                         |    2033 | t    | t    | t       | t
+ NOT the                           |    2587 | t    | t    | t       | t
+ NOT (NOT wire)                    |     791 | t    | t    | t       | t
+ wire OR NOT fraud                 |    2508 | t    | t    | t       | t
+ cable AND NOT (wire OR NOT fraud) |      44 | t    | t    | t       | t
+(10 rows)
+
+SELECT nd_plan('SELECT count(*) FROM nd_docs WHERE body @@> ''NOT wire''') ~ 'SiftCount' AS counted_by_the_index;
+ counted_by_the_index 
+----------------------
+ t
+(1 row)
+
+-- rows after the build live in the write buffer, deletes and updates leave dead versions, VACUUM and a merge fold them
+INSERT INTO nd_docs SELECT 3000 + i, CASE WHEN i % 19 = 0 THEN NULL ELSE concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'wire' END, 'fresh' || i % 4) END FROM generate_series(1, 300) i;
+SELECT * FROM nd_report();
+                 q                 | matches | scan | rank | counted | reference 
+-----------------------------------+---------+------+------+---------+-----------
+ NOT wire                          |    2175 | t    | t    | t       | t
+ NOT (wire OR fraud)               |    1859 | t    | t    | t       | t
+ NOT wire NOT fraud                |    1859 | t    | t    | t       | t
+ NOT (wire fraud)                  |    2951 | t    | t    | t       | t
+ NOT "wire fraud"                  |    2951 | t    | t    | t       | t
+ NOT wire*                         |    2175 | t    | t    | t       | t
+ NOT the                           |    2872 | t    | t    | t       | t
+ NOT (NOT wire)                    |     934 | t    | t    | t       | t
+ wire OR NOT fraud                 |    2793 | t    | t    | t       | t
+ cable AND NOT (wire OR NOT fraud) |      44 | t    | t    | t       | t
+(10 rows)
+
+DELETE FROM nd_docs WHERE id % 10 IN (3, 4);
+UPDATE nd_docs SET body = 'wire changed' WHERE id % 50 = 1;
+SELECT * FROM nd_report();
+                 q                 | matches | scan | rank | counted | reference 
+-----------------------------------+---------+------+------+---------+-----------
+ NOT wire                          |    1693 | t    | t    | t       | t
+ NOT (wire OR fraud)               |    1377 | t    | t    | t       | t
+ NOT wire NOT fraud                |    1377 | t    | t    | t       | t
+ NOT (wire fraud)                  |    2332 | t    | t    | t       | t
+ NOT "wire fraud"                  |    2332 | t    | t    | t       | t
+ NOT wire*                         |    1693 | t    | t    | t       | t
+ NOT the                           |    2304 | t    | t    | t       | t
+ NOT (NOT wire)                    |     797 | t    | t    | t       | t
+ wire OR NOT fraud                 |    2174 | t    | t    | t       | t
+ cable AND NOT (wire OR NOT fraud) |      44 | t    | t    | t       | t
+(10 rows)
+
+VACUUM nd_docs;
+SELECT * FROM nd_report();
+                 q                 | matches | scan | rank | counted | reference 
+-----------------------------------+---------+------+------+---------+-----------
+ NOT wire                          |    1693 | t    | t    | t       | t
+ NOT (wire OR fraud)               |    1377 | t    | t    | t       | t
+ NOT wire NOT fraud                |    1377 | t    | t    | t       | t
+ NOT (wire fraud)                  |    2332 | t    | t    | t       | t
+ NOT "wire fraud"                  |    2332 | t    | t    | t       | t
+ NOT wire*                         |    1693 | t    | t    | t       | t
+ NOT the                           |    2304 | t    | t    | t       | t
+ NOT (NOT wire)                    |     797 | t    | t    | t       | t
+ wire OR NOT fraud                 |    2174 | t    | t    | t       | t
+ cable AND NOT (wire OR NOT fraud) |      44 | t    | t    | t       | t
+(10 rows)
+
+SELECT sift.promote('nd_docs_body') IS NOT NULL AS promoted, sift.merge('nd_docs_body') IS NOT NULL AS merged;
+ promoted | merged 
+----------+--------
+ t        | t
+(1 row)
+
+SELECT * FROM nd_report();
+                 q                 | matches | scan | rank | counted | reference 
+-----------------------------------+---------+------+------+---------+-----------
+ NOT wire                          |    1693 | t    | t    | t       | t
+ NOT (wire OR fraud)               |    1377 | t    | t    | t       | t
+ NOT wire NOT fraud                |    1377 | t    | t    | t       | t
+ NOT (wire fraud)                  |    2332 | t    | t    | t       | t
+ NOT "wire fraud"                  |    2332 | t    | t    | t       | t
+ NOT wire*                         |    1693 | t    | t    | t       | t
+ NOT the                           |    2304 | t    | t    | t       | t
+ NOT (NOT wire)                    |     797 | t    | t    | t       | t
+ wire OR NOT fraud                 |    2174 | t    | t    | t       | t
+ cable AND NOT (wire OR NOT fraud) |      44 | t    | t    | t       | t
+(10 rows)
+
+-- the ranked scan: the documents a positive leaf hits come first, the complement scores 0, the cuts and the limit apply
+SELECT count(*) FILTER (WHERE s > 0) AS hit, count(*) FILTER (WHERE s = 0) AS complement, count(*) AS total
+	FROM (SELECT sift.score(ctid) AS s FROM nd_docs WHERE body @@> 'wire OR NOT fraud') q;
+ hit | complement | total 
+-----+------------+-------
+ 797 |       1377 |  2174
+(1 row)
+
+SELECT id, sift.score(ctid) FROM nd_docs WHERE body @@> 'NOT wire' ORDER BY 2 DESC, 1 LIMIT 3;
+ id | score 
+----+-------
+  2 |     0
+  5 |     0
+  7 |     0
+(3 rows)
+
+SELECT bool_and(s > 0) AS leaf_first FROM (SELECT sift.score(ctid) AS s FROM nd_docs WHERE body @@> 'wire OR NOT fraud' ORDER BY 1 DESC LIMIT 100) q;
+ leaf_first 
+------------
+ t
+(1 row)
+
+SELECT count(*) AS cut FROM (SELECT sift.score(ctid) AS s FROM nd_docs WHERE body @@> 'NOT wire' AND sift.score(ctid) = 0) q;
+ cut  
+------
+ 1693
+(1 row)
+
+SELECT count(*) AS zero_scored_rows FROM nd_docs WHERE body @@> 'NOT wire' AND sift.score(ctid) > 0;
+ zero_scored_rows 
+------------------
+                0
+(1 row)
+
+-- a NOT in the statements that change rows
+CREATE TABLE nd_dml AS SELECT id, body, 0::float4 AS s FROM nd_docs;
+CREATE INDEX nd_dml_body ON nd_dml USING sift (body);
+UPDATE nd_dml SET s = 1 WHERE body @@> 'NOT wire';
+SELECT count(*) = (SELECT count(*) FROM nd_docs WHERE body IS NOT NULL AND NOT (body @@> 'wire')) AS updated_the_complement,
+	count(*) FILTER (WHERE s = 1 AND body IS NULL) AS null_updated FROM nd_dml WHERE s = 1;
+ updated_the_complement | null_updated 
+------------------------+--------------
+ t                      |            0
+(1 row)
+
+DELETE FROM nd_dml WHERE body @@> 'NOT (wire OR fraud)';
+SELECT count(*) = (SELECT count(*) FROM nd_docs WHERE body IS NULL OR body @@> 'wire OR fraud') AS kept_the_rest FROM nd_dml;
+ kept_the_rest 
+---------------
+ t
+(1 row)
+
+DROP TABLE nd_dml;
+-- 2. the limits of a query
+SELECT count(*) = nd_count('wire') AS deep_240 FROM nd_docs WHERE body @@> (repeat('(', 240) || 'wire' || repeat(')', 240));
+ deep_240 
+----------
+ t
+(1 row)
+
+SELECT count(*) = nd_count('wire') AS deep_1000 FROM nd_docs WHERE body @@> (repeat('(', 1000) || 'wire' || repeat(')', 1000));
+ deep_1000 
+-----------
+ t
+(1 row)
+
+SELECT count(*) = nd_count('wire') AS not_chain FROM nd_docs WHERE body @@> (repeat('NOT ', 1000) || 'wire');
+ not_chain 
+-----------
+ t
+(1 row)
+
+SELECT left(nd_err('SELECT 1 FROM nd_docs WHERE body @@> ' || quote_literal(repeat('(', 1100) || 'wire' || repeat(')', 1100))), 40) AS too_deep;
+                 too_deep                 
+------------------------------------------
+ 54000 sift query: nesting deeper than 10
+(1 row)
+
+SELECT count(*) = nd_count('doc1') AS or_of_500
+	FROM nd_docs WHERE body @@> (SELECT 'doc1 OR ' || string_agg('absent' || i, ' OR ') FROM generate_series(1, 500) i);
+ or_of_500 
+-----------
+ t
+(1 row)
+
+SELECT count(*) = 0 AS and_of_2000
+	FROM nd_docs WHERE body @@> (SELECT string_agg('absent' || i, ' ') FROM generate_series(1, 2000) i);
+ and_of_2000 
+-------------
+ t
+(1 row)
+
+SELECT nd_err('SELECT 1 FROM nd_docs WHERE body @@> ' || quote_literal((SELECT string_agg('t' || i, ' OR ') FROM generate_series(1, 70000) i)));
+            nd_err            
+------------------------------
+ 54000 sift query is too long
+(1 row)
+
+INSERT INTO nd_docs SELECT 9000, (SELECT string_agg('w' || i, ' ') FROM generate_series(1, 200) i);
+SELECT count(*) AS phrase_of_200 FROM nd_docs WHERE body @@> ('"' || (SELECT string_agg('w' || i, ' ') FROM generate_series(1, 200) i) || '"');
+ phrase_of_200 
+---------------
+             1
+(1 row)
+
+SELECT count(*) AS phrase_without_the_last FROM nd_docs WHERE body @@> ('"' || (SELECT string_agg('w' || i, ' ') FROM generate_series(2, 200) i) || ' w1"');
+ phrase_without_the_last 
+-------------------------
+                       0
+(1 row)
+
+SELECT left(nd_err('SELECT 1 FROM nd_docs WHERE body @@> ' || quote_literal('"' || (SELECT string_agg('w' || i, ' ') FROM generate_series(1, 4100) i) || '"')), 40) AS phrase_too_long;
+             phrase_too_long              
+------------------------------------------
+ 54000 sift query: phrase longer than 409
+(1 row)
+
+DELETE FROM nd_docs WHERE id = 9000;
+SELECT round((sift.score(ctid) / (SELECT sift.score(ctid) FROM nd_docs WHERE body @@> 'wire' ORDER BY id LIMIT 1))::numeric, 3) AS boost_50000
+	FROM nd_docs WHERE body @@> 'wire^50000' ORDER BY id LIMIT 1;
+ boost_50000 
+-------------
+   50000.000
+(1 row)
+
+SELECT nd_err('SELECT 1 FROM nd_docs WHERE body @@> ''wire^1e19''') AS boost_over,
+	nd_err('SELECT 1 FROM nd_docs WHERE body @@> ''wire^-1''') AS boost_negative,
+	nd_err('SELECT 1 FROM nd_docs WHERE body @@> ''wire^nan''') AS boost_nan,
+	nd_err('SELECT 1 FROM nd_docs WHERE body @@> ''wire^inf''') AS boost_inf;
+                            boost_over                             |                           boost_negative                            |                              boost_nan                              |                              boost_inf                              
+-------------------------------------------------------------------+---------------------------------------------------------------------+---------------------------------------------------------------------+---------------------------------------------------------------------
+ 54000 sift query: boost must be between 0 and 1e+18 at position 6 | 42601 sift query: boost must be a non-negative number at position 6 | 42601 sift query: boost must be a non-negative number at position 6 | 42601 sift query: boost must be a non-negative number at position 6
+(1 row)
+
+DROP TABLE nd_docs;
+DROP FUNCTION nd_report(), nd_check(text, text), nd_count(text), nd_ids(text, text);
+-- 3. sift.score() in the statements that change or lock the rows it reads. A score depends on the statistics of the index, which count the
+-- versions a statement leaves until VACUUM, so every statement runs on a fresh copy of the same rows and is compared with the scores of the
+-- untouched one
+CREATE TABLE sd_src (id int PRIMARY KEY, body text, s float4, t text);
+INSERT INTO sd_src SELECT i, concat_ws(' ', CASE WHEN i % 3 = 0 THEN 'wire' END, CASE WHEN i % 5 = 0 THEN 'fraud' END, CASE WHEN i % 7 = 0 THEN repeat('cable ', 1 + i % 3) END, 'doc' || i % 9), NULL, NULL
+	FROM generate_series(1, 400) i;
+CREATE FUNCTION sd_copy(tbl text, indexed boolean) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format('CREATE TABLE %I (LIKE sd_src INCLUDING ALL)', tbl);
+	EXECUTE format('INSERT INTO %I SELECT * FROM sd_src', tbl);
+	IF indexed THEN
+		EXECUTE format('CREATE INDEX ON %I USING sift (body)', tbl);
+	END IF;
+	EXECUTE format('ANALYZE %I', tbl);
+END $$;
+SELECT sd_copy('sd_ix', true);
+ sd_copy 
+---------
+ 
+(1 row)
+
+CREATE TABLE sd_ref AS SELECT id, sift.score(ctid)::float4 AS s FROM sd_ix WHERE body @@> 'wire OR cable' OFFSET 0;
+SELECT count(*) AS reference_rows, count(DISTINCT s) AS distinct_scores, count(*) FILTER (WHERE s > (SELECT avg(s) FROM sd_ref)) AS above_the_mean FROM sd_ref;
+ reference_rows | distinct_scores | above_the_mean 
+----------------+-----------------+----------------
+            171 |               8 |             57
+(1 row)
+
+SELECT sd_copy('sd_u1', true), sd_copy('sd_u2', true), sd_copy('sd_u3', true), sd_copy('sd_d', true), sd_copy('sd_m', true);
+ sd_copy | sd_copy | sd_copy | sd_copy | sd_copy 
+---------+---------+---------+---------+---------
+         |         |         |         | 
+(1 row)
+
+SELECT nd_plan('UPDATE sd_u1 SET s = sift.score(ctid) WHERE body @@> ''wire OR cable''') ~ 'Custom Scan \(SiftScan\)' AS update_scan;
+ update_scan 
+-------------
+ t
+(1 row)
+
+UPDATE sd_u1 SET s = sift.score(ctid) WHERE body @@> 'wire OR cable';
+SELECT count(*) AS updated, count(*) FILTER (WHERE u.s = r.s) AS same_score FROM sd_u1 u JOIN sd_ref r USING (id) WHERE u.s IS NOT NULL;
+ updated | same_score 
+---------+------------
+     171 |        171
+(1 row)
+
+-- the score in a condition, alone or beside a qual
+UPDATE sd_u2 SET s = sift.score(ctid) WHERE body @@> 'wire OR cable' AND sift.score(ctid) * 2 > (SELECT avg(s) FROM sd_ref);
+SELECT count(*) AS updated_above, count(*) FILTER (WHERE u.s = r.s) AS same_score,
+	count(*) = (SELECT count(*) FROM sd_ref WHERE s * 2 > (SELECT avg(s) FROM sd_ref)) AS the_cut_rows FROM sd_u2 u JOIN sd_ref r USING (id) WHERE u.s IS NOT NULL;
+ updated_above | same_score | the_cut_rows 
+---------------+------------+--------------
+           171 |        171 | t
+(1 row)
+
+UPDATE sd_u3 SET s = sift.score(ctid) WHERE body @@> 'wire OR cable' AND (sift.score(ctid) > (SELECT avg(s) FROM sd_ref) OR id < 10);
+SELECT count(*) = (SELECT count(*) FROM sd_ref WHERE s > (SELECT avg(s) FROM sd_ref) OR id < 10) AS cut_or_qual,
+	count(*) FILTER (WHERE u.s = r.s) = count(*) AS same_score FROM sd_u3 u JOIN sd_ref r USING (id) WHERE u.s IS NOT NULL;
+ cut_or_qual | same_score 
+-------------+------------
+ t           | t
+(1 row)
+
+WITH d AS (DELETE FROM sd_d WHERE body @@> 'wire OR cable' AND sift.score(ctid) > (SELECT avg(s) FROM sd_ref) RETURNING id)
+	SELECT count(*) = (SELECT count(*) FROM sd_ref WHERE s > (SELECT avg(s) FROM sd_ref)) AS deleted_the_cut_rows,
+	count(*) = (SELECT count(*) FROM d JOIN sd_ref r USING (id) WHERE r.s > (SELECT avg(s) FROM sd_ref)) AS all_above FROM d;
+ deleted_the_cut_rows | all_above 
+----------------------+-----------
+ t                    | t
+(1 row)
+
+SELECT count(*) AS other_rows_kept FROM sd_d;
+ other_rows_kept 
+-----------------
+             343
+(1 row)
+
+SELECT id, round(sift.score(ctid)::numeric, 3) AS score FROM sd_ix WHERE body @@> 'wire OR cable' ORDER BY id LIMIT 3 FOR UPDATE;
+ id | score 
+----+-------
+  3 | 1.056
+  6 | 1.056
+  7 | 2.257
+(3 rows)
+
+SELECT id, round(sift.score(ctid)::numeric, 3) AS score FROM sd_ix WHERE body @@> 'wire OR cable' ORDER BY sift.score(ctid) DESC, id LIMIT 3 FOR SHARE;
+ id | score 
+----+-------
+ 14 | 2.427
+ 56 | 2.427
+ 77 | 2.427
+(3 rows)
+
+CREATE TABLE sd_tgt (id int PRIMARY KEY, t text);
+INSERT INTO sd_tgt SELECT id, 'old' FROM sd_ref WHERE id % 2 = 0;
+MERGE INTO sd_tgt d USING sd_m s ON d.id = s.id AND s.body @@> 'wire OR cable'
+	WHEN MATCHED THEN UPDATE SET t = round(sift.score(s.ctid)::numeric, 3)::text;
+SELECT count(*) AS merged, count(*) FILTER (WHERE d.t = round(r.s::numeric, 3)::text) AS same_score FROM sd_tgt d JOIN sd_ref r USING (id) WHERE d.t <> 'old';
+ merged | same_score 
+--------+------------
+     85 |         85
+(1 row)
+
+-- what stays refused names what to write
+SELECT nd_err('UPDATE sd_u1 SET s = 0 WHERE body @@> ''wire'' RETURNING sift.score(ctid)');
+                      nd_err                      
+--------------------------------------------------
+ 0A000 sift.score() is not available in RETURNING
+(1 row)
+
+SELECT nd_err('DELETE FROM sd_u1 WHERE body @@> ''wire'' RETURNING sift.score(ctid)');
+                      nd_err                      
+--------------------------------------------------
+ 0A000 sift.score() is not available in RETURNING
+(1 row)
+
+-- 4. a table no sift index serves: the same rows without an index, scored as the index scores them
+SELECT sd_copy('su', false);
+ sd_copy 
+---------
+ 
+(1 row)
+
+CREATE FUNCTION su_same(q text) RETURNS TABLE (matches bigint, same_rows boolean, same_scores boolean, max_difference float4) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY EXECUTE format('SELECT count(*), bool_and(a.id IS NOT NULL AND b.id IS NOT NULL), bool_and(a.s = b.s), max(abs(a.s - b.s))::float4
+		FROM (SELECT id, sift.score(ctid) AS s FROM su WHERE body @@> %1$L) a FULL JOIN (SELECT id, sift.score(ctid) AS s FROM sd_ix WHERE body @@> %1$L) b USING (id)', q);
+END $$;
+SELECT nd_plan('SELECT id, sift.score(ctid) FROM su WHERE body @@> ''wire''') AS unindexed_plan;
+          unindexed_plan           
+-----------------------------------
+ Custom Scan (SiftScoreScan) on su+
+ 
+(1 row)
+
+SELECT nd_plan('SELECT id FROM su WHERE body @@> ''wire''') ~ 'SiftScoreScan' AS plain_select_keeps_its_plan;
+ plain_select_keeps_its_plan 
+-----------------------------
+ f
+(1 row)
+
+SELECT q, s.* FROM unnest(ARRAY['wire', 'wire OR fraud', 'wire fraud', '"wire fraud"', 'wire* OR cable', 'wire~1 OR fraud', '/wi.e/ OR cable', 'wire^3 fraud',
+	'wire NOT fraud', 'NOT wire', 'wire OR NOT fraud', 'doc1 OR doc2', 'cable^2 OR (wire AND doc3)']) q, LATERAL su_same(q) s;
+             q              | matches | same_rows | same_scores | max_difference 
+----------------------------+---------+-----------+-------------+----------------
+ wire                       |     133 | t         | t           |              0
+ wire OR fraud              |     187 | t         | t           |              0
+ wire fraud                 |      26 | t         | t           |              0
+ "wire fraud"               |      26 | t         | t           |              0
+ wire* OR cable             |     171 | t         | t           |              0
+ wire~1 OR fraud            |     187 | t         | t           |              0
+ /wi.e/ OR cable            |     171 | t         | t           |              0
+ wire^3 fraud               |      26 | t         | t           |              0
+ wire NOT fraud             |     107 | t         | t           |              0
+ NOT wire                   |     267 | t         | t           |              0
+ wire OR NOT fraud          |     346 | t         | t           |              0
+ doc1 OR doc2               |      90 | t         | t           |              0
+ cable^2 OR (wire AND doc3) |      95 | t         | t           |              0
+(13 rows)
+
+SELECT count(*) AS matches, round(max(sift.score(ctid))::numeric, 4) AS best, bool_and(sift.max_score(ctid) = (SELECT max(s) FROM sd_ref)) AS max_score_of_all
+	FROM su WHERE body @@> 'wire OR cable';
+ matches |  best  | max_score_of_all 
+---------+--------+------------------
+     171 | 2.4274 | t
+(1 row)
+
+SELECT count(*) AS rows, max(sift.score(ctid)) AS no_match_scores_0 FROM su;
+ rows | no_match_scores_0 
+------+-------------------
+  400 |                 0
+(1 row)
+
+SELECT count(*) AS null_query FROM su WHERE body @@> NULL::text AND sift.score(ctid) >= 0;
+ null_query 
+------------
+          0
+(1 row)
+
+SELECT count(*) AS any_of_array, bool_and(sift.score(ctid) > 0) AS scored FROM su WHERE body @@> ANY (ARRAY['wire', 'cable']);
+ any_of_array | scored 
+--------------+--------
+          171 | t
+(1 row)
+
+SELECT id, round(sift.score(ctid)::numeric, 4) AS score FROM su WHERE body @@> 'wire OR cable' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id | score  
+----+--------
+ 14 | 2.4274
+ 56 | 2.4274
+ 77 | 2.4274
+(3 rows)
+
+-- sift.enable_scan off: an indexed table is scored by the heap, with the same scores
+SET sift.enable_scan = off;
+SELECT nd_plan('SELECT id, sift.score(ctid) FROM sd_ix WHERE body @@> ''wire''') ~ 'SiftScoreScan' AS scan_off_heap_scored;
+ scan_off_heap_scored 
+----------------------
+ t
+(1 row)
+
+SELECT count(*) AS scored_by_the_heap, count(*) FILTER (WHERE q.s = r.s) AS same_score
+	FROM (SELECT id, sift.score(ctid) AS s FROM sd_ix WHERE body @@> 'wire OR cable') q JOIN sd_ref r USING (id);
+ scored_by_the_heap | same_score 
+--------------------+------------
+                171 |        171
+(1 row)
+
+RESET sift.enable_scan;
+-- statements that change or lock the rows of a table without an index
+UPDATE su SET s = sift.score(ctid) WHERE body @@> 'wire OR cable' AND sift.score(ctid) > (SELECT avg(s) FROM sd_ref);
+SELECT count(*) AS updated, count(*) FILTER (WHERE su.s = r.s) AS same_score FROM su JOIN sd_ref r USING (id) WHERE su.s > 0;
+ updated | same_score 
+---------+------------
+      57 |         57
+(1 row)
+
+DELETE FROM su WHERE body @@> 'wire OR cable' AND sift.score(ctid) <= (SELECT avg(s) FROM sd_ref);
+SELECT count(*) AS left_rows, count(*) FILTER (WHERE su.s IS NULL) AS not_updated FROM su;
+ left_rows | not_updated 
+-----------+-------------
+       286 |         229
+(1 row)
+
+SELECT id FROM su WHERE body @@> 'wire OR cable' AND sift.score(ctid) > 0 ORDER BY id LIMIT 2 FOR UPDATE;
+ id 
+----
+  7
+ 14
+(2 rows)
+
+-- under row-level security the corpus is the rows the role sees
+CREATE ROLE sift_t_nd_user;
+GRANT USAGE ON SCHEMA sift TO sift_t_nd_user;
+CREATE TABLE sr (id int, tenant text, body text);
+INSERT INTO sr SELECT id, CASE WHEN id % 2 = 0 THEN 'sift_t_nd_user' ELSE 'other' END, body FROM sd_src;
+CREATE TABLE sr_own AS SELECT id, body FROM sr WHERE tenant = 'sift_t_nd_user';
+ALTER TABLE sr ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sr_own ON sr USING (tenant = current_user);
+GRANT SELECT ON sr, sr_own TO sift_t_nd_user;
+SET ROLE sift_t_nd_user;
+SELECT count(*) AS visible_matches,
+	bool_and(abs(a.s - b.s) < 1e-6) AS the_scores_of_the_rows_it_sees
+	FROM (SELECT id, sift.score(ctid) AS s FROM sr WHERE body @@> 'wire OR cable') a
+	JOIN (SELECT id, sift.score(ctid) AS s FROM sr_own WHERE body @@> 'wire OR cable') b USING (id);
+ visible_matches | the_scores_of_the_rows_it_sees 
+-----------------+--------------------------------
+              85 | t
+(1 row)
+
+SELECT count(*) AS visible, max(sift.max_score(ctid)) = (SELECT max(sift.score(ctid)) FROM sr_own WHERE body @@> 'wire OR cable') AS max_of_visible
+	FROM sr WHERE body @@> 'wire OR cable';
+ visible | max_of_visible 
+---------+----------------
+      85 | t
+(1 row)
+
+RESET ROLE;
+-- a partitioned table whose partitions have no index
+CREATE TABLE sp (id int, body text) PARTITION BY RANGE (id);
+CREATE TABLE sp1 PARTITION OF sp FOR VALUES FROM (0) TO (200);
+CREATE TABLE sp2 PARTITION OF sp FOR VALUES FROM (200) TO (1000);
+INSERT INTO sp SELECT id, body FROM sd_src;
+SELECT count(*) AS matches, count(*) FILTER (WHERE s > 0) AS scored FROM (SELECT sift.score(ctid) AS s FROM sp WHERE body @@> 'wire OR cable') q;
+ matches | scored 
+---------+--------
+     171 |    171
+(1 row)
+
+SELECT count(*) = (SELECT count(*) FROM sp1 WHERE body @@> 'cable') AS the_rows_of_the_partition, bool_and(a.s = b.s) AS a_partition_as_alone
+	FROM (SELECT id, sift.score(ctid) AS s FROM sp WHERE body @@> 'cable' AND tableoid = 'sp1'::regclass) a
+	JOIN (SELECT id, sift.score(ctid) AS s FROM sp1 WHERE body @@> 'cable') b USING (id);
+ the_rows_of_the_partition | a_partition_as_alone 
+---------------------------+----------------------
+ t                         | t
+(1 row)
+
+DROP TABLE sp, sr, sr_own, su, sd_ix, sd_u1, sd_u2, sd_u3, sd_d, sd_m, sd_src, sd_ref, sd_tgt;
+DROP OWNED BY sift_t_nd_user;
+DROP ROLE sift_t_nd_user;
+DROP FUNCTION su_same(text), sd_copy(text, boolean), nd_err(text), nd_plan(text);
+DROP EXTENSION pg_sift;

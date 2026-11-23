@@ -100,7 +100,7 @@ parse_weights(const char *spec, char ***names, double **weights)
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 						 errmsg("invalid weight for field \"%s\"", tok),
-						 errhint("A weight is a number above 0 and up to %d: \"title^3, body\".", (int) SIFT_MAX_BOOST)));
+						 errhint("A weight is a number above 0 and up to %g: \"title^3, body\".", SIFT_MAX_BOOST)));
 		}
 		while (*tok == ' ' || *tok == '\t')
 			tok++;
@@ -510,30 +510,32 @@ sift_build_info(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+/* A score is computed by the scan of its relation; a ctid typed in (no relation) has none, and scores 0 */
 static Datum
-scan_only(const char *name)
+scan_only(FunctionCallInfo fcinfo, const char *name)
 {
-	const char *out = sift_quarantine_names();
+	Node	   *arg = linitial(((FuncExpr *) fcinfo->flinfo->fn_expr)->args);
 
+	if (IsA(arg, Const))
+		PG_RETURN_FLOAT4(0.0f);
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("sift.%s() must be computed by a sift scan of the same relation", name),
-			 errdetail("The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off."),
-			 out ? errhint("Index %s of this database is quarantined (sift.quarantine), so no sift scan runs on it and the score has no value: REINDEX it to put it back in service.", out)
-			 : errhint("Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.")));
+			 errdetail("The score exists only inside the scan of the relation the ctid belongs to: it is not computed above a join, in a sublink, or for the ctid of a subquery."),
+			 errhint("Call it on the ctid of a table in the FROM clause of the query level that scans the table.")));
 	return (Datum) 0;
 }
 
 Datum
 sift_score(PG_FUNCTION_ARGS)
 {
-	return scan_only("score");
+	return scan_only(fcinfo, "score");
 }
 
 Datum
 sift_max_score(PG_FUNCTION_ARGS)
 {
-	return scan_only("max_score");
+	return scan_only(fcinfo, "max_score");
 }
 
 /*
@@ -553,6 +555,7 @@ typedef struct HighlightIndex
 static void
 hl_count(const SiftQNode *n, int *nexact, int *nwild)
 {
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case SQ_AND:
@@ -565,6 +568,7 @@ hl_count(const SiftQNode *n, int *nexact, int *nwild)
 			return;
 		case SQ_NOT:
 		case SQ_NOTHING:
+		case SQ_ALL:
 			return;
 		case SQ_TERM:
 			(*nexact)++;
@@ -584,6 +588,7 @@ hl_word(const SiftQNode *n, int ti, const char **s, int *len)
 static void
 hl_add(HighlightIndex *hl, const SiftQNode *n)
 {
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case SQ_AND:
@@ -618,6 +623,7 @@ hl_add(HighlightIndex *hl, const SiftQNode *n)
 			return;
 		case SQ_NOT:
 		case SQ_NOTHING:
+		case SQ_ALL:
 			return;
 		default:
 			hl->wild[hl->nwild++] = n;

@@ -25,7 +25,7 @@ LIMIT 10;
 
 ## 2. SiftQL Query Syntax
 
-`AND`, `OR`, and `NOT` are uppercase keywords; whitespace acts as `AND`. Precedence is `NOT` > `AND` > `OR`. Every `NOT` requires a positive term in its `AND` group.
+`AND`, `OR`, and `NOT` are uppercase keywords; whitespace acts as `AND`. Precedence is `NOT` > `AND` > `OR`. A query may be only a `NOT`: `NOT wire` matches every row with a text that `wire` does not (rows with a NULL text never match), and scores `0`. Queries may hold up to 65,535 leaves, 1,024 levels of nesting, phrases of 4,096 terms and boosts up to `1e18`.
 
 | Syntax | Example | Behavior |
 |---|---|---|
@@ -43,9 +43,10 @@ Patterns expanding past `sift.max_expansions` (default `512`) still match every 
 ## 3. Ranking and `sift.score(ctid)`
 
 - `ORDER BY sift.score(ctid) DESC LIMIT k` runs a block-max WAND ranked scan that skips blocks unable to enter the top `k` (ties break by `ctid`).
-- `WHERE sift.score(ctid) > 0.5` pushes simple threshold comparisons (`>`, `>=`, `<`, `<=`) against constants or parameters directly into the scan (`Score Filter`). For other expressions over the score, filter in an outer subquery.
+- `WHERE sift.score(ctid) > 0.5` pushes simple threshold comparisons (`>`, `>=`, `<`, `<=`) against constants or parameters directly into the scan (`Score Filter`). Any other condition on the score is tested on the row the scan scores.
 - `ORDER BY category, sift.score(ctid) DESC LIMIT k` scores only rows tied with the `k`-th key value (`Order: category, score DESC`).
-- For `UPDATE`, `DELETE`, `MERGE`, or `FOR UPDATE`, compute `sift.score(ctid)` inside a materialized subquery or CTE and join back by primary key.
+- `UPDATE`, `DELETE`, `MERGE` and `SELECT ... FOR UPDATE / FOR SHARE` read `sift.score(ctid)` in their own scan of the table, including a row a concurrent transaction changed (it is matched and scored again from its new text). The score is not available in `RETURNING`: select it in a subquery or `WITH` query of the statement.
+- A table that no `sift` index scan serves (no index, `sift.enable_scan = off`, a partition without an index, row-level security without `sift.rls_scores`) is scored by `SiftScoreScan`, which reads the heap twice: the first pass counts the documents and the document frequencies, the second scores the rows with the formulas of the index. The statistics are those of the rows the role may see. A leaf that matches several words (prefix, wildcard, regular expression, fuzzy) weighs by the number of documents it matches, and the BM25 parameters are the defaults. Without a `@@>` condition every score is `0`.
 
 ## 4. Combining BM25 Search with `sift_col` Analytics
 
@@ -115,7 +116,7 @@ Inspect the generated query with `sift.facet_sql(...)`.
 
 ## 8. Row-Level Security (`sift.rls_scores`)
 
-Roles subject to RLS policies do not use ranked BM25 scans by default because BM25 corpus statistics (document count, term document frequencies, average length) span the whole index.
+Roles subject to RLS policies do not use ranked index scans by default because BM25 corpus statistics (document count, term document frequencies, average length) span the whole index. Their `sift.score()` is computed by `SiftScoreScan` from the rows the role may see.
 
 - **Opt-in:** A superuser can enable ranked scans for a role via `ALTER ROLE app SET sift.rls_scores = on;`. Policy predicates run before query filters, hidden rows are never returned, and `EXPLAIN` omits hidden-row counters.
 - **Security caveat:** Because BM25 scores depend on global term frequencies, a user who knows their own document lengths can infer corpus-level term prevalence. Keep `sift.rls_scores = off` or partition one index per tenant when tenants must not observe corpus statistics.

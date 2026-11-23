@@ -352,6 +352,18 @@ doc_pass(SiftPlan *p, text *doc, float4 *score)
 }
 
 bool
+sift_plan_eval_doc(SiftPlan *p, text *doc, float4 *score)
+{
+	SiftDoc    *d = sift_doc_open(p->st->analyzer, VARDATA_ANY(doc), VARSIZE_ANY_EXHDR(doc));
+
+	for (int i = 0; i < p->nqueries; i++)
+		if (!sift_doc_match(d, p->queries[i]->root))
+			return false;
+	*score = p->scoring ? doc_score(p, d) : 0;
+	return true;
+}
+
+bool
 sift_plan_recheck(SiftPlan *plan, text *doc)
 {
 	return doc_pass(plan, doc, NULL);

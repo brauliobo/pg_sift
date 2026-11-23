@@ -64,7 +64,7 @@ RESET plan_cache_mode;
 -- the score comes from the scan of the OR; with the bitmap scan there is none
 SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
 SET sift.enable_scan = off;
-SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id FROM a WHERE body @@> ANY (ARRAY['7', 'gamma']) ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 RESET sift.enable_scan;
 
 DROP TABLE a;

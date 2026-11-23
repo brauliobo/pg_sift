@@ -565,3 +565,77 @@ scan_recheck(ScanState *node, TupleTableSlot *slot)
 	return true;
 }
 
+/* Does an EvalPlanQual recheck hand this scan a row version of its relation (or has it, already) instead of letting it read? */
+bool
+epq_substituted(const SiftScanState *ss)
+{
+	const EPQState *epq = ss->css.ss.ps.state->es_epq_active;
+	Index		rti = ((const Scan *) ss->css.ss.ps.plan)->scanrelid;
+
+	return epq != NULL && rti > 0 &&
+		(epq->relsubs_done[rti - 1] || epq->relsubs_slot[rti - 1] != NULL || epq->relsubs_rowmark[rti - 1] != NULL);
+}
+
+/* The score of the row version in heapslot, from its text; false when it no longer matches the queries (or has none) */
+static bool
+epq_score(SiftScanState *ss, float4 *score)
+{
+	MemoryContext old = MemoryContextSwitchTo(ss->tmpcx);
+	text	   *doc;
+	bool		ok;
+
+	if (!ss->started)
+	{
+		bool		max = false;
+
+		for (int i = 0; i < ss->ncols; i++)
+			max |= ss->col[i].kind == COL_MAX_SCORE;
+		MemoryContextSwitchTo(old);
+		if (max)
+			start_scan(ss);
+		else
+		{
+			ss->started = true;
+			old = MemoryContextSwitchTo(ss->cxt);
+			bind_scan(ss);
+			MemoryContextSwitchTo(old);
+		}
+		old = MemoryContextSwitchTo(ss->tmpcx);
+	}
+	doc = ss->empty ? NULL : index_text(ss);
+	ok = doc != NULL && sift_plan_eval_doc(ss->plan, doc, score);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(ss->tmpcx);
+	return ok;
+}
+
+/*
+ * EvalPlanQual: the row version a concurrent update left, which the caller locked, replaces the rows the scan reads. It is scored from
+ * its own text, so the match, the score and the quals are those of that version (a text that no longer matches is no row). The test
+ * tuple is of the relation's layout, not the scan tuple's, so ExecScan cannot hand it up: this builds the scan tuple and projects it.
+ */
+TupleTableSlot *
+epq_next(SiftScanState *ss)
+{
+	EPQState   *epq = ss->css.ss.ps.state->es_epq_active;
+	Index		rti = ((Scan *) ss->css.ss.ps.plan)->scanrelid;
+	ExprContext *econtext = ss->css.ss.ps.ps_ExprContext;
+	TupleTableSlot *test = epq->relsubs_slot[rti - 1];
+	float4		score = 0;
+
+	if (epq->relsubs_done[rti - 1])
+		return NULL;
+	epq->relsubs_done[rti - 1] = true;
+	if (test != NULL ? TupIsNull(test) : !EvalPlanQualFetchRowMark(epq, rti, ss->heapslot) || TupIsNull(ss->heapslot))
+		return NULL;
+	if (test != NULL)
+		ExecCopySlot(ss->heapslot, test);
+	if (!(ss->epq_score ? ss->epq_score : epq_score) (ss, &score))
+		return NULL;
+	ResetExprContext(econtext);
+	econtext->ecxt_scantuple = fill_scan_slot(ss, score);
+	if (!ExecQual(ss->cuts, econtext) || !ExecQual(ss->quals, econtext))
+		return NULL;
+	return ss->css.ss.ps.ps_ProjInfo ? ExecProject(ss->css.ss.ps.ps_ProjInfo) : econtext->ecxt_scantuple;
+}
+

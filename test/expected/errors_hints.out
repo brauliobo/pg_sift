@@ -83,7 +83,7 @@ SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
    hint: Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.
 (1 row)
 
--- sift.explain_why takes one statement; a score outside a sift scan says where it exists
+-- sift.explain_why takes one statement; a score of a ctid that is no column of a table says where it exists
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
                                                                        expect                                                                       
 ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -91,12 +91,12 @@ SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
    hint: Pass the text of a single SELECT, without a second statement; the SELECT of an INSERT, CREATE TABLE AS or a DELETE is explained by itself.
 (1 row)
 
-SELECT expect('SELECT sift.score(ctid) FROM many');
-                                                                                                  expect                                                                                                  
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 0A000 sift.score() must be computed by a sift scan of the same relation                                                                                                                                 +
-   detail: The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.+
-   hint: Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+SELECT expect('SELECT sift.score(q.c) FROM (SELECT ctid AS c FROM many OFFSET 0) q');
+                                                                               expect                                                                               
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 0A000 sift.score() must be computed by a sift scan of the same relation                                                                                           +
+   detail: The score exists only inside the scan of the relation the ctid belongs to: it is not computed above a join, in a sublink, or for the ctid of a subquery.+
+   hint: Call it on the ctid of a table in the FROM clause of the query level that scans the table.
 (1 row)
 
 -- an ALTER INDEX that changes what the segments were written with is refused once the index holds a segment, and the table goes on working;

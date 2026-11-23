@@ -65,6 +65,7 @@ RESET enable_bitmapscan;
 EXPLAIN (COSTS OFF) SELECT id, sift.score(ctid) FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT 5;
 EXPLAIN (COSTS OFF) SELECT id FROM r WHERE body @@> 'quick fox' AND grp = 1 ORDER BY sift.score(ctid) DESC LIMIT 5;
 SET sift.enable_scan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT 5;
 SELECT id FROM r WHERE body @@> 'quick fox' ORDER BY sift.score(ctid) DESC LIMIT 5;
 RESET sift.enable_scan;
 
@@ -86,10 +87,10 @@ EXECUTE top(NULL, 3);
 SELECT t.q, s.id FROM (VALUES ('lazy'), ('runs')) t(q),
 	LATERAL (SELECT id FROM r WHERE body @@> t.q ORDER BY sift.score(ctid) DESC LIMIT 2) s ORDER BY 1, 2;
 
--- the score only exists inside the scan of its relation
-SELECT sift.score(ctid) FROM r;
+-- a row no match qualifies scores 0, and a statement that locks the rows may read the score
+SELECT count(*), max(sift.score(ctid)) FROM r;
 SELECT id FROM r WHERE body @@> 'fox' ORDER BY sift.score(ctid) DESC LIMIT 1 FOR UPDATE;
-SELECT id FROM r WHERE id < 5 ORDER BY sift.score(ctid) DESC;
+SELECT id FROM r WHERE id < 5 ORDER BY sift.score(ctid) DESC, id;
 
 -- the operator follows the index analyzer
 CREATE TABLE s (id int, body text);

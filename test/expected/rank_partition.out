@@ -340,15 +340,19 @@ SELECT id, sift.score(ctid) FROM re WHERE body @@> 'rare' ORDER BY sift.score(ct
 (0 rows)
 
 DROP TABLE re;
--- sift.score() outside a ranked scan raises its usual error, and sift.max_score() is refused through the parent
-SELECT sift.score(ctid) FROM rp;
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+-- sift.score() of rows no match qualifies is 0, and sift.max_score() is refused through the parent
+SELECT count(*), max(sift.score(ctid)) FROM rp;
+ count | max 
+-------+-----
+  4000 |   0
+(1 row)
+
 SELECT sift.score(ctid) FROM rp WHERE id = 5;
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+ score 
+-------
+     0
+(1 row)
+
 SELECT id, sift.max_score(ctid) FROM rp WHERE body @@> 'rare' ORDER BY sift.score(ctid) DESC LIMIT 3;
 ERROR:  sift.max_score() is not available through a partitioned table
 HINT:  Call it on one partition, or use sift.score().
@@ -545,7 +549,7 @@ DROP TABLE ri CASCADE;
 NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to table ri1
 drop cascades to table ri2
--- a partition without a sift index: matching and count(*) work, ranking says what is missing
+-- a partition without a sift index: matching and count(*) work, and the heap scores its rows
 CREATE TABLE rx (id int, body text) PARTITION BY RANGE (id);
 CREATE TABLE rx1 PARTITION OF rx FOR VALUES FROM (0) TO (100);
 CREATE TABLE rx2 PARTITION OF rx FOR VALUES FROM (100) TO (200);
@@ -566,11 +570,7 @@ SELECT count(*) FROM (SELECT id FROM rx WHERE body @@> 'beta' OFFSET 0) t;
    240
 (1 row)
 
-SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() needs a sift index on every partition the query reads
-DETAIL:  "rx3" has no sift index that answers the @@> condition.
-HINT:  Create a matching USING sift index on the partitioned table or on every partition the query reads.
-SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
  id |   score    
 ----+------------
   4 | 0.34420642
@@ -578,14 +578,28 @@ SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY 
  14 | 0.34420642
 (3 rows)
 
-SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id >= 200 ORDER BY sift.score(ctid) DESC LIMIT 3;
-ERROR:  sift.score() needs a sift index on every partition the query reads
-DETAIL:  "rx3" has no sift index that answers the @@> condition.
-HINT:  Create a matching USING sift index on the partitioned table or on every partition the query reads.
+SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id < 200 ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id |   score    
+----+------------
+  4 | 0.34420642
+  9 | 0.34420642
+ 14 | 0.34420642
+(3 rows)
+
+SELECT id, sift.score(ctid) FROM rx WHERE body @@> 'beta' AND id >= 200 ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+ id  |   score    
+-----+------------
+ 204 | 0.34420642
+ 209 | 0.34420642
+ 214 | 0.34420642
+(3 rows)
+
 SELECT id, sift.score(ctid) FROM rx WHERE id < 200 ORDER BY id LIMIT 1;
-ERROR:  sift.score() must be computed by a sift scan of the same relation
-DETAIL:  The score exists only inside the sift scan that matched the row: it is not computed above a join, in a WHERE clause, for another table than the one scanned, or while sift.enable_scan is off.
-HINT:  Call it on the ctid of a table with a sift index, in the query level that scans the table, with a @@> condition on the indexed column.
+ id | score 
+----+-------
+  0 |     0
+(1 row)
+
 DROP TABLE rx;
 DROP TABLE rp;
 DROP FUNCTION rp_plan(text), rp_top(regclass, text, text, int, text, text), rp_scores(regclass, text, text, int, text, text),

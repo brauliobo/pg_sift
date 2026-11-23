@@ -76,6 +76,7 @@ extern List *scan_attr_tests(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *i
 extern bool scan_match_clause(PlannerInfo *root, Node *clause, IndexOptInfo *index, bool ranked, Expr **query);
 extern bool score_walker(Node *node, ScoreRefs *refs);
 extern bool score_cutoff(Node *clause, Index relid, bool *lower);
+extern bool reads_score_of(Node *node, Index relid);
 extern bool cuts_from_above(List *cuts, Index relid);
 extern bool is_partition(RelOptInfo *rel);
 extern List *score_exprs(PlannerInfo *root, RelOptInfo *rel);

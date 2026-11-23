@@ -1,6 +1,6 @@
 -- sift.score() compared with a constant in WHERE: a cutoff of the ranked scan. Every filtered query must return what the
--- subquery that ranks and filters on the score above it returns (the reference); any other use of the score in WHERE
--- is still an error
+-- subquery that ranks and filters on the score above it returns (the reference); any other condition on the score is tested
+-- on the row the scan scores
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 
@@ -281,27 +281,38 @@ SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND NOT 
 SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''quick OR dog'' AND sift.score(ctid) BETWEEN 0.9 AND 1.3 ORDER BY 1',
 	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''quick OR dog'' OFFSET 0) q WHERE s BETWEEN 0.9 AND 1.3 ORDER BY 1');
 
--- any other use of the score in WHERE is an error that says where to filter
-SELECT id FROM r WHERE body @@> 'dog' AND (sift.score(ctid) > 1 OR id = 1);
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) = 1;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) <> 1;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) IS NOT NULL;
-SELECT id FROM r WHERE body @@> 'dog' AND (CASE WHEN sift.score(ctid) > 1 THEN true ELSE false END);
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) + 1 > 2;
-SELECT id FROM r WHERE body @@> 'dog' AND abs(sift.score(ctid)) > 1;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid)::numeric > 1;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > id;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > random();
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > sift.score(ctid) / 2;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.max_score(ctid) > 1;
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > ANY (ARRAY[1, 2]);
-SELECT id FROM r WHERE sift.score(ctid) > 1;
-SELECT id FROM r WHERE body @@> 'dog' OR sift.score(ctid) > 1;
+-- any other condition on the score is tested on the row the scan scores: the rows of the filter on the reference subquery
+SELECT c AS condition, s.* FROM (VALUES
+	('(sift.score(ctid) > 1 OR id = 1)', '(s > 1 OR id = 1)'),
+	('sift.score(ctid) = 1', 's = 1'),
+	('sift.score(ctid) <> 1', 's <> 1'),
+	('sift.score(ctid) IS NOT NULL', 's IS NOT NULL'),
+	('(CASE WHEN sift.score(ctid) > 1 THEN true ELSE false END)', '(CASE WHEN s > 1 THEN true ELSE false END)'),
+	('sift.score(ctid) + 1 > 2', 's + 1 > 2'),
+	('abs(sift.score(ctid)) > 1', 'abs(s) > 1'),
+	('sift.score(ctid)::numeric > 1', 's::numeric > 1'),
+	('sift.score(ctid) > id', 's > id'),
+	('sift.score(ctid) > random() * 0', 's > 0'),
+	('sift.score(ctid) > sift.score(ctid) / 2', 's > s / 2'),
+	('sift.max_score(ctid) > 1', 'ms > 1'),
+	('sift.score(ctid) > ANY (ARRAY[1, 2])', 's > ANY (ARRAY[1, 2])'),
+	('sift.score(ctid) > 1', 's > 1')
+) v(c, rc), LATERAL sf_same('SELECT id FROM r WHERE body @@> ''dog'' AND ' || c || ' ORDER BY 1',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s, sift.max_score(ctid) AS ms FROM r WHERE body @@> ''dog'' OFFSET 0) q WHERE ' || rc || ' ORDER BY 1') s;
+-- no match to score: every score is 0
+SELECT * FROM sf_same('SELECT id FROM r WHERE sift.score(ctid) > 1', 'SELECT id FROM r WHERE false');
+SELECT * FROM sf_same('SELECT id FROM r WHERE sift.score(ctid) = 0 ORDER BY 1', 'SELECT id FROM r ORDER BY 1');
+-- a match under an OR is no query of the scan: its rows score 0
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''dog'' OR sift.score(ctid) > 1 ORDER BY 1', 'SELECT id FROM r WHERE body @@> ''dog'' ORDER BY 1');
 SELECT count(*) FROM r WHERE body @@> ANY (ARRAY['dog', 'fox']) AND sift.score(ctid) > 1;
 SELECT count(*) FROM r WHERE body @@> 'dog OR fox' AND sift.score(ctid) > 1;
 SELECT id FROM r WHERE body @@> 'dog' AND EXISTS (SELECT 1 WHERE sift.score(r.ctid) > 1 OFFSET 0);
-SELECT id FROM r WHERE body @@> 'dog' AND sift.score(ctid) > 1 FOR UPDATE;
-UPDATE r SET grp = grp WHERE body @@> 'dog' AND sift.score(ctid) > 1;
+SELECT * FROM sf_same('SELECT id FROM r WHERE body @@> ''dog'' AND sift.score(ctid) > 1 ORDER BY 1 FOR UPDATE',
+	'SELECT id FROM (SELECT id, sift.score(ctid) AS s FROM r WHERE body @@> ''dog'' OFFSET 0) q WHERE s > 1 ORDER BY 1');
+CREATE TABLE r_upd AS SELECT * FROM r;
+CREATE INDEX r_upd_idx ON r_upd USING sift (body);
+UPDATE r_upd SET grp = grp WHERE body @@> 'dog' AND sift.score(ctid) > 1;
+DROP TABLE r_upd;
 
 -- the same through a subquery filters, as the hint says
 SELECT count(*) AS n FROM (SELECT sift.score(ctid) AS s FROM r WHERE body @@> 'dog' OFFSET 0) q WHERE s > 1;

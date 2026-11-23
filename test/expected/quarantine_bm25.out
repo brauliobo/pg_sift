@@ -65,9 +65,9 @@ EXCEPT SELECT q, a FROM answers;
 (0 rows)
 
 SELECT expect($$ SELECT sift.score(ctid) FROM d WHERE body @@> 'alpha 3' $$) AS score_without_the_index;
-                         score_without_the_index                          
---------------------------------------------------------------------------
- 0A000: sift.score() must be computed by a sift scan of the same relation
+ score_without_the_index 
+-------------------------
+ ok
 (1 row)
 
 REINDEX INDEX d_idx;

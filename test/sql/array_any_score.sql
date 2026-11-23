@@ -102,8 +102,8 @@ SELECT count(*) FROM t WHERE body @@> ALL (ARRAY['omega', 'sigma']);
 SELECT count(*) FROM t WHERE body @@> 'omega AND sigma';
 SELECT count(*) FROM t WHERE NOT body @@> ANY (ARRAY['omega', 'sigma']);
 SELECT count(*) FROM t WHERE NOT body @@> 'omega OR sigma';
-SELECT id FROM t WHERE body @@> ALL (ARRAY['omega', 'sigma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
-SELECT id FROM t WHERE NOT body @@> ANY (ARRAY['omega', 'sigma']) ORDER BY sift.score(ctid) DESC LIMIT 3;
+SELECT id FROM t WHERE body @@> ALL (ARRAY['omega', 'sigma']) ORDER BY sift.score(ctid) DESC, id LIMIT 3;
+SELECT id FROM t WHERE NOT body @@> ANY (ARRAY['omega', 'sigma']) ORDER BY sift.score(ctid) DESC, id LIMIT 3;
 
 -- a parameter: the array of a generic plan is read when the scan starts
 PREPARE any_s(text[]) AS SELECT id, round(sift.score(ctid)::numeric, 4) FROM t WHERE body @@> ANY ($1) ORDER BY sift.score(ctid) DESC, id LIMIT 3;

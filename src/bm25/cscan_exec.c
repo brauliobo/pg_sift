@@ -250,7 +250,7 @@ sift_exec(CustomScanState *node)
 	TupleTableSlot *slot;
 
 	sift_errctx_push(&ctx, ((SiftScanState *) node)->indexoid);
-	slot = ExecScan(&node->ss, scan_next, scan_recheck);
+	slot = epq_substituted((SiftScanState *) node) ? epq_next((SiftScanState *) node) : ExecScan(&node->ss, scan_next, scan_recheck);
 	sift_errctx_pop(&ctx);
 	if (TupIsNull(slot))
 		search_assert_within(((SiftScanState *) node)->cxt);
