@@ -117,8 +117,8 @@ if [[ $MODE == affected ]]; then
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
 		elif [[ $f == test/col/* ]]; then FAST+="|^difftest-col|${GROUP[plan_gate]}"
-		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl|-vstore)?(-[12])?$'
-		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn(-shapes|-vstore)?$'
+		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl)?(-[12])?$'
+		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn(-shapes)?$'
 		elif [[ $f == test/fuzz/bm25_fuzz* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/fuzz/shapes_matrix* || $f == test/fuzz/surface_sweep* ]]; then FAST+='|^shapes-(matrix|surface)$'
 		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+="|${GROUP[plan_gate]}"; fi

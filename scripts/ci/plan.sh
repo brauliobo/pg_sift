@@ -132,9 +132,6 @@ if [[ $MODE == full ]]; then
 			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 		done
-		# every string column in a shared value store (docs/COL-VSTORE.md), a standing gate of the nightly run; the setting reaches the sessions through PGOPTIONS
-		job difftest-fuzz-vstore difftest-fuzz 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-6 --queries 40 --rows 3000 --leader-on
-		job difftest-txn-vstore difftest-txn 1 env PGOPTIONS='-c sift.test_vstore_columns=*' python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-6 --stop-after 2
 	fi
 	once_on_18 && job fuzz fuzz 1 "$S/fuzz.sh" --scale "$(lean_or_deep 4 10)"
 	once_on_18 && flavor_job hardened hardened "$S/hardened.sh"

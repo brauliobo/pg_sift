@@ -129,6 +129,7 @@ CHECKS+=(
 	'txn-fuzz	test/fuzz/txn_fuzz.py --selftest'
 	'bm25-fuzz	test/fuzz/bm25_fuzz.py --selftest'
 	'fast-gate	scripts/fast-gate.sh --selftest'
+	'test-hygiene	python3 -I scripts/check-test-hygiene.py --selftest && python3 -I scripts/check-test-hygiene.py'
 )
 
 tmp=$(mktemp -d)
