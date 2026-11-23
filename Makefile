@@ -133,6 +133,7 @@ TESTING_REGRESS += agg_v6_par
 TESTING_REGRESS += agg_v6_par_distinct_dict
 TESTING_REGRESS += agg_v6_par_distinct_dict_robust
 TESTING_REGRESS += agg_v6_par_topk_ext
+TESTING_REGRESS += agg_v6_par_dist_lean
 TESTING_REGRESS += agg_v6_parallel_2stage
 TESTING_REGRESS += agg_v6_parallel_2stage_robust
 TESTING_REGRESS += agg_v6_parallel_col_delta
