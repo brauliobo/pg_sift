@@ -134,3 +134,61 @@ A part gets the pack when the first 4 blocks, scaled to the part, are at most 40
 ## Reading
 
 The fetch of a row (`table/f2/f2_fetch.c`) takes the fast path for an MVCC snapshot when the snapshot sees the insert of the granule without a version of each row (the granule is frozen, the inserters of the part are settled, or its rows are of one transaction), the granule has no deletion vector and the row is not a pending delete; a column delta of the part is laid over the row. Any other row takes the granule path, which gives the same row. The decoded blocks are kept in a per-backend cache (`SIFT_F2_GCACHE_MAX_BLOCKS`), charged to `sift.backend_cache_kb` and dropped with the part, the table or a relcache invalidation.
+
+# Format 2.0 on-disk and WAL reference
+
+Every Format 2.0 structure that is written to disk or to the log, with the size and the offsets that the build asserts (`StaticAssertDecl`). A change of a structure here is a change of its assertion in the same commit.
+
+## sift_table visibility map
+
+A `sift_table` has the visibility map fork (`VISIBILITYMAP_FORKNUM`) that PostgreSQL's index-only scan reads. It is indexed by the **virtual block** of a row (`vblock`, the block number of its TID), never by a page of the main fork: the main fork holds the manifest, the parts and their extents, and `vblock` can be past its end. PostgreSQL's `visibilitymap_set()` is never called: its redo (`heap_xlog_visible`) sets `PD_ALL_VISIBLE` in the main fork block of the same number. The map is written by `core/f2/f2_vm_xlog.c` only.
+
+### Compatibility bit and counters
+
+| Name | Where | Value |
+|---|---|---|
+| `SIFT_ROCOMPAT_TABLE_VM` | `SiftMetaCommon.ro_compat_flags` (`core/f2/meta.h`) | `1 << 5`. A reader that ignores the map reads correct rows. A writer that cannot clear the bits (an older build, or a server that does not preload `pg_sift`) refuses to delete or update. Set by the first VACUUM that sets a bit. |
+| `vm_all_visible_vblocks` | `SiftColMetaPageData` (`col/f2/col_meta.h`) | `uint32`: the vblocks that are all visible, counted in the map fork at the last VACUUM |
+| `vm_all_frozen_vblocks` | `SiftColMetaPageData` | `uint32`: the vblocks that are all frozen |
+| `vm_total_vblocks` | `SiftColMetaPageData` | `uint64`: the vblocks that hold at least one row at the last VACUUM (the vblocks a compaction emptied and the ones nothing reserved are not counted) |
+
+`sizeof(SiftColMetaPageData) == 424` is unchanged: the counters sit in the bytes `maint_errmsg` gave up. The same three counters are copied into `SiftShmIndexMeta` (`core/shm_manifest.h`), whose slot stays two cache lines. A table that was never vacuumed has zeros: `allvisfrac = 0.0`.
+
+The planner reads `allvisfrac = vm_all_visible_vblocks / vm_total_vblocks` (0 where the server cannot log the map) and `VACUUM` stores `relallvisible` and `relallfrozen` scaled to the blocks of the file, `rint(nblocks * allvisfrac)`, so that `pg_class` and `table_relation_estimate_size` agree.
+
+### When a vblock is all visible
+
+A vblock is marked `VISIBILITYMAP_ALL_VISIBLE` by VACUUM, under a share lock on the table (no writer holds it, so nothing is staged in a backend that VACUUM cannot see), when all of these hold:
+
+1. **V1, closed and full.** It is below the floor `min(next_vblock, lease_lo of every live lease of the table)`, and all 291 of its rows are present. A backend that inserts reserves a run of vblocks and publishes `[lo, hi)` in a `SiftShmTidLease`; `lo` is the vblock it fills now and moves as it fills. A row that was staged and rolled back leaves an index entry whose address nothing holds; the vblock of such an address is never full, so no bit stands for it and the scan asks the table.
+2. **V2, no slab row.** No row of it is in the slab of a partition (the addresses of the slab are read).
+3. **V3, sealed inserters.** Every part whose envelope `[tid_min, tid_max]` covers it is frozen or sealed `SIFT_PART_FLAG_ALL_VISIBLE`, with `max_xid` older than the oldest transaction, and has no `SIFT_PART_EXT_EXPIRED`.
+4. **V4, no live tombstone.** No pending delete names a row of it, and a part that covers it has no deletion vector or has one that is `SIFT_PART_FLAG_DV_SETTLED` with `dv_max_xid` older than the oldest transaction. VACUUM removes the addresses of the rows that are dead for everyone from the indexes before it settles or compacts a part, so a settled vector has no entry left in any index.
+5. **V5, no column delta.** The partition has no `SIFT_PT_COL_DELTA` chain.
+
+It is also `VISIBILITYMAP_ALL_FROZEN` when every covering part is frozen (`SIFT_PART_FLAG_UNFROZEN` clear), has no deletion vector and has `max_xid` older than the freeze limit. A table with a time to live (`SIFT_ROCOMPAT_TTL`) has no map: a part that expires drops rows without a delete.
+
+Rows go to a vblock once and vblocks are never reused, so an insert cannot make a bit untrue. A temporary table has no map.
+
+### Clearing
+
+`DELETE`, and `UPDATE` (a column delta and a delete plus an insert alike), clear the two bits of the vblock of the old row (`sift_tbl_vm_clear`) before the change is staged, which is before it can be logged: replay never meets a deleted or updated row whose vblock is all visible. The clear is logged `SIFT_XLOG_VM_CLEAR`. `SELECT FOR UPDATE` and friends do not clear. `TRUNCATE` truncates the fork with the main fork, a rewrite starts a new file without one, and an unlogged table's fork is removed with the rest of its forks by the crash reset (its init fork has no map).
+
+### Resource manager `pg_sift_table_vm`
+
+`RegisterCustomRmgr(SIFT_RMGR_ID = 142)` from `_PG_init`, only while `shared_preload_libraries` loads the library; a standby replays the records only if it preloads the library as well. Without it nothing sets a bit and `allvisfrac` is 0.
+
+| Info | Value | Record |
+|---|---|---|
+| `SIFT_XLOG_VM_SET` | `0x10` | `SiftXlVmSet`, then `uint16 word_idx[nwords]`, then `uint64 bit_or[nwords]`; block 0 is the page of the map fork, registered without the hole of a standard page |
+| `SIFT_XLOG_VM_CLEAR` | `0x20` | `SiftXlVmClear`; block 0 is the page of the map fork |
+
+| Structure | Size | Offsets |
+|---|---|---|
+| `SiftXlVmSet` | 24 | `locator` 0, `vm_blkno` 12, `snapshotConflictHorizon` 16, `nwords` 20, `flags` 22, `pad` 23 |
+| `SiftXlVmClear` | 20 | `locator` 0, `vblock` 12, `flags` 16, `pad` 17 |
+| `SiftShmTidLease` (shared memory only) | 32 | `owner` 0, `locator` 4, `lo` 16, `hi` 24 |
+
+A word is eight bytes of the page, least significant byte first: 32 vblocks of two bits (the layout of the page of PostgreSQL's map: 4 vblocks per byte, 32,672 per page, 1,021 words).
+
+**Redo of `SIFT_XLOG_VM_SET`:** where the server is a hot standby and `snapshotConflictHorizon` is a valid transaction id, `ResolveRecoveryConflictWithSnapshot(horizon, false, locator)` first, so that a query whose snapshot might not see a transaction the bits stand for ends before it can read them (`hot_standby_feedback = off` needs it); then the page of the map is read (zeroed where missing), the words ORed in, the LSN set. The horizon is the newest `max_xid` or `dv_max_xid` of the clean parts that overlap the page. Redo never reads the main fork. A clear needs no horizon: it only sends a query to the table.
