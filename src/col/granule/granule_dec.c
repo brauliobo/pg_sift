@@ -20,8 +20,10 @@ group_total(const SiftGranuleView *v, int col)
 	int			total = 0;
 
 	if (col < 0 || col + 1 >= v->hdr->nchunks)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a chunk of elements names column %d, which is not in the granule", col));
+		SIFT_FAIL_CORRUPT("sift: a chunk of elements names column %d, which is not in the granule", col);
 
+	if (v->hdr->chunks[col + 1].flags & SIFT_CHUNK_ELEMS)
+		SIFT_FAIL_CORRUPT("sift: the chunk of lengths of column %d holds elements itself", col);
 	sift_chunk_open(v, col + 1, &g);
 	if (g.enc == SIFT_CENC_LIST_LEN)
 		total = (int) ((const uint32 *) g.body)[1];
@@ -29,12 +31,27 @@ group_total(const SiftGranuleView *v, int col)
 	return total;
 }
 
+/* The decode of the values reads n bytes of the body of a chunk */
+static void
+body_holds(const SiftChunk *c, uint64 n)
+{
+	if (n > c->body_len)
+		SIFT_FAIL_CORRUPT("sift: the %u values of a chunk of encoding %u need %llu bytes of its %u", c->nnonnull, c->enc, (unsigned long long) n, c->body_len);
+}
+
+/* The decode of values up to k1 reads those the chunk holds */
+static void
+values_hold(const SiftChunk *c, int k1)
+{
+	if (k1 > c->nnonnull)
+		SIFT_FAIL_CORRUPT("sift: values up to %d are read of a chunk that holds %d", k1, c->nnonnull);
+}
+
 /* The exceptions that hold only kinds, made into the block the entries of the others are read from: the entries in row order, the mask when there are many */
 static const SiftExcHeader *
 exc_unpack(const SiftExcHeader *stored, int nrows)
 {
-	/* check-memory: allow the kinds of one chunk of a granule, at most SIFT_GRANULE_ROWS */
-	int64	   *tags = palloc((nrows + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
+	int64	   *tags = sift_alloc((nrows + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
 	SiftExcHeader *h;
 	SiftVariantExcEntry *e;
 	uint64	   *mask = NULL;
@@ -45,13 +62,13 @@ exc_unpack(const SiftExcHeader *stored, int nrows)
 	for (int i = 0; i < nrows; i++)
 	{
 		if (tags[i] < 0 || tags[i] > UINT8_MAX)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: the kind of a row is %ld", (long) tags[i]));
+			SIFT_FAIL_CORRUPT("sift: the kind of a row is %ld", (long) tags[i]);
 		n += tags[i] != 0;
 	}
 	if (n != stored->n_entries)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a chunk lists %u kinds for %u exceptions", n, stored->n_entries));
+		SIFT_FAIL_CORRUPT("sift: a chunk lists %u kinds for %u exceptions", n, stored->n_entries);
 	len += (n > SIFT_EXC_SPARSE_MAX ? SIFT_EXC_MASK_WORDS * 8 : 0) + ((Size) n + 1) * sizeof(SiftVariantExcEntry);
-	h = palloc0(len);
+	h = sift_alloc0(len);
 	h->n_entries = n;
 	h->flags = n > SIFT_EXC_SPARSE_MAX ? SIFT_EXC_MASKED : 0;
 	if (h->flags & SIFT_EXC_MASKED)
@@ -64,7 +81,7 @@ exc_unpack(const SiftExcHeader *stored, int nrows)
 			if (mask != NULL)
 				mask[i >> 6] |= UINT64CONST(1) << (i & 63);
 		}
-	pfree(tags);
+	sift_free(tags);
 	return h;
 }
 
@@ -83,17 +100,16 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 		char	   *raw;
 
 		if (ref->len < 8)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a wrapped chunk is shorter than its header"));
+			SIFT_FAIL_CORRUPT("sift: a wrapped chunk is shorter than its header");
 		memcpy(hdr, p, 8);
 		if (hdr[1] > SIFT_CHUNK_RAW_MAX)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a wrapped chunk claims %u bytes", hdr[1]));
+			SIFT_FAIL_CORRUPT("sift: a wrapped chunk claims %u bytes", hdr[1]);
 		if (!sift_colz_available(hdr[0]))
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift: chunk compression %u is not available in this build", hdr[0]),
-							errhint("Install a pg_sift built with the library, or REINDEX with this version.")));
-		raw = palloc(hdr[1] + 8);
+			SIFT_FAIL_UNSUPPORTED("Install a pg_sift built with the library, or REINDEX with this version.", "sift: chunk compression %u is not available in this build", hdr[0]);
+		raw = sift_alloc(hdr[1] + 8);
 		c->owned |= SIFT_CHUNK_OWN_RAW;
 		if (!sift_colz_decompress(hdr[0], p + 8, ref->len - 8, raw, hdr[1]))
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a wrapped chunk does not decompress to its length"));
+			SIFT_FAIL_CORRUPT("sift: a wrapped chunk does not decompress to its length");
 		p = raw;
 		len = hdr[1];
 	}
@@ -104,13 +120,13 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 		{
 			bool		nulls = (ref->enc & SIFT_ENC_NULL_SPARSE) != 0;
 			uint16		listed;
-			uint8	   *bm = palloc((c->nrows + 7) / 8 + 8);
+			uint8	   *bm = sift_alloc((c->nrows + 7) / 8 + 8);
 
 			if (len < 2)
-				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a list of rows is shorter than its count"));
+				SIFT_FAIL_CORRUPT("sift: a list of rows is shorter than its count");
 			memcpy(&listed, p, 2);
 			if (listed > c->nrows || (uint32) 2 + 2 * listed > len || (!nulls && listed != c->nnonnull))
-				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a list of %u rows does not fit its chunk", listed));
+				SIFT_FAIL_CORRUPT("sift: a list of %u rows does not fit its chunk", listed);
 			memset(bm, nulls ? 0xFF : 0, (c->nrows + 7) / 8 + 8);
 			for (int i = 0; i < listed; i++)
 			{
@@ -118,7 +134,7 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 
 				memcpy(&row, p + 2 + 2 * i, 2);
 				if (row >= c->nrows)
-					SIFT_DAMAGE_DATA(NULL, errmsg("sift: a listed row %u is past the %d rows of its chunk", row, c->nrows));
+					SIFT_FAIL_CORRUPT("sift: a listed row %u is past the %d rows of its chunk", row, c->nrows);
 				if (nulls)
 					bm[row >> 3] &= ~(1 << (row & 7));
 				else
@@ -130,6 +146,8 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 		}
 		else
 		{
+			if ((uint64) MAXALIGN((c->nrows + 7) / 8) > len)
+				SIFT_FAIL_CORRUPT("sift: the validity of a chunk is shorter than its %d rows", c->nrows);
 			c->validity = (const uint8 *) p;
 			p += MAXALIGN((c->nrows + 7) / 8);
 		}
@@ -138,11 +156,13 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 	{
 		const SiftExcHeader *stored = (const SiftExcHeader *) p;
 
-		if (len < sizeof(*stored) || stored->n_entries > SIFT_GRANULE_ROWS || c->nrows > SIFT_GRANULE_ROWS)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a chunk has %u exceptions", stored->n_entries));
+		if ((uint64) (p - c->raw) + sizeof(*stored) > len)
+			SIFT_FAIL_CORRUPT("sift: a chunk ends before its exceptions");
+		if (stored->n_entries > SIFT_GRANULE_ROWS || c->nrows > SIFT_GRANULE_ROWS)
+			SIFT_FAIL_CORRUPT("sift: a chunk has %u exceptions", stored->n_entries);
 		c->exc_len = SIFT_EXC_BLOCK_LEN(stored);
 		if ((uint64) (p - c->raw) + c->exc_len > len)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: the exceptions of a chunk do not fit it"));
+			SIFT_FAIL_CORRUPT("sift: the exceptions of a chunk do not fit it");
 		if (stored->flags & SIFT_EXC_KINDS_PACKED)
 		{
 			c->exc = exc_unpack(stored, c->nrows);
@@ -158,27 +178,31 @@ sift_chunk_open(const SiftGranuleView *v, int idx, SiftChunk *c)
 		uint64		bytes;
 
 		if ((uint64) (p - c->raw) + sizeof(*h) > len)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: the rows of a key end the chunk before their header"));
+			SIFT_FAIL_CORRUPT("sift: the rows of a key end the chunk before their header");
 		bytes = h->mode == SIFT_KP_BITMAP ? MAXALIGN((c->nrows + 7) / 8) : MAXALIGN(2 * (uint64) h->count);
 		if ((h->mode != SIFT_KP_ARRAY16 && h->mode != SIFT_KP_NEG_ARRAY16 && h->mode != SIFT_KP_BITMAP) || h->count > c->nrows || h->npresent > c->nrows ||
 			(h->mode == SIFT_KP_BITMAP && h->count != c->nrows) || (uint64) (p - c->raw) + sizeof(*h) + bytes > len)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: the rows of a key (mode %u, %u of them) do not fit the chunk of %d rows", h->mode, h->count, c->nrows));
+			SIFT_FAIL_CORRUPT("sift: the rows of a key (mode %u, %u of them) do not fit the chunk of %d rows", h->mode, h->count, c->nrows);
 		c->keyp = h;
 		p += sizeof(*h) + bytes;
 	}
+	if ((uint64) (p - c->raw) > len)
+		SIFT_FAIL_CORRUPT("sift: the validity, exceptions and rows of a key of a chunk do not fit its %u bytes", len);
 	c->body = p;
 	c->body_len = len - (p - c->raw);
+	if (c->nnonnull != ((ref->flags & SIFT_CHUNK_ALL_NULL) || c->enc == SIFT_CENC_ALL_NULL ? 0 : c->validity == NULL ? c->nrows : sift_chunk_rank(c, c->nrows)))
+		SIFT_FAIL_CORRUPT("sift: a chunk of %d rows says %d hold a value, its validity another count", c->nrows, c->nnonnull);
 }
 
 void
 sift_chunk_close(SiftChunk *c)
 {
 	if (c->owned & SIFT_CHUNK_OWN_EXC)
-		pfree((void *) c->exc);
+		sift_free((void *) c->exc);
 	if (c->owned & SIFT_CHUNK_OWN_VALID)
-		pfree((void *) c->validity);
+		sift_free((void *) c->validity);
 	if (c->owned & SIFT_CHUNK_OWN_RAW)
-		pfree((void *) c->raw);
+		sift_free((void *) c->raw);
 	c->owned = 0;
 }
 
@@ -194,11 +218,11 @@ void
 sift_chunk_release_strs(SiftChunk *c)
 {
 	if (c->owned & SIFT_CHUNK_OWN_EXC)
-		pfree((void *) c->exc);
+		sift_free((void *) c->exc);
 	if (c->owned & SIFT_CHUNK_OWN_VALID)
-		pfree((void *) c->validity);
+		sift_free((void *) c->validity);
 	if ((c->owned & SIFT_CHUNK_OWN_RAW) && !strs_borrow_raw(c))
-		pfree((void *) c->raw);
+		sift_free((void *) c->raw);
 	c->owned = 0;
 }
 
@@ -283,13 +307,13 @@ sift_chunk_nonnull_rows(const SiftChunkRef *ref, const char *p, uint32 len, int 
 	if (ref->nnonnull > cap)
 		return cap + 1;
 	if (len < sift_chunk_validity_len(ref, nrows))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the validity of a chunk is shorter than its rows say"));
+		SIFT_FAIL_CORRUPT("sift: the validity of a chunk is shorter than its rows say");
 	if (ref->enc & SIFT_ENC_NONNULL_SPARSE)
 	{
 		memcpy(out, p + 2, 2 * (size_t) ref->nnonnull);
 		for (int i = 0; i < ref->nnonnull; i++)
 			if (out[i] >= nrows || (i > 0 && out[i] <= out[i - 1]))
-				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a list of rows with a value is not ascending inside its %d rows", nrows));
+				SIFT_FAIL_CORRUPT("sift: a list of rows with a value is not ascending inside its %d rows", nrows);
 		return ref->nnonnull;
 	}
 	if (ref->enc & SIFT_ENC_NULL_SPARSE)
@@ -321,10 +345,10 @@ sift_granule_nonnull_rows(const SiftGranuleView *v, int col, uint16 *out, uint16
 	uint16		n;
 
 	if (col < 0 || col + 1 >= v->hdr->nchunks)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: column %d is not in the granule", col));
+		SIFT_FAIL_CORRUPT("sift: column %d is not in the granule", col);
 	ref = &v->hdr->chunks[col + 1];
 	if (ref->flags & SIFT_CHUNK_ELEMS)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: column %d holds elements, which have no row of their own", col));
+		SIFT_FAIL_CORRUPT("sift: column %d holds elements, which have no row of their own", col);
 	if (!(ref->flags & SIFT_CHUNK_COMPRESSED))
 		return sift_chunk_nonnull_rows(ref, v->rec + ref->off, ref->len, v->hdr->nrows, out, cap);
 	sift_chunk_open(v, col + 1, &c);
@@ -344,7 +368,7 @@ sift_chunk_exc_mask(const SiftChunk *c)
 
 	if (c->exc->flags & SIFT_EXC_MASKED)
 		return (const uint64 *) ((const char *) c->exc + sizeof(SiftExcHeader));
-	mask = palloc0((Size) SIFT_EXC_MASK_WORDS * 8);
+	mask = sift_alloc0((Size) SIFT_EXC_MASK_WORDS * 8);
 	e = sift_exc_entries(c->exc);
 	for (int i = 0; i < c->exc->n_entries; i++)
 		mask[e[i].row_idx >> 6] |= UINT64CONST(1) << (e[i].row_idx & 63);
@@ -354,8 +378,7 @@ sift_chunk_exc_mask(const SiftChunk *c)
 static void
 unsupported(uint16 enc)
 {
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift: chunk encoding %u is not supported by this build", enc),
-					errhint("Upgrade pg_sift, or REINDEX the index with this version.")));
+	SIFT_FAIL_UNSUPPORTED("Upgrade pg_sift, or REINDEX the index with this version.", "sift: chunk encoding %u is not supported by this build", enc);
 }
 
 SiftCc *
@@ -364,10 +387,12 @@ sift_cc_blob_open(const char *p, uint32 avail, uint32 nvals, uint32 *whole)
 	uint32		len;
 
 	if (avail < 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a codec blob is shorter than its length"));
+		SIFT_FAIL_CORRUPT("sift: a codec blob is shorter than its length");
 	memcpy(&len, p, 4);
 	if (len > avail - 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a codec blob of %u bytes does not fit its chunk of %u", len, avail));
+		SIFT_FAIL_CORRUPT("sift: a codec blob of %u bytes does not fit its chunk of %u", len, avail);
+	if (8 + MAXALIGN(len) > avail)
+		SIFT_FAIL_CORRUPT("sift: a codec blob of %u bytes is not padded inside its chunk of %u", len, avail);
 	if (whole != NULL)
 		*whole = 8 + MAXALIGN(len);
 	return sift_cc_open_rows(CurrentMemoryContext, (const uint8 *) p + 8, len, false, nvals);
@@ -381,21 +406,20 @@ sift_cc_blob_ints(const char *p, uint32 avail, uint32 nvals, int k0, int k1, int
 
 	if (m == (int) nvals)
 	{
-		/* check-memory: allow the values of one chunk of a granule, at most SIFT_GRANULE_ROWS */
-		int64	   *all = palloc((nvals + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
+		int64	   *all = sift_alloc((nvals + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
 
 		sift_cc_decode(cc, all);
 		memcpy(out, all, (uint64) m * sizeof(int64));
-		pfree(all);
+		sift_free(all);
 	}
 	else if (m > 0)
 	{
-		uint32	   *idx = palloc(m * sizeof(uint32));
+		uint32	   *idx = sift_alloc(m * sizeof(uint32));
 
 		for (int i = 0; i < m; i++)
 			idx[i] = k0 + i;
 		sift_cc_decode_sel(cc, idx, m, out);
-		pfree(idx);
+		sift_free(idx);
 	}
 	sift_cc_close(cc);
 }
@@ -406,6 +430,7 @@ sift_chunk_ints(const SiftChunk *c, int k0, int k1, int64 *out)
 	const char *body = c->body;
 	int			n = k1 - k0;
 
+	values_hold(c, k1);
 	switch (c->enc)
 	{
 		case SIFT_CENC_ALL_NULL:
@@ -418,6 +443,7 @@ sift_chunk_ints(const SiftChunk *c, int k0, int k1, int64 *out)
 			{
 				int64		v;
 
+				body_holds(c, 8);
 				memcpy(&v, body, 8);
 				for (int i = 0; i < n; i++)
 					out[i] = v;
@@ -429,9 +455,11 @@ sift_chunk_ints(const SiftChunk *c, int k0, int k1, int64 *out)
 			sift_cc_blob_ints(body, c->body_len, c->nnonnull, k0, k1, out);
 			break;
 		case SIFT_CENC_NUM64:
+			body_holds(c, 8);
 			sift_cc_blob_ints(body + 8, c->body_len - 8, c->nnonnull, k0, k1, out);
 			break;
 		case SIFT_CENC_BOOL_BITS:
+			body_holds(c, ((uint64) k1 + 7) / 8);
 			for (int i = 0; i < n; i++)
 				out[i] = ((uint8) body[(k0 + i) >> 3] >> ((k0 + i) & 7)) & 1;
 			break;
@@ -440,6 +468,7 @@ sift_chunk_ints(const SiftChunk *c, int k0, int k1, int64 *out)
 				int			nb = (c->nrows + 63) / 64 + 1;
 				uint32		skip = 8 + MAXALIGN((uint64) nb * 4);
 
+				body_holds(c, skip);
 				sift_cc_blob_ints(body + skip, c->body_len - skip, c->nnonnull, k0, k1, out);
 			}
 			break;
@@ -469,6 +498,7 @@ sift_chunk_cc_open(const SiftChunk *c)
 		default:
 			return NULL;
 	}
+	body_holds(c, skip);
 	return sift_cc_blob_open(c->body + skip, c->body_len - skip, c->nnonnull, NULL);
 }
 
@@ -533,13 +563,13 @@ alp_rd_f8(const SiftChunk *c, int k0, int k1, double *out)
 	memcpy(&n_exc, body + 4, 4);
 	if (lb < SIFT_ALP_RD_MIN_LEFT || lb > SIFT_ALP_RD_MAX_LEFT || nd > SIFT_ALP_RD_DICT || tz > SIFT_ALPRD_MAX_TZ || lb + tz >= 64 || (flags & ~SIFT_ALPRD_HAS_EXC) ||
 		((flags & SIFT_ALPRD_HAS_EXC) == 0 && n_exc != 0) || n_exc > nn)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a split-bits chunk of %u bytes does not hold its %u values of %d left bits", c->body_len, nn, lb));
+		SIFT_FAIL_CORRUPT("sift: a split-bits chunk of %u bytes does not hold its %u values of %d left bits", c->body_len, nn, lb);
 	rb = 64 - lb - tz;
 	clen = MAXALIGN(((uint64) nn * 3 + 7) / 8);
 	rlen = MAXALIGN(((uint64) nn * rb + 7) / 8);
 	elen = MAXALIGN((uint64) n_exc * 4);
 	if (c->body_len < 8 + sizeof(dict) + clen + rlen + elen)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a split-bits chunk of %u bytes does not hold its %u values of %d left bits", c->body_len, nn, lb));
+		SIFT_FAIL_CORRUPT("sift: a split-bits chunk of %u bytes does not hold its %u values of %d left bits", c->body_len, nn, lb);
 	memcpy(dict, body + 8, sizeof(dict));
 	rights = codes + clen;
 	exc = rights + rlen;
@@ -559,7 +589,7 @@ alp_rd_f8(const SiftChunk *c, int k0, int k1, double *out)
 					u;
 
 		if (code >= (uint64) nd)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a split-bits chunk holds the code %llu of a table of %d", (unsigned long long) code, nd));
+			SIFT_FAIL_CORRUPT("sift: a split-bits chunk holds the code %llu of a table of %d", (unsigned long long) code, nd);
 		left = dict[code];
 		if (x < n_exc && alp_rd_exc_pos(exc, x) == (uint32) i)
 		{
@@ -580,21 +610,23 @@ sift_chunk_f8(const SiftChunk *c, int k0, int k1, double *out)
 	const char *body = c->body;
 	int			n = k1 - k0;
 
+	values_hold(c, k1);
 	switch (c->enc)
 	{
 		case SIFT_CENC_ALL_NULL:
 			break;
 		case SIFT_CENC_FLOAT_RAW:
+			body_holds(c, (uint64) k1 * 8);
 			memcpy(out, body + (uint64) k0 * 8, (uint64) n * 8);
 			break;
 		case SIFT_CENC_ALP:
 			{
 				SiftCc	   *cc = sift_cc_blob_open(body, c->body_len, c->nnonnull, NULL);
-				double	   *all = palloc((c->nnonnull + SIFT_COL_PAD / 8 + 8) * sizeof(double));
+				double	   *all = sift_alloc((c->nnonnull + SIFT_COL_PAD / 8 + 8) * sizeof(double));
 
 				sift_cc_decode_f8(cc, all);
 				memcpy(out, all + k0, (uint64) n * 8);
-				pfree(all);
+				sift_free(all);
 				sift_cc_close(cc);
 			}
 			break;
@@ -605,9 +637,12 @@ sift_chunk_f8(const SiftChunk *c, int k0, int k1, double *out)
 			if (sift_chunk_framed(c))
 				sift_frames_f8(c, k0, k1, out);
 			else
+			{
+				body_holds(c, (uint64) c->nnonnull * 8);
 				for (int i = 0; i < n; i++)
 					for (int b = 0; b < 8; b++)
 						((uint8 *) &out[i])[b] = (uint8) body[(uint64) b * c->nnonnull + k0 + i];
+			}
 			break;
 		default:
 			unsupported(c->enc);
@@ -621,7 +656,7 @@ sift_chunk_f8_sel(const SiftChunk *c, const uint32 *idx, int m, double *out)
 
 	if (c->enc == SIFT_CENC_ALP || (c->enc == SIFT_CENC_FLOAT_BSS && sift_chunk_framed(c) && m > (c->nnonnull + SIFT_FRAME_ROWS - 1) / SIFT_FRAME_ROWS))
 	{
-		all = palloc((c->nnonnull + SIFT_COL_PAD / 8 + 8) * sizeof(double));
+		all = sift_alloc((c->nnonnull + SIFT_COL_PAD / 8 + 8) * sizeof(double));
 		sift_chunk_f8(c, 0, c->nnonnull, all);
 	}
 	for (int i = 0; i < m; i++)
@@ -632,7 +667,7 @@ sift_chunk_f8_sel(const SiftChunk *c, const uint32 *idx, int m, double *out)
 			sift_chunk_f8(c, idx[i], idx[i] + 1, &out[i]);
 	}
 	if (all != NULL)
-		pfree(all);
+		sift_free(all);
 }
 
 /* The dictionary of the part that codes the chunk, of the kind its encoding says */
@@ -642,32 +677,32 @@ part_dict(const SiftChunk *c, SiftDictKind kind)
 	const SiftPartDict *d = sift_part_dict_find(c->view->dicts, c->idx - 1, kind);
 
 	if (d == NULL)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: column %d is coded by a dictionary of its part, which the part does not have", c->idx - 1));
+		SIFT_FAIL_CORRUPT("sift: column %d is coded by a dictionary of its part, which the part does not have", c->idx - 1);
 	return d;
 }
 
-/* The strings of a codec list (its length, then the blob) at p: off and bytes palloc'd */
+/* The strings of a codec list (its length, then the blob) at p: off and bytes allocated with sift_alloc */
 static void
 block_strs(const char *p, uint32 avail, uint32 n, uint32 **off, char **bytes, uint32 *whole, const void *ddict)
 {
 	uint32		len;
 
 	if (avail < 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a list of strings is shorter than its length"));
+		SIFT_FAIL_CORRUPT("sift: a list of strings is shorter than its length");
 	memcpy(&len, p, 4);
 	if (len > avail - 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a list of strings of %u bytes does not fit its chunk of %u", len, avail));
+		SIFT_FAIL_CORRUPT("sift: a list of strings of %u bytes does not fit its chunk of %u", len, avail);
 	sift_cc_decode_strs_dict(CurrentMemoryContext, (const uint8 *) p + 8, len, n, n, 0, off, bytes, ddict);
 	if (whole != NULL)
 		*whole = 8 + MAXALIGN(len);
 }
 
-/* Strings [k0, k1) of an FSST chunk (see put_fsst): decoded into one palloc'd buffer that p and len point into */
+/* Strings [k0, k1) of an FSST chunk (see put_fsst): decoded into one buffer of sift_alloc that p and len point into */
 static void
 fsst_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, void **out_own)
 {
 	bool		shared = (c->ref->enc & SIFT_ENC_PART_DICT) != 0;
-	SiftFsst   *t = shared ? part_dict(c, SIFT_DICT_KIND_FSST)->fsst : palloc(sizeof(SiftFsst));
+	SiftFsst   *t = shared ? part_dict(c, SIFT_DICT_KIND_FSST)->fsst : sift_alloc(sizeof(SiftFsst));
 	const uint8 *body = (const uint8 *) c->body;
 	uint32		avail = c->body_len,
 				at = shared ? 0 : sift_fsst_read_table(t, body, avail),
@@ -682,42 +717,42 @@ fsst_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, void 
 	if (k1 <= k0)
 		return;
 	if (avail - at < 16 || (!shared && at == 0))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the symbol table of a string chunk is damaged"));
+		SIFT_FAIL_CORRUPT("sift: the symbol table of a string chunk is damaged");
 	memcpy(hdr, body + at, 8);
 	memcpy(&whole, body + at + 8, 4);
 	whole = 8 + MAXALIGN(whole);
 	at += 8;
 	if (whole > avail - at || hdr[1] >= avail - at - whole || (uint64) hdr[1] > (uint64) hdr[0] * 2)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the coded strings of a chunk do not fit it"));
-	coded = palloc(k1 * sizeof(int64));
+		SIFT_FAIL_CORRUPT("sift: the coded strings of a chunk do not fit it");
+	coded = sift_alloc(k1 * sizeof(int64));
 	sift_cc_blob_ints((const char *) body + at, avail - at, c->nnonnull, 0, k1, coded);
-	off = palloc((k1 + 1) * sizeof(uint32));
+	off = sift_alloc((k1 + 1) * sizeof(uint32));
 	off[0] = 0;
 	for (int k = 0; k < k1; k++)
 	{
 		if (coded[k] < 0 || (uint64) coded[k] > hdr[1] - off[k])
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string is past the end of its chunk"));
+			SIFT_FAIL_CORRUPT("sift: a coded string is past the end of its chunk");
 		off[k + 1] = off[k] + (uint32) coded[k];
 	}
 	if (k1 == c->nnonnull && off[k1] != hdr[1])
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the coded strings of a chunk are %u bytes, its header says %u", off[k1], hdr[1]));
+		SIFT_FAIL_CORRUPT("sift: the coded strings of a chunk are %u bytes, its header says %u", off[k1], hdr[1]);
 	cap = Min((uint64) hdr[0], (uint64) 8 * (off[k1] - off[k0])) + SIFT_FSST_SLACK;
-	out = palloc(cap);
+	out = sift_alloc(cap);
 	if (out_own != NULL)
 		*out_own = out;
-	outoff = palloc((k1 - k0 + 1) * sizeof(uint32));
+	outoff = sift_alloc((k1 - k0 + 1) * sizeof(uint32));
 	if (!sift_fsst_decode_strs(t, body + at + whole, off + k0, k1 - k0, out, cap, outoff))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
+		SIFT_FAIL_CORRUPT("sift: a coded string does not decode");
 	for (int k = k0; k < k1; k++)
 	{
 		p[k - k0] = (const char *) out + outoff[k - k0];
 		len[k - k0] = outoff[k - k0 + 1] - outoff[k - k0];
 	}
-	pfree(coded);
-	pfree(off);
+	sift_free(coded);
+	sift_free(off);
 	if (!shared)
-		pfree(t);
-	pfree(outoff);
+		sift_free(t);
+	sift_free(outoff);
 }
 
 void
@@ -739,10 +774,10 @@ sift_chunk_dict(const SiftChunk *c, SiftGranuleDict *d, const char **codes, uint
 		char	   *bytes;
 
 		if (c->body_len < 8)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a dictionary chunk is shorter than its header"));
+			SIFT_FAIL_CORRUPT("sift: a dictionary chunk is shorter than its header");
 		memcpy(&nd, c->body, 4);
 		if (nd > SIFT_DICT_GRANULE_MAX)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a dictionary of %u strings in a granule", nd));
+			SIFT_FAIL_CORRUPT("sift: a dictionary of %u strings in a granule", nd);
 		block_strs(c->body + 8, c->body_len - 8, nd, &off, &bytes, &whole, NULL);
 		*d = (SiftGranuleDict) {.n = nd,.off = off,.bytes = bytes};
 		*codes = c->body + 8 + whole;
@@ -756,6 +791,7 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 	const char *body = c->body;
 	int			nn = c->nnonnull;
 
+	values_hold(c, k1);
 	switch (c->enc)
 	{
 		case SIFT_CENC_ALL_NULL:
@@ -768,8 +804,11 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 				const uint32 *offs = (const uint32 *) body;
 				const char *bytes = body + 4 * ((uint64) nn + 1);
 
+				body_holds(c, 4 * ((uint64) nn + 1));
 				for (int k = k0; k < k1; k++)
 				{
+					if (offs[k + 1] < offs[k] || offs[k + 1] > c->body_len - 4 * ((uint64) nn + 1))
+						SIFT_FAIL_CORRUPT("sift: a string of a chunk lies outside its %u bytes", c->body_len);
 					p[k - k0] = bytes + offs[k];
 					len[k - k0] = offs[k + 1] - offs[k];
 				}
@@ -804,7 +843,7 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 				SiftGranuleDict d;
 				const char *codes;
 				uint32		codes_len;
-				int64	   *code = palloc(Max(k1 - k0, 1) * sizeof(int64));
+				int64	   *code = sift_alloc(Max(k1 - k0, 1) * sizeof(int64));
 
 				sift_chunk_dict(c, &d, &codes, &codes_len);
 				if (own != NULL && !d.part)
@@ -816,23 +855,26 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 				for (int k = k0; k < k1; k++)
 				{
 					if ((uint64) code[k - k0] >= d.n)
-						SIFT_DAMAGE_DATA(NULL, errmsg("sift: a dictionary code is past its dictionary"));
+						SIFT_FAIL_CORRUPT("sift: a dictionary code is past its dictionary");
 					p[k - k0] = d.bytes + d.off[code[k - k0]];
 					len[k - k0] = d.off[code[k - k0] + 1] - d.off[code[k - k0]];
 				}
-				pfree(code);
+				sift_free(code);
 			}
 			break;
 		case SIFT_CENC_STR_VIEW:
 			{
 				const char *heap = body + (uint64) nn * sizeof(SiftStrView);
 
+				body_holds(c, (uint64) nn * sizeof(SiftStrView));
 				for (int k = k0; k < k1; k++)
 				{
 					const char *at = body + (uint64) k * sizeof(SiftStrView);
 					SiftStrView v;
 
 					memcpy(&v, at, sizeof(v));
+					if (v.len > 12 && (uint64) v.u.offset + v.len > c->body_len - (uint64) nn * sizeof(SiftStrView))
+						SIFT_FAIL_CORRUPT("sift: a string of a chunk lies outside its %u bytes", c->body_len);
 					len[k - k0] = v.len;
 					p[k - k0] = v.len <= 12 ? at + offsetof(SiftStrView, prefix) : heap + v.u.offset;
 				}
@@ -841,6 +883,7 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 		case SIFT_CENC_UUID16:
 		case SIFT_CENC_NUM128:
 		case SIFT_CENC_INTERVAL16:
+			body_holds(c, (uint64) k1 * 16);
 			for (int k = k0; k < k1; k++)
 			{
 				p[k - k0] = body + (uint64) k * 16;
@@ -849,10 +892,10 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 			break;
 		case SIFT_CENC_FIXED16:
 			{
-				char	   *vals = palloc(Max(k1 - k0, 1) * 16);
+				char	   *vals = sift_alloc(Max(k1 - k0, 1) * 16);
 				uint32		whole;
 				SiftCc	   *lane = sift_cc_blob_open(body, c->body_len, nn, &whole);
-				int64	   *tmp = palloc((nn + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
+				int64	   *tmp = sift_alloc((nn + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
 
 				if (own != NULL)
 					own->a[0] = vals;
@@ -870,7 +913,7 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 					p[k - k0] = vals + (uint64) (k - k0) * 16;
 					len[k - k0] = 16;
 				}
-				pfree(tmp);
+				sift_free(tmp);
 			}
 			break;
 		default:
@@ -889,7 +932,7 @@ sift_str_own_free(SiftStrOwn *own)
 {
 	for (int i = 0; i < 3; i++)
 		if (own->a[i] != NULL)
-			pfree(own->a[i]);
+			sift_free(own->a[i]);
 	*own = (SiftStrOwn) {0};
 }
 
@@ -911,7 +954,7 @@ sift_chunk_str_one(const SiftChunk *c, int k, const char **p, uint32 *len)
 
 	if (c->enc == SIFT_CENC_FIXED16)
 	{
-		char	   *val = palloc(16);
+		char	   *val = sift_alloc(16);
 		uint32		whole;
 		SiftCc	   *lane = sift_cc_blob_open(c->body, c->body_len, nn, &whole);
 
@@ -937,7 +980,7 @@ sift_chunk_str_one(const SiftChunk *c, int k, const char **p, uint32 *len)
 		sift_cc_decode_sel(cc, &uk, 1, &code);
 		sift_cc_close(cc);
 		if ((uint64) code >= pd->n)
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a dictionary code is past its dictionary"));
+			SIFT_FAIL_CORRUPT("sift: a dictionary code is past its dictionary");
 		*p = pd->bytes + pd->off[code];
 		*len = pd->off[code + 1] - pd->off[code];
 	}

@@ -1,7 +1,5 @@
 /*
  * col/f2/f2_view.c - the values of a column of a granule as the arrays of a ColView (col/f2/f2_view.h).
- *
- * check-memory: allow-allocs every array follows one granule (at most 65,535 rows), freed with the context of the granule
  */
 #include "postgres.h"
 
@@ -33,13 +31,13 @@ static void
 strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView *cv)
 {
 	SiftStrCell *sc;
-	const char **sp = palloc(n * sizeof(char *));
-	uint32	   *sl = palloc(n * sizeof(uint32));
+	const char **sp = sift_alloc(n * sizeof(char *));
+	uint32	   *sl = sift_alloc(n * sizeof(uint32));
 
 	if (codes)
 	{
-		uint32	   *dc = palloc(n * sizeof(uint32));
-		SiftGranuleDict *d = palloc(sizeof(SiftGranuleDict));
+		uint32	   *dc = sift_alloc(n * sizeof(uint32));
+		SiftGranuleDict *d = sift_alloc(sizeof(SiftGranuleDict));
 
 		if (sift_granule_str_codes(v, c, dc, nl, d))
 		{
@@ -48,7 +46,7 @@ strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView 
 			return;
 		}
 	}
-	sc = palloc(n * sizeof(SiftStrCell));
+	sc = sift_alloc(n * sizeof(SiftStrCell));
 	if (!sift_cfstr_memo_strs(v, c, NULL, n, sc))
 		sift_granule_strs(v, c, sc);
 	for (int r = 0; r < n; r++)
@@ -65,9 +63,9 @@ strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView 
 static bool
 sparse_codes(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrows, bool *sn, ColView *cv)
 {
-	uint32	   *sc = palloc(nrows * sizeof(uint32)),
-			   *dc = palloc0(n * sizeof(uint32));
-	SiftGranuleDict *d = palloc(sizeof(SiftGranuleDict));
+	uint32	   *sc = sift_alloc(nrows * sizeof(uint32)),
+			   *dc = sift_alloc0(n * sizeof(uint32));
+	SiftGranuleDict *d = sift_alloc(sizeof(SiftGranuleDict));
 
 	if (!sift_granule_point_str_codes(v, c, rows, nrows, sc, sn, d))
 		return false;
@@ -82,12 +80,12 @@ sparse_codes(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nro
 static void
 sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, bool *nl, ColView *cv)
 {
-	bool	   *sn = palloc(nrows * sizeof(bool));
+	bool	   *sn = sift_alloc(nrows * sizeof(bool));
 
 	if (cv->kind == SIFT_CELL_INT)
 	{
-		int64	   *sv = palloc(nrows * sizeof(int64)),
-				   *iv = palloc0(n * sizeof(int64));
+		int64	   *sv = sift_alloc(nrows * sizeof(int64)),
+				   *iv = sift_alloc0(n * sizeof(int64));
 
 		sift_granule_point_ints(v, c, rows, nrows, sv, sn);
 		for (int j = 0; j < nrows; j++)
@@ -96,8 +94,8 @@ sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *ro
 	}
 	else if (cv->kind == SIFT_CELL_F8)
 	{
-		double	   *sv = palloc(nrows * sizeof(double)),
-				   *fv = palloc0(n * sizeof(double));
+		double	   *sv = sift_alloc(nrows * sizeof(double)),
+				   *fv = sift_alloc0(n * sizeof(double));
 
 		sift_granule_point_f8(v, c, rows, nrows, sv, sn);
 		for (int j = 0; j < nrows; j++)
@@ -106,9 +104,9 @@ sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *ro
 	}
 	else if (!codes || !sparse_codes(v, c, n, rows, nrows, sn, cv))
 	{
-		SiftStrCell *sv = palloc(nrows * sizeof(SiftStrCell));
-		const char **sp = palloc0(n * sizeof(char *));
-		uint32	   *sl = palloc0(n * sizeof(uint32));
+		SiftStrCell *sv = sift_alloc(nrows * sizeof(SiftStrCell));
+		const char **sp = sift_alloc0(n * sizeof(char *));
+		uint32	   *sl = sift_alloc0(n * sizeof(uint32));
 
 		if (!sift_cfstr_memo_strs(v, c, rows, nrows, sv))
 			sift_granule_point_strs(v, c, rows, nrows, sv);
@@ -129,22 +127,22 @@ ColView
 sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows)
 {
 	ColView		cv = {0};
-	bool	   *nl = palloc0(n);
-	uint8	   *tg = palloc(n);
+	bool	   *nl = sift_alloc0(n);
+	uint8	   *tg = sift_alloc(n);
 
 	cv.kind = d->store == SIFT_COLS_INT ? SIFT_CELL_INT : (d->store == SIFT_COLS_STR || d->store == SIFT_COLS_VAR) ? SIFT_CELL_STR : SIFT_CELL_F8;
 	if (rows != NULL)
 		sparse_view(v, c, n, codes, rows, nrows, nl, &cv);
 	else if (cv.kind == SIFT_CELL_INT)
 	{
-		int64	   *iv = palloc(n * sizeof(int64));
+		int64	   *iv = sift_alloc(n * sizeof(int64));
 
 		sift_granule_ints(v, c, iv, nl);
 		cv.i = iv;
 	}
 	else if (cv.kind == SIFT_CELL_F8)
 	{
-		double	   *fv = palloc(n * sizeof(double));
+		double	   *fv = sift_alloc(n * sizeof(double));
 
 		sift_granule_f8(v, c, fv, nl);
 		cv.f = fv;
@@ -155,4 +153,12 @@ sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n,
 	cv.isnull = nl;
 	cv.tag = tg;
 	return cv;
+}
+
+bool
+sift_f2_decode_view_a(SiftArena *a, SiftErr *err, const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, ColView *out)
+{
+	SIFT_ARENA_TRY(a, err)
+		*out = sift_f2_decode_view(d, v, c, n, codes, rows, nrows);
+	SIFT_ARENA_END
 }

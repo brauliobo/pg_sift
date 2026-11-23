@@ -262,11 +262,11 @@ Size
 sift_prefix_get_head(const char *b, const char *end, SiftPromoPrefix *cx)
 {
 	if (end - b < 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a prefixed chunk is shorter than its prefix"));
+		SIFT_FAIL_CORRUPT("sift: a prefixed chunk is shorter than its prefix");
 	cx->plen = (uint8) b[0];
 	cx->min_digits = (uint8) b[1];
 	if (cx->plen > SIFT_PROMO_PREFIX_MAX || cx->min_digits > SIFT_PROMO_PREFIX_DIGITS || (uint64) (end - b) < 8 + MAXALIGN((uint64) cx->plen))
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the prefix of a chunk is out of range"));
+		SIFT_FAIL_CORRUPT("sift: the prefix of a chunk is out of range");
 	memcpy(cx->prefix, b + 8, cx->plen);
 	return 8 + MAXALIGN((uint64) cx->plen);
 }

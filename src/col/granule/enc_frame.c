@@ -52,17 +52,17 @@ frame_at(const SiftChunk *c, uint32 f, uint32 *len, int *cnt)
 				table;
 
 	if (c->body_len < FRAME_HDR_BYTES)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a framed chunk is shorter than its header"));
+		SIFT_FAIL_CORRUPT("sift: a framed chunk is shorter than its header");
 	memcpy(&hdr, c->body, sizeof(hdr));
 	if (hdr.frame_rows != SIFT_FRAME_ROWS || hdr.nframes != (uint32) ((c->nnonnull + SIFT_FRAME_ROWS - 1) / SIFT_FRAME_ROWS) || f >= hdr.nframes)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a framed chunk of %d values has %u frames of %u", c->nnonnull, hdr.nframes, hdr.frame_rows));
+		SIFT_FAIL_CORRUPT("sift: a framed chunk of %d values has %u frames of %u", c->nnonnull, hdr.nframes, hdr.frame_rows);
 	table = FRAME_HDR_BYTES + MAXALIGN((hdr.nframes + 1) * sizeof(uint32));
 	if (c->body_len < table)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a framed chunk is shorter than its table of frames"));
+		SIFT_FAIL_CORRUPT("sift: a framed chunk is shorter than its table of frames");
 	memcpy(&lo, c->body + FRAME_HDR_BYTES + f * sizeof(uint32), 4);
 	memcpy(&hi, c->body + FRAME_HDR_BYTES + (f + 1) * sizeof(uint32), 4);
 	if (lo > hi || hi > c->body_len - table)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a frame of a framed chunk is past its end"));
+		SIFT_FAIL_CORRUPT("sift: a frame of a framed chunk is past its end");
 	*len = hi - lo;
 	*cnt = Min(SIFT_FRAME_ROWS, c->nnonnull - (int) (f * SIFT_FRAME_ROWS));
 	return c->body + table + lo;
@@ -77,10 +77,10 @@ sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes)
 	const char *p = frame_at(c, f, &avail, &cnt);
 
 	if (avail < 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a frame of strings is shorter than its length"));
+		SIFT_FAIL_CORRUPT("sift: a frame of strings is shorter than its length");
 	memcpy(&len, p, 4);
 	if (len > avail - 8)
-		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a frame of strings of %u bytes does not fit its chunk of %u", len, avail));
+		SIFT_FAIL_CORRUPT("sift: a frame of strings of %u bytes does not fit its chunk of %u", len, avail);
 	sift_cc_decode_strs_dict(CurrentMemoryContext, (const uint8 *) p + 8, len, cnt, cnt, 0, off, bytes, NULL);
 }
 
@@ -89,8 +89,8 @@ sift_frames_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len
 {
 	const uint32 f0 = k0 / SIFT_FRAME_ROWS,
 				f1 = (k1 - 1) / SIFT_FRAME_ROWS;
-	uint32	  **offs = palloc((f1 - f0 + 1) * sizeof(uint32 *));
-	char	  **bytes = palloc((f1 - f0 + 1) * sizeof(char *));
+	uint32	  **offs = sift_alloc((f1 - f0 + 1) * sizeof(uint32 *));
+	char	  **bytes = sift_alloc((f1 - f0 + 1) * sizeof(char *));
 	uint64		total = 0;
 	char	   *all;
 
@@ -101,7 +101,7 @@ sift_frames_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len
 		sift_frame_strs(c, f, &offs[f - f0], &bytes[f - f0]);
 		total += offs[f - f0][Min(SIFT_FRAME_ROWS, c->nnonnull - (int) (f * SIFT_FRAME_ROWS))];
 	}
-	all = palloc(Max(total, 1));
+	all = sift_alloc(Max(total, 1));
 	for (uint32 f = f0, at = 0; f <= f1; f++)
 	{
 		const int	base = (int) (f * SIFT_FRAME_ROWS),
@@ -115,11 +115,11 @@ sift_frames_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len
 			len[base + k - k0] = o[k + 1] - o[k];
 		}
 		at += o[cnt];
-		pfree(offs[f - f0]);
-		pfree(bytes[f - f0]);
+		sift_free(offs[f - f0]);
+		sift_free(bytes[f - f0]);
 	}
-	pfree(offs);
-	pfree(bytes);
+	sift_free(offs);
+	sift_free(bytes);
 	if (bytes_out != NULL)
 		*bytes_out = all;
 }
@@ -128,9 +128,9 @@ void
 sift_frames_block_strs(const SiftChunk *c, uint32 **offs, char **bytes)
 {
 	const int	nn = c->nnonnull;
-	const char **p = palloc(Max(nn, 1) * sizeof(char *));
-	uint32	   *len = palloc(Max(nn, 1) * sizeof(uint32));
-	uint32	   *o = palloc((nn + 1) * sizeof(uint32));
+	const char **p = sift_alloc(Max(nn, 1) * sizeof(char *));
+	uint32	   *len = sift_alloc(Max(nn, 1) * sizeof(uint32));
+	uint32	   *o = sift_alloc((nn + 1) * sizeof(uint32));
 	uint64		total = 0;
 	void	   *all = NULL;
 
@@ -138,7 +138,7 @@ sift_frames_block_strs(const SiftChunk *c, uint32 **offs, char **bytes)
 		sift_frames_strs(c, 0, nn, p, len, &all);
 	for (int k = 0; k < nn; k++)
 		total += len[k];
-	*bytes = palloc(Max(total, 1));
+	*bytes = sift_alloc(Max(total, 1));
 	for (int k = 0, at = 0; k < nn; k++)
 	{
 		o[k] = at;
@@ -148,9 +148,9 @@ sift_frames_block_strs(const SiftChunk *c, uint32 **offs, char **bytes)
 	o[nn] = (uint32) total;
 	*offs = o;
 	if (all != NULL)
-		pfree(all);
-	pfree(p);
-	pfree(len);
+		sift_free(all);
+	sift_free(p);
+	sift_free(len);
 }
 
 void
@@ -199,18 +199,18 @@ sift_frames_f8(const SiftChunk *c, int k0, int k1, double *out)
 		uint8	   *planes;
 
 		if (len < sizeof(hdr))
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a frame of doubles is shorter than its header"));
+			SIFT_FAIL_CORRUPT("sift: a frame of doubles is shorter than its header");
 		memcpy(hdr, p, sizeof(hdr));
 		if (hdr[1] != (uint32) cnt * 8 || hdr[2] > len - sizeof(hdr) || (hdr[0] == 0 && hdr[2] != hdr[1]))
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a frame of %d doubles claims %u bytes in %u", cnt, hdr[1], hdr[2]));
-		planes = palloc(hdr[1] + 8);
+			SIFT_FAIL_CORRUPT("sift: a frame of %d doubles claims %u bytes in %u", cnt, hdr[1], hdr[2]);
+		planes = sift_alloc(hdr[1] + 8);
 		if (hdr[0] == 0)
 			memcpy(planes, p + sizeof(hdr), hdr[1]);
 		else if (!sift_colz_available(hdr[0]) || !sift_colz_decompress(hdr[0], p + sizeof(hdr), hdr[2], planes, hdr[1]))
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a frame of doubles does not inflate to its length"));
+			SIFT_FAIL_CORRUPT("sift: a frame of doubles does not inflate to its length");
 		for (int i = Max(k0 - base, 0); i < Min(k1 - base, cnt); i++)
 			for (int b = 0; b < 8; b++)
 				((uint8 *) &out[base + i - k0])[b] = planes[b * cnt + i];
-		pfree(planes);
+		sift_free(planes);
 	}
 }

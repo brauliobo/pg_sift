@@ -28,15 +28,15 @@ sift_granule_str_codes(const SiftGranuleView *v, int col, uint32 *codes, bool *i
 	if (c.enc != SIFT_CENC_DICT_CODE)
 		return false;
 	sift_chunk_dict(&c, dict, &blob, &blob_len);
-	vals = palloc(Max(c.nnonnull, 1) * sizeof(int64));
+	vals = sift_alloc(Max(c.nnonnull, 1) * sizeof(int64));
 	sift_cc_blob_ints(blob, blob_len, c.nnonnull, 0, c.nnonnull, vals);
 	for (int r = 0; r < c.nrows; r++)
 	{
 		isnull[r] = !sift_chunk_row_valid(&c, r);
 		codes[r] = isnull[r] ? 0 : (uint32) vals[k++];
 		if (codes[r] >= dict->n && !isnull[r])
-			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a dictionary code is past its dictionary"));
+			SIFT_FAIL_CORRUPT("sift: a dictionary code is past its dictionary");
 	}
-	pfree(vals);
+	sift_free(vals);
 	return true;
 }
