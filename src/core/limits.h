@@ -314,6 +314,9 @@
 	X(point_cols, "SIFT_POINT_MAX_COLS", "col/f2/f2_point_dir.h", SIFT_POINT_MAX_COLS, "columns", \
 	  "columns of a part that get a point directory: the ones with the most distinct values", \
 	  "the other columns are read as before (the rows are the same)", "-", 0) \
+	X(point_comp, "SIFT_POINT_MAX_COMP", "col/f2/f2_point_dir.h", SIFT_POINT_MAX_COMP, "columns", \
+	  "columns of one key of a point directory (a key of several columns is nearly all distinct only together)", \
+	  "a key of more columns is not made (the rows are the same)", "-", 0) \
 	X(point_values, "SIFT_POINT_MAX_VALUES", "col/f2/f2_point_dir.h", SIFT_POINT_MAX_VALUES, "values", \
 	  "constants of an equality or IN list the point directory answers", \
 	  "the granules are read (the rows are the same)", "-", 0) \
@@ -407,6 +410,9 @@
 	X(maint_workers, "SIFT_MAINT_MAX_WORKERS", "core/maint_sched.h", SIFT_MAINT_MAX_WORKERS, "workers", \
 	  "background maintenance workers the scheduler runs at one time", \
 	  "a larger sift.max_maint_workers runs this many", "sift.max_maint_workers", 0) \
+	X(gcache_frames, "SIFT_F2_GCACHE_MAX_FRAMES", "table/f2/f2_gcache.h", SIFT_F2_GCACHE_MAX_FRAMES, "frames", \
+	  "frames of 256 values of the strings and doubles of sift_table the cache of a backend keeps", \
+	  "the oldest frame is dropped and inflated again when a row asks for it", "-", 0) \
 	X(gcache_granules, "SIFT_F2_GCACHE_MAX_GRANULES", "table/f2/f2_gcache.h", SIFT_F2_GCACHE_MAX_GRANULES, "granules", \
 	  "decoded granules of sift_table the cache of a backend keeps", \
 	  "the oldest granule is dropped and read again when needed", "-", 0) \

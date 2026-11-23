@@ -428,6 +428,8 @@ col/f2/f2_store_schema.h
 col/f2/f2_tail.c
 col/f2/f2_tid_dir.c
 col/f2/f2_tid_dir.h
+col/f2/f2_tid_hash.c
+col/f2/f2_tid_hash.h
 col/f2/f2_tier.c
 col/f2/f2_tier.h
 col/f2/f2_tier_cache.c
@@ -466,6 +468,7 @@ col/f2/f2_vacuum_run.h
 col/f2/f2_view.c
 col/f2/f2_view.h
 col/f2/f2_write.c
+col/f2/f2_zone_test.c
 col/f2/f2_zone_verdict.c
 col/f2/f2test.h
 col/f2/format2_enc_test.c
@@ -517,6 +520,7 @@ col/granule/cfilt_cc.c
 col/granule/cfilt_cc.h
 col/granule/cfilt_str_simd.c
 col/granule/cfilt_str_simd.h
+col/granule/enc_frame.c
 col/granule/enc_str.c
 col/granule/granule.c
 col/granule/granule.h
@@ -526,6 +530,7 @@ col/granule/granule_enc.c
 col/granule/granule_filter.c
 col/granule/granule_filter.h
 col/granule/granule_int.h
+col/granule/framed_chunk_test.c
 col/granule/granule_point_test.c
 col/granule/granule_vec.c
 col/granule/part_codecs.c

@@ -139,7 +139,8 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | workers of a parallel CREATE INDEX of a sift_col index besides the leader (the directory is shared by the participants and leaves 7 segments to each of 16) | `15 workers` | fewer workers are launched than max_parallel_maintenance_workers allows | `max_parallel_maintenance_workers` | `col/v1/build_par.c` `MAX_WORKERS` |
 | key columns, INCLUDE columns and measures of one projection (each list) | `32 columns` | sift.create_projection refuses the spec (too many columns) | — | `col/f2/f2_proj.h` `SIFT_PROJ_MAX_COLS` |
 | columns a part keeps a quantile sketch of; the sketches option names at most twice this many columns | `256 columns` | ERROR 54000 naming the option | — | `col/f2/f2_kll.h` `SIFT_F2_KLL_MAX_COLS` |
-| columns of a part that get a point directory: the ones with the most distinct values | `3 columns` | the other columns are read as before (the rows are the same) | — | `col/f2/f2_point_dir.h` `SIFT_POINT_MAX_COLS` |
+| columns of a part that get a point directory: the ones with the most distinct values | `8 columns` | the other columns are read as before (the rows are the same) | — | `col/f2/f2_point_dir.h` `SIFT_POINT_MAX_COLS` |
+| columns of one key of a point directory (a key of several columns is nearly all distinct only together) | `4 columns` | a key of more columns is not made (the rows are the same) | — | `col/f2/f2_point_dir.h` `SIFT_POINT_MAX_COMP` |
 | constants of an equality or IN list the point directory answers | `64 values` | the granules are read (the rows are the same) | — | `col/f2/f2_point_dir.h` `SIFT_POINT_MAX_VALUES` |
 | highest attribute number a part records the default of an added column for (the PostgreSQL limit of the columns of a table) | `1,664 attributes` | a record that names more is damage (the part is not read) | — | `col/f2/f2_defaults.h` `SIFT_DEFAULTS_MAX_ATTNUM` |
 | the default of a text column added to a Format 2.0 table, which the parts record | `16,777,216 (16 MiB) bytes` | the default is refused: a default value is larger than a part keeps | — | `col/f2/f2_defaults.h` `SIFT_DEFAULTS_MAX_VALUE` |
@@ -180,5 +181,6 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 |---|---|---|---|---|
 | the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/wide.c` |
 | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | `4,294,967,294 blocks` | ERROR 54000, VACUUM FULL renumbers them | — | `table/v1/wbuf.c` |
+| frames of 256 values of the strings and doubles of sift_table the cache of a backend keeps | `512 frames` | the oldest frame is dropped and inflated again when a row asks for it | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_FRAMES` |
 | decoded granules of sift_table the cache of a backend keeps | `64 granules` | the oldest granule is dropped and read again when needed | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_GRANULES` |
 
