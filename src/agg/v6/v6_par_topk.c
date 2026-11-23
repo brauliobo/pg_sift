@@ -9,38 +9,34 @@
 struct SiftV6ParTopK
 {
 	SiftV6TopKRun *run;
-	MemoryContext tuple_cx;
-	SiftV6ParTopKSource source;
-	void	   *arg;
 	bool		drained;
 };
 
 SiftV6ParTopK *
-sift_v6_par_topk_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc, MemoryContext tuple_cx, SiftV6ParTopKSource source, void *arg)
+sift_v6_par_topk_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 {
 	SiftV6ParTopK *t = MemoryContextAllocZero(cx, sizeof(SiftV6ParTopK));
 
-	*t = (SiftV6ParTopK) {.run = sift_v6_topk_run_new(cx, spec, desc),.tuple_cx = tuple_cx,.source = source,.arg = arg};
+	t->run = sift_v6_topk_run_new(cx, spec, desc);
 	return t;
 }
 
-static bool
-next_group(void *arg, Datum *values, bool *isnull)
+SiftV6TopKRun *
+sift_v6_par_topk_heap(const SiftV6ParTopK *t)
 {
-	const SiftV6ParTopK *t = arg;
-
-	MemoryContextReset(t->tuple_cx);
-	return t->source(t->arg, values, isnull);
+	return t->run;
 }
 
 bool
-sift_v6_par_topk_next(SiftV6ParTopK *t, Datum *values, bool *isnull)
+sift_v6_par_topk_next(SiftV6ParTopK *t, SiftV6ParRun *r, Datum *values, bool *isnull)
 {
 	if (!t->drained)
 	{
+		const bool	emitted = sift_v6_par_next(r, values, isnull);
+
 		t->drained = true;
-		sift_v6_topk_run_stream(t->run, next_group, t, NULL, NULL, NULL);
-		MemoryContextReset(t->tuple_cx);
+		SIFT_INVARIANT(!emitted, "a run with a heap offers its groups there and emits none");
+		sift_v6_topk_run_finish(t->run);
 	}
 	return sift_v6_topk_run_next(t->run, values, isnull);
 }

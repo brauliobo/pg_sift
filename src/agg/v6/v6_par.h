@@ -143,6 +143,8 @@ typedef struct SiftV6ParWorkerStats
 /* the counters of the participants are an array in the shared block, each a whole number of cache lines; a run is palloc'd, so the type has no alignment of its own */
 StaticAssertDecl(sizeof(SiftV6ParWorkerStats) % PG_CACHE_LINE_SIZE == 0, "a participant's counters do not share a cache line with another's");
 
+typedef struct SiftV6TopKRun SiftV6TopKRun;
+
 typedef struct SiftV6ParEngine
 {
 	void	   *env;
@@ -163,6 +165,8 @@ typedef struct SiftV6ParEngine
 	/* The state is final: local_next gives the groups, once each */
 	void		(*local_finish) (void *local);
 	bool		(*local_next) (void *local, Datum *values, bool *isnull);
+	/* The final state's groups offered to the heap of a ORDER BY .. LIMIT, which makes the Datums of the keys of those that stay only */
+	void		(*local_offer) (void *local, SiftV6TopKRun *topk);
 	/* The distinct strategy: the number of distinct values of aggregate slot the partitions merged into local, and the total that the final state is given */
 	uint64		(*local_dist_count) (const void *local, uint32 slot);
 	void		(*local_set_dist) (void *local, uint32 slot, uint64 total);
@@ -231,7 +235,7 @@ typedef struct SiftV6ParShape
 	uint32		plain_slot_bytes;
 } SiftV6ParShape;
 
-extern uint32 sift_v6_par_chunks(SiftV6ParStrategy strategy, double hash_limit);
+extern uint32 sift_v6_par_chunks(SiftV6ParStrategy strategy, double expected_bytes);
 extern uint32 sift_v6_par_radix_parts(SiftV6ParStrategy strategy, int nworkers);
 extern Size sift_v6_par_dsm_size(const SiftV6ParShape *sh);
 /* Lays the block out in raw (sift_v6_par_dsm_size bytes) and initializes every shared word; granules[p] is the granules of part p */
@@ -272,6 +276,7 @@ typedef struct SiftV6ParRun
 	SiftV6ParDsmHdr *hdr;
 	SiftParCoord *coord;
 	const SiftV6ParEngine *eng;
+	SiftV6TopKRun *topk;			/* the heap the groups of the participant go to instead of the Gather */
 	int			pid;
 	bool		attached;
 	SiftV6ParStage stage;
@@ -286,9 +291,11 @@ typedef struct SiftV6ParRun
 	uint32		tick;				/* tuples since the last interrupt check */
 } SiftV6ParRun;
 
-extern SiftV6ParRun *sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng);
+extern SiftV6ParRun *sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopKRun *topk);
 /* The next finished group of this participant, false when it has no more; the first call runs the scan */
 extern bool sift_v6_par_next(SiftV6ParRun *r, Datum *values, bool *isnull);
+/* The next group of a final state, or with a heap every group of it offered there (false at once) */
+extern bool sift_v6_par_local_next(SiftV6ParRun *r, void *local, Datum *values, bool *isnull);
 /* Leaves the barrier if this participant is still at it, publishes its counters, frees it */
 extern void sift_v6_par_run_end(SiftV6ParRun *r);
 /* The error cleanup of a run (PG_ENSURE_ERROR_CLEANUP): the barrier of the others is not left waiting for it */

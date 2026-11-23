@@ -291,15 +291,16 @@ offer_compact(void *arg, const uint64 *s)
 	offer_group(o->r, o->g, o->set, NULL, s, o->acc, &o->bar, o->qual, o->ec, o->slot);
 }
 
-/* The state blocks of a run of groups are fetched together before the first is read: the slots stream in table order, their blocks are where the groups were made */
+/* The state blocks of a run of groups are fetched together before the first is read: the slots stream in table order, their blocks are where the groups were made; the heap is not finished, so the groups of another state can follow */
 void
-sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprContext *ec, TupleTableSlot *slot)
+sift_v6_topk_run_offer_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprContext *ec, TupleTableSlot *slot)
 {
 	const V6Set *set = &g->set[0];
 	const SiftSaltedHT *ht = &set->ht;
 	MemoryContext old = MemoryContextSwitchTo(r->tmp);
-	CountBar	bar = {0};
+	CountBar	bar;
 
+	count_bar(r, &bar);
 	if (g->store != NULL || set->nk == 0)
 	{
 		while (sift_v6_group_next(g, r->values, r->isnull))
@@ -309,18 +310,16 @@ sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprC
 		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(r->tmp);
-		sift_gtopk_finish(r->heap);
 		return;
 	}
 	if (set->cmp != NULL)
 	{
-		CompactOffer o = {.r = r,.g = g,.set = set,.qual = qual,.ec = ec,.slot = slot,.acc = MemoryContextAlloc(g->cx, Max(g->spec->naggs, 1) * sizeof(V6Acc))};
+		CompactOffer o = {.r = r,.g = g,.set = set,.qual = qual,.ec = ec,.slot = slot,.acc = MemoryContextAlloc(g->cx, Max(g->spec->naggs, 1) * sizeof(V6Acc)),.bar = bar};
 
 		v6g_compact_each(set, offer_compact, &o);
 		pfree(o.acc);
 		MemoryContextReset(r->tmp);
 		MemoryContextSwitchTo(old);
-		sift_gtopk_finish(r->heap);
 		return;
 	}
 	for (uint32 at = sift_ht_next_occupied(ht, 0); at < ht->capacity;)
@@ -338,6 +337,12 @@ sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprC
 	}
 	MemoryContextReset(r->tmp);
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprContext *ec, TupleTableSlot *slot)
+{
+	sift_v6_topk_run_offer_groups(r, g, qual, ec, slot);
 	sift_gtopk_finish(r->heap);
 }
 

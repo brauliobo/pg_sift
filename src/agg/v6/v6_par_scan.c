@@ -22,7 +22,7 @@ sift_v6_par_barrier_event(void)
 }
 
 SiftV6ParRun *
-sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng)
+sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng, SiftV6TopKRun *topk)
 {
 	SiftV6ParRun *r = palloc0(sizeof(SiftV6ParRun));
 
@@ -30,9 +30,19 @@ sift_v6_par_run_new(SiftV6ParDsmHdr *hdr, const SiftV6ParEngine *eng)
 	r->hdr = hdr;
 	r->coord = sift_v6_par_coord(hdr);
 	r->eng = eng;
+	r->topk = topk;
 	r->stage = SV6S_NEW;
 	r->export_cap = hdr->strategy == SV6P_TWO_STAGE ? SIFT_PAR_TWO_STAGE_MAX_GROUPS : SIFT_PAR_LOCAL_GROUPS;
 	return r;
+}
+
+bool
+sift_v6_par_local_next(SiftV6ParRun *r, void *local, Datum *values, bool *isnull)
+{
+	if (r->topk == NULL)
+		return r->eng->local_next(local, values, isnull);
+	r->eng->local_offer(local, r->topk);
+	return false;
 }
 
 /* The place at the barrier: the phase it was in when this participant came, 0 when there is a scan to do */

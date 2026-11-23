@@ -21,6 +21,8 @@ extern SiftV6TopKRun *sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *s
  * as tuples.
  */
 extern void sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprContext *ec, TupleTableSlot *slot);
+/* The same without finishing the heap, so that the groups of one more state can be offered; sift_v6_topk_run_finish then orders it */
+extern void sift_v6_topk_run_offer_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprContext *ec, TupleTableSlot *slot);
 /* The tuples next gives (values and nulls of the whole tuple) in the same way */
 extern void sift_v6_topk_run_stream(SiftV6TopKRun *r, bool (*next) (void *arg, Datum *values, bool *isnull), void *arg, ExprState *qual, ExprContext *ec, TupleTableSlot *slot);
 /* A row of a stream the caller builds (agg/v6/v6_rows_topn.h): offered by its sort values, then copied in when wants says so */

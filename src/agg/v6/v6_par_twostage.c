@@ -104,7 +104,7 @@ sift_v6_par_two_stage_next(SiftV6ParRun *r, Datum *values, bool *isnull)
 	switch (r->stage)
 	{
 		case SV6S_LOCAL:
-			if (r->eng->local_next(r->local, values, isnull))
+			if (sift_v6_par_local_next(r, r->local, values, isnull))
 			{
 				r->stats.groups_emitted++;
 				return true;

@@ -13,6 +13,7 @@
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_par_dist.h"
 #include "agg/v6/v6_par_pg.h"
+#include "agg/v6/v6_topk_run.h"
 #include "core/memtrack.h"
 
 /* MEM[MEM-AGG-17]: parallel worker SiftDistinct (the seen set is bounded by the hand over of par_local_load counting its bytes, not by a budget that would spill it; the heap goes back to the system when a worker state ends) */
@@ -432,6 +433,12 @@ par_local_next(void *local, Datum *values, bool *isnull)
 	return got;
 }
 
+static void
+par_local_offer(void *local, SiftV6TopKRun *topk)
+{
+	sift_v6_topk_run_offer_groups(topk, ((ParLocal *) local)->g, NULL, NULL, NULL);
+}
+
 static uint64
 par_local_dist_count(const void *local, uint32 slot)
 {
@@ -485,7 +492,7 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	for (int j = 0; j < spec->naggs; j++)
 		e->op[j] = v6g_acc_op(&spec->agg[j]);
 	*eng = (SiftV6ParEngine) {.env = e,.local_new = par_local_new,.local_free = par_local_free,.scan_morsel = par_scan_morsel,.local_load = par_local_load,
-		.local_export = par_local_export,.local_merge = par_local_merge,.local_finish = par_local_finish,.local_next = par_local_next,
+		.local_export = par_local_export,.local_merge = par_local_merge,.local_finish = par_local_finish,.local_next = par_local_next,.local_offer = par_local_offer,
 		.local_dist_count = par_local_dist_count,.local_set_dist = par_local_set_dist,.local_reset = par_local_reset};
 }
 

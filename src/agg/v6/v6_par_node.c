@@ -163,12 +163,6 @@ sift_v6_par_node_worker(SiftV6ParNode *pn, void *chunk)
 	pn->hdr = h;
 }
 
-static bool
-run_next(void *arg, Datum *values, bool *isnull)
-{
-	return sift_v6_par_next(((SiftV6ParNode *) arg)->run, values, isnull);
-}
-
 bool
 sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 {
@@ -178,11 +172,11 @@ sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 	if (pn->run == NULL)
 	{
 		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap);
-		pn->run = sift_v6_par_run_new(pn->hdr, &pn->eng);
 		if (pn->spec->topk > 0)
-			pn->topk = sift_v6_par_topk_new(pn->mcx, pn->spec, pn->desc, pn->tuple_cx, run_next, pn);
+			pn->topk = sift_v6_par_topk_new(pn->mcx, pn->spec, pn->desc);
+		pn->run = sift_v6_par_run_new(pn->hdr, &pn->eng, pn->topk != NULL ? sift_v6_par_topk_heap(pn->topk) : NULL);
 	}
-	got = pn->topk != NULL ? sift_v6_par_topk_next(pn->topk, values, isnull) : sift_v6_par_next(pn->run, values, isnull);
+	got = pn->topk != NULL ? sift_v6_par_topk_next(pn->topk, pn->run, values, isnull) : sift_v6_par_next(pn->run, values, isnull);
 	MemoryContextSwitchTo(old);
 	return got;
 }

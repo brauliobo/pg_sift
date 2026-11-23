@@ -30,7 +30,7 @@ sift_v6_par_emit_parts(SiftV6ParRun *r, Datum *values, bool *isnull)
 
 		if (r->plocal != NULL)
 		{
-			if (r->eng->local_next(r->plocal, values, isnull))
+			if (sift_v6_par_local_next(r, r->plocal, values, isnull))
 			{
 				r->stats.groups_emitted++;
 				if ((++r->tick & 1023) == 0)
@@ -158,7 +158,7 @@ sift_v6_par_dist_next(SiftV6ParRun *r, Datum *values, bool *isnull)
 {
 	if (r->stage == SV6S_NEW)
 		run_dist(r);
-	if (r->stage == SV6S_LOCAL && r->eng->local_next(r->local, values, isnull))
+	if (r->stage == SV6S_LOCAL && sift_v6_par_local_next(r, r->local, values, isnull))
 	{
 		r->stats.groups_emitted++;
 		return true;
