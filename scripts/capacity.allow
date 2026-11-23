@@ -9,7 +9,6 @@ array-append	src/agg/col.c	preds[n++] = src->wpred[i];	preds is COL_PREDS_MAX en
 array-append	src/agg/hybrid_agg_exec.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
 array-append	src/agg/lookclass.c	m->idx[m->n++] = p;	each distinct need is added once, at most nneed <= MAX_NEED
 array-append	src/agg/v6/group_dist.c	vals[n++] = (uint64) int_at(v, r);	vals is SIFT_VEC_LEN long and the loop visits the rows of one vector
-array-append	src/agg/v6/group_dist.c	rows[m++] = k;	rows is SIFT_VEC_LEN long and k indexes the selected rows of one vector
 array-append	src/bm25/tail.c	present[npresent++] = i;	present is nsegs + 1 long and i is one of the equal-term segments, each seen once
 array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {1, 0, t->leaves};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
 array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {2 * w.node, w.from, mid};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
@@ -33,7 +32,6 @@ array-append	src/bm25/runs_int.h	v[n++] = (uint8) x;	a varint of 64 bits takes a
 blocknumber-sum	src/bm25/walk.c	BlockNumber blk = dm->dir[i].sb * SIFT_SB_PAGES + p;	the heap block of a page of a superblock of the segment: a heap block number, below 2^32 by PostgreSQL
 array-append	src/bm25/writer.c	offs[n++] = k * 64 + __builtin_ctzll(m) + 1;	the offsets of one page: at most MaxHeapTuplesPerPage
 array-append	src/col/v1/am_v1.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
-array-append	src/col/v1/am_v1.c	rels[n++] = rt_fetch(rti, ps->rtable)->relid;	allocated for stmt_result_count() relations, the count of the same range table
 array-append	src/col/v1/amscan/amscan.c	tids[m++] = tids[i];	a compaction in place of the TIDs read, m never passes i; an estimate of rows by a double ratio
 array-append	src/col/v1/build/run.c	pick[n++] = low;	two picks, the loop runs twice
 array-append	src/col/v1/gorder.c	anc[nan++] = kv[i];	the anchors are counted first and the writer returns when there are more than the array holds
@@ -52,12 +50,10 @@ cast-after-product	src/col/v1/seg_write/summary.c	unit_agg_of(&w->zones[(Size) (
 cast-after-product	src/col/v1/wbuf/arena.c	values[8] = Int64GetDatum((int64) (a->nsegs * ARENA_SEG_PAGES - a->pages_free) * ARENA_PAGE);	the pages of the arena: at most ARENA_SEGS * ARENA_SEG_PAGES
 array-append	src/col/v1/wide.c	digits[nd++] = (char) ('0' + (int) (u % 10));	the digits of a 128-bit value: at most 39 of SIFT_COL_W128_TEXT
 blocknumber-sum	src/core/live.c	BlockNumber blk = l->first + SIFT_PAYLOAD_PAGE(b);	the page index is compared with npages just below, before the page is read; sift_live_check holds npages to the bits of the run
-blocknumber-sum	src/core/live.c	BlockNumber blk = l->first + SIFT_PAYLOAD_PAGE(b);	the page index is compared with npages just below, before the page is read; sift_live_check holds npages to the bits of the run
 blocknumber-sum	src/core/live_repair.c	BlockNumber blk = l->first + i;	the loop runs over the npages of the run
 array-append	src/core/progress.c	copy[n++] = p->slot[i];	a loop over the PROGRESS_SLOTS slots
 array-append	src/core/quarantine_sql.c	ids[n++] = q->entry[i].indexoid;	a loop over the sift_quar_entries() entries of the registry, ids is QUAR_ENTRIES long
 blocknumber-sum	src/core/relocate.c	BlockNumber blk = plan.source[i].start + j;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
-blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 blocknumber-sum	src/core/relocate.c	BlockNumber top = run->start + run->nblocks;	the extents of a segment are validated at read: start + nblocks is at most MaxBlockNumber (core/reader.c)
 array-append	src/core/xlog.h	x->full[x->n++] = (flags & GENERIC_XLOG_FULL_IMAGE) != 0;	GenericXLogRegisterBuffer, called on the line above, raises its own error past MAX_GENERIC_XLOG_PAGES buffers
 array-append	src/col/v1/maint/maint.c	moves[n++] = (SiftDvMove) {gen, start, unit - start, gen2, start};	the cuts are the set bits of a 64-bit mask, so at most 64 moves and the last: the array holds 65
@@ -89,7 +85,6 @@ array-append	src/col/f2/f2_pack.c	rel_ext[nrel++] = (SiftExtent) {c->d.header_bl
 array-append	src/col/f2/key_plan.c	k->set[k->nset++] = vs[i];	at most SET_CAP values are taken (n > SET_CAP narrows by range instead) and the set holds SET_CAP
 array-append	src/col/f2/key_plan.c	kept[nk++] = k->set[i];	the kept values are some of the at most SET_CAP of the set and kept holds SET_CAP
 array-append	src/col/f2/key_plan.c	k->set[m++] = v;	the values kept are some of those of the set, which holds at most SET_CAP
-cast-after-product	src/agg/gpu_v6.c	x->cache_limit = caps->cache_bytes > 0 ? (uint64) (caps->cache_bytes * CACHE_USE) : (uint64) sift_gpu_cache_mb * ((uint64) 1 << 20) * 3 / 4;	the product is a double (the bytes of the device times a share) and its result is cast; the integer product is widened first
 array-append	src/col/f2/f2_proj_spec.c	name[len++] = *ps->p++;	the loop condition stops at len + 1 < sizeof(name)
 array-append	src/col/f2/f2_proj_spec.c	name[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(name)
 array-append	src/col/f2/f2_proj_spec.c	u[len++] = (char) tolower((unsigned char) *ps->p++);	the loop condition stops at len + 1 < sizeof(u)

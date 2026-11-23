@@ -25,6 +25,7 @@
 
 #include "agg/v6/v6_unnest.h"
 #include "agg/vexpr_str.h"
+#include "core/catname.h"
 #include "col/am.h"
 #include "col/f2/f2_sink_ext.h"
 #include "core/sql.h"

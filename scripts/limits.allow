@@ -204,7 +204,6 @@ SIFT_WIN_NO_LIMIT	the most items (columns, keys, filters, masks, operations) one
 SORT_LIMIT_GUESS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 SORT_RESIDUAL_MAX_ROWS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 VK_MAX_EXTENSION_NAME_SIZE	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
-VM_SCAN_MAX_BLKS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 WARN_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
 SIFT_DICTSEEN_MAX_CODES	the codes of a dictionary the distinct-values set of a parallel scan reads as codes: a larger one is read as strings, the rows are the same
 SIFT_DICTSEEN_MAX_BYTES	the bytes of a dictionary the distinct-values set of a parallel scan reads as codes: a larger one is read as strings, the rows are the same
@@ -231,3 +230,24 @@ SNAP_MAX_READS	the cubes of keys a scope snapshot keeps for one statement (col/f
 INV_MAX_BUDGET	the bytes the bm25 build buffer holds before it spills to a run (bm25/inv.c), a performance threshold: the index is the same
 ROUTE_MAX_SHARE_PCT	the share of granules above which a scope router is not built (col/f2/f2_scope_route.c), a cost threshold: the rows are the same
 SET_INIT_SLOTS	the slots a group set starts with (agg/v6/group.c), it grows by doubling: no result depends on it
+CARRY_FIRST_SLOTS	the slots a window carry table starts with (agg/v6/v6_win_carry.c): it grows by doubling, no result depends on it
+CMP_MAX_KW	words of a compact group key (agg/v6/v6_group_compact.c): wider keys use the normal group table, the rows are the same
+CMP_MAX_WORDS	words of a compact group key (agg/v6/v6_group_cmp.h): wider keys use the normal group table, the rows are the same
+MONTH_MAX_DAYS	days of a month a calendar table holds (agg/v6/v6_tseries_fast.c): a fixed calendar fact, not a limit
+MONTH_SLOTS	slots of the month table of an unnest group (agg/v6/v6_unnest_run.c): a capacity of the implementation, past it the heap plan runs with the same rows
+OUT_SLOTS	slots of the output batch of an unnest group (agg/v6/v6_unnest_run.c): a capacity of the implementation, a full batch is flushed
+RG_FIRST_SLOTS	the groups a regrouped window starts with (agg/v6/v6_win_par.c): it grows by doubling, no result depends on it
+RG_MAX_GROUPS	groups a regrouped window holds (agg/v6/v6_win_par.c): past it the sorted window runs, the rows are the same
+RG_MAX_ROWS	rows a regrouped window holds (agg/v6/v6_win_par.c): past it the sorted window runs, the rows are the same
+SEARCH_MAX_ARMS	arms of a search the planner prices (agg/search.c): past it the normal plan runs with the same rows
+SEMI_ENTRIES	entries of the semi-join set cache (bm25/semi_cache.c): a cache bound with no visible effect
+SIFT_ARITH_MAX_STACK	the stack of a postfix arithmetic expression (agg/v6/v6_plan_rewrite.h): a longer expression is not planned, the rows are the same
+SIFT_ARITH_MAX_TOKENS	tokens of a postfix arithmetic expression (agg/v6/v6_plan_rewrite.h): a longer expression is not planned, the rows are the same
+SIFT_DICT_MAX_VALUES	values of a dictionary the parallel cost model prices (agg/v6/v6_par_path.c): a cost threshold, the rows are the same
+SIFT_LOCK_MAX_K	the top-K a lock-free heap keeps (agg/v6/v6_plan_rewrite.h): a larger K takes the normal path, the rows are the same
+SIFT_VN_MAX_FACTORS	factors of an exact numeric product (agg/v6/v6_expr_num.h): a longer product is not planned, the rows are the same
+SIFT_WIN_CARRY_MAX_VARS	variables a window carry holds (agg/v6/v6_win_carry.h): past it the plain window runs, the rows are the same
+SORT_LOOKUP_MAX_ROWS	rows of a projection sort lookup (agg/v6/v6_proj_sort_plan.c): past it the sort runs, the rows are the same
+STAT_SLOTS	slots of the column statistics cache of the planner (agg/v6/v6_colstat.c): a cache bound with no visible effect
+SUM_ROW_LIMIT	rows an exact numeric sum folds in one step (agg/v6/v6_expr_num.c): a batch size, the result is the same
+UNIQUE_LOCK_SLOTS	the key locks of a unique index (bm25/unique.c): keys that share a slot wait for each other, no result depends on it
