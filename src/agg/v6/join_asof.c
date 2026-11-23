@@ -17,6 +17,7 @@
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/table.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_type_d.h"
 #include "commands/explain.h"
 #include "executor/executor.h"
@@ -29,6 +30,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "parser/parsetree.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
@@ -134,8 +136,8 @@ describe(const RelOptInfo *outerrel, const Query *sub, Idiom *id)
 	if (!id->shape.single_table)
 		return true;
 	rte = linitial(sub->rtable);
-	id->shape.single_table = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL;
-	limit = (const Const *) sub->limitCount;
+	id->shape.single_table = rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !has_subclass(rte->relid) && rte->tablesample == NULL;
+	limit = (const Const *) eval_const_expressions(NULL, sub->limitCount);
 	id->shape.limit_one = limit != NULL && IsA(limit, Const) && !limit->constisnull && limit->consttype == INT8OID && DatumGetInt64(limit->constvalue) == 1 &&
 		sub->limitOption == LIMIT_OPTION_COUNT;
 	id->shape.has_offset = sub->limitOffset != NULL;
@@ -362,6 +364,11 @@ typedef struct V6Asof
 	int		   *fetch_at;		/* of each column of the scan tuple that is one of dim: its place among fetch */
 	PlanState  *fps;
 	TupleTableSlot *fslot;
+	bool		have_prev;		/* the last fact row of the run that arrived in order: its key and time */
+	int64		prev_k,
+				prev_ts;
+	bool		prev_knull,
+				prev_tsnull;
 	SiftV6Store out;
 	SiftAsofStats stats;
 	Datum	   *vals;
@@ -478,31 +485,55 @@ int_datum(Oid typid, Datum d)
 	return typid == INT4OID || typid == DATEOID ? (int64) DatumGetInt32(d) : DatumGetInt64(d);
 }
 
-/* the fact rows sorted by (k, ts), the NULLs last */
+/* the sort of the fact rows that do not arrive in the order of (k, ts), the NULLs last */
 static Tuplesortstate *
-sort_fact(V6Asof *st)
+sort_begin(V6Asof *st)
 {
 	const AttrNumber cols[2] = {st->fact_k, st->fact_ts};
 	const Oid	typs[2] = {st->ktyp, st->tstyp};
 	Oid			ops[2];
 	Oid			colls[2] = {InvalidOid, InvalidOid};
 	bool		nulls_first[2] = {false, false};
-	Tuplesortstate *ts;
 
 	for (int i = 0; i < 2; i++)
-		ops[i] = lookup_type_cache(typs[i], TYPECACHE_LT_OPR)->lt_opr;
-	ts = tuplesort_begin_heap(ExecGetResultType(st->fps), 2, (AttrNumber *) cols, ops, colls, nulls_first, work_mem, NULL, TUPLESORT_NONE);
-	for (;;)
 	{
-		TupleTableSlot *slot = ExecProcNode(st->fps);
-
-		if (TupIsNull(slot))
-			break;
-		CHECK_FOR_INTERRUPTS();
-		tuplesort_puttupleslot(ts, slot);
+		ops[i] = lookup_type_cache(typs[i], TYPECACHE_LT_OPR)->lt_opr;
+		if (!OidIsValid(ops[i]))
+			ereport(ERROR, (errcode(ERRCODE_UNDEFINED_FUNCTION), errmsg("could not identify a less-than operator for type %s", format_type_be(typs[i]))));
 	}
-	tuplesort_performsort(ts);
-	return ts;
+	return tuplesort_begin_heap(ExecGetResultType(st->fps), 2, (AttrNumber *) cols, ops, colls, nulls_first, work_mem, NULL, TUPLESORT_NONE);
+}
+
+/* the order of (k, ts) with the NULLs last: a < b, a = b or a > b as -1, 0, 1 */
+static int
+fact_cmp(int64 ak, bool aknull, int64 ats, bool atsnull, int64 bk, bool bknull, int64 bts, bool btsnull)
+{
+	if (aknull != bknull)
+		return aknull ? 1 : -1;
+	if (!aknull && ak != bk)
+		return ak < bk ? -1 : 1;
+	if (atsnull != btsnull)
+		return atsnull ? 1 : -1;
+	return atsnull || ats == bts ? 0 : ats < bts ? -1 : 1;
+}
+
+/* The key and time of a fact row, and whether the row follows the last one that arrived in order (it then joins the run); the first row that does not ends the run */
+static bool
+fact_in_order(V6Asof *st, TupleTableSlot *slot)
+{
+	const bool	knull = slot->tts_isnull[st->fact_k - 1],
+				tsnull = slot->tts_isnull[st->fact_ts - 1];
+	const int64 k = knull ? 0 : int_datum(st->ktyp, slot->tts_values[st->fact_k - 1]),
+				ts = tsnull ? 0 : int_datum(st->tstyp, slot->tts_values[st->fact_ts - 1]);
+
+	if (st->have_prev && fact_cmp(st->prev_k, st->prev_knull, st->prev_ts, st->prev_tsnull, k, knull, ts, tsnull) > 0)
+		return false;
+	st->have_prev = true;
+	st->prev_k = k;
+	st->prev_knull = knull;
+	st->prev_ts = ts;
+	st->prev_tsnull = tsnull;
+	return true;
 }
 
 /* the input over dim: the columns of its table, or of its index */
@@ -518,59 +549,115 @@ dim_input(const V6Asof *st, SiftV6Input *in)
 	relation_close(rel, NoLock);
 }
 
+/* One merge of the fact rows with dim: the rows must come in the order of (k, ts) */
+typedef struct Merge
+{
+	DimFeed    *feed;
+	SiftAsofStream *stream;
+} Merge;
+
+static Merge
+merge_open(V6Asof *st, EState *estate)
+{
+	SiftV6Input in;
+	Var		   *kvar = makeVar(1, st->dim_k, st->ktyp, -1, InvalidOid, 0);
+	Var		   *tvar = makeVar(1, st->dim_ts, st->tstyp, -1, InvalidOid, 0);
+	Merge		m = {.feed = MemoryContextAllocZero(st->out.cx, sizeof(DimFeed))};
+
+	dim_input(st, &in);
+	m.feed->kslot = sift_v6_input_add_var(&in, kvar);
+	m.feed->tslot = sift_v6_input_add_var(&in, tvar);
+	SIFT_INVARIANT(m.feed->kslot >= 0 && m.feed->tslot >= 0, "the asof join of relation %u does not read its keys", st->indexoid);
+	m.feed->src = sift_v6_format()->open(estate, &in, NULL, true);
+	m.stream = sift_asof_open(st->out.cx, st->spec, dim_next, m.feed);
+	return m;
+}
+
+static void
+merge_close(V6Asof *st, Merge *m)
+{
+	const SiftAsofStats *s = sift_asof_stats(m->stream);
+
+	st->stats.fact_rows += s->fact_rows;
+	st->stats.dim_rows += s->dim_rows;
+	st->stats.dim_null_rows += s->dim_null_rows;
+	st->stats.matched += s->matched;
+	sift_asof_close(m->stream);
+	m->feed->src->close(m->feed->src);
+}
+
+/* The join row of one fact row: the match in dim and the columns it gives */
+static void
+merge_row(V6Asof *st, Merge *m, TupleTableSlot *slot)
+{
+	const TupleDesc desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+	bool		fetched = false;
+	SiftAsofHit hit;
+
+	slot_getallattrs(slot);
+	hit = sift_asof_probe(m->stream, slot->tts_isnull[st->fact_k - 1] ? 0 : int_datum(st->ktyp, slot->tts_values[st->fact_k - 1]), slot->tts_isnull[st->fact_k - 1],
+						  slot->tts_isnull[st->fact_ts - 1] ? 0 : int_datum(st->tstyp, slot->tts_values[st->fact_ts - 1]), slot->tts_isnull[st->fact_ts - 1]);
+	CHECK_FOR_INTERRUPTS();
+	if (!hit.found && !st->left)
+		return;
+	if (hit.found && st->nfetch > 0)
+		fetched = m->feed->src->fetch(m->feed->src, hit.tag, st->fetch, st->nfetch, st->dvals, st->dnulls);
+	for (int i = 0; i < st->nout; i++)
+	{
+		if (!st->dim[i])
+		{
+			st->vals[i] = slot->tts_values[st->col[i] - 1];
+			st->nulls[i] = slot->tts_isnull[st->col[i] - 1];
+		}
+		else
+		{
+			st->nulls[i] = !fetched || st->dnulls[st->fetch_at[i]];
+			st->vals[i] = st->nulls[i] ? (Datum) 0 : st->dvals[st->fetch_at[i]];
+		}
+	}
+	sift_v6_store_put(&st->out, desc, st->vals, st->nulls);
+}
+
+/*
+ * The fact rows that arrive in the order of (k, ts) are merged as they come, with no sort; the first row that does not ends that run, and it and every row after it are sorted and merged
+ * against dim read again (a second merge: the answer of a fact row does not depend on the others, only the order the merge reads them in does).
+ */
 static void
 asof_run(V6Asof *st, EState *estate)
 {
-	SiftV6Input in;
-	DimFeed    *feed;
-	SiftAsofStream *stream;
-	Tuplesortstate *sorter;
-	Var		   *kvar = makeVar(1, st->dim_k, st->ktyp, -1, InvalidOid, 0);
-	Var		   *tvar = makeVar(1, st->dim_ts, st->tstyp, -1, InvalidOid, 0);
-	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+	Merge		m;
+	Tuplesortstate *rest = NULL;
 
 	sift_v6_store_start(&st->out, estate);
-	dim_input(st, &in);
-	feed = MemoryContextAllocZero(st->out.cx, sizeof(DimFeed));
-	feed->kslot = sift_v6_input_add_var(&in, kvar);
-	feed->tslot = sift_v6_input_add_var(&in, tvar);
-	SIFT_INVARIANT(feed->kslot >= 0 && feed->tslot >= 0, "the asof join of relation %u does not read its keys", st->indexoid);
-	feed->src = sift_v6_format()->open(estate, &in, NULL, true);
-	stream = sift_asof_open(st->out.cx, st->spec, dim_next, feed);
-	sorter = sort_fact(st);
-	while (tuplesort_gettupleslot(sorter, true, false, st->fslot, NULL))
+	st->stats = (SiftAsofStats) {0};
+	st->have_prev = false;
+	m = merge_open(st, estate);
+	for (;;)
 	{
-		bool		knull,
-					tnull;
-		const Datum kd = slot_getattr(st->fslot, st->fact_k, &knull);
-		const Datum td = slot_getattr(st->fslot, st->fact_ts, &tnull);
-		const SiftAsofHit hit = sift_asof_probe(stream, knull ? 0 : int_datum(st->ktyp, kd), knull, tnull ? 0 : int_datum(st->tstyp, td), tnull);
-		bool		fetched = false;
+		TupleTableSlot *slot = ExecProcNode(st->fps);
 
+		if (TupIsNull(slot))
+			break;
 		CHECK_FOR_INTERRUPTS();
-		if (!hit.found && !st->left)
-			continue;
-		if (hit.found && st->nfetch > 0)
-			fetched = feed->src->fetch(feed->src, hit.tag, st->fetch, st->nfetch, st->dvals, st->dnulls);
-		for (int i = 0; i < st->nout; i++)
+		slot_getallattrs(slot);
+		if (rest == NULL && fact_in_order(st, slot))
+			merge_row(st, &m, slot);
+		else
 		{
-			if (!st->dim[i])
-			{
-				st->vals[i] = st->fslot->tts_values[st->col[i] - 1];
-				st->nulls[i] = st->fslot->tts_isnull[st->col[i] - 1];
-			}
-			else
-			{
-				st->nulls[i] = !fetched || st->dnulls[st->fetch_at[i]];
-				st->vals[i] = st->nulls[i] ? (Datum) 0 : st->dvals[st->fetch_at[i]];
-			}
+			rest = rest != NULL ? rest : sort_begin(st);
+			tuplesort_puttupleslot(rest, slot);
 		}
-		sift_v6_store_put(&st->out, desc, st->vals, st->nulls);
 	}
-	tuplesort_end(sorter);
-	st->stats = *sift_asof_stats(stream);
-	sift_asof_close(stream);
-	feed->src->close(feed->src);
+	merge_close(st, &m);
+	if (rest != NULL)
+	{
+		tuplesort_performsort(rest);
+		m = merge_open(st, estate);
+		while (tuplesort_gettupleslot(rest, true, false, st->fslot, NULL))
+			merge_row(st, &m, st->fslot);
+		merge_close(st, &m);
+		tuplesort_end(rest);
+	}
 	st->out.ran = true;
 }
 
