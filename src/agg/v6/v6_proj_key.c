@@ -6,6 +6,8 @@
 
 #include "access/skey.h"
 #include "access/stratnum.h"
+#include "catalog/pg_am_d.h"
+#include "commands/defrem.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
@@ -225,6 +227,15 @@ index_attno(const Node *e)
 	return e != NULL && IsA(e, Var) && ((const Var *) e)->varno == INDEX_VAR && ((const Var *) e)->varlevelsup == 0 ? ((const Var *) e)->varattno : 0;
 }
 
+/* The operator family a column of an index compares in, and for a table (no index) the default one of the type of the column */
+static Oid
+column_opfamily(Relation rel, int attno)
+{
+	if (rel->rd_opfamily != NULL)
+		return rel->rd_opfamily[attno - 1];
+	return get_opclass_family(GetDefaultOpClass(TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid, BTREE_AM_OID));
+}
+
 /* One qual of a FILTER, in the forms the scan's own quals take (a column and a constant compared, = ANY of a constant array, IS [NOT] NULL), as a predicate of a spec */
 static bool
 pred_of_qual(const SiftF2Store *store, Relation index, const Node *q, SiftProjSpecPred *out, MemoryContext cx)
@@ -264,7 +275,7 @@ pred_of_qual(const SiftF2Store *store, Relation index, const Node *q, SiftProjSp
 	if (attno == 0 || r == NULL || !IsA(r, Const) || ((const Const *) r)->constisnull)
 		return false;
 	sk.sk_attno = attno;
-	sk.sk_strategy = get_op_opfamily_strategy(opno, index->rd_opfamily[attno - 1]);
+	sk.sk_strategy = get_op_opfamily_strategy(opno, column_opfamily(index, attno));
 	sk.sk_subtype = array ? InvalidOid : ((const Const *) r)->consttype;
 	sk.sk_collation = collid;
 	sk.sk_flags = array ? SK_SEARCHARRAY : 0;
