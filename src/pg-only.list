@@ -567,8 +567,10 @@ col/granule/enc_frame.c
 col/granule/enc_str.c
 col/granule/granule.c
 col/granule/granule.h
+col/granule/granule_a.h
 col/granule/granule_codes.c
 col/granule/granule_dec.c
+col/granule/granule_dec_a.c
 col/granule/granule_enc.c
 col/granule/granule_put.c
 col/granule/granule_filter.c
