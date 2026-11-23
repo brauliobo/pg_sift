@@ -122,4 +122,4 @@ def dml_scope(r, ctx):
         f'DELETE FROM item_links WHERE group_id = {k % 20} AND tenant_id = {t}', f'DELETE FROM item_links WHERE item_id % {m * 5} = {k}',
         f'UPDATE item_members SET deleted_at = now() WHERE item_id % {m} = {k}', f'UPDATE item_members SET deleted_at = NULL WHERE item_id % {m * 3} = {k}',
         f"INSERT INTO item_members SELECT {k % 20}, i, NULL, 'live' FROM generate_series({k}, 599, {m}) i ON CONFLICT DO NOTHING", f'DELETE FROM item_members WHERE item_id % {m * 5} = {k}',
-        'VACUUM item_scope', 'VACUUM item_grants', 'VACUUM item_links', 'VACUUM item_members', "SELECT sift.col_promote('events_col')", "SELECT sift.col_merge('events_col', true)", 'REINDEX INDEX events_col'])
+        'VACUUM item_scope', 'VACUUM item_grants', 'VACUUM item_links', 'VACUUM item_members', "SELECT sift.promote('events_col')", "SELECT sift.merge('events_col', true)", 'REINDEX INDEX events_col'])

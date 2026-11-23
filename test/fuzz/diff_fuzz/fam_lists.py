@@ -89,7 +89,7 @@ def dml_txn(r, ctx):
         f"BEGIN; {ins(lo, lo + n - 1)}; {ins(lo, lo + 1)}; COMMIT",
         f"{ins(lo, lo + n - 1)} ON CONFLICT (id) DO NOTHING; {ins(lo + n // 2, lo + n + n // 2)} ON CONFLICT (id) DO NOTHING",
         f"BEGIN; {ins(lo, lo + n - 1)}; DELETE FROM {t} WHERE id >= {lo} AND id < {lo + n // 3}; UPDATE {t} SET amount = amount + 1 WHERE id >= {lo + n // 2}; COMMIT",
-        f"BEGIN; {ins(lo, lo + n - 1)}; SELECT sift.col_promote('events_col'); {ins(lo + n, lo + 2 * n - 1)}; COMMIT",
+        f"BEGIN; {ins(lo, lo + n - 1)}; SELECT sift.promote('events_col'); {ins(lo + n, lo + 2 * n - 1)}; COMMIT",
     ])
 
 
@@ -123,7 +123,7 @@ def dml_trail(r, ctx):
         return f'INSERT INTO trf SELECT * FROM fz.gen_trf({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
     if e == 8:
         return r.choice(['VACUUM trf', 'VACUUM (FREEZE) trf'])
-    return r.choice(["SELECT sift.col_promote('trf_idx')", "SELECT sift.col_merge('trf_idx', true)", "SELECT sift.col_merge('trf_idx', false)"])
+    return r.choice(["SELECT sift.promote('trf_idx')", "SELECT sift.merge('trf_idx', true)", "SELECT sift.merge('trf_idx', false)"])
 
 
 SPANS = ["('span_a', daterange('2025-07-01', '2026-01-31', '[]'))", "('span_b', daterange('2025-01-01', '2025-06-30', '[]'))",

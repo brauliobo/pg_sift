@@ -3,7 +3,7 @@
 
 import re
 
-from .db import BASE
+from .db import BASE, usable
 from .fam_basic import gen_colcmp, gen_distleaf, gen_keys, gen_lookup, gen_numsum, gen_oneleaf, gen_partition, gen_placeholder, gen_preagg, gen_setkeys, gen_widew, render_lookup, render_oneleaf, render_partition, render_placeholder, render_preagg, render_setkeys
 from .fam_shapes import gen_corrsub, render_corrsub, gen_unusedlat, render_unusedlat, gen_decor, gen_dirty, gen_exists, gen_lateralagg, gen_latest, gen_leftlateral, gen_toplat, gen_toplook, gen_topn, gen_union, render_decor, render_dirty, render_exists, render_lateralagg, render_latest, render_leftlateral, render_toplat, render_toplook, render_topn, render_union
 from .fam_lists import gen_distinctrows, gen_listpage, gen_oneentity, gen_point, gen_pointagg, gen_same, gen_trail, gen_twolevel, gen_txnmix, render_distinctrows, render_listpage, render_oneentity, render_point, render_pointagg, render_same, render_trail, render_twolevel, render_txnmix
@@ -99,7 +99,7 @@ def variants(r, fam):
     v += r.sample(extra, r.choice([1, 2]))
     if fam == 'having':  # 0 and 2 workers, the pre-aggregates off
         v += [('hpar2', 'sift.enable_agg=on;' + PAR % (2, 'on')), ('hscan2', 'sift.enable_agg=on;sift.agg_preagg=off;' + PAR % (2, 'off'))]
-    return v
+    return [(n, spec) for n, spec in v if usable(spec)]
 
 
 def prepared_variants(vs):

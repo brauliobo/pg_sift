@@ -2,6 +2,7 @@
 # Each family is a gen(r, ctx) and a render(parts), with its DML.
 
 from . import tablemode
+from .db import knob, sets
 from .columns import keys
 from .fam_basic import grouped, where
 from .dml import bulk_insert
@@ -49,7 +50,7 @@ def render_exceptions(p):
 def dml_exceptions(r, ctx):
     """Stamps and restores (a stamped row makes its unit dirty: scanned until VACUUM and a merge write its exceptions again), inserts, deletes, VACUUM and merges on exf."""
     if not tablemode.TABLE and r.randrange(5) == 0:
-        return r.choice(['REINDEX INDEX exr_col', "SELECT sift.col_verify('exr_col', true)"])
+        return r.choice(['REINDEX INDEX exr_col', "SELECT count(*) FROM sift.check('exr_col', true)"])
     m = r.choice([13, 40, 97, 211, 509])
     ids = f'id % {m} = {r.randrange(m)}'
     e = r.randrange(12)
@@ -68,8 +69,8 @@ def dml_exceptions(r, ctx):
     if e == 8:
         return r.choice(['VACUUM exf', 'VACUUM (FREEZE) exf'])
     if tablemode.TABLE:
-        return r.choice(["SELECT sift.table_maintain('exf')", "SELECT sift.table_maintain('exf')", 'VACUUM FULL exf', bulk_insert(r, ctx, 'exf'), bulk_insert(r, ctx, 'exf')])
-    return r.choice(["SELECT sift.col_promote('exf_col')", "SELECT sift.col_merge('exf_col', true)", "SELECT sift.col_merge('exf_col', true)"])
+        return r.choice(["SELECT sift.maintain('exf')", "SELECT sift.maintain('exf')", 'VACUUM FULL exf', bulk_insert(r, ctx, 'exf'), bulk_insert(r, ctx, 'exf')])
+    return r.choice(["SELECT sift.promote('exf_col')", "SELECT sift.merge('exf_col', true)", "SELECT sift.merge('exf_col', true)"])
 
 
 # ---------- group shapes: the events of the keys a CTE picks from a table with a column index (IN-subqueries over links and assignments, COALESCE of a NULL member), grouped by the label a small table maps their metrics to ----------
@@ -125,7 +126,7 @@ def dml_flatkeys(r, ctx):
         f"INSERT INTO fk_map SELECT s, 'm{r.randrange(1, 4)}', 'new' FROM generate_series(0, 11) s WHERE s % {m} = {k}",
         f"UPDATE fk_members SET kind = 'k{r.randrange(4)}' WHERE id % {m} = {k}", f'UPDATE fk_members SET name = NULL WHERE id % {m} = {k}', f'DELETE FROM fk_members WHERE id % {m} = {k}',
         f"INSERT INTO fk_members SELECT i, 'k1', 'r' || i FROM generate_series(0, 599) i WHERE i % {m} = {k} ON CONFLICT DO NOTHING",
-        'VACUUM fk_members', 'VACUUM fk_links, fk_assign, fk_map', "SELECT sift.col_merge('fk_members_col', true)", "SELECT sift.col_promote('fk_members_col')"])
+        'VACUUM fk_members', 'VACUUM fk_links, fk_assign, fk_map', "SELECT sift.merge('fk_members_col', true)", "SELECT sift.promote('fk_members_col')"])
 
 
 # ---------- key lists: the rows of the entities a CTE of ids lists, joined and again in an IN sub-select of the same column (scopes of 0, 1, 5, 60, 200 and all entities, a duplicate and a NULL one) ----------
@@ -177,7 +178,7 @@ def dml_keylist(r, ctx):
         f'UPDATE kl_ev SET day = day + {r.randrange(1, 90)} WHERE id % {m} = {k}', f'DELETE FROM kl_ev WHERE id % {m} = {k}', f'UPDATE kl_ev SET price = NULL WHERE id % {m} = {k}',
         f'UPDATE kl_ev SET dim_a_id = NULL WHERE id % {m} = {k}', f'UPDATE kl_ev SET latest = NOT latest WHERE id % {m} = {k}',
         f"INSERT INTO kl_ev SELECT 100000 + i, i % 300, 1 + i % 60, 1 + i % 8, date '2025-01-01' + i % 400, 10 + i % 90, true, 'usd' FROM generate_series({k}, {k + 300}) i WHERE i % {m} = 0 ON CONFLICT DO NOTHING",
-        f'UPDATE kl_units SET flag = NOT flag WHERE id % {m} = {k}', 'VACUUM kl_ev', 'VACUUM kl_links', "SELECT sift.col_merge('kl_ev_col', true)", "SELECT sift.col_promote('kl_ev_col')"])
+        f'UPDATE kl_units SET flag = NOT flag WHERE id % {m} = {k}', 'VACUUM kl_ev', 'VACUUM kl_links', "SELECT sift.merge('kl_ev_col', true)", "SELECT sift.promote('kl_ev_col')"])
 
 
 # ---------- shared CTE copies: two aggregates over a CTE of the rows of the keys a small CTE picks (read through a column index), joined to a heavy CTE that the statement reads 1 to 3 times (inlined: one copy each) ----------
@@ -208,7 +209,7 @@ def dml_ctecopies(r, ctx):
         f'UPDATE cc_docs SET doc = NULL WHERE id % {m} = {k}', f"UPDATE cc_docs SET doc = '{{}}' WHERE id % {m} = {k}", f"UPDATE cc_docs SET doc = doc || '{{\"a\": null}}' WHERE id % {m} = {k} AND doc IS NOT NULL",
         f'UPDATE cc_docs SET grp = (grp + {r.randrange(1, 5)}) % 2000 WHERE id % {m} = {k}', f'DELETE FROM cc_docs WHERE id % {m} = {k}',
         f"INSERT INTO cc_docs SELECT 100000 + i, i % 2000, i % 17, jsonb_build_object('a', i % 4, 'b', i % 5) FROM generate_series({k}, {k + 300}) i WHERE i % {m} = 0 ON CONFLICT DO NOTHING",
-        f'UPDATE cc_fat SET w = w + 1 WHERE id % {m} = {k}', f'DELETE FROM cc_fat WHERE id % {m} = {k}', 'VACUUM cc_docs', 'VACUUM cc_fat', "SELECT sift.col_merge('cc_docs_col', true)", "SELECT sift.col_promote('cc_docs_col')"])
+        f'UPDATE cc_fat SET w = w + 1 WHERE id % {m} = {k}', f'DELETE FROM cc_fat WHERE id % {m} = {k}', 'VACUUM cc_docs', 'VACUUM cc_fat', "SELECT sift.merge('cc_docs_col', true)", "SELECT sift.promote('cc_docs_col')"])
 
 
 # ---------- global order (order_array_columns): a single-key ORDER BY .. LIMIT over the sorted arrays of the segments and the write buffer; only the key is selected, the rows of a tie may come in any order ----------
@@ -287,7 +288,8 @@ def dml_gorder(r, ctx):
     """The same change to gof, to gog (the arrays grouped by a column) and to goe (the ends of the plain order of d and t beside it)."""
     st = dml_gorder_one(r, ctx)
     same = lambda tbl: st.replace('fz.gen_gof', '@gen@').replace('gof', tbl).replace('@gen@', 'fz.gen_gof')
-    return st + '; ' + same('gog') + '; SET sift.test_col_gorder_ends = 64; ' + same('goe') + '; RESET sift.test_col_gorder_ends'
+    ends = ''.join(f'{s}; ' for s in sets(('sift.test_col_gorder_ends', 64)))
+    return st + '; ' + same('gog') + '; ' + ends + same('goe') + ('; RESET sift.test_col_gorder_ends' if knob('sift.test_col_gorder_ends') else '')
 
 
 def dml_gorder_one(r, ctx):
@@ -306,7 +308,7 @@ def dml_gorder_one(r, ctx):
         return f'INSERT INTO gof SELECT * FROM fz.gen_gof({lo}, {lo + n - 1}, {r.randrange(1, 9)})'
     if e == 7:
         return r.choice(['VACUUM gof', 'VACUUM (FREEZE) gof'])
-    return r.choice(["SELECT sift.col_promote('gof_idx')", "SELECT sift.col_merge('gof_idx', true)", "SELECT sift.col_merge('gof_idx', false)"])
+    return r.choice(["SELECT sift.promote('gof_idx')", "SELECT sift.merge('gof_idx', true)", "SELECT sift.merge('gof_idx', false)"])
 
 
 # ---------- calendar keys of a timestamptz in the session's zone: the steps of the zone's clock, cut where its offset changes ----------
@@ -359,7 +361,7 @@ def dml_keytable(r, ctx):
         return r.choice(['VACUUM ktf', 'VACUUM (FREEZE) ktf'])
     if e == 8:
         return f"ALTER INDEX ktf_idx SET (key_table = {r.choice(['on', 'off'])})"
-    return r.choice(["SELECT sift.col_promote('ktf_idx')", "SELECT sift.col_merge('ktf_idx', true)"])
+    return r.choice(["SELECT sift.promote('ktf_idx')", "SELECT sift.merge('ktf_idx', true)"])
 
 
 # ---------- row counts of a text dictionary (column format minor 24): count(*) WHERE s is tested by a prefix, an equality or a range, against the normal plan ----------
@@ -396,4 +398,4 @@ def dml_dictcount(r, ctx):
         return r.choice(['VACUUM dcf', 'VACUUM (FREEZE) dcf'])
     if e == 9:
         return r.choice([f"ALTER INDEX dcf_idx SET (count_columns = {r.choice(['s', 's', ''])!r})", 'REINDEX INDEX dcf_idx'])
-    return r.choice(["SELECT sift.col_promote('dcf_idx')", "SELECT sift.col_merge('dcf_idx', true)"])
+    return r.choice(["SELECT sift.promote('dcf_idx')", "SELECT sift.merge('dcf_idx', true)"])

@@ -54,4 +54,4 @@ def dml_groupsplit(r, ctx):
         f'DELETE FROM gs_tenant WHERE tenant_id = {t} AND dim_a_id % {m} = {k}', f'INSERT INTO gs_tenant SELECT {t}, i, NULL FROM generate_series({k}, 299, {m}) i',
         f'UPDATE gs_ev SET amount = amount + 1 WHERE dim_a_id % {m} = {k}', f'DELETE FROM gs_ev WHERE id % {m * 3} = {k}',
         f"INSERT INTO gs_ev SELECT (SELECT max(id) FROM gs_ev) + i, (i * 7 + {k}) % 310, date '2025-01-01' + i % 300, i % 5, i % 97 FROM generate_series(1, {r.choice([5, 40, 300])}) i",
-        'VACUUM gs_links, gs_pairs, gs_tenant', 'VACUUM gs_ev', "SELECT sift.col_merge('gs_ev_col', true)", "SELECT sift.col_promote('gs_ev_col')"])
+        'VACUUM gs_links, gs_pairs, gs_tenant', 'VACUUM gs_ev', "SELECT sift.merge('gs_ev_col', true)", "SELECT sift.promote('gs_ev_col')"])

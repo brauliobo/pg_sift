@@ -5,7 +5,7 @@ import random
 import re
 
 from . import tablemode
-from .db import REF, psql
+from .db import REF, psql, settings
 from .tablemode import TABLE_SKIP
 from .fam_lists import dml_trail, dml_txn
 from .fam_groups import dml_groupsplit
@@ -32,9 +32,9 @@ def split_pre(sql):
 
 def query_script(qid, sql, ordered, base, vs):
     pre, sql = split_pre(sql)
-    out = ([pre + ';'] if pre else []) + [f'\\echo FZQ|{qid}', 'SELECT fz.start();', f"SELECT fz.ref('{qid}', {sqlq(sql)}, '{base};{REF}');"]
+    out = ([pre + ';'] if pre else []) + [f'\\echo FZQ|{qid}', 'SELECT fz.start();', f"SELECT fz.ref('{qid}', {sqlq(sql)}, '{settings(f'{base};{REF}')}');"]
     for name, spec in vs:
-        out.append(f"SELECT fz.var('{qid}', {sqlq(sql)}, {keycols(ordered)}, '{name}', '{base};{spec}');")
+        out.append(f"SELECT fz.var('{qid}', {sqlq(sql)}, {keycols(ordered)}, '{name}', '{settings(f'{base};{spec}')}');")
     return '\n'.join(out)
 
 

@@ -14,7 +14,7 @@ BEGIN
 							 'min_parallel_table_scan_size', 'min_parallel_index_scan_size', 'parallel_leader_participation', 'seq_page_cost',
 							 'random_page_cost', 'enable_nestloop', 'enable_hashjoin', 'enable_mergejoin', 'enable_seqscan', 'enable_sort', 'sift.enable_col_scan',
 							 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan', 'sift.agg_scope'] LOOP
-		EXECUTE 'RESET ' || g;
+		IF g !~ '^sift\.' OR EXISTS (SELECT 1 FROM pg_settings WHERE name = g) THEN EXECUTE 'RESET ' || g; END IF;
 	END LOOP;
 	DISCARD PLANS;		-- a prepared statement is planned again under the settings that follow
 	FOREACH kv IN ARRAY string_to_array(spec, ';') LOOP
@@ -48,5 +48,5 @@ BEGIN
 		msg := coldiff.compare('coldiff_ref', 'coldiff_got', keycols, 1e-9, 1e-12);
 	END IF;
 	RETURN format('FZ|%s|%s|%s|%s|%s', qid, vname, CASE WHEN msg IS NULL THEN 'ok' ELSE 'DIFF' END,
-				  CASE WHEN coldiff.explain(q) ~ 'Custom Scan \(SiftAgg\)|Index (Only )?Scan using ev_part|Bitmap Index Scan on ev_part' THEN 1 ELSE 0 END, replace(left(coalesce(msg, ''), 900), E'\n', ' '));
+				  CASE WHEN coldiff.explain(q) ~ 'Custom Scan \(SiftAgg|Index (Only )?Scan using ev_part|Bitmap Index Scan on ev_part' THEN 1 ELSE 0 END, replace(left(coalesce(msg, ''), 900), E'\n', ' '));
 END $$;

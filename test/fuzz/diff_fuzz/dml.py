@@ -2,6 +2,7 @@
 # It runs on the heap tables and, with --table, on the sift_tables.
 
 from . import tablemode
+from .db import sets
 from .fam_units import KCUT_KEYS, WINDOW_COLS
 
 # ---------- DML (dirty rows and the write buffer) ----------
@@ -59,7 +60,7 @@ def bulk_insert(r, ctx, t):
 def dml_table(r, ctx, t, ids):
     """Statements that matter to the table only: the maintenance of its segments, a rewrite, COPY, and writes that roll back (their rows stay in the write buffers and the
     tombstones until a VACUUM drops them) or half roll back."""
-    m = "sift.table_maintain('%s')" % r.choice(['events', 'events', 'kc', 'ev_part'])
+    m = "sift.maintain('%s')" % r.choice(['events', 'events', 'kc', 'ev_part'])
     n = r.choice([5, 40])
     lo = ctx['next_ev'] if t == 'events' else ctx['next_pt']
     ctx['next_ev' if t == 'events' else 'next_pt'] += n
@@ -98,14 +99,14 @@ def dml_kcut(r, ctx):
     if e == 10:
         return [f'VACUUM {t}']
     if e == 11:
-        return [f"SELECT sift.col_promote('{idx}')"]
+        return [f"SELECT sift.promote('{idx}')"]
     if e == 12:
-        return [r.choice([f"SELECT sift.col_merge('{idx}', true)", f"SELECT sift.col_merge('{idx}', true)", f"SELECT count(*) FROM sift.col_refresh('{idx}')", f'REINDEX INDEX {idx}'])]
+        return [r.choice([f"SELECT sift.merge('{idx}', true)", f"SELECT sift.merge('{idx}', true)", f"SELECT count(*) FROM sift.maintain('{idx}')", f'REINDEX INDEX {idx}'])]
     if e == 13:
         # segments written without the key, merged into units cut by it
         lo = ctx['next_kc']; ctx['next_kc'] += 60
-        return [f'ALTER INDEX {idx} RESET (key_cut)', f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + 59}, {r.randrange(1, 9)})', f"SELECT sift.col_promote('{idx}')",
-                f"ALTER INDEX {idx} SET (key_cut = '{KCUT_KEY_OF[x]}')", f"SELECT sift.col_merge('{idx}', true)"]
+        return [f'ALTER INDEX {idx} RESET (key_cut)', f'INSERT INTO {t} SELECT * FROM fz.gen_kcut({lo}, {lo + 59}, {r.randrange(1, 9)})', f"SELECT sift.promote('{idx}')",
+                f"ALTER INDEX {idx} SET (key_cut = '{KCUT_KEY_OF[x]}')", f"SELECT sift.merge('{idx}', true)"]
     if e == 14:
         # another key: the segments cut by the old one stop a merge (the REINDEX hint of the error), so the index is built again
         return [f"ALTER INDEX {idx} SET (key_cut = '{r.choice(['ki', 'kd', 'kt', 'kn', 'kf', 'ki, kd', 'kd, kt', 'kn, kf', KCUT_KEY_OF[x]])}')", f'REINDEX INDEX {idx}']
@@ -118,7 +119,7 @@ def dml_floor(r, ctx):
     m = r.choice([13, 40, 97, 211])
     ids = f'id % {m} = {r.randrange(m)}'
     e = r.randrange(14)
-    st = ['SET sift.test_col_floor_sbs = 2', f'SET sift.test_col_unit_floor = {r.choice([64, 128, 256, 1024])}']
+    st = sets(('sift.test_col_floor_sbs', 2), ('sift.test_col_unit_floor', r.choice([64, 128, 256, 1024])))
     if e < 4:
         c = r.choice(KCUT_KEYS)
         return st + [f'UPDATE ufl SET {c} = {r.choice(KCUT_COLS[c]).format(d=r.randrange(1, 40))} WHERE {ids}']
@@ -133,11 +134,11 @@ def dml_floor(r, ctx):
     if e == 9:
         return st + ['VACUUM ufl']
     if e == 10:
-        return st + ["SELECT sift.col_promote('ufl_idx')"]
+        return st + ["SELECT sift.promote('ufl_idx')"]
     if e == 11:
-        return st + ["SET sift.test_col_unit_floor = 0", f'UPDATE ufl SET amount = amount + 1 WHERE {ids}', 'VACUUM ufl', "SELECT sift.col_promote('ufl_idx')"]
+        return st + sets(('sift.test_col_unit_floor', 0)) + [f'UPDATE ufl SET amount = amount + 1 WHERE {ids}', 'VACUUM ufl', "SELECT sift.promote('ufl_idx')"]
     if e == 12:
-        return st + [r.choice(["SELECT sift.col_merge('ufl_idx', true)", "SELECT sift.col_merge('ufl_idx', false)", "SELECT count(*) FROM sift.col_refresh('ufl_idx')", 'REINDEX INDEX ufl_idx'])]
+        return st + [r.choice(["SELECT sift.merge('ufl_idx', true)", "SELECT sift.merge('ufl_idx', false)", "SELECT count(*) FROM sift.maintain('ufl_idx')", 'REINDEX INDEX ufl_idx'])]
     return st + ['ANALYZE ufl']
 
 
@@ -165,7 +166,7 @@ def dml_dead(r, ctx):
     if e == 11:
         return ['VACUUM udd']
     if e == 12:
-        return [r.choice(["SELECT sift.col_promote('udd_idx')", "SELECT sift.col_merge('udd_idx', true)", "SELECT sift.col_merge('udd_idx', false)"])]
+        return [r.choice(["SELECT sift.promote('udd_idx')", "SELECT sift.merge('udd_idx', true)", "SELECT sift.merge('udd_idx', false)"])]
     return ['ANALYZE udd']
 
 
@@ -186,9 +187,9 @@ def dml_window(r, ctx):
     if e == 8:
         return ['VACUUM kcut_w']
     if e == 9:
-        return ["SELECT sift.col_promote('kcut_w_idx')"]
+        return ["SELECT sift.promote('kcut_w_idx')"]
     if e == 10:
-        return [r.choice(["SELECT sift.col_merge('kcut_w_idx', true)", 'REINDEX INDEX kcut_w_idx'])]
+        return [r.choice(["SELECT sift.merge('kcut_w_idx', true)", 'REINDEX INDEX kcut_w_idx'])]
     return ['ANALYZE kcut_w']
 
 
@@ -220,8 +221,8 @@ def dml_nullzone(r, ctx):
     if e == 12:
         return r.choice(['VACUUM nzf', 'VACUUM (FREEZE) nzf'])
     if tablemode.TABLE:
-        return r.choice(["SELECT sift.table_maintain('nzf')", "SELECT sift.table_maintain('nzf')", 'VACUUM FULL nzf', bulk_insert(r, ctx, 'nzf'), bulk_insert(r, ctx, 'nzf')])
-    return r.choice(["SELECT sift.col_promote('nzf_col')", "SELECT sift.col_merge('nzf_col', true)"])
+        return r.choice(["SELECT sift.maintain('nzf')", "SELECT sift.maintain('nzf')", 'VACUUM FULL nzf', bulk_insert(r, ctx, 'nzf'), bulk_insert(r, ctx, 'nzf')])
+    return r.choice(["SELECT sift.promote('nzf_col')", "SELECT sift.merge('nzf_col', true)"])
 
 
 def dml_arrlen(r, ctx):
@@ -254,4 +255,4 @@ def dml_arrlen(r, ctx):
     if e == 14:
         k = r.randrange(20)
         return f"UPDATE arf SET ia = ARRAY[{k}, {k}, {k + 1}], ta = ARRAY[['t1', 't2'], ['t{r.randrange(32)}', 't4']] WHERE {ids}"
-    return r.choice(["SELECT sift.col_promote('arf_col')", "SELECT sift.col_merge('arf_col', true)", 'REINDEX INDEX arf_col'])
+    return r.choice(["SELECT sift.promote('arf_col')", "SELECT sift.merge('arf_col', true)", 'REINDEX INDEX arf_col'])

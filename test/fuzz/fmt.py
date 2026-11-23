@@ -48,6 +48,15 @@ class Lib:
         self.format_major = 1 if name == 'f1' else 2
         self.v1_hooks = self.testing and self.format_major == 1
 
+    @classmethod
+    def offline(cls, name):
+        """the library of a run without a server (a selftest): every setting exists"""
+        lib = object.__new__(cls)
+        lib.name, lib.gucs, lib.testing = name, None, name != 'release'
+        lib.format_major = 1 if name == 'f1' else 2
+        lib.v1_hooks = lib.testing and lib.format_major == 1
+        return lib
+
     @property
     def pgoptions(self):
         return f'-c {TESTING_PROBE}={"on" if self.format_major == 1 else "off"}' if self.testing else ''
@@ -56,7 +65,7 @@ class Lib:
         return libpq_env({'PGOPTIONS': f'{self.pgoptions} {extra_options}'.strip()})
 
     def has(self, guc):
-        return not guc.startswith('sift.') or guc in self.gucs
+        return not guc.startswith('sift.') or self.gucs is None or guc in self.gucs
 
     def sets(self, settings):
         """the 'name=value' settings this library accepts"""

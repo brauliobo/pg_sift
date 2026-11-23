@@ -8,8 +8,9 @@ import re
 import sys
 import time
 
+import fmt
 from . import tablemode
-from .db import REF, build_base, create_db, data_sql, psql
+from .db import REF, build_base, configure, create_db, data_sql, psql
 from .tablemode import TABLE_SKIP
 from .registry import FAMILIES, LEADER, base_of
 from .run import CRASH, diverged, episodes, query_script, render_query, run_script
@@ -17,6 +18,7 @@ from .shrink import handle
 
 def main(doc):
     ap = argparse.ArgumentParser(description=doc, formatter_class=argparse.RawDescriptionHelpFormatter)
+    fmt.add_argument(ap)
     ap.add_argument('--seeds', default='1')
     ap.add_argument('--queries', type=int, default=40)
     ap.add_argument('--rows', type=int, default=3000)
@@ -35,6 +37,7 @@ def main(doc):
     a = ap.parse_args()
     FAMILIES['having'] = FAMILIES['having'][:2] + (a.having_weight,)
     tablemode.TABLE = a.table
+    configure(a.format, offline=a.selftest)
     if a.selftest:
         for tablemode.TABLE in (False, True):
             ctx = {'rows': a.rows, 'parts': a.parts, 'next_ev': a.rows + 1000, 'next_pt': a.rows + 1000, 'next_kc': a.rows + 1000, 'next_nz': a.rows + 1000, 'next_ar': a.rows + 1000, 'next_ex': a.rows + 1000, 'next_tr': a.rows + 1000, 'next_go': a.rows + 1000, 'next_kt': a.rows * 40 + 1000, 'next_dc': a.rows * 2 + 1000}
@@ -148,6 +151,6 @@ def main(doc):
             print(f'diff_fuzz: {a.stop_after} bad queries by seed {seed}: the remaining seeds are not run')
             break
     print('families, share of variant runs that used SiftAgg: ' + ', '.join(f'{f} {100 * p[0] // max(p[1], 1)}% of {p[1]}' for f, p in pushed.items() if p[1]))
-    print(f"diff_fuzz: {total['queries']} queries in {time.time() - t0:.0f}s: {total['ok']} equal, {total['DIFF']} divergent, {total['GENERR']} generator errors, {total['CRASH']} crashes, "
+    print(f"diff_fuzz: format={a.format} {total['queries']} queries in {time.time() - t0:.0f}s: {total['ok']} equal, {total['DIFF']} divergent, {total['GENERR']} generator errors, {total['CRASH']} crashes, "
           f"{total['timeout']} timeouts")
     return 1 if total['DIFF'] or total['GENERR'] or total['CRASH'] else 0
