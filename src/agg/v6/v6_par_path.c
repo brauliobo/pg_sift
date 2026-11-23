@@ -6,6 +6,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -19,27 +21,110 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_par_pg.h"
+#include "agg/v6/v6_plan_rewrite.h"
 #include "core/sift.h"
 
 #define GRANULE_ROWS	8192.0
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
 
+/*
+ * What a parallel plan saves, in milliseconds as the executor measures them on the 1M-row ClickBench table (the price of a serial path in the units of the planner does not say: it spans 4 to 860
+ * microseconds a unit across its queries). The scan of the serial path is shared by the participants; a parallel run adds its launch (the shared block, the workers, the Gather), and the records
+ * the participants hand to the partitions, which is the price of a group that a participant saw but does not own. Only the plan that takes this much less time than the serial one is added, and the
+ * Gather is priced by the ratio of the two times applied to the serial price: the setup cost of PostgreSQL's Gather is a fixed 1000 units, more than the whole serial price of a query that takes 100 ms.
+ */
+#define PAR_TUPLE_NS		15.0	/* the rows the scan reads */
+#define PAR_TEXT_QUAL_NS	30.0	/* a text column a qual reads, for every row of the table */
+#define PAR_INT_KEY_NS		10.0
+#define PAR_TEXT_KEY_NS		120.0
+#define PAR_DERIVE_NS		40.0
+#define PAR_AGG_NS			8.0
+#define PAR_VECTOR_AGG_NS	2.0		/* an aggregate of a query with no keys is a vector kernel over the batch */
+#define PAR_DISTINCT_NS		60.0
+#define PAR_TEXT_AGG_NS		80.0
+#define PAR_COLD_GROUPS		400000.0	/* from this many groups the table of a serial run no longer fits the caches ... */
+#define PAR_COLD_NS			250.0		/* ... and each row waits for memory (a participant of a parallel run keeps a table of SIFT_PAR_LOCAL_GROUPS) */
+#define PAR_RECORD_NS		250.0	/* a record: made, routed, merged */
+#define PAR_VALUE_NS		500.0	/* a distinct value: made, routed, added to the set of its group */
+#define PAR_LAUNCH_MS		28.0
+#define PAR_PER_WORKER_MS	3.0
+
 typedef struct CostPick
 {
-	SiftCostInputs in;
-	double		selectivity;
-	Cost		open;
+	Cost		serial_total;
+	double		serial_ms;		/* of the serial plan */
+	double		scan_ms;		/* of its scan without the waits for memory of a large table: what the participants share */
+	double		rows;
+	double		groups;
+	uint32		topk;
+	bool		values;			/* a count(DISTINCT): every row sends its value */
 	Cost		startup;
 	Cost		total;
 } CostPick;
+
+/* what a row costs for the column c, which is read as text or as a number; a computed one (length, extract) is made from its source */
+static double
+col_ns(const SiftV6Spec *spec, const SiftV6Col *c, double text_ns, double number_ns)
+{
+	const Oid	type = c->derive > 0 ? spec->derive[c->derive - 1].src.typid : c->typid;
+
+	return (c->derive > 0 ? PAR_DERIVE_NS : 0.0) + (c->attno > 0 && sift_v6_class(type) == SV6C_TEXT ? text_ns : number_ns);
+}
+
+/* the text columns the quals of the scan read: their strings are decoded for every row, whether or not it passes */
+static int
+text_quals(const SiftV6Spec *spec)
+{
+	Bitmapset  *cols = NULL;
+
+	foreach_ptr(Var, v, pull_var_clause((Node *) spec->indexqual, 0))
+		if (sift_v6_class(v->vartype) == SV6C_TEXT)
+			cols = bms_add_member(cols, v->varattno);
+	return bms_num_members(cols);
+}
+
+static double
+scan_ms(const SiftV6Spec *spec, double tuples, double rows)
+{
+	double		ns = 0;
+
+	for (int i = 0; i < spec->nkeys; i++)
+		ns += col_ns(spec, &spec->key[i], PAR_TEXT_KEY_NS, PAR_INT_KEY_NS);
+	for (int j = 0; j < spec->naggs; j++)
+		ns += col_ns(spec, &spec->agg[j].arg, PAR_TEXT_AGG_NS, spec->nkeys == 0 ? PAR_VECTOR_AGG_NS : PAR_AGG_NS) + (spec->agg[j].kind == SV6_COUNT_DISTINCT ? PAR_DISTINCT_NS : 0.0);
+	return (tuples * (PAR_TUPLE_NS + text_quals(spec) * PAR_TEXT_QUAL_NS) + rows * ns) / 1e6;
+}
+
+static double
+gather_rows(const CostPick *c, int nworkers)
+{
+	return c->topk > 0 ? Min(c->groups, (double) c->topk * (nworkers + 1)) : c->groups;
+}
+
+/* the launch and the hand-over of the records follow parallel_setup_cost and parallel_tuple_cost, which are 1000 and 0.1 where the milliseconds above were measured */
+static double
+parallel_ms(const CostPick *c, int nworkers)
+{
+	const double p = nworkers + 1;
+	const double groups = Max(c->groups, 1.0);
+	const double records = c->values ? c->rows : p * groups * (1.0 - exp(-c->rows / p / groups));
+	const double launch = (PAR_LAUNCH_MS + PAR_PER_WORKER_MS * nworkers) * parallel_setup_cost / DEFAULT_PARALLEL_SETUP_COST;
+	const double hand_over = records * (c->values ? PAR_VALUE_NS : PAR_RECORD_NS) / 1e6 / p * parallel_tuple_cost / DEFAULT_PARALLEL_TUPLE_COST;
+
+	return launch + c->scan_ms / (1.0 + SIFT_PAR_EFFICIENCY * nworkers) + hand_over;
+}
 
 static int
 pick_workers(void *arg, int max_by_granules)
 {
 	CostPick   *c = arg;
+	const double par = parallel_ms(c, max_by_granules);
 
-	return sift_agg_choose_workers(&c->in, c->selectivity, false, false, c->open, max_by_granules, &c->startup, &c->total);
+	if (par >= c->serial_ms * SIFT_PAR_MIN_GAIN)
+		return 0;
+	c->startup = c->total = c->serial_total * par / Max(c->serial_ms, 1e-6);
+	return max_by_granules;
 }
 
 /* The share of the rows each participant takes, as PostgreSQL divides the rows of a partial path: the leader's share shrinks with the workers it has to serve */
@@ -70,49 +155,68 @@ distinct_not_partitionable(const SiftV6Spec *spec, uint32 ndist)
 }
 
 static SiftV6ParInput
-par_input(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
+par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
 	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.parallel_ok = rel->consider_parallel && root->glob->parallelModeOK,.max_workers = max_parallel_workers_per_gather,
 		.exact_float = sift_agg_exact_float,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = rel->rows / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
-	bool		ext = false;
-	SiftV6AggPrice price;
+	bool		slot_text = false;
 
 	for (int j = 0; j < spec->naggs; j++)
 	{
 		const SiftV6Agg *a = &spec->agg[j];
 
 		ndist += a->kind == SV6_COUNT_DISTINCT;
-		ext |= v6g_is_ext(a);
+		slot_text |= v6g_is_ext(a) && sift_v6_class(a->arg.typid) == SV6C_TEXT;
 		in.float_sum_avg |= (a->kind == SV6_SUM || a->kind == SV6_AVG) && sift_v6_class(a->arg.typid) == SV6C_F64;
 	}
 	in.has_distinct = ndist > 0;
 	in.has_rls = agg_query_has_rls(root);
-	in.parallel_hazard = ext || OidIsValid(spec->text_indexoid) || unsafe_for_workers(root, spec, output_rel, having) || distinct_not_partitionable(spec, ndist);
+	in.parallel_hazard = (slot_text && ndist > 0 && spec->nkeys == 0) || OidIsValid(spec->text_indexoid) || unsafe_for_workers(root, spec, output_rel, having) || distinct_not_partitionable(spec, ndist);
 	in.state_bytes = sizeof(SiftAggSlot64) + (double) spec->naggs * sizeof(V6Acc) + 16.0;
-	price = sift_v6_agg_price(root, rel, ix, spec, groups);
-	pick->in = price.in;
-	pick->in.f_cold = 0.0;
-	pick->in.n_ship = ndist > 0 ? pick->in.g_eff * GRANULE_ROWS * price.selectivity : 0.0;
-	pick->selectivity = price.selectivity;
-	pick->open = price.open;
 	return in;
 }
 
-void
-sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having, double groups)
+/* ORDER BY .. LIMIT K of the groups, when each participant can keep its best K: HAVING would drop groups after the heap (the node does not run it), and grouping sets have no one order */
+static void
+set_topk(PlannerInfo *root, SiftV6Spec *spec, const List *scan_tlist, const List *having)
 {
-	CostPick	pick = {0};
-	SiftV6ParInput in = par_input(root, rel, ix, output_rel, serial_spec, having, groups, &pick);
-	SiftV6Spec	spec = *serial_spec;
-	int			nworkers = 0;
-	const SiftV6ParStrategy strategy = sift_v6_par_choose_strategy(&in, &nworkers);
-	CustomPath *cp;
-	double		total_groups = clamp_row_est(groups);
+	const uint32 k = sift_v6_topk_of(root->parse);
 
+	if (k == 0 || having != NIL || spec->nsets > 0 || spec->ntopk > 0)
+		return;
+	spec->topk = k;
+	if (!sift_v6_topk_items(root->parse, scan_tlist, spec))
+		spec->topk = spec->ntopk = 0;
+}
+
+void
+sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having, double groups,
+					 Cost serial_total)
+{
+	SiftV6Spec	spec = *serial_spec;
+	CostPick	pick = {.serial_total = serial_total,.groups = clamp_row_est(groups)};
+	SiftV6ParInput in;
+	int			nworkers = 0;
+	SiftV6ParStrategy strategy;
+	CustomPath *cp;
+	GatherPath *gather;
+	double		total_groups;
+
+	set_topk(root, &spec, scan_tlist, having);
+	pick.topk = spec.topk;
+	pick.rows = rel->rows;
+	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows);
+	pick.serial_ms = pick.scan_ms + (groups >= PAR_COLD_GROUPS ? rel->rows * PAR_COLD_NS / 1e6 : 0.0);
+	pick.values = false;
+	for (int j = 0; j < spec.naggs; j++)
+		pick.values |= spec.agg[j].kind == SV6_COUNT_DISTINCT;
+	in = par_input(root, rel, output_rel, &spec, having, groups, &pick);
+	strategy = sift_v6_par_choose_strategy(&in, &nworkers);
 	if (strategy == SV6P_SERIAL)
 		return;
+	total_groups = gather_rows(&pick, nworkers);
 	spec.par_strategy = strategy;
 	spec.par_workers = nworkers;
 	cp = makeNode(CustomPath);
@@ -122,10 +226,11 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix,
 	cp->path.parallel_aware = true;
 	cp->path.parallel_safe = true;
 	cp->path.parallel_workers = nworkers;
-	cp->path.startup_cost = pick.startup;
-	cp->path.total_cost = pick.total;
+	cp->path.startup_cost = cp->path.total_cost = pick.total;
 	cp->path.rows = clamp_row_est(total_groups / participants(nworkers));
 	cp->methods = methods;
 	cp->custom_private = list_make3(sift_v6_spec_pack(&spec), scan_tlist, having);
-	add_path(output_rel, (Path *) create_gather_path(root, output_rel, &cp->path, output_rel->reltarget, NULL, &total_groups));
+	gather = create_gather_path(root, output_rel, &cp->path, output_rel->reltarget, NULL, &total_groups);
+	gather->path.startup_cost = gather->path.total_cost = pick.total;
+	add_path(output_rel, (Path *) gather);
 }

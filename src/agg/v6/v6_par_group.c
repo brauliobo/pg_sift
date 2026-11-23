@@ -21,6 +21,7 @@
 typedef struct ParEnv
 {
 	const SiftV6Spec *spec;
+	SiftV6Spec	part_spec;		/* spec for the states of a participant that are not the whole answer: presized for the groups of one partition, not of the query */
 	MemoryContext cx;
 	TupleDesc	desc;
 	MemoryContext tuple_cx;		/* what a finished group is made in: the per-tuple memory of the node */
@@ -37,6 +38,12 @@ typedef struct ParEnv
 	struct ParLocal *cur;
 } ParEnv;
 
+static inline bool
+is_text_ext(const SiftV6Agg *a)
+{
+	return v6g_is_ext(a) && sift_v6_class(a->arg.typid) == SV6C_TEXT;
+}
+
 typedef struct ParLocal
 {
 	ParEnv	   *env;
@@ -48,11 +55,64 @@ typedef struct ParLocal
 	Size		rec_cap;
 } ParLocal;
 
-static void
-combine_accs(const ParEnv *e, V6Acc *dst, const V6Acc *src)
+/* The bytes after the accumulators of a record that a text state needs: its winner when it does not fit the 8 bytes of the state itself (the offsets of an arena mean nothing to another participant) */
+static Size
+tail_bytes(const ParEnv *e, const V6Acc *acc)
 {
+	Size		n = 0;
+
 	for (int j = 0; j < e->spec->naggs; j++)
-		sift_v6_acc_combine(e->op[j], &dst[j], &src[j]);
+		if (is_text_ext(&e->spec->agg[j]) && acc[j].n > 0 && !(((const SiftTextSlot *) &acc[j])->pad & SIFT_TSLOT_INLINE))
+			n += (Size) ((const SiftTextSlot *) &acc[j])->v1;
+	return n;
+}
+
+static void
+put_tail(const ParLocal *l, const V6Acc *acc, uint8 *dst)
+{
+	for (int j = 0; j < l->env->spec->naggs; j++)
+		if (is_text_ext(&l->env->spec->agg[j]) && acc[j].n > 0 && !(((const SiftTextSlot *) &acc[j])->pad & SIFT_TSLOT_INLINE))
+		{
+			uint32		len;
+			const char *w = sift_tslot_bytes(&l->g->tx, (const SiftTextSlot *) &acc[j], &len);
+
+			memcpy(dst, w, len);
+			dst += len;
+		}
+}
+
+/* The winner of a text state of a record: dst takes it when it is better, and counts the values the record folded */
+static void
+merge_text(ParLocal *l, const SiftV6Agg *a, V6Acc *dst, const V6Acc *src, const char **tail)
+{
+	const SiftTextSlot *s = (const SiftTextSlot *) src;
+	SiftTextSlot *d = (SiftTextSlot *) dst;
+	const char *bytes = (s->pad & SIFT_TSLOT_INLINE) ? (const char *) &s->v0 : *tail;
+	const int64 n = d->n;
+
+	if (s->n == 0)
+		return;
+	if (!(s->pad & SIFT_TSLOT_INLINE))
+		*tail += s->v1;
+	if (n == 0)
+		sift_tslot_set(&l->g->tx, d, bytes, (uint32) s->v1);
+	else
+		sift_tslot_offer(&l->g->tx, d, a->kind == SV6_MIN, bytes, (uint32) s->v1, NULL, NULL);
+	d->n = n + s->n;
+}
+
+static void
+combine_accs(ParLocal *l, V6Acc *dst, const V6Acc *src, const char *tail)
+{
+	const ParEnv *e = l->env;
+
+	for (int j = 0; j < e->spec->naggs; j++)
+		if (is_text_ext(&e->spec->agg[j]))
+			merge_text(l, &e->spec->agg[j], &dst[j], &src[j], &tail);
+		else if (v6g_is_ext(&e->spec->agg[j]))
+			v6g_ext_merge(l->g, &e->spec->agg[j], &dst[j], &src[j]);
+		else
+			sift_v6_acc_combine(e->op[j], &dst[j], &src[j]);
 }
 
 static void
@@ -167,7 +227,7 @@ par_local_new(void *env, bool whole)
 
 	l->env = e;
 	l->cx = sift_mem_allocset_create(e->cx, "sift agg v6 parallel state");
-	l->g = sift_v6_group_new(e->spec, l->cx, e->desc);
+	l->g = sift_v6_group_new(whole ? e->spec : &e->part_spec, l->cx, e->desc);
 	if (!whole)
 		for (int s = 0; s < l->g->nsets; s++)
 			l->g->set[s].plain_row = false;
@@ -229,11 +289,15 @@ export_plain(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 {
 	V6Set	   *set = &l->g->set[s];
 	const Size	accs = (Size) l->env->spec->naggs * sizeof(V6Acc);
-	uint8	   *rec = record_room(l, sizeof(SiftV6RecHdr) + accs);
-	SiftV6RecHdr h = {.len = (uint32) (sizeof(SiftV6RecHdr) + accs),.set_idx = (uint16) s,.flags = V6REC_PLAIN};
+	const Size	len = MAXALIGN(sizeof(SiftV6RecHdr) + accs + tail_bytes(l->env, set->plain));
+	uint8	   *rec = record_room(l, len);
+	SiftV6RecHdr h = {.len = (uint32) len,.set_idx = (uint16) s,.flags = V6REC_PLAIN};
 
+	check_record_size((uint32) len);
 	memcpy(rec, &h, sizeof(h));
 	memcpy(rec + sizeof(h), set->plain, accs);
+	memset(rec + sizeof(h) + accs, 0, len - sizeof(h) - accs);
+	put_tail(l, set->plain, rec + sizeof(h) + accs);
 	put(arg, rec, h.len);
 	memset(set->plain, 0, accs);
 }
@@ -250,21 +314,23 @@ export_groups(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 	{
 		uint32		klen = 0;
 		const uint8 *kbytes = set->wide ? sift_ht_wide_key(&set->ht, slot, &klen) : NULL;
-		const uint32 rlen = (uint32) MAXALIGN(base + klen);
+		const V6Acc *acc = (const V6Acc *) sift_ht_ext(&set->ht, slot);
+		const uint32 rlen = (uint32) MAXALIGN(base + klen + tail_bytes(l->env, acc));
 		uint8	   *rec;
 		SiftV6RecHdr h = {.len = rlen,.set_idx = (uint16) s,.flags = set->wide ? V6REC_WIDE : 0,.hash64 = slot->hash64,.key = slot->key};
 
 		check_record_size(rlen);
 		rec = record_room(l, rlen);
+		memset(rec + base + klen, 0, rlen - base - klen);
 		if (set->wide)
 		{
 			h.key.i64[0] = (int64) slot->key.wide.key_nulls;
 			h.key.i64[1] = klen;
 			memcpy(rec + base, kbytes, klen);
-			memset(rec + base + klen, 0, rlen - base - klen);
 		}
+		put_tail(l, acc, rec + base + klen);
 		memcpy(rec, &h, sizeof(h));
-		memcpy(rec + sizeof(h), sift_ht_ext(&set->ht, slot), accs);
+		memcpy(rec + sizeof(h), acc, accs);
 		put(arg, rec, rlen);
 	}
 	sift_ht_clear(&set->ht);
@@ -288,6 +354,7 @@ par_local_export(void *local, SiftV6RecPut put, void *arg)
 			export_plain(l, s, put, arg);
 		else
 			export_groups(l, s, put, arg);
+	l->g->tx.used = 0;
 }
 
 static void
@@ -298,24 +365,30 @@ par_local_merge(void *local, const uint8 *rec)
 	const SiftV6RecHdr *h = (const SiftV6RecHdr *) rec;
 	V6Set	   *set = &g->set[h->set_idx];
 	const V6Acc *accs = (const V6Acc *) (rec + sizeof(*h));
+	const uint8 *key_bytes = rec + sizeof(*h) + (Size) l->env->spec->naggs * sizeof(V6Acc);
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
 	SiftAggSlot64 *slot;
 	bool		found;
 
 	if (h->flags & V6REC_DIST)
-		v6g_dist_add_raw(g, set, (uint32) h->key.i64[0], rec + sizeof(*h), (uint32) h->key.i64[1], h->hash64);
+	{
+		const uint8 *key = rec + sizeof(*h);
+		const uint32 len = (uint32) h->key.i64[1];
+
+		v6g_dist_add_raw(g, set, (uint32) h->key.i64[0], key, len, set->nk == 0 ? h->hash64 : sift_aggk6_hash_bytes(key, len));
+	}
 	else if (h->flags & V6REC_PLAIN)
 	{
-		combine_accs(l->env, set->plain, accs);
+		combine_accs(l, set->plain, accs, (const char *) key_bytes);
 		set->plain_row = true;
 	}
 	else
 	{
 		if (h->flags & V6REC_WIDE)
-			slot = sift_ht_upsert_wide(&set->ht, h->hash64, rec + sizeof(*h) + (Size) l->env->spec->naggs * sizeof(V6Acc), (uint32) h->key.i64[1], (uint64) h->key.i64[0], &found);
+			slot = sift_ht_upsert_wide(&set->ht, h->hash64, key_bytes, (uint32) h->key.i64[1], (uint64) h->key.i64[0], &found);
 		else
 			slot = sift_ht_upsert(&set->ht, h->hash64, &h->key, &found);
-		combine_accs(l->env, (V6Acc *) sift_ht_ext(&set->ht, slot), accs);
+		combine_accs(l, (V6Acc *) sift_ht_ext(&set->ht, slot), accs, (const char *) key_bytes + ((h->flags & V6REC_WIDE) ? (uint32) h->key.i64[1] : 0));
 		v6g_spill_if_over(g);
 	}
 	MemoryContextSwitchTo(old);
@@ -353,6 +426,7 @@ static void
 par_local_reset(void *local)
 {
 	sift_v6_group_recycle(((ParLocal *) local)->g);
+	((ParLocal *) local)->g->tx.used = 0;
 }
 
 static void
@@ -369,6 +443,8 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	ParEnv	   *e = MemoryContextAllocZero(cx, sizeof(ParEnv));
 
 	e->spec = spec;
+	e->part_spec = *spec;
+	e->part_spec.groups_est = spec->groups_est / Max(hdr->radix_nparts, 1U);
 	e->cx = cx;
 	e->desc = desc;
 	e->tuple_cx = tuple_cx;

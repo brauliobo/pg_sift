@@ -402,8 +402,8 @@ sift_v6_topk_of(const Query *q)
 }
 
 /* the sort columns of the query as positions of the scan tuple; false when one is not a key or an aggregate the node makes */
-static bool
-topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
+bool
+sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
 {
 	if (list_length(q->sortClause) > SIFT_V6_MAX_TOPK_ITEMS)
 		return false;
@@ -447,7 +447,7 @@ sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		if (s->nsets > 0 || s->topk > 0 || s->ext != NULL || s->nparts > 0 || s->par_strategy != 0 || cp->custom_paths != NIL || path->parallel_aware)
 			continue;
 		s->topk = k;
-		if (!topk_items(root->parse, lsecond(cp->custom_private), s))
+		if (!sift_v6_topk_items(root->parse, lsecond(cp->custom_private), s))
 			continue;
 		top = makeNode(CustomPath);
 		*top = *cp;

@@ -10,8 +10,13 @@
 #include "storage/dsm.h"
 #include "utils/guc.h"
 
+#include <math.h>
+
+#include "agg/cost.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_par_pg.h"
+
+#define SIFT_PAR_MIN_POOL_BYTES	(4 << 20)
 
 const char *
 sift_v6_par_strategy_name(int strategy)
@@ -63,6 +68,26 @@ count_distinct(const SiftV6Spec *spec)
 	return n;
 }
 
+/*
+ * What the partitions of the run take at most before their records go to files: the records the participants hand over, each group once for every participant that saw it (all the rows
+ * when a COUNT(DISTINCT) sends its values). The block is made of that and not of work_mem: the operating system fills every byte of a segment when it is created.
+ */
+static double
+chunk_budget(const SiftV6ParNode *pn, int nparticipants)
+{
+	const SiftV6Spec *spec = pn->spec;
+	double		rows = 0;
+	const double groups = Max((double) spec->groups_est, 1.0);
+	const bool	values = count_distinct(spec) > 0;
+	double		records;
+
+	for (uint32 i = 0; i < pn->plan.nrefs; i++)
+		rows += (double) pn->plan.refs[i].ngranules * SIFT_GRANULE_ROWS;
+	records = values ? rows : nparticipants * groups * (1.0 - exp(-rows / nparticipants / groups));
+
+	return Min((double) get_hash_memory_limit(), Max(records * (double) (sizeof(SiftV6RecHdr) + (values ? 32 : (Size) spec->naggs * sizeof(V6Acc) + 32)), (double) SIFT_PAR_MIN_POOL_BYTES));
+}
+
 /* The leader lists the units of the scan once; the block holds them for every participant */
 Size
 sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
@@ -76,7 +101,7 @@ sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 	sift_v6_scan_end(scan);
 	pn->shape = (SiftV6ParShape) {.strategy = (SiftV6ParStrategy) spec->par_strategy,.nworkers = pcxt->nworkers,.n_parts = pn->plan.nrefs,.part_ref_bytes = sizeof(SiftParPartRef),
 		.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
-		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, (double) get_hash_memory_limit()),.radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers),
+		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, chunk_budget(pn, pcxt->nworkers + 1)),.radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers),
 		.plain_slot_bytes = (uint32) (sizeof(SiftV6RecHdr) + (Size) Max(spec->naggs, 1) * sizeof(V6Acc))};
 	MemoryContextSwitchTo(old);
 	return sift_v6_par_dsm_size(&pn->shape);
@@ -129,6 +154,12 @@ sift_v6_par_node_worker(SiftV6ParNode *pn, void *chunk)
 	pn->hdr = h;
 }
 
+static bool
+run_next(void *arg, Datum *values, bool *isnull)
+{
+	return sift_v6_par_next(((SiftV6ParNode *) arg)->run, values, isnull);
+}
+
 bool
 sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 {
@@ -139,8 +170,10 @@ sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 	{
 		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap);
 		pn->run = sift_v6_par_run_new(pn->hdr, &pn->eng);
+		if (pn->spec->topk > 0)
+			pn->topk = sift_v6_par_topk_new(pn->mcx, pn->spec, pn->desc, pn->tuple_cx, run_next, pn);
 	}
-	got = sift_v6_par_next(pn->run, values, isnull);
+	got = pn->topk != NULL ? sift_v6_par_topk_next(pn->topk, values, isnull) : sift_v6_par_next(pn->run, values, isnull);
 	MemoryContextSwitchTo(old);
 	return got;
 }
@@ -153,6 +186,7 @@ sift_v6_par_node_end(SiftV6ParNode *pn)
 		return;
 	sift_v6_par_run_end(pn->run);
 	pn->run = NULL;
+	pn->topk = NULL;
 	sift_v6_par_engine_end(&pn->eng);
 }
 

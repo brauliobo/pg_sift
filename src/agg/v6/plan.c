@@ -745,7 +745,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	agg_force_price(&cp->path);
 	add_path(p->out, &cp->path);
 	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table)
-		sift_v6_par_add_path(p->root, p->rel, p->index, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups);
+		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, cp->path.total_cost);
 }
 
 void

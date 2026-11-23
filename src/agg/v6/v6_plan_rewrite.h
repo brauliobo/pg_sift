@@ -38,6 +38,8 @@ extern bool sift_v6_derive_of(const SiftV6Resolver *rs, const Expr *e, bool key,
 /* The path of the grouped paths of input_rel with the order of ORDER BY .. LIMIT (v6_group_topk.h), added to output_rel (UPPERREL_ORDERED) */
 /* LIMIT + OFFSET of the query when they are constants and the statement is ordered (0: otherwise) */
 extern uint32 sift_v6_topk_of(const Query *q);
+/* The sort columns of the query as positions of the scan tuple (spec topk_item); false when one is not a key or an aggregate of the node */
+extern bool sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s);
 extern void sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
 /* The derivations, the derived key and argument columns and the affine range of a spec as ints after those of sift_v6_spec_pack, and back from position at */

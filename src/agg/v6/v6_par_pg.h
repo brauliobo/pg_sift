@@ -13,6 +13,7 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_par_node.h"
 #include "agg/v6/v6_par.h"
+#include "agg/v6/v6_par_topk.h"
 #include "col/f2/f2_sink.h"
 
 struct SiftV6ParNode
@@ -32,6 +33,7 @@ struct SiftV6ParNode
 	SiftF2ParPlan plan;
 	SiftV6ParEngine eng;
 	SiftV6ParRun *run;
+	SiftV6ParTopK *topk;		/* ORDER BY .. LIMIT of the groups: the participant gives its best K only */
 
 	/* what the participants did, read from the shared block when the node shuts down */
 	SiftV6ParWorkerStats total;
@@ -47,7 +49,7 @@ extern void sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec
 extern void sift_v6_par_engine_end(SiftV6ParEngine *eng);
 
 /* Adds the Gather of a parallel node next to the serial path of add_group_path, when sift_v6_par_choose_strategy picks a parallel strategy; the spec of the path carries it */
-extern void sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having,
-								 double groups);
+extern void sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having,
+								 double groups, Cost serial_total);
 
 #endif							/* SIFT_AGG_V6_PAR_PG_H */
