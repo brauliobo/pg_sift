@@ -395,7 +395,7 @@ sift_cc_blob_open(const char *p, uint32 avail, uint32 nvals, uint32 *whole)
 		SIFT_FAIL_CORRUPT("sift: a codec blob of %u bytes is not padded inside its chunk of %u", len, avail);
 	if (whole != NULL)
 		*whole = 8 + MAXALIGN(len);
-	return sift_cc_open_rows(CurrentMemoryContext, (const uint8 *) p + 8, len, false, nvals);
+	return sift_cc_open_rows(NULL, (const uint8 *) p + 8, len, false, nvals);
 }
 
 void
@@ -692,7 +692,7 @@ block_strs(const char *p, uint32 avail, uint32 n, uint32 **off, char **bytes, ui
 	memcpy(&len, p, 4);
 	if (len > avail - 8)
 		SIFT_FAIL_CORRUPT("sift: a list of strings of %u bytes does not fit its chunk of %u", len, avail);
-	sift_cc_decode_strs_dict(CurrentMemoryContext, (const uint8 *) p + 8, len, n, n, 0, off, bytes, ddict);
+	sift_cc_decode_strs_dict(NULL, (const uint8 *) p + 8, len, n, n, 0, off, bytes, ddict);
 	if (whole != NULL)
 		*whole = 8 + MAXALIGN(len);
 }
