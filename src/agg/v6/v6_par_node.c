@@ -18,6 +18,9 @@
 #include "agg/v6/v6_par_pg.h"
 
 #define SIFT_PAR_MIN_POOL_BYTES	(4 << 20)
+#define SIFT_PAR_POOL_BIG_GROUPS	400000	/* from this many expected groups a run fills its pool, and the estimate is the low one (it leaves out part of the key bytes) */
+#define SIFT_PAR_POOL_BIG		1.5		/* of the bytes of the estimate: a short pool sends partitions to temporary files, which costs more than the pages of the segment */
+#define SIFT_PAR_POOL_SMALL		0.5		/* a smaller run is estimated high (the groups of the planner are) and the pages of the segment are all made when it is created */
 
 const char *
 sift_v6_par_strategy_name(int strategy)
@@ -94,7 +97,7 @@ chunk_budget(const SiftV6ParNode *pn, int nparticipants)
 		bytes = rows * SIFT_PAR_DIST_FLAT_SHARE * (sizeof(SiftV6DistRec) + 8);
 	else
 		bytes = rows * (sizeof(SiftV6DistRec) + 8 * (spec->nkeys + 2)) + group_recs * (sizeof(SiftV6RecHdr) + (Size) spec->naggs * sizeof(V6Acc) + 32);
-	return Min((double) get_hash_memory_limit(), Max(bytes, (double) SIFT_PAR_MIN_POOL_BYTES));
+	return Min((double) get_hash_memory_limit(), Max(bytes * (groups >= SIFT_PAR_POOL_BIG_GROUPS ? SIFT_PAR_POOL_BIG : SIFT_PAR_POOL_SMALL), (double) SIFT_PAR_MIN_POOL_BYTES));
 }
 
 /* The leader lists the units of the scan once; the block holds them for every participant */

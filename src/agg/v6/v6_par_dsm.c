@@ -21,16 +21,14 @@ sift_v6_par_radix_parts(SiftV6ParStrategy strategy, int nworkers)
 	return nworkers >= SIFT_PAR_WIDE_WORKERS ? SIFT_PAR_RADIX_PARTS_WIDE : SIFT_PAR_RADIX_PARTS;
 }
 
-/* The chunks of the partitions that work_mem * hash_mem_multiplier allows; the two-stage strategy holds states, not groups, so it takes at most half and SIFT_PAR_RING_MAX_BYTES */
+/* The chunks of the partitions for the bytes the run is expected to hand over (v6_par_node.c, at most work_mem * hash_mem_multiplier); the two-stage strategy holds states, not groups, so it takes a half, at most SIFT_PAR_RING_MAX_BYTES */
 uint32
-sift_v6_par_chunks(SiftV6ParStrategy strategy, double hash_limit)
+sift_v6_par_chunks(SiftV6ParStrategy strategy, double expected_bytes)
 {
-	/* MEM[MEM-AGG-18]: parallel DSM chunk pool (half of work_mem * hash_mem_multiplier, at most SIFT_PAR_DSM_MAX=256MiB, in SIFT_RADIX_CHUNK_SIZE chunks; was all of it: leader and workers kept a full hash_mem each besides) */
-	double		budget = Min(hash_limit / 2, (double) SIFT_PAR_DSM_MAX);
-
 	if (strategy == SV6P_TWO_STAGE)
-		return (uint32) Max(SIFT_PAR_RADIX_PARTS, Min(budget / 2, (double) SIFT_PAR_RING_MAX_BYTES) / SIFT_RADIX_CHUNK_SIZE);
-	return (uint32) Max(16, Min(4096, budget / SIFT_RADIX_CHUNK_SIZE));
+		return (uint32) Max(SIFT_PAR_RADIX_PARTS, Min(expected_bytes / 2, (double) SIFT_PAR_RING_MAX_BYTES) / SIFT_RADIX_CHUNK_SIZE);
+	/* MEM[MEM-AGG-18]: parallel DSM chunk pool (the expected bytes, at most SIFT_PAR_DSM_MAX=256MiB, in SIFT_RADIX_CHUNK_SIZE chunks: a pool short of them sends the partitions to temporary files) */
+	return (uint32) Max(16, Min(4096, Min(expected_bytes, (double) SIFT_PAR_DSM_MAX) / SIFT_RADIX_CHUNK_SIZE));
 }
 
 static void
