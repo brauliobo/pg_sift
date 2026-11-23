@@ -185,7 +185,9 @@ typedef struct DistIn
 	uint32		n;
 	uint32		off[DIST_BATCH];
 	uint32		plen[DIST_BATCH];
+	uint64		hash[DIST_BATCH];
 	uint64		val[DIST_BATCH];
+	uint32		gid[DIST_BATCH];
 	SiftBytes	prefix;
 } DistIn;
 
@@ -241,18 +243,6 @@ move_value(void *arg, uint64 v)
 }
 
 static void
-move_pair(void *arg, const uint8 *prefix, uint32 plen, uint64 v)
-{
-	const struct
-	{
-		SiftV6ParDist *d;
-		uint32		slot;
-	}		   *to = arg;
-
-	add_generic(to->d, to->slot, prefix, plen, v);
-}
-
-static void
 move_to_generic(SiftV6ParDist *d, uint32 slot)
 {
 	V6Set	   *set = &d->g->set[0];
@@ -270,12 +260,7 @@ move_to_generic(SiftV6ParDist *d, uint32 slot)
 		set->flat_moved[slot] = true;
 	}
 	else
-	{
-		sift_du64g_pairs(set->gflat[slot], move_pair, (void *) &to);
-		sift_du64g_free(set->gflat[slot]);
-		set->gflat[slot] = NULL;
-		set->gflat_moved[slot] = true;
-	}
+		v6g_dist_gflat_flush(d->g, set);
 }
 
 static bool
@@ -314,6 +299,43 @@ open_flat(SiftV6ParDist *d, uint32 slot)
 	}
 }
 
+/* The number of the group of a record in the table of the owner (its slot's ext_idx), made when the group is new: the table is the one the accumulators of the group merge into */
+static uint32
+group_gid(V6Set *set, uint64 hash, const uint8 *prefix, uint32 plen)
+{
+	const uint8 *key = prefix + sizeof(uint64);
+	SiftInlineKey16 ik = {0};
+	uint64		nulls;
+	bool		found;
+
+	memcpy(&nulls, prefix, sizeof(nulls));
+	if (set->wide)
+		return sift_ht_upsert_wide(&set->ht, hash, key, plen - (uint32) sizeof(nulls), nulls, &found)->ext_idx;
+	if (set->packed)
+		memcpy(&ik, key, sizeof(ik));
+	else
+	{
+		memcpy(&ik.i64[0], key, sizeof(int64));
+		ik.i64[1] = (int64) nulls;
+	}
+	return sift_ht_upsert(&set->ht, hash, &ik, &found)->ext_idx;
+}
+
+static uint32
+add_flat_pairs(SiftV6ParDist *d, uint32 slot, DistIn *in)
+{
+	V6Set	   *set = &d->g->set[0];
+	uint32		done;
+
+	if (set->nk == 0)
+		return sift_du64_add(set->flat[slot], in->val, in->n);
+	for (uint32 i = 0; i < in->n; i++)
+		in->gid[i] = group_gid(set, in->hash[i], in->prefix.buf + in->off[i], in->plen[i]);
+	done = sift_du64g_add_batch(set->gflat[slot], in->gid, in->val, in->n);
+	v6g_spill_if_over(d->g);
+	return done;
+}
+
 static void
 flush_slot(SiftV6ParDist *d, uint32 slot)
 {
@@ -326,8 +348,7 @@ flush_slot(SiftV6ParDist *d, uint32 slot)
 	if (!is_moved(set, slot))
 	{
 		open_flat(d, slot);
-		done = set->nk == 0 ? sift_du64_add(set->flat[slot], in->val, in->n) :
-			sift_du64g_add_batch(set->gflat[slot], in->prefix.buf, in->off, in->plen, in->val, in->n);
+		done = add_flat_pairs(d, slot, in);
 		if (done < in->n)
 			move_to_generic(d, slot);
 	}
@@ -349,6 +370,7 @@ sift_v6_par_dist_add(SiftV6ParDist *d, const uint8 *rec)
 		flush_slot(d, slot);
 	in->off[in->n] = in->prefix.len;
 	in->plen[in->n] = plen;
+	in->hash[in->n] = h->hash64;
 	in->val[in->n++] = (uint64) h->value;
 	sift_bytes_put(&in->prefix, rec + sizeof(*h), plen);
 }
