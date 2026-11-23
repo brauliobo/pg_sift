@@ -158,7 +158,7 @@ sift_gpu_chunk_fill(const SiftGranuleView *v, int phys, SiftCellKind kind, const
 		return refuse(why, "the column is not in the granule");
 	ref = &v->hdr->chunks[phys + 1];
 	enc = ref->enc & SIFT_ENC_MASK;
-	if ((ref->flags & (SIFT_CHUNK_HAS_KINDS | SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_ELEMS)) || (ref->enc & SIFT_ENC_KEY_ANY) || (kind != SIFT_CELL_STR && (ref->enc & SIFT_ENC_PART_DICT)))
+	if ((ref->flags & (SIFT_CHUNK_HAS_KINDS | SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_ELEMS)) || (ref->enc & (SIFT_ENC_KEY_ANY | SIFT_ENC_FRAMED)) || (kind != SIFT_CELL_STR && (ref->enc & SIFT_ENC_PART_DICT)))
 		return refuse(why, "a chunk holds exceptions, elements or a dictionary of strings");
 	if (kind == SIFT_CELL_STR && (enc != SIFT_VK_ENC_DICT_CODE || !(ref->enc & SIFT_ENC_PART_DICT)))
 		return refuse(why, "a string chunk is not coded by the dictionary of its part");

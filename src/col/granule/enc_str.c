@@ -133,15 +133,38 @@ put_inline(StringInfo s, const char *const *p, const uint32 *len, const bool *is
 	pad8(s);
 }
 
-/* The strings as the codec's list: the offsets as a cascade and the bytes wrapped when the cold rule says so */
-static bool
+typedef struct BlockFrames
+{
+	const uint32 *off;
+	const char *bytes;
+	const SiftCcPolicy *pol;
+} BlockFrames;
+
+static void
+put_block_frame(StringInfo frame, int first, int cnt, void *arg)
+{
+	const BlockFrames *bf = arg;
+	uint32	   *off = palloc((cnt + 1) * sizeof(uint32));
+	StringInfoData blob;
+
+	for (int i = 0; i <= cnt; i++)
+		off[i] = bf->off[first + i] - bf->off[first];
+	initStringInfo(&blob);
+	sift_cc_encode_strs(&blob, off, bf->bytes + bf->off[first], cnt, bf->pol, NULL);
+	sift_cc_blob_put(frame, &blob);
+	pfree(off);
+	pfree(blob.data);
+}
+
+/* The strings as the codec's list: the offsets as a cascade and the bytes wrapped when the cold rule says so, in frames of a part of a sift_table; the modifiers of the encoding it needs */
+static uint16
 put_block(StringInfo s, const char *const *p, const uint32 *len, const bool *isnull, int n, int nn, const SiftChunkOpts *opt)
 {
 	uint32	   *off = palloc((nn + 1) * sizeof(uint32));
 	StringInfoData bytes,
 				blob;
 	SiftCcPolicy pol;
-	bool		with_dict = false;
+	uint16		mods = 0;
 
 	initStringInfo(&bytes);
 	off[0] = 0;
@@ -152,6 +175,13 @@ put_block(StringInfo s, const char *const *p, const uint32 *len, const bool *isn
 			off[++k] = bytes.len;
 		}
 	sift_cc_policy_tier(&pol, opt->tier, opt->alg);
+	if (opt->framed)
+	{
+		sift_frames_put(s, nn, put_block_frame, &(BlockFrames) {off, bytes.data, &pol});
+		pfree(off);
+		pfree(bytes.data);
+		return SIFT_ENC_FRAMED;
+	}
 	initStringInfo(&blob);
 	sift_cc_encode_strs(&blob, off, bytes.data, nn, &pol, NULL);
 	if (opt->cdict != NULL)
@@ -159,11 +189,11 @@ put_block(StringInfo s, const char *const *p, const uint32 *len, const bool *isn
 		StringInfoData zblob;
 
 		initStringInfo(&zblob);
-		with_dict = sift_cc_encode_strs_dict(&zblob, off, bytes.data, nn, &pol, opt->cdict) && zblob.len < blob.len;
-		if (with_dict)
+		if (sift_cc_encode_strs_dict(&zblob, off, bytes.data, nn, &pol, opt->cdict) && zblob.len < blob.len)
 		{
 			pfree(blob.data);
 			blob = zblob;
+			mods = SIFT_ENC_PART_DICT;
 		}
 		else
 			pfree(zblob.data);
@@ -172,7 +202,7 @@ put_block(StringInfo s, const char *const *p, const uint32 *len, const bool *isn
 	pfree(off);
 	pfree(bytes.data);
 	pfree(blob.data);
-	return with_dict;
+	return mods;
 }
 
 /*
@@ -238,17 +268,17 @@ put_cold_strs(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 {
 	StringInfoData block,
 				fsst;
-	bool		use_fsst,
-				with_dict;
+	bool		use_fsst;
+	uint16		mods;
 
 	initStringInfo(&block);
 	initStringInfo(&fsst);
-	with_dict = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
+	mods = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
 	use_fsst = opt->alg >= 0 && put_fsst(&fsst, col, n, nn, opt) && fsst_beats_block(fsst.len, block.len, opt->tier);
 	appendBinaryStringInfo(s, use_fsst ? fsst.data : block.data, use_fsst ? fsst.len : block.len);
 	pfree(block.data);
 	pfree(fsst.data);
-	return use_fsst ? SIFT_CENC_STR_FSST : SIFT_CENC_STR_BLOCK | (with_dict ? SIFT_ENC_PART_DICT : 0);
+	return use_fsst ? SIFT_CENC_STR_FSST : SIFT_CENC_STR_BLOCK | mods;
 }
 
 /*
@@ -437,14 +467,14 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 			bool		block_wins = false;
 			StringInfoData dict,
 						block;
-			bool		with_dict = false;
+			uint16		mods = 0;
 
 			if (cold && (uint64) nd * DICT_TRIAL_DIV > (uint64) nn)
 			{
 				initStringInfo(&dict);
 				initStringInfo(&block);
 				put_dict(&dict, col->s, col->slen, code, first, nd, nn, opt);
-				with_dict = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
+				mods = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
 				block_wins = (uint64) block.len * 100 < (uint64) dict.len * 95;
 				appendBinaryStringInfo(s, block_wins ? block.data : dict.data, block_wins ? block.len : dict.len);
 				pfree(dict.data);
@@ -452,7 +482,7 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 			}
 			else
 				put_dict(s, col->s, col->slen, code, first, nd, nn, opt);
-			ref->enc |= block_wins ? SIFT_CENC_STR_BLOCK | (with_dict ? SIFT_ENC_PART_DICT : 0) : SIFT_CENC_DICT_CODE;
+			ref->enc |= block_wins ? SIFT_CENC_STR_BLOCK | mods : SIFT_CENC_DICT_CODE;
 			pfree(code);
 			pfree(first);
 			return;
@@ -464,13 +494,13 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 	{
 		StringInfoData part,
 					block;
-		bool		with_dict;
+		uint16		mods;
 
 		initStringInfo(&part);
 		initStringInfo(&block);
 		if (put_part_fsst(&part, col, n, nn, opt))
 		{
-			with_dict = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
+			mods = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
 			if (fsst_beats_block(part.len, block.len, opt->tier))
 			{
 				appendBinaryStringInfo(s, part.data, part.len);
@@ -479,7 +509,7 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 			else
 			{
 				appendBinaryStringInfo(s, block.data, block.len);
-				ref->enc |= SIFT_CENC_STR_BLOCK | (with_dict ? SIFT_ENC_PART_DICT : 0);
+				ref->enc |= SIFT_CENC_STR_BLOCK | mods;
 			}
 			pfree(part.data);
 			pfree(block.data);

@@ -1,7 +1,8 @@
 /*
  * col/granule/point_decode.c - one value of a column of a granule, decoded without the other rows of it (col/granule/granule.h): the point reads of a row fetched by address, where the
  * decode of the whole column (up to 65,535 values) would cost a thousand times the value. A scratch of the decode (a symbol table) is allocated in the current context. A column that is one
- * compressed block (sift_granule_str_is_block) has no such read: the block is inflated whole, and the caller keeps what it inflated for the next row.
+ * compressed block (sift_granule_str_is_block) has no such read: the block is inflated whole, and the caller keeps what it inflated for the next row. A framed chunk of a sift_table inflates
+ * the frame of 256 values the row lies in.
  */
 #include "postgres.h"
 
@@ -160,7 +161,45 @@ sift_granule_str_is_block(const SiftGranuleView *v, int col)
 {
 	if (col < 0 || col + 1 >= v->hdr->nchunks)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: column %d is not in the granule", col)));
-	return (v->hdr->chunks[col + 1].enc & SIFT_ENC_MASK) == SIFT_CENC_STR_BLOCK;
+	return (v->hdr->chunks[col + 1].enc & (SIFT_ENC_MASK | SIFT_ENC_FRAMED)) == SIFT_CENC_STR_BLOCK;
+}
+
+bool
+sift_granule_frame_ref(const SiftGranuleView *v, int col, uint16 row, SiftFrameRef *ref)
+{
+	SiftChunk	c;
+	bool		framed;
+
+	col_open(v, col, &c);
+	framed = sift_chunk_framed(&c) && sift_chunk_row_valid(&c, row);
+	if (framed)
+	{
+		int			k = sift_chunk_rank(&c, row);
+
+		*ref = (SiftFrameRef) {k / SIFT_FRAME_ROWS, (uint16) (k % SIFT_FRAME_ROWS)};
+	}
+	sift_chunk_release_strs(&c);
+	return framed;
+}
+
+void
+sift_granule_frame_str(const SiftGranuleView *v, int col, uint32 frame, uint32 **off, char **bytes)
+{
+	SiftChunk	c;
+
+	col_open(v, col, &c);
+	sift_frame_strs(&c, frame, off, bytes);
+	sift_chunk_release_strs(&c);
+}
+
+void
+sift_granule_frame_f8(const SiftGranuleView *v, int col, uint32 frame, double *out)
+{
+	SiftChunk	c;
+
+	col_open(v, col, &c);
+	sift_frames_f8(&c, (int) (frame * SIFT_FRAME_ROWS), Min((int) ((frame + 1) * SIFT_FRAME_ROWS), c.nnonnull), out);
+	sift_chunk_release_strs(&c);
 }
 
 uint8

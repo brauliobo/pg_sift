@@ -741,6 +741,20 @@ put_f8_bss(StringInfo s, const double *vals, int nn)
 	pfree(planes);
 }
 
+typedef struct BssFrames
+{
+	const double *vals;
+	int			alg;
+} BssFrames;
+
+static void
+put_bss_frame(StringInfo frame, int first, int cnt, void *arg)
+{
+	const BssFrames *bf = arg;
+
+	sift_frame_f8_put(frame, bf->vals + first, cnt, bf->alg);
+}
+
 /* One encoding of the plan; false when the chunk did not shrink under it (nothing is appended then) */
 static bool
 put_f8_pick(StringInfo s, F8Pick pick, const double *vals, int nn, const F8Plan *plan, SiftChunkRef *ref, const SiftChunkOpts *opt)
@@ -758,6 +772,12 @@ put_f8_pick(StringInfo s, F8Pick pick, const double *vals, int nn, const F8Plan 
 			ref->enc |= SIFT_CENC_ALP_RD;
 			return true;
 		case F8_PICK_BSS:
+			if (opt->framed)
+			{
+				sift_frames_put(s, nn, put_bss_frame, &(BssFrames) {vals, wrap_alg(opt)});
+				ref->enc |= SIFT_CENC_FLOAT_BSS | SIFT_ENC_FRAMED;
+				return true;
+			}
 			put_f8_bss(s, vals, nn);
 			ref->enc |= SIFT_CENC_FLOAT_BSS;
 			return true;
@@ -897,6 +917,8 @@ put_key_present(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref)
 static bool
 wrappable(uint16 enc)
 {
+	if (enc & SIFT_ENC_FRAMED)
+		return false;
 	enc &= SIFT_ENC_MASK;
 	return enc == SIFT_CENC_STR_INLINE || enc == SIFT_CENC_STR_VIEW || enc == SIFT_CENC_FLOAT_BSS || enc == SIFT_CENC_FLOAT_RAW || enc == SIFT_CENC_UUID16 || enc == SIFT_CENC_NUM128 ||
 		enc == SIFT_CENC_INTERVAL16 || enc == SIFT_CENC_BOOL_BITS;

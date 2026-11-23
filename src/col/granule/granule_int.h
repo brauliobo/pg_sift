@@ -134,7 +134,26 @@ typedef struct SiftChunkOpts
 	const SiftDictEnc *dict;	/* the part's dictionary of the column, or NULL */
 	const struct SiftFsst *fsst;	/* the table of symbols of the column over the whole part, or NULL */
 	const void *cdict;			/* the zstd dictionary of the column over the whole part, or NULL */
+	bool		framed;			/* the strings of a block and the doubles of a split-bits chunk go in frames of SIFT_FRAME_ROWS values (SIFT_ENC_FRAMED): a part of a sift_table */
 } SiftChunkOpts;
+
+/* Framed chunks (enc_frame.c) */
+typedef void (*SiftFramePut) (StringInfo frame, int first, int cnt, void *arg);
+extern void sift_frames_put(StringInfo s, int nn, SiftFramePut put, void *arg);
+extern void sift_frame_f8_put(StringInfo s, const double *vals, int cnt, int alg);
+extern bool sift_chunk_framed(const SiftChunk *c);
+
+/* The offsets and bytes of the strings of frame f, palloc'd */
+extern void sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes);
+
+/* The strings [k0, k1) of a framed block chunk, from the frames they lie in only; the buffer they point into is given in *bytes_out (palloc'd) */
+extern void sift_frames_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, void **bytes_out);
+
+/* The offsets and bytes of every string of a framed block chunk, palloc'd (as sift_chunk_block_strs_own gives those of an unframed one) */
+extern void sift_frames_block_strs(const SiftChunk *c, uint32 **offs, char **bytes);
+
+/* The doubles [k0, k1) of a framed split-bits chunk, from the frames they lie in only */
+extern void sift_frames_f8(const SiftChunk *c, int k0, int k1, double *out);
 
 extern int	sift_put_cc_ints(StringInfo s, const int64 *vals, int n, const SiftChunkOpts *opt);
 extern void sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkRef *ref, const SiftChunkOpts *opt);

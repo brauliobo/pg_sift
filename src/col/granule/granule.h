@@ -155,6 +155,20 @@ StaticAssertDecl(sizeof(SiftPartColIdentity) == 8, "SiftPartColIdentity must be 
 #define SIFT_ENC_KEY_ANY		(SIFT_ENC_KEY_ALL_PRESENT | SIFT_ENC_KEY_ALL_ABSENT | SIFT_ENC_KEY_EQ_VALID | SIFT_ENC_KEY_HAS_MASK)
 #define SIFT_ENC_FRAMED			UINT16_C(0x8000)	/* body starts with 256-row SiftChunkFrameHdr for fast point reads */
 
+#define SIFT_FRAME_ROWS			256
+
+/*
+ * The body of a SIFT_ENC_FRAMED chunk (a STR_BLOCK or FLOAT_BSS of a sift_table part): the header, nframes + 1 offsets (uint32, from the end of the table, ascending), then the frames, each of
+ * SIFT_FRAME_ROWS nonnull values (the last the rest) coded and compressed by itself, so that a value is read by inflating its frame and not the whole chunk.
+ */
+typedef struct SiftChunkFrameHdr
+{
+	uint32		nframes;
+	uint32		frame_rows;		/* SIFT_FRAME_ROWS */
+} SiftChunkFrameHdr;
+
+StaticAssertDecl(sizeof(SiftChunkFrameHdr) == 8, "SiftChunkFrameHdr must be 8 bytes");
+
 typedef enum SiftKeyPresentMode
 {
 	SIFT_KP_ARRAY16 = 1,		/* the rows with the key as ascending 16-bit indexes (while at most 1/16 of the rows) */
@@ -276,6 +290,7 @@ typedef struct SiftGranuleIn
 	const struct SiftDictEnc *const *dicts;	/* per column, the dictionary of the part it is coded by, or NULL */
 	const struct SiftFsst *const *part_fsst;	/* per column, the table of symbols the whole part is coded by, or NULL (the array too: none) */
 	void *const *part_cdict;	/* per column, the zstd dictionary (sift_colz_zstd_create_cdict) the string bytes of the part are compressed with, or NULL (the array too: none) */
+	bool		framed;			/* a part of a sift_table: the cold blocks of strings and split-bit doubles are framed (SIFT_ENC_FRAMED) */
 } SiftGranuleIn;
 
 /* The transaction id as a full one: the epoch is that of the next transaction when it is normal; the frozen id is epoch 0 */
@@ -318,6 +333,20 @@ extern void sift_granule_f8(const SiftGranuleView *v, int col, double *out, bool
 extern bool sift_granule_point_str(const SiftGranuleView *v, int col, uint16 row, const char **p, uint32 *len);
 /* The strings of the column are one compressed block: a point read inflates all of them */
 extern bool sift_granule_str_is_block(const SiftGranuleView *v, int col);
+
+/*
+ * A column of a framed chunk (SIFT_ENC_FRAMED) is read a frame of SIFT_FRAME_ROWS values at a time: the frame a row lies in and its place in it (false: the row is null, or the column is not
+ * framed), and the frame decoded: the offsets (SIFT_FRAME_ROWS + 1) and bytes of its strings, or its doubles, palloc'd in the current context.
+ */
+typedef struct SiftFrameRef
+{
+	uint32		frame;
+	uint16		within;
+} SiftFrameRef;
+
+extern bool sift_granule_frame_ref(const SiftGranuleView *v, int col, uint16 row, SiftFrameRef *ref);
+extern void sift_granule_frame_str(const SiftGranuleView *v, int col, uint32 frame, uint32 **off, char **bytes);
+extern void sift_granule_frame_f8(const SiftGranuleView *v, int col, uint32 frame, double *out);
 extern uint8 sift_granule_point_tag(const SiftGranuleView *v, int col, uint16 row);
 
 /* The SIFT_COLTAG_* of the rows whose value the column could not hold (0 for the others) */

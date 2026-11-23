@@ -21,7 +21,7 @@ sift_granule_encode(StringInfo out, const SiftGranuleIn *in)
 	SiftGranuleHeader *h;
 	SiftGranuleDesc d = {0};
 	bool		nulls = false;
-	SiftChunkOpts opt = {.tier = in->tier,.alg = in->compress_alg};
+	SiftChunkOpts opt = {.tier = in->tier,.alg = in->compress_alg,.framed = in->framed};
 
 	if (in->nrows < 1 || in->nrows > SIFT_GRANULE_ROWS)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: a granule holds 1 to %d rows, not %d", SIFT_GRANULE_ROWS, in->nrows)));

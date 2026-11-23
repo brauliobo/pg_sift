@@ -399,7 +399,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		int			from = gstart[g],
 					cnt = gstart[g + 1] - from;
 		SiftGranuleIn gi = {.nrows = cnt,.ncols = nc,.tid = rows->tid + from,.cols = gcols,.row_base = from,.compress_alg = rows->compress_alg,.tier = tier,
-			.dicts = (const SiftDictEnc *const *) dicts,.part_fsst = codecs != NULL ? (const SiftFsst *const *) codecs->fsst : NULL,.part_cdict = codecs != NULL ? codecs->cdict : NULL};
+			.dicts = (const SiftDictEnc *const *) dicts,.part_fsst = codecs != NULL ? (const SiftFsst *const *) codecs->fsst : NULL,.part_cdict = codecs != NULL ? codecs->cdict : NULL,
+			.framed = rows->ncol_ids > 0 && SIFT_TIER_IS_COLD(tier)};
 		TransactionId lo = InvalidTransactionId,
 					hi = InvalidTransactionId;
 		bool		frozen = true;

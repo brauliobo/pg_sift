@@ -602,9 +602,12 @@ sift_chunk_f8(const SiftChunk *c, int k0, int k1, double *out)
 			alp_rd_f8(c, k0, k1, out);
 			break;
 		case SIFT_CENC_FLOAT_BSS:
-			for (int i = 0; i < n; i++)
-				for (int b = 0; b < 8; b++)
-					((uint8 *) &out[i])[b] = (uint8) body[(uint64) b * c->nnonnull + k0 + i];
+			if (sift_chunk_framed(c))
+				sift_frames_f8(c, k0, k1, out);
+			else
+				for (int i = 0; i < n; i++)
+					for (int b = 0; b < 8; b++)
+						((uint8 *) &out[i])[b] = (uint8) body[(uint64) b * c->nnonnull + k0 + i];
 			break;
 		default:
 			unsupported(c->enc);
@@ -616,7 +619,7 @@ sift_chunk_f8_sel(const SiftChunk *c, const uint32 *idx, int m, double *out)
 {
 	double	   *all = NULL;
 
-	if (c->enc == SIFT_CENC_ALP)
+	if (c->enc == SIFT_CENC_ALP || (c->enc == SIFT_CENC_FLOAT_BSS && sift_chunk_framed(c) && m > (c->nnonnull + SIFT_FRAME_ROWS - 1) / SIFT_FRAME_ROWS))
 	{
 		all = palloc((c->nnonnull + SIFT_COL_PAD / 8 + 8) * sizeof(double));
 		sift_chunk_f8(c, 0, c->nnonnull, all);
@@ -773,6 +776,9 @@ sift_chunk_strs_own(const SiftChunk *c, int k0, int k1, const char **p, uint32 *
 			}
 			break;
 		case SIFT_CENC_STR_BLOCK:
+			if (sift_chunk_framed(c))
+				sift_frames_strs(c, k0, k1, p, len, own != NULL ? &own->a[0] : NULL);
+			else
 			{
 				uint32	   *offs;
 				char	   *bytes;
@@ -890,7 +896,10 @@ sift_str_own_free(SiftStrOwn *own)
 void
 sift_chunk_block_strs_own(const SiftChunk *c, uint32 **offs, char **bytes)
 {
-	block_strs(c->body, c->body_len, c->nnonnull, offs, bytes, NULL, (c->ref->enc & SIFT_ENC_PART_DICT) ? part_dict(c, SIFT_DICT_KIND_ZSTD)->zstd_ddict : NULL);
+	if (sift_chunk_framed(c))
+		sift_frames_block_strs(c, offs, bytes);
+	else
+		block_strs(c->body, c->body_len, c->nnonnull, offs, bytes, NULL, (c->ref->enc & SIFT_ENC_PART_DICT) ? part_dict(c, SIFT_DICT_KIND_ZSTD)->zstd_ddict : NULL);
 }
 
 /* One value of a FIXED16 chunk or of a chunk coded by the dictionary of its part, decoded alone and not with the nn values around it */
