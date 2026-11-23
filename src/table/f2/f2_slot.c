@@ -106,6 +106,19 @@ str_datum(Relation rel, const SiftF2Store *store, const SiftF2GranuleBuf *gb, in
 	return str_image_datum(c->s.p, c->s.len, cx);
 }
 
+/* The string or the double of a lazy granule's framed chunk, from the frame the cache keeps; false when the chunk is not framed or the cell is null */
+static bool
+frame_cell(Relation rel, const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, SiftF2Cell *cell)
+{
+	const int	chunk = phys + 1;
+
+	if (kind == SIFT_CELL_INT || gb->lazy == NULL || gb->col_decoded[phys])
+		return false;
+	sift_lazy_granule_load(rel, gb->lazy, &chunk, 1);
+	*cell = (SiftF2Cell) {0};
+	return kind == SIFT_CELL_F8 ? sift_f2_gcache_cell_f8(rel, gb, phys, row, &cell->f) : sift_f2_gcache_cell_str(rel, gb, phys, row, &cell->s);
+}
+
 /* The cell of column phys; true when it made the granule decode the column whole */
 static bool
 read_cell(Relation rel, SiftF2Store *store, const CellSource *src, int phys, SiftCellKind kind, bool wide, SiftF2Cell *cell)
@@ -114,6 +127,8 @@ read_cell(Relation rel, SiftF2Store *store, const CellSource *src, int phys, Sif
 		return false;
 	if (*src->gb == NULL)
 		*src->gb = sift_f2_gcache_get(rel, store, src->pin, src->granule_id);
+	if (frame_cell(rel, *src->gb, phys, kind, src->row, cell))
+		return false;
 	return sift_f2_gbuf_cell(rel, *src->gb, phys, kind, src->row, wide, cell);
 }
 
