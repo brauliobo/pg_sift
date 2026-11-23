@@ -12,6 +12,8 @@
 
 #include "agg/v6/group_int.h"
 
+/* Whether the set will have a compact table: it has the keys and the aggregates one holds, and the groups the planner expects fit the memory they may take (until the scan says otherwise) */
+extern bool v6g_compact_eligible(const SiftV6Group *g, const V6Set *set);
 /* The rows of a batch of a set into its compact table (made with the first batch when the set fits); false when it cannot take them, with its groups moved to the group table: the caller goes on there */
 extern bool v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 /* The groups of the table into the group table of the set, and no compact table again */

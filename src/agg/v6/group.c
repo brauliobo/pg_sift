@@ -511,12 +511,27 @@ set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 	set->shape = (SiftRadixShape) {.wide_key = set->wide,.ext_stride = g->stride,.ext_dist_off = g->dist_off,.ctx = g,.init = shape_init,.merge = shape_merge};
 }
 
+/* the group table of a set for the groups the planner expects, when that many (a quarter of the memory the groups may take at most) */
+static void
+presize_set(SiftV6Group *g, V6Set *set)
+{
+	const uint64 per_group = sizeof(SiftAggSlot64) + 1 + g->stride;
+	const uint64 room = (g->budget - g->dist_budget) / 4 / per_group;
+	const uint64 est = g->spec->groups_est / g->nsets;
+
+	if (set->nk > 0 && est >= 4 * SIFT_VEC_LEN)
+		sift_ht_presize(&set->ht, (uint32) Min(est, room));
+}
+
 /* The state of a participant of a parallel run: its rows of a COUNT(DISTINCT) go to put, and its table holds what a participant may hold before it hands its groups over, whatever work_mem says */
 void
 sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
 {
 	g->dist_put = put;
 	g->dist_arg = arg;
+	for (int s = 0; s < g->nsets; s++)
+		if (v6g_compact_eligible(g, &g->set[s]))
+			presize_set(g, &g->set[s]);
 	g->budget = UINT64_MAX;
 	g->dist_budget = 0;
 	for (int s = 0; s < g->nsets; s++)
@@ -541,19 +556,13 @@ sift_v6_group_recycle(SiftV6Group *g)
 	v6g_dist_recycle(g);
 }
 
-/* the group tables for the groups the planner expects, when that many (a quarter of the memory the groups may take at most) */
+/* the group tables of the sets that have no compact table to take the groups first */
 static void
 presize(SiftV6Group *g)
 {
-	const uint64 per_group = sizeof(SiftAggSlot64) + 1 + g->stride;
-	const uint64 room = (g->budget - g->dist_budget) / 4 / per_group;
-	const uint64 est = g->spec->groups_est / g->nsets;
-
-	if (est < 4 * SIFT_VEC_LEN)
-		return;
 	for (int s = 0; s < g->nsets; s++)
-		if (g->set[s].nk > 0)
-			sift_ht_presize(&g->set[s].ht, (uint32) Min(est, room));
+		if (!v6g_compact_eligible(g, &g->set[s]))
+			presize_set(g, &g->set[s]);
 }
 
 SiftV6Group *
@@ -614,6 +623,8 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 		set->ht.lock_at = 0;
 		v6g_compact_flush(g, set);
 		set->cmp_off = true;
+		if (set->ht.count == 0)
+			presize_set(g, set);
 		sift_ht_reserve(&set->ht, 1);
 		if (set->packed)
 		{

@@ -8,63 +8,12 @@
 #include "utils/memutils.h"
 
 #include "agg/kern6.h"
-#include "agg/v6/v6_group_compact.h"
+#include "agg/v6/v6_group_cmp.h"
 
 #define CMP_AHEAD		16
-#define CMP_MAX_WORDS	8
-#define CMP_MAX_KW		4
 #define CMP_FIRST_CAP	1024
-#define CMP_ROWS_MAX	(UINT64CONST(1) << 31)	/* the rows at which a sum of 32-bit values may pass 62 bits */
-#define CMP_NO_ID		UINT32_MAX
-
-/* The strings a text key has had, each once, numbered in the order they came: a group's key holds the number */
-typedef struct IStr
-{
-	uint64		hash;
-	uint32		off;
-	uint32		len;
-} IStr;
-
-typedef struct Intern
-{
-	uint32	   *ht;				/* the number of a string + 1, 0 for an empty entry; a power of 2 of them */
-	uint32		cap;
-	uint32		n;
-	uint32		str_cap;
-	IStr	   *str;
-	char	   *arena;
-	Size		used;
-	Size		arena_cap;
-} Intern;
-
-typedef struct SiftCompact
-{
-	int			kw;				/* words of the key: 1 for one integer, 2 for a packed key */
-	int			sw;				/* words of a slot: 2, 4 or 8 */
-	int			nsum;
-	int8	   *word;			/* of each aggregate: the sum word that is its sum, or -1 */
-	SiftPackSpec pack;			/* a set of fixed-width keys: the key columns in the two words of its packed key */
-	int			strk;			/* the text key's place among the keys of the set, or -1: its word has the number of the string, and the null flags of every key column from bit 32 */
-	uint64	   *rowk;			/* a text among other keys: the key words of the rows of a batch, kw each */
-	Intern		in;
-	uint32	   *code_id;		/* the number of the string of each code of the dictionary of the part named by map_gen (CMP_NO_ID: not seen) */
-	uint32		code_cap;
-	uint32		map_n;
-	uint64		map_gen;
-	uint64	   *tab;
-	uint64		cap;
-	uint64		mask;
-	uint64		count;
-	uint64		rows;
-	uint64		null_group[CMP_MAX_WORDS];	/* kw 1: the group of the rows whose key is NULL */
-	bool		has_gid;		/* the statement has COUNT(DISTINCT): each group has a number, the word gidw of its slot, in the order the groups came */
-	int			gidw;
-	uint32		ngid;
-	uint64	   *dv;				/* the count of each group of each COUNT(DISTINCT), ngid for each, once the scan has ended */
-	const uint64 **by_gid;		/* the slot of each group, as far as by_n of them: made when the keys of the groups are asked by number */
-	uint32		by_n;
-	bool		flush_after;	/* a COUNT(DISTINCT) of the batch went to the exact set: the table is flushed when the batch is done */
-} SiftCompact;
+#define CMP_ROWS_MAX	(UINT64CONST(1) << 31)	/* the rows at which a sum of 32-bit values, or a count of 32 bits, may pass its width */
+#define CMP_MAX_KW		4
 
 static void compact_flush(SiftV6Group *g, V6Set *set, bool spill);
 
@@ -186,9 +135,15 @@ codes_of_part(SiftCompact *c, const SiftV6Group *g, const SiftKeyDict *kd)
 		c->code_cap = Max(Max(1024, kd->d.n), c->code_cap * 2);
 		if (c->code_id != NULL)
 			pfree(c->code_id);
-		c->code_id = MemoryContextAlloc(g->cx, (Size) c->code_cap * sizeof(uint32));
+		if (c->code_ent != NULL)
+			pfree(c->code_ent);
+		c->code_id = c->strm ? NULL : MemoryContextAlloc(g->cx, (Size) c->code_cap * sizeof(uint32));
+		c->code_ent = c->strm ? MemoryContextAlloc(g->cx, (Size) c->code_cap * sizeof(uint64)) : NULL;
 	}
-	memset(c->code_id, 0xFF, (Size) kd->d.n * sizeof(uint32));
+	if (c->strm)
+		memset(c->code_ent, 0, (Size) kd->d.n * sizeof(uint64));
+	else
+		memset(c->code_id, 0xFF, (Size) kd->d.n * sizeof(uint32));
 	c->map_gen = kd->gen;
 	c->map_n = kd->d.n;
 }
@@ -251,38 +206,68 @@ key_plan(const SiftV6Spec *spec, const V6Set *set, SiftCompact *c)
 	return c->strk >= 0;
 }
 
+static int
+slot_words(int need)
+{
+	return need <= 2 ? 2 : need <= 4 ? 4 : 8;
+}
+
+/* Whether the set has a compact table, whatever the state of the scan: what the table would be, in c */
+static bool
+compact_plan(const SiftV6Group *g, const V6Set *set, SiftCompact *c)
+{
+	const SiftV6Spec *spec = g->spec;
+	int			need;
+
+	if (spec->nsets != 0 || g->nfilters != 0 || set->nk == 0 || set->ht.lock_at != 0)
+		return false;
+	for (int j = 0; j < spec->naggs; j++)
+	{
+		if (!agg_fits(&spec->agg[j]))
+			return false;
+		c->nsum += spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG;
+	}
+	c->has_gid = g->ndist > 0;
+	if (!key_plan(spec, set, c))
+		return false;
+	c->strm = c->strk == 0 && c->kw == 1 && c->nsum == 0 && !c->has_gid;
+	need = c->kw + 1 + c->nsum + c->has_gid;
+	c->cnt_hi = c->strm || (c->kw == 2 && c->strk < 0 && !c->has_gid && slot_words(need - 1) < slot_words(need));
+	need -= c->cnt_hi;
+	if (need > CMP_MAX_WORDS)
+		return false;
+	c->sw = slot_words(need);
+	c->sum0 = c->cnt_hi ? c->kw : c->kw + 1;
+	c->cw = c->cnt_hi ? 1 : c->kw;
+	c->cshift = c->cnt_hi ? 32 : 0;
+	c->cinc = UINT64CONST(1) << c->cshift;
+	c->last_mask = c->cnt_hi ? UINT32_MAX : UINT64_MAX;
+	c->gidw = c->sum0 + c->nsum;
+	return (uint64) spec->groups_est * c->sw * sizeof(uint64) * 12 / 5 <= g->budget - g->dist_budget;
+}
+
+bool
+v6g_compact_eligible(const SiftV6Group *g, const V6Set *set)
+{
+	SiftCompact c = {0};
+
+	return compact_plan(g, set, &c);
+}
+
 static SiftCompact *
 compact_new(const SiftV6Group *g, const V6Set *set)
 {
 	const SiftV6Spec *spec = g->spec;
 	SiftCompact *c;
-	int			nsum = 0,
-				need;
 
-	if (g->dist_put != NULL || g->spilled || spec->nsets != 0 || g->nfilters != 0 || set->nk == 0 || set->ht.lock_at != 0 || set->ht.count != 0 || set->spill != NULL)
+	if (g->dist_put != NULL || g->spilled || set->ht.count != 0 || set->spill != NULL)
 		return NULL;
-	for (int j = 0; j < spec->naggs; j++)
-	{
-		if (!agg_fits(&spec->agg[j]))
-			return NULL;
-		nsum += spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG;
-	}
 	c = MemoryContextAllocZero(g->cx, sizeof(SiftCompact));
-	c->has_gid = g->ndist > 0;
-	need = 1 + nsum + c->has_gid;
-	if (!key_plan(spec, set, c) || (need += c->kw) > CMP_MAX_WORDS)
+	if (!compact_plan(g, set, c))
 	{
 		pfree(c);
 		return NULL;
 	}
-	c->sw = need <= 2 ? 2 : need <= 4 ? 4 : 8;
-	if ((uint64) spec->groups_est * c->sw * sizeof(uint64) * 12 / 5 > g->budget - g->dist_budget)
-	{
-		pfree(c);
-		return NULL;
-	}
-	c->nsum = nsum;
-	c->gidw = c->kw + 1 + nsum;
 	c->word = MemoryContextAlloc(g->cx, Max(spec->naggs, 1) * sizeof(int8));
 	for (int j = 0, w = 0; j < spec->naggs; j++)
 		c->word[j] = spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG ? (int8) w++ : -1;
@@ -302,7 +287,7 @@ key_hash(const SiftCompact *c, const uint64 *k)
 	if (c->kw == 1)
 		return sift_aggk6_hash1(k[0]);
 	if (c->strk < 0)
-		return sift_pack_hash(&(SiftInlineKey16) {.u64 = {k[0], k[1]}});
+		return sift_pack_hash(&(SiftInlineKey16) {.u64 = {k[0], c->cnt_hi ? (uint32) k[1] : k[1]}});
 	h = sift_aggk6_hash1(k[c->kw - 1]);
 	for (int i = c->kw - 2; i >= 0; i--)
 		h = sift_aggk6_hash1(k[i] ^ h);
@@ -317,15 +302,15 @@ find_slot(SiftCompact *c, uint64 h, const uint64 *key)
 		uint64	   *s = c->tab + i * c->sw;
 		int			w = 0;
 
-		if (s[c->kw] == 0)
+		if (cmp_count(c, s) == 0)
 		{
 			memcpy(s, key, c->kw * sizeof(uint64));
 			c->count++;
 			return s;
 		}
-		while (w < c->kw && s[w] == key[w])
+		while (w < c->kw - 1 && s[w] == key[w])
 			w++;
-		if (w == c->kw)
+		if (w == c->kw - 1 && ((s[w] ^ key[w]) & c->last_mask) == 0)
 			return s;
 	}
 }
@@ -344,11 +329,13 @@ compact_grow(SiftCompact *c, const SiftV6Group *g)
 	c->tab = tab_alloc(g, c->cap, c->sw);
 	c->count = 0;
 	c->by_n = 0;
-	for (uint64 i = 0; i < ocap; i++)
+	if (c->strm)
+		sstr_move(c, old, ocap);
+	for (uint64 i = 0; !c->strm && i < ocap; i++)
 	{
 		const uint64 *s = old + i * c->sw;
 
-		if (s[c->kw] != 0)
+		if (cmp_count(c, s) != 0)
 			memcpy(find_slot(c, key_hash(c, s), s), s, c->sw * sizeof(uint64));
 	}
 	pfree(old);
@@ -369,7 +356,7 @@ compact_reserve(SiftCompact *c, const SiftV6Group *g, uint16 n)
 static bool
 compact_takes(const SiftCompact *c, const SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *argvec)
 {
-	if (c->nsum > 0 && c->rows + bs->n_raw >= CMP_ROWS_MAX)
+	if ((c->nsum > 0 || c->cnt_hi) && c->rows + bs->n_raw >= CMP_ROWS_MAX)
 		return false;
 	for (int j = 0; j < g->spec->naggs; j++)
 		if (g->spec->agg[j].kind != SV6_COUNT_STAR && g->spec->agg[j].kind != SV6_COUNT_DISTINCT && !argvec[j]->all_valid)
@@ -393,8 +380,8 @@ text_id(SiftCompact *c, const SiftV6Group *g, const SiftVec *kv, uint16 r)
 	return intern_id(&c->in, g->cx, (const char *) sift_strview_bytes(&((const SiftStrView *) kv->data)[r]), ((const SiftStrView *) kv->data)[r].len);
 }
 
-/* The key words and hash of the rows of the batch (g->ikey, g->hash) */
-static void
+/* The key words and hash of the rows of the batch (g->ikey, g->hash): false when a row has a NULL column and the table has no room for the flags */
+static bool
 key_rows(SiftCompact *c, SiftV6Group *g, const V6Set *set, SiftVec *const *keyvec, uint16 n)
 {
 	SiftVec    *kvs[SIFT_PACK_MAX_KEYS];
@@ -414,14 +401,18 @@ key_rows(SiftCompact *c, SiftV6Group *g, const V6Set *set, SiftVec *const *keyve
 			g->ikey[k].i64[1] = !valid;
 			g->hash[k] = sift_aggk6_hash1((uint64) x);
 		}
-		return;
+		return true;
 	}
 	for (int i = 0; i < set->nk; i++)
 		kvs[i] = keyvec[set->kidx[i]];
 	if (c->strk < 0)
 	{
+		uint64		nulls = 0;
+
 		sift_pack_batch(&c->pack, kvs, g->sel, n, g->hash, g->ikey);
-		return;
+		for (uint16 k = 0; c->cnt_hi && k < n; k++)
+			nulls |= g->ikey[k].u64[1] >> 32;
+		return nulls == 0;
 	}
 	for (uint16 k = 0; k < n; k++)
 	{
@@ -438,6 +429,7 @@ key_rows(SiftCompact *c, SiftV6Group *g, const V6Set *set, SiftVec *const *keyve
 		w[c->strk] |= nulls << 32;
 		g->hash[k] = key_hash(c, w);
 	}
+	return true;
 }
 
 bool
@@ -471,7 +463,19 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 	for (int j = 0; j < g->spec->naggs; j++)
 		if (c->word[j] >= 0)
 			sum_vec[c->word[j]] = argvec[j];
-	key_rows(c, g, set, keyvec, n);
+	if (c->strm)
+	{
+		if (keyvec[set->kidx[0]]->type == SVEC_DICT32)
+			codes_of_part(c, g, (const SiftKeyDict *) keyvec[set->kidx[0]]->dict);
+		sstr_batch(c, g, keyvec[set->kidx[0]], n);
+		c->rows += n;
+		return true;
+	}
+	if (!key_rows(c, g, set, keyvec, n))
+	{
+		compact_flush(g, set, false);
+		return false;
+	}
 	for (uint16 k = 0; k < n; k++)
 	{
 		const uint64 *key = c->rowk != NULL ? c->rowk + (size_t) k * c->kw : g->ikey[k].u64;
@@ -482,13 +486,13 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 		s = c->kw == 1 && g->ikey[k].i64[1] != 0 ? c->null_group : find_slot(c, g->hash[k], key);
 		if (c->has_gid)
 		{
-			if (s[c->kw] == 0)
+			if (cmp_count(c, s) == 0)
 				s[c->gidw] = c->ngid++;
 			g->gid[k] = (uint32) s[c->gidw];
 		}
-		s[c->kw]++;
+		cmp_count_up(c, s);
 		for (int m = 0; m < c->nsum; m++)
-			s[c->kw + 1 + m] += (uint64) int_at(sum_vec[m], g->sel[k]);
+			s[c->sum0 + m] += (uint64) int_at(sum_vec[m], g->sel[k]);
 	}
 	c->rows += n;
 	if (c->has_gid)
@@ -508,7 +512,7 @@ v6g_compact_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *c
 uint64
 v6g_compact_count(const V6Set *set, const uint64 *slot)
 {
-	return slot[set->cmp->kw];
+	return cmp_count(set->cmp, slot);
 }
 
 void
@@ -517,9 +521,9 @@ v6g_compact_each(const V6Set *set, V6CompactFn fn, void *arg)
 	const SiftCompact *c = set->cmp;
 
 	for (uint64 i = 0; i < c->cap; i++)
-		if (c->tab[i * c->sw + c->kw] != 0)
+		if (cmp_count(c, c->tab + i * c->sw) != 0)
 			fn(arg, c->tab + i * c->sw);
-	if (c->kw == 1 && c->null_group[1] != 0)
+	if (c->kw == 1 && cmp_count(c, c->null_group) != 0)
 		fn(arg, c->null_group);
 }
 
@@ -530,11 +534,11 @@ v6g_compact_acc(const SiftV6Group *g, const V6Set *set, const uint64 *slot, V6Ac
 
 	for (int j = 0; j < g->spec->naggs; j++)
 	{
-		acc[j] = (V6Acc) {.n = (int64) slot[c->kw]};
+		acc[j] = (V6Acc) {.n = (int64) cmp_count(c, slot)};
 		if (g->spec->agg[j].kind == SV6_COUNT_DISTINCT)
 			acc[j] = (V6Acc) {.v0 = c->dv == NULL ? 0 : c->dv[(uint64) g->dslot[j] * c->ngid + slot[c->gidw]]};
 		else if (c->word[j] >= 0)
-			v6acc_set_i128(&acc[j], sift_i128_of_i64((int64) slot[c->kw + 1 + c->word[j]]));
+			v6acc_set_i128(&acc[j], sift_i128_of_i64((int64) slot[c->sum0 + c->word[j]]));
 	}
 }
 
@@ -552,7 +556,20 @@ slot_key(const SiftCompact *c, const uint64 *slot, int i, int64 *x)
 		*x = i == c->strk ? (int64) (slot[i] & UINT32_MAX) : (int64) slot[i];
 		return !((slot[c->strk] >> (32 + i)) & 1);
 	}
-	return sift_pack_get(&c->pack, &(SiftInlineKey16) {.u64 = {slot[0], slot[1]}}, i, x);
+	return sift_pack_get(&c->pack, &(SiftInlineKey16) {.u64 = {slot[0], c->cnt_hi ? (uint32) slot[1] : slot[1]}}, i, x);
+}
+
+/* The string of the group of a slot of a text key whose number is id (the slot is not the NULL group) */
+static void
+slot_text(const SiftCompact *c, const uint64 *slot, int64 id, const char **p, uint32 *len)
+{
+	if (c->strm)
+		sstr_slot_str(c, slot, p, len);
+	else
+	{
+		*p = c->in.arena + c->in.str[id].off;
+		*len = c->in.str[id].len;
+	}
 }
 
 void
@@ -571,7 +588,13 @@ v6g_compact_key_datums(const SiftV6Group *g, const V6Set *set, const uint64 *slo
 		if (isnull[k])
 			values[k] = (Datum) 0;
 		else if (i == c->strk)
-			values[k] = PointerGetDatum(cstring_to_text_with_len(c->in.arena + c->in.str[x].off, c->in.str[x].len));
+		{
+			const char *p;
+			uint32		len;
+
+			slot_text(c, slot, x, &p, &len);
+			values[k] = PointerGetDatum(cstring_to_text_with_len(p, len));
+		}
 		else
 			values[k] = v6g_int_datum(g->spec->key[k].typid, x);
 	}
@@ -603,9 +626,9 @@ by_gid_make(SiftCompact *c, const V6Set *set)
 		pfree(c->by_gid);
 	c->by_gid = MemoryContextAlloc(set->owner->cx, Max(c->ngid, 1) * sizeof(uint64 *));
 	for (uint64 i = 0; i < c->cap; i++)
-		if (c->tab[i * c->sw + c->kw] != 0)
+		if (cmp_count(c, c->tab + i * c->sw) != 0)
 			c->by_gid[c->tab[i * c->sw + c->gidw]] = c->tab + i * c->sw;
-	if (c->kw == 1 && c->null_group[c->kw] != 0)
+	if (c->kw == 1 && cmp_count(c, c->null_group) != 0)
 		c->by_gid[c->null_group[c->gidw]] = c->null_group;
 	c->by_n = c->ngid;
 }
@@ -622,10 +645,12 @@ key_bytes(const SiftCompact *c, const V6Set *set, const uint64 *slot, StringInfo
 			*nulls |= UINT64CONST(1) << i;
 		else if (i == c->strk)
 		{
-			const IStr *str = &c->in.str[x];
+			const char *p;
+			uint32		len;
 
-			appendBinaryStringInfo(buf, (const char *) &str->len, sizeof(uint32));
-			appendBinaryStringInfo(buf, c->in.arena + str->off, str->len);
+			slot_text(c, slot, x, &p, &len);
+			appendBinaryStringInfo(buf, (const char *) &len, sizeof(uint32));
+			appendBinaryStringInfo(buf, p, len);
 		}
 		else
 			appendBinaryStringInfo(buf, (const char *) &x, sizeof(x));
@@ -675,7 +700,7 @@ flush_upsert(SiftV6Group *g, V6Set *set, const uint64 *slot)
 		}
 		else
 		{
-			key = (SiftInlineKey16) {.u64 = {slot[0], slot[1]}};
+			key = (SiftInlineKey16) {.u64 = {slot[0], c->cnt_hi ? (uint32) slot[1] : slot[1]}};
 			h = sift_pack_hash(&key);
 		}
 		sift_ht_upsert_batch(&set->ht, &h, &key, 1, &s);
@@ -720,6 +745,7 @@ compact_flush(SiftV6Group *g, V6Set *set, bool spill)
 	if (set->cmp == NULL)
 		return;
 	old = MemoryContextSwitchTo(g->cx);
+	sift_ht_presize(&set->ht, (uint32) Min(set->cmp->count, f.spill ? FLUSH_SPILL_RUN : UINT32_MAX));
 	if (set->cmp->has_gid)
 	{
 		by_gid_make(set->cmp, set);
@@ -744,7 +770,7 @@ v6g_compact_bytes(const V6Set *set)
 {
 	const SiftCompact *c = set->cmp;
 
-	return c == NULL ? 0 : c->cap * c->sw * sizeof(uint64) + intern_bytes(&c->in) + (Size) c->code_cap * sizeof(uint32);
+	return c == NULL ? 0 : c->cap * c->sw * sizeof(uint64) + intern_bytes(&c->in) + (Size) c->code_cap * (c->strm ? sizeof(uint64) : sizeof(uint32));
 }
 
 void
@@ -761,6 +787,8 @@ v6g_compact_free(V6Set *set)
 		pfree(c->by_gid);
 	if (c->code_id != NULL)
 		pfree(c->code_id);
+	if (c->code_ent != NULL)
+		pfree(c->code_ent);
 	if (c->rowk != NULL)
 		pfree(c->rowk);
 	pfree(c->tab);
