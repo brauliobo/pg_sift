@@ -24,6 +24,7 @@ typedef struct StrMemoEnt
 	int			col;
 	const uint32 *offs;
 	const char *bytes;
+	const uint64 *live;			/* the ranks that were decoded (the others are empty in offs), NULL: all */
 } StrMemoEnt;
 
 typedef struct StrMemo
@@ -54,50 +55,75 @@ sift_cfstr_memo_open(MemoryContext cx)
 	memo_active = m;
 }
 
-/* The decoded strings of chunk c, which the caller allocated in the current context: kept when the memo is of that context, else freed */
+/* The decoded strings of chunk c (those of the ranks in live only, when it is given: owned by the memo's context as well), which the caller allocated in the current context: kept when the memo is of that context, else freed */
 static void
-memo_keep(const SiftChunk *c, uint32 *offs, char *bytes)
+memo_keep(const SiftChunk *c, uint32 *offs, char *bytes, const uint64 *live)
 {
 	StrMemo    *m = memo_active;
 
 	if (m != NULL && m->n < STR_MEMO_MAX && GetMemoryChunkContext(offs) == m->cx && GetMemoryChunkContext(bytes) == m->cx)
-		m->e[m->n++] = (StrMemoEnt) {.rec = c->view->rec,.col = c->idx - 1,.offs = offs,.bytes = bytes};
+		m->e[m->n++] = (StrMemoEnt) {.rec = c->view->rec,.col = c->idx - 1,.offs = offs,.bytes = bytes,.live = live};
 	else
 	{
 		pfree(offs);
 		pfree(bytes);
+		if (live != NULL)
+			pfree((void *) live);
 	}
+}
+
+static bool
+memo_has(const StrMemoEnt *e, int rank)
+{
+	return e->live == NULL || ((e->live[rank >> 6] >> (rank & 63)) & 1);
+}
+
+/* The strings of the rows from one entry: false when a row's string is not among those it decoded */
+static bool
+memo_fill(const StrMemoEnt *e, const SiftChunk *c, const uint16 *rows, uint16 nrows, SiftStrCell *out)
+{
+	int			word = 0,
+				rank = 0;
+
+	for (int j = 0; j < nrows; j++)
+	{
+		const int	row = rows != NULL ? rows[j] : j;
+
+		out[j] = (SiftStrCell) {.isnull = !sift_chunk_row_valid(c, row)};
+		if (!out[j].isnull)
+		{
+			const int	k = sift_chunk_rank_advance(c, &word, &rank, row);
+
+			if (!memo_has(e, k))
+				return false;
+			out[j].p = e->bytes + e->offs[k];
+			out[j].len = e->offs[k + 1] - e->offs[k];
+		}
+	}
+	return true;
 }
 
 bool
 sift_cfstr_memo_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out)
 {
-	const StrMemoEnt *e = NULL;
 	SiftChunk	c;
-	int			word = 0,
-				rank = 0;
+	bool		opened = false,
+				found = false;
 
-	for (int i = 0; memo_active != NULL && i < memo_active->n; i++)
-		if (memo_active->e[i].rec == v->rec && memo_active->e[i].col == col)
-			e = &memo_active->e[i];
-	if (e == NULL)
-		return false;
-	sift_chunk_open(v, col + 1, &c);
-	for (int j = 0; j < nrows; j++)
+	for (int i = memo_active != NULL ? memo_active->n : 0; i-- > 0 && !found;)
 	{
-		const int	row = rows != NULL ? rows[j] : j;
+		const StrMemoEnt *e = &memo_active->e[i];
 
-		out[j] = (SiftStrCell) {.isnull = !sift_chunk_row_valid(&c, row)};
-		if (!out[j].isnull)
-		{
-			const int	k = sift_chunk_rank_advance(&c, &word, &rank, row);
-
-			out[j].p = e->bytes + e->offs[k];
-			out[j].len = e->offs[k + 1] - e->offs[k];
-		}
+		if (e->rec != v->rec || e->col != col)
+			continue;
+		if (!opened)
+			sift_chunk_open(v, col + 1, &c);
+		opened = true;
+		found = memo_fill(e, &c, rows, nrows, out);
 	}
-	sift_chunk_close(&c);
-	return true;
+	if (opened)
+		sift_chunk_close(&c);
+	return found;
 }
 
 #if defined(__x86_64__)
@@ -282,7 +308,44 @@ src_bits(const StrOp *o, const StrSrc *src, uint32 nn, const uint64 *dense_live,
 			dense[k >> 6] |= (uint64) src_hit(o, src, k) << (k & 63);
 }
 
-/* FSST: the live strings are decoded one at a time and tested, when they are few; else the chunk is decoded to one slab */
+/* The live strings of an FSST chunk, decoded one after the other into one buffer and tested: the memo keeps it with the ranks it holds, for the view of the same granule */
+static void
+fsst_live(const StrOp *o, const SiftChunk *c, const SiftFsstChunk *f, const uint64 *live, uint64 *dense)
+{
+	const uint32 nn = c->nnonnull,
+				words = (nn + 63) / 64;
+	uint64		cap = SIFT_FSST_SLACK,
+				at = 0;
+	uint32	   *outoff = palloc(((size_t) nn + 1) * sizeof(uint32)),
+				next = 0;
+	uint64	   *kept = memcpy(palloc(words * sizeof(uint64)), live, words * sizeof(uint64));
+	uint8	   *out;
+
+	for (uint32 w = 0; w < words; w++)
+		for (uint64 bits = live[w]; bits != 0; bits &= bits - 1)
+			cap += 8 * (uint64) f->clen[(w << 6) + (uint32) __builtin_ctzll(bits)];
+	out = palloc(cap);
+	memset(dense, 0, words * sizeof(uint64));
+	for (uint32 w = 0; w < words; w++)
+		for (uint64 bits = live[w]; bits != 0; bits &= bits - 1)
+		{
+			uint32		k = (w << 6) + (uint32) __builtin_ctzll(bits),
+						len;
+
+			for (; next <= k; next++)
+				outoff[next] = at;
+			len = sift_fsst_decode(f->t, f->coded + f->off[k], (uint32) f->clen[k], out + at);
+			if (len == UINT32_MAX)
+				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
+			dense[w] |= (uint64) row_hit(o, (const char *) out + at, len) << (k & 63);
+			at += len;
+		}
+	for (; next <= nn; next++)
+		outoff[next] = at;
+	memo_keep(c, outoff, (char *) out, kept);
+}
+
+/* FSST: the live strings are decoded and tested, when they are few; else the chunk is decoded to one slab */
 static void
 fsst_bits(const StrOp *o, const SiftChunk *c, const uint64 *dense_live, uint64 *dense)
 {
@@ -293,33 +356,7 @@ fsst_bits(const StrOp *o, const SiftChunk *c, const uint64 *dense_live, uint64 *
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the symbol table of a string chunk is damaged"));
 	sift_fsst_chunk_offsets(&f, nn);
 	if (dense_live != NULL)
-	{
-		uint8		stk[512];
-		uint8	   *buf = stk;
-		uint32		cap = sizeof(stk) - SIFT_FSST_SLACK;
-
-		memset(dense, 0, ((nn + 63) / 64) * sizeof(uint64));
-		for (uint32 w = 0; w < (nn + 63) / 64; w++)
-			for (uint64 bits = dense_live[w]; bits != 0; bits &= bits - 1)
-			{
-				uint32		k = (w << 6) + (uint32) __builtin_ctzll(bits),
-							len;
-
-				if (8 * (uint64) f.clen[k] > cap)
-				{
-					if (buf != stk)
-						pfree(buf);
-					cap = 8 * (uint32) f.clen[k];
-					buf = palloc((size_t) cap + SIFT_FSST_SLACK);
-				}
-				len = sift_fsst_decode(f.t, f.coded + f.off[k], (uint32) f.clen[k], buf);
-				if (len == UINT32_MAX)
-					SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
-				dense[w] |= (uint64) row_hit(o, (const char *) buf, len) << (k & 63);
-			}
-		if (buf != stk)
-			pfree(buf);
-	}
+		fsst_live(o, c, &f, dense_live, dense);
 	else
 	{
 		uint64		cap = Min((uint64) f.raw_bytes, (uint64) 8 * f.coded_bytes) + SIFT_FSST_SLACK;
@@ -330,7 +367,7 @@ fsst_bits(const StrOp *o, const SiftChunk *c, const uint64 *dense_live, uint64 *
 		if (!sift_fsst_decode_strs(f.t, f.coded, f.off, nn, out, cap, outoff))
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
 		src_bits(o, &src, nn, NULL, dense);
-		memo_keep(c, outoff, (char *) out);
+		memo_keep(c, outoff, (char *) out, NULL);
 	}
 	sift_fsst_chunk_close(&f);
 }
@@ -369,7 +406,7 @@ sift_cfstr_bits_live(const SiftCfiltPred *cp, const SiftChunk *c, const uint64 *
 				sift_chunk_block_strs_own(c, &offs, &bytes);
 				src = (StrSrc) {.offs = offs,.bytes = (const uint8 *) bytes};
 				src_bits(&o, &src, nn, live, dense);
-				memo_keep(c, offs, bytes);
+				memo_keep(c, offs, bytes, NULL);
 			}
 			break;
 		default:
