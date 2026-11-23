@@ -44,6 +44,7 @@
 #include "core/compat.h"
 #include "core/memtrack.h"
 #include "table/dispatch.h"
+#include "table/f2/f2_slot.h"
 
 #define SORT_LIMIT_GUESS		100		/* the rows a LIMIT whose value the plan does not know is costed for */
 #define SORT_RESIDUAL_SEL_MIN	1e-6
@@ -814,7 +815,7 @@ sort_create_state(CustomScan *cscan)
 	ProjSortState  *st = (ProjSortState *) newNode(sizeof(ProjSortState), T_CustomScanState);
 
 	st->css.methods = &sort_exec_methods;
-	st->css.slotOps = sort_on_table(cscan->custom_private) ? &TTSOpsVirtual : &TTSOpsBufferHeapTuple;
+	st->css.slotOps = sort_on_table(cscan->custom_private) ? sift_f2_slot_ops() : &TTSOpsBufferHeapTuple;
 	return (Node *) st;
 }
 
