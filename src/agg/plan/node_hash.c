@@ -36,7 +36,7 @@ sift_node_hash(const Node *n)
 		case T_Var:
 			return hash_combine64(hash_combine64(h, ((const Var *) n)->varno), ((const Var *) n)->varattno);
 		case T_String:
-			return hash_combine64(h, hash_bytes((const unsigned char *) strVal(n), strlen(strVal(n))));
+			return hash_combine64(h, hash_bytes((const unsigned char *) ((const String *) n)->sval, strlen(((const String *) n)->sval)));
 		case T_OpExpr:
 			return hash_combine64(hash_combine64(h, ((const OpExpr *) n)->opno), sift_node_hash((const Node *) ((const OpExpr *) n)->args));
 		case T_FuncExpr:
