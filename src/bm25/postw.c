@@ -75,7 +75,14 @@ struct SiftPostingWriter
 	StringInfoData blk;
 	uint8	   *bound1;			/* bound for tf 1 by dl, for the dls up to nbound1; 0 = not computed */
 	uint32		nbound1;
+	bool		field;			/* the term is a field's: bounds ignore the length of the doc (sift_postw_field) */
 };
+
+void
+sift_postw_field(SiftPostingWriter *w, bool field)
+{
+	w->field = field;
+}
 
 SiftPostingWriter *
 sift_postw_begin(SiftStreamWriter *sw, const SiftScoreRef *ref, MemoryContext mcxt)
@@ -188,7 +195,7 @@ postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint
 		SIFT_INVARIANT(!((w->n > 0 || i > 0) && keys[i] <= (i > 0 ? keys[i - 1] : w->keys[w->n - 1])),
 					   "sift: postings of a term must arrive in ascending key order");
 		SIFT_INVARIANT(tf[i] != 0, "sift: posting with tf 0");
-		w->bound[w->n + i] = bound_of(w, tf[i], dl[i]);
+		w->bound[w->n + i] = bound_of(w, tf[i], w->field ? 0 : dl[i]);
 		if (staged && w->n + i > 0 && SIFT_GID(keys[i]) != SIFT_GID(i > 0 ? keys[i - 1] : w->keys[w->n - 1]))
 			w->open_start = w->n + i;
 	}

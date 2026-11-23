@@ -119,6 +119,11 @@ extern void sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint
  * postings (10 bytes each, as without). A writer without a stream stages nothing; none by default.
  */
 extern void sift_postw_spool(SiftPostingWriter *w, uint64 min_postings);
+/*
+ * The postings of a term of a field (the first byte of the term is SIFT_FIELD_BYTE) are bounded as if every doc were the shortest: a field is scored
+ * with the length of the field in the doc, which no bound from the length of the doc (or of any average) covers. Set per term, before its postings.
+ */
+extern void sift_postw_field(SiftPostingWriter *w, bool field);
 extern void sift_postw_pack(SiftPostingWriter *w);
 extern void sift_postw_posblk(SiftPostingWriter *w);
 

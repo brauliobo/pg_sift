@@ -66,6 +66,7 @@ typedef struct Union
 	uint64		total;			/* postings of the pass */
 	bool		any;			/* some superblock was built */
 	SiftPostingWriter *w;		/* begun by the first one */
+	bool		field;			/* its terms are a field's (the matcher's terms start with the field byte) */
 	const SiftScoreRef *ref;
 	uint64		budget;			/* postings a pass may gather */
 	uint32		from;			/* the superblocks of the pass */
@@ -488,7 +489,10 @@ union_emit(Union *u, uint32 gid)
 	if (u->scoring)
 		union_dl(u, gid, keys, n, u->dl);
 	if (u->w == NULL)
+	{
 		u->w = sift_postw_begin(NULL, u->ref, u->cx);
+		sift_postw_field(u->w, u->field);
+	}
 	sift_postw_add(u->w, keys, tf, u->dl, n, NULL, NULL);
 	u->any = true;
 }
@@ -579,6 +583,15 @@ union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool 
 	u.tcxt = sift_mem_allocset_create(cx, "sift prefix term");
 	u.sb = palloc0(((h->sb_hi - h->sb_lo + SB_CHUNK) / SB_CHUNK) * sizeof(SbPostings *));
 	memset(info, 0, sizeof(SiftTermInfo));
+	{
+		const char *lo,
+				   *hi;
+		int			lolen,
+					hilen;
+
+		sift_matcher_bounds(m, &lo, &lolen, &hi, &hilen);
+		u.field = lolen > 0 && SIFT_FIELD_TERM(lo[0], SIFT_MAX_FIELDS);
+	}
 	u.capture = true;
 	union_scan(&u, h->sb_lo, h->sb_hi);
 	u.capture = false;
