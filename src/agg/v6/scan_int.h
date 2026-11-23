@@ -52,6 +52,7 @@ typedef struct V6Derived
 	const SiftV6Derive *d;
 	const SiftVec *src;
 	SiftVec    *cond[SIFT_V6_MAX_CASE];
+	const struct V6Derived *prefix;	/* SVD_NUM_EXPR: the derivation of the first factors of this one, whose vector it multiplies */
 	SiftVxOut	out;
 } V6Derived;
 
@@ -72,6 +73,8 @@ struct SiftV6Scan
 	V6Bin	   *bins;
 	int			nderived;
 	V6Derived  *derived;
+	Relation	host;			/* the index, or the sift_table, the scan reads: the columns of the quals the keys do not say are those of its input */
+	SiftV6Bq   *bq;				/* those quals (SiftV6Spec.vqual), run over every batch */
 	SiftBatchSel bs;
 	MemoryContext batch_cx;
 	bool		count_only;

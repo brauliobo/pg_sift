@@ -27,6 +27,8 @@
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_vet.h"
+#include "agg/v6/v6_bqual.h"
+#include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "col/am.h"
@@ -139,6 +141,9 @@ setup_derived(V6Scan *s, const int *first)
 		V6Derived  *dv = &s->derived[s->nderived++];
 
 		dv->d = &spec->derive[k];
+		for (int j = 0; j < k && dv->prefix == NULL; j++)
+			if (sift_vn_prefix_of(&spec->derive[j], dv->d))
+				dv->prefix = &s->derived[j];
 		dv->src = &col_for(s, first, dv->d->src, false, false)->vec;
 		for (int i = 0; i < dv->d->ncond; i++)
 			dv->cond[i] = &col_for(s, first, dv->d->cond[i], false, false)->vec;
@@ -152,6 +157,36 @@ setup_derived(V6Scan *s, const int *first)
 			s->argvec[j] = &s->derived[spec->agg[j].arg.derive - 1].out.vec;
 }
 
+typedef struct BqCols
+{
+	V6Scan	   *s;
+	const int  *first;
+} BqCols;
+
+static const SiftVec *
+bq_col(void *arg, const SiftV6InCol *c)
+{
+	const BqCols *b = arg;
+
+	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale}, false, false)->vec;
+}
+
+/* the quals no scan key says: their input is the relation's, their columns are decoded with the others */
+static void
+setup_bq(V6Scan *s, const int *first)
+{
+	BqCols		cols = {s, first};
+	SiftV6Input in;
+
+	if (s->spec->vqual == NIL)
+		return;
+	if (s->spec->is_table)
+		sift_v6_input_init_table(&in, s->host);
+	else
+		sift_v6_input_init_rel(&in, s->host);
+	s->bq = sift_v6_bq_open(CurrentMemoryContext, s->spec->vqual, &in, bq_col, &cols);
+}
+
 static void
 scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 {
@@ -159,7 +194,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
 
-	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0)) * sizeof(V6Col));
+	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
@@ -172,6 +207,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			col_for(s, first, (SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]}, false, false);
 	setup_derived(s, first);
+	setup_bq(s, first);
 	for (int i = 0; i < s->ncols; i++)
 		if (s->cols[i].json && s->batch_cx == NULL)
 			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
@@ -200,7 +236,14 @@ static void
 derive_columns(V6Scan *s)
 {
 	for (int k = 0; k < s->nderived; k++)
-		sift_vx_derive(s->derived[k].d, s->derived[k].src, s->derived[k].cond, &s->bs, &s->derived[k].out);
+	{
+		const V6Derived *dv = &s->derived[k];
+
+		if (dv->d->kind == SVD_NUM_EXPR)
+			sift_vn_derive(dv->d, dv->cond, dv->prefix ? &dv->prefix->out.vec : NULL, dv->prefix ? dv->prefix->d->ncond : 0, &s->bs, &s->derived[k].out);
+		else
+			sift_vx_derive(dv->d, dv->src, dv->cond, &s->bs, &s->derived[k].out);
+	}
 	if (s->spec->affine)
 		sift_vx_affine_check(s->spec, s->keyvec[0], &s->bs);
 }
@@ -529,6 +572,12 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 		if (s->cols[i].json)
 			fill_exceptions(s, &s->cols[i], &views[s->cols[i].leaf], off, n);
 	}
+	if (s->bq != NULL)
+	{
+		sift_v6_bq_filter(s->bq, &s->bs);
+		if (s->bs.n_active == 0)
+			return;
+	}
 	derive_columns(s);
 	bin_keys(s);
 	s->stats->rows += s->bs.n_active;
@@ -731,7 +780,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 {
 	const SiftTidBridge *bridge = NULL;
 
-	s->count_only = s->rows == NULL && s->spec->ext == NULL && sift_v6_spec_count_only(s->spec);
+	s->count_only = s->rows == NULL && s->spec->ext == NULL && s->spec->vqual == NIL && sift_v6_spec_count_only(s->spec);
+	s->host = index;
 	scan_setup(s, sift_col_rel(index)->first, star);
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
@@ -773,6 +823,7 @@ sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	s->stats = stats;
 	s->recheck = recheck;
 	s->recheck_arg = recheck_arg;
+	s->host = index != NULL ? index : heap;
 	scan_setup(s, index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->pub = palloc(Max(s->ncols, 1) * sizeof(SiftV6FoldCol));
@@ -829,6 +880,7 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->stats = stats;
 	s->emit = emit;
 	s->emit_arg = emit_arg;
+	s->host = index;
 	scan_setup(s, sift_col_rel(index)->first, NULL);
 	s->leaves = scan_leaves(s);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
@@ -884,6 +936,7 @@ sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const S
 	SiftF2Store *store = sift_f2_store_open(rel);
 	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
 
+	s.host = rel;
 	scan_setup(&s, store->att_first, NULL);
 	o.leaves = scan_leaves(&s);
 	o.nleaves = s.ncols;

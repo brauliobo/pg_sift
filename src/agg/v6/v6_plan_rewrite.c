@@ -15,6 +15,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 
+#include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_group_topk.h"
 #include "agg/v6/v6_plan_rewrite.h"
 
@@ -383,6 +384,8 @@ sift_v6_derive_of(const SiftV6Resolver *rs, const Expr *e, bool key, SiftV6Deriv
 		d->kind = SVD_STRLEN;
 		d->utf8 = GetDatabaseEncoding() == PG_UTF8;
 	}
+	else if (!key && sift_vn_derive_of(rs, e, d))
+		d->kind = SVD_NUM_EXPR;
 	else
 		return false;
 	*restype = exprType((const Node *) e);
@@ -453,6 +456,7 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		}
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			d->else_bytes[b] = (uint8) list_nth_int(ints, at++);
+		sift_vn_derive_restore(d);
 	}
 	for (int i = 0; i < s->nkeys; i++)
 		s->key[i].derive = list_nth_int(ints, at++);

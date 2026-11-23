@@ -70,7 +70,7 @@ fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const
 			{
 				SiftI128	s = v6acc_i128(acc);
 
-				sift_i128_add(&s, sift_i128_of_i64(int_at(v, r)));
+				sift_i128_add(&s, v->type == SVEC_NUM128 ? ((const SiftI128 *) v->data)[r] : sift_i128_of_i64(int_at(v, r)));
 				v6acc_set_i128(acc, s);
 			}
 			acc->n++;
@@ -180,6 +180,8 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 				}
 				else if (v->type == SVEC_F64)
 					v6acc_set_f64(acc, sift_aggk6->sum_f64_fast(v->data, mk, bs->n_raw, v6acc_f64(acc)));
+				else if (v->type == SVEC_NUM128)
+					v6acc_set_i128(acc, sift_aggk6->sum_i128(v->data, mk, bs->n_raw, v6acc_i128(acc)));
 				else if (v->type == SVEC_I32)
 				{
 					SiftI128	s = v6acc_i128(acc);
