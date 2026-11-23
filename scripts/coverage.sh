@@ -10,7 +10,7 @@
 #   scripts/coverage.sh --pct --verify                                              recompute this build's counts and fail when they differ from the file (nightly)
 #
 # Each row of docs/coverage.tsv that has a sample query runs with EXPLAIN on a private fixture database (test/col/fixture.sql,
-# test/col/coverage_data.sql): the plan must have the node it claims (Custom Scan (SiftAgg), SiftScan, SiftCount, a bitmap scan on the
+# test/col/coverage_data.sql): the plan must have the node it claims (Custom Scan (SiftAgg*), SiftScan, SiftCount, a bitmap scan on the
 # sift index) or none (the normal plan), and the result must equal the one of the same query with every sift plan off
 # (sift.enable_agg and enable_scan off, no btree or bitmap scans). A row claiming an error runs its statement and
 # expects that SQLSTATE, and, when the row names a setting that avoids it, the statement without the error under that setting. Rows

@@ -20,7 +20,7 @@ DROP TABLE IF EXISTS coldiff.results;
 CREATE TABLE coldiff.results (
 	id serial PRIMARY KEY, scenario text NOT NULL, name text NOT NULL, shape text, expect text, variant text NOT NULL,
 	ok boolean NOT NULL,        -- the result (or the error) equals the reference's
-	used boolean,               -- the plan has Custom Scan (SiftAgg)
+	used boolean,               -- the plan has Custom Scan (SiftAgg*)
 	gather boolean,             -- the plan has a Gather
 	shape_ok boolean,           -- the expectation of the query holds (NULL: no expectation or not checked for this variant)
 	slug text,                  -- why the variant kept the normal plan (the refusal slug of sift.explain_refusals; testing builds, not for a prepared statement)
@@ -334,7 +334,7 @@ BEGIN
 				ms := coldiff.median(times);
 			END IF;
 			plan := coldiff.explain(stmt);
-			used := plan LIKE '%Custom Scan (SiftAgg)%';
+			used := plan LIKE '%Custom Scan (SiftAgg%';
 			slug := CASE WHEN NOT used AND v = 'on' AND NOT h ? 'prepare' THEN coldiff.refusal(stmt) END;
 			gat := plan LIKE '%Gather%';
 			mutated := NULL;

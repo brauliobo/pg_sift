@@ -4,7 +4,7 @@
 Every variant is a SELECT built from what the server and the source say: the key types come from pg_type (a type whose one-column sift_col index
 can be built), the aggregates from pg_aggregate, the volatile and stable functions from pg_proc, the sizes and key counts from SIFT_TOPN_* in
 src/agg/topn.h, the join kinds from the grammar. A variant runs twice, with the pushdown off (the reference) and on, and counts as covered when
-the plan has the node of its family (Top-N: or Custom Scan (SiftAgg)) and the rows equal the reference's. A variant that keeps the normal plan is
+the plan has the node of its family (Top-N: or Custom Scan (SiftAgg*)) and the rows equal the reference's. A variant that keeps the normal plan is
 named by its refusal slug (SET sift.explain_refusals) and excluded from the percentage when the registry of src/agg/refuse.h marks that slug
 as by design; the rest are gaps.
 
@@ -112,7 +112,7 @@ class V:
         self.id = hashlib.md5((fam + sub + sql + str(prep)).encode()).hexdigest()[:8]
 
 
-TOPN, AGG = 'Top-N: ', 'Custom Scan (SiftAgg)'
+TOPN, AGG = 'Top-N: ', 'Custom Scan (SiftAgg'
 
 
 def lit(col):

@@ -2,7 +2,7 @@
 -- Needs the helpers of test/col/run.sql (coldiff.header, materialize, explain, compare, apply, reset) in the same database.
 --
 --   expect  claim checked; "<claim> ~ REGEX" or "<claim> !~ REGEX" adds a regex that the plan must (not) match
---   agg     the plan has Custom Scan (SiftAgg) and the result equals the one with every sift plan off
+--   agg     the plan has Custom Scan (SiftAgg*) and the result equals the one with every sift plan off
 --   plain   the plan has no SiftAgg (falls back to the normal plan) and the result equals the reference
 --   scan    the plan has Custom Scan (SiftScan); count: SiftCount; bitmap: a Bitmap Index Scan on a sift index
 --   noscan  none of SiftAgg, SiftScan, SiftCount: the normal plan, the same result
@@ -76,7 +76,7 @@ BEGIN
 	p := coverage.plan_of(q); a := coverage.rows_text(q);
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	b := coverage.rows_text(q);
-	RETURN p LIKE '%Custom Scan (SiftAgg)%' AND a = b;
+	RETURN p LIKE '%Custom Scan (SiftAgg%' AND a = b;
 END $$;
 
 -- coverage.same(q) with the settings gucs ("name=value") in force for it only
@@ -118,13 +118,13 @@ BEGIN
 		r := r || coverage.rows_text(q);
 		IF w = 2 THEN p := coverage.plan_of(q); END IF;
 	END LOOP;
-	RETURN r[1] = r[2] AND r[2] = r[3] AND p LIKE '%Custom Scan (SiftAgg)%' AND p ~ 'Workers Planned: [1-9]';
+	RETURN r[1] = r[2] AND r[2] = r[3] AND p LIKE '%Custom Scan (SiftAgg%' AND p ~ 'Workers Planned: [1-9]';
 END $$;
 
 -- the control query has a SiftAgg plan and none of the queries qs has one: the shape of qs, not the table, keeps the normal plan
 CREATE FUNCTION coverage.keeps_normal(control text, qs text[]) RETURNS boolean LANGUAGE sql AS $$
-	SELECT coverage.plan_of(control) LIKE '%Custom Scan (SiftAgg)%'
-		AND NOT EXISTS (SELECT 1 FROM unnest(qs) q WHERE coverage.plan_of(q) LIKE '%Custom Scan (SiftAgg)%') $$;
+	SELECT coverage.plan_of(control) LIKE '%Custom Scan (SiftAgg%'
+		AND NOT EXISTS (SELECT 1 FROM unnest(qs) q WHERE coverage.plan_of(q) LIKE '%Custom Scan (SiftAgg%') $$;
 
 -- Units From Pre-aggregates of EXPLAIN ANALYZE for q (0 when the shape does not qualify, -1 when the plan has no SiftAgg)
 CREATE FUNCTION coverage.preagg_units(q text) RETURNS int LANGUAGE plpgsql AS $$
@@ -132,7 +132,7 @@ DECLARE l text; r text := '';
 BEGIN
 	PERFORM set_config('seq_page_cost', '10000', true), set_config('random_page_cost', '10000', true), set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP r := r || l || E'\n'; END LOOP;
-	IF r NOT LIKE '%Custom Scan (SiftAgg)%' THEN RETURN -1; END IF;
+	IF r NOT LIKE '%Custom Scan (SiftAgg%' THEN RETURN -1; END IF;
 	RETURN coalesce((regexp_match(r, '(\d+) from pre-aggregates'))[1]::int, 0);
 END $$;
 
@@ -178,7 +178,7 @@ BEGIN
 	PERFORM dblink_exec('cv_r', 'SET sift.enable_agg = off');
 	SELECT x INTO done_off FROM dblink('cv_r', wrap) t(x text);
 	PERFORM dblink_exec('cv_r', 'ROLLBACK'), dblink_disconnect('cv_r'), dblink_disconnect('cv_w');
-	RETURN p LIKE '%Custom Scan (SiftAgg)%' AND before = open_on AND before = open_off AND before = done_on AND before = done_off;
+	RETURN p LIKE '%Custom Scan (SiftAgg%' AND before = open_on AND before = open_off AND before = done_on AND before = done_off;
 EXCEPTION WHEN OTHERS THEN
 	PERFORM dblink_disconnect(c) FROM unnest(dblink_get_connections()) c WHERE c IN ('cv_r', 'cv_w');
 	RAISE;
@@ -251,9 +251,9 @@ BEGIN
 	PERFORM set_config('role', 'none', false);
 	PERFORM coverage.reset(gucs);
 	IF h ? 'prepare' THEN DEALLOCATE ALL; END IF;
-	has_agg := plan LIKE '%Custom Scan (SiftAgg)%';
-	has_scan := plan LIKE '%Custom Scan (SiftScan)%';
-	has_count := plan LIKE '%Custom Scan (SiftCount)%';
+	has_agg := plan LIKE '%Custom Scan (SiftAgg%';
+	has_scan := plan LIKE '%Custom Scan (SiftScan%';
+	has_count := plan LIKE '%Custom Scan (SiftCount%';
 	has_bitmap := plan ~ 'Bitmap Index Scan on \w*';
 
 	-- the result first: a wrong result fails whatever the claim
@@ -269,8 +269,8 @@ BEGIN
 	END IF;
 
 	msg := CASE claim
-		WHEN 'agg' THEN CASE WHEN NOT has_agg THEN 'the plan has no Custom Scan (SiftAgg)' END
-		WHEN 'plain' THEN CASE WHEN has_agg THEN 'the plan has Custom Scan (SiftAgg)' END
+		WHEN 'agg' THEN CASE WHEN NOT has_agg THEN 'the plan has no Custom Scan (SiftAgg*)' END
+		WHEN 'plain' THEN CASE WHEN has_agg THEN 'the plan has Custom Scan (SiftAgg*)' END
 		WHEN 'scan' THEN CASE WHEN NOT has_scan THEN 'the plan has no Custom Scan (SiftScan)' END
 		WHEN 'count' THEN CASE WHEN NOT has_count THEN 'the plan has no Custom Scan (SiftCount)' END
 		WHEN 'bitmap' THEN CASE WHEN NOT has_bitmap THEN 'the plan has no Bitmap Index Scan' END
