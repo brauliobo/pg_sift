@@ -123,23 +123,40 @@ docmap(SiftSegment *seg)
 	dm->nsb = nsb;
 	for (int c = 0; c < SIFT_ATTR_MAXCOLS; c++)
 		dm->acur[c] = -1;
+	for (int f = 0; f < SIFT_MAX_FIELDS; f++)
+		dm->fxsb[f] = -1;
 	if (seg->fmt >= SIFT_SEGFMT_ATTR)
 	{
-		uint64		adirlen;
+		uint64		adirlen,
+					fdirlen = 0,
+					extra = sizeof(tail);
 
 		if (s->len < sizeof(tail))
 			corrupt(seg, "DOCMAP of %llu bytes has no INCLUDE trailer.", ULL(s->len));
 		seg_read(seg, s->off + s->len - sizeof(tail), sizeof(tail), tail);
 		memcpy(&dm->recs_end, tail, sizeof(uint64));
 		memcpy(&dm->ncols, tail + 8, sizeof(uint32));
-		if (dm->ncols == 0 || dm->ncols > SIFT_ATTR_MAXCOLS)
+		if (seg->fmt >= SIFT_SEGFMT_FIELDDL)
+		{
+			dm->ft = MemoryContextAlloc(seg->mcxt, sizeof(SiftFieldDlTrailer));
+			if (s->len < sizeof(tail) + sizeof(SiftFieldDlTrailer))
+				corrupt(seg, "DOCMAP of %llu bytes has no field length trailer.", ULL(s->len));
+			seg_read(seg, s->off + s->len - sizeof(tail) - sizeof(SiftFieldDlTrailer), sizeof(SiftFieldDlTrailer), dm->ft);
+			if (dm->ft->magic != SIFT_FIELDDL_MAGIC || dm->ft->nfields == 0 || dm->ft->nfields > SIFT_MAX_FIELDS)
+				corrupt(seg, "DOCMAP's field length trailer (magic %x, %u fields) is invalid.", dm->ft->magic, dm->ft->nfields);
+			fdirlen = (uint64) nsb * dm->ft->nfields * sizeof(SiftFieldDlRef);
+			extra += sizeof(SiftFieldDlTrailer) + fdirlen;
+		}
+		if (dm->ncols > SIFT_ATTR_MAXCOLS || (dm->ncols == 0 && seg->fmt < SIFT_SEGFMT_FIELDDL))
 			corrupt(seg, "DOCMAP lists %u INCLUDE columns.", dm->ncols);
 		adirlen = (uint64) nsb * dm->ncols * sizeof(SiftAttrRef);
-		if (adirlen + (uint64) nsb * sizeof(SiftDocSBRef) + sizeof(tail) > s->len)
-			corrupt(seg, "DOCMAP of %llu bytes lists %u SBs and their INCLUDE records.", ULL(s->len), nsb);
-		dm->dir_off = s->off + s->len - sizeof(tail) - adirlen - nsb * sizeof(SiftDocSBRef);
+		if (adirlen + (uint64) nsb * sizeof(SiftDocSBRef) + extra > s->len)
+			corrupt(seg, "DOCMAP of %llu bytes lists %u SBs and their INCLUDE and field records.", ULL(s->len), nsb);
+		dm->dir_off = s->off + s->len - extra - adirlen - nsb * sizeof(SiftDocSBRef);
 		if (dm->recs_end > dm->dir_off || dm->recs_end % 4 != 0)
 			corrupt(seg, "DOCMAP's INCLUDE records end at %llu.", ULL(dm->recs_end));
+		if (dm->ft && dm->ft->fdir_off != dm->dir_off + (uint64) nsb * sizeof(SiftDocSBRef) + adirlen)
+			corrupt(seg, "DOCMAP's field length directory is at %llu.", ULL(dm->ft->fdir_off));
 	}
 	else
 	{
@@ -204,6 +221,7 @@ index_sb(SiftSegment *seg, DocMap *dm)
 		dm->xcap = Max(nslots, 4096);
 		dm->xdl = MemoryContextAlloc(dm->mcxt, dm->xcap * sizeof(uint16));
 	}
+	dm->xslots = nslots;
 	memset(dm->xdone, 0, sizeof(dm->xdone));
 	dm->indexed = true;
 }
@@ -420,6 +438,87 @@ sift_seg_block_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 wa
 		int			page = block * SIFT_BLK_PAGES + pg;
 
 		rows[pg] = (want >> pg & 1) && (dm->pagemask[page / 64] & (1ULL << (page % 64))) ? dl_row(dm, page) : NULL;
+	}
+}
+
+int
+sift_seg_nfields(SiftSegment *seg)
+{
+	return seg->fmt >= SIFT_SEGFMT_FIELDDL ? (int) docmap(seg)->ft->nfields : 0;
+}
+
+void
+sift_seg_field_sums(SiftSegment *seg, uint64 *sum_dl)
+{
+	DocMap	   *dm = docmap(seg);
+
+	memcpy(sum_dl, dm->ft->sum_dl, dm->ft->nfields * sizeof(uint64));
+}
+
+/* The record of field f in the loaded SB, its rows expanded to 16 bits at the offsets of the dl rows (xoff); zeros for an SB without words in the field */
+static const uint16 *
+field_rows(SiftSegment *seg, DocMap *dm, int f)
+{
+	SiftFieldDlRef ref;
+	uint64		bytes = 0;
+
+	if (dm->fxsb[f] == dm->cur)
+		return dm->fxdl[f];
+	if ((Size) dm->xslots + 16 > dm->fxcap[f])
+	{
+		if (dm->fxdl[f])
+			pfree(dm->fxdl[f]);
+		dm->fxcap[f] = Max(dm->xslots + 16, 4096);
+		dm->fxdl[f] = MemoryContextAlloc(seg->mcxt, dm->fxcap[f] * sizeof(uint16));
+	}
+	seg_read(seg, dm->ft->fdir_off + ((uint64) dm->cur * dm->ft->nfields + f) * sizeof(ref), sizeof(ref), &ref);
+	if (ref.dlcode > 2)
+		corrupt(seg, "Field length record of SB %u has rows of width code %d.", dm->dir[dm->cur].sb, ref.dlcode);
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+		if (dm->rows[p])
+			bytes += SIFT_DL_ROW_BYTES(ref.dlcode, dm->rowlen[p]);
+	if (ref.len != 0 && ref.len != bytes)
+		corrupt(seg, "Field length record of SB %u spans %u bytes, its rows %llu.", dm->dir[dm->cur].sb, ref.len, ULL(bytes));
+	memset(dm->fxdl[f], 0, (dm->xslots + 16) * sizeof(uint16));
+	if (ref.len > 0)
+	{
+		const uint8 *row;
+
+		if (ref.len + 32 > dm->freccap)
+		{
+			if (dm->frec)
+				pfree(dm->frec);
+			dm->freccap = Max(ref.len + 32, 4096);
+			dm->frec = MemoryContextAlloc(seg->mcxt, dm->freccap);
+		}
+		seg_read(seg, ref.off, ref.len, dm->frec);
+		row = dm->frec;
+		for (int p = 0; p < SIFT_SB_PAGES; p++)
+		{
+			if (!dm->rows[p])
+				continue;
+			if (ref.dlcode == 0)
+				memcpy(dm->fxdl[f] + dm->xoff[p], row, dm->rowlen[p] * sizeof(uint16));
+			else
+				expand_dl(dm->fxdl[f] + dm->xoff[p], row, dm->rowlen[p], SIFT_DL_CODE_BITS(ref.dlcode));
+			row += SIFT_DL_ROW_BYTES(ref.dlcode, dm->rowlen[p]);
+		}
+	}
+	dm->fxsb[f] = dm->cur;
+	return dm->fxdl[f];
+}
+
+void
+sift_seg_block_field_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int f, const uint16 **rows)
+{
+	DocMap	   *dm = indexed(seg, dc);
+	const uint16 *all = field_rows(seg, dm, f);
+
+	for (int pg = 0; pg < SIFT_BLK_PAGES; pg++)
+	{
+		int			page = block * SIFT_BLK_PAGES + pg;
+
+		rows[pg] = (want >> pg & 1) && (dm->pagemask[page / 64] & (1ULL << (page % 64))) ? all + dm->xoff[page] : NULL;
 	}
 }
 

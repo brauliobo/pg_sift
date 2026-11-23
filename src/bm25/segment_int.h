@@ -44,6 +44,36 @@ typedef struct SiftAttrColHdr
 	uint16		pad;
 } SiftAttrColHdr;
 
+/*
+ * The length of every field of every doc (SIFT_SEGFMT_FIELDDL), in the DOCMAP after the INCLUDE records: per SB and field one record of the dl rows of
+ * the SB's present pages one after the other, in the width its dlcode says (the codes of the docmap's own rows), the length of the doc in that field
+ * (sift_field_dl). A record is empty (len 0) when no doc of the SB has a word in the field. The trailer is SiftDocSBRef[nsb], SiftAttrRef[nsb][ncols],
+ * SiftFieldDlRef[nsb][nfields], SiftFieldDlTrailer, then the footer of format 5 (u64 recs_end, u32 ncols, u32 nsb).
+ */
+#define SIFT_FIELDDL_MAGIC		UINT32_C(0x46444C32)	/* "FDL2" */
+#define SIFT_MAX_BM25_FIELDS	16
+
+typedef struct SiftFieldDlRef
+{
+	uint64		off;			/* stream offset of the record */
+	uint32		len;			/* its bytes */
+	uint8		dlcode;			/* SIFT_DL_CODE_BITS */
+	uint8		pad[3];
+} SiftFieldDlRef;
+
+StaticAssertDecl(sizeof(SiftFieldDlRef) == 16, "SiftFieldDlRef must be 16 bytes");
+
+typedef struct SiftFieldDlTrailer
+{
+	uint32		magic;			/* SIFT_FIELDDL_MAGIC */
+	uint32		nfields;		/* 1..SIFT_MAX_FIELDS */
+	uint64		fdir_off;		/* stream offset of SiftFieldDlRef[nsb][nfields] */
+	uint64		sum_dl[SIFT_MAX_BM25_FIELDS];	/* the length of each field over all docs of the segment, vacuumed ones included */
+	uint64		ndocs_nz[SIFT_MAX_BM25_FIELDS];	/* the docs that have a word in the field */
+} SiftFieldDlTrailer;
+
+StaticAssertDecl(sizeof(SiftFieldDlTrailer) == 272, "SiftFieldDlTrailer must be 272 bytes");
+
 /* Reader docmap state */
 typedef struct DocMap
 {
@@ -53,6 +83,13 @@ typedef struct DocMap
 	uint64		dir_off;
 	uint64		recs_end;		/* where the SB records end: the directory, or the INCLUDE records after them */
 	uint32		ncols;			/* INCLUDE columns the segment holds */
+	SiftFieldDlTrailer *ft;		/* field lengths of the segment (SIFT_SEGFMT_FIELDDL), else NULL */
+	uint16	   *fxdl[SIFT_MAX_FIELDS];	/* the record of the field in SB fxsb, its rows expanded to 16 bits, one after the other (fxoff) */
+	Size		fxcap[SIFT_MAX_FIELDS];
+	int64		fxsb[SIFT_MAX_FIELDS];	/* its index in the SB directory, -1 none */
+	uint32		xslots;			/* slots of the expanded rows of the loaded SB (xoff of its pages), for fxdl */
+	uint8	   *frec;			/* scratch: a record as stored */
+	Size		freccap;
 	SiftAttrRef *adir;			/* their records, by SB, read once the query needs more than a few (attr_ref) */
 	SiftAttrRef atmp;			/* the one record read alone, valid until the next attr_ref */
 	int			areads;			/* records read alone so far */

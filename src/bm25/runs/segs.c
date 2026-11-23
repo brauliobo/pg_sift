@@ -28,6 +28,7 @@ open_seg_readers(SiftSegment **segs, int nsegs, Size budget, bool terms, const S
 	{
 		rd[i].idx = i;
 		rd[i].sc = sift_seg_cursor(segs[i], terms ? Max(budget / 2 / nsegs, 1024 * 1024) : 0, lo ? lo->term : NULL, lo ? lo->len : 0);
+		rd[i].nf = sift_seg_cursor_nfields(rd[i].sc);
 		rd[i].haspos = (segs[i]->entry.flags & SIFT_SEG_POSITIONS) != 0;
 		*positions &= rd[i].haspos;
 		if (terms)
@@ -118,7 +119,7 @@ sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget
 	bool		positions;
 	RunReader  *rd = open_seg_readers(segs, nsegs, budget, false, NULL, &positions);
 
-	mo.sw = runs_segw_begin(wt, gen, ref, mcxt, positions);
+	mo.sw = runs_segw_begin(wt, gen, ref, mcxt, positions, rd[0].nf);
 	runs_merge_docs(&mo, rd, nsegs);
 	close_seg_readers(rd, nsegs);
 	MemoryContextSwitchTo(old);
@@ -146,11 +147,12 @@ typedef struct DumpState
 	RunIO		io;
 	SiftKey		prev;
 	uint64		ndocs;
+	int			nf;
 	SiftRun    *run;
 } DumpState;
 
 static void
-dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n)
 {
 	DumpState  *ds = arg;
 
@@ -158,6 +160,8 @@ dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
 	{
 		io_varint(&ds->io, keys[i] - ds->prev);
 		io_varint(&ds->io, dl[i]);
+		for (int f = 0; f < ds->nf; f++)
+			io_varint(&ds->io, fdl[i * ds->nf + f]);
 	}
 	ds->ndocs -= n;
 }
@@ -201,7 +205,7 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 {
 	uint64		ndocs = sift_seg_live_docs(seg);
 	SiftRun    *run;
-	DumpState	ds = {.ndocs = ndocs};
+	DumpState	ds = {.ndocs = ndocs,.nf = sift_seg_index_nfields(seg)};
 	MemoryContext old;
 
 	if (ndocs == 0)
@@ -214,6 +218,7 @@ sift_run_from_segment(SiftSegment *seg, const SiftScoreRef *ref, MemoryContext m
 	run->ndocs = ndocs;
 	io_varint(&ds.io, ndocs);
 	io_varint(&ds.io, (seg->entry.flags & SIFT_SEG_POSITIONS) != 0);
+	io_varint(&ds.io, ds.nf);
 	sift_seg_stream(seg, (Size) maintenance_work_mem * 1024 / 2, &(SiftSegSink) {dump_docs, dump_term, dump_postings}, &ds);
 	SIFT_INVARIANT(ds.ndocs == 0, "sift: segment %llu lists %llu live docs but streamed another number", ULL(seg->entry.gen), ULL(ndocs));
 	io_varint(&ds.io, 0);

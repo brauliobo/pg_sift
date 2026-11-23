@@ -40,6 +40,8 @@ struct SiftInvBuf
 	MemoryContext mcxt;			/* reset with the buffer */
 	Size		budget;
 	uint64	   *docs;			/* key << 16 | dl, one cache line touch per posting */
+	int			nf;				/* fields whose length each doc has (sift_inv_fields) */
+	uint16	   *fdl;			/* [doc][field] */
 	uint32		ndocs;
 	uint32		maxdocs;
 	uint64		sum_dl;
@@ -98,6 +100,7 @@ inv_init(SiftInvBuf *b)
 
 	b->maxdocs = 1024;
 	b->docs = palloc(b->maxdocs * sizeof(uint64));
+	b->fdl = b->nf ? palloc(b->maxdocs * b->nf * sizeof(uint16)) : NULL;
 	b->ndocs = 0;
 	b->sum_dl = 0;
 	b->maxterms = 1024;
@@ -136,6 +139,16 @@ sift_inv_create(Size budget, MemoryContext mcxt, bool positions)
 	return b;
 }
 
+static void inv_reset(SiftInvBuf *b);
+
+void
+sift_inv_fields(SiftInvBuf *b, int nfields)
+{
+	SIFT_INVARIANT(b->ndocs == 0 && nfields >= 0 && nfields <= SIFT_MAX_FIELDS, "sift: field lengths of an inverted buffer set after its first doc");
+	b->nf = nfields;
+	inv_reset(b);
+}
+
 static void
 inv_reset(SiftInvBuf *b)
 {
@@ -146,7 +159,7 @@ inv_reset(SiftInvBuf *b)
 static Size
 inv_mem(const SiftInvBuf *b)
 {
-	return (Size) b->maxdocs * sizeof(uint64) + (Size) b->maxterms * sizeof(InvTerm) +
+	return (Size) b->maxdocs * (sizeof(uint64) + b->nf * sizeof(uint16)) + (Size) b->maxterms * sizeof(InvTerm) +
 		(Size) (b->mask + 1) * sizeof(uint64) + b->tcap + (Size) b->nblocks * POOL_BLOCK;
 }
 
@@ -364,7 +377,11 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 	{
 		b->maxdocs *= 2;
 		b->docs = repalloc(b->docs, (Size) b->maxdocs * sizeof(uint64));
+		if (b->nf)
+			b->fdl = repalloc(b->fdl, (Size) b->maxdocs * b->nf * sizeof(uint16));
 	}
+	if (b->nf)
+		sift_field_dl(terms, nterms, b->nf, b->fdl + (Size) ord * b->nf);
 	dl = Min(dl, SIFT_MAX_DL);
 	b->docs[ord] = key << 16 | dl;
 	b->sum_dl += dl;
@@ -506,7 +523,7 @@ sorted_terms(SiftInvBuf *b)
 
 /* Adds packed docs (key << 16 | dl) to a segment in batches */
 static void
-add_docs(SiftSegmentWriter *sw, const uint64 *docs, uint32 n)
+add_docs(SiftSegmentWriter *sw, const uint64 *docs, const uint16 *fdl, int nf, uint32 n)
 {
 	SiftKey		keys[BATCH];
 	uint16		dl[BATCH];
@@ -520,7 +537,7 @@ add_docs(SiftSegmentWriter *sw, const uint64 *docs, uint32 n)
 			keys[j] = DOC_KEY(docs[i + j]);
 			dl[j] = DOC_DL(docs[i + j]);
 		}
-		sift_segw_add_docs(sw, keys, dl, k);
+		sift_segw_add_docs(sw, keys, dl, nf ? fdl + (Size) i * nf : NULL, k);
 	}
 }
 
@@ -537,7 +554,9 @@ sift_inv_write(SiftInvBuf *b, SiftWriteTarget *wt, uint64 gen, const SiftScoreRe
 
 	if (as)
 		sift_segw_attrs(sw, as);
-	add_docs(sw, b->docs, b->ndocs);
+	if (b->nf)
+		sift_segw_fields(sw, b->nf);
+	add_docs(sw, b->docs, b->fdl, b->nf, b->ndocs);
 	for (uint32 i = 0; i < b->nterms; i++)
 	{
 		const InvTerm *t = &b->terms[order[i].idx];
@@ -588,10 +607,13 @@ spill_to(SiftInvBuf *b, SiftRun *run)
 	run->sum_dl = b->sum_dl;
 	io_varint(&io, b->ndocs);
 	io_varint(&io, b->positions);
+	io_varint(&io, b->nf);
 	for (uint32 i = 0; i < b->ndocs; prev = DOC_KEY(b->docs[i++]))
 	{
 		io_varint(&io, DOC_KEY(b->docs[i]) - prev);
 		io_varint(&io, DOC_DL(b->docs[i]));
+		for (int f = 0; f < b->nf; f++)
+			io_varint(&io, b->fdl[(Size) i * b->nf + f]);
 	}
 	for (uint32 i = 0; i < b->nterms; i++)
 	{

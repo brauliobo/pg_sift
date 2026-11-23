@@ -379,7 +379,7 @@ walk_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 			dl = w->gdl[j] = sbdocs_raw(&w->dc, docs, w->tids[j], &slot);
 			if (n + j > 0 && w->tids[j] <= (j ? w->tids[j - 1] : prev))
 				corrupt(seg, "Postings of \"%.*s\" are out of order.", len, term);
-			ub = sift_bound_u8(&w->ref, w->gtf[j], dl);
+			ub = sift_bound_u8(&w->ref, w->gtf[j], seg->fmt >= SIFT_SEGFMT_FIELDDL && SIFT_FIELD_TERM(term[0], SIFT_MAX_FIELDS) ? 0 : dl);
 			if (w->verify && (w->gtf[j] == 0 || ub > info->max_bound || ub > b[bi].bound ||
 				ub > b[bi].blk_bound[(SIFT_BLK(w->tids[j]) & (SIFT_SB_PAGES - 1)) >> SIFT_BLK_SHIFT]))
 				corrupt(seg, "Posting (%u,%u) of \"%.*s\" (tf %u, dl %u, bound %u) exceeds its bounds %u/%u/%u.",
@@ -451,14 +451,15 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	else if (verify)
 		verify_live(&w);
 	sift_dict_scan(seg->dict, NULL, 0, NULL, 0, walk_term, &w);
+	if (verify && seg->fmt >= SIFT_SEGFMT_FIELDDL)
+		sift_seg_verify_fields(seg);
 	if (st->nterms != seg->hdr->nterms)
 		corrupt(seg, "Dictionary holds %llu terms, the header %llu.", ULL(st->nterms), ULL(seg->hdr->nterms));
 	{
 		DocMap	   *dm = docmap(seg);
 
 		st->parts.docmap_attr = dm->dir_off - dm->recs_end;
-		st->parts.docmap_dir = (uint64) dm->nsb * sizeof(SiftDocSBRef) +
-			(seg->fmt >= SIFT_SEGFMT_ATTR ? (uint64) dm->nsb * sizeof(SiftAttrRef) + 16 : sizeof(uint32));
+		st->parts.docmap_dir = s[SIFT_SEC_DOCMAP].off + s[SIFT_SEC_DOCMAP].len - dm->dir_off;
 	}
 	st->parts.dictidx = s[SIFT_SEC_DICTIDX].len + seg->hdr->dictroot_n * sizeof(uint64);
 	st->parts.dict_blocks = s[SIFT_SEC_DICT].len - st->parts.dict_terms - st->parts.dict_entries - st->parts.dict_inline_keys -

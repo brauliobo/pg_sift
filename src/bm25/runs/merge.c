@@ -73,15 +73,17 @@ batch_to_run(Batch *bt)
 }
 
 static void
-out_docs(MergeOut *mo, const SiftKey *keys, const uint16 *dl, int n)
+out_docs(MergeOut *mo, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int nf, int n)
 {
 	if (mo->sw)
-		sift_segw_add_docs(mo->sw, keys, dl, n);
+		sift_segw_add_docs(mo->sw, keys, dl, nf ? fdl : NULL, n);
 	else
 		for (int i = 0; i < n; mo->prev = keys[i++])
 		{
 			io_varint(&mo->io, keys[i] - mo->prev);
 			io_varint(&mo->io, dl[i]);
+			for (int f = 0; f < nf; f++)
+				io_varint(&mo->io, fdl[i * nf + f]);
 		}
 }
 
@@ -111,7 +113,9 @@ runs_merge_docs(MergeOut *mo, RunReader *rd, int nruns)
 	binaryheap *heap = binaryheap_allocate(nruns, runs_doc_heap_cmp, NULL);
 	SiftKey		keys[BATCH];
 	uint16		dl[BATCH];
-	int			n = 0;
+	uint16		fdl[BATCH * SIFT_MAX_FIELDS];
+	int			nf = nruns > 0 ? rd[0].nf : 0,
+				n = 0;
 
 	for (int i = 0; i < nruns; i++)
 		if (runs_reader_next_doc(&rd[i]))
@@ -122,6 +126,7 @@ runs_merge_docs(MergeOut *mo, RunReader *rd, int nruns)
 		RunReader  *top = (RunReader *) DatumGetPointer(binaryheap_first(heap));
 
 		keys[n] = top->dkey;
+		memcpy(fdl + n * nf, top->dfdl, nf * sizeof(uint16));
 		dl[n++] = top->ddl;
 		if (runs_reader_next_doc(top))
 			binaryheap_replace_first(heap, PointerGetDatum(top));
@@ -129,13 +134,13 @@ runs_merge_docs(MergeOut *mo, RunReader *rd, int nruns)
 			binaryheap_remove_first(heap);
 		if (n == BATCH)
 		{
-			out_docs(mo, keys, dl, n);
+			out_docs(mo, keys, dl, fdl, nf, n);
 			n = 0;
 			CHECK_FOR_INTERRUPTS();
 		}
 	}
 	if (n > 0)
-		out_docs(mo, keys, dl, n);
+		out_docs(mo, keys, dl, fdl, nf, n);
 	binaryheap_free(heap);
 }
 

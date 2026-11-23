@@ -108,6 +108,7 @@ sift_merge_to_run(SiftRun **runs, int nruns, Size budget, RunHome *home)
 
 	io_varint(&mo.io, out->ndocs);
 	io_varint(&mo.io, positions);
+	io_varint(&mo.io, rd[0].nf);
 	runs_merge_readers(rd, nruns, positions, &mo);
 	run_finish(out, &mo.io);
 	for (int i = 0; i < nruns; i++)
@@ -146,13 +147,15 @@ sift_shrink_runs(SiftRun **runs, int nruns, int target, Size budget, RunHome *ho
 
 /* A segment writer that also stores the values of the INCLUDE columns, which the process that merges the docs reads from the heap */
 SiftSegmentWriter *
-runs_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions)
+runs_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions, int nfields)
 {
 	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, mcxt, positions);
 	SiftAttrSrc *as = sift_attr_src(wt, mcxt);
 
 	if (as != NULL)
 		sift_segw_attrs(sw, as);
+	if (nfields > 0)
+		sift_segw_fields(sw, nfields);
 	return sw;
 }
 
@@ -175,7 +178,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	old = MemoryContextSwitchTo(cxt);
 	rd = runs_open_readers(runs, nruns, budget, &positions, &ndocs);
 	/* the segment has positions when every run does */
-	mo.sw = runs_segw_begin(wt, gen, ref, cxt, positions);
+	mo.sw = runs_segw_begin(wt, gen, ref, cxt, positions, rd[0].nf);
 	/* the merged runs hold a term of any size: the posting writer takes about 10 bytes of each posting, half the budget at most */
 	sift_segw_spool(mo.sw, sift_seg_postings(budget) / 2);
 	runs_merge_readers(rd, nruns, positions, &mo);

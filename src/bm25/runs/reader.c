@@ -124,11 +124,21 @@ bool
 runs_reader_next_doc(RunReader *rd)
 {
 	if (rd->sc)
-		return sift_seg_cursor_doc(rd->sc, &rd->dkey, &rd->ddl);
+	{
+		const uint16 *fdl;
+
+		if (!sift_seg_cursor_doc(rd->sc, &rd->dkey, &rd->ddl, &fdl))
+			return false;
+		if (fdl)
+			memcpy(rd->dfdl, fdl, rd->nf * sizeof(uint16));
+		return true;
+	}
 	if (rd->dleft == 0)
 		return false;
 	rd->dkey += io_get_varint(&rd->io);
 	rd->ddl = io_get_varint(&rd->io);
+	for (int f = 0; f < rd->nf; f++)
+		rd->dfdl[f] = io_get_varint(&rd->io);
 	rd->dleft--;
 	return true;
 }
@@ -219,6 +229,8 @@ runs_open_readers(SiftRun **runs, int nruns, Size budget, bool *positions, uint6
 		SIFT_INVARIANT(BufFileSeek(rd[i].io.file, 0, 0, SEEK_SET) == 0, "sift: could not rewind a build run");
 		rd[i].dleft = io_get_varint(&rd[i].io);
 		rd[i].haspos = io_get_varint(&rd[i].io);
+		rd[i].nf = io_get_varint(&rd[i].io);
+		SIFT_INVARIANT(rd[i].nf == rd[0].nf, "sift: runs of %d and %d fields merge", rd[0].nf, rd[i].nf);
 		*ndocs += rd[i].dleft;
 		*positions &= rd[i].haspos;
 	}

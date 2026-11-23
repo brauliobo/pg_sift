@@ -178,6 +178,8 @@ typedef struct Stream
 	sift_tid   *tids;
 	uint8	   *gtf;
 	bool		dirty;			/* some doc was vacuumed */
+	int			nf;				/* fields whose lengths the docs deliver */
+	uint16	   *legacy;			/* their lengths for a segment that has none */
 	/* the live postings not yet delivered */
 	uint32		n;
 	uint32		pcap;			/* entries of keys, tf, dl and plen */
@@ -322,6 +324,7 @@ stream_docs(Stream *s)
 	SiftDocChunk ch;
 	SiftKey		keys[1024];
 	uint16		dl[1024];
+	uint16	   *fdl = s->nf ? palloc(lengthof(keys) * s->nf * sizeof(uint16)) : NULL;
 	int			n = 0;
 
 	for (uint32 sb = seg->hdr->sb_lo; sb <= seg->hdr->sb_hi && sift_seg_docs_next(seg, sb, &ch); sb = ch.sb + 1)
@@ -343,10 +346,12 @@ stream_docs(Stream *s)
 					int			o = wd * 64 + __builtin_ctzll(m);
 
 					keys[n] = ((SiftKey) (ch.sb * SIFT_SB_PAGES + p) << 16) | (o + 1);
-					dl[n++] = row[o];
+					if (s->nf)
+							sift_seg_doc_fields(seg, &ch, p, o, s->legacy, s->nf, fdl + n * s->nf);
+						dl[n++] = row[o];
 					if (n == lengthof(keys))
 					{
-						s->sink->docs(s->arg, keys, dl, n);
+						s->sink->docs(s->arg, keys, dl, fdl, n);
 						n = 0;
 					}
 				}
@@ -354,7 +359,7 @@ stream_docs(Stream *s)
 		CHECK_FOR_INTERRUPTS();
 	}
 	if (n > 0)
-		s->sink->docs(s->arg, keys, dl, n);
+		s->sink->docs(s->arg, keys, dl, fdl, n);
 }
 
 void
@@ -365,6 +370,9 @@ sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *ar
 	Stream		s = {.seg = seg,.sink = sink,.arg = arg,.dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0};
 
 	doccache_init(&s.dc, seg, cxt, budget);
+	s.nf = sift_seg_index_nfields(seg);
+	if (s.nf && seg->fmt < SIFT_SEGFMT_FIELDDL)
+		s.legacy = sift_seg_legacy_field_dl(seg, s.nf, cxt);
 	s.tcxt = sift_mem_allocset_create(cxt, "sift stream term");
 	stream_docs(&s);
 	if (sink->term)
@@ -386,6 +394,7 @@ struct SiftSegCursor
 	uint64		live[SIFT_OFFMASK_WORDS];
 	const uint16 *row;
 	uint64		m;
+	uint16		fdl[SIFT_MAX_FIELDS];	/* the lengths of the fields of the doc last returned */
 	/* terms */
 	SiftDictIter *dit;
 	SiftTermInfo info;
@@ -406,6 +415,7 @@ sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen)
 	c->cxt = cxt;
 	s->seg = seg;
 	s->dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0;
+	s->nf = sift_seg_index_nfields(seg);
 	doccache_init(&s->dc, seg, cxt, budget);
 	c->page = SIFT_SB_PAGES;
 	c->wd = SIFT_OFFMASK_WORDS;
@@ -425,10 +435,19 @@ sift_seg_cursor_close(SiftSegCursor *c)
 	MemoryContextDelete(c->cxt);
 }
 
+int
+sift_seg_cursor_nfields(const SiftSegCursor *c)
+{
+	return c->s.nf;
+}
+
 bool
-sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl)
+sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl, const uint16 **fdl)
 {
 	SiftSegment *seg = c->s.seg;
+
+	if (c->s.nf && c->s.legacy == NULL && seg->fmt < SIFT_SEGFMT_FIELDDL)
+		c->s.legacy = sift_seg_legacy_field_dl(seg, c->s.nf, c->cxt);
 
 	while (c->m == 0)
 	{
@@ -465,6 +484,9 @@ sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl)
 		c->m &= c->m - 1;
 		*key = ((SiftKey) (c->ch.sb * SIFT_SB_PAGES + c->page) << 16) | (o + 1);
 		*dl = c->row[o];
+		if (c->s.nf)
+			sift_seg_doc_fields(seg, &c->ch, c->page, o, c->s.legacy, c->s.nf, c->fdl);
+		*fdl = c->s.nf ? c->fdl : NULL;
 	}
 	return true;
 }
@@ -534,6 +556,7 @@ sift_seg_live_stats(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl)
 	SiftSegCursor *c;
 	SiftKey		key;
 	uint16		dl;
+	const uint16 *fdl;
 
 	if (!(seg->entry.flags & SIFT_SEG_DIRTY) || seg->fmt >= SIFT_SEGFMT_LIVEROWS)
 	{
@@ -542,7 +565,7 @@ sift_seg_live_stats(SiftSegment *seg, uint64 *ndocs, uint64 *sum_dl)
 	}
 	c = sift_seg_cursor(seg, 0, NULL, 0);
 	*ndocs = *sum_dl = 0;
-	while (sift_seg_cursor_doc(c, &key, &dl))
+	while (sift_seg_cursor_doc(c, &key, &dl, &fdl))
 	{
 		(*ndocs)++;
 		*sum_dl += dl;

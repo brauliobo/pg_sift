@@ -159,7 +159,7 @@ sift_runs_write_docs(SiftRun **runs, int nruns, Size budget, SiftWriteTarget *wt
 	uint64		ndocs;
 	RunReader  *rd = runs_open_readers(runs, nruns, budget, &positions, &ndocs);
 
-	mo.sw = runs_segw_begin(wt, gen, ref, mcxt, positions);
+	mo.sw = runs_segw_begin(wt, gen, ref, mcxt, positions, rd[0].nf);
 	runs_merge_docs(&mo, rd, nruns);
 	for (int i = 0; i < nruns; i++)
 		runs_run_release(runs[i]);

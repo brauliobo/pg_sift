@@ -21,6 +21,8 @@ typedef struct RunReader
 	uint64		dleft;
 	SiftKey		dkey;
 	uint16		ddl;
+	int			nf;				/* fields whose lengths the docs carry */
+	uint16		dfdl[SIFT_MAX_FIELDS];
 	/* postings of the current term */
 	uint64		pleft;
 	SiftKey		pkey;
@@ -74,7 +76,7 @@ extern void	runs_merge_terms(RunReader *rd, int nruns, bool positions, MergeOut 
 
 extern void	runs_merge_readers(RunReader *rd, int nruns, bool positions, MergeOut *mo);
 
-extern SiftSegmentWriter *	runs_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
+extern SiftSegmentWriter *	runs_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt, bool positions, int nfields);
 
 extern int	runs_choose_cuts(RunSample *all, int nall, uint64 min_bytes, int target, SiftTermCut *cuts);
 

@@ -70,7 +70,10 @@ extern PGDLLIMPORT int sift_test_dead_windows;
 
 extern SiftSegmentWriter *sift_segw_begin(SiftWriteTarget *wt, uint64 gen,
 										  const SiftScoreRef *ref, MemoryContext mcxt, bool positions);
-extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n);
+/* fdl: the lengths of the fields of each doc (nfields each, see sift_segw_fields), NULL for a segment without */
+extern void sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n);
+/* The segment keeps the length of each of nfields fields of its docs (format SIFT_SEGFMT_FIELDDL); before the first doc */
+extern void sift_segw_fields(SiftSegmentWriter *w, int nfields);
 /* The values of the INCLUDE columns of the docs that follow are fetched from src when an SB is flushed; before the first doc */
 extern void sift_segw_attrs(SiftSegmentWriter *w, const SiftAttrSrc *src);
 
@@ -121,6 +124,28 @@ typedef struct SiftDocChunk
 	uint64		rank_base;		/* segment rank of the SB's first doc */
 	bool		dirty;			/* some doc in this SB was vacuumed */
 } SiftDocChunk;
+
+/* The fields whose length each doc of the segment has (0 for a segment of an older format: it has the doc's length only), and their sums over all its docs, vacuumed ones included */
+extern int	sift_seg_nfields(SiftSegment *seg);
+extern void sift_seg_field_sums(SiftSegment *seg, uint64 *sum_dl);
+
+/* The fields of the index the segment is of (what a merge writes for its docs: those of the segment's own trailer when it has one) */
+extern int	sift_seg_index_nfields(SiftSegment *seg);
+
+/* The length of each field over the live docs of a segment of format SIFT_SEGFMT_FIELDDL (the sums of its trailer less those of the docs VACUUM removed) */
+extern void sift_seg_live_field_sums(SiftSegment *seg, uint64 *sum_dl);
+
+/* Checks the lengths of the fields of every doc and their sums against the tf of the words of the postings (corruption otherwise) */
+extern void sift_seg_verify_fields(SiftSegment *seg);
+
+/* The lengths of nf fields of every doc of a segment of an older format, [rank][field] over all its docs (rank order), from the tf of the words of its postings; allocated in mcxt */
+extern uint16 *sift_seg_legacy_field_dl(SiftSegment *seg, int nf, MemoryContext mcxt);
+
+/* The lengths of the nf fields of the doc at off (0-based) of page: from the segment's records, or from legacy (sift_seg_legacy_field_dl) when it has none */
+extern void sift_seg_doc_fields(SiftSegment *seg, const SiftDocChunk *dc, int page, int off, const uint16 *legacy, int nf, uint16 *out);
+
+/* The rows of field f (0-based) of the pages of a block (SIFT_BLK_PAGES pages) set in want that have docs, as sift_seg_block_dl has the docs' lengths; valid until the next docmap call on seg */
+extern void sift_seg_block_field_dl(SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, int f, const uint16 **rows);
 
 /* The columns of INCLUDE a segment holds values of (0 for a segment of an older format) */
 extern int	sift_seg_attr_ncols(SiftSegment *seg);
@@ -183,7 +208,8 @@ typedef enum SiftSegcacheKind
 	SIFT_SEGCACHE_DOCDIR,
 	SIFT_SEGCACHE_BLOB,
 	SIFT_SEGCACHE_ATTRDIR,
-	SIFT_SEGCACHE_BOUNDS
+	SIFT_SEGCACHE_BOUNDS,
+	SIFT_SEGCACHE_FIELDDEAD
 } SiftSegcacheKind;
 
 extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt,
@@ -384,7 +410,7 @@ extern void sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify
  */
 typedef struct SiftSegSink
 {
-	void		(*docs) (void *arg, const SiftKey *keys, const uint16 *dl, int n);
+	void		(*docs) (void *arg, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n);
 	void		(*term) (void *arg, const char *term, int len, const SiftTermInfo *info);
 	void		(*postings) (void *arg, const SiftKey *keys, const uint8 *tf, const uint16 *dl, const uint8 *pos,
 							 const uint32 *poslen, int n);
@@ -400,7 +426,9 @@ extern void sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *si
 typedef struct SiftSegCursor SiftSegCursor;
 
 extern SiftSegCursor *sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen);
-extern bool sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl);
+/* fdl: the lengths of the fields of the doc (sift_seg_cursor_nfields of them), valid until the next call; NULL for none */
+extern bool sift_seg_cursor_doc(SiftSegCursor *c, SiftKey *key, uint16 *dl, const uint16 **fdl);
+extern int	sift_seg_cursor_nfields(const SiftSegCursor *c);
 extern bool sift_seg_cursor_term(SiftSegCursor *c, const char **term, int *len, SiftTermInfo *info);
 /* The next live posting of the term; rec / len: its position record (NULL when the term has none) */
 extern bool sift_seg_cursor_posting(SiftSegCursor *c, SiftKey *key, uint8 *tf, uint16 *dl, const uint8 **rec, uint32 *len);

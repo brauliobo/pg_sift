@@ -318,8 +318,9 @@ idx_advance(IdxCursor *x)
 {
 	SiftKey		key;
 	uint16		dl;
+	const uint16 *fdl;
 
-	if (!sift_seg_cursor_doc(x->c, &key, &dl))
+	if (!sift_seg_cursor_doc(x->c, &key, &dl, &fdl))
 		return false;
 	x->id = sq_key_rowid(key);
 	return true;

@@ -68,7 +68,7 @@ typedef struct TermWalk
 } TermWalk;
 
 static void
-no_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+no_docs(void *arg, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n)
 {
 }
 

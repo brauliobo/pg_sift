@@ -49,6 +49,13 @@ struct SiftSegmentWriter
 	BufFile    *arecs[SIFT_ATTR_MAXCOLS];	/* the records of each column */
 	uint64		arec_len[SIFT_ATTR_MAXCOLS];
 	SiftAttrRef *adir;			/* [SB][col] */
+	/* the length of each field of every doc (SIFT_SEGFMT_FIELDDL): the rows of the SB being accumulated, the records of the SBs flushed (SB by SB, field by field) and where they are */
+	int			nf;
+	uint16	   *fdl;			/* [field][page][MAXOFF] */
+	BufFile    *frecs;
+	uint64		frec_len;
+	SiftFieldDlRef *fdir;		/* [SB][field] */
+	SiftFieldDlTrailer ft;
 	/* terms */
 	SiftPostingWriter *pw;
 	SiftDictWriter *dw;
@@ -138,30 +145,91 @@ write_region(SiftSegmentWriter *w, const uint64 *om, int np)
 
 /* STOR[STOR-BM25-07]: DOCMAP per-SB dl_code (1 doc dl>255 doubles 256-pg SB dl rows to 16b; v7 per-page) */
 static int
-dl_code(const SiftSegmentWriter *w)
+dl_code(const SiftSegmentWriter *w, uint16 maxdl)
 {
-	if (w->fmt < SIFT_SEGFMT_PACKED || w->sb_maxdl > 255)
+	if (w->fmt < SIFT_SEGFMT_PACKED || maxdl > 255)
 		return 0;
-	return w->sb_maxdl > 15 ? 1 : 2;
+	return maxdl > 15 ? 1 : 2;
 }
 
-/* The row of n slots in the width of code, little endian, a byte at least */
+/* The row of n slots in the width of code, little endian, a byte at least: dl itself for code 0, else buf (SIFT_MAX_OFFSET bytes) */
+static const uint8 *
+dl_row_bytes(const uint16 *dl, int n, int code, uint8 *buf, int *len)
+{
+	int			bits = SIFT_DL_CODE_BITS(code);
+
+	*len = SIFT_DL_ROW_BYTES(code, n);
+	if (code == 0)
+		return (const uint8 *) dl;
+	memset(buf, 0, *len);
+	for (int i = 0; i < n; i++)
+		buf[i * bits / 8] |= dl[i] << (i * bits % 8);
+	return buf;
+}
+
 static void
 write_dl_row(SiftStreamWriter *sw, const uint16 *dl, int n, int code)
 {
 	uint8		buf[SIFT_MAX_OFFSET];
-	int			bits = SIFT_DL_CODE_BITS(code);
-	int			len = SIFT_DL_ROW_BYTES(code, n);
+	int			len;
+	const uint8 *row = dl_row_bytes(dl, n, code, buf, &len);
 
-	if (code == 0)
+	sift_sw_write(sw, row, len);
+}
+
+void
+sift_segw_fields(SiftSegmentWriter *w, int nfields)
+{
+	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
+
+	SIFT_INVARIANT(w->ndocs == 0 && nfields > 0 && nfields <= SIFT_MAX_FIELDS, "sift: field lengths after the first doc, or %d of them", nfields);
+#ifdef SIFT_TESTING
+	if (sift_test_segfmt > 0 && sift_test_segfmt < SIFT_SEGFMT_FIELDDL)
+		return;					/* the test writes a format that has none */
+#endif
+	w->nf = nfields;
+	w->fmt = Max(w->fmt, SIFT_SEGFMT_FIELDDL);
+	w->fdl = palloc0((Size) nfields * SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+	w->frecs = BufFileCreateTemp(false);
+	w->fdir = palloc(w->maxsb * nfields * sizeof(SiftFieldDlRef));
+	w->ft = (SiftFieldDlTrailer) {.magic = SIFT_FIELDDL_MAGIC,.nfields = nfields};
+	MemoryContextSwitchTo(old);
+}
+
+/* The records of the field lengths of the SB being flushed, one per field: the rows of its present pages in the width its longest length needs (w->nsb is the SB's index) */
+static void
+flush_fields(SiftSegmentWriter *w)
+{
+	for (int f = 0; f < w->nf; f++)
 	{
-		sift_sw_write(sw, dl, n * sizeof(uint16));
-		return;
+		SiftFieldDlRef ref = {.off = w->frec_len};
+		uint16		maxdl = 0;
+
+		for (int p = 0; p < SIFT_SB_PAGES; p++)
+			for (int s = 0; w->pagemask[p / 64] >> (p % 64) & 1 && s < w->maxoff[p]; s++)
+				maxdl = Max(maxdl, w->fdl[((Size) f * SIFT_SB_PAGES + p) * MAXOFF + s]);
+		if (maxdl > 0)
+			ref.dlcode = dl_code(w, maxdl);
+		for (int p = 0; p < SIFT_SB_PAGES; p++)
+		{
+			uint16	   *row = w->fdl + ((Size) f * SIFT_SB_PAGES + p) * MAXOFF;
+			uint8		buf[SIFT_MAX_OFFSET];
+			int			len;
+			const uint8 *bytes;
+
+			if (!(w->pagemask[p / 64] >> (p % 64) & 1))
+				continue;
+			if (maxdl > 0)
+			{
+				bytes = dl_row_bytes(row, w->maxoff[p], ref.dlcode, buf, &len);
+				BufFileWrite(w->frecs, bytes, len);
+				ref.len += len;
+			}
+			memset(row, 0, w->maxoff[p] * sizeof(uint16));
+		}
+		w->frec_len += ref.len;
+		w->fdir[(Size) w->nsb * w->nf + f] = ref;
 	}
-	memset(buf, 0, len);
-	for (int i = 0; i < n; i++)
-		buf[i * bits / 8] |= dl[i] << (i * bits % 8);
-	sift_sw_write(sw, buf, len);
 }
 
 void
@@ -306,7 +374,7 @@ flush_sb(SiftSegmentWriter *w)
 	uint8	   *chunk;
 	uint32		hdr[2];
 	int			np = 0,
-				code = dl_code(w);
+				code = dl_code(w, w->sb_maxdl);
 
 	if (w->sb_ndocs == 0)
 		return;
@@ -327,9 +395,13 @@ flush_sb(SiftSegmentWriter *w)
 		w->sbdir = repalloc(w->sbdir, w->maxsb * sizeof(SiftDocSBRef));
 		if (w->adir)
 			w->adir = repalloc(w->adir, w->maxsb * w->attr.ncols * sizeof(SiftAttrRef));
+		if (w->fdir)
+			w->fdir = repalloc(w->fdir, w->maxsb * w->nf * sizeof(SiftFieldDlRef));
 	}
 	if (w->attr.ncols)
 		flush_attr(w);
+	if (w->nf)
+		flush_fields(w);
 	sw_pad4(w->sw);
 	w->sbdir[w->nsb++] = (SiftDocSBRef) {w->sb, w->sb_ndocs, sift_sw_tell(w->sw)};
 	sift_sw_write(w->sw, hdr, sizeof(hdr));
@@ -352,9 +424,10 @@ flush_sb(SiftSegmentWriter *w)
 }
 
 void
-sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, int n)
+sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n)
 {
 	SIFT_INVARIANT(!w->pw, "sift: segment docs must be added before terms");
+	SIFT_INVARIANT(w->nf == 0 || fdl != NULL, "sift: no field lengths for the docs of a segment of %d fields", w->nf);
 	for (int i = 0; i < n; i++)
 	{
 		BlockNumber blk = sift_key_block(keys[i]);
@@ -373,6 +446,12 @@ sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, 
 		w->pagemask[page / 64] |= 1ULL << (page % 64);
 		w->offmask[page * SIFT_OFFMASK_WORDS + (off - 1) / 64] |= 1ULL << ((off - 1) % 64);
 		w->dl[page * MAXOFF + off - 1] = dl[i];
+		for (int f = 0; f < w->nf; f++)
+		{
+			w->fdl[((Size) f * SIFT_SB_PAGES + page) * MAXOFF + off - 1] = fdl[i * w->nf + f];
+			w->ft.sum_dl[f] += fdl[i * w->nf + f];
+			w->ft.ndocs_nz[f] += fdl[i * w->nf + f] > 0;
+		}
 		w->maxoff[page] = Max(w->maxoff[page], off);
 		w->sb_maxdl = Max(w->sb_maxdl, dl[i]);
 		w->sb_ndocs++;
@@ -394,6 +473,57 @@ postw_open(SiftSegmentWriter *w)
 		sift_postw_posblk(w->pw);
 }
 
+/* Appends the spooled records of one kind to the stream, where the directory entries that point into them (ref, each of stride bytes) get their offsets */
+static void
+copy_records(SiftSegmentWriter *w, BufFile *file, uint64 *start, uint64 len)
+{
+	char		buf[4096];
+	size_t		got;
+
+	SIFT_INVARIANT(BufFileSeek(file, 0, 0, SEEK_SET) == 0, "sift: could not rewind the records of a segment");
+	while ((got = BufFileRead(file, buf, sizeof(buf))) > 0)
+		sift_sw_write(w->sw, buf, got);
+	BufFileClose(file);
+	*start += len;
+}
+
+/* The end of DOCMAP of format 5 and later: the directory of the SBs, then the INCLUDE and field records' directories and the field trailer, then recs_end, the INCLUDE columns and the SBs */
+static void
+write_trailer(SiftSegmentWriter *w)
+{
+	uint64		recs_end = sift_sw_tell(w->sw),
+				start = recs_end;
+	uint32		nc = w->attr.ncols;
+
+	for (uint32 c = 0; c < nc; c++)
+	{
+		copy_records(w, w->arecs[c], &start, w->arec_len[c]);
+		w->arecs[c] = NULL;
+		for (uint32 i = 0; i < w->nsb; i++)
+			w->adir[(Size) i * nc + c].off += start - w->arec_len[c];
+	}
+	if (w->nf)
+	{
+		copy_records(w, w->frecs, &start, w->frec_len);
+		w->frecs = NULL;
+		sw_pad4(w->sw);
+		for (uint32 i = 0; i < w->nsb * w->nf; i++)
+			w->fdir[i].off += start - w->frec_len;
+	}
+	sift_sw_write(w->sw, w->sbdir, w->nsb * sizeof(SiftDocSBRef));
+	if (nc)
+		sift_sw_write(w->sw, w->adir, (Size) w->nsb * nc * sizeof(SiftAttrRef));
+	if (w->nf)
+	{
+		w->ft.fdir_off = sift_sw_tell(w->sw);
+		sift_sw_write(w->sw, w->fdir, (Size) w->nsb * w->nf * sizeof(SiftFieldDlRef));
+		sift_sw_write(w->sw, &w->ft, sizeof(w->ft));
+	}
+	sift_sw_write(w->sw, &recs_end, sizeof(uint64));
+	sift_sw_write(w->sw, &nc, sizeof(uint32));
+	sift_sw_write(w->sw, &w->nsb, sizeof(uint32));
+}
+
 /* Closes DOCMAP and opens POSTINGS on the first term */
 static void
 start_terms(SiftSegmentWriter *w)
@@ -404,31 +534,8 @@ start_terms(SiftSegmentWriter *w)
 	flush_sb(w);
 	w->hdr.sb_hi = w->sb;
 	sw_pad4(w->sw);
-	if (w->attr.ncols)
-	{
-		uint64		recs_end = sift_sw_tell(w->sw);
-		uint32		nc = w->attr.ncols;
-		char		buf[4096];
-		size_t		got;
-		uint64		start = recs_end;
-
-		for (uint32 c = 0; c < nc; c++)
-		{
-			SIFT_INVARIANT(BufFileSeek(w->arecs[c], 0, 0, SEEK_SET) == 0, "sift: could not rewind the INCLUDE records of a segment");
-			while ((got = BufFileRead(w->arecs[c], buf, sizeof(buf))) > 0)
-				sift_sw_write(w->sw, buf, got);
-			BufFileClose(w->arecs[c]);
-			w->arecs[c] = NULL;
-			for (uint32 i = 0; i < w->nsb; i++)
-				w->adir[(Size) i * nc + c].off += start;
-			start += w->arec_len[c];
-		}
-		sift_sw_write(w->sw, w->sbdir, w->nsb * sizeof(SiftDocSBRef));
-		sift_sw_write(w->sw, w->adir, (Size) w->nsb * nc * sizeof(SiftAttrRef));
-		sift_sw_write(w->sw, &recs_end, sizeof(uint64));
-		sift_sw_write(w->sw, &nc, sizeof(uint32));
-		sift_sw_write(w->sw, &w->nsb, sizeof(uint32));
-	}
+	if (w->fmt >= SIFT_SEGFMT_ATTR)
+		write_trailer(w);
 	else
 	{
 		sift_sw_write(w->sw, w->sbdir, w->nsb * sizeof(SiftDocSBRef));
@@ -441,6 +548,8 @@ start_terms(SiftSegmentWriter *w)
 	w->dw = sift_dict_writer_begin(w->sw, w->fmt >= SIFT_SEGFMT_PACKED, w->fmt >= SIFT_SEGFMT_POSBLK);
 	pfree(w->offmask);
 	pfree(w->dl);
+	if (w->fdl)
+		pfree(w->fdl);
 	MemoryContextSwitchTo(old);
 }
 
@@ -452,6 +561,7 @@ sift_segw_begin_term(SiftSegmentWriter *w, const char *term, int len)
 	else if (w->pw == NULL)
 		start_terms(w);
 	SIFT_INVARIANT(len >= 1 && len <= SIFT_MAX_TERM_BYTES, "sift: term of %d bytes", len);
+	sift_postw_field(w->pw, SIFT_FIELD_TERM(term[0], SIFT_MAX_FIELDS));
 	memcpy(w->term, term, len);
 	w->termlen = len;
 	return w->pw;

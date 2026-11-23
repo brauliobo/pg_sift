@@ -222,6 +222,8 @@ build_begin(Relation index, Size budget)
 	sift_analyzer_set_positions(bs->an, bs->positions);
 	bs->budget = budget;
 	bs->inv = sift_inv_create(bs->budget, bs->cxt, bs->positions);
+	if (cfg.nfields)
+		sift_inv_fields(bs->inv, cfg.nfields);
 	bs->small_doc = sift_inv_small_doc(bs->inv);
 	bs->page_text = page_text_max(bs);
 	bs->ref = (SiftScoreRef) {(float4) sift_index_options(index)->k1, (float4) sift_index_options(index)->b, 0};

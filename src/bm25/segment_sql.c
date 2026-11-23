@@ -396,7 +396,7 @@ typedef struct HeapDump
 } HeapDump;
 
 static void
-dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+dump_docs(void *arg, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n)
 {
 	for (int i = 0; i < n; i++)
 		fp_add(((HeapDump *) arg)->bf, 0, keys[i], 0);

@@ -30,6 +30,7 @@ bm25/segment.c
 bm25/writer.c
 bm25/liveness.c
 bm25/walk.c
+bm25/fielddl.c
 bm25/livestream.c
 core/live.c
 bm25/runs/runs.c

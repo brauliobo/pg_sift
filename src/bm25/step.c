@@ -592,13 +592,26 @@ inv_add_doc(SiftInvBuf *inv, RunList *runs, DocText *dt, ItemPointerData *tid, S
 		runlist_push(runs, sift_inv_spill(inv));
 }
 
+/* An inverted buffer for the docs of the index, which keep the length of each of its fields */
+static SiftInvBuf *
+inv_create_for(Relation index, Size budget, MemoryContext cx, bool positions)
+{
+	SiftInvBuf *inv = sift_inv_create(budget, cx, positions);
+	SiftAnalyzerConfig cfg;
+
+	sift_analyzer_config_from_index(index, &cfg);
+	if (cfg.nfields)
+		sift_inv_fields(inv, cfg.nfields);
+	return inv;
+}
+
 /* Writes the sorted docs as one immutable segment, but for those whose row is gone (dead for every snapshot); false when there are none */
 static bool
 write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen, SiftSegEntry *entry)
 {
 	SiftScoreRef ref = score_ref(index);
 	DocText    *dt = doctext_open(index);
-	SiftInvBuf *inv = sift_inv_create(inv_budget(sort), CurrentMemoryContext, dt != NULL);
+	SiftInvBuf *inv = inv_create_for(index, inv_budget(sort), CurrentMemoryContext, dt != NULL);
 	RunList		runs = {.run = palloc(sizeof(SiftRun *)),.max = 1};
 	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
 
@@ -832,7 +845,7 @@ typedef struct Heal
 } Heal;
 
 static void
-heal_docs(void *arg, const SiftKey *keys, const uint16 *dl, int n)
+heal_docs(void *arg, const SiftKey *keys, const uint16 *dl, const uint16 *fdl, int n)
 {
 	Heal	   *h = arg;
 
@@ -898,7 +911,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	if (written < 0)
 	{
 		if (dt != NULL)
-			inv = sift_inv_create((Size) maintenance_work_mem * 1024 / 2, cx, true);
+			inv = inv_create_for(index, (Size) maintenance_work_mem * 1024 / 2, cx, true);
 		for (int i = 0; i < in->n; i++)
 		{
 			SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);

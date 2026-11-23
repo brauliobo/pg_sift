@@ -70,6 +70,8 @@ extern SiftInvBuf *sift_inv_create(Size budget, MemoryContext mcxt, bool positio
  * counts in N); keys must be strictly ascending (the heap build sorts each
  * page, promotion sorts its records). Term bytes are copied. Returns whether the buffer is full now.
  */
+/* The docs of the buffer have the length of each of nfields fields, which sift_inv_add takes from the field words of their terms (sift_field_dl) and the segments written from it keep; before the first doc */
+extern void sift_inv_fields(SiftInvBuf *buf, int nfields);
 extern bool sift_inv_add(SiftInvBuf *buf, ItemPointer tid, const SiftTermFreq *terms,
 						 int nterms, uint32 dl);
 extern bool sift_inv_full(const SiftInvBuf *buf);

@@ -498,7 +498,7 @@ sq_inv_write(SqInv *inv, SqStore *st)
 			keys[j] = inv->key[order[i + j]];
 			dl[j] = inv->dl[order[i + j]];
 		}
-		sift_segw_add_docs(sw, keys, dl, k);
+		sift_segw_add_docs(sw, keys, dl, NULL, k);
 	}
 	sorted = malloc(Max(inv->nterms, 1) * sizeof(InvTerm *));
 	for (uint32 i = 0; i < inv->nterms; i++)
