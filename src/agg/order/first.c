@@ -28,8 +28,6 @@ first_aggref(AggCtx *c, Node *e, List *more)
 	List	   *args = list_make1(makeTargetEntry((Expr *) copyObject(e), 1, NULL, false)),
 			   *order = NIL;
 
-	if (type_is_array(t) || arg_joined(c, e))
-		return NULL;
 	foreach_node(SortGroupClause, sgc, more)
 	{
 		TargetEntry *k = makeTargetEntry((Expr *) copyObject(get_sortgroupclause_expr(sgc, c->root->processed_tlist)), list_length(args) + 1, NULL, true);
@@ -40,7 +38,7 @@ first_aggref(AggCtx *c, Node *e, List *more)
 		order = lappend(order, o);
 	}
 	a = makeNode(Aggref);
-	a->aggfnoid = F_ARRAY_AGG_ANYNONARRAY;
+	a->aggfnoid = type_is_array(t) ? F_ARRAY_AGG_ANYARRAY : F_ARRAY_AGG_ANYNONARRAY;
 	a->aggtype = t;
 	a->aggcollid = a->inputcollid = exprCollation(e);
 	a->aggtranstype = INTERNALOID;
@@ -131,8 +129,6 @@ distinct_on_more(AggCtx *c, Query *parse, List **more)
 {
 	foreach_node(SortGroupClause, sgc, parse->sortClause)
 	{
-		if (arg_joined(c, get_sortgroupclause_expr(sgc, c->root->processed_tlist)))
-			return agg_refuse_on(DISTINCT_ON, "a sort expression of the DISTINCT ON reads a joined table");
 		if (get_sortgroupref_clause_noerr(sgc->tleSortGroupRef, parse->distinctClause) == NULL)
 			*more = lappend(*more, sgc);
 	}

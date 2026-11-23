@@ -522,7 +522,7 @@ agg_finish(AggCtx *c, SiftAggSpec *s, PlannerInfo *root, RelOptInfo *input_rel, 
 	if (c->part_key && sift_aggspec_spillable(s) && !(sift_aggspec_float_sums(s) && !sift_aggspec_workers_only(s)))
 		for (int i = 0; i < s->naggs; i++)
 			s->part_final |= s->agg[i].kind == SAA_COUNT_DISTINCT;
-	if (!first_fits(s))
+	if (!first_fits(s) && !sift_aggspec_spillable(s))
 	{
 		agg_refused(FIRST_MEMORY);
 		return;

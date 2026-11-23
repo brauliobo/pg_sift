@@ -352,7 +352,7 @@ SELECT plan_of($$SELECT DISTINCT ON (id) id, tenant_id, ts, amount, kind, note, 
 SELECT plan_of($$SELECT DISTINCT ON (tenant_id, kind) tenant_id, kind, id, ts, amount FROM ev ORDER BY tenant_id, kind, ts DESC, id$$) AS few_hundred_groups;
  few_hundred_groups 
 --------------------
- normal
+ SiftAgg
 (1 row)
 
 SELECT plan_of($$SELECT DISTINCT ON (kind) kind, id, ts, amount FROM ev ORDER BY kind, ts DESC, id$$) AS four_groups;

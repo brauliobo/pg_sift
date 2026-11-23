@@ -163,28 +163,31 @@ gen_first(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, int j, uint32 gi
 	return true;
 }
 
-/* the scan has ended: the first argument of the best row of each group is the group's value (the carrier aggregate has no transition or final function to run) */
+/* the first argument of the best row of group g is the group's value (the carrier aggregate has no transition or final function to run) */
+static void
+gen_first_value(GenSt *st, AggAcc *acc, uint32 g)
+{
+	GenBest    *b = (GenBest *) DatumGetPointer(acc->v[g]);
+	int			n = st->g->nargs;
+
+	if (b == NULL || (acc->nf[g] & GEN_INIT))
+		return;
+	acc->v[g] = b[0];
+	acc->nf[g] = GEN_INIT | (GEN_BEST_NULL(b, n, 0) ? GEN_NULL : 0);
+	for (int k = 1; k < n; k++)
+		if (gen_stored(st->g, k) && !GEN_BEST_NULL(b, n, k) && !st->abyval[k])
+			pfree(DatumGetPointer(b[k]));
+	pfree(b);
+}
+
+/* the scan has ended: the best row of each group is the group's value */
 static void
 gen_flush_first(AggExec *ex, int ai)
 {
-	GenSt	   *st = ex->gst[ai];
-	AggAcc	   *acc = &ex->acc[ai];
 	uint32		ngr = ex->hash ? ex->ngroups : ex->gcap;
-	int			n = st->g->nargs;
 
 	for (uint32 g = 0; g < ngr; g++)
-	{
-		GenBest    *b = (GenBest *) DatumGetPointer(acc->v[g]);
-
-		if (b == NULL)
-			continue;
-		acc->v[g] = b[0];
-		acc->nf[g] = GEN_INIT | (GEN_BEST_NULL(b, n, 0) ? GEN_NULL : 0);
-		for (int k = 1; k < n; k++)
-			if (gen_stored(st->g, k) && !GEN_BEST_NULL(b, n, k) && !st->abyval[k])
-				pfree(DatumGetPointer(b[k]));
-		pfree(b);
-	}
+		gen_first_value(ex->gst[ai], &ex->acc[ai], g);
 }
 
 /* a worker's best row of group g, appended to vb as a length (0: none) and the serialized values */
@@ -828,5 +831,9 @@ gen_finish(AggExec *ex)
 		if (ex->gst[ai])
 			for (uint32 i = 0; i < ex->nglist; i++)
 				if (!(ex->acc[ai].nf[ex->glist[i]] & GEN_DONE))
+				{
+					if (ex->gst[ai]->g->first)
+						gen_first_value(ex->gst[ai], &ex->acc[ai], ex->glist[i]);
 					gen_final(ex, ex->gst[ai], &ex->acc[ai], ex->glist[i]);
+				}
 }

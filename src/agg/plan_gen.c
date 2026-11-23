@@ -148,7 +148,7 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost, bool *ma
 					rhs;
 
 		/* the value of each joined row is the combo's: one table of values per aggregate */
-		if (ai < 0 || *mapped || !OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs) ||
+		if (ai < 0 || !OidIsValid(tc->eq_opr) || !get_op_hash_functions(tc->eq_opr, &lhs, &rhs) ||
 			!combo_slot(c, arg, true, &out->combo, &out->slot))
 			return false;
 		out->mapped = *mapped = true;
@@ -180,6 +180,18 @@ compile_gen_arg(AggCtx *c, Node *arg, SiftAggGenArg *out, double *cost, bool *ma
 	cost_qual_eval_node(&qc, arg, c->root);
 	*cost = 2.0 + (w.nl ? qc.per_tuple / cpu_operator_cost : 0.0) + 2.0 * w.nl;
 	return true;
+}
+
+/* the earlier argument of the call that is this joined expression: the aggregate holds one table of joined values, so the value and a sort key of one column share it */
+static int
+same_joined_arg(AggCtx *c, List *args, const SiftAggGen *g, const TargetEntry *te)
+{
+	if (!arg_joined(c, (Node *) te->expr))
+		return -1;
+	for (int k = 0; k < g->nargs; k++)
+		if (g->arg[k].mapped && equal(list_nth_node(TargetEntry, args, k)->expr, te->expr))
+			return k;
+	return -1;
 }
 
 static const SiftSrcLeaf *
@@ -406,8 +418,14 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 	foreach_node(TargetEntry, te, a->args)
 	{
 		double		k;
+		int			same = same_joined_arg(c, a->args, g, te);
 
-		if (!compile_gen_arg(c, (Node *) te->expr, &g->arg[g->nargs], &k, &mapped, ai))
+		if (same >= 0)
+		{
+			g->arg[g->nargs] = g->arg[same];
+			k = 0;
+		}
+		else if (!compile_gen_arg(c, (Node *) te->expr, &g->arg[g->nargs], &k, &mapped, ai))
 			return false;
 		cost += k;
 		if (!te->resjunk)
