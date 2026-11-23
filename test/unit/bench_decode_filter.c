@@ -19,7 +19,8 @@
 #include "unit.h"
 
 #define GRANULES	60
-#define REPEAT		60
+#define MIN_REPEAT	60
+#define PASS_SECONDS	0.15
 #define PASSES		9
 #define THREADS		4
 #define ARENA_BYTES	(2 * 1024 * 1024)
@@ -56,7 +57,8 @@ typedef struct Bench
 	SiftColValue val[GRANULES];
 	SiftCfiltPred cp[GRANULES];
 	int			col;
-	uint64		bytes_per_pass;
+	uint64		bytes_per_rep;			/* the bytes the filter reads in one repetition of every granule */
+	uint64		repeat;				/* how many times a pass filters each granule: the pass lasts PASS_SECONDS or more */
 	_Atomic uint64 next;
 	_Atomic uint64 declined;
 	SiftArena  *arena[THREADS];
@@ -93,7 +95,7 @@ bench_worker(void *arg, int w)
 {
 	Bench	   *b = arg;
 	SiftArena  *a = b->arena[w];
-	uint64		total = (uint64) b->ngran * REPEAT;
+	uint64		total = (uint64) b->ngran * b->repeat;
 
 	pthread_barrier_wait(&b->go);
 	for (uint64 i; (i = atomic_fetch_add(&b->next, 1)) < total;)
@@ -182,16 +184,16 @@ work_prepare(Bench *b, const Work *wk)
 	b->work = wk;
 	b->col = granule_fixture_col(b->fx, wk->col);
 	granules_pick(b, wk);
-	b->bytes_per_pass = 0;
+	b->bytes_per_rep = 0;
 	for (int k = 0; k < b->ngran; k++)
 	{
 		const FxRef *r = &b->fx->g[b->gran[k]].ref[b->col];
 
 		predicate_make(b, k);
 		for (int i = 0; i < FX_ROWS; i++)
-			b->bytes_per_pass += wk->strs ? (r->isnull[i] ? 0 : r->s[i].len) : 8;
+			b->bytes_per_rep += wk->strs ? (r->isnull[i] ? 0 : r->s[i].len) : 8;
 	}
-	b->bytes_per_pass *= REPEAT;
+	b->repeat = MIN_REPEAT;
 }
 
 static void
@@ -216,7 +218,7 @@ main(void)
 	b.fx = granule_fixture_build(GRANULES, 11);
 	for (int t = 0; t < THREADS; t++)
 		b.arena[t] = sift_arena_create(CurrentMemoryContext, ARENA_BYTES);
-	printf("bench_decode_filter: %d granules of %d rows, x%d per pass, %d passes, %s level\n", GRANULES, FX_ROWS, REPEAT, PASSES,
+	printf("bench_decode_filter: %d granules of %d rows, x%d or more per pass (a pass lasts %.2f s or more), %d passes, %s level\n", GRANULES, FX_ROWS, MIN_REPEAT, PASS_SECONDS, PASSES,
 		   sift_cpu.active == SIFT_SIMD_AVX512 ? "avx512" : sift_cpu.active == SIFT_SIMD_AVX2 ? "avx2" : "scalar");
 	load_line("start");
 	for (size_t k = 0; k < lengthof(works); k++)
@@ -225,6 +227,7 @@ main(void)
 					t4[PASSES];
 
 		work_prepare(&b, &works[k]);
+		b.repeat = MIN_REPEAT * (1 + (uint64) (PASS_SECONDS / run_pass(&b, 1)));
 		run_pass(&b, 1);
 		for (int p = 0; p < PASSES; p++)
 		{
@@ -234,10 +237,11 @@ main(void)
 		{
 			double		m1 = median(t1, PASSES),
 						m4 = median(t4, PASSES),
-						rows = (double) b.ngran * REPEAT * FX_ROWS;
+						bytes = (double) b.bytes_per_rep * b.repeat,
+						rows = (double) b.ngran * b.repeat * FX_ROWS;
 
-			printf("%-36s %2d granules 1T %9.1f MB/s %8.2f Mrows/s | 4T %9.1f MB/s %8.2f Mrows/s | 4T/1T %.2fx%s\n", works[k].name, b.ngran, b.bytes_per_pass / m1 / 1e6, rows / m1 / 1e6,
-				   b.bytes_per_pass / m4 / 1e6, rows / m4 / 1e6, m1 / m4, atomic_load(&b.declined) ? " (granules left to the decoder)" : "");
+			printf("%-36s %2d granules 1T %9.1f MB/s %8.2f Mrows/s | 4T %9.1f MB/s %8.2f Mrows/s | 4T/1T %.2fx%s\n", works[k].name, b.ngran, bytes / m1 / 1e6, rows / m1 / 1e6,
+				   bytes / m4 / 1e6, rows / m4 / 1e6, m1 / m4, atomic_load(&b.declined) ? " (granules left to the decoder)" : "");
 		}
 	}
 	load_line("end");
