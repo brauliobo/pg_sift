@@ -25,6 +25,7 @@ typedef struct LeafTerm
 typedef struct EvalLeaf
 {
 	const SiftQNode *node;
+	uint8		field;			/* the index field the leaf searches (1..), 0: the whole text */
 	SiftTermMatcher *m;			/* NULL for a plain term */
 	uint32		hash;			/* plain term: sift_term_hash */
 	bool		scoring;		/* a positive leaf: counts in the score */
@@ -142,6 +143,19 @@ struct SiftPlan
 	const SiftAttrTest *attrs;	/* ranked search: tests of INCLUDE columns the docs of a block pass before they are scored */
 	int			nattrs;
 	SiftBm25	bm;
+	/*
+	 * A leaf of a field is scored with the length of the field in the doc and the average of that length over the docs that keep it (the live docs of the
+	 * segments of format SIFT_SEGFMT_FIELDDL and of the write buffers): the sums here, and bmf the parameters made of them. The segments of older formats
+	 * do not keep it: their docs score the whole text's length.
+	 */
+	int			nfields;
+	uint32		fmask;			/* the fields (bit f - 1) a scoring leaf searches */
+	bool		fscored;		/* some doc has the lengths of its fields */
+	uint64		seg_fdocs;
+	uint64		seg_fsum[SIFT_MAX_FIELDS];
+	uint64		wbuf_fdocs;
+	uint64		wbuf_fsum[SIFT_MAX_FIELDS];
+	SiftBm25	bmf[SIFT_MAX_FIELDS];
 	SiftPlanStats stats;
 };
 
@@ -159,6 +173,10 @@ typedef struct SharedBind
 	uint64		seg_sum_dl;
 	uint64		wbuf_ndocs;
 	uint64		wbuf_sum_dl;
+	uint64		seg_fdocs;
+	uint64		seg_fsum[SIFT_MAX_FIELDS];
+	uint64		wbuf_fdocs;
+	uint64		wbuf_fsum[SIFT_MAX_FIELDS];
 	int64		nmhit;
 	int			nleaves;
 } SharedBind;
@@ -312,6 +330,8 @@ typedef struct RankWork
 {
 	float4		scores[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	float4		knorm[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
+	float4	   *fknorm[SIFT_MAX_FIELDS];	/* the same from the length of a field, for the fields the plan searches (rank_field_knorm) */
+	const float4 *lknorm[SIFT_MAX_FIELDS];	/* what the leaves of a field are scored with in the block: fknorm, or knorm for a segment without field lengths */
 	float4		leafbuf[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	float4		tmp[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
 	float4		vals[BLK_SLOTS] pg_attribute_aligned(SIFT_SIMD_ALIGN);
@@ -413,6 +433,11 @@ cursor_buf(MemoryContext cx)
 {
 	return MemoryContextAllocAligned(cx, SIFT_CUR_BUF, SIFT_SIMD_ALIGN, 0);
 }
+
+/* eval_fields.c: the averages of the lengths of the fields, and the norms a block's leaves of a field are scored with */
+extern SIFT_INTERNAL void bind_field_totals(SiftPlan *p, const void *shared);
+extern SIFT_INTERNAL void bind_field_params(SiftPlan *p, float4 k1, float4 b);
+extern SIFT_INTERNAL void rank_field_knorm(SiftPlan *p, SiftSegment *seg, const SiftDocChunk *dc, int block, uint32 want, RankWork *wk);
 
 /* wbind.c */
 extern SIFT_INTERNAL void bind_wbuf(SiftPlan *p);

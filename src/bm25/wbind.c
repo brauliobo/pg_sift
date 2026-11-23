@@ -259,14 +259,18 @@ wbufdoc_copy(MemoryContext cx, const SiftWbufDoc *d)
 	uint32	   *hash;
 	uint8	   *tf,
 			   *len;
+	uint16	   *fdl;
 
 	for (int i = 0; i < d->nterms; i++)
 		tl += d->len[i];
-	c = MemoryContextAlloc(cx, sizeof(SiftWbufDoc) + d->nterms * (sizeof(uint32) + 2) + tl);
-	hash = (uint32 *) (c + 1);
+	c = MemoryContextAlloc(cx, sizeof(SiftWbufDoc) + SIFT_MAX_FIELDS * sizeof(uint16) + d->nterms * (sizeof(uint32) + 2) + tl);
+	fdl = (uint16 *) (c + 1);
+	hash = (uint32 *) (fdl + SIFT_MAX_FIELDS);
 	tf = (uint8 *) (hash + d->nterms);
 	len = tf + d->nterms;
 	*c = *d;
+	if (d->field_dl)
+		c->field_dl = memcpy(fdl, d->field_dl, d->nfields * sizeof(uint16));
 	c->hash = memcpy(hash, d->hash, d->nterms * sizeof(uint32));
 	c->tf = memcpy(tf, d->tf, d->nterms);
 	c->len = memcpy(len, d->len, d->nterms);
@@ -291,8 +295,9 @@ bind_wbuf(SiftPlan *p)
 
 	for (int i = 0; i < p->nwbuf && !p->capped; i++)
 	{
+		/* the lengths of the fields are summed over every doc, not those of the pages the filter keeps */
 		SiftWbufReader *r = sift_wbuf_open(p->st->index, &p->st->dir->segs[p->wbufno[i]], p->mcxt,
-										 p->scoring ? wbuf_scored_ok : wbuf_page_ok, p);
+										 p->scoring && p->fmask ? NULL : p->scoring ? wbuf_scored_ok : wbuf_page_ok, p);
 		SiftWbufDoc	doc;
 		uint64		n,
 					sum,
@@ -307,6 +312,12 @@ bind_wbuf(SiftPlan *p)
 				dead_docs++;
 				dead_dl += doc.dl;
 				continue;
+			}
+			if (p->scoring && p->fmask && doc.field_dl)
+			{
+				p->wbuf_fdocs++;
+				for (int f = 0; f < doc.nfields; f++)
+					p->wbuf_fsum[f] += doc.field_dl[f];
 			}
 			doc_hits(p, &tab, &doc, hit, ent);
 			if (!doc_matches(p, p->root, hit))
@@ -349,8 +360,11 @@ sift_plan_export(const SiftPlan *p, Size *len)
 {
 	StringInfoData buf;
 	SharedBind	h = {.dir_len = sift_dir_bytes(p->st->dir),.seg_ndocs = p->seg_ndocs,.seg_sum_dl = p->seg_sum_dl,
-					 .wbuf_ndocs = p->wbuf_ndocs,.wbuf_sum_dl = p->wbuf_sum_dl,
+					 .wbuf_ndocs = p->wbuf_ndocs,.wbuf_sum_dl = p->wbuf_sum_dl,.seg_fdocs = p->seg_fdocs,.wbuf_fdocs = p->wbuf_fdocs,
 					 .nmhit = p->nmhit, .nleaves = p->nleaves};
+
+	memcpy(h.seg_fsum, p->seg_fsum, sizeof(h.seg_fsum));
+	memcpy(h.wbuf_fsum, p->wbuf_fsum, sizeof(h.wbuf_fsum));
 
 	initStringInfo(&buf);
 	appendBinaryStringInfo(&buf, &h, sizeof(h));
@@ -408,6 +422,8 @@ import_wbuf(SiftPlan *p, const SharedBind *h)
 	SIFT_INVARIANT(h->nleaves == p->nleaves, "sift: parallel participants bound different queries");
 	p->wbuf_ndocs = h->wbuf_ndocs;
 	p->wbuf_sum_dl = h->wbuf_sum_dl;
+	p->wbuf_fdocs = h->wbuf_fdocs;
+	memcpy(p->wbuf_fsum, h->wbuf_fsum, sizeof(p->wbuf_fsum));
 	p->nmhit = h->nmhit;
 	p->mhit = MemoryContextAlloc(p->mcxt, Max(h->nmhit, 1) * sizeof(WbufHit));
 	for (int64 i = 0; i < h->nmhit; i++, at += sizeof(SharedHit))
@@ -554,6 +570,7 @@ bind_scoring(SiftPlan *p)
 	const SiftOptions *o = sift_index_options(p->st->index);
 
 	sift_kern_bm25_init(&p->bm, (float4) o->k1, (float4) o->b, p->stats.avgdl > 0 ? (float4) p->stats.avgdl : 1.0f);
+	bind_field_params(p, (float4) o->k1, (float4) o->b);
 	for (int i = 0; i < p->nleaves; i++)
 		if (p->leaves[i].scoring)
 			weigh_leaf(p, &p->leaves[i]);
@@ -606,7 +623,8 @@ score_wbuf(SiftPlan *p)
 		}
 		for (int j = 0; j < p->nleaves; j++)
 			if (p->leaves[j].scoring && best[j] > 0)
-				score += sift_kern_bm25(w[j], best[j], knorm);
+				score += sift_kern_bm25(w[j], best[j], p->leaves[j].field && d->field_dl ?
+										sift_kern_knorm1(&p->bmf[p->leaves[j].field - 1], d->field_dl[p->leaves[j].field - 1]) : knorm);
 		h->score = score;
 	}
 	wbuf_tab_free(&tab);

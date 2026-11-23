@@ -138,6 +138,7 @@ typedef struct SiftDoc SiftDoc;
 
 extern SiftDoc *sift_doc_open(SiftAnalyzer *a, const char *text, int len);
 extern int	sift_doc_ntokens(const SiftDoc *d);
+extern int	sift_doc_field_dl(SiftDoc *d, int field);	/* the length of the field-th section as the index keeps it: the tokens of its distinct words (sift_field_dl) */
 extern int	sift_doc_tf(SiftDoc *d, int i);	/* occurrences of distinct term i */
 extern int	sift_doc_term_tf(SiftDoc *d, const char *term, int len);	/* occurrences of an index term, a prefix term (SEP prefix) included; 0 when absent */
 extern int	sift_doc_leaf_tf(SiftDoc *d, const SiftQNode *leaf);	/* most occurrences of one word an expansion leaf matches, in its field */

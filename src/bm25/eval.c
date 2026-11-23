@@ -127,7 +127,7 @@ typedef struct Place
 } Place;
 
 static EvalNode *
-en_leaf(SiftPlan *p, const SiftQNode *node, Place at, const SiftQNode *phrase)
+en_leaf(SiftPlan *p, const SiftQNode *node, Place at, const SiftQNode *phrase, int field)
 {
 	EvalNode   *n = en_make(p, EN_LEAF, 0, NULL);
 
@@ -136,8 +136,10 @@ en_leaf(SiftPlan *p, const SiftQNode *node, Place at, const SiftQNode *phrase)
 		p->maxleaves = Max(8, 2 * p->maxleaves);
 		SIFT_REGROW_IN(p->mcxt, p->leaves, p->maxleaves * sizeof(EvalLeaf));
 	}
-	p->leaves[p->nleaves] = (EvalLeaf) {.node = node,.scoring = at.positive,.phrase = phrase,
+	p->leaves[p->nleaves] = (EvalLeaf) {.node = node,.field = field,.scoring = at.positive,.phrase = phrase,
 	.optional = phrase && !at.required};
+	if (field && at.positive)
+		p->fmask |= 1U << (field - 1);
 	p->rescore |= phrase && at.positive && !at.required;
 	n->leaf = p->nleaves++;
 	return n;
@@ -161,7 +163,7 @@ term_leaf(SiftPlan *p, const SiftQNode *n, const char *text, int len, Place at, 
 	t->boost = n->boost;
 	t->text = (char *) text;
 	t->textlen = len;
-	return en_leaf(p, t, at, phrase);
+	return en_leaf(p, t, at, phrase, n->field);
 }
 
 /*
@@ -321,9 +323,9 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 		case SQ_PREFIX:
 			if (n->kind == SQ_TERM ? n->field : n->gram)
 				return indexed_leaf(p, n, at);
-			return en_leaf(p, n, at, NULL);
+			return en_leaf(p, n, at, NULL, n->field);
 		default:
-			return en_leaf(p, n, at, NULL);
+			return en_leaf(p, n, at, NULL, n->field);
 	}
 }
 
@@ -703,6 +705,7 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 	p->queries = queries;
 	p->nqueries = nqueries;
 	p->mcxt = st->mcxt;
+	p->nfields = sift_analyzer_nfields(st->analyzer);
 	p->segno = MemoryContextAlloc(st->mcxt, Max(st->dir->nsegs, 1) * sizeof(int));
 	p->wbufno = MemoryContextAlloc(st->mcxt, Max(st->dir->nsegs, 1) * sizeof(int));
 	for (int i = 0; i < st->dir->nsegs; i++)
@@ -743,6 +746,7 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 		p->sure = sure_tree(p);
 	for (int i = 0; i < p->nleaves; i++)
 		resolve_leaf(p, &p->leaves[i]);
+	bind_field_totals(p, shared);
 	if (shared)
 		import_wbuf(p, shared);
 	else

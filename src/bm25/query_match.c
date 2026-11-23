@@ -4,6 +4,7 @@
 #include "core/host.h"
 
 #include "bm25/query.h"
+#include "core/cmp.h"
 #include "bm25/query_int.h"
 
 /* ---------------------------------------------------------------- term matchers */
@@ -542,6 +543,38 @@ sift_doc_open(SiftAnalyzer *a, const char *text, int len)
 
 	doc_init(d, a, text, len);
 	return d;
+}
+
+static int
+token_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftToken *x = &((const SiftDoc *) arg)->tok[*(const int *) a],
+			   *y = &((const SiftDoc *) arg)->tok[*(const int *) b];
+
+	return sift_term_cmp(x->str, x->len, y->str, y->len);
+}
+
+/* The words of the section, each as often as the index counts it (once per token, at most SIFT_MAX_TF times, and not at all when its field term would exceed a term) */
+int
+sift_doc_field_dl(SiftDoc *d, int field)
+{
+	int		   *idx = palloc(Max(d->ntok, 1) * sizeof(int));
+	int			n = 0,
+				dl = 0;
+
+	for (int t = 0; t < d->ntok; t++)
+		if ((d->sec ? d->sec[t] : 0) + 1 == field)
+			idx[n++] = t;
+	qsort_arg(idx, n, sizeof(int), token_cmp, d);
+	for (int i = 0, j; i < n; i = j)
+	{
+		for (j = i; j < n && token_cmp(&idx[i], &idx[j], d) == 0; j++)
+			;
+		if (1 + d->tok[idx[i]].len <= SIFT_MAX_TERM_BYTES)
+			dl += Min(j - i, SIFT_MAX_TF);
+	}
+	pfree(idx);
+	return Min(dl, SIFT_MAX_DL);
 }
 
 int

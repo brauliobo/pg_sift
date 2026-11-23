@@ -353,6 +353,7 @@ leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, const uint64 *cand, float4
 	int			nt = p->leaves[leaf].nterms[rs->s],
 				np = 0;
 	bool		first = true;
+	const float4 *knorm = p->leaves[leaf].field ? wk->lknorm[p->leaves[leaf].field - 1] : wk->knorm;
 
 	for (int i = 0; i < nt; i++)
 		np += term_in_block(&t[i], b);
@@ -383,7 +384,7 @@ leaf_accum(SiftPlan *p, RankSeg *rs, int leaf, int b, const uint64 *cand, float4
 			zero_rows(wk->tmp, wk->tmc[0]);
 			out = wk->tmp;
 		}
-		sift_kern->bm25_sel(out, wk->tm[0], cand, SIFT_BLK_PAGES, term_block_tf(p->mcxt, &t[i], b, wk), wk->knorm, t[i].w);
+		sift_kern->bm25_sel(out, wk->tm[0], cand, SIFT_BLK_PAGES, term_block_tf(p->mcxt, &t[i], b, wk), knorm, t[i].w);
 		if (!first)
 			sift_kern->max_merge(wk->leafbuf, wk->tmp, wk->tmc[0], SIFT_BLK_PAGES);
 		first = false;
@@ -739,6 +740,7 @@ score_block(SiftRanker *r, RankSeg *rs, const sift_grp *g, const SiftFilterSB *f
 	if (!any)
 		return 0;
 	sift_kern->knorm(wk->knorm, wk->dl, wk->res[0], SIFT_BLK_PAGES, &p->bm);
+	rank_field_knorm(p, seg, dc, b, want, wk);
 	if (n > 1 && theta > -INFINITY)
 		return score_pruned(p, rs, b, theta, wk, r->ord, r->rest, n);
 	score_canonical(p, rs, b, wk->res[0], wk);

@@ -47,6 +47,7 @@ core/filter.c
 core/tidbridge.c
 core/format_ux.c
 bm25/eval.c
+bm25/eval_fields.c
 bm25/tail.c
 bm25/wbind.c
 bm25/wmemo.c

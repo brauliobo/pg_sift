@@ -579,6 +579,9 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 	r->k = k;
 	r->tmpcx = sift_mem_allocset_create(plan->mcxt, "sift candidate");
 	r->wk = MemoryContextAllocAligned(plan->mcxt, sizeof(RankWork), SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
+	for (int f = 0; f < plan->nfields; f++)
+		if (plan->scoring && (plan->fmask >> f & 1))
+			r->wk->fknorm[f] = MemoryContextAllocAligned(plan->mcxt, sizeof(float4) * BLK_SLOTS, SIFT_SIMD_ALIGN, 0);
 	r->leafub = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));
 	r->ord = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(int));
 	r->rest = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));

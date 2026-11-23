@@ -332,7 +332,8 @@ doc_score(SiftPlan *p, SiftDoc *d)
 		const EvalLeaf *l = &p->leaves[i];
 
 		if (l->scoring && !(l->phrase && !sift_doc_match(d, l->phrase)))
-			score += doc_leaf_score(l, d, kn);
+			score += doc_leaf_score(l, d, l->field && p->fscored ?
+									sift_kern_knorm1(&p->bmf[l->field - 1], sift_doc_field_dl(d, l->field)) : kn);
 	}
 	return score;
 }
