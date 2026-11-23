@@ -15,7 +15,7 @@
 #define SIFT_AUX_MARKS_PERMYRIAD	15		/* of the data of the part, what the marks may take, and as much the statistics */
 #define SIFT_AUX_STATS_PERMYRIAD	15
 #define SIFT_AUX_SKIP_COMP_PERMILLE	5		/* of the data that compresses, what the skip index may take */
-#define SIFT_AUX_MARKS_LOOKUP_NG	8		/* above this many granules the marks are what a lookup of the key reads, not an aid: they are kept at what they take (charged, not capped) */
+#define SIFT_AUX_MARKS_LOOKUP_NG	1		/* above this many granules the marks are what a lookup of the key reads, not an aid: they are kept at what they take (charged, not capped) */
 #define SIFT_AUX_STATS_MIN_ROWS		4096
 #define SIFT_AUX_SKIP_MIN_ROWS		16384
 #define SIFT_AUX_KLL_MIN_ROWS		32768
