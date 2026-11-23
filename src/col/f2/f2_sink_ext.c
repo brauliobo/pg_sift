@@ -10,6 +10,7 @@
 #include "col/am.h"
 #include "col/f2/delvec.h"
 #include "col/f2/f2_cache.h"
+#include "col/f2/f2_pull_prune.h"
 #include "col/f2/f2_sink_ext.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/l0_stage.h"
@@ -45,7 +46,9 @@ struct SiftF2Pull
 	SiftGranuleDesc *dir;
 	SiftDv	   *dv;
 	SiftTidIndexEntry *tix;
-	uint32		g;
+	uint32		g;				/* the granule being read */
+	SiftF2PullPrune prune;
+	SiftF2PullStats stats;
 
 	uint32		n;				/* the rows of the granule or slab being sliced, and the next slice's first */
 	uint32		off;
@@ -61,6 +64,8 @@ struct SiftF2Pull
 	uint64	   *doc_valid;
 	void	   *child_data[SIFT_F2_PULL_MAX_CHILD];
 	uint64	   *child_valid[SIFT_F2_PULL_MAX_CHILD];
+	SiftVecType child_type[SIFT_F2_PULL_MAX_CHILD];
+	SiftGranuleDict *child_dict[SIFT_F2_PULL_MAX_CHILD];
 	uint32		n_elems;
 	SiftGranVecCursor cur[SIFT_F2_PULL_MAX_COLS];	/* the cursor of each column of the granule, opened by its first slice: the chunk is opened once for all of them */
 	bool		cur_on[SIFT_F2_PULL_MAX_COLS];
@@ -108,6 +113,7 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 	p->pcx = sift_mem_allocset_create(cx, "sift f2 pull part");
 	p->gcx = sift_mem_allocset_create(cx, "sift f2 pull granule");
 	p->r = sift_col_rel(index);
+	sift_f2_pull_prune_begin(&p->prune, index, spec);
 	sift_stage_flush(index);
 	{
 		int			nstaged;
@@ -126,6 +132,12 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 	for (int m = 0; m < spec->nmasks; m++)
 		p->mbits[m] = MemoryContextAllocZero(cx, SIFT_VEC_WORDS * sizeof(uint64));
 	return p;
+}
+
+const SiftF2PullStats *
+sift_f2_pull_stats(const SiftF2Pull *p)
+{
+	return &p->stats;
 }
 
 void
@@ -193,27 +205,34 @@ begin_part(SiftF2Pull *p)
 		if (p->tix == NULL || tlen != (uint64) p->part->hdr.ngranules * sizeof(*p->tix))
 			SIFT_SEG_CORRUPT(p->index, p->part->hdr.part_gen, "The part has no usable TID index.");
 	}
-	p->g = 0;
+	sift_f2_pull_prune_open(&p->prune, p->index, p->part, p->dir, &p->stats);
 	MemoryContextSwitchTo(old);
 }
 
-/* the leaves the granule is read for: the _tid, the columns, the keys, the lengths of the arrays and their elements */
+/* the leaves a granule is first read for: the _tid and the lengths of the arrays, which say which rows are live and where the elements are before any column is read */
 static int
-granule_chunks(const SiftF2Pull *p, int *chunks)
+head_chunks(const SiftF2Pull *p, int *chunks)
 {
 	int			nc = 0;
 
 	chunks[nc++] = SIFT_COL_TID_IDX;
+	if (p->spec.group_leaf >= 0)
+		chunks[nc++] = p->spec.group_leaf + 1;
+	return nc;
+}
+
+/* the leaves of a granule that is not ruled out: the columns, the keys, and the elements when the granule has any */
+static int
+body_chunks(const SiftF2Pull *p, int *chunks)
+{
+	int			nc = 0;
+
 	for (int i = 0; i < p->spec.ncols; i++)
 		chunks[nc++] = p->spec.col[i].leaf + 1;
 	for (int m = 0; m < p->spec.nmasks; m++)
 		chunks[nc++] = p->spec.mask[m].leaf + 1;
-	if (p->spec.group_leaf >= 0)
-	{
-		chunks[nc++] = p->spec.group_leaf + 1;
-		for (int c = 0; c < p->spec.nchild; c++)
-			chunks[nc++] = p->spec.child[c].leaf + 1;
-	}
+	for (int c = 0; p->n_elems > 0 && c < p->spec.nchild; c++)
+		chunks[nc++] = p->spec.child[c].leaf + 1;
 	return nc;
 }
 
@@ -232,34 +251,74 @@ close_cursors(SiftF2Pull *p)
 	p->nchild_cur = 0;
 }
 
+/* an element column held as a dictionary in this granule: its codes, whole, and the dictionary they name; false when the chunk is no dictionary */
+static bool
+decode_child_codes(SiftF2Pull *p, int c)
+{
+	const uint32 n = p->n_elems;
+	uint32	   *codes = MemoryContextAllocAligned(p->gcx, Max((Size) n * sizeof(uint32), 1) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	bool	   *isnull = palloc(Max(n, 1));
+	SiftGranuleDict *dict = palloc(sizeof(SiftGranuleDict));
+
+	if (!sift_granule_str_codes(&p->gv, p->spec.child[c].leaf, codes, isnull, dict))
+		return false;
+	p->child_valid[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+	for (uint32 e = 0; e < n; e++)
+		p->child_valid[c][e >> 6] |= (uint64) !isnull[e] << (e & 63);
+	p->child_data[c] = codes;
+	p->child_dict[c] = dict;
+	p->child_type[c] = SVEC_DICT32;
+	return true;
+}
+
+/* an element column decoded batch by batch into whole-granule arrays of the cells of its type */
+static void
+decode_child_vec(SiftF2Pull *p, int c, SiftVecType type)
+{
+	const Size	es = esize(type);
+	const uint32 words = (p->n_elems + 63) / 64 + 1;
+	SiftVec		tmp = {.type = type,.scale = p->spec.child[c].scale};
+	uint64		tv[SIFT_VEC_WORDS];
+
+	tmp.data = palloc_aligned(SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	tmp.valid = tv;
+	sift_vec_cursor_open(&p->gv, p->spec.child[c].leaf, type, &p->child_cur[p->nchild_cur++]);
+	p->child_data[c] = palloc(Max((Size) p->n_elems * es, 1) + SIFT_VEC_PAD);
+	p->child_valid[c] = palloc0(words * sizeof(uint64));
+	p->child_type[c] = type;
+	for (uint32 at = 0; at < p->n_elems; at += SIFT_VEC_LEN)
+	{
+		const uint16 cnt = (uint16) Min(SIFT_VEC_LEN, p->n_elems - at);
+		const SiftVariantExcStream *exc = NULL;
+
+		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], (uint16) at, cnt, &tmp, &exc);
+		memcpy((char *) p->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
+		for (uint16 i = 0; i < cnt; i++)
+			if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))
+				p->child_valid[c][(at + i) >> 6] |= UINT64CONST(1) << ((at + i) & 63);
+	}
+}
+
 static void
 decode_children(SiftF2Pull *p)
 {
-	const SiftF2PullSpec *spec = &p->spec;
-
-	for (int c = 0; c < spec->nchild; c++)
+	for (int c = 0; c < p->spec.nchild; c++)
 	{
-		const Size	es = esize(spec->child[c].type);
-		const uint32 words = (p->n_elems + 63) / 64 + 1;
-		SiftVec		tmp = {.type = spec->child[c].type,.scale = spec->child[c].scale};
-		uint64		tv[SIFT_VEC_WORDS];
+		const bool	dict = p->spec.child[c].type == SVEC_DICT32;
 
-		tmp.data = palloc_aligned(SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
-		tmp.valid = tv;
-		sift_vec_cursor_open(&p->gv, spec->child[c].leaf, tmp.type, &p->child_cur[c]);
-		p->nchild_cur = c + 1;
-		p->child_data[c] = palloc(Max((Size) p->n_elems * es, 1) + SIFT_VEC_PAD);
-		p->child_valid[c] = palloc0(words * sizeof(uint64));
-		for (uint32 at = 0; at < p->n_elems; at += SIFT_VEC_LEN)
+		p->child_dict[c] = NULL;
+		if (p->n_elems == 0)
 		{
-			const uint16 cnt = (uint16) Min(SIFT_VEC_LEN, p->n_elems - at);
-			const SiftVariantExcStream *exc = NULL;
-
-			sift_vec_cursor_decode(&p->child_cur[c], (uint16) at, cnt, &tmp, &exc);
-			memcpy((char *) p->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
-			for (uint16 i = 0; i < cnt; i++)
-				if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))
-					p->child_valid[c][(at + i) >> 6] |= UINT64CONST(1) << ((at + i) & 63);
+			p->child_type[c] = dict ? SVEC_STRVIEW : p->spec.child[c].type;
+			p->child_data[c] = palloc0(SIFT_VEC_PAD);
+			p->child_valid[c] = palloc0(sizeof(uint64));
+		}
+		else if (dict && decode_child_codes(p, c))
+			p->stats.child_dict_granules++;
+		else
+		{
+			decode_child_vec(p, c, dict ? SVEC_STRVIEW : p->spec.child[c].type);
+			p->stats.child_str_granules += dict;
 		}
 	}
 }
@@ -289,7 +348,6 @@ begin_layout(SiftF2Pull *p)
 		p->doc_valid[r >> 6] |= (uint64) !isnull[r] << (r & 63);
 	}
 	p->n_elems = p->lay.n_elems;
-	decode_children(p);
 }
 
 static void
@@ -302,20 +360,51 @@ finish_live(SiftF2Pull *p, const uint64 *dead)
 	{
 		bool		ok = dead == NULL || !((dead[r >> 6] >> (r & 63)) & 1);
 
-		if (ok && p->px != NULL && (p->is_slab ? true : sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g - 1])) && sift_pdel_idx_has(p->px, p->tids[r]))
+		if (ok && p->px != NULL && (p->is_slab ? true : sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g])) && sift_pdel_idx_has(p->px, p->tids[r]))
 			ok = false;
 		p->live[r >> 6] |= (uint64) ok << (r & 63);
 	}
 }
 
+/* a live row whose array the columns cannot hold: the consumer reads it from the heap, so the zones of the elements say nothing of it */
+static bool
+live_poison(const SiftF2Pull *p)
+{
+	for (uint32 w = 0; w < (p->n + 63) / 64; w++)
+		if (p->live[w] & p->poison[w])
+			return true;
+	return false;
+}
+
+/* whether the zones of the element leaves say that no element of the granule passes */
+static bool
+elems_ruled_out(const SiftF2Pull *p)
+{
+	return p->spec.nelem_pred > 0 && p->has_layout && sift_f2_pull_prune_elems(&p->prune, p->g, p->n_elems);
+}
+
+/* no element: every row has an empty array, and the elements are not read; the rows the layout cannot hold are still the consumer's */
 static void
+empty_layout(SiftF2Pull *p)
+{
+	const uint32 *zeros = palloc0((p->n + 2) * sizeof(uint32));
+
+	p->lay = (SiftArrayLayout) {.n_parents = p->n,.n_elems = 0,.block_elem_off = zeros,.lengths = zeros,.offsets = zeros};
+	p->n_elems = 0;
+}
+
+/*
+ * A granule of the part: the _tid and the lengths first, then the rest. When the zones of the elements rule every element out the granule is not read, but for the rows the layout cannot hold (they
+ * come with no element); false when it is not read at all.
+ */
+static bool
 begin_granule(SiftF2Pull *p)
 {
-	const uint32 g = p->g++;
 	int			chunks[3 + SIFT_F2_PULL_MAX_COLS + SIFT_F2_PULL_MAX_MASKS + SIFT_F2_PULL_MAX_CHILD];
-	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, g) : NULL;
+	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, p->g) : NULL;
 	uint64		dead[SIFT_DV_MASK_WORDS];
 	bool		any_dead = false;
+	bool		no_elems;
 	MemoryContext old;
 	uint64	   *tids;
 
@@ -323,8 +412,8 @@ begin_granule(SiftF2Pull *p)
 	MemoryContextReset(p->gcx);
 	old = MemoryContextSwitchTo(p->gcx);
 	p->is_slab = false;
-	sift_lazy_granule_open(p->index, p->part, g, &p->lg);
-	sift_lazy_granule_load(p->index, &p->lg, chunks, granule_chunks(p, chunks));
+	sift_lazy_granule_open(p->index, p->part, p->g, &p->lg);
+	sift_lazy_granule_load(p->index, &p->lg, chunks, head_chunks(p, chunks));
 	p->gv = sift_granule_open_part(p->index, p->part, p->lg.rec, p->lg.gd.data_len, &p->lg.gd);
 	p->n = p->lg.gd.nrows;
 	p->off = 0;
@@ -336,7 +425,25 @@ begin_granule(SiftF2Pull *p)
 	finish_live(p, any_dead ? dead : NULL);
 	if (p->spec.group_leaf >= 0)
 		begin_layout(p);
+	no_elems = elems_ruled_out(p);
+	if (no_elems && !live_poison(p))
+	{
+		p->stats.granules_elem_skipped++;
+		MemoryContextSwitchTo(old);
+		return false;
+	}
+	if (no_elems)
+	{
+		empty_layout(p);
+		p->stats.granules_elem_elided++;
+	}
+	sift_lazy_granule_load(p->index, &p->lg, chunks, body_chunks(p, chunks));
+	p->stats.child_chunks += p->n_elems > 0 ? p->spec.nchild : 0;
+	if (p->spec.group_leaf >= 0 && p->has_layout)
+		decode_children(p);
+	p->stats.granules_read++;
 	MemoryContextSwitchTo(old);
+	return true;
 }
 
 static void
@@ -372,10 +479,11 @@ advance(SiftF2Pull *p)
 {
 	for (;;)
 	{
-		if (p->part != NULL && p->g < p->part->hdr.ngranules)
+		if (p->part != NULL && sift_f2_pull_prune_next(&p->prune, &p->g, &p->stats))
 		{
-			begin_granule(p);
-			return true;
+			if (begin_granule(p))
+				return true;
+			continue;
 		}
 		p->part = NULL;
 		if (p->slab_pending)
@@ -387,11 +495,23 @@ advance(SiftF2Pull *p)
 		}
 		if (p->e != NULL && p->pi < p->list->nparts)
 		{
-			begin_part(p);
+			if (sift_f2_pull_prune_part(&p->prune, &p->list->parts[p->pi]))
+			{
+				p->pi++;
+				p->stats.parts_skipped++;
+			}
+			else
+				begin_part(p);
 			continue;
 		}
 		if (p->ent >= p->plan->npartitions)
 			return false;
+		if (sift_f2_pull_prune_entry(&p->prune, &p->plan->partitions[p->ent]))
+		{
+			p->ent++;
+			p->stats.partitions_skipped++;
+			continue;
+		}
 		begin_entry(p);
 	}
 }
@@ -502,10 +622,12 @@ fill_elems(SiftF2Pull *p, uint16 off, uint16 cnt)
 	else
 		es->layout = (SiftArrayLayout) {.n_parents = 0,.n_elems = 0,.block_elem_off = zero_offsets,.lengths = zero_offsets,.offsets = zero_offsets};
 	es->n_elems = p->n_elems;
-	for (int c = 0; c < p->spec.nchild; c++)
+	for (int c = 0; p->has_layout && c < p->spec.nchild; c++)
 	{
 		es->child_data[c] = p->child_data[c];
 		es->child_valid[c] = p->child_valid[c];
+		es->child_type[c] = p->child_type[c];
+		es->child_dict[c] = p->child_dict[c];
 	}
 	es->poison = p->poison + off / 64;
 	es->doc_valid = p->doc_valid + off / 64;
