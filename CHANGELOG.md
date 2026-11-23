@@ -4,6 +4,8 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Added: col: `sift_col` indexes of Format Major 2 take `INCLUDE` columns and `UNIQUE` (a duplicate is `23505` at the build and at each write, a writer waits for the transaction of a key in doubt, `NULLS NOT DISTINCT` is kept, `INSERT ... ON CONFLICT` works with the operator class of the type named in the index), and hold a column of any type (`point`, `tsvector`, `json`, `xml`, the geometric types, `oid`, `tid`, composites and their domains) as the image of its datum instead of refusing `CREATE INDEX`; a Format Major 1 index still refuses `INCLUDE` and `UNIQUE`.
+
 ## 6.0.0 - 2026-11-22
 
 - Fixed: col: a 5.x `sift_col` index whose text columns use the shared column value store is read by 6.0 as before (every segment dictionary that refers to the store is read from the store of the column, at the epoch it names), with no REINDEX; `sift.upgrade_check()` lists such an index as information, not as a blocker.
