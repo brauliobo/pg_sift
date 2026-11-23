@@ -1,7 +1,7 @@
 /*
- * bm25/amscan.c - index scan callbacks. Only bitmap scans exist: amgettuple
- * is NULL; ranked and ordered access go through the
- * planner's custom scan (M3).
+ * bm25/amscan.c - index scan callbacks. Queries are answered by bitmap scans, and ranked and ordered access go through the planner's custom
+ * scan (M3). amgettuple answers one question, asked by the executor's pre-check of INSERT ... ON CONFLICT: the rows that hold the key of the row
+ * to insert. The planner does not see it (core/quarantine_plan.c), so it never plans an index scan.
  */
 #include "postgres.h"
 
@@ -16,6 +16,7 @@
 #include "utils/timestamp.h"
 
 #include "bm25/am.h"
+#include "bm25/bm25_doc.h"
 #include "bm25/eval.h"
 #include "core/errctx.h"
 #include "core/maint_pacer.h"
@@ -25,13 +26,16 @@
 typedef struct SiftScanOpaque
 {
 	MemoryContext cxt;			/* state, plan and iterator of one rescan */
+	List	   *twins;			/* the rows of the key of an ON CONFLICT pre-check, once looked for */
+	int			next;
+	bool		probed;
 } SiftScanOpaque;
 
 IndexScanDesc
 sift_ambeginscan(Relation index, int nkeys, int norderbys)
 {
 	IndexScanDesc scan = RelationGetIndexScan(index, nkeys, norderbys);
-	SiftScanOpaque *so = palloc(sizeof(SiftScanOpaque));
+	SiftScanOpaque *so = palloc0(sizeof(SiftScanOpaque));
 
 	so->cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift scan");
 	scan->opaque = so;
@@ -46,6 +50,30 @@ sift_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int
 	if (keys && scan->numberOfKeys > 0)
 		memcpy(scan->keyData, keys, scan->numberOfKeys * sizeof(ScanKeyData));
 	MemoryContextReset(so->cxt);
+	so->twins = NIL;
+	so->next = 0;
+	so->probed = false;
+}
+
+/* The next row that holds the key of the scan keys: the executor compares what is left (an open transaction's row is waited for) */
+bool
+sift_amgettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	SiftScanOpaque *so = scan->opaque;
+
+	if (!so->probed)
+	{
+		MemoryContext old = MemoryContextSwitchTo(so->cxt);
+
+		so->twins = sift_bm25_unique_twins(scan->indexRelation, scan->heapRelation, scan->keyData, scan->numberOfKeys);
+		so->probed = true;
+		MemoryContextSwitchTo(old);
+	}
+	if (so->next >= list_length(so->twins))
+		return false;
+	scan->xs_heaptid = *(ItemPointer) list_nth(so->twins, so->next++);
+	scan->xs_recheck = false;
+	return true;
 }
 
 /* Adds the matches of one heap page to the bitmap; returns their number */
@@ -119,6 +147,11 @@ scan_queries(IndexScanDesc scan, SiftIndexState *st, SiftQuery **queries)
 		ScanKey		key = &scan->keyData[i];
 		text	   *q;
 
+		if (key->sk_strategy != SIFT_STRATEGY_MATCH)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("sift.=== is the equality of a UNIQUE sift key, for INSERT ... ON CONFLICT: it is not a query operator"),
+					 errhint("Search with col @@> 'query'.")));
 		if (key->sk_flags & SK_ISNULL)
 			return KEYS_NULL;
 		q = DatumGetTextPP(key->sk_argument);

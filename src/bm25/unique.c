@@ -265,6 +265,36 @@ sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const
 	return !duplicated;
 }
 
+/* The rows a speculative pre-check (INSERT ... ON CONFLICT) must look at: those a dirty snapshot sees with the key of the row about to be inserted, a row of an open transaction included */
+List *
+sift_bm25_unique_twins(Relation index, Relation heap, const ScanKeyData *keys, int nkeys)
+{
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	List	   *twins = NIL;
+	uint64		key;
+	Prober		p;
+
+	for (int k = 0; k < nkeys; k++)
+	{
+		values[keys[k].sk_attno - 1] = keys[k].sk_argument;
+		isnull[keys[k].sk_attno - 1] = (keys[k].sk_flags & SK_ISNULL) != 0;
+	}
+	if (!sift_bm25_unique_key(index, values, isnull, &key))
+		return NIL;
+	prober_open(&p, heap, index);
+	foreach_ptr(ItemPointerData, cand, candidates(index, key, CurrentMemoryContext))
+	{
+		TransactionId xwait;
+		uint32		token;
+
+		if (probe_row(&p, cand, values, isnull, &xwait, &token) != PROBE_FREE)
+			twins = lappend(twins, cand);
+	}
+	prober_close(&p);
+	return twins;
+}
+
 void
 sift_bm25_unique_release(Relation index, uint64 key)
 {

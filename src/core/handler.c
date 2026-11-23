@@ -633,10 +633,19 @@ sift_result_row(FunctionCallInfo fcinfo, Datum *values, bool *nulls)
 	return HeapTupleGetDatum(heap_form_tuple(BlessTupleDesc(tupdesc), values, nulls));
 }
 
+#if PG_VERSION_NUM >= 180000
+/* The strategy of the operator a UNIQUE key is compared with (INSERT ... ON CONFLICT): sift.=== of the operator classes */
+static StrategyNumber
+sift_amtranslatecmptype(CompareType cmptype, Oid opfamily)
+{
+	return cmptype == COMPARE_EQ ? SIFT_STRATEGY_KEY_EQUAL : InvalidStrategy;
+}
+#endif
+
 Datum
 sift_handler(PG_FUNCTION_ARGS)
 {
-	IndexAmRoutine *am = sift_am_routine(1, 0, false);
+	IndexAmRoutine *am = sift_am_routine(SIFT_STRATEGY_KEY_EQUAL, 0, false);
 
 	am->amcaninclude = true;
 	am->amcanmulticol = am->amcanunique = true;
@@ -652,6 +661,10 @@ sift_handler(PG_FUNCTION_ARGS)
 	am->ambeginscan = sift_ambeginscan;
 	am->amrescan = sift_amrescan;
 	am->amgetbitmap = sift_amgetbitmap;
+	am->amgettuple = sift_amgettuple;
+#if PG_VERSION_NUM >= 180000
+	am->amtranslatecmptype = sift_amtranslatecmptype;
+#endif
 	am->amendscan = sift_amendscan;
 	PG_RETURN_POINTER(am);
 }

@@ -17,6 +17,7 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/typcache.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -232,6 +233,27 @@ sift_match_any(PG_FUNCTION_ARGS)
 	hit = sift_query_match_doc(c->query, c->analyzer, doc, strlen(doc));
 	pfree(doc);
 	PG_RETURN_BOOL(hit);
+}
+
+PG_FUNCTION_INFO_V1(sift_key_equal);
+
+/* sift.===, the equality of the key columns of a UNIQUE index: strategy 3 of its operator classes, which the pre-check of INSERT ... ON CONFLICT is built with; no query uses it */
+Datum
+sift_key_equal(PG_FUNCTION_ARGS)
+{
+	Oid			type = get_fn_expr_argtype(fcinfo->flinfo, 0);
+	TypeCacheEntry *tc;
+
+	if (!OidIsValid(type))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("sift.=== is the equality of a UNIQUE sift key, for INSERT ... ON CONFLICT: it is not a query operator")));
+	tc = lookup_type_cache(type, TYPECACHE_EQ_OPR_FINFO);
+	if (!OidIsValid(tc->eq_opr))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_FUNCTION),
+				 errmsg("could not identify an equality operator for type %s", format_type_be(type))));
+	PG_RETURN_BOOL(DatumGetBool(FunctionCall2Coll(&tc->eq_opr_finfo, PG_GET_COLLATION(), PG_GETARG_DATUM(0), PG_GETARG_DATUM(1))));
 }
 
 /* sift.match(doc, query), the @@> operator: default analyzer */

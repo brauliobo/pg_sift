@@ -41,6 +41,9 @@ extern bool sift_bm25_unique_check(Relation index, Relation heap, const Datum *v
 								   ItemPointer tid, IndexUniqueCheck check, uint64 key);
 extern void sift_bm25_unique_release(Relation index, uint64 key);
 
+/* The pre-check of INSERT ... ON CONFLICT: the rows with the key the scan keys (one per key column, as the executor builds them) hold; they are rows of the key's term whose columns are equal */
+extern List *sift_bm25_unique_twins(Relation index, Relation heap, const ScanKeyData *keys, int nkeys);
+
 /* The keys of the rows a UNIQUE index build has seen, to refuse a duplicate before anything is written */
 typedef struct SiftUniqueBuild SiftUniqueBuild;
 extern SiftUniqueBuild *sift_unique_build_begin(Relation heap, Relation index, MemoryContext cx);

@@ -1,5 +1,6 @@
 /*
- * core/quarantine_plan.c - the planner does not offer an index that is out of service (core/quarantine.h).
+ * core/quarantine_plan.c - what the planner sees of the sift indexes: it does not offer one that is out of service (core/quarantine.h), and it does not know that the BM25
+ * access method can return tuples (amgettuple answers only the pre-check of INSERT ... ON CONFLICT, bm25/amscan.c), so no index scan of it is planned.
  *
  * The index leaves the index list of its relation, so every path, scan and plan that PostgreSQL, sift_col and BM25 build from it is gone and the statement is planned on the heap:
  * the plain plans give the answers the index would have. The hook is the first to be installed of the planner hooks of sift (_PG_init), and each of the others calls the one it
@@ -17,7 +18,7 @@
 #include "core/sift.h"
 
 static void
-drop_quarantined(RelOptInfo *rel)
+adjust_indexes(RelOptInfo *rel)
 {
 	const SiftCatalog *cat = sift_catalog();
 	ListCell   *lc;
@@ -30,6 +31,8 @@ drop_quarantined(RelOptInfo *rel)
 
 		if (ii->relam != cat->am && ii->relam != cat->col_am)
 			continue;
+		if (ii->relam == cat->am)
+			ii->amhasgettuple = false;
 		index = index_open(ii->indexoid, NoLock);
 		out = sift_index_quarantined(index);
 		if (out)
@@ -49,7 +52,7 @@ quarantine_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOp
 {
 	if (prev_info_hook)
 		prev_info_hook(root, relid, inhparent, rel);
-	drop_quarantined(rel);
+	adjust_indexes(rel);
 }
 
 void
@@ -66,7 +69,7 @@ quarantine_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *r
 {
 	if (prev_simple_rel_hook)
 		prev_simple_rel_hook(root, rel, rte);
-	drop_quarantined(rel);
+	adjust_indexes(rel);
 }
 
 void

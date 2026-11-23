@@ -7,6 +7,13 @@
 
 #include "access/amapi.h"
 
+/*
+ * The strategies of the sift operator classes: 1 is the match (col @@> 'query'), 3 the equality of a UNIQUE key (sift.===), which no query uses: the executor
+ * compares a key with it in the pre-check of INSERT ... ON CONFLICT (btree's own number for equality, which PostgreSQL 17 looks for)
+ */
+#define SIFT_STRATEGY_MATCH		1
+#define SIFT_STRATEGY_KEY_EQUAL	3
+
 /* core/handler.c: the IndexAmRoutine the handlers start from; they set the callbacks */
 extern IndexAmRoutine *sift_am_routine(int strategies, int support, bool multicol);
 
@@ -37,6 +44,7 @@ extern IndexScanDesc sift_ambeginscan(Relation index, int nkeys, int norderbys);
 extern void sift_amrescan(IndexScanDesc scan, ScanKey keys, int nkeys,
 						  ScanKey orderbys, int norderbys);
 extern int64 sift_amgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
+extern bool sift_amgettuple(IndexScanDesc scan, ScanDirection dir);
 extern void sift_amendscan(IndexScanDesc scan);
 
 #endif							/* SIFT_AM_H */
