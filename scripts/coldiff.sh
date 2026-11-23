@@ -4,13 +4,15 @@
 # and auto), the results are compared in the database (test/col/run.sql), and the plans are read to report which queries used
 # Custom Scan (SiftAgg).
 #
-#   scripts/coldiff.sh [--suite fixtures|analytics|all] [--corpus REGEX] [--rows N] [--bench] [--strict-shape] [--keep]
+#   scripts/coldiff.sh [--suite fixtures|analytics|all] [--corpus REGEX] [--rows N] [--bench] [--strict-shape] [--keep] [--format f2|f1|release]
 #   scripts/coldiff.sh [--slice K/N] [--list]   one of N disjoint slices of the corpus (the Kth of every N queries in name order); --list prints the queries the options select and stops
 #   scripts/coldiff.sh --selftest
 #
 #   --suite S           fixtures: the small orders table of test/col/fixture.sql, the corpus test/col/fixtures/*.sql and the scenarios
 #                       (the DML heap states); analytics: the corpus of bench/sql/analytics (SIFT_ANALYTICS_DIR, queries --queries GLOB)
 #                       on its generator (--rows orders, default 20000, --stores N); all (default) runs both
+#   --format F          the format of the indexes of the test databases: f2 (default: Format 2.0), f1 (Format 1, the testing build) or release (the
+#                       release build, which defines no test setting: nothing test-only is set or read; test/col/format.sh)
 #   --fail-fast         a stage that failed ends the run after its own report (the full tier: a red slice does not run the scenarios after it)
 #   --corpus REGEX      only the queries whose file name matches (name@K400 is the query on the set K400)
 #   --variants LIST     comma separated: off-par on on-par on-scalar on-par-scalar (the reference "off" always runs; default all five)
@@ -50,7 +52,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS=4000 DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
-VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
+FORMAT=f2 VARIANTS=off-par,on,on-par,on-scalar,on-par-scalar SCENARIOS=all SLICES=1 COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -59,16 +61,18 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 while (( $# )); do
 	case $1 in
 		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; --list) LIST=1 ;; -v|--verbose) VERBOSE=1 ;;
-		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,40p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
+		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,46p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
-		*) sed -n '2,40p' "$0"; exit 1 ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --format) FORMAT=$2; shift ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		*) sed -n '2,46p' "$0"; exit 1 ;;
 	esac
 	shift
 done
-[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,40p' "$0"; exit 1; }
+[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,46p' "$0"; exit 1; }
+. "$REPO/test/col/format.sh"
+format_valid "$FORMAT" || { sed -n '2,46p' "$0"; exit 1; }
 [[ -n $STORES ]] || STORES=$(( ROWS / 30 > 100 ? ROWS / 30 : 100 ))
 QUERIES=${QUERIES:-$ANALYTICS_DIR/queries/*.sql}
 # a variant list as a PostgreSQL array literal: the reference always runs
@@ -95,6 +99,7 @@ fresh_db() {
 	DBS+=("$1")
 	DB=$1
 	sql -c "CREATE EXTENSION pg_sift"
+	format_apply "$FORMAT"
 	sql -c "CREATE EXTENSION IF NOT EXISTS pg_sift_test" 2>/dev/null || true
 	sql -f "$REPO/test/col/run.sql"
 }
