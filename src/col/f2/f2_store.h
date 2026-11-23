@@ -130,6 +130,8 @@ typedef struct SiftF2Store
 	int			nconns;
 	struct SiftConnDecl *conns;
 
+	struct SiftF2Packer *packers;	/* a table: how each attribute with a leaf becomes a cell, made with the first row packed (f2_store.c); NULL before */
+	int			npackers;
 	struct SiftCompressPolicy *comp_policy;
 	struct SiftSkipPolicy *skip_policy;
 	struct SiftSketchPolicy *sketch_policy;

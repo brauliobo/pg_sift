@@ -299,27 +299,6 @@ wide_cell(SiftCell *c, const char *image, uint32 image_len)
 	c->slen = 0;
 }
 
-static void
-bare_cell(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c)
-{
-	MemoryContext old;
-	struct varlena *v;
-
-	if (att->atttypid == NAMEOID)
-	{
-		c->s = NameStr(*DatumGetName(d));
-		c->slen = strnlen(c->s, NAMEDATALEN);
-		return;
-	}
-	old = MemoryContextSwitchTo(row_cx);
-	v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
-	MemoryContextSwitchTo(old);
-	c->s = VARDATA_ANY(v);
-	c->slen = VARSIZE_ANY_EXHDR(v);
-	if (spill && c->slen > SIFT_F2_WIDE_THRESHOLD)
-		wide_cell(c, (const char *) v, VARSIZE_ANY(v));
-}
-
 Datum
 sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx)
 {
@@ -342,50 +321,134 @@ sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryC
 	return PointerGetDatum(v);
 }
 
+/* How the datum of an attribute becomes its cell, decided once from the attribute and the store and not for each value */
+typedef enum PackKind
+{
+	PACK_NUM64,
+	PACK_BARE_NAME,
+	PACK_BARE_VARLENA,
+	PACK_FLOAT4,
+	PACK_FLOAT8,
+	PACK_INT64,
+	PACK_INT32,
+	PACK_INT16,
+	PACK_INT8,
+	PACK_FIXED,
+	PACK_CSTRING,
+	PACK_VARLENA
+} PackKind;
+
+struct SiftF2Packer
+{
+	PackKind	kind;
+	uint8		scale;
+	int16		len;
+	int			attr;			/* the index of the attribute in the values of a row */
+	int			leaf;
+};
+
+static PackKind
+pack_kind(const SiftF2Store *store, Form_pg_attribute att, uint8 *scale)
+{
+	if (sift_f2_attr_num64(att, scale))
+		return PACK_NUM64;
+	if (store->headerless && sift_f2_attr_bare_bytes(att))
+		return att->atttypid == NAMEOID ? PACK_BARE_NAME : PACK_BARE_VARLENA;
+	if (att->attbyval)
+		return att->atttypid == FLOAT4OID ? PACK_FLOAT4 : att->atttypid == FLOAT8OID ? PACK_FLOAT8 :
+			att->attlen == 8 ? PACK_INT64 : att->attlen == 4 ? PACK_INT32 : att->attlen == 2 ? PACK_INT16 : PACK_INT8;
+	return att->attlen > 0 ? PACK_FIXED : att->attlen == -2 ? PACK_CSTRING : PACK_VARLENA;
+}
+
+static void
+pack_cell(const struct SiftF2Packer *k, Datum d, MemoryContext row_cx, bool spill, SiftCell *c)
+{
+	MemoryContext old;
+	struct varlena *v;
+
+	switch (k->kind)
+	{
+		case PACK_NUM64:
+			sift_f2_num64_cell(d, k->scale, row_cx, c);
+			return;
+		case PACK_BARE_NAME:
+			c->s = NameStr(*DatumGetName(d));
+			c->slen = strnlen(c->s, NAMEDATALEN);
+			return;
+		case PACK_BARE_VARLENA:
+			old = MemoryContextSwitchTo(row_cx);
+			v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+			MemoryContextSwitchTo(old);
+			c->s = VARDATA_ANY(v);
+			c->slen = VARSIZE_ANY_EXHDR(v);
+			if (spill && c->slen > SIFT_F2_WIDE_THRESHOLD)
+				wide_cell(c, (const char *) v, VARSIZE_ANY(v));
+			return;
+		case PACK_FLOAT4:
+			c->f = DatumGetFloat4(d);
+			return;
+		case PACK_FLOAT8:
+			c->f = DatumGetFloat8(d);
+			return;
+		case PACK_INT64:
+			c->i = DatumGetInt64(d);
+			return;
+		case PACK_INT32:
+			c->i = DatumGetInt32(d);
+			return;
+		case PACK_INT16:
+			c->i = DatumGetInt16(d);
+			return;
+		case PACK_INT8:
+			c->i = (int8) DatumGetChar(d);
+			return;
+		case PACK_FIXED:
+			c->s = DatumGetPointer(d);
+			c->slen = k->len;
+			return;
+		case PACK_CSTRING:
+			c->s = DatumGetCString(d);
+			c->slen = strlen(c->s) + 1;
+			return;
+		case PACK_VARLENA:
+			old = MemoryContextSwitchTo(row_cx);
+			c->s = (const char *) PG_DETOAST_DATUM(d);
+			MemoryContextSwitchTo(old);
+			c->slen = VARSIZE_ANY(c->s);
+			if (spill && c->slen - VARHDRSZ > SIFT_F2_WIDE_THRESHOLD)
+				wide_cell(c, c->s, c->slen);
+			return;
+	}
+}
+
 void
 sift_f2_cell_of_datum(const SiftF2Store *store, Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c)
 {
-	MemoryContext old;
-	uint8		scale;
+	struct SiftF2Packer k = {.len = att->attlen};
 
-	if (sift_f2_attr_num64(att, &scale))
+	k.kind = pack_kind(store, att, &k.scale);
+	pack_cell(&k, d, row_cx, spill, c);
+}
+
+/* The packer of each attribute that has a leaf, by attribute: made with the first row packed, in the context of the store, which goes with the descriptor it was made from */
+static void
+packers_build(SiftF2Store *store, TupleDesc desc)
+{
+	struct SiftF2Packer *k = MemoryContextAlloc(store->cx, sizeof(*k) * Max(store->natts, 1));
+	int			n = 0;
+
+	for (int a = 1; a <= store->natts; a++)
 	{
-		sift_f2_num64_cell(d, scale, row_cx, c);
-		return;
+		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
+
+		if (store->att_first[a] < 0)
+			continue;
+		k[n] = (struct SiftF2Packer) {.len = att->attlen,.attr = a - 1,.leaf = store->att_first[a]};
+		k[n].kind = pack_kind(store, att, &k[n].scale);
+		n++;
 	}
-	if (store->headerless && sift_f2_attr_bare_bytes(att))
-	{
-		bare_cell(att, d, row_cx, spill, c);
-		return;
-	}
-	if (att->attbyval)
-	{
-		if (att->atttypid == FLOAT4OID)
-			c->f = DatumGetFloat4(d);
-		else if (att->atttypid == FLOAT8OID)
-			c->f = DatumGetFloat8(d);
-		else
-			c->i = att->attlen == 8 ? DatumGetInt64(d) : att->attlen == 4 ? DatumGetInt32(d) : att->attlen == 2 ? DatumGetInt16(d) : (int8) DatumGetChar(d);
-		return;
-	}
-	if (att->attlen > 0)
-	{
-		c->s = DatumGetPointer(d);
-		c->slen = att->attlen;
-		return;
-	}
-	if (att->attlen == -2)
-	{
-		c->s = DatumGetCString(d);
-		c->slen = strlen(c->s) + 1;
-		return;
-	}
-	old = MemoryContextSwitchTo(row_cx);
-	c->s = (const char *) PG_DETOAST_DATUM(d);
-	MemoryContextSwitchTo(old);
-	c->slen = VARSIZE_ANY(c->s);
-	if (spill && c->slen - VARHDRSZ > SIFT_F2_WIDE_THRESHOLD)
-		wide_cell(c, c->s, c->slen);
+	store->packers = k;
+	store->npackers = n;
 }
 
 static SiftCellKind
@@ -411,19 +474,17 @@ sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, c
 		sift_f2_row(rel, ((SiftColRel *) store->host_data)->f2, row_cx, tid, values, isnull, cells, elem, key);
 		return;
 	}
+	if (store->packers == NULL)
+		packers_build(store, desc);
 	memset(cells, 0, sizeof(SiftCell) * store->ncols);
-	for (int a = 1; a <= store->natts; a++)
+	for (int i = 0; i < store->npackers; i++)
 	{
-		int			leaf = store->att_first[a];
-		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
+		const struct SiftF2Packer *k = &store->packers[i];
 
-		if (leaf < 0)
-			continue;
-		Assert(store->kinds[leaf] == kind_of(att));
-		if (isnull[a - 1])
-			cells[leaf].isnull = true;
+		if (isnull[k->attr])
+			cells[k->leaf].isnull = true;
 		else
-			sift_f2_cell_of_datum(store, att, values[a - 1], row_cx, spill_wide_blobs, &cells[leaf]);
+			pack_cell(k, values[k->attr], row_cx, spill_wide_blobs, &cells[k->leaf]);
 	}
 	if (elem != NULL)
 		memset(elem, 0, sizeof(SiftCell *) * store->ncols);

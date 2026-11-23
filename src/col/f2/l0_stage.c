@@ -533,19 +533,39 @@ sift_stage_row_added(SiftTxnStage *st, SiftStagePart *p, uint64 tid)
 		tid_htab_add(st, tid, (uint32) (p - st->parts), (uint32) (p->rb->n - 1));
 }
 
-void
-sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem)
+static void
+stage_row(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, SubTransactionId sub, const SiftCell *cells, const SiftCell *const *elem)
 {
-	SiftStagePart *p = sift_stage_part_get(st, &st->routing.entries[sift_stage_route(&st->routing, key)]);
 	MemoryContext old = MemoryContextSwitchTo(p->rb->cx);
 
-	sift_rowbuf_add(p->rb, tid, xmin, cmin, GetCurrentSubTransactionId(), key, cells, elem);
+	sift_rowbuf_add(p->rb, tid, xmin, cmin, sub, key, cells, elem);
 	MemoryContextSwitchTo(old);
 	sift_stage_row_added(st, p, tid);
 	if (st->bulk_rows > 0)
 		sift_stage_bulk_check(rel, st, p);
 	else if (sift_stage_mem(st) >= (uint64) work_mem * 1024)
 		sift_stage_flush(rel);
+}
+
+void
+sift_stage_add(Relation rel, SiftTxnStage *st, const uint8 *key, uint64 tid, uint32 xmin, uint32 cmin, const SiftCell *cells, const SiftCell *const *elem)
+{
+	SiftStagePart *p = sift_stage_part_get(st, &st->routing.entries[sift_stage_route(&st->routing, key)]);
+
+	stage_row(rel, st, p, key, tid, xmin, cmin, GetCurrentSubTransactionId(), cells, elem);
+}
+
+void
+sift_stage_add_batch(Relation rel, SiftTxnStage *st, int n, const uint8 (*keys)[SIFT_BOUND_BYTES], const uint64 *tids, uint32 xmin, uint32 cmin, const SiftCell *cells)
+{
+	SubTransactionId sub = GetCurrentSubTransactionId();
+
+	for (int i = 0; i < n; i++)
+	{
+		SiftStagePart *p = sift_stage_part_get(st, &st->routing.entries[sift_stage_route(&st->routing, keys[i])]);
+
+		stage_row(rel, st, p, keys[i], tids[i], xmin, cmin, sub, cells + (size_t) i * st->spec.ncols, NULL);
+	}
 }
 
 void
