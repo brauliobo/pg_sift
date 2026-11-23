@@ -36,7 +36,8 @@ typedef enum SiftAmKind
 #define SIFT_COMPAT_SCOPES			(UINT64CONST(1) << 3)
 #define SIFT_COMPAT_TIME_BOUNDS		(UINT64CONST(1) << 4)	/* the 192-byte partition entries, the 224-byte part descriptors and the 64-byte directory keys carry two time bounds */
 #define SIFT_COMPAT_REMOTE_PARTS	(UINT64CONST(1) << 5)	/* a reader must know how to fetch the parts that live in remote storage (set only while the relation has one) */
-#define SIFT_KNOWN_COMPAT_MASK		(SIFT_COMPAT_PARTITIONED | SIFT_COMPAT_NATIVE_MVCC | SIFT_COMPAT_TRACK_DELETES | SIFT_COMPAT_SCOPES | SIFT_COMPAT_TIME_BOUNDS | SIFT_COMPAT_REMOTE_PARTS)
+#define SIFT_COMPAT_NATIVE_STRINGS	(UINT64CONST(1) << 6)	/* sift_table stores headerless UTF-8/name/bytea/uuid matching sift_col */
+#define SIFT_KNOWN_COMPAT_MASK		(SIFT_COMPAT_PARTITIONED | SIFT_COMPAT_NATIVE_MVCC | SIFT_COMPAT_TRACK_DELETES | SIFT_COMPAT_SCOPES | SIFT_COMPAT_TIME_BOUNDS | SIFT_COMPAT_REMOTE_PARTS | SIFT_COMPAT_NATIVE_STRINGS)
 
 /* Required to write: a bit this build does not know leaves the index readable and refuses a write or maintenance step */
 #define SIFT_ROCOMPAT_PREAGG_V2		(UINT64CONST(1) << 0)

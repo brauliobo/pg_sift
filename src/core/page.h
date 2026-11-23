@@ -462,6 +462,7 @@ typedef struct SiftWbufWideHeaderData
 
 #define SIFT_WBUF_DELETED	0x0001
 #define SIFT_WBUF_CONT		0x0002	/* more terms of the preceding doc: no dl, not counted */
+#define SIFT_WBUF_FIELDDL	0x0004	/* followed by uint16 field_dl[nfields] before hash[] */
 
 /*
  * Doc record, 4-byte aligned:

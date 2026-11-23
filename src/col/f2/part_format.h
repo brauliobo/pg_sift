@@ -43,6 +43,7 @@ typedef enum SiftSectionTag
 	SEC_VERS = 0x0100,
 	SEC_TID_INDEX = 0x0101,
 	SEC_DELVEC = 0x0102,
+	SEC_TID_HASH = 0x0103,		/* O(1) ctid -> (granule, row) hash directory for key-ordered parts */
 	SEC_GRANULE_TSTRIDE = 0x0110,	/* 256-row SiftTimeStride[] per granule */
 	SEC_VARIANT_EXC = 0x0111,	/* the (granule, column) pairs that keep an exception stream */
 

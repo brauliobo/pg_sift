@@ -22,6 +22,7 @@
 #define SIFT_GDESC_HAS_PREAGG	(UINT32_C(1) << 1)
 #define SIFT_GDESC_HAS_NULLS	(UINT32_C(1) << 2)
 #define SIFT_GDESC_SINGLE_XACT	(UINT32_C(1) << 4)	/* every row was inserted by one transaction (min_xid) at one command (single_cmin): the granule keeps no bytes in SEC_VERS */
+#define SIFT_GDESC_PREAGG_SKIP	(UINT32_C(1) << 5)	/* SEC_PREAGG v2 skipped this granule due to cardinality/budget; scan granule normally */
 
 typedef struct SiftGranuleDesc
 {
@@ -137,6 +138,8 @@ typedef struct SiftPartColIdentity
 
 StaticAssertDecl(sizeof(SiftPartColIdentity) == 8, "SiftPartColIdentity must be 8 bytes");
 
+#define SIFT_COLID_HEADERLESS	(UINT8_C(1) << 0)	/* text/varchar/bpchar/bytea/name stored without varlena/NUL-pad wrapper */
+
 #define SIFT_ENC_MASK			UINT16_C(0x00FF)
 #define SIFT_ENC_NULL_SPARSE	UINT16_C(0x0100)	/* the rows without a value are a list of 16-bit indexes, not a bit per row */
 #define SIFT_ENC_PART_DICT		UINT16_C(0x0200)	/* DICT_CODE: the strings are the dictionary of this column in SEC_DICTS of the part */
@@ -150,6 +153,7 @@ StaticAssertDecl(sizeof(SiftPartColIdentity) == 8, "SiftPartColIdentity must be 
 #define SIFT_ENC_KEY_EQ_VALID	UINT16_C(0x2000)	/* the key is on the rows that have a value, and on no other: no byte */
 #define SIFT_ENC_KEY_HAS_MASK	UINT16_C(0x4000)	/* a SiftKeyPresentHdr and the rows of the key follow the exceptions */
 #define SIFT_ENC_KEY_ANY		(SIFT_ENC_KEY_ALL_PRESENT | SIFT_ENC_KEY_ALL_ABSENT | SIFT_ENC_KEY_EQ_VALID | SIFT_ENC_KEY_HAS_MASK)
+#define SIFT_ENC_FRAMED			UINT16_C(0x8000)	/* body starts with 256-row SiftChunkFrameHdr for fast point reads */
 
 typedef enum SiftKeyPresentMode
 {
@@ -687,11 +691,21 @@ StaticAssertDecl(sizeof(SiftVariantExcSummary) == 16, "SiftVariantExcSummary is 
 /* Per column and granule: the least and the greatest of an integer column and the rows without a value of any column of the rows */
 typedef struct SiftZone
 {
-	int64		min;
-	int64		max;
+	union
+	{
+		int64		min;
+		double		fmin;
+	};
+	union
+	{
+		int64		max;
+		double		fmax;
+	};
 	uint32		nnull;
 	uint32		flags;			/* SIFT_ZONE_* */
 } SiftZone;
+
+StaticAssertDecl(sizeof(SiftZone) == 24, "SiftZone must be 24 bytes");
 
 #define SIFT_ZONE_NONE			(UINT32_C(1) << 0)	/* no least and greatest: a column that is no integer or holds only nulls */
 #define SIFT_ZONE_KEY_ALL_ABSENT (UINT32_C(1) << 1)	/* the leaf of a key of a document: the key is on no row of the granule (SIFT_ENC_KEY_ALL_ABSENT) */
@@ -702,6 +716,8 @@ typedef struct SiftZone
  */
 #define SIFT_ZONE_PROMO			(UINT32_C(1) << 3)
 #define SIFT_ZONE_PROMO_EXC		(UINT32_C(1) << 4)
+#define SIFT_ZONE_FLOAT			(UINT32_C(1) << 5)	/* fmin/fmax valid over non-null non-NaN doubles */
+#define SIFT_ZONE_HAS_NAN		(UINT32_C(1) << 6)	/* at least one non-null value in granule is NaN */
 #define SIFT_ZONE_PROMO_KIND(f)	(((f) >> 8) & 0xF)
 #define SIFT_ZONE_PROMO_PARAM(f) (((f) >> 12) & 0xF)
 #define SIFT_ZONE_PROMO_FLAGS(f) (((f) >> 16) & 0xFF)

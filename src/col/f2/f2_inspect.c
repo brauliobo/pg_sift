@@ -87,6 +87,7 @@ section_cat(uint16 tag)
 	{
 		case SEC_GRANULE_DIR:
 		case SEC_TID_INDEX:
+		case SEC_TID_HASH:
 			return CAT_TID_INDEX;
 		case SEC_DICTS:
 			return CAT_DICTS;
