@@ -403,6 +403,34 @@ active_rows(const uint64 *active, int n, uint16 *rows)
 	return m;
 }
 
+/* Whether the rows the filter chunks left are the answer as they stand: a sink that reads no column and no address (count(*)), and every predicate decided */
+static bool
+bitmap_answers(const F2Scan *s, const bool *decided, bool pend_hit, bool few)
+{
+	if (s->sink == NULL || s->nsink_leaves > 0 || s->bridge != NULL || !s->tids_unneeded || pend_hit || few)
+		return false;
+	for (int k = 0; k < s->npreds; k++)
+		if (!decided[k])
+			return false;
+	return true;
+}
+
+static void
+sink_bitmap(F2Scan *s, const SiftColSchema *schema, const SiftDvGran *dg, Snapshot snap, const uint64 *active, int n)
+{
+	uint64		dead[SIFT_DV_MASK_WORDS],
+				live[SIFT_CFILT_WORDS + 2] = {0},
+				maybe[SIFT_CFILT_WORDS + 2] = {0};
+	const int	words = (n + 63) / 64;
+
+	if (dg != NULL && sift_dv_mask64(dg, snap, dead) > 0)
+		for (int w = 0; w < words; w++)
+			live[w] = active[w] & ~dead[w];
+	else
+		memcpy(live, active, words * sizeof(uint64));
+	s->sink(s->sink_arg, &(SiftF2Batch) {.views = palloc0(schema->ncols * sizeof(ColView)),.live = live,.maybe = maybe,.scores = s->bscores,.part = s->part,.n = n});
+}
+
 /* The granules [g0, g1) of a pinned part, filtered on their chunks for the predicates that can be and decoded for the leaves of the others */
 static void
 scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, uint32 g0, uint32 g1, const SiftPendDelIndex *px, Snapshot snap)
@@ -493,6 +521,13 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			continue;
 		}
 		few = s->heap_decide && s->bridge != NULL && sift_f2_scan_few_rows(active, n);
+		if (bitmap_answers(s, decided, pend_hit, few))
+		{
+			sink_bitmap(s, schema, dg, snap, active, n);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(gcx);
+			continue;
+		}
 		if (!few)
 			load_rest(rel, s, &lg, decided);
 		nrows = active_rows(active, n, arows);
