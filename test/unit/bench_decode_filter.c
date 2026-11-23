@@ -1,5 +1,5 @@
 /*
- * bench_decode_filter.c - the throughput of the filters of a granule on pool threads, one thread against four: the strings of the zstd granules of the fixture (URL-like and title-like text, the
+ * bench_decode_filter.c - the throughput of the filters of a granule on pool threads, one thread against four: the strings of the zstd and lz4 granules of the fixture (URL-like and title-like text, the
  * block inflated to its strings, then LIKE '%lit%', NOT LIKE, equality) and its integers (a range on delta and frame-of-reference chunks), each worker in an arena of its own that it rewinds between
  * granules. The passes alternate 1T and 4T, and the report is the median of each: MB/s of the bytes the filter reads (the strings the filter reads, or the 8 bytes of a key), rows/s, and 4T/1T.
  *   make -C test/unit bench     (under flock /tmp/sift-perf.lock, optimized, no sanitizer)
@@ -32,17 +32,18 @@ typedef struct Work
 	const char *lit;
 	bool		strs;
 	int			enc;			/* the chunks the filter runs on */
-	bool		zstd;			/* ... in the granules whose wrapper is zstd */
+	int			alg;				/* ... in the granules of this wrapper (SIFT_CC_ALG_*), 0: of any */
 } Work;
 
 static const Work works[] = {
-	{"url LIKE '%lit%' (zstd block)", "url", SIFT_COLOP_CONTAINS, "ka", true, SIFT_CENC_STR_BLOCK, true},
-	{"url NOT LIKE '%lit%' (zstd block)", "url", SIFT_COLOP_NOTCONTAINS, "ra.com", true, SIFT_CENC_STR_BLOCK, true},
-	{"title LIKE '%lit%' (FSST)", "title", SIFT_COLOP_CONTAINS, "mi", true, SIFT_CENC_STR_FSST, false},
-	{"title = lit (FSST)", "title", SIFT_COLOP_EQ, NULL, true, SIFT_CENC_STR_FSST, false},
-	{"phrase = lit (dictionary)", "phrase", SIFT_COLOP_EQ, NULL, true, SIFT_CENC_DICT_CODE, false},
-	{"event_time >= key (delta)", "event_time", SIFT_COLOP_GE, NULL, false, SIFT_CENC_INT_DELTA, false},
-	{"counter = key (frame of reference)", "counter", SIFT_COLOP_EQ, NULL, false, SIFT_CENC_INT_FOR, false}
+	{"url LIKE '%lit%' (zstd block)", "url", SIFT_COLOP_CONTAINS, "ka", true, SIFT_CENC_STR_BLOCK, SIFT_CC_ALG_ZSTD},
+	{"url NOT LIKE '%lit%' (zstd block)", "url", SIFT_COLOP_NOTCONTAINS, "ra.com", true, SIFT_CENC_STR_BLOCK, SIFT_CC_ALG_ZSTD},
+	{"url LIKE '%lit%' (lz4 block)", "url", SIFT_COLOP_CONTAINS, "ka", true, SIFT_CENC_STR_BLOCK, SIFT_CC_ALG_LZ4},
+	{"title LIKE '%lit%' (FSST)", "title", SIFT_COLOP_CONTAINS, "mi", true, SIFT_CENC_STR_FSST, 0},
+	{"title = lit (FSST)", "title", SIFT_COLOP_EQ, NULL, true, SIFT_CENC_STR_FSST, 0},
+	{"phrase = lit (dictionary)", "phrase", SIFT_COLOP_EQ, NULL, true, SIFT_CENC_DICT_CODE, 0},
+	{"event_time >= key (delta)", "event_time", SIFT_COLOP_GE, NULL, false, SIFT_CENC_INT_DELTA, 0},
+	{"counter = key (frame of reference)", "counter", SIFT_COLOP_EQ, NULL, false, SIFT_CENC_INT_FOR, 0}
 };
 
 typedef struct Bench
@@ -149,7 +150,7 @@ granules_pick(Bench *b, const Work *wk)
 		SiftChunk	c;
 
 		sift_chunk_open(&b->fx->g[g].view, b->col + 1, &c);
-		if (c.enc == wk->enc && (!wk->zstd || b->fx->g[g].cfg->alg == SIFT_CC_ALG_ZSTD))
+		if (c.enc == wk->enc && (wk->alg == 0 || b->fx->g[g].cfg->alg == wk->alg))
 			b->gran[b->ngran++] = g;
 		sift_chunk_close(&c);
 	}
