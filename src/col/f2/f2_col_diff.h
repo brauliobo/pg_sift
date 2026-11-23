@@ -12,7 +12,7 @@
 
 #include "col/f2/rowbuf.h"
 
-#define SIFT_F2_DIFF_MAX_LEAVES		9	/* the changed leaves of one record, and the slot of the address (SIFT_COL_DELTA_MAX_COLS_PER_REC + 1) */
+#define SIFT_F2_DIFF_MAX_LEAVES		9	/* the changed leaves of one record, and the slot of the address (SIFT_COL_DELTA_MAX_COLS_INDEX + 1) */
 
 /* ---- the attributes of the index ---- */
 

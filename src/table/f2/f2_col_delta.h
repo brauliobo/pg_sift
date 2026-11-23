@@ -36,8 +36,9 @@
 #define SIFT_COL_DELTA_MIN_LIVE_ATTRS	2		/* a table of one column writes a row about as small as a patch */
 #define SIFT_COL_DELTA_MAX_RATIO_NUM	1		/* changed columns : live columns, at most 1 : 4, and one column of a table of two or three */
 #define SIFT_COL_DELTA_MAX_RATIO_DEN	4
-#define SIFT_COL_DELTA_MAX_COLS_PER_REC	8
-#define SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR	(SIFT_COL_DELTA_MAX_COLS_PER_REC + 1)	/* a record of a sift_col index also holds the new address of the row */
+#define SIFT_COL_DELTA_MAX_COLS_PER_REC	16		/* the changed columns of a sift_table record */
+#define SIFT_COL_DELTA_MAX_COLS_INDEX	8		/* the changed leaves of a sift_col record */
+#define SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR	(SIFT_COL_DELTA_MAX_COLS_INDEX + 1)	/* a record of a sift_col index also holds the new address of the row */
 #define SIFT_COL_DELTA_MAX_PAYLOAD		1024	/* the bytes of the column headers and values of one record, before the padding */
 #define SIFT_COL_DELTA_MAX_REC_BYTES	2048	/* what a record of the format may hold: the bound of a reader */
 #define SIFT_COL_DELTA_FOLD_PAGES		4		/* a chain of this many pages asks the maintenance worker for a fold */
@@ -590,7 +591,7 @@ typedef struct SiftColDeltaPolicyIn
 	bool		row_in_part;	/* the row is in a published part, not in a stage or a slab */
 	bool		after_update_triggers;
 	int			nchanged;
-	bool		hits_index;		/* a changed attribute is one of an index (also the summarising ones) */
+	bool		hits_index;		/* a changed attribute is one of an index that a new version of the row would have to be told of (not a summarising one: it is told at the same address) */
 	bool		hits_protected;	/* a changed attribute is of the sort key or has more than one leaf */
 	uint32		payload_bytes;
 	uint32		chain_pages;	/* pages the chain has now, and those the transaction's staged records of the partition will need */
@@ -668,6 +669,7 @@ typedef struct SiftColDeltaPlan
 	uint64		part_id;
 	uint8		key_lo[SIFT_BOUND_BYTES];
 	int			nchanged;
+	bool		summarizing;	/* a changed attribute is one of a summarising index (BRIN), which takes the new values at the same address (TU_Summarizing) */
 	uint8		flags;
 	SiftColDeltaCol cols[SIFT_COL_DELTA_MAX_COLS_PER_REC];
 } SiftColDeltaPlan;

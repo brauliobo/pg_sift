@@ -60,7 +60,7 @@ SET enable_seqscan = off;
 SELECT chk('a delta is seen through an index', count(*)::int, 1) FROM o WHERE customer_id = 6 AND notes = 'four';
 RESET enable_seqscan;
 
--- 2. what falls back to the row it was: an indexed column, more than a quarter of the columns, a value over 1 KB
+-- 2. what falls back to the row it was: an indexed column, more than 16 columns, a value over 1 KB
 SELECT ctid::text AS c2 FROM o WHERE id = 8 \gset
 WITH u AS (UPDATE o SET region = 99 WHERE id = 8 RETURNING ctid::text AS c) SELECT chk('an indexed column moves the row', c <> :'c2', true) FROM u;
 UPDATE oh SET region = 99 WHERE id = 8;
@@ -69,8 +69,12 @@ SELECT chk('the index finds the moved row', count(*)::int, 1) FROM o WHERE regio
 RESET enable_seqscan;
 SELECT ctid::text AS c3 FROM o WHERE id = 9 \gset
 WITH u AS (UPDATE o SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0 WHERE id = 9 RETURNING ctid::text AS c)
-SELECT chk('more than a quarter of the columns moves the row', c <> :'c3', true) FROM u;
+SELECT chk('eleven columns keep the row', c = :'c3', true) FROM u;
 UPDATE oh SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0 WHERE id = 9;
+SELECT ctid::text AS c3b FROM o WHERE id = 90 \gset
+WITH u AS (UPDATE o SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0, n19 = 0, n20 = 0, n21 = 0, n22 = 0, n23 = 0, n24 = 0 WHERE id = 90 RETURNING ctid::text AS c)
+SELECT chk('more than 16 columns moves the row', c <> :'c3b', true) FROM u;
+UPDATE oh SET n8 = 0, n9 = 0, n10 = 0, n11 = 0, n12 = 0, n13 = 0, n14 = 0, n15 = 0, n16 = 0, n17 = 0, n18 = 0, n19 = 0, n20 = 0, n21 = 0, n22 = 0, n23 = 0, n24 = 0 WHERE id = 90;
 SELECT ctid::text AS c4 FROM o WHERE id = 10 \gset
 WITH u AS (UPDATE o SET notes = repeat('x', 5000) WHERE id = 10 RETURNING ctid::text AS c) SELECT chk('a value over 1 KB moves the row', c <> :'c4', true) FROM u;
 UPDATE oh SET notes = repeat('x', 5000) WHERE id = 10;

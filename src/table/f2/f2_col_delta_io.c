@@ -512,6 +512,7 @@ typedef struct Diff
 {
 	int			nchanged;
 	bool		hits_index;
+	bool		hits_summarized;
 	bool		hits_protected;
 	bool		oversize;
 } Diff;
@@ -531,7 +532,8 @@ diff_row(Relation rel, SiftF2Store *store, TupleTableSlot *old, TupleTableSlot *
 
 		if (leaf < 0 || sift_tbl_f2_attr_equal(att, old->tts_values[a - 1], old->tts_isnull[a - 1], new->tts_values[a - 1], new->tts_isnull[a - 1]))
 			continue;
-		d->hits_index |= member_of(x->hot_blocking_attrs, a) || member_of(x->summarized_attrs, a);
+		d->hits_index |= member_of(x->hot_blocking_attrs, a);
+		d->hits_summarized |= member_of(x->summarized_attrs, a);
 		d->hits_protected |= member_of(x->protected_attrs, a);
 		d->oversize |= !new->tts_isnull[a - 1] && (too_big(att, new->tts_values[a - 1]) || !fits_cell(att, new->tts_values[a - 1]));
 		plan->flags |= time_flag_of(store, (int16) a);
@@ -573,6 +575,7 @@ sift_col_delta_plan(Relation rel, SiftF2Store *store, const SiftF2Loc *loc, Tupl
 	if (plan->reason != SIFT_CD_OK)
 		return;
 	plan->nchanged = d.nchanged;
+	plan->summarizing = d.hits_summarized;
 	plan->part_id = loc->entry.part_id;
 	memcpy(plan->key_lo, loc->entry.key_lo, SIFT_BOUND_BYTES);
 	plan->target = target_of(loc, sift_tbl_tid_pack(&old->tts_tid));

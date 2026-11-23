@@ -142,10 +142,13 @@ sift_cddir_page_check(const char *page)
 
 /* ---- reading ---- */
 
+/* A vector of blocks that holds 4 and doubles when n (a power of two from 4 on) are in it */
 static BlockNumber *
 grow_blks(BlockNumber *v, int n)
 {
-	return v == NULL ? palloc(sizeof(BlockNumber) * 4) : n % 4 == 0 ? repalloc(v, sizeof(BlockNumber) * (n + 4)) : v;
+	if (v == NULL)
+		return palloc(sizeof(BlockNumber) * 4);
+	return n >= 4 && (n & (n - 1)) == 0 ? repalloc(v, sizeof(BlockNumber) * 2 * n) : v;
 }
 
 const char *

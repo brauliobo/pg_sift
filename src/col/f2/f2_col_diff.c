@@ -148,7 +148,7 @@ sift_f2_col_delta_admit_index(const SiftF2AdmitIn *in)
 		return SIFT_F2A_CHAIN_FULL;
 	if (n == 0)
 		return SIFT_F2A_OK;
-	if (n > SIFT_COL_DELTA_MAX_COLS_PER_REC)
+	if (n > SIFT_COL_DELTA_MAX_COLS_INDEX)
 		return SIFT_F2A_TOO_MANY_LEAVES;
 	if (!sift_col_delta_cols_fit(n, in->total_leaves))
 		return SIFT_F2A_TOO_WIDE;

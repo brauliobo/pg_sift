@@ -30,7 +30,7 @@ sift_col_delta_admit(const SiftColDeltaPolicyIn *in)
 		return SIFT_CD_INDEXED_COLUMN;
 	if (in->hits_protected)
 		return SIFT_CD_PROTECTED_COLUMN;
-	if (in->nchanged > SIFT_COL_DELTA_MAX_COLS_PER_REC || !sift_col_delta_cols_fit(in->nchanged, in->live_attrs))
+	if (in->nchanged > SIFT_COL_DELTA_MAX_COLS_PER_REC)
 		return SIFT_CD_TOO_MANY_COLUMNS;
 	if (in->payload_bytes > SIFT_COL_DELTA_MAX_PAYLOAD)
 		return SIFT_CD_PAYLOAD_TOO_LARGE;

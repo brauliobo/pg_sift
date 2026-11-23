@@ -405,7 +405,7 @@ sift_tbl_f2_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, C
 		sift_tbl_rowlock_mark_col_delta(rel, old_packed, cid);
 		slot->tts_tid = *otid;
 		slot->tts_tableOid = RelationGetRelid(rel);
-		*update_indexes = TU_None;
+		*update_indexes = patch.summarizing ? TU_Summarizing : TU_None;
 	}
 	else
 	{

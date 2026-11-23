@@ -225,3 +225,10 @@ Rules:
 - An entry only widens. The entry of the newest data page is widened in the same generic WAL record that appends the records, so a reader that prunes by an entry never misses a record of its page.
 - A reader that wants one part, a few granules or a few attributes skips the entries that cannot hold them (`SiftColDeltaPrune`); a writer, a fold and `VACUUM` read the whole chain.
 - Directory pages are freed with the data pages in the manifest change that replaces the chain (`sift_col_delta_chain_extents`).
+
+## Column limits of a record (Spec 83, WS-83-3)
+
+`SIFT_COL_DELTA_MAX_COLS_PER_REC` is 16 for a `sift_table` record; a record of a `sift_col` index keeps `SIFT_COL_DELTA_MAX_COLS_INDEX` (8) changed leaves and the address of the row
+(`SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR`, 9). An UPDATE of a `sift_table` row is a patch whenever no column of an index other than a summarising one changes and at most 16 columns change; the share
+of the columns that change no longer matters. One that changes a column of a summarising index (BRIN) is a patch too and returns `TU_Summarizing`: the row keeps its address and only the
+summarising indexes are told of the new values.
