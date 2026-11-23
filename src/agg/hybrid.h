@@ -77,6 +77,12 @@ extern SiftHybridDir sift_hybrid_choose(const SiftHybridEst *est, SiftHybridCost
 /* SIFT_HYB_OR: the store scan of the structured quals, a heap fetch of each row it keeps, and the unordered match with a fetch of each of its rows */
 extern double sift_hybrid_or_cost(const SiftHybridEst *est);
 
+/* The types whose values of a heap row a folded scan reads one by one (a few hits, the matches of an OR) */
+extern bool sift_hybrid_point_type(Oid typid);
+
+/* SIFT_HYB_OR folded into groups: the store scan of the structured quals folds its rows, the matches the quals do not take are read from the heap */
+extern double sift_hybrid_or_agg_cost(const SiftHybridEst *est);
+
 /* Both directions apply: the plan cannot tell which is cheaper before the query is bound */
 extern bool sift_hybrid_both_apply(const SiftHybridEst *est);
 

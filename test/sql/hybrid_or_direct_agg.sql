@@ -1,0 +1,91 @@
+-- A text match ORed with structured quals under an aggregate (SIFT_HYB_OR): one SiftHybridAgg folds the rows the quals take from the store, then the matches they do not take from the heap,
+-- with no tuple handed to a HashAggregate. Every result is compared with the same query that the hybrid node refuses (a volatile qual is added), and the node is read from EXPLAIN.
+-- The statements run on a sift_col of a heap and on a sift_table, with committed, updated, inserted and deleted rows, and again in the transaction that changed them.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+CREATE TABLE da_col (id int PRIMARY KEY, tenant int NOT NULL, category int NOT NULL, region text NOT NULL, price float8 NOT NULL, amt numeric(10, 2) NOT NULL, body text NOT NULL);
+INSERT INTO da_col
+SELECT i, 1 + i % 400, 1 + i % 20, 'r' || (i % 6), (i % 97) * 1.5, (i % 53) * 2.25,
+	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 7 = 0 THEN 'seven' END, CASE WHEN i % 2500 = 0 THEN 'rareterm' END, CASE WHEN i % 3 = 0 THEN 'three three' END, 'tok' || i % 11)
+FROM generate_series(1, 20000) i;
+CREATE INDEX da_col_text ON da_col USING sift (body);
+CREATE INDEX da_col_col ON da_col USING sift_col (tenant, id, category, region, price, amt);
+ANALYZE da_col;
+VACUUM (FREEZE) da_col;
+CREATE TABLE da_tbl (id int PRIMARY KEY, tenant int NOT NULL, category int NOT NULL, region text NOT NULL, price float8 NOT NULL, amt numeric(10, 2) NOT NULL, body text NOT NULL) USING sift_table;
+INSERT INTO da_tbl SELECT * FROM da_col;
+CREATE INDEX da_tbl_text ON da_tbl USING sift (body);
+ANALYZE da_tbl;
+RESET client_min_messages;
+SET effective_cache_size = '8kB';
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+
+CREATE FUNCTION da_node(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; n text := 'none';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftHybridAgg\)' THEN n := 'SiftHybridAgg'; END IF;
+		IF l ~ 'Hybrid Direction: OR' THEN n := n || ' OR'; END IF;
+		IF l ~ 'HashAggregate|GroupAggregate' AND n = 'none' THEN n := 'Aggregate above the scan'; END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION da_cmp(a text, b text, OUT rows bigint, OUT diff bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE da_a AS ' || a;
+	EXECUTE 'CREATE TEMP TABLE da_b AS ' || b;
+	SELECT count(*) INTO rows FROM da_a;
+	SELECT count(*) INTO diff FROM ((TABLE da_a EXCEPT ALL TABLE da_b) UNION ALL (TABLE da_b EXCEPT ALL TABLE da_a)) d;
+	DROP TABLE da_a, da_b;
+END $$;
+
+CREATE FUNCTION da_same(q text) RETURNS TABLE (node text, rows bigint, diff bigint) LANGUAGE sql AS
+$$ SELECT da_node(q), c.rows, c.diff FROM da_cmp(q, regexp_replace(q, 'WHERE ', 'WHERE random() < 2 AND ')) c $$;
+
+CREATE TABLE da_q (n int, tbl text, body text);
+INSERT INTO da_q SELECT n, t, replace(w, '@T', t)
+FROM (VALUES
+	(1, 'SELECT region, count(*), sum(category), min(id), max(tenant) FROM @T WHERE (body @@> ''rareterm'' OR tenant = 5) GROUP BY region'),
+	(2, 'SELECT count(*), sum(price), avg(amt) FROM @T WHERE (body @@> ''seven'' OR tenant = 5)'),
+	(3, 'SELECT category, count(*) FROM @T WHERE (tenant = 5 OR body @@> ''rareterm'') GROUP BY category HAVING count(*) > 1'),
+	(4, 'SELECT region, count(*), max(amt) FROM @T WHERE (body @@> ''rareterm'' OR (tenant = 5 AND category < 3)) GROUP BY region'),
+	(5, 'SELECT count(*), min(price), max(price) FROM @T WHERE (body @@> ''"three three"'' OR tenant = 9)'),
+	(6, 'SELECT region, count(*) FROM @T WHERE (body @@> ''nomatchword'' OR tenant = 5) GROUP BY region'),
+	(7, 'SELECT count(*), sum(id) FROM @T WHERE (body @@> ''rareterm'' OR tenant = -1)'),
+	(8, 'SELECT region, count(*), sum(category) FROM @T WHERE (body @@> ''common seven'' OR category IN (3, 4) AND tenant > 390) GROUP BY region'),
+	(9, 'SELECT tenant % 3 AS g, count(*), sum(price) FROM @T WHERE (body @@> ''seven'' OR price > 140) GROUP BY 1'),
+	(10, 'SELECT count(*), sum(amt) FROM @T WHERE (body @@> ''rareterm'' OR amt > 110.5)')
+) w(n, w), (VALUES ('da_col'), ('da_tbl')) t(t);
+
+SELECT n, tbl, (da_same(body)).* FROM da_q ORDER BY n, tbl;
+
+-- the plan is the one node, and EXPLAIN says it folds the OR
+EXPLAIN (COSTS OFF) SELECT region, count(*) FROM da_col WHERE (body @@> 'rareterm' OR tenant = 5) GROUP BY region;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(price) FROM da_tbl WHERE (body @@> 'seven' OR tenant = 5);
+
+-- the same after a write buffer, an update, a delete (a sift_table takes the update only), VACUUM of the heap, and in the transaction that changed the rows
+INSERT INTO da_col SELECT 30000 + i, 1 + i % 400, 1 + i % 20, 'r' || (i % 6), i * 0.5, i * 1.25, 'rareterm tok' || i FROM generate_series(1, 30) i;
+INSERT INTO da_tbl SELECT * FROM da_col WHERE id > 30000;
+UPDATE da_col SET tenant = 5, body = 'moved seven' WHERE id % 1000 = 7;
+UPDATE da_tbl SET tenant = 5, body = 'moved seven' WHERE id % 1000 = 7;
+DELETE FROM da_col WHERE id % 900 = 0;
+SELECT n, tbl, (da_same(body)).* FROM da_q ORDER BY n, tbl;
+VACUUM da_col;
+SELECT n, tbl, (da_same(body)).* FROM da_q WHERE tbl = 'da_col' AND n IN (1, 2, 9, 10) ORDER BY n;
+BEGIN;
+INSERT INTO da_col VALUES (40001, 5, 2, 'r1', 3.5, 4.5, 'rareterm inside'), (40002, 6, 2, 'r1', 3.5, 4.5, 'nothing');
+UPDATE da_col SET body = 'rareterm updated' WHERE id = 10;
+DELETE FROM da_col WHERE id = 20;
+SELECT n, tbl, (da_same(body)).* FROM da_q WHERE tbl = 'da_col' AND n IN (1, 2, 5, 9) ORDER BY n;
+ROLLBACK;
+
+-- not folded: a score read, another qual beside the OR
+SELECT da_node('SELECT region, count(*), max(sift.score(ctid)) FROM da_col WHERE (body @@> ''seven'' OR tenant = 5) GROUP BY region');
+SELECT da_node('SELECT region, count(*) FROM da_col WHERE (body @@> ''seven'' OR tenant = 5) AND category < 5 GROUP BY region');
+SELECT sift.verify('da_col_text', true);
+DROP TABLE da_col, da_tbl, da_q;
+DROP FUNCTION da_node(text), da_cmp(text, text), da_same(text);
+DROP EXTENSION pg_sift;

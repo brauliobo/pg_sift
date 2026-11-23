@@ -78,9 +78,9 @@ typedef struct HybridPlan
 	Expr	   *keyset;			/* the hint of hybrid_semi_plan.c, (col = ANY (set)) IS NOT UNKNOWN */
 } HybridPlan;
 
-/* The types a sift_table's store compares in the planner's pushable quals */
+/* The types of a constant a sift_table's store compares an integer-like column with, whatever the width of the column (the other types are compared with a column of their own type) */
 static bool
-table_type_usable(Oid typid)
+table_const_type(Oid typid)
 {
 	switch (typid)
 	{
@@ -95,6 +95,22 @@ table_type_usable(Oid typid)
 		default:
 			return false;
 	}
+}
+
+static int store_attr(const SiftHybridStoreRef *store, AttrNumber attno);
+
+/* A column of a sift_table the store judges a comparison of: a number or a time held as it is (not LOSSY, not wide, not a string, whose order a collation may decide) */
+static bool
+table_col_exact(const SiftHybridStoreRef *store, AttrNumber attno)
+{
+	int			col = store_attr(store, attno);
+	const SiftColDef *d;
+
+	if (col < 0)
+		return false;
+	d = &store->table->schema->cols[store->table->att_first[attno]];
+	return !(d->flags & SIFT_COLD_LOSSY) && !sift_col_def_is_wide(d) && d->store != SIFT_COLS_STR && d->type != SIFT_COLT_VARLENA &&
+		d->type != SIFT_COLT_TIMETZ;
 }
 
 /* The column of the store (0-based) a heap attribute is: the column of the index, or the attribute of the table; -1: the store does not hold it */
@@ -148,7 +164,7 @@ table_compare(const SiftHybridStoreRef *store, OpExpr *op)
 		r = lsecond(q->args);
 	}
 	col = table_column(store, l);
-	if (col < 0 || !IsA(r, Const) || ((Const *) r)->constisnull || !table_type_usable(exprType(l)) || !table_type_usable(((Const *) r)->consttype))
+	if (col < 0 || !IsA(r, Const) || ((Const *) r)->constisnull || !table_col_exact(store, col + 1) || !(((Const *) r)->consttype == exprType(l) || (table_const_type(((Const *) r)->consttype) && table_const_type(exprType(l)))))
 		return NULL;
 	strat = get_op_opfamily_strategy(q->opno, store->table->opfamily[col + 1]);
 	if (strat < BTLessStrategyNumber || strat > BTGreaterStrategyNumber)
@@ -169,7 +185,7 @@ table_qual(const SiftHybridStoreRef *store, Expr *clause)
 			return table_compare(store, (OpExpr *) clause);
 		case T_NullTest:
 			nt = (NullTest *) clause;
-			if (nt->argisrow || table_column(store, (Node *) nt->arg) < 0 || !table_type_usable(exprType((Node *) nt->arg)))
+			if (nt->argisrow || table_column(store, (Node *) nt->arg) < 0 || !table_col_exact(store, ((Var *) strip_relabel((Node *) nt->arg))->varattno))
 				return NULL;
 			nt = copyObject(nt);
 			nt->arg = (Expr *) strip_relabel((Node *) nt->arg);
@@ -423,7 +439,7 @@ store_holds(HybridPlan *h, Var *v)
 	if (store_attr(&h->store, v->varattno) < 0)
 		return false;
 	if (h->store.table != NULL)
-		return table_type_usable(v->vartype);
+		return table_col_exact(&h->store, v->varattno);
 	for (int i = 0; i < h->store.index->ncolumns; i++)
 		if (h->store.index->indexkeys[i] == v->varattno)
 		{
@@ -745,6 +761,34 @@ add_agg_path(HybridPlan *h, const SiftHybridEst *e, SiftHybridDir dir, double co
 	add_path(out, &cp->path);
 }
 
+/* The matches of an OR are folded from the heap's rows: every column the aggregate reads is of a type those rows are read in */
+static bool
+or_columns_readable(HybridPlan *h, List *scan_tlist)
+{
+	foreach_node(Var, v, pull_var_clause((Node *) scan_tlist, PVC_RECURSE_AGGREGATES | PVC_RECURSE_PLACEHOLDERS))
+		if ((Index) v->varno == h->rel->relid && v->varattno != SelfItemPointerAttributeNumber && !sift_hybrid_point_type(v->vartype))
+			return false;
+	return true;
+}
+
+/* A text match ORed with structured quals: the OR alone in the restrictions of the rel, the quals' rows folded by the store and the other matches by the heap */
+static void
+sift_hybrid_or_agg_path(HybridPlan *h, RelOptInfo *rel, RelOptInfo *out, void *extra)
+{
+	SiftV6Spec	spec;
+	List	   *scan_tlist,
+			   *group_exprs;
+	SiftHybridEst e;
+
+	if (list_length(rel->baserestrictinfo) != 1 || !or_ok(h) ||
+		!sift_v6_compile_aggregate(h->root, rel, out, h->store.index, h->colrel, (SiftF2Store *) h->store.table, extra, &spec, &scan_tlist, &group_exprs) ||
+		sift_v6_spec_reads_score(&spec) || !or_columns_readable(h, scan_tlist) || score_outside_aggs((Node *) h->root->processed_tlist, &rel->relid))
+		return;
+	estimate(h, &e);
+	e.covered = true;
+	add_agg_path(h, &e, SIFT_HYB_OR, sift_hybrid_or_agg_cost(&e), out, &spec, scan_tlist, group_exprs, (List *) ((GroupPathExtraData *) extra)->havingQual);
+}
+
 static void
 sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void *extra)
 {
@@ -755,11 +799,20 @@ sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void 
 	SiftHybridEst e;
 	SiftHybridCosts costs;
 	SiftHybridDir dir;
+	bool		anded;
 
-	if (!sift_v6_plan_shape(root, rel, out) || !shape_ok(root, rel, planner_rt_fetch(rel->relid, root)) || !find_match(&h) || !pick_store(&h, planner_rt_fetch(rel->relid, root)))
+	if (!sift_v6_plan_shape(root, rel, out) || !shape_ok(root, rel, planner_rt_fetch(rel->relid, root)))
 		return;
-	if (classify_quals(&h) && sift_v6_compile_aggregate(root, rel, out, h.store.index, h.colrel, (SiftF2Store *) h.store.table, extra, &spec, &scan_tlist, &group_exprs) &&
-		!score_outside_aggs((Node *) root->processed_tlist, &rel->relid) && !score_outside_aggs((Node *) ((GroupPathExtraData *) extra)->havingQual, &rel->relid))
+	anded = find_match(&h);
+	if (!(anded ? pick_store(&h, planner_rt_fetch(rel->relid, root)) : has_or_clause(rel) && pick_store(&h, planner_rt_fetch(rel->relid, root)) && find_or_match(&h)))
+	{
+		close_store(&h);
+		return;
+	}
+	if (h.disjunct)
+		sift_hybrid_or_agg_path(&h, rel, out, extra);
+	else if (classify_quals(&h) && sift_v6_compile_aggregate(root, rel, out, h.store.index, h.colrel, (SiftF2Store *) h.store.table, extra, &spec, &scan_tlist, &group_exprs) &&
+			 !score_outside_aggs((Node *) root->processed_tlist, &rel->relid) && !score_outside_aggs((Node *) ((GroupPathExtraData *) extra)->havingQual, &rel->relid))
 	{
 		List	   *having = (List *) ((GroupPathExtraData *) extra)->havingQual;
 

@@ -90,6 +90,7 @@ typedef struct HybridState
 	HybridCol  *col;
 	int		   *leaves;
 	int			nleaves;
+	bool		scan_columns;	/* the scan of the quals hands the columns of the leaves to its sink too (SIFT_HYB_OR folded into groups), not only the scan of a bridge */
 	MemoryContext cxt;
 	TupleTableSlot *heapslot;
 	bool		started;
@@ -169,6 +170,8 @@ extern bool sift_hybrid_verify_rest(void *arg, ItemPointer tid, bool want_doc, t
 /* SIFT_HYB_OR: the heap shows the version of tid (kept in the heap slot) and the structured quals do not take it: the match alone does */
 extern bool sift_hybrid_rest_row(HybridState *st, ItemPointer tid);
 extern bool sift_hybrid_next_hit(void *arg, SiftKey *key, float4 *score);
+/* The text plan of a scan that reads no score and wants no order: the matches in heap order, unless the plan needs the text of a hit (a phrase) */
+extern void sift_hybrid_unscored_plan(HybridState *st);
 extern bool sift_hybrid_heap_check(void *arg, SiftKey key, bool quals);
 extern bool sift_hybrid_visible_only(void *arg, SiftKey key, bool quals);
 extern ItemPointerData sift_hybrid_tid_of(SiftKey key);

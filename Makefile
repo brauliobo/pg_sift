@@ -554,6 +554,7 @@ TESTING_REGRESS += hybrid_agg_score
 TESTING_REGRESS += hybrid_agg_table
 TESTING_REGRESS += hybrid_multimodal_facet
 TESTING_REGRESS += hybrid_or
+TESTING_REGRESS += hybrid_or_direct_agg
 TESTING_REGRESS += hybrid_tidbridge_bm25
 TESTING_REGRESS += include_filter
 TESTING_REGRESS += include_store

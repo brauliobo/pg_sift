@@ -188,7 +188,7 @@ static void
 table_scan(HybridState *st, const SiftTidBridge *br, F2Arg *a)
 {
 	SiftStoreScanOpts o = {.rel = st->heap,.store = st->table,.snap = st->css.ss.ps.state->es_snapshot,.preds = st->table_quals.preds,.npreds = st->table_quals.npreds,
-		.leaves = br ? st->leaves : NULL,.nleaves = br ? st->nleaves : 0,.bridge = br,.bridge_seen = &st->granules_seen,.bridge_skipped = &st->granules_skipped};
+		.leaves = br || st->scan_columns ? st->leaves : NULL,.nleaves = br || st->scan_columns ? st->nleaves : 0,.bridge = br,.bridge_seen = &st->granules_seen,.bridge_skipped = &st->granules_skipped};
 
 	if (st->table_quals.possible)
 		sift_f2_store_scan_sink(&o, f2_sink, a);
@@ -215,7 +215,7 @@ col_scan(HybridState *st, const SiftTidBridge *br, SiftHybridSink sink, void *si
 		if (st->heap_decide)
 			sift_f2_scan_set_heap_decide(scan);
 	}
-	sift_f2_scan_sink_maybe(scan, f2_sink, &a, br ? st->leaves : NULL, br ? st->nleaves : 0);
+	sift_f2_scan_sink_maybe(scan, f2_sink, &a, br || st->scan_columns ? st->leaves : NULL, br || st->scan_columns ? st->nleaves : 0);
 	index_endscan(scan);
 }
 

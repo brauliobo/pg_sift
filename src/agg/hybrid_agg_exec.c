@@ -7,6 +7,9 @@
  * A row the stored values cannot decide (a value the leaf did not hold, a clause of the heap's: the residuals, a tenant EXISTS whose key set the store did not take) is decided by the heap's
  * version of the row before it is folded.
  *
+ * SIFT_HYB_OR (a text match ORed with structured quals): one pass of the store folds the rows its quals take, the keys it was sure of are kept (as many as a quarter of work_mem holds), and
+ * then the matches in heap order: a match the store took is skipped, the others are read from the heap, and are folded when the heap shows them and its quals do not take them.
+ *
  * check-memory: allow-allocs every array here follows one chunk of hits or one batch of rows, which the byte budget of the bridge and the granule bound
  */
 #include "postgres.h"
@@ -27,6 +30,7 @@
 #include "agg/v6/v6.h"
 #include "core/memtrack.h"
 #include "core/compat.h"
+#include "core/u64set.h"
 #include "core/sift.h"
 
 typedef struct HybridAggState
@@ -50,6 +54,9 @@ typedef struct HybridAggState
 	SiftPageMatch pm;
 	int			pm_word;
 	uint64		pm_bits;
+	SiftU64Set	taken;				/* OR: the keys of the rows the store folded for sure */
+	uint32		taken_max;
+	uint32		taken_n;
 } HybridAggState;
 
 static void
@@ -152,8 +159,8 @@ typedef struct PointCol
 	bool	   *isnull;
 } PointCol;
 
-static bool
-point_type(Oid typid)
+bool
+sift_hybrid_point_type(Oid typid)
 {
 	return typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID || typid == BOOLOID ||
 		typid == FLOAT4OID || typid == FLOAT8OID || typid == TEXTOID || typid == VARCHAROID || typid == NUMERICOID;
@@ -171,7 +178,7 @@ point_cols(HybridAggState *st, const SiftV6FoldCol *cols, int n)
 		pc[c].typid = TupleDescAttr(h->heapslot->tts_tupleDescriptor, pc[c].attno - 1)->atttypid;
 		pc[c].cls = cols[c].cls;
 		pc[c].scale = cols[c].scale;
-		if (!point_type(pc[c].typid))
+		if (!sift_hybrid_point_type(pc[c].typid))
 			return NULL;
 		pc[c].i = palloc(POINT_BATCH * sizeof(int64));
 		pc[c].f = palloc(POINT_BATCH * sizeof(double));
@@ -260,6 +267,14 @@ point_flush(HybridAggState *st, PointCol *pc, int ncols, const uint64 *keys, con
 }
 
 static void
+point_leaves(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
+{
+	st->point_leaf = palloc(Max(ncols, 1) * sizeof(int));
+	for (int c = 0; c < ncols; c++)
+		st->point_leaf[c] = cols[c].leaf;
+}
+
+static void
 fold_point(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, PointCol *pc)
 {
 	HybridState *h = &st->h;
@@ -270,9 +285,7 @@ fold_point(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, PointCol *p
 	float4		score;
 	int			n = 0;
 
-	st->point_leaf = palloc(Max(ncols, 1) * sizeof(int));
-	for (int c = 0; c < ncols; c++)
-		st->point_leaf[c] = cols[c].leaf;
+	point_leaves(st, cols, ncols);
 	if (h->rank == NULL)
 		h->rank = sift_rank_begin(h->plan, 0, sift_hybrid_verify_point, h);
 	while (sift_rank_next(h->rank, &hit, &score))
@@ -317,6 +330,91 @@ fold_a(HybridAggState *st, PointCol *pc, const SiftV6FoldCol *cols, int ncols, S
 	st->a_run = NULL;
 }
 
+/* OR: the store's rows are folded, and those it is sure of are remembered */
+static void
+or_sink(void *arg, const SiftHybridBatch *b)
+{
+	HybridAggState *st = arg;
+
+	fold_sink(arg, b);
+	for (int r = 0; r < b->n && st->taken_n < st->taken_max; r++)
+		if ((b->live[r / 64] >> (r % 64) & 1) && !st->recheck_all && !(b->maybe != NULL && (b->maybe[r / 64] >> (r % 64) & 1)) && sift_u64set_add(&st->taken, b->tid[r]))
+			st->taken_n++;
+}
+
+/* OR: the matches the store did not take, read from the heap: visible, and not taken by the structured quals */
+static void
+fold_or_matches(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, PointCol *pc)
+{
+	HybridState *h = &st->h;
+	uint64		keys[POINT_BATCH];
+	float4		scores[POINT_BATCH];
+	SiftKey		key;
+	float4		score;
+	ItemPointerData tid;
+	bool		(*next) (void *, SiftKey *, float4 *);
+	void	   *next_arg = st;
+	int			n = 0;
+
+	point_leaves(st, cols, ncols);
+	sift_hybrid_unscored_plan(h);
+	if (sift_plan_recheck_needed(h->plan))
+	{
+		h->rank = sift_rank_begin(h->plan, 0, sift_hybrid_verify_rest, h);
+		next = sift_hybrid_next_hit;
+		next_arg = h;
+	}
+	else
+	{
+		st->it = sift_iter_begin(h->plan);
+		st->pm_word = SIFT_OFFMASK_WORDS - 1;
+		st->pm_bits = 0;
+		next = iter_hit;
+	}
+	while (next(next_arg, &key, &score))
+	{
+		if (sift_u64set_has(&st->taken, key))
+			continue;
+		tid = sift_hybrid_tid_of(key);
+		if (!sift_hybrid_rest_row(h, &tid))
+			continue;
+		for (int c = 0; c < ncols; c++)
+			point_put(h, &pc[c], n);
+		scores[n] = 0;
+		keys[n++] = key;
+		if (n == POINT_BATCH)
+		{
+			point_flush(st, pc, ncols, keys, scores, n);
+			n = 0;
+		}
+	}
+	if (n > 0)
+		point_flush(st, pc, ncols, keys, scores, n);
+	if (st->it != NULL)
+		sift_iter_end(st->it);
+	st->it = NULL;
+	st->point_rows = true;
+}
+
+static void
+fold_or(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
+{
+	HybridState *h = &st->h;
+	EState	   *estate = h->css.ss.ps.state;
+	PointCol   *pc = point_cols(st, cols, ncols);
+
+	SIFT_INVARIANT(pc != NULL, "sift: an OR folded into groups reads columns of the types the heap rows are folded from");
+	st->recheck_all = !sift_hybrid_rows_exact(h);
+	h->store.exact_quals = h->exact_quals;
+	h->scan_columns = true;
+	st->taken_max = Max((uint64) work_mem * 1024 / 4 / 16, 1024);
+	sift_u64set_init(&st->taken, st->taken_max);
+	sift_vis_begin(&h->vis, h->heap, estate->es_snapshot, h->text_index, sift_plan_dir_version(h->plan));
+	h->vis_open = true;
+	h->store.scan_quals(h->store.arg, or_sink, st);
+	fold_or_matches(st, cols, ncols, pc);
+}
+
 static void
 fold_rows(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
 {
@@ -325,6 +423,11 @@ fold_rows(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
 	const Size	budget = (Size) work_mem * 1024 / 2;
 	PointCol   *pc;
 
+	if (h->dir == SIFT_HYB_OR)
+	{
+		fold_or(st, cols, ncols);
+		return;
+	}
 	if (st->reads_score)
 	{
 		h->dir = SIFT_HYB_BM25_TO_COL;
@@ -469,6 +572,7 @@ agg_rescan(CustomScanState *node)
 	h->run = NULL;
 	st->ran = false;
 	st->point_rows = false;
+	st->taken_n = 0;
 	st->fstats = (SiftV6ScanStats) {0};
 	st->a_stats = (SiftHybridStats) {0};
 	ExecScanReScan(&node->ss);

@@ -245,8 +245,8 @@ hybrid_begin(CustomScanState *node, EState *estate, int eflags)
 }
 
 /* B without a score to read or an order to give: the matches in heap order, with no search, unless the plan needs the text of a hit (a phrase) */
-static void
-unscored_plan(HybridState *st)
+void
+sift_hybrid_unscored_plan(HybridState *st)
 {
 	SiftPlan   *scored = st->plan;
 
@@ -279,7 +279,7 @@ start_or(HybridState *st)
 		st->or_keys = BufFileCreateTemp(false);
 		st->store.scan_quals(st->store.arg, or_sink, st);
 		BufFileSeek(st->or_keys, 0, 0, SEEK_SET);
-		unscored_plan(st);
+		sift_hybrid_unscored_plan(st);
 		if (sift_plan_recheck_needed(st->plan))
 			st->rank = sift_rank_begin(st->plan, 0, sift_hybrid_verify_rest, st);
 		else
@@ -312,7 +312,7 @@ start_directed(HybridState *st)
 	st->fetch_heap = !st->covered || !st->exact_quals;
 	st->store.exact_quals = st->exact_quals;
 	if (!a && !st->point && !st->ranked && !st->scored)
-		unscored_plan(st);
+		sift_hybrid_unscored_plan(st);
 	sift_vis_begin(&st->vis, st->heap, estate->es_snapshot, st->text_index, sift_plan_dir_version(st->plan));
 	st->vis_open = true;
 	st->run = sift_hybrid_begin(st->cxt, st->dir, &st->store, (Size) work_mem * 1024 / 2, a ? sift_hybrid_heap_check : sift_hybrid_visible_only, st);

@@ -157,6 +157,15 @@ sift_hybrid_or_cost(const SiftHybridEst *e)
 	return e->bm25_dict_cost + e->col_granules * rpg * HYB_F2_ROW + kept * (HYB_BRIDGE_ADD + kept_fetch) + matched * (HYB_BM25_DOC * HYB_BM25_UNSCORED + e->heap_fetch);
 }
 
+double
+sift_hybrid_or_agg_cost(const SiftHybridEst *e)
+{
+	double		rpg = e->rows / Max(e->granules, 1.0),
+				matched = e->rows * e->sel_bm25;
+
+	return e->bm25_dict_cost + e->col_granules * rpg * HYB_F2_ROW + matched * (HYB_BM25_DOC * HYB_BM25_UNSCORED + e->heap_fetch);
+}
+
 SiftHybridRun *
 sift_hybrid_begin(MemoryContext parent, SiftHybridDir dir, const SiftHybridStore *store, Size budget_bytes, SiftHybridHeapCheck heap_check, void *check_arg)
 {
