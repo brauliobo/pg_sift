@@ -15,6 +15,8 @@
 #include "optimizer/pathnode.h"
 #include "executor/executor.h"
 #include "access/parallel.h"
+#include "catalog/pg_statistic.h"
+#include "utils/syscache.h"
 
 #include "agg/cost.h"
 #include "agg/plan/safety.h"
@@ -52,6 +54,7 @@ extern PGDLLIMPORT bool sift_agg_exact_float;
 #define PAR_COLD_NS			25.0		/* ... and each row waits for memory: a cache line of the compact table (a participant of a parallel run keeps a table of SIFT_PAR_LOCAL_GROUPS) */
 #define PAR_COLD_TEXT_NS	150.0		/* ... of a table with a text key, whose strings are compared as well */
 #define PAR_RECORD_NS		250.0	/* a record: made, routed, merged */
+#define PAR_COLD_RECORD_NS	400.0	/* ... of a run of PAR_COLD_GROUPS groups or more, whose records wait for memory (Q18 and Q33 spend 400 to 450 ns on each, with no temporary file) */
 #define PAR_VALUE_NS		60.0	/* a distinct value: its record routed and added to the set of its group at the owner */
 #define PAR_LAUNCH_MS		17.0	/* the workers join 5 to 6 ms after the leader starts, and the Gather waits for them to leave: measured on the 1M-row table */
 #define PAR_PER_WORKER_MS	1.0
@@ -115,12 +118,40 @@ scan_rows(const SiftV6Spec *spec, const RelOptInfo *rel)
 	return rel->rows;
 }
 
+/* The distinct values of a key column in the statistics of the table: 0 when it has none (the attribute of an index is the one its key names) */
 static double
-cold_ns(const SiftV6Spec *spec)
+key_distinct(const PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, const SiftV6Col *c)
+{
+	AttrNumber	attno = spec->is_table ? c->attno : 0;
+	HeapTuple	tup;
+	double		nd;
+
+	if (!spec->is_table && spec->nparts == 0)
+		foreach_ptr(IndexOptInfo, ix, rel->indexlist)
+			if (ix->indexoid == spec->relid && c->attno <= ix->ncolumns)
+				attno = ix->indexkeys[c->attno - 1];
+	if (attno <= 0)
+		return 0.0;
+	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(root->simple_rte_array[rel->relid]->relid), Int16GetDatum(attno), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tup))
+		return 0.0;
+	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
+	ReleaseSysCache(tup);
+	return nd > 0 ? nd : -nd * rel->tuples;
+}
+
+/* a text key of more values than a dictionary holds is compared as a string in the table; one of fewer is a code */
+static double
+cold_ns(const PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec)
 {
 	for (int i = 0; i < spec->nkeys; i++)
-		if (col_ns(spec, &spec->key[i], 1.0, 0.0) - (spec->key[i].derive > 0 ? PAR_DERIVE_NS : 0.0) > 0.0)
+	{
+		const SiftV6Col *k = &spec->key[i];
+		double		nd;
+
+		if (col_ns(spec, k, 1.0, 0.0) - (k->derive > 0 ? PAR_DERIVE_NS : 0.0) > 0.0 && !(k->derive == 0 && (nd = key_distinct(root, rel, spec, k)) > 0.0 && nd <= SIFT_DICT_MAX_VALUES))
 			return PAR_COLD_TEXT_NS;
+	}
 	return PAR_COLD_NS;
 }
 
@@ -156,7 +187,8 @@ parallel_ms(const CostPick *c, int nworkers)
 	const double groups = Max(c->groups, 1.0);
 	const double records = c->values ? c->rows * (c->nkeys == 0 ? 0.3 : 1.0) : p * groups * (1.0 - exp(-c->rows / p / groups));
 	const double launch = (PAR_LAUNCH_MS + PAR_PER_WORKER_MS * nworkers) * parallel_setup_cost / DEFAULT_PARALLEL_SETUP_COST;
-	const double hand_over = records * (c->values ? PAR_VALUE_NS : PAR_RECORD_NS) / 1e6 / p * parallel_tuple_cost / DEFAULT_PARALLEL_TUPLE_COST;
+	const double record_ns = c->values ? PAR_VALUE_NS : (c->groups >= PAR_COLD_GROUPS ? PAR_COLD_RECORD_NS : PAR_RECORD_NS);
+	const double hand_over = records * record_ns / 1e6 / p * parallel_tuple_cost / DEFAULT_PARALLEL_TUPLE_COST;
 
 	return launch + c->scan_ms / (1.0 + SIFT_PAR_EFFICIENCY * nworkers) + hand_over;
 }
@@ -256,7 +288,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;
 	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows, groups);
-	pick.serial_ms = pick.scan_ms + (groups >= PAR_COLD_GROUPS ? rel->rows * cold_ns(&spec) / 1e6 : 0.0);
+	pick.serial_ms = pick.scan_ms + (groups >= PAR_COLD_GROUPS ? rel->rows * cold_ns(root, rel, &spec) / 1e6 : 0.0);
 	pick.values = false;
 	pick.nkeys = spec.nkeys;
 	for (int j = 0; j < spec.naggs; j++)
