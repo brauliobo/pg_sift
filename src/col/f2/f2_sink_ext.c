@@ -251,6 +251,13 @@ close_cursors(SiftF2Pull *p)
 	p->nchild_cur = 0;
 }
 
+/* a value a vector cannot hold (an exception of a chunk): the consumer reads the rows of the granule from the heap, as it does those of a slab */
+static void
+poison_granule(SiftF2Pull *p)
+{
+	memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
+}
+
 /* an element column held as a dictionary in this granule: its codes, whole, and the dictionary they name; false when the chunk is no dictionary */
 static bool
 decode_child_codes(SiftF2Pull *p, int c)
@@ -292,6 +299,8 @@ decode_child_vec(SiftF2Pull *p, int c, SiftVecType type)
 		const SiftVariantExcStream *exc = NULL;
 
 		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], (uint16) at, cnt, &tmp, &exc);
+		if (exc != NULL)
+			poison_granule(p);
 		memcpy((char *) p->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
 		for (uint16 i = 0; i < cnt; i++)
 			if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))
@@ -596,7 +605,9 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 				p->cur_on[i] = true;
 			}
 			sift_vec_cursor_decode(&p->cur[i], off, cnt, &p->vec[i], &exc);
-			if (exc != NULL)
+			if (exc != NULL && p->spec.group_leaf >= 0)
+				poison_granule(p);
+			else if (exc != NULL)
 				ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
 						errhint("Read the column through a scan that decodes exceptions.")));
 		}
