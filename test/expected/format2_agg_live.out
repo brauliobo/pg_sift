@@ -437,10 +437,10 @@ DELETE FROM tenant_scope WHERE dim_a_id BETWEEN 900 AND 960 AND tenant_id > 30;
 SELECT scope_same(q) FROM scope_queries() q WHERE q LIKE '%tenant_id = 7' OR q LIKE '%GROUP BY s.tenant_id';
                                                                                                      scope_same                                                                                                      
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- same scope join SELECT count(*), sum(e.value_num), min(e.kind), max(e.id), avg(e.value_num), count(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
+ same scope summary SELECT count(*), sum(e.value_num), min(e.kind), max(e.id), avg(e.value_num), count(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope join SELECT s.tenant_id, count(*), sum(e.value_num), min(e.id), max(e.kind), avg(e.kind) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id
  same scope join SELECT s.tenant_id, count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE e.created_at >= '2026-03-01' AND e.created_at < '2026-05-01' GROUP BY s.tenant_id
- same scope join SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
+ same scope summary SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope scan of the facts SELECT count(DISTINCT e.kind) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
 (5 rows)
 
