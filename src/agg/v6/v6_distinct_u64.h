@@ -1,6 +1,6 @@
 /*
- * agg/v6/v6_distinct_u64.h - the exact set of the 64-bit values of an ungrouped COUNT(DISTINCT integer column): one open-addressing table of 8 byte values and a 1 byte tag each (0 empty, else 0x80
- * and 7 bits of the hash, which tells two values apart before the values are compared), where the generic set of v6_distinct.h pays a record, a hash and a partition for each value. The set is held
+ * agg/v6/v6_distinct_u64.h - the exact set of the 64-bit values of an ungrouped COUNT(DISTINCT integer column): one open-addressing table of 8 byte values (0 is an empty entry, and the value 0 a flag),
+ * where the generic set of v6_distinct.h pays a record, a hash and a partition for each value. The set is held
  * to a budget: sift_du64_add stops at the value whose growth would pass it, and the caller moves the values to the generic set (sift_du64_each), which spills.
  */
 #ifndef SIFT_AGG_V6_DISTINCT_U64_H

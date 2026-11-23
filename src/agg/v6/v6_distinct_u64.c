@@ -10,17 +10,18 @@
 
 /* MEM[MEM-AGG-09]: SiftDistinctU64 and SiftDu64G first tables (DU64_FIRST_CAP=64 values = 576B; grow checks live + new against the budget; was 1024 values = 9KB and 25KB for the grouped set) */
 #define DU64_FIRST_CAP	64
-#define DU64_AHEAD		16
+#define DU64_AHEAD		32
 #define DU64_TILE		64
+#define DU64_WIDE_FROM	(UINT64CONST(1) << 17)	/* the capacity from which a table grows fourfold */
 
 struct SiftDistinctU64
 {
 	MemoryContext cx;
-	uint64	   *key;
-	uint8	   *tag;
+	uint64	   *key;			/* 0 for an empty entry: the value 0 is has_zero */
 	uint64		cap;
 	uint64		count;
 	uint64		budget;
+	bool		has_zero;
 };
 
 static inline uint64
@@ -33,25 +34,17 @@ mix(uint64 x)
 	return x ^ (x >> 32);
 }
 
-static inline uint8
-tag_of(uint64 h)
-{
-	return (uint8) (0x80 | (h >> 57));
-}
-
 static inline void
 du64_prefetch(const SiftDistinctU64 *d, uint64 h)
 {
-	__builtin_prefetch(&d->tag[h & (d->cap - 1)]);
-	__builtin_prefetch(&d->key[h & (d->cap - 1)]);
+	__builtin_prefetch(&d->key[h & (d->cap - 1)], 1);
 }
 
 static void
 table_alloc(SiftDistinctU64 *d, uint64 cap)
 {
 	d->cap = cap;
-	d->key = MemoryContextAlloc(d->cx, cap * sizeof(uint64));
-	d->tag = MemoryContextAllocZero(d->cx, cap);
+	d->key = MemoryContextAllocZero(d->cx, cap * sizeof(uint64));
 }
 
 SiftDistinctU64 *
@@ -65,44 +58,43 @@ sift_du64_create(MemoryContext cx, uint64 budget_bytes)
 	return d;
 }
 
-/* 1 when v is new (and put in), 0 when it is there, -1 when it is new and the table is at its load limit */
+/* 1 when v (not 0) is new (and put in), 0 when it is there, -1 when it is new and the table is at its load limit */
 static inline int
 probe(SiftDistinctU64 *d, uint64 v, uint64 h)
 {
-	const uint8 t = tag_of(h);
-	uint64		i = h & (d->cap - 1);
-
-	for (;; i = (i + 1) & (d->cap - 1))
+	for (uint64 i = h & (d->cap - 1);; i = (i + 1) & (d->cap - 1))
 	{
-		if (d->tag[i] == 0)
+		if (d->key[i] == v)
+			return 0;
+		if (d->key[i] == 0)
 		{
 			if ((d->count + 1) * 10 > d->cap * 7)
 				return -1;
-			d->tag[i] = t;
 			d->key[i] = v;
 			return 1;
 		}
-		if (d->tag[i] == t && d->key[i] == v)
-			return 0;
 	}
 }
 
-/* the table of twice the capacity, when the budget holds both while the values move: false when it does not */
+/* the table of 2 times the capacity, 4 times once the table is past the cache (the values move once less often), when the budget holds both while the values move: false when it does not */
 static bool
 grow(SiftDistinctU64 *d)
 {
 	uint64	   *okey = d->key;
-	uint8	   *otag = d->tag;
 	const uint64 ocap = d->cap;
+	const uint64 factor = ocap >= DU64_WIDE_FROM && ocap * 5 * sizeof(uint64) <= d->budget ? 4 : 2;
 
-	if (d->cap * 3 * (sizeof(uint64) + 1) > d->budget)
+	if (ocap * (factor + 1) * sizeof(uint64) > d->budget)
 		return false;
-	table_alloc(d, ocap * 2);
+	table_alloc(d, ocap * factor);
 	for (uint64 i = 0; i < ocap; i++)
-		if (otag[i] != 0)
+	{
+		if (i + DU64_AHEAD < ocap && okey[i + DU64_AHEAD] != 0)
+			du64_prefetch(d, mix(okey[i + DU64_AHEAD]));
+		if (okey[i] != 0)
 			probe(d, okey[i], mix(okey[i]));
+	}
 	pfree(okey);
-	pfree(otag);
 	return true;
 }
 
@@ -121,11 +113,18 @@ sift_du64_add(SiftDistinctU64 *d, const uint64 *vals, uint32 n)
 			du64_prefetch(d, h[i]);
 		for (uint32 i = 0; i < m; i++)
 		{
+			const uint64 v = vals[base + i];
 			int			got;
 
 			if (i + DU64_AHEAD < m)
 				du64_prefetch(d, h[i + DU64_AHEAD]);
-			while ((got = probe(d, vals[base + i], h[i])) < 0)
+			if (v == 0)
+			{
+				d->count += !d->has_zero;
+				d->has_zero = true;
+				continue;
+			}
+			while ((got = probe(d, v, h[i])) < 0)
 				if (!grow(d))
 					return base + i;
 			d->count += got;
@@ -143,14 +142,16 @@ sift_du64_count(const SiftDistinctU64 *d)
 uint64
 sift_du64_bytes(const SiftDistinctU64 *d)
 {
-	return d->cap * (sizeof(uint64) + 1);
+	return d->cap * sizeof(uint64);
 }
 
 void
 sift_du64_each(const SiftDistinctU64 *d, void (*fn) (void *arg, uint64 v), void *arg)
 {
+	if (d->has_zero)
+		fn(arg, 0);
 	for (uint64 i = 0; i < d->cap; i++)
-		if (d->tag[i] != 0)
+		if (d->key[i] != 0)
 			fn(arg, d->key[i]);
 }
 
@@ -158,7 +159,6 @@ void
 sift_du64_free(SiftDistinctU64 *d)
 {
 	pfree(d->key);
-	pfree(d->tag);
 	pfree(d);
 }
 
@@ -347,6 +347,8 @@ bucket_dedup(SiftDu64G *d, DuBucket *b)
 	{
 		const DuPair e = b->p[i];
 
+		if (i + DU64_AHEAD < b->n)
+			__builtin_prefetch(&d->scratch[b->p[i + DU64_AHEAD].h32 & (cap - 1)], 1);
 		for (uint64 j = e.h32 & (cap - 1);; j = (j + 1) & (cap - 1))
 		{
 			if (d->scratch[j].gid1 == 0)
