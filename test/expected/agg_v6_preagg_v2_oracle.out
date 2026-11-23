@@ -1,0 +1,88 @@
+-- SEC_PREAGG version 2 against the values it was written from: every cell of every cube of every granule of every part of an index is recomputed from the granule (sift._test_preagg_v2_check)
+-- and compared, after the write, a later insert, a compaction that joins the cubes of parts, and the subtraction of dead rows. mismatched must be 0 everywhere.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_create_format1 = off;
+CREATE FUNCTION oracle(idx regclass) RETURNS TABLE (every_part_has_cubes bool, has_cells bool, mismatched int) LANGUAGE sql AS $$
+	SELECT parts = with_preagg AND parts > 0, cells > 0, mismatched FROM sift._test_preagg_v2_check(idx) $$;
+-- Zero to four keys with NULLs, integers of every width, a numeric, floats, a text and sets of distinct values
+CREATE TABLE ty (id int PRIMARY KEY, a int2, b text, c int, d text, v8 int8, n numeric(12,2), f4 float4, f8 float8, code int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO ty
+SELECT i, CASE WHEN i % 29 = 0 THEN NULL ELSE i % 4 END, 'b' || ((i / 4) % 3), CASE WHEN i % 31 = 0 THEN NULL ELSE (i / 12) % 3 END, 'd' || ((i / 36) % 2),
+	CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 37) % 10007 - 5000 END, ((i * 31) % 100000) / 100.0, ((i % 1000) * 0.25)::float4,
+	CASE WHEN i % 997 = 1 THEN 'NaN' WHEN i % 991 = 2 THEN 'Infinity' WHEN i % 983 = 3 THEN '-Infinity' WHEN i % 977 = 4 THEN '-0' ELSE (i % 800) * 0.5 END::float8, i % 30,
+	encode(sha256((i::text || 'a')::bytea), 'base64') || encode(sha256((i::text || 'b')::bytea), 'base64') || encode(sha256((i::text || 'c')::bytea), 'base64') ||
+	encode(sha256((i::text || 'd')::bytea), 'base64') || encode(sha256((i::text || 'e')::bytea), 'base64')
+FROM generate_series(1, 40000) i;
+CREATE INDEX ty_col ON ty USING sift_col (id, a, b, c, d, v8, n, f4, f8, code, pad) WITH (key_order = 'id');
+SELECT * FROM oracle('ty_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+-- Rows that arrive later are parts of their own; compaction joins the cubes of the parts it merges
+INSERT INTO ty SELECT i, i % 4, 'b' || (i % 3), i % 3, 'd' || (i % 2), i, i / 100.0, i % 50, i % 90, 40 + i % 30, md5(i::text) FROM generate_series(40001, 60000) i;
+SELECT * FROM oracle('ty_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+VACUUM ty;
+SELECT * FROM oracle('ty_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+-- Dead rows and a compaction that rewrites the part
+DELETE FROM ty WHERE id % 40 = 3;
+VACUUM ty;
+SELECT * FROM oracle('ty_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+-- Two keys that go together in the first granule and do not in the others: the joint cube has too many groups for those, which are left out of it alone (skipped)
+CREATE TABLE wide (id int PRIMARY KEY, a int, b int, v int, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO wide SELECT i, i % 50, CASE WHEN i <= 8192 THEN i % 50 ELSE (i / 50) % 50 END, i, md5(i::text) || md5((i + 1)::text) || md5((i + 2)::text) FROM generate_series(1, 40000) i;
+CREATE INDEX wide_col ON wide USING sift_col (id, a, b, v, pad) WITH (key_order = 'id');
+SELECT * FROM oracle('wide_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+SELECT skipped > 0 AS some_skipped FROM sift._test_preagg_v2_check('wide_col');
+ some_skipped 
+--------------
+ t
+(1 row)
+
+CREATE TABLE tiny (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO tiny SELECT i, i % 7, i FROM generate_series(1, 30000) i;
+CREATE INDEX tiny_col ON tiny USING sift_col (id, g, v) WITH (key_order = 'id');
+SELECT * FROM oracle('tiny_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+-- A table without a number or a key worth a cube
+CREATE TABLE words (id int PRIMARY KEY, w text) WITH (autovacuum_enabled = false);
+INSERT INTO words SELECT i, md5(i::text) FROM generate_series(1, 20000) i;
+CREATE INDEX words_col ON words USING sift_col (id, w) WITH (key_order = 'id');
+SELECT * FROM oracle('words_col');
+ every_part_has_cubes | has_cells | mismatched 
+----------------------+-----------+------------
+ t                    | t         |          0
+(1 row)
+
+DROP TABLE ty, wide, tiny, words;
+DROP FUNCTION oracle(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

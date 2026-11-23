@@ -1,0 +1,108 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1same
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+
+starting permutation: s1begin s2begin s2delete s2update s1same s2commit s1same s1rows s1end s1same
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa2;
+count
+-----
+40000
+(1 row)
+
+step s2begin: BEGIN;
+step s2delete: DELETE FROM iso_pa2 WHERE id % 3 = 0;
+step s2update: UPDATE iso_pa2 SET v = v + 1000000, w = w + 0.5 WHERE id % 7 = 0;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+step s2commit: COMMIT;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+step s1rows: SELECT count(*) AS rows FROM iso_pa2;
+ rows
+-----
+40000
+(1 row)
+
+step s1end: COMMIT;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+
+starting permutation: s1begin s2begin s2delete s2update s1same s2abort s1same s1end s1same
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa2;
+count
+-----
+40000
+(1 row)
+
+step s2begin: BEGIN;
+step s2delete: DELETE FROM iso_pa2 WHERE id % 3 = 0;
+step s2update: UPDATE iso_pa2 SET v = v + 1000000, w = w + 0.5 WHERE id % 7 = 0;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+step s1end: COMMIT;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+
+starting permutation: s1begin s2delete s2update s2vacuum s1same s1rows s1end s2vacuum s1same
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa2;
+count
+-----
+40000
+(1 row)
+
+step s2delete: DELETE FROM iso_pa2 WHERE id % 3 = 0;
+step s2update: UPDATE iso_pa2 SET v = v + 1000000, w = w + 0.5 WHERE id % 7 = 0;
+step s2vacuum: VACUUM iso_pa2;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+
+step s1rows: SELECT count(*) AS rows FROM iso_pa2;
+ rows
+-----
+40000
+(1 row)
+
+step s1end: COMMIT;
+step s2vacuum: VACUUM iso_pa2;
+step s1same: SELECT iso_pa2_same() AS same;
+same
+----
+t   
+(1 row)
+

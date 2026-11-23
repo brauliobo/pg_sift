@@ -164,6 +164,7 @@ TESTING_REGRESS += agg_v6_parallel_2stage_robust
 TESTING_REGRESS += agg_v6_parallel_col_delta
 TESTING_REGRESS += agg_v6_params_float_exec
 TESTING_REGRESS += agg_v6_parity_workload
+TESTING_REGRESS += agg_v6_preagg_v2_oracle
 TESTING_REGRESS += agg_v6_push_semi_keys
 TESTING_REGRESS += agg_v6_rows_dict_text
 TESTING_REGRESS += agg_v6_rows_text_ties
