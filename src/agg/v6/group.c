@@ -351,16 +351,11 @@ batch_rows(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *k
 	return sift_aggk6->mask_to_sel16(g->sel, hit, bs->n_raw);
 }
 
-static void
-grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+void
+v6g_grouped_slots(SiftV6Group *g, V6Set *set, uint16 n, SiftVec *const *keyvec)
 {
-	uint16		n;
 	const bool	coded = set->wide && set->nk == 1 && keyvec[set->kidx[0]]->type == SVEC_DICT32;
 
-	if (v6g_compact_batch(g, set, bs, keyvec, argvec))
-		return;
-	n = batch_rows(g, set, bs, keyvec);
-	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
 	if (coded)
 		code_slots(g, set, keyvec[set->kidx[0]], n);
 	else if (set->packed)
@@ -395,6 +390,18 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 		}
 		sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, n, g->slots);
 	}
+}
+
+static void
+grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
+	uint16		n;
+
+	if (v6g_compact_batch(g, set, bs, keyvec, argvec))
+		return;
+	n = batch_rows(g, set, bs, keyvec);
+	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
+	v6g_grouped_slots(g, set, n, keyvec);
 	if (locked(set))
 		n = sift_lock_compact(g->sel, g->slots, n);
 	for (int d = 0; d < g->ndist; d++)
@@ -462,8 +469,8 @@ sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *key
 	MemoryContextSwitchTo(old);
 }
 
-static void
-merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
+void
+v6g_merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 {
 	if (v6g_is_gen(a))
 		v6_gen_combine(g->gen, (int) (a - g->spec->agg), d, s);
@@ -490,7 +497,7 @@ shape_merge(const SiftRadixShape *sh, SiftAggSlot64 *dst, uint8 *dst_ext, const 
 	const SiftV6Spec *spec = g->spec;
 
 	for (int j = 0; j < spec->naggs; j++)
-		merge_acc(g, &spec->agg[j], (V6Acc *) dst_ext + j, (const V6Acc *) src_ext + j);
+		v6g_merge_acc(g, &spec->agg[j], (V6Acc *) dst_ext + j, (const V6Acc *) src_ext + j);
 }
 
 /* the keys of the set as fixed-width integers of at most 12 bytes in all: one inline key (v6_group_fast.h) */
@@ -710,7 +717,7 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 	{
 		const V6Acc in = acc_of_in(&g->spec->agg[j], &acc[j]);
 
-		merge_acc(g, &g->spec->agg[j], (V6Acc *) (state + g->off[j]), &in);
+		v6g_merge_acc(g, &g->spec->agg[j], (V6Acc *) (state + g->off[j]), &in);
 	}
 	v6g_spill_if_over(g);
 	MemoryContextSwitchTo(old);

@@ -232,6 +232,11 @@ v6g_acc_op(const SiftV6Agg *a)
 	return V6A_NONE;
 }
 
+/* The slot of each of the n rows sel[0 .. n-1] of a set of keys in set->ht (g->slots), and for COUNT(DISTINCT) the bytes of its group (g->rkey) */
+extern void v6g_grouped_slots(SiftV6Group *g, V6Set *set, uint16 n, SiftVec *const *keyvec);
+/* The partial state s of aggregate a folded into the state d of a group */
+extern void v6g_merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s);
+
 /* the budget the tables of the groups may take: what the distinct sets do not */
 extern void v6g_spill_if_over(SiftV6Group *g);
 /* Every group table of the state to its spill, now */
