@@ -37,6 +37,9 @@ HDR      = $(wildcard $(SRC)/core/*.h $(SRC)/col/*.h) $(wildcard *.h) trapped.de
 SHIM     = $(B)/pgshim.o $(B)/trapshim.o
 objs     = $(patsubst %.c,$(B)/lib/%.o,$(LIB_$(1)))
 
+-include $(wildcard *.mk)
+TESTS += $(GRANULE_TESTS)
+
 all: $(addprefix $(B)/,$(TESTS) $(BENCHES))
 
 $(B)/lib/%.o: $(SRC)/%.c $(HDR)
