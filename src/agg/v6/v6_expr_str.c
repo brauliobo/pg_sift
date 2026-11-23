@@ -131,6 +131,33 @@ set_valid(SiftVxOut *o, uint16 r, bool valid)
 	o->valid[r >> 6] = (o->valid[r >> 6] & ~(UINT64CONST(1) << (r & 63))) | ((uint64) valid << (r & 63));
 }
 
+/* extract of the unit and period of the call: the divisions are by constants, which the compiler turns into multiplications when it inlines this for the common units */
+static inline __attribute__((always_inline)) void
+extract_rows(const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o, int64 unit_us, int64 mod)
+{
+	int64	   *oi = o->data;
+
+	FOR_ACTIVE(bs, r)
+	{
+		int64		x = 0;
+		const bool	ok = valid_at(src, r) && sift_vx_extract_one(int_of(src, r), unit_us, mod, &x);
+
+		oi[r] = x;
+		set_valid(o, r, ok);
+	}
+}
+
+static void
+extract_batch(const SiftV6Derive *d, const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o)
+{
+	if (d->aux == 60000000)
+		extract_rows(src, bs, o, 60000000, 60);
+	else if (d->aux == INT64CONST(3600000000))
+		extract_rows(src, bs, o, INT64CONST(3600000000), 24);
+	else
+		extract_rows(src, bs, o, d->aux, 24);
+}
+
 void
 sift_vx_derive(const SiftV6Derive *d, const SiftVec *src, SiftVec *const *cond, const SiftBatchSel *bs, SiftVxOut *o)
 {
@@ -168,14 +195,7 @@ sift_vx_derive(const SiftV6Derive *d, const SiftVec *src, SiftVec *const *cond, 
 			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = false,.dense = true,.type = SVEC_STRVIEW};
 			break;
 		case SVD_EXTRACT:
-			FOR_ACTIVE(bs, r)
-			{
-				int64		x = 0;
-				const bool	ok = valid_at(src, r) && sift_vx_extract_one(int_of(src, r), d->aux, d->aux == 60000000 ? 60 : 24, &x);
-
-				oi[r] = x;
-				set_valid(o, r, ok);
-			}
+			extract_batch(d, src, bs, o);
 			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = false,.dense = true,.type = SVEC_I64};
 			break;
 		case SVD_CASE_STR:
