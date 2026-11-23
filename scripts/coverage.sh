@@ -2,7 +2,9 @@
 # The coverage table (docs/COVERAGE.md): what sift accelerates and what falls back to the normal PostgreSQL plan, generated from one file,
 # docs/coverage.tsv, and proven by running its sample queries on a test cluster.
 #
-#   scripts/coverage.sh [--check] [--rows REGEX] [--keep] [-v]                      run the proofs of the rows (--check also proves the proofs)
+#   scripts/coverage.sh [--check] [--rows REGEX] [--keep] [-v] [--format F]         run the proofs of the rows (--check also proves the proofs);
+#                                                                                   F: f2 (default, Format 2.0), f1 (Format 1, the testing build) or release (the release build:
+#                                                                                   no test setting is set or read; test/col/format.sh)
 #   scripts/coverage.sh --gen                                                       write docs/COVERAGE.md and the coverage block of README.md when it has one
 #   scripts/coverage.sh --docs                                                      the checks that need no cluster: the table, the results file, the generated docs
 #   scripts/coverage.sh --pct [--tier quick|full] [--baseline REF]                  run the variant matrices (test/matrix/matrix.py) on this build and on the
@@ -40,17 +42,19 @@ TSV=${COVERAGE_TSV:-$REPO/docs/coverage.tsv}
 OUT=$SIFT_TMP/coverage
 DB=sift_coverage
 PCT=${COVERAGE_PCT:-$REPO/docs/results/coverage-pct.tsv}
-CHECK= GEN= DOCS= DOPCT= VERIFY= TIER=full BASELINE= ROWS= KEEP= VERBOSE= FIXROWS=${COVERAGE_ROWS:-2000}
+FORMAT=f2 CHECK= GEN= DOCS= DOPCT= VERIFY= TIER=full BASELINE= ROWS= KEEP= VERBOSE= FIXROWS=${COVERAGE_ROWS:-2000}
 
 while (( $# )); do
 	case $1 in
 		--check) CHECK=1 ;; --gen) GEN=1 ;; --docs) DOCS=1 ;; --pct) DOPCT=1 ;; --verify) VERIFY=1 ;; --keep) KEEP=1 ;; -v|--verbose) VERBOSE=1 ;;
 		--tier) TIER=$2; shift ;; --baseline) BASELINE=$2; shift ;;
-		--rows) ROWS=$2; shift ;;
-		*) sed -n '2,34p' "$0"; exit 1 ;;
+		--rows) ROWS=$2; shift ;; --format) FORMAT=$2; shift ;;
+		*) sed -n '2,36p' "$0"; exit 1 ;;
 	esac
 	shift
 done
+. "$REPO/test/col/format.sh"
+format_valid "$FORMAT" || { sed -n '2,36p' "$0"; exit 1; }
 
 log() { printf '[coverage %s] %s\n' "$(date +%T)" "$*" >&2; }
 sql() { PGOPTIONS='-c client_min_messages=warning -c lc_messages=C' SIFT_DB=${SQLDB:-$DB} "$REPO/scripts/pgtest.sh" psql -v ON_ERROR_STOP=1 -qAt "$@"; }
@@ -232,6 +236,7 @@ generate() { gen_full >"$1/COVERAGE.md"; readme_with_block >"$1/README.md"; }
 setup_db() {
 	SQLDB=postgres sql -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "DROP ROLE IF EXISTS sift_cov_user" -c "CREATE DATABASE $DB"
 	sql -c "CREATE EXTENSION pg_sift"
+	format_apply "$FORMAT"
 	sql -f "$REPO/test/col/run.sql" -f "$REPO/test/col/coverage.sql"
 	sql -v n="$FIXROWS" -v seed=0 -f "$REPO/test/col/fixture.sql" >/dev/null
 	sql -f "$REPO/test/col/coverage_data.sql"
@@ -403,8 +408,8 @@ pct() {
 	[[ -z $VERIFY ]] || (( $(SQLDB=postgres sql -c "SHOW server_version_num") / 10000 == 18 )) || { log "docs/results/coverage-pct.tsv is measured on PostgreSQL 18: not verified here"; return 0; }
 	tip=$(git -C "$REPO" rev-parse --short HEAD)
 	log "variant matrices on $tip, tier $TIER"
-	"$REPO/scripts/coldiff.sh" --suite fixtures --scenarios none --variants on --capability --fixture-rows 1500 --keep >"$out/coldiff.log" 2>&1 || true
-	"$m" run --tier "$TIER" --out "$out/tip.tsv" --save "$out/matrix.json" --fixtures sift_coldiff_fix || return 1
+	"$REPO/scripts/coldiff.sh" --format "$FORMAT" --suite fixtures --scenarios none --variants on --capability --fixture-rows 1500 --keep >"$out/coldiff.log" 2>&1 || true
+	"$m" run --format "$FORMAT" --tier "$TIER" --out "$out/tip.tsv" --save "$out/matrix.json" --fixtures sift_coldiff_fix || return 1
 	: >"$rows"
 	"$m" tsv "$out/tip.tsv" --build "$tip" >"$out/tip.rows"
 	if [[ -z $VERIFY && $TIER == full ]]; then
@@ -416,8 +421,8 @@ pct() {
 			root=$(SIFT_OLD_REF=$base "$REPO/scripts/old-lib-check.sh" build | tail -1)
 			log "variant matrices on $base"
 			SIFT_TMP=$out/base SIFT_ROOT=$root SIFT_PORT=$port "$REPO/scripts/pgtest.sh" start >/dev/null
-			SIFT_TMP=$out/base SIFT_PORT=$port "$REPO/scripts/coldiff.sh" --suite fixtures --scenarios none --variants on --capability --fixture-rows 1500 --keep >"$out/coldiff-base.log" 2>&1 || true
-			SIFT_TMP=$out/base SIFT_PORT=$port "$m" run --out "$out/base.tsv" --from "$out/matrix.json" --by-design "$out/tip.tsv" --fixtures sift_coldiff_fix || true
+			SIFT_TMP=$out/base SIFT_PORT=$port "$REPO/scripts/coldiff.sh" --format release --suite fixtures --scenarios none --variants on --capability --fixture-rows 1500 --keep >"$out/coldiff-base.log" 2>&1 || true
+			SIFT_TMP=$out/base SIFT_PORT=$port "$m" run --format release --out "$out/base.tsv" --from "$out/matrix.json" --by-design "$out/tip.tsv" --fixtures sift_coldiff_fix || true
 			SIFT_TMP=$out/base SIFT_ROOT=$root SIFT_PORT=$port "$REPO/scripts/pgtest.sh" destroy >/dev/null || true
 			"$m" tsv "$out/base.tsv" --build "$base" >"$rows"
 		fi
