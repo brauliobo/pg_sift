@@ -1,6 +1,11 @@
 # Blocks of pairs and the measurement of a case, with the confirmation and extension blocks.
 # A suspect block is decided by a fresh one.
 
+def pair_order(round_no):
+    # ABAB... then BABA...: each round runs both revisions once and the first one alternates, so a drift of the host cancels in the log ratios
+    return [0,1] if round_no%2 == 0 else [1,0]
+
+
 def block(revisions, case, operations, deadline, control=False, sink=None, *, pair_count=INITIAL_PAIRS, identity=None, histories=1):
     if pair_count not in T95:
         raise ValueError('unsupported independent pair count')
@@ -14,7 +19,7 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
         for round_no in range(pair_count):
             pair = [None,None]
             pairs.append(pair)
-            order = [0,1] if round_no%2 == 0 else [1,0]
+            order = pair_order(round_no)
             if case.lifecycle=='insert_trajectory':
                 evidence = {}
                 saved['pairs'].append(evidence)

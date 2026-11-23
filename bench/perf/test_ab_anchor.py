@@ -517,5 +517,50 @@ class AnchorPairs(unittest.TestCase):
             gate.main(base+['--anchor-record',str(Path(tmp)/'m.tsv')])
 
 
+class DryRun(unittest.TestCase):
+    def plan(self, *extra, manifest=None):
+        argv = ['--baseline-ref','a'*40,'--candidate-ref','b'*40,'--output','o','--scratch-root','s','--dry-run',*extra]
+        out = io.StringIO()
+        with patch.object(gate,'perf_available',return_value=True), \
+             patch.object(gate,'exact_sha',side_effect=AssertionError('a dry run touches no revision')), contextlib.redirect_stdout(out):
+            self.assertEqual(gate.main(argv),0)
+        return json.loads(out.getvalue())
+
+    def test_the_schedule_names_every_run_its_profile_and_the_alternating_order(self):
+        plan = self.plan('--groups','agg','--allow-loaded')
+        runs = {r['name']:r for r in plan['runs']}
+        self.assertEqual(runs['agg_group@4T']['settings'],gate.SETTINGS_4T)
+        self.assertEqual(runs['agg_group']['settings'],gate.SETTINGS_1T)
+        self.assertNotIn('storage_update@4T',runs)
+        self.assertEqual(plan['pair_order'],['AB','BA']*3)
+        self.assertEqual(plan['quiet_host']['enabled'],False)
+        self.assertTrue(plan['perf_instructions'])
+        self.assertTrue(all(not r['paired_with_anchor'] for r in plan['runs']))
+
+    def test_a_real_gate_plans_the_quiet_host_guard_and_a_pinned_anchor_pairs_the_read_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'m.tsv'
+            path.write_text(manifest_text())
+            plan = self.plan('--groups','agg,storage','--anchor-ref','HEAD','--anchor-tsv',str(path),'--anchor-cache',tmp)
+        self.assertTrue(plan['quiet_host']['enabled'])
+        self.assertEqual(plan['anchor']['commit'],subprocess.run(['git','rev-parse','HEAD'],cwd=gate.ROOT,capture_output=True,text=True).stdout.strip())
+        self.assertEqual(plan['anchor_manifest']['cases'],3)
+        runs = {r['name']:r for r in plan['runs']}
+        self.assertTrue(runs['agg_group@4T']['paired_with_anchor'])
+        self.assertFalse(runs['storage_update']['paired_with_anchor'])
+        self.assertTrue(runs['agg_group']['drift_checked'])
+        self.assertFalse(runs['agg_distinct']['drift_checked'])
+        self.assertEqual(runs['agg_table_group']['needs'],'table')
+
+    def test_a_dry_run_leaves_no_state_for_the_next_run(self):
+        self.plan('--anchor-ref','HEAD')
+        self.assertFalse(gate.QUIET.enabled)
+        self.assertIsNone(gate.ANCHOR_MANIFEST)
+        self.assertFalse(gate.PERF_AVAILABLE)
+
+    def test_the_rounds_alternate_who_goes_first(self):
+        self.assertEqual([gate.pair_order(n) for n in range(4)],[[0,1],[1,0],[0,1],[1,0]])
+
+
 if __name__=='__main__':
     unittest.main()

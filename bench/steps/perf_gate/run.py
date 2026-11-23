@@ -25,6 +25,7 @@ def parser():
     p.add_argument('--no-perf',action='store_true',help='do not count instructions:u (elapsed time, plans, workers and sizes only)')
     p.add_argument('--quiet-max',type=float,default=QUIET_MAX_PERCENT,help='CPU and IO pressure (some avg10, percent) below which the host is quiet')
     p.add_argument('--quiet-timeout',type=float,default=QUIET_TIMEOUT_SECONDS,help='seconds to wait for a quiet host before a block; a block timed after the timeout is noisy')
+    p.add_argument('--dry-run',action='store_true',help='print what would be timed (runs, modes, pairing, guard, anchor, manifest) as JSON; builds and starts nothing')
     p.add_argument('--budget-seconds',type=float,default=300,help='global budget including builds/setup; exhaustion is inconclusive')
     p.add_argument('--workflow-start-seconds',type=float,help='workflow Unix start timestamp; prior elapsed time is deducted from the budget')
     p.add_argument('--cleanup-report-reserve-seconds',type=float,default=0,help='allowance deducted before builds/measurement; not a hard cleanup deadline')
@@ -167,6 +168,23 @@ def check_anchor_manifest(path):
     return 0
 
 
+def dry_run(args):
+    groups = [g for g in (args.groups or '').split(',') if g]
+    runs = expand(select(groups,args.tier))
+    anchor = subprocess.run(['git','rev-parse','--verify',args.anchor_ref+'^{commit}'],cwd=ROOT,capture_output=True,text=True,check=True).stdout.strip() if args.anchor_ref else None
+    reads = lambda c: c.lifecycle=='read'
+    plan = dict(tier=args.tier,baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,
+                runs=[dict(name=c.name,mode=c.mode,lifecycle=c.lifecycle,settings=MODE_SETTINGS[c.mode],
+                           needs=c.needs,paired_with_anchor=bool(anchor) and reads(c),
+                           drift_checked=bool(ANCHOR_MANIFEST) and reads(c) and (c.name.split('@')[0],c.mode) in ANCHOR_MANIFEST.rows) for c in runs],
+                pair_order=['AB' if pair_order(n)==[0,1] else 'BA' for n in range(INITIAL_PAIRS)],
+                quiet_host=QUIET.summary(),perf_instructions=PERF_AVAILABLE,
+                anchor=dict(ref=args.anchor_ref,commit=anchor,cache=str(args.anchor_cache),record=str(args.anchor_record) if args.anchor_record else None),
+                anchor_manifest=ANCHOR_MANIFEST and dict(path=str(args.anchor_tsv),cases=len(ANCHOR_MANIFEST.rows),**ANCHOR_MANIFEST.meta))
+    print(json.dumps(plan,indent=2))
+    return 0
+
+
 def main(argv=None):
     global DEADLINE, BATCH_WALL_LIMIT, QUIET, PERF_AVAILABLE, PROFILE, ANCHOR_MANIFEST
     checker = argparse.ArgumentParser(add_help=False,allow_abbrev=False)
@@ -185,6 +203,10 @@ def main(argv=None):
     QUIET = QuietGuard(not args.allow_loaded,args.quiet_max,args.quiet_timeout)
     PERF_AVAILABLE = not args.no_perf and perf_available()
     PROFILE = ANCHOR_MANIFEST is not None
+    if args.dry_run:
+        code = dry_run(args)
+        QUIET, PERF_AVAILABLE, PROFILE, ANCHOR_MANIFEST = QuietGuard(False), False, False, None
+        return code
     pr_wall_limit = BATCH_WALL_LIMIT
     if args.tier=='nightly':
         BATCH_WALL_LIMIT = NIGHTLY_BATCH_WALL_LIMIT
