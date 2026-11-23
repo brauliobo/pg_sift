@@ -78,15 +78,6 @@ sift_cseg_dict_heavy(SiftColSegment *seg, int col, uint64 spent)
 {
 }
 
-/* ---------- the dictionary of a 5.x column (col/v1/seg/dict_ref.c): it names a value store, a relation of PostgreSQL that no embedded host has ---------- */
-
-SiftCDict *
-seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryContext mcxt)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the dictionary of a 5.x column is read by the PostgreSQL extension only")));
-	return NULL;
-}
-
 /* ---------- segment heads, zone arrays and bisected positions (col/dictcache.c): not kept between queries, they stay in the segment's context ---------- */
 
 const SegHead *

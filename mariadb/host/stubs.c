@@ -7,6 +7,7 @@
 #include "store.h"
 
 #include "bm25/bitmap.h"
+#include "bm25/analyze.h"
 #include "bm25/eval.h"
 
 int			sift_max_expansions = 512;
@@ -17,6 +18,12 @@ const SiftOptions *
 sift_index_options(Relation index)
 {
 	return &index->store->opts;
+}
+
+void
+sift_analyzer_config_from_index(Relation index, SiftAnalyzerConfig *cfg)
+{
+	sift_analyzer_config_from_options(sift_index_options(index), cfg);
 }
 
 const char *

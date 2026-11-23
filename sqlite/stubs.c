@@ -6,6 +6,7 @@
  */
 #include "api.h"
 
+#include "bm25/analyze.h"
 #include "bm25/eval.h"
 
 /* ---------- options (core/handler.c) ---------- */
@@ -14,6 +15,12 @@ const SiftOptions *
 sift_index_options(Relation index)
 {
 	return &sq_store_options(index->store)->base;
+}
+
+void
+sift_analyzer_config_from_index(Relation index, SiftAnalyzerConfig *cfg)
+{
+	sift_analyzer_config_from_options(sift_index_options(index), cfg);
 }
 
 const char *
