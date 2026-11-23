@@ -41,7 +41,7 @@
 #define SIFT_COL_DELTA_MAX_PAYLOAD		1024	/* the bytes of the column headers and values of one record, before the padding */
 #define SIFT_COL_DELTA_MAX_REC_BYTES	2048	/* what a record of the format may hold: the bound of a reader */
 #define SIFT_COL_DELTA_FOLD_PAGES		4		/* a chain of this many pages asks the maintenance worker for a fold */
-#define SIFT_COL_DELTA_MAX_PAGES		32		/* no update is admitted to a chain that would pass it (256 kB: a bulk UPDATE of a daily flag fits one) */
+#define SIFT_COL_DELTA_MAX_PAGES		60000	/* what the 16 bits of the anchor's page count can name (480 MB): no update is admitted to a chain that would pass it; a fold is asked for long before */
 #define SIFT_COL_DELTA_MAX_ROW_ORDINAL	8192
 
 /* Whether n changed columns of the live_attrs of a table are few enough for a patch */
@@ -234,6 +234,10 @@ typedef struct SiftColDeltaBatch
 	uint32		cap;
 	uint16		nentries;
 	uint16		page_flags;		/* SIFT_CDPG_DIRTY_* of the records */
+	uint16		dir_flags;		/* SIFT_CDD_FLAG_* the records add to the directory entry of their page */
+	uint64		part_gen;		/* the part of every record, 0 for several */
+	uint32		granule_lo;
+	uint32		granule_hi;
 	FullTransactionId min_xid;
 	FullTransactionId max_xid;
 	uint64		part_gen_bloom;
@@ -252,8 +256,14 @@ extern void sift_col_delta_batch_split(SiftColDeltaBatch *b, uint32 room, FullTr
 typedef struct SiftColDeltaWriter
 {
 	void	   *ctx;
-	/* The records of b that fit the newest page, appended to it in place and logged as one change; false when none fits (b is as it was) */
-	bool		(*append_head) (void *ctx, BlockNumber head, SiftColDeltaBatch *b, FullTransactionId next);
+	/* The records of b that fit the newest page, appended to it in place and logged as one change, with the widening of its directory entry in dir_head (InvalidBlockNumber: no directory); false when none fits (b is as it was) */
+	bool		(*append_head) (void *ctx, BlockNumber head, BlockNumber dir_head, SiftColDeltaBatch *b, FullTransactionId next);
+	/* The directory: the newest data page of the chain whose newest directory page is dir_head */
+	BlockNumber (*dir_data_head) (void *ctx, BlockNumber dir_head);
+	/* The directory of a flat chain of npages pages, the newest at data_head: its newest directory page */
+	BlockNumber (*dir_promote) (void *ctx, BlockNumber data_head, int npages);
+	/* The entry of the data page blk, made for the records of part, in the directory whose newest page is dir_head (InvalidBlockNumber: none yet): the newest directory page after it */
+	BlockNumber (*dir_add) (void *ctx, BlockNumber dir_head, BlockNumber blk, const SiftColDeltaBatch *part);
 	/* n generations reserved for the pages of a flush in one change of the metapage; the first */
 	uint64		(*reserve_gens) (void *ctx, uint32 n);
 	/* A page of its own, of generation gen, for the records of b (at most one page of them) after the page prev, whose depth is depth - 1; its block */
@@ -298,14 +308,29 @@ typedef struct SiftColDeltaPageReader
 {
 	/* Copies block blk, a page of the chain checked as such, to dst (BLCKSZ bytes); NULL why on success */
 	const char *(*read) (void *ctx, BlockNumber blk, char *dst);
+	/* The same for a page of the directory (SIFT_PT_COL_DELTA_DIR) */
+	const char *(*read_dir) (void *ctx, BlockNumber blk, char *dst);
 	void	   *ctx;
 } SiftColDeltaPageReader;
+
+/* What a read wants of the chain of a directory: the entries that cannot hold it are not read. All-zero: every page */
+typedef struct SiftColDeltaPrune
+{
+	uint64		part_gen;		/* 0: every part */
+	bool		by_granule;
+	uint32		granule_lo;
+	uint32		granule_hi;
+	uint64		attnum_bloom;	/* 0: every attribute */
+} SiftColDeltaPrune;
 
 typedef struct SiftColDeltaChain
 {
 	int			npages;
 	char	   *arena;			/* npages pages, the oldest first */
 	BlockNumber *blks;			/* the block of each */
+	int			ndir;			/* the directory pages of an indexed chain */
+	BlockNumber *dir_blks;
+	int			nchain;			/* the pages the chain has: npages, unless a pruned read left some out */
 } SiftColDeltaChain;
 
 static inline const char *
@@ -316,6 +341,18 @@ sift_col_delta_chain_page(const SiftColDeltaChain *c, int i)
 
 /* The pages the anchor names, oldest first; NULL why on success, else the damage and the chain empty. Each page, its link and its depth are checked. */
 extern const char *sift_col_delta_chain_read(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, SiftColDeltaChain *out);
+
+/* The same, leaving out the pages of an indexed chain the directory shows hold nothing the prune wants (prune NULL: none); a flat chain is read whole */
+extern const char *sift_col_delta_chain_read_pruned(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, const SiftColDeltaPrune *prune, SiftColDeltaChain *out);
+
+/* NULL when a page is the depth-th of its chain and follows prev, else why not */
+extern const char *sift_col_delta_check_link(const char *page, int depth, BlockNumber prev);
+
+/* The extents a whole chain frees when it goes: its data pages and its directory pages (palloc'd; *n of them) */
+extern SiftExtent *sift_col_delta_chain_extents(const SiftColDeltaChain *c, int *n);
+
+/* What the records of a page of the chain say, as the batch a writer would have made of them */
+extern void sift_col_delta_page_summary(const char *page, SiftColDeltaBatch *seen);
 extern void sift_col_delta_chain_free(SiftColDeltaChain *c);
 extern FullTransactionId sift_col_delta_chain_min_xid(const SiftColDeltaChain *c);
 

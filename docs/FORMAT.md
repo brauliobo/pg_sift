@@ -192,3 +192,36 @@ Rows go to a vblock once and vblocks are never reused, so an insert cannot make 
 A word is eight bytes of the page, least significant byte first: 32 vblocks of two bits (the layout of the page of PostgreSQL's map: 4 vblocks per byte, 32,672 per page, 1,021 words).
 
 **Redo of `SIFT_XLOG_VM_SET`:** where the server is a hot standby and `snapshotConflictHorizon` is a valid transaction id, `ResolveRecoveryConflictWithSnapshot(horizon, false, locator)` first, so that a query whose snapshot might not see a transaction the bits stand for ends before it can read them (`hot_standby_feedback = off` needs it); then the page of the map is read (zeroed where missing), the words ORed in, the LSN set. The horizon is the newest `max_xid` or `dv_max_xid` of the clean parts that overlap the page. Redo never reads the main fork. A clear needs no horizon: it only sends a query to the table.
+
+# Format 2.0 on-disk structures
+
+Structures of Format 2.0 that a reader or writer outside the owning source file needs to know byte for byte. Every struct has a `StaticAssertDecl` of its size and of the offsets named here.
+
+## Column delta chain and its directory (Spec 83, WS-83-3)
+
+A partition's `SiftColDeltaAnchor` (32 bytes, `core/f2/col_delta_anchor.h`) names the newest page of its chain of `SIFT_PT_COL_DELTA` (42) pages. A chain of up to
+`SIFT_CDDIR_FLAT_PAGES` (4) pages is flat: the pages are linked newest to oldest (`prev_blk`) and `anchor.npages` counts them. The page that would make it longer builds the directory.
+
+| Constant | Value | Where |
+|---|---|---|
+| `SIFT_PT_COL_DELTA_DIR` | 46 | `core/page.h` |
+| `SIFT_COMPAT_COL_DELTA_DIR` | `1 << 7` of `compat_flags` | `core/f2/meta.h`; set by the manifest change that publishes the first anchor with `SIFT_CDLA_INDEXED_DIR`; a build that does not know it refuses to open the relation |
+| `SIFT_CDLA_INDEXED_DIR` | `1 << 4` of `SiftColDeltaAnchor.flags` | `anchor.delta_head_blkno` names the newest `SIFT_PT_COL_DELTA_DIR` page, not a data page; `anchor.npages` still counts data pages |
+| `SIFT_CDDIR_MAGIC` | `0x43444452` ("CDDR") | `table/f2/f2_col_delta_dir.h` |
+| `SIFT_CDDIR_MAX_ENTRIES` | 250 | entries of one directory page |
+| `SIFT_CDDIR_SOFT_FOLD_PAGES` | 256 | a flush that leaves a chain this long asks the maintenance worker for a fold of the partition; the update that flushed does not wait and is not refused |
+| `SIFT_COL_DELTA_MAX_PAGES` | 60000 | what the 16-bit `anchor.npages` can name; the only length at which an UPDATE is not admitted |
+
+`SiftColDeltaDirHdr` (48 bytes): `magic` 0, `version` 4, `flags` 6, `crc32c` 8 (`SIFT_PAGE_CRC_OFF`), `part_id` 12, `nentries` 16, `total_delta_pages` 20, `next_dir_blk` 24 (the next older
+directory page), `prev_dir_blk` 28 (reserved, `InvalidBlockNumber`), `min_xid` 32, `max_xid` 40.
+
+`SiftColDeltaDirEntry` (32 bytes), one per data page, oldest first: `blkno` 0, `nrecs` 4, `flags` 6 (`SIFT_CDD_FLAG_TID_ONLY` 1, `SIFT_CDD_FLAG_HAS_BATCH` 2, `SIFT_CDD_FLAG_HAS_BLOB` 4), `part_gen` 8
+(0 when the page holds records of several parts), `granule_lo` 16, `granule_hi` 20, `attnum_bloom` 24 (bit `attnum & 63` of every attribute a record of the page patches).
+
+Rules:
+
+- `total_delta_pages` of a directory page is the number of data pages up to and with its own entries. A reader takes the first `anchor.npages` entries: entries added in place since the anchor
+  was published are not seen. Only the newest directory page is written in place, under the partition lock, before the anchor that counts its entries is published.
+- An entry only widens. The entry of the newest data page is widened in the same generic WAL record that appends the records, so a reader that prunes by an entry never misses a record of its page.
+- A reader that wants one part, a few granules or a few attributes skips the entries that cannot hold them (`SiftColDeltaPrune`); a writer, a fold and `VACUUM` read the whole chain.
+- Directory pages are freed with the data pages in the manifest change that replaces the chain (`sift_col_delta_chain_extents`).

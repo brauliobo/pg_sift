@@ -594,6 +594,8 @@ publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *version)
 		else
 			m->common.ro_compat_flags &= ~SIFT_ROCOMPAT_PROJECTIONS;
 	}
+	if (ch->set_cd_dir)
+		m->common.compat_flags |= SIFT_COMPAT_COL_DELTA_DIR;
 	if (ch->set_tier)
 		sift_mf_apply_tier(m, ch);
 	if (FullTransactionIdIsValid(ch->new_min_xid) && (!FullTransactionIdIsValid(m->oldest_active_xid) || FullTransactionIdPrecedes(ch->new_min_xid, m->oldest_active_xid)))
@@ -690,6 +692,7 @@ build_commit(Relation rel, Tree *t, Change *ch, BlkVec *created, void *arg)
 																			(unsigned long long) e->part_id)));
 		if (FullTransactionIdIsValid(anchor.min_xid) && (!FullTransactionIdIsValid(ch->new_min_xid) || FullTransactionIdPrecedes(anchor.min_xid, ch->new_min_xid)))
 			ch->new_min_xid = anchor.min_xid;
+		ch->set_cd_dir = (anchor.flags & SIFT_CDLA_INDEXED_DIR) != 0;
 	}
 	if (sift_col_delta_anchor_has_chain(&anchor) && n == 0)
 		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift index \"%s\": partition %llu would keep a column delta chain and have no part", RelationGetRelationName(rel),

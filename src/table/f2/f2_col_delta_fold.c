@@ -298,7 +298,9 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	uint64	   *live = sift_col_delta_sorted_gens(parts, nparts),
 			   *want;
 	int			nwant,
-				nbatches;
+				nbatches,
+				nfreed;
+	SiftExtent *freed;
 	Placement	pl;
 	SiftColDeltaRemap remap;
 	bool		has_chain = sift_col_delta_load_chain(f->rel, entry, 0, &chain);
@@ -313,9 +315,11 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	edit->set_col_delta = true;
 	edit->new_col_delta = anchor;
 	SIFT_CRASH_POINT(f2_col_delta_fold_pre_p2);
-	*release = repalloc(*release, sizeof(SiftExtent) * (*nrelease + chain.npages + 1));
-	for (int i = 0; i < chain.npages; i++)
-		(*release)[(*nrelease)++] = (SiftExtent) {chain.blks[i], 1};
+	freed = sift_col_delta_chain_extents(&chain, &nfreed);
+	*release = repalloc(*release, sizeof(SiftExtent) * (*nrelease + nfreed + 1));
+	memcpy(*release + *nrelease, freed, sizeof(SiftExtent) * nfreed);
+	*nrelease += nfreed;
+	pfree(freed);
 	*stripped = sift_fxid_max(*stripped, plan.stripped);
 }
 

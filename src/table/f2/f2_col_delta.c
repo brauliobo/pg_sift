@@ -11,6 +11,7 @@
 #include "utils/memutils.h"
 
 #include "table/f2/f2_col_delta.h"
+#include "table/f2/f2_col_delta_dir.h"
 
 /* ---- the policy ---- */
 
@@ -212,6 +213,17 @@ bloom_of_record(SiftColDeltaBatch *b, const SiftColDeltaEntryHdr *h, const uint8
 	const uint8 *p = rec + sizeof(*h),
 			   *end = rec + h->rec_bytes;
 
+	if (b->part_gen_bloom == 0)
+	{
+		b->part_gen = h->part_gen;
+		b->granule_lo = b->granule_hi = h->granule_id;
+	}
+	else
+	{
+		b->part_gen = b->part_gen == h->part_gen ? h->part_gen : 0;
+		b->granule_lo = Min(b->granule_lo, h->granule_id);
+		b->granule_hi = Max(b->granule_hi, h->granule_id);
+	}
 	b->part_gen_bloom |= sift_cd_part_bit(h->part_gen);
 	b->tid_bloom |= sift_cd_tid_bit(sift_col_delta_hdr_tid(h));
 	for (int k = 0; k < h->ncols; k++)
@@ -374,6 +386,21 @@ check_records(const char *page, const SiftColDeltaPageData *h)
 	return NULL;
 }
 
+void
+sift_col_delta_page_summary(const char *page, SiftColDeltaBatch *seen)
+{
+	const uint8 *p = sift_col_delta_page_first(page),
+			   *end = sift_col_delta_page_end(page);
+
+	memset(seen, 0, sizeof(*seen));
+	for (SiftColDeltaEntryHdr rh; p < end; p += rh.rec_bytes)
+	{
+		memcpy(&rh, p, sizeof(rh));
+		bloom_of_record(seen, &rh, p);
+		seen->nentries++;
+	}
+}
+
 const char *
 sift_col_delta_page_check(const char *page)
 {
@@ -436,10 +463,12 @@ void
 sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next)
 {
 	bool		fresh = !sift_col_delta_anchor_has_chain(a),
-				leaves = (b->page_flags & SIFT_CDPG_LEAVES) != 0;
+				leaves = (b->page_flags & SIFT_CDPG_LEAVES) != 0,
+				indexed = (a->flags & SIFT_CDLA_INDEXED_DIR) != 0;
 	uint16		flags = a->flags | anchor_flags_of(b->page_flags);
 	FullTransactionId bmin = b->min_xid,
 				bmax = b->max_xid;
+	BlockNumber data_head = fresh || !indexed ? a->delta_head_blkno : w->dir_data_head(w->ctx, a->delta_head_blkno);
 	uint32		npages;
 	uint64		gen = 0;
 
@@ -451,7 +480,7 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 		if (!fresh)
 			w->commit_anchor(w->ctx, a);
 	}
-	if (sift_col_delta_anchor_has_chain(a) && w->append_head(w->ctx, a->delta_head_blkno, b, next))
+	if (!fresh && w->append_head(w->ctx, data_head, indexed ? a->delta_head_blkno : InvalidBlockNumber, b, next))
 		a->max_xid = sift_fxid_max(a->max_xid, bmax);
 	/* STOR[STOR-TBL-06]: batched col_delta page gen + single commit_anchor (1 vs N manifest/Block-0 WAL recs) */
 	npages = sift_col_delta_batch_pages(b);
@@ -462,7 +491,14 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 		SiftColDeltaBatch part;
 
 		batch_take(b, &off, (uint32) SIFT_COL_DELTA_PAGE_ROOM, next, &part);
-		a->delta_head_blkno = w->new_page(w->ctx, &part, a->delta_head_blkno, (uint16) (a->npages + 1), gen++);
+		if (!indexed && a->npages >= SIFT_CDDIR_FLAT_PAGES)
+		{
+			a->delta_head_blkno = w->dir_promote(w->ctx, data_head, a->npages);
+			a->flags |= SIFT_CDLA_INDEXED_DIR;
+			indexed = true;
+		}
+		data_head = w->new_page(w->ctx, &part, data_head, (uint16) (a->npages + 1), gen++);
+		a->delta_head_blkno = indexed ? w->dir_add(w->ctx, a->delta_head_blkno, data_head, &part) : data_head;
 		a->npages++;
 		a->min_xid = xid_min(a->min_xid, bmin);
 		a->max_xid = sift_fxid_max(a->max_xid, bmax);
@@ -475,18 +511,25 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 
 /* ---- the chain ---- */
 
+/* The page at blk is the one the chain's depth and link say it is */
 const char *
-sift_col_delta_chain_read(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, SiftColDeltaChain *out)
+sift_col_delta_check_link(const char *page, int depth, BlockNumber prev)
+{
+	if (sift_col_delta_page_hdr(page)->chain_pages != depth)
+		return "a page of the chain is not as deep as the chain says";
+	if (sift_col_delta_page_hdr(page)->prev_blk != prev)
+		return "the chain is not as long as its anchor says";
+	return NULL;
+}
+
+/* The flat chain: from the newest page along the links */
+static const char *
+read_flat(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, SiftColDeltaChain *out)
 {
 	BlockNumber blk = anchor->delta_head_blkno;
 	const char *why = NULL;
 	int			n = anchor->npages;
 
-	memset(out, 0, sizeof(*out));
-	if (!sift_col_delta_anchor_sane(anchor))
-		return "the anchor of a chain is not one of this format";
-	if (!sift_col_delta_anchor_has_chain(anchor))
-		return NULL;
 	/* MEM[MEM-TBL-15]: caller-scoped col_delta chain arena (npages * 8 KB; freed by chain_free) */
 	out->arena = palloc((Size) n * BLCKSZ);
 	out->blks = palloc(sizeof(BlockNumber) * n);
@@ -498,19 +541,34 @@ sift_col_delta_chain_read(const SiftColDeltaAnchor *anchor, const SiftColDeltaPa
 		why = reader->read(reader->ctx, blk, dst);
 		if (why == NULL)
 			why = sift_col_delta_page_check(dst);
-		if (why == NULL && sift_col_delta_page_hdr(dst)->chain_pages != i + 1)
-			why = "a page of the chain is not as deep as the chain says";
-		if (why == NULL && ((i == 0) != (sift_col_delta_page_hdr(dst)->prev_blk == InvalidBlockNumber)))
-			why = "the chain is not as long as its anchor says";
+		if (why == NULL)
+			why = sift_col_delta_check_link(dst, i + 1, i == 0 ? InvalidBlockNumber : sift_col_delta_page_hdr(dst)->prev_blk);
 		blk = sift_col_delta_page_hdr(dst)->prev_blk;
 	}
+	out->npages = out->nchain = n;
+	return why;
+}
+
+const char *
+sift_col_delta_chain_read_pruned(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, const SiftColDeltaPrune *prune, SiftColDeltaChain *out)
+{
+	const char *why;
+
+	memset(out, 0, sizeof(*out));
+	if (!sift_col_delta_anchor_sane(anchor))
+		return "the anchor of a chain is not one of this format";
+	if (!sift_col_delta_anchor_has_chain(anchor))
+		return NULL;
+	why = (anchor->flags & SIFT_CDLA_INDEXED_DIR) != 0 ? sift_cddir_chain_read(anchor, reader, prune, out) : read_flat(anchor, reader, out);
 	if (why != NULL)
-	{
 		sift_col_delta_chain_free(out);
-		return why;
-	}
-	out->npages = n;
-	return NULL;
+	return why;
+}
+
+const char *
+sift_col_delta_chain_read(const SiftColDeltaAnchor *anchor, const SiftColDeltaPageReader *reader, SiftColDeltaChain *out)
+{
+	return sift_col_delta_chain_read_pruned(anchor, reader, NULL, out);
 }
 
 void
@@ -520,6 +578,8 @@ sift_col_delta_chain_free(SiftColDeltaChain *c)
 		pfree(c->arena);
 	if (c->blks != NULL)
 		pfree(c->blks);
+	if (c->dir_blks != NULL)
+		pfree(c->dir_blks);
 	memset(c, 0, sizeof(*c));
 }
 

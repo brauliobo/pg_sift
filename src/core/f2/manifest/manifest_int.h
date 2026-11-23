@@ -69,6 +69,7 @@ typedef struct Change
 	BlockNumber tier_dir_blk;
 	uint32		ntier_parts;
 	uint64		tier_dir_gen;
+	bool		set_cd_dir;		/* a partition's column delta anchor names a SIFT_PT_COL_DELTA_DIR: the metapage says so for every reader (SIFT_COMPAT_COL_DELTA_DIR) */
 	FullTransactionId new_min_xid;
 } Change;
 

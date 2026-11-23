@@ -27,10 +27,12 @@
 #include "core/page_io.h"
 #include "core/part_lock.h"
 #include "core/worker.h"
+#include "col/f2/f2_vacuum_run.h"
 #include "col/f2/f2_store_schema.h"
 #include "core/u64set.h"
 #include "table/f2/f2_chain_cache.h"
 #include "table/f2/f2_col_delta.h"
+#include "table/f2/f2_col_delta_dir.h"
 #include "table/f2/f2_gcache.h"
 
 #ifdef SIFT_TESTING
@@ -78,13 +80,6 @@ sift_col_delta_ops_init(SiftColDeltaOps *ops, SiftTblVis *vis)
 
 /* ---- the pages of a chain ---- */
 
-typedef struct DiskReader
-{
-	Relation	rel;
-	uint32		part_id;
-	uint64		snap_manifest_ver;
-} DiskReader;
-
 /* A standby replays the records that recycle a page of the chain while a scan reads it: once the manifest has moved on that is a retry, not damage */
 static void
 retry_if_recycled(Relation rel, uint64 snap_manifest_ver)
@@ -97,13 +92,12 @@ retry_if_recycled(Relation rel, uint64 snap_manifest_ver)
 }
 
 static const char *
-read_page(void *ctx, BlockNumber blk, char *dst)
+read_typed(SiftColDeltaDiskReader *d, SiftPageType type, BlockNumber blk, char *dst)
 {
-	DiskReader *d = ctx;
 	Buffer		buf = sift_blk_read(d->rel, blk, BUFFER_LOCK_SHARE);
 	Page		page = BufferGetPage(buf);
 
-	sift_page_expect_snap(d->rel, page, blk, SIFT_PT_COL_DELTA, 0, d->part_id, d->snap_manifest_ver);
+	sift_page_expect_snap(d->rel, page, blk, type, 0, d->part_id, d->snap_manifest_ver);
 	if (!sift_page_sum_ok(page))
 		retry_if_recycled(d->rel, d->snap_manifest_ver);
 	memcpy(dst, page, BLCKSZ);
@@ -111,19 +105,37 @@ read_page(void *ctx, BlockNumber blk, char *dst)
 	return NULL;
 }
 
+static const char *
+read_page(void *ctx, BlockNumber blk, char *dst)
+{
+	return read_typed(ctx, SIFT_PT_COL_DELTA, blk, dst);
+}
+
+static const char *
+read_dir_page(void *ctx, BlockNumber blk, char *dst)
+{
+	return read_typed(ctx, SIFT_PT_COL_DELTA_DIR, blk, dst);
+}
+
+SiftColDeltaPageReader
+sift_col_delta_disk_reader(SiftColDeltaDiskReader *d)
+{
+	return (SiftColDeltaPageReader) {.read = read_page,.read_dir = read_dir_page,.ctx = d};
+}
+
 static bool
-load_chain(Relation rel, const SiftPartitionEntry *entry, uint64 snap_manifest_ver, SiftColDeltaChain *chain)
+load_chain_pruned(Relation rel, const SiftPartitionEntry *entry, uint64 snap_manifest_ver, const SiftColDeltaPrune *prune, SiftColDeltaChain *chain)
 {
 	SiftColDeltaAnchor anchor;
-	DiskReader	d = {.rel = rel,.part_id = (uint32) entry->part_id,.snap_manifest_ver = snap_manifest_ver};
-	SiftColDeltaPageReader reader = {.read = read_page,.ctx = &d};
+	SiftColDeltaDiskReader d = {.rel = rel,.part_id = (uint32) entry->part_id,.snap_manifest_ver = snap_manifest_ver};
+	SiftColDeltaPageReader reader = sift_col_delta_disk_reader(&d);
 	const char *why;
 
 	memset(chain, 0, sizeof(*chain));
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return false;
 	anchor = sift_manifest_read_col_delta(rel, entry);
-	why = sift_col_delta_chain_read(&anchor, &reader, chain);
+	why = sift_col_delta_chain_read_pruned(&anchor, &reader, prune, chain);
 	if (why != NULL)
 	{
 		retry_if_recycled(rel, snap_manifest_ver);
@@ -132,39 +144,94 @@ load_chain(Relation rel, const SiftPartitionEntry *entry, uint64 snap_manifest_v
 	return sift_col_delta_anchor_has_chain(&anchor);
 }
 
+static bool
+load_chain(Relation rel, const SiftPartitionEntry *entry, uint64 snap_manifest_ver, SiftColDeltaChain *chain)
+{
+	return load_chain_pruned(rel, entry, snap_manifest_ver, NULL, chain);
+}
+
 bool
 sift_col_delta_load_chain(Relation rel, const SiftPartitionEntry *entry, uint64 snap_manifest_ver, SiftColDeltaChain *chain)
 {
 	return load_chain(rel, entry, snap_manifest_ver, chain);
 }
 
-SiftColDeltaPartMap *
-sift_col_delta_load_part_map(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 snap_manifest_ver)
+/* The visibility of a chain's records as one snapshot has it, and whether it can still change: a writer that is in progress, and that is not this transaction, may commit */
+typedef struct SettledOps
+{
+	SiftTblVis *vis;
+	TransactionId last_xid;
+	bool		unsettled;
+} SettledOps;
+
+static bool
+settled_visible(void *ctx, TransactionId xmin, CommandId cid)
+{
+	SettledOps *so = ctx;
+
+	if (so->vis->snap->snapshot_type == SNAPSHOT_ANY && xmin != so->last_xid && TransactionIdIsNormal(xmin) && !TransactionIdIsCurrentTransactionId(xmin))
+	{
+		so->last_xid = xmin;
+		so->unsettled |= TransactionIdIsInProgress(xmin);
+	}
+	return sift_tbl_f2_delta_visible(so->vis, xmin, cid);
+}
+
+static SiftColDeltaPartMap *
+load_part_map(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaPrune *prune, uint32 ngranules, SiftTblVis *vis, uint64 snap_manifest_ver, bool *settled)
 {
 	SiftColDeltaChain chain;
 	SiftColDeltaOps ops;
+	SettledOps	so = {.vis = vis};
 	SiftColDeltaPartMap *map;
 	const char *why;
 
-	if (!load_chain(rel, entry, snap_manifest_ver, &chain))
+	if (!load_chain_pruned(rel, entry, snap_manifest_ver, prune, &chain))
 		return NULL;
-	sift_col_delta_ops_init(&ops, vis);
-	map = sift_col_delta_build_part_map(&chain, part_gen, ngranules, &ops, &why);
+	sift_col_delta_ops_make(&ops, &so, settled_visible);
+	map = sift_col_delta_build_part_map(&chain, prune->part_gen, ngranules, &ops, &why);
 	if (why != NULL)
 		SIFT_CORRUPT(rel, "%s (partition %llu).", why, (unsigned long long) entry->part_id);
+	if (settled != NULL)
+		*settled = !so.unsettled;
 	return map;
 }
 
+SiftColDeltaPartMap *
+sift_col_delta_load_part_map(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 snap_manifest_ver)
+{
+	SiftColDeltaPrune prune = {.part_gen = part_gen};
+
+	return load_part_map(rel, entry, &prune, ngranules, vis, snap_manifest_ver, NULL);
+}
+
 /* ---- the overlay of a scan ---- */
+
+/* What the retained map of a scan was made for: while all of it holds, no row's patches the snapshot sees can have changed */
+typedef struct MapKey
+{
+	uint64		part_id;
+	uint64		part_gen;
+	bool		one_granule;	/* the map holds the patches of the pages that can name granule only */
+	uint32		granule;
+	BlockNumber head_blk;		/* the newest page of the chain as the anchor names it, and its generation and last change */
+	uint64		head_gen;
+	XLogRecPtr	head_lsn;
+	Snapshot	snap;
+	TransactionId snap_xmin;
+	TransactionId snap_xmax;
+	CommandId	curcid;
+	SubTransactionId subxid;
+} MapKey;
 
 struct SiftColDeltaScan
 {
 	Relation	rel;
 	SiftTblVis *vis;
 	MemoryContext cx;
-	bool		valid;
-	uint64		part_id;
-	uint64		part_gen;
+	bool		valid;			/* map answers for the granule asked: no reset since it was made */
+	bool		retained;		/* key says what map was made for: after a reset it is used again when nothing it depends on changed */
+	MapKey		key;
 	SiftColDeltaPartMap *map;
 };
 
@@ -196,8 +263,15 @@ sift_col_delta_scan_begin(Relation rel, SiftTblVis *vis, MemoryContext cx)
 void
 sift_col_delta_scan_reset(SiftColDeltaScan *ds)
 {
+	ds->valid = false;
+}
+
+static void
+scan_drop_map(SiftColDeltaScan *ds)
+{
 	sift_col_delta_part_map_unref(ds->map);
 	ds->map = NULL;
+	ds->retained = false;
 	ds->valid = false;
 }
 
@@ -223,24 +297,62 @@ patch_decoded(SiftF2GranuleBuf *gb, int phys)
 	(void) sift_col_delta_apply_cells(&cells, gb->patch_arg, store->leaf_attno[leaf]);
 }
 
+/* The key a map asked for now would have; false for a snapshot whose view of a record can change without the chain changing */
+static bool
+map_key_now(const SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2GranuleBuf *gb, bool one_granule, MapKey *k)
+{
+	Snapshot	snap = ds->vis->snap;
+	SiftColDeltaAnchor a = sift_manifest_read_col_delta(ds->rel, entry);
+	Buffer		buf;
+
+	if (snap->snapshot_type != SNAPSHOT_MVCC && snap->snapshot_type != SNAPSHOT_ANY)
+		return false;
+	buf = sift_blk_read(ds->rel, a.delta_head_blkno, BUFFER_LOCK_SHARE);
+	*k = (MapKey) {.part_id = entry->part_id,.part_gen = gb->pin->part_gen,.one_granule = one_granule,.granule = one_granule ? gb->granule_id : 0,.head_blk = a.delta_head_blkno,
+		.head_gen = SiftPageGetOpaque(BufferGetPage(buf))->gen,.head_lsn = PageGetLSN(BufferGetPage(buf)),.snap = snap,.snap_xmin = snap->xmin,.snap_xmax = snap->xmax,
+		.curcid = snap->curcid,.subxid = GetCurrentSubTransactionId()};
+	UnlockReleaseBuffer(buf);
+	return true;
+}
+
+static bool
+map_key_same(const MapKey *a, const MapKey *b)
+{
+	return a->part_id == b->part_id && a->part_gen == b->part_gen && a->one_granule == b->one_granule && a->granule == b->granule && a->head_blk == b->head_blk &&
+		a->head_gen == b->head_gen && a->head_lsn == b->head_lsn && a->snap == b->snap && a->snap_xmin == b->snap_xmin && a->snap_xmax == b->snap_xmax &&
+		a->curcid == b->curcid && a->subxid == b->subxid;
+}
+
+/* The map is of the part the granule is in; a second granule of the part is a scan's, and reads the whole of it once. The first granule a scan asks of a part reads only the pages of the chain that can name it */
 const SiftColDeltaGranMap *
 sift_col_delta_scan_map(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2GranuleBuf *gb)
 {
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return NULL;
-	if (!ds->valid || ds->part_id != entry->part_id || ds->part_gen != gb->pin->part_gen)
+	if (!ds->valid || ds->key.part_id != entry->part_id || ds->key.part_gen != gb->pin->part_gen || (ds->key.one_granule && ds->key.granule != gb->granule_id))
 	{
-		MemoryContext map_cx = sift_col_delta_part_map_context(ds->cx);
-		MemoryContext old = MemoryContextSwitchTo(map_cx);
-		SiftColDeltaPartMap *loaded;
+		bool		same_part = ds->valid && ds->key.part_id == entry->part_id && ds->key.part_gen == gb->pin->part_gen;
+		MapKey		now;
+		bool		keyed = map_key_now(ds, entry, gb, !same_part, &now);
 
-		sift_col_delta_scan_reset(ds);
-		loaded = sift_col_delta_load_part_map(ds->rel, entry, gb->pin->part_gen, gb->pin->part->hdr.ngranules, ds->vis, 0);
-		MemoryContextSwitchTo(old);
-		ds->map = sift_col_delta_part_map_share(map_cx, loaded);
-		ds->part_id = entry->part_id;
-		ds->part_gen = gb->pin->part_gen;
-		ds->valid = true;
+		if (ds->retained && keyed && map_key_same(&now, &ds->key))
+			ds->valid = true;
+		else
+		{
+			MemoryContext map_cx = sift_col_delta_part_map_context(ds->cx);
+			MemoryContext old = MemoryContextSwitchTo(map_cx);
+			SiftColDeltaPrune prune = {.part_gen = gb->pin->part_gen,.by_granule = !same_part,.granule_lo = gb->granule_id,.granule_hi = gb->granule_id};
+			bool		settled = false;
+			SiftColDeltaPartMap *loaded;
+
+			scan_drop_map(ds);
+			loaded = load_part_map(ds->rel, entry, &prune, gb->pin->part->hdr.ngranules, ds->vis, 0, &settled);
+			MemoryContextSwitchTo(old);
+			ds->map = sift_col_delta_part_map_share(map_cx, loaded);
+			ds->key = keyed ? now : (MapKey) {.part_id = entry->part_id,.part_gen = gb->pin->part_gen,.one_granule = !same_part,.granule = same_part ? 0 : gb->granule_id};
+			ds->retained = keyed && settled;
+			ds->valid = true;
+		}
 	}
 	return ds->map != NULL ? sift_col_delta_gran_map(ds->map, gb->granule_id) : NULL;
 }
@@ -501,27 +613,6 @@ fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
 	return e;
 }
 
-typedef struct DiskChain
-{
-	Relation	rel;
-	const SiftPartitionEntry *entry;
-	SiftColDeltaAnchor *capture;	/* the anchor is the caller's to publish */
-	uint64		gen_next;		/* generations reserved ahead for the pages of all the batches of a chain */
-	uint32		gen_left;
-} DiskChain;
-
-static void
-disk_commit_anchor(void *ctx, const SiftColDeltaAnchor *a)
-{
-	DiskChain  *d = ctx;
-	SiftManifestEdit edit = {.part_id = d->entry->part_id,.key_lo = d->entry->key_lo,.set_col_delta = true,.new_col_delta = *a};
-
-	if (d->capture != NULL)
-		*d->capture = *a;
-	else
-		sift_manifest_commit(d->rel, &edit);
-}
-
 /* A row whose part a compaction replaced since the record was staged is where its address says now; one whose part a TTL drop took is gone, and its record with it */
 static void
 relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, const SiftPartDesc *parts, int nparts)
@@ -555,73 +646,11 @@ relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const in
 	sift_u64set_free(&gens);
 }
 
-static bool
-disk_append_head(void *ctx, BlockNumber head, SiftColDeltaBatch *b, FullTransactionId next)
-{
-	DiskChain  *d = ctx;
-	Relation	rel = d->rel;
-	uint32		part_id = (uint32) d->entry->part_id;
-	Buffer		buf = sift_blk_read(rel, head, BUFFER_LOCK_EXCLUSIVE);
-	Page		page = BufferGetPage(buf);
-	SiftColDeltaBatch part;
-	uint32		room;
-	SiftXlog	x;
-	bool		appended;
-
-	sift_page_expect(rel, page, head, SIFT_PT_COL_DELTA, 0, part_id);
-	if (!sift_page_sum_ok(page))
-		SIFT_CORRUPT(rel, "Block %u of the column delta chain does not match its checksum.", head);
-	room = (sift_col_delta_page_hdr(page)->flags & SIFT_CDPG_SEALED) != 0 ? 0 : SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page);
-	sift_col_delta_batch_split(b, room, next, &part);
-	appended = part.nentries > 0;
-	if (!appended)
-	{
-		UnlockReleaseBuffer(buf);
-		return false;
-	}
-	x = sift_xlog_start(rel);
-	SIFT_INVARIANT(sift_col_delta_page_append(sift_xlog_register(&x, buf, 0), &part), "a column delta batch that fit the page did not");
-	sift_xlog_done(&x);
-	sift_col_delta_batch_free(&part);
-	return true;
-}
-
-static uint64
-disk_reserve_gens(void *ctx, uint32 n)
-{
-	DiskChain  *d = ctx;
-	uint64		first;
-
-	if (d->gen_left < n)
-		return sift_manifest_new_gen(d->rel, n);
-	first = d->gen_next;
-	d->gen_next += n;
-	d->gen_left -= n;
-	return first;
-}
-
-static BlockNumber
-disk_new_page(void *ctx, const SiftColDeltaBatch *b, BlockNumber prev, uint16 depth, uint64 gen)
-{
-	DiskChain  *d = ctx;
-	Relation	rel = d->rel;
-	uint32		part_id = (uint32) d->entry->part_id;
-	BlockNumber blk = sift_fsm_alloc_meta_page(rel);
-	SiftXlog	x = sift_xlog_start(rel);
-	Page		page = sift_xlog_register(&x, sift_blk_new(rel, blk), GENERIC_XLOG_FULL_IMAGE);
-
-	sift_col_delta_page_init(page, gen, part_id, prev, depth);
-	SIFT_INVARIANT(sift_col_delta_page_append(page, b), "a column delta batch of one page did not fit an empty page");
-	sift_xlog_done(&x);
-	return blk;
-}
-
 void
 sift_col_delta_write_chain(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaBatch *batches, int nbatches, FullTransactionId next, SiftColDeltaAnchor *anchor)
 {
-	DiskChain	d = {.rel = rel,.entry = entry,.capture = anchor};
-	SiftColDeltaWriter w = {.ctx = &d,.append_head = disk_append_head,.reserve_gens = disk_reserve_gens,.new_page = disk_new_page,.commit_anchor = disk_commit_anchor};
-
+	SiftColDeltaDiskChain d = {.rel = rel,.entry = entry,.capture = anchor};
+	SiftColDeltaWriter w = sift_col_delta_disk_writer(&d);
 	uint32		pages = 0;
 
 	for (int i = 0; i < nbatches; i++)
@@ -639,15 +668,16 @@ sift_col_delta_write_chain(Relation rel, const SiftPartitionEntry *entry, SiftCo
 	}
 }
 
-/* Everything of the batch into the chain of the partition, under its lock */
-static void
+/* Everything of the batch into the chain of the partition, under its lock; the pages the chain has after */
+static uint32
 append_locked(Relation rel, const SiftPartitionEntry *e, SiftColDeltaBatch *b, FullTransactionId next)
 {
 	SiftColDeltaAnchor a = sift_manifest_read_col_delta(rel, e);
-	DiskChain	d = {.rel = rel,.entry = e};
-	SiftColDeltaWriter w = {.ctx = &d,.append_head = disk_append_head,.reserve_gens = disk_reserve_gens,.new_page = disk_new_page,.commit_anchor = disk_commit_anchor};
+	SiftColDeltaDiskChain d = {.rel = rel,.entry = e};
+	SiftColDeltaWriter w = sift_col_delta_disk_writer(&d);
 
 	sift_col_delta_chain_append(&w, &a, b, next);
+	return a.npages;
 }
 
 static void
@@ -665,6 +695,7 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		SiftPartDesc *parts;
 		int			nparts;
 		SiftColDeltaBatch b;
+		uint32		npages = 0;
 
 		for (hi = lo; hi < nlive && cd->items[ord[hi]].part_id == part_id; hi++)
 			;
@@ -674,10 +705,12 @@ flush_stage(Relation rel, SiftColDeltaStage *cd)
 		relocate_stale(rel, store, cd, ord, lo, hi, parts, nparts);
 		b = sift_col_delta_stage_take_run(cd, ord, lo, hi, next);
 		if (b.nentries > 0)
-			append_locked(rel, &e, &b, next);
+			npages = append_locked(rel, &e, &b, next);
 		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
 		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+		if (npages >= SIFT_CDDIR_SOFT_FOLD_PAGES)
+			(void) sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, part_id);
 		sift_col_delta_batch_free(&b);
 		pfree(parts);
 	}
@@ -768,7 +801,8 @@ shrink_chain(Relation rel, const SiftPartitionEntry *e, const SiftColDeltaChain 
 	SiftColDeltaAnchor anchor;
 	SiftColDeltaBatch *batches;
 	SiftExtent *release;
-	int			nbatches;
+	int			nbatches,
+				nrelease;
 
 	batches = sift_col_delta_compact_carry(plan, next, NULL, &nbatches);
 	if (nbatches >= chain->npages)
@@ -779,10 +813,8 @@ shrink_chain(Relation rel, const SiftPartitionEntry *e, const SiftColDeltaChain 
 		return false;
 	}
 	sift_col_delta_write_chain(rel, e, batches, nbatches, next, &anchor);
-	release = palloc(sizeof(SiftExtent) * chain->npages);
-	for (int i = 0; i < chain->npages; i++)
-		release[i] = (SiftExtent) {chain->blks[i], 1};
-	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.set_col_delta = true,.new_col_delta = anchor,.release = release,.nrelease = chain->npages});
+	release = sift_col_delta_chain_extents(chain, &nrelease);
+	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.set_col_delta = true,.new_col_delta = anchor,.release = release,.nrelease = nrelease});
 	pfree(release);
 	pfree(batches);
 	return true;
@@ -822,11 +854,8 @@ sift_col_delta_gc(Relation rel, uint64 part_id, const uint8 *key_lo, FullTransac
 	{
 		SiftManifestEdit edit = {.part_id = part_id,.key_lo = e.key_lo,.set_col_delta = true,.new_col_delta = sift_col_delta_anchor_none()};
 
-		release = palloc(sizeof(SiftExtent) * chain.npages);
-		for (int i = 0; i < chain.npages; i++)
-			release[i] = (SiftExtent) {chain.blks[i], 1};
+		release = sift_col_delta_chain_extents(&chain, &edit.nrelease);
 		edit.release = release;
-		edit.nrelease = chain.npages;
 		sift_manifest_commit(rel, &edit);
 		pfree(release);
 	}
