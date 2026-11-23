@@ -25,6 +25,7 @@
 #include "agg/v6/group_nan.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_argext.h"
+#include "agg/v6/v6_group_compact.h"
 #include "core/memtrack.h"
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
@@ -345,9 +346,12 @@ batch_rows(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *k
 static void
 grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
 {
-	uint16		n = batch_rows(g, set, bs, keyvec);
+	uint16		n;
 	const bool	coded = set->wide && set->nk == 1 && keyvec[set->kidx[0]]->type == SVEC_DICT32;
 
+	if (v6g_compact_batch(g, set, bs, keyvec, argvec))
+		return;
+	n = batch_rows(g, set, bs, keyvec);
 	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
 	if (coded)
 		code_slots(g, set, keyvec[set->kidx[0]], n);
@@ -515,6 +519,8 @@ sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
 	g->dist_arg = arg;
 	g->budget = UINT64_MAX;
 	g->dist_budget = 0;
+	for (int s = 0; s < g->nsets; s++)
+		g->set[s].cmp_off = true;
 }
 
 /* The state of a partition that did not spill, emptied for the records of the next partition: its tables and buffers stay */
@@ -606,7 +612,8 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const
 		SiftAggSlot64 *slot;
 
 		set->ht.lock_at = 0;
-
+		v6g_compact_flush(g, set);
+		set->cmp_off = true;
 		sift_ht_reserve(&set->ht, 1);
 		if (set->packed)
 		{
@@ -671,8 +678,8 @@ group_bytes(const SiftV6Group *g)
 	return bytes;
 }
 
-static void
-spill_all(SiftV6Group *g)
+void
+v6g_spill_all(SiftV6Group *g)
 {
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -700,7 +707,7 @@ void
 v6g_spill_if_over(SiftV6Group *g)
 {
 	if (group_bytes(g) > g->budget - g->dist_budget)
-		spill_all(g);
+		v6g_spill_all(g);
 }
 
 typedef struct V6Visit
@@ -765,6 +772,9 @@ sift_v6_group_finish(SiftV6Group *g)
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
 
 	v6g_dist_finish(g);
+	for (int s = 0; s < g->nsets && g->spec->topk == 0; s++)
+		v6g_compact_flush(g, &g->set[s]);
+	v6g_spill_if_over(g);
 	finish_in_cx(g);
 	MemoryContextSwitchTo(old);
 }
@@ -780,7 +790,7 @@ finish_in_cx(SiftV6Group *g)
 	}
 	if (!g->spilled)
 		return;
-	spill_all(g);
+	v6g_spill_all(g);
 	/* MEM[MEM-AGG-02]: SiftV6Group spill-emit peak (tables destroyed before the merge scan; scan budget * 3/4 and a tuplestore of work_mem/4: was all three at once, about 3x work_mem) */
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk > 0)
@@ -827,6 +837,8 @@ sift_v6_group_next(SiftV6Group *g, Datum *values, bool *isnull)
 {
 	const SiftV6Spec *spec = g->spec;
 
+	for (int s = 0; s < g->nsets; s++)
+		v6g_compact_flush(g, &g->set[s]);
 	if (g->store != NULL)
 	{
 		const int	n = spec->nkeys + spec->naggs;
@@ -864,7 +876,7 @@ sift_v6_group_bytes(const SiftV6Group *g)
 	uint64		bytes = 0;
 
 	for (int s = 0; s < g->nsets; s++)
-		bytes += g->set[s].nk > 0 ? sift_ht_bytes(&g->set[s].ht) : 0;
+		bytes += g->set[s].nk > 0 ? sift_ht_bytes(&g->set[s].ht) + v6g_compact_bytes(&g->set[s]) : 0;
 	return bytes;
 }
 
@@ -883,6 +895,8 @@ sift_v6_group_spill_stats(const SiftV6Group *g, uint64 *puts, uint64 *bytes)
 void
 sift_v6_group_free(SiftV6Group *g)
 {
+	for (int s = 0; s < g->nsets; s++)
+		v6g_compact_free(&g->set[s]);
 	v6g_dist_free(g);
 	v6g_filter_free(g);
 	if (g->wb.buf != NULL)

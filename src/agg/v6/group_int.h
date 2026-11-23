@@ -31,6 +31,9 @@ typedef struct V6DictSlot
 	struct V6Set *set;
 	uint32		slot;
 	SiftDictSeen *seen;
+	bool		mixed;			/* some of its strings went to the set of the group, not to seen: the count is that of the two together */
+	bool		direct;			/* what seen holds is all the strings, and direct_n their number */
+	uint64		direct_n;
 } V6DictSlot;
 
 typedef struct V6Set
@@ -55,6 +58,8 @@ typedef struct V6Set
 	bool	   *flat_moved;
 	SiftDu64G **gflat;			/* a set of keys: the grouped flat set of each integer COUNT(DISTINCT), NULL once its pairs moved to dist */
 	bool	   *gflat_moved;
+	struct SiftCompact *cmp;	/* the compact group table the set has until something it cannot hold comes (v6_group_compact.h) */
+	bool		cmp_off;		/* it has none, and will not have */
 	SiftLockSet lock;			/* a set of keys of a statement with spec->lock_k: the first keys of the locked group table (v6_group_lock.h) */
 } V6Set;
 
@@ -120,6 +125,8 @@ struct SiftV6Group
 	const uint64 *frows;		/* bit f of frows[r]: row r passes clause f (a set of keys only) */
 	uint16		sel[SIFT_VEC_LEN + SIFT_SEL_SLACK];
 	uint64		hash[SIFT_VEC_LEN];
+	uint32		gid[SIFT_VEC_LEN];	/* the group number of each row of a batch of the compact table (v6_group_compact.h), which v6g_dist_group_rows takes when gid_direct */
+	bool		gid_direct;
 	SiftInlineKey16 ikey[SIFT_VEC_LEN];
 	SiftAggSlot64 *slots[SIFT_VEC_LEN];
 	V6DistBatch *dbatch;
@@ -134,6 +141,8 @@ struct SiftV6Group
 /* The key columns of a slot into values and isnull, those whose bit of want is set (V6_KEYS_ALL: all of them); a wide key is read from its start each time */
 #define V6_KEYS_ALL		UINT32_MAX
 extern void v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want);
+/* The Datum of an integer key or value of a column of type typid */
+extern Datum v6g_int_datum(Oid typid, int64 x);
 extern Datum v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32 mask, bool *isnull);
 
 static inline bool
@@ -206,6 +215,8 @@ v6g_acc_op(const SiftV6Agg *a)
 
 /* the budget the tables of the groups may take: what the distinct sets do not */
 extern void v6g_spill_if_over(SiftV6Group *g);
+/* Every group table of the state to its spill, now */
+extern void v6g_spill_all(SiftV6Group *g);
 
 /* group_filter.c */
 extern void v6g_filter_init(SiftV6Group *g);
@@ -244,6 +255,10 @@ typedef void (*V6DistKeyFn) (void *arg, uint32 set_idx, uint32 slot, const void 
 extern void v6g_dist_dict_drain(SiftV6Group *g, V6DistKeyFn fn, void *arg);
 /* The strings the dictionary path holds, at most: what a participant of a parallel run counts as its load */
 extern uint64 v6g_dist_dict_load(const SiftV6Group *g);
+/* A statement that is nothing but COUNT(DISTINCT) of columns of text: a part with no predicate has all the strings of its dictionaries, whichever its rows (scan.c) */
+extern bool v6g_dist_dict_only(const SiftV6Group *g);
+extern bool v6g_dist_dict_fits(const SiftDictSrc *src);
+extern void v6g_dist_dict_part(SiftV6Group *g, int attno, const SiftDictSrc *src);
 /* The sets resolve their partitions: the counts of the groups reach their accumulators */
 extern void v6g_dist_finish(SiftV6Group *g);
 extern void v6g_dist_free(SiftV6Group *g);

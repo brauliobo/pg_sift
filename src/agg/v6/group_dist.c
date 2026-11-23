@@ -11,6 +11,7 @@
 
 #include "agg/group/ht.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_group_compact.h"
 
 #define DICT_PARALLEL_CAP		((uint64) 8 << 20)	/* the strings a participant of a parallel run holds by dictionary before it hands them on: what its own set of distinct values has no budget for either */
 
@@ -157,6 +158,7 @@ dict_emit(void *arg, const void *bytes, uint32 len)
 	V6DictSlot *ds = arg;
 	SiftV6Group *g = ds->g;
 
+	ds->mixed = true;
 	sift_dkey_reset(&g->dkey);
 	sift_dkey_bytes(&g->dkey, bytes, len);
 	if (g->dist_put != NULL)
@@ -166,14 +168,25 @@ dict_emit(void *arg, const void *bytes, uint32 len)
 }
 
 static V6DictSlot *
-dict_slot(SiftV6Group *g, V6Set *set, uint32 slot)
+dict_slot_of(SiftV6Group *g, V6Set *set, uint32 slot)
 {
 	if (set->dict == NULL)
+	{
 		set->dict = MemoryContextAllocZero(g->cx, Max(g->ndist, 1) * sizeof(V6DictSlot));
-	if (set->dict[slot].seen == NULL)
-		set->dict[slot] = (V6DictSlot) {.g = g,.set = set,.slot = slot,
-			.seen = sift_dictseen_create(g->cx, g->dist_budget > 0 ? g->dist_budget / (uint64) g->nsets / 2 : DICT_PARALLEL_CAP)};
+		for (int k = 0; k < g->ndist; k++)
+			set->dict[k] = (V6DictSlot) {.g = g,.set = set,.slot = (uint32) k};
+	}
 	return &set->dict[slot];
+}
+
+static V6DictSlot *
+dict_slot(SiftV6Group *g, V6Set *set, uint32 slot)
+{
+	V6DictSlot *ds = dict_slot_of(g, set, slot);
+
+	if (ds->seen == NULL)
+		ds->seen = sift_dictseen_create(g->cx, g->dist_budget > 0 ? g->dist_budget / (uint64) g->nsets / 2 : DICT_PARALLEL_CAP);
+	return ds;
 }
 
 /* The codes of a batch of a column the parts code by dictionaries: false when the dictionary is too large, and the rows are read as strings */
@@ -203,12 +216,58 @@ drain_emit(void *arg, const void *bytes, uint32 len)
 	da->fn(da->arg, (uint32) (da->ds->set - g->set), da->ds->slot, g->dkey.buf, g->dkey.len);
 }
 
+bool
+v6g_dist_dict_only(const SiftV6Group *g)
+{
+	if (g->nsets != 1 || g->set[0].nk != 0 || g->nfilters != 0 || g->spec->naggs == 0)
+		return false;
+	for (int j = 0; j < g->spec->naggs; j++)
+	{
+		const SiftV6Agg *a = &g->spec->agg[j];
+
+		if (a->kind != SV6_COUNT_DISTINCT || a->nxcols != 0 || a->arg.derive != 0 || a->fclause != 0)
+			return false;
+	}
+	return true;
+}
+
+bool
+v6g_dist_dict_fits(const SiftDictSrc *src)
+{
+	return sift_dictseen_fits(src);
+}
+
+void
+v6g_dist_dict_part(SiftV6Group *g, int attno, const SiftDictSrc *src)
+{
+	for (int j = 0; j < g->spec->naggs; j++)
+		if (g->spec->agg[j].arg.attno == attno)
+		{
+			V6DictSlot *ds = dict_slot(g, &g->set[0], (uint32) g->dslot[j]);
+
+			sift_dictseen_part(ds->seen, src, dict_emit, ds);
+		}
+}
+
+/* The strings of a set of no keys that its parts have named, and nothing else has, are counted where they are: they are not rows of the exact set */
+static void
+dict_exact(SiftV6Group *g)
+{
+	for (int s = 0; s < g->nsets; s++)
+		for (int k = 0; g->dist_put == NULL && g->set[s].nk == 0 && g->set[s].dict != NULL && k < g->ndist; k++)
+		{
+			V6DictSlot *ds = &g->set[s].dict[k];
+
+			ds->direct = ds->seen != NULL && !ds->mixed && sift_dictseen_exact(ds->seen, dict_emit, ds, &ds->direct_n) && !ds->mixed;
+		}
+}
+
 void
 v6g_dist_dict_drain(SiftV6Group *g, V6DistKeyFn fn, void *arg)
 {
 	for (int s = 0; s < g->nsets; s++)
 		for (int k = 0; g->set[s].dict != NULL && k < g->ndist; k++)
-			if (g->set[s].dict[k].seen != NULL)
+			if (g->set[s].dict[k].seen != NULL && !g->set[s].dict[k].direct)
 			{
 				DrainArg	da = {&g->set[s].dict[k], fn, arg};
 
@@ -257,6 +316,7 @@ v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *ta
 
 	if (v->type == SVEC_DICT32 && a->nxcols == 0 && dict_batch(g, set, j, v, n_raw, take))
 		return;
+	dict_slot_of(g, set, slot)->mixed = true;
 	V6_FOR_EACH_ROW(take, n_raw, r)
 	{
 		if (a->nxcols == 0 && !is_valid(v, r))
@@ -315,17 +375,24 @@ typedef struct MovePairs
 } MovePairs;
 
 static void
-add_pair(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const SiftAggSlot64 *s, int64 value)
+add_pair_key(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const V6RowKey *rk, int64 value)
 {
-	const V6RowKey rk = slot_key(set, s);
-	const uint32 plen = (uint32) sizeof(rk.nulls) + rk.len;
+	const uint32 plen = (uint32) sizeof(rk->nulls) + rk->len;
 
 	sift_dkey_reset(k);
 	sift_bytes_put(k, &plen, sizeof(plen));
-	sift_bytes_put(k, &rk.nulls, sizeof(rk.nulls));
-	sift_bytes_put(k, rk.p, rk.len);
+	sift_bytes_put(k, &rk->nulls, sizeof(rk->nulls));
+	sift_bytes_put(k, rk->p, rk->len);
 	sift_dkey_i64(k, value);
 	sift_distinct_add_dkey(dist_of(g, set), slot, k);
+}
+
+static void
+add_pair(SiftV6Group *g, V6Set *set, uint32 slot, SiftDistinctKey *k, const SiftAggSlot64 *s, int64 value)
+{
+	const V6RowKey rk = slot_key(set, s);
+
+	add_pair_key(g, set, slot, k, &rk, value);
 }
 
 static void
@@ -353,6 +420,42 @@ gflat_move(SiftV6Group *g, V6Set *set, uint32 slot)
 	sift_du64g_free(set->gflat[slot]);
 	set->gflat[slot] = NULL;
 	set->gflat_moved[slot] = true;
+}
+
+typedef struct CompactPairs
+{
+	SiftV6Group *g;
+	V6Set	   *set;
+	uint32		slot;
+	SiftDistinctKey *k;
+} CompactPairs;
+
+static void
+compact_pair(void *arg, uint32 gid, uint64 value)
+{
+	const CompactPairs *to = arg;
+	V6RowKey	rk;
+
+	v6g_compact_rowkey(to->set, gid, &rk);
+	add_pair_key(to->g, to->set, to->slot, to->k, &rk, (int64) value);
+}
+
+/* The grouped flat set of the slot is full while the groups are in the compact table: its pairs, and the batch's from done on, go to the generic set under the bytes of their groups, and the table is flushed when the batch is done */
+static void
+compact_move(SiftV6Group *g, V6Set *set, uint32 slot, const V6DistBatch *b, uint32 done, uint32 m)
+{
+	SiftDistinctKey k;
+	CompactPairs to = {g, set, slot, &k};
+
+	sift_dkey_init(&k, g->cx);
+	sift_du64g_pairs(set->gflat[slot], compact_pair, &to);
+	for (uint32 i = done; i < m; i++)
+		compact_pair(&to, b->gid[i], b->val[i]);
+	sift_dkey_free(&k);
+	sift_du64g_free(set->gflat[slot]);
+	set->gflat[slot] = NULL;
+	set->gflat_moved[slot] = true;
+	v6g_compact_defer_flush(set);
 }
 
 void
@@ -421,12 +524,17 @@ v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, u
 			row_to_dist(g, set, j, argvec, r, g->slots[k]);
 			continue;
 		}
-		b->gid[m] = g->slots[k]->ext_idx;
+		b->gid[m] = g->gid_direct ? g->gid[k] : g->slots[k]->ext_idx;
 		b->val[m] = (uint64) int_at(argvec[j], r);
 		b->row[m++] = k;
 	}
 	if (m == 0 || (done = sift_du64g_add_batch(d, b->gid, b->val, m)) == m)
 		return;
+	if (g->gid_direct)
+	{
+		compact_move(g, set, (uint32) g->dslot[j], b, done, m);
+		return;
+	}
 	gflat_move(g, set, (uint32) g->dslot[j]);
 	for (uint32 i = done; i < m; i++)
 		row_to_dist(g, set, j, argvec, g->sel[b->row[i]], g->slots[b->row[i]]);
@@ -480,14 +588,19 @@ emit_group(void *arg, uint32 gid, uint64 count)
 	{
 		V6Set	   *set;
 		uint32		off;
+		int			dk;
 	}		   *at = arg;
 
-	((V6Acc *) (sift_ht_ext_idx(&at->set->ht, gid) + at->off))->v0 += count;
+	if (at->set->cmp != NULL)
+		v6g_compact_dist(at->set, at->dk, gid, count);
+	else
+		((V6Acc *) (sift_ht_ext_idx(&at->set->ht, gid) + at->off))->v0 += count;
 }
 
 void
 v6g_dist_finish(SiftV6Group *g)
 {
+	dict_exact(g);
 	v6g_dist_dict_drain(g, dist_finish_add, g);
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -500,7 +613,8 @@ v6g_dist_finish(SiftV6Group *g)
 				{
 					V6Set	   *set;
 					uint32		off;
-				}			at = {set, g->off[g->dagg[k]]};
+					int			dk;
+				}			at = {set, g->off[g->dagg[k]], k};
 
 				sift_du64g_groups(set->gflat[k], emit_group, (void *) &at);
 			}
@@ -509,7 +623,9 @@ v6g_dist_finish(SiftV6Group *g)
 		if (set->nk == 0)
 			for (int k = 0; k < g->ndist; k++)
 			{
-				if (set->flat != NULL && set->flat[k] != NULL)
+				if (set->dict != NULL && set->dict[k].direct)
+					set->plain[g->dagg[k]].v0 = set->dict[k].direct_n;
+				else if (set->flat != NULL && set->flat[k] != NULL)
 					set->plain[g->dagg[k]].v0 = sift_du64_count(set->flat[k]);
 				else if (set->dist != NULL)
 					set->plain[g->dagg[k]].v0 = sift_distinct_count(set->dist, (uint32) k);

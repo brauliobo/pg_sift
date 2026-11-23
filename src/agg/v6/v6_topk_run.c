@@ -9,11 +9,13 @@
 #include "utils/sortsupport.h"
 
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_group_compact.h"
 #include "agg/v6/v6_group_topk.h"
 #include "agg/v6/v6_topk_run.h"
 #include "core/memtrack.h"
 
 #define INT8_GT_OPERATOR 413
+#define TOPK_RUN		32
 
 struct SiftV6TopKRun
 {
@@ -85,6 +87,7 @@ typedef struct Cand
 	const SiftV6Group *g;
 	const V6Set *set;
 	const SiftAggSlot64 *slot;
+	const uint64 *cslot;		/* the slot of the group in the compact table, when it is there (slot is then NULL) */
 	const V6Acc *acc;
 	SiftV6TopKRun *r;
 	Datum	   *values;
@@ -92,6 +95,15 @@ typedef struct Cand
 	uint32		keys_done;		/* the key columns already in values: the whole tuple of a candidate that stays makes only the others */
 	uint64		aggs_done;		/* the same for the aggregates (the first 64) */
 } Cand;
+
+static void
+cand_keys(const Cand *c, uint32 want)
+{
+	if (c->cslot != NULL)
+		v6g_compact_key_datums(c->g, c->set, c->cslot, c->values, c->isnull, want);
+	else
+		v6g_key_datums(c->g, c->set, &c->set->ht, c->slot, c->values, c->isnull, want);
+}
 
 static Datum
 cand_lazy(void *ctx, int item, bool *isnull)
@@ -104,7 +116,7 @@ cand_lazy(void *ctx, int item, bool *isnull)
 	if (pos < spec->nkeys)
 	{
 		if (!((c->keys_done >> pos) & 1))
-			v6g_key_datums(c->g, c->set, &c->set->ht, c->slot, c->values, c->isnull, UINT32_C(1) << pos);
+			cand_keys(c, UINT32_C(1) << pos);
 		c->keys_done |= UINT32_C(1) << pos;
 		*isnull = c->isnull[pos];
 		return c->values[pos];
@@ -124,7 +136,7 @@ cand_whole_tuple(const Cand *c)
 {
 	const SiftV6Spec *spec = c->g->spec;
 
-	v6g_key_datums(c->g, c->set, &c->set->ht, c->slot, c->values, c->isnull, ~c->keys_done);
+	cand_keys(c, ~c->keys_done);
 	for (int j = 0; j < spec->naggs; j++)
 		if (j >= 64 || !((c->aggs_done >> j) & 1))
 			c->values[spec->nkeys + j] = v6g_agg_datum(c->g, &spec->agg[j], &c->acc[j], c->set->mask, &c->isnull[spec->nkeys + j]);
@@ -193,13 +205,94 @@ sift_v6_topk_run_stream(SiftV6TopKRun *r, bool (*next) (void *arg, Datum *values
 	sift_gtopk_finish(r->heap);
 }
 
+/* The count a group must beat to enter a heap that is full and sorted by that count alone: a group that only ties it never enters */
+typedef struct CountBar
+{
+	bool		set;
+	int64		worst;
+} CountBar;
+
+static void
+count_bar(const SiftV6TopKRun *r, CountBar *bar)
+{
+	Datum		worst;
+	bool		worst_null;
+
+	bar->set = r->count_agg >= 0 && sift_gtopk_worst(r->heap, 0, &worst, &worst_null) && !worst_null;
+	if (bar->set)
+		bar->worst = DatumGetInt64(worst);
+}
+
+static inline bool
+count_loses_n(const SiftV6TopKRun *r, const CountBar *bar, int64 n)
+{
+	const bool	only = r->spec->ntopk == 1;
+
+	if (r->count_desc)
+		return only ? n <= bar->worst : n < bar->worst;
+	return only ? n >= bar->worst : n > bar->worst;
+}
+
+static inline bool
+count_loses(const SiftV6TopKRun *r, const CountBar *bar, const V6Acc *acc)
+{
+	return bar->set && count_loses_n(r, bar, (int64) acc[r->count_agg].n);
+}
+
+static void
+offer_group(SiftV6TopKRun *r, SiftV6Group *g, const V6Set *set, const SiftAggSlot64 *s, const uint64 *cslot, const V6Acc *acc, CountBar *bar, ExprState *qual, ExprContext *ec, TupleTableSlot *slot)
+{
+	Cand		c = {.g = g,.set = set,.slot = s,.cslot = cslot,.acc = acc,.r = r,.values = r->values,.isnull = r->isnull};
+
+	if (count_loses(r, bar, acc))
+		return;
+	memset(r->isnull, true, g->spec->nkeys * sizeof(bool));
+	if (qual != NULL)
+	{
+		cand_whole_tuple(&c);
+		offer_whole(r, r->values, r->isnull, qual, ec, slot);
+		count_bar(r, bar);
+	}
+	else if (sift_gtopk_wants(r->heap, cand_lazy, &c))
+	{
+		cand_whole_tuple(&c);
+		sift_gtopk_put(r->heap, r->values, r->isnull);
+		count_bar(r, bar);
+	}
+	tmp_release(r);
+}
+
+/* The groups of the compact table of the set, each offered with the state it would have in the group table */
+typedef struct CompactOffer
+{
+	SiftV6TopKRun *r;
+	SiftV6Group *g;
+	const V6Set *set;
+	CountBar	bar;
+	ExprState  *qual;
+	ExprContext *ec;
+	TupleTableSlot *slot;
+	V6Acc	   *acc;
+} CompactOffer;
+
+static void
+offer_compact(void *arg, const uint64 *s)
+{
+	CompactOffer *o = arg;
+	if (o->bar.set && count_loses_n(o->r, &o->bar, (int64) v6g_compact_count(o->set, s)))
+		return;
+	v6g_compact_acc(o->g, o->set, s, o->acc);
+	offer_group(o->r, o->g, o->set, NULL, s, o->acc, &o->bar, o->qual, o->ec, o->slot);
+}
+
+/* The state blocks of a run of groups are fetched together before the first is read: the slots stream in table order, their blocks are where the groups were made */
 void
 sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprContext *ec, TupleTableSlot *slot)
 {
-	const SiftV6Spec *spec = g->spec;
 	const V6Set *set = &g->set[0];
+	const SiftSaltedHT *ht = &set->ht;
 	MemoryContext old = MemoryContextSwitchTo(r->tmp);
-	const SiftAggSlot64 *s;
+	CountBar	bar = {0};
 
 	if (g->store != NULL || set->nk == 0)
 	{
@@ -213,29 +306,29 @@ sift_v6_topk_run_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual, ExprC
 		sift_gtopk_finish(r->heap);
 		return;
 	}
-	SIFT_HT_FOREACH(&set->ht, s)
+	if (set->cmp != NULL)
 	{
-		const V6Acc *acc = (const V6Acc *) sift_ht_ext(&set->ht, s);
-		Cand		c = {.g = g,.set = set,.slot = s,.acc = acc,.r = r,.values = r->values,.isnull = r->isnull};
-		Datum		worst;
-		bool		worst_null;
+		CompactOffer o = {.r = r,.g = g,.set = set,.qual = qual,.ec = ec,.slot = slot,.acc = MemoryContextAlloc(g->cx, Max(g->spec->naggs, 1) * sizeof(V6Acc))};
 
-		if (r->count_agg >= 0 && sift_gtopk_worst(r->heap, 0, &worst, &worst_null) && !worst_null &&
-			(r->count_desc ? (int64) acc[r->count_agg].n < DatumGetInt64(worst) : (int64) acc[r->count_agg].n > DatumGetInt64(worst)))
-			continue;
+		v6g_compact_each(set, offer_compact, &o);
+		pfree(o.acc);
+		MemoryContextReset(r->tmp);
+		MemoryContextSwitchTo(old);
+		sift_gtopk_finish(r->heap);
+		return;
+	}
+	for (uint32 at = sift_ht_next_occupied(ht, 0); at < ht->capacity;)
+	{
+		const SiftAggSlot64 *run[TOPK_RUN];
+		int			n = 0;
 
-		memset(r->isnull, true, spec->nkeys * sizeof(bool));
-		if (qual != NULL)
+		for (; n < TOPK_RUN && at < ht->capacity; at = sift_ht_next_occupied(ht, at + 1))
 		{
-			cand_whole_tuple(&c);
-			offer_whole(r, r->values, r->isnull, qual, ec, slot);
+			run[n] = &ht->slots[at];
+			__builtin_prefetch(sift_ht_ext(ht, run[n++]));
 		}
-		else if (sift_gtopk_wants(r->heap, cand_lazy, &c))
-		{
-			cand_whole_tuple(&c);
-			sift_gtopk_put(r->heap, r->values, r->isnull);
-		}
-		tmp_release(r);
+		for (int i = 0; i < n; i++)
+			offer_group(r, g, set, run[i], NULL, (const V6Acc *) sift_ht_ext(ht, run[i]), &bar, qual, ec, slot);
 	}
 	MemoryContextReset(r->tmp);
 	MemoryContextSwitchTo(old);

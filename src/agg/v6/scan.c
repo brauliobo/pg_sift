@@ -16,7 +16,9 @@
 
 #include "agg/group/ht.h"
 #include "agg/v6/v6.h"
+#include "agg/v6/group_int.h"
 #include "agg/v6/v6_filter_eval.h"
+#include "agg/v6/v6_group_fast.h"
 #include "agg/v6/v6_fuse.h"
 #include "agg/v6/v6_datebin_win_pg.h"
 #include "agg/v6/v6_dictseen.h"
@@ -48,6 +50,7 @@ typedef struct V6Col
 	bool		key_only;		/* a key and no argument: a text of it can stay the codes of its dictionary */
 	bool		by_code;		/* the argument of COUNT(DISTINCT) and of nothing else: a part that codes the column by a dictionary gives the codes of its rows (vec.dict is then this dict) */
 	SiftDictSrc dict;			/* the dictionary of the part, for the batch in hand when vec.type is SVEC_DICT32 */
+	SiftKeyDict kdict;			/* the same for a key column: the dictionary of the batch, and the part it is the dictionary of */
 } V6Col;
 
 /* a key that is date_bin() of a column, or its date_trunc('month'): the batch of the column binned into out, as the vector of the key */
@@ -382,7 +385,8 @@ fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen)
 			if (cv->dcode != NULL)
 			{
 				v->type = SVEC_DICT32;
-				v->dict = cv->dict;
+				c->kdict = (SiftKeyDict) {.d = *cv->dict,.gen = cv->dict->part ? part_gen : 0};
+				v->dict = &c->kdict;
 				memcpy(v->data, cv->dcode + off, n * sizeof(uint32));
 				break;
 			}
@@ -693,6 +697,30 @@ dict_leaves(const V6Scan *s)
 	return dict_leaf;
 }
 
+/* A part of a statement that is nothing but the COUNT(DISTINCT) of columns of text, and that the scan would read whole: the strings of its dictionaries are the strings of its rows, and no row is read */
+static bool
+part_dict_offer(void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts)
+{
+	V6Scan	   *s = arg;
+	SiftDictSrc src[SIFT_V6_MAX_KEYS + 16];
+
+	if (s->visible_part == NULL || s->visible_part->part_gen != d->part_gen || s->group == NULL || s->emit != NULL || s->pipe != NULL || s->rows != NULL || s->gate != NULL ||
+		s->nbins > 0 || s->nderived > 0 || s->ncols > lengthof(src) || !v6g_dist_dict_only(s->group))
+		return false;
+	for (int i = 0; i < s->ncols; i++)
+	{
+		if (!s->cols[i].by_code || dicts[i].off == NULL)
+			return false;
+		src[i] = (SiftDictSrc) {.gen = d->part_gen,.n = dicts[i].n,.off = dicts[i].off,.bytes = dicts[i].bytes};
+		if (!v6g_dist_dict_fits(&src[i]))
+			return false;
+	}
+	for (int i = 0; i < s->ncols; i++)
+		v6g_dist_dict_part(s->group, s->cols[i].attno, &src[i]);
+	s->stats->rows += d->nrows;
+	return true;
+}
+
 /* One pass over the index (over the rows of the bridge, when it is one) */
 static void
 scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, const SiftTidBridge *bridge)
@@ -705,6 +733,7 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	if (bridge != NULL)
 		sift_f2_scan_set_bridge(scan, bridge, NULL, NULL);
 	sift_f2_scan_set_part_sink(scan, part_offer);
+	sift_f2_scan_set_part_dict_sink(scan, part_dict_offer);
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
 	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
 	index_endscan(scan);

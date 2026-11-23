@@ -84,8 +84,8 @@ sift_v6_i128_numeric(SiftI128 v)
 	return sift_v6_scaled_numeric(v, 0);
 }
 
-static Datum
-int_datum(Oid typid, int64 x)
+Datum
+v6g_int_datum(Oid typid, int64 x)
 {
 	switch (typid)
 	{
@@ -132,7 +132,7 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 		case SV6_ARG_MAX:
 		case SV6_ARG_MIN:
 			*isnull = acc->n == 0 || acc->aux != 0;
-			return *isnull ? (Datum) 0 : int_datum(a->arg.typid, acc->v1);
+			return *isnull ? (Datum) 0 : v6g_int_datum(a->arg.typid, acc->v1);
 		case SV6_COUNT_DISTINCT:
 			return Int64GetDatum(v6acc_count(a, acc));
 		case SV6_SUM:
@@ -175,7 +175,7 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 				return Float8GetDatum(v6acc_f64(acc));
 			if (a->arg.typid == NUMERICOID)
 				return sift_v6_scaled_numeric((SiftI128) {.lo = acc->v0,.hi = (int64) acc->v0 < 0 ? -1 : 0}, a->arg.scale);
-			return int_datum(a->arg.typid, (int64) acc->v0);
+			return v6g_int_datum(a->arg.typid, (int64) acc->v0);
 	}
 }
 
@@ -194,14 +194,14 @@ v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, c
 			if (!((want >> k) & 1))
 				continue;
 			isnull[k] = !sift_pack_get(&set->pack, &s->key, i, &x);
-			values[k] = isnull[k] ? (Datum) 0 : int_datum(spec->key[k].typid, x);
+			values[k] = isnull[k] ? (Datum) 0 : v6g_int_datum(spec->key[k].typid, x);
 		}
 		return;
 	}
 	if (!set->wide)
 	{
 		isnull[set->kidx[0]] = s->key.i64[1] != 0;
-		values[set->kidx[0]] = isnull[set->kidx[0]] ? (Datum) 0 : int_datum(spec->key[set->kidx[0]].typid, s->key.i64[0]);
+		values[set->kidx[0]] = isnull[set->kidx[0]] ? (Datum) 0 : v6g_int_datum(spec->key[set->kidx[0]].typid, s->key.i64[0]);
 		return;
 	}
 	{
@@ -232,7 +232,7 @@ v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, c
 
 				memcpy(&x, p, sizeof(x));
 				if ((want >> k) & 1)
-					values[k] = int_datum(spec->key[k].typid, x);
+					values[k] = v6g_int_datum(spec->key[k].typid, x);
 				p += sizeof(x);
 			}
 		}
