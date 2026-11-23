@@ -375,7 +375,10 @@ ERROR:  the limit must not be negative
 SELECT * FROM sift.facets('d_body', 'd_cat', 'common AND', 1);
 ERROR:  sift query: expected a term after AND, found end of query at position 11
 SELECT * FROM sift.facets('d_body', 'd_cat', 'NOT common', 1);
-ERROR:  sift query: NOT needs a positive term in the same AND group at position 1
+ value | count 
+-------+-------
+(0 rows)
+
 CREATE TABLE other (id int, c text);
 CREATE INDEX other_c ON other USING sift (c) WITH (analyzer = keyword);
 SELECT * FROM sift.facets('d_body', 'other_c', 'common');

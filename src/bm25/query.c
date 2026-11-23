@@ -200,6 +200,8 @@ lex_word(QParser *p, QTok *t)
 			if (cur(p) == '(' || cur(p) == '{')
 			{
 				t->kind = T_FIELD;
+				pfree(lit.data);
+				pfree(pat.data);
 				return;
 			}
 			resetStringInfo(&lit);
@@ -277,6 +279,9 @@ lex_word(QParser *p, QTok *t)
 		else if (strcmp(lit.data, "NOT") == 0)
 			t->kind = T_NOT;
 	}
+	t->text = pnstrdup(t->text, t->textlen);
+	pfree(lit.data);
+	pfree(pat.data);
 }
 
 static void
@@ -572,26 +577,6 @@ parse_or(QParser *p, int depth)
 	return list_node(SQ_OR, kids);
 }
 
-/*
- * A NOT needs a positive sibling in its AND. Checked after parsing, once
- * unboosted groups are spliced: "a (NOT b NOT c)" is valid.
- */
-static void
-check_nots(const SiftQNode *n, SiftQKind parent)
-{
-	bool		pos = false;
-
-	if (n->kind == SQ_NOT && parent != SQ_AND)
-		SYNTAX(n->loc, "NOT needs a positive term in the same AND group");
-	for (int i = 0; i < n->nchild; i++)
-	{
-		pos |= n->child[i]->kind != SQ_NOT;
-		check_nots(n->child[i], n->kind);
-	}
-	if (n->kind == SQ_AND && !pos)
-		SYNTAX(n->child[0]->loc, "NOT needs a positive term in the same AND group");
-}
-
 SiftQuery *
 sift_query_parse(const char *src, int len)
 {
@@ -611,7 +596,6 @@ sift_query_parse(const char *src, int len)
 	q->root = parse_or(&p, 0);
 	if (p.tok.kind != T_EOF)
 		SYNTAX(p.tok.loc, "unexpected %s", tok_names[p.tok.kind]);
-	check_nots(q->root, SQ_NOTHING);
 	q->nleaves = p.nleaves;
 	return q;
 }
@@ -703,6 +687,7 @@ deparse_node(StringInfo buf, const SiftQNode *n, SiftQKind parent)
 		((n->kind == SQ_AND || n->kind == SQ_OR) &&
 		 (boosted || parent == SQ_NOT || parent == n->kind || (parent == SQ_AND && n->kind == SQ_OR)));
 
+	check_stack_depth();
 	if (group)
 		appendStringInfoChar(buf, '(');
 	if (n->field)
@@ -753,6 +738,9 @@ deparse_node(StringInfo buf, const SiftQNode *n, SiftQKind parent)
 			break;
 		case SQ_NOTHING:
 			appendStringInfoString(buf, "\"\"");
+			break;
+		case SQ_ALL:
+			appendStringInfoString(buf, "NOT \"\"");
 			break;
 	}
 	if (group)

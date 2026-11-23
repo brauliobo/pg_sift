@@ -3,8 +3,8 @@ CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 SELECT sift.parse_query('a OR (b');
 ERROR:  sift query: unclosed "(" at position 6
-SELECT sift.parse_query(repeat('a ', 257));
-ERROR:  sift query: more than 256 terms at position 513
+SELECT sift.parse_query(repeat('a ', 65536));
+ERROR:  sift query: more than 65535 terms at position 131071
 CREATE FUNCTION perr(q text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN 'ok: ' || sift.parse_query(q);
@@ -41,12 +41,12 @@ SELECT q, perr(q) FROM (VALUES
  NOT               | 42601: sift query: expected a term after NOT, found end of query at position 4
  a NOT             | 42601: sift query: expected a term after NOT, found end of query at position 6
  a NOT NOT         | 42601: sift query: expected a term after NOT, found end of query at position 10
- NOT a             | 42601: sift query: NOT needs a positive term in the same AND group at position 1
- NOT a NOT b       | 42601: sift query: NOT needs a positive term in the same AND group at position 1
- a OR NOT b        | 42601: sift query: NOT needs a positive term in the same AND group at position 6
- (NOT a) OR b      | 42601: sift query: NOT needs a positive term in the same AND group at position 2
- x (NOT b NOT c)^2 | 42601: sift query: NOT needs a positive term in the same AND group at position 4
- NOT (a b)         | 42601: sift query: NOT needs a positive term in the same AND group at position 1
+ NOT a             | ok: NOT a
+ NOT a NOT b       | ok: NOT a AND NOT b
+ a OR NOT b        | ok: a OR NOT b
+ (NOT a) OR b      | ok: b OR NOT a
+ x (NOT b NOT c)^2 | ok: x AND NOT b AND NOT c
+ NOT (a b)         | ok: NOT (a AND b)
  (a                | 42601: sift query: unclosed "(" at position 1
  a)                | 42601: sift query: unexpected ")" at position 2
  a))               | 42601: sift query: unexpected ")" at position 2
@@ -122,48 +122,47 @@ SELECT q, perr(q) FROM (VALUES
 
 -- limits
 SELECT q, perr(q) FROM (VALUES
-	('a^10000.01'), ('a^1e9'), ('a^99999999999999999999999999999999999999999'),
-	('(a^100)^101'), ('((a^10)^10)^100.5'),
-	('(((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))')
+	('a^1e18'), ('a^1e19'), ('a^99999999999999999999999999999999999999999'),
+	('(a^1e9)^1e9'), ('(a^1e9)^1e10'), ('((a^10)^10)^1e17')
 ) v(q);
-                                  q                                  |                                perr                                
----------------------------------------------------------------------+--------------------------------------------------------------------
- a^10000.01                                                          | 54000: sift query: boost must be between 0 and 10000 at position 3
- a^1e9                                                               | 54000: sift query: boost must be between 0 and 10000 at position 3
- a^99999999999999999999999999999999999999999                         | 54000: sift query: boost must be between 0 and 10000 at position 3
- (a^100)^101                                                         | 54000: sift query: combined boost exceeds 10000 at position 8
- ((a^10)^10)^100.5                                                   | 54000: sift query: combined boost exceeds 10000 at position 12
- (((((((((((((((((((((((((((((((((a))))))))))))))))))))))))))))))))) | 54000: sift query: nesting deeper than 32 at position 33
+                      q                      |                                perr                                
+---------------------------------------------+--------------------------------------------------------------------
+ a^1e18                                      | ok: a^1e+18
+ a^1e19                                      | 54000: sift query: boost must be between 0 and 1e+18 at position 3
+ a^99999999999999999999999999999999999999999 | 54000: sift query: boost must be between 0 and 1e+18 at position 3
+ (a^1e9)^1e9                                 | ok: a^1e+18
+ (a^1e9)^1e10                                | 54000: sift query: combined boost exceeds 1e+18 at position 8
+ ((a^10)^10)^1e17                            | 54000: sift query: combined boost exceeds 1e+18 at position 12
 (6 rows)
 
-SELECT perr(repeat('(', 32) || 'a' || repeat(')', 32)) AS depth_32;
- depth_32 
-----------
+SELECT perr(repeat('(', 1024) || 'a' || repeat(')', 1024)) AS depth_1024;
+ depth_1024 
+------------
  ok: a
 (1 row)
 
-SELECT perr(repeat('(', 33) || 'a' || repeat(')', 33)) AS depth_33;
-                         depth_33                         
-----------------------------------------------------------
- 54000: sift query: nesting deeper than 32 at position 33
+SELECT perr(repeat('(', 1025) || 'a' || repeat(')', 1025)) AS depth_1025;
+                          depth_1025                          
+--------------------------------------------------------------
+ 54000: sift query: nesting deeper than 1024 at position 1025
 (1 row)
 
-SELECT perr(repeat('a ', 256)) LIKE 'ok: a^256' AS leaves_256;
- leaves_256 
-------------
+SELECT perr(repeat('a ', 65535)) LIKE 'ok: a^65535' AS leaves_65535;
+ leaves_65535 
+--------------
  t
 (1 row)
 
-SELECT perr(repeat('a ', 257)) AS leaves_257;
-                       leaves_257                       
---------------------------------------------------------
- 54000: sift query: more than 256 terms at position 513
+SELECT perr(repeat('a ', 65536)) AS leaves_65536;
+                        leaves_65536                         
+-------------------------------------------------------------
+ 54000: sift query: more than 65535 terms at position 131071
 (1 row)
 
-SELECT perr('{' || repeat('a ', 257) || '}') AS brace_leaves;
-                      brace_leaves                      
---------------------------------------------------------
- 54000: sift query: more than 256 terms at position 514
+SELECT perr('{' || repeat('a ', 65536) || '}') AS brace_leaves;
+                        brace_leaves                         
+-------------------------------------------------------------
+ 54000: sift query: more than 65535 terms at position 131072
 (1 row)
 
 SELECT perr('"' || repeat('w ', 32) || '"') LIKE 'ok: %' AS phrase_32;
@@ -172,16 +171,22 @@ SELECT perr('"' || repeat('w ', 32) || '"') LIKE 'ok: %' AS phrase_32;
  t
 (1 row)
 
-SELECT perr('x "' || repeat('w ', 129) || '"') AS phrase_129;
-                          phrase_129                           
----------------------------------------------------------------
- 54000: sift query: phrase longer than 128 terms at position 3
+SELECT perr('x "' || repeat('w ', 4096) || '"') LIKE 'ok: x AND "w w%' AS phrase_4096;
+ phrase_4096 
+-------------
+ t
 (1 row)
 
-SELECT perr('x ' || repeat('w-', 129)) AS word_phrase_129;
-                        word_phrase_129                        
----------------------------------------------------------------
- 54000: sift query: phrase longer than 128 terms at position 3
+SELECT perr('x "' || repeat('w ', 4097) || '"') AS phrase_4097;
+                          phrase_4097                           
+----------------------------------------------------------------
+ 54000: sift query: phrase longer than 4096 terms at position 3
+(1 row)
+
+SELECT perr('x ' || repeat('w-', 4097)) AS word_phrase_4097;
+                        word_phrase_4097                        
+----------------------------------------------------------------
+ 54000: sift query: phrase longer than 4096 terms at position 3
 (1 row)
 
 -- hostile input fails fast and cleanly
@@ -216,15 +221,15 @@ SELECT perr(repeat('x', 262144)) AS max_size_term;
 (1 row)
 
 SELECT perr(repeat('a OR ', 52428)) AS huge_or;
-                         huge_or                         
----------------------------------------------------------
- 54000: sift query: more than 256 terms at position 1281
+                                      huge_or                                       
+------------------------------------------------------------------------------------
+ 42601: sift query: expected a term after OR, found end of query at position 262141
 (1 row)
 
 SELECT perr(repeat('"', 99999)) AS quotes;
-                         quotes                         
---------------------------------------------------------
- 54000: sift query: more than 256 terms at position 513
+                          quotes                          
+----------------------------------------------------------
+ 42601: sift query: unterminated phrase at position 99999
 (1 row)
 
 SELECT perr(repeat('\', 99999)) AS backslashes;
@@ -234,9 +239,9 @@ SELECT perr(repeat('\', 99999)) AS backslashes;
 (1 row)
 
 SELECT perr(repeat('/a(', 1000) || '/') AS regex_garbage;
-                       regex_garbage                       
------------------------------------------------------------
- 54000: sift query: nesting deeper than 32 at position 198
+                            regex_garbage                            
+---------------------------------------------------------------------
+ 42601: sift query: unterminated regular expression at position 3001
 (1 row)
 
 SELECT perr(E'\x01\x02\x03\x7f') AS only_control;
@@ -317,7 +322,7 @@ SELECT q, perr(q) FROM (VALUES
  name:a            | ok: "name a"
  name:(a b)        | ok: "name a" AND "name b"
  name:{a b}        | ok: "name a" OR "name b"
- NOT name:(a b)    | 42601: sift query: NOT needs a positive term in the same AND group at position 1
+ NOT name:(a b)    | ok: NOT ("name a" AND "name b")
  x name:(a OR b)^2 | ok: x AND ("name a"^2 OR "name b"^2)
  name:("a b" c)    | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
  name:(a /b/)      | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 9

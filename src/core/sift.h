@@ -85,9 +85,9 @@
 #define SIFT_MAX_TERM_BYTES		255
 #define SIFT_MAX_TF				255
 #define SIFT_MAX_DL				PG_UINT16_MAX
-#define SIFT_MAX_LEAVES			256
-#define SIFT_MAX_DEPTH			32
-#define SIFT_MAX_PHRASE			128
+#define SIFT_MAX_LEAVES			65535
+#define SIFT_MAX_DEPTH			1024
+#define SIFT_MAX_PHRASE			4096
 #define SIFT_LANES				8
 
 StaticAssertDecl(BLCKSZ == 8192, "sift requires BLCKSZ 8192");

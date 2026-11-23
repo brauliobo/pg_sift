@@ -62,7 +62,7 @@ SELECT q, pq(q) FROM (VALUES
  a NOT (a)^2                           | ""
  {a b} {b a}                           | (a OR b) AND (a OR b)
  "a b" "A  B"                          | "a b"^2
- a^6000 a^6000                         | a^6000 AND a^6000
+ a^6000 a^6000                         | a^12000
  a^5000 a^5000                         | a^10000
  x NOT (a OR a^3)                      | x AND NOT a
 (14 rows)
@@ -87,9 +87,9 @@ SELECT q, pq(q) FROM (VALUES
  --                  | ""
  -- x                | x
  x OR --             | x
- -- NOT x            | ""
+ -- NOT x            | NOT x
  x NOT --            | x
- x NOT (-- NOT y)    | x
+ x NOT (-- NOT y)    | x AND y
  "say \"hi\" \\ now" | "say hi now"
  "a\b"               | ab
  foo\(bar\)          | "foo bar"

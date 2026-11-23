@@ -585,6 +585,11 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 	r->seg = MemoryContextAllocZero(plan->mcxt, Max(plan->nsegs, 1) * sizeof(RankSeg));
 	if (plan->nphr > 0)
 		r->phrpos = posctx_create(plan);
+	if (plan->complement)
+	{
+		sift_plan_widen(plan, -INFINITY);
+		return r;
+	}
 	if (!sift_plan_warm_begin(plan, k) && (k <= 0 || sift_plan_tail_doomed(plan)))
 		sift_plan_widen(plan, -INFINITY);
 	r->deferred = !sift_plan_tail_settled(plan, -INFINITY);
@@ -598,6 +603,13 @@ sift_rank_parallel(SiftRanker *r, SiftPar *par)
 	uint64		sig = 0;
 
 	Assert(r->k > 0);
+	if (r->plan->complement)
+	{
+		r->par = par;
+		sift_par_attach(par);
+		sift_par_check_units(par, 0, 0);
+		return;
+	}
 	if (r->deferred)
 		rank_widen(r, -INFINITY);
 	if (!r->units_built)

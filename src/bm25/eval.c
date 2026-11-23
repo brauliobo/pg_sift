@@ -22,6 +22,7 @@
 #include "core/memtrack.h"
 
 static EvalNode nothing = {EN_NOTHING, .phrase = -1};
+static EvalNode all = {EN_ALL, .phrase = -1};
 
 SiftIndexState *
 sift_state_open_dir(Relation index, MemoryContext mcxt, const SiftDirSnapshot *dir)
@@ -266,18 +267,28 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
  * The tree the bitmaps evaluate: over = true yields a superset of the
  * matches (positive phrases become ANDs of their terms), false a subset (a
  * phrase matches nothing). NOT flips the direction, so what a NOT excludes
- * is never more than the exact exclusion.
+ * is never more than the exact exclusion. A NOT of nothing is every document,
+ * which an AND leaves out and an OR keeps (it matches the documents no leaf hits).
  */
 static EvalNode *
 relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 {
 	EvalNode  **kids;
+	EvalNode   *e;
+	bool		and = n->kind == SQ_AND,
+				any_all = false;
 	int			nk = 0;
 
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case SQ_NOTHING:
 			return &nothing;
+		case SQ_ALL:
+			return &all;
+		case SQ_NOT:
+			e = relax(p, n->child[0], !over, (Place) {false, false});
+			return e->kind == EN_NOTHING ? &all : e->kind == EN_ALL ? &nothing : en_not(p, e);
 		case SQ_PHRASE:
 			p->recheck |= !(at.required && at.positive);
 			p->hardrecheck |= !at.positive;
@@ -287,17 +298,16 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 			kids = MemoryContextAlloc(p->mcxt, n->nchild * sizeof(EvalNode *));
 			for (int i = 0; i < n->nchild; i++)
 			{
-				const SiftQNode *c = n->child[i];
-				bool		neg = c->kind == SQ_NOT;
-				Place		cat = neg ? (Place) {false, false} : (Place) {at.positive, at.required && n->kind == SQ_AND};
-				EvalNode   *e = relax(p, neg ? c->child[0] : c, neg ? !over : over, cat);
-
-				if (e->kind == EN_NOTHING && !neg && n->kind == SQ_AND)
+				e = relax(p, n->child[i], over, (Place) {at.positive, at.required && and});
+				if (e->kind == EN_NOTHING && and)
 					return &nothing;
-				if (e->kind != EN_NOTHING)
-					kids[nk++] = neg ? en_not(p, e) : e;
+				any_all |= e->kind == EN_ALL;
+				if (e->kind != EN_NOTHING && !(e->kind == EN_ALL && and))
+					kids[nk++] = e;
 			}
-			return nk == 0 ? &nothing : en_make(p, n->kind == SQ_AND ? EN_AND : EN_OR, nk, kids);
+			if (nk == 0)
+				return and && any_all ? &all : &nothing;
+			return en_make(p, and ? EN_AND : EN_OR, nk, kids);
 		case SQ_TERM:
 		case SQ_PREFIX:
 			if (n->kind == SQ_TERM ? n->field : n->gram)
@@ -305,6 +315,36 @@ relax(SiftPlan *p, const SiftQNode *n, bool over, Place at)
 			return en_leaf(p, n, at, NULL);
 		default:
 			return en_leaf(p, n, at, NULL);
+	}
+}
+
+/* A branch that matches documents no leaf hits: NOT alone, under an OR, or in an AND of NOTs; a ranked search cannot find those by bounds (a NOT beside a positive child only subtracts) */
+static bool
+complement_branch(const EvalNode *n, bool beside_positive)
+{
+	bool		positive = false;
+
+	check_stack_depth();
+	switch (n->kind)
+	{
+		case EN_ALL:
+			return true;
+		case EN_NOT:
+			return !beside_positive;
+		case EN_AND:
+			for (int i = 0; i < n->nchild; i++)
+				positive |= n->child[i]->kind != EN_NOT;
+			for (int i = 0; i < n->nchild; i++)
+				if (complement_branch(n->child[i], positive))
+					return true;
+			return false;
+		case EN_OR:
+			for (int i = 0; i < n->nchild; i++)
+				if (complement_branch(n->child[i], false))
+					return true;
+			return false;
+		default:
+			return false;
 	}
 }
 
@@ -378,7 +418,7 @@ expand_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 	Expand	   *e = arg;
 	SiftTermInfo live = *info;
 
-	if (!sift_matcher_match(e->matcher, term, len) || (e->live_in && !sift_seg_term_live(e->live_in, info)))
+	if ((len > 0 && term[0] == '\0') || !sift_matcher_match(e->matcher, term, len) || (e->live_in && !sift_seg_term_live(e->live_in, info)))
 		return true;
 	sift_seg_term_stats(e->seg, &live);
 	if (live.max_bound < e->min_bound)
@@ -685,6 +725,11 @@ plan_bind(SiftIndexState *st, SiftQuery **queries, int nqueries, int flags, cons
 		}
 	}
 	p->root = en_make(p, EN_AND, nqueries, roots);
+	p->complement = complement_branch(p->root, false);
+	if (p->complement)
+		for (int i = 0; i < p->nleaves; i++)
+			p->rescore |= p->leaves[i].scoring;
+	p->recheck |= p->rescore;
 	if (p->recheck && !p->scoring)
 		p->sure = sure_tree(p);
 	for (int i = 0; i < p->nleaves; i++)
@@ -809,10 +854,13 @@ node_prob(const SiftPlan *p, const EvalNode *n, Estimate *est)
 {
 	double		prob = n->kind == EN_AND ? 1.0 : 0.0;
 
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case EN_NOTHING:
 			return 0.0;
+		case EN_ALL:
+			return 1.0;
 		case EN_LEAF:
 			return leaf_prob(p, &p->leaves[n->leaf], est);
 		case EN_NOT:

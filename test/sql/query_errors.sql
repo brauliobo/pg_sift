@@ -3,7 +3,7 @@ CREATE EXTENSION pg_sift;
 \set VERBOSITY terse
 
 SELECT sift.parse_query('a OR (b');
-SELECT sift.parse_query(repeat('a ', 257));
+SELECT sift.parse_query(repeat('a ', 65536));
 
 CREATE FUNCTION perr(q text) RETURNS text LANGUAGE plpgsql AS $$
 BEGIN
@@ -34,18 +34,18 @@ SELECT q, perr(q) FROM (VALUES
 
 -- limits
 SELECT q, perr(q) FROM (VALUES
-	('a^10000.01'), ('a^1e9'), ('a^99999999999999999999999999999999999999999'),
-	('(a^100)^101'), ('((a^10)^10)^100.5'),
-	('(((((((((((((((((((((((((((((((((a)))))))))))))))))))))))))))))))))')
+	('a^1e18'), ('a^1e19'), ('a^99999999999999999999999999999999999999999'),
+	('(a^1e9)^1e9'), ('(a^1e9)^1e10'), ('((a^10)^10)^1e17')
 ) v(q);
-SELECT perr(repeat('(', 32) || 'a' || repeat(')', 32)) AS depth_32;
-SELECT perr(repeat('(', 33) || 'a' || repeat(')', 33)) AS depth_33;
-SELECT perr(repeat('a ', 256)) LIKE 'ok: a^256' AS leaves_256;
-SELECT perr(repeat('a ', 257)) AS leaves_257;
-SELECT perr('{' || repeat('a ', 257) || '}') AS brace_leaves;
+SELECT perr(repeat('(', 1024) || 'a' || repeat(')', 1024)) AS depth_1024;
+SELECT perr(repeat('(', 1025) || 'a' || repeat(')', 1025)) AS depth_1025;
+SELECT perr(repeat('a ', 65535)) LIKE 'ok: a^65535' AS leaves_65535;
+SELECT perr(repeat('a ', 65536)) AS leaves_65536;
+SELECT perr('{' || repeat('a ', 65536) || '}') AS brace_leaves;
 SELECT perr('"' || repeat('w ', 32) || '"') LIKE 'ok: %' AS phrase_32;
-SELECT perr('x "' || repeat('w ', 129) || '"') AS phrase_129;
-SELECT perr('x ' || repeat('w-', 129)) AS word_phrase_129;
+SELECT perr('x "' || repeat('w ', 4096) || '"') LIKE 'ok: x AND "w w%' AS phrase_4096;
+SELECT perr('x "' || repeat('w ', 4097) || '"') AS phrase_4097;
+SELECT perr('x ' || repeat('w-', 4097)) AS word_phrase_4097;
 
 -- hostile input fails fast and cleanly
 SELECT perr(repeat('(', 1000000)) AS deep_parens;

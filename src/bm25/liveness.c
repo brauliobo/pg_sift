@@ -253,6 +253,70 @@ count_live1(SiftSegment *seg, const SiftDocChunk *dc, const sift_grp *g, const u
 	return n;
 }
 
+/* The live docs of an SB as a group of bitmaps: every doc of a clean SB (rows of a segment with live rows, else the docmap's offsets expanded by the liveness bits); NULL for an SB without docs */
+static const sift_grp *
+seg_live_group(SiftSegment *seg, uint32 sb, sift_grp *legacy)
+{
+	SiftDocChunk dc;
+	DocMap	   *dm;
+
+	if (seg->fmt >= SIFT_SEGFMT_LIVEROWS)
+		return live2_rows(seg, sb);
+	if (!sift_seg_docs(seg, sb, &dc))
+		return NULL;
+	dm = loaded(seg, &dc);
+	*legacy = (sift_grp) {.gid = sb,.w = dm->nwmax * 8,.off = (const uint8 *) live_sb_offsets(seg, dm, &dc)};
+	memcpy(legacy->pages, dm->pagemask, sizeof(legacy->pages));
+	return legacy;
+}
+
+typedef struct LiveCur
+{
+	sift_cur	c;				/* first: cursors are used through it */
+	SiftSegment *seg;
+} LiveCur;
+
+static const sift_grp *
+live_seek(sift_cur *c, uint32_t target)
+{
+	SiftSegment *seg = ((LiveCur *) c)->seg;
+	sift_grp	legacy;
+
+	if (c->state == 2)
+		return NULL;
+	if (c->state == 1 && c->g.gid >= target)
+		return &c->g;
+	for (uint64 sb = Max(target, seg->hdr->sb_lo); sb < (uint64) seg->hdr->sb_hi + 1; sb++)
+	{
+		const sift_grp *g = seg_live_group(seg, (uint32) sb, &legacy);
+		Size		len;
+
+		if (g == NULL)
+			continue;
+		len = (Size) sift_pc64(g->pages[0]) + sift_pc64(g->pages[1]) + sift_pc64(g->pages[2]) + sift_pc64(g->pages[3]);
+		c->g = *g;
+		c->g.off = memcpy(c->buf, g->off, len * g->w);
+		c->state = 1;
+		return &c->g;
+	}
+	c->state = 2;
+	return NULL;
+}
+
+/* A cursor over the groups of all the live docs of the segment, which the complement of a match is taken from (ANDNOT) */
+sift_cur *
+sift_seg_live_cursor(SiftSegment *seg, MemoryContext cx)
+{
+	LiveCur    *lc = MemoryContextAllocZero(cx, sizeof(LiveCur));
+
+	lc->c.seek = live_seek;
+	lc->c.buf = MemoryContextAllocAligned(cx, SIFT_CUR_BUF, SIFT_SIMD_ALIGN, 0);
+	lc->c.ub1 = 255;
+	lc->c.op.est = seg->hdr->ndocs;
+	lc->seg = seg;
+	return &lc->c;
+}
+
 uint64
 sift_seg_live_count(SiftSegment *seg, const sift_grp *g, const uint64 *pages)
 {

@@ -72,7 +72,8 @@ typedef enum EvalKind
 	EN_LEAF,
 	EN_AND,
 	EN_OR,
-	EN_NOT						/* only as a child of EN_AND */
+	EN_NOT,						/* the live documents the child does not match; a child of an EN_AND with a positive child is only subtracted */
+	EN_ALL						/* every live document */
 } EvalKind;
 
 typedef struct EvalNode
@@ -132,6 +133,7 @@ struct SiftPlan
 	bool	   *phok;			/* [nsegs * nphr] the segment holds the positions of all terms of the phrase */
 	bool	   *segheap;		/* [nsegs] some phrase is not decided by the segment's positions */
 	bool		heap;			/* some candidates need the heap recheck */
+	bool		complement;		/* a branch matches documents that no leaf hits (NOT x alone, a NOT under an OR): the ranker walks the matches, not the bounds */
 	bool		rescore;		/* a phrase the score depends on: the exact score comes from the text */
 	bool		capped;			/* estimate: stop expanding at the limit */
 	bool		scoring;

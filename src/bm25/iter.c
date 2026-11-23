@@ -59,6 +59,32 @@ leaf_cursor(SiftPlan *p, int s, const EvalLeaf *l, SegCurs *cs, const IterCurs *
 	return orc;
 }
 
+/* kid[0] AND NOT kid[1] */
+static sift_cur *
+andnot_cursor(SegCurs *cs, MemoryContext cx, sift_cur *keep, sift_cur *drop)
+{
+	sift_cur  **kid = MemoryContextAlloc(cx, 2 * sizeof(sift_cur *));
+	sift_cur   *an = MemoryContextAllocZero(cx, sizeof(sift_cur));
+
+	kid[0] = keep;
+	kid[1] = drop;
+	sift_cur_andnot(an, kid, cursor_buf(cx));
+	if (cs)
+		cs->ops = lappend(cs->ops, an);
+	return an;
+}
+
+/* Every live doc of the segment; an operator cursor of the ranker, which starts each superblock again */
+static sift_cur *
+all_cursor(SiftPlan *p, int s, SegCurs *cs, MemoryContext cx)
+{
+	sift_cur   *c = sift_seg_live_cursor(p->seg[s], cx);
+
+	if (cs)
+		cs->ops = lappend(cs->ops, c);
+	return c;
+}
+
 /* Cursor over the segment's matches of n, NULL when there are none; without cs, ic keeps every leaf's cursors */
 sift_cur *
 seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *ic, MemoryContext cx)
@@ -68,20 +94,30 @@ seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *i
 			   *c;
 	int			npos = 0,
 				nneg = 0;
-	bool		dead = false;
+	bool		dead = false,
+				required = false;
 
+	check_stack_depth();
 	if (n->kind == EN_NOTHING)
 		return NULL;
+	if (n->kind == EN_ALL)
+		return all_cursor(p, s, cs, cx);
+	if (n->kind == EN_NOT)
+	{
+		c = seg_cursor(p, s, n->child[0], cs, ic, cx);
+		return c ? andnot_cursor(cs, cx, all_cursor(p, s, cs, cx), c) : all_cursor(p, s, cs, cx);
+	}
 	if (n->kind == EN_LEAF)
 		return n->phrase < 0 ? leaf_cursor(p, s, &p->leaves[n->leaf], cs, ic, cx) :
 			phrase_cursor(p, s, n->phrase, leaf_cursor(p, s, &p->leaves[n->leaf], cs, ic, cx), ic, cx);
-	pos = MemoryContextAlloc(cx, n->nchild * sizeof(sift_cur *));
+	pos = MemoryContextAlloc(cx, (n->nchild + 1) * sizeof(sift_cur *));
 	neg = MemoryContextAlloc(cx, n->nchild * sizeof(sift_cur *));
 	for (int i = 0; i < n->nchild; i++)
 	{
 		const EvalNode *k = n->child[i];
-		bool		isnot = k->kind == EN_NOT;
+		bool		isnot = k->kind == EN_NOT && n->kind == EN_AND;
 
+		required |= n->kind == EN_AND && !isnot;
 		c = seg_cursor(p, s, isnot ? k->child[0] : k, cs, ic, cx);
 		if (c == NULL && n->kind == EN_AND && !isnot)
 		{
@@ -93,23 +129,15 @@ seg_cursor(SiftPlan *p, int s, const EvalNode *n, SegCurs *cs, const IterCurs *i
 		if (c != NULL)
 			(isnot ? neg : pos)[isnot ? nneg++ : npos++] = c;
 	}
+	if (n->kind == EN_AND && !required && !dead)
+		pos[npos++] = all_cursor(p, s, cs, cx);
 	if (npos == 0 || dead)
 		return NULL;
 	c = op_cursor(cs, cx, n->kind, pos, npos);
 	if (n->phrase >= 0)
 		c = phrase_cursor(p, s, n->phrase, c, ic, cx);
 	if (nneg > 0)
-	{
-		sift_cur  **kid = MemoryContextAlloc(cx, 2 * sizeof(sift_cur *));
-		sift_cur   *an = MemoryContextAllocZero(cx, sizeof(sift_cur));
-
-		kid[0] = c;
-		kid[1] = op_cursor(cs, cx, EN_OR, neg, nneg);
-		sift_cur_andnot(an, kid, cursor_buf(cx));
-		if (cs)
-			cs->ops = lappend(cs->ops, an);
-		c = an;
-	}
+		c = andnot_cursor(cs, cx, c, op_cursor(cs, cx, EN_OR, neg, nneg));
 	return c;
 }
 
@@ -246,7 +274,7 @@ iter_merge(SiftMatchIter *it, int s, const sift_grp *g, bool sure)
 	const uint8 *off = g->off;
 	bool		dirty = (seg->entry.flags & SIFT_SEG_DIRTY) && sift_seg_sb_dirty(seg, g->gid);
 	bool		pos = !sure && p->npleaf > 0,
-				decided = !sure && it->som && !p->hardrecheck && !p->segheap[s];
+				decided = !sure && it->som && !p->hardrecheck && (p->segheap == NULL || !p->segheap[s]);
 	const SiftFilterSB *fs = iter_filter_sb(it);
 
 	if (pos)

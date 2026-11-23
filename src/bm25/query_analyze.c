@@ -25,6 +25,7 @@ node_cmp_shape(const SiftQNode *a, const SiftQNode *b)
 {
 	int			c;
 
+	check_stack_depth();
 	if (a->kind != b->kind)
 		return SIFT_CMP3(a->kind, b->kind);
 	if ((c = cmp_bytes(a->text, a->textlen, b->text, b->textlen)) != 0)
@@ -284,14 +285,17 @@ merge_dup(SiftQNode *prev, const SiftQNode *c, bool neg)
 
 /*
  * Flattens, sorts and merges duplicates (adding boosts while the sum stays
- * in range). AND folds to SQ_NOTHING with no positive child or with x and
- * NOT x; empty leaves are dropped. Returns NULL when nothing is left.
+ * in range). AND folds to SQ_NOTHING with x and NOT x; SQ_ALL is its identity,
+ * and an AND of NOTs alone stays one (the documents none of them holds). An OR
+ * with SQ_ALL keeps it only beside a positive child, which still scores.
+ * Empty leaves are dropped. Returns NULL when nothing is left.
  */
 static SiftQNode *
 analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, const char *field)
 {
 	List	   *list = NIL;
-	bool		nothing = false;
+	bool		nothing = false,
+				all = false;
 	SiftQNode **kids;
 	SiftQNode  *n;
 	int			nk = 0,
@@ -304,13 +308,27 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 
 		if (c && c->kind == SQ_NOTHING)
 			nothing = true;
+		else if (c && c->kind == SQ_ALL)
+			all = true;
 		else if (c)
 			list = sift_query_add_child(list, c, raw->kind);
 	}
 	if (nothing && raw->kind == SQ_AND)
 		return sift_query_new_node(SQ_NOTHING, raw->loc);
+	if (all && raw->kind == SQ_AND && list == NIL)
+		return sift_query_new_node(SQ_ALL, raw->loc);
 	if (list == NIL)
-		return nothing ? sift_query_new_node(SQ_NOTHING, raw->loc) : NULL;
+		return all ? sift_query_new_node(SQ_ALL, raw->loc) : nothing ? sift_query_new_node(SQ_NOTHING, raw->loc) : NULL;
+	if (all && raw->kind == SQ_OR)
+	{
+		bool		scoring = false;
+
+		foreach_ptr(SiftQNode, c, list)
+			scoring |= c->kind != SQ_NOT;
+		if (!scoring)
+			return sift_query_new_node(SQ_ALL, raw->loc);
+		list = lappend(list, sift_query_new_node(SQ_ALL, raw->loc));
+	}
 
 	kids = palloc(list_length(list) * sizeof(SiftQNode *));
 	foreach_ptr(SiftQNode, c, list)
@@ -320,13 +338,11 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 		if (m == 0 || !merge_dup(kids[m - 1], kids[i], neg))
 			kids[m++] = kids[i];
 	qsort(kids, m, sizeof(SiftQNode *), node_qsort_cmp);
+	while (npos < m && kids[npos]->kind != SQ_NOT)
+		npos++;
 
 	if (raw->kind == SQ_AND)
 	{
-		while (npos < m && kids[npos]->kind != SQ_NOT)
-			npos++;
-		if (npos == 0)
-			return sift_query_new_node(SQ_NOTHING, raw->loc);
 		for (int i = 0, j = npos; i < npos && j < m;)
 		{
 			int			c = node_cmp_shape(kids[i], kids[j]->child[0]);
@@ -440,11 +456,16 @@ analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 			return qualify(analyze_regex(raw, b), raw, a, field);
 		case SQ_NOT:
 			c = analyze_node(raw->child[0], a, 1.0, true, raw->fieldname ? raw->fieldname : field);
-			return c && c->kind != SQ_NOTHING ? sift_query_new_not(c, raw->loc) : NULL;
+			if (c == NULL || c->kind == SQ_NOTHING)
+				return sift_query_new_node(SQ_ALL, raw->loc);
+			if (c->kind == SQ_NOT)
+				return c->child[0];
+			return c->kind == SQ_ALL ? sift_query_new_node(SQ_NOTHING, raw->loc) : sift_query_new_not(c, raw->loc);
 		case SQ_AND:
 		case SQ_OR:
 			return analyze_bool(raw, a, boost, neg, field);
 		case SQ_NOTHING:
+		case SQ_ALL:
 			break;
 	}
 	return sift_query_new_node(SQ_NOTHING, raw->loc);
@@ -453,8 +474,9 @@ analyze_node(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 static void
 number_leaves(SiftQuery *q, SiftQNode *n)
 {
+	check_stack_depth();
 	q->needs_recheck |= n->kind == SQ_PHRASE;
-	if (n->nchild == 0 && n->kind != SQ_NOTHING)
+	if (n->nchild == 0 && n->kind != SQ_NOTHING && n->kind != SQ_ALL)
 		n->leafno = q->nleaves++;
 	for (int i = 0; i < n->nchild; i++)
 		number_leaves(q, n->child[i]);
@@ -480,6 +502,7 @@ sift_query_analyze(const SiftQuery *raw, SiftAnalyzer *a)
 static void
 push_field(SiftQNode *n, const char *field)
 {
+	check_stack_depth();
 	if (n->fieldname)
 		field = n->fieldname;
 	if (n->nchild > 0)
@@ -497,6 +520,7 @@ weigh_node(SiftQNode *n, int nf, const char *const *names, const double *weights
 {
 	SiftQNode  *grp;
 
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case SQ_AND:
@@ -526,7 +550,7 @@ weigh_node(SiftQNode *n, int nf, const char *const *names, const double *weights
 		double		boost = n->boost * weights[i];
 
 		if (boost > SIFT_MAX_BOOST)
-			LIMIT(n->loc, "boost over %d", (int) SIFT_MAX_BOOST);
+			LIMIT(n->loc, "boost over %g", SIFT_MAX_BOOST);
 		*c = *n;
 		c->fieldname = (char *) names[i];
 		c->field = 1;

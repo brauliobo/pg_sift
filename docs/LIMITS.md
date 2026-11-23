@@ -145,10 +145,10 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | prefix_index option | `15 characters` | option rejected at CREATE INDEX | `prefix_index option` | `core/sift.h` `SIFT_MAX_PREFIX_INDEX` |
 | default write buffer; a sift_table row that does not fit it is accepted with sift.table_wide_rows (on) | `4,096 (4 MiB) kB` | ERROR 54000 for a larger sift_table row only when sift.table_wide_rows is off (on, the default: up to 1 GB) | `sift.table_wide_rows` | `core/sift.h` `SIFT_DEFAULT_WRITE_BUFFER_LIMIT` |
 | length of a search query | `262,144 (256 KiB) bytes` | ERROR 54000 | — | `bm25/query.h` `SIFT_QUERY_MAX_BYTES` |
-| terms of a search query | `256 terms` | ERROR 54000 | — | `core/sift.h` `SIFT_MAX_LEAVES` |
-| nesting of a search query | `32 levels` | ERROR 54000 | — | `core/sift.h` `SIFT_MAX_DEPTH` |
-| terms of one phrase | `128 terms` | ERROR 54000 | — | `core/sift.h` `SIFT_MAX_PHRASE` |
-| combined boost of a query term | `10,000 factor` | ERROR 54000 | — | `bm25/query.h` `SIFT_MAX_BOOST` |
+| terms of a search query | `65,535 terms` | ERROR 54000 | — | `core/sift.h` `SIFT_MAX_LEAVES` |
+| nesting of a search query | `1,024 levels` | ERROR 54000 | — | `core/sift.h` `SIFT_MAX_DEPTH` |
+| terms of one phrase | `4,096 terms` | ERROR 54000 | — | `core/sift.h` `SIFT_MAX_PHRASE` |
+| combined boost of a query term | `1,000,000,000,000,000,000 factor` | ERROR 54000 | — | `bm25/query.h` `SIFT_MAX_BOOST` |
 | a regular expression of a query | `1,000 bytes` | ERROR 54000 | — | `bm25/query.h` `SIFT_MAX_REGEX_BYTES` |
 | rows a query list (= ANY(array)) may match in one scan | `100,000 rows` | normal plan | — | `bm25/planner_path.c` `ANY_LIST_MAX_ROWS` |
 | longest wait before a failing background maintenance retries | `3,600,000 ms` | retried once an hour | — | `core/maint.c` `BACKOFF_MAX_MS` |

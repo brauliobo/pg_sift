@@ -13,8 +13,10 @@
  * product of the boosts above them, 1 under NOT); AND/OR are flattened,
  * have >= 2 children, sorted canonically (positives first, NOTs last);
  * duplicate leaves merge by adding boosts, duplicate NOTs merge; x AND NOT x
- * folds to SQ_NOTHING. SQ_NOT appears only under an SQ_AND that has a
- * positive child; SQ_NOTHING appears only as the root. Leaves are numbered
+ * folds to SQ_NOTHING. SQ_NOT may stand anywhere and holds no SQ_NOT, SQ_ALL
+ * or SQ_NOTHING (NOT nothing is SQ_ALL, NOT SQ_ALL is nothing); SQ_ALL, every
+ * live document, is a child only of an SQ_OR that has a positive sibling, else
+ * the root; SQ_NOTHING appears only as the root. Leaves are numbered
  * 0..nleaves-1 in deparse order (leafno).
  *
  * A word, prefix, pattern or fuzzy term may be qualified, name:word*, and so may a group,
@@ -37,7 +39,7 @@
 #include "bm25/analyze.h"
 
 #define SIFT_QUERY_MAX_BYTES	(256 * 1024)
-#define SIFT_MAX_BOOST			10000.0
+#define SIFT_MAX_BOOST			1e18
 #define SIFT_MAX_REGEX_BYTES	1000	/* as Elasticsearch's max_regex_length */
 
 typedef enum SiftQKind
@@ -48,9 +50,10 @@ typedef enum SiftQKind
 	SQ_REGEX,					/* POSIX ARE, whole-term match */
 	SQ_FUZZY,					/* term~1 / term~2 */
 	SQ_PHRASE,					/* analyzed terms, adjacency rechecked */
+	SQ_ALL,						/* matches every document with a value: NOT of nothing */
 	SQ_AND,
 	SQ_OR,
-	SQ_NOT,						/* only as a child of SQ_AND */
+	SQ_NOT,
 	SQ_NOTHING					/* matches no document */
 } SiftQKind;
 

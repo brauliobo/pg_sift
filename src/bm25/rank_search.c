@@ -543,6 +543,37 @@ rank_wbuf(SiftRanker *r, SiftTopK *tk)
 			rank_candidate(r, tk, p->mhit[i].key, p->mhit[i].score, -1);
 }
 
+/*
+ * A plan with a complement branch has matches that no leaf hits, so no bound finds them: every match of the iterator is a candidate. One
+ * that no leaf scores scores 0 (the search ends once k are kept, as keys ascend); else its score comes from its text (rank_candidate
+ * rescores), so the bound it is admitted with is infinite.
+ */
+static void
+rank_zero(SiftRanker *r, SiftTopK *tk)
+{
+	SiftPlan   *p = r->plan;
+	SiftMatchIter *it = sift_iter_begin(p);
+	SiftPageMatch pm;
+	float4		bound = p->rescore ? INFINITY : 0;
+
+	while (sift_iter_next(it, &pm))
+	{
+		for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
+			for (uint64 m = pm.offmask[w]; m; m &= m - 1)
+			{
+				SiftKey		key = (uint64) pm.blk << 16 | (w * 64 + pg_rightmost_one_pos64(m) + 1);
+
+				CHECK_FOR_INTERRUPTS();
+				if ((p->filter == NULL || sift_filter_has(p->filter, key)) &&
+					(p->bridge == NULL || sift_tidbridge_probe_tid(p->bridge, key, NULL) != SIFT_TIDPROBE_NO))
+					rank_candidate(r, tk, key, bound, -1);
+			}
+		if (!p->rescore && !r->ties && tk->n == tk->k)
+			break;
+	}
+	sift_iter_end(it);
+}
+
 #define RANK_FIRST_BATCH	4
 #define RANK_BATCH			16
 
@@ -626,6 +657,11 @@ rank_units_streamed(SiftRanker *r, SiftTopK *tk)
 static void
 rank_units(SiftRanker *r, SiftTopK *tk)
 {
+	if (r->plan->complement)
+	{
+		rank_zero(r, tk);
+		return;
+	}
 	rank_wbuf(r, tk);
 	if (r->mode == SIFT_RM_BATCH_BMW || r->by_maxub)
 		rank_units_batched(r, tk);
@@ -647,7 +683,12 @@ rank_units_shared(SiftRanker *r, SiftTopK *tk)
 
 	r->par_active = true;
 	if (sift_par_claim_wbuf(r->par))
-		rank_wbuf(r, tk);
+	{
+		if (r->plan->complement)
+			rank_zero(r, tk);
+		else
+			rank_wbuf(r, tk);
+	}
 	while (reachable && sift_par_next_units(r->par, r->nunit, &lo, &hi))
 		for (int64 u = lo; u < hi && reachable; u++)
 		{
@@ -780,7 +821,7 @@ rank_search(SiftRanker *r)
 		rank_search_once(r);
 		r->floor = -INFINITY;
 	}
-	if (r->K == r->k && !r->par)
+	if (r->K == r->k && !r->par && !r->plan->complement)
 		sift_plan_remember_theta(r->plan, r->K, r->plan->stats.theta);
 }
 

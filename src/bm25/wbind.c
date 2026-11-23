@@ -20,8 +20,7 @@
 static bool
 node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom, int nwords)
 {
-	int			npos = 0;
-
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case EN_NOTHING:
@@ -29,16 +28,13 @@ node_may_match(const SiftPlan *p, const EvalNode *n, const uint64 *bloom, int nw
 		case EN_LEAF:
 			return p->leaves[n->leaf].m != NULL || sift_wbuf_bloom_has(bloom, nwords, p->leaves[n->leaf].hash);
 		case EN_NOT:
+		case EN_ALL:
 			return true;
 		case EN_AND:
 			for (int i = 0; i < n->nchild; i++)
-				if (n->child[i]->kind != EN_NOT)
-				{
-					npos++;
-					if (!node_may_match(p, n->child[i], bloom, nwords))
-						return false;
-				}
-			return npos > 0;
+				if (n->child[i]->kind != EN_NOT && !node_may_match(p, n->child[i], bloom, nwords))
+					return false;
+			return true;
 		case EN_OR:
 			for (int i = 0; i < n->nchild; i++)
 				if (node_may_match(p, n->child[i], bloom, nwords))
@@ -66,6 +62,15 @@ wbuf_leaf_ok(void *arg, const uint64 *bloom, int nwords)
 		if (p->leaves[i].scoring && (p->leaves[i].m != NULL || sift_wbuf_bloom_has(bloom, nwords, p->leaves[i].hash)))
 			return true;
 	return false;
+}
+
+/* A scoring bind reads the pages that count in the frequencies, and those of a complement branch, whose matches have no leaf to find them by */
+static bool
+wbuf_scored_ok(void *arg, const uint64 *bloom, int nwords)
+{
+	const SiftPlan *p = arg;
+
+	return wbuf_leaf_ok(arg, bloom, nwords) || (p->complement && wbuf_page_ok(arg, bloom, nwords));
 }
 
 /*
@@ -143,24 +148,22 @@ wbuf_tab_find(const SiftPlan *p, const WbufTab *tab, uint32 hash, const char *t,
 static bool
 doc_matches(const SiftPlan *p, const EvalNode *n, const bool *hit)
 {
-	int			npos = 0;
-
+	check_stack_depth();
 	switch (n->kind)
 	{
 		case EN_NOTHING:
 			return false;
+		case EN_ALL:
+			return true;
 		case EN_LEAF:
 			return hit[n->leaf];
 		case EN_NOT:
 			return !doc_matches(p, n->child[0], hit);
 		case EN_AND:
 			for (int i = 0; i < n->nchild; i++)
-			{
-				npos += n->child[i]->kind != EN_NOT;
 				if (!doc_matches(p, n->child[i], hit))
 					return false;
-			}
-			return npos > 0;
+			return true;
 		case EN_OR:
 			for (int i = 0; i < n->nchild; i++)
 				if (doc_matches(p, n->child[i], hit))
@@ -289,7 +292,7 @@ bind_wbuf(SiftPlan *p)
 	for (int i = 0; i < p->nwbuf && !p->capped; i++)
 	{
 		SiftWbufReader *r = sift_wbuf_open(p->st->index, &p->st->dir->segs[p->wbufno[i]], p->mcxt,
-										 p->scoring ? wbuf_leaf_ok : wbuf_page_ok, p);
+										 p->scoring ? wbuf_scored_ok : wbuf_page_ok, p);
 		SiftWbufDoc	doc;
 		uint64		n,
 					sum,

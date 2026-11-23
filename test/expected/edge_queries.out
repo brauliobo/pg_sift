@@ -33,10 +33,11 @@ SELECT same((SELECT string_agg('tok' || g, ' OR ') FROM generate_series(1, 256) 
 (1 row)
 
 SELECT hits((SELECT string_agg('tok' || g, ' OR ') FROM generate_series(1, 257) g));
-ERROR:  sift query: more than 256 terms at position 2453
-CONTEXT:  sift index "public.q_idx"
-SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
-PL/pgSQL function hits(text) line 4 at EXECUTE
+ hits 
+------
+ 1228
+(1 row)
+
 SELECT hits((SELECT string_agg('tok' || g, ' OR ') FROM generate_series(1, 200000) g));
 ERROR:  sift query is too long
 DETAIL:  The query has 2488891 bytes, the maximum is 262144.
@@ -63,10 +64,11 @@ CONTEXT:  sift index "public.q_idx"
 SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('word1 ', 40000));
-ERROR:  sift query: more than 256 terms at position 1537
-CONTEXT:  sift index "public.q_idx"
-SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
-PL/pgSQL function hits(text) line 4 at EXECUTE
+ hits 
+------
+ 60
+(1 row)
+
 -- nesting
 SELECT same(repeat('(', 30) || 'tok5' || repeat(')', 30));
  same 
@@ -75,7 +77,7 @@ SELECT same(repeat('(', 30) || 'tok5' || repeat(')', 30));
 (1 row)
 
 SELECT hits(repeat('(', 100000) || 'tok5' || repeat(')', 100000));
-ERROR:  sift query: nesting deeper than 32 at position 33
+ERROR:  sift query: nesting deeper than 1024 at position 1025
 CONTEXT:  sift index "public.q_idx"
 SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
@@ -86,7 +88,7 @@ CONTEXT:  sift index "public.q_idx"
 SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
 SELECT hits(repeat('(', 100));
-ERROR:  sift query: nesting deeper than 32 at position 33
+ERROR:  sift query: unexpected end of query at position 101
 CONTEXT:  sift index "public.q_idx"
 SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE
@@ -103,10 +105,11 @@ SELECT same('"' || (SELECT string_agg('tok' || g, ' ') FROM generate_series(1, 1
 (1 row)
 
 SELECT hits('"' || (SELECT string_agg('tok' || g, ' ') FROM generate_series(1, 1000) g) || '"');
-ERROR:  sift query: phrase longer than 128 terms at position 1
-CONTEXT:  sift index "public.q_idx"
-SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
-PL/pgSQL function hits(text) line 4 at EXECUTE
+ hits 
+------
+ 0
+(1 row)
+
 -- expansions
 SELECT same('tok12*'), same('tok1*'), same('*k12'), same('/tok1[0-9]/'), same('tok12~1');
  same | same | same | same | same 
@@ -184,7 +187,7 @@ SELECT hits('tok5^0');
 (1 row)
 
 SELECT hits('tok5^99999999999999999999');
-ERROR:  sift query: boost must be between 0 and 10000 at position 6
+ERROR:  sift query: boost must be between 0 and 1e+18 at position 6
 CONTEXT:  sift index "public.q_idx"
 SQL statement "SELECT count(*) FROM q WHERE body @@> $1"
 PL/pgSQL function hits(text) line 4 at EXECUTE

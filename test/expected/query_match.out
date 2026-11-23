@@ -93,7 +93,7 @@ SELECT q, hits(q), hits(q) = hits(sift.parse_query(q)) AS canon_equal FROM (VALU
  error-free                 | 6       | t
  --                         | -       | t
  fox --                     | 1,2,4,8 | t
- -- NOT fox                 | -       | t
+ -- NOT fox                 | 3,5,6,7 | t
  fox NOT fox                | -       | t
  fox^0                      | 1,2,4,8 | t
  fox OR NOT dog AND bear    | 1,2,4,8 | t

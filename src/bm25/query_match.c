@@ -447,6 +447,7 @@ eval_phrase(SiftDoc *d, const SiftQNode *n)
 static bool
 eval_node(SiftDoc *d, const SiftQNode *n)
 {
+	check_stack_depth();
 	if (n->field)
 		return doc_count_tokens(d, n->field, n, NULL, 0) > 0;
 	switch (n->kind)
@@ -465,6 +466,8 @@ eval_node(SiftDoc *d, const SiftQNode *n)
 			return !eval_node(d, n->child[0]);
 		case SQ_NOTHING:
 			return false;
+		case SQ_ALL:
+			return true;
 		case SQ_TERM:
 			return doc_find(d, n->text, n->textlen) >= 0;
 		case SQ_PHRASE:
@@ -493,6 +496,7 @@ sift_query_match_doc(const SiftQuery *q, SiftAnalyzer *a, const char *text, int 
 static bool
 has_phrase(const SiftQNode *n)
 {
+	check_stack_depth();
 	if (n->kind == SQ_PHRASE)
 		return true;
 	for (int i = 0; i < n->nchild; i++)

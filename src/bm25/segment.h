@@ -267,6 +267,8 @@ extern void sift_seg_term_stats(SiftSegment *seg, SiftTermInfo *info);
  */
 extern uint64 sift_seg_live_count(SiftSegment *seg, const sift_grp *g, const uint64 *pages);
 extern int	sift_seg_live_mask(SiftSegment *seg, uint32 sb, int page, uint64 *mask);
+/* A cursor over the groups of all the live docs of the segment, which the complement of a match is taken from (ANDNOT) */
+extern sift_cur *sift_seg_live_cursor(SiftSegment *seg, MemoryContext cx);
 
 /* Keeps in mask, a subset of the present offsets of a page of a dirty SB (dc->dirty), the live ones; returns how many are left */
 extern int	sift_seg_page_mask_live(SiftSegment *seg, const SiftDocChunk *dc, int page, uint64 *mask);
