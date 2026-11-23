@@ -70,6 +70,32 @@ plan_finish(const SiftVkJob *job, Plan *p)
 	return job->nkeys >= 1;
 }
 
+/* the table of groups and the result of a hash job, the slots as many as the groups it expects ask for but for the largest table that room bytes of memory allow */
+static bool
+size_hash(const SiftVkJob *job, uint64_t room, Plan *p)
+{
+	uint64_t	est = job->est_groups ? job->est_groups : 4096,
+				slots;
+
+	p->stride = job->nkeys + 3 + 3 * job->naggs;
+	slots = pow2_ge(est * 2);
+	while (slots > 4096 && (slots * p->stride * 8 > room || slots * p->stride * 8 > ((uint64_t) 3 << 30)))
+		slots >>= 1;
+	p->ht_mask = (uint32_t) slots - 1;
+	p->ht_maxload = (uint32_t) (slots / 4 * 3);
+	p->ht_bytes = slots * p->stride * 8;
+	p->out_bytes = (uint64_t) p->ht_maxload * (p->stride - 1) * 8;
+	return plan_finish(job, p);
+}
+
+uint64_t
+sift_vk_job_tables(const SiftVkJob *job)
+{
+	Plan		p = {0};
+
+	return job->mode == SIFT_VK_HASH && size_hash(job, UINT64_MAX, &p) ? p.ht_bytes + p.out_bytes : 0;
+}
+
 bool
 plan_job(SiftVk *vk, const SiftVkJob *job, Plan *p)
 {
@@ -105,24 +131,12 @@ plan_job(SiftVk *vk, const SiftVkJob *job, Plan *p)
 	}
 	else if (job->mode == SIFT_VK_HASH)
 	{
-		uint64_t	est = job->est_groups ? job->est_groups : 4096,
-					room = vk->caps.vram_budget_free / 4,
-					slots;
-
 		if (job->nkeys < 1)
 		{
 			snprintf(vk->err, sizeof(vk->err), "a hash job has a key");
 			return false;
 		}
-		p->stride = job->nkeys + 3 + 3 * n;
-		slots = pow2_ge(est * 2);
-		while (slots > 4096 && (slots * p->stride * 8 > room || slots * p->stride * 8 > ((uint64_t) 3 << 30)))
-			slots >>= 1;
-		p->ht_mask = (uint32_t) slots - 1;
-		p->ht_maxload = (uint32_t) (slots / 4 * 3);
-		p->ht_bytes = slots * p->stride * 8;
-		p->out_bytes = (uint64_t) p->ht_maxload * (p->stride - 1) * 8;
-		if (!plan_finish(job, p))
+		if (!size_hash(job, vk->caps.vram_budget_free / 4, p))
 		{
 			snprintf(vk->err, sizeof(vk->err), "the finish of a hash job does not fit the dense groups or the candidates");
 			return false;
@@ -133,6 +147,11 @@ plan_job(SiftVk *vk, const SiftVkJob *job, Plan *p)
 		p->cand_cap = job->max_cand ? job->max_cand : (1u << 20);
 		p->out_bytes = (uint64_t) p->cand_cap * 16;
 		p->flags = (job->sort_float ? SIFT_VK_FL_SORT_FLOAT : 0) | (job->topn_nulls ? SIFT_VK_FL_NULLS : 0);
+	}
+	if (!sift_vk_fit_cache(vk, job->tables ? job->tables : p->ht_bytes + p->out_bytes))
+	{
+		snprintf(vk->err, sizeof(vk->err), "no room for the cache the job leaves it");
+		return false;
 	}
 	p->gen0 = vk->evict_gen;
 	p->tab = tab_find(vk, job);

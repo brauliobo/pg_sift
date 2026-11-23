@@ -30,6 +30,10 @@
 #define SIFT_VK_MAXKEYS			8
 #define SIFT_VK_GRANULE_ROWS	8192
 #define SIFT_VK_SLAB_BYTES		((uint64_t) 4 << 20)
+/* the device memory the shared worker holds at its peak: the cache, what it holds besides (its context, the work buffers of the slots, the result buffers: 100 MiB measured) and the table of a job */
+#define SIFT_VK_VRAM_ENVELOPE	((uint64_t) 369 << 20)
+#define SIFT_VK_VRAM_FIXED		((uint64_t) 100 << 20)
+#define SIFT_VK_CACHE_MIN		((uint64_t) 28 << 20)	/* the cache a job with the largest table leaves: the sizes the cache is asked for are a ceiling it gives back down to this */
 
 typedef struct SiftVk SiftVk;
 
@@ -41,7 +45,8 @@ typedef enum SiftVkStatus
 	SIFT_VK_FAIL,				/* anything else (no memory, the device is unusable) */
 	SIFT_VK_DECODE,				/* a chunk the device cannot decode: run the scan on the CPU */
 	SIFT_VK_OVERFLOW,			/* the hash table or the candidate list was too small: run the scan on the CPU */
-	SIFT_VK_PROG_ERROR			/* a live row raised an error of the program: res.err_* name the row, the CPU raises the error */
+	SIFT_VK_PROG_ERROR,			/* a live row raised an error of the program: res.err_* name the row, the CPU raises the error */
+	SIFT_VK_NEED_BYTES			/* a chunk the job left out (bytes NULL) is not on the device: the caller sends it */
 } SiftVkStatus;
 
 typedef enum SiftVkMode
@@ -148,6 +153,7 @@ typedef struct SiftVkJob
 	int64_t		dense_kmin[2];	/* DENSE: the least value of each key */
 	uint32_t	dense_span[2];	/* ... and the values it can take plus one (the slot of NULL) */
 	uint64_t	est_groups;		/* HASH: the groups to expect (0: the rows) */
+	uint64_t	tables;			/* the table the largest job of the scan this job is part of takes: the cache is sized for it from the first job of the scan, so that the chunks it brings stay (0: this job's own) */
 	SiftVkFinish finish;		/* HASH */
 	SiftVkTopk	topk;			/* HASH, FIN_TOPK */
 	uint32_t	topn_k;			/* TOPN: the rows wanted */
@@ -233,6 +239,11 @@ extern const char *sift_vk_error(const SiftVk *vk);
 extern bool sift_vk_usable(const SiftVk *vk);
 /* The cache with a new size; empties it. False (the old one stays) when the device has no room */
 extern bool sift_vk_set_cache(SiftVk *vk, uint64_t bytes);
+/* The device keeps its peak within envelope bytes of which fixed are what it holds besides the cache and the table of a job: a job whose table needs the room of the cache takes it, the cache resizing down for the job and back up for the next (0: no limit) */
+/* The bytes of the table of groups and of the result a hash job takes (0 for the other kinds): what a scan names in SiftVkJob.tables so that the cache is sized once */
+extern uint64_t sift_vk_job_tables(const SiftVkJob *job);
+extern bool sift_vk_fit_cache(SiftVk *vk, uint64_t tables);
+extern void sift_vk_set_envelope(SiftVk *vk, uint64_t envelope, uint64_t fixed);
 /* How much of the chunks the cache holds, for the routing of the scan: the share of the n chunks that are resident, 0..1 */
 extern double sift_vk_resident_share(SiftVk *vk, const SiftVkKey *keys, uint32_t n);
 /* resident[i] = whether the chunk keys[i] is on the device, in one pass that looks ahead in the table; returns the number that are */

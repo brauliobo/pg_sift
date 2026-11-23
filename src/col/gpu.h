@@ -20,6 +20,12 @@ extern SiftVkKey sift_gpu_chunk_key(const RelFileLocator *loc, uint32 part_id, u
 
 /* The leaves whose chunks the device decodes: integers (a numeric of at most 18 digits, a boolean) and floats */
 extern bool sift_gpu_leaf_ok(SiftCellKind kind, uint8 hint);
+/* The leaves whose chunks the device reads as the codes of the dictionary of the part (SEC_DICTS): a text, when its chunks are coded by that dictionary (sift_gpu_chunk_fill says it) */
+static inline bool
+sift_gpu_dict_leaf_ok(SiftCellKind kind, uint8 hint)
+{
+	return kind == SIFT_CELL_STR && hint == SIFT_CHINT_AUTO;
+}
 
 /*
  * Whether the immutable part can be read for the snapshot on the device: false with the reason for a level 0 part. *cls is how its rows are seen by the snapshot (col/f2/part_vis.h):
@@ -34,8 +40,8 @@ extern bool sift_gpu_granule_eligible(const SiftPartDesc *d, const SiftGranuleDe
 
 /*
  * The chunk of column phys of the granule as stored, for the device: bytes point into the record of the granule, which must live as long as the chunk is used. z is the zone of the column in the
- * granule (the field of an integer is its distance from the least value of the zone). False, and why, for a chunk the device does not take: an encoding it has no decoder for, a wrapper that
- * is not LZ4, exceptions (values the column could not hold), a column that is not an integer or a float.
+ * granule (the field of an integer is its distance from the least value of the zone; the field of a text is its code, 4 bytes). False, and why, for a chunk the device does not take: an encoding
+ * it has no decoder for, a wrapper that is not LZ4, exceptions (values the column could not hold), a column that is not an integer or a float, a text that its dictionary does not code.
  */
 extern bool sift_gpu_chunk_fill(const SiftGranuleView *v, int phys, SiftCellKind kind, const SiftZone *z, SiftVkChunk *out, const char **why);
 

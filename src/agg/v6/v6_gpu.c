@@ -11,6 +11,7 @@
 #include "utils/rel.h"
 
 #include "agg/gpu_cfg.h"
+#include "agg/gpu_dict_agg.h"
 #include "agg/gpu_v6.h"
 #include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_topn.h"
@@ -24,6 +25,7 @@ typedef struct GpuQuery
 	SiftVexprProg sort;
 	SiftVexprProg filter[SIFT_VK_MAXAGGS];
 	SiftVexprProg key[SIFT_VK_MAXKEYS];
+	SiftGpuDictQual dict;		/* the comparisons of a text column in the conjuncts of the scan */
 	bool		zones;			/* the clause being compiled is a conjunct of the scan: its comparisons are zone tests too */
 	MemoryContext cx;
 	Relation	index;
@@ -242,6 +244,39 @@ note_zone_test(GpuQuery *g, int attno, const Var *v, const Const *k, int cmp)
 	q->zone[q->nzone++] = (SiftGpuZoneCmp) {.col = slot_of_attno(g, attno),.op = cmp,.val = element_value(k->consttype, k->constvalue)};
 }
 
+static bool
+is_text(Oid typid)
+{
+	return typid == TEXTOID || typid == VARCHAROID;
+}
+
+/* column = 'constant' and column <> 'constant' of a text, in a conjunct of the scan: the comparison of its code with the code the constant has in each part, which the units of the scan set (agg/gpu_dict_agg.h) */
+static const SiftVexprNode *
+compile_text_compare(GpuQuery *g, const OpExpr *op, const Var *v, const Const *k, int attno)
+{
+	const int	cmp = cmp_op_of(op->opno, qual_opfamily(g, attno));
+	SiftGpuDictQual *dq = &g->dict;
+	const SiftVexprNode *col;
+	SiftVexprNode *n;
+	text	   *s;
+	char	   *str;
+
+	if ((cmp != SCMP_EQ && cmp != SCMP_NE) || !g->zones || !is_text(k->consttype) || dq->n == SIFT_GPU_DICT_CMPS || !get_collation_isdeterministic(op->inputcollid))
+		return NULL;
+	if ((col = node_column(g, attno, v->vartype, SVEC_I64)) == NULL)
+		return NULL;
+	s = DatumGetTextPP(k->constvalue);
+	str = MemoryContextAlloc(g->cx, VARSIZE_ANY_EXHDR(s));
+	memcpy(str, VARDATA_ANY(s), VARSIZE_ANY_EXHDR(s));
+	dq->cmp[dq->n++] = (SiftGpuDictCmp) {.slot = slot_of_attno(g, attno),.ne = cmp == SCMP_NE,.str = str,.len = VARSIZE_ANY_EXHDR(s),
+		.code = node_const(g, INT8OID, SVEC_I64, Int64GetDatum(0))};
+	n = node_new(g, SVX_CMP, SVEC_BOOL);
+	n->aux = cmp;
+	n->args[n->nargs++] = col;
+	n->args[n->nargs++] = dq->cmp[dq->n - 1].code;
+	return n;
+}
+
 /* column op constant, both of one domain: the comparison runs in the wider of their types */
 static const SiftVexprNode *
 compile_compare(GpuQuery *g, const OpExpr *op)
@@ -257,6 +292,8 @@ compile_compare(GpuQuery *g, const OpExpr *op)
 
 	if (!var_const(g, op->args, &v, &k, &attno))
 		return NULL;
+	if (is_text(v->vartype))
+		return compile_text_compare(g, op, v, k, attno);
 	dom = domain_of(v->vartype);
 	cmp = cmp_op_of(op->opno, qual_opfamily(g, attno));
 	if (dom == DOM_NONE || dom != domain_of(k->consttype) || cmp < 0)
@@ -382,6 +419,8 @@ compile_conj(GpuQuery *g, const List *quals, SiftVexprProg *prog, bool scan, boo
 		}
 	}
 	*has = root != NULL;
+	if (scan)
+		g->dict.where = root;
 	return root == NULL ? scan : sift_vexpr_compile(root, prog);
 }
 
@@ -536,7 +575,7 @@ device_topk(const SiftV6Spec *s, bool having)
 		CompareType cmptype;
 		bool		is_agg = agg >= 0;
 
-		if (is_agg ? agg >= s->naggs || (s->agg[agg].kind != SV6_COUNT_STAR && s->agg[agg].kind != SV6_COUNT) : it->pos < 0)
+		if (is_agg ? agg >= s->naggs || (s->agg[agg].kind != SV6_COUNT_STAR && s->agg[agg].kind != SV6_COUNT) : it->pos < 0 || sift_v6_class(s->key[it->pos].typid) == SV6C_TEXT)
 			break;
 		if (!get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype))
 			break;
@@ -565,6 +604,7 @@ sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot 
 	if (!compile_quals(g, spec->indexqual) || !compile_filters(g, spec) || !compile_bins(g, spec) || !assign_slots(g, spec))
 		return NULL;
 	g->q.topk = device_topk(spec, having);
+	g->q.dict = g->dict.n > 0 ? &g->dict : NULL;
 	groups = sift_gpu_v6_agg(&g->q, gcx, desc, &gpu->run);
 	if (groups != NULL)
 		gpu->skip = covered_gens(gpu->run->plan, gcx, &gpu->nskip);
@@ -616,7 +656,7 @@ sift_v6_gpu_topn(const SiftV6TopNSpec *spec, SiftV6Input *in, const List *quals,
 	g->index = index;
 	g->tin = in;
 	g->q = (SiftGpuQuery) {.in = g->in,.rel = index,.heap = heap,.store = sift_f2_store_open(index),.snap = snap};
-	if (!compile_quals(g, quals) || !topn_key(g, spec) || !assign_in_slots(g))
+	if (!compile_quals(g, quals) || g->dict.n > 0 || !topn_key(g, spec) || !assign_in_slots(g))
 		return false;
 	if (!sift_gpu_v6_topn(&g->q, (uint32) spec->rows, spec->order[0].desc, spec->order[0].nulls_first, prunable, cx, &gpu->run, &cand, &ncand))
 		return false;

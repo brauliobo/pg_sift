@@ -91,6 +91,7 @@ sift_gpu_local_open(const char **why)
 			*why = err;
 			return NULL;
 		}
+		sift_vk_set_envelope(local.vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
 		strlcpy(local.device, sift_gpu_device, sizeof(local.device));
 		local.software = software;
 		local.cache_bytes = bytes;

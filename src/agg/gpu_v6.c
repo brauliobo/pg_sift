@@ -14,6 +14,7 @@
 #include "utils/memutils.h"
 
 #include "agg/gpu_cost.h"
+#include "agg/gpu_dict_agg.h"
 #include "agg/gpu_emit.h"
 #include "agg/gpu_shm.h"
 #include "agg/gpu_v6.h"
@@ -64,9 +65,6 @@ sift_gpu_v6_init_gucs(void)
 #define CACHE_USE					0.75	/* of the device cache one job's decoded chunks may take: none of them is then evicted by the job itself */
 #define GRANULES_PER_JOB_SHARED		1024
 #define GRANULES_PER_JOB_LOCAL		16384
-/* the device memory the worker may hold at its peak, 369 MiB: its cache, what it holds besides (its context, the work buffers of the slots, the result buffers: 100 MiB, measured with the cache at 128 MiB) and the table of a job */
-#define VRAM_ENVELOPE				((uint64) 369 << 20)
-#define VRAM_FIXED					((uint64) 100 << 20)
 #define TOPK_MAX					1024	/* the K of an ORDER BY .. LIMIT K the device keeps (agg/vk/run.c reads back about 4K groups) */
 typedef struct Exec
 {
@@ -80,8 +78,13 @@ typedef struct Exec
 	bool		main_job;		/* job runs: not an ungrouped COUNT(DISTINCT) alone */
 	int64	   *dcount;			/* dist: of each dense group of the keys, or of the one group: the pairs the finish of djob counts (SIFT_VK_COUNT_BITS) */
 	uint32		dgroups;
-	uint64		cache_bytes;
+	uint64		cache_bytes;	/* the ceiling of the cache of the device (sift.gpu_cache_mb as it came to) */
+	uint64		tables;			/* the largest table of the jobs: the cache is what the envelope of the device leaves of its ceiling besides it */
 	SiftGpuPlan *plan;
+	SiftGpuUnits *units;		/* a query that reads a text: the scan in the pieces the dictionaries cut it in (NULL: one piece, the plan) */
+	const SiftGpuUnit *unit;	/* the one that runs */
+	uint32		glo;			/* the granules of the plan that run: [glo, ghi) */
+	uint32		ghi;
 	SiftGpuConn *conn;
 	double		groups;
 	double		pairs;			/* dist: the pairs (the keys, the value) there can be */
@@ -109,17 +112,6 @@ decline(SiftGpuRun *run, const char *fmt,...)
 	return false;
 }
 
-static int
-column_slot(const SiftGpuQuery *q, int attno)
-{
-	const int	leaf = q->store->att_first[attno];
-
-	for (int c = 0; c < q->ncols; c++)
-		if (q->leaf[c] == leaf)
-			return c;
-	return -1;
-}
-
 /* A binned instant that may be infinite raises on the device where PostgreSQL bins it to itself, and the first key of a query whose other keys are it plus a constant must keep them from overflowing: the zones of the plan say */
 static const char *
 keys_out_of_range(const Exec *x)
@@ -129,14 +121,14 @@ keys_out_of_range(const Exec *x)
 
 	for (int b = 0; b < s->nbins; b++)
 	{
-		const int	c = column_slot(x->q, s->key[s->bin[b].key].attno);
+		const int	c = sift_gpu_query_slot(x->q, s->key[s->bin[b].key].attno);
 
 		if (c < 0 || !p->zrange[c] || p->zmin[c] == PG_INT64_MIN || p->zmax[c] == PG_INT64_MAX)
 			return "a binned timestamp may be infinite";
 	}
 	if (s->affine)
 	{
-		const int	c = column_slot(x->q, s->key[0].attno);
+		const int	c = sift_gpu_query_slot(x->q, s->key[0].attno);
 
 		if (c < 0 || !p->zrange[c] || p->zmin[c] < s->aff_lo || p->zmax[c] > s->aff_hi)
 			return "a key whose offsets may overflow";
@@ -151,7 +143,7 @@ job_end(const Exec *x, uint32 g0)
 	uint64		bytes = 0;
 	uint32		g = g0;
 
-	for (; g < x->plan->ngran && g - g0 < x->granules_per_job; g++)
+	for (; g < x->ghi && g - g0 < x->granules_per_job; g++)
 	{
 		bytes += x->plan->est_chunk[g];
 		if (g > g0 && bytes > x->cache_limit)
@@ -287,7 +279,7 @@ cost_in(const Exec *x, const SiftVkJob *j, double pcie_gbps, double cold_share)
 	return (SiftGpuCostIn) {.mode = j->mode,.finish = j->finish,.fast = sift_vk_job_is_fast(j),.rows = x->plan->rows,.scan_rows = x->plan->scan_rows,.enc_bytes = x->plan->enc_bytes,
 		.cold_share = cold_share,.pcie_gbps = pcie_gbps,.groups = of_pairs ? x->pairs : x->groups,.table_words = j->mode == SIFT_VK_HASH ? (double) table_bytes(j) / 8 : 0,
 		.dist_pairs = x->dist && !of_pairs ? x->pairs : 0,.ncols = x->q->ncols,.nops = (int) j->nops,.nkeys = (int) j->nkeys,.naggs = (int) j->naggs,
-		.parallel_workers = x->q->parallel_workers};
+		.njobs = sift_gpu_units_to_run(x->units),.parallel_workers = x->q->parallel_workers};
 }
 
 /* The time the jobs take on the device: the aggregates, and the pairs of COUNT(DISTINCT) after them, which find the chunks on it */
@@ -314,10 +306,42 @@ resident_share(Exec *x)
 	x->keys = palloc(Max(n, 1) * sizeof(SiftVkKey));
 	x->resident = palloc0(Max(n, 1));
 	sift_gpu_f2_keys(x->plan, x->keys);
-	sift_gpu_conn_resident(x->conn, x->keys, (uint32) n, x->resident);
+	sift_gpu_conn_resident(x->conn, x->tables, x->keys, (uint32) n, x->resident);
 	for (uint64 i = 0; i < n; i++)
 		hit += x->resident[i];
 	return n == 0 ? 0 : (double) hit / n;
+}
+
+/* The room the tables of the jobs have in the memory of the worker: its peak less the fixed part and the least cache a job runs with; the cache the sift.gpu_cache_mb asks for is a ceiling that gives way to a table */
+static uint64
+table_room(void)
+{
+	return SIFT_VK_VRAM_ENVELOPE - SIFT_VK_VRAM_FIXED - SIFT_VK_CACHE_MIN;
+}
+
+static bool
+in_envelope(const SiftVkJob *j)
+{
+	return table_bytes(j) <= table_room();
+}
+
+/* The cache the device runs the jobs with: its ceiling, or what the envelope leaves of it besides the largest table (agg/vk/cache.c sift_vk_fit_cache) */
+static uint64
+job_cache_bytes(const Exec *x)
+{
+	const uint64 room = SIFT_VK_VRAM_ENVELOPE - SIFT_VK_VRAM_FIXED - Min(x->tables, table_room());
+
+	return Min(x->cache_bytes, room / SIFT_VK_SLAB_BYTES * SIFT_VK_SLAB_BYTES);
+}
+
+/* The largest table of the jobs, which every job of the scan names so that the cache is sized once and the chunks the first of them brings stay for the last */
+static void
+set_tables(Exec *x)
+{
+	x->tables = sift_vk_job_tables(&x->job);
+	if (x->dist)
+		x->tables = Max(x->tables, sift_vk_job_tables(&x->djob));
+	x->job.tables = x->djob.tables = x->prime.tables = x->tables;
 }
 
 /* False, and why in the run, when the CPU is to run the scan: auto asks the cost, on asks only whether the device can */
@@ -348,7 +372,7 @@ route(Exec *x)
 	if (sift_gpu_mode == SIFT_GPU_AUTO && run->gpu_ms * SIFT_GPU_MARGIN >= cpu)
 		return decline(run, "the CPU is cheaper: %.2f ms against %.2f ms on the device with %.0f%% of the chunks on it (it must win by %.2fx)", cpu, run->gpu_ms, share * 100, SIFT_GPU_MARGIN);
 	x->cache_bytes = caps->cache_bytes > 0 ? caps->cache_bytes : (uint64) sift_gpu_cache_mb * ((uint64) 1 << 20);
-	x->cache_limit = (uint64) (x->cache_bytes * CACHE_USE);
+	x->cache_limit = (uint64) (job_cache_bytes(x) * CACHE_USE);
 	x->granules_per_job = sift_gpu_conn_shared(x->conn) ? GRANULES_PER_JOB_SHARED : GRANULES_PER_JOB_LOCAL;
 	run->shared = sift_gpu_conn_shared(x->conn);
 	run->pcie_gbps = caps->pcie_gbps;
@@ -358,44 +382,30 @@ route(Exec *x)
 	return true;
 }
 
-/* The room the tables of the jobs have in the memory of the worker: its peak less the fixed part and the cache */
-static uint64
-table_room(const Exec *x)
-{
-	return VRAM_ENVELOPE > VRAM_FIXED + x->cache_bytes ? VRAM_ENVELOPE - VRAM_FIXED - x->cache_bytes : 0;
-}
-
-/* The table is what the worker may hold at its peak besides its cache and its fixed part */
-static bool
-in_envelope(const Exec *x, const SiftVkJob *j)
-{
-	return table_bytes(j) <= table_room(x);
-}
-
 /* One job cannot hold the groups apart from the rows the CPU still scans, or the granules the device reads in more than one job: a count of distinct values and the best K of the groups need all of them */
 static bool
 confirm_finish(Exec *x)
 {
 	SiftVkJob  *j = &x->job;
-	const bool	whole = !x->plan->cpu_rest && job_end(x, 0) >= x->plan->ngran;
+	const bool	whole = !x->plan->cpu_rest && job_end(x, x->glo) >= x->ghi;
 
 	if (x->dist)
 	{
 		if (!whole)
 			return decline(x->run, "COUNT(DISTINCT) needs every granule in one job and none of the rows left to the CPU");
-		if (!in_envelope(x, &x->djob))
-			return decline(x->run, "the %llu MiB of pairs of COUNT(DISTINCT) would not fit the %llu MiB that the device memory leaves besides its cache of %llu MiB",
-						   (unsigned long long) (table_bytes(&x->djob) >> 20), (unsigned long long) (table_room(x) >> 20), (unsigned long long) (x->cache_bytes >> 20));
+		if (!in_envelope(&x->djob))
+			return decline(x->run, "the %llu MiB of pairs of COUNT(DISTINCT) would not fit the %llu MiB that the device memory leaves besides its least cache",
+						   (unsigned long long) (table_bytes(&x->djob) >> 20), (unsigned long long) (table_room() >> 20));
 		x->run->kernel = x->main_job ? j->mode : SIFT_VK_HASH;
 		return true;
 	}
-	if (j->finish == SIFT_VK_FIN_TOPK && !(whole && in_envelope(x, j)))
+	if (j->finish == SIFT_VK_FIN_TOPK && !(whole && in_envelope(j)))
 	{
 		j->finish = SIFT_VK_FIN_GROUPS;
 		if (j->est_groups * 1.34 * (j->nkeys + 3 + 3 * j->naggs) * 8 > sift_gpu_conn_result_bytes(x->conn))
-			return decline(x->run, "the groups would not fit the result area of the worker, and the best %u of them cannot be had on the device: %s (table %llu MiB of the %llu MiB left besides the cache of %llu MiB)",
+			return decline(x->run, "the groups would not fit the result area of the worker, and the best %u of them cannot be had on the device: %s (table %llu MiB of the %llu MiB the device memory leaves)",
 						   x->q->topk.k, whole ? "the table would not fit its memory" : "the chunks do not all fit one job", (unsigned long long) (table_bytes(j) >> 20),
-						   (unsigned long long) (table_room(x) >> 20), (unsigned long long) (x->cache_bytes >> 20));
+						   (unsigned long long) (table_room() >> 20));
 	}
 	if (j->mode == SIFT_VK_HASH && j->finish == SIFT_VK_FIN_GROUPS &&
 		j->est_groups * 1.34 * (j->nkeys + 3 + 3 * j->naggs) * 8 > sift_gpu_conn_result_bytes(x->conn))
@@ -425,11 +435,20 @@ setup(Exec *x, const char *why)
 	run->granules = x->plan->ngran;
 	if (x->plan->ndevice == 0)
 		return decline(run, "no part can be read by the device: %s", x->plan->why[0] ? x->plan->why : "the relation has none");
+	x->glo = 0;
+	x->ghi = x->plan->ngran;
+	if ((x->units = sift_gpu_units(q, x->plan, CurrentMemoryContext, &range)) == NULL && range != NULL)
+		return decline(run, "%s", range);
 	if (q->spec != NULL && (range = keys_out_of_range(x)) != NULL)
 		return decline(run, "%s", range);
 	choose_kernel(x);
 	if (q->spec != NULL && (range = choose_finish(x)) != NULL)
 		return decline(run, "%s", range);
+	if (x->units != NULL && x->units->n > 1 && x->dist)
+		return decline(run, "COUNT(DISTINCT) over the pieces the dictionaries of the parts cut the scan in");
+	if (x->units != NULL && x->units->n > 1 && x->job.finish == SIFT_VK_FIN_TOPK)
+		x->job.finish = SIFT_VK_FIN_GROUPS;
+	set_tables(x);
 	if (!route(x))
 		return false;
 	return q->spec == NULL || confirm_finish(x);
@@ -479,7 +498,7 @@ run_range(Exec *x, SiftVkJob *job, uint32 g0, uint32 gmax, uint32 *g1, SiftVkRes
 				grown = false;
 	SiftVkStatus st;
 
-	sift_gpu_conn_resident(x->conn, x->keys + first, (gmax - g0) * p->ncols, x->resident + first);
+	sift_gpu_conn_resident(x->conn, job->tables, x->keys + first, (gmax - g0) * p->ncols, x->resident + first);
 	for (;;)
 	{
 		SiftVkJob	larger = *job;
@@ -494,9 +513,10 @@ run_range(Exec *x, SiftVkJob *job, uint32 g0, uint32 gmax, uint32 *g1, SiftVkRes
 		larger.est_groups = Min(job->est_groups * 8, Max(p->rows, (uint64) 1024));
 		if (st == SIFT_GPU_NEED_BYTES && elide)
 			elide = false;
-		else if (st == SIFT_VK_OVERFLOW && job->mode == SIFT_VK_HASH && !grown && (job->finish == SIFT_VK_FIN_GROUPS || in_envelope(x, &larger)))
+		else if (st == SIFT_VK_OVERFLOW && job->mode == SIFT_VK_HASH && !grown && (job->finish == SIFT_VK_FIN_GROUPS || in_envelope(&larger)))
 		{
 			job->est_groups = larger.est_groups;
+			job->tables = sift_vk_job_tables(job);
 			grown = true;
 		}
 		else
@@ -517,10 +537,10 @@ status_why(Exec *x, SiftVkStatus st)
 static const char *
 run_all(Exec *x, SiftVkJob *job, void (*take) (Exec *, const SiftVkResult *, void *), void *arg)
 {
-	uint32		g0 = 0,
+	uint32		g0 = x->glo,
 				g1;
 
-	while (g0 < x->plan->ngran)
+	while (g0 < x->ghi)
 	{
 		SiftVkResult res;
 		const char *why = NULL;
@@ -545,10 +565,11 @@ take_none(Exec *x, const SiftVkResult *res, void *arg)
 static bool
 all_resident(const Exec *x)
 {
-	const uint32 n = x->plan->ngran * x->plan->ncols;
+	const uint32 first = x->glo * x->plan->ncols,
+				n = (x->ghi - x->glo) * x->plan->ncols;
 
-	sift_gpu_conn_resident(x->conn, x->keys, n, x->resident);
-	for (uint32 i = 0; i < n; i++)
+	sift_gpu_conn_resident(x->conn, x->tables, x->keys + first, n, x->resident + first);
+	for (uint32 i = first; i < first + n; i++)
 		if (!x->resident[i])
 			return false;
 	return true;
@@ -566,17 +587,17 @@ run_whole(Exec *x, SiftVkJob *job, void (*take) (Exec *, const SiftVkResult *, v
 	SiftVkStatus st;
 	uint32		g1;
 
-	if (x->plan->ngran == 0)
+	if (x->ghi == x->glo)
 		return NULL;
 	if (!all_resident(x) && (why = run_all(x, &x->prime, take_none, NULL)) != NULL)
 		return why;
-	st = run_range(x, job, 0, x->plan->ngran, &g1, &res, &why);
+	st = run_range(x, job, x->glo, x->ghi, &g1, &res, &why);
 	if (st == SIFT_VK_PROG_ERROR && res.has_err)
 		raise_program_error(&res);
 	if (st != SIFT_VK_OK)
 		return why != NULL ? why : status_why(x, st);
 	count_run(x->run, &res);
-	if (g1 < x->plan->ngran)
+	if (g1 < x->ghi)
 		return "the chunks of the scan did not all stay on the device";
 	take(x, &res, arg);
 	return NULL;
@@ -606,6 +627,7 @@ static void
 fold_group(const Exec *x, SiftV6Group *g, const int64 *key, uint64 nulls, const int64 *w, int64 distinct)
 {
 	SiftV6AccIn in[SIFT_VK_MAXAGGS];
+	SiftV6StrIn str[SIFT_VK_MAXKEYS];
 
 	for (int a = 0; a < x->q->spec->naggs; a++)
 	{
@@ -613,7 +635,7 @@ fold_group(const Exec *x, SiftV6Group *g, const int64 *key, uint64 nulls, const 
 
 		in[a] = m >= 0 ? acc_in(x->job.agg[m].kind, w + 3 * m) : (SiftV6AccIn) {.v0 = (uint64) distinct};
 	}
-	sift_v6_group_fold_rec(g, key, nulls, in);
+	sift_v6_group_fold_rec(g, key, sift_gpu_key_strings(x->q, x->plan, x->units, x->unit, x->job.nkeys, x->em->key_slot, key, nulls, str), nulls, in);
 }
 
 static int64
@@ -710,11 +732,34 @@ run_aggs(Exec *x, void *arg)
 		return why;
 	if (x->main_job)
 		return x->job.finish == SIFT_VK_FIN_TOPK ? run_whole(x, &x->job, take_groups, t) : run_all(x, &x->job, take_groups, t);
-	if (x->plan->ngran > 0 && x->job.nkeys == 0)
+	if (x->ghi > x->glo && x->job.nkeys == 0)
 		fold_group(x, take_group_set(x, t), NULL, 0, NULL, distinct_of(x, 0));
-	else if (x->plan->ngran > 0)
+	else if (x->ghi > x->glo)
 		fold_dense(x, take_group_set(x, t), NULL);
 	return NULL;
+}
+
+/* The pieces of the scan one after the other: each with the program of its WHERE, its codes meaning what its parts' dictionaries say */
+static const char *
+run_units(Exec *x, void *arg)
+{
+	for (uint32 i = 0; x->units != NULL && i < x->units->n; i++)
+	{
+		SiftGpuQuery qu = *x->q;
+		const char *why;
+
+		x->unit = &x->units->unit[i];
+		if (x->unit->skip)
+			continue;
+		x->glo = x->unit->g0;
+		x->ghi = x->unit->g1;
+		if (x->q->dict != NULL && x->q->dict->where != NULL)
+			qu.where = &x->unit->where;
+		sift_gpu_emit_init(x->em);
+		if ((why = sift_gpu_emit_agg(x->em, &qu, &x->job)) != NULL || (why = run_aggs(x, arg)) != NULL)
+			return why;
+	}
+	return x->units != NULL ? NULL : run_aggs(x, arg);
 }
 
 static void
@@ -753,7 +798,7 @@ sift_gpu_v6_agg(const SiftGpuQuery *q, MemoryContext gcx, TupleDesc desc, SiftGp
 	begin(&x, q, runp, gcx);
 	if (sift_gpu_mode != SIFT_GPU_OFF)
 	{
-		if (!drive(&x, sift_gpu_emit_agg(x.em, q, &x.job), run_aggs, &t))
+		if (!drive(&x, sift_gpu_emit_agg(x.em, q, &x.job), run_units, &t))
 		{
 			if (t.g != NULL)
 				sift_v6_group_free(t.g);

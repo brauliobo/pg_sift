@@ -171,7 +171,8 @@ struct SiftVk
 	uint64_t	rbuf_cap;
 	bool		released;		/* sift_vk_release: the cache is gone, the next job makes it again */
 	bool		trimmed;		/* the buffers of the slots and of the result are gone: the next job makes them again */
-	uint64_t	cache_want;		/* the bytes of cache the device was asked for */
+	uint64_t	cache_want;		/* the bytes of cache the device was asked for: the ceiling, caps.cache_bytes is what that came to */
+	uint64_t	envelope, fixed;	/* sift_vk_set_envelope */
 	void	   *topn_buf;		/* the candidates of the top N of the last job (16 bytes each) */
 	uint64_t	topn_cap;		/* in candidates */
 	/* the cache */
@@ -218,6 +219,7 @@ void free_fast(SiftVk *vk);
 /* cache.c */
 bool make_cache(SiftVk *vk, uint64_t bytes);
 bool revive(SiftVk *vk);
+bool job_resident(SiftVk *vk, const SiftVkJob *job);
 Ent *cache_find(SiftVk *vk, const SiftVkKey *k);
 Ent *cache_insert(SiftVk *vk, const SiftVkKey *k, uint32_t words, uint32_t *woff);
 void cache_remove(SiftVk *vk, Ent *e);

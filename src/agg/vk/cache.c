@@ -355,6 +355,21 @@ sift_vk_resident_share(SiftVk *vk, const SiftVkKey *keys, uint32_t n)
 	return n ? (double) hit / n : 0.0;
 }
 
+/* Every chunk the job left out (bytes NULL) is on the device */
+bool
+job_resident(SiftVk *vk, const SiftVkJob *job)
+{
+	for (uint32_t g = 0; g < job->ngran; g++)
+		for (uint32_t c = 0; c < job->ncols; c++)
+		{
+			const SiftVkChunk *ch = job->gran[g].col[c];
+
+			if (ch != NULL && ch->bytes == NULL && cache_find(vk, &ch->key) == NULL)
+				return false;
+		}
+	return true;
+}
+
 uint32_t
 sift_vk_resident_batch(SiftVk *vk, const SiftVkKey *keys, uint32_t n, uint8_t *resident)
 {
@@ -389,6 +404,16 @@ release_cache(SiftVk *vk)
 	vk->caps.cache_bytes = 0;
 }
 
+/* the cache made again at bytes, empty: no batch is in flight when this is called */
+static bool
+resize_cache(SiftVk *vk, uint64_t bytes)
+{
+	free_tabs(vk);
+	vk->evict_gen++;
+	release_cache(vk);
+	return make_cache(vk, bytes) && bind_buffers(vk);
+}
+
 /* MEM[MEM-VK-07]: sift_vk_set_cache resize (the old arena is freed before the new one is sized and made: one arena of VRAM at a time, was old + new) */
 bool
 sift_vk_set_cache(SiftVk *vk, uint64_t bytes)
@@ -400,14 +425,48 @@ sift_vk_set_cache(SiftVk *vk, uint64_t bytes)
 		return true;
 	if (vk->inflight && !settle_all(vk))
 		return false;
-	free_tabs(vk);
-	vk->evict_gen++;
-	release_cache(vk);
-	if (make_cache(vk, bytes) && bind_buffers(vk))
+	if (resize_cache(vk, bytes))
 		return true;
 	release_cache(vk);
 	vk->cache_want = was;
 	if (!make_cache(vk, was) || !bind_buffers(vk))
+		vk->released = true;
+	return false;
+}
+
+void
+sift_vk_set_envelope(SiftVk *vk, uint64_t envelope, uint64_t fixed)
+{
+	vk->envelope = envelope;
+	vk->fixed = fixed;
+}
+
+/*
+ * The cache sized for a job whose hash table and result take `tables` bytes: the ceiling the device was asked for (caps.cache_bytes), or what the envelope leaves of it, never less than SIFT_VK_CACHE_MIN.
+ * The arena is one buffer, so the cache that stays is its whole content least the slabs given back: the chunks of the job are sent again, and the next job whose table is smaller makes the cache the ceiling again.
+ */
+bool
+sift_vk_fit_cache(SiftVk *vk, uint64_t tables)
+{
+	const uint64_t ceiling = vk->caps.cache_bytes,
+				room = vk->envelope > vk->fixed + tables ? vk->envelope - vk->fixed - tables : 0;
+	uint64_t	want = room < ceiling ? room : ceiling;
+	uint32_t	n;
+
+	if (vk->envelope == 0 || vk->released)
+		return true;
+	if (want < SIFT_VK_CACHE_MIN)
+		want = Min(SIFT_VK_CACHE_MIN, ceiling);
+	n = (uint32_t) (want / SLAB_BYTES);
+	if (n == vk->nslab)
+		return true;
+	if (resize_cache(vk, (uint64_t) n * SLAB_BYTES))
+	{
+		vk->caps.cache_bytes = ceiling;
+		return true;
+	}
+	release_cache(vk);
+	if (!make_cache(vk, vk->cache_want) || !bind_buffers(vk))
 		vk->released = true;
 	return false;
 }

@@ -598,7 +598,7 @@ acc_of_in(const SiftV6AccIn *a)
 }
 
 void
-sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const SiftV6AccIn *acc)
+sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls, const SiftV6AccIn *acc)
 {
 	V6Set	   *set = &g->set[0];
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
@@ -632,7 +632,14 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const
 			resetStringInfo(&g->kbuf);
 			for (int i = 0; i < set->nk; i++)
 				if (!((key_nulls >> i) & 1))
-					appendBinaryStringInfo(&g->kbuf, (const char *) &key[set->kidx[i]], sizeof(int64));
+				{
+					const SiftV6StrIn *s = str != NULL ? &str[set->kidx[i]] : NULL;
+
+					if (s != NULL && s->p != NULL)
+						append_key_str(g, s->p, s->len);
+					else
+						appendBinaryStringInfo(&g->kbuf, (const char *) &key[set->kidx[i]], sizeof(int64));
+				}
 			slot = sift_ht_upsert_wide(&set->ht, sift_aggk6_hash1(sift_aggk6_hash_bytes(g->kbuf.data, g->kbuf.len) ^ key_nulls), g->kbuf.data, g->kbuf.len,
 									   key_nulls, &found);
 		}

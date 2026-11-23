@@ -116,7 +116,7 @@ sift_gpu_cost_gpu_ms(const SiftGpuCostIn *in)
 {
 	double		cold = in->enc_bytes * in->cold_share,
 				ns = kernel_ns(in) + (in->mode == SIFT_VK_TOPN ? 0 : GPU_NS_ROW_HOST),
-				ms = GPU_FIXED_MS + in->rows * ns / 1e6,
+				ms = GPU_FIXED_MS * (in->njobs > 1 ? in->njobs : 1) + in->rows * ns / 1e6,
 				readback = 0;
 
 	if (!in->fast && in->mode != SIFT_VK_TOPN && ms < GPU_FIXED_MS + GPU_VM_GRANULE_MS)

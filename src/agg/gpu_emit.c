@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "agg/gpu_dict_agg.h"
 #include "agg/gpu_emit.h"
 #include "agg/vk/layout.h"
 
@@ -238,24 +239,13 @@ emit_where(SiftGpuEmit *b, const SiftGpuQuery *q)
 	return w == 0 ? SIFT_VK_NONE8 : w;
 }
 
-static int
-slot_of_attno(const SiftGpuQuery *q, int attno)
-{
-	int			leaf = q->store->att_first[attno];
-
-	for (int c = 0; c < q->ncols; c++)
-		if (q->leaf[c] == leaf)
-			return c;
-	return -1;
-}
-
 /* The register of an expression of the query, or of its plain column; *is_float says what it holds */
 static uint32
 emit_value(SiftGpuEmit *b, const SiftGpuQuery *q, const SiftVexprProg *p, int attno, uint32 act, bool *is_float)
 {
 	if (p == NULL)
 	{
-		int			slot = slot_of_attno(q, attno);
+		int			slot = sift_gpu_query_slot(q, attno);
 
 		*is_float = slot >= 0 && col_is_float(q, slot);
 		return col_reg(b, q, slot);
@@ -296,11 +286,13 @@ emit_distinct(SiftGpuEmit *b, const SiftGpuQuery *q, int a, uint32 act)
 {
 	const SiftV6Agg *ag = &q->spec->agg[a];
 	bool		is_float;
-	int			slot = slot_of_attno(q, ag->arg.attno);
+	int			slot = sift_gpu_query_slot(q, ag->arg.attno);
 	uint32		reg;
 
 	if (q->filter[a] != NULL || q->arg[a] != NULL)
 		fail(b, "a COUNT(DISTINCT) with a FILTER or of an expression");
+	if (sift_gpu_slot_is_text(q, slot))
+		fail(b, "a COUNT(DISTINCT) of a text");
 	reg = emit_value(b, q, NULL, ag->arg.attno, act, &is_float);
 	if (is_float)
 		fail(b, "a COUNT(DISTINCT) of a float");
@@ -340,7 +332,11 @@ emit_aggs(SiftGpuEmit *b, const SiftGpuQuery *q, SiftVkJob *job, uint32 where)
 			va->freg = (uint8) fs;
 		}
 		if (sift_v6_kind_reads_column(ag->kind))
+		{
+			if (ag->kind != SV6_COUNT && sift_gpu_slot_is_text(q, sift_gpu_query_slot(q, ag->arg.attno)))
+				fail(b, "an aggregate of a text other than a COUNT");
 			va->vreg = (uint8) emit_value(b, q, q->arg[a], ag->arg.attno, act, &is_float);
+		}
 		va->kind = (uint8) agg_kind_of(b, ag->kind, is_float);
 	}
 	job->naggs = na;
@@ -355,9 +351,9 @@ emit_keys(SiftGpuEmit *b, const SiftGpuQuery *q, SiftVkJob *job, uint32 where)
 		SiftV6Class cls = sift_v6_class(k->typid);
 		bool		is_float;
 
-		b->key_slot[i] = q->key[i] == NULL ? slot_of_attno(q, k->attno) : -1;
-		if (q->key[i] == NULL && cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_BOOL)
-			fail(b, "a group key that is a string, a float or a numeric");
+		b->key_slot[i] = q->key[i] == NULL ? sift_gpu_query_slot(q, k->attno) : -1;
+		if (q->key[i] == NULL && cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_BOOL && !(cls == SV6C_TEXT && sift_gpu_slot_is_text(q, b->key_slot[i])))
+			fail(b, "a group key that is a string the parts do not code, a float or a numeric");
 		job->key_reg[i] = (uint8) emit_value(b, q, q->key[i], k->attno, where, &is_float);
 		if (is_float)
 			fail(b, "a group key that is a float");

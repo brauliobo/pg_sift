@@ -22,6 +22,7 @@
 #include "agg/gpu_v6.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_cache.h"
+#include "col/f2/f2_marks.h"
 #include "col/f2/f2_gbuf.h"
 #include "col/f2/l0_stage.h"
 #include "col/gpu.h"
@@ -48,8 +49,20 @@ typedef struct PlanPart
 	uint32		nsel;			/* ... the zones leave to the predicates: plan granules g0 .. g0 + nsel - 1 */
 	uint32		phys[SIFT_VK_MAXCOLS];
 	SiftZone   *zone[SIFT_VK_MAXCOLS];	/* ng zones of each column */
+	const SiftPartDict *dict[SIFT_VK_MAXCOLS];	/* of a text column: the strings its codes name in this part */
 	uint64	  **pend;			/* per granule the rows a pending delete of the partition deletes for the snapshot, NULL for a granule none names */
+	uint32		spans[SIFT_F2_MAX_RANGES][2];	/* the granules the predicates leave in the key of the part: [spans[i][0], spans[i][1]) */
+	int			nspans;
 } PlanPart;
+
+/* What the predicates of the scan leave of the key of the index: the key plan of its marks (agg/gpu_v6.h SiftGpuQuery.zone, in), the lead column's range, whether any row can pass */
+typedef struct KeyPrune
+{
+	SiftF2Rel	f;
+	SiftF2KeySet ks;
+	SiftKeyPlan plan;
+	bool		possible;
+} KeyPrune;
 
 /* What admitting the parts of one partition depends on */
 typedef struct Admit
@@ -150,22 +163,24 @@ refuse(const char **why, const char *msg)
 }
 
 static bool
-columns_ok(const SiftGpuQuery *q, const SiftF2PartPin *pin, uint32 *phys, const char **why)
+columns_ok(const SiftGpuQuery *q, const SiftF2PartPin *pin, PlanPart *pp, const char **why)
 {
 	const SiftF2ColMap *map = pin->col_map;
 
 	for (int c = 0; c < q->ncols; c++)
 	{
 		int			l = q->leaf[c];
+		const bool	text = sift_gpu_dict_leaf_ok(q->store->kinds[l], q->store->hints[l]);
 
-		if (!sift_gpu_leaf_ok(q->store->kinds[l], q->store->hints[l]))
-			return refuse(why, "a column is not an integer, a decimal or a float the device decodes");
-		phys[c] = l;
-		if (map == NULL)
-			continue;
-		if (l >= map->cur_ncols || map->mode[l] != SIFT_CMAP_DIRECT || map->phys_col[l] < 0)
+		if (!text && !sift_gpu_leaf_ok(q->store->kinds[l], q->store->hints[l]))
+			return refuse(why, "a column is not an integer, a decimal, a float or a text the device decodes");
+		pp->phys[c] = l;
+		if (map != NULL && (l >= map->cur_ncols || map->mode[l] != SIFT_CMAP_DIRECT || map->phys_col[l] < 0))
 			return refuse(why, "the part was written before a column was added or changed");
-		phys[c] = map->phys_col[l];
+		if (map != NULL)
+			pp->phys[c] = map->phys_col[l];
+		if (text && (pp->dict[c] = sift_part_dict_find(sift_part_dicts(q->rel, pin->part), (int) pp->phys[c], SIFT_DICT_KIND_STR)) == NULL)
+			return refuse(why, "a text column of the part has no dictionary of codes");
 	}
 	return true;
 }
@@ -256,7 +271,7 @@ admit(const Admit *a, const SiftPartDesc *d, PlanPart *pp, const char **why)
 	pp->ng = pin->part->hdr.ngranules;
 	if (col_delta_patches(a, pin))
 		refuse(why, "the part has column deltas on a column the query reads");
-	else if (columns_ok(q, pin, pp->phys, why) && read_zones(q, pp, why) && (cls != SIFT_VIS_PER_ROW || inserters_settled(d, pin, a->xmin, why)))
+	else if (columns_ok(q, pin, pp, why) && read_zones(q, pp, why) && (cls != SIFT_VIS_PER_ROW || inserters_settled(d, pin, a->xmin, why)))
 	{
 		pp->pend = a->pdel != NULL ? pending_masks(q->rel, pin, a->pdel) : NULL;
 		return true;
@@ -272,6 +287,8 @@ width_of(const SiftZone *z, SiftCellKind kind)
 
 	if (kind == SIFT_CELL_F8)
 		return 8;
+	if (kind == SIFT_CELL_STR)
+		return 4;
 	if ((z->flags & SIFT_ZONE_NONE) || z->min > z->max)
 		return 0;
 	range = (uint64) z->max - (uint64) z->min;
@@ -288,6 +305,8 @@ fold_zone(SiftGpuPlan *p, int c, const SiftZone *z, uint32 nrows, SiftCellKind k
 		return;
 	}
 	p->znulls[c] |= z->nnull > 0;
+	if (kind == SIFT_CELL_STR)
+		return;
 	if (z->nnull >= nrows)
 		return;
 	if ((z->flags & SIFT_ZONE_NONE) || z->min > z->max)
@@ -317,6 +336,66 @@ lower_bound_i64(const int64 *vals, uint32 n, int64 v)
 			hi = mid;
 	}
 	return lo;
+}
+
+static SiftColOp
+col_op_of(int cmp)
+{
+	return cmp == SCMP_EQ ? SIFT_COLOP_EQ : cmp == SCMP_LT ? SIFT_COLOP_LT : cmp == SCMP_LE ? SIFT_COLOP_LE : cmp == SCMP_GT ? SIFT_COLOP_GT : SIFT_COLOP_GE;
+}
+
+/* The comparisons and the IN lists of the scan as the predicates of the leaves they read: what the key of an index is planned from */
+static void
+key_prune_init(KeyPrune *kp, const SiftGpuQuery *q)
+{
+	SiftColPred *preds = palloc((q->nzone + q->nin + 1) * sizeof(SiftColPred));
+	SiftColValue *vals = palloc0((q->nzone + 1) * sizeof(SiftColValue));
+	int			n = 0;
+
+	kp->f = sift_f2_store_rel(q->store);
+	for (int i = 0; i < q->nzone; i++)
+	{
+		vals[i].v.i = q->zone[i].val;
+		preds[n++] = (SiftColPred) {.col = q->leaf[q->zone[i].col],.op = col_op_of(q->zone[i].op),.nvals = 1,.vals = &vals[i]};
+	}
+	for (int i = 0; i < q->nin; i++)
+	{
+		SiftColValue *in;
+
+		if (q->in[i].negate)
+			continue;
+		in = palloc0(q->in[i].n * sizeof(SiftColValue));
+		for (uint32 j = 0; j < q->in[i].n; j++)
+			in[j].v.i = q->in[i].vals[j];
+		preds[n++] = (SiftColPred) {.col = q->leaf[q->in[i].col],.op = SIFT_COLOP_IN,.nvals = (int) q->in[i].n,.vals = in};
+	}
+	sift_f2_key_plan(&kp->f, q->store->schema->cols, preds, n, &kp->plan);
+	kp->possible = sift_f2_key_set(&kp->f, preds, n, &kp->ks) && kp->plan.state != SIFT_KEY_PLAN_EMPTY;
+}
+
+/* The granules of the part the key of the index can reach: its marks when it has them, else the zones of the lead column; the whole part for one whose columns are mapped (the key is read by leaf) */
+static void
+part_spans(const SiftGpuQuery *q, const KeyPrune *kp, PlanPart *pp)
+{
+	if (!kp->possible)
+		pp->nspans = 0;
+	else if (kp->f.nkey == 0 || pp->pin->col_map != NULL)
+	{
+		pp->spans[0][0] = 0;
+		pp->spans[0][1] = pp->ng;
+		pp->nspans = pp->ng > 0;
+	}
+	else
+		pp->nspans = sift_f2_granule_spans(q->rel, pp->pin->part, &kp->f, &kp->ks, &kp->plan, pp->spans);
+}
+
+static bool
+in_spans(const PlanPart *pp, uint32 gl)
+{
+	for (int i = 0; i < pp->nspans; i++)
+		if (gl >= pp->spans[i][0] && gl < pp->spans[i][1])
+			return true;
+	return false;
 }
 
 static bool
@@ -368,7 +447,7 @@ fill_granule(SiftGpuPlan *p, const SiftGpuQuery *q, const PlanPart *pp, uint32 g
 	const uint64 *pend = pp->pend != NULL ? pp->pend[gl] : NULL;
 	uint32		ndead = 0;
 
-	if (zone_rules_out(q, pv, pp, gl))
+	if (!in_spans(pp, gl) || zone_rules_out(q, pv, pp, gl))
 		return false;
 	dg = pp->pin->dv != NULL ? sift_dv_granule(pp->pin->dv, gl) : NULL;
 	p->ngran++;
@@ -554,6 +633,26 @@ att_bloom(const SiftGpuQuery *q)
 	return bloom;
 }
 
+/* The codes of a text column are the numbers from 0 to the most strings a dictionary of its parts has: what the zones of an integer column are for the groups of a dense job */
+static void
+text_ranges(SiftGpuPlan *p, const SiftGpuQuery *q)
+{
+	const Priv *pv = p->priv;
+
+	for (int c = 0; c < q->ncols; c++)
+	{
+		uint32		n = 0;
+
+		if (!sift_gpu_dict_leaf_ok(q->store->kinds[q->leaf[c]], q->store->hints[q->leaf[c]]))
+			continue;
+		for (uint32 i = 0; i < pv->npart; i++)
+			n = Max(n, pv->part[i].dict[c]->n);
+		p->zmin[c] = 0;
+		p->zmax[c] = (int64) n - 1;
+		p->zrange[c] = n > 0;
+	}
+}
+
 SiftGpuPlan *
 sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 {
@@ -563,6 +662,7 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 	HeapVm		vm = {.vmbuf = InvalidBuffer};
 	bool		vet = false;
 	bool		seen[SIFT_VK_MAXCOLS] = {false};
+	KeyPrune	kp;
 
 	pv->plan_cx = sift_mem_allocset_create(mcxt, "sift gpu plan");
 	MemoryContextSwitchTo(pv->plan_cx);
@@ -605,17 +705,20 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 		}
 	}
 	build_arrays(p, q);
+	key_prune_init(&kp, q);
 	for (uint32 i = 0; i < pv->npart; i++)
 	{
 		PlanPart   *pp = &pv->part[i];
 
 		pv->gens[i] = pp->part_gen;
 		pp->g0 = p->ngran;
+		part_spans(q, &kp, pp);
 		for (uint32 g = 0; g < pp->ng; g++)
 			fill_granule(p, q, pp, g, seen);
 		pp->nsel = p->ngran - pp->g0;
 	}
 	qsort(pv->gens, pv->npart, sizeof(uint64), gen_cmp);
+	text_ranges(p, q);
 	fold_signature(pv, q->ncols);
 	pv->loaded_lo = p->ngran;
 	if (BufferIsValid(vm.vmbuf))
@@ -639,6 +742,21 @@ sift_gpu_f2_locate(const SiftGpuPlan *p, uint32 i, uint32 *part_id, uint64 *part
 	*part_id = pp->part_id;
 	*part_gen = pp->part_gen;
 	*granule = p->priv->local[i];
+}
+
+void
+sift_gpu_f2_part(const SiftGpuPlan *p, uint32 i, uint32 *g0, uint32 *g1)
+{
+	const PlanPart *pp = &p->priv->part[i];
+
+	*g0 = pp->g0;
+	*g1 = pp->g0 + pp->nsel;
+}
+
+const SiftPartDict *
+sift_gpu_f2_dict(const SiftGpuPlan *p, uint32 i, int slot)
+{
+	return p->priv->part[i].dict[slot];
 }
 
 bool

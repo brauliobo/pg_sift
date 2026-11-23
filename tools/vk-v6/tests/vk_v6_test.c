@@ -488,6 +488,54 @@ t11_tabs(const char *dev)
 	sift_vk_close(vk);
 }
 
+/* ---- T13: the cache gives way to the table of a job (agg/vk/cache.c fit_cache) ---- */
+
+/* the pairs of a hash job of est groups: its table takes 64 MiB at 1 << 20 */
+static void
+hash_job(Case *c, const TData *d, uint64_t est)
+{
+	case_init(c, d, SIFT_VK_HASH);
+	P_COL(&c->p, 0, C_V32, SIFT_VK_T_I64);
+	c->j.nkeys = 1;
+	c->j.key_reg[0] = 0;
+	c->j.est_groups = est;
+	c->j.finish = SIFT_VK_FIN_COUNT;
+	c->j.nops = c->p.n;
+	c->j.ops = c->p.w;
+}
+
+static void
+t13_envelope(const char *dev)
+{
+	char		err[256];
+	SiftVk	   *vk = sift_vk_open(dev, false, 64ull << 20, err, sizeof(err));
+	Rng			rng = {seed ^ 0x13E};
+	TData		d;
+	Case		c,
+				h;
+	SiftVkResult res;
+	uint64_t	distinct;
+
+	CHECK(vk != NULL, "T13 open: %s", err);
+	if (!vk)
+		return;
+	printf("T13 the cache gives way to the table of a job (a 64 MiB cache, an envelope that leaves it 36 MiB beside a 64 MiB table)\n");
+	build_base(&d, 6, &rng, 5001);
+	hash_job(&h, &d, 1 << 20);
+	CHECK(sift_vk_run(vk, &h.j, NULL, &res) == SIFT_VK_OK, "T13 the job with no envelope: %s", sift_vk_error(vk));
+	distinct = res.distinct;
+	tab_job(&c, &d, d.ngran, 0, 0, 0);
+	tab_run(vk, &d, &c, "ungrouped job: chunks resident", -1, 0);
+	sift_vk_set_envelope(vk, 120ull << 20, 16ull << 20);
+	CHECK(sift_vk_run(vk, &h.j, NULL, &res) == SIFT_VK_OK && res.distinct == distinct, "T13 the answer of a job whose table took room of the cache changed: %s", sift_vk_error(vk));
+	CHECK(res.chunks_uploaded > 0, "T13 the cache the table made room in kept its chunks");
+	CHECK(sift_vk_caps(vk)->cache_bytes == 64ull << 20, "T13 the ceiling of the cache changed: %llu MiB", (unsigned long long) (sift_vk_caps(vk)->cache_bytes >> 20));
+	tab_run(vk, &d, &c, "after the table: the cache is whole again, chunks sent", -1, 1);
+	tab_run(vk, &d, &c, "... and resident", -1, 0);
+	td_free(&d);
+	sift_vk_close(vk);
+}
+
 static int
 nodriver_main(void)
 {
@@ -548,6 +596,8 @@ main(int argc, char **argv)
 		t7_cache(dev_sel);
 	if (want("T11"))
 		t11_tabs(dev_sel);
+	if (want("T13"))
+		t13_envelope(dev_sel);
 	if (want("T8"))
 		t8_faults(dev_sel, argv[0]);
 	printf("%s: %d failures\n", failures ? "FAILED" : "PASSED", failures);

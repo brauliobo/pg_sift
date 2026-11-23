@@ -38,12 +38,19 @@ typedef struct SiftV6AccIn
 	int64		v1;				/* the high half of an integer sum */
 } SiftV6AccIn;
 
+/* The value of a text key of a group of the device: the bytes, which no int64 holds */
+typedef struct SiftV6StrIn
+{
+	const char *p;
+	uint32		len;
+} SiftV6StrIn;
+
 /*
  * Folds one group of the device into the set of all the keys of g (a plain GROUP BY): key holds the spec's nkeys values as int64 (the value of the key column, as the group holds it) and
- * bit i of key_nulls says that key i is NULL; acc has one state for each aggregate of the spec. With no key it is the one group of an ungrouped aggregate. Implemented in agg/v6/group.c, which
- * merges the states as it merges the groups of its spilled runs.
+ * bit i of key_nulls says that key i is NULL; str[i] is the value of key i when that is a text (p NULL for the others; str NULL when no key is); acc has one state for each aggregate of the spec. With no key it is the one
+ * group of an ungrouped aggregate. Implemented in agg/v6/group.c, which merges the states as it merges the groups of its spilled runs.
  */
-extern void sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const SiftV6AccIn *acc);
+extern void sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls, const SiftV6AccIn *acc);
 
 /* column [NOT] IN (set of integers without NULL) */
 typedef struct SiftGpuIn
@@ -91,7 +98,20 @@ typedef struct SiftGpuQuery
 	SiftVkTopk	topk;			/* the groups: the order of the node that keeps the K best of them (k 0: all groups are wanted) */
 	double		est_groups;		/* 0: not known */
 	int			parallel_workers;	/* the workers the CPU plan would run besides the leader */
+	const struct SiftGpuDictQual *dict;	/* the comparisons of a text column the scan makes: its programs hold a code for each (agg/gpu_dict_agg.h), NULL for none */
 } SiftGpuQuery;
+
+/* The slot of the column of attribute attno among those the device reads, -1 when it reads none of it */
+static inline int
+sift_gpu_query_slot(const SiftGpuQuery *q, int attno)
+{
+	const int	leaf = q->store->att_first[attno];
+
+	for (int c = 0; c < q->ncols; c++)
+		if (q->leaf[c] == leaf)
+			return c;
+	return -1;
+}
 
 /* ---- the parts on the device (agg/gpu_f2_plan.c) ---- */
 
@@ -132,6 +152,9 @@ extern SiftVkTabKey sift_gpu_f2_tab_key(const SiftGpuPlan *p, uint32 g0, uint32 
 extern bool sift_gpu_f2_load(SiftGpuPlan *p, uint32 g0, uint32 gmax, uint64 max_bytes, const uint8 *resident, uint32 *g1, const char **why);
 /* Gives back the bytes of the chunks loaded */
 extern void sift_gpu_f2_unload(SiftGpuPlan *p);
+/* The parts the device reads, in the order of their granules in the plan: the granules [*g0, *g1) of part i, and the dictionary of the codes of column slot `slot` in it (NULL for a column that is not a text) */
+extern void sift_gpu_f2_part(const SiftGpuPlan *p, uint32 i, uint32 *g0, uint32 *g1);
+extern const struct SiftPartDict *sift_gpu_f2_dict(const SiftGpuPlan *p, uint32 i, int slot);
 /* The part and the granule in it that granule i of the plan is */
 extern void sift_gpu_f2_locate(const SiftGpuPlan *p, uint32 i, uint32 *part_id, uint64 *part_gen, uint32 *granule);
 /* The part is one the device read: the CPU scan leaves it out */

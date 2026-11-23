@@ -27,8 +27,7 @@
 #define SIFT_GPU_STALE_US			(10 * USECS_PER_SEC)
 #define SIFT_GPU_NOT_THERE			UINT64_MAX
 
-/* A status of a job beyond those of the device: the chunks it left out were not on the device after all, the backend sends them */
-#define SIFT_GPU_NEED_BYTES			((SiftVkStatus) 100)
+#define SIFT_GPU_NEED_BYTES			SIFT_VK_NEED_BYTES
 
 typedef enum SiftGpuWorkerState
 {
@@ -94,6 +93,7 @@ typedef struct SiftGpuWireJob
 	int64		dense_kmin[2];
 	uint32		dense_span[2];
 	uint64		est_groups;
+	uint64		tables;
 	SiftVkFinish finish;
 	SiftVkTopk	topk;
 	uint32		topn_k;
@@ -120,6 +120,7 @@ typedef struct SiftGpuSlot
 	bool		software;		/* sift.gpu = on: a software device may serve the job */
 	char		device[64];
 	uint32		nkeys;			/* REQ_RESIDENT */
+	uint64		tables;			/* REQ_RESIDENT: SiftVkJob.tables */
 	SiftGpuWireJob job;
 	uint32		status;			/* SiftVkStatus or SIFT_GPU_NEED_BYTES */
 	SiftVkResult res;			/* its pointers mean nothing here: acc and cand are at the start of the staging area */
@@ -171,8 +172,8 @@ extern bool sift_gpu_conn_shared(const SiftGpuConn *c);
 /* The most bytes of chunks one job carries, and of result it can bring back (a job whose groups would not fit goes to the CPU) */
 extern uint64 sift_gpu_conn_batch_bytes(const SiftGpuConn *c);
 extern uint64 sift_gpu_conn_result_bytes(const SiftGpuConn *c);
-/* resident[i] = 1 when the chunk of keys[i] is on the device now */
-extern void sift_gpu_conn_resident(SiftGpuConn *c, const SiftVkKey *keys, uint32 n, uint8 *resident);
+/* resident[i] = 1 when the chunk of keys[i] is on the device now, once its cache is sized for jobs whose tables take `tables` bytes (SiftVkJob.tables) */
+extern void sift_gpu_conn_resident(SiftGpuConn *c, uint64 tables, const SiftVkKey *keys, uint32 n, uint8 *resident);
 /*
  * Runs the job: the status of sift_vk_run, SIFT_VK_LOST for a worker that is gone, SIFT_GPU_NEED_BYTES when a chunk the job left out (bytes NULL) is not on the device. The result is valid until
  * the next call.

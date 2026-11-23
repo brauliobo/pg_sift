@@ -29,6 +29,7 @@ typedef struct SiftGpuCostIn
 	int			nops;			/* the operations of the program, loads included */
 	int			nkeys;
 	int			naggs;
+	int			njobs;			/* the jobs the scan runs as, each with its own submission (the pieces the dictionaries of the parts cut it in); 0: one */
 	int			parallel_workers;	/* the planner's workers; the leader is one more */
 } SiftGpuCostIn;
 

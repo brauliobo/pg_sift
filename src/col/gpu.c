@@ -88,6 +88,11 @@ field_of(const SiftZone *z, SiftCellKind kind, bool all_null, SiftVkChunk *out)
 
 	if (all_null)
 		return true;
+	if (kind == SIFT_CELL_STR)
+	{
+		out->w = 4;
+		return true;
+	}
 	if (kind == SIFT_CELL_F8)
 	{
 		out->w = 8;
@@ -153,8 +158,10 @@ sift_gpu_chunk_fill(const SiftGranuleView *v, int phys, SiftCellKind kind, const
 		return refuse(why, "the column is not in the granule");
 	ref = &v->hdr->chunks[phys + 1];
 	enc = ref->enc & SIFT_ENC_MASK;
-	if ((ref->flags & (SIFT_CHUNK_HAS_KINDS | SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_ELEMS)) || (ref->enc & (SIFT_ENC_PART_DICT | SIFT_ENC_KEY_ANY)))
+	if ((ref->flags & (SIFT_CHUNK_HAS_KINDS | SIFT_CHUNK_HAS_OVERFLOW | SIFT_CHUNK_ELEMS)) || (ref->enc & SIFT_ENC_KEY_ANY) || (kind != SIFT_CELL_STR && (ref->enc & SIFT_ENC_PART_DICT)))
 		return refuse(why, "a chunk holds exceptions, elements or a dictionary of strings");
+	if (kind == SIFT_CELL_STR && (enc != SIFT_VK_ENC_DICT_CODE || !(ref->enc & SIFT_ENC_PART_DICT)))
+		return refuse(why, "a string chunk is not coded by the dictionary of its part");
 	if (!enc_ok(enc))
 		return refuse(why, "a chunk has an encoding the device does not decode");
 	flags = null_flags(ref);

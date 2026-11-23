@@ -768,6 +768,12 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		free(rc);
 		return SIFT_VK_FAIL;
 	}
+	if (!job_resident(vk, job))
+	{
+		plan_free(&rc->plan);
+		free(rc);
+		return SIFT_VK_NEED_BYTES;
+	}
 	if (job->mode == SIFT_VK_TOPN)
 		st = run_topn(rc, res);
 	else

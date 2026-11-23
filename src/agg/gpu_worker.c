@@ -68,7 +68,7 @@ sift_gpu_conn_result_bytes(const SiftGpuConn *c)
 }
 
 void
-sift_gpu_conn_resident(SiftGpuConn *c, const SiftVkKey *keys, uint32 n, uint8 *resident)
+sift_gpu_conn_resident(SiftGpuConn *c, uint64 tables, const SiftVkKey *keys, uint32 n, uint8 *resident)
 {
 	memset(resident, 0, n);
 }
@@ -118,31 +118,6 @@ static void
 interrupt_check(void)
 {
 	CHECK_FOR_INTERRUPTS();
-}
-
-/* A chunk the job left out must be on the device now: nothing else can evict it between this check and the run, which belong to one thread */
-static SiftVkStatus
-exec_job(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkResult *res)
-{
-	SiftVkKey  *keys = palloc(Max((Size) job->ngran * job->ncols, 1) * sizeof(SiftVkKey));
-	uint32		n = 0;
-
-	for (uint32 g = 0; g < job->ngran; g++)
-		for (uint32 c = 0; c < job->ncols; c++)
-		{
-			const SiftVkChunk *ch = job->gran[g].col[c];
-
-			if (ch != NULL && ch->bytes == NULL)
-				keys[n++] = ch->key;
-		}
-	if (n > 0 && sift_vk_resident_share(vk, keys, n) < 1.0)
-	{
-		pfree(keys);
-		memset(res, 0, sizeof(*res));
-		return SIFT_GPU_NEED_BYTES;
-	}
-	pfree(keys);
-	return sift_vk_run(vk, job, interrupt, res);
 }
 
 static void
@@ -238,6 +213,7 @@ wire_pack(char *stage, SiftGpuWireJob *wj, const SiftVkJob *job, const char **wh
 	memcpy(wj->dense_kmin, job->dense_kmin, sizeof(wj->dense_kmin));
 	memcpy(wj->dense_span, job->dense_span, sizeof(wj->dense_span));
 	wj->est_groups = job->est_groups;
+	wj->tables = job->tables;
 	wj->finish = job->finish;
 	wj->topk = job->topk;
 	wj->topn_k = job->topn_k;
@@ -259,7 +235,7 @@ wire_unpack(char *stage, const SiftGpuWireJob *wj)
 	SiftVkChunk *chunk = palloc(Max(wj->nchunks, 1) * sizeof(SiftVkChunk));
 	SiftVkGranule *gran = palloc0(Max(wj->ngran, 1) * sizeof(SiftVkGranule));
 	SiftVkJob	job = {.mode = wj->mode,.ncols = wj->ncols,.ngran = wj->ngran,.nops = wj->nops,.npool = wj->npool,.where_slot = wj->where_slot,
-	.nkeys = wj->nkeys,.naggs = wj->naggs,.est_groups = wj->est_groups,.finish = wj->finish,.topk = wj->topk,.topn_k = wj->topn_k,.topn_desc = wj->topn_desc,
+	.nkeys = wj->nkeys,.naggs = wj->naggs,.est_groups = wj->est_groups,.tables = wj->tables,.finish = wj->finish,.topk = wj->topk,.topn_k = wj->topn_k,.topn_desc = wj->topn_desc,
 	.topn_nulls = wj->topn_nulls,.sort_float = wj->sort_float,.sort_reg = wj->sort_reg,.max_cand = wj->max_cand,.tab = wj->tab};
 
 	for (uint32 k = 0; k < wj->nchunks; k++)
@@ -395,6 +371,7 @@ worker_open(WorkerState *w, const char *device, bool software, uint64 cache_byte
 	if (w->vk == NULL)
 		return false;
 	sift_vk_set_account(w->vk, account_to, &w->shm->host_bytes);
+	sift_vk_set_envelope(w->vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
 	strlcpy(w->device, device, sizeof(w->device));
 	w->software = software;
 	w->cache_bytes = cache_bytes;
@@ -426,8 +403,9 @@ serve_resident(WorkerState *w, SiftGpuSlot *s, char *stage)
 	const SiftVkKey *keys = (const SiftVkKey *) stage;
 	uint8	   *out = (uint8 *) stage + ALIGN8((Size) s->nkeys * sizeof(SiftVkKey));
 
-	sift_vk_resident_batch(w->vk, keys, s->nkeys, out);
-	s->status = SIFT_VK_OK;
+	s->status = sift_vk_fit_cache(w->vk, s->tables) ? SIFT_VK_OK : SIFT_VK_FAIL;
+	if (s->status == SIFT_VK_OK)
+		sift_vk_resident_batch(w->vk, keys, s->nkeys, out);
 }
 
 static void
@@ -435,7 +413,7 @@ serve_run(WorkerState *w, SiftGpuSlot *s, char *stage)
 {
 	SiftVkJob	job = wire_unpack(stage, &s->job);
 	SiftVkResult res;
-	SiftVkStatus st = exec_job(w->vk, &job, worker_interrupt, &res);
+	SiftVkStatus st = sift_vk_run(w->vk, &job, worker_interrupt, &res);
 	uint64		acc = (uint64) res.acc_words * 8,
 				cand = (uint64) res.ncand * 16;
 
@@ -917,12 +895,12 @@ sift_gpu_conn_run(SiftGpuConn *c, const SiftVkJob *job, SiftVkResult *res)
 {
 	if (c->shm != NULL)
 		return remote_run(c, job, res);
-	return exec_job(c->vk, job, interrupt_check, res);
+	return sift_vk_run(c->vk, job, interrupt_check, res);
 }
 
 /* Which of the m keys the worker holds, asked through a slot; none when no slot is free */
 static void
-resident_remote(SiftGpuConn *c, const SiftVkKey *keys, uint32 m, uint8 *out)
+resident_remote(SiftGpuConn *c, uint64 tables, const SiftVkKey *keys, uint32 m, uint8 *out)
 {
 	SiftGpuShm *shm = c->shm;
 	int			i = slot_claim(shm);
@@ -936,6 +914,7 @@ resident_remote(SiftGpuConn *c, const SiftVkKey *keys, uint32 m, uint8 *out)
 	stage = sift_gpu_stage(shm, i);
 	fill_request(s, SIFT_GPU_REQ_RESIDENT);
 	s->nkeys = m;
+	s->tables = tables;
 	memcpy(stage, keys, (Size) m * sizeof(SiftVkKey));
 	PG_TRY();
 	{
@@ -955,13 +934,15 @@ resident_remote(SiftGpuConn *c, const SiftVkKey *keys, uint32 m, uint8 *out)
 }
 
 void
-sift_gpu_conn_resident(SiftGpuConn *c, const SiftVkKey *keys, uint32 n, uint8 *resident)
+sift_gpu_conn_resident(SiftGpuConn *c, uint64 tables, const SiftVkKey *keys, uint32 n, uint8 *resident)
 {
 	uint32		per = (uint32) (SIFT_GPU_STAGE_BYTES / (sizeof(SiftVkKey) + 8));
 
+	if (c->shm == NULL && !sift_vk_fit_cache(c->vk, tables))
+		return;
 	for (uint32 from = 0; from < n; from += per)
 		if (c->shm != NULL)
-			resident_remote(c, keys + from, Min(per, n - from), resident + from);
+			resident_remote(c, tables, keys + from, Min(per, n - from), resident + from);
 		else
 			sift_vk_resident_batch(c->vk, keys + from, Min(per, n - from), resident + from);
 }
