@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run.py [--only GLOB] [--update] [--no-plans] [--keys N] [--out DIR]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
+"""run.py [--only GLOB] [--update] [--no-plans] [--plans FILE] [--keys N] [--out DIR]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
 
 Every statement of test/corpus/cases.sql runs in a NEW backend (psql \\connect) twice, with sift off (the native planner) and on, and the sorted rows must be equal. In the
 backend of the "on" run the plan is then explained: the Custom Scan (Sift...) nodes it holds and the verdict of sift.explain_why per arm (used, or the slug of the refusal). That
@@ -106,7 +106,7 @@ def main(a):
     [t.join() for t in th]
     pinned = {}
     major = int(subprocess.run(["psql", "-X", "-At", "-c", "show server_version_num"], capture_output=True, text=True).stdout) // 10000
-    pf = os.path.join(HERE, "plans.tsv")
+    pf = os.path.join(HERE, a[a.index("--plans") + 1] if "--plans" in a else "plans.tsv")
     if os.path.exists(pf):
         for l in open(pf).read().splitlines():
             if l and not l.startswith("#"):

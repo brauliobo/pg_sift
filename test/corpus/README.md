@@ -1,6 +1,6 @@
 # Corpus gate
 
-A standing differential and plan regression for the aggregate and column paths: `cases.sql` holds 393 statements (the shapes of the pushdown families, one `-- @case slug | family | note` marker each) that run on the lab of `lab.sql` (20000 events and the tables around them, deterministic: `setseed(0.42)`).
+A standing differential and plan regression for the aggregate and column paths: `cases.sql` holds the statements (the shapes of the pushdown families, one `-- @case slug | family | note` marker each) that run on the lab of `lab.sql` (20000 events and the tables around them, deterministic: `setseed(0.42)`).
 
 Every statement runs twice, each time in a **new backend** (`\connect`, so no cache, relcache entry or memory context of an earlier statement is warm):
 
@@ -10,10 +10,22 @@ Every statement runs twice, each time in a **new backend** (`\connect`, so no ca
 It fails when
 
 - the sorted rows differ (`extra_float_digits=-5`), or a statement errors;
-- the **plan slug** is not the pinned one in `plans.tsv`: the Custom Scan (Sift...) nodes of `explain (costs off)` and the verdict of `sift.explain_why` per arm (`t` used, `f:SLUG` refused). A statement that stops engaging, starts engaging, or is refused for another reason is a failure. Changing the set is allowed with `scripts/corpus.sh --update` **in the same commit**: read the diff of `plans.tsv`, a statement that left the engaged set is a regression unless the change says so.
+- the **plan slug** is not the pinned one in `plans.tsv` (`plans-f1.tsv` for `--format f1`): the Custom Scan (Sift...) nodes of `explain (costs off)` and the verdict of `sift.explain_why` per arm (`t` used, `f:SLUG` refused). A statement that stops engaging, starts engaging, or is refused for another reason is a failure. Changing the set is allowed with `scripts/corpus.sh --update` **in the same commit**: read the diff of `plans.tsv`, a statement that left the engaged set is a regression unless the change says so.
 
 A node `~` in `plans.tsv` leaves a statement whose engagement is a cost call that differs across majors unpinned (rows are still compared); `--update` keeps it.
 A row `slug@19` pins the plan of that statement on PostgreSQL 19 where the major's planner gives a label the others do not (the row without `@` is the pin of the other majors); `--update` keeps those rows as they are, and is run on PostgreSQL 18. The two rows there: PostgreSQL 19 turns the semi join of an `IN` over a UNION into an inner join, which the two level analysis then reads and refuses (`two_level:f:two_arms`), while the scope read of the statement is the same.
+
+## Formats and tables
+
+The corpus runs on the format of the library, with one set of statements:
+
+| command | library | indexes of the lab | plans pinned in |
+|---|---|---|---|
+| `scripts/corpus.sh` (`--format f2`) | testing | Format 2.0 | `plans.tsv` |
+| `scripts/corpus.sh --format release` | release (no test setting; refused on a testing library) | Format 2.0 | `plans.tsv` |
+| `scripts/corpus.sh --format f1` | testing | Format 1 | `plans-f1.tsv` |
+
+The plan slug names the `Custom Scan (Sift...)` nodes whole (`SiftAgg` of Format 1, `SiftAggV6`, `SiftAggV6Sip`, ... of Format 2.0): a statement that moves from one node to another of the family is a change of the plan and fails until the pins say so.
 
 ## Run
 
