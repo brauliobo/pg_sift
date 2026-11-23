@@ -237,6 +237,16 @@ class WarmBlocks(unittest.TestCase):
         self.assertEqual(events,['prepare','warm','EXPLAIN'])
 
 
+class CheckedInManifest(unittest.TestCase):
+    def test_the_seeded_manifest_covers_every_read_case_in_the_modes_it_runs(self):
+        path = Path(gate.__file__).resolve().parents[1]/'baselines/anchor-manifest.tsv'
+        manifest = gate.load_anchor_manifest(path)
+        expected = {(c.name.split('@')[0],c.mode) for c in gate.expand([c for c in gate.CASES if not c.nightly]) if c.lifecycle=='read'}
+        self.assertEqual(set(manifest.rows),expected)
+        self.assertTrue(all(row['instr_per_row'] and row['blocks'] for row in manifest.rows.values()))
+        self.assertEqual(manifest.meta['rows'],8192)
+
+
 class AnchorDrift(unittest.TestCase):
     def setUp(self):
         self.manifest = gate.parse_anchor_manifest(manifest_text())
