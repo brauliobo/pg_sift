@@ -9,12 +9,15 @@
 #include "postgres.h"
 
 #include "agg/v6/v6.h"
+#include "col/f2/f2_sink.h"
 
 
 /* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item */
 extern SiftV6Rows *sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec);
 /* the rows of bs, whose keys are keyvec and whose heap addresses are tid[row] */
 extern void sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyvec, const uint64 *tid);
+/* What a row must beat to stay, as the scan takes it (col/f2/f2_sink.h): kept up to date by sift_v6_rows_update; NULL when the first sort column is not an integer the zones of a granule bound */
+extern const SiftF2Bound *sift_v6_rows_bound(const SiftV6Rows *r);
 extern void sift_v6_rows_finish(SiftV6Rows *r);
 /* the heap address of the next best row; false after the last */
 extern bool sift_v6_rows_next(SiftV6Rows *r, uint64 *tid);

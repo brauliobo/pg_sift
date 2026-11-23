@@ -81,6 +81,12 @@ sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 	return r;
 }
 
+bool
+sift_v6_topk_run_worst(const SiftV6TopKRun *r, int item, Datum *value, bool *isnull)
+{
+	return sift_gtopk_worst(r->heap, item, value, isnull);
+}
+
 /* a candidate whose sort values are made on demand from a group's slot */
 typedef struct Cand
 {

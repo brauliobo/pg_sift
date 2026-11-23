@@ -26,6 +26,8 @@ extern void sift_v6_topk_run_stream(SiftV6TopKRun *r, bool (*next) (void *arg, D
 /* A row of a stream the caller builds (agg/v6/v6_rows_topn.h): offered by its sort values, then copied in when wants says so */
 extern bool sift_v6_topk_run_wants(SiftV6TopKRun *r, SiftTopKValue value, void *ctx);
 extern void sift_v6_topk_run_put(SiftV6TopKRun *r, const Datum *values, const bool *isnull);
+/* The value of sort column item in the worst row held, when the heap is full */
+extern bool sift_v6_topk_run_worst(const SiftV6TopKRun *r, int item, Datum *value, bool *isnull);
 extern void sift_v6_topk_run_finish(SiftV6TopKRun *r);
 /* The next best tuple; false after the last */
 extern bool sift_v6_topk_run_next(SiftV6TopKRun *r, Datum *values, bool *isnull);

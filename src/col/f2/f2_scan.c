@@ -134,6 +134,15 @@ pred_zones(Relation rel, const F2Scan *s, SiftF2PartPin *pin, uint32 g0)
 	return z;
 }
 
+/* Whether no row of a granule with this zone sorts strictly before the bound of the sink: a NULL cannot, unless NULLs sort first */
+static bool
+bound_excludes(const SiftF2Bound *b, const SiftZone *z)
+{
+	if (!b->active || (z->flags & SIFT_ZONE_NONE) || (b->nulls_first && z->nnull > 0))
+		return false;
+	return b->desc ? z->max <= b->value : z->min >= b->value;
+}
+
 /* The rows of n of the leaf of a key that have it, from the rows the granule keeps of it */
 static bool *
 decode_keyp(const SiftGranuleView *v, int c, int n)
@@ -402,6 +411,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 	const SiftVariantExcSummary *exc = pp->exc;
 	int			nexc = pp->nexc;
 	const SiftZone **zones = pred_zones(rel, s, pin, g0);
+	const SiftZone *bound_zones = s->bound != NULL ? sift_f2_pin_zones(rel, pin, s->sink_leaves[s->bound_sink_leaf]) : NULL;
 	MemoryContext gcx = sift_mem_allocset_create(s->cx, "sift f2 granule");
 	size_t		np = Max(s->npreds, 1);
 	GranuleWindow win = {.decided = palloc0((Size) SIFT_PF_WINDOW_GRANULES * np)};
@@ -434,7 +444,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 
 		if (wi == 0)
 			prune_window(rel, s, schema, part, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
-		if (win.skipped[wi])
+		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g])))
 			continue;
 		if (s->survey)
 		{
@@ -629,6 +639,15 @@ void
 sift_f2_scan_set_zone_sink(IndexScanDesc scan, SiftF2ZoneSink zone_sink)
 {
 	((F2Scan *) scan->opaque)->zone_sink = zone_sink;
+}
+
+void
+sift_f2_scan_set_bound(IndexScanDesc scan, int sink_leaf, const SiftF2Bound *bound)
+{
+	F2Scan	   *s = (F2Scan *) scan->opaque;
+
+	s->bound = bound;
+	s->bound_sink_leaf = sink_leaf;
 }
 
 /* Whether the zones of the sink leaves answer the part: no row of it is excluded or changed, and no granule of a leaf lacks a value */

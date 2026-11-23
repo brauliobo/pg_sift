@@ -6,6 +6,7 @@
 #include "access/tupdesc.h"
 #include "catalog/pg_type_d.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
 #include "agg/group/ht.h"
@@ -23,6 +24,8 @@ struct SiftV6Rows
 	Datum		values[SIFT_V6_MAX_KEYS + 1];
 	bool		isnull[SIFT_V6_MAX_KEYS + 1];
 	char		sbuf[SIFT_V6_MAX_KEYS][SHORT_TEXT_MAX + 1];
+	SiftF2Bound bound;
+	bool		bounded;		/* the first sort column is an integer: the heap's worst row bounds what a granule must hold */
 };
 
 typedef struct RowCand
@@ -93,6 +96,24 @@ cand_value(void *ctx, int item, bool *isnull)
 	return key_datum(&c->r->spec->key[pos], c->keyvec[pos], c->row, isnull, c->sbuf);
 }
 
+static bool
+bound_type(Oid typid)
+{
+	return typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID;
+}
+
+static int64
+bound_value(Oid typid, Datum d)
+{
+	return typid == INT2OID ? DatumGetInt16(d) : typid == INT4OID || typid == DATEOID ? DatumGetInt32(d) : DatumGetInt64(d);
+}
+
+const SiftF2Bound *
+sift_v6_rows_bound(const SiftV6Rows *r)
+{
+	return r->bounded ? &r->bound : NULL;
+}
+
 SiftV6Rows *
 sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 {
@@ -106,6 +127,16 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	sift_tupdesc_finalize(desc);
 	r->spec = spec;
 	r->run = sift_v6_topk_run_new(cx, spec, desc);
+	r->bounded = bound_type(spec->key[spec->topk_item[0].pos].typid);
+	if (r->bounded)
+	{
+		Oid			opfamily,
+					opcintype;
+		CompareType	cmptype;
+
+		get_ordering_op_properties(spec->topk_item[0].sortop, &opfamily, &opcintype, &cmptype);
+		r->bound = (SiftF2Bound) {.desc = cmptype == COMPARE_GT,.nulls_first = spec->topk_item[0].nulls_first};
+	}
 	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 rows");
 	MemoryContextSwitchTo(old);
 	return r;
@@ -132,6 +163,15 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 		}
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(r->tmp);
+	if (r->bounded)
+	{
+		Datum		worst;
+		bool		worst_null;
+
+		r->bound.active = sift_v6_topk_run_worst(r->run, 0, &worst, &worst_null) && !worst_null;
+		if (r->bound.active)
+			r->bound.value = bound_value(spec->key[spec->topk_item[0].pos].typid, worst);
+	}
 }
 
 void

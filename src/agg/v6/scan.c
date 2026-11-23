@@ -792,6 +792,19 @@ part_dict_offer(void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts)
 	return true;
 }
 
+/* The place among the scan's columns of the first sort column of a row Top-N */
+static int
+rows_bound_leaf(const V6Scan *s)
+{
+	const SiftVec *key = s->keyvec[s->spec->topk_item[0].pos];
+
+	for (int i = 0; i < s->ncols; i++)
+		if (&s->cols[i].vec == key)
+			return i;
+	SIFT_INVARIANT(false, "the sort column of a row Top-N is a column of the scan");
+	return 0;
+}
+
 /* One pass over the index (over the rows of the bridge, when it is one) */
 static void
 scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, const SiftTidBridge *bridge)
@@ -806,6 +819,8 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	sift_f2_scan_set_part_sink(scan, part_offer);
 	sift_f2_scan_set_part_dict_sink(scan, part_dict_offer);
 	sift_f2_scan_set_zone_sink(scan, zone_offer);
+	if (s->rows != NULL && sift_v6_rows_bound(s->rows) != NULL)
+		sift_f2_scan_set_bound(scan, rows_bound_leaf(s), sift_v6_rows_bound(s->rows));
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
 	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
 	index_endscan(scan);
