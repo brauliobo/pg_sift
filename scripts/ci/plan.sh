@@ -16,6 +16,14 @@ fault_smoke() {
 	job tap-shell-fault_matrix_standby-smoke tap-shell 0 env "SIFT_FAULT_ONLY=$FAULT_SMOKE_STANDBY" "$S/pgtest.sh" tap fault_matrix_standby
 }
 slope_shards() { local k; for (( k = 1; k <= SLOPE_SHARDS; k++ )); do job "tap-shell-mem_slope-$k" tap-shell 0 env "MEM_SLOPE_SHARD=$k/$SLOPE_SHARDS" "$S/pgtest.sh" tap mem_slope; done; }
+# the black-box canaries of scripts/perf/gate.py on the staged release library, a job for each area of scripts/areas.tsv (a change runs the jobs of the areas it is mapped to, the
+# core and the build run the smoke set). They need PostgreSQL 18 (extension_control_path) and the staged release library: a local run has none and queues none, `scripts/perf-select.py --run gate` runs them there
+perf_gate_jobs() {
+	local area
+	(( PG_MAJOR >= 18 )) && [[ -n ${SIFT_PREBUILT_RELEASE:-} ]] || return 0
+	for area in star clickbench coexist jsonb table bm25 gpu; do job perf-gate-$area perf-gate 0 python3 -I "$S/perf/gate.py" --area $area --root "$SIFT_PREBUILT_RELEASE"; done
+	job perf-gate-smoke perf-gate 0 python3 -I "$S/perf/gate.py" --smoke --root "$SIFT_PREBUILT_RELEASE"
+}
 # shellcheck disable=SC2046,SC2086  # the names are words
 if [[ $MODE == full ]]; then
 	# The full tier has two sizes. The lean one (every dispatch and the run that is the evidence of a release) fits a job in 45 minutes and the run in 75 on the hosted
@@ -67,23 +75,26 @@ if [[ $MODE == full ]]; then
 	done
 	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	once_on_18 && job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
-	# the plan the planner picks, the cost ratios and the results of 106 shapes at 30000 events, the size the bands of test/plan are recorded at (a run at 50000 puts 40 to 46 shapes of each of
+	# the plan the planner picks, the cost ratios and the results of 158 shapes at 30000 events, the size the bands of test/plan are recorded at (a run at 50000 puts 40 to 46 shapes of each of
 	# the four lanes under their bands: hosted and local, PostgreSQL 18, 2026-11-03); no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
 	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	job plan-gate-4t plan-gate-4t 1 "$S/plangate.sh" --lane stock-4t --runs 0
+	perf_gate_jobs
 	# the second pass of each lane at 250000 rows, the other size whose bands are recorded (half a minute each); the quick tier of the push runs the 30000 rows only
 	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
 		job plan-gate-250k plan-gate 1 "$S/plangate.sh" --runs 0 --rows 250000
 		job plan-gate-tuned-250k plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0 --rows 250000
 		job plan-gate-table-250k plan-gate-table 1 "$S/plangate.sh" --table --runs 0 --rows 250000
 		job plan-gate-table-tuned-250k plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0 --rows 250000
+		job plan-gate-4t-250k plan-gate-4t 1 "$S/plangate.sh" --lane stock-4t --runs 0 --rows 250000
 	fi
-	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 99 shapes at 30000 rows (docs/AGG.md); skipped without perf
+	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 149 shapes at 30000 rows (docs/AGG.md); skipped without perf
 	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
 	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
-	# the instructions to plan the 99 shapes (30000 events: planning does not depend on the rows) against their ceilings (test/plan/planning.tsv); skipped without perf
+	# the instructions to plan each shape (30000 events: planning does not depend on the rows) against their ceilings (test/plan/planning.tsv); skipped without perf
 	job plan-gate-planning plan-gate-planning 1 "$S/plangate.sh" --planning --rows 30000
 	# the instructions of 20 statement classes (the reads, the writes) at 300000 orders against their ceilings (test/plan/execution.tsv); skipped without perf
 	once_on_18 && job exec-budget exec-budget 1 "$S/exec-budget.sh"   # recorded on PostgreSQL 18: a count differs a little on another major
@@ -184,6 +195,8 @@ else
 	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
 	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
 	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
+	job plan-gate-4t plan-gate-4t 1 "$S/plangate.sh" --lane stock-4t --runs 0
+	perf_gate_jobs
 	# two seeds of each fuzzer (and the seeds of its fixed findings: 18 of txn_fuzz, 9, 10 and 34 of its shapes); the full tier runs the 12 to 400 seeds
 	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-2 --queries 100 --rows 3000 --leader-on
 	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-2 --queries 100 --rows 3000 --leader-on

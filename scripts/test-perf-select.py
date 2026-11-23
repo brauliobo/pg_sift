@@ -141,6 +141,14 @@ class SelectionTest(unittest.TestCase):
         picked = bash('-c', 're=$1; shift; for j in "$@"; do [[ $j =~ $re ]] && echo "$j"; done; :', 'x', regex, *jobs).split()
         self.assertEqual(picked, ['perf-gate-star', 'installcheck-agg_semi_lut', 'installcheck-col_search', 'installcheck-tbl_cap', 'difftest-col', 'isolation'])
 
+    def test_ci_runs_every_perf_job_for_the_gate_and_every_plan_lane_for_the_shapes(self):
+        def picked(path, *jobs):
+            regex = bash(ROOT / 'scripts/ci.sh', '--areas-regex', MAP, path).strip()
+            return bash('-c', 're=$1; shift; for j in "$@"; do [[ $j =~ $re ]] && echo "$j"; done; :', 'x', regex, *jobs).split()
+        self.assertEqual(picked('scripts/perf/gate.py', 'perf-gate-star', 'perf-gate-smoke', 'plan-gate'), ['perf-gate-star', 'perf-gate-smoke'])
+        lanes = ['plan-gate', 'plan-gate-4t', 'plan-gate-4t-250k', 'plan-gate-tuned', 'plan-gate-table-tuned-250k', 'plan-gate-calibrate']
+        self.assertEqual(picked('test/plan/shapes.sql', *lanes), lanes)
+
     def test_actual_ci_capture_expansion(self):
         for path, expected in {
             'test/sql/col_search.sql': '^$|^installcheck-col_search$|(^gh:ci$)',

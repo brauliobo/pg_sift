@@ -101,6 +101,8 @@ if [[ $MODE == affected ]]; then
 			FASTRE=$RE
 		fi
 	fi
+	# the canaries of an area (scripts/perf/gate.py) are a few seconds each: a pull request runs the ones its files are mapped to
+	[[ $FASTRE == . ]] || FASTRE+='|^perf-gate-'
 	mapfile -t JOBS_ALL < <(env -u SIFT_CI_JOBS -u SIFT_CI_AFFECTED -u SIFT_CI_SHARD SIFT_CI_AFFECTED="$RE" SIFT_CI_PG_MAJOR=18 "$0" --plan quick | cut -d' ' -f1)
 	PICK=()
 	for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $RE ]] && BATCHES=1; done
@@ -109,17 +111,17 @@ if [[ $MODE == affected ]]; then
 	cassert=false
 	for f in ${FILES[@]+"${FILES[@]}"}; do [[ $f == src/*.c && -f $REPO/$f ]] && grep -qE "$ASSERT_MARK" "$REPO/$f" && cassert=true; done
 	# the fast tier of a pull request (SIFT_CI_JOBS): the regression tests, the cheap checks, and the tests the diff itself touches; the rest runs on main
-	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$)'
+	FAST='^(installcheck-|isolation-emulated$|coverage$|tools-build$|format-isolation$|perf-gate-)'
 	for f in ${FILES[@]+"${FILES[@]}"}; do
 		if [[ $f =~ ^test/t/(.+)\.(pl|sh)$ ]]; then FAST+="|^tap(-shell)?-${BASH_REMATCH[1]}\$"
 		elif [[ $f == test/isolation/* ]]; then FAST+='|^isolation-[0-9]+$'
 		elif [[ $f == bench/scaling/* || $f == scripts/scaling-gate.sh ]]; then FAST+='|^tap-shell-scaling_slope$'
-		elif [[ $f == test/col/* ]]; then FAST+='|^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$'
+		elif [[ $f == test/col/* ]]; then FAST+="|^difftest-col|${GROUP[plan_gate]}"
 		elif [[ $f == test/fuzz/diff_fuzz* ]]; then FAST+='|^difftest-fuzz(-tbl|-vstore)?(-[12])?$'
 		elif [[ $f == test/fuzz/txn_fuzz* ]]; then FAST+='|^difftest-txn(-shapes|-vstore)?$'
 		elif [[ $f == test/fuzz/bm25_fuzz* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/fuzz/shapes_matrix* || $f == test/fuzz/surface_sweep* ]]; then FAST+='|^shapes-(matrix|surface)$'
-		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+='|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$'; fi
+		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+="|${GROUP[plan_gate]}"; fi
 	done
 	# a pull request builds its fast tier only when a job it can run is picked: scripts/areas.tsv may pick one of the rest, and no job selected is an error of the run
 	fastpg=false

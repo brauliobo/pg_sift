@@ -21,6 +21,8 @@
 =compat	^(installcheck-(compat_v1_|upgrade_path|col_removed_options|format_v1_v2_compat|format2_index_format_compat)|tap-(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)|tap-031_v51_full_compat|tap-shell-(pg_upgrade(_3[123])?|upgrade_compat(_standby)?|upgrade_path|upgrade_check|col_(dv|track_drop|removed_options|partition_adopt)_upgrade)|format-isolation)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
+# the lanes of scripts/plangate.sh, each at 30000 and 250000 rows
+=plan_gate	^plan-gate(-4t|-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
 =cheap	^(coverage|isolation-emulated|tools-build|format-isolation)$
 
@@ -40,9 +42,9 @@
 ^test/t/(.+)\.(pl|sh)$	^tap(-shell)?-\1$|{ci}
 ^test/t/tbl_vm_iso/	^tap-shell-tbl_vm$|{ci}
 ^(scripts/(mem-slope(-legacy)?\.py|mem-growth\.allow|memory-static\.allow)|test/mem-slope(-legacy)?\.tsv)$	^tap-shell-mem_slope(-[0-9]+|_order|_exact|_legacy)?$|{ci}
-^test/col/	^difftest-col|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$|^coverage$|{ci}
+^test/col/	^difftest-col|{plan_gate}|^coverage$|{ci}
 ^test/matrix/	^coverage-pct$|{ci}
-^test/plan/	^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$|{ci}
+^test/plan/	{plan_gate}|{ci}
 ^test/diff/	^difftest|{ci}
 ^test/fuzz/[^dtbcs]	^(fuzz|hardened|tools-build)$|{ci}
 ^test/fuzz/diff_fuzz	^difftest-fuzz(-tbl|-having)?(-[12])?$|{ci}
@@ -63,8 +65,8 @@
 ^src/agg/	fast:{agg}|{cheap}
 ^src/table/	fast:{tbl}|{cheap}
 # the cost model: a constant or a scale of the planner's prices moves plans of every area (the unit scale of the scan turned agg_topn_plan_keys red), so a change of these files runs every regression test and the plan gates, in the fast tier too
-^src/(col/v1/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	fast:^installcheck|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$
-^src/(col/v1/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	^installcheck|^plan-gate(-tuned|-calibrate(-tuned)?|-table(-tuned)?)?(-250k)?$
+^src/(col/v1/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	fast:^installcheck|{plan_gate}
+^src/(col/v1/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	^installcheck|{plan_gate}
 # the source areas
 ^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
 ^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication
@@ -129,7 +131,8 @@
 =perf	^gh:perf$
 =ci	^gh:ci$
 ^sql/.*\.sql$	.
-^scripts/(perf-select\.py|test-perf-select\.py|perf/.*|dry-perf-gate(\.sh|\.py|/.*))$	{perf}
+^scripts/(perf-select\.py|test-perf-select\.py|dry-perf-gate(\.sh|\.py|/.*))$	{perf}
+^scripts/perf/	^perf-gate-|{perf}
 ^(bench/steps/perf_gate(\.py|/.*)|bench/perf/.*|\.github/workflows/performance\.yml)$	{perf}
 # The areas of scripts/perf/gate.py: `scripts/perf-select.py` reads this map as `ci.sh affected` does and gives each changed path the canaries and the slice of scripts/plangate.sh of the area it can move.
 # An area is a `{perf_AREA}` row; a path that names none (a core file, a path no row maps) runs the smoke canaries, and a row names the group that can change it only: a path that serves two areas names both.
