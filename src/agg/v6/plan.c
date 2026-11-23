@@ -784,7 +784,7 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 
 		if (!sift_v6_index_owned(ix))
 			continue;
-		irel = index_open(ix->indexoid, NoLock);
+		irel = index_open(ix->indexoid, AccessShareLock);
 		p.colrel = sift_col_rel(irel);
 		p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
 		p.spec = (SiftV6Spec) {.relid = ix->indexoid,.rows = true,.topk = k};

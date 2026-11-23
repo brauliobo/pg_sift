@@ -441,7 +441,7 @@ topn_device(TopNState *st, EState *estate, Relation index, SiftV6Input *in)
 
 	if (st->src.device == NULL || st->spec->nkeys != 1)
 		return;
-	heap = table_open(index->rd_index->indrelid, NoLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	taken = sift_v6_gpu_topn(st->spec, in, st->quals, heap, index, estate->es_snapshot, leading_key_ordered(st->spec), st->cx, &st->gpu, &dev);
 	table_close(heap, NoLock);
 	if (taken)

@@ -192,7 +192,7 @@ index_pos(const IndexOptInfo *ix, AttrNumber attno)
 static bool
 table_holds_join_column(PlannerInfo *root, const PushJoin *j)
 {
-	Relation	heap = table_open(planner_rt_fetch(j->fact->relid, root)->relid, NoLock);
+	Relation	heap = table_open(planner_rt_fetch(j->fact->relid, root)->relid, AccessShareLock);
 	const bool	ok = sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops && sift_v6_table_leaf_holds(sift_f2_store_open(heap), j->fact_attno, SV6C_I64);
 
 	table_close(heap, NoLock);
@@ -214,7 +214,7 @@ compile_fact(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra,
 	if (!sift_v6_index_owned(ix))
 		return false;
 	*int_col = index_pos(ix, j->fact_attno);
-	irel = index_open(ix->indexoid, NoLock);
+	irel = index_open(ix->indexoid, AccessShareLock);
 	ok = *int_col >= 0 && !sift_col_rel(irel)->stale && sift_v6_leaf_holds(sift_col_rel(irel), *int_col + 1, SV6C_I64);
 	index_close(irel, NoLock);
 	return ok && sift_v6_compile_fact(root, j->fact, out, ix, extra, spec, scan_tlist);

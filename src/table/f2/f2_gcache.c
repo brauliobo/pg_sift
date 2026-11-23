@@ -143,7 +143,7 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 	gb = sift_f2_gbuf_load_lazy(rel, store, pin, g, CurrentMemoryContext);
 	while (sift_backend_cache_kb != 0 && hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES && gcache_evict_one())
 		;
-	if (pin->uncached || sift_backend_cache_kb == 0 || hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES)
+	if (sift_backend_cache_kb == 0 || pin->uncached || hash_get_num_entries(gcache) >= SIFT_F2_GCACHE_MAX_GRANULES)
 	{
 		MemoryContextSetParent(gb->cx, TopTransactionContext);
 		return gb;
@@ -162,18 +162,17 @@ sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 
 void
 sift_f2_gcache_forget(const RelFileLocator *locator)
 {
-	HASH_SEQ_STATUS seq;
-	GEntry	   *e;
+	dlist_mutable_iter it;
 
 	if (gcache == NULL)
 		return;
-	hash_seq_init(&seq, gcache);
-	while ((e = hash_seq_search(&seq)) != NULL)
+	dlist_foreach_modify(it, &gcache_lru)
+	{
+		GEntry	   *e = dlist_container(GEntry, lru, it.cur);
+
 		if (RelFileLocatorEquals(e->key.locator, *locator))
-		{
-			sift_f2_gbuf_unref(e->gb);
-			hash_search(gcache, &e->key, HASH_REMOVE, NULL);
-		}
+			drop_entry(e);
+	}
 }
 
 void

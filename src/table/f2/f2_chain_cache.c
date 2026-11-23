@@ -55,6 +55,7 @@ typedef struct Slot
 	bool		pending;		/* else the column delta chain */
 	RelFileLocator loc;
 	Oid			relid;
+	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when the slot is made */
 	uint64		part_id;
 	BlockNumber head_blk;
 	uint64		manifest_gen;
@@ -153,7 +154,7 @@ static void
 chain_invalidate(uint32 hashvalue)
 {
 	for (int i = 0; i < CHAIN_SLOTS; i++)
-		if (slots[i].cx != NULL && sift_f2_inval_hits(slots[i].relid, hashvalue))
+		if (slots[i].cx != NULL && sift_f2_inval_hits(slots[i].relhash, hashvalue))
 			slot_drop(&slots[i]);
 }
 
@@ -208,6 +209,7 @@ slot_open(Relation rel, bool pending, uint64 part_id)
 	s->pending = pending;
 	s->loc = rel->rd_locator;
 	s->relid = RelationGetRelid(rel);
+	s->relhash = sift_f2_rel_hash(rel);
 	s->part_id = part_id;
 	return s;
 }

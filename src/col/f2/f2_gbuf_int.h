@@ -20,12 +20,14 @@ extern void f2_gbuf_register_invalidation(void);
 /* Drops the pins of the relation that nobody holds and marks the others stale; the address indexes of the relation, unless a visit reads one */
 extern void f2_gbuf_invalidate_pins(Oid relid);
 extern void f2_locate_invalidate(Oid relid);
+extern void f2_locate_forget(const RelFileLocator *locator);
 extern void f2_locate_invalidate_hits(uint32 hashvalue);
 
 /* The entries of a cache that belong to one relation, found without a walk of the cache: a list of the nodes of the entries for each relation */
 typedef struct RelList
 {
 	Oid			relid;
+	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when its first entry is made: a callback runs outside a transaction and looks nothing up */
 	dlist_head	head;
 } RelList;
 
@@ -38,13 +40,16 @@ rel_lists_create(const char *name, MemoryContext cx)
 }
 
 static inline void
-rel_list_link(HTAB *lists, Oid relid, dlist_node *node)
+rel_list_link(HTAB *lists, Oid relid, uint32 relhash, dlist_node *node)
 {
 	bool		found;
 	RelList    *l = hash_search(lists, &relid, HASH_ENTER, &found);
 
 	if (!found)
+	{
+		l->relhash = relhash;
 		dlist_init(&l->head);
+	}
 	dlist_push_tail(&l->head, node);
 }
 
@@ -82,7 +87,7 @@ rel_lists_hits(HTAB *lists, uint32 hashvalue)
 
 	hash_seq_init(&seq, lists);
 	while ((l = hash_seq_search(&seq)) != NULL)
-		if (sift_f2_inval_hits(l->relid, hashvalue))
+		if (sift_f2_inval_hits(l->relhash, hashvalue))
 			hits = lappend_oid(hits, l->relid);
 	return hits;
 }

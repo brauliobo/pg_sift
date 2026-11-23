@@ -267,7 +267,6 @@ log_ent(Relation index)
 	}
 	log_pin(e);
 	e->tick = sift_cache_tick();
-	dlist_move_tail(&log_lru, &e->lru);
 	if (e->dir && e->dir->version == sift_dir_version(index))
 		return e;
 	if (e->dir)
@@ -312,6 +311,7 @@ log_synced(Relation index, bool entries)
 	/* the tombstones this backend holds back reach the log before it is read (supersede.c) */
 	sift_col_tombs_flush();
 	e = log_ent(index);
+	dlist_move_tail(&log_lru, &e->lru);
 	SiftMemTracker mt_col_tomb_log;
 
 	sift_mem_init_sub(&mt_col_tomb_log, "col_tomb_log", e->cxt, false, (Size) sift_backend_cache_kb * 1024 + SIFT_MEM_MIN_QUERY_BYTES);

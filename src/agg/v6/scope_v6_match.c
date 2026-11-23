@@ -266,7 +266,7 @@ match_union(const Query *q, const SiftScopeLeg legs[2])
 static bool
 paths_exclusive(const SiftScopeLeg legs[2])
 {
-	Relation	rel = table_open(legs[0].rel, NoLock);
+	Relation	rel = table_open(legs[0].rel, AccessShareLock);
 	const TupleConstr *constr = rel->rd_att->constr;
 	List	   *both = NIL,
 			   *checks = NIL;

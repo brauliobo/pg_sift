@@ -29,11 +29,14 @@ typedef struct StoreEntry
 	SiftF2Store *store;
 	uint64		tick;
 	dlist_node	lru_node;		/* in store_lru, the entry used longest ago first: the ticks of the list ascend */
+	uint32		relhash;		/* RELOID hash value of the relation and ATTNUM hash value of each attribute (atthash[a - 1]), taken with the store: a callback runs outside a transaction */
+	uint32	   *atthash;
 } StoreEntry;
 
 static HTAB *store_cache = NULL;
 static dlist_head store_lru = DLIST_STATIC_INIT(store_lru);
 static bool store_cache_registered = false;
+static uint64 store_invalidations = 0;	/* what a build that reads the catalogs finds out has changed under it */
 
 #define MAX_INVALIDATORS	4
 
@@ -59,17 +62,27 @@ sift_f2_invalidator_register(SiftF2Invalidator fn)
 	invalidators[ninvalidators++] = fn;
 }
 
-bool
-sift_f2_inval_hits(Oid relid, uint32 hashvalue)
+uint32
+sift_f2_rel_hash(Relation rel)
 {
-	return hashvalue == 0 || GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(relid)) == hashvalue;
+	return GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(RelationGetRelid(rel)));
 }
 
+bool
+sift_f2_inval_hits(uint32 relhash, uint32 hashvalue)
+{
+	return hashvalue == 0 || relhash == hashvalue;
+}
+
+/* A store a statement of the transaction may hold leaves the cache and lives to the end of the transaction; any other is deleted */
 static void
 drop_entry(StoreEntry *e)
 {
 	dlist_delete(&e->lru_node);
-	MemoryContextDelete(e->store->cx);
+	if (sift_cache_used_in_xact(e->tick))
+		MemoryContextSetParent(e->store->cx, TopTransactionContext);
+	else
+		MemoryContextDelete(e->store->cx);
 	hash_search(store_cache, &e->relid, HASH_REMOVE, NULL);
 }
 
@@ -79,12 +92,50 @@ store_invalidate(uint32 hashvalue)
 	HASH_SEQ_STATUS seq;
 	StoreEntry *e;
 
+	store_invalidations++;
 	if (store_cache == NULL)
 		return;
 	hash_seq_init(&seq, store_cache);
 	while ((e = hash_seq_search(&seq)) != NULL)
-		if (sift_f2_inval_hits(e->relid, hashvalue))
+		if (sift_f2_inval_hits(e->relhash, hashvalue))
 			drop_entry(e);
+}
+
+/* DROP COLUMN and ALTER COLUMN TYPE change pg_attribute rows and leave the pg_class row alone: the store follows the descriptor, so any attribute row of its relation drops it */
+static void
+store_attr_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue)
+{
+	HASH_SEQ_STATUS seq;
+	StoreEntry *e;
+
+	store_invalidations++;
+	if (store_cache == NULL)
+		return;
+	hash_seq_init(&seq, store_cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+	{
+		bool		hit = hashvalue == 0;
+
+		for (int a = 0; !hit && a < e->store->natts; a++)
+			hit = e->atthash[a] == hashvalue;
+		if (hit)
+			drop_entry(e);
+	}
+}
+
+/* CREATE INDEX and DROP INDEX on a table that has indexes already change no pg_class row and no pg_attribute row of it, but the indexes that block a column-delta update are part of the store */
+static void
+store_index_invalidate(Datum arg pg_attribute_unused(), int cacheid pg_attribute_unused(), uint32 hashvalue pg_attribute_unused())
+{
+	HASH_SEQ_STATUS seq;
+	StoreEntry *e;
+
+	store_invalidations++;
+	if (store_cache == NULL)
+		return;
+	hash_seq_init(&seq, store_cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		drop_entry(e);
 }
 
 /* the entry used longest ago, when no statement of the transaction may hold it: the ticks of the list ascend, so that is the first of it or none */
@@ -142,6 +193,8 @@ store_cache_init(void)
 	if (!store_cache_registered)
 	{
 		sift_f2_invalidator_register(store_invalidate);
+		CacheRegisterSyscacheCallback(ATTNUM, store_attr_invalidate, (Datum) 0);
+		CacheRegisterSyscacheCallback(INDEXRELID, store_index_invalidate, (Datum) 0);
 		sift_cache_register(&store_cache_kind);
 		store_cache_registered = true;
 	}
@@ -153,11 +206,12 @@ host_of(Relation rel)
 	return rel->rd_rel->relkind == RELKIND_INDEX ? &sift_col_host_ops : &sift_tbl_host_ops;
 }
 
+/* In the context of the caller until the store is whole and adopted: a build that fails leaves nothing in the cache budget */
 static SiftF2Store *
 store_build(Relation rel)
 {
 	/* MEM[MEM-IDLE-03]: cachebudget f2 store per-rel ctx (struct + shared-nothing option copies; evictable LRU; committed by sift_f2_store_open callers) */
-	MemoryContext cx = sift_cache_create_context("sift cache f2 store");
+	MemoryContext cx = sift_cache_create_context_in(CurrentMemoryContext, "sift cache f2 store");
 	SiftF2Store *s = MemoryContextAllocZero(cx, sizeof(SiftF2Store));
 
 	s->relid = RelationGetRelid(rel);
@@ -172,29 +226,49 @@ store_build(Relation rel)
 	return s;
 }
 
+/* The catalogs the build reads may change under it: a store made across an invalidation is made again */
+static SiftF2Store *
+store_build_current(Relation rel)
+{
+	for (;;)
+	{
+		uint64		seen = store_invalidations;
+		SiftF2Store *s = store_build(rel);
+
+		if (seen == store_invalidations)
+			return s;
+		MemoryContextDelete(s->cx);
+	}
+}
+
+static uint32 *
+store_att_hashes(const SiftF2Store *s)
+{
+	uint32	   *h = MemoryContextAlloc(s->cx, sizeof(uint32) * Max(s->natts, 1));
+
+	for (int a = 0; a < s->natts; a++)
+		h[a] = GetSysCacheHashValue2(ATTNUM, ObjectIdGetDatum(s->relid), Int16GetDatum(a + 1));
+	return h;
+}
+
 SiftF2Store *
 sift_f2_store_open(Relation rel)
 {
 	StoreEntry *e;
-	bool		found;
 	Oid			relid = RelationGetRelid(rel);
 
 	if (store_cache == NULL)
 		store_cache_init();
-	e = hash_search(store_cache, &relid, HASH_ENTER, &found);
-	if (!found)
+	e = hash_search(store_cache, &relid, HASH_FIND, NULL);
+	if (e == NULL)
 	{
-		e->store = NULL;
-		PG_TRY();
-		{
-			e->store = store_build(rel);
-		}
-		PG_CATCH();
-		{
-			hash_search(store_cache, &relid, HASH_REMOVE, NULL);
-			PG_RE_THROW();
-		}
-		PG_END_TRY();
+		SiftF2Store *s = store_build_current(rel);
+
+		e = hash_search(store_cache, &relid, HASH_ENTER, NULL);
+		e->store = s;
+		e->relhash = sift_f2_rel_hash(rel);
+		e->atthash = store_att_hashes(s);
+		sift_cache_adopt(s->cx);
 		dlist_push_tail(&store_lru, &e->lru_node);
 	}
 	else
