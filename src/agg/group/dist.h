@@ -21,6 +21,7 @@ typedef struct SiftDistSet
 	bool		wide;			/* the values are bytes */
 	uint8	  **chunk;			/* wide: the arena, in chunks of at most SIFT_DIST_CHUNK_MAX bytes: entries of {hash, length, bytes}, each at an 8 byte boundary; the last chunk is the one that grows */
 	uint32		nchunk;
+	uint32		chunk_cap;		/* the pointers chunk has room for */
 	uint64		arena_used;		/* in the last chunk */
 	uint64		arena_cap;		/* ... its size */
 	uint64		arena_bytes;	/* the size of every chunk */

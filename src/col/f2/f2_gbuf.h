@@ -93,7 +93,7 @@ typedef struct SiftF2GranuleBuf
 } SiftF2GranuleBuf;
 
 /* What a TRUNCATE of a table made in the transaction leaves: the file stays and its generations start again. The pins and the address index of the file are dropped (the ones a lookup or a granule holds go when it is done) */
-extern void sift_f2_gbuf_forget(const RelFileLocator *locator);
+extern void sift_f2_gbuf_forget(Relation rel);
 
 /* The part of the descriptor opened once (cached under sift.backend_cache_kb) and given back; the pin of a granule is held until it is released */
 extern SiftF2PartPin *sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);

@@ -312,6 +312,7 @@ col/f2/l0_stage_flush.c
 col/f2/l0_stage_int.h
 col/f2/part_format.c
 col/f2/part_format.h
+col/f2/part_read.c
 col/f2/part_vis.c
 col/f2/part_vis.h
 col/f2/pend_del.c

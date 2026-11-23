@@ -91,7 +91,7 @@ static void
 forget_caches(Relation rel)
 {
 	sift_plan_cache_forget(&rel->rd_locator);
-	sift_f2_gbuf_forget(&rel->rd_locator);
+	sift_f2_gbuf_forget(rel);
 	sift_f2_gcache_forget(&rel->rd_locator);
 }
 

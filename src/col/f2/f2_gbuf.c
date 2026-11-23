@@ -14,6 +14,7 @@
 #include "col/f2/delvec_delta.h"
 #include "col/f2/f2_cache.h"
 #include "col/f2/f2_gbuf_int.h"
+#include "col/f2/f2_slab_view.h"
 #include "core/cachebudget.h"
 #include "core/hash.h"
 #include "core/memtrack.h"
@@ -33,6 +34,7 @@ typedef struct PinEntry
 {
 	PinKey		key;
 	Oid			relid;
+	uint32		relhash;		/* sift_f2_rel_hash of the relation, taken when the pin is made */
 	SiftF2PartPin *pin;
 	dlist_node	lru_node;
 	bool		in_free_lru;
@@ -134,7 +136,7 @@ f2_gbuf_invalidate_pins(Oid relid)
 			else
 			{
 				dlist_delete(&e->rel_node);
-				rel_list_link(pins.by_rel, relid, &e->rel_node);
+				rel_list_link(pins.by_rel, relid, e->relhash, &e->rel_node);
 				e->pin->stale = true;
 			}
 		}
@@ -154,6 +156,36 @@ static void
 pin_evict_all(void)
 {
 	f2_gbuf_invalidate_pins(InvalidOid);
+}
+
+/* A pin a granule still holds is deleted by its last release: it is not in the cache any more, so no lookup finds it */
+static void
+pin_forget(PinEntry *e)
+{
+	SiftF2PartPin *pin = e->pin;
+
+	if (pin->refcnt == 0)
+		pin_free(e);
+	else
+	{
+		hash_search(pins.by_key, &e->key, HASH_REMOVE, NULL);
+		pin->uncached = true;
+	}
+}
+
+void
+sift_f2_gbuf_forget(Relation rel)
+{
+	if (pins.by_key != NULL)
+	{
+		dlist_head	mine;
+		dlist_mutable_iter it;
+
+		rel_list_detach(pins.by_rel, RelationGetRelid(rel), &mine);
+		dlist_foreach_modify(it, &mine)
+			pin_forget(dlist_container(PinEntry, rel_node, it.cur));
+	}
+	f2_locate_forget(&rel->rd_locator);
 }
 
 static const SiftCacheKind pin_kind = {"f2_part_pins", pin_oldest, pin_evict_one, pin_evict_all};
@@ -222,7 +254,7 @@ static SiftF2PartPin *
 pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
 	/* MEM[MEM-IDLE-05]: cachebudget f2 part pin ctx (1 KB init / 16 KB max block so the header image and section arrays are exact-fit chunks; evictable LRU) */
-	MemoryContext cx = AllocSetContextCreateInternal(pins.cx, "sift cache f2 part pin", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, PIN_CX_MAX_BLOCK);
+	MemoryContext cx = AllocSetContextCreateInternal(CurrentMemoryContext, "sift cache f2 part pin", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, PIN_CX_MAX_BLOCK);
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftF2PartPin *pin = palloc0(sizeof(SiftF2PartPin));
 	uint64		len;
@@ -232,7 +264,7 @@ pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_i
 	pin->part_gen = d->part_gen;
 	pin->part_id = part_id;
 	pin->cx = cx;
-	pin->part = sift_part_open_desc(rel, d, part_id);
+	pin->part = sift_f2_slab_desc(d) ? sift_f2_slab_part(rel, store, d, part_id) : sift_part_open_desc(rel, d, part_id);
 	pin->gdir = sift_part_granule_dir(rel, pin->part);
 	pin->tidx = sift_part_read_section(rel, pin->part, SEC_TID_INDEX, &len);
 	pin->dicts = sift_part_dicts(rel, pin->part);
@@ -250,16 +282,32 @@ pin_build(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_i
 	return pin;
 }
 
+/* The part of a micro-slab is made for the statement from the rows the slab holds now, so no other statement may find it: it lives until it is released, out of the cache */
+static SiftF2PartPin *
+slab_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
+{
+	SiftF2PartPin *pin = pin_build(rel, store, d, part_id);
+
+	MemoryContextSetParent(pin->cx, TopTransactionContext);
+	pin->uncached = true;
+	pin->refcnt = 1;
+	pin->lru_tick = sift_cache_tick();
+	return pin;
+}
+
+/* In the context of the caller until the pin is whole: a build that fails leaves nothing in the cache budget */
 SiftF2PartPin *
 sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
-	PinKey		key = {0};
+	PinKey		key;
 	PinEntry   *e;
-	bool		found;
 	bool		built = false;
 
 	if (pins.by_key == NULL)
 		pin_cache_init();
+	if (sift_f2_slab_desc(d))
+		return slab_pin_open(rel, store, d, part_id);
+	memset(&key, 0, sizeof(key));
 	key.locator = rel->rd_locator;
 	key.part_gen = d->part_gen;
 	key.header_blk = d->header_blk;
@@ -272,12 +320,14 @@ sift_f2_pin_open(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32
 		if (hash_get_num_entries(pins.by_key) >= PIN_CACHE_MAX)
 			pin_evict_one();
 		pin = pin_build(rel, store, d, part_id);
-		e = hash_search(pins.by_key, &key, HASH_ENTER, &found);
+		e = hash_search(pins.by_key, &key, HASH_ENTER, NULL);
 		e->pin = pin;
 		e->relid = RelationGetRelid(rel);
+		e->relhash = sift_f2_rel_hash(rel);
 		e->in_free_lru = false;
 		pin->entry = e;
-		rel_list_link(pins.by_rel, e->relid, &e->rel_node);
+		MemoryContextSetParent(pin->cx, pins.cx);
+		rel_list_link(pins.by_rel, e->relid, e->relhash, &e->rel_node);
 		built = true;
 	}
 	else if (e->in_free_lru)
@@ -306,6 +356,11 @@ sift_f2_pin_release(SiftF2PartPin *pin)
 	Assert(pin->refcnt > 0);
 	if (--pin->refcnt > 0)
 		return;
+	if (pin->uncached)
+	{
+		MemoryContextDelete(pin->cx);
+		return;
+	}
 	if (pin->stale || sift_backend_cache_kb == 0)
 		pin_drop(e);
 	else

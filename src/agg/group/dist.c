@@ -141,7 +141,11 @@ arena_room(SiftDistSet *s, uint64 size)
 		return;
 	}
 	cap = Max(size, DIST_MIN_ARENA);
-	s->chunk = s->chunk ? repalloc(s->chunk, (s->nchunk + 1) * sizeof(uint8 *)) : MemoryContextAlloc(s->cxt, sizeof(uint8 *));
+	if (s->nchunk == s->chunk_cap)
+	{
+		s->chunk_cap = s->chunk_cap ? s->chunk_cap * 2 : 8;
+		SIFT_REGROW_IN(s->cxt, s->chunk, s->chunk_cap * sizeof(uint8 *));
+	}
 	s->chunk[s->nchunk++] = MemoryContextAlloc(s->cxt, cap);
 	s->arena_used = 0;
 	s->arena_cap = cap;
