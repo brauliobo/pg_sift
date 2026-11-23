@@ -41,6 +41,7 @@
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_plan_shape.h"
+#include "agg/v6/v6_proj_sort_plan.h"
 #include "agg/v6/v6_qual.h"
 #include "col/am.h"
 #include "col/am/format_ops.h"
@@ -771,7 +772,8 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	const uint32 k = sift_v6_topk_of(q);
 
 	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL ||
-		q->rowMarks != NIL || !sift_v6_base_rel_ok(root, input_rel) || bms_membership(root->all_baserels) != BMS_SINGLETON)
+		q->rowMarks != NIL || !sift_v6_base_rel_ok(root, input_rel) || bms_membership(root->all_baserels) != BMS_SINGLETON ||
+		sift_v6_proj_sort_offered(input_rel))
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
 	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)

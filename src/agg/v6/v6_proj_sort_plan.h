@@ -10,6 +10,11 @@
 #ifndef SIFT_AGG_V6_PROJ_SORT_PLAN_H
 #define SIFT_AGG_V6_PROJ_SORT_PLAN_H
 
+#include "nodes/pathnodes.h"
+
 extern void sift_v6_proj_sort_plan_init(void);
+
+/* A ready projection serves the statement of the relation: its path, which carries the pathkeys, stands among those of the relation, and no generic top-N competes with it */
+extern bool sift_v6_proj_sort_offered(const RelOptInfo *rel);
 
 #endif							/* SIFT_AGG_V6_PROJ_SORT_PLAN_H */

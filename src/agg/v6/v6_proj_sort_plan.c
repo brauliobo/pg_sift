@@ -561,6 +561,15 @@ sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 	table_close(heap, NoLock);
 }
 
+bool
+sift_v6_proj_sort_offered(const RelOptInfo *rel)
+{
+	foreach_ptr(Path, path, rel->pathlist)
+		if (IsA(path, CustomPath) && ((const CustomPath *) path)->methods == &sort_path_methods)
+			return true;
+	return false;
+}
+
 static Plan *
 sort_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
