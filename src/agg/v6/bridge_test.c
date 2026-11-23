@@ -463,6 +463,12 @@ fmt_sorted_by(Oid indexoid, const int *atts, int n)
 	return true;
 }
 
+static int
+fmt_card_leaf(Oid indexoid, int col)
+{
+	return col;
+}
+
 static SiftV6Source *
 fmt_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted)
 {
@@ -478,6 +484,7 @@ static const SiftV6Format test_format = {
 	.leaf_holds = fmt_leaf_holds,
 	.sorted_by = fmt_sorted_by,
 	.card_view = NULL,
+	.card_leaf = fmt_card_leaf,
 	.open = fmt_open
 };
 

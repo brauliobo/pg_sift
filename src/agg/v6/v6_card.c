@@ -10,12 +10,11 @@
 #include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
-#include "access/genam.h"
-#include "col/am.h"
 
 #include "agg/plan/safety.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_vexpr.h"
 
 /* the integer a Const stands for in the order of its leaf: int2, int4, int8, date, timestamp, timestamptz; false for any other type */
 static bool
@@ -43,11 +42,7 @@ leaf_value(Oid typid, Datum d, int64 *out)
 int
 sift_v6_card_leaf(const IndexOptInfo *ix, int col)
 {
-	Relation	irel = index_open(ix->indexoid, AccessShareLock);
-	const int	leaf = sift_col_rel(irel)->first[col + 1];
-
-	index_close(irel, NoLock);
-	return leaf;
+	return sift_v6_format()->card_leaf(ix->indexoid, col);
 }
 
 static int

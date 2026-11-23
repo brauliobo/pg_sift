@@ -4,6 +4,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "catalog/pg_class_d.h"
 #include "utils/lsyscache.h"
 
@@ -12,6 +13,7 @@
 #include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_v6_bridge.h"
 #include "col/f2/f2_v6_format.h"
+#include "core/catname.h"
 #include "core/sift.h"
 #include "table/dispatch.h"
 
@@ -73,6 +75,16 @@ sorted_by(Oid relid, const int *atts, int n)
 	return true;
 }
 
+static int
+card_leaf(Oid relid, int col)
+{
+	Relation	irel = index_open(sift_rel_must_exist(relid), AccessShareLock);
+	const int	leaf = sift_col_rel(irel)->first[col + 1];
+
+	index_close(irel, NoLock);
+	return leaf;
+}
+
 static SiftV6Source *
 open_rel(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted)
 {
@@ -84,6 +96,7 @@ static const SiftV6Format f2_format = {
 	.leaf_holds = leaf_holds,
 	.sorted_by = sorted_by,
 	.card_view = sift_f2_v6_card_view,
+	.card_leaf = card_leaf,
 	.open = open_rel
 };
 

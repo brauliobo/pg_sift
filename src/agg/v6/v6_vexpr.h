@@ -94,6 +94,8 @@ typedef struct SiftV6Format
 	bool		(*sorted_by) (Oid relid, const int *atts, int n);
 	/* the statistics the index folded when its parts were written (agg/plan/card_est.h), NULL when it has none */
 	const SiftCardStatsView *(*card_view) (Oid relid);
+	/* the leaf of the statistics view that holds column col (0-based) of the index, -1 when it has none */
+	int			(*card_leaf) (Oid relid, int col);
 	/* the batches of the input over the snapshot of the estate: only the rows that pass quals (NULL: all), in the order of the index columns (ascending, NULLs last) when sorted is set */
 	SiftV6Source *(*open) (EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted);
 } SiftV6Format;
