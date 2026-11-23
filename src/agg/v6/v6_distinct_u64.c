@@ -55,6 +55,44 @@ sift_du64_dedup_slice(uint64 *tab, uint64 cap, const uint64 *vals, uint32 n)
 	return fresh;
 }
 
+void
+sift_du64_rehash(uint64 *dst, uint64 dcap, const uint64 *src, uint64 scap)
+{
+	const uint64 mask = dcap - 1;
+
+	for (uint64 i = 0; i < scap; i++)
+	{
+		uint64		j;
+
+		if (i + DU64_AHEAD < scap && src[i + DU64_AHEAD] != 0)
+			__builtin_prefetch(&dst[mix(src[i + DU64_AHEAD]) & mask], 1);
+		if (src[i] == 0)
+			continue;
+		for (j = mix(src[i]) & mask; dst[j] != 0; j = (j + 1) & mask)
+			;
+		dst[j] = src[i];
+	}
+}
+
+void
+sift_du64g_rehash(SiftDuPair *dst, uint64 dcap, const SiftDuPair *src, uint64 scap)
+{
+	const uint64 mask = dcap - 1;
+
+	for (uint64 i = 0; i < scap; i++)
+	{
+		uint64		j;
+
+		if (i + DU64_AHEAD < scap && src[i + DU64_AHEAD].gid1 != 0)
+			__builtin_prefetch(&dst[sift_du64_pair_hash(src[i + DU64_AHEAD].val, src[i + DU64_AHEAD].gid1 - 1) & mask], 1);
+		if (src[i].gid1 == 0)
+			continue;
+		for (j = sift_du64_pair_hash(src[i].val, src[i].gid1 - 1) & mask; dst[j].gid1 != 0; j = (j + 1) & mask)
+			;
+		dst[j] = src[i];
+	}
+}
+
 uint32
 sift_du64g_dedup_bucket(SiftDuPair *tab, uint64 cap, SiftDuPair *p, uint32 n)
 {
@@ -134,13 +172,7 @@ grow(SiftDistinctU64 *d)
 	if (ocap * (factor + 1) * sizeof(uint64) > d->budget)
 		return false;
 	table_alloc(d, ocap * factor);
-	for (uint64 i = 0; i < ocap; i++)
-	{
-		if (i + DU64_AHEAD < ocap && okey[i + DU64_AHEAD] != 0)
-			du64_prefetch(d, mix(okey[i + DU64_AHEAD]));
-		if (okey[i] != 0)
-			probe(d, okey[i], mix(okey[i]));
-	}
+	sift_du64_rehash(d->key, d->cap, okey, ocap);
 	pfree(okey);
 	return true;
 }
@@ -329,13 +361,7 @@ pairs_grow(SiftDu64G *d)
 		return false;
 	d->cap = ocap * 2;
 	d->tab = MemoryContextAllocZero(d->cx, d->cap * sizeof(DuPair));
-	for (uint64 i = 0; i < ocap; i++)
-	{
-		if (i + DU64_AHEAD < ocap && old[i + DU64_AHEAD].gid1 != 0)
-			__builtin_prefetch(&d->tab[pair_hash(old[i + DU64_AHEAD].val, old[i + DU64_AHEAD].gid1 - 1) & (d->cap - 1)], 1);
-		if (old[i].gid1 != 0)
-			d->tab[empty_slot(d, pair_hash(old[i].val, old[i].gid1 - 1))] = old[i];
-	}
+	sift_du64g_rehash(d->tab, d->cap, old, ocap);
 	pfree(old);
 	return true;
 }

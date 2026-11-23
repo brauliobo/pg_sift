@@ -37,6 +37,9 @@ sift_du64_pair_hash(uint64 v, uint32 gid)
 
 /* The values of vals[0 .. n-1] that are not 0 and are new to tab (0 is an empty entry: the caller keeps the value 0 itself); returns how many were new */
 extern uint32 sift_du64_dedup_slice(uint64 *tab, uint64 cap, const uint64 *vals, uint32 n);
+/* The entries of src (scap of them) into the empty table dst of dcap entries, which is twice as large or more: no entry is compared, they are all different (a pair is placed by the hash of its value and group) */
+extern void sift_du64_rehash(uint64 *dst, uint64 dcap, const uint64 *src, uint64 scap);
+extern void sift_du64g_rehash(SiftDuPair *dst, uint64 dcap, const SiftDuPair *src, uint64 scap);
 /* The pairs p[0 .. n-1] that are new to tab, moved to the front of p in their order; returns how many */
 extern uint32 sift_du64g_dedup_bucket(SiftDuPair *tab, uint64 cap, SiftDuPair *p, uint32 n);
 
