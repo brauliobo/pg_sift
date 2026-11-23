@@ -16,6 +16,28 @@ fault_smoke() {
 	job tap-shell-fault_matrix_standby-smoke tap-shell 0 env "SIFT_FAULT_ONLY=$FAULT_SMOKE_STANDBY" "$S/pgtest.sh" tap fault_matrix_standby
 }
 slope_shards() { local k; for (( k = 1; k <= SLOPE_SHARDS; k++ )); do job "tap-shell-mem_slope-$k" tap-shell 0 env "MEM_SLOPE_SHARD=$k/$SLOPE_SHARDS" "$S/pgtest.sh" tap mem_slope; done; }
+# the twin fuzzers, on Format 2.0: the quick tier runs the default seeds of the script; the full tier cuts the seeds into jobs of that one script (SIFT_FUZZ_SEEDS, SIFT_SEEDS name the seeds
+# of a job), 24 seeds of the sift_table as 8 jobs of 3 and of the sift_col index as 2 of 12, under the ids of the wrappers they replace (_b, _c, ...)
+twin_fuzz_jobs() {
+	local k id
+	if [[ $MODE != full ]]; then f2_tap_shell tbl_twin_fuzz tbl_twin_fuzz; f2_tap_shell col_twin_fuzz col_twin_fuzz; return; fi
+	for (( k = 1; k <= 8; k++ )); do
+		id=tbl_twin_fuzz; (( k == 1 )) || id+=_$(printf "\\$(printf %o $((96 + k)))")
+		f2_tap_shell "$id" tbl_twin_fuzz "SIFT_FUZZ_SEEDS=$(( 3 * k - 2 ))-$(( 3 * k ))" "SIFT_SEEDS=$(( 3 * k - 2 ))-$(( 3 * k ))"
+	done
+	for (( k = 1; k <= 2; k++ )); do
+		id=col_twin_fuzz; (( k == 1 )) || id+=_b
+		f2_tap_shell "$id" col_twin_fuzz "SIFT_FUZZ_SEEDS=$(( 12 * k - 11 ))-$(( 12 * k ))" "SIFT_SEEDS=$(( 12 * k - 11 ))-$(( 12 * k ))"
+	done
+}
+# scripts/fast-gate.sh on each library: the release library the user installs (the staged one, PostgreSQL 18), Format 1 beside the default 2.0 (the compat-f1 lane: SIFT_CI_JOBS=$COMPAT_F1_JOBS
+# also runs the upgrade tests of the v5 formats), and Format 2.0 on a PostgreSQL with assertions (the cassert shards and SIFT_CI_JOBS=assert)
+fast_gate_jobs() {
+	(( PG_MAJOR >= 18 )) || return 0
+	[[ -z ${SIFT_PREBUILT_RELEASE:-} ]] || job fast-gate-release fast-gate 0 "$S/fast-gate.sh" --format release --root "$SIFT_PREBUILT_RELEASE"
+	job compat-f1-fast-gate fast-gate 0 "$S/fast-gate.sh" --format f1
+	[[ -z ${SIFT_CI_ASSERT:-} && ${SIFT_CI_JOBS:-} != *assert* ]] || job fast-gate-assert fast-gate 0 "$S/fast-gate.sh" --format f2 --assert
+}
 # the black-box canaries of scripts/perf/gate.py on the staged release library, a job for each area of scripts/areas.tsv (a change runs the jobs of the areas it is mapped to, the
 # core and the build run the smoke set). They need PostgreSQL 18 (extension_control_path) and the staged release library: a local run has none and queues none, `scripts/perf-select.py --run gate` runs them there
 perf_gate_jobs() {
@@ -70,36 +92,37 @@ if [[ $MODE == full ]]; then
 	first=1 last=$slices
 	if (( PG_MAJOR < 18 )); then last=$(( slices / 2 )); elif [[ -z ${SIFT_CI_DEEP:-} ]]; then first=$(( slices / 2 + 1 )); fi
 	for (( k = first; k <= last; k++ )); do
-		job difftest-col-$k difftest-col 1 "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
-		job difftest-col-tbl-$k difftest-col-tbl 1 "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		f2_job difftest-col-$k difftest-col "$S/coldiff.sh" --fail-fast --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
+		f2_job difftest-col-tbl-$k difftest-col-tbl "$S/coldiff.sh" --fail-fast --table --suite fixtures --slice $k/$slices --fixture-rows 1500 --scenario-slices "$(lean_or_deep 3 1)"
 	done
-	job difftest-col-analytics difftest-col 1 "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
+	f2_job difftest-col-analytics difftest-col "$S/coldiff.sh" --fail-fast --suite analytics --rows 20000
 	once_on_18 && job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest
 	# the plan the planner picks, the cost ratios and the results of 158 shapes at 30000 events, the size the bands of test/plan are recorded at (a run at 50000 puts 40 to 46 shapes of each of
 	# the four lanes under their bands: hosted and local, PostgreSQL 18, 2026-11-03); no timings (--runs 0): a timing that loses only warns on the hosted runners, which are noisy
-	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
-	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
-	job plan-gate-4t plan-gate-4t 1 "$S/plangate.sh" --lane stock-4t --runs 0
+	f2_job plan-gate plan-gate "$S/plangate.sh" --runs 0
+	f2_job plan-gate-tuned plan-gate-tuned "$S/plangate.sh" --lane tuned --runs 0
+	f2_job plan-gate-table plan-gate-table "$S/plangate.sh" --table --runs 0
+	f2_job plan-gate-table-tuned plan-gate-table-tuned "$S/plangate.sh" --table --lane tuned --runs 0
+	f2_job plan-gate-4t plan-gate-4t "$S/plangate.sh" --lane stock-4t --runs 0
 	perf_gate_jobs
+	fast_gate_jobs
 	# the second pass of each lane at 250000 rows, the other size whose bands are recorded (half a minute each); the quick tier of the push runs the 30000 rows only
 	if [[ -n ${SIFT_CI_DEEP:-} ]]; then
-		job plan-gate-250k plan-gate 1 "$S/plangate.sh" --runs 0 --rows 250000
-		job plan-gate-tuned-250k plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0 --rows 250000
-		job plan-gate-table-250k plan-gate-table 1 "$S/plangate.sh" --table --runs 0 --rows 250000
-		job plan-gate-table-tuned-250k plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0 --rows 250000
-		job plan-gate-4t-250k plan-gate-4t 1 "$S/plangate.sh" --lane stock-4t --runs 0 --rows 250000
+		f2_job plan-gate-250k plan-gate "$S/plangate.sh" --runs 0 --rows 250000
+		f2_job plan-gate-tuned-250k plan-gate-tuned "$S/plangate.sh" --lane tuned --runs 0 --rows 250000
+		f2_job plan-gate-table-250k plan-gate-table "$S/plangate.sh" --table --runs 0 --rows 250000
+		f2_job plan-gate-table-tuned-250k plan-gate-table-tuned "$S/plangate.sh" --table --lane tuned --runs 0 --rows 250000
+		f2_job plan-gate-4t-250k plan-gate-4t "$S/plangate.sh" --lane stock-4t --runs 0 --rows 250000
 	fi
 	# the ranking of the estimates of the plans (the scan, b-tree, bitmap, sequential, PostgreSQL without sift) against their user instructions, of the 149 shapes at 30000 rows (docs/AGG.md); skipped without perf
-	job plan-gate-calibrate plan-gate-calibrate 1 "$S/plangate.sh" --calibrate --rows 30000
-	job plan-gate-calibrate-tuned plan-gate-calibrate-tuned 1 "$S/plangate.sh" --calibrate --lane tuned --rows 30000
+	f2_job plan-gate-calibrate plan-gate-calibrate "$S/plangate.sh" --calibrate --rows 30000
+	f2_job plan-gate-calibrate-tuned plan-gate-calibrate-tuned "$S/plangate.sh" --calibrate --lane tuned --rows 30000
 	# the instructions to plan each shape (30000 events: planning does not depend on the rows) against their ceilings (test/plan/planning.tsv); skipped without perf
-	job plan-gate-planning plan-gate-planning 1 "$S/plangate.sh" --planning --rows 30000
+	f2_job plan-gate-planning plan-gate-planning "$S/plangate.sh" --planning --rows 30000
 	# the instructions of 20 statement classes (the reads, the writes) at 300000 orders against their ceilings (test/plan/execution.tsv); skipped without perf
 	once_on_18 && job exec-budget exec-budget 1 "$S/exec-budget.sh"   # recorded on PostgreSQL 18: a count differs a little on another major
 	# 174 statements, each in a new backend, sift off against on (rows equal) and the plan slug of each pinned (test/corpus/README.md); a second on every major
-	job corpus corpus 1 "$S/corpus.sh"
+	f2_job corpus corpus "$S/corpus.sh"
 	# seeded random queries of the pushdown shapes, plain plan against the scan, the pre-aggregates and the arms alone (test/fuzz/diff_fuzz.py); --leader-on until the
 	# parallel scan of a partitioned table without leader participation no longer crashes a worker
 	# Lean: the seeds 1-3 run before PostgreSQL 18 and 4-6 on 18, each once (a seed is one set of random queries, the quick tier runs 1-4 on every major)
@@ -107,16 +130,16 @@ if [[ $MODE == full ]]; then
 	# (test/fuzz/txn_fuzz.py), and with --shapes the reads through cursors and prepared statements, partitioned tables and the upserts and COPY that run SQL through SPI
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		txn=1-8; (( PG_MAJOR < 18 )) || txn=9-16
-		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds $txn --stop-after 2
-		job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds $txn --stop-after 2
+		f2_job difftest-txn difftest-txn python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds $txn --stop-after 2
+		f2_job difftest-txn-shapes difftest-txn python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds $txn --stop-after 2
 	elif (( PG_MAJOR >= 18 )); then
-		job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
-		job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-400 --stop-after 3
+		f2_job difftest-txn difftest-txn python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-400 --stop-after 3
+		f2_job difftest-txn-shapes difftest-txn python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-400 --stop-after 3
 	fi
 	# every statement shape (join type and key form, grouping, ordering, predicates, index availability, parallelism, planner settings) against the plain plan, and every
 	# call of the SQL surface with hostile arguments: no signal, no internal error, same rows (test/fuzz/shapes_matrix.py, test/fuzz/surface_sweep.py)
-	job shapes-matrix shapes-matrix 1 python3 "$REPO/test/fuzz/shapes_matrix.py" --tier full
-	job shapes-surface shapes-surface 1 python3 "$REPO/test/fuzz/surface_sweep.py" --tier full
+	f2_job shapes-matrix shapes-matrix python3 "$REPO/test/fuzz/shapes_matrix.py" --tier full
+	f2_job shapes-surface shapes-surface python3 "$REPO/test/fuzz/surface_sweep.py" --tier full
 	# BM25 queries (phrase, plain, boolean) in subplans, LATERAL joins and cursors, each plan in a new backend, the heap plan against the index and the parallel plan (test/fuzz/bm25_fuzz.py)
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-12 --queries 30 --stop-after 2
@@ -125,17 +148,18 @@ if [[ $MODE == full ]]; then
 	fi
 	if [[ -z ${SIFT_CI_DEEP:-} ]]; then
 		seeds=1-3; (( PG_MAJOR < 18 )) || seeds=4-6
-		job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
-		job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
+		f2_job difftest-fuzz difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
+		f2_job difftest-fuzz-tbl difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $seeds --queries 100 --rows 6000 --leader-on --stop-after 3
 	elif (( PG_MAJOR >= 18 )); then
 		for k in 1 2 3 4; do
-			job difftest-fuzz-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
-			job difftest-fuzz-tbl-$k difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+			f2_job difftest-fuzz-$k difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
+			f2_job difftest-fuzz-tbl-$k difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds $(( k * 3 - 2 ))-$(( k * 3 )) --queries 150 --rows 6000 --leader-on --stop-after 3
 		done
 	fi
 	once_on_18 && job fuzz fuzz 1 "$S/fuzz.sh" --scale "$(lean_or_deep 4 10)"
 	once_on_18 && flavor_job hardened hardened "$S/hardened.sh"
 	job static static 0 "$S/static.sh"
+	twin_fuzz_jobs
 	tap_perl $(named $SLOW_PERL) $(rest t .pl $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL) $(rest t .sh $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)
@@ -183,31 +207,33 @@ else
 	# the mutants are checked on the built corpus (round 0): all 8 die there, and the rounds with DML, promotion, merge and REINDEX without a bug are the job difftest
 	once_on_18 && job difftest-mutants difftest-mutants 1 "$S/difftest.sh" --jobs "$MUTANT_JOBS" --engine mutants --docs 3000 --queries 10 --rounds 0 --minimize 0 \
 		--mutants "float8_score idf_df_plus1 count_plus drop_high_offset drop_sb_boundary tie_ctid_desc nofold_query topk_short"
-	job difftest-col difftest-col 1 "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
-	job difftest-col-tbl difftest-col-tbl 1 "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
+	f2_job difftest-col difftest-col "$S/coldiff.sh" --fixture-rows 1500 --rows 3000 --variants on,on-par --scenarios dml,abort,vacuum,held-lite --scenario-slices 3
+	f2_job difftest-col-tbl difftest-col-tbl "$S/coldiff.sh" --table --suite fixtures --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
 	job difftest-col-selftest difftest-col-selftest 1 "$S/coldiff.sh" --selftest --fixture-rows 1200
 	# each lane at 30000 rows, the size whose bands the plan and the ratios are recorded at; the second pass at 250000 rows (the bands of the ratio that falls with the rows) is the deep
 	# full tier's (plan-gate-250k below), and so is the ranking at 250,000 rows (6 minutes a lane, and a skip without perf)
-	job plan-gate plan-gate 1 "$S/plangate.sh" --runs 0
-	job plan-gate-tuned plan-gate-tuned 1 "$S/plangate.sh" --lane tuned --runs 0
-	job plan-gate-table plan-gate-table 1 "$S/plangate.sh" --table --runs 0
-	job plan-gate-table-tuned plan-gate-table-tuned 1 "$S/plangate.sh" --table --lane tuned --runs 0
-	job plan-gate-4t plan-gate-4t 1 "$S/plangate.sh" --lane stock-4t --runs 0
+	f2_job plan-gate plan-gate "$S/plangate.sh" --runs 0
+	f2_job plan-gate-tuned plan-gate-tuned "$S/plangate.sh" --lane tuned --runs 0
+	f2_job plan-gate-table plan-gate-table "$S/plangate.sh" --table --runs 0
+	f2_job plan-gate-table-tuned plan-gate-table-tuned "$S/plangate.sh" --table --lane tuned --runs 0
+	f2_job plan-gate-4t plan-gate-4t "$S/plangate.sh" --lane stock-4t --runs 0
 	perf_gate_jobs
+	fast_gate_jobs
 	# two seeds of each fuzzer (and the seeds of its fixed findings: 18 of txn_fuzz, 9, 10 and 34 of its shapes); the full tier runs the 12 to 400 seeds
-	once_on_18 && job difftest-fuzz difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-2 --queries 100 --rows 3000 --leader-on
-	once_on_18 && job difftest-fuzz-tbl difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-2 --queries 100 --rows 3000 --leader-on
-	once_on_18 && job difftest-fuzz-having difftest-fuzz 1 python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-2 --queries 40 --rows 3000 --leader-on
-	job difftest-txn difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-2,18 --stop-after 2
-	job difftest-txn-shapes difftest-txn 1 python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-2,9,10,34 --stop-after 2
+	once_on_18 && f2_job difftest-fuzz difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --seeds 1-2 --queries 100 --rows 3000 --leader-on
+	once_on_18 && f2_job difftest-fuzz-tbl difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --table --seeds 1-2 --queries 100 --rows 3000 --leader-on
+	once_on_18 && f2_job difftest-fuzz-having difftest-fuzz python3 "$REPO/test/fuzz/diff_fuzz.py" --families having --seeds 1-2 --queries 40 --rows 3000 --leader-on
+	f2_job difftest-txn difftest-txn python3 "$REPO/test/fuzz/txn_fuzz.py" --seeds 1-2,18 --stop-after 2
+	f2_job difftest-txn-shapes difftest-txn python3 "$REPO/test/fuzz/txn_fuzz.py" --shapes --seeds 1-2,9,10,34 --stop-after 2
 	job difftest-bm25 difftest-bm25 1 python3 "$REPO/test/fuzz/bm25_fuzz.py" --seeds 1-2 --queries 30 --stop-after 2
-	job shapes-matrix shapes-matrix 1 python3 "$REPO/test/fuzz/shapes_matrix.py" --tier quick
-	job shapes-surface shapes-surface 1 python3 "$REPO/test/fuzz/surface_sweep.py" --tier quick
+	f2_job shapes-matrix shapes-matrix python3 "$REPO/test/fuzz/shapes_matrix.py" --tier quick
+	f2_job shapes-surface shapes-surface python3 "$REPO/test/fuzz/surface_sweep.py" --tier quick
 	tap_shell leakcheck_gate
 	tap_perl 001_crash
 	installcheck filter_pushdown
 	job soak soak 1 "$S/soak.sh" --duration 15 --rows 20000 --rate 400 --clients 2 --check-every 5
 	job soak-col soak-col 1 "$S/colsoak.sh" --duration 18 --clients 6
+	twin_fuzz_jobs
 	tap_perl $(named $SLOW_PERL)
 	tap_shell $(named $SLOW_SHELL)
 	installcheck $(named $SLOW_REGRESS)

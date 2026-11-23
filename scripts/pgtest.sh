@@ -21,6 +21,7 @@
 #   scripts/pgtest.sh tap [t]    TAP shell tests test/t/*.sh (or test/t/<t>.sh), own clusters (SIFT_TAP_KEEP=1 keeps the data directories of a failed test)
 #   scripts/pgtest.sh ready      wait until the cluster accepts connections (recovery after a crashed backend)
 #   scripts/pgtest.sh clean      drop the databases a job left in the cluster (all but postgres and the test database), once it is ready
+#   scripts/pgtest.sh run CMD... CMD against a cluster of its own (SIFT_TEST_FORMAT, port SIFT_PORT + 1: the lane of scripts/ci.sh keeps SIFT_PORT), then the leak gate of stop
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
 #   scripts/pgtest.sh sanitizer-report  print ASan/UBSan findings (exit 1 if any)
@@ -202,6 +203,16 @@ stop() {
 	PGUSER=postgres leak_end "$DATA" "$TMP" pg_ctl -D "$DATA" -m fast -w stop >/dev/null
 }
 
+# run CMD...: start, CMD with the libpq environment of the cluster, stop; the leak gate of stop fails the run
+run() {
+	local rc=0
+	export SIFT_PORT=$((PORT + 1))
+	"$0" start || return 1
+	( eval "$("$0" env)"; "$@" ) || rc=$?
+	"$0" stop || rc=1
+	return $rc
+}
+
 # ready: waits until the cluster accepts connections (SIFT_READY_SECS, 300). A backend that dies (a sanitizer that halts it, a PANIC test) makes the postmaster
 # recover every other session; under ASan that takes a minute, and a job that starts in it fails at once with "the database system is not yet accepting connections"
 ready() {
@@ -356,6 +367,7 @@ case ${1:-} in
 	install) install ;;
 	start) start ;;
 	stop) stop ;;
+	run) shift; run "$@" ;;
 	conf) conf ;;
 	psql) shift; exec psql -U postgres -d "$DB" -X "$@" ;;
 	env)

@@ -147,6 +147,7 @@ if [[ $MODE == --selftest ]]; then
 				while read -r id _ _ cmd; do
 					[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
 					eval "args=($cmd)"
+					[[ ${args[0]} != env ]] || args=("${args[@]:4}")   # env SIFT_TEST_FORMAT=f2 pgtest.sh run: the Format 2.0 cluster of f2_job
 					cd=${args[0]}; k=''; mine=()
 					for (( i = 1; i < ${#args[@]}; i++ )); do
 						if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
@@ -257,6 +258,7 @@ if [[ $MODE == --selftest ]]; then
 				while read -r id _ _ cmd; do
 					[[ $id =~ ^$prefix-[0-9]+$ ]] || continue
 					eval "args=($cmd)"
+					[[ ${args[0]} != env ]] || args=("${args[@]:4}")   # env SIFT_TEST_FORMAT=f2 pgtest.sh run: the Format 2.0 cluster of f2_job
 					cd=${args[0]}; k=''; mine=()
 					for (( i = 1; i < ${#args[@]}; i++ )); do
 						if [[ ${args[i]} == --slice ]]; then k=${args[++i]}; else mine+=("${args[i]}"); fi
@@ -399,6 +401,32 @@ if [[ $MODE == --selftest ]]; then
 		done
 	fi
 	if st_on tooling; then
+		# the Format 2.0 cutover: the high-level suites run in a cluster of Format 2.0 of their own, the fast gate runs on the release library, on Format 1 and under assertions, and the seeds of the
+		# twin fuzzers are the shards of one script, each seed in one job
+		for m in quick full; do
+			out=$(env SIFT_CI_PG_MAJOR=18 SIFT_PREBUILT_RELEASE=/stage "$0" --plan $m) || { echo "FAIL: --plan $m"; bad=1; continue; }
+			n=0
+			while read -r id _ _ cmd; do
+				[[ $id =~ ^(corpus|plan-gate[a-z0-9-]*|shapes-(matrix|surface)|difftest-(col(-tbl|-analytics)?(-[0-9]+)?|txn(-shapes)?|fuzz(-tbl|-having)?(-[0-9]+)?)|tap-shell-(tbl|col)_twin_fuzz(_[a-h])?)$ ]] || continue
+				[[ $id == tap-shell-*_twin_fuzz_[a-h] && $m == quick ]] && continue   # the wrappers of the other seeds skip themselves in the quick tier
+				[[ $cmd == "env SIFT_TEST_FORMAT=f2 "* ]] && n=$((n + 1)) || { echo "FAIL: the $m job $id does not run on Format 2.0 (env SIFT_TEST_FORMAT=f2): $cmd"; bad=1; }
+			done <<<"$out"
+			(( n >= 12 )) || { echo "FAIL: the $m plan has $n high-level jobs on Format 2.0, want 12 or more"; bad=1; }
+			[[ $(awk '$1 == "fast-gate-release"' <<<"$out") == *"--format release --root /stage"* ]] || { echo "FAIL: the $m plan has no fast gate on the release library"; bad=1; }
+			[[ $(awk '$1 == "compat-f1-fast-gate"' <<<"$out") == *"--format f1"* ]] || { echo "FAIL: the $m plan has no fast gate on Format 1"; bad=1; }
+			[[ -z $(awk '$1 == "fast-gate-assert"' <<<"$out") ]] || { echo "FAIL: the $m plan queues the fast gate with assertions without the assertion shard"; bad=1; }
+			[[ -z $(env SIFT_CI_PG_MAJOR=18 "$0" --plan $m | awk '$1 == "fast-gate-release"') ]] || { echo "FAIL: the $m plan queues the fast gate on the release library with no staged one"; bad=1; }
+			[[ -z $(env SIFT_CI_PG_MAJOR=17 SIFT_PREBUILT_RELEASE=/stage "$0" --plan $m | awk '$1 ~ /^fast-gate/') ]] || { echo "FAIL: the $m plan on PostgreSQL 17 queues a fast gate (it needs extension_control_path)"; bad=1; }
+			[[ $(env SIFT_CI_PG_MAJOR=18 SIFT_CI_ASSERT=1 "$0" --plan $m | awk '$1 == "fast-gate-assert"') == *"--format f2 --assert"* ]] || { echo "FAIL: the $m plan of the assertion shard has no fast gate with assertions"; bad=1; }
+			[[ $(env SIFT_CI_PG_MAJOR=18 SIFT_CI_JOBS="$COMPAT_F1_JOBS" "$0" --plan $m | awk '{ printf "%s ", $1 }' | grep -o 'compat-f1-fast-gate' | wc -l) == 1 ]] || { echo "FAIL: the Format 1 lane (COMPAT_F1_JOBS) of the $m plan has not the fast gate once"; bad=1; }
+		done
+		out=$(env SIFT_CI_PG_MAJOR=18 "$0" --plan full)
+		for t in tbl:8:3 col:2:12; do
+			IFS=: read -r name n per <<<"$t"
+			seeds=$(grep -E "^tap-shell-${name}_twin_fuzz(_[a-h])? " <<<"$out" | grep -o 'SIFT_FUZZ_SEEDS=[0-9-]*' | cut -d= -f2 | sort -t- -k1,1n | tr '\n' ' ')
+			want=$(for (( k = 1; k <= n; k++ )); do echo -n "$(( per * k - per + 1 ))-$(( per * k )) "; done)
+			[[ $seeds == "$want" ]] || { echo "FAIL: the ${name}_twin_fuzz jobs of the full plan run the seeds '$seeds', want '$want' (24 seeds, each once)"; bad=1; }
+		done
 		# a released extension script is never edited (an install upgraded in place would miss the change): new objects go into the next version's scripts
 		(cd "$REPO" && scripts/sha256.sh --quiet -c scripts/released-sql.sha256) || { echo "FAIL: a released sql/pg_sift--*.sql differs from its tag; add the change to the scripts of the next version (a release appends its own scripts to scripts/released-sql.sha256)"; bad=1; }
 		# scripts/leftovers.allow: a test that exists, an object and a reason on every line

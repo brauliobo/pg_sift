@@ -24,6 +24,11 @@ flavor_job() {
 	job "$1" "$2" 0 "${@:3}"
 	(( PG_MAJOR >= 18 )) || [[ ! -v J_SUITE[$1] ]] || J_AFTER[$1]=1
 }
+# f2_job ID SUITE CMD...: a high-level suite on Format 2.0, the default format of 6.0, in a cluster of its own (scripts/pgtest.sh run): the cluster of the lane stays on Format 1,
+# which the regression tests expect. f2_tap_shell ID SCRIPT [NAME=VALUE...]: the shell test SCRIPT as the job ID, on Format 2.0
+F2_CLUSTER_MB=50   # the scratch of the cluster of its own, over what the job of the lane needed in the cluster of the lane
+f2_job() { job "$1" "$2" 0 env SIFT_TEST_FORMAT=f2 "$S/pgtest.sh" run "${@:3}"; EST_MB[$1]=$(( ${EST_MB[$1]:-$JOB_MB} + F2_CLUSTER_MB )); }
+f2_tap_shell() { job "tap-shell-$1" tap-shell 0 env SIFT_TEST_FORMAT=f2 "${@:3}" "$S/pgtest.sh" tap "$2"; }
 named() { local n; for n in "$@"; do echo "$n"; done; }
 # rest DIR SUFFIX NAME...: the files test/DIR/*SUFFIX that are not named, so that a new test is queued without editing the lists
 rest() {
