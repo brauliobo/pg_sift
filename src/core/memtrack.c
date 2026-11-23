@@ -153,9 +153,11 @@ sift_mem_trim_os(void)
 void
 sift_mem_trim_if_free(Size min_free_bytes)
 {
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 33)
+#ifdef __GLIBC__
+#if __GLIBC_PREREQ(2, 33)
 	if (mallinfo2().fordblks >= min_free_bytes)
 		sift_mem_trim_os();
+#endif
 #endif
 }
 
