@@ -566,7 +566,7 @@ job_seal(Job *j)
 	j->j.ops = j->p.w;
 	for (int c = 0; c < B_NCOLS; c++)
 		mask |= (uint64_t) (j->vg[0].col[c] != NULL) << c;
-	j->j.tab = (SiftVkTabKey) {.rel = 0xB3C4, .manifest_gen = 1, .col_mask = mask, .granules = j->j.ngran};
+	j->j.tab = (SiftVkTabKey) {.rel = 0xB3C4, .manifest_gen = 1, .col_mask = {mask}, .granules = j->j.ngran};
 }
 
 void

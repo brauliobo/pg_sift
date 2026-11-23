@@ -21,6 +21,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_topn.h"
 #include "core/memtrack.h"
 
@@ -222,11 +223,11 @@ static const CustomPathMethods topn_path_methods = {"SiftAggV6TopN", sift_agg_v6
 
 /* Whether the leading key reads in the order of the parts, or in the reverse of it (NULLs at the other end): the tournament then reads from the best granule on and stops where the rows are enough */
 static bool
-leading_key_ordered(const TopNPlan *p)
+leading_key_ordered(const SiftV6TopNSpec *spec)
 {
-	const int	att = p->spec.key[0].attno;
+	const int	att = spec->key[0].attno;
 
-	return sift_v6_format()->sorted_by(p->index->indexoid, &att, 1) && p->spec.order[0].desc == p->spec.order[0].nulls_first;
+	return sift_v6_format()->sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
 }
 
 static void
@@ -234,8 +235,10 @@ topn_add_path(TopNPlan *p)
 {
 	const double k = plan_rows(p->spec.limit, p->spec.offset);
 	const double sel = Max(p->rel->rows / Max(p->rel->tuples, 1.0), 1e-9);
-	const double read = leading_key_ordered(p) ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
-	const double total = cpu_tuple_cost * (k + read) + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
+	const bool	ordered = leading_key_ordered(&p->spec);
+	const double read = ordered ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
+	const double total = !ordered && sift_v6_gpu_topn_forced(&p->spec) ? cpu_tuple_cost * k :
+		cpu_tuple_cost * (k + read) + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
 
 	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals));
@@ -337,6 +340,7 @@ typedef struct TopNState
 	const SiftTopNWinRow *rows;
 	uint32		nrows;
 	uint32		pos;
+	SiftV6Gpu	gpu;
 	bool		ran;
 	Tuplesortstate *sort;		/* the run that sorted its rows */
 	TupleTableSlot *sorted;
@@ -370,6 +374,8 @@ topn_release(TopNState *st)
 	}
 	st->sort = NULL;
 	st->sorted = NULL;
+	sift_v6_gpu_end(&st->gpu);
+	st->gpu = (SiftV6Gpu) {0};
 	if (st->src.close != NULL)
 		st->src.close(st->src.src);
 	if (st->cx != NULL)
@@ -425,6 +431,23 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 	st->sorted = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 }
 
+/* ORDER BY one key LIMIT n that the order of the parts cannot answer early: the device takes the best rows of the parts it reads, and the tournament the rest */
+static void
+topn_device(TopNState *st, EState *estate, Relation index, SiftV6Input *in)
+{
+	SiftV6TopNDevice dev;
+	Relation	heap;
+	bool		taken;
+
+	if (st->src.device == NULL || st->spec->nkeys != 1)
+		return;
+	heap = table_open(index->rd_index->indrelid, NoLock);
+	taken = sift_v6_gpu_topn(st->spec, in, st->quals, heap, index, estate->es_snapshot, leading_key_ordered(st->spec), st->cx, &st->gpu, &dev);
+	table_close(heap, NoLock);
+	if (taken)
+		st->src.device(st->src.src, &dev);
+}
+
 static void
 topn_run(TopNState *st, EState *estate)
 {
@@ -437,18 +460,20 @@ topn_run(TopNState *st, EState *estate)
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
 	sift_v6_input_init_rel(&in, index);
 	sift_v6_input_bind(&in, estate);
-	index_close(index, NoLock);
 	compiled = sift_v6_vexpr_quals(st->cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals);
 	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of index %u are not compiled", st->spec->indexoid);
 	st->pos = 0;
 	st->ran = true;
 	if (!tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows))
 	{
+		index_close(index, NoLock);
 		topn_sort_rows(st, estate, &in, st->quals == NIL ? NULL : &quals);
 		return;
 	}
 	opened = bound_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
 	SIFT_INVARIANT(opened, "the Top-N scan of index %u cannot be opened", st->spec->indexoid);
+	topn_device(st, estate, index, &in);
+	index_close(index, NoLock);
 	st->rows = sift_v6_topn_run(st->cx, st->spec, &st->src, &st->tourn, &st->nrows);
 }
 
@@ -508,6 +533,7 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	TopNState  *st = (TopNState *) node;
 
 	sift_v6_explain_index(es, st->spec->indexoid);
+	sift_v6_gpu_explain(&st->gpu, es);
 	if (st->tourn != NULL)
 		sift_v6_explain_count(es, "Top-N Rows", (int64) st->spec->rows);
 	if (st->tourn != NULL)

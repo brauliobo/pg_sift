@@ -529,6 +529,7 @@ TESTING_REGRESS += format2_ux_progress
 TESTING_REGRESS += format_v1_v2_compat
 TESTING_REGRESS += fuzzy_seek
 TESTING_REGRESS += gpu_agg_v6_churn
+TESTING_REGRESS += gpu_topn_v6
 TESTING_REGRESS += hybrid_agg
 TESTING_REGRESS += hybrid_agg_cost
 TESTING_REGRESS += hybrid_agg_score

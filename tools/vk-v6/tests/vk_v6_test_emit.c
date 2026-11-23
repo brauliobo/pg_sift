@@ -9,6 +9,7 @@
 #include "catalog/pg_type_d.h"
 
 #include "agg/gpu_emit.h"
+#include "agg/vk/fast.h"
 #include "agg/vexpr.h"
 #include "vk_v6_agg_case.h"
 
@@ -22,7 +23,7 @@ vcal_extract_scale(SiftVxField field, bool is_date)
 	abort();
 }
 
-#define NPRED_MAX	4
+#define NPRED_MAX	(FAST_PRED_MAX + 1)
 #define NODES		64
 
 typedef struct T10Col
@@ -346,7 +347,7 @@ simple_query(SiftVk *dev, const TData *d, Rng *rng, int i, const Pred *preds, in
 static void
 other_queries(SiftVk *dev, const TData *d, Rng *rng, T10Count *cnt)
 {
-	static const char *const names[] = {"OR", "NOT", "arithmetic", "column against column", "IN list", "FILTER", "five comparisons", "numeric constant of another scale"};
+	static const char *const names[] = {"OR", "NOT", "arithmetic", "column against column", "IN list", "FILTER", "past the comparison cap", "numeric constant of another scale"};
 
 	for (int v = 0; v < 8; v++)
 	{
@@ -354,7 +355,7 @@ other_queries(SiftVk *dev, const TData *d, Rng *rng, T10Count *cnt)
 		Tree		t = {0};
 		Pred		a = random_pred(rng, 1),
 					b = random_pred(rng, 2),
-					five[5];
+					over[NPRED_MAX];
 		const SiftVexprNode *w = NULL;
 		char		name[96];
 
@@ -396,9 +397,9 @@ other_queries(SiftVk *dev, const TData *d, Rng *rng, T10Count *cnt)
 		}
 		else if (v == 6)
 		{
-			for (int i = 0; i < 5; i++)
-				five[i] = random_pred(rng, i % 3);
-			w = and_tree(&t, five, 0, 5, 0);
+			for (int i = 0; i < NPRED_MAX; i++)
+				over[i] = random_pred(rng, i % 3);
+			w = and_tree(&t, over, 0, NPRED_MAX, 0);
 		}
 		else if (v == 7)
 		{
@@ -463,7 +464,7 @@ test_emit(SiftVk *dev, Rng *rng)
 	for (int i = 0; i < 90; i++)
 	{
 		Pred		preds[NPRED_MAX];
-		int			np = 2 + i % 3;
+		int			np = 2 + i % (FAST_PRED_MAX - 1);
 		SiftVkMode	mode = i % 5 == 0 ? SIFT_VK_DENSE : i % 5 == 1 ? SIFT_VK_HASH : SIFT_VK_UNGROUPED;
 
 		for (int p = 0; p < np; p++)

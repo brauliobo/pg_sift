@@ -519,7 +519,8 @@ worker_idle_release(WorkerState *w)
 	const Size	page = sysconf(_SC_PAGESIZE);
 
 	sift_vk_release(w->vk, true);
-	w->shm->caps = *sift_vk_caps(w->vk);
+	if (w->vk != NULL)
+		w->shm->caps = *sift_vk_caps(w->vk);
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 		if (pg_atomic_read_u32(&w->shm->slot[i].state) == SIFT_GPU_S_FREE)
 			(void) madvise((void *) TYPEALIGN(page, sift_gpu_stage(w->shm, i)), SIFT_GPU_STAGE_BYTES - page, MADV_DONTNEED);

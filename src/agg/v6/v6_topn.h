@@ -39,11 +39,22 @@ typedef struct SiftV6SkipStats
 	uint64		granules;
 } SiftV6SkipStats;
 
+/* What the device took of the query: its best rows (SiftGpuCand of agg/gpu_v6.h, in order) and the generations of the parts it read, ascending, which the source leaves out */
+typedef struct SiftV6TopNDevice
+{
+	const struct SiftGpuCand *cand;
+	uint32		ncand;
+	const uint64 *skip;
+	int			nskip;
+} SiftV6TopNDevice;
+
 /* The units of the index as the tournament reads them, and the rows of the winners: what the format gives the node */
 typedef struct SiftV6TopNSource
 {
 	SiftTournOps ops;
 	void	   *src;
+	/* the rows of the device go to the tournament as the source's own and the parts it read are not scanned; NULL: the source takes nothing of the device */
+	void		(*device) (void *src, const SiftV6TopNDevice *dev);
 	/* queues the partitions and the rows not yet in a part (sift_tourn_push) */
 	void		(*seed) (void *src, SiftTournament *t);
 	/* the columns attnos[0 .. n-1] of the table for a winner, as the Datums of their types (the heap row of its tid, or the leaves of the index) */

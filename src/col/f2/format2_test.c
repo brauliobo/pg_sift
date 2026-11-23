@@ -385,9 +385,10 @@ sift_test_f2_sections(PG_FUNCTION_ARGS)
 		skipped += !sift_section_known(p->secdir[i].tag);
 		good += len == p->secdir[i].len && memcmp(got, want, len) == 0;
 	}
-	appendStringInfo(&out, "sections=%d verified=%d unknown_skipped=%d extents=%u inline=%u indirect_pages=%d inline_sections=%d",
+	appendStringInfo(&out, "sections=%d verified=%d unknown_skipped=%d extents=%u inline=%u indirect_pages=%d inline_sections=%d zones_inline=%d",
 					 p->hdr.nsec, good, skipped, p->hdr.total_extents, p->hdr.ninline_extents, p->nextlist_pages,
-					 (int) ((sift_part_section(p, SEC_SCHEMA)->flags & SIFT_SEC_FLAG_INLINE) != 0) + (int) ((sift_part_section(p, SEC_LEAF_STATS)->flags & SIFT_SEC_FLAG_INLINE) != 0));
+					 (int) ((sift_part_section(p, SEC_SCHEMA)->flags & SIFT_SEC_FLAG_INLINE) != 0) + (int) ((sift_part_section(p, SEC_LEAF_STATS)->flags & SIFT_SEC_FLAG_INLINE) != 0),
+					 (int) ((sift_part_section(p, SEC_ZONES)->flags & SIFT_SEC_FLAG_INLINE) != 0));
 	index_close(rel, NoLock);
 	PG_RETURN_TEXT_P(cstring_to_text(out.data));
 }

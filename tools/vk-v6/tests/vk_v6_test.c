@@ -413,7 +413,7 @@ tab_job(Case *c, const TData *d, uint32_t ngran, int64_t thr, int variant, uint6
 	c->j.ngran = ngran;
 	for (int k = 0; k < C_NCOLS; k++)
 		mask |= (uint64_t) (d->vg[0].col[k] != NULL) << k;
-	c->j.tab = (SiftVkTabKey) {.rel = rel, .manifest_gen = 1, .col_mask = mask, .granules = ngran};
+	c->j.tab = (SiftVkTabKey) {.rel = rel, .manifest_gen = 1, .col_mask = {mask}, .granules = ngran};
 }
 
 /* the job on the device: its status, whether its table was found, the chunks it had to send; the answer is compared with the oracle's */

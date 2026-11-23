@@ -179,7 +179,7 @@ read_zones(const SiftGpuQuery *q, PlanPart *pp, const char **why)
 	for (int c = 0; c < q->ncols; c++)
 	{
 		pp->zone[c] = palloc(pp->ng * sizeof(SiftZone));
-		sift_part_read_bytes(q->rel, part, zs->off + (uint64) pp->phys[c] * pp->ng * sizeof(SiftZone), (uint64) pp->ng * sizeof(SiftZone), pp->zone[c]);
+		sift_part_read_section_bytes(q->rel, part, zs, (uint64) pp->phys[c] * pp->ng * sizeof(SiftZone), (uint64) pp->ng * sizeof(SiftZone), pp->zone[c]);
 	}
 	return true;
 }

@@ -3,13 +3,16 @@
  * partition is queued with the bounds of its time column when the leading key is that column; a partition is opened into its parts, a part (opened once, with its deletion vector) into the one
  * frontier granule of a part that reads in the order of the query or the reverse of it, and into all its granules, each with the zones of its keys, otherwise. A granule is read by its leaves
  * of the keys first: the rows that cannot beat theta are dropped before the quals and the heap are looked at; the rows left are judged as the source of batches judges them (f2_v6_bridge.c).
+ * The parts the device read (SiftV6TopNDevice) are not opened: its best rows are offered first, with the addresses read from their granules, and tighten theta before the slab is scanned.
  */
 #include "postgres.h"
 
 #include "utils/memutils.h"
 
+#include "agg/gpu_v6.h"
 #include "col/am.h"
 #include "core/memtrack.h"
+#include "col/f2/f2_store_scan.h"
 #include "col/f2/f2_v6_bridge.h"
 #include "col/f2/part_format.h"
 
@@ -37,6 +40,7 @@ typedef struct TopSrc
 	SiftV6TopNSpec spec;
 	int			key_leaf[SIFT_TOURN_MAX_KEYS];
 	int			time_slot[SIFT_TOURN_MAX_KEYS];	/* the time column (0, 1) a key is, -1: none */
+	SiftV6TopNDevice dev;		/* what the device took; no rows and no parts when it took nothing */
 	bool		lead_key;		/* the leading key of the query is the leading key column of the index, an integer: the keys of a partition or a part bound it */
 	unsigned	lead_flags;
 	TopPartition *partitions;
@@ -145,6 +149,108 @@ push_granule(TopSrc *s, SiftTournament *t, SiftTournKind kind, uint32 pi, uint32
 	sift_tourn_push(t, kind, pi, g, pj, &k0, s->spec.nkeys > 1 ? &k1 : NULL);
 }
 
+typedef struct DevPart
+{
+	uint64		gen;
+	uint32		slot;			/* of the partition */
+	uint32		idx;			/* of the part in it */
+} DevPart;
+
+static int
+dev_part_cmp(const void *a, const void *b)
+{
+	const uint64 x = ((const DevPart *) a)->gen,
+				y = ((const DevPart *) b)->gen;
+
+	return x < y ? -1 : x > y;
+}
+
+/* The parts of the plan the device read, by generation */
+static DevPart *
+device_parts(const TopSrc *s, int *n)
+{
+	const SiftPlanSnapshot *plan = s->c->plan;
+	DevPart    *parts = palloc(Max(s->dev.nskip, 1) * sizeof(DevPart));
+
+	*n = 0;
+	for (int i = 0; i < plan->npartitions; i++)
+		for (int j = 0; j < plan->partlists[i].nparts; j++)
+		{
+			const uint64 gen = plan->partlists[i].parts[j].part_gen;
+
+			if (sift_store_gen_skipped(s->dev.skip, s->dev.nskip, gen))
+				parts[(*n)++] = (DevPart) {gen, (uint32) i, (uint32) j};
+		}
+	qsort(parts, *n, sizeof(DevPart), dev_part_cmp);
+	return parts;
+}
+
+/* the rows of the device by the granule they sit in, so that each granule gives its addresses once */
+static int
+dev_row_cmp(const void *a, const void *b, void *arg)
+{
+	const SiftGpuCand *c = arg,
+			   *x = &c[*(const uint32 *) a],
+			   *y = &c[*(const uint32 *) b];
+
+	if (x->part_gen != y->part_gen)
+		return x->part_gen < y->part_gen ? -1 : 1;
+	return x->granule != y->granule ? (x->granule < y->granule ? -1 : 1) : 0;
+}
+
+/* The rows the device chose are rows of the tournament: its key, and the address of the row read from the granule it names */
+static void
+offer_device(TopSrc *s, SiftTournament *t)
+{
+	const SiftGpuCand *cand = s->dev.cand;
+	DevPart    *parts;
+	uint32	   *order;
+	int			nparts;
+	const SiftGpuCand *at = NULL;
+	F2V6Gran	g;
+	const DevPart *part = NULL;
+
+	if (s->dev.ncand == 0)
+		return;
+	parts = device_parts(s, &nparts);
+	order = palloc(s->dev.ncand * sizeof(uint32));
+	for (uint32 i = 0; i < s->dev.ncand; i++)
+		order[i] = i;
+	qsort_arg(order, s->dev.ncand, sizeof(uint32), dev_row_cmp, (void *) cand);
+	for (uint32 i = 0; i < s->dev.ncand; i++)
+	{
+		const SiftGpuCand *c = &cand[order[i]];
+		SiftTopNWinRow row = {.key[0] = c->isnull ? 0 : c->key,.nulls = c->isnull,.local_g = (uint16) c->granule,.row_ord = (uint16) c->row};
+
+		if (at == NULL || at->part_gen != c->part_gen || at->granule != c->granule)
+		{
+			const DevPart key = {.gen = c->part_gen};
+			MemoryContext old;
+
+			part = bsearch(&key, parts, nparts, sizeof(DevPart), dev_part_cmp);
+			SIFT_INVARIANT(part != NULL, "the device read part generation %llu of index %u, which the plan of the scan lacks", (unsigned long long) c->part_gen, s->spec.indexoid);
+			MemoryContextReset(s->gcx);
+			old = MemoryContextSwitchTo(s->gcx);
+			f2v6_granule(s->c, part_of(s, part->slot, part->idx)->part, c->granule, NULL, 0, &g);
+			MemoryContextSwitchTo(old);
+			at = c;
+		}
+		SIFT_INVARIANT(c->row < g.n && ((g.live[c->row >> 6] >> (c->row & 63)) & 1), "row %u of granule %u of part generation %llu of index %u is not one the scan sees",
+					   c->row, c->granule, (unsigned long long) c->part_gen, s->spec.indexoid);
+		row.tid = g.tid[c->row];
+		row.part_slot = part->slot;
+		sift_tourn_offer(t, &row);
+	}
+	pfree(order);
+	pfree(parts);
+}
+
+static void
+top_device(void *src, const SiftV6TopNDevice *dev)
+{
+	((TopSrc *) src)->dev = *dev;
+}
+
 static void
 top_seed(void *src, SiftTournament *t)
 {
@@ -152,6 +258,7 @@ top_seed(void *src, SiftTournament *t)
 	const SiftPlanSnapshot *plan = s->c->plan;
 	SiftV6SkipStats *skips = sift_f2_v6_eval_skips(s->ev);
 
+	offer_device(s, t);
 	for (int i = 0; i < plan->npartitions; i++)
 		if (plan->partitions[i].l0_slab_blk != InvalidBlockNumber && sift_f2_v6_eval_entry_meets_keys(s->ev, &plan->partitions[i]))
 			sift_tourn_push(t, STOK_L0_SLAB, (uint32) i, 0, 0, NULL, NULL);
@@ -193,7 +300,8 @@ top_expand(void *src, SiftTournament *t, const SiftTopNSchedTok *tok)
 			SiftTournBound k0 = known ? time_bound(s, 0, d->time_min, d->time_max) : unknown_bound,
 						k1 = known && s->spec.nkeys > 1 ? time_bound(s, 1, d->time_min, d->time_max) : unknown_bound;
 
-			if (!f2v6_part_meets_time(s->c, e, d, sift_f2_v6_eval_window(s->ev)) || !sift_f2_v6_eval_part_meets_keys(s->ev, d))
+			if (sift_store_gen_skipped(s->dev.skip, s->dev.nskip, d->part_gen) || !f2v6_part_meets_time(s->c, e, d, sift_f2_v6_eval_window(s->ev)) ||
+				!sift_f2_v6_eval_part_meets_keys(s->ev, d))
 			{
 				sift_f2_v6_eval_skips(s->ev)->parts++;
 				continue;
@@ -338,6 +446,6 @@ sift_f2_v6_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Inp
 	s->lead_key = s->c->f->nkey > 0 && s->key_leaf[0] == s->c->f->key_cols[0] && s->c->schema->cols[s->key_leaf[0]].store == SIFT_COLS_INT;
 	s->lead_flags = s->c->f->spec.sort_flags[0];
 	MemoryContextSwitchTo(old);
-	*dst = (SiftV6TopNSource) {.ops = {.expand = top_expand,.frontier_next = top_frontier_next,.scan = top_scan},.src = s,.seed = top_seed,.fetch = top_fetch,.close = top_close,.skips = sift_f2_v6_eval_skips(s->ev)};
+	*dst = (SiftV6TopNSource) {.ops = {.expand = top_expand,.frontier_next = top_frontier_next,.scan = top_scan},.src = s,.device = top_device,.seed = top_seed,.fetch = top_fetch,.close = top_close,.skips = sift_f2_v6_eval_skips(s->ev)};
 	return true;
 }

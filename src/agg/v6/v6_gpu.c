@@ -14,6 +14,7 @@
 #include "agg/gpu_cfg.h"
 #include "agg/gpu_v6.h"
 #include "agg/v6/v6_gpu.h"
+#include "agg/v6/v6_topn.h"
 
 typedef struct GpuQuery
 {
@@ -21,8 +22,10 @@ typedef struct GpuQuery
 	SiftGpuIn	in[SIFT_VK_MAXCOLS];
 	int			in_attno[SIFT_VK_MAXCOLS];
 	SiftVexprProg where;
+	SiftVexprProg sort;
 	MemoryContext cx;
 	Relation	index;
+	SiftV6Input *tin;			/* a top-N: the clauses are the table's, and this maps its attributes to those of the index; NULL: the clauses are already the index's */
 } GpuQuery;
 
 static int64 element_value(Oid elemtype, Datum d);
@@ -150,14 +153,14 @@ node_const(GpuQuery *g, Oid typid, SiftVecType type, Datum d)
 }
 
 static const SiftVexprNode *
-node_column(GpuQuery *g, const Var *v, SiftVecType as)
+node_column(GpuQuery *g, int attno, Oid typid, SiftVecType as)
 {
-	const int	slot = slot_of_attno(g, v->varattno);
+	const int	slot = slot_of_attno(g, attno);
 	SiftVexprNode *c;
 
 	if (slot < 0)
 		return NULL;
-	c = node_new(g, SVX_COL, vec_type_of(v->vartype));
+	c = node_new(g, SVX_COL, vec_type_of(typid));
 	c->aux = slot;
 	return c->type == as ? c : node_unary(g, SVX_CAST, as, c);
 }
@@ -182,39 +185,72 @@ cmp_op_of(Oid opno, Oid opfamily)
 	}
 }
 
+/* The attribute of the index a Var of a clause reads (those of the scan of the table are mapped through its input); 0: the index has no column of it */
+static int
+qual_attno(GpuQuery *g, const Var *v)
+{
+	int			slot;
+
+	if (g->tin == NULL)
+		return v->varattno;
+	return (slot = sift_v6_input_add_var(g->tin, v)) < 0 ? 0 : g->tin->col[slot].attno;
+}
+
+static Oid
+qual_opfamily(const GpuQuery *g, int attno)
+{
+	return g->index != NULL ? g->index->rd_opfamily[attno - 1] : g->q.store->opfamily[attno];
+}
+
+/* Var op Const with a constant that is not NULL: what the device compares; a clause of any other form (a parameter, an expression) is the CPU's */
+static bool
+var_const(GpuQuery *g, const List *args, const Var **v, const Const **k, int *attno)
+{
+	if (list_length(args) != 2 || !IsA(linitial(args), Var) || !IsA(lsecond(args), Const) || ((const Const *) lsecond(args))->constisnull)
+		return false;
+	*v = linitial(args);
+	*k = lsecond(args);
+	return (*attno = qual_attno(g, *v)) > 0;
+}
+
 /* what the scan of the CPU also knows of a comparison of a whole number column: its zones rule out the granules it cannot pass */
 static void
-note_zone_test(GpuQuery *g, const Var *v, const Const *k, int cmp)
+note_zone_test(GpuQuery *g, int attno, const Var *v, const Const *k, int cmp)
 {
 	SiftGpuQuery *q = &g->q;
 
-	if (domain_of(v->vartype) != DOM_INT || cmp == SCMP_NE || k->constisnull || q->nzone == SIFT_GPU_ZONE_TESTS)
+	if (domain_of(v->vartype) != DOM_INT || cmp == SCMP_NE || q->nzone == SIFT_GPU_ZONE_TESTS)
 		return;
-	q->zone[q->nzone++] = (SiftGpuZoneCmp) {.col = slot_of_attno(g, v->varattno),.op = cmp,.val = element_value(k->consttype, k->constvalue)};
+	q->zone[q->nzone++] = (SiftGpuZoneCmp) {.col = slot_of_attno(g, attno),.op = cmp,.val = element_value(k->consttype, k->constvalue)};
 }
 
 /* column op constant, both of one domain: the comparison runs in the wider of their types */
 static const SiftVexprNode *
 compile_compare(GpuQuery *g, const OpExpr *op)
 {
-	const Var  *v = linitial(op->args);
-	const Const *k = lsecond(op->args);
-	const Domain dom = domain_of(v->vartype);
-	const int	cmp = cmp_op_of(op->opno, g->index != NULL ? g->index->rd_opfamily[v->varattno - 1] : g->q.store->opfamily[v->varattno]);
+	const Var  *v;
+	const Const *k;
+	int			attno;
+	Domain		dom;
+	int			cmp;
 	SiftVecType type;
 	SiftVexprNode *n;
 	const SiftVexprNode *col;
 
+	if (!var_const(g, op->args, &v, &k, &attno))
+		return NULL;
+	dom = domain_of(v->vartype);
+	cmp = cmp_op_of(op->opno, qual_opfamily(g, attno));
 	if (dom == DOM_NONE || dom != domain_of(k->consttype) || cmp < 0)
 		return NULL;
 	type = dom == DOM_F64 ? SVEC_F64 : vec_type_of(v->vartype) == SVEC_I64 || vec_type_of(k->consttype) == SVEC_I64 ? SVEC_I64 : SVEC_I32;
-	if ((col = node_column(g, v, type)) == NULL)
+	if ((col = node_column(g, attno, v->vartype, type)) == NULL)
 		return NULL;
 	n = node_new(g, SVX_CMP, SVEC_BOOL);
 	n->aux = cmp;
 	n->args[n->nargs++] = col;
 	n->args[n->nargs++] = node_const(g, k->consttype, type, k->constvalue);
-	note_zone_test(g, v, k, cmp);
+	note_zone_test(g, attno, v, k, cmp);
 	return n;
 }
 
@@ -222,8 +258,12 @@ static const SiftVexprNode *
 compile_null_test(GpuQuery *g, const NullTest *nt)
 {
 	const Var  *v = (const Var *) nt->arg;
-	const SiftVexprNode *col = node_column(g, v, vec_type_of(v->vartype));
+	int			attno;
+	const SiftVexprNode *col;
 
+	if (!IsA(nt->arg, Var) || (attno = qual_attno(g, v)) <= 0)
+		return NULL;
+	col = node_column(g, attno, v->vartype, vec_type_of(v->vartype));
 	return col == NULL ? NULL : node_unary(g, nt->nulltesttype == IS_NULL ? SVX_IS_NULL : SVX_IS_NOT_NULL, SVEC_BOOL, col);
 }
 
@@ -246,15 +286,22 @@ element_value(Oid elemtype, Datum d)
 static bool
 add_in_list(GpuQuery *g, const ScalarArrayOpExpr *sa)
 {
-	const Var  *v = linitial(sa->args);
-	ArrayType  *arr = DatumGetArrayTypeP(((const Const *) lsecond(sa->args))->constvalue);
-	const Oid	elemtype = ARR_ELEMTYPE(arr);
-	const Domain dom = domain_of(v->vartype);
+	const Var  *v;
+	const Const *k;
+	int			attno;
+	ArrayType  *arr;
+	Oid			elemtype;
+	Domain		dom;
 	Datum	   *elems;
 	bool	   *nulls;
 	int			n;
 	int64	   *vals;
 
+	if (!var_const(g, sa->args, &v, &k, &attno) || !sa->useOr || cmp_op_of(sa->opno, qual_opfamily(g, attno)) != SCMP_EQ)
+		return false;
+	arr = DatumGetArrayTypeP(k->constvalue);
+	elemtype = ARR_ELEMTYPE(arr);
+	dom = domain_of(v->vartype);
 	if (dom == DOM_NONE || dom == DOM_F64 || dom != domain_of(elemtype) || g->q.nin == SIFT_VK_MAXCOLS)
 		return false;
 	deconstruct_array(arr, elemtype, get_typlen(elemtype), get_typbyval(elemtype), TYPALIGN_INT, &elems, &nulls, &n);
@@ -267,7 +314,7 @@ add_in_list(GpuQuery *g, const ScalarArrayOpExpr *sa)
 			return false;
 		vals[i] = element_value(elemtype, elems[i]);
 	}
-	g->in_attno[g->q.nin] = v->varattno;
+	g->in_attno[g->q.nin] = attno;
 	g->in[g->q.nin++] = (SiftGpuIn) {.n = n,.vals = vals};
 	return true;
 }
@@ -288,11 +335,11 @@ compile_qual(GpuQuery *g, const Node *qual)
 
 /* The quals of the scan: IN lists to sets, the others to the one program of the WHERE */
 static bool
-compile_quals(GpuQuery *g, const SiftV6Spec *spec)
+compile_quals(GpuQuery *g, const List *quals)
 {
 	const SiftVexprNode *root = NULL;
 
-	foreach_ptr(Node, qual, spec->indexqual)
+	foreach_ptr(Node, qual, quals)
 	{
 		const SiftVexprNode *n;
 
@@ -321,13 +368,22 @@ compile_quals(GpuQuery *g, const SiftV6Spec *spec)
 	return sift_vexpr_compile(root, &g->where);
 }
 
-/* The slots of the columns the sets, the keys and the arguments read, after those of the program */
+/* The slots of the columns the sets read, after those of the program */
 static bool
-assign_slots(GpuQuery *g, const SiftV6Spec *spec)
+assign_in_slots(GpuQuery *g)
 {
 	for (int i = 0; i < g->q.nin; i++)
 		if ((g->in[i].col = slot_of_attno(g, g->in_attno[i])) < 0)
 			return false;
+	return true;
+}
+
+/* The slots of the columns the sets, the keys and the arguments read, after those of the program */
+static bool
+assign_slots(GpuQuery *g, const SiftV6Spec *spec)
+{
+	if (!assign_in_slots(g))
+		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 		if (slot_of_attno(g, spec->key[i].attno) < 0)
 			return false;
@@ -382,12 +438,66 @@ sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot 
 	g->index = index;
 	g->q = (SiftGpuQuery) {.in = g->in,.rel = rel,.heap = index != NULL ? heap : NULL,.store = sift_f2_store_open(rel),.snap = snap,.spec = spec,
 		.est_groups = spec->nkeys == 0 ? 1 : est_groups};
-	if (!compile_quals(g, spec) || !assign_slots(g, spec))
+	if (!compile_quals(g, spec->indexqual) || !assign_slots(g, spec))
 		return NULL;
 	groups = sift_gpu_v6_agg(&g->q, gcx, desc, &gpu->run);
 	if (groups != NULL)
 		gpu->skip = covered_gens(gpu->run->plan, gcx, &gpu->nskip);
 	return groups;
+}
+
+/* ORDER BY one whole number, date or instant, no ties: what the device ranks (a float key orders -0 and NaN as the tournament does not) */
+static bool
+topn_shape(const SiftV6TopNSpec *spec)
+{
+	const Domain dom = domain_of(spec->key[0].typid);
+
+	return spec->nkeys == 1 && !spec->with_ties && dom != DOM_NONE && dom != DOM_F64;
+}
+
+bool
+sift_v6_gpu_topn_forced(const SiftV6TopNSpec *spec)
+{
+	return sift_gpu_mode == SIFT_GPU_ON && topn_shape(spec);
+}
+
+/* The sort program is the column of the key */
+static bool
+topn_key(GpuQuery *g, const SiftV6TopNSpec *spec)
+{
+	const SiftVexprNode *col;
+
+	if (!topn_shape(spec))
+		return false;
+	if ((col = node_column(g, spec->key[0].attno, spec->key[0].typid, vec_type_of(spec->key[0].typid))) == NULL)
+		return false;
+	g->q.sort = &g->sort;
+	return sift_vexpr_compile(col, &g->sort);
+}
+
+bool
+sift_v6_gpu_topn(const SiftV6TopNSpec *spec, SiftV6Input *in, const List *quals, Relation heap, Relation index, Snapshot snap, bool prunable, MemoryContext cx,
+				 SiftV6Gpu *gpu, SiftV6TopNDevice *dev)
+{
+	GpuQuery   *g;
+	SiftGpuCand *cand;
+	uint32		ncand;
+
+	*gpu = (SiftV6Gpu) {0};
+	if (sift_gpu_mode == SIFT_GPU_OFF)
+		return false;
+	g = MemoryContextAllocZero(cx, sizeof(GpuQuery));
+	g->cx = cx;
+	g->index = index;
+	g->tin = in;
+	g->q = (SiftGpuQuery) {.in = g->in,.rel = index,.heap = heap,.store = sift_f2_store_open(index),.snap = snap};
+	if (!compile_quals(g, quals) || !topn_key(g, spec) || !assign_in_slots(g))
+		return false;
+	if (!sift_gpu_v6_topn(&g->q, (uint32) spec->rows, spec->order[0].desc, spec->order[0].nulls_first, prunable, cx, &gpu->run, &cand, &ncand))
+		return false;
+	gpu->skip = covered_gens(gpu->run->plan, cx, &gpu->nskip);
+	*dev = (SiftV6TopNDevice) {.cand = cand,.ncand = ncand,.skip = gpu->skip,.nskip = gpu->nskip};
+	return true;
 }
 
 void
