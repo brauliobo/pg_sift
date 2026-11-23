@@ -40,9 +40,26 @@ strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView 
 	cv->slen = sl;
 }
 
+/* The codes of the rows only, placed at their rows of an array of n: false when the column is not a dictionary of strings */
+static bool
+sparse_codes(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrows, bool *sn, ColView *cv)
+{
+	uint32	   *sc = palloc(nrows * sizeof(uint32)),
+			   *dc = palloc0(n * sizeof(uint32));
+	SiftGranuleDict *d = palloc(sizeof(SiftGranuleDict));
+
+	if (!sift_granule_point_str_codes(v, c, rows, nrows, sc, sn, d))
+		return false;
+	for (int j = 0; j < nrows; j++)
+		dc[rows[j]] = sc[j];
+	cv->dcode = dc;
+	cv->dict = d;
+	return true;
+}
+
 /* The values of the rows only, placed at their rows of arrays of n */
 static void
-sparse_view(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrows, bool *nl, ColView *cv)
+sparse_view(const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, bool *nl, ColView *cv)
 {
 	bool	   *sn = palloc(nrows * sizeof(bool));
 
@@ -66,7 +83,7 @@ sparse_view(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrow
 			fv[rows[j]] = sv[j];
 		cv->f = fv;
 	}
-	else
+	else if (!codes || !sparse_codes(v, c, n, rows, nrows, sn, cv))
 	{
 		SiftStrCell *sv = palloc(nrows * sizeof(SiftStrCell));
 		const char **sp = palloc0(n * sizeof(char *));
@@ -96,7 +113,7 @@ sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n,
 
 	cv.kind = d->store == SIFT_COLS_INT ? SIFT_CELL_INT : (d->store == SIFT_COLS_STR || d->store == SIFT_COLS_VAR) ? SIFT_CELL_STR : SIFT_CELL_F8;
 	if (rows != NULL)
-		sparse_view(v, c, n, rows, nrows, nl, &cv);
+		sparse_view(v, c, n, codes, rows, nrows, nl, &cv);
 	else if (cv.kind == SIFT_CELL_INT)
 	{
 		int64	   *iv = palloc(n * sizeof(int64));

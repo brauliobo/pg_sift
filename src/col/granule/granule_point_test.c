@@ -21,6 +21,28 @@ rnd(uint64 *s)
 	return *s >> 17;
 }
 
+/* The codes of the rows from the point decoder against those of the whole column: both say the column is not coded, or agree on the dictionary, the nulls and the codes */
+static int
+codes_failures(const SiftGranuleView *v, const uint16 *rows, int k, int n)
+{
+	uint32	   *pc = palloc(Max(k, 1) * sizeof(uint32)),
+			   *fc = palloc(n * sizeof(uint32));
+	bool	   *pn = palloc(Max(k, 1)),
+			   *fn = palloc(n);
+	SiftGranuleDict pd,
+				fd;
+	int			failures = 0;
+
+	if (!sift_granule_str_codes(v, 0, fc, fn, &fd))
+		return sift_granule_point_str_codes(v, 0, rows, k, pc, pn, &pd);
+	if (!sift_granule_point_str_codes(v, 0, rows, k, pc, pn, &pd))
+		return 1;
+	failures += pd.n != fd.n;
+	for (int j = 0; j < k; j++)
+		failures += pn[j] != fn[rows[j]] || pc[j] != fc[rows[j]];
+	return failures;
+}
+
 /* kind 0: int, 1: float, 2: string; pattern 0: a constant, 1: ascending, 2: few values, 3: random; nulls: every 5th row */
 static int
 case_failures(int kind, int pattern, int n, bool nulls, uint64 *rs)
@@ -105,6 +127,7 @@ case_failures(int kind, int pattern, int n, bool nulls, uint64 *rs)
 			sift_granule_strs(&v, 0, fo);
 			for (int j = 0; j < k; j++)
 				failures += so[j].isnull != fo[rows[j]].isnull || (!so[j].isnull && (so[j].len != fo[rows[j]].len || memcmp(so[j].p, fo[rows[j]].p, so[j].len) != 0));
+			failures += codes_failures(&v, rows, k, n);
 		}
 	}
 	return failures;

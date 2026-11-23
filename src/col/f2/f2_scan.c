@@ -387,12 +387,14 @@ prune_window(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPar
 	MemoryContextDelete(cx);
 }
 
-/* The rows set in the bitmap, into rows (SIFT_POINT_ROWS_MAX of them): their number, or 0 when there are more */
+/* The rows set in the bitmap, into rows (SIFT_POINT_ROWS_MAX of them): their number, or 0 when there are more or when they are a quarter of the n rows or more, which the dense decode reads faster */
 static int
-active_rows(const uint64 *active, int n, uint16 *rows)
+active_rows(const uint64 *active, uint32 live, int n, uint16 *rows)
 {
 	int			m = 0;
 
+	if (live * 4 >= (uint32) n)
+		return 0;
 	for (int w = 0; w < (n + 63) / 64; w++)
 		for (uint64 bits = active[w]; bits != 0; bits &= bits - 1)
 		{
@@ -530,7 +532,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 		}
 		if (!few)
 			load_rest(rel, s, &lg, decided);
-		nrows = active_rows(active, n, arows);
+		nrows = active_rows(active, live, n, arows);
 		rows = nrows > 0 ? arows : NULL;
 		views = palloc0(schema->ncols * sizeof(ColView));
 		for (int k = 0; k < s->npreds && !few; k++)

@@ -482,6 +482,9 @@ extern void sift_granule_strs(const SiftGranuleView *v, int col, SiftStrCell *ou
 /* The strings of the ascending rows; out[j] is of rows[j] (isnull set), the strings point into the record or into a scratch of the current context */
 extern void sift_granule_point_strs(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, SiftStrCell *out);
 
+/* The same for the ascending rows only, codes[j] and isnull[j] for rows[j]: the code stream is read at those rows and no string is decoded; false when the chunk is not coded */
+extern bool sift_granule_point_str_codes(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, uint32 *codes, bool *isnull, SiftGranuleDict *dict);
+
 /* The code of each row of a column held as a dictionary of strings, with isnull per row and the dictionary the codes name (valid with the granule); false, with nothing written, when the chunk is not coded */
 extern bool sift_granule_str_codes(const SiftGranuleView *v, int col, uint32 *codes, bool *isnull, SiftGranuleDict *dict);
 

@@ -5,7 +5,12 @@
  */
 #include "postgres.h"
 
+#include "core/damage.h"
+
+#include "col/am.h"
+#include "col/fsst.h"
 #include "col/granule/granule.h"
+#include "col/granule/granule_filter.h"
 #include "col/granule/granule_int.h"
 
 static void
@@ -28,6 +33,34 @@ sift_granule_point_str(const SiftGranuleView *v, int col, uint16 row, const char
 		sift_chunk_str_one(&c, sift_chunk_rank(&c, row), p, len);
 	sift_chunk_release_strs(&c);
 	return valid;
+}
+
+/* The strings of ranks k[0..m) (ascending) of an FSST chunk: the coded lengths are read once for the chunk, the m strings are decoded one after the other into one buffer */
+static void
+fsst_sel(const SiftChunk *c, const uint32 *k, int m, const char **p, uint32 *len)
+{
+	SiftFsstChunk f;
+	uint64		cap = SIFT_FSST_SLACK,
+				at = 0;
+	uint8	   *out;
+
+	if (!sift_fsst_chunk_open(c, &f))
+		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the symbol table of a string chunk is damaged"));
+	sift_fsst_chunk_offsets(&f, c->nnonnull);
+	for (int i = 0; i < m; i++)
+		cap += 8 * (uint64) f.clen[k[i]];
+	out = palloc(cap);
+	for (int i = 0; i < m; i++)
+	{
+		uint32		n = sift_fsst_decode(f.t, f.coded + f.off[k[i]], (uint32) f.clen[k[i]], out + at);
+
+		if (n == UINT32_MAX)
+			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a coded string does not decode"));
+		p[i] = (const char *) out + at;
+		len[i] = n;
+		at += n;
+	}
+	sift_fsst_chunk_close(&f);
 }
 
 /* The strings of the ascending rows: the rank of each row is found from the one before it, and a few rows of a symbol-table chunk are decoded alone */
@@ -58,8 +91,7 @@ sift_granule_point_strs(const SiftGranuleView *v, int col, const uint16 *rows, u
 		uint32	   *len = palloc(span * sizeof(uint32));
 
 		if (sparse)
-			for (int i = 0; i < m; i++)
-				sift_chunk_str_one(&c, k[i], &p[i], &len[i]);
+			fsst_sel(&c, k, m, p, len);
 		else
 			sift_chunk_strs(&c, k[0], k[m - 1] + 1, p, len);
 		for (int j = 0, i = 0; j < nrows; j++)
@@ -76,6 +108,51 @@ sift_granule_point_strs(const SiftGranuleView *v, int col, const uint16 *rows, u
 	}
 	pfree(k);
 	sift_chunk_release_strs(&c);
+}
+
+bool
+sift_granule_point_str_codes(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, uint32 *codes, bool *isnull, SiftGranuleDict *dict)
+{
+	SiftChunk	c;
+	const char *blob;
+	uint32		blob_len;
+	/* check-memory: allow the rows of one granule, at most SIFT_GRANULE_ROWS */
+	uint32	   *k = palloc(Max(nrows, 1) * sizeof(uint32));
+	/* check-memory: allow the rows of one granule, at most SIFT_GRANULE_ROWS */
+	int64	   *vals = palloc(Max(nrows, 1) * sizeof(int64));
+	int			word = 0,
+				rank = 0,
+				m = 0;
+
+	col_open(v, col, &c);
+	if (c.enc != SIFT_CENC_DICT_CODE)
+	{
+		sift_chunk_release_strs(&c);
+		return false;
+	}
+	sift_chunk_dict(&c, dict, &blob, &blob_len);
+	for (int j = 0; j < nrows; j++)
+	{
+		isnull[j] = !sift_chunk_row_valid(&c, rows[j]);
+		if (!isnull[j])
+			k[m++] = sift_chunk_rank_advance(&c, &word, &rank, rows[j]);
+	}
+	if (m > 0)
+	{
+		SiftCc	   *cc = sift_cc_blob_open(blob, blob_len, c.nnonnull, NULL);
+
+		sift_cc_decode_sel(cc, k, m, vals);
+		sift_cc_close(cc);
+	}
+	for (int j = 0, i = 0; j < nrows; j++)
+	{
+		codes[j] = isnull[j] ? 0 : (uint32) vals[i++];
+		if (!isnull[j] && codes[j] >= dict->n)
+			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a dictionary code is past its dictionary"));
+	}
+	pfree(k);
+	pfree(vals);
+	return true;
 }
 
 bool
