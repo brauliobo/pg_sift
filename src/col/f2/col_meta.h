@@ -11,7 +11,7 @@
 #include "core/f2/meta.h"
 #include "core/shm_manifest.h"
 
-#define SIFT_COL_MAINT_ERR_LEN	192
+#define SIFT_COL_MAINT_ERR_LEN	160
 
 typedef struct SiftColMetaPageData
 {
@@ -61,6 +61,12 @@ typedef struct SiftColMetaPageData
 	uint16		shrink_blocked;
 	uint16		inline_off;		/* the inline summary after the struct (SiftMetaInlineHeader), 0 and 0 without one */
 	uint16		inline_len;
+	uint32		vm_all_visible_vblocks;	/* sift_table VM: cached ALL_VISIBLE vblocks */
+	uint32		vm_all_frozen_vblocks;	/* sift_table VM: cached ALL_FROZEN vblocks */
+	uint64		vm_total_vblocks;		/* sift_table VM: high-water vblock watermark */
+	uint64		key_order_change_gen;	/* 0 if all live parts match active key_order; else part_gen threshold */
+	uint32		active_key_order_hash;	/* hash of active (attnum, sort_flags)[0..nsort-1] */
+	uint32		key_order_pad;			/* reserved 0 */
 	char		maint_errmsg[SIFT_COL_MAINT_ERR_LEN];
 } SiftColMetaPageData;
 

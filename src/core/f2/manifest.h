@@ -146,6 +146,7 @@ StaticAssertDecl(sizeof(SiftPartDirPageData) == 24, "SiftPartDirPageData header 
 #define SIFT_PART_EXT_SLAB			(UINT8_C(1) << 4)	/* of a descriptor made in memory, never stored: the micro-slab at header_blk of nrows rows, as a part a standby reads (col/f2/f2_slab_view.h) */
 #define SIFT_PART_EXT_PREAGG		(UINT8_C(1) << 5)	/* the part carries SEC_PREAGG v2 cubes */
 #define SIFT_PART_EXT_TID_HASH		(UINT8_C(1) << 6)	/* the part carries SEC_TID_HASH for O(1) ctid locate on key-ordered parts */
+#define SIFT_PART_EXT_ROW_PACK		(UINT8_C(1) << 7)	/* the part carries SEC_ROW_PACK 64-row LZ4 micro-blocks */
 
 typedef struct SiftPartDesc
 {

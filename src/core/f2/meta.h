@@ -37,7 +37,8 @@ typedef enum SiftAmKind
 #define SIFT_COMPAT_TIME_BOUNDS		(UINT64CONST(1) << 4)	/* the 192-byte partition entries, the 224-byte part descriptors and the 64-byte directory keys carry two time bounds */
 #define SIFT_COMPAT_REMOTE_PARTS	(UINT64CONST(1) << 5)	/* a reader must know how to fetch the parts that live in remote storage (set only while the relation has one) */
 #define SIFT_COMPAT_NATIVE_STRINGS	(UINT64CONST(1) << 6)	/* sift_table stores headerless UTF-8/name/bytea/uuid matching sift_col */
-#define SIFT_KNOWN_COMPAT_MASK		(SIFT_COMPAT_PARTITIONED | SIFT_COMPAT_NATIVE_MVCC | SIFT_COMPAT_TRACK_DELETES | SIFT_COMPAT_SCOPES | SIFT_COMPAT_TIME_BOUNDS | SIFT_COMPAT_REMOTE_PARTS | SIFT_COMPAT_NATIVE_STRINGS)
+#define SIFT_COMPAT_COL_DELTA_DIR	(UINT64CONST(1) << 7)	/* partition delta anchor may reference SIFT_PT_COL_DELTA_DIR */
+#define SIFT_KNOWN_COMPAT_MASK		(SIFT_COMPAT_PARTITIONED | SIFT_COMPAT_NATIVE_MVCC | SIFT_COMPAT_TRACK_DELETES | SIFT_COMPAT_SCOPES | SIFT_COMPAT_TIME_BOUNDS | SIFT_COMPAT_REMOTE_PARTS | SIFT_COMPAT_NATIVE_STRINGS | SIFT_COMPAT_COL_DELTA_DIR)
 
 /* Required to write: a bit this build does not know leaves the index readable and refuses a write or maintenance step */
 #define SIFT_ROCOMPAT_PREAGG_V2		(UINT64CONST(1) << 0)
@@ -45,7 +46,8 @@ typedef enum SiftAmKind
 #define SIFT_ROCOMPAT_META_INLINE	(UINT64CONST(1) << 2)	/* block 0 holds the inline summary after the metapage struct (col/col_meta.h) */
 #define SIFT_ROCOMPAT_PROJECTIONS	(UINT64CONST(1) << 3)	/* writers and compaction must maintain the secondary projections (set only while the relation has one) */
 #define SIFT_ROCOMPAT_TTL			(UINT64CONST(1) << 4)	/* writers and compaction must enforce the time to live (set only while the relation has one) */
-#define SIFT_KNOWN_ROCOMPAT_MASK	(SIFT_ROCOMPAT_PREAGG_V2 | SIFT_ROCOMPAT_META_INLINE | SIFT_ROCOMPAT_PROJECTIONS | SIFT_ROCOMPAT_TTL)
+#define SIFT_ROCOMPAT_TABLE_VM		(UINT64CONST(1) << 5)	/* writers must clear VISIBILITYMAP_FORKNUM bits on sift_table DML */
+#define SIFT_KNOWN_ROCOMPAT_MASK	(SIFT_ROCOMPAT_PREAGG_V2 | SIFT_ROCOMPAT_META_INLINE | SIFT_ROCOMPAT_PROJECTIONS | SIFT_ROCOMPAT_TTL | SIFT_ROCOMPAT_TABLE_VM)
 
 /* SiftColMetaPageData.state_flags: states, not format */
 #define SIFT_META_FLAG_QUARANTINED	(UINT32_C(1) << 0)

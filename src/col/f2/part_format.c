@@ -21,7 +21,7 @@
 bool
 sift_section_known(uint16 tag)
 {
-	return (tag >= SEC_SCHEMA && tag <= SEC_DICTS) || (tag >= SEC_VERS && tag <= SEC_TID_HASH) || (tag >= SEC_GRANULE_TSTRIDE && tag <= SEC_VARIANT_EXC) || (tag >= SEC_ZONES && tag <= SEC_POINT) || tag == SEC_SKIP_INDEX || tag == SEC_KLL || tag == SEC_KEY_MARKS || tag == SEC_COL_STATS ||
+	return (tag >= SEC_SCHEMA && tag <= SEC_DICTS) || (tag >= SEC_VERS && tag <= SEC_ROW_PACK) || (tag >= SEC_GRANULE_TSTRIDE && tag <= SEC_VARIANT_EXC) || (tag >= SEC_ZONES && tag <= SEC_POINT) || tag == SEC_SKIP_INDEX || tag == SEC_KLL || tag == SEC_KEY_MARKS || tag == SEC_COL_STATS ||
 		(tag >= SEC_LEAF_STATS && tag <= SEC_SCHEMA_DEFAULTS && tag != 0x0302) || (tag >= SEC_SCOPE_HDR && tag <= SEC_SCOPE_ENT_ROUTE);
 }
 

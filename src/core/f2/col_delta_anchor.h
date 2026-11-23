@@ -20,7 +20,8 @@
 #define SIFT_CDLA_DIRTY_TIME1			(UINT16_C(1) << 1)
 #define SIFT_CDLA_TID_ONLY				(UINT16_C(1) << 2)	/* the chain holds address changes only (SIFT_CD_ATT_TID_REMAP): no value of the index is patched, its summaries stay valid */
 #define SIFT_CDLA_DIRTY_SCOPE			(UINT16_C(1) << 3)	/* the chain patches a leaf a scope summary of the index reads */
-#define SIFT_CDLA_KNOWN					(SIFT_CDLA_DIRTY_TIME0 | SIFT_CDLA_DIRTY_TIME1 | SIFT_CDLA_TID_ONLY | SIFT_CDLA_DIRTY_SCOPE)
+#define SIFT_CDLA_INDEXED_DIR			(UINT16_C(1) << 4)	/* delta_head_blkno points to SIFT_PT_COL_DELTA_DIR */
+#define SIFT_CDLA_KNOWN					(SIFT_CDLA_DIRTY_TIME0 | SIFT_CDLA_DIRTY_TIME1 | SIFT_CDLA_TID_ONLY | SIFT_CDLA_DIRTY_SCOPE | SIFT_CDLA_INDEXED_DIR)
 
 typedef struct SiftColDeltaAnchor
 {
