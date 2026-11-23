@@ -16,12 +16,16 @@ FLOCK    = $(if $(shell command -v flock),flock /tmp/sift-perf.lock)
 OUT     ?= /tmp/sift-unit
 MODE    ?= plain
 
-TESTS   = test_arena par_core
-BENCHES = bench_arena
+TESTS   = test_arena par_core par_radix
+BENCHES = bench_arena bench_par_radix
 LIB_test_arena  = core/par/arena.c col/compress.c
 LIB_bench_arena = core/par/arena.c
 LIB_par_core    = core/par/arena.c core/par/morsel.c core/par/pool.c core/par/radix.c core/par/topk.c
 FX_par_core     = $(B)/par_host.o
+LIB_par_radix   = $(LIB_par_core) agg/v6/par/group.c agg/v6/par/distinct.c agg/v6/v6_group_cmp.c agg/v6/v6_distinct_u64.c agg/kern6_hash.c
+FX_par_radix    = $(B)/par_host.o
+LIB_bench_par_radix = $(LIB_par_radix)
+FX_bench_par_radix  = $(B)/par_host.o
 
 OPT_plain = -O2
 OPT_asan  = -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined
@@ -34,7 +38,7 @@ B        = $(OUT)/$(MODE)
 CFLAGS   = -std=gnu17 -g -fno-omit-frame-pointer $(OPT_$(MODE)) $(SIFT_BASE_ISA) -ffp-contract=off -Wall -Werror -pthread \
            $(SIFT_INC) -I$(PGINC) $(SIFT_PGCPP) -I. -DSIFT_HAVE_LZ4 -DSIFT_HAVE_ZSTD
 WRAPPED  = ${shell sed -n 's/^TRAPV\?([^,]*, *\([A-Za-z0-9_]*\),.*/\1/p' trapped.def}
-LDFLAGS  = $(foreach f,$(WRAPPED),-Wl,--wrap=$(f))
+LDFLAGS  = $(foreach f,$(WRAPPED) pthread_create,-Wl,--wrap=$(f))
 LDLIBS   = $(PGLIB) -lpgport -lpgcommon $(SIFT_PGLIBS) -lzstd -llz4 -lm
 HDR      = $(wildcard $(SRC)/core/*.h $(SRC)/col/*.h) $(wildcard *.h) trapped.def
 SHIM     = $(B)/pgshim.o $(B)/trapshim.o
