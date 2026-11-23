@@ -38,6 +38,10 @@ extern char *result_buf(UDF_INIT *initid, size_t need);
 extern void common_deinit(UDF_INIT *initid);
 extern SiftIdx *open_index(UDF_ARGS *args, char *error);
 
+/* A reference of open_index that the function gives back whichever way it returns */
+extern void ix_scope_end(SiftIdx **ixp);
+#define SCOPED_IX	SiftIdx *__attribute__((cleanup(ix_scope_end)))
+
 /* udf_host.c */
 extern const SxHost host;
 extern void local_close(void);

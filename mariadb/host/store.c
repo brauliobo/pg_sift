@@ -2,9 +2,9 @@
  * store.c - the storage layer of src/core/store.h on segment files instead of an index relation (store.h).
  *
  * An index is a directory of immutable segment files, each a sequence of 8 KiB pages in the layout of src/core/page.h (block 0
- * unused). The files are mapped into one reserved address range, a segment per slot of 4 GiB, so a block number is a pointer
- * and the "buffer" of a block is its page. There is no metapage, directory, free list or WAL: the directory is the manifest of
- * engine.c.
+ * unused). Each file is mapped on its own, at the address the kernel gives it, and the process keeps that address per mapped
+ * slot, so a block number resolves to a pointer and the "buffer" of a block is its page. There is no metapage, directory, free
+ * list or WAL: the directory is the manifest of engine.c.
  */
 #include "store.h"
 
@@ -23,39 +23,28 @@
 	ereport(ERROR, (errcode(ERRCODE_INDEX_CORRUPTED), \
 					errmsg("sift index \"%s\" is corrupted", RelationGetRelationName(index)), errdetail(__VA_ARGS__)))
 
-/* ------------------------------------------------ the mapped range */
+/* ------------------------------------------------ the mapped segments */
 
-static char *range;
 static uint32 next_relnumber = 1;
 
 /*
  * The block numbers of an index (slot << SLOT_SHIFT | block of the file) are in its manifest, so they are per index; the
- * range of the buffers is shared by every index of the process: each mapped slot takes a free slot of the range.
+ * table of the mappings is shared by every index of the process: each mapped segment takes a free entry of it.
  */
 static struct
 {
 	bool		used;
 	int			local;
-}			gowner[SIFT_NGSLOTS];
+	char	   *base;
+	size_t		len;
+}			gmap[SIFT_NGSLOTS];
 
 static pthread_mutex_t gmu = PTHREAD_MUTEX_INITIALIZER;
-
-void
-sift_store_init(void)
-{
-	size_t		len = (size_t) SIFT_NGSLOTS * SLOT_BYTES;
-
-	if (range)
-		return;
-	range = mmap(NULL, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-	if (range == MAP_FAILED)
-		elog(ERROR, "sift: could not reserve %zu bytes of address space", len);
-}
 
 static inline Page
 page_of(const SiftRel *sr, BlockNumber blk)
 {
-	return range + ((size_t) sr->gslot[blk >> SIFT_SLOT_SHIFT] << SIFT_SLOT_SHIFT | (blk & (SLOT_BLOCKS - 1))) * BLCKSZ;
+	return gmap[sr->gslot[blk >> SIFT_SLOT_SHIFT]].base + (size_t) (blk & (SLOT_BLOCKS - 1)) * BLCKSZ;
 }
 
 Buffer
@@ -72,9 +61,10 @@ sq_unpin(Buffer buf)
 BlockNumber
 BufferGetBlockNumber(Buffer buf)
 {
-	size_t		g = (size_t) (buf - range) / BLCKSZ;
-
-	return (BlockNumber) gowner[g >> SIFT_SLOT_SHIFT].local << SIFT_SLOT_SHIFT | (g & (SLOT_BLOCKS - 1));
+	for (int g = 0; g < SIFT_NGSLOTS; g++)
+		if (gmap[g].used && buf >= gmap[g].base && buf < gmap[g].base + gmap[g].len)
+			return (BlockNumber) gmap[g].local << SIFT_SLOT_SHIFT | (size_t) (buf - gmap[g].base) / BLCKSZ;
+	elog(ERROR, "sift: buffer outside the mapped segments");
 }
 
 /* Pages are edited in the private mapping, there is no log */
@@ -100,22 +90,19 @@ GenericXLogAbort(GenericXLogState *state)
 {
 }
 
+/* MEM[MEM-PORT-08]: MariaDB store mmap arena + prefault (1024*4GiB = 4TiB VmSize + MADV_POPULATE_READ) */
+/* STOR[STOR-PORT-08]: single-stream contiguous file alloc + drop unconditional MADV_POPULATE_READ on open */
 static int
-gslot_take(int local)
+gslot_take(int local, char *base, size_t len)
 {
 	int			g = 0;
 
 	pthread_mutex_lock(&gmu);
-	while (g < SIFT_NGSLOTS && gowner[g].used)
+	while (g < SIFT_NGSLOTS && gmap[g].used)
 		g++;
 	if (g < SIFT_NGSLOTS)
-	{
-		gowner[g].used = true;
-		gowner[g].local = local;
-	}
+		gmap[g] = (typeof(gmap[0])) {.used = true,.local = local,.base = base,.len = len};
 	pthread_mutex_unlock(&gmu);
-	if (g == SIFT_NGSLOTS)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: too many mapped segments in this server")));
 	return g;
 }
 
@@ -123,7 +110,7 @@ static void
 gslot_free(int g)
 {
 	pthread_mutex_lock(&gmu);
-	gowner[g].used = false;
+	gmap[g].used = false;
 	pthread_mutex_unlock(&gmu);
 }
 
@@ -131,17 +118,19 @@ int
 sift_map_fd(int fd, int local, uint32 *blocks)
 {
 	off_t		size = lseek(fd, 0, SEEK_END);
-	int			g = gslot_take(local);
-	char	   *at = range + (size_t) g * SLOT_BYTES;
+	char	   *at = size < BLCKSZ || size > (off_t) SLOT_BYTES ? MAP_FAILED :
+		mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+	int			g;
 
-	if (size < BLCKSZ || size > (off_t) SLOT_BYTES ||
-		mmap(at, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, 0) == MAP_FAILED)
-	{
-		gslot_free(g);
+	if (at == MAP_FAILED)
 		elog(ERROR, "sift: could not map a segment file");
+	g = gslot_take(local, at, size);
+	if (g == SIFT_NGSLOTS)
+	{
+		munmap(at, size);
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: too many mapped segments in this server")));
 	}
 	*blocks = size / BLCKSZ;
-	madvise(at, size, MADV_POPULATE_READ);	/* prefault from the page cache; MAP_POPULATE would copy every page of a private mapping */
 	return g;
 }
 
@@ -161,8 +150,7 @@ sift_map_path(const char *path, int local, uint32 *blocks)
 void
 sift_unmap(int g, uint32 blocks)
 {
-	mmap(range + (size_t) g * SLOT_BYTES, (size_t) blocks * BLCKSZ, PROT_NONE,
-		 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+	munmap(gmap[g].base, (size_t) blocks * BLCKSZ);
 	gslot_free(g);
 }
 
@@ -173,7 +161,6 @@ sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out)
 {
 	SiftRel    *sr = calloc(1, sizeof(SiftRel));
 
-	sift_store_init();
 	sr->rel.store = sr;
 	snprintf(sr->rel.relname, sizeof(sr->rel.relname), "%s", name);
 	sr->rel.rd_locator.relNumber = __atomic_fetch_add(&next_relnumber, 1, __ATOMIC_RELAXED);

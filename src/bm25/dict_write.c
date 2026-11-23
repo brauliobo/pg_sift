@@ -23,6 +23,7 @@ sift_dict_writer_begin(SiftStreamWriter *sw, bool packed, bool pos2)
 	return w;
 }
 
+/* STOR[STOR-BM25-12]: DICT front-coded block fill + df=3..7 non-inline overhead (ALIGN4 + 2-4B varints) */
 static void
 flush_block(SiftDictWriter *w)
 {
@@ -148,7 +149,7 @@ sift_dict_add(SiftDictWriter *w, const char *term, int len, const SiftTermInfo *
 			if (w->nidx / SIFT_DICT_ROOT_FANOUT == w->maxroot)
 			{
 				w->maxroot *= 2;
-				w->root = repalloc_huge(w->root, w->maxroot * sizeof(uint64));
+				w->root = repalloc(w->root, w->maxroot * sizeof(uint64));
 			}
 			w->root[w->nidx / SIFT_DICT_ROOT_FANOUT] = e.prefix;
 		}

@@ -13,11 +13,11 @@ SELECT i, 'w' || i % 10 || ' common x' || i % 7,
 	(ARRAY[NULL, '', 'Alpha', 'alpha', 'ALPHA', 'Café', 'cafe', 'CAFÉ', 'gamma delta', 'Beta', 'beta', 'Zeta'])[1 + i % 12],
 	't' || i % 5, 'k' || i % 2500, repeat('p', 1000)
 FROM generate_series(1, 6000) i;
-CREATE INDEX d_body ON d USING sift (body) WITH (write_buffer_limit = 64);
+CREATE INDEX d_body ON d USING sift (body) WITH (write_buffer_limit = 64, dead_rewrite_pct = 50);
 -- folded: case and accent folding on (the default); raw: values kept byte for byte
-CREATE INDEX d_cat ON d USING sift (cat) WITH (analyzer = keyword);
-CREATE INDEX d_raw ON d USING sift (cat) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 2);
-CREATE INDEX d_hc ON d USING sift (hc) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 3, vacuum_segments = 128);
+CREATE INDEX d_cat ON d USING sift (cat) WITH (analyzer = keyword, dead_rewrite_pct = 50);
+CREATE INDEX d_raw ON d USING sift (cat) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 2, dead_rewrite_pct = 50);
+CREATE INDEX d_hc ON d USING sift (hc) WITH (analyzer = keyword, case_folding = false, accent_folding = false, build_segments = 3, vacuum_segments = 128, dead_rewrite_pct = 50);
 VACUUM ANALYZE d;
 SELECT idx, count(*) AS segments, max(sb_hi) AS last_sb
 FROM (SELECT 'd_raw' idx, * FROM sift.segments('d_raw') UNION ALL SELECT 'd_hc', * FROM sift.segments('d_hc')) s GROUP BY idx ORDER BY idx;

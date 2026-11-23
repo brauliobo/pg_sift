@@ -10,11 +10,12 @@
 
 #define WBUF	(SIFT_MAX_TERM_BYTES + 1)
 
-/* Wide copy of s, in buf when it fits */
+/* MEM[MEM-BM25-06]: query_match to_wchar + doc_group last[] (leaked in caller cx per doc) */
+/* Wide copy of s, in buf when it fits (a caller that gets another pointer frees it) */
 static pg_wchar *
 to_wchar(const char *s, int len, pg_wchar *buf, int *wlen)
 {
-	pg_wchar   *w = len < WBUF ? buf : palloc((len + 1) * sizeof(pg_wchar));
+	pg_wchar   *w = buf != NULL && len < WBUF ? buf : palloc((len + 1) * sizeof(pg_wchar));
 
 	*wlen = pg_mb2wchar_with_len(s, w, len);
 	return w;
@@ -72,6 +73,8 @@ regex_match(regex_t *re, const char *s, int len)
 	pg_wchar   *w = to_wchar(s, len, buf, &wl);
 	int			rc = pg_regexec(re, w, wl, 0, NULL, 0, NULL, 0);
 
+	if (w != buf)
+		pfree(w);
 	if (rc != REG_OKAY && rc != REG_NOMATCH)
 	{
 		char		msg[128];
@@ -129,7 +132,7 @@ void
 sift_query_fuzzy_prepare(SiftQNode *leaf)
 {
 	leaf->headlen = char_len(leaf->text, leaf->text + leaf->textlen);
-	leaf->tail = to_wchar(leaf->text + leaf->headlen, leaf->textlen - leaf->headlen, palloc((WBUF + 1) * sizeof(pg_wchar)),
+	leaf->tail = to_wchar(leaf->text + leaf->headlen, leaf->textlen - leaf->headlen, NULL,
 						  &leaf->ntail);
 }
 
@@ -141,11 +144,15 @@ fuzzy_match(const SiftQNode *q, const char *t, int tlen)
 				m;
 	pg_wchar	tb[WBUF];
 	pg_wchar   *tw;
+	bool		within;
 
 	if (abs(q->textlen - tlen) > 4 * q->fuzzy || tlen < l || memcmp(q->text, t, l) != 0)
 		return false;
 	tw = to_wchar(t + l, tlen - l, tb, &m);
-	return lev_within(q->tail, q->ntail, tw, m, q->fuzzy);
+	within = lev_within(q->tail, q->ntail, tw, m, q->fuzzy);
+	if (tw != tb)
+		pfree(tw);
+	return within;
 }
 
 /*
@@ -159,7 +166,8 @@ fuzzy_dead_prefix(const SiftQNode *q, const char *t, int tlen)
 				k = q->fuzzy,
 				n = q->ntail,
 				m,
-				off = l;
+				off = l,
+				dead = 0;
 	pg_wchar	tb[WBUF];
 	pg_wchar   *qw = q->tail,
 			   *tw;
@@ -194,12 +202,17 @@ fuzzy_dead_prefix(const SiftQNode *q, const char *t, int tlen)
 			best = Min(best, v);
 		}
 		if (best > k)
-			return off;
+		{
+			dead = off;
+			break;
+		}
 		if (hi < n)
 			row[hi + 1] = k + 1;
 		tmp = prev, prev = row, row = tmp;
 	}
-	return 0;
+	if (tw != tb)
+		pfree(tw);
+	return dead;
 }
 
 int
@@ -297,6 +310,7 @@ doc_group(SiftDoc *d)
 		d->tf[id]++;
 		last[id] = t;
 	}
+	pfree(last);
 }
 
 static int

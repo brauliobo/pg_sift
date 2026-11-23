@@ -153,6 +153,7 @@ sq_merge(SqStore *st, const uint64 *gens, int n)
 
 /* ---------- policy: bm25/merge.c, with the tiers starting at 1 MiB ---------- */
 
+/* STOR[STOR-PORT-03]: SQLite 24KiB min seg per autocommit txn + 25% dead-doc merge trigger (vs 50%) */
 int
 sq_merge_pick(SqStore *st, bool force, int fanin, uint64 *sel)
 {

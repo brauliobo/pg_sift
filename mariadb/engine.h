@@ -94,6 +94,8 @@ extern int	sx_drop(const char *name, char *err, size_t errlen);
 
 /* Opens an index once per process; later calls return the same handle */
 extern SiftIdx *sx_open(const char *name, char *err, size_t errlen);
+/* gives back the reference sx_open took: a dropped index is freed with its last */
+extern void sx_release(SiftIdx *ix);
 
 /* A value of the index's configuration (NULL when absent), valid for the life of the process */
 extern const char *sx_cfg(SiftIdx *ix, const char *key);

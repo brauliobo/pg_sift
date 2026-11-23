@@ -29,9 +29,12 @@ bool		sift_test_wbuf_narrow = false;
 #define WBUFPAGE(page)	((SiftWbufPageHeaderData *) SiftPageGetData(page))
 #define RECS(page, hs)	(SiftPageGetData(page) + (hs))
 #define ROOM(page)		(SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page))
+#define WBUF_SPLIT_ROOM	1024	/* a doc is split over pages rather than moved whole when the page has this much room left */
+#define WBUF_VACUUM_SEAL_PAGES 8	/* pages from which VACUUM seals an open buffer */
 #define RECSIZE(nterms, termbytes) \
 	TYPEALIGN(4, sizeof(SiftWbufDocData) + (Size) (nterms) * 6 + (termbytes))
 
+/* STOR[STOR-BM25-06]: wbuf 1024B wide bloom (13.1%/pg) + 4B/term hash (33%/rec); ABI-locked, shrink via early seal */
 /* The header of a page of a buffer of this format: the buffers of format 0 have the 256-bit bloom in it, those of SIFT_WBUF_FORMAT_WIDE a bloom of 8,192 bits after it */
 static inline Size
 hdr_size(uint16 format)
@@ -92,15 +95,14 @@ sift_wbuf_seal(Relation index, bool force)
 }
 
 /*
- * VACUUM seals an open buffer once it holds a quarter of write_buffer_limit, as for a sift_col index: a search reads every document of the open buffer (and the heap
- * pages of those not yet all-visible), so the 4 MB a buffer may reach cost a search many times what the index needs after a round of updates (300,000 documents,
- * 16 MB: 684 blocks and 1.6 ms for a search at 4 MB, 186 and 0.54 ms when the VACUUM of the round seals it), and its rows are promoted and merged instead of waiting
- * for a seal that may never come.
+ * VACUUM seals an open buffer of WBUF_VACUUM_SEAL_PAGES pages: a search reads every document of the open buffer (and the heap pages of those not yet
+ * all-visible), and the buffer is several times larger than the segment it becomes, so its rows are promoted and merged instead of waiting for a seal
+ * that may never come.
  */
 uint64
 sift_wbuf_seal_vacuum(Relation index)
 {
-	return sift_lane_seal(index, false, hdr_size(new_format()), new_format(), 0, Max(limit_pages(index) / 4, 2 * SIFT_LANES), has_docs);
+	return sift_lane_seal(index, false, hdr_size(new_format()), new_format(), 0, WBUF_VACUUM_SEAL_PAGES, has_docs);
 }
 
 /* Cached per relation: the active segment and the lane tails last seen */
@@ -264,8 +266,9 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 			sift_page_edit_end(index, &ed, 1);
 			break;
 		}
-		/* a doc that fits an empty page moves there whole rather than splitting */
-		place = n > 0 && !(first && RECSIZE(nterms, whole_bytes) <= SIFT_PAGE_PAYLOAD - hdr_size(h->format));
+		/* STOR[STOR-BM25-05]: wbuf tail-split >=1KiB (uses SIFT_WBUF_CONT) + VACUUM seal >=8p (vs 1/4 limit) */
+		place = n > 0 && (ROOM(BufferGetPage(cur)) >= WBUF_SPLIT_ROOM ||
+						  !(first && RECSIZE(nterms, whole_bytes) <= SIFT_PAGE_PAYLOAD - hdr_size(h->format)));
 		pa = (PieceArg) {tid, dl, !first, t + i, n, tb, i + n < nterms, h->format, place};
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, hdr_size(h->format), limit_pages(index),
 							 fill_piece, &pa, &crossed);

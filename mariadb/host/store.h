@@ -1,11 +1,10 @@
 /*
- * store.h - the "relation" of an index: a directory of immutable segment files that store.c maps into a reserved address
- * range, so that the block numbers of the page layout (src/core/page.h) address them.
+ * store.h - the "relation" of an index: a directory of immutable segment files that store.c maps one by one, so that the block
+ * numbers of the page layout (src/core/page.h) address them.
  *
- * A segment is mapped MAP_PRIVATE at a slot of 4 GiB of the range; the block number of a page is slot << SIFT_SLOT_SHIFT | the
- * block of the file, so the Buffer of a block (host_store.h) is the pointer to its page and nothing is pinned or locked. A merge
- * clears liveness bits in its private copy of the pages only. The rest of the mapped range and the registry of mapped slots are
- * guarded by locks, every other piece of state the engine writes while it runs is per thread (sqlite/host/host.c).
+ * A segment is mapped MAP_PRIVATE; the block number of a page is slot << SIFT_SLOT_SHIFT | the block of the file, so the Buffer
+ * of a block (host_store.h) is the pointer to its page and nothing is pinned or locked. A merge clears liveness bits in its
+ * private copy of the pages only. The registry of mapped segments is guarded by a lock, every other piece of state the engine writes while it runs is per thread (sqlite/host/host.c).
  */
 #ifndef SIFT_MDB_STORE_H
 #define SIFT_MDB_STORE_H
@@ -19,7 +18,7 @@
 #define SIFT_NSLOTS			256		/* segment slots of one index (the block numbers in its manifest) */
 #define SIFT_DELTA_SLOT		(SIFT_NSLOTS - 1)	/* the slot of the live segment built from the queue */
 #define SIFT_DELTA2_SLOT	(SIFT_NSLOTS - 2)	/* the slot of its micro segment */
-#define SIFT_NGSLOTS		1024	/* slots of the reserved range, shared by every index of the process */
+#define SIFT_NGSLOTS		1024	/* segments mapped at once, shared by every index of the process */
 
 /* What SqStore is for this host (host_store.h declares it): the state of one index, whose RelationData is `rel` */
 struct SqStore
@@ -30,7 +29,7 @@ struct SqStore
 	char		optstr[256];	/* the strings of opts (stemmer, fields), which sit right after it */
 	uint32		dpp;			/* documents per page: docid d is key (d / dpp) << 16 | (d % dpp + 1) */
 	bool		slot_used[SIFT_NSLOTS];
-	int			gslot[SIFT_NSLOTS];	/* where each mapped slot sits in the reserved range */
+	int			gslot[SIFT_NSLOTS];	/* where each mapped slot sits in the table of mapped segments */
 	uint32		slot_blocks[SIFT_NSLOTS];
 	/* visibility: the docids that do not count (superseded or deleted), ascending, in two lists (the index's and the live segment's) */
 	const int64 *dead[2];
@@ -54,9 +53,6 @@ sift_key_docid(const SiftRel *sr, SiftKey key)
 	return (int64) sift_key_block(key) * sr->dpp + (int) (key & 0xFFFF) - 1;
 }
 
-/* Reserves the address range (once) */
-extern void sift_store_init(void);
-
 /* Creates the relation handle the engine functions take; *out is its state */
 extern Relation sift_rel_create(const char *name, const char *dir, uint32 dpp, SiftRel **out);
 extern void sift_rel_destroy(Relation rel);
@@ -66,7 +62,7 @@ extern Relation sift_rel_view(const SiftRel *base, SiftRel **out);
 extern void sift_rel_view_free(Relation rel);
 
 /*
- * Mapping a segment file takes a slot of the reserved range (returned) without touching any index; a slot is then
+ * Mapping a segment file takes an entry of the table of mapped segments (returned) without touching any index; a slot is then
  * attached to the index at a local slot number (under the index's lock) and detached before it is unmapped.
  */
 extern int	sift_map_path(const char *path, int local, uint32 *blocks);

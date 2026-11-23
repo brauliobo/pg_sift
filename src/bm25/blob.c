@@ -32,7 +32,8 @@ static grp_info grp_scan(const sift_tid *t, uint32_t i, uint32_t n, int ctype)
 	g.ob = nbits(maxoff - 1) ? nbits(maxoff - 1) : 1;
 	size_t bm = 32 + (size_t)g.npages * g.w, ar = (size_t)(g.j - g.i) * (g.w <= 32 ? 2 : 4);
 	g.array = ctype == SIFT_CT_ARRAY || ((ctype == SIFT_CT_AUTO || ctype == SIFT_CT_PACKED) && ar < bm);
-	if (ctype == SIFT_CT_PACKED && g.array && packed_bytes(g.j - g.i, g.ob) < ar) g.array = 0, g.packed = 1;
+	/* STOR[STOR-BM25-02]: evaluate PACKED vs min(ar,bm) (fixes skipped PACKED groups when bm<=ar, up to -41%) */
+	if (ctype == SIFT_CT_PACKED && packed_bytes(g.j - g.i, g.ob) < (g.array ? ar : bm)) g.array = 0, g.packed = 1;
 	return g;
 }
 

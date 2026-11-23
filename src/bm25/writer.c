@@ -124,7 +124,7 @@ write_region(SiftSegmentWriter *w, const uint64 *om, int np)
 		if (w->nreg == w->maxreg)
 		{
 			w->maxreg *= 2;
-			w->reg = repalloc_huge(w->reg, w->maxreg * sizeof(uint64));
+			w->reg = repalloc(w->reg, w->maxreg * sizeof(uint64));
 		}
 		w->reg[w->nreg] = w->nreg == 0 ? 0 : w->reg[w->nreg - 1];
 		w->nreg++;
@@ -136,6 +136,7 @@ write_region(SiftSegmentWriter *w, const uint64 *om, int np)
 		BufFileWrite(w->liverows, om + SIFT_OFFMASK_WORDS * k, r.w);
 }
 
+/* STOR[STOR-BM25-07]: DOCMAP per-SB dl_code (1 doc dl>255 doubles 256-pg SB dl rows to 16b; v7 per-page) */
 static int
 dl_code(const SiftSegmentWriter *w)
 {
@@ -167,7 +168,8 @@ void
 sift_segw_attrs(SiftSegmentWriter *w, const SiftAttrSrc *src)
 {
 	MemoryContext old = MemoryContextSwitchTo(w->mcxt);
-	Size		n = (Size) SIFT_ATTR_MAXCOLS * SIFT_SB_PAGES * MAXOFF;
+	/* MEM[MEM-BM25-09]: SiftSegWriter attrs + stack buf (SIFT_ATTR_MAXCOLS*670KB -> src->ncols; 64KB stack buf) */
+	Size		n = (Size) src->ncols * SIFT_SB_PAGES * MAXOFF;
 
 	SIFT_INVARIANT(w->ndocs == 0 && src->ncols > 0 && src->ncols <= SIFT_ATTR_MAXCOLS, "sift: INCLUDE columns after the first doc, or %d of them", src->ncols);
 	w->attr = *src;
@@ -255,6 +257,7 @@ flush_attr(SiftSegmentWriter *w)
 			hdr.flags = unknown ? 0 : SIFT_ATTR_NOUNK;
 			hdr.base = any ? lo : 0;
 			hdr.unk = any ? (uint64) hi - (uint64) lo + 2 : 1;
+			/* STOR[STOR-BM25-08]: adir INCLUDE per-SB bitpack width=bits(hi-lo+2) over 0..maxoff-1 (v7 dict/frame) */
 			hdr.width = code_bits(hdr.unk);
 			for (int p = 0; p < SIFT_SB_PAGES; p++)
 				if (w->pagemask[p / 64] & (1ULL << (p % 64)))
@@ -299,7 +302,7 @@ flush_attr(SiftSegmentWriter *w)
 static void
 flush_sb(SiftSegmentWriter *w)
 {
-	uint64	   *om = palloc(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
+	uint64	   *om;
 	uint8	   *chunk;
 	uint32		hdr[2];
 	int			np = 0,
@@ -307,6 +310,7 @@ flush_sb(SiftSegmentWriter *w)
 
 	if (w->sb_ndocs == 0)
 		return;
+	om = palloc(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
 	for (int p = 0; p < SIFT_SB_PAGES; p++)
 		if (w->pagemask[p / 64] & (1ULL << (p % 64)))
 			memcpy(om + SIFT_OFFMASK_WORDS * np++, w->offmask + SIFT_OFFMASK_WORDS * p,
@@ -320,9 +324,9 @@ flush_sb(SiftSegmentWriter *w)
 	if (w->nsb == w->maxsb)
 	{
 		w->maxsb *= 2;
-		w->sbdir = repalloc_huge(w->sbdir, w->maxsb * sizeof(SiftDocSBRef));
+		w->sbdir = repalloc(w->sbdir, w->maxsb * sizeof(SiftDocSBRef));
 		if (w->adir)
-			w->adir = repalloc_huge(w->adir, w->maxsb * w->attr.ncols * sizeof(SiftAttrRef));
+			w->adir = repalloc(w->adir, w->maxsb * w->attr.ncols * sizeof(SiftAttrRef));
 	}
 	if (w->attr.ncols)
 		flush_attr(w);
@@ -404,7 +408,7 @@ start_terms(SiftSegmentWriter *w)
 	{
 		uint64		recs_end = sift_sw_tell(w->sw);
 		uint32		nc = w->attr.ncols;
-		char		buf[65536];
+		char		buf[4096];
 		size_t		got;
 		uint64		start = recs_end;
 

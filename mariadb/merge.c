@@ -32,22 +32,63 @@ typedef struct Plan
 {
 	int			n;
 	bool		full;
+	bool		compact;		/* no segment to merge, but the event log is more than twice what its documents need: write it anew */
 	ManSeg		src[SIFT_DIR_POLICY_MAX];
 } Plan;
 
-/* The segments to merge now, copied from the manifest; plan->n = 0 when there is nothing to do */
+/* The index the pick of this thread is for: the policy asks its segments one at a time */
+static __thread const SiftIdx *pick_ix;
+
+/* A segment all dead, or with a quarter of its documents dead and more than 64: rewritten alone, the others stay as they are */
+static bool
+dead_enough(size_t dead, uint64 ndocs)
+{
+	return dead > 0 && (dead == ndocs || (dead > 64 && dead * 4 >= ndocs));
+}
+
+/*
+ * The segments of a feed share superblocks with the ones before, so the dead documents of its range of superblocks (the
+ * engine's dead list is not in the liveness bits) are an upper bound: when that does not make it mostly dead no segment is read,
+ * otherwise the segment says which of them it holds.
+ */
+static bool
+seg_mostly_dead(Relation index, const SiftSegEntry *e)
+{
+	const SiftIdx *ix = pick_ix;
+	size_t		first = lower_bound(ix->dead, ix->ndead, (int64) e->sb_lo * SIFT_SB_PAGES * ix->man.dpp),
+				last = lower_bound(ix->dead, ix->ndead, (int64) (e->sb_hi + 1) * SIFT_SB_PAGES * ix->man.dpp),
+				dead = 0;
+	MemoryContext cx,
+				old;
+	SiftSegment *seg;
+
+	if (!dead_enough(last - first, e->ndocs))
+		return false;
+	cx = op_begin();
+	old = MemoryContextSwitchTo(cx);
+	seg = sift_seg_open(index, e, cx);
+	for (size_t i = first; i < last; i++)
+		dead += sift_seg_live_rank(seg, sift_docid_key(ix->sr, ix->dead[i])) >= 0;
+	sift_seg_close(seg);
+	MemoryContextSwitchTo(old);
+	op_end(cx);
+	return dead_enough(dead, e->ndocs);
+}
+
 static void
 pick(SiftIdx *ix, bool full, Plan *plan)
 {
-	SiftMergePolicy pol = {.tier_base = (uint64) 1 << 20,.fanin = ix->fanin};
+	SiftMergePolicy pol = {.tier_base = (uint64) 1 << 20,.fanin = ix->fanin,.mostly_dead = seg_mostly_dead};
 	SiftDirSnapshot *snap;
 	SiftSegEntry sel[SIFT_DIR_POLICY_MAX];
 	bool		force;
 	int			n;
 
 	plan->n = 0;
+	plan->compact = false;
 	RD_LOCK(ix);
-	force = full || (ix->ndead > 64 && ix->ndead * 4 > ix->ndoc);
+	/* STOR[STOR-PORT-10]: per-segment dead-doc accounting vs global force-merge (avoids rewriting clean base seg) */
+	force = full;
 	snap = sift_dir_alloc(ix->man.nsegs);
 	snap->nsegs = ix->man.nsegs;
 	for (int i = 0; i < snap->nsegs; i++)
@@ -56,7 +97,9 @@ pick(SiftIdx *ix, bool full, Plan *plan)
 		if (force && ix->ndead > 0)		/* the engine's dead documents are not in the liveness bits: any segment may hold some */
 			snap->segs[i].flags |= SIFT_SEG_DIRTY;
 	}
+	pick_ix = ix;
 	n = sift_merge_pick(ix->rel, &pol, snap, force, sel);
+	plan->compact = n == 0 && ix->man.log_len > Max(65536, 2 * (ix->ndoc + ix->ndead) * sizeof(Ev));
 	for (int i = 0; i < n; i++)
 		for (int j = 0; j < snap->nsegs; j++)
 			if (ix->segs[j].e.gen == sel[i].gen)
@@ -141,6 +184,7 @@ in_plan(const Plan *plan, const ManSeg *s)
 	return false;
 }
 
+/* MEM[MEM-PORT-14]: MariaDB merge_run + filter_docs publish peak (dead copy + 2x ids/pks/dead arrays) */
 /* The keys and dead documents that remain once the dropped ones are gone; returns the new count of documents */
 static size_t
 filter_docs(const SiftIdx *ix, const Merged *mg, int64 **ids, int64 **pks, int64 **dead, size_t *ndead)
@@ -181,7 +225,7 @@ publish_merge(SiftIdx *ix, const Plan *plan, Merged *mg, int *oldg, uint32 *oldb
 	uint64		len;
 	int			nkeep = 0;
 	int64		bytes = 0;
-	bool		filtered = plan->full || mg->ndropped > 0;
+	bool		filtered = plan->full || plan->compact || mg->ndropped > 0;
 
 	for (uint32 i = 0; i < m.nsegs; i++)
 		if (!in_plan(plan, &ix->segs[i]))
@@ -324,7 +368,7 @@ merge_sets(SiftIdx *ix, bool full)
 		}
 		pick(ix, full, plan);
 		plan->full = full;
-		if (plan->n == 0)
+		if (plan->n == 0 && !plan->compact)
 		{
 			free(plan);
 			break;

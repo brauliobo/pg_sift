@@ -2,7 +2,7 @@
  * cli.c - sift_cli: the engine of engine.c without a server, for development, the correctness harness and the
  * microbenchmarks.
  *
- *   sift_cli BASE create NAME [CFG]      CFG: lines of key=value (dpp=32 by default), see engine.h
+ *   sift_cli BASE create NAME [CFG]      CFG: lines of key=value (dpp=256 by default), see engine.h
  *   sift_cli BASE load NAME FILE         FILE: id TAB text (COPY escapes); every row is an insert with seq = pk = id
  *   sift_cli BASE feed NAME FILE         FILE: seq TAB op TAB pk TAB text (a drain with updates and deletes)
  *   sift_cli BASE topk NAME K QUERY | count NAME QUERY | matches NAME QUERY | stats NAME | merge NAME | tokens NAME TEXT
@@ -206,7 +206,7 @@ main(int argc, char **argv)
 	cmd = argv[2];
 	if (!strcmp(cmd, "create"))
 	{
-		if (sx_create(argv[3], argc > 4 ? argv[4] : "dpp=32", err, sizeof(err)) != 0)
+		if (sx_create(argv[3], argc > 4 ? argv[4] : "dpp=256", err, sizeof(err)) != 0)
 			die("create");
 	}
 	else if (!strcmp(cmd, "load") || !strcmp(cmd, "feed"))

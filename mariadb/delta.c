@@ -23,7 +23,8 @@
 #include "bm25/kernels.h"
 #include "bm25/runs.h"
 
-#define DELTA_BUDGET	((Size) 256 << 20)
+/* MEM[MEM-PORT-11]: MariaDB Delta cache (256MiB memfd + <=500k raw d->text[] strings) */
+#define DELTA_BUDGET	((Size) 64 << 20)
 #define DELTA_MAX_DOCS	500000
 #define MICRO_MIN		64			/* documents a micro segment may hold whatever the primary */
 #define PKMAP_MIN		64			/* documents from which a segment keeps a table of its keys */

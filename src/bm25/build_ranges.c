@@ -9,6 +9,7 @@
 #include "build_int.h"
 
 #include "utils/wait_event.h"
+#include "core/memtrack.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_range_pieces = 0;
@@ -97,7 +98,7 @@ static void
 write_one(SiftBuildShared *shared, Relation index, int gen, int i)
 {
 	SiftBuildRanges *rg = &shared->ranges;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift range", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift range");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	BufFile    *post = BufFileCreateFileSet(&shared->fileset.fs, range_file(gen, i, 'p'));
 	BufFile    *ent = BufFileCreateFileSet(&shared->fileset.fs, range_file(gen, i, 'e'));
@@ -313,7 +314,7 @@ sift_ranges_write(BuildState *bs, SiftRun **runs, int nruns, uint64 gen, SiftSeg
 	rg->ref = bs->ref;
 	rg->ref.avgdl = (float4) ((double) sum_dl / ndocs);
 	sift_ranges_publish(shared, ncuts);
-	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment write", ALLOCSET_DEFAULT_SIZES);
+	cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment write");
 	sw = sift_runs_write_docs(runs, nruns, bs->budget, bs->wt, gen, &bs->ref, cxt);
 	sift_ranges_stitch(shared, bs->index, sw);
 	sift_segw_finish(sw, entry);

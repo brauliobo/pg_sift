@@ -13,6 +13,7 @@
 #include "common/pg_prng.h"
 #include "core/sql.h"
 #include "core/damage.h"
+#include "core/memtrack.h"
 
 PG_FUNCTION_INFO_V1(sift_test_postings);
 
@@ -51,7 +52,7 @@ sift_test_postings(PG_FUNCTION_ARGS)
 	PostingsOut o = {(ReturnSetInfo *) fcinfo->resultinfo};
 	Relation	index;
 	SiftDirSnapshot *snap;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test postings", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift test postings");
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
@@ -104,7 +105,7 @@ sift_test_segment_parts(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
 	SiftDirSnapshot *snap;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test parts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift test parts");
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
@@ -182,7 +183,7 @@ sift_test_attr_dump(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
 	SiftDirSnapshot *snap;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift test attr", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift test attr");
 	static const char *const names[] = {"value", "null", "unknown"};
 
 	InitMaterializedSRF(fcinfo, 0);

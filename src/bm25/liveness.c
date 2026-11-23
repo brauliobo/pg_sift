@@ -761,12 +761,12 @@ count_dead(SiftSegment *seg, const SiftLive2HeaderData *h, uint32 *dead)
 	SiftLive	l = seg_live(seg);
 	DocMap	   *dm = docmap(seg);
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead postings");
-	MemoryContext wcx = AllocSetContextCreate(cx, "sift dead rows", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext wcx = sift_mem_allocset_create(cx, "sift dead rows");
 	DeadScan	ds = {.seg = seg,.dead = dead,.nslots = h->nslots};
 	uint8	   *dirty = palloc((h->nsb + 7) / 8);
 	Size		budget = (Size) maintenance_work_mem * 1024 / 2;
 
-	ds.tcxt = AllocSetContextCreate(cx, "sift dead postings term", ALLOCSET_DEFAULT_SIZES);
+	ds.tcxt = sift_mem_allocset_create(cx, "sift dead postings term");
 	ds.grp = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_grp *));
 	ds.flat = MemoryContextAllocZero(cx, (Size) h->nsb * sizeof(sift_dead_sb));
 	ds.dsb = MemoryContextAlloc(cx, (Size) Max(h->nsb, 1) * sizeof(uint32));

@@ -18,6 +18,7 @@
 #include "core/cachebudget.h"
 #include "core/damage.h"
 #include "core/fmv.h"
+#include "core/memtrack.h"
 
 /* A posting's slot in its superblock: page * 512 + offset - 1 */
 #define SLOT_BITS		17
@@ -83,6 +84,8 @@ typedef struct Union
 	SiftKey    *keys;			/* the merged superblock: allocated by the first */
 	uint8	   *mtf;
 	uint16	   *dl;
+	uint32		keycap;			/* entries of keys, mtf and dl */
+	uint32		tidcap;			/* entries of tids and tf */
 } Union;
 
 int			sift_prefix_gather_kb = 131072;
@@ -113,8 +116,43 @@ union_check(const Union *u, uint32 gid, SiftKey key)
 static void *
 union_regrow(Union *u, void *p, Size n)
 {
-	SIFT_REGROW_HUGE_IN(u->cx, p, n);
+	SIFT_REGROW_IN(u->cx, p, n);
 	return p;
+}
+
+/* MEM[MEM-BM25-01]: prefix union_build scratch (128KB acc + 1.49MB tid/tf/key arrays; 128MB gather cap) */
+/* The postings of a group of n: the arrays of one group's decode start at 256 and grow to what a group needs (their content is not kept) */
+static void
+union_group_scratch(Union *u, uint32 n)
+{
+	if (n <= u->tidcap)
+		return;
+	if (u->tids)
+	{
+		pfree(u->tids);
+		pfree(u->tf);
+	}
+	u->tidcap = Min(Max(n, 256), SIFT_GRP_MAXTIDS);
+	u->tids = MemoryContextAlloc(u->cx, (Size) u->tidcap * sizeof(sift_tid));
+	u->tf = MemoryContextAlloc(u->cx, u->tidcap + SIFT_KERN_PAD);
+}
+
+/* The arrays of a merged superblock of n postings; dl is zero, the one dl of a union that does not score */
+static void
+union_merge_scratch(Union *u, uint32 n)
+{
+	if (n <= u->keycap)
+		return;
+	if (u->keys)
+	{
+		pfree(u->keys);
+		pfree(u->mtf);
+		pfree(u->dl);
+	}
+	u->keycap = Min(Max(n, 2048), SIFT_GRP_MAXTIDS);
+	u->keys = MemoryContextAlloc(u->cx, (Size) u->keycap * sizeof(SiftKey));
+	u->mtf = MemoryContextAlloc(u->cx, u->keycap);
+	u->dl = MemoryContextAllocZero(u->cx, (Size) u->keycap * sizeof(uint16));
 }
 
 static inline SbPostings *
@@ -263,6 +301,7 @@ union_postings(Union *u, const SiftTermInfo *info, CapTerm *ct)
 			union_count(u, g->gid, n);
 			continue;
 		}
+		union_group_scratch(u, n);
 		k = sift_grp_tids(g, NULL, u->tids);
 		if (u->scoring)
 			sift_post_group_tf(c, u->tf);
@@ -424,12 +463,7 @@ union_emit(Union *u, uint32 gid)
 
 	if (b == NULL ? !union_direct(u) : b->n == 0 && !union_direct(u))
 		return;
-	if (u->keys == NULL)
-	{
-		u->keys = MemoryContextAlloc(u->cx, SIFT_GRP_MAXTIDS * sizeof(SiftKey));
-		u->mtf = MemoryContextAlloc(u->cx, SIFT_GRP_MAXTIDS);
-		u->dl = MemoryContextAllocZero(u->cx, SIFT_GRP_MAXTIDS * sizeof(uint16));	/* without scoring no bound is read: one dl for all */
-	}
+	union_merge_scratch(u, b != NULL && b->n <= UNION_SPARSE_MAX ? b->n : SIFT_GRP_MAXTIDS);
 	keys = u->keys;
 	tf = u->mtf;
 	if (b != NULL && b->n <= UNION_SPARSE_MAX)
@@ -535,17 +569,15 @@ static const uint8 *
 union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool scoring, int min_bound, MemoryContext mcxt,
 			SiftTermInfo *info, uint8 *left_out)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift prefix union", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift prefix union");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	Union		u = {.seg = seg,.m = m,.scoring = scoring,.min_bound = min_bound,.cx = cx,.ref = ref,
-					 .budget = (uint64) Max(sift_prefix_gather_kb, 1) * 1024};
+					 .budget = (uint64) Max(Min(sift_prefix_gather_kb, work_mem / 2), 1) * 1024};
 	const SiftSegHeaderData *h = seg->hdr;
 	const uint8 *blob = NULL;
 
-	u.tcxt = AllocSetContextCreate(cx, "sift prefix term", ALLOCSET_DEFAULT_SIZES);
+	u.tcxt = sift_mem_allocset_create(cx, "sift prefix term");
 	u.sb = palloc0(((h->sb_hi - h->sb_lo + SB_CHUNK) / SB_CHUNK) * sizeof(SbPostings *));
-	u.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
-	u.tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	memset(info, 0, sizeof(SiftTermInfo));
 	u.capture = true;
 	union_scan(&u, h->sb_lo, h->sb_hi);
@@ -618,13 +650,13 @@ cache_key(const SiftSegment *seg, const char *key, int keylen, bool scoring, int
 }
 
 static uint8 *
-blob_copy(MemoryContext mcxt, const uint8 *blob, const SiftTermInfo *info)
+blob_copy(MemoryContext mcxt, const uint8 *blob, const SiftTermInfo *info, int flags)
 {
 	uint8	   *c;
 
 	if (blob == NULL)
 		return NULL;
-	c = MemoryContextAllocAligned(mcxt, (Size) info->post_len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+	c = MemoryContextAllocAligned(mcxt, (Size) info->post_len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, flags);
 	memcpy(c, blob, (Size) info->post_len + SIFT_KERN_PAD);
 	return c;
 }
@@ -684,6 +716,7 @@ cache_evict_all(void)
 
 static const SiftCacheKind prefix_kind = {"bm25_prefix", cache_oldest, cache_evict_one, cache_evict_all};
 
+/* MEM[MEM-BM25-02]: prefix cache_put (MCXT_ALLOC_HUGE, missing sift_cache_commit; 258B inline CacheKey) */
 static void
 cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 left_out)
 {
@@ -700,9 +733,9 @@ cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 
 		cache = hash_create("sift prefix cache", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		sift_cache_register(&prefix_kind);
 	}
-	if (!sift_cache_room(size) || hash_search(cache, k, HASH_FIND, NULL) != NULL)
+	if (size > (Size) sift_backend_cache_kb * 1024 / 2 || !sift_cache_room(size) || hash_search(cache, k, HASH_FIND, NULL) != NULL)
 		return;
-	copy = blob_copy(cache_cx, blob, info);
+	copy = blob_copy(cache_cx, blob, info, 0);
 	e = hash_search(cache, k, HASH_ENTER, NULL);
 	e->info = *info;
 	e->blob = copy;
@@ -710,6 +743,7 @@ cache_put(const CacheKey *k, const SiftTermInfo *info, const uint8 *blob, uint8 
 	e->size = size;
 	e->pins = 0;
 	cache_link_newest(e);
+	sift_cache_commit();
 }
 
 /*
@@ -760,7 +794,7 @@ sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int key
 			if (e->pins++ == 0)
 				cache_unlink(e);
 			sift_host_cache_unlock();
-			blob = blob_copy(mcxt, e->blob, info);
+			blob = blob_copy(mcxt, e->blob, info, MCXT_ALLOC_HUGE);
 			sift_host_cache_lock();
 			if (--e->pins == 0)
 				cache_link_newest(e);

@@ -169,6 +169,7 @@ ent_term(const FacetCtx *fc, const Entry *e)
 	return fc->terms + e->off;
 }
 
+/* STOR[STOR-PORT-06]: facet vtab duplicates 4-5 shadow tables + _content (use content='' / external ref) */
 static bool
 dict_visit(void *arg, const char *term, int len, const SiftTermInfo *info)
 {

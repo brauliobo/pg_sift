@@ -659,7 +659,8 @@ sift_highlight(PG_FUNCTION_ARGS)
 	MatchCache *c;
 	SiftAnalyzer *a;
 	SiftToken  *toks;
-	text	   *doc;
+	text	   *doc,
+			   *res;
 	const char *s,
 			   *start_tag = tag_arg(fcinfo, 2, "<b>"),
 			   *stop_tag = tag_arg(fcinfo, 3, "</b>");
@@ -689,5 +690,13 @@ sift_highlight(PG_FUNCTION_ARGS)
 	}
 	appendBinaryStringInfo(&buf, s + done, VARSIZE_ANY_EXHDR(doc) - done);
 	sift_analyzer_reset(a);
-	PG_RETURN_TEXT_P(cstring_to_text_with_len(buf.data, buf.len));
+	/* MEM[MEM-BM25-07]: sift_highlight StringInfo buf + tag cstrings (2x doc_len unfreed in caller cx) */
+	res = cstring_to_text_with_len(buf.data, buf.len);
+	pfree(buf.data);
+	if (!PG_ARGISNULL(2))
+		pfree((char *) start_tag);
+	if (!PG_ARGISNULL(3))
+		pfree((char *) stop_tag);
+	PG_FREE_IF_COPY(doc, 0);
+	PG_RETURN_TEXT_P(res);
 }

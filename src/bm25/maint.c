@@ -67,7 +67,7 @@ refresh_dead_tables(Relation index)
 	for (int i = 0; i < snap->nsegs; i++)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
 		{
-			MemoryContext segcx = AllocSetContextCreate(CurrentMemoryContext, "sift dead refresh segment", ALLOCSET_DEFAULT_SIZES);
+			MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead refresh segment");
 			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], segcx);
 
 			sift_seg_refresh_dead(seg);
@@ -205,7 +205,7 @@ worker_step(Oid indexoid, TimestampTz start, bool last)
 	MemoryContext old;
 
 	StartTransactionCommand();
-	cx = AllocSetContextCreate(CurrentMemoryContext, "sift maintenance step", ALLOCSET_DEFAULT_SIZES);
+	cx = sift_mem_allocset_create(CurrentMemoryContext, "sift maintenance step");
 	old = MemoryContextSwitchTo(cx);
 	SiftMemTracker mt_maint_worker_step;
 

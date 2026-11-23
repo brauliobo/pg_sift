@@ -12,6 +12,7 @@
 
 #include "core/store.h"
 #include "core/restrict.h"
+#include "core/memtrack.h"
 
 PGDLLEXPORT void sift_merge_worker(dsm_segment *seg, shm_toc *toc);
 
@@ -86,7 +87,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	/* the context of the workers needs a transaction id from before its parallel mode, which a parallel VACUUM's leader cannot take: one process merges */
 	if (nworkers < 1 || n > MAX_MERGE_FANIN || sift_xid_unassignable())
 		return -1;
-	cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment merge", ALLOCSET_DEFAULT_SIZES);
+	cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment merge");
 #ifdef SIFT_TESTING
 	mem_watch(cxt);
 #endif

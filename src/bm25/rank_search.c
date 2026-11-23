@@ -99,7 +99,7 @@ tie_add(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score)
 	{
 		tk->tiecap = Max(2 * tk->tiecap, 256);
 		rank_budget(tk, tk->cap);
-		SIFT_REGROW_HUGE_IN(r->plan->mcxt, tk->tie, tk->tiecap * sizeof(SiftHit));
+		SIFT_REGROW_IN(r->plan->mcxt, tk->tie, tk->tiecap * sizeof(SiftHit));
 	}
 	tk->tie[tk->ntie++] = (SiftHit) {.key = key,.score = score};
 }
@@ -111,7 +111,7 @@ tie_defer(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 	{
 		tk->lazycap = Max(2 * tk->lazycap, 256);
 		rank_budget(tk, tk->cap);
-		SIFT_REGROW_HUGE_IN(r->plan->mcxt, tk->lazy, tk->lazycap * sizeof(SiftLazyHit));
+		SIFT_REGROW_IN(r->plan->mcxt, tk->lazy, tk->lazycap * sizeof(SiftLazyHit));
 	}
 	tk->lazy[tk->nlazy++] = (SiftLazyHit) {.key = key,.score = score,.seg = seg};
 }
@@ -176,7 +176,7 @@ rank_candidate(SiftRanker *r, SiftTopK *tk, SiftKey key, float4 score, int seg)
 		if (tk->n == tk->cap && tk->n < tk->k && !rank_spill_flush(r, tk))
 		{
 			rank_budget(tk, Min(tk->k, 2 * tk->cap));
-			tk->hit = repalloc_huge(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
+			tk->hit = repalloc(tk->hit, (tk->cap = Min(tk->k, 2 * tk->cap)) * sizeof(SiftHit));
 		}
 		sift_kern_topk_push(tk, score, vis);
 		/* the hit the new one pushed out ties with the new worst one, or the worst score rose and the ties are behind it */
@@ -246,7 +246,7 @@ rank_append_ties(SiftTopK *tk)
 	if (tk->n + tk->ntie > tk->cap)
 	{
 		rank_budget(tk, tk->n + tk->ntie);
-		tk->hit = repalloc_huge(tk->hit, (tk->cap = tk->n + tk->ntie) * sizeof(SiftHit));
+		tk->hit = repalloc(tk->hit, (tk->cap = tk->n + tk->ntie) * sizeof(SiftHit));
 	}
 	qsort(tk->tie, tk->ntie, sizeof(SiftHit), hit_key_cmp);
 	memcpy(tk->hit + tk->n, tk->tie, tk->ntie * sizeof(SiftHit));
@@ -700,7 +700,7 @@ rank_merge_shared(SiftRanker *r)
 		r->nhit++;
 	r->complete = r->ties || n < r->K;
 	if (r->nhit > r->hitcap)
-		r->hit = repalloc_huge(r->hit, (r->hitcap = r->nhit) * sizeof(SiftHit));
+		r->hit = repalloc(r->hit, (r->hitcap = r->nhit) * sizeof(SiftHit));
 	for (int64 i = 0; i < r->nhit; i++)
 	{
 		r->hit[i] = (SiftHit) {all[i].key, all[i].score};
@@ -729,7 +729,7 @@ rank_search_once(SiftRanker *r)
 	r->spill_ok = r->K == PG_INT64_MAX && !r->ties && !shared;
 	r->nhit = 0;
 	cap = Min(r->K, RANK_INITIAL_K);
-	sift_kern_topk_init(&tk, MemoryContextAllocHuge(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
+	sift_kern_topk_init(&tk, MemoryContextAlloc(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
 	tk.floor = r->floor;
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
 	if (shared)

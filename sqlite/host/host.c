@@ -9,20 +9,29 @@
 
 /* ---------- memory contexts: bump blocks for small chunks, malloc for large ones, both freed with the context ---------- */
 
-#define SQ_BLOCK		(64 * 1024)
+/* MEM[MEM-PORT-04]: SqHost MemoryContext bump allocator (128B min alloc, 64KB blocks, no-op pfree) */
+#define SQ_BLOCK_MIN	(4 * 1024)		/* the bump blocks of a context grow from this to SQ_BLOCK_MAX, a fourfold step at a time */
+#define SQ_BLOCK_MAX	(64 * 1024)
 #define SQ_SMALL		1024
-#define SQ_F_LARGE		1
+#define SQ_GRAIN		16
+#define SQ_CLASSES		(SQ_SMALL / SQ_GRAIN)
+#define SQ_LARGE_BIT	1
 
+/* 16 bytes before every payload: the context, and the size shifted left by the large bit */
 typedef struct SqChunk
 {
-	struct SqChunk *prev,
-			   *next;
-	void	   *base;					/* what free() takes; differs from the chunk for aligned ones */
-	Size		size;
 	MemoryContext cx;
-	uint32		flags;
-	uint32		pad[3];
-} SqChunk;								/* 64 bytes: the payload is 64-byte aligned like a PG IO buffer */
+	Size		sz;
+} SqChunk;
+
+/* before the SqChunk of a large chunk: the list of the context, and what free() takes (it differs from the chunk for aligned ones) */
+typedef struct SqLarge
+{
+	struct SqLarge *prev,
+			   *next;
+	void	   *base;
+	Size		pad;
+} SqLarge;
 
 struct MemoryContextData
 {
@@ -30,13 +39,39 @@ struct MemoryContextData
 				child,
 				nextsib,
 				prevsib;
-	SqChunk		large;					/* list head of large chunks, and of bump blocks */
+	SqLarge		large;					/* list head of large chunks, and of bump blocks */
 	char	   *bump;
 	char	   *bump_end;
+	Size		block;					/* size of the next bump block */
+	void	   *freed[SQ_CLASSES];		/* the small chunks pfree gave back, a list for each size class: payload bytes (class + 1) * SQ_GRAIN */
 	MemoryContextCallback *cbs;			/* the reset callbacks, last registered first */
 	size_t		self_allocated;			/* the sizes of the chunks of this context, and of its tree: kept when a chunk comes or goes, read by MemoryContextMemAllocated */
 	size_t		tree_allocated;
 };
+
+static inline SqChunk *
+chunk_of(void *p)
+{
+	return (SqChunk *) p - 1;
+}
+
+static inline SqLarge *
+large_of(SqChunk *c)
+{
+	return (SqLarge *) c - 1;
+}
+
+static inline Size
+chunk_size(const SqChunk *c)
+{
+	return c->sz >> 1;
+}
+
+static inline uint32
+size_class(Size size)
+{
+	return size ? (size - 1) / SQ_GRAIN : 0;
+}
 
 _Thread_local MemoryContext CurrentMemoryContext;
 MemoryContext TopMemoryContext;
@@ -78,6 +113,7 @@ AllocSetContextCreate(MemoryContext parent, const char *name, size_t min, size_t
 	MemoryContext cx = calloc(1, sizeof(struct MemoryContextData));
 
 	cx->large.next = cx->large.prev = &cx->large;
+	cx->block = SQ_BLOCK_MIN;
 	cx->parent = parent;
 	if (parent)
 	{
@@ -103,7 +139,7 @@ cx_account(MemoryContext cx, ssize_t delta)
 }
 
 static void
-chunk_link(MemoryContext cx, SqChunk *c)
+chunk_link(MemoryContext cx, SqLarge *c)
 {
 	c->next = cx->large.next;
 	c->prev = &cx->large;
@@ -114,7 +150,7 @@ chunk_link(MemoryContext cx, SqChunk *c)
 static void
 cx_free_chunks(MemoryContext cx)
 {
-	for (SqChunk *c = cx->large.next, *n; c != &cx->large; c = n)
+	for (SqLarge *c = cx->large.next, *n; c != &cx->large; c = n)
 	{
 		n = c->next;
 		free(c->base);
@@ -122,6 +158,8 @@ cx_free_chunks(MemoryContext cx)
 	cx_account(cx, -(ssize_t) __atomic_load_n(&cx->self_allocated, __ATOMIC_RELAXED));
 	cx->large.next = cx->large.prev = &cx->large;
 	cx->bump = cx->bump_end = NULL;
+	cx->block = SQ_BLOCK_MIN;
+	memset(cx->freed, 0, sizeof(cx->freed));
 }
 
 void
@@ -191,18 +229,18 @@ MemoryContextMemAllocated(MemoryContext cx, bool recurse)
 static void *
 cx_alloc_large(MemoryContext cx, Size size, Size align)
 {
-	char	   *raw = malloc(sizeof(SqChunk) + size + align);
+	char	   *raw = malloc(sizeof(SqLarge) + sizeof(SqChunk) + size + align);
 	SqChunk    *c;
+	SqLarge    *l;
 
 	if (raw == NULL)
 		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("out of memory allocating %zu bytes", size)));
-	c = (SqChunk *) TYPEALIGN(align, raw + sizeof(SqChunk));
-	c = (SqChunk *) ((char *) c - sizeof(SqChunk));
-	c->base = raw;
-	c->size = size;
+	c = (SqChunk *) TYPEALIGN(align, raw + sizeof(SqLarge) + sizeof(SqChunk)) - 1;
+	l = large_of(c);
+	l->base = raw;
+	c->sz = size << 1 | SQ_LARGE_BIT;
 	c->cx = cx;
-	c->flags = SQ_F_LARGE;
-	chunk_link(cx, c);
+	chunk_link(cx, l);
 	cx_account(cx, (ssize_t) size);
 	return c + 1;
 }
@@ -211,23 +249,31 @@ static void *
 cx_alloc(MemoryContext cx, Size size)
 {
 	SqChunk    *c;
-	Size		need;
+	uint32		cls = size_class(size);
+	Size		need = sizeof(SqChunk) + (Size) (cls + 1) * SQ_GRAIN;
 
 	if (size > SQ_SMALL)
 		return cx_alloc_large(cx, size, 64);
-	need = sizeof(SqChunk) + TYPEALIGN(64, size);
+	if (cx->freed[cls])
+	{
+		void	   *p = cx->freed[cls];
+
+		cx->freed[cls] = *(void **) p;
+		chunk_of(p)->sz = size << 1;
+		return p;
+	}
 	if (cx->bump == NULL || cx->bump + need > cx->bump_end)
 	{
-		char	   *blk = cx_alloc_large(cx, SQ_BLOCK, 64);
+		char	   *blk = cx_alloc_large(cx, cx->block, 64);
 
 		cx->bump = blk;
-		cx->bump_end = blk + SQ_BLOCK;
+		cx->bump_end = blk + cx->block;
+		cx->block = Min(cx->block * 4, SQ_BLOCK_MAX);
 	}
 	c = (SqChunk *) cx->bump;
 	cx->bump += need;
-	c->size = size;
+	c->sz = size << 1;
 	c->cx = cx;
-	c->flags = 0;
 	return c + 1;
 }
 
@@ -287,33 +333,47 @@ palloc_extended(Size size, int flags)
 MemoryContext
 GetMemoryChunkContext(void *p)
 {
-	return ((SqChunk *) p - 1)->cx;
+	return chunk_of(p)->cx;
 }
 
 void
 pfree(void *p)
 {
-	SqChunk    *c = (SqChunk *) p - 1;
+	SqChunk    *c = chunk_of(p);
 
-	if (c->flags & SQ_F_LARGE)
+	if (c->sz & SQ_LARGE_BIT)
 	{
-		c->prev->next = c->next;
-		c->next->prev = c->prev;
-		cx_account(c->cx, -(ssize_t) c->size);
-		free(c->base);
+		SqLarge    *l = large_of(c);
+
+		l->prev->next = l->next;
+		l->next->prev = l->prev;
+		cx_account(c->cx, -(ssize_t) chunk_size(c));
+		free(l->base);
+	}
+	else
+	{
+		uint32		cls = size_class(chunk_size(c));
+
+		*(void **) p = c->cx->freed[cls];
+		c->cx->freed[cls] = p;
 	}
 }
 
 void *
 repalloc(void *p, Size size)
 {
-	SqChunk    *c = (SqChunk *) p - 1;
+	SqChunk    *c = chunk_of(p);
+	Size		old = chunk_size(c);
 	void	   *n;
 
-	if (size <= c->size)
+	if (c->sz & SQ_LARGE_BIT ? size <= old : size <= (Size) (size_class(old) + 1) * SQ_GRAIN)
+	{
+		if (!(c->sz & SQ_LARGE_BIT))
+			c->sz = Max(size, old) << 1;
 		return p;
+	}
 	n = cx_alloc(c->cx, size);
-	memcpy(n, p, c->size);
+	memcpy(n, p, old);
 	pfree(p);
 	return n;
 }
@@ -555,15 +615,28 @@ seg_dict_ref_load(SiftColSegment *seg, int col, uint64 at, uint64 len, MemoryCon
 	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a 5.x shared column value store is read by the PostgreSQL host only")));
 }
 
-/* the cache budget (core/cachebudget.h): this host keeps every entry that alone fits the budget and never evicts for another */
+/* the cache budget (core/cachebudget.h): every cache is a child of one context, whose tree may hold sift_backend_cache_kb; the entry used the longest ago goes first */
 #include "core/cachebudget.h"
 
 int			sift_backend_cache_kb = 16 * 1024;
 
+static MemoryContext cache_root;
+static pthread_once_t cache_once = PTHREAD_ONCE_INIT;
+static const SiftCacheKind *cache_kinds[SIFT_CACHE_MAX_KINDS];
+static int	ncache_kinds;
+
+static void
+cache_root_create(void)
+{
+	sq_mem_init();
+	cache_root = AllocSetContextCreate(TopMemoryContext, "sift caches", 0, 0, 0);
+}
+
 MemoryContext
 sift_cache_create_context(const char *name)
 {
-	return AllocSetContextCreate(TopMemoryContext, name, ALLOCSET_DEFAULT_SIZES);
+	pthread_once(&cache_once, cache_root_create);
+	return AllocSetContextCreate(cache_root, name, ALLOCSET_DEFAULT_SIZES);
 }
 
 uint64
@@ -577,16 +650,48 @@ sift_cache_tick(void)
 void
 sift_cache_register(const SiftCacheKind *kind)
 {
+	SIFT_INVARIANT(ncache_kinds < SIFT_CACHE_MAX_KINDS, "sift: more caches than the %d of core/cachebudget.h", SIFT_CACHE_MAX_KINDS);
+	cache_kinds[ncache_kinds++] = kind;
+}
+
+Size
+sift_cache_total_bytes(void)
+{
+	return cache_root ? MemoryContextMemAllocated(cache_root, true) : 0;
+}
+
+static bool
+evict_oldest(void)
+{
+	const SiftCacheKind *victim = NULL;
+	uint64		best = UINT64_MAX;
+
+	for (int i = 0; i < ncache_kinds; i++)
+	{
+		uint64		t = cache_kinds[i]->oldest();
+
+		if (t < best)
+		{
+			best = t;
+			victim = cache_kinds[i];
+		}
+	}
+	return victim != NULL && victim->evict_one();
 }
 
 bool
 sift_cache_room(Size need)
 {
-	return need <= (Size) sift_backend_cache_kb * 1024;
+	Size		limit = (Size) sift_backend_cache_kb * 1024;
+	bool		fits = need <= limit;
+
+	while (fits && sift_cache_total_bytes() + need > limit)
+		fits = evict_oldest();
+	return fits;
 }
 
 bool
 sift_cache_commit(void)
 {
-	return true;
+	return sift_cache_room(0);
 }

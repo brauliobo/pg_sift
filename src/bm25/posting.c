@@ -289,7 +289,7 @@ sift_post_bounds(SiftPostingCursor *c, int *n)
 			c->nbounds = c->ng;
 			return c->bounds;
 		}
-		c->bounds = kept ? obj : MemoryContextAllocHuge(c->mcxt, bytes);
+		c->bounds = kept ? obj : MemoryContextAlloc(c->mcxt, bytes);
 		for (uint32 i = 0; i < c->ng; i++)
 		{
 			SiftGroupBounds *b = &c->bounds[i];

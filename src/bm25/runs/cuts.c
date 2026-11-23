@@ -6,6 +6,7 @@
 #include "core/host.h"
 #include "core/cmp.h"
 #include "bm25/runs/runs_priv.h"
+#include "core/memtrack.h"
 
 bool
 sift_runs_splittable(SiftRun **runs, int nruns)
@@ -83,7 +84,7 @@ runs_choose_cuts(RunSample *all, int nall, uint64 min_bytes, int target, SiftTer
 int
 sift_runs_cuts(SiftRun **runs, int nruns, Size budget, uint64 min_bytes, int target, SiftTermCut *cuts)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run cuts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift run cuts");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	bool		positions;
 	uint64		ndocs;
@@ -151,7 +152,7 @@ reader_to_term(RunReader *rd, const SiftRun *run, const SiftTermCut *lo)
 SiftSegmentWriter *
 sift_runs_write_docs(SiftRun **runs, int nruns, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run docs", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift run docs");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	MergeOut	mo = {0};
 	bool		positions;
@@ -170,7 +171,7 @@ sift_runs_write_docs(SiftRun **runs, int nruns, Size budget, SiftWriteTarget *wt
 void
 sift_runs_write_range(SiftRun **runs, int nruns, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift run range", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift run range");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	MergeOut	mo = {.sw = rw};
 	bool		positions;

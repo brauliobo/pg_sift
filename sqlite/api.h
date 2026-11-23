@@ -18,6 +18,7 @@
 #include "bm25/merge.h"
 
 /* rowid <-> document key: block = rowid >> SQ_ROWID_SHIFT, offset = (rowid & mask) + 1; rowids 0 .. 2^37 - 1 */
+/* STOR[STOR-PORT-04]: SQ_ROWID_SHIFT=5 (32 docs/pg -> 8x SBs + 50% zero-padded LIVE2 bitmaps; v7 shift=8) */
 #define SQ_ROWID_SHIFT	5
 #define SQ_ROWID_MAX	((int64_t) 1 << (32 + SQ_ROWID_SHIFT))
 
@@ -136,6 +137,9 @@ extern SqInv *sq_inv_new(bool positions);
 extern void sq_inv_free(SqInv *inv);
 extern bool sq_inv_empty(const SqInv *inv);
 extern uint64 sq_inv_postings(const SqInv *inv);
+/* the bytes of the buffer, from which it is written as a segment whatever pending_postings says */
+#define SQ_INV_BYTES	((uint64) 128 << 20)
+extern uint64 sq_inv_bytes(const SqInv *inv);
 extern void sq_inv_add(SqInv *inv, SiftKey key, const SiftTermFreq *terms, int nterms, uint32 dl);
 extern bool sq_inv_remove(SqInv *inv, SiftKey key);
 extern void sq_inv_clear(SqInv *inv);

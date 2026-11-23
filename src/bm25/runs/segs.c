@@ -5,6 +5,7 @@
  */
 #include "core/host.h"
 #include "bm25/runs/runs_priv.h"
+#include "core/memtrack.h"
 
 /*
  * bm25/runs/runs.c - the sorted runs and their merge into segments (bm25/runs.h). Portable: a run is a
@@ -76,7 +77,7 @@ seg_sample(void *arg, const char *term, int len, uint64 post_off, uint64 nterms)
 int
 sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, SiftTermCut *cuts)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment cuts", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment cuts");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SegSamples	ss = {0};
 	RunSample  *all = NULL;
@@ -111,7 +112,7 @@ sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int target, Sift
 SiftSegmentWriter *
 sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, MemoryContext mcxt)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment docs", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment docs");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	MergeOut	mo = {0};
 	bool		positions;
@@ -128,7 +129,7 @@ sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget
 void
 sift_segs_write_range(SiftSegment **segs, int nsegs, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment range", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment range");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	MergeOut	mo = {.sw = rw};
 	bool		positions;

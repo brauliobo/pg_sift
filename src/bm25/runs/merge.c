@@ -42,7 +42,7 @@ batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 
 		if (bt->poslen + len > bt->poscap)
 		{
 			bt->poscap = Max(bt->poslen + len, Max(8192, bt->poscap * 2));
-			SIFT_REGROW_HUGE_IN(CurrentMemoryContext, bt->pos, bt->poscap);
+			SIFT_REGROW_IN(CurrentMemoryContext, bt->pos, bt->poscap);
 		}
 		memcpy(bt->pos + bt->poslen, rec, len);
 		bt->plen[bt->n] = len;

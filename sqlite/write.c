@@ -256,7 +256,7 @@ rebuild(SqVtab *vt)
 			cols[i] = sqlite3_column_value(q, i + 1);
 		check_rowid(sqlite3_column_int64(q, 0));
 		index_doc(vt, sqlite3_column_int64(q, 0), cols);
-		if ((int64_t) sq_inv_postings(vt->pend) > vt->pending_postings)
+		if (((int64_t) sq_inv_postings(vt->pend) > vt->pending_postings || sq_inv_bytes(vt->pend) > SQ_INV_BYTES))
 			sq_vt_flush(vt, false);
 	}
 	sqlite3_finalize(q);
@@ -545,7 +545,7 @@ insert_doc(SqVtab *vt, sqlite3_int64 oldid, sqlite3_value *newid, sqlite3_value 
 		*rowid = sqlite3_value_int64(newid);
 	check_rowid(*rowid);
 	index_doc(vt, *rowid, cols);
-	if ((int64_t) sq_inv_postings(vt->pend) > vt->pending_postings)
+	if (((int64_t) sq_inv_postings(vt->pend) > vt->pending_postings || sq_inv_bytes(vt->pend) > SQ_INV_BYTES))
 		sq_vt_flush(vt, false);
 }
 

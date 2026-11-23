@@ -53,7 +53,8 @@
 #include "bm25/dict.h"
 #include "core/store.h"
 
-#define SIFT_BLKBOUND_MIN		32	/* postings in a group to store blk_bound[] */
+/* STOR[STOR-BM25-03]: SIFT_BLKBOUND_MIN 32->64 (omits 16B blk_bound on 32..63 posting SBs; ABI flag-gated) */
+#define SIFT_BLKBOUND_MIN		64	/* postings in a group to store blk_bound[] */
 #define SIFT_SPAN_MIN_DF		1024	/* LIST postings from which sift_post_bounds may skip decoding */
 
 /*

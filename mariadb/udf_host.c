@@ -51,7 +51,8 @@ local_close(void)
 	call_conn = NULL;
 }
 
-/* Runs the statement in s as the server itself (no user, no database: names are qualified) and returns its rows */
+/* MEM[MEM-PORT-12]: MariaDB udf_host mysql_store_result (2x full queue/fetch copy in client RAM; rows now streamed by mysql_use_result) */
+/* Runs the statement in s as the server itself (no user, no database: names are qualified) and returns its rows to fetch one by one */
 static MYSQL_RES *
 sql_run(Sql *s, char *err, size_t errlen)
 {
@@ -68,12 +69,24 @@ sql_run(Sql *s, char *err, size_t errlen)
 		}
 		SQL(set_character_set) (call_conn, "utf8mb4");
 	}
-	if (SQL(real_query) (call_conn, s->sql, s->len) != 0 || (r = SQL(store_result) (call_conn)) == NULL)
+	if (SQL(real_query) (call_conn, s->sql, s->len) != 0 || (r = SQL(use_result) (call_conn)) == NULL)
 	{
 		snprintf(err, errlen, "sift: reading the table failed: %s", SQL(error) (call_conn));
 		return NULL;
 	}
 	return r;
+}
+
+/* Releases the rows of sql_run once all were fetched: a stream that broke before its end is an error, not a short result */
+static int
+sql_done(MYSQL_RES *r, char *err, size_t errlen)
+{
+	unsigned int no = SQL(errno) (call_conn);
+
+	if (no != 0)
+		snprintf(err, errlen, "sift: reading the table failed: %s", SQL(error) (call_conn));
+	SQL(free_result) (r);
+	return no != 0 ? -1 : 0;
 }
 
 /* A statement that waits for a metadata lock of a pending DDL would deadlock with the statement that called us */
@@ -84,7 +97,9 @@ host_queue(void *ctx, SiftIdx *ix, int64_t after, SxEvent **out, size_t *n, char
 {
 	Sql			s = {0};
 	MYSQL_RES  *r;
-	size_t		rows;
+	MYSQL_ROW	row;
+	size_t		rows = 0,
+				cap = 0;
 
 	sql_put(&s, SQL_PREFIX "SELECT seq, op, pk FROM %s WHERE seq > %lld AND op <> 'B' ORDER BY seq", sx_cfg(ix, "queue"),
 			(long long) after);
@@ -96,17 +111,22 @@ host_queue(void *ctx, SiftIdx *ix, int64_t after, SxEvent **out, size_t *n, char
 		*n = 0;
 		return -1;
 	}
-	rows = SQL(num_rows) (r);
-	*out = malloc((rows + 1) * sizeof(SxEvent));
-	for (size_t i = 0; i < rows; i++)
+	*out = NULL;
+	while ((row = SQL(fetch_row) (r)) != NULL)
 	{
-		MYSQL_ROW	row = SQL(fetch_row) (r);
-
-		(*out)[i] = (SxEvent) {strtoll(row[0], NULL, 10), strtoll(row[2], NULL, 10), row[1][0]};
+		if (rows == cap)
+			*out = realloc(*out, (cap = cap ? cap * 2 : 1024) * sizeof(SxEvent));
+		(*out)[rows++] = (SxEvent) {strtoll(row[0], NULL, 10), strtoll(row[2], NULL, 10), row[1][0]};
 	}
 	*n = rows;
-	SQL(free_result) (r);
 	sql_free(&s);
+	if (sql_done(r, err, errlen) != 0)
+	{
+		free(*out);
+		*out = NULL;
+		*n = 0;
+		return -1;
+	}
 	return 0;
 }
 
@@ -192,10 +212,7 @@ host_fetch(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, SxRow *rows, ch
 				rows[at->at].len = len[1];
 			}
 		}
-		if (r)
-			SQL(free_result) (r);
-		else
-			rc = -1;
+		rc = r ? sql_done(r, err, errlen) : -1;
 		sql_free(&s);
 	}
 	free(ord);
@@ -233,10 +250,7 @@ host_exists(void *ctx, SiftIdx *ix, const int64_t *pks, size_t n, uint8_t *prese
 			if (at)
 				present[at->at] = 1;
 		}
-		if (r)
-			SQL(free_result) (r);
-		else
-			rc = -1;
+		rc = r ? sql_done(r, err, errlen) : -1;
 		sql_free(&s);
 	}
 	free(ord);

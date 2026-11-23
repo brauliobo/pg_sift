@@ -5,6 +5,7 @@
 #include "bm25/eval.h"
 #include "bm25/eval_int.h"
 #include "bm25/segment.h"
+#include "core/memtrack.h"
 
 typedef struct CountCtx
 {
@@ -87,7 +88,7 @@ static int64
 eval_pages(SiftPlan *plan, SiftVis *vis, SiftVerifyFn verify, void *arg, SiftPageFn fn, void *fnarg,
 		   SiftNextRangeFn next, void *next_arg)
 {
-	CountCtx	cc = {plan, vis, verify, arg, AllocSetContextCreate(CurrentMemoryContext, "sift count", ALLOCSET_DEFAULT_SIZES), UINT32_MAX};
+	CountCtx	cc = {plan, vis, verify, arg, sift_mem_allocset_create(CurrentMemoryContext, "sift count"), UINT32_MAX};
 	SiftMatchIter *it = sift_iter_begin(plan);
 	SiftPageMatch pm;
 	int64		n = 0;

@@ -11,6 +11,7 @@
 
 #include "bm25/segment_int.h"
 #include "core/cmp.h"
+#include "core/memtrack.h"
 
 const uint32 sift_df_class_lo[SIFT_DF_CLASSES] = {1, 2, 3, 16, 128, 1024, 8192, 65536, 524288};
 const char *const sift_df_class_name[SIFT_DF_CLASSES] = {
@@ -432,7 +433,7 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.visit = visit;
 	w.arg = arg;
 	w.prevlen = -1;
-	w.tcxt = AllocSetContextCreate(CurrentMemoryContext, "sift walk term", ALLOCSET_DEFAULT_SIZES);
+	w.tcxt = sift_mem_allocset_create(CurrentMemoryContext, "sift walk term");
 	w.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	w.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	w.gdl = palloc(SIFT_GRP_MAXTIDS * sizeof(uint16));

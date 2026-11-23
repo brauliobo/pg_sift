@@ -63,12 +63,29 @@ sq_inv_new(bool positions)
 
 	inv->positions = positions;
 	inv->docs_sorted = true;
+	return inv;
+}
+
+/* MEM[MEM-PORT-02]: SqInv write buffer (FLUSH_POSTINGS=64M -> 1.6-2.4GiB RSS; eager 36KB on RO) */
+/* The tables are made by the first write: a connection that only reads holds none */
+static void
+inv_tables(SqInv *inv)
+{
+	if (inv->dmap)
+		return;
 	inv->dmask = 1023;
 	inv->dused = 0;
 	inv->dmap = calloc(inv->dmask + 1, sizeof(uint32));
 	inv->smask = 4095;
 	inv->slots = calloc(inv->smask + 1, sizeof(InvTerm *));
-	return inv;
+}
+
+uint64
+sq_inv_bytes(const SqInv *inv)
+{
+	return (uint64) inv->npost * sizeof(InvPosting) + inv->poscap + (uint64) inv->dcap * (sizeof(SiftKey) + 3) +
+		(inv->dmap ? (uint64) (inv->dmask + 1) * sizeof(uint32) + (uint64) (inv->smask + 1) * sizeof(InvTerm *) : 0) +
+		(uint64) inv->nterms * (sizeof(InvTerm) + 16);
 }
 
 void
@@ -96,19 +113,15 @@ sq_inv_clear(SqInv *inv)
 	inv->poslen = inv->poscap = 0;
 	inv->npost = 0;
 	inv->docs_sorted = true;
-	inv->dmask = 1023;
-	inv->dused = 0;
-	inv->dmap = calloc(inv->dmask + 1, sizeof(uint32));
-	inv->smask = 4095;
-	inv->slots = calloc(inv->smask + 1, sizeof(InvTerm *));
+	inv->dmap = NULL;
+	inv->slots = NULL;
+	inv->dmask = inv->smask = inv->dused = 0;
 }
 
 void
 sq_inv_free(SqInv *inv)
 {
 	sq_inv_clear(inv);
-	free(inv->dmap);
-	free(inv->slots);
 	free(inv);
 }
 
@@ -163,6 +176,7 @@ add_doc(SqInv *inv, SiftKey key, uint32 dl)
 	uint32		ord = inv->ndocs,
 				h;
 
+	inv_tables(inv);
 	if (ord == inv->dcap)
 	{
 		inv->dcap = inv->dcap ? inv->dcap * 2 : 4096;
@@ -198,6 +212,8 @@ add_doc(SqInv *inv, SiftKey key, uint32 dl)
 static int64
 find_doc(const SqInv *inv, SiftKey key)
 {
+	if (inv->dmap == NULL)
+		return -1;
 	for (uint32 h = key_hash(key) & inv->dmask; inv->dmap[h]; h = (h + 1) & inv->dmask)
 	{
 		uint32		ord = inv->dmap[h] - 1;
@@ -223,9 +239,11 @@ sq_inv_remove(SqInv *inv, SiftKey key)
 static InvTerm *
 term_get(SqInv *inv, const char *bytes, int len, uint32 hash)
 {
-	uint32		h = hash & inv->smask;
+	uint32		h;
 	InvTerm    *t;
 
+	inv_tables(inv);
+	h = hash & inv->smask;
 	for (; (t = inv->slots[h]) != NULL; h = (h + 1) & inv->smask)
 		if (t->hash == hash && t->len == len && memcmp(t->bytes, bytes, len) == 0)
 			return t;
@@ -283,7 +301,7 @@ add_posting(SqInv *inv, const char *bytes, int len, uint32 hash, uint32 ord, uin
 	{
 		if (inv->poslen + plen > inv->poscap)
 		{
-			inv->poscap = Max(inv->poslen + plen, Max(1 << 20, inv->poscap * 2));
+			inv->poscap = Max(inv->poslen + plen, Max(16384, inv->poscap * 2));
 			inv->pos = realloc(inv->pos, inv->poscap);
 		}
 		memcpy(inv->pos + inv->poslen, pos, plen);
@@ -392,17 +410,15 @@ batch_flush(Batch *b)
 static void
 write_term(SqInv *inv, SiftSegmentWriter *sw, Batch *b, InvTerm *t, const uint32 *rank, const uint32 *order)
 {
-	bool		needsort = !t->sorted || !inv->docs_sorted;
 	InvPosting *p = t->p;
 	uint32		n = t->n;
 
 	b->n = 0;
 	b->haspos = t->haspos;
 	b->pw = sift_segw_begin_term(sw, t->bytes, t->len);
-	if (needsort)
+	/* MEM[MEM-PORT-03]: SqInv dmap + sq_inv_write sort copies (3x dmap grow; 2x flush peak) */
+	if (!t->sorted || !inv->docs_sorted)
 	{
-		p = malloc(n * sizeof(InvPosting));
-		memcpy(p, t->p, n * sizeof(InvPosting));
 		rank_ctx.rank = rank;
 		qsort(p, n, sizeof(InvPosting), posting_cmp);
 	}
@@ -431,8 +447,8 @@ write_term(SqInv *inv, SiftSegmentWriter *sw, Batch *b, InvTerm *t, const uint32
 	}
 	batch_flush(b);
 	sift_segw_end_term(sw);
-	if (needsort)
-		free(p);
+	free(t->p);
+	t->p = NULL;
 }
 
 static bool

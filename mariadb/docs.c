@@ -169,9 +169,10 @@ apply_event(SiftIdx *ix, int64 docid, int64 pk, int64 op)
 			ix->dead = realloc(ix->dead, (ix->capdead = ix->capdead ? ix->capdead * 2 : 1024) * sizeof(int64));
 		ix->dead[ix->ndead++] = prev;
 	}
+	/* MEM[MEM-PORT-09]: MariaDB SiftIdx resident arrays (ids+pks 16-32B/doc + latest 48-96B/key + dead) */
 	if (op == 'I' && ix->ndoc == ix->capdoc)
 	{
-		ix->capdoc = ix->capdoc ? ix->capdoc * 2 : 1024;
+		ix->capdoc = ix->capdoc ? ix->capdoc + ix->capdoc / 2 : 1024;
 		ix->ids = realloc(ix->ids, ix->capdoc * sizeof(int64));
 		ix->pks = realloc(ix->pks, ix->capdoc * sizeof(int64));
 	}
@@ -223,7 +224,7 @@ prepare_events(const SiftIdx *ix, const Ev *ev, size_t n, Prep *p)
 	p->latest = latest_reserve(ix, n, &p->caplatest, &p->nlatest);
 	if (ix->ndoc + nins > ix->capdoc)
 	{
-		p->capdoc = Max(Max(ix->capdoc * 2, ix->ndoc + nins), 1024);
+		p->capdoc = Max(Max(ix->capdoc + ix->capdoc / 2, ix->ndoc + nins), 1024);
 		p->ids = malloc(p->capdoc * sizeof(int64));
 		p->pks = malloc(p->capdoc * sizeof(int64));
 		memcpy(p->ids, ix->ids, ix->ndoc * sizeof(int64));

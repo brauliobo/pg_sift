@@ -149,8 +149,6 @@ docmap(SiftSegment *seg)
 	if (!sift_docdir_get(seg, nsb, &dm->dir, &dm->rank_base, &handle))
 		docmap_read(seg, dm, handle);
 	dm->cur = -1;
-	dm->om = MemoryContextAllocAligned(seg->mcxt, SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64),
-									   SIFT_SIMD_ALIGN, 0);
 	seg->docmap = dm;
 	return dm;
 }
@@ -223,6 +221,9 @@ load_sb(SiftSegment *seg, DocMap *dm, int64 i)
 		return;
 	dm->cur = -1;
 	dm->indexed = false;
+	/* MEM[MEM-BM25-05]: SiftSegment DocMap (om 16KB + rec HUGE + xdl 149KB + adir per opened segment) */
+	if (dm->om == NULL)
+		dm->om = MemoryContextAllocAligned(seg->mcxt, SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64), SIFT_SIMD_ALIGN, 0);
 	if (len > dm->reccap)
 	{
 		dm->reccap = Max(len, 4096);

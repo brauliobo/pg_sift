@@ -219,9 +219,9 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	ss->index = index_open(ss->indexoid, AccessShareLock);
 	ss->iinfo = BuildIndexInfo(ss->index);
 	ss->heapslot = table_slot_create(ss->heap, &estate->es_tupleTable);
-	ss->cxt = AllocSetContextCreate(estate->es_query_cxt, "sift scan", ALLOCSET_DEFAULT_SIZES);
+	ss->cxt = sift_mem_allocset_create(estate->es_query_cxt, "sift scan");
 	/* beside ss->cxt, not in it: close_scan resets that one at every rescan, which deletes its children and leaves this pointer at a context that the next one created takes the place of */
-	ss->tmpcx = AllocSetContextCreate(estate->es_query_cxt, "sift recheck", ALLOCSET_DEFAULT_SIZES);
+	ss->tmpcx = sift_mem_allocset_create(estate->es_query_cxt, "sift recheck");
 	ss->wd = SIFT_OFFMASK_WORDS;
 	ss->vm_sb = UINT32_MAX;
 	init_cols(ss, cs);
@@ -420,7 +420,7 @@ heap_superblocks(SiftScanState *ss)
 static void
 export_bind(SiftScanState *ss)
 {
-	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift parallel bind", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext tmp = sift_mem_allocset_create(CurrentMemoryContext, "sift parallel bind");
 	MemoryContext old = MemoryContextSwitchTo(tmp);
 	SiftIndexState *st = sift_state_open(ss->index, tmp);
 	SiftPlan   *plan = bind_queries(ss, st, NULL);

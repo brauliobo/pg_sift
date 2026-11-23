@@ -78,7 +78,6 @@ engine_init(void)
 	int			level;
 
 	sq_mem_init();
-	sift_store_init();
 	sq_tmpdir = tmp_dir;
 	sift_cpu_init();
 	sift_init();
@@ -301,7 +300,8 @@ do_create(const char *name, const char *dir, const char *cfg)
 	Relation	rel;
 	Manifest	m = {.format = MDB_FORMAT,.sift_format = SIFT_FORMAT_ID,.page_layout = PAGE_LAYOUT_ID,
 	.next_gen = 1};
-	int			dpp = (int) cfg_num(cfg, "dpp", 32);
+	/* STOR[STOR-PORT-09]: default dpp 32->256 for new indexes (honors MANIFEST.dpp; -8x SB meta & -50% LIVE2) */
+	int			dpp = (int) cfg_num(cfg, "dpp", 256);
 
 	memcpy(m.magic, MAN_MAGIC, sizeof(m.magic));
 	if (dpp < 1 || dpp > 256)
@@ -360,6 +360,27 @@ free_idx(SiftIdx *ix)
 	ix->dropped = true;
 }
 
+/* MEM[MEM-PORT-10]: MariaDB do_drop/free_idx leak (leaks ix->cfg, ix->meta[0..5], and ~16KB SiftIdx struct) */
+static void
+destroy_idx(SiftIdx *ix)
+{
+	for (int i = 0; i < NMETA; i++)
+		free((char *) ix->meta[i]);
+	free(ix->cfg);
+	pthread_rwlock_destroy(&ix->rw);
+	pthread_mutex_destroy(&ix->wmu);
+	pthread_mutex_destroy(&ix->mergemu);
+	pthread_mutex_destroy(&ix->dmu);
+	free(ix);
+}
+
+void
+sx_release(SiftIdx *ix)
+{
+	if (ix && __atomic_sub_fetch(&ix->refs, 1, __ATOMIC_ACQ_REL) == 0)
+		destroy_idx(ix);
+}
+
 static void
 unlink_dir(const char *dir)
 {
@@ -392,9 +413,10 @@ do_drop(const char *name, const char *dir)
 		for (int i = 0; i < nreg; i++)
 			if (reg[i] == ix)
 				reg[i] = reg[--nreg];
-		free_idx(ix);			/* the struct itself stays: a query that started before may still hold it */
+		free_idx(ix);			/* the struct stays until the last query that holds it lets go */
 		WR_UNLOCK(ix);
 		pthread_mutex_unlock(&ix->mergemu);
+		sx_release(ix);
 	}
 	unlink_dir(dir);
 }
@@ -427,6 +449,7 @@ new_idx(const char *name)
 	pthread_mutex_init(&ix->dmu, NULL);
 	snprintf(ix->name, sizeof(ix->name), "%s", name);
 	dir_of(name, ix->dir, sizeof(ix->dir));
+	ix->refs = 1;
 	return ix;
 }
 
@@ -438,22 +461,29 @@ sx_open(const char *name, char *err, size_t errlen)
 	thread_init();
 	pthread_rwlock_rdlock(&reg_lock);
 	ix = registered(name);
+	if (ix)
+		__atomic_add_fetch(&ix->refs, 1, __ATOMIC_RELAXED);
 	pthread_rwlock_unlock(&reg_lock);
 	if (ix)
 		return ix;
 	pthread_rwlock_wrlock(&reg_lock);
-	if ((ix = registered(name)) == NULL)
+	if ((ix = registered(name)) != NULL)
+		__atomic_add_fetch(&ix->refs, 1, __ATOMIC_RELAXED);
+	else
 	{
 		ix = new_idx(name);
 		if (nreg == lengthof(reg))
 			snprintf(sift_err_msg, sizeof(sift_err_msg), "sift: too many indexes open");
 		if (nreg < lengthof(reg) && SIFT_TRY(do_open(ix)) == 0)
+		{
 			reg[nreg++] = ix;
+			ix->refs++;
+		}
 		else
 		{
 			finish_call(-1, err, errlen);
 			free_idx(ix);
-			free(ix);
+			destroy_idx(ix);
 			ix = NULL;
 		}
 	}

@@ -1,11 +1,11 @@
--- dead_rewrite_pct: the percent of dead documents above which maintenance rewrites a lone segment (default 50), changed with ALTER INDEX and no REINDEX.
+-- dead_rewrite_pct: the percent of dead documents above which maintenance rewrites a lone segment (default 25), changed with ALTER INDEX and no REINDEX.
 CREATE EXTENSION pg_sift;
 SET enable_seqscan = off;
 SET sift.async_maintenance = off;
 CREATE TABLE dr (id serial, body text) WITH (autovacuum_enabled = off);
 INSERT INTO dr (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common' FROM generate_series(1, 10000) i;
 SET client_min_messages = warning;
-CREATE INDEX dr_idx ON dr USING sift (body) WITH (build_segments = 1);
+CREATE INDEX dr_idx ON dr USING sift (body) WITH (build_segments = 1, dead_rewrite_pct = 50);
 RESET client_min_messages;
 CREATE TEMP TABLE built AS SELECT gen FROM sift.segments('dr_idx');
 SELECT count(*) AS segments FROM built;
@@ -14,13 +14,13 @@ SELECT count(*) AS segments FROM built;
         1
 (1 row)
 
--- 30% dead: under the default 50 the segment stays
+-- 30% dead: under 50 the segment stays
 DELETE FROM dr WHERE id % 10 < 3;
 VACUUM dr;
-SELECT count(*) AS kept_at_default FROM sift.segments('dr_idx') s JOIN built USING (gen);
- kept_at_default 
------------------
-               1
+SELECT count(*) AS kept_at_50 FROM sift.segments('dr_idx') s JOIN built USING (gen);
+ kept_at_50 
+------------
+          1
 (1 row)
 
 -- the same 30% with the threshold at 25: VACUUM rewrites it and drops the dead documents

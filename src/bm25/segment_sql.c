@@ -41,7 +41,7 @@ sift_segments(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
 	SiftDirSnapshot *snap;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segments", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segments");
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), "col_segments");
@@ -104,7 +104,7 @@ void
 sift_bm25_stats(Relation index, SiftIndexStats *st)
 {
 	SiftDirSnapshot *snap;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift index stats", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift index stats");
 
 	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
@@ -286,7 +286,7 @@ sift_segment_postings(PG_FUNCTION_ARGS)
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	index;
 	SiftDirSnapshot *snap;
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift segment postings", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment postings");
 
 	InitMaterializedSRF(fcinfo, 0);
 	index = open_sift(PG_GETARG_OID(0), NULL);
@@ -489,7 +489,7 @@ verify_heap(Relation index, const SiftDirSnapshot *snap, Snapshot snapshot, uint
 	{
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE)
 		{
-			MemoryContext segcx = AllocSetContextCreate(cxt, "sift verify heap segment", ALLOCSET_DEFAULT_SIZES);
+			MemoryContext segcx = sift_mem_allocset_create(cxt, "sift verify heap segment");
 			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], segcx);
 
 			MemoryContext old = MemoryContextSwitchTo(segcx);
@@ -623,7 +623,7 @@ disjoint_from_earlier(Bm25Verify *bv, SiftSegment *seg)
 
 		if (e->kind != SIFT_SEG_IMMUTABLE || e->sb_hi < bv->seg->sb_lo || bv->seg->sb_hi < e->sb_lo)
 			continue;
-		MemoryContext earliercx = AllocSetContextCreate(bv->cxt, "sift verify earlier segment", ALLOCSET_DEFAULT_SIZES);
+		MemoryContext earliercx = sift_mem_allocset_create(bv->cxt, "sift verify earlier segment");
 
 		earlier = sift_seg_open(bv->index, e, earliercx);
 		verify_disjoint(bv->index, earlier, seg);
@@ -726,7 +726,7 @@ step_segment(void *arg)
 	SiftSegStats st;
 	SiftSegment *seg;
 	MemoryContext old;
-	MemoryContext segcx = AllocSetContextCreate(bv->cxt, "sift verify segment", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext segcx = sift_mem_allocset_create(bv->cxt, "sift verify segment");
 
 	LockPage(bv->index, SIFT_MAINT_LOCK_BLKNO, ShareLock);
 	if (e->kind != SIFT_SEG_IMMUTABLE)
@@ -782,8 +782,8 @@ bm25_verify(SiftCheck *ck, Relation index, bool heapallindexed)
 
 	bv->index = index;
 	bv->snapshot = snapshot;
-	bv->cxt = AllocSetContextCreate(old, "sift verify", ALLOCSET_DEFAULT_SIZES);
-	bv->walk = AllocSetContextCreate(bv->cxt, "sift verify walk", ALLOCSET_DEFAULT_SIZES);
+	bv->cxt = sift_mem_allocset_create(old, "sift verify");
+	bv->walk = sift_mem_allocset_create(bv->cxt, "sift verify walk");
 	MemoryContextSwitchTo(bv->cxt);
 	SiftMemTracker mt_bm25_verify;
 

@@ -90,7 +90,7 @@ typedef struct Delta
 	int64		max_seq;		/* highest seq of the queue rows it was built from */
 	size_t		nev;			/* their number: the queue is what it holds while both still are what the host counts */
 	struct Delta *root;			/* a micro segment's primary (a reference), else NULL */
-	int			g;				/* mapped slot of the reserved range, -1 without documents */
+	int			g;				/* entry of the table of mapped segments, -1 without documents */
 	uint32		blocks;
 	SiftSegEntry e;
 	int64	   *dead;			/* live docids of the segments that a queue row retires, ascending */
@@ -156,6 +156,7 @@ struct SiftIdx
 	Delta	   *delta;			/* the cached live segment (dmu) */
 	bool		feeding;
 	bool		dropped;
+	int			refs;			/* the registry's, and one for each sx_open not yet sx_release'd: the struct is freed with the last */
 	bool		want_merge;
 	char		merge_err[256];	/* the last error of a background merge */
 };

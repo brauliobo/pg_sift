@@ -75,7 +75,7 @@ void
 sift_posbuf_grow(SiftPosBuf *out, uint32 n)
 {
 	out->cap = Max(n, Max(64, out->cap * 2));
-	SIFT_REGROW_HUGE_IN(out->mcxt, out->v, (Size) out->cap * sizeof(uint32));
+	SIFT_REGROW_IN(out->mcxt, out->v, (Size) out->cap * sizeof(uint32));
 }
 
 /* LEB128 at *pp, which the writer made */
@@ -102,6 +102,7 @@ leb(const uint8 **pp)
 	return v;
 }
 
+/* STOR[STOR-BM25-04]: posblk 32-doc max-pos bitwidth + 4B/32 ckpt (outlier pos inflates 31 docs; v7 PFOR-exc) */
 /* Appends to out the block of the k postings whose records are at p (len bytes) */
 void
 sift_posblk_put(const uint8 *p, Size len, uint32 k, StringInfo out)

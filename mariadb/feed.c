@@ -15,7 +15,8 @@
 #include "bm25/analyze.h"
 #include "bm25/runs.h"
 
-#define BUILD_BUDGET	((Size) 512 << 20)
+/* MEM[MEM-PORT-13]: MariaDB feed BUILD_BUDGET (512MiB hardcoded + unbounded ev[] accumulation) */
+#define BUILD_BUDGET	((Size) 128 << 20)
 
 struct SiftFeed
 {

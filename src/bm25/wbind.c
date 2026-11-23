@@ -271,6 +271,7 @@ wbufdoc_copy(MemoryContext cx, const SiftWbufDoc *d)
 	return c;
 }
 
+/* MEM[MEM-BM25-04]: wbind wbufdoc_copy + mhit + plan_export (unbudgeted deep-copy + huge mhit + unbounded StringInfo) */
 void
 bind_wbuf(SiftPlan *p)
 {
@@ -310,7 +311,7 @@ bind_wbuf(SiftPlan *p)
 			if (p->nmhit == cap)
 			{
 				cap = Max(64, 2 * cap);
-				SIFT_REGROW_HUGE_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
+				SIFT_REGROW_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
 			}
 			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbufdoc_copy(p->mcxt, &doc) : NULL};
 		}
@@ -328,6 +329,8 @@ bind_wbuf(SiftPlan *p)
 		for (int64 j = 1; j < p->nmhit; j++)
 			if (p->mhit[j].key != p->mhit[k - 1].key)
 				p->mhit[k++] = p->mhit[j];
+			else if (p->mhit[j].doc)
+				pfree(p->mhit[j].doc);
 		p->nmhit = k;
 	}
 	pfree(hit);
@@ -403,7 +406,7 @@ import_wbuf(SiftPlan *p, const SharedBind *h)
 	p->wbuf_ndocs = h->wbuf_ndocs;
 	p->wbuf_sum_dl = h->wbuf_sum_dl;
 	p->nmhit = h->nmhit;
-	p->mhit = MemoryContextAllocHuge(p->mcxt, Max(h->nmhit, 1) * sizeof(WbufHit));
+	p->mhit = MemoryContextAlloc(p->mcxt, Max(h->nmhit, 1) * sizeof(WbufHit));
 	for (int64 i = 0; i < h->nmhit; i++, at += sizeof(SharedHit))
 	{
 		SharedHit	sh;

@@ -12,7 +12,8 @@
 #define SIFT_MERGE_MAX_SEGMENTS	32		/* more directory entries than this trigger a merge of the smallest segments (2 * fanin from a fanin of 16 up) */
 #define SIFT_MERGE_MIN_FANIN	2		/* the range of merge_fanin of the PostgreSQL host */
 #define SIFT_MERGE_MAX_FANIN	32
-#define SIFT_MERGE_DEAD_PCT		50		/* percent of dead documents above which a lone segment is rewritten */
+/* STOR[STOR-BM25-10]: dead-seg rewrite threshold 50%->25% + drop dead wbuf docs on promote (step.c:473) */
+#define SIFT_MERGE_DEAD_PCT		25		/* percent of dead documents above which a lone segment is rewritten */
 
 /* Directory entries from which the policy merges the smallest segments: never fewer than the tiers it waits for need (2 * fanin) */
 #define SIFT_MERGE_ENTRIES(fanin)	Max(SIFT_MERGE_MAX_SEGMENTS, 2 * (fanin))

@@ -91,7 +91,8 @@ cache_new(SqStore *st)
 	size_t		bytes = (size_t) st->cache_kib * 1024;
 
 	c->soft = Max((uint32) (bytes / st->unit), SQ_MIN_SLOTS);
-	c->hard = c->soft * 2 + 512;
+	/* MEM[MEM-PORT-01]: SqCache mmap arena (hard=2*soft+512 -> 2x VmSize; no MADV_DONTNEED on evict) */
+	c->hard = c->soft + Max(64, Min(c->soft / 8, 256));
 	c->map_len = (size_t) c->hard * st->unit + st->unit;
 	c->map = mmap(NULL, c->map_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	if (c->map == MAP_FAILED)
@@ -283,6 +284,7 @@ cache_invalidate(SqStore *st)
 			c->slot[i].dirty = 0;
 			c->slot[i].queued = 0;
 			cache_unlink(c, i);
+			madvise(slot_data(st, i), st->unit, MADV_DONTNEED);
 		}
 	if (c)
 		cache_recount_held(c);
@@ -307,10 +309,12 @@ cache_drop_unit(SqStore *st, uint32 unit)
 	if (f >= 0 && st->cache->slot[f].pins <= 0 && !st->cache->slot[f].dirty)
 	{
 		cache_unlink(st->cache, f);
+		madvise(slot_data(st, f), st->unit, MADV_DONTNEED);
 		st->cache->all_held = false;
 	}
 }
 
+/* MEM[MEM-PORT-06]: per-vtab private SqCache (share process/db-level cache across vtabs) */
 void
 sq_store_set_cache(SqStore *st, int cache_kib)
 {
@@ -726,9 +730,9 @@ GenericXLogAbort(GenericXLogState *state)
 {
 }
 
-/* Writes the byte range [off, off + len) of a unit back into its rows, in place */
+/* Reads (src NULL) or writes the byte range [off, off + len) of a unit in its rows, in place; dst/src are len bytes */
 static void
-write_range(SqStore *st, uint32 unit, uint32 off, uint32 len, const char *src)
+range_io(SqStore *st, uint32 unit, uint32 off, uint32 len, char *dst, const char *src)
 {
 	for (uint32 j = off / st->chunk_bytes; j <= (off + len - 1) / st->chunk_bytes; j++)
 	{
@@ -742,13 +746,40 @@ write_range(SqStore *st, uint32 unit, uint32 off, uint32 len, const char *src)
 		else
 			rc = sqlite3_blob_open(st->db, st->schema, st->chunks_name, "data", row, 1, &st->wblob);
 		if (rc == SQLITE_OK)
-			rc = sqlite3_blob_write(st->wblob, src + (lo - off), hi - lo, lo - j * st->chunk_bytes);
+			rc = src ? sqlite3_blob_write(st->wblob, src + (lo - off), hi - lo, lo - j * st->chunk_bytes)
+				: sqlite3_blob_read(st->wblob, dst + (lo - off), hi - lo, lo - j * st->chunk_bytes);
 		if (rc != SQLITE_OK)
 		{
 			sqlite3_blob_close(st->wblob);
 			st->wblob = NULL;
-			elog(ERROR, "sift: cannot write chunk %u of \"%s\": %s", unit, st->name, sqlite3_errmsg(st->db));
+			elog(ERROR, "sift: cannot %s chunk %u of \"%s\": %s", src ? "write" : "read", unit, st->name, sqlite3_errmsg(st->db));
 		}
+	}
+}
+
+#define SQ_DIRTY_SLICE	512
+
+/* STOR[STOR-PORT-05]: coalesce dirty byte range in sq_store_flush_pages (avoids full 8KiB/2-3 WAL pg write) */
+/*
+ * Writes back the 512-byte slices of an edited page that differ from the stored ones, a run of them at a time: a liveness flip changes a few bytes, and SQLite
+ * logs every page of its overflow chain that a blob write touches
+ */
+static void
+write_page_diff(SqStore *st, uint32 unit, uint32 pg, const char *page)
+{
+	char		old[SQ_PAGE];
+	uint32		base = pg * SQ_PAGE;
+
+	range_io(st, unit, base, SQ_PAGE, old, NULL);
+	for (uint32 at = 0, run; at < SQ_PAGE; at = run)
+	{
+		run = at;
+		while (run < SQ_PAGE && memcmp(page + run, old + run, SQ_DIRTY_SLICE) != 0)
+			run += SQ_DIRTY_SLICE;
+		if (run > at)
+			range_io(st, unit, base + at, run - at, NULL, page + at);
+		else
+			run = at + SQ_DIRTY_SLICE;
 	}
 }
 
@@ -765,7 +796,7 @@ sq_store_flush_pages(SqStore *st)
 		for (uint32 pg = 0; pg < st->P; pg++)
 			if (sl->dirty >> pg & 1)
 			{
-				write_range(st, sl->chunk, pg * SQ_PAGE, SQ_PAGE, slot_data(st, st->dirty[i]) + (size_t) pg * SQ_PAGE);
+				write_page_diff(st, sl->chunk, pg, slot_data(st, st->dirty[i]) + (size_t) pg * SQ_PAGE);
 				wrote = true;
 			}
 		sl->dirty = 0;

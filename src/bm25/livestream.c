@@ -7,6 +7,7 @@
 #include "bm25/segment.h"
 
 #include "bm25/segment_int.h"
+#include "core/memtrack.h"
 
 static void
 lru_unlink(DocCache *dc, SBDocs *e)
@@ -44,6 +45,11 @@ sbdocs_build(DocCache *dc, int64 at)
 	uint32		total = 0;
 	bool		anydead = false;
 
+	if (dc->rows == NULL)
+	{
+		dc->rows = MemoryContextAlloc(dc->mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+		dc->dead = MemoryContextAlloc(dc->mcxt, (SIFT_SB_PAGES * MAXOFF + 7) / 8);
+	}
 	sift_seg_docs(seg, docmap(seg)->dir[at].sb, &ch);
 	dirty_everywhere(seg, &ch);
 	memset(dc->dead, 0, (SIFT_SB_PAGES * MAXOFF + 7) / 8);
@@ -155,10 +161,8 @@ doccache_init(DocCache *dc, SiftSegment *seg, MemoryContext mcxt, Size budget)
 	*dc = (DocCache) {.seg = seg,.mcxt = mcxt,.budget = budget};
 	if (budget == 0)
 		return;
-	dc->sb = MemoryContextAllocHuge(mcxt, docmap(seg)->nsb * sizeof(SBDocs *));
+	dc->sb = MemoryContextAlloc(mcxt, docmap(seg)->nsb * sizeof(SBDocs *));
 	memset(dc->sb, 0, docmap(seg)->nsb * sizeof(SBDocs *));
-	dc->rows = MemoryContextAlloc(mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-	dc->dead = MemoryContextAlloc(mcxt, (SIFT_SB_PAGES * MAXOFF + 7) / 8);
 }
 
 /* A term can have this many postings (a group, the most the evaluator decodes at once) */
@@ -176,6 +180,8 @@ typedef struct Stream
 	bool		dirty;			/* some doc was vacuumed */
 	/* the live postings not yet delivered */
 	uint32		n;
+	uint32		pcap;			/* entries of keys, tf, dl and plen */
+	uint32		gcap;			/* entries of tids and gtf */
 	SiftKey    *keys;
 	uint8	   *tf;
 	uint16	   *dl;
@@ -184,6 +190,31 @@ typedef struct Stream
 	Size		poslen;
 	Size		poscap;
 } Stream;
+
+/* MEM[MEM-BM25-12]: bm25 livestream/facet scratch + allowlist sweep (1.8MB/seg eager; 41 DEFAULT_SIZES + 37 huge) */
+/* The arrays of a group of k postings (what decodes at once), growing from 256 to what the groups of the segment need */
+static void
+stream_reserve_group(Stream *s, uint32 k)
+{
+	if (k <= s->gcap)
+		return;
+	s->gcap = Min(Max(k, Max(256, 2 * s->gcap)), STREAM_POSTINGS);
+	SIFT_REGROW_IN(s->dc.mcxt, s->tids, (Size) s->gcap * sizeof(sift_tid));
+	SIFT_REGROW_IN(s->dc.mcxt, s->gtf, s->gcap + SIFT_KERN_PAD);
+}
+
+/* The pending postings: k more */
+static void
+stream_reserve_pending(Stream *s, uint32 k)
+{
+	if (s->n + k <= s->pcap)
+		return;
+	s->pcap = Min(Max(s->n + k, Max(256, 2 * s->pcap)), STREAM_POSTINGS);
+	SIFT_REGROW_IN(s->dc.mcxt, s->keys, (Size) s->pcap * sizeof(SiftKey));
+	SIFT_REGROW_IN(s->dc.mcxt, s->tf, s->pcap);
+	SIFT_REGROW_IN(s->dc.mcxt, s->dl, (Size) s->pcap * sizeof(uint16));
+	SIFT_REGROW_IN(s->dc.mcxt, s->plen, (Size) s->pcap * sizeof(uint32));
+}
 
 static void
 stream_flush(Stream *s, bool haspos)
@@ -199,8 +230,11 @@ static void
 stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *pr)
 {
 	SBDocs	   *e = sbdocs_get(&s->dc, g->gid);
-	uint32		k = sift_grp_tids(g, NULL, s->tids);
+	uint32		k;
 
+	stream_reserve_group(s, sift_grp_count(g));
+	stream_reserve_pending(s, sift_grp_count(g));
+	k = sift_grp_tids(g, NULL, s->tids);
 	sift_post_group_tf(c, s->gtf);
 	for (uint32 j = 0; j < k; j++)
 	{
@@ -215,7 +249,7 @@ stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *
 			if (s->poslen + len > s->poscap)
 			{
 				s->poscap = Max(s->poslen + len, Max(8192, s->poscap * 2));
-				SIFT_REGROW_HUGE_IN(s->dc.mcxt, s->pos, s->poscap);
+				SIFT_REGROW_IN(s->dc.mcxt, s->pos, s->poscap);
 			}
 			memcpy(s->pos + s->poslen, rec, len);
 			s->poslen += len;
@@ -235,9 +269,11 @@ stream_count(Stream *s, SiftPostingCursor *c)
 
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
-		SBDocs	   *e = sbdocs_get(&s->dc, g->gid);
-		uint32		k = sift_grp_tids(g, NULL, s->tids);
+ 		SBDocs	   *e = sbdocs_get(&s->dc, g->gid);
+		uint32		k;
 
+		stream_reserve_group(s, sift_grp_count(g));
+		k = sift_grp_tids(g, NULL, s->tids);
 		for (uint32 j = 0; j < k; j++)
 			live += sbdocs_dl(&s->dc, e, s->tids[j]) != 0;
 	}
@@ -324,18 +360,12 @@ stream_docs(Stream *s)
 void
 sift_seg_stream(SiftSegment *seg, Size budget, const SiftSegSink *sink, void *arg)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift stream", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift stream");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	Stream		s = {.seg = seg,.sink = sink,.arg = arg,.dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0};
 
 	doccache_init(&s.dc, seg, cxt, budget);
-	s.tcxt = AllocSetContextCreate(cxt, "sift stream term", ALLOCSET_DEFAULT_SIZES);
-	s.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
-	s.gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
-	s.keys = palloc(STREAM_POSTINGS * sizeof(SiftKey));
-	s.tf = palloc(STREAM_POSTINGS);
-	s.dl = palloc(STREAM_POSTINGS * sizeof(uint16));
-	s.plen = palloc(STREAM_POSTINGS * sizeof(uint32));
+	s.tcxt = sift_mem_allocset_create(cxt, "sift stream term");
 	stream_docs(&s);
 	if (sink->term)
 		sift_dict_scan(seg->dict, NULL, 0, NULL, 0, stream_term, &s);
@@ -368,7 +398,7 @@ struct SiftSegCursor
 SiftSegCursor *
 sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift cursor", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift cursor");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftSegCursor *c = palloc0(sizeof(SiftSegCursor));
 	Stream	   *s = &c->s;
@@ -382,13 +412,7 @@ sift_seg_cursor(SiftSegment *seg, Size budget, const char *lo, int lolen)
 	c->next_sb = seg->hdr->sb_lo;
 	if (budget > 0)
 	{
-		s->tcxt = AllocSetContextCreate(cxt, "sift cursor term", ALLOCSET_DEFAULT_SIZES);
-		s->tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
-		s->gtf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
-		s->keys = palloc(STREAM_POSTINGS * sizeof(SiftKey));
-		s->tf = palloc(STREAM_POSTINGS);
-		s->dl = palloc(STREAM_POSTINGS * sizeof(uint16));
-		s->plen = palloc(STREAM_POSTINGS * sizeof(uint32));
+		s->tcxt = sift_mem_allocset_create(cxt, "sift cursor term");
 		c->dit = sift_dict_iter(seg->dict, lo, lolen, cxt);
 	}
 	MemoryContextSwitchTo(old);

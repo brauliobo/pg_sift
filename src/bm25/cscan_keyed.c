@@ -94,7 +94,7 @@ add_tie(KeyTop *t, const ItemPointerData *entry)
 	{
 		t->captie = Max(64, 2 * t->captie);
 		keytop_budget(t, binaryheap_size(t->heap), t->captie);
-		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, t->tie, t->captie * sizeof(ItemPointerData));
+		SIFT_REGROW_IN(CurrentMemoryContext, t->tie, t->captie * sizeof(ItemPointerData));
 	}
 	t->tie[t->ntie++] = *entry;
 }
@@ -252,7 +252,7 @@ keyed_search(SiftScanState *ss)
 
 	if (ss->kcx)
 		MemoryContextDelete(ss->kcx);
-	ss->kcx = AllocSetContextCreate(ss->cxt, "sift keyed", ALLOCSET_DEFAULT_SIZES);
+	ss->kcx = sift_mem_allocset_create(ss->cxt, "sift keyed");
 	old = MemoryContextSwitchTo(ss->kcx);
 	keytop_budget(&t, ss->kheld, 0);
 	t.heap = binaryheap_allocate(ss->kheld, keyrow_worse, ss);

@@ -8,7 +8,7 @@ SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE dw (id int, v text);
 INSERT INTO dw SELECT g, 'common w' || (g % 1000) || ' x' || (g % 37) FROM generate_series(1, 400000) g;
-CREATE INDEX dw_v ON dw USING sift (v);
+CREATE INDEX dw_v ON dw USING sift (v) WITH (dead_rewrite_pct = 50);
 
 -- a third of the docs, in every superblock
 DELETE FROM dw WHERE id % 3 = 0;

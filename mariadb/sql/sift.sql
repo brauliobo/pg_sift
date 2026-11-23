@@ -77,7 +77,7 @@ END//
 DROP FUNCTION IF EXISTS sift_options//
 CREATE FUNCTION sift_options(o TEXT, p_fields TEXT) RETURNS TEXT DETERMINISTIC
 	RETURN CONCAT_WS(CHAR(10),
-		CONCAT('dpp=', IFNULL(JSON_VALUE(o, '$.dpp'), 32)),
+		CONCAT('dpp=', IFNULL(JSON_VALUE(o, '$.dpp'), 256)),
 		CONCAT('k1=', IFNULL(JSON_VALUE(o, '$.k1'), '1.2')),
 		CONCAT('b=', IFNULL(JSON_VALUE(o, '$.b'), '0.75')),
 		CONCAT('stemmer=', IFNULL(JSON_VALUE(o, '$.stemmer'), '')),

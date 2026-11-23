@@ -306,9 +306,9 @@ live_set_bit(const SiftLive *l, uint64 b, uint8 mask)
 }
 
 /*
- * The SB's dirty bit goes first, in a record of its own: a crash leaves a bit set over rows that are still live, which readers take as a hint to look at the
- * liveness bits. Then the header page (nsb and ndead lead both headers: the count goes up here, hdr adds what the format keeps besides) and the pages of
- * the bits of the dead rows of a unit, which GenericXLog holds with it: a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS bits) fills the record.
+ * The SB's dirty bit, the header page (nsb and ndead lead both headers: the count goes up here, hdr adds what the format keeps besides) and the pages of
+ * the bits of the dead rows of a unit go in one GenericXLog record, which a crash applies whole or not at all: a unit of the most rows (SIFT_COL_UNIT_MAX_ROWS
+ * bits) fills the record. A dirty bit past the header page (a run of more than 65,000 SBs) goes first in a record of its own, so the record keeps its pages.
  * The bits are bit numbers of the run, bit0 + bits[i], ascending.
  */
 static void
@@ -316,9 +316,13 @@ live_clear(const SiftLive *l, uint64 dirty, uint8 mask, uint64 bit0, const uint6
 		   void (*hdr) (void *header, void *arg), void *arg)
 {
 	LiveEdit	e;
+	bool		fused = SIFT_PAYLOAD_PAGE(dirty) == 0;
 
-	live_set_bit(l, dirty, mask);
+	if (!fused)
+		live_set_bit(l, dirty, mask);
 	live_edit_begin(&e, l, (bit0 + bits[0]) / 8, (bit0 + bits[nd - 1]) / 8, true);
+	if (fused)
+		*live_edit_at(&e, dirty) |= mask;
 	for (int i = 0; i < nd; i++)
 		*live_edit_at(&e, (bit0 + bits[i]) / 8) &= ~(1 << ((bit0 + bits[i]) % 8));
 	((SiftLiveHeaderData *) live_edit_at(&e, 0))->ndead += nd;
@@ -479,27 +483,81 @@ sift_live2_dead_all(const SiftLive *l, const SiftLive2HeaderData *h, uint32 *out
 	sift_live_copy(l, h->tbl_off, (uint64) h->nslots * sizeof(uint32), (uint8 *) out);
 }
 
+/* The pages of the table of dead postings that differ from `dead`: a page that does not is not logged (it would cost a full page image after a checkpoint) */
+static void
+live2_changed_pages(const SiftLive *l, uint64 lo, uint64 hi, const uint8 *src, bool *changed)
+{
+	uint8		cur[SIFT_PAGE_PAYLOAD];
+
+	for (uint64 b = lo, n; b < hi; b += n)
+	{
+		n = Min(hi - b, SIFT_PAGE_PAYLOAD - SIFT_PAYLOAD_OFF(b));
+		sift_live_copy(l, b, n, cur);
+		changed[SIFT_PAYLOAD_PAGE(b) - SIFT_PAYLOAD_PAGE(lo)] = memcmp(cur, src + (b - lo), n) != 0;
+	}
+}
+
+/* Writes the table bytes of the pages first..last in one record, with the header page (tbl_ndead) when `tail` */
+static void
+live2_write_run(const SiftLive *l, uint64 lo, uint64 hi, const uint8 *src, uint32 first, uint32 last, bool tail)
+{
+	LiveEdit	e;
+	uint64		b0 = Max(lo, SIFT_PAYLOAD_BYTES(first)),
+				end = Min(hi, SIFT_PAYLOAD_BYTES(last + 1));
+
+	live_edit_begin(&e, l, b0, end - 1, tail);
+	for (uint64 at = b0, n; at < end; at += n)
+	{
+		n = Min(end - at, SIFT_PAGE_PAYLOAD - SIFT_PAYLOAD_OFF(at));
+		memcpy(live_edit_at(&e, at), src + (at - lo), n);
+	}
+	if (tail)
+		((SiftLive2HeaderData *) live_edit_at(&e, 0))->tbl_ndead = ((SiftLive2HeaderData *) live_edit_at(&e, 0))->ndead;
+	live_edit_end(&e, true);
+}
+
+/* STOR[STOR-BM25-09]: fuse dirty-SB bit + live_clear into 1 GenericXLog + 4-pg batch in set_dead (-50% del WAL) */
 void
 sift_live2_set_dead(const SiftLive *l, const SiftLive2HeaderData *h, const uint32 *dead)
 {
 	uint64		lo = h->tbl_off,
 				hi = LIVE2_BYTES(h);
-	const uint8 *src = (const uint8 *) dead;
+	uint32		p0 = SIFT_PAYLOAD_PAGE(lo),
+				p1 = lo == hi ? p0 : SIFT_PAYLOAD_PAGE(hi - 1),
+				p = p0;
+	bool	   *changed = palloc0((p1 - p0 + 1) * sizeof(bool)),
+				header_done = false;
 	LiveEdit	e;
 
-	for (uint64 b = lo, n; b < hi; b += n)
+	if (lo < hi)
+		live2_changed_pages(l, lo, hi, (const uint8 *) dead, changed);
+	while (p <= p1 && lo < hi)
 	{
-		uint8	   *at;
-		bool		differs;
+		uint32		q = p;
+		bool		more = false;
 
-		n = Min(hi - b, SIFT_PAGE_PAYLOAD - SIFT_PAYLOAD_OFF(b));
-		live_edit_begin(&e, l, b, b, false);
-		at = live_edit_at(&e, b);
-		differs = memcmp(at, src + (b - lo), n) != 0;
-		memcpy(at, src + (b - lo), n);
-		live_edit_end(&e, differs);
+		if (!changed[p - p0])
+		{
+			p++;
+			continue;
+		}
+		while (q < p1 && changed[q + 1 - p0] && q + 1 - p < MAX_GENERIC_XLOG_PAGES)
+			q++;
+		for (uint32 r = q + 1; r <= p1 && !more; r++)
+			more = changed[r - p0];
+		if (!more && p > 0 && q - p + 1 == MAX_GENERIC_XLOG_PAGES)
+			q--, more = true;
+		live2_write_run(l, lo, hi, (const uint8 *) dead, p, q, !more);
+		header_done = !more;
+		if (header_done)
+			break;
+		p = q + 1;
 	}
-	live_edit_begin(&e, l, 0, 0, false);
-	((SiftLive2HeaderData *) live_edit_at(&e, 0))->tbl_ndead = ((SiftLive2HeaderData *) live_edit_at(&e, 0))->ndead;
-	live_edit_end(&e, true);
+	if (!header_done)
+	{
+		live_edit_begin(&e, l, 0, 0, false);
+		((SiftLive2HeaderData *) live_edit_at(&e, 0))->tbl_ndead = ((SiftLive2HeaderData *) live_edit_at(&e, 0))->ndead;
+		live_edit_end(&e, true);
+	}
+	pfree(changed);
 }

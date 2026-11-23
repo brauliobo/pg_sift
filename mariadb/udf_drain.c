@@ -45,6 +45,8 @@ drain_deinit(UDF_INIT *initid)
 
 	if (d && d->feed)
 		sx_feed_abort(d->feed);
+	if (d)
+		sx_release(d->ix);
 	free(d);
 }
 
@@ -68,6 +70,7 @@ drain_clear(UDF_INIT *initid, char *is_null, char *error)
 
 	if (d->feed)
 		sx_feed_abort(d->feed);
+	sx_release(d->ix);
 	memset(d, 0, sizeof(Drain));
 	d->load = load;
 }

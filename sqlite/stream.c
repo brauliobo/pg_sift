@@ -132,6 +132,7 @@ sift_wt_begin(Relation index, SiftWriteMode mode)
 
 	wt->st = st;
 	wt->index = index;
+	/* STOR[STOR-PORT-01]: SQLite _chunks overflow math (16KiB=4 ovf+489B local +3.1%, 4KiB=+12.3%) + unit slack */
 	wt->first = wt->next = (st->hw + st->P - 1) / st->P * st->P;
 	wt->cur = -1;
 	wt->buf = MemoryContextAllocAligned(CurrentMemoryContext, st->unit, 64, 0);

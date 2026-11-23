@@ -177,7 +177,7 @@ sift_topk_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT char *
 sift_topk(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
-	SiftIdx    *ix;
+	SCOPED_IX	ix = NULL;
 	int			k = (int) *(long long *) args->args[2],
 				n = 0,
 				rc;
@@ -234,7 +234,7 @@ sift_count_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT long long
 sift_count(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 {
-	SiftIdx    *ix;
+	SCOPED_IX	ix = NULL;
 	int64_t		count;
 	char		err[512];
 	SxIdSet		flt;
@@ -273,7 +273,7 @@ sift_matches_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT char *
 sift_matches(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
-	SiftIdx    *ix;
+	SCOPED_IX	ix = NULL;
 	int64_t    *pks,
 				n;
 	char		err[512],

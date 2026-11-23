@@ -123,6 +123,7 @@ ent_evict_all(void)
 
 static const SiftCacheKind seg_kind = {"bm25_segcache", ent_oldest, ent_evict_one, ent_evict_all};
 
+/* MEM[MEM-BM25-03]: segcache entry (MCXT_ALLOC_HUGE, missing sift_cache_commit; 256-entry HTAB) */
 bool
 sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt, void **obj, void **handle)
 {
@@ -139,7 +140,7 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 
 			cache_cx = sift_cache_create_context("sift cache segments");
 			ctl.hcxt = cache_cx;
-			cache = hash_create("sift segment bytes", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+			cache = hash_create("sift segment bytes", 32, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 			sift_cache_register(&seg_kind);
 		}
 		memset(&k, 0, sizeof(k));
@@ -153,7 +154,7 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 		{
 			if (sift_cache_room(size))
 			{
-				void	   *p = MemoryContextAllocAligned(cache_cx, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+				void	   *p = MemoryContextAllocAligned(cache_cx, size, SIFT_SIMD_ALIGN, 0);
 
 				e = hash_search(cache, &k, HASH_ENTER, NULL);
 				e->obj = p;
@@ -162,6 +163,7 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 				e->used = sift_cache_tick();
 				dlist_push_tail(&pinned, &e->node);
 				cache_bytes += size;
+				sift_cache_commit();
 			}
 			else
 				SEGCACHE_STAT(refused);

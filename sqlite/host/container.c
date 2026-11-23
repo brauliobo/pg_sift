@@ -133,6 +133,7 @@ struct HTAB
 	HEnt	  **buckets;
 	uint32		nbuckets;
 	long		nentries;
+	HEnt	   *removed;				/* the entries HASH_REMOVE unlinked, which the next HASH_ENTER reuses: the one returned stays readable until then, as in PostgreSQL */
 };
 
 #define HENT_HDR	16
@@ -203,7 +204,10 @@ hash_search(HTAB *t, const void *key, HASHACTION action, bool *found)
 
 		if (action != HASH_REMOVE)
 			return HENT_ENTRY(e);
+		/* MEM[MEM-PORT-05]: SqHost cache budget stub + HTAB remove (no-op register, unbounded room, HASH_REMOVE leak) */
 		*pp = e->next;
+		e->next = t->removed;
+		t->removed = e;
 		t->nentries--;
 		return HENT_ENTRY(e);
 	}
@@ -215,8 +219,13 @@ hash_search(HTAB *t, const void *key, HASHACTION action, bool *found)
 		pp = &t->buckets[h & (t->nbuckets - 1)];
 	}
 	{
-		HEnt	   *e = MemoryContextAllocZero(t->cx, HENT_HDR + t->entrysize);
+		HEnt	   *e = t->removed;
 
+		if (e)
+			t->removed = e->next;
+		else
+			e = MemoryContextAlloc(t->cx, HENT_HDR + t->entrysize);
+		memset(e, 0, HENT_HDR + t->entrysize);
 		e->hash = h;
 		memcpy(HENT_ENTRY(e), key, t->keysize);
 		e->next = t->buckets[h & (t->nbuckets - 1)];

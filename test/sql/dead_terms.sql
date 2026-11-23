@@ -8,7 +8,7 @@ SET enable_indexscan = off;
 
 CREATE TABLE dt (id int, body text);
 INSERT INTO dt SELECT i, 'ri' || i || ' base' FROM generate_series(1, 1000) i;
-CREATE INDEX dt_idx ON dt USING sift (body);
+CREATE INDEX dt_idx ON dt USING sift (body) WITH (dead_rewrite_pct = 50);
 DELETE FROM dt WHERE id <= 440;
 VACUUM dt;
 SELECT dirty, nterms FROM sift.segments('dt_idx');
@@ -31,7 +31,7 @@ SELECT sift.verify('dt_idx', true);
 -- the live terms of several segments are counted once
 CREATE TABLE dt2 (id int, body text);
 INSERT INTO dt2 SELECT i, 'ri' || i FROM generate_series(1, 400) i;
-CREATE INDEX dt2_idx ON dt2 USING sift (body);
+CREATE INDEX dt2_idx ON dt2 USING sift (body) WITH (dead_rewrite_pct = 50);
 DELETE FROM dt2 WHERE id <= 150;
 VACUUM dt2;
 INSERT INTO dt2 SELECT i, 'ri' || i FROM generate_series(401, 800) i;

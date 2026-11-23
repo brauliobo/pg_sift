@@ -47,6 +47,7 @@ typedef struct TermSpool
 } TermSpool;
 
 #define TF_PIECE		4096	/* postings of the tf stream encoded at once when staging */
+#define POSTW_KEEP		65536	/* postings of a term whose arrays the writer keeps for the next one */
 
 struct SiftPostingWriter
 {
@@ -72,7 +73,8 @@ struct SiftPostingWriter
 	bool		haspos;
 	bool		posblk;			/* the position stream of a term is written in blocks (segment format 4) */
 	StringInfoData blk;
-	uint8		bound1[SIFT_MAX_DL + 1];	/* bound for tf 1 by dl; 0 = not computed */
+	uint8	   *bound1;			/* bound for tf 1 by dl, for the dls up to nbound1; 0 = not computed */
+	uint32		nbound1;
 };
 
 SiftPostingWriter *
@@ -96,11 +98,23 @@ grow(MemoryContext mcxt, void *p, Size sz)
 	return p ? repalloc_huge(p, sz) : MemoryContextAllocHuge(mcxt, sz);
 }
 
+static pg_noinline void
+bound1_grow(SiftPostingWriter *w, uint16 dl)
+{
+	uint32		n = Min(Max(256, pg_nextpower2_32((uint32) dl + 1)), SIFT_MAX_DL + 1);
+
+	w->bound1 = w->bound1 ? repalloc(w->bound1, n) : MemoryContextAlloc(w->mcxt, n);
+	memset(w->bound1 + w->nbound1, 0, n - w->nbound1);
+	w->nbound1 = n;
+}
+
 static inline uint8
 bound_of(SiftPostingWriter *w, uint8 tf, uint16 dl)
 {
 	if (tf > 1)
 		return sift_kern_bound_u8(&w->ref, tf, dl);
+	if (unlikely(dl >= w->nbound1))
+		bound1_grow(w, dl);
 	if (w->bound1[dl] == 0)
 		w->bound1[dl] = sift_kern_bound_u8(&w->ref, 1, dl);
 	return w->bound1[dl];
@@ -216,7 +230,7 @@ out_buf(SiftPostingWriter *w, Size len)
 		w->outcap = Max(len, Max(4096, w->outcap * 2));
 		if (w->out)
 			pfree(w->out);
-		w->out = MemoryContextAllocHuge(w->mcxt, w->outcap);
+		w->out = MemoryContextAlloc(w->mcxt, w->outcap);
 	}
 	memset(w->out, 0, len);
 	return w->out;
@@ -306,6 +320,40 @@ pos_blocks(SiftPostingWriter *w)
 	}
 }
 
+/* Superblock groups of the term and those that carry a blk_bound row */
+static void
+count_groups(const SiftPostingWriter *w, uint32 n, uint32 *ng, uint32 *nrows)
+{
+	*ng = *nrows = 0;
+	for (uint32 i = 0, j; i < n; i = j, ++*ng)
+	{
+		for (j = i; j < n && SIFT_GID(w->keys[j]) == SIFT_GID(w->keys[i]); j++)
+			;
+		*nrows += j - i >= SIFT_BLKBOUND_MIN;
+	}
+}
+
+/*
+ * Is GROUPED within 10% of LIST for the term, sidecar included (a small bias kept for its seek and bound speed on dense terms)?
+ * A df below SIFT_GROUPED_MIN_DF only reaches here when a test build lowered grouped_min_df to force GROUPED.
+ */
+static bool
+grouped_pays(const SiftPostingWriter *w, uint32 n, sift_enc_opts *opts, uint32 *ng, uint32 *nrows)
+{
+	sift_enc_opts lopts = {.kind = SIFT_LIST,.ctype = opts->ctype};
+	size_t		gbytes,
+				lbytes;
+
+	count_groups(w, n, ng, nrows);
+	if (n < SIFT_GROUPED_MIN_DF)
+		return true;
+	opts->kind = SIFT_GROUPED;
+	gbytes = sift_encode(w->keys, NULL, NULL, n, opts, NULL) + (size_t) *ng * sizeof(SiftGroupScore) +
+		(size_t) *nrows * SIFT_BLKS_PER_SB;
+	lbytes = sift_encode(w->keys, NULL, NULL, n, &lopts, NULL);
+	return gbytes * 10 <= lbytes * 11;
+}
+
 /*
  * Encodes the term's postings into w->out, filling info but for post_off;
  * returns the term blob, NULL for an inline term (which has none).
@@ -350,19 +398,11 @@ postw_encode(SiftPostingWriter *w, SiftTermInfo *info)
 		}
 		return NULL;
 	}
-	opts.kind = n >= w->grouped_min ? SIFT_GROUPED : SIFT_LIST;
 	opts.ctype = w->ctype;
+	/* STOR[STOR-BM25-01]: cost-based LIST vs GROUPED selection (avoids 24-40B/SB metadata on sparse df>=8192) */
+	opts.kind = n >= w->grouped_min && grouped_pays(w, n, &opts, &ng, &nrows) ? SIFT_GROUPED : SIFT_LIST;
 	if (opts.kind == SIFT_LIST)
-		info->flags |= SIFT_TERM_SPARSE;
-	else
-	{
-		for (uint32 i = 0, j; i < n; i = j, ng++)
-		{
-			for (j = i; j < n && SIFT_GID(w->keys[j]) == SIFT_GID(w->keys[i]); j++)
-				;
-			nrows += j - i >= SIFT_BLKBOUND_MIN;
-		}
-	}
+		info->flags |= SIFT_TERM_SPARSE, ng = nrows = 0;
 	clen = sift_encode(w->keys, NULL, NULL, n, &opts, NULL);
 	side = (Size) ng * sizeof(SiftGroupScore) + (Size) nrows * SIFT_BLKS_PER_SB +
 		(info->nnib ? (n + 7) / 8 + (info->nnib + 1) / 2 + nesc : 0);
@@ -567,7 +607,7 @@ spool_blocks(SiftPostingWriter *w)
 					to = b + 1 < nck ? ck[b + 1] : rawlen;
 
 		if (to - from > rawcap)
-			SIFT_REGROW_HUGE_IN(w->mcxt, raw, rawcap = to - from);
+			SIFT_REGROW_IN(w->mcxt, raw, rawcap = to - from);
 		BufFileSeek(sp->pos, 0, from, SEEK_SET);
 		BufFileReadExact(sp->pos, raw, to - from);
 		resetStringInfo(&out);
@@ -669,6 +709,41 @@ spool_end(SiftPostingWriter *w, SiftTermInfo *info)
 	w->sp = NULL;
 }
 
+/*
+ * The term is written: its arrays start over at their first size once a term of more than POSTW_KEEP postings (a stop word) has grown them, so that the
+ * rest of the segment does not hold the peak
+ */
+static void
+term_done(SiftPostingWriter *w)
+{
+	/* MEM[MEM-BM25-10]: SiftPostingWriter bound1 + posting arrays (64KB inline bound1 + unshrunk high-water arrays) */
+	if (w->cap > POSTW_KEEP)
+	{
+		pfree(w->keys);
+		pfree(w->tf);
+		pfree(w->bound);
+		pfree(w->ckpt);
+		w->keys = NULL;
+		w->tf = w->bound = NULL;
+		w->ckpt = NULL;
+		w->cap = 0;
+	}
+	if (w->poscap > POSTW_KEEP * 4 && w->pos)
+	{
+		pfree(w->pos);
+		w->pos = NULL;
+		w->poscap = 0;
+	}
+	if (w->outcap > POSTW_KEEP * 4)
+	{
+		pfree(w->out);
+		w->out = NULL;
+		w->outcap = 0;
+	}
+	w->n = 0;
+	w->poslen = 0;
+}
+
 void
 sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
 {
@@ -685,8 +760,7 @@ sift_postw_end_term(SiftPostingWriter *w, SiftTermInfo *info)
 			sift_sw_write(w->sw, out, info->post_len);
 		}
 	}
-	w->n = 0;
-	w->poslen = 0;
+	term_done(w);
 }
 
 const uint8 *
@@ -701,7 +775,6 @@ sift_postw_end_term_mem(SiftPostingWriter *w, SiftTermInfo *info, MemoryContext 
 		memcpy(blob, out, info->post_len);
 		memset(blob + info->post_len, 0, SIFT_KERN_PAD);
 	}
-	w->n = 0;
-	w->poslen = 0;
+	term_done(w);
 	return blob;
 }

@@ -117,6 +117,7 @@ typedef struct Facets
 	Res		   *res;
 	int64		nres;
 	int64		rescap;
+	Size		viewbytes;		/* the dirty-SB views of the segments (view and viewed arrays) */
 	int64		lim;			/* results wanted, < 0 all */
 	bool		bounded;		/* results beyond lim are dropped while collecting */
 	/* phrase recheck */
@@ -131,7 +132,7 @@ static void
 facet_budget(const Facets *f, Size vals)
 {
 	sift_budget_check(f->qsbcap * sizeof(QSb) + f->nqsb * sizeof(sift_grp) + f->rowcap * ROW_BYTES + f->termcap +
-					  f->entcap * sizeof(Entry) + f->rescap * sizeof(Res) + vals,
+					  f->entcap * sizeof(Entry) + f->rescap * sizeof(Res) + f->viewbytes + vals,
 					  work_mem, "sift.facets", "work_mem", "facet a keyword index with fewer distinct values, or narrow the query");
 }
 
@@ -149,7 +150,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 		{
 			f->qsbcap = Max(64, 2 * f->qsbcap);
 			facet_budget(f, 0);
-			SIFT_REGROW_HUGE_IN(f->mcxt, f->qsb, f->qsbcap * sizeof(QSb));
+			SIFT_REGROW_IN(f->mcxt, f->qsb, f->qsbcap * sizeof(QSb));
 		}
 		f->qsb[f->nqsb++] = (QSb) {.sb = sb,.row = f->nrows};
 	}
@@ -159,7 +160,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 	{
 		f->rowcap = Max(256, 2 * f->rowcap);
 		facet_budget(f, 0);
-		SIFT_REGROW_HUGE_IN(f->mcxt, f->rows, f->rowcap * ROW_BYTES);
+		SIFT_REGROW_IN(f->mcxt, f->rows, f->rowcap * ROW_BYTES);
 	}
 	memcpy(f->rows[f->nrows++], offmask, ROW_BYTES);
 }
@@ -301,7 +302,7 @@ seg_view(Facets *f, FacetSeg *fs, int i)
 static Entry *
 ents_regrow(Facets *f, Entry *ents, Size cap)
 {
-	SIFT_REGROW_HUGE_IN(f->mcxt, ents, cap * sizeof(Entry));
+	SIFT_REGROW_IN(f->mcxt, ents, cap * sizeof(Entry));
 	return ents;
 }
 
@@ -318,7 +319,7 @@ add_entry(Facets *f, const char *term, int len, int seg, const SiftTermInfo *inf
 	{
 		f->termcap = Max(4096, 2 * f->termcap + len);
 		facet_budget(f, 0);
-		SIFT_REGROW_HUGE_IN(f->mcxt, f->terms, f->termcap);
+		SIFT_REGROW_IN(f->mcxt, f->terms, f->termcap);
 	}
 	memcpy(f->terms + f->nterms, term, len);
 	f->ent[f->nent++] = (Entry) {.off = f->nterms,.len = len,.seg = seg,.info = *info};
@@ -392,6 +393,7 @@ collect_entries(Facets *f, SiftIndexState *st)
 			{
 				fs->view = MemoryContextAllocZero(f->mcxt, f->nqsb * sizeof(sift_grp *));
 				fs->viewed = MemoryContextAllocZero(f->mcxt, f->nqsb);
+				f->viewbytes += (Size) f->nqsb * (sizeof(sift_grp *) + 1);
 			}
 			sift_dict_scan(fs->seg->dict, NULL, 0, NULL, 0, dict_visit, &v);
 			sift_sr_release(&fs->seg->sr);
@@ -533,7 +535,7 @@ res_add(Facets *f, Res r)
 	{
 		f->rescap = Max(16, Min(2 * f->rescap, f->bounded ? f->lim : PG_INT64_MAX));
 		facet_budget(f, 0);
-		SIFT_REGROW_HUGE_IN(f->mcxt, f->res, f->rescap * sizeof(Res));
+		SIFT_REGROW_IN(f->mcxt, f->res, f->rescap * sizeof(Res));
 	}
 	if (!f->bounded)
 		f->res[f->nres++] = r;
@@ -671,7 +673,7 @@ collect_values(Facets *f, int64 *nvals)
 	int64		n = 0;
 
 	facet_budget(f, Max(f->nent, 1) * sizeof(Value));
-	vals = MemoryContextAllocHuge(f->mcxt, Max(f->nent, 1) * sizeof(Value));
+	vals = MemoryContextAlloc(f->mcxt, Max(f->nent, 1) * sizeof(Value));
 	sort_entries(f);
 	for (int64 i = 0, j; i < f->nent; i = j)
 	{
@@ -813,8 +815,8 @@ sift_facet_counts(PG_FUNCTION_ARGS)
 				 errmsg("the limit must not be negative")));
 	f.bounded = f.lim >= 0 && !nulls;
 	query = PG_GETARG_TEXT_PP(2);
-	f.mcxt = AllocSetContextCreate(CurrentMemoryContext, "sift facets", ALLOCSET_DEFAULT_SIZES);
-	f.tmpcx = AllocSetContextCreate(f.mcxt, "sift facet value", ALLOCSET_DEFAULT_SIZES);
+	f.mcxt = sift_mem_allocset_create(CurrentMemoryContext, "sift facets");
+	f.tmpcx = sift_mem_allocset_create(f.mcxt, "sift facet value");
 	f.index = open_index(PG_GETARG_OID(0));
 	f.findex = open_index(PG_GETARG_OID(1));
 	sift_quarantine_require(f.index, "sift.facets");

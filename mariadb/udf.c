@@ -119,6 +119,12 @@ arg_name(UDF_ARGS *args, int i, char *buf, size_t n, char *error)
 	return buf;
 }
 
+void
+ix_scope_end(SiftIdx **ixp)
+{
+	sx_release(*ixp);
+}
+
 SiftIdx *
 open_index(UDF_ARGS *args, char *error)
 {
@@ -259,7 +265,7 @@ sift_stats_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT char *
 sift_stats(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
-	SiftIdx    *ix = open_index(args, error);
+	SCOPED_IX	ix = open_index(args, error);
 
 	return ix ? stats_json(initid, ix, length, error) : NULL;
 }
@@ -279,7 +285,7 @@ sift_watermark_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT long long
 sift_watermark(UDF_INIT *initid, UDF_ARGS *args, char *is_null, char *error)
 {
-	SiftIdx    *ix = open_index(args, error);
+	SCOPED_IX	ix = open_index(args, error);
 	SiftIdxStats st;
 	char		err[512];
 
@@ -299,7 +305,7 @@ sift_merge_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT char *
 sift_merge(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
-	SiftIdx    *ix = open_index(args, error);
+	SCOPED_IX	ix = open_index(args, error);
 	char		err[512];
 	int			full = args->arg_count > 1 && args->args[1] && strncmp(args->args[1], "full", 4) == 0;
 
@@ -328,7 +334,7 @@ sift_tokens_init(UDF_INIT *initid, UDF_ARGS *args, char *message)
 EXPORT char *
 sift_tokens(UDF_INIT *initid, UDF_ARGS *args, char *result, unsigned long *length, char *is_null, char *error)
 {
-	SiftIdx    *ix;
+	SCOPED_IX	ix = NULL;
 	char		err[512],
 			   *toks,
 			   *out;

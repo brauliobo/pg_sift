@@ -56,7 +56,7 @@ SELECT sift.verify('vs_idx', true);
 -- a mostly dead segment is rewritten whatever the target: with 128 the tiered merges are not for the count, the rewrite is for the garbage
 DROP INDEX vs_idx;
 SET client_min_messages = warning;
-CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 10, vacuum_segments = 128);
+CREATE INDEX vs_idx ON vs USING sift (body) WITH (build_segments = 10, vacuum_segments = 128, dead_rewrite_pct = 50);
 RESET client_min_messages;
 SELECT count(*) AS built FROM sift.segments('vs_idx');
 SELECT sum(ndocs) AS docs FROM sift.segments('vs_idx');

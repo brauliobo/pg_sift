@@ -6,10 +6,12 @@
 #include "core/cmp.h"
 #include "bm25/runs.h"
 #include "bm25/runs_int.h"
+#include "core/memtrack.h"
 
 #define POOL_SHIFT		16
 #define POOL_BLOCK		(1 << POOL_SHIFT)
 #define POOL_MAX_BLOCKS	60000		/* addresses stay below 2^32 */
+#define INV_MAX_BUDGET	((Size) 256 << 20)	/* the buffer spills to a run at this size, so that no array of it passes 1 GB */
 #define POOL(b, a)		((b)->blocks[(a) >> POOL_SHIFT] + ((a) & (POOL_BLOCK - 1)))
 #define NLEVELS			9
 #define DOC_KEY(d)		((d) >> 16)
@@ -51,6 +53,7 @@ struct SiftInvBuf
 	Size		tcap;
 	uint8	  **blocks;
 	uint32		nblocks;
+	uint32		maxblocks;
 	uint32		pool_next;
 	bool		term_full;		/* a term has maxdf_full postings */
 	uint32		maxdf_full;		/* the buffer is full when a term has this many postings */
@@ -105,7 +108,9 @@ inv_init(SiftInvBuf *b)
 	b->tcap = 16384;
 	b->tbytes = palloc(b->tcap);
 	b->tlen = 0;
-	b->blocks = palloc(POOL_MAX_BLOCKS * sizeof(uint8 *));
+	/* MEM[MEM-BM25-08]: SiftInvBuf blocks pointer array (60000*8 = 480KB eager even for 1-doc flush) */
+	b->maxblocks = 64;
+	b->blocks = palloc(b->maxblocks * sizeof(uint8 *));
 	b->nblocks = 0;
 	b->pool_next = 0;
 	b->term_full = false;
@@ -121,12 +126,12 @@ sift_inv_create(Size budget, MemoryContext mcxt, bool positions)
 
 	b->positions = positions;
 	b->parent = mcxt;
-	b->budget = Max(budget, 1024 * 1024);
+	b->budget = Max(Min(budget, INV_MAX_BUDGET), 1024 * 1024);
 	b->maxdf_full = Max(Min(Min(Max(sift_seg_postings(b->budget) / 2, MIN_RUN_POSTINGS), SIFT_BLOB_MAX / (4 * BLOB_POSTING_BYTES)),
 							PG_INT32_MAX), 1);
 	b->pool_room = Max(pool_max() / 32, 3);
 	b->small_doc = (Size) (b->pool_room - 2) * POOL_BLOCK / SMALL_DOC_BYTES;
-	b->mcxt = AllocSetContextCreate(mcxt, "sift inverted buffer", ALLOCSET_DEFAULT_SIZES);
+	b->mcxt = sift_mem_allocset_create(mcxt, "sift inverted buffer");
 	inv_init(b);
 	return b;
 }
@@ -198,6 +203,8 @@ pool_alloc(SiftInvBuf *b, uint32 size)
 	if ((b->pool_next >> POOL_SHIFT) >= b->nblocks || (b->pool_next & (POOL_BLOCK - 1)) + size > POOL_BLOCK)
 	{
 		SIFT_INVARIANT(b->nblocks != pool_max(), "sift: inverted buffer pool exhausted");
+		if (b->nblocks == b->maxblocks)
+			b->blocks = repalloc(b->blocks, (b->maxblocks *= 2) * sizeof(uint8 *));
 		b->blocks[b->nblocks++] = MemoryContextAlloc(b->mcxt, POOL_BLOCK);
 		b->pool_next = (b->nblocks - 1) << POOL_SHIFT;
 	}
@@ -245,7 +252,7 @@ chunk_put(PosChunk *pc, uint8 c)
 	if (pc->len == pc->cap)
 	{
 		pc->cap = Max(4096, pc->cap * 2);
-		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, pc->buf, pc->cap);
+		SIFT_REGROW_IN(CurrentMemoryContext, pc->buf, pc->cap);
 	}
 	pc->buf[pc->len++] = c;
 }
@@ -323,12 +330,12 @@ term_get(SiftInvBuf *b, const SiftTermFreq *tf)
 	if (b->nterms == b->maxterms)
 	{
 		b->maxterms *= 2;
-		b->terms = repalloc_huge(b->terms, (Size) b->maxterms * sizeof(InvTerm));
+		b->terms = repalloc(b->terms, (Size) b->maxterms * sizeof(InvTerm));
 	}
 	if (b->tlen + tf->len > b->tcap)
 	{
 		b->tcap *= 2;
-		b->tbytes = repalloc_huge(b->tbytes, b->tcap);
+		b->tbytes = repalloc(b->tbytes, b->tcap);
 	}
 	t = &b->terms[b->nterms];
 	memset(t, 0, sizeof(InvTerm));
@@ -356,7 +363,7 @@ sift_inv_add(SiftInvBuf *b, ItemPointer tid, const SiftTermFreq *terms, int nter
 	if (ord == b->maxdocs)
 	{
 		b->maxdocs *= 2;
-		b->docs = repalloc_huge(b->docs, (Size) b->maxdocs * sizeof(uint64));
+		b->docs = repalloc(b->docs, (Size) b->maxdocs * sizeof(uint64));
 	}
 	dl = Min(dl, SIFT_MAX_DL);
 	b->docs[ord] = key << 16 | dl;
@@ -482,7 +489,7 @@ sort_term_cmp(const void *x, const void *y, void *arg)
 static SortTerm *
 sorted_terms(SiftInvBuf *b)
 {
-	SortTerm   *s = MemoryContextAllocHuge(b->mcxt, Max(b->nterms, 1) * sizeof(SortTerm));
+	SortTerm   *s = MemoryContextAlloc(b->mcxt, Max(b->nterms, 1) * sizeof(SortTerm));
 
 	for (uint32 i = 0; i < b->nterms; i++)
 	{
@@ -520,7 +527,7 @@ add_docs(SiftSegmentWriter *sw, const uint64 *docs, uint32 n)
 void
 sift_inv_write(SiftInvBuf *b, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, SiftSegEntry *entry)
 {
-	MemoryContext cxt = AllocSetContextCreate(b->parent, "sift segment write", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(b->parent, "sift segment write");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	SiftSegmentWriter *sw = sift_segw_begin(wt, gen, ref, cxt, b->positions);
 	SiftAttrSrc *as = sift_attr_src(wt, cxt);

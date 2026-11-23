@@ -40,7 +40,7 @@ sift_dict_open(SiftStreamReader *sr, const SiftSegHeaderData *hdr, MemoryContext
 				(unsigned long long) dict->off, (unsigned long long) dict->len,
 				(unsigned long long) idx->off, (unsigned long long) idx->len,
 				(unsigned long long) hdr->dictroot_off, d->nroot, (unsigned long long) d->nterms);
-	d->root = MemoryContextAllocHuge(mcxt, Max(rootlen, 1));
+	d->root = MemoryContextAlloc(mcxt, Max(rootlen, 1));
 	src = sift_sr_get(sr, hdr->dictroot_off, rootlen, d->root);
 	if (src != d->root)
 		memcpy(d->root, src, rootlen);

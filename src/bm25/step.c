@@ -457,43 +457,6 @@ doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int 
 	return true;
 }
 
-/*
- * The doc of a record whose row is gone: the row is dead for every snapshot, so no query returns it, but it counts in the statistics of
- * its segment as it did in the buffer's, and the terms of a segment with positions all have records. Each word term gets its tf
- * occurrences at the positions 0 .. tf - 1.
- */
-static SiftTermFreq *
-dead_terms(const DocCursor *c, MemoryContext cx)
-{
-	SiftTermFreq *terms = MemoryContextAlloc(cx, Max(c->nterms, 1) * sizeof(SiftTermFreq));
-	Size		room = 0;
-	uint8	   *p;
-
-	for (uint32 i = 0; i < c->nterms; i++)
-		room += 12 + c->terms[i].tf;
-	p = MemoryContextAlloc(cx, room);
-	for (uint32 i = 0; i < c->nterms; i++)
-	{
-		uint8	   *start = p;
-		uint32		n = c->terms[i].tf;
-
-		terms[i] = c->terms[i];
-		if (!SIFT_SYNTHETIC_TERM(terms[i].term))
-		{
-			p = sift_put_varint(p, n > 1);
-			if (n > 1)
-			{
-				p = sift_put_varint(p, n - 2);
-				memset(p, 0, n - 1);
-				p += n - 1;
-			}
-			terms[i].pos = start;
-			terms[i].poslen = p - start;
-		}
-	}
-	return terms;
-}
-
 typedef struct RunList
 {
 	SiftRun   **run;
@@ -522,7 +485,7 @@ inv_add_doc(SiftInvBuf *inv, RunList *runs, DocText *dt, ItemPointerData *tid, S
 		runlist_push(runs, sift_inv_spill(inv));
 }
 
-/* Writes the sorted docs as one immutable segment; false when there are none */
+/* Writes the sorted docs as one immutable segment, but for those whose row is gone (dead for every snapshot); false when there are none */
 static bool
 write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen, SiftSegEntry *entry)
 {
@@ -531,7 +494,6 @@ write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen
 	SiftInvBuf *inv = sift_inv_create(inv_budget(sort), CurrentMemoryContext, dt != NULL);
 	RunList		runs = {.run = palloc(sizeof(SiftRun *)),.max = 1};
 	DocCursor	c = {.sort = sort,.terms = palloc(sizeof(SiftTermFreq)),.maxterms = 1};
-	MemoryContext deadcx = AllocSetContextCreate(CurrentMemoryContext, "sift promote gone docs", ALLOCSET_DEFAULT_SIZES);
 
 	while (next_doc(&c))
 	{
@@ -543,15 +505,10 @@ write_docs(Relation index, SiftWriteTarget *wt, Tuplesortstate *sort, uint64 gen
 
 		sift_key_to_tid(c.key, &tid);
 		if (dt != NULL && !doctext_terms(dt, &tid, &terms, &nterms, &dl, &len))
-		{
-			MemoryContextReset(deadcx);
-			terms = dead_terms(&c, deadcx);
-			len = 0;
-		}
+			continue;
 		inv_add_doc(inv, &runs, dt, &tid, terms, nterms, dl, len);
 	}
 	doctext_close(dt);
-	MemoryContextDelete(deadcx);
 	if (runs.n == 0 && sift_inv_empty(inv))
 		return false;
 	if (runs.n == 0)
@@ -905,6 +862,9 @@ merge_next(Relation index, bool force, SiftMergeGoal goal, bool propagate, uint6
 		}
 		if (all_there(index, sel))
 			r = run_step(index, propagate, merge_segments, sel);
+		/* STOR[STOR-BM25-13]: post-merge freelist recycle + tail truncate check (bounds 2.5x peak merge high_water) */
+		if (r == SIFT_STEP_DONE)
+			sift_recycle(index);
 		for (int i = 0; i < sel->n; i++)
 			unclaim(index, sel->seg[i].gen);
 	}

@@ -28,8 +28,8 @@ sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_
 	*handle = NULL;
 	if (nsb < sift_docdir_min_sb)
 	{
-		*dir = MemoryContextAllocHuge(seg->mcxt, nsb * sizeof(SiftDocSBRef));
-		*rank_base = MemoryContextAllocHuge(seg->mcxt, (nsb + 1) * sizeof(uint64));
+		*dir = MemoryContextAlloc(seg->mcxt, nsb * sizeof(SiftDocSBRef));
+		*rank_base = MemoryContextAlloc(seg->mcxt, (nsb + 1) * sizeof(uint64));
 		return false;
 	}
 	ready = sift_segcache_get(&seg->sr, SIFT_SEGCACHE_DOCDIR, seg->entry.header_blk,

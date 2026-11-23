@@ -19,6 +19,7 @@
 #include "core/errctx.h"
 #include "core/maint_pacer.h"
 #include "core/quarantine.h"
+#include "core/memtrack.h"
 
 typedef struct SiftScanOpaque
 {
@@ -31,7 +32,7 @@ sift_ambeginscan(Relation index, int nkeys, int norderbys)
 	IndexScanDesc scan = RelationGetIndexScan(index, nkeys, norderbys);
 	SiftScanOpaque *so = palloc(sizeof(SiftScanOpaque));
 
-	so->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift scan", ALLOCSET_DEFAULT_SIZES);
+	so->cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift scan");
 	scan->opaque = so;
 	return scan;
 }

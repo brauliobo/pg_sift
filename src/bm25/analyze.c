@@ -309,6 +309,7 @@ bag_add(SiftAnalyzer *a, size_t *used, int *nterms, int n, int tf)
  * and field words bag[0..nwords) (their lengths 1..prefix_len in characters,
  * or the whole word if shorter), each once per occurrence of the word.
  */
+/* STOR[STOR-BM25-11]: prefix_index 1..prefix_len synthetic expansion (3x-5x postings; cost-based LIST/PACKED helps) */
 static void
 bag_add_prefixes(SiftAnalyzer *a, size_t *used, int *nterms, int nwords)
 {

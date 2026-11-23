@@ -8,6 +8,7 @@
 #include "rank_int.h"
 #include "bm25/kernels.h"
 #include "core/cmp.h"
+#include "core/memtrack.h"
 
 #ifdef SIFT_TESTING
 int			sift_test_rank_mode = -1;
@@ -34,6 +35,15 @@ leafcur_cmp(const void *a, const void *b)
 	return x->leaf < y->leaf ? -1 : x->leaf > y->leaf;
 }
 
+static int
+gid_ub_cmp(const void *a, const void *b)
+{
+	uint32		x = ((const GidUB *) a)->gid,
+				y = ((const GidUB *) b)->gid;
+
+	return x < y ? -1 : x > y;
+}
+
 /* The bounds of one leaf in segment s: the max over its terms per SB */
 static void
 leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
@@ -43,7 +53,6 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 	int			nt = l->nterms[rs->s],
 				total = 0;
 	GidUB	   *all;
-	uint64	   *key;
 	double		ref = p->seg[rs->s]->hdr->avgdl_ref;
 
 	for (int i = 0; i < nt; i++)
@@ -53,7 +62,9 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 		sift_post_bounds(rs->cs.leafpc[leaf][i], &n);
 		total += n;
 	}
-	all = MemoryContextAllocHuge(cx, Max(total, 1) * sizeof(GidUB));
+	/* MEM[MEM-BM25-11]: bounds/rank_search scratch (2.1x leaf_bounds + 2x tie append + undercounted spill) */
+	/* check-memory: allow total counts the superblocks of the leaf's terms in one segment: at most nterms * nsb entries */
+	all = MemoryContextAlloc(cx, Max(total, 1) * sizeof(GidUB));
 	total = 0;
 	for (int i = 0; i < nt; i++)
 	{
@@ -68,25 +79,17 @@ leaf_bounds(SiftPlan *p, RankSeg *rs, int leaf, MemoryContext cx)
 			sift_kern->ub_accum(all[total].ub, gb[j].blk_bound, w, SIFT_BLKS_PER_SB);
 		}
 	}
-	/* sorts (gid, index) keys instead of the 68-byte entries */
-	key = MemoryContextAllocHuge(cx, Max(total, 1) * sizeof(uint64));
-	for (int i = 0; i < total; i++)
-		key[i] = (uint64) all[i].gid << 32 | i;
 	if (nt > 1)
-		sift_sort_u64(key, total);
-	out->list = MemoryContextAllocHuge(cx, Max(total, 1) * sizeof(GidUB));
+		qsort(all, total, sizeof(GidUB), gid_ub_cmp);
 	for (int i = 0; i < total; i++)
 	{
-		const GidUB *in = &all[(uint32) key[i]];
-
-		if (out->n > 0 && out->list[out->n - 1].gid == in->gid)
+		if (out->n > 0 && all[out->n - 1].gid == all[i].gid)
 			for (int k = 0; k < SIFT_BLKS_PER_SB; k++)
-				out->list[out->n - 1].ub[k] = Max(out->list[out->n - 1].ub[k], in->ub[k]);
+				all[out->n - 1].ub[k] = Max(all[out->n - 1].ub[k], all[i].ub[k]);
 		else
-			out->list[out->n++] = *in;
+			all[out->n++] = all[i];
 	}
-	pfree(key);
-	pfree(all);
+	out->list = all;
 }
 
 /* Does the bounded tree have a possible match in the SB whose leaf bounds are ubp (NULL: no posting of the leaf there)? Leaves that do not score have none: they may match anywhere */
@@ -156,7 +159,7 @@ unit_add(SiftRanker *r, int s, uint32 gid, const float4 *const *ubp, Unit **unit
 	if (*nunits == *cap)
 	{
 		*cap = Max(64, 2 * *cap);
-		SIFT_REGROW_HUGE_IN(r->plan->mcxt, *units, *cap * sizeof(Unit));
+		SIFT_REGROW_IN(r->plan->mcxt, *units, *cap * sizeof(Unit));
 	}
 	(*units)[(*nunits)++] = u;
 }
@@ -514,7 +517,7 @@ static void
 rank_materialize_units(SiftRanker *r)
 {
 	SiftPlan   *p = r->plan;
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift bounds", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift bounds");
 	int			cap = 0;
 
 	for (int s = 0; s < p->nsegs; s++)
@@ -574,7 +577,7 @@ sift_rank_begin(SiftPlan *plan, int64 k, SiftVerifyFn verify, void *arg)
 	r->verify = verify;
 	r->arg = arg;
 	r->k = k;
-	r->tmpcx = AllocSetContextCreate(plan->mcxt, "sift candidate", ALLOCSET_DEFAULT_SIZES);
+	r->tmpcx = sift_mem_allocset_create(plan->mcxt, "sift candidate");
 	r->wk = MemoryContextAllocAligned(plan->mcxt, sizeof(RankWork), SIFT_SIMD_ALIGN, MCXT_ALLOC_ZERO);
 	r->leafub = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(float4));
 	r->ord = MemoryContextAllocZero(plan->mcxt, Max(plan->nleaves, 1) * sizeof(int));

@@ -14,7 +14,7 @@ CREATE FUNCTION dc_doc(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 		|| CASE WHEN i = 777 THEN ' solitary' ELSE '' END
 $$;
 INSERT INTO dc SELECT i, dc_doc(i), repeat('x', 1500) FROM generate_series(1, 12000) i;
-CREATE INDEX dc_idx ON dc USING sift (body);
+CREATE INDEX dc_idx ON dc USING sift (body) WITH (dead_rewrite_pct = 50);
 SELECT pg_relation_size('dc') / current_setting('block_size')::int / 256 >= 8 AS several_superblocks;
 
 CREATE TABLE qs (q text);

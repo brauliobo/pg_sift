@@ -19,6 +19,7 @@
 #include "bm25/eval_int.h"
 #include "bm25/prefix.h"
 #include "bm25/segment.h"
+#include "core/memtrack.h"
 
 static EvalNode nothing = {EN_NOTHING, .phrase = -1};
 
@@ -854,7 +855,7 @@ sift_plan_est_postings(const SiftPlan *plan)
 void
 sift_eval_estimate_src(Relation index, const SiftQuerySrc *srcs, int nqueries, SiftEstimate *est)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift estimate", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift estimate");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftIndexState *st = sift_state_open(index, cx);
 	SiftQuery **q = palloc(nqueries * sizeof(SiftQuery *));

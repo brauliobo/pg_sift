@@ -93,36 +93,52 @@ replay_log(SiftIdx *ix)
 	finish_events(ix);
 }
 
-/* The log of the documents n given: an insert for each, then the delete of every key that has none left alive */
+/* The keys that have no document left alive, each once, ascending */
+static int64 *
+deleted_keys(const SiftIdx *ix, const int64 *pks, size_t nd, size_t *nkeys)
+{
+	int64	   *keys = malloc((nd + 1) * sizeof(int64));
+	size_t		n = 0;
+
+	for (size_t i = 0; i < nd; i++)
+		if (latest_get(ix, pks[i]) == 0)
+			keys[n++] = pks[i];
+	qsort(keys, n, sizeof(int64), sift_cmp_i64);
+	*nkeys = 0;
+	for (size_t i = 0; i < n; i++)
+		if (i == 0 || keys[i] != keys[i - 1])
+			keys[(*nkeys)++] = keys[i];
+	return keys;
+}
+
+/* STOR[STOR-PORT-07]: compact events-<N>.log on >2x bloat + dedup 'D' records + reclaim <=64 all-dead idx */
+/* The log of the documents n given: an insert for each, then the delete of every key that has none left alive (once, whatever its versions) */
 void
 write_compact_log(SiftIdx *ix, uint32 logno, const int64 *ids, const int64 *pks, size_t nd, uint64 *len)
 {
 	char		path[600];
 	int			fd;
 	Ev			ev[4096];
-	size_t		n = 0;
+	size_t		n = 0,
+				nkeys;
+	int64	   *keys = deleted_keys(ix, pks, nd, &nkeys);
 
 	log_path(ix, logno, path, sizeof(path));
 	fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
 	if (fd < 0)
 		fail("sift: could not create %s: %s", path, strerror(errno));
 	*len = 0;
-	for (int pass = 0; pass < 2; pass++)
-		for (size_t i = 0; i < nd; i++)
+	for (size_t i = 0; i < nd + nkeys; i++)
+	{
+		ev[n++] = i < nd ? (Ev) {ids[i], pks[i], 'I'} : (Ev) {0, keys[i - nd], 'D'};
+		if (n == lengthof(ev))
 		{
-			if (pass == 0)
-				ev[n++] = (Ev) {ids[i], pks[i], 'I'};
-			else if (latest_get(ix, pks[i]) == 0)
-				ev[n++] = (Ev) {0, pks[i], 'D'};
-			else
-				continue;
-			if (n == lengthof(ev))
-			{
-				write_all(fd, ev, n * sizeof(Ev), path);
-				*len += n * sizeof(Ev);
-				n = 0;
-			}
+			write_all(fd, ev, n * sizeof(Ev), path);
+			*len += n * sizeof(Ev);
+			n = 0;
 		}
+	}
+	free(keys);
 	write_all(fd, ev, n * sizeof(Ev), path);
 	*len += n * sizeof(Ev);
 	if (fsync(fd) != 0)

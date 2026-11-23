@@ -117,7 +117,7 @@ SELECT sift_stats('news') AS stats;
 +------------------------------------------------------------------------------------------------------------------------+
 | stats                                                                                                                  |
 +------------------------------------------------------------------------------------------------------------------------+
-| {"segments":0,"docs":0,"dead":0,"live":0,"drained":0,"pending":7,"bytes":0,"dpp":32,"docbase":0,"merges":0,"format":2} |
+| {"segments":0,"docs":0,"dead":0,"live":0,"drained":0,"pending":7,"bytes":0,"dpp":256,"docbase":0,"merges":0,"format":2} |
 +------------------------------------------------------------------------------------------------------------------------+
 ```
 
@@ -287,7 +287,7 @@ each against pg_sift):
 
 | option | default | meaning |
 | --- | --- | --- |
-| `dpp` | 32 | documents per page of the index (a build parameter; 8 to 32 for small tables) |
+| `dpp` | 256 | documents per page of the index (a build parameter; a persisted index keeps its own) |
 | `k1`, `b` | 1.2, 0.75 | BM25 saturation and length normalization |
 | `stemmer` | none | `"en"` (English) or none |
 | `case_folding`, `accent_folding` | true | fold case / strip accents when analyzing |

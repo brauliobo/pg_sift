@@ -1,11 +1,11 @@
--- dead_rewrite_pct: the percent of dead documents above which maintenance rewrites a lone segment (default 50), changed with ALTER INDEX and no REINDEX.
+-- dead_rewrite_pct: the percent of dead documents above which maintenance rewrites a lone segment (default 25), changed with ALTER INDEX and no REINDEX.
 CREATE EXTENSION pg_sift;
 SET enable_seqscan = off;
 SET sift.async_maintenance = off;
 CREATE TABLE dr (id serial, body text) WITH (autovacuum_enabled = off);
 INSERT INTO dr (body) SELECT 'k' || (i % 7) || ' g' || (i % 1000) || ' common' FROM generate_series(1, 10000) i;
 SET client_min_messages = warning;
-CREATE INDEX dr_idx ON dr USING sift (body) WITH (build_segments = 1);
+CREATE INDEX dr_idx ON dr USING sift (body) WITH (build_segments = 1, dead_rewrite_pct = 50);
 RESET client_min_messages;
 CREATE TEMP TABLE built AS SELECT gen FROM sift.segments('dr_idx');
 SELECT count(*) AS segments FROM built;

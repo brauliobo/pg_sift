@@ -241,6 +241,25 @@ sq_store_seg_rows(const SqStore *st, const SiftSegEntry *e, int64_t *lo, int64_t
 	*hi = (int64_t) (e->header_blk / st->P) * st->R + st->R - 1;
 }
 
+/* Under auto_vacuum=INCREMENTAL the pages the rows of a retired segment freed go back to the file's end (and to the system) now, not at the next full VACUUM */
+static void
+return_free_pages(SqStore *st)
+{
+	char	   *sql = sqlite3_mprintf("PRAGMA \"%w\".auto_vacuum", st->schema);
+	sqlite3_stmt *q;
+	bool		incremental = false;
+
+	if (sqlite3_prepare_v2(st->db, sql, -1, &q, NULL) == SQLITE_OK)
+		incremental = sqlite3_step(q) == SQLITE_ROW && sqlite3_column_int(q, 0) == 2;
+	sqlite3_finalize(q);
+	sqlite3_free(sql);
+	if (!incremental)
+		return;
+	sql = sqlite3_mprintf("PRAGMA \"%w\".incremental_vacuum", st->schema);
+	CHECK(st, sqlite3_exec(st->db, sql, NULL, NULL, NULL));
+	sqlite3_free(sql);
+}
+
 void
 sq_store_retire(SqStore *st, uint64 gen)
 {
@@ -276,6 +295,10 @@ sq_store_retire(SqStore *st, uint64 gen)
 	d->meta.sum_dl -= d->segs[i].sum_dl;
 	memmove(&d->segs[i], &d->segs[i + 1], (d->nsegs - i - 1) * sizeof(SiftSegEntry));
 	d->nsegs--;
+	/* STOR[STOR-PORT-02]: reset monotonic hw=2 when nsegs==0 + incremental_vacuum hint after retire/rebuild */
+	if (d->nsegs == 0)
+		st->hw = 2;
+	return_free_pages(st);
 	persist_meta(st, false);
 }
 
@@ -309,6 +332,7 @@ sift_store_check_page(Relation index, Buffer buf, SiftPageType type, uint64 gen)
 							   (unsigned long long) gen)));
 }
 
+/* MEM[MEM-PORT-07]: SqDir entry vector (shrink after compaction/drop) */
 SiftDirSnapshot *
 sift_dir_alloc(int n)
 {
