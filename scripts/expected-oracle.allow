@@ -8,3 +8,4 @@ test/expected/dirty_query.out:top_ok	6	NULL for a case without ties (dq_cases.ti
 test/expected/dirty_query.out:deep_ok	6	as top_ok, for the page past 2000 rows
 test/expected/col_reindex_from_index.out:same_as_no_sift	1	the mutant row: the build that leaves the write buffer out must give answers that differ from the table's, which is what the step proves it can tell
 test/expected/agg_two_level_rows_consolidated_2.out:ok	2	at work_mem 256kB the lookup table of the hash join does not fit, so the planner does not take the scan (the verdict includes pushed(q)); the answers of the scan and of the normal plan are the same
+test/expected/bm25_nontext_unique.out:match_any	2	the match_any of a DATE finds no word in its text form and the one of NULL is NULL: the test pins both
