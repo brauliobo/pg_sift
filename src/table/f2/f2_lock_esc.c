@@ -179,7 +179,7 @@ sift_esc_live_count(void)
 }
 
 static TransactionId
-holder_in_the_way(const RelFileLocator *loc, uint64 part_id, LOCKMODE want)
+holder_in_the_way(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 {
 	TransactionId found = InvalidTransactionId;
 	uint32		si = dir_stripe(loc, part_id);
@@ -192,7 +192,7 @@ holder_in_the_way(const RelFileLocator *loc, uint64 part_id, LOCKMODE want)
 		const SiftPartEscEntry *e = &shm->esc_stripes[si].entries[i];
 
 		if (e->part_id == part_id && RelFileLocatorEquals(e->locator, *loc) && !TransactionIdIsCurrentTransactionId(e->top_xid) &&
-			DoLockModesConflict(want, sift_esc_coarse_pgmode((LockTupleMode) e->mode)) && TransactionIdIsInProgress(e->top_xid))
+			sift_esc_modes_conflict(want, sift_esc_coarse_modes((LockTupleMode) e->mode)) && TransactionIdIsInProgress(e->top_xid))
 			found = e->top_xid;
 	}
 	LWLockRelease(&shm->esc_locks[si].lock);
@@ -200,7 +200,7 @@ holder_in_the_way(const RelFileLocator *loc, uint64 part_id, LOCKMODE want)
 }
 
 static TransactionId
-conflicting_xid(const RelFileLocator *loc, uint64 part_id, LOCKMODE want)
+conflicting_xid(const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 {
 	TransactionId xid = holder_in_the_way(loc, part_id, want);
 
@@ -210,7 +210,7 @@ conflicting_xid(const RelFileLocator *loc, uint64 part_id, LOCKMODE want)
 TransactionId
 sift_esc_find_conflicting_xid(const RelFileLocator *loc, uint64 part_id, LockTupleMode mode)
 {
-	return conflicting_xid(loc, part_id, sift_esc_intent_pgmode(mode));
+	return conflicting_xid(loc, part_id, sift_esc_intent_modes(mode));
 }
 
 void
@@ -565,6 +565,12 @@ block_of(const SiftLocalLock *l)
 	return l->part_id == SIFT_ESC_PART_ALL ? SIFT_LOCK_REL_BULK_BLKNO : SIFT_LOCK_PART_ESC_BLKNO(l->part_id);
 }
 
+static BlockNumber
+key_block_of(const SiftLocalLock *l)
+{
+	return l->part_id == SIFT_ESC_PART_ALL ? SIFT_LOCK_REL_KEY_BLKNO : SIFT_LOCK_PART_KEY_BLKNO(l->part_id);
+}
+
 /* The lock if it is free, else, where the policy waits, after the wait (*waited); TM_BeingModified where it does not */
 static TM_Result
 take(const LOCKTAG *tag, LOCKMODE mode, LockWaitPolicy wait_policy, bool *waited)
@@ -578,16 +584,38 @@ take(const LOCKTAG *tag, LOCKMODE mode, LockWaitPolicy wait_policy, bool *waited
 	return TM_Ok;
 }
 
+/* The modes on the key block, then on the row block: a request that is refused on the row block gives back what it took on the key block */
+static TM_Result
+take_modes(const SiftLocalLock *l, SiftEscModes modes, LockWaitPolicy wait_policy, bool *waited)
+{
+	LOCKTAG		key = page_tag(l, key_block_of(l));
+	LOCKTAG		row = page_tag(l, block_of(l));
+	TM_Result	r = TM_Ok;
+	bool		key_taken = false;
+
+	if (modes.key != NoLock)
+	{
+		r = take(&key, modes.key, wait_policy, waited);
+		key_taken = r == TM_Ok;
+	}
+	if (r == TM_Ok && modes.row != NoLock)
+	{
+		r = take(&row, modes.row, wait_policy, waited);
+		if (r != TM_Ok && key_taken)
+			(void) LockRelease(&key, modes.key, false);
+	}
+	return r;
+}
+
 static TM_Result
 take_intent(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bool *reread, TM_FailureData *tmfd)
 {
-	LOCKMODE	want = sift_esc_intent_pgmode(mode);
-	LOCKTAG		tag = page_tag(l, block_of(l));
+	SiftEscModes want = sift_esc_intent_modes(mode);
 	TM_Result	r;
 
-	if (l->intent_mode >= 0 && sift_esc_intent_pgmode((LockTupleMode) l->intent_mode) >= want)
+	if (l->intent_mode >= (int8) mode)
 		return TM_Ok;
-	r = take(&tag, want, wait_policy, reread);
+	r = take_modes(l, want, wait_policy, reread);
 	if (r != TM_Ok)
 	{
 		tmfd->xmax = conflicting_xid(&l->loc, l->part_id, want);
@@ -691,8 +719,7 @@ sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, LockTupleMode mode
 	SiftLocalLock *t = whole ? rl : pl;
 	LockTupleMode esc_mode = (LockTupleMode) Max(Max((int) mode, t->held_max), t->esc_mode);
 	bool		must = stripe_full || pglm || (t->esc_mode >= 0 && (int) mode > t->esc_mode);
-	LOCKTAG		tag = page_tag(t, block_of(t));
-	LOCKMODE	want = sift_esc_coarse_pgmode(esc_mode);
+	SiftEscModes want = sift_esc_coarse_modes(esc_mode);
 	TM_Result	r = TM_Ok;
 
 	*escalated = false;
@@ -705,7 +732,7 @@ sift_esc_promote(Relation rel, uint64 part_id, uint32 nparts, LockTupleMode mode
 			return TM_Ok;
 	}
 	if (r == TM_Ok)
-		r = take(&tag, want, wait_policy, reread);
+		r = take_modes(t, want, wait_policy, reread);
 	if (r != TM_Ok && !must)
 	{
 		pl->retry_at = pl->tier1_rows + SIFT_ROWLOCK_RETRY_ROWS;
@@ -747,10 +774,9 @@ sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 			continue;
 		if (pin_splits(rl, LockWaitSkip, &waited) == TM_Ok)
 		{
-			LOCKTAG		tag = page_tag(l, block_of(l));
 			LockTupleMode mode = (LockTupleMode) l->held_max;
 
-			if (take(&tag, sift_esc_coarse_pgmode(mode), LockWaitSkip, &waited) == TM_Ok)
+			if (take_modes(l, sift_esc_coarse_modes(mode), LockWaitSkip, &waited) == TM_Ok)
 			{
 				l->esc_mode = mode;
 				l->esc_sub = GetCurrentSubTransactionId();

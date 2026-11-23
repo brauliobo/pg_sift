@@ -1,0 +1,110 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1ks s2ks s2sh s2nk s2nonkey s2up s1c s2v
+busy
+----
+f   
+(1 row)
+
+step s1ks: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR KEY SHARE) l;
+locked
+------
+  6000
+(1 row)
+
+step s2ks: SELECT id FROM iso_ls WHERE id = 100 FOR KEY SHARE NOWAIT;
+ id
+---
+100
+(1 row)
+
+step s2sh: SELECT id FROM iso_ls WHERE id = 100 FOR SHARE NOWAIT;
+ id
+---
+100
+(1 row)
+
+step s2nk: SELECT id FROM iso_ls WHERE id = 100 FOR NO KEY UPDATE NOWAIT;
+ id
+---
+100
+(1 row)
+
+step s2nonkey: UPDATE iso_ls SET val = val + 10 WHERE id = 100;
+step s2up: SELECT id FROM iso_ls WHERE id = 100 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_ls"
+step s1c: COMMIT;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_ls;
+    n| s
+-----+--
+20000|10
+(1 row)
+
+
+starting permutation: s1sh s2ks s2sh s2nk s2up s1c s2v
+busy
+----
+f   
+(1 row)
+
+step s1sh: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR SHARE) l;
+locked
+------
+  6000
+(1 row)
+
+step s2ks: SELECT id FROM iso_ls WHERE id = 100 FOR KEY SHARE NOWAIT;
+ id
+---
+100
+(1 row)
+
+step s2sh: SELECT id FROM iso_ls WHERE id = 100 FOR SHARE NOWAIT;
+ id
+---
+100
+(1 row)
+
+step s2nk: SELECT id FROM iso_ls WHERE id = 100 FOR NO KEY UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_ls"
+step s2up: SELECT id FROM iso_ls WHERE id = 100 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_ls"
+step s1c: COMMIT;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_ls;
+    n|s
+-----+-
+20000|0
+(1 row)
+
+
+starting permutation: s1nk s2ks s2sh s2nk s2up s1c s2v
+busy
+----
+f   
+(1 row)
+
+step s1nk: BEGIN; SELECT count(*) AS locked FROM (SELECT id FROM iso_ls WHERE id <= 6000 FOR NO KEY UPDATE) l;
+locked
+------
+  6000
+(1 row)
+
+step s2ks: SELECT id FROM iso_ls WHERE id = 100 FOR KEY SHARE NOWAIT;
+ id
+---
+100
+(1 row)
+
+step s2sh: SELECT id FROM iso_ls WHERE id = 100 FOR SHARE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_ls"
+step s2nk: SELECT id FROM iso_ls WHERE id = 100 FOR NO KEY UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_ls"
+step s2up: SELECT id FROM iso_ls WHERE id = 100 FOR UPDATE NOWAIT;
+ERROR:  could not obtain lock on row in relation "iso_ls"
+step s1c: COMMIT;
+step s2v: SELECT count(*) AS n, sum(val) AS s FROM iso_ls;
+    n|s
+-----+-
+20000|0
+(1 row)
+

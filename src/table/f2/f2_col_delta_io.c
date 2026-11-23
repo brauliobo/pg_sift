@@ -357,7 +357,9 @@ live_attrs(const SiftF2Store *store)
 static bool
 after_update_triggers(Relation rel)
 {
-	return rel->trigdesc != NULL && (rel->trigdesc->trig_update_after_row || rel->trigdesc->trig_update_after_statement);
+	const TriggerDesc *td = rel->trigdesc;
+
+	return td != NULL && (td->trig_update_after_row || td->trig_update_old_table || td->trig_update_new_table);
 }
 
 static bool

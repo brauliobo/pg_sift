@@ -594,6 +594,7 @@ TESTING_REGRESS += store_%
 TESTING_REGRESS += store_sweep_runs
 TESTING_REGRESS += surface_null_args
 TESTING_REGRESS += table_f2_col_delta
+TESTING_REGRESS += table_f2_col_delta_trigger
 TESTING_REGRESS += table_f2_copy_schema_evol
 TESTING_REGRESS += table_f2_drop_in_txn
 TESTING_REGRESS += table_f2_drop_parts_before

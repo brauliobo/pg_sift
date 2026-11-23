@@ -4,7 +4,7 @@
  * Tier 1 (f2_rowlock.h) is a row entry in shared memory. A transaction that locks SIFT_ROWLOCK_ESCALATE_AT rows of a partition, or finds a stripe full, holds the partition (tier 2A) and, after
  * SIFT_ROWLOCK_PART_TO_REL_AT partitions of a relation, the relation (tier 2B): a page lock of the relation at a virtual block (core/part_lock.h), so that the deadlock detector sees every wait.
  * Every row locker holds the page locks of its relation and partition in an intention mode, once, before it takes an entry: the intention modes (1..3) are compatible with each other, so the rows
- * are arbitrated by the entries; a coarse holder (modes 5, 7, 8) conflicts with exactly the row lockers whose mode conflicts with its own (sift_esc_coarse_pgmode). A plain read takes no lock of either tier.
+ * are arbitrated by the entries; a coarse holder conflicts with exactly the row lockers whose mode conflicts with its own (sift_esc_modes_conflict). A plain read takes no lock of either tier.
  * The table below the stripes is the directory of the coarse holders: whom a NOWAIT or SKIP LOCKED request names as the one in its way, and what a prepared transaction left behind.
  *
  * Without the shared table (no room in /dev/shm) every row lock is a coarse lock of the partition or the relation (SIFT_LOCK_BACKEND_PGLM): the lock manager of the server does all of it.
@@ -16,7 +16,15 @@
 
 #include "storage/lmgr.h"
 
+#include "core/part_lock.h"
 #include "table/f2/f2_rowlock.h"
+
+#define SIFT_LOCK_REL_KEY_BLKNO		0xFFFFD000U		/* the key block of the whole relation (the row block is SIFT_LOCK_REL_BULK_BLKNO) */
+#define SIFT_LOCK_PART_KEY_BASE		0xFFFFD001U		/* the key block of one partition, the row block of which is SIFT_LOCK_PART_ESC_BLKNO */
+#define SIFT_LOCK_PART_KEY_BLKNO(part_id) (SIFT_LOCK_PART_KEY_BASE + (BlockNumber) ((part_id) % SIFT_LOCK_PART_ESC_SLOTS))
+
+StaticAssertDecl(SIFT_LOCK_PART_KEY_BASE + SIFT_LOCK_PART_ESC_SLOTS <= SIFT_LOCK_REL_BULK_BLKNO, "the key blocks end before the row blocks of the escalation");
+StaticAssertDecl(SIFT_LOCK_REL_KEY_BLKNO >= 0xFFFF0000U, "the key blocks are above the blocks of a relation");
 
 #define SIFT_ROWLOCK_ESCALATE_AT	4096	/* rows of one partition a transaction locks one by one before it holds the partition */
 #define SIFT_ROWLOCK_REL_ROW_CAP	4096	/* rows of one relation, over all its partitions, before the heaviest partition is held */
@@ -65,37 +73,62 @@ typedef struct SiftRowLockShmLayout
 	uint16		esc_n[SIFT_ESC_STRIPES];
 } SiftRowLockShmLayout;
 
-/* What a row lock of the mode takes of the relation and partition locks: once as an intention, and as the coarse lock that holds all rows of its range */
-static inline LOCKMODE
-sift_esc_intent_pgmode(LockTupleMode mode)
+/*
+ * What a row lock of the mode takes of the relation and partition locks, in two page locks: the row block holds the intention and coarse modes that arbitrate Share, NoKeyExclusive and
+ * Exclusive, the key block the ones that tell a KeyShare holder from a NoKeyExclusive one (both are RowExclusive on the row block, and only Exclusive conflicts with KeyShare). A lock of the
+ * mode takes its modes on the key block first, then on the row block. NoLock: the block is not taken. The conflicts of the four modes are those of the heap's tuple locks:
+ *
+ *	held \ asked		KeyShare	Share		NoKeyExcl	Exclusive
+ *	KeyShare			-			-			-			conflict
+ *	Share				-			-			conflict	conflict
+ *	NoKeyExclusive		-			conflict	conflict	conflict
+ *	Exclusive			conflict	conflict	conflict	conflict
+ */
+typedef struct SiftEscModes
+{
+	LOCKMODE	row;
+	LOCKMODE	key;
+} SiftEscModes;
+
+static inline SiftEscModes
+sift_esc_intent_modes(LockTupleMode mode)
 {
 	switch (mode)
 	{
 		case LockTupleKeyShare:
-			return AccessShareLock;
+			return (SiftEscModes) {AccessShareLock, NoLock};
 		case LockTupleShare:
-			return RowShareLock;
+			return (SiftEscModes) {RowShareLock, NoLock};
 		case LockTupleNoKeyExclusive:
+			return (SiftEscModes) {RowExclusiveLock, NoLock};
 		case LockTupleExclusive:
-			return RowExclusiveLock;
+			return (SiftEscModes) {RowExclusiveLock, RowExclusiveLock};
 	}
 	pg_unreachable();
 }
 
-static inline LOCKMODE
-sift_esc_coarse_pgmode(LockTupleMode mode)
+static inline SiftEscModes
+sift_esc_coarse_modes(LockTupleMode mode)
 {
 	switch (mode)
 	{
 		case LockTupleKeyShare:
+			return (SiftEscModes) {AccessShareLock, ShareLock};
 		case LockTupleShare:
-			return ShareLock;
+			return (SiftEscModes) {ShareLock, NoLock};
 		case LockTupleNoKeyExclusive:
-			return ExclusiveLock;
+			return (SiftEscModes) {ExclusiveLock, NoLock};
 		case LockTupleExclusive:
-			return AccessExclusiveLock;
+			return (SiftEscModes) {AccessExclusiveLock, NoLock};
 	}
 	pg_unreachable();
+}
+
+static inline bool
+sift_esc_modes_conflict(SiftEscModes a, SiftEscModes b)
+{
+	return (a.row != NoLock && b.row != NoLock && DoLockModesConflict(a.row, b.row)) ||
+		(a.key != NoLock && b.key != NoLock && DoLockModesConflict(a.key, b.key));
 }
 
 /* A transition of the locks of a (sub)transaction, to undo when it rolls back: what the relation or partition held before it */
