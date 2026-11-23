@@ -100,7 +100,7 @@ def insert_pair(revisions, case, identity, operations, deadline, sink, *, order=
         phase_sum = sum(p['seconds'] for side in sides for p in side['phases'].values())
         finished_at = utc_now()
         end = time.monotonic()
-        wall = end-origin
+        wall = end-label_c
         sink.update(finished_at=finished_at,end_offset_seconds=end-PROCESS_ORIGIN,
                     wall_seconds=wall,phase_seconds=phase_sum,residual_seconds=wall-phase_sum)
 
