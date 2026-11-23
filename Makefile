@@ -144,6 +144,7 @@ TESTING_REGRESS += agg_v6_sip_window_expr
 TESTING_REGRESS += agg_v6_star_jsonb_unnest
 TESTING_REGRESS += agg_v6_text_collation
 TESTING_REGRESS += agg_v6_topn_card_vexpr
+TESTING_REGRESS += agg_v6_tpch_exprs
 TESTING_REGRESS += agg_v6_zone_calendar
 TESTING_REGRESS += agg_vis_counts
 TESTING_REGRESS += agg_vnum_program
