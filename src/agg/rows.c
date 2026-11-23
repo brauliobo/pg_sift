@@ -38,6 +38,7 @@
 #include "core/explain.h"
 #include "core/limits.h"
 #include "core/hash.h"
+#include "core/memtrack.h"
 
 bool		sift_agg_rows = true;
 
@@ -132,6 +133,7 @@ typedef struct RowsSet
 } RowsSet;
 
 #define ROWS_PARTS		16
+#define ROWS_SET_INIT	256
 #define ROWS_TAB_MIN	4096	/* the slots rows_rehash starts a table with */
 #define ROWS_DIVERT		UINT32_MAX
 
@@ -236,7 +238,8 @@ rows_clear_table(RowsExec *ex)
 static void
 rows_reset(RowsExec *ex)
 {
-	uint64		cap = 4096;
+	/* MEM[MEM-AGG-14]: RowsSet pair array (ROWS_SET_INIT=256 pairs * 16B = 4KB a set, doubled as it fills; was 4096 pairs = 64KB for every set) */
+	uint64		cap = ROWS_SET_INIT;
 
 	for (int k = 0; k < ex->nsets; k++)
 	{
@@ -275,7 +278,8 @@ rows_reset(RowsExec *ex)
 static double
 rows_held(RowsExec *ex)
 {
-	double		held = ex->gcap * sift_agg_rows_group_bytes(ex->spec) + (double) MemoryContextMemAllocated(ex->kcxt, true);
+	/* MEM[MEM-AGG-14]: RowsSet group accounting (groups, key context, the hash table of the groups and the per-tuple context; was without the table) */
+	double		held = ex->gcap * sift_agg_rows_group_bytes(ex->spec) + (double) MemoryContextMemAllocated(ex->kcxt, true) + (double) ex->tabcap * sizeof(uint32);
 
 	if (ex->pgstate)
 		held += (double) MemoryContextMemAllocated(ex->pgstate->curaggcontext->ecxt_per_tuple_memory, true);
@@ -765,8 +769,9 @@ rows_begin(CustomScanState *node, EState *estate, int eflags)
 	ex->child = linitial(node->custom_ps);
 	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
 		return;
-	ex->cxt = AllocSetContextCreate(estate->es_query_cxt, "sift agg rows", ALLOCSET_DEFAULT_SIZES);
-	ex->kcxt = AllocSetContextCreate(ex->cxt, "sift agg rows keys", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	ex->cxt = sift_mem_allocset_create(estate->es_query_cxt, "sift agg rows");
+	ex->kcxt = sift_mem_allocset_create(ex->cxt, "sift agg rows keys");
 	ex->call = AllocSetContextCreate(ex->cxt, "sift agg rows call", ALLOCSET_SMALL_SIZES);
 	ex->hash = MemoryContextAllocZero(ex->cxt, Max(s->nkeys, 1) * sizeof(FmgrInfo));
 	ex->eq = MemoryContextAllocZero(ex->cxt, Max(s->nkeys, 1) * sizeof(FmgrInfo));

@@ -75,6 +75,7 @@ typedef struct SiftGpuPlanPriv
 	uint64		col_mask[4];	/* the leaves of the column slots */
 	uint64		sig;			/* the leaves in slot order, then of each part its id, generation, granules and physical columns: what the descriptors depend on */
 	int64	  **in_sorted;		/* per IN list of the query of 8 values or more: its values ascending (NULL for a shorter one) */
+	MemoryContext plan_cx;		/* everything the plan holds but itself and this struct: freed in one step by sift_gpu_f2_free, whether the scan goes on the device or declines */
 	MemoryContext load_cx;
 	uint32		loaded_lo;
 	uint32		loaded_hi;
@@ -474,11 +475,13 @@ build_arrays(SiftGpuPlan *p, const SiftGpuQuery *q)
 	pv->gens = palloc(Max(pv->npart, 1) * sizeof(uint64));
 }
 
+/* MEM[MEM-VK-12]: gpu_f2_plan heap_vm (the visibility map is read page by page as the granules ask for it, never as a bitmap of the heap: was up to 4MiB built before the plan was known to be eligible) */
 /* The pending deletes of the partition the snapshot sees; a sift_table folds its own and a sift_col index offers the addresses */
 static SiftPendDelIndex *
 pending_index(const SiftGpuQuery *q, const SiftPartitionEntry *e)
 {
 	uint64	   *dead;
+	SiftPendDelIndex *px;
 	int			n;
 
 	if (e->pend_del_blk == InvalidBlockNumber)
@@ -486,7 +489,11 @@ pending_index(const SiftGpuQuery *q, const SiftPartitionEntry *e)
 	if (q->heap == NULL)
 		return sift_tbl_f2_pending_index(q->rel, e, q->snap);
 	dead = sift_f2_pending_dead(q->rel, e, q->snap, &n);
-	return n > 0 ? sift_pdel_idx_build(dead, n) : NULL;
+	/* MEM[MEM-VK-11]: pending_index dead array (the addresses are copied into the index, then freed; was kept until the plan's context went) */
+	px = n > 0 ? sift_pdel_idx_build(dead, n) : NULL;
+	if (dead != NULL)
+		pfree(dead);
+	return px;
 }
 
 static void
@@ -546,6 +553,8 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 	bool		vet = false;
 	bool		seen[SIFT_VK_MAXCOLS] = {false};
 
+	pv->plan_cx = sift_mem_allocset_create(mcxt, "sift gpu plan");
+	MemoryContextSwitchTo(pv->plan_cx);
 	p->priv = pv;
 	p->ncols = q->ncols;
 	pv->rel = q->rel;
@@ -560,7 +569,7 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 			memcpy(pv->in_sorted[i], q->in[i].vals, q->in[i].n * sizeof(int64));
 			sift_sort_i64(pv->in_sorted[i], q->in[i].n);
 		}
-	pv->load_cx = sift_mem_allocset_create(mcxt, "sift gpu chunks");
+	pv->load_cx = sift_mem_allocset_create(pv->plan_cx, "sift gpu chunks");
 	pv->cb = (MemoryContextCallback) {.func = release_cb,.arg = pv};
 	MemoryContextRegisterResetCallback(mcxt, &pv->cb);
 	for (int c = 0; c < q->ncols; c++)
@@ -704,10 +713,20 @@ sift_gpu_f2_unload(SiftGpuPlan *p)
 	pv->loaded_hi = 0;
 }
 
+/* MEM[MEM-VK-11]: gpu plan teardown (plan_cx deleted with SiftGpuPlan.gran/chunk/est_chunk, Priv.part and its zones and pending indexes, the IN lists and the chunk context: nothing of the plan outlives a decline) */
 void
 sift_gpu_f2_free(SiftGpuPlan *p)
 {
-	release_pins(p->priv);
-	MemoryContextDelete(p->priv->load_cx);
-	p->priv->load_cx = NULL;
+	Priv	   *pv = p->priv;
+
+	release_pins(pv);
+	MemoryContextDelete(pv->plan_cx);
+	pv->plan_cx = pv->load_cx = NULL;
+	pv->part = NULL;
+	pv->part_of = NULL;
+	pv->gens = NULL;
+	pv->in_sorted = NULL;
+	p->gran = NULL;
+	p->chunk = NULL;
+	p->est_chunk = NULL;
 }

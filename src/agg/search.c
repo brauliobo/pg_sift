@@ -30,6 +30,7 @@
 #include "agg/plan/safety.h"
 #include "agg/search.h"
 #include "core/quarantine.h"
+#include "core/memtrack.h"
 
 /*
  * What the match set costs, in operator costs: a posting decoded and combined, a matching row decoded and aggregated by the scan, a page of matches
@@ -404,7 +405,8 @@ heap_setup(SiftSearch *s)
 	s->slot = table_slot_create(s->heap, NULL);
 	s->estate = CreateExecutorState();
 	s->iinfo = BuildIndexInfo(s->index);
-	s->tmpcx = AllocSetContextCreate(s->cxt, "sift search recheck", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	s->tmpcx = sift_mem_allocset_create(s->cxt, "sift search recheck");
 	s->heap_ready = true;
 	MemoryContextSwitchTo(old);
 }

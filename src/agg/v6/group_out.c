@@ -58,12 +58,14 @@ sift_v6_scaled_numeric(SiftI128 v, int scale)
 {
 	int16		digits[V6_NUMERIC_MAX_DIGITS];
 	StringInfoData wire;
+	Datum		out;
 	bool		neg;
 	int			weight,
 				nd = sift_v6_i128_digits(v, scale, &neg, digits, &weight);
 
 	if (nd < 0)
 		return scaled_numeric_text(v, scale);
+	/* MEM[MEM-AGG-03]: sift_v6_scaled_numeric wire buffer (StringInfo of 1KB per numeric value, freed after numeric_recv; was left in the group context until the query ended) */
 	initStringInfo(&wire);
 	pq_sendint16(&wire, nd);
 	pq_sendint16(&wire, weight);
@@ -71,7 +73,9 @@ sift_v6_scaled_numeric(SiftI128 v, int scale)
 	pq_sendint16(&wire, scale);
 	for (int i = 0; i < nd; i++)
 		pq_sendint16(&wire, digits[i]);
-	return DirectFunctionCall3(numeric_recv, PointerGetDatum(&wire), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	out = DirectFunctionCall3(numeric_recv, PointerGetDatum(&wire), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
+	pfree(wire.data);
+	return out;
 }
 
 Datum

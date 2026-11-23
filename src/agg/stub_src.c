@@ -35,6 +35,7 @@
 #include "core/cmp.h"
 #include "core/visibility.h"
 #include "agg/stub_src_int.h"
+#include "core/memtrack.h"
 
 typedef struct StubSource StubSource;
 
@@ -72,7 +73,8 @@ struct StubSource
 static StubSource *
 stub_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, bool lenient)
 {
-	MemoryContext cxt = AllocSetContextCreate(mcxt, "sift_colstub source", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	MemoryContext cxt = sift_mem_allocset_create(mcxt, "sift_colstub source");
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 	StubSource *src = palloc0(sizeof(StubSource));
 	int			natts;
@@ -94,12 +96,12 @@ stub_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, 
 	src->nbuf = palloc(sizeof(bool) * natts);
 	src->nblocks = RelationGetNumberOfBlocks(heap);
 	src->nsb = (src->nblocks + SIFT_SB_PAGES - 1) / SIFT_SB_PAGES;
-	src->ucxt = AllocSetContextCreate(cxt, "sift_colstub unit", ALLOCSET_DEFAULT_SIZES);
+	src->ucxt = sift_mem_allocset_create(cxt, "sift_colstub unit");
 	src->esc.type = T_ErrorSaveContext;
 	src->dc.lay = src->lay;
 	src->dc.cxt = src->ucxt;
 	src->dc.idcxt = cxt;
-	src->dc.tmp = AllocSetContextCreate(cxt, "sift_colstub row", ALLOCSET_DEFAULT_SIZES);
+	src->dc.tmp = sift_mem_allocset_create(cxt, "sift_colstub row");
 	src->dc.esc = lenient ? &src->esc : NULL;
 	MemoryContextSwitchTo(old);
 	return src;
@@ -509,7 +511,7 @@ sample_unit(StubSource *src, const SiftSrcUnit *unit, SiftSrcStats *st, bool *se
 static void
 sample_stats(Relation heap, Relation index, BlockNumber nblocks, StubSample *sm)
 {
-	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_colstub stats", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift_colstub stats");
 	StubSource *src = stub_open(heap, index, NULL, cxt, true);
 	uint32		sbs[2] = {0, src->nsb / 2};
 	double		rows = 0;

@@ -7,6 +7,8 @@
 
 #include <errno.h>
 #include <signal.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
@@ -288,7 +290,8 @@ typedef struct WorkerState
 	char		device[64];
 	bool		software;
 	uint64		cache_bytes;
-	MemoryContext jobcx;
+	MemoryContext jobcx;		/* NULL between jobs: nothing of the worker is a context of its own while it waits */
+	MemoryContext basecx;
 	const SiftGpuSlot *cur;
 } WorkerState;
 
@@ -371,8 +374,12 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 			wake(s);
 		}
 	}
-	MemoryContextSwitchTo(MemoryContextGetParent(worker->jobcx));
-	MemoryContextDelete(worker->jobcx);
+	if (worker->jobcx != NULL)
+	{
+		MemoryContextSwitchTo(worker->basecx);
+		MemoryContextDelete(worker->jobcx);
+		worker->jobcx = NULL;
+	}
 }
 
 static bool
@@ -457,11 +464,14 @@ slot_free_done(SiftGpuSlot *s)
 	pg_atomic_compare_exchange_u32(&s->state, &st, SIFT_GPU_S_FREE);
 }
 
+/* MEM[MEM-VK-01]: gpu worker jobcx ("sift gpu job" made for each job and deleted when it ends, so none is live while the worker waits or exits idle: the leak gate of leak_test.c finds nothing) */
 static void
 serve(WorkerState *w, SiftGpuSlot *s, char *stage)
 {
-	MemoryContext old = MemoryContextSwitchTo(w->jobcx);
+	MemoryContext old = MemoryContextSwitchTo(w->basecx);
 
+	w->jobcx = sift_mem_allocset_create(w->basecx, "sift gpu job");
+	MemoryContextSwitchTo(w->jobcx);
 	w->cur = s;
 	s->error[0] = '\0';
 	PG_TRY();
@@ -492,7 +502,9 @@ serve(WorkerState *w, SiftGpuSlot *s, char *stage)
 	}
 	PG_END_TRY();
 	MemoryContextSwitchTo(old);
-	MemoryContextReset(w->jobcx);
+	sift_mem_release_os(MemoryContextMemAllocated(w->jobcx, true));
+	MemoryContextDelete(w->jobcx);
+	w->jobcx = NULL;
 	w->cur = NULL;
 	pg_atomic_write_u32(&s->state, SIFT_GPU_S_DONE);
 	wake(s);
@@ -500,11 +512,26 @@ serve(WorkerState *w, SiftGpuSlot *s, char *stage)
 		slot_free_done(s);
 }
 
+/* The worker idle: the device gives back its buffers and cache, the pages of the free staging areas leave this process, and the heap goes back to the system */
+static void
+worker_idle_release(WorkerState *w)
+{
+	const Size	page = sysconf(_SC_PAGESIZE);
+
+	sift_vk_release(w->vk, true);
+	w->shm->caps = *sift_vk_caps(w->vk);
+	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
+		if (pg_atomic_read_u32(&w->shm->slot[i].state) == SIFT_GPU_S_FREE)
+			(void) madvise((void *) TYPEALIGN(page, sift_gpu_stage(w->shm, i)), SIFT_GPU_STAGE_BYTES - page, MADV_DONTNEED);
+	sift_mem_trim_os();
+}
+
 static void
 worker_loop(WorkerState *w, const WorkerExtra *extra)
 {
 	SiftGpuShm *shm = w->shm;
 	TimestampTz last_job = GetCurrentTimestamp();
+	bool		released = false;
 	char		err[160];
 
 	if (!worker_open(w, extra->device, extra->software, (uint64) extra->cache_mb << 20, err, sizeof(err)))
@@ -535,11 +562,21 @@ worker_loop(WorkerState *w, const WorkerExtra *extra)
 		}
 		CHECK_FOR_INTERRUPTS();
 		if (did)
+		{
 			last_job = GetCurrentTimestamp();
+			released = false;
+		}
 		else if (GetCurrentTimestamp() - last_job > SIFT_GPU_IDLE_US)
 			break;
 		else
+		{
+			if (!released && GetCurrentTimestamp() - last_job > SIFT_GPU_RELEASE_US)
+			{
+				worker_idle_release(w);
+				released = true;
+			}
 			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH, 1000, PG_WAIT_EXTENSION);
+		}
 	}
 	sift_vk_close(w->vk);
 	w->vk = NULL;
@@ -557,7 +594,7 @@ sift_gpu_worker_main(pg_attribute_unused() Datum main_arg)
 	w.shm = attach_shm();
 	if (w.shm == NULL)
 		proc_exit(1);
-	w.jobcx = sift_mem_allocset_create(CurrentMemoryContext, "sift gpu job");
+	w.basecx = CurrentMemoryContext;
 	worker = &w;
 	before_shmem_exit(worker_exit, PointerGetDatum(w.shm));
 	w.shm->worker_procno = MyProcNumber;
@@ -575,65 +612,9 @@ struct SiftGpuConn
 	SiftVk	   *vk;
 	SiftVkCaps	caps;
 	char		error[200];
-	MemoryContext rcx;			/* the copy of a result */
+	/* MEM[MEM-VK-10]: GPU client result context rcx (the copy of a result, at most the staging area of 4MiB; the heap goes back to the system when the connection closes) */
+	MemoryContext rcx;
 };
-
-/* The device of the backend: kept for the session, closed when it ends */
-static struct LocalDevice
-{
-	SiftVk	   *vk;
-	char		device[64];
-	bool		software;
-	uint64		cache_bytes;
-	uint64		host_bytes;
-	bool		exit_hook;
-}			local;
-
-static void
-local_exit(pg_attribute_unused() int code, pg_attribute_unused() Datum arg)
-{
-	sift_vk_close(local.vk);
-	local.vk = NULL;
-}
-
-static void
-local_account(pg_attribute_unused() void *arg, int64 delta)
-{
-	local.host_bytes += delta;
-}
-
-static SiftVk *
-local_open(const char **why)
-{
-	static char err[200];
-	uint64		bytes = (uint64) sift_gpu_cache_mb << 20;
-	bool		software = sift_gpu_mode == SIFT_GPU_ON;
-
-	if (local.vk != NULL && (strcmp(local.device, sift_gpu_device) != 0 || (software && !local.software)))
-	{
-		sift_vk_close(local.vk);
-		local.vk = NULL;
-	}
-	if (local.vk == NULL)
-	{
-		local.vk = sift_vk_open(sift_gpu_device, software, bytes, err, sizeof(err));
-		if (local.vk == NULL)
-		{
-			*why = err;
-			return NULL;
-		}
-		sift_vk_set_account(local.vk, local_account, NULL);
-		strlcpy(local.device, sift_gpu_device, sizeof(local.device));
-		local.software = software;
-		local.cache_bytes = bytes;
-		if (!local.exit_hook)
-			on_proc_exit(local_exit, 0);
-		local.exit_hook = true;
-	}
-	else if (bytes != local.cache_bytes && sift_vk_set_cache(local.vk, bytes))
-		local.cache_bytes = bytes;
-	return local.vk;
-}
 
 static bool
 worker_alive(const SiftGpuShm *shm)
@@ -720,7 +701,7 @@ sift_gpu_conn_open(bool allow_local, const char **why)
 		c->shm = shm;
 		c->caps = shm->caps;
 	}
-	else if (allow_local && (c->vk = local_open(why)) != NULL)
+	else if (allow_local && (c->vk = sift_gpu_local_open(why)) != NULL)
 		c->caps = *sift_vk_caps(c->vk);
 	else
 	{
@@ -736,6 +717,7 @@ sift_gpu_conn_close(SiftGpuConn *c)
 {
 	if (c == NULL)
 		return;
+	sift_mem_release_os(MemoryContextMemAllocated(c->rcx, true));
 	MemoryContextDelete(c->rcx);
 	pfree(c);
 }

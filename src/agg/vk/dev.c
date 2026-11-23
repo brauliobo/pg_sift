@@ -467,6 +467,7 @@ make_device(SiftVk *vk, uint64_t cache_bytes)
 	CK(vk->vkCreateCommandPool(vk->dev, &ci, NULL, &vk->cpool));
 	ci.queueFamilyIndex = vk->tf;
 	CK(vk->vkCreateCommandPool(vk->dev, &ci, NULL, &vk->tpool));
+	vk->cache_want = cache_bytes;
 	if (!make_cache(vk, cache_bytes) || !make_pipelines(vk) || !make_slots(vk))
 		return false;
 	calibrate(vk);

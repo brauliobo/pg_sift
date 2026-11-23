@@ -20,6 +20,7 @@
 #include "agg/lookclass_int.h"
 #include "col/am.h"
 #include "col/dictshm.h"
+#include "core/memtrack.h"
 
 #define KEY_CHDR	UINT64CONST(0x53494654A101)
 #define KEY_CSNAP	UINT64CONST(0x53494654A102)
@@ -113,7 +114,8 @@ gang_claim(void *carg, uint32 nsb, uint32 *lo, uint32 *hi)
 static void
 gang_read(ClassShared *sh, uint16 *lut, int slot, const UnitScope *sc, Relation rel, Relation ix, ColNeed *need, ClassOut *out)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "lookup class part", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "lookup class part");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	DenseLoad	d = {.cxt = cx,.lastsb = PG_UINT32_MAX,.shared = true,.idbase = slot * DENSE_MAX_CLASSES,.key = sh->key,.ncol = sh->ncol,
 	.cap = sh->cap,.limit = sh->limit,.lut = lut,.strs.cxt = cx};
@@ -282,7 +284,7 @@ dense_gang(AggExec *ex, Relation rel, Relation ix, ColNeed *need, int nneed, Den
 	if (!gang_wanted(ex, ix, need, d, &cap))
 		return false;
 	nw = Min(max_parallel_workers_per_gather, GANG_MAX);
-	cx = AllocSetContextCreate(CurrentMemoryContext, "lookup class gang", ALLOCSET_DEFAULT_SIZES);
+	cx = sift_mem_allocset_create(CurrentMemoryContext, "lookup class gang");
 	/* the workers read the index of the table, and the rows this transaction holds back for it are in no page for them */
 	sift_col_flush_held();
 	src = sift_colsrc_open(rel, ix, ex->snap, cx, NULL, NULL);

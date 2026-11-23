@@ -8,7 +8,10 @@
 #include "agg/kern6.h"
 
 #define DIST_MIN_CELLS	16
-#define DIST_MIN_ARENA	4096
+/* MEM[MEM-AGG-07]: DSet distinct string arena (a set starts at DIST_MIN_ARENA=128B and doubles to a chunk of DIST_CHUNK_MAX=512MiB, then adds a chunk; no huge allocation; was 4096B for every group and one huge array) */
+#define DIST_MIN_ARENA	128
+#define DIST_CHUNK_BITS	30
+#define DIST_CHUNK_MAX	((uint64) 512 << 20)
 
 typedef struct DistEntry
 {
@@ -32,8 +35,10 @@ sift_dist_new(void)
 void
 sift_dist_free(SiftDistSet *s)
 {
-	if (s->arena)
-		pfree(s->arena);
+	for (uint32 i = 0; i < s->nchunk; i++)
+		pfree(s->chunk[i]);
+	if (s->chunk)
+		pfree(s->chunk);
 	pfree(s->cells);
 	pfree(s);
 }
@@ -41,13 +46,15 @@ sift_dist_free(SiftDistSet *s)
 uint64
 sift_dist_bytes(const SiftDistSet *s)
 {
-	return sizeof(SiftDistSet) + (uint64) s->cap * sizeof(uint64) + s->arena_cap;
+	return sizeof(SiftDistSet) + (uint64) s->cap * sizeof(uint64) + s->arena_bytes;
 }
 
 static inline const DistEntry *
 entry_at(const SiftDistSet *s, uint64 cell)
 {
-	return (const DistEntry *) (s->arena + cell - 1);
+	const uint64 at = cell - 1;
+
+	return (const DistEntry *) (s->chunk[at >> DIST_CHUNK_BITS] + (at & (((uint64) 1 << DIST_CHUNK_BITS) - 1)));
 }
 
 static inline uint32
@@ -114,29 +121,49 @@ sift_dist_add(SiftDistSet *s, uint64 v)
 	return true;
 }
 
+/* room for size bytes at the end of the last chunk: it doubles up to DIST_CHUNK_MAX, then the entry starts a chunk */
+static void
+arena_room(SiftDistSet *s, uint64 size)
+{
+	uint64		cap;
+
+	if (s->nchunk > 0 && s->arena_used + size <= s->arena_cap)
+		return;
+	if (s->nchunk > 0 && s->arena_used + size <= DIST_CHUNK_MAX)
+	{
+		cap = Max(s->arena_cap, DIST_MIN_ARENA);
+		while (cap < s->arena_used + size)
+			cap <<= 1;
+		cap = Min(cap, Max(DIST_CHUNK_MAX, s->arena_used + size));
+		s->chunk[s->nchunk - 1] = repalloc(s->chunk[s->nchunk - 1], cap);
+		s->arena_bytes += cap - s->arena_cap;
+		s->arena_cap = cap;
+		return;
+	}
+	cap = Max(size, DIST_MIN_ARENA);
+	s->chunk = s->chunk ? repalloc(s->chunk, (s->nchunk + 1) * sizeof(uint8 *)) : MemoryContextAlloc(s->cxt, sizeof(uint8 *));
+	s->chunk[s->nchunk++] = MemoryContextAlloc(s->cxt, cap);
+	s->arena_used = 0;
+	s->arena_cap = cap;
+	s->arena_bytes += cap;
+}
+
 static uint64
 arena_put(SiftDistSet *s, uint64 hash, const void *bytes, uint32 len)
 {
-	const uint64 at = s->arena_used,
-				size = TYPEALIGN(8, offsetof(DistEntry, bytes) + (uint64) len);
+	const uint64 size = TYPEALIGN(8, offsetof(DistEntry, bytes) + (uint64) len);
+	uint64		at;
 	DistEntry  *e;
 
-	if (at + size > s->arena_cap)
-	{
-		uint64		cap = Max(s->arena_cap, DIST_MIN_ARENA);
-
-		while (cap < at + size)
-			cap <<= 1;
-		s->arena = s->arena ? repalloc_huge(s->arena, cap) : MemoryContextAllocHuge(s->cxt, cap);
-		s->arena_cap = cap;
-	}
-	e = (DistEntry *) (s->arena + at);
+	arena_room(s, size);
+	at = ((uint64) (s->nchunk - 1) << DIST_CHUNK_BITS) + s->arena_used;
+	e = (DistEntry *) (s->chunk[s->nchunk - 1] + s->arena_used);
 	e->hash = hash;
 	e->len = len;
 	e->pad = 0;
 	memcpy(e->bytes, bytes, len);
 	memset(e->bytes + len, 0, size - offsetof(DistEntry, bytes) - len);
-	s->arena_used = at + size;
+	s->arena_used += size;
 	return at;
 }
 

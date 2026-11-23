@@ -108,7 +108,8 @@ static const char *path_spill_detail;
 static double path_vet;				/* of the path agg_cost is pricing: the heap check of the rows on pages that are not all-visible, and the share of those pages */
 static double path_vet_pct;
 static List *path_vets;			/* PathVet of each path the arms priced, for agg_vet_of: in vet_cx, for the plans of a statement are planned in contexts that are deleted before the choice between them is made */
-static MemoryContext vet_cx;		/* kept for the backend, reset after each statement's plans (the leak report allows the names "sift cache ...") */
+/* MEM[MEM-AGG-21]: backend cache context deleted after each statement's plans (0 bytes idle, 24 bytes per priced path while planning) */
+static MemoryContext vet_cx;
 static List *done;
 static MemoryContext final_cx;		/* the context final_wait lives in */
 static List *final_wait;			/* (root, ArmNote) of the arms that were used before the LIMIT of the query was costed: reported when the final paths are known */
@@ -237,7 +238,8 @@ agg_vet_forget(void)
 {
 	path_vets = NIL;
 	if (vet_cx != NULL)
-		MemoryContextReset(vet_cx);
+		MemoryContextDelete(vet_cx);
+	vet_cx = NULL;
 }
 
 /* a path the arm is about to add to its upper relation: add_path may free it, so its cost is taken now */

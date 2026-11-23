@@ -33,6 +33,7 @@
 #include "agg/lookcol_int.h"
 #include "agg/topn.h"
 #include "executor/instrument.h"
+#include "core/memtrack.h"
 
 #ifdef SIFT_TESTING
 static bool test_scope_join;
@@ -217,7 +218,8 @@ unit_entries(AggExec *ex, Snapshot snapshot, SiftScopeCounts *c)
 			c->entries = unit_memo[i].entries;
 			return;
 		}
-	cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	cx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope price");
 	units = sift_colsrc_open_scope(ex->heap, ex->index, snapshot, cx, ex->view);
 	leaf = sift_agg_scope_leaf(sift_colsrc_source_layout(units), sc->key_name);
 	c->entries = unit_rows(units, sc->all ? not_null_prune(leaf) : values_prune(leaf, sc->keys, sc->nkeys), &c->units);
@@ -309,7 +311,7 @@ entity_cheaper(AggExec *ex, Snapshot snapshot, uint64 changed, const SiftScopeRe
 {
 	const SiftAggScope *sc = ex->spec->scope;
 	SiftScopeCounts c = unit_counts(ex, snapshot);
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift scope price", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift scope price");
 	SiftSrcSource *entity = sift_colsrc_open(ex->heap, ex->index, snapshot, cx, ex->view, NULL);
 	bool		cheaper;
 

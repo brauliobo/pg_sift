@@ -23,6 +23,7 @@
 #include "utils/timestamp.h"
 
 #include "agg/agg_int.h"
+#include "core/cachebudget.h"
 #include "core/shmbudget.h"
 #include "col/dsmreg.h"
 #include "core/compat.h"
@@ -102,7 +103,9 @@ typedef struct LookShmPin
 } LookShmPin;
 
 static LookShm *shm[LOOK_POOLS];
+/* MEM[MEM-AGG-23]: transient backend cache context of the attached segment list deleted with the last unpin (0 bytes idle, 32 bytes per attached segment) */
 static List *attached;
+static MemoryContext attached_cx;
 
 static SiftShmPoolId
 ledger_pool(LookPool pool)
@@ -157,6 +160,11 @@ shm_unpin(void *arg)
 		attached = list_delete_ptr(attached, p->att);
 		dsm_detach(p->att->seg);
 		pfree(p->att);
+		if (attached == NIL)
+		{
+			MemoryContextDelete(attached_cx);
+			attached_cx = NULL;
+		}
 	}
 }
 
@@ -178,7 +186,9 @@ shm_attach(dsm_handle h, MemoryContext mcxt)
 		if (seg == NULL)
 			return NULL;
 		dsm_pin_mapping(seg);
-		old = MemoryContextSwitchTo(TopMemoryContext);
+		if (attached_cx == NULL)
+			attached_cx = sift_cache_create_context("sift cache lookup attachments");
+		old = MemoryContextSwitchTo(attached_cx);
 		att = palloc(sizeof(LookShmAtt));
 		att->h = h;
 		att->seg = seg;

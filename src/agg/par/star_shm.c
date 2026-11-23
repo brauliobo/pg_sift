@@ -52,6 +52,7 @@ sip_blocks(const SiftStarDimSpec *dims, int d)
 	return sift_sip_blocks_for(dims[d].raw_rows, sift_sip_budget_bytes());
 }
 
+/* MEM[MEM-AGG-19]: star join DSM sized for the unfiltered rows of each dimension (raw_rows times 8 bytes per payload column plus 9 bytes of keys and pass flags; workers read int64 payload slots so narrowing the payload is a layout change not made here) */
 /* Where everything is: filled into b when it is not NULL, and the total bytes */
 static Size
 layout(const SiftStarDimSpec *dims, int n, uint32 n_participants, SiftStarDimBundle *b)

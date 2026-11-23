@@ -31,6 +31,7 @@
 #include "agg/agg_int.h"
 #include "agg/init_int.h"
 #include "col/hll.h"
+#include "core/memtrack.h"
 
 static Datum
 gen_eval_once(AggExec *ex, ExprState *e, Oid typid, bool *isnull)
@@ -293,7 +294,8 @@ gen_new(AggExec *ex, const SiftAggAgg *a, int ai)
 	gen_stat_pick(ex, st);
 	if (g->topn)
 	{
-		st->tcx = AllocSetContextCreate(ex->cxt, "sift agg first rows", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		st->tcx = sift_mem_allocset_create(ex->cxt, "sift agg first rows");
 		gen_first_begin(st);
 	}
 	return st;
@@ -315,7 +317,7 @@ gen_open(AggExec *ex)
 			{
 				ex->gas = makeNode(AggState);
 				ex->gas->tmpcontext = ex->lutcx;
-				ex->gres = AllocSetContextCreate(ex->cxt, "sift agg results", ALLOCSET_DEFAULT_SIZES);
+				ex->gres = sift_mem_allocset_create(ex->cxt, "sift agg results");
 			}
 			ex->gst[ai] = gen_new(ex, &s->agg[ai], ai);
 			ex->gst[ai]->follower = s->agg[ai].gen->first && leader >= 0;

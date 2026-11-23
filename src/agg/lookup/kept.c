@@ -10,6 +10,7 @@
 
 #include "agg/stats.h"
 #include "agg/lookup/int.h"
+#include "core/memtrack.h"
 
 /*
  * A table is kept when the scan only reads it and what narrows its load is the same for every query: the table's own columns (the Params after
@@ -142,7 +143,8 @@ map_kept_find(AggExec *ex, int ci, Relation rel, MemoryContext cxt, bool own, Ke
 			t->cols.type[t->cols.n++] = have.type[p];
 		}
 	}
-	t->cx = AllocSetContextCreate(cxt, "sift cache lookup table", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	t->cx = sift_mem_allocset_create(cxt, "sift cache lookup table");
 	return NULL;
 }
 

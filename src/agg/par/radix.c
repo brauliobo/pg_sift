@@ -53,10 +53,11 @@ sift_par_coord_size_custom(uint32 max_chunks)
 	return SIFT_PAR_SHM_ALIGN + COORD_HDR + MORSEL_SPAN + mul_size(SIFT_RADIX_CHUNK_SIZE, max_chunks);
 }
 
+/* MEM[MEM-AGG-18]: parallel radix worker mq + stage (a worker's stage is n_parts * SIFT_RADIX_STAGE bytes besides its local table; the chunks of the pool are half of hash memory, at most SIFT_PAR_DSM_MAX) */
 uint32
 sift_par_budget_chunks(void)
 {
-	return (uint32) Max(1, Min(get_hash_memory_limit(), SIFT_PAR_DSM_MAX) / SIFT_RADIX_CHUNK_SIZE);
+	return (uint32) Max(1, Min(get_hash_memory_limit() / 2, SIFT_PAR_DSM_MAX) / SIFT_RADIX_CHUNK_SIZE);
 }
 
 static void

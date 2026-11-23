@@ -25,6 +25,7 @@
 #include "col/am.h"
 #include "agg/agg.h"
 #include "agg/topn/int.h"
+#include "core/memtrack.h"
 
 bool		sift_topn_zone_keys = true;
 #ifdef SIFT_TESTING
@@ -457,7 +458,8 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		}
 	}
 	if (t->nblob > 0 || t->nexpr > 0 || t->key[0].nenum > 0)
-		t->ucxt = AllocSetContextCreate(cxt, "sift top-N unit", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		t->ucxt = sift_mem_allocset_create(cxt, "sift top-N unit");
 	if (t->nblob > 0)
 		t->oc = palloc0(ORD_CACHE * sizeof(OrdCode));
 	/* the zones of the next keys tell, for a first key that ties, which superblocks can still hold a row before the n-th: they bound the walk in the order of the keys */

@@ -3,7 +3,8 @@
  * looks up chunk by chunk to build a batch) are written to a device buffer when a job ends well, named by the key of the job
  * (SiftVkTabKey). The next job with that key copies its rows into the control words on the device and looks nothing up: a warm scan of
  * thousands of granules costs the host the header and the granule table, not a hash lookup per chunk. A table is good while no decoded chunk
- * has left the cache since it was made (vk->evict_gen), because the descriptors are word offsets into the cache.
+ * has left the slabs it names since it was made (Slab.gen), because the descriptors are word offsets into the cache; a table gone stale is
+ * freed when a job begins and ends, not kept in device memory until another table takes its place.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +20,17 @@ tab_bytes(uint32_t ngran, uint32_t ncols)
 	return (uint64_t) ngran * ncols * 32;
 }
 
+/* no slab the table names was evicted since it was made */
+static bool
+tab_valid(const SiftVk *vk, const Tab *t)
+{
+	for (uint32_t i = 0; i < t->nslabs; i++)
+		if (t->slabs[i] >= vk->nslab || vk->slab[t->slabs[i]].gen != t->sgen[i])
+			return false;
+	return true;
+}
+
+/* MEM[MEM-VK-06]: tab descriptor cache (at most TAB_MAX=64 tables and 64MiB of VRAM; a table is valid while the slabs it names keep their gen, stale ones are freed by reap_tabs) */
 Tab *
 tab_find(SiftVk *vk, const SiftVkJob *job)
 {
@@ -28,7 +40,7 @@ tab_find(SiftVk *vk, const SiftVkJob *job)
 	{
 		Tab		   *t = &vk->tab[i];
 
-		if (t->buf.b && t->gen == vk->evict_gen && t->ngran == job->ngran && t->ncols == job->ncols && memcmp(&t->key, &job->tab, sizeof(t->key)) == 0)
+		if (t->buf.b && tab_valid(vk, t) && t->ngran == job->ngran && t->ncols == job->ncols && memcmp(&t->key, &job->tab, sizeof(t->key)) == 0)
 		{
 			t->used = ++vk->tab_clock;
 			return t;
@@ -54,8 +66,18 @@ tab_free(SiftVk *vk, Tab *t)
 {
 	buf_free(vk, &t->buf);
 	free(t->slabs);
+	free(t->sgen);
 	free(t->host);
 	memset(t, 0, sizeof(*t));
+}
+
+/* the tables a slab evicted since went stale: their device memory is given back (no batch is in flight when a job begins or has ended) */
+void
+reap_tabs(SiftVk *vk)
+{
+	for (int i = 0; i < TAB_MAX; i++)
+		if (vk->tab[i].buf.b && !tab_valid(vk, &vk->tab[i]))
+			tab_free(vk, &vk->tab[i]);
 }
 
 void
@@ -72,7 +94,8 @@ slabs_of(const SiftVk *vk, const uint32_t *host, uint64_t nrows, Tab *t)
 	uint8_t    *seen = calloc(vk->nslab, 1);
 
 	t->slabs = malloc((size_t) vk->nslab * sizeof(uint32_t));
-	if (!seen || !t->slabs)
+	t->sgen = malloc((size_t) vk->nslab * sizeof(uint64_t));
+	if (!seen || !t->slabs || !t->sgen)
 	{
 		free(seen);
 		return false;
@@ -84,6 +107,7 @@ slabs_of(const SiftVk *vk, const uint32_t *host, uint64_t nrows, Tab *t)
 		if (host[r * 8 + 5] != 0 && !seen[slab])
 		{
 			seen[slab] = 1;
+			t->sgen[t->nslabs] = vk->slab[slab].gen;
 			t->slabs[t->nslabs++] = slab;
 		}
 	}
@@ -95,8 +119,8 @@ slabs_of(const SiftVk *vk, const uint32_t *host, uint64_t nrows, Tab *t)
 static bool
 tab_older(const SiftVk *vk, const Tab *a, const Tab *b)
 {
-	bool		sa = a->gen != vk->evict_gen,
-				sb = b->gen != vk->evict_gen;
+	bool		sa = !tab_valid(vk, a),
+				sb = !tab_valid(vk, b);
 
 	return sa != sb ? sa : a->used < b->used;
 }

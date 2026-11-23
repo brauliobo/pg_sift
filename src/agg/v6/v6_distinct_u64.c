@@ -7,7 +7,8 @@
 
 #include "agg/v6/v6_distinct_u64.h"
 
-#define DU64_FIRST_CAP	1024
+/* MEM[MEM-AGG-09]: SiftDistinctU64 and SiftDu64G first tables (DU64_FIRST_CAP=64 values = 576B, 512B arena; grow checks live + new against the budget; was 1024 values = 9KB and 25KB for the grouped set) */
+#define DU64_FIRST_CAP	64
 #define DU64_AHEAD		16
 #define DU64_TILE		64
 
@@ -162,7 +163,7 @@ sift_du64_free(SiftDistinctU64 *d)
 
 /* ---- grouped ---- */
 
-#define DU64G_FIRST_GROUPS	256
+#define DU64G_FIRST_GROUPS	64
 
 struct SiftDu64G
 {
@@ -231,7 +232,7 @@ sift_du64g_create(MemoryContext cx, uint64 budget_bytes)
 	d->gcount = MemoryContextAlloc(cx, d->gcap * sizeof(uint64));
 	d->goff = MemoryContextAlloc(cx, d->gcap * sizeof(uint32));
 	d->glen = MemoryContextAlloc(cx, d->gcap * sizeof(uint32));
-	d->arena_cap = 4096;
+	d->arena_cap = 512;
 	d->arena = MemoryContextAlloc(cx, d->arena_cap);
 	d->pcap = DU64_FIRST_CAP;
 	d->pv = MemoryContextAlloc(cx, d->pcap * sizeof(uint64));

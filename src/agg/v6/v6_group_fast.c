@@ -1,6 +1,7 @@
 /*
  * agg/v6/v6_group_fast.c - packed keys, batched byte keys and the text minimum and maximum of the groups of SiftAggV6 (agg/v6/v6_group_fast.h).
  */
+/* check-memory: allow-allocs the rows of the wide batch are one batch of at most SIFT_VEC_LEN rows */
 #include "postgres.h"
 
 #include "agg/kern6.h"

@@ -11,6 +11,7 @@
 
 #include "agg/kern.h"
 #include "agg/colsrc.h"
+#include "core/memtrack.h"
 
 #define MAX_PROVIDERS	4
 
@@ -195,7 +196,8 @@ sift_colsrc_count_part(Relation heap, Relation index, Snapshot snapshot, MemoryC
 		c->view = prov->part_count(heap, index, mcxt, &c->vlen, &c->nsb);
 		return;
 	}
-	cx = AllocSetContextCreate(CurrentMemoryContext, "sift source count", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	cx = sift_mem_allocset_create(CurrentMemoryContext, "sift source count");
 	src = sift_colsrc_open_part(heap, index, snapshot, cx, NULL);
 	c->nsb = sift_colsrc_nsb(src);
 	c->vlen = sift_colsrc_view_size(src);

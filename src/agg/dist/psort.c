@@ -14,7 +14,8 @@
 #define PS_START		1024		/* pairs of the first array */
 #define PS_CHUNK		8192		/* pairs a run is read in */
 #define PS_PROBE		(1 << 20)	/* pairs of the array at which its repeats are looked at before it grows */
-#define PS_FANIN		64			/* runs merged at a time: a read buffer each */
+/* MEM[MEM-AGG-10]: PairSort merge buffers (PS_FANIN=32 runs at a time * 64KB = 2MiB; was 64 runs, 4MiB) */
+#define PS_FANIN		32			/* runs merged at a time: a read buffer each */
 
 typedef struct PsRun
 {
@@ -42,7 +43,8 @@ struct PairSort
 	BufFile    *out;			/* the merged distinct pairs */
 	uint64		nout;
 	uint64		pos;			/* the pairs given so far */
-	uint64		rbuf[PS_CHUNK];
+	/* MEM[MEM-AGG-10]: PairSort rbuf (PS_CHUNK*8 = 64KB read buffer, made when the merged pairs are first read from the file; was inside every PairSort) */
+	uint64	   *rbuf;
 	uint32		ri;
 	uint32		rn;
 };
@@ -69,7 +71,8 @@ psort_begin(MemoryContext cxt, uint64 budget)
 	PairSort   *s = MemoryContextAllocZero(cxt, sizeof(PairSort));
 
 	s->cxt = cxt;
-	s->maxcap = Min(Max(budget / sizeof(uint64), PS_START), MaxAllocHugeSize / sizeof(uint64) / 2);
+	/* MEM[MEM-AGG-10]: PairSort array and radix tmp (the array holds at most half the budget, so it and the tmp array of ps_radix fit it together; was the whole budget twice) */
+	s->maxcap = Min(Max(budget / sizeof(uint64) / 2, PS_START), MaxAllocHugeSize / sizeof(uint64) / 2);
 	return s;
 }
 
@@ -338,6 +341,8 @@ psort_next(PairSort *s, uint64 *v)
 		{
 			s->rn = (uint32) Min(s->nout - s->pos, PS_CHUNK);
 			s->ri = 0;
+			if (s->rbuf == NULL)
+				s->rbuf = MemoryContextAlloc(s->cxt, sizeof(uint64) * PS_CHUNK);
 			BufFileReadExact(s->out, s->rbuf, s->rn * sizeof(uint64));
 		}
 		*v = s->rbuf[s->ri++];

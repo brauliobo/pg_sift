@@ -43,6 +43,7 @@ part_of(uint64 hash, uint32 depth)
 	return (uint32) (hash >> LEVEL_SHIFT[depth]) & (SIFT_SPILL_PARTS - 1);
 }
 
+/* MEM[MEM-AGG-11]: SiftGroupSpill per-level stage and BufFiles (SIFT_SPILL_PARTS times 12KB is 192KB a level and 768KB at most; a sub-level partition file is closed when its merge is done, the top level stays for the next scan of the node; was held to the end of the scan) */
 static void
 set_init(SpillSet *ss, uint32 depth)
 {
@@ -246,7 +247,11 @@ merge_file(ScanCtx *sc, BufFile *f, uint32 depth)
 	set_seal(sub, &bytes);
 	for (uint32 p = 0; p < SIFT_SPILL_PARTS; p++)
 		if (sub->files[p])
+		{
 			merge_file(sc, sub->files[p], depth + 1);
+			BufFileClose(sub->files[p]);
+			sub->files[p] = NULL;
+		}
 	set_free(sub);
 	sc->sp->open[depth + 1] = NULL;
 	pfree(sub);

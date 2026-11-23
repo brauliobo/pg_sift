@@ -15,6 +15,7 @@
 
 #include "core/limits.h"
 #include "agg/part/int.h"
+#include "core/memtrack.h"
 
 /*
  * What PostgreSQL checks for a query on a partitioned table: row security of the table, not the partitions'. Its privileges were checked by the
@@ -57,7 +58,8 @@ open_part(PartSource *ps, int i)
 	heap_part(ps, i);
 	if (OidIsValid(ps->indexoid[i]))
 		ps->index[i] = index_open(ps->indexoid[i], AccessShareLock);
-	cx = AllocSetContextCreate(ps->mcxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	cx = sift_mem_allocset_create(ps->mcxt, "sift agg partition");
 	ps->pcx[i] = cx;
 	ps->src[i] = sift_colsrc_open_part(ps->heap[i], ps->index[i], ps->snapshot, cx, ps->view[i]);
 	ps->gen[i]++;

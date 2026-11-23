@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 
 #include "agg/topn/int.h"
+#include "core/memtrack.h"
 
 /* The bar as a code (on: false when there is none, or it is NULL, which is compared as a NULL is): a row is strictly after it when its code is above ob.v (below it, for DESC) */
 typedef struct OrdBar
@@ -151,7 +152,8 @@ unit_ord(SiftTopN *t, const SiftSrcDict *d, int64 npass)
 	if (sorted == NULL && oc->ord)
 		return oc;
 	if (t->ocxt == NULL)
-		t->ocxt = AllocSetContextCreate(MemoryContextGetParent(t->ucxt), "sift top-N order codes", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		t->ocxt = sift_mem_allocset_create(MemoryContextGetParent(t->ucxt), "sift top-N order codes");
 	if (oc->ord == NULL)
 		oc->ord = MemoryContextAlloc(t->ocxt, (Size) d->n * sizeof(uint64));
 	if (sorted)

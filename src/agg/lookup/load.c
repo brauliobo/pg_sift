@@ -31,6 +31,7 @@
 #include "agg/lookup/int.h"
 #include "agg/init_int.h"
 #include "core/memtrack.h"
+#include "core/cachebudget.h"
 
 #define LOOKUP_RESERVE_MAX	(1 << 22)	/* rows a map is sized for before the load: a table the statistics put above is grown as it is read */
 
@@ -69,12 +70,14 @@ look_reg_find(const LookReg *r, const EState *estate, const char *key)
 	return NULL;
 }
 
-/* the entry's estate and key are set: it goes first in its bucket; the buckets are made in cx when the first entry comes */
+/* the entry's estate and key are set: it goes first in its bucket; the buckets are made when the first entry comes and freed with the last */
 void
-look_reg_add(LookReg *r, MemoryContext cx, LookRegEnt *e)
+look_reg_add(LookReg *r, LookRegEnt *e)
 {
+	/* MEM[MEM-AGG-24]: shared lookup registry buckets in the backend cache root, freed with the last entry (0 bytes idle, 2048 bytes per registry while a statement shares a table) */
 	if (r->bucket == NULL)
-		r->bucket = MemoryContextAllocZero(cx, LOOK_REG_BUCKETS * sizeof(LookRegEnt *));
+		r->bucket = MemoryContextAllocZero(sift_cache_root_context(), LOOK_REG_BUCKETS * sizeof(LookRegEnt *));
+	r->count++;
 	e->hash = look_reg_hash(e->estate, e->key);
 	e->next = r->bucket[e->hash % LOOK_REG_BUCKETS];
 	r->bucket[e->hash % LOOK_REG_BUCKETS] = e;
@@ -87,6 +90,11 @@ look_reg_del(LookReg *r, LookRegEnt *e)
 		if (*at == e)
 		{
 			*at = e->next;
+			if (--r->count == 0)
+			{
+				pfree(r->bucket);
+				r->bucket = NULL;
+			}
 			return;
 		}
 }
@@ -775,7 +783,8 @@ map_load_shared(AggExec *ex, int ci, const MapLoadHint *hint)
 		ex->nshared++;
 		return ((SharedMap *) e)->map;
 	}
-	mcxt = AllocSetContextCreate(estate->es_query_cxt, "sift agg shared lookup", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	mcxt = sift_mem_allocset_create(estate->es_query_cxt, "sift agg shared lookup");
 	sm = MemoryContextAlloc(mcxt, sizeof(SharedMap));
 	sm->ent.estate = estate;
 	sm->ent.key = MemoryContextStrdup(mcxt, key);
@@ -783,7 +792,7 @@ map_load_shared(AggExec *ex, int ci, const MapLoadHint *hint)
 	sm->cb.func = shared_map_forget;
 	sm->cb.arg = sm;
 	MemoryContextRegisterResetCallback(mcxt, &sm->cb);
-	look_reg_add(&shared_maps, TopMemoryContext, &sm->ent);
+	look_reg_add(&shared_maps, &sm->ent);
 	return sm->map;
 }
 

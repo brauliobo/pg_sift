@@ -7,6 +7,7 @@
 
 #include "agg/pre.h"
 #include "col/v1/pagg.h"
+#include "core/memtrack.h"
 
 void
 sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa)
@@ -131,7 +132,8 @@ sift_aggpre_unit_hist(SiftAggPre *pre, const SiftColUnit *unit, int col, const S
 	SiftCRollupNeed cn;
 
 	if (pre->pcx == NULL)
-		pre->pcx = AllocSetContextCreate(pre->cxt, "sift_aggpre histogram", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		pre->pcx = sift_mem_allocset_create(pre->cxt, "sift_aggpre histogram");
 	MemoryContextReset(pre->pcx);
 	cn.ndims = 0;
 	cn.nmeas = need ? need->nmeas : 0;
@@ -192,7 +194,7 @@ sift_aggpre_unit_rollup(SiftAggPre *pre, const SiftColUnit *unit, const SiftColS
 	if (list >= 0 && col_of_leaf && (list = col_of_leaf[list]) < 0)
 		return false;
 	if (pre->pcx == NULL)
-		pre->pcx = AllocSetContextCreate(pre->cxt, "sift_aggpre histogram", ALLOCSET_DEFAULT_SIZES);
+		pre->pcx = sift_mem_allocset_create(pre->cxt, "sift_aggpre histogram");
 	MemoryContextReset(pre->pcx);
 	if (!sift_col_unit_rollup(unit, list, pre->pcx, need->all ? NULL : &cn, &r, dict))
 		return false;

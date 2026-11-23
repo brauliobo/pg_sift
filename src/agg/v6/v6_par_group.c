@@ -14,6 +14,7 @@
 #include "agg/v6/v6_par_pg.h"
 #include "core/memtrack.h"
 
+/* MEM[MEM-AGG-17]: parallel worker SiftDistinct (the seen set is bounded by the hand over of par_local_load counting its bytes, not by a budget that would spill it; the heap goes back to the system when a worker state ends) */
 #define SEEN_NO_BUDGET		(UINT64CONST(1) << 40)
 #define SEEN_ENTRY_BYTES	64		/* what an entry of the set of a participant takes, to tell when it is full */
 
@@ -178,8 +179,11 @@ par_local_free(void *local)
 {
 	ParLocal   *l = local;
 
+	const Size	peak = MemoryContextMemAllocated(l->cx, true);
+
 	sift_v6_group_free(l->g);
 	MemoryContextDelete(l->cx);
+	sift_mem_release_os(peak);
 }
 
 static void

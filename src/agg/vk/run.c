@@ -95,7 +95,7 @@ write_init(RunCtx *rc)
 	const Plan *p = &rc->plan;
 	const SiftVkJob *job = rc->job;
 
-	memset(w, 0, (SIFT_VK_RES_ACC_OFF + p->acc_words) * 8);
+	memset(w, 0, ((uint64_t) SIFT_VK_RES_ACC_OFF + p->acc_words) * 8);
 	w[SIFT_VK_RES_ERR] = INT64_MAX;
 	if (job->mode != SIFT_VK_UNGROUPED && job->mode != SIFT_VK_DENSE)
 		return;
@@ -265,12 +265,16 @@ finish_batch(RunCtx *rc, Batch *b)
 	return batch_check(vk, b);
 }
 
+/* MEM[MEM-VK-05]: vk ht + out + hout (ht and out in VRAM grow to the job and are freed above 16MiB and 8MiB when it ends; hout pinned host is at most HOUT_CHUNK=8MiB, was up to 2.25GiB) */
 static bool
 ensure_buffers(SiftVk *vk, const Plan *p)
 {
 	const VkBufferUsageFlags u = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	const uint64_t hout = p->out_bytes < HOUT_CHUNK ? p->out_bytes : HOUT_CHUNK;
 	bool		rebind = false;
 
+	if (!ensure_res(vk, (uint64_t) SIFT_VK_RES_ACC_OFF + p->acc_words))
+		return false;
 	if (p->ht_bytes > vk->ht_cap)
 	{
 		buf_free(vk, &vk->ht);
@@ -287,14 +291,39 @@ ensure_buffers(SiftVk *vk, const Plan *p)
 		vk->out_cap = p->out_bytes;
 		rebind = true;
 	}
-	if (p->out_bytes > vk->hout_cap)
+	if (hout > vk->hout_cap)
 	{
 		buf_free(vk, &vk->hout);
-		if (!buf_new(vk, &vk->hout, p->out_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK))
+		if (!buf_new(vk, &vk->hout, hout, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK))
 			return false;
-		vk->hout_cap = p->out_bytes;
+		vk->hout_cap = hout;
 	}
 	return !rebind || bind_buffers(vk);
+}
+
+/* when a job ends, the hash table and the result buffer that went over what the device keeps between jobs are freed (the gathered result stays until the next job: the caller reads it) */
+void
+trim_job_buffers(SiftVk *vk)
+{
+	const VkBufferUsageFlags u = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	bool		rebind = false;
+
+	if (vk->inflight || vk->released || vk->trimmed)
+		return;
+	if (vk->ht_cap > HT_RETAIN_MAX)
+	{
+		buf_free(vk, &vk->ht);
+		vk->ht_cap = buf_new(vk, &vk->ht, 1 << 20, u, K_DEVICE) ? 1 << 20 : 0;
+		rebind = true;
+	}
+	if (vk->out_cap > OUT_RETAIN_MAX)
+	{
+		buf_free(vk, &vk->out);
+		vk->out_cap = buf_new(vk, &vk->out, 1 << 20, u, K_DEVICE) ? 1 << 20 : 0;
+		rebind = true;
+	}
+	if (rebind)
+		bind_buffers(vk);
 }
 
 /* the job went over every granule: its descriptor table is kept for the next job with its key (the device having no room for it is no failure of the job), or (tests) the one it used is checked */
@@ -337,6 +366,8 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 			if (!finish_batch(rc, b))
 				return SIFT_VK_DECODE;
 		}
+		if (!ensure_work(vk, s))
+			return SIFT_VK_FAIL;
 		vk->batch++;
 		bs = batch_build(vk, s, rc->job, &rc->plan, g, g1, b);
 		if (bs == BUILD_NO_ROOM && vk->slot[k ^ 1].busy)
@@ -375,15 +406,15 @@ run_scan(RunCtx *rc, uint32_t g0, uint32_t g1)
 	return SIFT_VK_OK;
 }
 
-/* the second read back: the groups or candidates the first one counted, from the device buffer of the job */
+/* the second read back: the bytes of the groups or candidates the first one counted at from, from the device buffer of the job, into hout */
 static bool
-read_out(RunCtx *rc, uint64_t bytes, void (*interrupt) (void))
+read_out(RunCtx *rc, uint64_t from, uint64_t bytes, void (*interrupt) (void))
 {
 	SiftVk	   *vk = rc->vk;
 	Slot	   *s = &vk->slot[0];
 	VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
 	VkSubmitInfo cs = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &s->ccb};
-	VkBufferCopy cp = {0, 0, (bytes + 7) & ~7ull};
+	VkBufferCopy cp = {from, 0, (bytes + 7) & ~7ull};
 	sigset_t	old;
 	VkResult	r;
 
@@ -399,6 +430,36 @@ read_out(RunCtx *rc, uint64_t bytes, void (*interrupt) (void))
 	s->busy = true;
 	vk->inflight = true;
 	return wait_slot(vk, s, interrupt);
+}
+
+/* the first bytes of the result in the buffer of the device as host memory: hout when it holds them, else the chunks of hout gathered in a buffer of the host */
+static const void *
+read_result(RunCtx *rc, uint64_t bytes)
+{
+	SiftVk	   *vk = rc->vk;
+	uint64_t	off = 0;
+
+	if (bytes <= vk->hout_cap)
+		return read_out(rc, 0, bytes, rc->interrupt) ? vk->hout.map : NULL;
+	if (vk->rbuf_cap < bytes)
+	{
+		void	   *b = realloc(vk->rbuf, bytes);
+
+		if (!b)
+			return NULL;
+		vk->rbuf = b;
+		vk->rbuf_cap = bytes;
+	}
+	while (off < bytes)
+	{
+		const uint64_t n = bytes - off < vk->hout_cap ? bytes - off : vk->hout_cap;
+
+		if (!read_out(rc, off, n, rc->interrupt))
+			return NULL;
+		memcpy((char *) vk->rbuf + off, vk->hout.map, n);
+		off += n;
+	}
+	return vk->rbuf;
 }
 
 typedef struct Cand
@@ -467,18 +528,16 @@ finish_result(RunCtx *rc, SiftVkResult *res)
 			return SIFT_VK_OVERFLOW;
 		res->rec_words = p->stride - 1;
 		res->ngroups = (uint32_t) n;
-		if (n && !read_out(rc, n * (p->stride - 1) * 8, rc->interrupt))
+		if (n && !(res->acc = read_result(rc, n * (p->stride - 1) * 8)))
 			return SIFT_VK_FAIL;
-		res->acc = vk->hout.map;
 		res->acc_words = (uint32_t) (n * (p->stride - 1));
 		return SIFT_VK_OK;
 	}
 	n = (uint64_t) h[SIFT_VK_RES_NCAND];
 	if (n > p->cand_cap)
 		return SIFT_VK_OVERFLOW;
-	if (n && !read_out(rc, n * 16, rc->interrupt))
+	if (n && !(res->cand = read_result(rc, n * 16)))
 		return SIFT_VK_FAIL;
-	res->cand = vk->hout.map;
 	res->ncand = (uint32_t) n;
 	return SIFT_VK_OK;
 }
@@ -572,6 +631,12 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 		return vk && vk->lost ? SIFT_VK_LOST : SIFT_VK_FAIL;
 	if (vk->inflight && !settle_all(vk))
 		return vk->lost ? SIFT_VK_LOST : SIFT_VK_TIMEOUT;
+	free(vk->rbuf);
+	vk->rbuf = NULL;
+	vk->rbuf_cap = 0;
+	if ((vk->released || vk->trimmed) && !revive(vk))
+		return SIFT_VK_FAIL;
+	reap_tabs(vk);
 	rc = calloc(1, sizeof(*rc));
 	if (!rc)
 		return SIFT_VK_FAIL;
@@ -615,6 +680,8 @@ sift_vk_run(SiftVk *vk, const SiftVkJob *job, void (*interrupt) (void), SiftVkRe
 	res->fast = rc->plan.fast;
 	res->tab_hit = rc->plan.tab != NULL;
 	plan_free(&rc->plan);
+	reap_tabs(vk);
+	trim_job_buffers(vk);
 	res->times.compile_ms = rc->plan.compile_ms;
 	res->times.wall_ms = now_ms() - t0;
 	free(rc);

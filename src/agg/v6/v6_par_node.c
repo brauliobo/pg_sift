@@ -82,6 +82,7 @@ sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 	return sift_v6_par_dsm_size(&pn->shape);
 }
 
+/* MEM[MEM-AGG-17]: parallel granules_of array (nrefs * 4B, freed after the morsel table copied it; was leaked on every init and rescan) */
 static uint32 *
 granules_of(const SiftV6ParNode *pn)
 {
@@ -95,8 +96,10 @@ granules_of(const SiftV6ParNode *pn)
 void
 sift_v6_par_node_initialize(SiftV6ParNode *pn, ParallelContext *pcxt, void *chunk)
 {
-	SiftV6ParDsmHdr *h = sift_v6_par_dsm_init(chunk, pcxt->seg, &pn->shape, granules_of(pn));
+	uint32	   *granules = granules_of(pn);
+	SiftV6ParDsmHdr *h = sift_v6_par_dsm_init(chunk, pcxt->seg, &pn->shape, granules);
 
+	pfree(granules);
 	memcpy((char *) h + h->parts_off, pn->plan.refs, (Size) pn->plan.nrefs * sizeof(SiftParPartRef));
 	memcpy((char *) h + h->staged_dead_off, pn->plan.staged_dead, (Size) pn->plan.nstaged * sizeof(uint64));
 	pn->hdr = h;
@@ -109,8 +112,11 @@ sift_v6_par_node_reinitialize(SiftV6ParNode *pn, void *chunk)
 	sift_v6_par_node_end(pn);
 	pn->have_total = false;
 	pn->total = (SiftV6ParWorkerStats) {0};
+	uint32	   *granules = granules_of(pn);
+
 	pn->hdr = sift_v6_par_dsm_block(chunk);
-	sift_v6_par_dsm_reinit(pn->hdr, granules_of(pn));
+	sift_v6_par_dsm_reinit(pn->hdr, granules);
+	pfree(granules);
 }
 
 void

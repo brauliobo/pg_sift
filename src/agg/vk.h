@@ -204,6 +204,8 @@ extern int	sift_vk_list_devices(SiftVkDevInfo *out, int max, int *chosen, const 
  */
 extern SiftVk *sift_vk_open(const char *device, bool allow_software, uint64_t cache_bytes, char *err, size_t errlen);
 extern void sift_vk_close(SiftVk *vk);
+/* Gives back the buffers of a device that is idle, and with cache its cache too (the next job makes them again); false when a submission cannot be waited for */
+extern bool sift_vk_release(SiftVk *vk, bool cache);
 extern const SiftVkCaps *sift_vk_caps(const SiftVk *vk);
 extern const char *sift_vk_error(const SiftVk *vk);
 extern bool sift_vk_usable(const SiftVk *vk);

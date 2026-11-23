@@ -71,9 +71,12 @@ typedef struct V6State
 static uint64
 scan_signature(const SiftV6Spec *spec)
 {
-	const char *text = nodeToString(spec->indexqual);
+	/* MEM[MEM-AGG-06]: scan_signature nodeToString buffer (the text of the index quals, freed after it is hashed; was left in the query context for every plan execution) */
+	char	   *text = nodeToString(spec->indexqual);
+	uint64		sig = DatumGetUInt64(hash_any_extended((const unsigned char *) text, strlen(text), 0));
 
-	return DatumGetUInt64(hash_any_extended((const unsigned char *) text, strlen(text), 0));
+	pfree(text);
+	return sig;
 }
 
 static void
@@ -435,7 +438,13 @@ v6_end(CustomScanState *node)
 	if (st->group != NULL)
 		sift_v6_group_free(st->group);
 	if (st->gcx != NULL)
+	{
+		/* MEM[MEM-AGG-06]: v6_end teardown (the heap the groups of the query peaked at goes back to the system: sift_mem_release_os with the bytes of the groups context; was never trimmed) */
+		const Size	peak = MemoryContextMemAllocated(st->gcx, true);
+
 		MemoryContextDelete(st->gcx);
+		sift_mem_release_os(peak);
+	}
 	sift_v6_fuse_detach(&st->arm);
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);

@@ -142,6 +142,7 @@ _Static_assert(sizeof(SiftTextSlot) == 32, "a text state is the 32 bytes of an a
 #define SIFT_TSLOT_INLINE	1
 #define SIFT_TSLOT_INLINE_MAX	8
 
+/* MEM[MEM-AGG-04]: SiftTextArena append-only string arena (cap doubles up to MaxAllocSize with the old arena live; counted by the spill check; a replaced winner of MIN or MAX that outgrew its room leaves its bytes until the query ends) */
 typedef struct SiftTextArena
 {
 	MemoryContext cx;
@@ -188,7 +189,10 @@ sift_tslot_set(SiftTextArena *ar, SiftTextSlot *s, const char *p, uint32 len)
 		{
 			if (ar->used + len > ar->cap)
 			{
-				ar->cap = Max(ar->cap * 2, Max(ar->used + len, 4096));
+				if (ar->used + len > MaxAllocSize)
+					ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the text MIN or MAX values of the groups are over 1 GB"),
+									errhint("Group by fewer columns or aggregate shorter values.")));
+				ar->cap = Min(Max(ar->cap * 2, Max(ar->used + len, 4096)), MaxAllocSize);
 				ar->buf = ar->buf == NULL ? MemoryContextAlloc(ar->cx, ar->cap) : repalloc(ar->buf, ar->cap);
 			}
 			s->v0 = ar->used;

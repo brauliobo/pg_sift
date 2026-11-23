@@ -22,6 +22,7 @@
 #include "core/sql.h"
 #include "core/inspect.h"
 #include "core/store.h"
+#include "core/memtrack.h"
 
 PG_FUNCTION_INFO_V1(sift_test_aggstub_is_index);
 PG_FUNCTION_INFO_V1(sift_test_aggstub_layout);
@@ -51,7 +52,8 @@ ts_open(TestScan *ts, Oid indexoid)
 	if (!sift_aggstub_owns_index(ts->index->rd_rel->relam))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_colstub index", RelationGetRelationName(ts->index))));
 	ts->heap = table_open(ts->index->rd_index->indrelid, AccessShareLock);
-	ts->cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_colstub test", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	ts->cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift_colstub test");
 	ts->src = sift_colsrc_open(ts->heap, ts->index, GetTransactionSnapshot(), ts->cxt, NULL, NULL);
 	ts->layout = sift_colsrc_source_layout(ts->src);
 }

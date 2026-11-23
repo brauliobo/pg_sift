@@ -45,6 +45,7 @@
 #include "utils/rel.h"
 
 #include "agg/agg_int.h"
+#include "core/cachebudget.h"
 #include "core/shmbudget.h"
 #include "col/dsmreg.h"
 #include "agg/plan_int.h"
@@ -75,9 +76,11 @@ typedef struct VerdictEntry
 				isize;
 } VerdictEntry;
 
+/* MEM[MEM-AGG-22]: backend cache evicted whole by the cache budget (4096 entries times 72 bytes plus the 3 KB setting list at most) */
 static HTAB *cache;
+static MemoryContext verdict_cx;
+static uint64 verdict_used;
 static dlist_head recent = DLIST_STATIC_INIT(recent);
-
 bool		sift_agg_verdict_cache = true;
 
 /* the table of all the backends: sets of VSHM_WAYS entries, the set of a key by its remainder; the least recently read of a full set goes */
@@ -278,6 +281,52 @@ verdict_new_planning(void)
 static const struct config_generic **setting_vars;
 static int	n_setting_vars;
 
+static void
+verdict_drop(void)
+{
+	if (verdict_cx == NULL)
+		return;
+	MemoryContextDelete(verdict_cx);
+	verdict_cx = NULL;
+	cache = NULL;
+	setting_vars = NULL;
+	n_setting_vars = 0;
+	settings_known = false;
+	dlist_init(&recent);
+}
+
+static uint64
+verdict_oldest(void)
+{
+	return verdict_cx != NULL && !sift_cache_used_in_xact(verdict_used) ? verdict_used : UINT64_MAX;
+}
+
+static bool
+verdict_evict_one(void)
+{
+	if (verdict_cx == NULL)
+		return false;
+	verdict_drop();
+	return true;
+}
+
+static const SiftCacheKind verdict_kind = {"agg_verdicts", verdict_oldest, verdict_evict_one, verdict_drop};
+
+static MemoryContext
+verdict_context(void)
+{
+	static bool registered;
+
+	if (verdict_cx == NULL)
+		verdict_cx = sift_cache_create_context("sift cache cte verdicts");
+	if (!registered)
+	{
+		sift_cache_register(&verdict_kind);
+		registered = true;
+	}
+	return verdict_cx;
+}
+
 static bool
 planner_setting(const struct config_generic *g)
 {
@@ -305,7 +354,7 @@ settings_hash(void)
 	{
 		int			n;
 		struct config_generic **vars = get_guc_variables(&n);
-		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContext old = MemoryContextSwitchTo(verdict_context());
 
 		setting_vars = palloc(sizeof(*setting_vars) * n);
 		for (int i = 0; i < n; i++)
@@ -431,7 +480,7 @@ sizes_walker(Node *node, TableSizes *s)
 static void
 cache_create(void)
 {
-	HASHCTL		ctl = {.keysize = sizeof(uint64), .entrysize = sizeof(VerdictEntry), .hcxt = TopMemoryContext};
+	HASHCTL		ctl = {.keysize = sizeof(uint64), .entrysize = sizeof(VerdictEntry), .hcxt = verdict_context()};
 
 	cache = hash_create("sift CTE verdicts", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
@@ -527,6 +576,7 @@ verdict_lookup(Query *q, int kind, CteVerdict *vd)
 	vd->cacheable = true;
 	if (cache == NULL)
 		cache_create();
+	verdict_used = sift_cache_tick();
 	vd->known = entry_read(vd->key, vd);
 	if (!vd->known)
 	{

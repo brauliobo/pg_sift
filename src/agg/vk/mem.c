@@ -49,6 +49,7 @@ sigs_restore(const sigset_t *old)
 	pthread_sigmask(SIG_SETMASK, old, NULL);
 }
 
+/* MEM[MEM-VK-09]: vk host accounting (every pinned host buffer is counted by buf_new and buf_free: stage, rinit, rhost, hout, rstat, ctl and dj without ReBAR) */
 void
 account(SiftVk *vk, int64_t delta)
 {
@@ -134,6 +135,8 @@ heap_budget_free(SiftVk *vk)
 void
 buf_free(SiftVk *vk, Buf *b)
 {
+	if (b->host)
+		account(vk, -(int64_t) b->size);
 	if (b->map)
 		vk->vkUnmapMemory(vk->dev, b->m);
 	if (b->b)
@@ -216,6 +219,9 @@ buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind)
 		buf_free(vk, b);
 		return fail(vk, "binding a buffer", r);
 	}
+	b->host = !(vk->mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	if (b->host)
+		account(vk, (int64_t) b->size);
 	return true;
 }
 

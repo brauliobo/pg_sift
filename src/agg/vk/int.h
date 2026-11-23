@@ -33,14 +33,20 @@
 #define SLAB_BYTES		SIFT_VK_SLAB_BYTES
 #define SLAB_WORDS		((uint32_t) (SLAB_BYTES / 4))
 #define MIN_SLABS		4
-#define UP_CAP			((uint64_t) 16 << 20)		/* a slot: chunk bytes copied to the device */
-#define UNW_CAP			((uint64_t) 32 << 20)		/* ... and the bytes the LZ4 chunks of the batch unwrap to */
+/* MEM[MEM-VK-10]: slot staging stage (UP_CAP=4MiB pinned host per slot, 8MiB for both; was 16MiB per slot) */
+#define UP_CAP			((uint64_t) 4 << 20)		/* a slot: chunk bytes copied to the device */
+#define UNW_CAP			((uint64_t) 16 << 20)		/* ... and the bytes the LZ4 chunks of the batch unwrap to */
 #define SLACK			64
 #define CTL_CAP			((uint64_t) 4 << 20)		/* a slot: the control words of a batch */
 #define DJ_MAX			8192						/* decode jobs of a batch */
 #define BATCH_GRAN_MAX	2048
 #define RES_CAP_WORDS	((uint64_t) SIFT_VK_RES_ACC_OFF + ((uint64_t) 1 << 20))
-#define DEC_WGS			64							/* the workgroups of the decoder: each takes jobs one after the other */
+#define RES_MIN_WORDS	((uint64_t) SIFT_VK_RES_ACC_OFF + 8192)	/* the result buffers at open: the words of the decoder and room for a scalar or small grouped result */
+/* MEM[MEM-VK-04]: slot work buffer (UP_CAP + UNW_CAP + DEC_WGS * 896KiB = 48MiB per slot, made at its first batch; was 104MiB per slot at open) */
+#define DEC_WGS			32							/* the workgroups of the decoder: each takes jobs one after the other */
+#define HT_RETAIN_MAX	((uint64_t) 16 << 20)		/* the hash table, the result and its read back kept between jobs: more is freed when the job ends */
+#define OUT_RETAIN_MAX	((uint64_t) 8 << 20)
+#define HOUT_CHUNK		((uint64_t) 8 << 20)		/* the pinned bytes of the read back of a result: a larger one is gathered chunk by chunk */
 #define AGG_WGS_MAX		512
 #define WAIT_SLICE_NS	5000000ull
 #define WAIT_TOTAL_MS	10000
@@ -55,6 +61,7 @@ typedef struct Buf
 	VkDeviceMemory m;
 	void	   *map;
 	uint64_t	size;
+	bool		host;			/* pinned host memory: counted in vk->accounted */
 } Buf;
 
 #define VK_ENT_NONE		UINT32_MAX
@@ -66,6 +73,7 @@ typedef struct Slab
 	uint32_t	ent_count;
 	uint64_t	stamp;			/* last use */
 	uint64_t	pin;			/* the batch that last used it: not evictable until that batch ended */
+	uint64_t	gen;			/* bumped when the slab is evicted: a table that names it from before is stale */
 } Slab;
 
 typedef struct Ent
@@ -92,10 +100,11 @@ typedef struct Tab
 {
 	SiftVkTabKey key;
 	uint32_t	ngran, ncols;
-	uint64_t	gen;			/* vk->evict_gen when it was made: any eviction since makes it stale */
+	uint64_t	gen;			/* vk->evict_gen when it was made: an eviction while its job ran keeps it from being stored */
 	uint64_t	used;			/* last use */
 	Buf			buf;			/* ngran * ncols * 8 words, as the shaders read them */
 	uint32_t   *slabs;			/* the slabs of the chunks it names, to keep them young */
+	uint64_t   *sgen;			/* Slab.gen of each when it was made: the eviction of one makes the table stale */
 	uint32_t	nslabs;
 	uint32_t   *host;			/* tests: the table as the host built it */
 } Tab;
@@ -157,6 +166,12 @@ struct SiftVk
 	bool		no_fast;		/* test: every job runs the expression machine */
 	Buf			arena, res, rinit, rhost, ht, out, hout;
 	uint64_t	ht_cap, out_cap, hout_cap;
+	uint64_t	res_words;		/* the words res, rinit and rhost hold */
+	void	   *rbuf;			/* a result larger than hout, gathered from it in chunks */
+	uint64_t	rbuf_cap;
+	bool		released;		/* sift_vk_release: the cache is gone, the next job makes it again */
+	bool		trimmed;		/* the buffers of the slots and of the result are gone: the next job makes them again */
+	uint64_t	cache_want;		/* the bytes of cache the device was asked for */
 	void	   *topn_buf;		/* the candidates of the top N of the last job (16 bytes each) */
 	uint64_t	topn_cap;		/* in candidates */
 	/* the cache */
@@ -168,6 +183,7 @@ struct SiftVk
 	uint64_t	done_batch;		/* the last batch that ended: its pins are gone */
 	Ent		   *ent;
 	uint32_t	nent;			/* power of two */
+	uint32_t	nent_max;		/* the table doubles up to here when it is full */
 	uint32_t	used;			/* the entries the cache holds */
 	SiftVkResult last;
 };
@@ -190,6 +206,10 @@ void free_pipelines(SiftVk *vk);
 bool make_slots(SiftVk *vk);
 void free_slots(SiftVk *vk);
 bool bind_buffers(SiftVk *vk);
+bool slots_alloc(SiftVk *vk);
+void slots_release(SiftVk *vk);
+bool ensure_work(SiftVk *vk, Slot *s);
+bool ensure_res(SiftVk *vk, uint64_t words);
 
 /* fast.c */
 VkPipeline fast_pipeline(SiftVk *vk, int pl, const FastShape *fs);
@@ -197,6 +217,7 @@ void free_fast(SiftVk *vk);
 
 /* cache.c */
 bool make_cache(SiftVk *vk, uint64_t bytes);
+bool revive(SiftVk *vk);
 Ent *cache_find(SiftVk *vk, const SiftVkKey *k);
 Ent *cache_insert(SiftVk *vk, const SiftVkKey *k, uint32_t words, uint32_t *woff);
 void cache_remove(SiftVk *vk, Ent *e);
@@ -209,8 +230,10 @@ bool tab_store(SiftVk *vk, const SiftVkJob *job, const uint32_t *host, uint64_t 
 bool tab_verify(SiftVk *vk, const SiftVkJob *job, const Tab *t);
 void tab_touch(SiftVk *vk, Tab *t);
 void free_tabs(SiftVk *vk);
+void reap_tabs(SiftVk *vk);
 
 /* run.c */
+void trim_job_buffers(SiftVk *vk);
 bool settle_all(SiftVk *vk);
 bool wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void));
 

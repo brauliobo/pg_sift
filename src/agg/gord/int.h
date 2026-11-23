@@ -92,6 +92,8 @@ extern void gord_cur_fill(SiftGOrd *g, GCur *c, uint32 p);
 extern bool gord_group_load(SiftGOrd *g, GCur *c);
 extern void gord_group_next(SiftGOrd *g, GCur *c);
 extern uint32 gord_group_skip(SiftGOrd *g, uint32 k);
+extern SiftCGOrdBuf *gbuf_get(void);
+extern void gbuf_put(SiftCGOrdBuf *b);
 
 /* the address of the entry p is in the buffer: the window [afrom, afrom + an) of the chunk */
 static inline bool

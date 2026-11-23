@@ -508,7 +508,7 @@ void
 done_put(AggExec *ex)
 {
 	TupleTableSlot *slot = ex->css.ss.ss_ScanTupleSlot;
-	MemoryContext tmp = AllocSetContextCreate(ex->cxt, "sift agg partition", ALLOCSET_DEFAULT_SIZES),
+	MemoryContext tmp = sift_mem_allocset_create(ex->cxt, "sift agg partition"),				/* MEM[MEM-AGG-25]: agg query contexts (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
 				old = MemoryContextSwitchTo(tmp);
 
 	if (ex->done == NULL)
@@ -575,9 +575,9 @@ agg_recheck(ScanState *node, TupleTableSlot *slot)
 void
 engine_contexts(AggExec *ex, MemoryContext parent)
 {
-	ex->cxt = AllocSetContextCreate(parent, "sift agg", ALLOCSET_DEFAULT_SIZES);
-	ex->tcxt = AllocSetContextCreate(ex->cxt, "sift agg table", ALLOCSET_DEFAULT_SIZES);
-	ex->ucxt = AllocSetContextCreate(ex->cxt, "sift agg unit", ALLOCSET_DEFAULT_SIZES);
+	ex->cxt = sift_mem_allocset_create(parent, "sift agg");
+	ex->tcxt = sift_mem_allocset_create(ex->cxt, "sift agg table");
+	ex->ucxt = sift_mem_allocset_create(ex->cxt, "sift agg unit");
 }
 
 void
@@ -725,7 +725,7 @@ scan_spec(AggExec *ex, MemoryContext parent)
 	engine_contexts(ex, parent);
 	if (ex->unpacked == NULL)
 	{
-		MemoryContext cx = AllocSetContextCreate(parent, "sift agg spec", ALLOCSET_DEFAULT_SIZES),
+		MemoryContext cx = sift_mem_allocset_create(parent, "sift agg spec"),
 					old = MemoryContextSwitchTo(cx);
 
 		ex->unpacked = sift_aggspec_unpack(ex->pack);

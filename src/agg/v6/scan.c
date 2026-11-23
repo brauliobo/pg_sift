@@ -121,7 +121,8 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 			return &s->cols[i];
 		}
 	s->cols[s->ncols] = (V6Col) {.leaf = leaf,.attno = c.attno,.scale = c.scale,.json = c.jleaf > 0,.typid = c.typid,.cls = sift_v6_class(c.typid),.nan_ok = takes_nan,.key_only = key};
-	s->cols[s->ncols].vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	/* MEM[MEM-AGG-05]: SiftV6Scan batch column buffer (SIFT_VEC_LEN * elem + SIFT_VEC_PAD: 8B an element, 16KB a column; 16B, 32KB, only for a text or JSON column; was 32KB for every column) */
+	s->cols[s->ncols].vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * (s->cols[s->ncols].cls == SV6C_TEXT || c.jleaf > 0 ? sizeof(SiftStrView) : sizeof(int64)) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	return &s->cols[s->ncols++];
 }
 
@@ -238,7 +239,10 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			col_for(s, first, (SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]}, false, false);
 	setup_derived(s, first);
-	s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
+	for (int i = 0; i < s->ncols; i++)
+		if (s->cols[i].json && s->batch_cx == NULL)
+			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
+			s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
 	for (int i = 0; i < s->ncols; i++)
 		s->cols[i].by_code = s->cols[i].cls == SV6C_TEXT && !s->cols[i].json && read_by_code_only(spec, s->cols[i].attno);
 	s->bins = palloc0(Max(spec->nbins, 1) * sizeof(V6Bin));
@@ -537,7 +541,8 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 static void
 fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
 {
-	MemoryContextReset(s->batch_cx);
+	if (s->batch_cx != NULL)
+		MemoryContextReset(s->batch_cx);
 	for (int i = 0; i < s->ncols; i++)
 	{
 		if (s->cols[i].attno == SIFT_V6_SCORE_ATTNO)
@@ -720,7 +725,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
 	}
 	sift_v6_vet_end(&s->vet);
-	MemoryContextDelete(s->batch_cx);
+	if (s->batch_cx != NULL)
+		MemoryContextDelete(s->batch_cx);
 }
 
 void
@@ -784,7 +790,8 @@ void
 sift_v6_fold_end(SiftV6Fold *s)
 {
 	sift_v6_vet_end(&s->vet);
-	MemoryContextDelete(s->batch_cx);
+	if (s->batch_cx != NULL)
+		MemoryContextDelete(s->batch_cx);
 }
 
 /* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit */
@@ -831,7 +838,8 @@ sift_v6_scan_end(SiftV6Scan *s)
 {
 	index_endscan(s->scan);
 	sift_v6_vet_end(&s->vet);
-	MemoryContextDelete(s->batch_cx);
+	if (s->batch_cx != NULL)
+		MemoryContextDelete(s->batch_cx);
 	pfree(s->leaves);
 	pfree(s);
 }
@@ -857,7 +865,8 @@ sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const S
 	o.nan_leaves = scan_nan_leaves(&s, store->ncols);
 	if (quals->possible)
 		sift_f2_store_scan_sink(&o, v6_sink, &s);
-	MemoryContextDelete(s.batch_cx);
+	if (s.batch_cx != NULL)
+		MemoryContextDelete(s.batch_cx);
 }
 
 void
@@ -887,7 +896,8 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	index_endscan(scan);
 	sift_v6_vet_end(&a.s[0].vet);
 	for (int i = 0; i < cohort->narms; i++)
-		MemoryContextDelete(a.s[i].batch_cx);
+		if (a.s[i].batch_cx != NULL)
+			MemoryContextDelete(a.s[i].batch_cx);
 }
 
 void

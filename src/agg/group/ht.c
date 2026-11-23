@@ -126,6 +126,7 @@ ht_new_gen(SiftSaltedHT *ht)
 		ht->gen = 1;
 }
 
+/* MEM[MEM-AGG-01]: SiftSaltedHT primary table (capacity * 65B: 64B SiftAggSlot64 + 1B ctrl; a grow holds old + 2x new, so 3x the old table, for the length of the rehash) */
 void
 sift_ht_clear(SiftSaltedHT *ht)
 {
@@ -135,6 +136,30 @@ sift_ht_clear(SiftSaltedHT *ht)
 	ht->count = 0;
 	ht->ext_used = 0;
 	ht->arena_used = 0;
+}
+
+/* A cleared table given back all but min_slots of its slots and all its state blocks and key arena: what a spill leaves resident is a table of the size that gathers the next groups */
+void
+sift_ht_shrink_to(SiftSaltedHT *ht, uint32 min_slots)
+{
+	uint32		cap = SIFT_HT_MIN_SLOTS;
+
+	SIFT_INVARIANT(ht->count == 0, "sift: a table shrinks only when it is cleared");
+	while (cap < min_slots)
+		cap <<= 1;
+	if (ht->ext_slab)
+		pfree(ht->ext_slab);
+	if (ht->arena)
+		pfree(ht->arena);
+	ht->ext_slab = NULL;
+	ht->ext_cap = 0;
+	ht->arena = NULL;
+	ht->arena_cap = 0;
+	if (ht->capacity <= cap)
+		return;
+	pfree(ht->ctrl);
+	pfree(ht->slots);
+	ht_alloc(ht, cap);
 }
 
 static inline void
@@ -192,6 +217,7 @@ sift_ht_reserve(SiftSaltedHT *ht, uint32 n)
 		ht_grow(ht, cap);
 }
 
+/* MEM[MEM-AGG-01]: SiftSaltedHT ext_slab (ext_cap * ext_stride, doubles while the old slab is live: 3x for the copy) */
 static void
 ext_resize(SiftSaltedHT *ht, uint32 cap)
 {
@@ -224,20 +250,21 @@ ht_ext_new(SiftSaltedHT *ht)
 	return ht->ext_used++;
 }
 
+/* MEM[MEM-AGG-01]: SiftSaltedHT key arena (the bytes of the wide keys, doubling up to MaxAllocSize with the old arena live; the spill check counts arena_cap) */
 static uint32
 ht_arena_put(SiftSaltedHT *ht, const void *key, uint32 len)
 {
 	const uint32 off = ht->arena_used;
 
-	if ((uint64) off + len > UINT32_MAX)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the group keys of an aggregate are over 4 GB"),
-						errdetail("A table of wide keys addresses its keys with 32 bits."), errhint("Group by fewer or shorter key columns.")));
+	if ((uint64) off + len > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the group keys of an aggregate are over 1 GB"),
+						errdetail("A table of wide keys holds its keys in one allocation."), errhint("Group by fewer or shorter key columns.")));
 	if (off + len > ht->arena_cap)
 	{
 		uint32		cap = Max(ht->arena_cap, 4096);
 
 		while (cap < off + len)
-			cap = cap > UINT32_MAX / 2 ? UINT32_MAX : cap << 1;
+			cap = cap > MaxAllocSize / 2 ? MaxAllocSize : cap << 1;
 		ht->arena = ht->arena ? repalloc(ht->arena, cap) : MemoryContextAlloc(ht->cxt, cap);
 		ht->arena_cap = cap;
 	}

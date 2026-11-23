@@ -11,6 +11,7 @@
 #include "agg/agg.h"
 #include "agg/par/int.h"
 #include "agg/spill/int.h"
+#include "core/memtrack.h"
 
 /* the sweep of gstream_begin: a place in the order of the result is the key (negated for a descending order), NULL at the end the ORDER BY puts it */
 typedef __int128 Pos __attribute__((aligned(8)));	/* palloc gives 8 bytes */
@@ -236,7 +237,8 @@ gstream_begin(AggExec *ex)
 	}
 	gs->lo[n] = POS_HIGH;
 	pfree(z);
-	gs->tmp = AllocSetContextCreate(ex->cxt, "sift agg group stream", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	gs->tmp = sift_mem_allocset_create(ex->cxt, "sift agg group stream");
 	ex->gs = gs;
 	/* the table starts again as a spilled scan's does: a hash table */
 	table_reset(ex);

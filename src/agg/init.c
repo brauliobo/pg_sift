@@ -14,6 +14,7 @@
 
 #include "agg/agg_int.h"
 #include "core/limits.h"
+#include "core/memtrack.h"
 
 static bool
 param_walker(Node *n, Param **found)
@@ -575,7 +576,8 @@ register_combos(AggExec *ex)
 		ComboSt    *cs = &ex->cs[ci];
 
 		cs->ninputs = Max(cb->nleaves, 1);
-		cs->cxt = AllocSetContextCreate(ex->cxt, "sift agg combo cache", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		cs->cxt = sift_mem_allocset_create(ex->cxt, "sift agg combo cache");
 		cs->resettable = cb->join < 0;
 		cs->by_id = !preserved && cb->join < 0 && cb->nleaves == 1 && cb->leaf[0] >= 0 && leaf_wide(&ex->lay->leaf[cb->leaf[0]]);
 		cs->fstep = sift_agg_float_step && cs->by_id && ex->lay->leaf[cb->leaf[0]].vtype == SCV_F64 && combo_fstep(cb, &cs->fs);

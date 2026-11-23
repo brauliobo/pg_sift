@@ -54,13 +54,17 @@ Osa *
 osa_new(AggExec *ex, int ai)
 {
 	Osa		   *o = MemoryContextAllocZero(ex->tcxt, sizeof(Osa));
+	int			nosa = 0;
 
 	for (int j = 0; j < ex->spec->naggs; j++)
 		o->noflat |= ex->spec->agg[j].share == ai && is_ordered_agg(&ex->spec->agg[j]) && osa_is_mode(&ex->spec->agg[j]);
 
+	for (int j = 0; j < ex->spec->naggs; j++)
+		nosa += is_ordered_agg(&ex->spec->agg[j]) && ex->spec->agg[j].share == j;
 	o->cap = 1024;
 	o->slot = MemoryContextAllocZero(ex->tcxt, o->cap * sizeof(OsaSlot));
-	o->maxn = Max((uint64) work_mem * 1024 / (4 * sizeof(OsaSlot)), 256);	/* the table has at most 4 slots per pair */
+	/* MEM[MEM-AGG-13]: SiftOsa ordered-set aggregate (work_mem divided by the ordered-set aggregates of the query, 4 slots per pair; was the whole work_mem for each of them) */
+	o->maxn = Max((uint64) work_mem * 1024 / (4 * sizeof(OsaSlot) * Max(nosa, 1)), 256);
 	return o;
 }
 

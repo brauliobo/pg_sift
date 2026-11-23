@@ -188,6 +188,7 @@ blob_key_table(AggExec *ex, int j, uint32 *ids, uint32 n, StringInfo b)
 		/* the values themselves: 64 bits for an integer or the bits of a float, 128 for a numeric */
 		Size		esz = k->numk ? sizeof(sift_i128) : sizeof(int64);
 		uint32		hd[2] = {nused, nused * esz};
+		/* MEM[MEM-AGG-15]: blob_key_table vals array (nused * 8 or 16B, freed once written; was never freed) */
 		char	   *vals = palloc(Max(nused, 1) * esz);
 
 		for (uint32 i = 0; i < nused; i++)
@@ -197,6 +198,7 @@ blob_key_table(AggExec *ex, int j, uint32 *ids, uint32 n, StringInfo b)
 				memcpy(vals + i * esz, &k->idval[old[i] - 1], esz);
 		bw_put(b, hd, sizeof(hd));
 		bw_put(b, vals, nused * esz);
+		pfree(vals);
 	}
 	else
 		bw_values(b, &k->ot, old, nused);

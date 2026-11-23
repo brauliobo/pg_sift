@@ -328,6 +328,7 @@ lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookC
 	}
 	if (!sift_cache_room(size))
 		return false;
+	/* MEM[MEM-AGG-24]: kept lookup contexts of 256 KB max blocks reparented here then budgeted by sift_cache_commit (LOOKCACHE_BYTES per backend) */
 	if (cache_cx == NULL)
 	{
 		cache_cx = sift_cache_create_context("sift cache lookup tables");
@@ -359,5 +360,6 @@ lookcache_keep(const char *key, const LookFinger *before, MapTab *m, const LookC
 	MemoryContextSetParent(cx, cache_cx);
 	cache_bytes += size;
 	look_pin(e, mcxt);
+	sift_cache_commit();
 	return true;
 }

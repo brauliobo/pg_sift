@@ -71,6 +71,7 @@
 #define SIFT_VK_DEC_WG			64u
 #define SIFT_VK_DEC_SLOTS		10u
 #define SIFT_VK_DEC_WRAP_BYTES	262144u
+/* MEM[MEM-VK-04]: decode scratch of one workgroup (896KiB; DEC_WGS of them in a slot work buffer) */
 #define SIFT_VK_DEC_SCR_BYTES	((uint64_t) SIFT_VK_DEC_SLOTS * 8192 * 8 + SIFT_VK_DEC_WRAP_BYTES)
 
 /* the encodings of a chunk (SiftChunkEnc of col/granule/granule.h) the decoder takes */

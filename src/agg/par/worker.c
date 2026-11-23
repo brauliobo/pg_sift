@@ -14,6 +14,7 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_live.h"
 #include "core/errctx.h"
+#include "core/memtrack.h"
 
 static void
 send_blob(shm_mq_handle *mqh, const void *data, Size len)
@@ -132,7 +133,8 @@ sift_agg_worker_main(dsm_segment *seg, shm_toc *toc)
 		scan_items(ex);
 	if (!ex->topn)
 	{
-		MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift worker blobs", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		MemoryContext tmp = sift_mem_allocset_create(CurrentMemoryContext, "sift worker blobs");
 
 		blob_dump_chunks(ex, tmp, send_part, ex->mqh);
 		MemoryContextDelete(tmp);

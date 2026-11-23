@@ -126,6 +126,7 @@ sift_gtopk_wants(SiftGTopK *t, SiftTopKValue value, void *ctx)
 	return false;
 }
 
+/* MEM[MEM-AGG-16]: top-k slot arrays and value buffer in the group context for the query (k slots times ncols times 9 bytes plus one power of two buffer per slot; a slot is refilled in place, never allocated again per row) */
 /* The row (copied) into the slot r */
 static void
 fill_row(const SiftGTopK *t, TopRow *r, const Datum *values, const bool *isnull)
@@ -181,6 +182,7 @@ sift_gtopk_put(SiftGTopK *t, const Datum *values, const bool *isnull)
 	if (t->n < t->k)
 	{
 		if (t->n >= Min(t->k, 1024U) && (t->n & (t->n - 1)) == 0)
+			/* check-memory: allow the rows kept are at most k, the LIMIT of the query */
 			/* check-memory: allow k is at most SIFT_TOPK_MAX_K */
 			t->rows = repalloc(t->rows, Min((uint64) t->k, (uint64) t->n * 2) * sizeof(TopRow));
 		t->rows[t->n] = (TopRow) {0};

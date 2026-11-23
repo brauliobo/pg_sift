@@ -478,7 +478,7 @@ t11_tabs(const char *dev)
 	tab_run(vk, &big, &c, "a job larger than the cache evicts", 0, 1);
 	tab_job(&c, &d, d.ngran, 0, 0, 77);
 	tab_run(vk, &d, &c, "after the eviction: chunks sent again", 0, 1);
-	tab_run(vk, &d, &c, "... resident: a miss that makes the table", 0, 0);
+	tab_run(vk, &d, &c, "... resident: its table, the slabs it names kept", 1, 0);
 	tab_run(vk, &d, &c, "... and now its table", 1, 0);
 	CHECK(sift_vk_set_cache(vk, 16ull << 20), "T11 set cache");
 	tab_run(vk, &d, &c, "a new cache holds no table", 0, 1);

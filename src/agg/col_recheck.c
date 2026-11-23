@@ -19,6 +19,7 @@
 #include "col/shred_pg.h"
 
 #include "agg/col_int.h"
+#include "core/memtrack.h"
 
 /* ---- the recheck of the rows that hold a value a leaf cannot store ---- */
 
@@ -34,8 +35,9 @@ recheck_init(ColSource *src)
 	k->index = src->index;
 	k->snap = src->snapshot;
 	k->life = src->cxt;
-	k->cxt = AllocSetContextCreate(src->cxt, "sift recheck rows", ALLOCSET_DEFAULT_SIZES);
-	k->tmp = AllocSetContextCreate(src->cxt, "sift recheck row", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	k->cxt = sift_mem_allocset_create(src->cxt, "sift recheck rows");
+	k->tmp = sift_mem_allocset_create(src->cxt, "sift recheck row");
 	k->rc = sift_col_shred_recheck_create(src->cxt, r->shred);
 	k->rc->mcxt = k->cxt;
 	src->rck = k;

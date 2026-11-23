@@ -151,6 +151,8 @@ sift_ht_bytes(const SiftSaltedHT *ht)
 }
 /* Drops every group (and the sets and wide keys they own), keeping the memory of the slots */
 extern void sift_ht_clear(SiftSaltedHT *ht);
+/* A cleared table brought down to min_slots slots, with no state blocks and no key arena: the memory a spill gives back */
+extern void sift_ht_shrink_to(SiftSaltedHT *ht, uint32 min_slots);
 /* Room for n more groups without growing: the slots a batch of upserts returns stay valid */
 extern void sift_ht_reserve(SiftSaltedHT *ht, uint32 n);
 /* Room for n groups in the slots and in the state blocks at once, so that a scan that meets about n groups grows nothing */

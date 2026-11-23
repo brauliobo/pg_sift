@@ -10,6 +10,7 @@
 
 #include "agg/topn/int.h"
 #include "core/cachebudget.h"
+#include "core/memtrack.h"
 
 /* The superblocks by the best row they can hold, key by key: a unit whose bound on the keys so far ties with another is ordered by the next key */
 typedef struct WalkSort
@@ -365,7 +366,8 @@ walk_build(SiftTopN *t, MemoryContext cxt, const WalkKey *key, bool segs)
 {
 	uint32		nsb = t->nsb;
 	int			wkeys = t->wkeys;
-	MemoryContext cx = key != NULL ? AllocSetContextCreate(cxt, "sift cache topn walk", ALLOCSET_DEFAULT_SIZES) : AllocSetContextCreate(cxt, "sift topn walk", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	MemoryContext cx = key != NULL ? sift_mem_allocset_create(cxt, "sift cache topn walk") : sift_mem_allocset_create(cxt, "sift topn walk");
 	WalkBase   *wb = MemoryContextAllocZero(cx, sizeof(WalkBase));
 	WalkSort	ws;
 

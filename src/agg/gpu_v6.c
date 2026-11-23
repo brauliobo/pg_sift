@@ -77,6 +77,7 @@ typedef struct Exec
 	uint8	   *resident;
 } Exec;
 
+/* MEM[MEM-VK-11]: gpu_v6 decline path (sift_gpu_f2_free gives the whole plan back before the CPU scan runs: nothing of the plan stays in the query's context) */
 static bool pg_attribute_printf(2, 3)
 decline(SiftGpuRun *run, const char *fmt,...)
 {

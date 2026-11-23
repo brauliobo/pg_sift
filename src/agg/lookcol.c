@@ -36,6 +36,7 @@
 #include "core/cmp.h"
 #include "core/hash.h"
 #include "core/quarantine.h"
+#include "core/memtrack.h"
 
 
 static bool
@@ -615,8 +616,9 @@ lookcol_read_units(const UnitScope *sc, Relation rel, Relation ix, Relation ix2,
 	bool		ok = true,
 				more = true;
 
-	ucx = AllocSetContextCreate(old, "lookup columns", ALLOCSET_DEFAULT_SIZES);
-	ux = AllocSetContextCreate(ucx, "lookup columns of a unit", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	ucx = sift_mem_allocset_create(old, "lookup columns");
+	ux = sift_mem_allocset_create(ucx, "lookup columns of a unit");
 	MemoryContextSwitchTo(ucx);
 	srcs[0] = sift_colsrc_open(rel, ix, sc->snap, ucx, sc->view, NULL);
 	if (ix2 != NULL)

@@ -61,13 +61,17 @@ typedef struct DistGroupCount
 	uint64		count;
 } DistGroupCount;
 
+/* the table a reset keeps for the next use of the set: a larger one is given back */
+#define DIST_RESET_CAP		4096
 #define DIST_GROUP_CAP		512
 #define DIST_GROUP_FLUSH	(DIST_GROUP_CAP * 7 / 10)
 
+/* MEM[MEM-AGG-08]: SiftDistinct budget accounting (table, arena, counts, the partition files of the spill set at 8KB a BufFile, and the spill scratch; was without the last two) */
 static uint64
 dist_bytes(const SiftDistinct *d)
 {
-	return (uint64) d->cap * sizeof(DistEntry) + d->arena_bytes + (uint64) d->ncount * sizeof(uint64);
+	return (uint64) d->cap * sizeof(DistEntry) + d->arena_bytes + (uint64) d->ncount * sizeof(uint64) +
+		(d->spill != NULL ? (uint64) sift_spill_nparts_of(d->spill) * 8192 : 0) + d->scratch_cap;
 }
 
 static void
@@ -224,6 +228,7 @@ dist_put_spill(SiftDistinct *d, uint32 part, uint32 slot, const void *key, uint3
  * The set is over its budget: the keys that are not in the resident partition go to their partition files (and are no longer counted: the partition pass counts them), and the others stay in a
  * smaller table. When the set already spills, the resident partition goes too and every row spills from now on.
  */
+/* MEM[MEM-AGG-08]: dist_evict resident table (the old table and arena are live while the kept entries are copied into the new ones: old + new at once) */
 static void
 dist_evict(SiftDistinct *d)
 {
@@ -420,7 +425,13 @@ sift_distinct_reset(SiftDistinct *d)
 	d->spill = NULL;
 	d->resident = DIST_NO_PART;
 	d->finished = false;
-	if (d->tab != NULL)
+	if (d->tab != NULL && d->cap > DIST_RESET_CAP)
+	{
+		pfree(d->tab);
+		d->tab = NULL;
+		d->cap = 0;
+	}
+	else if (d->tab != NULL)
 		memset(d->tab, 0, (Size) d->cap * sizeof(DistEntry));
 	d->nent = 0;
 	dist_free_arena(d);

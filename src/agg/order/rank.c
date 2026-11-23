@@ -30,6 +30,7 @@
 
 #include "agg/agg.h"
 #include "agg/agg_int.h"
+#include "core/memtrack.h"
 
 /* the Sort stays below this many rows expected */
 #define RANK_PLAN_ROWS 2048
@@ -442,7 +443,8 @@ rank_begin(CustomScanState *node, EState *estate, int eflags)
 			   *nf = lfourth(cs->custom_private);
 
 	ex->pcxt = CurrentMemoryContext;
-	ex->cxt = AllocSetContextCreate(ex->pcxt, "sift rank sort", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	ex->cxt = sift_mem_allocset_create(ex->pcxt, "sift rank sort");
 	ex->rowcxt = AllocSetContextCreate(ex->pcxt, "sift rank sort row", ALLOCSET_SMALL_SIZES);
 	ex->nkeys = list_length(att);
 	ex->key = palloc0(ex->nkeys * sizeof(RankKey));

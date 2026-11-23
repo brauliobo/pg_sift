@@ -11,6 +11,7 @@
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_group_topk.h"
 #include "agg/v6/v6_topk_run.h"
+#include "core/memtrack.h"
 
 #define INT8_GT_OPERATOR 413
 
@@ -48,6 +49,7 @@ sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 
 	r->spec = spec;
 	r->desc = desc;
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
 	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 top k");
 	for (int i = 0; i < spec->ntopk; i++)
 	{

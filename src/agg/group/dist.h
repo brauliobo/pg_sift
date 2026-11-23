@@ -14,14 +14,16 @@
 
 typedef struct SiftDistSet
 {
-	uint64	   *cells;			/* cap cells, 0 = empty; a value, or the offset + 1 of an entry of the arena */
+	uint64	   *cells;			/* cap cells, 0 = empty; a value, or the address + 1 of an entry of the arena: its chunk and its offset in the chunk */
 	uint32		cap;			/* a power of 2 */
 	uint32		used;			/* the nonzero values, or the entries of the arena */
 	bool		has_zero;
 	bool		wide;			/* the values are bytes */
-	uint8	   *arena;			/* wide: entries of {hash, length, bytes}, each at an 8 byte boundary */
-	uint64		arena_used;
-	uint64		arena_cap;
+	uint8	  **chunk;			/* wide: the arena, in chunks of at most SIFT_DIST_CHUNK_MAX bytes: entries of {hash, length, bytes}, each at an 8 byte boundary; the last chunk is the one that grows */
+	uint32		nchunk;
+	uint64		arena_used;		/* in the last chunk */
+	uint64		arena_cap;		/* ... its size */
+	uint64		arena_bytes;	/* the size of every chunk */
 	MemoryContext cxt;
 } SiftDistSet;
 

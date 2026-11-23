@@ -9,6 +9,7 @@
 #include "nodes/nodeFuncs.h"
 
 #include "agg/lookup/int.h"
+#include "core/memtrack.h"
 
 /* the child runs of the first-row lookups of a statement that read the same table, over its arms (a worker counts its own) */
 typedef struct FirstCount
@@ -44,7 +45,8 @@ first_order_row(const MapTab *m, const SiftAggFirst *f, FirstOrd *o, TupleTableS
 	size_t		at = (size_t) (m->nrow - 1) * f->nord;
 
 	if (o->cx == NULL)
-		o->cx = AllocSetContextCreate(CurrentMemoryContext, "sift first-row order", ALLOCSET_DEFAULT_SIZES);
+		/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+		o->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift first-row order");
 	if (m->nrow > o->cap)
 	{
 		o->cap = Max(o->cap * 2, 1024);
@@ -213,7 +215,7 @@ first_count(AggExec *ex, const char *key)
 	fc->cb.func = first_count_forget;
 	fc->cb.arg = fc;
 	MemoryContextRegisterResetCallback(estate->es_query_cxt, &fc->cb);
-	look_reg_add(&first_counts, TopMemoryContext, &fc->ent);
+	look_reg_add(&first_counts, &fc->ent);
 	return &fc->n;
 }
 

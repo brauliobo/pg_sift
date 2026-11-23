@@ -31,6 +31,7 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 
 		if (a->local)
 			continue;
+		/* MEM[MEM-AGG-15]: two.c arms_resize ord and cell arrays (the old arrays are freed once copied; were leaked on every grow, 2x the final size in all) */
 		nord = MemoryContextAlloc(ex->tcxt, newcap * sizeof(uint64));
 		memset(nord, 0xff, newcap * sizeof(uint64));
 		for (int ai = 0; ai < sa->ninner; ai++)
@@ -44,6 +45,8 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 				if (t != UINT32_MAX && a->ord[g] != UINT64_MAX)
 					nc[t] = a->cell[ai][g];
 			}
+			if (a->cell[ai] != NULL)
+				pfree(a->cell[ai]);
 			a->cell[ai] = nc;
 		}
 		for (uint32 g = 0; g < oldcap && a->ord; g++)
@@ -53,6 +56,8 @@ arms_resize(AggExec *ex, uint32 newcap, const uint32 *remap, uint32 oldcap)
 			if (t != UINT32_MAX && a->ord[g] != UINT64_MAX)
 				nord[t] = a->ord[g];
 		}
+		if (a->ord != NULL)
+			pfree(a->ord);
 		a->ord = nord;
 	}
 	if (remap)

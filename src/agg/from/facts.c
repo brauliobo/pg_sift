@@ -16,6 +16,7 @@
 #include "agg/agg.h"
 #include "agg/part.h"
 #include "agg/from/int.h"
+#include "core/memtrack.h"
 
 /*
  * The layout, statistics and pre-aggregates of a partition's index are read once for a plan, however many arms and CTEs scan the table: the
@@ -67,6 +68,9 @@ typedef struct SrcFacts
 } SrcFacts;
 
 #define FACTS_CACHE		SIFT_AGG_MAX_PARTS	/* the indexes of the largest scan */
+
+/* MEM[MEM-AGG-20]: facts_cx 3x HTAB (FACTS_INIT=16 entries made up front, then as the tables are read; SrcFacts embeds about 30KB of SiftSrcStats, so 256 entries held megabytes of idle cache) */
+#define FACTS_INIT	16
 
 static MemoryContext part_memo_cx;
 static uint64 memo_seq;			/* the plannings of this backend, counted at each memo */
@@ -152,7 +156,8 @@ sift_agg_memo_begin(void)
 		return NULL;
 	if (facts != NULL && hash_get_num_entries(facts) + (src_facts ? hash_get_num_entries(src_facts) : 0) + facts_replaced >= FACTS_CACHE)
 		facts_empty();
-	part_memo_cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan memo", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	part_memo_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift plan memo");
 	memo_seq++;
 	return part_memo_cx;
 }
@@ -227,11 +232,11 @@ facts_init(void)
 		sift_cache_register(&facts_kind);
 	}
 	ctl.hcxt = facts_cx;
-	facts = hash_create("sift partition facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	facts = hash_create("sift partition facts", FACTS_INIT, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	ctl.entrysize = sizeof(SrcFacts);
-	src_facts = hash_create("sift index facts", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	src_facts = hash_create("sift index facts", FACTS_INIT, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	ctl.entrysize = sizeof(FactsWatch);
-	facts_watch = hash_create("sift partition facts watch", 256, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	facts_watch = hash_create("sift partition facts watch", FACTS_INIT, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
 
 static const SiftSrcZones *

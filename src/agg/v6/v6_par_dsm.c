@@ -25,7 +25,8 @@ sift_v6_par_radix_parts(SiftV6ParStrategy strategy, int nworkers)
 uint32
 sift_v6_par_chunks(SiftV6ParStrategy strategy, double hash_limit)
 {
-	double		budget = Min(hash_limit, (double) SIFT_PAR_DSM_MAX);
+	/* MEM[MEM-AGG-18]: parallel DSM chunk pool (half of work_mem * hash_mem_multiplier, at most SIFT_PAR_DSM_MAX=256MiB, in SIFT_RADIX_CHUNK_SIZE chunks; was all of it: leader and workers kept a full hash_mem each besides) */
+	double		budget = Min(hash_limit / 2, (double) SIFT_PAR_DSM_MAX);
 
 	if (strategy == SV6P_TWO_STAGE)
 		return (uint32) Max(SIFT_PAR_RADIX_PARTS, Min(budget / 2, (double) SIFT_PAR_RING_MAX_BYTES) / SIFT_RADIX_CHUNK_SIZE);

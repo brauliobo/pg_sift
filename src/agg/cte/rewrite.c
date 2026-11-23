@@ -38,6 +38,7 @@ typedef struct SourceEntry
 	Bitmapset  *reads;			/* the columns of the table that some column index holds, as pull_varattnos numbers them */
 } SourceEntry;
 
+/* MEM[MEM-AGG-21]: backend cache of column sources evicted whole by the cache budget or a pg_class invalidation (about 100 bytes per relation) */
 static HTAB *source_cache;
 static MemoryContext source_cx;	/* the hash and the bitmaps of its entries: deleted together */
 static uint64 source_gen;		/* counts the drops of the cache: an answer read across one is not kept */
@@ -70,7 +71,7 @@ source_cache_inval(Datum arg, int cacheid, uint32 hashvalue)
 static uint64
 source_oldest(void)
 {
-	return source_cache != NULL ? source_tick : UINT64_MAX;
+	return source_cache != NULL && !sift_cache_used_in_xact(source_tick) ? source_tick : UINT64_MAX;
 }
 
 static bool

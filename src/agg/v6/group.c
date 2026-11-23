@@ -461,6 +461,8 @@ pack_plan(const SiftV6Spec *spec, V6Set *set)
 	return set->nk <= SIFT_PACK_MAX_KEYS && sift_pack_plan(width, sign, set->nk, &set->pack);
 }
 
+#define SET_INIT_SLOTS	64
+
 static void
 set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 {
@@ -477,7 +479,8 @@ set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 	if (set->nk == 0)
 		set->plain = palloc0(Max(spec->naggs, 1) * sizeof(V6Acc));
 	else
-		sift_ht_init_ex(&set->ht, 1024, set->wide, g->stride, g->dist_off);
+		/* MEM[MEM-AGG-03]: SiftV6Group set_init table (SET_INIT_SLOTS=64 slots * 65B = 4KB per grouping set, grown with the groups; was 1024 slots = 66.5KB, 1MB for CUBE of 4) */
+		sift_ht_init_ex(&set->ht, SET_INIT_SLOTS, set->wide, g->stride, g->dist_off);
 	set->shape = (SiftRadixShape) {.wide_key = set->wide,.ext_stride = g->stride,.ext_dist_off = g->dist_off,.ctx = g,.init = shape_init,.merge = shape_merge};
 }
 
@@ -624,10 +627,23 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const
 }
 
 
+/* The bytes the groups hold now, as the allocator has them: the tables whole, the text arena, the code slots, and the table a batch would grow: old and new at once */
 static uint64
-live_bytes(const SiftSaltedHT *ht)
+group_bytes(const SiftV6Group *g)
 {
-	return (uint64) ht->count * (sizeof(SiftAggSlot64) + 1) + (uint64) ht->ext_used * ht->ext_stride + ht->arena_used;
+	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch));
+
+	for (int s = 0; s < g->nsets; s++)
+	{
+		const SiftSaltedHT *ht = &g->set[s].ht;
+
+		if (g->set[s].nk == 0)
+			continue;
+		bytes += sift_ht_bytes(ht);
+		if (ht->count + SIFT_VEC_LEN > ht->grow_at)
+			bytes += 2 * (uint64) ht->capacity * (sizeof(SiftAggSlot64) + 1);
+	}
+	return bytes;
 }
 
 static void
@@ -648,19 +664,16 @@ spill_all(SiftV6Group *g)
 		}
 		sift_gspill_put_ht(set->spill, &set->ht);
 		sift_ht_clear(&set->ht);
+		sift_ht_shrink_to(&set->ht, SIFT_SPILL_LOCAL_CAP);
 	}
 	g->spilled = true;
 }
 
+/* MEM[MEM-AGG-02]: SiftV6Group spill budget check (group_bytes of allocated memory against budget - dist_budget; a spill leaves SIFT_SPILL_LOCAL_CAP slots per set; was count * 65B and the whole table kept) */
 void
 v6g_spill_if_over(SiftV6Group *g)
 {
-	uint64		bytes = 0;
-
-	for (int s = 0; s < g->nsets; s++)
-		if (g->set[s].nk > 0)
-			bytes += live_bytes(&g->set[s].ht);
-	if (bytes > g->budget - g->dist_budget)
+	if (group_bytes(g) > g->budget - g->dist_budget)
 		spill_all(g);
 }
 
@@ -742,7 +755,11 @@ finish_in_cx(SiftV6Group *g)
 	if (!g->spilled)
 		return;
 	spill_all(g);
-	g->store = tuplestore_begin_heap(false, false, work_mem);
+	/* MEM[MEM-AGG-02]: SiftV6Group spill-emit peak (tables destroyed before the merge scan; scan budget * 3/4 and a tuplestore of work_mem/4: was all three at once, about 3x work_mem) */
+	for (int s = 0; s < g->nsets; s++)
+		if (g->set[s].nk > 0)
+			sift_ht_destroy(&g->set[s].ht);
+	g->store = tuplestore_begin_heap(false, false, Max(work_mem / 4, 64));
 	g->mslot = MakeSingleTupleTableSlot(g->desc, &TTSOpsMinimalTuple);
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -754,7 +771,7 @@ finish_in_cx(SiftV6Group *g)
 				store_plain(g, &g->set[s]);
 		}
 		else if (g->set[s].spill != NULL)
-			sift_gspill_scan(g->set[s].spill, g->budget, visit_merged, &v);
+			sift_gspill_scan(g->set[s].spill, g->budget / 4 * 3, visit_merged, &v);
 	}
 }
 

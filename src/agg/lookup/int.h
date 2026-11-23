@@ -194,10 +194,11 @@ typedef struct LookRegEnt
 typedef struct LookReg
 {
 	LookRegEnt **bucket;
+	int			count;
 } LookReg;
 
 extern LookRegEnt * look_reg_find(const LookReg *r, const EState *estate, const char *key);
-extern void look_reg_add(LookReg *r, MemoryContext cx, LookRegEnt *e);
+extern void look_reg_add(LookReg *r, LookRegEnt *e);
 extern void look_reg_del(LookReg *r, LookRegEnt *e);
 extern int	map_find_ids_head(const MapTab *m, const uint32 *kid, uint32 *row);
 extern MapTab * map_load_table(AggExec *ex, int ci, MemoryContext cxt, const MapLoadHint *hint);

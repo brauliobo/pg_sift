@@ -32,6 +32,7 @@
 #include "agg/agg.h"
 #include "agg/lookup/int.h"
 #include "agg/combo/probe.h"
+#include "core/memtrack.h"
 
 /* ExecAllocTableSlot takes the flags of the slot from PostgreSQL 19 */
 #if PG_VERSION_NUM >= 190000
@@ -258,7 +259,8 @@ combo_probe_on(AggExec *ex, int ci)
 		if (dp->state > 0)
 		{
 			map_note_table(ex, dp->hrel);
-			dp->bcxt = AllocSetContextCreate(ex->cxt, "sift direct probe", ALLOCSET_DEFAULT_SIZES);
+			/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+			dp->bcxt = sift_mem_allocset_create(ex->cxt, "sift direct probe");
 			if (dp->ioss)
 			{
 				/* ExecutorEnd resets the executor state's slot table after this node's context is deleted */

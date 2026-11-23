@@ -22,6 +22,7 @@
 #include "core/cmp.h"
 #include "agg/agg_int.h"
 #include "agg/group_int.h"
+#include "core/memtrack.h"
 
 static int
 idval_cmp(const void *a, const void *b, void *arg)
@@ -165,7 +166,8 @@ jkey_cmp(const void *a, const void *b)
 static bool
 jsonb_presort(IdVal *vals, uint32 nd, SortSupport ssup)
 {
-	MemoryContext tmp = AllocSetContextCreate(CurrentMemoryContext, "sift agg jsonb ranks", ALLOCSET_DEFAULT_SIZES),
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	MemoryContext tmp = sift_mem_allocset_create(CurrentMemoryContext, "sift agg jsonb ranks"),
 				old = MemoryContextSwitchTo(tmp);
 	StringInfoData bytes;
 	uint32	   *at = palloc((nd + 1) * sizeof(uint32));
@@ -399,7 +401,7 @@ groups_order(AggExec *ex)
 
 	if (n < 2)
 		return;
-	tmp = AllocSetContextCreate(ex->cxt, "sift agg group order", ALLOCSET_DEFAULT_SIZES);
+	tmp = sift_mem_allocset_create(ex->cxt, "sift agg group order");
 	old = MemoryContextSwitchTo(tmp);
 	col = palloc(nord * sizeof(OrdCol));
 	for (uint32 o = 0; o < s->nord; o++)

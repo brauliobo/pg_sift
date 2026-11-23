@@ -15,7 +15,8 @@ typedef struct SpillSet
 	int			depth;
 	int			n;				/* partitions: for ranges, those of the values and one more for NULL */
 	int64	   *bound;			/* ranges: n - 2 points, ascending; partition p < n - 1 holds the values from bound[p - 1] up to bound[p] (those of its parent at the ends) */
-	BufFile    *f[SPILL_MAX_PARTS + 1];
+	BufFile    *f[SPILL_MAX_PARTS + 1];	/* made when the partition gets its first blob */
+	MemoryContext fcx;			/* the context the files are made in */
 	uint32		nblobs[SPILL_MAX_PARTS + 1];
 } SpillSet;
 

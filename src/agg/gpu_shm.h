@@ -19,8 +19,11 @@
 #define SIFT_GPU_SHM_NAME			"sift_gpu_shm_v6"
 #define SIFT_GPU_SHM_VERSION		1
 #define SIFT_GPU_SLOTS				4
-#define SIFT_GPU_STAGE_BYTES		((Size) 16 << 20)
-#define SIFT_GPU_IDLE_US			(300 * USECS_PER_SEC)
+/* MEM[MEM-VK-02]: SiftGpuShm staging DSM (SIFT_GPU_SLOTS * 4MiB = 16MiB of pinned shared memory, pages of idle slots dropped from the worker; was 4 * 16MiB) */
+#define SIFT_GPU_STAGE_BYTES		((Size) 4 << 20)
+/* MEM[MEM-VK-01]: worker idle tiers (the device gives back its buffers and cache after SIFT_GPU_RELEASE_US without a job, the worker ends after SIFT_GPU_IDLE_US; was 300s with all of it held) */
+#define SIFT_GPU_RELEASE_US			(15 * USECS_PER_SEC)
+#define SIFT_GPU_IDLE_US			(60 * USECS_PER_SEC)
 #define SIFT_GPU_STALE_US			(10 * USECS_PER_SEC)
 #define SIFT_GPU_NOT_THERE			UINT64_MAX
 
@@ -158,6 +161,8 @@ typedef struct SiftGpuConn SiftGpuConn;
  * (a build without Vulkan, no usable device, no room for a worker and no leave to open one).
  */
 extern SiftGpuConn *sift_gpu_conn_open(bool allow_local, const char **why);
+/* The device of the backend's own (gpu_local.c): opened for the session, NULL and why when there is none */
+extern SiftVk *sift_gpu_local_open(const char **why);
 extern void sift_gpu_conn_close(SiftGpuConn *c);
 extern const SiftVkCaps *sift_gpu_conn_caps(const SiftGpuConn *c);
 extern bool sift_gpu_conn_shared(const SiftGpuConn *c);

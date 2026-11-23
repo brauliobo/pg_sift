@@ -14,6 +14,7 @@
 
 #include "agg/agg.h"
 #include "agg/cte/int.h"
+#include "core/memtrack.h"
 
 /*
  * The contexts of the plans that lost are deleted when the hook is done: the memory they free then is the executor's to reuse, where a free
@@ -39,7 +40,8 @@ plan_in_own_context(SIFT_PLANNER_PARAMS, MemoryContext *cx)
 #ifdef SIFT_TESTING
 	sift_agg_plan_passes++;
 #endif
-	*cx = AllocSetContextCreate(CurrentMemoryContext, "sift plan variant", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	*cx = sift_mem_allocset_create(CurrentMemoryContext, "sift plan variant");
 	old = MemoryContextSwitchTo(*cx);
 	stmt = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 	MemoryContextSwitchTo(old);

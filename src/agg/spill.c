@@ -42,6 +42,7 @@
 #include "agg/spill/int.h"
 #include "agg/gen_run_int.h"
 #include "agg/update_int.h"
+#include "core/memtrack.h"
 
 #define SPILL_MIN_PARTS		8
 #define SPILL_MAX_PARTS		128		/* one BufFile (8 kB) each */
@@ -79,7 +80,8 @@ spill_begin(AggExec *ex)
 		get_equality_op_for_ordering_op(ex->spec->ord[0].sortop, &reverse);
 		sp->desc = reverse;
 	}
-	sp->tmp = AllocSetContextCreate(ex->cxt, "sift agg spill", ALLOCSET_DEFAULT_SIZES);
+	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
+	sp->tmp = sift_mem_allocset_create(ex->cxt, "sift agg spill");
 	ex->spill = sp;
 }
 
@@ -151,8 +153,7 @@ set_new(int depth, int n)
 
 	set->depth = depth;
 	set->n = n;
-	for (int p = 0; p < n; p++)
-		set->f[p] = BufFileCreateTemp(false);
+	set->fcx = CurrentMemoryContext;
 	return set;
 }
 
@@ -274,11 +275,19 @@ range_part(const SpillSet *set, int64 v)
 	return lo;
 }
 
+/* MEM[MEM-AGG-12]: SiftAggSpill BufFile array (a partition's BufFile of 8KB is made at its first blob; was all nparts, up to 128 = 1MB, when the set was made) */
 static void
 blob_write(SpillSet *set, int p, const StringInfoData *b)
 {
 	uint32		len = b->len;
 
+	if (set->f[p] == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(set->fcx);
+
+		set->f[p] = BufFileCreateTemp(false);
+		MemoryContextSwitchTo(old);
+	}
 	BufFileWrite(set->f[p], &len, sizeof(len));
 	BufFileWrite(set->f[p], b->data, b->len);
 	set->nblobs[p]++;
@@ -467,10 +476,7 @@ work_add(AggSpill *sp, SpillSet *set, const SpillWork *parent)
 			}
 		}
 		if (set->nblobs[p] == 0)
-		{
-			BufFileClose(set->f[p]);
 			continue;
-		}
 		w = palloc0(sizeof(SpillWork));
 		w->f = set->f[p];
 		w->nblobs = set->nblobs[p];
@@ -734,7 +740,8 @@ spill_end(AggExec *ex)
 	if (sp->mslot)
 		ExecDropSingleTupleTableSlot(sp->mslot);
 	for (int p = 0; sp->set && p < sp->set->n; p++)
-		BufFileClose(sp->set->f[p]);
+		if (sp->set->f[p] != NULL)
+			BufFileClose(sp->set->f[p]);
 	foreach_ptr(SpillWork, w, sp->work)
 		BufFileClose(w->f);
 }
