@@ -22,6 +22,7 @@
 #include "agg/v6/v6_filter_eval.h"
 #include "agg/v6/v6_filter_pivot.h"
 #include "agg/v6/v6_group_fast.h"
+#include "agg/v6/v6_group_lock.h"
 
 /* The strings of one COUNT(DISTINCT) aggregate of a set of no keys that the rows named by the codes of their part's dictionary (group_dist.c) */
 typedef struct V6DictSlot
@@ -54,6 +55,7 @@ typedef struct V6Set
 	bool	   *flat_moved;
 	SiftDu64G **gflat;			/* a set of keys: the grouped flat set of each integer COUNT(DISTINCT), NULL once its pairs moved to dist */
 	bool	   *gflat_moved;
+	SiftLockSet lock;			/* a set of keys of a statement with spec->lock_k: the first keys of the locked group table (v6_group_lock.h) */
 } V6Set;
 
 /* The rows r < n of the bitmap mk that are set, in order, a word at a time: r is declared by the caller */
@@ -78,13 +80,12 @@ typedef struct V6RowKey
 	uint64		nulls;
 } V6RowKey;
 
-/* The pairs of a batch of one COUNT(DISTINCT), for the grouped flat set (group_dist.c) */
+/* The pairs of a batch of one COUNT(DISTINCT), for the grouped flat set (group_dist.c): the group number, the value and the position in the batch of each */
 typedef struct V6DistBatch
 {
-	StringInfoData buf;
-	uint32		off[SIFT_VEC_LEN];
-	uint32		plen[SIFT_VEC_LEN];
+	uint32		gid[SIFT_VEC_LEN];
 	uint64		val[SIFT_VEC_LEN];
+	uint16		row[SIFT_VEC_LEN];
 } V6DistBatch;
 
 struct SiftV6Group
@@ -121,7 +122,6 @@ struct SiftV6Group
 	uint64		hash[SIFT_VEC_LEN];
 	SiftInlineKey16 ikey[SIFT_VEC_LEN];
 	SiftAggSlot64 *slots[SIFT_VEC_LEN];
-	V6RowKey	rkey[SIFT_VEC_LEN];	/* the groups of the rows of the batch, when the aggregates count distinct values */
 	V6DistBatch *dbatch;
 	SiftAggSlot64 **code_slots;	/* the group of each code of the dictionary of a batch (code_slot), valid when its code_epoch is code_epoch_cur */
 	uint32	   *code_epoch;
@@ -229,9 +229,10 @@ extern uint64 v6g_group_hash(const V6Set *set, const void *key, uint32 klen, uin
 extern void v6g_dist_init(SiftV6Group *g);
 /* The rows of take (a bitmap of n_raw rows) of the batch for the COUNT(DISTINCT) aggregate j of a set of no keys */
 extern void v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, const uint64 *take, SiftVec *const *argvec);
-/* One row of a set of keys: key is the bytes of its group (nulls: the bit of each NULL key) */
+/* The rows of a batch of a set of keys, whose groups are g->slots */
 extern void v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 n);
-extern void v6g_dist_group_row(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 r, const void *key, uint32 klen, uint64 nulls);
+/* The pairs the grouped flat sets hold by group number go to the generic set, before the group table is emptied and its numbers mean other groups */
+extern void v6g_dist_gflat_flush(SiftV6Group *g, V6Set *set);
 /* A key of COUNT(DISTINCT) aggregate slot that a participant of a parallel run sent here, with the hash it carries: the bytes v6g_dist_group_row or v6g_dist_plain built */
 extern void v6g_dist_add_raw(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len, uint64 hash);
 /* The distinct sets of the state are emptied for the records of another partition */

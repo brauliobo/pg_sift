@@ -224,6 +224,7 @@ typedef struct SiftV6Spec
 	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */
 	int			ntopk;
 	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
+	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
 } SiftV6Spec;
 
 /*

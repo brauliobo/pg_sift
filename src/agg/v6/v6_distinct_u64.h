@@ -19,22 +19,22 @@ extern void sift_du64_each(const SiftDistinctU64 *d, void (*fn) (void *arg, uint
 extern void sift_du64_free(SiftDistinctU64 *d);
 
 /*
- * The grouped set: pairs (group, value) of a GROUP BY with COUNT(DISTINCT integer column). A group is the bytes of its key (the prefix of v6_distinct.h), numbered by this set alone, so a group has no
- * number outside it; every pair is held once as 8 bytes of value, 4 of group and a tag, and the count of its group goes up when a pair is new. sift_du64g_add says no, and adds nothing, when
- * what the set would need passes the budget: the caller moves the pairs to the generic set (sift_du64g_pairs) and goes on there.
+ * The grouped set: pairs (group, value) of a GROUP BY with COUNT(DISTINCT integer column). A group is the dense number its caller already has (the ext_idx of its slot in the group table), so a pair
+ * is one entry of 16 bytes (the value and the group) in one open-addressing table and the count of its group goes up when a pair is new: no second table finds the group. The set says no, and adds
+ * nothing, when what it would need passes the budget: the caller moves the pairs to the generic set (sift_du64g_pairs) and goes on there.
  */
 typedef struct SiftDu64G SiftDu64G;
 
-typedef void (*SiftDu64GGroup) (void *arg, const uint8 *prefix, uint32 plen, uint64 count);
-typedef void (*SiftDu64GPair) (void *arg, const uint8 *prefix, uint32 plen, uint64 value);
+typedef void (*SiftDu64GGroup) (void *arg, uint32 gid, uint64 count);
+typedef void (*SiftDu64GPair) (void *arg, uint32 gid, uint64 value);
 
 extern SiftDu64G *sift_du64g_create(MemoryContext cx, uint64 budget_bytes);
-extern bool sift_du64g_add(SiftDu64G *d, const uint8 *prefix, uint32 plen, uint64 value);
+extern bool sift_du64g_add(SiftDu64G *d, uint32 gid, uint64 value);
 /*
- * The n pairs (the prefix of row i is plen[i] bytes at prefixes + off[i], its value vals[i]), the groups and pairs prefetched ahead. Returns n, or the index of the first pair that is new and does
- * not fit the budget: the pairs before it are in the set, and the caller moves it to the generic set (sift_du64g_pairs) and adds the rest there.
+ * The n pairs (gids[i], vals[i]), the entries prefetched ahead. Returns n, or the index of the first pair that is new and does not fit the budget: the pairs before it are in the set, and the
+ * caller moves it to the generic set (sift_du64g_pairs) and adds the rest there.
  */
-extern uint32 sift_du64g_add_batch(SiftDu64G *d, const uint8 *prefixes, const uint32 *off, const uint32 *plen, const uint64 *vals, uint32 n);
+extern uint32 sift_du64g_add_batch(SiftDu64G *d, const uint32 *gids, const uint64 *vals, uint32 n);
 /* each group that has a pair, with the number of its distinct values */
 extern void sift_du64g_groups(const SiftDu64G *d, SiftDu64GGroup fn, void *arg);
 extern void sift_du64g_pairs(const SiftDu64G *d, SiftDu64GPair fn, void *arg);

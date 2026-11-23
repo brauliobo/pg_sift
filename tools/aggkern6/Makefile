@@ -4,7 +4,7 @@
 OUT     ?= /tmp/sift-aggkern6-tools
 N       ?= 20
 
-LIB      = $(addprefix $(SRC)/agg/,kern6.c kern6_cmp.c kern6_avx2.c kern6_avx2_cmp.c kern6_avx2_agg.c kern6_avx512.c kern6_avx512_cmp.c kern6_avx512_agg.c kern6_neon.c kern6_neon_cmp.c kern6_neon_agg.c kern6_sbbf.c) $(SRC)/core/sbbf.c
+LIB      = $(addprefix $(SRC)/agg/,kern6.c kern6_hash.c kern6_cmp.c kern6_avx2.c kern6_avx2_cmp.c kern6_avx2_agg.c kern6_avx512.c kern6_avx512_cmp.c kern6_avx512_agg.c kern6_neon.c kern6_neon_cmp.c kern6_neon_agg.c kern6_sbbf.c) $(SRC)/core/sbbf.c
 HDR      = $(wildcard $(SRC)/agg/kern6*.h) $(SRC)/agg/vec.h $(wildcard bench.h cases_*.h test_*.h)
 
 CC      ?= gcc

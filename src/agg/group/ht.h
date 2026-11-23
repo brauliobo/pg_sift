@@ -71,6 +71,7 @@ typedef struct SiftSaltedHT
 	uint32		mask;
 	uint32		count;
 	uint32		grow_at;
+	uint32		lock_at;		/* not 0: the batch upserts (sift_ht_upsert_batch, sift_ht_upsert_wide_lazy) make no group once the table has this many, and return NULL for a key it has not */
 	uint32		gen;			/* never 0; changes whenever the slots move or the groups go (growth, clear): what a pointer to a slot was taken at */
 	MemoryContext cxt;			/* what the table allocates in, whatever context is current when it grows */
 	bool		key_is_wide;
@@ -163,6 +164,9 @@ extern SiftAggSlot64 *sift_ht_upsert(SiftSaltedHT *ht, uint64 hash, const SiftIn
 extern SiftAggSlot64 *sift_ht_upsert_wide(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls, bool *found);
 /* The same, growing the table only when the key is new and the load limit is reached (the caller finds the slots it holds again when ht->gen changes) */
 extern SiftAggSlot64 *sift_ht_upsert_wide_lazy(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls, bool *found);
+/* The same for the key of a string: the 4 bytes of its length and its len bytes (what sift_wide_batch_build makes of it), which are copied only when the key is new */
+extern SiftAggSlot64 *sift_ht_upsert_lenpfx_lazy(SiftSaltedHT *ht, uint64 hash, const void *p, uint32 len, bool *found);
+extern SiftAggSlot64 *sift_ht_find_lenpfx(const SiftSaltedHT *ht, uint64 hash, const void *p, uint32 len);
 /* The slot of the key, NULL when the table has no such group; never changes the table */
 extern SiftAggSlot64 *sift_ht_find(const SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key);
 extern SiftAggSlot64 *sift_ht_find_wide(const SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, uint64 nulls);
@@ -187,6 +191,55 @@ sift_strview_bytes(const SiftStrView *v)
 extern SiftAggSlot64 *sift_ht_upsert_str(SiftSaltedHT *ht, const SiftStrView *v, bool *found);
 
 #define SIFT_HT_PREFETCH	16
+#define SIFT_HT_PREFETCH_SLOT	8
+#define SIFT_HT_PREFETCH_KEY	4
+
+/*
+ * The staged prefetch of a probe loop: the control group of the hash SIFT_HT_PREFETCH rows ahead, the first slot its salt matches, or else the first empty one (that slot, not the first of the group, is where the key is or goes)
+ * SIFT_HT_PREFETCH_SLOT rows ahead, and, for a wide table, the bytes of the key of that slot SIFT_HT_PREFETCH_KEY ahead: each stage reads what the one before it brought in.
+ */
+static inline void
+sift_ht_prefetch_group(const SiftSaltedHT *ht, uint64 hash)
+{
+	const uint32 g = (uint32) hash & ht->mask;
+
+	__builtin_prefetch(&ht->ctrl[g]);
+}
+
+static inline const SiftAggSlot64 *
+sift_ht_first_match(const SiftSaltedHT *ht, uint64 hash)
+{
+	const uint32 pos = (uint32) hash & ht->mask;
+	const SiftHtMask m = sift_ht_match16_fast(ht->ctrl + pos, SIFT_HASH_SALT(hash));
+
+	return m ? &ht->slots[(pos + SIFT_HT_MASK_NEXT(m)) & ht->mask] : NULL;
+}
+
+static inline void
+sift_ht_prefetch_slot(const SiftSaltedHT *ht, uint64 hash)
+{
+	const SiftAggSlot64 *s = sift_ht_first_match(ht, hash);
+
+	if (s != NULL)
+		__builtin_prefetch(s);
+	else
+	{
+		const uint32 pos = (uint32) hash & ht->mask;
+		const SiftHtMask e = sift_ht_match16_fast(ht->ctrl + pos, 0);
+
+		if (e)
+			__builtin_prefetch(&ht->slots[(pos + SIFT_HT_MASK_NEXT(e)) & ht->mask], 1);
+	}
+}
+
+static inline void
+sift_ht_prefetch_key(const SiftSaltedHT *ht, uint64 hash)
+{
+	const SiftAggSlot64 *s = sift_ht_first_match(ht, hash);
+
+	if (s != NULL)
+		__builtin_prefetch(ht->arena + s->key.wide.arena_off);
+}
 
 /* The index of the first occupied slot at or after pos (capacity when there is none): 16 control bytes at a time, whose top bits are the occupied ones. ctrl has 16 bytes after the capacity */
 static inline uint32
@@ -225,11 +278,18 @@ sift_ht_wide_key(const SiftSaltedHT *ht, const SiftAggSlot64 *s, uint32 *len)
 	return ht->arena + s->key.wide.arena_off;
 }
 
+/* The state block of group number idx (the ext_idx of its slot) of a table made with one */
+static inline uint8 *
+sift_ht_ext_idx(const SiftSaltedHT *ht, uint32 idx)
+{
+	return ht->ext_slab + (size_t) idx * ht->ext_stride;
+}
+
 /* The state block of a slot of a table made with one */
 static inline uint8 *
 sift_ht_ext(const SiftSaltedHT *ht, const SiftAggSlot64 *s)
 {
-	return ht->ext_slab + (size_t) s->ext_idx * ht->ext_stride;
+	return sift_ht_ext_idx(ht, s->ext_idx);
 }
 
 /* The first four aggregates as count, sum, min, max */

@@ -252,44 +252,53 @@ ht_ext_new(SiftSaltedHT *ht)
 
 /* MEM[MEM-AGG-01]: SiftSaltedHT key arena (the bytes of the wide keys, doubling up to MaxAllocSize with the old arena live; the spill check counts arena_cap) */
 static uint32
-ht_arena_put(SiftSaltedHT *ht, const void *key, uint32 len)
+ht_arena_put(SiftSaltedHT *ht, const void *key, uint32 len, const void *tail, uint32 tail_len)
 {
 	const uint32 off = ht->arena_used;
+	const uint64 total = (uint64) len + tail_len;
 
-	if ((uint64) off + len > MaxAllocSize)
+	if ((uint64) off + total > MaxAllocSize)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the group keys of an aggregate are over 1 GB"),
 						errdetail("A table of wide keys holds its keys in one allocation."), errhint("Group by fewer or shorter key columns.")));
-	if (off + len > ht->arena_cap)
+	if (off + total > ht->arena_cap)
 	{
 		uint32		cap = Max(ht->arena_cap, 4096);
 
-		while (cap < off + len)
+		while (cap < off + total)
 			cap = cap > MaxAllocSize / 2 ? MaxAllocSize : cap << 1;
 		ht->arena = ht->arena ? repalloc(ht->arena, cap) : MemoryContextAlloc(ht->cxt, cap);
 		ht->arena_cap = cap;
 	}
 	if (len > 0)
 		memcpy(ht->arena + off, key, len);
-	ht->arena_used = off + len;
+	if (tail_len > 0)
+		memcpy(ht->arena + off + len, tail, tail_len);
+	ht->arena_used = off + (uint32) total;
 	return off;
 }
 
-/* The key of a probe: 16 inline bytes, or len bytes and the null flags */
+/* The key of a probe: 16 inline bytes, or len bytes (and tail_len more after them: a string behind its length, whose bytes are copied only when the key is new) and the null flags */
 typedef struct HtKey
 {
 	const SiftInlineKey16 *inl;
 	const void *bytes;
 	uint32		len;
+	const void *tail;
+	uint32		tail_len;
 	uint64		nulls;
 } HtKey;
 
 static inline bool
 ht_key_eq(const SiftSaltedHT *ht, const SiftAggSlot64 *s, const HtKey *k)
 {
+	const uint8 *at;
+
 	if (!ht->key_is_wide)
 		return s->key.u64[0] == k->inl->u64[0] && s->key.u64[1] == k->inl->u64[1];
-	return s->key.wide.key_len == k->len && s->key.wide.key_nulls == k->nulls &&
-		(k->len == 0 || memcmp(ht->arena + s->key.wide.arena_off, k->bytes, k->len) == 0);
+	if (s->key.wide.key_len != k->len + k->tail_len || s->key.wide.key_nulls != k->nulls)
+		return false;
+	at = ht->arena + s->key.wide.arena_off;
+	return (k->len == 0 || memcmp(at, k->bytes, k->len) == 0) && (k->tail_len == 0 || memcmp(at + k->len, k->tail, k->tail_len) == 0);
 }
 
 static inline SiftAggSlot64 *
@@ -302,8 +311,8 @@ ht_new_slot(SiftSaltedHT *ht, uint32 at, uint64 hash, const HtKey *k)
 	s->ext_idx = SIFT_HT_NO_EXT;
 	if (ht->key_is_wide)
 	{
-		s->key.wide.arena_off = ht_arena_put(ht, k->bytes, k->len);
-		s->key.wide.key_len = k->len;
+		s->key.wide.arena_off = ht_arena_put(ht, k->bytes, k->len, k->tail, k->tail_len);
+		s->key.wide.key_len = k->len + k->tail_len;
 		s->key.wide.key_nulls = k->nulls;
 	}
 	else
@@ -339,6 +348,8 @@ ht_upsert(SiftSaltedHT *ht, uint64 hash, const HtKey *k, bool *found, bool grow_
 		}
 		if ((e = sift_ht_match16_fast(ht->ctrl + pos, 0)) != 0)
 		{
+			if (grow_on_miss && ht->lock_at != 0 && ht->count >= ht->lock_at)
+				return (*found = false, NULL);
 			if (grow_on_miss && ht->count >= ht->grow_at)
 			{
 				ht_grow(ht, ht->capacity << 1);
@@ -430,6 +441,23 @@ sift_ht_find_wide(const SiftSaltedHT *ht, uint64 hash, const void *key, uint32 l
 	return ht_find(ht, hash, &k);
 }
 
+SiftAggSlot64 *
+sift_ht_upsert_lenpfx_lazy(SiftSaltedHT *ht, uint64 hash, const void *p, uint32 len, bool *found)
+{
+	const HtKey k = {.bytes = &len,.len = sizeof(len),.tail = p,.tail_len = len};
+
+	Assert(ht->key_is_wide);
+	return ht_upsert(ht, hash, &k, found, true);
+}
+
+SiftAggSlot64 *
+sift_ht_find_lenpfx(const SiftSaltedHT *ht, uint64 hash, const void *p, uint32 len)
+{
+	const HtKey k = {.bytes = &len,.len = sizeof(len),.tail = p,.tail_len = len};
+
+	return ht_find(ht, hash, &k);
+}
+
 /* The probe loop of a batch */
 static void
 ht_upsert_run(SiftSaltedHT *ht, const uint64 *hashes, const SiftInlineKey16 *keys, uint32 n, SiftAggSlot64 **out)
@@ -442,12 +470,9 @@ ht_upsert_run(SiftSaltedHT *ht, const uint64 *hashes, const SiftInlineKey16 *key
 		bool		found;
 
 		if (i + SIFT_HT_PREFETCH < n)
-		{
-			const uint32 ahead = (uint32) hashes[i + SIFT_HT_PREFETCH] & ht->mask;
-
-			__builtin_prefetch(ht->ctrl + ahead);
-			__builtin_prefetch(&ht->slots[ahead]);
-		}
+			sift_ht_prefetch_group(ht, hashes[i + SIFT_HT_PREFETCH]);
+		if (i + SIFT_HT_PREFETCH_SLOT < n)
+			sift_ht_prefetch_slot(ht, hashes[i + SIFT_HT_PREFETCH_SLOT]);
 		out[i] = ht_upsert(ht, hashes[i], &k, &found, true);
 		if (ht->gen != gen)
 		{

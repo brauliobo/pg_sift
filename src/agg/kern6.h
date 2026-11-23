@@ -162,29 +162,15 @@ sift_aggk6_hash1(uint64 x)
 	return x ^ (x >> 32);
 }
 
-/* The hash of len bytes (a wide key, a string): the same bytes give the same hash at every level and on every host */
-static inline uint64
-sift_aggk6_hash_bytes(const void *p, uint32 len)
-{
-	const uint8 *b = p;
-	uint64		h = sift_aggk6_hash1(len);
-
-	for (; len >= 8; len -= 8, b += 8)
-	{
-		uint64		w;
-
-		memcpy(&w, b, 8);
-		h = sift_aggk6_hash1(h ^ w);
-	}
-	if (len > 0)
-	{
-		uint64		w = 0;
-
-		memcpy(&w, b, len);
-		h = sift_aggk6_hash1(h ^ w);
-	}
-	return h;
-}
+/*
+ * The hash of len bytes (a wide key, a string): CRC32C lanes of 8-byte words mixed by sift_aggk6_hash1 (agg/kern6_hash.c), the same bytes giving the same hash at every level and on every host,
+ * whether the CPU has the CRC instruction or not. sift_aggk6_hash_lenpfx(p, len) is the hash of the len bytes of p behind their length as 4 bytes (the bytes of a string key of a group table), taken
+ * from p, which is not copied. The batches: h[k] of the key k of a buffer (sift_aggk6_hash1 of its hash and its null flags), and h[k] the sift_aggk6_hash1 of the sift_aggk6_hash_lenpfx of the view v[sel[k]], the hash of a string key with no nulls (a row whose bit of valid is clear, when valid is not NULL, is not read and its h[k] is left as it is).
+ */
+extern uint64 sift_aggk6_hash_bytes(const void *p, uint32 len);
+extern uint64 sift_aggk6_hash_lenpfx(const void *p, uint32 len);
+extern void sift_aggk6_hash_wide_batch(uint64 *h, const uint8 *buf, const uint32 *off, const uint32 *len, const uint64 *nulls, uint16 n);
+extern void sift_aggk6_hash_str_batch(uint64 *h, const SiftStrView *v, const uint64 *valid, const uint16 *sel, uint16 n);
 
 /* The bits of a hash: the first probe group (0..31), the salt (48..54), the radix partition (56..63, top radix_bits) */
 #define SIFT_HASH_SALT(h)		((uint8) (0x80 | (((h) >> 48) & 0x7F)))

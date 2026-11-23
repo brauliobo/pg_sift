@@ -741,7 +741,9 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->methods = &v6_path_methods;
 	cp->custom_paths = child_paths;
 	p->spec.groups_est = (uint32) Min(groups, (double) INT_MAX);
+	p->spec.lock_k = child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 ? sift_v6_limit_of(p->root->parse) : 0;
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
+	p->spec.lock_k = 0;
 	agg_force_price(&cp->path);
 	add_path(p->out, &cp->path);
 	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table)

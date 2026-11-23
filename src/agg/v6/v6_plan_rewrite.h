@@ -40,6 +40,9 @@ extern bool sift_v6_derive_of(const SiftV6Resolver *rs, const Expr *e, bool key,
 extern uint32 sift_v6_topk_of(const Query *q);
 /* The sort columns of the query as positions of the scan tuple (spec topk_item); false when one is not a key or an aggregate of the node */
 extern bool sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s);
+#define SIFT_LOCK_MAX_K	4096
+/* the K of GROUP BY .. LIMIT K with no ORDER BY, HAVING or DISTINCT (0: the query is not one, or K is over SIFT_LOCK_MAX_K) */
+extern uint32 sift_v6_limit_of(const Query *q);
 extern void sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
 /* The derivations, the derived key and argument columns and the affine range of a spec as ints after those of sift_v6_spec_pack, and back from position at */

@@ -59,6 +59,9 @@ extern void sift_wide_batch_build(SiftWideBatch *wb, const int *kidx, int nk, Si
 /* slots[k] for the key of row k, in a wide table that has room for n groups (sift_ht_reserve) */
 extern void sift_wide_batch_upsert(SiftSaltedHT *ht, const SiftWideBatch *wb, uint16 n, SiftAggSlot64 **slots);
 
+/* slots[k] for the row sel[k] of the string vector kv, the one key of a wide table that has room for n groups (sift_ht_reserve): the bytes of a row are hashed where they are, and copied only when its group is new */
+extern void sift_str_batch_upsert(SiftSaltedHT *ht, const SiftVec *kv, const uint16 *sel, uint16 n, uint64 *hash, SiftAggSlot64 **slots);
+
 /* ---- the minimum and maximum of a text column ---- */
 
 #define SIFT_STRMM_INLINE_MAX	16u

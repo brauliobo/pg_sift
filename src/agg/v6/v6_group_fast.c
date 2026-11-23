@@ -197,8 +197,7 @@ sift_wide_batch_build(SiftWideBatch *wb, const int *kidx, int nk, SiftVec *const
 		wb->len[k] = (uint32) (at - wb->off[k]);
 		wb->nulls[k] = nulls;
 	}
-	for (uint16 k = 0; k < n; k++)
-		wb->hash[k] = sift_aggk6_hash1(sift_aggk6_hash_bytes(wb->buf + wb->off[k], wb->len[k]) ^ wb->nulls[k]);
+	sift_aggk6_hash_wide_batch(wb->hash, wb->buf, wb->off, wb->len, wb->nulls, n);
 }
 
 void
@@ -211,17 +210,56 @@ sift_wide_batch_upsert(SiftSaltedHT *ht, const SiftWideBatch *wb, uint16 n, Sift
 		bool		found;
 
 		if (k + SIFT_HT_PREFETCH < n)
-		{
-			const uint32 g = (uint32) wb->hash[k + SIFT_HT_PREFETCH] & ht->mask;
-
-			__builtin_prefetch(&ht->ctrl[g]);
-			__builtin_prefetch(&ht->slots[g]);
-		}
+			sift_ht_prefetch_group(ht, wb->hash[k + SIFT_HT_PREFETCH]);
+		if (k + SIFT_HT_PREFETCH_SLOT < n)
+			sift_ht_prefetch_slot(ht, wb->hash[k + SIFT_HT_PREFETCH_SLOT]);
+		if (k + SIFT_HT_PREFETCH_KEY < n)
+			sift_ht_prefetch_key(ht, wb->hash[k + SIFT_HT_PREFETCH_KEY]);
 		slots[k] = sift_ht_upsert_wide_lazy(ht, wb->hash[k], wb->buf + wb->off[k], wb->len[k], wb->nulls[k], &found);
 		if (ht->gen != gen)
 		{
 			for (uint16 j = 0; j < k; j++)
 				slots[j] = sift_ht_find_wide(ht, wb->hash[j], wb->buf + wb->off[j], wb->len[j], wb->nulls[j]);
+			gen = ht->gen;
+		}
+	}
+}
+
+/* The group of the null key: what sift_wide_batch_build makes of a NULL (no bytes, the null flag) */
+static inline uint64
+null_hash(void)
+{
+	return sift_aggk6_hash1(sift_aggk6_hash_bytes("", 0) ^ 1);
+}
+
+void
+sift_str_batch_upsert(SiftSaltedHT *ht, const SiftVec *kv, const uint16 *sel, uint16 n, uint64 *hash, SiftAggSlot64 **slots)
+{
+	const SiftStrView *v = kv->data;
+	const uint64 *valid = kv->all_valid ? NULL : kv->valid;
+	uint32		gen = ht->gen;
+
+	sift_aggk6_hash_str_batch(hash, v, valid, sel, n);
+	for (uint16 k = 0; k < n; k++)
+	{
+		const bool	null = valid != NULL && !((valid[sel[k] >> 6] >> (sel[k] & 63)) & 1);
+		bool		found;
+
+		if (null)
+			hash[k] = null_hash();
+		if (k + SIFT_HT_PREFETCH < n)
+			sift_ht_prefetch_group(ht, hash[k + SIFT_HT_PREFETCH]);
+		if (k + SIFT_HT_PREFETCH_SLOT < n)
+			sift_ht_prefetch_slot(ht, hash[k + SIFT_HT_PREFETCH_SLOT]);
+		if (k + SIFT_HT_PREFETCH_KEY < n)
+			sift_ht_prefetch_key(ht, hash[k + SIFT_HT_PREFETCH_KEY]);
+		slots[k] = null ? sift_ht_upsert_wide_lazy(ht, hash[k], NULL, 0, 1, &found) :
+			sift_ht_upsert_lenpfx_lazy(ht, hash[k], sift_strview_bytes(&v[sel[k]]), v[sel[k]].len, &found);
+		if (ht->gen != gen)
+		{
+			for (uint16 j = 0; j < k; j++)
+				slots[j] = slots[j] == NULL ? NULL : (valid != NULL && !((valid[sel[j] >> 6] >> (sel[j] & 63)) & 1)) ? sift_ht_find_wide(ht, hash[j], NULL, 0, 1) :
+					sift_ht_find_lenpfx(ht, hash[j], sift_strview_bytes(&v[sel[j]]), v[sel[j]].len);
 			gen = ht->gen;
 		}
 	}

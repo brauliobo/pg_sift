@@ -319,11 +319,34 @@ code_slots(SiftV6Group *g, V6Set *set, const SiftVec *kv, uint16 n)
 	}
 }
 
+static inline bool
+locked(const V6Set *set)
+{
+	return set->ht.lock_at != 0 && set->ht.count >= set->ht.lock_at;
+}
+
+/* The rows of the batch the groups take: those of the mask, and once the table is locked only those whose first key is one of its groups' (when that is an integer) */
+static uint16
+batch_rows(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec)
+{
+	const SiftVec *k0 = keyvec[set->kidx[0]];
+	uint64		hit[SIFT_VEC_WORDS];
+
+	if (!locked(set))
+		return sift_aggk6->mask_to_sel16(g->sel, bs->mask, bs->n_raw);
+	if (!set->lock.built)
+		sift_lock_set_build(&set->lock, &set->ht, set->packed, &set->pack, k0->type == SVEC_I64);
+	if (!set->lock.usable || k0->type != SVEC_I64)
+		return sift_aggk6->mask_to_sel16(g->sel, bs->mask, bs->n_raw);
+	sift_lock_set_rows(&set->lock, k0, bs->mask, bs->n_raw, hit);
+	return sift_aggk6->mask_to_sel16(g->sel, hit, bs->n_raw);
+}
+
 static void
 grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
 {
-	const uint16 n = sift_aggk6->mask_to_sel16(g->sel, bs->mask, bs->n_raw);
-	const bool	coded = set->wide && set->nk == 1 && g->ndist == 0 && keyvec[set->kidx[0]]->type == SVEC_DICT32;
+	uint16		n = batch_rows(g, set, bs, keyvec);
+	const bool	coded = set->wide && set->nk == 1 && keyvec[set->kidx[0]]->type == SVEC_DICT32;
 
 	g->frows = g->nfilters > 0 ? sift_fmasks_rows(g->fmasks) : NULL;
 	if (coded)
@@ -336,15 +359,13 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 			kvs[i] = keyvec[set->kidx[i]];
 		sift_pack_batch(&set->pack, kvs, g->sel, n, g->hash, g->ikey);
 		sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, n, g->slots);
-		for (uint16 k = 0; g->ndist > 0 && k < n; k++)
-			g->rkey[k] = (V6RowKey) {&g->ikey[k], sizeof(SiftInlineKey16), 0};
 	}
+	else if (set->wide && set->nk == 1 && keyvec[set->kidx[0]]->type == SVEC_STRVIEW)
+		sift_str_batch_upsert(&set->ht, keyvec[set->kidx[0]], g->sel, n, g->hash, g->slots);
 	else if (set->wide)
 	{
 		sift_wide_batch_build(&g->wb, set->kidx, set->nk, keyvec, g->sel, n);
 		sift_wide_batch_upsert(&set->ht, &g->wb, n, g->slots);
-		for (uint16 k = 0; g->ndist > 0 && k < n; k++)
-			g->rkey[k] = (V6RowKey) {g->wb.buf + g->wb.off[k], g->wb.len[k], g->wb.nulls[k]};
 	}
 	else
 	{
@@ -361,9 +382,9 @@ grouped_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const
 			g->hash[k] = sift_aggk6_hash1((uint64) x);
 		}
 		sift_ht_upsert_batch(&set->ht, g->hash, g->ikey, n, g->slots);
-		for (uint16 k = 0; g->ndist > 0 && k < n; k++)
-			g->rkey[k] = (V6RowKey) {&g->ikey[k].i64[0], sizeof(int64), (uint64) g->ikey[k].i64[1]};
 	}
+	if (locked(set))
+		n = sift_lock_compact(g->sel, g->slots, n);
 	for (int d = 0; d < g->ndist; d++)
 		v6g_dist_group_rows(g, set, g->dagg[d], argvec, n);
 	for (int j = 0; j < g->spec->naggs; j++)
@@ -481,6 +502,8 @@ set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 	else
 		/* MEM[MEM-AGG-03]: SiftV6Group set_init table (SET_INIT_SLOTS=64 slots * 65B = 4KB per grouping set, grown with the groups; was 1024 slots = 66.5KB, 1MB for CUBE of 4) */
 		sift_ht_init_ex(&set->ht, SET_INIT_SLOTS, set->wide, g->stride, g->dist_off);
+	if (spec->nsets == 0 && g->ndist == 0 && set->nk > 0)
+		set->ht.lock_at = spec->lock_k;
 	set->shape = (SiftRadixShape) {.wide_key = set->wide,.ext_stride = g->stride,.ext_dist_off = g->dist_off,.ctx = g,.init = shape_init,.merge = shape_merge};
 }
 
@@ -582,6 +605,8 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, uint64 key_nulls, const
 	{
 		SiftAggSlot64 *slot;
 
+		set->ht.lock_at = 0;
+
 		sift_ht_reserve(&set->ht, 1);
 		if (set->packed)
 		{
@@ -653,7 +678,7 @@ spill_all(SiftV6Group *g)
 	{
 		V6Set	   *set = &g->set[s];
 
-		if (set->nk == 0 || set->ht.count == 0)
+		if (set->nk == 0 || set->ht.count == 0 || set->ht.lock_at != 0)
 			continue;
 		if (set->spill == NULL)
 		{
@@ -663,6 +688,7 @@ spill_all(SiftV6Group *g)
 			MemoryContextSwitchTo(old);
 		}
 		sift_gspill_put_ht(set->spill, &set->ht);
+		v6g_dist_gflat_flush(g, set);
 		sift_ht_clear(&set->ht);
 		sift_ht_shrink_to(&set->ht, SIFT_SPILL_LOCAL_CAP);
 	}
