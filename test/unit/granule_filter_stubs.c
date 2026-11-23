@@ -5,7 +5,6 @@
 #include "postgres.h"
 
 #include "col/f2/f2_pred.h"
-#include "col/v1/enc.h"
 #include "core/f2/bitscatter.h"
 #include "pgshim.h"
 
