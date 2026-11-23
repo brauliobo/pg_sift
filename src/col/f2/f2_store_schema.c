@@ -121,6 +121,16 @@ first_time_leaf(const SiftF2Store *s)
 	return s->spec.time_cols[0] - 1;
 }
 
+/* The wrap of the chunks of a part is one for the whole part: that of the default entry of the option (SiftRows.compress_alg: < 0 none, 0 by the tier, else SIFT_CC_ALG_*) */
+static int
+part_compress_alg(const char *option)
+{
+	SiftCcPolicy def;
+
+	(void) sift_cc_policy_for_column(option, "", &def);
+	return def.mode == SIFT_CCM_NONE ? -1 : def.mode == SIFT_CCM_LAYER ? def.alg : 0;
+}
+
 static void
 make_compression(SiftF2Store *s, Relation rel)
 {
@@ -133,6 +143,7 @@ make_compression(SiftF2Store *s, Relation rel)
 	if (err != NULL)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("compression of table \"%s\": %s", RelationGetRelationName(rel), err)));
 	s->comp_policy = cp;
+	s->spec.compress_alg = part_compress_alg(s->opts.compression);
 }
 
 static void
