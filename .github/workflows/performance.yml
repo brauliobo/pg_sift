@@ -1,11 +1,26 @@
 name: focused performance
 
-# not on pull requests: of 439 hosted measurements 12 % were inconclusive and 2 of the 6 regressions reported cleared on a rerun of the same commit, so a pull
-# request cannot wait for its verdict. The nightly run compares with the commit of 24 hours before; a dispatch from a branch does the same.
-# No scheduled run is enabled in this repository: dispatch the workflow to run it.
+# Layer 3 of the performance gate: wall clock and instructions of the stock planner at 1 and 4 workers, paired against the parent and against a pinned
+# release anchor. Not on pull requests: of 439 hosted measurements 12 % were inconclusive and 2 of the 6 regressions reported cleared on a rerun of the
+# same commit, so a pull request cannot wait for its verdict (its gate is scripts/perf). The nightly run compares with the commit of 24 hours before and
+# with the anchor, so that ten commits of 2 % do not pass one by one; a dispatch from a branch does the same.
+# A real run waits for a quiet host before every timed block (scripts/quiet.sh): dispatch it on a quiet runner (the runner input). A block timed on a busy
+# host is inconclusive. No scheduled run is enabled in this repository: dispatch the workflow to run it.
 on:
   workflow_dispatch:
     inputs:
+      runner:
+        description: Runner label; a quiet dedicated runner gives verdicts, a shared one mostly inconclusive blocks
+        type: string
+        default: ubuntu-24.04
+      anchor_ref:
+        description: Pinned release anchor, a tag or commit (the last release candidate once 6.0 ships); empty for none
+        type: string
+        default: v5.1.0
+      allow_loaded:
+        description: Smoke only, time without waiting for a quiet host
+        type: boolean
+        default: false
       verify_control:
         description: Acceptance only, unchanged SHA plus controlled SQL slowdown
         type: boolean
@@ -20,15 +35,18 @@ concurrency:
 
 jobs:
   focused:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 60
     env:
+      ANCHOR_REF: ${{ (inputs.verify_control != true && inputs.anchor_ref) || '' }}
+      ALLOW_LOADED: ${{ inputs.allow_loaded == true && 'true' || 'false' }}
       CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       TIER: ${{ (github.event_name == 'pull_request' || inputs.verify_control == true) && 'pr' || 'nightly' }}
       # a pull request or acceptance run: the whole job. The nightly tier (both revisions built at the larger fixture, every case measured, 490 s hosted) counts
       # from the end of the package install, which took from 18 s to 1172 s on hosted runners
-      BUDGET_SECONDS: ${{ (github.event_name == 'pull_request' || inputs.verify_control == true) && 300 || 1500 }}
+      # with the anchor: the third build, the third cluster and the paired anchor blocks of every read case
+      BUDGET_SECONDS: ${{ (github.event_name == 'pull_request' || inputs.verify_control == true) && 300 || 2400 }}
       VERIFY_CONTROL: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_control == true && 'true' || 'false' }}
     steps:
       - name: Start end-to-end clock
@@ -76,6 +94,11 @@ jobs:
           printf 'Baseline: %s\nCandidate: %s\nTier: %s\n' "$baseline" "$CANDIDATE_SHA" "$TIER" >> "$ARTIFACTS/workflow-summary.md"
           python3 scripts/test-perf-select.py 2>&1 | tee "$ARTIFACTS/selection-tests.log"
           python3 -m unittest discover -s bench/perf -p 'test_*.py' -v 2>&1 | tee "$ARTIFACTS/methodology-tests.log"
+          python3 bench/steps/perf_gate.py --check-anchor-tsv bench/baselines/anchor-manifest.tsv | tee "$ARTIFACTS/anchor-manifest.log"
+          if [[ -n "$ANCHOR_REF" ]]; then
+            echo "anchor_sha=$(git rev-parse --verify "$ANCHOR_REF^{commit}")" >> "$GITHUB_OUTPUT"
+            printf 'Anchor: %s\n' "$ANCHOR_REF" >> "$ARTIFACTS/workflow-summary.md"
+          fi
           python3 scripts/perf-select.py --baseline-ref "$baseline" --candidate-ref "$CANDIDATE_SHA" \
             --tier "$TIER" --output "$ARTIFACTS/selection.json" | tee -a "$GITHUB_OUTPUT"
           if [[ "$VERIFY_CONTROL" == true ]]; then
@@ -100,8 +123,16 @@ jobs:
           scripts/apt-install.sh postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev build-essential python3
           echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
 
+      # The pinned anchor changes on a release, not on a commit: its build is kept per commit and PostgreSQL major (the layout scripts/build-v510-fixture.sh writes).
+      - name: Restore the pinned anchor build
+        if: steps.scope.outputs.run == 'true' && steps.scope.outputs.anchor_sha != ''
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/focused-perf-anchor
+          key: perf-anchor-${{ runner.os }}-${{ runner.arch }}-pg18-${{ steps.scope.outputs.anchor_sha }}
+
       # Both exact SHA builds, isolated libraries/clusters and paired samples run here,
-      # with one PG18/compiler/configuration. No matrix or source/object cache.
+      # with one PG18/compiler/configuration. No matrix or source/object cache for them.
       - name: Paired focused gate
         if: steps.scope.outputs.run == 'true'
         env:
@@ -116,6 +147,11 @@ jobs:
           [[ $TIER == nightly ]] && date +%s.%N > "$ARTIFACTS/budget-start"
           acceptance=()
           if [[ "$VERIFY_CONTROL" == true ]]; then acceptance+=(--verify-control); fi
+          if [[ "$ALLOW_LOADED" == true ]]; then acceptance+=(--allow-loaded); fi
+          # stock planner, 1 and 4 workers, paired with the parent; with an anchor also paired with it and compared with its recorded manifest
+          if [[ -n "$ANCHOR_REF" ]]; then
+            acceptance+=(--anchor-ref "$ANCHOR_REF" --anchor-cache "$RUNNER_TEMP/focused-perf-anchor" --anchor-tsv bench/baselines/anchor-manifest.tsv)
+          fi
           rc=0
           nice -n 19 python3 bench/steps/perf_gate.py \
             --baseline-ref "$BASELINE_SHA" --candidate-ref "$CANDIDATE_SHA" \
@@ -124,8 +160,8 @@ jobs:
             --budget-seconds "$BUDGET_SECONDS" --workflow-start-seconds "$(cat "$ARTIFACTS"/budget-start "$ARTIFACTS"/workflow-start 2>/dev/null | head -1)" \
             --cleanup-report-reserve-seconds 30 \
             2>&1 | tee "$ARTIFACTS/driver.log" || rc=${PIPESTATUS[0]}
-          # exit 2 is an inconclusive measurement: a hosted runner shares its host (12 % of 439 runs), so it is a warning, not a failed run; the acceptance
-          # run exists to prove the gate can tell, and a regression (1) or an error (3) fail either way
+          # exit 2 is an inconclusive measurement (a noisy block, a shared host: 12 % of 439 hosted runs), so it is a warning, not a failed run; the acceptance
+          # run exists to prove the gate can tell, and a regression (1), a drift from the anchor (1) or an error (3) fail either way
           if [[ $rc == 2 && "$VERIFY_CONTROL" != true ]]; then
             echo "::warning::inconclusive measurement: $(sed -n 's/^Error: //p' "$ARTIFACTS/gate/summary.md" | head -1) (see the gate summary)"
             rc=0
