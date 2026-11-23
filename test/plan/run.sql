@@ -3,7 +3,7 @@
 -- planner's own choice) and scan (the sequential, index and bitmap scans off, so that Custom Scan (SiftAgg) runs when the query is one it can).
 -- It checks, and records in plangate.results:
 --   * the results: equal across the paths by the contract of coldiff.compare (text for every type, floats within 1e-12 + 1e-9 * max);
---   * the plan chosen against the plan of the tag `-- expect: PLAN [LO HI]`: scan, normal or either;
+--   * the plan chosen against the plan of the row of the shape in test/plan/bands.tsv (lane, shape, PLAN, LO, HI): scan, normal or either;
 --   * the cost ratio (the planner's total cost of the scan path, the chosen plan when it is one, over the native one) against its band LO HI, so that a drift is seen
 --     before it flips a choice (no band, or `-`, when the query has no scan path);
 --   * the tag `-- parallel: yes`: under the lane stock4t, the plan of PostgreSQL has a Gather (the shape is one of the parallel scans the lane is for)
@@ -17,7 +17,7 @@ CREATE TABLE plangate.results (
 	workers int,                -- the most workers a node (Gather, Gather Merge) plans, of the plan chosen: what the parallel lanes (stock4t, tuned) let it use
 	native_workers int,         -- the same of the plan PostgreSQL has without sift
 	problems text[] NOT NULL DEFAULT '{}');
--- the expectation of a shape in a lane other than stock (test/plan/bands.tsv, the lane in the setting plangate.lane): its plan and band replace the tag of the shape.
+-- the expectation of a shape in a lane (test/plan/bands.tsv, bands-f1.tsv for Format 1; the lane in the setting plangate.lane): its plan and its band.
 -- A band is a factor of 2 around the ratio at 30000 rows, the size of the full CI tier: the ratio falls with the rows (plangate.sh --rows), so another size has bands of its own, the lane `LANE@ROWS`
 CREATE TABLE plangate.bands (lane text, name text, plan text, lo text, hi text);
 
@@ -50,7 +50,7 @@ END $$;
 -- one shape (its text: the tags, then the query) into plangate.results
 CREATE FUNCTION plangate.run(txt text, runs int) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
-	h jsonb := coldiff.header(txt); q text := h ->> 'body'; nm text := h ->> 'name'; tags text[] := string_to_array(coalesce(h ->> 'expect', 'untagged -'), ' '); plan text := tags[1]; band text[] := tags[2:3];
+	h jsonb := coldiff.header(txt); q text := h ->> 'body'; nm text := h ->> 'name'; plan text := 'new'; band text[] := ARRAY['-', NULL];
 	keycols int[] := CASE WHEN h ->> 'key' = '-' THEN NULL WHEN coalesce(h ->> 'key', '') = '' THEN '{}'::int[] ELSE string_to_array(h ->> 'key', ' ')::int[] END;
 	lane_band plangate.bands; anyband boolean := false; problems text[] := '{}'; chosen text; native record; sc record; ch record; err text; diff text; native_ms float8; scan_ms float8; ratio float8; verdict text;
 	nruns int := CASE WHEN runs > 0 THEN greatest(runs, coalesce((h ->> 'runs')::int, 0)) ELSE 0 END;
@@ -116,9 +116,3 @@ CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '',
 	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s
 	WHERE substring(s FROM '^-- name: (\S+)') ~ pattern
 	  AND (areas = '' OR string_to_array(substring(s FROM '(?n)^-- area: (.*)$'), ' ') && string_to_array(areas, ',')) $$;
-
--- the `-- expect:` line each shape would have from this run: its plan (the chosen one where it is new) and a band of a factor of 2 either way, in 2 significant digits
-CREATE VIEW plangate.suggestions AS
-	SELECT name, concat_ws(' ', CASE WHEN plan = 'new' THEN chosen ELSE plan END,
-		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int) || ' ' || round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int), '-')) AS expect
-	FROM plangate.results;
