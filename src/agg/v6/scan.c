@@ -93,6 +93,7 @@ struct SiftV6Scan
 	SiftBatchSel bs;
 	MemoryContext batch_cx;
 	bool		count_only;
+	bool		minmax_only;	/* every aggregate is a MIN or MAX of an integer column and nothing else is asked: the zones of a part answer it */
 	const SiftPartDesc *visible_part;	/* the part whose rows part_offer found all-visible: its batches are not vetted */
 	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
 	SiftVec   **fact;			/* the vectors of the columns, for the pipe */
@@ -563,6 +564,56 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 	return false;
 }
 
+/* MIN and MAX of integer columns of the whole relation: a part's zones hold the least and the greatest value of each column */
+static bool
+spec_minmax_only(const SiftV6Spec *spec)
+{
+	bool		only = spec->naggs > 0 && spec->nkeys == 0 && spec->nsets == 0 && spec->nbins == 0 && spec->nfilters == 0 && spec->nderive == 0 && !spec->affine && spec->ext == NULL;
+
+	for (int j = 0; only && j < spec->naggs; j++)
+	{
+		const SiftV6Agg *a = &spec->agg[j];
+
+		only = (a->kind == SV6_MIN || a->kind == SV6_MAX) && a->fclause == 0 && a->arg.jleaf == 0 && a->arg.scale == 0 && sift_v6_class(a->arg.typid) != SV6C_F64 &&
+			sift_v6_class(a->arg.typid) != SV6C_TEXT && sift_v6_class(a->arg.typid) != SV6C_BOOL && a->arg.typid != NUMERICOID;
+	}
+	return only;
+}
+
+/* The least and the greatest of the part, as the two rows of a batch of the columns the aggregates read */
+static bool
+zone_offer(void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone)
+{
+	V6Scan	   *s = arg;
+	SiftBatchSel *bs = &s->bs;
+
+	if (!s->minmax_only || s->visible_part != d)
+		return false;
+	for (int i = 0; i < s->ncols; i++)
+	{
+		SiftVec    *v = &s->cols[i].vec;
+
+		((int64 *) v->data)[0] = zone[i].min;
+		((int64 *) v->data)[1] = zone[i].max;
+		v->type = SVEC_I64;
+		v->valid = NULL;
+		v->nan = NULL;
+		v->all_valid = true;
+		v->len = 2;
+		v->dense = true;
+		v->sel = NULL;
+	}
+	memset(bs->mask, 0, sizeof(bs->mask));
+	bs->mask[0] = 3;
+	bs->n_raw = 2;
+	bs->n_active = 2;
+	bs->all_active = true;
+	bs->has_sel = false;
+	sift_v6_group_update(s->group, bs, s->keyvec, s->argvec);
+	s->stats->rows += d->nrows;
+	return true;
+}
+
 /* The columns of the n rows from off of a batch that vet_slice kept, folded into the groups, the pipe or the caller's emit */
 static void
 fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
@@ -754,6 +805,7 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 		sift_f2_scan_set_bridge(scan, bridge, NULL, NULL);
 	sift_f2_scan_set_part_sink(scan, part_offer);
 	sift_f2_scan_set_part_dict_sink(scan, part_dict_offer);
+	sift_f2_scan_set_zone_sink(scan, zone_offer);
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
 	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
 	index_endscan(scan);
@@ -767,6 +819,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 
 	s->count_only = s->rows == NULL && s->spec->ext == NULL && sift_v6_spec_count_only(s->spec);
 	scan_setup(s, sift_col_rel(index)->first, star);
+	s->minmax_only = s->rows == NULL && s->pipe == NULL && spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
 	if (next_chunk == NULL)
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);

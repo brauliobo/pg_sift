@@ -625,6 +625,44 @@ scan_pinned(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sc
 	s->cands = NULL;
 }
 
+void
+sift_f2_scan_set_zone_sink(IndexScanDesc scan, SiftF2ZoneSink zone_sink)
+{
+	((F2Scan *) scan->opaque)->zone_sink = zone_sink;
+}
+
+/* Whether the zones of the sink leaves answer the part: no row of it is excluded or changed, and no granule of a leaf lacks a value */
+static bool
+zones_answer(Relation rel, F2Scan *s, SiftF2PartPin *pin, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px)
+{
+	const uint32 ng = pin->part->hdr.ngranules;
+	SiftF2PartZone *zone;
+	int			nexc;
+
+	if (s->zone_sink == NULL || s->npreds > 0 || s->nsink_leaves == 0 || px != NULL || s->bridge != NULL || d->dv_blk != InvalidBlockNumber || (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA))
+		return false;
+	(void) sift_f2_pin_exc(rel, pin, &nexc);
+	if (nexc > 0)
+		return false;
+	zone = palloc(s->nsink_leaves * sizeof(SiftF2PartZone));
+	for (int j = 0; j < s->nsink_leaves; j++)
+	{
+		const SiftZone *z = sift_f2_pin_zones(rel, pin, s->sink_leaves[j]);
+
+		zone[j] = (SiftF2PartZone) {.min = PG_INT64_MAX,.max = PG_INT64_MIN};
+		if (z == NULL || ng == 0)
+			return false;
+		for (uint32 g = 0; g < ng; g++)
+		{
+			if (z[g].flags & SIFT_ZONE_NONE)
+				return false;
+			zone[j].min = Min(zone[j].min, z[g].min);
+			zone[j].max = Max(zone[j].max, z[g].max);
+		}
+	}
+	return s->zone_sink(s->sink_arg, d, zone);
+}
+
 static void
 scan_part(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px, Snapshot snap)
 {
@@ -632,7 +670,8 @@ scan_part(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sche
 
 	PG_TRY();
 	{
-		scan_pinned(rel, s, f, schema, e, pin, px, snap);
+		if (!zones_answer(rel, s, pin, e, d, px))
+			scan_pinned(rel, s, f, schema, e, pin, px, snap);
 	}
 	PG_FINALLY();
 	{

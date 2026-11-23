@@ -47,7 +47,7 @@ static bool
 query_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, SiftV6ProjQuery *q)
 {
 	*q = (SiftV6ProjQuery) {.limit = -1};
-	if (spec->nderive > 0 || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys == 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
+	if (spec->nderive > 0 || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 		q->group[q->ngroup++] = (SiftProjKey) {.leaf = h->store->att_first[spec->key[i].attno],.fn = SPF_COLUMN};
@@ -164,7 +164,9 @@ static void
 fill_result(const SiftV6Spec *spec, SiftProjCube *cube, MemoryContext cx, SiftV6ProjResult *out)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	int			n = sift_proj_cube_ngroups(cube);
+	const int	ngroups = sift_proj_cube_ngroups(cube);
+	const int	n = Max(ngroups, spec->nkeys == 0);
+	SiftProjGroup empty = {.st = palloc0(Max(spec->naggs, 1) * sizeof(SiftProjMState))};
 
 	out->natts = spec->nkeys + spec->naggs;
 	out->nrows = n;
@@ -172,7 +174,7 @@ fill_result(const SiftV6Spec *spec, SiftProjCube *cube, MemoryContext cx, SiftV6
 	out->isnull = palloc(Max(n * out->natts, 1) * sizeof(bool));
 	for (int i = 0; i < n; i++)
 	{
-		const SiftProjGroup *g = sift_proj_cube_group(cube, i);
+		const SiftProjGroup *g = i < ngroups ? sift_proj_cube_group(cube, i) : &empty;
 		Datum	   *v = out->values + (size_t) i * out->natts;
 		bool	   *nl = out->isnull + (size_t) i * out->natts;
 

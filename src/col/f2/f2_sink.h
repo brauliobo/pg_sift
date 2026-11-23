@@ -65,6 +65,20 @@ extern void sift_f2_scan_set_part_sink(IndexScanDesc scan, SiftF2PartSink part_s
 typedef bool (*SiftF2PartDictSink) (void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts);
 extern void sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSink sink);
 
+/*
+ * The least and the greatest value of each sink leaf over the granules of a part that no key, predicate, deletion vector, pending delete, bridge, column delta or
+ * exception touches, offered after the part is pinned and before a granule of it is read: the consumer returns true when that answers it and the part is then not scanned. zone[j] is the
+ * sink leaf j; a part whose zones are not integers (or have a granule with no value) is not offered.
+ */
+typedef struct SiftF2PartZone
+{
+	int64		min;
+	int64		max;
+} SiftF2PartZone;
+
+typedef bool (*SiftF2ZoneSink) (void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone);
+extern void sift_f2_scan_set_zone_sink(IndexScanDesc scan, SiftF2ZoneSink zone_sink);
+
 /* The sink leaves (by their place among the leaves given to sift_f2_scan_sink; the array must outlive the scan) it takes as the codes of the dictionary of a granule when the chunk has one; call it before the scan runs */
 extern void sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf);
 
