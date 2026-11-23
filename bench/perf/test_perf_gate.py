@@ -11,6 +11,7 @@ import io
 import unittest
 from unittest.mock import patch
 import os  # noqa: E402
+import re
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../steps'))
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
 
@@ -700,6 +701,15 @@ class Methodology(unittest.TestCase):
                          'Plans':[{'Node Type':'Custom Scan','Custom Plan Provider':'SiftAgg'}]}}]
         self.assertEqual(gate.workers(plan),{'planned':4,'launched':3})
         self.assertEqual(gate.workers([{'Plan':{'Node Type':'Seq Scan'}}]),{'planned':0,'launched':0})
+
+    def test_every_sift_setting_the_harness_sends_is_a_release_guc(self):
+        root = Path(gate.__file__).resolve().parents[2]
+        release = {line.split('|')[0] for line in (root/'scripts/guc-disposition.psv').read_text().splitlines() if '|KEEP|' in line}
+        sent = [gate.MODE_SETTINGS['1T'],gate.MODE_SETTINGS['4T'],(root/'bench/perf/fixture.sql').read_text(),
+                *(c.settings+';'+c.reset+';'+c.sql for c in gate.CASES)]
+        used = {m for text in sent for m in re.findall(r'\bSET\s+(sift\.\w+)',text,re.I)}
+        self.assertGreater(len(used),3)
+        self.assertEqual(sorted(used-release),[])
 
 
 if __name__=='__main__':

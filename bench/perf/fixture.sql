@@ -1,6 +1,5 @@
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance=off;
-SET sift.table_write_buffer_limit=2048;
 CREATE TABLE seed (id int, g int, amount bigint, body text, pad text);
 ALTER TABLE seed ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO seed
