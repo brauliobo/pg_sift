@@ -128,9 +128,9 @@ RESET enable_seqscan;
 SELECT id, round(sift.score(ctid)::numeric, 3) AS score FROM mc WHERE sift.sections(title, body) @@> 'title:alpha body:beta' ORDER BY sift.score(ctid) DESC, id LIMIT 3;
  id  | score 
 -----+-------
-  25 | 1.936
-  75 | 1.936
- 125 | 1.936
+  25 | 1.946
+  75 | 1.946
+ 125 | 1.946
 (3 rows)
 
 -- writes, deletes, promotion, VACUUM and merge keep it in step

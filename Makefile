@@ -157,6 +157,7 @@ TESTING_REGRESS += aggstub_%
 TESTING_REGRESS += analyzer_version
 TESTING_REGRESS += bm25_dead_windows
 TESTING_REGRESS += bm25_dict_block_limit
+TESTING_REGRESS += bm25_field_dl_bm25f
 TESTING_REGRESS += bm25_lazy_tail_maxscore
 TESTING_REGRESS += bm25_par_part_ranked
 TESTING_REGRESS += bm25_tidbridge

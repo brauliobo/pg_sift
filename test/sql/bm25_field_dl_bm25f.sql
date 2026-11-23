@@ -1,75 +1,129 @@
--- Fields: name:"a b" is a phrase of that section only, and a phrase never holds across the boundary of two sections.
+-- BM25F: a leaf of a field is scored with the length of the field in the doc and the average length of that field (segments of format 6, the write
+-- buffer), not with the length of the whole text:
+--   score = boost * idf * (k1 + 1) * tf / (tf + k1 * (1 - b + b * dl_f / avgdl_f))     idf = ln(1 + (N - df_f + 0.5) / (df_f + 0.5))
+-- with dl_f the tokens of the field in the doc and avgdl_f their average over the live docs. The score of sift is compared with that formula computed in
+-- SQL from the tokens of the live rows, for a built segment, the write buffer, a promoted one, vacuumed docs, a merge, and a segment of format 4 (which has
+-- no field lengths: its docs score the length of the whole text) that a merge rewrites as format 6.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.async_maintenance = off;
 
-CREATE FUNCTION sections(name text, city text, rest text) RETURNS text LANGUAGE sql IMMUTABLE AS
-	$$ SELECT coalesce(name, '') || chr(29) || coalesce(city, '') || chr(29) || coalesce(rest, '') $$;
+CREATE FUNCTION sections(title text, body text) RETURNS text LANGUAGE sql IMMUTABLE AS
+	$$ SELECT coalesce(title, '') || chr(29) || coalesce(body, '') $$;
+CREATE FUNCTION bf_words(seed int, n int) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+	SELECT string_agg((ARRAY['alpha','beta','gamma','delta','omega','sigma','kappa','zeta','theta','lambda','rho','tau'])
+		[1 + (hashint4(seed * 37 + w) & 2147483647) % 12], ' ') FROM generate_series(1, n) w $$;
 
-CREATE TABLE fp (id int PRIMARY KEY, name text, city text, rest text);
-INSERT INTO fp VALUES
-	(1, 'red wire', 'blue sky', 'green grass'),
-	(2, 'wire red', 'sky blue', 'grass green'),
-	(3, 'red', 'wire', 'red wire'),
-	(4, 'the red wire', 'blue', 'wire red'),
-	(5, 'blue', 'sky blue', 'red wire'),
-	(6, 'red wire red wire', '', ''),
-	(7, '', 'red wire', ''),
-	(8, 'a red', 'wire b', 'wire');
-INSERT INTO fp SELECT i, 'p' || i, 'q' || i, 'r' || i FROM generate_series(100, 400) i;
-CREATE INDEX fp_idx ON fp USING sift (sections(name, city, rest)) WITH (fields = 'name,city');
-CREATE TABLE fq (LIKE fp);
-INSERT INTO fq SELECT * FROM fp;
-CREATE INDEX fq_idx ON fq USING sift (sections(name, city, rest)) WITH (fields = 'name,city', positions = off);
-ANALYZE fp;
-ANALYZE fq;
+-- a short title and a long body: the length of a row is nearly the length of its body, the length of the title is not
+CREATE TABLE bf (id int PRIMARY KEY, title text, body text, pad text DEFAULT repeat('x', 300));
+ALTER TABLE bf ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO bf SELECT i, bf_words(i, 1 + i % 3), bf_words(i + 1000, 20 + i % 40) FROM generate_series(1, 600) i;
+CREATE TABLE bl (LIKE bf INCLUDING DEFAULTS);
+ALTER TABLE bl ADD PRIMARY KEY (id);
+ALTER TABLE bl ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO bl SELECT id, title, body FROM bf;
+CREATE INDEX bf_idx ON bf USING sift (sections(title, body)) WITH (fields = 'title,body');
+SET sift.test_segfmt = 4;
+CREATE INDEX bl_idx ON bl USING sift (sections(title, body)) WITH (fields = 'title,body');
+RESET sift.test_segfmt;
+VACUUM (ANALYZE) bf;
+VACUUM (ANALYZE) bl;
+SELECT 'bf_idx' AS idx, format FROM sift._test_segment_formats('bf_idx') WHERE kind = 'immutable'
+UNION ALL SELECT 'bl_idx', format FROM sift._test_segment_formats('bl_idx') WHERE kind = 'immutable';
+SELECT sift.verify('bf_idx', true), sift.verify('bl_idx', true);
 
--- the parse of a field phrase, and a field phrase on an index without fields
-SELECT sift.parse_query('name:"red wire"', 'fp_idx'::regclass);
-SELECT sift.parse_query('city:("red wire" blue)^2', 'fp_idx'::regclass);
-SELECT sift.parse_query('name:"red wire"', 'fp_idx'::regclass) = sift.parse_query(sift.parse_query('name:"red wire"', 'fp_idx'::regclass), 'fp_idx'::regclass) AS roundtrip;
-CREATE TABLE fn (id int PRIMARY KEY, t text);
-INSERT INTO fn VALUES (1, 'name red wire');
-CREATE INDEX fn_idx ON fn USING sift (t);
-SELECT sift.parse_query('name:"red wire"', 'fn_idx'::regclass);
-SELECT sift.parse_query('name:/red/', 'fp_idx'::regclass);
-
-CREATE FUNCTION ids(tbl text, q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
+-- the reference of one word in one field of table t: its score by the formula, from the tokens of the live rows; whole: the length of the row
+CREATE FUNCTION bf_ref(t text, word text, fld text, whole bool DEFAULT false) RETURNS TABLE (id int, score float8) LANGUAGE plpgsql AS $$
 BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(id::text, '' '' ORDER BY id), ''-'') FROM %I WHERE id < 100 AND sections(name, city, rest) @@> %L', tbl, q) INTO r;
-	RETURN r;
+	RETURN QUERY EXECUTE format($q$
+	WITH tok AS (SELECT t.id, s.f, tk.token, count(*)::int AS tf
+				 FROM %1$I t, LATERAL (VALUES ('title', t.title), ('body', t.body)) s(f, txt), LATERAL sift.tokenize(coalesce(s.txt, '')) tk
+				 GROUP BY 1, 2, 3),
+	     n AS (SELECT count(*)::float8 AS n FROM %1$I),
+	     fl AS (SELECT tok.id, tok.f, sum(tf)::float8 AS dl FROM tok GROUP BY 1, 2),
+	     rl AS (SELECT fl.id, sum(dl) AS dl FROM fl GROUP BY 1),
+	     av AS (SELECT fl.f, sum(dl) / (SELECT n FROM n) AS avgdl FROM fl GROUP BY 1),
+	     ra AS (SELECT sum(dl) / (SELECT n FROM n) AS avgdl FROM rl),
+	     df AS (SELECT count(*)::float8 AS df FROM tok WHERE f = %3$L AND token = %2$L)
+	SELECT tok.id, ln(1 + (n.n - df.df + 0.5) / (df.df + 0.5)) * 2.2 * tok.tf /
+		   (tok.tf + 1.2 * (1 - 0.75 + 0.75 * CASE WHEN %4$L::bool THEN rl.dl / ra.avgdl ELSE fl.dl / av.avgdl END))
+	FROM tok JOIN fl USING (id, f) JOIN rl USING (id) JOIN av USING (f), n, df, ra WHERE tok.f = %3$L AND tok.token = %2$L $q$, t, word, fld, whole);
 END $$;
-CREATE FUNCTION seqids(tbl text, q text) RETURNS text LANGUAGE plpgsql
-	SET enable_indexscan = off SET enable_bitmapscan = off SET sift.enable_scan = off AS $$
-DECLARE r text;
+
+CREATE FUNCTION bf_sift(t text, q text) RETURNS TABLE (id int, score float8) LANGUAGE plpgsql
+	SET enable_seqscan = off SET enable_bitmapscan = off SET enable_indexscan = off AS $$
 BEGIN
-	EXECUTE format('SELECT coalesce(string_agg(id::text, '' '' ORDER BY id), ''-'') FROM %I WHERE id < 100 AND sections(name, city, rest) @@> %L', tbl, q) INTO r;
-	RETURN r;
+	RETURN QUERY EXECUTE format('SELECT t.id, sift.score(t.ctid)::float8 FROM %I t WHERE sections(title, body) @@> %L ORDER BY 2 DESC, t.ctid', t, q);
 END $$;
 
--- the phrase of a section: the index (with positions and without), the seq scan agree
-SELECT q, ids('fp', q) AS idx, ids('fq', q) AS nopos, seqids('fp', q) AS seq
-FROM unnest(ARRAY['name:"red wire"', 'city:"red wire"', 'name:"wire red"', 'city:"blue sky"', 'name:"red wire" city:"blue sky"',
-                  'name:"red wire" OR city:"red wire"', 'name:("red wire" "wire red")', 'name:"red the wire"', 'name:"wire"']) q;
+-- rows only in one, and scores that differ by more than float4 rounding (a relative 1e-4)
+CREATE FUNCTION bf_diff(t text, word text, fld text, whole bool DEFAULT false) RETURNS text LANGUAGE sql AS $$
+	SELECT count(*) FILTER (WHERE r.id IS NULL) || ' only sift, ' || count(*) FILTER (WHERE s.id IS NULL) || ' only reference, ' ||
+		   count(*) FILTER (WHERE abs(s.score - r.score) > 1e-4 * r.score) || ' differ, ' || count(s.id) || ' rows'
+	FROM bf_sift(t, fld || ':' || word) s FULL JOIN bf_ref(t, word, fld, whole) r USING (id) $$;
 
--- an unqualified phrase never crosses the boundary of two sections: "red wire" is not held by 'red' | 'wire', nor 'a red' | 'wire b' as "red wire"
-SELECT q, ids('fp', q) AS idx, ids('fq', q) AS nopos, seqids('fp', q) AS seq
-FROM unnest(ARRAY['"red wire"', '"wire blue"', '"red blue"', '"sky green"', '"blue sky green"', '"red wire" AND NOT name:"red wire"', '"a red wire b"']) q;
+CREATE FUNCTION bf_all(t text, whole bool DEFAULT false) RETURNS TABLE (q text, diff text) LANGUAGE sql AS $$
+	SELECT fld || ':' || w, bf_diff(t, w, fld, whole) FROM unnest(ARRAY['alpha', 'zeta', 'tau']) w, unnest(ARRAY['title', 'body']) fld ORDER BY 1 $$;
 
--- the same after a write buffer, an update, a promotion, VACUUM and a merge
-INSERT INTO fp VALUES (9, 'red', 'wire', 'x'), (10, 'x red wire', 'y', 'z'), (11, 'x', 'red wire', 'z');
-INSERT INTO fq SELECT * FROM fp WHERE id IN (9, 10, 11);
-SELECT q, ids('fp', q), ids('fq', q), seqids('fp', q) FROM unnest(ARRAY['"red wire"', 'name:"red wire"', 'city:"red wire"']) q;
-UPDATE fp SET name = 'red wire' WHERE id = 5;
-UPDATE fq SET name = 'red wire' WHERE id = 5;
-DELETE FROM fp WHERE id = 1;
-DELETE FROM fq WHERE id = 1;
-SELECT q, ids('fp', q), ids('fq', q), seqids('fp', q) FROM unnest(ARRAY['"red wire"', 'name:"red wire"', 'city:"red wire"']) q;
-VACUUM fp;
-VACUUM fq;
-SELECT q, ids('fp', q), ids('fq', q), seqids('fp', q) FROM unnest(ARRAY['"red wire"', 'name:"red wire"', 'city:"red wire"']) q;
-SELECT sift.verify('fp_idx', true), sift.verify('fq_idx', true);
-DROP TABLE fp, fq, fn;
-DROP FUNCTION ids(text, text);
-DROP FUNCTION seqids(text, text);
-DROP FUNCTION sections(text, text, text);
+-- a field of the built segment; the format 4 segment scores the length of the row, as before
+SELECT * FROM bf_all('bf');
+SELECT * FROM bf_all('bl', true);
+
+-- the per-field length is not the length of the row: the same query against the formula with the row's length differs for most rows
+SELECT count(*) FILTER (WHERE abs(s.score - r.score) > 1e-4 * r.score) > 0 AS field_dl_is_not_row_dl
+FROM bf_sift('bf', 'title:alpha') s JOIN bf_ref('bf', 'alpha', 'title', true) r USING (id);
+
+-- the sum of two fields with weights
+SELECT sift.field_query('alpha', 'title^3, body') AS fq \gset
+SELECT count(*) AS rows,
+       count(*) FILTER (WHERE abs(s.score - (3 * coalesce(t.score, 0) + coalesce(b.score, 0))) > 1e-4 * s.score) AS differ
+FROM bf_sift('bf', :'fq') s LEFT JOIN bf_ref('bf', 'alpha', 'title') t USING (id) LEFT JOIN bf_ref('bf', 'alpha', 'body') b USING (id);
+
+-- the write buffer: rows added after the build score their own field lengths, with the averages of the segment and the buffer
+INSERT INTO bf SELECT i, bf_words(i, 1 + i % 4), bf_words(i + 1000, 10 + i % 70) FROM generate_series(601, 700) i;
+INSERT INTO bl SELECT id, title, body FROM bf WHERE id > 600;
+SELECT ndocs AS in_buffer_bf FROM sift._test_wbuf_reads('bf_idx');
+SELECT ndocs AS in_buffer_bl FROM sift._test_wbuf_reads('bl_idx');
+SELECT * FROM bf_all('bf');
+SELECT sift.verify('bf_idx', true);
+
+-- the buffer promoted to a segment of format 6, and the same for the format 4 index, which then holds a segment of each format
+SELECT sift.promote('bf_idx') IS NOT NULL AS promoted_bf, sift.promote('bl_idx') IS NOT NULL AS promoted_bl;
+SELECT 'bf_idx' AS idx, format FROM sift._test_segment_formats('bf_idx') WHERE kind = 'immutable'
+UNION ALL SELECT 'bl_idx', format FROM sift._test_segment_formats('bl_idx') WHERE kind = 'immutable' ORDER BY 1, 2;
+SELECT * FROM bf_all('bf');
+SELECT sift.verify('bf_idx', true), sift.verify('bl_idx', true);
+
+-- deleted and vacuumed rows leave the averages and the top of the ranked scan, whose bounds stay above every score
+DELETE FROM bf WHERE id % 7 = 0;
+DELETE FROM bl WHERE id % 7 = 0;
+VACUUM bf;
+VACUUM bl;
+SELECT * FROM bf_all('bf');
+SELECT q, ids = whole AS top_is_the_head
+FROM (SELECT 'title:alpha' AS q, (SELECT array_agg(id) FROM (SELECT t.id FROM bf t WHERE sections(title, body) @@> 'title:alpha' ORDER BY sift.score(t.ctid) DESC, t.ctid LIMIT 10) a) AS ids,
+             (SELECT array_agg(id) FROM (SELECT id FROM bf_sift('bf', 'title:alpha') LIMIT 10) b) AS whole
+      UNION ALL SELECT 'body:zeta', (SELECT array_agg(id) FROM (SELECT t.id FROM bf t WHERE sections(title, body) @@> 'body:zeta' ORDER BY sift.score(t.ctid) DESC, t.ctid LIMIT 10) a),
+             (SELECT array_agg(id) FROM (SELECT id FROM bf_sift('bf', 'body:zeta') LIMIT 10) b)) v;
+SELECT sift.verify('bf_idx', true);
+
+-- a merge rewrites the segments: every doc keeps its field lengths, and the segments of format 4 get them from the tf of their words
+SELECT sift.merge('bf_idx', true) >= 0 AS merged_bf, sift.merge('bl_idx', true) >= 0 AS merged_bl;
+SELECT 'bf_idx' AS idx, format FROM sift._test_segment_formats('bf_idx') WHERE kind = 'immutable'
+UNION ALL SELECT 'bl_idx', format FROM sift._test_segment_formats('bl_idx') WHERE kind = 'immutable' ORDER BY 1, 2;
+SELECT * FROM bf_all('bf');
+SELECT * FROM bf_all('bl');
+SELECT sift.verify('bf_idx', true), sift.verify('bl_idx', true);
+
+-- an index without fields keeps writing the format it wrote: nothing to normalize, no field lengths
+CREATE TABLE bn (id int PRIMARY KEY, body text);
+INSERT INTO bn SELECT i, bf_words(i, 30) FROM generate_series(1, 300) i;
+CREATE INDEX bn_idx ON bn USING sift (body);
+SELECT format FROM sift._test_segment_formats('bn_idx') WHERE kind = 'immutable';
+SELECT sift.verify('bn_idx', true);
+
+DROP TABLE bf, bl, bn;
+DROP FUNCTION bf_words(int, int), sections(text, text), bf_ref(text, text, text, bool), bf_sift(text, text), bf_diff(text, text, text, bool),
+	bf_all(text, bool);
+DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

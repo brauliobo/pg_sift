@@ -1,8 +1,8 @@
 -- sift.sections and sift.field_query (docs/FIELDS-FACETS.md): the sections of one key, searched with per-field weights at query time.
 -- A leaf of the weighted query is the OR of that leaf in each weighted field with the weight as boost, so a row scores the sum over the
--- fields of the BM25 of the field's own terms (document frequency and term frequency of the field, length of the whole row):
+-- fields of the BM25 of the field's own terms (document frequency, term frequency and length of the field, and the average length of the field over the rows):
 --   score = sum over the leaves of the query, over the weighted fields f, of
---           w_f * idf_f * (k1 + 1) * tf_f / (tf_f + k1 * (1 - b + b * dl / avgdl))     idf_f = ln(1 + (N - df_f + 0.5) / (df_f + 0.5))
+--           w_f * idf_f * (k1 + 1) * tf_f / (tf_f + k1 * (1 - b + b * dl_f / avgdl_f))     idf_f = ln(1 + (N - df_f + 0.5) / (df_f + 0.5))
 -- The score of sift is compared with that formula computed in SQL from the tokens of each section, the top k of the ranked scan with the
 -- whole ranking (the bounds that stop a ranked scan early must hold with weights below and above 1), and the match sets with the index,
 -- the document evaluation and the unweighted queries.
@@ -31,17 +31,18 @@ CREATE TABLE fw_tok AS
 SELECT t.id, s.f, tk.token, count(*)::int AS tf
 FROM fw t, LATERAL (VALUES ('title', t.title), ('body', t.body), ('tags', t.tags)) s(f, txt), LATERAL sift.tokenize(coalesce(s.txt, '')) tk
 GROUP BY 1, 2, 3;
-CREATE TABLE fw_dl AS SELECT t.id, (SELECT count(*) FROM sift.tokenize(sift.sections(t.title, t.body, t.tags)))::int AS dl FROM fw t;
+CREATE TABLE fw_dl AS SELECT id, f, sum(tf)::float8 AS dl FROM fw_tok GROUP BY 1, 2;
+CREATE TABLE fw_avgdl AS SELECT f, sum(tf)::float8 / (SELECT count(*) FROM fw) AS avgdl FROM fw_tok GROUP BY 1;
 CREATE TABLE fw_df AS SELECT f, token, count(*) AS df FROM fw_tok GROUP BY 1, 2;
 
 -- the rows and the scores of a query of words, ANDed or ORed, over fields with weights
 CREATE FUNCTION fw_ref(terms text[], fields text[], weights float8[], conj bool DEFAULT true) RETURNS TABLE (id int, score float8) LANGUAGE sql AS $$
-	WITH st AS (SELECT count(*)::float8 AS n, avg(dl::float8) AS avgdl FROM fw_dl),
+	WITH st AS (SELECT count(*)::float8 AS n FROM fw),
 	     wf AS (SELECT f, w FROM unnest(fields, weights) u(f, w)),
 	     leaf AS (
 		SELECT k.id, k.token,
-			   sum(wf.w * ln(1 + (st.n - d.df + 0.5) / (d.df + 0.5)) * 2.2 * k.tf / (k.tf + 1.2 * (1 - 0.75 + 0.75 * dl.dl / st.avgdl))) AS sc
-		FROM fw_tok k JOIN wf USING (f) JOIN fw_df d USING (f, token) JOIN fw_dl dl USING (id), st
+			   sum(wf.w * ln(1 + (st.n - d.df + 0.5) / (d.df + 0.5)) * 2.2 * k.tf / (k.tf + 1.2 * (1 - 0.75 + 0.75 * dl.dl / av.avgdl))) AS sc
+		FROM fw_tok k JOIN wf USING (f) JOIN fw_df d USING (f, token) JOIN fw_dl dl USING (id, f) JOIN fw_avgdl av USING (f), st
 		WHERE k.token = ANY (terms) GROUP BY k.id, k.token)
 	SELECT leaf.id, sum(sc) FROM leaf GROUP BY leaf.id HAVING NOT conj OR count(*) = array_length(terms, 1) $$;
 
@@ -126,7 +127,7 @@ SELECT fw_topk(sift.field_query('alpha beta', 'title^3, body, tags^0.5'), 10) AS
 	   fw_cnt(sift.field_query('alpha', 'title, body, tags')) = fw_cnt('alpha') AS same_matches,
 	   fw_seq(sift.field_query('alpha', 'title^3, body')) = fw_cnt(sift.field_query('alpha', 'title^3, body')) AS seq_agrees;
 SELECT sift.verify('fw_idx', true);
-DROP TABLE fw, fw_tok, fw_dl, fw_df;
+DROP TABLE fw, fw_tok, fw_dl, fw_avgdl, fw_df;
 DROP FUNCTION fw_words(int, int), fw_ref(text[], text[], float8[], bool), fw_sift(text), fw_diff(text, text[], text[], float8[], bool),
 	fw_cnt(text), fw_seq(text), fw_topk(text, int);
 DROP EXTENSION pg_sift;
