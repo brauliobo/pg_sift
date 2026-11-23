@@ -36,6 +36,7 @@
 #include "agg/v6/v6_join_push.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_vexpr.h"
+#include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_argext.h"
 #include "agg/v6/v6_argext_sql.h"
 #include "agg/v6/v6_card.h"
@@ -219,7 +220,7 @@ derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 
 	if (!sift_v6_derive_of(&rs, e, key, &d, &restype) || (at = add_derive(p, &d)) == 0)
 		return false;
-	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at};
+	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.scale = d.kind == SVD_NUM_EXPR ? (int) d.aux : 0,.derive = at};
 	return true;
 }
 
@@ -450,6 +451,8 @@ compile_agg(V6Plan *p, Aggref *a)
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
 			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && derived_col(p, arg, false, &g.arg))) && kind_takes(g.kind, g.arg.typid))))
+			return false;
+		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_NUM_EXPR && g.kind != SV6_SUM && g.kind != SV6_AVG && g.kind != SV6_COUNT)
 			return false;
 		if (two && (!column_of(p, ((TargetEntry *) lsecond(a->args))->expr, false, &g.arg2) || sift_v6_class(g.arg2.typid) == SV6C_BOOL || sift_v6_class(g.arg2.typid) == SV6C_TEXT))
 			return false;
@@ -734,8 +737,8 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	p->scan_tlist = NIL;
 	p->scan_vars = NULL;
 	p->text = NULL;
-	exprs = sift_v6_collapse_offset_sums((Node *) p->out->reltarget->exprs);
-	having = sift_v6_collapse_offset_sums(extra->havingQual);
+	exprs = sift_vn_rewrite_aggs((Node *) p->out->reltarget->exprs);
+	having = sift_vn_rewrite_aggs(extra->havingQual);
 	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, exprs) && (having == NULL || compile_aggs(p, having)) &&
 		reads_only_scan_tlist(p, exprs) && (having == NULL || reads_only_scan_tlist(p, having));
 }
@@ -906,7 +909,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	heap = table_open(rte->relid, AccessShareLock);
 	if (sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops)
 	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.store = sift_f2_store_open(heap)};
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.store = sift_f2_store_open(heap),.batch_ok = true};
 
 		if (sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
 			sift_v6_add_group_path(&p, output_rel, group_exprs, (List *) ((GroupPathExtraData *) extra)->havingQual);
@@ -914,7 +917,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	else
 		foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
 		{
-			V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
+			V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true};
 			Relation	irel;
 
 			if (!sift_v6_index_owned(ix))
@@ -983,7 +986,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	CustomScan *cs = makeNode(CustomScan);
 	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
 
-	cs->scan.plan.targetlist = (List *) sift_v6_collapse_offset_sums((Node *) tlist);
+	cs->scan.plan.targetlist = (List *) sift_vn_rewrite_aggs((Node *) tlist);
 	cs->scan.scanrelid = 0;
 	cs->flags = best->flags;
 	collect_params((Node *) spec->indexqual, &cs->custom_exprs);
@@ -996,7 +999,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 		cs->custom_private = sift_v6_spec_pack(spec);
 	}
 	cs->methods = &sift_agg_v6_plan_methods;
-	cs->scan.plan.qual = (List *) sift_v6_collapse_offset_sums((Node *) lthird(best->custom_private));
+	cs->scan.plan.qual = (List *) sift_vn_rewrite_aggs((Node *) lthird(best->custom_private));
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
 	if (OidIsValid(spec->text_indexoid))
 		root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->text_indexoid);

@@ -8,10 +8,12 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "rewrite/rewriteManip.h"
 
 #include "agg/group/ht.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_bqual.h"
 #include "agg/v6/v6_qual.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "col/am/preds.h"
@@ -115,9 +117,9 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	ScalarArrayOpExpr *q = copyObject(sa);
 	SiftV6Col	col;
 
-	if (!sa->useOr || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
+	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
 		!sift_v6_plan_column(p, linitial(sa->args), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
-		get_op_opfamily_strategy(sa->opno, sift_v6_plan_opfamily(p, col.attno)) != BTEqualStrategyNumber ||
+		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), sift_v6_plan_opfamily(p, col.attno)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && !sift_text_bytes_equal(sa->inputcollid)))
 		return NULL;
 	linitial(q->args) = index_var(linitial(sa->args), col.attno - 1);
@@ -163,6 +165,40 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 	}
 }
 
+static bool
+has_param(Node *n, void *context)
+{
+	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, has_param, context));
+}
+
+static bool
+has_numeric_var(Node *n, void *context)
+{
+	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
+}
+
+/* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/v6/v6_bqual.h); a table refuses the statement that reads a NaN of a numeric, so
+ * it leaves the quals on numerics to the executor */
+static bool
+qual_batch(V6Plan *p, RestrictInfo *ri)
+{
+	SiftV6Input in = {.indexoid = p->relid,.is_table = p->store != NULL,.nkeys = p->store != NULL ? p->store->natts : 0};
+	Expr	   *clause;
+
+	if (!p->batch_ok || ri->pseudoconstant || contain_mutable_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
+		return false;
+	if (p->store != NULL && has_numeric_var((Node *) ri->clause, NULL))
+		return false;
+	if (p->store == NULL)
+		sift_v6_input_init_info(&in, p->index);
+	clause = copyObject(ri->clause);
+	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
+	if (!sift_v6_bq_plan_ok(&in, clause))
+		return false;
+	p->spec.vqual = lappend(p->spec.vqual, clause);
+	return true;
+}
+
 /* the clauses of the query imply the predicate of a partial index: every row the query reads is in the index */
 bool
 sift_v6_index_complete(const V6Plan *p)
@@ -192,6 +228,8 @@ sift_v6_compile_quals(V6Plan *p)
 			continue;
 		q = ri->pseudoconstant ? NULL : sift_v6_index_qual(p, ri->clause);
 		jq = ri->pseudoconstant || q != NULL || p->store != NULL ? NIL : sift_v6_json_qual(&rel, ri->clause);
+		if (q == NULL && jq == NIL && qual_batch(p, ri))
+			continue;
 		if (q == NULL && jq == NIL)
 			return false;
 		if (q != NULL)

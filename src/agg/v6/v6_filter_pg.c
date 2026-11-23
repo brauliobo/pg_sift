@@ -132,6 +132,21 @@ btree_op(Oid opno, SiftPredOp *op)
 	return false;
 }
 
+/* a comparison that holds for a value that is not equal: the negator of an equality */
+static bool
+filter_op(Oid opno, SiftPredOp *op)
+{
+	const Oid	neg = get_negator(opno);
+	SiftPredOp	eq;
+
+	if (btree_op(opno, op))
+		return true;
+	if (!OidIsValid(neg) || !btree_op(neg, &eq) || eq != SPO_EQ)
+		return false;
+	*op = SPO_NE;
+	return true;
+}
+
 static bool
 set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
 {
@@ -147,7 +162,7 @@ set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
 			return !c->constisnull && f64_of(c->constvalue, c->consttype, &p->f);
 		case SV6C_TEXT:
 			p->kind = SPK_STR;
-			if (c->constisnull || !is_text_type(c->consttype) || (p->op != SPO_EQ && p->op != SPO_IN))
+			if (c->constisnull || !is_text_type(c->consttype) || (p->op != SPO_EQ && p->op != SPO_NE && p->op != SPO_IN))
 				return false;
 			p->s = str_of(b, c->constvalue);
 			return true;
@@ -166,7 +181,7 @@ pred_compare(Build *b, const OpExpr *op, SiftPred *p)
 		return false;
 	v = linitial(op->args);
 	c = lsecond(op->args);
-	return (p->vec = fcol_index(b, v)) >= 0 && btree_op(op->opno, &p->op) && set_const(b, p, v->vartype, c);
+	return (p->vec = fcol_index(b, v)) >= 0 && filter_op(op->opno, &p->op) && set_const(b, p, v->vartype, c);
 }
 
 static bool
@@ -184,16 +199,16 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 	SiftPredOp	op;
 	uint32		k = 0;
 
-	if (!sa->useOr || list_length(sa->args) != 2 || !IsA(linitial(sa->args), Var) || !IsA(lsecond(sa->args), Const))
+	if (list_length(sa->args) != 2 || !IsA(linitial(sa->args), Var) || !IsA(lsecond(sa->args), Const))
 		return false;
 	v = linitial(sa->args);
 	c = lsecond(sa->args);
-	if (c->constisnull || (p->vec = fcol_index(b, v)) < 0 || !btree_op(sa->opno, &op) || op != SPO_EQ)
+	if (c->constisnull || (p->vec = fcol_index(b, v)) < 0 || !filter_op(sa->opno, &op) || op != (sa->useOr ? SPO_EQ : SPO_NE))
 		return false;
 	arr = DatumGetArrayTypeP(c->constvalue);
 	get_typlenbyvalalign(ARR_ELEMTYPE(arr), &typlen, &typbyval, &typalign);
 	deconstruct_array(arr, ARR_ELEMTYPE(arr), typlen, typbyval, typalign, &elems, &nulls, &n);
-	p->op = SPO_IN;
+	p->op = sa->useOr ? SPO_IN : SPO_NOT_IN;
 	p->in_i = MemoryContextAllocZero(b->cx, sizeof(int64) * Max(n, 1));
 	p->in_f = MemoryContextAllocZero(b->cx, sizeof(double) * Max(n, 1));
 	p->in_s = MemoryContextAllocZero(b->cx, sizeof(SiftPredStr) * Max(n, 1));
@@ -202,6 +217,8 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 		Const		e = {.consttype = ARR_ELEMTYPE(arr),.constvalue = elems[i],.constisnull = nulls[i]};
 		SiftPred	one = {.op = SPO_EQ};
 
+		if (nulls[i] && !sa->useOr)
+			return false;
 		if (nulls[i])
 			continue;
 		if (!set_const(b, &one, v->vartype, &e))
