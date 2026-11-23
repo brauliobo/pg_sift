@@ -106,15 +106,6 @@ read_zstd_dict(Relation rel, const SiftPart *part, MemoryContext cx, const char 
 	MemoryContextRegisterResetCallback(cx, &cb->cb);
 }
 
-const SiftPartDict *
-sift_part_dict_find(const SiftPartDicts *ds, int col, SiftDictKind kind)
-{
-	for (int i = 0; ds != NULL && i < ds->n; i++)
-		if (ds->d[i].col == col && ds->d[i].kind == kind)
-			return &ds->d[i];
-	return NULL;
-}
-
 const SiftPartDicts *
 sift_part_dicts(Relation rel, const SiftPart *cpart)
 {

@@ -6,6 +6,15 @@
 #include "col/granule/granule_int.h"
 #include "core/damage.h"
 
+const SiftPartDict *
+sift_part_dict_find(const SiftPartDicts *ds, int col, SiftDictKind kind)
+{
+	for (int i = 0; ds != NULL && i < ds->n; i++)
+		if (ds->d[i].col == col && ds->d[i].kind == kind)
+			return &ds->d[i];
+	return NULL;
+}
+
 bool
 sift_granule_str_codes(const SiftGranuleView *v, int col, uint32 *codes, bool *isnull, SiftGranuleDict *dict)
 {
