@@ -142,6 +142,15 @@ f2_gbuf_invalidate_pins(Oid relid)
 }
 
 static void
+pin_invalidate_hits(uint32 hashvalue)
+{
+	if (pins.by_key == NULL)
+		return;
+	foreach_oid(relid, rel_lists_hits(pins.by_rel, hashvalue))
+		f2_gbuf_invalidate_pins(relid);
+}
+
+static void
 pin_evict_all(void)
 {
 	f2_gbuf_invalidate_pins(InvalidOid);
@@ -158,8 +167,7 @@ gbuf_invalidate(uint32 hashvalue)
 		f2_locate_invalidate(InvalidOid);
 		return;
 	}
-	foreach_oid(relid, rel_lists_hits(pins.by_rel, hashvalue))
-		f2_gbuf_invalidate_pins(relid);
+	pin_invalidate_hits(hashvalue);
 	f2_locate_invalidate_hits(hashvalue);
 }
 
