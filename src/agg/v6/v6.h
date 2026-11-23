@@ -38,7 +38,8 @@ typedef enum SiftV6Kind
 	SV6_VAR_POP,
 	SV6_VAR_SAMP,
 	SV6_BOOL_OR,
-	SV6_BOOL_AND
+	SV6_BOOL_AND,
+	SV6_PCT_CONT				/* percentile_cont(frac) WITHIN GROUP (ORDER BY float8 column): the values of the group in the arena of its text states (v6_pct.h) */
 } SiftV6Kind;
 
 #define SIFT_V6_MAX_KEYS	32
@@ -124,6 +125,7 @@ typedef struct SiftV6Agg
 	SiftV6Col	xcol[SIFT_V6_MAX_DCOLS - 1];
 	int			fclause;		/* FILTER (WHERE ..): 1 + the number of its clause in SiftV6Spec.filter, 0 for none */
 	Oid			restype;
+	double		frac;			/* SV6_PCT_CONT: the fraction */
 } SiftV6Agg;
 
 /* A numeric NaN is not NULL: these aggregates fold it. It counts, and makes a sum or an average NaN, a maximum NaN and a minimum NaN when no other row has a value, and is one more distinct value */
@@ -155,7 +157,8 @@ typedef enum SiftV6DeriveKind
 	SVD_STRLEN,					/* length(text) of src: the characters (the bytes in a single-byte encoding), as the type of the key or argument says */
 	SVD_URL_HOST,				/* regexp_replace(src, '^https?://(?:www\\.)?([^/]+)/.*$', '\\1') */
 	SVD_EXTRACT,				/* extract(minute or hour FROM src), src a timestamp; aux is the unit in microseconds */
-	SVD_CASE_STR				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
+	SVD_CASE_STR,				/* CASE WHEN cond[0] = cval[0] AND .. THEN src ELSE the constant END, text */
+	SVD_ARITH					/* + - * of float8 columns (src, cond[0..]) and a constant (aux): the postfix tokens in cval, v6_plan_rewrite.h; the batches of an unnest only */
 } SiftV6DeriveKind;
 
 #define SIFT_V6_MAX_DERIVE	8

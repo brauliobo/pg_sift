@@ -8,6 +8,7 @@
 
 #include "agg/v6/group_ext.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/v6_pct.h"
 
 static const struct
 {
@@ -78,6 +79,9 @@ v6g_ext_fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *
 		case SV6_BOOL_AND:
 			sift_bool_offer((SiftBoolAcc *) acc, a->kind == SV6_BOOL_OR, int_at(v, r) != 0);
 			break;
+		case SV6_PCT_CONT:
+			sift_v6_pct_add(&g->tx, acc, ((const double *) v->data)[r]);
+			break;
 		default:
 			{
 				const SiftStrView *s = &((const SiftStrView *) v->data)[r];
@@ -110,6 +114,9 @@ v6g_ext_merge(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 		case SV6_BOOL_AND:
 			sift_bool_merge((SiftBoolAcc *) d, (const SiftBoolAcc *) s, a->kind == SV6_BOOL_OR);
 			break;
+		case SV6_PCT_CONT:
+			sift_v6_pct_merge(&g->tx, d, s);
+			break;
 		default:
 			sift_tslot_merge(&g->tx, (SiftTextSlot *) d, (const SiftTextSlot *) s, a->kind == SV6_MIN, NULL, NULL);
 	}
@@ -136,6 +143,8 @@ v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, bool *
 		case SV6_BOOL_OR:
 		case SV6_BOOL_AND:
 			return BoolGetDatum(((const SiftBoolAcc *) acc)->v != 0);
+		case SV6_PCT_CONT:
+			return Float8GetDatum(sift_v6_pct_final(&g->tx, acc, a->frac));
 		default:
 			{
 				uint32		len = 0;

@@ -208,6 +208,7 @@ v6g_acc_op(const SiftV6Agg *a)
 		case SV6_VAR_SAMP:
 		case SV6_BOOL_OR:
 		case SV6_BOOL_AND:
+		case SV6_PCT_CONT:
 			break;
 	}
 	return V6A_NONE;
