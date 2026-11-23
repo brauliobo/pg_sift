@@ -398,17 +398,18 @@ scenario_held() {
 	[[ $SCENARIOS == *held-lite* ]] || check scenario-held-after "$@"
 }
 
-# maintenance of the index: REINDEX, then promotion and merge when the functions exist
+# maintenance of the index: REINDEX, promote, merge; of a table: sift.maintain, VACUUM, VACUUM FULL
 scenario_maint() {
-	local fn
-	log "scenario maint: REINDEX, promote, merge"
-	if [[ -n $TBL ]]; then sql -c "VACUUM orders"; check scenario-vacuum-2 "$@"; sql -c "VACUUM FULL orders"; check scenario-vacuum-full "$@"; return; fi
+	log "scenario maint: $([[ -n $TBL ]] && echo 'maintain, VACUUM, VACUUM FULL' || echo 'REINDEX, promote, merge')"
+	if [[ -n $TBL ]]; then
+		sql -c "SELECT sift.maintain('orders')" >/dev/null; check scenario-maintain "$@"
+		sql -c "VACUUM orders"; check scenario-vacuum-2 "$@"
+		sql -c "VACUUM FULL orders"; check scenario-vacuum-full "$@"
+		return
+	fi
 	sql -c "REINDEX INDEX orders_col" -c "REINDEX TABLE t_part"; check scenario-reindex "$@"
-	for fn in col_promote col_merge; do
-		if [[ $(sql -c "SELECT to_regproc('sift.$fn') IS NOT NULL") == t ]]; then
-			sql -c "SELECT sift.$fn('orders_col'$([[ $fn == col_merge ]] && echo ', true'))" >/dev/null; check "scenario-$fn" "$@"
-		else log "scenario maint: sift.$fn does not exist, skipped"; fi
-	done
+	sql -c "SELECT sift.promote('orders_col')" >/dev/null; check scenario-promote "$@"
+	sql -c "SELECT sift.merge('orders_col', true)" >/dev/null; check scenario-merge "$@"
 }
 
 fixtures_suite() {
