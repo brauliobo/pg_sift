@@ -26,6 +26,12 @@
 # what the fast tier of a pull request runs besides the tests of the area: the proof of the coverage table and the emulated isolation tests (a few seconds each)
 =cheap	^(coverage|isolation-emulated|tools-build|format-isolation)$
 
+# the areas of scripts/fast-gate.sh the performance ones do not name: the column index (src/col, unless another area owns the file) and the SQL surface
+=fg_col	^fast-gate-col$
+=fg_sql	^fast-gate-sql$
+^src/col/	{fg_col}
+^(sql/|pg_sift[^/]*\.control$|src/core/(guc|sql_)|src/col/am/options)	{fg_sql}
+
 # the whole build and every harness: a change here can break anything
 ^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
@@ -115,7 +121,7 @@
 ^(Makefile$|src/core/(sift|page|limits)\.h$|src/col/api/(format|meta)\.h$|src/(bm25/(count|cscan_exec|iter|planner_path|prefix|rank_search|writer)|col/v1/(build/(run|btree_par)|build_par|seg/(points|verify)|test/query))\.c$)	{layout}
 ^src/core/visibility\.c$	^tap-shell-sb_mask_small$
 ^scripts/(upgrade[-_]check\.sh|upgrade_check_(head|tail)\.sql)$	^tap-shell-upgrade_check$
-^scripts/(static\.baseline|build-bench\.sql|lint\.sh|check-tap-sleeps\.sh|tap-sleeps\.allow|check-versions\.sh|bench-tests\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-build-id\.sh|test-ci-build-fail\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|check-tap-timeouts\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-relcache-slots\.sh|check-polling\.sh|polling\.allow|check-leak-hooks\.sh|check-raw-alloc\.sh|check-arg-order\.py|check-upper-paths\.sh|leak-hooks\.allow|check-package-text\.sh|check-expected-oracle\.py|expected-oracle\.allow|check-test-hygiene\.py|check-codec-bytes\.py|codec-bytes\.allow|test-gen-docs-skip\.sh|test-gen-docs-public\.sh|format-literals\.tsv)	-
+^scripts/(static\.baseline|build-bench\.sql|lint\.sh|check-tap-sleeps\.sh|tap-sleeps\.allow|check-versions\.sh|bench-tests\.sh|test-ci-claim\.sh|test-affected-untracked\.sh|test-affected-wide\.sh|test-ci-stop\.sh|test-build-id\.sh|test-ci-build-fail\.sh|test-ci-ready\.sh|test-scaling-gate\.sh|check-pg-bare\.sh|check-tap-timeouts\.sh|pg-bare\.allow|check-scaling-triggers\.sh|check-format-literals\.sh|check-compat-calls\.sh|check-relcache-slots\.sh|check-polling\.sh|polling\.allow|check-leak-hooks\.sh|check-raw-alloc\.sh|check-arg-order\.py|check-upper-paths\.sh|leak-hooks\.allow|check-package-text\.sh|check-expected-oracle\.py|expected-oracle\.allow|check-test-hygiene\.py|test-fast-gate-select\.py|check-codec-bytes\.py|codec-bytes\.allow|test-gen-docs-skip\.sh|test-gen-docs-public\.sh|format-literals\.tsv)	-
 ^(scripts/(check-complexity\.sh|complexity\.allow|check-scaling-ops\.sh|git-hooks/pre-commit)|test/scaling/)	-
 ^scripts/source-snapshot\.sh$	^(hardened|assert|valgrind)$
 ^scripts/port-isa-check\.sh$	gh:sqlite|gh:mariadb

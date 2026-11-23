@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# The fast high-level gate (Spec 84): the differential, plan, fuzz and lifecycle suites that see the whole product, in one command of about a minute, the same for CI and for a
-# developer's or an agent's verification. Six stages over four lanes, each lane with a cluster of its own, one install shared:
+# The fast high-level gate (Spec 84): the differential, plan, fuzz and lifecycle suites that see the whole product, the same for CI and for a developer's or an agent's verification.
+# `--area all` (CI) is six stages over four lanes, about a minute, each lane with a cluster of its own, one install shared; `--diff BASE` and `--files` run only the stages the
+# changed paths can move, in 15 to 35 s:
 #
-#   lane 1   corpus (col, table)       scripts/corpus.sh [--table]
+#   lane 1   corpus (col, table)       scripts/corpus.sh [--table] [--only GLOB|GLOB]
 #            plangate (col, table, 4t) scripts/plangate.sh --runs 0 --slice smoke|AREA|all [--table | --lane stock-4t]
 #            lifecycle                 DML, VACUUM, ADD COLUMN, ADD PRIMARY KEY, DROP COLUMN, VACUUM FULL, REINDEX and sift.check on a sift_col index and a sift_table
 #            coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
@@ -10,38 +11,52 @@
 #   lane 3   shapes_matrix             test/fuzz/shapes_matrix.py --tier quick
 #   lane 4   txn_fuzz                  test/fuzz/txn_fuzz.py --shapes: two sessions, savepoints, cursors, prepared statements
 #            tbl_twin_fuzz             test/fuzz/tbl_twin_fuzz.py: a sift_table against its heap twin
+#            bm25_fuzz, diff_fuzz      only for an area or a harness that names them
+#   lane 5   regress                   scripts/pgtest.sh regress TEST...: the test/sql files of the change, on Format 1 (--include-sql, or a test/sql file edited)
 #   every lane ends with the leak gate of its cluster (scripts/leakcheck.sh, run by pgtest.sh stop)
 #
-#   scripts/fast-gate.sh [--format f2|f1|release] [--area AREA[,AREA]] [--assert] [--quick|--full] [--root DIR] [--keep] [--dry-run]
+#   scripts/fast-gate.sh [--format f2|f1|release] [--diff BASE | --files PATH... | --area AREA[,AREA]] [--include-sql] [--assert] [--quick|--full] [--root DIR] [--keep] [--dry-run]
 #   scripts/fast-gate.sh --selftest
 #
 #   --format F     f2 (default): the testing library, every index and table Format 2.0; f1: the testing library, Format 1 indexes (the compat-f1 lane); release: the release library,
 #                  no sift.test_* setting and no sift._test_ function (what a user installs). SIFT_TEST_FORMAT of scripts/pgtest.sh, which starts each cluster
-#   --area AREA    the plan shapes of the area (star clickbench coexist jsonb table bm25 gpu smoke all) instead of one shape of each area (--quick) or every shape (--full)
+#   --area AREA    the areas to run (star clickbench coexist jsonb col table bm25 gpu sql, smoke or all: the six stages). Default, and what CI runs: all
+#   --diff BASE    the paths of `git diff --name-only --no-renames BASE` (from the merge base, the working tree included) and the untracked files that scripts/areas.tsv maps
+#   --files PATH.. the paths named, for scripts and for scripts/test-fast-gate-select.py
+#                  A path goes to the areas scripts/areas.tsv gives it (scripts/areas.sh --owners: the {perf_AREA}, {fg_col} and {fg_sql} groups), the same map as scripts/perf-select.py and
+#                  ci.sh affected; a path of an area beside others is run once for all (one corpus --only, one plangate --slice, one shapes_matrix --only); test/sql/X.sql runs X alone; a
+#                  harness (test/corpus, test/plan, test/col, test/fuzz, test/matrix and their scripts) runs itself; a path no area owns (src/core, the Makefile, a new file of src/) runs
+#                  smoke, never nothing; documentation and what no job runs runs nothing and exits 0
+#   --include-sql  also the regression tests that execute the functions the paths touch (scripts/focus/*.tsv, scripts/focus-pins.tsv): at most 40, all when CI is set
 #   --assert       a PostgreSQL built with --enable-cassert (the one on PATH when it has it, else scripts/pg-assert.sh --inject) and a scan of the server logs for a TRAP,
 #                  a memory-context warning and the other findings of scripts/assert.sh
 #   --quick|--full the sizes of the stages: quick (default) one seed, the quick tiers; full the whole plan shapes, the full tiers, four seeds
 #   --root DIR     a root a build staged (scripts/ci-build.sh, with its .flavor). Default: SIFT_PREBUILT_ROOT, SIFT_PREBUILT_RELEASE for release, SIFT_ROOT when its flavor fits,
 #                  else the tree is built and installed (scripts/pgtest.sh install; a developer's incremental build)
 #   --keep         keeps the scratch directory, which holds the log of each step (a failure keeps it)
-#   --dry-run      prints the format, the library, the lanes and the commands and runs none of them
+#   --dry-run      prints the paths, the areas, the regression tests, the lanes and the commands and runs none of them (no PostgreSQL, a tenth of a second)
 #
-# A harness is given --format F when its usage has it, and --table, --fast or --ddl when it has them: a stage whose harness has not got what the format needs says so and is
-# skipped, not failed (the release library has no test-only hooks, so a harness without --format is skipped there). Exit 1 when a step fails. The clusters listen on SIFT_PORT (default 56130) + 1 to + 4.
+# A harness is given --format F when its usage has it, and --table, --fast, --ddl or the multi-glob `--only GLOB|GLOB` when it has them: a stage whose harness has not got what the
+# format needs says so and is skipped, not failed (the release library has no test-only hooks, so a harness without --format is skipped there); a corpus --only it cannot union
+# runs the whole corpus. Exit 1 when a step fails. The clusters listen on SIFT_PORT (default 56130) + 1 to + 5.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
-AREAS="star clickbench coexist jsonb table bm25 gpu smoke all"
+AREAS="star clickbench coexist jsonb col table bm25 gpu sql smoke all"
 BAD='TRAP: |detected write past chunk end|problem in alloc set|could not find block containing chunk|pfree called with invalid pointer|invalid memory alloc request|missing lock for relation'
 
-FORMAT=f2 TIER=quick AREA='' ASSERT='' ROOT_ARG='' KEEP='' DRY='' SELFTEST=''
+FORMAT=f2 TIER=quick AREA='' ASSERT='' ROOT_ARG='' KEEP='' DRY='' SELFTEST='' SEL_BASE='' SEL_FILES='' INCLUDE_SQL=''
+PATHS=()
 parse() {
 	while (( $# )); do
 		case $1 in
 			--format) FORMAT=${2:-}; shift ;;
 			--area) AREA=${2:-}; shift ;;
+			--diff) SEL_BASE=${2:-}; shift ;;
+			--files) SEL_FILES=1; while (( $# > 1 )) && [[ $2 != -* ]]; do PATHS+=("$2"); shift; done ;;
+			--include-sql) INCLUDE_SQL=1 ;;
 			--assert) ASSERT=1 ;;
 			--quick) TIER=quick ;;
 			--full) TIER=full ;;
@@ -57,6 +72,10 @@ parse() {
 	[[ $FORMAT == f2 || $FORMAT == f1 || $FORMAT == release ]] || { echo "fast-gate: --format is f2, f1 or release, not '$FORMAT'" >&2; exit 2; }
 	local a
 	for a in ${AREA//,/ }; do [[ " $AREAS " == *" $a "* ]] || { echo "fast-gate: --area '$a' is none of: $AREAS" >&2; exit 2; }; done
+	[[ $(printf '%s' "${AREA:+a}${SEL_BASE:+b}${SEL_FILES:+c}" | wc -c) -le 1 ]] || { echo "fast-gate: --area, --diff and --files are alternatives" >&2; exit 2; }
+	[[ -z $SEL_FILES || ${#PATHS[@]} -gt 0 ]] || { echo "fast-gate: --files names no path" >&2; exit 2; }
+	[[ -n $AREA$SEL_BASE$SEL_FILES ]] || AREA=all
+	[[ -z $SEL_BASE || -n $(git -C "$REPO" rev-parse --verify -q "$SEL_BASE^{commit}") ]] || { echo "fast-gate: --diff $SEL_BASE is no commit of this checkout" >&2; exit 2; }
 	[[ -z $ROOT_ARG || -d $ROOT_ARG ]] || { echo "fast-gate: --root $ROOT_ARG is no directory" >&2; exit 2; }
 	return 0
 }
@@ -65,6 +84,7 @@ parse() {
 cassert() { [[ $(pg_config --configure 2>/dev/null) == *--enable-cassert* ]]; }
 # supports FLAG FILE: the harness names the flag (its usage), so that the gate works before and after the harness learns it
 supports() { grep -qF -- "$1" "$REPO/$2" 2>/dev/null; }
+supports_re() { grep -qE -- "$1" "$REPO/$2" 2>/dev/null; }
 
 # the steps: S_NAME, S_LANE, S_CMD (quoted words, run by eval in the lane's environment), S_SKIP (why it does not run, or empty)
 S_NAME=() S_LANE=() S_CMD=() S_SKIP=()
@@ -89,29 +109,187 @@ add_sql() {
 	S_NAME+=("$1") S_LANE+=("$2") S_CMD+=("$cmd") S_SKIP+=('')
 }
 
+# ---------- the router: paths -> areas -> the stages ----------
+# route turns PATHS (--files, or --diff BASE) into SEL_AREAS and into what each stage is asked (DEM); --area names the areas itself. The map is scripts/areas.tsv, read by
+# scripts/areas.sh --owners as scripts/perf-select.py and ci.sh affected read it: {perf_AREA} rows for star, clickbench, coexist, jsonb, table, bm25 and gpu, {fg_col} and {fg_sql}
+AREA_ORDER="star clickbench coexist jsonb col table bm25 gpu sql smoke"
+OWNER_GROUPS=(perf_star perf_clickbench perf_coexist perf_jsonb perf_table perf_bm25 perf_gpu fg_col fg_sql)
+declare -A DEM=() PATH_AREAS=() LANE_FMT=()
+SEL_AREAS=() SQL_EDITED=() SQL_TESTS=() SQL_CUT=0 MB=''
+# axis STEP AXIS SEP VALUES: the stage is asked for the VALUES (split at SEP) of an axis: the globs of corpus --only, the slices of plangate, the regexes of shapes_matrix. The asks of every
+# area merge into one run of the stage; ALL widens an axis to everything, so the merged run is never narrower than any of them
+axis() {
+	local step=$1 key=$1:$2 sep=$3 v vs
+	DEM[$step]=1
+	IFS=$sep read -ra vs <<<"$4"
+	for v in "${vs[@]}"; do
+		[[ ${DEM[$key]-} == ALL ]] && return 0
+		if [[ $v == ALL ]]; then DEM[$key]=ALL; return 0; fi
+		[[ "$sep${DEM[$key]-}$sep" == *"$sep$v$sep"* ]] || DEM[$key]=${DEM[$key]:+${DEM[$key]}$sep}$v
+	done
+}
+want() { DEM[$1]=1; }
+# apply_area AREA: the stages and the slices of an area (Spec 84 section 3.1); smoke, which every path no area owns falls back to, is all
+apply_area() {
+	local slice=smoke
+	[[ $TIER == quick ]] || slice=all
+	case $1 in
+		star) axis corpus only '|' '*join*|*scope*|*semi*|*anti*'; axis plangate slice , star; axis shapes_matrix only '|' join; axis shapes_matrix facts , ALL ;;
+		clickbench) axis corpus only '|' '*agg*|*window*|*having*|*range*|*gsets*'; axis plangate slice , clickbench
+			axis shapes_matrix only '|' 'group|win|topn|distinct'; axis shapes_matrix facts , ALL ;;
+		coexist) axis corpus only '|' ALL; axis plangate slice , coexist,smoke; axis shapes_matrix only '|' ALL; axis shapes_matrix facts , ALL ;;
+		jsonb) axis corpus only '|' '*json*|*unnest*|*path*|*elem*'; axis plangate slice , jsonb; axis coldiff corpus '|' 'json|unnest|path|elem|contains'
+			axis coldiff scenarios , dml,vacuum ;;
+		col) axis corpus only '|' ALL; axis plangate slice , smoke; axis coldiff corpus '|' ALL; axis coldiff scenarios , dml,abort,vacuum; want txn_fuzz
+			axis surface_sweep only '|' 'col|check|maint|promote|merge|scope' ;;
+		table) want corpus-table; axis plangate-table slice , table; axis coldiff-table corpus '|' ALL; axis coldiff-table scenarios , dml,abort,vacuum
+			axis shapes_matrix only '|' ALL; axis shapes_matrix facts , tbl,tbl_bm25; want tbl_twin_fuzz ;;
+		bm25) axis plangate slice , bm25; axis shapes_matrix only '|' ALL; axis shapes_matrix facts , bm25,tbl_bm25; want bm25_fuzz ;;
+		gpu) axis plangate slice , gpu; axis corpus only '|' '*agg*' ;;
+		sql) axis surface_sweep only '|' ALL; axis corpus only '|' ALL; axis plangate slice , smoke ;;
+		smoke|all) axis corpus only '|' ALL; want corpus-table; axis plangate slice , "$slice"; axis plangate-table slice , "$slice"; axis plangate-4t slice , "$slice"; want lifecycle
+			axis coldiff corpus '|' ALL; axis coldiff scenarios , dml,abort,vacuum; axis coldiff-table corpus '|' ALL; axis coldiff-table scenarios , dml,abort,vacuum
+			axis surface_sweep only '|' ALL; axis shapes_matrix only '|' ALL; axis shapes_matrix facts , ALL; want txn_fuzz; want tbl_twin_fuzz ;;
+	esac
+}
+# harness_path PATH: a harness, or a script of one, asks for itself (all of it, as the whole gate would run it); 1 for any other path
+harness_path() {
+	case $1 in
+		test/corpus/*|scripts/corpus.sh) axis corpus only '|' ALL; want corpus-table ;;
+		test/plan/*|scripts/plangate.sh) axis plangate slice , smoke; axis plangate-table slice , smoke; axis plangate-4t slice , smoke ;;
+		test/col/*|test/matrix/*|scripts/coldiff.sh|scripts/coverage.sh) axis coldiff corpus '|' ALL; axis coldiff scenarios , dml,abort,vacuum
+			axis coldiff-table corpus '|' ALL; axis coldiff-table scenarios , dml,abort,vacuum ;;
+		test/fuzz/shapes_matrix*) axis shapes_matrix only '|' ALL; axis shapes_matrix facts , ALL ;;
+		test/fuzz/surface_sweep*) axis surface_sweep only '|' ALL ;;
+		test/fuzz/txn_fuzz*) want txn_fuzz ;;
+		test/fuzz/tbl_twin_fuzz*|test/t/tbl_twin_fuzz*) want tbl_twin_fuzz ;;
+		test/fuzz/diff_fuzz*) want diff_fuzz ;;
+		test/fuzz/bm25_fuzz*) want bm25_fuzz ;;
+		*) return 1 ;;
+	esac
+}
+# owner_areas OWNER...: the areas of one path from the owners of scripts/areas.sh --owners: none of the groups (a core file, the Makefile, a new file of src/, a script) is smoke, `-` (a
+# path no job builds or runs: documentation) is nothing; the column index is its own area only when no other area owns the path (src/col/shred.c is jsonb, src/col/v1/amscan/cost.c coexist)
+owner_areas() {
+	local o=" $* " a=() g
+	REPLY=
+	[[ $o == ' - ' ]] && return 0
+	for g in star clickbench coexist jsonb table bm25 gpu; do [[ $o == *" perf_$g "* ]] && a+=("$g"); done
+	[[ $o == *' fg_sql '* ]] && a+=(sql)
+	(( ${#a[@]} )) || { [[ $o == *' fg_col '* ]] && a+=(col); }
+	(( ${#a[@]} )) || a=(smoke)
+	REPLY=${a[*]}
+}
+# gather_paths: PATHS of --diff BASE: the changed files of the merge base to the working tree, and the untracked files the map covers (another lane's scratch in a shared tree is no change of this one)
+gather_paths() {
+	local f
+	[[ -n $SEL_BASE ]] || return 0
+	MB=$(git -C "$REPO" merge-base "$SEL_BASE" HEAD) || { echo "fast-gate: no merge base of $SEL_BASE and HEAD" >&2; exit 2; }
+	mapfile -t PATHS < <(cd "$REPO" && { git diff --name-only --no-renames "$MB"; git ls-files --others --exclude-standard | { source scripts/areas.sh; areas_load scripts/areas.tsv
+		while IFS= read -r f; do [[ -z $(areas_unmatched "$f") ]] && echo "$f"; done; }; } | sort -u)
+}
+route() {
+	local p n i line rest=() owners=() out=() a
+	INPUT=${SEL_BASE:+diff}${SEL_FILES:+files}${AREA:+area}
+	if [[ -n $AREA ]]; then
+		for a in ${AREA//,/ }; do apply_area "$a"; done
+		SEL_AREAS=(${AREA//,/ })
+		return 0
+	fi
+	gather_paths
+	for p in "${PATHS[@]}"; do
+		case $p in
+			test/sql/*.sql|test/expected/*.out) n=${p##*/}; n=${n%.*}
+				[[ -f $REPO/test/sql/$n.sql && -f $REPO/test/expected/$n.out && " ${SQL_EDITED[*]-} " != *" $n "* ]] && SQL_EDITED+=("$n"); PATH_AREAS[$p]=test/sql ;;
+			*) if harness_path "$p"; then PATH_AREAS[$p]=harness; else rest+=("$p"); fi ;;
+		esac
+	done
+	if (( ${#rest[@]} )); then
+		mapfile -t out < <(bash "$REPO/scripts/areas.sh" --owners "$REPO/scripts/areas.tsv" "${OWNER_GROUPS[@]}" -- "${rest[@]}" </dev/null)
+		i=0
+		for line in "${out[@]}"; do
+			if [[ $line == -- ]]; then owner_areas "${owners[@]}"; PATH_AREAS[${rest[i++]}]=$REPLY; owners=(); else owners+=("$line"); fi
+		done
+	fi
+	for a in $AREA_ORDER; do
+		for p in "${PATHS[@]}"; do [[ " ${PATH_AREAS[$p]-} " == *" $a "* ]] && { SEL_AREAS+=("$a"); apply_area "$a"; break; }; done
+	done
+}
+# resolve_sql: SQL_TESTS, the regression tests to run: the test/sql files edited, and with --include-sql the ones that execute the functions of the src/ files (by hunk with --diff, by
+# file with --files: scripts/ci/focus.sh), at most 40 unless CI is set
+resolve_sql() {
+	local p t src=() toks=() fnt=() bare=() names=() n
+	names=("${SQL_EDITED[@]}")
+	if [[ -n $INCLUDE_SQL ]]; then
+		source "$REPO/scripts/ci/focus.sh"
+		for p in "${PATHS[@]}"; do [[ $p =~ ^src/.*\.[ch]$ && -f $REPO/$p ]] && src+=("$p"); done
+		if [[ -n $SEL_BASE ]] && (( ${#src[@]} )); then
+			mapfile -t toks < <(focus_tokens "$MB")
+			for t in "${toks[@]}"; do [[ $t == *:'*' ]] || fnt+=("$t"); done
+			(( ${#fnt[@]} )) && names+=($(focus_select "${fnt[@]}" | sed -n 's/^T //p'))
+			for p in "${src[@]}"; do [[ " ${fnt[*]-} " == *" $p:"* ]] || bare+=("$p"); done
+		else bare=("${src[@]}"); fi
+		(( ${#bare[@]} )) && names+=($(focus_file_tests "${bare[@]}"))
+	fi
+	for n in "${names[@]}"; do
+		[[ -f $REPO/test/expected/$n.out && -f $REPO/test/sql/$n.sql && " ${SQL_TESTS[*]-} " != *" $n "* ]] && SQL_TESTS+=("$n")
+	done
+	if [[ -z ${CI:-} && ${#SQL_TESTS[@]} -gt 40 ]]; then SQL_CUT=$(( ${#SQL_TESTS[@]} - 40 )); SQL_TESTS=("${SQL_TESTS[@]:0:40}"); fi
+}
+
+# the plan of the stages the router asked for, in the order of the lanes
 build_plan() {
-	local slice=${AREA:-smoke} seeds=1 secs=12 matrix=quick
-	[[ -n $AREA || $TIER == quick ]] || slice=all
+	local seeds=1 secs=12 matrix=quick only facts f kept=() a=() sc
 	[[ $TIER == quick ]] || { seeds=1-4 secs=40 matrix=full; }
 	S_NAME=() S_LANE=() S_CMD=() S_SKIP=()
-	add_step corpus 1 scripts/corpus.sh -
-	add_step corpus-table 1 scripts/corpus.sh --table --table
-	add_step plangate 1 scripts/plangate.sh - --runs 0 --slice "$slice"
-	add_step plangate-table 1 scripts/plangate.sh - --runs 0 --slice "$slice" --table
-	add_step plangate-4t 1 scripts/plangate.sh - --runs 0 --slice "$slice" --lane stock-4t
-	add_sql lifecycle 1
-	if supports --fast scripts/coldiff.sh; then
-		add_step coldiff 1 scripts/coldiff.sh - --fast --variants on,on-par --scenarios dml,abort,vacuum
-		add_step coldiff-table 1 scripts/coldiff.sh --table --fast --variants on,on-par --scenarios dml,abort,vacuum --table
-	else
-		add_step coldiff 1 scripts/coldiff.sh - --fail-fast --suite fixtures --slice 1/48 --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3
-		add_step coldiff-table 1 scripts/coldiff.sh --table --fail-fast --suite fixtures --slice 1/48 --fixture-rows 1500 --variants on,on-par --scenarios dml,abort,vacuum --scenario-slices 3 --table
+	route
+	resolve_sql
+	if [[ -n ${DEM[corpus]-} ]]; then
+		only=${DEM[corpus:only]}
+		if [[ $only != ALL && $only == *'|'* ]] && ! supports_re '--only GLOB\[?\|' scripts/corpus.sh; then only=ALL; fi
+		a=(); [[ $only == ALL ]] || a=(--only "$only")
+		add_step corpus 1 scripts/corpus.sh - ${a[@]+"${a[@]}"}
 	fi
-	add_step surface_sweep 2 test/fuzz/surface_sweep.py - --tier "$matrix" --use-cluster
-	add_step shapes_matrix 3 test/fuzz/shapes_matrix.py - --tier "$matrix"
-	add_step txn_fuzz 4 test/fuzz/txn_fuzz.py - --shapes --seeds "$seeds" --stop-after 1
-	if supports --table test/fuzz/txn_fuzz.py; then add_step txn_fuzz-table 4 test/fuzz/txn_fuzz.py - --shapes --seeds "$seeds" --stop-after 1 --table; fi
-	add_step tbl_twin_fuzz 4 test/fuzz/tbl_twin_fuzz.py - --seeds "$seeds" --seconds "$secs" $(supports --ddl test/fuzz/tbl_twin_fuzz.py && echo --ddl)
+	[[ -z ${DEM[corpus-table]-} ]] || add_step corpus-table 1 scripts/corpus.sh --table --table
+	[[ -z ${DEM[plangate]-} ]] || add_step plangate 1 scripts/plangate.sh - --runs 0 --slice "${DEM[plangate:slice]}"
+	[[ -z ${DEM[plangate-table]-} ]] || add_step plangate-table 1 scripts/plangate.sh - --runs 0 --slice "${DEM[plangate-table:slice]}" --table
+	[[ -z ${DEM[plangate-4t]-} ]] || add_step plangate-4t 1 scripts/plangate.sh - --runs 0 --slice "${DEM[plangate-4t:slice]}" --lane stock-4t
+	[[ -z ${DEM[lifecycle]-} ]] || add_sql lifecycle 1
+	for f in coldiff coldiff-table; do
+		[[ -n ${DEM[$f]-} ]] || continue
+		sc=${DEM[$f:scenarios]} a=(--variants on,on-par --scenarios "$sc")
+		[[ $f == coldiff ]] || a+=(--table)
+		if supports --fast scripts/coldiff.sh; then a+=(--fast); else a+=(--fail-fast --suite fixtures --fixture-rows 1500 --scenario-slices 3); fi
+		if [[ ${DEM[$f:corpus]} != ALL ]]; then a+=(--corpus "${DEM[$f:corpus]}"); elif ! supports --fast scripts/coldiff.sh; then a+=(--slice 1/48); fi
+		add_step "$f" 1 scripts/coldiff.sh "$([[ $f == coldiff ]] || echo --table)" "${a[@]}"
+	done
+	[[ -z ${DEM[surface_sweep]-} ]] || add_step surface_sweep 2 test/fuzz/surface_sweep.py - --tier "$matrix" --use-cluster $([[ ${DEM[surface_sweep:only]} == ALL ]] || echo --only "${DEM[surface_sweep:only]}")
+	if [[ -n ${DEM[shapes_matrix]-} ]]; then
+		a=(--tier "$matrix"); [[ ${DEM[shapes_matrix:only]} == ALL ]] || a+=(--only "${DEM[shapes_matrix:only]}")
+		facts=${DEM[shapes_matrix:facts]}
+		if [[ $facts != ALL ]]; then
+			for f in ${facts//,/ }; do [[ $f != tbl* ]] || supports "'$f'" test/fuzz/shapes_matrix.py && kept+=("$f"); done
+			(( ${#kept[@]} )) && a+=(--facts "$(IFS=,; echo "${kept[*]}")")
+		fi
+		add_step shapes_matrix 3 test/fuzz/shapes_matrix.py - "${a[@]}"
+		[[ $facts == ALL || ${#kept[@]} -gt 0 ]] || S_SKIP[-1]="shapes_matrix.py has no fact $facts yet"
+	fi
+	if [[ -n ${DEM[txn_fuzz]-} ]]; then
+		add_step txn_fuzz 4 test/fuzz/txn_fuzz.py - --shapes --seeds "$seeds" --stop-after 1
+		! supports --table test/fuzz/txn_fuzz.py || add_step txn_fuzz-table 4 test/fuzz/txn_fuzz.py - --shapes --seeds "$seeds" --stop-after 1 --table
+	fi
+	[[ -z ${DEM[tbl_twin_fuzz]-} ]] || add_step tbl_twin_fuzz 4 test/fuzz/tbl_twin_fuzz.py - --seeds "$seeds" --seconds "$secs" $(supports --ddl test/fuzz/tbl_twin_fuzz.py && echo --ddl)
+	[[ -z ${DEM[bm25_fuzz]-} ]] || add_step bm25_fuzz 4 test/fuzz/bm25_fuzz.py - --seeds "$seeds" --queries 20 --stop-after 1
+	if [[ -n ${DEM[diff_fuzz]-} ]]; then
+		add_step diff_fuzz 4 test/fuzz/diff_fuzz.py - --seeds "$seeds" --queries 40 --rows 3000 --leader-on --stop-after 1
+		add_step diff_fuzz-table 4 test/fuzz/diff_fuzz.py - --seeds "$seeds" --queries 40 --rows 3000 --leader-on --stop-after 1 --table
+	fi
+	if (( ${#SQL_TESTS[@]} )); then
+		add_step regress 5 scripts/pgtest.sh - regress "${SQL_TESTS[@]}"
+		LANE_FMT[5]=f1
+		[[ $FORMAT != release ]] || S_SKIP[-1]="test/sql runs on the release library through scripts/release-library-check.sh (ci.sh release-library-regress)"
+	fi
+	return 0
 }
 
 # ---------- the library, the root and the PostgreSQL ----------
@@ -151,8 +329,16 @@ lane_tmp() { echo "$WORK/lane$1"; }
 lane_port() { echo $(( BASE_PORT + $1 )); }
 
 print_plan() {
-	local k i
-	echo "fast-gate: format=$FORMAT tier=$TIER area=${AREA:--} assert=${ASSERT:+yes}${ASSERT:-no}"
+	local k i p st='' sk=''
+	echo "fast-gate: format=$FORMAT tier=$TIER input=$INPUT assert=${ASSERT:+yes}${ASSERT:-no}"
+	echo "paths:     ${#PATHS[@]}"
+	for p in "${PATHS[@]}"; do echo "  $p -> ${PATH_AREAS[$p]:-nothing}"; done
+	echo "areas:     ${SEL_AREAS[*]:--}"
+	echo "sql:       ${SQL_TESTS[*]:--}${SQL_CUT:+$([[ $SQL_CUT == 0 ]] || echo " ($SQL_CUT more cut at 40: CI=1 runs them)")}"
+	for i in "${!S_NAME[@]}"; do [[ -n ${S_SKIP[i]} ]] && sk+=" ${S_NAME[i]}" || st+=" ${S_NAME[i]}"; done
+	st=${st:- -} sk=${sk:- -}
+	echo "steps:     ${st# }"
+	echo "skipped:   ${sk# }"
 	echo "library:   $(library_line)"
 	echo "postgres:  $(pg_line)"
 	echo "root:      $ROOT_HOW"
@@ -187,7 +373,7 @@ lane_extensions() {
 lane_run() {
 	local k=$1 i t rc=0 d
 	d=$(lane_tmp "$k")
-	export SIFT_TMP=$d SIFT_PORT=$(lane_port "$k") SIFT_FUZZ_OUT=$d/fuzz
+	export SIFT_TMP=$d SIFT_PORT=$(lane_port "$k") SIFT_FUZZ_OUT=$d/fuzz SIFT_TEST_FORMAT=${LANE_FMT[$k]:-$FORMAT}
 	mkdir -p "$d" "$SIFT_FUZZ_OUT"
 	if [[ -z ${FAST_GATE_NO_CLUSTER:-} ]]; then
 		"$REPO/scripts/pgtest.sh" start >"$OUT/lane$k.start.log" 2>&1 || { echo "FAIL 0 the cluster did not start (lane$k.start.log)" >"$OUT/cluster-$k.res"; return 1; }
@@ -334,9 +520,13 @@ selftest() {
 	out=$("$0" --dry-run --format f2); [[ $out == *'test_create_format1 = off'* ]] || fail "f2 does not say sift.test_create_format1 = off"
 	out=$("$0" --dry-run --format f1); [[ $out == *'test_create_format1 = on'* ]] || fail "f1 does not say sift.test_create_format1 = on"
 	out=$("$0" --dry-run --format f2 --assert); [[ $out == *'assertions'* ]] || fail "--assert says nothing of assertions"
-	out=$("$0" --dry-run --area star,table); [[ $out == *'--slice star,table'* ]] || fail "--area does not reach plangate as --slice"
+	out=$("$0" --dry-run --area star,table); [[ $out == *'--slice star'* && $out == *'areas:     star table'* && $out == *'coldiff-table'* ]] || fail "--area star,table does not run the plan slice star and the table stages"
 	out=$("$0" --dry-run --full); [[ $out == *'--slice all'* && $out == *'--tier full'* ]] || fail "--full does not run every plan shape and the full tiers"
-	out=$("$0" --dry-run); [[ $out == *'--slice smoke'* && $out == *'--tier quick'* ]] || fail "--quick (default) does not run the smoke shapes and the quick tiers"
+	out=$("$0" --dry-run); [[ $out == *'areas:     all'* && $out == *'--slice smoke'* && $out == *'--tier quick'* ]] || fail "the default (--area all, --quick) does not run the smoke shapes and the quick tiers"
+	out=$("$0" --dry-run --files README.md); [[ $out == *'nothing to run'* ]] || fail "documentation runs a check"
+	out=$("$0" --dry-run --files src/new_thing.c); [[ $out == *'areas:     smoke'* ]] || fail "an unmapped src/ file is not smoke"
+	"$0" --area star --files README.md >/dev/null 2>&1; (( $? == 2 )) || fail "--area with --files does not exit 2"
+	"$0" --diff no-such-commit >/dev/null 2>&1; (( $? == 2 )) || fail "--diff of no commit does not exit 2"
 	"$0" --format nope >/dev/null 2>&1; (( $? == 2 )) || fail "an unknown format does not exit 2"
 	"$0" --area nope >/dev/null 2>&1; (( $? == 2 )) || fail "an unknown area does not exit 2"
 	"$0" --bogus >/dev/null 2>&1; (( $? == 2 )) || fail "an unknown option does not exit 2"
@@ -369,6 +559,7 @@ main() {
 	resolve_root
 	write_lifecycle_sql
 	build_plan
+	(( ${#S_NAME[@]} )) || { print_plan; echo 'fast-gate: nothing to run'; exit 0; }
 	if [[ -n $DRY ]]; then print_plan; exit 0; fi
 	print_plan
 	T0=$SECONDS
