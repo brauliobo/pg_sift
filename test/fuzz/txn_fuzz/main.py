@@ -5,10 +5,11 @@ import json
 import sys
 import time
 
+import fmt
 from .gen import Config, config, script, setup_sql
 from . import run as run_mod
 from .run import ERRORS, build_base, check_sql, release_prepared, run
-from .session import drop_db, psql
+from .session import configure, drop_db, psql
 from .shapes import KINDS, ShapeGen, shape_config
 from .shrink import shrink, write
 
@@ -23,6 +24,8 @@ def seeds_of(spec):
 
 def main(doc):
     ap = argparse.ArgumentParser(description=doc, formatter_class=argparse.RawDescriptionHelpFormatter)
+    fmt.add_argument(ap)
+    ap.add_argument('--table', action='store_true', help='t is a sift_table (no sift_col index): the same actions, the statements and the checks of the access method')
     ap.add_argument('--seeds', default='1')
     ap.add_argument('--actions', type=int, default=60, help='actions of a script (statements, reconnects and checks)')
     ap.add_argument('--tracks', default='auto,key,off,ctid', help='the track_changes settings the seeds draw from (v4.1.0 and before: auto,key,off)')
@@ -45,20 +48,22 @@ def main(doc):
     ap.add_argument('--selftest', action='store_true', help='no server: every seed from 0 to 39 generates a script (the lint job)')
     a = ap.parse_args()
     tracks = a.tracks.split(',')
+    if not a.selftest:
+        run_mod.configure(configure(a.format), a.table)
     if a.variants:
         run_mod.VARIANTS[:] = [v for v in run_mod.VARIANTS if v[0] == 'plain' or v[0] in a.variants.split(',')]
 
     def make(seed):
         if a.shapes:
-            c = shape_config(seed, prepared, tracks, not a.no_spi, not a.no_oc, not a.no_truncate, a.parts)
+            c = shape_config(seed, prepared, tracks, not a.no_spi, not a.no_oc, not a.no_truncate, a.parts, a.table)
             return c, ShapeGen(c, a.actions, a.only, a.concurrently).build()
-        c = config(seed, prepared, tracks, not a.no_spi, not a.no_oc, not a.no_truncate)
+        c = config(seed, prepared, tracks, not a.no_spi, not a.no_oc, not a.no_truncate, a.table)
         return c, script(c, a.actions)
     if a.selftest:
         prepared = False
         n = 0
-        for shapes in (False, True):
-            a.shapes = shapes
+        for table, shapes in ((False, False), (False, True), (True, False), (True, True)):
+            a.table, a.shapes = table, shapes
             for seed in range(40):
                 c, acts = make(seed)
                 if not setup_sql(c).strip() or not any(x['t'] == 'check' for x in acts) or sum(x['t'] == 'sql' for x in acts) < 5:
@@ -72,7 +77,7 @@ def main(doc):
             a.shapes, a.only = True, only
             if not any(x.get('kind', 'plain') != 'plain' for seed in range(10) for x in make(seed)[1]):
                 sys.exit(f'txn_fuzz selftest: --only {only} made no check')
-        a.shapes, a.only, a.concurrently, a.parts = True, '', True, 0
+        a.table, a.shapes, a.only, a.concurrently, a.parts = False, True, '', True, 0
         if not any('CONCURRENTLY' in x.get('sql', '') for seed in range(10) for x in make(seed)[1]):
             sys.exit('txn_fuzz selftest: --concurrently made no CONCURRENTLY statement')
         print(f'txn_fuzz selftest: {n} scripts')

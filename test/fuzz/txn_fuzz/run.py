@@ -16,8 +16,21 @@ VARIANTS = [('plain', PLAIN), ('scan', SCAN), ('default', ['SET sift.enable_agg 
                                    'SET min_parallel_index_scan_size = 0'])]
 RESET = ['plan_cache_mode', 'sift.enable_agg', 'sift.agg_force', 'sift.enable_col_scan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan', 'enable_seqscan', 'max_parallel_workers_per_gather',
          'parallel_setup_cost', 'parallel_tuple_cost', 'min_parallel_table_scan_size', 'min_parallel_index_scan_size']
+TABLE_PLAIN, TABLE_SCAN = ['SET sift.enable_scan = off'], ['SET sift.enable_scan = on']    # a sift_table is read by the scan of the table access method: the reference is without it
+ALL_VARIANTS = [(v, list(sets)) for v, sets in VARIANTS]
+ALL_RESET = list(RESET)
+
+
+def configure(lib, table):
+    """the settings the library accepts (the release library has no sift.agg_force); in --table mode the reference is without the scan of the access method"""
+    gucs = lambda stmts: [s for s in stmts if lib.has(s.split()[1])]
+    VARIANTS[:] = [(v, gucs(sets + (TABLE_PLAIN if table and v == 'plain' else TABLE_SCAN if table and v != 'index' else []))) for v, sets in ALL_VARIANTS]
+    RESET[:] = [g for g in ALL_RESET + (['sift.enable_scan'] if table else []) if lib.has(g)]
+
+
 ERRORS = collections.Counter()      # the statement errors of the runs, by message: a generator that raises many of one kind wastes the script
 ENV = re.compile(r'Disk quota|No space left|could not resize shared memory|out of memory|too many open files')   # the machine, not sift
+INTERNAL = re.compile(r'unrecognized|cache lookup failed|could not find|could not open relation|variable not found|no relation entry|unexpected (null|type|node|status)|XX000')   # a statement the server refuses by an elog of its own code, whatever the plan
 CRASH = re.compile(r'server closed the connection|connection to server was lost|terminating connection|crash of another server|server process .* was terminated')
 
 
@@ -190,6 +203,9 @@ def run(c, acts, db, stop_at_first=True):
                     out = s.run(a['sql'])
                     nerr += len(errors(out))
                     ERRORS.update(re.sub(r'\d+', 'N', e)[:110] for e in errors(out))
+                    internal = [e for e in errors(out) if INTERNAL.search(e)]
+                    if internal:
+                        fail = (i, 'INTERNAL ERROR: ' + ' | '.join(internal)[:300] + ' | ' + a['sql'][:200].replace('\n', ' '))
                 else:
                     if errors(s.run('SELECT 1')):
                         continue

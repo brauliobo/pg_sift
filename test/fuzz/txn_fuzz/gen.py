@@ -6,6 +6,7 @@
 
 import random
 import re
+import dataclasses
 from dataclasses import dataclass, asdict
 
 DOMAIN_B = 40_000_000       # session B writes its own rows from here: no lock waits with A
@@ -13,8 +14,10 @@ MOVED = 50_000_000          # a row whose key changes goes here (+ a counter)
 
 
 def ix(c, text):
-    """The statement on the index t_c: on a partitioned table, the same statement on the index of each partition"""
-    return text if not c.parts else '; '.join(re.sub(r'\bt_c\b', f't_c{i}', text) for i in range(c.parts))
+    """The statement on the maintained relation t_c (the index of a sift_col table, the sift_table itself in --table mode): on a partitioned table, the same statement on the
+    relation of each partition"""
+    names = [c.rel(i) for i in range(c.parts)] if c.parts else [c.rel()]
+    return '; '.join(re.sub(r'\bt_c\b', n, text) for n in names)
 
 
 @dataclass
@@ -34,6 +37,13 @@ class Config:
     oc: bool = True     # INSERT .. ON CONFLICT (speculative insertion): False leaves it out
     spi: bool = True    # statements that run SQL through SPI (a volatile function, a DO block) and a trigger that updates t: False leaves them out
     parts: int = 0      # t is hash partitioned in this many partitions, one sift_col index each (t_c0, t_c1, ..); 0: one table, one index t_c
+    table: bool = False  # t is a sift_table (USING sift_table), without a sift_col index: the plans compared are the table scan of the access method and the others
+
+    def rel(self, i=None):
+        """the relation the maintenance functions take: the sift_col index (t_c, t_c<i>) or, for a sift_table, the table (t, t_p<i>)"""
+        if self.table:
+            return 't' if i is None else f't_p{i}'
+        return 't_c' if i is None else f't_c{i}'
 
     def key(self, e):
         return str(e) if self.keytype == 'int' else f"'c' || ({e})"
@@ -42,25 +52,27 @@ class Config:
         return '_'.join(str(v) for v in asdict(self).values() if not isinstance(v, bool) or v).replace('/', '')
 
 
-def config(seed, prepared, tracks, spi=True, oc=True, trunc=True):
+def config(seed, prepared, tracks, spi=True, oc=True, trunc=True, table=False):
     r = random.Random(f'cfg{seed}')
-    return Config(seed, r.choice(['int', 'text']), r.choice([4000, 12000, 20000]), r.choices(tracks, [{'auto': 4, 'key': 3, 'off': 1, 'ctid': 3}[t] for t in tracks])[0], r.choice([100, 100, 75]),
-                  r.random() < 0.4, r.random() < 0.5, r.random() < 0.75, r.choice(['none', 'none', 'after', 'before']), r.random() < 0.6, prepared, trunc, oc, spi)
+    c = Config(seed, r.choice(['int', 'text']), r.choice([4000, 12000, 20000]), r.choices(tracks, [{'auto': 4, 'key': 3, 'off': 1, 'ctid': 3}[t] for t in tracks])[0], r.choice([100, 100, 75]),
+               r.random() < 0.4, r.random() < 0.5, r.random() < 0.75, r.choice(['none', 'none', 'after', 'before']), r.random() < 0.6, prepared, trunc, oc, spi)
+    return dataclasses.replace(c, table=True, track='auto') if table else c
 
 
 def setup_sql(c):
     kt = 'int' if c.keytype == 'int' else 'text'
     opts = {'auto': '', 'key': " WITH (track_changes = 'k')", 'off': " WITH (track_changes = 'off')", 'ctid': " WITH (track_changes = 'ctid')"}[c.track]
     r0 = c.rows * 6 // 10 if c.wbuf else c.rows
-    storage = f"WITH (autovacuum_enabled = false, fillfactor = {c.fillfactor})"
+    storage = '' if c.table else f"WITH (autovacuum_enabled = false, fillfactor = {c.fillfactor})"
+    using = ' USING sift_table' if c.table else ''
     cols = f"k {kt} PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad int NOT NULL DEFAULT 0"
     if c.parts:
         create = f"CREATE TABLE t ({cols}) PARTITION BY HASH (k);\n" + ''.join(
-            f"CREATE TABLE t_p{i} PARTITION OF t FOR VALUES WITH (MODULUS {c.parts}, REMAINDER {i}) {storage};\n" for i in range(c.parts))
-        index = ''.join(f"CREATE INDEX t_c{i} ON t_p{i} USING sift_col (k, tenant, amount){opts};\n" for i in range(c.parts))
+            f"CREATE TABLE t_p{i} PARTITION OF t FOR VALUES WITH (MODULUS {c.parts}, REMAINDER {i}){using} {storage};\n" for i in range(c.parts))
+        index = '' if c.table else ''.join(f"CREATE INDEX t_c{i} ON t_p{i} USING sift_col (k, tenant, amount){opts};\n" for i in range(c.parts))
     else:
-        create = f"CREATE TABLE t ({cols}) {storage};\n"
-        index = f"CREATE INDEX t_c ON t USING sift_col (k, tenant, amount){opts};\n"
+        create = f"CREATE TABLE t ({cols}){using} {storage};\n"
+        index = '' if c.table else f"CREATE INDEX t_c ON t USING sift_col (k, tenant, amount){opts};\n"
     s = f"""SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 {create}INSERT INTO t (k, tenant, amount) SELECT {c.key('i')}, i % 10, i FROM generate_series(1, {r0}) i;
@@ -68,7 +80,7 @@ CREATE EXTENSION IF NOT EXISTS pg_sift;
     if c.wbuf:
         s += f"INSERT INTO t (k, tenant, amount) SELECT {c.key('i')}, i % 10, i FROM generate_series({r0 + 1}, {c.rows}) i;\n"
         if c.promote:
-            s += ix(c, "SELECT sift.col_promote('t_c');") + "\n"
+            s += ix(c, "SELECT sift.promote('t_c');") + "\n"
     s += "VACUUM (FREEZE, ANALYZE) t;\n" if c.vacuum else "ANALYZE t;\n"
     s += f"""CREATE FUNCTION tf_one() RETURNS int LANGUAGE plpgsql AS $$ BEGIN PERFORM 1; RETURN 0; END $$;
 CREATE FUNCTION tf_bump(kk {kt}) RETURNS int LANGUAGE plpgsql AS $$ BEGIN UPDATE t SET amount = amount + 1 WHERE k = kk; RETURN 0; END $$;
@@ -233,6 +245,8 @@ class Gen:
         self.out.append({'s': s, 't': 'sql', 'sql': ix(self.c, text)})
 
     def maint_stmt(self):
+        if self.c.table:
+            return self.r.choice(['REINDEX TABLE t', 'VACUUM FULL t', 'CLUSTER t USING t_pkey', 'ANALYZE t', 'SELECT * FROM sift.maintain(\'t_c\')', 'SELECT sift.check(\'t_c\')'])
         return self.r.choice(['REINDEX INDEX t_c', 'VACUUM FULL t', 'CLUSTER t USING t_pkey', "ALTER INDEX t_c SET (track_changes = 'ctid')",
                               "ALTER INDEX t_c SET (track_changes = 'off')", 'ANALYZE t'])
 
@@ -256,13 +270,14 @@ class Gen:
         elif w == 'vacuum':
             self.sql('B', self.vacuum_sql())
         elif w == 'promote':
-            self.sql('B', "SELECT sift.col_promote('t_c')")
+            self.sql('B', "SELECT sift.promote('t_c')")
         else:
             self.out.append({'s': 'B', 't': 'reconnect'})
             self.bintxn = False
 
     DDL = ['REINDEX INDEX t_c', 'CLUSTER t USING t_pkey', "ALTER INDEX t_c SET (track_changes = 'ctid')", "ALTER INDEX t_c SET (track_changes = 'k')", "ALTER INDEX t_c SET (track_changes = 'off')",
-           "ALTER INDEX t_c SET (track_changes = 'auto')", "SELECT sift.col_refresh('t_c')", "SELECT sift.col_merge('t_c', true)", "SELECT sift.col_promote('t_c')"]
+           "ALTER INDEX t_c SET (track_changes = 'auto')", "SELECT * FROM sift.maintain('t_c')", "SELECT sift.merge('t_c', true)", "SELECT sift.promote('t_c')"]
+    DDL_TABLE = ['REINDEX TABLE t', 'CLUSTER t USING t_pkey', 'VACUUM FULL t', "SELECT * FROM sift.maintain('t_c')", "SELECT sift.merge('t_c', true)", "SELECT sift.promote('t_c')"]
 
     def rr_ddl(self):
         """A transaction takes its snapshot (REPEATABLE READ or SERIALIZABLE), another session commits, and the transaction runs DDL on the index and reads (a wrong answer of 4.0 to 4.2)"""
@@ -276,7 +291,7 @@ class Gen:
         if r.random() < 0.3:
             self.sql('A', self.a_stmt())
         for _ in range(r.choice([1, 1, 2])):
-            self.sql('A', r.choice(self.DDL))
+            self.sql('A', r.choice(self.DDL_TABLE if self.c.table else self.DDL))
             self.check('A')
             if r.random() < 0.4:
                 self.sql('B', self.b_stmt())
@@ -328,7 +343,7 @@ class Gen:
                     self.sql('A', self.vacuum_sql())
                     self.check('A')
                 elif w == 'promote':
-                    self.sql('A', "SELECT sift.col_promote('t_c')")
+                    self.sql('A', "SELECT sift.promote('t_c')")
                     self.check('A')
                 elif w == 'maint':
                     self.sql(r.choice(['A', 'B']), self.maint_stmt())

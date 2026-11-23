@@ -6,10 +6,19 @@ import subprocess
 import sys
 import time
 
+import fmt
+
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
-ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
-           PGOPTIONS=f"-c client_min_messages=warning -c lc_messages=C {os.environ.get('PGOPTIONS', '')}")
+CLIENT_OPTIONS = f"-c client_min_messages=warning -c lc_messages=C {os.environ.get('PGOPTIONS', '')}"
+ENV = dict(os.environ, PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres', PGOPTIONS=CLIENT_OPTIONS)
 READ_TIMEOUT = 90.0
+
+
+def configure(name):
+    """probes the library once and makes every session of the run start in the format"""
+    lib = fmt.Lib(name, env=ENV)
+    ENV['PGOPTIONS'] = f'{CLIENT_OPTIONS} {lib.pgoptions}'.strip()
+    return lib
 
 
 class Hang(Exception):

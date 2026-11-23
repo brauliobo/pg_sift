@@ -16,9 +16,9 @@ MOVES = ['FETCH 3', 'FETCH BACKWARD 2', 'MOVE FORWARD 4', 'FETCH PRIOR', 'FETCH 
 KINDS = ('cursor', 'prep', 'persist')       # --only: the checks of one shape, in place of the plain ones
 
 
-def shape_config(seed, prepared, tracks, spi=True, oc=True, trunc=True, parts=None):
+def shape_config(seed, prepared, tracks, spi=True, oc=True, trunc=True, parts=None, table=False):
     """The configuration of config(): a third of the seeds are partitioned (parts forces 0 or 3), and the triggers of the shapes (BEFORE INSERT and an AFTER INSERT statement that read t) are drawn too"""
-    c = base_config(seed, prepared, tracks, spi, oc, trunc)
+    c = base_config(seed, prepared, tracks, spi, oc, trunc, table)
     r = random.Random(f'shape{seed}')
     n = r.choice([0, 0, 3]) if parts is None else parts
     trigger = r.choice(['insert', 'stmt']) if r.random() < 0.3 and spi else c.trigger
@@ -88,7 +88,7 @@ class ShapeGen(Gen):
                               f"CREATE INDEX CONCURRENTLY t_c2 ON t USING sift_col (k, tenant, amount){self.TRACK_OPTS[self.c.track]};\nDROP INDEX t_c2"])    # DROP INDEX CONCURRENTLY of a tracked index fails by design
 
     def maint_stmt(self):
-        if self.concurrently and not self.c.parts and self.r.random() < 0.4:
+        if self.concurrently and not self.c.parts and not self.c.table and self.r.random() < 0.4:
             return self.concurrent_stmt()
         return self.shape_maint()
 
@@ -151,7 +151,7 @@ class ShapeGen(Gen):
 
     def check(self, s):
         r = self.r
-        if self.concurrently and s == 'A' and not self.atx and not self.c.parts and r.random() < 0.15:
+        if self.concurrently and s == 'A' and not self.atx and not self.c.parts and not self.c.table and r.random() < 0.15:
             self.sql('A', self.concurrent_stmt())
         if not self.only:
             super().check(s)
