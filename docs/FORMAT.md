@@ -44,3 +44,93 @@ A record is the `dl` rows of the SB's present pages one after the other, in the 
 - The average of a field is the sum of its lengths over the live documents of the segments of format 6 and of the write buffers, divided by their number. A vacuumed document leaves both sums.
 - A segment of format 5 or older does not keep the lengths: its documents score the length of the whole text with the average of the whole text, as before. A merge writes format 6 for an index with fields, taking the lengths of an older segment from the tf of the field words of its postings.
 - The stored bound of a posting of a field term is the bound of a document of length 0 (it does not depend on any length or average), so it stays above every score whatever the document, the field or the average: WAND and block-max bounds are unchanged in kind and need no scaling when documents are vacuumed.
+
+# Part format: the sections that read a row by address
+
+Format 2.0 parts of a `sift_table` carry two optional sections that make the fetch of one row by its address (a ctid, as an index scan or a join hands it over) cost one block read and not one chunk of every column.
+
+| Section | Tag | `ext_flags` bit | Written when |
+|---|---|---|---|
+| SEC_TID_HASH | `0x0103` | `1 << 6` | level 1 and up, the table has an index, 4096 rows or more |
+| SEC_ROW_PACK | `0x0104` | `1 << 7` | the part has SEC_TID_HASH and the pack is at most 40% of SEC_GRANULES |
+
+There is no setting: a table with no index (`pg_class.relhasindex`) gets neither section, and a part whose pack would be over 40% of its granules gets the hash alone. A reader that does not know a section ignores it.
+
+## SEC_TID_HASH, version 2
+
+A header, `nbuckets + 1` entry numbers (`uint32`, the first entry of each bucket), then one entry per row of the part, ascending in a bucket. `nbuckets` is a power of two, `1 << log2_buckets`, with 2 rows a bucket on average. The bucket of an address is the top `log2_buckets` bits of `sift_fmix64(tid)`; the hash never changes.
+
+```c
+typedef struct SiftTidHashHdr           /* 16 bytes */
+{
+    uint32      magic;                  /* 0x48444954, "TIDH" */
+    uint16      version;                /* 2 */
+    uint16      flags;                  /* bit 0: the entries name rows of SEC_ROW_PACK */
+    uint32      log2_buckets;           /* at byte 8 */
+    uint32      nrows;
+} SiftTidHashHdr;
+
+typedef struct SiftTidHashSlotV2        /* 8 bytes */
+{
+    uint32      row_idx;                /* the row of the part, from 0 */
+    uint16      fp16;                   /* at byte 4: the low 16 bits of sift_fmix64(tid) */
+    uint16      granule_id;             /* at byte 6 */
+} SiftTidHashSlotV2;
+```
+
+The section is `16 + 4 * (nbuckets + 1) + 8 * nrows` bytes; a reader checks that size, so a lookup reads the two entry numbers of its bucket and then the entries between them. `fp16` drops most rows of the bucket; it is never trusted alone, the reader checks the address in the row (the pack row or the granule) it names.
+
+Version 1 (entry `granule_id << 13 | row in the granule`, 4 rows a bucket, no tag) is still read, and names granules, not rows. A part with SEC_ROW_PACK always has version 2.
+
+## SEC_ROW_PACK
+
+The rows of the part in blocks of 64 (`SIFT_ROW_PACK_ROWS`), in the order of the part, each block compressed with LZ4 (the raw codec when LZ4 does not make it smaller). Analytical scans never read it.
+
+```
+SiftRowPackHdr | SiftRowPackCol[ncols] | SiftRowPackBlockEntry[nblocks] (at dir_off) | blocks (8-aligned, from data_off)
+```
+
+```c
+typedef struct SiftRowPackHdr           /* 32 bytes */
+{
+    uint32      magic;                  /* 0x52504B32, "RPK2" */
+    uint16      version;                /* 1 */
+    uint16      flags;                  /* bit 0: some string is left to SEC_GRANULES */
+    uint16      ncols;                  /* the columns of the part, in the order of its SEC_SCHEMA */
+    uint16      rows_per_blk;           /* 64 */
+    uint32      nblocks;                /* at byte 12 */
+    uint32      nrows;
+    uint32      dir_off;                /* from the start of the section */
+    uint64      data_off;               /* at byte 24, from the start of the section */
+} SiftRowPackHdr;
+
+typedef struct SiftRowPackCol           /* 16 bytes */
+{
+    uint8       kind;                   /* SiftCellKind */
+    uint8       width;                  /* the bytes of an integer: 1, 2, 4 or 8 */
+    uint16      pad16;
+    uint32      pad32;
+    int64       base;                   /* what an integer's stored distance is from */
+} SiftRowPackCol;
+
+typedef struct SiftRowPackBlockEntry    /* 16 bytes */
+{
+    uint32      off_qwords;             /* from data_off, in 8-byte units */
+    uint32      comp_len;               /* the bytes on disk */
+    uint32      raw_len;                /* at byte 8 */
+    uint16      nrows;                  /* 1..64 */
+    uint16      codec_flags;            /* at byte 14, bits 0..3: 0 raw, 1 LZ4 */
+} SiftRowPackBlockEntry;
+```
+
+A block, uncompressed: `uint32 row_off[nrows + 1]` (from the start of the block), then the rows. A row is `uint64 tid`, `uint8 null_bm[(ncols + 7) / 8]` (a set bit is NULL), `uint16 fixed_bytes`, the non-null integer and float columns in column order (an integer is its distance from `SiftRowPackCol.base` in `width` bytes, a float is 8 bytes), then the non-null string columns in column order (`uint16` length, and the bytes).
+
+A cell the pack does not hold has the length `0xFFFF` and is read from SEC_GRANULES: a string over 128 bytes (`SIFT_ROW_PACK_INLINE_MAX`), a value a column keeps by reference, a string of a column with exceptions. A part with a column of arrays of objects, or an exception in an integer or float column, gets no pack.
+
+## Policy
+
+A part gets the pack when the first 4 blocks, scaled to the part, are at most 40% (`SIFT_ROW_PACK_SHARE_PERCENT`) of the bytes of SEC_GRANULES. The pack keeps whole rows uncompressed across columns, so a table of narrow, well coded columns (the granules hold a row in a few bits) is over the share and keeps the granule path; a table with wide, incompressible columns is under it.
+
+## Reading
+
+The fetch of a row (`table/f2/f2_fetch.c`) takes the fast path for an MVCC snapshot when the snapshot sees the insert of the granule without a version of each row (the granule is frozen, the inserters of the part are settled, or its rows are of one transaction), the granule has no deletion vector and the row is not a pending delete; a column delta of the part is laid over the row. Any other row takes the granule path, which gives the same row. The decoded blocks are kept in a per-backend cache (`SIFT_F2_GCACHE_MAX_BLOCKS`), charged to `sift.backend_cache_kb` and dropped with the part, the table or a relcache invalidation.

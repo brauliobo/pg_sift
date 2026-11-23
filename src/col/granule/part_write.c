@@ -17,6 +17,7 @@
 #include "col/skip/skip_index.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "table/f2/f2_row_pack.h"
 
 static void
 zone_add_float(SiftZone *z, double v)
@@ -353,7 +354,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	StringInfoData dictsec,
 				skipsec,
 				pointsec,
-				tidhash;
+				tidhash,
+				rpacksec;
 	int64		tmin[SIFT_MANIFEST_TIME_COLS] = {0},
 				tmax[SIFT_MANIFEST_TIME_COLS] = {0};
 	SiftColPromo *promos = NULL;
@@ -364,7 +366,8 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 				stats_len;
 	SiftAuxBudget aux;
 	bool		stats_in,
-				has_tid_hash;
+				has_tid_hash,
+				has_row_pack;
 	int			npromo = 0;
 	SiftPartCodecs *codecs = NULL;
 	MemoryContext granule_cx;
@@ -618,9 +621,14 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	if (level > 0 && sift_point_dir_build(rows, gstart, ng, gdata.len, &pointsec))
 		sift_part_add_section(secs, &nsec, SEC_POINT, 0, pointsec.data, pointsec.len, false);
 	initStringInfo(&tidhash);
-	has_tid_hash = indexed_table(rel, rows) && sift_tid_hash_build(rows, level, gstart, ng, false, &tidhash);
+	initStringInfo(&rpacksec);
+	has_row_pack = indexed_table(rel, rows) && level > 0 && rows->nrows >= SIFT_TID_HASH_MIN_ROWS && sift_row_pack_build(rows, gdata.len, &rpacksec);
+	has_tid_hash = indexed_table(rel, rows) && sift_tid_hash_build(rows, level, gstart, ng, has_row_pack, &tidhash);
+	has_row_pack = has_row_pack && has_tid_hash;
 	if (has_tid_hash)
 		sift_part_add_section(secs, &nsec, SEC_TID_HASH, 0, tidhash.data, tidhash.len, false);
+	if (has_row_pack)
+		sift_part_add_section(secs, &nsec, SEC_ROW_PACK, 0, rpacksec.data, rpacksec.len, false);
 	if (rows->kll != NULL && sift_aux_kll_k(&aux, UINT16_MAX) > 0)
 	{
 		SiftF2KllCols kcols = *rows->kll;
@@ -660,7 +668,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		*memory = sift_part_in_memory(rel, &in, &d);
 	else
 		d = sift_part_write(rel, &in);
-	d.ext_flags = (marks != NULL ? SIFT_PART_EXT_KEY_MARKS : 0) | (stats_in ? SIFT_PART_EXT_COL_STATS : 0) | (has_tid_hash ? SIFT_PART_EXT_TID_HASH : 0);
+	d.ext_flags = (marks != NULL ? SIFT_PART_EXT_KEY_MARKS : 0) | (stats_in ? SIFT_PART_EXT_COL_STATS : 0) | (has_tid_hash ? SIFT_PART_EXT_TID_HASH : 0) | (has_row_pack ? SIFT_PART_EXT_ROW_PACK : 0);
 	memcpy(d.key_lo, kmin, SIFT_BOUND_BYTES);
 	memcpy(d.key_hi, kmax, SIFT_BOUND_BYTES);
 	memcpy(d.time_min, tmin, sizeof(tmin));
