@@ -155,8 +155,15 @@ def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None
             result['space_status'] = result['validation']['size_checks']['status']
             if result['space_status']=='regression':
                 result['status'] = 'regression'
-        if PERF_AVAILABLE and case.lifecycle=='read':
-            result['instructions'] = measure_instructions(revisions,case,fixture_rows(revisions[0].conn),deadline)
+        if case.lifecycle=='read' and (PERF_AVAILABLE or PROFILE):
+            rows = fixture_rows(revisions[0].conn)
+            if PERF_AVAILABLE:
+                result['instructions'] = measure_instructions(revisions,case,rows,deadline)
+            if PROFILE:
+                instructions = result.get('instructions')
+                result['profile'] = case_profile(revisions[1].conn,case,instructions and instructions['candidate_per_row'],operations,deadline)
+                if ANCHOR_MANIFEST:
+                    result['vs_anchor_manifest'] = anchor_drift(ANCHOR_MANIFEST,case,result['profile'],rows)
         kind = regression_kind(result['status'],result.get('instructions'))
         if kind:
             result['regression_kind'] = kind

@@ -16,6 +16,7 @@ def parser():
     p.add_argument('--pg-config',default=shutil.which('pg_config'))
     p.add_argument('--port-base',type=int,default=56240)
     p.add_argument('--allow-loaded',action='store_true',help='smoke/dev only: time without waiting for a quiet host; a real gate waits (scripts/quiet.sh)')
+    p.add_argument('--anchor-tsv',type=Path,help='manifest of the pinned release anchor (bench/baselines/anchor-manifest.tsv): a case that drifts from it fails, however small each commit was')
     p.add_argument('--no-perf',action='store_true',help='do not count instructions:u (elapsed time, plans, workers and sizes only)')
     p.add_argument('--quiet-max',type=float,default=QUIET_MAX_PERCENT,help='CPU and IO pressure (some avg10, percent) below which the host is quiet')
     p.add_argument('--quiet-timeout',type=float,default=QUIET_TIMEOUT_SECONDS,help='seconds to wait for a quiet host before a block; a block timed after the timeout is noisy')
@@ -144,11 +145,32 @@ def check_fixture(revisions,report):
             raise ValueError('actual sift_table fixture fails segment/page boundary')
 
 
+def check_anchor_manifest(path):
+    try:
+        manifest = load_anchor_manifest(path)
+    except ValueError as exc:
+        print(f'error: {exc}',file=sys.stderr)
+        return 3
+    print(f"{path}: {len(manifest.rows)} cases of {manifest.meta['anchor_ref']} ({manifest.meta['anchor_sha']}), {manifest.meta['rows']} rows, tier {manifest.meta['tier']}")
+    return 0
+
+
 def main(argv=None):
-    global DEADLINE, BATCH_WALL_LIMIT, QUIET, PERF_AVAILABLE
+    global DEADLINE, BATCH_WALL_LIMIT, QUIET, PERF_AVAILABLE, PROFILE, ANCHOR_MANIFEST
+    checker = argparse.ArgumentParser(add_help=False,allow_abbrev=False)
+    checker.add_argument('--check-anchor-tsv',type=Path,help='validate an anchor manifest and exit; no other argument is needed')
+    checked = checker.parse_known_args(argv)[0].check_anchor_tsv
+    if checked:
+        return check_anchor_manifest(checked)
     args = parser().parse_args(argv)
+    try:
+        ANCHOR_MANIFEST = load_anchor_manifest(args.anchor_tsv) if args.anchor_tsv else None
+    except ValueError as exc:
+        print(f'error: {exc}',file=sys.stderr)
+        return 3
     QUIET = QuietGuard(not args.allow_loaded,args.quiet_max,args.quiet_timeout)
     PERF_AVAILABLE = not args.no_perf and perf_available()
+    PROFILE = ANCHOR_MANIFEST is not None
     pr_wall_limit = BATCH_WALL_LIMIT
     if args.tier=='nightly':
         BATCH_WALL_LIMIT = NIGHTLY_BATCH_WALL_LIMIT
@@ -287,7 +309,8 @@ def main(argv=None):
         write_terminal(report,args,start,end)
     BATCH_WALL_LIMIT = pr_wall_limit
     QUIET = QuietGuard(False)
-    PERF_AVAILABLE = False
+    PERF_AVAILABLE = PROFILE = False
+    ANCHOR_MANIFEST = None
     print(f"{report['status']}: {args.output/'summary.md'}")
     return {'pass':0,'regression':1,'inconclusive':2,'error':3,
             'diagnostic_pass':0,'diagnostic_regression':1,'diagnostic_inconclusive':2,'diagnostic_error':3}[report['status']]

@@ -3,6 +3,8 @@
 
 PERF_EVENT = 'instructions:u'
 PERF_AVAILABLE = False
+PROFILE = False
+ANCHOR_MANIFEST = None
 
 
 def perf_available(run=subprocess.run):

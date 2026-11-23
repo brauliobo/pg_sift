@@ -165,5 +165,190 @@ class Instructions(unittest.TestCase):
                 self.assertEqual(result.get('regression_kind'),'ipc_or_scaling' if available else 'instructions_unmeasured')
 
 
+SHA = 'f' * 40
+META = {'anchor_ref':'v5.1.0','anchor_sha':SHA,'postgresql':'PostgreSQL 18.7','rows':'8192','tier':'pr','recorded':'2026-11-23'}
+ROWS = {('agg_group','1T'):dict(instr_per_row=100.0,ms_ratio_vs_native=0.5,blocks=40.0),
+        ('agg_group','4T'):dict(instr_per_row=120.0,ms_ratio_vs_native=0.6,blocks=40.0),
+        ('bm25_top10_common','1T'):dict(instr_per_row=None,ms_ratio_vs_native=None,blocks=12.0)}
+
+
+def manifest_text(meta=META, rows=ROWS):
+    return gate.format_anchor_manifest(meta,rows)
+
+
+class AnchorManifestFile(unittest.TestCase):
+    def test_a_manifest_round_trips_with_its_metadata(self):
+        manifest = gate.parse_anchor_manifest(manifest_text())
+        self.assertEqual(manifest.meta['rows'],8192)
+        self.assertEqual(manifest.meta['anchor_ref'],'v5.1.0')
+        self.assertEqual(manifest.rows[('agg_group','4T')],ROWS[('agg_group','4T')])
+        self.assertIsNone(manifest.rows[('bm25_top10_common','1T')]['ms_ratio_vs_native'])
+        self.assertEqual(manifest_text().splitlines()[0],'# schema: perf-anchor-manifest v1')
+
+    def test_every_malformed_manifest_names_its_line_and_is_refused(self):
+        good = manifest_text().splitlines()
+        header = good.index('\t'.join(gate.ANCHOR_COLUMNS))
+        def with_row(row): return '\n'.join(good[:header+1]+[row])+'\n'
+        row = '\t'.join
+        cases = {
+            'no schema': '\n'.join(good[1:])+'\n',
+            'other schema': '\n'.join(['# schema: perf-anchor-manifest v0']+good[1:])+'\n',
+            'missing metadata': '\n'.join(good[:3]+good[header:])+'\n',
+            'unknown metadata': '\n'.join(good[:header]+['# colour: red']+good[header:])+'\n',
+            'repeated metadata': '\n'.join(good[:header]+['# rows: 8192']+good[header:])+'\n',
+            'short sha': manifest_text(dict(META,anchor_sha='abc')),
+            'bad tier': manifest_text(dict(META,tier='weekly')),
+            'bad rows': manifest_text(dict(META,rows='0')),
+            'wrong header': '\n'.join(good[:header]+['case_id\tmode']+good[header+1:])+'\n',
+            'no case': '\n'.join(good[:header+1])+'\n',
+            'field count': with_row('agg_group\t1T\tv5.1.0\t1'),
+            'unknown case': with_row(row(['nope','1T','v5.1.0','1','1','1'])),
+            'unknown mode': with_row(row(['agg_group','8T','v5.1.0','1','1','1'])),
+            'case without that mode': with_row(row(['bm25_top10_common','4T','v5.1.0','1','1','1'])),
+            'mutation case': with_row(row(['storage_update','1T','v5.1.0','1','1','1'])),
+            'other ref': with_row(row(['agg_group','1T','v6.0.0','1','1','1'])),
+            'not a number': with_row(row(['agg_group','1T','v5.1.0','many','1','1'])),
+            'zero': with_row(row(['agg_group','1T','v5.1.0','0','1','1'])),
+            'infinite': with_row(row(['agg_group','1T','v5.1.0','inf','1','1'])),
+            'nothing recorded': with_row(row(['agg_group','1T','v5.1.0','-','-','-'])),
+            'duplicate': '\n'.join(good+[good[header+1]])+'\n',
+        }
+        for label,text in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(ValueError,'anchor manifest'):
+                gate.parse_anchor_manifest(text)
+
+    def test_a_manifest_that_cannot_be_read_names_the_flag_and_the_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError,'--anchor-tsv .*absent'):
+                gate.load_anchor_manifest(Path(tmp)/'absent')
+
+
+class WarmBlocks(unittest.TestCase):
+    def test_blocks_come_from_an_execution_after_the_first_one_of_the_session(self):
+        events = []
+        class Conn:
+            def rows(self, sql):
+                events.append(sql.split(' ',1)[0])
+                return [[json.dumps([{'Plan':{'Shared Hit Blocks':6,'Shared Read Blocks':2}}])]]
+        case = gate.CASES[0]
+        with patch.object(gate,'prepare',side_effect=lambda *a: events.append('prepare')), \
+             patch.object(gate,'elapsed',side_effect=lambda *a: events.append('warm') or 1.0):
+            self.assertEqual(gate.warm_blocks(Conn(),case,math.inf),8)
+        self.assertEqual(events,['prepare','warm','EXPLAIN'])
+
+
+class AnchorDrift(unittest.TestCase):
+    def setUp(self):
+        self.manifest = gate.parse_anchor_manifest(manifest_text())
+        self.case = next(c for c in gate.CASES if c.name=='agg_group')
+
+    def drift(self, instr=100.0, wall=0.5, blocks=40.0, rows=8192, case=None):
+        profile = dict(instr_per_row=instr,ms_ratio_vs_native=wall,blocks=blocks)
+        return gate.anchor_drift(self.manifest,case or self.case,profile,rows)
+
+    def test_inside_every_limit_passes(self):
+        got = self.drift(109.9,0.5*1.149,40*1.10+2)
+        self.assertEqual(got['status'],'pass')
+        self.assertEqual({c['status'] for c in got['checks'].values()},{'pass'})
+
+    def test_each_signal_fails_alone_past_its_limit(self):
+        for label,kwargs,failed in (('instructions',dict(instr=110.5),'instructions'),('wall',dict(wall=0.5*1.16),'wall_vs_native'),
+                                    ('blocks',dict(blocks=47.0),'blocks')):
+            with self.subTest(label):
+                got = self.drift(**kwargs)
+                self.assertEqual(got['status'],'regression')
+                self.assertEqual([k for k,c in got['checks'].items() if c['status']=='regression'],[failed])
+
+    def test_modes_are_recorded_apart(self):
+        self.assertEqual(self.drift(125,case=self.case.at('4T'))['status'],'pass')
+        self.assertEqual(self.drift(125)['status'],'regression')
+
+    def test_blocks_are_compared_only_at_the_recorded_row_count(self):
+        got = self.drift(blocks=4000,rows=32768)
+        self.assertEqual(got['status'],'pass')
+        self.assertEqual(got['checks']['blocks']['status'],'rows_differ')
+
+    def test_what_cannot_be_measured_or_was_not_recorded_does_not_fail(self):
+        self.assertEqual(self.drift(instr=None,wall=None,blocks=None)['status'],'unmeasured')
+        self.assertEqual(self.drift(case=next(c for c in gate.CASES if c.name=='agg_distinct'))['status'],'unrecorded')
+        bm25 = next(c for c in gate.CASES if c.name=='bm25_top10_common')
+        got = gate.anchor_drift(self.manifest,bm25,dict(instr_per_row=5.0,ms_ratio_vs_native=None,blocks=12.0),8192)
+        self.assertEqual((got['status'],got['checks']['instructions']['status']),('pass','unrecorded'))
+
+    def test_ten_commits_of_two_percent_pass_every_pairing_and_fail_the_anchor(self):
+        parent = 100.0
+        for step in range(10):
+            candidate = parent*1.02
+            self.assertEqual(gate.verdict(gate.interval([(parent,candidate)]*6)),'pass')
+            parent = candidate
+        self.assertEqual(self.drift(instr=parent)['checks']['instructions']['status'],'regression')
+
+    def test_the_drift_decides_the_verdict_of_a_gating_case_only(self):
+        def report(name,drift):
+            return dict(config={'verify_control':False},status='pass',complete=True,size_complete=True,required_size_states=[],
+                        size_checks=[dict(state='settled_build',status='pass')],
+                        cases=[dict(name=name,timing_status='pass',vs_anchor_manifest=dict(status=drift))])
+        for name,drift,expected in (('agg_group','regression','regression'),('agg_group@4T','regression','regression'),
+                                    ('agg_group','pass','pass'),('agg_group','unmeasured','pass'),('agg_group','unrecorded','pass'),
+                                    ('storage_point_lookup','regression','pass')):
+            with self.subTest(name=name,drift=drift):
+                value = report(name,drift)
+                gate.reduce_report(value)
+                self.assertEqual(value['status'],expected)
+
+    def test_the_native_ratio_is_the_median_of_paired_batches(self):
+        times = {self.case.sql:[4.0,2.0,3.0,9.0,3.0],self.case.oracle:[1.0]*5}
+        def timed(conn, case, operations, deadline):
+            return times[case.sql].pop(0) if operations>1 and case.sql==self.case.sql else (1.0 if case.sql==self.case.oracle and operations>1 else 0.1)
+        with patch.object(gate,'prepare'), patch.object(gate,'elapsed',side_effect=timed):
+            self.assertEqual(gate.native_wall_ratio(object(),self.case,5,math.inf),3.0)
+
+
+class AnchorCommandLine(unittest.TestCase):
+    def run_main(self, *argv):
+        out,err = io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = gate.main(list(argv))
+        return code,out.getvalue(),err.getvalue()
+
+    def test_check_anchor_tsv_validates_without_any_other_argument(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good,bad = Path(tmp)/'good.tsv',Path(tmp)/'bad.tsv'
+            good.write_text(manifest_text())
+            bad.write_text(manifest_text().replace('v5.1.0\t100','v9\t100',1))
+            code,out,_ = self.run_main('--check-anchor-tsv',str(good))
+            self.assertEqual(code,0)
+            self.assertIn('3 cases of v5.1.0',out)
+            code,_,err = self.run_main('--check-anchor-tsv',str(bad))
+            self.assertEqual(code,3)
+            self.assertIn('anchor_ref',err)
+
+    def test_a_bad_manifest_stops_a_run_before_any_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp)/'bad.tsv'
+            bad.write_text('nothing\n')
+            with patch.object(gate,'exact_sha',side_effect=AssertionError('setup began')):
+                code,_,err = self.run_main('--baseline-ref','a'*40,'--candidate-ref','b'*40,'--output',tmp,'--scratch-root',tmp,
+                                           '--anchor-tsv',str(bad))
+        self.assertEqual(code,3)
+        self.assertIn('--anchor-tsv',err)
+
+    def test_the_drift_reaches_the_case_result_of_a_run_with_a_manifest(self):
+        class Rev:
+            def __init__(self,name,*args): self.name,self.conn,self.timings,self.versions,self.started = name,self,{},[],False
+        case = next(c for c in gate.CASES if c.name=='agg_group')
+        timed = dict(gate.interval([(1,1.0)]*6),samples=[(1,1.0)]*6)
+        manifest = gate.parse_anchor_manifest(manifest_text())
+        with patch.object(gate,'PROFILE',True), patch.object(gate,'PERF_AVAILABLE',True), patch.object(gate,'ANCHOR_MANIFEST',manifest), \
+             patch.object(gate,'validate_case',return_value={'size_checks':None}), \
+             patch.object(gate,'calibrate',return_value={'operations':3}), patch.object(gate,'block',return_value=timed), \
+             patch.object(gate,'fixture_rows',return_value=8192), patch.object(gate,'case_instructions',side_effect=[800000,900000]), \
+             patch.object(gate,'native_wall_ratio',return_value=0.5), patch.object(gate,'warm_blocks',return_value=50):
+            result = gate.measure([Rev('a'),Rev('b')],case,math.inf)
+        self.assertEqual(result['profile'],dict(instr_per_row=900000/8192,ms_ratio_vs_native=0.5,blocks=50))
+        self.assertEqual(result['vs_anchor_manifest']['checks']['blocks']['status'],'regression')
+        self.assertEqual(result['vs_anchor_manifest']['status'],'regression')
+
+
 if __name__=='__main__':
     unittest.main()

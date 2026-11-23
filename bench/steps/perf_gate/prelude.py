@@ -4,6 +4,7 @@
 import argparse
 import ctypes
 import contextlib
+import dataclasses
 import datetime
 import hashlib
 import json

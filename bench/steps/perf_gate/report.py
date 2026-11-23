@@ -22,6 +22,8 @@ def reduce_report(report):
                              and report.get('acceptance_pass',False) else 'inconclusive')
         return
     statuses = {c['timing_status'] for c in report['cases'] if c['name'].split('@')[0] in GATING}
+    statuses |= {c['vs_anchor_manifest']['status'] for c in report['cases'] if c['name'].split('@')[0] in GATING and 'vs_anchor_manifest' in c}
+    statuses -= {'unrecorded','unmeasured'}
     report['status'] = ('regression' if size_regression or 'regression' in statuses else
                         'inconclusive' if not report['complete'] or statuses-{'pass','skipped'} or report['size_status']!='pass' else 'pass')
 
