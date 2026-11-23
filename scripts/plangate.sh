@@ -3,7 +3,7 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned] [--table] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned|gpu] [--table] [--warn-time] [--update] [--keep]
 #   scripts/plangate.sh --calibrate [--rows N] [--lane stock|tuned] [--shapes REGEX]   the ranking of the estimates against the instructions (below)
 #   scripts/plangate.sh --planning [--rows N] [--shapes REGEX] [--update]   the instructions to plan each shape, scan on and off, against test/plan/planning.tsv (below)
 #
@@ -21,6 +21,9 @@
 #   --lane stock-4t   the stock planner costs of the stock lane with up to 4 parallel workers per gather (the stock parallel costs and thresholds untouched, no suppression of Gather):
 #                 the lane `stock4t` of test/plan/bands.tsv holds the plan and the band of each shape, so a parallel plan that the scan loses to, or a scan that PostgreSQL's parallel plan beats,
 #                 fails as in the other lanes. Not with --table, --calibrate and --planning (those need serial plans)
+#   --lane gpu    the shapes of the area gpu (--slice gpu does the same on any lane) on a Vulkan device: sift.gpu = auto with sift.gpu_min_rows 10000, then the arbitration of the
+#                 device against the CPU on EXPLAIN ANALYZE: the slice of 500 rows stays on the CPU (`GPU: not used`), the dense aggregate runs on the device (sift.gpu = on) and returns the rows
+#                 of sift.gpu = off. Without a hardware device (a build without VULKAN=1, no loader or driver, a software renderer) it is skipped, exit 0, and says why
 #   --table       the tables as sift_table (test/plan/table.sql): the results must agree as ever; the plan and the cost band are those of the lane in
 #                 test/plan/bands.tsv (table, tabletuned with --lane tuned), so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --warn-time   a shape that the scan makes slower than native by more than 1 ms and 20% (verdict lose) is a warning, not a failure: hosted runners are noisy
@@ -49,7 +52,7 @@ while (( $# )); do
 		--warn-time) WARN=1 ;; --calibrate) CAL=1 ;; --planning) CAL=1 PLAN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
 		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --slice) SLICE=$2; shift ;; --lane) LANE=$2; shift ;;
 		--selftest) SELFTEST=1 ;;
-		*) sed -n 2,33p "$0"; exit 1 ;;
+		*) sed -n 2,36p "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -77,6 +80,9 @@ slice_areas() {
 	(IFS=,; echo "${out[*]}")
 }
 
+# the GPU: line of EXPLAIN ANALYZE (stdin) that names a hardware device: empty when the scan stayed on the CPU (no line, or `GPU: not used`) or ran on a software renderer
+gpu_device() { sed -n 's/^ *GPU: //p' | grep -v '^not used' | grep -viE 'llvmpipe|lavapipe|swiftshader|software' | head -1 || true; }
+
 if [[ -n $SELFTEST ]]; then
 	d=$(mktemp -d)
 	trap 'rm -rf "$d"' EXIT
@@ -91,6 +97,10 @@ if [[ -n $SELFTEST ]]; then
 	[[ $(slice_areas star,smoke) == star,smoke && -z $(slice_areas jsonb,all) && -z $(slice_areas all) ]] || { echo "plangate selftest: --slice did not give its areas" >&2; exit 1; }
 	slice_areas star,bogus 2>/dev/null && { echo "plangate selftest: --slice accepted an unknown area" >&2; exit 1; }
 	slice_areas '' 2>/dev/null && { echo "plangate selftest: --slice accepted no area" >&2; exit 1; }
+	[[ $(printf 'GroupAggregate\n  GPU: NVIDIA GeForce RTX 3060 (shared worker), hash kernel; the CPU would take 1.41 ms\n' | gpu_device) == 'NVIDIA GeForce RTX 3060 (shared worker), hash kernel; the CPU would take 1.41 ms' ]] ||
+		{ echo "plangate selftest: a hardware device is not found in EXPLAIN" >&2; exit 1; }
+	[[ -z $(printf '  GPU: not used (the build has no Vulkan)\n' | gpu_device) && -z $(printf '  GPU: llvmpipe (LLVM 17.0.6, 256 bits) (backend own device)\n' | gpu_device) &&
+		-z $(printf 'Custom Scan\n' | gpu_device) ]] || { echo "plangate selftest: a CPU scan or a software device counted as a GPU" >&2; exit 1; }
 	echo "plangate selftest: ok"
 	exit 0
 fi
@@ -223,10 +233,47 @@ estimate_misses() {
 	return $rc
 }
 
+# the line of the device that one scan of a throwaway sift_col table takes under sift.gpu = on (empty: none that is hardware)
+gpu_probe() {
+	sql -q -c "CREATE TABLE gpu_probe AS SELECT i % 40 AS g, i::bigint AS v FROM generate_series(1, 20000) i" -c "CREATE INDEX gpu_probe_col ON gpu_probe USING sift_col (g, v)" \
+		-c "VACUUM (FREEZE, ANALYZE) gpu_probe" >/dev/null
+	sql -qAt -c "SET sift.gpu = 'on'" -c "SET sift.gpu_min_rows = 1" -c "SET enable_seqscan = off" -c "SET enable_indexscan = off" -c "SET enable_bitmapscan = off" \
+		-c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT g, count(*), sum(v) FROM gpu_probe GROUP BY g" 2>/dev/null | gpu_device
+	sql -q -c "DROP TABLE gpu_probe" >/dev/null
+}
+# the query of a shape of shapes.sql, without its tags and its closing semicolon
+shape_body() { awk -v n="$1" '$0 == "-- name: " n { on = 1; next } on && /^$/ { exit } on && !/^--/ { print }' "$REPO/test/plan/shapes.sql" | sed '$ s/;[[:space:]]*$//'; }
+# the arbitration of the device against the CPU, on the rows of the gpu shapes: the small slice stays on the CPU under auto, the dense aggregate runs on the device under on, with the rows of off
+gpu_arbitration() {
+	local small dense out rc=0 diff
+	small=$(shape_body gpu_small_slice) dense=$(shape_body gpu_dense_multi_agg)
+	out=$(sql -qAt -c "SET sift.gpu = 'auto'" -c "SET sift.gpu_min_rows = 10000" -c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $small")
+	[[ $out == *'GPU: not used'* ]] || { echo "FAIL gpu_small_slice: the 500 rows left the CPU under sift.gpu = auto, or EXPLAIN has no GPU line: $out"; rc=1; }
+	out=$(sql -qAt -c "SET sift.gpu = 'on'" -c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $dense")
+	[[ -n $(gpu_device <<<"$out") ]] || { echo "FAIL gpu_dense_multi_agg: no hardware device ran the scan under sift.gpu = on: $out"; rc=1; }
+	diff=$(sql -qAt <<-SQL
+		SET sift.gpu = 'on'; CREATE TEMP TABLE g_on AS $dense;
+		SET sift.gpu = 'off'; CREATE TEMP TABLE g_off AS $dense;
+		SELECT (SELECT count(*) FROM (SELECT * FROM g_on EXCEPT SELECT * FROM g_off) a) + (SELECT count(*) FROM (SELECT * FROM g_off EXCEPT SELECT * FROM g_on) b);
+	SQL
+	)
+	[[ ${diff##*$'\n'} == 0 ]] || { echo "FAIL gpu_dense_multi_agg: the device and the CPU return different rows"; rc=1; }
+	(( rc )) || echo "plangate gpu: the slice stays on the CPU, the dense aggregate runs on the device and returns the CPU rows"
+	return $rc
+}
+
+GPU=
+if [[ $LANE == gpu ]]; then
+	[[ -z $TABLE && -z $CAL ]] || { log "--lane gpu runs the heap tables of the area gpu: not with --table, --calibrate or --planning"; exit 1; }
+	LANE=stock GPU=1
+	: "${SLICE=gpu}"
+fi
 if [[ -n ${SLICE+x} ]]; then
 	[[ -z $CAL ]] || { log "--slice picks shapes of shapes.sql: --calibrate and --planning take the shapes of calibrate.tsv (--shapes)"; exit 1; }
 	AREAS_RUN=$(slice_areas "$SLICE") || exit 1
+	[[ ,$AREAS_RUN, != *,gpu,* ]] || GPU=1
 fi
+[[ -z $GPU || -z $TABLE ]] || { log "the area gpu runs the heap tables: not with --table"; exit 1; }
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
 # serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration
 settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
@@ -234,7 +281,7 @@ case $LANE in
 	stock) ;;
 	tuned) settings=(max_parallel_workers_per_gather=8 jit=off seq_page_cost=100 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4GB hash_mem_multiplier=2) ;;
 	stock-4t) settings=(max_parallel_workers_per_gather=4 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=64MB) ;;
-	*) log "unknown lane $LANE (stock, stock-4t or tuned)"; exit 1 ;;
+	*) log "unknown lane $LANE (stock, stock-4t, tuned or gpu)"; exit 1 ;;
 esac
 [[ $LANE != stock-4t || ( -z $TABLE && -z $CAL ) ]] || { log "--lane stock-4t has no --table bands, and --calibrate and --planning count the instructions of serial plans"; exit 1; }
 # the lane of the bands of test/plan/bands.tsv: none for stock on the heap, else table, tuned, tabletuned or stock4t
@@ -245,6 +292,18 @@ LK=${TABLE:+table}$(case $LANE in tuned) echo tuned ;; stock-4t) echo stock4t ;;
 [[ -z $CAL ]] || settings+=(max_parallel_workers_per_gather=0)
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
 sql -qAt -c "CREATE EXTENSION pg_sift" >/dev/null
+if [[ -n $GPU ]]; then
+	device=$(gpu_probe)
+	if [[ -z $device ]]; then
+		rest=$(tr , '\n' <<<"$AREAS_RUN" | grep -vx gpu | paste -sd, - || true)
+		log "gpu: no usable hardware Vulkan device (a build without VULKAN=1, no loader or driver, or a software renderer): the area gpu is skipped"
+		[[ -n $rest ]] || exit 0
+		AREAS_RUN=$rest
+	else
+		log "gpu: $device"
+		printf "ALTER DATABASE %s SET sift.gpu TO 'auto';\nALTER DATABASE %s SET sift.gpu_min_rows TO '10000';\n" "$DB" "$DB" | sql -q >/dev/null
+	fi
+fi
 log "tables: $ROWS events, seed $SEED"
 sql -q -v n="$ROWS" -v seed="$SEED" -f "$REPO/test/col/run.sql" -f "$REPO/test/plan/gen.sql" ${TABLE:+-f "$REPO/test/plan/table.sql"} -f "$REPO/test/plan/run.sql" ${CAL:+-f "$REPO/test/plan/calibrate.sql"} >/dev/null
 [[ -z $CAL ]] || { if [[ -n $PLAN ]]; then planning; else calibrate; fi; exit $?; }
@@ -298,4 +357,5 @@ bad=$(sql -qAt -c "SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM unnest(pr
 total=$(sql -qAt -c "SELECT count(*) FROM plangate.results")
 (( total > 0 )) || { log "FAIL: no shape ran"; exit 1; }
 if [[ -n $WARN ]]; then sql -qAt -c "SELECT 'WARN ' || name || ': the scan is slower than native (' || round(scan_ms::numeric, 1) || ' ms against ' || round(native_ms::numeric, 1) || ')' FROM plangate.results WHERE verdict = 'lose' ORDER BY name"; fi
+[[ -z ${device:-} ]] || gpu_arbitration || bad=1
 (( bad == 0 )) || exit 1
