@@ -205,7 +205,7 @@ fits_header_page(const SiftSecInput *secs, int nsec)
 static bool
 inlinable(uint16 tag)
 {
-	return tag == SEC_GRANULE_DIR || tag == SEC_DICTS || tag == SEC_TID_INDEX || tag == SEC_GRANULE_TSTRIDE || tag == SEC_VARIANT_EXC || tag == SEC_PREAGG || tag == SEC_POINT ||
+	return tag == SEC_SCHEMA || tag == SEC_GRANULE_DIR || tag == SEC_DICTS || tag == SEC_TID_INDEX || tag == SEC_GRANULE_TSTRIDE || tag == SEC_VARIANT_EXC || tag == SEC_PREAGG || tag == SEC_POINT ||
 		tag == SEC_SKIP_INDEX || tag == SEC_KLL || tag == SEC_KEY_MARKS || tag == SEC_COL_STATS || tag == SEC_SCHEMA_DEFAULTS || tag == SEC_ZONES;
 }
 

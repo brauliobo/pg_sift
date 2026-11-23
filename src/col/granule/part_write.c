@@ -523,7 +523,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 			appendBinaryStringInfo(&schema, (const char *) &stamp, sizeof(stamp));
 		}
 	}
-	sift_part_add_section(secs, &nsec, SEC_SCHEMA, SIFT_SEC_FLAG_REQUIRED, schema.data, schema.len, true);
+	sift_part_add_section(secs, &nsec, SEC_SCHEMA, SIFT_SEC_FLAG_REQUIRED, schema.data, schema.len, false);
 	if (rows->defaults_len > 0)
 		sift_part_add_section(secs, &nsec, SEC_SCHEMA_DEFAULTS, 0, rows->defaults, rows->defaults_len, false);
 	sift_part_add_section(secs, &nsec, SEC_GRANULE_DIR, SIFT_SEC_FLAG_REQUIRED, dir, ng * sizeof(SiftGranuleDesc), false);

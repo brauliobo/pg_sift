@@ -33,7 +33,7 @@ schema_check(const SiftColDef *defs, int n)
 	int			nconn = 0,
 				nscope = 0;
 
-	if (n < 1 || n > SIFT_F2_MAX_COLS)
+	if (n < 1 || n > SIFT_TBL_F2_MAX_COLS)
 		return "the number of leaves is out of range";
 	for (int i = 0; i < n; i++)
 	{
@@ -223,7 +223,7 @@ sift_cschema_parse(MemoryContext mcxt, const void *data, Size len)
 	if (len < sizeof(head))
 		return NULL;
 	memcpy(head, p, sizeof(head));
-	if (head[0] != COLS_MAGIC || head[1] < 1 || head[1] > SIFT_F2_MAX_COLS)
+	if (head[0] != COLS_MAGIC || head[1] < 1 || head[1] > SIFT_TBL_F2_MAX_COLS)
 		return NULL;
 	defs = palloc0(head[1] * sizeof(SiftColDef));
 	for (uint32 i = 0; i < head[1]; i++)

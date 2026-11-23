@@ -136,9 +136,11 @@
 	X(merge_disk_peak, "-", "col/v1/maint/maint.c", 2, "times the live index", \
 	  "disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back", "the step fails with PostgreSQL's disk-full error before it replaces a segment", "-", 0) \
 	X(col_leaves, "SIFT_COL_MAX_COLS", "col/api/format.h", SIFT_COL_MAX_COLS, "leaves", \
-	  "leaf slots of a sift_col index and columns of a sift_table (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
+	  "leaf slots of a sift_col index of format major 1 and columns of a sift_table of format major 1 (127 are usable)", "CREATE INDEX, CREATE TABLE or ALTER TABLE rejected", "-", 1) \
 	X(f2_leaves, "SIFT_F2_MAX_COLS", "col/api/format.h", SIFT_F2_MAX_COLS, "leaves", \
 	  "leaf slots (columns and shredded jsonb paths) of a sift_col index of format major 2", "CREATE INDEX rejected", "-", 1) \
+	X(tbl_f2_columns, "SIFT_TBL_F2_MAX_COLS", "col/api/format.h", SIFT_TBL_F2_MAX_COLS, "columns", \
+	  "columns of a sift_table of format major 2 (the 1,600 of PostgreSQL)", "CREATE TABLE or ALTER TABLE rejected", "-", 0) \
 	X(string_bytes, "SIFT_COL_MAX_VALUE", "col/api/format.h", SIFT_COL_MAX_VALUE, "bytes", \
 	  "one string value of a column leaf", "ERROR 54000 at build or merge", "-", 1) \
 	X(unit_bytes, "SIFT_COL_UNIT_MAX_BYTES", "col/api/format.h", SIFT_COL_UNIT_MAX_BYTES, "bytes", \

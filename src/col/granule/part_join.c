@@ -248,7 +248,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 		goff += pg;
 	}
 	schema = sift_part_read_section(rel, src[0], SEC_SCHEMA, &len);
-	sift_part_add_section(secs, &nsec, SEC_SCHEMA, SIFT_SEC_FLAG_REQUIRED, schema, len, true);
+	sift_part_add_section(secs, &nsec, SEC_SCHEMA, SIFT_SEC_FLAG_REQUIRED, schema, len, false);
 	defaults = sift_part_read_section(rel, src[0], SEC_SCHEMA_DEFAULTS, &deflen);
 	if (defaults != NULL)
 		sift_part_add_section(secs, &nsec, SEC_SCHEMA_DEFAULTS, 0, defaults, deflen, false);

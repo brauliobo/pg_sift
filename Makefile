@@ -603,6 +603,7 @@ TESTING_REGRESS += tbl_bulk_eligible
 TESTING_REGRESS += tbl_fetch_dict
 TESTING_REGRESS += tbl_hot_sift_index
 TESTING_REGRESS += tbl_key_table
+TESTING_REGRESS += tbl_limits
 TESTING_REGRESS += tbl_limits_lowered
 TESTING_REGRESS += tbl_options
 TESTING_REGRESS += tbl_page_corrupt

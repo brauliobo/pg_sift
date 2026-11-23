@@ -133,8 +133,8 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 		n++;
 		store->has_jsonb = store->has_jsonb || att->atttypid == JSONBOID;
 	}
-	if (n > SIFT_COL_MAX_COLS)
-		ereport(ERROR, (errcode(ERRCODE_TOO_MANY_COLUMNS), errmsg("table \"%s\" has %d columns, the most a sift_table keeps is %d", RelationGetRelationName(rel), n, SIFT_COL_MAX_COLS)));
+	if (n > SIFT_TBL_F2_MAX_COLS)
+		ereport(ERROR, (errcode(ERRCODE_TOO_MANY_COLUMNS), errmsg("table \"%s\" has %d columns, the most a sift_table keeps is %d", RelationGetRelationName(rel), n, SIFT_TBL_F2_MAX_COLS)));
 	store->ncols = n;
 
 	sift_tbl_f2_apply_key_order(rel, store);

@@ -84,7 +84,7 @@ COMMENT ON FUNCTION sift.promote(regclass) IS 'Seals the write buffer of a sift,
 COMMENT ON FUNCTION sift.merge(regclass, bool) IS 'Merges the parts or segments of a sift, sift_col or sift_table now, in this session, and returns how many were merged; force merges when nothing is due.';
 COMMENT ON FUNCTION sift.check(regclass, bool, int) IS 'The problems of the sift indexes and tables the caller may maintain (or of one), a row each with its segment or part; no row when sound. heapallindexed also compares every heap row with the index. Works on a standby and on Format 1 and Format 2.0.';
 COMMENT ON FUNCTION sift.index_format(regclass) IS 'The metapage format of a sift index, a sift_col index or a sift_table, Format 1 and Format 2.0: major and minor; long_words, for a sift index, tells whether it was built by 5.0 or later; reads says what the loaded library does with it. Never fails on a format it can read.';
-COMMENT ON EVENT TRIGGER sift_table_ddl_check IS 'After ALTER TABLE: refuses a column that a sift_table cannot hold (more than 1,024), and notes a table that becomes the partition or child of another';
+COMMENT ON EVENT TRIGGER sift_table_ddl_check IS 'After ALTER TABLE: refuses a column that a Format 1 sift_table cannot hold (more than 127), and notes a table that becomes the partition or child of another';
 
 -- The five pools of the shared memory budget (sift.shared_cache_kb), one row each in the order of the ledger: the share of the limit, what is held, the most that was held, the refusals and the pool
 -- entries that were evicted to make room. sift.shared_memory() keeps its 5.1 columns; this one is the ledger that sift.health and sift.activity read.

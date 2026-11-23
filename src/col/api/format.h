@@ -63,6 +63,7 @@ struct SiftCGOrdCuts;
 #define SIFT_COL_FORMAT_MAX_READ SIFT_COL_FORMAT_WBUFKEY	/* the newest minor this build reads */
 #define SIFT_COL_META_FLAG		0x00010000	/* SiftMetaPageData.flags: this is a sift_col index */
 #define SIFT_COL_MAX_COLS		128
+#define SIFT_TBL_F2_MAX_COLS	1600		/* columns of a sift_table of format major 2: the 1,600 of PostgreSQL (MaxHeapAttributeNumber) */
 #define SIFT_F2_MAX_COLS		1024		/* leaves of an index of format major 2: its granules name a column in 10 bits */
 #define SIFT_COL_MAX_VALUE		0x3FFFFFFF	/* bytes of a string value: PostgreSQL's 1 GB */
 #define SIFT_COL_UNIT_MAX_BYTES	SIFT_COL_MAX_VALUE	/* bytes of the strings of one leaf in one unit; the values past it are stored as overflow */

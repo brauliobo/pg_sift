@@ -42,6 +42,7 @@
 #include "col/am.h"
 #include "col/v1/seg.h"
 #include "core/limits.h"
+#include "core/meta_peek.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/seg_int.h"
 #include "core/catname.h"
@@ -261,6 +262,12 @@ sift_tbl_layout_ready(Relation rel, SiftTblRel *st)
 	(void) layout_of(rel, st);
 }
 
+static bool
+is_format1(Relation rel)
+{
+	return sift_meta_resolve_major(rel) == SIFT_FORMAT_MAJOR;
+}
+
 void
 sift_tbl_layout_check(Relation rel)
 {
@@ -336,7 +343,7 @@ sift_table_ddl_check(PG_FUNCTION_ARGS)
 			{
 				Relation	rel = relation_open(oid, NoLock);
 
-				if (sift_tbl_is_table(rel))
+				if (sift_tbl_is_table(rel) && is_format1(rel))
 					sift_tbl_layout_check(rel);
 				relation_close(rel, NoLock);
 			}
@@ -621,7 +628,8 @@ sift_table_paths_check(PG_FUNCTION_ARGS)
 		for (int i = 1; i <= RelationGetDescr(rel)->natts; i++)
 			if ((sift_col_shred_nleaves(a, i) > 0) != (i == attno))
 				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("the paths of \"%s\" must all start with that column's name", col)));
-		(void) layout_build_for(rel, cx, declared_paths(rel, attno, spec));
+		if (is_format1(rel))
+			(void) layout_build_for(rel, cx, declared_paths(rel, attno, spec));
 	}
 	MemoryContextDelete(cx);
 	CacheInvalidateRelcache(rel);
