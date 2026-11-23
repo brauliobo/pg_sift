@@ -285,11 +285,59 @@ typedef struct PageFilter
 	uint64		pdel_part;
 } PageFilter;
 
+/* The valid TIDs of [tid_min, tid_max] (offsets 1..SIFT_TBL_ROWS_PER_VBLOCK of each virtual block): as many as the granule has distinct rows when it holds every one of them */
+static bool
+holds_every_tid(const SiftTidIndexEntry *t, uint16 nrows)
+{
+	const uint64 vmin = t->tid_min >> 16,
+				vmax = t->tid_max >> 16;
+	const uint32 omin = t->tid_min & 0xFFFF,
+				omax = t->tid_max & 0xFFFF;
+
+	if (omin < 1 || omin > SIFT_TBL_ROWS_PER_VBLOCK || omax < 1 || omax > SIFT_TBL_ROWS_PER_VBLOCK || t->tid_max < t->tid_min)
+		return false;
+	if (vmin == vmax)
+		return (uint64) omax - omin + 1 == nrows;
+	return (uint64) (SIFT_TBL_ROWS_PER_VBLOCK - omin + 1) + (vmax - vmin - 1) * SIFT_TBL_ROWS_PER_VBLOCK + omax == nrows;
+}
+
+/* Sets the 1-based offsets lo..hi of the page mask */
+static void
+set_offsets(uint64 *mask, uint32 lo, uint32 hi)
+{
+	for (uint32 bit = lo - 1; bit < hi; bit++)
+		mask[bit / 64] |= UINT64CONST(1) << (bit % 64);
+}
+
+/*
+ * A granule whose rows every snapshot sees (settled inserts, no deletion vector entry, no pending delete among its TIDs) and that holds every TID of its range shows the page the
+ * offsets of that range, whichever rows they are: no TID is decoded
+ */
+static bool
+page_all_visible(PageFilter *f, SiftF2GranuleBuf *gb)
+{
+	const SiftTidIndexEntry *t;
+	uint64		vmin,
+				vmax;
+
+	if (f->snap->snapshot_type != SNAPSHOT_MVCC || gb->pin == NULL || gb->pin->tidx == NULL || !inserts_all_visible(&f->vis, gb) ||
+		(gb->pin->dv != NULL && sift_dv_granule(gb->pin->dv, gb->granule_id) != NULL))
+		return false;
+	t = &gb->pin->tidx[gb->granule_id];
+	if (!holds_every_tid(t, gb->nrows) || (f->pdel != NULL && sift_pdel_idx_may_hit_granule(f->pdel, t)))
+		return false;
+	vmin = t->tid_min >> 16;
+	vmax = t->tid_max >> 16;
+	if (f->vblock >= vmin && f->vblock <= vmax)
+		set_offsets(f->seen_visible, f->vblock == vmin ? t->tid_min & 0xFFFF : 1, f->vblock == vmax ? t->tid_max & 0xFFFF : SIFT_TBL_ROWS_PER_VBLOCK);
+	return true;
+}
+
 static bool
 filter_granule(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 {
 	PageFilter *f = arg;
-	const uint64 *tids = sift_f2_gbuf_tids(gb);
+	const uint64 *tids;
 
 	if (f->pdel == NULL || f->pdel_part != entry->part_id)
 	{
@@ -297,6 +345,9 @@ filter_granule(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 		f->pdel = sift_tbl_f2_pending_index(f->rel, entry, f->snap);
 		f->pdel_part = entry->part_id;
 	}
+	if (page_all_visible(f, gb))
+		return false;
+	tids = sift_f2_gbuf_tids(gb);
 	for (uint16 r = 0; r < gb->nrows; r++)
 	{
 		OffsetNumber off = tids[r] & 0xFFFF;
