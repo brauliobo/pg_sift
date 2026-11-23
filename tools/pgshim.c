@@ -345,13 +345,13 @@ errfinish(const char *filename, int lineno, const char *funcname)
 	}
 	snprintf(pgshim_errloc, sizeof(pgshim_errloc), "%s:%d %s", filename, lineno, funcname);
 	armed = false;
-	longjmp(try_jmp, 1);
+	_longjmp(try_jmp, 1);
 }
 
 bool
 pgshim_try(void (*fn) (void *), void *arg)
 {
-	if (setjmp(try_jmp))
+	if (_setjmp(try_jmp))
 		return false;
 	armed = true;
 	fn(arg);
