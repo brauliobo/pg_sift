@@ -17,6 +17,7 @@
 #include "utils/rel.h"
 
 #include "bm25/am.h"
+#include "bm25/bm25_doc.h"
 #include "core/lane.h"
 #include "core/quarantine.h"
 #include "core/maint.h"
@@ -321,10 +322,13 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	SiftTermFreq *terms;
 	uint32		dl;
 	int			n;
-	text	   *t;
+	uint64		key;
+	bool		keyed = sift_bm25_unique_key(index, values, isnull, &key),
+				unique = true;
+	text	   *t = sift_bm25_assemble_doc(index, values, isnull, CurrentMemoryContext);
 
-	if (isnull[0])
-		return false;
+	if (t == NULL)
+		return true;
 	if (indexInfo->ii_AmCache == &out_of_service || sift_index_known_out(index))
 	{
 		indexInfo->ii_AmCache = &out_of_service;
@@ -338,12 +342,21 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 		sift_analyzer_config_from_index(index, &cfg);
 		an = indexInfo->ii_AmCache = sift_analyzer_create(&cfg, indexInfo->ii_Context);
 	}
-	t = DatumGetTextPP(values[0]);
+	if (keyed && checkUnique != UNIQUE_CHECK_NO)
+	{
+		unique = sift_bm25_unique_check(index, heap, values, isnull, heap_tid, checkUnique, key);
+		if (checkUnique == UNIQUE_CHECK_EXISTING)
+			return unique;
+	}
 	n = sift_analyze_doc(an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
+	if (keyed)
+		n = sift_bm25_unique_terms(terms, n, key, &dl, &terms);
 	if (sift_wbuf_append(index, heap_tid, terms, n, dl))
 		sift_maint_after_seal(index);
 	sift_analyzer_reset(an);
-	return false;
+	if (keyed && checkUnique != UNIQUE_CHECK_NO)
+		sift_bm25_unique_release(index, key);
+	return unique;
 }
 
 struct SiftWbufReader

@@ -166,6 +166,8 @@ typedef struct MatchCache
 	SiftAnalyzer *analyzer;
 	SiftQuery  *query;
 	struct HighlightIndex *hl;	/* the positive leaves of the query by kind, made by the first sift.highlight */
+	FmgrInfo	outfn;			/* sift.match_any: the output function of the type of its first argument */
+	bool		outfn_set;
 } MatchCache;
 
 static MatchCache *
@@ -205,6 +207,31 @@ match(FunctionCallInfo fcinfo, Oid index)
 	MatchCache *c = match_cache(fcinfo, PG_GETARG_TEXT_PP(1), index);
 
 	return sift_query_match_doc(c->query, c->analyzer, VARDATA_ANY(doc), VARSIZE_ANY_EXHDR(doc));
+}
+
+PG_FUNCTION_INFO_V1(sift_match_any);
+
+/* sift.match_any(doc anyelement, query), the @@> operator on a column of any type: the text its output function writes, the default analyzer */
+Datum
+sift_match_any(PG_FUNCTION_ARGS)
+{
+	MatchCache *c = match_cache(fcinfo, PG_GETARG_TEXT_PP(1), InvalidOid);
+	char	   *doc;
+	bool		hit;
+
+	if (!c->outfn_set)
+	{
+		Oid			outfunc;
+		bool		isvarlena;
+
+		getTypeOutputInfo(get_fn_expr_argtype(fcinfo->flinfo, 0), &outfunc, &isvarlena);
+		fmgr_info_cxt(outfunc, &c->outfn, c->mcxt);
+		c->outfn_set = true;
+	}
+	doc = OutputFunctionCall(&c->outfn, PG_GETARG_DATUM(0));
+	hit = sift_query_match_doc(c->query, c->analyzer, doc, strlen(doc));
+	pfree(doc);
+	PG_RETURN_BOOL(hit);
 }
 
 /* sift.match(doc, query), the @@> operator: default analyzer */
@@ -299,27 +326,18 @@ call_selectivity(SupportRequestSelectivity *req)
 	return vardata.rel ? (Node *) req : NULL;
 }
 
-static Node *
-strip_relabel(Node *expr)
-{
-	while (IsA(expr, RelabelType))
-		expr = (Node *) ((RelabelType *) expr)->arg;
-	return expr;
-}
-
-/* Is expr (a column or expression of range table entry relid) the key of the sift index? */
+/* Is expr (a column or expression of range table entry relid) the text of the sift index? */
 static bool
 index_key_is(Relation index, Index relid, Node *expr)
 {
-	Node	   *key;
+	int			nkey = index->rd_index->indnkeyatts,
+				keys[INDEX_MAX_KEYS];
+	List	   *exprs = RelationGetIndexExpressions(index);
 
-	expr = strip_relabel(expr);
-	if (index->rd_index->indkey.values[0] != 0)
-		return IsA(expr, Var) && ((Var *) expr)->varno == relid && ((Var *) expr)->varlevelsup == 0 &&
-			((Var *) expr)->varattno == index->rd_index->indkey.values[0];
-	key = linitial(RelationGetIndexExpressions(index));
-	ChangeVarNodes(key, 1, relid, 0);
-	return equal(strip_relabel(key), expr);
+	for (int k = 0; k < nkey; k++)
+		keys[k] = index->rd_index->indkey.values[k];
+	ChangeVarNodes((Node *) exprs, 1, relid, 0);
+	return sift_key_is_whole(nkey, keys, exprs, relid, expr);
 }
 
 /*
@@ -376,7 +394,7 @@ keyed_indexes(PlannerInfo *root, Node *expr)
 	{
 		Relation	index = index_open(indexoid, AccessShareLock);
 
-		if (index->rd_rel->relam == sift_catalog()->am && index->rd_index->indisvalid && index->rd_index->indnkeyatts == 1 &&
+		if (index->rd_rel->relam == sift_catalog()->am && index->rd_index->indisvalid &&
 			heap_attisnull(index->rd_indextuple, Anum_pg_index_indpred, NULL) && index_key_is(index, relid, expr))
 			found = lappend_oid(found, indexoid);
 		index_close(index, AccessShareLock);

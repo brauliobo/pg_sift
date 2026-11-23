@@ -33,6 +33,7 @@
 #include "utils/snapmgr.h"
 
 #include "bm25/eval.h"
+#include "bm25/bm25_doc.h"
 #include "bm25/wbuf.h"
 #include "bm25/segment.h"
 #include "core/quarantine.h"
@@ -180,10 +181,8 @@ facet_verify(void *arg, ItemPointer tid, bool want_doc, text **doc)
 	ResetPerTupleExprContext(f->estate);
 	GetPerTupleExprContext(f->estate)->ecxt_scantuple = f->slot;
 	FormIndexDatum(f->iinfo, f->slot, f->estate, values, isnull);
-	if (isnull[0])
-		return false;
-	*doc = DatumGetTextPP(values[0]);
-	return true;
+	*doc = sift_bm25_assemble_doc(f->index, values, isnull, CurrentMemoryContext);
+	return *doc != NULL;
 }
 
 static void

@@ -47,7 +47,7 @@ split_quals(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *ii, bool ranked, S
 	c->attr_all = false;
 	c->semi = NIL;
 	c->semi_rels = NULL;
-	if (ii->relam != sift_catalog()->am || ii->nkeycolumns != 1 || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
+	if (ii->relam != sift_catalog()->am || ii->hypothetical || (ii->indpred != NIL && !ii->predOK))
 		return false;
 	foreach_node(RestrictInfo, rinfo, rel->baserestrictinfo)
 	{

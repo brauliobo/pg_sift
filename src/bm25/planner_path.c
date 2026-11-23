@@ -92,6 +92,24 @@ const_queries(List *queries, SiftQuerySrc **srcs, int *nsrcs)
 	return true;
 }
 
+/*
+ * The quals of a native scan of an index of several columns are `column @@> query`, which the default analyzer defines (the seq scan and the recheck
+ * use it): an index analyzed otherwise (a stemmer, no case folding) does not answer them; sift.sections(...) @@> query is its own scan, with the index's
+ */
+static bool
+columns_need_default_analyzer(Relation index)
+{
+	SiftAnalyzerConfig have,
+				dflt;
+
+	if (IndexRelationGetNumberOfKeyAttributes(index) == 1)
+		return false;
+	sift_analyzer_config_from_index(index, &have);
+	sift_analyzer_config_set_synthetic(&have, have.prefix_len, "");
+	sift_analyzer_config_default(&dflt);
+	return !sift_analyzer_config_agrees(&have, &dflt);
+}
+
 /* The query operands of the index quals; NIL when one is an array qual (ANY): the bitmap scan runs it as one scan per element, which this estimate does not cover */
 static List *
 qual_query_exprs(IndexPath *path)
@@ -161,12 +179,21 @@ sift_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	IndexWork	w;
 	Relation	index = index_open(path->indexinfo->indexoid, NoLock);
 	bool		out = sift_quarantine_cost(index, path->indexinfo->pages, indexStartupCost, indexTotalCost, indexSelectivity, indexCorrelation, indexPages);
+	bool		other = !out && columns_need_default_analyzer(index);
 
 	index_close(index, NoLock);
 	if (out)
 		return;
+	if (other)
+	{
+		*indexStartupCost = *indexTotalCost = 1e30;
+		*indexSelectivity = 1.0;
+		*indexCorrelation = 0.0;
+		*indexPages = Max(path->indexinfo->pages, 1);
+		return;
+	}
 	genericcostestimate(root, path, loop_count, &costs);
-	index_work(path->indexinfo->indexoid, path->indexinfo->reltablespace, qual_query_exprs(path), &w);
+	index_work(path->indexinfo->indexoid, path->indexinfo->reltablespace, path->indexinfo->nkeycolumns > 1 ? NIL : qual_query_exprs(path), &w);
 	if (w.known)
 	{
 		costs.numIndexPages = w.pages;

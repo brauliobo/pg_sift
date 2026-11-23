@@ -94,8 +94,9 @@ CREATE INDEX CONCURRENTLY t1_cic ON t1 USING sift (body);
 SELECT sift.verify('t1_cic', true);
 DROP INDEX t1_cic;
 
--- Only heap tables, one column, sift indexes for the functions
+-- sift indexes for the functions
 CREATE INDEX t2_multi ON t2 USING sift (body, body);
+DROP INDEX t2_multi;
 SELECT sift.verify('t2'::regclass);
 CREATE INDEX t2_btree ON t2 (id);
 SELECT * FROM sift.segments('t2_btree');

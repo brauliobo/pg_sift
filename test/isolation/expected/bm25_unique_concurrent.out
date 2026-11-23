@@ -1,0 +1,81 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2b s1i s2i s1c s2c s3check
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i: INSERT INTO iso_uq VALUES (2, 'contended key');
+step s2i: INSERT INTO iso_uq VALUES (3, 'contended key'); <waiting ...>
+step s1c: COMMIT;
+step s2i: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_uq_idx"
+step s2c: COMMIT;
+step s3check: SELECT id, body FROM iso_uq ORDER BY id;
+id|body         
+--+-------------
+ 1|existing key 
+ 2|contended key
+(2 rows)
+
+
+starting permutation: s1b s2b s1i s2i s1r s2c s3check
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i: INSERT INTO iso_uq VALUES (2, 'contended key');
+step s2i: INSERT INTO iso_uq VALUES (3, 'contended key'); <waiting ...>
+step s1r: ROLLBACK;
+step s2i: <... completed>
+step s2c: COMMIT;
+step s3check: SELECT id, body FROM iso_uq ORDER BY id;
+id|body         
+--+-------------
+ 1|existing key 
+ 3|contended key
+(2 rows)
+
+
+starting permutation: s1b s2b s1i s2o s1c s2c s3check
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1i: INSERT INTO iso_uq VALUES (2, 'contended key');
+step s2o: INSERT INTO iso_uq VALUES (5, 'other key');
+step s1c: COMMIT;
+step s2c: COMMIT;
+step s3check: SELECT id, body FROM iso_uq ORDER BY id;
+id|body         
+--+-------------
+ 1|existing key 
+ 2|contended key
+ 5|other key    
+(3 rows)
+
+
+starting permutation: s1b s2b s1d s2e s1c s2c s3check
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1d: DELETE FROM iso_uq WHERE id = 1;
+step s2e: INSERT INTO iso_uq VALUES (4, 'existing key'); <waiting ...>
+step s1c: COMMIT;
+step s2e: <... completed>
+step s2c: COMMIT;
+step s3check: SELECT id, body FROM iso_uq ORDER BY id;
+id|body        
+--+------------
+ 4|existing key
+(1 row)
+
+
+starting permutation: s1b s2b s1d s2e s1r s2c s3check
+step s1b: BEGIN;
+step s2b: BEGIN;
+step s1d: DELETE FROM iso_uq WHERE id = 1;
+step s2e: INSERT INTO iso_uq VALUES (4, 'existing key'); <waiting ...>
+step s1r: ROLLBACK;
+step s2e: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_uq_idx"
+step s2c: COMMIT;
+step s3check: SELECT id, body FROM iso_uq ORDER BY id;
+id|body        
+--+------------
+ 1|existing key
+(1 row)
+

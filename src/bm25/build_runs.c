@@ -284,7 +284,7 @@ flush_page(BuildState *bs)
 	if (bs->ndocs > 0)
 		check_order(bs, &bs->docs[0].tid);
 	for (int i = 0; i < bs->ndocs; i++)
-		analyze_doc(bs, &bs->docs[i].tid, bs->text.data + bs->docs[i].off, bs->docs[i].len);
+		analyze_doc(bs, &bs->docs[i].tid, bs->text.data + bs->docs[i].off, bs->docs[i].len, bs->docs[i].keyed ? &bs->docs[i].key : NULL);
 	bs->ndocs = 0;
 	resetStringInfo(&bs->text);
 	sift_analyzer_reset(bs->an);

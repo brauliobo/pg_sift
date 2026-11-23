@@ -26,6 +26,7 @@
 #include "utils/timestamp.h"
 
 #include "bm25/analyze.h"
+#include "bm25/bm25_doc.h"
 #include "bm25/build.h"
 #include "core/compat.h"
 #include "core/lane.h"
@@ -358,6 +359,7 @@ typedef struct DocText
 {
 	bool		snapshot;		/* a snapshot is pushed: the text of the docs of a batch may be out of line, and a worker has none */
 	uint32		batch_left;		/* the docs the snapshot serves still */
+	Relation	index;
 	Relation	heap;
 	IndexInfo  *info;
 	EState	   *estate;
@@ -382,6 +384,7 @@ doctext_open(Relation index)
 #endif
 	d = palloc0(sizeof(DocText));
 	SIFT_TEST_GATE(sift_test_worker_gate && MyBackendType == B_BG_WORKER, 7);
+	d->index = index;
 	d->heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	d->info = BuildIndexInfo(index);
 	d->estate = CreateExecutorState();
@@ -441,7 +444,6 @@ doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int 
 {
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
-	text	   *t;
 
 	doctext_snapshot(d);
 	if (!doctext_fetch(d, tid))
@@ -449,12 +451,7 @@ doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int 
 	ResetPerTupleExprContext(d->estate);
 	GetPerTupleExprContext(d->estate)->ecxt_scantuple = d->slot;
 	FormIndexDatum(d->info, d->slot, d->estate, values, isnull);
-	if (isnull[0])
-		return false;
-	t = DatumGetTextPP(values[0]);
-	*len = VARSIZE_ANY_EXHDR(t);
-	*nterms = sift_analyze_doc(d->an, VARDATA_ANY(t), *len, terms, dl);
-	return true;
+	return sift_bm25_row_terms(d->an, d->index, values, isnull, terms, nterms, dl, len);
 }
 
 typedef struct RunList

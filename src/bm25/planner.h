@@ -71,6 +71,12 @@ extern int64 sift_attr_datum(Oid type, Datum d);
 extern bool sift_index_matches_key(IndexOptInfo *index, Node *expr);
 
 /*
+ * Is expr the text a sift index holds: its one key column, or sift.sections of all the key columns of one on several? keys[k] is the column of
+ * key k, 0 for the next of exprs, the expressions of the index as for range table entry relid
+ */
+extern bool sift_key_is_whole(int nkey, const int *keys, const List *exprs, Index relid, Node *expr);
+
+/*
  * Clause recognition shared by hooks, amcostestimate and support functions:
  * true if clause is `key @@> q` (or sift.match_idx(key, q, index)) where key
  * matches the index key and q is pseudo-constant; *query receives q.

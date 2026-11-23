@@ -115,12 +115,20 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	BuildState *bs = state;
 	MemoryContext old;
 	text	   *t;
-	bool		detoasted;
+	bool		detoasted,
+				keyed;
+	uint64		key = 0;
 	int			len;
 	BlockNumber blk = ItemPointerGetBlockNumber(tid);
 
-	if (isnull[0])
+	old = MemoryContextSwitchTo(bs->tmpcxt);
+	t = sift_bm25_assemble_doc(index, values, isnull, bs->tmpcxt);
+	keyed = t != NULL && sift_bm25_unique_key(index, values, isnull, &key);
+	MemoryContextSwitchTo(old);
+	if (t == NULL)
 		return;
+	if (keyed && alive)
+		sift_unique_build_add(bs->uniq, tid, key, values, isnull);
 	if (blk != bs->page)
 	{
 		flush_page(bs);
@@ -129,7 +137,6 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 			end_segment(bs);
 	}
 	old = MemoryContextSwitchTo(bs->tmpcxt);
-	t = DatumGetTextPP(values[0]);
 	detoasted = (Pointer) t != DatumGetPointer(values[0]);
 	len = VARSIZE_ANY_EXHDR(t);
 	if (bs->text.len > 0 && bs->text.len + len > bs->page_text)
@@ -137,7 +144,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 	if (len > bs->page_text)
 	{
 		check_order(bs, tid);
-		analyze_doc(bs, tid, VARDATA_ANY(t), len);
+		analyze_doc(bs, tid, VARDATA_ANY(t), len, keyed ? &key : NULL);
 		sift_analyzer_reset(bs->an);
 	}
 	else
@@ -147,7 +154,7 @@ build_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool aliv
 			bs->maxdocs *= 2;
 			bs->docs = repalloc(bs->docs, bs->maxdocs * sizeof(PageDoc));
 		}
-		bs->docs[bs->ndocs++] = (PageDoc) {*tid, bs->text.len, len};
+		bs->docs[bs->ndocs++] = (PageDoc) {*tid, bs->text.len, len, keyed, key};
 		if (bs->text.len + len < bs->text.maxlen)
 		{
 			memcpy(bs->text.data + bs->text.len, VARDATA_ANY(t), len);
@@ -199,12 +206,11 @@ init_bounds(BuildState *bs, Relation heap, int nsegments)
 static BuildState *
 build_begin(Relation index, Size budget)
 {
-	const SiftOptions *opts = sift_index_options(index);
 	BuildState *bs = palloc0(sizeof(BuildState));
 	SiftAnalyzerConfig cfg;
 	MemoryContext old;
 
-	sift_analyzer_config_from_options(opts, &cfg);
+	sift_analyzer_config_from_index(index, &cfg);
 	bs->index = index;
 	bs->analyzer_hash = cfg.hash;
 	strlcpy(bs->analyzer_config, cfg.tsconfig, sizeof(bs->analyzer_config));
@@ -414,17 +420,20 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift indexes require a heap or sift_table table"),
 				 errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
-	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0)
+	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0 && !index->rd_index->indisunique)
 	{
 		SiftAnalyzerConfig cfg;
 
 		/* the options are refused here: a worker that refuses them first reports the error to the leader with the context of the worker */
-		sift_analyzer_config_from_options(opts, &cfg);
+		sift_analyzer_config_from_index(index, &cfg);
 		ldr = begin_parallel(heap, index, info);
 	}
 	bs = build_begin(index, (Size) maintenance_work_mem * 1024 / (ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1));
 	old = MemoryContextSwitchTo(bs->cxt);
 	SiftMemTracker mt_bm25_build;
+
+	if (index->rd_index->indisunique)
+		bs->uniq = sift_unique_build_begin(heap, index, bs->cxt);
 
 	sift_mem_init_sub(&mt_bm25_build, "bm25_build", bs->cxt, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, ldr ? ((SiftBuildShared *) ldr->shared)->nparticipants : 1, 1));
 	if (ldr == NULL)
@@ -441,6 +450,8 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 	progress_phase(bs, PHASE_SCAN);
 	res->heap_tuples = build_scan(bs, heap, info, ldr ? sift_table_beginscan_parallel(heap, SCAN_OF(ldr->shared)) : NULL, true);
 	res->index_tuples = bs->indexed;
+	if (bs->uniq)
+		sift_unique_build_end(bs->uniq);
 	if (ldr)
 	{
 		add_counts(ldr->shared, res->heap_tuples, bs->indexed);

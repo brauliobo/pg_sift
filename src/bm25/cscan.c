@@ -27,6 +27,7 @@
 #include "utils/rel.h"
 
 #include "bm25/eval.h"
+#include "bm25/bm25_doc.h"
 #include "bm25/planner.h"
 #include "bm25/cscan_int.h"
 #include "core/quarantine.h"
@@ -103,7 +104,7 @@ index_text(SiftScanState *ss)
 	ResetPerTupleExprContext(estate);
 	GetPerTupleExprContext(estate)->ecxt_scantuple = ss->heapslot;
 	FormIndexDatum(ss->iinfo, ss->heapslot, estate, values, isnull);
-	return isnull[0] ? NULL : DatumGetTextPP(values[0]);
+	return sift_bm25_assemble_doc(ss->index, values, isnull, CurrentMemoryContext);
 }
 
 /*

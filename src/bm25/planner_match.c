@@ -8,6 +8,7 @@
 
 #include "access/stratnum.h"
 #include "access/sysattr.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
@@ -25,17 +26,80 @@
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 
+static Node *
+strip_relabel(Node *expr)
+{
+	while (IsA(expr, RelabelType))
+		expr = (Node *) ((RelabelType *) expr)->arg;
+	return expr;
+}
+
+/* Is expr key column k, attno its column, else (0) keyexpr its expression? */
+static bool
+key_column_is(Node *expr, Index relid, int attno, Node *keyexpr)
+{
+	expr = strip_relabel(expr);
+	if (attno != 0)
+		return IsA(expr, Var) && ((Var *) expr)->varno == relid && ((Var *) expr)->varlevelsup == 0 && ((Var *) expr)->varattno == attno;
+	return equal(expr, strip_relabel(keyexpr));
+}
+
+static bool
+is_sift_sections(Oid funcid)
+{
+	return get_func_namespace(funcid) == get_namespace_oid("sift", true) && strcmp(get_func_name(funcid), "sections") == 0;
+}
+
+/* The elements of sift.sections(a, b, ...), a call, or its definition as the planner inlines it, array_to_string(ARRAY[a, b, ...], chr(29), ''); NIL for another expression */
+static List *
+sections_elements(Node *expr)
+{
+	List	   *args;
+	Const	   *sep,
+			   *nullstr;
+
+	if (!IsA(expr, FuncExpr))
+		return NIL;
+	args = ((FuncExpr *) expr)->args;
+	if (is_sift_sections(((FuncExpr *) expr)->funcid))
+		return list_length(args) == 1 && IsA(linitial(args), ArrayExpr) ? ((ArrayExpr *) linitial(args))->elements : NIL;
+	if (((FuncExpr *) expr)->funcid != F_ARRAY_TO_STRING_ANYARRAY_TEXT_TEXT || !IsA(linitial(args), ArrayExpr) ||
+		!IsA(lsecond(args), Const) || !IsA(lthird(args), Const))
+		return NIL;
+	sep = (Const *) lsecond(args);
+	nullstr = (Const *) lthird(args);
+	if (sep->constisnull || nullstr->constisnull || VARSIZE_ANY_EXHDR(DatumGetTextPP(sep->constvalue)) != 1 ||
+		*VARDATA_ANY(DatumGetTextPP(sep->constvalue)) != SIFT_FIELD_SEP || VARSIZE_ANY_EXHDR(DatumGetTextPP(nullstr->constvalue)) != 0)
+		return NIL;
+	return ((ArrayExpr *) linitial(args))->elements;
+}
+
+bool
+sift_key_is_whole(int nkey, const int *keys, const List *exprs, Index relid, Node *expr)
+{
+	const ListCell *keyexpr = exprs ? list_head(exprs) : NULL;
+	List	   *elems;
+
+	expr = strip_relabel(expr);
+	if (nkey == 1)
+		return key_column_is(expr, relid, keys[0], keys[0] == 0 ? linitial(exprs) : NULL);
+	elems = sections_elements(expr);
+	if (list_length(elems) != nkey)
+		return false;
+	for (int k = 0; k < nkey; k++)
+	{
+		if (!key_column_is(list_nth(elems, k), relid, keys[k], keys[k] == 0 ? lfirst(keyexpr) : NULL))
+			return false;
+		if (keys[k] == 0)
+			keyexpr = lnext(exprs, keyexpr);
+	}
+	return true;
+}
+
 bool
 sift_index_matches_key(IndexOptInfo *index, Node *expr)
 {
-	if (index->nkeycolumns != 1 || index->relam != sift_catalog()->am)
-		return false;
-	while (IsA(expr, RelabelType))
-		expr = (Node *) ((RelabelType *) expr)->arg;
-	if (index->indexkeys[0] != 0)
-		return IsA(expr, Var) && ((Var *) expr)->varno == index->rel->relid &&
-			((Var *) expr)->varattno == index->indexkeys[0];
-	return equal(expr, linitial(index->indexprs));
+	return index->relam == sift_catalog()->am && sift_key_is_whole(index->nkeycolumns, index->indexkeys, index->indexprs, index->rel->relid, expr);
 }
 
 bool

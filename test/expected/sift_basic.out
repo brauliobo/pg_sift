@@ -7,17 +7,19 @@ SELECT amname, amtype FROM pg_am WHERE amname = 'sift';
 
 SELECT oprnamespace::regnamespace, oprname, oprleft::regtype, oprright::regtype
   FROM pg_operator WHERE oprname = '@@>';
- oprnamespace | oprname | oprleft | oprright 
---------------+---------+---------+----------
- pg_catalog   | @@>     | text    | text
-(1 row)
+ oprnamespace | oprname |  oprleft   | oprright 
+--------------+---------+------------+----------
+ pg_catalog   | @@>     | text       | text
+ pg_catalog   | @@>     | anyelement | text
+(2 rows)
 
 SELECT opcname, opcdefault FROM pg_opclass
   WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift');
  opcname  | opcdefault 
 ----------+------------
  text_ops | t
-(1 row)
+ any_ops  | t
+(2 rows)
 
 CREATE TABLE docs (id int, body text);
 CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (b = 2);

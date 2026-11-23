@@ -211,16 +211,18 @@ SELECT sift.verify('a_renamed', true);
  
 (1 row)
 
--- shapes the access method does not offer
-CREATE INDEX a_bad ON a USING sift (body, id);
-ERROR:  access method "sift" does not support multicolumn indexes
-CREATE INDEX a_bad ON a USING sift (id);
-ERROR:  data type integer has no default operator class for access method "sift"
-HINT:  You must specify an operator class for the index or define a default operator class for the data type.
+-- key shapes: several columns, a column of another type, INCLUDE columns, UNIQUE
+CREATE INDEX a_multi ON a USING sift (body, id);
+DROP INDEX a_multi;
+CREATE INDEX a_int ON a USING sift (id);
+DROP INDEX a_int;
 CREATE INDEX a_incl ON a USING sift (body) INCLUDE (id);
 DROP INDEX a_incl;
-CREATE UNIQUE INDEX a_bad ON a USING sift (body);
-ERROR:  access method "sift" does not support unique indexes
+CREATE UNIQUE INDEX a_uniq ON a USING sift (body);
+ERROR:  could not create unique index "a_uniq"
+DETAIL:  Key (body)=(running runner runs cats) is duplicated.
+DROP INDEX a_uniq;
+ERROR:  index "a_uniq" does not exist
 CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
 ERROR:  unknown sift stemmer "klingon"
 HINT:  Valid stemmers are "en", "none" and the names of text search configurations (with their schema unless they are in pg_catalog).

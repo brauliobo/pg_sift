@@ -608,7 +608,7 @@ sift_amvalidate(Oid opclassoid)
 	return true;
 }
 
-/* What the sift access methods share: bitmap scans only, no ordering or uniqueness, a parallel build (makeNode zeroes the rest) */
+/* What the sift access methods share: bitmap scans only, no ordering, a parallel build (makeNode zeroes the rest) */
 IndexAmRoutine *
 sift_am_routine(int strategies, int support, bool multicol)
 {
@@ -639,6 +639,7 @@ sift_handler(PG_FUNCTION_ARGS)
 	IndexAmRoutine *am = sift_am_routine(1, 0, false);
 
 	am->amcaninclude = true;
+	am->amcanmulticol = am->amcanunique = true;
 	am->ambuild = sift_ambuild;
 	am->ambuildempty = sift_ambuildempty;
 	am->aminsert = sift_aminsert;

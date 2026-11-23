@@ -84,12 +84,15 @@ ALTER TABLE a ALTER COLUMN body TYPE text;
 SELECT agree('a', 'runs');
 SELECT sift.verify('a_renamed', true);
 
--- shapes the access method does not offer
-CREATE INDEX a_bad ON a USING sift (body, id);
-CREATE INDEX a_bad ON a USING sift (id);
+-- key shapes: several columns, a column of another type, INCLUDE columns, UNIQUE
+CREATE INDEX a_multi ON a USING sift (body, id);
+DROP INDEX a_multi;
+CREATE INDEX a_int ON a USING sift (id);
+DROP INDEX a_int;
 CREATE INDEX a_incl ON a USING sift (body) INCLUDE (id);
 DROP INDEX a_incl;
-CREATE UNIQUE INDEX a_bad ON a USING sift (body);
+CREATE UNIQUE INDEX a_uniq ON a USING sift (body);
+DROP INDEX a_uniq;
 CREATE INDEX a_bad ON a USING sift (body) WITH (stemmer = 'klingon');
 CREATE INDEX a_bad ON a USING sift (body) WITH (write_buffer_limit = 0);
 

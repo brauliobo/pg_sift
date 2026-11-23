@@ -25,6 +25,7 @@
 #include "utils/snapmgr.h"
 
 #include "bm25/am.h"
+#include "bm25/bm25_doc.h"
 #include "bm25/build.h"
 #include "core/parbuild.h"
 #include "storage/condition_variable.h"
@@ -39,6 +40,8 @@ typedef struct PageDoc
 	ItemPointerData tid;
 	uint32		off;			/* into the page's text arena */
 	uint32		len;
+	bool		keyed;			/* the doc has the unique key below */
+	uint64		key;
 } PageDoc;
 
 typedef struct BuildState
@@ -48,6 +51,7 @@ typedef struct BuildState
 	MemoryContext tmpcxt;
 	SiftAnalyzer *an;
 	SiftInvBuf *inv;
+	SiftUniqueBuild *uniq;	/* the keys of a UNIQUE index so far */
 	Size		budget;
 	Size		page_text;		/* bytes of text of a heap page held before they are analyzed (see page_text_max) */
 	Size		small_doc;		/* docs of fewer bytes of text always fit the buffer that is not full */
@@ -194,12 +198,14 @@ extern Size page_text_max(const BuildState *bs);
 
 /* Analyzes a doc into the buffer, which is spilled first when a large doc does not fit it */
 static inline void
-analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len)
+analyze_doc(BuildState *bs, ItemPointer tid, const char *text, int len, const uint64 *key)
 {
 	SiftTermFreq *terms;
 	uint32		dl;
 	int			n = sift_analyze_doc(bs->an, text, len, &terms, &dl);
 
+	if (key)
+		n = sift_bm25_unique_terms(terms, n, *key, &dl, &terms);
 	if (len >= bs->small_doc && !sift_inv_empty(bs->inv) && !sift_inv_fits(bs->inv, n, len))
 		spill(bs);
 	bs->indexed++;

@@ -25,6 +25,7 @@
 #include "table/dispatch.h"
 #include "table/v1/table_v1.h"
 #include "bm25/segment_sql.h"
+#include "bm25/bm25_doc.h"
 #include "core/catname.h"
 #include "core/inspect.h"
 #include "core/memtrack.h"
@@ -452,15 +453,13 @@ static void
 heap_check_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool alive, void *state)
 {
 	HeapCheck  *hc = state;
-	text	   *t;
 	SiftTermFreq *terms;
 	uint32		dl;
-	int			n;
+	int			n,
+				len;
 
-	if (isnull[0])
+	if (!sift_bm25_row_terms(hc->an, index, values, isnull, &terms, &n, &dl, &len))
 		return;
-	t = DatumGetTextPP(values[0]);
-	n = sift_analyze_doc(hc->an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
 	check_missing(hc, tid, 0, 0, NULL, 0);
 	for (int i = 0; i < n; i++)
 		check_missing(hc, tid, sift_term_hash64(terms[i].term, terms[i].len), terms[i].tf, terms[i].term, terms[i].len);
