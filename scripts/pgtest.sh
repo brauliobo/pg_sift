@@ -28,6 +28,9 @@
 #   scripts/pgtest.sh new-data DIR [wal]    a fresh data directory (the template copied, else initdb); wal: the default 16 MB WAL
 #                                           segments, for the tests whose point is WAL (always a real initdb)
 #
+# SIFT_TEST_FORMAT: f1 (default: the tests of format major 1 keep their indexes in it), f2 (SIFT_TESTING=1, sift.test_create_format1 = off: every CREATE INDEX and
+# sift_table builds Format 2.0, what the high-level suites run on) or release (the release library, SIFT_TESTING= empty: no sift.test_* setting is given to the server).
+#
 # SIFT_TMP (default /tmp/sift-arch) and SIFT_PORT (56100-56299, default
 # 56100) let several jobs run clusters side by side; SIFT_ROOT (default
 # $SIFT_TMP/root) lets clusters in other SIFT_TMP directories share one install; TAP clusters use
@@ -65,6 +68,12 @@ PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 # the cluster is this one and no other: a default of the caller (a service, a database) must not send a client to the system PostgreSQL
 unset PGDATABASE PGSERVICE PGSERVICEFILE
 export PGHOST=$SOCK PGPORT=$PORT
+TEST_FORMAT=${SIFT_TEST_FORMAT:-f1}
+case $TEST_FORMAT in
+	f1|f2) ;;
+	release) SIFT_TESTING= ;;
+	*) echo "pgtest: SIFT_TEST_FORMAT must be f1, f2 or release, not '$TEST_FORMAT'" >&2; exit 1 ;;
+esac
 export SIFT_TESTING=${SIFT_TESTING-1}
 FLAVOR="${SANITIZE:+asan }${SIFT_TESTING:+testing }${SIFT_HARDEN:+harden$SIFT_HARDEN${SIFT_UBSAN_SET:+(${SIFT_UBSAN_SET// /,})}${SIFT_POINTER_OVERFLOW:++ptr} }$([[ -n ${SIFT_LTO:-} ]] && echo lto || echo nolto)${VULKAN:+ vulkan} pg$PG_MAJOR"
 
@@ -103,7 +112,8 @@ install() {
 # the build chooser (sift.col_build_source = auto) reads the index a REINDEX replaces and says so in a notice with the seconds it took: the clusters of the regression tests read the heap, as
 # before 5.1, so that no expected output carries those seconds; the tests of the chooser say SET sift.col_build_source = auto
 # CREATE INDEX builds format major 2: the tests keep the indexes they create in format major 1 (the testing build only); the tests of format major 2 say SET sift.test_create_format1 = off
-TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_create_format1 = on$'\n'sift.test_quiet_build_notice = on}"
+CREATE_FORMAT1=on; [[ $TEST_FORMAT != f2 ]] || CREATE_FORMAT1=off
+TREE_CONF="${SIFT_TESTING:+sift.col_build_source = heap$'\n'sift.test_scope_patch = on$'\n'sift.test_create_format1 = $CREATE_FORMAT1$'\n'sift.test_quiet_build_notice = on}"
 # SIFT_MEMCENSUS=KB|on: every statement of every test that grows memory by KB (on: 1024) writes a SIFTMEM line to the server log
 [[ -z ${SIFT_TESTING:-} || -z ${SIFT_MEMCENSUS:-} ]] || TREE_CONF+=$'\n'"sift.test_memctx_census = $([[ $SIFT_MEMCENSUS == on ]] && echo 1024 || echo "$SIFT_MEMCENSUS")"
 tree_options() { local l; [[ -z $TREE_CONF ]] || while IFS= read -r l; do printf -- '-c %s ' "${l// = /=}"; done <<<"$TREE_CONF"; }
