@@ -12,6 +12,7 @@
 #include "utils/builtins.h"
 #include "utils/numeric.h"
 
+#include "agg/v6/v6_colstat.h"
 #include "agg/v6/v6_proj_ctx.h"
 #include "agg/v6/v6_proj_exec.h"
 #include "agg/v6/v6_proj_fold.h"
@@ -47,6 +48,8 @@ static bool
 query_of(const SiftV6ProjHost *h, const SiftV6Spec *spec, SiftV6ProjQuery *q)
 {
 	*q = (SiftV6ProjQuery) {.limit = -1};
+	if (h->heap != NULL && h->npreds == 0 && sift_v6_spec_whole_parts(spec))
+		return false;
 	if (spec->nderive > 0 || spec->affine || spec->nsets > 0 || spec->nfuncs > 0 || spec->nkeys > SV6P_MAX || spec->naggs > SV6P_MAX || h->npreds > SV6P_MAX)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)

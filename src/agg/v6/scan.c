@@ -21,6 +21,7 @@
 #include "agg/v6/v6_group_fast.h"
 #include "agg/v6/v6_fuse.h"
 #include "agg/v6/v6_datebin_win_pg.h"
+#include "agg/v6/v6_colstat.h"
 #include "agg/v6/v6_dictseen.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_pipe.h"
@@ -95,6 +96,8 @@ struct SiftV6Scan
 	bool		count_only;
 	bool		minmax_only;	/* every aggregate is a MIN or MAX of an integer column and nothing else is asked: the zones of a part answer it */
 	const SiftPartDesc *visible_part;	/* the part whose rows part_offer found all-visible: its batches are not vetted */
+	V6VisMap	vis;
+	V6ColStat  *stat;			/* an ungrouped aggregate of integer columns: the totals of the parts it has read whole */
 	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
 	SiftVec   **fact;			/* the vectors of the columns, for the pipe */
 	const SiftClause *gate;		/* an arm of a pass over the union of the keys of its arms: the rows it takes */
@@ -527,31 +530,12 @@ vet_maybe(V6Scan *s, const uint64 *maybe, const uint64 *tid, int off, int n)
 	return bs->n_active;
 }
 
-/* Whether every heap page the addresses of a part span is all-visible: then no row of it needs the heap, and the count of its rows is the descriptor's */
-#define PART_VM_SPAN_MAX	4096	/* pages a part may span, whatever its rows, for the visibility map to be asked of each */
-
-static bool
-part_all_visible(V6Scan *s, const SiftPartDesc *d)
-{
-	const uint64 span = (uint64) (d->tid_max >> 16) - (d->tid_min >> 16) + 1;
-
-	if (d->tid_max == 0)
-		return false;
-	/* a part whose rows are spread over far more pages than rows (a handful of old tuples among millions of pages) is read row by row: asking for each of its pages costs more than its rows */
-	if (span > PART_VM_SPAN_MAX && span > 4 * (d->nrows / 16 + 64))
-		return false;
-	for (BlockNumber b = d->tid_min >> 16; b <= (BlockNumber) (d->tid_max >> 16); b++)
-		if (!VM_ALL_VISIBLE(s->vet.heap, b, &s->vet.vmbuf))
-			return false;
-	return true;
-}
-
 static bool
 part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded)
 {
 	V6Scan	   *s = arg;
 
-	s->visible_part = part_all_visible(s, d) ? d : NULL;
+	s->visible_part = sift_v6_vis_part_all_visible(&s->vis, s->vet.heap, d) ? d : NULL;
 	if (s->visible_part == NULL)
 		return false;
 	if (countable && s->count_only)
@@ -560,24 +544,13 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 		s->stats->rows += d->nrows;
 		return true;
 	}
+	if (s->stat != NULL && sift_v6_colstat_offer(s->stat, d, countable))
+	{
+		s->stats->rows += d->nrows;
+		return true;
+	}
 	*tids_unneeded = s->rows == NULL;
 	return false;
-}
-
-/* MIN and MAX of integer columns of the whole relation: a part's zones hold the least and the greatest value of each column */
-static bool
-spec_minmax_only(const SiftV6Spec *spec)
-{
-	bool		only = spec->naggs > 0 && spec->nkeys == 0 && spec->nsets == 0 && spec->nbins == 0 && spec->nfilters == 0 && spec->nderive == 0 && !spec->affine && spec->ext == NULL;
-
-	for (int j = 0; only && j < spec->naggs; j++)
-	{
-		const SiftV6Agg *a = &spec->agg[j];
-
-		only = (a->kind == SV6_MIN || a->kind == SV6_MAX) && a->fclause == 0 && a->arg.jleaf == 0 && a->arg.scale == 0 && sift_v6_class(a->arg.typid) != SV6C_F64 &&
-			sift_v6_class(a->arg.typid) != SV6C_TEXT && sift_v6_class(a->arg.typid) != SV6C_BOOL && a->arg.typid != NUMERICOID;
-	}
-	return only;
 }
 
 /* The least and the greatest of the part, as the two rows of a batch of the columns the aggregates read */
@@ -651,6 +624,8 @@ v6_sink(void *arg, const SiftF2Batch *b)
 	V6Scan	   *s = arg;
 	const bool	visible = batch_visible(s, b);
 
+	if (s->stat != NULL && visible)
+		sift_v6_colstat_note(s->stat, b);
 	for (int off = 0; off < b->n; off += SIFT_VEC_LEN)
 	{
 		const int	n = Min(SIFT_VEC_LEN, b->n - off);
@@ -834,8 +809,11 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 
 	s->count_only = s->rows == NULL && s->spec->ext == NULL && sift_v6_spec_count_only(s->spec);
 	scan_setup(s, sift_col_rel(index)->first, star);
-	s->minmax_only = s->rows == NULL && s->pipe == NULL && spec_minmax_only(s->spec);
+	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
+	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
+	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0)
+		s->stat = sift_v6_colstat_begin(s->spec, s->group, index, sift_col_rel(index)->first, CurrentMemoryContext);
 	if (next_chunk == NULL)
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
@@ -844,6 +822,9 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		s->stats->bridge_tids += bridge->ntids;
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
 	}
+	if (s->stat != NULL)
+		sift_v6_colstat_end(s->stat);
+	sift_v6_vis_free(&s->vis);
 	sift_v6_vet_end(&s->vet);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
