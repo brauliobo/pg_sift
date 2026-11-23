@@ -1,0 +1,1008 @@
+-- Format 2.0 sift_table parity: every check raises on failure and prints one row (name, ok); a clean run prints only ok rows.
+-- About 15 s. Run on a build where new tables take Format 2.0 (sift.test_create_format1 off) except in section 12, which makes a Format 1 table.
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET statement_timeout = '240s';
+CREATE SCHEMA f2p;
+SET search_path = f2p, public;
+CREATE FUNCTION chk(name text, got anyelement, want anyelement) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
+	RETURN name || ': ok';
+END $$;
+CREATE FUNCTION fails(stmt text, state text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE stmt;
+	RAISE EXCEPTION 'FAILED: % did not raise %', stmt, state;
+EXCEPTION WHEN OTHERS THEN
+	IF SQLSTATE <> state THEN RAISE EXCEPTION 'FAILED: % raised % (%), want %', stmt, SQLSTATE, SQLERRM, state; END IF;
+	RETURN state || ': ok';
+END $$;
+CREATE FUNCTION format_major(rel regclass) RETURNS int LANGUAGE sql AS $$
+	SELECT (get_byte(page, 28) + 256 * get_byte(page, 29))::int FROM (SELECT get_raw_page(rel::text, 0) AS page) p $$;
+-- 1. CRUD
+CREATE TABLE t (id int PRIMARY KEY, g int, v numeric(10,2), s text, ts timestamptz) USING sift_table;
+INSERT INTO t SELECT i, i % 10, i / 4.0, 'row ' || i, timestamptz '2024-01-01' + i * interval '1 minute' FROM generate_series(1, 20000) i;
+SELECT chk('insert count', count(*)::int, 20000) FROM t;
+       chk        
+------------------
+ insert count: ok
+(1 row)
+
+SELECT chk('insert sum', sum(v), (SELECT sum(i / 4.0) FROM generate_series(1, 20000) i)::numeric) FROM t;
+      chk       
+----------------
+ insert sum: ok
+(1 row)
+
+UPDATE t SET v = v + 1, s = s || '!' WHERE g = 3;
+SELECT chk('update rows', count(*)::int, 2000) FROM t WHERE s LIKE '%!';
+       chk       
+-----------------
+ update rows: ok
+(1 row)
+
+SELECT chk('update value', v, 13 / 4.0 + 1) FROM t WHERE id = 13;
+       chk        
+------------------
+ update value: ok
+(1 row)
+
+DELETE FROM t WHERE g = 7;
+SELECT chk('delete count', count(*)::int, 18000) FROM t;
+       chk        
+------------------
+ delete count: ok
+(1 row)
+
+SELECT chk('deleted gone', count(*)::int, 0) FROM t WHERE g = 7;
+       chk        
+------------------
+ deleted gone: ok
+(1 row)
+
+SELECT chk('pk probe', s, 'row 5') FROM t WHERE id = 5;
+     chk      
+--------------
+ pk probe: ok
+(1 row)
+
+SELECT chk('pk probe of a deleted row', count(*)::int, 0) FROM t WHERE id = 7;
+              chk              
+-------------------------------
+ pk probe of a deleted row: ok
+(1 row)
+
+SELECT chk('format major', format_major('t'), 2);
+       chk        
+------------------
+ format major: ok
+(1 row)
+
+SELECT chk('ctid is virtual', (SELECT count(*)::int FROM t WHERE ctid = (SELECT ctid FROM t WHERE id = 5)), 1);
+         chk         
+---------------------
+ ctid is virtual: ok
+(1 row)
+
+SELECT chk('tid range', (SELECT count(*)::int FROM t WHERE ctid >= '(0,1)' AND ctid < '(1,1)') BETWEEN 1 AND 291, true);
+      chk      
+---------------
+ tid range: ok
+(1 row)
+
+SELECT chk('tablesample', (SELECT count(*) FROM t TABLESAMPLE SYSTEM (100)) = 18000, true);
+       chk       
+-----------------
+ tablesample: ok
+(1 row)
+
+-- 2. MVCC: rollback, repeatable read, read committed, subtransactions
+BEGIN;
+INSERT INTO t VALUES (100001, 1, 1, 'rolled back', now());
+UPDATE t SET v = -1 WHERE id = 1;
+DELETE FROM t WHERE id = 2;
+ROLLBACK;
+SELECT chk('rollback insert', count(*)::int, 0) FROM t WHERE id = 100001;
+         chk         
+---------------------
+ rollback insert: ok
+(1 row)
+
+SELECT chk('rollback update', v <> -1, true) FROM t WHERE id = 1;
+         chk         
+---------------------
+ rollback update: ok
+(1 row)
+
+SELECT chk('rollback delete', count(*)::int, 1) FROM t WHERE id = 2;
+         chk         
+---------------------
+ rollback delete: ok
+(1 row)
+
+BEGIN;
+SAVEPOINT a;
+DELETE FROM t WHERE id = 3;
+ROLLBACK TO a;
+SELECT chk('rollback to savepoint', count(*)::int, 1) FROM t WHERE id = 3;
+            chk            
+---------------------------
+ rollback to savepoint: ok
+(1 row)
+
+SAVEPOINT b;
+INSERT INTO t VALUES (100002, 1, 1, 'kept', now());
+RELEASE b;
+COMMIT;
+SELECT chk('release savepoint', count(*)::int, 1) FROM t WHERE id = 100002;
+          chk          
+-----------------------
+ release savepoint: ok
+(1 row)
+
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM t \gset before_
+INSERT INTO t VALUES (100003, 1, 1, 'inside', now());
+SELECT chk('own insert visible', count(*)::int, :before_count + 1) FROM t;
+          chk           
+------------------------
+ own insert visible: ok
+(1 row)
+
+ROLLBACK;
+SELECT chk('own insert rolled back', count(*)::int, :before_count) FROM t;
+            chk             
+----------------------------
+ own insert rolled back: ok
+(1 row)
+
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM t WHERE id <= 3 ORDER BY id;
+UPDATE t SET v = 0 WHERE id <= 3;
+SELECT chk('cursor snapshot', (SELECT count(*)::int FROM t WHERE id <= 3 AND v = 0), 3);
+         chk         
+---------------------
+ cursor snapshot: ok
+(1 row)
+
+FETCH ALL FROM c;
+ id 
+----
+  1
+  2
+  3
+(3 rows)
+
+ROLLBACK;
+-- 3. COPY, COPY FREEZE, multi_insert, CTAS
+CREATE TABLE c (id int, s text, n numeric(12,3)) USING sift_table;
+COPY (SELECT i, 'c' || i, i / 8.0 FROM generate_series(1, 30000) i) TO '/tmp/f2p_copy.csv' CSV;
+COPY c FROM '/tmp/f2p_copy.csv' CSV;
+SELECT chk('copy count', count(*)::int, 30000) FROM c;
+      chk       
+----------------
+ copy count: ok
+(1 row)
+
+SELECT chk('copy sum', sum(n), (SELECT sum(i / 8.0) FROM generate_series(1, 30000) i)::numeric) FROM c;
+     chk      
+--------------
+ copy sum: ok
+(1 row)
+
+TRUNCATE c;
+BEGIN;
+TRUNCATE c;
+COPY c FROM '/tmp/f2p_copy.csv' CSV FREEZE;
+COMMIT;
+SELECT chk('copy freeze count', count(*)::int, 30000) FROM c;
+          chk          
+-----------------------
+ copy freeze count: ok
+(1 row)
+
+CREATE TABLE ctas USING sift_table AS SELECT * FROM c WHERE id % 2 = 0;
+SELECT chk('ctas count', count(*)::int, 15000) FROM ctas;
+      chk       
+----------------
+ ctas count: ok
+(1 row)
+
+SELECT chk('ctas format', format_major('ctas'), 2);
+       chk       
+-----------------
+ ctas format: ok
+(1 row)
+
+INSERT INTO c SELECT * FROM ctas;
+SELECT chk('insert select', count(*)::int, 45000) FROM c;
+        chk        
+-------------------
+ insert select: ok
+(1 row)
+
+\! rm -f /tmp/f2p_copy.csv
+-- 4. ON CONFLICT
+CREATE TABLE oc (id int PRIMARY KEY, n int, s text) USING sift_table;
+INSERT INTO oc SELECT i, 1, 'a' FROM generate_series(1, 1000) i;
+INSERT INTO oc SELECT i, 1, 'b' FROM generate_series(1, 1500) i ON CONFLICT (id) DO NOTHING;
+SELECT chk('do nothing', (count(*)::int, count(*) FILTER (WHERE s = 'a')::int), (1500, 1000)) FROM oc;
+      chk       
+----------------
+ do nothing: ok
+(1 row)
+
+INSERT INTO oc SELECT i, 1, 'c' FROM generate_series(1, 1200) i ON CONFLICT (id) DO UPDATE SET n = oc.n + 1, s = EXCLUDED.s;
+SELECT chk('do update', (count(*)::int, count(*) FILTER (WHERE n = 2)::int, count(*) FILTER (WHERE s = 'c')::int), (1500, 1200, 1200)) FROM oc;
+      chk      
+---------------
+ do update: ok
+(1 row)
+
+SELECT fails('INSERT INTO oc VALUES (1, 0, ''dup'')', '23505');
+   fails   
+-----------
+ 23505: ok
+(1 row)
+
+MERGE INTO oc USING (SELECT i AS id FROM generate_series(1400, 1600) i) m ON oc.id = m.id
+	WHEN MATCHED THEN UPDATE SET n = 9 WHEN NOT MATCHED THEN INSERT VALUES (m.id, 9, 'm');
+SELECT chk('merge', (count(*)::int, count(*) FILTER (WHERE n = 9)::int), (1600, 201)) FROM oc;
+    chk    
+-----------
+ merge: ok
+(1 row)
+
+-- 5. Row locks: the four modes, NOWAIT, SKIP LOCKED, EvalPlanQual through a second session
+SELECT chk('for update', count(*)::int, 5) FROM (SELECT id FROM oc WHERE id <= 5 FOR UPDATE) l;
+      chk       
+----------------
+ for update: ok
+(1 row)
+
+SELECT chk('for no key update', count(*)::int, 5) FROM (SELECT id FROM oc WHERE id <= 5 FOR NO KEY UPDATE) l;
+          chk          
+-----------------------
+ for no key update: ok
+(1 row)
+
+SELECT chk('for share', count(*)::int, 5) FROM (SELECT id FROM oc WHERE id <= 5 FOR SHARE) l;
+      chk      
+---------------
+ for share: ok
+(1 row)
+
+SELECT chk('for key share', count(*)::int, 5) FROM (SELECT id FROM oc WHERE id <= 5 FOR KEY SHARE) l;
+        chk        
+-------------------
+ for key share: ok
+(1 row)
+
+CREATE EXTENSION IF NOT EXISTS dblink;
+SELECT dblink_connect('s2', format('dbname=%s user=%s', current_database(), current_user));
+ dblink_connect 
+----------------
+ OK
+(1 row)
+
+BEGIN;
+SELECT count(*) FROM (SELECT 1 FROM oc WHERE id = 10 FOR UPDATE) l;
+ count 
+-------
+     1
+(1 row)
+
+SELECT fails($$SELECT * FROM dblink('s2', 'SELECT 1 FROM f2p.oc WHERE id = 10 FOR UPDATE NOWAIT') AS x(r int)$$, '55P03');
+   fails   
+-----------
+ 55P03: ok
+(1 row)
+
+SELECT chk('skip locked', (SELECT count(*)::int FROM dblink('s2', 'SELECT id FROM f2p.oc WHERE id IN (10, 11) FOR UPDATE SKIP LOCKED') AS x(id int)), 1);
+       chk       
+-----------------
+ skip locked: ok
+(1 row)
+
+ROLLBACK;
+-- EvalPlanQual: the second session waits on a row the first updates, then re-evaluates its qual on the successor
+SELECT dblink_exec('s2', 'SET search_path = f2p');
+ dblink_exec 
+-------------
+ SET
+(1 row)
+
+BEGIN;
+UPDATE oc SET n = 100 WHERE id = 20;
+SELECT dblink_send_query('s2', 'UPDATE oc SET n = n + 1 WHERE id = 20 AND n >= 2');
+ dblink_send_query 
+-------------------
+                 1
+(1 row)
+
+DO $$
+DECLARE deadline timestamptz := clock_timestamp() + interval '10 s';
+BEGIN
+	WHILE NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND pid <> pg_backend_pid() AND datname = current_database()) LOOP
+		IF clock_timestamp() > deadline THEN RAISE EXCEPTION 'the second session did not wait on the row'; END IF;
+		PERFORM pg_sleep(0.01);
+	END LOOP;
+END $$;
+COMMIT;
+SELECT chk('epq update count', r, 'UPDATE 1') FROM dblink_get_result('s2') AS x(r text);
+         chk          
+----------------------
+ epq update count: ok
+(1 row)
+
+SELECT chk('epq successor', n, 101) FROM oc WHERE id = 20;
+        chk        
+-------------------
+ epq successor: ok
+(1 row)
+
+SELECT dblink_disconnect('s2');
+ dblink_disconnect 
+-------------------
+ OK
+(1 row)
+
+-- 6. Secondary B-tree, partial, expression, unique and covering indexes; Index Only Scan reports no heap fetches that skip MVCC
+CREATE INDEX t_g ON t (g);
+CREATE INDEX t_expr ON t (lower(s));
+CREATE INDEX t_part ON t (id) WHERE g = 3;
+CREATE UNIQUE INDEX t_uniq ON t (id, g);
+SET enable_seqscan = off;
+SELECT chk('btree probe', count(*)::int, 2000) FROM t WHERE g = 3;
+       chk       
+-----------------
+ btree probe: ok
+(1 row)
+
+SELECT chk('expression probe', count(*)::int, 1) FROM t WHERE lower(s) = 'row 5';
+         chk          
+----------------------
+ expression probe: ok
+(1 row)
+
+SELECT chk('partial probe', count(*)::int, 2000) FROM t WHERE g = 3 AND id > 0;
+        chk        
+-------------------
+ partial probe: ok
+(1 row)
+
+SET enable_bitmapscan = off;
+SELECT chk('index scan after update', (SELECT count(*)::int FROM t WHERE g = 3 AND s LIKE '%!'), 2000);
+             chk             
+-----------------------------
+ index scan after update: ok
+(1 row)
+
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+SET enable_indexscan = off; SET enable_seqscan = off;
+SELECT chk('bitmap scan', count(*)::int, 2000) FROM t WHERE g = 3;
+       chk       
+-----------------
+ bitmap scan: ok
+(1 row)
+
+RESET enable_indexscan; RESET enable_seqscan;
+SELECT chk('index vs seq', (SELECT count(*) FROM t WHERE g BETWEEN 2 AND 4), count(*)) FROM (SELECT * FROM t WHERE g BETWEEN 2 AND 4 OFFSET 0) x;
+       chk        
+------------------
+ index vs seq: ok
+(1 row)
+
+UPDATE t SET g = 11 WHERE id <= 100;
+SELECT chk('index follows update', count(*)::int, 90) FROM t WHERE g = 11;
+           chk            
+--------------------------
+ index follows update: ok
+(1 row)
+
+CREATE INDEX CONCURRENTLY t_cic ON t (ts);
+SELECT chk('cic valid', indisvalid, true) FROM pg_index WHERE indexrelid = 't_cic'::regclass;
+      chk      
+---------------
+ cic valid: ok
+(1 row)
+
+SELECT chk('cic probe', count(*)::int, 1) FROM t WHERE ts = timestamptz '2024-01-01' + 5 * interval '1 minute';
+      chk      
+---------------
+ cic probe: ok
+(1 row)
+
+REINDEX TABLE CONCURRENTLY t;
+SELECT chk('reindex valid', count(*) FILTER (WHERE NOT indisvalid)::int, 0) FROM pg_index WHERE indrelid = 't'::regclass;
+        chk        
+-------------------
+ reindex valid: ok
+(1 row)
+
+-- 7. BM25 index on a table: visibility of the rows it scores
+CREATE TABLE d (id int PRIMARY KEY, body text) USING sift_table;
+INSERT INTO d SELECT i, 'alpha beta ' || (CASE WHEN i % 3 = 0 THEN 'gamma' ELSE 'delta' END) || ' doc' || i FROM generate_series(1, 3000) i;
+CREATE INDEX d_bm25 ON d USING sift (body);
+SELECT chk('bm25 match', count(*)::int, 1000) FROM d WHERE body @@> 'gamma';
+      chk       
+----------------
+ bm25 match: ok
+(1 row)
+
+DELETE FROM d WHERE id % 6 = 0;
+SELECT chk('bm25 after delete', count(*)::int, 500) FROM d WHERE body @@> 'gamma';
+          chk          
+-----------------------
+ bm25 after delete: ok
+(1 row)
+
+BEGIN;
+UPDATE d SET body = 'omega only' WHERE id = 3;
+SELECT chk('bm25 own update', count(*)::int, 1) FROM d WHERE body @@> 'omega';
+         chk         
+---------------------
+ bm25 own update: ok
+(1 row)
+
+ROLLBACK;
+SELECT chk('bm25 after rollback', count(*)::int, 0) FROM d WHERE body @@> 'omega';
+           chk           
+-------------------------
+ bm25 after rollback: ok
+(1 row)
+
+-- 8. Wide values: stored outside the granules, read back, updated, compacted
+CREATE TABLE w (id int PRIMARY KEY, big text, b bytea, j jsonb) USING sift_table;
+INSERT INTO w SELECT i, repeat(md5(i::text), 400), decode(repeat(md5(i::text), 300), 'hex') , jsonb_build_object('k', repeat('x', 6000), 'i', i)
+	FROM generate_series(1, 200) i;
+SELECT chk('wide length', (min(length(big)), max(length(big))), (12800, 12800)) FROM w;
+       chk       
+-----------------
+ wide length: ok
+(1 row)
+
+SELECT chk('wide content', big, repeat(md5('7'), 400)) FROM w WHERE id = 7;
+       chk        
+------------------
+ wide content: ok
+(1 row)
+
+SELECT chk('wide bytea', length(b), 4800) FROM w WHERE id = 7;
+      chk       
+----------------
+ wide bytea: ok
+(1 row)
+
+SELECT chk('wide jsonb', j ->> 'i', '7') FROM w WHERE id = 7;
+      chk       
+----------------
+ wide jsonb: ok
+(1 row)
+
+UPDATE w SET big = repeat('z', 20000) WHERE id <= 50;
+SELECT chk('wide update', count(*)::int, 50) FROM w WHERE big = repeat('z', 20000);
+       chk       
+-----------------
+ wide update: ok
+(1 row)
+
+DELETE FROM w WHERE id > 100;
+VACUUM w;
+SELECT chk('wide after vacuum', (count(*)::int, count(*) FILTER (WHERE length(big) >= 12800)::int), (100, 100)) FROM w;
+          chk          
+-----------------------
+ wide after vacuum: ok
+(1 row)
+
+SELECT chk('wide aggregate', sum(length(big))::bigint, 50::bigint * 20000 + 50::bigint * 12800) FROM w;
+        chk         
+--------------------
+ wide aggregate: ok
+(1 row)
+
+-- 9. ALTER TABLE: ADD, RENAME and DROP COLUMN keep the relation file; ALTER COLUMN TYPE rewrites it into a new one
+CREATE TABLE a (id int, v int) USING sift_table;
+INSERT INTO a SELECT i, i FROM generate_series(1, 5000) i;
+SELECT pg_relation_filenode('a') AS fn0 \gset
+ALTER TABLE a ADD COLUMN extra text DEFAULT 'x';
+ALTER TABLE a ADD COLUMN nothing int;
+SELECT chk('add column keeps the file', pg_relation_filenode('a') = :fn0, true);
+              chk              
+-------------------------------
+ add column keeps the file: ok
+(1 row)
+
+SELECT chk('add column default', (count(*) FILTER (WHERE extra = 'x')::int, count(nothing)::int), (5000, 0)) FROM a;
+          chk           
+------------------------
+ add column default: ok
+(1 row)
+
+INSERT INTO a VALUES (5001, 1, 'y', 7);
+ALTER TABLE a ALTER COLUMN v TYPE bigint;
+SELECT chk('widen rewrites', pg_relation_filenode('a') <> :fn0, true);
+        chk         
+--------------------
+ widen rewrites: ok
+(1 row)
+
+SELECT pg_relation_filenode('a') AS fn1 \gset
+SELECT chk('widen values', sum(v), (SELECT sum(i) + 1 FROM generate_series(1, 5000) i)::numeric) FROM a;
+       chk        
+------------------
+ widen values: ok
+(1 row)
+
+ALTER TABLE a RENAME COLUMN v TO val;
+SELECT chk('rename column', sum(val), (SELECT sum(i) + 1 FROM generate_series(1, 5000) i)::numeric) FROM a;
+        chk        
+-------------------
+ rename column: ok
+(1 row)
+
+ALTER TABLE a DROP COLUMN nothing;
+SELECT chk('drop column', (SELECT count(*)::int FROM pg_attribute WHERE attrelid = 'a'::regclass AND attnum > 0 AND NOT attisdropped), 3);
+       chk       
+-----------------
+ drop column: ok
+(1 row)
+
+SELECT chk('drop column keeps the file', pg_relation_filenode('a') = :fn1, true);
+              chk               
+--------------------------------
+ drop column keeps the file: ok
+(1 row)
+
+ALTER TABLE a ALTER COLUMN val TYPE text USING val::text;
+SELECT chk('recast values', (SELECT min(val) FROM a WHERE id = 5000), '5000');
+        chk        
+-------------------
+ recast values: ok
+(1 row)
+
+ALTER TABLE a ADD COLUMN gen int GENERATED ALWAYS AS (id * 2) STORED;
+SELECT chk('stored generated column', gen, 20) FROM a WHERE id = 10;
+             chk             
+-----------------------------
+ stored generated column: ok
+(1 row)
+
+-- a column named by an option cannot be dropped; renaming it renames the option value
+CREATE TABLE ao (id int, ts timestamp, v int) USING sift_table;
+SELECT sift.table_set_option('ao', 'key_order', 'ts');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT fails('ALTER TABLE ao DROP COLUMN ts', '2BP01');
+   fails   
+-----------
+ 2BP01: ok
+(1 row)
+
+ALTER TABLE ao RENAME COLUMN ts TO tm;
+SELECT chk('option follows rename', value, 'tm') FROM sift.table_option_values WHERE rel::oid = 'ao'::regclass AND name = 'key_order';
+            chk            
+---------------------------
+ option follows rename: ok
+(1 row)
+
+SELECT sift.table_reset_option('ao', 'key_order');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
+ALTER TABLE ao DROP COLUMN tm;
+SELECT chk('drop after reset', (SELECT count(*)::int FROM pg_attribute WHERE attrelid = 'ao'::regclass AND attnum > 0 AND NOT attisdropped), 2);
+         chk          
+----------------------
+ drop after reset: ok
+(1 row)
+
+-- 10. VACUUM FREEZE advances relfrozenxid; index cleanup; VACUUM (TRUNCATE) keeps the rows
+CREATE TABLE vf (id int PRIMARY KEY, v int) USING sift_table;
+INSERT INTO vf SELECT i, i FROM generate_series(1, 8000) i;
+SELECT age(relfrozenxid) AS age0 FROM pg_class WHERE oid = 'vf'::regclass \gset
+DELETE FROM vf WHERE id % 2 = 0;
+VACUUM (FREEZE, INDEX_CLEANUP ON, VERBOSE OFF) vf;
+SELECT chk('freeze relfrozenxid advanced', age(relfrozenxid) <= :age0 + 1, true) FROM pg_class WHERE oid = 'vf'::regclass;
+               chk                
+----------------------------------
+ freeze relfrozenxid advanced: ok
+(1 row)
+
+SELECT chk('freeze rows', (count(*)::int, sum(v)::bigint), (4000, (SELECT sum(i) FROM generate_series(1, 7999, 2) i))) FROM vf;
+       chk       
+-----------------
+ freeze rows: ok
+(1 row)
+
+SELECT chk('vacuum drops the index entries of dead rows', (SELECT count(*)::int FROM vf WHERE id = 2), 0);
+                       chk                       
+-------------------------------------------------
+ vacuum drops the index entries of dead rows: ok
+(1 row)
+
+SET enable_seqscan = off;
+SELECT chk('index after vacuum', (SELECT count(*)::int FROM vf WHERE id BETWEEN 1 AND 100), 50);
+          chk           
+------------------------
+ index after vacuum: ok
+(1 row)
+
+RESET enable_seqscan;
+DELETE FROM vf WHERE id > 100;
+VACUUM (TRUNCATE ON) vf;
+SELECT chk('rows after tail', count(*)::int, 50) FROM vf;
+         chk         
+---------------------
+ rows after tail: ok
+(1 row)
+
+SELECT chk('stats rows', reltuples::int BETWEEN 0 AND 100, true) FROM pg_class WHERE oid = 'vf'::regclass;
+      chk       
+----------------
+ stats rows: ok
+(1 row)
+
+SELECT chk('allvisible is not claimed', relallvisible, 0) FROM pg_class WHERE oid = 'vf'::regclass;
+              chk              
+-------------------------------
+ allvisible is not claimed: ok
+(1 row)
+
+ANALYZE vf;
+SELECT chk('analyze', (SELECT reltuples::int FROM pg_class WHERE oid = 'vf'::regclass) BETWEEN 1 AND 200, true);
+     chk     
+-------------
+ analyze: ok
+(1 row)
+
+VACUUM FULL vf;
+SELECT chk('vacuum full', (count(*)::int, format_major('vf')), (50, 2)) FROM vf;
+       chk       
+-----------------
+ vacuum full: ok
+(1 row)
+
+CLUSTER vf USING vf_pkey;
+SELECT chk('cluster', count(*)::int, 50) FROM vf;
+     chk     
+-------------
+ cluster: ok
+(1 row)
+
+-- 11. TRUNCATE: plain, in a transaction, rolled back, with a staged write, restart identity, of a published table
+CREATE TABLE tr (id serial PRIMARY KEY, v int) USING sift_table;
+INSERT INTO tr (v) SELECT i FROM generate_series(1, 10000) i;
+BEGIN; TRUNCATE tr; SELECT chk('truncate inside', count(*)::int, 0) FROM tr; ROLLBACK;
+         chk         
+---------------------
+ truncate inside: ok
+(1 row)
+
+SELECT chk('truncate rolled back', count(*)::int, 10000) FROM tr;
+           chk            
+--------------------------
+ truncate rolled back: ok
+(1 row)
+
+BEGIN; INSERT INTO tr (v) VALUES (1); TRUNCATE tr; COMMIT;
+SELECT chk('truncate after staged write', count(*)::int, 0) FROM tr;
+               chk               
+---------------------------------
+ truncate after staged write: ok
+(1 row)
+
+INSERT INTO tr (v) SELECT i FROM generate_series(1, 10) i;
+TRUNCATE tr RESTART IDENTITY;
+INSERT INTO tr (v) VALUES (1);
+SELECT chk('restart identity', id, 1) FROM tr;
+         chk          
+----------------------
+ restart identity: ok
+(1 row)
+
+SELECT chk('truncate format', format_major('tr'), 2);
+         chk         
+---------------------
+ truncate format: ok
+(1 row)
+
+SELECT chk('virtual addresses restart', ctid::text, '(0,1)') FROM tr;
+              chk              
+-------------------------------
+ virtual addresses restart: ok
+(1 row)
+
+CREATE TABLE trp (id int) USING sift_table;
+INSERT INTO trp SELECT generate_series(1, 100);
+CREATE TABLE trf (id int REFERENCES tr (id)) USING sift_table;
+SELECT fails('TRUNCATE tr', '0A000');
+   fails   
+-----------
+ 0A000: ok
+(1 row)
+
+TRUNCATE tr, trf;
+-- 12. FOR ALL TABLES publication (needs the library preloaded; the refusal without it is in C-INTEGRATION-GUIDE.md)
+SET client_min_messages = error;
+CREATE PUBLICATION f2p_all FOR ALL TABLES;
+SET client_min_messages = warning;
+CREATE TABLE pub (id int PRIMARY KEY, v text) USING sift_table;
+INSERT INTO pub SELECT i, 'p' || i FROM generate_series(1, 1000) i;
+UPDATE pub SET v = 'u' WHERE id <= 10;
+DELETE FROM pub WHERE id > 990;
+SELECT chk('published dml', (count(*)::int, count(*) FILTER (WHERE v = 'u')::int), (990, 10)) FROM pub;
+        chk        
+-------------------
+ published dml: ok
+(1 row)
+
+ALTER TABLE pub REPLICA IDENTITY FULL;
+UPDATE pub SET v = 'f' WHERE id = 11;
+SELECT chk('replica identity full', v, 'f') FROM pub WHERE id = 11;
+            chk            
+---------------------------
+ replica identity full: ok
+(1 row)
+
+SELECT chk('replica identity changed', relreplident, 'f') FROM pg_class WHERE oid = 'pub'::regclass;
+             chk              
+------------------------------
+ replica identity changed: ok
+(1 row)
+
+CREATE TABLE pub_part (id int, v text) PARTITION BY RANGE (id);
+CREATE TABLE pub_p1 (id int, v text) USING sift_table;
+ALTER TABLE pub_part ATTACH PARTITION pub_p1 FOR VALUES FROM (0) TO (100);
+SELECT chk('attach partition', count(*)::int, 0) FROM pub_part;
+         chk          
+----------------------
+ attach partition: ok
+(1 row)
+
+DROP TABLE pub_part;
+DROP TABLE pub;
+DROP PUBLICATION f2p_all;
+-- 13. sift.upgrade_table(regclass) RETURNS bool: a Format 1 table becomes Format 2.0 with its rows, indexes and options; false (and a notice) when there is nothing to do; MAINTAIN is the right
+SET sift.test_create_format1 = on;
+CREATE TABLE up (id int PRIMARY KEY, g int, s text, ts timestamptz) USING sift_table;
+INSERT INTO up SELECT i, i % 7, repeat('u', i % 50), timestamptz '2024-01-01' + i * interval '1 second' FROM generate_series(1, 40000) i;
+SET sift.test_create_format1 = off;
+UPDATE up SET s = 'upd' WHERE id <= 100;
+DELETE FROM up WHERE id > 39000;
+CREATE INDEX up_g ON up (g);
+SELECT sift.table_set_option('up', 'key_order', 'ts');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT chk('before upgrade', format_major('up'), 1);
+        chk         
+--------------------
+ before upgrade: ok
+(1 row)
+
+SELECT count(*), sum(id), md5(string_agg(s, ',' ORDER BY id)) FROM up \gset up0_
+SELECT pg_relation_filenode('up') AS fn_up \gset
+SELECT chk('upgrade result', sift.upgrade_table('up'), true);
+        chk         
+--------------------
+ upgrade result: ok
+(1 row)
+
+SELECT chk('after upgrade', format_major('up'), 2);
+        chk        
+-------------------
+ after upgrade: ok
+(1 row)
+
+SELECT chk('upgrade swapped the file', pg_relation_filenode('up') <> :fn_up, true);
+             chk              
+------------------------------
+ upgrade swapped the file: ok
+(1 row)
+
+SELECT chk('upgrade count', count(*)::int, :up0_count::int) FROM up;
+        chk        
+-------------------
+ upgrade count: ok
+(1 row)
+
+SELECT chk('upgrade sum', sum(id)::numeric, :up0_sum::numeric) FROM up;
+       chk       
+-----------------
+ upgrade sum: ok
+(1 row)
+
+SELECT chk('upgrade content', md5(string_agg(s, ',' ORDER BY id)), :'up0_md5') FROM up;
+         chk         
+---------------------
+ upgrade content: ok
+(1 row)
+
+SELECT chk('upgrade keeps the indexes', (SELECT count(*)::int FROM pg_index WHERE indrelid = 'up'::regclass AND indisvalid), 2);
+              chk              
+-------------------------------
+ upgrade keeps the indexes: ok
+(1 row)
+
+SELECT chk('upgrade keeps the options', value, 'ts') FROM sift.table_option_values WHERE rel::oid = 'up'::regclass AND name = 'key_order';
+              chk              
+-------------------------------
+ upgrade keeps the options: ok
+(1 row)
+
+SET enable_seqscan = off;
+SELECT chk('index after upgrade', count(*)::int, (SELECT count(*)::int FROM generate_series(1, 39000) i WHERE i % 7 = 3)) FROM up WHERE g = 3;
+           chk           
+-------------------------
+ index after upgrade: ok
+(1 row)
+
+RESET enable_seqscan;
+SELECT pg_relation_filenode('up') AS fn_up2 \gset
+SELECT chk('upgrade twice', sift.upgrade_table('up'), false);
+        chk        
+-------------------
+ upgrade twice: ok
+(1 row)
+
+SELECT chk('upgrade twice keeps the file', pg_relation_filenode('up') = :fn_up2, true);
+               chk                
+----------------------------------
+ upgrade twice keeps the file: ok
+(1 row)
+
+INSERT INTO up VALUES (50000, 1, 'after', now());
+SELECT chk('write after upgrade', count(*)::int, 39001) FROM up;
+           chk           
+-------------------------
+ write after upgrade: ok
+(1 row)
+
+VACUUM FREEZE up;
+CREATE ROLE f2p_user NOLOGIN;
+GRANT USAGE ON SCHEMA f2p TO f2p_user;
+SET ROLE f2p_user;
+SELECT fails('SELECT sift.upgrade_table(''f2p.up'')', '42501');
+   fails   
+-----------
+ 42501: ok
+(1 row)
+
+RESET ROLE;
+GRANT MAINTAIN ON up TO f2p_user;
+SET ROLE f2p_user;
+SELECT chk('maintain may upgrade', sift.upgrade_table('f2p.up'), false);
+           chk            
+--------------------------
+ maintain may upgrade: ok
+(1 row)
+
+RESET ROLE;
+-- 14. No visibility map fraction for the planner (EXT-06)
+ANALYZE c;
+SELECT chk('relallvisible', relallvisible, 0) FROM pg_class WHERE oid = 'c'::regclass;
+        chk        
+-------------------
+ relallvisible: ok
+(1 row)
+
+-- 15. The options: ten documented, thirteen of Format 1 that are accepted and ignored, the grammar of compression of sift_col
+CREATE TABLE opt (id int, ts timestamptz, s text) USING sift_table;
+SELECT chk('documented options', (SELECT count(*)::int FROM unnest(sift._table_option_names())), 10);
+          chk           
+------------------------
+ documented options: ok
+(1 row)
+
+SELECT sift.table_set_option('opt', 'compression', 'auto; s=zstd:3');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT chk('compression per column', value, 'auto; s=zstd:3') FROM sift.table_option_values WHERE rel::oid = 'opt'::regclass AND name = 'compression';
+            chk             
+----------------------------
+ compression per column: ok
+(1 row)
+
+SELECT fails('SELECT sift.table_set_option(''opt'', ''compression'', ''s=bogus'')', '22023');
+   fails   
+-----------
+ 22023: ok
+(1 row)
+
+SELECT fails('SELECT sift.table_set_option(''opt'', ''no_such_option'', ''x'')', '22023');
+   fails   
+-----------
+ 22023: ok
+(1 row)
+
+SELECT sift.table_set_option('opt', 'wide_rows', 'on');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT chk('format 1 option kept', value, 'on') FROM sift.table_option_values WHERE rel::oid = 'opt'::regclass AND name = 'wide_rows';
+           chk            
+--------------------------
+ format 1 option kept: ok
+(1 row)
+
+SELECT sift.table_reset_option('opt', 'wide_rows');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
+SELECT chk('format 1 option reset', count(*)::int, 0) FROM sift.table_option_values WHERE rel::oid = 'opt'::regclass AND name = 'wide_rows';
+            chk            
+---------------------------
+ format 1 option reset: ok
+(1 row)
+
+INSERT INTO opt SELECT i, now(), repeat('o', 10) FROM generate_series(1, 1000) i;
+SELECT chk('table with options', count(*)::int, 1000) FROM opt;
+          chk           
+------------------------
+ table with options: ok
+(1 row)
+
+-- 16. Virtual generated columns (PostgreSQL 18) hold no value in the table (EXT-12)
+SELECT current_setting('server_version_num')::int >= 180000 AS pg18 \gset
+\if :pg18
+CREATE TABLE gv (id int PRIMARY KEY, a int, v int GENERATED ALWAYS AS (a * 2) VIRTUAL, s text, ts timestamptz) USING sift_table;
+INSERT INTO gv (id, a, s, ts) SELECT i, i, 'r' || i, now() FROM generate_series(1, 5000) i;
+SELECT chk('virtual column evaluates', (sum(v), count(*) FILTER (WHERE v = a * 2)::int), (25005000::bigint, 5000)) FROM gv;
+UPDATE gv SET a = a + 1 WHERE id <= 100;
+SELECT chk('virtual column follows update', v, 22) FROM gv WHERE id = 10;
+ALTER TABLE gv ADD COLUMN w int GENERATED ALWAYS AS (a + 100) VIRTUAL;
+ALTER TABLE gv ADD COLUMN k int DEFAULT 5;
+SELECT chk('virtual column added later', (count(*) FILTER (WHERE w = a + 100)::int, count(*) FILTER (WHERE k = 5)::int), (5000, 5000)) FROM gv;
+ALTER TABLE gv DROP COLUMN v;
+VACUUM gv;
+SELECT chk('after drop and vacuum', (count(*)::int, sum(w)::bigint), (5000, 13002600::bigint)) FROM gv;
+\endif
+-- 17. A lookup by address finds its row among many parts: one part for each batch of a hundred rows
+CREATE TABLE lp (id int PRIMARY KEY, v int) USING sift_table;
+DO $$ BEGIN FOR i IN 0..39 LOOP INSERT INTO lp SELECT i * 100 + n, n FROM generate_series(1, 100) n; COMMIT; END LOOP; END $$;
+SELECT chk('probe every batch', (SELECT count(*)::int FROM generate_series(0, 39) i, LATERAL (SELECT 1 FROM lp WHERE id = i * 100 + 50) x), 40);
+          chk          
+-----------------------
+ probe every batch: ok
+(1 row)
+
+UPDATE lp SET v = -v WHERE id % 100 = 50;
+SELECT chk('update every batch', count(*)::int, 40) FROM lp WHERE v = -50;
+          chk           
+------------------------
+ update every batch: ok
+(1 row)
+
+SELECT chk('read an empty stage', count(*)::int, 4000) FROM lp;
+           chk           
+-------------------------
+ read an empty stage: ok
+(1 row)
+
+DROP SCHEMA f2p CASCADE;
+DROP OWNED BY f2p_user;
+DROP ROLE f2p_user;
+DROP EXTENSION pageinspect;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -254,7 +254,6 @@ BEGIN
 		set_config('enable_bitmapscan', (stage NOT IN ('seqscan', 'scan_par'))::text, true),
 		set_config('enable_indexscan', (stage NOT IN ('seqscan', 'scan_par'))::text, true),
 		set_config('sift.enable_scan', (stage NOT IN ('seqscan', 'bitmap'))::text, true),
-		set_config('sift.enable_count', (stage NOT IN ('seqscan', 'bitmap'))::text, true),
 		-- the *_par stages run the sift plans parallel (3 workers, free to start); the others keep the defaults
 		set_config('max_parallel_workers_per_gather', CASE WHEN stage LIKE '%\_par' THEN '3' END, true),
 		set_config('parallel_setup_cost', CASE WHEN stage LIKE '%\_par' THEN '0' END, true),

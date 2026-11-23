@@ -14,7 +14,7 @@ SELECT relation_blocks = high_water AS blocks_in_use, free_blocks, reusable_bloc
 FROM sift.index_info('oi_idx');
  blocks_in_use | free_blocks | reusable_blocks | free_extents | segments | max_segments | ndocs | maintenance_busy 
 ---------------+-------------+-----------------+--------------+----------+--------------+-------+------------------
- t             |           0 |               0 |            0 |        1 |          128 |  3000 | f
+ t             |           0 |               0 |            0 |        1 |              |  3000 | f
 (1 row)
 
 SELECT kind, ndocs, extents, dead_docs FROM sift.segments('oi_idx');

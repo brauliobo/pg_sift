@@ -3,6 +3,7 @@
 -- search on a copy of the table whose index has no INCLUDE columns, with NULL stretches, rows of the write buffer, updated and deleted rows, a promotion,
 -- a merge, a VACUUM and a REINDEX; a superblock with a doc whose heap tuple was gone when its segment was written is read whatever its range.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 -- 40,000 rows of about 13 to a page: 12 superblocks of 256 pages, each column ascending with id
 CREATE TABLE docs (id int PRIMARY KEY, body text, category_id int, created_at date, counter_a int8, tier smallint, pad text);
 INSERT INTO docs

@@ -4,6 +4,7 @@
 -- build allocated; the test limits are 500 documents a run, merges of 8 runs and 20,000 postings of the
 -- largest term of a segment (the real one is a tenth of the memory budget).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET maintenance_work_mem = '1MB';
 SET sift.test_run_docs = 500;

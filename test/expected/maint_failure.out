@@ -97,6 +97,7 @@ SET sift.test_fail_pages = 3;
 VACUUM mf;
 WARNING:  sift index "mf_idx": maintenance failed: sift test: injected failure after 3 pages
 DETAIL:  It is retried later, after a growing delay.
+HINT:  Inspect SELECT * FROM sift.health('public.mf_idx'); or retry with SELECT sift.merge('public.mf_idx');
 RESET sift.test_fail_pages;
 SELECT sift._test_maint_failures('mf_idx') AS failures;
  failures 

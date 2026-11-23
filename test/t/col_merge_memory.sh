@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A forced merge stays within maintenance_work_mem: the process that merges 4,000,000 rows at 64 MB takes under 64 MB of anonymous memory in all, and the segments it writes
+# A forced merge stays within maintenance_work_mem: the process that merges 4,000,000 rows (a build and twenty promotions) at 64 MB takes under 64 MB of anonymous memory in all, and the segments it writes
 # are the partitions that memory allows, all of one size (the last one no short one). The inputs' batches and the output's used to be held until the end of the merge (97 MB
 # for 5,000,000 rows at 64 MB), and the partitions to be cut at a share of the bytes a unit overshoots, with a short last one.
 . "$(dirname "$0")/lib.bash"
@@ -9,10 +9,14 @@ node_init mem 11 "autovacuum = off
 sift.async_maintenance = off"
 node_start mem || bail "start failed"
 sql mem "CREATE EXTENSION pg_sift" "CREATE TABLE t (id int, g int, ts timestamp, amount int, pad text)" \
-	"INSERT INTO t SELECT i, i % 50, timestamp '2026-01-01' + floor(random() * 100003)::int * interval '1 minute', i % 100, md5(i::text) FROM generate_series(1, 4000000) i" \
+	"INSERT INTO t SELECT i, i % 50, timestamp '2026-01-01' + floor(random() * 100003)::int * interval '1 minute', i % 100, md5(i::text) FROM generate_series(1, 3000000) i" \
 	"VACUUM (FREEZE, ANALYZE) t" >/dev/null || bail "load failed"
-sql mem "SET maintenance_work_mem = '64MB'" "SET max_parallel_maintenance_workers = 2" "CREATE INDEX t_col ON t USING sift_col (id, g, ts, amount)" >/dev/null || bail "build failed"
-check "the build wrote several segments" test "$(sql mem "SELECT count(*) > 3 FROM sift.col_segments('t_col') WHERE kind = 'immutable'")" == t
+sql mem "SET maintenance_work_mem = '64MB'" "SET sift.test_col_segment_kb = 8192" "SET max_parallel_maintenance_workers = 2" "CREATE INDEX t_col ON t USING sift_col (id, g, ts, amount)" >/dev/null || bail "build failed"
+for ((i = 0; i < 20; i++)); do
+	sql mem "INSERT INTO t SELECT i, i % 50, timestamp '2026-01-01' + floor(random() * 100003)::int * interval '1 minute', i % 100, md5(i::text) FROM generate_series($((3000001 + i * 50000)), $((3050000 + i * 50000))) i" \
+		"SELECT sift.col_promote('t_col')" >/dev/null || bail "promotion $i failed"
+done
+check "the build and the promotions wrote several segments" test "$(sql mem "SELECT count(*) > 3 FROM sift.col_segments('t_col') WHERE kind = 'immutable'")" == t
 
 D=$(dir mem)
 PM=$(head -1 "$D/data/postmaster.pid")

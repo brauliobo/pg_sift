@@ -136,7 +136,7 @@ space_table_v1(const SiftApiRel *r, SiftApiSpace *s)
 {
 	SiftTblRel *st = sift_tbl_rel(r->rel);
 	SiftFreeStats fs = {0};
-	bool		got;
+	bool		idle = true;
 
 	sift_tbl_refresh_full(r->rel, st);
 	if (RelationGetNumberOfBlocks(r->rel) > 0)
@@ -165,10 +165,9 @@ space_table_v1(const SiftApiRel *r, SiftApiSpace *s)
 	s->shrink_blocked_by = sift_api_shrink_blocked_by(st->dir->meta.shrink_blocked);
 	s->has_vblocks = true;
 	s->vblocks_left = (int64) MaxBlockNumber - (int64) SIFT_TBL_NEXT_VBLOCK(&st->dir->meta);
-	got = ConditionalLockRelationOid(RelationGetRelid(r->rel), ShareUpdateExclusiveLock);
-	if (got)
+	if (!RecoveryInProgress() && (idle = ConditionalLockRelationOid(RelationGetRelid(r->rel), ShareUpdateExclusiveLock)))
 		UnlockRelationOid(RelationGetRelid(r->rel), ShareUpdateExclusiveLock);
-	set_busy(s, !got);
+	set_busy(s, !idle);
 }
 
 /* sift_col and sift_table of Format 2.0: the metapage, the allocator and the manifest */

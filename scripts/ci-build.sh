@@ -37,8 +37,9 @@ stage_flavor() { # OUT FLAVOR: runs as its own process (--stage), where set -e h
 	rm -rf "$work" && mkdir -p "$work/tree"
 	copy_git_sources "$REPO" "$work/tree"
 	cd "$work/tree"
+	# the staged tree has no .git: the build id is the checkout's
 	# shellcheck disable=SC2046  # the words of flavor_env are assignments
-	env $(flavor_env "$f") SIFT_STAGE=1 SIFT_TMP="$work/tmp" SIFT_ROOT="$out/root-$f" SIFT_PORT="${SIFT_PORT:-56100}" SIFT_MAKE_JOBS="$JOBS" scripts/pgtest.sh install
+	env $(flavor_env "$f") SIFT_BUILD_ID="$(scripts/build-id.sh "$REPO")" SIFT_STAGE=1 SIFT_TMP="$work/tmp" SIFT_ROOT="$out/root-$f" SIFT_PORT="${SIFT_PORT:-56100}" SIFT_MAKE_JOBS="$JOBS" scripts/pgtest.sh install
 	if [[ $f == testing ]]; then
 		mkdir -p "$out/root-$f/.checks"
 		scripts/isa_check.sh | tee "$out/root-$f/.checks/isa-baseline"

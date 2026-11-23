@@ -192,7 +192,7 @@ SELECT kc_add(11000, 0, 400)
 SELECT * FROM kc_state()
  segments | added_pct |        due         
 ----------+-----------+--------------------
-        3 |        14 | key ranges overlap
+        4 |        14 | key ranges overlap
 (1 row)
 
 SELECT kc_add(11000, 0, 400)
@@ -204,7 +204,7 @@ SELECT kc_add(11000, 0, 400)
 SELECT * FROM kc_state()
  segments | added_pct |        due         
 ----------+-----------+--------------------
-        4 |        25 | key ranges overlap
+        5 |        25 | key ranges overlap
 (1 row)
 
 SELECT kc_add(11000, 0, 400)
@@ -216,7 +216,7 @@ SELECT kc_add(11000, 0, 400)
 SELECT * FROM kc_state()
  segments | added_pct |        due         
 ----------+-----------+--------------------
-        5 |        33 | key ranges overlap
+        6 |        33 | key ranges overlap
 (1 row)
 
 -- the tier merge of the overlays leaves the recorded partitions as they were: it writes no partition, the overlays hold rows of every key

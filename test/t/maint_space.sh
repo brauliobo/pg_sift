@@ -6,7 +6,8 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 4
-node_init space 7 "autovacuum = off"
+node_init space 7 "autovacuum = off
+sift.async_maintenance = on"
 node_start space || bail "start failed"
 sql space "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE t (id serial, body text)" \

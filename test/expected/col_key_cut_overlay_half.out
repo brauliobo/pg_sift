@@ -77,7 +77,7 @@ SELECT oh_promote()
 SELECT * FROM oh_state()
  overlays | share_pct |        due         
 ----------+-----------+--------------------
-        4 |        42 | key ranges overlap
+        4 |        41 | key ranges overlap
 (1 row)
 
 SELECT oh_promote()
@@ -101,7 +101,7 @@ SELECT oh_promote()
 SELECT * FROM oh_state()
  overlays | share_pct |        due         
 ----------+-----------+--------------------
-        6 |        52 | key ranges overlap
+        6 |        51 | key ranges overlap
 (1 row)
 
 SELECT oh_promote()
@@ -113,7 +113,7 @@ SELECT oh_promote()
 SELECT * FROM oh_state()
  overlays | share_pct |        due         
 ----------+-----------+--------------------
-        7 |        56 | key ranges overlap
+        7 |        55 | key ranges overlap
 (1 row)
 
 -- the manual rule takes them all in, and nothing is due after it

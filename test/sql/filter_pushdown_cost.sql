@@ -3,6 +3,7 @@
 -- rows that pass are spread over the heap and expensive when they are clustered away from its start. The planner
 -- prices that from the filter column's statistics; the answers of off, on and force must be the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 CREATE FUNCTION fc_kind(flt text, mode text, k int DEFAULT 10) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE

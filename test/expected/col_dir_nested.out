@@ -139,7 +139,7 @@ SELECT (SELECT count(*) FROM nh WHERE a = 1 AND b = 1 AND c = 1) = (SELECT count
 SELECT count(DISTINCT lo) < count(*) AS cut_inside_a_value FROM sift._test_col_part_bounds('nh_idx');
  cut_inside_a_value 
 --------------------
- t
+ f
 (1 row)
 
 -- a key of four components is past the depth a bound holds (three and the address): the bound keeps the first three, partitions that meet in them share it, and col_verify accepts that

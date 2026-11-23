@@ -182,6 +182,8 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 			return e->ready;
 		}
 	}
+	else
+		SEGCACHE_STAT(refused);
 	*obj = MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 	return false;
 }

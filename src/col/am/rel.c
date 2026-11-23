@@ -548,7 +548,7 @@ oid_format(Oid indexoid, bool serving)
 
 	if (index == NULL)
 		return 0;
-	if (index->rd_rel->relam == sift_col_am_oid() && !(serving && sift_index_quarantined(index)))
+	if (index->rd_rel->relam == sift_col_am_oid() && !(serving && (!index->rd_index->indisvalid || sift_index_quarantined(index))))
 		major = sift_col_format_major(index);
 	relation_close(index, AccessShareLock);
 	return major;

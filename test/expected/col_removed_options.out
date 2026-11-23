@@ -97,13 +97,39 @@ SELECT reloptions FROM pg_class WHERE relname = 'ro_plain';
 
 -- sift.upgrade_commands() lists the RESET of an index that holds one, and no REINDEX for a point_columns that writes nothing
 SELECT object::text, kind, command, required, reason ~ '^deprecated and ignored' AS says_ignored FROM sift.upgrade_commands() WHERE object::text ~ '^ro_' ORDER BY 1;
-      object      | kind  |                                     command                                     | required | says_ignored 
-------------------+-------+---------------------------------------------------------------------------------+----------+--------------
- ro_key_cut_rows  | reset | ALTER INDEX public.ro_key_cut_rows RESET (key_cut_rows);                        | f        | t
- ro_order_columns | reset | ALTER INDEX public.ro_order_columns RESET (order_columns);                      | f        | t
- ro_plain         | reset | ALTER INDEX public.ro_plain RESET (key_cut_rows, order_columns, point_columns); | f        | t
- ro_point_columns | reset | ALTER INDEX public.ro_point_columns RESET (point_columns);                      | f        | t
-(4 rows)
+      object      |  kind   |                             command                              | required | says_ignored 
+------------------+---------+------------------------------------------------------------------+----------+--------------
+ ro_key_cut_rows  | reset   | ALTER INDEX public.ro_key_cut_rows RESET (order_array_columns);  | f        | f
+ ro_key_cut_rows  | reset   | ALTER INDEX public.ro_key_cut_rows RESET (key_cut);              | f        | f
+ ro_key_cut_rows  | reset   | ALTER INDEX public.ro_key_cut_rows RESET (cube_minmax);          | f        | f
+ ro_key_cut_rows  | reset   | ALTER INDEX public.ro_key_cut_rows RESET (key_columns);          | f        | f
+ ro_key_cut_rows  | reindex | REINDEX INDEX CONCURRENTLY public.ro_key_cut_rows;               | f        | f
+ ro_key_cut_rows  | reset   | ALTER INDEX public.ro_key_cut_rows RESET (point_tid_columns);    | f        | f
+ ro_key_cut_rows  | reset   | ALTER INDEX public.ro_key_cut_rows RESET (key_cut_rows);         | f        | f
+ ro_order_columns | reset   | ALTER INDEX public.ro_order_columns RESET (key_columns);         | f        | f
+ ro_order_columns | reset   | ALTER INDEX public.ro_order_columns RESET (order_array_columns); | f        | f
+ ro_order_columns | reset   | ALTER INDEX public.ro_order_columns RESET (order_columns);       | f        | f
+ ro_order_columns | reset   | ALTER INDEX public.ro_order_columns RESET (cube_minmax);         | f        | f
+ ro_order_columns | reset   | ALTER INDEX public.ro_order_columns RESET (key_cut);             | f        | f
+ ro_order_columns | reset   | ALTER INDEX public.ro_order_columns RESET (point_tid_columns);   | f        | f
+ ro_order_columns | reindex | REINDEX INDEX CONCURRENTLY public.ro_order_columns;              | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (key_columns);                 | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (key_cut);                     | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (point_tid_columns);           | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (order_array_columns);         | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (cube_minmax);                 | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (key_cut_rows);                | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (point_columns);               | f        | f
+ ro_plain         | reset   | ALTER INDEX public.ro_plain RESET (order_columns);               | f        | f
+ ro_plain         | reindex | REINDEX INDEX CONCURRENTLY public.ro_plain;                      | f        | f
+ ro_point_columns | reset   | ALTER INDEX public.ro_point_columns RESET (point_columns);       | f        | f
+ ro_point_columns | reset   | ALTER INDEX public.ro_point_columns RESET (cube_minmax);         | f        | f
+ ro_point_columns | reset   | ALTER INDEX public.ro_point_columns RESET (key_columns);         | f        | f
+ ro_point_columns | reset   | ALTER INDEX public.ro_point_columns RESET (point_tid_columns);   | f        | f
+ ro_point_columns | reset   | ALTER INDEX public.ro_point_columns RESET (key_cut);             | f        | f
+ ro_point_columns | reindex | REINDEX INDEX CONCURRENTLY public.ro_point_columns;              | f        | f
+ ro_point_columns | reset   | ALTER INDEX public.ro_point_columns RESET (order_array_columns); | f        | f
+(30 rows)
 
 -- the dump of such an index names the options in its WITH list as stored, and CREATE INDEX accepts it
 SELECT pg_get_indexdef('ro_plain'::regclass) AS dumped \gset

@@ -7,6 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.test_create_format1 = off;
 SET sift.agg_force = on;
+SET sift.simd = scalar;
 CREATE TABLE sf (id int PRIMARY KEY, k int, g int, v int, x float8, doc jsonb, tags text[], nums int4[]) WITH (autovacuum_enabled = false);
 INSERT INTO sf SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 1 + i % 25 END, i % 7, i % 90, (i % 40) * 0.5,
 	CASE i % 12
@@ -70,7 +71,7 @@ EXPLAIN (COSTS OFF) SELECT d1.name, count(*), sum(sf.v) FROM sf JOIN d1 ON sf.k 
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
-   Exec: SIMD=avx2 group=salted-ht
+   Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
 (6 rows)
@@ -81,7 +82,7 @@ EXPLAIN (COSTS OFF) SELECT d1.name, d3.cat, count(*) FROM sf JOIN d1 ON sf.k = d
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 2
-   Exec: SIMD=avx2 group=salted-ht
+   Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
    ->  Seq Scan on d3
@@ -93,7 +94,7 @@ EXPLAIN (COSTS OFF) SELECT u.e, count(*) FROM sf CROSS JOIN LATERAL unnest(sf.ta
  Custom Scan (SiftAggV6)
    Index: sf_col
    Unnest: lateral columnar
-   Exec: SIMD=avx2 group=salted-ht
+   Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
 (5 rows)
 
@@ -102,7 +103,7 @@ EXPLAIN (COSTS OFF) SELECT sf.doc->>'t', sum((sf.doc->>'a')::float8) FROM sf GRO
 ------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: sf_col
-   Exec: SIMD=avx2 group=salted-ht
+   Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
 (4 rows)
 
@@ -112,7 +113,7 @@ EXPLAIN (COSTS OFF) SELECT d3.cat, sf.doc->>'t', sum((sf.doc->>'a')::float8) FRO
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
-   Exec: SIMD=avx2 group=salted-ht
+   Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d3
 (6 rows)

@@ -3,6 +3,7 @@
 -- some in nearly every doc (posting groups), some in a few (posting lists), one in a single doc. Each round clears more than 5% of the segment's docs, which is when
 -- VACUUM counts the table again (below that it stays and the scores are within 1%: dead_stale).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SELECT sift.version() IS NOT NULL AS library_loaded;
  library_loaded 
 ----------------
@@ -51,7 +52,6 @@ SELECT dirty FROM sift.segments('dc_idx') WHERE kind = 'immutable' ORDER BY gen 
 (1 row)
 
 SELECT * FROM dc_same();
-NOTICE:  table "dc_ref" does not exist, skipping
  queries | same_as_fresh_index 
 ---------+---------------------
       13 |                  13

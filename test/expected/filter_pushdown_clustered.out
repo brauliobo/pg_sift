@@ -5,6 +5,7 @@
 -- at the start of the heap keeps the post-filter scan, the others are pushed down; the answers of off, on and force are
 -- the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE FUNCTION fk_kind(flt text, mode text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	l text;

@@ -13,7 +13,7 @@ SELECT "table", segments, max_segments, segment_rows, units = listed_units AS un
 FROM sift.col_index_status WHERE index = 'cis_idx'::regclass;
  table | segments | max_segments | segment_rows | units_once | dirty_segments | dead_rows | buffer_rows | sealed_buffers | running | failures | due | sized 
 -------+----------+--------------+--------------+------------+----------------+-----------+-------------+----------------+---------+----------+-----+-------
- cis   |        1 |              |        20000 | t          |              0 |         0 |           0 |              0 | f       |        0 |     | t
+ cis   |        1 |          128 |        20000 | t          |              0 |         0 |           0 |              0 | f       |        0 |     | t
 (1 row)
 
 -- a write buffer: new rows wait there until a promotion

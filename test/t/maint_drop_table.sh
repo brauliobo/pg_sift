@@ -7,6 +7,7 @@
 
 plan 5
 node_init dt 9 "autovacuum = off
+sift.async_maintenance = on
 deadlock_timeout = 200ms"
 node_start dt || bail "start failed"
 D=$(dir dt)

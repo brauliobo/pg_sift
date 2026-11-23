@@ -2,6 +2,7 @@
 -- stitches the ranges. The index is the one a serial build writes, byte for byte.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pageinspect;
+SET client_min_messages = warning;
 SET maintenance_work_mem = '64MB';
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_maintenance_workers = 3;

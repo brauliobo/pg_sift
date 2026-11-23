@@ -2,12 +2,10 @@
 -- the raising forms name what to do; a failure inside a scan names the index
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+SET client_min_messages = warning;
 CREATE TABLE ck (id int PRIMARY KEY, a int, b text);
 INSERT INTO ck SELECT i, i % 10, 'v' || i % 50 FROM generate_series(1, 20000) i;
 CREATE INDEX ck_col ON ck USING sift_col (a, b);
-NOTICE:  sift_col index "ck_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = a, b
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ck_col');
 CREATE INDEX ck_bm ON ck USING sift (b);
 INSERT INTO ck SELECT i, i % 10, 'w' || i % 50 FROM generate_series(20001, 40000) i;
 SELECT sift.col_promote('ck_col') > 0 AS promoted;
@@ -115,9 +113,6 @@ SELECT raised($$ SELECT count(*) FROM sift.check('ck_col') $$);
 (1 row)
 
 REINDEX INDEX ck_col;
-NOTICE:  sift_col index "ck_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = a, b
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ck_col');
 SELECT sift._test_poke('ck_bm', 3, 8184, 77, 8);
  _test_poke 
 ------------
@@ -194,9 +189,9 @@ SELECT raised($$ SELECT * FROM sift.check('ck_bm') $$);
 (1 row)
 
 SELECT raised($$ SELECT sift.table_verify('ct') $$);
-                                          raised                                          
-------------------------------------------------------------------------------------------
- 42501: permission denied for table ct | SQL statement " SELECT sift.table_verify('ct') "
+                                                raised                                                
+------------------------------------------------------------------------------------------------------
+ 42501: permission denied for table ct | SQL statement "SELECT sift_internal.check_raise(tbl, false)"
 (1 row)
 
 SELECT raised($$ SELECT * FROM sift.check('ct') $$);

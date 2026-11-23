@@ -300,9 +300,9 @@ ORDER BY k COLLATE "C";
       k      | used |    slug    |                                                                                  reason                                                                                  
 -------------+------+------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  allowed     | t    |            | 
- now         | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ now         | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
  random      | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a function that is not immutable)
- stable_text | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ stable_text | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
 (4 rows)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

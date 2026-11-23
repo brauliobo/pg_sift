@@ -67,3 +67,4 @@ SELECT parity('SELECT grp, count(*), sum(qty) FROM @T GROUP BY grp') AS after_ma
 
 DROP TABLE ut, uh;
 DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text), raises(text);
+DROP EXTENSION pg_sift;

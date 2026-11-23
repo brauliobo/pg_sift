@@ -34,6 +34,7 @@
 #include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/sql.h"
+#include "core/worker.h"
 
 static Relation
 open_f2(Oid relid)
@@ -44,6 +45,18 @@ open_f2(Oid relid)
 	index = index_open(relid, AccessShareLock);
 	sift_check_inspect(index);
 	return index;
+}
+
+/* The relation of a worker inspector: a sift_col index or a sift_table of format major 2 */
+static Relation
+open_f2_relation(Oid relid)
+{
+	Relation	rel;
+
+	sift_inspect_expect(relid, NULL, NULL);
+	rel = relation_open(relid, AccessShareLock);
+	sift_check_inspect(rel);
+	return rel;
 }
 
 static uint64
@@ -524,7 +537,7 @@ f2_tracking(FunctionCallInfo fcinfo)
 static Datum
 f2_worker_state(FunctionCallInfo fcinfo)
 {
-	Relation	index = open_f2(PG_GETARG_OID(0));
+	Relation	index = open_f2_relation(PG_GETARG_OID(0));
 	SiftColMetaPageData meta = sift_col_meta_read(index);
 	SiftManifestRead mr = sift_manifest_read_range(index, NULL, NULL);
 	Datum		v[8] = {0};
@@ -545,7 +558,29 @@ f2_worker_state(FunctionCallInfo fcinfo)
 	v[2] = BoolGetDatum(false);
 	v[3] = Int32GetDatum((int32) meta.failures_total);
 	nulls[4] = nulls[5] = nulls[6] = nulls[7] = true;
-	index_close(index, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	return sift_result_row(fcinfo, v, nulls);
+}
+
+/* The last background step that ended well and the failures noted since the build, from the metapage */
+static Datum
+f2_worker_history(FunctionCallInfo fcinfo)
+{
+	Relation	index = open_f2_relation(PG_GETARG_OID(0));
+	SiftColMetaPageData meta = sift_col_meta_read(index);
+	Datum		v[4] = {0};
+	bool		nulls[4] = {false};
+	const char *job = sift_job_name(meta.maint_ok_job);
+
+	nulls[0] = nulls[1] = nulls[2] = meta.maint_ok_at == 0;
+	if (!nulls[0])
+	{
+		v[0] = TimestampTzGetDatum(meta.maint_ok_at);
+		v[1] = CStringGetTextDatum(job ? job : "");
+		v[2] = Int64GetDatum(meta.maint_ok_ms);
+	}
+	v[3] = Int64GetDatum(meta.failures_total);
+	relation_close(index, AccessShareLock);
 	return sift_result_row(fcinfo, v, nulls);
 }
 
@@ -588,6 +623,8 @@ sift_col_v2_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo)
 			return f2_tracking(fcinfo);
 		case SIFT_SQL_WORKER_STATE:
 			return f2_worker_state(fcinfo);
+		case SIFT_SQL_WORKER_HISTORY:
+			return f2_worker_history(fcinfo);
 	}
 	pg_unreachable();
 }

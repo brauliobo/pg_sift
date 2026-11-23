@@ -1,6 +1,7 @@
 -- A conjunction of many terms of very different frequency: the cursors are ordered rarest first and
 -- skipped once the page intersection is empty; results equal the document-level evaluation
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 CREATE TABLE am (id serial, body text);
 INSERT INTO am (body)
 SELECT 'common' || ' mid' || (i % 3) || ' w' || (i % 50) || ' x' || (i % 700) || ' y' || (i % 1999) || ' rare' || (i % 20011)

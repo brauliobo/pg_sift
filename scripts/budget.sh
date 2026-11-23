@@ -4,7 +4,7 @@
 #   scripts/budget.sh run NAME CMD...   CMD under the budget of NAME; a run over its wall or tmpfs budget is stopped and reported as a BUDGET FAILURE
 #                                       (exit 124 wall, 125 tmpfs) with the slowest steps of $BUDGET_STEPS. Without SIFT_TMP the run gets a scratch
 #                                       directory of its own on tmpfs, removed on exit; on failure only its logs and repro files (at most 20 MB) are kept in
-#                                       $BUDGET_KEEP/NAME.<time> (default /dev/shm/sift-budget-fail). A scratch directory the caller made is the caller's to remove.
+#                                       $BUDGET_KEEP/NAME.<time> (default /dev/shm/sift-budget-fail, or under $TMPDIR where there is no /dev/shm). A scratch directory the caller made is the caller's to remove.
 #   scripts/budget.sh tap FILE          for prove --exec: the TAP file under tap:<name>, else tap:default
 #   scripts/budget.sh step NAME CMD...  CMD, its wall seconds appended to $BUDGET_STEPS (the slowest steps of a budget failure)
 #   scripts/budget.sh limits NAME       "SECONDS MB" of NAME
@@ -48,9 +48,11 @@ run() {
 		return "$rc"
 	fi
 	export BUDGET_ACTIVE=$name
-	BUDGET_KEEP=${BUDGET_KEEP:-/dev/shm/sift-budget-fail}
+	local shm=/dev/shm
+	[[ -d $shm && -w $shm ]] || shm=${TMPDIR:-/tmp}
+	BUDGET_KEEP=${BUDGET_KEEP:-$shm/sift-budget-fail}
 	if [[ -z ${SIFT_TMP:-} ]]; then
-		scratch=$(mktemp -d "/dev/shm/sift-budget-${name//[^A-Za-z0-9_.-]/_}.XXXXXX") && OWN=$scratch
+		scratch=$(mktemp -d "$shm/sift-budget-${name//[^A-Za-z0-9_.-]/_}.XXXXXX") && OWN=$scratch
 		export SIFT_TMP=$scratch
 	fi
 	scratch=${BUDGET_SCRATCH:-$SIFT_TMP}

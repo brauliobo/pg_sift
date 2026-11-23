@@ -258,11 +258,12 @@ check "sift.approx_count_distinct on the column index is what the normal plan gi
 	"$(q new postgres "SET sift.enable_agg = off" "SELECT sift.approx_count_distinct(id) || ':' || sift.approx_count_distinct(g) FROM facts")"
 check "column aggregates are identical and equal the normal plan" test "$(sed -n 2,3p <<<"$AFTER")" == "$(sed -n 2,3p <<<"$BEFORE")"
 check "the tables answer as before, by the scan and the normal plan" test "$(sed -n 4,7p <<<"$AFTER")" == "$(sed -n 4,7p <<<"$BEFORE")"
+preflight() { out=$(PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" "$@" postgres 2>&1); }
 if [[ -z $OLD_REF ]]; then
-	check "the preflight finds nothing to fix" quiet env PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" --strict postgres
+	check "the preflight finds nothing to fix" preflight --strict
 else
 	# the objects of a release name what the update leaves to REINDEX or VACUUM FULL (warnings), and nothing blocks
-	check "the preflight lists nothing that blocks" quiet env PGHOST="$(dir new)/sock" PGPORT="$(port new)" PGUSER=postgres "$REPO/scripts/upgrade-check.sh" postgres
+	check "the preflight lists nothing that blocks" preflight
 fi
 
 # an index that tracks its changes: pg_upgrade restores the table before its indexes, so the triggers are made again, and they must hear what the upgraded cluster writes

@@ -4,6 +4,8 @@
  */
 #include "postgres.h"
 
+#include "access/relation.h"
+#include "catalog/pg_class.h"
 #include "fmgr.h"
 
 #include "col/am/format_ops.h"
@@ -11,14 +13,29 @@
 #include "col/pg.h"
 #include "core/check.h"
 #include "core/errctx.h"
+#include "core/meta_peek.h"
 #include "core/sql.h"
+#include "table/dispatch.h"
 
 PG_FUNCTION_INFO_V1(sift_col_tracking);
+
+static bool
+f2_table_oid(Oid relid)
+{
+	Relation	rel = try_relation_open(relid, AccessShareLock);
+	bool		f2;
+
+	if (rel == NULL)
+		return false;
+	f2 = rel->rd_rel->relkind != RELKIND_INDEX && sift_tbl_is_table(rel) && sift_meta_resolve_major(rel) == SIFT_FORMAT2_MAJOR;
+	relation_close(rel, AccessShareLock);
+	return f2;
+}
 
 static const SiftColFormatOps *
 ops_of_index(Oid indexoid)
 {
-	return sift_col_index_oid_format(indexoid) == SIFT_FORMAT2_MAJOR ? &sift_col_v2_ops : &sift_col_v1_ops;
+	return sift_col_index_oid_format(indexoid) == SIFT_FORMAT2_MAJOR || f2_table_oid(indexoid) ? &sift_col_v2_ops : &sift_col_v1_ops;
 }
 
 static Datum
@@ -76,3 +93,4 @@ SIFT_SQL_ENTRY(sift_col_maintenance_due, SIFT_SQL_MAINTENANCE_DUE)
 SIFT_SQL_ENTRY(sift_col_maintenance_status, SIFT_SQL_MAINTENANCE_STATUS)
 SIFT_SQL_ENTRY(sift_col_tracking, SIFT_SQL_TRACKING)
 SIFT_SQL_ENTRY(sift_worker_state, SIFT_SQL_WORKER_STATE)
+SIFT_SQL_ENTRY(sift_worker_history, SIFT_SQL_WORKER_HISTORY)

@@ -44,6 +44,7 @@ extern PGDLLEXPORT Datum sift_index_info(PG_FUNCTION_ARGS);		/* (regclass) recor
 extern PGDLLEXPORT Datum sift_index_format(PG_FUNCTION_ARGS);	/* (regclass) record */
 extern PGDLLEXPORT Datum sift_worker_state(PG_FUNCTION_ARGS);	/* (regclass) record */
 extern Datum sift_worker_state_dir(PG_FUNCTION_ARGS);
+extern Datum sift_worker_history_dir(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_progress_rows(PG_FUNCTION_ARGS);	/* () setof record: the maintenance jobs that run now (sift.progress) */
 extern PGDLLEXPORT Datum sift_quarantine_rows(PG_FUNCTION_ARGS);	/* () setof record: the index files recorded as damaged in this database */
 extern PGDLLEXPORT Datum sift_worker_history(PG_FUNCTION_ARGS);	/* (regclass) record: when the last step ended well, its job and time, the failures noted */

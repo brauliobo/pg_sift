@@ -61,7 +61,7 @@ check "a scan holds 2 kB of state for each partition it reads, not its source (7
 SCOPE=col_verify; check "a column verify over its lowered budget fails naming col_verify" red "SELECT sift.col_verify('c_col', true)"
 SCOPE=index_vacuum; check "a VACUUM over its lowered budget fails naming index_vacuum" red "UPDATE c SET amount = amount + 1 WHERE k < 2" "VACUUM c"
 sql mb "CREATE TABLE ct AS SELECT g AS id, g % 7 AS k, g % 500 AS k2, 'n' || g % 300 AS txt, g::numeric AS amount FROM generate_series(1, 20000) g" >/dev/null
-SCOPE=col_writer_spool; check "a column build over its lowered budget fails naming the first tracker to pass it, col_writer_spool" red "CREATE INDEX ct_col ON ct USING sift_col (id, k, k2, txt, amount)"
+SCOPE=col_build; check "a column build over its lowered budget fails naming the first tracker to pass it, col_build" red "CREATE INDEX ct_col ON ct USING sift_col (id, k, k2, txt, amount)"
 out=$(sql mb "SET sift.test_mem_check = off" "SET sift.test_mem_budget_scale = 0.0001" "SELECT count(*) FROM d WHERE body @@> 'wireless charger'" 2>&1)
 check "sift.test_mem_check = off returns before the measure" test "$out" -gt 0
 check "the server log has one SIFTMEM_SCOPE line for a scope at backend exit" grep -q "SIFTMEM_SCOPE name=bm25_" "$(dir mb)/postgres.log"

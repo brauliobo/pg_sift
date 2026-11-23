@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tap: pooled
-# The index a REINDEX that takes its rows from the index it replaces (col/v1/build/from_index.c) leaves is the one a REINDEX from the heap leaves: the same immutable segments, cut where the
-# runs of a build end, and no more bytes in the file (the segments' streams take their extents as the build's do, so no hole is left between them). Two sizes of a key_cut index of wide
+# The index a REINDEX that takes its rows from the index it replaces (col/v1/build/from_index.c) leaves is the one a REINDEX from the heap leaves: the same immutable segments (the merge
+# that writes them holds two fifths of its memory where a build holds half, so it may cut one segment more), and no more bytes in the file (the segments' streams take their extents as the build's do, so no hole is left between them). Two sizes of a key_cut index of wide
 # rows at the default maintenance_work_mem: one segment, and the first size that needs two.
 . "$(dirname "$0")/lib.bash"
 
@@ -30,7 +30,7 @@ shape() {
 for n in "${SIZES[@]}"; do
 	read -r hsegs hseg_bytes hbytes osegs oseg_bytes obytes used <<<"$(shape "$n")"
 	diag "REINDEX of $n rows: ${hsegs} segments of ${hseg_bytes} bytes (file ${hbytes}) from the heap, ${osegs} of ${oseg_bytes} (file ${obytes}) from the old index"
-	check "$n rows: the REINDEX took its rows from the old index and wrote the segments of the one from the heap" test "$used" == 1 -a "$osegs" -eq "$hsegs"
+	check "$n rows: the REINDEX took its rows from the old index and wrote the segments of the one from the heap, or one more" test "$used" == 1 -a "$osegs" -ge "$hsegs" -a "$osegs" -le "$((hsegs + 1))"
 	check "$n rows: ... in no more segment bytes" test "$oseg_bytes" -le "$hseg_bytes"
 done
 finish

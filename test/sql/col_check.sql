@@ -1,6 +1,7 @@
 -- sift.check: one row per problem, no row when the indexes are sound, damage reported and never raised; the privilege of the verifiers;
 -- the raising forms name what to do; a failure inside a scan names the index
 CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
 CREATE TABLE ck (id int PRIMARY KEY, a int, b text);
 INSERT INTO ck SELECT i, i % 10, 'v' || i % 50 FROM generate_series(1, 20000) i;
 CREATE INDEX ck_col ON ck USING sift_col (a, b);

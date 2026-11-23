@@ -6,6 +6,7 @@
 
 plan 5
 node_init tail 12 "autovacuum = off
+sift.async_maintenance = on
 max_worker_processes = 16"
 node_start tail || bail "start failed"
 sql tail "CREATE EXTENSION pg_sift" "CREATE TABLE t (id serial, body text) WITH (autovacuum_enabled = off)" \

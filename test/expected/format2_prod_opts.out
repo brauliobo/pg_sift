@@ -48,7 +48,7 @@ SELECT n, nvalid, sift._test_f2_sparse(n, nvalid) FROM (VALUES (8192, 0), (8192,
  8192 |     19 | validity=NONNULL_SPARSE validity_bytes=40 chunk_bytes=136 nonnull=19 ints=ok rows=ok cap=ok vec=ok
  8192 |    512 | validity=NONNULL_SPARSE validity_bytes=1032 chunk_bytes=1608 nonnull=512 ints=ok rows=ok cap=ok vec=ok
  8192 |    513 | validity=BITMAP validity_bytes=1024 chunk_bytes=1600 nonnull=513 ints=ok rows=ok cap=ok vec=ok
- 8192 |   8180 | validity=NULL_SPARSE validity_bytes=32 chunk_bytes=216 nonnull=8180 ints=ok rows=ok cap=ok vec=ok
+ 8192 |   8180 | validity=NULL_SPARSE validity_bytes=32 chunk_bytes=1176 nonnull=8180 ints=ok rows=ok cap=ok vec=ok
 (6 rows)
 
 -- A key that the rows of a granule all have, none has, or have but for a few, and the document shapes that hold it: the bits kept are the smallest of a list of the rows that have
@@ -60,9 +60,9 @@ FROM (VALUES (8192, 8192, 0, 0, 0, false), (8192, 0, 0, 0, 0, false), (8192, 800
 ------+--------+--------+-----------+----------+---------------+-----------------------------------------------------------------------------------------------------------------------------
  8192 |   8192 |      0 |         0 |        0 | f             | key=ALL_PRESENT enc=INT_DELTA chunk_bytes=120 key_bytes=0 present=8192 decode=ok tags=ok slices(zero,one,bits)=0,5,0
  8192 |      0 |      0 |         0 |        0 | f             | key=ALL_ABSENT enc=ALL_NULL chunk_bytes=0 key_bytes=0 present=0 decode=ok tags=ok slices(zero,one,bits)=5,0,0
- 8192 |   8000 |      0 |         0 |        0 | f             | key=EQ_VALID enc=INT_DELTA chunk_bytes=1160 key_bytes=0 present=8000 decode=ok tags=ok slices(zero,one,bits)=0,0,5
+ 8192 |   8000 |      0 |         0 |        0 | f             | key=EQ_VALID enc=INT_DELTA chunk_bytes=2560 key_bytes=0 present=8000 decode=ok tags=ok slices(zero,one,bits)=0,0,5
  8192 |    100 |      3 |         2 |        1 | f             | key=MASK_ARRAY16 enc=INT_FOR chunk_bytes=752 key_bytes=224 present=106 decode=ok tags=ok slices(zero,one,bits)=0,0,5
- 8192 |   8100 |     40 |        20 |       10 | f             | key=MASK_NEG_ARRAY16 enc=INT_DELTA chunk_bytes=1176 key_bytes=56 present=8170 decode=ok tags=ok slices(zero,one,bits)=0,1,4
+ 8192 |   8100 |     40 |        20 |       10 | f             | key=MASK_NEG_ARRAY16 enc=INT_DELTA chunk_bytes=1872 key_bytes=56 present=8170 decode=ok tags=ok slices(zero,one,bits)=0,1,4
  8192 |   4000 |      3 |         2 |        1 | t             | key=EQ_VALID enc=KEY_PRESENT chunk_bytes=1024 key_bytes=0 present=4006 decode=ok tags=ok slices(zero,one,bits)=0,0,5
  8192 |   3000 |      0 |         0 |        0 | f             | key=EQ_VALID enc=INT_DELTA chunk_bytes=3024 key_bytes=0 present=3000 decode=ok tags=ok slices(zero,one,bits)=0,0,5
  8192 |   4000 |    100 |       100 |      100 | f             | key=MASK_BITMAP enc=INT_DELTA chunk_bytes=5184 key_bytes=1032 present=4300 decode=ok tags=ok slices(zero,one,bits)=0,0,5

@@ -2,6 +2,7 @@
 -- The ids a search returns, its count and its k best scores are the ones of a reference computed from the text, for terms that sit in few, many and every superblock,
 -- for phrases, after deletes and VACUUM.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 -- 20,000 rows of 900 bytes on about 2,100 heap pages (8 superblocks, as 200,000 narrow rows have): 'common' in every row, seven terms in 2,800, 500 terms in 40, 'rare' in 200, 'x y' in 1,500,
 -- 'early' in the first 30 rows, 'mid' in 41 rows of one superblock, 'late' in the last 500: a conjunction of them with a dense term skips whole superblocks of the dense one

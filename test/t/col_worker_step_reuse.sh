@@ -7,7 +7,8 @@
 
 ROUNDS=$(knob SIFT_WS_ROUNDS 48 32)
 plan 4
-node_init reuse 6 "autovacuum = off"
+node_init reuse 6 "autovacuum = off
+sift.async_maintenance = on"
 node_start reuse || bail "start failed"
 sql reuse "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE t (id int, grp int, amount numeric(10,2), pad text)" \

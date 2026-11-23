@@ -7,6 +7,7 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.test_create_format1 = off;
 SET sift.agg_force = on;
+SET sift.simd = scalar;
 
 CREATE TABLE sf (id int PRIMARY KEY, k int, g int, v int, x float8, doc jsonb, tags text[], nums int4[]) WITH (autovacuum_enabled = false);
 INSERT INTO sf SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 1 + i % 25 END, i % 7, i % 90, (i % 40) * 0.5,

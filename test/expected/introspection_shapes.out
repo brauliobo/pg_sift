@@ -13,11 +13,16 @@ SELECT * FROM sift.col_index_info('ish_bm');
 ERROR:  "ish_bm" is a sift index
 HINT:  Use sift.index_info.
 SELECT * FROM sift.col_segments('ish_bm');
-ERROR:  "ish_bm" is a sift index
-HINT:  Use sift.segments.
+ERROR:  "ish_bm" is not a sift_col index
+CONTEXT:  PL/pgSQL function sift_internal.require_am(regclass,text) line 8 at RAISE
+SQL statement "SELECT sift_internal.require_am(index, 'sift_col')"
+PL/pgSQL function col_segments(regclass) line 3 at PERFORM
 SELECT * FROM sift.index_info('ish_col');
-ERROR:  "ish_col" is a sift_col index
-HINT:  Use sift.col_index_info.
+ relation_blocks | high_water | free_blocks | reusable_blocks | free_extents | segments | max_segments | ndocs | sum_dl | maintenance_busy 
+-----------------+------------+-------------+-----------------+--------------+----------+--------------+-------+--------+------------------
+               7 |          7 |           0 |               0 |            0 |        2 |              |  2000 |        | f
+(1 row)
+
 SELECT * FROM sift.segments('ish_col');
 ERROR:  "ish_col" is a sift_col index
 HINT:  Use sift.col_segments.
@@ -35,12 +40,24 @@ SELECT * FROM sift.worker_state('ish_pkey');
 ERROR:  "ish_pkey" is not a sift index
 SELECT * FROM sift.index_info('ish_pkey');
 ERROR:  "ish_pkey" is not a sift index
+CONTEXT:  SQL statement "SELECT s.relation_blocks, s.high_water, s.free_blocks, s.reusable_blocks, s.free_extents, s.parts, NULL::int4, s.rows, NULL::int8, s.maintenance_busy
+	                                                                                                                                                                                                                                                        FROM sift.space(index) s"
+PL/pgSQL function index_info(regclass) line 3 at SQL statement
 SELECT * FROM sift.col_segments('ish_pkey');
 ERROR:  "ish_pkey" is not a sift_col index
+CONTEXT:  PL/pgSQL function sift_internal.require_am(regclass,text) line 8 at RAISE
+SQL statement "SELECT sift_internal.require_am(index, 'sift_col')"
+PL/pgSQL function col_segments(regclass) line 3 at PERFORM
 SELECT * FROM sift.table_space('ish');
-ERROR:  "ish" is not a sift_table
+ERROR:  "ish" is not a sift index
+CONTEXT:  SQL statement "SELECT s.relation_blocks, s.high_water, s.free_blocks, s.reusable_blocks, s.free_extents, s.vblocks_left
+	                                                                                                                                                                    FROM sift.space(tbl) s"
+PL/pgSQL function table_space(regclass) line 3 at SQL statement
 SELECT * FROM sift.table_segments('ish');
 ERROR:  "ish" is not a sift_table
+CONTEXT:  PL/pgSQL function sift_internal.require_am(regclass,text) line 8 at RAISE
+SQL statement "SELECT sift_internal.require_am(tbl, 'sift_table')"
+PL/pgSQL function table_segments(regclass) line 3 at PERFORM
 -- one view over every sift object
 SELECT relation, kind, "table", bytes > 0 AS sized, segments, format ~ '^[0-9]+[.][0-9]+$' AS formatted, state FROM sift.indexes ORDER BY relation::text;
  relation |    kind    | table | sized | segments | formatted | state 

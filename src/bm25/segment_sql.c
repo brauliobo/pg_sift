@@ -247,7 +247,7 @@ sift_worker_state_dir(PG_FUNCTION_ARGS)
  * since the index was built. None of it for a sift_table (it has no metapage) and NULL where worker_state is.
  */
 Datum
-sift_worker_history(PG_FUNCTION_ARGS)
+sift_worker_history_dir(PG_FUNCTION_ARGS)
 {
 	Relation	index = worker_open(PG_GETARG_OID(0));
 	SiftDirSnapshot *snap;

@@ -5,6 +5,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
+SET maintenance_work_mem = '256MB';
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 

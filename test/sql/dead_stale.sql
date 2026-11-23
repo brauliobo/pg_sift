@@ -1,6 +1,7 @@
 -- While less than 5% of a segment's docs were cleared since the last count of its dead postings, VACUUM leaves the table as it is and the dfs scale it to the live docs:
 -- the scores stay within 1% of those of the same rows indexed afresh and the top 20 are the same docs. From 5% on, after a merge and after REINDEX the scores are exact.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SELECT sift.version() IS NOT NULL AS library_loaded;
 
 CREATE TABLE ds (id int PRIMARY KEY, body text) WITH (autovacuum_enabled = off);

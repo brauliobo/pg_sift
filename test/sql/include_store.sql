@@ -2,6 +2,7 @@
 -- segment was written: after the build, a promotion, a merge, a VACUUM that rewrites a segment and a REINDEX, and for every type that is kept.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
 
 CREATE TABLE docs (id int, body text, category_id int, created_at date, active bool, label text, counter_a int8, seen_at timestamptz);
 INSERT INTO docs

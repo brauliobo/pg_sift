@@ -268,7 +268,9 @@ SELECT fails('TRUNCATE tr', '0A000');
 TRUNCATE tr, trf;
 
 -- 12. FOR ALL TABLES publication (needs the library preloaded; the refusal without it is in C-INTEGRATION-GUIDE.md)
+SET client_min_messages = error;
 CREATE PUBLICATION f2p_all FOR ALL TABLES;
+SET client_min_messages = warning;
 CREATE TABLE pub (id int PRIMARY KEY, v text) USING sift_table;
 INSERT INTO pub SELECT i, 'p' || i FROM generate_series(1, 1000) i;
 UPDATE pub SET v = 'u' WHERE id <= 10;

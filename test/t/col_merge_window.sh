@@ -52,6 +52,6 @@ check "12 inputs cut by a key hold under 44 MB at 1 MB of maintenance_work_mem" 
 check "the index cut by a key verifies against the heap" test "$(verify_errors c12_col)" == 0
 
 table r12 12 off
-out=$(sql mw "SET maintenance_work_mem = '1MB'" "SET sift.test_mem_budget_scale = 0.25" "SELECT sift.col_merge('r12_col', true)" 2>&1) && out="merged"
+out=$(sql mw "SET maintenance_work_mem = '1MB'" "SET sift.test_mem_budget_scale = 0.09" "SELECT sift.col_merge('r12_col', true)" 2>&1) && out="merged"
 check "a merge over its lowered budget fails naming col_merge_window" grep -qE "sift memory budget exceeded: col_merge_window: [0-9]+ > [0-9]+ bytes" <<<"$out"
 finish

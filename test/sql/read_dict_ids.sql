@@ -2,6 +2,7 @@
 -- its block by bisection, not by reading every block of the run (sift._test_read_stats counts the blocks read).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
 
 CREATE TABLE ri (id int PRIMARY KEY, ref text);
 INSERT INTO ri SELECT i, 'ord-0000' || lpad(i::text, 8, '0') FROM generate_series(1, 40000) i;

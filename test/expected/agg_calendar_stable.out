@@ -6,6 +6,9 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
 CREATE TABLE cs (id int, ts timestamp, tz timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO cs
 SELECT row_number() OVER (), (t.i AT TIME ZONE 'UTC'), t.i

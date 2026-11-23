@@ -80,3 +80,4 @@ SELECT same(q) FROM unnest(ARRAY[
 DROP TABLE fp, fd;
 DROP FUNCTION same(text);
 DROP FUNCTION answer(text);
+DROP EXTENSION pg_sift;

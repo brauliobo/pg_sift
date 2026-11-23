@@ -4,6 +4,7 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+SET work_mem = '16MB';
 CREATE TABLE dim_a (id int PRIMARY KEY, name text, updated_at timestamptz, score int) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, 'p' || i, now(), i % 100 FROM generate_series(1, 20000) i;
 CREATE INDEX dim_a_col ON dim_a USING sift_col (id, name, score) WITH (track_changes = 'id');

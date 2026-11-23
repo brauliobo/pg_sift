@@ -4,6 +4,7 @@
 -- of the group will do: SQL does not define the order of equal scores) and the sequential evaluation of the same query, for exact, lossy and combined
 -- bitmaps, partial and partitioned tables, and rows in every state (updates, deletes, inserts, vacuumed or not).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 \ir test/sift_plan.sql
 CREATE FUNCTION sift_scan_node(q text) RETURNS jsonb LANGUAGE plpgsql AS $$

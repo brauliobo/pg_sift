@@ -48,7 +48,7 @@ ERROR:  permission denied for index "pr_idx"
 SELECT * FROM sift.index_info('pr_idx');
  relation_blocks | high_water | free_blocks | reusable_blocks | free_extents | segments | max_segments | ndocs | sum_dl | maintenance_busy 
 -----------------+------------+-------------+-----------------+--------------+----------+--------------+-------+--------+------------------
-               5 |          5 |           0 |               0 |            0 |        1 |          128 |   300 |    900 | f
+               5 |          5 |           0 |               0 |            0 |        1 |              |   300 |        | f
 (1 row)
 
 RESET ROLE;

@@ -7,7 +7,8 @@
 . "$(dirname "$0")/lib.bash"
 
 plan 8
-node_init delay 13 "autovacuum = off"
+node_init delay 13 "autovacuum = off
+sift.async_maintenance = on"
 node_start delay || bail "start failed"
 sql delay "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "setup failed"
 

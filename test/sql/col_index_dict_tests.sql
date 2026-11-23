@@ -3,6 +3,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
+SET maintenance_work_mem = '256MB';
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE dt (id int, k text, n numeric);

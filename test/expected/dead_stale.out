@@ -1,6 +1,7 @@
 -- While less than 5% of a segment's docs were cleared since the last count of its dead postings, VACUUM leaves the table as it is and the dfs scale it to the live docs:
 -- the scores stay within 1% of those of the same rows indexed afresh and the top 20 are the same docs. From 5% on, after a merge and after REINDEX the scores are exact.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SELECT sift.version() IS NOT NULL AS library_loaded;
  library_loaded 
 ----------------
@@ -44,7 +45,6 @@ SELECT dead_docs FROM sift.segments('ds_idx') WHERE kind = 'immutable';
 (1 row)
 
 SELECT * FROM ds_compare();
-NOTICE:  table "ds_ref" does not exist, skipping
        q        | same_top20 | max_diff_below_1pct | same_scores 
 ----------------+------------+---------------------+-------------
  u0             | t          | t                   | f

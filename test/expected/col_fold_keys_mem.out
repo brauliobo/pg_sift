@@ -1,12 +1,12 @@
 -- The fold of the marks of the tombstone log of an index clears the rows whose delete or update every snapshot sees as committed. It gathered the key of every mark into one array
--- (8 bytes a mark, however many marks the log held), and holds a chunk of them now: as many keys as sift.backend_cache_kb has bytes, the rest in a temp file in the same order, cleared a
--- chunk at a time. The scope col_fold_keys (the limit and 64 kB) holds the same bytes at every size of the log once it passes a chunk (a per-row term of 0), and the
--- mutant that holds the marks in one array fails its budget. The rows cleared, what is left of the log and what a scan reads are the same in one chunk (1 GB) and in many (16 kB).
+-- (8 bytes a mark, however many marks the log held), and holds a chunk of them now: as many keys as half of maintenance_work_mem has bytes, the rest in a temp file in the same order, cleared a
+-- chunk at a time. The scope col_fold_keys stays under that half whatever the size of the log. The rows cleared, what is left of the log and what a scan reads are the same in one chunk (1 GB)
+-- and at the default.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
--- tables of 4,000 to 16,000 rows (2,048 keys fit a chunk at 16 kB): every row updated and one in four deleted, so the log holds 1.25 entries a row; a twin of the largest for the 1 GB fold
+-- tables of 4,000 to 16,000 rows: every row updated and one in four deleted, so the log holds 1.25 entries a row; a twin of the largest for the 1 GB fold
 CREATE TABLE f4 (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
 CREATE TABLE f8 (LIKE f4) WITH (autovacuum_enabled = false);
 CREATE TABLE f12 (LIKE f4) WITH (autovacuum_enabled = false);
@@ -38,22 +38,18 @@ DELETE FROM f16w WHERE id % 4 = 0
 CREATE TABLE census (rows int, peak int8, cleared int8, left_over int8);
 -- a fresh backend for each size folds the log
 \c -
-SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f4_c') AS cleared \gset
 INSERT INTO census SELECT 4000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f4_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
 \c -
-SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f8_c') AS cleared \gset
 INSERT INTO census SELECT 8000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f8_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
 \c -
-SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f12_c') AS cleared \gset
 INSERT INTO census SELECT 12000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f12_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
 \c -
-SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
 SELECT sift._test_col_fold_marks('f16_c') AS cleared \gset
 INSERT INTO census SELECT 16000, peak, :cleared, (SELECT count(*) FROM sift._test_col_log_entries('f16_c')) FROM sift._test_mem_highwater() WHERE scope = 'col_fold_keys';
@@ -66,16 +62,16 @@ SELECT rows, cleared, left_over FROM census ORDER BY rows;
  16000 |   16000 |         0
 (4 rows)
 
--- every size passes the 2,048 keys of a chunk (5,000 marks and more) and holds the same bytes: 0 bytes a row
-SELECT count(DISTINCT peak) = 1 AS same_bytes_at_every_size, max(peak) < 16384 + 65536 AS under_the_budget FROM census;
- same_bytes_at_every_size | under_the_budget 
---------------------------+------------------
- t                        | t
+-- the keys of every size stay under the half of maintenance_work_mem that a chunk may hold
+SELECT max(peak) < pg_size_bytes(current_setting('maintenance_work_mem')) / 2 AS under_half_of_maintenance_work_mem FROM census;
+ under_half_of_maintenance_work_mem 
+------------------------------------
+ t
 (1 row)
 
 -- the same fold in one chunk: the rows cleared, what is left of the log and the rows a scan reads are the same
 \c -
-SET sift.backend_cache_kb = '1GB';
+SET maintenance_work_mem = '1GB';
 SELECT sift._test_col_fold_marks('f16w_c') = (SELECT cleared FROM census WHERE rows = 16000) AS same_rows_cleared_in_one_chunk;
  same_rows_cleared_in_one_chunk 
 --------------------------------

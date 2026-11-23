@@ -300,16 +300,16 @@ FROM (VALUES ('stable user function', $q$SELECT id FROM tb ORDER BY tf_stable(g)
 			 ('allowed',              $q$SELECT id FROM tb ORDER BY lower(s || v), id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
-          k           | used |    slug    |                                                                                reason                                                                                 
-----------------------+------+------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+          k           | used |    slug    |                                                                                 reason                                                                                  
+----------------------+------+------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  allowed              | t    |            | 
- array result         | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
- concat function      | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
- interval result      | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
- jsonb result         | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
- stable text of date  | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
- stable user function | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
- sub-select           | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
+ array result         | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
+ concat function      | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ interval result      | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
+ jsonb result         | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a result type the scan does not hold as a key)
+ stable text of date  | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ stable user function | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ sub-select           | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
 (8 rows)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

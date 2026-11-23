@@ -193,7 +193,7 @@ subtest 'CREATE INDEX CONCURRENTLY with deletes and updates running keeps no dea
 	my $old = $primary->background_psql('postgres');
 	$old->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM cc');
 	my $cic = $primary->background_psql('postgres');
-	$cic->query_until(qr/cic_started/, "\\echo cic_started\nCREATE INDEX CONCURRENTLY cc_i ON cc USING sift_col (id, g, v) WITH (key_order = 'id', track_changes = 'ctid');\n");
+	$cic->query_until(qr/cic_started/, "SET client_min_messages = warning;\n\\echo cic_started\nCREATE INDEX CONCURRENTLY cc_i ON cc USING sift_col (id, g, v) WITH (key_order = 'id', track_changes = 'ctid');\n");
 	$primary->safe_psql('postgres', q{
 		DELETE FROM cc WHERE id % 3 = 0;
 		UPDATE cc SET v = v + 1 WHERE id % 5 = 0;

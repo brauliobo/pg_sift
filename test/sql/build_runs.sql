@@ -2,6 +2,7 @@
 -- merges them in passes (a bounded fan-in), whatever the table size, serial or parallel. The index
 -- is the one a build with plenty of memory writes, but for its segment layout.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 2;
 
 CREATE TABLE br (id serial, body text) WITH (parallel_workers = 2);

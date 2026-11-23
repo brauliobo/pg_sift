@@ -40,7 +40,7 @@ VP=$!
 waiting 1 || { touch "$D/release.6" "$D/release.1"; bail "the release did not wait at the gate: $(cat "$D/vacuum.out")"; }
 # a later xid completes: the horizon, which leaves the VACUUM's own xid out, moves past it
 sql p4 "SELECT txid_current()" >/dev/null
-sql p4 "LOAD 'pg_sift'" "SET sift.test_vis_pause = 1" "SET enable_seqscan = off" "SET sift.enable_scan = off" \
+sql p4 "LOAD 'pg_sift'" "SET sift.test_vis_pause = 1" "SET enable_seqscan = off" \
 	"SELECT count(*) FROM t WHERE body @@> 'zzstable'" >"$D/reader.out" 2>&1 &
 RP=$!
 waiting 2 || { touch "$D/release.6" "$D/release.1"; bail "the reader did not wait for the map: $(cat "$D/reader.out")"; }

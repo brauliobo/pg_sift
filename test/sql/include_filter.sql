@@ -4,6 +4,7 @@
 -- updated rows, a VACUUM, a merge and a REINDEX are in the data.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
 SELECT setseed(0.42);
 
 CREATE TABLE docs (id int PRIMARY KEY, body text, category_id int, created_at date, active bool, counter_a int8, label text, tier smallint);

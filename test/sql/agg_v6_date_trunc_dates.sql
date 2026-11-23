@@ -71,3 +71,7 @@ DROP FUNCTION failure(text);
 
 DROP FUNCTION date_wrong(text, text);
 DROP FUNCTION kdiff(text, text);
+DROP VIEW kr;
+DROP TABLE kd;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

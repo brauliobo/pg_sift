@@ -46,12 +46,20 @@ typedef struct Gen
 	uint8	   *tag;
 } Gen;
 
+static int64
+wide_int(uint64 *rs)
+{
+	int64		a = (int64) rnd(rs) * 4099;
+
+	return a - (int64) (rnd(rs) << 20);
+}
+
 static void
 gen_ints(Gen *g, const char *pat, uint64 *rs)
 {
 	for (int r = 0; r < g->n; r++)
 		g->i[r] = strcmp(pat, "const") == 0 ? 42 : strcmp(pat, "seq") == 0 ? 1000 + r : strcmp(pat, "sorted") == 0 ? (int64) r * 3 + (int64) (rnd(rs) % 3) :
-			strcmp(pat, "runs") == 0 ? (r / 50) % 7 * 1000003 : strcmp(pat, "wide") == 0 ? (int64) rnd(rs) * 4099 - (int64) (rnd(rs) << 20) : strcmp(pat, "bool") == 0 ? rnd(rs) % 2 :
+			strcmp(pat, "runs") == 0 ? (r / 50) % 7 * 1000003 : strcmp(pat, "wide") == 0 ? wide_int(rs) : strcmp(pat, "bool") == 0 ? rnd(rs) % 2 :
 			strcmp(pat, "list") == 0 ? (int64) (rnd(rs) % 6) : strcmp(pat, "money") == 0 ? (int64) (rnd(rs) % 1000000) - 500000 : (int64) (rnd(rs) % 100);
 }
 
@@ -71,7 +79,8 @@ static double
 outlier_f8(int r, uint64 *rs)
 {
 	double		d = 1.0 + (double) (rnd(rs) % UINT64CONST(1099511627776)) / 1099511627776.0;
-	uint64		bits = (rnd(rs) << 1) ^ rnd(rs);
+	uint64		hi = rnd(rs) << 1;
+	uint64		bits = hi ^ rnd(rs);
 
 	if (r % 50 == 7)
 		memcpy(&d, &bits, 8);
@@ -101,7 +110,12 @@ fsst_gen(const char *pat, int r, uint64 *rs, char *buf)
 	else if (strcmp(pat, "tag") == 0)
 		len = sprintf(buf, "tag-%05u", (unsigned) (rnd(rs) % 50000));
 	else if (strcmp(pat, "url") == 0)
-		len = sprintf(buf, "https://example.com/%s/%u?id=%u", words[rnd(rs) % 16], (unsigned) (rnd(rs) % 500), (unsigned) (rnd(rs) % 100000));
+	{
+		const char *word = words[rnd(rs) % 16];
+		unsigned	dir = (unsigned) (rnd(rs) % 500);
+
+		len = sprintf(buf, "https://example.com/%s/%u?id=%u", word, dir, (unsigned) (rnd(rs) % 100000));
+	}
 	else if (strcmp(pat, "utf8") == 0)
 		len = sprintf(buf, "\xC3\xA9t\xC3\xA9-\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E-\xC3\xB1" "and\xC3\xBA-%u-\xE2\x82\xAC", (unsigned) (rnd(rs) % 100000));
 	else if (strcmp(pat, "binary") == 0)
@@ -109,9 +123,19 @@ fsst_gen(const char *pat, int r, uint64 *rs, char *buf)
 			buf[len++] = (char) rnd(rs);
 	else if (strcmp(pat, "multikb") == 0)
 		for (uint32 n = 2000 + rnd(rs) % 4000; len + 24 < n;)
-			len += sprintf(buf + len, "%s%u ", words[rnd(rs) % 16], (unsigned) (rnd(rs) % 1000));
+		{
+			const char *word = words[rnd(rs) % 16];
+
+			len += sprintf(buf + len, "%s%u ", word, (unsigned) (rnd(rs) % 1000));
+		}
+	else if (strcmp(pat, "mixed") == 0 && r % 7 != 0)
+	{
+		unsigned	id = (unsigned) (rnd(rs) % 100000);
+
+		len = sprintf(buf, "k%u/%s", id, words[rnd(rs) % 16]);
+	}
 	else if (strcmp(pat, "mixed") == 0)
-		len = r % 7 == 0 ? 0 : sprintf(buf, "k%u/%s", (unsigned) (rnd(rs) % 100000), words[rnd(rs) % 16]);
+		len = 0;
 	else
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("unknown pattern \"%s\"", pat)));
 	return len;
@@ -413,7 +437,7 @@ shuffled_rows(int rows, uint64 seed)
 static SiftGranuleView
 one_granule(const SiftColIn *col, int n, SiftGranuleDesc *desc)
 {
-	SiftGranuleIn in = {.nrows = n,.ncols = 1,.tier = SIFT_TIER_WARM_L1,.cols = col,.all_frozen = true};
+	SiftGranuleIn in = {.nrows = n,.ncols = 1,.compress_alg = -1,.tier = SIFT_TIER_WARM_L1,.cols = col,.all_frozen = true};
 	uint64	   *tid = palloc(n * sizeof(uint64));
 	StringInfoData out;
 	char	   *raw;

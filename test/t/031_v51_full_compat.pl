@@ -22,7 +22,7 @@ plan skip_all => $why unless defined $v510;
 my $v60 = v60_root();
 plan skip_all => 'no 6.0 library: run through scripts/tap.sh (SIFT_ROOT) or set SIFT_V60_LIBDIR' unless defined $v60;
 
-my $tree = tempdir('v51tree');
+my $tree = PostgreSQL::Test::Utils::tempdir('v51tree');
 $ENV{PATH} = make_server_tree($tree) . ":$ENV{PATH}";
 delete $ENV{TEMP_CONFIG};
 
