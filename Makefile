@@ -594,6 +594,7 @@ TESTING_REGRESS += table_f2_col_delta
 TESTING_REGRESS += table_f2_copy_schema_evol
 TESTING_REGRESS += table_f2_drop_in_txn
 TESTING_REGRESS += table_f2_drop_parts_before
+TESTING_REGRESS += table_f2_fetch
 TESTING_REGRESS += table_f2_lock_escalation
 TESTING_REGRESS += table_f2_parity
 TESTING_REGRESS += table_f2_plans
