@@ -22,6 +22,9 @@ extern void sift_du64_free(SiftDistinctU64 *d);
  * The grouped set: pairs (group, value) of a GROUP BY with COUNT(DISTINCT integer column). A group is the dense number its caller already has (the ext_idx of its slot in the group table), so a pair
  * is one entry of 16 bytes (the value and the group) in one open-addressing table and the count of its group goes up when a pair is new: no second table finds the group. The set says no, and adds
  * nothing, when what it would need passes the budget: the caller moves the pairs to the generic set (sift_du64g_pairs) and goes on there.
+ *
+ * A set whose table outgrows the cache keeps its pairs in 64 buckets by the top bits of their hash instead: a pair is appended to its bucket, and a bucket is deduplicated in a table that fits
+ * the cache (the work is linear in the pairs, and no pair is a miss), so that the pairs of a scan of millions of rows cost a store, not a probe of a table of tens of megabytes.
  */
 typedef struct SiftDu64G SiftDu64G;
 
@@ -29,15 +32,17 @@ typedef void (*SiftDu64GGroup) (void *arg, uint32 gid, uint64 count);
 typedef void (*SiftDu64GPair) (void *arg, uint32 gid, uint64 value);
 
 extern SiftDu64G *sift_du64g_create(MemoryContext cx, uint64 budget_bytes);
+/* The same, with the number of table entries at which the pairs go to the buckets of the radix mode (below) in place of a larger table */
+extern SiftDu64G *sift_du64g_create_ex(MemoryContext cx, uint64 budget_bytes, uint64 radix_cap);
 extern bool sift_du64g_add(SiftDu64G *d, uint32 gid, uint64 value);
 /*
  * The n pairs (gids[i], vals[i]), the entries prefetched ahead. Returns n, or the index of the first pair that is new and does not fit the budget: the pairs before it are in the set, and the
  * caller moves it to the generic set (sift_du64g_pairs) and adds the rest there.
  */
 extern uint32 sift_du64g_add_batch(SiftDu64G *d, const uint32 *gids, const uint64 *vals, uint32 n);
-/* each group that has a pair, with the number of its distinct values */
-extern void sift_du64g_groups(const SiftDu64G *d, SiftDu64GGroup fn, void *arg);
-extern void sift_du64g_pairs(const SiftDu64G *d, SiftDu64GPair fn, void *arg);
+/* each group that has a pair, with the number of its distinct values (the buckets of the radix mode are deduplicated first) */
+extern void sift_du64g_groups(SiftDu64G *d, SiftDu64GGroup fn, void *arg);
+extern void sift_du64g_pairs(SiftDu64G *d, SiftDu64GPair fn, void *arg);
 extern uint64 sift_du64g_bytes(const SiftDu64G *d);
 extern void sift_du64g_free(SiftDu64G *d);
 
