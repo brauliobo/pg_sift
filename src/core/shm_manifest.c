@@ -54,6 +54,7 @@ typedef struct Table
 	pg_atomic_uint64 epoch_mask[SIFT_SHM_EPOCH_SLOTS / 64];	/* the backends that have pinned in an epoch slot and not exited: all that oldest_epoch reads */
 	SiftEpochSlot epoch[SIFT_SHM_EPOCH_SLOTS];
 	SiftShmIndexSlot slot[SIFT_SHM_MANIFEST_SLOTS];
+	SiftShmTidLease lease[SIFT_SHM_TID_LEASES];
 } Table;
 
 static Table *table;
@@ -100,6 +101,12 @@ table_init(SIFT_DSM_INIT_ARGS)
 	pg_atomic_init_u64(&t->clock, 1);
 	pg_atomic_init_u32(&t->snaps_live, 0);
 	pg_atomic_init_u64(&t->snap_bytes, 0);
+	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
+	{
+		pg_atomic_init_u32(&t->lease[i].owner, 0);
+		pg_atomic_init_u64(&t->lease[i].lo, 0);
+		pg_atomic_init_u64(&t->lease[i].hi, 0);
+	}
 	for (int i = 0; i < SIFT_SHM_MANIFEST_SLOTS; i++)
 	{
 		SiftShmIndexSlot *s = &t->slot[i];
@@ -124,7 +131,7 @@ registry(void)
 {
 	if (table == NULL)
 	{
-		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (164224 B fixed; 256 epochs + 512 slots) */
+		/* MEM[MEM-SHM-03]: DSM registry sift_shm_manifest (256 epochs + 512 slots + 2048 vblock leases, fixed) */
 		void	   *raw = sift_dsm_try(REGISTRY_NAME, sizeof(Table) + PG_CACHE_LINE_SIZE, table_init);
 
 		if (raw == NULL)
@@ -876,4 +883,65 @@ sift_shm_manifest_stats(SiftShmManifestStats *stats)
 	stats->area_users = t->area_users;
 	LWLockRelease(&t->area_lock);
 	stats->area_bytes = area == NULL ? 0 : dsa_get_total_size(area);
+}
+
+/* ---------- the vblock leases ---------- */
+
+int
+sift_shm_tid_lease_acquire(const RelFileLocator *locator)
+{
+	Table	   *t = registry();
+
+	for (int i = 0; t != NULL && i < SIFT_SHM_TID_LEASES; i++)
+	{
+		SiftShmTidLease *l = &t->lease[i];
+		uint32		free_slot = 0;
+
+		if (!pg_atomic_compare_exchange_u32(&l->owner, &free_slot, SIFT_TID_LEASE_CLAIMING))
+			continue;
+		l->locator = *locator;
+		pg_atomic_write_u64(&l->lo, 0);
+		pg_atomic_write_u64(&l->hi, 0);
+		pg_write_barrier();
+		pg_atomic_write_u32(&l->owner, (uint32) MyProcNumber + 1);
+		return i;
+	}
+	return -1;
+}
+
+void
+sift_shm_tid_lease_set(int slot, uint64 lo, uint64 hi)
+{
+	SiftShmTidLease *l = &table->lease[slot];
+
+	pg_atomic_write_u64(&l->hi, hi);
+	pg_atomic_write_u64(&l->lo, lo);
+}
+
+void
+sift_shm_tid_lease_release(int slot)
+{
+	pg_atomic_write_u32(&table->lease[slot].owner, 0);
+}
+
+bool
+sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor)
+{
+	Table	   *t = registry();
+
+	if (t == NULL)
+		return false;
+	*floor = next_vblock;
+	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
+	{
+		SiftShmTidLease *l = &t->lease[i];
+		uint32		owner = pg_atomic_read_u32(&l->owner);
+
+		pg_read_barrier();
+		if (owner == SIFT_TID_LEASE_CLAIMING)
+			*floor = 0;
+		else if (owner != 0 && RelFileLocatorEquals(l->locator, *locator))
+			*floor = Min(*floor, pg_atomic_read_u64(&l->lo));
+	}
+	return true;
 }

@@ -31,7 +31,8 @@ sift_col_meta_shm(const Relation rel, const SiftColMetaPageData *m)
 		.locator = rel->rd_locator, .manifest_version = m->manifest_version, .scope_dir_gen = m->scope_dir_gen, .partdir_root_blk = m->partdir_root_blk,
 		.scope_dir_blk = m->scope_dir_blk, .partdir_level = m->partdir_level, .nscopes = m->nscopes, .npartitions = m->npartitions, .total_rows = m->total_rows,
 		.total_dead = m->total_dead, .total_bytes = m->total_bytes, .oldest_active_xid = XidFromFullTransactionId(m->oldest_active_xid), .meta_flags = m->state_flags,
-		.compat_flags = m->common.compat_flags, .ro_compat_flags = m->common.ro_compat_flags, .inline_off = m->inline_off, .inline_len = m->inline_len
+		.compat_flags = m->common.compat_flags, .ro_compat_flags = m->common.ro_compat_flags, .inline_off = m->inline_off, .inline_len = m->inline_len,
+		.vm_all_visible_vblocks = m->vm_all_visible_vblocks, .vm_all_frozen_vblocks = m->vm_all_frozen_vblocks, .vm_total_vblocks = m->vm_total_vblocks
 	};
 }
 

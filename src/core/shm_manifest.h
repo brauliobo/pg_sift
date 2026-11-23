@@ -65,6 +65,9 @@ typedef struct SiftShmIndexMeta
 	uint64		ro_compat_flags;
 	uint16		inline_off;
 	uint16		inline_len;
+	uint32		vm_all_visible_vblocks;	/* sift_table: the vblocks of the visibility map that are all visible and all frozen, and the vblocks it spans, as of the last VACUUM */
+	uint32		vm_all_frozen_vblocks;
+	uint64		vm_total_vblocks;
 } SiftShmIndexMeta;
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
@@ -72,7 +75,6 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
 	/* line 0: the seqlock (even: stable, odd: a writer is in it) and the meta */
 	pg_atomic_uint64 seq;
 	SiftShmIndexMeta meta;
-	char		pad_line0[PG_CACHE_LINE_SIZE - sizeof(pg_atomic_uint64) - sizeof(SiftShmIndexMeta)];
 
 	/* line 1: the snapshot of the manifest in the dsa_area (InvalidDsaPointer: none), the use clock, the lock that the readers beyond the epoch slots take to pin the snapshot and the writer takes to swap it */
 	pg_atomic_uint64 current_snap_dp;
@@ -82,6 +84,25 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
 	LWLock		build_lock;
 	char		pad_line1[PG_CACHE_LINE_SIZE - 4 * sizeof(pg_atomic_uint64) - sizeof(LWLock)];
 } SiftShmIndexSlot;
+
+/*
+ * The virtual blocks a backend may still put rows in (core/f2/f2_vm_xlog.h): a backend that inserts into a sift_table reserves a run of vblocks and keeps one slot for it, [lo, hi) with lo
+ * the vblock it fills now. VACUUM marks a vblock all visible only below the least lo of the table, because a row that has not been written yet may still come to it. A slot is
+ * taken for the life of the backend (or until its run is used up) and is claimed in two steps: while it is CLAIMING a reader takes it for a lease on every table from vblock 0.
+ */
+#define SIFT_SHM_TID_LEASES			2048
+#define SIFT_TID_LEASE_CLAIMING		UINT32_MAX
+
+typedef struct SiftShmTidLease
+{
+	pg_atomic_uint32 owner;		/* 0: free; else the proc number + 1 of the backend, or SIFT_TID_LEASE_CLAIMING */
+	RelFileLocator locator;
+	pg_atomic_uint64 lo;
+	pg_atomic_uint64 hi;
+} SiftShmTidLease;
+
+StaticAssertDecl(sizeof(SiftShmTidLease) == 32, "a vblock lease is 32 bytes");
+StaticAssertDecl(offsetof(SiftShmTidLease, lo) == 16, "lo of a vblock lease sits at byte 16");
 
 StaticAssertDecl(offsetof(SiftShmIndexSlot, current_snap_dp) == PG_CACHE_LINE_SIZE, "line 0 of a slot of the manifest registry is one cache line");
 StaticAssertDecl(sizeof(SiftShmIndexSlot) == 2 * PG_CACHE_LINE_SIZE, "a slot of the manifest registry is two cache lines");
@@ -167,6 +188,13 @@ extern const void *sift_shm_snap_part_list(const SiftShmManifestSnap *snap, uint
 extern bool sift_shm_snap_part_list_install(const SiftShmManifestSnap *snap, uint32 p, const void *data, Size bytes);
 
 extern void sift_shm_manifest_stats(SiftShmManifestStats *stats);
+
+/* The lease slot of this backend for the table, or -1 where the registry cannot be had (the caller decides what that costs); a slot is released with the backend (or at once, sift_shm_tid_lease_release) */
+extern int	sift_shm_tid_lease_acquire(const RelFileLocator *locator);
+extern void sift_shm_tid_lease_set(int slot, uint64 lo, uint64 hi);
+extern void sift_shm_tid_lease_release(int slot);
+/* The vblock below which no backend may still put a row (the least lo of the leases of the table, at most next_vblock); false where the registry cannot be had */
+extern bool sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor);
 
 #ifdef SIFT_TESTING
 /* A reader that found the slot of `looked_up` and pins it for `expected`: the slot went to another index between the two */
