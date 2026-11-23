@@ -112,9 +112,7 @@ member_ok(const SiftColDef *member)
 bool
 sift_f2s_supported(Relation rel, const SiftF2Store *store, int ord)
 {
-	const SiftScopeSpecs *specs = sift_scope_specs(rel);
-
-	return specs != NULL && ord < specs->n && specs->s[ord]->joined == NULL && member_ok(member_def(store, ord));
+	return member_ok(member_def(store, ord));
 }
 
 bool
