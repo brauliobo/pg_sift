@@ -749,6 +749,8 @@ core/f2/unit_queue.c
 core/f2/unit_queue.h
 core/f2/vis_f2.c
 core/f2/vis_f2.h
+core/f2/f2_vm_xlog.c
+core/f2/f2_vm_xlog.h
 core/filter_test.c
 core/freelist.c
 core/freelist_alloc.c

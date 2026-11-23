@@ -31,6 +31,7 @@
 #include "col/f2/f2_vacuum_run.h"
 #include "col/f2/l0_stage.h"
 #include "core/cachebudget.h"
+#include "core/f2/f2_vm_xlog.h"
 #include "core/memtrack.h"
 #include "core/shmbudget.h"
 #include "core/sift.h"
@@ -343,6 +344,7 @@ _PG_init(void)
 	sift_gpu_v6_init_gucs();
 	sift_explain_init();
 	sift_tbl_init();
+	sift_vm_xlog_init();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
 	sift_memcensus_init();
