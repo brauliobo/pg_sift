@@ -8,8 +8,11 @@ the plan has the node of its family (Top-N: or Custom Scan (SiftAgg*)) and the r
 named by its refusal slug (SET sift.explain_refusals) and excluded from the percentage when the registry of src/agg/refuse.h marks that slug
 as by design; the rest are gaps.
 
-  test/matrix/matrix.py run --label LABEL --out FILE [--tier quick|full] [--rows N] [--by-design FILE]
+  test/matrix/matrix.py run --out FILE [--format f2|f1|release] [--tier quick|full] [--rows N] [--by-design FILE]
   test/matrix/matrix.py tsv FILE... --build NAME         the rows of docs/results/coverage-pct.tsv
+
+--format: the format of the indexes of the data: f2 (default, Format 2.0), f1 (Format 1, the testing build) or release (the release build,
+which defines no test setting: none is set or read).
 
 Needs a started scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT) with the extension installable.
 """
@@ -329,9 +332,22 @@ def join_variants(types):
 
 
 # ---------- the data ----------
-def build_data(rows, types=None):
+def apply_format(fmt):
+    """the format of the indexes of the database: the setting only the testing build defines is set there (f2: off, f1: on) and nowhere else"""
+    out, _ = psql(DB, "CREATE EXTENSION IF NOT EXISTS pg_sift; LOAD 'pg_sift'; SELECT count(*) = 1 FROM pg_settings WHERE name = 'sift.test_create_format1'")
+    testing = out.split()[-1] == 't'
+    if fmt == 'release' and testing:
+        sys.exit('--format release needs the release build (SIFT_TESTING= scripts/pgtest.sh install): this library defines the test settings')
+    if fmt == 'f1' and not testing:
+        sys.exit('--format f1 needs the testing build (scripts/pgtest.sh install): the release library creates Format 2.0 only')
+    if testing:
+        psql(DB, f"ALTER DATABASE {DB} SET sift.test_create_format1 = {'on' if fmt == 'f1' else 'off'}")
+
+
+def build_data(rows, types=None, fmt='f2'):
     """the database; types: the key types of another run (so that two servers answer the same variants), else the ones this server takes"""
     psql('postgres', f'DROP DATABASE IF EXISTS {DB} WITH (FORCE); CREATE DATABASE {DB}')
+    apply_format(fmt)
     psql(DB, open(f'{HERE}/data.sql').read().replace(':rows', str(rows)))
     types = types or key_types()[:30]
     cols = ', '.join(f"CASE WHEN i % {17 + j} = 0 THEN NULL ELSE {expr.format(v=f'(mx_h(i, {10 + j}) % 3000)', t=typ)} END AS c_{n}" for j, (n, typ, _, expr) in enumerate(types))
@@ -436,7 +452,7 @@ def run(args):
     import json
     slugs = registry()
     saved = json.load(open(args.from_)) if args.from_ else None
-    types = build_data(args.rows, [tuple(t) for t in saved['types']] if saved else None)
+    types = build_data(args.rows, [tuple(t) for t in saved['types']] if saved else None, args.format)
     if saved:
         variants = [V(*x['key']) for x in saved['variants']]
         for v, x in zip(variants, saved['variants']):
@@ -525,6 +541,7 @@ if __name__ == '__main__':
     sp = ap.add_subparsers(dest='cmd', required=True)
     r = sp.add_parser('run')
     r.add_argument('--out', required=True)
+    r.add_argument('--format', default='f2', choices=['f2', 'f1', 'release'])
     r.add_argument('--tier', default='full', choices=['quick', 'full'])
     r.add_argument('--rows', type=int, default=24000)
     r.add_argument('--jobs', type=int, default=2)
