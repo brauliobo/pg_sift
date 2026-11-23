@@ -1,26 +1,37 @@
 #!/usr/bin/env python3
 """Differential fuzz of a sift_table against a plain heap twin (test/t/tbl_twin_fuzz.sh runs it).
 
-  test/fuzz/tbl_twin_fuzz.py [--seeds 1-24] [--seconds 80] [--hold P]    needs PGHOST / PGPORT of a cluster with pg_sift and pg_sift_test, and SIFT_FUZZ_OUT, a directory for the logs
+  test/fuzz/tbl_twin_fuzz.py [--format f2|f1|release] [--seeds 1-24] [--seconds 80] [--hold P] [--ddl | --no-ddl]    needs PGHOST / PGPORT of a cluster with pg_sift (and pg_sift_test
+  for f2 and f1), and SIFT_FUZZ_OUT, a directory for the logs
 
 A seed drives two writers (own key ranges) that apply the same INSERT / UPDATE / DELETE / upsert / aborted-transaction statements to the table T (sift_table) and
 to its twin H (heap) in one transaction, a long REPEATABLE READ or SERIALIZABLE reader, and two maintenance sessions (VACUUM, VACUUM (FREEZE),
-sift.table_maintain) with the background maintenance worker on. In a round, a helper session often holds the maintenance lock (sift._test_tbl_hold_maint) so that
-the VACUUMs queue behind it while the writers fill and close write buffers, and promotes under the lock (sift._test_tbl_promote_held): the interleaving in which a
-VACUUM that waited for the lock used a list of segments it had read before. After each round the full row set of T and H must be the same through the default plan,
+sift.maintain) with the background maintenance worker on. On Format 1 with the test library (--format f1), a round often holds the maintenance lock (sift._test_tbl_hold_maint)
+so that the VACUUMs queue behind it while the writers fill and close write buffers, and promotes under the lock (sift._test_tbl_promote_held): the interleaving in which a
+VACUUM that waited for the lock used a list of segments it had read before. Format 2.0 and the release library have no such hook: the VACUUMs, sift.maintain and the writers run
+against each other. After each round the full row set of T and H must be the same through the default plan,
 the index and a sequential scan (EXCEPT ALL both ways, no key twice, the primary key probed through the index), the reader's snapshot must give the same answer
-on T and H and the same on every re-read, and no statement may fail. Seeds are serial (one cluster); the interleaving of the sessions is the server's, so a seed
-that fails on an old build is a probability, not a switch.
+on T and H and the same on every re-read, sift.check must report nothing on T, and no statement may fail. Seeds are serial (one cluster); the interleaving of the sessions is the
+server's, so a seed that fails on an old build is a probability, not a switch.
+--ddl (the default except on f1) adds, while no session writes or reads, the DDL of a table that lives long: ALTER TABLE ADD COLUMN (a constant, a stored generated column),
+ALTER COLUMN TYPE and DROP COLUMN of the added columns, DROP and ADD PRIMARY KEY, VACUUM FULL and REINDEX, always on the twin as well; the added columns take part in the comparison. The
+writers also run repeated non-key updates of one key range, the churn that makes a b-tree leaf delete the versions of its rows by itself (bottom-up deletion).
 """
 import argparse, json, os, random, re, selectors, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fmt  # noqa: E402
 
 SOCK = os.environ['PGHOST']
 PORT = os.environ['PGPORT']
 DB = os.environ.get('PGDATABASE', 'postgres')
 OUT = os.environ['SIFT_FUZZ_OUT']   # the logs of the seeds
 T, H = 'tw_sift', 'tw_heap'
+LIB = None                          # the library of the cluster, probed by main
+ENV = None                          # the environment of every psql
 ERR = re.compile(r'^(ERROR|FATAL|PANIC|server closed|connection to server|psql: error)', re.M)
 BIG = 2_000_000
+DDL = False                         # the DDL operations of --ddl, set by main
 
 
 class Fail(Exception):
@@ -40,7 +51,9 @@ class Ctx:
         self.t0 = time.time()
         self.stats = dict(txn_commit=0, txn_rollback=0, ops=0, big_inserts=0, rounds=0, holds=0,
                           hold_waiters_ok=0, hold_released_early=0, promote_held=0, maint_stmts=0, reader_checks=0,
-                          readers=0, full_checks=0)
+                          readers=0, full_checks=0, checks=0, ddl=0)
+        self.extra = []                 # the columns DDL added to both tables
+        self.retypable = {}             # of them, those whose type ALTER COLUMN TYPE may change
 
     def log(self, who, text):
         self.seq += 1
@@ -51,9 +64,7 @@ class Ctx:
 class Sess:
     def __init__(self, name, ctx, setup=''):
         self.name, self.ctx, self.n, self.buf, self.tok = name, ctx, 0, '', None
-        env = dict(os.environ, LC_ALL='C', PGHOST=SOCK, PGPORT=PORT)
-        for k in ('PGDATABASE', 'PGSERVICE', 'PGOPTIONS'):
-            env.pop(k, None)
+        env = ENV
         self.p = subprocess.Popen(['psql', '-X', '-A', '-t', '-F', '|', '-U', 'postgres', '-d', DB], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=False, env=env)
         self.fd = self.p.stdout.fileno()
@@ -156,8 +167,8 @@ class Writer:
 
     def op(self, kind=None, recent=True):
         r = self.rng
-        kind = kind or r.choices(['ins_small', 'ins_mid', 'upsert', 'insnothing', 'upd', 'upd_pad', 'upd_pk', 'upd_grp', 'del'],
-                                 [18, 12, 10, 5, 25, 5, 4, 5, 16])[0]
+        kind = kind or r.choices(['ins_small', 'ins_mid', 'upsert', 'insnothing', 'upd', 'upd_pad', 'upd_pk', 'upd_grp', 'del', 'upd_churn'],
+                                 [18, 12, 10, 5, 25, 5, 4, 5, 16, 6 if DDL else 0])[0]
         if kind == 'ins_small':
             return self.ins(r.randint(1, 60), r.randint(10, 120))
         if kind == 'ins_mid':
@@ -176,6 +187,8 @@ class Writer:
                     f"FROM generate_series({a}, {hi}) i {tail}")
         if kind == 'upd':
             return f"UPDATE {{t}} SET v = v + {r.randint(1, 9)} WHERE {sel}"
+        if kind == 'upd_churn':
+            return ''.join(f"UPDATE {{t}} SET v = v + {d} WHERE {sel}; " for d in (1, -1, 2, -2))[:-2]
         if kind == 'upd_pad':
             return f"UPDATE {{t}} SET pad = repeat('z', {r.randint(10, 300)}) WHERE {sel}"
         if kind == 'upd_grp':
@@ -238,9 +251,12 @@ MODES = {
     'seq': 'SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off; SET sift.enable_scan = off; RESET enable_seqscan;',
 }
 
-FULL = f"""
-WITH a AS MATERIALIZED (SELECT pk, v, grp, md5(pad) m FROM {T} WHERE pk >= -2147483648 ORDER BY pk),
-     b AS MATERIALIZED (SELECT pk, v, grp, md5(pad) m FROM {H} WHERE pk >= -2147483648 ORDER BY pk)
+def full_sql(extra):
+    """the rows of T and H compared by EXCEPT ALL both ways, with the columns that DDL added (extra: their names) in the digest; then the primary key alone"""
+    tail = ''.join(f" || '|' || coalesce({c}::text, '')" for c in extra)
+    return f"""
+WITH a AS MATERIALIZED (SELECT pk, v, grp, md5(pad{tail}) m FROM {T} WHERE pk >= -2147483648 ORDER BY pk),
+     b AS MATERIALIZED (SELECT pk, v, grp, md5(pad{tail}) m FROM {H} WHERE pk >= -2147483648 ORDER BY pk)
 SELECT (SELECT count(*) FROM (SELECT * FROM a EXCEPT ALL SELECT * FROM b) x),
        (SELECT count(*) FROM (SELECT * FROM b EXCEPT ALL SELECT * FROM a) x),
        (SELECT count(*) - count(DISTINCT pk) FROM a), (SELECT count(*) FROM a), (SELECT count(*) FROM b);
@@ -264,7 +280,7 @@ def probe(ws):
 def full_check(ctx, ck, ws, label):
     ctx.stats['full_checks'] += 1
     for mode, setup in MODES.items():
-        ck.send(setup + FULL)
+        ck.send(setup + full_sql(ctx.extra))
         out = ck.wait_one(120)
         if ERR.search(out):
             raise Fail(f'{label} [{mode}]: error: {ERR.search(out).group(0)}: {out}')
@@ -287,6 +303,11 @@ def full_check(ctx, ck, ws, label):
         a, b = lines[i].split('|')[1:], lines[i + 1].split('|')[1:]
         if a != b:
             raise Fail(f'{label} index probes: T={a} H={b}')
+    ck.send(f"SELECT index, segment, problem, detail FROM sift.check('{T}');")
+    out = ck.wait_one(120).strip()
+    if out:
+        raise Fail(f'{label}: sift.check reports on {T}: {out[:1500]}')
+    ctx.stats['checks'] += 1
 
 
 def snap_sql(t):
@@ -338,20 +359,50 @@ def reader_check(ctx, rd, state, label):
 
 
 def maint_batch(rng, k):
-    pool = [f'VACUUM {T};', f"SELECT busy, dead_rows, promoted, merged FROM sift.table_maintain('{T}');",
+    pool = [f'VACUUM {T};', f"SELECT busy, dead_rows, promoted, merged FROM sift.maintain('{T}');",
             f'VACUUM (FREEZE) {T};']
     return '\n'.join(rng.choice(pool) for _ in range(k))
+
+
+ADD_COLUMNS = [('int DEFAULT 7', True), ("text DEFAULT 'd'", False), ('bigint DEFAULT -3', False), ('int GENERATED ALWAYS AS (grp * 2 + 1) STORED', False)]    # (definition, may change type)
+
+
+def ddl_ops(rng, ctx):
+    """one DDL operation, as the statements that run on T and then on H in one transaction (or alone, when VACUUM FULL and REINDEX cannot run in one)"""
+    ctx.stats['ddl'] += 1
+    both = lambda f: f'BEGIN;\n{f(T)};\n{f(H)};\nCOMMIT;'
+    k = rng.choice(['add', 'add', 'type', 'drop', 'repk', 'repk', 'vfull', 'reindex', 'reindex_pk'])
+    retypable = [c for c in ctx.extra if ctx.retypable[c]]
+    if k == 'add' or (k == 'type' and not retypable) or (k == 'drop' and not ctx.extra):
+        name, (spec, retype) = f'x{ctx.seq}', rng.choice(ADD_COLUMNS)
+        ctx.extra.append(name)
+        ctx.retypable[name] = retype
+        return both(lambda t: f'ALTER TABLE {t} ADD COLUMN {name} {spec}')
+    if k == 'type':
+        name = rng.choice(retypable)
+        ctx.retypable[name] = False
+        return both(lambda t: f'ALTER TABLE {t} ALTER COLUMN {name} TYPE bigint')
+    if k == 'drop':
+        name = ctx.extra.pop(rng.randrange(len(ctx.extra)))
+        return both(lambda t: f'ALTER TABLE {t} DROP COLUMN {name}')
+    if k == 'repk':
+        return both(lambda t: f'ALTER TABLE {t} DROP CONSTRAINT {t}_pkey, ADD PRIMARY KEY (pk)')
+    if k == 'vfull':
+        return f'VACUUM FULL {T};\nVACUUM FULL {H};'
+    if k == 'reindex':
+        return f'REINDEX TABLE {T};\nREINDEX TABLE {H};'
+    return f'REINDEX INDEX {T}_pkey;\nREINDEX INDEX {H}_pkey;'
 
 
 def run_seed(label, seed, budget, hold=None):
     ctx = Ctx(label, seed)
     rng = random.Random(seed)
     prof = seed % 3
-    p_hold = (0.7, 0.4, 0.15)[prof] if hold is None else hold
+    p_hold = ((0.7, 0.4, 0.15)[prof] if hold is None else hold) if LIB.v1_hooks else 0
     p_reader = (0.25, 0.4, 0.5)[prof]
     hot = rng.choice(['on', 'off'])
     cfg = f"SET sift.dead_rewrite_pct = {rng.choice([30, 10, 60])};"
-    ctx.log('config', f'seed={seed} profile={prof} {cfg} hot_update={hot}')
+    ctx.log('config', f'seed={seed} format={LIB.name} profile={prof} {cfg} hot_update={hot} ddl={DDL} hooks={LIB.v1_hooks}')
     S = {}
     try:
         ck = S['CK'] = Sess('CK', ctx, cfg)
@@ -475,13 +526,22 @@ def run_seed(label, seed, budget, hold=None):
                     RD.send('COMMIT;')
                     RD.wait_one(30)
                     reader = None
+            if DDL and reader is None:
+                full_check(ctx, ck, ws, label_r + ' before DDL')
+                ddl = ddl_ops(rng, ctx)
+                ctx.log('ddl', ddl)
+                ck.send(ddl)
+                out = ck.wait_one(120)
+                if ERR.search(out):
+                    raise Fail(f'{label_r}: DDL failed: {ERR.search(out).group(0)}: {out}')
+                label_r += ' after DDL'
             full_check(ctx, ck, ws, label_r)
         if reader:
             RD.send('COMMIT;')
             RD.wait_one(30)
             reader = None
         # drain: nothing holds a snapshot; maintenance, then the background worker, then check again
-        M1.send(f'VACUUM {T};\nSELECT sift.table_maintain(\'{T}\');\nVACUUM (FREEZE) {T};')
+        M1.send(f"VACUUM {T};\nSELECT sift.maintain('{T}');\nVACUUM (FREEZE) {T};")
         M2.send(f'VACUUM (FREEZE) {T};')
         collect_maint([M1, M2])
         full_check(ctx, ck, ws, 'final after maintenance')
@@ -520,12 +580,19 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--seconds', type=float, default=80)
     ap.add_argument('--hold', type=float)
+    ap.add_argument('--ddl', action=argparse.BooleanOptionalAction, default=None, help='DDL between the rounds (default: on for f2 and release)')
+    fmt.add_argument(ap)
     a = ap.parse_args()
+    global LIB, ENV, DDL
+    base = fmt.libpq_env(dict(PGHOST=SOCK, PGPORT=PORT))
+    LIB = fmt.Lib(a.format, db=DB, env=dict(base, PGUSER='postgres'))
+    ENV = dict(LIB.env(), PGHOST=SOCK, PGPORT=PORT)
+    DDL = LIB.format_major == 2 if a.ddl is None else a.ddl
     seeds = [n for part in a.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
     for seed in seeds:
         rc, ctx = run_seed('twin', seed, a.seconds, a.hold)
-        print(f'seed={seed} {("OK", "FAIL", "HARNESS")[rc]} {time.time() - ctx.t0:.0f}s log={ctx.path}', flush=True)
+        print(f'seed={seed} format={a.format} ddl={DDL} {("OK", "FAIL", "HARNESS")[rc]} {time.time() - ctx.t0:.0f}s log={ctx.path}', flush=True)
         bad += rc != 0
     sys.exit(1 if bad else 0)
 
