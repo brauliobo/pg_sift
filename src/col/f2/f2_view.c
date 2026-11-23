@@ -44,11 +44,11 @@ strs_view(const SiftGranuleView *v, int c, int n, bool *nl, bool codes, ColView 
 static void
 sparse_view(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrows, bool *nl, ColView *cv)
 {
-	bool		sn[SIFT_POINT_ROWS_MAX];
+	bool	   *sn = palloc(nrows * sizeof(bool));
 
 	if (cv->kind == SIFT_CELL_INT)
 	{
-		int64		sv[SIFT_POINT_ROWS_MAX],
+		int64	   *sv = palloc(nrows * sizeof(int64)),
 				   *iv = palloc0(n * sizeof(int64));
 
 		sift_granule_point_ints(v, c, rows, nrows, sv, sn);
@@ -58,7 +58,7 @@ sparse_view(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrow
 	}
 	else if (cv->kind == SIFT_CELL_F8)
 	{
-		double		sv[SIFT_POINT_ROWS_MAX],
+		double	   *sv = palloc(nrows * sizeof(double)),
 				   *fv = palloc0(n * sizeof(double));
 
 		sift_granule_point_f8(v, c, rows, nrows, sv, sn);
@@ -68,7 +68,7 @@ sparse_view(const SiftGranuleView *v, int c, int n, const uint16 *rows, int nrow
 	}
 	else
 	{
-		SiftStrCell sv[SIFT_POINT_ROWS_MAX];
+		SiftStrCell *sv = palloc(nrows * sizeof(SiftStrCell));
 		const char **sp = palloc0(n * sizeof(char *));
 		uint32	   *sl = palloc0(n * sizeof(uint32));
 

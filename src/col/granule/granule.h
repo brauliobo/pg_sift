@@ -309,7 +309,7 @@ extern void sift_granule_point_f8(const SiftGranuleView *v, int col, const uint1
 extern void sift_granule_f8(const SiftGranuleView *v, int col, double *out, bool *isnull);
 
 /* The most rows a scan decodes at their own values (a directory or a filter left that few): more are decoded as the whole column */
-#define SIFT_POINT_ROWS_MAX		512
+#define SIFT_POINT_ROWS_MAX		2048
 /* One row of a column, decoded without the others (point_decode.c): false for a NULL. The string points into the record or into a scratch of the current context */
 extern bool sift_granule_point_str(const SiftGranuleView *v, int col, uint16 row, const char **p, uint32 *len);
 /* The strings of the column are one compressed block: a point read inflates all of them */
