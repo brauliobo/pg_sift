@@ -53,6 +53,8 @@ INSERT_HISTORY_CAP = 5
 CPU_PILOT_ROWS = 32
 CPU_PILOT_ITERATIONS = 16
 CPU_ITERATION_CAP = 1024
+# a sift_table of Format 2 holds one granule per ~8 MB of column data: the fixture of 8192 padded rows is one part with one granule
+MIN_FIXTURE_UNITS = 1
 SETTINGS_COMMON = ("SET statement_timeout='30s'; SET jit=off; SET work_mem='64MB'; SET sift.async_maintenance=off; "
                    "SET sift.enable_agg=on; SET sift.enable_col_scan=on; SET sift.enable_scan=on")
 # The stock planner decides every plan: only the number of workers differs between the two profiles; no cost or enable_* GUC is forced.

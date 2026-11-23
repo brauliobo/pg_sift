@@ -16,8 +16,8 @@ def insert_identity(revisions):
 
 def insert_footprint(conn):
     geometry = table_geometry(conn,'mutable')
-    if geometry['units']<3 or geometry['column_segments']<1 or geometry['relation_blocks']<256:
-        raise ValueError('mutable fixture lacks actual table unit/segment/page boundary')
+    if geometry['units']<MIN_FIXTURE_UNITS or geometry['column_segments']<1 or geometry['relation_blocks']<256:
+        raise ValueError('mutable fixture lacks an actual table granule, column part or 256 pages')
     forks = relation_forks(conn)
     return dict(geometry=geometry,forks={name:forks[name] for name in MUTABLE_RELATIONS},
                 totals={name:fork_totals(forks)[name] for name in MUTABLE_RELATIONS})

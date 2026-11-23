@@ -62,8 +62,8 @@ def validate_case(revisions, case):
             before_forks = relation_forks(conn)
             before = list(fork_totals(before_forks).items())
             before_geometry = table_geometry(conn,'mutable')
-            if before_geometry['units']<3:
-                raise ValueError('mutable fixture lacks actual table unit boundary')
+            if before_geometry['units']<MIN_FIXTURE_UNITS:
+                raise ValueError('mutable fixture holds no column granule')
             if case.sql.startswith('VACUUM'):
                 conn.exec(case.sql)
                 plan = None

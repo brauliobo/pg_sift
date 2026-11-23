@@ -112,11 +112,11 @@ class InsertTrajectory(unittest.TestCase):
         self.assertEqual(len(sizes['forks']),2)
 
     def test_insert_geometry_precondition_is_actual(self):
-        for geometry in ({'units':2,'column_segments':1,'relation_blocks':256},
-                         {'units':3,'column_segments':0,'relation_blocks':256},
-                         {'units':3,'column_segments':1,'relation_blocks':255}):
+        for geometry in ({'units':0,'column_segments':1,'relation_blocks':256},
+                         {'units':1,'column_segments':0,'relation_blocks':256},
+                         {'units':1,'column_segments':1,'relation_blocks':255}):
             with patch.object(gate,'table_geometry',return_value=geometry):
-                with self.assertRaisesRegex(ValueError,'boundary'):
+                with self.assertRaisesRegex(ValueError,'granule'):
                     gate.insert_footprint(None)
 
     def test_common_n_frozen_for_initial_and_fresh_six(self):

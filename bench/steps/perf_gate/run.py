@@ -153,8 +153,8 @@ def check_fixture(revisions,report):
     report['table_geometry'] = {r.name:table_geometry(r.conn,'store') for r in revisions}
     for rev in revisions:
         geometry = report['table_geometry'][rev.name]
-        if geometry['column_segments']<1 or geometry['units']<3 or geometry['relation_blocks']<256:
-            raise ValueError('actual sift_table fixture fails segment/page boundary')
+        if geometry['column_segments']<1 or geometry['units']<MIN_FIXTURE_UNITS or geometry['relation_blocks']<256:
+            raise ValueError('actual sift_table fixture holds no column part, granule or 256 pages')
 
 
 def check_anchor_manifest(path):
