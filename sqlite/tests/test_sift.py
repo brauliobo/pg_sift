@@ -116,9 +116,11 @@ class Basics(TmpDb):
         db = connect()
         db.execute('CREATE VIRTUAL TABLE t USING sift(body)')
         db.execute("INSERT INTO t(rowid, body) VALUES (1, 'x')")
-        for q in ('AND', '(', '"unterminated', 'NOT x'):
+        for q in ('AND', '(', '"unterminated'):
             with self.assertRaises(sqlite3.Error, msg=q):
                 ids(db, q)
+        db.execute("INSERT INTO t(rowid, body) VALUES (2, 'y')")
+        self.assertEqual(ids(db, 'NOT x'), [2])
         with self.assertRaises(sqlite3.Error):
             db.execute("INSERT INTO t(t) VALUES ('nonsense')")
         self.assertEqual(ids(db, 'x'), [1])
