@@ -101,7 +101,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, PointAcc *a, bool grouped, int c)
 {
 	bool		dense = gord_dense_ok(w);
 
-	sift_blob_init(&ob->tab, w->scxt);
+	sift_blob_init(&ob->tab, w->scxt, segw_blob_mem(w));
 	if (grouped)
 	{
 		uint32		nv = 0,
@@ -173,7 +173,7 @@ build_order(SiftColSegWriter *w, OrdBlock *ob, PointAcc *a, bool grouped, int c)
 				Size		compact,
 							extra = w->dict[c]->n >= sift_limit(dict_lookup_min, CDICT_LOOKUP_MIN) ? sift_cdict_blocks_extra(w->dict[c], w->pol ? &w->pol[c] : NULL, &compact) : 0;
 
-				sift_blob_init(&codes, w->scxt);
+				sift_blob_init(&codes, w->scxt, segw_blob_mem(w));
 				sift_esrc_open(&src, vals, nulls);
 				sift_cgord_build_text(&src, a->n, a->nn, w->dict[c], w->pagg.gorder_coll[c], order, dense, true, &codes);
 				sift_esrc_close(&src);

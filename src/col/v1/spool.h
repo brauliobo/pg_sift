@@ -123,18 +123,20 @@ extern void sift_esrc_close(SiftEntSrc *r);
  * A block of bytes built in order: all of it in head while it is small, else head (what comes before the part on the file, the header and the directory of an order block), the
  * file (the chunks, written as they are made) and tail (what ends the block). A block of an order array is as long as its segment has rows, so it is not held whole in memory.
  */
-#define SIFT_BLOB_MEM		262144
+#define SIFT_BLOB_MEM		262144	/* the most of a block in memory; the owner of the blob gives less when its leaves share a small budget, down to SIFT_BLOB_MIN */
+#define SIFT_BLOB_MIN		8192
 
 typedef struct SiftBlob
 {
 	MemoryContext cxt;
+	Size		mem;			/* the bytes of its chunks it keeps in memory before they go to the file */
 	StringInfoData head;
 	BufFile    *file;
 	uint64		flen;
 	StringInfoData tail;
 } SiftBlob;
 
-extern void sift_blob_init(SiftBlob *b, MemoryContext cxt);
+extern void sift_blob_init(SiftBlob *b, MemoryContext cxt, Size mem);
 extern void sift_blob_free(SiftBlob *b);
 
 static inline uint64

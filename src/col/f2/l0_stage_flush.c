@@ -309,7 +309,11 @@ cancel_staged(SiftTxnStage *st)
 		sift_stage_part_changed(st, &st->parts[i]);
 	}
 	if (cancelled == 0)
+	{
+		pfree(c.dead);
+		pfree(c.hit);
 		return;
+	}
 	sift_stage_tid_invalidate(st);
 	for (int i = 0; i < st->ndels; i++)
 	{
@@ -322,6 +326,8 @@ cancel_staged(SiftTxnStage *st)
 		st->dels[kept++] = st->dels[i];
 	}
 	st->ndels = kept;
+	pfree(c.dead);
+	pfree(c.hit);
 }
 
 /* The rows of the buffers again by the partitions of the manifest as it is now (a split or a merge changed it since they were routed) */

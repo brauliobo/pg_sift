@@ -124,6 +124,23 @@ extern uint64 sift_cwbuf_inserted_since(Relation index, const SiftSegEntry *entr
 extern SiftColBatch **sift_cwbuf_batches(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, MemoryContext mcxt, int *n, SiftXWait *stamp);
 
 /*
+ * The live rows of a sealed write buffer as the batches sift_cwbuf_batches makes, one at a time and in memory of maintenance_work_mem and not of the rows: the records are read and sorted once at the open
+ * (stamp: who inserted them, as sift_cwbuf_batches), and next fills b with the rows of the next superblock, false at the end. A repeated address is written once (its first record).
+ */
+typedef struct SiftCWbufStream SiftCWbufStream;
+extern SiftCWbufStream *sift_cwbuf_stream_open(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, SiftXWait *stamp);
+extern int sift_cwbuf_stream_batches(const SiftCWbufStream *s);
+extern uint64 sift_cwbuf_stream_rows(const SiftCWbufStream *s);
+/* Whether every row keeps its kinds (a segment written from them may say so) */
+extern bool sift_cwbuf_stream_kinds_exact(const SiftCWbufStream *s);
+extern bool sift_cwbuf_stream_next(SiftCWbufStream *s, SiftColBatch *b);
+/* Starts again at the first superblock */
+extern void sift_cwbuf_stream_rewind(SiftCWbufStream *s);
+/* All the batches at once, in mcxt, for a write that sorts the rows of the whole segment; the stream is rewound */
+extern SiftColBatch **sift_cwbuf_stream_collect(SiftCWbufStream *s, MemoryContext mcxt);
+extern void sift_cwbuf_stream_close(SiftCWbufStream *s);
+
+/*
  * What a scan was given of a kept set: the set (a serial, never reused) and the rows added to it in place since it was made. A cache of the scan that
  * is keyed by it (the order of the buffer's rows, col/v1/scan/gorder.c) holds while both are the same; the rows of a set only grow, and a set that is dropped is
  * replaced by one with another serial

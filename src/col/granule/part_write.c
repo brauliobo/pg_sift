@@ -14,6 +14,7 @@
 #include "col/f2/f2_marks.h"
 #include "col/f2/preagg_delta.h"
 #include "col/skip/skip_index.h"
+#include "core/memtrack.h"
 #include "core/page_io.h"
 
 /* The least and the greatest time of each run of SIFT_TSTRIDE_ROWS rows of a granule */
@@ -310,6 +311,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	bool		stats_in;
 	int			npromo = 0;
 	SiftPartCodecs *codecs = NULL;
+	MemoryContext granule_cx;
 
 	if (n < 1)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: a part holds at least one row")));
@@ -342,6 +344,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 			put_dicts(rows, tier, dicts, codecs, &dictsec);
 	}
 	stats = sift_col_stats_begin((uint16) nc);
+	granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift part granule encode");
 	for (int g = 0; g < ng; g++)
 	{
 		int			from = gstart[g],
@@ -371,7 +374,14 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		gi.all_frozen = frozen;
 		gi.min_xid = frozen ? sift_xid_to_fxid(FrozenTransactionId) : sift_xid_to_fxid(lo);
 		gi.max_xid = frozen ? sift_xid_to_fxid(FrozenTransactionId) : sift_xid_to_fxid(hi);
-		dir[g] = sift_granule_encode(&gdata, &gi);
+		/* MEM[MEM-COL-12]: codec write scratch ctx (the chunk bodies and candidates of a granule are reset with it) */
+		{
+			MemoryContext old = MemoryContextSwitchTo(granule_cx);
+
+			dir[g] = sift_granule_encode(&gdata, &gi);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(granule_cx);
+		}
 		pa_first[g] = pa_cells.len / sizeof(SiftPreaggCell);
 		if (want_preagg)
 		{
@@ -453,6 +463,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 				}
 		}
 	}
+	MemoryContextDelete(granule_cx);
 	if (rows->keys == NULL)
 	{
 		memcpy(kmin, rows->key_lo, SIFT_BOUND_BYTES);

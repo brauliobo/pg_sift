@@ -242,8 +242,8 @@ sift_rowbuf_cell(const SiftRowBuf *rb, int c, int idx)
 	return cell;
 }
 
-void
-sift_rowbuf_add(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransactionId subxid, const uint8 *key, const SiftCell *cells, const SiftCell *const *elem)
+static void
+row_begin(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransactionId subxid, const uint8 *key)
 {
 	reserve(rb, 1);
 	rb->tid[rb->n] = tid;
@@ -254,6 +254,29 @@ sift_rowbuf_add(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransac
 		memcpy(rb->keys[rb->n], key, SIFT_BOUND_BYTES);
 	else
 		memset(rb->keys[rb->n], 0, SIFT_BOUND_BYTES);
+}
+
+/* The elements of the row being added to the group groups[gi]: cnt of them start where the elements of the rows before end */
+static void
+group_begin(SiftRowBuf *rb, int gi, uint32 cnt)
+{
+	rb->estart[rb->groups[gi]][rb->n] = rb->nelem[rb->groups[gi]];
+	reserve_elems(rb, gi, cnt);
+}
+
+static void
+group_end(SiftRowBuf *rb, int gi, uint32 cnt)
+{
+	int			g = rb->groups[gi];
+
+	rb->nelem[g] += cnt;
+	rb->estart[g][rb->n + 1] = rb->nelem[g];
+}
+
+void
+sift_rowbuf_add(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransactionId subxid, const uint8 *key, const SiftCell *cells, const SiftCell *const *elem)
+{
+	row_begin(rb, tid, xmin, cmin, subxid, key);
 	for (int c = 0; c < rb->ncols; c++)
 		if (!sift_rowbuf_is_child(rb, c))
 			set_cell(rb, rb->n, c, &cells[c]);
@@ -262,43 +285,44 @@ sift_rowbuf_add(SiftRowBuf *rb, uint64 tid, uint32 xmin, uint32 cmin, SubTransac
 		int			g = rb->groups[gi];
 		uint32		cnt = cells[g].isnull ? 0 : (uint32) cells[g].i;
 
-		rb->estart[g][rb->n] = rb->nelem[g];
-		reserve_elems(rb, gi, cnt);
+		group_begin(rb, gi, cnt);
 		for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
 			for (uint32 j = 0; j < cnt; j++)
 				set_cell(rb, rb->nelem[g] + j, rb->children[k], &elem[rb->children[k]][j]);
-		rb->nelem[g] += cnt;
-		rb->estart[g][rb->n + 1] = rb->nelem[g];
+		group_end(rb, gi, cnt);
 	}
 	rb->n++;
 }
 
+/* MEM[MEM-COL-06]: rowbuf copy_row scratch (zero per-row palloc; direct col-to-col copy) */
 void
 sift_rowbuf_copy_row(SiftRowBuf *dst, const SiftRowBuf *src, int r, uint32 xmin, uint32 cmin, SubTransactionId subxid)
 {
-	SiftCell   *cells = palloc0(Max(src->ncols, 1) * sizeof(SiftCell));
-	SiftCell  **elem = palloc0(Max(src->ncols, 1) * sizeof(SiftCell *));
-
-	for (int c = 0; c < src->ncols; c++)
-		if (!sift_rowbuf_is_child(src, c))
-			cells[c] = sift_rowbuf_cell(src, c, r);
-	for (int c = 0; c < src->ncols; c++)
-		if (sift_rowbuf_is_child(src, c))
+	row_begin(dst, src->tid[r], xmin, cmin, subxid, src->keys[r]);
+	for (int c = 0; c < dst->ncols; c++)
+		if (!sift_rowbuf_is_child(dst, c))
 		{
-			int			g = src->parent[c];
-			uint32		first = src->estart[g][r],
-						cnt = src->estart[g][r + 1] - first;
+			SiftCell	cell = sift_rowbuf_cell(src, c, r);
 
-			elem[c] = palloc(Max(cnt, 1) * sizeof(SiftCell));
-			for (uint32 j = 0; j < cnt; j++)
-				elem[c][j] = sift_rowbuf_cell(src, c, first + j);
+			set_cell(dst, dst->n, c, &cell);
 		}
-	sift_rowbuf_add(dst, src->tid[r], xmin, cmin, subxid, src->keys[r], cells, (const SiftCell *const *) elem);
-	for (int c = 0; c < src->ncols; c++)
-		if (elem[c] != NULL)
-			pfree(elem[c]);
-	pfree(elem);
-	pfree(cells);
+	for (int gi = 0; gi < dst->ngroups; gi++)
+	{
+		int			g = dst->groups[gi];
+		uint32		first = src->estart[g][r],
+					cnt = src->estart[g][r + 1] - first;
+
+		group_begin(dst, gi, cnt);
+		for (int k = dst->child_off[gi]; k < dst->child_off[gi + 1]; k++)
+			for (uint32 j = 0; j < cnt; j++)
+			{
+				SiftCell	cell = sift_rowbuf_cell(src, dst->children[k], first + j);
+
+				set_cell(dst, dst->nelem[g] + j, dst->children[k], &cell);
+			}
+		group_end(dst, gi, cnt);
+	}
+	dst->n++;
 }
 
 static void
@@ -370,6 +394,7 @@ fill_missing(const SiftRowBuf *rb, int c, const SiftCell *mc, int n, bool *nv, u
 	}
 }
 
+/* MEM[MEM-COL-07]: rowbuf add_granule_mapped reusable granule scratch ctx (reset per granule) */
 void
 sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap)
 {
@@ -379,6 +404,7 @@ sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const S
 	uint64	   *tids = palloc(n * sizeof(uint64));
 	SiftCell   *cells = palloc0(rb->ncols * sizeof(SiftCell));
 	SiftCell  **elem = palloc0(rb->ncols * sizeof(SiftCell *));
+	uint32	   *elemcap = palloc0(rb->ncols * sizeof(uint32));
 	int64	  **iv = palloc0(rb->ncols * sizeof(int64 *));
 	double	  **fv = palloc0(rb->ncols * sizeof(double *));
 	SiftStrCell **sv = palloc0(rb->ncols * sizeof(SiftStrCell *));
@@ -438,7 +464,11 @@ sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const S
 				uint32		from = first[rb->parent[c]][r],
 							cnt = first[rb->parent[c]][r + 1] - from;
 
-				elem[c] = palloc(Max(cnt, 1) * sizeof(SiftCell));
+				if (cnt > elemcap[c])
+				{
+					elemcap[c] = Max(cnt, 2 * elemcap[c]);
+					elem[c] = elem[c] ? repalloc(elem[c], elemcap[c] * sizeof(SiftCell)) : palloc(elemcap[c] * sizeof(SiftCell));
+				}
 				for (uint32 j = 0; j < cnt; j++)
 					elem[c][j] = (SiftCell) {0};
 				for (uint32 j = 0; j < cnt; j++)

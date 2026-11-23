@@ -60,20 +60,21 @@ heap_down(DictHeap *h, int i)
 	}
 }
 
+/* MEM[MEM-COL-09]: f2 dict merge table (max-part initial cap, grown by doubling, shrunk to the merged size) */
 /* The merge of the dictionaries in[0 .. nparts) of column c into m->dict[c], and the map of the codes of each */
 static void
 merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
 {
-	uint32		total = 0;
-	uint64		nbytes = 0;
+	uint32		ocap = 1;
+	Size		bcap = 1;
 	uint32	   *cur = palloc0(m->nparts * sizeof(uint32));
 	SiftPartDict *out = &m->dict[c];
 	DictHeap	h = {in, cur, palloc(m->nparts * sizeof(int)), 0};
 
 	for (int k = 0; k < m->nparts; k++)
 	{
-		total += in[k]->n;
-		nbytes += in[k]->off[in[k]->n];
+		ocap = Max(ocap, in[k]->n);
+		bcap = Max(bcap, in[k]->off[in[k]->n]);
 		m->map[k * m->ncols + c] = (SiftCodeMap) {palloc(in[k]->n * sizeof(uint32)), in[k]->n};
 		if (in[k]->n > 0)
 			h.part[h.n++] = k;
@@ -81,16 +82,21 @@ merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
 	for (int i = h.n / 2 - 1; i >= 0; i--)
 		heap_down(&h, i);
 	out->col = c;
-	out->off = palloc((total + 1) * sizeof(uint32));
-	out->bytes = palloc(Max(nbytes, 1));
+	out->off = palloc((ocap + 1) * sizeof(uint32));
+	out->bytes = palloc(bcap);
 	out->off[0] = 0;
 	while (h.n > 0)
 	{
 		const SiftPartDict *b = in[h.part[0]];
 		uint32		bi = cur[h.part[0]];
+		uint32		len = b->off[bi + 1] - b->off[bi];
 
-		memcpy(out->bytes + out->off[out->n], b->bytes + b->off[bi], b->off[bi + 1] - b->off[bi]);
-		out->off[out->n + 1] = out->off[out->n] + (b->off[bi + 1] - b->off[bi]);
+		if (out->n == ocap)
+			out->off = repalloc(out->off, ((ocap *= 2) + 1) * sizeof(uint32));
+		if (out->off[out->n] + (Size) len > bcap)
+			out->bytes = repalloc(out->bytes, bcap = Max(out->off[out->n] + (Size) len, Min(2 * bcap, MaxAllocSize)));
+		memcpy(out->bytes + out->off[out->n], b->bytes + b->off[bi], len);
+		out->off[out->n + 1] = out->off[out->n] + len;
 		while (h.n > 0 && entry_cmp(in[h.part[0]], cur[h.part[0]], b, bi) == 0)
 		{
 			int			k = h.part[0];
@@ -102,6 +108,8 @@ merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
 		}
 		out->n++;
 	}
+	out->off = repalloc(out->off, ((Size) out->n + 1) * sizeof(uint32));
+	out->bytes = repalloc(out->bytes, Max(out->off[out->n], 1));
 	pfree(h.part);
 	pfree(cur);
 }

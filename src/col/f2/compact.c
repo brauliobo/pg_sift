@@ -245,6 +245,20 @@ join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const S
 	return true;
 }
 
+/* The granules of a part that was just written: its header is read in a scratch context, so no SiftPart stays behind in the caller's */
+static uint32
+part_granules(Relation rel, const SiftPartDesc *d, uint32 part_id)
+{
+	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift compact written part");
+	MemoryContext old = MemoryContextSwitchTo(scratch);
+	uint32		n = sift_part_open(rel, d->header_blk, d->part_gen, part_id)->hdr.ngranules;
+
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(scratch);
+	return n;
+}
+
+/* MEM[MEM-COL-10]: f2 compact write_side scratch (avoid leaking SiftPart in caller ctx) */
 /* The rows of one side of the cut written as a part of the level above: sorted, their merged dictionaries put back, the tier flagged */
 static SiftPartDesc
 write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftCompactResult *res)
@@ -264,7 +278,7 @@ write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const Sif
 	r.adopt_dicts = adopt;
 	d = sift_part_write_rows(rel, part_id, gen, Min(level + 1, SIFT_MAX_PART_LEVEL), out_tier, &r);
 	res->new_gen = res->new_gen == 0 ? gen : res->new_gen;
-	res->granules_written += sift_part_open(rel, d.header_blk, gen, part_id)->hdr.ngranules;
+	res->granules_written += part_granules(rel, &d, part_id);
 	res->bytes_out += d.nbytes;
 	return d;
 }

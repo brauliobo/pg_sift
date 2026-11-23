@@ -24,6 +24,7 @@
 #define SIFT_SBBF_BLOCK_BYTES	32
 #define SIFT_SBBF_WORD_ROWS		64
 #define SIFT_SBBF_BPK			10		/* bits for each distinct key: a false positive rate of about 1.2% */
+#define SIFT_SBBF_BPK_LEAN		8		/* the form for a filter that does not fit its budget at SIFT_SBBF_BPK: a fifth smaller, a false positive rate of about 2.4% */
 
 typedef struct __attribute__((aligned(32))) SiftSbbfBlock
 {

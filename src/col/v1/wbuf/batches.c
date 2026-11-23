@@ -24,47 +24,6 @@ typedef struct Held
 	const uint8 *payload;
 } Held;
 
-/* The inserter of a record when it was read: no xid in it (a speculative insertion, an index without track_changes), committed, or not finished */
-#define XST_NONE		0
-#define XST_COMMITTED	1
-#define XST_OPEN		2
-#define XST_ABORTED		3
-
-static TransactionId xst_last = InvalidTransactionId;
-static uint8 xst_last_st;
-
-/* Committed and aborted are final, and a read of the log does not repeat for the next record of the same transaction; the memory is for one pass over records, since an xid comes round */
-static uint8
-xst_of(TransactionId x)
-{
-	uint8		st;
-
-	if (x == xst_last && TransactionIdIsValid(x))
-		return xst_last_st;
-	switch (sift_xid_state(x))
-	{
-		case SIFT_XID_COMMITTED:
-			st = XST_COMMITTED;
-			break;
-		case SIFT_XID_OPEN:
-			return XST_OPEN;
-		case SIFT_XID_ABORTED:
-			st = XST_ABORTED;
-			break;
-		default:
-			return XST_NONE;
-	}
-	xst_last = x;
-	xst_last_st = st;
-	return st;
-}
-
-static void
-xst_forget(void)
-{
-	xst_last = InvalidTransactionId;
-}
-
 typedef struct Fresh
 {
 	MemoryContext arena;		/* the payloads: records of any size at their size, as they come */
@@ -168,7 +127,7 @@ static void
 fresh_add(void *arg, const RawRec *rec)
 {
 	Fresh	   *f = arg;
-	uint8		st = xst_of(rec->xmin);
+	uint8		st = wbuf_xst_of(rec->xmin);
 
 	/* the tuple of a transaction that did not commit is seen by no one: VACUUM would take its entry out, and the set does not hold it */
 	if (st == XST_ABORTED)
@@ -235,7 +194,7 @@ fresh_read(SiftCWbufReader *r, WbufLane *lane, StampList *stamp, Fresh *f)
 {
 	bool		located = true;
 
-	xst_forget();
+	wbuf_xst_forget();
 	f->cap = 256;
 	f->nheld = 0;
 	f->held = palloc(f->cap * sizeof(Held));
@@ -323,12 +282,12 @@ set_stamp(BatchSet *s)
 {
 	TransactionId top;
 
-	xst_forget();
+	wbuf_xst_forget();
 	for (int i = 0; i < s->nopen && !s->xbad;)
 	{
 		TransactionId x = s->xopen[i];
 
-		uint8		st = xst_of(x);
+		uint8		st = wbuf_xst_of(x);
 
 		if (st == XST_COMMITTED)
 		{

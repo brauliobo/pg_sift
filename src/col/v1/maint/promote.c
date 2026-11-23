@@ -69,7 +69,8 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const SiftColRel *r = sift_col_rel_private(index, cx);	/* the floor reads the heap's statistics, a catalog read that reloads the cached state */
 	const SiftColSchema *schema = r->schema;
-	SiftColBatch **batches;
+	SiftCWbufStream *stream;
+	SiftColBatch *batch;
 	int			nb;
 	SiftWriteTarget *wt = NULL;
 	SiftColSegWriter *w = NULL;
@@ -87,24 +88,22 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 
 	sift_cwbuf_flag_sealed(index, sealed);
 	sift_cwbuf_summary(index, sealed, &records, &buffer_pages);
-	batches = sift_cwbuf_batches(index, sealed, schema, cx, &nb, &xwait);
+	stream = sift_cwbuf_stream_open(index, sealed, schema, &xwait);
+	nb = sift_cwbuf_stream_batches(stream);
+	batch = sift_cbatch_create(cx, schema);
 	if (nb > 0)
 	{
 		int			format = sift_col_format_minor;
 		uint32		unit = maint_floor_rows(index);
 		SiftColFill *fill;
 		struct SiftScopeFill *sf;
-		uint64		nbrows = 0,
+		uint64		nbrows = sift_cwbuf_stream_rows(stream),
 					largest = 0,
 					idx_rows;
 
 		/* the rows of a write buffer written before the kinds were kept may lack them: such a segment is not minor 6, 7 or 8 */
-		for (int i = 0; i < nb; i++)
-		{
-			nbrows += batches[i]->nrows;
-			if (!sift_cbatch_kinds_exact(batches[i]))
-				format = Min(format, SIFT_COL_FORMAT_TAGS);
-		}
+		if (!sift_cwbuf_stream_kinds_exact(stream))
+			format = Min(format, SIFT_COL_FORMAT_TAGS);
 		wt = sift_wt_begin(index, SIFT_WRITE_SHARED);
 		w = sift_colw_begin(wt, sift_store_new_gen(index), schema, r->policy, format, cx, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2));
 		fill = maint_scope_fill_begin(index, cx, nbrows, &sf);
@@ -127,16 +126,16 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		{
 			/* the rows of the sealed buffer come out in units of a key range, so that they overlay the older units in as few of them as their keys span */
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index), r->cut, r->ncut);
-			sift_colk_write(w, batches, nb, schema, r->cut, r->ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), cx, 0);
+			sift_colk_write(w, sift_cwbuf_stream_collect(stream, cx), nb, schema, r->cut, r->ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), cx, 0);
 		}
 		else if (maint_unit_floor_applies(unit, nbrows, nb))
 		{
 			sift_colw_set_keyed(w, sift_colk_aim_rows(index), NULL, 0);
-			sift_colk_write(w, batches, nb, schema, NULL, 0, unit, cx, 0);
+			sift_colk_write(w, sift_cwbuf_stream_collect(stream, cx), nb, schema, NULL, 0, unit, cx, 0);
 		}
 		else
-			for (int i = 0; i < nb; i++)
-				sift_colw_add(w, batches[i]);
+			while (sift_cwbuf_stream_next(stream, batch))
+				sift_colw_add(w, batch);
 		rows = sift_colw_rows(w);
 		sift_colw_finish(w, &neu[0]);
 		neu[0].flags |= sealed->flags & SIFT_SEG_ROOTS;
@@ -145,10 +144,11 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 		{
 			ScopeRun   *run = maint_scope_run_begin(index, sf, cx);
 
-			for (int i = 0; i < nb; i++)
+			sift_cwbuf_stream_rewind(stream);
+			while (sift_cwbuf_stream_next(stream, batch))
 			{
-				maint_scope_run_batch(run, batches[i]);
-				maint_scope_run_add(run, batches[i], 0, batches[i]->nrows);
+				maint_scope_run_batch(run, batch);
+				maint_scope_run_add(run, batch, 0, batch->nrows);
 			}
 			nneu += maint_scope_run_write(run, wt, fill, idx_rows, format, neu + 1);
 			maint_scope_run_end(run);
@@ -162,6 +162,7 @@ promote_one(Relation index, const SiftSegEntry *sealed, const SiftSegEntry *in, 
 			sift_seg_set_xstamp(&neu[0], sift_xstamp_make(&xwait));
 		sift_wt_finish(wt);
 	}
+	sift_cwbuf_stream_close(stream);
 	pages = sift_cwbuf_pages(index, sealed, &npages);
 	/* the floor of the stamps goes down to this promotion's before its segments are published, whether or not it wrote a scope segment: its rows with no pair are exact as of it too */
 	if (stamps.n > 0)

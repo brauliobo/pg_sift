@@ -236,6 +236,13 @@ segw_set_rows(const SiftColSegWriter *w)
 	return (uint32) Min(Max(w->tracker.budget / 4 / ((Size) Max(w->schema->ncols, 1) * 2 * sizeof(SiftEnt)), 128), SIFT_ESET_ROWS);
 }
 
+/* The bytes of a block of an order array the writer keeps in memory before they go to a file: its leaves share a quarter of its budget (at least SIFT_BLOB_MIN) */
+static inline Size
+segw_blob_mem(const SiftColSegWriter *w)
+{
+	return Max(w->tracker.budget / 4 / (Size) Max(w->schema->ncols, 1), (Size) SIFT_BLOB_MIN);
+}
+
 extern bool	segw_elem_point(const SiftColSegWriter *w, int c);
 
 extern bool	segw_gorder_grouped(const SiftColSegWriter *w, int c);

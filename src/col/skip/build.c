@@ -320,7 +320,7 @@ put_unsaturated(Stream *s, int g, const uint8 *blocks, uint32 nb)
 }
 
 static void
-bloom_granule(Builder *b, Stream *s, int g, const SiftColIn *c, int n)
+bloom_granule(Builder *b, Stream *s, int g, const SiftColIn *c, int n, uint32 bpk)
 {
 	uint32		nd,
 				nb;
@@ -329,7 +329,7 @@ bloom_granule(Builder *b, Stream *s, int g, const SiftColIn *c, int n)
 	if (n < SIFT_SKIP_FILTER_MIN_ROWS)
 		return;
 	nd = distinct_hashes(b, c, n, TAB_N);
-	nb = sift_sbbf_nblocks(nd, SIFT_SBBF_BPK);
+	nb = sift_sbbf_nblocks(nd, bpk);
 	blocks = palloc0((uint64) nb * SIFT_SBBF_BLOCK_BYTES);
 	for (uint32 i = 0; i < TAB_N; i++)
 		if (b->tab[i] != 0)
@@ -373,7 +373,7 @@ distinct_trigrams(Builder *b, const SiftColIn *c, int n)
 }
 
 static void
-trigram_granule(Builder *b, Stream *s, int g, const SiftColIn *c, int n)
+trigram_granule(Builder *b, Stream *s, int g, const SiftColIn *c, int n, uint32 bpk)
 {
 	int			nt;
 	uint32		nb;
@@ -381,7 +381,7 @@ trigram_granule(Builder *b, Stream *s, int g, const SiftColIn *c, int n)
 
 	if (n < SIFT_SKIP_FILTER_MIN_ROWS || (nt = distinct_trigrams(b, c, n)) < 0)
 		return;
-	nb = Min(SIFT_TRIGRAM_MAX_BLOCKS, sift_sbbf_nblocks(nt, SIFT_SBBF_BPK));
+	nb = Min(SIFT_TRIGRAM_MAX_BLOCKS, sift_sbbf_nblocks(nt, bpk));
 	blocks = palloc0((uint64) nb * SIFT_SBBF_BLOCK_BYTES);
 	for (int i = 0; i < nt; i++)
 		sift_sbbf_insert(blocks, nb, sift_skip_hash_trigram(b->tris[i]));
@@ -396,9 +396,18 @@ typedef struct Candidate
 	bool	   *want;			/* the granules the cheap summaries left */
 } Candidate;
 
-/* A filter of a column for the granules in want: kept when the bytes of all the filters stay within the budget */
 static void
-filter_stream(Builder *b, const SiftRows *rows, const int *gstart, const Candidate *cd)
+stream_drop(Stream *s)
+{
+	pfree(s->data.data);
+	pfree(s->plen);
+	pfree(s->flags);
+	pfree(s);
+}
+
+/* The filter of a column for the granules in want, bpk bits for each key */
+static Stream *
+filter_build(Builder *b, const SiftRows *rows, const int *gstart, const Candidate *cd, uint32 bpk)
 {
 	Stream	   *s = stream_new(b, cd->col, cd->kind, SIFT_SBBF_BPK);
 
@@ -412,9 +421,24 @@ filter_stream(Builder *b, const SiftRows *rows, const int *gstart, const Candida
 			continue;
 		slice = sift_colin_slice(&rows->cols[cd->col], from);
 		if (cd->kind == SIFT_SKIP_BLOOM_SB)
-			bloom_granule(b, s, g, &slice, n);
+			bloom_granule(b, s, g, &slice, n, bpk);
 		else
-			trigram_granule(b, s, g, &slice, n);
+			trigram_granule(b, s, g, &slice, n, bpk);
+	}
+	return s;
+}
+
+/* A filter of a column for the granules in want: kept when the bytes of all the filters stay within the budget */
+static void
+filter_stream(Builder *b, const SiftRows *rows, const int *gstart, const Candidate *cd)
+{
+	Stream	   *s = filter_build(b, rows, gstart, cd, SIFT_SBBF_BPK);
+
+	/* STOR[STOR-COL-05]: adaptive 8 BPK SBBF sizing under aux budget (20% smaller filters) */
+	if (b->bytes + s->data.len > b->budget)
+	{
+		stream_drop(s);
+		s = filter_build(b, rows, gstart, cd, SIFT_SBBF_BPK_LEAN);
 	}
 	if (b->bytes + s->data.len <= b->budget && s->data.len > 0)
 	{
@@ -422,12 +446,7 @@ filter_stream(Builder *b, const SiftRows *rows, const int *gstart, const Candida
 		stream_keep(b, s);
 	}
 	else
-	{
-		pfree(s->data.data);
-		pfree(s->plen);
-		pfree(s->flags);
-		pfree(s);
-	}
+		stream_drop(s);
 }
 
 static int

@@ -522,11 +522,11 @@ sift_esrc_close(SiftEntSrc *r)
 }
 
 void
-sift_blob_init(SiftBlob *b, MemoryContext cxt)
+sift_blob_init(SiftBlob *b, MemoryContext cxt, Size mem)
 {
 	MemoryContext old = MemoryContextSwitchTo(cxt);
 
-	*b = (SiftBlob) {.cxt = cxt};
+	*b = (SiftBlob) {.cxt = cxt,.mem = Min(mem, SIFT_BLOB_MEM)};
 	initStringInfo(&b->head);
 	initStringInfo(&b->tail);
 	MemoryContextSwitchTo(old);

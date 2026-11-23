@@ -25,10 +25,12 @@ extern void sift_stage_renew_part(SiftTxnStage *st, SiftStagePart *p);
 /* The rows moved or went in ways the table by address does not follow: it is built again when a look for an address needs it */
 extern void sift_stage_tid_invalidate(SiftTxnStage *st);
 
+/* MEM[MEM-COL-13]: TopTransactionContext SiftTxnStage (the row buffers, the staged deletes and the tables by address and by delete count against work_mem) */
 static inline uint64
 sift_stage_mem(const SiftTxnStage *st)
 {
-	return st->mem_bytes;
+	return st->mem_bytes + (uint64) st->capdels * sizeof(SiftStageDel) + (uint64) st->del_htab_cap * sizeof(uint32) +
+		(st->tid_htab != NULL ? ((uint64) st->tid_htab_mask + 1) * sizeof(SiftStageTidSlot) : 0);
 }
 
 extern int	sift_stage_addr_cmp(const void *a, const void *b);

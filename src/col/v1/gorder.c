@@ -456,9 +456,10 @@ pos_smaller(StringInfo body, uint32 k0, SiftCGOrdDir *d, const OrdEnt *e, const 
 	return smaller;
 }
 
-/* The chunks of a block as they are made: kept in memory up to SIFT_BLOB_MEM bytes, then on a file */
+/* The chunks of a block as they are made: kept in memory up to the bytes its blob allows (SIFT_BLOB_MEM at most), then on a file */
 typedef struct BodySink
 {
+	Size		limit;
 	StringInfoData mem;
 	BufFile    *file;
 	uint64		len;
@@ -469,7 +470,7 @@ sink_put(BodySink *b, const StringInfoData *chunk, MemoryContext cxt)
 {
 	appendBinaryStringInfo(&b->mem, chunk->data, chunk->len);
 	b->len += chunk->len;
-	if (b->mem.len >= SIFT_BLOB_MEM)
+	if (b->mem.len >= b->limit)
 	{
 		MemoryContext old = MemoryContextSwitchTo(cxt);
 
@@ -522,7 +523,7 @@ build_block(OrdEnt *ent, SiftEntSrc *src, uint32 nvals, uint32 nnull, int gcol, 
 	SiftEnt    *es = ent == NULL ? palloc(SIFT_CGORD_CAP * sizeof(SiftEnt)) : NULL;
 	StringInfoData cb,
 				gtab = {0};
-	BodySink	sink = {0};
+	BodySink	sink = {.limit = out->mem};
 	SiftCGOrdDir *dir = palloc0((nchunks + 1) * sizeof(SiftCGOrdDir));
 	SiftCGOrdGrp *gv = NULL,
 			   *gn = NULL,

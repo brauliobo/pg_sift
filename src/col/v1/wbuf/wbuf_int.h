@@ -180,6 +180,15 @@ typedef struct RawRec
 	Size		len;
 } RawRec;
 
+/* The inserter of a record when it was read: no xid in it (a speculative insertion, an index without track_changes), committed, or not finished */
+#define XST_NONE		0
+#define XST_COMMITTED	1
+#define XST_OPEN		2
+#define XST_ABORTED		3
+
+extern uint8 wbuf_xst_of(TransactionId x);
+extern void wbuf_xst_forget(void);
+
 extern uint32	wbuf_limit_pages(Relation index);
 
 extern void	wbuf_reader_keys(SiftCWbufReader *r, const SiftCWbufKeys *keys);
