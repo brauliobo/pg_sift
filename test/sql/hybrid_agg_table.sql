@@ -1,0 +1,86 @@
+-- SiftHybridAgg over a sift_table: the groups of an aggregate over a text query and structured quals, folded from the columns of the table's store. Every result is compared with the same
+-- query that the hybrid node refuses (a volatile qual is added) and the node is read from EXPLAIN (the direction is the cost model's: both are folded and compared). The statements run on a table with committed, updated and deleted rows,
+-- and again inside the transaction that changed them.
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
+CREATE TABLE ha_docs (
+	id int PRIMARY KEY, tenant int NOT NULL, region int NOT NULL, amount int NOT NULL, active boolean NOT NULL, seen timestamptz NOT NULL, day date NOT NULL, note int, body text NOT NULL) USING sift_table;
+INSERT INTO ha_docs
+SELECT i, i % 300, i % 7, i % 100, i % 10 <> 0, timestamptz '2026-01-01' + i * interval '1 minute', date '2026-01-01' + i % 90, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 13 END,
+	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 20 = 0 THEN 'mid' END, CASE WHEN i % 6000 = 0 THEN 'rareterm' END, 'tok' || i % 13, 'base')
+FROM generate_series(1, 40000) i;
+CREATE INDEX ha_text ON ha_docs USING sift (body);
+ANALYZE ha_docs;
+SELECT busy FROM sift.table_maintain('ha_docs') \gset
+RESET client_min_messages;
+SET effective_cache_size = '8kB';
+
+CREATE FUNCTION ha_node(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; n text := 'none';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftHybrid' THEN n := substring(l from 'Custom Scan \((SiftHybrid[A-Za-z]+)\)'); END IF;
+		IF n <> 'none' AND l ~ 'Hybrid Store: ' THEN n := n || ' ' || substring(l from 'Hybrid Store: (.+)$'); END IF;
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE FUNCTION ha_cmp(a text, b text, OUT rows bigint, OUT diff bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE ha_a AS ' || a;
+	EXECUTE 'CREATE TEMP TABLE ha_b AS ' || b;
+	SELECT count(*) INTO rows FROM ha_a;
+	SELECT count(*) INTO diff FROM ((TABLE ha_a EXCEPT ALL TABLE ha_b) UNION ALL (TABLE ha_b EXCEPT ALL TABLE ha_a)) d;
+	DROP TABLE ha_a, ha_b;
+END $$;
+
+CREATE FUNCTION ha_same(q text) RETURNS TABLE (rows bigint, diff bigint) LANGUAGE sql AS
+$$ SELECT * FROM ha_cmp(q, regexp_replace(q, 'WHERE ', 'WHERE random() < 2 AND ')) $$;
+
+CREATE TABLE ha_q (name text PRIMARY KEY, q text);
+INSERT INTO ha_q VALUES
+	('facet_small',	'SELECT region, count(*), sum(amount), min(amount), max(amount), avg(amount) FROM ha_docs WHERE tenant = 8 AND body @@> ''common'' GROUP BY region'),
+	('facet_wide',	'SELECT region, active, count(*), sum(amount), min(amount), max(amount) FROM ha_docs WHERE tenant < 150 AND body @@> ''mid'' GROUP BY region, active'),
+	('count_all',	'SELECT count(*) FROM ha_docs WHERE tenant < 300 AND body @@> ''common'''),
+	('plain_aggs',	'SELECT count(*) AS n, count(note) AS n_note, sum(amount), min(seen), max(seen), avg(region) FROM ha_docs WHERE tenant < 200 AND body @@> ''common'''),
+	('having',		'SELECT region, count(*) FROM ha_docs WHERE tenant < 300 AND body @@> ''common'' GROUP BY region HAVING count(*) > 2500'),
+	('by_day',		'SELECT day, count(*), sum(amount) FROM ha_docs WHERE amount < 60 AND body @@> ''tok3'' GROUP BY day'),
+	('by_null',		'SELECT note, count(*) FROM ha_docs WHERE tenant < 250 AND body @@> ''mid'' GROUP BY note'),
+	('bool_cmp',	'SELECT region, count(*) FROM ha_docs WHERE active AND tenant < 250 AND body @@> ''common'' GROUP BY region'),
+	('is_null',		'SELECT region, count(*) FROM ha_docs WHERE note IS NULL AND body @@> ''common'' GROUP BY region'),
+	('no_match',	'SELECT region, count(*) FROM ha_docs WHERE tenant < 250 AND body @@> ''nosuchword'' GROUP BY region'),
+	('rare',		'SELECT region, count(*), sum(amount) FROM ha_docs WHERE tenant < 250 AND body @@> ''rareterm'' GROUP BY region'),
+	('phrase_or',	'SELECT region, count(*) FROM ha_docs WHERE tenant < 250 AND body @@> ''rareterm OR mid'' GROUP BY region'),
+	('ts_range',	'SELECT region, count(*) FROM ha_docs WHERE seen >= timestamptz ''2026-01-10'' AND seen < timestamptz ''2026-01-20'' AND body @@> ''common'' GROUP BY region'),
+	('no_qual',		'SELECT region, count(*), sum(amount) FROM ha_docs WHERE body @@> ''common'' GROUP BY region');
+
+\echo -- the node
+SELECT name, ha_node(q) FROM ha_q ORDER BY name;
+\echo -- the answers are those of the query the node refuses
+SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
+
+\echo -- after updates, deletes and inserts, committed
+UPDATE ha_docs SET amount = amount + 500 WHERE id % 9 = 0;
+UPDATE ha_docs SET region = (region + 1) % 7 WHERE id % 13 = 0;
+DELETE FROM ha_docs WHERE id % 17 = 0;
+INSERT INTO ha_docs SELECT i, i % 300, i % 7, i % 100, true, now(), current_date, 1, 'common late ' || i FROM generate_series(40001, 40500) i;
+SELECT name, ha_node(q) FROM ha_q WHERE name IN ('facet_small', 'plain_aggs', 'no_qual') ORDER BY name;
+SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
+
+\echo -- inside the transaction that changes the rows
+BEGIN;
+UPDATE ha_docs SET amount = amount + 7, tenant = tenant + 1 WHERE id % 5 = 0;
+DELETE FROM ha_docs WHERE id % 19 = 0;
+INSERT INTO ha_docs SELECT i, i % 300, i % 7, i % 100, false, now(), current_date, NULL, 'common mid inside ' || i FROM generate_series(50001, 50300) i;
+SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
+ROLLBACK;
+SELECT name, (ha_same(q)).* FROM ha_q WHERE name IN ('facet_wide', 'plain_aggs', 'no_qual') ORDER BY name;
+
+\echo -- text columns of a sift_table are not held by its store: the groups are PostgreSQL's, over the hybrid scan
+SELECT ha_node('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body') AS node;
+
+DROP FUNCTION ha_same(text), ha_cmp(text, text), ha_node(text);
+DROP TABLE ha_q;
+DROP TABLE ha_docs;
+DROP EXTENSION pg_sift;

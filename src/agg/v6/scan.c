@@ -751,7 +751,7 @@ sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	s->stats = stats;
 	s->recheck = recheck;
 	s->recheck_arg = recheck_arg;
-	scan_setup(s, sift_col_rel(index)->first, NULL);
+	scan_setup(s, index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->pub = palloc(Max(s->ncols, 1) * sizeof(SiftV6FoldCol));
 	for (int i = 0; i < s->ncols; i++)

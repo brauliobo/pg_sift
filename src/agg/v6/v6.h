@@ -19,6 +19,7 @@
 #include "agg/vec.h"
 #include "core/tidbridge.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_store.h"
 
 typedef enum SiftV6Kind
 {
@@ -287,11 +288,12 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_plan_methods;
 extern void sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 /*
- * The aggregate of the statement over the columns of index ix (open as irel) of rel, without its WHERE quals, for a scan that brings its own rows (agg/hybrid_plan.c): the keys and aggregates in
+ * The aggregate of the statement over the columns of index ix (open as irel) of rel, or of the store of a sift_table, without its WHERE quals, for a scan that brings its own rows (agg/hybrid_plan.c): the keys and aggregates in
  * *spec, the entries of the rows the aggregate leaves in *scan_tlist (the keys, then the aggregates), the grouping expressions in *group_exprs; false when the index does not hold what the statement reads.
  * extra is the GroupPathExtraData of the upper path. sift_v6_plan_shape says whether the statement is of the shape the aggregate scan serves (one table, no windows or DISTINCT ON).
  */
-extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, void *extra, SiftV6Spec *spec, List **scan_tlist, List **group_exprs);
+extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, SiftF2Store *store, void *extra, SiftV6Spec *spec,
+									  List **scan_tlist, List **group_exprs);
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 /* The index holds attribute att (1-based), of the class, in one plain leaf the scan decodes as it is stored */
 extern bool sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls);

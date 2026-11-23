@@ -7,6 +7,7 @@
 #include "access/genam.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/parsetree.h"
 
 #include "agg/v6/plan_int.h"
 #include "bm25/planner.h"
@@ -23,14 +24,23 @@ sift_v6_score_col(V6Plan *p, const Expr *e, SiftV6Col *out)
 }
 
 bool
-sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, void *extra, SiftV6Spec *spec, List **scan_tlist, List **group_exprs)
+sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, SiftF2Store *store, void *extra, SiftV6Spec *spec, List **scan_tlist,
+						  List **group_exprs)
 {
-	V6Plan		p = {.root = root,.rel = rel,.out = out,.relid = ix->indexoid,.index = ix,.colrel = sift_col_rel(irel),.score_ok = true};
+	V6Plan		p = {.root = root,.rel = rel,.out = out,.score_ok = true};
 
 	*group_exprs = sift_v6_group_exprs_of(root);
-	if (p.colrel->stale)
-		return false;
-	p.f2 = sift_f2_rel(irel);
+	if (store != NULL)
+		p.relid = planner_rt_fetch(rel->relid, root)->relid, p.store = store;
+	else
+	{
+		p.relid = ix->indexoid;
+		p.index = ix;
+		p.colrel = sift_col_rel(irel);
+		if (p.colrel->stale)
+			return false;
+		p.f2 = sift_f2_rel(irel);
+	}
 	if (!sift_v6_compile_head(&p, (GroupPathExtraData *) extra, *group_exprs))
 		return false;
 	*spec = p.spec;

@@ -166,7 +166,7 @@ point_cols(HybridAggState *st, const SiftV6FoldCol *cols, int n)
 
 	for (int c = 0; c < n; c++)
 	{
-		pc[c].attno = h->store_index->rd_index->indkey.values[cols[c].attno - 1];
+		pc[c].attno = h->store_index != NULL ? h->store_index->rd_index->indkey.values[cols[c].attno - 1] : cols[c].attno;
 		pc[c].typid = TupleDescAttr(h->heapslot->tts_tupleDescriptor, pc[c].attno - 1)->atttypid;
 		pc[c].cls = cols[c].cls;
 		pc[c].scale = cols[c].scale;
@@ -334,7 +334,7 @@ fold_rows(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
 		h->dir = sift_hybrid_pick_direction(h, true);
 		h->resolved = true;
 	}
-	else if (h->dir == SIFT_HYB_COL_TO_BM25 && h->nscan == 0 && h->n_ext_preds == 0)
+	else if (h->dir == SIFT_HYB_COL_TO_BM25 && !sift_hybrid_has_store_quals(h))
 		h->dir = SIFT_HYB_BM25_TO_COL;
 	st->recheck_all = !sift_hybrid_rows_exact(h);
 	h->store.exact_quals = h->exact_quals;
@@ -418,7 +418,9 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	HybridAggState *st = (HybridAggState *) node;
 	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 	TupleDesc	scan_desc = node->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-	Oid			heap_oid = IndexGetRelation((Oid) list_nth_int(linitial(cs->custom_private), SIFT_HYBP_STORE_OID), false);
+	List	   *ints = linitial(cs->custom_private);
+	Oid			store_oid = (Oid) list_nth_int(ints, SIFT_HYBP_STORE_OID);
+	Oid			heap_oid = list_nth_int(ints, SIFT_HYBP_HOST) == SIFT_HYB_HOST_TABLE ? store_oid : IndexGetRelation(store_oid, false);
 
 	st->spec = sift_v6_spec_unpack(lfourth(cs->custom_private));
 	st->ngroup = intVal(list_nth(cs->custom_private, 4));
@@ -479,8 +481,9 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	const SiftHybridStats *b = &h->stats;
 
 	ExplainPropertyText("Hybrid Direction", h->adaptive ? (h->resolved ? psprintf("%s (adaptive)", sift_hybrid_dir_name(h->dir)) : "adaptive") : sift_hybrid_dir_name(h->dir), es);
-	ExplainPropertyText("Hybrid Store", "sift_col", es);
-	ExplainPropertyText("Index", RelationGetRelationName(h->store_index), es);
+	ExplainPropertyText("Hybrid Store", h->table != NULL ? "sift_table" : "sift_col", es);
+	if (h->store_index != NULL)
+		ExplainPropertyText("Index", RelationGetRelationName(h->store_index), es);
 	if (!es->analyze)
 		return;
 	ExplainPropertyInteger("Bridge Chunks", NULL, b->chunks, es);

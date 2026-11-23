@@ -620,7 +620,8 @@ static void
 add_agg_path(HybridPlan *h, const SiftHybridEst *e, SiftHybridDir dir, double cost, RelOptInfo *out, const SiftV6Spec *spec, List *scan_tlist, List *group_exprs, List *having)
 {
 	CustomPath *cp = makeNode(CustomPath);
-	List	   *ints = list_make5_int(dir, SIFT_HYB_HOST_COL, (int) h->text->indexoid, (int) h->store.index->indexoid, 0),
+	List	   *ints = list_make5_int(dir, h->store.table != NULL ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL, (int) h->text->indexoid,
+									   (int) (h->store.table != NULL ? h->store.table->relid : h->store.index->indexoid), 0),
 			   *qinfo = list_copy(h->qinfo),
 			   *exprs = lcons(h->query, list_copy(h->quals));
 	const double groups = clamp_row_est((spec->nkeys == 0 ? 1.0 : estimate_num_groups(h->root, group_exprs, e->rows * e->sel_bm25 * e->sel_col, NULL, NULL)) * Max(spec->nsets, 1));
@@ -652,10 +653,9 @@ sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void 
 	SiftHybridCosts costs;
 	SiftHybridDir dir;
 
-	if (!sift_v6_plan_shape(root, rel, out) || !shape_ok(root, rel, planner_rt_fetch(rel->relid, root)) || !find_match(&h) || (h.store.index = col_index(rel)) == NULL)
+	if (!sift_v6_plan_shape(root, rel, out) || !shape_ok(root, rel, planner_rt_fetch(rel->relid, root)) || !find_match(&h) || !pick_store(&h, planner_rt_fetch(rel->relid, root)))
 		return;
-	h.colrel = index_open(h.store.index->indexoid, AccessShareLock);
-	if (classify_quals(&h) && sift_v6_compile_aggregate(root, rel, out, h.store.index, h.colrel, extra, &spec, &scan_tlist, &group_exprs) &&
+	if (classify_quals(&h) && sift_v6_compile_aggregate(root, rel, out, h.store.index, h.colrel, (SiftF2Store *) h.store.table, extra, &spec, &scan_tlist, &group_exprs) &&
 		!score_outside_aggs((Node *) root->processed_tlist, &rel->relid) && !score_outside_aggs((Node *) ((GroupPathExtraData *) extra)->havingQual, &rel->relid))
 	{
 		List	   *having = (List *) ((GroupPathExtraData *) extra)->havingQual;
@@ -667,7 +667,7 @@ sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void 
 		if (h.params && sift_hybrid_both_apply(&e))
 			add_agg_path(&h, &e, SIFT_HYB_ADAPTIVE, Min(Min(costs.col_to_bm25, costs.bm25_to_col), cheapest_total(rel) * SIFT_HYB_WIN), out, &spec, scan_tlist, group_exprs, having);
 		else if (dir != SIFT_HYB_NONE)
-			add_agg_path(&h, &e, sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col, out, &spec, scan_tlist, group_exprs, having);
+			add_agg_path(&h, &e, h.store.table == NULL && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col, out, &spec, scan_tlist, group_exprs, having);
 	}
 	close_store(&h);
 }
