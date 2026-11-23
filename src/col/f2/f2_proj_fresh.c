@@ -21,7 +21,7 @@ dv_gen_of(const SiftPartDesc *d)
 bool
 sift_proj_part_projectable(const SiftPartDesc *base)
 {
-	if (base->flags & (SIFT_PART_FLAG_SCOPE | SIFT_PART_FLAG_L0_MICRO | SIFT_PART_FLAG_PACKED_SLOT))
+	if (base->flags & (SIFT_PART_FLAG_SCOPE | SIFT_PART_FLAG_PACKED_SLOT))
 		return false;
 	return base->level >= 1 && (base->flags & SIFT_PART_FLAG_ALL_VISIBLE) && base->col_delta_blk == InvalidBlockNumber &&
 		(base->dv_blk == InvalidBlockNumber || (base->flags & SIFT_PART_FLAG_DV_SETTLED));
