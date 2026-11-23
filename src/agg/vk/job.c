@@ -490,4 +490,12 @@ batch_check(SiftVk *vk, Batch *b)
 	return ok;
 }
 
+#else							/* SIFT_VULKAN */
+
+uint64_t
+sift_vk_job_tables(const SiftVkJob *job)
+{
+	return 0;
+}
+
 #endif							/* SIFT_VULKAN */
