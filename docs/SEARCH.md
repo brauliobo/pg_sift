@@ -89,7 +89,7 @@ ORDER BY sift.score(ctid) DESC
 LIMIT 10;
 ```
 
-Each term outside an explicit `field:` qualifier runs across every listed field with its weight (`0 < w <= 10000`), summing per-field BM25 scores (equivalent to Elasticsearch `most_fields`). Phrases, regexes, and `NOT` terms match the whole document.
+Each term outside an explicit `field:` qualifier runs across every listed field with its weight (`0 < w <= 10000`), summing per-field BM25 scores (equivalent to Elasticsearch `most_fields`). A phrase is scoped like a word (`title:"red wire"` is held by the title alone); an unscoped phrase never holds across the boundary of two sections. Regexes and unscoped `NOT` terms match the whole document.
 
 ## 7. Exact Facets (`sift.facet_counts`)
 
