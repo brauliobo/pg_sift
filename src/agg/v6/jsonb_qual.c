@@ -15,7 +15,9 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 
+#include "agg/group/ht.h"
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 #include "col/am.h"
 #include "core/errctx.h"
 
@@ -189,6 +191,45 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1};
 	return true;
+}
+
+/*
+ * The text of a number, a boolean or a document is what `->>` gives for such a value, which the leaf of a text key does not hold (it holds the strings, and a value of another type is an exception
+ * the leaf reads as NULL): a comparison with a constant that no such value can be the text of is decided by the leaf alone.
+ */
+static bool
+json_text_unambiguous(const Const *c)
+{
+	char	   *s = TextDatumGetCString(c->constvalue);
+
+	return s[0] != '\0' && strchr("0123456789+-.{[", s[0]) == NULL && strcmp(s, "true") != 0 && strcmp(s, "false") != 0 && strcmp(s, "null") != 0 &&
+		pg_strcasecmp(s, "nan") != 0 && pg_strcasecmp(s, "infinity") != 0;
+}
+
+Expr *
+sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
+{
+	const Expr *l;
+	const Const *c;
+	SiftV6Col	col;
+	OpExpr	   *q;
+
+	if (list_length(op->args) != 2 || get_opcode(op->opno) != F_TEXTEQ || !sift_text_bytes_equal(op->inputcollid))
+		return NULL;
+	l = strip(linitial(op->args));
+	c = (const Const *) strip(lsecond(op->args));
+	if (c != NULL && IsA(l, Const) && !IsA(c, Const))
+	{
+		const Expr *t = l;
+
+		l = (const Expr *) c;
+		c = (const Const *) t;
+	}
+	if (c == NULL || !IsA(c, Const) || c->constisnull || c->consttype != TEXTOID || !json_text_unambiguous(c) || !sift_v6_json_read(rel, l, &col) || col.typid != TEXTOID)
+		return NULL;
+	q = copyObject((OpExpr *) op);
+	q->args = list_make2(makeVar(INDEX_VAR, SIFT_V6_JLEAF_VATT + col.jleaf - 1, TEXTOID, -1, op->inputcollid, 0), copyObject((Node *) c));
+	return (Expr *) q;
 }
 
 void

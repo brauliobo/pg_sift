@@ -41,7 +41,9 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_cost.h"
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_pct.h"
 #include "agg/v6/v6_plan_rewrite.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_proj_sort_plan.h"
 #include "agg/v6/v6_qual.h"
@@ -191,7 +193,7 @@ read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 static bool
 resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	return column_of(ctx, e, numeric_ok, out);
+	return column_of(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
 }
 
 static int
@@ -210,7 +212,7 @@ add_derive(V6Plan *p, const SiftV6Derive *d)
 static bool
 derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
-	const SiftV6Resolver rs = {resolve_column, p};
+	const SiftV6Resolver rs = {resolve_column, p, p->xseed != NULL && p->xseed->unnest};
 	SiftV6Derive d;
 	Oid			restype;
 	int			at;
@@ -349,6 +351,8 @@ kind_takes(SiftV6Kind kind, Oid typid)
 		case SV6_BOOL_OR:
 		case SV6_BOOL_AND:
 			return cls == SV6C_BOOL;
+		case SV6_PCT_CONT:
+			return typid == FLOAT8OID;
 		case SV6_ARG_MAX:
 		case SV6_ARG_MIN:
 			return cls == SV6C_I32 || cls == SV6C_I64;
@@ -409,6 +413,18 @@ compile_distinct_row(V6Plan *p, const RowExpr *row, SiftV6Agg *g)
 	return true;
 }
 
+/* the kind of an aggregate of the statement: percentile_cont only where the groups are those of an unnest, which keeps the values of a group in one arena (v6_pct.h) */
+static bool
+agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
+{
+	if (p->xseed != NULL && sift_v6_pct_cont_of(unfiltered, &g->frac))
+	{
+		g->kind = SV6_PCT_CONT;
+		return true;
+	}
+	return sift_v6_agg_kind(unfiltered, &g->kind);
+}
+
 static bool
 compile_agg(V6Plan *p, Aggref *a)
 {
@@ -418,7 +434,7 @@ compile_agg(V6Plan *p, Aggref *a)
 	Oid			coll;
 
 	unfiltered.aggfilter = NULL;
-	if (!sift_v6_agg_kind(&unfiltered, &g.kind) || (a->aggfilter != NULL && !compile_filter(p, a->aggfilter, &g.fclause)))
+	if (!agg_kind_of(p, &unfiltered, &g) || (a->aggfilter != NULL && !compile_filter(p, a->aggfilter, &g.fclause)))
 		return false;
 	if (g.kind == SV6_COUNT_DISTINCT && list_length(a->args) == 1 && IsA(((TargetEntry *) linitial(a->args))->expr, RowExpr))
 	{
@@ -546,6 +562,11 @@ compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 	const char *fn;
 	int64		trunc_us;
 
+	if (sift_v6_unnest_month_key(p, e, k))
+	{
+		p->spec.bin[p->spec.nbins++] = (SiftV6Bin) {.key = p->spec.nkeys,.stride_us = SIFT_DATEBIN_MONTH,.origin = 0};
+		return true;
+	}
 	if (sift_v6_date_trunc_bin(&rs, e, k, &trunc_us))
 	{
 		p->spec.bin[p->spec.nbins++] = (SiftV6Bin) {.key = p->spec.nkeys,.stride_us = trunc_us,.origin = 0};

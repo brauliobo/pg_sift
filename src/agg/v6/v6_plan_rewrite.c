@@ -199,6 +199,97 @@ sift_v6_date_trunc_bin(const SiftV6Resolver *rs, const Expr *e, SiftV6Col *src, 
 	return false;
 }
 
+/* ---- + - * of float8 ---- */
+
+typedef struct Arith
+{
+	const SiftV6Resolver *rs;
+	SiftV6Derive *d;
+	int			ncols;			/* the columns so far: the source and the conditions */
+	int			ntok;
+	bool		has_const;
+	int			depth;
+	int			max_depth;
+} Arith;
+
+static bool
+arith_token(Arith *a, uint8 tok)
+{
+	if (a->ntok == SIFT_ARITH_MAX_TOKENS)
+		return false;
+	a->d->cval[a->ntok / 8] |= (int64) tok << (8 * (a->ntok % 8));
+	a->ntok++;
+	return true;
+}
+
+static SiftV6Col *
+arith_slot(Arith *a, int i)
+{
+	return i == 0 ? &a->d->src : &a->d->cond[i - 1];
+}
+
+static bool
+arith_col(Arith *a, const Expr *e)
+{
+	SiftV6Col	col;
+	int			at;
+
+	if (!a->rs->column(a->rs->ctx, e, false, &col) || (col.typid != FLOAT8OID && col.typid != INT2OID && col.typid != INT4OID && col.typid != INT8OID))
+		return false;
+	for (at = 0; at < a->ncols; at++)
+		if (memcmp(arith_slot(a, at), &col, sizeof(col)) == 0)
+			break;
+	if (at == a->ncols)
+	{
+		if (a->ncols == SIFT_V6_MAX_CASE + 1)
+			return false;
+		*arith_slot(a, a->ncols++) = col;
+	}
+	return ++a->depth <= SIFT_ARITH_MAX_STACK && arith_token(a, (uint8) (SIFT_ARITH_COL + at)) && (a->max_depth = Max(a->max_depth, a->depth)) > 0;
+}
+
+static bool
+arith_walk(Arith *a, const Expr *e)
+{
+	const OpExpr *op = (const OpExpr *) e;
+	const FuncExpr *f = (const FuncExpr *) e;
+	const Const *c = (const Const *) e;
+
+	if (IsA(e, OpExpr) && list_length(op->args) == 2)
+	{
+		const Oid	fn = get_opcode(op->opno);
+
+		if ((fn != F_FLOAT8PL && fn != F_FLOAT8MI && fn != F_FLOAT8MUL) || !arith_walk(a, linitial(op->args)) || !arith_walk(a, lsecond(op->args)))
+			return false;
+		a->depth--;
+		return arith_token(a, fn == F_FLOAT8PL ? SIFT_ARITH_ADD : fn == F_FLOAT8MI ? SIFT_ARITH_SUB : SIFT_ARITH_MUL);
+	}
+	if (IsA(e, FuncExpr) && list_length(f->args) == 1 && (f->funcid == F_FLOAT8_INT2 || f->funcid == F_FLOAT8_INT4 || f->funcid == F_FLOAT8_INT8))
+		return arith_col(a, linitial(f->args));
+	if (IsA(e, Const) && !c->constisnull && c->consttype == FLOAT8OID && !a->has_const)
+	{
+		const double v = DatumGetFloat8(c->constvalue);
+
+		a->has_const = true;
+		memcpy(&a->d->aux, &v, sizeof(v));
+		a->max_depth = Max(a->max_depth, ++a->depth);
+		return arith_token(a, SIFT_ARITH_CONST);
+	}
+	return IsA(e, Var) && ((const Var *) e)->vartype == FLOAT8OID && arith_col(a, e);
+}
+
+/* e is float8 arithmetic over at most five columns of the batches: an operation of at least one operator, so that a column alone stays the column */
+static bool
+arith_of(const SiftV6Resolver *rs, const Expr *e, SiftV6Derive *d)
+{
+	Arith		a = {.rs = rs,.d = d};
+
+	if (!rs->arith_ok || !IsA(e, OpExpr) || exprType((const Node *) e) != FLOAT8OID || !arith_walk(&a, e) || a.ncols == 0 || a.depth != 1 || a.ntok > 8 * (a.ncols - 1))
+		return false;
+	d->ncond = a.ncols - 1;
+	return true;
+}
+
 /* ---- the computed keys and arguments ---- */
 
 static bool
@@ -284,6 +375,8 @@ sift_v6_derive_of(const SiftV6Resolver *rs, const Expr *e, bool key, SiftV6Deriv
 		d->kind = SVD_EXTRACT;
 	else if (key && IsA(e, CaseExpr) && case_of(rs, (const CaseExpr *) e, d))
 		d->kind = SVD_CASE_STR;
+	else if (!key && arith_of(rs, e, d))
+		d->kind = SVD_ARITH;
 	else if (!key && IsA(e, FuncExpr) && list_length(f->args) == 1 && func_named(f->funcid, "length") && utf8_or_single_byte() &&
 			 rs->column(rs->ctx, linitial(f->args), false, &d->src) && sift_v6_class(d->src.typid) == SV6C_TEXT)
 	{
@@ -319,9 +412,10 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		const SiftV6Derive *d = &s->derive[i];
 
 		ints = list_concat(ints, list_make5_int(d->kind, d->src.attno, (int) d->src.typid, d->ncond, d->else_len));
+		ints = list_concat(ints, list_make2_int((int) d->src.src, d->src.slot));
 		ints = put64(lappend_int(ints, d->utf8), d->aux);
 		for (int c = 0; c < d->ncond; c++)
-			ints = put64(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), d->cval[c]);
+			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make2_int((int) d->cond[c].src, d->cond[c].slot)), d->cval[c]);
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			ints = lappend_int(ints, d->else_bytes[b]);
 	}
@@ -346,16 +440,16 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		SiftV6Derive *d = &s->derive[i];
 
 		d->kind = list_nth_int(ints, at);
-		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2)};
+		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6)};
 		d->ncond = list_nth_int(ints, at + 3);
 		d->else_len = list_nth_int(ints, at + 4);
-		d->utf8 = list_nth_int(ints, at + 5);
-		d->aux = get64(ints, at + 6);
-		at += 8;
-		for (int c = 0; c < d->ncond; c++, at += 4)
+		d->utf8 = list_nth_int(ints, at + 7);
+		d->aux = get64(ints, at + 8);
+		at += 10;
+		for (int c = 0; c < d->ncond; c++, at += 6)
 		{
-			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1)};
-			d->cval[c] = get64(ints, at + 2);
+			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3)};
+			d->cval[c] = get64(ints, at + 4);
 		}
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			d->else_bytes[b] = (uint8) list_nth_int(ints, at++);

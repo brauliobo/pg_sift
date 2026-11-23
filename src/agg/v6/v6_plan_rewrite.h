@@ -19,7 +19,20 @@ typedef struct SiftV6Resolver
 	/* e is a column of the index the scan reads: its SiftV6Col (the planner's column_of) */
 	bool		(*column) (void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out);
 	void	   *ctx;
+	bool		arith_ok;		/* the scan computes SVD_ARITH (the batches of an unnest do) */
 } SiftV6Resolver;
+
+/*
+ * The postfix of an SVD_ARITH: one byte a token, packed from cval[0] on. A column is the source (0) or a condition column (1 + its index); it is a float8, or an integer that PostgreSQL casts
+ * to float8 in its place. At most one constant, aux as the bits of the double.
+ */
+#define SIFT_ARITH_COL		0x10	/* + the column */
+#define SIFT_ARITH_CONST	0x20
+#define SIFT_ARITH_ADD		0x30
+#define SIFT_ARITH_SUB		0x31
+#define SIFT_ARITH_MUL		0x32
+#define SIFT_ARITH_MAX_TOKENS	32
+#define SIFT_ARITH_MAX_STACK	8
 
 /* a copy of expr in which every SUM(x + C) is the expression over SUM(x) and COUNT(x); the same tree gives the same copy, so that the plan can make it again */
 extern Node *sift_v6_collapse_offset_sums(Node *expr);

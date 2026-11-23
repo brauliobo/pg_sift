@@ -45,6 +45,24 @@ take_int64(const List *l, int *at)
 	return (int64) v;
 }
 
+static int64
+f64_bits(double d)
+{
+	int64		v;
+
+	memcpy(&v, &d, sizeof(v));
+	return v;
+}
+
+static double
+bits_f64(int64 v)
+{
+	double		d;
+
+	memcpy(&d, &v, sizeof(d));
+	return d;
+}
+
 List *
 sift_v6_spec_pack(const SiftV6Spec *s)
 {
@@ -55,6 +73,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	for (int j = 0; j < s->naggs; j++)
 	{
 		ints = lappend_int(lappend_int(lappend_int(ints, s->agg[j].kind), (int) s->agg[j].restype), s->agg[j].nxcols);
+		ints = put_int64(ints, f64_bits(s->agg[j].frac));
 		ints = lappend_int(put_col(put_col(ints, &s->agg[j].arg), &s->agg[j].arg2), s->agg[j].fclause);
 		for (int c = 0; c < s->agg[j].nxcols; c++)
 			ints = put_col(ints, &s->agg[j].xcol[c]);
@@ -104,6 +123,7 @@ sift_v6_spec_unpack(const List *l)
 
 		*a = (SiftV6Agg) {.kind = list_nth_int(ints, at),.restype = (Oid) list_nth_int(ints, at + 1),.nxcols = list_nth_int(ints, at + 2)};
 		at += 3;
+		a->frac = bits_f64(take_int64(ints, &at));
 		a->arg = take_col(ints, &at);
 		a->arg2 = take_col(ints, &at);
 		a->fclause = list_nth_int(ints, at++);
@@ -175,8 +195,11 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 			ints = lappend_int(lappend_int(ints, xd->pcol[c]), (int) xd->ptype[c]);
 	}
 	ints = lappend_int(ints, x->unnest);
-	ints = lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(ints, x->elem.attno), (int) x->elem.type), x->elem.group_leaf), x->elem.elem_leaf), x->elem.left);
-	return list_make2(ints, x->where);
+	ints = list_concat(ints, list_make4_int((int) x->elem.fn, x->elem.attno, (int) x->elem.type, x->elem.group_leaf));
+	ints = list_concat(ints, list_make3_int(x->elem.left, x->elem.semi, x->elem.ncols));
+	for (int c = 0; c < x->elem.ncols; c++)
+		ints = lappend_int(lappend_int(ints, x->elem.col_leaf[c]), (int) x->elem.col_type[c]);
+	return list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where);
 }
 
 SiftV6Ext *
@@ -212,9 +235,18 @@ sift_v6_ext_unpack(const List *l)
 		}
 	}
 	x->unnest = list_nth_int(ints, at++);
-	x->elem = (SiftV6XElem) {.attno = list_nth_int(ints, at),.type = (Oid) list_nth_int(ints, at + 1),.group_leaf = list_nth_int(ints, at + 2),.elem_leaf = list_nth_int(ints, at + 3),
-	.left = list_nth_int(ints, at + 4)};
+	x->elem = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, at),.attno = list_nth_int(ints, at + 1),.type = (Oid) list_nth_int(ints, at + 2),
+	.group_leaf = list_nth_int(ints, at + 3),.left = list_nth_int(ints, at + 4),.semi = list_nth_int(ints, at + 5),.ncols = list_nth_int(ints, at + 6)};
+	at += 7;
+	for (int c = 0; c < x->elem.ncols; c++, at += 2)
+	{
+		x->elem.col_leaf[c] = list_nth_int(ints, at);
+		x->elem.col_type[c] = (Oid) list_nth_int(ints, at + 1);
+	}
 	x->where = lsecond(l);
+	x->elem_where = lthird(l);
+	x->elem_names = lfourth(l);
+	x->heap_where = list_nth(l, 4);
 	return x;
 }
 

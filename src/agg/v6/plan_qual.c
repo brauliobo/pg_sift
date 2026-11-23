@@ -11,7 +11,9 @@
 
 #include "agg/group/ht.h"
 #include "agg/v6/plan_int.h"
+#include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_qual.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 #include "col/am/preds.h"
 
 /* a constant, or a parameter the scan reads when it starts (and again when it is rescanned) */
@@ -134,13 +136,24 @@ qual_null_test(V6Plan *p, NullTest *nt)
 	return (Expr *) q;
 }
 
+/* doc ->> 'key' = 'constant' where the batches of the scan are the elements of an unnest, whose quals are evaluated on them and not by an index scan */
+static Expr *
+qual_json_text(V6Plan *p, OpExpr *op)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+
+	return p->xseed != NULL && p->xseed->unnest && p->store == NULL ? sift_v6_json_text_qual(&rel, op) : NULL;
+}
+
 Expr *
 sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
+	Expr	   *q;
+
 	switch (nodeTag(clause))
 	{
 		case T_OpExpr:
-			return qual_compare(p, (OpExpr *) clause);
+			return (q = qual_compare(p, (OpExpr *) clause)) != NULL ? q : qual_json_text(p, (OpExpr *) clause);
 		case T_ScalarArrayOpExpr:
 			return qual_in_list(p, (ScalarArrayOpExpr *) clause);
 		case T_NullTest:

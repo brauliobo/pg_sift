@@ -1,9 +1,10 @@
 /*
- * agg/v6/v6_unnest_plan.c - CROSS JOIN LATERAL unnest(col) AS u(elem) (or LEFT JOIN LATERAL ... ON true) over an array column of the fact table as part of the aggregate scan of SiftAggV6: when the paths of
- * the index keep the array of the column as a list (col[] text, ids[] int4: a leaf of its lengths and a leaf of its elements), the node takes the elements from the index and the keys and
- * aggregates of the statement may name the element beside the columns of the table (agg/v6/v6_unnest_run.h). The WHERE clauses of the table are evaluated on the batches, which have no scan keys.
+ * agg/v6/v6_unnest_plan.c - CROSS JOIN LATERAL unnest(col) AS u(elem), jsonb_to_recordset(col) AS u(c1 t1, ..) (or LEFT JOIN LATERAL ... ON true) over an array column of the fact table as part of the
+ * aggregate scan of SiftAggV6: when the paths of the index keep the array of the column as a list (col[] text, ids[] int4, items[]{sku text, price float8}: a leaf of its lengths and a leaf of its
+ * elements or of each key of its objects), the node takes the elements from the index and the keys and aggregates of the statement may name the elements beside the columns of the table
+ * (agg/v6/v6_unnest_run.h). The WHERE clauses of the table and of the elements are evaluated on the batches, which have no scan keys.
  *
- * The unnested relation takes no qual of its own (a condition on the element is not the node's), and the statement reads no other relation.
+ * The statement reads no other relation. The planning of the lateral relation itself is agg/v6/v6_unnest_jsonb.h.
  */
 #include "postgres.h"
 
@@ -18,48 +19,8 @@
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 #include "col/am/format_ops.h"
-
-/* the leaves of the array of attribute att: its lengths and its elements */
-static bool
-array_leaves(const SiftColRel *r, int att, Oid elem, int *group, int *leaf)
-{
-	*group = *leaf = -1;
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
-		if (r->schema->cols[i].kind == SIFT_COLK_GROUP)
-			*group = i;
-	for (int i = r->first[att]; *group >= 0 && i < r->first[att] + r->nleaves[att]; i++)
-	{
-		const SiftColDef *d = &r->schema->cols[i];
-
-		if (d->parent == *group && d->kind == SIFT_COLK_SCALAR && d->lane == 0 && !(d->flags & SIFT_COLD_LOSSY) &&
-			(sift_v6_class(elem) == SV6C_TEXT ? d->store == SIFT_COLS_STR : d->store == SIFT_COLS_INT))
-			*leaf = i;
-	}
-	return *leaf >= 0;
-}
-
-/* the unnest of the array column of a table in the FROM clause: its element type, and the Var of the column */
-static bool
-unnest_of(PlannerInfo *root, const RelOptInfo *rel, Index fact, const Var **array, Oid *elem)
-{
-	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
-	const RangeTblFunction *rtf;
-	const FuncExpr *fe;
-	Oid			e;
-
-	if (rel->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 || rel->baserestrictinfo != NIL ||
-		rel->joininfo != NIL || !bms_equal(rel->lateral_relids, bms_make_singleton(fact)))
-		return false;
-	rtf = linitial(rte->functions);
-	fe = (const FuncExpr *) rtf->funcexpr;
-	if (!IsA(rtf->funcexpr, FuncExpr) || rtf->funccolcount != 1 || list_length(fe->args) != 1 || fe->funcid != F_UNNEST_ANYARRAY || !IsA(linitial(fe->args), Var))
-		return false;
-	*array = linitial(fe->args);
-	e = get_element_type((*array)->vartype);
-	*elem = e;
-	return (*array)->varno == fact && (*array)->varlevelsup == 0 && fe->funcresulttype == e && (e == TEXTOID || e == VARCHAROID || e == INT2OID || e == INT4OID || e == INT8OID);
-}
 
 /* the join is inner or a left one of the unnest with no condition; any other special join is not ours */
 static bool
@@ -75,27 +36,6 @@ join_kind(PlannerInfo *root, Index elem_rti, bool *left)
 	return true;
 }
 
-static bool
-seed_unnest(V6Plan *p, RelOptInfo *elem_rel, const Var *array, Oid elem, bool left)
-{
-	SiftV6Ext  *x = sift_v6_ext_new();
-	int			group,
-				leaf;
-
-	for (int i = 0; i < p->index->ncolumns; i++)
-		if (p->index->indexkeys[i] == array->varattno)
-		{
-			if (!array_leaves(p->colrel, i + 1, elem, &group, &leaf))
-				return false;
-			x->unnest = true;
-			x->elem = (SiftV6XElem) {.attno = i + 1,.type = elem,.group_leaf = group,.elem_leaf = leaf,.left = left};
-			p->xseed = x;
-			p->elem_rel = elem_rel;
-			return true;
-		}
-	return false;
-}
-
 /* a key of a jsonb document is read from the batches of the scan: the stream of the elements does not carry the payloads of its rows that the leaf cannot hold */
 static bool
 reads_json(const SiftV6Spec *s)
@@ -109,12 +49,30 @@ reads_json(const SiftV6Spec *s)
 	return false;
 }
 
+/* what the batches of the scan compute is the month of a date column (the one binning of a key the scan of an unnest does) and float8 arithmetic of arguments (agg/v6/v6_plan_rewrite.h), and no other */
+static bool
+computes_only_months(const SiftV6Spec *s)
+{
+	for (int b = 0; b < s->nbins; b++)
+		if (s->bin[b].stride_us != SIFT_DATEBIN_MONTH || s->key[s->bin[b].key].typid != DATEOID)
+			return false;
+	for (int k = 0; k < s->nderive; k++)
+		if (s->derive[k].kind != SVD_ARITH)
+			return false;
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].derive != 0)
+			return false;
+	return true;
+}
+
 static bool
 where_clause(V6Plan *p)
 {
 	SiftClause *clause;
 	SiftBytes	canon;
 
+	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
+		p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)
 		return true;
 	clause = palloc(sizeof(SiftClause));
@@ -126,14 +84,28 @@ where_clause(V6Plan *p)
 	return true;
 }
 
+/* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */
+#define HEAVY_AGG_PAIR_FACTOR	6
+
+/* the pairs of the whole table: the batches of the scan come from every granule of the index (the pull prunes none by the quals of the table), so a selective statement costs what the table does */
+static Cost
+pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
+{
+	const double sel = Max(clauselist_selectivity(p->root, p->rel->baserestrictinfo, 0, JOIN_INNER, NULL), 1.0e-6);
+	int			heavy = 0;
+
+	for (int j = 0; p->spec.nkeys > 0 && j < p->spec.naggs; j++)
+		heavy += p->spec.agg[j].kind == SV6_COUNT_DISTINCT || p->spec.agg[j].kind == SV6_PCT_CONT;
+	return input_rel->rows / sel * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy);
+}
+
 static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo *elem_rel, GroupPathExtraData *extra, List *group_exprs)
 {
-	const Var  *array;
-	Oid			elem;
+	SiftV6ElemRte rte;
 	bool		left;
 
-	if (!sift_v6_plan_fact_ok(root, fact) || !unnest_of(root, elem_rel, fact->relid, &array, &elem) || !join_kind(root, elem_rel->relid, &left))
+	if (!sift_v6_plan_fact_ok(root, fact) || !sift_v6_unnest_rte(root, fact, elem_rel, &rte) || !join_kind(root, elem_rel->relid, &left))
 		return;
 	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
 	{
@@ -145,9 +117,9 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 		irel = index_open(ix->indexoid, AccessShareLock);
 		p.colrel = sift_col_rel(irel);
 		p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
-		if (p.f2 != NULL && seed_unnest(&p, elem_rel, array, elem, left) && sift_v6_compile_on(&p, extra, group_exprs) && p.spec.nbins == 0 && p.spec.jsonqual == NIL && !reads_json(&p.spec) &&
-			where_clause(&p))
-			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, input_rel->rows * cpu_operator_cost * 4.0, input_rel->rows);
+		if (p.f2 != NULL && sift_v6_unnest_seed(&p, elem_rel, &rte, left) && sift_v6_compile_on(&p, extra, group_exprs) && computes_only_months(&p.spec) && p.spec.jsonqual == NIL &&
+			!reads_json(&p.spec) && sift_v6_unnest_elem_quals(&p) && where_clause(&p))
+			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, pairs_cost(&p, input_rel), input_rel->rows);
 		index_close(irel, NoLock);
 	}
 }
@@ -168,16 +140,4 @@ sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo 
 		group_exprs = lappend(group_exprs, get_sortgroupclause_expr(sgc, root->parse->targetList));
 	try_fact(root, input_rel, output_rel, root->simple_rel_array[a], root->simple_rel_array[b], (GroupPathExtraData *) extra, group_exprs);
 	try_fact(root, input_rel, output_rel, root->simple_rel_array[b], root->simple_rel_array[a], (GroupPathExtraData *) extra, group_exprs);
-}
-
-bool
-sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
-{
-	const Var  *v = (const Var *) e;
-	const SiftV6Class cls = IsA(e, Var) ? sift_v6_class(v->vartype) : SV6C_NONE;
-
-	if (p->elem_rel == NULL || !IsA(e, Var) || v->varno != p->elem_rel->relid || v->varattno != 1 || v->varlevelsup != 0 || (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_TEXT))
-		return false;
-	*out = (SiftV6Col) {.attno = p->spec.ext->elem.attno,.typid = v->vartype,.src = SV6SRC_ELEM};
-	return true;
 }
