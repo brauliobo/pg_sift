@@ -3,7 +3,7 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--lane stock|stock-4t|tuned] [--table] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned] [--table] [--warn-time] [--update] [--keep]
 #   scripts/plangate.sh --calibrate [--rows N] [--lane stock|tuned] [--shapes REGEX]   the ranking of the estimates against the instructions (below)
 #   scripts/plangate.sh --planning [--rows N] [--shapes REGEX] [--update]   the instructions to plan each shape, scan on and off, against test/plan/planning.tsv (below)
 #
@@ -14,6 +14,8 @@
 #   --runs N      median of N warm runs of the native and the scan path (default 3; 0: no timings; a shape tagged `-- runs: K` takes at least K)
 #   --shapes RE   only the shapes whose name matches the regular expression (anywhere in the name: `^top_rows` and `unindexed_column$` too). A filtered --update rewrites the rows of the
 #                 shapes that ran and keeps the others, and writes nothing when none ran
+#   --slice AREAS the shapes of the areas (comma separated: star, clickbench, coexist, jsonb, table, bm25, gpu, smoke; all: every shape) that the `-- area:` tag of test/plan/shapes.sql lists, so that a change
+#                 runs the shapes it can move (seconds): smoke is one shape of each area, coexist the shapes whose plan is, or may be, PostgreSQL's own. With --shapes, the shapes that match both
 #   --lane tuned   the planner settings of a tuned profile (seq_page_cost 100, random_page_cost 4, workers 8, hash_mem_multiplier 2, work_mem 4GB): the results must agree and a
 #                 lose still fails, but the plan and the cost band are those of the lane in test/plan/bands.tsv, so a different plan or a ratio outside its band fails on PostgreSQL 18, as in the stock lane
 #   --lane stock-4t   the stock planner costs of the stock lane with up to 4 parallel workers per gather (the stock parallel costs and thresholds untouched, no suppression of Gather):
@@ -38,15 +40,16 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
-ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST=
+ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST= AREAS_RUN=
+AREAS='star clickbench coexist jsonb table bm25 gpu smoke'
 DB=${PLANGATE_DB:-sift_plangate}
 
 while (( $# )); do
 	case $1 in
 		--warn-time) WARN=1 ;; --calibrate) CAL=1 ;; --planning) CAL=1 PLAN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
-		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --lane) LANE=$2; shift ;;
+		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --slice) SLICE=$2; shift ;; --lane) LANE=$2; shift ;;
 		--selftest) SELFTEST=1 ;;
-		*) sed -n 2,30p "$0"; exit 1 ;;
+		*) sed -n 2,33p "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -62,6 +65,18 @@ merge_bands() {
 	rm -f "$out"
 }
 
+# the areas of a --slice as the list the runner takes: empty for every shape (all), else the areas themselves; fails on a name that is none
+slice_areas() {
+	local a out=()
+	for a in ${1//,/ }; do
+		[[ $a != all ]] || { echo; return 0; }
+		[[ " $AREAS " == *" $a "* ]] || { echo "plangate: unknown area '$a' (${AREAS// /, }, all)" >&2; return 1; }
+		out+=("$a")
+	done
+	(( ${#out[@]} )) || { echo "plangate: --slice names no area" >&2; return 1; }
+	(IFS=,; echo "${out[*]}")
+}
+
 if [[ -n $SELFTEST ]]; then
 	d=$(mktemp -d)
 	trap 'rm -rf "$d"' EXIT
@@ -73,6 +88,9 @@ if [[ -n $SELFTEST ]]; then
 	cp "$d/old" "$d/keep"
 	merge_bands "$d/new" "$d/old" 2>/dev/null && { echo "plangate selftest: an update with no row went through" >&2; exit 1; }
 	cmp -s "$d/old" "$d/keep" || { echo "plangate selftest: an update with no row changed the file" >&2; exit 1; }
+	[[ $(slice_areas star,smoke) == star,smoke && -z $(slice_areas jsonb,all) && -z $(slice_areas all) ]] || { echo "plangate selftest: --slice did not give its areas" >&2; exit 1; }
+	slice_areas star,bogus 2>/dev/null && { echo "plangate selftest: --slice accepted an unknown area" >&2; exit 1; }
+	slice_areas '' 2>/dev/null && { echo "plangate selftest: --slice accepted no area" >&2; exit 1; }
 	echo "plangate selftest: ok"
 	exit 0
 fi
@@ -205,6 +223,10 @@ estimate_misses() {
 	return $rc
 }
 
+if [[ -n ${SLICE+x} ]]; then
+	[[ -z $CAL ]] || { log "--slice picks shapes of shapes.sql: --calibrate and --planning take the shapes of calibrate.tsv (--shapes)"; exit 1; }
+	AREAS_RUN=$(slice_areas "$SLICE") || exit 1
+fi
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
 # serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration
 settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
@@ -230,9 +252,9 @@ log "shapes"
 sql -q <<-SQL >/dev/null
 	\\copy plangate.bands FROM '$REPO/test/plan/bands.tsv'
 SQL
-sql -q -v runs="$RUNS" -v pattern="$ONLY" >/dev/null <<-SQL
+sql -q -v runs="$RUNS" -v pattern="$ONLY" -v areas="$AREAS_RUN" >/dev/null <<-SQL
 	\\set text \`cat '$REPO/test/plan/shapes.sql'\`
-	SELECT plangate.run_all(:'text', :runs, :'pattern');
+	SELECT plangate.run_all(:'text', :runs, :'pattern', :'areas');
 SQL
 
 if [[ -n $UPDATE && -n $LK ]]; then
@@ -245,6 +267,7 @@ if [[ -n $UPDATE && -n $LK ]]; then
 	log "updated the $LK rows of test/plan/bands.tsv"
 elif [[ -n $UPDATE ]]; then
 	sql -qAt -F $'\t' -c "SELECT name, expect FROM plangate.suggestions" >"${SIFT_TMP}/plangate-expect.tsv"
+	[[ -s ${SIFT_TMP}/plangate-expect.tsv ]] || { rm -f "${SIFT_TMP}/plangate-expect.tsv"; log "no row to update: the shapes filter matched none"; exit 1; }
 	awk -F'\t' 'NR == FNR { e[$1] = $2; next }
 		/^-- name: / { n = substr($0, 10) }
 		/^-- expect: / && (n in e) { print "-- expect: " e[n]; next }

@@ -6,6 +6,7 @@
 --   * the plan chosen against the plan of the tag `-- expect: PLAN [LO HI]`: scan, normal or either;
 --   * the cost ratio (the planner's total cost of the scan path, the chosen plan when it is one, over the native one) against its band LO HI, so that a drift is seen
 --     before it flips a choice (no band, or `-`, when the query has no scan path);
+--   * the shapes of an area (scripts/plangate.sh --slice): the tag `-- area: A B` of a shape lists the areas it covers (star, clickbench, coexist, jsonb, table, bm25, gpu, smoke)
 --   * the times (median of N warm runs): the scan against native. Not a failure of this file: lose is a column the script reads.
 \set ON_ERROR_STOP on
 CREATE SCHEMA plangate;
@@ -106,9 +107,11 @@ BEGIN
 	DROP TABLE IF EXISTS pg_temp.pg_native, pg_temp.pg_chosen, pg_temp.pg_scan;
 END $$;
 
--- every shape of a file whose name matches `pattern`: a shape starts at its `-- name:` line
-CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '') RETURNS void LANGUAGE sql AS $$
-	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s WHERE substring(s FROM '^-- name: (\S+)') ~ pattern $$;
+-- every shape of a file whose name matches `pattern` and that has one of the `areas` (comma separated, none: every shape) in its `-- area:` line: a shape starts at its `-- name:` line
+CREATE FUNCTION plangate.run_all(shapes text, runs int, pattern text DEFAULT '', areas text DEFAULT '') RETURNS void LANGUAGE sql AS $$
+	SELECT plangate.run(s, runs) FROM regexp_split_to_table(shapes, E'\n(?=-- name: )') s
+	WHERE substring(s FROM '^-- name: (\S+)') ~ pattern
+	  AND (areas = '' OR string_to_array(substring(s FROM '(?n)^-- area: (.*)$'), ' ') && string_to_array(areas, ',')) $$;
 
 -- the `-- expect:` line each shape would have from this run: its plan (the chosen one where it is new) and a band of a factor of 2 either way, in 2 significant digits
 CREATE VIEW plangate.suggestions AS
