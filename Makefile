@@ -158,6 +158,7 @@ TESTING_REGRESS += analyzer_version
 TESTING_REGRESS += bm25_dead_windows
 TESTING_REGRESS += bm25_dict_block_limit
 TESTING_REGRESS += bm25_lazy_tail_maxscore
+TESTING_REGRESS += bm25_par_part_ranked
 TESTING_REGRESS += bm25_tidbridge
 TESTING_REGRESS += bm25_wbuf_read_promote
 TESTING_REGRESS += bm25_wbuf_wide_bloom

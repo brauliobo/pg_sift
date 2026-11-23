@@ -50,6 +50,23 @@ limit_hint(SiftScanState *ss, List *limit)
 }
 
 /* The tests of INCLUDE columns, from the flat list the planner made (planner_attr.c): column, op, value, n and the n values of each */
+/* The floor the ranked scans of one LIMIT share lives in an exec param of the query: the first of them to start makes it */
+static void
+init_group_floor(SiftScanState *ss, int group, int eflags)
+{
+	ParamExecData *pe;
+
+	if (group == 0 || (eflags & EXEC_FLAG_EXPLAIN_ONLY))
+		return;
+	pe = &ss->css.ss.ps.state->es_param_exec_vals[group - 1];
+	if (DatumGetPointer(pe->value) == NULL)
+	{
+		pe->value = PointerGetDatum(MemoryContextAlloc(ss->css.ss.ps.state->es_query_cxt, sizeof(float4)));
+		*(float4 *) DatumGetPointer(pe->value) = -INFINITY;
+	}
+	ss->group_floor = (float4 *) DatumGetPointer(pe->value);
+}
+
 static void
 init_attrs(SiftScanState *ss, List *flat)
 {
@@ -235,6 +252,7 @@ sift_begin(CustomScanState *node, EState *estate, int eflags)
 	init_attrs(ss, list_nth_node(List, cs->custom_private, SIFT_PRIV_ATTR));
 	ss->semi = list_nth_node(List, cs->custom_private, SIFT_PRIV_SEMI);
 	ss->ties = DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_TIES))->constvalue) != 0;
+	init_group_floor(ss, DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GROUP))->constvalue), eflags);
 	if (ss->k == 0 && !(eflags & EXEC_FLAG_EXPLAIN_ONLY))
 		ss->k = limit_hint(ss, ExecInitExprList(lthird_node(List, cs->custom_exprs), &node->ss.ps));
 	ss->heap = node->ss.ss_currentRelation;
@@ -308,6 +326,8 @@ sift_rescan(CustomScanState *node)
 	SiftScanState *ss = (SiftScanState *) node;
 
 	close_scan(ss);
+	if (ss->group_floor)
+		*ss->group_floor = -INFINITY;
 	if (ss->bitmap)
 	{
 		if (node->ss.ps.chgParam != NULL)
@@ -374,6 +394,8 @@ sift_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 			ExplainPropertyInteger("Limit Hint", NULL, ss->k, es);
 		if (ss->ties)
 			ExplainPropertyBool("Includes Ties", true, es);
+		if (DatumGetInt32(((Const *) list_nth(cs->custom_private, SIFT_PRIV_GROUP))->constvalue) != 0)
+			ExplainPropertyBool("Shared Floor", true, es);
 		if (ss->nattr > 0 || ss->semi != NIL)
 			ExplainPropertyInteger("Include Tests", NULL, ss->semi_done ? ss->nattr : ss->nattr + list_length(ss->semi), es);
 		if (ss->bitmap && gated(ss) && es->verbose)

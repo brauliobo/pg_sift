@@ -122,7 +122,7 @@ has_score_column(const ModifyTable *mt)
 }
 
 static void
-finish_walk(Plan *plan, bool scans)
+finish_walk(PlannedStmt *stmt, Plan *plan, bool scans)
 {
 	if (plan == NULL)
 		return;
@@ -130,26 +130,26 @@ finish_walk(Plan *plan, bool scans)
 	if (IsA(plan, ModifyTable) && ((ModifyTable *) plan)->returningLists != NIL && has_score_column((ModifyTable *) plan))
 		returning_scores((ModifyTable *) plan);
 	if (scans)
-		sift_tie_node(plan);
-	finish_walk(plan->lefttree, scans);
-	finish_walk(plan->righttree, scans);
+		sift_tie_node(stmt, plan);
+	finish_walk(stmt, plan->lefttree, scans);
+	finish_walk(stmt, plan->righttree, scans);
 	if (IsA(plan, Append))
 		foreach_ptr(Plan, p, ((Append *) plan)->appendplans)
-			finish_walk(p, scans);
+			finish_walk(stmt, p, scans);
 	else if (IsA(plan, MergeAppend))
 		foreach_ptr(Plan, p, ((MergeAppend *) plan)->mergeplans)
-			finish_walk(p, scans);
+			finish_walk(stmt, p, scans);
 	else if (IsA(plan, SubqueryScan))
-		finish_walk(((SubqueryScan *) plan)->subplan, scans);
+		finish_walk(stmt, ((SubqueryScan *) plan)->subplan, scans);
 	else if (IsA(plan, CustomScan))
 		foreach_ptr(Plan, p, ((CustomScan *) plan)->custom_plans)
-			finish_walk(p, scans);
+			finish_walk(stmt, p, scans);
 }
 
 void
 sift_finish_plan(PlannedStmt *stmt, bool scans)
 {
-	finish_walk(stmt->planTree, scans);
+	finish_walk(stmt, stmt->planTree, scans);
 	foreach_ptr(Plan, p, stmt->subplans)
-		finish_walk(p, scans);
+		finish_walk(stmt, p, scans);
 }

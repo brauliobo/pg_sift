@@ -51,6 +51,7 @@ typedef enum SiftPrivateField
 	SIFT_PRIV_ATTR,				/* List of int8 Const, per test of an INCLUDE column the ranker applies: column, SiftAttrOp, value, n and the n values of a list (nil: none; planner_attr.c) */
 	SIFT_PRIV_SEMI,				/* List, per small table that an inner join keys to an INCLUDE column: its Oid, the column's position, the attribute of the table's key and its own quals (planner_attr.c); nil: none */
 	SIFT_PRIV_TIES,				/* int32: 1 = the scan's rows go to an incremental sort under a LIMIT of exactly the k hint rows (planner_ties.c), 0 otherwise */
+	SIFT_PRIV_GROUP,			/* int32: 1 + the exec param of the floor the ranked scans under one MergeAppend share, 0 = none (planner_ties.c) */
 	SIFT_NPRIV
 } SiftPrivateField;
 

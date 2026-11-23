@@ -90,21 +90,25 @@ SELECT rp_plan('SELECT id, sift.score(ctid) FROM rp WHERE body @@> ''alpha beta'
                Query: 'alpha beta'::text       +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp2 rp_2+
                Index: rp2_body_idx             +
                Query: 'alpha beta'::text       +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp3 rp_3+
                Index: rp3_body_idx             +
                Query: 'alpha beta'::text       +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp4 rp_4+
                Index: rp4_body_idx             +
                Query: 'alpha beta'::text       +
                Order: score DESC               +
-               Limit Hint: 5
+               Limit Hint: 5                   +
+               Shared Floor: true
 (1 row)
 
 SELECT rp_plan('SELECT id FROM rp WHERE body @@> ''rare'' ORDER BY sift.score(ctid) DESC LIMIT 5');
@@ -118,21 +122,25 @@ SELECT rp_plan('SELECT id FROM rp WHERE body @@> ''rare'' ORDER BY sift.score(ct
                Query: 'rare'::text             +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp2 rp_2+
                Index: rp2_body_idx             +
                Query: 'rare'::text             +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp3 rp_3+
                Index: rp3_body_idx             +
                Query: 'rare'::text             +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp4 rp_4+
                Index: rp4_body_idx             +
                Query: 'rare'::text             +
                Order: score DESC               +
-               Limit Hint: 5
+               Limit Hint: 5                   +
+               Shared Floor: true
 (1 row)
 
 SELECT id, sift.score(ctid) FROM rp WHERE body @@> 'alpha beta' ORDER BY sift.score(ctid) DESC LIMIT 5;
@@ -196,11 +204,13 @@ SELECT rp_plan('SELECT id FROM rp WHERE body @@> ''rare'' AND id >= 1000 AND id 
                Query: 'rare'::text             +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on rp3 rp_2+
                Index: rp3_body_idx             +
                Query: 'rare'::text             +
                Order: score DESC               +
-               Limit Hint: 5
+               Limit Hint: 5                   +
+               Shared Floor: true
 (1 row)
 
 SELECT rp_plan('SELECT id FROM rp WHERE body @@> ''rare'' AND id < 0 ORDER BY sift.score(ctid) DESC LIMIT 5');
@@ -444,16 +454,19 @@ SELECT rp_plan('SELECT id FROM ro WHERE body @@> ''rare'' ORDER BY sift.score(ct
                Query: 'rare'::text             +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on ro2 ro_2+
                Index: ro2_body_idx             +
                Query: 'rare'::text             +
                Order: score DESC               +
                Limit Hint: 5                   +
+               Shared Floor: true              +
          ->  Custom Scan (SiftScan) on ro3 ro_3+
                Index: ro3_body_idx             +
                Query: 'rare'::text             +
                Order: score DESC               +
-               Limit Hint: 5
+               Limit Hint: 5                   +
+               Shared Floor: true
 (1 row)
 
 DROP TABLE rs, ro;
@@ -480,21 +493,25 @@ SELECT rp_plan('SELECT id FROM rm WHERE body @@> ''rare'' ORDER BY sift.score(ct
                Query: 'rare'::text                +
                Order: score DESC                  +
                Limit Hint: 5                      +
+               Shared Floor: true                 +
          ->  Custom Scan (SiftScan) on rm_lo1 rm_2+
                Index: rm_lo1_body_idx             +
                Query: 'rare'::text                +
                Order: score DESC                  +
                Limit Hint: 5                      +
+               Shared Floor: true                 +
          ->  Custom Scan (SiftScan) on rm_hi0 rm_3+
                Index: rm_hi0_body_idx             +
                Query: 'rare'::text                +
                Order: score DESC                  +
                Limit Hint: 5                      +
+               Shared Floor: true                 +
          ->  Custom Scan (SiftScan) on rm_hi1 rm_4+
                Index: rm_hi1_body_idx             +
                Query: 'rare'::text                +
                Order: score DESC                  +
-               Limit Hint: 5
+               Limit Hint: 5                      +
+               Shared Floor: true
 (1 row)
 
 SELECT rp_check('rm', 'rare') AS rare, rp_check('rm', 'alpha beta') AS and_query, rp_check('rm', 'rare OR beta^2', 'id < 1500') AS pruned,

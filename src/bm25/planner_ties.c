@@ -8,10 +8,12 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/plannodes.h"
 
 #include "agg/hybrid_int.h"
+#include "core/sift.h"
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "bm25/cscan_int.h"
@@ -63,39 +65,75 @@ tie_hybrid_scan(CustomScan *cs, int64 rows)
 	lfirst_int(list_nth_cell(ints, SIFT_HYBP_TIES)) = 1;
 }
 
+/* A ranked scan whose hits are the rows it hands out: ranked by the score alone, every qual applied by the ranker */
+static CustomScan *
+ranked_scan(Plan *plan)
+{
+	CustomScan *cs;
+
+	if (plan == NULL || !IsA(plan, CustomScan))
+		return NULL;
+	cs = (CustomScan *) plan;
+	if (cs->methods != &sift_scan_plan_methods || private_int(cs, SIFT_PRIV_MODE) != SIFT_MODE_RANKED ||
+		private_int(cs, SIFT_PRIV_K) <= 0 || private_int(cs, SIFT_PRIV_LATE) != 0 ||
+		list_nth(cs->custom_private, SIFT_PRIV_KEYOPS) != NIL || cs->scan.plan.qual != NIL)
+		return NULL;
+	return cs;
+}
+
 static void
 tie_scan(Plan *plan, int64 rows)
 {
 	CustomScan *cs;
 
-	if (plan == NULL || !IsA(plan, CustomScan))
-		return;
-	cs = (CustomScan *) plan;
-	if (cs->methods == &sift_hybrid_plan_methods)
+	if (plan != NULL && IsA(plan, CustomScan) && ((CustomScan *) plan)->methods == &sift_hybrid_plan_methods)
 	{
-		tie_hybrid_scan(cs, rows);
+		tie_hybrid_scan((CustomScan *) plan, rows);
 		return;
 	}
-	/* hits the scan hands out as they are: ranked by the score alone, every quals applied by the ranker */
-	if (cs->methods != &sift_scan_plan_methods || private_int(cs, SIFT_PRIV_MODE) != SIFT_MODE_RANKED ||
-		private_int(cs, SIFT_PRIV_K) <= 0 || private_int(cs, SIFT_PRIV_LATE) != 0 ||
-		list_nth(cs->custom_private, SIFT_PRIV_KEYOPS) != NIL || cs->scan.plan.qual != NIL)
+	cs = ranked_scan(plan);
+	if (cs == NULL)
 		return;
 	set_private(cs, SIFT_PRIV_K, makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(rows), false, FLOAT8PASSBYVAL));
 	set_private(cs, SIFT_PRIV_TIES, makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(1), false, true));
 }
 
+/*
+ * The scans of the partitions under a MergeAppend under a LIMIT of k rows each search their k best: the k-th best score of the first
+ * search is the least any later partition's hit needs to beat, so the scans share a floor (an exec param holding it) that each search
+ * starts above and raises.
+ */
+static void
+floor_scans(PlannedStmt *stmt, MergeAppend *merge, int64 rows)
+{
+	if (!sift_parallel_scan || list_length(merge->mergeplans) < 2)
+		return;
+	foreach_ptr(Plan, p, merge->mergeplans)
+	{
+		CustomScan *cs = ranked_scan(p);
+
+		if (cs == NULL || private_int(cs, SIFT_PRIV_K) != rows)
+			return;
+	}
+	stmt->paramExecTypes = lappend_oid(stmt->paramExecTypes, INTERNALOID);
+	foreach_ptr(Plan, p, merge->mergeplans)
+		set_private((CustomScan *) p, SIFT_PRIV_GROUP,
+					makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(list_length(stmt->paramExecTypes)), false, true));
+}
+
 /* One node of the finished plan (sift_finish_plan visits them all) */
 void
-sift_tie_node(Plan *plan)
+sift_tie_node(PlannedStmt *stmt, Plan *plan)
 {
 	int64		rows;
 
 	if (IsA(plan, Limit) && limit_rows((Limit *) plan, &rows))
 	{
-		Plan	   *sort = rows_below(plan->lefttree);
+		Plan	   *below = rows_below(plan->lefttree);
 
-		if (sort != NULL && IsA(sort, IncrementalSort))
-			tie_scan(rows_below(sort->lefttree), rows);
+		if (below != NULL && IsA(below, IncrementalSort))
+			tie_scan(rows_below(below->lefttree), rows);
+		else if (below != NULL && IsA(below, MergeAppend))
+			floor_scans(stmt, (MergeAppend *) below, rows);
 	}
 }

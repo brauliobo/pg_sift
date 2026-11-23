@@ -771,13 +771,18 @@ rank_search_once(SiftRanker *r)
 	r->nhit = 0;
 	cap = Min(r->K, RANK_INITIAL_K);
 	sift_kern_topk_init(&tk, MemoryContextAlloc(p->mcxt, cap * sizeof(SiftHit)), cap, r->K);
-	tk.floor = r->floor;
+	tk.floor = r->group_floor && !r->searched ? Max(r->floor, *r->group_floor) : r->floor;
+#ifdef SIFT_TESTING
+	sift_rank_stats.floor_searches += r->group_floor && !r->searched && *r->group_floor > -INFINITY;
+#endif
 	p->stats.blocks_scored = p->stats.blocks_skipped = p->stats.candidates = p->stats.verified = 0;
 	if (shared)
 		rank_units_shared(r, &tk);
 	else
 		rank_units(r, &tk);
 	p->stats.theta = sift_kern_topk_theta(&tk);
+	if (r->group_floor && !r->searched && tk.n == tk.k)
+		*r->group_floor = Max(*r->group_floor, p->stats.theta);
 	r->complete = r->ties || tk.n < r->K;
 	rank_close_ties(r, &tk);
 	if (r->spill)
@@ -821,7 +826,7 @@ rank_search(SiftRanker *r)
 		rank_search_once(r);
 		r->floor = -INFINITY;
 	}
-	if (r->K == r->k && !r->par && !r->plan->complement)
+	if (r->K == r->k && !r->par && !r->group_floor && !r->plan->complement)
 		sift_plan_remember_theta(r->plan, r->K, r->plan->stats.theta);
 }
 
@@ -872,6 +877,13 @@ sift_rank_ties(SiftRanker *r)
 {
 	Assert(r->k > 0 && !r->searched);
 	r->ties = true;
+}
+
+void
+sift_rank_group_floor(SiftRanker *r, float4 *cell)
+{
+	Assert(!r->searched);
+	r->group_floor = cell;
 }
 
 void

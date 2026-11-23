@@ -216,6 +216,7 @@ typedef struct SiftRankStats
 	uint64		tail_direct;	/* segments of a leaf that went again on those terms as they are */
 	uint64		tail_unioned;	/* ... and on the one union of them */
 	uint64		tail_trimmed;	/* ... of which left terms out */
+	uint64		floor_searches;	/* first searches that started above the k-th score the scans of the other partitions raised */
 } SiftRankStats;
 extern SiftRankStats sift_rank_stats;
 #endif
@@ -231,6 +232,12 @@ extern void sift_rank_end(SiftRanker *r);
  * that drops a hit calls sift_rank_reopen: the ranker goes on as without ties, with the next search.
  */
 extern void sift_rank_ties(SiftRanker *r);
+
+/*
+ * The scan is one of the partitions under a MergeAppend under a LIMIT of k rows, each of which searches its k best: cell holds the k-th best
+ * score of the searches done so far (-infinity: none). The first search starts above it and, once it holds k hits, raises it.
+ */
+extern void sift_rank_group_floor(SiftRanker *r, float4 *cell);
 extern void sift_rank_reopen(SiftRanker *r);
 
 /* The k of the search after one of k hits that was not enough: it grows fast while the hits are few, slowly beyond */

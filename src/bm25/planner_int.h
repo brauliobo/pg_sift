@@ -89,7 +89,7 @@ extern List *param_limits(PlannerInfo *root);
 extern bool keyed_order(PlannerInfo *root, RelOptInfo *rel, KeyedOrder *ko);
 
 /* bm25/planner_ties.c: a scan whose rows go to an incremental sort under a LIMIT is told to hand out the group tied with the last */
-extern void sift_tie_node(Plan *plan);
+extern void sift_tie_node(PlannedStmt *stmt, Plan *plan);
 
 
 /* bm25/planner_path.c */

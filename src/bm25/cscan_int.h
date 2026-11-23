@@ -69,6 +69,7 @@ typedef struct SiftScanState
 	int64		late_rows;			/* > 0: the plan asked the ranker for the hits that this many rows take through the quals (SIFT_PRIV_LATE) */
 	int64		nread;				/* late quals: hits read from the ranker, and those that passed */
 	int64		nkept;
+	float4	   *group_floor;		/* the k-th best score the searches of the partitions of one LIMIT raise (SIFT_PRIV_GROUP) */
 	bool		ties;				/* the rows go to an incremental sort under a LIMIT of k rows: the ranker keeps the hits tied with the k-th (SIFT_PRIV_TIES) */
 	bool		late;				/* a ranked scan checks the quals on the rows it hands out, not on every candidate */
 	bool		secure;				/* a policy or security barrier view hides rows: no counter of the index in EXPLAIN ANALYZE */

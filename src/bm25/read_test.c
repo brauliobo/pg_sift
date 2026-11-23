@@ -53,6 +53,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		{"tail_direct", sift_rank_stats.tail_direct},
 		{"tail_unioned", sift_rank_stats.tail_unioned},
 		{"tail_trimmed", sift_rank_stats.tail_trimmed},
+		{"floor_searches", sift_rank_stats.floor_searches},
 		{"group_tf", sift_post_stats.group_tf},
 		{"block_tf", sift_post_stats.block_tf},
 		{"segcache_bytes", sift_segcache_bytes()},

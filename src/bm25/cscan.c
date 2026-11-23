@@ -369,6 +369,8 @@ start_scan(SiftScanState *ss)
 			ss->rank = sift_rank_begin(ss->plan, ss->k, scan_verify, ss);
 			if (ss->ties)
 				sift_rank_ties(ss->rank);
+			if (ss->group_floor)
+				sift_rank_group_floor(ss->rank, ss->group_floor);
 			if (ss->par.sh)
 				sift_rank_parallel(ss->rank, &ss->par);
 			for (int i = 0; i < ss->ncols; i++)

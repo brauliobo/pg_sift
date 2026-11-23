@@ -372,6 +372,7 @@ struct SiftRanker
 	int64		fb_want;
 	bool		complete;
 	bool		ties;				/* the search keeps every hit that ties with its worst one; nothing is asked after them (sift_rank_ties) */
+	float4	   *group_floor;		/* the first search starts above this k-th score, which the scans of the other partitions of the LIMIT raised (sift_rank_group_floor) */
 	SiftPar    *par;				/* parallel: the first search is shared with the other participants */
 	bool		par_active;			/* ... and is running now */
 	PosCtx	   *phrpos;
