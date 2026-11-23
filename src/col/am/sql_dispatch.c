@@ -18,6 +18,7 @@
 #include "table/dispatch.h"
 
 PG_FUNCTION_INFO_V1(sift_col_tracking);
+PG_FUNCTION_INFO_V1(sift_col_refresh);
 
 static bool
 f2_table_oid(Oid relid)
@@ -94,3 +95,12 @@ SIFT_SQL_ENTRY(sift_col_maintenance_status, SIFT_SQL_MAINTENANCE_STATUS)
 SIFT_SQL_ENTRY(sift_col_tracking, SIFT_SQL_TRACKING)
 SIFT_SQL_ENTRY(sift_worker_state, SIFT_SQL_WORKER_STATE)
 SIFT_SQL_ENTRY(sift_worker_history, SIFT_SQL_WORKER_HISTORY)
+
+/* not STRICT: a NULL index gives NULL, as it did before the format chose the answer */
+Datum
+sift_col_refresh(PG_FUNCTION_ARGS)
+{
+	if (PG_ARGISNULL(0))
+		PG_RETURN_NULL();
+	return dispatch(SIFT_SQL_REFRESH, fcinfo);
+}

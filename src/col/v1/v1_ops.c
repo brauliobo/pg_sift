@@ -39,6 +39,8 @@ v1_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo)
 			return sift_worker_state_dir(fcinfo);
 		case SIFT_SQL_WORKER_HISTORY:
 			return sift_worker_history_dir(fcinfo);
+		case SIFT_SQL_REFRESH:
+			return sift_col_v1_refresh(fcinfo);
 	}
 	pg_unreachable();
 }

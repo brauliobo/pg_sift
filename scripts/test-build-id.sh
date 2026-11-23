@@ -9,3 +9,7 @@ commit() { git commit -q --allow-empty -m "$1"; }
 commit one; git tag v1.2.3; commit two; git tag base-1.2.4; commit three
 id=$("$REPO/scripts/build-id.sh" "$TMP/t")
 [[ $id =~ ^1\.2\.3-2-g[0-9a-f]{7,}\+[0-9a-f]{7,}$ ]] && echo "ok: $id" || { echo "FAIL: build id '$id' does not name release v1.2.3"; exit 1; }
+git init -q "$TMP/n" && cd "$TMP/n" || exit 1
+cp "$REPO/META.json" .; git config user.email t@example.com; git config user.name t; commit untagged
+id=$("$REPO/scripts/build-id.sh" "$TMP/n")
+[[ $id =~ ^[0-9]+\.[0-9]+[^+]*\+[0-9a-f]{7,}$ ]] && echo "ok: $id" || { echo "FAIL: untagged build id '$id' is not VERSION+SHA"; exit 1; }

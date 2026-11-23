@@ -440,8 +440,6 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 		SiftColPred *p = &preds[i];
 
 		*p = (SiftColPred) {.col = leaf,.collid = k->defs[leaf].store == SIFT_COLS_STR ? key->sk_collation : InvalidOid};
-		/* a NaN is stored as a NULL with the overflow flag, and a row with an overflow flag is a candidate of every test of the leaf: the heap scan decides */
-		k->recheck |= k->defs[leaf].type == SIFT_COLT_NUMERIC;
 		if (key->sk_strategy == COL_STRAT_JSONB_EXISTS)
 		{
 			if (!key_exists_pred(k, key, p))

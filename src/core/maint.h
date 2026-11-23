@@ -198,6 +198,7 @@ extern Relation sift_mops_open(const SiftMaintOps *ops, Oid indexoid, LOCKMODE l
 extern Relation sift_mops_open_maintain(const SiftMaintOps *ops, Oid indexoid);
 extern Datum sift_mops_sql_promote(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
 extern Datum sift_mops_sql_merge(const SiftMaintOps *ops, PG_FUNCTION_ARGS);
+extern bool sift_maintain_f2(Oid relid, const char *what, int32 *promoted, int32 *merged);
 
 /*
  * The rewrite of an index that churn left scattered (ops->rewrite_due): seals the open write buffer, promotes, and merges what the kind's

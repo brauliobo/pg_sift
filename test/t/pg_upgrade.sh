@@ -233,7 +233,7 @@ if [[ $upgraded -ne 0 ]]; then
 	upgrade_failed new
 	bail "pg_upgrade failed"
 fi
-sed_i "/^sift\\.\(test_\|col_build_source\)/d" "$(dir new)/data/postgresql.conf"   # settings of the test build the preflight below would report
+sed_i "/^sift\\.test_/d;/^sift\\.col_build_source/d" "$(dir new)/data/postgresql.conf"   # settings of the test build the preflight below would report
 node_start new || bail "the upgraded cluster does not start"
 
 if [[ -z $OLD_REF ]]; then

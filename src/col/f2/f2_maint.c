@@ -33,6 +33,7 @@
 #include "core/f2/meta.h"
 #include "core/inspect.h"
 #include "core/meta_peek.h"
+#include "core/ops.h"
 #include "core/sql.h"
 #include "core/worker.h"
 
@@ -387,6 +388,7 @@ f2_verify(FunctionCallInfo fcinfo)
 {
 	Relation	index = open_f2(PG_GETARG_OID(0));
 
+	sift_check_maintain(index);
 	(void) sift_fsm_check(index);
 	ereport(NOTICE, (errmsg("sift_col index \"%s\": %s", RelationGetRelationName(index), sift_f2_check_keys(index))));
 	if (PG_GETARG_BOOL(1))
@@ -458,6 +460,7 @@ f2_maintain(FunctionCallInfo fcinfo)
 	PreventCommandIfReadOnly("sift.col_maintain()");
 	PreventCommandDuringRecovery("sift.col_maintain()");
 	index = open_f2(PG_GETARG_OID(0));
+	sift_check_maintain(index);
 	sift_f2_maintain(index);
 	index_close(index, AccessShareLock);
 	PG_RETURN_BOOL(true);
@@ -562,6 +565,19 @@ f2_worker_state(FunctionCallInfo fcinfo)
 	return sift_result_row(fcinfo, v, nulls);
 }
 
+/* sift.col_refresh: an index of format major 2 keeps no pre-aggregate sidecar of a segment that its options could make stale, so there is nothing to rewrite */
+static Datum
+f2_refresh(FunctionCallInfo fcinfo)
+{
+	Relation	index = open_f2(PG_GETARG_OID(0));
+	Datum		v[2] = {Int32GetDatum(0), Int32GetDatum(0)};
+	bool		nulls[2] = {false};
+
+	sift_check_maintain(index);
+	index_close(index, AccessShareLock);
+	return sift_result_row(fcinfo, v, nulls);
+}
+
 /* The last background step that ended well and the failures noted since the build, from the metapage */
 static Datum
 f2_worker_history(FunctionCallInfo fcinfo)
@@ -625,6 +641,8 @@ sift_col_v2_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo)
 			return f2_worker_state(fcinfo);
 		case SIFT_SQL_WORKER_HISTORY:
 			return f2_worker_history(fcinfo);
+		case SIFT_SQL_REFRESH:
+			return f2_refresh(fcinfo);
 	}
 	pg_unreachable();
 }

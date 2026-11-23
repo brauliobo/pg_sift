@@ -44,10 +44,33 @@ check_sketches(Relation rel, const SiftPartSpec *spec, const SiftPart *part, con
 	}
 }
 
+/* The spec of the part: the sort order its SEC_SCHEMA records, which is the one its rows keep whatever order the index asks for now (a key_order set or a primary key added after the rows were written) */
+static SiftPartSpec
+part_spec(Relation rel, const SiftPartSpec *spec, const SiftPart *part, uint16 *sort_cols)
+{
+	SiftPartSpec own = *spec;
+	uint64		len;
+	char	   *schema = sift_part_read_section(rel, part, SEC_SCHEMA, &len);
+	uint16		hdr[2];
+	Size		off;
+
+	memcpy(hdr, schema, sizeof(hdr));
+	own.nsort = hdr[1] & 0x00FF;
+	off = (4 + (Size) hdr[0] + 1) & ~(Size) 1;
+	memcpy(sort_cols, schema + off, own.nsort * sizeof(uint16));
+	memcpy(own.sort_flags, schema + off + own.nsort * sizeof(uint16), own.nsort);
+	own.sort_cols = sort_cols;
+	pfree(schema);
+	return own;
+}
+
 static void
-check_part(Relation rel, const SiftPartSpec *spec, const SiftPartitionEntry *e, const SiftPartDesc *d, uint64 *granules, uint64 *rows)
+check_part(Relation rel, const SiftPartSpec *current, const SiftPartitionEntry *e, const SiftPartDesc *d, uint64 *granules, uint64 *rows)
 {
 	SiftPart   *part = sift_part_open_desc(rel, d, (uint32) e->part_id);
+	uint16		sort_cols[SIFT_KEY_ORDER_MAX];
+	SiftPartSpec own = part_spec(rel, current, part, sort_cols);
+	const SiftPartSpec *spec = &own;
 	SiftCell   *cells = palloc0(Max(spec->ncols, 1) * sizeof(SiftCell));
 	int			nint = sift_spec_int_keys(spec);
 	uint8		prev[SIFT_BOUND_BYTES],

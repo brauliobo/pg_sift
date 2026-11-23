@@ -75,11 +75,21 @@ ops_of_oid(Oid indexoid)
 Datum
 sift_promote(PG_FUNCTION_ARGS)
 {
+	int32		promoted,
+				merged;
+
+	if (sift_maintain_f2(PG_GETARG_OID(0), "sift.promote()", &promoted, &merged))
+		PG_RETURN_INT32(promoted);
 	return sift_mops_sql_promote(ops_of_oid(PG_GETARG_OID(0)), fcinfo);
 }
 
 Datum
 sift_merge(PG_FUNCTION_ARGS)
 {
+	int32		promoted,
+				merged;
+
+	if (sift_maintain_f2(PG_GETARG_OID(0), "sift.merge()", &promoted, &merged))
+		PG_RETURN_INT32(merged);
 	return sift_mops_sql_merge(ops_of_oid(PG_GETARG_OID(0)), fcinfo);
 }

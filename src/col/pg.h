@@ -260,6 +260,7 @@ extern Datum sift_col_v1_verify(PG_FUNCTION_ARGS);
 struct SiftCheck;
 extern void sift_col_v1_check(struct SiftCheck *ck, Oid indexoid, bool heapallindexed);
 extern Datum sift_col_v1_tracking(PG_FUNCTION_ARGS);
+extern Datum sift_col_v1_refresh(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_repair(PG_FUNCTION_ARGS);	/* (index regclass, dry_run bool): the segments whose liveness pages it restored */
 extern PGDLLEXPORT Datum sift_col_promote(PG_FUNCTION_ARGS);
 extern PGDLLEXPORT Datum sift_col_merge(PG_FUNCTION_ARGS);

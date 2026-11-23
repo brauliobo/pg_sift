@@ -1,0 +1,41 @@
+-- A sift_table of Format 2.0 that is written and dropped in one transaction: the rows it staged go with it, and the commit has nothing to flush.
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+
+BEGIN;
+CREATE TABLE dt (id int, g int) USING sift_table;
+INSERT INTO dt SELECT i, i % 3 FROM generate_series(1, 100) i;
+DROP TABLE dt;
+COMMIT;
+SELECT to_regclass('dt') IS NULL AS dropped;
+
+BEGIN;
+CREATE TABLE dt (id int, g int) USING sift_table;
+INSERT INTO dt SELECT i, i % 3 FROM generate_series(1, 100) i;
+SAVEPOINT s;
+DROP TABLE dt;
+RELEASE s;
+COMMIT;
+SELECT to_regclass('dt') IS NULL AS dropped;
+
+BEGIN;
+CREATE TABLE pdt (id int, body text) PARTITION BY RANGE (id);
+CREATE TABLE pdt_a PARTITION OF pdt FOR VALUES FROM (0) TO (100) USING sift_table;
+INSERT INTO pdt SELECT i, 'x' FROM generate_series(0, 50) i;
+DROP TABLE pdt;
+COMMIT;
+SELECT to_regclass('pdt') IS NULL AS dropped;
+
+CREATE TABLE kt (id int, g int) USING sift_table;
+INSERT INTO kt SELECT i, i % 3 FROM generate_series(1, 100) i;
+BEGIN;
+INSERT INTO kt SELECT i, i % 3 FROM generate_series(101, 200) i;
+CREATE TABLE kt2 (id int) USING sift_table;
+INSERT INTO kt2 VALUES (1);
+DROP TABLE kt2;
+COMMIT;
+SELECT count(*) AS kept FROM kt;
+
+DROP TABLE kt;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -155,6 +155,16 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 	MemoryContextSwitchTo(old);
 }
 
+/* The key order of the table a rewrite copies from: the new relation has neither its options nor its primary key yet, and its parts must sort as the old ones do */
+void
+sift_tbl_f2_adopt_layout(SiftF2Store *to, const SiftF2Store *from)
+{
+	to->nkey = from->nkey;
+	memcpy(to->key_cols, from->key_cols, sizeof(to->key_cols));
+	memcpy(to->spec.sort_flags, from->spec.sort_flags, sizeof(to->spec.sort_flags));
+	to->spec.nsort = from->nkey;
+}
+
 /* ---- SEC_SCHEMA ---- */
 
 static inline Size

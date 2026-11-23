@@ -3,6 +3,7 @@
 -- cheaper (a selective filter), as for a literal common query, and a loose filter stays after the ranker; the rows,
 -- scores and ties are those of the plan with the literal query in every mode.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 
 -- the plan of a prepared query with a filter, as a generic plan (the query unknown) or a custom one (the query bound)
 CREATE FUNCTION fp_kind(flt text, generic boolean, mode text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$

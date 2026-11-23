@@ -29,7 +29,7 @@ SELECT count(*) > 0 AS has_extents, sum(nblocks) <= (SELECT high_water FROM sift
 SELECT rows, segments >= 1 AS has_parts, leaves FROM sift.col_index_info('ev_idx');
  rows  | has_parts | leaves 
 -------+-----------+--------
- 50000 | t         |       
+ 50000 | t         |      4
 (1 row)
 
 SELECT count(*) >= 1 AS has_parts, sum(rows) AS rows, bool_and(kind = 'immutable') AS immutable FROM sift.col_segments('ev_idx');
@@ -66,16 +66,16 @@ SELECT segments >= 1 AS has_parts, sealed, failures FROM sift.worker_state('ev_i
 (1 row)
 
 SELECT heap, blocked_by FROM sift.col_maintenance_status('ev_idx');
- heap | blocked_by 
-------+------------
- ev   | {}
+ heap |            blocked_by             
+------+-----------------------------------
+ ev   | {"sift.async_maintenance is off"}
 (1 row)
 
 DELETE FROM ev WHERE id % 2 = 0;
 SELECT sift.col_maintain('ev_idx');
  col_maintain 
 --------------
- f
+ t
 (1 row)
 
 SELECT sift.col_verify('ev_idx');

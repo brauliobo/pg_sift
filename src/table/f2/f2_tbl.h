@@ -182,6 +182,7 @@ extern int	sift_tbl_f2_option_count(void);
 extern int	sift_tbl_f2_hidden_option_count(void);
 extern void sift_tbl_f2_load_options(Relation rel, SiftF2Store *store, MemoryContext cx);
 extern void sift_tbl_f2_apply_key_order(Relation rel, SiftF2Store *store);
+extern void sift_tbl_f2_adopt_layout(SiftF2Store *to, const SiftF2Store *from);
 
 /* sift.table_set_option on a table of format major 2: the value checked (false, with why) and, for an option of Format 1, the notice that Format 2.0 ignores it (not while restoring a binary upgrade) */
 extern bool sift_tbl_f2_option_check_set(Relation rel, const char *name, const char *value, const char **why);

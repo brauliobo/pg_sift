@@ -305,8 +305,10 @@ stage_xact(XactEvent event, void *arg)
 		foreach(lc, stages)
 		{
 			SiftTxnStage *st = lfirst(lc);
-			Relation	rel = relation_open(st->relid, RowExclusiveLock);
+			Relation	rel = try_relation_open(st->relid, RowExclusiveLock);
 
+			if (rel == NULL)
+				continue;
 			if (RelFileLocatorEquals(st->locator, rel->rd_locator) && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
 			{
 				flush_stage(rel, st, true);

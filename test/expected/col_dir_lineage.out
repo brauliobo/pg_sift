@@ -23,7 +23,7 @@ CREATE TABLE before AS SELECT * FROM sift._test_dir_parts('t_idx');
 SELECT count(*) AS partitions, count(*) FILTER (WHERE lo_empty) AS empty_bound, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('t_idx');
  partitions | empty_bound | rows_from_lo | rows_below_next 
 ------------+-------------+--------------+-----------------
-         96 |           1 | t            | t
+         48 |           1 | t            | t
 (1 row)
 
 SELECT (SELECT count(*) FROM sift.col_segments('t_idx') WHERE kind = 'immutable') = count(*) AS every_segment_in_a_partition, count(*) > 30 AS cut_in_partitions, count(DISTINCT lineage) = count(*) AS distinct_lineages,
@@ -45,7 +45,7 @@ SELECT (SELECT count(*) FROM sift.col_segments('t_idx') WHERE kind = 'immutable'
 SELECT count(*) AS partitions, count(*) FILTER (WHERE lo_empty) AS empty_bound, bool_and(rows_from_lo) AS rows_from_lo, bool_and(rows_below_next) AS rows_below_next FROM sift._test_col_part_bounds('t_idx');
  partitions | empty_bound | rows_from_lo | rows_below_next 
 ------------+-------------+--------------+-----------------
-         88 |           1 | t            | t
+         44 |           1 | t            | t
 (1 row)
 
 SELECT sift.col_verify('t_idx', true);

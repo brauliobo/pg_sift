@@ -244,6 +244,8 @@ col_scan_begin(IndexScanDesc scan, bool lazy)
 	}
 	else
 		so->unsat = true;
+	for (int i = 0; sat && i < scan->numberOfKeys; i++)
+		keys.recheck |= so->preds[i].col >= 0 && so->defs[so->preds[i].col].type == SIFT_COLT_NUMERIC;	/* Format 1 stores a NaN as a NULL with the overflow flag: the heap decides it */
 	so->recheck = keys.recheck;
 	so->started = true;
 	MemoryContextSwitchTo(old);

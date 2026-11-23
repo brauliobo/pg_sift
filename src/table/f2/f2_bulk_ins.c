@@ -44,7 +44,7 @@ bulk_state(SiftF2Store *store)
 		return b;
 	b = MemoryContextAllocZero(store->cx, sizeof(SiftTblBulkState));
 	b->cells = MemoryContextAlloc(store->cx, sizeof(SiftCell) * Max(store->ncols, 1));
-	b->batch_cx = sift_mem_allocset_create(store->cx, "sift bulk insert batch");
+	b->batch_cx = sift_mem_allocset_create(store->cx, "sift cache bulk insert batch");
 	b->row_bytes = row_bytes_of(store);
 	x->bulk = b;
 	return b;

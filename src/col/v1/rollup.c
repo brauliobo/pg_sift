@@ -396,8 +396,6 @@ sift_col_rollup_refresh(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(n);
 }
 
-PG_FUNCTION_INFO_V1(sift_col_refresh);
-
 /* The generations of the immutable segments whose sidecar is not what the options ask now and that a rewrite can change (sift_cseg_pre_stale), in directory order */
 static int
 stale_segments(Relation index, uint64 **gens)
@@ -647,7 +645,7 @@ sift_col_caps(Relation index, SiftChoiceFn add, void *ctx)
  * setting accept. Returns the segments rewritten and the stale ones left.
  */
 Datum
-sift_col_refresh(PG_FUNCTION_ARGS)
+sift_col_v1_refresh(PG_FUNCTION_ARGS)
 {
 	Relation	index;
 	uint64	   *gens;
@@ -659,8 +657,6 @@ sift_col_refresh(PG_FUNCTION_ARGS)
 	Datum		v[2];
 	bool		nulls[2] = {false};
 
-	if (PG_ARGISNULL(0))
-		PG_RETURN_NULL();
 	limit = PG_ARGISNULL(1) ? PG_INT32_MAX : PG_GETARG_INT32(1);
 	if (limit < 0)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("max_segments must not be negative")));

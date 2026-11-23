@@ -56,3 +56,6 @@ SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key_stays_on_
  ->  Seq Scan on pt
 (3 rows)
 
+DROP FUNCTION plan(text);
+DROP TABLE pt;
+DROP EXTENSION pg_sift;

@@ -77,11 +77,11 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '0:bogus:1') | 22023 sift test: unknown operator "bogus"
  SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, '9:eq:1')    | 22023 sift test: no leaf 9
  SELECT count(*) FROM sift._test_col_tids('sna_idx'::regclass, 'g')         | 22023 sift test: bad group predicate "g"
- SELECT count(*) FROM sift.col_unit_agg('sna_idx'::regclass, NULL)          | ok
- SELECT count(*) FROM sift.col_unit_agg(NULL, 'g')                          | ok
+ SELECT count(*) FROM sift.col_unit_agg('sna_idx'::regclass, NULL)          | 22004 sift.col_unit_agg: the argument leaf must not be NULL
+ SELECT count(*) FROM sift.col_unit_agg(NULL, 'g')                          | 22004 sift.col_unit_agg: the argument index must not be NULL
  SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, 'g', NULL)    | ok
- SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, NULL, 'id')   | ok
- SELECT count(*) FROM sift.col_unit_hist(NULL, 'id')                        | ok
+ SELECT count(*) FROM sift.col_unit_hist('sna_idx'::regclass, NULL, 'id')   | 22004 sift.col_unit_hist: the argument dim must not be NULL
+ SELECT count(*) FROM sift.col_unit_hist(NULL, 'id')                        | 22004 sift.col_unit_hist: the argument index must not be NULL
  SELECT sift._names_expr('1; DROP TABLE sna_t', 'id', 'x')                  | 42601 sift._names_expr: the argument is not one expression
  SELECT sift._names_expr('id', 'id', NULL)                                  | 22004 sift._names_expr: the argument to_name must not be NULL
  SELECT sift._names_expr('id', NULL, 'x')                                   | 22004 sift._names_expr: the argument from_name must not be NULL

@@ -24,10 +24,12 @@
 
 #include "col/f2/col_meta.h"
 #include "col/f2/f2.h"
+#include "core/catname.h"
 #include "core/explain.h"
 #include "core/f2/meta.h"
 #include "core/maint.h"
 #include "core/maint_int.h"
+#include "core/meta_peek.h"
 #include "core/ops.h"
 #include "core/sql_api.h"
 #include "table/dispatch.h"
@@ -214,6 +216,33 @@ maintain_table_f2(const SiftApiRel *r, MaintainResult *res)
 	after = f2_shape(r->rel);
 	UnlockRelationOid(relid, ShareUpdateExclusiveLock);
 	f2_result(&before, &after, res);
+}
+
+/* sift.promote and sift.merge of a relation of Format 2.0, which has no directory of segments to seal or merge one by one: the step of sift.maintain, and the slabs and the parts it took away. False for any other relation */
+bool
+sift_maintain_f2(Oid relid, const char *what, int32 *promoted, int32 *merged)
+{
+	MaintainResult res = {0};
+	SiftApiRel	r;
+	Relation	rel = relation_open(sift_rel_must_exist(relid), AccessShareLock);
+	SiftApiAm	am;
+	bool		f2 = sift_api_am_of(rel, &am) && (rel->rd_rel->relkind == RELKIND_INDEX || rel->rd_rel->relkind == RELKIND_RELATION) &&
+		sift_meta_peek_format(rel).status == SIFT_FMT_V2;
+
+	relation_close(rel, AccessShareLock);
+	if (!f2)
+		return false;
+	PreventCommandIfReadOnly(what);
+	PreventCommandDuringRecovery(what);
+	r = sift_api_open(relid, AccessShareLock);
+	if (r.am == SIFT_API_COL)
+		maintain_col_f2(&r, &res);
+	else
+		maintain_table_f2(&r, &res);
+	sift_api_close(&r, AccessShareLock);
+	*promoted = res.promoted;
+	*merged = res.merged;
+	return true;
 }
 
 Datum

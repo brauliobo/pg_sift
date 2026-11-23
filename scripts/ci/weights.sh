@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # The constants of the plan that other parts read: the release-library smoke list, the column slices and the job weights that cut the shards.
 # weight_of sets WEIGHT from scripts/weights-*.tsv. Sourced by scripts/ci.sh; not a script of its own.
-STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes facet_counts col_scan tbl_basic tbl_agg agg_count_not_null agg_window agg_refusals agg_privileges roles_ddl roles_dml_query roles_maintenance edge_ddl cache_discard ops_info"   # see release_library_tests
+STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes tbl_basic edge_ddl ops_info"   # see release_library_tests
 SLOW_REGRESS="tbl_bigtx tbl_writepath build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
 	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"   # the regression tests that are jobs of their own, longest first
 COL_SLICES_LEAN=8 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths

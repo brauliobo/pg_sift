@@ -146,10 +146,12 @@ like($toc, qr/TABLE DATA sift table_option_values/, 'EXT-09: the dump carries th
 	my $dst = restore_node('restore_two_phase');
 	my @r = ('-p', $dst->port, '-h', $dst->host, '-d', 'postgres');
 	$dst->command_ok([ 'pg_restore', '--section=pre-data', @r, $custom ], 'EXT-09: pg_restore, pre-data');
-	$dst->command_ok([ 'pg_restore', '--section=data', '-t', 'sift.table_option_values', '-t', 'sift.table_paths', @r, $custom ],
-		'EXT-09: pg_restore, the data of the option tables');
-	$dst->command_ok([ 'pg_restore', '--section=data', '--exclude-table-data=sift.table_option_values', '--exclude-table-data=sift.table_paths', @r, $custom ],
-		'EXT-09: pg_restore, the rest of the data');
+	my $option_data = qr/TABLE DATA sift (table_option_values|table_paths) /;
+	my ($options, $rest) = map { $src->basedir . "/$_.list" } qw(options rest);
+	append_to_file($options, join('', grep { $_ =~ $option_data } split(/^/m, $toc)));
+	append_to_file($rest, join('', grep { $_ !~ $option_data } split(/^/m, $toc)));
+	$dst->command_ok([ 'pg_restore', '--section=data', '-L', $options, @r, $custom ], 'EXT-09: pg_restore, the data of the option tables');
+	$dst->command_ok([ 'pg_restore', '--section=data', '-L', $rest, @r, $custom ], 'EXT-09: pg_restore, the rest of the data');
 	$dst->command_ok([ 'pg_restore', '--section=post-data', @r, $custom ], 'EXT-09: pg_restore, post-data');
 	is(options_unapplied($dst), '0', 'EXT-09: restored in two phases, no part predates the restored options');
 	restored_ok($dst, 'EXT-09 two-phase pg_restore');
@@ -166,6 +168,7 @@ sub tablespace_of
 sub in_tablespace_dir { my ($node, $rel) = @_; return sql($node, "SELECT pg_relation_filepath('$rel') LIKE 'pg_tblspc/%'") }
 
 my $before = everything($src);
+my $phase = 1;
 for my $move (
 	[ 'ALTER INDEX ev_col SET TABLESPACE ts1',      'ev_col',    'ts1' ],
 	[ 'ALTER INDEX ev_trk SET TABLESPACE ts2',      'ev_trk',    'ts2' ],
@@ -181,7 +184,7 @@ for my $move (
 	is(in_tablespace_dir($src, $rel), $to eq 'pg_default' ? 'f' : 't', "EXT-17: the file of $rel is where the tablespace says");
 	is_deeply(everything($src), $before, "EXT-17: after $stmt every query answers as before");
 	is(sql($src, 'SELECT count(*) FROM sift.check(NULL, true)'), '0', "EXT-17: sift.check(heapallindexed) after $stmt");
-	sql($src, dml(2, @ALL_DML));
+	sql($src, dml(++$phase, @ALL_DML));
 	for my $name (sort keys %HEAP_QUERIES)
 	{
 		is(digest($src, $HEAP_QUERIES{$name}), digest($src, $HEAP_QUERIES{$name}, 1), "EXT-17: $name is the heap's answer after writes past $stmt");
@@ -191,7 +194,7 @@ for my $move (
 for my $rel (@SIFT_COL, @TABLES) { is(format_of($src, $rel), '2.0', "EXT-17: $rel is still Format 2.0") }
 
 sql($src, 'CHECKPOINT');
-sql($src, dml(3, @ALL_DML));
+sql($src, dml(++$phase, @ALL_DML));
 $before = everything($src);
 $src->stop('immediate');
 $src->start;

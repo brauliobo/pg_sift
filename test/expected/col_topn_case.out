@@ -257,8 +257,8 @@ ORDER BY k COLLATE "C";
      k      | used |    slug    |                                                                                  reason                                                                                  
 ------------+------+------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  allowed    | t    |            | 
- stable     | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
- sub-select | f    | topn_shape | the ORDER BY .. LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
+ stable     | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+ sub-select | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
  volatile   | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a function that is not immutable)
 (4 rows)
 

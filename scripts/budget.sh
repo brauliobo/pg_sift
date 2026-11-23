@@ -32,7 +32,7 @@ keep_failure() { # SCRATCH NAME: logs and small repro files only
 	local dst=$BUDGET_KEEP/$2.$(date +%H%M%S) f
 	mkdir -p "$dst"
 	( cd "$1" && find . -type f \( -name '*.log' -o -name '*.diffs' -o -name 'FAIL-*' -o -name summary.txt -o -name '*.out' \) -size -2M ) | while read -r f; do
-		(( $(du -sk "$dst" | cut -f1) < 20480 )) && (cd "$1" && cp --parents "$f" "$dst")
+		(( $(du -sk "$dst" | cut -f1) < 20480 )) && (cd "$1" && mkdir -p "$dst/${f%/*}" && cp "$f" "$dst/$f")
 	done
 	echo "budget: failure files in $dst"
 }

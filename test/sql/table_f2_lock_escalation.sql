@@ -1,6 +1,6 @@
 -- The row locks of a sift_table at the size of a bulk statement: an UPDATE or DELETE of every row of a table holds the relation with one lock of the lock manager once a partition has more
 -- than 4,096 locked rows, and the backend keeps no entry for each row. The answers are the heap's, no statement fails with "too many row locks held", and what the backend holds for its locks does not grow with the rows.
--- Every check raises on failure and prints one row (name, ok). SIFT_SCALE=n sets the rows (default 100000, about 8 minutes: the statements run at 1 to 3 ms for each row).
+-- Every check raises on failure and prints one row (name, ok). SIFT_SCALE=n sets the rows (default 12000, about 17 seconds: the statements run at 1 to 3 ms for each row, so 100000 takes minutes; the thresholds are 4,096 and 8,192 rows).
 -- Runs with no shared_preload_libraries. SIFT_DSM_FAIL=1 runs it as a server that cannot make the segment of the row locks (sift.test_dsm_fail): on a cluster that has just started, since
 -- a segment that exists is used; the answers are the same, the locks are the ones of the lock manager and no segment is made (the warning that says so is not shown).
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
@@ -12,7 +12,7 @@ SET statement_timeout = '3600s';
 \getenv scale SIFT_SCALE
 \if :{?scale}
 \else
-\set scale 100000
+\set scale 12000
 \endif
 \getenv dsm_fail SIFT_DSM_FAIL
 \if :{?dsm_fail}
