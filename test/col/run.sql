@@ -247,7 +247,7 @@ END $$;
 CREATE FUNCTION coldiff.refusal(stmt text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE want text := CASE WHEN stmt ~* '\mLIMIT\M' THEN 'topn' WHEN stmt ~* '\mDISTINCT\M' THEN 'distinct' ELSE 'single' END; s text;
 BEGIN
-	EXECUTE format('SELECT slug FROM sift._test_explain_why(%L) WHERE NOT used AND slug IS NOT NULL ORDER BY arm = %L DESC, arm = ''single'' DESC LIMIT 1', stmt, want) INTO s;
+	EXECUTE format('SELECT slug FROM sift.explain_why(%L) WHERE NOT used AND slug IS NOT NULL ORDER BY arm = %L DESC, arm = ''single'' DESC LIMIT 1', stmt, want) INTO s;
 	RETURN s;
 EXCEPTION WHEN OTHERS THEN RETURN NULL;
 END $$;
