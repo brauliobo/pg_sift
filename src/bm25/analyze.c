@@ -204,6 +204,23 @@ sift_analyzer_nfields(const SiftAnalyzer *a)
 	return a->cfg.nfields;
 }
 
+void
+sift_field_dl(const SiftTermFreq *terms, int nterms, int nfields, uint16 *dl)
+{
+	memset(dl, 0, nfields * sizeof(uint16));
+	for (int i = 0; i < nterms; i++)
+	{
+		const SiftTermFreq *t = &terms[i];
+
+		if (SIFT_FIELD_TERM(t->term[0], nfields) && t->len > 1 && t->term[1] != SIFT_PREFIX_SEP)
+		{
+			uint16	   *f = &dl[(unsigned char) t->term[0] - SIFT_FIELD_BASE];
+
+			*f = Min(*f + t->tf, SIFT_MAX_DL);
+		}
+	}
+}
+
 const char *
 sift_analyzer_field_names(const SiftAnalyzer *a)
 {

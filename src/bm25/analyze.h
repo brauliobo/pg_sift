@@ -213,6 +213,12 @@ extern int	sift_analyze_doc(SiftAnalyzer *a, const char *text, int len,
 							 SiftTermFreq **out, uint32 *dl);
 
 /*
+ * The length of each of the first nfields sections of a document in a bag sift_analyze_doc made: the tf of the words that section
+ * has as terms of its own (not their prefix terms), saturated at SIFT_MAX_DL. dl[nfields] is filled.
+ */
+extern void sift_field_dl(const SiftTermFreq *terms, int nterms, int nfields, uint16 *dl);
+
+/*
  * Folds without tokenizing or stemming (wildcard and prefix literals): token
  * characters fold as in tokens, ignorables are dropped, everything else is
  * copied. *out is NUL-terminated.
