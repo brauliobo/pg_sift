@@ -193,6 +193,7 @@ MemoryContextSwitchTo(MemoryContext cx)
 #define ERRCODE_T_R_SERIALIZATION_FAILURE	10
 #define ERRCODE_DATA_CORRUPTED				11
 #define ERRCODE_OUT_OF_MEMORY				12
+#define ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE	13
 
 extern bool errstart(int elevel, const char *domain);
 extern bool errstart_cold(int elevel, const char *domain);

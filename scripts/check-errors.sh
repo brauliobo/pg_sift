@@ -24,7 +24,7 @@ src = sys.argv[1]
 registry = sys.argv[2]
 NEEDS_HELP = {"ERRCODE_PROGRAM_LIMIT_EXCEEDED", "ERRCODE_FEATURE_NOT_SUPPORTED", "ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE"}
 call = re.compile(r"\b(ereport|elog)\s*\(")
-damage_call = re.compile(r"\bSIFT_DAMAGE_(?:INDEX|DATA|OTHER_INDEX|OTHER_DATA)\s*\(")
+damage_call = re.compile(r"\b(?:SIFT_DAMAGE_(?:INDEX|DATA|OTHER_INDEX|OTHER_DATA)|SIFT_FAIL_CORRUPT)\s*\(")
 detail_call = re.compile(r"\b(errmsg|errmsg_plural|errdetail|errhint|errcontext)\s*\(")
 oid_name = re.compile(r'"[^"]*\b(?:relation|index|table)\s+%u')
 ddl_hint = re.compile(r'"[^"]*\b(?:ALTER|REINDEX|DROP)\s+(?:INDEX|TABLE)\b[^"]*%s')
@@ -119,7 +119,7 @@ for root, _, names in os.walk(src):
         for m in damage_call.finditer(text):
             n = text.count("\n", 0, m.start()) + 1
             body = text[m.end():balanced(text, m.end() - 1) - 1]
-            if name != "damage.h" and "RelationGetRelationName" not in body and not any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
+            if name not in ("damage.h", "arena.h") and "RelationGetRelationName" not in body and not any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
                 unnamed.add(os.path.relpath(path, os.path.dirname(src)))
 
 # the registry: FILE <TAB> files that push the context scope its errors are raised under (or "-": a known gap)

@@ -26,6 +26,12 @@ extern Size sift_colz_compress(int alg, int level, const void *src, Size n, void
 /* Decompresses exactly rawlen bytes into dst from clen bytes; false on any error, including a stream that does not produce exactly rawlen */
 extern bool sift_colz_decompress(int alg, const void *src, Size clen, void *dst, Size rawlen);
 
+/*
+ * Frees the zstd contexts the calling thread made (one for each thread that compressed or decompressed, kept for the life of the thread).
+ * A thread of a pool calls it before it exits; the backend thread keeps its own.
+ */
+extern void sift_colz_thread_fini(void);
+
 #define SIFT_ZSTD_DICT_MIN_BYTES	1024u
 #define SIFT_ZSTD_DICT_MAX_BYTES	16384u
 #define SIFT_ZSTD_DICT_SAMPLE_CAP	(128u * 1024u)

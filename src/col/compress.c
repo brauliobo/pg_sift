@@ -50,6 +50,16 @@ static _Thread_local ZSTD_CCtx *zstd_cctx;
 static _Thread_local ZSTD_DCtx *zstd_dctx;
 #endif
 
+void
+sift_colz_thread_fini(void)
+{
+#ifdef SIFT_HAVE_ZSTD
+	ZSTD_freeCCtx(zstd_cctx);
+	zstd_cctx = NULL;
+	ZSTD_freeDCtx(zstd_dctx);
+	zstd_dctx = NULL;
+#endif
+}
 
 Size
 sift_colz_compress(int alg, int level, const void *src, Size n, void *dst, Size cap)
