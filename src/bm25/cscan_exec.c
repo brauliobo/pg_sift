@@ -12,6 +12,7 @@
 #include "executor/executor.h"
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "storage/predicate.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -20,6 +21,7 @@
 
 #include "bm25/eval.h"
 #include "bm25/planner.h"
+#include "bm25/semi_cache.h"
 #include "bm25/cscan_int.h"
 #include "core/cmp.h"
 #include "core/compat.h"
@@ -81,7 +83,68 @@ init_attrs(SiftScanState *ss, List *flat)
 	ss->nattr = n;
 }
 
-/* The most keys of a table the scan tests the join column against: more is left to the join */
+static bool
+has_param(Node *node, void *context)
+{
+	return node != NULL && (IsA(node, Param) || expression_tree_walker(node, has_param, context));
+}
+
+/* A set that a later statement under the same snapshot can read again: the quals ask nothing that changes between two statements */
+static bool
+semi_cacheable(List *quals)
+{
+	return !contain_mutable_functions((Node *) quals) && !has_param((Node *) quals, NULL);
+}
+
+/* The sorted distinct keys of attno of the rows of dim that pass quals, or SIFT_SEMI_OVER when they are more than SIFT_SEMI_MAX_SET */
+static int
+read_semi(EState *estate, Relation dim, AttrNumber attno, List *quals, int64 **keys)
+{
+	Oid			keytype = TupleDescAttr(RelationGetDescr(dim), attno - 1)->atttypid;
+	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
+	ExprState  *qual = ExecPrepareQual(quals, estate);
+	ExprContext *econtext = CreateExprContext(estate);
+	TupleTableSlot *slot = table_slot_create(dim, NULL);
+	TableScanDesc scan = sift_table_beginscan(dim, estate->es_snapshot, 0, NULL);
+	int64	   *set = palloc(1024 * sizeof(int64));
+	int			nset = 0,
+				cap = 1024,
+				m = 0;
+
+	while (nset != SIFT_SEMI_OVER && table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		bool		isnull;
+		Datum		d;
+
+		econtext->ecxt_scantuple = slot;
+		if (!ExecQual(qual, econtext))
+			continue;
+		d = slot_getattr(slot, attno, &isnull);
+		if (isnull)
+			continue;
+		if (nset == cap && cap >= SIFT_SEMI_MAX_SET)
+			nset = SIFT_SEMI_OVER;
+		else
+		{
+			if (nset == cap)
+				set = repalloc(set, (cap *= 2) * sizeof(int64));
+			set[nset++] = sift_attr_datum(keytype, d);
+		}
+	}
+	table_endscan(scan);
+	ExecDropSingleTupleTableSlot(slot);
+	MemoryContextSwitchTo(old);
+	if (nset != SIFT_SEMI_OVER)
+	{
+		qsort(set, nset, sizeof(int64), sift_cmp_i64);
+		for (int j = 0; j < nset; j++)
+			if (m == 0 || set[m - 1] != set[j])
+				set[m++] = set[j];
+		nset = m;
+	}
+	*keys = set;
+	return nset;
+}
 
 /*
  * The keys of the rows that pass the quals of each table the planner offered (SIFT_PRIV_SEMI), as one more IN test on the column they are joined
@@ -103,57 +166,21 @@ load_semi(SiftScanState *ss)
 		int			col = (int) DatumGetInt64(((Const *) list_nth(ss->semi, 4 * i + 1))->constvalue);
 		AttrNumber	attno = (AttrNumber) DatumGetInt64(((Const *) list_nth(ss->semi, 4 * i + 2))->constvalue);
 		List	   *quals = (List *) list_nth(ss->semi, 4 * i + 3);
-		Relation	dim = table_open(reloid, AccessShareLock);
-		Oid			keytype = TupleDescAttr(RelationGetDescr(dim), attno - 1)->atttypid;
-		MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
-		ExprState  *qual = ExecPrepareQual(quals, estate);
-		ExprContext *econtext = CreateExprContext(estate);
-		TupleTableSlot *slot = table_slot_create(dim, NULL);
-		TableScanDesc scan = sift_table_beginscan(dim, estate->es_snapshot, 0, NULL);
-		int64	   *set = palloc(1024 * sizeof(int64));
-		int			nset = 0,
-					cap = 1024;
-		bool		over = false;
+		char	   *key = semi_cacheable(quals) ? nodeToString(quals) : NULL;
+		int64	   *set = NULL;
+		int			nset;
 
-		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		if (key == NULL || !sift_semi_cache_get(reloid, attno, key, estate->es_snapshot, estate->es_query_cxt, &set, &nset))
 		{
-			bool		isnull;
-			Datum		d;
+			Relation	dim = table_open(reloid, AccessShareLock);
 
-			econtext->ecxt_scantuple = slot;
-			if (!ExecQual(qual, econtext))
-				continue;
-			d = slot_getattr(slot, attno, &isnull);
-			if (isnull)
-				continue;
-			if (nset == cap)
-			{
-				if (cap >= SIFT_SEMI_MAX_SET)
-				{
-					over = true;
-					break;
-				}
-				cap *= 2;
-				set = repalloc(set, cap * sizeof(int64));
-			}
-			set[nset++] = sift_attr_datum(keytype, d);
+			nset = read_semi(estate, dim, attno, quals, &set);
+			table_close(dim, AccessShareLock);
+			if (key != NULL)
+				sift_semi_cache_put(reloid, attno, key, estate->es_snapshot, set, nset);
 		}
-		table_endscan(scan);
-		ExecDropSingleTupleTableSlot(slot);
-		MemoryContextSwitchTo(old);
-		table_close(dim, AccessShareLock);
-		if (over)
-			continue;
-		qsort(set, nset, sizeof(int64), sift_cmp_i64);
-		{
-			int			m = 0;
-
-			for (int j = 0; j < nset; j++)
-				if (m == 0 || set[m - 1] != set[j])
-					set[m++] = set[j];
-			nset = m;
-		}
-		ss->attr[ss->nattr++] = (SiftAttrTest) {.col = col, .op = SIFT_AT_IN, .set = set, .nset = nset};
+		if (nset != SIFT_SEMI_OVER)
+			ss->attr[ss->nattr++] = (SiftAttrTest) {.col = col, .op = SIFT_AT_IN, .set = set, .nset = nset};
 	}
 }
 
