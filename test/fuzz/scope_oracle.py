@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Oracle gate of the scope index: random workloads whose expected answer comes from stock PostgreSQL only (test/t/col_scope_oracle.sh runs it).
 
-  test/fuzz/scope_oracle.py --primary SOCK:PORT --standby SOCK:PORT --stock SOCK:PORT --restore SOCK:PORT --out DIR [--seeds 1-3] [--rows 60000] [--steps 8] [--window 6]
+  test/fuzz/scope_oracle.py [--format f2|f1|release] --primary SOCK:PORT --standby SOCK:PORT --stock SOCK:PORT --restore SOCK:PORT --out DIR [--seeds 1-3] [--rows 60000] [--steps 8] [--window 6]
 
 The nodes: PRIMARY has pg_sift and the scope index (wal_level logical); STANDBY streams from it (physical, hot standby); STOCK never loads pg_sift (a cluster that holds the plain tables only, fed by logical replication of the base
 tables: the oracle, no sift code on its side); RESTORE has pg_sift and takes a dump of the primary.
 
-SIFT_ORACLE_VERIFY_EVERY=1 runs sift.col_scope_verify after every step and window (default 4).
+SIFT_ORACLE_VERIFY_EVERY=1 runs the verification of the scope index (sift.col_scope_verify on Format 1, sift.check elsewhere) after every step and window (default 4).
 SIFT_ORACLE_SET is SQL every session of the primary runs first (`SET sift.test_no_track = on;` is a mutant of the tracking that the gate must catch).
+--format f2 (default) builds the scope index in Format 2.0 on the test library, f1 in Format 1, release on the release library: a test setting the library lacks is left out (test/fuzz/fmt.py).
 
 A seed draws a shape (one path, soft deleted pairs, a scope of two paths), a size and builds the facts and the pairs. Steps change facts and pairs (inserts, updates, moves of the member, HOT updates, deletes, upserts; pairs
 inserted, deleted, moved, reloaded, soft deleted, restored; grants and memberships), run VACUUM, promotion, merge, REINDEX (also CONCURRENTLY, and of a journal index of the pairs) and CREATE INDEX CONCURRENTLY of a second scope index, leave a writer's transaction open
@@ -23,6 +24,10 @@ restored and read. The first wrong answer stops the run (exit 1) with the query,
 """
 import argparse, os, random, re, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fmt  # noqa: E402
+
+FMT = None      # the library of the nodes, probed by main
 ERR = re.compile(r'^(ERROR|FATAL|PANIC|server closed|connection to server|psql: error)', re.M)
 TZ = "SET TimeZone = 'UTC'; SET client_min_messages = warning; SET max_parallel_workers_per_gather = 0; SET jit = off; SET lock_timeout = '60s';"
 WHY = {}
@@ -34,6 +39,14 @@ class Fail(Exception):
     pass
 
 
+KNOB = re.compile(r'\b(?:SET(?: LOCAL)?|RESET) (sift\.\w+)(?: = \w+)?;[ \t]*')
+
+
+def knobs(sql):
+    """the statements of sql without the settings of sift that the library lacks (the release library has no sift.agg_force and no sift.agg_scope)"""
+    return KNOB.sub(lambda m: m.group(0) if FMT.has(m.group(1)) else '', sql)
+
+
 class Pg:
     """A psql session on a node: send a script, read to the sentinel."""
     ALL = []
@@ -42,16 +55,14 @@ class Pg:
         host, port = node.rsplit(':', 1)
         self.name, self.log, self.n, self.node, self.db = name, log, 0, node, db
         Pg.ALL.append(self)
-        env = dict(os.environ, LC_ALL='C', PGHOST=host, PGPORT=port)
-        for k in ('PGDATABASE', 'PGSERVICE', 'PGOPTIONS'):
-            env.pop(k, None)
+        env = dict(FMT.env() if sift else fmt.libpq_env(), PGHOST=host, PGPORT=port)
         self.p = subprocess.Popen(['psql', '-X', '-A', '-t', '-F', '|', '-U', 'postgres', '-d', db], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
         self.run('\\set ON_ERROR_ROLLBACK on\n' + ("LOAD 'pg_sift';" if sift else '') + TZ + setup)
 
     def run(self, sql, allow=None):
         self.n += 1
-        sql = sql.rstrip()
+        sql = knobs(sql).rstrip()
         if not sql.endswith(';'):
             sql += ';'
         tok = f'@@END {self.n}'
@@ -423,6 +434,13 @@ def wait_stock(p, *subs):
             raise Fail(f'the subscription of {sk.name} did not catch up')
 
 
+def verify_sql(idx):
+    """the scope index against its pairs: sift.col_scope_verify on Format 1, sift.check (the public verification of every index and table) elsewhere"""
+    if FMT.v1_hooks:
+        return f"SELECT scope_key, problem, detail FROM sift.col_scope_verify({idx}, 50);"
+    return f"SELECT segment, problem, detail FROM sift.check({idx}, true, 50);"
+
+
 def run_seed(a, seed):
     rng = random.Random(seed)
     db = f'oracle{seed}'
@@ -442,7 +460,8 @@ def run_seed(a, seed):
     root = Pg('admin', P, 'postgres', log, sift=False)
     for n in (P, B, R):
         Pg('admin', n, 'postgres', log, sift=False).run(f"DROP DATABASE IF EXISTS {db} WITH (FORCE); CREATE DATABASE {db};")
-    setup = (f"SET sift.test_scope_patch = {patch};" + (f" SET sift.test_col_segment_kb = {seg};" if seg else '') + (f" SET sift.test_col_unit_rows = {urows};" if urows else '')
+    v1 = FMT.v1_hooks
+    setup = (FMT.set_sql([f'sift.test_scope_patch={patch}']) + (f" SET sift.test_col_segment_kb = {seg};" if seg and v1 else '') + (f" SET sift.test_col_unit_rows = {urows};" if urows and v1 else '')
              + os.environ.get('SIFT_ORACLE_SET', ''))
     shell(f"echo 'seed {seed}: shape {shape.name} rows {rows} index options [{opts}] test_scope_patch {patch} segment_kb {seg} unit_rows {urows} late {late}' >> {out}/summary.txt")
     print(f'seed {seed}: shape {shape.name}, {rows} rows, options [{opts}], patch {patch}, segment_kb {seg}, unit_rows {urows}, late {late}', flush=True)
@@ -523,7 +542,7 @@ def run_seed(a, seed):
 
     def verify(step):
         for who, pg in (('primary', A), ('standby', SP), ('logical subscriber', LP)):
-            o = pg.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 50);")
+            o = pg.run(verify_sql("'facts_col'"))
             STATS['verify'] += 1
             STATS['unverified'] += o.count('unverified')
             if 'differs' in o:
@@ -575,7 +594,7 @@ def run_seed(a, seed):
         for _ in range(r.randint(1, 2)):
             edit(W, shape.pair_edit(r)); edit(W, fact_edit(r, shape.M, state))
         if r.random() < 0.5:
-            M2.run(r.choice(["VACUUM facts;", "VACUUM pairs;" if shape.name != 'union' else "VACUUM grants;", "SELECT sift.col_promote('facts_col');", "SELECT sift.col_merge('facts_col', true);"]))
+            M2.run(r.choice(["VACUUM facts;", "VACUUM pairs;" if shape.name != 'union' else "VACUUM grants;", "SELECT sift.promote('facts_col');", "SELECT sift.merge('facts_col', true);"]))
         for arm in ('scope', 'planned', 'plain'):
             got = answers(R1, arm, qs, snapshot=False)
             gate.compare(seed, step, f'old {level} snapshot, {arm} vs the first read', qs, got, first, R1, arm, R1, 'plain', True)
@@ -588,7 +607,7 @@ def run_seed(a, seed):
         before = shape.queries(r, ntenants)
         base = answers(A, 'plain', before)
         edit(W2, "BEGIN;" + fact_edit(r, shape.M, state) + shape.pair_edit(r))
-        M2.run(r.choice(["VACUUM facts;", "SELECT sift.col_promote('facts_col');", "SELECT sift.col_merge('facts_col', true);", "VACUUM;"]))
+        M2.run(r.choice(["VACUUM facts;", "SELECT sift.promote('facts_col');", "SELECT sift.merge('facts_col', true);", "VACUUM;"]))
         for arm in ('scope', 'plain'):
             got = answers(A, arm, before)
             gate.compare(seed, step, f'a writer holds a transaction open, {arm} vs the state before it', before, got, base, A, arm, A, 'plain')
@@ -650,7 +669,7 @@ def run_seed(a, seed):
             if cic and not did and n >= 2:
                 did = True
                 M2.run(shape.scope_index('facts_col2', opts, True), allow=r'.')
-                M2.run("SELECT sift.col_promote('facts_col');" if r.random() < 0.5 else "VACUUM facts;")
+                M2.run("SELECT sift.promote('facts_col');" if r.random() < 0.5 else "VACUUM facts;")
         bench.wait()
         if bench.returncode not in (0, None):
             lg = open(f'{d}/pgbench.log').read()
@@ -662,7 +681,7 @@ def run_seed(a, seed):
         """The scope segments are drained: every row whose member has a pair goes, VACUUM and a merge of everything take the segments that held the oldest stamp, and the member of each row that stays is granted."""
         edit(W, f"DELETE FROM facts WHERE dim_a_id <= {shape.M};")
         W.run("VACUUM facts;")
-        M2.run("SELECT sift.col_promote('facts_col'); SELECT sift.col_merge('facts_col', true);")
+        M2.run("SELECT sift.promote('facts_col'); SELECT sift.merge('facts_col', true);")
         quiesce(step, 'scope segments drained')
         edit(W, shape.grant_late())
         quiesce(step, 'member of each row left, granted')
@@ -679,7 +698,7 @@ def run_seed(a, seed):
         if kind == 'key_cut':
             M2.run(f"ALTER INDEX facts_col SET (key_cut = '{lr.choice(['off', 'dim_a_id'])}');")
             edit(W, fact_edit(lr, shape.M, state))
-            M2.run("SELECT sift.col_promote('facts_col'); SELECT sift.col_merge('facts_col', true);")
+            M2.run("SELECT sift.promote('facts_col'); SELECT sift.merge('facts_col', true);")
         elif kind == 'refuse':
             for stmt in ("ALTER INDEX facts_col SET (scope = 'off')", "ALTER INDEX facts_col RESET (scope)"):
                 if 'ERROR' not in M2.run(stmt, allow=r'.'):
@@ -689,9 +708,9 @@ def run_seed(a, seed):
             wait_stock(A, SK, LP)
             for pg in (SK, LP, A):
                 pg.run(f"ALTER TABLE facts RENAME TO facts_r; ALTER TABLE {pt} RENAME TO {pt}_r;")
-            M2.run("ALTER INDEX facts_col RENAME TO facts_col_r; VACUUM facts_r; SELECT sift.col_promote('facts_col_r'); SELECT sift.col_merge('facts_col_r', true);")
+            M2.run("ALTER INDEX facts_col RENAME TO facts_col_r; VACUUM facts_r; SELECT sift.promote('facts_col_r'); SELECT sift.merge('facts_col_r', true);")
             for who, pg in (('primary', A), ('logical subscriber', LP)):
-                o = pg.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify(" + ("'facts_col_r'" if pg is A else "'facts_col'") + ", 50);")
+                o = pg.run(verify_sql("'facts_col_r'" if pg is A else "'facts_col'"))
                 if 'differs' in o:
                     gate.fail(seed, step, f'sift.col_scope_verify on the {who} reports a differing key while the tables are renamed', 'col_scope_verify', '', o)
             for pg in (A, SK, LP):
@@ -711,7 +730,7 @@ def run_seed(a, seed):
         if r.random() < 0.7:
             W.run(r.choice(["VACUUM facts;", "VACUUM (ANALYZE) " + ('pairs' if shape.name != 'union' else 'grants, group_members') + ";", "VACUUM (FREEZE) facts;"]))
         if r.random() < 0.4:
-            M2.run(r.choice(["SELECT sift.col_promote('facts_col');", "SELECT sift.col_merge('facts_col', false);", "SELECT sift.col_merge('facts_col', true);"]))
+            M2.run(r.choice(["SELECT sift.promote('facts_col');", "SELECT sift.merge('facts_col', false);", "SELECT sift.merge('facts_col', true);"]))
         if r.random() < 0.15:
             M2.run(r.choice(["REINDEX INDEX facts_col;", "REINDEX INDEX CONCURRENTLY facts_col;", f"REINDEX INDEX {r.choice(shape.journals())};"]), allow=r'.')
         quiesce(step, f'step {step}')
@@ -750,7 +769,7 @@ def run_seed(a, seed):
     stock = answers(SK, 'stock', qs)
     for arm in ('scope', 'planned', 'plain'):
         gate.compare(seed, 'restore', f'restored {arm} vs the stock node', qs, answers(RP, arm, qs), stock, RP, arm, SK, 'stock')
-    o = RP.run("SELECT scope_key, problem, detail FROM sift.col_scope_verify('facts_col', 50);")
+    o = RP.run(verify_sql("'facts_col'"))
     STATS['verify'] += 1
     if 'differs' in o:
         gate.fail(seed, 'restore', 'sift.col_scope_verify on the restored database reports a differing key', 'col_scope_verify', '', o)
@@ -789,7 +808,11 @@ def main():
     p.add_argument('--windows', type=int, default=1)
     p.add_argument('--toggle-every', dest='toggle_every', type=int, default=1)
     p.add_argument('--window-secs', dest='window_secs', type=int, default=8)
+    fmt.add_argument(p)
     a = p.parse_args()
+    global FMT
+    host, port = a.primary.rsplit(':', 1)
+    FMT = fmt.Lib(a.format, env=dict(fmt.libpq_env(), PGHOST=host, PGPORT=port, PGUSER='postgres'))
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
     try:
