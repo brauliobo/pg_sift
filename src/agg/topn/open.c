@@ -87,6 +87,9 @@ sift_topn_key_ok(const SiftSrcLeaf *lf)
 		case UUIDOID:
 		case BYTEAOID:
 		case INETOID:
+		case CIDROID:
+		case BPCHAROID:
+		case NAMEOID:
 			return lf->vtype == SCV_CODE;
 		default:
 			/* an enum is the vector of the OIDs of its values: the scan ranks them in the order of the type */
@@ -393,7 +396,7 @@ order_gok(SiftTopN *t, const SiftSrcLayout *lay, Relation heap)
 			 * rows, and a group of equal strings is told by its bytes, so a collation that calls different bytes equal cannot have them
 			 */
 			if (j != 0 || k->bkind != BK_TEXT || !OidIsValid(k->collid) || (t->gtyp[0] != TEXTOID && t->gtyp[0] != VARCHAROID) ||
-				(t->nkey > 1 && !get_collation_isdeterministic(k->collid)))
+				!get_collation_isdeterministic(k->collid))
 				return false;
 			t->gtext = true;
 		}
@@ -444,7 +447,7 @@ sift_topn_open(Node *spec, const SiftSrcLayout *lay, SiftSrcSource *src, Relatio
 		if (k->vtype == SCV_CODE)
 		{
 			k->blob = true;
-			k->bkind = cmp == F_BTTEXTCMP ? BK_TEXT : cmp == F_UUID_CMP ? BK_UUID : cmp == F_BYTEACMP ? BK_BYTEA : BK_FMGR;
+			k->bkind = cmp == F_BTTEXTCMP ? BK_TEXT : cmp == F_UUID_CMP ? BK_UUID : cmp == F_BYTEACMP ? BK_BYTEA : cmp == F_BPCHARCMP ? BK_BPCHAR : cmp == F_BTNAMECMP ? BK_NAME : BK_FMGR;
 			k->typid = k->bkind == BK_TEXT ? TEXTOID : leaf >= 0 ? lay->leaf[leaf].typid : xcoll;
 			k->sortop = sortop;
 			k->collid = collid;

@@ -83,7 +83,7 @@ NOTICE:  table "nm_b" does not exist, skipping
 -------+---------------+----------------
  build | a_asc         | same+topn 25
  build | a_desc        | same+topn 25
- build | a_expression  | same 25
+ build | a_expression  | same+topn 25
  build | a_filter      | same+topn 30
  build | a_nan_offset  | same+topn 30
  build | a_nulls_first | same+topn 25
@@ -146,7 +146,7 @@ SELECT * FROM nm_stage('segments');
 ----------+---------------+-----------------
  segments | a_asc         | same+topn 25
  segments | a_desc        | same+topn 25
- segments | a_expression  | same 25
+ segments | a_expression  | same+topn 25
  segments | a_filter      | same+topn 30
  segments | a_nan_offset  | same+topn 30
  segments | a_nulls_first | same+topn 25
@@ -192,7 +192,7 @@ SELECT * FROM nm_stage('buffer');
 --------+---------------+-----------------
  buffer | a_asc         | same+topn 25
  buffer | a_desc        | same+topn 25
- buffer | a_expression  | same 25
+ buffer | a_expression  | same+topn 25
  buffer | a_filter      | same+topn 30
  buffer | a_nan_offset  | same+topn 30
  buffer | a_nulls_first | same+topn 25
@@ -255,7 +255,7 @@ SELECT * FROM nm_stage('merged');
 --------+---------------+-----------------
  merged | a_asc         | same+topn 25
  merged | a_desc        | same+topn 25
- merged | a_expression  | same 25
+ merged | a_expression  | same+topn 25
  merged | a_filter      | same+topn 30
  merged | a_nan_offset  | same+topn 30
  merged | a_nulls_first | same+topn 25
@@ -285,7 +285,7 @@ SELECT * FROM nm_stage('vacuumed');
 ----------+---------------+-----------------
  vacuumed | a_asc         | same+topn 25
  vacuumed | a_desc        | same+topn 25
- vacuumed | a_expression  | same 25
+ vacuumed | a_expression  | same+topn 25
  vacuumed | a_filter      | same+topn 30
  vacuumed | a_nan_offset  | same+topn 30
  vacuumed | a_nulls_first | same+topn 25

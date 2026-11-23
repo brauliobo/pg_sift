@@ -111,7 +111,8 @@ topn_num_type(Oid t)
 static bool
 topn_val_type(Oid t)
 {
-	return topn_num_type(t) || sift_str_type(t) || t == UUIDOID || t == BYTEAOID || t == INETOID;
+	return topn_num_type(t) || sift_str_type(t) || t == UUIDOID || t == BYTEAOID || t == INETOID || t == CIDROID || t == BPCHAROID || t == INTERVALOID ||
+		t == JSONBOID || (type_is_array(t) && OidIsValid(lookup_type_cache(t, TYPECACHE_CMP_PROC)->cmp_proc));
 }
 
 /* A leaf the evaluator can build a datum of: the plain types of a column, as the index keeps them */
@@ -123,12 +124,17 @@ topn_in_leaf_ok(const SiftSrcLeaf *lf)
 	switch (lf->typid)
 	{
 		case NUMERICOID:
-			return lf->vtype == SCV_I64 && !lf->wide && lf->scale >= 0;
+			return lf->wide ? lf->vtype == SCV_CODE : lf->vtype == SCV_I64 && lf->scale >= 0;
+		case INTERVALOID:
+			return lf->wide && lf->vtype == SCV_CODE;
 		case TEXTOID:
 		case VARCHAROID:
+		case BPCHAROID:
+		case NAMEOID:
 		case UUIDOID:
 		case BYTEAOID:
 		case INETOID:
+		case CIDROID:
 			return lf->vtype == SCV_CODE;
 		default:
 			return topn_num_type(lf->typid) && lf->vtype != SCV_CODE && !lf->wide;
@@ -237,8 +243,8 @@ topn_expr(AggCtx *c, Node *e, List **exprs, SiftTopXform *xf)
 
 	if (!topn_val_type(rtype))
 		return agg_refuse_on(TOPN_SHAPE, "the sort expression has a result type the scan does not hold as a key");
-	if (contain_mutable_functions(e))
-		return agg_refuse_on(TOPN_SHAPE, "the sort expression calls a function that is not immutable");
+	if (contain_volatile_functions(e))
+		return agg_refuse_on(TOPN_SHAPE, "the sort expression calls a volatile function");
 	if (topn_expr_walker(e, &w))
 		return agg_refuse_f(TOPN_SHAPE, "the sort expression %s", w.why);
 	if (w.leaves == NIL)
@@ -302,7 +308,7 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 	else
 		rtype = lf->typid;
 	/* a varchar column sorts by the operators of text */
-	if ((lf != NULL && !sift_topn_key_ok(lf)) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID) && !(opcintype == ANYENUMOID && type_is_enum(rtype))) ||
+	if ((lf != NULL && !sift_topn_key_ok(lf)) || (opcintype != rtype && !(rtype == VARCHAROID && opcintype == TEXTOID) && !(rtype == CIDROID && opcintype == INETOID) && !(opcintype == ANYARRAYOID && type_is_array(rtype)) && !(opcintype == ANYENUMOID && type_is_enum(rtype))) ||
 		opfamily != lookup_type_cache(opcintype, TYPECACHE_BTREE_OPFAMILY)->btree_opf)
 		return agg_refuse_on(TOPN_SHAPE, "a sort key is not a leaf the scan keeps in order, nor an expression of the leaves, or its operator is not the default btree operator of its type");
 	*cmp = *collid = InvalidOid;
@@ -310,9 +316,6 @@ topn_key(AggCtx *c, SortGroupClause *sgc, int *leaf, bool *desc, StringInfo txt,
 	{
 		*cmp = get_opfamily_proc(opfamily, opcintype, opcintype, BTORDER_PROC);
 		*collid = exprCollation(e);
-		/* strings that are equal under a nondeterministic collation (equal as the collation sees them, not as bytes) tie in an order the plan chooses */
-		if (opcintype == TEXTOID && (!OidIsValid(*collid) || !get_collation_isdeterministic(*collid)))
-			return agg_refuse_on(TOPN_SHAPE, "a text sort key has a nondeterministic collation: strings that are equal under it differ as bytes, and their order is the plan's");
 	}
 	*desc = strategy == SIFT_CMP_GT;
 	appendStringInfo(txt, "%s", txt->len ? ", " : "");

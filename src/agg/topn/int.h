@@ -105,6 +105,8 @@ typedef struct TopKey
 #define BK_TEXT		0			/* the bytes of a text: varstr_cmp under the collation of the query (byte order under C, strcoll then byte order else) */
 #define BK_UUID		1			/* 16 bytes: memcmp, as uuid_cmp */
 #define BK_BYTEA	2			/* the varlena image: memcmp of the contents, then the length, as byteacmp */
+#define BK_BPCHAR	4			/* the bytes of a char(n): the text without its trailing spaces, varstr_cmp under the collation, as bpcharcmp */
+#define BK_NAME		5			/* the bytes of a name: the string before its first NUL, varstr_cmp, as namecmp */
 #define BK_FMGR		3			/* any other datum image (inet): the type's own comparison function, on an aligned copy */
 #define KEY_BLOB(v)		((const KeyBlob *) (uintptr_t) (v))
 /* A key's value as a position in the sort order: NULLs in front of or behind the values, the values by the direction (class -1: no bound) */

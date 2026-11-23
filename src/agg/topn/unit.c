@@ -225,7 +225,14 @@ sort_put_tuple(SiftTopN *t, const int64 *k, const bool *isnull, uint64 tid)
 
 		if (!key->blob || isnull[j])
 			t->sin->tts_values[j] = Int64GetDatum(k[j]);
-		else if (key->bkind == BK_TEXT)
+		else if (key->bkind == BK_NAME)
+		{
+			NameData   *nm = MemoryContextAllocZero(t->ucxt, NAMEDATALEN);
+
+			memcpy(nm->data, KEY_BLOB(k[j])->data, Min(KEY_BLOB(k[j])->len, NAMEDATALEN - 1));
+			t->sin->tts_values[j] = NameGetDatum(nm);
+		}
+		else if (key->bkind == BK_TEXT || key->bkind == BK_BPCHAR)
 		{
 			struct varlena *v = MemoryContextAlloc(t->ucxt, VARHDRSZ + KEY_BLOB(k[j])->len);
 

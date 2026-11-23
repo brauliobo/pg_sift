@@ -19,7 +19,7 @@ CREATE SCHEMA IF NOT EXISTS coldiff;
 CREATE FUNCTION coldiff.u(id bigint, draw int, seed int DEFAULT 0) RETURNS float8 LANGUAGE sql IMMUTABLE PARALLEL SAFE
 	AS $$ SELECT (hashint8extended(id, draw * 1000003::bigint + seed) & 16777215)::float8 / 16777216 $$;
 
-DROP TABLE IF EXISTS t_partial, t_partial_hidden, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, tenants, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_coal, t_dist, t_wide, t_misc, t_net,
+DROP TABLE IF EXISTS t_partial, t_partial_hidden, orders, orders_odd, orders_part, t_part, t_part_ni, t_part_op, t_inh, tenants, pf_fact, pf_fact_empty, pf_dim, metrics_map, categories_map, kinds_map, analytics_sets, t_int, t_float, t_nan, t_text, t_chars, t_coal, t_dist, t_wide, t_misc, t_net,
 	map_dup, map_null, map_case, map_part, map_empty, map_vals, map_nums, dim_source, dim_status, dim_lang, dim_country, dim_day, dim_customer, dim_pair,
 	t_tags CASCADE;
 
@@ -312,6 +312,17 @@ DROP TYPE IF EXISTS coldiff_lvl3 CASCADE;
 DROP COLLATION IF EXISTS coldiff_nd;
 -- a nondeterministic collation (case and accents equal): a top-N by a text key under it keeps the normal plan; without ICU the fixtures that need it are skipped
 DO $$ BEGIN CREATE COLLATION coldiff_nd (provider = icu, locale = 'und-u-ks-level1', deterministic = false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- char(n), name and a text column under a nondeterministic collation: trailing spaces that char(n) ignores, strings that are equal under the collation
+-- and differ as bytes (case, accents), a name longer than a dictionary entry of the others, NULLs, and enough rows for the scan to be the cheaper plan
+CREATE TABLE t_chars (id integer PRIMARY KEY, grp integer NOT NULL, bp char(6), b1 char(1), nm name, nd text);
+INSERT INTO t_chars SELECT i, 1 + i % 3,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE (ARRAY['ab','ab ','b','a','abc','B',' a','','ab  ','ab   ','abcdef'])[1 + i % 11] END,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE (ARRAY['a','b',' ','B','é'])[1 + i % 5] END,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE (ARRAY['x','y','xa','Z','a b','é','X','_n','n_','Ä'])[1 + i % 10] || (i % 7) END,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE (ARRAY['a','A','b','B','Ab','aB','ä','é','E','','a b','Ä'])[1 + i % 12] || (i % 13) END
+FROM generate_series(1, greatest(:n, 4000)) i;
+DO $$ BEGIN ALTER TABLE t_chars ALTER COLUMN nd TYPE text COLLATE coldiff_nd; EXCEPTION WHEN OTHERS THEN NULL; END $$;
+
 CREATE TYPE coldiff_lvl3 AS ENUM ('lo', 'ok', 'hi');
 ALTER TYPE coldiff_lvl3 ADD VALUE 'meh' BEFORE 'ok';
 CREATE TABLE t_misc (id integer PRIMARY KEY, grp integer NOT NULL, qty integer, t time, e coldiff_lvl3, u uuid, b bytea, ia integer[], ta text[], na numeric[],

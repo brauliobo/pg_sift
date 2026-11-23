@@ -184,18 +184,18 @@ FROM (VALUES ('nondeterministic', $q$SELECT id, p FROM tr ORDER BY p COLLATE tx_
 ORDER BY k COLLATE "C";
         k         | used |    slug    | named 
 ------------------+------+------------+-------
- char(n)          | f    | topn_shape | f
- cidr             | f    | topn_shape | f
+ char(n)          | t    |            | 
+ cidr             | t    |            | 
  deterministic    | t    |            | 
- name             | f    | topn_shape | f
- nondeterministic | f    | topn_shape | t
+ name             | t    |            | 
+ nondeterministic | t    |            | 
  text_pattern_ops | f    | topn_shape | f
 (6 rows)
 
 SELECT tx_check($q$SELECT id, p FROM tr ORDER BY p COLLATE tx_nd, id LIMIT 5$q$);
- tx_check 
-----------
- same 5
+  tx_check   
+-------------
+ same+topn 5
 (1 row)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

@@ -297,12 +297,12 @@ FROM (VALUES ('random',      $q$SELECT id, a FROM ta ORDER BY a + (random() * 0)
 			 ('allowed',     $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
-      k      | used |    slug    |                                                                                  reason                                                                                  
--------------+------+------------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- allowed     | t    |            | 
- now         | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
- random      | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a function that is not immutable)
- stable_text | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression calls a function that is not immutable)
+      k      | used |   slug   |                                                                           reason                                                                            
+-------------+------+----------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
+ allowed     | t    |          | 
+ now         | t    |          | 
+ random      | f    | volatile | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a volatile function)
+ stable_text | t    |          | 
 (4 rows)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

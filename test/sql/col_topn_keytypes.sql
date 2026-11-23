@@ -1,0 +1,79 @@
+-- Top-N sort keys the scan orders as the normal plan does (sift.enable_agg off): a char(n), name or cidr column, a text column under a nondeterministic collation,
+-- a stable expression (now(), concat, to_char, a timestamptz plus an interval), a wide numeric, an interval, and an array, an interval or a jsonb result.
+-- Every query runs twice and the rows are compared in order: ascending and descending, NULLs first and last, ties, a deep page, a spilling sort, workers.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET sift.async_maintenance = off;
+CREATE COLLATION kt_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
+
+CREATE TABLE kt (id int PRIMARY KEY, t text COLLATE kt_nd, c char(6), cu char(1), n name, cd cidr, d date, tz timestamptz, nw numeric(30, 4), iv interval);
+INSERT INTO kt
+SELECT i,
+	CASE WHEN i % 17 = 0 THEN NULL ELSE (ARRAY['a','A','b','B','Ab','aB','ä','é','E','','a b'])[1 + i % 11] || (i % 13) END,
+	CASE WHEN i % 19 = 0 THEN NULL ELSE (ARRAY['ab','ab ','b','a','abc','B',' a','','ab  '])[1 + i % 9] END,
+	CASE WHEN i % 23 = 0 THEN NULL ELSE (ARRAY['a','b',' ','B'])[1 + i % 4] END,
+	CASE WHEN i % 29 = 0 THEN NULL ELSE (ARRAY['x','y','xa','Z','a b','é','X'])[1 + i % 7] || (i % 7) END,
+	CASE WHEN i % 31 = 0 THEN NULL ELSE network(set_masklen(('10.' || (i % 5) || '.' || (i % 31) || '.0')::inet, 8 + i % 25))::cidr END,
+	CASE WHEN i % 37 = 0 THEN NULL ELSE date '2024-01-01' + i % 400 END,
+	CASE WHEN i % 41 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 7919 % 100000) * interval '1 minute' END,
+	CASE WHEN i % 43 = 0 THEN NULL WHEN i % 97 = 0 THEN 'NaN'::numeric ELSE (i * 7919 % 1000003)::numeric * 10000000000000000000 + (i % 100) / 100.0 END,
+	CASE WHEN i % 47 = 0 THEN NULL ELSE (i % 40) * interval '1 day' + (i % 7) * interval '1 hour' + (i % 3) * interval '1 month' END
+FROM generate_series(1, 30000) i;
+CREATE INDEX kt_col ON kt USING sift_col (id, t, c, cu, n, cd, d, tz, nw, iv);
+VACUUM (ANALYZE) kt;
+
+CREATE FUNCTION kt_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
+
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the number of rows
+CREATE FUNCTION kt_check(q text, workers int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE n bigint; plan text := ''; line text;
+BEGIN
+	DROP TABLE IF EXISTS kt_a, kt_b;
+	PERFORM kt_mode(true, workers);
+	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
+	EXECUTE 'CREATE TEMP TABLE kt_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	PERFORM kt_mode(false, 0);
+	EXECUTE 'CREATE TEMP TABLE kt_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
+	SELECT count(*) INTO n FROM ((SELECT pos, r FROM kt_a EXCEPT ALL SELECT pos, r FROM kt_b) UNION ALL (SELECT pos, r FROM kt_b EXCEPT ALL SELECT pos, r FROM kt_a)) d;
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM kt_b);
+END $$;
+
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+-- the columns: char(n), name, cidr and a nondeterministic text column, in every direction and NULLs placement, with a short, a long and a deep page
+SELECT r, count(*) AS queries FROM (
+	SELECT kt_check(format('SELECT id, %1$s FROM kt ORDER BY %1$s %2$s %3$s, id LIMIT %4$s', k, dir, nl, lim)) AS r
+	FROM unnest(ARRAY['t', 't COLLATE "C"', 'c', 'cu', 'n', 'cd', 'nw', 'iv']) k, unnest(ARRAY['', 'DESC']) dir,
+		unnest(ARRAY['', 'NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY['1', '10', '500']) lim) q
+GROUP BY r ORDER BY r;
+
+-- the expressions: stable functions, wide numeric and interval leaves, results of an array, interval, jsonb, cidr or char(n) type
+SELECT r, count(*) AS queries FROM (
+	SELECT kt_check(format('SELECT id FROM kt ORDER BY %1$s %2$s, id LIMIT %3$s', e, dir, lim)) AS r
+	FROM unnest(ARRAY['now() - tz', 'tz + interval ''3 hours''', 'concat(c, n)', 'concat(d, ''x'', id)', 'to_char(d, ''YYYY-MM'')', 'd::text COLLATE "C"',
+			'nw * 2', 'nw + 1', 'nw::text COLLATE "C"', 'iv + interval ''1 day''', 'iv * 2', 'ARRAY[id % 5, id % 3]', 'ARRAY[c, n]', 'to_jsonb(id % 7)', 'to_jsonb(t)',
+			'cidr(network(cd))', 'c::char(3)']) e, unnest(ARRAY['', 'DESC NULLS LAST']) dir, unnest(ARRAY['7', '400']) lim) q
+GROUP BY r ORDER BY r;
+
+-- filters, an offset, workers, a sort of every row (a work_mem the keys do not fit)
+SELECT kt_check('SELECT id, c, n FROM kt WHERE id % 3 = 0 ORDER BY c DESC, n, id LIMIT 20 OFFSET 15');
+SELECT kt_check('SELECT id, t FROM kt WHERE d > date ''2024-06-01'' ORDER BY t, id LIMIT 25 OFFSET 3');
+SELECT kt_check('SELECT id, c FROM kt ORDER BY c, id LIMIT 700', 2);
+SELECT kt_check('SELECT id, nw FROM kt ORDER BY nw * 2 DESC NULLS LAST, id LIMIT 300', 2);
+SET work_mem = '64kB';
+SELECT kt_check('SELECT id, t FROM kt ORDER BY t, id LIMIT 12000');
+SELECT kt_check('SELECT id, c, n FROM kt ORDER BY c, n DESC, id LIMIT 12000');
+SELECT kt_check('SELECT id FROM kt ORDER BY concat(c, n), id LIMIT 12000');
+RESET work_mem;
+
+-- a volatile function and a sub-select keep the normal plan
+EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY id % 7 + (random() * 0)::int, id LIMIT 5;
+EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5;
+
+DROP TABLE kt;
+DROP FUNCTION kt_check(text, int);
+DROP FUNCTION kt_mode(bool, int);
+DROP COLLATION kt_nd;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;

@@ -85,7 +85,7 @@ NOTICE:  table "iv_b" does not exist, skipping
  build | a_text        | same+topn 60
  build | a_ties        | same+topn 40
  build | all_rows      | same+topn 6000
- build | expression    | same 25
+ build | expression    | same+topn 25
  build | second_key    | same+topn 30
  build | two_keys      | same+topn 30
  build | w_few_asc     | same+topn 30
@@ -140,7 +140,7 @@ SELECT * FROM iv_stage('segments');
  segments | a_text        | same+topn 60
  segments | a_ties        | same+topn 40
  segments | all_rows      | same+topn 12000
- segments | expression    | same 25
+ segments | expression    | same+topn 25
  segments | second_key    | same+topn 30
  segments | two_keys      | same+topn 30
  segments | w_few_asc     | same+topn 30
@@ -178,7 +178,7 @@ SELECT * FROM iv_stage('buffer');
  buffer | a_text        | same+topn 60
  buffer | a_ties        | same+topn 40
  buffer | all_rows      | same+topn 12261
- buffer | expression    | same 25
+ buffer | expression    | same+topn 25
  buffer | second_key    | same+topn 30
  buffer | two_keys      | same+topn 30
  buffer | w_few_asc     | same+topn 30
@@ -233,7 +233,7 @@ SELECT * FROM iv_stage('merged');
  merged | a_text        | same+topn 60
  merged | a_ties        | same+topn 40
  merged | all_rows      | same+topn 12261
- merged | expression    | same 25
+ merged | expression    | same+topn 25
  merged | second_key    | same+topn 30
  merged | two_keys      | same+topn 30
  merged | w_few_asc     | same+topn 30
@@ -256,7 +256,7 @@ SELECT * FROM iv_stage('vacuumed');
  vacuumed | a_text        | same+topn 60
  vacuumed | a_ties        | same+topn 40
  vacuumed | all_rows      | same+topn 12261
- vacuumed | expression    | same 25
+ vacuumed | expression    | same+topn 25
  vacuumed | second_key    | same+topn 30
  vacuumed | two_keys      | same+topn 30
  vacuumed | w_few_asc     | same+topn 30

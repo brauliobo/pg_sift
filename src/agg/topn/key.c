@@ -11,6 +11,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/memutils.h"
 #include "utils/numeric.h"
+#include "utils/timestamp.h"
 #include "utils/tuplesort.h"
 #include "utils/uuid.h"
 #include "utils/varlena.h"
@@ -26,6 +27,14 @@
 #define ST_DEFINE
 #include "lib/sort_template.h"
 
+static inline uint32
+bpchar_trim(const char *p, uint32 len)
+{
+	while (len > 0 && p[len - 1] == ' ')
+		len--;
+	return len;
+}
+
 /* < 0, 0, > 0: the entry a sorts before, with or after b, ascending, as the type's btree comparison of the query's operator class says */
 int
 bytes_cmp(const TopKey *k, const char *a, uint32 la, const char *b, uint32 lb)
@@ -34,6 +43,10 @@ bytes_cmp(const TopKey *k, const char *a, uint32 la, const char *b, uint32 lb)
 	{
 		case BK_TEXT:
 			return varstr_cmp(a, la, b, lb, k->collid);
+		case BK_BPCHAR:
+			return varstr_cmp(a, bpchar_trim(a, la), b, bpchar_trim(b, lb), k->collid);
+		case BK_NAME:
+			return varstr_cmp(a, strnlen(a, la), b, strnlen(b, lb), k->collid);
 		case BK_UUID:
 			return memcmp(a, b, 16);
 		case BK_BYTEA:
@@ -242,10 +255,18 @@ in_entry(SiftTopN *t, TopIn *in, uint32 c)
 	{
 		case TEXTOID:
 		case VARCHAROID:
+		case BPCHAROID:
 			r = MemoryContextAlloc(t->ucxt, VARHDRSZ + len);
 			SET_VARSIZE(r, VARHDRSZ + len);
 			memcpy(VARDATA(r), p, len);
 			break;
+		case NAMEOID:
+			r = MemoryContextAllocZero(t->ucxt, NAMEDATALEN);
+			memcpy(r, p, Min(len, NAMEDATALEN - 1));
+			break;
+		case INTERVALOID:
+			len = sizeof(Interval);
+			/* fall through */
 		case UUIDOID:
 			r = MemoryContextAlloc(t->ucxt, len);
 			memcpy(r, p, len);
@@ -366,12 +387,14 @@ expr_eval_unit(SiftTopN *t, TopKey *k, SiftTopLeaf leaf, void *ctx, const uint64
 
 						if (k->bkind == BK_UUID)
 							appendBinaryStringInfo(&bytes, DatumGetPointer(d), UUID_LEN);
+						else if (k->bkind == BK_FMGR && k->typlen > 0)
+							appendBinaryStringInfo(&bytes, DatumGetPointer(d), k->typlen);
 						else
 						{
 							struct varlena *v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
 							uint32		len = VARSIZE_ANY_EXHDR(v);
 
-							if (k->bkind == BK_TEXT)
+							if (k->bkind == BK_TEXT || k->bkind == BK_BPCHAR)
 								appendBinaryStringInfo(&bytes, VARDATA_ANY(v), len);
 							else
 							{
