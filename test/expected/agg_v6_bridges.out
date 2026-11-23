@@ -206,7 +206,9 @@ INSERT INTO v6_checks VALUES
     ('window: a WHERE clause', 'SELECT g, a, b, row_number() OVER (PARTITION BY g ORDER BY a, b) AS rn FROM v6t WHERE b < 2500 AND f ORDER BY g, a, b', 'SiftAggV6Window', 'window', true),
     ('window: the first rows of each partition', 'SELECT * FROM (SELECT g, a, b, row_number() OVER (PARTITION BY g ORDER BY a, b) AS rn FROM v6t) AS s WHERE rn <= 3 ORDER BY g, a, b', 'SiftAggV6Window', 'window', true),
     ('window: the first ranks of each partition', 'SELECT * FROM (SELECT g, a, rank() OVER (PARTITION BY g ORDER BY a) AS r FROM v6t) AS s WHERE r < 3 ORDER BY g, a', 'SiftAggV6Window', 'window', true),
-    ('window: another order stays with PostgreSQL', 'SELECT g, a, row_number() OVER (PARTITION BY g ORDER BY b) AS rn FROM v6t ORDER BY g, b', '', 'window', true),
+    ('window: parts not sorted by the order are sorted by partition', 'SELECT g, a, row_number() OVER (PARTITION BY g ORDER BY b) AS rn FROM v6t ORDER BY g, b', 'SiftAggV6Window', 'window', true),
+    ('window: parts not sorted by the key are put together', 'SELECT a, b, sum(b) OVER (PARTITION BY a ORDER BY b) AS s, lag(g) OVER (PARTITION BY a ORDER BY b) AS prev FROM v6t ORDER BY a, b', 'SiftAggV6Window', 'window', true),
+    ('window: a partition key that is not a column stays with PostgreSQL', 'SELECT g, a, row_number() OVER (PARTITION BY g + 1 ORDER BY b) AS rn FROM v6t ORDER BY g, b', '', 'window', true),
     ('window: DISTINCT ON the first row', 'SELECT DISTINCT ON (g) g, a FROM v6t ORDER BY g, a', 'SiftAggV6Window', 'window', true),
     ('window: DISTINCT ON the last row', 'SELECT DISTINCT ON (g) g, a FROM v6t ORDER BY g, a DESC NULLS FIRST', 'SiftAggV6Window', 'window', true),
     ('window: DISTINCT ON with a WHERE clause', 'SELECT DISTINCT ON (g, a) g, a FROM v6t WHERE b > 1000 ORDER BY g, a', 'SiftAggV6Window', 'window', true),
@@ -221,41 +223,43 @@ INSERT INTO v6_checks VALUES
     ('sip: a dimension that keeps no key', 'SELECT count(*) FROM v6t f JOIN v6dim d ON f.a = d.k WHERE d.tag = ''none''', 'SiftAggV6Sip', 'sip', false),
     ('sip: an outer join stays with PostgreSQL', 'SELECT count(*) FROM v6t f LEFT JOIN v6dim d ON f.a = d.k AND d.tag = ''hot''', '', 'sip', false);
 SELECT name, sift._test_v6_check(query, node, ARRAY[bridge], ordered) AS result FROM v6_checks ORDER BY name;
-                          name                           | result 
----------------------------------------------------------+--------
- sip: a condition on the fact table                      | ok
- sip: a dimension that keeps few keys                    | ok
- sip: a dimension that keeps no key                      | ok
- sip: an outer join stays with PostgreSQL                | ok
- stream: a WHERE clause and HAVING                       | ok
- stream: not a prefix of the index stays with PostgreSQL | ok
- stream: one key                                         | ok
- stream: only count                                      | ok
- stream: two keys                                        | ok
- stream: two value columns                               | ok
- topn: WITH TIES                                         | ok
- topn: a WHERE clause and an offset                      | ok
- topn: a boolean and a date in the clauses               | ok
- topn: a clause the machine does not run                 | ok
- topn: a column that is not in the index                 | ok
- topn: a float key with NULLs                            | ok
- topn: a numeric key                                     | ok
- topn: a timestamp descending                            | ok
- topn: an expression key stays with PostgreSQL           | ok
- topn: two keys                                          | ok
- window: DISTINCT ON the first row                       | ok
- window: DISTINCT ON the last row                        | ok
- window: DISTINCT ON with a WHERE clause                 | ok
- window: a WHERE clause                                  | ok
- window: aggregates over peers                           | ok
- window: another order stays with PostgreSQL             | ok
- window: lag and lead                                    | ok
- window: ranks of ties                                   | ok
- window: row_number over unique keys                     | ok
- window: running aggregates                              | ok
- window: the first ranks of each partition               | ok
- window: the first rows of each partition                | ok
-(32 rows)
+                                name                                | result 
+--------------------------------------------------------------------+--------
+ sip: a condition on the fact table                                 | ok
+ sip: a dimension that keeps few keys                               | ok
+ sip: a dimension that keeps no key                                 | ok
+ sip: an outer join stays with PostgreSQL                           | ok
+ stream: a WHERE clause and HAVING                                  | ok
+ stream: not a prefix of the index stays with PostgreSQL            | ok
+ stream: one key                                                    | ok
+ stream: only count                                                 | ok
+ stream: two keys                                                   | ok
+ stream: two value columns                                          | ok
+ topn: WITH TIES                                                    | ok
+ topn: a WHERE clause and an offset                                 | ok
+ topn: a boolean and a date in the clauses                          | ok
+ topn: a clause the machine does not run                            | ok
+ topn: a column that is not in the index                            | ok
+ topn: a float key with NULLs                                       | ok
+ topn: a numeric key                                                | ok
+ topn: a timestamp descending                                       | ok
+ topn: an expression key stays with PostgreSQL                      | ok
+ topn: two keys                                                     | ok
+ window: DISTINCT ON the first row                                  | ok
+ window: DISTINCT ON the last row                                   | ok
+ window: DISTINCT ON with a WHERE clause                            | ok
+ window: a WHERE clause                                             | ok
+ window: a partition key that is not a column stays with PostgreSQL | ok
+ window: aggregates over peers                                      | ok
+ window: lag and lead                                               | ok
+ window: parts not sorted by the key are put together               | ok
+ window: parts not sorted by the order are sorted by partition      | ok
+ window: ranks of ties                                              | ok
+ window: row_number over unique keys                                | ok
+ window: running aggregates                                         | ok
+ window: the first ranks of each partition                          | ok
+ window: the first rows of each partition                           | ok
+(34 rows)
 
 -- ---------------------------------------------------------------------------------------------------------------------------------------------------
 -- under row-level security of the query no bridge is chosen
