@@ -21,6 +21,9 @@ typedef struct SiftGpuEmit
 	uint32		nmasks;
 	int			col_reg[SIFT_VK_MAXCOLS];
 	int			key_slot[SIFT_VK_MAXKEYS];	/* the column slot of a key that is a plain column, else -1 */
+	int			amap[SIFT_VK_MAXAGGS];	/* the aggregate of the job that is the aggregate of the spec, -1 for a COUNT(DISTINCT), which the job does not hold */
+	int			dist_slot;		/* the column slot of the value the COUNT(DISTINCT) aggregates count, -1 for none */
+	int			dist_reg;		/* ... and its register */
 	const char *why;			/* the first reason the device cannot run the query, else NULL */
 } SiftGpuEmit;
 

@@ -15,6 +15,7 @@
 typedef struct SiftGpuCostIn
 {
 	SiftVkMode	mode;
+	SiftVkFinish finish;		/* HASH: what is read back of the table */
 	bool		fast;			/* sift_vk_job_is_fast: a program of columns and comparisons with constants */
 	double		rows;
 	double		scan_rows;		/* the rows the scan of the CPU reads: those of the granules the zones do not rule out */
@@ -22,6 +23,8 @@ typedef struct SiftGpuCostIn
 	double		cold_share;		/* the share of them that is not on the device, 0..1 */
 	double		pcie_gbps;
 	double		groups;			/* the groups of the result (dense: the slots, hash: the estimate) */
+	double		table_words;	/* HASH: the words of the table of the device, which the job clears and the finish reads */
+	double		dist_pairs;		/* COUNT(DISTINCT): the pairs of a group and a value the CPU keeps in a hash table (an upper bound: 0 for none) */
 	int			ncols;			/* the columns the query reads */
 	int			nops;			/* the operations of the program, loads included */
 	int			nkeys;

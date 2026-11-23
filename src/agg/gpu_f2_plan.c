@@ -43,8 +43,9 @@ typedef struct PlanPart
 	SiftF2PartPin *pin;
 	uint32		part_id;
 	uint64		part_gen;
-	uint32		g0;				/* the plan's granule of the part's first */
-	uint32		ng;
+	uint32		g0;				/* the plan's granule of the part's first the zones leave */
+	uint32		ng;				/* the granules of the part */
+	uint32		nsel;			/* ... the zones leave to the predicates: plan granules g0 .. g0 + nsel - 1 */
 	uint32		phys[SIFT_VK_MAXCOLS];
 	SiftZone   *zone[SIFT_VK_MAXCOLS];	/* ng zones of each column */
 	uint64	  **pend;			/* per granule the rows a pending delete of the partition deletes for the snapshot, NULL for a granule none names */
@@ -69,7 +70,8 @@ typedef struct SiftGpuPlanPriv
 	int			leaf[SIFT_VK_MAXCOLS];
 	PlanPart   *part;
 	uint32		npart;
-	uint32	   *part_of;		/* per granule */
+	uint32	   *part_of;		/* per granule of the plan */
+	uint32	   *local;			/* per granule of the plan: its place in its part */
 	uint64	   *gens;			/* of the parts the device reads, ascending */
 	uint64		manifest;		/* the manifest generation the parts were read at */
 	uint64		col_mask[4];	/* the leaves of the column slots */
@@ -354,17 +356,22 @@ zone_rules_out(const SiftGpuQuery *q, const Priv *pv, const PlanPart *pp, uint32
 	return false;
 }
 
-static void
+/* The granule gl of the part as the next granule of the plan; one whose zones rule out every row the predicates keep is not sent, uploaded, decoded or run */
+static bool
 fill_granule(SiftGpuPlan *p, const SiftGpuQuery *q, const PlanPart *pp, uint32 gl, bool *seen)
 {
 	Priv	   *pv = p->priv;
-	uint32		i = pp->g0 + gl;
+	uint32		i = p->ngran;
 	const SiftGranuleDesc *gd = &pp->pin->gdir[gl];
-	const SiftDvGran *dg = pp->pin->dv != NULL ? sift_dv_granule(pp->pin->dv, gl) : NULL;
+	const SiftDvGran *dg;
 	SiftVkGranule *g = &p->gran[i];
 	const uint64 *pend = pp->pend != NULL ? pp->pend[gl] : NULL;
 	uint32		ndead = 0;
 
+	if (zone_rules_out(q, pv, pp, gl))
+		return false;
+	dg = pp->pin->dv != NULL ? sift_dv_granule(pp->pin->dv, gl) : NULL;
+	p->ngran++;
 	g->id = i;
 	g->nrows = gd->nrows;
 	if (dg != NULL || pend != NULL)
@@ -383,9 +390,9 @@ fill_granule(SiftGpuPlan *p, const SiftGpuQuery *q, const PlanPart *pp, uint32 g
 	}
 	p->dead_rows += ndead;
 	pv->part_of[i] = (uint32) (pp - pv->part);
+	pv->local[i] = gl;
 	p->rows += gd->nrows - ndead;
-	if (!zone_rules_out(q, pv, pp, gl))
-		p->scan_rows += gd->nrows - ndead;
+	p->scan_rows += gd->nrows - ndead;
 	p->enc_bytes += (uint64) gd->data_len * q->ncols / Max(pp->pin->part->hdr.ncols, 1);
 	for (int c = 0; c < q->ncols; c++)
 	{
@@ -397,6 +404,7 @@ fill_granule(SiftGpuPlan *p, const SiftGpuQuery *q, const PlanPart *pp, uint32 g
 		p->est_chunk[i] += width_of(z, kind) * gd->nrows + gd->nrows / 8;
 		fold_zone(p, c, z, gd->nrows, kind, seen);
 	}
+	return true;
 }
 
 static int
@@ -441,6 +449,8 @@ fold_signature(Priv *pv, int ncols)
 		sig = hash_combine64(hash_combine64(hash_combine64(sig, pp->part_id), pp->part_gen), pp->ng);
 		for (int c = 0; c < ncols; c++)
 			sig = hash_combine64(sig, pp->phys[c]);
+		for (uint32 k = 0; k < pp->nsel; k++)
+			sig = hash_combine64(sig, pv->local[pp->g0 + k]);
 	}
 	pv->sig = sig;
 }
@@ -463,15 +473,12 @@ build_arrays(SiftGpuPlan *p, const SiftGpuQuery *q)
 	uint32		n = 0;
 
 	for (uint32 i = 0; i < pv->npart; i++)
-	{
-		pv->part[i].g0 = n;
 		n += pv->part[i].ng;
-	}
-	p->ngran = n;
 	p->gran = palloc0(Max(n, 1) * sizeof(SiftVkGranule));
 	p->chunk = palloc0((Size) Max(n, 1) * q->ncols * sizeof(SiftVkChunk));
 	p->est_chunk = palloc0(Max(n, 1) * sizeof(uint32));
 	pv->part_of = palloc(Max(n, 1) * sizeof(uint32));
+	pv->local = palloc(Max(n, 1) * sizeof(uint32));
 	pv->gens = palloc(Max(pv->npart, 1) * sizeof(uint64));
 }
 
@@ -511,6 +518,7 @@ plan_parts(SiftGpuPlan *p, const Admit *proto, const SiftPlanSnapshot *view)
 
 		a.e = &view->partitions[i];
 		a.pdel = px;
+		p->cpu_rest |= a.e->l0_slab_blk != InvalidBlockNumber;
 		for (int j = 0; j < view->partlists[i].nparts; j++)
 		{
 			const SiftPartDesc *d = &view->partlists[i].parts[j];
@@ -525,7 +533,10 @@ plan_parts(SiftGpuPlan *p, const Admit *proto, const SiftPlanSnapshot *view)
 			if (admit(&a, d, &pv->part[pv->npart], &why))
 				pv->npart++;
 			else
+			{
 				strlcpy(p->why, why, sizeof(p->why));
+				p->cpu_rest = true;
+			}
 		}
 		if (px != NULL)
 			sift_pdel_idx_free(px);
@@ -596,9 +607,13 @@ sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt)
 	build_arrays(p, q);
 	for (uint32 i = 0; i < pv->npart; i++)
 	{
-		pv->gens[i] = pv->part[i].part_gen;
-		for (uint32 g = 0; g < pv->part[i].ng; g++)
-			fill_granule(p, q, &pv->part[i], g, seen);
+		PlanPart   *pp = &pv->part[i];
+
+		pv->gens[i] = pp->part_gen;
+		pp->g0 = p->ngran;
+		for (uint32 g = 0; g < pp->ng; g++)
+			fill_granule(p, q, pp, g, seen);
+		pp->nsel = p->ngran - pp->g0;
 	}
 	qsort(pv->gens, pv->npart, sizeof(uint64), gen_cmp);
 	fold_signature(pv, q->ncols);
@@ -623,7 +638,7 @@ sift_gpu_f2_locate(const SiftGpuPlan *p, uint32 i, uint32 *part_id, uint64 *part
 
 	*part_id = pp->part_id;
 	*part_gen = pp->part_gen;
-	*granule = i - pp->g0;
+	*granule = p->priv->local[i];
 }
 
 bool
@@ -647,7 +662,7 @@ load_granule(SiftGpuPlan *p, uint32 g, const uint8 *resident, uint64 *bytes, con
 {
 	Priv	   *pv = p->priv;
 	const PlanPart *pp = &pv->part[pv->part_of[g]];
-	uint32		gl = g - pp->g0;
+	uint32		gl = pv->local[g];
 	int			chunks[SIFT_VK_MAXCOLS],
 				col[SIFT_VK_MAXCOLS],
 				n = 0;
@@ -724,6 +739,7 @@ sift_gpu_f2_free(SiftGpuPlan *p)
 	pv->plan_cx = pv->load_cx = NULL;
 	pv->part = NULL;
 	pv->part_of = NULL;
+	pv->local = NULL;
 	pv->gens = NULL;
 	pv->in_sorted = NULL;
 	p->gran = NULL;

@@ -285,21 +285,50 @@ agg_kind_of(SiftGpuEmit *b, SiftV6Kind kind, bool is_float)
 		case SV6_MAX:
 			return is_float ? SIFT_VK_AK_MAX_F : SIFT_VK_AK_MAX;
 		default:
-			fail(b, "an aggregate the device does not compute (count distinct)");
+			fail(b, "an aggregate the device does not compute");
 			return 0;
 	}
+}
+
+/* COUNT(DISTINCT value) of a column of whole numbers: the register of the value, which the job names as the last key of the pairs it counts; every such aggregate counts the same column */
+static void
+emit_distinct(SiftGpuEmit *b, const SiftGpuQuery *q, int a, uint32 act)
+{
+	const SiftV6Agg *ag = &q->spec->agg[a];
+	bool		is_float;
+	int			slot = slot_of_attno(q, ag->arg.attno);
+	uint32		reg;
+
+	if (q->filter[a] != NULL || q->arg[a] != NULL)
+		fail(b, "a COUNT(DISTINCT) with a FILTER or of an expression");
+	reg = emit_value(b, q, NULL, ag->arg.attno, act, &is_float);
+	if (is_float)
+		fail(b, "a COUNT(DISTINCT) of a float");
+	if (b->dist_slot >= 0 && b->dist_slot != slot)
+		fail(b, "COUNT(DISTINCT) of more than one column");
+	b->dist_slot = slot;
+	b->dist_reg = (int) reg;
 }
 
 static void
 emit_aggs(SiftGpuEmit *b, const SiftGpuQuery *q, SiftVkJob *job, uint32 where)
 {
+	uint32		na = 0;
+
 	for (int a = 0; a < q->spec->naggs; a++)
 	{
 		const SiftV6Agg *ag = &q->spec->agg[a];
-		SiftVkAgg  *va = &job->agg[a];
+		SiftVkAgg  *va = &job->agg[na];
 		uint32		act = where;
 		bool		is_float = false;
 
+		if (ag->kind == SV6_COUNT_DISTINCT)
+		{
+			b->amap[a] = -1;
+			emit_distinct(b, q, a, act);
+			continue;
+		}
+		b->amap[a] = (int) na++;
 		va->freg = SIFT_VK_NONE8;
 		va->vreg = SIFT_VK_NONE8;
 		if (q->filter[a] != NULL)
@@ -314,6 +343,7 @@ emit_aggs(SiftGpuEmit *b, const SiftGpuQuery *q, SiftVkJob *job, uint32 where)
 			va->vreg = (uint8) emit_value(b, q, q->arg[a], ag->arg.attno, act, &is_float);
 		va->kind = (uint8) agg_kind_of(b, ag->kind, is_float);
 	}
+	job->naggs = na;
 }
 
 static void
@@ -339,6 +369,7 @@ sift_gpu_emit_init(SiftGpuEmit *b)
 {
 	memset(b, 0, sizeof(*b));
 	b->nmasks = 1;
+	b->dist_slot = b->dist_reg = -1;
 	memset(b->col_reg, -1, sizeof(b->col_reg));
 }
 
@@ -355,7 +386,6 @@ sift_gpu_emit_agg(SiftGpuEmit *b, const SiftGpuQuery *q, SiftVkJob *job)
 	emit_aggs(b, q, job, act);
 	emit_keys(b, q, job, act);
 	job->nkeys = s->nkeys;
-	job->naggs = s->naggs;
 	job->ncols = q->ncols;
 	job->nops = b->nops;
 	job->ops = b->ops;

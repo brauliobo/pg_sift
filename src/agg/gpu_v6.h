@@ -88,6 +88,7 @@ typedef struct SiftGpuQuery
 	const SiftVexprProg *arg[SIFT_VK_MAXAGGS];
 	const SiftVexprProg *filter[SIFT_VK_MAXAGGS];
 	const SiftVexprProg *sort;	/* top-N: the expression ordered by */
+	SiftVkTopk	topk;			/* the groups: the order of the node that keeps the K best of them (k 0: all groups are wanted) */
 	double		est_groups;		/* 0: not known */
 	int			parallel_workers;	/* the workers the CPU plan would run besides the leader */
 } SiftGpuQuery;
@@ -113,6 +114,7 @@ typedef struct SiftGpuPlan
 	int64		zmax[SIFT_VK_MAXCOLS];
 	bool		zrange[SIFT_VK_MAXCOLS];
 	bool		znulls[SIFT_VK_MAXCOLS];
+	bool		cpu_rest;		/* rows are left to the CPU besides the parts the device reads: a part it refuses, the slab of a partition: a result of whole groups cannot be had from the device alone */
 	char		why[96];		/* why the last part the device does not read is left to the CPU */
 	struct SiftGpuPlanPriv *priv;
 } SiftGpuPlan;
