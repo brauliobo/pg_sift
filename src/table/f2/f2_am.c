@@ -2,7 +2,7 @@
  * table/f2/f2_am.c - the relation of a sift_table as the table access method asks for it: its slots, its files, TRUNCATE, copies, its size, and the scans that build indexes.
  *
  * A row is a virtual tuple: the scan fills its values from a granule, so the slot is the plain virtual one. The layout of Format 2.0 (block 0, the empty partition directory, the
- * allocator) is written when the file is made, with the file's own locator; a table has no TOAST table and no visibility map, and never claims rows are all visible.
+ * allocator) is written when the file is made, with the file's own locator; a table has no TOAST table, and its visibility map is indexed by the virtual block of a row (table/f2/f2_vm.h).
  */
 #include "postgres.h"
 
@@ -33,6 +33,7 @@
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_slot.h"
 #include "table/f2/f2_tbl.h"
+#include "table/f2/f2_vm.h"
 
 const TupleTableSlotOps *
 sift_tbl_f2_slot_callbacks(Relation rel pg_attribute_unused())
@@ -157,13 +158,12 @@ void
 sift_tbl_f2_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber *pages, double *tuples, double *allvisfrac)
 {
 	SiftShmIndexMeta peek;
+	BlockNumber unused,
+				also_unused;
 	uint64		rows = 0;
 
-	/*
-	 * A sift_table has no visibility map fork and its addresses are virtual: IndexOnlyNext asks the heap's map directly, so a fraction above zero would price scans that cannot
-	 * run. The columns are read without building rows by SiftAgg and SiftScanExec, which need no such claim.
-	 */
-	*allvisfrac = 0.0;
+	/* IndexOnlyNext asks the map fork by the vblock of an address: the fraction is that of the vblocks VACUUM found all visible, and 0 where the server cannot log the map */
+	sift_tbl_vm_fractions(rel, 0, &unused, &also_unused, allvisfrac);
 	if (RelationGetNumberOfBlocks(rel) > 0)
 	{
 		if (sift_shm_manifest_peek(&rel->rd_locator, &peek))

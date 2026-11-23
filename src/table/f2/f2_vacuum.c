@@ -33,6 +33,7 @@
 #include "col/f2/f2_scope.h"
 #include "col/f2/f2_tier_host.h"
 #include "table/f2/f2_tbl.h"
+#include "table/f2/f2_vm.h"
 
 #define SIFT_VAC_L0_FLUSH_ROWS 2048
 
@@ -435,12 +436,16 @@ update_relstats(Relation rel, FullTransactionId oldest, const struct VacuumCutof
 	bool		fz,
 				mz;
 	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
-	double		live = (double) (meta.total_rows - meta.total_dead);
+	double		live = (double) (meta.total_rows - meta.total_dead),
+				allvisfrac;
+	BlockNumber relallvisible,
+				relallfrozen;
 
+	sift_tbl_vm_fractions(rel, nblocks, &relallvisible, &relallfrozen, &allvisfrac);
 #if PG_VERSION_NUM >= 180000
-	vac_update_relstats(rel, nblocks, live, 0, 0, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
+	vac_update_relstats(rel, nblocks, live, relallvisible, relallfrozen, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
 #else
-	vac_update_relstats(rel, nblocks, live, 0, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
+	vac_update_relstats(rel, nblocks, live, relallvisible, rel->rd_rel->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
 #endif
 	sift_pgstat_report_vacuum(rel, (PgStat_Counter) live, (PgStat_Counter) meta.total_dead, GetCurrentTimestamp());
 }
@@ -508,6 +513,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_FINAL_CLEANUP);
 	new_oldest = recompute_oldest(rel, oldest_fx);
 	store_oldest_active(rel, new_oldest);
+	sift_tbl_vm_vacuum(rel, oldest_fx, freeze_fx);
 	update_relstats(rel, new_oldest, &cutoffs);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_TRUNCATE);
 	sift_fsm_reclaim(rel);
