@@ -729,6 +729,7 @@ void
 sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows)
 {
 	CustomPath *cp = makeNode(CustomPath);
+	bool		locked;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
 
 	cp->path.pathtype = T_CustomScan;
@@ -743,10 +744,11 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	p->spec.groups_est = (uint32) Min(groups, (double) INT_MAX);
 	p->spec.lock_k = child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 ? sift_v6_limit_of(p->root->parse) : 0;
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
+	locked = p->spec.lock_k > 0;
 	p->spec.lock_k = 0;
 	agg_force_price(&cp->path);
 	add_path(p->out, &cp->path);
-	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table)
+	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table && !locked)
 		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, cp->path.total_cost);
 }
 
