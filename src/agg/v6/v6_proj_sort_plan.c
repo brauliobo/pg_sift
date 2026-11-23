@@ -564,10 +564,11 @@ sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 bool
 sift_v6_proj_sort_offered(const RelOptInfo *rel)
 {
+	bool		offered = false;
+
 	foreach_ptr(Path, path, rel->pathlist)
-		if (IsA(path, CustomPath) && ((const CustomPath *) path)->methods == &sort_path_methods)
-			return true;
-	return false;
+		offered |= IsA(path, CustomPath) && ((const CustomPath *) path)->methods == &sort_path_methods;
+	return offered;
 }
 
 static Plan *
