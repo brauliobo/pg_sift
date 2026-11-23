@@ -481,6 +481,7 @@ sift_col_delta_stage_plan(Relation rel, const SiftColDeltaPlan *plan, CommandId 
 		/* MEM[MEM-TBL-16]: TopTransactionContext staged col_deltas (items[] + rec copies) */
 		st->host_stage = MemoryContextAllocZero(TopTransactionContext, sizeof(SiftColDeltaStage));
 		st->host_event = sift_col_delta_stage_event;
+		st->host_holds_in = sift_col_delta_stage_holds_in;
 	}
 	sift_col_delta_stage_add(st->host_stage, plan->part_id, plan->key_lo, GetCurrentSubTransactionId(), rec);
 	st->host_pending++;

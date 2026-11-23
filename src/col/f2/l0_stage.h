@@ -60,6 +60,7 @@ typedef enum SiftStageEvent
 struct SiftTxnStage;
 struct SiftCdRemapCache;
 typedef void (*SiftStageHostEvent) (Relation rel, struct SiftTxnStage *st, SiftStageEvent ev, SubTransactionId sub, SubTransactionId parent);
+typedef bool (*SiftStageHostHolds) (const void *host_stage, uint64 lo, uint64 hi);
 
 typedef struct SiftTxnStage
 {
@@ -89,6 +90,7 @@ typedef struct SiftTxnStage
 	struct SiftCdRemapCache *cd_cache;	/* a sift_col index: the address changes of the column delta chain of each partition the transaction updated rows of, kept for its next updates (col/f2/f2_col_delta_srv.c) */
 	void	   *host_stage;		/* what the host of the relation stages besides rows and deletes (a table: its column delta records), NULL for none */
 	SiftStageHostEvent host_event;	/* the host's answer to the events above, set with host_stage */
+	SiftStageHostHolds host_holds_in;	/* whether a record the host staged is for a row of the addresses lo..hi, which a read of them must see written; NULL: any pending record may be */
 	uint32		bulk_rows;		/* a bulk insert (sift_stage_set_bulk): the rows at which the buffer of a partition is written; 0: the stage flushes at work_mem */
 	uint64		bulk_budget;	/* the bytes the buffers of all partitions may hold */
 	uint32		host_pending;	/* the records the host staged that the next read of the relation must see written */

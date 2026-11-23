@@ -33,8 +33,8 @@
 
 /* ---- policy: constants, no setting ---- */
 
-#define SIFT_COL_DELTA_MIN_LIVE_ATTRS	4		/* a table of fewer columns writes a row about as small as a patch */
-#define SIFT_COL_DELTA_MAX_RATIO_NUM	1		/* changed columns : live columns, at most 1 : 4 */
+#define SIFT_COL_DELTA_MIN_LIVE_ATTRS	2		/* a table of one column writes a row about as small as a patch */
+#define SIFT_COL_DELTA_MAX_RATIO_NUM	1		/* changed columns : live columns, at most 1 : 4, and one column of a table of two or three */
 #define SIFT_COL_DELTA_MAX_RATIO_DEN	4
 #define SIFT_COL_DELTA_MAX_COLS_PER_REC	8
 #define SIFT_COL_DELTA_MAX_COLS_LEAF_ADDR	(SIFT_COL_DELTA_MAX_COLS_PER_REC + 1)	/* a record of a sift_col index also holds the new address of the row */
@@ -43,6 +43,13 @@
 #define SIFT_COL_DELTA_FOLD_PAGES		4		/* a chain of this many pages asks the maintenance worker for a fold */
 #define SIFT_COL_DELTA_MAX_PAGES		32		/* no update is admitted to a chain that would pass it (256 kB: a bulk UPDATE of a daily flag fits one) */
 #define SIFT_COL_DELTA_MAX_ROW_ORDINAL	8192
+
+/* Whether n changed columns of the live_attrs of a table are few enough for a patch */
+static inline bool
+sift_col_delta_cols_fit(int n, int live_attrs)
+{
+	return live_attrs >= SIFT_COL_DELTA_MIN_LIVE_ATTRS && n <= Max(1, live_attrs * SIFT_COL_DELTA_MAX_RATIO_NUM / SIFT_COL_DELTA_MAX_RATIO_DEN);
+}
 
 #ifdef SIFT_TESTING
 extern PGDLLIMPORT bool sift_test_col_delta;
@@ -159,7 +166,7 @@ typedef struct SiftColDeltaColHdr
 
 StaticAssertDecl(sizeof(SiftColDeltaColHdr) == 4, "SiftColDeltaColHdr must be 4 bytes");
 
-/* One changed column on its way into a record: the cell as sift_f2_cell_of_datum made it (a varlena with its header, a fixed-length value as it is) */
+/* One changed column on its way into a record: the cell as sift_f2_cell_of_datum made it (a bare string or a varlena image, a fixed-length value as it is) */
 typedef struct SiftColDeltaCol
 {
 	int16		attnum;
@@ -480,6 +487,9 @@ typedef struct SiftColDeltaStage
 	SiftCdPartBytes *part_bytes_tab;	/* the bytes of each partition: open addressing, a partition keeps its slot */
 	uint32		part_bytes_cap;
 	uint32		part_bytes_n;
+	uint64	   *tids;			/* the address of every row a record was staged for, plus one (open addressing); a released record leaves its row in until the stage is cleared */
+	uint32		tids_cap;
+	uint32		tids_n;
 } SiftColDeltaStage;
 
 /* The record of the changes of two records of one transaction at one row: the columns of both, the later value of a column where both hold it; 0 when it does not fit a record */
@@ -497,6 +507,9 @@ extern void sift_col_delta_stage_promote_sub(SiftColDeltaStage *st, SubTransacti
 
 /* Before the commit or the prepare: every record belongs to the top transaction, which is all a reader and a prepared transaction may meet */
 extern void sift_col_delta_stage_normalize_top(SiftColDeltaStage *st, TransactionId top_xid);
+
+/* Whether a record is staged for a row of the addresses lo..hi: a read of them must see it written (the stage is written before such a read, and not before the read of any other row) */
+extern bool sift_col_delta_stage_holds_in(const void *stage, uint64 lo, uint64 hi);
 
 /* The bytes staged for a partition: what an admission counts */
 extern uint64 sift_col_delta_stage_part_bytes(const SiftColDeltaStage *st, uint64 part_id);

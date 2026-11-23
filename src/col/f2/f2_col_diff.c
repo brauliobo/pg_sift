@@ -150,7 +150,7 @@ sift_f2_col_delta_admit_index(const SiftF2AdmitIn *in)
 		return SIFT_F2A_OK;
 	if (n > SIFT_COL_DELTA_MAX_COLS_PER_REC)
 		return SIFT_F2A_TOO_MANY_LEAVES;
-	if (!(in->total_leaves >= SIFT_COL_DELTA_MIN_LIVE_ATTRS ? n * SIFT_COL_DELTA_MAX_RATIO_DEN <= in->total_leaves * SIFT_COL_DELTA_MAX_RATIO_NUM : n == 1 && in->total_leaves >= 2))
+	if (!sift_col_delta_cols_fit(n, in->total_leaves))
 		return SIFT_F2A_TOO_WIDE;
 	if (in->payload_bytes > SIFT_COL_DELTA_MAX_PAYLOAD)
 		return SIFT_F2A_PAYLOAD;

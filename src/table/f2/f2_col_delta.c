@@ -29,7 +29,7 @@ sift_col_delta_admit(const SiftColDeltaPolicyIn *in)
 		return SIFT_CD_INDEXED_COLUMN;
 	if (in->hits_protected)
 		return SIFT_CD_PROTECTED_COLUMN;
-	if (in->nchanged > SIFT_COL_DELTA_MAX_COLS_PER_REC || in->nchanged * SIFT_COL_DELTA_MAX_RATIO_DEN > in->live_attrs * SIFT_COL_DELTA_MAX_RATIO_NUM)
+	if (in->nchanged > SIFT_COL_DELTA_MAX_COLS_PER_REC || !sift_col_delta_cols_fit(in->nchanged, in->live_attrs))
 		return SIFT_CD_TOO_MANY_COLUMNS;
 	if (in->payload_bytes > SIFT_COL_DELTA_MAX_PAYLOAD)
 		return SIFT_CD_PAYLOAD_TOO_LARGE;
@@ -667,6 +667,63 @@ sift_col_delta_stage_book(SiftColDeltaStage *st, const SiftStageColDelta *it, in
 		st->sub_items += items;
 }
 
+static uint32
+tid_slot(const uint64 *tab, uint32 cap, uint64 tid)
+{
+	uint32		i = (uint32) ((tid * UINT64CONST(0x9E3779B97F4A7C15)) >> 40) & (cap - 1);
+
+	while (tab[i] != 0 && tab[i] != tid + 1)
+		i = (i + 1) & (cap - 1);
+	return i;
+}
+
+static void
+tids_add(SiftColDeltaStage *st, uint64 tid)
+{
+	uint32		i;
+
+	if ((st->tids_n + 1) * 2 > st->tids_cap)
+	{
+		uint32		cap = Max(64, st->tids_cap * 2);
+		uint64	   *tab = MemoryContextAllocZero(TopTransactionContext, sizeof(uint64) * cap);
+
+		for (uint32 k = 0; k < st->tids_cap; k++)
+			if (st->tids[k] != 0)
+				tab[tid_slot(tab, cap, st->tids[k] - 1)] = st->tids[k];
+		if (st->tids != NULL)
+			pfree(st->tids);
+		st->tids = tab;
+		st->tids_cap = cap;
+	}
+	i = tid_slot(st->tids, st->tids_cap, tid);
+	if (st->tids[i] == 0)
+		st->tids_n++;
+	st->tids[i] = tid + 1;
+}
+
+bool
+sift_col_delta_stage_holds_in(const void *stage, uint64 lo, uint64 hi)
+{
+	const SiftColDeltaStage *st = stage;
+
+	if (st->tids_n == 0 || lo > hi)
+		return false;
+	if (hi - lo >= st->tids_n)
+	{
+		for (uint32 i = 0; i < st->tids_cap; i++)
+			if (st->tids[i] != 0 && st->tids[i] - 1 >= lo && st->tids[i] - 1 <= hi)
+				return true;
+		return false;
+	}
+	for (uint64 tid = lo;; tid++)
+	{
+		if (st->tids[tid_slot(st->tids, st->tids_cap, tid)] != 0)
+			return true;
+		if (tid == hi)
+			return false;
+	}
+}
+
 void
 sift_col_delta_stage_add(SiftColDeltaStage *st, uint64 part_id, const uint8 *key_lo, SubTransactionId subxid, const uint8 *rec)
 {
@@ -686,6 +743,7 @@ sift_col_delta_stage_add(SiftColDeltaStage *st, uint64 part_id, const uint8 *key
 	it->subxid = subxid;
 	it->rec = MemoryContextAlloc(TopTransactionContext, h.rec_bytes);
 	memcpy(it->rec, rec, h.rec_bytes);
+	tids_add(st, sift_col_delta_hdr_tid(&h));
 	sift_col_delta_stage_book(st, it, h.rec_bytes, 1);
 }
 
@@ -818,6 +876,9 @@ sift_col_delta_stage_clear(SiftColDeltaStage *st)
 	for (int i = 0; i < st->n; i++)
 		SIFT_INVARIANT(st->items[i].rec == NULL, "a column delta stage was cleared with a record in it");
 	st->n = 0;
+	st->tids_n = 0;
+	if (st->tids != NULL)
+		memset(st->tids, 0, sizeof(uint64) * st->tids_cap);
 }
 
 void
@@ -830,5 +891,7 @@ sift_col_delta_stage_free(SiftColDeltaStage *st)
 		pfree(st->items);
 	if (st->part_bytes_tab != NULL)
 		pfree(st->part_bytes_tab);
+	if (st->tids != NULL)
+		pfree(st->tids);
 	memset(st, 0, sizeof(*st));
 }

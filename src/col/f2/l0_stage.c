@@ -643,7 +643,7 @@ sift_stage_holds_in(Relation rel, uint64 lo, uint64 hi)
 
 	if (st == NULL)
 		return false;
-	if (st->host_pending > 0)
+	if (st->host_pending > 0 && (st->host_holds_in == NULL || st->host_holds_in(st->host_stage, lo, hi)))
 		return true;
 	if (st->total_rows == 0 || lo > hi || hi < st->tid_min || lo > st->tid_max)
 		return false;
