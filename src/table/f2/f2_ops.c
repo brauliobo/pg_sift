@@ -10,6 +10,7 @@
 #include "table/dispatch.h"
 #include "table/f2/f2_blob.h"
 #include "table/f2/f2_col_delta.h"
+#include "table/f2/f2_cost_hook.h"
 #include "table/f2/f2_tbl.h"
 
 SIFT_TAM_DELETE_ADAPTER(sift_tbl_f2_tuple_delete)
@@ -112,4 +113,5 @@ sift_tbl_v2_init(void)
 {
 	sift_tbl_f2_locks_init();
 	sift_col_delta_fold_install();
+	sift_tbl_f2_cost_hook_init();
 }
