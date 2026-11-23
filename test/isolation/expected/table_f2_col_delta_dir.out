@@ -1,0 +1,101 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2b s1big s2r s1c s2r s2e s3r
+step s2b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_cdd SET b = b + 1 WHERE id <= 20000;
+step s2r: SELECT id, b, c FROM iso_cdd WHERE id IN (1, 10000, 20000) ORDER BY id; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+   id|b|c
+-----+-+-
+    1|0|1
+10000|0|1
+20000|0|1
+(3 rows)
+
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
+step s1c: COMMIT;
+step s2r: SELECT id, b, c FROM iso_cdd WHERE id IN (1, 10000, 20000) ORDER BY id; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+   id|b|c
+-----+-+-
+    1|0|1
+10000|0|1
+20000|0|1
+(3 rows)
+
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
+step s2e: COMMIT;
+step s3r: SELECT id, b, c FROM iso_cdd WHERE id IN (1, 10000, 20000) ORDER BY id; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+   id|b|c
+-----+-+-
+    1|1|1
+10000|1|1
+20000|1|1
+(3 rows)
+
+    n|   sb|   sc
+-----+-----+-----
+20000|20000|20000
+(1 row)
+
+
+starting permutation: s2b s1big s2r s1r s2r s2e s3r
+step s2b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
+step s1big: BEGIN; UPDATE iso_cdd SET b = b + 1 WHERE id <= 20000;
+step s2r: SELECT id, b, c FROM iso_cdd WHERE id IN (1, 10000, 20000) ORDER BY id; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+   id|b|c
+-----+-+-
+    1|0|1
+10000|0|1
+20000|0|1
+(3 rows)
+
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
+step s1r: ROLLBACK;
+step s2r: SELECT id, b, c FROM iso_cdd WHERE id IN (1, 10000, 20000) ORDER BY id; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+   id|b|c
+-----+-+-
+    1|0|1
+10000|0|1
+20000|0|1
+(3 rows)
+
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
+step s2e: COMMIT;
+step s3r: SELECT id, b, c FROM iso_cdd WHERE id IN (1, 10000, 20000) ORDER BY id; SELECT count(*) AS n, sum(b) AS sb, sum(c) AS sc FROM iso_cdd;
+   id|b|c
+-----+-+-
+    1|0|1
+10000|0|1
+20000|0|1
+(3 rows)
+
+    n|sb|   sc
+-----+--+-----
+20000| 0|20000
+(1 row)
+
