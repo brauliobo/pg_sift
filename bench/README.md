@@ -189,7 +189,7 @@ session with each other, not with another session or machine.
 **Quiet host (`scripts/quiet.sh`).** The articles and places runs (`steps/lib.sh`) do not wait for a quiet host: they judge each timed batch by the work of others in its window (`sentinel_*`: NOISY above `SIFT_NOISE_CPU`, 0.25 cores, over the idle host's, listed in `noisy.txt`) and print the pressure for information. The other timed steps (`ab.sh`, `facets.sh`, `parallel.sh`, `col-build.sh`) wait as follows.
 (`/proc/pressure/cpu` and `io`, the `some` line). Before each timed batch (a class of cells, a pgbench round, a timed query, a build) `quiet_wait` blocks until both resources are below 10% in the
 10 s average (`avg10`) for two samples 2 s apart; after `SIFT_QUIET_TIMEOUT` seconds (default 60) the batch runs anyway and is marked **NOISY** (in the log, in `noisy.txt` of the table directory, in the table or the footer of the
-step), never silently. Headers and footers print `pressure cpu=X%/Y% io=X%/Y% (some avg10/avg60)`. Instruction-count steps (`cpu_gate.sh`, the cycles of `ab.sh run`) print it and never wait. Override with the environment:
+step), never silently. Headers and footers print `pressure cpu=X%/Y% io=X%/Y% (some avg10/avg60)`. Override with the environment:
 `SIFT_QUIET_MAX` (percent, default 10), `SIFT_QUIET_TIMEOUT` (seconds), `SIFT_QUIET_WINDOW` (`avg10` or `avg60`); the same options exist on the command (`scripts/quiet.sh wait --max 20 --timeout 300`, `report`). On a kernel without PSI it says
 that it cannot measure (exit status 3) and every batch is NOISY.
 
@@ -218,29 +218,6 @@ Per-tier cluster, port and dump:
 |---|---:|---:|---|
 | Q (`slim` 50,000, `ab` 150,000: `Q_DOCS`) | 50,000 / 150,000 | 56040 | `$BENCH_STORE/cache/sift-Q-<docs>.dump` |
 | F (`full`) | 218,058 | 56050 | `$BENCH_STORE/cache/sift-F-ALL.dump` |
-
-### Gate on a busy host (`steps/cpu_gate.sh`)
-
-Throughput and latency say nothing on a host whose cpu pressure stays above the 10% of `scripts/quiet.sh`, so this gate compares builds by what the server executes: user-space instructions (and cycles, as secondary
-evidence, because the other load contends for the caches) that `perf stat -e instructions:u,cycles:u -p POSTMASTER` counts for the processes the postmaster forks during one operation. That is the
-backend plus the maintenance worker and parallel workers, summed; a write's window ends when the worker has gone. It is standalone, never part of `make check` or `scripts/ci.sh`, needs `perf`
-(`perf_event_paranoid` <= 2) and one checkout per build with `scripts/pgtest.sh` (`git worktree add --detach /tmp/x REF`; build everything the same way, the Makefile links without LTO by default):
-
-```sh
-bench/steps/cpu_gate.sh --build before=/tmp/x-before --build after=/tmp/x-after [--build head=/tmp/x-head] \
-    [--reps 7] [--max-reps 25] [--se 1] [--budget 3600] [--cells REGEX] [--rows 20000] [--inserts 10000] [--queries 100] [--raw FILE] \
-    [--index-opts LABEL='vacuum_truncate = false'] [--guc LABEL=sift.maintenance_cost_delay=0]
-```
-
-The first `--build` is the baseline. `--index-opts` gives the indexes of one build a reloption list and `--guc` a setting of its cluster, so the same checkout under two labels compares two configurations of one build (`merge_fanin = 32` against the default). Each build gets a release-build cluster under `/tmp/sift-gate-LABEL` (ports `SIFT_PORT`, default 56120, and up); nothing else is touched, and clusters and scratch files are removed
-at the end. The data are deterministic (`setseed`), made once per build into template databases and copied per run, and the heap's md5 must be equal on all builds. Cells: `insert1 bulk copy update
-delete promote merge create` (writes on a fresh copy), `vacuum_backlog vacuum_dead vacuum_clean vacuum_nofree` (the last is the second VACUUM in a row, which costs less than a session, so it is compared raw, session included: what the check for a free tail to give back costs), and the query classes `count rank and or phrase` on 61 segments (`idle60_*`), on one (`idle1_*`) and
-on the index after VACUUM and more rows (`vac_*`), plus `session` (connect, load sift, one query on an empty index), whose cost is subtracted from every other cell, which is divided by its operations.
-Per round every cell runs on every build one after the other, the first of the round rotating (ABAB, BABA). The ratio to the baseline is the geometric mean of the per-round ratios of instructions per
-operation with a 95% interval (t distribution); `--reps` rounds run for every cell, then only the cells whose standard error of the ratio is above `--se` percent get more, up to `--max-reps` rounds or
-`--budget` seconds. A cell regresses when its whole interval is above 1.02; the table also gives the ratio of cycles, WAL bytes, index size, segments left and documents not promoted. A cell whose end
-state differs between builds (`design`: VACUUM merging further, the worker promoting the tail of a bulk load) is work done by design: its ratio is reported apart, with the segment counts, and does not gate.
-`--raw FILE` keeps every measurement (`cell build round metric value`).
 
 ## The 6.0 release pass
 
@@ -282,7 +259,7 @@ The engines that are not pg_sift are measured once per host, dataset, settings a
 | `xlib.sh` | the external engines (Tantivy, Elasticsearch) in the lanes: `xbench` as the load generator, `x_*` of the adapters |
 | `cell.py` | one measured cell: pgbench in chunks until the relative standard error is small enough or the time is up (batch means / order statistics), see How a run works |
 | `stats.py` | the statistics of repeated measurements (median, sd, standard error), imported by `cell.py`, `tables.py` and `analytics.py` |
-| `perf.sh` | `perf_counts PID [-- CMD]`: user-space cycles, instructions and CPU time of a process by `perf stat`, one line; sourced by `ab.sh` and `bench/cpu-query.sh`, run by `analytics.py` |
+| `perf.sh` | `perf_counts PID [-- CMD]`: user-space cycles, instructions and CPU time of a process by `perf stat`, one line; sourced by `bench/cpu-query.sh`, run by `analytics.py` |
 | `lib.sh` | shared settings and helpers: tiers, ports, engine roots, `q` (psql), `load_engine`, `rounds` / `rotated` / `rse_cells` (the rounds and their stopping rule), `cold_table` / `cold_ms` / `cold_cell` (cold cache), `locked` (perf lock) |
 | `machine.sh`, `tables.py` | the machine and engine description; raw run tables to `results.tsv` / `tables.md` (`report`) |
 | `resultfile.py` | the results files of `docs/results/` (`# key: value` lines and a tab separated table), their reader and writer, and the replacement of the generated blocks of the pages |
@@ -296,8 +273,6 @@ The engines that are not pg_sift are measured once per host, dataset, settings a
 | `corpus.sh` | `load` a tier and cache its dump, `restore` it |
 | `fetch.sh` | build sift and rum (PGXS), unpack pg_search, check the Elasticsearch package, build `xbench` (in a scratch target; only the stripped binary stays): one `$BENCH_WORK/engines/<name>/{dl,root}` per engine, which the cluster searches for extensions |
 | `build.sh` | sift CREATE INDEX per parallel worker count, appends to `build-workers.tsv` (`workers`) |
-| `ab.sh` | standalone, run directly: interleaved A/B of sift builds (git refs or the working tree) on the slim corpus, one backend's user cycles and instructions per transaction (or qps at N clients), mean and standard error; `prepare`, `prepare_places` (adapter index plus a btree on `country_code`), `shapes` (`sql/ab_shapes.sql`, the filter shapes of the plan-choice tests), `build`, `run`, `clients` (header of the script; `run bench/sql/ab_and_filter_prep.pgb ...` is a prepared rare AND query with a selective filter, the shape a generic plan with the pushdown serves worse than main's post-filter plan) |
-| `cpu_gate.sh` | standalone, run directly: gate of two or more sift builds by user instructions and cycles per operation of the server processes (backend plus maintenance worker), per cell ratio to the baseline with a 95% interval, interleaved rounds extended until the standard error is small; holds up on a busy host (section Gate on a busy host) |
 | `shred.sh` | the shredder's throughput on a throwaway cluster of `scripts/pgtest.sh` (`shred`; `sql/shred.sql`; `SHRED_DOCS`, `SHRED_ROUNDS`) |
 | `facets.sh`, `facets_es.py`, `parallel.sh` | standalone, run directly: facet counts of `sift.facets` against GROUP BY and Elasticsearch; speedup of the parallel scan by worker count on a restored `bench` database |
 | `oracle.sh`, `rank_check.sh` | exact match-set / count(*) oracle (tsvector); soft BM25 check against pgx-bm25 (`check`) |

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The one measurement of a backend's user-space work by perf stat, for bench/steps/ab.sh, bench/cpu-query.sh and steps/analytics.py.
+# The one measurement of a backend's user-space work by perf stat, for bench/cpu-query.sh and steps/analytics.py.
 #
 #   perf_counts PID [-- CMD...]   (sourced; or executed: steps/perf.sh PID [-- CMD...])
 #

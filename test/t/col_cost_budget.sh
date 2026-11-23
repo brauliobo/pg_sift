@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # tap: pooled
-# The common requests of a table with a sift_col index stay inside absolute resource bounds, so that a change that makes them dearer fails here (the instructions of the same requests are
-# in scripts/instr-budget-cost.sh): the WAL of a row inserted in its own transaction and of a row of a batch, the WAL a VACUUM of an index nothing changed writes (none), and the
+# The common requests of a table with a sift_col index stay inside absolute resource bounds, so that a change that makes them dearer fails here: the WAL of a row inserted in its own transaction and of a row of a batch, the WAL a VACUUM of an index nothing changed writes (none), and the
 # background workers a table with nothing to do starts (none, and so no log line).
 . "$(dirname "$0")/lib.bash"
 

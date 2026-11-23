@@ -41,9 +41,6 @@ script:musl-check.sh	900	1500	build on postgres:18-alpine, the IFUNC check and p
 script:test-regress-batch.sh	120	100	one cluster, a batch of 20 one-table fixtures and three failing batches; seconds
 script:pgtest.sh	1800	3072	regress of the whole suite serially: 2,459 s release / 5,556 s cassert: run it sharded (scripts/ci.sh, SIFT_CI_JOBS=installcheck); one test or TAP is bounded by its own row
 script:soak.sh	900	1500	600 s of pgbench + setup (default --duration 600); 191-220 s in the quick tier (15 s soak hosted)
-script:instr-budget-dirread.sh	180	200	the instructions of a directory read at a flat and a forced chain of 1, 3 and 100 segments: one cluster, tables of a few thousand rows
-script:instr-budget-dirmemo.sh	180	200	the chain reads of single-row writes on a forced chain of 120 segments (a DELETE, four DELETEs, the first INSERT) against one read, and a statement after the first against a flat directory: one cluster, 120 one-row segments, 15 s measured
-script:instr-budget-guard.sh	120	200	the transaction ids a guarded one-row DELETE assigns, against the same DELETEs without a guard: one cluster, 300 rows in three segments, 20 s measured
 script:colsoak.sh	600	1000	300 s default duration; 124 s in the full tier
 script:fuzz.sh	1200	1500	scale 10 sanitizer fuzz; hosted 'fuzz' job 514 s (698-1024 s on the deep tier)
 script:difftest.sh	900	1500	hosted difftest jobs 392-994 s per shard
@@ -60,13 +57,6 @@ script:valgrind.sh	1800	3000	memcheck over a regression subset (--leaks: the cur
 script:massif-slope.py	1800	3000	the massif half of valgrind.sh --massif: 5 cases x 2 sizes, a native setup and one backend under massif each
 script:release.sh	2700	3072	the release from a green head; the gate is gate:release
 script:exec-budget.sh	600	1000	-
-script:perf-gate-maint.sh	1800	3000	two builds, interleaved cells; -
-script:dry-perf-gate.py	1800	3000	-
-script:instr-budget.sh	600	1000	callgrind of one backend; -
-script:instr-budget-ungrouped.sh	600	1000	-
-script:instr-budget-vet.sh	600	1000	-
-script:instr-budget-wbuf.sh	600	1000	-
-script:instr-budget-zone.sh	600	1000	-
 script:stability.sh	2700	3072	see gate:stability
 script:bm25-size.sh	600	1000	-
 script:merge-bytes.sh	600	1000	-
@@ -84,8 +74,6 @@ script:ci_stats.sh	-	-	a helper of the entry points above, no run of its own
 script:corpus-local.sh	-	-	a helper of the entry points above, no run of its own
 script:cpu_time.py	-	-	a helper of the entry points above, no run of its own
 script:fresh-psql.py	-	-	a helper of the entry points above, no run of its own
-script:instr-budget-fetch.sh	-	-	a helper of the entry points above, no run of its own
-script:instr-budget-lib.sh	-	-	a helper of the entry points above, no run of its own
 script:leakcheck.sh	-	-	a helper of the entry points above, no run of its own
 script:lint.sh	-	-	a helper of the entry points above, no run of its own
 script:private-overlay.sh	-	-	a helper of the entry points above, no run of its own
@@ -93,7 +81,6 @@ script:simd_level.sh	-	-	a helper of the entry points above, no run of its own
 script:test-ci-ready.sh	-	-	a helper of the entry points above, no run of its own
 script:test-perf-select.py	-	-	a helper of the entry points above, no run of its own
 regress:shard	1800	2000	one of 4 shards of the 1,265 regression tests (every fourth name) on a cluster of its own; serial: 2,459 s release / 5,556 s cassert, so a shard is ~620 s / ~1,400 s
-script:instr-budget-cost.sh	600	1000	callgrind of one backend: planning, INSERT and an unchanged VACUUM on a table with a sift_col index; -
 tap:mem_slope_legacy	1500	3000	the legacy memory slope gate (leakx, cap, evict, pinned): 180 s and 2.0 GB of tmpfs measured, one cluster at shared_buffers 64 MB
 tap:mem_idle_series	900	1500	12000 statements of 25 kinds in one backend at 100,000-row tables, 100 rows inserted a round: 224 s on one host, 210 to 290 s on the hosted fast tier (786 s at 200 rows under 4 parallel lanes), one cluster at shared_buffers 64 MB
 tap:col_build_exact_memory	120	300	the exact bytes of the col_build scope at three steps of 40,000 to 120,000 rows on the 8-page flavour, key_cut at 1, 8 and 16 MB, at 1 MB under a serial floor of 2 MB and plain at 36 and 40 MB, and the same rows under the shipped floor: 32 s with the 8-page flavour built beforehand (scripts/ci/run.sh), 7.5e10 user instructions, one cluster

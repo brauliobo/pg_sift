@@ -7,7 +7,6 @@ bench/steps/cluster.sh	benchmark or perf-gate cluster: it measures timings of th
 bench/steps/v6_cluster.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 bench/steps/writecost.sh	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 bench/test/test_iolib.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
-scripts/dry-perf-gate.py	benchmark or perf-gate cluster: it measures timings of the release library, a leak check would change what it measures; the test lanes check the same code
 scripts/musl-check.sh	the server of postgres:<major>-alpine runs the smoke test of the installed package (packaging/smoke.sql) and is stopped with the container: the leaks of a musl build are not a test of this tree's allocators
 scripts/test-regress-batch.sh	a fixture cluster of tables t01-t20 that proves the batch runner names the guilty test: no sift code runs
 scripts/old-lib-check.sh	starts the server of an older release on a data directory of this tree: the leaks of that release are not this tree's
