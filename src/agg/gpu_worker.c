@@ -238,6 +238,8 @@ wire_pack(char *stage, SiftGpuWireJob *wj, const SiftVkJob *job, const char **wh
 	memcpy(wj->dense_kmin, job->dense_kmin, sizeof(wj->dense_kmin));
 	memcpy(wj->dense_span, job->dense_span, sizeof(wj->dense_span));
 	wj->est_groups = job->est_groups;
+	wj->finish = job->finish;
+	wj->topk = job->topk;
 	wj->topn_k = job->topn_k;
 	wj->topn_desc = job->topn_desc;
 	wj->topn_nulls = job->topn_nulls;
@@ -257,7 +259,7 @@ wire_unpack(char *stage, const SiftGpuWireJob *wj)
 	SiftVkChunk *chunk = palloc(Max(wj->nchunks, 1) * sizeof(SiftVkChunk));
 	SiftVkGranule *gran = palloc0(Max(wj->ngran, 1) * sizeof(SiftVkGranule));
 	SiftVkJob	job = {.mode = wj->mode,.ncols = wj->ncols,.ngran = wj->ngran,.nops = wj->nops,.npool = wj->npool,.where_slot = wj->where_slot,
-	.nkeys = wj->nkeys,.naggs = wj->naggs,.est_groups = wj->est_groups,.topn_k = wj->topn_k,.topn_desc = wj->topn_desc,
+	.nkeys = wj->nkeys,.naggs = wj->naggs,.est_groups = wj->est_groups,.finish = wj->finish,.topk = wj->topk,.topn_k = wj->topn_k,.topn_desc = wj->topn_desc,
 	.topn_nulls = wj->topn_nulls,.sort_float = wj->sort_float,.sort_reg = wj->sort_reg,.max_cand = wj->max_cand,.tab = wj->tab};
 
 	for (uint32 k = 0; k < wj->nchunks; k++)
@@ -380,6 +382,8 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 		MemoryContextDelete(worker->jobcx);
 		worker->jobcx = NULL;
 	}
+	sift_vk_close(worker->vk);
+	worker->vk = NULL;
 }
 
 static bool

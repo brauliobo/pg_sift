@@ -58,7 +58,7 @@ $(OUT)/codec/pgshim.o: $(WTI)/tools/pgshim.c
 	$(CC) $(CCFLAGS) -c -o $@ $<
 
 # ---- the tests and the benchmark ----
-TESTOBJ   = $(OUT)/tests/vk_v6_gen.o $(OUT)/tests/vk_v6_oracle.o $(OUT)/tests/vk_v6_test_agg.o
+TESTOBJ   = $(OUT)/tests/vk_v6_gen.o $(OUT)/tests/vk_v6_oracle.o $(OUT)/tests/vk_v6_test_agg.o $(OUT)/tests/vk_v6_test_finish.o
 # T10: the engine's own expression compiler and the translator the server runs (src/agg/gpu_emit.c)
 EMITOBJ   = $(OUT)/tests/vk_v6_test_emit.o $(OUT)/agg/gpu_emit.o $(OUT)/codec/agg/vexpr_compile.o
 TCFLAGS   = -std=gnu11 -O2 -g $(WARN) -DSIFT_VULKAN -I$(ROOT)/src -I$(HERE)/tests -I$(SRC) -I$(WTI)/tools/colcodec -I$(PGINC) $(SIFT_PGCPP) $(SIFT_BASE_ISA) -ffp-contract=off $(SANFLAGS)

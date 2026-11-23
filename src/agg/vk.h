@@ -52,6 +52,25 @@ typedef enum SiftVkMode
 	SIFT_VK_TOPN
 } SiftVkMode;
 
+/* How a HASH job ends: the groups as records, or only what a COUNT(DISTINCT) or an ORDER BY .. LIMIT K of the groups reads of the table, so that the host reads back bytes and not the table */
+typedef enum SiftVkFinish
+{
+	SIFT_VK_FIN_GROUPS,			/* every group, as a record */
+	SIFT_VK_FIN_COUNT,			/* COUNT(DISTINCT): the table holds the pairs (the keys, the value), the value last; the result is the number of pairs whose value is not NULL (distinct) */
+	SIFT_VK_FIN_DENSE_COUNT,	/* ... of each group of the keys before the last, numbered as a DENSE job numbers them (dense_kmin, dense_span): acc[group] holds the count in its low SIFT_VK_COUNT_BITS bits and, above them, the pairs whose value is NULL */
+	SIFT_VK_FIN_TOPK			/* the groups that can be among the best topk.k of the order of the first topk.ncomp sort columns, as records */
+} SiftVkFinish;
+
+#define SIFT_VK_COUNT_BITS		40
+
+typedef struct SiftVkTopk
+{
+	uint32_t	k;
+	uint32_t	ncomp;			/* 1 or 2 */
+	uint32_t	comp[2];		/* bit 0: the sort column is an aggregate (COUNT), else a key; bits 1..8 its index; bit 9: DESC; bit 10: NULLs first */
+	uint32_t	cover;			/* 1: these are all the sort columns of the query, so any k of the groups that tie in them are the answer, and only as many as it takes of the ties are candidates */
+} SiftVkTopk;
+
 /* The identity of a decoded chunk: a part is immutable, a rewrite is a new part_gen, TRUNCATE a new relation file */
 typedef struct SiftVkKey
 {
@@ -129,6 +148,8 @@ typedef struct SiftVkJob
 	int64_t		dense_kmin[2];	/* DENSE: the least value of each key */
 	uint32_t	dense_span[2];	/* ... and the values it can take plus one (the slot of NULL) */
 	uint64_t	est_groups;		/* HASH: the groups to expect (0: the rows) */
+	SiftVkFinish finish;		/* HASH */
+	SiftVkTopk	topk;			/* HASH, FIN_TOPK */
 	uint32_t	topn_k;			/* TOPN: the rows wanted */
 	bool		topn_desc;
 	bool		topn_nulls;		/* NULL sorts first: the rows without a key are candidates */
@@ -156,6 +177,7 @@ typedef struct SiftVkResult
 	uint32_t	rec_words;		/* HASH: a record is the nkeys key words, the NULL mask of the key, the rows, 3 words per aggregate */
 	const int64_t *cand;		/* TOPN: ncand pairs (sort key, granule << 32 | row | 1 << 62 when the key is NULL) */
 	uint32_t	ncand;
+	uint64_t	distinct;		/* HASH, FIN_COUNT */
 	bool		fast;			/* a fast kernel ran the job (agg/vk/fast.c) */
 	bool		tab_hit;		/* the descriptor table of the job came from the device: no chunk was looked up */
 	bool		has_err;

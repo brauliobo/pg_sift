@@ -19,8 +19,19 @@ typedef struct RunCtx
 	Plan		plan;
 	void		(*interrupt) (void);
 	SiftVkResult *res;
+	Slot	   *last;			/* the slot of the last batch: its control words are those of the job */
 	Batch		bt[NSLOT];
 } RunCtx;
+
+/* the words of the control and result buffers that only the finish kernels use (agg/vk/shaders/common_compact.glsl) */
+#define J_TK_NCOMP		90u
+#define J_TK_COMP		91u
+#define J_TK_K			93u
+#define J_TK_COVER		94u
+#define TK_STATE_WORD	8		/* RES_TAU: the words of the threshold and of the selection of it, cleared before the passes */
+#define TK_BINS			256		/* the histogram of a round of the selection, the first words of the result list */
+
+enum { FINISH_COMPACT, FINISH_COUNT, FINISH_DENSE_COUNT };
 
 bool
 wait_slot(SiftVk *vk, Slot *s, void (*interrupt) (void))
@@ -139,6 +150,24 @@ submit(SiftVk *vk, Slot *s, bool split)
 	return true;
 }
 
+/* the finish of a hash job that gives its groups, or counts the pairs of a COUNT(DISTINCT) by the group of their keys but the last (vk_ht_compact.comp) */
+static void
+finish_hash(RunCtx *rc, VkCommandBuffer cb)
+{
+	SiftVk	   *vk = rc->vk;
+	const SiftVkJob *job = rc->job;
+	const Plan *p = &rc->plan;
+	uint32_t	pc[4] = {job->finish == SIFT_VK_FIN_GROUPS ? FINISH_COMPACT : job->finish == SIFT_VK_FIN_COUNT ? FINISH_COUNT : FINISH_DENSE_COUNT, job->nkeys - 1, 0, 0};
+
+	if (job->finish == SIFT_VK_FIN_DENSE_COUNT)
+	{
+		vk->vkCmdFillBuffer(cb, vk->out.b, 0, (uint64_t) p->groups * 8, 0);
+		barrier(vk, cb, TR, VK_ACCESS_TRANSFER_WRITE_BIT, CS, SRW);
+	}
+	dispatch(vk, cb, vk->pipe[PL_COMPACT], (p->ht_mask + 256) / 256 < 1024 ? (p->ht_mask + 256) / 256 : 1024, pc);
+	barrier(vk, cb, CS, SRW, TR, VK_ACCESS_TRANSFER_READ_BIT);
+}
+
 /* the commands of a batch: the staged bytes to the device, the unwrap and the decode of the chunks missing from the cache, the kernel;
  * the first one starts from the init image, the last one ends with the finish of the job */
 static bool
@@ -221,11 +250,11 @@ record_batch(RunCtx *rc, Batch *b, bool first, bool last)
 	}
 	if (last)
 	{
-		if (job->mode == SIFT_VK_HASH)
-		{
-			dispatch(vk, cb, vk->pipe[PL_COMPACT], (p->ht_mask + 256) / 256 < 1024 ? (p->ht_mask + 256) / 256 : 1024, pc_agg);
+		rc->last = s;
+		if (job->mode == SIFT_VK_HASH && job->finish != SIFT_VK_FIN_TOPK)
+			finish_hash(rc, cb);
+		else if (job->mode == SIFT_VK_HASH)
 			barrier(vk, cb, CS, SRW, TR, VK_ACCESS_TRANSFER_READ_BIT);
-		}
 		cp = (VkBufferCopy) {0, 0, 64};
 		vk->vkCmdCopyBuffer(cb, vk->res.b, vk->rhost.b, 1, &cp);
 		if (p->acc_words)
@@ -494,6 +523,80 @@ cand_cmp(const void *pa, const void *pb, void *arg)
 	return a->tag < b->tag ? -1 : a->tag > b->tag;
 }
 
+/* The two passes of vk_ht_topk.comp over the finished table, in the slot of the last batch (its control words name the table): the nine rounds of the radix selection of the threshold for each sort column,
+ * then the candidates; the first words of the result back for their number */
+static bool
+topk_pass(RunCtx *rc)
+{
+	SiftVk	   *vk = rc->vk;
+	const Plan *p = &rc->plan;
+	const SiftVkJob *job = rc->job;
+	Slot	   *s = rc->last;
+	VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+	const uint32_t groups = (p->ht_mask + 256) / 256 < 1024 ? (p->ht_mask + 256) / 256 : 1024;
+	VkBufferCopy cp = {0, 0, 64};
+
+	CK(vk->vkResetCommandBuffer(s->ccb, 0));
+	CK(vk->vkBeginCommandBuffer(s->ccb, &bi));
+	vk->vkCmdFillBuffer(s->ccb, vk->res.b, (uint64_t) SIFT_VK_RES_NCAND * 8, 8, 0);
+	vk->vkCmdFillBuffer(s->ccb, vk->res.b, (uint64_t) TK_STATE_WORD * 8, 10 * 8, 0);
+	vk->vkCmdFillBuffer(s->ccb, vk->out.b, 0, TK_BINS * 8, 0);
+	barrier(vk, s->ccb, TR, VK_ACCESS_TRANSFER_WRITE_BIT, CS, SRW);
+	vk->vkCmdBindDescriptorSets(s->ccb, VK_PIPELINE_BIND_POINT_COMPUTE, vk->pl, 0, 1, &s->ds, 0, NULL);
+	dispatch(vk, s->ccb, vk->pipe[PL_HT_TOPK], 1, (uint32_t[4]) {3, 0, 0, 0});
+	barrier(vk, s->ccb, CS, SRW, CS, SRW);
+	for (uint32_t c = 0; c < job->topk.ncomp; c++)
+		for (uint32_t round = 0; round <= 8; round++)
+		{
+			uint32_t	pc_hist[4] = {0, c, round, 0},
+						pc_step[4] = {1, c, round, 0};
+
+			dispatch(vk, s->ccb, vk->pipe[PL_HT_TOPK], groups, pc_hist);
+			barrier(vk, s->ccb, CS, SRW, CS, SRW);
+			dispatch(vk, s->ccb, vk->pipe[PL_HT_TOPK], 1, pc_step);
+			barrier(vk, s->ccb, CS, SRW, CS, SRW);
+		}
+	dispatch(vk, s->ccb, vk->pipe[PL_HT_TOPK], groups, (uint32_t[4]) {2, 0, 0, 0});
+	barrier(vk, s->ccb, CS, SRW, TR, VK_ACCESS_TRANSFER_READ_BIT);
+	vk->vkCmdCopyBuffer(s->ccb, vk->res.b, vk->rhost.b, 1, &cp);
+	CK(vk->vkEndCommandBuffer(s->ccb));
+	return submit(vk, s, false) && wait_slot(vk, s, rc->interrupt);
+}
+
+/*
+ * The groups of the table that can be among the best k of the order of its first sort columns, as records (the table of a query with a top K of its groups, ORDER BY a count or a key LIMIT k): a group after the
+ * threshold in that order has k groups before it, and the host reads back the groups that tie with it or are before it, thousands of tens of millions.
+ */
+static SiftVkStatus
+finish_topk(RunCtx *rc, SiftVkResult *res)
+{
+	SiftVk	   *vk = rc->vk;
+	const SiftVkJob *job = rc->job;
+	const Plan *p = &rc->plan;
+	const int64_t *h = vk->rhost.map;
+	uint32_t   *ctl = rc->last->ctl.map;
+	uint64_t	n;
+
+	if (h[SIFT_VK_RES_OVF] != 0 || (uint64_t) h[SIFT_VK_RES_HTUSED] > (uint64_t) p->ht_maxload + 1024)
+		return SIFT_VK_OVERFLOW;
+	ctl[J_TK_NCOMP] = job->topk.ncomp;
+	ctl[J_TK_COMP] = job->topk.comp[0];
+	ctl[J_TK_COMP + 1] = job->topk.comp[1];
+	ctl[J_TK_K] = job->topk.k;
+	ctl[J_TK_COVER] = job->topk.cover;
+	if (!topk_pass(rc))
+		return vk->lost ? SIFT_VK_LOST : vk->usable ? SIFT_VK_FAIL : SIFT_VK_TIMEOUT;
+	n = (uint64_t) h[SIFT_VK_RES_NCAND];
+	if (n > p->cand_cap)
+		return SIFT_VK_OVERFLOW;
+	res->rec_words = p->stride - 1;
+	res->ngroups = (uint32_t) n;
+	res->acc_words = (uint32_t) (n * (p->stride - 1));
+	if (n && !(res->acc = read_result(rc, n * (p->stride - 1) * 8)))
+		return SIFT_VK_FAIL;
+	return SIFT_VK_OK;
+}
+
 static SiftVkStatus
 finish_result(RunCtx *rc, SiftVkResult *res)
 {
@@ -520,6 +623,21 @@ finish_result(RunCtx *rc, SiftVkResult *res)
 		res->acc_words = p->acc_words;
 		res->ngroups = job->mode == SIFT_VK_DENSE ? p->groups : 1;
 		return SIFT_VK_OK;
+	}
+	if (job->mode == SIFT_VK_HASH && job->finish == SIFT_VK_FIN_TOPK)
+		return finish_topk(rc, res);
+	if (job->mode == SIFT_VK_HASH && job->finish != SIFT_VK_FIN_GROUPS)
+	{
+		if (h[SIFT_VK_RES_OVF] != 0 || (uint64_t) h[SIFT_VK_RES_HTUSED] > (uint64_t) p->ht_maxload + 1024)
+			return SIFT_VK_OVERFLOW;
+		if (job->finish == SIFT_VK_FIN_COUNT)
+		{
+			res->distinct = (uint64_t) h[SIFT_VK_RES_NCOMP];
+			return SIFT_VK_OK;
+		}
+		res->ngroups = p->groups;
+		res->acc_words = p->groups;
+		return (res->acc = read_result(rc, (uint64_t) p->groups * 8)) ? SIFT_VK_OK : SIFT_VK_FAIL;
 	}
 	if (job->mode == SIFT_VK_HASH)
 	{

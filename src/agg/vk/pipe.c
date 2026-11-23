@@ -25,6 +25,7 @@ static const struct
 	{sift_vk_spv_agg_dense, sizeof(sift_vk_spv_agg_dense)},
 	{sift_vk_spv_agg_hash, sizeof(sift_vk_spv_agg_hash)},
 	{sift_vk_spv_ht_compact, sizeof(sift_vk_spv_ht_compact)},
+	{sift_vk_spv_ht_topk, sizeof(sift_vk_spv_ht_topk)},
 	{sift_vk_spv_topn, sizeof(sift_vk_spv_topn)},
 	{sift_vk_spv_agg_fast_ungrouped, sizeof(sift_vk_spv_agg_fast_ungrouped)},
 	{sift_vk_spv_agg_fast_dense, sizeof(sift_vk_spv_agg_fast_dense)},

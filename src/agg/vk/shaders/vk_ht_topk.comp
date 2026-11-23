@@ -1,0 +1,306 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+/*
+ * vk_ht_topk.comp - the groups of a finished hash table that can be among the K best of ORDER BY .. LIMIT K, in two passes, so that the host reads back the few thousand groups that can be and not all of
+ * them. The order is that of the first one or two sort columns of the query (a group key, or a COUNT): a group worse than K others in that prefix is not in the answer whatever the columns after it say.
+ *   pass 1: the threshold, the K-th group of the order, found exactly by radix selection one sort column at a time: a column is the class of its value (NULLs first, the values, NULLs last) and then the eight
+ *           bytes of the value as an unsigned number in the order of the column, most significant first; each of these rounds is a histogram of the groups that still can be the K-th (pc0 = 0, pc1 = the column,
+ *           pc2 = the round), and a step that picks the bin the K-th falls in (pc0 = 1); the first round also finds the range of the values, and the rounds of the leading bytes that the range shares are not run.
+ *           The columns after the first look only at the groups equal to the threshold of the ones before. pc0 = 3 starts the range.
+ *   pass 2: the candidates (pc0 = 2): every group that is not after the threshold in the order is written as a record (write_group), RES_NCAND counting them whatever the capacity of the list; when the
+ *           columns are all those of the query, the groups that tie with the threshold are taken only as many as the K-th needs of them.
+ * The histogram is kept in the first 256 words of the result list, which the candidates then overwrite; the state of the selection is in the words of the result buffer from RES_TAU.
+ */
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#include "common_decode.glsl"
+#include "common_compact.glsl"
+
+layout(local_size_x = 256) in;
+
+uint ncomp()
+{
+	return min(ctl[J_TK_NCOMP], TK_MAX_COMP);
+}
+
+/* the value of component c of slot s, and whether it is NULL: a key of the group, or the count of an aggregate */
+int64_t comp_value(uint s, uint c, out bool isnull)
+{
+	uint w = ctl[J_TK_COMP + c], idx = (w >> 1u) & 255u, b = s * ctl[J_HT_STRIDE];
+
+	if ((w & 1u) == 0u)
+	{
+		isnull = key_null(s, idx);
+		return ht[b + 1u + idx];
+	}
+	isnull = false;
+	if (((ctl[J_CNT_ROWS] >> idx) & 1u) != 0u)
+		return ht[b + 2u + ctl[J_NKEYS]];
+	return ht[b + 3u + ctl[J_NKEYS] + idx * 3u];
+}
+
+bool comp_desc(uint c)
+{
+	return ((ctl[J_TK_COMP + c] >> 9u) & 1u) != 0u;
+}
+
+/* the order of two values of component c: negative when a is first */
+int comp_order(uint c, bool an, int64_t av, bool bn, int64_t bv)
+{
+	bool nulls_first = ((ctl[J_TK_COMP + c] >> 10u) & 1u) != 0u;
+
+	if (an != bn)
+		return an == nulls_first ? -1 : 1;
+	if (an || av == bv)
+		return 0;
+	return (av < bv) == !comp_desc(c) ? -1 : 1;
+}
+
+/* the class of a value in the order: 0 first, 1 a value, 2 last */
+uint comp_class(uint c, bool isnull)
+{
+	return isnull ? (((ctl[J_TK_COMP + c] >> 10u) & 1u) != 0u ? 0u : 2u) : 1u;
+}
+
+/* a value as the unsigned number that orders like it in the order of component c, and back */
+uint64_t order_key(uint c, int64_t v)
+{
+	uint64_t x = uint64_t(v) ^ 0x8000000000000000ul;
+
+	return comp_desc(c) ? ~x : x;
+}
+
+int64_t order_value(uint c, uint64_t x)
+{
+	return int64_t((comp_desc(c) ? ~x : x) ^ 0x8000000000000000ul);
+}
+
+/* the group of slot s is equal to the threshold in the components before c */
+bool equal_before(uint s, uint c)
+{
+	uint nul = uint(res[RES_TAU + 1u]);
+
+	for (uint j = 0u; j < c; j++)
+	{
+		bool isnull;
+		int64_t v = comp_value(s, j, isnull);
+
+		if (comp_order(j, isnull, v, ((nul >> j) & 1u) != 0u, res[RES_TAU + 2u + j]) != 0)
+			return false;
+	}
+	return true;
+}
+
+#define SIGN		0x8000000000000000ul
+#define BIN_LO		256u		/* the least and the greatest value of the groups that can be the K-th, in the words of the list after the histogram */
+#define BIN_HI		257u
+
+shared int64_t sh_lo[256];
+shared int64_t sh_hi[256];
+
+/* the least and the greatest of the values of the invocations of the group in out64[BIN_LO], out64[BIN_HI] */
+void reduce_range(int64_t lo, int64_t hi)
+{
+	uint tid = gl_LocalInvocationID.x;
+
+	sh_lo[tid] = lo;
+	sh_hi[tid] = hi;
+	barrier();
+	for (uint h = 128u; h > 0u; h >>= 1u)
+	{
+		if (tid < h)
+		{
+			sh_lo[tid] = min(sh_lo[tid], sh_lo[tid + h]);
+			sh_hi[tid] = max(sh_hi[tid], sh_hi[tid + h]);
+		}
+		barrier();
+	}
+	if (tid == 0u)
+	{
+		atomicMin(out64[BIN_LO], sh_lo[0]);
+		atomicMax(out64[BIN_HI], sh_hi[0]);
+	}
+}
+
+void histogram(uint c, uint round)
+{
+	uint mask = ctl[J_HT_MASK], nslots = mask + 1u, total = gl_NumWorkGroups.x * 256u, rounds = (nslots + total - 1u) / total;
+	uint cls = uint(res[RES_TK_CLASS]);
+	int64_t lo = 0x7FFFFFFFFFFFFFFFl, hi = -0x7FFFFFFFFFFFFFFFl - 1l;
+
+	if (res[RES_TK_DONE] != 0l || (round != 0u && (cls != 1u || round <= uint(res[RES_TK_SKIP]))))
+		return;
+	for (uint it = 0u; it < rounds; it++)
+	{
+		uint s = gl_GlobalInvocationID.x + it * total;
+
+		if (s >= nslots || !slot_ready(s) || !equal_before(s, c))
+			continue;
+		bool isnull;
+		int64_t v = comp_value(s, c, isnull);
+
+		if (round == 0u)
+		{
+			uint k = comp_class(c, isnull);
+
+			atomicAdd(out64[k], 1l);
+			if (k == 1u)
+			{
+				int64_t key = int64_t(order_key(c, v) ^ SIGN);
+
+				lo = min(lo, key);
+				hi = max(hi, key);
+			}
+		}
+		else if (!isnull)
+		{
+			uint64_t x = order_key(c, v);
+
+			if (round == 1u || (x >> (72u - 8u * round)) == uint64_t(res[RES_TK_PREFIX]))
+				atomicAdd(out64[uint((x >> (64u - 8u * round)) & 255ul)], 1l);
+		}
+	}
+	if (round == 0u)
+		reduce_range(lo, hi);
+}
+
+/* the number of leading bytes that two order keys share */
+uint shared_bytes(uint64_t a, uint64_t b)
+{
+	uint64_t d = a ^ b;
+
+	if (d == 0ul)
+		return 8u;
+	return uint(d >> 32u) != 0u ? (31u - uint(findMSB(uint(d >> 32u)))) / 8u : 4u + (31u - uint(findMSB(uint(d)))) / 8u;
+}
+
+void step(uint c, uint round)
+{
+	uint tid = gl_LocalInvocationID.x;
+
+	if (tid == 0u && res[RES_TK_DONE] == 0l && (round == 0u || (res[RES_TK_CLASS] == 1l && round > uint(res[RES_TK_SKIP]))))
+	{
+		int64_t remain = c == 0u && round == 0u ? int64_t(ctl[J_TK_K]) : res[RES_TK_REMAIN], cum = 0l;
+		uint bins = round == 0u ? 3u : 256u, pick = bins;
+
+		for (uint b = 0u; b < bins && pick == bins; b++)
+		{
+			if (cum + out64[b] >= remain)
+				pick = b;
+			else
+				cum += out64[b];
+		}
+		if (pick == bins)
+		{
+			res[RES_TK_DONE] = 1l;
+			res[RES_TAU] = 0l;
+		}
+		else
+		{
+			res[RES_TAU] = 1l;
+			res[RES_TK_REMAIN] = remain - cum;
+			if (round == 0u)
+			{
+				res[RES_TK_CLASS] = int64_t(pick);
+				res[RES_TK_PREFIX] = 0l;
+				res[RES_TK_SKIP] = 0l;
+				res[RES_TAU + 1u] |= pick != 1u ? int64_t(1u << c) : 0l;
+				res[RES_TAU + 2u + c] = 0l;
+				if (pick == 1u)
+				{
+					uint64_t xl = uint64_t(out64[BIN_LO]) ^ SIGN, xh = uint64_t(out64[BIN_HI]) ^ SIGN;
+					uint p = shared_bytes(xl, xh);
+
+					res[RES_TK_SKIP] = int64_t(p);
+					res[RES_TK_PREFIX] = p == 0u ? 0l : int64_t(xl >> (64u - 8u * p));
+					if (p == 8u)
+						res[RES_TAU + 2u + c] = order_value(c, xl);
+				}
+			}
+			else
+			{
+				uint64_t prefix = (uint64_t(res[RES_TK_PREFIX]) << 8u) | uint64_t(pick);
+
+				res[RES_TK_PREFIX] = int64_t(prefix);
+				if (round == 8u)
+					res[RES_TAU + 2u + c] = order_value(c, prefix);
+			}
+		}
+	}
+	barrier();
+	if (tid < 256u)
+		out64[tid] = 0l;
+	if (tid == 0u)
+	{
+		out64[BIN_LO] = 0x7FFFFFFFFFFFFFFFl;
+		out64[BIN_HI] = -0x7FFFFFFFFFFFFFFFl - 1l;
+	}
+}
+
+/* the order of the group of slot s against the threshold: negative when it is before it, 0 when it ties */
+int order_vs_tau(uint s)
+{
+	uint nul = uint(res[RES_TAU + 1u]);
+
+	for (uint c = 0u; c < ncomp(); c++)
+	{
+		bool isnull;
+		int64_t v = comp_value(s, c, isnull);
+		int o = comp_order(c, isnull, v, ((nul >> c) & 1u) != 0u, res[RES_TAU + 2u + c]);
+
+		if (o != 0)
+			return o;
+	}
+	return 0;
+}
+
+/* the group of slot s can be among the K best: it is before the threshold, or ties with it and the ties taken do not make more than the K-th needs */
+bool candidate(uint s, bool has_tau)
+{
+	int o;
+
+	if (!has_tau)
+		return true;
+	o = order_vs_tau(s);
+	if (o != 0)
+		return o < 0;
+	return ctl[J_TK_COVER] == 0u || atomicAdd(res[RES_TK_TIES], 1l) < res[RES_TK_REMAIN];
+}
+
+void emit()
+{
+	uint mask = ctl[J_HT_MASK], stride = ctl[J_HT_STRIDE], cap = ctl[J_CAND_CAP];
+	uint nslots = mask + 1u, total = gl_NumWorkGroups.x * 256u, rounds = (nslots + total - 1u) / total;
+	uint gid = gl_GlobalInvocationID.x;
+	bool has_tau = res[RES_TAU] != 0l;
+
+	for (uint it = 0u; it < rounds; it++)
+	{
+		uint s = gid + it * total;
+		bool pick = s < nslots && ht[s * stride] < 0l && candidate(s, has_tau);
+		uvec4 bal = subgroupBallot(pick);
+		uint cnt = subgroupBallotBitCount(bal), before = subgroupBallotExclusiveBitCount(bal);
+		uint first = 0u;
+
+		if (subgroupElect() && cnt != 0u)
+			first = uint(atomicAdd(res[RES_NCAND], int64_t(cnt)));
+		first = subgroupBroadcastFirst(first);
+		if (pick && first + before < cap)
+			write_group(s, (first + before) * (stride - 1u));
+	}
+}
+
+void main()
+{
+	if (pc0 == 0u)
+		histogram(pc1, pc2);
+	else if (pc0 == 1u)
+		step(pc1, pc2);
+	else if (pc0 == 3u)
+	{
+		out64[BIN_LO] = 0x7FFFFFFFFFFFFFFFl;
+		out64[BIN_HI] = -0x7FFFFFFFFFFFFFFFl - 1l;
+	}
+	else
+		emit();
+}

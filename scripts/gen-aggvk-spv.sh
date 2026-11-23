@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 
 SHDIR=src/agg/vk/shaders
 OUT=src/agg/vk_spv.h
-NAMES="lz4 decode agg_ungrouped agg_dense agg_hash ht_compact topn agg_fast_ungrouped agg_fast_dense agg_fast_hash"
+NAMES="lz4 decode agg_ungrouped agg_dense agg_hash ht_compact ht_topk topn agg_fast_ungrouped agg_fast_dense agg_fast_hash"
 for t in glslc spirv-opt; do
 	command -v "$t" >/dev/null || { echo "gen-aggvk-spv: $t is not installed" >&2; exit 2; }
 done

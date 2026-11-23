@@ -42,6 +42,34 @@ pick_kernel(SiftVk *vk, const SiftVkJob *job, Plan *p)
 	return p->fast;
 }
 
+/* what a hash job that does not give every group needs of the result buffer: the counts of the dense groups of its keys but the last, or the candidates a host can read back at most (the staging area of the worker) */
+static bool
+plan_finish(const SiftVkJob *job, Plan *p)
+{
+	uint64_t	g = 1;
+
+	if (job->finish == SIFT_VK_FIN_GROUPS)
+		return true;
+	p->out_bytes = 0;
+	if (job->finish == SIFT_VK_FIN_TOPK)
+	{
+		p->cand_cap = (uint32_t) (SIFT_VK_SLAB_BYTES / ((p->stride - 1) * 8) < p->ht_maxload ? SIFT_VK_SLAB_BYTES / ((p->stride - 1) * 8) : p->ht_maxload);
+		p->out_bytes = (uint64_t) p->cand_cap * (p->stride - 1) * 8;
+		return job->topk.k > 0 && job->topk.ncomp >= 1 && job->topk.ncomp <= 2;
+	}
+	if (job->finish == SIFT_VK_FIN_DENSE_COUNT)
+	{
+		if (job->nkeys < 2 || job->nkeys > 3)
+			return false;
+		for (uint32_t j = 0; j + 1 < job->nkeys; j++)
+			g *= job->dense_span[j];
+		p->groups = (uint32_t) g;
+		p->out_bytes = g * 8;
+		return g > 0 && g <= ((uint64_t) 1 << 20);
+	}
+	return job->nkeys >= 1;
+}
+
 bool
 plan_job(SiftVk *vk, const SiftVkJob *job, Plan *p)
 {
@@ -94,6 +122,11 @@ plan_job(SiftVk *vk, const SiftVkJob *job, Plan *p)
 		p->ht_maxload = (uint32_t) (slots / 4 * 3);
 		p->ht_bytes = slots * p->stride * 8;
 		p->out_bytes = (uint64_t) p->ht_maxload * (p->stride - 1) * 8;
+		if (!plan_finish(job, p))
+		{
+			snprintf(vk->err, sizeof(vk->err), "the finish of a hash job does not fit the dense groups or the candidates");
+			return false;
+		}
 	}
 	else if (job->mode == SIFT_VK_TOPN)
 	{

@@ -924,6 +924,8 @@ test_agg(SiftVk *dev, uint64_t seed, const char *only)
 		t9_fast(&rng);
 	if (all || strstr(only, "T10"))
 		test_emit(dev, &rng);
+	if (all || strstr(only, "T12"))
+		test_finish(dev, &rng);
 	printf("aggregate cases: %llu run (%llu on a fast kernel, each also on the machine), %llu with differences\n", (unsigned long long) cases_run,
 		   (unsigned long long) fast_cases, (unsigned long long) cases_bad);
 }

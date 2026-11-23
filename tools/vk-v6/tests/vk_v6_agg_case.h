@@ -26,5 +26,7 @@ void build_base(TData *d, uint32_t ngran, Rng *rng, uint32_t last_rows);
 bool case_check(const char *name, Case *c, const TData *d, double ftol);
 /* T10 (vk_v6_test_emit.c) */
 void test_emit(SiftVk *dev, Rng *rng);
+/* T12 (vk_v6_test_finish.c) */
+void test_finish(SiftVk *dev, Rng *rng);
 
 #endif

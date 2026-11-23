@@ -17,7 +17,7 @@
 #include "agg/vk.h"
 
 #define SIFT_GPU_SHM_NAME			"sift_gpu_shm_v6"
-#define SIFT_GPU_SHM_VERSION		1
+#define SIFT_GPU_SHM_VERSION		2
 #define SIFT_GPU_SLOTS				4
 /* MEM[MEM-VK-02]: SiftGpuShm staging DSM (SIFT_GPU_SLOTS * 4MiB = 16MiB of pinned shared memory, pages of idle slots dropped from the worker; was 4 * 16MiB) */
 #define SIFT_GPU_STAGE_BYTES		((Size) 4 << 20)
@@ -94,6 +94,8 @@ typedef struct SiftGpuWireJob
 	int64		dense_kmin[2];
 	uint32		dense_span[2];
 	uint64		est_groups;
+	SiftVkFinish finish;
+	SiftVkTopk	topk;
 	uint32		topn_k;
 	bool		topn_desc;
 	bool		topn_nulls;

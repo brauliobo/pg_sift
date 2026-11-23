@@ -127,7 +127,7 @@ typedef struct Slot
 	uint32_t	cappend;
 } Slot;
 
-enum { PL_LZ4, PL_DECODE, PL_UNGROUPED, PL_DENSE, PL_HASH, PL_COMPACT, PL_TOPN, PL_FAST_UNGROUPED, PL_FAST_DENSE, PL_FAST_HASH, PL_N };
+enum { PL_LZ4, PL_DECODE, PL_UNGROUPED, PL_DENSE, PL_HASH, PL_COMPACT, PL_HT_TOPK, PL_TOPN, PL_FAST_UNGROUPED, PL_FAST_DENSE, PL_FAST_HASH, PL_N };
 #define PL_FIXED		PL_FAST_UNGROUPED		/* the pipelines before it are built at open; the fast ones per shape */
 enum { K_DEVICE, K_REBAR, K_HOST, K_READBACK };
 
