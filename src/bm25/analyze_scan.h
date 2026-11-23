@@ -480,6 +480,13 @@ scan_token(SiftAnalyzer *a, const uint8 *s, int len, int *off, int *start, char 
 
 /* Token stream */
 
+/* The positions the n bytes between two tokens skip: SIFT_FIELD_GAP when they hold the boundary of two sections of an index with fields */
+static inline uint32
+section_gap(const SiftAnalyzer *a, const uint8 *between, int n)
+{
+	return a->cfg.nfields && n > 0 && memchr(between, SIFT_FIELD_SEP, n) ? SIFT_FIELD_GAP : 0;
+}
+
 int
 sift_analyze_tokens(SiftAnalyzer *a, const char *text, int len, SiftToken **out)
 {
@@ -494,10 +501,13 @@ sift_analyze_tokens(SiftAnalyzer *a, const char *text, int len, SiftToken **out)
 	a->gap = 0;
 	for (;;)
 	{
+		int			prev = off;
+
 		ENSURE(a, buf, bufcap, used + DST_CAP);
 		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;
 		ENSURE(a, toks, tokcap, ntok + 1);
+		a->gap += section_gap(a, s + prev, start - prev);
 		pos += a->gap;
 		a->gap = 0;
 		a->toks[ntok] = (SiftToken)
@@ -525,10 +535,13 @@ sift_analyze_next(SiftAnalyzer *a, SiftTokenStream *ts, SiftToken *tok)
 	int			start,
 				n;
 
+	int			prev = ts->off;
+
 	a->gap = 0;
 	n = scan_token(a, (const uint8 *) ts->text, ts->len, &ts->off, &start, a->scratch);
 	if (n < 0)
 		return false;
+	a->gap += section_gap(a, (const uint8 *) ts->text + prev, start - prev);
 	ts->pos += a->gap;
 	*tok = (SiftToken)
 	{

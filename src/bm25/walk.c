@@ -23,7 +23,7 @@ typedef struct Walk
 	SiftSegment *seg;
 	SiftScoreRef ref;
 	bool		verify;
-	bool		stops;			/* the index's text search configuration drops stop words, which keep a position: positions may pass dl */
+	bool		stops;			/* the index's text search configuration drops stop words, which keep a position, or it has fields, whose boundary skips SIFT_FIELD_GAP: positions may pass dl */
 	SiftSegStats *st;
 	SiftWalkVisit visit;
 	void	   *arg;
@@ -428,7 +428,8 @@ sift_seg_walk(SiftSegment *seg, const SiftScoreRef *ref, bool verify, SiftSegSta
 	w.ref = *ref;
 	w.ref.avgdl = seg->hdr->avgdl_ref;
 	w.verify = verify;
-	w.stops = seg->index && sift_analyze_stemmer(sift_options_stemmer(sift_index_options(seg->index))) == SIFT_STEM_TS;
+	w.stops = seg->index && (sift_analyze_stemmer(sift_options_stemmer(sift_index_options(seg->index))) == SIFT_STEM_TS ||
+							 *sift_options_fields(sift_index_options(seg->index)) != '\0');
 	w.st = st;
 	w.visit = visit;
 	w.arg = arg;

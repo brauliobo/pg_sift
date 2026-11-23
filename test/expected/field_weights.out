@@ -128,8 +128,8 @@ FROM unnest(ARRAY['alpha', 'alpha beta', 'alp*', 'alpha OR zeta', 'a?pha', 'alph
  alphx~1                     |  1793 |     1793 | 1793 |          1793 |       1552 |    1552
  alpha NOT beta              |  1002 |     1002 | 1002 |          1002 |        867 |     867
  (alpha OR beta) AND gamma   |  1270 |     1270 | 1270 |          1270 |        997 |     997
- "alpha beta"                |   110 |      110 |  110 |           110 |        110 |     110
- alpha "beta gamma"          |    40 |       40 |   40 |            40 |         35 |      35
+ "alpha beta"                |    96 |       96 |   96 |            96 |         96 |      96
+ alpha "beta gamma"          |    33 |       33 |   33 |            33 |         31 |      31
  /al.ha/                     |  1793 |     1793 | 1793 |          1793 |       1793 |    1793
  tags:alpha                  |   389 |      389 |  389 |           389 |        389 |     389
  title:(alpha OR beta) gamma |   324 |      324 |  324 |           324 |        274 |     274

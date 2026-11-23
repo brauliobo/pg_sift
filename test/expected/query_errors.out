@@ -300,16 +300,16 @@ SELECT q, ferr(q) FROM (VALUES
 	('name:a'), ('nope:a'), ('nope:(a b)'), ('name:(a nope:b)'), ('x NOT nope:a'), ('name:{a nope:b}'), ('name:(a "b c")'), ('name:{/a/}'),
 	('name:(a (b OR nope:c))^2'), ('Name:a')
 ) v(q);
-            q             |                                                                 ferr                                                                 
---------------------------+--------------------------------------------------------------------------------------------------------------------------------------
+            q             |                                                                ferr                                                                
+--------------------------+------------------------------------------------------------------------------------------------------------------------------------
  name:a                   | ok: name:a
  nope:a                   | 42601: sift query: unknown field "nope" (available fields: name, city) at position 1
  nope:(a b)               | 42601: sift query: unknown field "nope" (available fields: name, city) at position 7
  name:(a nope:b)          | 42601: sift query: unknown field "nope" (available fields: name, city) at position 9
  x NOT nope:a             | 42601: sift query: unknown field "nope" (available fields: name, city) at position 7
  name:{a nope:b}          | 42601: sift query: unknown field "nope" (available fields: name, city) at position 9
- name:(a "b c")           | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 9
- name:{/a/}               | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
+ name:(a "b c")           | ok: name:a AND name:"b c"
+ name:{/a/}               | 42601: sift query: a field applies to words, prefixes, patterns, fuzzy terms and phrases, not to regular expressions at position 7
  name:(a (b OR nope:c))^2 | 42601: sift query: unknown field "nope" (available fields: name, city) at position 15
  Name:a                   | ok: "name a"
 (10 rows)
@@ -317,15 +317,15 @@ SELECT q, ferr(q) FROM (VALUES
 SELECT q, perr(q) FROM (VALUES
 	('name:a'), ('name:(a b)'), ('name:{a b}'), ('NOT name:(a b)'), ('x name:(a OR b)^2'), ('name:("a b" c)'), ('name:(a /b/)')
 ) v(q);
-         q         |                                                                 perr                                                                 
--------------------+--------------------------------------------------------------------------------------------------------------------------------------
+         q         |                                                                perr                                                                
+-------------------+------------------------------------------------------------------------------------------------------------------------------------
  name:a            | ok: "name a"
  name:(a b)        | ok: "name a" AND "name b"
  name:{a b}        | ok: "name a" OR "name b"
  NOT name:(a b)    | ok: NOT ("name a" AND "name b")
  x name:(a OR b)^2 | ok: x AND ("name a"^2 OR "name b"^2)
- name:("a b" c)    | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
- name:(a /b/)      | 42601: sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 9
+ name:("a b" c)    | ok: name AND "a b" AND "name c"
+ name:(a /b/)      | 42601: sift query: a field applies to words, prefixes, patterns, fuzzy terms and phrases, not to regular expressions at position 9
 (7 rows)
 
 DROP TABLE qe;

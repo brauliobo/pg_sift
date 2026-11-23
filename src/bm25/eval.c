@@ -244,7 +244,16 @@ relax_phrase(SiftPlan *p, const SiftQNode *n, Place at)
 			leaf[i] = leaf[first[i]];
 			continue;
 		}
-		kids[nk++] = term_leaf(p, n, n->terms[i], n->termlens[i], at, n);
+		if (n->field)
+		{
+			char	   *term = MemoryContextAlloc(p->mcxt, n->termlens[i] + 1);
+
+			term[0] = SIFT_FIELD_BYTE(n->field);
+			memcpy(term + 1, n->terms[i], n->termlens[i]);
+			kids[nk++] = term_leaf(p, n, term, n->termlens[i] + 1, at, n);
+		}
+		else
+			kids[nk++] = term_leaf(p, n, n->terms[i], n->termlens[i], at, n);
 		leaf[i] = kids[nk - 1]->leaf;
 	}
 	pfree(first);

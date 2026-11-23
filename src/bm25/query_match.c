@@ -360,6 +360,13 @@ doc_count_tokens(const SiftDoc *d, int field, const SiftQNode *leaf, const char 
 	return n;
 }
 
+/* Is token t in the section a field phrase names (any section for a phrase without a field) */
+static inline bool
+in_field(const SiftDoc *d, const SiftQNode *n, int t)
+{
+	return !n->field || (d->sec ? d->sec[t] : 0) + 1 == n->field;
+}
+
 /* Documents with more tokens than this find a phrase from the occurrences of its rarest term, not by a pass over their tokens */
 #define PHRASE_SCAN_MAX	64
 
@@ -407,7 +414,7 @@ eval_phrase_anchored(SiftDoc *d, const SiftQNode *n)
 		{
 			int			j = token_at(d->tok, d->ntok, t, start + (n->offs ? n->offs[i] : i));
 
-			if (j < 0 || d->id[j] != ids[i])
+			if (j < 0 || d->id[j] != ids[i] || !in_field(d, n, j))
 				break;
 		}
 		found = i == n->nterms;
@@ -435,7 +442,8 @@ eval_phrase(SiftDoc *d, const SiftQNode *n)
 
 			while (j < d->ntok && tok[j].pos < want)
 				j++;
-			if (j == d->ntok || tok[j].pos != want || tok[j].len != n->termlens[i] || memcmp(tok[j].str, n->terms[i], n->termlens[i]) != 0)
+			if (j == d->ntok || tok[j].pos != want || tok[j].len != n->termlens[i] || memcmp(tok[j].str, n->terms[i], n->termlens[i]) != 0 ||
+				!in_field(d, n, j))
 				break;
 		}
 		if (i == n->nterms)
@@ -448,7 +456,7 @@ static bool
 eval_node(SiftDoc *d, const SiftQNode *n)
 {
 	check_stack_depth();
-	if (n->field)
+	if (n->field && n->kind != SQ_PHRASE)
 		return doc_count_tokens(d, n->field, n, NULL, 0) > 0;
 	switch (n->kind)
 	{

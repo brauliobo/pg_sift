@@ -164,8 +164,8 @@ sift_query_canon_pattern(StringInfo pat, bool *trailing)
 
 /*
  * Does the ':' under the cursor end a field name (lowercase identifier) that
- * qualifies what follows: a word character, or a group opened right after it?
- * name:"x" and name:/x/ stay words, as before fields existed.
+ * qualifies what follows: a word character, a phrase or a group opened right after it?
+ * name:/x/ stays a word, as before fields existed.
  */
 static bool
 field_follows(const QParser *p, const char *name, int len)
@@ -177,7 +177,7 @@ field_follows(const QParser *p, const char *name, int len)
 	for (int i = 1; i < len; i++)
 		if (!(islower((unsigned char) name[i]) || isdigit((unsigned char) name[i]) || name[i] == '_'))
 			return false;
-	return next == '(' || next == '{' || (!is_space(next) && !is_special(next) && next != '\0');
+	return next == '(' || next == '{' || next == '"' || (!is_space(next) && !is_special(next) && next != '\0');
 }
 
 static void
@@ -202,6 +202,12 @@ lex_word(QParser *p, QTok *t)
 				t->kind = T_FIELD;
 				pfree(lit.data);
 				pfree(pat.data);
+				return;
+			}
+			if (cur(p) == '"')
+			{
+				t->kind = T_PHRASE;
+				lex_quoted(p, t, '"', false);
 				return;
 			}
 			resetStringInfo(&lit);

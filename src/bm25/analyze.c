@@ -351,20 +351,20 @@ bag_add_prefixes(SiftAnalyzer *a, size_t *used, int *nterms, int nwords)
 	}
 }
 
-/* Counts the field word "field-byte word" of the word the bag holds at index t, unless it exceeds a term */
-static void
+/* Counts the field word "field-byte word" of the word the bag holds at index t, unless it exceeds a term; its bag index, -1 for none */
+static int
 bag_add_field_word(SiftAnalyzer *a, size_t *used, int *nterms, int t, int field)
 {
 	int			n = a->bag[t].len;
 	char	   *dst;
 
 	if (1 + n > SIFT_MAX_TERM_BYTES)
-		return;
+		return -1;
 	ENSURE(a, buf, bufcap, *used + 1 + n + DST_CAP);
 	dst = a->buf + *used;
 	dst[0] = SIFT_FIELD_BYTE(field);
 	memcpy(dst + 1, a->buf + a->bag[t].off, n);
-	bag_add(a, used, nterms, 1 + n, 1);
+	return bag_add(a, used, nterms, 1 + n, 1);
 }
 
 void
@@ -373,23 +373,34 @@ sift_analyzer_set_positions(SiftAnalyzer *a, bool on)
 	a->positions = on;
 }
 
-/* Groups the positions of the ntok tokens by bag index (counting sort); the bag holds nbag terms */
+/* Records that the bag term idx occurs at position pos */
+static inline void
+occ_add(SiftAnalyzer *a, size_t *nocc, int idx, uint32 pos)
+{
+	ENSURE(a, tokidx, tokidxcap, *nocc + 1);
+	ENSURE(a, tokpos, tokposcap, *nocc + 1);
+	a->tokidx[*nocc] = idx;
+	a->tokpos[*nocc] = pos;
+	++*nocc;
+}
+
+/* Groups the positions of the nocc occurrences (a word, or its field word) by bag index (counting sort); the bag holds nbag terms; explicit: tokpos holds the positions, else the occurrence is its position */
 static void
-group_positions(SiftAnalyzer *a, int ntok, int nbag)
+group_positions(SiftAnalyzer *a, size_t nocc, int nbag, bool explicit)
 {
 	ENSURE(a, pstart, pstartcap, (size_t) nbag + 1);
-	ENSURE(a, plist, plistcap, ntok);
+	ENSURE(a, plist, plistcap, nocc);
 	memset(a->pstart, 0, ((size_t) nbag + 1) * sizeof(uint32));
-	for (int t = 0; t < ntok; t++)
+	for (size_t t = 0; t < nocc; t++)
 		a->pstart[a->tokidx[t] + 1]++;
 	for (int b = 0; b < nbag; b++)
 		a->pstart[b + 1] += a->pstart[b];
 	/* fills each group from its start; the starts end up one group later, where the groups end */
-	if (a->ts)
-		for (int t = 0; t < ntok; t++)
+	if (explicit)
+		for (size_t t = 0; t < nocc; t++)
 			a->plist[a->pstart[a->tokidx[t]]++] = a->tokpos[t];
 	else
-		for (int t = 0; t < ntok; t++)
+		for (size_t t = 0; t < nocc; t++)
 			a->plist[a->pstart[a->tokidx[t]]++] = t;
 }
 
@@ -425,6 +436,7 @@ analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint
 	size_t		used = 0;
 	uint64		ntok = 0,
 				gaps = 0;
+	size_t		nocc = 0;
 	int			nterms = 0,
 				nbag = 0,
 				off = 0,
@@ -439,29 +451,26 @@ analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint
 	bag_table(a, pg_nextpower2_32(Min(Max(len / 4, 64), 1 << 16)), 0);
 	for (;;)
 	{
+		uint32		pos;
+
 		ENSURE(a, buf, bufcap, used + DST_CAP);
 		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;
-		cur = bag_add(a, &used, &nterms, n, 1);
-		if (a->positions)
-		{
-			ENSURE(a, tokidx, tokidxcap, ntok + 1);
-			a->tokidx[ntok] = cur;
-			if (ts)
-			{
-				ENSURE(a, tokpos, tokposcap, ntok + 1);
-				a->tokpos[ntok] = ntok + (gaps += a->gap);
-				a->gap = 0;
-			}
-		}
-		ntok++;
+		if (sep && sep < s + start)
+			a->gap += SIFT_FIELD_GAP;
 		for (; sep && sep < s + start; section++)
 			sep = memchr(sep + 1, SIFT_FIELD_SEP, s + len - (sep + 1));
-		if (section < a->cfg.nfields)
-			bag_add_field_word(a, &used, &nterms, cur, section + 1);
+		cur = bag_add(a, &used, &nterms, n, 1);
+		pos = ts ? ntok + (gaps += a->gap) : ntok;
+		a->gap = 0;
+		if (a->positions)
+			occ_add(a, &nocc, cur, pos);
+		ntok++;
+		if (section < a->cfg.nfields && (cur = bag_add_field_word(a, &used, &nterms, cur, section + 1)) >= 0 && a->positions)
+			occ_add(a, &nocc, cur, pos);
 	}
-	if (a->positions && ntok > 0)
-		group_positions(a, ntok, nbag = nterms);
+	if (a->positions && nocc > 0)
+		group_positions(a, nocc, nbag = nterms, ts);
 	if (a->cfg.prefix_len)
 		bag_add_prefixes(a, &used, &nterms, nterms);
 
@@ -518,7 +527,7 @@ sift_analyzer_spare_terms(SiftAnalyzer *a, size_t n)
 int
 sift_analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint32 *dl)
 {
-	return a->ts ? analyze_doc(a, text, len, out, dl, true) : analyze_doc(a, text, len, out, dl, false);
+	return a->ts || a->cfg.nfields ? analyze_doc(a, text, len, out, dl, true) : analyze_doc(a, text, len, out, dl, false);
 }
 
 /* Literal folding */

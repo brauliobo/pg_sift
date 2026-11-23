@@ -53,6 +53,12 @@
 /* Bump on any change to tokenization, folding, stemming or hashing output */
 #define SIFT_ANALYZER_VERSION	2
 
+/*
+ * The positions of the tokens after a SIFT_FIELD_SEP skip this many: wider than any phrase, so that no phrase, with or without stop words
+ * between its terms, is held across the boundary of two sections of a text of an index with fields
+ */
+#define SIFT_FIELD_GAP	65536
+
 /* A term over SIFT_MAX_TERM_BYTES: SIFT_TERM_HEAD bytes of its start, then U+FFFF and 16 hex digits of a hash (SIFT_TERM_TAIL bytes) */
 #define SIFT_TERM_TAIL	(3 + 16)
 #define SIFT_TERM_HEAD	(SIFT_MAX_TERM_BYTES - SIFT_TERM_TAIL)

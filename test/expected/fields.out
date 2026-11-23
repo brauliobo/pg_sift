@@ -78,9 +78,9 @@ SELECT sift.parse_query('name:alpha', 'fn_idx'::regclass);
 (1 row)
 
 SELECT sift.parse_query('a\:b name:"x y" 10:30 name: :x name:\a', 'ft_idx'::regclass);
-                       parse_query                       
----------------------------------------------------------
- name:a AND name^2 AND x AND "10 30" AND "a b" AND "x y"
+                        parse_query                         
+------------------------------------------------------------
+ name:a AND name AND x AND "10 30" AND "a b" AND name:"x y"
 (1 row)
 
 SELECT sift.parse_query('name:alpha');
@@ -112,9 +112,13 @@ SELECT sift.parse_query('name:(alpha beta)', 'fn_idx'::regclass);
 (1 row)
 
 SELECT sift.parse_query('name:{/al.*/}', 'ft_idx'::regclass);
-ERROR:  sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
+ERROR:  sift query: a field applies to words, prefixes, patterns, fuzzy terms and phrases, not to regular expressions at position 7
 SELECT sift.parse_query('name:e-mail', 'ft_idx'::regclass);
-ERROR:  sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 1
+  parse_query  
+---------------
+ name:"e mail"
+(1 row)
+
 CREATE FUNCTION fqs() RETURNS SETOF text LANGUAGE sql AS $$ SELECT * FROM unnest(ARRAY[
 	'alpha', 'al*', 'a*', 'alph*', 'alpha~1', 'a?p*', 'be*', 'bet', 'z*', 'x3', 'x*', 'ube*', 'gam*']) $$;
 -- cnt: through the index; seqcnt: document evaluation; colcnt: the same query on the column alone
@@ -334,7 +338,11 @@ SELECT sift.match('name alpha, name beta', 'name:(alpha beta)'), sift.match('alp
 (1 row)
 
 SELECT sift.parse_query('name:("alpha beta" gamma)', 'fn_idx'::regclass);
-ERROR:  sift query: a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions at position 7
+              parse_query               
+----------------------------------------
+ name AND "alpha beta" AND "name gamma"
+(1 row)
+
 -- one answer for a query on every plan, and the error of an unknown field with its fields
 CREATE FUNCTION fcnt(tbl text, qual text, mode text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint;

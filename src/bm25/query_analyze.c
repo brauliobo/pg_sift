@@ -364,24 +364,39 @@ analyze_bool(const SiftQNode *raw, SiftAnalyzer *a, double boost, bool neg, cons
 }
 
 #define NOT_QUALIFIABLE \
-	"a field applies to words, prefixes, patterns and fuzzy terms, not to phrases or regular expressions"
+	"a field applies to words, prefixes, patterns, fuzzy terms and phrases, not to regular expressions"
 
 /*
  * Without fields a colon is plain text, as before fields existed: name:word is the word "name:word",
- * and so is every word of name:(a b). An index with fields rejects a name it does not have.
+ * and so is every word of name:(a b); name:"a b" is the word "name:" and the phrase "a b". An index
+ * with fields rejects a name it does not have.
  */
 static const SiftQNode *
 unqualified(const SiftQNode *raw, const char *name)
 {
 	SiftQNode  *n;
 
-	if (raw->kind == SQ_PHRASE || raw->kind == SQ_REGEX)
+	if (raw->kind == SQ_REGEX)
 		SYNTAX(raw->loc, NOT_QUALIFIABLE);
 	n = palloc(sizeof(SiftQNode));
 	*n = *raw;
+	n->fieldname = NULL;
+	if (raw->kind == SQ_PHRASE)
+	{
+		SiftQNode  *and = sift_query_new_node(SQ_AND, raw->loc),
+				   *word = sift_query_new_node(SQ_TERM, raw->loc);
+
+		word->text = psprintf("%s:", name);
+		word->textlen = strlen(word->text);
+		n->boost = 1.0f;
+		and->nchild = 2;
+		and->child = palloc(2 * sizeof(SiftQNode *));
+		and->child[0] = word;
+		and->child[1] = n;
+		return and;
+	}
 	n->text = psprintf("%s:%s", name, raw->text);
 	n->textlen = strlen(n->text);
-	n->fieldname = NULL;
 	return n;
 }
 
@@ -414,7 +429,7 @@ qualify(SiftQNode *n, const SiftQNode *raw, SiftAnalyzer *a, const char *field)
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("sift query: unknown field \"%s\" (available fields: %s) at position %d", name, field_list(a), raw->loc),
 				 errhint("Fields come from the fields option of the sift index; a literal colon is written \\:.")));
-	if (n->kind == SQ_PHRASE || n->kind == SQ_REGEX)
+	if (n->kind == SQ_REGEX)
 		SYNTAX(raw->loc, NOT_QUALIFIABLE);
 	n->field = k;
 	n->fieldname = pstrdup(name);
