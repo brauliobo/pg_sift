@@ -8,6 +8,7 @@
 #include "core/host.h"
 
 #include "access/htup.h"
+#include "fmgr.h"
 #include "utils/relcache.h"
 
 typedef enum SiftTblOp
@@ -19,6 +20,8 @@ typedef enum SiftTblOp
 
 /* Registers the resource manager when pg_sift is preloaded (called from _PG_init) */
 extern void sift_tbl_init(void);
+/* sift._tbl_rmgr_registered() boolean: whether this server registered the resource managers, which only a preloaded library does */
+extern Datum sift_tbl_rmgr_registered(PG_FUNCTION_ARGS);
 /* True when changes to rel must be logged for decoding; 0A000 when they must but pg_sift is not preloaded */
 extern bool sift_tbl_check_publication(Relation rel);
 /* Is the table published for logical decoding (wal_level = logical): the same test without the error for a missing resource manager */

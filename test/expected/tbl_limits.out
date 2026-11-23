@@ -293,5 +293,12 @@ SELECT count(*) FROM sift.check('wide1598');
 
 DROP TABLE wide200, wide500, wide1600, wide1598;
 RESET sift.test_create_format1;
+-- the resource managers of a published sift_table are registered by a preloaded library only; this server loads it on first use
+SELECT sift._tbl_rmgr_registered();
+ _tbl_rmgr_registered 
+----------------------
+ f
+(1 row)
+
 DROP FUNCTION make_wide(int), add_cols(regclass, int), wide_cols(int), wide_rows(regclass, int, int), wide_check(regclass, int), add_named(regclass, text, int);
 DROP EXTENSION pg_sift;

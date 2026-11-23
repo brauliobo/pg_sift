@@ -18,6 +18,8 @@ my $plain = sift_node('plain', allows_streaming => 'logical');
 $plain->start;
 install_sift($plain);
 
+is($plain->safe_psql('postgres', 'SELECT sift._tbl_rmgr_registered()'), 'f', 'without preload the resource managers are not registered');
+
 subtest 'without preload an unpublished table works under wal_level = logical' => sub {
 	$plain->safe_psql('postgres', "$tbl USING sift_table");
 	$plain->safe_psql('postgres', q{
@@ -74,11 +76,36 @@ subtest 'without preload a published table raises 0A000 with the way out' => sub
 };
 $plain->stop;
 
+# ---------- preload under another name ----------
+# the server, not the text of shared_preload_libraries, says whether the resource managers are registered: a library that a link names
+# differently is preloaded all the same
+subtest 'a library preloaded under another name is registered and its tables can be published' => sub {
+	my $pkglib = `pg_config --pkglibdir`;
+	chomp $pkglib;
+	my $dir = ($ENV{SIFT_ROOT} // '') . $pkglib;
+	plan skip_all => 'pg_sift.so is not under SIFT_ROOT' unless -f "$dir/pg_sift.so";
+	my $alias = sift_node('alias', allows_streaming => 'logical');
+	my $links = $alias->basedir . '/links';
+	mkdir $links;
+	symlink "$dir/pg_sift.so", "$links/pg_sift_alias.so";
+	$alias->append_conf('postgresql.conf', "dynamic_library_path = '$links:$dir:\$libdir'");
+	$alias->append_conf('postgresql.conf', "shared_preload_libraries = 'pg_sift_alias'");
+	$alias->start;
+	install_sift($alias);
+	is($alias->safe_psql('postgres', 'SELECT sift._tbl_rmgr_registered()'), 't', 'the resource managers are registered');
+	$alias->safe_psql('postgres', "$tbl USING sift_table; CREATE PUBLICATION pub FOR TABLE orders");
+	is($alias->safe_psql('postgres', 'SELECT count(*) FROM pg_publication_rel'), 1, 'the publication of the sift_table is made');
+	$alias->safe_psql('postgres', "INSERT INTO orders VALUES (1, 's', 1, 'n')");
+	is($alias->safe_psql('postgres', 'SELECT count(*) FROM orders'), 1, 'and the table takes writes');
+	$alias->stop;
+};
+
 # ---------- preload: publisher and subscriber ----------
 my $pub = sift_node('publisher', allows_streaming => 'logical');
 $pub->append_conf('postgresql.conf', "shared_preload_libraries = 'pg_sift'");
 $pub->start;
 install_sift($pub);
+is($pub->safe_psql('postgres', 'SELECT sift._tbl_rmgr_registered()'), 't', 'preloaded: the resource managers are registered');
 $pub->safe_psql('postgres', "$tbl USING sift_table; CREATE PUBLICATION pub FOR TABLE orders");
 
 my $sub = sift_node('subscriber');

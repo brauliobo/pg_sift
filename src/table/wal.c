@@ -42,6 +42,14 @@ typedef struct SiftTblChange
 
 static bool rmgr_registered;
 
+PG_FUNCTION_INFO_V1(sift_tbl_rmgr_registered);
+
+Datum
+sift_tbl_rmgr_registered(PG_FUNCTION_ARGS)
+{
+	PG_RETURN_BOOL(rmgr_registered);
+}
+
 bool
 sift_tbl_published(Relation rel)
 {
@@ -64,7 +72,7 @@ sift_tbl_check_publication(Relation rel)
 				 errmsg("sift_table table \"%s\" is published and wal_level is \"logical\", but pg_sift is not in shared_preload_libraries",
 						RelationGetRelationName(rel)),
 				 errdetail("Logical replication of a sift_table table needs the pg_sift resource manager, which is registered only when the library is preloaded."),
-				 errhint("Add pg_sift to shared_preload_libraries (primary and every standby) and restart, or publish a heap staging table instead of \"%s\".",
+				 errhint("Add pg_sift to shared_preload_libraries (primary and every standby), for example ALTER SYSTEM SET shared_preload_libraries = 'pg_sift' with the libraries it lists now, and restart, or publish a heap staging table instead of \"%s\".",
 						 RelationGetRelationName(rel))));
 	return true;
 }
