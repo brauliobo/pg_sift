@@ -281,16 +281,21 @@ lookup_ready(AggCtx *c, JoinCtx *jc, List *quals, Relids done)
 {
 	Relids		available = bms_add_member(bms_copy(done), jc->rti);
 
+	bool		named = false;
+
 	if (jc->j.params != NIL)
 		return bms_is_subset(lookup_inputs(c, (Node *) jc->args), done);
 	foreach_ptr(Node, q, quals)
 	{
 		Relids		vars = lookup_inputs(c, q);
 
-		if (bms_is_member(jc->rti, vars) && bms_is_subset(vars, available))
+		if (!bms_is_member(jc->rti, vars))
+			continue;
+		named = true;
+		if (bms_is_subset(vars, available))
 			return true;
 	}
-	return false;
+	return !named && (jc->kind == SJ_INNER || jc->kind == SJ_LEFT);
 }
 
 static bool
@@ -786,8 +791,8 @@ setup_joins(AggCtx *c, List **quals, List **post, List **scan_quals, List **scan
 		foreach_ptr(Node, q, jc->clauses)
 			if (jc->j.params != NIL || (!array_keys(c, jc, q, &conds) && !join_clause(c, jc, q, false) && !join_expr_clause(c, jc, q, false)))
 				conds = lappend(conds, q);
-		if ((jc->j.nkey == 0 && conds == NIL && jc->j.params == NIL) || (conds != NIL && !join_filter(c, jc, conds)))
-			return agg_refuse_on(JOIN_CONDITION, "a join with no equality between its columns and the scanned table's leaves (a range, an inequality or ON true)");
+		if ((jc->j.nkey == 0 && conds == NIL && jc->j.params == NIL && jc->kind != SJ_INNER && jc->kind != SJ_LEFT) || (conds != NIL && !join_filter(c, jc, conds)))
+			return agg_refuse_on(JOIN_CONDITION, "a join with no equality between its columns and the scanned table's leaves (a range or an inequality)");
 	}
 	return true;
 }
