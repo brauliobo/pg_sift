@@ -143,6 +143,20 @@ or_arms(Node *q, IndexOptInfo *ii)
 	return arms;
 }
 
+/* the ORs of searches the scan takes as arms: each arm of the product is the plain matches and one branch of every OR, ANDed */
+#define SEARCH_MAX_ARMS		16
+
+static List *
+distribute_arms(List *arms, List *or_group)
+{
+	List	   *out = NIL;
+
+	foreach_ptr(List, arm, arms)
+		foreach_ptr(List, branch, or_group)
+			out = lappend(out, list_concat_copy(arm, branch));
+	return out;
+}
+
 SiftSearchPlan *
 sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexoid, Oid heapoid, bool allow_or)
 {
@@ -156,30 +170,39 @@ sift_search_extract(PlannerInfo *root, RelOptInfo *rel, List **quals, Oid indexo
 		List	   *mine = NIL,
 				   *rest = NIL,
 				   *queries = NIL,
-				   *arms = NIL;
-		Node	   *orq = NULL;
+				   *arms,
+				   *groups = NIL,
+				   *ors = NIL;
+		int			narms = 1;
 
 		if (ii->relam != sift_catalog()->am || ii->ncolumns != 1 || !agg_index_complete(ii))
 			continue;
 		foreach_ptr(Node, q, *quals)
 		{
 			Expr	   *query;
+			List	   *branches;
 
 			if (sift_match_clause(q, ii, &query) && sift_operand_ok((Node *) query))
 			{
 				mine = lappend(mine, q);
 				queries = lappend(queries, query);
-				continue;
 			}
-			rest = lappend(rest, q);
-			if (allow_or && orq == NULL && (arms = or_arms(q, ii)) != NIL)
-				orq = q;
+			else if (allow_or && (branches = or_arms(q, ii)) != NIL && narms * list_length(branches) <= SEARCH_MAX_ARMS)
+			{
+				groups = lappend(groups, branches);
+				narms *= list_length(branches);
+				ors = lappend(ors, q);
+			}
+			else
+				rest = lappend(rest, q);
 		}
-		if (mine == NIL && orq == NULL)
+		if (mine == NIL && ors == NIL)
 			continue;
-		/* an OR group stands alone: next to plain conjuncts it stays a condition of the scan, which the scan cannot evaluate */
-		*quals = mine != NIL ? rest : list_delete_ptr(rest, orq);
-		return mine != NIL ? search_plan(root, rel, ii, mine, list_make1(queries)) : search_plan(root, rel, ii, list_make1(orq), arms);
+		*quals = rest;
+		arms = list_make1(queries);
+		foreach_ptr(List, group, groups)
+			arms = distribute_arms(arms, group);
+		return search_plan(root, rel, ii, list_concat(mine, ors), arms);
 	}
 	return NULL;
 }
