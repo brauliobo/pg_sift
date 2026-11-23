@@ -13,6 +13,8 @@
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topk_run.h"
 
+#define SHORT_TEXT_MAX	126
+
 struct SiftV6Rows
 {
 	const SiftV6Spec *spec;
@@ -20,6 +22,7 @@ struct SiftV6Rows
 	MemoryContext tmp;
 	Datum		values[SIFT_V6_MAX_KEYS + 1];
 	bool		isnull[SIFT_V6_MAX_KEYS + 1];
+	char		sbuf[SIFT_V6_MAX_KEYS][SHORT_TEXT_MAX + 1];
 };
 
 typedef struct RowCand
@@ -27,10 +30,36 @@ typedef struct RowCand
 	const SiftV6Rows *r;
 	SiftVec *const *keyvec;
 	uint16		row;
+	char		sbuf[SHORT_TEXT_MAX + 1];
 } RowCand;
 
+static const uint8 *
+text_at(const SiftVec *v, uint16 row, uint32 *len)
+{
+	if (v->type == SVEC_DICT32)
+	{
+		const SiftGranuleDict *d = v->dict;
+		const uint32 code = ((const uint32 *) v->data)[row];
+
+		*len = d->off[code + 1] - d->off[code];
+		return (const uint8 *) d->bytes + d->off[code];
+	}
+	*len = ((const SiftStrView *) v->data)[row].len;
+	return sift_strview_bytes(&((const SiftStrView *) v->data)[row]);
+}
+
 static Datum
-key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull)
+text_datum(const uint8 *p, uint32 len, char *sbuf)
+{
+	if (len > SHORT_TEXT_MAX)
+		return PointerGetDatum(cstring_to_text_with_len((const char *) p, (int) len));
+	SET_VARSIZE_SHORT(sbuf, len + VARHDRSZ_SHORT);
+	memcpy(sbuf + VARHDRSZ_SHORT, p, len);
+	return PointerGetDatum(sbuf);
+}
+
+static Datum
+key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
 {
 	*isnull = !is_valid(v, row);
 	if (*isnull)
@@ -45,9 +74,10 @@ key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull)
 		case TEXTOID:
 		case VARCHAROID:
 			{
-				const SiftStrView *sv = &((const SiftStrView *) v->data)[row];
+				uint32		len;
+				const uint8 *p = text_at(v, row, &len);
 
-				return PointerGetDatum(cstring_to_text_with_len((const char *) sift_strview_bytes(sv), (int) sv->len));
+				return text_datum(p, len, sbuf);
 			}
 		default:
 			return Int64GetDatum(int_at(v, row));
@@ -57,10 +87,10 @@ key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull)
 static Datum
 cand_value(void *ctx, int item, bool *isnull)
 {
-	const RowCand *c = ctx;
+	RowCand    *c = ctx;
 	const int	pos = c->r->spec->topk_item[item].pos;
 
-	return key_datum(&c->r->spec->key[pos], c->keyvec[pos], c->row, isnull);
+	return key_datum(&c->r->spec->key[pos], c->keyvec[pos], c->row, isnull, c->sbuf);
 }
 
 SiftV6Rows *
@@ -90,12 +120,12 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 	for (int w = 0; w < (bs->n_raw + 63) / 64; w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
 		{
-			const RowCand c = {r, keyvec, (uint16) (w * 64 + __builtin_ctzll(bits))};
+			RowCand		c = {.r = r,.keyvec = keyvec,.row = (uint16) (w * 64 + __builtin_ctzll(bits))};
 
-			if (!sift_v6_topk_run_wants(r->run, cand_value, (void *) &c))
+			if (!sift_v6_topk_run_wants(r->run, cand_value, &c))
 				continue;
 			for (int i = 0; i < spec->nkeys; i++)
-				r->values[i] = key_datum(&spec->key[i], keyvec[i], c.row, &r->isnull[i]);
+				r->values[i] = key_datum(&spec->key[i], keyvec[i], c.row, &r->isnull[i], r->sbuf[i]);
 			r->values[spec->nkeys] = Int64GetDatum((int64) tid[c.row]);
 			r->isnull[spec->nkeys] = false;
 			sift_v6_topk_run_put(r->run, r->values, r->isnull);
