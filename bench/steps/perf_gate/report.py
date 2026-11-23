@@ -21,7 +21,7 @@ def reduce_report(report):
         report['status'] = ('pass' if report['complete'] and report['size_status']=='pass'
                              and report.get('acceptance_pass',False) else 'inconclusive')
         return
-    statuses = {c['timing_status'] for c in report['cases'] if c['name'] in GATING}
+    statuses = {c['timing_status'] for c in report['cases'] if c['name'].split('@')[0] in GATING}
     report['status'] = ('regression' if size_regression or 'regression' in statuses else
                         'inconclusive' if not report['complete'] or statuses-{'pass','skipped'} or report['size_status']!='pass' else 'pass')
 
@@ -95,12 +95,13 @@ def _write_report(output, report):
             if phase in case and 'n' in case[phase]:
                 b = case[phase]
                 lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']} |")
-    lines.extend(['', '| Case / workload | Phase | Complete | Timing | Combined | Seed / first ID / N |',
-                  '|---|---|---|---|---|---|'])
+    lines.extend(['', '| Case / workload | Mode | Phase | Complete | Timing | Combined | Seed / first ID / N | Workers planned/launched base, head |',
+                  '|---|---|---|---|---|---|---|---|'])
     for case in report['cases']:
         identity = case.get('identity',{})
         details = f"{identity.get('seed_count','-')} / {identity.get('first_id','-')} / {case.get('operations','-')}"
-        lines.append(f"| {case['name']} / {case['workload_version']} | {case['phase']} | {case['complete']} | {case['timing_status']} | {case['status']} | {details} |")
+        pool = ', '.join(f"{w['planned']}/{w['launched']}" for w in case.get('validation',{}).get('workers',[])) or '-'
+        lines.append(f"| {case['name']} / {case['workload_version']} | {case.get('mode','1T')} | {case['phase']} | {case['complete']} | {case['timing_status']} | {case['status']} | {details} | {pool} |")
     for case in report['cases']:
         if 'control_budget' in case:
             lines.extend(['', 'Mutation control budget: `'+json.dumps(case['control_budget'])+'`.', ''])

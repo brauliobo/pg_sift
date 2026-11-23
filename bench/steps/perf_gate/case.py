@@ -31,6 +31,11 @@ def plan_nodes(plan):
     return [root]+[node for child in root.get('Plans',[]) for node in plan_nodes(child)]
 
 
+def workers(plan):
+    nodes = plan_nodes(plan)
+    return dict(planned=sum(n.get('Workers Planned',0) for n in nodes),launched=sum(n.get('Workers Launched',0) for n in nodes))
+
+
 def topology(plan):
     return [{k:n[k] for k in ('Node Type','Custom Plan Provider','Index Name','Index','Relation Name','Parent Relationship') if k in n}
             for n in plan_nodes(plan)]
@@ -99,7 +104,7 @@ def validate_case(revisions, case):
         lifecycle_sizes = compare_sizes([dict(p['after']) for p in footprints],
                                         'mutable_vacuum',MUTABLE_RELATIONS)
         lifecycle_sizes['forks'] = [p['after_forks'] for p in footprints]
-    return dict(results=checks,plans=plans,plan_changed=plan_changed,
+    return dict(results=checks,plans=plans,plan_changed=plan_changed,workers=[workers(p) for p in plans],
                 topology=[topology(p) for p in plans],sizes=footprints,size_checks=lifecycle_sizes)
 
 

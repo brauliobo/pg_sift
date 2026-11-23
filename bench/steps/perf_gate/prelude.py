@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'bench/perf'))
 sys.path.insert(0, str(ROOT / 'bench/steps'))
 import cell
-from catalog import CASES, select
+from catalog import CASES, expand, select
 
 GATING = {c.name for c in CASES if c.gate}
 

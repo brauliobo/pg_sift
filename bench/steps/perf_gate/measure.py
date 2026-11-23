@@ -41,7 +41,7 @@ def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None,
 
 def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0):
     start = time.monotonic()
-    result = dict(name=case.name,group=case.group,smoke=case.smoke,status='inconclusive',
+    result = dict(name=case.name,case=case.name.split('@')[0],mode=case.mode,group=case.group,smoke=case.smoke,status='inconclusive',
                   timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
                   lifecycle=case.lifecycle,workload_version=case.workload_version,phase_runtime_seconds={})
     if sink is not None:

@@ -30,7 +30,7 @@ def new_report(args):
                               read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
                               supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
                               insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
-                              insert_history_cap=INSERT_HISTORY_CAP,cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
+                              insert_history_cap=INSERT_HISTORY_CAP,modes=sorted({m for c in CASES for m in c.modes}),cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
 
 
@@ -179,6 +179,7 @@ def main(argv=None):
             if not 56100 <= args.port_base <= 56298:
                 raise ValueError('port-base must be in 56100..56298')
             selected = select([g for g in args.groups.split(',') if g],args.tier)
+            runs = expand(selected)
             report['required_size_states'] = ['settled_build','churn_vacuum'] + [
                 state for lifecycle,state in (('insert_trajectory','mutable_insert_trajectory'),
                                               ('reset_each_operation','mutable_vacuum'))
@@ -220,8 +221,8 @@ def main(argv=None):
             elif args.verify_control:
                 verify_control(revisions,report,args,deadline)
             else:
-                for index, case in enumerate(selected):
-                    later = sum(c.lifecycle != 'read' for c in selected[index+1:])
+                for index, case in enumerate(runs):
+                    later = sum(c.lifecycle != 'read' for c in runs[index+1:])
                     try:
                         measure(revisions,case,deadline,sink=report['cases'],report=report,output=args.output,reserve=CASE_RESERVE_SECONDS*later)
                     except BudgetExpired:

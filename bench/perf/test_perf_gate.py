@@ -654,6 +654,53 @@ class Methodology(unittest.TestCase):
             gate.configure(conn,dataclasses.replace(gate.CASES[0],mode=mode))
             self.assertEqual(conn.scripts,[gate.MODE_SETTINGS[mode]])
 
+    def test_analytical_cases_run_in_both_modes_and_the_rest_in_one(self):
+        runs = [c.name for c in gate.expand(gate.CASES)]
+        self.assertEqual({c.mode for c in gate.expand(gate.CASES)},{'1T','4T'})
+        for name in ('agg_group','agg_table_scan','agg_high_cardinality_nightly'):
+            self.assertIn(name,runs)
+            self.assertIn(name+'@4T',runs)
+        for name in ('bm25_top10_common','bm25_count_rare','storage_point_lookup','storage_insert','storage_update','storage_vacuum_space'):
+            self.assertIn(name,runs)
+            self.assertNotIn(name+'@4T',runs)
+        self.assertEqual(len(runs),len(set(runs)))
+
+    def test_a_4t_run_gates_like_its_case_and_a_4t_regression_fails_the_verdict(self):
+        for four,expected in (('pass','pass'),('regression','regression'),('inconclusive','inconclusive')):
+            report = dict(config={'verify_control': False}, status='pass', complete=True, size_complete=True, required_size_states=[],
+                          size_checks=[dict(state='settled_build', status='pass')],
+                          cases=[dict(name='agg_group', timing_status='pass'), dict(name='agg_group@4T', timing_status=four)])
+            gate.reduce_report(report)
+            self.assertEqual(report['status'],expected)
+        report = dict(config={'verify_control': False}, status='pass', complete=True, size_complete=True, required_size_states=[],
+                      size_checks=[dict(state='settled_build', status='pass')],
+                      cases=[dict(name='storage_point_lookup@4T', timing_status='regression')])
+        gate.reduce_report(report)
+        self.assertEqual(report['status'],'pass')
+
+    def test_4t_pairs_alternate_and_each_side_runs_the_4t_profile(self):
+        events = []
+        class Conn:
+            def __init__(self,side): self.side = side
+            def script(self,text): events.append((self.side,'script',text))
+            def exec(self,sql): events.append((self.side,'exec',sql))
+        class Rev:
+            def __init__(self,side): self.conn = Conn(side)
+        case = next(c for c in gate.CASES if c.name=='agg_group').at('4T')
+        self.assertEqual((case.name,case.mode),('agg_group@4T','4T'))
+        gate.block([Rev('A'),Rev('B')],case,2,math.inf)
+        firsts = [side for side,kind,sql in events if kind=='exec' and sql==case.sql][::3]
+        self.assertEqual(firsts,['A','B','B','A','A','B','B','A','A','B','B','A'])
+        profiles = {text for _,kind,text in events if kind=='script'}
+        self.assertIn(gate.SETTINGS_4T,profiles)
+        self.assertNotIn(gate.SETTINGS_1T,profiles)
+
+    def test_worker_evidence_counts_planned_and_launched(self):
+        plan = [{'Plan':{'Node Type':'Gather','Workers Planned':4,'Workers Launched':3,
+                         'Plans':[{'Node Type':'Custom Scan','Custom Plan Provider':'SiftAgg'}]}}]
+        self.assertEqual(gate.workers(plan),{'planned':4,'launched':3})
+        self.assertEqual(gate.workers([{'Plan':{'Node Type':'Seq Scan'}}]),{'planned':0,'launched':0})
+
 
 if __name__=='__main__':
     unittest.main()
