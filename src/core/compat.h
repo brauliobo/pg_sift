@@ -49,6 +49,13 @@ sift_index_ready(Relation index)
 #define SIFT_POINT(name)	INJECTION_POINT(name)
 #endif
 
+/* Does the CHECK constraint hold for the rows? 18 adds NOT ENFORCED constraints; 17 enforces every one it has */
+#if PG_VERSION_NUM >= 180000
+#define sift_check_enforced(c)	((c)->ccenforced)
+#else
+#define sift_check_enforced(c)	true
+#endif
+
 /*
  * A path that loses to every path that is not disabled, as the path of a node whose enable_ setting is off: 18 counts the disabled nodes of a path
  * (nodes: at least that many), 17 adds disable_cost to its cost, once.

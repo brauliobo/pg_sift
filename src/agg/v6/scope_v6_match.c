@@ -24,6 +24,7 @@
 
 #include "agg/v6/scope_v6_int.h"
 #include "agg/v6/scope_v6_match.h"
+#include "core/compat.h"
 
 static bool
 select_only(const Query *q)
@@ -285,7 +286,7 @@ paths_exclusive(const SiftScopeLeg legs[2])
 		both = lappend(both, nt);
 	}
 	for (int i = 0; constr != NULL && i < constr->num_check; i++)
-		if (constr->check[i].ccvalid && constr->check[i].ccenforced)
+		if (constr->check[i].ccvalid && sift_check_enforced(&constr->check[i]))
 			checks = list_concat(checks, make_ands_implicit((Expr *) stringToNode(constr->check[i].ccbin)));
 	exclusive = predicate_refuted_by(both, checks, false);
 	table_close(rel, NoLock);
