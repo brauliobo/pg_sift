@@ -338,6 +338,8 @@ v6_run(V6State *st, EState *estate)
 	for (int k = 0; k < st->nsources; k++)
 		if (st->sources[k].nrt > 0)
 			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->sources[k].rtkeys, st->sources[k].nrt);
+	if (st->spec->is_table)
+		sift_f2_store_bind_quals(st->sources[0].heap, sift_f2_store_open(st->sources[0].heap), &st->sources[0].quals, st->css.ss.ps.ps_ExprContext);
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
 	st->ran = true;
 	if (st->spec->rows)

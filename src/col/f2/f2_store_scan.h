@@ -11,6 +11,7 @@
 
 #include "access/relscan.h"
 #include "access/skey.h"
+#include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
 #include "utils/snapshot.h"
 
@@ -64,7 +65,14 @@ extern bool sift_f2_store_part_next(SiftStorePart *p, SiftF2Batch *b);
 
 extern void sift_f2_store_scan_close(SiftStoreScan *s);
 
-/* The quals of the statement's scan of a table: as the keys of an index scan (the predicates of a projection are made from them) and as the predicates on the leaves the store scan decides; possible false: no row qualifies */
+/* The key of a quals' comparison whose operand is a parameter: the value it has when the scan starts is the argument of key */
+typedef struct SiftStoreRuntimeKey
+{
+	int			key;
+	ExprState  *expr;
+} SiftStoreRuntimeKey;
+
+/* The quals of the statement's scan of a table: as the keys of an index scan (the predicates of a projection are made from them) and as the predicates on the leaves the store scan decides; possible false: no row qualifies. With runtime keys (nrt > 0) the predicates are those of the last sift_f2_store_bind_quals, made in cx */
 typedef struct SiftStoreQuals
 {
 	ScanKeyData *keys;
@@ -72,13 +80,19 @@ typedef struct SiftStoreQuals
 	SiftColPred *preds;
 	int			npreds;
 	bool		possible;
+	MemoryContext cx;
+	int			nrt;
+	SiftStoreRuntimeKey *rt;
 } SiftStoreQuals;
 
 /* The same from the keys of an index scan of the table's attributes; out->keys is keys */
 extern void sift_f2_store_key_preds(Relation rel, const SiftF2Store *store, const ScanKeyData *keys, int nkeys, MemoryContext cx, SiftStoreQuals *out);
 
-/* quals: comparisons, IN lists and null tests of INDEX_VAR attributes (the attributes of the table) against constants, as agg/v6/plan.c keeps them; allocated in cx */
+/* quals: comparisons, IN lists and null tests of INDEX_VAR attributes (the attributes of the table) against constants or parameters, as agg/v6/plan.c keeps them; allocated in cx */
 extern void sift_f2_store_compile_quals(Relation rel, const SiftF2Store *store, const List *quals, MemoryContext cx, SiftStoreQuals *out);
+
+/* The values of the parameters of the quals as the scan that starts now has them, and the predicates made from them: before each start of the scan, as ExecIndexEvalRuntimeKeys is for an index scan */
+extern void sift_f2_store_bind_quals(Relation rel, const SiftF2Store *store, SiftStoreQuals *q, ExprContext *econtext);
 
 /*
  * What decides, from the descriptors and the predicates alone, whether a partition or a part can hold a row the scan wants, on the time columns: window is the closed range the predicates leave a
