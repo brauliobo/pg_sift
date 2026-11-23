@@ -468,7 +468,7 @@ typedef struct SiftWbufWideHeaderData
 
 /*
  * Doc record, 4-byte aligned:
- *   SiftWbufDocData, uint32 hash[nterms], uint8 tf[nterms], uint8 len[nterms],
+ *   SiftWbufDocData, [uint16 field_dl[reserved] padded to 4 bytes: with SIFT_WBUF_FIELDDL], uint32 hash[nterms], uint8 tf[nterms], uint8 len[nterms],
  *   term bytes (concatenated, sum(len) = termbytes), zero pad to 4 bytes.
  * A doc that does not fit a page is split into pieces: the first carries
  * dl, the others SIFT_WBUF_CONT. All pieces of a doc are adjacent in one lane.
@@ -480,7 +480,7 @@ typedef struct SiftWbufDocData
 	uint16		nterms;
 	uint16		dl;
 	uint16		termbytes;
-	uint16		reserved;
+	uint16		reserved;		/* SIFT_WBUF_FIELDDL: the fields of field_dl, else 0 */
 } SiftWbufDocData;
 
 /*

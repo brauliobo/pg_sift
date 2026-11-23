@@ -32,8 +32,12 @@ bool		sift_test_wbuf_narrow = false;
 #define ROOM(page)		(SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page))
 #define WBUF_SPLIT_ROOM	1024	/* a doc is split over pages rather than moved whole when the page has this much room left */
 #define WBUF_VACUUM_SEAL_PAGES 8	/* pages from which VACUUM seals an open buffer */
-#define RECSIZE(nterms, termbytes) \
-	TYPEALIGN(4, sizeof(SiftWbufDocData) + (Size) (nterms) * 6 + (termbytes))
+/* The lengths of the fields of a doc (SIFT_WBUF_FIELDDL) follow its header, nfields of them, so that the hashes stay aligned; nfields is in the record */
+#define FDL_BYTES(nfields) TYPEALIGN(4, (Size) (nfields) * sizeof(uint16))
+#define RECSIZE(nterms, termbytes, nfields) \
+	TYPEALIGN(4, sizeof(SiftWbufDocData) + FDL_BYTES(nfields) + (Size) (nterms) * 6 + (termbytes))
+#define REC_NFIELDS(d)	(((d)->flags & SIFT_WBUF_FIELDDL) ? (d)->reserved : 0)
+#define REC_HASH(d)		((const uint32 *) ((const char *) ((d) + 1) + FDL_BYTES(REC_NFIELDS(d))))
 
 /* STOR[STOR-BM25-06]: wbuf 1024B wide bloom (13.1%/pg) + 4B/term hash (33%/rec); ABI-locked, shrink via early seal */
 /* The header of a page of a buffer of this format: the buffers of format 0 have the 256-bit bloom in it, those of SIFT_WBUF_FORMAT_WIDE a bloom of 8,192 bits after it */
@@ -139,35 +143,39 @@ refresh_hint(Relation index, WbufHint *h, uint32 analyzer_hash)
 
 /* Largest n whose piece of terms[0..n) fits room; -1 when not even an empty piece does */
 static int
-fit(Size room, const SiftTermFreq *t, int nterms, int *termbytes)
+fit(Size room, const SiftTermFreq *t, int nterms, int nfields, int *termbytes)
 {
 	int			n = 0,
 				tb = 0;
 
 	*termbytes = 0;
-	if (sizeof(SiftWbufDocData) > room)
+	if (RECSIZE(0, 0, nfields) > room)
 		return -1;
-	while (n < nterms && RECSIZE(n + 1, tb + t[n].len) <= room)
+	while (n < nterms && RECSIZE(n + 1, tb + t[n].len, nfields) <= room)
 		tb += t[n++].len;
 	*termbytes = tb;
 	return n;
 }
 
 static void
-put_piece(Page page, ItemPointer tid, uint32 dl, bool cont, const SiftTermFreq *t, int n, int termbytes)
+put_piece(Page page, ItemPointer tid, uint32 dl, const uint16 *fdl, int nfields, bool cont, const SiftTermFreq *t, int n, int termbytes)
 {
 	SiftWbufPageHeaderData *ph = WBUFPAGE(page);
+	int			nf = cont ? 0 : nfields;
 	Size		used = SiftPageGetUsed(page),
-				size = RECSIZE(n, termbytes);
+				size = RECSIZE(n, termbytes, nf);
 	SiftWbufDocData *d = (SiftWbufDocData *) (SiftPageGetData(page) + used);
-	uint32	   *hash = (uint32 *) (d + 1);
+	uint32	   *hash = (uint32 *) ((char *) (d + 1) + FDL_BYTES(nf));
 	uint8	   *tf = (uint8 *) (hash + n),
 			   *len = tf + n;
 	char	   *tb = (char *) (len + n);
 
 	memset(d, 0, size);
 	d->tid = *tid;
-	d->flags = cont ? SIFT_WBUF_CONT : 0;
+	d->flags = cont ? SIFT_WBUF_CONT : nf ? SIFT_WBUF_FIELDDL : 0;
+	d->reserved = nf;
+	if (nf)
+		memcpy(d + 1, fdl, nf * sizeof(uint16));
 	d->nterms = n;
 	d->dl = cont ? 0 : dl;
 	d->termbytes = termbytes;
@@ -192,6 +200,8 @@ typedef struct PieceArg
 {
 	ItemPointer tid;
 	uint32		dl;
+	const uint16 *fdl;
+	int			nfields;
 	bool		cont;
 	const SiftTermFreq *t;
 	int			n;
@@ -211,11 +221,11 @@ fill_wide(Page page)
 	for (Size pos = sizeof(SiftWbufWideHeaderData); pos < SiftPageGetUsed(page);)
 	{
 		const SiftWbufDocData *d = (const SiftWbufDocData *) (SiftPageGetData(page) + pos);
-		const uint32 *hash = (const uint32 *) (d + 1);
+		const uint32 *hash = REC_HASH(d);
 
 		for (int i = 0; i < d->nterms; i++)
 			bloom_add(ph->wide, SIFT_WBUF_WIDE_WORDS, hash[i]);
-		pos += RECSIZE(d->nterms, d->termbytes);
+		pos += RECSIZE(d->nterms, d->termbytes, REC_NFIELDS(d));
 	}
 	ph->base.flags |= SIFT_WBUFPAGE_WIDE;
 }
@@ -227,7 +237,7 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
 
 	if (a->place)
 	{
-		put_piece(cp, a->tid, a->dl, a->cont, a->t, a->n, a->termbytes);
+		put_piece(cp, a->tid, a->dl, a->fdl, a->nfields, a->cont, a->t, a->n, a->termbytes);
 		if (a->spans)
 			WBUFPAGE(cp)->flags |= SIFT_WBUFPAGE_SPANS;
 	}
@@ -241,7 +251,7 @@ fill_piece(Page cp, Page np, Page hp, void *arg)
  */
 static bool
 write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, const SiftTermFreq *t,
-		  int nterms, uint32 dl, BlockNumber *tail)
+		  int nterms, uint32 dl, const uint16 *fdl, int nfields, BlockNumber *tail)
 {
 	bool		crossed = false,
 				first = true;
@@ -254,7 +264,7 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 	{
 		int			rem = nterms - i,
 					tb,
-					n = fit(ROOM(BufferGetPage(cur)), t + i, rem, &tb);
+					n = fit(ROOM(BufferGetPage(cur)), t + i, rem, first ? nfields : 0, &tb);
 		bool		place;
 		PieceArg	pa;
 
@@ -263,14 +273,14 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 			SiftPageEdit ed;
 
 			sift_page_edit_begin(&ed, cur, SIFT_PAGE_DATA_OFFSET + sizeof(SiftWbufPageHeaderData));
-			put_piece(ed.page, tid, dl, !first, t + i, n, tb);
+			put_piece(ed.page, tid, dl, fdl, nfields, !first, t + i, n, tb);
 			sift_page_edit_end(index, &ed, 1);
 			break;
 		}
 		/* STOR[STOR-BM25-05]: wbuf tail-split >=1KiB (uses SIFT_WBUF_CONT) + VACUUM seal >=8p (vs 1/4 limit) */
 		place = n > 0 && (ROOM(BufferGetPage(cur)) >= WBUF_SPLIT_ROOM ||
-						  !(first && RECSIZE(nterms, whole_bytes) <= SIFT_PAGE_PAYLOAD - hdr_size(h->format)));
-		pa = (PieceArg) {tid, dl, !first, t + i, n, tb, i + n < nterms, h->format, place};
+						  !(first && RECSIZE(nterms, whole_bytes, nfields) <= SIFT_PAGE_PAYLOAD - hdr_size(h->format)));
+		pa = (PieceArg) {tid, dl, fdl, nfields, !first, t + i, n, tb, i + n < nterms, h->format, place};
 		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, hdr_size(h->format), limit_pages(index),
 							 fill_piece, &pa, &crossed);
 		if (place)
@@ -285,7 +295,7 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 }
 
 bool
-sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl)
+sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nterms, uint32 dl, const uint16 *fdl, int nfields)
 {
 	WbufHint	hint = *get_hint(index),
 			   *h = &hint;	/* a copy: a lock taken below (the maintenance opens the heap) reloads the entry and frees the cached one */
@@ -306,7 +316,7 @@ sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int
 			break;
 		h->gen = 0;
 	}
-	crossed = write_doc(index, h, lane, buf, tid, terms, nterms, dl, &tail);
+	crossed = write_doc(index, h, lane, buf, tid, terms, nterms, dl, fdl, nfields, &tail);
 	h->tail[lane] = tail;
 	*get_hint(index) = hint;
 	return crossed;
@@ -321,6 +331,7 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	SiftAnalyzer *an;
 	SiftTermFreq *terms;
 	uint32		dl;
+	uint16		fdl[SIFT_MAX_FIELDS];
 	int			n;
 	uint64		key;
 	bool		keyed = sift_bm25_unique_key(index, values, isnull, &key),
@@ -351,7 +362,8 @@ sift_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid,
 	n = sift_analyze_doc(an, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), &terms, &dl);
 	if (keyed)
 		n = sift_bm25_unique_terms(an, terms, n, key, &dl, &terms);
-	if (sift_wbuf_append(index, heap_tid, terms, n, dl))
+	sift_field_dl(terms, n, sift_analyzer_nfields(an), fdl);
+	if (sift_wbuf_append(index, heap_tid, terms, n, dl, fdl, sift_analyzer_nfields(an)))
 		sift_maint_after_seal(index);
 	sift_analyzer_reset(an);
 	if (keyed && checkUnique != UNIQUE_CHECK_NO)
@@ -385,6 +397,7 @@ struct SiftWbufReader
 	uint8	   *atf;
 	uint8	   *alen;
 	char	   *aterms;
+	uint16		afdl[SIFT_MAX_FIELDS];
 };
 
 static bool page_ruled_out(void *arg, Page page);
@@ -478,11 +491,13 @@ rec_at(SiftWbufReader *r, Size *size)
 
 	if (r->pos + sizeof(SiftWbufDocData) > r->used)
 		corrupt(r->index, "A record header at byte %zu overruns the %zu used bytes of a write buffer page.", r->pos, r->used);
-	*size = RECSIZE(d->nterms, d->termbytes);
+	if (REC_NFIELDS(d) > SIFT_MAX_FIELDS)
+		corrupt(r->index, "A write buffer record has the lengths of %u fields.", REC_NFIELDS(d));
+	*size = RECSIZE(d->nterms, d->termbytes, REC_NFIELDS(d));
 	if (r->pos + *size > r->used)
 		corrupt(r->index, "A record of %zu bytes at byte %zu overruns the %zu used bytes of a write buffer page.",
 				*size, r->pos, r->used);
-	len = (const uint8 *) (d + 1) + d->nterms * 5;
+	len = (const uint8 *) REC_HASH(d) + d->nterms * 5;
 	sum = sift_sum_u8(len, d->nterms);
 	if (sum != d->termbytes)
 		corrupt(r->index, "A write buffer record lists %u term bytes but its terms add up to %u.", d->termbytes, sum);
@@ -492,7 +507,7 @@ rec_at(SiftWbufReader *r, Size *size)
 static void
 asm_piece(SiftWbufReader *r, const SiftWbufDocData *d)
 {
-	const uint32 *hash = (const uint32 *) (d + 1);
+	const uint32 *hash = REC_HASH(d);
 	const uint8 *tf = (const uint8 *) (hash + d->nterms),
 			   *len = tf + d->nterms;
 
@@ -540,9 +555,11 @@ sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc)
 		doc->dl = d->dl;
 		doc->deleted = (d->flags & SIFT_WBUF_DELETED) != 0;
 		r->pos += size;
+		doc->field_dl = (d->flags & SIFT_WBUF_FIELDDL) ? (const uint16 *) (d + 1) : NULL;
+		doc->nfields = REC_NFIELDS(d);
 		if (r->pos < r->used || !(r->pflags & SIFT_WBUFPAGE_SPANS) || !BlockNumberIsValid(r->it.nextblk))
 		{
-			const uint32 *hash = (const uint32 *) (d + 1);
+			const uint32 *hash = REC_HASH(d);
 
 			doc->nterms = d->nterms;
 			doc->hash = hash;
@@ -553,6 +570,11 @@ sift_wbuf_next(SiftWbufReader *r, SiftWbufDoc *doc)
 		}
 		/* the doc goes on in the next page; the copy of this one is about to be replaced */
 		r->nasm = r->asmbytes = 0;
+		if (doc->field_dl)
+		{
+			memcpy(r->afdl, doc->field_dl, REC_NFIELDS(d) * sizeof(uint16));
+			doc->field_dl = r->afdl;
+		}
 		for (;;)
 		{
 			asm_piece(r, d);
@@ -649,9 +671,9 @@ verify_page(void *arg, Page page, BlockNumber blk)
 	{
 		Size		size;
 		const SiftWbufDocData *d = rec_at(r, &size);
-		const uint32 *hash = (const uint32 *) (d + 1);
+		const uint32 *hash = REC_HASH(d);
 
-		if (!ItemPointerIsValid(&d->tid) || (d->flags & ~(SIFT_WBUF_DELETED | SIFT_WBUF_CONT)))
+		if (!ItemPointerIsValid(&d->tid) || (d->flags & ~(SIFT_WBUF_DELETED | SIFT_WBUF_CONT | SIFT_WBUF_FIELDDL)))
 			corrupt(r->index, "A record of write buffer %llu has tid (%u,%u) and flags %x.",
 					(unsigned long long) v->gen, ItemPointerGetBlockNumberNoCheck(&d->tid),
 					ItemPointerGetOffsetNumberNoCheck(&d->tid), d->flags);

@@ -40,7 +40,7 @@ sift_sum_u8(const uint8 *p, uint32 n)
  * (caller asks maint to seal).
  */
 extern bool sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms,
-							int nterms, uint32 dl);
+							int nterms, uint32 dl, const uint16 *fdl, int nfields);
 
 /*
  * Seals the active segment (only above write_buffer_limit unless force) and opens
@@ -56,6 +56,8 @@ typedef struct SiftWbufDoc
 {
 	ItemPointerData tid;
 	uint16		dl;
+	uint8		nfields;		/* of field_dl */
+	const uint16 *field_dl;		/* the lengths of the fields of the doc, NULL for a doc written without (an older build) */
 	uint32		nterms;			/* may exceed 64k distinct terms */
 	bool		deleted;
 	const uint32 *hash;
