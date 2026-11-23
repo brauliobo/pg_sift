@@ -382,7 +382,20 @@ decode_run(const SiftFsst *t, const uint8 *in, const uint8 *end, uint8 **outp)
 	while (in < end)
 	{
 		uint32		code = in[0];
-		uint8		esc = (uint8) -(code == SIFT_FSST_ESCAPE);
+		uint8		esc;
+
+		if (in + 1 < end && code != SIFT_FSST_ESCAPE && in[1] != SIFT_FSST_ESCAPE)
+		{
+			const uint32 next = in[1];
+			const uint32 first = t->len[code];
+
+			memcpy(out, t->sym[code], SIFT_FSST_SYMBOL_BYTES);
+			memcpy(out + first, t->sym[next], SIFT_FSST_SYMBOL_BYTES);
+			out += first + t->len[next];
+			in += 2;
+			continue;
+		}
+		esc = (uint8) -(code == SIFT_FSST_ESCAPE);
 
 		memcpy(out, t->sym[code], SIFT_FSST_SYMBOL_BYTES);
 		out[0] |= in[1] & esc;
