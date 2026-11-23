@@ -395,9 +395,10 @@ fill_missing(const SiftRowBuf *rb, int c, const SiftCell *mc, int n, bool *nv, u
 }
 
 /* MEM[MEM-COL-07]: rowbuf add_granule_mapped reusable granule scratch ctx (reset per granule) */
-void
-sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap)
+static void
+add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap, int r0, int r1, const bool *want)
 {
+	static const SiftCell null_cell = {.isnull = true};
 	MemoryContext tmp = sift_mem_allocset_create(CurrentMemoryContext, "sift granule rows");
 	MemoryContext old = MemoryContextSwitchTo(tmp);
 	int			n = v->hdr->nrows;
@@ -418,13 +419,14 @@ sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const S
 	for (int c = 0; c < rb->ncols; c++)
 	{
 		int			pc = remap != NULL ? remap->phys[c] : c;
-		int			len = pc < 0 ? n : sift_granule_chunk_len(v, pc);
+		const bool	unwanted = want != NULL && !want[c] && !sift_rowbuf_is_group(rb, c) && !sift_rowbuf_is_child(rb, c);
+		int			len = pc < 0 || unwanted ? n : sift_granule_chunk_len(v, pc);
 
 		nv[c] = palloc(Max(len, 1) * sizeof(bool));
 		tv[c] = palloc(Max(len, 1));
-		if (pc < 0)
+		if (pc < 0 || unwanted)
 		{
-			fill_missing(rb, c, &remap->missing[c], n, nv[c], tv[c], &iv[c], &fv[c], &sv[c]);
+			fill_missing(rb, c, pc < 0 ? &remap->missing[c] : &null_cell, n, nv[c], tv[c], &iv[c], &fv[c], &sv[c]);
 			continue;
 		}
 		sift_granule_tags(v, pc, tv[c]);
@@ -455,7 +457,7 @@ sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const S
 			for (int r = 0; r < n; r++)
 				first[g][r + 1] = first[g][r] + (nv[g][r] ? 0 : (uint32) iv[g][r]);
 		}
-	for (int r = 0; r < n; r++)
+	for (int r = r0; r < r1; r++)
 	{
 		for (int c = 0; c < rb->ncols; c++)
 		{
@@ -517,6 +519,18 @@ sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const S
 	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(tmp);
+}
+
+void
+sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap)
+{
+	add_granule_rows(rb, v, vers, spec, code_map, remap, 0, v->hdr->nrows, NULL);
+}
+
+void
+sift_rowbuf_add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftPartSpec *spec, int r0, int r1, const bool *want)
+{
+	add_granule_rows(rb, v, NULL, spec, NULL, NULL, r0, r1, want);
 }
 
 /* The arrays of a column of elements are made when its group first holds an element */

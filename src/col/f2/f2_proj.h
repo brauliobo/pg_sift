@@ -405,6 +405,15 @@ struct SiftKeySpec;
 struct SiftKeyPlan;
 extern bool sift_proj_cursor_seek(SiftProjCursor *c, const struct SiftKeySpec *ks, const struct SiftKeyPlan *plan);
 
+/*
+ * Before the first row: of the rows of a granule only the hull of those whose first sort column (an integer) is in [lo, hi], or holds an exception tag, are made as cells; the others are not rows the
+ * cursor gives. The rows are tested on their cells as before, so the answer never depends on the window.
+ */
+extern void sift_proj_cursor_window(SiftProjCursor *c, int64 lo, int64 hi);
+
+/* Before the first row: the columns of the spec the caller reads (one flag each, which must outlive the cursor); the cells of the others are NULL */
+extern void sift_proj_cursor_columns(SiftProjCursor *c, const bool *want);
+
 /* Granules the cursor left out and granules it has read */
 extern void sift_proj_cursor_stats(const SiftProjCursor *c, uint32 *skipped, uint32 *read);
 

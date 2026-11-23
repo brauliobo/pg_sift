@@ -28,6 +28,11 @@ struct SiftProjCursor
 	SiftDvCursor dgc;			/* the deletion vector's granule of the rows in hand */
 	SiftRowBuf *one;
 	int			r;
+	int			r0;				/* the row of the granule that row 0 of one is */
+	bool		windowed;
+	const bool *want;
+	int64		key_lo;
+	int64		key_hi;
 };
 
 SiftProjCursor *
@@ -76,17 +81,61 @@ sift_proj_cursor_stats(const SiftProjCursor *c, uint32 *skipped, uint32 *read)
 	*read = c->nread;
 }
 
+void
+sift_proj_cursor_window(SiftProjCursor *c, int64 lo, int64 hi)
+{
+	c->windowed = true;
+	c->key_lo = lo;
+	c->key_hi = hi;
+}
+
+void
+sift_proj_cursor_columns(SiftProjCursor *c, const bool *want)
+{
+	c->want = want;
+}
+
+/* The rows [r0, r1) of the granule from the first to the last whose first sort column is in the window, or cannot say (an exception tag) */
+static void
+window_rows(const SiftProjCursor *c, const SiftGranuleView *v, int *r0, int *r1)
+{
+	const int	col = c->spec->sort_cols[0];
+	const int	len = sift_granule_chunk_len(v, col);
+	int64	   *iv = palloc(Max(len, 1) * sizeof(int64));
+	bool	   *nv = palloc(Max(len, 1) * sizeof(bool));
+	uint8	   *tv = palloc(Max(len, 1));
+
+	sift_granule_ints(v, col, iv, nv);
+	sift_granule_tags(v, col, tv);
+	*r0 = *r1 = 0;
+	for (int r = 0; r < len; r++)
+		if (tv[r] != 0 || (!nv[r] && iv[r] >= c->key_lo && iv[r] <= c->key_hi))
+		{
+			if (*r1 == 0)
+				*r0 = r;
+			*r1 = r + 1;
+		}
+	pfree(iv);
+	pfree(nv);
+	pfree(tv);
+}
+
 static void
 load_granule(SiftProjCursor *c, uint32 g)
 {
 	SiftGranuleDesc gd;
-	char	   *rec = sift_part_read_granule(c->rel, c->part, g, &gd);
+	char	   *rec = sift_part_read_granule_cols(c->rel, c->part, g, c->want, &gd);
 	SiftGranuleView v = sift_granule_open_part(c->rel, c->part, rec, gd.data_len, &gd);
+	int			r0 = 0,
+				r1 = v.hdr->nrows;
 
+	if (c->windowed)
+		window_rows(c, &v, &r0, &r1);
 	c->one = sift_rowbuf_new(c->spec);
 	sift_dv_cursor_init(&c->dgc, c->dv ? sift_dv_granule(c->dv, g) : NULL);
-	sift_rowbuf_add_granule(c->one, &v, NULL, c->spec, NULL);
+	sift_rowbuf_add_granule_rows(c->one, &v, c->spec, r0, r1, c->want);
 	c->r = 0;
+	c->r0 = r0;
 	c->nread++;
 }
 
@@ -102,7 +151,7 @@ sift_proj_cursor_next(SiftProjCursor *c, const SiftRowBuf **rows, int *r)
 			int			at = c->r++;
 			bool		dead = false;
 
-			(void) sift_dv_cursor_find(&c->dgc, at, &dead);
+			(void) sift_dv_cursor_find(&c->dgc, (uint16) (c->r0 + at), &dead);
 			if (dead == c->dead_only)
 			{
 				*rows = c->one;
