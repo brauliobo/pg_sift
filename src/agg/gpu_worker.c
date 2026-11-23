@@ -494,15 +494,14 @@ serve(WorkerState *w, SiftGpuSlot *s, char *stage)
 		slot_free_done(s);
 }
 
-/* The worker idle: the device gives back its buffers and cache, the pages of the free staging areas leave this process, and the heap goes back to the system */
+/* The worker idle: the device is closed with its buffers, cache and compiled kernels (the next job opens it again: what the driver keeps of a device grows with the kernels it ran), the pages of the free staging areas leave this process, and the heap goes back to the system */
 static void
 worker_idle_release(WorkerState *w)
 {
 	const Size	page = sysconf(_SC_PAGESIZE);
 
-	sift_vk_release(w->vk, true);
-	if (w->vk != NULL)
-		w->shm->caps = *sift_vk_caps(w->vk);
+	sift_vk_close(w->vk);
+	w->vk = NULL;
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 		if (pg_atomic_read_u32(&w->shm->slot[i].state) == SIFT_GPU_S_FREE)
 			(void) madvise((void *) TYPEALIGN(page, sift_gpu_stage(w->shm, i)), SIFT_GPU_STAGE_BYTES - page, MADV_DONTNEED);
