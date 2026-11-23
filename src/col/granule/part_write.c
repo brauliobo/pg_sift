@@ -312,6 +312,13 @@ single_xact(const SiftRows *rows, int from, int cnt)
 	return true;
 }
 
+/* The rows of a sift_table that has an index are read by address (an index fetch); the rows of a table that has none, and those of an index, never are */
+static bool
+indexed_table(Relation rel, const SiftRows *rows)
+{
+	return rows->ncol_ids > 0 && rel->rd_rel->relkind != RELKIND_INDEX && rel->rd_rel->relhasindex;
+}
+
 /* The part of rows, written; with memory, kept in memory instead and written nowhere */
 static SiftPartDesc
 write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftCompressTier tier, const SiftRows *rows, SiftPart **memory)
@@ -611,7 +618,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 	if (level > 0 && sift_point_dir_build(rows, gstart, ng, gdata.len, &pointsec))
 		sift_part_add_section(secs, &nsec, SEC_POINT, 0, pointsec.data, pointsec.len, false);
 	initStringInfo(&tidhash);
-	has_tid_hash = sift_tid_hash_build(rows, level, gstart, ng, &tidhash);
+	has_tid_hash = indexed_table(rel, rows) && sift_tid_hash_build(rows, level, gstart, ng, false, &tidhash);
 	if (has_tid_hash)
 		sift_part_add_section(secs, &nsec, SEC_TID_HASH, 0, tidhash.data, tidhash.len, false);
 	if (rows->kll != NULL && sift_aux_kll_k(&aux, UINT16_MAX) > 0)

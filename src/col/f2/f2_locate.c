@@ -536,6 +536,30 @@ visit_granule(const VisitPart *vp, SiftF2PartPin *pin, const SiftPartitionEntry 
 	return stop;
 }
 
+/* The granules the address hash of the part names for the address, ascending (n of them) */
+static int
+hashed_granules(VisitPart *vp, SiftF2PartPin *pin, uint32 **gids)
+{
+	SiftTidHashHit *hits;
+	int			nhits = sift_tid_hash_find(vp->rel, pin->part, pin->desc.nrows, vp->lo, &hits),
+				n = 0;
+
+	for (int i = 0; i < nhits; i++)
+	{
+		const SiftTidHashHit *h = &hits[i];
+
+		if (h->granule_id >= pin->part->hdr.ngranules ||
+			(h->row_idx != SIFT_TID_HASH_NO_ROW && (h->row_idx < pin->gdir[h->granule_id].row_base || h->row_idx - pin->gdir[h->granule_id].row_base >= pin->gdir[h->granule_id].nrows)))
+			SIFT_DAMAGE_DATA(vp->rel, errmsg("sift: an address hash entry names a row outside its granule"));
+	}
+	*gids = palloc(Max(nhits, 1) * sizeof(uint32));
+	for (int i = 0; i < nhits; i++)
+		if (n == 0 || (*gids)[n - 1] != hits[i].granule_id)
+			(*gids)[n++] = hits[i].granule_id;
+	pfree(hits);
+	return n;
+}
+
 static bool
 visit_part(const TidSlot *slot, void *arg)
 {
@@ -552,7 +576,7 @@ visit_part(const TidSlot *slot, void *arg)
 		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && (hashed || ng > GRAN_INDEX_MIN_GRANULES))
 		{
 			uint32	   *gids;
-			int			n = hashed ? sift_tid_hash_granules(vp->rel, pin->part, pin->desc.nrows, vp->lo, &gids) : part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
+			int			n = hashed ? hashed_granules(vp, pin, &gids) : part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
 
 			for (int k = 0; k < n && !stop; k++)
 				stop = visit_granule(vp, pin, entry, gids[k]);

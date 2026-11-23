@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_tid_hash.c - the address hash directory of a part in key order (f2_tid_hash.h)
+ * col/f2/f2_tid_hash.c - the address hash directory of a part of a sift_table (f2_tid_hash.h)
  */
 #include "postgres.h"
 
@@ -29,60 +29,94 @@ sift_test_f2_tid_hash_stats(PG_FUNCTION_ARGS)
 #endif
 
 bool
-sift_tid_hash_build(const SiftRows *rows, uint16 level, const int *gstart, int ng, StringInfo out)
+sift_tid_hash_build(const SiftRows *rows, uint16 level, const int *gstart, int ng, bool rpack, StringInfo out)
 {
-	const uint32 log2_buckets = sift_tid_hash_log2(rows->nrows),
+	const uint32 log2_buckets = sift_tid_hash_log2(rows->nrows, SIFT_TID_HASH_V2_LOAD),
 				nb = UINT32_C(1) << log2_buckets;
-	SiftTidHashHdr hdr = {SIFT_TID_HASH_MAGIC, SIFT_TID_HASH_VERSION, 0, log2_buckets, (uint32) rows->nrows};
+	SiftTidHashHdr hdr = {SIFT_TID_HASH_MAGIC, SIFT_TID_HASH_VER_V2, rpack ? SIFT_TID_HASH_FLAG_RPACK : 0, log2_buckets, (uint32) rows->nrows};
+	SiftTidHashSlotV2 *slots;
 	uint32	   *start,
-			   *at,
-			   *ref;
+			   *at;
 
-	if (level == 0 || rows->nsort == 0 || rows->ncol_ids == 0 || rows->nrows < SIFT_TID_HASH_MIN_ROWS)
+	if (level == 0 || (rows->nsort == 0 && !rpack) || rows->ncol_ids == 0 || rows->nrows < SIFT_TID_HASH_MIN_ROWS || ng > UINT16_MAX + 1)
 		return false;
 	start = palloc0((nb + 1) * sizeof(uint32));
 	at = palloc(nb * sizeof(uint32));
-	ref = palloc((Size) rows->nrows * sizeof(uint32));
 	for (uint64 r = 0; r < rows->nrows; r++)
 		start[sift_tid_hash_bucket(rows->tid[r], log2_buckets) + 1]++;
 	for (uint32 b = 0; b < nb; b++)
 		start[b + 1] += start[b];
 	memcpy(at, start, nb * sizeof(uint32));
-	for (int g = 0; g < ng; g++)
-		for (int r = gstart[g]; r < gstart[g + 1]; r++)
-			ref[at[sift_tid_hash_bucket(rows->tid[r], log2_buckets)]++] = ((uint32) g << SIFT_TID_HASH_ROW_BITS) | (uint32) (r - gstart[g]);
 	appendBinaryStringInfo(out, (char *) &hdr, sizeof(hdr));
 	appendBinaryStringInfo(out, (char *) start, (nb + 1) * sizeof(uint32));
-	appendBinaryStringInfo(out, (char *) ref, (uint64) rows->nrows * sizeof(uint32));
+	enlargeStringInfo(out, (Size) rows->nrows * sizeof(SiftTidHashSlotV2));
+	slots = (SiftTidHashSlotV2 *) (out->data + out->len);
+	for (int g = 0; g < ng; g++)
+		for (int r = gstart[g]; r < gstart[g + 1]; r++)
+			slots[at[sift_tid_hash_bucket(rows->tid[r], log2_buckets)]++] = (SiftTidHashSlotV2) {(uint32) r, sift_tid_hash_fp(rows->tid[r]), (uint16) g};
+	out->len += (uint64) rows->nrows * sizeof(SiftTidHashSlotV2);
+	out->data[out->len] = '\0';
 	pfree(start);
 	pfree(at);
-	pfree(ref);
 	return true;
 }
 
+static SiftTidHashHdr
+read_header(Relation rel, const SiftPart *part, const SiftSecDirEntry *se, uint64 nrows)
+{
+	SiftTidHashHdr hdr;
+	uint64		slot_bytes;
+
+	sift_part_read_section_bytes(rel, part, se, 0, sizeof(hdr), &hdr);
+	slot_bytes = hdr.version == SIFT_TID_HASH_VER_V2 ? sizeof(SiftTidHashSlotV2) : sizeof(uint32);
+	if (hdr.magic != SIFT_TID_HASH_MAGIC || (hdr.version != SIFT_TID_HASH_VER_V1 && hdr.version != SIFT_TID_HASH_VER_V2) || hdr.nrows != nrows || hdr.log2_buckets == 0 || hdr.log2_buckets > 32 ||
+		se->len != sizeof(hdr) + ((UINT64_C(1) << hdr.log2_buckets) + 1) * sizeof(uint32) + nrows * slot_bytes)
+		SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory is not the size of its part"));
+	return hdr;
+}
+
+static int
+hits_v1(const uint32 *ref, uint32 n, SiftTidHashHit *hits)
+{
+	int			k = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		if (k == 0 || hits[k - 1].granule_id != ref[i] >> SIFT_TID_HASH_ROW_BITS)
+			hits[k++] = (SiftTidHashHit) {SIFT_TID_HASH_NO_ROW, ref[i] >> SIFT_TID_HASH_ROW_BITS};
+	return k;
+}
+
+static int
+hits_v2(const SiftTidHashSlotV2 *slots, uint32 n, uint16 fp, SiftTidHashHit *hits)
+{
+	int			k = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		if (slots[i].fp16 == fp)
+			hits[k++] = (SiftTidHashHit) {slots[i].row_idx, slots[i].granule_id};
+	return k;
+}
+
 int
-sift_tid_hash_granules(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid, uint32 **gids)
+sift_tid_hash_find(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid, SiftTidHashHit **hits)
 {
 	const SiftSecDirEntry *se = sift_part_section(part, SEC_TID_HASH);
-	const uint32 log2_buckets = sift_tid_hash_log2(nrows),
-				nb = UINT32_C(1) << log2_buckets;
-	const uint64 entries_at = sizeof(SiftTidHashHdr) + (uint64) (nb + 1) * sizeof(uint32);
-	uint32		span[2],
-			   *ref;
-	int			n = 0;
+	const SiftTidHashHdr hdr = read_header(rel, part, se, nrows);
+	const bool	v2 = hdr.version == SIFT_TID_HASH_VER_V2;
+	const uint64 slot_bytes = v2 ? sizeof(SiftTidHashSlotV2) : sizeof(uint32),
+				entries_at = sizeof(hdr) + ((UINT64_C(1) << hdr.log2_buckets) + 1) * sizeof(uint32);
+	uint32		span[2];
+	void	   *raw;
+	int			n;
 
-	if (se->len != entries_at + nrows * sizeof(uint32))
-		SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory is not the size of its part"));
-	sift_part_read_section_bytes(rel, part, se, sizeof(SiftTidHashHdr) + (uint64) sift_tid_hash_bucket(tid, log2_buckets) * sizeof(uint32), sizeof(span), span);
+	sift_part_read_section_bytes(rel, part, se, sizeof(hdr) + (uint64) sift_tid_hash_bucket(tid, hdr.log2_buckets) * sizeof(uint32), sizeof(span), span);
 	if (span[0] > span[1] || span[1] > nrows)
 		SIFT_DAMAGE_DATA(rel, errmsg("sift: an address hash directory has a bucket past its entries"));
-	ref = palloc(Max(span[1] - span[0], 1) * sizeof(uint32));
-	*gids = palloc(Max(span[1] - span[0], 1) * sizeof(uint32));
-	sift_part_read_section_bytes(rel, part, se, entries_at + (uint64) span[0] * sizeof(uint32), (uint64) (span[1] - span[0]) * sizeof(uint32), ref);
-	for (uint32 i = 0; i < span[1] - span[0]; i++)
-		if (n == 0 || (*gids)[n - 1] != ref[i] >> SIFT_TID_HASH_ROW_BITS)
-			(*gids)[n++] = ref[i] >> SIFT_TID_HASH_ROW_BITS;
-	pfree(ref);
+	raw = palloc(Max(span[1] - span[0], 1) * slot_bytes);
+	*hits = palloc(Max(span[1] - span[0], 1) * sizeof(SiftTidHashHit));
+	sift_part_read_section_bytes(rel, part, se, entries_at + (uint64) span[0] * slot_bytes, (uint64) (span[1] - span[0]) * slot_bytes, raw);
+	n = v2 ? hits_v2(raw, span[1] - span[0], sift_tid_hash_fp(tid), *hits) : hits_v1(raw, span[1] - span[0], *hits);
+	pfree(raw);
 #ifdef SIFT_TESTING
 	lookups++;
 	granules += n;
