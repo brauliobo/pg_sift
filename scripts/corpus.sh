@@ -2,12 +2,12 @@
 # The corpus gate (test/corpus/README.md): the statements of test/corpus/cases.sql on the lab of test/corpus/lab.sql (20000 events), each in a new backend with sift off
 # and on, the rows equal, and the plan slug of each (the Custom Scan (Sift...) nodes and the verdict of sift.explain_why per arm) the one pinned in test/corpus/plans.tsv.
 #
-#   scripts/corpus.sh [--format f2|f1|release] [--table] [--only GLOB] [--rows N] [--update] [--keep]
+#   scripts/corpus.sh [--format f2|f1|release] [--table] [--only GLOB[|GLOB...]] [--rows N] [--update] [--keep]
 #
 #   --format F    the format of the indexes the lab creates: f2 (default: Format 2.0 on the testing library), f1 (Format 1 on the testing library, the pins of plans-f1.tsv) or release
 #                 (the release library, Format 2.0, no test setting: refused on a testing library, so that the run is the one of the binary users install)
 #   --table       the base tables of the lab as sift_table (test/corpus/table.sql): the rows must agree as ever, the plans are not pinned
-#   --only GLOB   only the statements whose slug matches (a focused run: the lab is loaded as ever)
+#   --only GLOB   only the statements whose slug matches (a focused run: the lab is loaded as ever); several globs separated by | or , match a statement when any of them does
 #   --rows N      events of the lab (default 20000, the size the plans are pinned at: another size checks the rows only)
 #   --update      rewrites the pins of the format (test/corpus/plans.tsv, plans-f1.tsv for f1) from this run: read the diff, a statement that left the engaged set is a regression unless the change says so
 #   --keep        keeps the database sift_corpus

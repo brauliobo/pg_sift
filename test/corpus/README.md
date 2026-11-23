@@ -33,6 +33,7 @@ The plan slug names the `Custom Scan (Sift...)` nodes whole (`SiftAgg` of Format
     scripts/corpus-local.sh                # one command: installs the library, starts a throwaway cluster, runs the corpus, removes the cluster
     scripts/corpus.sh                      # the same on the cluster of scripts/pgtest.sh (SIFT_TMP, SIFT_PORT; installed and started), as the CI job does
     scripts/corpus.sh --only 'agg_*'       # a focused run (the statements whose slug matches; the lab is loaded as ever)
+    scripts/corpus.sh --only 'join_*|scope_*'   # several globs, separated by | or , (a statement runs when any matches)
     scripts/corpus.sh --update             # re-record plans.tsv
     CORPUS_ON_SET='set sift.agg_dense=off;' scripts/corpus.sh   # try a setting: what it does to rows and plans
 

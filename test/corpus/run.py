@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""run.py [--only GLOB] [--update] [--no-plans] [--plans FILE] [--keys N] [--out DIR]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
+"""run.py [--only GLOB[|GLOB...]] [--update] [--no-plans] [--plans FILE] [--keys N] [--out DIR]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
 
 Every statement of test/corpus/cases.sql runs in a NEW backend (psql \\connect) twice, with sift off (the native planner) and on, and the sorted rows must be equal. In the
 backend of the "on" run the plan is then explained: the Custom Scan (Sift...) nodes it holds and the verdict of sift.explain_why per arm (used, or the slug of the refusal). That
@@ -97,7 +97,8 @@ def plan_of(path):
 def main(a):
     only = a[a.index("--only") + 1] if "--only" in a else "*"
     update, noplans = "--update" in a, "--no-plans" in a
-    cases = [c for c in parse(os.path.join(HERE, "cases.sql")) if fnmatch.fnmatch(c["slug"], only)]
+    globs = re.split(r"[|,]", only)
+    cases = [c for c in parse(os.path.join(HERE, "cases.sql")) if any(fnmatch.fnmatch(c["slug"], g) for g in globs)]
     out = a[a.index("--out") + 1] if "--out" in a else tempfile.mkdtemp(prefix="corpus.", dir=os.environ.get("TMPDIR", "/tmp"))
     os.makedirs(out, exist_ok=True)
     errs = {}
