@@ -1,6 +1,6 @@
 /*
  * agg/v6/v6_par_scan.c - what the two strategies of v6_par.h share: the participant's place at the barrier, the loop that claims morsels, the hand-over of a table to the partitions, and the
- * merge of a partition into an engine state. The morsels are those of agg/par/morsel.h over the parts of the scan (the shared block holds the parts, one SiftParPartRef each); the engine decides
+ * merge of a partition into an engine state. The morsels are those of core/par/morsel.h over the parts of the scan (the shared block holds the parts, one SiftParPartRef each); the engine decides
  * what a morsel is (group.c: the granules of a part of a sift_col index or of a sift_table, col/f2/f2_sink.h).
  */
 #include "core/host.h"

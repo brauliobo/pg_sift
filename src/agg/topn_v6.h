@@ -12,8 +12,8 @@
  * leaves the choice among ties to the executor); WITH TIES keeps every row that ties the last of the n + m rows. The rows are not decoded here: a winner is
  * (part, granule, row in the granule), and the caller reads the rest of its columns for the rows it outputs.
  *
- * Parallel: each participant runs a tournament of its own over the units it was given and the queue (agg/par/morsel.h) carries the bound of the best-placed one
- * in topn_theta_bits as an integer that only grows; a unit whose best value on the leading key is below it is not read by any of them, and the winners of all are
+ * Parallel: each participant runs a tournament of its own over the units it was given and the queue (core/par/morsel.h) carries the bound of the best-placed one
+ * in the bound of the queue (topn_theta, core/par/topk.h) as an integer that only grows; a unit whose best value on the leading key is below it is not read by any of them, and the winners of all are
  * merged (sift_tourn_merge).
  */
 #ifndef SIFT_AGG_TOPN_V6_H
@@ -21,7 +21,7 @@
 
 #include <math.h>
 
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 
 #define SIFT_TOURN_MAX_KEYS		4
 #define SIFT_TOURN_MAX_K		100000

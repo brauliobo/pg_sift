@@ -26,7 +26,7 @@
 #include "storage/ipc.h"
 #include "utils/wait_event.h"
 
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 #include "agg/par/radix.h"
 #include "agg/v6/v6_acc.h"
 

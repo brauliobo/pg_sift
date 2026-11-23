@@ -144,7 +144,7 @@ CREATE FUNCTION sift._test_ht_text_groups(vals text[], collation oid) RETURNS in
 CREATE FUNCTION sift._test_radix_par(seed int8, workers int4, granules int4, groups int4, mode int4, local_cap int4, max_chunks int4,
 									 OUT launched int4, OUT out_groups int8, OUT bad int8, OUT spilled int4, OUT chunks int4, OUT par_us int8, OUT scan_us int8)
 	AS 'MODULE_PATHNAME', 'sift_test_radix_par' LANGUAGE C STRICT;
--- Guided work queue of the parallel scans (src/agg/par/morsel_test.c): workers launched, claims, granules, granules not visited exactly once, claims out of protocol, longest claim, length of the last claim.
+-- Guided work queue of the parallel scans (src/core/par/morsel_test.c): workers launched, claims, granules, granules not visited exactly once, claims out of protocol, longest claim, length of the last claim.
 CREATE FUNCTION sift._test_morsel_par(seed int8, workers int4, parts int4, granules int4,
 									  OUT launched int4, OUT claims int8, OUT total int8, OUT wrong int8, OUT bad_claims int8, OUT max_run int4, OUT tail_run int4)
 	AS 'MODULE_PATHNAME', 'sift_test_morsel_par' LANGUAGE C STRICT;

@@ -1,5 +1,5 @@
 /*
- * agg/par/morsel_test.c - test-only SQL function of the guided work queue (agg/par/morsel.c), compiled only with SIFT_TESTING and
+ * core/par/morsel_test.c - test-only SQL function of the guided work queue (core/par/morsel.c), compiled only with SIFT_TESTING and
  * registered by the pg_sift_test extension: the leader and 0, 1, 2, 4 or 8 workers take every granule of a list of parts whose sizes
  * are as skewed as a Zipf law (the first part holds half of the granules, the next a quarter, and so on, some parts hold none) and
  * count the visits of each granule in the shared segment. Every granule must be visited once, every claim must lie within one part
@@ -15,7 +15,7 @@
 #include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/xact.h"
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 #include "miscadmin.h"
 #include "storage/s_lock.h"
 #include "storage/shm_toc.h"

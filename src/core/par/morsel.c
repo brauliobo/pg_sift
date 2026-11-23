@@ -1,9 +1,9 @@
 /*
- * agg/par/morsel.c - the guided work queue of agg/par/morsel.h.
+ * core/par/morsel.c - the guided work queue of core/par/morsel.h.
  */
 #include "postgres.h"
 
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 #include "port/pg_bitutils.h"
 
 Size
@@ -31,7 +31,7 @@ sift_morsel_init(SiftMorselQueue *q, uint32 n_parts, const uint32 *granules, uin
 	q->n_parts = n_parts;
 	q->n_participants = n_participants;
 	q->n_lanes = Min(n_participants, SIFT_MORSEL_LANES);
-	pg_atomic_init_u64(&q->topn_theta_bits, 0);
+	sift_bound_init(&q->topn_theta, 0);
 	for (uint32 l = 0; l < q->n_lanes; l++)
 	{
 		pg_atomic_init_u32(&q->lanes[l].cursor, (uint32) (total * l / q->n_lanes));
@@ -124,16 +124,13 @@ sift_morsel_claim(SiftMorselQueue *q, uint32 participant, SiftMorsel *m)
 uint64
 sift_morsel_theta_load(SiftMorselQueue *q)
 {
-	return pg_atomic_read_u64(&q->topn_theta_bits);
+	return sift_bound_load(&q->topn_theta);
 }
 
 void
 sift_morsel_theta_raise(SiftMorselQueue *q, uint64 bits)
 {
-	uint64		cur = pg_atomic_read_u64(&q->topn_theta_bits);
-
-	while (cur < bits && !pg_atomic_compare_exchange_u64(&q->topn_theta_bits, &cur, bits))
-		;
+	sift_bound_raise(&q->topn_theta, bits);
 }
 
 void

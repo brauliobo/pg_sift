@@ -872,6 +872,9 @@ core/meta_peek.c
 core/meta_peek.h
 core/ops.c
 core/ops.h
+core/par/morsel.c
+core/par/morsel.h
+core/par/morsel_test.c
 core/par/pool.c
 core/par/pool.h
 core/parbuild.c

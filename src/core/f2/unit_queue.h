@@ -1,6 +1,6 @@
 /*
  * core/f2/unit_queue.h - the queue of units the workers of a parallel scan of a table take their next piece of work from: 256 bytes in shared memory, each claim a share of what is left,
- * so that the last worker is not left a long tail. The claimed word and the read-only ones are a cache line apart. The units are numbered [0, nunits); what a unit is, the scan says. (The morsels of the parallel aggregate, agg/par/morsel.h,
+ * so that the last worker is not left a long tail. The claimed word and the read-only ones are a cache line apart. The units are numbered [0, nunits); what a unit is, the scan says. (The morsels of the parallel aggregate, core/par/morsel.h,
  * are another queue: variable-length lanes that the aggregate sizes by row.)
  */
 #ifndef SIFT_UNIT_QUEUE_H

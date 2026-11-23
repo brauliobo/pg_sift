@@ -29,7 +29,7 @@
 #include "access/parallel.h"
 #include "agg/group/dist.h"
 #include "agg/group/rec.h"
-#include "agg/par/morsel.h"
+#include "core/par/morsel.h"
 #include "agg/group/ht.h"
 #include "port/atomics.h"
 #include "storage/barrier.h"
@@ -148,7 +148,7 @@ extern shm_mq_handle **sift_par_leader_queues(SiftParCoord *c, dsm_segment *seg,
 /* The participant id: the leader 0, worker w w + 1 */
 extern int	sift_par_participant(void);
 
-/* Phase 1: the next morsel of granules [*first, *first + *n) of the flat list of the scan (agg/par/morsel.h), false when there is none */
+/* Phase 1: the next morsel of granules [*first, *first + *n) of the flat list of the scan (core/par/morsel.h), false when there is none */
 extern bool sift_par_next_morsel(SiftParCoord *c, uint32 *first, uint32 *n);
 
 /* Joins the barrier; returns the phase: 0 when there is a scan to do */

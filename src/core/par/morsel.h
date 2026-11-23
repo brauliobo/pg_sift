@@ -1,5 +1,5 @@
 /*
- * agg/par/morsel.h - the work queue of a parallel scan: the granules of every part of the scan as one flat list, which the participants
+ * core/par/morsel.h - the work queue of a parallel scan: the granules of every part of the scan as one flat list, which the participants
  * (the leader and the workers) take from by a compare-and-swap on a cursor.
  *
  * A claim is a run of granules of one part: (part, first, n). The run is long while the list is long and shrinks as it is consumed, so
@@ -14,17 +14,19 @@
  * in the cache of their chiplet), and when its lane is empty it takes from the lane with the most granules left, so that the lists finish
  * together all the same. With one participant there is one lane and the list is read in order.
  *
- * A Top-N tournament over the granules (agg/topn_v6.h) shares what it has learned in topn_theta_bits, alone on its own cache line pair: the encoded
+ * A Top-N tournament over the granules (agg/topn_v6.h) shares what it has learned in topn_theta (a SiftAtomicBound), alone on its own cache line pair: the encoded
  * bound of the K-th best row of the participant that is furthest along (0 = none yet). It only grows (a compare-and-swap that keeps the larger), and every
  * participant reads it before it takes a granule; once a granule cannot hold a row better than the bound, the rest of the list cannot either and
  * sift_morsel_stop ends it for all.
  *
  * The queue is in shared memory, allocated with sift_morsel_size() bytes aligned to a cache line, and has no pointer: it is valid at any address.
  */
-#ifndef SIFT_AGG_PAR_MORSEL_H
-#define SIFT_AGG_PAR_MORSEL_H
+#ifndef SIFT_CORE_PAR_MORSEL_H
+#define SIFT_CORE_PAR_MORSEL_H
 
 #include "port/atomics.h"
+
+#include "core/par/topk.h"
 
 /* the most granules of a claim: 8 * 8192 rows */
 #define SIFT_MORSEL_MAX			8
@@ -52,7 +54,7 @@ typedef struct SiftMorselQueue
 	uint32		n_participants;
 	uint32		n_lanes;
 	SiftMorselLane lanes[SIFT_MORSEL_LANES] pg_attribute_aligned(PG_CACHE_LINE_SIZE);
-	pg_atomic_uint64 topn_theta_bits pg_attribute_aligned(2 * PG_CACHE_LINE_SIZE);
+	SiftAtomicBound topn_theta pg_attribute_aligned(2 * PG_CACHE_LINE_SIZE);
 	uint32		part_start[FLEXIBLE_ARRAY_MEMBER];	/* n_parts + 1: the flat index of the first granule of each part, then the total */
 } pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftMorselQueue;
 
@@ -77,4 +79,4 @@ extern void sift_morsel_stop(SiftMorselQueue *q);
 /* The run of the next claim of a list with `left` granules left (the guided size) */
 extern uint32 sift_morsel_run(uint32 left, uint32 n_participants);
 
-#endif							/* SIFT_AGG_PAR_MORSEL_H */
+#endif							/* SIFT_CORE_PAR_MORSEL_H */
