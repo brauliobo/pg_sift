@@ -13,6 +13,7 @@
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topk_run.h"
+#include "core/compat.h"
 
 #define SHORT_TEXT_MAX	126
 
@@ -26,6 +27,8 @@ struct SiftV6Rows
 	char		sbuf[SIFT_V6_MAX_KEYS][SHORT_TEXT_MAX + 1];
 	SiftF2Bound bound;
 	bool		bounded;		/* the first sort column is an integer: the heap's worst row bounds what a granule must hold */
+	bool		by_code;		/* the first sort column is a text in byte order: a dictionary lists its strings in that order, so the codes bound the rows as the strings do */
+	bool		desc;
 };
 
 typedef struct RowCand
@@ -97,6 +100,12 @@ cand_value(void *ctx, int item, bool *isnull)
 }
 
 static bool
+text_type(Oid typid)
+{
+	return typid == TEXTOID || typid == VARCHAROID;
+}
+
+static bool
 bound_type(Oid typid)
 {
 	return typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID;
@@ -128,31 +137,85 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	r->spec = spec;
 	r->run = sift_v6_topk_run_new(cx, spec, desc);
 	r->bounded = bound_type(spec->key[spec->topk_item[0].pos].typid);
-	if (r->bounded)
+	r->by_code = text_type(spec->key[spec->topk_item[0].pos].typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
+	if (r->bounded || r->by_code)
 	{
 		Oid			opfamily,
 					opcintype;
 		CompareType	cmptype;
 
 		get_ordering_op_properties(spec->topk_item[0].sortop, &opfamily, &opcintype, &cmptype);
-		r->bound = (SiftF2Bound) {.desc = cmptype == COMPARE_GT,.nulls_first = spec->topk_item[0].nulls_first};
+		r->desc = cmptype == COMPARE_GT;
+		r->bound = (SiftF2Bound) {.desc = r->desc,.nulls_first = spec->topk_item[0].nulls_first};
 	}
 	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 rows");
 	MemoryContextSwitchTo(old);
 	return r;
 }
 
+/* The first dictionary entry at or past the string (strict: past it) */
+static uint32
+dict_search(const SiftGranuleDict *d, const uint8 *p, uint32 len, bool strict)
+{
+	uint32		lo = 0,
+				hi = d->n;
+
+	while (lo < hi)
+	{
+		const uint32 mid = lo + (hi - lo) / 2;
+		const uint32 elen = d->off[mid + 1] - d->off[mid];
+		const int	cmp = memcmp(d->bytes + d->off[mid], p, Min(elen, len));
+		const bool	before = cmp != 0 ? cmp < 0 : (strict ? elen <= len : elen < len);
+
+		if (before)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
+/* The codes of the dictionary of the first sort column that a row must have to beat the heap's worst: the others sort after it, or with a lone sort column are equal to it */
+static void
+code_range(const SiftV6Rows *r, const SiftVec *k0, uint32 *lo, uint32 *hi)
+{
+	const SiftGranuleDict *d = k0->dict;
+	Datum		worst;
+	bool		worst_null;
+	const text *t;
+
+	*lo = 0;
+	*hi = UINT32_MAX;
+	if (!sift_v6_topk_run_worst(r->run, 0, &worst, &worst_null) || worst_null)
+		return;
+	t = DatumGetTextPP(worst);
+	if (r->desc)
+		*lo = dict_search(d, (const uint8 *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), r->spec->ntopk == 1);
+	else if ((*hi = dict_search(d, (const uint8 *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), r->spec->ntopk > 1)) == 0)
+		*lo = 1;
+	else
+		(*hi)--;
+}
+
 void
 sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyvec, const uint64 *tid)
 {
 	const SiftV6Spec *spec = r->spec;
+	const SiftVec *k0 = keyvec[spec->topk_item[0].pos];
+	const bool	coded = r->by_code && k0->type == SVEC_DICT32;
 	MemoryContext old = MemoryContextSwitchTo(r->tmp);
+	uint32		lo = 0,
+				hi = UINT32_MAX;
 
+	if (coded)
+		code_range(r, k0, &lo, &hi);
 	for (int w = 0; w < (bs->n_raw + 63) / 64; w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
 		{
 			RowCand		c = {.r = r,.keyvec = keyvec,.row = (uint16) (w * 64 + __builtin_ctzll(bits))};
 
+			if (coded && is_valid(k0, c.row) && (((const uint32 *) k0->data)[c.row] > hi || ((const uint32 *) k0->data)[c.row] < lo))
+				continue;
 			if (!sift_v6_topk_run_wants(r->run, cand_value, &c))
 				continue;
 			for (int i = 0; i < spec->nkeys; i++)
@@ -160,6 +223,8 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 			r->values[spec->nkeys] = Int64GetDatum((int64) tid[c.row]);
 			r->isnull[spec->nkeys] = false;
 			sift_v6_topk_run_put(r->run, r->values, r->isnull);
+			if (coded)
+				code_range(r, k0, &lo, &hi);
 		}
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(r->tmp);
