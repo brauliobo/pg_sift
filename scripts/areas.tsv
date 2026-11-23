@@ -91,6 +91,7 @@
 ^scripts/isolation\.sh$	^isolation
 ^scripts/static\.sh$	^static$
 ^scripts/plangate\.sh$	^plan-gate
+^scripts/fast-gate\.sh$	-
 ^scripts/plan-margin\.sh$	-
 ^(scripts/exec-budget\.sh|bench/steps/cases\.sh|bench/steps/cases/.*|test/plan/execution\.tsv)$	^exec-budget$
 ^(scripts/corpus(-local)?\.sh|test/corpus/)	^corpus$
