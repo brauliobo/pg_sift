@@ -21,6 +21,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "agg/agg.h"
 #include "agg/hybrid_agg_core.h"
 #include "agg/hybrid_state.h"
 #include "agg/v6/v6.h"
@@ -182,8 +183,8 @@ point_cols(HybridAggState *st, const SiftV6FoldCol *cols, int n)
 }
 
 /* The scaled integer the store holds of a numeric (the column's type is numeric(p, s) with p at most 18, so the value fits and has no digit past the scale) */
-static int64
-numeric_scaled(Datum d, int scale)
+int64
+sift_numeric_scaled(Datum d, int scale)
 {
 	int64		pow10 = 1;
 	Datum		unit;
@@ -219,7 +220,7 @@ point_put(HybridState *h, PointCol *c, int r)
 			c->i[r] = DatumGetInt64(d);
 			break;
 		case NUMERICOID:
-			c->i[r] = numeric_scaled(d, c->scale);
+			c->i[r] = sift_numeric_scaled(d, c->scale);
 			break;
 		case BOOLOID:
 			c->i[r] = DatumGetBool(d);
