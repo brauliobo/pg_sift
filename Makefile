@@ -602,6 +602,7 @@ TESTING_REGRESS += read_%
 TESTING_REGRESS += scaling_ops_gate
 TESTING_REGRESS += scope_in5_parity
 TESTING_REGRESS += scope_overlay_parity
+TESTING_REGRESS += table_f2_col_delta_hot
 TESTING_REGRESS += table_f2_col_delta_summ
 TESTING_REGRESS += scope_pair_edit_live
 TESTING_REGRESS += scope_topn_parity
