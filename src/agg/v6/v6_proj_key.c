@@ -20,7 +20,9 @@
 #include "utils/uuid.h"
 
 #include "agg/v6/v6_proj_key.h"
+#include "agg/v6/v6_qual.h"
 #include "col/am.h"
+#include "col/am/preds.h"
 
 typedef enum KeyClass
 {
@@ -183,7 +185,7 @@ sift_v6_proj_pred_of_key(const SiftF2Store *store, TupleDesc td, const ScanKeyDa
 		MemoryContextSwitchTo(old);
 		return true;
 	}
-	if ((sk->sk_flags & ~SK_SEARCHARRAY) != 0 || st < BTLessStrategyNumber || st > BTGreaterStrategyNumber || (array && st != BTEqualStrategyNumber) || leaf < 0)
+	if ((sk->sk_flags & ~SK_SEARCHARRAY) != 0 || st < BTLessStrategyNumber || (st > BTGreaterStrategyNumber && st != COL_STRAT_NE) || (array && st != BTEqualStrategyNumber) || leaf < 0)
 		goto done;
 	if (array)
 		arg = ARR_ELEMTYPE(DatumGetArrayTypeP(sk->sk_argument));
@@ -192,7 +194,9 @@ sift_v6_proj_pred_of_key(const SiftF2Store *store, TupleDesc td, const ScanKeyDa
 		goto done;
 	if (kc == KC_TEXT && !(OidIsValid(sk->sk_collation) && get_collation_isdeterministic(sk->sk_collation)))
 		goto done;
-	if (kc == KC_TEXT && st != BTEqualStrategyNumber && !sift_v6_proj_collation_bytewise(sk->sk_collation))
+	if (kc == KC_NUMERIC && st == COL_STRAT_NE)
+		goto done;
+	if (kc == KC_TEXT && st != BTEqualStrategyNumber && st != COL_STRAT_NE && !sift_v6_proj_collation_bytewise(sk->sk_collation))
 		goto done;
 	vals = palloc(Max(array ? ArrayGetNItems(ARR_NDIM(DatumGetArrayTypeP(sk->sk_argument)), ARR_DIMS(DatumGetArrayTypeP(sk->sk_argument))) : 1, 1) * sizeof(SiftProjConst));
 	*out = (SiftProjPred) {.leaf = (int16) leaf,.op = array ? SPO_IN : (uint8) (st - BTLessStrategyNumber),.bytes = kc == KC_TEXT || kc == KC_UUID,.nvals = 1,.vals = vals};
@@ -276,6 +280,8 @@ pred_of_qual(const SiftF2Store *store, Relation index, const Node *q, SiftProjSp
 		return false;
 	sk.sk_attno = attno;
 	sk.sk_strategy = get_op_opfamily_strategy(opno, column_opfamily(index, attno));
+	if (sk.sk_strategy == 0)
+		sk.sk_strategy = sift_v6_qual_private_strategy(opno, column_opfamily(index, attno));
 	sk.sk_subtype = array ? InvalidOid : ((const Const *) r)->consttype;
 	sk.sk_collation = collid;
 	sk.sk_flags = array ? SK_SEARCHARRAY : 0;
