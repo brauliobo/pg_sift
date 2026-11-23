@@ -12,6 +12,7 @@
 #include "core/host.h"
 
 #include "col/f2/delvec.h"
+#include "col/f2/preagg_v2.h"
 
 typedef struct SiftPreaggCell
 {
@@ -69,5 +70,27 @@ extern bool sift_preagg_subtract(const SiftGranuleView *v, int dim_col, int meas
 /* The cube of every granule of an opened part: the cells of granule g, or NULL when the part has none */
 struct SiftPart;
 extern SiftPreaggCell *sift_part_read_preagg(Relation rel, const struct SiftPart *part, uint32 g, int *ncells);
+
+/* What a query reads of the measures of a cube, a bit for each measure: the measures it reads, those whose minimum or maximum it reads, and those whose float sum it reads */
+typedef struct SiftPreaggReads
+{
+	uint32		meas;
+	uint32		minmax;
+	uint32		float_sum;
+} SiftPreaggReads;
+
+#define SIFT_PREAGG_READS_ALL	((SiftPreaggReads) {~UINT32_C(0), ~UINT32_C(0), 0})
+
+/*
+ * Subtracts the rows of an ascending list (the dead rows, the rows a predicate excludes, or their union: the caller checks sift_preagg_excl_ok) from the groups of a cube of a granule; the group of a
+ * row is found by its dimensions, which are read at the rows only. A group left with no row keeps its cell with row_count 0. False, with the cells untouched, when a row is the least or the
+ * greatest of its group and the query reads the minimum or the maximum of that measure, is NaN or infinite, has a measure whose float sum the query reads, or its group is not in the cube. Only the
+ * measures the query reads (bit m: measure m of the cube) are corrected: the others are not read by the caller. The sets of distinct values are not
+ * corrected: a query that counts distinct values scans the granule.
+ */
+/* Sets want[leaf] for the columns sift_preagg_v2_subtract reads at the rows: the dimensions and the measures the query reads */
+extern void sift_preagg_v2_subtract_cols(const SiftPreaggCubeDesc *cd, const SiftPreaggReads *reads, bool *want);
+
+extern bool sift_preagg_v2_subtract(const SiftPreaggCubeDesc *cd, SiftPreaggGran *gran, const SiftGranuleView *v, const uint16 *rows, uint16 nrows, const SiftPreaggReads *reads);
 
 #endif							/* SIFT_PREAGG_DELTA_H */
