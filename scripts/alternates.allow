@@ -107,6 +107,7 @@ test/expected/format2_limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	
 test/expected/format2_limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
 test/expected/format2_limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
 test/expected/format2_limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
+test/expected/table_f2_fetch_1.out	8b73b2cbd394efecc960a1f90aa319b7d66cf1c3	17	sift_lines
 test/expected/table_f2_parity_1.out	29ab438535f80cdb3c37f8ebd6f3673fb2a69b65	17	chk
 test/expected/table_f2_parity_1.out	55872b3b89fc20bd60611e6fb677b34f022bd1a9	17	chk
 test/expected/table_f2_parity_1.out	62fa207ae7b3d7158de6c589eb89609f6dc058bf	17	chk

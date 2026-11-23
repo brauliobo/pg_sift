@@ -1,6 +1,6 @@
 -- Format 2.0 sift_table: the rows a statement reads by address, and the quals it hands to the scan, give the rows a heap gives.
 -- The key order scatters the addresses of the rows over the granules of the part (no granule holds a range of them), as the load of a table in the order of a key does.
--- About 10 s. EXPLAIN (SIFT) needs PostgreSQL 18: table_f2_fetch_1.out is the same test where it says so. Run on a build where new tables take Format 2.0 (sift.test_create_format1 off).
+-- About 3 s. EXPLAIN (SIFT) needs PostgreSQL 18: table_f2_fetch_1.out is the same test where it says so. Run on a build where new tables take Format 2.0 (sift.test_create_format1 off).
 CREATE EXTENSION IF NOT EXISTS pg_sift CASCADE;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;

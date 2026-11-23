@@ -172,9 +172,9 @@ SELECT ios_same('SELECT id, t, v, u, n FROM ios WHERE id < 400 OR id > 10000') A
 CREATE TABLE ios2 (id int, t text, c char(6), b bytea, n numeric);
 INSERT INTO ios2 SELECT i, 't' || i, 'c' || i % 90, decode(md5(i::text), 'hex'), i / 3.0 FROM generate_series(1, 2000) i;
 CREATE INDEX ios2_bad ON ios2 USING sift_col (id, c) WITH (return_columns = 'c');
-ERROR:  invalid return_columns option "c": not a text, varchar or uuid column
+ERROR:  invalid return_columns option "c": not a text, varchar, uuid or opaque-type column
 CREATE INDEX ios2_bad2 ON ios2 USING sift_col (id, b) WITH (return_columns = 'b');
-ERROR:  invalid return_columns option "b": not a text, varchar or uuid column
+ERROR:  invalid return_columns option "b": not a text, varchar, uuid or opaque-type column
 CREATE INDEX ios2_idx ON ios2 USING sift_col (id, t, c, b, n) WITH (key_order = 'id');
 VACUUM ios2;
 SELECT ios_same('SELECT id, t FROM ios2 WHERE id < 500') AS text_not_named,
