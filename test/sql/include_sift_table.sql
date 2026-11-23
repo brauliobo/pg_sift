@@ -1,26 +1,73 @@
--- The values of INCLUDE columns are read from heap tuples when a segment is written (bm25/attr.c); a sift_table has none, so a BM25 index with INCLUDE columns on one is refused
--- when it is created (not when its first segment is written, with sealed segments piling up until then), whether the table is empty or not. An index without INCLUDE columns on a
--- sift_table and one with them on a heap table answer as the sequential scan does.
+-- The values of INCLUDE columns are read from the rows of the table when a segment is written (bm25/attr.c): the tuples of a heap table, the rows of a sift_table through its
+-- row fetch. A BM25 index with INCLUDE columns on a sift_table answers as the same index on a heap table does and as the sequential scan does, and the columns past the
+-- first eight are checked on the table.
 CREATE EXTENSION pg_sift;
 
 CREATE TABLE t_empty (id int, body text, n int, d date) USING sift_table;
 CREATE INDEX t_empty_idx ON t_empty USING sift (body) INCLUDE (n, d);
-CREATE TABLE t_rows (id int, body text, n int, d date) USING sift_table;
-INSERT INTO t_rows SELECT g, 'word w' || g % 7, g % 10, DATE '2026-01-01' + g FROM generate_series(1, 5000) g;
-CREATE INDEX t_rows_idx ON t_rows USING sift (body) INCLUDE (n);
-CREATE INDEX t_rows_idx ON t_rows USING sift (body) INCLUDE (n, d) WITH (stemmer = 'en');
-SELECT count(*) AS no_index FROM pg_index WHERE indrelid IN ('t_empty'::regclass, 't_rows'::regclass);
+INSERT INTO t_empty SELECT g, 'word w' || g % 7, g % 10, DATE '2026-01-01' + g FROM generate_series(1, 300) g;
+SELECT sift.promote('t_empty_idx') >= 0 AS promoted;
+SELECT count(*) FROM t_empty WHERE body @@> 'w3' AND n = 3;
 
--- without INCLUDE columns, the same filter is checked on the table
-CREATE INDEX t_rows_plain ON t_rows USING sift (body);
+CREATE TABLE t_rows (id int, body text, n int, d date, tag text) USING sift_table;
+INSERT INTO t_rows SELECT g, 'word w' || g % 7, g % 10, DATE '2026-01-01' + g, 'tag' || g % 3 FROM generate_series(1, 5000) g;
+INSERT INTO t_rows VALUES (5001, 'word w3', NULL, NULL, NULL);
 CREATE TABLE t_heap AS SELECT * FROM t_rows;
-CREATE INDEX t_heap_idx ON t_heap USING sift (body) INCLUDE (n, d);
-SELECT sift.promote('t_rows_plain') >= 0 AND sift.promote('t_heap_idx') >= 0 AS promoted;
-SELECT (SELECT count(*) FROM t_rows WHERE body @@> 'w3' AND n = 3 AND d >= '2026-06-01') =
-	(SELECT count(*) FROM t_heap WHERE body @@> 'w3' AND n = 3 AND d >= '2026-06-01') AS same_answer;
+CREATE TABLE t_plain AS SELECT * FROM t_rows;
+CREATE INDEX t_rows_idx ON t_rows USING sift (body) INCLUDE (n, d, tag);
+CREATE INDEX t_heap_idx ON t_heap USING sift (body) INCLUDE (n, d, tag);
+CREATE INDEX t_plain_idx ON t_plain USING sift (body);
+CREATE INDEX t_rows_stem ON t_rows USING sift (body) INCLUDE (n) WITH (stemmer = 'en');
+DROP INDEX t_rows_stem;
+SELECT sift.promote('t_rows_idx') >= 0 AND sift.promote('t_heap_idx') >= 0 AND sift.promote('t_plain_idx') >= 0 AS promoted;
+
+CREATE FUNCTION answers(tbl text, pred text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE c bigint; ids text;
+BEGIN
+	EXECUTE format('SELECT count(*), string_agg(id::text, '','' ORDER BY id) FROM %I WHERE body @@> ''w3 OR w5'' AND %s', tbl, pred) INTO c, ids;
+	RETURN c || ' ' || md5(coalesce(ids, ''));
+END $$;
+CREATE FUNCTION preds() RETURNS SETOF text LANGUAGE sql AS $$ SELECT p FROM unnest(ARRAY[
+	'n = 3', 'n <> 3', 'n < 5', 'n >= 7', 'n IN (1, 2, 9)', 'n IS NULL', 'n IS NOT NULL', 'd >= ''2026-06-01''', 'd < ''2026-02-01''', 'd IS NULL', 'n = 3 AND d >= ''2026-06-01''',
+	'tag = ''tag1''', 'tag IS NULL', 'n = 3 AND tag = ''tag2''', 'n = 3 OR d < ''2026-01-20''']) p $$;
+SELECT pred FROM preds() pred WHERE answers('t_rows', pred) <> answers('t_plain', pred) OR answers('t_heap', pred) <> answers('t_plain', pred);
 SELECT (SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM t_rows WHERE body @@> 'w3 OR w5' AND n = 3 ORDER BY sift.score(ctid) DESC, id LIMIT 20) a) =
 	(SELECT array_agg(id ORDER BY id) FROM (SELECT id FROM t_heap WHERE body @@> 'w3 OR w5' AND n = 3 ORDER BY sift.score(ctid) DESC, id LIMIT 20) b) AS same_top;
-SELECT segments, failures FROM sift.worker_state('t_rows_plain');
 
-DROP TABLE t_empty, t_rows, t_heap;
+-- the columns the index holds are filtered inside the scan of the index
+EXPLAIN (COSTS OFF) SELECT id FROM t_rows WHERE body @@> 'w3 OR w5' AND n = 3 ORDER BY sift.score(ctid) DESC, id LIMIT 20;
+
+-- rows that change: an update of an INCLUDE column is a new row, a delete is none
+UPDATE t_rows SET n = 99 WHERE id % 7 = 3 AND id < 200;
+UPDATE t_heap SET n = 99 WHERE id % 7 = 3 AND id < 200;
+UPDATE t_plain SET n = 99 WHERE id % 7 = 3 AND id < 200;
+DELETE FROM t_rows WHERE id % 11 = 0;
+DELETE FROM t_heap WHERE id % 11 = 0;
+DELETE FROM t_plain WHERE id % 11 = 0;
+INSERT INTO t_rows SELECT 6000 + g, 'word w3 w5', 99, DATE '2027-01-01', 'late' FROM generate_series(1, 20) g;
+INSERT INTO t_heap SELECT * FROM t_rows WHERE id >= 6000;
+INSERT INTO t_plain SELECT * FROM t_rows WHERE id >= 6000;
+SELECT pred FROM preds() pred WHERE answers('t_rows', pred) <> answers('t_plain', pred) OR answers('t_heap', pred) <> answers('t_plain', pred);
+SELECT answers('t_rows', 'n = 99') = answers('t_plain', 'n = 99') AS updated_found, answers('t_rows', 'n = 3') = answers('t_plain', 'n = 3') AS old_gone;
+SELECT sift.promote('t_rows_idx') >= 0 AS promoted;
+VACUUM t_rows, t_heap, t_plain;
+SELECT sift.merge('t_rows_idx', true) IS NOT NULL AS merged;
+SELECT pred FROM preds() pred WHERE answers('t_rows', pred) <> answers('t_plain', pred) OR answers('t_heap', pred) <> answers('t_plain', pred);
+SELECT sift.verify('t_rows_idx', true);
+
+-- more than eight INCLUDE columns: the first eight are held by the index, the others are checked on the table
+CREATE TABLE t_wide (id int, body text, a1 int, a2 int, a3 int, a4 int, a5 int, a6 int, a7 int, a8 int, a9 int, a10 int, a11 text) USING sift_table;
+INSERT INTO t_wide SELECT g, 'word w' || g % 7, g % 3, g % 4, g % 5, g % 6, g % 7, g % 8, g % 9, g % 10, g % 11, g % 12, 'x' || g % 2 FROM generate_series(1, 2000) g;
+CREATE TABLE t_wide_heap AS SELECT * FROM t_wide;
+CREATE INDEX t_wide_idx ON t_wide USING sift (body) INCLUDE (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+CREATE INDEX t_wide_heap_idx ON t_wide_heap USING sift (body) INCLUDE (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11);
+SELECT sift.promote('t_wide_idx') >= 0 AND sift.promote('t_wide_heap_idx') >= 0 AS promoted;
+SELECT (SELECT count(*) FROM t_wide WHERE body @@> 'w3' AND a1 = 1 AND a8 = 3) = (SELECT count(*) FROM t_wide_heap WHERE body @@> 'w3' AND a1 = 1 AND a8 = 3) AS first_columns,
+       (SELECT count(*) FROM t_wide WHERE body @@> 'w3' AND a9 = 5 AND a10 = 3) = (SELECT count(*) FROM t_wide_heap WHERE body @@> 'w3' AND a9 = 5 AND a10 = 3) AS later_columns,
+       (SELECT count(*) FROM t_wide WHERE body @@> 'w3' AND a11 = 'x1') = (SELECT count(*) FROM t_wide_heap WHERE body @@> 'w3' AND a11 = 'x1') AS text_column,
+       (SELECT count(*) FROM t_wide WHERE body @@> 'w3' AND a1 = 1 AND a9 = 5) > 0 AS some;
+SELECT sift.verify('t_wide_idx', true);
+
+DROP FUNCTION answers(text, text), preds();
+DROP TABLE t_empty, t_rows, t_heap, t_plain, t_wide, t_wide_heap;
 DROP EXTENSION pg_sift;
