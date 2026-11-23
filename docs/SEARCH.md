@@ -91,6 +91,8 @@ LIMIT 10;
 
 Each term outside an explicit `field:` qualifier runs across every listed field with its weight (`0 < w <= 10000`), summing per-field BM25 scores (equivalent to Elasticsearch `most_fields`). A phrase is scoped like a word (`title:"red wire"` is held by the title alone); an unscoped phrase never holds across the boundary of two sections. Regexes and unscoped `NOT` terms match the whole document.
 
+A leaf of a field is scored with the length of that field in the document and the average of that length over the documents (BM25F), so a short title is not diluted by a long body; the stored lengths and their bounds are described in [FORMAT.md](FORMAT.md). Segments written before format 6 score the length of the whole text until a merge rewrites them.
+
 ## 7. Exact Facets (`sift.facet_counts`)
 
 Compute multiple exact, multi-select facets (terms, ranges, histograms, date histograms, arrays) in one snapshot-consistent call. When a `sift_col` index covers the faceted columns, each facet runs through `SiftAgg`.
