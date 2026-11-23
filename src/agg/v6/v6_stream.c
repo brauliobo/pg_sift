@@ -514,6 +514,8 @@ stream_try(StreamPlan *p)
 	List	   *priv;
 	int			atts[SIFT_STREAM_MAX_KEYS];
 	double		groups;
+	Cost		open,
+				scan;
 	const SiftCardStatsView *view;
 
 	if (!collect(p))
@@ -532,8 +534,9 @@ stream_try(StreamPlan *p)
 	groups = sift_v6_card_groups(p->root, p->rel, p->index, view, p->keys, p->rel->rows);
 	if (groups < 0)
 		groups = estimate_num_groups(p->root, p->keys, p->rel->rows, NULL, NULL);
-	sift_v6_add_path(p->out, &stream_path_methods, 0, cpu_tuple_cost * (0.1 * p->rel->rows + groups) + cpu_operator_cost * p->rel->rows * list_length(p->quals), groups,
-					 p->root->group_pathkeys, priv);
+	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	scan += cpu_tuple_cost * groups + cpu_operator_cost * p->rel->rows * (1 + list_length(p->quals));
+	sift_v6_add_path(p->out, &stream_path_methods, open + (scan - open) / Max(groups, 1.0), scan, groups, p->root->group_pathkeys, priv);
 	return true;
 }
 

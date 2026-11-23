@@ -13,10 +13,11 @@
 #include <math.h>
 
 #define SIFT_COST_GRANULE_ROWS	8192.0
-#define SIFT_COST_OPEN_OPS		200.0	/* operators a scan spends to open a part: its header, its marks and zones */
-#define SIFT_COST_FILTER_OPS	0.15	/* operators a row costs on a chunk as it is stored, a column of a filter */
-#define SIFT_COST_REST_OPS		0.10	/* ... and a column decoded after the filters */
-#define SIFT_COST_ROW_OPS		0.25	/* ... and a row that passes, in index tuples */
+#define SIFT_COST_BASE_OPS		40000.0	/* operators a scan spends before its first part: the index opened and its plan read (0.1 ms measured warm) */
+#define SIFT_COST_OPEN_OPS		7000.0	/* operators a scan spends to open a part: its header, its marks and zones (40 us measured warm) */
+#define SIFT_COST_FILTER_OPS	2.0		/* operators a row costs on a chunk as it is stored, a column of a filter (4 ns measured on a column of numbers no mark prunes) */
+#define SIFT_COST_REST_OPS		1.0		/* ... and a column decoded after the filters */
+#define SIFT_COST_ROW_OPS		10.0	/* ... and a row that passes, in index tuples (a tuple the access method returns: about 0.5 us warm, a cpu_tuple_cost of the plan above it) */
 
 typedef struct SiftScanCostIn
 {
@@ -77,7 +78,7 @@ sift_scan_cost(const SiftScanCostIn *in)
 	bytes = Max(bytes, floor_bytes);
 	out.bytes_read = bytes;
 	out.rows_read = Max(rows, Min(in->total_rows, SIFT_COST_GRANULE_ROWS));
-	out.startup = in->cpu_operator_cost * SIFT_COST_OPEN_OPS * Max(in->parts_surv, 1.0);
+	out.startup = in->cpu_operator_cost * (SIFT_COST_BASE_OPS + SIFT_COST_OPEN_OPS * Max(in->parts_surv, 1.0));
 	out.total = out.startup + in->seq_page_cost * (bytes / in->block_size) * in->io_reuse +
 		in->cpu_operator_cost * rows * (SIFT_COST_FILTER_OPS * in->n_filt + SIFT_COST_REST_OPS * in->sel_lead * in->n_rest) +
 		in->cpu_index_tuple_cost * in->total_rows * in->sel * SIFT_COST_ROW_OPS;

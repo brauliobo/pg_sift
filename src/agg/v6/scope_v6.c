@@ -32,6 +32,7 @@
 #include "agg/agg.h"
 #include "agg/plan/format_ops.h"
 #include "agg/spec/spec.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/scope_v6_int.h"
 #include "agg/v6/scope_v6_match.h"
 #include "col/am.h"
@@ -630,7 +631,7 @@ table_usable(PlannerInfo *root, const RelOptInfo *fact)
 static bool
 index_usable(const IndexOptInfo *ix)
 {
-	bool		ok = ix->indpred == NIL && ix->indexprs == NIL && !ix->hypothetical && sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid);
+	bool		ok = ix->indpred == NIL && !ix->hypothetical && sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid);
 	Relation	irel;
 
 	if (!ok)
@@ -883,7 +884,15 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	cp->path.pathtarget = out->reltarget;
 	cp->path.rows = groups;
 	cp->path.startup_cost = 0;
-	cp->path.total_cost = p->spec.scan ? cpu_tuple_cost * (0.05 * p->fact->tuples + groups) : 2 * random_page_cost + cpu_tuple_cost * groups;
+	cp->path.total_cost = 2 * random_page_cost + cpu_tuple_cost * groups;
+	if (p->spec.scan)
+	{
+		Cost		open;
+
+		sift_v6_scan_price(p->root, p->fact, p->index, 0, &open, &cp->path.total_cost);
+		cp->path.startup_cost = open;
+		cp->path.total_cost += cpu_tuple_cost * groups + cpu_operator_cost * p->fact->rows;
+	}
 	cp->methods = &scope_path_methods;
 	if (p->spec.scan)
 		cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p->spec), p->v6_tlist, extra->havingQual, scope_exprs(p), sift_v6_spec_pack(&p->v6));

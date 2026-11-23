@@ -47,7 +47,7 @@ extern void sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec
 extern void sift_v6_par_engine_end(SiftV6ParEngine *eng);
 
 /* Adds the Gather of a parallel node next to the serial path of add_group_path, when sift_v6_par_choose_strategy picks a parallel strategy; the spec of the path carries it */
-extern void sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having,
+extern void sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having,
 								 double groups);
 
 #endif							/* SIFT_AGG_V6_PAR_PG_H */

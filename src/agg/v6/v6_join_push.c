@@ -30,6 +30,7 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/scope_v6_int.h"
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
 #include "col/am.h"
@@ -260,6 +261,8 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	int			int_col;
 	CustomPath *cp;
 	double		groups;
+	Cost		open,
+				scan;
 	const Path *dim_path = j->dim->cheapest_total_path;
 
 	if (!compile_fact(root, j, out, extra, ix, &int_col, &spec, &scan_tlist) || OidIsValid(spec.text_indexoid))
@@ -272,8 +275,9 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	cp->path.parent = out;
 	cp->path.pathtarget = out->reltarget;
 	cp->path.rows = clamp_row_est(groups);
-	cp->path.startup_cost = dim_path->total_cost;
-	cp->path.total_cost = dim_path->total_cost + cpu_tuple_cost * (0.05 * j->fact->tuples + groups);
+	sift_v6_scan_price(root, j->fact, ix, j->fact_attno, &open, &scan);
+	cp->path.startup_cost = dim_path->total_cost + open;
+	cp->path.total_cost = dim_path->total_cost + scan + cpu_tuple_cost * groups + cpu_operator_cost * (dim_path->rows + 2.0 * j->fact->rows);
 	cp->methods = &push_path_methods;
 	cp->custom_paths = list_make1((Path *) dim_path);
 	cp->custom_private = list_make5(sift_v6_spec_pack(&spec), scan_tlist, ((GroupPathExtraData *) extra)->havingQual,

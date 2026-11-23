@@ -5,6 +5,7 @@
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
 
 CREATE TABLE nh (id int PRIMARY KEY, grp int, amount numeric(12,2), qty int) WITH (autovacuum_enabled = false);
 CREATE TABLE nc (LIKE nh INCLUDING ALL) WITH (autovacuum_enabled = false);

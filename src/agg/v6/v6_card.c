@@ -10,6 +10,8 @@
 #include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
+#include "access/genam.h"
+#include "col/am.h"
 
 #include "agg/plan/safety.h"
 #include "agg/v6/v6.h"
@@ -38,6 +40,16 @@ leaf_value(Oid typid, Datum d, int64 *out)
 	}
 }
 
+int
+sift_v6_card_leaf(const IndexOptInfo *ix, int col)
+{
+	Relation	irel = index_open(ix->indexoid, AccessShareLock);
+	const int	leaf = sift_col_rel(irel)->first[col + 1];
+
+	index_close(irel, NoLock);
+	return leaf;
+}
+
 static int
 leaf_of(const IndexOptInfo *ix, Index relid, const Node *e)
 {
@@ -47,7 +59,7 @@ leaf_of(const IndexOptInfo *ix, Index relid, const Node *e)
 	if (e == NULL || !IsA(e, Var) || v->varno != relid || v->varlevelsup != 0)
 		return -1;
 	cls = sift_v6_class(v->vartype);
-	return (cls == SV6C_I32 || cls == SV6C_I64) && v->vartype != NUMERICOID ? agg_index_col(ix, v->varattno) : -1;
+	return (cls == SV6C_I32 || cls == SV6C_I64) && v->vartype != NUMERICOID && agg_index_col(ix, v->varattno) >= 0 ? sift_v6_card_leaf(ix, agg_index_col(ix, v->varattno)) : -1;
 }
 
 static SiftCardPred *
@@ -278,6 +290,23 @@ sift_v6_card_rel(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, con
 		rest_sel = clauselist_selectivity(root, cq.rest, 0, JOIN_INNER, NULL);
 	rel->rows = clamp_row_est(est.est_rows * rest_sel);
 	return true;
+}
+
+double
+sift_v6_card_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, List **rest)
+{
+	SiftV6CardQuery cq;
+	SiftCardEst est;
+
+	if (view == NULL || view->n_sample == 0 || may_leak(root, rel))
+	{
+		*rest = rel->baserestrictinfo;
+		return -1;
+	}
+	sift_v6_card_query(rel->baserestrictinfo, rel->relid, ix, &cq);
+	sift_card_estimate(view, &cq.q, &est);
+	*rest = cq.rest;
+	return est.g_total > 0 ? est.g_eff / est.g_total : -1;
 }
 
 double

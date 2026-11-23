@@ -332,6 +332,8 @@ build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 	v->total_granules = granules;
 	v->ncols = f->ncols;
 	v->nparts = plan->npartitions;
+	for (int i = 0; i < plan->npartitions; i++)
+		v->nfiles += plan->partlists[i].nparts;
 	v->n_sample = nsample;
 	for (int i = 0; i < plan->npartitions; i++)
 	{

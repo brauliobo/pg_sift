@@ -25,6 +25,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_window.h"
 #include "agg/v6/v6_win_partsort.h"
 #include "agg/v6/v6_winx_glue.h"
@@ -505,7 +506,8 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 	int			atts[2 * SIFT_WIN_MAX_KEYS];
 	int			n = 0;
 	List	   *priv;
-	double		total;
+	Cost		open,
+				total;
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 	{
@@ -524,10 +526,11 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		atts[n++] = in.col[spec.ord_slot[i]].attno;
 	if (!sift_v6_format()->sorted_by(p->index->indexoid, atts, n))
 		return false;
-	total = cpu_tuple_cost * 0.2 * p->rel->rows * (1 + spec.win.n_funcs) + cpu_operator_cost * p->rel->rows * list_length(p->quals);
+	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &total);
+	total += cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
 	if (p->partsort)
 		total += cpu_operator_cost * p->rel->rows * 2.0 * (1 + spec.win.n_ord);
-	sift_v6_add_path(p->out, &window_path_methods, 0, total, rows, pathkeys, lappend(list_copy(priv), p->quals));
+	sift_v6_add_path(p->out, &window_path_methods, open, total, rows, pathkeys, lappend(list_copy(priv), p->quals));
 	return true;
 }
 

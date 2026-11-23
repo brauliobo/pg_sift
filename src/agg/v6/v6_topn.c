@@ -21,6 +21,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_topn.h"
 #include "core/memtrack.h"
@@ -237,8 +238,13 @@ topn_add_path(TopNPlan *p)
 	const double sel = Max(p->rel->rows / Max(p->rel->tuples, 1.0), 1e-9);
 	const bool	ordered = leading_key_ordered(&p->spec);
 	const double read = ordered ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
-	const double total = !ordered && sift_v6_gpu_topn_forced(&p->spec) ? cpu_tuple_cost * k :
-		cpu_tuple_cost * (k + read) + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
+	Cost		open,
+				scan;
+	double		total;
+
+	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	total = !ordered && sift_v6_gpu_topn_forced(&p->spec) ? open + cpu_tuple_cost * k :
+		open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
 
 	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals));

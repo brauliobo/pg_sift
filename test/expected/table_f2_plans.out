@@ -41,6 +41,7 @@ SELECT plan('SELECT date_bin(interval ''1 hour'', at, timestamptz ''2030-01-01''
  Table: pt
 (2 rows)
 
+SET sift.agg_force = on;
 SELECT plan('SELECT count(*) FROM pt WHERE id < 100') AS key_range_count;
      key_range_count     
 -------------------------
@@ -48,6 +49,7 @@ SELECT plan('SELECT count(*) FROM pt WHERE id < 100') AS key_range_count;
  Table: pt
 (2 rows)
 
+RESET sift.agg_force;
 SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key_stays_on_the_heap;
  text_key_stays_on_the_heap 
 ----------------------------

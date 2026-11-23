@@ -43,14 +43,19 @@ sift_v6_spec_ncols_read(const SiftV6Spec *spec)
 	return n;
 }
 
-double
-sift_v6_scan_cost(const SiftV6CostIn *in)
+void
+sift_v6_scan_cost(const SiftV6CostIn *in, Cost *startup, Cost *total)
 {
-	const double granules = ceil(in->tuples / SIFT_GRANULE_ROWS);
-	const double io_granules = Max(1.0, granules * in->sel);
-	const double col_frac = (double) Max(1, in->ncols_read) / Max(1, in->ncols_host);
-	const double n_surv = in->tuples * in->sel;
-	const double n_vet = in->table ? 0.0 : n_surv * (1.0 - in->allvisfrac);
+	const double granules = Max(1.0, ceil(in->tuples / SIFT_GRANULE_ROWS));
+	const double decoded = Min(Max(in->tuples, 1.0), Max(in->f_prune * granules, 1.0) * SIFT_GRANULE_ROWS);
+	const SiftCostInputs costs = {
+		.g_eff = decoded / SIFT_GRANULE_ROWS,
+		.b_dec = decoded * Max(in->ncols_read, 1) * sizeof(int64),
+		.n_groups = Max(in->groups, 1.0),
+		.f_join = 1.0,
+		.r_bw_cpu = SIFT_COST_R_BW_CPU,
+		.f_cold = 1.0,
+	};
 
-	return io_granules * col_frac * seq_page_cost + n_surv * 0.05 * cpu_tuple_cost + n_vet * cpu_tuple_cost + in->groups * cpu_tuple_cost;
+	sift_agg_estimate_cost(&costs, Min(Max(in->rows, 1.0) / decoded, 1.0), false, false, SIFT_OPEN_OPS * cpu_operator_cost, 0, startup, total);
 }

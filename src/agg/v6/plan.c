@@ -5,6 +5,8 @@
 /* check-memory: allow-allocs every array here follows the keys and aggregates of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/amapi.h"
 #include "access/genam.h"
 #include "access/table.h"
@@ -66,7 +68,7 @@ host_attno(const V6Plan *p, AttrNumber attno)
 {
 	if (p->store != NULL)
 		return attno > 0 && attno <= p->store->natts ? attno : 0;
-	for (int i = 0; i < p->index->ncolumns; i++)
+	for (int i = 0; attno > 0 && i < p->index->ncolumns; i++)
 		if (p->index->indexkeys[i] == attno)
 			return i + 1;
 	return 0;
@@ -151,13 +153,37 @@ sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	return column_of(p, e, numeric_ok, out);
 }
 
+/* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
+static bool
+index_expr_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	int			k = 0;
+	const Oid	typid = exprType((const Node *) e);
+
+	if (p->index == NULL || p->index->indexprs == NIL || typid == NUMERICOID || sift_v6_class(typid) == SV6C_NONE)
+		return false;
+	for (int i = 0; i < p->index->ncolumns; i++)
+	{
+		if (p->index->indexkeys[i] != 0)
+			continue;
+		if (equal(e, list_nth(p->index->indexprs, k++)))
+		{
+			if (!leaf_class_ok(&host_schema(p)->cols[host_first(p, i + 1)], host_nleaves(p, i + 1), sift_v6_class(typid)))
+				return false;
+			*out = (SiftV6Col) {.attno = i + 1,.typid = typid};
+			return true;
+		}
+	}
+	return false;
+}
+
 /* A column the scan reads as a value: a column of the index, the text or the float8 of a key of a jsonb document, a payload column of a dimension or the element of the unnest */
 static bool
 read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return column_of(p, e, numeric_ok, out) ||
+	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) ||
 		(p->store == NULL && (sift_v6_json_read(&rel, e, out) ||
 							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out)))));
 }
@@ -198,16 +224,14 @@ derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 static void
 scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 {
-	SiftV6CostIn in = {.tuples = p->rel->tuples,.allvisfrac = p->rel->allvisfrac,.groups = groups,.table = p->store != NULL,
-	.sel = clauselist_selectivity(p->root, p->rel->baserestrictinfo, 0, JOIN_INNER, NULL),.ncols_read = sift_v6_spec_ncols_read(&p->spec),
-	.ncols_host = p->store != NULL ? p->store->natts : p->index->ncolumns};
-
 	if (p->store == NULL)
-		sift_v6_agg_cost(p->rel, p->index, &p->spec, groups, startup, total);
+		sift_v6_agg_cost(p->root, p->rel, p->index, &p->spec, groups, startup, total);
 	else
 	{
-		*startup = 0;
-		*total = sift_v6_scan_cost(&in);
+		const SiftV6CostIn in = {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo),
+		.groups = groups,.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
+
+		sift_v6_scan_cost(&in, startup, total);
 	}
 	if (p->text != NULL)
 	{
@@ -647,7 +671,7 @@ sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 bool
 sift_v6_index_owned(const IndexOptInfo *ix)
 {
-	return ix->indexprs == NIL && !ix->hypothetical && sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid);
+	return !ix->hypothetical && sift_agg_format_ops_owns(sift_agg_format_ops(sift_col_v2_ops.format_major), ix->indexoid);
 }
 
 bool
@@ -721,7 +745,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	agg_force_price(&cp->path);
 	add_path(p->out, &cp->path);
 	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table)
-		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups);
+		sift_v6_par_add_path(p->root, p->rel, p->index, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups);
 }
 
 void
@@ -780,6 +804,8 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	{
 		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
 		Relation	irel;
+		Cost		open,
+					scan;
 		bool		ok = false;
 
 		if (!sift_v6_index_owned(ix))
@@ -792,7 +818,9 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		index_close(irel, NoLock);
 		if (!ok)
 			continue;
-		sift_v6_add_path(output_rel, &v6_path_methods, 0, cpu_tuple_cost * (0.05 * input_rel->tuples + k), Min((double) k, input_rel->rows), root->sort_pathkeys,
+		sift_v6_scan_price(root, input_rel, ix, 0, &open, &scan);
+		scan += cpu_operator_cost * input_rel->rows * log2(k + 1.0);
+		sift_v6_add_path(output_rel, &v6_path_methods, scan, scan + cpu_tuple_cost * k, Min((double) k, input_rel->rows), root->sort_pathkeys,
 						 list_make3(sift_v6_spec_pack(&p.spec), p.scan_tlist, NIL));
 		return;
 	}

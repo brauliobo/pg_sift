@@ -23,6 +23,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_sip.h"
 #include "core/memtrack.h"
 #include "core/compat.h"
@@ -214,13 +215,16 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SipJo
 	const int	slot = (sift_v6_input_init_info(&in, ix), sift_v6_input_add_var(&in, j->fact_key));
 	const double kept = Max(j->dim->rows, 1.0) / Max(j->dim->tuples, 1.0);
 	const double rows = clamp_row_est(rel->rows * kept);
+	Cost		open,
+				scan;
 	List	   *ints;
 
 	if (slot < 0 || (in.col[slot].type != SVEC_I32 && in.col[slot].type != SVEC_I64))
 		return false;
 	ints = list_make5_int((int) ix->indexoid, (int) rel->relid, (int) planner_rt_fetch(j->dim->relid, root)->relid, (int) j->dim->relid, j->fact_key->varattno);
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
-	sift_v6_add_path(rel, &sip_path_methods, 0, cpu_tuple_cost * (0.05 * rel->tuples + 1.5 * rows) + cpu_operator_cost * j->dim->tuples, rows, NIL,
+	sift_v6_scan_price(root, rel, ix, j->fact_key->varattno, &open, &scan);
+	sift_v6_add_path(rel, &sip_path_methods, open, scan + cpu_tuple_cost * rows + cpu_operator_cost * (j->dim->tuples + rel->rows), rows, NIL,
 					 list_make3(ints, pushable(rel, ix), clauses_of(j->dim->baserestrictinfo)));
 	return true;
 }

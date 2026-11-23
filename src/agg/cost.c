@@ -33,7 +33,7 @@ sift_agg_estimate_cost(const SiftCostInputs *in, double selectivity, bool is_pre
 	if (n_workers > 0)
 	{
 		work = parallel_setup_cost + work / (1.0 + SIFT_PAR_EFFICIENCY * n_workers);
-		emit = in->n_groups * parallel_tuple_cost;
+		emit = Max(in->n_groups, in->n_ship) * parallel_tuple_cost;
 	}
 	*total_out = fixed_cost + work + emit;
 	*startup_out = fixed_cost + (is_streaming ? work / Max(in->n_groups, 1.0) : work);

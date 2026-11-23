@@ -16,6 +16,7 @@
 
 #include "agg/cost.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/group_int.h"
 #include "agg/v6/v6_par_pg.h"
 #include "core/sift.h"
@@ -28,6 +29,7 @@ typedef struct CostPick
 {
 	SiftCostInputs in;
 	double		selectivity;
+	Cost		open;
 	Cost		startup;
 	Cost		total;
 } CostPick;
@@ -37,7 +39,7 @@ pick_workers(void *arg, int max_by_granules)
 {
 	CostPick   *c = arg;
 
-	return sift_agg_choose_workers(&c->in, c->selectivity, true, false, 0.0, max_by_granules, &c->startup, &c->total);
+	return sift_agg_choose_workers(&c->in, c->selectivity, false, false, c->open, max_by_granules, &c->startup, &c->total);
 }
 
 /* The share of the rows each participant takes, as PostgreSQL divides the rows of a partial path: the leader's share shrinks with the workers it has to serve */
@@ -68,13 +70,14 @@ distinct_not_partitionable(const SiftV6Spec *spec, uint32 ndist)
 }
 
 static SiftV6ParInput
-par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
+par_input(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
 	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.parallel_ok = rel->consider_parallel && root->glob->parallelModeOK,.max_workers = max_parallel_workers_per_gather,
 		.exact_float = sift_agg_exact_float,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = rel->rows / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		ext = false;
+	SiftV6AggPrice price;
 
 	for (int j = 0; j < spec->naggs; j++)
 	{
@@ -88,16 +91,20 @@ par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const Sift
 	in.has_rls = agg_query_has_rls(root);
 	in.parallel_hazard = ext || OidIsValid(spec->text_indexoid) || unsafe_for_workers(root, spec, output_rel, having) || distinct_not_partitionable(spec, ndist);
 	in.state_bytes = sizeof(SiftAggSlot64) + (double) spec->naggs * sizeof(V6Acc) + 16.0;
-	pick->in = (SiftCostInputs) {.g_eff = in.g_eff,.b_dec = rel->rows * 8.0 * (spec->nkeys + spec->naggs + 1),.n_groups = groups,.f_join = 1.0,.r_bw_cpu = SIFT_COST_R_BW_CPU,.f_cold = 0.0};
-	pick->selectivity = rel->tuples > 0 ? Min(1.0, rel->rows / rel->tuples) : 1.0;
+	price = sift_v6_agg_price(root, rel, ix, spec, groups);
+	pick->in = price.in;
+	pick->in.f_cold = 0.0;
+	pick->in.n_ship = ndist > 0 ? pick->in.g_eff * GRANULE_ROWS * price.selectivity : 0.0;
+	pick->selectivity = price.selectivity;
+	pick->open = price.open;
 	return in;
 }
 
 void
-sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having, double groups)
+sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having, double groups)
 {
 	CostPick	pick = {0};
-	SiftV6ParInput in = par_input(root, rel, output_rel, serial_spec, having, groups, &pick);
+	SiftV6ParInput in = par_input(root, rel, ix, output_rel, serial_spec, having, groups, &pick);
 	SiftV6Spec	spec = *serial_spec;
 	int			nworkers = 0;
 	const SiftV6ParStrategy strategy = sift_v6_par_choose_strategy(&in, &nworkers);

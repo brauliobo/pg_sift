@@ -108,6 +108,7 @@ typedef struct SiftCardStatsView
 	uint64		total_granules;
 	uint32		ncols;
 	uint32		nparts;
+	uint32		nfiles;			/* the parts of every partition: a scan opens each of them before its zones leave a granule */
 	uint32		n_sample;
 	bool		has_l0;			/* rows not yet in a part exist, and no partition describes them */
 	const SiftColCardStats *cols;
