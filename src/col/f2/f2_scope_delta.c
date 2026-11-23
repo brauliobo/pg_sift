@@ -35,7 +35,7 @@ key_cube_compute(SiftF2Scope *sc, const SiftScopeL2Root *r, int64 key, const Sif
 	}
 	if (!has)
 		sift_scube_init(out, shape);
-	if (sc->entity.added_cube != NULL && sc->entity.added_cube(sc->entity.arg, key, q->month, &added))
+	if (sc->entity.added_cube != NULL && sc->entity.added_cube(sc->entity.arg, key, sift_scope_span_month(q->month), &added))
 	{
 		sift_scube_merge(out, &added, NULL);
 		sift_scube_free(&added);
@@ -68,6 +68,65 @@ sift_f2_scope_key_cube(SiftF2Scope *sc, int64 key, const SiftScopeQueryNeeds *q,
 	return has;
 }
 
+/* The rows of the key in [lo, hi), read from the rows of the key */
+static bool
+slice_cube(SiftF2Scope *sc, int64 key, int64 lo, int64 hi, SiftScopeCubeAcc *out)
+{
+	sift_scube_init(out, ((const SiftF2ScopeParts *) sc->entity.arg)->sc->shape);
+	(void) sift_scope_overlay_slice(&sc->meta, sift_scope_l2_find(&sc->meta, key), key, &sc->entity, sc->changed, sc->nchanged, (SiftScopeSpan) {.lo = lo,.hi = hi}, out);
+	if (out->row_count > 0)
+		return true;
+	sift_scube_free(out);
+	return false;
+}
+
+/* The window is a part of its month and the rest of the month is a small part of it: the month's cube less the rest. Not when what is left may be wrong for the query (*served false) */
+static bool
+month_less_rest(SiftF2Scope *sc, int64 key, SiftScopeQueryNeeds q, int64 lo, int64 hi, SiftScopeCubeAcc *out, bool *served)
+{
+	const int32 month = sift_scope_month_of(lo);
+	const int64 rest[2][2] = {{sift_scope_month_start(month), lo}, {hi, sift_scope_month_end(month)}};
+	bool		exact;
+	bool		has;
+
+	q.month = month;
+	has = sift_f2_scope_key_cube(sc, key, &q, out, &exact);
+	*served = exact;
+	for (int i = 0; has && i < 2; i++)
+	{
+		SiftScopeCubeAcc c;
+
+		if (rest[i][0] >= rest[i][1] || !slice_cube(sc, key, rest[i][0], rest[i][1], &c))
+			continue;
+		*served = sift_scope_cube_take_out(out, &c, &q);
+		sift_scube_free(&c);
+		if (!*served)
+		{
+			sift_scube_free(out);
+			return false;
+		}
+	}
+	if (has && out->row_count == 0)
+	{
+		sift_scube_free(out);
+		has = false;
+	}
+	return has;
+}
+
+bool
+sift_f2_scope_window_cube(SiftF2Scope *sc, int64 key, const SiftScopeQueryNeeds *q, int64 lo, int64 hi, SiftScopeCubeAcc *out)
+{
+	const int32 month = sift_scope_month_of(lo);
+	const int64 rest = sift_scope_month_end(month) - sift_scope_month_start(month) - (hi - lo);
+	bool		served = false;
+	bool		has = false;
+
+	if (rest * SIFT_SCOPE_REST_RATIO <= hi - lo)
+		has = month_less_rest(sc, key, *q, lo, hi, out, &served);
+	return served ? has : slice_cube(sc, key, lo, hi, out);
+}
+
 bool
 sift_f2_scope_added_rank(const SiftF2Scope *sc, int64 key, int ring, int missing, const SiftScopeNewest *last)
 {
@@ -75,7 +134,7 @@ sift_f2_scope_added_rank(const SiftF2Scope *sc, int64 key, int ring, int missing
 	SiftScopeCubeAcc cube;
 	bool		rank;
 
-	if (p->added == NULL || !sift_f2s_added_cube(sc->entity.arg, key, SIFT_SCOPE_NO_MONTH, &cube))
+	if (p->added == NULL || !sift_f2s_added_cube(sc->entity.arg, key, SIFT_SPAN_ALL, &cube))
 		return false;
 	rank = ring != 0 || missing > 0 || last == NULL || (cube.has_time && cube.time_max >= last->time);
 	sift_scube_free(&cube);

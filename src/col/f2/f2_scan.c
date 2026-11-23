@@ -21,6 +21,7 @@
 #include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_part_pin_scan.h"
 #include "col/f2/f2_point_dir.h"
+#include "col/f2/f2_scope_route.h"
 #include "col/f2/f2_view.h"
 #include "col/skip/skip_index.h"
 #include "core/memtrack.h"
@@ -314,13 +315,14 @@ load_rest(Relation rel, const F2Scan *s, SiftLazyGranule *lg, const bool *decide
 	sift_lazy_granule_load(rel, lg, chunks, nc);
 }
 
-/* Whether granule g is ruled out before it is read: by the tid bridge, by the zones of the predicates or by the skipping indexes; decided says which predicates they found true of every row of it */
+/* Whether granule g is ruled out before it is read: by the tid bridge, by the scope router, by the zones of the predicates or by the skipping indexes; decided says which predicates they found true of every row of it */
 static bool
 granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftZone *const *zones, uint32 g0, uint32 g,
 				  const SiftVariantExcSummary *exc, int nexc, const SiftTidIndexEntry *tix, bool *decided)
 {
-	bool		bridge_miss = sift_f2_scan_bridge_granule_miss(s, g, tix);
-	bool		skip = bridge_miss;
+	const bool	bridge_miss = sift_f2_scan_bridge_granule_miss(s, g, tix);
+	const bool	ruled = bridge_miss || (s->router != NULL && !sift_scope_router_wants(s->router, part->hdr.part_gen, g));
+	bool		skip = ruled;
 	bool	   *exceptions = palloc0(Max(s->npreds, 1));
 
 	for (int k = 0; k < s->npreds; k++)
@@ -336,9 +338,9 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const Si
 		(*s->bridge_seen)++;
 	if (bridge_miss && s->bridge_skipped)
 		(*s->bridge_skipped)++;
-	if (skip && !bridge_miss)
+	if (skip && !ruled)
 		F2_STAT(zone_skipped);
-	else if (!bridge_miss && !probe_skips(rel, s, part, pp, zones, g0, g, exceptions, decided))
+	else if (!ruled && !probe_skips(rel, s, part, pp, zones, g0, g, exceptions, decided))
 		skip = true;
 	pfree(exceptions);
 	return skip;

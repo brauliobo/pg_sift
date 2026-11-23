@@ -6,6 +6,7 @@
 
 #include "postgres.h"
 
+#include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
 
 #include "agg/v6/v6.h"
@@ -56,6 +57,9 @@ typedef struct ScopeSpec
 extern bool sift_v6_plain_table(const RangeTblEntry *rte);
 extern List *sift_v6_scope_spec_pack(const ScopeSpec *s);
 extern ScopeSpec *sift_v6_scope_spec_unpack(const List *ints);
+
+/* The scope of the index ix of the facts that summarizes the pairs relation the statement joins by member (fact column fact_att = pairs column pairs_att) and binds to one key: its ordinal and the expression of the key */
+extern bool sift_v6_scope_one_key(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key);
 
 /* The cells of the leaves (leaves[0 .. nleaves - 1]) of the newest rows of a key under the order of the statement, from its ring and the rows the summary lacks; false: the join answers */
 extern bool sift_v6_scope_topn(SiftF2Scope *sc, const ScopeSpec *sp, int64 key, bool no_key, int tie_leaf, const int *leaves, int nleaves, SiftF2ScopeCell **out, int *nout);

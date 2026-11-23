@@ -398,11 +398,12 @@ struct SiftF2ParPlan;
 
 extern SiftV6Scan *sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, SiftV6BatchFn emit,
 									  void *emit_arg);
-/* The parts of the generations skip (ascending) are not read: another scan took them */
+/* The parts of the generations skip (ascending) are not read: another scan took them; a router (NULL: none) keeps the scan to the granules of one scope key (f2_scope_route.h) */
+struct SiftScopeRouter;
 struct SiftV6StarRun;
 /* The same for a statement of ext: star is the dimensions of the pass the scan is of (v6_star_run.h), NULL for an unnest or none */
 extern void sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
-								 SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg);
+								 const struct SiftScopeRouter *router, SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg);
 extern void sift_v6_scan_all(SiftV6Scan *s, const uint64 *skip, int nskip);
 extern void sift_v6_scan_plan(SiftV6Scan *s, struct SiftF2ParPlan *out);
 extern void sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
@@ -413,7 +414,7 @@ typedef struct SiftV6Rows SiftV6Rows;
 
 extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats);
 extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
-							 const uint64 *skip, int nskip, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
+							 const uint64 *skip, int nskip, const struct SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
 
 /* The same for a spec that is_table: the rows of the sift_table the quals accept, which its own versions show to the snapshot */
 struct SiftStoreQuals;

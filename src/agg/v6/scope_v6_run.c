@@ -37,6 +37,7 @@
 #include "col/am.h"
 #include "col/col.h"
 #include "col/f2/f2_scope.h"
+#include "col/f2/f2_scope_route.h"
 #include "core/page_io.h"
 #include "core/cmp.h"
 #include "core/memtrack.h"
@@ -66,6 +67,7 @@ typedef struct ScopeState
 	int			nscan_keys;
 	MemoryContext gcx;
 	SiftV6Group *group;
+	const SiftScopeRouter *router;	/* scan: the granules of the key that the summary names, NULL when it cannot route */
 	SiftV6ScanStats stats;
 	int64		members;
 	bool		inexact;		/* a minimum or maximum cannot be kept after the pair edits: the join answers */
@@ -271,10 +273,12 @@ needs_minmax(const ScopeSpec *sp)
 	return false;
 }
 
-/* The window of the statement as months of the cubes: its bounds are month starts of the leaf's own unit, and not more months than a cube read is worth */
+/* The window [lo, hi) of the statement and the months it touches: those it holds whole are read from the cubes, the (at most two) it cuts from the rows of the key; not more months than a cube read is worth */
 typedef struct MonthWindow
 {
 	bool		ranged;
+	int64		lo;
+	int64		hi;
 	int32		first;
 	int32		last;
 } MonthWindow;
@@ -300,18 +304,21 @@ bound_micros(ScopeState *st, ExprState *e, int strat, bool upper, int64 *out)
 static bool
 month_window(ScopeState *st, MonthWindow *w)
 {
-	int64		lo,
-				hi;
-
 	*w = (MonthWindow) {0};
 	if (!st->spec->ranged)
 		return true;
-	if (!bound_micros(st, st->lo, st->spec->lo_strat, false, &lo) || !bound_micros(st, st->hi, st->spec->hi_strat, true, &hi))
+	if (!bound_micros(st, st->lo, st->spec->lo_strat, false, &w->lo) || !bound_micros(st, st->hi, st->spec->hi_strat, true, &w->hi))
 		return false;
 	w->ranged = true;
-	w->first = sift_scope_month_of(lo);
-	w->last = sift_scope_month_of(hi) - 1;
-	return sift_scope_month_start(w->first) == lo && sift_scope_month_start(w->last + 1) == hi && w->last - w->first < MONTH_WINDOW_MAX;
+	w->first = sift_scope_month_of(w->lo);
+	w->last = w->lo < w->hi ? sift_scope_month_of(w->hi - 1) : w->first - 1;
+	return w->last - w->first < MONTH_WINDOW_MAX;
+}
+
+static bool
+month_whole(const MonthWindow *w, int32 month)
+{
+	return w->lo <= sift_scope_month_start(month) && sift_scope_month_end(month) <= w->hi;
 }
 
 /* The cube of the key (of the month q names) as the snapshot sees it: with the pairs edited the entity side tells what the summary lacks or counts too many */
@@ -329,6 +336,16 @@ cube_at(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key,
 	return has;
 }
 
+/* The rows of the key in the month that the window holds: the cube of the month when it holds all of it, else the rows of the part the window cuts */
+static bool
+window_month_cube(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key, SiftScopeQueryNeeds q, const MonthWindow *w, int32 month, SiftScopeCubeAcc *out)
+{
+	if (w->ranged && !month_whole(w, month))
+		return sift_f2_scope_window_cube(sc, key, &q, Max(w->lo, sift_scope_month_start(month)), Min(w->hi, sift_scope_month_end(month)), out);
+	q.month = month;
+	return cube_at(st, sc, root, key, &q, out);
+}
+
 static bool
 read_cube(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key, SiftScopeQueryNeeds q, const MonthWindow *w, SiftScopeCubeAcc *out)
 {
@@ -340,8 +357,7 @@ read_cube(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 ke
 	{
 		SiftScopeCubeAcc c;
 
-		q.month = m;
-		if (!cube_at(st, sc, root, key, &q, any ? &c : out))
+		if (!window_month_cube(st, sc, root, key, q, w, m, any ? &c : out))
 			continue;
 		if (any)
 		{
@@ -369,8 +385,7 @@ read_months(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, SiftSc
 
 		if (w->ranged && (months[i] < w->first || months[i] > w->last))
 			continue;
-		q.month = months[i];
-		if (!sift_scope_cube_live(&sc->meta, root, &q, &sc->entity, &c, &stats))
+		if (!window_month_cube(st, sc, root, root->scope_key, q, w, months[i], &c))
 			continue;
 		in_months += c.row_count;
 		add_row(st, &c, root->scope_key, months[i]);
@@ -572,7 +587,17 @@ key_members(ScopeState *st, EState *estate)
 	return construct_array_builtin(vals, n, member_type);
 }
 
-/* The facts of the key K are the facts whose member is one of its members: the scan of the index with the list among its keys */
+/* The granules of the key K that the summary names, which hold all its facts; NULL for a NULL key or a summary that cannot route */
+static const SiftScopeRouter *
+scan_router(ScopeState *st, EState *estate)
+{
+	bool		no_key;
+	const int64 key = key_value(st, &no_key);
+
+	return no_key ? NULL : sift_f2_scope_build_router(st->rel, st->spec->ord, estate->es_snapshot, &key, 1, st->gcx);
+}
+
+/* The facts of the key K are the facts whose member is one of its members: the scan of the index with the list among its keys, in the granules of the key */
 static void
 scan_run(ScopeState *st, EState *estate)
 {
@@ -580,12 +605,13 @@ scan_run(ScopeState *st, EState *estate)
 	ScanKey		keys = palloc((st->nscan_keys + 1) * sizeof(ScanKeyData));
 
 	st->started = true;
+	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope groups");
 	memcpy(keys, st->scan_keys, st->nscan_keys * sizeof(ScanKeyData));
 	keys[st->nscan_keys] = (ScanKeyData) {.sk_flags = SK_SEARCHARRAY,.sk_attno = st->spec->member_col,.sk_strategy = BTEqualStrategyNumber,
 	.sk_argument = PointerGetDatum(key_members(st, estate))};
-	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope groups");
+	st->router = scan_router(st, estate);
 	st->group = sift_v6_group_new(st->v6, st->gcx, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor);
-	sift_v6_scan_run(st->v6, st->group, st->heap, st->rel, keys, st->nscan_keys + 1, estate->es_snapshot, NULL, 0, &st->stats, NULL, NULL);
+	sift_v6_scan_run(st->v6, st->group, st->heap, st->rel, keys, st->nscan_keys + 1, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL);
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }
@@ -769,6 +795,7 @@ scan_reset(ScopeState *st)
 		MemoryContextDelete(st->gcx);
 	st->gcx = NULL;
 	st->group = NULL;
+	st->router = NULL;
 	st->stats = (SiftV6ScanStats) {0};
 }
 
@@ -818,6 +845,11 @@ scope_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		if (st->started)
 		{
 			ExplainPropertyInteger("Scope Members", NULL, st->members, es);
+			if (st->router != NULL)
+			{
+				ExplainPropertyInteger("Scope Granules Kept", NULL, st->router->mask.kept, es);
+				ExplainPropertyInteger("Scope Granules Total", NULL, st->router->mask.n, es);
+			}
 			ExplainPropertyUInteger("Rows Vetted Against The Heap", NULL, st->stats.heap_vet_rows, es);
 		}
 		return;

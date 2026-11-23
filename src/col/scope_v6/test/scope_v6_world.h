@@ -112,6 +112,7 @@ typedef struct TWorld
 	uint64		part_calls;		/* parts asked whether they have dead rows */
 	uint64		runs_calls;		/* granules asked for their entity runs */
 	uint64		ring_scans;		/* granules decoded for an order leaf at query time */
+	uint32		unnamed_from;	/* the granules from this one on are of parts no summary names (rows the entity side adds); 0: every granule is named */
 	uint32		npart_gen;		/* parts so far, retired ones too: the part_gen of the next is npart_gen + 1 */
 } TWorld;
 

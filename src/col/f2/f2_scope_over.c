@@ -395,7 +395,7 @@ sift_f2s_key_runs(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 key, u
 }
 
 static bool
-rowset_cube(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 scope_key, int32 month, SiftScopeCubeAcc *out)
+rowset_cube(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out)
 {
 	uint32		nruns;
 	uint32	   *runs = sift_f2s_key_runs(p, a, scope_key, &nruns);
@@ -403,7 +403,7 @@ rowset_cube(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 scope_key, i
 	sift_scube_init(out, a->shape);
 	for (uint32 r = 0; r < nruns; r++)
 		for (uint32 i = a->run_first[runs[r]]; i < a->run_first[runs[r] + 1]; i++)
-			if (month == SIFT_SCOPE_NO_MONTH || (a->time != NULL && !a->time_null[i] && sift_scope_month_of(a->time[i]) == month))
+			if (span.all || (a->time != NULL && sift_scope_span_has(&span, a->time[i], a->time_null[i])))
 				sift_scube_add_row(out, &a->rows, i, NULL);
 	pfree(runs);
 	if (out->row_count > 0)
@@ -413,11 +413,11 @@ rowset_cube(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 scope_key, i
 }
 
 bool
-sift_f2s_added_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out)
+sift_f2s_added_cube(void *arg, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out)
 {
 	SiftF2ScopeParts *p = arg;
 
-	return rowset_cube(p, p->added, scope_key, month, out);
+	return rowset_cube(p, p->added, scope_key, span, out);
 }
 
 uint32
@@ -799,5 +799,5 @@ sift_f2s_gone_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *ou
 		gone_open(p);
 	if (p->gone_many)
 		return SIFT_GONE_MANY;
-	return rowset_cube(p, p->gone, scope_key, month, out) ? SIFT_GONE_ROWS : SIFT_GONE_NONE;
+	return rowset_cube(p, p->gone, scope_key, sift_scope_span_month(month), out) ? SIFT_GONE_ROWS : SIFT_GONE_NONE;
 }

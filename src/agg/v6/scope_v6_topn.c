@@ -75,7 +75,7 @@ gained_rank(SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key, int64 cut)
 	{
 		const uint32 nb = Min(TOP_MEMBERS_BATCH, n - from);
 
-		sc->entity.members_cubes(sc->entity.arg, gained + from, nb, SIFT_SCOPE_NO_MONTH, cubes, has);
+		sc->entity.members_cubes(sc->entity.arg, gained + from, nb, SIFT_SPAN_ALL, cubes, has);
 		for (uint32 i = 0; i < nb; i++)
 			if (has[i])
 			{

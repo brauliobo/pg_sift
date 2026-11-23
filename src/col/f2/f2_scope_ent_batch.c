@@ -21,8 +21,20 @@ member_at(const int64 *members, const uint16 *ht, int64 member)
 	return at;
 }
 
+/* A granule whose time zone leaves the span holds no row of it */
+static bool
+zone_meets_span(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const SiftScopeSpan *span)
+{
+	SiftZone	z;
+
+	if (span->all)
+		return true;
+	z = sift_f2s_slot_zone(p, s, p->sc->time_leaf, g);
+	return !(z.flags & SIFT_ZONE_NONE) && z.max * p->sc->time_unit >= span->lo && z.min * p->sc->time_unit < span->hi;
+}
+
 void
-sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, int32 month, SiftScopeCubeAcc *out, bool *has)
+sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, SiftScopeSpan span, SiftScopeCubeAcc *out, bool *has)
 {
 	SiftF2ScopeParts *p = arg;
 	uint16		ht[2 * BATCH_MAX] = {0};
@@ -49,7 +61,7 @@ sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, int32 month, S
 						ng;
 			MemoryContext old;
 
-			if (z.flags & SIFT_ZONE_NONE)
+			if ((z.flags & SIFT_ZONE_NONE) || !zone_meets_span(p, s, g, &span))
 				continue;
 			while (lo < hi)
 			{
@@ -76,7 +88,7 @@ sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, int32 month, S
 				slot = ht[member_at(members, ht, r.member[row])];
 				if (slot == 0 || sift_f2s_has_row(gone, ng, row))
 					continue;
-				if (month != SIFT_SCOPE_NO_MONTH && (r.time_null[row] || sift_scope_month_of(r.time[row]) != month))
+				if (!span.all && !sift_scope_span_has(&span, r.time[row], r.time_null[row]))
 					continue;
 				sift_scube_add_row(&out[slot - 1], &r, row, NULL);
 			}
@@ -91,10 +103,10 @@ sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, int32 month, S
 }
 
 bool
-sift_f2s_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out)
+sift_f2s_member_cube(void *arg, int64 member, SiftScopeSpan span, SiftScopeCubeAcc *out)
 {
 	bool		has;
 
-	sift_f2s_members_cubes(arg, &member, 1, month, out, &has);
+	sift_f2s_members_cubes(arg, &member, 1, span, out, &has);
 	return has;
 }

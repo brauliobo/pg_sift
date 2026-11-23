@@ -91,6 +91,7 @@ typedef struct F2Scan
 	uint64	   *bridge_seen;
 	uint64	   *bridge_skipped;
 	uint64	   *bridge_parts_skipped;
+	const struct SiftScopeRouter *router;	/* a scan for the facts of one scope key: the granules the summary of the scope does not name for it are skipped (f2_scope_route.h) */
 	float4	   *bscores;		/* the scores of the rows of the granule or slab last probed against the bridge */
 	const SiftColPred *ext_preds;	/* the predicates of a hybrid scan, appended to the index quals' (bridge.c) */
 	int			n_ext_preds;

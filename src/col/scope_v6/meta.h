@@ -796,6 +796,28 @@ typedef enum SiftScopeGone
 	SIFT_GONE_MANY
 } SiftScopeGone;
 
+/* The rows a read takes by their time: every row (those whose time is NULL too), or those whose time is in [lo, hi) */
+typedef struct SiftScopeSpan
+{
+	bool		all;
+	int64		lo;
+	int64		hi;
+} SiftScopeSpan;
+
+#define SIFT_SPAN_ALL	((SiftScopeSpan) {.all = true})
+
+static inline SiftScopeSpan
+sift_scope_span_month(int32 month)
+{
+	return month == SIFT_SCOPE_NO_MONTH ? SIFT_SPAN_ALL : (SiftScopeSpan) {.lo = sift_scope_month_start(month),.hi = sift_scope_month_end(month)};
+}
+
+static inline bool
+sift_scope_span_has(const SiftScopeSpan *s, int64 time, bool time_null)
+{
+	return s->all || (!time_null && time >= s->lo && time < s->hi);
+}
+
 typedef struct SiftScopeEntity
 {
 	void	   *arg;
@@ -805,8 +827,8 @@ typedef struct SiftScopeEntity
 	uint32		(*strides) (void *arg, uint32 gidx, const SiftTimeStride **s);
 	/* decodes stride s of a granule: appends to out the (time, row_ord) of the rows that pass the query filter, are live and (impure) belong to scope_key; returns how many */
 	uint32		(*scan_stride) (void *arg, uint32 gidx, uint32 stride, bool impure, int64 scope_key, SiftScopeNewest *out);
-	/* the cube of the rows of a member (month SIFT_SCOPE_NO_MONTH: all time), canonical codes; false when it has none */
-	bool		(*member_cube) (void *arg, int64 member, int32 month, SiftScopeCubeAcc *out);
+	/* the cube of the rows of a member in the span, canonical codes; false when it has none */
+	bool		(*member_cube) (void *arg, int64 member, SiftScopeSpan span, SiftScopeCubeAcc *out);
 	/* the part has a deletion vector or pending deletes: a part that has none is read as it is, with no call below for its granules */
 	bool		(*part_dirty) (void *arg, uint64 part_gen);
 	/* the rows of a granule that a deletion vector holds; *nrows: the rows of the granule */
@@ -824,8 +846,8 @@ typedef struct SiftScopeEntity
 	/* decodes the order leaf of ring of a granule: appends to out (gidx, row_ord and the value) the rows that pass the query filter, are live,
 	 * hold a value of [lo, hi] and (impure) belong to scope_key; at most 1 << SIFT_GRANULE_ROW_BITS of them; returns how many */
 	uint32		(*scan_ring) (void *arg, uint32 gidx, uint32 ring, bool impure, int64 scope_key, int64 lo, int64 hi, SiftScopeNewest *out);
-	/* the rows the object lacks that the snapshot sees (NULL: it lacks none): the cube of those of a key in a month (SIFT_SCOPE_NO_MONTH: all time), false when it has none */
-	bool		(*added_cube) (void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);
+	/* the rows the object lacks that the snapshot sees (NULL: it lacks none): the cube of those of a key in the span, false when it has none */
+	bool		(*added_cube) (void *arg, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out);
 	/* the months those rows of a key are in, ascending and distinct */
 	uint32		(*added_months) (void *arg, int64 scope_key, const int32 **months);
 	/* the rows of the key that the object counts and the snapshot does not see, read once for all keys: their cube in a month (SIFT_SCOPE_NO_MONTH: all time) (NULL: the entity has none to hand) */
@@ -833,7 +855,7 @@ typedef struct SiftScopeEntity
 	/* how many of keys (ascending, distinct) the member belongs to, at most one when semi (NULL: owns for each key) */
 	uint32		(*owns_count) (void *arg, int64 member, const int64 *keys, uint32 nkeys, bool semi);
 	/* member_cube for members (ascending, distinct) in one pass over the granules: out[i] is initialized, and has[i] set when it holds a row (NULL: member_cube for each) */
-	void		(*members_cubes) (void *arg, const int64 *members, uint32 n, int32 month, SiftScopeCubeAcc *out, bool *has);
+	void		(*members_cubes) (void *arg, const int64 *members, uint32 n, SiftScopeSpan span, SiftScopeCubeAcc *out, bool *has);
 } SiftScopeEntity;
 
 /* The ring of a key, decoded from the compact or the wide slot: the entries newest first in out[0..SIFT_SCOPE_TOPK_CAP), the rest zero; returns how many are set */
@@ -935,6 +957,8 @@ typedef enum SiftScopePatch
 
 /* The cube of a key after pair edits: removed members taken out, added members put in (at most SIFT_SCOPE_PATCH_MEMBERS together) */
 extern SiftScopePatch sift_scope_cube_patch(SiftScopeCubeAcc *acc, const SiftScopeQueryNeeds *q, const SiftScopeEntity *e, const int64 *added, uint32 nadded, const int64 *removed, uint32 nremoved);
+/* acc less the cube sub of rows it holds; false when what is left may be wrong for the query (a minimum or maximum, a float sum, a distinct set the rows may have held) */
+extern bool sift_scope_cube_take_out(SiftScopeCubeAcc *acc, const SiftScopeCubeAcc *sub, const SiftScopeQueryNeeds *q);
 /* The medium path: the sum of the level-1 nodes of a key that hold none of the changed members; touched[i] marks the nodes that do */
 extern void sift_scope_cube_untouched(const SiftScopeMeta *m, const SiftScopeL2Root *r, int32 month, const int64 *changed, uint32 nchanged, SiftScopeCubeAcc *out, bool *touched);
 /* A member that is in several of the queried keys is counted once: takes out (mult - 1) copies of its cube */

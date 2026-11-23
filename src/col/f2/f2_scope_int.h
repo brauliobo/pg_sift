@@ -201,8 +201,8 @@ extern const struct SiftVariantExcSummary *sift_f2s_slot_exc(SiftF2ScopeParts *p
 enum { SIFT_F2S_NEED_MEMBER = 1, SIFT_F2S_NEED_TIME = 2, SIFT_F2S_NEED_DIMS = 4, SIFT_F2S_NEED_MEAS = 8, SIFT_F2S_NEED_ALL = 15 };
 extern void sift_f2s_decode_cols(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, const uint16 *at, uint32 nat, uint32 need, SiftScopeRows *r);
 extern bool sift_f2s_has_row(const uint16 *rows, uint32 n, uint32 row);
-extern void sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, int32 month, SiftScopeCubeAcc *out, bool *has);
-extern bool sift_f2s_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out);
+extern void sift_f2s_members_cubes(void *arg, const int64 *members, uint32 n, SiftScopeSpan span, SiftScopeCubeAcc *out, bool *has);
+extern bool sift_f2s_member_cube(void *arg, int64 member, SiftScopeSpan span, SiftScopeCubeAcc *out);
 /* The chunk of the part that holds the leaf: the leaf itself in an index and in a part that has the schema of the table */
 extern int sift_f2s_slot_phys(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf);
 extern SiftZone sift_f2s_slot_zone(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf, uint32 g);
@@ -238,7 +238,7 @@ extern SiftScopePairMap *sift_f2s_pairs(SiftF2ScopeParts *p);
 /* The pairs of the object with those of the changed members as the snapshot sees them, for the scope keys the read asks for (f2_scope_pairs.c) */
 extern SiftScopePairMap *sift_f2s_edited_pairs(Relation heap, Relation rel, const SiftF2ScopeCfg *sc, Snapshot snap, const SiftScopePairMap *object, const int64 *keys, uint32 nkeys, const int64 *changed, uint32 nchanged);
 extern SiftScopePairMap *sift_f2s_object_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Snapshot snap, uint64 object_gen, MemoryContext reader);
-extern bool sift_f2s_added_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);
+extern bool sift_f2s_added_cube(void *arg, int64 scope_key, SiftScopeSpan span, SiftScopeCubeAcc *out);
 extern SiftScopeGone sift_f2s_gone_cube(void *arg, int64 scope_key, int32 month, SiftScopeCubeAcc *out);
 extern bool sift_f2s_slot_dirty(const SiftF2ScopeParts *p, const SiftF2ScopeSlot *s);
 extern uint32 sift_f2s_added_months(void *arg, int64 scope_key, const int32 **months);

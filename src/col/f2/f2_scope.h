@@ -49,6 +49,7 @@ struct SiftF2Scope
 	int64	   *changed;		/* the members whose pairs changed since the summary for the keys the read asked for, ascending, each a member the keys may have gained or lost (f2_scope_delta.c) */
 	uint32		nchanged;
 	SiftScopeEntity entity;
+	SiftScopeGranSource source;	/* the zones and rows of the granules of the entity parts, for a read that looks for the granules of some members */
 	Snapshot	snap;
 	uint64		max_part_gen;
 	Relation	heap;			/* the table of the index, rel itself for a table */
@@ -73,6 +74,8 @@ extern bool sift_f2_scope_added_rank(const SiftF2Scope *sc, int64 key, int ring,
  * for the query. *exact false: a minimum or maximum the read needs cannot be kept after the edits: the read must not answer from the summary.
  */
 extern bool sift_f2_scope_key_cube(SiftF2Scope *sc, int64 key, const SiftScopeQueryNeeds *q, SiftScopeCubeAcc *out, bool *exact);
+/* The cube of key for the rows whose time is in [lo, hi), a part of one UTC month, under the pairs as they are now: exact for every aggregate whatever was deleted, moved or added (a minimum or maximum that the rows left out may have held is read from the rows of the window). false: the key has no row in it */
+extern bool sift_f2_scope_window_cube(SiftF2Scope *sc, int64 key, const SiftScopeQueryNeeds *q, int64 lo, int64 hi, SiftScopeCubeAcc *out);
 /* The ring (0: the time leaf) of an opened summary whose order leaf is the column col, -1 when it has none */
 extern int	sift_f2_scope_ring_of(const SiftF2Scope *sc, int col);
 /* Can the column be the order of a ring (a timestamp, a date or an integer), and can its NULLs be told from its values for a query that keeps the NULL rows of scope ord */

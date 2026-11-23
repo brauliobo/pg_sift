@@ -382,6 +382,7 @@ scope_open(Relation rel, int ord, Snapshot snap, int excl_col, bool live, const 
 	sc->snap = snap;
 	sc->max_part_gen = sc->meta.hdr.max_part_gen;
 	sc->entity = sift_f2s_entity(p);
+	sc->source = sift_f2s_source(p);
 	sc->heap = heap;
 	sc->member_leaf = cfg->member_leaf;
 	sc->nrings = cfg->nrings;

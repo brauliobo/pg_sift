@@ -895,6 +895,30 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	add_path(out, &cp->path);
 }
 
+bool
+sift_v6_scope_one_key(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key)
+{
+	ScopePlan	p = {.root = root,.fact = fact,.pairs = pairs,.index = ix};
+	bool		ok = false;
+
+	if (!plain_relation(root, fact) || !pairs_ok(&p) || !index_usable(ix))
+		return false;
+	p.irel = scope_rel_open(&p);
+	for (int o = 0; o < sift_f2_nscopes(p.irel) && !ok; o++)
+	{
+		reset_spec(&p, o);
+		ok = scope_matches(&p, o) && fact_attno(&p, p.layout.member_col) == fact_att && p.leg.member == pairs_att && compile_key_filter(&p) &&
+			p.spec.key_given && !p.spec.key_array;
+		if (ok)
+		{
+			*ord = o;
+			*key = p.key_expr;
+		}
+	}
+	relation_close(p.irel, NoLock);
+	return ok;
+}
+
 void
 sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out, void *extra)
 {

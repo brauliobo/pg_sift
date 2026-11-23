@@ -151,7 +151,7 @@ outside_rows(const SiftScopeEntity *e, int64 member, int32 month, const SiftScop
 	SiftScopeCubeAcc all;
 	bool		ok = true;
 
-	if (!e->member_cube(e->arg, member, month, &all))
+	if (!e->member_cube(e->arg, member, sift_scope_span_month(month), &all))
 		return true;
 	if (all.row_count > counted->row_count)
 	{
@@ -275,49 +275,59 @@ sift_scope_overlay_fold(SiftScopeCubeAcc *acc, const SiftScopeRows *r, const uin
 	return taken;
 }
 
-static int
-u32_order(const void *a, const void *b)
-{
-	return sift_cmp_u32(a, b);
-}
-
 static bool
-strides_overlap(const SiftScopeEntity *e, uint32 gidx, int64 lo, int64 hi)
+strides_overlap(const SiftScopeEntity *e, uint32 gidx, const SiftScopeSpan *span)
 {
 	const SiftTimeStride *st;
 	const uint32 n = e->strides(e->arg, gidx, &st);
 
 	for (uint32 i = 0; i < n; i++)
-		if (st[i].time_max >= lo && st[i].time_min < hi)
+		if (st[i].time_max >= span->lo && st[i].time_min < span->hi)
 			return true;
 	return n == 0;
 }
 
-uint32
-sift_scope_overlay_boundary(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEntity *e, int64 lo, int64 hi, SiftScopeCubeAcc *acc)
+/* The ordinals among the nrefs granules of the key (ascending) that hold rows of the months the span touches */
+static uint32
+span_granules(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeSpan *span, uint32 nrefs, uint32 **out)
 {
-	const uint32 nrefs = sift_scope_key_refs(m, r, NULL),
-				cap = Max(sift_scope_monthmap_ngranules(m, r), 1);
+	const uint32 cap = Max(sift_scope_monthmap_ngranules(m, r), 1);
+	uint32	   *ords = palloc(sizeof(uint32) * cap);
+	uint8	   *held = palloc0(nrefs);
+	uint32	   *want = palloc(sizeof(uint32) * nrefs);
+	uint32		n = 0;
+
+	for (int32 mo = sift_scope_month_of(span->lo); mo <= sift_scope_month_of(span->hi - 1); mo++)
+	{
+		const uint32 k = sift_scope_monthmap_granules(m, r, mo, ords, cap);
+
+		for (uint32 i = 0; i < k; i++)
+			held[ords[i]] = 1;
+	}
+	for (uint32 o = 0; o < nrefs; o++)
+		if (held[o])
+			want[n++] = o;
+	pfree(ords);
+	pfree(held);
+	*out = want;
+	return n;
+}
+
+/* The rows of the granules of key r whose time is in the span, that the key owns under the pairs as they are, but those of the members in skip (ascending), added to acc; the granules read */
+static uint32
+key_granules_slice(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEntity *e, const SiftScopeSpan *span, const int64 *skip, uint32 nskip, SiftScopeCubeAcc *acc)
+{
+	const uint32 nrefs = sift_scope_key_refs(m, r, NULL);
 	SiftScopeGranRef *refs;
-	uint32	   *ords,
-			   *want;
-	uint32		nwant = 0,
+	uint32	   *want;
+	uint32		nwant,
 				read = 0;
 
-	if (lo >= hi || nrefs == 0)
+	if (nrefs == 0)
 		return 0;
 	refs = palloc(sizeof(*refs) * nrefs);
-	ords = palloc(sizeof(uint32) * cap);
-	want = palloc(sizeof(uint32) * cap * 2);
 	sift_scope_key_refs(m, r, refs);
-	for (int32 mo = sift_scope_month_of(lo); mo <= sift_scope_month_of(hi - 1); mo++)
-	{
-		const uint32 n = sift_scope_monthmap_granules(m, r, mo, ords, cap);
-
-		for (uint32 i = 0; i < n && nwant < cap * 2; i++)
-			want[nwant++] = ords[i];
-	}
-	qsort(want, nwant, sizeof(uint32), u32_order);
+	nwant = span_granules(m, r, span, nrefs, &want);
 	for (uint32 w = 0; w < nwant; w++)
 	{
 		SiftScopeRows rows;
@@ -325,19 +335,69 @@ sift_scope_overlay_boundary(const SiftScopeMeta *m, const SiftScopeL2Root *r, co
 		const SiftScopeDictMap *map = NULL;
 		const uint32 gidx = refs[want[w]].global_granule_idx;
 
-		if ((w > 0 && want[w] == want[w - 1]) || !strides_overlap(e, gidx, lo, hi))
+		if (!strides_overlap(e, gidx, span))
 			continue;
 		memset(&rows, 0, sizeof(rows));
 		rows.want_filter = (m->hdr.flags & SIFT_SMETA_NULL_FILTERED) != 0;
 		e->granule_rows(e->arg, gidx, &rows, &dead, &map);
 		read++;
 		for (uint32 i = 0; i < rows.n; i++)
-			if (row_wanted(&rows, i, dead, SIFT_SCOPE_NO_MONTH) && rows.time != NULL && !(rows.time_null != NULL && rows.time_null[i]) && rows.time[i] >= lo && rows.time[i] < hi &&
-				e->owns(e->arg, rows.member[i], r->scope_key))
+			if (row_wanted(&rows, i, dead, SIFT_SCOPE_NO_MONTH) && rows.time != NULL && sift_scope_span_has(span, rows.time[i], rows.time_null != NULL && rows.time_null[i]) &&
+				find_member(skip, nskip, rows.member[i]) == NULL && e->owns(e->arg, rows.member[i], r->scope_key))
 				sift_scube_add_row(acc, &rows, i, map);
 	}
 	pfree(refs);
-	pfree(ords);
 	pfree(want);
+	return read;
+}
+
+static void
+fold_cube(SiftScopeCubeAcc *acc, SiftScopeCubeAcc *c)
+{
+	sift_scube_merge(acc, c, NULL);
+	sift_scube_free(c);
+}
+
+/* The rows in the span of the members the key owns now whose pairs changed: they may be in granules the key did not have, so all the granules that can hold them are read */
+static void
+changed_members_slice(const SiftScopeEntity *e, const int64 *own, uint32 nown, const SiftScopeSpan *span, SiftScopeCubeAcc *acc)
+{
+	SiftScopeCubeAcc *cubes = palloc(sizeof(SiftScopeCubeAcc) * nown);
+	bool	   *has = palloc(nown);
+
+	if (e->members_cubes != NULL)
+		e->members_cubes(e->arg, own, nown, *span, cubes, has);
+	else
+		for (uint32 i = 0; i < nown; i++)
+			has[i] = e->member_cube(e->arg, own[i], *span, &cubes[i]);
+	for (uint32 i = 0; i < nown; i++)
+		if (has[i])
+			fold_cube(acc, &cubes[i]);
+	pfree(cubes);
+	pfree(has);
+}
+
+uint32
+sift_scope_overlay_slice(const SiftScopeMeta *m, const SiftScopeL2Root *r, int64 key, const SiftScopeEntity *e, const int64 *changed, uint32 nchanged, SiftScopeSpan span, SiftScopeCubeAcc *acc)
+{
+	int64	   *own;
+	uint32		nown = 0,
+				read = 0;
+	SiftScopeCubeAcc added;
+
+	SIFT_INVARIANT(!span.all, "scope slice: a span of the time leaf");
+	if (span.lo >= span.hi)
+		return 0;
+	own = palloc(sizeof(int64) * Max(nchanged, 1));
+	for (uint32 i = 0; i < nchanged; i++)
+		if (e->owns(e->arg, changed[i], key))
+			own[nown++] = changed[i];
+	if (r != NULL)
+		read = key_granules_slice(m, r, e, &span, own, nown, acc);
+	if (nown > 0)
+		changed_members_slice(e, own, nown, &span, acc);
+	if (e->added_cube != NULL && e->added_cube(e->arg, key, span, &added))
+		fold_cube(acc, &added);
+	pfree(own);
 	return read;
 }

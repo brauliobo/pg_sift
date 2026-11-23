@@ -723,6 +723,8 @@ col/f2/f2_scope_snap.c
 col/f2/f2_scope_snap.h
 col/f2/f2_scope_twohop.c
 col/f2/f2_scope_pairs.c
+col/f2/f2_scope_route.c
+col/f2/f2_scope_route.h
 col/f2/f2_scope_test.c
 col/f2/f2_sink.h
 col/f2/f2_tier.c
@@ -761,6 +763,8 @@ col/scope_v6/delta.c
 col/scope_v6/evict.c
 col/scope_v6/heap.c
 col/scope_v6/int.h
+col/scope_v6/mask.c
+col/scope_v6/mask.h
 col/scope_v6/meta.h
 col/scope_v6/object.c
 col/scope_v6/overlay.c

@@ -193,7 +193,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
 
 		if (open == SSO_SCAN)
-			sift_v6_scan_run_ext(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
+			sift_v6_scan_run_ext(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, NULL, 0, NULL, &st->stats, st->star, NULL, NULL);
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
@@ -222,7 +222,7 @@ v6_scan(V6State *st, Snapshot snap)
 		V6Source   *src = &st->sources[k];
 
 		if (src->index != NULL)
-			sift_v6_scan_run(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, st->gpu.skip, st->gpu.nskip, &st->stats,
+			sift_v6_scan_run(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, st->gpu.skip, st->gpu.nskip, NULL, &st->stats,
 							 text ? sift_v6_text_chunk : NULL, text);
 		else
 			sift_v6_scan_table(st->spec, st->group, src->heap, &src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats);

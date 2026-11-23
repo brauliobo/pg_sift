@@ -577,6 +577,7 @@ TESTING_REGRESS += read_%
 TESTING_REGRESS += scaling_ops_gate
 TESTING_REGRESS += scope_overlay_parity
 TESTING_REGRESS += scope_pair_edit_live
+TESTING_REGRESS += scope_window_parity
 TESTING_REGRESS += segfmt_%
 TESTING_REGRESS += shm_ledger
 TESTING_REGRESS += shm_manifest

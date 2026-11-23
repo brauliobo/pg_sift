@@ -682,7 +682,7 @@ e_scan_stride(void *arg, uint32 gidx, uint32 stride, bool impure, int64 key, Sif
 }
 
 static bool
-e_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out)
+e_member_cube(void *arg, int64 member, SiftScopeSpan span, SiftScopeCubeAcc *out)
 {
 	TWorld	   *w = arg;
 
@@ -693,17 +693,43 @@ e_member_cube(void *arg, int64 member, int32 month, SiftScopeCubeAcc *out)
 		SiftScopeRows r;
 		const SiftScopeDictMap *map;
 
-		if (g->retired)
+		if (g->retired || (w->unnamed_from > 0 && gi >= w->unnamed_from))
 			continue;
 		gran_rows(w, g, &r, false, &map);
 		for (uint32 i = 0; i < g->n; i++)
 		{
 			if (g->mnull[i] || g->member[i] != member || g->dead[i] || !TW_IN_SCOPE(w, g, i))
 				continue;
-			if (month != SIFT_SCOPE_NO_MONTH && (g->tnull[i] || sift_scope_month_of(g->time[i]) != month))
+			if (!span.all && !sift_scope_span_has(&span, g->time[i], g->tnull[i]))
 				continue;
 			sift_scube_add_row(out, &r, i, map);
 		}
+	}
+	if (out->row_count > 0)
+		return true;
+	sift_scube_free(out);
+	return false;
+}
+
+/* The rows of the parts no summary names that the key owns now, in the span */
+static bool
+e_added_cube(void *arg, int64 key, SiftScopeSpan span, SiftScopeCubeAcc *out)
+{
+	TWorld	   *w = arg;
+
+	sift_scube_init(out, w->shape);
+	for (uint32 gi = w->unnamed_from; gi < w->ngran; gi++)
+	{
+		TGran	   *g = &w->g[gi];
+		SiftScopeRows r;
+		const SiftScopeDictMap *map;
+
+		if (g->retired)
+			continue;
+		gran_rows(w, g, &r, false, &map);
+		for (uint32 i = 0; i < g->n; i++)
+			if (!g->mnull[i] && !g->dead[i] && TW_IN_SCOPE(w, g, i) && (span.all || sift_scope_span_has(&span, g->time[i], g->tnull[i])) && e_owns(arg, g->member[i], key))
+				sift_scube_add_row(out, &r, i, map);
 	}
 	if (out->row_count > 0)
 		return true;
@@ -855,7 +881,7 @@ SiftScopeEntity
 tw_entity(TWorld *w)
 {
 	return (SiftScopeEntity) {w, e_live, e_strides, e_scan_stride, e_member_cube, e_part_dirty, e_dead_count, e_dead_rows, e_granule_rows, e_granule_cube, e_owns,
-							  e_ring_zone, e_scan_ring};
+							  e_ring_zone, e_scan_ring, w->unnamed_from > 0 ? e_added_cube : NULL};
 }
 
 /* ---------------------------------------------------------------------------

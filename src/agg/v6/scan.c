@@ -29,6 +29,7 @@
 #include "col/am.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_sink.h"
+#include "col/f2/f2_scope_route.h"
 #include "col/f2/f2_store_scan.h"
 #include "core/memtrack.h"
 
@@ -93,6 +94,7 @@ struct SiftV6Scan
 	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
 	SiftVec   **fact;			/* the vectors of the columns, for the pipe */
 	const SiftClause *gate;		/* an arm of a pass over the union of the keys of its arms: the rows it takes */
+	const SiftScopeRouter *router;	/* a scan for the facts of one scope key: the granules the summary of the scope does not name for it are not read (f2_scope_route.h) */
 	bool		all_visible;	/* the run of granules being read is of a frozen part with no deletion: its rows need no look at the heap */
 	IndexScanDesc scan;			/* a scan that is begun apart from its run (sift_v6_scan_begin) */
 	int		   *leaves;
@@ -699,6 +701,7 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 
 	index_rescan(scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_skip_parts(scan, skip, nskip);
+	sift_f2_scan_set_scope_router(scan, s->router);
 	if (bridge != NULL)
 		sift_f2_scan_set_bridge(scan, bridge, NULL, NULL);
 	sift_f2_scan_set_part_sink(scan, part_offer);
@@ -731,9 +734,9 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 
 void
 sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
-					 SiftV6ScanStats *stats, SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg)
+					 const SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
-	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
+	V6Scan		s = {.spec = spec,.group = g,.stats = stats,.router = router};
 
 	scan_run(&s, heap, index, keys, nkeys, snap, skip, nskip, star, next_chunk, chunk_arg);
 }
@@ -845,10 +848,10 @@ sift_v6_scan_end(SiftV6Scan *s)
 }
 
 void
-sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, SiftV6ScanStats *stats,
-				 SiftV6ChunkFn next_chunk, void *chunk_arg)
+sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
+				 const SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
-	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, stats, NULL, next_chunk, chunk_arg);
+	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, router, stats, NULL, next_chunk, chunk_arg);
 }
 
 void

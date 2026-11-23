@@ -8,6 +8,7 @@
 #include "nodes/tidbitmap.h"
 #include "utils/memutils.h"
 
+#include "col/f2/f2_scope_route.h"
 #include "col/f2/scan/scan_int.h"
 #include "col/f2/scan/stream.h"
 #include "core/errctx.h"
@@ -117,6 +118,14 @@ sift_f2_scan_set_bridge(IndexScanDesc scan, const SiftTidBridge *bridge, uint64 
 	s->bridge = bridge;
 	s->bridge_seen = seen;
 	s->bridge_skipped = skipped;
+}
+
+void
+sift_f2_scan_set_scope_router(IndexScanDesc scan, const SiftScopeRouter *router)
+{
+	F2Scan	   *s = scan->opaque;
+
+	s->router = router;
 }
 
 void

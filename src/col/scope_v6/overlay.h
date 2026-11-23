@@ -1,6 +1,6 @@
 /*
  * col/scope_v6/overlay.h - a summary served while the pairs move under it: the cube of a key after pair edits, the rows the summary does
- * not hold folded in, and the rows of the edge of a time window read from the granules of its month. Portable: the entity side (granules, deletion vectors, ownership) is SiftScopeEntity.
+ * not hold folded in, and the rows of a slice of a time window read from the key's own rows. Portable: the entity side (granules, deletion vectors, ownership) is SiftScopeEntity.
  */
 #ifndef SIFT_COL_SCOPE_V6_OVERLAY_H
 #define SIFT_COL_SCOPE_V6_OVERLAY_H
@@ -10,6 +10,9 @@
 #include "col/scope_v6/meta.h"
 
 #define SIFT_SCOPE_OVERLAY_MAX_PAIR_EDITS	256U
+
+/* A window that holds a part of a month is read as the month's cube less the rest of the month when the rest is at most this part of the window */
+#define SIFT_SCOPE_REST_RATIO				4
 
 /* How a read is served: the summary as it is, or with the rows it lacks or counts too many (slabs, parts it does not name, deletes, inserters not settled) and the pair edits of the journal overlaid */
 typedef enum SiftScopeServeMode
@@ -60,7 +63,12 @@ typedef struct SiftScopeFold
 
 extern uint32 sift_scope_overlay_fold(SiftScopeCubeAcc *acc, const SiftScopeRows *r, const uint8 *skip, const SiftScopeEntity *e, const SiftScopeFold *f);
 
-/* The rows of key r whose time is in [lo, hi) (one UTC month at most), read from the granules of the month map and the strides that overlap, added to acc; the granules read */
-extern uint32 sift_scope_overlay_boundary(const SiftScopeMeta *m, const SiftScopeL2Root *r, const SiftScopeEntity *e, int64 lo, int64 hi, SiftScopeCubeAcc *acc);
+/*
+ * The live rows of key (r: its root, NULL when the summary has none) whose time is in the span, a part of a month or more, added to acc (initialized by the caller); the granules read. They are the rows
+ * of the granules of the key (those of its month map and strides that overlap) that it owns under the pairs as they are, the rows of the members in changed (ascending: those whose pairs changed
+ * since the summary, which may be in granules the key never had) that it owns now, and the rows the summary lacks (added_cube). Every row is added as the build adds it, so count, sum, avg, min and max
+ * of every leaf are exact whatever was deleted or moved.
+ */
+extern uint32 sift_scope_overlay_slice(const SiftScopeMeta *m, const SiftScopeL2Root *r, int64 key, const SiftScopeEntity *e, const int64 *changed, uint32 nchanged, SiftScopeSpan span, SiftScopeCubeAcc *acc);
 
 #endif							/* SIFT_COL_SCOPE_V6_OVERLAY_H */

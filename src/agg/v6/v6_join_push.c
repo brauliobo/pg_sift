@@ -28,11 +28,13 @@
 
 #include "agg/agg.h"
 #include "agg/v6/plan_int.h"
+#include "agg/v6/scope_v6_int.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
 #include "col/am.h"
 #include "col/col.h"
+#include "col/f2/f2_scope_route.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/f2_store_scan.h"
 #include "core/memtrack.h"
@@ -237,6 +239,18 @@ static Plan *push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best
 
 static const CustomPathMethods push_path_methods = {"SiftAggV6Push", push_plan_path, NULL};
 
+/* The scope of the index whose summary keeps the scan to the granules of the one key the statement binds the small side to: (ordinal, key expression), NIL for none */
+static List *
+scope_route(PlannerInfo *root, const PushJoin *j, IndexOptInfo *ix)
+{
+	int			ord;
+	Expr	   *key;
+
+	if (ix == NULL || !sift_v6_scope_one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
+		return NIL;
+	return list_make2(makeInteger(ord), copyObject(key));
+}
+
 static void
 add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra, IndexOptInfo *ix)
 {
@@ -262,8 +276,9 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	cp->path.total_cost = dim_path->total_cost + cpu_tuple_cost * (0.05 * j->fact->tuples + groups);
 	cp->methods = &push_path_methods;
 	cp->custom_paths = list_make1((Path *) dim_path);
-	cp->custom_private = list_make4(sift_v6_spec_pack(&spec), scan_tlist, ((GroupPathExtraData *) extra)->havingQual,
-									list_make2(key_template(j, int_col, get_atttype(planner_rt_fetch(j->fact->relid, root)->relid, j->fact_attno)), copyObject(j->dim_var)));
+	cp->custom_private = list_make5(sift_v6_spec_pack(&spec), scan_tlist, ((GroupPathExtraData *) extra)->havingQual,
+									list_make2(key_template(j, int_col, get_atttype(planner_rt_fetch(j->fact->relid, root)->relid, j->fact_attno)), copyObject(j->dim_var)),
+									scope_route(root, j, ix));
 	add_path(out, &cp->path);
 }
 
@@ -297,6 +312,7 @@ push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	CustomScan *cs = makeNode(CustomScan);
 	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
 	List	   *join = lfourth(best->custom_private);
+	List	   *scope = list_nth(best->custom_private, 4);
 	const Var  *dim_var = lsecond(join);
 	const int	resno = sift_v6_child_resno(((Plan *) linitial(custom_plans))->targetlist, dim_var);
 
@@ -306,7 +322,9 @@ push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 	cs->flags = best->flags;
 	cs->custom_plans = custom_plans;
 	cs->custom_scan_tlist = lsecond(best->custom_private);
-	cs->custom_private = list_make2(linitial(best->custom_private), list_make3(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype)));
+	cs->custom_private = list_make2(linitial(best->custom_private),
+									list_make4(linitial(join), makeInteger(resno), makeInteger(dim_var->vartype), makeInteger(scope == NIL ? 0 : intVal(linitial(scope)))));
+	cs->custom_exprs = scope == NIL ? NIL : list_make1(lsecond(scope));
 	cs->methods = &sift_agg_v6_push_plan_methods;
 	cs->scan.plan.qual = lthird(best->custom_private);
 	root->glob->relationOids = lappend_oid(root->glob->relationOids, spec->relid);
@@ -324,6 +342,10 @@ typedef struct PushState
 	ScalarArrayOpExpr *key;
 	int			resno;
 	Oid			elemtype;
+	int			scope_ord;		/* with scope_key: the scope whose summary routes the scan */
+	ExprState  *scope_key;		/* the one key the statement binds the small side to, NULL when the scan is not routed */
+	Oid			scope_type;
+	const SiftScopeRouter *router;
 	Relation	heap;
 	Relation	index;
 	MemoryContext gcx;
@@ -344,6 +366,12 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	st->key = linitial(join);
 	st->resno = intVal(lsecond(join));
 	st->elemtype = (Oid) intVal(lthird(join));
+	st->scope_ord = intVal(lfourth(join));
+	if (cs->custom_exprs != NIL)
+	{
+		st->scope_key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
+		st->scope_type = exprType(linitial(cs->custom_exprs));
+	}
 	st->index = st->spec->is_table ? NULL : index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->spec->is_table ? st->spec->relid : st->index->rd_index->indrelid, AccessShareLock);
 	foreach_ptr(Plan, child, cs->custom_plans)
@@ -413,6 +441,23 @@ values_array(const PushState *st, const int64 *v, int n)
 	return construct_array(d, n, st->elemtype, len, byval, align);
 }
 
+/* The granules of the key that the summary of the scope names; NULL when the scan is not routed, the key is NULL, or the summary cannot route */
+static const SiftScopeRouter *
+scope_router(PushState *st, EState *estate)
+{
+	bool		isnull;
+	Datum		d;
+	int64		key;
+
+	if (st->scope_key == NULL)
+		return NULL;
+	d = ExecEvalExprSwitchContext(st->scope_key, st->css.ss.ps.ps_ExprContext, &isnull);
+	if (isnull)
+		return NULL;
+	key = value_of(st->scope_type, d);
+	return sift_f2_scope_build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, st->gcx);
+}
+
 /* One scan of the fact for the values of ids: each value is in one batch only, so the rows of the batches are the rows of the join */
 static void
 push_scan(PushState *st, EState *estate, ArrayType *ids)
@@ -437,7 +482,7 @@ push_scan(PushState *st, EState *estate, ArrayType *ids)
 	{
 		ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
 		SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
-		sift_v6_scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, &st->stats, NULL, NULL);
+		sift_v6_scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL);
 	}
 }
 
@@ -451,6 +496,7 @@ push_run(PushState *st, EState *estate)
 
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 push groups");
 	st->ran = true;
+	st->router = scope_router(st, estate);
 	v = small_side(st, &n);
 	st->nvalues = n;
 	st->group = sift_v6_group_new(st->spec, st->gcx, desc);
@@ -500,6 +546,7 @@ push_release(PushState *st)
 		MemoryContextDelete(st->gcx);
 	st->group = NULL;
 	st->gcx = NULL;
+	st->router = NULL;
 }
 
 static void
@@ -537,6 +584,11 @@ push_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText("Join", "pushed into the scan as a key", es);
 	if (st->ran)
 		ExplainPropertyInteger("Join Keys Pushed", NULL, st->nvalues, es);
+	if (st->router != NULL)
+	{
+		ExplainPropertyInteger("Scope Granules Kept", NULL, st->router->mask.kept, es);
+		ExplainPropertyInteger("Scope Granules Total", NULL, st->router->mask.n, es);
+	}
 }
 
 static const CustomExecMethods push_exec_methods = {
