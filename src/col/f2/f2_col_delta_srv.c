@@ -356,7 +356,7 @@ stage_record(SiftTxnStage *st, CdCacheEntry *ent, const SiftPartitionEntry *e, c
 }
 
 bool
-sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt, HeapTuple newt, uint64 old_tid)
+sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt, HeapTuple newt, uint64 old_tid, bool index_unchanged)
 {
 	SiftF2Rel  *f = env->f;
 	SiftF2Store *store = sift_f2_store_open(env->index);
@@ -371,7 +371,10 @@ sift_cdi_stage_update(const SiftF2DiffEnv *env, SiftTxnStage *st, HeapTuple oldt
 
 	if (f->spec.preagg || sift_proj_relation_has(env->index))
 		return false;
-	sift_f2_diff_update(env, oldt, newt, &res);
+	if (index_unchanged)
+		res = (SiftF2DiffResult) {.pred = SIFT_PRED_BOTH};
+	else
+		sift_f2_diff_update(env, oldt, newt, &res);
 	if (res.pred != SIFT_PRED_BOTH || res.key_changed || res.leaves.rejected ||
 		sift_f2_scope_reads_any(env->index, res.leaves.leaf, res.leaves.nchanged) || !locate_row(env->index, store, st, old_tid, &loc, &ent))
 		return false;

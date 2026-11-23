@@ -33,6 +33,7 @@
 #include "core/f2/fsm.h"
 #include "core/page_io.h"
 #include "col/scope.h"
+#include "col/f2/f2_col_delta_idx.h"
 #include "core/xid_cache.h"
 
 
@@ -46,6 +47,8 @@ sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemP
 	uint8		key[SIFT_BOUND_BYTES];
 	SiftTxnStage *st = sift_stage_get(index, &f->spec);
 
+	if (indexUnchanged)
+		sift_f2_track_note_unchanged(index, heap_tid);
 	sift_f2_row(index, f, rowcxt, heap_tid, values, isnull, cells, elem, key);
 	sift_stage_add(index, st, key, sift_f2_tid(heap_tid), GetCurrentTransactionId(), GetCurrentCommandId(true), cells, (const SiftCell *const *) elem);
 	MemoryContextReset(rowcxt);

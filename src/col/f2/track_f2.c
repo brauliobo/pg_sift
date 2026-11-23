@@ -17,6 +17,7 @@
 #include "executor/executor.h"
 #include "storage/bufmgr.h"
 #include "storage/sinval.h"
+#include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -211,6 +212,64 @@ read_key(HeapTuple old, const ItemPointerData *tid, uint8 *key)
 	return held;
 }
 
+/* ---- the addresses aminsert said unchanged ---- */
+
+typedef struct UnchangedKey
+{
+	Oid			index;
+	ItemPointerData tid;
+} UnchangedKey;
+
+/* The key is hashed as bytes: its padding is zero */
+static void
+unchanged_key(UnchangedKey *key, Oid index, const ItemPointerData *tid)
+{
+	memset(key, 0, sizeof(*key));
+	key->index = index;
+	key->tid = *tid;
+}
+
+static HTAB *unchanged = NULL;
+static bool unchanged_ended_registered = false;
+
+/* The table lives in the transaction's memory: the pointer is forgotten with it */
+static void
+unchanged_ended(XactEvent event pg_attribute_unused(), void *arg pg_attribute_unused())
+{
+	unchanged = NULL;
+}
+
+void
+sift_f2_track_note_unchanged(Relation index, ItemPointer new_tid)
+{
+	UnchangedKey key;
+
+	if (!sift_col_track_on(index))
+		return;
+	unchanged_key(&key, RelationGetRelid(index), new_tid);
+	if (unchanged == NULL)
+	{
+		HASHCTL		hc = {.keysize = sizeof(UnchangedKey),.entrysize = sizeof(UnchangedKey),.hcxt = TopTransactionContext};
+
+		if (!unchanged_ended_registered)
+		{
+			RegisterXactCallback(unchanged_ended, NULL);
+			unchanged_ended_registered = true;
+		}
+		unchanged = hash_create("sift_col indexUnchanged notes", 64, &hc, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	(void) hash_search(unchanged, &key, HASH_ENTER, NULL);
+}
+
+static bool
+unchanged_take(Oid index, const ItemPointerData *new_tid)
+{
+	UnchangedKey key;
+
+	unchanged_key(&key, index, new_tid);
+	return unchanged != NULL && hash_search(unchanged, &key, HASH_REMOVE, NULL) != NULL;
+}
+
 /* An UPDATE whose index entry stays and only changes its address and a few leaves is a record of the column delta chain (col/f2/f2_col_delta_idx.h), not a tombstone and a new entry */
 static bool
 staged_as_delta(TriggerData *td, const ItemPointerData *tid)
@@ -218,7 +277,7 @@ staged_as_delta(TriggerData *td, const ItemPointerData *tid)
 	Relation	index = index_open(ctx.index, AccessShareLock);
 	SiftF2DiffEnv env = {.heap = td->tg_relation,.index = index,.f = (SiftF2Rel *) ctx.f,.direct = ctx.plain,.info = ctx.info,.estate = ctx.estate,.slot = ctx.slot,.pred = ctx.pred,
 		.cx = CurrentMemoryContext};
-	bool		staged = sift_cdi_stage_update(&env, ctx.stage, td->tg_trigtuple, td->tg_newtuple, sift_f2_tid(tid));
+	bool		staged = sift_cdi_stage_update(&env, ctx.stage, td->tg_trigtuple, td->tg_newtuple, sift_f2_tid(tid), unchanged_take(ctx.index, &td->tg_newtuple->t_self));
 
 	index_close(index, NoLock);
 	return staged;

@@ -129,7 +129,13 @@ extern bool sift_cdi_scan_remaps(const struct F2Scan *s, uint32 g);
  * are few and the chain has room: the new version's entry, which aminsert staged, is withdrawn from the stage (it is not written) and the old version's entry stays, at the new address
  * from the record's commit. False when the update takes the way of a tombstone and a new entry.
  */
-extern bool sift_cdi_stage_update(const SiftF2DiffEnv *env, struct SiftTxnStage *st, HeapTuple oldt, HeapTuple newt, uint64 old_tid);
+extern bool sift_cdi_stage_update(const SiftF2DiffEnv *env, struct SiftTxnStage *st, HeapTuple oldt, HeapTuple newt, uint64 old_tid, bool index_unchanged);
+
+/*
+ * aminsert is told that an UPDATE that is not HOT changed no column of the index (indexUnchanged): the row trigger of track_changes, which stages the update as a record of the chain, then
+ * writes the new address of the row and nothing else, without reading a column of either version. The note is of the new version's address and lasts until its trigger takes it or the transaction ends.
+ */
+extern void sift_f2_track_note_unchanged(Relation index, ItemPointer new_tid);
 
 /* The overlay of the part of the partition for the snapshot xc stands for, in the current memory context; NULL when the partition has no chain or the snapshot sees no patch of it (f2_col_delta_srv.c) */
 extern SiftColDeltaPartMap *sift_cdi_part_map(Relation rel, const SiftPartitionEntry *e, const SiftPart *part, SiftXidCache *xc);
