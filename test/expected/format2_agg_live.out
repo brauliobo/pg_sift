@@ -296,7 +296,7 @@ SELECT scope_same(q) FROM scope_queries() q;
  same scope scan of the facts SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.event_date >= DATE '2026-02-01' AND e.event_date < DATE '2026-03-01'
  same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2030-01-01' AND e.created_at < '2030-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-03-01' AND e.created_at >= '2026-02-05'
- same scope join SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
+ same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01'
  same scope summary SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.kind = 3
@@ -313,13 +313,13 @@ SELECT scope_same(q) FROM scope_queries() q;
  same scope summary SELECT count(*), sum(e.id), min(e.id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 999
  same scope summary SELECT s.tenant_id, count(*), sum(e.value_num), min(e.id), max(e.kind), avg(e.kind) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id
  same scope summary SELECT s.tenant_id, count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id HAVING count(*) > 2100
- same scope join SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01'
+ same scope summary SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01'
  same scope summary SELECT count(*), max(e.id), avg(e.kind) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE e.created_at > '2026-01-31 23:59:59.999999+00' AND e.created_at <= '2026-02-28 23:59:59.999999+00' AND s.tenant_id = 12
- same scope join SELECT s.tenant_id, count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE e.created_at >= '2026-03-01' AND e.created_at < '2026-05-01' GROUP BY s.tenant_id
+ same scope summary SELECT s.tenant_id, count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE e.created_at >= '2026-03-01' AND e.created_at < '2026-05-01' GROUP BY s.tenant_id
  same scope scan of the facts SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.event_date >= DATE '2026-02-01' AND e.event_date < DATE '2026-03-01'
- same scope join SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2030-01-01' AND e.created_at < '2030-03-01'
+ same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2030-01-01' AND e.created_at < '2030-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-03-01' AND e.created_at >= '2026-02-05'
- same scope join SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
+ same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01'
  same scope summary SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.kind = 3
@@ -376,7 +376,7 @@ SELECT scope_same(q) FROM scope_queries() q;
  same scope scan of the facts SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.event_date >= DATE '2026-02-01' AND e.event_date < DATE '2026-03-01'
  same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2030-01-01' AND e.created_at < '2030-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-03-01' AND e.created_at >= '2026-02-05'
- same scope join SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
+ same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01'
  same scope summary SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.kind = 3
@@ -423,7 +423,7 @@ SELECT scope_same(q) FROM scope_queries() q;
  same scope scan of the facts SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.event_date >= DATE '2026-02-01' AND e.event_date < DATE '2026-03-01'
  same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2030-01-01' AND e.created_at < '2030-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-03-01' AND e.created_at >= '2026-02-05'
- same scope join SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
+ same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01'
  same scope summary SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.kind = 3
@@ -459,7 +459,7 @@ SELECT scope_same(q) FROM scope_queries() q;
  same scope scan of the facts SELECT count(*), sum(e.value_num) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.event_date >= DATE '2026-02-01' AND e.event_date < DATE '2026-03-01'
  same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2030-01-01' AND e.created_at < '2030-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-03-01' AND e.created_at >= '2026-02-05'
- same scope join SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
+ same scope summary SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-03' AND e.created_at < '2026-03-01'
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01'
  same scope summary SELECT count(*), sum(e.price) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7
  same scope scan of the facts SELECT count(*) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.kind = 3
