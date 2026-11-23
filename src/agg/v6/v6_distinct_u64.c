@@ -24,14 +24,61 @@ struct SiftDistinctU64
 	bool		has_zero;
 };
 
-static inline uint64
-mix(uint64 x)
+#define mix(x)	sift_du64_mix(x)
+
+uint32
+sift_du64_dedup_slice(uint64 *tab, uint64 cap, const uint64 *vals, uint32 n)
 {
-	x ^= x >> 32;
-	x *= UINT64CONST(0xd6e8feb86659fd93);
-	x ^= x >> 32;
-	x *= UINT64CONST(0xd6e8feb86659fd93);
-	return x ^ (x >> 32);
+	const uint64 mask = cap - 1;
+	uint32		fresh = 0;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		const uint64 v = vals[i];
+
+		if (i + DU64_AHEAD < n)
+			__builtin_prefetch(&tab[mix(vals[i + DU64_AHEAD]) & mask], 1);
+		if (v == 0)
+			continue;
+		for (uint64 j = mix(v) & mask;; j = (j + 1) & mask)
+		{
+			if (tab[j] == v)
+				break;
+			if (tab[j] == 0)
+			{
+				tab[j] = v;
+				fresh++;
+				break;
+			}
+		}
+	}
+	return fresh;
+}
+
+uint32
+sift_du64g_dedup_bucket(SiftDuPair *tab, uint64 cap, SiftDuPair *p, uint32 n)
+{
+	uint32		out = 0;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		const SiftDuPair e = p[i];
+
+		if (i + DU64_AHEAD < n)
+			__builtin_prefetch(&tab[p[i + DU64_AHEAD].h32 & (cap - 1)], 1);
+		for (uint64 j = e.h32 & (cap - 1);; j = (j + 1) & (cap - 1))
+		{
+			if (tab[j].gid1 == 0)
+			{
+				tab[j] = e;
+				p[out++] = e;
+				break;
+			}
+			if (tab[j].val == e.val && tab[j].gid1 == e.gid1)
+				break;
+		}
+	}
+	return out;
 }
 
 static inline void
@@ -172,12 +219,7 @@ sift_du64_free(SiftDistinctU64 *d)
  * One cache line holds four: a probe reads the value and the group of an entry together, and the group number 0 is an empty entry (a group g is stored as g + 1). In a bucket of the radix
  * mode h32 is the low half of the hash of the pair, so that the bucket is deduplicated with no hash made again.
  */
-typedef struct DuPair
-{
-	uint64		val;
-	uint32		gid1;
-	uint32		h32;
-} DuPair;
+typedef SiftDuPair DuPair;
 
 /*
  * A table that outgrows DU64G_RADIX_CAP entries is past the cache, and each pair it takes is a miss (twice again while it grows). It becomes DU64G_BUCKETS buckets of pairs, chosen by the top
@@ -216,11 +258,7 @@ struct SiftDu64G
 	uint64		scratch_cap;
 };
 
-static inline uint64
-pair_hash(uint64 v, uint32 gid)
-{
-	return mix(v ^ ((uint64) gid + 1) * UINT64CONST(0x9e3779b97f4a7c15));
-}
+#define pair_hash(v, gid)	sift_du64_pair_hash(v, gid)
 
 uint64
 sift_du64g_bytes(const SiftDu64G *d)
@@ -333,7 +371,6 @@ static void
 bucket_dedup(SiftDu64G *d, DuBucket *b)
 {
 	const uint64 cap = pg_nextpower2_64(Max(64, (uint64) b->n * 2));
-	uint32		out = 0;
 
 	if (cap > d->scratch_cap)
 	{
@@ -343,25 +380,7 @@ bucket_dedup(SiftDu64G *d, DuBucket *b)
 		d->scratch_cap = cap;
 	}
 	memset(d->scratch, 0, cap * sizeof(DuPair));
-	for (uint32 i = 0; i < b->n; i++)
-	{
-		const DuPair e = b->p[i];
-
-		if (i + DU64_AHEAD < b->n)
-			__builtin_prefetch(&d->scratch[b->p[i + DU64_AHEAD].h32 & (cap - 1)], 1);
-		for (uint64 j = e.h32 & (cap - 1);; j = (j + 1) & (cap - 1))
-		{
-			if (d->scratch[j].gid1 == 0)
-			{
-				d->scratch[j] = e;
-				b->p[out++] = e;
-				break;
-			}
-			if (d->scratch[j].val == e.val && d->scratch[j].gid1 == e.gid1)
-				break;
-		}
-	}
-	b->n = out;
+	b->n = sift_du64g_dedup_bucket(d->scratch, cap, b->p, b->n);
 }
 
 static void
