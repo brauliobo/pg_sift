@@ -6,6 +6,7 @@
 --   * the plan chosen against the plan of the tag `-- expect: PLAN [LO HI]`: scan, normal or either;
 --   * the cost ratio (the planner's total cost of the scan path, the chosen plan when it is one, over the native one) against its band LO HI, so that a drift is seen
 --     before it flips a choice (no band, or `-`, when the query has no scan path);
+--   * the tag `-- parallel: yes`: under the lane stock4t, the plan of PostgreSQL has a Gather (the shape is one of the parallel scans the lane is for)
 --   * the shapes of an area (scripts/plangate.sh --slice): the tag `-- area: A B` of a shape lists the areas it covers (star, clickbench, coexist, jsonb, table, bm25, gpu, smoke)
 --   * the times (median of N warm runs): the scan against native. Not a failure of this file: lose is a column the script reads.
 \set ON_ERROR_STOP on
@@ -64,6 +65,9 @@ BEGIN
 	IF band[1] = 'any' THEN anyband := true; band := ARRAY['-', NULL]; END IF;	-- the tag `normal any`: a scan path that exists on some minors of the server only
 	PERFORM plangate.path('native');
 	native := plangate.cost(q);
+	IF txt ~ E'(?m)^-- parallel: yes' AND current_setting('plangate.lane', true) LIKE 'stock4t%' AND native.workers < 1 THEN
+		problems := problems || 'parallel: PostgreSQL plans no worker for it under stock-4t (the fact table is under min_parallel_table_scan_size?)'::text;
+	END IF;
 	err := coldiff.materialize(q, 'pg_native');
 	IF err IS NOT NULL THEN problems := problems || ('native: ' || err); END IF;
 	IF nruns > 0 AND err IS NULL THEN native_ms := plangate.ms(q, nruns); END IF;

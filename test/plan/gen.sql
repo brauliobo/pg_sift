@@ -1,5 +1,7 @@
 -- The tables of the plan-choice gate (scripts/plangate.sh, test/plan/shapes.sql): events (the fact rows, :n of them), dims (the parents, one per
--- 500 events, at least 60), facts (a second, smaller fact table), a month spine, spans and a partitioned copy of the events. Every draw is a
+-- 500 events, at least 60), facts (a second, smaller fact table), a month spine, spans and a partitioned copy of the events, then the star of the shapes of the
+-- areas star, clickbench, coexist, jsonb, bm25 and gpu (sf_category, sf_product, sf_region and the fact table sf_events, padded to cross the 8MB at which PostgreSQL plans a parallel scan
+-- at 30000 events) and the sift_table of the shapes of the area table (tbl_store). Every draw is a
 -- hash of (row number, seed): the same arguments give the same rows, and ANALYZE reads every row (statistics target 1000) and VACUUM marks every page visible, so the planner sees
 -- the same statistics on every run.
 --
@@ -112,3 +114,33 @@ CREATE TABLE links_b (id int PRIMARY KEY, parent_id int NOT NULL, label text NOT
 INSERT INTO links_b SELECT i, 1 + (hashint4(i + :seed) & 2147483647) % greatest(60, :n / 15), 'lbl_' || i % 10, i / 7 % 3, i / 3 % 5 FROM generate_series(1, 4 * :n) i;
 CREATE INDEX links_b_parent ON links_b (parent_id, status);
 VACUUM (FREEZE, ANALYZE) facts_b, dim_b, dim_c, links_b;
+
+-- the star: a snowflake (sf_category over sf_product) and a flat dimension (sf_region) around sf_events, whose pad column (224 bytes held in the row: STORAGE PLAIN) takes the heap over the 8MB
+-- of min_parallel_table_scan_size at 30000 events, so that the stock planner plans workers with no parallel setting changed. Urls are log-uniform (4000 distinct, one in twelve has
+-- `google` in it), doc has nested scalars and a two-element array (one row in fifty has none), body has a common term (wire), a middle one (switch, one in five), a rare one (quantum, one in 97) and a phrase
+CREATE TABLE sf_category (cat_id int PRIMARY KEY, label text NOT NULL);
+INSERT INTO sf_category SELECT c, 'cat_' || c FROM generate_series(1, 32) c;
+CREATE TABLE sf_product (prod_id int PRIMARY KEY, cat_id int NOT NULL, brand text NOT NULL, price numeric(10,2) NOT NULL);
+INSERT INTO sf_product SELECT p, 1 + p % 32, 'brand_' || p % 20, 5 + (p * 37) % 120 FROM generate_series(1, 512) p;
+CREATE TABLE sf_region (reg_id int PRIMARY KEY, tier text NOT NULL, active boolean NOT NULL);
+INSERT INTO sf_region SELECT r, 'tier_' || chr(97 + r % 3), r % 5 <> 0 FROM generate_series(1, 64) r;
+CREATE TABLE sf_events (id int PRIMARY KEY, prod_id int NOT NULL, reg_id int NOT NULL, day date NOT NULL, status text NOT NULL, url text NOT NULL, amount float8 NOT NULL, qty int NOT NULL,
+	metric numeric(12,2) NOT NULL, doc jsonb, body text NOT NULL, pad text NOT NULL) WITH (autovacuum_enabled = false);
+ALTER TABLE sf_events ALTER COLUMN pad SET STORAGE PLAIN;
+INSERT INTO sf_events SELECT i, 1 + (hashint4(i + :seed) & 2147483647) % 512, 1 + (hashint4(i * 3 + :seed) & 2147483647) % 64, date '2024-01-01' + (hashint4(i + :seed + 11) & 1023) % 730,
+	'st_' || chr(97 + i % 8), CASE WHEN i % 12 = 0 THEN 'https://google.example/q/' ELSE 'https://example.com/p/' END || floor(power(4000.0, (i * 0.6180339887498949) % 1.0))::int,
+	1 + (i % 17) + 0.25 * (i % 4), 1 + i % 9, ((i * 13) % 1000) / 10.0,
+	CASE WHEN i % 50 = 0 THEN NULL ELSE jsonb_build_object('channel', 'ch_' || i % 5, 'score', 1 + (i * 3) % 10, 'flag', CASE WHEN i % 4 = 0 THEN 'ok' ELSE 'no' END,
+		'items', jsonb_build_array(jsonb_build_object('kind', 'k_' || i % 3, 'score', 1 + (i * 7) % 10), jsonb_build_object('kind', 'k_' || (i + 1) % 3, 'score', 1 + (i * 5) % 10))) END,
+	'wire' || CASE WHEN i % 5 = 0 THEN ' switch' ELSE '' END || CASE WHEN i % 97 = 0 THEN ' quantum' ELSE '' END || CASE WHEN i % 11 = 0 THEN ' clean cable' ELSE '' END || ' t' || i % 2000,
+	repeat(md5(i::text), 7)
+	FROM generate_series(1, :n) i;
+CREATE INDEX sf_events_day_reg ON sf_events (reg_id, day);
+CREATE INDEX sf_events_col ON sf_events USING sift_col (id, prod_id, reg_id, day, status, url, amount, qty, metric, doc)
+	WITH (paths = 'doc.channel text, doc.score float8, doc.flag text, doc.items[]{kind astext, score float8}');
+CREATE INDEX sf_events_bm25 ON sf_events USING sift (body);
+
+-- the events again as a sift_table of its own, with a b-tree on its key (the area table runs on it whatever the lane)
+CREATE TABLE tbl_store (id int PRIMARY KEY, reg_id int NOT NULL, day date NOT NULL, status text NOT NULL, amount float8 NOT NULL, qty int NOT NULL) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO tbl_store SELECT id, reg_id, day, status, amount, qty FROM sf_events;
+VACUUM (FREEZE, ANALYZE) sf_category, sf_product, sf_region, sf_events, tbl_store;

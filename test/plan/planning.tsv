@@ -4,6 +4,14 @@ arms_filter	797
 arms_per_parent_metrics	849
 arms_scalar_subselects	1000	1.5
 arms_union	1331
+cb_like_substr	2076
+cb_point_seek	778	1.32
+cb_text_groupby	425
+cb_topk_order	417
+coexist_analytical_range	1028	1.87
+coexist_btree_range	475
+coexist_multi_agg	541
+coexist_pk_point	225
 count_all	232
 count_by_kind	299
 count_live	267
@@ -34,6 +42,8 @@ flat_list	1029
 float_metric	803
 float_sum_unrounded	744
 global	697
+gpu_dense_multi_agg	592	1.84
+gpu_small_slice	574	1.79
 groups_over_threshold	571
 having	624
 in_active_parents	992
@@ -45,6 +55,10 @@ join_other_fact_filter	1571
 join_spans_values	1661	1.8
 join_tier	1003
 join_two_lookups	2126	1.5
+jsonb_contains_negation	584	1.79
+jsonb_presence_leaf	306
+jsonb_shred_filter_agg	728	2.07
+jsonb_unnest_agg	764	1.74
 jsonpath_element	1840
 lag_of_months	710	1.5
 lateral_dim_limit_one	987
@@ -91,10 +105,12 @@ scope_path_filter_in	1046
 scope_path_filter_join	1055
 search_count	221
 search_group	473
+search_hybrid_facet	686	1.82
 search_join	796
 search_latest_rows	420
 search_one_parent	460	1.15
 search_or_by_month	555
+search_topk_ranked	432	1.3
 select_distinct	576
 share_of_total	512
 skew_heaviest_parents	1031
@@ -105,9 +121,16 @@ spine_expression_key	714
 spine_range_join	863
 spine_series	1295
 spine_span_kind	786
+star_left_dim	956	1.75
+star_selective_dim	2038	1.58
+star_snowflake_sip	1735	1.6
+star_two_dims	2042	1.58
 sum_by_kind_month	509
 sum_by_parent	330
 sum_of_maxima_by_month	719	1.5
+table_group_agg	475	1.91
+table_point_pk	186
+table_range_prune	565
 text_not_equal	657
 three_keys	840
 top_groups	407

@@ -740,3 +740,127 @@ SELECT f.status, count(*) AS n FROM facts_b f WHERE NOT EXISTS (SELECT 1 FROM li
 -- area: star
 SELECT f.status, count(l.id) AS n FROM facts_b f LEFT JOIN links_b l ON l.parent_id = f.dim_a_id AND l.status = 0 AND l.weight = 1  GROUP BY 1 ORDER BY 1;
 
+
+-- the shapes of the areas star, clickbench, coexist, jsonb, table, bm25 and gpu on the star of gen.sql (sf_events and its dimensions; tbl_store for the area table): the shapes of a
+-- subsystem that the families above hardly reach. A shape tagged `-- parallel: yes` is one PostgreSQL plans with workers under the lane stock-4t at 30000 events (its per-row CPU cost covers parallel_setup_cost: the others plan workers from about 250000 events, see the workers column of --rows 250000)
+
+-- name: star_two_dims
+-- expect: scan 0.055 0.22
+-- area: star smoke
+SELECT r.tier, p.brand, count(*) AS n, sum(e.amount) AS total FROM sf_events e JOIN sf_region r ON r.reg_id = e.reg_id JOIN sf_product p ON p.prod_id = e.prod_id
+WHERE r.active AND p.price > 50 GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- name: star_snowflake_sip
+-- expect: scan 0.052 0.21
+-- area: star
+SELECT c.cat_id, count(*) AS n, sum(e.qty) AS units FROM sf_events e JOIN sf_product p ON p.prod_id = e.prod_id JOIN sf_category c ON c.cat_id = p.cat_id
+WHERE c.cat_id IN (1, 2, 3) GROUP BY 1 ORDER BY 1;
+
+-- name: star_selective_dim
+-- expect: scan 0.054 0.21
+-- area: star
+SELECT r.reg_id, count(*) AS n, round(avg(e.amount)::numeric, 3) AS mean FROM sf_events e JOIN sf_region r ON r.reg_id = e.reg_id JOIN sf_product p ON p.prod_id = e.prod_id
+WHERE p.brand = 'brand_3' AND r.tier = 'tier_a' AND r.active GROUP BY 1 ORDER BY 1;
+
+-- name: star_left_dim
+-- expect: scan 0.054 0.22
+-- area: star
+SELECT r.tier, count(*) AS n, sum(e.qty) AS units FROM sf_events e LEFT JOIN sf_region r ON r.reg_id = e.reg_id AND r.active GROUP BY 1 ORDER BY 1;
+
+-- name: cb_text_groupby
+-- expect: scan 0.041 0.16
+-- area: clickbench
+SELECT url, count(*) AS n, sum(amount) AS total FROM sf_events GROUP BY 1 ORDER BY n DESC, url LIMIT 20;
+
+-- name: cb_like_substr
+-- expect: scan 0.029 0.12
+-- area: clickbench
+SELECT status, count(*) AS n, sum(qty) AS units FROM sf_events WHERE url LIKE '%google%' GROUP BY 1 ORDER BY 1;
+
+-- name: cb_topk_order
+-- expect: scan 0.068 0.27
+-- area: clickbench
+SELECT id, day, amount FROM sf_events WHERE reg_id <= 16 ORDER BY day DESC, id DESC LIMIT 20;
+
+-- name: cb_point_seek
+-- expect: normal 6.3 25
+-- area: clickbench
+SELECT id, reg_id, amount, status FROM sf_events WHERE reg_id = 7 AND day = (SELECT min(day) FROM sf_events WHERE reg_id = 7) ORDER BY id;
+
+-- name: coexist_pk_point
+-- expect: normal -
+-- area: coexist
+SELECT id, reg_id, amount FROM sf_events WHERE id = 4219;
+
+-- name: coexist_btree_range
+-- expect: normal -
+-- area: coexist
+SELECT id, amount FROM sf_events WHERE reg_id = 5 AND day BETWEEN date '2024-06-01' AND date '2024-06-30' ORDER BY id;
+
+-- name: coexist_analytical_range
+-- expect: scan 0.025 0.099
+-- area: coexist
+SELECT status, count(*) AS n, sum(amount * qty) AS revenue, avg(metric) AS mean FROM sf_events
+WHERE day >= date '2024-04-01' AND day < date '2025-04-01' AND qty BETWEEN 2 AND 7 GROUP BY 1 ORDER BY 1;
+
+-- name: coexist_multi_agg
+-- expect: scan 0.033 0.13
+-- area: coexist
+SELECT reg_id, count(*) AS n, sum(amount) AS total, min(day) AS first_day, max(day) AS last_day, avg(qty) AS mean_qty FROM sf_events GROUP BY 1 ORDER BY 1;
+
+-- name: jsonb_shred_filter_agg
+-- expect: scan 0.030 0.12
+-- area: jsonb
+SELECT doc ->> 'channel' AS channel, count(*) AS n, sum((doc ->> 'score')::float8) AS total FROM sf_events WHERE doc ->> 'flag' = 'ok' GROUP BY 1 ORDER BY 1;
+
+-- name: jsonb_unnest_agg
+-- expect: scan 0.00070 0.0028
+-- area: jsonb
+-- parallel: yes
+SELECT elem ->> 'kind' AS kind, count(*) AS n, sum((elem ->> 'score')::float8) AS total FROM sf_events e
+CROSS JOIN LATERAL jsonb_array_elements(e.doc -> 'items') AS elem GROUP BY 1 ORDER BY 1;
+
+-- name: jsonb_presence_leaf
+-- expect: scan 0.021 0.085
+-- area: jsonb
+SELECT count(*) AS n FROM sf_events WHERE doc IS NULL;
+
+-- name: jsonb_contains_negation
+-- expect: scan 0.031 0.13
+-- area: jsonb
+SELECT status, count(*) AS n FROM sf_events WHERE NOT (doc @> '{"flag": "ok"}') GROUP BY 1 ORDER BY 1;
+
+-- name: search_hybrid_facet
+-- expect: scan 0.078 0.31
+-- area: bm25
+SELECT status, count(*) AS n, sum(amount) AS total FROM sf_events WHERE body @@> 'quantum OR clean' AND reg_id <= 16 GROUP BY 1 ORDER BY 1;
+
+-- name: search_topk_ranked
+-- expect: normal -
+-- area: bm25
+SELECT id FROM sf_events WHERE body @@> 'wire switch' ORDER BY sift.score(ctid) DESC, id LIMIT 10;
+
+-- name: gpu_small_slice
+-- expect: scan 0.063 0.25
+-- area: gpu smoke
+SELECT status, count(*) AS n, sum(amount) AS total FROM sf_events WHERE reg_id = 1 GROUP BY 1 ORDER BY 1;
+
+-- name: gpu_dense_multi_agg
+-- expect: scan 0.032 0.13
+-- area: gpu
+SELECT status, count(*) AS n, sum(amount) AS total, sum(qty) AS units, avg(amount) AS mean FROM sf_events GROUP BY 1 ORDER BY 1;
+
+-- name: table_point_pk
+-- expect: normal -
+-- area: table
+SELECT id, reg_id, amount, status FROM tbl_store WHERE id = 4219;
+
+-- name: table_range_prune
+-- expect: scan 0.074 0.30
+-- area: table
+SELECT reg_id, count(*) AS n, sum(amount) AS total FROM tbl_store WHERE reg_id = 7 AND day BETWEEN date '2024-06-01' AND date '2024-09-01' GROUP BY 1;
+
+-- name: table_group_agg
+-- expect: scan 0.082 0.33
+-- area: table
+SELECT status, count(*) AS n, sum(amount) AS total, sum(qty) AS units FROM tbl_store GROUP BY 1 ORDER BY 1;
