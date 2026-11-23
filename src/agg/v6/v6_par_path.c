@@ -38,7 +38,7 @@ extern PGDLLIMPORT bool sift_agg_exact_float;
 #define PAR_TUPLE_NS		15.0	/* the rows the scan reads */
 #define PAR_TEXT_QUAL_NS	30.0	/* a text column a qual reads, for every row of the table */
 #define PAR_INT_KEY_NS		10.0
-#define PAR_TEXT_KEY_NS		120.0	/* a text key of many values: its strings are decoded and hashed */
+#define PAR_TEXT_KEY_NS		40.0	/* a text key of many values: its strings are interned per part and hashed */
 #define PAR_DICT_QUAL_NS	5.0		/* a qual on a column the query groups by, which the parts hold by dictionary codes */
 #define PAR_DICT_DISTINCT_NS	4.0		/* a COUNT(DISTINCT) of a text column held by dictionary codes: a bit of the code */
 #define PAR_DICT_KEY_NS		30.0	/* a text key of at most SIFT_DICT_MAX values: the parts hold it by dictionary codes (b_dec is a code read) */
@@ -46,10 +46,11 @@ extern PGDLLIMPORT bool sift_agg_exact_float;
 #define PAR_AGG_NS			8.0
 #define PAR_VECTOR_AGG_NS	2.0		/* an aggregate of a query with no keys is a vector kernel over the batch */
 #define PAR_DISTINCT_NS		12.0	/* a COUNT(DISTINCT) of no keys: the flat set of the values */
-#define PAR_GROUP_DISTINCT_NS	150.0	/* of a GROUP BY: the set of its (group, value) pairs */
+#define PAR_GROUP_DISTINCT_NS	8.0		/* of a GROUP BY: the set of its (group, value) pairs, in cache-sized radix buckets */
 #define PAR_TEXT_AGG_NS		80.0
 #define PAR_COLD_GROUPS		400000.0	/* from this many groups the table of a serial run no longer fits the caches ... */
-#define PAR_COLD_NS			250.0		/* ... and each row waits for memory (a participant of a parallel run keeps a table of SIFT_PAR_LOCAL_GROUPS) */
+#define PAR_COLD_NS			25.0		/* ... and each row waits for memory: a cache line of the compact table (a participant of a parallel run keeps a table of SIFT_PAR_LOCAL_GROUPS) */
+#define PAR_COLD_TEXT_NS	150.0		/* ... of a table with a text key, whose strings are compared as well */
 #define PAR_RECORD_NS		250.0	/* a record: made, routed, merged */
 #define PAR_VALUE_NS		60.0	/* a distinct value: its record routed and added to the set of its group at the owner */
 #define PAR_LAUNCH_MS		17.0	/* the workers join 5 to 6 ms after the leader starts, and the Gather waits for them to leave: measured on the 1M-row table */
@@ -112,6 +113,15 @@ scan_rows(const SiftV6Spec *spec, const RelOptInfo *rel)
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !is_key_column(spec, v->varattno))
 			return rel->tuples;
 	return rel->rows;
+}
+
+static double
+cold_ns(const SiftV6Spec *spec)
+{
+	for (int i = 0; i < spec->nkeys; i++)
+		if (col_ns(spec, &spec->key[i], 1.0, 0.0) - (spec->key[i].derive > 0 ? PAR_DERIVE_NS : 0.0) > 0.0)
+			return PAR_COLD_TEXT_NS;
+	return PAR_COLD_NS;
 }
 
 static double
@@ -246,7 +256,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;
 	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows, groups);
-	pick.serial_ms = pick.scan_ms + (groups >= PAR_COLD_GROUPS ? rel->rows * PAR_COLD_NS / 1e6 : 0.0);
+	pick.serial_ms = pick.scan_ms + (groups >= PAR_COLD_GROUPS ? rel->rows * cold_ns(&spec) / 1e6 : 0.0);
 	pick.values = false;
 	pick.nkeys = spec.nkeys;
 	for (int j = 0; j < spec.naggs; j++)
