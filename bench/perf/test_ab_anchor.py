@@ -350,5 +350,172 @@ class AnchorCommandLine(unittest.TestCase):
         self.assertEqual(result['vs_anchor_manifest']['status'],'regression')
 
 
+class AnchorStage(unittest.TestCase):
+    SHA = 'c' * 40
+
+    def fake_command(self, argv, **kwargs):
+        return self.SHA if argv[0]=='git' else 'PostgreSQL 18.7 on x86_64'
+
+    def stage(self, cache, build, ref='v5.1.0'):
+        with patch.object(gate,'command',side_effect=self.fake_command), patch.object(gate,'archive_tree',side_effect=lambda sha,dest,*a: dest.mkdir()), \
+             patch.object(gate,'build_release',side_effect=build):
+            return gate.stage_anchor(ref,cache,'/usr/bin/pg_config',1,None)
+
+    def library(self, tree, stage, *args):
+        (stage/'usr/lib/postgresql/18/lib').mkdir(parents=True)
+        (stage/'usr/lib/postgresql/18/lib/pg_sift.so').write_text('lib')
+
+    def test_the_anchor_is_built_once_per_commit_and_major_and_then_reused(self):
+        built = []
+        def build(tree, stage, *args):
+            built.append(stage)
+            self.library(tree,stage)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)/'anchor'
+            first = self.stage(cache,build)
+            second = self.stage(cache,build)
+            self.assertEqual(first,(self.SHA,cache/f'{self.SHA[:12]}-pg18',False))
+            self.assertEqual(second,(self.SHA,first[1],True))
+            self.assertEqual(len(built),1)
+            self.assertEqual((first[1]/'.fixture').read_text(),f'{self.SHA} pg18\n')
+            self.assertEqual(sorted(p.name for p in cache.iterdir()),[first[1].name])
+
+    def test_a_stage_that_scripts_build_v510_fixture_wrote_is_reused(self):
+        def build(*args): raise AssertionError('rebuilt a stamped stage')
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp)/f'{self.SHA[:12]}-pg18'
+            stage.mkdir()
+            (stage/'.fixture').write_text(f'{self.SHA} pg18\n')
+            self.assertEqual(self.stage(Path(tmp),build),(self.SHA,stage,True))
+
+    def test_a_stale_stage_is_rebuilt_and_a_build_without_a_library_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stage = Path(tmp)/f'{self.SHA[:12]}-pg18'
+            stage.mkdir()
+            (stage/'.fixture').write_text(f'{"d"*40} pg18\n')
+            self.assertEqual(self.stage(Path(tmp),self.library)[2],False)
+            self.assertEqual((stage/'.fixture').read_text(),f'{self.SHA} pg18\n')
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(RuntimeError,'no pg_sift library'):
+            self.stage(Path(tmp),lambda *a: a[1].mkdir())
+        self.assertFalse(list(Path(tmp).glob('*pg18')))
+
+    def test_a_prebuilt_revision_neither_archives_nor_builds(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(gate,'archive_tree',side_effect=AssertionError('archived')), \
+             patch.object(gate,'allocate_socket_directory',return_value=(Path(tmp)/'sock',{})):
+            rev = gate.Revision('anchor',self.SHA,None,Path(tmp),Path(tmp),'/usr/bin/pg_config',56284,1,prebuilt=Path(tmp)/'stage',anchor=True)
+            self.assertEqual((rev.stage,rev.anchor),(Path(tmp)/'stage',True))
+
+    def test_an_unknown_sift_setting_of_an_older_release_is_skipped_only_when_the_release_is_listed(self):
+        sent = []
+        for gucs,expected in ((None,['SET sift.agg_preagg=off','SET sift.enable_agg=on','SET jit=off']),
+                              ({'sift.enable_agg'},['SET sift.enable_agg=on','SET jit=off'])):
+            conn = object.__new__(gate.SQL)
+            conn.gucs = gucs
+            conn.exec = sent.append
+            sent.clear()
+            conn.script('SET sift.agg_preagg=off; set sift.enable_agg=on; SET jit=off')
+            self.assertEqual([s.strip().replace('set','SET') for s in sent],expected)
+
+
+class AnchorPairs(unittest.TestCase):
+    class Rev:
+        def __init__(self, name, capabilities=()):
+            self.name,self.conn,self.capabilities = name,self,set(capabilities)
+
+    def report(self):
+        return dict(cases=[],vs_anchor=[],anchor_profile={},config={'verify_control':False},status='pass',complete=True,size_complete=True,
+                    required_size_states=[],size_checks=[dict(state='settled_build',status='pass')])
+
+    def pair(self, case, ratio, record=False, anchor=None, **patches):
+        report = self.report()
+        timed = dict(gate.interval([(1,ratio)]*6),samples=[(1,ratio)]*6)
+        with patch.object(gate,'validate_case',return_value={'size_checks':None}), patch.object(gate,'calibrate',return_value={'operations':3}), \
+             patch.object(gate,'block',return_value=timed), patch.object(gate,'PERF_AVAILABLE',True), patch.object(gate,'fixture_rows',return_value=100), \
+             patch.object(gate,'case_instructions',side_effect=[2000,2600]), patch.object(gate,'native_wall_ratio',return_value=0.25), \
+             patch.object(gate,'warm_blocks',return_value=10):
+            gate.measure_against_anchor(anchor or self.Rev('anchor',('table',)),self.Rev('candidate'),case,math.inf,report,None,record)
+        return report
+
+    def case(self, name='agg_group'):
+        return next(c for c in gate.CASES if c.name==name)
+
+    def test_a_candidate_slower_than_the_anchor_is_a_regression_the_parent_comparison_cannot_see(self):
+        report = self.pair(self.case(),1.25)
+        self.assertEqual(report['vs_anchor'][0]['status'],'regression')
+        self.assertEqual(report['vs_anchor'][0]['regression_kind'],'instructions')
+        gate.reduce_report(report)
+        self.assertEqual(report['status'],'regression')
+        passing = self.pair(self.case(),1.0)
+        gate.reduce_report(passing)
+        self.assertEqual(passing['status'],'pass')
+
+    def test_a_candidate_on_par_with_the_anchor_passes_and_the_ratio_is_reported(self):
+        report = self.pair(self.case(),1.0)
+        self.assertEqual(report['vs_anchor'][0]['status'],'pass')
+        self.assertEqual(report['vs_anchor'][0]['instructions']['ratio'],1.3)
+        self.assertEqual(report['anchor_profile'],{})
+
+    def test_a_case_the_anchor_cannot_run_is_reported_not_timed(self):
+        report = self.pair(self.case('agg_table_group'),1.25,anchor=self.Rev('anchor'))
+        entry = report['vs_anchor'][0]
+        self.assertEqual((entry['status'],entry['timing_status']),('skipped','skipped'))
+        self.assertIn('no table access method',entry['reason'])
+        gate.reduce_report(report)
+        self.assertEqual(report['status'],'pass')
+
+    def test_an_anchor_that_answers_differently_is_skipped_not_an_error(self):
+        report = self.report()
+        with patch.object(gate,'validate_case',side_effect=gate.CorrectnessMismatch('agg_group baseline/candidate: correctness differs')):
+            gate.measure_against_anchor(self.Rev('anchor',('table',)),self.Rev('candidate'),self.case(),math.inf,report,None,False)
+        self.assertEqual(report['vs_anchor'][0]['status'],'skipped')
+        self.assertIn('correctness differs',report['vs_anchor'][0]['reason'])
+
+    def test_recording_profiles_the_anchor_side_of_the_pair(self):
+        report = self.pair(self.case('agg_group').at('4T'),1.0,record=True)
+        self.assertEqual(report['anchor_profile'],{'agg_group@4T':dict(instr_per_row=20.0,ms_ratio_vs_native=0.25,blocks=10)})
+
+    def test_the_recorded_manifest_is_the_one_a_later_run_reads(self):
+        report = self.pair(self.case(),1.0,record=True)
+        report.update(anchor=dict(sha=SHA,rows=100),postgresql='PostgreSQL 18.7',date='2026-11-23T10:00:00+00:00',quiet_host=dict(enabled=True,blocks=1,noisy_blocks=0))
+        report['anchor_profile'].update(self.pair(self.case('agg_group').at('4T'),1.0,record=True)['anchor_profile'])
+        with tempfile.TemporaryDirectory() as tmp:
+            args = gate.parser().parse_args(['--baseline-ref','a','--candidate-ref','b','--output','o','--scratch-root','s','--anchor-ref','v5.1.0',
+                                             '--anchor-record',str(Path(tmp)/'m.tsv')])
+            gate.anchor_record(report,args)
+            manifest = gate.load_anchor_manifest(Path(tmp)/'m.tsv')
+        self.assertEqual(manifest.meta['anchor_ref'],'v5.1.0')
+        self.assertEqual(set(manifest.rows),{('agg_group','1T'),('agg_group','4T')})
+        self.assertEqual(manifest.rows[('agg_group','1T')]['blocks'],10)
+
+    def test_a_wall_ratio_is_recorded_only_from_a_quiet_host(self):
+        profile = {'agg_group':dict(instr_per_row=20.0,ms_ratio_vs_native=0.25,blocks=10)}
+        for host,recorded in ((dict(enabled=True,blocks=12,noisy_blocks=0),0.25),(dict(enabled=True,blocks=12,noisy_blocks=1),None),
+                              (dict(enabled=False,blocks=0,noisy_blocks=0),None),(dict(enabled=True,blocks=0,noisy_blocks=0),None)):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as tmp:
+                report = dict(anchor_profile=profile,quiet_host=host,anchor=dict(sha=SHA,rows=100),postgresql='PostgreSQL 18.7',date='2026-11-23T10:00:00+00:00')
+                args = gate.parser().parse_args(['--baseline-ref','a','--candidate-ref','b','--output','o','--scratch-root','s','--anchor-ref','v5.1.0',
+                                                 '--anchor-record',str(Path(tmp)/'m.tsv')])
+                gate.anchor_record(report,args)
+                row = gate.load_anchor_manifest(Path(tmp)/'m.tsv').rows[('agg_group','1T')]
+                self.assertEqual((row['ms_ratio_vs_native'],row['instr_per_row'],row['blocks']),(recorded,20.0,10))
+
+    def test_the_anchor_fixture_must_hold_the_candidate_data(self):
+        class Conn:
+            def __init__(self,digest): self.conn,self.digest = self,digest
+            def rows(self,sql): return [self.digest]
+        self.assertEqual(gate.check_anchor_fixture(Conn(['8192','x']),Conn(['8192','x'])),8192)
+        with self.assertRaisesRegex(gate.CorrectnessMismatch,'logical fixture'):
+            gate.check_anchor_fixture(Conn(['8192','x']),Conn(['8192','y']))
+
+    def test_the_anchor_flags(self):
+        base = ['--baseline-ref','a','--candidate-ref','b','--output','o','--scratch-root','s']
+        parsed = gate.parser().parse_args(base)
+        self.assertEqual((parsed.anchor_ref,parsed.anchor_tsv,parsed.anchor_record,parsed.build_jobs),(None,None,None,2))
+        parsed = gate.parser().parse_args(base+['--anchor-ref','v5.1.0','--anchor-tsv','m.tsv','--build-jobs','1'])
+        self.assertEqual((parsed.anchor_ref,str(parsed.anchor_tsv),parsed.build_jobs),('v5.1.0','m.tsv',1))
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            gate.main(base+['--anchor-record',str(Path(tmp)/'m.tsv')])
+
+
 if __name__=='__main__':
     unittest.main()

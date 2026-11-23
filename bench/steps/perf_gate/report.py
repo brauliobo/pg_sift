@@ -23,6 +23,7 @@ def reduce_report(report):
         return
     statuses = {c['timing_status'] for c in report['cases'] if c['name'].split('@')[0] in GATING}
     statuses |= {c['vs_anchor_manifest']['status'] for c in report['cases'] if c['name'].split('@')[0] in GATING and 'vs_anchor_manifest' in c}
+    statuses |= {c['timing_status'] for c in report.get('vs_anchor',[]) if c['name'].split('@')[0] in GATING}
     statuses -= {'unrecorded','unmeasured'}
     report['status'] = ('regression' if size_regression or 'regression' in statuses else
                         'inconclusive' if not report['complete'] or statuses-{'pass','skipped'} or report['size_status']!='pass' else 'pass')
@@ -68,6 +69,32 @@ def reduce_insert_feasibility(report):
                                   for name,b in (('initial',initial),('confirmation',confirmation)) if 'n' in b}
 
 
+def pair_lines(cases, left, right):
+    lines = ['', f'| Case | Phase | n | Ratio | 95% CI | {left} median [min,max] s | {right} median [min,max] s | Status |', '|---|---|---:|---:|---|---|---|---|']
+    for case in cases:
+        for phase in ('initial','confirmation','extension'):
+            if phase in case and 'n' in case[phase]:
+                b = case[phase]
+                lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']}{' (noisy block)' if b.get('noisy') else ''} |")
+    return lines
+
+
+def deciding_ratio(case):
+    block = next((case[phase] for phase in ('extension','confirmation','initial') if phase in case and 'n' in case[phase]),None)
+    return f"{block['ratio']:.3f}" if block else '-'
+
+
+def comparison_lines(report):
+    """vs_base catches the regression of one change; vs_anchor the drift of many"""
+    anchored = {c['name']:c for c in report.get('vs_anchor',[])}
+    lines = ['', '| Case | Mode | vs_base ratio | vs_base | vs_anchor ratio | vs_anchor | Anchor manifest drift |', '|---|---|---:|---|---:|---|---|']
+    for case in report['cases']:
+        anchor = anchored.get(case['name'],{})
+        drift = case.get('vs_anchor_manifest',{}).get('status','-')
+        lines.append(f"| {case['name']} | {case.get('mode','1T')} | {deciding_ratio(case)} | {case['timing_status']} | {deciding_ratio(anchor)} | {anchor.get('timing_status','-')} | {drift} |")
+    return lines
+
+
 def write_report(output, report):
     report['quiet_host'] = QUIET.summary()
     with run_phase(report,'report_write') as phase:
@@ -92,13 +119,11 @@ def _write_report(output, report):
                       'Diagnostic coverage: `'+json.dumps(report.get('coverage',{}))+'`.',
                       'Achieved windows: `'+json.dumps(report.get('achieved_windows',{}))+'`.',
                       'A diagnostic pass does not establish adequate SQL window, power or gate readiness.'])
-    lines.extend(['', '| Case | Phase | n | Ratio | 95% CI | Base median [min,max] s | Head median [min,max] s | Status |',
-                  '|---|---|---:|---:|---|---|---|---|'])
-    for case in report['cases']:
-        for phase in ('initial','confirmation','extension'):
-            if phase in case and 'n' in case[phase]:
-                b = case[phase]
-                lines.append(f"| {case['name']} | {phase} | {b['n']} | {b['ratio']:.3f} | [{b['lower']:.3f}, {b['upper']:.3f}] | {b['baseline_median']:.4f} {b['baseline_range']} | {b['candidate_median']:.4f} {b['candidate_range']} | {case['status']}{' (noisy block)' if b.get('noisy') else ''} |")
+    lines.extend(pair_lines(report['cases'],'Base','Head'))
+    if report.get('anchor'):
+        lines.extend(['',f"Pinned anchor: `{report['anchor']['ref']}` ({report['anchor']['sha']}), staged `{report['anchor']['stage']}`, reused: {report['anchor']['reused']}. Cases the anchor cannot run are reported as skipped, not timed.",
+                      *pair_lines(report['vs_anchor'],'Anchor','Head')])
+    lines.extend(comparison_lines(report))
     lines.extend(['', '| Case / workload | Mode | Phase | Complete | Timing | Combined | Seed / first ID / N | Workers planned/launched base, head |',
                   '|---|---|---|---|---|---|---|---|'])
     for case in report['cases']:

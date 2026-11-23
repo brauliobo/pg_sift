@@ -12,12 +12,19 @@ CREATE TABLE docs (LIKE seed);
 ALTER TABLE docs ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO docs SELECT * FROM seed ORDER BY id;
 CREATE INDEX docs_bm25 ON docs USING sift(body);
+SELECT EXISTS (SELECT 1 FROM pg_am WHERE amname='sift_col') AS has_col, EXISTS (SELECT 1 FROM pg_am WHERE amname='sift_table') AS has_table \gset
+\if :has_col
 CREATE INDEX docs_col ON docs USING sift_col(id,g,amount);
+\endif
+\if :has_table
 CREATE TABLE store (LIKE seed) USING sift_table;
 INSERT INTO store SELECT * FROM seed ORDER BY id;
 CREATE INDEX store_pk ON store(id);
 CREATE TABLE mutable (LIKE seed) USING sift_table;
 CREATE INDEX mutable_pk ON mutable(id);
+\endif
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) docs;
+\if :has_table
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) store;
+\endif
 ANALYZE seed;

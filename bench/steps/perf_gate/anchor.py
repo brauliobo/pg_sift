@@ -142,3 +142,66 @@ def anchor_drift(manifest, case, profile, rows):
     statuses = {c['status'] for c in checks.values()}
     return dict(source='manifest',checks=checks,
                 status='regression' if 'regression' in statuses else 'pass' if 'pass' in statuses else 'unmeasured')
+
+
+def anchor_cache_root():
+    return Path(os.environ.get('XDG_CACHE_HOME') or Path.home()/'.cache')/'sift/anchor'
+
+
+def stage_anchor(ref, cache_root, pg_config, jobs, log):
+    sha = command(['git','rev-parse','--verify',ref+'^{commit}'],cwd=ROOT)
+    return (sha,*stage_release(sha,cache_root,pg_config,jobs,log))
+
+
+def stage_release(sha, cache_root, pg_config, jobs, log, source=ROOT):
+    """(staged install, reused) of a commit: built once per commit and PostgreSQL major, then reused by every run.
+    The stage and its `.fixture` stamp are the ones scripts/build-v510-fixture.sh writes, so that script can fill the cache as well."""
+    major = re.search(r'\d+',command([pg_config,'--version'])).group()
+    stage = cache_root/f'{sha[:12]}-pg{major}'
+    stamp = f'{sha} pg{major}'
+    if (stage/'.fixture').is_file() and (stage/'.fixture').read_text().strip()==stamp:
+        return stage,True
+    cache_root.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='anchor-',dir=cache_root) as tmp:
+        staged = Path(tmp)/'stage'
+        archive_tree(sha,Path(tmp)/'source',source,log)
+        build_release(Path(tmp)/'source',staged,pg_config,jobs,log)
+        if not list(staged.rglob('pg_sift.*so')):
+            raise RuntimeError(f'the build of {sha} staged no pg_sift library')
+        (staged/'.fixture').write_text(stamp+'\n')
+        shutil.rmtree(stage,ignore_errors=True)
+        staged.rename(stage)
+    return stage,False
+
+
+def unsupported(sink, case, reason):
+    sink.append(dict(name=case.name,case=case.name.split('@')[0],mode=case.mode,group=case.group,smoke=case.smoke,gate=case.gate,
+                     status='skipped',timing_status='skipped',complete=True,phase='complete',reason=reason))
+
+
+def measure_against_anchor(anchor, candidate, case, deadline, report, output, record):
+    """the case on the anchor and the candidate, paired like any other revisions; what the anchor cannot run is reported, not timed"""
+    sink = report['vs_anchor']
+    if case.needs and case.needs not in anchor.capabilities:
+        return unsupported(sink,case,f'the anchor has no {case.needs} access method')
+    try:
+        result = measure([anchor,candidate],case,deadline,sink=sink,report=report,output=output,profile=False,label='_anchor')
+    except CorrectnessMismatch as exc:
+        sink[-1].update(status='skipped',timing_status='skipped',complete=True,phase='complete',reason=str(exc))
+        return
+    if record and result['status']!='skipped':
+        instructions = result.get('instructions')
+        report['anchor_profile'][case.name] = case_profile(anchor.conn,case,instructions and instructions['baseline_per_row'],result['operations'],deadline)
+
+
+def anchor_record(report, args):
+    """instructions and blocks do not depend on the host; a wall ratio is recorded only from a run that waited for a quiet host and never timed a noisy block"""
+    host = report['quiet_host']
+    quiet = host['enabled'] and host['blocks']>0 and host['noisy_blocks']==0
+    rows = {(name.split('@')[0],'4T' if name.endswith('@4T') else '1T'):dict(profile,ms_ratio_vs_native=profile['ms_ratio_vs_native'] if quiet else None)
+            for name,profile in report['anchor_profile'].items()}
+    meta = dict(anchor_ref=args.anchor_ref,anchor_sha=report['anchor']['sha'],postgresql=report['postgresql'],
+                rows=report['anchor']['rows'],tier=args.tier,recorded=report['date'][:10])
+    text = format_anchor_manifest(meta,rows)
+    parse_anchor_manifest(text)
+    args.anchor_record.write_text(text)

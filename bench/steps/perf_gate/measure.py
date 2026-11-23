@@ -32,14 +32,15 @@ def block(revisions, case, operations, deadline, control=False, sink=None, *, pa
     return saved
 
 
-def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0):
+def measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0, profile=True, label=None):
     if report is None:
         report={}
-    with run_phase(report,case.name+('_controlled' if control else '_clean')):
-        return _measure(revisions,case,deadline,control,sink,frozen=frozen,report=report,output=output,force_confirmation=force_confirmation,reserve=reserve)
+    with run_phase(report,case.name+(label or ('_controlled' if control else '_clean'))):
+        return _measure(revisions,case,deadline,control,sink,frozen=frozen,report=report,output=output,force_confirmation=force_confirmation,reserve=reserve,
+                        profile=profile)
 
 
-def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0):
+def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None, report=None, output=None, force_confirmation=False, reserve=0, profile=True):
     start = time.monotonic()
     result = dict(name=case.name,case=case.name.split('@')[0],mode=case.mode,group=case.group,smoke=case.smoke,status='inconclusive',
                   timing_status='inconclusive',complete=False,phase='validation',started_at=utc_now(),
@@ -159,7 +160,7 @@ def _measure(revisions, case, deadline, control=False, sink=None, *, frozen=None
             rows = fixture_rows(revisions[0].conn)
             if PERF_AVAILABLE:
                 result['instructions'] = measure_instructions(revisions,case,rows,deadline)
-            if PROFILE:
+            if PROFILE and profile:
                 instructions = result.get('instructions')
                 result['profile'] = case_profile(revisions[1].conn,case,instructions and instructions['candidate_per_row'],operations,deadline)
                 if ANCHOR_MANIFEST:

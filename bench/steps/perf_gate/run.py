@@ -16,6 +16,11 @@ def parser():
     p.add_argument('--pg-config',default=shutil.which('pg_config'))
     p.add_argument('--port-base',type=int,default=56240)
     p.add_argument('--allow-loaded',action='store_true',help='smoke/dev only: time without waiting for a quiet host; a real gate waits (scripts/quiet.sh)')
+    p.add_argument('--anchor-ref',help='pinned release anchor (a tag or commit such as v5.1.0 or the last RC): built once into --anchor-cache and timed against the candidate on every read case it can run')
+    p.add_argument('--anchor-cache',type=Path,default=anchor_cache_root(),help='where staged anchors are kept, one per commit and PostgreSQL major (also filled by scripts/build-v510-fixture.sh)')
+    p.add_argument('--anchor-record',type=Path,help='write the manifest of what the anchor costs per case (needs --anchor-ref; the file --anchor-tsv reads)')
+    p.add_argument('--stage-cache',type=Path,help='dev loops: keep the staged build of every revision here, per commit, instead of building it again; no cache is used by default')
+    p.add_argument('--build-jobs',type=int,default=2,help='make -j of each build')
     p.add_argument('--anchor-tsv',type=Path,help='manifest of the pinned release anchor (bench/baselines/anchor-manifest.tsv): a case that drifts from it fails, however small each commit was')
     p.add_argument('--no-perf',action='store_true',help='do not count instructions:u (elapsed time, plans, workers and sizes only)')
     p.add_argument('--quiet-max',type=float,default=QUIET_MAX_PERCENT,help='CPU and IO pressure (some avg10, percent) below which the host is quiet')
@@ -28,14 +33,14 @@ def parser():
 
 def new_report(args):
     return dict(schema_version=4,complete=False,size_complete=False,budget_exhausted=False,date=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],size_checks=[],size_status='inconclusive',
+                  baseline_ref=args.baseline_ref,candidate_ref=args.candidate_ref,status='inconclusive',cases=[],vs_anchor=[],anchor_profile={},anchor=None,size_checks=[],size_status='inconclusive',
                   cpu=next((l.split(':',1)[1].strip() for l in Path('/proc/cpuinfo').read_text().splitlines() if l.startswith('model name')),platform.machine()),
                   cpus=os.cpu_count(),runner=os.environ.get('RUNNER_NAME',platform.node()),load=os.getloadavg(),
                   config=dict(tier=args.tier,groups=args.groups,insert_feasibility=args.insert_feasibility,initial_pairs=INITIAL_PAIRS,
                               read_confirmation_pairs=READ_CONFIRMATION_PAIRS,mutation_confirmation_pairs=MUTATION_CONFIRMATION_PAIRS,
                               supported_pairs=list(T95),t_critical_by_pairs=T95,target_seconds=TARGET,threshold=MATERIAL,
                               insert_pilot_operations=INSERT_PILOT,insert_growth_cap_operations=INSERT_GROWTH_CAP,
-                              insert_history_cap=INSERT_HISTORY_CAP,modes=sorted({m for c in CASES for m in c.modes}),cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,quiet_host_guard=not args.allow_loaded,perf_instructions=PERF_AVAILABLE,build_workers=2,
+                              insert_history_cap=INSERT_HISTORY_CAP,modes=sorted({m for c in CASES for m in c.modes}),cpu_pilot_rows=CPU_PILOT_ROWS,cpu_pilot_iterations=CPU_PILOT_ITERATIONS,cpu_iteration_cap=CPU_ITERATION_CAP,budget_seconds=args.budget_seconds,verify_control=args.verify_control,quiet_host_guard=not args.allow_loaded,anchor_ref=args.anchor_ref,anchor_tsv=str(args.anchor_tsv) if args.anchor_tsv else None,perf_instructions=PERF_AVAILABLE,build_workers=2,
                               build_flags='USE_PGXS=1 SIFT_TESTING= SIFT_LTO= SANITIZE= VULKAN=',settings=SETTINGS),runtime_seconds={})
 
 
@@ -128,6 +133,13 @@ def record_source_identity(args,report):
                                      fixture_owner='candidate harness, loaded identically into both isolated exact-SHA builds')
 
 
+def check_anchor_fixture(anchor, candidate):
+    """the same logical fixture on an older release: the rows are what its per-row numbers are divided by"""
+    digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in (anchor,candidate)]
+    require_equal(digests[0],digests[1],'logical fixture of the anchor and the candidate')
+    return int(digests[1][0][0])
+
+
 def check_fixture(revisions,report):
     report['fixture_sha256'] = hashlib.sha256((ROOT/'bench/perf/fixture.sql').read_bytes()).hexdigest()
     digests = [r.conn.rows("SELECT count(*),md5(string_agg(row(seed.*)::text,'|' ORDER BY id)) FROM seed") for r in revisions]
@@ -163,6 +175,8 @@ def main(argv=None):
     if checked:
         return check_anchor_manifest(checked)
     args = parser().parse_args(argv)
+    if args.anchor_record and not args.anchor_ref:
+        parser().error('--anchor-record needs --anchor-ref')
     try:
         ANCHOR_MANIFEST = load_anchor_manifest(args.anchor_tsv) if args.anchor_tsv else None
     except ValueError as exc:
@@ -179,7 +193,7 @@ def main(argv=None):
     args.output = args.output.resolve()
     args.output.mkdir(parents=True,exist_ok=True)
     report = new_report(args)
-    revisions = []
+    revisions, references = [], []
     scratch = None
     start = time.monotonic()
     DEADLINE = start
@@ -204,8 +218,8 @@ def main(argv=None):
             exact_sha(args.candidate_ref)
             if args.verify_control:
                 require_equal(args.baseline_ref,args.candidate_ref,'control requires unchanged revisions')
-            if not 56100 <= args.port_base <= 56298:
-                raise ValueError('port-base must be in 56100..56298')
+            if not 56100 <= args.port_base <= 56298-bool(args.anchor_ref):
+                raise ValueError('port-base must be in 56100..56298, one lower with an anchor')
             selected = select([g for g in args.groups.split(',') if g],args.tier)
             runs = expand(selected)
             report['required_size_states'] = ['settled_build','churn_vacuum'] + [
@@ -220,11 +234,21 @@ def main(argv=None):
             scratch = Path(tempfile.mkdtemp(prefix='perf-gate-',dir=args.scratch_root))
             for i, (name,sha,tree) in enumerate([('baseline',args.baseline_ref,args.baseline_tree),('candidate',args.candidate_ref,args.candidate_tree)]):
                 phase = time.monotonic()
-                rev = Revision(name,sha,tree,scratch,args.output,str(Path(args.pg_config).resolve()),args.port_base+i)
+                pg_config = str(Path(args.pg_config).resolve())
+                prebuilt = stage_release(sha,args.stage_cache,pg_config,args.build_jobs,args.output/f'{name}-setup.log',Path(tree) if tree else ROOT)[0] if args.stage_cache else None
+                rev = Revision(name,sha,tree,scratch,args.output,pg_config,args.port_base+i,args.build_jobs,prebuilt)
                 revisions.append(rev)
                 report.setdefault('unix_socket_paths',{})[name] = rev.socket_path
+            if args.anchor_ref:
+                phase = time.monotonic()
+                sha,stage,reused = stage_anchor(args.anchor_ref,args.anchor_cache,str(Path(args.pg_config).resolve()),args.build_jobs,args.output/'anchor-setup.log')
+                report['anchor'] = dict(ref=args.anchor_ref,sha=sha,stage=str(stage),reused=reused)
+                report['runtime_seconds']['anchor_stage'] = time.monotonic()-phase
+                anchor = Revision('anchor',sha,None,scratch,args.output,str(Path(args.pg_config).resolve()),args.port_base+2,args.build_jobs,prebuilt=stage,anchor=True)
+                references.append(anchor)
+                report['unix_socket_paths']['anchor'] = anchor.socket_path
             write_report(args.output,report)
-            for rev in revisions:
+            for rev in revisions+references:
                 phase = time.monotonic()
                 name = rev.name
                 report.setdefault('cluster_config',{})[name] = rev.setup(32768 if args.tier=='nightly' else 8192)
@@ -235,6 +259,8 @@ def main(argv=None):
             finalize_fixtures(revisions,DEADLINE,report['fixture_checkpoint_barrier'])
             report['runtime_seconds']['fixture_checkpoint_barrier'] = report['fixture_checkpoint_barrier']['runtime_seconds']
             check_fixture(revisions,report)
+            for anchor in references:
+                report['anchor']['rows'] = check_anchor_fixture(anchor,revisions[1])
             if not args.insert_feasibility:
                 report['initial_sizes'] = {r.name:sizes(r.conn) for r in revisions}
                 report['size_checks'].append(size_snapshot(revisions,'settled_build'))
@@ -259,6 +285,8 @@ def main(argv=None):
                         # a case that does not gate stays inconclusive in the report; the cases after it are still measured
                         if case.gate:
                             raise
+                    if references and case.lifecycle=='read':
+                        measure_against_anchor(references[0],revisions[1],case,deadline,report,args.output,args.anchor_record)
                     write_report(args.output,report)
                 report['size_checks'].append(churn_sizes(revisions))
             if time.monotonic()>=deadline:
@@ -278,7 +306,7 @@ def main(argv=None):
             report['runtime_seconds']['measurement_validation'] = time.monotonic()-measurement_start
         phase = time.monotonic()
         with run_phase(report,'final_cluster_teardown') as cleanup_phase:
-            stop_revisions(revisions,scratch,report,args,cleanup_phase)
+            stop_revisions(revisions+references,scratch,report,args,cleanup_phase)
         report['runtime_seconds']['cleanup'] = time.monotonic()-phase
         report['runtime_seconds']['total_before_final_reduce_write'] = time.monotonic()-start
         report['terminal_accounting_file']='terminal-accounting.json (includes final reducer/writer; excludes this sidecar write and outer upload)'
@@ -289,6 +317,8 @@ def main(argv=None):
                 else:
                     reduce_report(report)
             write_report(args.output,report)
+            if args.anchor_record and report['complete'] and report['status']!='error':
+                anchor_record(report,args)
         except Exception as exc:
             report.setdefault('terminal_errors',[]).append(f'{type(exc).__name__}: {exc}')
             if report['status'] not in ('error','diagnostic_error'):

@@ -13,6 +13,10 @@ class PlanAbsent(ValueError):
     pass
 
 
+class CorrectnessMismatch(ValueError):
+    pass
+
+
 def interval(pairs):
     if len(pairs) not in T95:
         raise ValueError('a block requires exactly 6 or 16 independent pairs')
@@ -46,4 +50,4 @@ def extension_fits(confirmation, deadline, reserve):
 
 def require_equal(left, right, label):
     if left != right:
-        raise ValueError(f'{label}: correctness differs: {left!r} != {right!r}')
+        raise CorrectnessMismatch(f'{label}: correctness differs: {left!r} != {right!r}')

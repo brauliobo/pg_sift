@@ -1,9 +1,44 @@
 # A revision under test: its build, cluster, start, stop and logs, and the fixtures it loads.
 # Both revisions are built from exact commits and run side by side.
 
+BUILD_FLAGS = ('USE_PGXS=1','SIFT_TESTING=','SIFT_LTO=','SANITIZE=','VULKAN=')
+ANCHOR_CAPABILITIES = {'table':'sift_table','col':'sift_col'}
+
+
+def clean_env(pg_config):
+    env = os.environ.copy()
+    for key in ('MAKEFLAGS','MFLAGS','CFLAGS','CPPFLAGS','LDFLAGS','PGOPTIONS','SIFT_INITDB_TEMPLATE',
+                'SANITIZE','SIFT_HARDEN','SIFT_LTO','VULKAN','SIFT_TESTING','LD_PRELOAD'):
+        env.pop(key, None)
+    env['PATH'] = str(Path(pg_config).parent)+os.pathsep+env['PATH']
+    return env
+
+
+def archive_tree(sha, destination, source, log):
+    # git archive ignores untracked build products and avoids inherited object files.
+    archive = destination.with_suffix('.tar')
+    command(['git','archive','--format=tar','-o',archive,sha],cwd=source,log=log)
+    destination.mkdir()
+    with tarfile.open(archive) as tar:
+        tar.extractall(destination, filter='data')
+    archive.unlink()
+
+
+def build_release(tree, stage, pg_config, jobs, log):
+    """the release library and SQL of TREE, installed under STAGE (the layout of a DESTDIR install)"""
+    env = clean_env(pg_config)
+    flags = [*BUILD_FLAGS,f'PG_CONFIG={pg_config}']
+    command(['nice','-n','19','make',f'-j{jobs}',*flags],cwd=tree,env=env,log=log)
+    command(['nice','-n','19','make',f'-j{jobs}',*flags,f'DESTDIR={stage}','install'],cwd=tree,env=env,log=log)
+    return env
+
+
 class Revision:
-    def __init__(self, name, sha, tree, scratch, output, pg_config, port):
-        self.name, self.sha = name, sha
+    prebuilt = None
+    anchor = False
+
+    def __init__(self, name, sha, tree, scratch, output, pg_config, port, jobs=2, prebuilt=None, anchor=False):
+        self.name, self.sha, self.jobs, self.prebuilt, self.anchor = name, sha, jobs, prebuilt, anchor
         self.base = scratch / name
         self.base.mkdir()
         self.tree = self.base / 'source'
@@ -14,18 +49,15 @@ class Revision:
         self.started = False
         self.pg_config = pg_config
         self.log = output / f'{name}-setup.log'
-        source = Path(tree).resolve() if tree else ROOT
-        if tree:
-            require_equal(command(['git','rev-parse','HEAD'],cwd=source), sha, name+' tree HEAD')
-            if command(['git','status','--porcelain','--untracked-files=no'],cwd=source):
-                raise ValueError(f'{name} tree has tracked modifications')
-        # git archive ignores untracked build products and avoids inherited object files.
-        archive = self.base / 'source.tar'
-        command(['git','archive','--format=tar','-o',archive,sha],cwd=source,log=self.log)
-        self.tree.mkdir()
-        with tarfile.open(archive) as tar:
-            tar.extractall(self.tree, filter='data')
-        archive.unlink()
+        if prebuilt:
+            self.stage = Path(prebuilt)
+        else:
+            source = Path(tree).resolve() if tree else ROOT
+            if tree:
+                require_equal(command(['git','rev-parse','HEAD'],cwd=source), sha, name+' tree HEAD')
+                if command(['git','status','--porcelain','--untracked-files=no'],cwd=source):
+                    raise ValueError(f'{name} tree has tracked modifications')
+            archive_tree(sha,self.tree,source,self.log)
         self.socket,self.socket_path = allocate_socket_directory(port)
         self.socket_owned = True
         self.server_log_evidence = None
@@ -33,14 +65,7 @@ class Revision:
     def setup(self, rows=8192):
         self.timings = {}
         phase = time.monotonic()
-        env = os.environ.copy()
-        for key in ('MAKEFLAGS','MFLAGS','CFLAGS','CPPFLAGS','LDFLAGS','PGOPTIONS','SIFT_INITDB_TEMPLATE',
-                    'SANITIZE','SIFT_HARDEN','SIFT_LTO','VULKAN','SIFT_TESTING','LD_PRELOAD'):
-            env.pop(key, None)
-        env['PATH'] = str(Path(self.pg_config).parent)+os.pathsep+env['PATH']
-        flags = ['USE_PGXS=1','SIFT_TESTING=','SIFT_LTO=','SANITIZE=','VULKAN=',f'PG_CONFIG={self.pg_config}']
-        command(['nice','-n','19','make','-j2',*flags],cwd=self.tree,env=env,log=self.log)
-        command(['nice','-n','19','make','-j2',*flags,f'DESTDIR={self.stage}','install'],cwd=self.tree,env=env,log=self.log)
+        env = clean_env(self.pg_config) if self.prebuilt else build_release(self.tree,self.stage,self.pg_config,self.jobs,self.log)
         self.timings['build_install'] = time.monotonic()-phase
         phase = time.monotonic()
         bindir = Path(command([self.pg_config,'--bindir']))
@@ -94,6 +119,10 @@ jit=off
         lib.PQgetisnull.argtypes = [ctypes.c_void_p,ctypes.c_int,ctypes.c_int]
         self.conn = SQL(lib, f'host={self.socket} port={self.port} user=postgres dbname=postgres application_name=perf-gate')
         self.conn.exec("LOAD 'pg_sift'")
+        if self.anchor:
+            self.conn.gucs = {row[0] for row in self.conn.rows("SELECT name FROM pg_settings WHERE name LIKE 'sift.%'")}
+            access_methods = {row[0] for row in self.conn.rows('SELECT amname FROM pg_am')}
+            self.capabilities = {name for name,method in ANCHOR_CAPABILITIES.items() if method in access_methods}
         self.conn.script(SETTINGS)
         require_equal(self.conn.rows('SHOW block_size'),[['8192']],'PostgreSQL page size')
         self.versions = self.conn.rows("SELECT version(),extversion FROM pg_extension WHERE extname='pg_sift'")

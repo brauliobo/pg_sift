@@ -30,9 +30,13 @@ class SQL(cell.Connection):
             raise BudgetExpired('global runtime budget exhausted after SQL operation')
         return result
 
+    # None: every statement is sent. A set: the sift.* GUCs of an older release, which a SET of an unknown one must not abort.
+    gucs = None
+
     def script(self, text):
         for sql in text.split(';'):
-            if sql.strip():
+            setting = re.match(r'\s*SET\s+(sift\.\w+)',sql,re.I)
+            if sql.strip() and not (setting and self.gucs is not None and setting.group(1) not in self.gucs):
                 self.exec(sql)
 
 
