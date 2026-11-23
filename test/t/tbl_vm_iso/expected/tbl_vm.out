@@ -1,0 +1,138 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s2_del s3_vac s3_read
+step s2_del: DELETE FROM vm_t WHERE id % 7 = 0;
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+5143|5143
+(1 row)
+
+
+starting permutation: s1_snap s2_del s3_vac s1_read s1_end s3_read
+step s1_snap: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM vm_t;
+count
+-----
+ 6000
+(1 row)
+
+step s2_del: DELETE FROM vm_t WHERE id % 7 = 0;
+step s3_vac: VACUUM vm_t;
+step s1_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+6000|6000
+(1 row)
+
+step s1_end: COMMIT;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+5143|5143
+(1 row)
+
+
+starting permutation: s2_begin s2_del_open s3_vac s3_read s2_commit s3_read
+step s2_begin: BEGIN;
+step s2_del_open: DELETE FROM vm_t WHERE id % 3 = 0;
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+6000|6000
+(1 row)
+
+step s2_commit: COMMIT;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+4000|4000
+(1 row)
+
+
+starting permutation: s2_begin s2_del_open s2_prep s3_vac s3_read s2_commitp s3_read s3_vac s3_read
+step s2_begin: BEGIN;
+step s2_del_open: DELETE FROM vm_t WHERE id % 3 = 0;
+step s2_prep: PREPARE TRANSACTION 'vm_iso';
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+6000|6000
+(1 row)
+
+step s2_commitp: COMMIT PREPARED 'vm_iso';
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+4000|4000
+(1 row)
+
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+4000|4000
+(1 row)
+
+
+starting permutation: s2_upd s3_vac s3_read s2_key s3_read s3_vac s3_read
+step s2_upd: UPDATE vm_t SET v = v + 1 WHERE id % 5 = 0;
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+6000|6000
+(1 row)
+
+step s2_key: UPDATE vm_t SET k = k + 100000 WHERE id % 11 = 0;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+6000|6000
+(1 row)
+
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+6000|6000
+(1 row)
+
+
+starting permutation: s2_ins s3_vac s2_del s3_read s3_vac s3_read
+step s2_ins: INSERT INTO vm_t SELECT g, g, 0, 'n' FROM generate_series(6001, 6500) g;
+step s3_vac: VACUUM vm_t;
+step s2_del: DELETE FROM vm_t WHERE id % 7 = 0;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+5572|5572
+(1 row)
+
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+5572|5572
+(1 row)
+
+
+starting permutation: s2_trunc s2_refill s3_vac s3_read s2_del s3_read
+step s2_trunc: TRUNCATE vm_t;
+step s2_refill: INSERT INTO vm_t SELECT g, g, 0, 'r' FROM generate_series(1, 3000) g;
+step s3_vac: VACUUM vm_t;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+3000|3000
+(1 row)
+
+step s2_del: DELETE FROM vm_t WHERE id % 7 = 0;
+step s3_read: SELECT vm_ios() AS ios, vm_tbl() AS tbl;
+ ios| tbl
+----+----
+2572|2572
+(1 row)
+
