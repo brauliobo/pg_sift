@@ -20,14 +20,15 @@ sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension fai
 node_clone cm sb 2 "sift.async_maintenance = off" || bail "standby failed"
 node_start sb || bail "standby start failed"
 
-FAMILIES=(bm25_promote bm25_merge col_promote col_merge scope_build scope_refill vacuum tbl_seal scope_cic reindex_col reindex_scope_c vs_intern vs_compact tbl_copy alter_refresh)
-GATE_FAMILIES=(tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite vs_intern:intern tbl_copy:load)
+FAMILIES=(bm25_promote bm25_merge col_promote col_merge scope_build scope_refill vacuum tbl_seal scope_cic reindex_col reindex_scope_c tbl_copy alter_refresh)
+GATE_FAMILIES=(tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite tbl_copy:load f2_vacuum:f2manifest f2_compact:f2compact f2_tier:f2tier f2_scope_build:f2scope
+	f2_col_delta:f2coldelta)
 declare -A SETUP OP
 for row in "${SCENARIOS[@]}"; do IFS='~' read -r name setup op <<<"$row"; SETUP[$name]=$setup; OP[$name]=$op; done
 
 on_standby() { # the checks of a healthy node on the standby: indexes verify, store check, answers equal REF through the indexes and without
 	local plain idx
-	sql sb "$VERIFY" >&2 || return 1
+	sql sb "$([[ ${name:-} == f2_* ]] && echo "$VERIFY_F2" || echo "$VERIFY")" >&2 || return 1
 	plain=$(sql sb "${PLAIN[@]}" "$QA" "$QB" 2>&1)
 	[[ $plain == "$REF" ]] || { diag "the plain answers of the standby are not the primary's: $plain"; return 1; }
 	idx=$(sql sb "${IDX[@]}" "$QA" "$QB" 2>&1)

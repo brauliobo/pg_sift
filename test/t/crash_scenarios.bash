@@ -54,8 +54,8 @@ VERIFY="DO \$\$ DECLARE r record; BEGIN
 	END IF;
 END \$\$"
 VERIFY_F2="DO \$\$ DECLARE r record; BEGIN
-	FOR r IN SELECT c.oid::regclass AS ix FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname = 'sift_col' LOOP
-		PERFORM sift.col_verify(r.ix);
+	FOR r IN SELECT c.oid::regclass AS ix, a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift_col', 'sift_table') LOOP
+		IF r.amname = 'sift_col' THEN PERFORM sift.col_verify(r.ix); END IF;
 		IF EXISTS (SELECT 1 FROM sift.check(r.ix)) THEN RAISE EXCEPTION 'sift.check finds a problem in %', r.ix; END IF;
 	END LOOP;
 END \$\$"
@@ -112,6 +112,10 @@ gate_spec() { # GATE: the gate of the phase "gate:GATE"
 		tombwrite) adv1 7008; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.backend_cache_kb = 16") ;;
 		tombmerge) adv1 7009; GATE_SET=("SET sift.test_phase_gate = 7000" "SET sift.backend_cache_kb = 16") ;;
 		f2manifest) adv1 7010; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		f2compact) adv1 7011; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		f2tier) adv1 7012; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		f2scope) adv1 7013; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
+		f2coldelta) adv1 7014; GATE_SET=("SET sift.test_phase_gate = 7000") ;;
 		alter) adv2 14; GATE_SET=("SET sift.test_alter_gate = on") ;;
 		repair_before) adv2 15; GATE_SET=("SET sift.test_repair_gate = on") ;;
 		repair_after) adv2 16; GATE_SET=("SET sift.test_repair_gate = on") ;;
@@ -145,6 +149,21 @@ SCENARIOS+=(
 	"f2_reindex~$F2@@$COL~$F2@@REINDEX INDEX docs_col"
 	"f2_vacuum~$F2@@$COL@@DELETE FROM docs WHERE id % 3 = 0@@UPDATE docs SET n = n + 1 WHERE id % 7 = 0~$F2@@VACUUM docs"
 )
+# Format 2, the other durable steps (gates of core/f2/f2_gate.h): the compaction of a VACUUM, the move of an old part to the object store, the summaries of a scope (build, refill) and the column deltas of a
+# sift_table (a table of eight columns, of which an UPDATE changes one)
+F2TIER="$F2@@ALTER TABLE docs ADD COLUMN ts timestamp, ADD COLUMN pad text@@UPDATE docs SET ts = timestamp '2020-01-01' + id * interval '1 hour', pad = md5(id::text)"
+F2TIER+="@@COPY (SELECT 1) TO PROGRAM 'rm -rf $D/tier && mkdir -p $D/tier'@@CREATE INDEX docs_col ON docs USING sift_col (id, g, n, ts, pad)"
+F2TIER+="@@INSERT INTO docs SELECT i, i % 9, i % 100, 'alpha', localtimestamp - i * interval '1 minute', md5(i::text) FROM generate_series(6001, 8000) i@@VACUUM docs"
+F2TIER+="@@SELECT sift.set_tier_policy('docs_col', 'file://$D/tier', '30 days')"
+TBL8="CREATE TABLE tbl (id int, g int, n int, a int, b int, c int, d int, e int) USING sift_table WITH (autovacuum_enabled = false); CREATE TABLE tbl_h (id int, g int, n int, a int, b int, c int, d int, e int)"
+F2DELTA="$F2@@$TBL8@@INSERT INTO tbl SELECT i, i % 9, i % 100, i, i, i, i, i FROM generate_series(1, 9000) i@@INSERT INTO tbl_h SELECT * FROM tbl@@SELECT busy FROM sift.table_maintain('tbl')"
+SCENARIOS+=(
+	"f2_compact~$F2@@$COL@@DELETE FROM docs WHERE id % 3 = 0@@UPDATE docs SET n = n + 1 WHERE id % 7 = 0~$F2@@VACUUM docs"
+	"f2_tier~$F2TIER~$F2@@VACUUM docs"
+	"f2_scope_build~$F2@@$GP~$F2@@$SCOPEIX"
+	"f2_scope_refill~$F2@@$GP@@$SCOPEIX@@$(more 6001 8000)~$F2@@UPDATE gp SET t = t@@SELECT sift.col_maintain('docs_sc')"
+	"f2_col_delta~$F2DELTA~$F2@@UPDATE tbl SET n = n + 1 WHERE id % 50 = 0; UPDATE tbl_h SET n = n + 1 WHERE id % 50 = 0"
+)
 # deletion records (core/v1_col/tomb_dv.h): a committed statement deletes a fifth of the rows of an index that tracks its changes, so that the log holds records; the VACUUM and the fold clear their rows and drop them, the merge carries them to marks
 DVSET="ALTER TABLE docs ADD PRIMARY KEY (id); CREATE INDEX docs_col ON docs USING sift_col (id, g, n) WITH (write_buffer_limit = 4096, track_changes = 'id')"
 SCENARIOS+=(
@@ -152,5 +171,5 @@ SCENARIOS+=(
 	"dv_fold~$DVSET; DELETE FROM docs WHERE id % 5 = 0~SELECT sift._test_col_fold_marks('docs_col')"
 	"dv_merge~$DVSET; $(more 6001 7000); SELECT sift.col_promote('docs_col'); $(more 7001 8000); SELECT sift.col_promote('docs_col'); DELETE FROM docs WHERE id % 5 = 0~SELECT sift.col_merge('docs_col', true)"
 )
-DATA_OPS=" tbl_tomb tbl_copy "
+DATA_OPS=" tbl_tomb tbl_copy f2_col_delta "
 DAMAGED=" col_repair "

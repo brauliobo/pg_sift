@@ -9,8 +9,8 @@ SLOW_SHELL="leakcheck_gate store_crash replication store_replica index_build_cra
 # the memory slope gate of the quick tier in SLOPE_SHARDS jobs, each the cases whose crc32 of the name falls in its shard (the slope of a case does not depend on the others; the full tiers run the gate whole)
 SLOPE_SHARDS=3
 # the fault matrix of the quick tier is a smoke: the quick rows of the operations that publish the most (FAULT_SMOKE, a regex of the rows of test/t/fault_matrix.tsv) and the standby
-# matrix of two of them. The whole matrix, on every operation and with a standby on every family, runs in the full tier (the nightly run)
-FAULT_SMOKE='^(col_build|col_promote|vacuum|tbl_seal)\.|^(bm25_promote|scope_promote|col_cic|col_merge|reindex_col_c|tbl_copy)\.(b1\.terminate|ak\.immediate)$|^f2_[a-z_]+\.gate-f2manifest\.terminate$' FAULT_SMOKE_STANDBY='^(col_promote|vacuum)$'
+# matrix of four of them (two of Format 2). The whole matrix, on every operation and with a standby on every family, runs in the full tier (the nightly run)
+FAULT_SMOKE='^(col_build|col_promote|vacuum|tbl_seal)\.|^(bm25_promote|scope_promote|col_cic|col_merge|reindex_col_c|tbl_copy)\.(b1\.terminate|ak\.immediate)$|^f2_[a-z_]+\.gate-f2[a-z]+\.terminate$' FAULT_SMOKE_STANDBY='^(col_promote|vacuum|f2_compact|f2_col_delta)$'
 fault_smoke() {
 	job tap-shell-fault_matrix-smoke tap-shell 0 env "SIFT_FAULT_ONLY=$FAULT_SMOKE" "$S/pgtest.sh" tap fault_matrix
 	job tap-shell-fault_matrix_standby-smoke tap-shell 0 env "SIFT_FAULT_ONLY=$FAULT_SMOKE_STANDBY" "$S/pgtest.sh" tap fault_matrix_standby

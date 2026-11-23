@@ -18,12 +18,6 @@
 #include "core/f2/manifest.h"
 #include "core/f2/manifest/manifest_int.h"
 #include "core/page_io.h"
-#ifdef SIFT_TESTING
-#include "bm25/build.h"
-
-/* the phase a commit of the manifest waits in for the advisory lock of sift.test_phase_gate + this, before it takes a page (table/load/write.c: 4 to 6, core/v1_col/tomb_write.c: 7) */
-#define SIFT_F2_PHASE_MANIFEST	10
-#endif
 
 #define PLIST(p)	((SiftPartListPageData *) SiftPageGetData(p))
 
@@ -724,9 +718,6 @@ uint64
 sift_manifest_commit(Relation rel, const SiftManifestEdit *edit)
 {
 	SIFT_F2_GATE(SIFT_F2_GATE_MANIFEST);
-#ifdef SIFT_TESTING
-	sift_test_phase_wait(SIFT_F2_PHASE_MANIFEST);
-#endif
 	return run_change(rel, &edit->part_id, 1, build_commit, (void *) edit, edit->key_lo);
 }
 
