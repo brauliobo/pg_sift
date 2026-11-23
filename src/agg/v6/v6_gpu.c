@@ -4,7 +4,6 @@
  */
 #include "postgres.h"
 
-#include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/primnodes.h"
 #include "utils/array.h"
@@ -23,6 +22,9 @@ typedef struct GpuQuery
 	int			in_attno[SIFT_VK_MAXCOLS];
 	SiftVexprProg where;
 	SiftVexprProg sort;
+	SiftVexprProg filter[SIFT_VK_MAXAGGS];
+	SiftVexprProg key[SIFT_VK_MAXKEYS];
+	bool		zones;			/* the clause being compiled is a conjunct of the scan: its comparisons are zone tests too */
 	MemoryContext cx;
 	Relation	index;
 	SiftV6Input *tin;			/* a top-N: the clauses are the table's, and this maps its attributes to those of the index; NULL: the clauses are already the index's */
@@ -46,12 +48,21 @@ slot_of_attno(GpuQuery *g, int attno)
 }
 
 static bool
+plain_column(const SiftV6Col *c)
+{
+	return c->derive == 0 && c->jleaf == 0;
+}
+
+static bool
 device_shape(const SiftV6Spec *s)
 {
-	if (s->nsets > 0 || s->nfuncs > 0 || s->nfilters > 0 || s->nbins > 0 || s->naggs == 0)
+	if (s->nsets > 0 || s->nfuncs > 0 || s->naggs == 0 || s->jsonqual != NIL)
 		return false;
+	for (int i = 0; i < s->nkeys; i++)
+		if (!plain_column(&s->key[i]))
+			return false;
 	for (int j = 0; j < s->naggs; j++)
-		if (s->agg[j].fclause != 0 || s->agg[j].nxcols > 0)
+		if (s->agg[j].nxcols > 0 || !plain_column(&s->agg[j].arg))
 			return false;
 	return true;
 }
@@ -87,6 +98,13 @@ domain_of(Oid typid)
 		default:
 			return DOM_NONE;
 	}
+}
+
+/* the zones of these hold the values the device compares: whole numbers, and dates and instants as the days and microseconds they are stored as */
+static bool
+zone_domain(Domain dom)
+{
+	return dom == DOM_INT || dom == DOM_DATE || dom == DOM_TS || dom == DOM_TSTZ;
 }
 
 static SiftVecType
@@ -219,7 +237,7 @@ note_zone_test(GpuQuery *g, int attno, const Var *v, const Const *k, int cmp)
 {
 	SiftGpuQuery *q = &g->q;
 
-	if (domain_of(v->vartype) != DOM_INT || cmp == SCMP_NE || q->nzone == SIFT_GPU_ZONE_TESTS)
+	if (!g->zones || !zone_domain(domain_of(v->vartype)) || cmp == SCMP_NE || q->nzone == SIFT_GPU_ZONE_TESTS)
 		return;
 	q->zone[q->nzone++] = (SiftGpuZoneCmp) {.col = slot_of_attno(g, attno),.op = cmp,.val = element_value(k->consttype, k->constvalue)};
 }
@@ -333,19 +351,20 @@ compile_qual(GpuQuery *g, const Node *qual)
 	}
 }
 
-/* The quals of the scan: IN lists to sets, the others to the one program of the WHERE */
+/* The conjunction of quals as one program in prog (*has: there is one); in the quals of the scan the IN lists become sets and the comparisons zone tests, in those of a FILTER neither can be */
 static bool
-compile_quals(GpuQuery *g, const List *quals)
+compile_conj(GpuQuery *g, const List *quals, SiftVexprProg *prog, bool scan, bool *has)
 {
 	const SiftVexprNode *root = NULL;
 
+	g->zones = scan;
 	foreach_ptr(Node, qual, quals)
 	{
 		const SiftVexprNode *n;
 
 		if (IsA(qual, ScalarArrayOpExpr))
 		{
-			if (!add_in_list(g, (const ScalarArrayOpExpr *) qual))
+			if (!scan || !add_in_list(g, (const ScalarArrayOpExpr *) qual))
 				return false;
 			continue;
 		}
@@ -362,10 +381,84 @@ compile_quals(GpuQuery *g, const List *quals)
 			root = both;
 		}
 	}
-	if (root == NULL)
-		return true;
-	g->q.where = &g->where;
-	return sift_vexpr_compile(root, &g->where);
+	*has = root != NULL;
+	return root == NULL ? scan : sift_vexpr_compile(root, prog);
+}
+
+static bool
+compile_quals(GpuQuery *g, const List *quals)
+{
+	bool		has;
+
+	if (!compile_conj(g, quals, &g->where, true, &has))
+		return false;
+	if (has)
+		g->q.where = &g->where;
+	return true;
+}
+
+/* FILTER (WHERE ..) of each aggregate: the program of its clause */
+static bool
+compile_filters(GpuQuery *g, const SiftV6Spec *spec)
+{
+	for (int j = 0; j < spec->naggs; j++)
+	{
+		bool		has;
+
+		if (spec->agg[j].fclause == 0)
+			continue;
+		if (!compile_conj(g, list_nth(spec->filter, spec->agg[j].fclause - 1), &g->filter[j], false, &has))
+			return false;
+		g->q.filter[j] = &g->filter[j];
+	}
+	return true;
+}
+
+/* The binned instants are timestamps of PostgreSQL's range, 4713 BC to 294276 AD, which in microseconds from 2000 lie within 2.2e17 of it, and an origin of that range is as near: that much and a stride more added to the
+ * source puts it past the origin, so the integer division of the bin rounds down as timestamp_bin does and no instant of the range overflows */
+#define BIN_SHIFT_MIN		INT64_C(320000000000000000)
+#define BIN_STRIDE_MAX		INT64_C(1000000000000000000)
+
+/* date_bin(stride, column, origin) of the key as one program: ((column - base) / stride) * stride + base, base = origin less a multiple of the stride that is at least BIN_SHIFT_MIN */
+static bool
+compile_bin(GpuQuery *g, const SiftV6Spec *spec, const SiftV6Bin *b)
+{
+	const SiftV6Col *k = &spec->key[b->key];
+	const int64 shift = (BIN_SHIFT_MIN / b->stride_us + 1) * b->stride_us,
+				base = b->origin - shift;
+	const SiftVexprNode *col;
+	SiftVexprNode *n;
+	SiftVexprNode *sub,
+			   *div,
+			   *mul;
+
+	if (b->stride_us <= 0 || b->stride_us > BIN_STRIDE_MAX || (col = node_column(g, k->attno, k->typid, SVEC_I64)) == NULL)
+		return false;
+	sub = node_new(g, SVX_SUB, SVEC_I64);
+	sub->args[sub->nargs++] = col;
+	sub->args[sub->nargs++] = node_const(g, INT8OID, SVEC_I64, Int64GetDatum(base));
+	div = node_new(g, SVX_DIV, SVEC_I64);
+	div->args[div->nargs++] = sub;
+	div->args[div->nargs++] = node_const(g, INT8OID, SVEC_I64, Int64GetDatum(b->stride_us));
+	mul = node_new(g, SVX_MUL, SVEC_I64);
+	mul->args[mul->nargs++] = div;
+	mul->args[mul->nargs++] = node_const(g, INT8OID, SVEC_I64, Int64GetDatum(b->stride_us));
+	n = node_new(g, SVX_ADD, SVEC_I64);
+	n->args[n->nargs++] = mul;
+	n->args[n->nargs++] = node_const(g, INT8OID, SVEC_I64, Int64GetDatum(base));
+	if (!sift_vexpr_compile(n, &g->key[b->key]))
+		return false;
+	g->q.key[b->key] = &g->key[b->key];
+	return true;
+}
+
+static bool
+compile_bins(GpuQuery *g, const SiftV6Spec *spec)
+{
+	for (int i = 0; i < spec->nbins; i++)
+		if (!compile_bin(g, spec, &spec->bin[i]))
+			return false;
+	return true;
 }
 
 /* The slots of the columns the sets read, after those of the program */
@@ -423,23 +516,55 @@ covered_gens(const SiftGpuPlan *plan, MemoryContext cx, int *n)
 	return gens;
 }
 
+/*
+ * The first one or two sort columns of ORDER BY .. LIMIT K of the groups, as the device orders them: a group key of whole numbers or the count of a COUNT aggregate. A group worse than K others in these is not
+ * among the best K whatever the columns after them say, so the device may leave it out; a HAVING can leave K better groups out first.
+ */
+static SiftVkTopk
+device_topk(const SiftV6Spec *s, bool having)
+{
+	SiftVkTopk	t = {0};
+
+	if (having || s->topk == 0 || s->ntopk == 0)
+		return t;
+	for (int i = 0; i < Min(s->ntopk, 2); i++)
+	{
+		const SiftV6TopKItem *it = &s->topk_item[i];
+		const int	agg = it->pos - s->nkeys;
+		Oid			opfamily,
+					opcintype;
+		CompareType cmptype;
+		bool		is_agg = agg >= 0;
+
+		if (is_agg ? agg >= s->naggs || (s->agg[agg].kind != SV6_COUNT_STAR && s->agg[agg].kind != SV6_COUNT) : it->pos < 0)
+			break;
+		if (!get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype))
+			break;
+		t.comp[t.ncomp++] = (uint32) is_agg | (uint32) (is_agg ? agg : it->pos) << 1 | (uint32) (cmptype == COMPARE_GT) << 9 | (uint32) it->nulls_first << 10;
+	}
+	t.k = t.ncomp > 0 ? s->topk : 0;
+	t.cover = (int) t.ncomp == s->ntopk;
+	return t;
+}
+
 SiftV6Group *
-sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot snap, double est_groups, MemoryContext gcx, TupleDesc desc, SiftV6Gpu *gpu)
+sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot snap, double est_groups, bool having, MemoryContext gcx, TupleDesc desc, SiftV6Gpu *gpu)
 {
 	Relation	rel = index != NULL ? index : heap;
 	GpuQuery   *g;
 	SiftV6Group *groups;
 
 	*gpu = (SiftV6Gpu) {0};
-	if (sift_gpu_mode == SIFT_GPU_OFF || spec->nderive > 0 || spec->affine || !device_shape(spec))
+	if (sift_gpu_mode == SIFT_GPU_OFF || spec->nderive > 0 || !device_shape(spec))
 		return NULL;
 	g = MemoryContextAllocZero(gcx, sizeof(GpuQuery));
 	g->cx = gcx;
 	g->index = index;
 	g->q = (SiftGpuQuery) {.in = g->in,.rel = rel,.heap = index != NULL ? heap : NULL,.store = sift_f2_store_open(rel),.snap = snap,.spec = spec,
-		.est_groups = spec->nkeys == 0 ? 1 : est_groups};
-	if (!compile_quals(g, spec->indexqual) || !assign_slots(g, spec))
+		.est_groups = spec->nkeys == 0 ? 1 : spec->groups_est > 0 ? spec->groups_est : est_groups};
+	if (!compile_quals(g, spec->indexqual) || !compile_filters(g, spec) || !compile_bins(g, spec) || !assign_slots(g, spec))
 		return NULL;
+	g->q.topk = device_topk(spec, having);
 	groups = sift_gpu_v6_agg(&g->q, gcx, desc, &gpu->run);
 	if (groups != NULL)
 		gpu->skip = covered_gens(gpu->run->plan, gcx, &gpu->nskip);

@@ -112,7 +112,35 @@ SELECT same_both($$SELECT id, n FROM gx ORDER BY n NULLS FIRST, id LIMIT 10$$) A
 SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 256$$) AS top_256;
 SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 300$$) AS top_over_device_limit;
 
+-- COUNT(DISTINCT) of a column of whole numbers, alone or by dense keys: the pairs are counted on the device
+SELECT same_both($$SELECT count(DISTINCT q) FROM gx$$) AS distinct_alone;
+SELECT same_both($$SELECT count(DISTINCT n), count(*) FROM gx WHERE q > 300$$) AS distinct_null_values;
+SELECT same_both($$SELECT count(DISTINCT w), sum(q) FROM gx WHERE g < 5$$) AS distinct_beside_sum;
+SELECT same_both($$SELECT g, count(DISTINCT q) FROM gx GROUP BY g$$) AS distinct_by_group;
+SELECT same_both($$SELECT g, n, count(DISTINCT q), sum(w) FROM gx GROUP BY g, n$$) AS distinct_two_keys;
+SELECT same_both($$SELECT n, count(DISTINCT w) FROM gx WHERE id > 200000 GROUP BY n$$) AS distinct_null_key;
+
+-- the best K groups of ORDER BY a count or a key LIMIT K (the order of every column given, so that no row is chosen among equals)
+SELECT same_both($$SELECT id, count(*) FROM gx GROUP BY id ORDER BY 2 DESC, 1 LIMIT 10$$) AS best_count_then_key;
+SELECT same_both($$SELECT id % 5000, count(*), sum(w) FROM gx GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5$$) AS best_hash;
+SELECT same_both($$SELECT wide, id % 7, count(*) FROM gx GROUP BY 1, 2 ORDER BY 3 DESC, 1 DESC, 2 LIMIT 4$$) AS best_two_keys;
+SELECT same_both($$SELECT id, count(*), sum(w) FROM gx GROUP BY id ORDER BY 1 DESC LIMIT 7$$) AS best_key_desc;
+SELECT same_both($$SELECT n, count(*) FROM gx GROUP BY n ORDER BY 1 NULLS FIRST LIMIT 3$$) AS best_key_nulls_first;
+SELECT same_both($$SELECT id, count(*) FROM gx GROUP BY id HAVING count(*) > 0 ORDER BY 2 DESC, 1 LIMIT 6$$) AS best_having;
+SELECT same_both($$SELECT id, count(*) FROM gx GROUP BY id ORDER BY 2 DESC, 1 LIMIT 100000$$) AS best_more_than_groups;
+
+-- the granules the zones rule out are not sent, and a date bin is the key of the device
+SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE id > 240000$$) AS zones_prune_ungrouped;
+SELECT same_both($$SELECT g, count(*) FROM gx WHERE id < 30000 GROUP BY g$$) AS zones_prune_dense;
+SELECT same_both($$SELECT w, count(*) FROM gx WHERE id >= 100000 AND id < 120000 GROUP BY w$$) AS zones_prune_hash;
+SELECT same_both($$SELECT count(*) FROM gx WHERE id > 1000000$$) AS zones_prune_all;
+SELECT same_both($$SELECT date_bin('7 days', t, TIMESTAMP '2001-01-01'), count(*), sum(w) FROM gx WHERE q < 100 GROUP BY 1$$) AS date_bin_key;
+SELECT same_both($$SELECT g, date_bin('1 hour', t, TIMESTAMP '2000-01-01 00:20:00'), count(*) FROM gx WHERE id < 5000 GROUP BY 1, 2$$) AS date_bin_two_keys;
+
 -- shapes the device leaves to the CPU
+SELECT same_both($$SELECT g, count(DISTINCT q), count(DISTINCT w) FROM gx GROUP BY g$$) AS distinct_two_columns;
+SELECT same_both($$SELECT g, count(DISTINCT c) FROM gx GROUP BY g$$) AS distinct_text;
+SELECT same_both($$SELECT id, count(DISTINCT q) FROM gx WHERE id < 40000 GROUP BY id$$) AS distinct_by_sparse_keys;
 SELECT same_both($$SELECT g, count(DISTINCT q), sum(w) FROM gx GROUP BY g$$) AS distinct_agg;
 SELECT same_both($$SELECT g, string_agg(c, ',' ORDER BY c) FROM gx WHERE id < 200 GROUP BY g$$) AS ordered_agg;
 SELECT same_both($$SELECT c, count(*) FROM gx WHERE c LIKE 'n%' GROUP BY c$$) AS text_filter;

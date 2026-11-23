@@ -25,7 +25,7 @@ typedef struct SiftV6Gpu
  * the columns. The quals of spec are compiled for the device here: those it cannot run leave the scan to the CPU.
  * est_groups is the planner's count of groups.
  */
-extern SiftV6Group *sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot snap, double est_groups, MemoryContext gcx, TupleDesc desc, SiftV6Gpu *gpu);
+extern SiftV6Group *sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot snap, double est_groups, bool having, MemoryContext gcx, TupleDesc desc, SiftV6Gpu *gpu);
 
 /*
  * The best spec->rows rows of the parts the device read, for the one key of spec ordered over the rows that pass quals (the clauses of the scan of in), or false when the CPU runs the whole

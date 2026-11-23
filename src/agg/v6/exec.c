@@ -208,7 +208,7 @@ v6_scan(V6State *st, Snapshot snap)
 	SiftV6Text *text = OidIsValid(st->spec->text_indexoid) ? sift_v6_text_open(st->spec, CurrentMemoryContext) : NULL;
 
 	if (st->spec->nparts == 0 && st->spec->ext == NULL && text == NULL)
-		st->group = sift_v6_gpu_agg(st->spec, st->sources[0].heap, st->sources[0].index, snap, st->css.ss.ps.plan->plan_rows, st->gcx, desc, &st->gpu);
+		st->group = sift_v6_gpu_agg(st->spec, st->sources[0].heap, st->sources[0].index, snap, st->css.ss.ps.plan->plan_rows, st->css.ss.ps.qual != NULL, st->gcx, desc, &st->gpu);
 	if (st->group == NULL)
 		st->group = sift_v6_group_new(st->spec, st->gcx, desc);
 	if (st->spec->ext != NULL)

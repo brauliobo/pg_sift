@@ -291,7 +291,142 @@ SELECT same_both($$SELECT id, a FROM gx ORDER BY a DESC LIMIT 300$$) AS top_over
  t
 (1 row)
 
+-- COUNT(DISTINCT) of a column of whole numbers, alone or by dense keys: the pairs are counted on the device
+SELECT same_both($$SELECT count(DISTINCT q) FROM gx$$) AS distinct_alone;
+ distinct_alone 
+----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(DISTINCT n), count(*) FROM gx WHERE q > 300$$) AS distinct_null_values;
+ distinct_null_values 
+----------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(DISTINCT w), sum(q) FROM gx WHERE g < 5$$) AS distinct_beside_sum;
+ distinct_beside_sum 
+---------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, count(DISTINCT q) FROM gx GROUP BY g$$) AS distinct_by_group;
+ distinct_by_group 
+-------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, n, count(DISTINCT q), sum(w) FROM gx GROUP BY g, n$$) AS distinct_two_keys;
+ distinct_two_keys 
+-------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT n, count(DISTINCT w) FROM gx WHERE id > 200000 GROUP BY n$$) AS distinct_null_key;
+ distinct_null_key 
+-------------------
+ t
+(1 row)
+
+-- the best K groups of ORDER BY a count or a key LIMIT K (the order of every column given, so that no row is chosen among equals)
+SELECT same_both($$SELECT id, count(*) FROM gx GROUP BY id ORDER BY 2 DESC, 1 LIMIT 10$$) AS best_count_then_key;
+ best_count_then_key 
+---------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id % 5000, count(*), sum(w) FROM gx GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5$$) AS best_hash;
+ best_hash 
+-----------
+ t
+(1 row)
+
+SELECT same_both($$SELECT wide, id % 7, count(*) FROM gx GROUP BY 1, 2 ORDER BY 3 DESC, 1 DESC, 2 LIMIT 4$$) AS best_two_keys;
+ best_two_keys 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, count(*), sum(w) FROM gx GROUP BY id ORDER BY 1 DESC LIMIT 7$$) AS best_key_desc;
+ best_key_desc 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT n, count(*) FROM gx GROUP BY n ORDER BY 1 NULLS FIRST LIMIT 3$$) AS best_key_nulls_first;
+ best_key_nulls_first 
+----------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, count(*) FROM gx GROUP BY id HAVING count(*) > 0 ORDER BY 2 DESC, 1 LIMIT 6$$) AS best_having;
+ best_having 
+-------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, count(*) FROM gx GROUP BY id ORDER BY 2 DESC, 1 LIMIT 100000$$) AS best_more_than_groups;
+ best_more_than_groups 
+-----------------------
+ t
+(1 row)
+
+-- the granules the zones rule out are not sent, and a date bin is the key of the device
+SELECT same_both($$SELECT count(*), sum(w) FROM gx WHERE id > 240000$$) AS zones_prune_ungrouped;
+ zones_prune_ungrouped 
+-----------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, count(*) FROM gx WHERE id < 30000 GROUP BY g$$) AS zones_prune_dense;
+ zones_prune_dense 
+-------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT w, count(*) FROM gx WHERE id >= 100000 AND id < 120000 GROUP BY w$$) AS zones_prune_hash;
+ zones_prune_hash 
+------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT count(*) FROM gx WHERE id > 1000000$$) AS zones_prune_all;
+ zones_prune_all 
+-----------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT date_bin('7 days', t, TIMESTAMP '2001-01-01'), count(*), sum(w) FROM gx WHERE q < 100 GROUP BY 1$$) AS date_bin_key;
+ date_bin_key 
+--------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, date_bin('1 hour', t, TIMESTAMP '2000-01-01 00:20:00'), count(*) FROM gx WHERE id < 5000 GROUP BY 1, 2$$) AS date_bin_two_keys;
+ date_bin_two_keys 
+-------------------
+ t
+(1 row)
+
 -- shapes the device leaves to the CPU
+SELECT same_both($$SELECT g, count(DISTINCT q), count(DISTINCT w) FROM gx GROUP BY g$$) AS distinct_two_columns;
+ distinct_two_columns 
+----------------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT g, count(DISTINCT c) FROM gx GROUP BY g$$) AS distinct_text;
+ distinct_text 
+---------------
+ t
+(1 row)
+
+SELECT same_both($$SELECT id, count(DISTINCT q) FROM gx WHERE id < 40000 GROUP BY id$$) AS distinct_by_sparse_keys;
+ distinct_by_sparse_keys 
+-------------------------
+ t
+(1 row)
+
 SELECT same_both($$SELECT g, count(DISTINCT q), sum(w) FROM gx GROUP BY g$$) AS distinct_agg;
  distinct_agg 
 --------------
