@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """Differential fuzz of the order arrays of a sift_col index under churn (test/t/col_twin_fuzz.sh runs it).
 
-  test/fuzz/col_twin_fuzz.py [--seeds 1-24] [--rows 30000] [--steps 10]    needs PGHOST / PGPORT of a cluster with pg_sift, SIFT_FUZZ_OUT, a directory for the logs
+  test/fuzz/col_twin_fuzz.py [--format f2|f1|release] [--seeds 1-24] [--rows 30000] [--steps 10]    needs PGHOST / PGPORT of a cluster with pg_sift, SIFT_FUZZ_OUT, a directory for the logs
 
 A seed fills a table with keys of a chosen shape (many equal keys, a NULL region, scattered or arriving in order), builds two sift_col indexes (order arrays on four columns, and
 grouped by an entity) and b-tree twins, and draws steps: batches of INSERTs, DELETEs and UPDATEs of a random, newest or oldest window, upserts, updates that change a key and
-updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, the fold of the marks of the tombstone log into the liveness runs, merge, REINDEX and ANALYZE.
+updates that do not, an aborted transaction, repeated updates of the same rows, promotion, VACUUM, the fold of the marks of the tombstone log into the liveness runs (Format 1 on the test library; sift.maintain on Format 2.0), merge, REINDEX and ANALYZE.
 Two more sessions hold inserters open across those steps (their own stream of random choices, so the steps of a seed are the same with or without them): a transaction that inserts rows
 (some under a savepoint that is rolled back or released) and stays open for some steps, then commits or rolls back, so that a promotion, a merge, a VACUUM and the reads of the checks
 see rows of transactions in progress, and stamps that wait for them; SIFT_FUZZ_HOLD=0 leaves them out. SIFT_FUZZ_SET is SQL every session runs first
 (`SET sift.test_hf_ignore_stamp = on;` takes every segment for stamped: a mutant the holders of a seed must catch). After every step a sample of the queries (top-N both ways, OFFSET small and deep,
 ranges with LIMIT, IN lists, group top-N, NULL regions, text keys) must give the same ordered rows through the forced sift plan, the planned one, a forced b-tree plan and a
-forced heap plan, and col_verify must pass. A REPEATABLE READ reader opened before the churn must read, through the arrays and through the heap, the rows it first read. The
-seed also draws track_changes on or off, sift.test_col_wbuf_ref, key_cut, the segment size and, in a testing build, sift.test_col_gorder_seek (every chunk seekable).
+forced heap plan, and sift.check must find nothing. A REPEATABLE READ reader opened before the churn must read, through the arrays and through the heap, the rows it first read. The
+seed also draws track_changes on or off, key_cut and, on Format 1 with the test library (--format f1), sift.test_col_wbuf_ref, the segment size and sift.test_col_gorder_seek (every
+chunk seekable); Format 2.0 and the release library have none of those knobs, and a setting the library lacks is left out.
 """
 import argparse, os, random, re, subprocess, sys, time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fmt  # noqa: E402
+
+FMT = None      # the library of the cluster, probed by main
+ENV = None      # the environment of every psql
 SOCK, PORT = os.environ['PGHOST'], os.environ['PGPORT']
 DB = os.environ.get('PGDATABASE', 'postgres')
 OUT = os.environ['SIFT_FUZZ_OUT']
@@ -28,10 +34,10 @@ CREATE TABLE ct_res (stage text, qid int, class text, gord bool, ok bool, detail
 CREATE FUNCTION ct_arm(arm text) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
 	PERFORM set_config(k, v, true) FROM (VALUES ('sift.enable_agg', 'on'), ('sift.enable_col_scan', 'on'), ('enable_indexscan', 'on'), ('enable_bitmapscan', 'on'),
-		('enable_indexonlyscan', 'on'), ('sift.agg_force', 'off'), ('enable_seqscan', 'on'), ('enable_sort', 'on')) s(k, v);
+		('enable_indexonlyscan', 'on'), ('enable_seqscan', 'on'), ('enable_sort', 'on')@FORCE_OFF@) s(k, v);
 	IF arm = 'sift' THEN
 		PERFORM set_config(k, v, true) FROM (VALUES ('enable_indexscan', 'off'), ('enable_bitmapscan', 'off'), ('enable_indexonlyscan', 'off'),
-			('sift.agg_force', 'on'), ('enable_seqscan', 'off'), ('enable_sort', 'off')) s(k, v);
+			('enable_seqscan', 'off'), ('enable_sort', 'off')@FORCE_ON@) s(k, v);
 	ELSIF arm = 'btree' THEN
 		PERFORM set_config(k, v, true) FROM (VALUES ('sift.enable_agg', 'off'), ('sift.enable_col_scan', 'off'), ('enable_seqscan', 'off'), ('enable_bitmapscan', 'off')) s(k, v);
 	ELSIF arm = 'heap' THEN
@@ -87,9 +93,10 @@ BEGIN
 END $$;
 
 CREATE FUNCTION ct_verify(idx text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE p text;
 BEGIN
-	PERFORM sift.col_verify(idx::regclass, true);
-	RETURN 'ok';
+	SELECT string_agg(problem || ': ' || coalesce(detail, ''), '; ') INTO p FROM sift.check(idx::regclass, true);
+	RETURN coalesce('ERROR ' || p, 'ok');
 EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR ' || SQLERRM;
 END $$;
@@ -155,11 +162,8 @@ class Sess:
 
     def __init__(self, name, log, setup=''):
         self.name, self.log, self.n = name, log, 0
-        env = dict(os.environ, LC_ALL='C', PGHOST=SOCK, PGPORT=PORT)
-        for k in ('PGDATABASE', 'PGSERVICE', 'PGOPTIONS'):
-            env.pop(k, None)
         self.p = subprocess.Popen(['psql', '-X', '-A', '-t', '-F', '|', '-U', 'postgres', '-d', DB], stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=ENV)
         if setup:
             self.run(setup)
 
@@ -280,13 +284,15 @@ class Churn:
             w = self.window(5)
             return kind, ' ; '.join(f"UPDATE ct SET ts = ts + interval '{i} minutes', k = (k + {i}) % 300 WHERE {w}" for i in (1, 2, 3))
         if kind == 'promote':
-            return kind, "SELECT sift.col_promote('ct_i'), sift.col_promote('ct_g')"
+            return kind, "SELECT sift.promote('ct_i'), sift.promote('ct_g')"
         if kind == 'vacuum':
             return kind, 'VACUUM ct'
         if kind == 'fold':
-            return kind, "SELECT sift._test_col_fold_marks('ct_i'), sift._test_col_fold_marks('ct_g')"
+            if FMT.v1_hooks:
+                return kind, "SELECT sift._test_col_fold_marks('ct_i'), sift._test_col_fold_marks('ct_g')"
+            return kind, "SELECT count(*) FROM sift.maintain('ct_i'), sift.maintain('ct_g')"
         if kind == 'merge':
-            return kind, "SELECT sift.col_merge('ct_i', true), sift.col_merge('ct_g', true)"
+            return kind, "SELECT sift.merge('ct_i', true), sift.merge('ct_g', true)"
         if kind == 'reindex':
             return kind, 'REINDEX INDEX ct_i'
         return kind, 'ANALYZE ct'
@@ -299,7 +305,7 @@ def check(a, label, every, off):
         raise Fail(f'{label}: {out.strip()[:1500]}')
     for line in out.split('\n'):
         if line.startswith('verify|') and line != 'verify|ok|ok':
-            raise Fail(f'{label}: col_verify: {line}')
+            raise Fail(f'{label}: sift.check: {line}')
         if line.startswith('bad|'):
             raise Fail(f'{label}: answers differ: {line}')
 
@@ -311,19 +317,20 @@ def run_seed(seed, n, steps):
     log = open(path, 'w')
     seek = rng.random() < 0.5
     cfg = dict(track=rng.choice(['on', 'on', 'off']), key_cut=rng.choice(['off', 'auto']), seg_kb=rng.choice([48, 96, 200]), seek=seek, wbuf=rng.choice(['on', 'on', 'off']))
-    log.write(f'-- seed {seed} {cfg}\n')
+    log.write(f'-- seed {seed} format={FMT.name} {cfg}\n')
     n = rng.choice([n // 2, n])
     keys = rng.choice([('(i * 7919) % 300', 'few'), ('(i * 7919) % 5', 'tiny'), ('(i * 7919) % 50000', 'many')])
     trk = ", track_changes = 'off'" if cfg['track'] == 'off' else ''
     kc = '' if cfg['key_cut'] == 'auto' else ", key_cut = 'off'"
     ts = rng.choice(["TIMESTAMP '2026-01-01' + i * interval '1 minute'", f"TIMESTAMP '2026-01-01' + ((i * 7919) % {n}) * interval '1 minute'"])
-    flags = f"SET sift.test_col_segment_kb = {cfg['seg_kb']}; SET sift.test_col_wbuf_ref = {cfg['wbuf']};" + (' SET sift.test_col_gorder_seek = on;' if cfg['seek'] else '')
+    flags = (f"SET sift.test_col_segment_kb = {cfg['seg_kb']}; SET sift.test_col_wbuf_ref = {cfg['wbuf']};" + (' SET sift.test_col_gorder_seek = on;' if cfg['seek'] else '')) if FMT.v1_hooks else ''
+    funcs = LIB.replace('@FORCE_OFF@', ", ('sift.agg_force', 'off')" if FMT.has('sift.agg_force') else '').replace('@FORCE_ON@', ", ('sift.agg_force', 'on')" if FMT.has('sift.agg_force') else '')
     a, rd = Sess('writer', log, SETUP), Sess('reader', log, SETUP)
     hold = os.environ.get('SIFT_FUZZ_HOLD', '1') != '0'
     hs = [Sess(f'holder{k}', log, SETUP) for k in range(2 if hold else 0)]
     holders = [Holder(h, random.Random(seed * 7919 + k), k) for k, h in enumerate(hs)]
     try:
-        a.run(f"{flags}\nDROP TABLE IF EXISTS ct, ct_q, ct_res CASCADE;\n" + LIB.replace('CREATE FUNCTION', 'CREATE OR REPLACE FUNCTION'))
+        a.run(f"{flags}\nDROP TABLE IF EXISTS ct, ct_q, ct_res CASCADE;\n" + funcs.replace('CREATE FUNCTION', 'CREATE OR REPLACE FUNCTION'))
         ins = ',\n'.join(f'({i}, {sqlstr(c)}, {sqlstr(q)})' for i, (c, q) in enumerate(queries(n), 1))
         out = a.run(f"""INSERT INTO ct_q VALUES {ins};
 CREATE TABLE ct (id int PRIMARY KEY, k int, u bigint, ts timestamp, s text, g int, pad text) WITH (autovacuum_enabled = off);
@@ -362,7 +369,7 @@ VACUUM (ANALYZE) ct;""")
         for h in holders:
             if h.is_open:
                 h.end()
-        a.run(f"SELECT sift.col_promote('ct_i'), sift.col_promote('ct_g');")
+        a.run("SELECT sift.promote('ct_i'), sift.promote('ct_g');")
         a.run('VACUUM ct;')
         check(a, 'final', 2, 0)
         a.run('DROP TABLE ct, ct_q, ct_res CASCADE;')
@@ -383,13 +390,18 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--rows', type=int, default=30000)
     ap.add_argument('--steps', type=int, default=10)
+    fmt.add_argument(ap)
     o = ap.parse_args()
+    global FMT, ENV
+    base = fmt.libpq_env(dict(PGHOST=SOCK, PGPORT=PORT))
+    FMT = fmt.Lib(o.format, db=DB, env=dict(base, PGUSER='postgres'))
+    ENV = dict(FMT.env(), PGHOST=SOCK, PGPORT=PORT)
     seeds = [n for part in o.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
     for seed in seeds:
         t0 = time.time()
         rc, path = run_seed(seed, o.rows, o.steps)
-        print(f'seed={seed} {"OK" if rc == 0 else "FAIL"} {time.time() - t0:.0f}s log={path}', flush=True)
+        print(f'seed={seed} format={o.format} {"OK" if rc == 0 else "FAIL"} {time.time() - t0:.0f}s log={path}', flush=True)
         bad += rc
     sys.exit(1 if bad else 0)
 
