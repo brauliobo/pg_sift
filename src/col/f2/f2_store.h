@@ -119,6 +119,7 @@ typedef struct SiftF2Store
 	bool		has_keys;
 	bool		has_groups;
 	bool		has_jsonb;
+	bool		headerless;		/* sift_table (SIFT_COMPAT_NATIVE_STRINGS): text, varchar, char(n), bytea and name keep their bytes bare and a uuid its 16 bytes, as a sift_col index does */
 
 	uint16		key_cols[SIFT_KEY_ORDER_MAX];
 	int			nkey;
@@ -169,8 +170,14 @@ sift_f2_attr_has_leaf(Form_pg_attribute att)
 	return !att->attisdropped && !sift_f2_attr_is_virtual(att);
 }
 
-/* The cell of the value of an attribute; with spill, a varlena over SIFT_F2_WIDE_THRESHOLD becomes a null cell tagged SIFT_F2_TAG_WIDE_RAW that keeps the raw value as its payload */
-extern void sift_f2_cell_of_datum(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c);
+/*
+ * The cell of the value of an attribute of a table store; with spill, a varlena over SIFT_F2_WIDE_THRESHOLD becomes a null cell tagged SIFT_F2_TAG_WIDE_RAW that keeps the raw value (the varlena
+ * with its header) as its payload. A headerless store keeps the bytes of a text, varchar, char(n) or bytea without their header and a name without its padding; any other string is the datum image.
+ */
+extern void sift_f2_cell_of_datum(const SiftF2Store *store, Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c);
+
+/* The datum of a string cell of a headerless store: the varlena (a short header up to 126 bytes) or the zero padded name, in cx */
+extern Datum sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx);
 
 /*
  * The relation invalidations of the Format 2.0 caches (the stores, the part pins, the address indexes, the granules): the backend takes one syscache callback on RELOID, whose

@@ -42,12 +42,19 @@ sift_tbl_f2_slot_callbacks(Relation rel pg_attribute_unused())
 
 /* ---- files ---- */
 
+#ifdef SIFT_TESTING
+bool		sift_test_headered_strings = false;
+#define NEW_TABLE_COMPAT()	(sift_tbl_host_ops.base_compat_flags & ~(sift_test_headered_strings ? SIFT_COMPAT_NATIVE_STRINGS : 0))
+#else
+#define NEW_TABLE_COMPAT()	(sift_tbl_host_ops.base_compat_flags)
+#endif
+
 static void
 init_pages(Relation rel)
 {
-	sift_col_meta_init(rel, SIFT_AM_TABLE, sift_tbl_host_ops.base_compat_flags, 0, 0);
+	sift_col_meta_init(rel, SIFT_AM_TABLE, NEW_TABLE_COMPAT(), 0, 0);
 	if (rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED)
-		sift_col_meta_init_fork(rel, SIFT_AM_TABLE, sift_tbl_host_ops.base_compat_flags, 0, 0);
+		sift_col_meta_init_fork(rel, SIFT_AM_TABLE, NEW_TABLE_COMPAT(), 0, 0);
 }
 
 void

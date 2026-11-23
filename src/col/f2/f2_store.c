@@ -287,8 +287,63 @@ sift_f2_store_from_oid(Oid relid)
 	return s;
 }
 
+/* A value over the wide threshold leaves the granules: its cell is null and tagged, and the varlena image goes to the extents of the table */
+static void
+wide_cell(SiftCell *c, const char *image, uint32 image_len)
+{
+	c->isnull = true;
+	c->tag = SIFT_F2_TAG_WIDE_RAW;
+	c->xp = image;
+	c->xplen = image_len;
+	c->s = NULL;
+	c->slen = 0;
+}
+
+static void
+bare_cell(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c)
+{
+	MemoryContext old;
+	struct varlena *v;
+
+	if (att->atttypid == NAMEOID)
+	{
+		c->s = NameStr(*DatumGetName(d));
+		c->slen = strnlen(c->s, NAMEDATALEN);
+		return;
+	}
+	old = MemoryContextSwitchTo(row_cx);
+	v = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
+	MemoryContextSwitchTo(old);
+	c->s = VARDATA_ANY(v);
+	c->slen = VARSIZE_ANY_EXHDR(v);
+	if (spill && c->slen > SIFT_F2_WIDE_THRESHOLD)
+		wide_cell(c, (const char *) v, VARSIZE_ANY(v));
+}
+
+Datum
+sift_f2_bare_datum(Form_pg_attribute att, const char *bytes, uint32 len, MemoryContext cx)
+{
+	struct varlena *v;
+
+	if (att->atttypid == NAMEOID)
+		return NameGetDatum(memcpy(MemoryContextAllocZero(cx, NAMEDATALEN), bytes, len));
+	if (len < VARATT_SHORT_MAX)
+	{
+		v = MemoryContextAlloc(cx, len + 1);
+		SET_VARSIZE_SHORT(v, len + 1);
+		memcpy(VARDATA_SHORT(v), bytes, len);
+	}
+	else
+	{
+		v = MemoryContextAlloc(cx, len + VARHDRSZ);
+		SET_VARSIZE(v, len + VARHDRSZ);
+		memcpy(VARDATA(v), bytes, len);
+	}
+	return PointerGetDatum(v);
+}
+
 void
-sift_f2_cell_of_datum(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c)
+sift_f2_cell_of_datum(const SiftF2Store *store, Form_pg_attribute att, Datum d, MemoryContext row_cx, bool spill, SiftCell *c)
 {
 	MemoryContext old;
 	uint8		scale;
@@ -296,6 +351,11 @@ sift_f2_cell_of_datum(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool
 	if (sift_f2_attr_num64(att, &scale))
 	{
 		sift_f2_num64_cell(d, scale, row_cx, c);
+		return;
+	}
+	if (store->headerless && sift_f2_attr_bare_bytes(att))
+	{
+		bare_cell(att, d, row_cx, spill, c);
 		return;
 	}
 	if (att->attbyval)
@@ -325,14 +385,7 @@ sift_f2_cell_of_datum(Form_pg_attribute att, Datum d, MemoryContext row_cx, bool
 	MemoryContextSwitchTo(old);
 	c->slen = VARSIZE_ANY(c->s);
 	if (spill && c->slen - VARHDRSZ > SIFT_F2_WIDE_THRESHOLD)
-	{
-		c->isnull = true;
-		c->tag = SIFT_F2_TAG_WIDE_RAW;
-		c->xp = c->s;
-		c->xplen = c->slen;
-		c->s = NULL;
-		c->slen = 0;
-	}
+		wide_cell(c, c->s, c->slen);
 }
 
 static SiftCellKind
@@ -370,7 +423,7 @@ sift_f2_store_pack_row(Relation rel, SiftF2Store *store, MemoryContext row_cx, c
 		if (isnull[a - 1])
 			cells[leaf].isnull = true;
 		else
-			sift_f2_cell_of_datum(att, values[a - 1], row_cx, spill_wide_blobs, &cells[leaf]);
+			sift_f2_cell_of_datum(store, att, values[a - 1], row_cx, spill_wide_blobs, &cells[leaf]);
 	}
 	if (elem != NULL)
 		memset(elem, 0, sizeof(SiftCell *) * store->ncols);

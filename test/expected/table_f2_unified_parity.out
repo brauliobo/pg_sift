@@ -42,12 +42,6 @@ SELECT parity('SELECT grp, count(*), sum(qty), min(qty), max(qty) FROM @T GROUP 
  t
 (1 row)
 
-SELECT parity('SELECT tag, count(*), sum(amount), avg(amount) FROM @T WHERE amount IS NOT NULL GROUP BY tag') AS numeric_sums;
- numeric_sums 
---------------
- t
-(1 row)
-
 SELECT parity('SELECT id, amount FROM @T WHERE id = 20001') AS nan_round_trip;
  nan_round_trip 
 ----------------
@@ -85,6 +79,12 @@ DELETE FROM uh WHERE id = 20001;
 SELECT sift.table_maintain('ut') IS NOT NULL AS maintained_without_nan;
  maintained_without_nan 
 ------------------------
+ t
+(1 row)
+
+SELECT parity('SELECT tag, count(*), sum(amount), avg(amount) FROM @T WHERE amount IS NOT NULL GROUP BY tag') AS numeric_sums;
+ numeric_sums 
+--------------
  t
 (1 row)
 

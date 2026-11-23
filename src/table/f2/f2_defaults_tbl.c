@@ -24,7 +24,7 @@ default_kind(SiftCellKind kind)
 }
 
 static SiftDefaultsStatus
-add_missing(SiftSchemaDefaults *d, TupleDesc desc, int attnum, MemoryContext tmp)
+add_missing(const SiftF2Store *store, SiftSchemaDefaults *d, TupleDesc desc, int attnum, MemoryContext tmp)
 {
 	Form_pg_attribute att = TupleDescAttr(desc, attnum - 1);
 	SiftDefaultVal dv = {.attnum = attnum,.kind = default_kind(sift_f2_kind_of_attribute(att))};
@@ -34,7 +34,7 @@ add_missing(SiftSchemaDefaults *d, TupleDesc desc, int attnum, MemoryContext tmp
 	{
 		SiftCell	cell = {0};
 
-		sift_f2_cell_of_datum(att, value, tmp, false, &cell);
+		sift_f2_cell_of_datum(store, att, value, tmp, false, &cell);
 		dv.i = cell.i;
 		dv.f = cell.f;
 		dv.s = (const uint8 *) cell.s;
@@ -44,7 +44,7 @@ add_missing(SiftSchemaDefaults *d, TupleDesc desc, int attnum, MemoryContext tmp
 }
 
 static SiftSchemaDefaults *
-defaults_of_desc(Relation rel)
+defaults_of_desc(Relation rel, const SiftF2Store *store)
 {
 	TupleDesc	desc = RelationGetDescr(rel);
 	SiftSchemaDefaults *d = sift_defaults_new();
@@ -59,7 +59,7 @@ defaults_of_desc(Relation rel)
 		if (att->attisdropped)
 			st = sift_defaults_add_dropped(d, a);
 		else if (att->atthasmissing && sift_f2_attr_has_leaf(att))
-			st = add_missing(d, desc, a, tmp);
+			st = add_missing(store, d, desc, a, tmp);
 		if (st != SIFT_DEFAULTS_OK)
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the default of column %d of sift_table \"%s\" cannot be kept in its parts: %s", a, RelationGetRelationName(rel),
 																			sift_defaults_status_text(st)),
@@ -73,7 +73,7 @@ void
 sift_tbl_f2_defaults_attach(Relation rel, SiftF2Store *store)
 {
 	MemoryContext old = MemoryContextSwitchTo(store->cx);
-	SiftSchemaDefaults *d = defaults_of_desc(rel);
+	SiftSchemaDefaults *d = defaults_of_desc(rel, store);
 	uint8	   *bytes;
 	uint64		len;
 

@@ -1,0 +1,191 @@
+-- A Format 2.0 sift_table made before SIFT_COMPAT_NATIVE_STRINGS keeps its strings as datum images and goes on reading, updating and aggregating as it did; a rewrite (VACUUM FULL) makes it keep them bare.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_headered_strings = on;
+CREATE TABLE lg (id int PRIMARY KEY, t text, v varchar(20), c char(8), n name, b bytea, u uuid, m numeric(12,2), w text) USING sift_table WITH (autovacuum_enabled = false);
+RESET sift.test_headered_strings;
+CREATE TABLE lh (LIKE lg INCLUDING ALL);
+CREATE VIEW src AS SELECT g AS id, CASE WHEN g % 13 = 0 THEN NULL ELSE 'text ' || (g % 50) END AS t, 'var' || (g % 7) AS v, 'c' || (g % 5) AS c, ('name' || (g % 9))::name AS n,
+	decode(md5(g::text), 'hex') AS b, ('00000000-0000-4000-8000-' || lpad(to_hex(g % 100), 12, '0'))::uuid AS u, (g % 300) / 7.0 AS m,
+	CASE WHEN g % 250 = 0 THEN repeat('w' || g, 3000) ELSE 'short' || g END AS w
+FROM generate_series(1, 20000) g;
+INSERT INTO lg SELECT * FROM src;
+INSERT INTO lh SELECT * FROM src;
+CREATE FUNCTION same(name text, q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a int; b int;
+BEGIN
+	EXECUTE format('SELECT count(*) FROM ((%s) EXCEPT ALL (%s)) x', replace(q, '@T@', 'lg'), replace(q, '@T@', 'lh')) INTO a;
+	EXECUTE format('SELECT count(*) FROM ((%s) EXCEPT ALL (%s)) x', replace(q, '@T@', 'lh'), replace(q, '@T@', 'lg')) INTO b;
+	IF a + b > 0 THEN RAISE EXCEPTION 'FAILED %: % rows only in the table, % only in the heap', name, a, b; END IF;
+	RETURN name || ': ok';
+END $$;
+CREATE FUNCTION twin(stmt text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE replace(stmt, '@T@', 'lg');
+	EXECUTE replace(stmt, '@T@', 'lh');
+END $$;
+CREATE FUNCTION steps(prefix text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN NEXT same(prefix || ' rows', 'SELECT * FROM @T@');
+	RETURN NEXT same(prefix || ' text key', 'SELECT t, count(*), count(DISTINCT n) FROM @T@ GROUP BY t');
+	RETURN NEXT same(prefix || ' filters', 'SELECT count(*), sum(id) FROM @T@ WHERE t LIKE ''text 1%'' AND v IN (''var1'', ''var2'') AND n = ''name3''');
+	RETURN NEXT same(prefix || ' uuid and bytea', 'SELECT u, count(*), min(md5(b::text)) FROM @T@ GROUP BY u');
+	RETURN NEXT same(prefix || ' wide', 'SELECT id, md5(w) FROM @T@ WHERE id % 250 = 0');
+END $$;
+CREATE FUNCTION plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP
+		CONTINUE WHEN line ~ '^\s*(Exec|I/O & Mem):';
+		RETURN NEXT regexp_replace(line, '^\s+', '');
+	END LOOP;
+END $$;
+SELECT sift.table_maintain('lg') IS NOT NULL AS maintained_headered;
+ maintained_headered 
+---------------------
+ t
+(1 row)
+
+ANALYZE lg;
+SELECT plan('SELECT t, count(*) FROM lg GROUP BY t') AS headered_text_key_stays_on_the_heap;
+ headered_text_key_stays_on_the_heap 
+-------------------------------------
+ HashAggregate
+ Group Key: t
+ ->  Seq Scan on lg
+(3 rows)
+
+SELECT steps('headered');
+            steps            
+-----------------------------
+ headered rows: ok
+ headered text key: ok
+ headered filters: ok
+ headered uuid and bytea: ok
+ headered wide: ok
+(5 rows)
+
+SELECT twin('UPDATE @T@ SET t = ''upd '' || id WHERE id % 3 = 0');
+ twin 
+------
+ 
+(1 row)
+
+SELECT twin('UPDATE @T@ SET n = ''changed'' WHERE id % 4 = 0');
+ twin 
+------
+ 
+(1 row)
+
+SELECT twin('UPDATE @T@ SET u = NULL WHERE id % 6 = 0');
+ twin 
+------
+ 
+(1 row)
+
+SELECT twin('DELETE FROM @T@ WHERE id % 10 = 3');
+ twin 
+------
+ 
+(1 row)
+
+SELECT steps('headered after updates');
+                   steps                   
+-------------------------------------------
+ headered after updates rows: ok
+ headered after updates text key: ok
+ headered after updates filters: ok
+ headered after updates uuid and bytea: ok
+ headered after updates wide: ok
+(5 rows)
+
+SELECT sift.table_maintain('lg') IS NOT NULL AS maintained;
+ maintained 
+------------
+ t
+(1 row)
+
+SELECT steps('headered after maintenance');
+                     steps                     
+-----------------------------------------------
+ headered after maintenance rows: ok
+ headered after maintenance text key: ok
+ headered after maintenance filters: ok
+ headered after maintenance uuid and bytea: ok
+ headered after maintenance wide: ok
+(5 rows)
+
+SELECT count(*) AS check_problems_headered FROM sift.check('lg'::regclass);
+ check_problems_headered 
+-------------------------
+                       0
+(1 row)
+
+VACUUM FULL lg;
+SELECT sift.table_maintain('lg') IS NOT NULL AS maintained_rewritten;
+ maintained_rewritten 
+----------------------
+ t
+(1 row)
+
+ANALYZE lg;
+SELECT plan('SELECT t, count(*) FROM lg GROUP BY t') AS rewritten_text_key;
+   rewritten_text_key    
+-------------------------
+ Custom Scan (SiftAggV6)
+ Table: lg
+(2 rows)
+
+SELECT steps('rewritten');
+            steps             
+------------------------------
+ rewritten rows: ok
+ rewritten text key: ok
+ rewritten filters: ok
+ rewritten uuid and bytea: ok
+ rewritten wide: ok
+(5 rows)
+
+SELECT count(*) AS check_problems_rewritten FROM sift.check('lg'::regclass);
+ check_problems_rewritten 
+--------------------------
+                        0
+(1 row)
+
+SELECT twin('UPDATE @T@ SET v = ''v'' || id, c = ''x'' WHERE id % 9 = 0');
+ twin 
+------
+ 
+(1 row)
+
+SELECT twin('INSERT INTO @T@ SELECT g + 100000, ''late'', ''late'', ''late'', ''late'', ''\x00ff'', NULL, 1, ''w'' FROM generate_series(1, 300) g');
+ twin 
+------
+ 
+(1 row)
+
+SELECT steps('rewritten after updates');
+                   steps                    
+--------------------------------------------
+ rewritten after updates rows: ok
+ rewritten after updates text key: ok
+ rewritten after updates filters: ok
+ rewritten after updates uuid and bytea: ok
+ rewritten after updates wide: ok
+(5 rows)
+
+SELECT count(*) AS check_problems_rewritten_after_updates FROM sift.check('lg'::regclass);
+ check_problems_rewritten_after_updates 
+----------------------------------------
+                                      0
+(1 row)
+
+DROP TABLE lg, lh;
+DROP VIEW src;
+DROP FUNCTION same(text, text), twin(text), steps(text), plan(text);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

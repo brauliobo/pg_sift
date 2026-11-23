@@ -431,7 +431,7 @@ diff_row(Relation rel, SiftF2Store *store, TupleTableSlot *old, TupleTableSlot *
 			c->kind = store->kinds[leaf];
 			c->cell = (SiftCell) {.isnull = new->tts_isnull[a - 1]};
 			if (!c->cell.isnull)
-				sift_f2_cell_of_datum(att, new->tts_values[a - 1], CurrentMemoryContext, false, &c->cell);
+				sift_f2_cell_of_datum(store, att, new->tts_values[a - 1], CurrentMemoryContext, false, &c->cell);
 		}
 		d->nchanged++;
 	}

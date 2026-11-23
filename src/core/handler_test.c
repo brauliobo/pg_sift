@@ -22,6 +22,7 @@
 #include "core/visibility.h"
 #include "core/parbuild.h"
 #include "col/am.h"
+#include "table/f2/f2_tbl.h"
 #include "table/v1/table_v1.h"
 #include "agg/par_int.h"
 
@@ -97,6 +98,9 @@ sift_handler_test_gucs(void)
 	DefineCustomBoolVariable("sift.test_create_format1",
 							 "Testing: the relations made while it is on take Format 1, whatever format a new relation takes by default.",
 							 NULL, &sift_test_create_format1, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
+	DefineCustomBoolVariable("sift.test_headered_strings",
+							 "Testing: the Format 2.0 sift_tables made while it is on keep their strings as datum images, as a table of the first builds did (no SIFT_COMPAT_NATIVE_STRINGS).",
+							 NULL, &sift_test_headered_strings, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_quiet_build_notice",
 							 "Testing: the summaries of a build and of a maintenance ignore how long it took (they speak for 10,000 rows, a choice or a format change only).",
 							 NULL, &sift_test_quiet_build_notice, false, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

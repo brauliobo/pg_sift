@@ -68,6 +68,14 @@ sift_f2_num64_exception_datum(const char *payload, uint32 len, MemoryContext cx)
 
 /* ---- the schema ---- */
 
+bool
+sift_f2_attr_lossless_str(const SiftF2Store *store, Form_pg_attribute att)
+{
+	if (!store->headerless)
+		return false;
+	return att->atttypid == UUIDOID || (sift_f2_attr_bare_bytes(att) && (att->atttypid != BPCHAROID || att->atttypmod >= 0));
+}
+
 static SiftColStore
 store_of(SiftCellKind kind, Form_pg_attribute att)
 {
@@ -91,7 +99,7 @@ make_schema(Relation rel, const SiftF2Store *s)
 		defs[c] = (SiftColDef) {
 			.id = (int16) c,.parent = -1,.kind = SIFT_COLK_SCALAR,.store = store_of(s->kinds[c], att),.attno = s->leaf_attno[c],
 			.type = s->hints[c] == SIFT_CHINT_NUM64 ? SIFT_COLT_NUMERIC : sift_col_type_of_oid(att->atttypid),.path = "",.scale = s->scales[c],
-			.flags = s->kinds[c] == SIFT_CELL_STR ? SIFT_COLD_LOSSY : 0,.name = pstrdup(NameStr(att->attname)),
+			.flags = s->kinds[c] == SIFT_CELL_STR && !sift_f2_attr_lossless_str(s, att) ? SIFT_COLD_LOSSY : 0,.name = pstrdup(NameStr(att->attname)),
 		};
 	}
 	return sift_cschema_create(s->cx, defs, s->ncols);

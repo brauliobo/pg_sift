@@ -50,14 +50,21 @@ int_datum(Form_pg_attribute att, int64 v, uint8 scale)
 	return att->attlen == 8 ? Int64GetDatum(v) : att->attlen == 4 ? Int32GetDatum((int32) v) : att->attlen == 2 ? Int16GetDatum((int16) v) : CharGetDatum((char) v);
 }
 
+/* A string the table keeps as a datum image (any type but those a headerless store keeps bare) is copied: the granule may go before the row does, and the bytes may not be aligned for the type */
 static Datum
-patch_datum(Form_pg_attribute att, SiftCellKind kind, uint8 scale, const SiftColDeltaPatch *p, MemoryContext cx)
+str_image_datum(const char *bytes, uint32 len, MemoryContext cx)
+{
+	return PointerGetDatum(memcpy(MemoryContextAlloc(cx, len), bytes, len));
+}
+
+static Datum
+patch_datum(const SiftF2Store *store, Form_pg_attribute att, SiftCellKind kind, uint8 scale, const SiftColDeltaPatch *p, MemoryContext cx)
 {
 	if (kind == SIFT_CELL_INT)
 		return int_datum(att, p->val.i, scale);
 	if (kind == SIFT_CELL_F8)
 		return att->atttypid == FLOAT4OID ? Float4GetDatum((float4) p->val.f) : Float8GetDatum(p->val.f);
-	return PointerGetDatum(memcpy(MemoryContextAlloc(cx, p->vlen), p->val.s, p->vlen));
+	return store->headerless && sift_f2_attr_bare_bytes(att) ? sift_f2_bare_datum(att, p->val.s, p->vlen, cx) : str_image_datum(p->val.s, p->vlen, cx);
 }
 
 static bool
@@ -77,9 +84,11 @@ str_datum(Relation rel, const SiftF2Store *store, const SiftF2GranuleBuf *gb, in
 
 		return store->host->read_wide_blob(rel, ref, len, att->atttypid, att->attlen, cx);
 	}
+	if (store->headerless && sift_f2_attr_bare_bytes(att))
+		return sift_f2_bare_datum(att, c->s.p, c->s.len, cx);
 	if (gb->lazy == NULL && ((uintptr_t) c->s.p % align_of(att)) == 0)
 		return PointerGetDatum(c->s.p);
-	return PointerGetDatum(memcpy(MemoryContextAlloc(cx, c->s.len), c->s.p, c->s.len));
+	return str_image_datum(c->s.p, c->s.len, cx);
 }
 
 /* True when the attribute made the granule decode a column that no row asked for before: only then does the cache hold more */
@@ -105,7 +114,7 @@ fill_att(Relation rel, const SiftF2Store *store, SiftF2GranuleBuf *gb, uint16 ro
 	if (p != NULL)
 	{
 		slot->tts_isnull[a - 1] = (p->flags & SIFT_CDCOL_IS_NULL) != 0;
-		slot->tts_values[a - 1] = slot->tts_isnull[a - 1] ? (Datum) 0 : patch_datum(att, store->kinds[leaf], store->scales[leaf], p, cx);
+		slot->tts_values[a - 1] = slot->tts_isnull[a - 1] ? (Datum) 0 : patch_datum(store, att, store->kinds[leaf], store->scales[leaf], p, cx);
 		return false;
 	}
 	if (phys < 0)

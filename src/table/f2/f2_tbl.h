@@ -157,7 +157,7 @@ extern void sift_tbl_f2_defaults_verify(Relation rel, const SiftF2Store *store, 
 extern void sift_tbl_f2_col_synth(const SiftF2Store *store, int leaf, SiftSynth *out);
 
 /* The identities of the columns a part is written with, for its SEC_SCHEMA (SiftPartSpec.col_ids, written by col/granule/part_write.c when the host is a table); made in the context of the store */
-extern SiftPartColIdentity *sift_tbl_f2_column_identities(const SiftF2Store *store, int *n);
+extern SiftPartColIdentity *sift_tbl_f2_column_identities(Relation rel, const SiftF2Store *store, int *n);
 
 /* Writes every slab of the table out as parts: a schema change then meets no row staged under the old tuple descriptor */
 extern void sift_tbl_f2_flush_all_slabs(Relation rel);
@@ -187,6 +187,10 @@ extern int	sift_tbl_f2_hidden_option_count(void);
 extern void sift_tbl_f2_load_options(Relation rel, SiftF2Store *store, MemoryContext cx);
 extern void sift_tbl_f2_apply_key_order(Relation rel, SiftF2Store *store);
 extern void sift_tbl_f2_adopt_layout(SiftF2Store *to, const SiftF2Store *from);
+
+#ifdef SIFT_TESTING
+extern PGDLLIMPORT bool sift_test_headered_strings;
+#endif
 
 /* sift.table_set_option on a table of format major 2: the value checked (false, with why) and, for an option of Format 1, the notice that Format 2.0 ignores it (not while restoring a binary upgrade) */
 extern bool sift_tbl_f2_option_check_set(Relation rel, const char *name, const char *value, const char **why);

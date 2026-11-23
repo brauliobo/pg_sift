@@ -32,23 +32,26 @@ is_time_type(Oid t)
 }
 
 static SiftPartColIdentity
-identity_of(const SiftF2Store *store, int leaf)
+identity_of(Relation rel, const SiftF2Store *store, int leaf)
 {
+	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(rel), store->leaf_attno[leaf] - 1);
+
 	return (SiftPartColIdentity) {
 		.attnum = store->leaf_attno[leaf],
 		.phys_kind = (uint8) store->kinds[leaf],
 		.phys_hint = store->hints[leaf],
 		.phys_scale = store->scales[leaf],
+		.flags = store->headerless && sift_f2_attr_bare_bytes(att) ? SIFT_COLID_HEADERLESS : 0,
 	};
 }
 
 SiftPartColIdentity *
-sift_tbl_f2_column_identities(const SiftF2Store *store, int *n)
+sift_tbl_f2_column_identities(Relation rel, const SiftF2Store *store, int *n)
 {
 	SiftPartColIdentity *ids = MemoryContextAlloc(store->cx, sizeof(SiftPartColIdentity) * Max(store->ncols, 1));
 
 	for (int c = 0; c < store->ncols; c++)
-		ids[c] = identity_of(store, c);
+		ids[c] = identity_of(rel, store, c);
 	*n = store->ncols;
 	return ids;
 }
@@ -60,6 +63,13 @@ sift_tbl_f2_identities_hash(const SiftPartColIdentity *ids, int n)
 }
 
 /* ---- the leaves of a table ---- */
+
+/* A table made by this build says so in its metapage; one that has no block yet is made with the flags of the host */
+static bool
+native_strings(Relation rel)
+{
+	return RelationGetNumberOfBlocks(rel) == 0 || (sift_col_meta_read(rel).common.compat_flags & SIFT_COMPAT_NATIVE_STRINGS) != 0;
+}
 
 static void
 define_time_columns(Relation rel, SiftF2Store *store)
@@ -117,6 +127,7 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 	store->hints = MemoryContextAllocZero(cx, Max(desc->natts, 1));
 	store->scales = MemoryContextAllocZero(cx, Max(desc->natts, 1));
 	store->att_first[0] = -1;
+	store->headerless = native_strings(rel);
 	for (int a = 1; a <= desc->natts; a++)
 	{
 		Form_pg_attribute att = TupleDescAttr(desc, a - 1);
@@ -129,6 +140,8 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 		store->kinds[n] = sift_f2_kind_of_attribute(att);
 		if (sift_f2_attr_num64(att, &store->scales[n]))
 			store->hints[n] = SIFT_CHINT_NUM64;
+		else if (store->headerless && att->atttypid == UUIDOID)
+			store->hints[n] = SIFT_CHINT_UUID;
 		x->has_wide = x->has_wide || (store->kinds[n] == SIFT_CELL_STR && !att->attbyval && att->attlen == -1);
 		n++;
 		store->has_jsonb = store->has_jsonb || att->atttypid == JSONBOID;
@@ -142,7 +155,7 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 		.ncols = n,.kinds = store->kinds,.nsort = store->nkey,.sort_cols = store->key_cols,.hints = store->hints,.scales = store->scales,
 	};
 	define_time_columns(rel, store);
-	store->spec.col_ids = sift_tbl_f2_column_identities(store, &store->spec.ncol_ids);
+	store->spec.col_ids = sift_tbl_f2_column_identities(rel, store, &store->spec.ncol_ids);
 	store->schema_hash = sift_tbl_f2_identities_hash(store->spec.col_ids, store->spec.ncol_ids);
 	sift_f2_store_hydrate(rel, store);
 	sift_tbl_f2_defaults_attach(rel, store);
@@ -217,7 +230,7 @@ set_missing(SiftF2ColMap *m, const SiftF2Store *store, Relation rel, int c, Memo
 	m->missing_null[c] = isnull;
 	m->missing_cell[c].isnull = isnull;
 	if (!isnull)
-		sift_f2_cell_of_datum(att, m->missing_val[c], cx, false, &m->missing_cell[c]);
+		sift_f2_cell_of_datum(store, att, m->missing_val[c], cx, false, &m->missing_cell[c]);
 }
 
 static void

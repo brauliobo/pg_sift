@@ -65,6 +65,16 @@ sift_f2_attr_may_have_exceptions(Form_pg_attribute att)
 	return att->atttypid == NUMERICOID;
 }
 
+/* An attribute whose cell, in a headerless store, is the bare bytes of its value: text, varchar, char(n), bytea and name */
+static inline bool
+sift_f2_attr_bare_bytes(Form_pg_attribute att)
+{
+	return att->atttypid == TEXTOID || att->atttypid == VARCHAROID || att->atttypid == BPCHAROID || att->atttypid == BYTEAOID || att->atttypid == NAMEOID;
+}
+
+/* Whether the leaf of a string attribute holds exactly its values, so that predicates and group keys are decided on the stored bytes: as in a sift_col index, a char without a length is not (its bytes are not its equality) */
+extern bool sift_f2_attr_lossless_str(const SiftF2Store *store, Form_pg_attribute att);
+
 /* The leaves of attribute att of a table store: 0 for a dropped column, 1 for a scalar, more for a column the store shreds */
 extern int	sift_f2_store_attr_leaves(const SiftF2Store *store, int att);
 

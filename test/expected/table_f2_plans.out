@@ -49,14 +49,12 @@ SELECT plan('SELECT count(*) FROM pt WHERE id < 100') AS key_range_count;
  Table: pt
 (2 rows)
 
-RESET sift.agg_force;
-SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key_stays_on_the_heap;
- text_key_stays_on_the_heap 
-----------------------------
- HashAggregate
- Group Key: kind
- ->  Seq Scan on pt
-(3 rows)
+SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key_is_served_by_agg_v6;
+ text_key_is_served_by_agg_v6 
+------------------------------
+ Custom Scan (SiftAggV6)
+ Table: pt
+(2 rows)
 
 DROP FUNCTION plan(text);
 DROP TABLE pt;

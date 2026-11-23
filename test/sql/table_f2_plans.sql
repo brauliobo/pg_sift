@@ -23,8 +23,7 @@ SELECT plan('SELECT grp, sum(amount) FROM pt WHERE qty >= 5 AND grp IN (1, 2, 3)
 SELECT plan('SELECT date_bin(interval ''1 hour'', at, timestamptz ''2030-01-01''), count(*) FROM pt GROUP BY 1') AS date_bin;
 SET sift.agg_force = on;
 SELECT plan('SELECT count(*) FROM pt WHERE id < 100') AS key_range_count;
-RESET sift.agg_force;
-SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key_stays_on_the_heap;
+SELECT plan('SELECT kind, count(*) FROM pt GROUP BY kind') AS text_key_is_served_by_agg_v6;
 DROP FUNCTION plan(text);
 DROP TABLE pt;
 DROP EXTENSION pg_sift;

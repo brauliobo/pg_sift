@@ -38,7 +38,6 @@ BEGIN
 END $$;
 
 SELECT parity('SELECT grp, count(*), sum(qty), min(qty), max(qty) FROM @T GROUP BY grp') AS plain_groups;
-SELECT parity('SELECT tag, count(*), sum(amount), avg(amount) FROM @T WHERE amount IS NOT NULL GROUP BY tag') AS numeric_sums;
 SELECT parity('SELECT id, amount FROM @T WHERE id = 20001') AS nan_round_trip;
 CREATE FUNCTION raises(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN EXECUTE q; RETURN false; EXCEPTION WHEN OTHERS THEN RETURN true; END $$;
@@ -49,6 +48,7 @@ SELECT parity('SELECT count(*), count(DISTINCT grp) FROM @T') AS totals_with_a_n
 DELETE FROM ut WHERE id = 20001;
 DELETE FROM uh WHERE id = 20001;
 SELECT sift.table_maintain('ut') IS NOT NULL AS maintained_without_nan;
+SELECT parity('SELECT tag, count(*), sum(amount), avg(amount) FROM @T WHERE amount IS NOT NULL GROUP BY tag') AS numeric_sums;
 SELECT parity('SELECT count(*), count(amount), count(DISTINCT grp) FROM @T') AS totals_with_nulls;
 SELECT parity('SELECT day, count(*) FILTER (WHERE flag), sum(qty) FILTER (WHERE qty > 10) FROM @T GROUP BY day') AS filtered;
 SELECT parity('SELECT date_bin(interval ''1 day'', at, timestamptz ''2030-01-01''), count(*) FROM @T GROUP BY 1') AS date_bin;
