@@ -3,10 +3,12 @@
 # test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
-#   scripts/plangate.sh [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned|gpu] [--table] [--warn-time] [--update] [--keep]
+#   scripts/plangate.sh [--format f2|f1|release] [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned|gpu] [--table] [--warn-time] [--update] [--keep]
 #   scripts/plangate.sh --calibrate [--rows N] [--lane stock|tuned] [--shapes REGEX]   the ranking of the estimates against the instructions (below)
 #   scripts/plangate.sh --planning [--rows N] [--shapes REGEX] [--update]   the instructions to plan each shape, scan on and off, against test/plan/planning.tsv (below)
 #
+#   --format F    the format of the indexes of the tables: f2 (default: Format 2.0 on the testing library; the bands of test/plan/bands.tsv), f1 (Format 1 on the testing library; test/plan/bands-f1.tsv)
+#                 or release (the release library, Format 2.0, no test setting; the bands of f2; refused on a testing library, so that the run is the one of the binary users install)
 #   --rows N      events (default 30000, the size the expectations are recorded at), --seed N the generator seed (default 1). The cost ratio of the scan over the normal plan falls with the
 #                 rows (the scan costs its start and its units, the plan its rows: the median over the shapes is 0.134, 0.082 and 0.067 at 30000, 100000 and 250000 rows, the time ratio
 #                 0.109, 0.061 and 0.051), so the bands hold at 30000 only (40 of 106 shapes leave them at 50000). Another size has bands of its own, the rows `LANE@N` of test/plan/bands.tsv
@@ -42,7 +44,7 @@ set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
-ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST= AREAS_RUN=
+ROWS=30000 SEED=1 RUNS=3 ONLY= WARN= UPDATE= KEEP= LANE=stock TABLE= CAL= PLAN= SELFTEST= AREAS_RUN= FORMAT=f2
 AREAS='star clickbench coexist jsonb table bm25 gpu smoke'
 DB=${PLANGATE_DB:-sift_plangate}
 
@@ -50,8 +52,8 @@ while (( $# )); do
 	case $1 in
 		--warn-time) WARN=1 ;; --calibrate) CAL=1 ;; --planning) CAL=1 PLAN=1 ;; --update) UPDATE=1 ;; --keep) KEEP=1 ;; --table) TABLE=1 ;;
 		--rows) ROWS=$2; shift ;; --seed) SEED=$2; shift ;; --runs) RUNS=$2; shift ;; --shapes) ONLY=$2; shift ;; --slice) SLICE=$2; shift ;; --lane) LANE=$2; shift ;;
-		--selftest) SELFTEST=1 ;;
-		*) sed -n 2,36p "$0"; exit 1 ;;
+		--selftest) SELFTEST=1 ;; --format) FORMAT=$2; shift ;;
+		*) sed -n 2,38p "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -66,6 +68,12 @@ merge_bands() {
 	cat "$out" >"$old"
 	rm -f "$out"
 }
+
+# the setting of a session that makes the indexes of the --format (empty for release: the release library has none), and the bands file of the format
+format_setting() {
+	case $1 in f2) echo '-c sift.test_create_format1=off' ;; f1) echo '-c sift.test_create_format1=on' ;; release) ;; *) echo "plangate: unknown format $1 (f2, f1 or release)" >&2; return 1 ;; esac
+}
+format_bands() { [[ $1 == f1 ]] && echo bands-f1.tsv || echo bands.tsv; }
 
 # the areas of a --slice as the list the runner takes: empty for every shape (all), else the areas themselves; fails on a name that is none
 slice_areas() {
@@ -100,11 +108,14 @@ if [[ -n $SELFTEST ]]; then
 		{ echo "plangate selftest: a hardware device is not found in EXPLAIN" >&2; exit 1; }
 	[[ -z $(printf '  GPU: not used (the build has no Vulkan)\n' | gpu_device) && -z $(printf '  GPU: llvmpipe (LLVM 17.0.6, 256 bits) (backend own device)\n' | gpu_device) &&
 		-z $(printf 'Custom Scan\n' | gpu_device) ]] || { echo "plangate selftest: a CPU scan or a software device counted as a GPU" >&2; exit 1; }
+	[[ $(format_setting f2) == *=off && $(format_setting f1) == *=on && -z $(format_setting release) && $(format_bands f2) == bands.tsv && $(format_bands release) == bands.tsv &&
+		$(format_bands f1) == bands-f1.tsv ]] || { echo "plangate selftest: --format did not give its setting and bands" >&2; exit 1; }
+	format_setting bogus 2>/dev/null && { echo "plangate selftest: --format accepted an unknown format" >&2; exit 1; }
 	echo "plangate selftest: ok"
 	exit 0
 fi
 
-sql() { PGOPTIONS='-c client_min_messages=warning' SIFT_DB=${DBNOW:-$DB} "$REPO/scripts/pgtest.sh" psql -v ON_ERROR_STOP=1 "$@"; }
+sql() { PGOPTIONS="-c client_min_messages=warning${FMT_OPT:+ $FMT_OPT}" SIFT_DB=${DBNOW:-$DB} "$REPO/scripts/pgtest.sh" psql -v ON_ERROR_STOP=1 "$@"; }
 log() { printf '[plangate %s] %s\n' "$(date +%T)" "$*" >&2; }
 [[ -n $KEEP ]] || trap 'DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" >/dev/null 2>&1 || true' EXIT
 
@@ -273,7 +284,11 @@ if [[ -n ${SLICE+x} ]]; then
 	[[ ,$AREAS_RUN, != *,gpu,* ]] || GPU=1
 fi
 [[ -z $GPU || -z $TABLE ]] || { log "the area gpu runs the heap tables: not with --table"; exit 1; }
+FMT_OPT=$(format_setting "$FORMAT") BANDS=$(format_bands "$FORMAT")
 DBNOW=postgres sql -qAt -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
+testing=$(FMT_OPT= sql -qAt -c "CREATE EXTENSION pg_sift" -c "SELECT current_setting('sift.test_create_format1', true) IS NOT NULL" | tail -1)
+[[ $FORMAT != release || $testing != t ]] || { log "--format release needs the release library (SIFT_TESTING= scripts/pgtest.sh install), this cluster has the testing one"; exit 1; }
+[[ $FORMAT == release || $testing == t ]] || { log "--format $FORMAT needs the testing library (scripts/pgtest.sh install), this cluster has the release one"; exit 1; }
 # serial plans, no JIT and the stock planner costs: the bands are ratios of the costs the server ships with, whatever its configuration
 settings=(max_parallel_workers_per_gather=0 jit=off seq_page_cost=1 random_page_cost=4 cpu_tuple_cost=0.01 effective_cache_size=4GB work_mem=4MB)
 case $LANE in
@@ -291,7 +306,6 @@ LK=${LK:-stock}
 settings+=("plangate.lane=$LK")
 [[ -z $CAL ]] || settings+=(max_parallel_workers_per_gather=0)
 for s in "${settings[@]}"; do printf "ALTER DATABASE %s SET %s TO '%s';\n" "$DB" "${s%%=*}" "${s#*=}"; done | sql -q >/dev/null
-sql -qAt -c "CREATE EXTENSION pg_sift" >/dev/null
 if [[ -n $GPU ]]; then
 	device=$(gpu_probe)
 	if [[ -z $device ]]; then
@@ -309,7 +323,7 @@ sql -q -v n="$ROWS" -v seed="$SEED" -f "$REPO/test/col/run.sql" -f "$REPO/test/p
 [[ -z $CAL ]] || { if [[ -n $PLAN ]]; then planning; else calibrate; fi; exit $?; }
 log "shapes"
 sql -q <<-SQL >/dev/null
-	\\copy plangate.bands FROM '$REPO/test/plan/bands.tsv'
+	\\copy plangate.bands FROM '$REPO/test/plan/$BANDS'
 SQL
 sql -q -v runs="$RUNS" -v pattern="$ONLY" -v areas="$AREAS_RUN" >/dev/null <<-SQL
 	\\set text \`cat '$REPO/test/plan/shapes.sql'\`
@@ -321,9 +335,9 @@ if [[ -n $UPDATE ]]; then
 	sql -qAt -F $'\t' -c "SELECT '$LK', name, CASE WHEN plan = 'either' THEN plan ELSE chosen END,
 		coalesce(round(ratio::numeric / 2, 1 - floor(log(ratio::numeric / 2))::int)::text, '-'), coalesce(round(ratio::numeric * 2, 1 - floor(log(ratio::numeric * 2))::int)::text, '-')
 		FROM plangate.results" >"${SIFT_TMP}/plangate-bands.tsv"
-	merge_bands "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/bands.tsv" || { rm -f "${SIFT_TMP}/plangate-bands.tsv"; exit 1; }
+	merge_bands "${SIFT_TMP}/plangate-bands.tsv" "$REPO/test/plan/$BANDS" || { rm -f "${SIFT_TMP}/plangate-bands.tsv"; exit 1; }
 	rm -f "${SIFT_TMP}/plangate-bands.tsv"
-	log "updated the $LK rows of test/plan/bands.tsv"
+	log "updated the $LK rows of test/plan/$BANDS"
 fi
 
 # the expected plans and cost bands, of every lane, are the costs of PostgreSQL 18: on another major their drift is a warning, a wrong result still fails

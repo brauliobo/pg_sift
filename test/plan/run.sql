@@ -25,13 +25,13 @@ CREATE FUNCTION plangate.path(p text) RETURNS void LANGUAGE sql AS $$
 	SELECT set_config('sift.enable_agg', (p <> 'native')::text, false), set_config(s, (p <> 'scan')::text, false)
 	FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s $$;
 
--- whether the plan has Custom Scan (SiftAgg), its total cost and the most workers a node of it plans. Before PostgreSQL 18 a disabled node adds 1e10 to the cost: taken off.
+-- whether the plan has a Custom Scan of the family SiftAgg (SiftAgg of Format 1, SiftAggV6 and its variants of Format 2.0), its total cost and the most workers a node of it plans. Before PostgreSQL 18 a disabled node adds 1e10 to the cost: taken off.
 CREATE FUNCTION plangate.cost(q text, OUT siftagg boolean, OUT cost float8, OUT workers int) LANGUAGE plpgsql AS $$
 DECLARE j jsonb; c float8;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	c := (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
-	siftagg := j::text LIKE '%"SiftAgg"%';
+	siftagg := j::text ~ '"Custom Plan Provider"\s*:\s*"SiftAgg';
 	cost := c - 1e10 * floor(c / 1e10);
 	workers := coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
 END $$;
