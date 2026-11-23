@@ -679,31 +679,6 @@ part_open(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPartit
 	return true;
 }
 
-/* Whether the sink takes the part from the dictionaries of its leaves: the rows of the part are all of it, and each leaf the sink takes as codes has one */
-static bool
-part_dicts_answer(Relation rel, F2Scan *s, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px)
-{
-	const SiftPartDicts *ds;
-	SiftGranuleDict *dicts;
-	bool		answered;
-
-	if (s->part_dict_sink == NULL || s->sink_dict == NULL || s->npreds > 0 || s->bridge != NULL || px != NULL || (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ||
-		pin->desc.dv_blk != InvalidBlockNumber || pin->desc.ndead != 0)
-		return false;
-	ds = sift_part_dicts(rel, pin->part);
-	dicts = palloc0(Max(s->nsink_leaves, 1) * sizeof(SiftGranuleDict));
-	for (int j = 0; j < s->nsink_leaves; j++)
-	{
-		const SiftPartDict *pd = s->sink_dict[j] ? sift_part_dict_find(ds, s->sink_leaves[j], SIFT_DICT_KIND_STR) : NULL;
-
-		if (pd != NULL)
-			dicts[j] = (SiftGranuleDict) {.n = pd->n,.off = pd->off,.bytes = pd->bytes,.part = true};
-	}
-	answered = s->part_dict_sink(s->sink_arg, &pin->desc, dicts);
-	pfree(dicts);
-	return answered;
-}
-
 /* The granules of a pinned part the key ranges and the zones leave */
 static void
 scan_pinned(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px, Snapshot snap)
@@ -712,7 +687,7 @@ scan_pinned(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sc
 	int			nspans;
 	PartCx		cx;
 
-	if (part_dicts_answer(rel, s, e, pin, px))
+	if (sift_f2_part_dicts_answer(rel, s, e, pin, px))
 		return;
 	nspans = sift_f2_granule_spans(rel, pin->part, f, &s->keys, &s->keyplan, spans);
 	F2_STAT(parts_read);
@@ -738,38 +713,6 @@ sift_f2_scan_set_bound(IndexScanDesc scan, int sink_leaf, const SiftF2Bound *bou
 	s->bound_sink_leaf = sink_leaf;
 }
 
-/* Whether the zones of the sink leaves answer the part: no row of it is excluded or changed, and no granule of a leaf lacks a value */
-static bool
-zones_answer(Relation rel, F2Scan *s, SiftF2PartPin *pin, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px)
-{
-	const uint32 ng = pin->part->hdr.ngranules;
-	SiftF2PartZone *zone;
-	int			nexc;
-
-	if (s->zone_sink == NULL || s->npreds > 0 || s->nsink_leaves == 0 || px != NULL || s->bridge != NULL || d->dv_blk != InvalidBlockNumber || (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA))
-		return false;
-	(void) sift_f2_pin_exc(rel, pin, &nexc);
-	if (nexc > 0)
-		return false;
-	zone = palloc(s->nsink_leaves * sizeof(SiftF2PartZone));
-	for (int j = 0; j < s->nsink_leaves; j++)
-	{
-		const SiftZone *z = sift_f2_pin_zones(rel, pin, s->sink_leaves[j]);
-
-		zone[j] = (SiftF2PartZone) {.min = PG_INT64_MAX,.max = PG_INT64_MIN};
-		if (z == NULL || ng == 0)
-			return false;
-		for (uint32 g = 0; g < ng; g++)
-		{
-			if (z[g].flags & SIFT_ZONE_NONE)
-				return false;
-			zone[j].min = Min(zone[j].min, z[g].min);
-			zone[j].max = Max(zone[j].max, z[g].max);
-		}
-	}
-	return s->zone_sink(s->sink_arg, d, zone);
-}
-
 static void
 scan_part(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *schema, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px, Snapshot snap)
 {
@@ -777,7 +720,7 @@ scan_part(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sche
 
 	PG_TRY();
 	{
-		if (!zones_answer(rel, s, pin, e, d, px))
+		if (!sift_f2_zones_answer(rel, s, pin, e, d, px))
 			scan_pinned(rel, s, f, schema, e, pin, px, snap);
 	}
 	PG_FINALLY();

@@ -19,6 +19,7 @@
 #include "col/f2/f2_pred.h"
 #include "col/f2/delvec.h"
 #include "col/f2/f2_sink.h"
+#include "col/f2/f2_part_pin_scan.h"
 #include "col/f2/pend_del.h"
 #include "col/granule/granule_filter.h"
 #include "col/skip/skip_index.h"
@@ -147,6 +148,8 @@ extern uint64 *sift_f2_scan_slab_bridge(F2Scan *s, const uint64 *tids, int n);
 extern int	sift_f2_scan_append_ext(F2Scan *s, int kept);
 
 extern void sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s);
+extern bool sift_f2_part_dicts_answer(Relation rel, F2Scan *s, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px);
+extern bool sift_f2_zones_answer(Relation rel, F2Scan *s, SiftF2PartPin *pin, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px);
 extern void sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s);
 extern void sift_f2_scan_sort_put(F2Scan *s, const SiftColSchema *schema, uint64 tid, bool maybe, const ColView *views, int r);
 extern void sift_f2_scan_sort_end(F2Scan *s);
