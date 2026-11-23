@@ -1,6 +1,7 @@
 /*
  * agg/v6/v6_dictseen.c - the distinct strings of dictionary-coded rows (v6_dictseen.h).
  */
+#include "agg/kern6.h"
 #include "agg/v6/v6_dictseen.h"
 
 #define DICTSEEN_MIN_CAP		(256 * 1024)
@@ -28,6 +29,7 @@ struct SiftDictSeen
 	MemoryContext cx;
 	uint64		cap;
 	bool		have;			/* a part is being read: its dictionary is in part, its seen codes in bits */
+	bool		emitted;		/* a string has gone to emit: the strings of the set are not all there are */
 	uint64		gen;
 	uint32		n;
 	DictRun		part;
@@ -57,7 +59,7 @@ run_len(const DictRun *r, uint32 i)
 static inline uint64
 str_hash(const char *p, uint32 len)
 {
-	return hash_bytes_extended((const unsigned char *) p, (int) len, 0) | 1;
+	return sift_aggk6_hash_bytes(p, len) | 1;
 }
 
 /* the home slot of a hash in a table of cap slots: the high bits, as the lowest of a hash that is never 0 is always set */
@@ -178,6 +180,7 @@ seen_add(SiftDictSeen *d, const char *p, uint32 len)
 static void
 seen_emit(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
 {
+	d->emitted = true;
 	for (uint32 i = 0; i < d->ht_cap; i++)
 		if (d->ht[i].hash != 0)
 			emit(arg, d->arena + d->ht[i].off, d->ht[i].len);
@@ -209,6 +212,30 @@ fold_part(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
 		}
 	if (d->arena_len + (uint64) d->ht_cap * sizeof(DictSlot) > d->cap)
 		seen_emit(d, emit, arg);
+}
+
+bool
+sift_dictseen_fits(const SiftDictSrc *src)
+{
+	return src->n <= SIFT_DICTSEEN_MAX_CODES && src->off[src->n] <= SIFT_DICTSEEN_MAX_BYTES;
+}
+
+void
+sift_dictseen_part(SiftDictSeen *d, const SiftDictSrc *src, SiftDictSeenEmit emit, void *arg)
+{
+	fold_part(d, emit, arg);
+	for (uint32 c = 0; c < src->n; c++)
+		seen_add(d, src->bytes + src->off[c], src->off[c + 1] - src->off[c]);
+	if (d->arena_len + (uint64) d->ht_cap * sizeof(DictSlot) > d->cap)
+		seen_emit(d, emit, arg);
+}
+
+bool
+sift_dictseen_exact(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg, uint64 *count)
+{
+	fold_part(d, emit, arg);
+	*count = d->ht_used;
+	return !d->emitted;
 }
 
 bool

@@ -74,6 +74,12 @@ sift_f2_scan_set_part_sink(IndexScanDesc scan, SiftF2PartSink part_sink)
 }
 
 void
+sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSink sink)
+{
+	((F2Scan *) scan->opaque)->part_dict_sink = sink;
+}
+
+void
 sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf)
 {
 	((F2Scan *) scan->opaque)->sink_dict = dict_leaf;

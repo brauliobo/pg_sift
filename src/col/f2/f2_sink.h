@@ -57,6 +57,14 @@ extern void sift_f2_scan_sink_maybe(IndexScanDesc scan, SiftF2Sink sink, void *a
 typedef bool (*SiftF2PartSink) (void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded);
 extern void sift_f2_scan_set_part_sink(IndexScanDesc scan, SiftF2PartSink part_sink);
 
+/*
+ * A sink that takes leaves as codes (sift_f2_scan_set_dict_leaves) may be offered, before a part with no predicate, pending delete, deletion vector, bridge or column patch is read, the dictionaries of the
+ * whole part of those leaves (dicts[j] of sink leaf j: n 0 when the part has none, or the leaf is not taken as codes): when the strings of a leaf are all the sink wants of it, they are all it needs of
+ * the part, and it returns true: no granule of the part is read.
+ */
+typedef bool (*SiftF2PartDictSink) (void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts);
+extern void sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSink sink);
+
 /* The sink leaves (by their place among the leaves given to sift_f2_scan_sink; the array must outlive the scan) it takes as the codes of the dictionary of a granule when the chunk has one; call it before the scan runs */
 extern void sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf);
 

@@ -33,6 +33,16 @@ extern SiftDictSeen *sift_dictseen_create(MemoryContext cx, uint64 cap_bytes);
  */
 extern bool sift_dictseen_batch(SiftDictSeen *d, const SiftDictSrc *src, const uint32 *code, const uint64 *take, const uint64 *valid, uint16 n_raw, SiftDictSeenEmit emit, void *arg);
 
+/*
+ * Whether the dictionary is one the set takes; a part with no predicate, no deletion and no NULL-hiding column patch has a row of each string of its dictionary, so that sift_dictseen_part says them all seen
+ * without a code of a row being read. The part being read is folded in first, as for a batch of another part.
+ */
+extern bool sift_dictseen_fits(const SiftDictSrc *src);
+extern void sift_dictseen_part(SiftDictSeen *d, const SiftDictSrc *src, SiftDictSeenEmit emit, void *arg);
+
+/* The number of distinct strings seen, with the part being read folded in, when none has gone to emit (so that the set holds them all): false otherwise */
+extern bool sift_dictseen_exact(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg, uint64 *count);
+
 /* Folds the part being read and hands every string seen to emit, once each, in no order; the set is empty afterwards */
 extern void sift_dictseen_drain(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg);
 

@@ -51,6 +51,7 @@ typedef struct F2Scan
 	SiftF2Sink	sink;			/* not NULL: the rows go to it, and nothing is collected */
 	void	   *sink_arg;
 	SiftF2PartSink part_sink;	/* a sink that is offered each part before it is read (SiftF2PartSink) */
+	SiftF2PartDictSink part_dict_sink;	/* a sink that is offered the dictionaries of each part that has no predicate (SiftF2PartDictSink) */
 	const SiftPartDesc *part;	/* the part being scanned; NULL for a slab */
 	const struct SiftPointCands *cands;	/* the rows of the part being scanned that the point directory names for a predicate: the others are not looked at */
 	bool		tids_unneeded;	/* the sink will not read the addresses of the rows of this part */
