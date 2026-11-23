@@ -103,6 +103,7 @@ struct SiftV6SortScan
 	int			nbase;
 	int64		nrest_rows;
 	int			nseeked;
+	bool	   *want;			/* of each column of a projection part: the statement, its predicates or the merge read it */
 };
 
 static void
@@ -121,8 +122,9 @@ static int
 rest_leaves(const SiftV6ProjQuery *q, const SiftProjSpec *spec, int *leaves)
 {
 	int			n = 0;
+	const int	nkeys = q->norder > 0 ? spec->nkeys : Min(spec->nkeys, 1);
 
-	for (int i = 0; i < q->nread + spec->nkeys; i++)
+	for (int i = 0; i < q->nread + nkeys; i++)
 	{
 		int			leaf = i < q->nread ? q->read[i] : spec->key[i - q->nread].leaf;
 		bool		seen = false;
@@ -170,6 +172,50 @@ part_dead(const SiftV6SortScan *s, int i, const SiftProjLink *link)
 	return d;
 }
 
+/* The integers the predicates on the first sort column leave (a superset: an open bound is the end of the integers); false when that column is not an integer or no predicate bounds it */
+static bool
+first_key_bounds(const SiftProjPartSpec *pps, const SiftProjSpec *spec, const SiftProjPred *preds, int n, int64 *lo, int64 *hi)
+{
+	bool		bound = false;
+
+	*lo = PG_INT64_MIN;
+	*hi = PG_INT64_MAX;
+	if (pps->kinds[0] != SIFT_CELL_INT || spec->key[0].fn != SPF_COLUMN)
+		return false;
+	for (int i = 0; i < n; i++)
+	{
+		const SiftProjPred *p = &preds[i];
+
+		if (p->leaf != spec->key[0].leaf || p->bytes || p->nvals < 1)
+			continue;
+		switch ((SiftProjOp) p->op)
+		{
+			case SPO_EQ:
+			case SPO_IN:
+				for (int v = 0; v < p->nvals; v++)
+				{
+					*lo = bound ? Min(*lo, p->vals[v].i) : p->vals[v].i;
+					*hi = bound ? Max(*hi, p->vals[v].i) : p->vals[v].i;
+					bound = true;
+				}
+				break;
+			case SPO_GT:
+			case SPO_GE:
+				*lo = Max(*lo, p->vals[0].i);
+				bound = true;
+				break;
+			case SPO_LT:
+			case SPO_LE:
+				*hi = Min(*hi, p->vals[0].i);
+				bound = true;
+				break;
+			default:
+				break;
+		}
+	}
+	return bound;
+}
+
 /* The stream of part i of the projection for the predicates given: sought by its marks when they bound the sort columns */
 static void
 open_stream(SiftV6SortScan *s, int i, const PartDead *dead, const SiftProjPred *preds)
@@ -178,11 +224,16 @@ open_stream(SiftV6SortScan *s, int i, const PartDead *dead, const SiftProjPred *
 	const SiftProjSpec *spec = &s->src->def->spec;
 	SiftV6ProjSeek seek;
 	PartStream *p = &s->streams[s->nstreams++];
+	int64		lo,
+				hi;
 
 	*p = (PartStream) {.cur = sift_proj_cursor_open(h->rel, sift_v6_proj_part_of(s->src, s->src->serve[i].proj_gen), SIFT_PROJ_PART_ID, &s->pps->spec, false),
 		.pps = s->pps,.first = &spec->key[0],.preds = preds,.npreds = h->npreds,.ncols = h->store->ncols,.row = palloc(h->store->ncols * sizeof(SiftCell)),
 		.vet = s->vet,.vet_arg = s->vet_arg,.vet_all = s->vet_all,.dead = dead};
 	s->nseeked += sift_v6_proj_seek_plan(s->pps, spec, preds, h->npreds, &seek) && sift_proj_cursor_seek(p->cur, &seek.ks, &seek.plan);
+	sift_proj_cursor_columns(p->cur, s->want);
+	if (first_key_bounds(s->pps, spec, preds, h->npreds, &lo, &hi))
+		sift_proj_cursor_window(p->cur, lo, hi);
 	sift_proj_merge_add(s->merge, (SiftProjStream) {part_next, p});
 	s->nparts++;
 }
@@ -227,6 +278,10 @@ open_streams(SiftV6SortScan *s, const SiftV6ProjQuery *q)
 	s->pps = palloc(sizeof(SiftProjPartSpec));
 	sift_proj_part_spec(h->store, spec, &s->ctx.cols, s->pps);
 	s->streams = palloc(Max(nskip, 1) * (use.in_merge ? SIFT_PROJ_IN_SEEK_MAX : 1) * sizeof(PartStream));
+	s->want = palloc0(Max(s->pps->nlay, 1) * sizeof(bool));
+	for (int i = 0; i < s->pps->nlay; i++)
+		for (int j = 0; j < nleaves; j++)
+			s->want[i] |= s->pps->lay[i].leaf == leaves[j];
 	s->rest = sift_proj_topk_new(&ospec, &s->ctx.cols, h->store->ncols, q->limit);
 	s->merge = sift_proj_merge_new(&ospec, &s->ctx.cols, q->limit);
 	for (int i = 0; i < s->ctx.base.n; i++)

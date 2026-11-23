@@ -48,6 +48,7 @@
 
 #define SORT_LIMIT_GUESS		100		/* the rows a LIMIT whose value the plan does not know is costed for */
 #define SORT_RESIDUAL_SEL_MIN	1e-6
+#define SORT_LOOKUP_MAX_ROWS	10000	/* the most rows a statement with no ORDER BY and no LIMIT may expect for a projection to seek them: it hands out all of them */
 #define SORT_RESIDUAL_MAX_ROWS	100000	/* the most rows a statement with quals no cell can judge may have vetted against the relation to fill its limit */
 
 /* What the plan carries, in custom_private (sort_pack / sort_unpack) */
@@ -171,8 +172,11 @@ bound_rows(const SortSpec *s, ExprContext *econtext)
 	bool		null;
 	int64		n = 0,
 				off = 0;
-	Datum		v = ExecEvalExprSwitchContext(ExecInitExpr((Expr *) s->limit_expr, NULL), econtext, &null);
+	Datum		v;
 
+	if (s->limit_expr == NULL)
+		return -1;
+	v = ExecEvalExprSwitchContext(ExecInitExpr((Expr *) s->limit_expr, NULL), econtext, &null);
 	if (null)
 		return -1;
 	n = DatumGetInt64(v);
@@ -474,14 +478,28 @@ plan_limit_rows(PlannerInfo *root, const Query *q)
 	return n > 0 && n <= INT_MAX ? (int) n : -1;
 }
 
+/* No ORDER BY and no LIMIT: the rows the statement's predicates on the leading sort columns select, in any order */
+static bool
+is_lookup(const PlannerInfo *root)
+{
+	return root->query_pathkeys == NIL && root->parse->limitCount == NULL && root->parse->limitOffset == NULL;
+}
+
+static bool
+ordered_limit(PlannerInfo *root)
+{
+	Query	   *q = root->parse;
+
+	return root->query_pathkeys != NIL && root->query_pathkeys == root->sort_pathkeys && q->limitCount != NULL &&
+		bound_is_fixed(q->limitCount) && bound_is_fixed(q->limitOffset) && plan_limit_rows(root, q) > 0 && q->limitOption == LIMIT_OPTION_COUNT;
+}
+
 static bool
 shape_ok(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
 	Query	   *q = root->parse;
 
-	return q->commandType == CMD_SELECT && root->query_pathkeys != NIL && root->query_pathkeys == root->sort_pathkeys && q->limitCount != NULL &&
-		bound_is_fixed(q->limitCount) && bound_is_fixed(q->limitOffset) && plan_limit_rows(root, q) > 0 &&
-		q->limitOption == LIMIT_OPTION_COUNT && !q->hasAggs && !q->hasWindowFuncs && !q->hasTargetSRFs &&
+	return q->commandType == CMD_SELECT && (is_lookup(root) || ordered_limit(root)) && !q->hasAggs && !q->hasWindowFuncs && !q->hasTargetSRFs &&
 		q->groupClause == NIL && q->distinctClause == NIL && q->setOperations == NULL && !q->hasRowSecurity && q->rowMarks == NIL && rel->reloptkind == RELOPT_BASEREL &&
 		bms_membership(root->all_baserels) == BMS_SINGLETON && rel->lateral_relids == NULL && rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh &&
 		rte->tablesample == NULL && rte->securityQuals == NIL;
@@ -492,12 +510,13 @@ static bool
 compile_on(SortPlan *p)
 {
 	SiftProjPred *preds;
+	const bool	lookup = is_lookup(p->root);
 
-	if (!sift_proj_relation_has(p->owner))
+	if (!sift_proj_relation_has(p->owner) || (lookup && p->rel->rows > SORT_LOOKUP_MAX_ROWS))
 		return false;
 	p->store = sift_f2_store_open(p->owner);
 	p->cols = sift_proj_columns_of_store(p->owner, p->store);
-	p->spec = (SortSpec) {.table = p->ix == NULL,.indexoid = p->ix != NULL ? p->ix->indexoid : InvalidOid,.limit = plan_limit_rows(p->root, p->root->parse),
+	p->spec = (SortSpec) {.table = p->ix == NULL,.indexoid = p->ix != NULL ? p->ix->indexoid : InvalidOid,.limit = lookup ? (int) clamp_row_est(p->rel->rows) : plan_limit_rows(p->root, p->root->parse),
 		.limit_expr = p->root->parse->limitCount,.offset_expr = p->root->parse->limitOffset != NULL ? p->root->parse->limitOffset : (Node *) makeConst(INT8OID, -1, InvalidOid, 8, Int64GetDatum(0), false, true)};
 	p->keys = NIL;
 	foreach_ptr(PathKey, pk, p->root->query_pathkeys)
@@ -522,7 +541,7 @@ add_sort_path(SortPlan *p)
 	cp->path.pathkeys = p->root->query_pathkeys;
 	cp->path.rows = rows;
 	cp->path.startup_cost = 100 * cpu_operator_cost;
-	cp->path.total_cost = cp->path.startup_cost + read * (cpu_tuple_cost + random_page_cost);
+	cp->path.total_cost = cp->path.startup_cost + read * (cpu_tuple_cost + (is_lookup(p->root) ? cpu_index_tuple_cost : random_page_cost));
 	cp->methods = &sort_path_methods;
 	cp->custom_private = sort_pack(&p->spec, p->keys);
 	add_path(p->rel, &cp->path);
@@ -604,6 +623,7 @@ typedef struct ProjSortState
 	TupleTableSlot *vet_slot;
 	IndexFetchTableData *fetch;	/* a sift_col: the heap's index fetch, which follows a HOT chain from the root the projection holds */
 	TupleTableSlot *sort_slot;
+	TableScanDesc rel_scan;		/* no projection serves a statement with no ORDER BY: the relation is scanned and the quals of the node keep its rows */
 	bool		began;
 } ProjSortState;
 
@@ -643,7 +663,7 @@ vet_row(void *arg, uint64 tid)
 	return ok;
 }
 
-/* No projection serves the statement: the relation's rows that satisfy its quals, the first limit of them in the order of the statement */
+/* No projection serves the statement: the relation's rows that satisfy its quals, the first limit of them in the order of the statement (all of them, as they come, when it has no order) */
 static void
 sort_relation(ProjSortState *st)
 {
@@ -652,7 +672,14 @@ sort_relation(ProjSortState *st)
 	TupleDesc	td = RelationGetDescr(heap);
 	TableScanDesc scan = sift_table_beginscan(heap, st->css.ss.ps.state->es_snapshot, 0, NULL);
 	ExprContext *econtext = st->css.ss.ps.ps_ExprContext;
-	MemoryContext old = MemoryContextSwitchTo(st->cx);
+	MemoryContext old;
+
+	if (s->norder == 0)
+	{
+		st->rel_scan = scan;
+		return;
+	}
+	old = MemoryContextSwitchTo(st->cx);
 
 	st->sort = tuplesort_begin_heap(td, s->norder, (AttrNumber *) s->heap_att, (Oid *) s->sortop, (Oid *) s->collid, (bool *) s->nulls_first, work_mem, NULL, TUPLESORT_ALLOWBOUNDED);
 	st->sort_slot = MakeSingleTupleTableSlot(td, &TTSOpsMinimalTuple);
@@ -703,6 +730,8 @@ sort_end_scan(ProjSortState *st)
 		sift_v6_proj_sort_end(st->scan);
 	if (st->sort != NULL)
 		tuplesort_end(st->sort);
+	if (st->rel_scan != NULL)
+		table_endscan(st->rel_scan);
 	if (st->fetch != NULL)
 		table_index_fetch_end(st->fetch);
 	if (st->vet_slot != NULL)
@@ -713,6 +742,7 @@ sort_end_scan(ProjSortState *st)
 		MemoryContextDelete(st->cx);
 	st->scan = NULL;
 	st->sort = NULL;
+	st->rel_scan = NULL;
 	st->vet_slot = st->sort_slot = NULL;
 	st->fetch = NULL;
 	st->cx = NULL;
@@ -730,6 +760,8 @@ sort_next(ScanState *ss)
 	if (!st->began)
 		sort_begin_scan(st);
 	ExecClearTuple(slot);
+	if (st->rel_scan != NULL)
+		return table_scan_getnextslot(st->rel_scan, ForwardScanDirection, st->vet_slot) ? ExecCopySlot(slot, st->vet_slot) : NULL;
 	if (st->sort != NULL)
 		return tuplesort_gettupleslot(st->sort, true, false, st->sort_slot, NULL) ? ExecCopySlot(slot, st->sort_slot) : NULL;
 	while (sift_v6_proj_sort_next(st->scan, &tid, &row))
