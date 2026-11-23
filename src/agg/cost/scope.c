@@ -217,7 +217,8 @@ scope_alt_record(AggCtx *c, SiftAggSpec *s, RelOptInfo *input_rel, Path *p, List
 	nd = column_distinct(c, makeVar(c->relid, fk, InvalidOid, -1, InvalidOid, 0), false);
 	per_pair = Max(c->rel->rows, 1.0) / (nd > 0 ? nd : DEFAULT_NUM_DISTINCT);
 	a->knot_rows = Max(per * per_pair, 1.0);
-	a->skip = 1.0 - Min(c->rel->rows / Max(c->rel->tuples, 1.0), 1.0);
+	a->whole_fits = agg_lookup_table_fits_whole(c, s, rti);
+	a->skip =1.0 - Min(c->rel->rows / Max(c->rel->tuples, 1.0), 1.0);
 	foreach_ptr(JoinCtx, jc, c->joins)
 		if (jc->cpath != NULL)
 			a->children = lappend(a->children, jc->cpath);
@@ -252,7 +253,8 @@ scope_alt_attach(AggCtx *c, SiftAggSpec *s, Path *p, List *pathkeys)
 	if (t == NULL || !t->second || s->scope == NULL)
 		return true;
 	foreach_ptr(ScopeAlt, a, t->alts)
-		if (equal(a->pathkeys, pathkeys) && s->nord == a->spec->nord && a->spec->nworkers <= s->nworkers && (best == NULL || a->total < best->total))
+		if (equal(a->pathkeys, pathkeys) && s->nord == a->spec->nord && a->spec->nworkers <= s->nworkers && (a->whole_fits || s->scope->param == NULL) &&
+			(best == NULL || a->total < best->total))
 			best = a;
 	/* a row for each pair of a member in several keys is what the join counts, and the units cannot when the member's pairs changed */
 	if (best == NULL)

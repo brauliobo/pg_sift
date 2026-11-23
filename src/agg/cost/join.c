@@ -768,14 +768,12 @@ join_load_rows(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, const JoinDepMap *deps, d
 
 /* the bytes of the lookup table of a join that loads `rows` rows: the rows that pass its own filter are stored, a table read whole sizes its map to its rows (agg/lookup/load.c) */
 static double
-join_table_bytes(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double rows)
+stored_table_bytes(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double stored, bool reserved)
 {
 	const SiftAggJoin *j = &jc->j;
 	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
 	Oid			relid = planner_rt_fetch(jc->rti, c->root)->relid;
-	bool		own = sift_agg_lookup_pushdown && j->fslot >= 0 && !sift_aggjoin_preserves(j->kind) && !slot_reads_leaf(&s->combo[jc->combo], j->fslot);
-	double		stored = own ? Min(rows, Max(jrel->rows, 1.0)) : rows,
-				key_nd = Min(stored, Max(jrel->tuples, 1.0) / Max(join_rows_per_key(jc, Max(jrel->tuples, 1.0)), 1.0)),
+	double		key_nd = Min(stored, Max(jrel->tuples, 1.0) / Max(join_rows_per_key(jc, Max(jrel->tuples, 1.0)), 1.0)),
 				col_nd[SIFT_AGG_MAX_JCOLS];
 	int			col_width[SIFT_AGG_MAX_JCOLS];
 
@@ -784,7 +782,27 @@ join_table_bytes(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double rows)
 		col_nd[col] = joined_distinct(c, jc, col);
 		col_width[col] = j->colexpr[col] == NULL ? get_attavgwidth(relid, j->colatt[col]) : 0;
 	}
-	return agg_lookup_map_bytes(j, stored, !own && rows >= jrel->tuples, join_keys_only(c, s, jc), key_nd, col_nd, col_width);
+	return agg_lookup_map_bytes(j, stored, reserved, join_keys_only(c, s, jc), key_nd, col_nd, col_width);
+}
+
+static double
+join_table_bytes(AggCtx *c, SiftAggSpec *s, JoinCtx *jc, double rows)
+{
+	const SiftAggJoin *j = &jc->j;
+	RelOptInfo *jrel = find_base_rel(c->root, jc->rti);
+	bool		own = sift_agg_lookup_pushdown && j->fslot >= 0 && !sift_aggjoin_preserves(j->kind) && !slot_reads_leaf(&s->combo[jc->combo], j->fslot);
+
+	return stored_table_bytes(c, s, jc, own ? Min(rows, Max(jrel->rows, 1.0)) : rows, !own && rows >= jrel->tuples);
+}
+
+/* does the lookup table of the join to relation rti fit what a load may take when it stores every row of the relation, which a scan reading the keys of a parameter may have to? */
+bool
+agg_lookup_table_fits_whole(AggCtx *c, SiftAggSpec *s, Index rti)
+{
+	foreach_ptr(JoinCtx, jc, c->joins)
+		if (jc->rti == rti)
+			return stored_table_bytes(c, s, jc, Max(find_base_rel(c->root, rti)->tuples, 1.0), false) <= (double) agg_lookup_limit_kb() * 1024;
+	return true;
 }
 
 /* does each lookup table the scan loads fit half of work_mem, which agg/lookup/load.c holds the load to? */

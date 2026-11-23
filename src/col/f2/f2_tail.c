@@ -204,7 +204,10 @@ sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId 
 
 	(void) sift_fsm_reclaim(rel);
 	for (int moved = 0; moved < SIFT_TAIL_MAX_MOVES && relocate_top(rel, store, horizon, hot_cut); moved++)
+	{
+		(void) sift_fsm_tail_shrink(rel);
 		MemoryContextReset(pass);
+	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(pass);
 }

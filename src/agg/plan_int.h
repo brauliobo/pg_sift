@@ -317,6 +317,7 @@ typedef struct ScopeAlt
 	double		credit;
 	double		skip;
 	double		knot_rows;
+	bool		whole_fits;		/* the lookup table of its scope join fits when it stores every row of the relation: the keys of a parameter may be all of them */
 	List	   *children;		/* the plans its joins read (a sub-select, a union of the two paths of a scope), numbered as the first pass's children: the node of the second pass holds them after its own */
 } ScopeAlt;
 
@@ -592,6 +593,7 @@ extern double group_table_bytes(const SiftAggSpec *s, double groups, double *sta
 extern double group_lane_bytes(const SiftAggSpec *s, double groups);
 extern double agg_share_rows(AggCtx *c, SiftAggSpec *s);
 extern bool agg_lookup_tables_fit(AggCtx *c, SiftAggSpec *s);
+extern bool agg_lookup_table_fits_whole(AggCtx *c, SiftAggSpec *s, Index rti);
 
 extern bool unsupported_clause(AggCtx *c, Node *n);
 extern bool add_join(AggCtx *c, FromScan *fs, Index rti);
