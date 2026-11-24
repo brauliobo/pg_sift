@@ -676,7 +676,8 @@ sift_dvd_chunks_bytes(const SiftDvDeltaGran *g, int ng)
 	uint32		n = 0;
 
 	for (int i = 0; i < ng; i++)
-		n += SIFT_DV_CHUNK_BYTES(g[i].nrows);
+		for (uint32 left = g[i].nrows; left > 0; left -= Min(left, SIFT_DV_DELTA_MAX_MARKS))
+			n += SIFT_DV_CHUNK_BYTES(Min(left, SIFT_DV_DELTA_MAX_MARKS));
 	return n;
 }
 
@@ -701,13 +702,17 @@ sift_dvd_page_append(char *pg, const SiftDvDeltaGran *g, int ng, TransactionId x
 	Assert(sift_dvd_page_takes(pg, sift_dvd_chunks_bytes(g, ng)));
 	for (int i = 0; i < ng; i++)
 	{
-		SiftDvDeltaChunkHdr c = {.magic = SIFT_DV_DELTA_MAGIC,.granule_id = g[i].granule_id,.nmarks = g[i].nrows,
-			.chunk_flags = TransactionIdIsValid(xmax) ? 0 : SIFT_DV_DELTA_SETTLED,.xmax = xmax,.cmax = cmax};
+		Assert(g[i].nrows > 0);
+		for (uint32 from = 0, n; from < g[i].nrows; from += n)
+		{
+			SiftDvDeltaChunkHdr c = {.magic = SIFT_DV_DELTA_MAGIC,.granule_id = g[i].granule_id,
+				.chunk_flags = TransactionIdIsValid(xmax) ? 0 : SIFT_DV_DELTA_SETTLED,.xmax = xmax,.cmax = cmax};
 
-		Assert(g[i].nrows > 0 && g[i].nrows <= SIFT_DV_DELTA_MAX_MARKS);
-		memcpy(SiftPageGetData(pg) + pos, &c, sizeof(c));
-		memcpy(SiftPageGetData(pg) + pos + sizeof(c), g[i].rows, g[i].nrows * sizeof(uint16));
-		pos += SIFT_DV_CHUNK_BYTES(g[i].nrows);
+			c.nmarks = n = Min(g[i].nrows - from, SIFT_DV_DELTA_MAX_MARKS);
+			memcpy(SiftPageGetData(pg) + pos, &c, sizeof(c));
+			memcpy(SiftPageGetData(pg) + pos + sizeof(c), g[i].rows + from, n * sizeof(uint16));
+			pos += SIFT_DV_CHUNK_BYTES(n);
+		}
 		nmarks += g[i].nrows;
 	}
 	h->ndead_total += nmarks;

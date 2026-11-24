@@ -4,6 +4,7 @@ This file is the changelog of the PostgreSQL extension. The SQLite extension (`s
 
 ## Unreleased
 
+- Fixed: col: a statement that deletes more than 2,048 rows of one granule of a part whose deletion vector is still open to a delta tail no longer damages the vector (`The deletion vector N is damaged`, the index out of service until a REINDEX); the rows go to the tail in chunks of at most 2,048.
 - Added: col: `sift_col` indexes of Format Major 2 take `INCLUDE` columns and `UNIQUE` (a duplicate is `23505` at the build and at each write, a writer waits for the transaction of a key in doubt, `NULLS NOT DISTINCT` is kept, `INSERT ... ON CONFLICT` works with the operator class of the type named in the index), and hold a column of any type (`point`, `tsvector`, `json`, `xml`, the geometric types, `oid`, `tid`, composites and their domains) as the image of its datum instead of refusing `CREATE INDEX`; a Format Major 1 index still refuses `INCLUDE` and `UNIQUE`.
 - Added: bm25: a query that is only a NOT (`NOT wire`, `NOT (a OR b)`, `a OR NOT b`) matches every row with a text that the rest does not, through the count, the unordered and the ranked scan, with the same rows as the sequential evaluation; it scored 0 and was `42601` before.
 - Changed: bm25: the limits of a query are 65,535 leaves, 1,024 levels, 4,096 terms in a phrase and a boost up to `1e18`; a deeper or wider query is evaluated without growing the stack.
