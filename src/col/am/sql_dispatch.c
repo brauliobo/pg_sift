@@ -112,7 +112,12 @@ SIFT_SQL_ENTRY(sift_col_maintain, SIFT_SQL_MAINTAIN)
 SIFT_SQL_ENTRY(sift_col_maintenance_due, SIFT_SQL_MAINTENANCE_DUE)
 SIFT_SQL_ENTRY(sift_col_maintenance_status, SIFT_SQL_MAINTENANCE_STATUS)
 SIFT_SQL_ENTRY(sift_col_tracking, SIFT_SQL_TRACKING)
-SIFT_SQL_ENTRY(sift_worker_state, SIFT_SQL_WORKER_STATE)
+
+Datum
+sift_worker_state(PG_FUNCTION_ARGS)
+{
+	return sift_f2_relation(PG_GETARG_OID(0)) ? sift_col_v2_ops.sql(SIFT_SQL_WORKER_STATE, fcinfo) : dispatch(SIFT_SQL_WORKER_STATE, fcinfo);
+}
 SIFT_SQL_ENTRY(sift_worker_history, SIFT_SQL_WORKER_HISTORY)
 
 /* not STRICT: a NULL index gives NULL, as it did before the format chose the answer */

@@ -14,6 +14,7 @@ SET sift.test_create_format1 = off;
 VACUUM FULL r1;
 CLUSTER r2 USING r2_pkey;
 SELECT r::text, f.major || '.' || f.minor AS format FROM unnest(ARRAY['r1', 'r2']::regclass[]) r, LATERAL sift.index_format(r) f ORDER BY 1;
+SELECT relation::text, format FROM sift.indexes WHERE relation IN ('r1'::regclass, 'r2'::regclass) ORDER BY 1;
 SELECT count(*), sum(g), min(id), max(id) FROM r1;
 SELECT count(*), sum(g), min(id), max(id) FROM r2;
 INSERT INTO r1 VALUES (3001, 1, 'new');

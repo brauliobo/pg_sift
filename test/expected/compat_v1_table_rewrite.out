@@ -26,6 +26,13 @@ SELECT r::text, f.major || '.' || f.minor AS format FROM unnest(ARRAY['r1', 'r2'
  r2 | 2.0
 (2 rows)
 
+SELECT relation::text, format FROM sift.indexes WHERE relation IN ('r1'::regclass, 'r2'::regclass) ORDER BY 1;
+ relation | format 
+----------+--------
+ r1       | 2.0
+ r2       | 2.0
+(2 rows)
+
 SELECT count(*), sum(g), min(id), max(id) FROM r1;
  count | sum  | min | max  
 -------+------+-----+------
