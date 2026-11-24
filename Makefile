@@ -145,6 +145,7 @@ TESTING_REGRESS += agg_v6_clickhouse_sql
 TESTING_REGRESS += agg_v6_connect_dim_cache_f1
 TESTING_REGRESS += agg_v6_core_suite
 TESTING_REGRESS += agg_v6_cost_unlocks
+TESTING_REGRESS += agg_v6_datum_expr
 TESTING_REGRESS += agg_v6_float8_overflow
 TESTING_REGRESS += agg_v6_jsonb_exists
 TESTING_REGRESS += agg_v6_live_suites

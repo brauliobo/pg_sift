@@ -127,10 +127,10 @@ SELECT * FROM held('SELECT g, min(u) AS m, count(*) AS c FROM pk GROUP BY g HAVI
 (1 row)
 
 -- a filter, and a LIMIT that stops the Gather early
-SELECT * FROM held('SELECT g, min(u), count(*) AS c FROM pk WHERE v < 500 AND u LIKE ''%7'' GROUP BY g ORDER BY c DESC, g LIMIT 6');
+SELECT * FROM held('SELECT g, min(u), count(*) AS c FROM pk WHERE v < 500 AND k > 40 GROUP BY g ORDER BY c DESC, g LIMIT 6');
  parallel | strategy | same 
 ----------+----------+------
- t        |          | t
+ t        | radix    | t
 (1 row)
 
 SELECT count(*) AS limited FROM (SELECT g, min(u), count(*) FROM pk GROUP BY g LIMIT 10) AS q;

@@ -57,7 +57,7 @@ SELECT * FROM held('SELECT min(u), max(u), min(t), count(*) FROM pk');
 SELECT * FROM held('SELECT g, count(*) AS c FROM pk GROUP BY g HAVING count(*) > 9 ORDER BY c DESC, g LIMIT 5');
 SELECT * FROM held('SELECT g, min(u) AS m, count(*) AS c FROM pk GROUP BY g HAVING count(*) > 9 ORDER BY c DESC, g LIMIT 5');
 -- a filter, and a LIMIT that stops the Gather early
-SELECT * FROM held('SELECT g, min(u), count(*) AS c FROM pk WHERE v < 500 AND u LIKE ''%7'' GROUP BY g ORDER BY c DESC, g LIMIT 6');
+SELECT * FROM held('SELECT g, min(u), count(*) AS c FROM pk WHERE v < 500 AND k > 40 GROUP BY g ORDER BY c DESC, g LIMIT 6');
 SELECT count(*) AS limited FROM (SELECT g, min(u), count(*) FROM pk GROUP BY g LIMIT 10) AS q;
 DROP FUNCTION held(text), answer_of(text), plan_of(text);
 DROP TABLE pk;

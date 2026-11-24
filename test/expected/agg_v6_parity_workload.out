@@ -134,7 +134,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT g, count(*) FROM pw WHERE n <> 5 GROUP BY g
  same node SELECT g, count(*) FROM pw WHERE t <> 'key3' GROUP BY g
  same node SELECT g, count(*) FROM pw WHERE d <> DATE '2020-06-01' GROUP BY g
- same normal SELECT g, count(*) FROM pw WHERE b <> true GROUP BY g
+ same node SELECT g, count(*) FROM pw WHERE b <> true GROUP BY g
  same node SELECT g, count(*) FROM pw WHERE v <> 3::bigint AND n <> 5 GROUP BY g
 (5 rows)
 
@@ -161,19 +161,19 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT count(*) FROM pw WHERE date_trunc(''quarter'', d) = TIMESTAMPTZ ''2020-04-01''',
 	'SELECT g, count(*) FROM pw WHERE date_trunc(''month'', d) >= TIMESTAMPTZ ''2020-06-01'' GROUP BY g'
 ]) q;
-                                                                   same                                                                   
-------------------------------------------------------------------------------------------------------------------------------------------
- same normal SELECT date_trunc('month', d) AS m, count(*) FROM pw GROUP BY 1
- same normal SELECT date_trunc('year', d), date_trunc('week', d), date_trunc('day', d), date_trunc('hour', d) FROM pw GROUP BY 1, 2, 3, 4
- same normal SELECT count(*) FROM pw WHERE date_trunc('quarter', d) = TIMESTAMPTZ '2020-04-01'
- same normal SELECT g, count(*) FROM pw WHERE date_trunc('month', d) >= TIMESTAMPTZ '2020-06-01' GROUP BY g
+                                                                  same                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT date_trunc('month', d) AS m, count(*) FROM pw GROUP BY 1
+ same node SELECT date_trunc('year', d), date_trunc('week', d), date_trunc('day', d), date_trunc('hour', d) FROM pw GROUP BY 1, 2, 3, 4
+ same node SELECT count(*) FROM pw WHERE date_trunc('quarter', d) = TIMESTAMPTZ '2020-04-01'
+ same node SELECT g, count(*) FROM pw WHERE date_trunc('month', d) >= TIMESTAMPTZ '2020-06-01' GROUP BY g
 (4 rows)
 
 SET timezone = 'America/Sao_Paulo';
 SELECT same('SELECT date_trunc(''month'', d), count(*) FROM pw GROUP BY 1');
-                                  same                                  
-------------------------------------------------------------------------
- same normal SELECT date_trunc('month', d), count(*) FROM pw GROUP BY 1
+                                 same                                 
+----------------------------------------------------------------------
+ same node SELECT date_trunc('month', d), count(*) FROM pw GROUP BY 1
 (1 row)
 
 SET timezone = 'UTC';
