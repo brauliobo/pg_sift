@@ -7,9 +7,9 @@ SET sift.test_create_format1 = off;
 CREATE TABLE ha_docs (
 	id int PRIMARY KEY, tenant int NOT NULL, region int NOT NULL, amount int NOT NULL, active boolean NOT NULL, seen timestamptz NOT NULL, day date NOT NULL, note int, body text NOT NULL) USING sift_table;
 INSERT INTO ha_docs
-SELECT i, i % 300, i % 7, i % 100, i % 10 <> 0, timestamptz '2026-01-01' + i * interval '1 minute', date '2026-01-01' + i % 90, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 13 END,
-	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 20 = 0 THEN 'mid' END, CASE WHEN i % 6000 = 0 THEN 'rareterm' END, 'tok' || i % 13, 'base')
-FROM generate_series(1, 40000) i;
+SELECT i, i % 300, i % 7, i % 100, i % 10 <> 0, timestamptz '2026-01-01' + i * interval '4 minutes', date '2026-01-01' + i % 90, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 13 END,
+	concat_ws(' ', CASE WHEN i % 2 = 0 THEN 'common' END, CASE WHEN i % 20 = 0 THEN 'mid' END, CASE WHEN i % 1500 = 0 THEN 'rareterm' END, 'tok' || i % 13, 'base')
+FROM generate_series(1, 10000) i;
 CREATE INDEX ha_text ON ha_docs USING sift (body);
 ANALYZE ha_docs;
 SELECT busy FROM sift.table_maintain('ha_docs') \gset
@@ -44,7 +44,7 @@ INSERT INTO ha_q VALUES
 	('facet_wide',	'SELECT region, active, count(*), sum(amount), min(amount), max(amount) FROM ha_docs WHERE tenant < 150 AND body @@> ''mid'' GROUP BY region, active'),
 	('count_all',	'SELECT count(*) FROM ha_docs WHERE tenant < 300 AND body @@> ''common'''),
 	('plain_aggs',	'SELECT count(*) AS n, count(note) AS n_note, sum(amount), min(seen), max(seen), avg(region) FROM ha_docs WHERE tenant < 200 AND body @@> ''common'''),
-	('having',		'SELECT region, count(*) FROM ha_docs WHERE tenant < 300 AND body @@> ''common'' GROUP BY region HAVING count(*) > 2500'),
+	('having',		'SELECT region, count(*) FROM ha_docs WHERE tenant < 300 AND body @@> ''common'' GROUP BY region HAVING count(*) > 625'),
 	('by_day',		'SELECT day, count(*), sum(amount) FROM ha_docs WHERE amount < 60 AND body @@> ''tok3'' GROUP BY day'),
 	('by_null',		'SELECT note, count(*) FROM ha_docs WHERE tenant < 250 AND body @@> ''mid'' GROUP BY note'),
 	('bool_cmp',	'SELECT region, count(*) FROM ha_docs WHERE active AND tenant < 250 AND body @@> ''common'' GROUP BY region'),
@@ -64,7 +64,7 @@ SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
 UPDATE ha_docs SET amount = amount + 500 WHERE id % 9 = 0;
 UPDATE ha_docs SET region = (region + 1) % 7 WHERE id % 13 = 0;
 DELETE FROM ha_docs WHERE id % 17 = 0;
-INSERT INTO ha_docs SELECT i, i % 300, i % 7, i % 100, true, now(), current_date, 1, 'common late ' || i FROM generate_series(40001, 40500) i;
+INSERT INTO ha_docs SELECT i, i % 300, i % 7, i % 100, true, now(), current_date, 1, 'common late ' || i FROM generate_series(10001, 10125) i;
 SELECT name, ha_node(q) FROM ha_q WHERE name IN ('facet_small', 'plain_aggs', 'no_qual') ORDER BY name;
 SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
 
@@ -72,7 +72,7 @@ SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
 BEGIN;
 UPDATE ha_docs SET amount = amount + 7, tenant = tenant + 1 WHERE id % 5 = 0;
 DELETE FROM ha_docs WHERE id % 19 = 0;
-INSERT INTO ha_docs SELECT i, i % 300, i % 7, i % 100, false, now(), current_date, NULL, 'common mid inside ' || i FROM generate_series(50001, 50300) i;
+INSERT INTO ha_docs SELECT i, i % 300, i % 7, i % 100, false, now(), current_date, NULL, 'common mid inside ' || i FROM generate_series(20001, 20075) i;
 SELECT name, (ha_same(q)).* FROM ha_q ORDER BY name;
 ROLLBACK;
 SELECT name, (ha_same(q)).* FROM ha_q WHERE name IN ('facet_wide', 'plain_aggs', 'no_qual') ORDER BY name;
