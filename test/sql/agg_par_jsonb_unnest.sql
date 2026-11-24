@@ -96,6 +96,15 @@ SELECT * FROM check_par('smallint key, sum of integer', $q$ SELECT e.i2, count(*
 SELECT * FROM check_par('bigint key', $q$ SELECT e.i8, count(*) FROM jr_ty f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS e(t text, i2 int2, i4 int4, i8 int8, f float8, b bool) GROUP BY 1 $q$);
 SELECT * FROM check_par('float8 key', $q$ SELECT e.f, count(*) FROM jr_ty f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS e(t text, i2 int2, i4 int4, i8 int8, f float8, b bool) GROUP BY 1 $q$);
 SELECT * FROM check_par('quals of the bigint and the smallint', $q$ SELECT e.t, count(*) FROM jr_ty f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS e(t text, i2 int2, i4 int4, i8 int8, f float8, b bool) WHERE e.i8 > 1000000 AND e.i2 < 50 GROUP BY 1 $q$);
+
+-- a document that is not an array of objects: PostgreSQL raises, and so does the statement on the node (a scalar, an object)
+CREATE TABLE jr_bad (id int, a jsonb, b jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO jr_bad SELECT i, CASE WHEN i = 5000 THEN '5' ELSE '[{"kind": "a", "n": 1}]' END::jsonb, CASE WHEN i = 5000 THEN '{"kind": "a"}' ELSE '[{"kind": "b", "n": 2}]' END::jsonb FROM generate_series(1, 9000) i;
+CREATE INDEX jr_bad_col ON jr_bad USING sift_col (id, a, b) WITH (paths = 'a[]{kind text, n int4}, b[]{kind text, n int4}', rollup_columns = 'off');
+VACUUM (FREEZE, ANALYZE) jr_bad;
+SELECT * FROM check_par('a scalar document', $q$ SELECT e.kind, count(*) FROM jr_bad f CROSS JOIN LATERAL jsonb_to_recordset(f.a) AS e(kind text, n int) GROUP BY 1 $q$);
+SELECT * FROM check_par('an object document', $q$ SELECT e.kind, count(*) FROM jr_bad f CROSS JOIN LATERAL jsonb_to_recordset(f.b) AS e(kind text, n int) GROUP BY 1 $q$);
+SELECT * FROM check_par('the same table with the bad row out of the way', $q$ SELECT e.kind, count(*) FROM jr_bad f CROSS JOIN LATERAL jsonb_to_recordset(f.b) AS e(kind text, n int) WHERE f.id < 5000 GROUP BY 1 $q$);
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
-DROP TABLE jr_t, jr_ty;
+DROP TABLE jr_t, jr_ty, jr_bad;
 DROP EXTENSION pg_sift;

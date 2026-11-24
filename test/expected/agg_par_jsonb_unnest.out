@@ -152,3 +152,18 @@ SET sift.agg_force = on;
  quals of the bigint and the smallint | t    | t    | t
 (1 row)
 
+       label       | same | node | nonempty 
+-------------------+------+------+----------
+ a scalar document | t    | t    | f
+(1 row)
+
+       label        | same | node | nonempty 
+--------------------+------+------+----------
+ an object document | t    | t    | f
+(1 row)
+
+                     label                      | same | node | nonempty 
+------------------------------------------------+------+------+----------
+ the same table with the bad row out of the way | t    | t    | t
+(1 row)
+
