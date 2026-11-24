@@ -21,6 +21,7 @@
 #include "col/f2/l0_stage.h"
 #include "col/f2/scan/ord_stream.h"
 #include "col/f2/scan/par_int.h"
+#include "col/f2/scan/rescan_cache.h"
 #include "core/memtrack.h"
 #include "core/errctx.h"
 
@@ -43,6 +44,7 @@ typedef struct OrdCursor
 	const SiftPartitionEntry *e;
 	const SiftPartDesc *d;
 	const SiftPendDelIndex *px;
+	bool		cached;			/* its granules are read decoded (sift_rescan_part_ok) */
 	uint32		spans[SIFT_F2_MAX_RANGES][2];
 	int			nspans;
 	uint32		ngran;
@@ -83,6 +85,7 @@ typedef struct SiftOrdStream
 	const SiftF2Rel *f;
 	const SiftColSchema *schema;
 	const SiftPendDelIndex *staged_px;
+	SiftRescanScan *rc;			/* not NULL: the granules of a part are read decoded (scan/rescan_cache.c) */
 	int			nkey;
 	int			key_leaf[SIFT_BOUND_COMPS];
 	bool		nulls_first[SIFT_BOUND_COMPS];
@@ -167,12 +170,14 @@ ord_sink(void *arg, const SiftF2Batch *b)
 	OrdCursor  *c = arg;
 	SiftOrdStream *os = c->os;
 	const F2Scan *s = os->s;
+	const int	nlive = sift_f2_batch_rows(b);
 	MemoryContext old;
 
-	if (b->n > c->cap)
+	if (nlive > c->cap)
 	{
-		c->rows = c->rows == NULL ? MemoryContextAlloc(os->pcx, (Size) b->n * os->stride) : repalloc(c->rows, (Size) b->n * os->stride);
-		c->cap = b->n;
+		c->rows = c->rows == NULL ? MemoryContextAlloc(os->pcx, (Size) nlive * os->stride) :
+			repalloc(c->rows, (Size) nlive * os->stride);
+		c->cap = nlive;
 	}
 	old = MemoryContextSwitchTo(c->datacx);
 	for (int w = 0; w < (b->n + 63) / 64; w++)
@@ -230,6 +235,12 @@ cur_load(SiftOrdStream *os, OrdCursor *c, uint32 gi)
 	}
 	for (; g >= c->spans[sp][1] - c->spans[sp][0]; sp++)
 		g -= c->spans[sp][1] - c->spans[sp][0];
+	if (c->cached)
+	{
+		sift_rescan_granule(os->rel, s, os->rc, os->schema, c->pin, g + c->spans[sp][0], c->px, os->snap);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	if ((c->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 	{
 		int			nexc = c->pcx.pp.nexc;
@@ -386,7 +397,8 @@ part_cursors(SiftOrdStream *os, int idx)
 		c->pin = sift_f2_scan_pin(os->rel, d, (uint32) e->part_id);
 		s->part = d;
 		c->ngran = 0;
-		if (part_open(os->rel, s, os->schema, e, c->pin, os->snap, &c->pcx))
+		c->cached = os->rc != NULL && sift_rescan_part_ok(os->rel, e, c->pin);
+		if (c->cached || part_open(os->rel, s, os->schema, e, c->pin, os->snap, &c->pcx))
 		{
 			c->cands = s->cands;
 			s->cands = NULL;
@@ -550,6 +562,7 @@ ord_begin(IndexScanDesc scan, bool fwd)
 	os->staged_px = sift_f2_staged_index(staged, nstaged);
 	if (!s->compiled)
 		compile_preds(s, os->schema);
+	os->rc = sift_rescan_begin(s, os->f, os->schema);
 	os->plan = sift_plan_cache_get(rel, s->cx);
 	os->plo = sift_f2_first_reaching(os->plan, s->keys.hull.has_lo ? s->keys.hull.lo : NULL);
 	os->phi = sift_f2_last_overlapping(os->plan, os->plo, s->keys.hull.has_hi ? s->keys.hull.hi : NULL);

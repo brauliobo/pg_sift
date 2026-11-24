@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 
 #include "col/f2/f2_scope_route.h"
+#include "col/f2/scan/rescan_cache.h"
 #include "col/f2/scan/scan_int.h"
 #include "col/f2/scan/stream.h"
 #include "core/errctx.h"
@@ -157,6 +158,7 @@ sift_f2_amendscan(IndexScanDesc scan)
 	F2Scan	   *s = scan->opaque;
 
 	sift_f2_scan_sort_end(s);
+	sift_rescan_end(s);
 	MemoryContextDelete(s->cx);
 	pfree(s);
 }

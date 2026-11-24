@@ -961,5 +961,6 @@ sift_f2_amrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys, ScanKey ord
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
 	sift_f2_scan_sort_end(s);
 	MemoryContextReset(s->cx);
-	*s = (F2Scan) {.hdr = s->hdr,.cx = s->cx,.itupdesc = s->itupdesc,.want = s->want,.project = s->project};
+	*s = (F2Scan) {.hdr = s->hdr,.cx = s->cx,.itupdesc = s->itupdesc,.want = s->want,.project = s->project,
+				   .rescans = s->rescans + 1,.rescan = s->rescan};
 }
