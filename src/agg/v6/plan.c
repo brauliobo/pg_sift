@@ -46,6 +46,8 @@
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_plan_shape.h"
+#include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_qual.h"
 #include "col/am.h"
 #include "col/am/format_ops.h"
@@ -236,6 +238,22 @@ derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	return true;
 }
 
+/* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector, a key may be of any type that can be grouped */
+static bool
+pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
+{
+	const SiftV6Resolver rs = {resolve_column, p, false};
+	SiftV6Derive d = {0};
+	Oid			restype;
+	int			at;
+
+	if (p->xseed != NULL || !sift_v6_pgexpr_derive_of(&rs, p->rel->relid, e, &d, &restype, &p->spec.pgexpr) ||
+		!(sift_v6_type_native(restype) || (key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
+		return false;
+	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};
+	return true;
+}
+
 static void
 scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 {
@@ -395,7 +413,9 @@ compile_agg(V6Plan *p, Aggref *a)
 		const bool	score = !two && g.kind != SV6_COUNT_DISTINCT && sift_v6_score_col(p, arg, &g.arg);
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
-			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && derived_col(p, arg, false, &g.arg))) && sift_v6_kind_takes(g.kind, g.arg.typid))))
+			!(score || ((read_of(p, arg, !two, &g.arg) || (!two && (derived_col(p, arg, false, &g.arg) || pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))))
+			return false;
+		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_PG_EXPR && g.kind >= SV6_STDDEV_POP && g.kind <= SV6_VAR_SAMP)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_NUM_EXPR && g.kind != SV6_SUM && g.kind != SV6_AVG && g.kind != SV6_COUNT)
 			return false;
@@ -451,7 +471,7 @@ compile_grouping(V6Plan *p, GroupingFunc *gf)
 static bool
 compile_aggs(V6Plan *p, Node *e)
 {
-	foreach_ptr(Node, n, pull_var_clause(e, PVC_INCLUDE_AGGREGATES))
+	foreach_ptr(Node, n, pull_var_clause(e, PVC_INCLUDE_AGGREGATES | PVC_RECURSE_PLACEHOLDERS))
 	{
 		if (!IsA(n, Aggref) && !IsA(n, GroupingFunc))
 			continue;
@@ -571,6 +591,21 @@ affine_key(V6Plan *p, Expr *e)
 	return true;
 }
 
+/* a key: a column, a binned or derived column, or what the executor computes from columns; the table groups the types it has no bytes of by their values (v6_datum.h) */
+static bool
+compile_key(V6Plan *p, Expr *e, SiftV6Col *k)
+{
+	const Oid	typid = getBaseType(exprType((Node *) e));
+
+	if (read_of(p, e, false, k) || compile_bin(p, e, k) || derived_col(p, e, true, k) || pg_derived_col(p, e, true, k) ||
+		(typid == NUMERICOID && column_of(p, e, true, k)))
+	{
+		k->collid = exprCollation((Node *) e);
+		return !(sift_v6_class(k->typid) == SV6C_TEXT && !sift_text_bytes_equal(k->collid));
+	}
+	return false;
+}
+
 static bool
 compile_keys(V6Plan *p, List *group_exprs)
 {
@@ -583,13 +618,15 @@ compile_keys(V6Plan *p, List *group_exprs)
 			continue;
 		if (affine_key(p, e))
 			continue;
-		if (p->spec.nkeys == SIFT_V6_MAX_KEYS || !(read_of(p, e, false, k) || compile_bin(p, e, k) || derived_col(p, e, true, k)) || sift_v6_class(k->typid) == SV6C_F64 ||
-			(sift_v6_class(k->typid) == SV6C_TEXT && !sift_text_bytes_equal(exprCollation((Node *) e))))
+		if (IsA(e, PlaceHolderVar))
+			e = ((PlaceHolderVar *) e)->phexpr;
+		if (p->spec.nkeys == SIFT_V6_MAX_KEYS || !compile_key(p, e, k))
 			return false;
 		p->spec.nkeys++;
 		add_scan_var(p, e);
 	}
-	return p->spec.nkeys > 0 || group_exprs == NIL;
+	p->spec.constant_groups = p->spec.nkeys == 0 && p->root->parse->groupClause != NIL && p->root->parse->groupingSets == NIL;
+	return p->spec.nkeys > 0 || p->spec.constant_groups || group_exprs == NIL;
 }
 
 bool
@@ -659,7 +696,9 @@ reads_outside_scan_tlist(Node *e, void *context)
 		return false;
 	if (scan_tlist_has(p, (const Expr *) e))
 		return false;
-	if (IsA(e, Var) || IsA(e, Aggref) || IsA(e, GroupingFunc) || IsA(e, PlaceHolderVar))
+	if (IsA(e, PlaceHolderVar))
+		return reads_outside_scan_tlist((Node *) ((PlaceHolderVar *) e)->phexpr, context);
+	if (IsA(e, Var) || IsA(e, Aggref) || IsA(e, GroupingFunc))
 		return true;
 	return expression_tree_walker(e, reads_outside_scan_tlist, context);
 }
@@ -719,7 +758,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	agg_force_price(&cp->path);
 	serial_total = cp->path.total_cost;
 	add_path(p->out, &cp->path);
-	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table && !locked)
+	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table && !locked && sift_v6_spec_parallel_ok(p->root, &p->spec))
 		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total);
 }
 

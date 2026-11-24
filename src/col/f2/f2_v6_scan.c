@@ -74,6 +74,8 @@ read_by_code_only(const SiftV6Spec *spec, int attno)
 {
 	bool		distinct = false;
 
+	if (sift_v6_spec_pg_reads(spec))
+		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 		if (spec->key[i].attno == attno)
 			return false;
@@ -194,7 +196,7 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
 
-	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * sizeof(V6Col));
+	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
@@ -208,6 +210,9 @@ scan_setup(V6Scan *s, const int *first, SiftV6StarRun *star)
 			col_for(s, first, (SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]}, false, false);
 	setup_derived(s, first);
 	setup_bq(s, first);
+	for (int k = 0; k < s->nderived; k++)
+		if (s->derived[k].d->kind == SVD_PG_EXPR)
+			s->derived[k].pg = sift_v6_pgexpr_bind(CurrentMemoryContext, spec, s->derived[k].d, bq_col, &(BqCols) {s, first}, s->derived[k].pgin);
 	for (int i = 0; i < s->ncols; i++)
 		if (s->cols[i].json && s->batch_cx == NULL)
 			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
@@ -239,7 +244,9 @@ derive_columns(V6Scan *s)
 	{
 		const V6Derived *dv = &s->derived[k];
 
-		if (dv->d->kind == SVD_NUM_EXPR)
+		if (dv->d->kind == SVD_PG_EXPR)
+			sift_v6_pgexpr_derive(dv->pg, dv->pgin, &s->bs, &s->derived[k].out);
+		else if (dv->d->kind == SVD_NUM_EXPR)
 			sift_vn_derive(dv->d, dv->cond, dv->prefix ? &dv->prefix->out.vec : NULL, dv->prefix ? dv->prefix->d->ncond : 0, &s->bs, &s->derived[k].out);
 		else
 			sift_vx_derive(dv->d, dv->src, dv->cond, &s->bs, &s->derived[k].out);

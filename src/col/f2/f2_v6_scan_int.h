@@ -14,6 +14,7 @@
 #include "col/f2/f2_v6_colstat.h"
 #include "agg/v6/v6_datebin_win_pg.h"
 #include "agg/v6/v6_expr_str.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_vet.h"
@@ -55,6 +56,8 @@ typedef struct V6Derived
 	const SiftVec *src;
 	SiftVec    *cond[SIFT_V6_MAX_CASE];
 	const struct V6Derived *prefix;	/* SVD_NUM_EXPR: the derivation of the first factors of this one, whose vector it multiplies */
+	SiftV6PgExpr *pg;			/* SVD_PG_EXPR: the evaluator, and the vectors of the columns it reads */
+	const SiftVec *pgin[SIFT_V6_MAX_COLS];
 	SiftVxOut	out;
 } V6Derived;
 

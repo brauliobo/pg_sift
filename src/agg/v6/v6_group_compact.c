@@ -8,6 +8,7 @@
 #include "utils/memutils.h"
 
 #include "agg/kern6.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_group_cmp.h"
 
 #define CMP_AHEAD		16
@@ -598,6 +599,8 @@ v6g_compact_key_datums(const SiftV6Group *g, const V6Set *set, const uint64 *slo
 		else
 			values[k] = v6g_int_datum(g->spec->key[k].typid, x);
 	}
+	if (g->gen != NULL)
+		sift_v6_genkeys_resolve(g->gen, values, isnull, want);
 }
 
 void

@@ -18,6 +18,7 @@
 #include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_group_topk.h"
 #include "agg/v6/v6_plan_rewrite.h"
+#include "agg/v6/v6_datum.h"
 
 static bool
 func_named(Oid funcid, const char *name)
@@ -534,7 +535,7 @@ sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
 				break;
 			pos++;
 		}
-		if (!found)
+		if (!found || (pos < s->nkeys && sift_v6_key_generic(s->key[pos].typid)))
 			return false;
 		s->topk_item[s->ntopk++] = (SiftV6TopKItem) {.pos = pos,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}

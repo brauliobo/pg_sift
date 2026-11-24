@@ -185,7 +185,7 @@ qual_batch(V6Plan *p, RestrictInfo *ri)
 	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->tsch.natts : 0};
 	Expr	   *clause;
 
-	if (!p->batch_ok || ri->pseudoconstant || contain_mutable_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
+	if (!p->batch_ok || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
 		return false;
 	if (p->is_table && has_numeric_var((Node *) ri->clause, NULL))
 		return false;

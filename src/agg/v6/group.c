@@ -25,6 +25,7 @@
 #include "agg/v6/group_nan.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_argext.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_group_compact.h"
 #include "core/memtrack.h"
 
@@ -444,6 +445,8 @@ sift_v6_group_add_rows(SiftV6Group *g, uint64 n)
 {
 	for (int j = 0; j < g->spec->naggs; j++)
 		g->set[0].plain[j].n += n;
+	if (g->spec->constant_groups && n > 0)
+		g->set[0].plain_row = true;
 }
 
 void
@@ -455,9 +458,14 @@ sift_v6_group_update(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *key
 		return;
 	old = MemoryContextSwitchTo(g->cx);
 	v6g_filter_eval(g, bs, argvec);
+	if (g->gen != NULL)
+		keyvec = sift_v6_genkeys_apply(g->gen, bs, keyvec);
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk == 0)
+		{
+			g->set[s].plain_row |= g->spec->constant_groups;
 			plain_batch(g, &g->set[s], bs, argvec);
+		}
 		else
 			grouped_batch(g, &g->set[s], bs, keyvec, argvec);
 	v6g_spill_if_over(g);
@@ -524,7 +532,7 @@ set_init(SiftV6Group *g, V6Set *set, uint32 mask)
 			set->kidx[set->nk++] = i;
 	set->packed = pack_plan(spec, set);
 	set->wide = !set->packed && (set->nk > 1 || (set->nk == 1 && sift_v6_class(spec->key[set->kidx[0]].typid) == SV6C_TEXT));
-	set->plain_row = true;
+	set->plain_row = !spec->constant_groups;
 	if (set->nk == 0)
 		set->plain = palloc0(Max(spec->naggs, 1) * sizeof(V6Acc));
 	else
@@ -596,7 +604,8 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const uint32 all = spec->nkeys >= 32 ? UINT32_MAX : (((uint32) 1) << spec->nkeys) - 1;
 
-	g->spec = spec;
+	g->gen = sift_v6_genkeys_new(cx, spec);
+	g->spec = g->gen != NULL ? sift_v6_genkeys_spec(g->gen) : spec;
 	g->cx = cx;
 	g->desc = desc;
 	g->budget = get_hash_memory_limit();
@@ -705,7 +714,7 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 static uint64
 group_bytes(const SiftV6Group *g)
 {
-	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch));
+	uint64		bytes = g->tx.cap + (uint64) g->code_cap * (sizeof(*g->code_slots) + sizeof(*g->code_epoch)) + (g->gen != NULL ? sift_v6_genkeys_bytes(g->gen) : 0);
 
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -954,6 +963,8 @@ sift_v6_group_free(SiftV6Group *g)
 		tuplestore_end(g->store);
 	if (g->tx.buf != NULL)
 		pfree(g->tx.buf);
+	if (g->gen != NULL)
+		sift_v6_genkeys_free(g->gen);
 }
 
 const char *

@@ -15,6 +15,7 @@
 #include "agg/v6/group_nan.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_argext.h"
+#include "agg/v6/v6_datum.h"
 
 
 static Datum
@@ -179,8 +180,8 @@ v6g_agg_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, uint32
 	}
 }
 
-void
-v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want)
+static void
+raw_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want)
 {
 	const SiftV6Spec *spec = g->spec;
 
@@ -237,4 +238,12 @@ v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, c
 			}
 		}
 	}
+}
+
+void
+v6g_key_datums(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, Datum *values, bool *isnull, uint32 want)
+{
+	raw_key_datums(g, set, ht, s, values, isnull, want);
+	if (g->gen != NULL)
+		sift_v6_genkeys_resolve(g->gen, values, isnull, want);
 }

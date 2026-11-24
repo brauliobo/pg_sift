@@ -95,7 +95,7 @@ integer_arg(const SiftV6Col *c)
 static bool
 plain_spec(const SiftV6Spec *spec)
 {
-	return spec->naggs > 0 && spec->nkeys == 0 && spec->nsets == 0 && spec->nbins == 0 && spec->nfilters == 0 && spec->nderive == 0 && !spec->affine && spec->ext == NULL;
+	return spec->naggs > 0 && spec->nkeys == 0 && spec->nsets == 0 && spec->nbins == 0 && spec->nfilters == 0 && spec->nderive == 0 && !spec->affine && spec->ext == NULL && !spec->constant_groups;
 }
 
 bool

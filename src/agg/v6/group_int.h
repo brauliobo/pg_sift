@@ -95,6 +95,7 @@ typedef struct V6DistBatch
 struct SiftV6Group
 {
 	const SiftV6Spec *spec;
+	struct SiftV6GenKeys *gen;	/* the keys the table does not group by their bytes: the spec above is then the copy in which they are int8 codes (v6_datum.h) */
 	MemoryContext cx;
 	int			nsets;
 	V6Set	   *set;
