@@ -566,6 +566,7 @@ TESTING_REGRESS += format2_stor_mem_col
 TESTING_REGRESS += format2_storage_codec_suite
 TESTING_REGRESS += format2_tiering_col
 TESTING_REGRESS += format2_tiering_ttl
+TESTING_REGRESS += format2_topn_tied_first_key
 TESTING_REGRESS += format2_ux_progress
 TESTING_REGRESS += format2_zero_unsupported
 TESTING_REGRESS += format_v1_v2_compat

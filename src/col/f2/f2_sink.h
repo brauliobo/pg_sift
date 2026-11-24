@@ -80,7 +80,8 @@ typedef bool (*SiftF2ZoneSink) (void *arg, const SiftPartDesc *d, const SiftF2Pa
 extern void sift_f2_scan_set_zone_sink(IndexScanDesc scan, SiftF2ZoneSink zone_sink);
 
 /*
- * A consumer that keeps the best K rows by an integer sort leaf says what a row must beat to stay: a granule whose zone of the leaf holds no row that sorts strictly before value is not read.
+ * A consumer that keeps the best K rows by an integer sort leaf says what a row must beat to stay: a granule whose zone of the leaf holds no row that sorts strictly before value is not read,
+ * and with ties (a later sort key orders the rows equal to value) none that sorts before or equal to it.
  * The consumer changes the bound as its heap fills; it must outlive the scan, and sink_leaf is the place of the leaf among those given to sift_f2_scan_sink.
  */
 typedef struct SiftF2Bound
@@ -88,6 +89,7 @@ typedef struct SiftF2Bound
 	bool		active;
 	bool		desc;
 	bool		nulls_first;
+	bool		ties;
 	int64		value;
 } SiftF2Bound;
 

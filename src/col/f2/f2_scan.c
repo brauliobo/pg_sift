@@ -144,6 +144,8 @@ bound_excludes(const SiftF2Bound *b, const SiftZone *z)
 {
 	if (!b->active || (z->flags & SIFT_ZONE_NONE) || (b->nulls_first && z->nnull > 0))
 		return false;
+	if (b->ties)
+		return b->desc ? z->max < b->value : z->min > b->value;
 	return b->desc ? z->max <= b->value : z->min >= b->value;
 }
 
