@@ -152,10 +152,10 @@ SELECT pg_relation_size('ts') / 8192 > 10000 AS late_blocks;
 CREATE TABLE tq (cond text);
 INSERT INTO tq
 SELECT format(f, a, a + w) FROM unnest(ARRAY['d BETWEEN %s AND %s', 'd BETWEEN %s AND %s AND flag IS NULL', 'd >= %s AND d < %s AND flag = 1']) WITH ORDINALITY f(f, fi),
-	   unnest(ARRAY[0, 500, 5000, 12000, 19990]) WITH ORDINALITY a(a, ai), unnest(ARRAY[40, 900]) WITH ORDINALITY w(w, wi) WHERE (fi + ai + wi) % 2 = 0;
+	   unnest(ARRAY[0, 500, 5000, 12000, 19990]) WITH ORDINALITY a(a, ai), unnest(ARRAY[40, 900]) WITH ORDINALITY w(w, wi) WHERE (fi + ai + wi) % 3 = 0;
 INSERT INTO tq
 SELECT format(f, a, b) FROM unnest(ARRAY['c BETWEEN %L AND %L', 'c BETWEEN %L AND %L AND flag IS NULL', 'c >= %L AND c < %L AND flag = 2']) WITH ORDINALITY f(f, fi),
-	   (VALUES (1, 'k00000', 'k00040'), (2, 'k04000', 'k04900'), (3, 'k10050', 'k10090'), (4, 'k16500', 'k17400'), (5, 'k19900', 'k19999')) v(vi, a, b) WHERE (fi + vi) % 2 = 0;
+	   (VALUES (1, 'k00000', 'k00040'), (2, 'k04000', 'k04900'), (3, 'k10050', 'k10090'), (4, 'k16500', 'k17400'), (5, 'k19900', 'k19999')) v(vi, a, b) WHERE (fi + vi) % 3 = 0;
 SELECT t.tbl, count(*) AS conditions, count(*) FILTER (WHERE tb_count(t.tbl, q.cond, true) = tb_count(t.tbl, q.cond, false)) AS same,
 	   count(*) FILTER (WHERE tb_count(t.tbl, q.cond, false) > 0) AS found
 FROM tq q, (VALUES ('ts'), ('tk')) t(tbl) GROUP BY t.tbl ORDER BY 1;
