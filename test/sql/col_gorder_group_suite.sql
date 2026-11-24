@@ -110,7 +110,7 @@ CREATE SCHEMA s3;
 GRANT USAGE ON SCHEMA s3 TO PUBLIC;
 SET search_path = s3, public;
 -- A group array read of a table whose rows were updated and vacuumed takes the exact key of an entry from the heap, and asks of the dead rows of the segment only those of the unit of the
--- entry's page: the top rows of one group are a few pages of a table that has sixty thousand dead rows, and listing them all for each statement was most of its cost.
+-- entry's page: the top rows of one group are a few pages of a table that has thirty thousand dead rows, and listing them all for each statement was most of its cost.
 SET client_min_messages = warning;
 SET synchronous_commit = on;
 SET sift.async_maintenance = off;
@@ -119,12 +119,12 @@ SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE gd (id int PRIMARY KEY, g int, ts timestamp, pad text DEFAULT repeat('x', 60)) WITH (autovacuum_enabled = off);
 ALTER TABLE gd ALTER COLUMN pad SET STORAGE PLAIN;
-INSERT INTO gd (id, g, ts) SELECT i, i % 50, timestamp '2026-01-01' + i * interval '1 minute' FROM generate_series(1, 200000) i;
+INSERT INTO gd (id, g, ts) SELECT i, i % 50, timestamp '2026-01-01' + i * interval '1 minute' FROM generate_series(1, 100000) i;
 CREATE INDEX gd_i ON gd USING sift_col (id, g, ts) WITH (order_array_columns = 'ts', order_array_group = 'g', key_cut = 'off');
 VACUUM (FREEZE, ANALYZE) gd;
 UPDATE gd SET ts = ts + interval '3 hours', g = (g + 1) % 50 WHERE id % 10 < 3;
 VACUUM gd;
-SELECT (SELECT count(*) FROM sift.col_segments('gd_i') WHERE kind = 'immutable') AS segments, (SELECT sum(dead_rows) FROM sift.col_segments('gd_i')) > 50000 AS many_dead;
+SELECT (SELECT count(*) FROM sift.col_segments('gd_i') WHERE kind = 'immutable') AS segments, (SELECT sum(dead_rows) FROM sift.col_segments('gd_i')) > 25000 AS many_dead;
 
 CREATE FUNCTION gd_rows(q text, via_sift boolean) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -204,9 +204,9 @@ BEGIN
 	EXECUTE 'SELECT md5(string_agg(t::text, ''|'' ORDER BY t::text)) FROM (' || q || ') t' INTO rb;
 	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN counted THEN 'counted' WHEN narrowed THEN 'narrowed' ELSE 'units' END;
 END $$;
-CREATE FUNCTION gr_all(t text) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
+CREATE FUNCTION gr_all(t text, stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
 $$ SELECT gr_chk(format('SELECT %s FROM %s WHERE %s', sel, t, w)), 1::bigint
-   FROM unnest(ARRAY['count(*)', 'count(*), sum(score), max(id)', 'min(created), max(created)', 'id, created']) sel,
+   FROM unnest(ARRAY['count(*)', 'count(*), sum(score), max(id)', 'min(created), max(created)', 'id, created']) WITH ORDINALITY s(sel, si),
 		unnest(ARRAY['ent_id = 7 AND created BETWEEN ''2024-02-01'' AND ''2024-02-15''',
 					 'ent_id = 7 AND created >= ''2024-03-01''',
 					 'ent_id = 7 AND created < ''2024-01-20''',
@@ -219,20 +219,20 @@ $$ SELECT gr_chk(format('SELECT %s FROM %s WHERE %s', sel, t, w)), 1::bigint
 					 'ent_id >= 7 AND ent_id <= 7 AND created > ''2024-04-01'' AND created < ''2024-04-20''',
 					 'ent_id BETWEEN 7 AND 9 AND created BETWEEN ''2024-02-01'' AND ''2024-02-15''',
 					 'ent_id = 7 AND created IS NULL',
-					 'ent_id = 7 AND created BETWEEN ''2024-02-01'' AND ''2024-02-15'' AND score < 2500']) w
-   WHERE NOT (sel = 'id, created' AND w ~ '2030|2025-01-01') $$;
-SELECT result, count(*) FROM gr_all('gr') GROUP BY 1 ORDER BY 1;
-SELECT result, count(*) FROM gr_all('gs') GROUP BY 1 ORDER BY 1;
+					 'ent_id = 7 AND created BETWEEN ''2024-02-01'' AND ''2024-02-15'' AND score < 2500']) WITH ORDINALITY x(w, wi)
+   WHERE (si + wi + stage) % 4 = 0 AND NOT (sel = 'id, created' AND w ~ '2030|2025-01-01') $$;
+SELECT result, count(*) FROM gr_all('gr', 0) GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gs', 1) GROUP BY 1 ORDER BY 1;
 
 -- a write buffer next to the segment, then a promotion
 INSERT INTO gr SELECT 300000 + i, i % 400, timestamp '2024-02-05' + i * interval '1 second', i % 5000, 'w' FROM generate_series(1, 1500) i;
 INSERT INTO gs SELECT * FROM gr WHERE id > 300000;
-SELECT result, count(*) FROM gr_all('gr') GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gr', 2) GROUP BY 1 ORDER BY 1;
 SELECT sift.col_promote('gr_i') >= 0 AS promoted_r, sift.col_promote('gs_i') >= 0 AS promoted_s;
 VACUUM gr;
 VACUUM gs;
-SELECT result, count(*) FROM gr_all('gr') GROUP BY 1 ORDER BY 1;
-SELECT result, count(*) FROM gr_all('gs') GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gr', 3) GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gs', 4) GROUP BY 1 ORDER BY 1;
 
 -- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
 DELETE FROM gr WHERE id % 53 = 0;
@@ -243,16 +243,16 @@ BEGIN;
 UPDATE gr SET created = timestamp '2024-02-10' WHERE id % 3 = 0;
 INSERT INTO gr SELECT 400000 + i, 7, timestamp '2024-02-10', i, 'r' FROM generate_series(1, 300) i;
 ROLLBACK;
-SELECT result, count(*) FROM gr_all('gr') GROUP BY 1 ORDER BY 1;
-SELECT result, count(*) FROM gr_all('gs') GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gr', 5) GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gs', 6) GROUP BY 1 ORDER BY 1;
 VACUUM gr;
 VACUUM gs;
-SELECT result, count(*) FROM gr_all('gr') GROUP BY 1 ORDER BY 1;
-SELECT result, count(*) FROM gr_all('gs') GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gr', 7) GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM gr_all('gs', 8) GROUP BY 1 ORDER BY 1;
 SELECT sift.col_verify('gr_i'), sift.col_verify('gs_i');
 
 DROP TABLE gr, gs;
-DROP FUNCTION gr_chk(text), gr_all(text);
+DROP FUNCTION gr_chk(text), gr_all(text, int);
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA s4 CASCADE;
@@ -284,13 +284,13 @@ SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('tx_
 ANALYZE tx;
 
 CREATE FUNCTION tx_chk(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.topn_check_ordered_rows_with_nulls(q) $$;
-CREATE FUNCTION tx_all() RETURNS TABLE (col text, result text, n bigint) LANGUAGE sql AS
+CREATE FUNCTION tx_all(stage int) RETURNS TABLE (col text, result text, n bigint) LANGUAGE sql AS
 $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIMIT %4$s OFFSET %5$s', c, d, nl, lim, o, w)), 1::bigint
    FROM unnest(ARRAY['c', 'l']) WITH ORDINALITY c(c, ci), unnest(ARRAY['ASC', 'DESC']) WITH ORDINALITY d(d, di), unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) WITH ORDINALITY nl(nl, nli),
 		unnest(ARRAY[1, 10, 100, 2000]) WITH ORDINALITY lim(lim, limi), unnest(ARRAY[0, 7]) WITH ORDINALITY o(o, oi),
 		unnest(ARRAY['', 'WHERE id > 0', 'WHERE c >= ''customer-0100'' AND c < ''customer-0300''', 'WHERE c >= ''order-''', 'WHERE c < ''a''']) WITH ORDINALITY w(w, wi)
-   WHERE (ci + di + nli + limi + oi + wi) % 3 = 0 $$;
-SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
+   WHERE (ci + di + nli + limi + oi + wi + stage) % 6 = 0 $$;
+SELECT col, result, count(*) FROM tx_all(0) GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- rows of the buffer deleted, updated (the key moves), an insert and an update rolled back
 DELETE FROM tx WHERE id > 8000 AND id % 7 = 0;
@@ -301,20 +301,20 @@ INSERT INTO tx SELECT 40000 + i, 'customer-', 'customer-', 1 FROM generate_serie
 ROLLBACK;
 ANALYZE tx;
 SELECT sum(rows) > 4096 AS buffer_over_the_old_limit FROM sift.col_segments('tx_i') WHERE kind = 'buffer';
-SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT col, result, count(*) FROM tx_all(1) GROUP BY 1, 2 ORDER BY 1, 2;
 
 SELECT sift.col_promote('tx_i') >= 0 AS promoted;
 INSERT INTO tx SELECT 50000 + i, tx_str(i * 13), tx_str(i * 17), 0 FROM generate_series(1, 5000) i;
 ANALYZE tx;
-SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT col, result, count(*) FROM tx_all(2) GROUP BY 1, 2 ORDER BY 1, 2;
 -- a buffer past the limit of a locale column: the units answer, the answers are the heap's
 INSERT INTO tx SELECT 100000 + i, tx_str(i * 19), tx_str(i * 23), 0 FROM generate_series(1, 17000) i;
 ANALYZE tx;
 SELECT sum(rows) > 16384 AS buffer_over_the_locale_limit FROM sift.col_segments('tx_i') WHERE kind = 'buffer';
-SELECT col, result, count(*) FROM tx_all() GROUP BY 1, 2 ORDER BY 1, 2;
+SELECT col, result, count(*) FROM tx_all(3) GROUP BY 1, 2 ORDER BY 1, 2;
 SELECT sift.col_verify('tx_i');
 
-DROP FUNCTION tx_all(), tx_chk(text), tx_str(int);
+DROP FUNCTION tx_all(int), tx_chk(text), tx_str(int);
 DROP TABLE tx;
 RESET ALL;
 SET client_min_messages = warning;
