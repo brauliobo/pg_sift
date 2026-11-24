@@ -12,6 +12,7 @@
 #include "col/f2/l0_href_fetch.h"
 #include "col/f2/l0_slab.h"
 #include "core/damage.h"
+#include "core/f2/f2_gate.h"
 #include "core/page_io.h"
 
 #define SL(p)	((SiftL0SlabPageData *) SiftPageGetData(p))
@@ -762,6 +763,7 @@ sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const Sift
 	SIFT_INVARIANT(!RecoveryInProgress(), "sift: a micro-slab is flushed on a primary, a standby reads it in memory (col/f2/f2_slab_view.h)");
 	if (sift_l0_href_flush(rel, part_id, key_lo, spec))
 		return true;
+	SIFT_F2_GATE(SIFT_F2_GATE_SLAB_FLUSH);
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)

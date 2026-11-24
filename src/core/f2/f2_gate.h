@@ -14,6 +14,7 @@
 #define SIFT_F2_GATE_TIER		12	/* a part is in the object store and the manifest does not name it */
 #define SIFT_F2_GATE_SCOPE		13	/* the summaries of the scopes are written and the manifest does not name them */
 #define SIFT_F2_GATE_COL_DELTA	14	/* the column deltas of a partition are appended and no commit has published them */
+#define SIFT_F2_GATE_SLAB_FLUSH	15	/* a flush of a slab found no chain of references and holds no lock of the partition */
 
 #define SIFT_F2_GATE(phase)		sift_test_phase_wait(phase)
 #else
