@@ -127,6 +127,10 @@ src/col/f2/f2_store.c	sift_f2_rel_hash	guarded	GetSysCacheHashValue1 returns a h
 src/col/f2/f2_store.c	store_att_hashes	guarded	GetSysCacheHashValue2 returns a hash value, not a tuple: the relation is the open relation of the store being made, and the values are kept to compare in the invalidation callback, where nothing may be looked up
 src/agg/v6/join_asof.c	sort_begin	guarded	the types are the vartypes of the fact Vars the parser resolved; the result is tested with OidIsValid and raises
 src/agg/v6/v6_expr_num.c	numeric_op	guarded	the result of get_opname is assigned and tested against NULL in the same condition
+src/agg/v6/v6_dim_cache.c	journal_index	guarded	the indexes are the relation's own index list (RelationGetIndexList of the heap of a scan the statement holds open and locked): DROP INDEX waits for the lock; index_open raises for a missing one
+src/agg/v6/v6_dim_cache.c	readable	guarded	the index is the one journal_index opened and left locked for the statement: DROP INDEX waits for that lock; index_open raises for a missing one
+src/agg/v6/v6_dim_cache.c	sift_dimcache_keep	guarded	GetSysCacheHashValue1 only hashes the OID of the table and of its locked index for the invalidation callback; it needs no tuple
+src/agg/v6/v6_dim_cache.c	sift_dimcache_try	guarded	the index is the one journal_index found in the relation list of the scanned heap and left locked: DROP INDEX waits for that lock; index_open raises for a missing one
 src/bm25/facet_rls.c	sift_facet_rls_begin	guarded	the heap is open, so its namespace exists and get_namespace_name returns its name
 src/table/f2/f2_options.c	read_rows	guarded	cfgid is tested with OidIsValid right above; table_open raises for a missing relation, it never returns NULL
 src/bm25/funcs.c	sift_key_equal	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and eq_opr is tested with OidIsValid on the next line

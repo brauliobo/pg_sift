@@ -7,6 +7,7 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
+#include "agg/v6/v6_dim_cache.h"
 #include "agg/v6/v6_star_run.h"
 #include "core/memtrack.h"
 
@@ -19,6 +20,10 @@ struct SiftV6StarRun
 	SiftStarDim dim[SIFT_STAR_MAX_DIMS];
 	bool		have[SIFT_STAR_MAX_DIMS];
 	bool		read[SIFT_STAR_MAX_DIMS];	/* the plan has run: it is rescanned before it runs again */
+	SiftDimTry *dc[SIFT_STAR_MAX_DIMS];	/* what the pass may keep of the dimension (v6_dim_cache.h) */
+	bool		kept[SIFT_STAR_MAX_DIMS];	/* the table is an entry of the cache: pinned until the tables are freed, not freed with them */
+	uint32		hits;			/* the dimensions read from the cache, and those read from the plan to be kept */
+	uint32		built;
 	uint32		nparts[SIFT_STAR_MAX_DIMS];
 	uint32		part[SIFT_STAR_MAX_DIMS];
 	uint32		passes;
@@ -190,12 +195,27 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 static void
 free_dim(SiftV6StarRun *r, int d)
 {
-	if (r->have[d])
+	if (r->have[d] && !r->kept[d])
 		sift_star_dim_free(&r->dim[d]);
-	r->have[d] = false;
+	r->have[d] = r->kept[d] = false;
 }
 
-/* Reads dimension d for the pass; in the first pass, with the classes of keys it needs to fit */
+/* The table of dimension d as a statement before it kept it, when the table it was read from is still the one */
+static bool
+find_kept(SiftV6StarRun *r, int d)
+{
+	SiftStarShape sh;
+
+	shape_of(&r->x->dim[d], r->budget, &sh);
+	r->dc[d] = sift_dimcache_try(r->ps[d], &r->x->dim[d], &sh, r->cx);
+	if (r->dc[d] == NULL || !sift_dimcache_find(r->dc[d], r->budget, &r->dim[d]))
+		return false;
+	r->have[d] = r->kept[d] = true;
+	r->hits++;
+	return true;
+}
+
+/* Reads dimension d for the pass; in the first pass, with the classes of keys it needs to fit, or as the cache holds it when it need not be read */
 static void
 build_dim(SiftV6StarRun *r, int d, uint32 pass)
 {
@@ -203,12 +223,30 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 	bool		settled;
 
 	free_dim(r, d);
+	r->dc[d] = NULL;
+	if (pass == 0 && r->nparts[d] == 1 && find_kept(r, d))
+	{
+		r->bytes = Max(r->bytes, r->dim[d].bytes);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	do
 	{
-		const bool	fits = read_dim(r, d, r->nparts[d], r->part[d]);
-		const bool	last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS;
+		const bool	keep = pass == 0 && r->nparts[d] == 1 && r->dc[d] != NULL;
+		bool		fits;
+		bool		last;
 
+		if (keep)
+			MemoryContextSwitchTo(sift_dimcache_read_cx(r->dc[d]));
+		fits = read_dim(r, d, r->nparts[d], r->part[d]);
+		MemoryContextSwitchTo(r->cx);
+		last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS;
 		settled = fits && (last || r->nparts[d] == 1 || r->dim[d].bytes <= r->budget / 2);
+		if (keep && fits)
+		{
+			r->built++;
+			r->kept[d] = sift_dimcache_keep(r->dc[d], &r->dim[d]);
+		}
 		if (settled)
 			continue;
 		sift_star_dim_free(&r->dim[d]);
@@ -268,10 +306,21 @@ sift_v6_star_bytes(const SiftV6StarRun *r)
 	return r->bytes;
 }
 
+bool
+sift_v6_star_cache(const SiftV6StarRun *r, uint32 *hits, uint32 *built)
+{
+	*hits = r->hits;
+	*built = r->built;
+	return r->hits + r->built > 0;
+}
+
 void
 sift_v6_star_close(SiftV6StarRun *r)
 {
 	for (int d = 0; d < r->x->ndims; d++)
+	{
 		free_dim(r, d);
+		r->dc[d] = NULL;
+	}
 	MemoryContextReset(r->cx);
 }

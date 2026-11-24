@@ -510,6 +510,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	V6State    *st = (V6State *) node;
 	SiftExplainStatsV6 ex = {.group_mode = "salted-ht"};
+	uint32		dim_hits,
+				dim_built;
 
 	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->spec->is_table ? st->sources[0].heap : st->sources[0].index), es);
 	if (st->spec->nparts > 0)
@@ -552,6 +554,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
 	if (st->star_passes > 1)
 		ExplainPropertyInteger("Star Passes", NULL, st->star_passes, es);
+	if (st->star != NULL && sift_v6_star_cache(st->star, &dim_hits, &dim_built))
+		ExplainPropertyText("Dimension Cache", psprintf("%u hit, %u built", dim_hits, dim_built), es);
 	sift_v6_gpu_explain(&st->gpu, es);
 	ex.heap_vet_rows = st->stats.heap_vet_rows;
 	ex.grans_scanned = st->stats.batches;
