@@ -46,6 +46,7 @@
 #include "agg/v6/v6_pct.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_unnest_jsonb.h"
+#include "agg/v6/v6_join_plan.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_pg_expr.h"
@@ -921,6 +922,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	{
 		sift_v6_star_upper_paths(root, input_rel, output_rel, extra);
 		sift_v6_unnest_upper_paths(root, input_rel, output_rel, extra);
+		sift_v6_join_upper_paths(root, input_rel, output_rel, extra);
 		for (int i = 0; i < sift_store_ops_count(); i++)
 			if (sift_store_ops_at(i)->scope != NULL)
 				sift_store_ops_at(i)->scope->upper_paths(root, input_rel, output_rel, extra);
