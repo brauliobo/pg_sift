@@ -7,6 +7,7 @@
 #include "agg/agg.h"
 #include "agg/part.h"
 #include "agg/par/int.h"
+#include "agg/v6/v6_test_gucs.h"
 
 /*
  * The superblocks are split in items that the participants take from a counter. Float sums are order dependent, so that a result

@@ -52,8 +52,6 @@ extern double sift_search_cost(const SiftSearchPlan *sp, double nrows, double nu
 
 /* ---- executor ---- */
 
-/* Superblocks whose matches are held at a time (a page of matches takes 64 bytes); sift.search_chunk_sbs */
-extern PGDLLIMPORT int sift_search_chunk_sbs;
 extern void sift_search_init(void);
 
 typedef struct SiftSearch SiftSearch;

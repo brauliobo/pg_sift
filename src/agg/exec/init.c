@@ -199,9 +199,6 @@ sift_agg_init(void)
 	DefineCustomIntVariable("sift.test_agg_par_min_rows",
 							"Testing: rows below which an aggregate scan takes no workers.",
 							NULL, &sift_agg_par_min_rows, 80000, 0, INT_MAX, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-	DefineCustomIntVariable("sift.test_search_chunk_sbs",
-							"Testing: superblocks of a chunk of a search scan.",
-							NULL, &sift_search_chunk_sbs, 32, 1, 1024, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
 	DefineCustomBoolVariable("sift.test_agg_super",
 							 "Testing: a scan answers from the summaries of groups of units.",
 							 NULL, &sift_agg_super, true, PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);

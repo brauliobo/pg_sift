@@ -11,6 +11,7 @@
 #include "agg/agg.h"
 #include "agg/wide.h"
 #include "agg/exec/int.h"
+#include "agg/v6/v6_test_gucs.h"
 
 /*
  * The match set of the superblocks a window is in. The first window is asked for alone (the scan often ends in it, and a match set costs by

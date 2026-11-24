@@ -291,8 +291,6 @@ sift_search_describe(Node *spec)
 	return buf.data;
 }
 
-int			sift_search_chunk_sbs = 32;
-
 void
 sift_search_init(void)
 {

@@ -65,6 +65,7 @@
 #include "col/shred.h"
 #include "core/sql.h"
 #include "core/build_id.h"
+#include "agg/v6/v6_test_gucs.h"
 
 PG_MODULE_MAGIC_EXT(.name = "pg_sift", .version = SIFT_BUILD_ID);
 
@@ -353,6 +354,7 @@ _PG_init(void)
 	sift_leak_test_init();
 	sift_memcensus_init();
 	sift_memtrack_define_test_gucs();
+	sift_v6_define_test_gucs();
 	sift_aggstub_init();
 	sift_limits_init();
 #endif
