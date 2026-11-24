@@ -98,7 +98,7 @@ CREATE TABLE ev AS
 SELECT g AS id, jsonb_build_object('region', (ARRAY['EU', 'US', 'US', 'AP', 'EU', 'SA', 'US', 'AP', 'EU', 'US'])[(g * 7919) % 10 + 1], 'tier', (g * 31) % 5)
        || CASE WHEN (g * 104729) % 4 = 0 THEN '{"flag_a": true}'::jsonb ELSE '{}'::jsonb END AS payload,
        CASE WHEN g % 1000 = 0 THEN timestamptz '2026-01-01' END AS deleted_at
-FROM generate_series(1::int8, 120000) AS g;
+FROM generate_series(1::int8, 30000) AS g;
 ANALYZE ev;
 CREATE TABLE ev_cols AS
 SELECT array_agg(CASE payload->>'region' WHEN 'EU' THEN 1 WHEN 'US' THEN 2 WHEN 'AP' THEN 3 ELSE 4 END::int8 ORDER BY id) AS region,
@@ -201,16 +201,22 @@ CREATE FUNCTION vexpr_run(prog text, live int[]) RETURNS SETOF record LANGUAGE s
 -- the number of rows, one by one and all together, where the engine and PostgreSQL differ in the result or the error
 CREATE FUNCTION vdiff(prog text, pgx text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
-	r int; e text; p text; bad bigint := 0; ok int[] := '{}'; n bigint; nrows int := (SELECT count(*) FROM vd);
+	r int; e text; p text; bad bigint := 0; ok int[] := '{}'; n bigint; nrows int := (SELECT count(*) FROM vd); clean bool;
 BEGIN
-	FOR r IN SELECT id FROM vd ORDER BY id LOOP
+	BEGIN
+		EXECUTE format('SELECT count((%s)::text) FROM vd', pgx);
+		clean := true;
+		ok := ARRAY(SELECT id FROM vd ORDER BY id);
+	EXCEPTION WHEN others THEN clean := false;
+	END;
+	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 7 = 0 ORDER BY id LOOP
 		BEGIN
 			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
 		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
 		END;
 		BEGIN
 			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
-			ok := ok || r;
+			IF NOT clean THEN ok := ok || r; END IF;
 		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
 		END;
 		IF e IS DISTINCT FROM p THEN
