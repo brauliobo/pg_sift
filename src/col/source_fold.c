@@ -536,11 +536,11 @@ key_clause(Relation index, const ScanKeyData *k)
 		sa->opfuncid = get_opcode(opno);
 		sa->useOr = true;
 		sa->inputcollid = k->sk_collation;
-		sa->args = list_make2(var, makeConst(arr, -1, InvalidOid, typlen, k->sk_argument, false, byval));
+		sa->args = list_make2(var, makeConst(arr, -1, InvalidOid, typlen, k->sk_argument, (k->sk_flags & SK_ISNULL) != 0, byval));
 		return (Node *) sa;
 	}
 	get_typlenbyval(right, &typlen, &byval);
-	return (Node *) make_opclause(opno, BOOLOID, false, (Expr *) var, (Expr *) makeConst(right, -1, k->sk_collation, typlen, k->sk_argument, false, byval), InvalidOid, k->sk_collation);
+	return (Node *) make_opclause(opno, BOOLOID, false, (Expr *) var, (Expr *) makeConst(right, -1, k->sk_collation, typlen, k->sk_argument, (k->sk_flags & SK_ISNULL) != 0, byval), InvalidOid, k->sk_collation);
 }
 
 List *
