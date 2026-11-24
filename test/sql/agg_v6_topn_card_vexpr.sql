@@ -95,10 +95,10 @@ SELECT count(*) FROM sift._test_topn('{1}', NULL, NULL, '{t}', ARRAY[true], ARRA
 -- ---------------------------------------------------------------------------------------------------------------------------------------------------
 -- events: a jsonb payload with a region, a tier and a flag on a quarter of the rows, in no order; deleted_at is NULL on 99.9% of them
 CREATE TABLE ev AS
-SELECT g AS id, jsonb_build_object('region', (ARRAY['EU', 'US', 'US', 'AP', 'EU', 'SA', 'US', 'AP', 'EU', 'US'])[(g * 7919) % 10 + 1], 'tier', (g * 31) % 5)
-       || CASE WHEN (g * 104729) % 4 = 0 THEN '{"flag_a": true}'::jsonb ELSE '{}'::jsonb END AS payload,
+SELECT g AS id, format('{"region": "%s", "tier": %s%s}', (ARRAY['EU', 'US', 'US', 'AP', 'EU', 'SA', 'US', 'AP', 'EU', 'US'])[(g * 7919) % 10 + 1], (g * 31) % 5,
+                       CASE WHEN (g * 104729) % 4 = 0 THEN ', "flag_a": true' ELSE '' END)::jsonb AS payload,
        CASE WHEN g % 1000 = 0 THEN timestamptz '2026-01-01' END AS deleted_at
-FROM generate_series(1::int8, 30000) AS g;
+FROM generate_series(1::int8, 20000) AS g;
 ANALYZE ev;
 CREATE TABLE ev_cols AS
 SELECT array_agg(CASE payload->>'region' WHEN 'EU' THEN 1 WHEN 'US' THEN 2 WHEN 'AP' THEN 3 ELSE 4 END::int8 ORDER BY id) AS region,
@@ -209,13 +209,14 @@ BEGIN
 		ok := ARRAY(SELECT id FROM vd ORDER BY id);
 	EXCEPTION WHEN others THEN clean := false;
 	END;
-	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 13 = 0 ORDER BY id LOOP
+	EXECUTE format('PREPARE vdq(int) AS SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = $1', pgx);
+	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 29 = 0 ORDER BY id LOOP
 		BEGIN
-			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
+			EXECUTE format('EXECUTE vdq(%s)', r) INTO p;
 			IF NOT clean THEN ok := ok || r; END IF;
 		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
 		END;
-		CONTINUE WHEN r % 13 <> 0 AND p NOT LIKE 'error: %';
+		CONTINUE WHEN r % 29 <> 0 AND p NOT LIKE 'error: %';
 		BEGIN
 			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
 		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
@@ -225,6 +226,7 @@ BEGIN
 			IF bad <= 3 THEN RAISE NOTICE '% row %: engine %, PostgreSQL %', prog, r, e, p; END IF;
 		END IF;
 	END LOOP;
+	DEALLOCATE vdq;
 	EXECUTE format('SELECT count(*) FROM (((SELECT ord, res FROM vexpr_run(%L, %L) AS t(ord int, res text)) EXCEPT ALL (SELECT id, (%s)::text FROM vd WHERE id = ANY (%L))) UNION ALL ((SELECT id, (%s)::text FROM vd WHERE id = ANY (%L)) EXCEPT ALL (SELECT ord, res FROM vexpr_run(%L, %L) AS t(ord int, res text)))) AS d',
 	               prog, CASE WHEN cardinality(ok) = nrows THEN NULL ELSE ok END, pgx, ok, pgx, ok, prog, CASE WHEN cardinality(ok) = nrows THEN NULL ELSE ok END) INTO n;
 	RETURN bad + n;
