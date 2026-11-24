@@ -16,6 +16,7 @@
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "agg/v6/par/unnest_run.h"
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_expr_str.h"
@@ -26,6 +27,7 @@
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_unnest.h"
 #include "agg/v6/v6_unnest_jsonb.h"
+#include "agg/v6/v6_unnest_pairs.h"
 #include "col/f2/f2_v6_unnest_run.h"
 #include "agg/v6/v6_vet.h"
 #include "agg/vexpr_str.h"
@@ -130,6 +132,10 @@ typedef struct UnRun
 	void	   *jdata[SIFT_F2_PULL_MAX_COLS];
 	uint64	   *jvalid[SIFT_F2_PULL_MAX_COLS];
 	SiftF2Pull *pull;
+	SiftF2PullSpec ps;
+	Snapshot	snap;
+	SiftUnPairs *pairs;			/* the plain unnest the compute threads fold: the pairs of the leader's own folds (par_plain) */
+	bool		redo;			/* the batches again, for the threads' share: their rows of the heap and their counts are in the groups already */
 	int32	   *month_key;
 	int32	   *month_val;
 	uint32	   *pidx;

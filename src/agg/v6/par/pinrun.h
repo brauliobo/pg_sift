@@ -14,6 +14,7 @@
 
 #include "agg/gpu_v6.h"
 #include "agg/v6/par/group.h"
+#include "agg/v6/par/wordsink.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_pipe.h"
 #include "col/f2/pin_win.h"
@@ -54,6 +55,9 @@ extern void sift_v6_pinrun_end(SiftV6PinRun *r);
  * them into cv[i] (the codes of a dictionary for the leaf i with codes[i]; codes NULL: none). *nact == 0: no row is left and nothing is decoded.
  */
 extern bool sift_v6_pin_slot_cols(const SiftPinSlot *sl, SiftArena *a, SiftErr *err, const int *leaf, int nleaves, const bool *codes, ColView *cv, uint64 **active, uint32 *nact);
+
+/* The group of a run of the words of agg/v6/par/wordsink.h, in the form the statement's groups take */
+extern void sift_v6_pin_fold_words(SiftV6Group *g, const SiftV6Spec *spec, const SiftParWordShape *sh, const SiftParGroupRow *row);
 
 /* The statements the operators of this directory take: begin is NULL for the others, or when the backend has no threads for them */
 extern bool sift_v6_pin_wanted(const SiftV6Spec *spec);

@@ -138,7 +138,7 @@ typedef struct Stmt
 	SiftV6Spec	spec;
 	SiftV6Ext	ext;
 	SiftV6Pipe *pipe;
-	SiftParStarShape sh;
+	SiftParWordShape sh;
 	bool		text_key;
 } Stmt;
 
@@ -382,7 +382,7 @@ run(const Fact *f, const Stmt *st, const Dim *d, uint32 workers)
 	SiftParOps	ops = sift_par_group_ops;
 	Vec			v;
 
-	c.st = sift_par_star_new(CurrentMemoryContext, &st->sh, &st->spec, st->pipe, workers);
+	c.st = sift_par_star_new(CurrentMemoryContext, &st->sh, st->pipe, workers);
 	ar = sift_par_arenas_create(CurrentMemoryContext, workers, SCRATCH, 8 << 20, 8 << 20);
 	g = sift_par_group_create(ar, &st->sh.gs, false, ROWS, &hooks, &err);
 	CHECK(g != NULL);
@@ -441,7 +441,7 @@ check_scan(bool null_measure, int copies, int expect_code)
 	Fact	   *f = make_fact(null_measure);
 	Dim		   *d = make_dim(copies, SV6J_INNER_EQUI);
 	Stmt	   *st = make_stmt(d, SV6J_INNER_EQUI, false, true);
-	SiftParStar *star = sift_par_star_new(CurrentMemoryContext, &st->sh, &st->spec, st->pipe, 1);
+	SiftParStar *star = sift_par_star_new(CurrentMemoryContext, &st->sh, st->pipe, 1);
 	SiftParCol	col[3];
 	SiftParGroupBatch out = {0};
 	SiftErr		err = {0};

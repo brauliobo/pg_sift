@@ -497,6 +497,125 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		}
 }
 
+/* a statement of plain columns of the table and one element column, the pairs of which the compute threads can fold as the serial run does */
+static bool
+par_plain(const UnRun *u)
+{
+	if (u->x->elem.fn != SV6E_UNNEST || u->keyed || u->ntests > 0 || u->nel != 1 || u->row_slot >= 0 || u->spec->nderive > 0 || u->eev != NULL || u->x->ndims > 0 || u->attr_slot != NULL)
+		return false;
+	for (int i = 0; i < u->ncols; i++)
+		if (u->cols[i].month || u->cols[i].json)
+			return false;
+	return true;
+}
+
+/* The rows of the batch that take part: the deletion vector, the WHERE clause, the visibility of the heap row; false when none is left */
+static bool
+par_select_rows(UnRun *u, const SiftF2ExtBatch *b, uint64 *mask)
+{
+	SiftBatchSel *bs = &u->bs;
+	const int	words = (b->n + 63) / 64;
+
+	memset(bs->mask, 0, sizeof(bs->mask));
+	memcpy(bs->mask, b->live, words * sizeof(uint64));
+	if (b->n & 63)
+		bs->mask[words - 1] &= (UINT64CONST(1) << (b->n & 63)) - 1;
+	if (u->has_where)
+		restrict_where(u, b);
+	if (sift_v6_vet_mask(&u->vet, b->tid, 0, false, b->n, bs) == 0)
+		return false;
+	memcpy(mask, bs->mask, words * sizeof(uint64));
+	return true;
+}
+
+/* The rows whose array the index cannot hold leave mask and are folded from the heap (not again by a rerun) */
+static void
+par_fold_heap_rows(UnRun *u, const SiftF2ExtBatch *b, uint64 *mask)
+{
+	const SiftF2ElemStream *es = b->elem;
+	const int	words = (b->n + 63) / 64;
+
+	MemoryContextReset(u->bcx);
+	for (int w = 0; w < words; w++)
+	{
+		const uint64 heap = es->layout.n_parents < (uint32) b->n ? mask[w] : mask[w] & es->poison[w];
+
+		mask[w] &= ~heap;
+		for (uint64 bits = heap; !u->redo && bits != 0; bits &= bits - 1)
+			sift_f2_unnest_emit_heap_row(u, b->col, b->tid[w * 64 + __builtin_ctzll(bits)], w * 64 + __builtin_ctzll(bits));
+	}
+}
+
+static bool
+par_next_batch(void *arg, const SiftF2ExtBatch **bp, uint64 *mask)
+{
+	UnRun	   *u = arg;
+
+	while ((*bp = sift_f2_pull_next(u->pull)) != NULL)
+	{
+		uint64		any = 0;
+
+		u->stats->batches += !u->redo;
+		if (!par_select_rows(u, *bp, mask))
+			continue;
+		u->stats->rows += u->redo ? 0 : u->bs.n_active;
+		par_fold_heap_rows(u, *bp, mask);
+		for (int w = 0; w < SIFT_VEC_WORDS; w++)
+			any |= mask[w];
+		if (any != 0)
+			return true;
+	}
+	return false;
+}
+
+/* The pairs of the rows of mask, read from the columns of the index */
+static void
+par_fold_pairs(void *arg, const SiftF2ExtBatch *b, const uint64 *mask)
+{
+	UnRun	   *u = arg;
+	const SiftF2ElemStream *es = b->elem;
+	const SiftUnnestIn in = {.lay = &es->layout,.parent_mask = mask,.doc_valid = es->doc_valid,.left = u->x->elem.left};
+	SiftUnnestCursor cur = {0};
+	SiftVec		ev[SIFT_V6_XELEM_COLS];
+	uint64		none[SIFT_VEC_WORDS];
+
+	elem_vecs(u, es, ev);
+	while (!sift_unnest_done(&in, &cur))
+	{
+		const uint32 m = sift_unnest_expand(&in, &cur, sift_un_pairs_pidx(u->pairs), sift_un_pairs_eidx(u->pairs), SIFT_VEC_LEN, none);
+
+		if (m > 0)
+			sift_un_pairs_emit(u->pairs, b->col, &ev[0], m);
+	}
+}
+
+static void
+par_redo(void *arg)
+{
+	UnRun	   *u = arg;
+
+	sift_f2_pull_end(u->pull);
+	u->pull = sift_f2_pull_begin(u->index, u->snap, &u->ps);
+	u->redo = true;
+}
+
+/* true: every row is in the groups of g */
+static bool
+unnest_par(UnRun *u, SiftV6Group *g)
+{
+	SiftVecType type[SIFT_F2_PULL_MAX_COLS + 1];
+	SiftV6UnnestSrc src;
+
+	if (!par_plain(u))
+		return false;
+	for (int i = 0; i < u->ncols; i++)
+		type[i] = vec_type(u->cols[i].cls);
+	type[u->ncols] = u->etype[0];
+	u->pairs = sift_un_pairs_new(CurrentMemoryContext, u->pipe, u->ncols, type);
+	src = (SiftV6UnnestSrc) {.next = par_next_batch,.fold = par_fold_pairs,.redo = par_redo,.pairs = u->pairs,.pipe = u->pipe,.left = u->x->elem.left,.arg = u};
+	return sift_v6_unnest_par(u->spec, g, u->index, &src);
+}
+
 static void
 setup_clauses(UnRun *u, const SiftColRel *r)
 {
@@ -622,7 +741,6 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	UnRun		run = {0};
 	UnRun	   *u = &run;
 	SiftF2PullSpec ps;
-	SiftF2Pull *pull;
 	SiftV6MapPreagg *map;
 	const SiftF2ExtBatch *b;
 
@@ -638,11 +756,13 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
 	ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	ps.gran_arg = map;
-	pull = sift_f2_pull_begin(index, snap, &ps);
-	u->pull = pull;
-	while ((b = sift_f2_pull_next(pull)) != NULL)
-		run_batch(u, b);
-	sift_f2_pull_end(pull);
+	u->ps = ps;
+	u->snap = snap;
+	u->pull = sift_f2_pull_begin(index, snap, &u->ps);
+	if (map != NULL || !unnest_par(u, g))
+		while ((b = sift_f2_pull_next(u->pull)) != NULL)
+			run_batch(u, b);
+	sift_f2_pull_end(u->pull);
 	if (map != NULL)
 		sift_v6_map_preagg_end(map);
 	unrun_end(u);

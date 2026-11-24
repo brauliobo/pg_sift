@@ -16,26 +16,17 @@
 
 #include "agg/v6/par/cols.h"
 #include "agg/v6/par/group.h"
+#include "agg/v6/par/wordsink.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_pipe.h"
 
-typedef struct SiftParStarShape
-{
-	SiftParGroupSpec gs;
-	int			nk;				/* the keys of the statement: the key words of gs, or one text key; none: one group of key 0 */
-	int			nsum;
-	int			sum_agg[SIFT_PAR_GROUP_MAX_SUM];	/* the aggregate (of the spec) whose argument each sum is of */
-	int			ncount;
-	int			count_agg[SIFT_PAR_GROUP_MAX_SUM];	/* the aggregates COUNT(col): a NULL argument is the scan's */
-} SiftParStarShape;
-
 /* Whether the statement is one the threads fold: its keys, aggregates and the columns of its dimensions are integers or (one key) text; a spec the planner made for the scan of the fact columns */
-extern bool sift_par_star_shape(const SiftV6Spec *spec, SiftParStarShape *sh);
+extern bool sift_par_star_shape(const SiftV6Spec *spec, SiftParWordShape *sh);
 
 typedef struct SiftParStar SiftParStar;
 
 /* The pipes and buffers of nthreads threads over the dimensions of pipe (the pipe of the leader, with its dimensions open): everything a thread takes, made now, by the leader */
-extern SiftParStar *sift_par_star_new(MemoryContext cx, const SiftParStarShape *sh, const SiftV6Spec *spec, const SiftV6Pipe *pipe, int nthreads);
+extern SiftParStar *sift_par_star_new(MemoryContext cx, const SiftParWordShape *sh, const SiftV6Pipe *pipe, int nthreads);
 
 /* Thread `worker`: the words of the n rows of a granule (fact[i] the column of slot i of the pipe, active the rows of the granule that pass), valid until the next call of the thread */
 extern bool sift_par_star_batch(SiftParStar *st, int worker, const SiftParCol *fact, const uint64 *active, int n, SiftErr *err, SiftParGroupBatch *out);

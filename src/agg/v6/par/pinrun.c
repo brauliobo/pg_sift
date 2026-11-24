@@ -10,24 +10,17 @@
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
+#include "agg/v6/par/gsink.h"
 #include "agg/v6/par/pinrun.h"
 #include "agg/v6/par/star_run.h"
 #include "agg/v6/par/tseries_run.h"
 #include "col/granule/cfilt_str_simd.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
-#include "core/par/radix.h"
 
 #define WORK_BYTES		(16u << 20)
 #define STATE_MIN		(8u << 20)
 #define SINK_MIN_BYTES	(1u << 20)
-#define SINK_STR_BYTES	32
-
-typedef struct PinSink
-{
-	SiftArena  *arena;
-	SiftRadixOut out;
-} PinSink;
 
 struct SiftV6PinRun
 {
@@ -37,8 +30,7 @@ struct SiftV6PinRun
 	Relation	index;
 	SiftPinWin *win;
 	SiftParGroup *grp;
-	PinSink    *sink[SIFT_PAR_MAX_THREADS];
-	atomic_bool sink_full;
+	SiftV6GSink *sink;
 	uint32		fed;
 	uint32		npending;
 	uint32	   *pending;		/* the granules a thread left to the leader */
@@ -49,66 +41,10 @@ struct SiftV6PinRun
 	}			w[SIFT_PAR_MAX_THREADS];
 };
 
-/* ---- the records of a stream: the length of a text key (0 for integers), the key words, the count, the sums, then the bytes of a text key to a multiple of 8 ---- */
-
-static uint32
-rec_words(const SiftParGroupSpec *gs)
-{
-	return 1 + gs->kw + 1 + gs->nsum;
-}
-
-static uint32
-rec_tail(const SiftParGroupSpec *gs, uint32 len)
-{
-	return gs->str && len != SIFT_STR_NULL ? (len + 7) & ~7u : 0;
-}
-
 static void
 pin_emit(void *arg, int worker, const SiftParGroupRow *row)
 {
-	SiftV6PinRun *r = arg;
-	const SiftParGroupSpec *gs = &r->d.gs;
-	const uint32 words = rec_words(gs),
-				tail = rec_tail(gs, row->len);
-	uint64	   *rec = sift_radix_reserve(&r->sink[worker]->out, 0, words * 8 + tail);
-
-	if (rec == NULL)
-	{
-		atomic_store_explicit(&r->sink_full, true, memory_order_relaxed);
-		return;
-	}
-	rec[0] = gs->str ? row->len : 0;
-	memcpy(rec + 1, row->key, gs->kw * sizeof(uint64));
-	rec[1 + gs->kw] = row->count;
-	memcpy(rec + 2 + gs->kw, row->sum, gs->nsum * sizeof(uint64));
-	if (tail > 0)
-	{
-		rec[words + tail / 8 - 1] = 0;
-		memcpy(rec + words, row->str, row->len);
-	}
-}
-
-static bool
-sink_chunk(void *arg, const uint8 *b, uint32 len)
-{
-	const SiftV6PinRun *r = arg;
-	const SiftParGroupSpec *gs = &r->d.gs;
-
-	for (uint32 off = 0; off < len;)
-	{
-		const uint64 *rec = (const uint64 *) (b + off);
-		SiftParGroupRow row = {0};
-		const uint32 tail = rec_tail(gs, (uint32) rec[0]);
-
-		row.len = gs->str ? (uint32) rec[0] : 0;
-		memcpy(row.key, rec + 1, gs->kw * sizeof(uint64));
-		row.count = rec[1 + gs->kw];
-		memcpy(row.sum, rec + 2 + gs->kw, gs->nsum * sizeof(uint64));
-		row.str = tail > 0 ? (const uint8 *) (rec + rec_words(gs)) : NULL;
-		r->d.fold(r->d.arg, &row);
-		off += rec_words(gs) * 8 + tail;
-	}
-	return true;
+	sift_v6_gsink_emit(((SiftV6PinRun *) arg)->sink, worker, row);
 }
 
 /* ---- a thread ---- */
@@ -200,7 +136,6 @@ sift_v6_pinrun_new(const SiftV6PinDesc *d, const SiftV6Spec *spec, SiftV6ScanSta
 	r->spec = spec;
 	r->stats = stats;
 	r->index = index;
-	atomic_init(&r->sink_full, false);
 	r->win = sift_pin_win_new(index, snap, d->leaf, d->nleaves, 2 * sift_par_pool_threads(), part_ok, part_arg);
 	return r;
 }
@@ -236,7 +171,7 @@ arenas_fit(const SiftV6PinRun *r, int nthreads, size_t *state, size_t *sink)
 	const uint64 rows = sift_pin_win_rows(r->win);
 	const uint32 words = gs->kw + gs->nsum;
 	const uint64 rec = gs->str ? 64 : 8 * (words <= 1 ? 1 : pg_nextpower2_32(words));
-	const uint64 out_rec = 8 * rec_words(gs) + (gs->str ? SINK_STR_BYTES : 0);
+	const uint64 out_rec = sift_v6_gsink_record_bytes(gs);
 	const uint64 per_thread = (uint64) work_mem * 1024 * 3 / 4 / nthreads;
 	const uint64 fixed = r->d.scratch_bytes + WORK_BYTES;
 	uint64		share;
@@ -247,17 +182,6 @@ arenas_fit(const SiftV6PinRun *r, int nthreads, size_t *state, size_t *sink)
 	*state = Max((uint64) STATE_MIN, Min(4 * rec * rows / nthreads, share));
 	*sink = Max((uint64) SINK_MIN_BYTES, Min(2 * out_rec * rows / nthreads, share));
 	return true;
-}
-
-static void
-make_sinks(SiftV6PinRun *r, MemoryContext cx, int nthreads, size_t bytes)
-{
-	for (int t = 0; t < nthreads; t++)
-	{
-		r->sink[t] = MemoryContextAllocAligned(cx, sizeof(PinSink), SIFT_ARENA_ALIGN, 0);
-		r->sink[t]->arena = sift_arena_create(cx, bytes);
-		sift_radix_init(&r->sink[t]->out, r->sink[t]->arena);
-	}
 }
 
 static void
@@ -275,7 +199,7 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	if (r->d.prepare != NULL)
 		r->d.prepare(r->d.arg, cx, nthreads);
 	r->pending = palloc(sizeof(uint32) * items);
-	make_sinks(r, cx, nthreads, sink);
+	r->sink = sift_v6_gsink_new(cx, &r->d.gs, nthreads, sink);
 	r->grp = sift_par_group_create(ar, &r->d.gs, false, sift_pin_win_rows(r->win), &hooks, &err);
 	if (r->grp == NULL)
 	{
@@ -286,14 +210,12 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	}
 	done = sift_par_run(&(SiftParCfg) {.mode = SIFT_PAR_RING,.nthreads = nthreads,.ring_slots = 2 * nthreads}, &pin_ops, r, ar, r->index);
 	MemoryContextSwitchTo(old);
-	kept = !atomic_load_explicit(&r->sink_full, memory_order_relaxed) && !sift_par_group_spilled(r->grp);
+	kept = !sift_v6_gsink_full(r->sink) && !sift_par_group_spilled(r->grp);
 	if (kept)
 	{
+		sift_v6_gsink_drain(r->sink, r->d.fold, r->d.arg);
 		for (int t = 0; t < nthreads; t++)
-		{
-			sift_radix_scan(&r->sink[t]->out, 0, sink_chunk, r);
 			r->stats->rows += r->w[t].rows;
-		}
 		replay_items(r, r->pending, r->npending);
 		if (!done)
 			replay_from(r, r->fed);
@@ -383,6 +305,29 @@ sift_v6_pin_fold_row(SiftV6Group *g, const SiftV6Spec *spec, const SiftParGroupR
 		}
 	}
 	sift_v6_group_fold_rec(g, key, str, key_nulls, acc);
+}
+
+void
+sift_v6_pin_fold_words(SiftV6Group *g, const SiftV6Spec *spec, const SiftParWordShape *sh, const SiftParGroupRow *row)
+{
+	int64		key[SIFT_V6_MAX_KEYS] = {0};
+	SiftV6StrIn str[SIFT_V6_MAX_KEYS] = {{0}};
+	uint64		nulls = 0;
+
+	if (sh->gs.str)
+	{
+		str[0] = (SiftV6StrIn) {(const char *) row->str, row->len};
+		nulls = row->len == SIFT_STR_NULL;
+	}
+	else
+		for (int i = 0; i < sh->nk; i++)
+		{
+			const bool	null = row->key[i] == UINT64_MAX;
+
+			nulls |= (uint64) null << i;
+			key[i] = null ? 0 : (int64) (row->key[i] ^ (UINT64CONST(1) << 63));
+		}
+	sift_v6_pin_fold_row(g, spec, row, key, str, nulls);
 }
 
 bool

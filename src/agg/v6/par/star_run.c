@@ -14,7 +14,7 @@ typedef struct StarRun
 	const SiftV6Spec *spec;
 	SiftV6Group *g;
 	const SiftV6Pipe *pipe;
-	SiftParStarShape sh;
+	SiftParWordShape sh;
 	SiftParStar *st;
 	int			nfact;
 	int			leaf[FACT_COLS_MAX];
@@ -25,7 +25,7 @@ star_prepare(void *arg, MemoryContext cx, int nthreads)
 {
 	StarRun    *r = arg;
 
-	r->st = sift_par_star_new(cx, &r->sh, r->spec, r->pipe, nthreads);
+	r->st = sift_par_star_new(cx, &r->sh, r->pipe, nthreads);
 }
 
 static bool
@@ -50,24 +50,8 @@ static void
 star_fold(void *arg, const SiftParGroupRow *row)
 {
 	const StarRun *r = arg;
-	int64		key[SIFT_V6_MAX_KEYS] = {0};
-	SiftV6StrIn str[SIFT_V6_MAX_KEYS] = {{0}};
-	uint64		nulls = 0;
 
-	if (r->sh.gs.str)
-	{
-		str[0] = (SiftV6StrIn) {(const char *) row->str, row->len};
-		nulls = row->len == SIFT_STR_NULL;
-	}
-	else
-		for (int i = 0; i < r->sh.nk; i++)
-		{
-			const bool	null = row->key[i] == UINT64_MAX;
-
-			nulls |= (uint64) null << i;
-			key[i] = null ? 0 : (int64) (row->key[i] ^ (UINT64CONST(1) << 63));
-		}
-	sift_v6_pin_fold_row(r->g, r->spec, row, key, str, nulls);
+	sift_v6_pin_fold_words(r->g, r->spec, &r->sh, row);
 }
 
 SiftV6PinRun *
