@@ -159,10 +159,10 @@ INSERT INTO ops VALUES
 	(18, 'qual = (edge rows)', $q$SELECT count(*), count(@C) FROM @T WHERE id > 150000 AND id < 150013 AND @C = @W$q$, 'n', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'k', NULL),
 	(20, 'parallel group key', $q$SELECT @C, count(*), sum(v) FROM @T GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
 	(21, 'parallel count distinct', $q$SELECT g, count(DISTINCT @C) FROM @T GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
-	(30, 'top-n', $q$SELECT id, @C FROM @T ORDER BY @C, id LIMIT 7$q$, 'o', 'Custom Scan (SiftAggV6TopN)', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
-	(31, 'top-n desc offset', $q$SELECT id, @C FROM @T ORDER BY @C DESC NULLS LAST, id DESC LIMIT 9 OFFSET 3$q$, 'o', 'Custom Scan (SiftAggV6TopN)', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
+	(30, 'top-n', $q$SELECT id, @C FROM @T ORDER BY @C, id LIMIT 7$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
+	(31, 'top-n desc offset', $q$SELECT id, @C FROM @T ORDER BY @C DESC NULLS LAST, id DESC LIMIT 9 OFFSET 3$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
 	(32, 'rows (payload)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY k, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'v', NULL),
-	(33, 'rows (key)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY @C, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{uuid,numeric,char(n),bytea,name}', '{}', 'v', NULL),
+	(33, 'rows (key)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY @C, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'v', NULL),
 	(40, 'stream', $q$SELECT @C, count(*), sum(v) FROM @T GROUP BY @C ORDER BY @C$q$, 'ov', 'Custom Scan (SiftAggV6Stream)', 'ft', false, '{uuid,numeric,char(n),bytea,name}', '{}', 's', NULL),
 	(41, 'window key', $q$SELECT id, @C, rank() OVER (PARTITION BY @C ORDER BY at) FROM @T$q$, 'u', 'Custom Scan (SiftAggV6Window)', 'ft', false, '{uuid,numeric,char(n),bytea,name}', '{}', 's', NULL),
 	(42, 'window payload', $q$SELECT id, @C, rank() OVER (PARTITION BY s ORDER BY at) FROM @T$q$, 'u', 'Custom Scan (SiftAggV6Window)', 'ft', false, '{}', '{}', 's', NULL),
@@ -259,7 +259,7 @@ SELECT edge('SELECT count(*) FROM (SELECT c FROM @T WHERE id IN (150001, 150002)
 SELECT edge('SELECT count(*) FROM (SELECT b FROM @T WHERE id IN (150001, 150002) GROUP BY b) x', 2) AS bytea_empty_and_zero_byte_are_two_groups;
 SELECT edge('SELECT count(*) FROM (SELECT n FROM @T WHERE id IN (150002, 150003) GROUP BY n) x', 2) AS name_trailing_blank_is_a_value;
 SELECT edge('SELECT count(*) FROM (SELECT u FROM @T WHERE id IN (150001, 150007) GROUP BY u) x', 1) AS uuid_equal_values_are_one_group;
-SELECT plan_of('SELECT id, n FROM @T ORDER BY n, id LIMIT 7') LIKE '%Custom Scan (SiftAggV6TopN)%Table: ft%' AS name_top_n_is_the_top_n_node;
+SELECT plan_of('SELECT id, n FROM @T ORDER BY n, id LIMIT 7') LIKE '%Table: ft%Top-N: n, id%' AS name_top_n_is_the_top_n_node;
 
 DROP TABLE ft, fh, dt, dh, pp, ph, pm, pmh;
 DROP FUNCTION tw(text, boolean), plan_of(text), launched(text), same(text, text), same_serial(text, text), cell(text, text, text, text, text, boolean), fill(text, boolean), fill_all(text), edge(text, bigint);
