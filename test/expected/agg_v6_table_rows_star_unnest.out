@@ -1,7 +1,7 @@
 -- A sift_table with no sift_col index is read by the row Top-N, the star join and the unnest of SiftAggV6, row for row as its heap twin is answered. Every check prints t. Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
-DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE TABLE rt (id int PRIMARY KEY, grp int, k int, tag text, amount numeric(12,2), tags text[], ids int[], note text)
 	USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE rh (LIKE rt INCLUDING ALL) WITH (autovacuum_enabled = false);

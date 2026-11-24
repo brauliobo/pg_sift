@@ -2,7 +2,7 @@
 -- with a sift_col index, is one SiftAggV6 over its partitions, and so is the parallel one that steals granules across all of them. Every answer is the heap twin's, also with rows, deletes and updates
 -- of the open transaction (and of a savepoint it rolled back) that the workers see through the transaction's own versions.
 CREATE EXTENSION pg_sift;
-SET sift.test_create_format1 = off;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers = 8;
 SET parallel_setup_cost = 0;
