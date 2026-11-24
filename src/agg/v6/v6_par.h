@@ -125,8 +125,8 @@ typedef struct SiftV6ParWorkerStats
 	uint64		morsels_stolen;
 	uint64		parts_scanned;
 	uint64		grans_scanned;
-	uint64		grans_pruned_zone;
-	uint64		grans_pruned_skip;
+	uint64		grans_preagg;
+	uint64		grans_preagg_delta;
 	uint64		grans_pruned_dict;
 	uint64		cfilt_grans_total;
 	uint64		cfilt_grans_hit;

@@ -822,6 +822,9 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
 	index_rescan(s->scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_set_dict_leaves(s->scan, dict_leaves(s));
+	s->preagg = emit != NULL && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
+	if (s->preagg != NULL)
+		sift_f2_scan_set_gran_sink(s->scan, sift_v6_preagg_try_granule, s->preagg);
 	return s;
 }
 
@@ -838,8 +841,10 @@ sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstag
 }
 
 void
-sift_v6_scan_morsel(SiftV6Scan *s, const SiftParPartRef *ref, uint32 first, uint32 n)
+sift_v6_scan_morsel(SiftV6Scan *s, SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n)
 {
+	if (s->preagg != NULL)
+		sift_v6_preagg_set_group(s->preagg, into);
 	s->all_visible = (ref->flags & SIFT_PAR_PART_ALL_VISIBLE) != 0;
 	sift_f2_scan_morsel(s->scan, ref, first, n);
 	s->all_visible = false;
@@ -848,6 +853,8 @@ sift_v6_scan_morsel(SiftV6Scan *s, const SiftParPartRef *ref, uint32 first, uint
 void
 sift_v6_scan_end(SiftV6Scan *s)
 {
+	if (s->preagg != NULL)
+		sift_v6_preagg_end(s->preagg);
 	index_endscan(s->scan);
 	sift_v6_vet_end(&s->vet);
 	if (s->batch_cx != NULL)

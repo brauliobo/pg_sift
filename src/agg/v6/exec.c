@@ -604,6 +604,8 @@ explain_par(const SiftV6ParNode *par, SiftExplainStatsV6 *ex)
 	ex->par_ran = ps.ran;
 	ex->par_escalated = ps.escalated;
 	ex->grans_scanned += ps.grans_scanned;
+	ex->grans_preagg += ps.grans_preagg;
+	ex->grans_preagg_delta += ps.grans_preagg_delta;
 	ex->heap_vet_rows += ps.heap_vet_rows;
 	ex->par_morsels_stolen = ps.morsels_stolen;
 	ex->par_radix_parts = ps.radix_parts;

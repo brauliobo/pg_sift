@@ -176,6 +176,12 @@ sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, S
 }
 
 void
+sift_v6_preagg_set_group(SiftV6Preagg *pa, SiftV6Group *g)
+{
+	pa->group = g;
+}
+
+void
 sift_v6_preagg_end(SiftV6Preagg *pa)
 {
 	MemoryContextDelete(pa->pcx);

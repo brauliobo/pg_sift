@@ -328,6 +328,15 @@ sift_v6_spec_nvec(const SiftV6Spec *s)
 	return sift_v6_spec_fvec(s) + s->nfcols;
 }
 
+static inline bool
+sift_v6_spec_distinct(const SiftV6Spec *s)
+{
+	for (int j = 0; j < s->naggs; j++)
+		if (s->agg[j].kind == SV6_COUNT_DISTINCT)
+			return true;
+	return false;
+}
+
 /* An aggregate over sift.score(ctid): the rows of the fold have to come with their scores */
 static inline bool
 sift_v6_spec_reads_score(const SiftV6Spec *s)

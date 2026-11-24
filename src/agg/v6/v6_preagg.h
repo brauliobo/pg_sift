@@ -23,6 +23,8 @@ typedef struct SiftV6Preagg SiftV6Preagg;
 extern SiftV6Preagg *sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, SiftV6Vet *vet, SiftV6ScanStats *stats);
 /* A SiftF2GranSink: true when the granule was answered and is not to be read */
 extern bool sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *offer);
+/* The groups the cells of the granules go into from now on: a participant of a parallel run folds into the state of the morsel it takes */
+extern void sift_v6_preagg_set_group(SiftV6Preagg *pa, SiftV6Group *g);
 extern void sift_v6_preagg_end(SiftV6Preagg *pa);
 
 /* group_cells.c: n cells of a granule (keyvec[i] is key i, one row for each; acc[c * naggs + j] the partial state of aggregate j of cell c) folded into the groups */
