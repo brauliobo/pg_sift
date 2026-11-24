@@ -21,6 +21,7 @@
 #include "catalog/pg_index.h"
 
 #include "col/f2/f2_store_schema.h"
+#include "col/f2/preagg_v2.h"
 #include "table/f2/f2_col_delta.h"
 #include "table/f2/f2_tbl.h"
 #include "core/damage.h"
@@ -113,6 +114,20 @@ has_partial_or_expr_unique(Relation rel)
 	return found;
 }
 
+/* The cubes the option preagg of the table asks of the parts written from now on */
+static void
+declare_preagg(Relation rel, SiftF2Store *store)
+{
+	SiftPreaggDecl *decl = MemoryContextAllocZero(store->cx, sizeof(SiftPreaggDecl));
+	bool		off;
+	const char *bad = sift_preagg_decl_parse(store->opts.preagg, store->schema, false, decl, &off);
+
+	if (bad != NULL)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("option preagg of table \"%s\" is not valid: %s", RelationGetRelationName(rel), bad)));
+	store->spec.preagg = !off;
+	store->spec.preagg_decl = decl->ndims > 0 ? decl : NULL;
+}
+
 void
 sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 {
@@ -156,12 +171,12 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 	sift_tbl_f2_apply_key_order(rel, store);
 	store->spec = (SiftPartSpec) {
 		.ncols = n,.kinds = store->kinds,.nsort = store->nkey,.sort_cols = store->key_cols,.hints = store->hints,.scales = store->scales,
-		.preagg = pg_strcasecmp(store->opts.preagg, "off") != 0,.preagg_dim = -1,.preagg_measure = -1,
 	};
 	define_time_columns(rel, store);
 	store->spec.col_ids = sift_tbl_f2_column_identities(rel, store, &store->spec.ncol_ids);
 	store->schema_hash = sift_tbl_f2_identities_hash(store->spec.col_ids, store->spec.ncol_ids);
 	sift_f2_store_hydrate(rel, store);
+	declare_preagg(rel, store);
 	sift_tbl_f2_defaults_attach(rel, store);
 	old = MemoryContextSwitchTo(cx);
 	x->key_attrs = bms_copy(RelationGetIndexAttrBitmap(rel, INDEX_ATTR_BITMAP_KEY));

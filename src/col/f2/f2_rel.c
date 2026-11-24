@@ -8,6 +8,7 @@
 #include "utils/jsonb.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/preagg_v2.h"
 #include "col/pg.h"
 #include "col/scope.h"
 
@@ -114,6 +115,20 @@ time_leaves(SiftF2Rel *f, const SiftColSchema *schema)
 		}
 }
 
+/* What the option preagg of the index declares: the cubes it names (NULL: none, they are chosen from the data); *on is whether the parts get cubes at all */
+static const SiftPreaggDecl *
+sift_f2_preagg_decl(Relation index, const SiftColSchema *schema, bool *on)
+{
+	SiftPreaggDecl *decl = palloc0(sizeof(SiftPreaggDecl));
+	bool		off;
+	const char *bad = sift_preagg_decl_parse(sift_col_options_preagg(index), schema, false, decl, &off);
+
+	if (bad != NULL)
+		sift_col_option_error("preagg", sift_col_options_preagg(index), bad);
+	*on = !off;
+	return decl->ndims > 0 ? decl : NULL;
+}
+
 SiftF2Rel *
 sift_f2_rel(Relation index)
 {
@@ -161,8 +176,11 @@ sift_f2_rel(Relation index)
 		f->key_cols[f->nkey++] = key_leaf(index, r->schema, (const char *) o + o->ko_name[k]);
 	if (r->shred != NULL)
 		sift_col_shred_keep_payloads(r->shred);
+	bool		preagg;
+	const SiftPreaggDecl *decl = sift_f2_preagg_decl(index, r->schema, &preagg);
+
 	f->spec = (SiftPartSpec) {.ncols = n,.kinds = f->kinds,.nsort = f->nkey,.sort_cols = f->key_cols,.hints = f->hints,.scales = f->scales,.key_leaf = f->has_keys ? f->key_leaf : NULL,
-	.parent = f->has_groups ? f->parent : NULL,.preagg = pg_strcasecmp(sift_col_options_preagg(index), "off") != 0,.preagg_dim = -1,.preagg_measure = -1};
+	.parent = f->has_groups ? f->parent : NULL,.preagg = preagg,.preagg_decl = decl};
 	memcpy(f->spec.sort_flags, o->ko_flags, sizeof(f->spec.sort_flags));
 	SiftF2KllCols kll;
 

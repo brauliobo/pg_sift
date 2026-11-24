@@ -21,6 +21,7 @@
 #include "utils/varlena.h"
 
 #include "col/codec.h"
+#include "col/f2/preagg_v2.h"
 #include "table/f2/f2_tbl.h"
 
 const char *const sift_tbl_f2_option_names[] = {
@@ -198,10 +199,23 @@ sift_tbl_f2_option_known(const char *name)
 		find_name(sift_tbl_f2_hidden_option_names, lengthof(sift_tbl_f2_hidden_option_names), name) >= 0;
 }
 
+/* The cubes of preagg name columns of the table */
+static bool
+preagg_ok(Relation rel, const char *value, const char **why)
+{
+	SiftPreaggDecl decl;
+	bool		off;
+
+	*why = sift_preagg_decl_parse(value, sift_f2_store_open(rel)->schema, true, &decl, &off);
+	return *why == NULL;
+}
+
 bool
 sift_tbl_f2_option_check_set(Relation rel, const char *name, const char *value, const char **why)
 {
 	if (!sift_tbl_f2_option_check(name, value, why))
+		return false;
+	if (strcmp(name, "preagg") == 0 && !preagg_ok(rel, value, why))
 		return false;
 	if (find_name(sift_tbl_f2_hidden_option_names, lengthof(sift_tbl_f2_hidden_option_names), name) >= 0 && !IsBinaryUpgrade)
 		ereport(NOTICE, (errmsg("option \"%s\" of sift_table \"%s\" is an option of Format 1 that Format 2.0 ignores", name, RelationGetRelationName(rel)),

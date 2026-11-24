@@ -46,10 +46,12 @@ PG_FUNCTION_INFO_V1(sift_test_f2_array_layout);
 static const SiftCellKind f2_kinds[F2_NCOLS] = {SIFT_CELL_INT, SIFT_CELL_STR, SIFT_CELL_INT, SIFT_CELL_INT};
 static const uint16 f2_sort[1] = {0};
 
+static const SiftPreaggDecl f2_decl = {.ndims = 1,.dim = {3},.nmeas = 1,.meas = {2}};
+
 SiftPartSpec
 f2t_spec(bool preagg)
 {
-	return (SiftPartSpec) {.ncols = F2_NCOLS,.kinds = f2_kinds,.nsort = 1,.sort_cols = f2_sort,.preagg = preagg,.preagg_dim = 3,.preagg_measure = 2};
+	return (SiftPartSpec) {.ncols = F2_NCOLS,.kinds = f2_kinds,.nsort = 1,.sort_cols = f2_sort,.preagg = preagg,.preagg_decl = &f2_decl};
 }
 
 void

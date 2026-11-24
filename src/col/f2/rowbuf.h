@@ -34,8 +34,7 @@ typedef struct SiftPartSpec
 	const uint16 *sort_cols;
 	uint8		sort_flags[SIFT_KEY_ORDER_MAX];	/* of each sort column: SIFT_KEY_DESC, SIFT_KEY_NULLS_FIRST; none: ascending, NULLs last */
 	bool		preagg;
-	int			preagg_dim;
-	int			preagg_measure;
+	const struct SiftPreaggDecl *preagg_decl;	/* the cubes the user declared, NULL: chosen from the data */
 	const uint8 *hints;			/* per column the SiftChunkHint, NULL: all automatic */
 	const uint8 *scales;		/* per column the scale of SIFT_CHINT_NUM64 */
 	const bool *key_leaf;		/* per column: the leaf of a top-level key of a jsonb document, whose chunks keep on which rows the key exists (SiftColIn.key_leaf); NULL: none */

@@ -910,7 +910,7 @@ sift_rowbuf_rows(SiftRowBuf *rb, SiftColIn *cols, const SiftPartSpec *spec)
 	}
 	SiftRows	rows = {.nrows = rb->n,.ncols = rb->ncols,.tid = rb->tid,.xmin = rb->xmin,.cmin = rb->cmin,.cols = cols,
 	.keys = (const uint8 (*)[SIFT_BOUND_BYTES]) rb->keys,.sort_cols = spec->sort_cols,.sort_flags = spec->sort_flags,.nsort = spec->nsort,.key_lo = NULL,.key_hi = NULL,
-	.preagg = spec->preagg,.preagg_dim = spec->preagg_dim,.preagg_measure = spec->preagg_measure,.time_col = spec->time_col,.compress_alg = spec->compress_alg,.kll = spec->kll,
+	.preagg = spec->preagg,.preagg_decl = spec->preagg_decl,.time_col = spec->time_col,.compress_alg = spec->compress_alg,.kll = spec->kll,
 	.col_ids = spec->col_ids,.ncol_ids = spec->ncol_ids,.defaults = spec->defaults,.defaults_len = spec->defaults_len,.defaults_stamp = spec->defaults_stamp};
 
 	memcpy(rows.time_cols, spec->time_cols, sizeof(rows.time_cols));

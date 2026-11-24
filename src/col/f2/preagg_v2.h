@@ -176,7 +176,27 @@ sift_pag_dist(const SiftPreaggCubeDesc *c, const SiftPreaggGroupHdr *grp, int d)
 
 /* ---- writing ---- */
 
-/* The cubes a part is written with: the columns of the rows it holds (preagg_dim and preagg_measure of the rows when they name one dimension and one measure, else chosen from the data) */
+/*
+ * The cubes the user declared with preagg = 'cube(dimension: measure, ...; dimension ...)': the leaves of the dimensions and the measures (those of every entry together). A part that has a declaration
+ * keeps a cube of no dimension, one for each declared dimension it can hold (an integer, or a string it has a dictionary of) and one of them all when their groups fit, each with the declared
+ * measures (the numeric columns when none is declared) and no sets of distinct values.
+ */
+typedef struct SiftPreaggDecl
+{
+	int			ndims;
+	int			dim[SIFT_PREAGG_MAX_DIMS];
+	int			nmeas;
+	int			meas[SIFT_PREAGG_MAX_MEAS];
+} SiftPreaggDecl;
+
+struct SiftColSchema;
+/*
+ * The option preagg read: NULL when it is valid, else why not. decl is what it declares (ndims 0: nothing, the cubes are chosen from the data), off whether it is 'off'. A column that is not a leaf of the
+ * schema is an error when strict and left out otherwise; no schema: the syntax alone is checked.
+ */
+extern const char *sift_preagg_decl_parse(const char *opt, const struct SiftColSchema *schema, bool strict, SiftPreaggDecl *decl, bool *off);
+
+/* The cubes a part is written with: the columns of the rows it holds (a declaration of the rows, else chosen from the data) */
 typedef struct SiftPreaggPlan
 {
 	int			ncubes;

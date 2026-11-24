@@ -134,7 +134,7 @@ observed_groups(const SiftRows *rows, const SiftDictEnc *const *dicts, const int
 		uint32		at;
 
 		for (int i = 0; i < n; i++)
-			h = sift_fmix64(h ^ (uint64) plan_key(&rows->cols[cols[i]], dicts[cols[i]], r)) + i;
+			h = sift_fmix64(h ^ (uint64) plan_key(&rows->cols[cols[i]], dicts != NULL ? dicts[cols[i]] : NULL, r)) + i;
 		h |= 1;
 		for (at = (uint32) h & (size - 1); seen[at] != 0 && seen[at] != h; at = (at + 1) & (size - 1))
 			;
@@ -214,6 +214,45 @@ ranked(const ColInfo *ci, int nc, bool dims, int max, int *out)
 	return Min(n, max);
 }
 
+static bool
+listed(const int *v, int n, int leaf)
+{
+	for (int i = 0; i < n; i++)
+		if (v[i] == leaf)
+			return true;
+	return false;
+}
+
+/* The declared dimensions this part can hold (an integer, or a string it keeps a dictionary of: not a scaled numeric) */
+static int
+declared_dims(const SiftPreaggDecl *dc, const ColInfo *ci, int nc, int *dims)
+{
+	int			n = 0;
+
+	for (int i = 0; i < dc->ndims; i++)
+		if (dc->dim[i] < nc && ci[dc->dim[i]].dkind != 0 && ci[dc->dim[i]].mkind != SIFT_PMEAS_NUM64)
+			dims[n++] = dc->dim[i];
+	return n;
+}
+
+/* The cubes of a declaration: all the rows, each declared dimension, and the dimensions together when the groups of the first granule fit */
+static void
+plan_declared(const SiftRows *rows, const SiftDictEnc *const *dicts, ColInfo *ci, int *dims, SiftPreaggPlan *plan)
+{
+	const SiftPreaggDecl *dc = rows->preagg_decl;
+	const int	nc = rows->ncols;
+	int			nd;
+
+	for (int c = 0; c < nc && dc->nmeas > 0; c++)
+		ci[c].numeric &= listed(dc->meas, dc->nmeas, c);
+	nd = declared_dims(dc, ci, nc, dims);
+	add_cube(plan, ci, nc, dims, 0, NULL, 0, PAG_EXPLICIT_GROUPS);
+	for (int i = 0; i < nd; i++)
+		add_cube(plan, ci, nc, &dims[i], 1, NULL, 0, PAG_EXPLICIT_GROUPS);
+	if (nd > 1 && observed_groups(rows, dicts, dims, nd, PAG_EXPLICIT_GROUPS) <= PAG_EXPLICIT_GROUPS)
+		add_cube(plan, ci, nc, dims, nd, NULL, 0, PAG_EXPLICIT_GROUPS);
+}
+
 bool
 sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
 {
@@ -225,22 +264,12 @@ sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftP
 				ndist,
 				njoint = 0;
 	uint32		groups;
-	const bool	explicit_cube = rows->preagg_dim >= 0 && rows->preagg_measure >= 0;
 
 	*plan = (SiftPreaggPlan) {0};
 	for (int c = 0; c < nc; c++)
 		col_info(rows, dicts, c, &ci[c]);
-	if (explicit_cube)
-	{
-		for (int c = 0; c < nc; c++)
-			ci[c].numeric = c == rows->preagg_measure && ci[c].numeric;
-		ndist = 0;
-		dims[0] = rows->preagg_dim;
-		nd = ci[dims[0]].dkind != 0 ? 1 : 0;
-		add_cube(plan, ci, nc, dims, 0, dist, 0, PAG_EXPLICIT_GROUPS);
-		if (nd == 1)
-			add_cube(plan, ci, nc, dims, 1, dist, 0, PAG_EXPLICIT_GROUPS);
-	}
+	if (rows->preagg_decl != NULL && rows->preagg_decl->ndims > 0)
+		plan_declared(rows, dicts, ci, dims, plan);
 	else
 	{
 		groups = Min(PAG_AUTO_GROUPS, PAG_AUTO_CELL_BYTES / cell_bytes_bound(ci, nc));

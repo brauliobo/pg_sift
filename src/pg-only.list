@@ -513,6 +513,7 @@ col/f2/part_vis.c
 col/f2/part_vis.h
 col/f2/pend_del.c
 col/f2/pend_del.h
+col/f2/preagg_decl.c
 col/f2/preagg_delta.c
 col/f2/preagg_delta.h
 col/f2/preagg_test.c
