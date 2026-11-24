@@ -36,7 +36,6 @@
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "col/am.h"
-#include "col/f2/f2.h"
 #include "core/sift.h"
 
 static planner_hook_type prev_planner_hook;

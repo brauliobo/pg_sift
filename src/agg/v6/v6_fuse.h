@@ -17,7 +17,8 @@
 #include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
 
-#include "col/f2/f2.h"
+#include "core/scan_types.h"
+
 
 struct SiftV6Spec;
 struct SiftV6QualSet;

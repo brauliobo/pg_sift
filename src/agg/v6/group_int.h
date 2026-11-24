@@ -14,7 +14,6 @@
 #include "agg/group/state.h"
 #include "agg/v6/group_ext.h"
 #include "agg/v6/v6.h"
-#include "col/granule/granule.h"
 #include "agg/v6/v6_acc.h"
 #include "agg/v6/v6_dictseen.h"
 #include "agg/v6/v6_distinct.h"

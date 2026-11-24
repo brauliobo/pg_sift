@@ -50,7 +50,7 @@ part_codes(const SiftGpuQuery *q, const SiftGpuPlan *p, uint32 i, int64 *code)
 
 	for (int j = 0; dq != NULL && j < dq->n; j++)
 	{
-		code[j] = code_in(sift_gpu_f2_dict(p, i, dq->cmp[j].slot), dq->cmp[j].str, dq->cmp[j].len);
+		code[j] = code_in(p->ops->dict(p, i, dq->cmp[j].slot), dq->cmp[j].str, dq->cmp[j].len);
 		none |= code[j] < 0 && !dq->cmp[j].ne;
 	}
 	return none;
@@ -96,7 +96,7 @@ sift_gpu_units(const SiftGpuQuery *q, const SiftGpuPlan *p, MemoryContext cx, co
 					g1;
 		const bool	none = part_codes(q, p, i, code);
 
-		sift_gpu_f2_part(p, i, &g0, &g1);
+		p->ops->part(p, i, &g0, &g1);
 		if (u != NULL && !us->text_key && same_codes(q->dict, code, last))
 		{
 			u->g1 = g1;
@@ -120,7 +120,7 @@ sift_gpu_units(const SiftGpuQuery *q, const SiftGpuPlan *p, MemoryContext cx, co
 bool
 sift_gpu_unit_str(const SiftGpuPlan *p, const SiftGpuUnit *u, int slot, int64 code, SiftV6StrIn *out)
 {
-	const SiftPartDict *d = sift_gpu_f2_dict(p, u->part, slot);
+	const SiftPartDict *d = p->ops->dict(p, u->part, slot);
 
 	if (code < 0 || code >= (int64) d->n)
 		return false;

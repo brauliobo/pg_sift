@@ -11,7 +11,7 @@
 static const struct SiftScopeRouter *
 scope_build_router(Relation index, int ord, Snapshot snap, const int64 *keys, int nkeys, MemoryContext cx)
 {
-	return sift_f2_scope_build_router(index, ord, snap, keys, (uint32) nkeys, cx);
+	return sift_f2_scope_build_router(index, ord, snap, keys, (uint32) nkeys, NULL, cx);
 }
 
 static void

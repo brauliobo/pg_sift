@@ -9,7 +9,6 @@
 #include "postgres.h"
 
 #include "agg/v6/v6.h"
-#include "col/f2/f2_sink.h"
 
 
 /* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item */

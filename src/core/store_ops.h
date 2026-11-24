@@ -104,7 +104,7 @@ typedef struct SiftOrderOps
 	bool		(*sorted_by) (Oid relid, bool is_table, const int *atts, int n);
 	int			(*lead_att) (Oid relid);
 	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
-							  struct SiftV6ScanStats *stats);
+							  struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
 } SiftOrderOps;
 
 /* 2. Pre-aggregates: the integer dimension and measure leaves the parts keep SEC_PREAGG cubes of (false: the relation keeps none) */

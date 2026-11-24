@@ -15,11 +15,11 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "agg/cost.h"
 #include "agg/hybrid_int.h"
 #include "agg/v6/v6.h"
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
-#include "col/f2/f2.h"
 #include "core/memtrack.h"
 #include "core/sift.h"
 

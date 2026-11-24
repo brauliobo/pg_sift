@@ -39,7 +39,7 @@ static int
 slot_of_attno(GpuQuery *g, int attno)
 {
 	SiftGpuQuery *q = &g->q;
-	const int	leaf = q->store->att_first[attno];
+	const int	leaf = q->sch.att_first[attno];
 
 	for (int i = 0; i < q->ncols; i++)
 		if (q->leaf[i] == leaf)
@@ -220,7 +220,7 @@ qual_attno(GpuQuery *g, const Var *v)
 static Oid
 qual_opfamily(const GpuQuery *g, int attno)
 {
-	return g->index != NULL ? g->index->rd_opfamily[attno - 1] : g->q.store->opfamily[attno];
+	return g->index != NULL ? g->index->rd_opfamily[attno - 1] : g->q.sch.att_opfamily[attno];
 }
 
 /* Var op Const with a constant that is not NULL: what the device compares; a clause of any other form (a parameter, an expression) is the CPU's */
@@ -425,6 +425,21 @@ compile_conj(GpuQuery *g, const List *quals, SiftVexprProg *prog, bool scan, boo
 	return root == NULL ? scan : sift_vexpr_compile(root, prog);
 }
 
+/* The format of the relation of the query, when it feeds the device: its leaf map and the table of its device entries */
+static bool
+gpu_format(SiftGpuQuery *q, bool is_table)
+{
+	const SiftStoreOps *ops = sift_store_ops_for_oid(RelationGetRelid(q->rel), is_table);
+
+	SiftStoreStats stats;
+
+	if (ops == NULL || ops->gpu == NULL || !ops->schema(RelationGetRelid(q->rel), is_table, &q->sch) || !ops->stats(RelationGetRelid(q->rel), is_table, &stats))
+		return false;
+	q->ops = ops->gpu;
+	q->live_rows = stats.live_rows;
+	return true;
+}
+
 static bool
 compile_quals(GpuQuery *g, const List *quals)
 {
@@ -546,7 +561,7 @@ covered_gens(const SiftGpuPlan *plan, MemoryContext cx, int *n)
 		uint32		part_id,
 					granule;
 
-		sift_gpu_f2_locate(plan, i, &part_id, &gens[i], &granule);
+		plan->ops->locate(plan, i, &part_id, &gens[i], &granule);
 	}
 	qsort(gens, plan->ngran, sizeof(uint64), gen_cmp);
 	*n = 0;
@@ -600,9 +615,9 @@ sift_v6_gpu_agg(const SiftV6Spec *spec, Relation heap, Relation index, Snapshot 
 	g = MemoryContextAllocZero(gcx, sizeof(GpuQuery));
 	g->cx = gcx;
 	g->index = index;
-	g->q = (SiftGpuQuery) {.in = g->in,.rel = rel,.heap = index != NULL ? heap : NULL,.store = sift_f2_store_open(rel),.snap = snap,.spec = spec,
+	g->q = (SiftGpuQuery) {.in = g->in,.rel = rel,.heap = index != NULL ? heap : NULL,.snap = snap,.spec = spec,
 		.est_groups = spec->nkeys == 0 ? 1 : spec->groups_est > 0 ? spec->groups_est : est_groups};
-	if (!compile_quals(g, spec->indexqual) || !compile_filters(g, spec) || !compile_bins(g, spec) || !assign_slots(g, spec))
+	if (!gpu_format(&g->q, index == NULL) || !compile_quals(g, spec->indexqual) || !compile_filters(g, spec) || !compile_bins(g, spec) || !assign_slots(g, spec))
 		return NULL;
 	g->q.topk = device_topk(spec, having);
 	g->q.dict = g->dict.n > 0 ? &g->dict : NULL;
@@ -656,8 +671,8 @@ sift_v6_gpu_topn(const SiftV6TopNSpec *spec, SiftV6Input *in, const List *quals,
 	g->cx = cx;
 	g->index = index;
 	g->tin = in;
-	g->q = (SiftGpuQuery) {.in = g->in,.rel = index,.heap = heap,.store = sift_f2_store_open(index),.snap = snap};
-	if (!compile_quals(g, quals) || g->dict.n > 0 || !topn_key(g, spec) || !assign_in_slots(g))
+	g->q = (SiftGpuQuery) {.in = g->in,.rel = index,.heap = heap,.snap = snap};
+	if (!gpu_format(&g->q, false) || !compile_quals(g, quals) || g->dict.n > 0 || !topn_key(g, spec) || !assign_in_slots(g))
 		return false;
 	if (!sift_gpu_v6_topn(&g->q, (uint32) spec->rows, spec->order[0].desc, spec->order[0].nulls_first, prunable, cx, &gpu->run, &cand, &ncand))
 		return false;

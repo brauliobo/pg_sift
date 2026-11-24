@@ -24,22 +24,26 @@ sift_v6_score_col(V6Plan *p, const Expr *e, SiftV6Col *out)
 }
 
 bool
-sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, SiftF2Store *store, void *extra, SiftV6Spec *spec, List **scan_tlist,
+sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *table, void *extra, SiftV6Spec *spec, List **scan_tlist,
 						  List **group_exprs)
 {
 	V6Plan		p = {.root = root,.rel = rel,.out = out,.score_ok = true};
 
 	*group_exprs = sift_v6_group_exprs_of(root);
-	if (store != NULL)
-		p.relid = planner_rt_fetch(rel->relid, root)->relid, p.store = store;
+	if (table != NULL)
+	{
+		p.relid = planner_rt_fetch(rel->relid, root)->relid;
+		p.ops = sift_store_ops_for_oid(p.relid, true);
+		p.is_table = true;
+		p.tsch = *table;
+	}
 	else
 	{
 		p.relid = ix->indexoid;
 		p.index = ix;
-		p.colrel = sift_col_rel(irel);
-		if (p.colrel->stale)
+		sift_v6_plan_index(&p, irel);
+		if (p.ops == NULL)
 			return false;
-		p.f2 = sift_f2_rel(irel);
 	}
 	if (!sift_v6_compile_head(&p, (GroupPathExtraData *) extra, *group_exprs))
 		return false;
@@ -52,7 +56,7 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 bool
 sift_v6_text_qual(V6Plan *p, RestrictInfo *ri)
 {
-	if (p->store != NULL || p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_query)) == NULL)
+	if (p->is_table || p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_query)) == NULL)
 		return false;
 	p->text_qual = ri;
 	return true;

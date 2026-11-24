@@ -20,7 +20,6 @@
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_sip.h"
 #include "agg/v6/v6_vexpr.h"
-#include "col/f2/f2_cost_model.h"
 
 static const SiftCardStatsView *
 index_view(const IndexOptInfo *ix)

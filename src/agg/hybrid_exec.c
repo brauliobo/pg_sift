@@ -184,7 +184,7 @@ fill_chunk(HybridState *st)
 static bool
 usable_output(const HybridState *st, Oid typid)
 {
-	if (st->table != NULL)
+	if (st->is_table)
 		return typid == BOOLOID || typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID;
 	return sift_hybrid_type_usable(typid) || typid == TEXTARRAYOID || typid == INT4ARRAYOID || typid == INT8ARRAYOID;
 }
@@ -213,8 +213,8 @@ setup_columns(HybridState *st, CustomScan *cs)
 			c->leaf = -1;
 			if (c->kind == HC_VAR)
 			{
-				if (st->table != NULL)
-					c->leaf = st->table->att_first[c->attno];
+				if (st->is_table)
+					c->leaf = st->tsch.att_first[c->attno];
 				else
 					for (int i = 0; i < st->store_index->rd_index->indnatts; i++)
 						if (st->store_index->rd_index->indkey.values[i] == c->attno)
@@ -509,7 +509,7 @@ hybrid_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	const SiftHybridStats *s = st->started && st->run ? &st->run->stats : &st->stats;
 
 	ExplainPropertyText("Hybrid Direction", st->adaptive ? (st->resolved ? psprintf("%s%s (adaptive)", sift_hybrid_dir_name(st->dir), st->point ? " point" : "") : "adaptive") : sift_hybrid_dir_name(st->dir), es);
-	ExplainPropertyText("Hybrid Store", st->table != NULL ? "sift_table" : "sift_col", es);
+	ExplainPropertyText("Hybrid Store", st->is_table ? "sift_table" : "sift_col", es);
 	if (st->ext != NIL)
 	{
 		StringInfoData buf;

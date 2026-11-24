@@ -106,11 +106,12 @@ sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 {
 	SiftV6ScanStats stats = {0};
 	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
-	SiftV6Scan *scan = sift_v6_scan_begin(pn->spec, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap, &stats, NULL, NULL);
+	const SiftParOps *par = sift_store_ops_for_oid(RelationGetRelid(pn->index), false)->par;
+	SiftV6Scan *scan = par->begin(pn->spec, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap, &stats, NULL, NULL);
 	const SiftV6Spec *spec = pn->spec;
 
-	sift_v6_scan_plan(scan, &pn->plan);
-	sift_v6_scan_end(scan);
+	par->plan(scan, &pn->plan);
+	par->end(scan);
 	pn->shape = (SiftV6ParShape) {.strategy = (SiftV6ParStrategy) spec->par_strategy,.nworkers = pcxt->nworkers,.n_parts = pn->plan.nrefs,.part_ref_bytes = sizeof(SiftParPartRef),
 		.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
 		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, chunk_budget(pn, pcxt->nworkers + 1)),.radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers),

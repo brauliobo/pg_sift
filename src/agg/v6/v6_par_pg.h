@@ -14,7 +14,6 @@
 #include "agg/v6/v6_par_node.h"
 #include "agg/v6/v6_par.h"
 #include "agg/v6/v6_par_topk.h"
-#include "col/f2/f2_sink.h"
 
 struct SiftV6ParNode
 {

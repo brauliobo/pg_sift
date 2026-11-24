@@ -18,8 +18,8 @@
 
 #include "agg/vec.h"
 #include "core/tidbridge.h"
-#include "col/f2/f2.h"
-#include "col/f2/f2_store.h"
+#include "col/am.h"
+#include "core/store_ops.h"
 
 typedef enum SiftV6Kind
 {
@@ -279,7 +279,7 @@ typedef struct SiftV6Rel
 	Index		relid;
 	const IndexOptInfo *index;
 	const SiftColRel *colrel;
-	const SiftF2Rel *f2;
+	const SiftStoreOps *ops;	/* the format of the index, NULL when it holds nothing of it (a stale index) */
 } SiftV6Rel;
 
 /*
@@ -302,14 +302,13 @@ extern Plan *sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPat
  * *spec, the entries of the rows the aggregate leaves in *scan_tlist (the keys, then the aggregates), the grouping expressions in *group_exprs; false when the index does not hold what the statement reads.
  * extra is the GroupPathExtraData of the upper path. sift_v6_plan_shape says whether the statement is of the shape the aggregate scan serves (one table, no windows or DISTINCT ON).
  */
-extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, SiftF2Store *store, void *extra, SiftV6Spec *spec,
+extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *table, void *extra, SiftV6Spec *spec,
 									  List **scan_tlist, List **group_exprs);
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 /* The index holds attribute att (1-based), of the class, in one plain leaf the scan decodes as it is stored */
 extern bool sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls);
-/* The same for column att of a sift_table (1-based) */
-struct SiftF2Store;
-extern bool sift_v6_table_leaf_holds(const struct SiftF2Store *store, int att, SiftV6Class cls);
+/* The same for column att of a sift_table (1-based), by the schema of its store */
+extern bool sift_v6_table_leaf_holds(const SiftStoreSchema *table, int att, SiftV6Class cls);
 extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
 extern bool sift_v6_kind_takes(SiftV6Kind kind, Oid typid);
 /* The aggregate of the facts of a join as a scan of the index (the tuple of its scan tlist): false when a key, an aggregate or a qual of the facts is not one the scan decides (scope_v6.c adds the members of a scope key) */
@@ -321,13 +320,6 @@ extern const CustomPathMethods *sift_v6_group_path_methods(void);
 extern List *sift_v6_spec_pack(const SiftV6Spec *s);
 extern SiftV6Spec *sift_v6_spec_unpack(const List *l);
 
-/* The scope aggregate (agg/v6/scope_v6.c): a join of the facts with the pairs of a scope of the index is answered by the cubes of its summary (col/f2/f2_scope.h) */
-extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_scope_plan_methods;
-
-extern void sift_agg_v6_scope_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
-/* ORDER BY ring leaf DESC LIMIT n of the facts of a scope key: the newest rows of its ring (ORDERED stage) */
-extern void sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
-extern Plan *sift_agg_v6_scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
 /* The groups: keys and aggregates folded from batches, then every group once */
 typedef struct SiftV6Group SiftV6Group;
@@ -380,7 +372,7 @@ extern bool sift_v6_text_chunk(void *text, const SiftTidBridge **bridge);
 extern void sift_v6_text_close(SiftV6Text *t);
 
 /*
- * The fold of the rows of a scan into the groups, which sift_v6_scan_run drives with the rows of a scan of the index and a caller with the rows of its own (agg/hybrid_agg_exec.c): sift_v6_fold_batch
+ * The fold of the rows of a scan into the groups, which the zone scan of the format (core/store_ops.h) drives with the rows of a scan of the index and a caller with the rows of its own (agg/hybrid_agg_exec.c): sift_v6_fold_batch
  * takes a batch of rows (the ColView of each leaf, indexed by leaf; sift_v6_fold_cols are the ones to decode), the live ones decided by the stored values and the maybe ones they could not decide;
  * the recheck says whether the heap keeps a maybe row (visible, and passing the quals the scan holds). A fold lives in the memory context it began in.
  */
@@ -396,44 +388,12 @@ typedef struct SiftV6FoldCol
 	int			scale;			/* a numeric: the digits after the point of the scaled integer the leaf holds */
 } SiftV6FoldCol;
 
-extern SiftV6Fold *sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, SiftV6Recheck recheck, void *recheck_arg);
-extern const SiftV6FoldCol *sift_v6_fold_cols(const SiftV6Fold *f, int *n);
-extern void sift_v6_fold_batch(SiftV6Fold *f, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, int n);
-/* The same for rows that come with the score of their hit (score[r] for row r): the batch of a fold whose spec reads the score (sift_v6_spec_reads_score) */
-extern void sift_v6_fold_batch_scored(SiftV6Fold *f, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, const float4 *score, int n);
-extern void sift_v6_fold_end(SiftV6Fold *f);
-
 /* The rows of a batch as the vectors of the keys and of the arguments of the aggregates (keyvec[i] is key i, argvec[j] the argument of aggregate j); what a scan hands each batch to */
 typedef void (*SiftV6BatchFn) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 typedef struct SiftV6Scan SiftV6Scan;
-struct SiftParPartRef;
-struct SiftF2ParPlan;
 
-extern SiftV6Scan *sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, SiftV6BatchFn emit,
-									  void *emit_arg);
-/* The parts of the generations skip (ascending) are not read: another scan took them; a router (NULL: none) keeps the scan to the granules of one scope key (f2_scope_route.h) */
-struct SiftScopeRouter;
-struct SiftV6StarRun;
-/* The same for a statement of ext: star is the dimensions of the pass the scan is of (v6_star_run.h), NULL for an unnest or none */
-extern void sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
-								 const struct SiftScopeRouter *router, SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg);
-extern void sift_v6_scan_all(SiftV6Scan *s, const uint64 *skip, int nskip);
-extern void sift_v6_scan_plan(SiftV6Scan *s, struct SiftF2ParPlan *out);
-extern void sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
-extern void sift_v6_scan_morsel(SiftV6Scan *s, const struct SiftParPartRef *ref, uint32 first, uint32 n);
-extern void sift_v6_scan_end(SiftV6Scan *s);
 /* The rows the scan keeps go to rows (v6_rows_topn.h) instead of the groups */
 typedef struct SiftV6Rows SiftV6Rows;
-
-extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
-							  SiftV6ChunkFn next_chunk, void *chunk_arg);
-extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
-							 const uint64 *skip, int nskip, const struct SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
-
-/* The same for a spec that is_table: the rows of the sift_table the quals accept, which its own versions show to the snapshot */
-struct SiftStoreQuals;
-extern void sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const struct SiftStoreQuals *quals, Snapshot snap, const uint64 *skip,
-							   int nskip, SiftV6ScanStats *stats);
 
 /*
  * The arms of a cohort of SiftV6Fuse (v6_fuse.h) that scan the same index with the same keys, in one pass: the rows are looked at in the heap once and every arm folds them into its groups. arms[0]
@@ -452,6 +412,5 @@ typedef struct SiftV6ScanArm
 	const struct SiftClause *gate;
 } SiftV6ScanArm;
 
-extern void sift_v6_scan_run_arms(struct SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap);
 
 #endif							/* SIFT_AGG_V6_H */

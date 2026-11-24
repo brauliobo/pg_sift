@@ -72,7 +72,7 @@ fold_sink(void *arg, const SiftHybridBatch *b)
 		maybe[w] = st->recheck_all ? b->live[w] : (b->maybe != NULL ? b->maybe[w] : 0);
 		live[w] = b->live[w] & ~maybe[w];
 	}
-	sift_v6_fold_batch_scored(st->fold, b->tid, live, maybe, b->cols, b->score, b->n);
+	st->h.ops->hybrid->fold_batch_scored(st->fold, b->tid, live, maybe, b->cols, b->score, b->n);
 	pfree(live);
 	pfree(maybe);
 }
@@ -263,7 +263,7 @@ point_flush(HybridAggState *st, PointCol *pc, int ncols, const uint64 *keys, con
 	memset(live, 0, sizeof(live));
 	for (int r = 0; r < n; r++)
 		live[r / 64] |= UINT64CONST(1) << (r % 64);
-	sift_v6_fold_batch_scored(st->fold, keys, live, NULL, views, scores, n);
+	st->h.ops->hybrid->fold_batch_scored(st->fold, keys, live, NULL, views, scores, n);
 }
 
 static void
@@ -467,9 +467,9 @@ agg_run(HybridAggState *st)
 	st->ran = true;
 	MemoryContextSwitchTo(st->gcx);
 	st->group = sift_v6_group_new(st->spec, st->gcx, st->group_desc);
-	st->fold = sift_v6_fold_begin(st->spec, st->group, h->heap, h->store_index, estate->es_snapshot, &st->fstats, agg_recheck, st);
+	st->fold = st->h.ops->hybrid->fold_begin(st->spec, st->group, h->heap, h->store_index, estate->es_snapshot, &st->fstats, agg_recheck, st);
 	st->reads_score = sift_v6_spec_reads_score(st->spec);
-	cols = sift_v6_fold_cols(st->fold, &ncols);
+	cols = st->h.ops->hybrid->fold_cols(st->fold, &ncols);
 	h->leaves = palloc(Max(ncols, 1) * sizeof(int));
 	for (int c = 0; c < ncols; c++)
 		h->leaves[c] = cols[c].leaf;
@@ -477,7 +477,7 @@ agg_run(HybridAggState *st)
 	if (sift_hybrid_bind(h))
 		fold_rows(st, cols, ncols);
 	sift_hybrid_finish(h);
-	sift_v6_fold_end(st->fold);
+	st->h.ops->hybrid->fold_end(st->fold);
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }
@@ -586,7 +586,7 @@ agg_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	const SiftHybridStats *b = &h->stats;
 
 	ExplainPropertyText("Hybrid Direction", h->adaptive ? (h->resolved ? psprintf("%s (adaptive)", sift_hybrid_dir_name(h->dir)) : "adaptive") : sift_hybrid_dir_name(h->dir), es);
-	ExplainPropertyText("Hybrid Store", h->table != NULL ? "sift_table" : "sift_col", es);
+	ExplainPropertyText("Hybrid Store", h->is_table ? "sift_table" : "sift_col", es);
 	if (h->store_index != NULL)
 		ExplainPropertyText("Index", RelationGetRelationName(h->store_index), es);
 	if (!es->analyze)

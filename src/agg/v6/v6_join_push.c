@@ -27,16 +27,13 @@
 
 #include "agg/agg.h"
 #include "agg/v6/plan_int.h"
-#include "agg/v6/scope_v6_int.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
 #include "col/am.h"
 #include "col/col.h"
-#include "col/f2/f2_scope_route.h"
-#include "col/f2/f2_store.h"
-#include "col/f2/f2_store_scan.h"
+#include "core/store_ops.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
 #include "table/dispatch.h"
@@ -201,7 +198,9 @@ static bool
 table_holds_join_column(PlannerInfo *root, const PushJoin *j)
 {
 	Relation	heap = table_open(planner_rt_fetch(j->fact->relid, root)->relid, AccessShareLock);
-	const bool	ok = sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops && sift_v6_table_leaf_holds(sift_f2_store_open(heap), j->fact_attno, SV6C_I64);
+	const SiftStoreOps *ops = sift_store_ops_for_oid(RelationGetRelid(heap), true);
+	SiftStoreSchema sch;
+	const bool	ok = ops != NULL && ops->schema(RelationGetRelid(heap), true, &sch) && sift_v6_table_leaf_holds(&sch, j->fact_attno, SV6C_I64);
 
 	table_close(heap, NoLock);
 	return ok;
@@ -254,7 +253,9 @@ scope_route(PlannerInfo *root, const PushJoin *j, IndexOptInfo *ix)
 	int			ord;
 	Expr	   *key;
 
-	if (ix == NULL || !sift_v6_scope_one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
+	const SiftStoreOps *ops = ix != NULL ? sift_store_ops_for_oid(ix->indexoid, false) : NULL;
+
+	if (ops == NULL || ops->scope == NULL || !ops->scope->one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
 		return NIL;
 	return list_make2(makeInteger(ord), copyObject(key));
 }
@@ -356,7 +357,8 @@ typedef struct PushState
 	int			scope_ord;		/* with scope_key: the scope whose summary routes the scan */
 	ExprState  *scope_key;		/* the one key the statement binds the small side to, NULL when the scan is not routed */
 	Oid			scope_type;
-	const SiftScopeRouter *router;
+	const SiftStoreOps *ops;
+	const struct SiftScopeRouter *router;
 	Relation	heap;
 	Relation	index;
 	MemoryContext gcx;
@@ -383,6 +385,7 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 		st->scope_key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
 		st->scope_type = exprType(linitial(cs->custom_exprs));
 	}
+	st->ops = sift_store_ops_for_oid(st->spec->relid, st->spec->is_table);
 	st->index = st->spec->is_table ? NULL : index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->spec->is_table ? st->spec->relid : st->index->rd_index->indrelid, AccessShareLock);
 	foreach_ptr(Plan, child, cs->custom_plans)
@@ -453,7 +456,7 @@ values_array(const PushState *st, const int64 *v, int n)
 }
 
 /* The granules of the key that the summary of the scope names; NULL when the scan is not routed, the key is NULL, or the summary cannot route */
-static const SiftScopeRouter *
+static const struct SiftScopeRouter *
 scope_router(PushState *st, EState *estate)
 {
 	bool		isnull;
@@ -466,7 +469,7 @@ scope_router(PushState *st, EState *estate)
 	if (isnull)
 		return NULL;
 	key = value_of(st->scope_type, d);
-	return sift_f2_scope_build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, NULL, st->gcx);
+	return st->ops->scope->build_router(st->index, st->scope_ord, estate->es_snapshot, &key, 1, st->gcx);
 }
 
 /* One scan of the fact for the values of ids: each value is in one batch only, so the rows of the batches are the rows of the join */
@@ -484,16 +487,15 @@ push_scan(PushState *st, EState *estate, ArrayType *ids)
 	quals = lappend(quals, q);
 	if (st->spec->is_table)
 	{
-		SiftStoreQuals sq;
+		const struct SiftStoreQuals *sq = st->ops->zone->compile_quals(st->heap, quals, estate->es_query_cxt);
 
-		sift_f2_store_compile_quals(st->heap, sift_f2_store_open(st->heap), quals, estate->es_query_cxt, &sq);
-		sift_v6_scan_table(st->spec, st->group, st->heap, &sq, estate->es_snapshot, NULL, 0, &st->stats);
+		st->ops->zone->scan_table(st->spec, st->group, st->heap, sq, estate->es_snapshot, NULL, 0, &st->stats);
 	}
 	else
 	{
 		ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
 		SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
-		sift_v6_scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL);
+		st->ops->zone->scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL, NULL);
 	}
 }
 
@@ -597,8 +599,12 @@ push_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Join Keys Pushed", NULL, st->nvalues, es);
 	if (st->router != NULL)
 	{
-		ExplainPropertyInteger("Scope Granules Kept", NULL, st->router->mask.kept, es);
-		ExplainPropertyInteger("Scope Granules Total", NULL, st->router->mask.n, es);
+		int64		kept,
+					total;
+
+		st->ops->scope->router_counts(st->router, &kept, &total);
+		ExplainPropertyInteger("Scope Granules Kept", NULL, kept, es);
+		ExplainPropertyInteger("Scope Granules Total", NULL, total, es);
 	}
 }
 

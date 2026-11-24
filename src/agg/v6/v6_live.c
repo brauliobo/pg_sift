@@ -14,7 +14,6 @@
 #include "agg/v6/v6_stream.h"
 #include "agg/v6/v6_topn.h"
 #include "agg/v6/v6_window.h"
-#include "col/f2/f2_v6_bridge.h"
 
 void
 sift_agg_v6_live_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)

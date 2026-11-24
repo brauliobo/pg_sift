@@ -20,9 +20,7 @@
 #include "agg/hybrid_quals.h"
 #include "bm25/planner.h"
 #include "col/am.h"
-#include "col/f2/f2.h"
-#include "col/f2/f2_sink.h"
-#include "col/f2/f2_store_scan.h"
+#include "core/store_ops.h"
 
 typedef enum HybridColKind
 {
@@ -73,8 +71,10 @@ typedef struct HybridState
 	Relation	heap,
 				text_index,
 				store_index;		/* a sift_col: its index; NULL for a sift_table */
-	SiftF2Store *table;			/* a sift_table: its store, which decides visibility and takes the quals as predicates */
-	SiftStoreQuals table_quals;
+	const SiftStoreOps *ops;	/* the format of the store */
+	bool		is_table;		/* a sift_table: its store decides visibility and takes the quals as predicates */
+	SiftStoreSchema tsch;		/* of that store */
+	struct SiftStoreQuals *table_quals;
 	IndexInfo  *iinfo;
 	ScanKey		keys;
 	int			nkeys;

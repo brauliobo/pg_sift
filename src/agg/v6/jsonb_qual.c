@@ -69,6 +69,13 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 	return false;
 }
 
+/* the leaf of the format of the index that keeps whether the key is on the rows of the document attribute att (-1: none keeps it) */
+static int
+key_leaf(const SiftV6Rel *rel, int att, const char *key)
+{
+	return rel->ops != NULL && rel->ops->jsonb != NULL ? rel->ops->jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key)) : -1;
+}
+
 /* doc -> 'k' (fn F_JSONB_OBJECT_FIELD) or doc ->> 'k' (F_JSONB_OBJECT_FIELD_TEXT) of such a document, and the leaf of its key (-1: none keeps it) */
 static int
 field_leaf(const SiftV6Rel *rel, const Expr *e, Oid fn, int *att, const char **key)
@@ -79,7 +86,7 @@ field_leaf(const SiftV6Rel *rel, const Expr *e, Oid fn, int *att, const char **k
 	args = e != NULL ? args_of(e) : NIL;
 	if (e == NULL || func_of(e) != fn || list_length(args) != 2 || !doc_of(rel, linitial(args), att) || (*key = text_const(lsecond(args))) == NULL)
 		return -1;
-	return sift_f2_key_leaf(rel->f2, *att, *key, strlen(*key));
+	return key_leaf(rel, *att, *key);
 }
 
 static bool
@@ -160,7 +167,7 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	if (func_of(clause) == F_JSONB_EXISTS && list_length(args_of(clause)) == 2)
 	{
 		key = text_const(lsecond(args_of(clause)));
-		if (key != NULL && doc_of(rel, linitial(args_of(clause)), &att) && sift_f2_key_leaf(rel->f2, att, key, strlen(key)) >= 0)
+		if (key != NULL && doc_of(rel, linitial(args_of(clause)), &att) && key_leaf(rel, att, key) >= 0)
 			return qual_of(JQ_EXISTS, att, key, 0);
 		return NIL;
 	}
@@ -235,7 +242,7 @@ sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
 void
 sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys)
 {
-	const SiftF2Rel *f = sift_f2_rel(index);
+	const SiftJsonbOps *ops = sift_store_ops_for_oid(RelationGetRelid(index), false)->jsonb;
 	ScanKey		all;
 
 	if (spec->jsonqual == NIL)
@@ -247,7 +254,7 @@ sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int
 	{
 		const char *key = strVal(lthird(q));
 		const int	att = intVal(lsecond(q));
-		const int	leaf = sift_f2_key_leaf(f, att, key, strlen(key));
+		const int	leaf = ops->key_leaf(RelationGetRelid(index), att, key, strlen(key));
 
 		SIFT_INVARIANT(leaf >= 0, "the key of a jsonb qual of the aggregate scan is a leaf of the index");
 		all[(*nkeys)++] = intVal(linitial(q)) == JQ_EXISTS ?

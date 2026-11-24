@@ -14,7 +14,7 @@
 
 #include "agg/group/ht.h"
 #include "agg/vec.h"
-#include "col/granule/granule.h"
+#include "core/scan_types.h"
 
 /* The dictionary of a key column whose rows are codes (SVEC_DICT32): gen names the part it is of when it is the dictionary of the part (it is the same strings for every granule of the part), else 0 */
 typedef struct SiftKeyDict

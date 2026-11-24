@@ -6,7 +6,6 @@
 
 #include "agg/kern6.h"
 #include "agg/v6/v6_group_fast.h"
-#include "col/granule/granule.h"
 
 /* ---- packed keys ---- */
 

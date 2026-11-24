@@ -15,7 +15,7 @@
 #include "nodes/pathnodes.h"
 
 #include "col/col.h"
-#include "col/f2/f2_pred_ext.h"
+#include "col/like_simd.h"
 
 typedef enum SiftHybQualKind
 {

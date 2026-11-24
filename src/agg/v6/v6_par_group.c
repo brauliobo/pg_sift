@@ -34,6 +34,7 @@ typedef struct ParEnv
 	int			nkeys;
 	Snapshot	snap;
 	SiftV6Scan *scan;
+	const SiftParOps *par;
 	SiftV6ScanStats stats;
 	SiftV6ScanStats seen;
 	V6AccOp    *op;
@@ -211,8 +212,9 @@ open_scan(ParEnv *e)
 	const SiftV6ParDsmHdr *h = e->hdr;
 	MemoryContext old = MemoryContextSwitchTo(e->cx);
 
-	e->scan = sift_v6_scan_begin(e->spec, e->heap, e->index, e->keys, e->nkeys, e->snap, &e->stats, batch_to_local, e);
-	sift_v6_scan_morsel_begin(e->scan, (const uint64 *) ((const char *) h + h->staged_dead_off), h->n_staged_dead);
+	e->par = sift_store_ops_for_oid(RelationGetRelid(e->index), false)->par;
+	e->scan = e->par->begin(e->spec, e->heap, e->index, e->keys, e->nkeys, e->snap, &e->stats, batch_to_local, e);
+	e->par->morsel_begin(e->scan, (const uint64 *) ((const char *) h + h->staged_dead_off), h->n_staged_dead);
 	MemoryContextSwitchTo(old);
 }
 
@@ -267,7 +269,7 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 		MemoryContextSwitchTo(old);
 	}
 	e->cur = l;
-	sift_v6_scan_morsel(e->scan, &refs[m->part], m->first, m->n);
+	e->par->morsel(e->scan, &refs[m->part], m->first, m->n);
 	st->rows_scanned += e->stats.rows - e->seen.rows;
 	st->grans_scanned += e->stats.batches - e->seen.batches;
 	st->heap_vet_rows += e->stats.heap_vet_rows - e->seen.heap_vet_rows;
@@ -502,6 +504,6 @@ sift_v6_par_engine_end(SiftV6ParEngine *eng)
 	ParEnv	   *e = eng->env;
 
 	if (e->scan != NULL)
-		sift_v6_scan_end(e->scan);
+		e->par->end(e->scan);
 	e->scan = NULL;
 }

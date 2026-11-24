@@ -46,21 +46,18 @@
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_plan_shape.h"
-#include "col/f2/f2_v6_proj_sort_plan.h"
 #include "agg/v6/v6_qual.h"
 #include "col/am.h"
 #include "col/am/format_ops.h"
 #include "col/am/preds.h"
 #include "col/col.h"
-#include "col/f2/f2_store.h"
-#include "col/f2/f2_store_schema.h"
 #include "table/dispatch.h"
 #include "core/catname.h"
 
 SiftV6Rel
 sift_v6_plan_rel(const V6Plan *p)
 {
-	return (SiftV6Rel) {.relid = p->rel->relid,.index = p->index,.colrel = p->colrel,.f2 = p->f2};
+	return (SiftV6Rel) {.relid = p->rel->relid,.index = p->index,.colrel = p->colrel,.ops = p->ops};
 }
 
 static const CustomPathMethods v6_path_methods = {"SiftAggV6", sift_agg_v6_plan_path, NULL};
@@ -69,8 +66,8 @@ static const CustomPathMethods v6_path_methods = {"SiftAggV6", sift_agg_v6_plan_
 static int
 host_attno(const V6Plan *p, AttrNumber attno)
 {
-	if (p->store != NULL)
-		return attno > 0 && attno <= p->store->natts ? attno : 0;
+	if (p->is_table)
+		return attno > 0 && attno <= p->tsch.natts ? attno : 0;
 	for (int i = 0; attno > 0 && i < p->index->ncolumns; i++)
 		if (p->index->indexkeys[i] == attno)
 			return i + 1;
@@ -80,25 +77,25 @@ host_attno(const V6Plan *p, AttrNumber attno)
 static const SiftColSchema *
 host_schema(const V6Plan *p)
 {
-	return p->store != NULL ? p->store->schema : p->colrel->schema;
+	return p->is_table ? p->tsch.leaves : p->colrel->schema;
 }
 
 static int
 host_first(const V6Plan *p, int att)
 {
-	return p->store != NULL ? p->store->att_first[att] : p->colrel->first[att];
+	return p->is_table ? p->tsch.att_first[att] : p->colrel->first[att];
 }
 
 static int
 host_nleaves(const V6Plan *p, int att)
 {
-	return p->store != NULL ? sift_f2_store_attr_leaves(p->store, att) : p->colrel->nleaves[att];
+	return p->is_table ? p->tsch.att_nleaves[att] : p->colrel->nleaves[att];
 }
 
 Oid
 sift_v6_plan_opfamily(const V6Plan *p, int att)
 {
-	return p->store != NULL ? p->store->opfamily[att] : p->index->opfamily[att - 1];
+	return p->is_table ? p->tsch.att_opfamily[att] : p->index->opfamily[att - 1];
 }
 
 static bool
@@ -130,9 +127,24 @@ sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls)
 }
 
 bool
-sift_v6_table_leaf_holds(const SiftF2Store *store, int att, SiftV6Class cls)
+sift_v6_table_leaf_holds(const SiftStoreSchema *table, int att, SiftV6Class cls)
 {
-	return att > 0 && att <= store->natts && leaf_class_ok(&store->schema->cols[store->att_first[att]], sift_f2_store_attr_leaves(store, att), cls);
+	return att > 0 && att <= table->natts && leaf_class_ok(&table->leaves->cols[table->att_first[att]], table->att_nleaves[att], cls);
+}
+
+bool
+sift_v6_plan_table(V6Plan *p, Oid relid)
+{
+	p->ops = sift_store_ops_for_oid(relid, true);
+	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->tsch);
+	return p->is_table;
+}
+
+void
+sift_v6_plan_index(V6Plan *p, Relation irel)
+{
+	p->colrel = sift_col_rel(irel);
+	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
 }
 
 static bool
@@ -187,7 +199,7 @@ read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
 	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) ||
-		(p->store == NULL && (sift_v6_json_read(&rel, e, out) ||
+		(!p->is_table && (sift_v6_json_read(&rel, e, out) ||
 							  (exprType((Node *) e) != NUMERICOID && (sift_v6_star_column(p, e, out) || sift_v6_unnest_column(p, e, out)))));
 }
 
@@ -227,7 +239,7 @@ derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 static void
 scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 {
-	if (p->store == NULL)
+	if (!p->is_table)
 		sift_v6_agg_cost(p->root, p->rel, p->index, &p->spec, groups, startup, total);
 	else
 	{
@@ -664,7 +676,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	Node	   *exprs,
 			   *having;
 
-	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->store != NULL,.ext = p->xseed};
+	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
 	p->cap_aggs = p->cap_funcs = 0;
 	p->scan_tlist = NIL;
@@ -709,6 +721,17 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	add_path(p->out, &cp->path);
 	if (child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 && !p->spec.is_table && !locked)
 		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total);
+}
+
+
+/* a ready projection of a format serves the row query of the relation: its own path stands among those of the relation */
+static bool
+proj_sort_offered(const RelOptInfo *rel)
+{
+	for (int i = 0; i < sift_store_ops_count(); i++)
+		if (sift_store_ops_at(i)->proj != NULL && sift_store_ops_at(i)->proj->sort_offered(rel))
+			return true;
+	return false;
 }
 
 void
@@ -760,7 +783,7 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 
 	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL ||
 		q->rowMarks != NIL || !sift_v6_base_rel_ok(root, input_rel) || bms_membership(root->all_baserels) != BMS_SINGLETON ||
-		sift_v6_proj_sort_offered(input_rel))
+		proj_sort_offered(input_rel))
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
 	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
@@ -774,10 +797,9 @@ add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		if (!sift_v6_index_owned(ix))
 			continue;
 		irel = index_open(ix->indexoid, AccessShareLock);
-		p.colrel = sift_col_rel(irel);
-		p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
+		sift_v6_plan_index(&p, irel);
 		p.spec = (SiftV6Spec) {.relid = ix->indexoid,.rows = true,.topk = k};
-		ok = p.f2 != NULL && sift_v6_index_complete(&p) && rows_keys(&p) && rows_outputs(&p) && sift_v6_compile_quals(&p);
+		ok = p.ops != NULL && sift_v6_index_complete(&p) && rows_keys(&p) && rows_outputs(&p) && sift_v6_compile_quals(&p);
 		index_close(irel, NoLock);
 		if (!ok)
 			continue;
@@ -813,7 +835,9 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 
 	if (stage == UPPERREL_ORDERED)
 	{
-		sift_agg_v6_scope_topk_paths(root, input_rel, output_rel);
+		for (int i = 0; i < sift_store_ops_count(); i++)
+			if (sift_store_ops_at(i)->scope != NULL)
+				sift_store_ops_at(i)->scope->topk_paths(root, input_rel, output_rel);
 		if (sift_enable_agg)
 		{
 			sift_v6_topk_paths(root, input_rel, output_rel);
@@ -827,7 +851,9 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	{
 		sift_v6_star_upper_paths(root, input_rel, output_rel, extra);
 		sift_v6_unnest_upper_paths(root, input_rel, output_rel, extra);
-		sift_agg_v6_scope_upper_paths(root, input_rel, output_rel, extra);
+		for (int i = 0; i < sift_store_ops_count(); i++)
+			if (sift_store_ops_at(i)->scope != NULL)
+				sift_store_ops_at(i)->scope->upper_paths(root, input_rel, output_rel, extra);
 		sift_agg_v6_join_push_paths(root, input_rel, output_rel, extra);
 		return;
 	}
@@ -842,11 +868,11 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	}
 	rte = planner_rt_fetch(input_rel->relid, root);
 	heap = table_open(rte->relid, AccessShareLock);
-	if (sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops)
+	if (sift_store_ops_for_oid(rte->relid, true) != NULL)
 	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.store = sift_f2_store_open(heap),.batch_ok = true};
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.batch_ok = true};
 
-		if (sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
+		if (sift_v6_plan_table(&p, rte->relid) && sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
 			sift_v6_add_group_path(&p, output_rel, group_exprs, (List *) ((GroupPathExtraData *) extra)->havingQual);
 	}
 	else
@@ -858,9 +884,8 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 			if (!sift_v6_index_owned(ix))
 				continue;
 			irel = index_open(ix->indexoid, AccessShareLock);
-			p.colrel = sift_col_rel(irel);
-			p.f2 = p.colrel->stale ? NULL : sift_f2_rel(irel);
-			if (p.f2 != NULL && sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
+			sift_v6_plan_index(&p, irel);
+			if (p.ops != NULL && sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
 				sift_v6_add_group_path(&p, output_rel, group_exprs, (List *) ((GroupPathExtraData *) extra)->havingQual);
 			index_close(irel, NoLock);
 		}
@@ -886,13 +911,10 @@ sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, Index
 	bool		ok;
 
 	if (ix != NULL)
-	{
-		p.colrel = sift_col_rel(rel);
-		p.f2 = sift_f2_rel(rel);
-	}
+		sift_v6_plan_index(&p, rel);
 	else
-		p.store = sift_f2_store_open(rel);
-	ok = sift_v6_compile_on(&p, extra, sift_v6_group_exprs_of(root));
+		sift_v6_plan_table(&p, relid);
+	ok = (ix != NULL || p.is_table) && sift_v6_compile_on(&p, extra, sift_v6_group_exprs_of(root));
 	if (ix != NULL)
 		index_close(rel, NoLock);
 	else

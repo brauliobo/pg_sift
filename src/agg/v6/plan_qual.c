@@ -43,7 +43,7 @@ index_var(const Var *v, int col)
 static bool
 numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Node *operand)
 {
-	return p->store == NULL && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
+	return !p->is_table && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
 		sift_col_numeric_key_fits(col->scale, ((const Const *) operand)->constvalue);
 }
 
@@ -53,7 +53,7 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 {
 	const bool	text = sift_v6_class(col->typid) == SV6C_TEXT;
 	const Oid	family = sift_v6_plan_opfamily(p, col->attno);
-	const bool	index = p->store == NULL;
+	const bool	index = !p->is_table;
 	int			strat = get_op_opfamily_strategy(q->opno, family);
 
 	if (strat == 0 && index && !p->in_filter)
@@ -144,7 +144,7 @@ qual_json_text(V6Plan *p, OpExpr *op)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL && p->xseed->unnest && p->store == NULL ? sift_v6_json_text_qual(&rel, op) : NULL;
+	return p->xseed != NULL && p->xseed->unnest && !p->is_table ? sift_v6_json_text_qual(&rel, op) : NULL;
 }
 
 Expr *
@@ -182,14 +182,14 @@ has_numeric_var(Node *n, void *context)
 static bool
 qual_batch(V6Plan *p, RestrictInfo *ri)
 {
-	SiftV6Input in = {.indexoid = p->relid,.is_table = p->store != NULL,.nkeys = p->store != NULL ? p->store->natts : 0};
+	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->tsch.natts : 0};
 	Expr	   *clause;
 
 	if (!p->batch_ok || ri->pseudoconstant || contain_mutable_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
 		return false;
-	if (p->store != NULL && has_numeric_var((Node *) ri->clause, NULL))
+	if (p->is_table && has_numeric_var((Node *) ri->clause, NULL))
 		return false;
-	if (p->store == NULL)
+	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
 	clause = copyObject(ri->clause);
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
@@ -227,7 +227,7 @@ sift_v6_compile_quals(V6Plan *p)
 		if (!ri->pseudoconstant && sift_v6_text_qual(p, ri))
 			continue;
 		q = ri->pseudoconstant ? NULL : sift_v6_index_qual(p, ri->clause);
-		jq = ri->pseudoconstant || q != NULL || p->store != NULL ? NIL : sift_v6_json_qual(&rel, ri->clause);
+		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
 		if (q == NULL && jq == NIL && qual_batch(p, ri))
 			continue;
 		if (q == NULL && jq == NIL)

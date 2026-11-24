@@ -11,7 +11,7 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "col/am.h"
-#include "col/f2/f2_store.h"
+#include "core/store_ops.h"
 
 typedef struct V6Plan
 {
@@ -21,8 +21,9 @@ typedef struct V6Plan
 	Oid			relid;			/* the relation scanned: the index, or the table */
 	IndexOptInfo *index;		/* a sift_col: its index; NULL for a sift_table */
 	const SiftColRel *colrel;
-	const SiftF2Rel *f2;
-	SiftF2Store *store;			/* a sift_table: its store, whose attributes are those of the table */
+	const SiftStoreOps *ops;	/* the format of the relation; for an index NULL when it holds nothing (a stale index) */
+	bool		is_table;		/* a sift_table: tsch is the schema of its store, whose attributes are those of the table */
+	SiftStoreSchema tsch;
 	SiftV6Spec	spec;
 	int			cap_aggs;		/* the room of spec.agg and spec.func */
 	int			cap_funcs;
@@ -59,6 +60,10 @@ extern List *sift_v6_group_exprs_of(PlannerInfo *root);
 
 /* The path of the plan for the output relation; a spec with parts reads each of their indexes into the same groups */
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
+
+/* The plan of a sift_table or of an open index: the format that owns it (ops NULL when none does) and, for a table, the schema of its store; false: no format owns the table */
+extern bool sift_v6_plan_table(V6Plan *p, Oid relid);
+extern void sift_v6_plan_index(V6Plan *p, Relation irel);
 
 /* The relation of the plan as the scan reads it, and the operator family of an attribute of the host */
 extern SiftV6Rel sift_v6_plan_rel(const V6Plan *p);

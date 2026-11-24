@@ -10,7 +10,6 @@
 
 #include "agg/v6/v6_vet.h"
 #include "col/am.h"
-#include "col/f2/f2.h"
 
 void
 sift_v6_vet_begin(SiftV6Vet *v, Relation heap, Snapshot snap, SiftV6ScanStats *stats)

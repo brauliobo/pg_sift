@@ -64,7 +64,7 @@ raw_op(SiftGpuEmit *b, uint32 op, uint32 ty, uint32 tt, uint32 fl, uint32 dst, u
 static bool
 col_is_float(const SiftGpuQuery *q, int slot)
 {
-	return q->store->kinds[q->leaf[slot]] == SIFT_CELL_F8;
+	return q->sch.leaf_kinds[q->leaf[slot]] == SIFT_CELL_F8;
 }
 
 static uint32

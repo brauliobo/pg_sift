@@ -40,8 +40,8 @@
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "col/am.h"
-#include "col/f2/f2.h"
-#include "col/f2/f2_store.h"
+#include "agg/cost.h"
+#include "core/store_ops.h"
 #include "table/dispatch.h"
 #include "core/sift.h"
 
@@ -52,7 +52,9 @@ static create_upper_paths_hook_type prev_upper_hook;
 typedef struct SiftHybridStoreRef
 {
 	IndexOptInfo *index;
-	const SiftF2Store *table;
+	bool		is_table;
+	Oid			relid;			/* a sift_table: the table */
+	SiftStoreSchema tsch;		/* and the schema of its store */
 } SiftHybridStoreRef;
 
 typedef struct HybridPlan
@@ -108,7 +110,7 @@ table_col_exact(const SiftHybridStoreRef *store, AttrNumber attno)
 
 	if (col < 0)
 		return false;
-	d = &store->table->schema->cols[store->table->att_first[attno]];
+	d = &store->tsch.leaves->cols[store->tsch.att_first[attno]];
 	return !(d->flags & SIFT_COLD_LOSSY) && !sift_col_def_is_wide(d) && d->store != SIFT_COLS_STR && d->type != SIFT_COLT_VARLENA &&
 		d->type != SIFT_COLT_TIMETZ;
 }
@@ -117,8 +119,8 @@ table_col_exact(const SiftHybridStoreRef *store, AttrNumber attno)
 static int
 store_attr(const SiftHybridStoreRef *store, AttrNumber attno)
 {
-	if (store->table != NULL)
-		return attno > 0 && attno <= store->table->natts && store->table->att_first[attno] >= 0 ? attno - 1 : -1;
+	if (store->is_table)
+		return attno > 0 && attno <= store->tsch.natts && store->tsch.att_first[attno] >= 0 ? attno - 1 : -1;
 	for (int i = 0; i < store->index->ncolumns; i++)
 		if (store->index->indexkeys[i] == attno)
 			return i;
@@ -166,7 +168,7 @@ table_compare(const SiftHybridStoreRef *store, OpExpr *op)
 	col = table_column(store, l);
 	if (col < 0 || !IsA(r, Const) || ((Const *) r)->constisnull || !table_col_exact(store, col + 1) || !(((Const *) r)->consttype == exprType(l) || (table_const_type(((Const *) r)->consttype) && table_const_type(exprType(l)))))
 		return NULL;
-	strat = get_op_opfamily_strategy(q->opno, store->table->opfamily[col + 1]);
+	strat = get_op_opfamily_strategy(q->opno, store->tsch.att_opfamily[col + 1]);
 	if (strat < BTLessStrategyNumber || strat > BTGreaterStrategyNumber)
 		return NULL;
 	linitial(q->args) = strip_relabel(l);
@@ -232,13 +234,18 @@ pick_store(HybridPlan *h, RangeTblEntry *rte)
 	Relation	heap = table_open(rte->relid, AccessShareLock);
 
 	if (sift_tbl_is_table(heap))
-		h->store.table = sift_tbl_ops(heap) == &sift_tbl_v2_ops ? sift_f2_store_open(heap) : NULL;
+	{
+		const SiftStoreOps *ops = sift_store_ops_for_oid(rte->relid, true);
+
+		h->store.relid = rte->relid;
+		h->store.is_table = ops != NULL && ops->schema(rte->relid, true, &h->store.tsch);
+	}
 	else
 		h->store.index = col_index(h->rel);
 	table_close(heap, NoLock);
 	if (h->store.index != NULL)
 		h->colrel = index_open(h->store.index->indexoid, AccessShareLock);
-	return h->store.table != NULL || h->store.index != NULL;
+	return h->store.is_table || h->store.index != NULL;
 }
 
 static void
@@ -336,7 +343,7 @@ static bool
 classify_quals(HybridPlan *h)
 {
 	h->params = has_param((Node *) h->query, NULL);
-	if (h->store.table != NULL)
+	if (h->store.is_table)
 		return !h->params && classify_table_quals(h);
 	foreach_node(RestrictInfo, ri, h->rel->baserestrictinfo)
 	{
@@ -386,7 +393,7 @@ or_branch(HybridPlan *h, Expr *branch, List **quals, List **qinfo)
 
 		if (contain_mutable_functions((Node *) c) || !no_score(h, c))
 			return false;
-		if (h->store.table != NULL)
+		if (h->store.is_table)
 			norm = table_qual(&h->store, c);
 		else if (!sift_hybrid_qual_pushable(h->store.index, h->colrel, c, &q, &norm))
 			norm = NULL;
@@ -438,7 +445,7 @@ store_holds(HybridPlan *h, Var *v)
 		return true;
 	if (store_attr(&h->store, v->varattno) < 0)
 		return false;
-	if (h->store.table != NULL)
+	if (h->store.is_table)
 		return table_col_exact(&h->store, v->varattno);
 	for (int i = 0; i < h->store.index->ncolumns; i++)
 		if (h->store.index->indexkeys[i] == v->varattno)
@@ -506,7 +513,7 @@ estimate(HybridPlan *h, SiftHybridEst *e)
 				cold = 1.0 - Min(1.0, (double) effective_cache_size / Max((double) rel->pages, 1.0));
 
 	*e = (SiftHybridEst) {
-		.host = h->store.table != NULL ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL,.rows = rows,.granules = granules,
+		.host = h->store.is_table ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL,.rows = rows,.granules = granules,
 		.col_granules = granules * sift_hybrid_granule_hit(sel_col, rows / granules),
 		.heap_fetch = cpu_tuple_cost + random_page_cost * cold,.sel_col = sel_col,
 		.sel_bm25 = clause_selectivity(h->root, (Node *) h->match_expr, rel->relid, JOIN_INNER, NULL),
@@ -533,8 +540,8 @@ static void
 add_path_of(HybridPlan *h, const SiftHybridEst *e, SiftHybridDir dir, double cost)
 {
 	CustomPath *cp = makeNode(CustomPath);
-	List	   *ints = list_make5_int(dir, h->store.table != NULL ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL, (int) h->text->indexoid,
-									   (int) (h->store.table != NULL ? h->store.table->relid : h->store.index->indexoid), (int) h->k);
+	List	   *ints = list_make5_int(dir, h->store.is_table ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL, (int) h->text->indexoid,
+									   (int) (h->store.is_table ? h->store.relid : h->store.index->indexoid), (int) h->k);
 
 	ints = lappend_int(ints, h->ranked);
 	ints = lappend_int(ints, 0);
@@ -607,7 +614,7 @@ add_choice_paths(HybridPlan *h)
 	if (h->params && sift_hybrid_both_apply(&e))
 		add_path_of(h, &e, SIFT_HYB_ADAPTIVE, Min(Min(costs.col_to_bm25, costs.bm25_to_col), cheapest_total(h->rel) * SIFT_HYB_WIN));
 	else if (dir != SIFT_HYB_NONE)
-		add_path_of(h, &e, h->store.table == NULL && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col);
+		add_path_of(h, &e, !h->store.is_table && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col);
 }
 
 static void
@@ -739,8 +746,8 @@ static void
 add_agg_path(HybridPlan *h, const SiftHybridEst *e, SiftHybridDir dir, double cost, RelOptInfo *out, const SiftV6Spec *spec, List *scan_tlist, List *group_exprs, List *having)
 {
 	CustomPath *cp = makeNode(CustomPath);
-	List	   *ints = list_make5_int(dir, h->store.table != NULL ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL, (int) h->text->indexoid,
-									   (int) (h->store.table != NULL ? h->store.table->relid : h->store.index->indexoid), 0),
+	List	   *ints = list_make5_int(dir, h->store.is_table ? SIFT_HYB_HOST_TABLE : SIFT_HYB_HOST_COL, (int) h->text->indexoid,
+									   (int) (h->store.is_table ? h->store.relid : h->store.index->indexoid), 0),
 			   *qinfo = list_copy(h->qinfo),
 			   *exprs = lcons(h->query, list_copy(h->quals));
 	const double groups = clamp_row_est((spec->nkeys == 0 ? 1.0 : estimate_num_groups(h->root, group_exprs, e->rows * e->sel_bm25 * e->sel_col, NULL, NULL)) * Max(spec->nsets, 1));
@@ -781,7 +788,7 @@ sift_hybrid_or_agg_path(HybridPlan *h, RelOptInfo *rel, RelOptInfo *out, void *e
 	SiftHybridEst e;
 
 	if (list_length(rel->baserestrictinfo) != 1 || !or_ok(h) ||
-		!sift_v6_compile_aggregate(h->root, rel, out, h->store.index, h->colrel, (SiftF2Store *) h->store.table, extra, &spec, &scan_tlist, &group_exprs) ||
+		!sift_v6_compile_aggregate(h->root, rel, out, h->store.index, h->colrel, h->store.is_table ? &h->store.tsch : NULL, extra, &spec, &scan_tlist, &group_exprs) ||
 		sift_v6_spec_reads_score(&spec) || !or_columns_readable(h, scan_tlist) || score_outside_aggs((Node *) h->root->processed_tlist, &rel->relid))
 		return;
 	estimate(h, &e);
@@ -811,7 +818,7 @@ sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void 
 	}
 	if (h.disjunct)
 		sift_hybrid_or_agg_path(&h, rel, out, extra);
-	else if (classify_quals(&h) && sift_v6_compile_aggregate(root, rel, out, h.store.index, h.colrel, (SiftF2Store *) h.store.table, extra, &spec, &scan_tlist, &group_exprs) &&
+	else if (classify_quals(&h) && sift_v6_compile_aggregate(root, rel, out, h.store.index, h.colrel, h.store.is_table ? &h.store.tsch : NULL, extra, &spec, &scan_tlist, &group_exprs) &&
 			 !score_outside_aggs((Node *) root->processed_tlist, &rel->relid) && !score_outside_aggs((Node *) ((GroupPathExtraData *) extra)->havingQual, &rel->relid))
 	{
 		List	   *having = (List *) ((GroupPathExtraData *) extra)->havingQual;
@@ -823,7 +830,7 @@ sift_hybrid_agg_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, void 
 		if (h.params && sift_hybrid_both_apply(&e))
 			add_agg_path(&h, &e, SIFT_HYB_ADAPTIVE, Min(Min(costs.col_to_bm25, costs.bm25_to_col), cheapest_total(rel) * SIFT_HYB_WIN), out, &spec, scan_tlist, group_exprs, having);
 		else if (dir != SIFT_HYB_NONE)
-			add_agg_path(&h, &e, h.store.table == NULL && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col, out, &spec, scan_tlist, group_exprs, having);
+			add_agg_path(&h, &e, !h.store.is_table && sift_hybrid_both_apply(&e) ? SIFT_HYB_ADAPTIVE : dir, dir == SIFT_HYB_COL_TO_BM25 ? costs.col_to_bm25 : costs.bm25_to_col, out, &spec, scan_tlist, group_exprs, having);
 	}
 	close_store(&h);
 }

@@ -19,7 +19,6 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-#include "col/f2/f2_store.h"
 #include "agg/hybrid_semi.h"
 #include "agg/hybrid_state.h"
 #include "core/compat.h"
@@ -155,68 +154,21 @@ sift_hybrid_verify_b(void *arg, ItemPointer tid, bool want_doc, text **doc)
 	return with_text(arg, tid, want_doc, doc);
 }
 
-typedef struct F2Arg
+static SiftHybridScan
+scan_of(HybridState *st, const SiftTidBridge *br)
 {
-	SiftHybridSink sink;
-	void	   *sink_arg;
-	bool		table;			/* a sift_table: its store decides visibility, and has no undecided rows or scores */
-} F2Arg;
-
-static void
-f2_sink(void *arg, const SiftF2Batch *b)
-{
-	F2Arg	   *a = arg;
-	const int	words = (b->n + 63) / 64;
-	uint64	   *any;
-	SiftHybridBatch hb;
-
-	if (a->table)
-	{
-		hb = (SiftHybridBatch) {.tid = b->tid,.live = b->live,.n = b->n,.exact_vis = true,.cols = b->views};
-		a->sink(a->sink_arg, &hb);
-		return;
-	}
-	any = palloc(Max(words, 1) * sizeof(uint64));
-	hb = (SiftHybridBatch) {.tid = b->tid,.live = any,.maybe = b->maybe,.score = b->scores,.n = b->n,.exact_vis = false,.cols = b->views};
-	for (int w = 0; w < words; w++)
-		any[w] = b->live[w] | b->maybe[w];
-	a->sink(a->sink_arg, &hb);
-	pfree(any);
-}
-
-static void
-table_scan(HybridState *st, const SiftTidBridge *br, F2Arg *a)
-{
-	SiftStoreScanOpts o = {.rel = st->heap,.store = st->table,.snap = st->css.ss.ps.state->es_snapshot,.preds = st->table_quals.preds,.npreds = st->table_quals.npreds,
-		.leaves = br || st->scan_columns ? st->leaves : NULL,.nleaves = br || st->scan_columns ? st->nleaves : 0,.bridge = br,.bridge_seen = &st->granules_seen,.bridge_skipped = &st->granules_skipped};
-
-	if (st->table_quals.possible)
-		sift_f2_store_scan_sink(&o, f2_sink, a);
+	return (SiftHybridScan) {.heap = st->heap,.index = st->store_index,.snap = st->css.ss.ps.state->es_snapshot,.keys = st->scan_keys,.nkeys = st->nscan,
+		.ext_preds = st->ext_preds,.n_ext_preds = st->n_ext_preds,.leaves = br || st->scan_columns ? st->leaves : NULL,.nleaves = br || st->scan_columns ? st->nleaves : 0,.bridge = br,
+		.granules_seen = &st->granules_seen,.granules_skipped = &st->granules_skipped,.parts_skipped = &st->parts_skipped,.heap_decide = br && st->heap_decide,
+		.quals = st->table_quals};
 }
 
 static void
 col_scan(HybridState *st, const SiftTidBridge *br, SiftHybridSink sink, void *sink_arg)
 {
-	F2Arg		a = {sink, sink_arg, st->table != NULL};
-	IndexScanDesc scan;
+	const SiftHybridScan s = scan_of(st, br);
 
-	if (st->table != NULL)
-	{
-		table_scan(st, br, &a);
-		return;
-	}
-	scan = sift_index_beginscan(st->heap, st->store_index, st->css.ss.ps.state->es_snapshot, st->nscan);
-	index_rescan(scan, st->scan_keys, st->nscan, NULL, 0);
-	if (st->n_ext_preds > 0 || br)
-		sift_f2_scan_set_ext_preds(scan, st->ext_preds, st->n_ext_preds, &st->parts_skipped);
-	if (br)
-	{
-		sift_f2_scan_set_bridge(scan, br, &st->granules_seen, &st->granules_skipped);
-		if (st->heap_decide)
-			sift_f2_scan_set_heap_decide(scan);
-	}
-	sift_f2_scan_sink_maybe(scan, f2_sink, &a, br || st->scan_columns ? st->leaves : NULL, br || st->scan_columns ? st->nleaves : 0);
-	index_endscan(scan);
+	st->ops->hybrid->scan(&s, sink, sink_arg);
 }
 
 static void
@@ -285,7 +237,7 @@ init_quals(HybridState *st, CustomScan *cs)
 			   *residual_forms = NIL,
 			   *exists_forms = NIL;
 	VarMap		to_heap = {cs->custom_scan_tlist, NULL, false},
-				to_index = {cs->custom_scan_tlist, st->store_index, st->table != NULL};
+				to_index = {cs->custom_scan_tlist, st->store_index, st->is_table};
 	int			i = 0;
 
 	foreach_ptr(Expr, q, quals)
@@ -309,7 +261,7 @@ init_quals(HybridState *st, CustomScan *cs)
 				break;
 			default:
 				heap_forms = lappend(heap_forms, map_var((Node *) q, &to_heap));
-				SIFT_INVARIANT(st->table == NULL, "sift: a sift_table takes only standard quals in a hybrid scan");
+				SIFT_INVARIANT(!st->is_table, "sift: a sift_table takes only standard quals in a hybrid scan");
 				st->ext = lappend(st->ext, sift_hybrid_ext_init(&st->css.ss.ps, &hq, q, sift_col_rel(st->store_index)->first[hq.col + 1]));
 		}
 		i++;
@@ -414,22 +366,16 @@ eval_quals(HybridState *st)
 static double
 surviving_granules(HybridState *st)
 {
-	IndexScanDesc scan = sift_index_beginscan(st->heap, st->store_index, st->css.ss.ps.state->es_snapshot, st->nscan);
-	uint64		n;
+	const SiftHybridScan s = scan_of(st, NULL);
 
-	index_rescan(scan, st->scan_keys, st->nscan, NULL, 0);
-	if (st->n_ext_preds > 0)
-		sift_f2_scan_set_ext_preds(scan, st->ext_preds, st->n_ext_preds, NULL);
-	n = sift_f2_scan_survey(scan);
-	index_endscan(scan);
-	return (double) n;
+	return (double) st->ops->hybrid->survey(&s);
 }
 
 /* The estimate the planner made, with what the bound values say: the documents the query matches and the granules the structured quals leave */
 bool
 sift_hybrid_has_store_quals(const HybridState *st)
 {
-	return st->table != NULL ? st->table_quals.npreds > 0 : st->nscan > 0 || st->n_ext_preds > 0;
+	return st->is_table ? st->ops->hybrid->table_has_preds(st->table_quals) : st->nscan > 0 || st->n_ext_preds > 0;
 }
 
 /* The rows of tid[0..n) left in live that the heap shows: the rows of an all-visible page are no heap check, the others are one each */
@@ -503,8 +449,10 @@ sift_hybrid_open(HybridState *st, CustomScan *cs, EState *estate, Relation heap)
 	st->heap_decide = true;
 	st->scan_tlist = cs->custom_scan_tlist;
 	st->text_index = index_open(st->text_oid, AccessShareLock);
-	if (st->host == SIFT_HYB_HOST_TABLE)
-		st->table = sift_f2_store_open(heap);
+	st->is_table = st->host == SIFT_HYB_HOST_TABLE;
+	st->ops = sift_store_ops_for_oid(st->is_table ? RelationGetRelid(heap) : st->store_oid, st->is_table);
+	if (st->is_table)
+		st->ops->schema(RelationGetRelid(heap), true, &st->tsch);
 	else
 		st->store_index = index_open(st->store_oid, AccessShareLock);
 	st->iinfo = BuildIndexInfo(st->text_index);
@@ -513,8 +461,8 @@ sift_hybrid_open(HybridState *st, CustomScan *cs, EState *estate, Relation heap)
 	st->heapslot = table_slot_create(st->heap, NULL);
 	st->cxt = sift_mem_allocset_create(estate->es_query_cxt, "sift hybrid scan");
 	init_quals(st, cs);
-	if (st->table != NULL)
-		sift_f2_store_compile_quals(heap, st->table, st->std_quals, st->cxt, &st->table_quals);
+	if (st->is_table)
+		st->table_quals = st->ops->zone->compile_quals(heap, st->std_quals, st->cxt);
 	else
 	{
 		ExecIndexBuildScanKeys(ps, st->store_index, st->std_quals, false, &st->keys, &st->nkeys, &st->rtkeys, &st->nrt, &arrkeys, &narr);
@@ -522,7 +470,7 @@ sift_hybrid_open(HybridState *st, CustomScan *cs, EState *estate, Relation heap)
 		ExecIndexBuildScanKeys(ps, st->store_index, st->hint_quals, false, &st->hint_keys, &st->nhint, &st->hint_rtkeys, &st->nhrt, &arrkeys, &narr);
 		SIFT_INVARIANT(narr == 0, "sift: the index of a hybrid scan takes an array qual as one key");
 	}
-	st->store = (SiftHybridStore) {.host = st->host,.hot_chains = st->table == NULL,.exact_quals = true,.arg = st,.scan_quals = store_scan_quals,.scan_bridge = store_scan_bridge};
+	st->store = (SiftHybridStore) {.host = st->host,.hot_chains = !st->is_table,.exact_quals = true,.arg = st,.scan_quals = store_scan_quals,.scan_bridge = store_scan_bridge};
 }
 
 void
