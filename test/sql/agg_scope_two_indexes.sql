@@ -1,0 +1,22 @@
+-- Two scope indexes of one table, neither with the summed column: the plan of an aggregate over the join of the facts and the pairs starts its aggregate list on the first index, drops it
+-- when the sum has no measure there, and starts it again on the second; the answer is the join's with sift.agg_scope off.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_create_format1 = off;
+
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT m, 1 + m % 5 FROM generate_series(1, 200) m;
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, amount int) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 200, i % 100 FROM generate_series(1, 4000) i;
+CREATE INDEX events_a ON events USING sift_col (id, dim_a_id) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+CREATE INDEX events_b ON events USING sift_col (id, dim_a_id) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+
+SELECT count(*), sum(e.amount) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3;
+SET sift.agg_scope = off;
+SELECT count(*), sum(e.amount) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3;
+RESET sift.agg_scope;
+DROP TABLE events, tenant_scope;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -584,6 +584,7 @@ static void
 reset_spec(ScopePlan *p, int ord)
 {
 	p->spec = (ScopeSpec) {.relid = RelationGetRelid(p->irel),.is_table = p->index == NULL,.ord = ord,.key_type = p->spec.key_type};
+	p->cap_aggs = 0;
 	p->key_expr = p->lo_expr = p->hi_expr = p->month_expr = NULL;
 	p->scan_tlist = NIL;
 }

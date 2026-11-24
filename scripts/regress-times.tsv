@@ -387,6 +387,7 @@ agg_scope_refusals	0.26
 agg_scope_small_key_choice	0.43
 agg_scope_sublink	1.62
 agg_scope_topn_delta	1.06
+agg_scope_two_indexes	0.30
 agg_scope_twohop_recognition	1.44
 agg_scope_union_group	1.09
 agg_scope_unread	0.18
