@@ -227,7 +227,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 		for (int k = 0; k < xd->nkeys; k++)
 		{
 			ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, xd->fatt[k]), (int) xd->ftype[k]), (int) xd->ktype[k]), xd->kcol[k]);
-			ints = lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(ints, (int) xd->fsrc[k]), xd->fdim[k]), xd->fslot[k]), (int) xd->kvarno[k]), xd->kx[k]);
+			ints = list_concat(lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(ints, (int) xd->fsrc[k]), xd->fdim[k]), xd->fslot[k]), (int) xd->kvarno[k]), xd->kx[k]), list_make1_int(xd->kres[k]));
 		}
 		ints = lappend_int(ints, xd->npay);
 		for (int c = 0; c < xd->npay; c++)
@@ -276,7 +276,7 @@ sift_v6_ext_unpack(const List *l)
 
 		xd->mode = (SiftV6JoinMode) list_nth_int(ints, at++);
 		xd->nkeys = list_nth_int(ints, at++);
-		for (int k = 0; k < xd->nkeys; k++, at += 9)
+		for (int k = 0; k < xd->nkeys; k++, at += 10)
 		{
 			xd->fatt[k] = list_nth_int(ints, at);
 			xd->ftype[k] = (Oid) list_nth_int(ints, at + 1);
@@ -287,6 +287,7 @@ sift_v6_ext_unpack(const List *l)
 			xd->fslot[k] = list_nth_int(ints, at + 6);
 			xd->kvarno[k] = (Index) list_nth_int(ints, at + 7);
 			xd->kx[k] = list_nth_int(ints, at + 8);
+			xd->kres[k] = list_nth_int(ints, at + 9);
 		}
 		xd->npay = list_nth_int(ints, at++);
 		for (int c = 0; c < xd->npay; c++, at += 2)
@@ -365,7 +366,7 @@ sift_v6_ext_resolve(SiftV6Ext *x, const List *custom_plans)
 		const Plan *plan = list_nth(custom_plans, d);
 
 		for (int k = 0; k < xd->nkeys; k++)
-			xd->kcol[k] = column_position(plan, xd->kvarno[k], xd->kcol[k]);
+			xd->kcol[k] = xd->kres[k] > 0 ? (AttrNumber) xd->kres[k] : column_position(plan, xd->kvarno[k], xd->kcol[k]);
 		for (int c = 0; c < xd->npay; c++)
 			xd->pcol[c] = column_position(plan, 0, xd->pcol[c]);
 	}

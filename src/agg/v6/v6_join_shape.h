@@ -27,6 +27,8 @@ typedef struct SiftV6JoinDim
 	int			nkeys;
 	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the column of the relations before the dimension, or the expression of them, that its key is probed with */
 	const Var  *key[SIFT_STAR_MAX_KEYS];
+	int			kpos[SIFT_STAR_MAX_KEYS];	/* the position of a computed key in the tuples of path */
+	const Node *kexpr[SIFT_STAR_MAX_KEYS];	/* the expression of the columns of the dimension that its key is, which its plan computes (NULL: the column key names); key is then a Var of its type only */
 	bool		lateral;		/* a lateral sub-select cut to one row: its keys are the equalities it ties itself to the relations before it with (v6_lateral_plan.h) */
 } SiftV6JoinDim;
 
@@ -49,6 +51,8 @@ extern int	sift_v6_join_role(const SiftV6JoinShape *sh, const Var *v);
 /* the part of the latest relation the columns of e are of; ROLE_NONE when it reads a column the join does not know, or none */
 extern int	sift_v6_join_expr_role(const SiftV6JoinShape *sh, const Node *e);
 extern bool sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var *key);
+/* the same with a key that an expression of the dimension computes */
+extern bool sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, const Node *kexpr);
 extern bool sift_v6_join_add_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode);
 
 #endif							/* SIFT_AGG_V6_JOIN_SHAPE_H */

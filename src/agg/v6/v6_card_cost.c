@@ -8,6 +8,7 @@
 #include "access/sysattr.h"
 #include "catalog/pg_statistic.h"
 #include "nodes/bitmapset.h"
+#include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
@@ -319,6 +320,9 @@ sift_v6_dim_cost(const Path *child)
 {
 	const RelOptInfo *rel = child->parent;
 	Cost		spc_seq;
+
+	if (IsA(child, ProjectionPath))
+		return sift_v6_dim_cost(((const ProjectionPath *) child)->subpath) + child->total_cost - ((const ProjectionPath *) child)->subpath->total_cost;
 
 	if (child->pathtype != T_SeqScan)
 		return child->total_cost;

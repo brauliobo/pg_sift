@@ -30,6 +30,7 @@ typedef struct SiftV6XDim
 	int			fdim[SIFT_STAR_MAX_KEYS];
 	int			fslot[SIFT_STAR_MAX_KEYS];
 	int			kx[SIFT_STAR_MAX_KEYS];		/* a key the probing side computes: 1 + its place in SiftV6Ext.kexpr, the other fields of it naming no column (0: the column they name) */
+	int			kres[SIFT_STAR_MAX_KEYS];	/* a key the plan of the dimension computes from its columns: its position in the tuples of that plan (0: the column kcol names) */
 	Oid			ktype[SIFT_STAR_MAX_KEYS];	/* the type of the key column of the dimension */
 	AttrNumber	kcol[SIFT_STAR_MAX_KEYS];	/* the column of the dimension: its attribute while planned, then its position in the tuples of its plan */
 	Index		kvarno[SIFT_STAR_MAX_KEYS];	/* the relation of the column when the dimension is a join of several (0: the attribute is the one of the only relation) */

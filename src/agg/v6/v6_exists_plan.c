@@ -299,7 +299,11 @@ sift_v6_exists_main_unique(PlannerInfo *root, const SiftV6JoinShape *sh)
 			return false;
 		rte = planner_rt_fetch(bms_singleton_member(jd->rels), root);
 		for (int k = 0; k < jd->nkeys; k++)
+		{
+			if (jd->kexpr[k] != NULL)
+				return false;
 			atts[k] = jd->key[k]->varattno;
+		}
 		if (rte->rtekind != RTE_RELATION || !sift_agg_unique_key(rte->relid, jd->nkeys, 0, atts, NULL))
 			return false;
 	}
