@@ -47,7 +47,6 @@ for name in "${FAMILIES[@]}"; do
 	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
 	(( ++fi ))
 	fresh "${SETUP[$name]}" || bail "$name: setup"
-	REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
 	k=$(op_stmts "$name"; sql cm "${OPS[@]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$name: the operation failed in a clean state"
 	(( k > 0 )) || continue
 	for n in $(( (k + 1) / 2 )) "-$k"; do
