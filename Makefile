@@ -223,6 +223,7 @@ TESTING_REGRESS += col_dead_keys_budget
 TESTING_REGRESS += col_dead_rewrite
 TESTING_REGRESS += col_delta_scoped
 TESTING_REGRESS += col_delta_unchanged
+TESTING_REGRESS += col_delvec_delta_chunks
 TESTING_REGRESS += col_dict_bisect
 TESTING_REGRESS += col_dict_blocks_hash
 TESTING_REGRESS += col_dict_cache
