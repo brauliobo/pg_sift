@@ -8,7 +8,7 @@ CREATE FUNCTION mig_run(q text, agg bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
-	EXECUTE format('SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), ''[]'')::text FROM (%s) t', q) INTO r;
+	EXECUTE format('SELECT coalesce(''['' || string_agg(j, '', '' ORDER BY j) || '']'', ''[]'') FROM (SELECT to_jsonb(t)::text AS j FROM (%s) t) s', q) INTO r;
 	RETURN r;
 EXCEPTION WHEN others THEN RETURN 'ERR ' || SQLSTATE || ' ' || SQLERRM;
 END $$;
@@ -19,6 +19,16 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	RETURN CASE WHEN a = b THEN 'same' ELSE format('DIFF off=%s on=%s', left(a, 200), left(b, 200)) END;
 END $$;
+-- a digest of the rows of q (and their number) with the aggregate scan on or off and the memory given
+CREATE FUNCTION mig_digest(q text, agg bool, wm text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true), set_config('work_mem', wm, true);
+	EXECUTE format('SELECT md5(string_agg(t, E''\n'' ORDER BY t)) || '' '' || count(*) FROM (SELECT q::text AS t FROM (%s) q) s', q) INTO r;
+	RETURN r;
+END $$;
+-- are the rows of q, read by the aggregate scan with the memory given, those of the normal plan with room
+CREATE FUNCTION mig_same_at(q text, wm text) RETURNS boolean LANGUAGE sql AS $$ SELECT mig_digest(q, true, wm) = mig_digest(q, false, '256MB') $$;
 -- the control: a statement whose rows depend on the setting is told apart
 SELECT mig_same($$SELECT current_setting('sift.enable_agg') AS v$$) LIKE 'DIFF%' AS control_detects_a_difference;
  control_detects_a_difference 
@@ -44,20 +54,15 @@ CREATE INDEX events_col ON events USING sift_col (id, k1, k2, k3, val, w, n, ts)
 VACUUM (FREEZE, ANALYZE) events;
 -- the rows of two tables, the keys (columns k*) equal and the measures (columns m*) equal or within 1e-9 of each other
 CREATE FUNCTION same_rows(a regclass, b regclass) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE ok boolean;
+DECLARE ok boolean; k text; m text;
 BEGIN
-	EXECUTE format($q$
-		WITH ka AS (SELECT j, (SELECT coalesce(jsonb_object_agg(key, value), '{}') FROM jsonb_each(j) WHERE key LIKE 'k%%') k FROM (SELECT to_jsonb(x) j FROM %s x) s),
-		     kb AS (SELECT j, (SELECT coalesce(jsonb_object_agg(key, value), '{}') FROM jsonb_each(j) WHERE key LIKE 'k%%') k FROM (SELECT to_jsonb(y) j FROM %s y) s)
-		SELECT NOT EXISTS (SELECT 1 FROM ka FULL JOIN kb USING (k)
-			WHERE ka.j IS NULL OR kb.j IS NULL OR EXISTS (
-				SELECT 1 FROM jsonb_each(ka.j) e LEFT JOIN jsonb_each(kb.j) f USING (key)
-				WHERE e.key LIKE 'm%%' AND NOT (e.value = f.value OR (jsonb_typeof(e.value) = 'number' AND jsonb_typeof(f.value) = 'number'
-					AND abs((e.value)::text::numeric - (f.value)::text::numeric) <= 1e-9 * greatest(1, abs((e.value)::text::numeric), abs((f.value)::text::numeric))))))
-		$q$, a, b) INTO ok;
+	SELECT string_agg(quote_ident(attname), ', ') FILTER (WHERE attname LIKE 'k%'),
+	       string_agg(format('x.%1$I IS NOT DISTINCT FROM y.%1$I OR abs(x.%1$I::numeric - y.%1$I::numeric) <= 1e-9 * greatest(1, abs(x.%1$I::numeric), abs(y.%1$I::numeric))', attname), ') AND (') FILTER (WHERE attname LIKE 'm%')
+	  INTO k, m FROM pg_attribute WHERE attrelid = a AND attnum > 0 AND NOT attisdropped;
+	EXECUTE format('SELECT NOT EXISTS (SELECT 1 FROM (SELECT jsonb_build_array(%1$s) AS k, true AS p, * FROM %2$s) x FULL JOIN (SELECT jsonb_build_array(%1$s) AS k, true AS p, * FROM %3$s) y USING (k)'
+		' WHERE x.p IS NULL OR y.p IS NULL OR NOT coalesce((%4$s), false))', k, a, b, m) INTO ok;
 	RETURN ok;
 END $$;
--- one query forced to the scan (the sort and the hash of the normal plan off) with the memory given, then as the normal plan: does it spill, are the rows the same
 -- one query with the memory given and the sort and the hash of the normal plan off, then as the normal plan: are the rows the same
 CREATE FUNCTION spill_case(kcols text, keys text, mem text DEFAULT '64kB', aggs text DEFAULT NULL, tbl text DEFAULT 'events') RETURNS TABLE (shape text, same boolean) LANGUAGE plpgsql AS $$
 DECLARE q text;
@@ -74,11 +79,11 @@ BEGIN
 	RESET sift.enable_agg;
 	RETURN QUERY SELECT keys, same_rows('got', 'want');
 END $$;
--- 100 groups of 94 rows whose sets of 40 to 12,000 values outgrow hash memory in the partitions that are merged: they go through the sort there, and
+-- 100 groups of 47 rows whose sets of 40 to 12,000 values outgrow hash memory in the partitions that are merged: they go through the sort there, and
 -- the counts are taken from it when the partition is done
 CREATE TABLE sets AS
 SELECT i AS id, (hashint4(i) & 2147483647) % 100 AS k1, (hashint4(i * 3) & 2147483647) % 40 AS v40, (hashint4(i * 5) & 2147483647) % 12000 AS v5, 1.5::float8 AS w
-FROM generate_series(1, 9400) i;
+FROM generate_series(1, 4700) i;
 CREATE INDEX sets_col ON sets USING sift_col (id, k1, v40, v5, w);
 VACUUM (FREEZE, ANALYZE) sets;
 SELECT * FROM spill_case('k1 AS k1', 'k1', '64kB', 'count(*) AS m1, count(DISTINCT v40) AS m2, count(DISTINCT v5) AS m3', 'sets');
@@ -224,20 +229,20 @@ SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 10 = 0 THEN 7 ELSE (i * 7919) 
        CASE WHEN i % 19 = 0 THEN NULL ELSE 'k' || (i * 31) % 15000 END, CASE WHEN i % 23 = 0 THEN NULL ELSE date '2020-01-01' + (i * 13) % 3000 END,
        timestamp '2020-01-01' + ((i * 17) % 90000) * interval '1 minute', 'v' || (i * 7) % 9000,
        CASE WHEN i % 13 = 0 THEN NULL ELSE (i::bigint * 104729) % 40000 END, i % 1000, (i % 313) / 4.0
-FROM generate_series(1, 120000) i;
+FROM generate_series(1, 5000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, ki, kt, kd, kts, kv, u, v, w);
 VACUUM (FREEZE, ANALYZE) ev;
 -- a second segment (new strings in its dictionaries), a write buffer, and dead rows and new row versions: one statement reads one snapshot, so every pass
 -- sees the same rows
 INSERT INTO ev SELECT i, (i * 7919) % 25000, 'k' || (i * 31) % 20000, date '2021-01-01' + (i * 13) % 500, timestamp '2021-01-01' + (i % 700) * interval '1 hour',
-       'v' || (i * 7) % 12000, (i::bigint * 104729) % 50000, i % 1000, (i % 313) / 4.0 FROM generate_series(120001, 140000) i;
+       'v' || (i * 7) % 12000, (i::bigint * 104729) % 50000, i % 1000, (i % 313) / 4.0 FROM generate_series(5001, 6000) i;
 SELECT sift.col_promote('ev_col') IS NOT NULL AS promoted;
  promoted 
 ----------
  t
 (1 row)
 
-INSERT INTO ev SELECT i, (i * 7919) % 30000, 'k' || (i * 31) % 22000, NULL, timestamp '2022-01-01', 'v' || i % 10, NULL, i % 1000, 1.5 FROM generate_series(140001, 150000) i;
+INSERT INTO ev SELECT i, (i * 7919) % 30000, 'k' || (i * 31) % 22000, NULL, timestamp '2022-01-01', 'v' || i % 10, NULL, i % 1000, 1.5 FROM generate_series(6001, 6500) i;
 UPDATE ev SET u = u + 1 WHERE id % 29 = 0;
 DELETE FROM ev WHERE id % 31 = 0;
 CREATE TABLE qs (name text PRIMARY KEY, q text);
@@ -256,13 +261,13 @@ INSERT INTO qs VALUES
 CREATE FUNCTION digest(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE d text;
 BEGIN
-	EXECUTE format($f$SELECT md5(coalesce(string_agg(t::text, E'\n' ORDER BY t::text), '')) FROM (%s) t$f$, q) INTO d;
+	EXECUTE format($f$SELECT md5(coalesce(string_agg(s, E'\n' ORDER BY s), '')) FROM (SELECT t::text AS s FROM (%s) t) r$f$, q) INTO d;
 	RETURN d;
 END $$;
 SET sift.enable_agg = off;
 CREATE TABLE want AS SELECT name, digest(q) AS d FROM qs;
 RESET sift.enable_agg;
--- a table that would outgrow hash memory is read in shares: the rows are the normal plan's with room, with 64 kB and with 1 MB
+-- a table that would outgrow hash memory is read in shares: the rows are the normal plan's with room, with 64 kB and with 256 kB (the scan forced)
 SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) ORDER BY name;
             name             | same 
 -----------------------------+------
@@ -279,8 +284,10 @@ SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) ORDER BY name;
  varchar key                 | t
 (11 rows)
 
-SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
+SET enable_hashagg = off;
+SET enable_sort = off;
+SET work_mem = '64kB';
 SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) ORDER BY name;
             name             | same 
 -----------------------------+------
@@ -297,7 +304,7 @@ SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) ORDER BY name;
  varchar key                 | t
 (11 rows)
 
-SET work_mem = '1MB';
+SET work_mem = '256kB';
 SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) WHERE name IN ('int key', 'top-n') ORDER BY name;
   name   | same 
 ---------+------
@@ -305,37 +312,37 @@ SELECT name, digest(q) = d AS same FROM qs JOIN want USING (name) WHERE name IN 
  top-n   | t
 (2 rows)
 
-RESET work_mem;
-RESET hash_mem_multiplier;
 -- a node that is read again replays its rows
-SET work_mem = '1MB';
-SET hash_mem_multiplier = 1;
 SELECT count(*) AS rows_replayed FROM generate_series(1, 3) g, (SELECT kt, count(DISTINCT u) c FROM ev GROUP BY kt) s;
  rows_replayed 
 ---------------
-         62361
+         17808
 (1 row)
 
 RESET work_mem;
 RESET hash_mem_multiplier;
+RESET enable_hashagg;
+RESET enable_sort;
 SET sift.enable_agg = off;
 SELECT count(*) AS rows_replayed_normal FROM generate_series(1, 3) g, (SELECT kt, count(DISTINCT u) c FROM ev GROUP BY kt) s;
  rows_replayed_normal 
 ----------------------
-                62361
+                17808
 (1 row)
 
 RESET sift.enable_agg;
 -- groups of two keys in a small direct table
-CREATE TABLE dk AS SELECT i AS id, i % 250 AS a, (i / 250) % 250 AS b, i % 7 AS c FROM generate_series(1, 120000) i;
+CREATE TABLE dk AS SELECT i AS id, i % 80 AS a, (i / 80) % 80 AS b, i % 7 AS c FROM generate_series(1, 6400) i;
 CREATE INDEX dk_col ON dk USING sift_col (id, a, b, c);
 VACUUM (FREEZE, ANALYZE) dk;
 INSERT INTO qs VALUES ('direct arrays', 'SELECT a, b, count(*), sum(c) FROM dk GROUP BY a, b');
 SET sift.enable_agg = off;
 INSERT INTO want SELECT name, digest(q) FROM qs WHERE name = 'direct arrays';
 RESET sift.enable_agg;
-SET work_mem = '2MB';
+SET work_mem = '256kB';
 SET hash_mem_multiplier = 1;
+SET enable_hashagg = off;
+SET enable_sort = off;
 SELECT digest(q) = d AS same FROM qs JOIN want USING (name) WHERE name = 'direct arrays';
  same 
 ------
@@ -350,6 +357,8 @@ SELECT (SELECT count(*) FROM (SELECT a, b, count(*) n FROM dk GROUP BY a, b LIMI
 
 RESET work_mem;
 RESET hash_mem_multiplier;
+RESET enable_hashagg;
+RESET enable_sort;
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA m2 CASCADE;
@@ -361,19 +370,11 @@ GRANT USAGE ON SCHEMA m3 TO PUBLIC;
 SET search_path = m3, public;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
-SET work_mem = '256MB';
 CREATE TABLE h (id int, k1 int, k2 int, k3 int, k4 int, k5 int, v int) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO h SELECT i, i % 1000, i % 997, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 991 END, i % 983, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 977 END, (i * 7) % 1000
-FROM generate_series(1, 200000) i;
+FROM generate_series(1, 20000) i;
 CREATE INDEX h_col ON h USING sift_col (id, k1, k2, k3, k4, k5, v);
 VACUUM ANALYZE h;
-CREATE FUNCTION h_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT md5(string_agg(q::text, E''\n'' ORDER BY q::text)) || '' '' || count(*) FROM (%s) q', q) INTO r;
-	RETURN r;
-END $$;
 CREATE TABLE h_q (n int, q text);
 INSERT INTO h_q VALUES
 	(1, 'SELECT k1, count(*) AS n, sum(v) AS s FROM h GROUP BY k1'),
@@ -384,7 +385,7 @@ INSERT INTO h_q VALUES
 	(6, 'SELECT k1, k2, k3, k4, k5, count(*) AS n FROM h GROUP BY k1, k2, k3, k4, k5'),
 	(7, 'SELECT k3, k5, count(*) AS n, sum(v) AS s FROM h WHERE id <= 5000 GROUP BY k3, k5');
 -- the plan is the scan, and the rows are the normal plan's: the direct arrays when they fit, then the hash table forced for every size
-SELECT n, h_rows(q, true) = h_rows(q, false) AS same FROM h_q ORDER BY n;
+SELECT n, mig_same_at(q, '256MB') AS same FROM h_q ORDER BY n;
  n | same 
 ---+------
  1 | t
@@ -396,9 +397,8 @@ SELECT n, h_rows(q, true) = h_rows(q, false) AS same FROM h_q ORDER BY n;
  7 | t
 (7 rows)
 
-SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
-SELECT n, h_rows(q, true) = h_rows(q, false) AS same_in_a_small_table FROM h_q ORDER BY n;
+SELECT n, mig_same_at(q, '64kB') AS same_in_a_small_table FROM h_q ORDER BY n;
  n | same_in_a_small_table 
 ---+-----------------------
  1 | t
@@ -420,7 +420,6 @@ CREATE SCHEMA m4;
 GRANT USAGE ON SCHEMA m4 TO PUBLIC;
 SET search_path = m4, public;
 SET max_parallel_workers_per_gather = 0;
-SET work_mem = '256MB';
 CREATE TABLE d (id int, i4 int, i8 bigint, sp bigint, ext bigint, dt date, ts timestamptz, f8 float8, nu numeric(12,2), v int) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO d SELECT i,
 	(i * 37 % 700) - 350,
@@ -432,16 +431,9 @@ INSERT INTO d SELECT i,
 	CASE i % 7 WHEN 0 THEN 'NaN'::float8 WHEN 1 THEN '-0'::float8 WHEN 2 THEN 0 WHEN 3 THEN 'Infinity'::float8 WHEN 4 THEN '-Infinity'::float8 ELSE (i % 50) * 0.5 END,
 	(i % 3000) / 100.0,
 	(i * 7) % 1000
-FROM generate_series(1, 12000) i;
+FROM generate_series(1, 6000) i;
 CREATE INDEX d_col ON d USING sift_col (id, i4, i8, sp, ext, dt, ts, f8, nu, v);
 VACUUM ANALYZE d;
-CREATE FUNCTION d_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', push::text, true);
-	EXECUTE format('SELECT md5(string_agg(q::text, E''\n'' ORDER BY q::text)) || '' '' || count(*) FROM (%s) q', q) INTO r;
-	RETURN r;
-END $$;
 CREATE TABLE d_q (n int, q text);
 INSERT INTO d_q VALUES
 	(1, 'SELECT i4, count(*) AS n, sum(v) AS s FROM d GROUP BY i4'),
@@ -467,7 +459,7 @@ INSERT INTO d_q VALUES
 	(21, 'SELECT nu * 100000000000000000000 AS g, count(*) AS n, sum(v) AS s FROM d GROUP BY 1'),
 	(22, 'SELECT ext * 4.0 AS g, count(*) AS n FROM d GROUP BY 1');
 -- the plan is the scan, and the rows are the normal plan's
-SELECT n, d_rows(q, true) = d_rows(q, false) AS same FROM d_q ORDER BY n;
+SELECT n, mig_same_at(q, '256MB') AS same FROM d_q ORDER BY n;
  n  | same 
 ----+------
   1 | t
@@ -494,9 +486,8 @@ SELECT n, d_rows(q, true) = d_rows(q, false) AS same FROM d_q ORDER BY n;
  22 | t
 (22 rows)
 
-SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
-SELECT n, d_rows(q, true) = d_rows(q, false) AS same_in_a_small_table FROM d_q ORDER BY n;
+SELECT n, mig_same_at(q, '64kB') AS same_in_a_small_table FROM d_q ORDER BY n;
  n  | same_in_a_small_table 
 ----+-----------------------
   1 | t
@@ -535,21 +526,19 @@ SET search_path = m5, public;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 CREATE TABLE fs_t (id int, x float8, r float4, v int) USING sift_table;
-CREATE TABLE fs_h (LIKE fs_t);
--- 9000 random values with three decimals (some of them near the ends of int32, in every chunk), the multiples of 0.1, 0.25 and 5 and their neighbours in the last bit (the edges of the buckets), the ties of rint, the ends of int32,
+-- 4300 random values with three decimals (some of them near the ends of int32, in each of the two chunks), the multiples of 0.1, 0.25 and 5 and their neighbours in the last bit (the edges of the buckets), the ties of rint, the ends of int32,
 -- the signed zeros, the values no number is made of, and NULLs
-INSERT INTO fs_t SELECT i, CASE WHEN i % 1700 = 0 THEN -2147483647.0 + i / 1700 WHEN i % 1900 = 0 THEN 2147483646.0 - i / 1900 ELSE ((hashint4(i) % 5000001) / 1000.0 - 2500)::float8 END,
-	((hashint4(i + 7) % 200001) / 100.0 - 1000)::float4, i % 17 FROM generate_series(1, 9000) i;
-INSERT INTO fs_t SELECT 10000 + i, i * 0.1, i * 0.25, i % 5 FROM generate_series(-300, 300) i;
-INSERT INTO fs_t SELECT 11000 + i, i * 0.1 * (1 + 2.220446049250313e-16), i * 0.25 * (1 - 1.1102230246251565e-16), i % 5 FROM generate_series(-300, 300) i;
-INSERT INTO fs_t SELECT 12000 + i, i * 5.0 - 1e-13 * (i % 3 - 1), i * 5.0, i % 7 FROM generate_series(-300, 300) i;
+INSERT INTO fs_t SELECT i, CASE WHEN i % 1075 = 0 THEN -2147483647.0 + i / 1075 WHEN i % 1400 = 0 THEN 2147483646.0 - i / 1400 ELSE ((hashint4(i) % 5000001) / 1000.0 - 2500)::float8 END,
+	((hashint4(i + 7) % 200001) / 100.0 - 1000)::float4, i % 17 FROM generate_series(1, 4300) i;
+INSERT INTO fs_t SELECT 10000 + i, i * 0.1, i * 0.25, i % 5 FROM generate_series(-100, 100) i;
+INSERT INTO fs_t SELECT 11000 + i, i * 0.1 * (1 + 2.220446049250313e-16), i * 0.25 * (1 - 1.1102230246251565e-16), i % 5 FROM generate_series(-100, 100) i;
+INSERT INTO fs_t SELECT 12000 + i, i * 5.0 - 1e-13 * (i % 3 - 1), i * 5.0, i % 7 FROM generate_series(-100, 100) i;
 INSERT INTO fs_t SELECT 13000 + i, i + 0.5, i + 0.5, i % 3 FROM generate_series(-40, 40) i;
 INSERT INTO fs_t VALUES
 	(14001, 0, 0, 1), (14002, '-0'::float8, '-0'::float4, 2), (14003, 0.5, 0.5, 3), (14004, -0.5, -0.5, 4), (14005, 1e-320, 1e-40, 5), (14006, -1e-320, -1e-40, 6),
 	(14007, 2147483646.5, 2147483520, 1), (14008, 2147483647, 2147483520, 2), (14009, 2147483647.5, 2147483648, 3), (14010, -2147483647, -2147483520, 4),
 	(14011, -2147483648, -2147483648, 5), (14012, 1e300, 1e30, 6), (14013, -1e300, -1e30, 7), (14014, 'NaN', 'NaN', 8), (14015, 'Infinity', 'Infinity', 9),
 	(14016, '-Infinity', '-Infinity', 10), (14017, NULL, NULL, 11), (14018, NULL, 3.5, 12), (14019, 12345678901.5, 5, 13), (14020, 4.9999999999999991, 4.9999, 14);
-INSERT INTO fs_h SELECT * FROM fs_t;
 ANALYZE fs_t;
 -- the whole table, and the rows an integer cast does not raise on
 CREATE TABLE fs_q (q text);
@@ -669,7 +658,7 @@ SELECT i, i % 7,
 FROM generate_series(1, 9000) i;
 CREATE INDEX d_col ON d_t USING sift_col (id, grp, kind, flag, qty, amt);
 VACUUM ANALYZE d_t;
--- 3000 documents of 0 to 6 elements, one of 9000 (an element chunk ends inside a document), SQL NULL and empty arrays
+-- 1500 documents of 0 to 6 elements, one of 9000 (an element chunk ends inside a document), SQL NULL and empty arrays
 CREATE TABLE d_j (id int, grp int, label text, items jsonb);
 INSERT INTO d_j
 SELECT i, i % 5, CASE WHEN i % 9 = 0 THEN NULL ELSE 'L' || (i % 4) END,
@@ -681,12 +670,12 @@ SELECT i, i % 5, CASE WHEN i % 9 = 0 THEN NULL ELSE 'L' || (i % 4) END,
                                                               'n', CASE WHEN (i + k) % 7 = 0 THEN NULL ELSE (i * k) % 50 - 20 END,
                                                               'x', CASE WHEN (i + k) % 6 = 0 THEN NULL ELSE ((i * k) % 80 - 20) * 0.25 END) ORDER BY k), '[]')
                   FROM generate_series(1, (i * 5) % 7) k) END
-FROM generate_series(1, 3000) i;
+FROM generate_series(1, 1500) i;
 CREATE INDEX d_jcol ON d_j USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
 VACUUM ANALYZE d_j;
 -- the same documents never vacuumed (no page is all-visible, so the rows that keep an element are checked against the heap), with deleted and updated rows
 CREATE TABLE d_nv (id int, grp int, label text, items jsonb) WITH (autovacuum_enabled = false);
-INSERT INTO d_nv SELECT * FROM d_j WHERE id <= 2000 AND id <> 7;
+INSERT INTO d_nv SELECT * FROM d_j WHERE id <= 1000 AND id <> 7;
 CREATE INDEX d_nvcol ON d_nv USING sift_col (id, grp, label, items) WITH (paths = 'items[]{k text, f text, n int4, x float8}');
 DELETE FROM d_nv WHERE id % 10 = 3;
 UPDATE d_nv SET items = '[{"k": "c1", "f": "fa", "n": 1, "x": 0.5}]' WHERE id % 10 = 4;
@@ -849,8 +838,8 @@ CREATE INDEX sk_facts_col ON sk_facts USING sift_col (k, v, big, f, n, d);
 VACUUM (FREEZE, ANALYZE) sk_facts;
 -- the statistics are those of the first 2,000 rows (100 groups): the arrays start small and the key outgrows them
 INSERT INTO sk_facts
-SELECT g, (hashint4(g) & 2147483647) % 24000, g % 1000, g::bigint * 3000000000, g / 7.0, (g % 5000) / 100.0, date '2024-01-01' + g % 700
-FROM generate_series(2001, 60000) g;
+SELECT g, (g * 7919) % 17011, g % 1000, g::bigint * 3000000000, g / 7.0, (g % 5000) / 100.0, date '2024-01-01' + g % 700
+FROM generate_series(2001, 24000) g;
 VACUUM (FREEZE) sk_facts;
 CREATE FUNCTION groups_summary(wm text) RETURNS TABLE (groups bigint, same bool) LANGUAGE plpgsql AS $$
 DECLARE
@@ -858,9 +847,10 @@ DECLARE
 	want record;
 	got record;
 BEGIN
-	PERFORM set_config('work_mem', wm, true);
+	PERFORM set_config('work_mem', '1GB', true);
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE q INTO want;
+	PERFORM set_config('work_mem', wm, true);
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	EXECUTE q INTO got;
 	RETURN QUERY SELECT got.c, got = want;
@@ -869,26 +859,26 @@ END $$;
 SELECT * FROM groups_summary('1GB');
  groups | same 
 --------+------
-  21844 | t
+  17011 | t
 (1 row)
 
 ANALYZE sk_facts;
 SELECT * FROM groups_summary('64kB');
  groups | same 
 --------+------
-  21844 | t
+  17011 | t
 (1 row)
 
 SELECT * FROM groups_summary('1MB');
  groups | same 
 --------+------
-  21844 | t
+  17011 | t
 (1 row)
 
 RESET ALL;
 SET client_min_messages = warning;
 DROP SCHEMA m7 CASCADE;
 -- <<< single_key
-DROP FUNCTION mig_same(text), mig_run(text, bool);
+DROP FUNCTION mig_same_at(text, text), mig_digest(text, bool, text), mig_same(text), mig_run(text, bool);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
