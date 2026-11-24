@@ -328,7 +328,7 @@ acc_sum(const CubeAgg *g, int64 n, SiftSrcI128 isum, double fsum, V6Acc *out)
 	if (n == 0)
 		return;
 	if (g->is_float)
-		v6acc_set_f64(out, fsum);
+		*out = v6g_acc_of_f64_sum(fsum, 0, n);
 	else
 		v6acc_set_i128(out, (SiftI128) {(uint64) isum, (int64) (isum >> 64)});
 }
