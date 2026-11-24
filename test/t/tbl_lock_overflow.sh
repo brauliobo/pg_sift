@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The row locks of a sift_table past the 128 stripes of 64 entries of shared memory: writers on disjoint rows hold more entries than the stripes take, the entries of a full stripe go to chunks of
 # dynamic shared memory (sift._test_rowlock_stats), and no writer holds the relation to wait for another. Two writers in one transaction each hold 4,200 rows of two tables (8,400 entries, more than
 # the stripes hold) and a gate (an advisory lock a test holds) makes the second one reach a full stripe while the first still has rows to lock: a writer that holds the relation for it waits for the
