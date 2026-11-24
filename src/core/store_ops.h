@@ -104,13 +104,19 @@ typedef struct SiftStoreStats
  * scan_rows: the rows of an ORDER BY .. LIMIT of one table go to rows instead of the groups, and to totals as well when the statement carries the aggregates of the whole set; star: the dimensions
  * a join of the fact table reads (index NULL: heap is a sift_table, which quals say what it decides).
  */
+#define SIFT_ROWS_TOTALS	0x01	/* folds the aggregates of the whole set into totals */
+#define SIFT_ROWS_DERIVED	0x02	/* sorts by keys the scan computes from columns */
+#define SIFT_ROWS_STAR		0x04	/* reads the dimensions of a join (star) */
+#define SIFT_ROWS_TEXT		0x08	/* takes the chunks of a text match */
+#define SIFT_ROWS_ALL		(SIFT_ROWS_TOTALS | SIFT_ROWS_DERIVED | SIFT_ROWS_STAR | SIFT_ROWS_TEXT)
+
 typedef struct SiftOrderOps
 {
 	bool		(*sorted_by) (Oid relid, bool is_table, const int *atts, int n);
 	int			(*lead_att) (Oid relid, bool is_table);
 	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, struct SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals,
 							  Snapshot snap, struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
-	bool		rows_extras;	/* scan_rows also folds the aggregates of the whole set into totals, reads the dimensions of a join (star) and takes the chunks of a text match */
+	uint8		rows_serves;	/* what scan_rows takes beyond the best rows of one relation: SIFT_ROWS_* */
 	/* the source of the Top-N tournament over the parts of an index (NULL, or false: the best rows are those of a sort of the rows the source gives) */
 	bool		(*topn_open) (EState *estate, const struct SiftV6TopNSpec *spec, const struct SiftV6Input *in, const struct SiftV6Vexpr *quals, struct SiftV6TopNSource *dst);
 } SiftOrderOps;

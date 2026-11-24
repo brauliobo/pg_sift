@@ -87,14 +87,17 @@ sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 		ExplainPropertyText("Lookup Joins", spec->join_desc, es);
 }
 
-/* the format keeps the best rows of the relation, and what the spec asks beyond them (the aggregates of the whole set, the keys computed from columns, the dimensions of a join, a text match) when it serves that */
+/* the format keeps the best rows of the relation, and what the spec asks beyond them (the aggregates of the whole set, the keys computed from columns, the dimensions of a join, a text match) when it serves that;
+ * a key computed from columns is the value of the column in the heap row, which only a store that reads its values exactly gives */
 static bool
 rows_served(const V6Plan *p)
 {
 	const SiftOrderOps *order = p->ops->order;
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	const uint8 asks = (p->spec.naggs > 0 ? SIFT_ROWS_TOTALS : 0) | (p->spec.nderive > 0 ? SIFT_ROWS_DERIVED : 0) | (p->spec.ext != NULL ? SIFT_ROWS_STAR : 0) |
+		(OidIsValid(p->spec.text_indexoid) ? SIFT_ROWS_TEXT : 0);
 
-	return order != NULL && order->scan_rows != NULL &&
-		(order->rows_extras || (p->spec.naggs == 0 && p->spec.nderive == 0 && p->spec.ext == NULL && !OidIsValid(p->spec.text_indexoid)));
+	return order != NULL && order->scan_rows != NULL && (order->rows_serves & asks) == asks && (p->spec.nderive == 0 || sift_v6_values_exact(&rel));
 }
 
 bool
