@@ -35,6 +35,7 @@ extern const SiftStoreParOps sift_v1_par_ops;
 extern const SiftOrderOps v1_order_ops;
 extern const SiftPreaggOps v1_preagg_ops;
 extern const SiftJsonbOps v1_jsonb_ops;
+extern void sift_v1_unnest_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 extern const SiftHybridOps v1_hybrid_ops;
 
 /* The predicates of a scan of a sift_table: the clauses of the statement's index quals over its attributes, and the executor whose parameters they read */
@@ -86,6 +87,7 @@ typedef struct SiftV1ElemSpec
 	int			nchild;
 	int			child_leaf[SIFT_V1_MAX_ELEM_COLS];
 	SiftVecType child_type[SIFT_V1_MAX_ELEM_COLS];
+	bool		child_kind[SIFT_V1_MAX_ELEM_COLS];	/* the column is the kind of the member (SIFT_ELEM_KIND_VALUE) the leaf holds, not its value: a row that has an element without one cannot tell a missing member from a JSON null */
 } SiftV1ElemSpec;
 
 /*
@@ -131,7 +133,7 @@ extern const SiftV1ElemBatch *sift_v1_source_elems(SiftV6Source *src);
 extern void sift_v1_strview(MemoryContext cx, SiftStrView *sv, const SiftSrcDict *dict, uint32 code);
 
 /* The vector types the leaves of the shredded array of a layout are read as: false when the array or one of the columns of its elements is not one the elements of a source are read from (the array is read from the heap row) */
-extern bool sift_v1_elem_spec(const SiftSrcLayout *lay, int group_leaf, int nchild, const int *child_leaf, const SiftVecType *child_type, SiftV1ElemSpec *out);
+extern bool sift_v1_elem_spec(const SiftSrcLayout *lay, int group_leaf, int nchild, const int *child_leaf, const SiftVecType *child_type, const bool *child_kind, SiftV1ElemSpec *out);
 
 /*
  * The float8 of a member of a map of a document (v1_store_ops_member.c) as a column of a source: the leaf of the values of the map named by the keys of path (a document attribute att; -1: the index holds

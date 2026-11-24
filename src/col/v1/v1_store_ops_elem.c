@@ -54,10 +54,12 @@ sift_v1_strview(MemoryContext cx, SiftStrView *sv, const SiftSrcDict *dict, uint
 
 /* a column of the elements the leaf holds as the vector type says: an integer or a boolean as int8, a float as float8, a text as a string view of the codes of its dictionary */
 static bool
-child_holds(const SiftSrcLeaf *l, SiftVecType type)
+child_holds(const SiftSrcLeaf *l, SiftVecType type, bool kind)
 {
 	if (l->kind != SCL_SCALAR || l->wide || l->scale != 0 || l->typid == NUMERICOID || l->arrhead || l->arrlen != 0)
 		return false;
+	if (kind)
+		return type == SVEC_I64;
 	switch (type)
 	{
 		case SVEC_I64:
@@ -72,22 +74,25 @@ child_holds(const SiftSrcLeaf *l, SiftVecType type)
 }
 
 bool
-sift_v1_elem_spec(const SiftSrcLayout *lay, int group_leaf, int nchild, const int *child_leaf, const SiftVecType *child_type, SiftV1ElemSpec *out)
+sift_v1_elem_spec(const SiftSrcLayout *lay, int group_leaf, int nchild, const int *child_leaf, const SiftVecType *child_type, const bool *child_kind, SiftV1ElemSpec *out)
 {
 	const SiftSrcLeaf *g;
 
 	if (group_leaf < 0 || group_leaf >= lay->nleaves || nchild < 1 || nchild > SIFT_V1_MAX_ELEM_COLS)
 		return false;
 	g = &lay->leaf[group_leaf];
-	if (g->kind != SCL_ARRAY || g->parent >= 0 || g->path != NIL)
+	if ((g->kind != SCL_ARRAY && g->kind != SCL_OBJECT) || g->parent >= 0 || g->path != NIL)
 		return false;
 	*out = (SiftV1ElemSpec) {.group_leaf = group_leaf,.nchild = nchild};
 	for (int c = 0; c < nchild; c++)
 	{
-		if (child_leaf[c] < 0 || child_leaf[c] >= lay->nleaves || lay->leaf[child_leaf[c]].parent != group_leaf || !child_holds(&lay->leaf[child_leaf[c]], child_type[c]))
+		const bool	kind = child_kind != NULL && child_kind[c];
+
+		if (child_leaf[c] < 0 || child_leaf[c] >= lay->nleaves || lay->leaf[child_leaf[c]].parent != group_leaf || !child_holds(&lay->leaf[child_leaf[c]], child_type[c], kind))
 			return false;
 		out->child_leaf[c] = child_leaf[c];
 		out->child_type[c] = child_type[c];
+		out->child_kind[c] = kind;
 	}
 	return true;
 }
@@ -120,6 +125,16 @@ range_overflows(const uint64 *ovf, uint32 from, uint32 to)
 	return false;
 }
 
+/* whether one of the elements [from, to) of a leaf has no value: a missing member and a JSON null look the same, and a kind column tells them apart */
+static bool
+range_has_null(const uint8 *isnull, uint32 from, uint32 to)
+{
+	for (uint32 i = from; isnull != NULL && i < to; i++)
+		if (isnull[i])
+			return true;
+	return false;
+}
+
 /* an element of the array has a value in none of the columns read: the shredder keeps an element that is no object (a number, a string, a null, an array) as an object with no key, which is no object to PostgreSQL */
 static bool
 empty_element(const SiftV1Elems *e, const SiftSrcVec *const *child, uint32 el)
@@ -137,7 +152,7 @@ row_held(const SiftV1Elems *e, const SiftSrcVec *group, const SiftSrcVec *const 
 	if ((group->isnull != NULL && group->isnull[o]) || (group->ovf != NULL && bit_at(group->ovf, o)))
 		return false;
 	for (int c = 0; c < e->spec.nchild; c++)
-		if (range_overflows(child[c]->ovf, group->eoff[o], group->eoff[o + 1]))
+		if (range_overflows(child[c]->ovf, group->eoff[o], group->eoff[o + 1]) || (e->spec.child_kind[c] && range_has_null(child[c]->isnull, group->eoff[o], group->eoff[o + 1])))
 			return false;
 	for (uint32 el = group->eoff[o]; e->spec.objects && el < group->eoff[o + 1]; el++)
 		if (empty_element(e, child, el))
@@ -148,6 +163,11 @@ row_held(const SiftV1Elems *e, const SiftSrcVec *group, const SiftSrcVec *const 
 static void
 put_value(const SiftV1Elems *e, int c, const SiftSrcVec *v, uint32 src, void *data, uint32 dst, MemoryContext cx)
 {
+	if (e->spec.child_kind[c])
+	{
+		((int64 *) data)[dst] = SIFT_ELEM_KIND_VALUE;
+		return;
+	}
 	switch (e->spec.child_type[c])
 	{
 		case SVEC_F64:

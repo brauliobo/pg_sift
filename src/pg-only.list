@@ -759,6 +759,11 @@ col/v1_engine/v1_store_ops_hybrid.c
 col/v1_engine/v1_store_ops_jsonb.c
 col/v1_engine/v1_store_ops_order.c
 col/v1_engine/v1_store_ops_preagg.c
+col/v1_engine/v1_store_ops_unnest.c
+col/v1_engine/v1_store_ops_unnest.h
+col/v1_engine/v1_store_ops_unnest_emit.c
+col/v1_engine/v1_store_ops_unnest_keys.c
+col/v1_engine/v1_store_ops_unnest_test.c
 col/v1/verify.c
 col/v1/wbuf.h
 col/v1/wbuf/
