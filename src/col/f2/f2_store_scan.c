@@ -27,6 +27,7 @@
 #include "col/f2/l0_stage.h"
 #include "col/f2/part_vis.h"
 #include "col/f2/pend_del.h"
+#include "col/f2/pin_win.h"
 #include "core/memtrack.h"
 #include "core/tidbridge.h"
 #include "table/f2/f2_blob.h"
@@ -67,6 +68,9 @@ struct SiftStoreScan
 	int			ncheck;
 	bool		wide;
 	bool		possible;
+	SiftF2Sink	sink;			/* sift_f2_store_scan_sink: where the granules a thread left go */
+	void	   *sink_arg;
+	bool		replaying;		/* the granules of the window are being read: none goes back to it */
 	bool	   *offer_decided;	/* a sift_table with a granule sink: what no zone or skipping index of the table decides, per predicate (never a predicate) */
 	const SiftZone **offer_zones;
 	bool	   *offer_exceptions;
@@ -553,6 +557,24 @@ bridge_wants(const SiftStorePart *p, uint32 g)
 	return wanted;
 }
 
+static void part_replay(void *arg, const void *host, SiftF2PartPin *pin, uint32 g);
+
+/* The granule shows every row to the snapshot as the stored values do (no version, delete, patch or form of its own to look at), so a thread folds it as the sink would: the window takes it */
+static bool
+part_handed_over(SiftStorePart *p, uint32 g)
+{
+	const SiftStoreScan *s = p->s;
+	const SiftTblVis *v = &s->tvis;
+	bool		eligible;
+
+	if (s->o->pinwin == NULL || s->replaying)
+		return false;
+	eligible = (p->px == NULL || !sift_pdel_idx_may_hit_granule(p->px, &p->pin->tidx[g])) && s->o->npreds == 0 && s->o->bridge == NULL && !v->serializable && v->snap->snapshot_type == SNAPSHOT_MVCC &&
+		(p->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 &&
+		((p->pin->gdir[g].flags & SIFT_GDESC_ALL_FROZEN) != 0 || (FullTransactionIdIsValid(v->snap_xmin) && sift_vis_part_inserts_settled(&p->pin->desc, v->snap_xmin)));
+	return sift_pin_win_take_table(s->o->pinwin, s->o->rel, s->store->schema, p->e, p->pin, g, eligible, part_replay, (void *) s);
+}
+
 static bool
 part_load_granule(SiftStorePart *p)
 {
@@ -562,7 +584,7 @@ part_load_granule(SiftStorePart *p)
 	if (!p->started)
 		part_open_pin(p);
 	while (p->pin != NULL && part_next_granule_id(p, &g))
-		if (bridge_wants(p, g) && !granule_answered(p, g))
+		if (bridge_wants(p, g) && !granule_answered(p, g) && !part_handed_over(p, g))
 		{
 			p->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->pin, g);
 			if (s->delta != NULL)
@@ -592,6 +614,8 @@ part_close(SiftStorePart *p)
 	part_release_granule(p);
 	part_release_pin(p);
 	MemoryContextDelete(p->gcx);
+	pfree(p->views);
+	pfree(p->active);
 	pfree(p);
 }
 
@@ -608,6 +632,26 @@ part_new(SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, c
 	p->views = MemoryContextAllocZero(s->cx, sizeof(ColView) * s->store->ncols);
 	p->active = MemoryContextAlloc(s->cx, sizeof(int) * Max(s->ncheck, 1));
 	return p;
+}
+
+/* A granule the window took, read and given to the sink as the scan reads it */
+static void
+part_replay(void *arg, const void *host, SiftF2PartPin *pin, uint32 g)
+{
+	SiftStoreScan *s = arg;
+	SiftStorePart *p = part_new(s, host, &pin->desc, NULL);
+	SiftF2Batch b;
+
+	p->pin = sift_f2_pin_open(s->o->rel, s->store, &pin->desc, pin->part_id);
+	p->nspans = 1;
+	p->spans[0][0] = p->g = g;
+	p->spans[0][1] = g + 1;
+	p->started = true;
+	s->replaying = true;
+	while (sift_f2_store_part_next(p, &b))
+		s->sink(s->sink_arg, &b);
+	s->replaying = false;
+	part_close(p);
 }
 
 /* ---- the partitions ---- */
@@ -769,10 +813,14 @@ scan_table(const SiftStoreScanOpts *o, SiftF2Sink sink, void *arg)
 	SiftStoreScan *s = sift_f2_store_scan_open(o);
 	SiftF2Batch b;
 
+	s->sink = sink;
+	s->sink_arg = arg;
 	for (List *run; (run = sift_f2_store_scan_next_run(s, false)) != NIL;)
 		foreach_ptr(SiftStorePart, p, run)
 			while (sift_f2_store_part_next(p, &b))
 				sink(arg, &b);
+	if (o->pinwin != NULL)
+		o->pinwin_done(arg);
 	sift_f2_store_scan_close(s);
 }
 

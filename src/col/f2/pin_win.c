@@ -25,6 +25,7 @@ typedef struct SiftPinPart
 	int			npreds;
 	const SiftColSchema *schema;
 	bool		tids_unneeded;
+	const void *host;			/* what the scan that listed the part knows it by (SiftPinReplay) */
 } SiftPinPart;
 
 typedef struct PinJob
@@ -44,8 +45,9 @@ struct SiftPinWin
 	MemoryContext cx;
 	Relation	rel;
 	Snapshot	snap;
-	F2Scan	   *scan;
-	const SiftColSchema *schema;
+	F2Scan	   *scan;			/* the scan of an index that listed the granules */
+	SiftPinReplay replay;		/* the scan of a table that did */
+	void	   *replay_arg;
 	bool	   *want;			/* per leaf of the schema: the chunk is read for the granule */
 	int			nleaves;
 	int			ncols;
@@ -176,28 +178,53 @@ sift_pin_win_zone_range(const SiftPinWin *w, int64 *min, int64 *max)
 
 /* The part of the scan the pin and the predicate set belong to, the first time a granule of it is handed over */
 static uint32
-part_of(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp)
+part_of(SiftPinWin *w, Relation rel, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, const SiftColPred *preds, int npreds, bool tids_unneeded, const void *host)
 {
 	SiftPinPart *p;
 
-	if (w->nparts > 0 && w->parts[w->nparts - 1].pp.cf == pp->cf && w->parts[w->nparts - 1].pin->part_gen == pin->part_gen)
+	if (w->nparts > 0 && w->parts[w->nparts - 1].pp.cf == pp->cf && w->parts[w->nparts - 1].host == host && w->parts[w->nparts - 1].pin->part_gen == pin->part_gen)
 		return w->nparts - 1;
 	p = &w->parts[w->nparts];
 	p->pin = sift_f2_scan_pin(rel, &pin->desc, pin->part_id);
 	p->pp = *pp;
-	p->preds = s->preds;
-	p->npreds = s->npreds;
+	p->preds = preds;
+	p->npreds = npreds;
 	p->schema = schema;
-	p->tids_unneeded = s->tids_unneeded;
+	p->tids_unneeded = tids_unneeded;
+	p->host = host;
 	return w->nparts++;
+}
+
+/* The granule into the list; false when the window cannot take it */
+static bool
+list_granule(SiftPinWin *w, Relation rel, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, const SiftColPred *preds, int npreds, bool tids_unneeded, const void *host,
+			 uint32 g, uint32 decided)
+{
+	const SiftGranuleDesc *gd = &pin->gdir[g];
+	PinJob		job = {.granule = g,.nrows = gd->nrows,.decided = decided};
+
+	for (int c = 0; c < w->ncols; c++)
+		if (w->want[c] && (sift_f2_exc_has(pp->exc, pp->nexc, g, c) || schema->cols[c].path[0] != '\0'))
+			return false;
+	if (gd->data_len > PIN_WIN_RECORD_MAX || w->njobs >= PIN_WIN_ITEMS_MAX)
+		return false;
+	if (w->nparts == PIN_WIN_PARTS_MAX && (w->parts[w->nparts - 1].pp.cf != pp->cf || w->parts[w->nparts - 1].host != host || w->parts[w->nparts - 1].pin->part_gen != pin->part_gen))
+		return false;
+	job.part = part_of(w, rel, schema, pin, pp, preds, npreds, tids_unneeded, host);
+	if (w->zone_leaf >= 0)
+		note_zone(w, &job, sift_f2_pin_zones(rel, pin, w->zone_leaf), g);
+	if (w->njobs == w->cap)
+		w->jobs = repalloc(w->jobs, sizeof(PinJob) * (w->cap *= 2));
+	w->jobs[w->njobs++] = job;
+	w->rows += gd->nrows;
+	return true;
 }
 
 bool
 sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, uint32 g, const bool *decided, const SiftPendDelIndex *px,
 				  Snapshot snap)
 {
-	const SiftGranuleDesc *gd = &pin->gdir[g];
-	PinJob		job = {.granule = g,.nrows = gd->nrows};
+	uint32		mask = 0;
 
 	if (w->head > 0)
 	{
@@ -205,30 +232,44 @@ sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *s
 		return false;
 	}
 	w->refused++;
-	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > 32 || gd->data_len > PIN_WIN_RECORD_MAX ||
-		w->njobs >= PIN_WIN_ITEMS_MAX || sift_cdi_scan_granule_patched(s, g) || !w->part_ok(w->part_arg, &pin->desc))
+	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > 32 || sift_cdi_scan_granule_patched(s, g) ||
+		!w->part_ok(w->part_arg, &pin->desc))
 		return false;
 	for (int k = 0; k < s->npreds; k++)
 	{
 		if (!decided[k] && (!s->cf_ok[k] || sift_f2_exc_has(pp->exc, pp->nexc, g, s->preds[k].col)))
 			return false;
-		job.decided |= (uint32) decided[k] << k;
+		mask |= (uint32) decided[k] << k;
 	}
-	for (int c = 0; c < w->ncols; c++)
-		if (w->want[c] && (sift_f2_exc_has(pp->exc, pp->nexc, g, c) || schema->cols[c].path[0] != '\0'))
-			return false;
-	if (w->nparts == PIN_WIN_PARTS_MAX && (w->parts[w->nparts - 1].pp.cf != pp->cf || w->parts[w->nparts - 1].pin->part_gen != pin->part_gen))
+	if (!list_granule(w, rel, schema, pin, pp, s->preds, s->npreds, s->tids_unneeded, NULL, g, mask))
 		return false;
-	job.part = part_of(w, rel, s, schema, pin, pp);
-	if (w->zone_leaf >= 0)
-		note_zone(w, &job, sift_f2_pin_zones(rel, pin, w->zone_leaf), g);
-	if (w->njobs == w->cap)
-		w->jobs = repalloc(w->jobs, sizeof(PinJob) * (w->cap *= 2));
-	w->jobs[w->njobs++] = job;
-	w->refused--;
-	w->rows += gd->nrows;
 	w->scan = s;
-	w->schema = schema;
+	w->refused--;
+	return true;
+}
+
+bool
+sift_pin_win_take_table(SiftPinWin *w, Relation rel, const SiftColSchema *schema, const void *host, SiftF2PartPin *pin, uint32 g, bool eligible, SiftPinReplay replay, void *replay_arg)
+{
+	static const PartPreds none;
+	int			nexc;
+	PartPreds	pp = none;
+
+	if (w->head > 0)
+	{
+		w->head--;
+		return false;
+	}
+	w->refused++;
+	if (!eligible || pin->col_map != NULL)
+		return false;
+	pp.exc = sift_f2_pin_exc(rel, pin, &nexc);
+	pp.nexc = nexc;
+	if (!list_granule(w, rel, schema, pin, &pp, NULL, 0, false, host, g, 0))
+		return false;
+	w->replay = replay;
+	w->replay_arg = replay_arg;
+	w->refused--;
 	return true;
 }
 
@@ -313,10 +354,18 @@ sift_pin_win_replay(SiftPinWin *w, uint32 jobno)
 	const PinJob *job = &w->jobs[jobno];
 	const SiftPinPart *pt = &w->parts[job->part];
 	F2Scan	   *s = w->scan;
-	const SiftPartDesc *part = s->part;
-	const bool	tids_unneeded = s->tids_unneeded;
-	struct SiftPinWin *taken = s->pinwin;
+	const SiftPartDesc *part;
+	bool		tids_unneeded;
+	struct SiftPinWin *taken;
 
+	if (pt->host != NULL)
+	{
+		w->replay(w->replay_arg, pt->host, pt->pin, job->granule);
+		return;
+	}
+	part = s->part;
+	tids_unneeded = s->tids_unneeded;
+	taken = s->pinwin;
 	s->pinwin = NULL;
 	s->part = &pt->pin->desc;
 	s->tids_unneeded = pt->tids_unneeded;

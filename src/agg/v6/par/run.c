@@ -44,7 +44,7 @@ par_plain_col(const SiftV6Col *c)
 static bool
 shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 {
-	if (spec->is_table || spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid))
+	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid))
 		return false;
 	for (int k = 0; k < lengthof(kinds); k++)
 	{

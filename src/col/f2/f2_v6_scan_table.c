@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "agg/v6/v6.h"
+#include "agg/v6/par/run.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_star_run.h"
@@ -52,6 +53,15 @@ unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
 		s->fact[i] = &s->cols[i].vec;
 }
 
+static void
+table_par_done(void *arg)
+{
+	V6Scan	   *s = arg;
+
+	sift_v6_par_end(s->par);
+	s->par = NULL;
+}
+
 void
 sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star, SiftV6ChunkFn next_chunk,
 						  void *chunk_arg)
@@ -71,6 +81,13 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	s->preagg = quals->possible && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
 	o.gran_sink = s->preagg != NULL ? sift_v6_preagg_try_granule : NULL;
 	o.gran_arg = s->preagg;
+	if (quals->possible && quals->npreds == 0 && next_chunk == NULL && s->pipe == NULL && s->unnest == NULL && s->rows == NULL && s->group != NULL)
+		s->par = sift_v6_par_begin(s->spec, s->group, NULL, s->stats, store->att_first, rel, snap, NULL, NULL);
+	if (s->par != NULL)
+	{
+		o.pinwin = sift_v6_par_window(s->par);
+		o.pinwin_done = table_par_done;
+	}
 	if (quals->possible && next_chunk == NULL)
 		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
 	while (quals->possible && next_chunk != NULL && next_chunk(chunk_arg, &bridge))

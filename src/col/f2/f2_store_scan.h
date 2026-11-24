@@ -40,6 +40,8 @@ typedef struct SiftStoreScanOpts
 	uint64	   *bridge_skipped;
 	const struct SiftPlanSnapshot *plan;	/* the manifest the caller made its own plan from: read as it is; NULL: the current one */
 	bool		emit_maybe;		/* the sink takes the rows no predicate could decide on the stored values (SiftF2Batch.maybe) */
+	struct SiftPinWin *pinwin;	/* a sift_table scan with no predicate: the granules settled for the snapshot go to the window instead of the sink (col/f2/pin_win.h) */
+	void		(*pinwin_done) (void *sink_arg);	/* after the last granule, with the scan still open: the owner of the window runs it and the scan replays what the threads left */
 	SiftF2GranSink gran_sink;	/* a sift_table: offered each granule before it is loaded, as sift_f2_scan_set_gran_sink offers those of an index; NULL: none */
 	void	   *gran_arg;
 } SiftStoreScanOpts;

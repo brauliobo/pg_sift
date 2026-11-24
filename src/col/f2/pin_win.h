@@ -57,6 +57,15 @@ extern SiftPinWin *sift_pin_win_new(Relation rel, Snapshot snap, const int *leav
 extern bool sift_pin_win_take(SiftPinWin *w, Relation rel, struct F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const struct PartPreds *pp, uint32 g, const bool *decided,
 							  const SiftPendDelIndex *px, Snapshot snap);
 
+/*
+ * Called by the scan of a sift_table for every granule it would read, with whether the granule is for the threads (eligible: every row of it is there for the snapshot as the stored values show
+ * it, no predicate, pending delete, column delta or column map touches it): true when the window took it. host is the partition entry of the part, which replay gives back to the scan, with
+ * the pin of the window, to read the granule as it would have
+ */
+typedef void (*SiftPinReplay) (void *arg, const void *host, SiftF2PartPin *pin, uint32 granule);
+extern bool sift_pin_win_take_table(SiftPinWin *w, Relation rel, const SiftColSchema *schema, const void *host, SiftF2PartPin *pin, uint32 g, bool eligible, SiftPinReplay replay,
+									void *replay_arg);
+
 /* What the window holds: granules and their rows */
 extern uint32 sift_pin_win_items(const SiftPinWin *w);
 extern uint64 sift_pin_win_rows(const SiftPinWin *w);
