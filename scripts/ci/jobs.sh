@@ -7,10 +7,13 @@
 # the port block of the lane.
 declare -A J_SUITE J_CLUSTER J_CMD J_AFTER
 J_ID=() SUITES=()
+# skipped ID: the run never queues the job (SKIP_RE of config.sh). A Format 1.0 run queues no job that builds an older release either: those test the upgrade from released formats, which the Format 2.0 run covers
+skipped() { [[ -n $SKIP_RE && $1 =~ $SKIP_RE ]] || { [[ $FORMAT == 1 ]] && needs_git_history "$1"; }; }
 job() {
 	local id=$1
 	[[ -z ${SIFT_CI_JOBS:-} || $id =~ $SIFT_CI_JOBS ]] && [[ ! -v J_SUITE[$id] ]] || return 0   # a job keeps its first place in the queue
 	[[ $id == installcheck-batch* || $id =~ ${SIFT_CI_AFFECTED:-.} ]] || return 0   # affected: the batches are cut from the tests that match (installcheck_batches)
+	skipped "$id" && return 0
 	J_ID+=("$id")
 	J_SUITE[$id]=$2 J_CLUSTER[$id]=$3
 	[[ " ${SUITES[*]-} " == *" $2 "* ]] || SUITES+=("$2")
@@ -24,11 +27,6 @@ flavor_job() {
 	job "$1" "$2" 0 "${@:3}"
 	(( PG_MAJOR >= 18 )) || [[ ! -v J_SUITE[$1] ]] || J_AFTER[$1]=1
 }
-# f2_job ID SUITE CMD...: a high-level suite on Format 2.0, the default format of 6.0, in a cluster of its own (scripts/pgtest.sh run): the cluster of the lane stays on Format 1,
-# which the regression tests expect. f2_tap_shell ID SCRIPT [NAME=VALUE...]: the shell test SCRIPT as the job ID, on Format 2.0
-F2_CLUSTER_MB=50   # the scratch of the cluster of its own, over what the job of the lane needed in the cluster of the lane
-f2_job() { job "$1" "$2" 0 env SIFT_TEST_FORMAT=f2 "$S/pgtest.sh" run "${@:3}"; EST_MB[$1]=$(( ${EST_MB[$1]:-$JOB_MB} + F2_CLUSTER_MB )); }
-f2_tap_shell() { job "tap-shell-$1" tap-shell 0 env SIFT_TEST_FORMAT=f2 "${@:3}" "$S/pgtest.sh" tap "$2"; }
 named() { local n; for n in "$@"; do echo "$n"; done; }
 # rest DIR SUFFIX NAME...: the files test/DIR/*SUFFIX that are not named, so that a new test is queued without editing the lists
 rest() {
@@ -88,6 +86,7 @@ installcheck_batches() {
 	local i=0 t load names b sel=()
 	for t in "$@"; do
 		[[ installcheck-$t =~ ${SIFT_CI_AFFECTED:-.} ]] || continue
+		! skipped "installcheck-$t" || continue
 		[[ -z ${SIFT_CI_ASSERT:-} || ! installcheck-$t =~ $ASSERT_SKIP ]] || continue
 		if regress_solo "$t"; then installcheck "$t"; else sel+=("$t"); fi
 	done

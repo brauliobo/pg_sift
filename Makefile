@@ -839,15 +839,13 @@ $(call colz_probe,ZSTD,zstd)
 # SIFT_HARDEN=pkg|init|1: opt-in compiler hardening (scripts/harden.mk, docs/SAFETY.md)
 include $(dir $(SIFT_MK))scripts/harden.mk
 
-# make check / check-full only run scripts/ci.sh, which builds and installs on its own; PGXS would
+# make check only runs scripts/ci.sh, which builds and installs on its own; PGXS would
 # claim "check" is unsupported, so it is not included for these goals. pg-assert and pg-valgrind build the PostgreSQL of the `assert`
 # and `valgrind` CI lanes once into a cache outside the repo (scripts/pg-assert.sh; PG_ASSERT_MAJOR=17 for the 17 branch).
-ifneq ($(filter check check-full lint dev-check check-scaling-ops pg-assert pg-valgrind,$(MAKECMDGOALS)),)
-.PHONY: check check-full lint dev-check check-scaling-ops pg-assert pg-valgrind
+ifneq ($(filter check lint dev-check check-scaling-ops pg-assert pg-valgrind,$(MAKECMDGOALS)),)
+.PHONY: check lint dev-check check-scaling-ops pg-assert pg-valgrind
 check:
 	scripts/ci.sh quick
-check-full:
-	scripts/ci.sh full
 lint:
 	scripts/lint.sh
 dev-check:

@@ -55,6 +55,9 @@ COMPAT_F1_JOBS='^(compat-f1-fast-gate|tap-031_v51_full_compat|tap-032_v6_dump_re
 # (the SQL surface, the planner and executor hooks, the NEON kernels), the isolation specs, the crash, standby and upgrade tests, the corpus and the plan bands. The differential tests, the fuzzers,
 # the soaks and the slopes run on the PostgreSQL 18 x86 entry
 COMPAT_JOBS='^(installcheck-|isolation-[0-9]+$|isolation-emulated$|tap-(001_crash|002_standby|003_wal_minimal|005_parallel_crash|024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace|006_tbl|007_tbl_logical|020_lookup_shared_concurrent)$|tap-shell-(col_dict_shared_shm|fault_matrix-smoke|pg_upgrade|replica_mixed|replication|store_crash|store_replica|index_build_crash|col_index_crash|col_index_replica|col_crash_matrix|maint_standby|leakcheck_gate|tbl_load_workers)$|plan-gate(-table)?$|corpus$|difftest-col(-tbl|-selftest)?$|isa-baseline$|tools-build$|simd-level$)'
+# the entry of PostgreSQL 19 runs all of it; 17 has no pg_upgrade job (it upgrades from the major before 18), and AArch64 no mixed-version replication job, which builds the older release it replicates
+# from: only the PostgreSQL 18 x86 entry reads the history of the release tags
+COMPAT_JOBS_17=${COMPAT_JOBS/pg_upgrade|/} COMPAT_JOBS_ARM=${COMPAT_JOBS/pg_upgrade|replica_mixed|/}
 if [[ $MODE == affected ]]; then
 	shift
 	OUT=pick
@@ -114,7 +117,7 @@ if [[ $MODE == affected ]]; then
 	fastpg=false
 	for id in "${PICK[@]}"; do [[ $id =~ $FAST && ( $id == installcheck-batch* || $id =~ $FASTRE ) ]] && fastpg=true; done
 	case $OUT in
-		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos musl; do echo "gh:$f $(flag $f)"; done ;;
+		list) echo "${#PICK[@]} of ${#JOBS_ALL[@]} jobs: ${PICK[*]}"; for f in sqlite mariadb replication macos musl f1; do echo "gh:$f $(flag $f)"; done ;;
 		github)
 			echo "jobs=$RE"
 			echo "fast=$FAST"
@@ -123,8 +126,12 @@ if [[ $MODE == affected ]]; then
 			echo "cassert=$cassert"
 			echo "cassertjobs=$ASSERT_JOBS"
 			echo "compat=$COMPAT_JOBS"
+			echo "compat17=$COMPAT_JOBS_17"
+			echo "compatarm=$COMPAT_JOBS_ARM"
 			echo "pg=$( (( ${#PICK[@]} )) && echo true || echo false)"
-			for f in sqlite mariadb replication macos musl; do echo "$f=$(flag $f)"; done
+			for f in sqlite mariadb replication macos musl f1; do echo "$f=$(flag $f)"; done
+			echo "hardened=$([[ " ${PICK[*]} " == *' hardened '* ]] && echo true || echo false)"
+			echo "formula=$([[ $BASE == all || " ${FILES[*]-} " == *' Formula/pg_sift.rb '* ]] && echo true || echo false)"
 			echo "nshards=$( (( ${#PICK[@]} >= ${SIFT_CI_SHARD_MIN:-40} )) && echo 3 || echo 1)"
 			echo "full=$( (( ${#PICK[@]} == ${#JOBS_ALL[@]} )) && [[ $(flag sqlite)$(flag mariadb)$(flag replication) == truetruetrue ]] && echo true || echo false)" ;;
 		pick) "$REPO/scripts/check-neutral.sh" || exit 1   # a change of any file: the wording guard is not a job of the map

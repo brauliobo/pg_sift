@@ -10,8 +10,6 @@ tap-shell-scaling_slope	1400
 tap-shell-mem_slope-1	1330
 tap-shell-mem_slope-3	1290
 tap-shell-mem_idle_series	1270
-tap-shell-mem_slope	1250
-tap-shell-mem_slope_legacy	1250
 tap-shell-col_shrink	1240
 installcheck-batch7	1100
 tap-shell-mem_slope_exact	1070
@@ -49,12 +47,10 @@ installcheck-batch11	570
 tap-006_truncate	570
 installcheck-batch6	560
 tap-shell-col_build_standby_space	530
-plan-gate-calibrate-tuned	520
 tap-015_space	520
 isolation-2	510
 tap-shell-col_merge_flat_memory	510
 installcheck-batch17	490
-plan-gate-calibrate	480
 plan-gate-tuned	460
 tap-shell-col_disk_growth	460
 tap-shell-col_merge_memory	460

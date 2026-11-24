@@ -1,11 +1,9 @@
 # shellcheck shell=bash
-# The constants of the plan that other parts read: the release-library smoke list, the column slices and the job weights that cut the shards.
+# The constants of the plan that other parts read: the release-library smoke list and the job weights that cut the shards.
 # weight_of sets WEIGHT from scripts/weights-*.tsv. Sourced by scripts/ci.sh; not a script of its own.
 STOCK_SMOKE="sift_basic count_scan filter_pushdown_gate rank_score_shapes tbl_basic edge_ddl ops_info"   # see release_library_tests
 SLOW_REGRESS="tbl_bigtx tbl_writepath build_large_docs index_build_postings filter_pushdown facets parallel_scan insert_backpressure parallel_pushdown index_build_thresholds
 	edge_documents rank_semi_join analyze_invariant rank_join rank_prune phrase_positions kernels_simd col_kernels_simd col_enc parallel_build"   # the regression tests that are jobs of their own, longest first
-COL_SLICES_LEAN=8 COL_SLICES_DEEP=12 COL_SLICES_DEEP17=18   # slices of the column differential jobs of the full tier (below): the deep tier cuts them finer so that no job passes the hour, and before 18 runs the first half of twelfths
-COL_SLICES=$COL_SLICES_LEAN; [[ -z ${SIFT_CI_DEEP:-} ]] || COL_SLICES=$COL_SLICES_DEEP
 JOB_WEIGHT_DEFAULT=10
 REGRESS_BATCH_SECS=60 REGRESS_TEST_SECS=1
 declare -A REGRESS_SECS=()
@@ -45,26 +43,18 @@ batch_weights() {
 	while read -r load names; do W_BATCH[installcheck-batch$((++i))]=$(batch_weight "$load"); done < <(regress_pack "${sel[@]}")
 }
 AFTER_LANES=4   # the lanes of a hosted runner: a job that runs after the pool runs alone, so each second of it costs this many lane seconds of the shard
-# the shards are cut by the lane seconds each job took on its PostgreSQL major in a hosted run (scripts/ci-times.py --weights, the run is named in the header of each file; the other jobs
-# weigh JOB_WEIGHT_DEFAULT): scripts/weights-quick.tsv (the quick tier), weights-full.tsv (the full tier), weights-deep.tsv (the deep full tier).
-# Each line is: job, seconds on 17, on 18, on 19 and on arm64; a file without the last two (the full tiers run on x86-64 17 and 18) weighs them like 18.
-declare -A W_QUICK17 W_QUICK18 W_QUICK19 W_QUICKARM W_FULL17 W_FULL18 W_FULL19 W_FULLARM W_DEEP17 W_DEEP18 W_DEEP19 W_DEEPARM
-for tier in quick full deep; do
-	declare -n w17=W_${tier^^}17 w18=W_${tier^^}18 w19=W_${tier^^}19 warm=W_${tier^^}ARM
-	while IFS=$'\t' read -r job a17 a18 a19 aarm; do
-		[[ $job == '#'* ]] || { w17[$job]=$a17; w18[$job]=$a18; w19[$job]=${a19:-$a18}; warm[$job]=${aarm:-$a18}; }
-	done <"$REPO/scripts/weights-$tier.tsv"
-	unset -n w17 w18 w19 warm
-done
-# weight_of JOB [deep [FLAVOUR]]: sets WEIGHT to the weight in seconds of a lane (no subshell: the shard checks ask for it a million times); deep, else the mode of the run, picks the
-# file, FLAVOUR (17, 18, 19, arm; else the one of this runner, FLAVOUR of config.sh) the column
+# the shards are cut by the lane seconds each job took on its PostgreSQL major in a hosted run (scripts/ci-times.py --weights, the run is named in the header of the file; the other jobs
+# weigh JOB_WEIGHT_DEFAULT): scripts/weights-quick.tsv. Each line is: job, seconds on 17, on 18, on 19 and on arm64.
+declare -A W_17 W_18 W_19 W_ARM
+while IFS=$'\t' read -r job a17 a18 a19 aarm; do
+	[[ $job == '#'* ]] || { W_17[$job]=$a17; W_18[$job]=$a18; W_19[$job]=${a19:-$a18}; W_ARM[$job]=${aarm:-$a18}; }
+done <"$REPO/scripts/weights-quick.tsv"
+# weight_of JOB [FLAVOUR]: sets WEIGHT to the weight in seconds of a lane (no subshell: the shard checks ask for it a million times); FLAVOUR (17, 18, 19, arm; else the one of this runner,
+# FLAVOUR of config.sh) picks the column
 weight_of() {
-	local tier=${MODE:-full} fl=${3:-${FLAVOUR:-${PG_MAJOR:-18}}}
-	[[ -z ${2:-} ]] || tier=deep
-	[[ $tier == quick || $tier == deep ]] || tier=full
+	local fl=${2:-${FLAVOUR:-${PG_MAJOR:-18}}}
 	[[ $fl == @(17|19|arm) ]] || fl=18
-	local -n tier_w=W_${tier^^}${fl^^}
-	local dflt=$JOB_WEIGHT_DEFAULT
-	[[ $1 != installcheck-batch* ]] || { (( ${#W_BATCH[@]} )) || batch_weights; WEIGHT=${W_BATCH[$1]:-$dflt}; return; }   # a batch is cut anew by every plan: no hosted run weighed it
-	WEIGHT=${tier_w[$1]:-$dflt}
+	local -n tier_w=W_${fl^^}
+	[[ $1 != installcheck-batch* ]] || { (( ${#W_BATCH[@]} )) || batch_weights; WEIGHT=${W_BATCH[$1]:-$JOB_WEIGHT_DEFAULT}; return; }   # a batch is cut anew by every plan: no hosted run weighed it
+	WEIGHT=${tier_w[$1]:-$JOB_WEIGHT_DEFAULT}
 }

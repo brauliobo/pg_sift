@@ -4,7 +4,7 @@
 # tests run on it. A violation is a trap instruction: the backend dies, the test fails. Complements the ASan flavor (which sees heap and stack
 # but not an overrun inside a palloc chunk or a struct) with checks that cost nothing to enable and run on the release code generation.
 #
-#   scripts/hardened.sh [TEST...]        (SIFT_HARDEN=pkg|init|1, default 1; SIFT_TMP and SIFT_PORT as scripts/pgtest.sh)
+#   scripts/hardened.sh [--quick|TEST...]   (SIFT_HARDEN=pkg|init|1, default 1; SIFT_TMP and SIFT_PORT as scripts/pgtest.sh); --quick: the six tests of the quick tier
 #
 # The default tests are the decoders and the readers of stored bytes: codec, column unit, kernels at every SIMD level, shredder, term
 # blobs, corruption tests, positions, the table AM. scripts/ci.sh runs this as the job `hardened`. SIFT_PREBUILT_HARDENED (scripts/ci-build.sh): the staged root of
@@ -15,7 +15,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 source "$REPO/scripts/source-snapshot.sh"
 TMP=${SIFT_TMP:-/tmp/sift-hardened-$$}
 WORK=$TMP/hardened
-TESTS=("$@")
+QUICK_TESTS=(colcodec_basic col_enc kernels_simd shred_values verify_corrupt query_errors)
+if [[ ${1:-} == --quick ]]; then TESTS=("${QUICK_TESTS[@]}"); else TESTS=("$@"); fi
 (( ${#TESTS[@]} )) || TESTS=(colcodec_basic colcodec_simd col_enc col_kernels_simd kernels_simd kernels_filter shred_values shred_kernels shred_diff
 	verify_corrupt store_corrupt query_errors phrase_positions position_blocks index_build_postings tbl_basic tbl_agg)
 export SIFT_HARDEN=${SIFT_HARDEN:-1}

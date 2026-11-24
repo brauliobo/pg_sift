@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Single entry point for the test suites, with a pass/fail/skip summary.
 #
-#   scripts/ci.sh [quick|full]        (make check | make check-full)
+#   scripts/ci.sh [quick]             (make check)
 #   scripts/ci.sh affected [--list|--github] [BASE]   quick, only the jobs the diff against BASE (default origin/main, with the working tree) can break
 #                                     (scripts/areas.tsv; --list prints them, --github the outputs of the workflow's `changes` job)
 #   scripts/ci.sh stop [DIR]          ends the run of the scratch directory DIR (default $SIFT_CI_TMP) by the pid it recorded in DIR/run.pid, never by a name
@@ -9,8 +9,11 @@
 #   scripts/ci.sh summary [FILE...]   the jobs of the last runs by state and every job that skipped with its reasons, from the one-line-per-job files a run retains in
 #                                     $TMPDIR/sift-ci-summary (default: all of them); fails when a skip gives no reason
 #   scripts/ci.sh --scratch [FILE...] scripts/scratch.tsv (the scratch each job measured, which the scheduler trusts) updated by retained summaries, on stdout
-#   scripts/ci.sh --plan [quick|full] the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
-#   scripts/ci.sh --toolchain [quick|full]   yes when a job of the shard (SIFT_CI_SHARD) compiles, else no: the workflow installs the compiler cache and the tag history only for yes
+#   scripts/ci.sh --plan [quick]      the jobs and whether each runs in the pool or after it; --selftest checks that on every PostgreSQL major
+#   scripts/ci.sh --toolchain [quick]        yes when a job of the shard (SIFT_CI_SHARD) compiles, else no: the workflow installs the compiler and its cache only for yes
+#   scripts/ci.sh --history [quick]          yes when a job of the shard reads a release tag or builds an older release, else no: the workflow fetches the tag history only for yes
+#   SIFT_FORMAT=1 scripts/ci.sh ...   the Format 1.0 run: the testing library creates Format 1.0 (scripts/pgtest.sh), jobs of scripts/ci/format1-skip.txt are not queued (default 2)
+#   SIFT_CI_SKIP=REGEX                jobs whose names match are not queued (the workflow runs `hardened` as a job of its own)
 #
 # quick (default, about a minute on 8 free cores): non-ASan build, small corpora and short runs. installcheck (also against the
 #   release library, without the test-only functions: scripts/release-library-check.sh), isolation (emulated and real), the Perl and shell TAP tests (sift only, fewer crash
@@ -18,20 +21,17 @@
 #   fast-to-detect ones), the differential test of the aggregate pushdown and its self-test (scripts/coldiff.sh, docs/AGG.md), the proof of
 #   the coverage table, a 15 s soak, an 18 s column-index soak (scripts/colsoak.sh) and a
 #   fuzz pass with shorter loops (scripts/fuzz.sh).
-# full: ASan build and clusters, installcheck, the differential test at 5 000 documents, all 16
-#   mutants, every isolation and TAP test (GIN control included), all fuzz targets, GIN-control
-#   and sift soaks (600 s), the column-index soak (300 s) and the server sanitizer report.
-# SANITIZE=1 makes quick run on the ASan build too.
+# SANITIZE=1 makes quick run on the ASan build too (assert.yml runs the fuzzers and the leak set that way, one seed each, weekly). The long soaks (scripts/soak.sh, scripts/colsoak.sh), the 250,000 row
+# plan gates (scripts/plangate.sh --rows 250000) and the exhaustive fault matrix (SIFT_CI_JOBS=fault_matrix) are run by hand.
 #
 # The suites are cut into jobs (a regression test, a TAP file, a differential test...) that a pool of lanes takes from one
 # queue, longest first: SIFT_LANES lanes (default: the cores, at most 8), each with its own cluster (started when its first
 # job needs one) and one shared install, at nice 19. A lane starts a job when the scratch estimated for the jobs running (EST_MB,
-# JOB_MB) plus its own fits CI_BUDGET_MB (quick 1800, full 2000; the first job always runs), so the run stays under 3 GB
+# JOB_MB) plus its own fits CI_BUDGET_MB (1800; the first job always runs), so the run stays under 3 GB
 # however many lanes there are. The scratch directory is $SIFT_CI_TMP (default $TMPDIR/sift-ci-<pid>, /tmp when unset and on macOS), removed
 # when everything passed or the run was interrupted (INT, TERM; KEEP=1 keeps it; a failure keeps it for the logs, a day); a job that passed leaves it at once. On exit, and at the start of
 # the next run (the directories of dead pids), every postmaster under the directory is stopped and the directory removed: no run leaves a cluster behind. The ports are
-# SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (quick 3072, the shard fails; full
-# 8192, 512 more per lane above four). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
+# SIFT_PORT (default 56130) and +10 per lane. A watchdog stops the run when the directory exceeds CI_MAX_MB (3072, the shard fails). SIFT_CI_STATS=1 prints the footprint of the run (peak by component, lane and job, and the
 # memory of the postgres processes) and is how EST_MB is kept up to date. SIFT_CI_JOBS, a regex on the job names
 # (installcheck-facets, tap-001_crash, tap-shell-store_crash, difftest-mutants, soak, fuzz...), runs just those (the regression tests of
 # SLOW_REGRESS and the tests of roles and of the extension's recreation are jobs of their own, the others run 24 to a job, installcheck-batch1..., each one pg_regress run with one leak and
@@ -46,11 +46,10 @@
 # failed. Exit 1 if any suite fails.
 #
 # hardened (scripts/hardened.sh) builds the tree with SIFT_HARDEN=1 (docs/SAFETY.md: stack protector, FORTIFY_SOURCE=3, zero-initialized locals, trap-mode
-# UBSan) in a private copy and runs the regression tests of the decoders on it (quick: six; full: all of them); span-test runs the unit tests of
-# the bounds-checked reader (src/core/span.h) plain and under ASan+UBSan; static (full only, scripts/static.sh) runs clang-tidy, the gcc and
-# clang analyzers and cppcheck where installed, and reports the findings that are not in scripts/static.baseline without failing the run.
+# UBSan) in a private copy and runs the regression tests of the decoders on it (six tests with --quick, all of them without); span-test runs the unit tests of
+# the bounds-checked reader (src/core/span.h) plain and under ASan+UBSan.
 #
-# assert (scripts/assert.sh) and valgrind (scripts/valgrind.sh) are not part of quick or full: they run a PostgreSQL built from source with assertions and
+# assert (scripts/assert.sh) and valgrind (scripts/valgrind.sh) are not part of quick: they run a PostgreSQL built from source with assertions and
 # memory-context checking (and USE_VALGRIND) on the regression subset, plus two TAP tests for assert, when SIFT_CI_JOBS names them (SIFT_CI_JOBS=assert).
 #
 # The last stage, leakcheck, is the leak gate over everything the lanes ran (scripts/leakcheck.sh): the
@@ -71,11 +70,6 @@ usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
 [[ " $* " != *' -h '* && " $* " != *' --help '* ]] || { usage; exit 0; }
 # --times [RESULTS]: the per-job table of a kept run (KEEP=1; default the newest $TMPDIR/sift-ci-*), longest first: job, wall seconds, CPU
 # seconds (client plus server processes), lane, status
-# --shards PG [deep]: the runners of the full tier on that PostgreSQL major, the one place the workflow and the selftest read (the weights below balance the jobs over them)
-if [[ $MODE == --shards ]]; then
-	if [[ -n ${3:-} ]]; then (( ${2:?} == 17 )) && echo 5 || echo 9; else echo 6; fi
-	exit
-fi
 # stop [DIR]: ends the run whose scratch directory is DIR (default $SIFT_CI_TMP) by the pid it recorded there (stop_run in scripts/ci/procs.sh); no other process is looked up or touched
 if [[ $MODE == stop ]]; then
 	source "$REPO/scripts/ci/procs.sh"
@@ -104,6 +98,7 @@ source "$REPO/scripts/ci/procs.sh"
 source "$REPO/scripts/ci/skips.sh"
 source "$REPO/scripts/ci/selftest.sh"
 source "$REPO/scripts/ci/config.sh"
+source "$REPO/scripts/ci/needs.sh"
 source "$REPO/scripts/ci/jobs.sh"
 source "$REPO/scripts/ci/plan.sh"
 source "$REPO/scripts/ci/shards.sh"

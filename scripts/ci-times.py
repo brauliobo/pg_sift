@@ -154,7 +154,7 @@ if __name__ == '__main__':
     ap.add_argument('runs', nargs='*', type=int)
     ap.add_argument('--selftest', action='store_true')
     ap.add_argument('--weights', action='store_true')
-    ap.add_argument('--tier', choices=('quick', 'full'), default='full', help='the jobs the weights come from (--weights)')
+    ap.add_argument('--tier', choices=('quick', 'full'), default='quick', help='the jobs the weights come from (--weights)')
     ap.add_argument('--floor', type=int, default=20, help='seconds under which a job weighs the default (--weights)')
     ap.add_argument('--cache', default=os.path.join(tempfile.gettempdir(), 'ci-times'))
     a = ap.parse_args()

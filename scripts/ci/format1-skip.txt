@@ -1,0 +1,11 @@
+# The jobs a Format 1.0 run (SIFT_FORMAT=1, scripts/ci.sh) does not queue: an extended regular expression on job names for each line, joined by `|`. The Format 2.0 run covers each of
+# them, or it does not depend on the format of the indexes: everything else of the plan runs on both formats. A job that builds an older release is skipped too (scripts/ci/needs.sh).
+# the library users get has no sift.test_create_format1, and the builds and static checks do not change with the format
+^(release-library-regress|hardened|isa-baseline|tools-build|format-isolation|regress-batch|difftest-col-selftest|fast-gate-release|fast-gate-assert)$
+# the canaries of the release library, which only creates Format 2.0
+^perf-gate-
+# the regression tests of Format 2.0 itself, and the ones of Format 1 that set the format by themselves (they run the same on both runs)
+^installcheck-(format2_|table_f2_|f2_|stor_f2_|compat_v1_|format_v1_v2_compat|agg_lateral_flatten_f2$)
+# the Format 2.0 WAL tests, and the upgrade and compatibility tests (a golden v5 cluster, pg_upgrade, the dump and restore)
+^tap-(024_format2_wal|025_format2_minimal_wal|013_upgrade_v5_to_v6|031_v51_full_compat|032_v6_dump_restore_tablespace)$
+^tap-shell-(f2_|pg_upgrade|compat_|old_lib_refusal|upgrade_)

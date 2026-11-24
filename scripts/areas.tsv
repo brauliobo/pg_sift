@@ -3,11 +3,11 @@
 # `=NAME<TAB>ERE` names a group of job names of scripts/ci.sh (`scripts/ci.sh --plan`). Any other row is `PATH<TAB>JOBS`: PATH is an ERE over a changed file,
 # JOBS an ERE over job names in which {NAME} stands for a group and \N for a group of PATH; `-` means no job (the file is mapped, nothing runs), `.` every job. A file
 # takes the union of the rows it matches. A file that no row matches runs every job. The names `gh:sqlite`, `gh:mariadb`, `gh:replication`, `gh:macos` and `gh:musl` are the
-# workflow jobs that are not in scripts/ci.sh. `scripts/ci.sh --selftest` fails when a tracked file matches no row or a job is in no group, so a new
-# test or file is never left out silently. The nightly run and the release check run every job: this map only picks what a push runs.
+# workflow jobs that are not in scripts/ci.sh, and `gh:f1` the run of the Format 1.0 shards (SIFT_FORMAT=1) of a pull request. `scripts/ci.sh --selftest` fails when a tracked file matches no row or a job is in no group, so a new
+# test or file is never left out silently. A dispatch and the release check run every job: this map only picks what a push runs.
 #
 # A row whose JOBS start with `fast:` is read only by the fast tier of a pull request (`scripts/ci.sh affected --github`, `fastjobs`): a file it matches runs
-# the regression tests of its own area there, not of the whole stack above it; the push to main and the nightly run use the rows below, which run the stack.
+# the regression tests of its own area there, not of the whole stack above it; the push to main and a dispatch use the rows below, which run the stack.
 #
 # groups (a job may be in several: the stack col, agg and table is one chain of code, so a change of one runs the groups above it)
 =bm25	^(installcheck-(bm25_(multicol|nontext_unique|field_dl_bm25f|field_phrase|on_conflict|or_score|par_dsm_part|par_part_ranked|returning_score)|hybrid_multimodal_facet|scaling_ops_gate|bm25_lazy_tail_maxscore|bm25_tidbridge|core_tidbridge|hybrid_tidbridge_bm25|core_ring_wrap|extlock_errors|quarantine_|roles_|ddl_hooks|introspection_shapes|locks_view|shared_memory|shm_ledger|shm_manifest|upgrade_path|sift_basic|bm25_bitmap_recheck|bm25_wbuf_read_promote|bm25_wbuf_wide_bloom|bm25_budgets|bm25_dead_windows|bm25_dict_block_limit|bm25_rescan_context|bm25_stats|bm25_negation_dml_score|limits_|core_radix_sort|core_range|errors_hints|array_any_|facet_counts|field_weights|index_parts|segfmt_mixed|analy[sz]|and_many|build_|count_scan|dead_|bm25_buffer_share|dirty_query|edge_|fuzzy_|facets|fields|filter_pushdown|include_|lang_|index_build_|insert_backpressure|kernels_|list_slice_|live_stats|maint_|merge_fanin|merge_heal|merge_parts|merge_ranges|merge_slope|ops_info|parallel_|phrase_|plan|position_|prefix_|promote_spill|query_|rank_|read_|recheck_|reference|rls_stats|scan_|store_|vacuum_|verify_|wbuf_|write_)|tap-0(0[1-5]|12|22)_|tap-shell-(fault_matrix(-[0-9]+|-smoke)?|fault_matrix_standby(-smoke)?|fault_matrix_workers|mem_budget|quarantine_standby|quarantine_restart|quarantine_concurrent|quarantine_slots|quarantine_txstate|bm25_cold_stems|compat_|library_loaded_twice|old_lib_refusal|extension_lifecycle|roles_|upgrade_check|upgrade_path|pg_upgrade|upgrade_settings|replica_mixed|publication_all_tables|index_|leakcheck_gate|leak_hooks|maint_|replication|store_|vacuum_count|vacuum_parallel_merge|vacuum_standby_cut)|difftest(-nopos|-mutants(-[123])?|-[12])?$|soak(-gin)?$)
@@ -35,7 +35,7 @@
 # the whole build and every harness: a change here can break anything
 ^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
-^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/(ci|nightly)\.yml))	.|{perf}
+^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/workflows/ci\.yml)	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
 ^(test/unit/|scripts/unit-scaling\.sh)	-
 ^test/bench_on/	^(fuzz|hardened|tools-build)$|{ci}
@@ -75,12 +75,12 @@
 ^src/(col/v1/amscan/cost|agg/cost/[a-z]+|agg/order/cost|bm25/planner_path)\.[ch]$	^installcheck|{plan_gate}
 # the source areas
 ^src/bm25/	{bm25}|{dec}|{any}|{search}|gh:sqlite|gh:mariadb|gh:replication
-^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication
+^src/col/	{col}|{agg}|{tbl}|{dec}|{any}|gh:sqlite|gh:mariadb|gh:replication|gh:f1
 # the column format constants (the minor a build writes): the upgrade tests state the formats they expect
 ^src/col/col\.h$	^tap-shell-(extension_lifecycle|upgrade_check)$
-^src/agg/	{agg}|{any}|gh:replication
+^src/agg/	{agg}|{any}|gh:replication|gh:f1
 ^src/agg/	{col}|{tbl}|{ci}
-^src/table/	{tbl}|{any}|gh:replication
+^src/table/	{tbl}|{any}|gh:replication|gh:f1
 ^src/portable[^/]*\.list$	{bm25}|{col}|{dec}|{any}|gh:sqlite|gh:mariadb
 ^src/pg-only\.list$	-
 # the harness of one job selects the jobs that run it (`scripts/ci.sh --selftest` fails when it misses one)
@@ -169,12 +169,12 @@
 ^(scripts/mem-slope(-legacy)?\.py|test/mem-slope(-legacy)?\.tsv|test/idle-series\.tsv|scripts/mem-growth\.allow)$	^tap-shell-(mem_slope|mem_slope_legacy|mem_idle_series)$
 ^scripts/check-mem-growth\.sh$	-
 ^scripts/(audit-gucs\.(pl|sh)|guc-disposition\.psv|check-retired\.sh)$	-
-^(scripts/build-v510-fixture\.sh|test/t/SiftCompat\.pm)$	{compat}
+^(scripts/build-v510-fixture\.sh|test/t/SiftCompat\.pm)$	{compat}|gh:f1
 ^test/proj_helpers\.sql$	^installcheck-proj_|{ci}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	fast:{compat}|{cheap}
-^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}
+^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}|gh:f1
 ^scripts/check-format-isolation\.sh$	^format-isolation$
-^(test/sql/(compat_v1_|format_v1_v2_compat|format2_index_format_compat)|test/t/(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)\.pl)	{compat}
+^(test/sql/(compat_v1_|format_v1_v2_compat|format2_index_format_compat)|test/t/(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)\.pl)	{compat}|gh:f1
 # the Alpine (musl) build has no GNU IFUNC: `.` (the build, src/core/) runs it; these are what only it reads
 ^(scripts/(check-no-ifunc|musl-check)\.sh|packaging/docker/)	gh:musl
 ^scripts/docker-smoke\.sh$	-

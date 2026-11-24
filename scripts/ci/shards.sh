@@ -1,36 +1,15 @@
 # shellcheck shell=bash
 # SIFT_CI_SHARD=K/N: cuts the queue into the slice of this runner, prints the plan for --plan, and refuses a run with no job. Sourced by scripts/ci.sh; not a script of its own.
-# shellcheck shell=bash
 # The jobs are cut by weight (weights.sh: the seconds of a lane each took in a hosted run): the heaviest job goes to the shard with the least load so far, which balances the shards to
 # within a few percent (--selftest checks it, and that the shards are the plan exactly once). Shard 1 runs the checks of the harness. Before PostgreSQL 18 the jobs that run after the
 # pool (flavor installs, serial) are all the last shard's, which starts the pool with their weight already on it, times the lanes of a hosted runner (AFTER_LANES: they run alone, every
 # second of theirs idles the other lanes). A shard queues its jobs heaviest first (heaviest_first): a lane that
 # takes a 6 minute job last ends the shard 6 minutes after the others.
-# TOOLCHAIN_USE: what a test says when it builds, or reads the tags of the repository (a shallow clone would skip it, silently)
-TOOLCHAIN_USE='build_old|old-lib-check|scaling-gate|pg_upgrade|\bmake\b|\bgcc\b|git -C|git (archive|show|tag|describe)'
-# needs_toolchain ID: whether the job compiles (the compiler, the headers of the libraries, the history of the tags): the fuzz harnesses and the analyzers, a test that builds an older release,
-# the 8-page flavour or pg_upgrade's target. Every other job runs on the staged roots of scripts/ci-build.sh
-declare -A NEEDS_TOOLCHAIN
-needs_toolchain() {
-	[[ -v NEEDS_TOOLCHAIN[$1] ]] || { _needs_toolchain "$1" && NEEDS_TOOLCHAIN[$1]=0 || NEEDS_TOOLCHAIN[$1]=1; }
-	return "${NEEDS_TOOLCHAIN[$1]}"
-}
-# uses_toolchain FILE: the code of the test (not its comments, which say "make" and "pg_upgrade" of tests that do neither) builds or reads the tags
-uses_toolchain() { grep -vE '^[[:space:]]*#' "$1" | grep -E "$TOOLCHAIN_USE" >/dev/null; }
-_needs_toolchain() {
-	local f=${1#tap-shell-}
-	case $1 in
-		fuzz|static|valgrind*|assert|massif|asan-leaks) return 0 ;;
-		tap-shell-*) [[ -f $REPO/test/t/$f.sh ]] || f=${f%-*}; uses_toolchain "$REPO/test/t/$f.sh" ;;
-		tap-*) uses_toolchain "$REPO/test/t/${1#tap-}.pl" ;;
-		*) return 1 ;;
-	esac
-}
 # The jobs that build older releases (the scripts of test/t that call build_old or scripts/old-lib-check.sh, and pg_upgrade) all go to the first shard: the workflow caches the built releases
 # for each shard, so a job that moved to another shard when the weights changed built them cold (compat_matrix 721 s and old_lib_refusal 525 s beside 190 and 79 warm, hosted run 42142749980)
-pinned() { # ID: whether the job is one of them. In the quick tier every job that compiles is the first shard's, so that the others install nothing but the server
+pinned() { # ID: whether the job is one of them. Every job that compiles is the first shard's, so that the others install nothing but the server
 	local n
-	[[ $MODE != quick ]] || ! needs_toolchain "$1" || return 0
+	! needs_toolchain "$1" || return 0
 	[[ -n ${OLDLIB_TESTS:-} ]] || OLDLIB_TESTS=" $(grep -l -E 'build_old|old-lib-check' "$REPO"/test/t/*.sh 2>/dev/null | sed 's|.*/||; s|\.sh$||' | tr '\n' ' ')pg_upgrade "
 	for n in $OLDLIB_TESTS; do [[ $1 == "tap-shell-$n" || $1 == "tap-shell-${n}_"* ]] && return 0; done
 	return 1
@@ -45,25 +24,25 @@ shard_loads() {
 	local pool=$1 line id k i
 	SHARD_OF=() LOAD=()
 	for (( k = 0; k < pool; k++ )); do LOAD[k]=0; done
-	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && { weight_of "$id" "${SIFT_CI_DEEP:-}"; LOAD[pool - 1]=$(( LOAD[pool - 1] + WEIGHT * AFTER_LANES )); }; done
-	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || ! pinned "$id" || { weight_of "$id" "${SIFT_CI_DEEP:-}"; SHARD_OF[$id]=0 LOAD[0]=$(( LOAD[0] + WEIGHT )); }; done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] && { weight_of "$id"; LOAD[pool - 1]=$(( LOAD[pool - 1] + WEIGHT * AFTER_LANES )); }; done
+	for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || ! pinned "$id" || { weight_of "$id"; SHARD_OF[$id]=0 LOAD[0]=$(( LOAD[0] + WEIGHT )); }; done
 	local -a NHEAVY=()
 	for (( k = 0; k < pool; k++ )); do NHEAVY[k]=0; done
 	while read -r line; do
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( NHEAVY[i] < NHEAVY[k] || (NHEAVY[i] == NHEAVY[k] && LOAD[i] < LOAD[k]) )) && k=$i; done
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} )) NHEAVY[k]=$(( NHEAVY[k] + 1 ))
-	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || pinned "$id" || [[ ! $id =~ $HEAVY_JOBS ]] || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || pinned "$id" || [[ ! $id =~ $HEAVY_JOBS ]] || { weight_of "$id"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
 	while read -r line; do
 		id=${line#* }; k=0
 		for (( i = 1; i < pool; i++ )); do (( LOAD[i] < LOAD[k] )) && k=$i; done
 		SHARD_OF[$id]=$k LOAD[k]=$(( LOAD[k] + ${line% *} ))
-	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || pinned "$id" || [[ $id =~ $HEAVY_JOBS ]] || { weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
+	done < <(for id in "${J_ID[@]}"; do [[ -v J_AFTER[$id] ]] || pinned "$id" || [[ $id =~ $HEAVY_JOBS ]] || { weight_of "$id"; echo "$WEIGHT $id"; }; done | sort -s -k1,1nr)
 }
 # heaviest_first: J_ID by weight, ties in queue order
 heaviest_first() {
 	local id
-	mapfile -t J_ID < <(for id in "${J_ID[@]}"; do weight_of "$id" "${SIFT_CI_DEEP:-}"; echo "$WEIGHT $id"; done | sort -s -k1,1nr | cut -d' ' -f2)
+	mapfile -t J_ID < <(for id in "${J_ID[@]}"; do weight_of "$id"; echo "$WEIGHT $id"; done | sort -s -k1,1nr | cut -d' ' -f2)
 }
 heaviest_first
 # --plan with SIFT_CI_SHARD=all/N: the plans of the N shards in one run, each line prefixed with the number of its shard (--selftest asks for them all)
@@ -89,9 +68,10 @@ if [[ ${SIFT_CI_SHARD:-} =~ ^([0-9]+)/([0-9]+)$ ]]; then
 	J_ID=("${KEEP_IDS[@]}")
 fi
 (( LANES <= ${#J_ID[@]} )) || LANES=$(( ${#J_ID[@]} > 0 ? ${#J_ID[@]} : 1 ))   # a shard with no job still builds
-# --toolchain: yes when a job of this shard compiles (the workflow installs the toolchain and the history only then), else no
-if [[ $PLAN == toolchain ]]; then
-	for id in "${J_ID[@]}"; do needs_toolchain "$id" && { echo yes; exit 0; }; done
+# --toolchain: yes when a job of this shard compiles (the workflow installs the compiler and the headers only then), else no; --history: yes when a job of this shard reads a release tag
+# (the workflow fetches the history of the tags only then), else no
+if [[ $PLAN == toolchain || $PLAN == history ]]; then
+	for id in "${J_ID[@]}"; do needs_${PLAN/history/git_history} "$id" && { echo yes; exit 0; }; done
 	echo no
 	exit 0
 fi

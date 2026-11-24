@@ -10,7 +10,6 @@ make installcheck               # regression tests against a running server
 make check                      # quick tier in throwaway clusters (~1.5 min on 8 cores)
 scripts/ci.sh affected          # only jobs your diff against origin/main can affect (scripts/areas.tsv)
 scripts/ci.sh affected --focus  # regression tests covering the changed C functions (scripts/focus/)
-make check-full                 # full tier: ASan/UBSan, long soak and fuzz runs, all mutants
 ```
 
 - `make check` and CI scripts require bash 4+ (on macOS, `brew install bash` and place it first on `PATH`).
