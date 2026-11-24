@@ -49,7 +49,8 @@ SELECT i, i % 7, i % 7 + 1,
 			jsonb_build_object('category', (ARRAY['Food', 'Toys', '5', 'Books'])[i % 4 + 1], 'val', (ARRAY['b', 'true', 'a'])[i % 3 + 1], 'dir_a', (ARRAY['dn', 'up', 'up'])[i % 3 + 1], 'score', i % 7 / 2.0)))
 	END
 FROM generate_series(1, 3000) i;
-CREATE TABLE uc (LIKE uh);
+ALTER TABLE uh ADD PRIMARY KEY (id);
+CREATE TABLE uc (LIKE uh INCLUDING INDEXES);
 INSERT INTO uc SELECT * FROM uh;
 CREATE INDEX uc_col ON uc USING sift_col (id, grp, dim_id, items, pe_norm(doc))
 	WITH (paths = 'items[]{category text, kind text, qty int4, price float8}, pe_norm.lang astext, pe_norm.parts[]{category astext, val astext, dir_a astext, score float8}');
@@ -111,6 +112,15 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT sm.derived, count(*) FROM @T r JOIN ud d ON d.id = r.dim_id CROSS JOIN LATERAL jsonb_to_recordset(pe_norm(r.doc) -> ''parts'') AS p(category text, val text) LEFT JOIN um sm ON sm.entity_type = d.typ AND sm.category = p.category AND sm.val = p.val GROUP BY 1',
 	'SELECT d.typ, sm.derived, count(*), sum(r.id) FROM @T r JOIN ud d ON d.id = r.dim_id CROSS JOIN LATERAL jsonb_to_recordset(pe_norm(r.doc) -> ''parts'') AS p(category text, val text, dir_a text) JOIN um sm ON sm.entity_type = d.typ AND sm.category = p.category AND sm.val = p.val WHERE p.dir_a = ''up'' GROUP BY 1, 2',
 	'SELECT sm.derived, count(*) FROM @T r CROSS JOIN LATERAL jsonb_to_recordset(r.items) AS i(category text, kind text) LEFT JOIN um sm ON sm.entity_type = ''t1'' AND sm.category = i.category AND sm.val = ''a'' GROUP BY 1'
+]) q;
+
+-- per-item arms: the keys are the primary key of the table with the columns it fixes (the plan leaves these out of its group list) and an element column, and the aggregates are those of a CASE that
+-- the scan cannot decide as a filter: the sum and the average of the same cast, and of two tests
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT o.id, o.dim_id, p.category, avg(p.score) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, score float8) GROUP BY o.id, o.dim_id, p.category',
+	'SELECT o.id, o.grp, o.dim_id, count(*), sum(p.score) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, score float8) GROUP BY o.id, o.grp, o.dim_id',
+	'SELECT o.id, p.category, avg(CASE WHEN p.val ~ ''^[ab]$'' THEN p.score * 2 END), sum(CASE WHEN p.val ~ ''^[ab]$'' THEN p.score * 2 END) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(category text, val text, score float8) GROUP BY o.id, p.category',
+	'SELECT o.id, o.grp, sum(CASE WHEN p.score > 1 THEN p.score + 1 END), count(CASE WHEN p.score > 1 THEN p.score + 1 END), sum(CASE WHEN p.val = ''a'' THEN p.score END) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(val text, score float8) GROUP BY o.id, o.grp'
 ]) q;
 
 -- traps: the plans and results of PostgreSQL's own (NOT EXISTS, an EXISTS under OR or beside another, an AND among the arms of an OR)

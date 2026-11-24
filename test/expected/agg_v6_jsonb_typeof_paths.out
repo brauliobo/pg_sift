@@ -126,7 +126,7 @@ SELECT same(q) FROM unnest(ARRAY[
                                                                                      same                                                                                     
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same node SELECT count(*) FILTER (WHERE jsonb_typeof(doc->'m') = 'number') AS nums, count(*) FILTER (WHERE jsonb_typeof(doc->'m') IS NULL) AS missing FROM @T
- same normal SELECT grp, count(*) FILTER (WHERE jsonb_typeof(doc->'m') = 'null') AS nulls, sum(id) FILTER (WHERE jsonb_typeof(doc->'a') <> 'string') AS s FROM @T GROUP BY 1
+ same node SELECT grp, count(*) FILTER (WHERE jsonb_typeof(doc->'m') = 'null') AS nulls, sum(id) FILTER (WHERE jsonb_typeof(doc->'a') <> 'string') AS s FROM @T GROUP BY 1
  same node SELECT CASE jsonb_typeof(doc->'s') WHEN 'string' THEN 'text' WHEN 'number' THEN 'num' WHEN 'null' THEN 'nil' ELSE 'other' END AS kind, count(*) FROM @T GROUP BY 1
  same node SELECT sum(CASE WHEN jsonb_typeof(doc->'m') = 'number' THEN 1 ELSE 0 END), sum(CASE WHEN jsonb_typeof(doc->'m') IS NULL THEN id END) FROM @T
  same node SELECT grp, count(*) FROM @T GROUP BY grp, CASE WHEN jsonb_typeof(doc->'a') IN ('number', 'boolean') THEN 1 ELSE 0 END
