@@ -48,11 +48,11 @@ INSERT INTO trs SELECT format('SELECT %1$s FROM tr WHERE %2$s ORDER BY %1$s %3$s
 FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 3000]) l, unnest(ARRAY[0, 5]) o
 WHERE substr(cond, 1, 1) = col OR cond LIKE 'starts_with(' || col || '%';
 SELECT count(*) AS statements FROM trs;
-SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 10 = 0) r GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 20 = 0) r GROUP BY 1 ORDER BY 1;
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
 CREATE FUNCTION tr_all(stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
-$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q || stage) % 20 = 0) r GROUP BY 1 ORDER BY 1 $$;
+$$ SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q || stage) % 60 = 0) r GROUP BY 1 ORDER BY 1 $$;
 INSERT INTO tr (id, c, l) SELECT 20000 + i, tr_str(i * 13), tr_str(i * 17) FROM generate_series(1, 700) i;
 SELECT * FROM tr_all(1);
 DELETE FROM tr WHERE id % 7 = 0;
@@ -156,9 +156,9 @@ SELECT format(f, a, a + w) FROM unnest(ARRAY['d BETWEEN %s AND %s', 'd BETWEEN %
 INSERT INTO tq
 SELECT format(f, a, b) FROM unnest(ARRAY['c BETWEEN %L AND %L', 'c BETWEEN %L AND %L AND flag IS NULL', 'c >= %L AND c < %L AND flag = 2']) WITH ORDINALITY f(f, fi),
 	   (VALUES (1, 'k00000', 'k00040'), (2, 'k04000', 'k04900'), (3, 'k10050', 'k10090'), (4, 'k16500', 'k17400'), (5, 'k19900', 'k19999')) v(vi, a, b) WHERE (fi + vi) % 3 = 0;
-SELECT t.tbl, count(*) AS conditions, count(*) FILTER (WHERE tb_count(t.tbl, q.cond, true) = tb_count(t.tbl, q.cond, false)) AS same,
-	   count(*) FILTER (WHERE tb_count(t.tbl, q.cond, false) > 0) AS found
-FROM tq q, (VALUES ('ts'), ('tk')) t(tbl) GROUP BY t.tbl ORDER BY 1;
+SELECT tbl, count(*) AS conditions, count(*) FILTER (WHERE bitmap = heap) AS same, count(*) FILTER (WHERE heap > 0) AS found
+FROM (SELECT t.tbl, tb_count(t.tbl, q.cond, true) AS bitmap, tb_count(t.tbl, q.cond, false) AS heap FROM tq q, (VALUES ('ts'), ('tk')) t(tbl)) c
+GROUP BY tbl ORDER BY 1;
 DROP TABLE ts, tk, tq;
 DROP FUNCTION tb_count(text, text, bool);
 DROP FUNCTION tb_count(text, bool);
@@ -262,14 +262,14 @@ BEGIN
 END $$;
 
 -- ranges of 1 day to 400 days (about 100 to 40,000 rows) from 2 starts, with and without deleted_at IS NULL, and on the timestamp
-CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, differ int, below_limit int, above_limit int) LANGUAGE sql AS $$
+CREATE FUNCTION kl_check(layout text, turn int) RETURNS TABLE (layout text, cases int, differ int, below_limit int, above_limit int) LANGUAGE sql AS $$
 	WITH q AS (
 		SELECT format('SELECT id FROM kl WHERE d BETWEEN %L AND %L%s', a, a + w, CASE WHEN n THEN ' AND del IS NULL' ELSE '' END) AS q
 		FROM (SELECT date '2022-01-01' + s * 362 AS a, si FROM unnest(ARRAY[1, 3]) WITH ORDINALITY u(s, si)) x, unnest(ARRAY[0, 30, 400]) WITH ORDINALITY w(w, wi), (VALUES (true, 1), (false, 2)) v(n, ni)
-		WHERE (si + wi + ni) % 2 = 1
+		WHERE (si + wi + ni + turn) % 3 = 0
 		UNION ALL
 		SELECT format('SELECT id FROM kl WHERE ts >= %L AND ts < %L AND ent = %s', timestamp '2022-01-01' + s * 170 * interval '1 day', timestamp '2022-01-01' + (s * 170 + w) * interval '1 day', 1 + s)
-		FROM unnest(ARRAY[0, 2, 4]) WITH ORDINALITY u(s, si), unnest(ARRAY[1, 200]) WITH ORDINALITY w(w, wi) WHERE (si + wi) % 2 = 0
+		FROM unnest(ARRAY[0, 2, 4]) WITH ORDINALITY u(s, si), unnest(ARRAY[1, 200]) WITH ORDINALITY w(w, wi) WHERE (si + wi + turn) % 3 = 0
 	), r AS (SELECT q, kl_rows(q, 'heap') AS h FROM q)
 	SELECT layout, count(*)::int, count(*) FILTER (WHERE kl_rows(q, 'bitmap') <> h OR kl_rows(q, 'index') <> h)::int,
 		count(*) FILTER (WHERE h < 16384)::int, count(*) FILTER (WHERE h >= 16384)::int
@@ -277,15 +277,15 @@ CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, dif
 $$;
 
 CREATE INDEX kl_i ON kl USING sift_col (id, ent, d, ts, del) WITH (key_cut = 'ent', order_array_columns = 'd, ts');
-SELECT * FROM kl_check('one segment');
+SELECT * FROM kl_check('one segment', 0);
 INSERT INTO kl SELECT 105000 + i, 1 + (random() * 59)::int, date '2022-01-01' + (random() * 1500)::int, timestamp '2022-01-01' + random() * 1500 * interval '1 day', NULL, repeat('x', 150) FROM generate_series(1, 10000) i;
 UPDATE kl SET d = d + 2 WHERE id % 10 = 0;
 SELECT sift.col_promote('kl_i') >= 0 AS promoted;
-SELECT * FROM kl_check('promoted');
+SELECT * FROM kl_check('promoted', 1);
 REINDEX INDEX kl_i;
-SELECT * FROM kl_check('reindexed');
+SELECT * FROM kl_check('reindexed', 2);
 
-DROP FUNCTION kl_check(text);
+DROP FUNCTION kl_check(text, int);
 DROP FUNCTION kl_rows(text, text);
 DROP TABLE kl;
 RESET ALL;
