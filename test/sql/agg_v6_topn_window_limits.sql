@@ -148,7 +148,24 @@ CREATE INDEX wp_fts ON wp USING sift (memo);
 SELECT parity('SELECT id, placed FROM wp WHERE memo @@> ''cable'' ORDER BY placed DESC, id LIMIT 10') AS w12_partitioned_text_top_n;
 SELECT parity('SELECT status, count(*) FROM wp WHERE memo @@> ''wire'' GROUP BY status ORDER BY status') AS w12_partitioned_text_groups;
 
+-- LIMIT and OFFSET given as int parameters (the cast to int8 of the parameter is part of the statement)
+SET plan_cache_mode = force_generic_plan;
+PREPARE w_page(int, int) AS SELECT id, total FROM wc WHERE tenant_id < 15 ORDER BY total DESC, id LIMIT $1 OFFSET $2;
+CREATE FUNCTION w_page(l int, o int, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN agg THEN 'on' ELSE 'off' END, true);
+	SELECT coalesce(string_agg(x::text, E'\n'), '') INTO r FROM (SELECT id, total FROM wc WHERE tenant_id < 15 ORDER BY total DESC, id LIMIT l OFFSET o) x;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN r;
+END $$;
+SELECT plan_ok('EXECUTE w_page(7, 5)') AS w_int_params_plan;
+SELECT w_page(7, 5, true) = w_page(7, 5, false) AND w_page(7, 5, true) <> '' AS w_int_params_page;
+SELECT w_page(0, 0, true) = w_page(0, 0, false) AS w_int_params_empty;
+SELECT w_page(2000, 3, true) = w_page(2000, 3, false) AS w_int_params_all;
+RESET plan_cache_mode;
+
 DROP TABLE wh, wc, wt, wph, wp, w_tenants, w_1600, w_sys, w_sys_x;
-DROP FUNCTION rows_of(text, boolean), parity(text), plan_ok(text);
+DROP FUNCTION rows_of(text, boolean), parity(text), plan_ok(text), w_page(int, int, boolean);
 DROP COLLATION w_nd;
 DROP EXTENSION pg_sift;

@@ -18,6 +18,7 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
 #include "utils/rel.h"
@@ -129,18 +130,35 @@ index_key_type_ok(const SiftV6InCol *c)
 	return c->typid == NUMERICOID ? c->type == SVEC_NUM64 : int_order_type(c->typid);
 }
 
-/* A count the query gives as an int8 constant or an external parameter (NULL: not given) */
+/* The external parameter a count is: bare, or under the implicit cast to int8 of an int2 or int4 one (PREPARE q(int) .. LIMIT $1) */
+static const Param *
+count_param(const Node *n)
+{
+	if (IsA(n, FuncExpr) && (((const FuncExpr *) n)->funcid == F_INT8_INT4 || ((const FuncExpr *) n)->funcid == F_INT8_INT2))
+		n = linitial(((const FuncExpr *) n)->args);
+	return IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXTERN ? (const Param *) n : NULL;
+}
+
+/* A count the query gives as an int8 constant or an external parameter of an integer type (NULL: not given) */
 static bool
 count_ok(const Node *n)
 {
-	return n == NULL || (IsA(n, Const) && ((const Const *) n)->consttype == INT8OID) ||
-		(IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXTERN && ((const Param *) n)->paramtype == INT8OID);
+	const Param *prm;
+
+	if (n == NULL || IsA(n, Const))
+		return n == NULL || ((const Const *) n)->consttype == INT8OID;
+	prm = count_param(n);
+	return prm != NULL && (prm->paramtype == INT8OID || prm->paramtype == INT4OID || prm->paramtype == INT2OID);
 }
 
 /* The value of a count; false: it is NULL (LIMIT ALL, no offset). A parameter has the value of this execution */
 static bool
 count_value(const ParamListInfo params, const Node *n, int64 *out)
 {
+	const Param *param;
+	ParamExternData work;
+	const ParamExternData *prm;
+
 	if (n == NULL)
 		return false;
 	if (IsA(n, Const))
@@ -148,14 +166,10 @@ count_value(const ParamListInfo params, const Node *n, int64 *out)
 		*out = ((const Const *) n)->constisnull ? 0 : DatumGetInt64(((const Const *) n)->constvalue);
 		return !((const Const *) n)->constisnull;
 	}
-	{
-		const int	id = ((const Param *) n)->paramid;
-		ParamExternData work;
-		const ParamExternData *prm = params->paramFetch != NULL ? params->paramFetch(params, id, false, &work) : &params->params[id - 1];
-
-		*out = prm->isnull ? 0 : DatumGetInt64(prm->value);
-		return !prm->isnull;
-	}
+	param = count_param(n);
+	prm = params->paramFetch != NULL ? params->paramFetch(params, param->paramid, false, &work) : &params->params[param->paramid - 1];
+	*out = prm->isnull ? 0 : param->paramtype == INT8OID ? DatumGetInt64(prm->value) : param->paramtype == INT4OID ? DatumGetInt32(prm->value) : DatumGetInt16(prm->value);
+	return !prm->isnull;
 }
 
 /* offset + limit for the tournament; false when a run must sort the rows it is given: LIMIT ALL, WITH TIES, a sum past SIFT_TOURN_MAX_K */
