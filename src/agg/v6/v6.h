@@ -117,9 +117,6 @@ typedef enum SiftV6Src
 	SV6SRC_ELEM					/* the element of the unnested array of the index */
 } SiftV6Src;
 
-/* SiftV6Col.attno of sift.score(ctid), the score of the row's hit: no column of the index, a float4 the rows of a fold come with (sift_v6_fold_batch_scored) */
-#define SIFT_V6_SCORE_ATTNO		(-1)
-
 /*
  * The virtual attributes (an INDEX_VAR or scan varattno above every column of an index) of what a statement reads of a key of a jsonb document whose leaf is `leaf`: its JSON type
  * (jsonb_typeof(doc -> 'key')), its `->>` text, and the float8 cast of that text. An index holds at most SIFT_F2_MAX_COLS (1024) leaves, so each kind has a range of that many attributes.
@@ -498,6 +495,8 @@ typedef bool (*SiftV6ChunkFn) (void *arg, const SiftTidBridge **bridge);
 
 /* v6_text.c: the text query of a statement of the aggregate (the planner reads it from the quals, the executor feeds it to the scan as chunks) */
 extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries);
+/* The clause is a match of a text index of the relation, which no scan key or batch qual decides */
+extern bool sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri);
 extern bool sift_v6_text_usable(IndexOptInfo *text, List *queries);
 /* touch: the fraction of the rows of the store that the scan of the chunks reads (the granules the hits are in) */
 extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch);

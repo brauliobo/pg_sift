@@ -27,16 +27,19 @@
 #include "core/compat.h"
 #include "core/memtrack.h"
 #include "core/store_ops.h"
+#include "core/tidbridge.h"
 #include "table/v1/v1_tbl_ops.h"
 
 /* ---- the leaves a scan decodes as they are stored ---- */
 
 /* the leaf of attribute att when it is the only one (the lanes of a wide value, which have no type, are its head's): a scalar of the attribute itself, none for a document, a declared path or a list */
-static const SiftSrcLeaf *
-att_leaf(const SiftSrcLayout *lay, int att)
+const SiftSrcLeaf *
+sift_v1_att_leaf(const SiftSrcLayout *lay, int att)
 {
 	const SiftSrcLeaf *found = NULL;
 
+	if (att >= SIFT_V6_JLEAF_VATT)
+		return &lay->leaf[att - SIFT_V6_JLEAF_VATT];
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
@@ -50,10 +53,13 @@ att_leaf(const SiftSrcLayout *lay, int att)
 	return found;
 }
 
-static Oid
-att_typid(const SiftSrcLayout *lay, int att)
+Oid
+sift_v1_att_typid(const SiftSrcLayout *lay, int att)
 {
 	const Node *e = att >= 1 && att <= list_length(lay->attexprs) ? list_nth(lay->attexprs, att - 1) : NULL;
+
+	if (att >= SIFT_V6_JLEAF_VATT)
+		return lay->leaf[att - SIFT_V6_JLEAF_VATT].typid;
 
 	return e == NULL ? InvalidOid : exprType(e);
 }
@@ -113,9 +119,9 @@ v1_owns_rel(Oid relid, bool is_table)
 static SiftStoreAtt
 describe_att(const SiftSrcLayout *lay, int att)
 {
-	const SiftSrcLeaf *l = att_leaf(lay, att);
+	const SiftSrcLeaf *l = sift_v1_att_leaf(lay, att);
 	const Node *e = att >= 1 && att <= list_length(lay->attexprs) ? list_nth(lay->attexprs, att - 1) : NULL;
-	SiftStoreAtt a = {.attno = att,.typid = att_typid(lay, att),.typmod = e == NULL ? -1 : exprTypmod(e),.vec_type = SVEC_DATUM};
+	SiftStoreAtt a = {.attno = att,.typid = sift_v1_att_typid(lay, att),.typmod = e == NULL ? -1 : exprTypmod(e),.vec_type = SVEC_DATUM};
 
 	a.is_jsonb = a.typid == JSONBOID;
 	if (l == NULL || l->wide)
@@ -235,8 +241,8 @@ v1_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
-	const SiftSrcLeaf *l = att_leaf(lay, att);
-	const bool	holds = l != NULL && leaf_serves(l, att_typid(lay, att), (SiftV6Class) cls);
+	const SiftSrcLeaf *l = sift_v1_att_leaf(lay, att);
+	const bool	holds = l != NULL && leaf_serves(l, sift_v1_att_typid(lay, att), (SiftV6Class) cls);
 
 	sift_v1_rel_close(&r);
 	return holds;
@@ -268,6 +274,12 @@ typedef struct V1Src
 	uint64	   *bits;			/* the rows of the unit the snapshot sees and nothing has been taken of */
 	int			pos;
 	SiftV6Vexpr *quals;
+	const SiftTidBridge *bridge;
+	int			ntypes;
+	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
+	int			score_col;		/* the column of the input that holds the scores of the bridge, -1 for none */
+	uint64		kept[SIFT_VEC_WORDS];
+	float4		score[SIFT_VEC_LEN];
 	SiftVexprCtx *vctx;
 	TupleTableSlot *fslot;
 	IndexFetchTableData *index_fetch;	/* an index entry names the root of a chain of versions of the heap row; a sift_table row is its own */
@@ -288,6 +300,15 @@ typedef struct V1Src
 } V1Src;
 
 static bool
+types_pass(V1Src *s)
+{
+	for (int t = 0; t < s->ntypes; t++)
+		if (!s->rd->filter_types(s->src, &s->unit, s->types[t].leaf, s->types[t].types, s->bits))
+			return false;
+	return true;
+}
+
+static bool
 unit_next(V1Src *s)
 {
 	for (;;)
@@ -302,6 +323,8 @@ unit_next(V1Src *s)
 		s->rd->live(s->src, &s->unit, s->bits);
 		if (s->rd->vet_needed(s->src, &s->unit))
 			s->rd->vet(s->src, &s->unit, s->bits);
+		if (!types_pass(s))
+			continue;
 		for (int w = 0; w < nw; w++)
 			if (s->bits[w] != 0)
 			{
@@ -470,7 +493,8 @@ batch_fill(V1Src *s)
 		for (int j = 0; j < k; j++)
 		{
 			for (int i = 0; i < s->in.ncols; i++)
-				put_col(s, i, s->ords[j], n + j);
+				if (i != s->score_col)
+					put_col(s, i, s->ords[j], n + j);
 			for (int m = 0; m < s->in.nmasks; m++)
 				put_mask(s, m, s->ords[j], n + j);
 			s->tag[n + j] = (uint64) ItemPointerGetBlockNumber(&s->tids[j]) << 16 | ItemPointerGetOffsetNumber(&s->tids[j]);
@@ -484,6 +508,28 @@ batch_fill(V1Src *s)
 	return n;
 }
 
+/* only the rows the bridge holds, the scores of its hits in the score column */
+static bool
+bridge_narrow(V1Src *s, SiftV6Batch *b)
+{
+	const int	words = (b->n + 63) / 64;
+	uint64		live[SIFT_VEC_WORDS];
+
+	memset(live, 0xFF, words * sizeof(uint64));
+	if (b->n & 63)
+		live[words - 1] = (UINT64CONST(1) << (b->n & 63)) - 1;
+	if (sift_tidbridge_probe_vec(s->bridge, b->tag, live, b->n, s->kept, s->score) == 0)
+		return false;
+	if (s->score_col >= 0)
+	{
+		for (int r = 0; r < b->n; r++)
+			((double *) s->data[s->score_col])[r] = s->score[r];
+		memcpy(s->valid[s->score_col], live, words * sizeof(uint64));
+	}
+	b->mask = s->kept;
+	return true;
+}
+
 static bool
 v1_next(SiftV6Source *base, SiftV6Batch *out)
 {
@@ -493,6 +539,8 @@ v1_next(SiftV6Source *base, SiftV6Batch *out)
 	while ((n = batch_fill(s)) > 0)
 	{
 		*out = (SiftV6Batch) {.n = (uint16) n,.col = s->vec,.masks = s->masks,.tag = s->tag};
+		if (s->bridge != NULL && !bridge_narrow(s, out))
+			continue;
 		if (s->quals == NULL)
 			return true;
 		sift_v6_vexpr_cover(s->quals, &s->in, out);
@@ -550,33 +598,55 @@ read_slot(V1Src *s, const SiftSrcLeaf *l)
 static const SiftSrcLeaf *
 input_leaf(const V1Src *s, int att, SiftV6Class cls)
 {
-	const SiftSrcLeaf *l = att_leaf(s->lay, att);
+	const SiftSrcLeaf *l = sift_v1_att_leaf(s->lay, att);
 
-	SIFT_INVARIANT(l != NULL && leaf_serves(l, att_typid(s->lay, att), cls), "attribute %d of relation %u is not a leaf Format 1 decodes as class %d", att, s->in.indexoid, (int) cls);
+	SIFT_INVARIANT(l != NULL && leaf_serves(l, sift_v1_att_typid(s->lay, att), cls), "attribute %d of relation %u is not a leaf Format 1 decodes as class %d", att, s->in.indexoid, (int) cls);
 	return l;
+}
+
+static void
+alloc_column(V1Src *s, int i, size_t width)
+{
+	s->data[i] = palloc_aligned((SIFT_VEC_LEN + SIFT_VEC_PAD) * width, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	s->valid[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	s->nan[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+}
+
+static void
+bind_column(V1Src *s, int i)
+{
+	SiftV6InCol *c = &s->in.col[i];
+	const SiftSrcLeaf *l = input_leaf(s, c->attno, vec_class[c->type]);
+	const size_t width = c->type == SVEC_STRVIEW ? sizeof(SiftStrView) : c->type == SVEC_I32 ? sizeof(int32) : c->type == SVEC_BOOL ? 1 : sizeof(int64);
+
+	SIFT_INVARIANT(c->type != SVEC_NUM64 || l->scale == c->scale, "numeric attribute %d of relation %u is stored at scale %d, not %d", c->attno, s->in.indexoid, l->scale, c->scale);
+	if (c->type == SVEC_DATUM)
+	{
+		c->typid = sift_v1_att_typid(s->lay, c->attno);
+		get_typlenbyval(c->typid, &s->typlen[i], &s->typbyval[i]);
+	}
+	s->col_leaf[i] = l;
+	s->col_read[i] = read_slot(s, l);
+	alloc_column(s, i, width);
+}
+
+static void
+bind_score(V1Src *s, int i)
+{
+	SIFT_INVARIANT(s->bridge != NULL && s->in.col[i].type == SVEC_F64, "relation %u was asked for scores of a scan without a text bridge", s->in.indexoid);
+	s->score_col = i;
+	alloc_column(s, i, sizeof(double));
 }
 
 static void
 bind_columns(V1Src *s)
 {
+	s->score_col = -1;
 	for (int i = 0; i < s->in.ncols; i++)
-	{
-		SiftV6InCol *c = &s->in.col[i];
-		const SiftSrcLeaf *l = input_leaf(s, c->attno, vec_class[c->type]);
-		const size_t width = c->type == SVEC_STRVIEW ? sizeof(SiftStrView) : c->type == SVEC_I32 ? sizeof(int32) : c->type == SVEC_BOOL ? 1 : sizeof(int64);
-
-		SIFT_INVARIANT(c->type != SVEC_NUM64 || l->scale == c->scale, "numeric attribute %d of relation %u is stored at scale %d, not %d", c->attno, s->in.indexoid, l->scale, c->scale);
-		if (c->type == SVEC_DATUM)
-		{
-			c->typid = att_typid(s->lay, c->attno);
-			get_typlenbyval(c->typid, &s->typlen[i], &s->typbyval[i]);
-		}
-		s->col_leaf[i] = l;
-		s->col_read[i] = read_slot(s, l);
-		s->data[i] = palloc_aligned((SIFT_VEC_LEN + SIFT_VEC_PAD) * width, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-		s->valid[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-		s->nan[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-	}
+		if (s->in.col[i].attno == SIFT_V6_SCORE_ATTNO)
+			bind_score(s, i);
+		else
+			bind_column(s, i);
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
 		SIFT_INVARIANT(s->in.mask[m].key == NULL, "a source of relation %u was asked for the keys of a document", s->in.indexoid);
@@ -586,6 +656,20 @@ bind_columns(V1Src *s)
 		s->mvalid[m] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		s->masks[m] = (SiftVexprMaskIn) {.bits = s->mbits[m],.valid = s->mvalid[m]};
 	}
+}
+
+static void
+bind_types(V1Src *s, const SiftV1Scan *scan)
+{
+	for (int t = 0; t < scan->ntypes; t++)
+	{
+		bool		read = false;
+
+		for (int i = 0; i < s->in.ncols; i++)
+			read |= s->col_leaf[i] != NULL && s->col_leaf[i]->id == scan->types[t].leaf;
+		s->types[t] = (SiftV1TypeTest) {.leaf = scan->types[t].leaf,.types = scan->types[t].types | (read ? SIFT_SRC_JT_READ : 0)};
+	}
+	s->ntypes = scan->ntypes;
 }
 
 /* A unit whose zone of an integer column lies wholly outside the bounds the program puts on it is not read; the program still tests every row of the units that are */
@@ -610,18 +694,22 @@ prune_begin(V1Src *s, const SiftV1Range *range)
 }
 
 SiftV6Source *
-sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftV1Range *range,
-					const SiftFilter *keep)
+sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftV1Scan *scan)
 {
+	const SiftV1Scan none = {0};
+	const SiftV1Range *range;
 	MemoryContext cx = sift_mem_allocset_create(parent, "sift v1 source");
 	V1Src	   *s = MemoryContextAllocZero(cx, sizeof(V1Src));
 	MemoryContext old = MemoryContextSwitchTo(cx);
 
+	scan = scan != NULL ? scan : &none;
+	range = scan->range;
 	s->cx = cx;
 	s->unit_cx = sift_mem_allocset_create(cx, "sift v1 source unit");
 	s->batch_cx = sift_mem_allocset_create(cx, "sift v1 source batch");
 	s->in = *in;
 	s->snap = snap;
+	s->bridge = scan->bridge;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
 	s->rd = sift_v1_reader_of(in->is_table);
 	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);
@@ -633,8 +721,9 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	if (quals != NULL)
 		s->quals = sift_v6_vexpr_dup(cx, quals);
 	s->vctx = sift_vexpr_ctx_new(cx);
-	if (keep != NULL)
-		s->rd->select(s->src, keep);
+	if (scan->keep != NULL)
+		s->rd->select(s->src, scan->keep);
+	bind_types(s, scan);
 	prune_begin(s, range);
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = v1_fetch,.close = v1_close};
@@ -645,7 +734,7 @@ static SiftV6Source *
 v1_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted)
 {
 	SIFT_INVARIANT(!sorted, "Format 1 sorts nothing: a sorted source of relation %u was asked for", in->indexoid);
-	return sift_v1_source_open(estate->es_query_cxt, estate->es_snapshot, in, quals, NULL, NULL);
+	return sift_v1_source_open(estate->es_query_cxt, estate->es_snapshot, in, quals, NULL);
 }
 
 static const SiftStoreOps v1_store_ops = {
@@ -660,7 +749,8 @@ static const SiftStoreOps v1_store_ops = {
 	.par = &sift_v1_par_ops,
 	.order = &v1_order_ops,
 	.preagg = &v1_preagg_ops,
-	.jsonb = &v1_jsonb_ops
+	.jsonb = &v1_jsonb_ops,
+	.hybrid = &v1_hybrid_ops
 };
 
 void

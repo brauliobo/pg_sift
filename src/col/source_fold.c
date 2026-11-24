@@ -22,6 +22,7 @@
 #include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_filter_eval.h"
 #include "agg/v6/v6_fuse.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_vexpr.h"
@@ -53,6 +54,8 @@ typedef struct FoldDerived
 	const SiftVec *src;
 	SiftVec    *cond[SIFT_V6_MAX_CASE];
 	const struct FoldDerived *prefix;
+	SiftV6PgExpr *pg;
+	const SiftVec *pgin[SIFT_V6_MAX_COLS];
 	SiftVxOut	out;
 } FoldDerived;
 
@@ -62,6 +65,7 @@ struct SiftSrcFold
 	MemoryContext cx;
 	SiftV6Input in;
 	SiftV6Vexpr *quals;
+	List	   *residual;		/* the clauses of a.quals the source does not compile: a batch qual of the fold decides them */
 	int			nfold;
 	FoldCol		col[SIFT_V6_MAX_COLS];
 	SiftVec		vec[SIFT_V6_MAX_COLS];
@@ -82,19 +86,21 @@ static FoldCol *
 col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 {
 	SiftV6Class cls;
+	int			attno;
 
 	if (c.derive > 0)
 		c = f->a.spec->derive[c.derive - 1].src;
 	cls = sift_v6_class(c.typid);
-	SIFT_INVARIANT(c.attno > 0 && c.jleaf == 0 && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
+	attno = c.jleaf > 0 ? SIFT_V6_JLEAF_VATT + c.jleaf - 1 : c.attno;
+	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
 	for (int i = 0; i < f->nfold; i++)
-		if (f->col[i].attno == c.attno)
+		if (f->col[i].attno == attno)
 		{
 			f->col[i].nan_ok &= takes_nan;
 			return &f->col[i];
 		}
-	f->col[f->nfold] = (FoldCol) {.attno = c.attno,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
-	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = c.attno,.typid = c.typid,.scale = c.scale,
+	f->col[f->nfold] = (FoldCol) {.attno = attno,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
+	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,
 		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64};
 	return &f->col[f->nfold++];
 }
@@ -125,6 +131,8 @@ setup_pipe(SiftSrcFold *f)
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			f->pipe->fslot[d][k] = slot_of(f, &(SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]});
+	for (int i = 0; i < x->nrcol; i++)
+		f->pipe->rslot[i] = slot_of(f, &x->rcol[i]);
 	for (int i = 0; i < spec->nkeys; i++)
 		f->pipe->key_slot[i] = slot_of(f, &spec->key[i]);
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
@@ -191,36 +199,65 @@ setup_bq(SiftSrcFold *f)
 {
 	SiftV6Input in;
 
-	if (f->a.spec->vqual == NIL)
+	List	   *clauses = list_concat_copy(f->a.spec->vqual, f->residual);
+
+	if (clauses == NIL)
 		return;
 	if (f->a.spec->is_table)
 		sift_v6_input_init_table(&in, f->a.host);
 	else
 		sift_v6_input_init_rel(&in, f->a.host);
-	f->bq = sift_v6_bq_open(f->cx, f->a.spec->vqual, &in, bq_col, f);
+	f->bq = sift_v6_bq_open(f->cx, clauses, &in, bq_col, f);
+}
+
+static void
+setup_pgexprs(SiftSrcFold *f)
+{
+	for (int k = 0; k < f->nderived; k++)
+		if (f->derived[k].d->kind == SVD_PG_EXPR)
+			f->derived[k].pg = sift_v6_pgexpr_bind(f->cx, f->a.spec, f->derived[k].d, bq_col, f, f->derived[k].pgin);
+}
+
+/* Whether the source compiles the clause over the columns of the input: the others are the fold's to decide on the decoded batch */
+static bool
+source_decides(MemoryContext cx, const SiftSrcFold *f, Node *clause)
+{
+	SiftV6Input scratch = f->in;
+	SiftV6Vexpr probe;
+	MemoryContext trial = AllocSetContextCreate(cx, "sift source fold trial", ALLOCSET_SMALL_SIZES);
+	const bool	ok = sift_v6_vexpr_quals(trial, list_make1(clause), 1, f->a.estate != NULL ? f->a.estate->es_param_list_info : NULL, &scratch, &probe);
+
+	MemoryContextDelete(trial);
+	return ok;
 }
 
 static void
 setup_quals(SiftSrcFold *f)
 {
+	List	   *source = NIL;
+
 	if (f->a.spec->is_table)
 		sift_v6_input_init_table(&f->in, f->a.host);
 	else
 		sift_v6_input_init_rel(&f->in, f->a.host);
 	if (f->a.estate != NULL)
 		sift_v6_input_bind(&f->in, f->a.estate);
-	if (f->a.quals == NIL)
+	foreach_ptr(Node, clause, f->a.quals)
+		if (source_decides(f->cx, f, clause))
+			source = lappend(source, clause);
+		else
+			f->residual = lappend(f->residual, clause);
+	if (source == NIL)
 		return;
 	f->quals = palloc0(sizeof(SiftV6Vexpr));
-	if (!sift_v6_vexpr_quals(f->cx, f->a.quals, 1, f->a.estate != NULL ? f->a.estate->es_param_list_info : NULL, &f->in, f->quals))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the quals of the aggregate scan of %s are not ones the stored columns decide", sift_rel_label(f->a.spec->relid)),
-						errhint("Run the statement with sift.enable_agg = off.")));
+	if (!sift_v6_vexpr_quals(f->cx, source, 1, f->a.estate != NULL ? f->a.estate->es_param_list_info : NULL, &f->in, f->quals))
+		SIFT_INVARIANT(false, "the quals of the aggregate scan of %s compiled when each was tried alone", sift_rel_label(f->a.spec->relid));
 }
 
 static bool
 vec_takes_nan(const SiftV6Spec *spec, int v)
 {
-	return v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v]);
+	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
 }
 
 SiftSrcFold *
@@ -233,8 +270,8 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 
 	f->a = *a;
 	f->cx = cx;
-	f->count_only = spec->rows == false && spec->ext == NULL && spec->vqual == NIL && sift_v6_spec_count_only(spec);
 	setup_quals(f);
+	f->count_only = spec->rows == false && spec->ext == NULL && spec->vqual == NIL && f->residual == NIL && sift_v6_spec_count_only(spec);
 	f->keyvec = palloc0(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	f->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	if (!f->count_only)
@@ -248,8 +285,12 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 		for (int d = 0; spec->ext != NULL && d < spec->ext->ndims; d++)
 			for (int k = 0; k < spec->ext->dim[d].nkeys; k++)
 				col_for(f, (SiftV6Col) {.attno = spec->ext->dim[d].fatt[k],.typid = spec->ext->dim[d].ftype[k]}, false);
+		for (int i = 0; spec->ext != NULL && i < spec->ext->nrcol; i++)
+			if (spec->ext->rcol[i].src == SV6SRC_ATTR)
+				col_for(f, spec->ext->rcol[i], false);
 		setup_derived(f);
 		setup_bq(f);
+		setup_pgexprs(f);
 		setup_bins(f);
 		if (spec->ext != NULL && spec->ext->ndims > 0)
 			setup_pipe(f);
@@ -311,7 +352,9 @@ derive_columns(SiftSrcFold *f)
 	{
 		const FoldDerived *dv = &f->derived[k];
 
-		if (dv->d->kind == SVD_NUM_EXPR)
+		if (dv->d->kind == SVD_PG_EXPR)
+			sift_v6_pgexpr_derive(dv->pg, dv->pgin, &f->bs, &f->derived[k].out);
+		else if (dv->d->kind == SVD_NUM_EXPR)
 			sift_vn_derive(dv->d, dv->cond, dv->prefix ? &dv->prefix->out.vec : NULL, dv->prefix ? dv->prefix->d->ncond : 0, &f->bs, &f->derived[k].out);
 		else
 			sift_vx_derive(dv->d, dv->src, dv->cond, &f->bs, &f->derived[k].out);
@@ -340,8 +383,8 @@ bin_keys(SiftSrcFold *f)
 	}
 }
 
-static void
-fold_batch(SiftSrcFold *f, const SiftV6Batch *b)
+void
+sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 {
 	SiftBatchSel *bs = &f->bs;
 
@@ -380,6 +423,12 @@ fold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 		sift_v6_group_update(f->a.group, bs, f->keyvec, f->argvec);
 }
 
+const SiftV6Input *
+sift_srcfold_input(const SiftSrcFold *f)
+{
+	return &f->in;
+}
+
 void
 sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 {
@@ -387,7 +436,7 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 	SiftV6Batch b;
 
 	while (src->next(src, &b))
-		fold_batch(f, &b);
+		sift_srcfold_batch(f, &b);
 	src->close(src);
 }
 
@@ -417,6 +466,13 @@ sift_srcfold_bounds(const SiftV6Vexpr *quals, SiftSrcBound *out)
 	for (int i = 0; i < quals->nbounds; i++)
 		out[i] = (SiftSrcBound) {.slot = quals->bound[i].slot,.has_lo = quals->bound[i].has_lo,.has_hi = quals->bound[i].has_hi,.lo = quals->bound[i].lo,.hi = quals->bound[i].hi};
 	return quals->nbounds;
+}
+
+void
+sift_srcfold_count_chunk(SiftV6ScanStats *stats, const SiftTidBridge *bridge)
+{
+	stats->chunks++;
+	stats->bridge_tids += bridge->ntids;
 }
 
 void
@@ -487,7 +543,8 @@ sift_srcfold_scankey_quals(Relation index, ScanKey keys, int nkeys)
 	List	   *quals = NIL;
 
 	for (int i = 0; i < nkeys; i++)
-		quals = lappend(quals, key_clause(index, &keys[i]));
+		if (keys[i].sk_strategy != COL_STRAT_JSONB_EXISTS && keys[i].sk_strategy != COL_STRAT_JSONB_TYPE)
+			quals = lappend(quals, key_clause(index, &keys[i]));
 	return quals;
 }
 

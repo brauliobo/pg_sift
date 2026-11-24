@@ -81,6 +81,20 @@ sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries)
 	return text;
 }
 
+/* The clause is a match of a text index of the relation (a text query the index answers, whatever its query): no scan key or batch qual of the aggregate decides it */
+bool
+sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri)
+{
+	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
+	{
+		Expr	   *q;
+
+		if (ix->relam == sift_catalog()->am && !ix->hypothetical && sift_match_clause((Node *) ri->clause, ix, &q))
+			return true;
+	}
+	return false;
+}
+
 static SiftPlan *
 bind_query(SiftIndexState *ist, Const *query, int flags)
 {

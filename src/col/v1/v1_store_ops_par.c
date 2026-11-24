@@ -90,7 +90,7 @@ open_morsel(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
 {
 	const V1Morsel *m = arg;
 
-	return sift_v1_source_open(m->s->cx, m->s->snap, in, quals, &m->range, NULL);
+	return sift_v1_source_open(m->s->cx, m->s->snap, in, quals, &(SiftV1Scan) {.range = &m->range});
 }
 
 static void

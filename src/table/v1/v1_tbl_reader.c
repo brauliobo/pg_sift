@@ -419,6 +419,19 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 	return t;
 }
 
+/* only a path leaf has types, and the layout offers the paths only when every segment has them */
+static bool
+tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+{
+	SiftV1Tbl  *t = impl;
+	TblPart    *p = unit->priv;
+	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
+
+	t->tol[leaf] = true;
+	sift_srcsel_filter_types(&t->sel, p->src, &p->unit, p->col[leaf], l->typid, l->astext, types, bits);
+	return sift_srcsel_rows_left(bits, unit->nrow);
+}
+
 const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.layout = sift_v1_tbl_layout,
 	.stats = sift_v1_tbl_stats,
@@ -435,6 +448,7 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.live = sift_v1_tbl_live,
 	.vet_needed = sift_v1_tbl_vet_needed,
 	.vet = sift_v1_tbl_vet,
+	.filter_types = tbl_filter_types,
 	.read = sift_v1_tbl_read,
 	.tids = sift_v1_tbl_tids
 };

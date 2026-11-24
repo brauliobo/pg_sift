@@ -342,6 +342,17 @@ sift_v1_idx_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint3
 	pfree(ords);
 }
 
+static bool
+idx_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
+{
+	SiftV1Idx  *r = impl;
+	const SiftSrcLeaf *l = &r->lay->leaf[leaf];
+
+	r->tol[leaf] = true;
+	sift_srcsel_filter_types(&r->sel, r->cs, &r->unit, leaf, l->typid, l->astext, types, bits);
+	return sift_srcsel_rows_left(bits, unit->nrow);
+}
+
 const SiftV1ReaderOps sift_v1_idx_reader = {
 	.layout = sift_v1_idx_layout,
 	.stats = sift_v1_idx_stats,
@@ -359,6 +370,7 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.live = sift_v1_idx_live,
 	.vet_needed = sift_v1_idx_vet_needed,
 	.vet = sift_v1_idx_vet,
+	.filter_types = idx_filter_types,
 	.read = sift_v1_idx_read,
 	.tids = sift_v1_idx_tids
 };

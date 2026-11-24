@@ -44,6 +44,8 @@ typedef struct SiftV1ReaderOps
 	void		(*live) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
 	bool		(*vet_needed) (void *impl, const SiftSrcUnit *unit);
 	void		(*vet) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
+	/* the rows of bits whose value in the leaf has none of the JSON types (SIFT_SRC_JT_*, SIFT_SRC_JT_READ: the query reads the leaf as well) are cleared; false when none is left. A leaf tested is read as NULL where it holds a value the stored column cannot */
+	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 	void		(*read) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
 	void		(*tids) (void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 } SiftV1ReaderOps;

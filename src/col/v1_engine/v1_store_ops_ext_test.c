@@ -302,7 +302,7 @@ sift_test_v1_match(PG_FUNCTION_ARGS)
 		sift_v6_input_init_rel(&in, rel);
 	in.col[0] = (SiftV6InCol) {.attno = att,.typid = INT4OID,.type = SVEC_I32};
 	in.ncols = 1;
-	src = sift_v1_source_open(CurrentMemoryContext, GetActiveSnapshot(), &in, NULL, NULL, match_set(PG_GETARG_ARRAYTYPE_P(3)));
+	src = sift_v1_source_open(CurrentMemoryContext, GetActiveSnapshot(), &in, NULL, &(SiftV1Scan) {.keep = match_set(PG_GETARG_ARRAYTYPE_P(3))});
 	while (src->next(src, &b))
 		for (int r = 0; r < b.n; r++)
 		{

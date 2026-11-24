@@ -40,6 +40,11 @@ extern SiftSrcFold *sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 /* Opens the source, folds every batch of it and closes it; the fold can run again (a morsel of a parallel scan) */
 extern void sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg);
 extern void sift_srcfold_free(SiftSrcFold *f);
+/* A text-hit chunk of the scan: the statistics count it and its TIDs */
+extern void sift_srcfold_count_chunk(struct SiftV6ScanStats *stats, const struct SiftTidBridge *bridge);
+/* The columns the fold reads (the score of a text hit among them, as SIFT_V6_SCORE_ATTNO) and the folding of a batch whose vectors are those, in that order: for a caller that has the rows already */
+extern const SiftV6Input *sift_srcfold_input(const SiftSrcFold *f);
+extern void sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b);
 
 /* The arms of a cohort (agg/v6/v6_fuse.h) read the same relation with the same keys: each arm folds its rows into its groups, those its gate takes; args gives the relation, quals and estate */
 extern void sift_srcfold_arms(struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, const SiftSrcFoldArgs *common, SiftSrcOpen open, void *open_arg);

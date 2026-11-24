@@ -1,8 +1,7 @@
 /*
  * col/v1_engine/v1_store_ops_jsonb.c - SiftJsonbOps of Format 1 (core/store_ops.h).
  *
- * key_leaf: Format 1 keeps no leaf that says whether a top-level key is on a row of a document (its shredded paths hold values, and a row whose value a leaf cannot hold is read again from the
- * heap), so no key of a document is a leaf the scan keys or the batches of the engine can name: -1.
+ * key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key.
  * unnest_run: the aggregate scan of a LATERAL unnest of an array column (agg/v6/v6_unnest_run.h). The columns of the table the statement reads come from the batches of the Format 1 source, which
  * hands over only the rows the tombstones and the snapshot leave; the array of each row that passes the quals of the table is read from its heap row and taken apart as PostgreSQL does (NULL and
  * empty arrays, NULL elements, a jsonb document that is no array and the errors it raises included), and the pairs of (row, element) go through the pipe of the engine into the groups.
@@ -11,6 +10,7 @@
 #include "postgres.h"
 
 #include "access/tableam.h"
+#include "catalog/pg_type_d.h"
 #include "utils/array.h"
 #include "utils/date.h"
 #include "utils/float.h"
@@ -28,6 +28,7 @@
 #include "agg/v6/v6_vexpr.h"
 #include "agg/vexpr_str.h"
 #include "col/v1/v1_store_ops.h"
+#include "table/v1/v1_tbl_ops.h"
 #include "core/errctx.h"
 #include "core/memtrack.h"
 
@@ -95,10 +96,29 @@ typedef struct UnRun
 	MemoryContext bcx;			/* the array of the row being taken apart */
 } UnRun;
 
+static bool
+typed_leaf(Oid typid)
+{
+	return typid == BOOLOID || typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == FLOAT4OID || typid == FLOAT8OID || typid == NUMERICOID || typid == TEXTOID;
+}
+
 static int
 jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
 {
-	return -1;
+	const SiftV1Rel r = sift_v1_rel_open(indexoid, false);
+	const SiftSrcLayout *lay = sift_v1_idx_reader.layout(r.rel);
+	int			found = -1;
+
+	for (int i = 0; i < lay->nleaves && found < 0; i++)
+	{
+		const SiftSrcLeaf *l = &lay->leaf[i];
+
+		if (l->attno == att && l->parent < 0 && l->kind == SCL_SCALAR && !l->lossy && l->name[0] != '#' && typed_leaf(l->typid) && list_length(l->path) == 1 &&
+			strncmp(strVal(linitial(l->path)), key, len) == 0 && strVal(linitial(l->path))[len] == '\0')
+			found = i;
+	}
+	sift_v1_rel_close(&r);
+	return found;
 }
 
 static SiftVecType
@@ -552,7 +572,7 @@ open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 	for (int i = 0; i < u->ncols; i++)
 		in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.type = vec_type(u->cols[i].cls)};
 	in.ncols = u->ncols;
-	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, NULL, NULL, NULL);
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, NULL, NULL);
 }
 
 static void

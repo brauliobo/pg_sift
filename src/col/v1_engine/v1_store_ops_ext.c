@@ -135,7 +135,7 @@ order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relatio
 	else
 		sift_v6_input_init_rel(&in, index);
 	sort_columns(spec, &schema, &in);
-	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, &in, &quals) ? &quals : NULL, NULL, NULL);
+	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, &in, &quals) ? &quals : NULL, NULL);
 	while (src->next(src, &b))
 	{
 		batch_sel(&bs, &b);
