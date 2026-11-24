@@ -287,6 +287,7 @@ FROM unnest(ARRAY['>', '>=']) ops, generate_series(-1, 61, 9) pa, generate_serie
  >=  |    126 | t
 (2 rows)
 
+SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT a, b FROM ok_oa WHERE (a, b) > (30, 40) ORDER BY a, b LIMIT 20;
                   QUERY PLAN                   
 -----------------------------------------------
@@ -297,7 +298,6 @@ EXPLAIN (COSTS OFF) SELECT a, b FROM ok_oa WHERE (a, b) > (30, 40) ORDER BY a, b
 (4 rows)
 
 PREPARE kp(int, int) AS SELECT a, b FROM ok_oa WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT 20;
-SET enable_seqscan = off;
 SET sift.enable_agg = off;
 EXPLAIN (COSTS OFF) EXECUTE kp(30, 40);
                   QUERY PLAN                   

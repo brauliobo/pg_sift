@@ -38,6 +38,7 @@ CREATE FUNCTION mv_answer(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
+	PERFORM set_config('sift.agg_force', scan::text, true);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	EXECUTE 'SELECT coalesce(string_agg(t::text, '';'' ORDER BY t::text), '''') FROM (' || q || ') t' INTO r;
 	RETURN r;
@@ -47,6 +48,7 @@ CREATE FUNCTION mv_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; r bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
+	PERFORM set_config('sift.agg_force', 'true', true);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		r := r OR l ~ 'Custom Scan \(SiftAgg\)';

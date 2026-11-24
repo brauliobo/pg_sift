@@ -72,12 +72,12 @@ SELECT shape, sum(tried) AS tried, sum(pushed) AS pushed, sum(bad) AS mismatches
     shape     | tried | pushed | mismatches 
 --------------+-------+--------+------------
  anti         |    24 |      0 |          0
- bykind       |    24 |     24 |          0
- count        |    24 |     24 |          0
- having       |    24 |     24 |          0
+ bykind       |    24 |      0 |          0
+ count        |    24 |      0 |          0
+ having       |    24 |      0 |          0
  repeating    |    24 |      0 |          0
- semi         |    24 |     24 |          0
- semi grouped |    24 |     24 |          0
+ semi         |    24 |      0 |          0
+ semi grouped |    24 |      0 |          0
  window       |    24 |     24 |          0
 (8 rows)
 

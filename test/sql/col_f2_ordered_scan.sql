@@ -176,9 +176,9 @@ BEGIN
 END $$;
 SELECT ops, count(*) AS probes, bool_and(ok_cmp(pa, pb, lim, ops)) AS agree
 FROM unnest(ARRAY['>', '>=']) ops, generate_series(-1, 61, 9) pa, generate_series(-1, 96, 19) pb, unnest(ARRAY[1, 20, 500]) lim GROUP BY ops ORDER BY ops;
+SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT a, b FROM ok_oa WHERE (a, b) > (30, 40) ORDER BY a, b LIMIT 20;
 PREPARE kp(int, int) AS SELECT a, b FROM ok_oa WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT 20;
-SET enable_seqscan = off;
 SET sift.enable_agg = off;
 EXPLAIN (COSTS OFF) EXECUTE kp(30, 40);
 EXECUTE kp(58, 90);
