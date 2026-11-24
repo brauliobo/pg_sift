@@ -97,14 +97,14 @@ typedef struct SiftStoreStats
 
 /*
  * 1. Key order: the sort order the parts keep, and the scan that keeps the best rows of it. lead_att: the attribute of the first key column of the index (0: none, or not a column);
- * scan_rows: the rows of an ORDER BY .. LIMIT of one table go to rows instead of the groups.
+ * scan_rows: the rows of an ORDER BY .. LIMIT of one table go to rows instead of the groups (index NULL: heap is a sift_table, which quals say what it decides).
  */
 typedef struct SiftOrderOps
 {
 	bool		(*sorted_by) (Oid relid, bool is_table, const int *atts, int n);
 	int			(*lead_att) (Oid relid);
-	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
-							  struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
+	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals,
+							  Snapshot snap, struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
 } SiftOrderOps;
 
 /* 2. Pre-aggregates: the integer dimension and measure leaves the parts keep SEC_PREAGG cubes of (false: the relation keeps none) */

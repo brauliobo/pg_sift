@@ -18,6 +18,7 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_cost.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topn.h"
@@ -99,40 +100,87 @@ rows_outputs(V6Plan *p)
 	return p->scan_tlist != NIL;
 }
 
+static bool
+rows_compile(V6Plan *p, uint32 k)
+{
+	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k};
+	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && rows_outputs(p) && sift_v6_compile_quals(p);
+}
+
+static void
+rows_add(V6Plan *p, uint32 k, Cost scan)
+{
+	PlannerInfo *root = p->root;
+
+	p->spec.topn_desc = sift_v6_topn_desc(root, planner_rt_fetch(p->rel->relid, root)->relid);
+	scan += cpu_operator_cost * p->rel->rows * log2(k + 1.0) + sort_exprs_cost(root, p->rel->rows);
+	sift_v6_add_path(p->out, sift_v6_group_path_methods(), scan, scan + cpu_tuple_cost * k, Min((double) k, p->rel->rows), root->sort_pathkeys,
+					 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL));
+}
+
+static bool
+rows_table_path(V6Plan *p, Oid relid, uint32 k)
+{
+	Cost		open,
+				scan;
+	SiftV6CostIn in;
+
+	if (!sift_v6_plan_table(p, relid) || !rows_compile(p, k))
+		return false;
+	in = (SiftV6CostIn) {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo),.groups = k,
+	.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
+	sift_v6_scan_cost(&in, &open, &scan);
+	rows_add(p, k, scan);
+	return true;
+}
+
+static bool
+rows_index_path(V6Plan *p, uint32 k)
+{
+	Relation	irel;
+	Cost		open,
+				scan;
+	bool		ok;
+
+	if (!sift_v6_index_owned(p->index))
+		return false;
+	irel = index_open(p->index->indexoid, AccessShareLock);
+	sift_v6_plan_index(p, irel);
+	ok = rows_compile(p, k);
+	index_close(irel, NoLock);
+	if (!ok)
+		return false;
+	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	rows_add(p, k, scan);
+	return true;
+}
+
 /* ORDER BY columns LIMIT K of the rows of one table with every qual pushed to the scan: the rows go to a heap of the best K (v6_rows_topn.h) */
 void
 sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	const Query *q = root->parse;
 	const uint32 k = sift_v6_topk_of(q);
+	Oid			relid;
 
 	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL ||
 		q->rowMarks != NIL || !sift_v6_base_rel_ok(root, input_rel) || bms_membership(root->all_baserels) != BMS_SINGLETON ||
 		proj_sort_offered(input_rel))
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
+	relid = planner_rt_fetch(input_rel->relid, root)->relid;
+	if (sift_store_ops_for_scan(relid, true) != NULL)
+	{
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = relid};
+
+		rows_table_path(&p, relid, k);
+		return;
+	}
 	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
 	{
 		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
-		Relation	irel;
-		Cost		open,
-					scan;
-		bool		ok = false;
 
-		if (!sift_v6_index_owned(ix))
-			continue;
-		irel = index_open(ix->indexoid, AccessShareLock);
-		sift_v6_plan_index(&p, irel);
-		p.spec = (SiftV6Spec) {.relid = ix->indexoid,.rows = true,.topk = k};
-		ok = p.ops != NULL && sift_v6_index_complete(&p) && rows_keys(&p) && rows_outputs(&p) && sift_v6_compile_quals(&p);
-		index_close(irel, NoLock);
-		if (!ok)
-			continue;
-		p.spec.topn_desc = sift_v6_topn_desc(root, planner_rt_fetch(input_rel->relid, root)->relid);
-		sift_v6_scan_price(root, input_rel, ix, 0, &open, &scan);
-		scan += cpu_operator_cost * input_rel->rows * log2(k + 1.0) + sort_exprs_cost(root, input_rel->rows);
-		sift_v6_add_path(output_rel, sift_v6_group_path_methods(), scan, scan + cpu_tuple_cost * k, Min((double) k, input_rel->rows), root->sort_pathkeys,
-						 list_make3(sift_v6_spec_pack(&p.spec), p.scan_tlist, NIL));
-		return;
+		if (rows_index_path(&p, k))
+			return;
 	}
 }

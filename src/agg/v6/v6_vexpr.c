@@ -31,6 +31,7 @@
 #include "agg/v6/v6_vexpr.h"
 #include "agg/zoneoff.h"
 #include "core/memtrack.h"
+#include "core/store_ops.h"
 
 static const SiftV6Format *bound_format;
 
@@ -847,10 +848,11 @@ sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
 {
 	RangeTblEntry *rte;
 
-	if (rel->reloptkind != RELOPT_BASEREL || rel->indexlist == NIL || rel->lateral_relids != NULL || agg_query_has_rls(root))
+	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root))
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL;
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL &&
+		(rel->indexlist != NIL || sift_store_ops_for_scan(rte->relid, true) != NULL);
 }
 
 void

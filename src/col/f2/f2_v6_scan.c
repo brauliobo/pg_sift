@@ -830,23 +830,30 @@ sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation
 	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, router, stats, NULL, next_chunk, chunk_arg);
 }
 
+static void
+scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip)
+{
+	SiftF2Store *store = sift_f2_store_open(rel);
+	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
+
+	s->host = rel;
+	scan_setup(s, store->schema->cols, store->att_first, NULL);
+	o.leaves = scan_leaves(s);
+	o.nleaves = s->ncols;
+	o.nan_leaves = scan_nan_leaves(s, store->ncols);
+	if (quals->possible)
+		sift_f2_store_scan_sink(&o, v6_sink, s);
+	if (s->batch_cx != NULL)
+		MemoryContextDelete(s->batch_cx);
+}
+
 void
 sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip,
 				   SiftV6ScanStats *stats)
 {
 	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
-	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
 
-	s.host = rel;
-	scan_setup(&s, store->schema->cols, store->att_first, NULL);
-	o.leaves = scan_leaves(&s);
-	o.nleaves = s.ncols;
-	o.nan_leaves = scan_nan_leaves(&s, store->ncols);
-	if (quals->possible)
-		sift_f2_store_scan_sink(&o, v6_sink, &s);
-	if (s.batch_cx != NULL)
-		MemoryContextDelete(s.batch_cx);
+	scan_table_run(&s, rel, quals, snap, skip, nskip);
 }
 
 void
@@ -881,10 +888,13 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 }
 
 void
-sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
-				  SiftV6ChunkFn next_chunk, void *chunk_arg)
+sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, const SiftStoreQuals *quals, Snapshot snap,
+				  SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	V6Scan		s = {.spec = spec,.rows = rows,.stats = stats};
 
-	scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, NULL, next_chunk, chunk_arg);
+	if (index == NULL)
+		scan_table_run(&s, heap, quals, snap, NULL, 0);
+	else
+		scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, NULL, next_chunk, chunk_arg);
 }
