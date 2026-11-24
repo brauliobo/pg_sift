@@ -1366,6 +1366,7 @@ FROM generate_series(1, 40000) i;
 -- one participant, one part: the skip budget of a part follows its own bytes, which the workers' share of the heap would change from run to run
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX sk_i ON sk USING sift_col (id, k_hi, k_n, note, pad1, pad2) WITH (key_order = 'id');
+RESET max_parallel_maintenance_workers;
 SELECT sift._test_f2_check('sk_i') ~ '^parts=[0-9]+ ' AS consistent;
  consistent 
 ------------
