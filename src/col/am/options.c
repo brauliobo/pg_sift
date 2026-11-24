@@ -816,9 +816,11 @@ sift_col_warn_f2_deprecated_relopts(Relation index, Datum before)
 {
 	HeapTuple	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
 	bool		isnull;
-	Datum		stored = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
+	Datum		stored;
 	List	   *had = untransformRelOptions(before);
 
+	SIFT_INVARIANT(HeapTupleIsValid(tuple), "sift_col: the pg_class row of index %u exists", RelationGetRelid(index));
+	stored = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
 	if (!isnull)
 		foreach_ptr(DefElem, def, untransformRelOptions(stored))
 			if (is_format1_relopt(def->defname) && relopt_written(def, had))
