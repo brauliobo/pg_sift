@@ -1,0 +1,58 @@
+-- A numeric NaN in a column a statement filters, groups or compares answers as the heap does, from a sift_col index and from a sift_table of Format 2.0: the WHERE, IN, <> and FILTER clauses on a
+-- numeric, GROUP BY it, count(DISTINCT) of it, with and without NaN rows in the groups. No statement raises 0A000 where the heap answers. Every statement runs over the heap twin (the truth), the
+-- index and the table; each prints whether the three answer alike, and whether the index ran as SiftAggV6.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+
+CREATE TABLE zh (id int, g int, n numeric(10,2), w numeric, t text) WITH (autovacuum_enabled = false);
+INSERT INTO zh SELECT i, i % 7, CASE WHEN i % 100 = 0 THEN 'NaN'::numeric WHEN i % 41 = 0 THEN NULL ELSE (i % 500) / 8.0 END,
+       CASE WHEN i % 90 = 0 THEN 'NaN'::numeric ELSE (i % 300) / 4.0 END, 'k' || i % 9 FROM generate_series(1, 6000) i;
+CREATE TABLE zi (LIKE zh) WITH (autovacuum_enabled = false);
+INSERT INTO zi SELECT * FROM zh;
+CREATE INDEX zi_col ON zi USING sift_col (id, g, n, w, t);
+CREATE TABLE zt USING sift_table AS SELECT * FROM zh;
+VACUUM zh, zi, zt;
+
+CREATE FUNCTION answer(rel text, q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE format('SELECT md5(coalesce(string_agg(r, ''|'' ORDER BY r), '''')) FROM (SELECT row_to_json(x)::text r FROM (%s) x) y', format(q, rel)) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION ran(rel text, q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) %s', format(q, rel)) LOOP
+		IF line LIKE '%Custom Scan (SiftAggV6)%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE TABLE cases (n serial, q text);
+INSERT INTO cases (q) VALUES
+ ('SELECT g, count(*), sum(id) FROM %s WHERE n = ''NaN'' GROUP BY g'),
+ ('SELECT g, count(*), sum(id) FROM %s WHERE n < ''NaN'' GROUP BY g'),
+ ('SELECT g, count(*) FROM %s WHERE n < 1e30 GROUP BY g'),
+ ('SELECT g, count(*) FROM %s WHERE n IN (1.5, ''NaN'') GROUP BY g'),
+ ('SELECT g, count(*) FROM %s WHERE n <> 100 GROUP BY g'),
+ ('SELECT g, count(*) FROM %s WHERE n > 100 GROUP BY g'),
+ ('SELECT g, count(*) FROM %s WHERE n BETWEEN 10 AND 20 GROUP BY g'),
+ ('SELECT n, count(*) FROM %s GROUP BY n'),
+ ('SELECT w, count(*) FROM %s GROUP BY w'),
+ ('SELECT g, count(DISTINCT n), count(DISTINCT w) FROM %s GROUP BY g'),
+ ('SELECT g, count(*) FILTER (WHERE n = ''NaN''), sum(id) FILTER (WHERE n > 5) FROM %s GROUP BY g'),
+ ('SELECT g, count(*) FILTER (WHERE n < 5), count(*) FILTER (WHERE n > 5), sum(n) FROM %s GROUP BY g'),
+ ('SELECT g, count(*) FILTER (WHERE w > 5), max(w) FROM %s GROUP BY g'),
+ ('SELECT t, count(*) FILTER (WHERE n <> 3), sum(id) FILTER (WHERE w < 20) FROM %s GROUP BY t');
+SELECT n, answer('zh', q) = answer('zi', q) AS index_agrees, answer('zh', q) = answer('zt', q) AS table_agrees, ran('zi', q) AS index_v6 FROM cases ORDER BY n;
+
+DROP TABLE cases, zh, zi, zt;
+DROP FUNCTION answer(text, text), ran(text, text);
+DROP EXTENSION pg_sift;
