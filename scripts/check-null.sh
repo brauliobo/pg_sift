@@ -284,12 +284,12 @@ def file_hits(f):
 with multiprocessing.get_context('fork').Pool(min(os.cpu_count() or 1, 8)) as pool:
     found = [h for per_file in pool.map(file_hits, names, chunksize=16) for h in per_file]
 bad, stale = report(found, allow)
+sites_out = sites.communicate()[0]
+print(sites_out, end='', flush=True)
 for f, n, fn, rule, msg in bad:
     print('%s:%d: %s: %s (%s; or a row in scripts/null.allow with the reason it cannot be NULL)' % (f, n, rule, msg, fn))
 for k in stale:
     print('scripts/null.allow: %s %s %s has no hit any more: delete the row' % k)
 print('check-null: %d unread site(s), %d stale row(s), %d allowed, %d files' % (len(bad), len(stale), len(allow), len(names)))
-sites_out = sites.communicate()[0]
-print(sites_out, end='')
 sys.exit(1 if bad or stale or sites.returncode else 0)
 PY
