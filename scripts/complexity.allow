@@ -22,6 +22,7 @@ manifest-unbounded	src/col/f2/delete.c	2	maintenance or inspection of a whole re
 manifest-unbounded	src/col/f2/delvec_delta.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/f2_cache.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/f2_check.c	1	maintenance or inspection of a whole relation
+manifest-unbounded	src/col/f2/f2_choices.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/f2_drop_parts.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/f2_granules.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/col/f2/f2_inspect.c	1	maintenance or inspection of a whole relation
@@ -51,6 +52,7 @@ manifest-unbounded	src/core/sql_parts.c	1	maintenance or inspection of a whole r
 manifest-unbounded	src/core/sql_status.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/f2_ddl.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/f2_vacuum.c	2	maintenance or inspection of a whole relation
+manifest-unbounded	src/table/f2/f2_vm.c	1	maintenance or inspection of a whole relation
 mem-alloc-hot	src/agg/rows.c	2	a census or a budget check; the call is not per row
 mem-alloc-hot	src/agg/spill/stream.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/f2/f2_cache.c	1	a census or a budget check; the call is not per row

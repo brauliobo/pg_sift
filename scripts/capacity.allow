@@ -7,6 +7,7 @@ array-append	src/agg/col.c	preds[n++] = src->flt.pred[i];	preds is COL_PREDS_MAX
 array-append	src/agg/col.c	preds[n++] = src->spred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
 array-append	src/agg/col.c	preds[n++] = src->wpred[i];	preds is COL_PREDS_MAX entries: the sum of the caps of the predicates that are copied into it
 array-append	src/agg/hybrid_agg_exec.c	keys[n++] = sift_f2_tid(&hit);	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
+array-append	src/agg/hybrid_agg_exec.c	keys[n++] = key;	the batch is flushed at POINT_BATCH rows, right after the append, and n starts again at 0
 array-append	src/agg/lookclass.c	m->idx[m->n++] = p;	each distinct need is added once, at most nneed <= MAX_NEED
 array-append	src/agg/v6/group_dist.c	vals[n++] = (uint64) int_at(v, r);	vals is SIFT_VEC_LEN long and the loop visits the rows of one vector
 array-append	src/bm25/tail.c	present[npresent++] = i;	present is nsegs + 1 long and i is one of the equal-term segments, each seen once
