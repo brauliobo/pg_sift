@@ -85,7 +85,6 @@ typedef struct UnRun
 	bool		typbyval;
 	char		typalign;
 	SiftV6RecFn *rec;
-	Relation	index;
 	bool		keyed;			/* SV6E_KEYS: a row of the table is one pair, the members its keys name */
 	int			nchild;			/* the element columns of the pull and how each is decoded: those of the statement, or the keys and the values of the map when keyed */
 	SiftVecType ctype[SIFT_V6_XELEM_COLS];

@@ -109,7 +109,7 @@ sift_v6_mapkey_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 bool
 sift_v6_mapkey_pair_qual(V6Plan *p, RestrictInfo *ri)
 {
-	Expr	   *q = sift_v6_mapkey_on(p) && !ri->pseudoconstant ? sift_v6_unnest_pair_qual(p, ri->clause) : NULL;
+	Expr	   *q = sift_v6_mapkey_on(p) && !ri->pseudoconstant ? sift_v6_unnest_elem_qual(p, (Node *) ri->clause) : NULL;
 
 	if (q != NULL)
 		p->xseed->pair_where = lappend(p->xseed->pair_where, q);

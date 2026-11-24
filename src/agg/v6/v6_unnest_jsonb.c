@@ -50,8 +50,6 @@ col_holds(Oid typid, int32 typmod, const SiftColDef *d)
 			return d->store == SIFT_COLS_F4 && d->type == SIFT_COLT_FLOAT4;
 		case FLOAT8OID:
 			return d->store == SIFT_COLS_F8 && d->type == SIFT_COLT_FLOAT8;
-		case BOOLOID:
-			return d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL;
 		default:
 			return false;
 	}
@@ -253,22 +251,10 @@ member_leaf(const SiftColRel *r, int att, int group, const char *name)
 	return -1;
 }
 
-/* the path of the list the function takes apart: the document, or its key (a key that no path spells apart from a nested one is none) */
-static char *
-list_path(const V6Plan *p, const SiftV6ElemRte *rte)
-{
-	const char *col = get_attname(planner_rt_fetch(p->rel->relid, p->root)->relid, rte->array->varattno, false);
-
-	if (rte->key != NULL && strpbrk(rte->key, ".[]*#") != NULL)
-		return NULL;
-	return rte->key != NULL ? psprintf("%s.%s[]", col, rte->key) : psprintf("%s[]", col);
-}
-
 static bool
 seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *key, int att, List **names)
 {
 	const SiftColRel *r = p->colrel;
-	const char *path = list_path(p, rte);
 	int			c = 0;
 
 	if (!r->json[att] || (e->group_leaf = group_of(r, att, key)) < 0)
@@ -309,7 +295,7 @@ bool
 sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value)
 {
 	*key = *value = -1;
-	if (!r->json[att] || (*group = group_of(r, att)) < 0 || strstr(r->schema->cols[*group].path, ".*") == NULL)
+	if (!r->json[att] || (*group = group_of(r, att, NULL)) < 0 || strstr(r->schema->cols[*group].path, ".*") == NULL)
 		return false;
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 	{

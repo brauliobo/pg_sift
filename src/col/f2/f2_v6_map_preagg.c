@@ -74,7 +74,7 @@ spec_ok(const SiftV6Spec *spec)
 {
 	const SiftV6Ext *x = spec->ext;
 
-	if (spec->nsets != 0 || spec->nbins != 0 || spec->nderive != 0 || spec->nfilters != 0 || spec->nfuncs != 0 || spec->text_query != NULL || spec->jsonqual != NIL ||
+	if (spec->nsets != 0 || spec->nbins != 0 || spec->nderive != 0 || spec->nfilters != 0 || spec->nfuncs != 0 || spec->text_queries != NIL || spec->jsonqual != NIL ||
 		spec->vqual != NIL || spec->pgexpr != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1 ||
 		spec->nkeys > 1 || spec->is_table)
 		return false;
