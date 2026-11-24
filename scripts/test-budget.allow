@@ -127,7 +127,6 @@ sql	agg_topn_cost_plan_suite.sql	3	predates the budget of test/README.md
 sql	agg_topn_offset_ties_suite.sql	1	predates the budget of test/README.md
 sql	agg_topn_offset_ties_suite_testing.sql	1	predates the budget of test/README.md
 sql	agg_unique_key_in_list.sql	1	predates the budget of test/README.md
-sql	agg_v6_adaptive_star.sql	1	predates the budget of test/README.md
 sql	agg_v6_core_suite.sql	2	predates the budget of test/README.md
 sql	agg_v6_par_dist_lean.sql	1	predates the budget of test/README.md
 sql	agg_v6_par_distinct_dict.sql	2	predates the budget of test/README.md
@@ -137,7 +136,7 @@ sql	agg_v6_parallel_2stage.sql	1	predates the budget of test/README.md
 sql	agg_v6_parallel_2stage_robust.sql	1	predates the budget of test/README.md
 sql	agg_v6_parallel_col_delta.sql	1	predates the budget of test/README.md
 sql	agg_v6_params_float_exec.sql	1	predates the budget of test/README.md
-sql	agg_v6_topn_card_vexpr.sql	2	predates the budget of test/README.md
+sql	agg_v6_topn_card_vexpr.sql	1	predates the budget of test/README.md
 sql	agg_vet_dirty_cost.sql	1	predates the budget of test/README.md
 sql	agg_visibility_refusal.sql	1	predates the budget of test/README.md
 sql	agg_wide_numeric_cost.sql	1	predates the budget of test/README.md
@@ -193,7 +192,7 @@ sql	col_gorder_entity_group.sql	1	predates the budget of test/README.md
 sql	col_gorder_group_count.sql	1	predates the budget of test/README.md
 sql	col_gorder_group_points.sql	1	predates the budget of test/README.md
 sql	col_gorder_group_pos.sql	1	predates the budget of test/README.md
-sql	col_gorder_group_suite.sql	4	predates the budget of test/README.md
+sql	col_gorder_group_suite.sql	3	predates the budget of test/README.md
 sql	col_gorder_keyed.sql	1	predates the budget of test/README.md
 sql	col_gorder_mem_segment.sql	2	predates the budget of test/README.md
 sql	col_gorder_narrow.sql	2	predates the budget of test/README.md
@@ -215,7 +214,7 @@ sql	col_key_cut_big_overlays.sql	1	predates the budget of test/README.md
 sql	col_key_cut_grown_overlay.sql	1	predates the budget of test/README.md
 sql	col_key_cut_overlap.sql	1	predates the budget of test/README.md
 sql	col_key_cut_overlay_mass.sql	1	predates the budget of test/README.md
-sql	col_key_cut_overlays_suite.sql	9	predates the budget of test/README.md
+sql	col_key_cut_overlays_suite.sql	8	predates the budget of test/README.md
 sql	col_key_cut_paced.sql	1	predates the budget of test/README.md
 sql	col_key_cut_partition.sql	1	predates the budget of test/README.md
 sql	col_key_cut_ranges.sql	1	predates the budget of test/README.md
@@ -261,7 +260,7 @@ sql	col_range_count_dirty.sql	1	predates the budget of test/README.md
 sql	col_range_order.sql	1	predates the budget of test/README.md
 sql	col_rewrite_cut.sql	1	predates the budget of test/README.md
 sql	col_rewrite_roll.sql	2	predates the budget of test/README.md
-sql	col_scan_key_range.sql	3	predates the budget of test/README.md
+sql	col_scan_key_range.sql	2	predates the budget of test/README.md
 sql	col_scope_build_rule.sql	1	predates the budget of test/README.md
 sql	col_scope_par_estimate.sql	1	predates the budget of test/README.md
 sql	col_scope_patch_members.sql	1	predates the budget of test/README.md
@@ -350,4 +349,3 @@ sql	tbl_text_filter.sql	1	predates the budget of test/README.md
 sql	tbl_vacuum_dead_span.sql	1	predates the budget of test/README.md
 sql	tbl_zone_prune.sql	1	predates the budget of test/README.md
 sql	vacuum_truncate.sql	2	predates the budget of test/README.md
-unit	f2_scaling_test.c	1	predates the budget of test/README.md
