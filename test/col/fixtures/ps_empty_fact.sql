@@ -2,6 +2,7 @@
 -- shape: join
 -- expect: agg
 -- guc: sift.agg_force = on
+-- requires: SELECT current_setting('sift.agg_force', true) IS NOT NULL
 -- key: -
 SELECT d.label, count(*) AS rows, count(f.id) AS facts, sum(f.v) AS v, min(f.t) AS t
 FROM pf_dim d LEFT JOIN pf_fact_empty f ON f.a = d.a AND f.b = d.b
