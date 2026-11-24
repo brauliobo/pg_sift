@@ -86,13 +86,21 @@ var_correlation(PlannerInfo *root, Node *var)
 	return corr;
 }
 
+static bool
+is_equality(Oid opno)
+{
+	const char *name = get_opname(opno);
+
+	return name != NULL && strcmp(name, "=") == 0;
+}
+
 /* `var = const` or `var = ANY (const list)`: what a point directory answers */
 static bool
 is_point_clause(const Expr *clause)
 {
-	if (IsA(clause, OpExpr) && list_length(((const OpExpr *) clause)->args) == 2)
-		return strcmp(get_opname(((const OpExpr *) clause)->opno), "=") == 0;
-	return IsA(clause, ScalarArrayOpExpr) && ((const ScalarArrayOpExpr *) clause)->useOr && strcmp(get_opname(((const ScalarArrayOpExpr *) clause)->opno), "=") == 0;
+	if (IsA(clause, OpExpr))
+		return list_length(((const OpExpr *) clause)->args) == 2 && is_equality(((const OpExpr *) clause)->opno);
+	return IsA(clause, ScalarArrayOpExpr) && ((const ScalarArrayOpExpr *) clause)->useOr && is_equality(((const ScalarArrayOpExpr *) clause)->opno);
 }
 
 /* the share of the units of the index a point clause reads: those that keep no point directory of its column are read whole (0 without an index) */
