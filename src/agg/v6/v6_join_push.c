@@ -86,38 +86,51 @@ join_vars(const Var *a, const Var *b, PushJoin *j)
 	return OidIsValid(j->opno);
 }
 
-/* The one clause that joins the two relations, fact.col = dim.col over integers: the only equivalence class that holds a column of each, or the clause of the semi-join of an IN (sub-select) that no class holds */
+static bool
+class_joins(const EquivalenceClass *ec, const PushJoin *j)
+{
+	return !ec->ec_has_const && bms_is_member(j->fact->relid, ec->ec_relids) && bms_is_member(j->dim->relid, ec->ec_relids);
+}
+
+static bool
+class_vars(const EquivalenceClass *ec, PushJoin *j)
+{
+	const Expr *a,
+			   *b;
+
+	if (ec->ec_has_volatile || list_length(ec->ec_members) != 2)
+		return false;
+	a = ((EquivalenceMember *) linitial(ec->ec_members))->em_expr;
+	b = ((EquivalenceMember *) lsecond(ec->ec_members))->em_expr;
+	return IsA(a, Var) && IsA(b, Var) && join_vars((const Var *) a, (const Var *) b, j);
+}
+
+static bool
+equal_vars(const OpExpr *op, PushJoin *j)
+{
+	return IsA(op, OpExpr) && list_length(op->args) == 2 && IsA(linitial(op->args), Var) && IsA(lsecond(op->args), Var) &&
+		get_op_opfamily_strategy(op->opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber && join_vars(linitial(op->args), lsecond(op->args), j);
+}
+
+/* The join of the two relations is one clause, fact.col = dim.col over integers, that the key of the scan decides: every other clause that holds a column of each (a class of an expression or a third column, an inequality, an OR) stays with PostgreSQL's join. The clause is the one equivalence class that holds both relations, or the one clause of the semi-join of an IN (sub-select) that no class holds */
 static bool
 find_join(PlannerInfo *root, PushJoin *j)
 {
-	bool		classed = false;
+	const EquivalenceClass *joining = NULL;
+	int			clauses = list_length(j->dim->joininfo);
 
 	j->semi = root->join_info_list != NIL;
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
-	{
-		const Var  *a,
-				   *b;
-
-		if (ec->ec_has_const || !bms_is_member(j->fact->relid, ec->ec_relids) || !bms_is_member(j->dim->relid, ec->ec_relids))
-			continue;
-		if (classed || ec->ec_has_volatile || list_length(ec->ec_members) != 2)
-			return false;
-		a = (const Var *) ((EquivalenceMember *) linitial(ec->ec_members))->em_expr;
-		b = (const Var *) ((EquivalenceMember *) lsecond(ec->ec_members))->em_expr;
-		if (!IsA(a, Var) || !IsA(b, Var) || !join_vars(a, b, j))
-			return false;
-		classed = true;
-	}
-	if (classed)
-		return j->fact->joininfo == NIL && j->dim->joininfo == NIL;
-	if (j->semi && list_length(j->fact->joininfo) == 1 && list_length(j->dim->joininfo) == 1)
-	{
-		const OpExpr *op = (const OpExpr *) ((RestrictInfo *) linitial(j->dim->joininfo))->clause;
-
-		return IsA(op, OpExpr) && list_length(op->args) == 2 && IsA(linitial(op->args), Var) && IsA(lsecond(op->args), Var) &&
-			get_op_opfamily_strategy(op->opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber && join_vars(linitial(op->args), lsecond(op->args), j);
-	}
-	return false;
+		if (class_joins(ec, j))
+		{
+			joining = ec;
+			clauses++;
+		}
+	if (clauses != 1 || list_length(j->fact->joininfo) != list_length(j->dim->joininfo))
+		return false;
+	if (joining == NULL)
+		return j->semi && equal_vars((const OpExpr *) ((RestrictInfo *) linitial(j->dim->joininfo))->clause, j);
+	return class_vars(joining, j);
 }
 
 #define PUSH_PINNED_MAX 64
