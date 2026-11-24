@@ -788,12 +788,14 @@ sift_col_delta_sorted_gens(const SiftPartDesc *parts, int nparts)
 	return gens;
 }
 
+/* A writer that began after the pass read the next id appends to the chain the pass reads: its id is newer than the next id of the pass, and a full id is made from an id no newer than the next id it is made by */
 SiftHorizonStatus
 sift_col_delta_horizon_status(void *ctx, TransactionId xid, FullTransactionId *fxid)
 {
 	SiftXidHorizonCache *hc = ctx;
+	bool		began_after = !TransactionIdPrecedesOrEquals(xid, XidFromFullTransactionId(hc->next));
 
-	*fxid = sift_xid_fxid_at(hc->next, xid);
+	*fxid = sift_xid_fxid_at(began_after ? ReadNextFullTransactionId() : hc->next, xid);
 	return sift_xid_horizon_status(hc, xid);
 }
 
