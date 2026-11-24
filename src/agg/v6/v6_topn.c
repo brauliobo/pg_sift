@@ -193,7 +193,7 @@ typedef struct TopNPlan
 	PlannerInfo *root;
 	RelOptInfo *rel;
 	RelOptInfo *out;
-	const IndexOptInfo *index;
+	const IndexOptInfo *index;	/* NULL for a sift_table */
 	SiftV6TopNSpec spec;
 	SiftV6Input in;
 	List	   *scan_tlist;
@@ -275,23 +275,36 @@ leading_key_ordered(const SiftV6TopNSpec *spec)
 {
 	const int	att = spec->key[0].attno;
 
-	return sift_v6_rel_sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
+	return !spec->is_table && sift_v6_rel_sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
+}
+
+static double
+index_total(const TopNPlan *p, double k)
+{
+	const double sel = Max(p->rel->rows / Max(p->rel->tuples, 1.0), 1e-9);
+	const bool	ordered = leading_key_ordered(&p->spec);
+	const double read = ordered ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
+	Cost		open,
+				scan;
+
+	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	if (!ordered && sift_v6_gpu_topn_forced(&p->spec))
+		return open + cpu_tuple_cost * k;
+	return open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
+}
+
+/* A sift_table has no tournament: its rows are read whole in vectors, and each row that passes the quals is fetched once into a sort bounded by the limit */
+static double
+table_total(const TopNPlan *p, double k)
+{
+	return cpu_tuple_cost * (0.05 * p->rel->tuples + p->rel->rows + k) + cpu_operator_cost * (p->rel->tuples * list_length(p->quals) + p->rel->rows * p->spec.nkeys);
 }
 
 static void
 topn_add_path(TopNPlan *p)
 {
 	const double k = plan_rows(p->spec.limit, p->spec.offset);
-	const double sel = Max(p->rel->rows / Max(p->rel->tuples, 1.0), 1e-9);
-	const bool	ordered = leading_key_ordered(&p->spec);
-	const double read = ordered ? Min(p->rel->tuples, k / sel + 4.0 * SIFT_VEC_LEN) : p->rel->tuples;
-	Cost		open,
-				scan;
-	double		total;
-
-	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
-	total = !ordered && sift_v6_gpu_topn_forced(&p->spec) ? open + cpu_tuple_cost * k :
-		open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
+	const double total = p->spec.is_table ? table_total(p, k) : index_total(p, k);
 
 	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
@@ -301,19 +314,22 @@ void
 sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	SiftV6TopNSpec shape = {0};
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (stage != UPPERREL_ORDERED || !sift_v6_base_rel_ok(root, input_rel) || !shape_ok(root, &shape))
 		return;
 	sift_v6_stage_target(root, stage, output_rel);
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.spec = shape};
+		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = src[i].ix,.spec = shape,.in = src[i].input};
 
-		if (!agg_index_complete(ix) || !sift_v6_rel_ordered(ix->indexoid, false))
+		if (!sift_v6_source_usable(&src[i]) || (!src[i].is_table && !sift_v6_rel_ordered(src[i].reloid, false)))
 			continue;
-		p.spec.indexoid = ix->indexoid;
+		p.spec.indexoid = src[i].reloid;
+		p.spec.is_table = src[i].is_table;
 		p.spec.rti = input_rel->relid;
-		sift_v6_input_init_info(&p.in, ix);
 		if (compile_keys(&p) && compile_outputs(&p) && compile_quals(&p))
 		{
 			p.spec.desc = sift_v6_topn_desc(root, input_rel->relid);
@@ -332,7 +348,7 @@ sift_agg_v6_topn_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best,
 List *
 sift_v6_topn_spec_pack(const SiftV6TopNSpec *s)
 {
-	List	   *l = list_make3_int((int) s->indexoid, (int) s->rti, s->nkeys);
+	List	   *l = list_make4_int((int) s->indexoid, (int) s->rti, s->nkeys, s->is_table);
 
 	for (int i = 0; i < s->nkeys; i++)
 	{
@@ -353,9 +369,10 @@ sift_v6_topn_spec_unpack(const List *l)
 	s->indexoid = (Oid) list_nth_int(ints, 0);
 	s->rti = (Index) list_nth_int(ints, 1);
 	s->nkeys = list_nth_int(ints, 2);
+	s->is_table = list_nth_int(ints, 3);
 	for (int i = 0; i < s->nkeys; i++)
 	{
-		const int	at = 3 + 6 * i;
+		const int	at = 4 + 6 * i;
 
 		s->key[i] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.scale = list_nth_int(ints, at + 2)};
 		s->order[i] = (SiftTournKey) {.desc = list_nth_int(ints, at + 3) & 1,.nulls_first = (list_nth_int(ints, at + 3) >> 1) & 1};
@@ -511,26 +528,25 @@ topn_run(TopNState *st, EState *estate)
 	bool		compiled,
 				opened;
 	bool		(*topn_open) (EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
-	Relation	index = index_open(st->spec->indexoid, AccessShareLock);
+	Relation	source = sift_v6_source_open(st->spec->indexoid, st->spec->is_table, AccessShareLock, &in);
 
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
-	sift_v6_input_init_rel(&in, index);
 	sift_v6_input_bind(&in, estate);
 	compiled = sift_v6_vexpr_quals(st->cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals);
-	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of index %u are not compiled", st->spec->indexoid);
+	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of relation %u are not compiled", st->spec->indexoid);
 	st->pos = 0;
 	st->ran = true;
-	topn_open = sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open;
+	topn_open = st->spec->is_table ? NULL : sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open;
 	opened = topn_open != NULL && tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows) &&
 		topn_open(estate, st->spec, &in, st->quals == NIL ? NULL : &quals, &st->src);
 	if (!opened)
 	{
-		index_close(index, NoLock);
+		sift_v6_source_close(source, st->spec->is_table, NoLock);
 		topn_sort_rows(st, estate, &in, st->quals == NIL ? NULL : &quals);
 		return;
 	}
-	topn_device(st, estate, index, &in);
-	index_close(index, NoLock);
+	topn_device(st, estate, source, &in);
+	sift_v6_source_close(source, st->spec->is_table, NoLock);
 	st->rows = sift_v6_topn_run(st->cx, st->spec, &st->src, &st->tourn, &st->nrows);
 }
 
@@ -589,7 +605,7 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	TopNState  *st = (TopNState *) node;
 
-	sift_v6_explain_index(es, st->spec->indexoid, false);
+	sift_v6_explain_index(es, st->spec->indexoid, st->spec->is_table);
 	sift_v6_topn_explain(es, st->spec->desc, sift_v6_topn_limit_text(st->spec->limit, st->spec->offset));
 	sift_v6_gpu_explain(&st->gpu, es);
 	sift_v6_explain_topn_rows(st->spec, es);

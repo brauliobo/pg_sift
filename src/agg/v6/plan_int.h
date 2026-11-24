@@ -118,6 +118,8 @@ extern bool sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);
 extern bool sift_v6_resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* A sort key of a row Top-N: a column or an expression of the scan under any collation, since the heap of the best rows compares by the sort operator */
 extern bool sift_v6_compile_sort_key(V6Plan *p, Expr *e, SiftV6Col *k);
+/* a column the scan holds in a native vector: of the kernels' classes, or the text of a table */
+extern bool sift_v6_plan_native_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 /* the same for a column the scan reads as any value: the kernels' columns, the text of a table, the datums, and a column of a dimension or of the unnested element (an aggregate of PostgreSQL's own functions reads them) */
 extern bool sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* a key or argument PostgreSQL's executor computes from columns of the scan, as a column of the scan */

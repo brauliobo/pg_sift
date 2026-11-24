@@ -63,10 +63,31 @@ SELECT parity('SELECT f.id, f.amount FROM @T f JOIN @D d ON d.k = f.k WHERE d.la
 SELECT parity('SELECT d.label, count(*), sum(f.grp) FROM @T f JOIN @D d ON d.k = f.k WHERE d.label < ''l3'' GROUP BY d.label') AS sip_under_an_aggregate;
 SELECT parity('SELECT f.id FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''nothing''') AS sip_no_dimension_row;
 
+-- the best rows of a table by their keys
+SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Custom Scan (SiftAggV6TopN)') AS topn_served_by_agg_v6;
+SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Table: ot') AS topn_reads_the_table;
+SELECT NOT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Index:') AS topn_reads_no_index;
+SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10') AS topn_desc;
+SELECT parity_ordered('SELECT id, amount FROM @T ORDER BY amount NULLS FIRST, id DESC LIMIT 25') AS topn_nulls_first;
+SELECT parity_ordered('SELECT id, amount, tag FROM @T WHERE tag <> ''tag1'' AND k < 200 ORDER BY amount DESC NULLS LAST, id LIMIT 15 OFFSET 40') AS topn_offset_and_quals;
+SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC FETCH FIRST 5 ROWS WITH TIES') AS topn_with_ties;
+SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp > 100 ORDER BY amount DESC, id LIMIT 10') AS topn_no_match;
+PREPARE topn_t (int, bigint) AS SELECT id, amount FROM ot WHERE grp = $1 ORDER BY amount DESC, id LIMIT $2;
+PREPARE topn_h (int, bigint) AS SELECT id, amount FROM oh WHERE grp = $1 ORDER BY amount DESC, id LIMIT $2;
+SET plan_cache_mode = force_generic_plan;
+CREATE TEMP TABLE topn_got AS EXECUTE topn_t(5, 7);
+CREATE TEMP TABLE topn_want AS EXECUTE topn_h(5, 7);
+RESET plan_cache_mode;
+SELECT (SELECT count(*) FROM topn_got) = 7 AND NOT EXISTS (SELECT * FROM topn_got EXCEPT SELECT * FROM topn_want) AS topn_parameters;
+DROP TABLE topn_got, topn_want;
+DEALLOCATE topn_t;
+DEALLOCATE topn_h;
+
 UPDATE ot SET k = (k + 1) % 400, grp = 3 WHERE id % 9 = 0;
 UPDATE oh SET k = (k + 1) % 400, grp = 3 WHERE id % 9 = 0;
 DELETE FROM ot WHERE id % 13 = 0;
 DELETE FROM oh WHERE id % 13 = 0;
+SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 30') AS topn_after_updates_and_deletes;
 SELECT plan_has('SELECT f.id, f.grp FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''l5''', 'Custom Scan (SiftAggV6Sip)') AS sip_served_after_updates_and_deletes;
 SELECT parity('SELECT f.id, f.grp, d.label FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''l5''') AS sip_after_updates_and_deletes;
 

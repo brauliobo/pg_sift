@@ -193,6 +193,13 @@ table_text_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+/* A column of the kernels' classes or the text of a table: the values the scan holds in a native vector, which an ordering of them follows */
+bool
+sift_v6_plan_native_column(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	return column_of(p, e, false, out) || table_text_of(p, e, out);
+}
+
 /* A column the scan reads as a value of any type: the columns of the kernels, the text of a table, the datums, and the payload of a dimension or the element of the unnest */
 bool
 sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)

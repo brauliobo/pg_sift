@@ -18,7 +18,8 @@
 
 typedef struct SiftV6TopNSpec
 {
-	Oid			indexoid;
+	Oid			indexoid;		/* the index, or the sift_table when is_table */
+	bool		is_table;
 	Index		rti;			/* of the table in the query the plan was made for: the Vars of its clauses */
 	int			nkeys;
 	SiftV6Col	key[SIFT_TOURN_MAX_KEYS];
