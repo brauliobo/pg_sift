@@ -212,6 +212,20 @@ SELECT count(*) AS problems FROM sift.check('events_date');
 SELECT count(*) AS problems FROM sift.check('events_timestamptz');
 SELECT count(*) AS problems FROM sift.check('accounts_u');
 
-DROP TABLE accounts, events, key_names, pairs_text, pairs_varchar, pairs_uuid, pairs_date, pairs_timestamptz, pairs_timestamp;
+-- 7. A text member is kept in format major 2 as well: the scope has no summary (a member is an integer there) and its statements are answered by the join
+CREATE TABLE tm_events (id int PRIMARY KEY, member text NOT NULL, amount int NOT NULL);
+INSERT INTO tm_events SELECT i, 'm' || (1 + i % 60), i % 101 FROM generate_series(1, 1000) i;
+CREATE TABLE tm_pairs (member text NOT NULL, key text NOT NULL);
+CREATE UNIQUE INDEX tm_pairs_u ON tm_pairs (member, key);
+INSERT INTO tm_pairs SELECT 'm' || m, 'k' || (m % 5) FROM generate_series(1, 60) m;
+CREATE INDEX tm_events_i ON tm_events USING sift_col (member, amount) WITH (scope = 'k: member -> tm_pairs(member, key)', track_changes = 'ctid');
+SELECT format_major, scopes FROM sift.status('tm_events_i');
+SELECT same('SELECT count(*), sum(e.amount) FROM tm_events e JOIN tm_pairs p ON p.member = e.member WHERE p.key = ''k2''') AS text_member;
+INSERT INTO tm_events SELECT 5000 + i, 'm' || (1 + i % 60), 7 FROM generate_series(1, 100) i;
+INSERT INTO tm_pairs VALUES ('m1', 'k2');
+SELECT same('SELECT count(*), sum(e.amount) FROM tm_events e JOIN tm_pairs p ON p.member = e.member WHERE p.key = ''k2''') AS text_member_after_dml;
+SELECT count(*) AS problems FROM sift.check('tm_events_i');
+
+DROP TABLE tm_events, tm_pairs, accounts, events, key_names, pairs_text, pairs_varchar, pairs_uuid, pairs_date, pairs_timestamptz, pairs_timestamp;
 DROP FUNCTION same(text), lit(text, int), shapes(text), all_shapes(), after_dml();
 DROP EXTENSION pg_sift;
