@@ -53,18 +53,23 @@ index_att(const V6Plan *p, const Var *doc)
 	return 0;
 }
 
-/* the leaf of the key of attribute att that holds its numbers as float8 (the member of the document is then a column of the index, not of a map); -1: none */
+/* the scalar leaf the index keeps of the key of attribute att (the member of the document is then a column of the index, not of a map); -1: none */
 static int
-key_float8_leaf(const V6Plan *p, int att, const char *key)
+key_scalar_leaf(const V6Plan *p, int att, const char *key)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	const int	leaf = rel.ops != NULL && rel.ops->jsonb != NULL ? rel.ops->jsonb->key_leaf(p->index->indexoid, att, key, strlen(key)) : -1;
-	const SiftColDef *d;
 
-	if (leaf < 0)
-		return -1;
-	d = &p->colrel->schema->cols[leaf];
-	return d->kind == SIFT_COLK_SCALAR && d->store == SIFT_COLS_F8 && d->type == SIFT_COLT_FLOAT8 && d->lane == 0 ? leaf : -1;
+	return leaf >= 0 && p->colrel->schema->cols[leaf].kind == SIFT_COLK_SCALAR && p->colrel->schema->cols[leaf].lane == 0 ? leaf : -1;
+}
+
+/* the leaf of the key that holds its numbers as float8; -1: none */
+static int
+key_float8_leaf(const V6Plan *p, int att, const char *key)
+{
+	const int	leaf = key_scalar_leaf(p, att, key);
+
+	return leaf >= 0 && p->colrel->schema->cols[leaf].store == SIFT_COLS_F8 && p->colrel->schema->cols[leaf].type == SIFT_COLT_FLOAT8 ? leaf : -1;
 }
 
 bool
@@ -155,7 +160,7 @@ probe(Node *n, Probe *pr)
 
 	if (n == NULL)
 		return false;
-	if (member_read(n, &doc, &key, &type) && (pr->att = index_att(pr->p, doc)) > 0 && (IsA(n, FuncExpr) || key_float8_leaf(pr->p, pr->att, key) < 0))
+	if (member_read(n, &doc, &key, &type) && (pr->att = index_att(pr->p, doc)) > 0 && (IsA(n, FuncExpr) || key_scalar_leaf(pr->p, pr->att, key) < 0))
 		return true;
 	return expression_tree_walker(n, probe, pr);
 }
