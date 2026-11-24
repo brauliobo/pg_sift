@@ -627,8 +627,8 @@ sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v
 	sift_col_datum_values_att(def, 0, false, d, name, v);
 }
 
-static Datum
-nan_numeric(void)
+Datum
+sift_col_nan_numeric(void)
 {
 	return DirectFunctionCall3(numeric_in, CStringGetDatum("NaN"), ObjectIdGetDatum(InvalidOid), Int32GetDatum(-1));
 }
@@ -679,7 +679,7 @@ sift_col_values_datum(const SiftColDef *def, Oid typid, int16 typlen, bool typby
 			d = ObjectIdGetDatum((Oid) v->v.i);
 			break;
 		case SIFT_COLT_NUMERIC:
-			d = v->isnull ? nan_numeric()
+			d = v->isnull ? sift_col_nan_numeric()
 				: def->store == SIFT_COLS_STR ? sift_col_image_numeric((const uint8 *) v->v.s, v->len, (int32) v[1].v.i)
 				: def->lanes == 2 ? sift_col_w128_numeric(sift_col_wide_join(v[0].v.i, v[1].v.i), def->scale)
 				: sift_col_key_numeric(def->scale, v->v.i);

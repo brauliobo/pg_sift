@@ -414,6 +414,7 @@ extern int64 sift_col_numeric_key(int scale, Datum value, SiftColRound round);
 /* A finite constant whose scaled value is below 10^18, which every numeric(p <= 18, s) leaf stays under (so sift_col_numeric_key cannot overflow) */
 extern bool sift_col_numeric_key_fits(int scale, Datum value);
 extern Datum sift_col_key_numeric(int scale, int64 key);
+extern Datum sift_col_nan_numeric(void);
 
 /*
  * The other forms of numeric and the wide types. The constant of a predicate on a numeric of two lanes is scaled and

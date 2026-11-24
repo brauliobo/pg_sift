@@ -15,6 +15,7 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "port/pg_bitutils.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -81,12 +82,43 @@ doc_holds(const SiftSrcLayout *lay, int att)
 	return att >= 1 && att <= lay->natts && sift_v1_att_typid(lay, att) == JSONBOID && att_heap_column(lay, att) != 0;
 }
 
-/* a type that is its integer or float as stored: a Datum is made of it without the type's input or a dictionary */
+/* the head of the leaves that keep attribute att whole: a scalar of the attribute itself, which for an array is the image its lengths come after */
+static const SiftSrcLeaf *
+datum_head(const SiftSrcLayout *lay, int att)
+{
+	const SiftSrcLeaf *found = NULL;
+
+	for (int i = 0; i < lay->nleaves; i++)
+	{
+		const SiftSrcLeaf *l = &lay->leaf[i];
+
+		if (l->attno != att || l->typid == InvalidOid || l->arrlen != 0)
+			continue;
+		if (found != NULL || l->parent >= 0 || l->kind != SCL_SCALAR || l->path != NIL || l->noimage || l->lossy || l->astext)
+			return NULL;
+		found = l;
+	}
+	return found;
+}
+
+static bool
+is_text_type(Oid typid)
+{
+	return typid == TEXTOID || typid == VARCHAROID || typid == BPCHAROID || typid == NAMEOID;
+}
+
+/* a type whose Datum is made of the leaf as stored: an integer or float by value, a scaled numeric, an enum label, a text from its dictionary, or the image of a wide value */
 static bool
 datum_by_value(const SiftSrcLeaf *l, Oid typid)
 {
 	if (typid == FLOAT4OID || typid == FLOAT8OID)
 		return l->vtype == SCV_F64;
+	if (typid == NUMERICOID)
+		return l->vtype == SCV_I64;
+	if (is_text_type(typid))
+		return l->vtype == SCV_CODE;
+	if (l->vtype == SCV_I32 && get_typtype(typid) == TYPTYPE_ENUM)
+		return true;
 	return (typid == BOOLOID || typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID ||
 			typid == CASHOID) && (l->vtype == SCV_I32 || l->vtype == SCV_I64);
 }
@@ -154,7 +186,7 @@ describe_att(const SiftSrcLayout *lay, int att)
 			a.vec_type = a.typid == BOOLOID ? SVEC_BOOL : SVEC_I32;
 			break;
 		case SCV_I64:
-			a.vec_type = a.typid == NUMERICOID ? SVEC_NUM64 : SVEC_I64;
+			a.vec_type = a.typid == NUMERICOID ? SVEC_DATUM : SVEC_I64;
 			a.scale = l->scale;
 			a.prec = a.typid == NUMERICOID ? 18 : 0;
 			break;
@@ -286,7 +318,7 @@ v1_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
-	const SiftSrcLeaf *l = sift_v1_att_leaf(lay, att);
+	const SiftSrcLeaf *l = cls == SV6C_DATUM ? datum_head(lay, att) : sift_v1_att_leaf(lay, att);
 	const bool	holds = (cls == SV6C_DATUM && doc_holds(lay, att)) || (l != NULL && leaf_serves(l, sift_v1_att_typid(lay, att), (SiftV6Class) cls));
 
 	sift_v1_rel_close(&r);
@@ -435,19 +467,39 @@ put_strview(V1Src *s, SiftStrView *sv, const SiftSrcVec *v, uint32 r, bool valid
 }
 
 static Datum
+numeric_datum(const SiftSrcLeaf *l, const SiftSrcVec *v, uint32 r)
+{
+	return v->ovf != NULL && sift_src_bit(v->ovf, r) ? sift_col_nan_numeric() : sift_col_key_numeric(l->scale, sift_src_int(v->data, l->vtype, r));
+}
+
+static Datum
+code_datum(V1Src *s, Oid typid, const SiftSrcVec *v, uint32 r, bool image)
+{
+	char		buf[SIFT_SRC_DICT_ENTRY];
+	uint32		len;
+	const char *p = sift_srcdict_str(v->dict, ((const uint32 *) v->data)[r], &len, buf);
+	NameData   *name;
+
+	if (image)
+		return PointerGetDatum(memcpy(MemoryContextAlloc(s->batch_cx, len), p, len));
+	if (typid != NAMEOID)
+		return PointerGetDatum(cstring_to_text_with_len(p, len));
+	name = MemoryContextAllocZero(s->batch_cx, NAMEDATALEN);
+	memcpy(NameStr(*name), p, Min(len, NAMEDATALEN - 1));
+	return NameGetDatum(name);
+}
+
+static Datum
 datum_of(V1Src *s, int i, const SiftSrcVec *v, uint32 r)
 {
 	const SiftSrcLeaf *l = s->col_leaf[i];
+	const Oid	typid = s->in.col[i].typid;
 
-	if (l->wide)
-	{
-		char		buf[SIFT_SRC_DICT_ENTRY];
-		uint32		len;
-		const char *p = sift_srcdict_str(v->dict, ((const uint32 *) v->data)[r], &len, buf);
-
-		return PointerGetDatum(memcpy(MemoryContextAlloc(s->batch_cx, len), p, len));
-	}
-	switch (s->in.col[i].typid)
+	if (l->vtype == SCV_CODE)
+		return code_datum(s, typid, v, r, l->wide);
+	if (typid == NUMERICOID)
+		return numeric_datum(l, v, r);
+	switch (typid)
 	{
 		case BOOLOID:
 			return BoolGetDatum(sift_src_int(v->data, l->vtype, r) != 0);
@@ -461,7 +513,7 @@ datum_of(V1Src *s, int i, const SiftSrcVec *v, uint32 r)
 		case FLOAT8OID:
 			return Float8GetDatum(((const double *) v->data)[r]);
 		default:
-			return Int64GetDatum(sift_src_int(v->data, l->vtype, r));
+			return get_typtype(typid) == TYPTYPE_ENUM ? ObjectIdGetDatum((Oid) sift_src_int(v->data, l->vtype, r)) : Int64GetDatum(sift_src_int(v->data, l->vtype, r));
 	}
 }
 
@@ -470,7 +522,8 @@ put_col(V1Src *s, int i, uint32 r, int n)
 {
 	const SiftSrcVec *v = &s->read_vec[s->col_read[i]];
 	const SiftSrcLeaf *l = s->col_leaf[i];
-	const bool	nan = v->ovf != NULL && sift_src_bit(v->ovf, r);
+	const bool	datum = s->in.col[i].type == SVEC_DATUM;
+	const bool	nan = !datum && v->ovf != NULL && sift_src_bit(v->ovf, r);
 	const bool	valid = (v->isnull == NULL || !v->isnull[r]) && !nan;
 
 	if (nan && !sift_src_nan_leaf(l))
@@ -734,7 +787,7 @@ read_slot(V1Src *s, const SiftSrcLeaf *l)
 static const SiftSrcLeaf *
 input_leaf(const V1Src *s, int att, SiftV6Class cls)
 {
-	const SiftSrcLeaf *l = sift_v1_att_leaf(s->lay, att);
+	const SiftSrcLeaf *l = cls == SV6C_DATUM ? datum_head(s->lay, att) : sift_v1_att_leaf(s->lay, att);
 
 	SIFT_INVARIANT(l != NULL && leaf_serves(l, sift_v1_att_typid(s->lay, att), cls), "attribute %d of relation %u is not a leaf Format 1 decodes as class %d", att, s->in.indexoid, (int) cls);
 	return l;
