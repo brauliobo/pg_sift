@@ -8,10 +8,12 @@
 set -euo pipefail
 
 duplicates() {
-	local f
-	for f; do
-		awk '/^#[ \t]*ifndef[ \t]+[A-Za-z_0-9]+/ { n = $2; getline; if ($1 == "#define" && $2 == n) print n; exit }' "$f" | sed "s|\$|\t$f|"
-	done | sort | awk -F'\t' '{ c[$1]++; f[$1] = f[$1] " " $2 } END { bad = 0; for (g in c) if (c[g] > 1) { print "duplicate include guard " g ":" f[g]; bad = 1 } exit bad }'
+	(( $# )) || return 0
+	awk '
+		FNR == 1 { done = 0; pending = "" }
+		pending != "" { if ($1 == "#define" && $2 == pending) print pending "\t" FILENAME; pending = ""; next }
+		!done && /^#[ \t]*ifndef[ \t]+[A-Za-z_0-9]+/ { pending = $2; done = 1 }
+	' "$@" | sort | awk -F'\t' '{ c[$1]++; f[$1] = f[$1] " " $2 } END { bad = 0; for (g in c) if (c[g] > 1) { print "duplicate include guard " g ":" f[g]; bad = 1 } exit bad }'
 }
 
 if [[ ${1:-} == --selftest ]]; then

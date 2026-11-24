@@ -13,11 +13,19 @@ TBL_SHELL_BANNED='#include "table/(v1|f2)/'
 V2_BANNED='#include "[^"]*/v1/|#include "core/(store|dirchain|lane|live)\.h"|#include "core/v1_col/|SiftDirSnapshot|SiftColSegment|SiftTombLog|format_major == 1'
 V1_BANNED='#include "[^"]*/(f2|v6|scope_v6|granule|skip)/|#include "col/(granule|skip)'
 scan() { # DIR
-	(cd "$1" && find src -type f \( -name '*.c' -o -name '*.h' \) | LC_ALL=C sort | while read -r f; do
-		if [[ $f =~ $V2 ]]; then grep -nE "$V2_BANNED" "$f" | sed "s#^#$f:#"
-		elif [[ $f =~ $V1 ]]; then grep -nE "$V1_BANNED" "$f" | sed "s#^#$f:#"
-		elif [[ $f =~ $TBL_SHELL ]]; then grep -nE "$TBL_SHELL_BANNED" "$f" | sed "s#^#$f:#"; fi
-	done)
+	(cd "$1" && {
+		local f v2=() v1=() tb=()
+		while read -r f; do
+			if [[ $f =~ $V2 ]]; then v2+=("$f")
+			elif [[ $f =~ $V1 ]]; then v1+=("$f")
+			elif [[ $f =~ $TBL_SHELL ]]; then tb+=("$f"); fi
+		done < <(find src -type f \( -name '*.c' -o -name '*.h' \) | LC_ALL=C sort)
+		{
+			(( ${#v2[@]} )) && grep -HnE "$V2_BANNED" "${v2[@]}"
+			(( ${#v1[@]} )) && grep -HnE "$V1_BANNED" "${v1[@]}"
+			(( ${#tb[@]} )) && grep -HnE "$TBL_SHELL_BANNED" "${tb[@]}"
+		} | LC_ALL=C sort -t: -k1,1 -s
+	})
 }
 if [[ ${1:-} == --selftest ]]; then
 	d=$(mktemp -d) && trap 'rm -rf "$d"' EXIT

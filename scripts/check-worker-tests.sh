@@ -19,7 +19,8 @@ runs_worker() { grep -qiE "$ENABLES" "$1" && { grep -qiE "$WORKER_ON" "$1" || ! 
 prints_worker_state() { grep -qiE "$PRINTS" "$1"; }
 
 violations() {
-	for f in "$@"; do
+	local f
+	for f in $(grep -liE "$ENABLES" "$@" || true); do
 		runs_worker "$f" && prints_worker_state "$f" || continue
 		t=$(basename "$f" .sql)
 		grep -qE "^$t	." "$ALLOW" || echo "$t"
