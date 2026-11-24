@@ -48,6 +48,12 @@ typedef struct SiftV1ReaderOps
 	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 	void		(*read) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
 	void		(*tids) (void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
+	/* the unit stands for exactly the rows the snapshot sees (stored, no dead row, every heap page all-visible), so the two below answer for them; else the unit is read */
+	bool		(*unit_exact) (void *impl, const SiftSrcUnit *unit);
+	/* the zone and the exact sums of a leaf of an exact unit; false when it has none (an overflow value, a leaf the segment lacks) */
+	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
+	/* GROUP BY dim over an exact unit, with the measures need names; the arrays live until the next call; false when the unit holds no histogram of dim or lacks a measure */
+	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h);
 } SiftV1ReaderOps;
 
 extern const SiftV1ReaderOps sift_v1_idx_reader;
@@ -57,6 +63,12 @@ extern const SiftV1ReaderOps sift_v1_tbl_reader;
 extern void sift_src_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);
 /* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries; wovf[i], wjnull[i]: a write buffer holds an overflow value, a JSON null, of leaf i */
 extern void sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st);
+
+/* What a stored unit answers (col/v1/v1_reader_unit.c); def is the definition of col in the unit's schema, the maps translate the leaves of the source and the columns of the schema (NULL: the same) */
+extern bool sift_v1_unit_exact(const SiftColUnit *unit);
+extern bool sift_v1_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, SiftSrcUnitAgg *agg);
+extern bool sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need,
+							  SiftSrcDict *hdict, SiftSrcHist *h);
 
 /* The histograms a spec writes, as the planner sees them */
 extern void sift_src_preagg_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa);

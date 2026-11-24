@@ -14,6 +14,7 @@
 #include "col/col.h"
 #include "col/v1/seg.h"
 #include "col/v1/v1_reader.h"
+#include "core/memtrack.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/v1_tbl_reader.h"
 
@@ -432,6 +433,35 @@ tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
+static bool
+tbl_unit_exact(void *impl, const SiftSrcUnit *unit)
+{
+	return !((SiftV1Tbl *) impl)->sel.compact && sift_v1_unit_exact(&((TblPart *) unit->priv)->unit);
+}
+
+/* a segment of an older layout may lack the column: the unit is read, and the scan gives the default of the catalog */
+static bool
+tbl_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	const TblPart *p = unit->priv;
+
+	return p->col[leaf] >= 0 && sift_v1_unit_agg(&p->unit, p->col[leaf], &p->schema->cols[p->col[leaf]], agg);
+}
+
+static bool
+tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
+{
+	SiftV1Tbl  *t = impl;
+	const TblPart *p = unit->priv;
+
+	if (p->col[dim] < 0)
+		return false;
+	if (t->hcx == NULL)
+		t->hcx = sift_mem_allocset_create(t->cxt, "sift v1 table histogram");
+	MemoryContextReset(t->hcx);
+	return sift_v1_unit_hist(&p->unit, p->col[dim], &p->schema->cols[p->col[dim]], t->hcx, p->col, p->leaf_of_col, need, &t->hdict, h);
+}
+
 const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.layout = sift_v1_tbl_layout,
 	.stats = sift_v1_tbl_stats,
@@ -450,5 +480,8 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.vet = sift_v1_tbl_vet,
 	.filter_types = tbl_filter_types,
 	.read = sift_v1_tbl_read,
-	.tids = sift_v1_tbl_tids
+	.tids = sift_v1_tbl_tids,
+	.unit_exact = tbl_unit_exact,
+	.unit_agg = tbl_unit_agg,
+	.unit_hist = tbl_unit_hist
 };

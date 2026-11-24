@@ -11,6 +11,7 @@
 #include "col/col.h"
 #include "col/v1/src_zone.h"
 #include "col/v1/v1_reader_int.h"
+#include "core/memtrack.h"
 
 void
 sift_v1_idx_init(SiftV1Idx *r, Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys)
@@ -353,6 +354,33 @@ idx_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
+static bool
+idx_unit_exact(void *impl, const SiftSrcUnit *unit)
+{
+	SiftV1Idx  *r = impl;
+
+	return !r->sel.compact && sift_v1_unit_exact(&r->unit);
+}
+
+static bool
+idx_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
+{
+	SiftV1Idx  *r = impl;
+
+	return sift_v1_unit_agg(&r->unit, leaf, sift_col_def(r->cs, leaf), agg);
+}
+
+static bool
+idx_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
+{
+	SiftV1Idx  *r = impl;
+
+	if (r->hcx == NULL)
+		r->hcx = sift_mem_allocset_create(r->cxt, "sift v1 histogram");
+	MemoryContextReset(r->hcx);
+	return sift_v1_unit_hist(&r->unit, dim, sift_col_def(r->cs, dim), r->hcx, NULL, NULL, need, &r->hdict, h);
+}
+
 const SiftV1ReaderOps sift_v1_idx_reader = {
 	.layout = sift_v1_idx_layout,
 	.stats = sift_v1_idx_stats,
@@ -372,5 +400,8 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.vet = sift_v1_idx_vet,
 	.filter_types = idx_filter_types,
 	.read = sift_v1_idx_read,
-	.tids = sift_v1_idx_tids
+	.tids = sift_v1_idx_tids,
+	.unit_exact = idx_unit_exact,
+	.unit_agg = idx_unit_agg,
+	.unit_hist = idx_unit_hist
 };

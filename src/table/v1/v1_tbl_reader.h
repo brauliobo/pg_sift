@@ -53,6 +53,8 @@ typedef struct SiftV1Tbl
 	int			nparts;
 	int			last;			/* the part of the unit returned last, -1 at the start */
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
+	MemoryContext hcx;			/* the arrays of the last histogram, and its dictionary */
+	SiftSrcDict hdict;
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
 	SiftSrcLeafBuf *buf;		/* per leaf */
 	SiftSrcSel	sel;			/* the match set the units are restricted to */
