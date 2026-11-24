@@ -8,47 +8,6 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
-| leaf partitions per SiftAgg scan, after PostgreSQL's pruning; no more than hash memory (partition_memory at least) holds at 8 kB a partition (2,048 at the default work_mem) | `32,768 partitions` | normal plan (slug partition_count, the detail has the count) | — | `agg/part.h` `SIFT_AGG_MAX_PARTS` |
-| what the partitions of a scan may keep together when hash memory is smaller (SIFT_AGG_PART_STATE, 8 kB, a partition) | `16,777,216 (16 MiB) bytes` | normal plan (the partition limit follows it) | — | `agg/part.h` `SIFT_AGG_PART_FLOOR` |
-| value combinations the remainders of a hash level are computed for (once per level) | `1,048,576 combinations` | the partitions of the level are kept (not pruned) | — | `agg/part/prune.c` `HASH_MAX_COMBOS` |
-| keys times range or list partitions a list of keys is tested against exactly | `20,000 tests` | only the range of the keys prunes | — | `agg/part/prune.c` `KEYS_MAX_TESTS` |
-| partitions a group table that outgrows hash memory is written to (the planner's groups over the groups the first table held, a power of two from 8) | `128 partitions` | a partition that does not fit is partitioned again | `work_mem, hash_mem_multiplier` | `agg/spill.c` `SPILL_MAX_PARTS` |
-| levels of partitions a partition of a spilled group table is partitioned again (a hash of the same key values, another level each time) | `8 levels` | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/spill_int.h` `SPILL_MAX_DEPTH` |
-| lookup-joined tables per scan | `32 tables` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_JOINS` |
-| value combinations per scan | `128 combinations` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_COMBOS` |
-| distinct input tuples of one value-combination cache | `16,777,216 entries` | the caches start again (re-evaluates the values they held) | — | `agg/combo/int.h` `COMBO_MAX_ENTRIES` |
-| memory the cache of one value combination holds, and the values of its dictionary leaves: half of hash memory, shared by the participants of the scan and its combos (4 MB by default for one) | `4,194,304 (4 MiB) bytes` | the cache starts again (re-evaluates the values it held) | `work_mem, hash_mem_multiplier` | `agg/combo/ents.c` |
-| equality columns of a lookup join | `3 columns` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_JKEYS` |
-| columns of the joined table that expressions read | `16 columns` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_JCOLS` |
-| equalities of a joined-table column with a value, for the index scan that loads it | `3 equalities` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_JIDX` |
-| estimated memory of the rows of a lookup table (a joined table, sub-select, VALUES list or function, a first-row child) or of a spine: half of work_mem (4 MB by default) | `2,048 (2 MiB) kB` | normal plan (slug join_child, spine_rows) | `work_mem` | `agg/plan/finish.c` |
-| the byte table of the keys of a semi, anti or inner join by one integer key (its range of values) or the set of its keys, for each combination of the scan: its share of work_mem | `4,194,304 (4 MiB) bytes` | the scan's key filter tests the keys, else the join is evaluated row by row | `work_mem` | `agg/init.c` |
-| elements a generic plan is priced for when its set filter is one array parameter (the planner assumes 10) | `1,000 elements` | the paths that fetch the rows of the set one by one are priced for the elements of the planner's guess | `work_mem` | `agg/plan/base.c` `AGG_PARAM_SET_ELEMS` |
-| a lookup table shared with the parallel workers through DSM | `1,073,741,824 (1 GiB) bytes` | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/par/int.h` `SHARE_MAX` |
-| lookup tables shared through DSM at one time | `64 tables` | each backend loads its own | `sift.agg_lookup_shared_kb` | `agg/lookshm.c` `LOOKSHM_SLOTS` |
-| LIMIT + OFFSET a top-N scan keeps in a heap | `100,000 rows` | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it | — | `agg/topn.h` `SIFT_TOPN_MAX_ROWS` |
-| ORDER BY columns a top-N scan keeps in a heap | `8 columns` | the scan sorts every row that passes (in memory up to hash_mem, then a tuplesort at work_mem) and the plan is priced with it | — | `agg/topn.h` `SIFT_TOPN_MAX_KEYS` |
-| entries of the dictionary of a segment a top-N scan makes an order code for (8 bytes an entry, up to 8 dictionaries at a time) | `1,048,576 entries` | the rows of its units are compared with the bar as bytes, as before the order code | — | `agg/topn/int.h` `ORD_MAX_ENTRIES` |
-| the entries an OFFSET over a global order leaves to the heap to confirm, and the entries of one group of an order read group after group that it checks at once (12 bytes each); a longer one is walked | `1,048,576 entries` | the entries the skip leaves are read one by one, as without the skip (the rows are the same) | — | `agg/gord/int.h` `GORD_PEND_MAX` |
-| the partial result a worker of a parallel aggregate sends in one message: the groups of its table go in messages of about this many bytes (a pair of a count(DISTINCT) takes 8); a group that alone takes more than four times this (1 GB at most) ends the scan | `268,435,456 (256 MiB) bytes` | more messages (the leader adds them one after the other); ERROR 54000 for a single group that takes more than four times it, naming max_parallel_workers_per_gather | — | `agg/blob/dump.c` `BLOB_CHUNK_BYTES` |
-| sort columns after the DISTINCT ON columns | `4 columns` | normal plan | — | `agg/order/int.h` `FIRST_MAX_KEYS` |
-| ORDER BY columns of a first-row lookup child | `8 columns` | the sub-select runs once per key, as a lookup subquery | — | `agg/spec/join.h` `SIFT_AGG_MAX_FORD` |
-| output columns of a first-row lookup child that map to the table | `16 columns` | normal plan | — | `agg/spec/join.h` `SIFT_AGG_MAX_FOUT` |
-| group keys (grouping sets count with their keys) | `32 keys` | normal plan (slug too_many_keys) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_KEYS` |
-| constants of a numeric IN list compared one by one; a longer list is tested as a hash set | `64 constants` | a hash set of the scaled values | — | `agg/plan_pred.c` `AGG_MAX_NUM_IN` |
-| members of an IN list from which a range wider than a byte table (4 million values) is tested in a bit table of at most half of hash memory (up to 2^28 values); a shorter list or a wider range is a hash table | `1,024 values` | a hash table of the values | — | `agg/pred_in.c` `MIN_BITS_VALUES` |
-| words of a group in a narrow count(DISTINCT) set (64 values a word, one window of values for all the groups); 0 turns the form off | `8 words` | the set is a bitmap, a directory and chunks of 4096 bits a group | — | `agg/dist_int.h` `DIST_NARROW_WORDS` |
-| UNION ALL arms of a fused or two-level scan | `16 arms` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_ARMS` |
-| virtual leaves (expressions) per scan | `16 leaves` | normal plan (slug shape_width) | — | `agg/spec/expr.h` `SIFT_AGG_MAX_VLEAVES` |
-| conjuncts on wide leaves per scan | `8 conjuncts` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_WIDE` |
-| leaves one argument of a generic aggregate reads | `4 leaves` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_GLEAVES` |
-| arguments of a generic aggregate (PostgreSQL FUNC_MAX_ARGS) | `100 arguments` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_GARGS` |
-| operations of one float8 aggregate argument | `16 operations` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_VX` |
-| leaves one value combination reads | `8 leaves` | normal plan | — | `agg/spec/expr.h` `SIFT_AGG_MAX_CLEAVES` |
-| aggregates sharing one rows-set (count(DISTINCT) grouping) | `32 aggregates` | normal plan (slug rows_shape) | — | `agg/rows.h` `SIFT_ROWS_MAX_SHARED` |
-| text conditions of a scan that prune units by prefix | `16 conditions` | the others do not prune units | — | `agg/chunkfilter.h` `COL_MAX_STR_PRUNE` |
-| values of an IN set sent as a zone filter | `8 values` | a larger set is not used as a zone filter | — | `agg/init_filter.c` `FILTER_MAX_SET` |
-| groups the node that groups rows (SiftAggRows) holds: their count and the arrays of their keys and aggregates are 32 bits | `2,147,483,648 groups` | normal plan (NOTICE), ERROR 54000 once rows were sent | — | `agg/rows.h` `SIFT_ROWS_MAX_GROUPS` |
 | parts one small relation of a star join is read in when it does not fit hash memory: each part is one more pass over the facts | `65,536 parts` | ERROR 54000 naming work_mem and hash_mem_multiplier | `work_mem, hash_mem_multiplier` | `agg/v6/v6_star_run.c` `STAR_MAX_PARTS` |
 | PARTITION BY keys, and ORDER BY keys, of a window the window operator runs | `4 keys` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_KEYS` |
 | window functions of one window the window operator runs | `8 functions` | normal plan | — | `agg/window.h` `SIFT_WIN_MAX_FUNCS` |
@@ -86,13 +45,12 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
 | segments a step of a merge of sift_col segments opens at once (fewer when maintenance_work_mem holds fewer inputs of 192 kB) | `64 segments` | the step merges the cheapest window of them; a forced merge goes on in passes | `maintenance_work_mem` | `col/v1/maint/maint_int.h` `MERGE_MAX_FANIN` |
+| the entries an OFFSET over a global order leaves to the heap to confirm, and the entries of one group of an order read group after group that it checks at once (12 bytes each); a longer one is walked | `1,048,576 entries` | the entries the skip leaves are read one by one, as without the skip (the rows are the same) | — | `col/v1/amscan/ord_merge_int.h` `GORD_PEND_MAX` |
 | the bytes a seekable chunk of an order array (a fence key every 32 entries) may take, against the plain chunk of the same entries: the writer keeps the seekable form of a chunk up to this; 0 writes none | `115 percent` | the chunk is written plain and read by the old walk (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_SEEK_MAX_PCT` |
 | the bytes a positional chunk of a grouped order array (its entries as positions in the plain order of the leaf, read through it) may take, against the other form of the same entries: the writer keeps the positional form of a chunk up to this; 0 writes none | `75 percent` | the chunk keeps the keys and addresses of its entries (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_POS_MAX_PCT` |
 | the mean distance between the positions of a group in a chunk of a grouped order array that the writer keeps positional (as many entries as two chunks of the plain order): farther apart, each entry a scan reads is in a chunk of the plain order of its own | `1,024 entries` | the chunk keeps the keys and addresses of its entries (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_POS_MAX_GAP` |
 | rows a top-N, range or count by an order array sorts in memory for one source: the write buffers' and those of the segments the overlays left without the array (a text key under a locale: at least 16,384 or 8 for each row wanted) | `2,097,152 rows` | the scan reads the units, and the planner prices no walk of the array (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_MEM_MAX` |
 | rows of the segments that keep no order array of a leaf (the overlays written lean) that a top-N, range or count by the array of the leaf decodes and sorts in memory once for the backend (the first scan; the next find the order kept) | `65,536 rows` | the scan reads the units, and the planner prices no walk of the array (the rows are the same) | — | `col/v1/gorder.h` `SIFT_CGORD_FREE_MAX` |
-| leaves of the layout of one scan | `128 leaves` | normal plan | — | `col/v1/src_meta.h` `SIFT_COLSRC_MAX_LEAVES` |
-| filters of a scan that skip units | `64 filters` | the others do not skip units | — | `col/v1/src_exec.h` `SIFT_COLSRC_MAX_FILTERS` |
 | disk the index needs while a merge or a rewrite runs: the output is written before the inputs are freed (measured 2.02, 1.86 and 2.07 times the live index), and the next VACUUM gives the end of the file back | `2 times the live index` | the step fails with PostgreSQL's disk-full error before it replaces a segment | — | `col/v1/maint/maint.c` |
 | leaf slots of a sift_col index of format major 1 and columns of a sift_table of format major 1 (127 are usable) | `128 leaves` | CREATE INDEX, CREATE TABLE or ALTER TABLE rejected | — | `col/api/format.h` `SIFT_COL_MAX_COLS` |
 | leaf slots (columns and shredded jsonb paths) of a sift_col index of format major 2 | `1,024 leaves` | CREATE INDEX rejected | — | `col/api/format.h` `SIFT_F2_MAX_COLS` |
@@ -181,9 +139,9 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
-| the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/wide.c` |
 | virtual blocks of TIDs of a sift_table, never reused (sift.table_space: vblocks_left) | `4,294,967,294 blocks` | ERROR 54000, VACUUM FULL renumbers them | — | `table/v1/wbuf.c` |
 | frames of 256 values of the strings and doubles of sift_table the cache of a backend keeps | `512 frames` | the oldest frame is dropped and inflated again when a row asks for it | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_FRAMES` |
 | decoded granules of sift_table the cache of a backend keeps | `64 granules` | the oldest granule is dropped and read again when needed | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_GRANULES` |
+| the distinct values of a wide column (a numeric past 18 digits, an unconstrained numeric, money, an interval) in the rows of one unit of a sift_table, as the scan keeps them to compare and group | `1,073,741,823 (~1024 MiB) bytes` | ERROR 54000 naming the column | — | `table/v1/v1_tbl_reader_read.c` |
 | decoded row pack blocks of 64 rows of sift_table the cache of a backend keeps | `256 blocks` | the oldest block is dropped and read again when a row asks for it | — | `table/f2/f2_gcache.h` `SIFT_F2_GCACHE_MAX_BLOCKS` |
 

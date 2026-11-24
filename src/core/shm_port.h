@@ -25,7 +25,6 @@ extern __thread int sift_shm_procno;
 
 #define SIFT_SHM_BACKEND_LOCAL	static __thread
 
-extern void sift_shm_port_init(void);
 
 static inline int
 sift_shm_my_procno(void)

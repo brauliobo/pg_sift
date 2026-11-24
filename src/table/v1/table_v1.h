@@ -444,8 +444,6 @@ extern int	sift_tbl_cmp_sb_lo(const void *a, const void *b);
 /* The rows of superblock sb in the write buffers seg (private copies, pages known) as an engine batch of the table layout, in mcxt; DEAD records
  * are left out, visibility is the reader's */
 extern SiftColBatch *sift_tbl_wbuf_batch(Relation rel, SiftTblRel *st, SiftTblSeg *seg, int nseg, uint32 sb, MemoryContext mcxt);
-/* Registers the table as a column source of SiftAgg (from sift_tbl_init) */
-extern void sift_tbl_src_register(void);
 
 /*
  * Promotes the write buffers that stopped taking rows and whose rows are all final (decided, and older than oldest) into column

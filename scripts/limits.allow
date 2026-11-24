@@ -1,20 +1,14 @@
 # Macros named *_MAX_* or *_LIMIT* that are not limits a user can reach, so they have no row in SIFT_LIMITS (src/core/limits.h).
 # NAME, a tab, the reason. scripts/gen-limits.sh --check fails for a macro that is neither here nor a row, and for a line whose macro is gone.
 # A bound that a user can reach gets a row, not a line here.
-DENSE_MAX_CLASSES	the tuples of column values a dense lookup table tells apart (agg/lookcol.c): past it the table is hashed row by row and the rows are the same
 ARR_MAX_CANDS	array columns whose elements the default of paths samples: a memory bound of the sample (128 MB of sets), the others keep their image
 CHUNK_MAX_N	sanity bound on the row count a decoder reads from a chunk: a corruption check
-COL_MAX_WIDE	array size that mirrors wide_conjuncts (SIFT_AGG_MAX_WIDE)
 ESTIMATE_MEMO_MAX_KEY	size of the key of a planner memo: an internal cache bound with no visible effect
-INLINE_JOIN_LIMIT	width of the join-order search of the inline plan of a shared CTE: a planning-cost choice with no visible limit (the plan differs, the rows do not)
 MERGE_MAX_BYTES	no caller left: delete it in a cleanup
 ORDER_MAX_ROWS	the most rows of a key-cut unit, the maximum of sift.col_unit_rows (the directory of a unit is read with the head of its record)
 PAGG_MAX_TUPLES	decoder bound for a rollup blob (a corruption check), derived from rollup_tuples
 POOL_MAX_BLOCKS	size of the CREATE INDEX buffer pool, kept so that addresses stay below 2^32 (sift.test_pool_blocks lowers it)
-RANK_MAX_ROWS	most rows the SiftSort node ranks in memory: more go to the tuplesort, as a Sort sorts them (the rows are the same, the packed rank keys of 40 million rows are 320 MB)
-SIFT_AGG_MAX_PARAMS	derived array size of the executor parameters
 SIFT_ALLOC_MAX_LOCKED	invariant of the block allocator, not reachable by valid input
-SIFT_COLSTUB_MAX_STR	test-only stub source (SIFT_TESTING)
 SIFT_COL_FORMAT_MAX_READ	the newest column format minor this build reads: a version, not a size
 SIFT_COL_MAX_LANES	array size of the lanes of one numeric leaf
 SIFT_CORDER_MAX_KEYS	an IN list of more keys than this is read from the units: each key seeks a chunk of the sorted keys of its own
@@ -32,7 +26,6 @@ SIFT_MAX_REBINDS	size of the table of kernel rebind callbacks
 SIFT_MAX_W	words of a page bitmap: the layout of the postings
 SIFT_MERGE_MAX_FANIN	merge policy: segments one merge reads at a time
 SIFT_MERGE_MAX_SEGMENTS	merge policy: more directory entries than this start a merge
-SIFT_NUM_MAX_DIGITS	the same limit as wide_digits, counted by the planner
 SIFT_RADIX_MAX_DIGIT	bits of the widest digit of the radix sort of core/cmp.h: the counters of a digit (4 KB) and the cache lines its pass writes to; the order of the result does not depend on it
 SIFT_SRC_MAX_DIMS	planner-side array size of the dimensions of a source, above cube_dims
 SIFT_SRC_MAX_MEAS	planner-side array size that mirrors cube_measures
@@ -45,28 +38,17 @@ SIFT_KTAB_MAX_GROUPS	the keys of a leaf in a segment beyond which the accumulato
 VK_MAX_MEMORY_HEAPS	constant of the Vulkan API
 VK_MAX_MEMORY_TYPES	constant of the Vulkan API
 VK_MAX_PHYSICAL_DEVICE_NAME_SIZE	constant of the Vulkan API
-VSHM_MAX_SETS	the array of the shared verdict table, which sift.verdict_cache_kb (up to 1 MB) fills in part
-CAL_MAX_CUTS	the most clock changes of the session zone the prefilter of a periodic calendar step splits its windows at (a span of several centuries); more and the step is tested by the expression, no result changes
 LOAD_MAX_GROUPS	groups a bulk load writes at once: the backend and three workers, bounded by max_parallel_maintenance_workers and maintenance_work_mem
 LOAD_MAX_UNITS	array size of the units of a run: LOAD_SBS for each of LOAD_MAX_GROUPS
-DP_MAX_LEVELS	size of the array of the pages of one descent: a btree is never as deep, the probe falls back to the index scan when it is
-DP_MAX_PEND	keys of a chunk the direct probe holds before it flushes them: a memory bound of the batch with no visible effect
-JSTR_MAX_KEYS	a text join key list longer than this, or than a sixteenth of the table's rows, is left to the join: a speed threshold, the rows are the same either way
 SIFT_CONN_MAX_CONNECTIONS	connections one connect option names: a syntax bound of the option text, rejected with an error
-FOUND_MAX_KEYS	keys the journal of a parent may name for a join answered from the found flag (agg/found.c): past it the join loads the parent, the rows are the same
-FOUND_MAX_PROBES	keys deleted or changed in a parent that a join answered from the found flag probes in its btree (agg/found.c): past it the join loads the parent, the rows are the same
 CONN_TAGS_MAX_KEYS	the keys of a read past which its journal records are not filtered by their key tag (the tags of that many keys leave few records out): a cost bound, the rows are the same
 BLK_SLOTS	layout: the offsets of one scoring block, SIFT_BLK_PAGES pages of SIFT_KERN_SLOTS
 SIFT_KERN_SLOTS	layout: the offsets of one heap page in the offset mask (SIFT_OFFMASK_WORDS words of 64 bits)
 CUBE_SET_SLOTS	size of the probe table of one histogram dimension, a power of two over twice its groups (col/v1/keycols/cube.c); the table is local to the call
 ROWS_SLOTS	size of the probe table that counts the distinct pairs of a stretch, a power of two over the cells a unit may keep; it stops counting at its limit
-DENSE_SLOTS	size of the hash over the classes of a dense lookup table, four times DENSE_MAX_CLASSES; past DENSE_MAX_CLASSES the table is hashed row by row
 F_SLOTS	a flag bit of a shared dictionary (the slots form), not a size
 KEYS_DENSE_SLOTS	slots a key needs in a bitmap before a sorted array is used instead: a speed threshold, the keys are the same
-MEMO_SLOTS	slots of the memo of the rows of a child scan that a query shares between its workers (agg/memo.c): an entry is stored only while the table is half full and the 32 MB arena has room, the others are computed again
-NDICT_SLOTS	dictionaries an aggregate scan keeps open at one time (agg/leaf.c): the least recently used one is replaced
 PEND_SLOTS	indexes whose rows a backend buffers for one commit (col/v1/wbuf/pending.c): the rows of another index are written to its lane at once
-PROBE_AHEAD_SLOTS	slots above which the group probe prefetches (agg/group/gids.c): a speed threshold, the groups are the same
 SET_MEMO_SLOTS	entries of the memo of the ranges of one probe, replaced in turn (col/v1/amscan/ranges.c)
 TOMB_SLOTS	indexes whose tombstones a statement holds back for the page-wise append (col/v1/supersede.c): when none is free every held buffer goes to the log and the first is reused
 SIFT_TOMB_PRESSURE_ENTRIES	the length of the tombstone log of a sift_table at which the maintenance worker is asked for: a scheduling threshold, with no effect on what a statement may do
@@ -165,9 +147,6 @@ SIFT_POINT_MAX_PCT	tuning bound of an algorithm (memory, batch or radix size, lo
 SIFT_PROJ_MAX_DIRTY_VM_BLKS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 SIFT_RADIX_MQ_WIDE_WORKERS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 SIFT_REMOTE_MAX_BYTES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
-SIFT_ROLLUP_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
-SIFT_ROLLUP_MAX_SETS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
-SIFT_ROLLUP_MAX_VALS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_SCOPE_OVERLAY_MAX_ROWS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 SIFT_SHM_MAX_PROCS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 SIFT_SIP_MAX_BYTES	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
@@ -177,7 +156,6 @@ SIFT_SPILL_MAX_PARTS	tuning bound of an algorithm (memory, batch or radix size, 
 SIFT_STAR_MAX_DIMS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STAR_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STAR_MAX_PAY	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
-SIFT_STAR_MAX_PAY_COLS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STREAM_MAX_KEYS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STREAM_MAX_VALS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 SIFT_STREAM_NO_LIMIT	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
@@ -251,4 +229,6 @@ SIFT_KJ_SLOTS	the record pages a block of the connect journal names (col/f2/f2_j
 SIFT_MAINT_CONNECT_BACKOFF_MAX_US	the pause after a worker could not connect to its database: 60 s at most, a state of the queue that no setting names
 SIFT_PAR_MAX_THREADS	the threads of the pool of a statement, the backend included (core/par/pool.h): the use is capped at max_parallel_workers_per_gather + 1; the rows are the same
 SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/f2_lock_ovf.h): a full stripe takes another chunk; no count is refused
+SIFT_COLSRC_MAX_FILTERS	array size of the planner spec structs (agg/spec/*.h) behind sift.explain_why and the f2 scope probe: no user-reachable bound
+SIFT_COLSRC_MAX_LEAVES	array size of the planner spec structs (agg/spec/*.h) behind sift.explain_why and the f2 scope probe: no user-reachable bound
 SIFT_VM_DIRTY_MAX_INTERVALS	the runs of dirty heap blocks a set of a visibility map pass keeps (col/f2/f2_vac_vm.h): past it the set skips nothing; no count is refused

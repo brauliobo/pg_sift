@@ -9,7 +9,6 @@
 
 #include <time.h>
 
-#include "agg/kern_cases.h"
 
 #define N			SIFT_AGG_VEC
 #define NW			SIFT_AGG_VECW

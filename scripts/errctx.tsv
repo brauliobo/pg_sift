@@ -2,23 +2,22 @@
 # FILE <TAB> the files that push the context scope (sift_errctx_push, core/errctx.h) its errors are raised under; scripts/check-errors.sh checks that each calls it
 # and that no file with such a message is missing here. "-" is a gap: the entry points that read it push no scope yet.
 # A file whose message does name the index (SIFT_CORRUPT, SIFT_SEG_CORRUPT) is not listed.
-src/agg/topn/next.c	src/agg/exec/run.c src/agg/par/worker.c
-src/agg/topn/run.c	src/agg/exec/run.c src/agg/par/worker.c
-src/col/v1/src_wide.c	src/agg/exec/run.c src/agg/par/worker.c
+src/col/v1/src_wide.c	
 src/bm25/dict_int.h	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
 src/bm25/pos.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
 src/bm25/posting.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
-src/col/v1/batch_unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/chunk.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/codec_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/ctest.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/order.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/scan/gfree.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/scan/scope_segrows.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/scan_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/types.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/col/v1/unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/agg/exec/run.c src/core/maint.c
-src/core/span.c	src/col/v1/amscan/amscan.c src/bm25/amscan.c src/agg/exec/run.c
+src/col/v1/batch_unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/chunk.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/codec_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/codec_parse.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/ctest.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/order.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/scan/gfree.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/scan/scope_segrows.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/scan_int.h	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/types.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/col/v1/unit.c	src/col/v1/amscan/amscan.c src/col/v1/amscan/cost.c src/core/maint.c
+src/core/span.c	src/col/v1/amscan/amscan.c src/bm25/amscan.c
 src/table/v1/wbuf.c	src/table/v1/analyze.c src/table/v1/fetch.c src/table/v1/scan.c
 src/col/granule/granule.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c
 src/col/granule/granule_dec.c	src/col/f2/scan/fetch.c src/col/f2/f2_write.c

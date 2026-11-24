@@ -10,12 +10,6 @@
 #include "utils/builtins.h"
 #include "utils/guc.h"
 
-#include "agg/col_int.h"
-#include "agg/colsrc.h"
-#include "agg/part.h"
-#include "agg/rows.h"
-#include "agg/spec.h"
-#include "agg/topn.h"
 #include "agg/v6/v6_datebin_win.h"
 #include "agg/v6/v6_filter_pivot.h"
 #include "agg/v6/v6_first.h"

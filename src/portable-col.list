@@ -6,8 +6,6 @@
 # headers
 agg/filter_adapt.c
 agg/filter_adapt.h
-agg/kern.c
-agg/kern.h
 agg/kern6.c
 agg/kern6.h
 agg/kern6_avx2.c
@@ -29,19 +27,11 @@ agg/kern6_neon.h
 agg/kern6_neon_agg.c
 agg/kern6_neon_cmp.c
 agg/kern6_sbbf.c
-agg/kern_avx2.c
-agg/kern_avx512.c
-agg/kern_cases.h
-agg/kern_int.h
-agg/kern_neon.c
-agg/kern_vec.h
 agg/nth.h
 agg/stream_exec.h
-agg/variant_eval.h
 agg/vec.h
 agg/vexpr.h
 agg/vexpr_kern.h
-agg/vexpr_str.c
 agg/vexpr_str.h
 agg/window.h
 col/api/format.h

@@ -72,8 +72,6 @@
 
 bool		sift_enable_col_scan = true;
 
-double		sift_plan_scale = 1.0;
-
 static bool
 exec_param_of_parent(Node *node, PlannerInfo *root)
 {
@@ -300,21 +298,6 @@ sift_col_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, C
 	sift_errctx_pop(&ctx);
 }
 
-/* sift.plan_scale: the table the index covers has that many times the pages and rows, with the statistics of the columns as they are (an absolute n_distinct stays, a fraction grows) */
-static void
-col_scale_rel(RelOptInfo *rel)
-{
-	if (sift_plan_scale <= 1.0)
-		return;
-	rel->pages = (BlockNumber) Min(rel->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
-	rel->tuples *= sift_plan_scale;
-	foreach_node(IndexOptInfo, ii, rel->indexlist)
-	{
-		ii->pages = (BlockNumber) Min(ii->pages * sift_plan_scale, (double) (MaxBlockNumber - 1));
-		ii->tuples *= sift_plan_scale;
-	}
-}
-
 /* ---- off means off ---- */
 
 /*
@@ -491,7 +474,7 @@ point_lookup_qual(PlannerInfo *root, Node *qual, IndexOptInfo *ii, Oid heapid, c
 				return false;
 			distinct = ((Form_pg_statistic) GETSTRUCT(stats))->stadistinct;
 			ReleaseSysCache(stats);
-			per_key = distinct < 0 ? 1.0 / -distinct : ii->rel->tuples * Max(sift_plan_scale, 1.0) / Max(distinct, 1.0);
+			per_key = distinct < 0 ? 1.0 / -distinct : ii->rel->tuples / Max(distinct, 1.0);
 			return per_key <= POINT_LOOKUP_ROWS_KEY && keys * per_key <= POINT_LOOKUP_ROWS;
 		}
 	return false;
@@ -559,20 +542,15 @@ static get_relation_info_hook_type prev_info_hook;
 static void
 col_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *rel)
 {
-	bool		indexed = false;
-
 	if (prev_info_hook)
 		prev_info_hook(root, relid, inhparent, rel);
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->relam == sift_col_am_oid())
 		{
-			indexed = true;
 			plain_index_for_rows_only(root, ii);
 			if (!sift_enable_col_scan)
 				ii->amhasgetbitmap = ii->amhasgettuple = false;
 		}
-	if (indexed)
-		col_scale_rel(rel);
 }
 
 static void
@@ -632,18 +610,14 @@ static build_simple_rel_hook_type prev_simple_rel_hook;
 static void
 col_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 {
-	bool		indexed = false;
 
 	if (prev_simple_rel_hook)
 		prev_simple_rel_hook(root, rel, rte);
 	foreach_node(IndexOptInfo, ii, rel->indexlist)
 		if (ii->relam == sift_col_am_oid())
 		{
-			indexed = true;
 			plain_index_for_rows_only(root, ii);
 		}
-	if (indexed)
-		col_scale_rel(rel);
 }
 
 static void

@@ -1,1 +1,1 @@
-agg_facts_reread_bound	src/agg/from/facts.c:cached_facts src/agg/from/facts.c:facts_empty src/agg/from/facts.c:part_facts src/agg/from/facts.c:read_facts src/agg/from/facts.c:sift_agg_memo_end src/core/cachebudget.c:sift_cache_room
+agg_facts_reread_bound	src/core/cachebudget.c:sift_cache_room

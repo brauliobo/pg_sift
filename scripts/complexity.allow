@@ -9,7 +9,6 @@ bsearch-in-seq-loop	src/col/granule/granule_filter.c	1	an unsorted or random-ord
 bsearch-in-seq-loop	src/col/v1/preagg/dsets.c	1	an unsorted or random-order probe list
 bsearch-in-seq-loop	src/table/f2/f2_vacuum.c	1	an unsorted or random-order probe list
 bsearch-in-seq-loop	src/table/v1/vers.c	1	an unsorted or random-order probe list
-hash-seq-hot	src/agg/search.c	1	a bounded table walked once per call
 hash-seq-hot	src/bm25/facet.c	1	a bounded table walked once per call
 hash-seq-hot	src/bm25/tail.c	1	a bounded table walked once per call
 hash-seq-hot	src/bm25/wbind.c	1	a bounded table walked once per call
@@ -53,8 +52,6 @@ manifest-unbounded	src/core/sql_status.c	1	maintenance or inspection of a whole 
 manifest-unbounded	src/table/f2/f2_ddl.c	1	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/f2_vacuum.c	2	maintenance or inspection of a whole relation
 manifest-unbounded	src/table/f2/f2_vm.c	1	maintenance or inspection of a whole relation
-mem-alloc-hot	src/agg/rows.c	2	a census or a budget check; the call is not per row
-mem-alloc-hot	src/agg/spill/stream.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/f2/f2_cache.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/f2/f2_gbuf.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/f2/scan/rescan_cache.c	1	once for each granule the cache fills (a miss that decodes the granule), not for each row
@@ -64,10 +61,7 @@ mem-alloc-hot	src/col/v1/tomblog.c	1	a census or a budget check; the call is not
 mem-alloc-hot	src/col/v1/wbuf/batches.c	2	a census or a budget check; the call is not per row
 mem-alloc-hot	src/table/f2/f2_gcache.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/table/v1/gscan_cache.c	1	a census or a budget check; the call is not per row
-memmove-in-loop	src/agg/dist/convert.c	1	a bounded array shifted in a cold path
-memmove-in-loop	src/agg/dist/psort.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/agg/filter_adapt.c	1	bounded: at most SIFT_AFILT_MAX (64) entries, a shift of at most 128 bytes
-memmove-in-loop	src/agg/rows_psort.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/agg/v6/v6_fuse.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/bm25/bitmap.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/col/v1/build/build.c	1	a bounded array shifted in a cold path
@@ -78,8 +72,6 @@ memmove-in-loop	src/col/v1/wbuf/batches.c	1	a bounded array shifted in a cold pa
 memmove-in-loop	src/core/f2/fsm.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/core/f2/fsm/slab.c	1	a bounded array shifted in a cold path
 memmove-in-loop	src/core/jsonbuild.c	1	a bounded array shifted in a cold path
-qsort-in-loop	src/agg/dist/psort.c	1	one sort of a fresh temporary array per outer bucket
-qsort-in-loop	src/agg/rows_psort.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/build_runs.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/eval.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/bm25/facet.c	1	one sort of a fresh temporary array per outer bucket
@@ -91,7 +83,6 @@ qsort-in-loop	src/col/scope_v6/topk.c	1	one sort of a fresh temporary array per 
 qsort-in-loop	src/core/space.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/table/f2/f2_am.c	1	one sort of the addresses of a window of the scan, the windows are disjoint: the total is N log of the window
 repalloc-additive	sqlite/auxfn_facets.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
-repalloc-additive	src/agg/part/tests.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/agg/stream_exec.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/f2_scope_build.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/col/f2/f2_tail.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
@@ -106,8 +97,6 @@ repalloc-additive	src/core/lane.c	1	a bounded array or a sentinel slot; Spec 66 
 repalloc-additive	src/core/v1_col/tomb_write.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/core/verify.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/table/f2/f2_col_delta_fold.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
-spinlock-loop	src/agg/lookshm.c	10	a fixed number of slots of a shared table
-spinlock-loop	src/agg/verdict.c	4	a fixed number of slots of a shared table
 spinlock-loop	src/col/dictshm.c	5	a fixed number of slots of a shared table
 spinlock-loop	src/col/leafshm.c	4	a fixed number of slots of a shared table
 spinlock-loop	src/col/shmstatus.c	1	a fixed number of slots of a shared table

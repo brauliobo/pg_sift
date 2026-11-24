@@ -124,8 +124,6 @@ extern bool sift_v6_spec_has_gen(const SiftV6Spec *spec);
 /* executor side (v6_gen.c) */
 extern V6Gen *v6_gen_new(const SiftV6Spec *spec, MemoryContext cx, uint64 limit);
 extern void v6_gen_free(V6Gen *gen);
-/* the argument values of the rows of a batch live until the next one starts */
-extern void v6_gen_batch_begin(V6Gen *gen);
 /* aggregate j of a group takes row r of the batch whose vectors are argvec: the group's state is acc */
 extern void v6_gen_fold(V6Gen *gen, int j, V6Acc *acc, SiftVec *const *argvec, uint16 r);
 /* the state s of another table joins the state d of the same group */

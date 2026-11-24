@@ -94,7 +94,6 @@ extern void colb_scope_gather(ColBuild *b);
 extern void colb_scope_say_rollup(Relation index);
 extern void colb_finish_runs(ColBuild *b);
 extern Size colb_run_budget(ColBuild *b, Size held);
-extern Size colb_writer_budget(int nslots);
 extern void colb_flush_batch(ColBuild *b);
 extern void colb_add_row(ColBuild *b, const SiftColRow *row);
 extern void colb_write_run(ColBuild *b, bool last);

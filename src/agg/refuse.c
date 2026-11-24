@@ -36,12 +36,12 @@
 #include "utils/tuplestore.h"
 
 #include "agg/agg.h"
-#include "agg/plan_int.h"
 #include "agg/refuse.h"
 #include "agg/stats.h"
 #include "agg/v6/v6_settings.h"
 #include "core/limits.h"
 #include "core/cachebudget.h"
+#include "core/sift.h"
 
 PG_FUNCTION_INFO_V1(sift_agg_explain_why);
 PG_FUNCTION_INFO_V1(sift_agg_refusal_slugs);
@@ -103,7 +103,6 @@ typedef struct PathVet
 } PathVet;
 
 static ArmNote *arm;
-static bool scope_said;			/* an arm of the scope was emitted for the statement sift.explain_why plans */
 static double path_spill;			/* of the path agg_cost is pricing: taken by agg_arm_path */
 static const char *path_spill_detail;
 static double path_vet;				/* of the path agg_cost is pricing: the heap check of the rows on pages that are not all-visible, and the share of those pages */
@@ -362,7 +361,6 @@ emit(const ArmNote *a)
 		bool		n[7] = {false, false, a->used, a->used, a->used, a->paths == NIL && a->scan == 0, (a->paths == NIL && a->scan == 0) || a->normal < 0};
 
 
-		scope_said |= strcmp(a->name, "scope") == 0 || (strlen(a->name) > 6 && strcmp(a->name + strlen(a->name) - 6, ":scope") == 0);
 		v[0] = CStringGetTextDatum(a->name);
 		v[1] = BoolGetDatum(a->used);
 		v[2] = a->used ? (Datum) 0 : CStringGetTextDatum(slug);
@@ -776,17 +774,6 @@ why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *p
 		agg_report("index", AGG_REFUSE_WHERE, NULL, false, 0, -1);
 }
 
-/* a statement that holds a relation of a scope of a table it scans and was neither read from the scope units nor refused by a site of the planner says why, in the arm scope */
-static void
-why_scope_arm(const PlannedStmt *ps)
-{
-	const char *why;
-
-	if (scope_said || ps->commandType != CMD_SELECT || (why = sift_agg_scope_unread(ps)) == NULL)
-		return;
-	agg_report("scope", AGG_REFUSE_SCOPE, why, false, 0, 0);
-}
-
 /* The values of the EXECUTE for the parameters of the prepared statement, as commands/prepare.c evaluates them (that function is not exported) */
 static ParamListInfo
 why_params(ParseState *pstate, const PreparedStatement *entry, List *given, EState *estate)
@@ -863,7 +850,6 @@ why_execute(const ExecuteStmt *es, const char *sql)
 				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
 				if (tuplestore_tuple_count(why_store) == 0)
 					why_index_arm(copyObject(psrc->raw_parse_tree), psrc->query_string, ps, psrc->param_types, psrc->num_params, params);
-				why_scope_arm(ps);
 			}
 		ReleaseCachedPlan(cplan, CurrentResourceOwner);
 	}
@@ -895,7 +881,6 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 		why_store = rsi->setResult;
 		why_desc = rsi->setDesc;
 		sift_explain_refusals = true;
-		scope_said = false;
 		if (IsA(raw->stmt, ExecuteStmt))
 			why_execute((const ExecuteStmt *) raw->stmt, sql);
 		else
@@ -908,7 +893,6 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 					ExecCheckPermissions(ps->rtable, ps->permInfos, true);
 					if (tuplestore_tuple_count(why_store) == 0)
 						why_index_arm(again_raw, sql, ps, NULL, 0, NULL);
-					why_scope_arm(ps);
 				}
 		}
 	}

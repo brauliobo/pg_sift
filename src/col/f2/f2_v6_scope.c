@@ -31,7 +31,6 @@
 
 #include "agg/agg.h"
 #include "agg/v6/v6_safety.h"
-#include "agg/spec/spec.h"
 #include "agg/v6/v6_card.h"
 #include "col/f2/f2_v6_scope_int.h"
 #include "agg/v6/v6_settings.h"

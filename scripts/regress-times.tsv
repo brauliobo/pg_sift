@@ -59,7 +59,6 @@ agg_direct_combo_cost	0.35
 agg_dirty_semantics	0.33
 agg_dist_stream	5.64
 agg_distinct	0.25
-agg_distinct_cost	0.81
 agg_distinct_hash_cap	2.71
 agg_distinct_narrow	5.20
 agg_distinct_on	2.53
@@ -240,10 +239,8 @@ agg_partial_index_implied	1.70
 agg_partition_narrow	1.08
 agg_partitions	1.03
 agg_partitions_many	9.88
-agg_plan_facts_cache	1.28
 agg_plan_invalidation	0.53
 agg_plan_quals_estimated	0.21
-agg_plan_scale	0.39
 agg_plan_search_scale	0.18
 agg_plan_tables	0.44
 agg_plan_validate_once	0.14
@@ -257,7 +254,6 @@ agg_preagg_minmax	7.73
 agg_preagg_recheck	0.44
 agg_preagg_super	5.51
 agg_pred_normalize	0.30
-agg_prepass_const_list	1.19
 agg_preserved_leaf_aggs	0.52
 agg_preserved_where	0.20
 agg_privileges	0.24
@@ -282,7 +278,6 @@ agg_scalar_dirty_elems	1.07
 agg_scalar_dirty_filter	0.37
 agg_scalar_dirty_share	1.60
 agg_scalar_dirty_where	0.27
-agg_scan_price	3.77
 agg_scope_array_sublink	1.15
 agg_scope_choice	2.39
 agg_scope_cost	0.84
@@ -317,11 +312,9 @@ agg_set_array	7.17
 agg_set_key_skew	1.88
 agg_sets_fold	1.93
 agg_sets_unnest_distinct	0.28
-agg_shape_walks	0.21
 agg_shape_widths	0.99
 agg_share_lookups	1.33
 agg_skip_empty_unit	0.19
-agg_source_cache	0.17
 agg_sparse_keys	2.57
 agg_sparse_text	0.29
 agg_spill_contexts	8.79
@@ -388,7 +381,6 @@ agg_wide_sum_dict	3.48
 agg_wide_sum_records	5.94
 agg_wildcard_key_cost	1.67
 agg_window	0.20
-agg_workers_guessed_keys	0.17
 agg_workload_shapes	1.50
 agg_zone_cost	2.50
 agg_zone_or	2.71
@@ -805,7 +797,6 @@ col_tags	2.26
 col_text_contains	7.42
 col_text_ilike	4.98
 col_text_patterns	5.56
-col_text_prefilter	21.90
 col_text_scanwrap	7.87
 col_text_tsig	3.29
 col_tomb_horizon	0.32
@@ -1109,7 +1100,6 @@ shred_kernels	0.18
 shred_spec	0.14
 shred_values	0.54
 sift_basic	0.11
-slot_owner	0.23
 store_basic	0.78
 store_corrupt	0.19
 store_dir_lineage	0.22

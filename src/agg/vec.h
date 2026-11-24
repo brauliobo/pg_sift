@@ -173,7 +173,5 @@ typedef struct SiftArrayLayout
 #define SIFT_ELEM_KIND_VALUE	1
 #define SIFT_ELEM_KIND_JNULL	7
 
-/* out (SIFT_COL_NWORDS-free: ceil(n_elems / 64) words) = the elements whose parent is in parent_mask; returns the number of elements set */
-extern uint32 sift_array_elem_mask(uint64 *out, const SiftArrayLayout *lay, const uint64 *parent_mask);
 
 #endif							/* SIFT_AGG_VEC_H */

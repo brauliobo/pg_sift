@@ -1,22 +1,4 @@
 # RULE	FILE	THE LINE	WHAT BOUNDS IT -- 'bounded:' was read at the site, 'open:' is a growth that nothing bounds by a setting (the 5.0.1 memory audit lists it).
-double	agg/combo/ents.c	cs->dir = cs->dir ? repalloc(cs->dir, (size_t) cap * sizeof(uint32)) : MemoryContextAlloc(cs->cxt, (size_t) cap * sizeof(uint32));	open: the directory of the combinations of one statement: one per distinct combination, no limit but the group table check
-double	agg/combo/ids.c	t->hv = repalloc(t->hv, t->cap * sizeof(uint32));	open: ids of the strings of one combination: one per distinct string, no limit but the group table check
-double	agg/combo/ids.c	t->len = repalloc(t->len, t->cap * sizeof(uint32));	open: ids of the strings of one combination: one per distinct string, no limit but the group table check
-double	agg/combo/ids.c	t->ptr = repalloc(t->ptr, t->cap * sizeof(char *));	open: ids of the strings of one combination: one per distinct string, no limit but the group table check
-double	agg/leaf.c	t->hv = repalloc(t->hv, t->cap * sizeof(uint32));	bounded: the table of a count(DISTINCT) is held to hash memory (values_nospill_check ends the scan past it and the statement runs again as PostgreSQL plans it); a statement that cannot run again keeps its values
-double	agg/leaf.c	t->val = repalloc(t->val, t->cap * sizeof(Datum));	bounded: the table of a count(DISTINCT) is held to hash memory (values_nospill_check ends the scan past it and the statement runs again as PostgreSQL plans it); a statement that cannot run again keeps its values
-double	agg/lookclass.c	s->buf = s->buf ? repalloc(s->buf, s->cap) : MemoryContextAlloc(s->cxt, s->cap);	bounded: the bytes of the classes of one lookup table, under sift.agg_lookup_kb
-double	agg/lookcol.c	kp->pair = kp->pair ? repalloc(kp->pair, (kp->cap *= 2) * sizeof(SiftScopePair)) : palloc((kp->cap = 1024) * sizeof(SiftScopePair));	bounded: pairs of one lookup, under sift.agg_lookup_kb
-double	agg/lookup/map.c	mc->hv = repalloc(mc->hv, mc->cap * sizeof(uint32));	bounded: the values of one lookup table, under sift.agg_lookup_kb
-double	agg/lookup/map.c	mc->val = repalloc(mc->val, mc->cap * sizeof(Datum));	bounded: the values of one lookup table, under sift.agg_lookup_kb
-double	agg/pred_cal.c	out = repalloc(out, (cap *= 2) * sizeof(int64));	bounded: values of one IN list or predicate of the statement
-double	agg/stub_dec.c	d->bytes = repalloc(d->bytes, d->bcap *= 2);	open: the decoded dictionary of one source leaf, with the distinct values of the leaf: no limit but the segment's own size
-double	agg/stub_dec.c	d->off = repalloc(d->off, sizeof(uint32) * ((d->cap *= 2) + 1));	open: the decoded dictionary of one source leaf, with the distinct values of the leaf: no limit but the segment's own size
-double	agg/stub_src.c	src->rowkey = repalloc(src->rowkey, sizeof(SiftKey) * src->cap);	bounded: the rows of one unit of the source (a unit is at most SIFT_COL_UNIT_ROWS rows)
-double	agg/stub_src.c	u->nulls = repalloc(u->nulls, sizeof(bool) * natts * src->cap);	bounded: the rows of one unit of the source (a unit is at most SIFT_COL_UNIT_ROWS rows)
-double	agg/stub_src.c	u->vals = repalloc(u->vals, sizeof(Datum) * natts * src->cap);	bounded: the rows of one unit of the source (a unit is at most SIFT_COL_UNIT_ROWS rows)
-double	agg/topn/unit.c	t->mem = repalloc(t->mem, t->capmem * t->stride * sizeof(int64));	bounded: at most topn_rows (100,000) rows of stride int64 words
-double	agg/two.c	a->cid = repalloc(a->cid, (Size) a->ccap * a->nlk * sizeof(uint32));	open: cells of a two-level aggregate: one per distinct inner key tuple, no limit but the group table check
 double	col/v1/src_wide.c	w->bytes = repalloc(w->bytes, w->bcap);	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	col/v1/src_wide.c	w->key = repalloc(w->key, w->dcap * 3 * sizeof(uint64));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	col/v1/src_wide.c	w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
@@ -40,16 +22,9 @@ double	core/reads.c	pending = pending ? repalloc(pending, cap * sizeof(Pending))
 double	core/lane.c	blks = repalloc(blks, (cap *= 2) * sizeof(BlockNumber));	bounded: the blocks of one lane, at most the pages of the relation
 double	table/v1/gscan_cache.c	g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));	bounded: units of one group scan of a sift_table, the memory of its fetch contexts
 double	col/scope_v6/topk.c	l->e = repalloc(l->e, sizeof(*l->e) * (l->cap = Max(l->cap * 2, l->n + n)));	bounded: the live rows of one scope key that hold one value of an order leaf (the tie at the cut of a query), at most the rows of the key
-int	agg/leaf.c	char *data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAlloc(ex->ucxt, nrow * esz + SIFT_AGG_PAD + SIFT_SIMD_ALIGN));	bounded: nrow is a unit's rows (SIFT_COL_UNIT_ROWS at most) times esz of 4 or 8: far below 4 GB
-int	agg/leaf.c	v->data = (char *) TYPEALIGN(SIFT_SIMD_ALIGN, MemoryContextAllocZero(ex->ucxt, n * esz + SIFT_AGG_PAD * esz + SIFT_SIMD_ALIGN));	bounded: nrow is a unit's rows (SIFT_COL_UNIT_ROWS at most) times esz of 4 or 8: far below 4 GB
 int	col/v1/src_sel.c	b->data = MemoryContextAlloc(cxt, b->cap * 8);	bounded: cap is a size_t of the rows of a unit
 int	bm25/facet.c	rows = MemoryContextAlloc(f->mcxt, n * ROW_BYTES);	bounded: n is the pages of a superblock (SIFT_PAGEMASK_WORDS * 64) times ROW_BYTES
 int	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: size is the length of one posting block
-lifetime	agg/cost/cte.c	priced = MemoryContextAlloc(TopMemoryContext, PRICED_MAX * sizeof(PricedList));	bounded: PRICED_MAX entries
-lifetime	agg/expr/walk.c	walk_memo = MemoryContextAlloc(TopMemoryContext, WALK_MEMO_MAX * sizeof(WalkMemo));	bounded: WALK_MEMO_MAX entries
-lifetime	agg/fuse.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one registration per executor state of the statement in flight, removed with it
-lifetime	agg/fuse.c	old = MemoryContextSwitchTo(TopMemoryContext);	bounded: one registration per executor state of the statement in flight, removed with it
-lifetime	agg/par/stats.c	s = MemoryContextAllocZero(TopMemoryContext, sizeof(ParStats));	bounded: one struct per backend
 lifetime	col/am/rel.c	memset(MemoryContextAlloc(CacheMemoryContext, sz), 0x7f, sz);	bounded: one planning memo per backend, reset when the catalog changes; the 0x7f fill is a leak canary of a test
 lifetime	col/am/ioss.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: emptied at the end of the transaction (ioss_pending)
 lifetime	col/dsmreg.c	cx = MemoryContextSwitchTo(TopMemoryContext);	bounded: one record per attached dynamic shared memory segment, with its settings
@@ -69,7 +44,6 @@ lifetime	table/v1/store.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryCon
 lifetime	table/v1/store.c	rel->rd_amcache = MemoryContextAlloc(CacheMemoryContext, sizeof(SiftTblRelHeader));	bounded: one entry per sift_table relation the backend opened, dropped with the relcache entry
 lifetime	core/cachebudget.c	cache_root = AllocSetContextCreate(TopMemoryContext, "SiftBackendCacheContext", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, CACHE_BLOCK_MAX);	bounded: the root of every cache of the backend: sift.backend_cache_kb, the oldest entry nobody holds goes first (sift_cache_room)
 lifetime	col/v1/maint/merge_pick.c	settled.gens = settled.gens ? repalloc(settled.gens, 2 * settled.cap * sizeof(uint64)) : MemoryContextAlloc(TopMemoryContext, 2 * settled.cap * sizeof(uint64));	bounded: the generations of the segments the last merges of one index wrote, at most 2 * SETTLED_MAX (a ring)
-loop	agg/lookcol.c	for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)	bounded: walks the set bits of a member bitmap into pairs under sift.agg_lookup_kb
 loop	agg/v6/v6_unnest_jsonb.c	for (uint32 k = 0; ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)	bounded: the members of the one document of a row, in the context of the batch that is reset for the next
 loop	bm25/cscan_exec.c	while (nset != SIFT_SEMI_OVER && table_scan_getnextslot(scan, ForwardScanDirection, slot))	bounded: the dimension set is capped at SIFT_SEMI_MAX_SET and the scan stops at it
 loop	bm25/liveness.c	for (; i < dm->nsb && used < rows; i++)	bounded: used < rows bounds the loop by the rows asked for
@@ -90,7 +64,6 @@ double	col/f2/f2_tier_sigv4.c	b->d = b->d ? repalloc(b->d, b->cap) : palloc(b->c
 double	col/f2/key_marks.c	b->bytes = b->bytes ? repalloc(b->bytes, (size_t) b->cap * stride) : palloc((size_t) b->cap * stride);	bounded: one mark for each granule of the part being built, which maintenance_work_mem holds
 double	col/f2/f2_gpu_plan.c	pv->part = repalloc(pv->part, (cap *= 2) * sizeof(PlanPart));	bounded: the parts of the manifest of one relation (the manifest is one allocation under 1 GB), a few words each
 double	agg/gpu_v6.c	t->cand = repalloc(t->cand, (t->cap *= 2) * sizeof(SiftGpuCand));	bounded: at most k candidates (k up to SIFT_TOPN_MAX_ROWS) for each device batch of one scan
-double	agg/par/dim_shm.c	l->claimed = l->claimed ? repalloc(l->claimed, l->cap_claimed * sizeof(SiftMorsel)) : palloc(l->cap_claimed * sizeof(SiftMorsel));	open: one entry for each morsel a worker claims, a morsel being at least a granule of 8,192 rows and 16 bytes; it passes 1 GB above 5e11 rows for one worker
 double	agg/group/rec.c	b->p = b->p ? repalloc(b->p, b->cap) : palloc(b->cap);	bounded: the largest record of one group (its key and aggregate states), a few kilobytes
 double	col/f2/f2_v6_scope.c	p->spec.agg = p->spec.agg ? repalloc(p->spec.agg, (Size) p->cap_aggs * sizeof(SiftV6Agg)) : palloc((Size) p->cap_aggs * sizeof(SiftV6Agg));	bounded: the aggregates of one statement, one entry for each aggregate it names
 double	col/f2/f2_v6_scope_run.c	st->vals = st->vals ? repalloc(st->vals, (Size) st->cap_rows * sizeof(Datum *)) : palloc((Size) st->cap_rows * sizeof(Datum *));	open: the result rows of one scope statement, one for each group the statement returns

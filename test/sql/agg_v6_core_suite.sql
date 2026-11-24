@@ -2,42 +2,6 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 
--- >>> agg_v6_dim_shm
-CREATE SCHEMA s1;
-GRANT USAGE ON SCHEMA s1 TO PUBLIC;
-SET search_path = s1, public;
--- Shared dimension table (src/agg/par/dim_shm.c): the leader and 0, 1, 2 and 4 workers build one immutable hash of the keys of a
--- dimension in a shared segment (count, prefix sum and fill, each by every participant), then probe it, and a worker writes its
--- answers to a file of the SharedFileSet of the context. Every answer, every probe once, and every key of the table are compared
--- with a sorted reference of the same rows. A key in several rows (a domain smaller than the rows) has all its rows.
-SET max_parallel_workers = 8;
-SET max_parallel_workers_per_gather = 8;
-
--- (workers, rows, domain): unique keys (domain >> rows), some duplicates, many duplicates
-SELECT w AS workers, n AS rows, d AS domain, r.launched = w AS launched_all, r.fits, r.answered = 20000 AS all_probes, r.wrong
-FROM (VALUES (0, 50000, 1000000), (1, 50000, 1000000), (2, 50000, 1000000), (4, 50000, 1000000),
-             (0, 30000, 20000), (2, 30000, 20000), (4, 30000, 20000),
-             (1, 20000, 200), (4, 20000, 200), (4, 1, 10), (2, 17, 5)) AS v(w, n, d),
-     LATERAL sift._test_dim_shm(7, w, n, d, 20000) AS r
-ORDER BY w, n, d;
-
--- a dimension of many blocks of buckets and granules of rows
-SET work_mem = '64MB';
-SELECT w AS workers, r.launched = w AS launched_all, r.buckets, r.answered = 5000 AS all_probes, r.wrong
-FROM (VALUES (1), (4)) AS v(w), LATERAL sift._test_dim_shm(11, w, 300000, 1000000000, 5000) AS r
-ORDER BY w;
-
--- a table over the share of work_mem a shared dimension may take is not built
-SET work_mem = '64kB';
-SET hash_mem_multiplier = 1;
-SELECT r.fits, r.launched, r.answered, r.wrong FROM sift._test_dim_shm(7, 2, 5000, 100000, 1000) AS r;
-RESET work_mem;
-RESET hash_mem_multiplier;
-RESET ALL;
-SET client_min_messages = warning;
-DROP SCHEMA s1 CASCADE;
-RESET client_min_messages;
--- <<< agg_v6_dim_shm
 
 -- >>> agg_v6_explain
 CREATE SCHEMA s2;
@@ -238,10 +202,9 @@ CREATE SCHEMA s7;
 GRANT USAGE ON SCHEMA s7 TO PUBLIC;
 SET search_path = s7, public;
 -- 2048-row engine units (src/agg/v6_test.c): the salted hash table with its growth and its radix scatter and merge,
--- the element mask of an array column, and the five-input cost of a SiftAgg path at the default planner costs.
+-- and the five-input cost of a SiftAgg path at the default planner costs.
 
 SELECT sift._test_salted_ht(11, 60) AS ht_failures;
-SELECT sift._test_array_elem_mask(5, 200) AS array_failures;
 
 SET seq_page_cost = 1;
 SET cpu_operator_cost = 0.0025;
@@ -353,11 +316,8 @@ RESET client_min_messages;
 CREATE SCHEMA s9;
 GRANT USAGE ON SCHEMA s9 TO PUBLIC;
 SET search_path = s9, public;
--- JSONB variant exception streams read without a heap fetch (src/agg/variant_eval.c) and the sorted streaming GROUP BY and Top-N
--- (src/agg/stream_exec.c), each against a loop over the rows. Each is the number of failed cases.
+-- The sorted streaming GROUP BY and Top-N (src/agg/stream_exec.c) against a loop over the rows. Each is the number of failed cases.
 
-SELECT sift._test_variant_eval(4, 400) AS variant_failures;
-SELECT sift._test_variant_eval(21, 400) AS variant_failures;
 SELECT sift._test_stream_exec(6, 300) AS stream_failures;
 SELECT sift._test_stream_exec(33, 300) AS stream_failures;
 RESET ALL;

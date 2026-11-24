@@ -28,7 +28,6 @@
 #include "core/maint_pacer.h"
 #include "access/tableam.h"
 #include "col/am.h"
-#include "agg/exec/int.h"
 #include "core/store_ops.h"
 #include "core/cpu.h"
 #include "core/errctx.h"

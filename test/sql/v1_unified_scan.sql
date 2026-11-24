@@ -1,10 +1,9 @@
--- Format 1 on the unified aggregate scan (sift.test_unified_agg): the text hits of a BM25 index, the typed JSON path leaves of a document and the residual condition of a self join are folded
+-- Format 1 on the unified aggregate scan: the text hits of a BM25 index, the typed JSON path leaves of a document and the residual condition of a self join are folded
 -- from the batches of the Format 1 source, and the groups are the heap's own after updates and deletes. A scan with a text bridge reads the score of the hit as a column.
 CREATE EXTENSION pg_sift_test CASCADE;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 SET sift.test_create_format1 = on;
-SET sift.test_unified_agg = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

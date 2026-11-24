@@ -13,7 +13,6 @@
 #include <pthread.h>
 #include <stdatomic.h>
 
-#include "agg/kern_cases.h"
 
 #define NTHREADS	(getenv("KT_THREADS") ? atoi(getenv("KT_THREADS")) : 8)
 

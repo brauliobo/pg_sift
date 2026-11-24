@@ -60,16 +60,7 @@ PG_FUNCTION_INFO_V1(sift_test_vet_offsets);
 PG_FUNCTION_INFO_V1(sift_test_gorder_decoded);
 
 PG_FUNCTION_INFO_V1(sift_test_key_sorts);
-
-PG_FUNCTION_INFO_V1(sift_test_source_lookups);
-
-PG_FUNCTION_INFO_V1(sift_test_prepass_nodes);
-
-PG_FUNCTION_INFO_V1(sift_test_agg_outer_walks);
-PG_FUNCTION_INFO_V1(sift_test_agg_key_lists);
 PG_FUNCTION_INFO_V1(sift_test_vis_counts);
-PG_FUNCTION_INFO_V1(sift_test_agg_plan_passes);
-PG_FUNCTION_INFO_V1(sift_test_agg_workers_pay);
 
 PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 

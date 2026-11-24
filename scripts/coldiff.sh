@@ -31,7 +31,7 @@
 #   --rel X --abs X     tolerance of float columns: |x - y| <= abs + rel * max(|x|, |y|) (defaults 1e-9 and 1e-12)
 #   --no-index          without the column index: plain against plain (the self-check of the harness); without the flag a missing
 #                       access method or a failing CREATE INDEX skips the suite with a message
-#   --col-am NAME       the access method (default: sift_col, else sift_colstub when only the stub exists)
+#   --col-am NAME       the access method (default: sift_col)
 #   --table             the fixtures suite on sift_table: the fixture tables are rewritten USING sift_table (with the paths of --col-paths declared for
 #                       their jsonb columns) instead of getting a column index, the scenarios
 #                       that need a heap (hot, recycle) are skipped and maint is VACUUM and VACUUM FULL (own database sift_coldiff_tbl);
@@ -100,7 +100,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# fresh_db NAME: an empty database with sift, the test-only extension (the stub of the access method lives there) and the runner
+# fresh_db NAME: an empty database with sift, the test-only extension and the runner
 fresh_db() {
 	DB=postgres sql -c "DROP DATABASE IF EXISTS $1 WITH (FORCE)" -c "CREATE DATABASE $1"
 	DBS+=("$1")
@@ -111,13 +111,13 @@ fresh_db() {
 	sql -f "$REPO/test/col/run.sql"
 }
 
-# the access method of the column index: --col-am, else sift_col, else sift_colstub; empty when none exists (or --no-index)
+# the access method of the column index: --col-am, else sift_col; empty when none exists (or --no-index)
 resolve_am() {
 	[[ -z $NOINDEX ]] || return 0
 	if [[ -n $TBL ]]; then AM=sift_table; elif [[ -n $COL_AM ]]; then AM=$COL_AM; else
-		AM=$(sql -c "SELECT amname FROM pg_am WHERE amname IN ('sift_col', 'sift_colstub') ORDER BY amname = 'sift_col' DESC LIMIT 1")
+		AM=sift_col
 	fi
-	[[ -n $AM && $(sql -c "SELECT count(*) FROM pg_am WHERE amname = '$AM'") == 1 ]] || { AM=; skip "no column index access method (sift_col, sift_colstub): run with --no-index for the plain-against-plain self-check"; return 1; }
+	[[ -n $AM && $(sql -c "SELECT count(*) FROM pg_am WHERE amname = '$AM'") == 1 ]] || { skip "no column index access method ($AM): run with --no-index for the plain-against-plain self-check"; AM=; return 1; }
 }
 
 # ---------- corpus ----------

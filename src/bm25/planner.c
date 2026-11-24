@@ -18,7 +18,6 @@
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
-#include "agg/plan_int.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_join_push.h"
 #include "agg/v6/v6_join.h"

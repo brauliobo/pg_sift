@@ -446,7 +446,6 @@ extern void sift_colw_prune(struct SiftColSegment *seg, const SiftColPred *p, ui
 
 /* col/v1/amscan/amscan.c: the bitmap scan of the sift.col_*_ops operator classes (docs/COL-SCAN.md) */
 extern bool sift_enable_col_scan;
-extern double sift_plan_scale;
 extern void sift_col_scan_init(void);
 /* The bytes a row takes while the rows of a key-cut build, promotion or merge are held to be sorted (an estimate: a reference and a value of every leaf) */
 extern uint64 sift_colk_row_bytes(const SiftColSchema *schema);
@@ -536,7 +535,6 @@ extern void sift_col_maint_tick(Oid indexoid, int64 dirty_rows);
 extern bool sift_col_promote_tick(Relation index);
 extern void sift_col_maint_init(void);
 
-extern PGDLLIMPORT int sift_cdict_cache_kb;	/* kB of parsed segment dictionaries a backend keeps (col/dictcache.c); sift.test_col_dict_cache */
 
 /* Testing builds: sift.test_col_scan_jitter_us sleeps up to that long at the points of a scan where another backend (VACUUM, DML, maintenance)
  * can change what the scan has read and not yet read: after open, after a unit is loaded, between the all-visible mask and the liveness,

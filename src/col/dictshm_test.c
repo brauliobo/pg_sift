@@ -23,7 +23,6 @@
 #include "col/dictshm_int.h"
 #include "col/dsmreg.h"
 #include "access/xact.h"
-#include "agg/lookup_int.h"
 
 /* The records some backend reads in place, and the pins on them (all backends) */
 void
@@ -261,7 +260,7 @@ PG_FUNCTION_INFO_V1(sift_test_dsm_caller);
 
 /*
  * sift._test_dsm_caller(caller, parallel): whether the table of a caller of the registry could be had by a backend, as that caller asks for it (inside a parallel operation, where no
- * subtransaction can start, when parallel). Never an error, which is the point: lookup_rows and lookup_dim (the pools of the lookups, agg/lookshm.c), dictionary (the directory of
+ * subtransaction can start, when parallel). Never an error, which is the point: dictionary (the directory of
  * the dictionaries), dictionary_ring (its ring) and dictionary_worker (what a parallel worker joins).
  */
 Datum
@@ -274,11 +273,7 @@ sift_test_dsm_caller(PG_FUNCTION_ARGS)
 
 	if (parallel)
 		EnterParallelMode();
-	if (strcmp(caller, "lookup_rows") == 0)
-		got = lookshm_bytes(LOOK_ROWS) > 0;
-	else if (strcmp(caller, "lookup_dim") == 0)
-		got = lookshm_bytes(LOOK_DIM) > 0;
-	else if (strcmp(caller, "dictionary") == 0)
+	if (strcmp(caller, "dictionary") == 0)
 		got = dshm_get() != NULL;
 	else if (strcmp(caller, "dictionary_ring") == 0)
 		got = (s = dshm_get()) != NULL && ring_get(s);

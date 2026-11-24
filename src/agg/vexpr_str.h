@@ -58,20 +58,7 @@ typedef struct SiftVstrArena
 	SiftVstrBlock *head;
 } SiftVstrArena;
 
-extern void sift_vstr_arena_init(SiftVstrArena *ar, MemoryContext cx);
-extern char *sift_vstr_arena_alloc(SiftVstrArena *ar, uint32 len);
-extern void sift_vstr_arena_reset(SiftVstrArena *ar);
-extern void sift_vstr_arena_free(SiftVstrArena *ar);
 
-extern bool sift_vstr_is_ascii(const char *p, uint32 len);
-/* dst (room for len bytes) = the string with 'A'..'Z' folded; false (dst unspecified) when a byte is not ASCII */
-extern bool sift_vstr_lower_ascii(char *dst, const char *src, uint32 len);
-/* split_part(s, d, field) of PostgreSQL: the fields are cut at the occurrences of d, left to right without overlap; a field below zero counts from the last; -1 for field 0, which PostgreSQL rejects */
-extern int	sift_vstr_split_part(const char *s, uint32 len, const char *d, uint32 dlen, int32 field, const char **out, uint32 *olen);
-/* the set of bytes btrim(s, chars) cuts: false when chars holds a byte that is not ASCII (a character of more than one byte) */
-extern bool sift_vstr_trim_set(bool *set, const char *chars, uint32 n);
-extern void sift_vstr_btrim(const char *s, uint32 len, const bool *set, const char **out, uint32 *olen);
-extern int	sift_vstr_cmp_bytes(const char *a, uint32 alen, const char *b, uint32 blen);
 
 typedef enum SiftVstrOp
 {
@@ -102,12 +89,7 @@ typedef struct SiftVstrPipe
 	void	   *lower_arg;
 } SiftVstrPipe;
 
-extern void sift_vstr_step_lower(SiftVstrPipe *p);
-extern bool sift_vstr_step_btrim(SiftVstrPipe *p, const char *chars, uint32 n);
-extern bool sift_vstr_step_split_part(SiftVstrPipe *p, const char *delim, uint32 dlen, int32 field);
 
-/* out[r] and valid_out = the pipeline over the rows of active (the others are left alone); a NULL input is NULL. true unless a row needed a lower this pipeline cannot make */
-extern bool sift_vstr_pipe_run(const SiftVstrPipe *p, SiftVstrArena *ar, const SiftVec *in, const uint64 *active, uint16 n, SiftStrView *out, uint64 *valid_out);
 
 typedef enum SiftVstrCmp
 {
@@ -140,12 +122,5 @@ typedef struct SiftVstrSet
 	uint64		len_mask;		/* bit (length mod 64) is set for the length of an element */
 } SiftVstrSet;
 
-extern SiftVstrSet *sift_vstr_set_build(const char *const *p, const uint32 *len, const bool *isnull, uint32 n);
-extern bool sift_vstr_set_has(const SiftVstrSet *s, const char *p, uint32 len);
-extern void sift_vstr_set_free(SiftVstrSet *s);
-/* bit i of bits (ceil(n / 64) words) = dict[i] is in the set: the strings of a dictionary of a part, once for the part */
-extern void sift_vstr_set_dict_bits(const SiftVstrSet *s, const SiftStrView *dict, uint32 n, uint64 *bits);
-/* x = ANY(set) with the three-valued logic of SQL: true when x is in it, unknown when x is NULL or it is not and the set holds a NULL, else false */
-extern void sift_vstr_in_set(const SiftStrView *v, const uint64 *valid, const uint64 *active, uint16 n, const SiftVstrSet *s, uint64 *true_out, uint64 *known_out);
 
 #endif							/* SIFT_AGG_VEXPR_STR_H */

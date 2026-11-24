@@ -501,7 +501,6 @@ sift_tbl_v1_init(void)
 {
 	define_gucs();
 	sift_tbl_slot_init();
-	sift_tbl_src_register();
 }
 
 const TableAmRoutine sift_tbl_v1_methods = {

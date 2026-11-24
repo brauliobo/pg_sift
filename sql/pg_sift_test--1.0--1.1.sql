@@ -127,8 +127,6 @@ CREATE FUNCTION sift._test_aggkern6_level() RETURNS text
 -- Salted hash table, array element masks and the cost of a SiftAgg path (src/agg/v6_test.c): the number of failed cases.
 CREATE FUNCTION sift._test_salted_ht(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_salted_ht' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_array_elem_mask(seed int8, cases int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_array_elem_mask' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_agg_cost(g_eff float8, b_dec float8, n_groups float8, f_join float8, selectivity float8, is_preagg bool,
 									is_streaming bool, max_workers int4, OUT workers int4, OUT startup float8, OUT total float8)
 	AS 'MODULE_PATHNAME', 'sift_test_agg_cost' LANGUAGE C STRICT;
@@ -150,10 +148,6 @@ CREATE FUNCTION sift._test_radix_par(seed int8, workers int4, granules int4, gro
 CREATE FUNCTION sift._test_morsel_par(seed int8, workers int4, parts int4, granules int4,
 									  OUT launched int4, OUT claims int8, OUT total int8, OUT wrong int8, OUT bad_claims int8, OUT max_run int4, OUT tail_run int4)
 	AS 'MODULE_PATHNAME', 'sift_test_morsel_par' LANGUAGE C STRICT;
--- Shared dimension table (src/agg/par/dim_shm_test.c): workers launched, buckets, probes answered, wrong answers and keys, fits the budget, bytes, microseconds of the build.
-CREATE FUNCTION sift._test_dim_shm(seed int8, workers int4, nrows int4, domain int4, probes int4,
-								   OUT launched int4, OUT buckets int4, OUT answered int8, OUT wrong int8, OUT fits bool, OUT bytes int8, OUT build_us int8)
-	AS 'MODULE_PATHNAME', 'sift_test_dim_shm' LANGUAGE C STRICT;
 -- Adaptive execution (src/agg/adaptive_test.c): the order of the conjuncts that the measures give, the circuit breaker of the join filter, the tiers of the groups and
 -- the grouping sets under a budget, each against the same work with no limit.
 CREATE FUNCTION sift._test_apipe(OUT moved_best_first bool, OUT barrier_violations int4, OUT reorders int4, OUT near_ranks_stable bool, OUT drift_followed bool,
@@ -165,27 +159,6 @@ CREATE FUNCTION sift._test_sip_adapt(granules int4, head_granules int4, head_mat
 									 OUT auto_disables int4, OUT auto_reenables int4, OUT disabled_at_end bool, OUT reject_after_reenable_pct int4,
 									 OUT level2_prunes bool, OUT missed int8)
 	AS 'MODULE_PATHNAME', 'sift_test_sip_adapt' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_group_tiers(n int8, domain int8, base int8, start int4, budget int8, hot int4, skew int4, OUT groups int8, OUT rows int8,
-									   OUT key_sum int8, OUT sum_sum int8, OUT mix int8, OUT tier int4, OUT visited int4, OUT spilled_bytes int8, OUT depth int4,
-									   OUT same bool)
-	AS 'MODULE_PATHNAME', 'sift_test_group_tiers' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_rollup_spill(masks int8[], n int8, groups int8, max_bytes int8, skew bool, dist bool, OUT nodes_spilled int4, OUT bytes_spilled int8,
-										OUT depth int4, OUT groups_out int8, OUT same bool)
-	AS 'MODULE_PATHNAME', 'sift_test_rollup_spill' LANGUAGE C STRICT;
--- The dimensions of a star join in one block (src/agg/par/star_shm_test.c): the rows of a fact table joined to categories, items (which point to the categories: a snowflake) and
--- regions through the filters and tables of the bundle that the leader and the workers built, and what the scan did.
-CREATE FUNCTION sift._test_star(f_item int8[], f_region int8[], i_id int8[], i_cat int8[], i_pay int8[], c_id int8[], c_pay int8[], r_id int8[], r_pay int8[],
-								kind_cat int4, kind_item int4, kind_region int4, cats_unique bool, items_unique bool, with_regions bool, workers int4,
-								granule int4 DEFAULT 1024)
-	RETURNS TABLE(ord int4, item_pay int8, cat_pay int8, region_pay int8)
-	AS 'MODULE_PATHNAME', 'sift_test_star' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_star_stats(OUT items_raw int4, OUT items_surviving int4, OUT cats_surviving int4, OUT any_empty bool, OUT fact_rows_read int8,
-									  OUT granules_total int4, OUT granules_pruned int4, OUT rows_probed int8, OUT auto_disables int4, OUT elided int4,
-									  OUT launched int4, OUT bundle_bytes int8)
-	AS 'MODULE_PATHNAME', 'sift_test_star_stats' LANGUAGE C STRICT;
--- Exception streams of JSONB paths and sorted streaming GROUP BY / Top-N (src/agg/stream_test.c): the number of failed cases.
-CREATE FUNCTION sift._test_variant_eval(seed int8, cases int4) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_variant_eval' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_stream_exec(seed int8, cases int4) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_stream_exec' LANGUAGE C STRICT;
 
@@ -211,14 +184,6 @@ CREATE FUNCTION sift._test_explain_v6(scenario int, format text, verbose bool DE
 	AS 'MODULE_PATHNAME', 'sift_test_explain_v6' LANGUAGE C;
 CREATE FUNCTION sift._test_vexpr_compiles(prog text) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_test_vexpr_compiles' LANGUAGE C STRICT;
--- Grouping sets in one pass (src/agg/rollup_test.c): the groups of every set, in the columns of the GROUPING SETS query that the SQL test compares them to.
-CREATE FUNCTION sift._test_rollup(ka int8[], kb int8[], kc int8[], va int8[], vb int8[], masks int8[], prehash bool DEFAULT false, batch int4 DEFAULT 2048,
-								  with_distinct bool DEFAULT false, act bool[] DEFAULT NULL)
-	RETURNS TABLE(set_idx int4, gset int4, k1 int8, k2 int8, k3 int8, n int8, c1 int8, s1 numeric, mn1 int8, mx1 int8, c2 int8, s2 numeric, mn2 int8,
-				  mx2 int8, dcnt int8)
-	AS 'MODULE_PATHNAME', 'sift_test_rollup' LANGUAGE C;
-CREATE FUNCTION sift._test_rollup_distinct(masks int8[], n int8, max_bytes int8, OUT errored bool, OUT retained int8)
-	AS 'MODULE_PATHNAME', 'sift_test_rollup_distinct' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_state_flags(index regclass) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_f2_state_flags' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_pack_tails(index regclass) RETURNS int4 AS 'MODULE_PATHNAME', 'sift_test_f2_pack_tails' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_pack_info(index regclass, part_id int8, plo int8, OUT part_gen int8, OUT header_blk int8, OUT packed bool, OUT slot int4, OUT inline bool)

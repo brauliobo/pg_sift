@@ -13,7 +13,6 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET sift.test_agg_par_min_rows = 0;
 SET max_parallel_workers_per_gather = 2;
-SET sift.test_par_leader_wait = on;
 
 -- one path, integer key and member: 12 tenants, members in one to three of them
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));

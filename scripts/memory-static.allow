@@ -58,7 +58,6 @@ defaultsizes	table/v1/scan.c	1
 defaultsizes	table/v1/store.c	1
 defaultsizes	table/v1/v1_tbl_reader.c	1
 defaultsizes	table/v1/v1_tbl_reader_read.c	1
-huge	agg/dist/psort.c	1
 huge	bm25/liveness.c	1
 huge	bm25/postw.c	1
 huge	col/granule/part_write.c	1
@@ -87,10 +86,6 @@ huge	table/v1/vacuum.c	1
 raw_mwm	col/v1/build/run.c	1
 raw_mwm	col/v1/conn_fill.c	1
 raw_mwm	col/v1/scope_fill.c	1
-toplevel	agg/cost/cte.c	1
-toplevel	agg/expr/walk.c	1
-toplevel	agg/fuse.c	2
-toplevel	agg/par/stats.c	1
 toplevel	col/am/ioss.c	2
 toplevel	col/am/rel.c	1
 toplevel	col/dsmreg.c	2
