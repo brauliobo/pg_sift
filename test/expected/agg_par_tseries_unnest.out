@@ -71,6 +71,67 @@ SELECT * FROM check_par('15 minutes by dev, little work_mem', $q$ SELECT date_bi
 (1 row)
 
 SET work_mem = '256MB';
+SELECT * FROM check_par('sums, a count of a column with NULLs and an average', $q$ SELECT date_bin('1 hour', ts, timestamptz '2020-01-01') b, dev, count(*), count(v), sum(v), avg(w) FROM hc_t GROUP BY 1, 2 $q$);
+                        label                        | same | node | nonempty 
+-----------------------------------------------------+------+------+----------
+ sums, a count of a column with NULLs and an average | t    | t    | t
+(1 row)
+
+SELECT * FROM check_par('the count alone', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) FROM hc_t GROUP BY 1, 2 $q$);
+      label      | same | node | nonempty 
+-----------------+------+------+----------
+ the count alone | t    | t    | t
+(1 row)
+
+SELECT * FROM check_par('the groups with the most rows', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) c FROM hc_t GROUP BY 1, 2 ORDER BY c DESC, b, dev LIMIT 20 $q$);
+             label             | same | node | nonempty 
+-------------------------------+------+------+----------
+ the groups with the most rows | t    | t    | t
+(1 row)
+
+INSERT INTO hc_t SELECT 100000 + i, timestamptz '2024-01-01 00:00:00+00' + (i * 53 % 6000000) * interval '1 second', (i::bigint * 7919 % 20000)::int, i % 5, i % 1000, (i % 100)::smallint
+FROM generate_series(1, 3000) i;
+DELETE FROM hc_t WHERE id % 211 = 0;
+SELECT * FROM check_par('15 minutes by dev, rows inserted and deleted since the index', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
+                            label                             | same | node | nonempty 
+--------------------------------------------------------------+------+------+----------
+ 15 minutes by dev, rows inserted and deleted since the index | t    | t    | t
+(1 row)
+
+-- ---- the same without the rows the threads leave to the scan: every group comes from them ----
+CREATE TABLE hd_t (id int, ts timestamptz, dev int, site int, v int, w smallint) WITH (autovacuum_enabled = false);
+INSERT INTO hd_t SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 6000000) * interval '1 second' END,
+	CASE WHEN i % 1009 = 0 THEN NULL ELSE (i::bigint * 7919 % 20000)::int END, i % 5, i % 1000, (i % 100)::smallint
+FROM generate_series(1, 100000) i;
+CREATE INDEX hd_t_col ON hd_t USING sift_col (id, ts, dev, site, v, w) WITH (rollup_columns = 'off');
+VACUUM (FREEZE, ANALYZE) hd_t;
+SELECT * FROM check_par('groups read out as the threads made them', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hd_t GROUP BY 1, 2 $q$);
+                  label                   | same | node | nonempty 
+------------------------------------------+------+------+----------
+ groups read out as the threads made them | t    | t    | t
+(1 row)
+
+SELECT * FROM check_par('sum of an integer column and an average', $q$ SELECT date_bin('1 hour', ts, timestamptz '2020-01-01') b, dev, count(v), sum(v), avg(w) FROM hd_t GROUP BY 1, 2 $q$);
+                  label                  | same | node | nonempty 
+-----------------------------------------+------+------+----------
+ sum of an integer column and an average | t    | t    | t
+(1 row)
+
+SELECT * FROM check_par('a predicate on the groups', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) FROM hd_t GROUP BY 1, 2 HAVING sum(w) > 50 $q$);
+           label           | same | node | nonempty 
+---------------------------+------+------+----------
+ a predicate on the groups | t    | t    | t
+(1 row)
+
+INSERT INTO hd_t SELECT 100000 + i, timestamptz '2024-01-01 00:00:00+00' + (i * 53 % 6000000) * interval '1 second', (i::bigint * 7919 % 20000)::int, i % 5, i % 1000, (i % 100)::smallint
+FROM generate_series(1, 3000) i;
+DELETE FROM hd_t WHERE id % 211 = 0;
+SELECT * FROM check_par('groups read out as the threads made them, rows inserted and deleted since the index', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hd_t GROUP BY 1, 2 $q$);
+                                        label                                        | same | node | nonempty 
+-------------------------------------------------------------------------------------+------+------+----------
+ groups read out as the threads made them, rows inserted and deleted since the index | t    | t    | t
+(1 row)
+
 -- ---- arrays: two keys, NULL columns, NULL elements ----
 CREATE TABLE un2_t (id int, grp int, qty int, label text, tags text[], nums int[]) WITH (autovacuum_enabled = false);
 INSERT INTO un2_t SELECT i, i % 50, CASE WHEN i % 7 = 0 OR i % 50 = 3 THEN NULL ELSE i % 9 END, CASE WHEN i % 11 = 0 THEN NULL ELSE 'label-' || i % 13 END,
@@ -153,5 +214,5 @@ SELECT * FROM check_par('a group for every row and element', $q$ SELECT f.id, t,
 (1 row)
 
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
-DROP TABLE hc_t, un2_t;
+DROP TABLE hc_t, hd_t, un2_t;
 DROP EXTENSION pg_sift;

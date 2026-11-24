@@ -42,6 +42,28 @@ SELECT * FROM check_par('with a predicate', $q$ SELECT date_bin('15 minutes', ts
 SET work_mem = '4MB';
 SELECT * FROM check_par('15 minutes by dev, little work_mem', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
 SET work_mem = '256MB';
+SELECT * FROM check_par('sums, a count of a column with NULLs and an average', $q$ SELECT date_bin('1 hour', ts, timestamptz '2020-01-01') b, dev, count(*), count(v), sum(v), avg(w) FROM hc_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('the count alone', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) FROM hc_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('the groups with the most rows', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) c FROM hc_t GROUP BY 1, 2 ORDER BY c DESC, b, dev LIMIT 20 $q$);
+INSERT INTO hc_t SELECT 100000 + i, timestamptz '2024-01-01 00:00:00+00' + (i * 53 % 6000000) * interval '1 second', (i::bigint * 7919 % 20000)::int, i % 5, i % 1000, (i % 100)::smallint
+FROM generate_series(1, 3000) i;
+DELETE FROM hc_t WHERE id % 211 = 0;
+SELECT * FROM check_par('15 minutes by dev, rows inserted and deleted since the index', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
+
+-- ---- the same without the rows the threads leave to the scan: every group comes from them ----
+CREATE TABLE hd_t (id int, ts timestamptz, dev int, site int, v int, w smallint) WITH (autovacuum_enabled = false);
+INSERT INTO hd_t SELECT i, CASE WHEN i % 997 = 0 THEN NULL ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 6000000) * interval '1 second' END,
+	CASE WHEN i % 1009 = 0 THEN NULL ELSE (i::bigint * 7919 % 20000)::int END, i % 5, i % 1000, (i % 100)::smallint
+FROM generate_series(1, 100000) i;
+CREATE INDEX hd_t_col ON hd_t USING sift_col (id, ts, dev, site, v, w) WITH (rollup_columns = 'off');
+VACUUM (FREEZE, ANALYZE) hd_t;
+SELECT * FROM check_par('groups read out as the threads made them', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hd_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('sum of an integer column and an average', $q$ SELECT date_bin('1 hour', ts, timestamptz '2020-01-01') b, dev, count(v), sum(v), avg(w) FROM hd_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('a predicate on the groups', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) FROM hd_t GROUP BY 1, 2 HAVING sum(w) > 50 $q$);
+INSERT INTO hd_t SELECT 100000 + i, timestamptz '2024-01-01 00:00:00+00' + (i * 53 % 6000000) * interval '1 second', (i::bigint * 7919 % 20000)::int, i % 5, i % 1000, (i % 100)::smallint
+FROM generate_series(1, 3000) i;
+DELETE FROM hd_t WHERE id % 211 = 0;
+SELECT * FROM check_par('groups read out as the threads made them, rows inserted and deleted since the index', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hd_t GROUP BY 1, 2 $q$);
 
 -- ---- arrays: two keys, NULL columns, NULL elements ----
 CREATE TABLE un2_t (id int, grp int, qty int, label text, tags text[], nums int[]) WITH (autovacuum_enabled = false);
@@ -65,5 +87,5 @@ SELECT * FROM check_par('count of the element, left', $q$ SELECT n, count(*), co
 SELECT * FROM check_par('count of the text element, NULL elements', $q$ SELECT f.grp, count(*), count(t) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1 $q$);
 SELECT * FROM check_par('a group for every row and element', $q$ SELECT f.id, t, count(*) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) WHERE f.id <= 20000 GROUP BY 1, 2 $q$);
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
-DROP TABLE hc_t, un2_t;
+DROP TABLE hc_t, hd_t, un2_t;
 DROP EXTENSION pg_sift;
