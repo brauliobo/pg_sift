@@ -6,7 +6,7 @@ SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 SELECT current_setting('data_directory') || '/sift_tier_regress' AS tierdir \gset
-\set mk 'rm -rf ' :tierdir ' ' :tierdir '.bak && mkdir -p ' :tierdir
+\set mk 'cat >/dev/null && rm -rf ' :tierdir ' ' :tierdir '.bak && mkdir -p ' :tierdir
 COPY (SELECT 1) TO PROGRAM :'mk';
 CREATE TABLE ev (id int8, ts timestamp NOT NULL, tenant int, v int, pad text) USING sift_table;
 CREATE TABLE evn (ts timestamp) USING sift_table;
@@ -56,15 +56,15 @@ SELECT count(*) AS problems FROM sift.check('ev');
 
 -- sift.check reads the object: a byte that changed and an object that is gone are damage of the table; the object put back is sound
 SELECT substr(location, 8) AS objpath FROM sift.tier_status \gset
-\set save 'cp ' :objpath ' ' :tierdir '.bak'
+\set save 'cat >/dev/null && cp ' :objpath ' ' :tierdir '.bak'
 COPY (SELECT 1) TO PROGRAM :'save';
-\set flip 'printf X | dd of=' :objpath ' bs=1 seek=100 conv=notrunc 2>/dev/null'
+\set flip 'cat >/dev/null && printf X | dd of=' :objpath ' bs=1 seek=100 conv=notrunc 2>/dev/null'
 COPY (SELECT 1) TO PROGRAM :'flip';
 SELECT count(*) AS problems, bool_and(detail LIKE '%object in the store%') AS names_the_object FROM sift.check('ev');
-\set gone 'rm ' :objpath
+\set gone 'cat >/dev/null && rm ' :objpath
 COPY (SELECT 1) TO PROGRAM :'gone';
 SELECT count(*) AS problems, bool_and(detail LIKE '%object in the store%') AS names_the_object FROM sift.check('ev');
-\set put 'cp ' :tierdir '.bak ' :objpath
+\set put 'cat >/dev/null && cp ' :tierdir '.bak ' :objpath
 COPY (SELECT 1) TO PROGRAM :'put';
 SELECT count(*) AS problems FROM sift.check('ev');
 
@@ -130,7 +130,7 @@ SELECT (SELECT count(*) FROM sift.tier_policies) AS tier_policies, (SELECT count
 -- a policy cannot be cleared while an object of the table waits to be deleted
 SELECT sift.clear_tier_policy('ev');
 DROP TABLE ev, evn, plain;
-\set rm 'rm -rf ' :tierdir ' ' :tierdir '.bak'
+\set rm 'cat >/dev/null && rm -rf ' :tierdir ' ' :tierdir '.bak'
 COPY (SELECT 1) TO PROGRAM :'rm';
 DROP FUNCTION uses_btree(text);
 DROP EXTENSION pg_sift_test;

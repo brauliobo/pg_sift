@@ -5,7 +5,7 @@ SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 \set VERBOSITY terse
 SELECT current_setting('data_directory') || '/sift_tier_regress_col' AS tierdir \gset
-\set mk 'rm -rf ' :tierdir ' && mkdir -p ' :tierdir
+\set mk 'cat >/dev/null && rm -rf ' :tierdir ' && mkdir -p ' :tierdir
 COPY (SELECT 1) TO PROGRAM :'mk';
 CREATE TABLE evc (id int8, ts timestamp NOT NULL, v int, pad text);
 INSERT INTO evc SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 100, md5(i::text) FROM generate_series(1, 5000) i;
@@ -56,7 +56,7 @@ SELECT sift.set_tier_policy('evc_col_new', 'file://' || :'tierdir') AS changed;
 DROP INDEX evc_col_new;
 SELECT count(*) AS policies FROM sift.tier_policies;
 DROP TABLE evc;
-\set rm 'rm -rf ' :tierdir
+\set rm 'cat >/dev/null && rm -rf ' :tierdir
 COPY (SELECT 1) TO PROGRAM :'rm';
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
