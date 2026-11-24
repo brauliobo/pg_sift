@@ -108,6 +108,8 @@ v2_has_source(PlannerInfo *root, RelOptInfo *input_rel)
 		RangeTblEntry *rte = planner_rt_fetch(relid, root);
 		RelOptInfo *rel = root->simple_rel_array[relid];
 
+		if (rte->rtekind == RTE_FUNCTION)
+			continue;
 		if (rte->rtekind != RTE_RELATION || rel == NULL || rte->inh || sift_tbl_is_f2_oid(rte->relid))
 			return true;
 		foreach_node(IndexOptInfo, ix, rel->indexlist)
