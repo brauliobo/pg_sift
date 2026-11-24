@@ -40,6 +40,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import scope_stock_ch as ch  # noqa: E402
 SQL = os.path.join(HERE, '..', 'sql', 'scope_stock')
 TENANTS = (1, 2, 3, 4, 5, 6, 7, 8)
 EDIT_TENANT = 6    # the tenant whose pairs the edits change; none of the measured reads is on it for its member keys
@@ -148,7 +149,13 @@ ARMS = {
                    "SELECT pg_relation_size('events_col') + pg_relation_size('grants_by_member') + pg_relation_size('grants_by_group') + pg_relation_size('memberships_by_member')"),
 }
 ARMS['sift_scope_cluster'] = (True, sql_text('sift_scope_cluster.sql'), semi_classes, ARMS['sift_scope'][3])
+ARMS.update({n: (False, ch.ddl(n), (lambda n=n: ch.statements(n, classes_of)), ch.size_sql(n)) for n in ch.SPECS})
 ORDER = list(ARMS)
+
+
+def default_arms(size):
+    """the arms of a size: its own list, else every one but the opt-in ch_mv"""
+    return list(SIZES[size]['arms'] or [n for n in ORDER if n not in ch.OPTIONAL])
 LEGACY_ARMS = {'sift_reuse': 'sift_entity', 'sift_scope_rollup': 'sift_scope_cluster'}   # the 5.1.0 names: lists of arms and results files that still use them are read under the new ones
 
 
@@ -390,6 +397,14 @@ def run_arm(cl, a, name, oracle, outdir):
     return dict(name=name, build_s=build_s, build_wal=build_wal, size=size, note=sift_extra, cells=cells, parallel=parallel, writes=writes, dirty=dirty)
 
 
+def run_ch_arm(cl, a, server, name, oracle):
+    """a ClickHouse arm (steps/scope_stock_ch.py): the fixture comes out of the fixture database as CSV, the server starts with the first one"""
+    paths = ch.export(cl, a.base, os.path.join(a.dir, 'ch', 'export'))
+    if server.proc is None and server.container is None:
+        server.start()
+    return ch.run_arm(server, a, name, ARMS[name][2](), oracle, paths, quiet)
+
+
 def save(outdir, r):
     n = r['name']
     with open(os.path.join(outdir, f'{n}.cells.tsv'), 'w') as f:
@@ -447,7 +462,7 @@ def versions(cl, a):
 def cmd_run(a):
     size = SIZES[a.size]
     a.facts, a.tenants = a.facts or size['facts'], a.tenants or list(size['tenants'])
-    arms = (a.arms or ','.join(size['arms'] or ORDER)).split(',')
+    arms = (a.arms or ','.join(default_arms(a.size))).split(',')
     os.makedirs(a.out, exist_ok=True)
     os.makedirs(os.path.join(a.dir, 'sock'), exist_ok=True)
     cl = Cluster(a)
@@ -456,6 +471,10 @@ def cmd_run(a):
         print('NOTICE: the arm ivm is skipped: pg_ivm is not installed under any --root (bench/steps/fetch.sh pg_ivm builds the pinned release)', file=sys.stderr, flush=True)
         arms.remove('ivm')
         skipped.append('ivm (pg_ivm not installed)')
+    for name in [n for n in arms if n in ch.SPECS and not ch.version()]:
+        print(f'NOTICE: the arm {name} is skipped: neither clickhouse-server nor docker with STORE_CH_IMAGE is available', file=sys.stderr, flush=True)
+        arms.remove(name)
+        skipped.append(f'{name} (no ClickHouse)')
     if 'stock_default' not in arms and load_oracle(a.out) is None:
         raise SystemExit('the arms need stock_default (the oracle of every md5): add it to --arms or run it first into the same --out')
     if not os.path.exists(os.path.join(cl.data, 'PG_VERSION')):
@@ -469,12 +488,18 @@ def cmd_run(a):
         cl.psql('postgres', '-c', 'CHECKPOINT')
     meta = dict(fixture_stats(cl, a), **versions(cl, a), size=a.size, date=datetime.date.today().isoformat(), arms=','.join(arms), skipped='; '.join(skipped) or 'none',
                 tenants=','.join(map(str, a.tenants)), classes=','.join(QUERIES))
-    for name in arms:
-        if a.resume and os.path.exists(os.path.join(a.out, f'{name}.cells.tsv')):
-            continue
-        r = run_arm(cl, a, name, load_oracle(a.out) if name != 'stock_default' else None, a.out)
-        save(a.out, r)
-    cl.stop()
+    server = ch.Server(os.path.join(a.dir, 'ch'), a.port + 1) if any(n in ch.SPECS for n in arms) else None
+    try:
+        for name in arms:
+            if a.resume and os.path.exists(os.path.join(a.out, f'{name}.cells.tsv')):
+                continue
+            oracle = load_oracle(a.out) if name != 'stock_default' else None
+            r = run_ch_arm(cl, a, server, name, oracle) if name in ch.SPECS else run_arm(cl, a, name, oracle, a.out)
+            save(a.out, r)
+    finally:
+        if server:
+            server.stop()
+        cl.stop()
     import resultfile
     with open(os.path.join(a.out, 'run.meta'), 'w') as f:
         f.write(''.join(f'{k}\t{v}\n' for k, v in dict(meta, load=resultfile.host_load()).items()))
@@ -569,7 +594,7 @@ def arm_key(a, name):
     size = SIZES[a.size]
     return benchlib.key_of({'epoch': CACHE_EPOCH, 'arm': name, 'ddl': ARMS[name][1], 'classes': ARMS[name][2](), 'size': a.size, 'facts': a.facts or size['facts'],
                             'tenants': list(a.tenants or size['tenants']), 'member_total': a.member_total, 'base': sql_text('base.sql'), 'pg': a.pg,
-                            'ivm': a.ivm if name == 'ivm' else '', 'host': benchlib.host_fingerprint()['id']})
+                            'ivm': a.ivm if name == 'ivm' else '', 'ch': ch.version() if name in ch.SPECS else '', 'host': benchlib.host_fingerprint()['id']})
 
 
 def cache_file(a, name):
@@ -578,7 +603,7 @@ def cache_file(a, name):
 
 def cmd_cache_plan(a):
     """three lines: the arms to run (the sift arms, stock_default and the rival arms with no entry), the arms that come from the cache, the rival arms this run measures"""
-    arms = (a.arms or ','.join(SIZES[a.size]['arms'] or ORDER)).split(',')
+    arms = (a.arms or ','.join(default_arms(a.size))).split(',')
     cached = [] if a.remeasure_all else [n for n in arms if n in rival_arms() and os.path.exists(cache_file(a, n))]
     run = [n for n in arms if n not in cached]
     print(','.join(run))

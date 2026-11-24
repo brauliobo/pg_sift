@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Usage: bench/bench scope-stock [--size quick|standard] [--docs] [--arms LIST] [--tenants LIST] [--facts N] [--build DIR] [--root DIR] [--out FILE] [--keep] [--resume]   (steps/scope_stock.sh)
-# The scope index against tuned stock PostgreSQL (steps/scope_stock_arms.py): nine read classes, eight tenants, warm and cold, eight arms (the b-tree and semi join as written, the tuned semi join,
-# copies of the events by tenant kept by triggers, rollups, pg_ivm incremental views, the entity index, the scope index), every result md5-equal to the plain statement, and the write cost of each arm.
-#   --size        quick (240,000 events, tenants 1, 4 and 8, five arms: minutes; the quick release profile runs it) or standard (2.4 million events, eight tenants, every arm; the release pass)
+# The scope index against tuned stock PostgreSQL (steps/scope_stock_arms.py): nine read classes, eight tenants, warm and cold, the arms (the b-tree and semi join as written, the tuned semi join,
+# copies of the events by tenant kept by triggers, rollups, pg_ivm incremental views, the entity index, the scope index, and ClickHouse with a JOIN, with PROJECTIONs, opt-in with a materialized view:
+# steps/scope_stock_ch.py), every result md5-equal to the plain statement, and the write cost of each arm.
+#   --size        quick (240,000 events, tenants 1, 4 and 8, five arms: minutes; the quick release profile runs it) or standard (2.4 million events, eight tenants, every arm but ch_mv; the release pass)
 #   --docs        standard size only: also write the results file and rewrite the generated blocks of docs/BENCHMARKS.md (scripts/gen-docs.py)
-#   --arms LIST   some arms only (stock_default is the oracle of every md5 and must be in the list); with --docs their rows replace those of the arms in the results file (merge)
+#   --arms LIST   some arms only (stock_default is the oracle of every md5 and must be in the list; ch_join, ch_proj and ch_mv run on clickhouse-server of the PATH, else on STORE_CH_IMAGE
+#                 under docker, and are skipped with a notice when there is neither); with --docs their rows replace those of the arms in the results file (merge)
 #   --remeasure-all  every arm again; --no-cache  neither read nor write the cache of the rival arms; --cache-dir DIR  where it is ($BENCH_STORE/cache/rivals, default under the cache of lanes)
 #                 The stock arms are cached by (arm SQL, fixture, PostgreSQL release, pg_ivm release, host): a pass after a pg_sift release measures stock_default (the oracle) and the sift arms only
 #   --resume      after an interrupted --keep run: the arms already saved in its raw directory are not measured again (needs --keep both times)
@@ -22,12 +24,12 @@ REPO=$(dirname "$BENCH")
 . "$BENCH/versions.env"
 
 ORIG=("$@")
-SIZE=standard DOCS='' RESUME='' OUT='' KEEP=${KEEP:-} ARGS=() EXPLICIT='' REMEASURE='' NOCACHE='' CACHE_DIR=${RIVAL_CACHE:-${BENCH_STORE:-${BENCH_WORK:-/tmp/sift-bench}}/cache/rivals}
+SIZE=standard DOCS='' RESUME='' OUT='' KEEP=${KEEP:-} ARGS=() ARMS='' EXPLICIT='' REMEASURE='' NOCACHE='' CACHE_DIR=${RIVAL_CACHE:-${BENCH_STORE:-${BENCH_WORK:-/tmp/sift-bench}}/cache/rivals}
 while (( $# )); do
 	case $1 in
 		--size) SIZE=$2; shift ;;
 		--docs) DOCS=1 ;;
-		--arms|--tenants|--facts) ARGS+=("$1" "$2"); [[ $1 != --arms ]] || EXPLICIT=1; shift ;;
+		--arms|--tenants|--facts) ARGS+=("$1" "$2"); [[ $1 != --arms ]] || { EXPLICIT=1 ARMS=$2; }; shift ;;
 		--remeasure-all) REMEASURE=1 ;;
 		--no-cache) NOCACHE=1 ;;
 		--cache-dir) CACHE_DIR=$2; shift ;;
@@ -36,7 +38,7 @@ while (( $# )); do
 		--out) OUT=$2; shift ;;
 		--keep) KEEP=1 ;;
 		--resume) ARGS+=("$1"); RESUME=1 ;;
-		*) sed -n '2,15p' "$0"; exit 1 ;;
+		*) sed -n '2,17p' "$0"; exit 1 ;;
 	esac
 	shift
 done
@@ -49,9 +51,13 @@ scratch_install scope-stock
 scratch_port
 RAW=$SIFT_TMP/raw
 IVM=${BENCH_WORK:-${SIFT_BENCH_ROOT:-/tmp/sift-bench}}/engines/pg_ivm/root
-cleanup() { [[ -n $KEEP ]] || rm -rf "$SIFT_TMP/data" "$SIFT_TMP/sock" "$SIFT_TMP/log" "$RAW"; }
+cleanup() {
+	[[ ! -f $SIFT_TMP/ch/pid ]] || kill "$(cat "$SIFT_TMP/ch/pid")" 2>/dev/null || true
+	[[ -n $KEEP ]] || rm -rf "$SIFT_TMP/data" "$SIFT_TMP/sock" "$SIFT_TMP/log" "$SIFT_TMP/ch" "$RAW"
+}
 trap cleanup EXIT
-if [[ ! -d $IVM ]] && ! "$HERE/fetch.sh" pg_ivm >&2; then
+export STORE_CH_IMAGE
+if [[ ! -d $IVM && ( -z $EXPLICIT || ,$ARMS, == *,ivm,* ) ]] && ! "$HERE/fetch.sh" pg_ivm >&2; then
 	echo "NOTICE: scope-stock: pg_ivm $PG_IVM_VERSION could not be built (steps/fetch.sh pg_ivm); the ivm arm is skipped" >&2
 fi
 roots=(--root "$SIFT_ROOT"); [[ ! -d $IVM ]] || roots+=(--root "$IVM")
