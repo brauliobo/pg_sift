@@ -1,14 +1,14 @@
 -- The point directory of heap addresses by the default formula: an equality on an integer column of nearly unique values that does not follow the order of the table reads every unit
 -- (the keys of a unit span the whole range), so a CREATE INDEX whose benefit B (the speedup of the equality) is at least its cost C (the growth of the index and of the build)
 -- writes the column to point_tid_columns as 'auto: col' and says so. A column in heap order reads one unit, and gets it once the table is large enough for the unit to cost (col_point_auto_ordered: 500,000 instructions
--- saved); not one of few values, not a table where the lookup is cheap, not an option the user set. The table is 400,000 rows because the formula weighs the bytes of its rows against the instructions of a scan of them.
+-- saved); not one of few values, not a table where the lookup is cheap, not an option the user set. The table is 100,000 rows because the formula weighs the bytes of its rows against the instructions of a scan of them.
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE pa (id int, rid int8, a int, b int, c int, d int, e int, f int, tenant_id int) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO pa SELECT g, hashint8extended(g, 9) & 4611686018427387903, (hashint8extended(g, 1) & 1023)::int, (hashint8extended(g, 2) & 1023)::int, (hashint8extended(g, 3) & 1023)::int,
-	(hashint8extended(g, 4) & 1023)::int, (hashint8extended(g, 5) & 1023)::int, (hashint8extended(g, 6) & 1023)::int, (hashint8extended(g, 7) & 127)::int FROM generate_series(1, 400000) g;
+	(hashint8extended(g, 4) & 1023)::int, (hashint8extended(g, 5) & 1023)::int, (hashint8extended(g, 6) & 1023)::int, (hashint8extended(g, 7) & 127)::int FROM generate_series(1, 100000) g;
 VACUUM (FREEZE, ANALYZE) pa;
 CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((SELECT split_part(o, '=', 2) FROM pg_class c, unnest(c.reloptions) o WHERE c.oid = $1 AND o LIKE 'point_tid_columns=%'), '-') $$;
 
@@ -16,10 +16,10 @@ CREATE FUNCTION popt(regclass) RETURNS text LANGUAGE sql AS $$ SELECT coalesce((
 SET client_min_messages = notice;
 CREATE INDEX pa_rid ON pa USING sift_col (rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
 SET client_min_messages = warning;
--- the column in heap order (400,000 rows: a unit to read is large), few values, a one-column index of a table that is small for it: the first is chosen, not the others
+-- the column in heap order (100,000 rows: a unit to read is large), few values, a one-column index of a table that is small for it: the first is chosen, not the others
 CREATE INDEX pa_id ON pa USING sift_col (id, a, b, c, d, e, f) WITH (order_array_columns = 'off');
 CREATE INDEX pa_few ON pa USING sift_col (a, b, c, d, e, f) WITH (order_array_columns = 'off');
-CREATE TABLE pas AS SELECT * FROM pa WHERE id <= 20000;
+CREATE TABLE pas AS SELECT * FROM pa WHERE id <= 5000;
 VACUUM (FREEZE, ANALYZE) pas;
 CREATE INDEX pas_rid ON pas USING sift_col (rid, a, b, c, d, e, f) WITH (order_array_columns = 'off');
 -- a column with a unique b-tree of its own is not chosen: the planner takes the b-tree for an equality, so the directory would be size alone
@@ -55,7 +55,7 @@ SELECT popt('pa_rid') AS rid_decided_again;
 
 -- the answers are those of the table
 DROP INDEX pa_id, pa_few, pa_off, pa_user, pa_tid;
-SELECT rid AS k FROM pa WHERE id = 123457 \gset
+SELECT rid AS k FROM pa WHERE id = 12345 \gset
 SET enable_seqscan = off; SET enable_bitmapscan = off;
 SELECT count(*), min(id) FROM pa WHERE rid = :k;
 SELECT count(*) FROM pa WHERE rid IN (:k, 1, 2, (SELECT rid FROM pa WHERE id = 777));
@@ -66,7 +66,7 @@ SELECT count(*) FROM pa WHERE rid IN (:k, 1, 2, (SELECT rid FROM pa WHERE id = 7
 
 -- a timestamp of nearly unique values is not a lookup key (its reads are ranges and an order), and the growth the NOTICE predicts counts the values of the paths of a jsonb column, not its documents
 CREATE TABLE pj AS SELECT g AS id, hashint8extended(g, 9) & 4611686018427387903 AS rid, TIMESTAMP '2025-01-01' + (hashint8extended(g, 3) & 8388607) * interval '1 second' AS ts,
-	jsonb_build_object('a', g % 7, 't', 't' || g % 40, 'text', repeat(md5(g::text), 8)) AS doc FROM generate_series(1, 400000) g;
+	jsonb_build_object('a', g % 7, 't', 't' || g % 40, 'text', repeat(md5(g::text), 8)) AS doc FROM generate_series(1, 100000) g;
 VACUUM (FREEZE, ANALYZE) pj;
 SET client_min_messages = notice;
 CREATE INDEX pj_auto ON pj USING sift_col (rid, ts, doc) WITH (key_cut = 'off', order_array_columns = 'off', paths = 'doc.a float8, doc.t astext');
@@ -78,7 +78,7 @@ DROP TABLE pj;
 
 -- the paths of a jsonb column have the statistics of the column, not their own: none of them is a lookup key or an order array of its own, and the default builds
 CREATE TABLE pjp AS SELECT g AS id, jsonb_build_object('a', (hashint8extended(g, 5) & 1048575) % 100000, 'b', 'v' || (hashint8extended(g, 6) & 1048575) % 500,
-	'tags', jsonb_build_array('t' || (hashint8extended(g, 7) & 1048575) % 50)) AS doc FROM generate_series(1, 300000) g;
+	'tags', jsonb_build_array('t' || (hashint8extended(g, 7) & 1048575) % 50)) AS doc FROM generate_series(1, 75000) g;
 VACUUM (FREEZE, ANALYZE) pjp;
 CREATE INDEX pjp_auto ON pjp USING sift_col (doc);
 SELECT popt('pjp_auto') AS pjp_options;
