@@ -42,7 +42,7 @@ done
 # the context and the malloc leaks show at backend exit, after the session ended
 off=$(logsize)
 sql gate "SELECT sift._test_leak('context')" >/dev/null
-for _ in $(seq 100); do grep -q 'sift leak: memory context' "$LOG" && break; sleep 0.1; done
+wait_for "grep -q 'sift leak: memory context' '$LOG'" 10
 check "the gate fails on a sift memory context that outlives its backend" gate_fails "$off" 'sift leak: memory context "sift leaked"'
 
 # the caches a backend keeps for its life are named "sift cache ...": a backend that read the tombstone log of a column index leaves nothing else behind
@@ -51,13 +51,13 @@ sql gate "CREATE TABLE tl (id int PRIMARY KEY, g int)" "INSERT INTO tl SELECT i,
 	"CREATE INDEX tl_c ON tl USING sift_col (id, g) WITH (track_changes = 'id')" "UPDATE tl SET g = g + 1 WHERE id % 5 = 0" \
 	"SELECT count(*) FROM sift._test_col_log_entries('tl_c')" "DROP TABLE tl" >/dev/null || bail "tombstone log setup failed"
 backends() { sql gate "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()"; }
-until [[ $(backends) == 0 ]]; do sleep 0.1; done
+wait_for "[[ \$(backends) == 0 ]]" 30
 slice "$off"
 check "a backend that read a tombstone log leaves only cache contexts behind" leak_scan "$D/slice.out"
 
 sql gate "SELECT sift._test_leak('malloc')" >/dev/null
 if [[ -n $asan ]]; then
-	for _ in $(seq 100); do grep -qs sift_test_leak "$D"/asan.* && break; sleep 0.1; done
+	wait_for "grep -qs sift_test_leak '$D'/asan.*" 10
 	check "the gate fails on a malloc leak (LeakSanitizer)" asan_fails
 else
 	skip 1 "malloc leaks need the sanitizer build (SANITIZE=1)"
@@ -65,16 +65,20 @@ fi
 
 if [[ -d /proc/self ]]; then   # the memory of a process is read from /proc: not on macOS
 	# a backend whose memory keeps growing, next to an idle one: the soak's growth check tells them apart. The leak is about 300 KB a call: at
-	# 50 calls a second the 3 s window after the warmup grows far past the 8 MB threshold, even when the host slows the loop several times.
+	# 50 calls a second the leaker grows past 48 MB (six times the 8 MB threshold) in about four seconds, and the watch ends when it has; a slow host only makes it longer.
 	# The sleeps below do not hold the stderr of the test: prove reads it and would wait for them after the last test
 	PGAPPNAME=leaker psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 <<<"SELECT sift._test_leak('malloc')\\watch 0.02" &
 	leaker=$!
 	PGAPPNAME=idler psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 < <(sleep 30 2>/dev/null) &
 	idler=$!
 	app_pids() { sql gate "SELECT pid FROM pg_stat_activity WHERE application_name IN ('leaker', 'idler') ORDER BY application_name"; }
-	for _ in $(seq 100); do [[ $(app_pids | wc -l) == 2 ]] && break; sleep 0.1; done
-	leak_watch_start "$D/memory.tsv" app_pids 0.25
-	sleep 5
+	wait_for "[[ \$(app_pids | wc -l) == 2 ]]" 10
+	leaker_pid=$(sql gate "SELECT pid FROM pg_stat_activity WHERE application_name = 'leaker'")
+	# the check fits a line over the samples after the first third, whose clock is whole seconds: the watch ends when the leaker has grown 48 MB (six times the threshold) over at least
+	# four of them, with the samples the check reads
+	leaker_ready() { awk -v p="$leaker_pid" '$2 == p { n++; if (!t0) t0 = $1; t1 = $1; if (!lo || $3 < lo) lo = $3; if ($3 > hi) hi = $3 } END { exit !(n >= 12 && t1 - t0 >= 4 && (hi - lo) / 1024 >= 48) }' "$D/memory.tsv"; }
+	leak_watch_start "$D/memory.tsv" app_pids 0.05
+	wait_for leaker_ready 60
 	LEAK_QUARANTINE_MB=0 leak_watch_stop "$D/memory.tsv" >"$D/growth.out"
 	kill "$leaker" "$idler" 2>/dev/null
 	check "the growth check fails the backend that leaks, not the idle one" bash -c \
@@ -87,7 +91,7 @@ fi
 ( echo "BEGIN; CREATE TABLE held (i int); SELECT 1;"; sleep 30 ) 2>/dev/null |
 	psql -X -q -h "$D/sock" -p "$(port gate)" -U postgres -d postgres >/dev/null 2>&1 &
 holder=$!
-for _ in $(seq 100); do [[ $(sql gate "SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'") == 1 ]] && break; sleep 0.1; done
+wait_for "[[ \$(sql gate \"SELECT count(*) FROM pg_stat_activity WHERE state = 'idle in transaction'\") == 1 ]]" 10
 check "the cluster check fails on a session left in a transaction" cluster_fails "idle in transaction"
 kill "$holder" 2>/dev/null
 
@@ -102,7 +106,7 @@ temp_schema() { sql gate "SELECT relnamespace::regnamespace FROM pg_class WHERE 
 count_locks() { sql gate "SELECT count(*) FROM pg_locks WHERE relation = '$(temp_schema).leaving'::regclass AND $1"; }
 lock_count_is() { [[ $(count_locks "$1") == "$2" ]]; }
 temp_table_exists() { [[ -n $(temp_schema) ]]; }
-until_true() { for _ in $(seq 100); do "$@" && return 0; sleep 0.1; done; return 1; }
+until_true() { wait_for "$(printf "%q " "$@")" 10; }
 until_true temp_table_exists || bail "the temporary table was not created"
 ( echo "BEGIN; LOCK TABLE $(temp_schema).leaving IN ACCESS SHARE MODE;"; sleep 30 ) 2>/dev/null 7>&- | "${SESSION[@]}" >/dev/null 2>&1 7>&- &
 exit_blocker=$!
@@ -127,10 +131,10 @@ check "the cluster check waits for a backend that is still exiting" cluster_wait
 off=$(logsize)
 sql gate "SELECT pg_sleep(60)" >/dev/null 2>&1 &
 sleeper=$!
-for _ in $(seq 100); do [[ $(sql gate "SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(60)%' AND pid <> pg_backend_pid()") == 1 ]] && break; sleep 0.1; done
+wait_for "[[ \$(sql gate \"SELECT count(*) FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(60)%' AND pid <> pg_backend_pid()\") == 1 ]]" 10
 kill -KILL "$(sql gate "SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(60)%' AND pid <> pg_backend_pid()")"
 wait "$sleeper" 2>/dev/null
-for _ in $(seq 100); do grep -q 'terminated by signal' "$LOG" && break; sleep 0.1; done
+wait_for "grep -q 'terminated by signal' '$LOG'" 10
 check "the gate fails on a backend killed by a signal" gate_fails "$off" 'terminated by signal 9'
 
 if [[ -n $asan ]]; then
