@@ -661,7 +661,7 @@ SiftV6UnnestRows *
 sift_v6_unnest_rows_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Snapshot snap, SiftV6ScanStats *stats, int nfact, const SiftVecType *fact_type,
 						  int (*attr_slot) (void *arg, const SiftV6Col *c), void *attr_arg)
 {
-	UnRun	   *u = palloc0(sizeof(UnRun));
+	UnRun	   *u = sift_palloc0_aligned(UnRun, 1);
 
 	if (nfact > SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
