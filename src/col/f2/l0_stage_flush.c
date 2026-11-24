@@ -221,23 +221,47 @@ flush_and_renew(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
 	sift_stage_renew_part(st, p);
 }
 
-/* The buffer of a partition that holds the flush count is written at once; the largest buffer is when all hold the budget (checked every SIFT_BATCH_RESET_ROWS rows of a buffer, not for each row) */
+/* The partition whose buffer holds the most memory: the one a flush frees the most with */
+static SiftStagePart *
+largest_buffer(SiftTxnStage *st)
+{
+	SiftStagePart *big = &st->parts[0];
+
+	for (int i = 1; i < st->nparts; i++)
+		if (st->parts[i].rb->mem_bytes > big->rb->mem_bytes)
+			big = &st->parts[i];
+	return big;
+}
+
+/*
+ * The buffer of a partition that holds the flush count is written at once; the largest buffer when all of them hold the budget (checked for each row: the memory of the buffers is counted as rows
+ * are added). The part is written in a context of its own, which goes with it: what the write holds (the encoded granules, the dictionaries, the zones) is the size of the part, which a
+ * statement that loads a whole table would keep to its end otherwise.
+ */
 void
 sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 {
+	SiftStagePart *victim = p->rb->n >= (int) st->bulk_rows ? p : largest_buffer(st);
+	MemoryContext scratch;
+	MemoryContext caller;
 	SiftManifestRead now;
-	SiftStagePart *big = p;
+	bool		same;
 
-	if (p->rb->n < (int) st->bulk_rows && ((p->rb->n % SIFT_BATCH_RESET_ROWS) != 0 || sift_stage_mem(st) < st->bulk_budget))
+	if (p->rb->n < (int) st->bulk_rows && st->mem_bytes < st->bulk_budget)
 		return;
-	for (int i = 0; i < st->nparts; i++)
-		if (st->parts[i].rb->n > big->rb->n)
-			big = &st->parts[i];
+	scratch = sift_mem_allocset_create(TopTransactionContext, "sift stage bulk flush");
+	caller = MemoryContextSwitchTo(scratch);
 	now = sift_manifest_read_range(rel, NULL, NULL);
-	if (!sift_manifest_same_topology(&now, &st->routing))
-		sift_stage_flush_rows(rel, st, false);
+	same = sift_manifest_same_topology(&now, &st->routing);
+	if (same)
+		flush_part(rel, st, victim, NULL);
+	MemoryContextSwitchTo(caller);
+	sift_mem_release_os(MemoryContextMemAllocated(scratch, true));
+	MemoryContextDelete(scratch);
+	if (same)
+		sift_stage_renew_part(st, victim);
 	else
-		flush_and_renew(rel, st, big, NULL);
+		sift_stage_flush_rows(rel, st, false);
 }
 
 /* The run of the deletes of the partition: the runs ascend by the lower bound of their entry, as the parts do */
@@ -333,30 +357,37 @@ cancel_staged(SiftTxnStage *st)
 	pfree(c.hit);
 }
 
-/* The rows of the buffers again by the partitions of the manifest as it is now (a split or a merge changed it since they were routed) */
+/* The rows of the buffers again by the partitions of the manifest as it is now (a split or a merge changed it since they were routed), one old buffer at a time: it is freed once its rows are in the new ones, so the rows are never held three times */
 static void
 reroute(SiftTxnStage *st, const SiftManifestRead *now)
 {
-	SiftRowBuf *all = sift_rowbuf_new(&st->spec);
-	MemoryContext old;
+	SiftStagePart *old = st->parts;
+	int			nold = st->nparts;
+	MemoryContext prev;
 
-	for (int i = 0; i < st->nparts; i++)
-		for (int r = 0; r < st->parts[i].rb->n; r++)
-			sift_rowbuf_copy_row(all, st->parts[i].rb, r, st->parts[i].rb->xmin[r], st->parts[i].rb->cmin[r], st->parts[i].rb->subxid[r]);
+	st->parts = NULL;
+	st->nparts = 0;
+	st->cap_parts = 0;
 	sift_stage_reset_parts(st);
-	old = MemoryContextSwitchTo(TopTransactionContext);
+	prev = MemoryContextSwitchTo(TopTransactionContext);
 	pfree(st->routing.entries);
 	st->routing = *now;
 	st->routing.entries = memcpy(palloc(now->n * sizeof(SiftPartitionEntry)), now->entries, now->n * sizeof(SiftPartitionEntry));
-	MemoryContextSwitchTo(old);
-	for (int r = 0; r < all->n; r++)
+	MemoryContextSwitchTo(prev);
+	for (int i = 0; i < nold; i++)
 	{
-		SiftStagePart *p = sift_stage_part_get(st, &now->entries[sift_stage_route(now, all->keys[r])]);
+		const SiftRowBuf *from = old[i].rb;
 
-		sift_rowbuf_copy_row(p->rb, all, r, all->xmin[r], all->cmin[r], all->subxid[r]);
-		sift_stage_row_added(st, p, all->tid[r]);
+		for (int r = 0; r < from->n; r++)
+		{
+			SiftStagePart *p = sift_stage_part_get(st, &now->entries[sift_stage_route(now, from->keys[r])]);
+
+			sift_rowbuf_copy_row(p->rb, from, r, from->xmin[r], from->cmin[r], from->subxid[r]);
+			sift_stage_row_added(st, p, from->tid[r]);
+		}
+		sift_rowbuf_free(old[i].rb);
 	}
-	sift_rowbuf_free(all);
+	pfree(old);
 }
 
 /*
@@ -431,6 +462,7 @@ sift_stage_flush_rows(Relation rel, SiftTxnStage *st, bool at_end)
 	write_stage(rel, st, at_end);
 	sift_cdi_cache_staged_changed(st);
 	MemoryContextSwitchTo(caller);
+	sift_mem_release_os(MemoryContextMemAllocated(scratch, true));
 	MemoryContextDelete(scratch);
 	if (st->host_stage != NULL)
 		st->host_event(rel, st, at_end ? SIFT_STAGE_FLUSH_AT_END : SIFT_STAGE_FLUSH, 0, 0);
