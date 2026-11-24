@@ -20,6 +20,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
+#include "storage/lmgr.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -48,8 +49,10 @@ PG_FUNCTION_INFO_V1(sift_test_v1_match);
 static const SiftStoreOps *
 ops_of(Oid relid, bool is_table)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, is_table);
+	const SiftStoreOps *ops;
 
+	LockRelationOid(relid, AccessShareLock);
+	ops = sift_store_ops_for_oid(relid, is_table);
 	if (ops == NULL || strcmp(ops->name, "v1") != 0)
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("Format 1 does not own relation %u", relid)));
 	return ops;
