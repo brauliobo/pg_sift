@@ -29,6 +29,7 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_dim_keys.h"
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_join_push.h"
 #include "col/am.h"
@@ -48,6 +49,7 @@ typedef struct PushJoin
 {
 	RelOptInfo *fact;
 	RelOptInfo *dim;
+	Path	   *dim_path;		/* the plan the small side is read with */
 	Var		   *dim_var;
 	AttrNumber	fact_attno;
 	Oid			opno;
@@ -279,7 +281,7 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	double		groups;
 	Cost		open,
 				scan;
-	const Path *dim_path = j->dim->cheapest_total_path;
+	const Path *dim_path = j->dim_path;
 
 	if (!compile_fact(root, j, out, extra, ix, &int_col, &spec, &scan_tlist) || OidIsValid(spec.text_indexoid))
 		return;
@@ -319,6 +321,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 		if (j.fact == NULL || j.dim == NULL || !plain_table(root, j.fact) || !plain_table(root, j.dim) || j.dim->cheapest_total_path == NULL ||
 			j.dim->rows > PUSH_ROWS_MAX || !find_join(root, &j) || !(j.semi || dim_unique(&j)))
 			continue;
+		j.dim_path = sift_v6_dim_path(root, j.fact, j.dim, j.semi ? SV6J_SEMI_EQUI : SV6J_INNER_EQUI, 1, &j.fact_attno, (const Var *const *) &j.dim_var);
 		add_push_path(root, &j, out, extra, NULL);
 		foreach_ptr(IndexOptInfo, ix, j.fact->indexlist)
 			add_push_path(root, &j, out, extra, ix);

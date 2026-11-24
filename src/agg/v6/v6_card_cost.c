@@ -315,9 +315,9 @@ scan_parts(const ScanBytes *b)
 }
 
 Cost
-sift_v6_dim_cost(const RelOptInfo *rel)
+sift_v6_dim_cost(const Path *child)
 {
-	const Path *child = rel->cheapest_total_path;
+	const RelOptInfo *rel = child->parent;
 	Cost		spc_seq;
 
 	if (child->pathtype != T_SeqScan)

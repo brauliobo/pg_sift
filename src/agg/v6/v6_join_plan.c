@@ -23,6 +23,7 @@
 
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_dim_keys.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_exists_plan.h"
 #include "agg/v6/v6_join_plan.h"
@@ -590,12 +591,31 @@ lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startu
 	*startup = 0;
 	for (int d = 0; d < sh->nd; d++)
 	{
-		const Cost	read = sift_v6_dim_cost(sh->dim[d].rel);
+		const Cost	read = sift_v6_dim_cost(sh->dim[d].path);
 
 		*startup += read;
-		total += read + sh->dim[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
+		total += read + sh->dim[d].path->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
 	}
 	return total;
+}
+
+/* the plan each dimension is read with: its cheapest, or the one that probes it by the constant keys of the fact table's filter */
+static void
+plan_dims(PlannerInfo *root, SiftV6JoinShape *sh)
+{
+	for (int d = 0; d < sh->nd; d++)
+	{
+		SiftV6JoinDim *jd = &sh->dim[d];
+		AttrNumber	probe_attno[SIFT_STAR_MAX_KEYS];
+
+		for (int k = 0; k < jd->nkeys; k++)
+		{
+			const Var  *v = sift_v6_plain_var(jd->probe[k]);
+
+			probe_attno[k] = v != NULL && v->varno == sh->fact->relid ? v->varattno : 0;
+		}
+		jd->path = bms_membership(jd->rels) == BMS_SINGLETON && !jd->lateral ? sift_v6_dim_path(root, sh->fact, jd->rel, jd->mode, jd->nkeys, probe_attno, jd->key) : jd->rel->cheapest_total_path;
+	}
 }
 
 static void
@@ -615,7 +635,7 @@ try_source(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Gro
 		if (sh->elem != NULL)
 			xt += sift_v6_unnest_pairs_cost(&p, input_rel);
 		for (int d = 0; d < sh->nd; d++)
-			children = lappend(children, sh->dim[d].rel->cheapest_total_path);
+			children = lappend(children, sh->dim[d].path);
 		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, children, xs, xt, input_rel->rows);
 	}
 	sift_v6_source_close(rel, src->is_table, NoLock);
@@ -630,6 +650,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 
 	if (!sift_v6_plan_fact_ok(root, fact) || !sift_v6_rel_has_source(root, fact) || (elem != NULL && !sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte)) || !shape_of(root, base, &sh))
 		return;
+	plan_dims(root, &sh);
 	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 		try_source(root, input_rel, output_rel, extra, group_exprs, &sh, &src[i]);

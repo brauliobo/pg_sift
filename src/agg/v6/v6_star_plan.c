@@ -22,12 +22,14 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_dim_keys.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_source_rel.h"
 
 typedef struct StarDim
 {
 	RelOptInfo *rel;
+	Path	   *path;			/* the plan the node reads it with */
 	bool		left;			/* the right side of a left join of the query */
 	int			nkeys;
 	const Var  *fvar[SIFT_STAR_MAX_KEYS];
@@ -314,6 +316,20 @@ star_add(V6Plan *p, const StarGoal *goal, double input_rows, List *children, Cos
 		sift_v6_add_join_path(p, goal->group_exprs, (List *) goal->extra->havingQual, children, startup, total, input_rows);
 }
 
+/* the plan each dimension is read with: its cheapest, or the one that probes it by the constant keys of the fact table's filter */
+static void
+plan_dims(PlannerInfo *root, const RelOptInfo *fact, StarDim *dims, int nd)
+{
+	for (int d = 0; d < nd; d++)
+	{
+		AttrNumber	probe_attno[SIFT_STAR_MAX_KEYS];
+
+		for (int k = 0; k < dims[d].nkeys; k++)
+			probe_attno[k] = dims[d].fvar[k]->varattno;
+		dims[d].path = sift_v6_dim_path(root, fact, dims[d].rel, dims[d].left ? SV6J_LEFT_EQUI : SV6J_INNER_EQUI, dims[d].nkeys, probe_attno, dims[d].dvar);
+	}
+}
+
 static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, const StarGoal *goal)
 {
@@ -342,6 +358,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	for (int d = 0; d < nd; d++)
 		if (dims[d].nkeys == 0)
 			return;
+	plan_dims(root, fact, dims, nd);
 	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 	{
@@ -355,11 +372,11 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 		{
 			for (int d = 0; d < nd; d++)
 			{
-				Path	   *child = dims[d].rel->cheapest_total_path;
+				Path	   *child = dims[d].path;
 
 				children = lappend(children, child);
-				xs += sift_v6_dim_cost(dims[d].rel);
-				xt += sift_v6_dim_cost(dims[d].rel) + dims[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
+				xs += sift_v6_dim_cost(child);
+				xt += sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
 			}
 			star_add(&p, goal, input_rel->rows, children, xs, xt);
 		}
