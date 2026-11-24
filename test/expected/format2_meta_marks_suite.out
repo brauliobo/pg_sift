@@ -382,21 +382,21 @@ SELECT sift._test_f2_check('t_idx');
 
 -- Sections: written sorted by tag, read back with their checksums, an unknown optional tag skipped, an unknown required tag refused
 SELECT sift._test_f2_sections('t_idx', false, 100, 1000, 20000);
-                                       _test_f2_sections                                       
------------------------------------------------------------------------------------------------
- sections=5 verified=5 unknown_skipped=1 extents=1 inline=1 indirect_pages=0 inline_sections=2
+                                              _test_f2_sections                                               
+--------------------------------------------------------------------------------------------------------------
+ sections=5 verified=5 unknown_skipped=1 extents=1 inline=1 indirect_pages=0 inline_sections=2 zones_inline=1
 (1 row)
 
 SELECT sift._test_f2_sections('t_idx', false, 1, 1, 20000);
-                                       _test_f2_sections                                       
------------------------------------------------------------------------------------------------
- sections=5 verified=5 unknown_skipped=1 extents=3 inline=1 indirect_pages=1 inline_sections=2
+                                              _test_f2_sections                                               
+--------------------------------------------------------------------------------------------------------------
+ sections=5 verified=5 unknown_skipped=1 extents=3 inline=1 indirect_pages=1 inline_sections=2 zones_inline=1
 (1 row)
 
 SELECT sift._test_f2_sections('t_idx', false, 0, 1, 8152 * 1017);
-                                        _test_f2_sections                                         
---------------------------------------------------------------------------------------------------
- sections=5 verified=5 unknown_skipped=1 extents=1018 inline=0 indirect_pages=2 inline_sections=2
+                                                _test_f2_sections                                                
+-----------------------------------------------------------------------------------------------------------------
+ sections=5 verified=5 unknown_skipped=1 extents=1018 inline=0 indirect_pages=2 inline_sections=2 zones_inline=1
 (1 row)
 
 SELECT regexp_replace(expect('SELECT sift._test_f2_sections(''t_idx'', true, 1, 1, 20000)'), 'part [0-9]+', 'part N');
@@ -1398,7 +1398,7 @@ SELECT n, nvalid, sift._test_f2_sparse(n, nvalid) FROM (VALUES (8192, 0), (8192,
  8192 |     19 | validity=NONNULL_SPARSE validity_bytes=40 chunk_bytes=136 nonnull=19 ints=ok rows=ok cap=ok vec=ok
  8192 |    512 | validity=NONNULL_SPARSE validity_bytes=1032 chunk_bytes=1608 nonnull=512 ints=ok rows=ok cap=ok vec=ok
  8192 |    513 | validity=BITMAP validity_bytes=1024 chunk_bytes=1600 nonnull=513 ints=ok rows=ok cap=ok vec=ok
- 8192 |   8180 | validity=NULL_SPARSE validity_bytes=32 chunk_bytes=216 nonnull=8180 ints=ok rows=ok cap=ok vec=ok
+ 8192 |   8180 | validity=NULL_SPARSE validity_bytes=32 chunk_bytes=1176 nonnull=8180 ints=ok rows=ok cap=ok vec=ok
 (6 rows)
 
 -- A key that the rows of a granule all have, none has, or have but for a few, and the document shapes that hold it: the bits kept are the smallest of a list of the rows that have
@@ -1410,9 +1410,9 @@ FROM (VALUES (8192, 8192, 0, 0, 0, false), (8192, 0, 0, 0, 0, false), (8192, 800
 ------+--------+--------+-----------+----------+---------------+-----------------------------------------------------------------------------------------------------------------------------
  8192 |   8192 |      0 |         0 |        0 | f             | key=ALL_PRESENT enc=INT_DELTA chunk_bytes=120 key_bytes=0 present=8192 decode=ok tags=ok slices(zero,one,bits)=0,5,0
  8192 |      0 |      0 |         0 |        0 | f             | key=ALL_ABSENT enc=ALL_NULL chunk_bytes=0 key_bytes=0 present=0 decode=ok tags=ok slices(zero,one,bits)=5,0,0
- 8192 |   8000 |      0 |         0 |        0 | f             | key=EQ_VALID enc=INT_DELTA chunk_bytes=1160 key_bytes=0 present=8000 decode=ok tags=ok slices(zero,one,bits)=0,0,5
+ 8192 |   8000 |      0 |         0 |        0 | f             | key=EQ_VALID enc=INT_DELTA chunk_bytes=2560 key_bytes=0 present=8000 decode=ok tags=ok slices(zero,one,bits)=0,0,5
  8192 |    100 |      3 |         2 |        1 | f             | key=MASK_ARRAY16 enc=INT_FOR chunk_bytes=752 key_bytes=224 present=106 decode=ok tags=ok slices(zero,one,bits)=0,0,5
- 8192 |   8100 |     40 |        20 |       10 | f             | key=MASK_NEG_ARRAY16 enc=INT_DELTA chunk_bytes=1176 key_bytes=56 present=8170 decode=ok tags=ok slices(zero,one,bits)=0,1,4
+ 8192 |   8100 |     40 |        20 |       10 | f             | key=MASK_NEG_ARRAY16 enc=INT_DELTA chunk_bytes=1872 key_bytes=56 present=8170 decode=ok tags=ok slices(zero,one,bits)=0,1,4
  8192 |   4000 |      3 |         2 |        1 | t             | key=EQ_VALID enc=KEY_PRESENT chunk_bytes=1024 key_bytes=0 present=4006 decode=ok tags=ok slices(zero,one,bits)=0,0,5
  8192 |   3000 |      0 |         0 |        0 | f             | key=EQ_VALID enc=INT_DELTA chunk_bytes=3024 key_bytes=0 present=3000 decode=ok tags=ok slices(zero,one,bits)=0,0,5
  8192 |   4000 |    100 |       100 |      100 | f             | key=MASK_BITMAP enc=INT_DELTA chunk_bytes=5184 key_bytes=1032 present=4300 decode=ok tags=ok slices(zero,one,bits)=0,0,5
@@ -1459,10 +1459,10 @@ SELECT scans();
  0 exact, 0 recheck, 5 skipped, 0 read, 0 sparse
 (1 row)
 
-SELECT idx_rows('SELECT * FROM sp WHERE s IS NOT NULL') AS s_not_null, count(*) AS heap FROM sp WHERE s IS NOT NULL;
- s_not_null | heap 
-------------+------
-        100 |  100
+SELECT idx_rows('SELECT * FROM sp WHERE s IS NOT NULL') AS s_not_null;
+ s_not_null 
+------------
+        100
 (1 row)
 
 SELECT scans();
@@ -1471,16 +1471,28 @@ SELECT scans();
  100 exact, 0 recheck, 0 skipped, 5 read, 5 sparse
 (1 row)
 
-SELECT idx_rows('SELECT * FROM sp WHERE s IS NULL') AS s_null, count(*) AS heap FROM sp WHERE s IS NULL;
- s_null | heap  
---------+-------
-  39900 | 39900
+SELECT count(*) AS heap FROM sp WHERE s IS NOT NULL;
+ heap 
+------
+  100
+(1 row)
+
+SELECT idx_rows('SELECT * FROM sp WHERE s IS NULL') AS s_null;
+ s_null 
+--------
+  39900
 (1 row)
 
 SELECT scans();
-                        scans                         
-------------------------------------------------------
- 79800 exact, 0 recheck, 0 skipped, 10 read, 0 sparse
+                        scans                        
+-----------------------------------------------------
+ 39900 exact, 0 recheck, 0 skipped, 5 read, 0 sparse
+(1 row)
+
+SELECT count(*) AS heap FROM sp WHERE s IS NULL;
+ heap  
+-------
+ 39900
 (1 row)
 
 SELECT f2_same('SELECT id FROM sp WHERE s IS NOT NULL') AS s_not_null, f2_same('SELECT id FROM sp WHERE s IS NULL AND g = 3') AS s_null_g3;

@@ -701,10 +701,12 @@ SELECT idx_rows('SELECT * FROM sp WHERE z IS NULL') AS z_null;
 SELECT scans();
 SELECT idx_rows('SELECT * FROM sp WHERE z IS NOT NULL') AS z_not_null;
 SELECT scans();
-SELECT idx_rows('SELECT * FROM sp WHERE s IS NOT NULL') AS s_not_null, count(*) AS heap FROM sp WHERE s IS NOT NULL;
+SELECT idx_rows('SELECT * FROM sp WHERE s IS NOT NULL') AS s_not_null;
 SELECT scans();
-SELECT idx_rows('SELECT * FROM sp WHERE s IS NULL') AS s_null, count(*) AS heap FROM sp WHERE s IS NULL;
+SELECT count(*) AS heap FROM sp WHERE s IS NOT NULL;
+SELECT idx_rows('SELECT * FROM sp WHERE s IS NULL') AS s_null;
 SELECT scans();
+SELECT count(*) AS heap FROM sp WHERE s IS NULL;
 SELECT f2_same('SELECT id FROM sp WHERE s IS NOT NULL') AS s_not_null, f2_same('SELECT id FROM sp WHERE s IS NULL AND g = 3') AS s_null_g3;
 SELECT f2_same('SELECT id FROM sp WHERE z IS NULL AND s IS NOT NULL') AS both;
 
