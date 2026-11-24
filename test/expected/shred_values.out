@@ -119,22 +119,22 @@ SELECT * FROM sh('{"items":[{"category":"x","kind":"p","qty":1},{"category":"x",
  col  | items[].category |      0 |   0 |     | value    | x
  col  | items[].category |      0 |   1 |     | value    | x
  col  | items[].category |      0 |   2 |     | value    | y
- col  | items[].category |      0 |   3 |     | absent   | 
- col  | items[].category |      0 |   4 |     | absent   | 
+ col  | items[].category |      0 |   3 |     | overflow | 
+ col  | items[].category |      0 |   4 |     | overflow | 
  col  | items[].category |      0 |   5 |     | overflow | 
  col  | items[].category |      0 |   6 |     | absent   | 
  col  | items[].kind     |      0 |   0 |     | value    | p
  col  | items[].kind     |      0 |   1 |     | value    | q
  col  | items[].kind     |      0 |   2 |     | value    | p
- col  | items[].kind     |      0 |   3 |     | absent   | 
- col  | items[].kind     |      0 |   4 |     | absent   | 
+ col  | items[].kind     |      0 |   3 |     | overflow | 
+ col  | items[].kind     |      0 |   4 |     | overflow | 
  col  | items[].kind     |      0 |   5 |     | overflow | 
  col  | items[].kind     |      0 |   6 |     | absent   | 
  col  | items[].qty      |      0 |   0 |     | value    | 1
  col  | items[].qty      |      0 |   1 |     | absent   | 
  col  | items[].qty      |      0 |   2 |     | value    | 3
- col  | items[].qty      |      0 |   3 |     | absent   | 
- col  | items[].qty      |      0 |   4 |     | absent   | 
+ col  | items[].qty      |      0 |   3 |     | overflow | 
+ col  | items[].qty      |      0 |   4 |     | overflow | 
  col  | items[].qty      |      0 |   5 |     | overflow | 
  col  | items[].qty      |      0 |   6 |     | absent   | 
  list | items[]          |      0 |   0 |     | value    | 7
@@ -218,16 +218,18 @@ SELECT * FROM sh('{"metrics":{"cpu":0.5,"io":2,"net":null,"mem":"high","disk":[1
 (7 rows)
 
 SELECT * FROM sh('{"metrics":{"a":{"n":1,"m":"x"},"b":{"n":2},"c":3}}', 'metrics.*{n int4, m text}');
- kind |    path     | parent | ord | key | state  | val 
-------+-------------+--------+-----+-----+--------+-----
- col  | metrics.*.n |      0 |   0 | a   | value  | 1
- col  | metrics.*.n |      0 |   1 | b   | value  | 2
- col  | metrics.*.n |      0 |   2 | c   | absent | 
- col  | metrics.*.m |      0 |   0 | a   | value  | x
- col  | metrics.*.m |      0 |   1 | b   | absent | 
- col  | metrics.*.m |      0 |   2 | c   | absent | 
- list | metrics.*   |      0 |   0 |     | value  | 3
-(7 rows)
+ kind |    path     | parent | ord | key |  state   | val 
+------+-------------+--------+-----+-----+----------+-----
+ col  | metrics.*.n |      0 |   0 | a   | value    | 1
+ col  | metrics.*.n |      0 |   1 | b   | value    | 2
+ col  | metrics.*.n |      0 |   2 | c   | overflow | 
+ col  | metrics.*.m |      0 |   0 | a   | value    | x
+ col  | metrics.*.m |      0 |   1 | b   | absent   | 
+ col  | metrics.*.m |      0 |   2 | c   | overflow | 
+ list | metrics.*   |      0 |   0 |     | value    | 3
+ ovf  | metrics.*.n |        |     |     | overflow | 1
+ ovf  | metrics.*.m |        |     |     | overflow | 1
+(9 rows)
 
 SELECT * FROM sh('{"metrics":[1]}', 'metrics.* int4');
  kind |   path    | parent | ord | key |  state   | val 
