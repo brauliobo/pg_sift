@@ -57,6 +57,7 @@ mem-alloc-hot	src/agg/rows.c	2	a census or a budget check; the call is not per r
 mem-alloc-hot	src/agg/spill/stream.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/f2/f2_cache.c	1	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/f2/f2_gbuf.c	1	a census or a budget check; the call is not per row
+mem-alloc-hot	src/col/f2/scan/rescan_cache.c	1	once for each granule the cache fills (a miss that decodes the granule), not for each row
 mem-alloc-hot	src/col/v1/build/run.c	2	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/v1/scan/gmem.c	3	a census or a budget check; the call is not per row
 mem-alloc-hot	src/col/v1/tomblog.c	1	a census or a budget check; the call is not per row
@@ -88,6 +89,7 @@ qsort-in-loop	src/col/f2/rowbuf_cluster.c	2	one sort of a fresh temporary array 
 qsort-in-loop	src/col/scope_v6/assemble.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/col/scope_v6/topk.c	1	one sort of a fresh temporary array per outer bucket
 qsort-in-loop	src/core/space.c	1	one sort of a fresh temporary array per outer bucket
+qsort-in-loop	src/table/f2/f2_am.c	1	one sort of the addresses of a window of the scan, the windows are disjoint: the total is N log of the window
 repalloc-additive	sqlite/auxfn_facets.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/agg/part/tests.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
 repalloc-additive	src/agg/stream_exec.c	1	a bounded array or a sentinel slot; Spec 66 ON-RES tracks the growth sites
@@ -114,4 +116,3 @@ spinlock-loop	src/col/v1/wbuf/arena.c	5	a fixed number of slots of a shared tabl
 spinlock-loop	src/core/progress.c	2	a fixed number of slots of a shared table
 spinlock-loop	src/core/quarantine.c	2	a fixed number of slots of a shared table
 spinlock-loop	src/core/quarantine_sql.c	2	a fixed number of slots of a shared table
-mem-alloc-hot	src/col/f2/scan/rescan_cache.c	1	once for each granule the cache fills (a miss that decodes the granule), not for each row

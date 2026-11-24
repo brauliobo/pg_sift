@@ -27,6 +27,8 @@
 #include "utils/snapmgr.h"
 #include "utils/tuplesort.h"
 
+#include "core/cmp.h"
+#include "core/memtrack.h"
 #include "core/shm_manifest.h"
 #include "core/compat.h"
 #include "col/f2/f2_cache.h"
@@ -274,59 +276,70 @@ sift_tbl_f2_index_build_range_scan(Relation table_rel, Relation index_rel, struc
 	return reltuples;
 }
 
-/* The visible rows sorted by address and merged with the addresses the index has: one pass of N log N where a scan that probes the index for each row is N squared */
+/*
+ * The visible rows of the table by windows of virtual blocks (a window holds at most the addresses a half of the maintenance budget holds, as every block holds a bounded number of
+ * rows), each sorted by address and merged with the addresses the index has, which come in the order of the sort of PostgreSQL: one pass of N log N with no temp file where a scan that probes the index for each row is N squared.
+ * A row that does not satisfy the predicate of the index is not in the window: the index never held it.
+ */
 void
 sift_tbl_f2_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info, Snapshot snapshot, struct ValidateIndexState *state)
 {
-	Tuplesortstate *mine = tuplesort_begin_datum(INT8OID, Int8LessOperator, InvalidOid, false, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	const uint64 nvblocks = sift_tbl_f2_nvblocks(table_rel);
+	const uint64 max_addrs = Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2) / sizeof(int64), SIFT_TBL_ROWS_PER_VBLOCK);
+	const uint64 step = max_addrs / SIFT_TBL_ROWS_PER_VBLOCK;
+	int64	   *window = palloc(max_addrs * sizeof(int64));
 	TableScanDesc scan = sift_table_beginscan(table_rel, snapshot, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(table_rel, NULL);
 	EState	   *estate = CreateExecutorState();
 	ExprContext *econtext = GetPerTupleExprContext(estate);
 	ExprState  *predicate = ExecPrepareQual(index_info->ii_Predicate, estate);
-	Datum		idx_val = 0,
-				mine_val;
+	Datum		idx_val = 0;
 	bool		idx_null,
-				mine_null,
-				have_idx;
+				have_idx = tuplesort_getdatum(state->tuplesort, true, false, &idx_val, &idx_null, NULL);
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
 
 	econtext->ecxt_scantuple = slot;
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	for (uint64 from = 0; from < nvblocks; from += step)
 	{
-		CHECK_FOR_INTERRUPTS();
-		state->htups += 1;
-		tuplesort_putdatum(mine, Int64GetDatum((int64) itemptr_encode(&slot->tts_tid)), false);
+		ItemPointerData lo,
+					hi;
+		uint64		n = 0;
+
+		ItemPointerSet(&lo, (BlockNumber) from, FirstOffsetNumber);
+		ItemPointerSet(&hi, (BlockNumber) Min(from + step - 1, nvblocks - 1), SIFT_TBL_ROWS_PER_VBLOCK);
+		sift_tbl_f2_scan_set_tidrange(scan, &lo, &hi);
+		while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		{
+			CHECK_FOR_INTERRUPTS();
+			state->htups += 1;
+			MemoryContextReset(econtext->ecxt_per_tuple_memory);
+			if (predicate == NULL || ExecQual(predicate, econtext))
+				window[n++] = (int64) itemptr_encode(&slot->tts_tid);
+		}
+		qsort(window, n, sizeof(int64), sift_cmp_i64);
+		for (uint64 i = 0; i < n; i++)
+		{
+			ItemPointerData tid;
+
+			for (; have_idx && DatumGetInt64(idx_val) < window[i]; have_idx = tuplesort_getdatum(state->tuplesort, true, false, &idx_val, &idx_null, NULL))
+				state->itups += 1;
+			if (have_idx && DatumGetInt64(idx_val) == window[i])
+				continue;
+			itemptr_decode(&tid, window[i]);
+			if (!table_tuple_fetch_row_version(table_rel, &tid, snapshot, slot))
+				continue;
+			MemoryContextReset(econtext->ecxt_per_tuple_memory);
+			FormIndexDatum(index_info, slot, estate, values, isnull);
+			index_insert(index_rel, values, isnull, &tid, table_rel, index_info->ii_Unique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO, false, index_info);
+			state->tups_inserted += 1;
+		}
 	}
 	table_endscan(scan);
-	tuplesort_performsort(mine);
-	have_idx = tuplesort_getdatum(state->tuplesort, true, false, &idx_val, &idx_null, NULL);
-	while (tuplesort_getdatum(mine, true, false, &mine_val, &mine_null, NULL))
-	{
-		ItemPointerData tid;
-
-		CHECK_FOR_INTERRUPTS();
-		while (have_idx && DatumGetInt64(idx_val) < DatumGetInt64(mine_val))
-		{
-			state->itups += 1;
-			have_idx = tuplesort_getdatum(state->tuplesort, true, false, &idx_val, &idx_null, NULL);
-		}
-		if (have_idx && DatumGetInt64(idx_val) == DatumGetInt64(mine_val))
-			continue;
-		itemptr_decode(&tid, DatumGetInt64(mine_val));
-		if (!table_tuple_fetch_row_version(table_rel, &tid, snapshot, slot))
-			continue;
-		MemoryContextReset(econtext->ecxt_per_tuple_memory);
-		if (predicate != NULL && !ExecQual(predicate, econtext))
-			continue;
-		FormIndexDatum(index_info, slot, estate, values, isnull);
-		index_insert(index_rel, values, isnull, &tid, table_rel, index_info->ii_Unique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO, false, index_info);
-		state->tups_inserted += 1;
-	}
-	tuplesort_end(mine);
 	ExecDropSingleTupleTableSlot(slot);
 	FreeExecutorState(estate);
+	pfree(window);
+	sift_mem_release_os(max_addrs * sizeof(int64));
 	index_info->ii_ExpressionsState = NIL;
 	index_info->ii_PredicateState = NULL;
 }
