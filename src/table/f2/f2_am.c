@@ -261,11 +261,9 @@ sift_tbl_f2_index_build_range_scan(Relation table_rel, Relation index_rel, struc
 		if (progress)
 			pgstat_progress_update_param(PROGRESS_CREATEIDX_TUPLES_DONE, (int64) reltuples);
 	}
+	table_endscan(scan);
 	if (own_scan)
-	{
-		table_endscan(scan);
 		UnregisterSnapshot(snapshot);
-	}
 	ExecDropSingleTupleTableSlot(slot);
 	FreeExecutorState(estate);
 	index_info->ii_ExpressionsState = NIL;
