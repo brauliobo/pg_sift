@@ -541,7 +541,7 @@ par_fold_heap_rows(UnRun *u, const SiftF2ExtBatch *b, uint64 *mask)
 		const uint64 heap = es->layout.n_parents < (uint32) b->n ? mask[w] : mask[w] & es->poison[w];
 
 		mask[w] &= ~heap;
-		for (uint64 bits = heap; !u->redo && bits != 0; bits &= bits - 1)
+		for (uint64 bits = heap; u->pulled > u->seen && bits != 0; bits &= bits - 1)
 			sift_f2_unnest_emit_heap_row(u, b->col, b->tid[w * 64 + __builtin_ctzll(bits)], w * 64 + __builtin_ctzll(bits));
 	}
 }
@@ -555,10 +555,11 @@ par_next_batch(void *arg, const SiftF2ExtBatch **bp, uint64 *mask)
 	{
 		uint64		any = 0;
 
-		u->stats->batches += !u->redo;
+		u->pulled++;
+		u->stats->batches += u->pulled > u->seen;
 		if (!par_select_rows(u, *bp, mask))
 			continue;
-		u->stats->rows += u->redo ? 0 : u->bs.n_active;
+		u->stats->rows += u->pulled > u->seen ? u->bs.n_active : 0;
 		par_fold_heap_rows(u, *bp, mask);
 		for (int w = 0; w < SIFT_VEC_WORDS; w++)
 			any |= mask[w];
@@ -596,7 +597,8 @@ par_redo(void *arg)
 
 	sift_f2_pull_end(u->pull);
 	u->pull = sift_f2_pull_begin(u->index, u->snap, &u->ps);
-	u->redo = true;
+	u->seen = u->pulled;
+	u->pulled = 0;
 }
 
 /* true: every row is in the groups of g */

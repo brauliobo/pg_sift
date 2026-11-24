@@ -135,7 +135,8 @@ typedef struct UnRun
 	SiftF2PullSpec ps;
 	Snapshot	snap;
 	SiftUnPairs *pairs;			/* the plain unnest the compute threads fold: the pairs of the leader's own folds (par_plain) */
-	bool		redo;			/* the batches again, for the threads' share: their rows of the heap and their counts are in the groups already */
+	uint32		pulled;			/* the batches of the index the pass has read */
+	uint32		seen;			/* the batches of the first pass (0 in it): those of the batches again that it read have their rows of the heap and their counts in the groups already */
 	int32	   *month_key;
 	int32	   *month_val;
 	uint32	   *pidx;
