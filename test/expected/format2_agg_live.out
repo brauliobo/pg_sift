@@ -7,6 +7,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.test_create_format1 = off;
+-- the tables are tiny: the open of the scan would cost more than the heap plans these tests are not about
+SET cpu_operator_cost = 0.00001;
 CREATE TABLE lv (id int PRIMARY KEY, g int, t text, v bigint, f float8, d date, ts timestamptz, b bool, n int) WITH (autovacuum_enabled = false);
 INSERT INTO lv SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'key' || (i % 13) || repeat('x', i % 20) END, CASE WHEN i % 17 = 0 THEN NULL ELSE i * 3 END,
 	i * 0.5, DATE '2020-01-01' + (i % 400), TIMESTAMPTZ '2021-01-01' + i * interval '1 hour', i % 3 = 0, i % 100 FROM generate_series(1, 30000) i;
@@ -215,10 +217,10 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT g, count(*), sum(n) FROM mix GROUP BY g',
 	'SELECT g, count(*) FROM mix WHERE n > 20 GROUP BY ROLLUP (g)'
 ]) q;
-                                  same                                  
-------------------------------------------------------------------------
- same node SELECT g, count(*), sum(n) FROM mix GROUP BY g
- same node SELECT g, count(*) FROM mix WHERE n > 20 GROUP BY ROLLUP (g)
+                                   same                                   
+--------------------------------------------------------------------------
+ same normal SELECT g, count(*), sum(n) FROM mix GROUP BY g
+ same normal SELECT g, count(*) FROM mix WHERE n > 20 GROUP BY ROLLUP (g)
 (2 rows)
 
 DROP INDEX mix_v2;
@@ -690,7 +692,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT count(*), count(amount), sum(amount), avg(amount), min(amount), max(amount) FROM nm
  same node SELECT g, sum(amount), avg(amount), min(amount), max(amount), sum(w), max(w) FROM nm GROUP BY g
  same node SELECT g, sum(amount) FROM nm WHERE v > 15000 GROUP BY g
- same normal SELECT g, sum(amount) FROM nm WHERE amount > 10 GROUP BY g
+ same node SELECT g, sum(amount) FROM nm WHERE amount > 10 GROUP BY g
  same normal SELECT amount, count(*) FROM nm GROUP BY amount
 (5 rows)
 

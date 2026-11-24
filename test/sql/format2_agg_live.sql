@@ -6,6 +6,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.test_create_format1 = off;
+-- the tables are tiny: the open of the scan would cost more than the heap plans these tests are not about
+SET cpu_operator_cost = 0.00001;
 
 CREATE TABLE lv (id int PRIMARY KEY, g int, t text, v bigint, f float8, d date, ts timestamptz, b bool, n int) WITH (autovacuum_enabled = false);
 INSERT INTO lv SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'key' || (i % 13) || repeat('x', i % 20) END, CASE WHEN i % 17 = 0 THEN NULL ELSE i * 3 END,
