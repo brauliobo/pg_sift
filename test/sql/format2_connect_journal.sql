@@ -84,7 +84,8 @@ SELECT * FROM report('insert');
 SELECT * FROM journaled('insert');
 SELECT problems() AS problems;
 
--- the writer's own transaction, an abort and a savepoint that rolls back: the aborted writes are no change of the parent
+-- the writer's own transaction, an abort and a savepoint that rolls back: the aborted writes are no change of the parent (the aggregate inside the transaction asks the journal, which writes the
+-- records the transaction holds: they count as moved, no reader counts them)
 BEGIN;
 UPDATE dim SET b = 2 WHERE k % 17 = 0;
 SELECT * FROM report('in the transaction');
