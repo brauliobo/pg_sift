@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# scripts/bench-tests.sh [FILE...]: bench/test/test_*.py (or FILEs), four at a time; a failing test prints its name, exit status and the end of its output, and the last line names them all
+# scripts/bench-tests.sh [FILE...]: bench/test/test_*.py (or FILEs), all at once (BENCH_TESTS_JOBS caps them, default the cores); a failing test prints its name, exit status and the end of its output, and the last line names them all
 #   scripts/bench-tests.sh --selftest   a passing, a failing and a crashing test: both failures are named with their output, the passing one is silent, the run exits 1
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 1
 out=$(mktemp -d); trap 'rm -rf "$out"' EXIT
+slots=${BENCH_TESTS_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
 run_tests() {
-	local t
+	local t running=0
 	rm -f "$out/failed"
 	for t in "$@"; do
-		(( $(jobs -r | wc -l) < 4 )) || wait -n
+		(( running < slots )) || { wait -n; running=$((running - 1)); }
 		{ python3 -I "$t" >"$out/${t##*/}.log" 2>&1 || echo "$? $t" >>"$out/failed"; } &
+		running=$((running + 1))
 	done
 	wait
 	[[ -e $out/failed ]] || return 0
