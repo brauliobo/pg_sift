@@ -260,6 +260,13 @@ resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	return column_of(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
 }
 
+/* the columns of an expression PostgreSQL computes: a numeric and a type the native vectors do not hold are datums, so a NaN is the value it is */
+static bool
+resolve_datum_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
+{
+	return datum_column_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
+}
+
 static int
 add_derive(V6Plan *p, const SiftV6Derive *d)
 {
@@ -291,7 +298,7 @@ derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 static bool
 pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
-	const SiftV6Resolver rs = {resolve_column, p, false};
+	const SiftV6Resolver rs = {resolve_datum_column, p, false};
 	SiftV6Derive d = {0};
 	Oid			restype;
 	int			at;
@@ -376,13 +383,11 @@ spec_room(V6Plan *p, bool func)
 }
 
 /* FILTER (WHERE ..): a conjunction of the quals of a scan, over the columns of the index; the same clause of two aggregates is one clause (at most 64 of them: a bit of the mask of a row each) */
-static bool
-compile_filter(V6Plan *p, Expr *filter, int *fclause)
+/* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
+static List *
+native_filter_quals(V6Plan *p, Expr *filter)
 {
 	List	   *quals = NIL;
-	SiftClause *clause = palloc(sizeof(SiftClause));
-	SiftBytes	canon;
-	int			id;
 
 	p->in_filter = true;
 	foreach_ptr(Expr, c, make_ands_implicit(filter))
@@ -390,12 +395,55 @@ compile_filter(V6Plan *p, Expr *filter, int *fclause)
 		Expr	   *q = sift_v6_index_qual(p, c);
 
 		if (q == NULL)
-			return false;
+		{
+			quals = NIL;
+			break;
+		}
 		quals = lappend(quals, q);
 	}
 	p->in_filter = false;
+	return quals;
+}
+
+/* the clause as a boolean PostgreSQL's own functions compute over the datums of its columns: the test that the derived column is true */
+static List *
+derived_filter_quals(V6Plan *p, Expr *filter)
+{
+	SiftV6Col	col;
+	BooleanTest *bt;
+	int			i = 0;
+
+	if (exprType((Node *) filter) != BOOLOID || !pg_derived_col(p, filter, false, &col))
+		return NIL;
+	while (i < p->spec.nfcols && p->spec.fcol[i].derive != col.derive)
+		i++;
+	if (i == p->spec.nfcols && p->spec.nfcols == SIFT_V6_MAX_FCOLS)
+		return NIL;
+	p->spec.fcol[i] = col;
+	p->spec.nfcols = Max(p->spec.nfcols, i + 1);
+	bt = makeNode(BooleanTest);
+	bt->arg = (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(col.derive), false, true);
+	bt->booltesttype = IS_TRUE;
+	return list_make1(bt);
+}
+
+static bool
+compile_filter(V6Plan *p, Expr *filter, int *fclause)
+{
+	List	   *quals = native_filter_quals(p, filter);
+	SiftClause *clause = palloc(sizeof(SiftClause));
+	SiftBytes	canon;
+	int			id;
+
 	sift_bytes_init(&canon, CurrentMemoryContext);
-	if (!sift_v6_clause_make(CurrentMemoryContext, quals, &p->spec, clause, &canon) || (id = sift_freg_add(p->freg, canon.buf, canon.len)) < 0)
+	if (quals == NIL || !sift_v6_clause_make(CurrentMemoryContext, quals, &p->spec, clause, &canon))
+	{
+		sift_bytes_init(&canon, CurrentMemoryContext);
+		quals = derived_filter_quals(p, filter);
+		if (quals == NIL || !sift_v6_clause_make(CurrentMemoryContext, quals, &p->spec, clause, &canon))
+			return false;
+	}
+	if ((id = sift_freg_add(p->freg, canon.buf, canon.len)) < 0)
 		return false;
 	if (id == p->spec.nfilters)
 	{

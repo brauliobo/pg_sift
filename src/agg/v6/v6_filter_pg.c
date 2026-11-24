@@ -235,6 +235,24 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 	return true;
 }
 
+/* a clause PostgreSQL evaluates over the datums of its columns (the planner's derivation, whose number is the constant of the test): the rows where the derived boolean is true */
+static bool
+pred_derived(Build *b, const BooleanTest *bt, SiftPred *p)
+{
+	int			derive;
+
+	if (bt->booltesttype != IS_TRUE || !IsA(bt->arg, Const))
+		return false;
+	derive = DatumGetInt32(((const Const *) bt->arg)->constvalue);
+	for (int i = 0; i < *b->nfcols; i++)
+		if (b->fcol[i].derive == derive)
+		{
+			*p = (SiftPred) {.op = SPO_EQ,.kind = SPK_INT,.vec = i,.i = 1};
+			return true;
+		}
+	return false;
+}
+
 static bool
 pred_null_test(Build *b, const NullTest *nt, SiftPred *p)
 {
@@ -249,9 +267,11 @@ canon_pred(Build *b, const SiftPred *p)
 {
 	const uint8 head[2] = {(uint8) p->op, (uint8) p->kind};
 	const int	attno = b->fcol[p->vec].attno;
+	const int	derive = b->fcol[p->vec].derive;
 
 	canon_put(b, head, sizeof(head));
 	canon_put(b, &attno, sizeof(attno));
+	canon_put(b, &derive, sizeof(derive));
 	canon_put(b, &p->i, sizeof(p->i));
 	canon_put(b, &p->f, sizeof(p->f));
 	canon_put(b, &p->s.len, sizeof(p->s.len));
@@ -288,6 +308,9 @@ build(Build *b, const List *quals, SiftClause *out)
 				break;
 			case T_NullTest:
 				ok = pred_null_test(b, (const NullTest *) q, p);
+				break;
+			case T_BooleanTest:
+				ok = pred_derived(b, (const BooleanTest *) q, p);
 				break;
 			default:
 				ok = false;

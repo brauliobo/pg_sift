@@ -254,6 +254,9 @@ scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *s
 		if (x->rcol[i].src == SV6SRC_ATTR)
 			col_for(s, first, x->rcol[i], false, false);
 	setup_derived(s, first);
+	for (int i = 0; i < spec->nfcols; i++)
+		if (spec->fcol[i].derive > 0)
+			s->argvec[sift_v6_spec_fvec(spec) + i] = &s->derived[spec->fcol[i].derive - 1].out.vec;
 	setup_bq(s, first);
 	for (int k = 0; k < s->nderived; k++)
 		if (s->derived[k].d->kind == SVD_PG_EXPR)

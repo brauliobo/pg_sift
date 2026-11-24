@@ -416,7 +416,7 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		const SiftV6Derive *d = &s->derive[i];
 
 		ints = list_concat(ints, list_make5_int(d->kind, d->src.attno, (int) d->src.typid, d->ncond, d->else_len));
-		ints = list_concat(ints, list_make2_int((int) d->src.src, d->src.slot));
+		ints = list_concat(ints, list_make3_int((int) d->src.src, d->src.slot, d->src.scale));
 		ints = put64(lappend_int(ints, d->utf8), d->aux);
 		for (int c = 0; c < d->ncond; c++)
 			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make2_int((int) d->cond[c].src, d->cond[c].slot)), d->cval[c]);
@@ -427,6 +427,8 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		ints = lappend_int(ints, s->key[i].derive);
 	for (int j = 0; j < s->naggs; j++)
 		ints = lappend_int(ints, s->agg[j].arg.derive);
+	for (int i = 0; i < s->nfcols; i++)
+		ints = lappend_int(ints, s->fcol[i].derive);
 	ints = lappend_int(lappend_int(ints, s->affine), (int) s->aff_type);
 	ints = put64(put64(ints, s->aff_lo), s->aff_hi);
 	ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, s->rows), (int) s->groups_est), (int) s->topk), s->ntopk);
@@ -444,12 +446,13 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		SiftV6Derive *d = &s->derive[i];
 
 		d->kind = list_nth_int(ints, at);
-		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6)};
+		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6),
+			.scale = list_nth_int(ints, at + 7)};
 		d->ncond = list_nth_int(ints, at + 3);
 		d->else_len = list_nth_int(ints, at + 4);
-		d->utf8 = list_nth_int(ints, at + 7);
-		d->aux = get64(ints, at + 8);
-		at += 10;
+		d->utf8 = list_nth_int(ints, at + 8);
+		d->aux = get64(ints, at + 9);
+		at += 11;
 		for (int c = 0; c < d->ncond; c++, at += 6)
 		{
 			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3)};
@@ -463,6 +466,8 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		s->key[i].derive = list_nth_int(ints, at++);
 	for (int j = 0; j < s->naggs; j++)
 		s->agg[j].arg.derive = list_nth_int(ints, at++);
+	for (int i = 0; i < s->nfcols; i++)
+		s->fcol[i].derive = list_nth_int(ints, at++);
 	s->affine = list_nth_int(ints, at);
 	s->aff_type = (Oid) list_nth_int(ints, at + 1);
 	s->aff_lo = get64(ints, at + 2);
