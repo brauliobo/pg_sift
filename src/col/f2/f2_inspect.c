@@ -1,7 +1,7 @@
 /*
- * col/f2/f2_inspect.c - sift_index_size_breakdown(regclass): where the bytes of an index of format major 2 are, by category. Every block of the index is counted once, so the categories add up to
+ * col/f2/f2_inspect.c - sift_index_size_breakdown(regclass) and sift.col_sections of format major 2: where the bytes of a sift_col index or a sift_table are, by category. Every block of the index is counted once, so the categories add up to
  * pg_relation_size: a page that is not part of a stream (metapage, manifest, allocator, delete vectors, slab) by its type, the streams of the live parts by section and, in the granule
- * section, by chunk, and what is free, quarantined or left over in a page as fsm_free and page_slack.
+ * section, by chunk, and what is free, quarantined or left over in a page as fsm_free and page_slack. sift.col_sections splits the chunks of an index by leaf.
  */
 #include "postgres.h"
 
@@ -10,6 +10,9 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 
+#include "col/am.h"
+#include "col/f2/col_meta.h"
+#include "col/f2/f2_choices.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_cache.h"
 #include "col/granule/granule_int.h"
@@ -17,6 +20,7 @@
 #include "core/explain.h"
 #include "core/f2/manifest.h"
 #include "core/f2/meta.h"
+#include "core/sql_api.h"
 
 PG_FUNCTION_INFO_V1(sift_index_size_breakdown);
 
@@ -163,7 +167,7 @@ census(Relation rel, uint64 *bytes)
 
 /* The chunks of the granules of a part: by encoding, the exception blocks apart; the framing of the granules and what lies between them goes with the _tid */
 static uint64
-granule_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
+granule_bytes(Relation rel, const SiftPart *part, uint64 *bytes, uint64 *leaf, int nleaf)
 {
 	uint64		covered = 0;
 
@@ -181,9 +185,14 @@ granule_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
 
 			sift_chunk_open(&v, i, &c);
 			exc = c.exc_len;
+			chunks += c.ref->len;
+			if (i >= 1 && i <= nleaf)
+			{
+				leaf[i - 1] += c.ref->len;
+				continue;
+			}
 			bytes[CAT_GRANULE_EXC] += exc;
 			bytes[chunk_cat(c.ref->enc)] += c.ref->len - Min(exc, c.ref->len);
-			chunks += c.ref->len;
 		}
 		bytes[CAT_GRANULE_TID] += gd.data_len - chunks;
 		covered += gd.data_len;
@@ -193,7 +202,7 @@ granule_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
 
 /* The stream of a part: its sections by category, the rest of its pages as slack */
 static uint64
-stream_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
+stream_bytes(Relation rel, const SiftPart *part, uint64 *bytes, uint64 *leaf, int nleaf)
 {
 	uint64		pages = SIFT_PAYLOAD_PAGES(part->hdr.stream_bytes);
 	uint64		counted = 0;
@@ -204,7 +213,7 @@ stream_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
 		uint64		got = s->len;
 
 		if (s->tag == SEC_GRANULES)
-			got = granule_bytes(rel, part, bytes);
+			got = granule_bytes(rel, part, bytes, leaf, nleaf);
 		else
 			bytes[section_cat(s->tag)] += s->len;
 		counted += got;
@@ -213,26 +222,16 @@ stream_bytes(Relation rel, const SiftPart *part, uint64 *bytes)
 	return pages;
 }
 
-Datum
-sift_index_size_breakdown(PG_FUNCTION_ARGS)
+/* Every block of the relation once: the categories in bytes, and the chunks of the first nleaf columns of each granule (chunk 0 is the _tid) in leaf (NULL, 0: by category) */
+static uint64
+size_census(Relation rel, const SiftColMetaPageData *meta, uint64 *bytes, uint64 *leaf, int nleaf)
 {
-	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	rel = index_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
-	uint64		bytes[CAT_COUNT] = {0};
 	uint64		live_pages = 0;
-	SiftManifestRead all;
-	uint64		data_pages,
-				total;
-	SiftColMetaPageData meta;
+	SiftManifestRead all = sift_manifest_read_range(rel, NULL, NULL);
 	SiftManifestScopeRef *scopes;
 	int			nscopes;
-	Datum		values[4];
-	bool		nulls[4] = {false};
+	uint64		data_pages;
 
-	if (!sift_col_is_index(rel) || sift_col_format_major(rel) != SIFT_FORMAT2_MAJOR)
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("index \"%s\" is not a sift index of format major 2", RelationGetRelationName(rel))));
-	meta = sift_col_meta_read(rel);
-	all = sift_manifest_read_range(rel, NULL, NULL);
 	for (int i = 0; i < all.n; i++)
 	{
 		int			n;
@@ -242,16 +241,38 @@ sift_index_size_breakdown(PG_FUNCTION_ARGS)
 		{
 			SiftPart   *part = sift_part_open_desc(rel, &parts[j], (uint32) all.entries[i].part_id);
 
-			live_pages += stream_bytes(rel, part, bytes);
+			live_pages += stream_bytes(rel, part, bytes, leaf, nleaf);
 		}
 	}
-	scopes = sift_manifest_read_scopes(rel, &meta, &nscopes);
+	scopes = sift_manifest_read_scopes(rel, meta, &nscopes);
 	for (int i = 0; i < nscopes; i++)
 		if ((scopes[i].flags & SIFT_SCOPEREF_ACTIVE) && scopes[i].header_blk != InvalidBlockNumber)
-			live_pages += stream_bytes(rel, sift_part_open(rel, scopes[i].header_blk, scopes[i].meta_gen, 0), bytes);
+			live_pages += stream_bytes(rel, sift_part_open(rel, scopes[i].header_blk, scopes[i].meta_gen, 0), bytes, leaf, nleaf);
 	data_pages = census(rel, bytes);
 	bytes[CAT_FSM_FREE] += (data_pages - live_pages) * BLCKSZ;
-	total = (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ;
+	return (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ;
+}
+
+static Relation
+open_inspected(Oid relid, SiftApiRel *r)
+{
+	*r = sift_api_open(relid, AccessShareLock);
+	if (!r->f2)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("index \"%s\" is not a sift index of format major 2", RelationGetRelationName(r->rel))));
+	return r->rel;
+}
+
+Datum
+sift_index_size_breakdown(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	SiftApiRel	r;
+	Relation	rel = open_inspected(PG_GETARG_OID(0), &r);
+	uint64		bytes[CAT_COUNT] = {0};
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
+	uint64		total = size_census(rel, &meta, bytes, NULL, 0);
+	Datum		values[4];
+	bool		nulls[4] = {false};
 
 	InitMaterializedSRF(fcinfo, 0);
 	for (int c = 0; c < CAT_COUNT; c++)
@@ -262,7 +283,39 @@ sift_index_size_breakdown(PG_FUNCTION_ARGS)
 		values[3] = DirectFunctionCall1(float8_numeric, Float8GetDatum(meta.total_rows ? rint((double) bytes[c] * 100 / meta.total_rows) / 100 : 0));
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
 	}
-	index_close(rel, AccessShareLock);
+	sift_api_close(&r, AccessShareLock);
+	return (Datum) 0;
+}
+
+static void
+put_section(ReturnSetInfo *rsi, const char *section, const char *leaf, uint64 bytes)
+{
+	Datum		v[3] = {CStringGetTextDatum(section), leaf != NULL ? CStringGetTextDatum(leaf) : (Datum) 0, Int64GetDatum((int64) bytes)};
+	bool		nulls[3] = {false, leaf == NULL, false};
+
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
+}
+
+/* sift.col_sections(rel): the categories of the breakdown as sections, the chunks of a sift_col index by leaf; the rows add up to the size of the relation. The parts of a sift_table hold the columns of the schema they were written under, so its chunks stay by category */
+Datum
+sift_f2_sections(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	SiftApiRel	r;
+	Relation	rel = open_inspected(PG_GETARG_OID(0), &r);
+	const SiftColSchema *schema = r.am == SIFT_API_COL ? sift_col_rel(rel)->schema : NULL;
+	int			nleaf = schema != NULL ? schema->ncols : 0;
+	uint64		bytes[CAT_COUNT] = {0};
+	uint64	   *leaf = palloc0(Max(nleaf, 1) * sizeof(uint64));
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
+
+	size_census(rel, &meta, bytes, leaf, nleaf);
+	InitMaterializedSRF(fcinfo, 0);
+	for (int c = 0; c < nleaf; c++)
+		put_section(rsi, "chunks", schema->cols[c].path != NULL && schema->cols[c].path[0] != '\0' ? schema->cols[c].path : NameStr(TupleDescAttr(rel->rd_att, schema->cols[c].attno - 1)->attname), leaf[c]);
+	for (int c = 0; c < CAT_COUNT; c++)
+		put_section(rsi, cat_names[c], NULL, bytes[c]);
+	sift_api_close(&r, AccessShareLock);
 	return (Datum) 0;
 }
 

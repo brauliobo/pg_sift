@@ -20,6 +20,7 @@
 #include "col/api/format.h"
 #include "col/f2/compact.h"
 #include "col/f2/f2.h"
+#include "col/f2/f2_choices.h"
 #include "col/f2/f2_vacuum_run.h"
 #include "col/f2/f2_proj.h"
 #include "col/f2/f2_scope.h"
@@ -601,14 +602,6 @@ f2_worker_history(FunctionCallInfo fcinfo)
 	return sift_result_row(fcinfo, v, nulls);
 }
 
-static Datum
-f2_sections(FunctionCallInfo fcinfo)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift.col_sections does not read an index of format major 2"),
-					errhint("Use sift.index_size_breakdown(index).")));
-	pg_unreachable();
-}
-
 Datum
 sift_col_v2_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo)
 {
@@ -627,7 +620,7 @@ sift_col_v2_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo)
 		case SIFT_SQL_LEAVES:
 			return f2_leaves(fcinfo);
 		case SIFT_SQL_SECTIONS:
-			return f2_sections(fcinfo);
+			return sift_f2_sections(fcinfo);
 		case SIFT_SQL_VERIFY:
 			return f2_verify(fcinfo);
 		case SIFT_SQL_MAINTAIN:

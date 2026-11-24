@@ -10,6 +10,7 @@
 
 #include "col/am/format_ops.h"
 #include "col/am.h"
+#include "col/f2/f2_choices.h"
 #include "col/pg.h"
 #include "core/check.h"
 #include "core/errctx.h"
@@ -81,13 +82,31 @@ sift_col_check(SiftCheck *ck, Oid indexoid, bool heapallindexed)
 		return dispatch(fn, fcinfo); \
 	}
 
+/* A sift_table of format major 2 has no index to resolve: the sections and the choices of any Format 2 relation are Format 2's, everything else is the format of the index's */
+extern PGDLLEXPORT Datum sift_col_sections(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_col_index_choices(PG_FUNCTION_ARGS);
+extern PGDLLEXPORT Datum sift_index_choices(PG_FUNCTION_ARGS);
+
+Datum
+sift_col_sections(PG_FUNCTION_ARGS)
+{
+	return sift_f2_relation(PG_GETARG_OID(0)) ? sift_f2_sections(fcinfo) : dispatch(SIFT_SQL_SECTIONS, fcinfo);
+}
+
+PG_FUNCTION_INFO_V1(sift_index_choices);
+
+Datum
+sift_index_choices(PG_FUNCTION_ARGS)
+{
+	return sift_f2_relation(PG_GETARG_OID(0)) ? sift_f2_index_choices(fcinfo) : sift_col_index_choices(fcinfo);
+}
+
 SIFT_SQL_ENTRY(sift_col_space, SIFT_SQL_SPACE)
 SIFT_SQL_ENTRY(sift_col_extents, SIFT_SQL_EXTENTS)
 SIFT_SQL_ENTRY(sift_col_shrink_history, SIFT_SQL_SHRINK_HISTORY)
 SIFT_SQL_ENTRY(sift_col_index_info, SIFT_SQL_INDEX_INFO)
 SIFT_SQL_ENTRY(sift_col_segments, SIFT_SQL_SEGMENTS)
 SIFT_SQL_ENTRY(sift_col_leaves, SIFT_SQL_LEAVES)
-SIFT_SQL_ENTRY(sift_col_sections, SIFT_SQL_SECTIONS)
 SIFT_SQL_ENTRY(sift_col_verify, SIFT_SQL_VERIFY)
 SIFT_SQL_ENTRY(sift_col_maintain, SIFT_SQL_MAINTAIN)
 SIFT_SQL_ENTRY(sift_col_maintenance_due, SIFT_SQL_MAINTENANCE_DUE)

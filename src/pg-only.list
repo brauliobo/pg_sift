@@ -519,6 +519,8 @@ col/f2/f2_uniq_slab.c
 col/f2/f2_uniq_slab.h
 col/f2/f2_uniq_parts.c
 col/f2/f2_uniq_parts.h
+col/f2/f2_choices.c
+col/f2/f2_choices.h
 col/gpu.c
 col/gpu.h
 col/gpu_unwrap.c
