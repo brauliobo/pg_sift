@@ -1,4 +1,4 @@
--- date_trunc and EXTRACT of a timestamptz in the zone of the session (src/agg/vexpr_cal.c, src/agg/zoneoff.c), held to PostgreSQL's own functions to the microsecond: in zones
+-- date_trunc and EXTRACT of a timestamptz in the zone of the session (src/agg/vexpr_cal.c, src/core/zoneoff.c), held to PostgreSQL's own functions to the microsecond: in zones
 -- with daylight saving time and across its changes, in zones of a half hour or a quarter of an hour, with a change at midnight, a negative one, and the years before and after the
 -- rules the tables of the zones hold. A day or more is cut to the local midnight, whose offset is that of the midnight and not of the row; a second, a minute and an hour keep the row's.
 CREATE EXTENSION pg_sift;

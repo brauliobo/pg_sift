@@ -246,8 +246,8 @@ agg/wide.h
 agg/wide_nums.c
 agg/window.c
 agg/window_test.c
-agg/zoneoff.c
-agg/zoneoff.h
+core/zoneoff.c
+core/zoneoff.h
 bm25/am.h
 bm25/amscan.c
 bm25/analyze_index.c

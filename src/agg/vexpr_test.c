@@ -31,7 +31,7 @@
 #include "utils/jsonb.h"
 
 #include "agg/vexpr.h"
-#include "agg/zoneoff.h"
+#include "core/zoneoff.h"
 
 PG_FUNCTION_INFO_V1(sift_test_vexpr);
 PG_FUNCTION_INFO_V1(sift_test_vexpr_compiles);

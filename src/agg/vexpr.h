@@ -19,7 +19,7 @@
  *
  * Calendar: date_trunc of a timestamp to second, minute, hour, day or week is a fixed period (a multiply by the reciprocal of the period and a correction), to month,
  * quarter or year and EXTRACT of year, quarter, month, day, dow, isodow, doy, hour, minute or epoch go through the days of the proleptic Gregorian calendar (twelve
- * integer operations a date, no branch and no table). A timestamptz has the zone of the node (agg/zoneoff.h, the pieces of constant offset of the session zone):
+ * integer operations a date, no branch and no table). A timestamptz has the zone of the node (core/zoneoff.h, the pieces of constant offset of the session zone):
  * every row reads its own piece, and date_trunc to a day or more puts the instant of the truncated local time in the piece of that time, as PostgreSQL does (a month
  * that starts in standard time ends a row of summer time in the offset of the month's first midnight). +-infinity is kept by date_trunc, gives NULL to EXTRACT but year and epoch, and those two raise 0A000 for it: a scan sends a
  * chunk whose zone holds an infinity to the executor. EXTRACT is a numeric as in PostgreSQL: scale 0, and for the epoch of a timestamp scale 6.

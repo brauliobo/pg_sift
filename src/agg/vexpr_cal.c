@@ -1,6 +1,6 @@
 /*
  * agg/vexpr_cal.c - the calendar kernels of agg/vexpr_cal.h. The clock a timestamptz is read on is the one of its row: the offset of the piece of the zone that holds its
- * instant (agg/zoneoff.h), so that a batch that crosses a clock change reads each side of it right; a result of a day or more is the instant of its local midnight, in the
+ * instant (core/zoneoff.h), so that a batch that crosses a clock change reads each side of it right; a result of a day or more is the instant of its local midnight, in the
  * piece that holds that midnight, which is not always the row's. A period of a fixed length (second to week) is cut by the reciprocal of the period: the timestamp is
  * made unsigned by a multiple of the period that is above every timestamp's distance from 0, the quotient is the high half of its product with floor(2^64 /
  * period), which is the quotient or one below it, and one compare puts it right. A month, a quarter, a year and the parts of a date go through the days of the
@@ -10,7 +10,7 @@
 #include "postgres.h"
 
 #include "agg/vexpr_cal.h"
-#include "agg/zoneoff.h"
+#include "core/zoneoff.h"
 #include "core/fmv.h"
 
 #define USECS_PER_DAY_I		INT64CONST(86400000000)

@@ -1,5 +1,5 @@
 /*
- * agg/zoneoff.c - the offsets of a time zone over a stretch of instants
+ * core/zoneoff.c - the offsets of a time zone over a stretch of instants
  *
  * date_trunc, extract and date() of a timestamptz read the clock of the session's zone. A step of that clock (a day, an hour) is not a step of UTC where the zone has an
  * offset, and the offset changes where it has daylight saving time. The offsets of the zone over the instants of a batch are a few pieces of constant offset (PostgreSQL's
@@ -12,7 +12,7 @@
 #include "utils/datetime.h"
 
 #include "core/host.h"
-#include "agg/zoneoff.h"
+#include "core/zoneoff.h"
 
 /* the instants of a step reach this far beyond the instants of the rows */
 #define ZONE_MARGIN		(3 * USECS_PER_DAY)

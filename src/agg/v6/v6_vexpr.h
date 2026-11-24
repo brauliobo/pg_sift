@@ -26,7 +26,7 @@
 #include "agg/vexpr.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_inset.h"
-#include "agg/zoneoff.h"
+#include "core/zoneoff.h"
 
 /* The format that owns a relation is the one the registry finds (core/store_ops.h); these ask it and give NULL, false or -1 where it keeps no such capability */
 extern bool sift_v6_rel_owned(Oid relid, bool is_table);

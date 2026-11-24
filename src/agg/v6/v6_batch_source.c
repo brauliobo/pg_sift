@@ -8,7 +8,7 @@
 #include "utils/memutils.h"
 
 #include "agg/v6/v6_vexpr.h"
-#include "agg/zoneoff.h"
+#include "core/zoneoff.h"
 
 SiftV6Vexpr *
 sift_v6_vexpr_dup(MemoryContext cx, const SiftV6Vexpr *quals)

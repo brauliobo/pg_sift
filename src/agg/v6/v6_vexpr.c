@@ -27,7 +27,7 @@
 #include "executor/nodeSubplan.h"
 
 #include "agg/v6/v6_vexpr.h"
-#include "agg/zoneoff.h"
+#include "core/zoneoff.h"
 #include "core/memtrack.h"
 #include "core/store_ops.h"
 

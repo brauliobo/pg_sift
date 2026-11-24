@@ -1,8 +1,8 @@
 /*
- * agg/zoneoff.h - the offsets of a time zone over a stretch of instants (agg/zoneoff.c)
+ * core/zoneoff.h - the offsets of a time zone over a stretch of instants (core/zoneoff.c)
  */
-#ifndef SIFT_AGG_ZONEOFF_H
-#define SIFT_AGG_ZONEOFF_H
+#ifndef SIFT_CORE_ZONEOFF_H
+#define SIFT_CORE_ZONEOFF_H
 
 #include "pgtime.h"
 
