@@ -64,6 +64,7 @@ sift_v6_resid_new(MemoryContext cx, const SiftV6Ext *x)
 	desc = CreateTemplateTupleDesc(Max(r->ncols, 1));
 	for (int i = 0; i < r->ncols; i++)
 		TupleDescInitEntry(desc, i + 1, NULL, r->col[i].typid, -1, 0);
+	sift_tupdesc_finalize(desc);
 	r->slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	r->econtext->ecxt_scantuple = r->slot;
 	MemoryContextSwitchTo(old);

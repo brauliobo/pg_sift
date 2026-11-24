@@ -121,9 +121,11 @@ make_dims(PlannerInfo *root, Relids base, JoinShape *sh)
 	for (int i = 0; i < sh->nd; i++)
 		rest = bms_del_members(rest, sh->dim[i].rels);
 	while ((r = bms_next_member(rest, r)) >= 0)
+	{
+		if (sh->nd + ni >= SIFT_STAR_MAX_DIMS)
+			return false;
 		inner[ni++] = (JoinDim) {.rels = bms_make_singleton(r),.mode = SV6J_INNER_EQUI};
-	if (sh->nd + ni > SIFT_STAR_MAX_DIMS)
-		return false;
+	}
 	memmove(&sh->dim[ni], &sh->dim[0], sh->nd * sizeof(JoinDim));
 	memcpy(&sh->dim[0], inner, ni * sizeof(JoinDim));
 	sh->nd += ni;
