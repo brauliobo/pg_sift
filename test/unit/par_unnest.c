@@ -394,11 +394,11 @@ emit(void *arg, int worker, const SiftParGroupRow *row)
 	Ctx		   *c = arg;
 	Rec			r = {.count = row->count,.sum = row->sum[0]};
 
-	if (c->gs->str)
+	if (c->gs->strs)
 	{
-		r.len = row->len;
-		if (row->len != SIFT_STR_NULL)
-			memcpy(r.str, row->str, row->len);
+		r.len = row->str[0].len;
+		if (r.len != SIFT_STR_NULL)
+			memcpy(r.str, row->str[0].p, r.len);
 	}
 	else
 		memcpy(r.key, row->key, sizeof(uint64) * 2);
@@ -478,11 +478,11 @@ replay(Ctx *c, const Stmt *st)
 		{
 			Rec			r = {.count = 1,.sum = st->sh.nsum > 0 ? b.arg[0][i] : 0};
 
-			if (st->sh.gs.str)
+			if (st->sh.gs.strs)
 			{
-				r.len = b.str[i].len;
+				r.len = b.str[0][i].len;
 				if (r.len != SIFT_STR_NULL)
-					memcpy(r.str, b.str[i].p, r.len);
+					memcpy(r.str, b.str[0][i].p, r.len);
 			}
 			else
 				for (int j = 0; j < st->sh.nk; j++)

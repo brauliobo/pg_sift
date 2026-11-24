@@ -33,7 +33,7 @@ bool
 sift_par_word_shape(const SiftV6Spec *sp, SiftV6Src via, bool attr_text, SiftParWordShape *sh)
 {
 	if (sp->is_table || sp->nparts != 0 || sp->rows || sp->nsets != 0 || sp->nbins != 0 || sp->nderive != 0 || sp->nfilters != 0 || sp->lock_k != 0 || sp->affine || sp->jsonqual != NIL ||
-		OidIsValid(sp->text_indexoid) || sp->naggs < 1 || sp->topk != 0 || sp->nkeys > SIFT_PAR_GROUP_MAX_KW)
+		OidIsValid(sp->text_indexoid) || sp->naggs < 1 || sp->topk != 0 || sp->nkeys > SIFT_PAR_GROUP_MAX_KEYS)
 		return false;
 	sh->nk = sp->nkeys;
 	for (int i = 0; i < sp->nkeys; i++)
@@ -43,7 +43,7 @@ sift_par_word_shape(const SiftV6Spec *sp, SiftV6Src via, bool attr_text, SiftPar
 		if (!plain_col(c, via))
 			return false;
 		if (sift_v6_class(c->typid) == SV6C_TEXT && sp->nkeys == 1 && (c->src == via || attr_text))
-			sh->gs.str = true;
+			sh->gs.strs = 1;
 		else if (!int_class(c->typid))
 			return false;
 	}
@@ -64,7 +64,7 @@ sift_par_word_shape(const SiftV6Spec *sp, SiftV6Src via, bool attr_text, SiftPar
 		else
 			return false;
 	}
-	sh->gs.kw = sh->gs.str ? 0 : Max(sp->nkeys, 1);
+	sh->gs.nk = Max(sp->nkeys, 1);
 	sh->gs.nsum = sh->nsum;
 	return true;
 }
@@ -76,7 +76,7 @@ struct SiftParWords
 	uint32		n;
 	bool		serial;
 	bool		full;
-	uint64	   *key[SIFT_PAR_GROUP_MAX_KW];
+	uint64	   *key[SIFT_PAR_GROUP_MAX_KEYS];
 	uint64	   *sum[SIFT_PAR_GROUP_MAX_SUM];
 	SiftStrRef *str;
 	char	   *inl;			/* the bytes of the strings that sit in their views: the batch they were gathered in is gone when the group table reads them */
@@ -89,11 +89,11 @@ sift_par_words_new(MemoryContext cx, const SiftParWordShape *sh, uint32 cap)
 
 	w->sh = sh;
 	w->cap = cap;
-	for (int j = 0; j < Max(sh->gs.kw, 1) && !sh->gs.str; j++)
+	for (int j = 0; j < sh->gs.nk && !sh->gs.strs; j++)
 		w->key[j] = MemoryContextAlloc(cx, (size_t) cap * sizeof(uint64));
 	for (int m = 0; m < sh->nsum; m++)
 		w->sum[m] = MemoryContextAlloc(cx, (size_t) cap * sizeof(uint64));
-	if (sh->gs.str)
+	if (sh->gs.strs)
 	{
 		w->str = MemoryContextAlloc(cx, (size_t) cap * sizeof(SiftStrRef));
 		w->inl = MemoryContextAlloc(cx, (size_t) cap * INLINE_BYTES);
@@ -134,11 +134,11 @@ row_words(SiftParWords *w, uint32 i, uint32 r, SiftVec *const *keyvec, SiftVec *
 {
 	const SiftParWordShape *sh = w->sh;
 
-	if (sh->gs.str)
+	if (sh->gs.strs)
 		text_key(w, i, keyvec[0], r);
 	else if (sh->nk == 0)
 		w->key[0][i] = 0;
-	for (int j = 0; !sh->gs.str && j < sh->nk; j++)
+	for (int j = 0; !sh->gs.strs && j < sh->nk; j++)
 	{
 		const SiftVec *v = keyvec[j];
 		const bool	valid = sift_vec_valid_at(v, r);
@@ -208,9 +208,9 @@ void
 sift_par_words_out(const SiftParWords *w, SiftParGroupBatch *out)
 {
 	out->n = w->n;
-	for (int j = 0; j < SIFT_PAR_GROUP_MAX_KW; j++)
+	for (int j = 0; j < SIFT_PAR_GROUP_MAX_KEYS; j++)
 		out->key[j] = w->key[j];
 	for (int m = 0; m < w->sh->nsum; m++)
 		out->arg[m] = w->sum[m];
-	out->str = w->sh->gs.str ? w->str : NULL;
+	out->str[0] = w->sh->gs.strs ? w->str : NULL;
 }

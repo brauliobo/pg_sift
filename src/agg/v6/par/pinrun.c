@@ -73,7 +73,7 @@ static bool
 op_feed(void *vr, uint32 item)
 {
 	SiftV6PinRun *r = vr;
-	const bool	fed = sift_pin_win_feed(r->win, item);
+	const bool	fed = sift_pin_win_feed(r->win, item, item);
 
 	r->fed += fed;
 	return fed;
@@ -116,6 +116,12 @@ op_phase2(void *vr, int t, uint32 part, SiftArena *work, SiftErr *err)
 }
 
 static void
+op_finish(void *vr)
+{
+	sift_par_group_ops.finish(((SiftV6PinRun *) vr)->grp);
+}
+
+static void
 op_overflow(void *vr, const SiftParRange *left, uint32 nleft)
 {
 	SiftParGroup *g = ((SiftV6PinRun *) vr)->grp;
@@ -125,7 +131,7 @@ op_overflow(void *vr, const SiftParRange *left, uint32 nleft)
 }
 
 static const SiftParOps pin_ops = {.feed_slot = op_feed,.release_slot = op_release,.fallback_item = op_fallback,.phase1 = op_phase1,.seal = op_seal,.phase2 = op_phase2,
-	.overflow_drain = op_overflow};
+	.finish = op_finish,.overflow_drain = op_overflow};
 
 SiftV6PinRun *
 sift_v6_pinrun_new(const SiftV6PinDesc *d, const SiftV6Spec *spec, SiftV6ScanStats *stats, Relation index, Snapshot snap, SiftPinPartOk part_ok, void *part_arg)
@@ -169,8 +175,8 @@ arenas_fit(const SiftV6PinRun *r, int nthreads, size_t *state, size_t *sink)
 {
 	const SiftParGroupSpec *gs = &r->d.gs;
 	const uint64 rows = sift_pin_win_rows(r->win);
-	const uint32 words = gs->kw + gs->nsum;
-	const uint64 rec = gs->str ? 64 : 8 * (words <= 1 ? 1 : pg_nextpower2_32(words));
+	const uint32 words = gs->nk + gs->nsum;
+	const uint64 rec = gs->strs ? 64 : 8 * (words <= 1 ? 1 : pg_nextpower2_32(words));
 	const uint64 out_rec = sift_v6_gsink_record_bytes(gs);
 	const uint64 per_thread = (uint64) work_mem * 1024 * 3 / 4 / nthreads;
 	const uint64 fixed = r->d.scratch_bytes + WORK_BYTES;
@@ -314,10 +320,10 @@ sift_v6_pin_fold_words(SiftV6Group *g, const SiftV6Spec *spec, const SiftParWord
 	SiftV6StrIn str[SIFT_V6_MAX_KEYS] = {{0}};
 	uint64		nulls = 0;
 
-	if (sh->gs.str)
+	if (sh->gs.strs)
 	{
-		str[0] = (SiftV6StrIn) {(const char *) row->str, row->len};
-		nulls = row->len == SIFT_STR_NULL;
+		str[0] = (SiftV6StrIn) {(const char *) row->str[0].p, row->str[0].len};
+		nulls = row->str[0].len == SIFT_STR_NULL;
 	}
 	else
 		for (int i = 0; i < sh->nk; i++)

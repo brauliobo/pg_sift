@@ -294,12 +294,18 @@ op_phase2(void *vr, int t, uint32 part, SiftArena *work, SiftErr *err)
 }
 
 static void
+op_finish(void *vr)
+{
+	sift_par_group_ops.finish(((UnPar *) vr)->grp);
+}
+
+static void
 op_overflow(void *vr, const SiftParRange *left, uint32 nleft)
 {
 }
 
 static const SiftParOps un_ops = {.feed_slot = op_feed,.release_slot = op_release,.fallback_item = op_fallback,.phase1 = op_phase1,.seal = op_seal,.phase2 = op_phase2,
-	.overflow_drain = op_overflow};
+	.finish = op_finish,.overflow_drain = op_overflow};
 
 static void
 un_fold(void *arg, const SiftParGroupRow *row)
@@ -330,7 +336,7 @@ redo_serial(UnPar *r)
 static int
 threads_fit(const SiftParWordShape *sh, int nthreads)
 {
-	const uint64 words = (uint64) SIFT_UN_PAIRS_MAX * 8 * (Max(sh->gs.kw, 1) + sh->nsum) + (sh->gs.str ? (uint64) SIFT_UN_PAIRS_MAX * 28 : 0);
+	const uint64 words = (uint64) SIFT_UN_PAIRS_MAX * 8 * (sh->gs.nk + sh->nsum) + (sh->gs.strs ? (uint64) SIFT_UN_PAIRS_MAX * 28 : 0);
 	const uint64 per_thread = SCRATCH_BYTES + STATE_BYTES + WORK_BYTES + SINK_BYTES + words + 2 * sizeof(SiftUnSlot);
 	const uint64 budget = (uint64) work_mem * 1024 * 3 / 4;
 

@@ -64,8 +64,8 @@ bin_column(const SiftTsKey *k, const SiftParCol *c, const uint64 *active, int n,
 bool
 sift_tseries_batch(const SiftTsShape *sh, const SiftParCol *col, const uint64 *active, uint32 nact, int n, SiftArena *a, SiftErr *err, SiftParGroupBatch *out)
 {
-	const int64 *bins[SIFT_PAR_GROUP_MAX_KW] = {0};
-	uint64	   *key[SIFT_PAR_GROUP_MAX_KW] = {0},
+	const int64 *bins[SIFT_PAR_GROUP_MAX_KEYS] = {0};
+	uint64	   *key[SIFT_PAR_GROUP_MAX_KEYS] = {0},
 			   *sum[SIFT_PAR_GROUP_MAX_SUM] = {0};
 	uint32		i = 0;
 

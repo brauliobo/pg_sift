@@ -17,7 +17,7 @@
 
 #define SIFT_TS_NULL_WORD		UINT64_MAX
 #define SIFT_TS_SIGN			(UINT64CONST(1) << 63)
-#define SIFT_TS_LEAVES_MAX		(SIFT_PAR_GROUP_MAX_KW + 2 * SIFT_PAR_GROUP_MAX_SUM)
+#define SIFT_TS_LEAVES_MAX		(SIFT_PAR_GROUP_MAX_KEYS + 2 * SIFT_PAR_GROUP_MAX_SUM)
 
 /* One key of the statement: a column of the window, binned or not */
 typedef struct SiftTsKey
@@ -31,7 +31,7 @@ typedef struct SiftTsKey
 typedef struct SiftTsShape
 {
 	int			nk;
-	SiftTsKey	key[SIFT_PAR_GROUP_MAX_KW];
+	SiftTsKey	key[SIFT_PAR_GROUP_MAX_KEYS];
 	int			nsum;
 	int			sum_at[SIFT_PAR_GROUP_MAX_SUM];
 	int			ncount;			/* the columns COUNT(col) counts */

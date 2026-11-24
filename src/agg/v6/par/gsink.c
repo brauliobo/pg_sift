@@ -1,13 +1,12 @@
 /*
- * agg/v6/par/gsink.c - the streams of agg/v6/par/gsink.h.
- *
- * A record is the length of a text key (0 for integers), the key words, the count, the sums, then the bytes of a text key to a multiple of 8.
+ * agg/v6/par/gsink.c - the streams of agg/v6/par/gsink.h: a group is the partial-aggregate record of agg/v6/par/group_key.h, all of them in partition 0 of the stream of the thread.
  */
 #include "postgres.h"
 
+#include "agg/v6/par/group_key.h"
 #include "agg/v6/par/gsink.h"
 #include "core/par/pool.h"
-#include "core/par/radix.h"
+#include "core/popcount.h"
 
 typedef struct GSinkStream
 {
@@ -20,25 +19,13 @@ struct SiftV6GSink
 	SiftParGroupSpec gs;
 	int			nthreads;
 	atomic_bool full;
-	GSinkStream	   *s[SIFT_PAR_MAX_THREADS];
+	GSinkStream *s[SIFT_PAR_MAX_THREADS];
 };
-
-static uint32
-rec_words(const SiftParGroupSpec *gs)
-{
-	return 1 + gs->kw + 1 + gs->nsum;
-}
-
-static uint32
-rec_tail(const SiftParGroupSpec *gs, uint32 len)
-{
-	return gs->str && len != SIFT_STR_NULL ? (len + 7) & ~7u : 0;
-}
 
 uint64
 sift_v6_gsink_record_bytes(const SiftParGroupSpec *gs)
 {
-	return 8 * rec_words(gs) + (gs->str ? SIFT_V6_GSINK_STR : 0);
+	return 8 * (gs->nk + gs->nsum + 1) + (uint64) sift_pc64(gs->strs) * SIFT_V6_GSINK_STR;
 }
 
 SiftV6GSink *
@@ -61,25 +48,8 @@ sift_v6_gsink_new(MemoryContext cx, const SiftParGroupSpec *gs, int nthreads, si
 void
 sift_v6_gsink_emit(SiftV6GSink *k, int worker, const SiftParGroupRow *row)
 {
-	const SiftParGroupSpec *gs = &k->gs;
-	const uint32 words = rec_words(gs),
-				tail = rec_tail(gs, row->len);
-	uint64	   *rec = sift_radix_reserve(&k->s[worker]->out, 0, words * 8 + tail);
-
-	if (rec == NULL)
-	{
+	if (!pgk_put_to(&k->gs, &k->s[worker]->out, 0, true, row))
 		atomic_store_explicit(&k->full, true, memory_order_relaxed);
-		return;
-	}
-	rec[0] = gs->str ? row->len : 0;
-	memcpy(rec + 1, row->key, gs->kw * sizeof(uint64));
-	rec[1 + gs->kw] = row->count;
-	memcpy(rec + 2 + gs->kw, row->sum, gs->nsum * sizeof(uint64));
-	if (tail > 0)
-	{
-		rec[words + tail / 8 - 1] = 0;
-		memcpy(rec + words, row->str, row->len);
-	}
 }
 
 bool
@@ -99,21 +69,14 @@ static bool
 drain_chunk(void *arg, const uint8 *b, uint32 len)
 {
 	const Drain *d = arg;
-	const SiftParGroupSpec *gs = d->gs;
 
 	for (uint32 off = 0; off < len;)
 	{
-		const uint64 *rec = (const uint64 *) (b + off);
 		SiftParGroupRow row = {0};
-		const uint32 tail = rec_tail(gs, (uint32) rec[0]);
+		uint32		h32[SIFT_PAR_GROUP_MAX_KEYS];
 
-		row.len = gs->str ? (uint32) rec[0] : 0;
-		memcpy(row.key, rec + 1, gs->kw * sizeof(uint64));
-		row.count = rec[1 + gs->kw];
-		memcpy(row.sum, rec + 2 + gs->kw, gs->nsum * sizeof(uint64));
-		row.str = tail > 0 ? (const uint8 *) (rec + rec_words(gs)) : NULL;
+		off += pgk_parse(d->gs, true, b + off, &row, h32);
 		d->fold(d->arg, &row);
-		off += rec_words(gs) * 8 + tail;
 	}
 	return true;
 }

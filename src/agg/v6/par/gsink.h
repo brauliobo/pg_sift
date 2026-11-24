@@ -15,7 +15,7 @@ typedef void (*SiftV6GSinkFold) (void *arg, const SiftParGroupRow *row);
 
 /* The streams of nthreads threads of `bytes` each, for the groups of gs */
 extern SiftV6GSink *sift_v6_gsink_new(MemoryContext cx, const SiftParGroupSpec *gs, int nthreads, size_t bytes);
-/* The bytes of the record of a group of gs: of a text key of up to SIFT_V6_GSINK_STR bytes */
+/* The bytes of the record of a group of gs: with each text key of up to SIFT_V6_GSINK_STR bytes */
 #define SIFT_V6_GSINK_STR	32
 extern uint64 sift_v6_gsink_record_bytes(const SiftParGroupSpec *gs);
 /* Thread `worker`: the group goes to its stream (the hook emit of the groups) */

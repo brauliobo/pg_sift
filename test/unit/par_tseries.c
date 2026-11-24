@@ -106,7 +106,7 @@ make_shape(const SiftTsKey *bin)
 	sh.key[1] = (SiftTsKey) {.at = 1};
 	sh.sum_at[0] = 2;
 	sh.count_at[sh.ncount++] = 2;
-	sh.gs = (SiftParGroupSpec) {.kw = 2,.nsum = 1};
+	sh.gs = (SiftParGroupSpec) {.nk = 2,.nsum = 1};
 	return sh;
 }
 

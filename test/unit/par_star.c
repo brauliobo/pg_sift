@@ -337,11 +337,11 @@ emit(void *arg, int worker, const SiftParGroupRow *row)
 	Ctx		   *c = arg;
 	Rec			r = {.count = row->count,.sum = row->sum[0]};
 
-	if (c->gs->str)
+	if (c->gs->strs)
 	{
-		r.len = row->len;
-		if (row->len != SIFT_STR_NULL)
-			memcpy(r.str, row->str, row->len);
+		r.len = row->str[0].len;
+		if (r.len != SIFT_STR_NULL)
+			memcpy(r.str, row->str[0].p, r.len);
 	}
 	else
 		memcpy(r.key, row->key, sizeof(uint64) * 2);

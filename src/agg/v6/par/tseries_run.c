@@ -43,7 +43,7 @@ keys_of(const SiftV6Spec *sp, const int *first, TsRun *t)
 {
 	SiftTsShape *sh = &t->sh;
 
-	if (sp->nkeys < 1 || sp->nkeys > SIFT_PAR_GROUP_MAX_KW)
+	if (sp->nkeys < 1 || sp->nkeys > SIFT_PAR_GROUP_MAX_KEYS)
 		return false;
 	sh->nk = sp->nkeys;
 	for (int i = 0; i < sp->nkeys; i++)
@@ -105,7 +105,7 @@ shape_of(const SiftV6Spec *sp, const int *first, TsRun *t)
 	if (!keys_of(sp, first, t) || !aggs_of(sp, first, t))
 		return false;
 	t->sh.ncols = t->nleaves;
-	t->sh.gs = (SiftParGroupSpec) {.kw = t->sh.nk,.nsum = t->sh.nsum};
+	t->sh.gs = (SiftParGroupSpec) {.nk = t->sh.nk,.nsum = t->sh.nsum};
 	return true;
 }
 

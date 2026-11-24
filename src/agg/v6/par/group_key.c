@@ -229,6 +229,14 @@ pgk_put(const SiftCompact *c, const SiftParGroupSpec *sp, SiftRadixOut *o, bool 
 	return sp->strs ? put_mixed(o, part, sp, partial, r, h32) : put_words(o, part, sp, partial, r);
 }
 
+bool
+pgk_put_to(const SiftParGroupSpec *sp, SiftRadixOut *o, uint32 part, bool partial, const SiftParGroupRow *r)
+{
+	const uint32 h32[SIFT_PAR_GROUP_MAX_KEYS] = {0};
+
+	return sp->strs ? put_mixed(o, part, sp, partial, r, h32) : put_words(o, part, sp, partial, r);
+}
+
 uint32
 pgk_parse(const SiftParGroupSpec *sp, bool partial, const uint8 *b, SiftParGroupRow *r, uint32 *h32)
 {

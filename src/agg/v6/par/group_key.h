@@ -32,6 +32,9 @@ extern uint64 pgk_batch_bytes(const SiftParGroupSpec *sp, const SiftParGroupBatc
 /* The record of the row (a row, or a partial aggregate) into the partition of its key; false when the stream has no room */
 extern bool pgk_put(const SiftCompact *c, const SiftParGroupSpec *sp, SiftRadixOut *o, bool partial, const SiftParGroupRow *r);
 
+/* The same into partition part of the stream, whose records the consumer reads whole (the hashes of the texts in it are not set) */
+extern bool pgk_put_to(const SiftParGroupSpec *sp, SiftRadixOut *o, uint32 part, bool partial, const SiftParGroupRow *r);
+
 /* The record at b into r (a row has the count 1) and the hash of each of its texts into h32, and the bytes it takes. Only the keys of the spec are set in r */
 extern uint32 pgk_parse(const SiftParGroupSpec *sp, bool partial, const uint8 *b, SiftParGroupRow *r, uint32 *h32);
 
