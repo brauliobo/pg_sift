@@ -8,8 +8,6 @@ SET sift.async_maintenance = off;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 SET timezone = 'UTC';
-ALTER OPERATOR FAMILY sift.col_integer_ops USING sift_col ADD FUNCTION 1 (int4, int4) btint4cmp(int4, int4);
-ALTER OPERATOR FAMILY sift.col_integer_ops USING sift_col ADD FUNCTION 1 (int8, int8) btint8cmp(int8, int8);
 
 CREATE TABLE oa (id int, k int4, d date, pad text DEFAULT repeat('x', 100));
 INSERT INTO oa (id, k, d) SELECT i, CASE WHEN i % 13 = 0 THEN NULL ELSE (i * 7919) % 3001 - 1500 END, CASE WHEN i % 17 = 0 THEN NULL ELSE date '2020-01-01' + (i * 31) % 700 END FROM generate_series(1, 8000) i;
