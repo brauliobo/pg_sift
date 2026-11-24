@@ -105,6 +105,7 @@ typedef enum SiftErrCode
 	SIFT_ERR_INVALID_PARAM,		/* 22023 */
 	SIFT_ERR_LIMIT,				/* 54000 */
 	SIFT_ERR_ARENA_FULL,		/* arg0: bytes asked, arg1: bytes left; the leader runs the work on the backend path */
+	SIFT_ERR_SERIAL,			/* what the worker holds is not for a worker (a value it does not fold): nothing of it is done, and the leader runs it on the backend path */
 	SIFT_ERR_WORK_MEM,			/* the leader spills */
 	SIFT_ERR_CANCEL				/* the leader checks for interrupts */
 } SiftErrCode;

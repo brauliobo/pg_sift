@@ -3,6 +3,8 @@
  */
 #include "postgres.h"
 
+#include <pthread.h>
+
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
@@ -164,12 +166,37 @@ sift_par_arenas_create(MemoryContext cx, uint32 nthreads, size_t scratch_bytes, 
 	return ar;
 }
 
+/* What a slot of the ring holds, by the item in it */
+enum
+{
+	RING_RUN = 0,
+	RING_DONE,
+	RING_REPLAY,
+	RING_FAILED
+};
+
+/* The items made by the leader and taken by the threads: all counters and states are under mu (an item is a granule of 8192 rows: a few thousand a second, not a hot lock) */
+typedef struct SiftRing
+{
+	pthread_mutex_t mu;
+	pthread_cond_t cv;
+	uint32		slots;
+	uint32		published;		/* the items made */
+	uint32		claimed;		/* the items a thread has taken */
+	uint32		released;		/* the items whose slot is free again */
+	bool		eof;
+	uint8		state[SIFT_PAR_RING_MAX];
+} SiftRing;
+
 typedef struct SiftParRun
 {
 	const SiftParOps *ops;
 	void	   *ctx;
 	SiftParArenas *ar;
 	SiftMorselQueue *q;
+	SiftRing	ring;
+	SiftParMode mode;
+	bool		completed;		/* run_phases returned: the error, if any, is one of the latch */
 	int			nthreads;
 	SiftErrLatch lt;
 	atomic_bool halt;
@@ -185,10 +212,22 @@ halted(const SiftParRun *r)
 }
 
 static void
+run_halt(SiftParRun *r)
+{
+	atomic_store_explicit(&r->halt, true, memory_order_relaxed);
+	if (r->mode == SIFT_PAR_RING && r->nthreads > 1)
+	{
+		pthread_mutex_lock(&r->ring.mu);
+		pthread_cond_broadcast(&r->ring.cv);
+		pthread_mutex_unlock(&r->ring.mu);
+	}
+}
+
+static void
 fail(SiftParRun *r, const SiftErr *err)
 {
 	sift_errlatch_post(&r->lt, err);
-	atomic_store_explicit(&r->halt, true, memory_order_relaxed);
+	run_halt(r);
 }
 
 static void
@@ -212,6 +251,163 @@ phase1_loop(SiftParRun *r, int t)
 		if (t == 0)
 			CHECK_FOR_INTERRUPTS();
 	}
+}
+
+/* ---- the ring ---- */
+
+/* Thread t takes item: what it says of it is the state of the slot */
+static uint8
+ring_item(SiftParRun *r, int t, uint32 item)
+{
+	SiftArena  *scratch = &r->ar->w[t].scratch;
+	SiftErr		err = {0};
+	uint32		done = 0;
+
+	sift_arena_reset(scratch);
+	if (r->ops->phase1(r->ctx, t, item, item + 1, scratch, &done, &err))
+		return RING_DONE;
+	if (err.code == SIFT_ERR_ARENA_FULL || err.code == SIFT_ERR_SERIAL)
+		return RING_REPLAY;
+	fail(r, &err);
+	return RING_FAILED;
+}
+
+/* An item of the ring is the leader's alone to pass on, when it is replayed on the backend path or done */
+static void
+ring_settle_item(SiftParRun *r, uint32 item, bool replay)
+{
+	if (replay && r->ops->fallback_item != NULL)
+		r->ops->fallback_item(r->ctx, item);
+	r->ops->release_slot(r->ctx, item);
+}
+
+/* A helper thread: takes the items as they are made, until the leader says there are no more */
+static void
+ring_helper(SiftParRun *r, int t)
+{
+	SiftRing   *g = &r->ring;
+
+	pthread_mutex_lock(&g->mu);
+	while (!halted(r))
+	{
+		if (g->claimed < g->published)
+		{
+			const uint32 item = g->claimed++;
+			uint8		st;
+
+			pthread_mutex_unlock(&g->mu);
+			st = ring_item(r, t, item);
+			pthread_mutex_lock(&g->mu);
+			g->state[item % g->slots] = st;
+			pthread_cond_broadcast(&g->cv);
+		}
+		else if (g->eof)
+			break;
+		else
+			pthread_cond_wait(&g->cv, &g->mu);
+	}
+	pthread_mutex_unlock(&g->mu);
+}
+
+/* The slots at the head of the ring whose items are done, passed on in the order of the items (the lock is held on entry and on return) */
+static void
+ring_reclaim(SiftParRun *r)
+{
+	SiftRing   *g = &r->ring;
+
+	while (g->released < g->published && g->state[g->released % g->slots] != RING_RUN && g->state[g->released % g->slots] != RING_FAILED)
+	{
+		const uint32 item = g->released;
+		const uint8 st = g->state[item % g->slots];
+
+		pthread_mutex_unlock(&g->mu);
+		ring_settle_item(r, item, st == RING_REPLAY);
+		pthread_mutex_lock(&g->mu);
+		g->released++;
+	}
+}
+
+/* Thread 0: makes the items while there is room, takes one when the ring is full, passes the slots on; never waits while it has something to do */
+static void
+ring_leader(SiftParRun *r)
+{
+	SiftRing   *g = &r->ring;
+
+	pthread_mutex_lock(&g->mu);
+	while (!halted(r))
+	{
+		ring_reclaim(r);
+		if (!g->eof && g->published - g->released < g->slots)
+		{
+			bool		made;
+
+			pthread_mutex_unlock(&g->mu);
+			CHECK_FOR_INTERRUPTS();
+			made = r->ops->feed_slot(r->ctx, g->published);
+			pthread_mutex_lock(&g->mu);
+			g->state[g->published % g->slots] = RING_RUN;
+			g->published += made;
+			g->eof = !made;
+			pthread_cond_broadcast(&g->cv);
+		}
+		else if (g->claimed < g->published)
+		{
+			const uint32 item = g->claimed++;
+			uint8		st;
+
+			pthread_mutex_unlock(&g->mu);
+			st = ring_item(r, 0, item);
+			pthread_mutex_lock(&g->mu);
+			g->state[item % g->slots] = st;
+		}
+		else if (g->eof && g->released == g->published)
+			break;
+		else
+			pthread_cond_wait(&g->cv, &g->mu);
+	}
+	pthread_mutex_unlock(&g->mu);
+}
+
+/* One thread: the leader makes an item, runs it, passes its slot on */
+static void
+ring_inline(SiftParRun *r)
+{
+	for (uint32 item = 0; !halted(r); item++)
+	{
+		uint8		st;
+
+		CHECK_FOR_INTERRUPTS();
+		if (!r->ops->feed_slot(r->ctx, item))
+			break;
+		st = ring_item(r, 0, item);
+		r->ring.published = item + 1;
+		r->ring.state[item % r->ring.slots] = st;
+		if (st == RING_FAILED)
+			break;
+		ring_settle_item(r, item, st == RING_REPLAY);
+		r->ring.released = item + 1;
+	}
+}
+
+static void
+phase1_ring(SiftParRun *r, int t)
+{
+	if (r->nthreads == 1)
+		ring_inline(r);
+	else if (t == 0)
+		ring_leader(r);
+	else
+		ring_helper(r, t);
+}
+
+/* What the ring holds when the run ends before its items did: the leader passes it on (the items not folded are replayed when the run goes on on the backend path) */
+static void
+ring_close(SiftParRun *r, bool replay)
+{
+	SiftRing   *g = &r->ring;
+
+	for (; g->released < g->published; g->released++)
+		ring_settle_item(r, g->released, replay && g->state[g->released % g->slots] != RING_DONE);
 }
 
 static void
@@ -240,7 +436,10 @@ phase2_loop(SiftParRun *r, int t)
 static void
 job_phase1(int worker, void *r)
 {
-	phase1_loop(r, worker);
+	if (((SiftParRun *) r)->mode == SIFT_PAR_RING)
+		phase1_ring(r, worker);
+	else
+		phase1_loop(r, worker);
 }
 
 static void
@@ -252,7 +451,7 @@ job_phase2(int worker, void *r)
 static void
 job_stop(void *r)
 {
-	atomic_store_explicit(&((SiftParRun *) r)->halt, true, memory_order_relaxed);
+	run_halt(r);
 }
 
 static void
@@ -271,6 +470,8 @@ leftover(const SiftParRun *r, SiftParRange *out)
 {
 	uint32		n = 0;
 
+	if (r->mode == SIFT_PAR_RING)
+		return 0;
 	for (int t = 0; t < r->nthreads; t++)
 		if (r->left[t].lo < r->left[t].hi)
 			out[n++] = r->left[t];
@@ -289,7 +490,7 @@ run_phases(SiftParRun *r)
 {
 	SiftErr		err = {0};
 
-	run_phase(r, job_phase1, phase1_loop);
+	run_phase(r, job_phase1, r->mode == SIFT_PAR_RING ? phase1_ring : phase1_loop);
 	if (halted(r))
 		return;
 	if (r->ops->seal != NULL && !r->ops->seal(r->ctx, &r->nparts, &err))
@@ -298,21 +499,39 @@ run_phases(SiftParRun *r)
 		run_phase(r, job_phase2, phase2_loop);
 }
 
+/* Whether the run stopped for memory, and the operator drains what it folded */
+static bool
+overflowed(SiftParRun *r, SiftErr *err)
+{
+	return sift_errlatch_get(&r->lt, err) && err->code == SIFT_ERR_WORK_MEM && r->ops->overflow_drain != NULL;
+}
+
 bool
 sift_par_run(const SiftParCfg *cfg, const SiftParOps *ops, void *ctx, SiftParArenas *arenas, Relation rel)
 {
-	SiftParRun	r = {.ops = ops,.ctx = ctx,.ar = arenas,.nthreads = cfg->nthreads};
+	SiftParRun	r = {.ops = ops,.ctx = ctx,.ar = arenas,.mode = cfg->mode,.nthreads = cfg->nthreads};
 	SiftErr		err;
 
 	Assert(cfg->nthreads >= 1 && cfg->nthreads <= arenas->n);
-	r.q = MemoryContextAllocAligned(CurrentMemoryContext, sift_morsel_size(1), SIFT_PAR_SHM_ALIGN, 0);
-	sift_morsel_init(r.q, 1, &cfg->items, cfg->nthreads);
 	sift_errlatch_init(&r.lt);
 	atomic_init(&r.halt, false);
 	atomic_init(&r.next_part, 0);
+	if (cfg->mode == SIFT_PAR_RING)
+	{
+		Assert(ops->feed_slot != NULL && ops->release_slot != NULL && cfg->ring_slots <= SIFT_PAR_RING_MAX);
+		r.ring.slots = cfg->ring_slots > 0 ? cfg->ring_slots : Min(2 * cfg->nthreads, SIFT_PAR_RING_MAX);
+		pthread_mutex_init(&r.ring.mu, NULL);
+		pthread_cond_init(&r.ring.cv, NULL);
+	}
+	else
+	{
+		r.q = MemoryContextAllocAligned(CurrentMemoryContext, sift_morsel_size(1), SIFT_PAR_SHM_ALIGN, 0);
+		sift_morsel_init(r.q, 1, &cfg->items, cfg->nthreads);
+	}
 	PG_TRY();
 	{
 		run_phases(&r);
+		r.completed = true;
 	}
 	PG_FINALLY();
 	{
@@ -321,20 +540,31 @@ sift_par_run(const SiftParCfg *cfg, const SiftParOps *ops, void *ctx, SiftParAre
 			job_stop(&r);
 			sift_par_pool_wait();
 		}
+		if (r.mode == SIFT_PAR_RING && !(r.completed && overflowed(&r, &err)))
+			ring_close(&r, false);
 	}
 	PG_END_TRY();
+	if (r.mode == SIFT_PAR_RING)
+	{
+		pthread_cond_destroy(&r.ring.cv);
+		pthread_mutex_destroy(&r.ring.mu);
+	}
 	if (sift_errlatch_get(&r.lt, &err))
 	{
 		SiftParRange left[SIFT_PAR_MAX_THREADS + SIFT_MORSEL_LANES];
 
 		if (err.code != SIFT_ERR_WORK_MEM || ops->overflow_drain == NULL)
 			sift_err_rethrow(rel, &err);
+		if (r.mode == SIFT_PAR_RING)
+			ring_close(&r, true);
 		ops->overflow_drain(ctx, left, leftover(&r, left));
-		pfree(r.q);
+		if (r.q != NULL)
+			pfree(r.q);
 		return false;
 	}
 	if (ops->finish != NULL)
 		ops->finish(ctx);
-	pfree(r.q);
+	if (r.q != NULL)
+		pfree(r.q);
 	return true;
 }

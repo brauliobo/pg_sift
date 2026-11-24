@@ -106,18 +106,41 @@ typedef struct SiftParRange
 	uint32		hi;
 } SiftParRange;
 
-/* A run: the items [0, items) are split in morsels, and phase 2 has the partitions that seal returns */
+typedef enum SiftParMode
+{
+	SIFT_PAR_RANGE = 0,			/* the items [0, items) are split in guided morsels that every thread takes */
+	SIFT_PAR_RING = 1			/* the leader makes the items one by one into a ring of ring_slots slots (SiftParOps.feed), every thread takes the ones that are made */
+} SiftParMode;
+
+/* The ring of a run in RING mode: at most this many slots */
+#define SIFT_PAR_RING_MAX		64
+
+/* A run: RANGE: the items [0, items) are split in morsels; RING: the items are what feed makes. Phase 2 has the partitions that seal returns */
 typedef struct SiftParCfg
 {
+	SiftParMode mode;
 	uint32		nthreads;		/* 1: every phase runs on the leader, with no wakeup of the pool */
-	uint32		items;
+	uint32		items;			/* RANGE: the number of items */
+	uint32		ring_slots;		/* RING: the slots, 1 .. SIFT_PAR_RING_MAX (0: twice the threads); item i is in slot i % ring_slots */
 } SiftParCfg;
 
 typedef struct SiftParOps
 {
 	/*
-	 * Thread `worker`: the items [lo, hi). false, with err filled, when it stops before the end: *done is the number of items from lo that are in. SIFT_ERR_WORK_MEM is the memory of the
-	 * thread: the others stop, and overflow_drain follows.
+	 * RING, the leader (the server may be called): makes item `item` in its slot, the next after the ones made; false: there are no more. The slot is not touched by the leader after
+	 * feed returns until release.
+	 */
+	bool		(*feed_slot) (void *ctx, uint32 item);
+	/* RING, the leader: item is done on every thread, or was replayed: its slot is free */
+	void		(*release_slot) (void *ctx, uint32 item);
+	/*
+	 * RING, the leader: phase 1 of the item said SIFT_ERR_ARENA_FULL or SIFT_ERR_SERIAL, so that nothing of it is folded: it is the backend path's, and its slot is still the item's. Runs
+	 * before release_slot, in the order of the items.
+	 */
+	void		(*fallback_item) (void *ctx, uint32 item);
+	/*
+	 * Thread `worker`: the items [lo, hi) (RING: the item lo). false, with err filled, when it stops before the end: *done is the number of items from lo that are in. SIFT_ERR_WORK_MEM is the
+	 * memory of the thread: the others stop, and overflow_drain follows. RING: SIFT_ERR_ARENA_FULL and SIFT_ERR_SERIAL leave the item to fallback_item and the run goes on.
 	 */
 	bool		(*phase1) (void *ctx, int worker, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *done, SiftErr *err);
 	/* The leader, after every thread has left phase 1: the partitions of phase 2 (0: the answer is done). May call the server */

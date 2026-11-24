@@ -16,12 +16,14 @@ FLOCK    = $(if $(shell command -v flock),flock /tmp/sift-perf.lock)
 OUT     ?= /tmp/sift-unit
 MODE    ?= plain
 
-TESTS   = test_arena par_core par_radix
+TESTS   = test_arena par_core par_ring par_radix
 BENCHES = bench_arena bench_par_radix
 LIB_test_arena  = core/par/arena.c col/compress.c
 LIB_bench_arena = core/par/arena.c
 LIB_par_core    = core/par/arena.c core/par/morsel.c core/par/pool.c core/par/radix.c core/par/topk.c
 FX_par_core     = $(B)/par_host.o
+LIB_par_ring    = $(LIB_par_core)
+FX_par_ring     = $(B)/par_host.o
 LIB_par_radix   = $(LIB_par_core) agg/v6/par/group.c agg/v6/par/distinct.c agg/v6/v6_group_cmp.c agg/v6/v6_distinct_u64.c agg/kern6_hash.c
 FX_par_radix    = $(B)/par_host.o
 LIB_bench_par_radix = $(LIB_par_radix)
