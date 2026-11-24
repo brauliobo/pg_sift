@@ -164,6 +164,7 @@ TESTING_REGRESS += agg_v6_jsonb_exists
 TESTING_REGRESS += agg_v6_lateral_table_params
 TESTING_REGRESS += agg_v6_live_suites
 TESTING_REGRESS += agg_v6_lookup_nan
+TESTING_REGRESS += agg_v6_matrix_remaining_tail
 TESTING_REGRESS += agg_v6_matrix_topn_const
 TESTING_REGRESS += agg_v6_numeric_nan
 TESTING_REGRESS += agg_v6_par

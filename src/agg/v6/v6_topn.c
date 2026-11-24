@@ -213,7 +213,7 @@ shape_ok(PlannerInfo *root, SiftV6TopNSpec *spec)
 		q->hasTargetSRFs || q->distinctClause != NIL || q->setOperations != NULL || q->rowMarks != NIL || q->sortClause == NIL ||
 		list_length(q->sortClause) > SIFT_TOURN_MAX_KEYS || q->limitCount == NULL || !count_ok(q->limitCount) || !count_ok(q->limitOffset))
 		return false;
-	if (IsA(l, Const) && (l->constisnull || DatumGetInt64(l->constvalue) <= 0 || plan_rows(q->limitCount, q->limitOffset) > SIFT_TOURN_MAX_K))
+	if (IsA(l, Const) && (l->constisnull || DatumGetInt64(l->constvalue) <= 0))
 		return false;
 	if (q->limitOffset != NULL && IsA(o, Const) && !o->constisnull && DatumGetInt64(o->constvalue) < 0)
 		return false;
@@ -338,6 +338,8 @@ index_total(const TopNPlan *p, double k)
 				scan;
 
 	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	if (k > SIFT_TOURN_MAX_K)
+		return scan + cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (p->spec.nkeys + list_length(p->quals) + log2(Max(p->rel->rows, 2.0)));
 	if (!ordered && sift_v6_gpu_topn_forced(&p->spec))
 		return open + cpu_tuple_cost * k;
 	return open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));

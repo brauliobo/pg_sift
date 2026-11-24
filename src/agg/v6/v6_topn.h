@@ -2,8 +2,8 @@
  * agg/v6/v6_topn.h - ORDER BY k0 [, k1 ..] LIMIT n OFFSET m of one table over the sorted parts of an index of format major 2, as a SiftAggV6TopN node (UPPERREL_ORDERED): the tournament of
  * agg/topn_v6.h reads the units whose zones can hold a better row first and stops when none can. The node gives the best offset + n rows in order (with WITH TIES, every row that ties
  * the last) and keeps the pathkeys of the sort, so that the Limit above it takes the offset and the rows; it reads nothing the query's WHERE clauses do not pass (compiled by
- * v6_vexpr.h) and is not chosen under row security, for a constant limit past SIFT_TOURN_MAX_K rows, or, of an index, for a key the order of whose int64 is not the order of the type (a sift_table sorts the rows it fetches with the comparator and the collation of the query, so it takes uuid, bytea, char(n), name and numeric keys too). The limit and the offset
- * may be parameters: a run whose offset + limit is no more than SIFT_TOURN_MAX_K (and that has no WITH TIES) takes the tournament, any other sorts the rows the source gives in a tuplesort bounded by it.
+ * v6_vexpr.h) and is not chosen under row security or, of an index, for a key the order of whose int64 is not the order of the type (a sift_table sorts the rows it fetches with the comparator and the collation of the query, so it takes uuid, bytea, char(n), name and numeric keys too). The limit and the offset
+ * may be parameters: a run whose offset + limit is no more than SIFT_TOURN_MAX_K (and that has no WITH TIES) takes the tournament, any other (a constant past it is priced as that sort) sorts the rows the source gives in a tuplesort bounded by it.
  */
 #ifndef SIFT_AGG_V6_TOPN_H
 #define SIFT_AGG_V6_TOPN_H
