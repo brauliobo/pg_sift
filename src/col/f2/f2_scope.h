@@ -24,7 +24,7 @@ extern bool sift_f2_scoped(Relation rel);
 /* Does a scope of the index read one of the leaves: a column delta that patches none of them leaves every summary as it is */
 extern bool sift_f2_scope_reads_any(Relation rel, const int16 *leaves, int n);
 
-/* The summaries of all the scopes of the relation, built over the entity parts of the manifest as it is, replace the ones the directory names, in one commit; heap: the table of the index, rel for a table */
+/* The summaries of the scopes of the relation a summary can be made of (an integer member), built over the entity parts of the manifest as it is, replace the ones the directory names, in one commit; heap: the table of the index, rel for a table */
 extern void sift_f2_scope_build(Relation heap, Relation rel);
 
 /* After a compaction, an insert or an edit of the pairs: the summaries that no longer describe the parts or the pairs are built again; the number of them. A table the summary of whose scope cannot be built now (no journal of its pairs, a column delta, a part of another schema) is left as it is */

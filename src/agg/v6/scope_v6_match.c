@@ -11,9 +11,11 @@
 #include "postgres.h"
 
 #include "access/table.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_class_d.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_opfamily_d.h"
+#include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -31,6 +33,32 @@ select_only(const Query *q)
 {
 	return q->commandType == CMD_SELECT && !q->hasAggs && !q->hasWindowFuncs && !q->hasSubLinks && !q->hasTargetSRFs && q->groupClause == NIL && q->sortClause == NIL && q->limitCount == NULL &&
 		q->limitOffset == NULL && q->cteList == NIL && q->rowMarks == NIL && q->havingQual == NULL && list_length(q->targetList) == 1 && !((TargetEntry *) linitial(q->targetList))->resjunk;
+}
+
+Node *
+sift_v6_strip_relabel(Node *n)
+{
+	while (n != NULL && IsA(n, RelabelType))
+		n = (Node *) ((RelabelType *) n)->arg;
+	return n;
+}
+
+/* An integer to an integer, a date, timestamp or timestamptz to its own type, a string to a string, a uuid to a uuid */
+bool
+sift_v6_key_arg_ok(Oid key_type, Oid typid)
+{
+	return sift_keymap_same_kind(key_type, typid) || (sift_scope_word_type(key_type) && typid == key_type);
+}
+
+/* Is opno the equality of the scope key column: an integer, a date, a timestamp or a timestamptz, or a text or varchar column under a deterministic collation of the operator, or a uuid */
+bool
+sift_v6_key_equality(Oid key_type, Oid opno, Oid inputcollid)
+{
+	const Oid	opclass = GetDefaultOpClass(key_type, BTREE_AM_OID);
+
+	if (sift_keymap_type(key_type) && key_type != UUIDOID && OidIsValid(inputcollid) && !get_collation_isdeterministic(inputcollid))
+		return false;
+	return OidIsValid(opclass) && get_op_opfamily_strategy(opno, get_opclass_family(opclass)) == BTEqualStrategyNumber;
 }
 
 static bool

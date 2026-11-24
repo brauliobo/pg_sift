@@ -256,9 +256,12 @@ sift_f2_scope_build(Relation heap, Relation rel)
 	{
 		SiftF2ScopeCfg sc;
 
+		refs[s] = (SiftManifestScopeRef) {0};
+		replaced[s] = sift_f2s_supported(rel, store, s);
+		if (!replaced[s])
+			continue;
 		sift_f2s_cfg(rel, store, s, &sc);
 		refs[s] = build_scratch(build_one, heap, rel, store, &sc, &mr, snap);
-		replaced[s] = true;
 	}
 	commit_scopes(rel, &mr, refs, nscope, replaced);
 	UnregisterSnapshot(snap);
