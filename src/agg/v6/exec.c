@@ -552,6 +552,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (st->spec->nparts > 0)
 		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
+	sift_v6_explain_group_keys(st->spec, es);
 	if (st->spec->topk > 0)
 		sift_v6_explain_topn_groups(st->spec, es);
 	if (OidIsValid(st->spec->text_indexoid) && es->analyze)
@@ -585,7 +586,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 	{
 		ExplainPropertyInteger("Star Dimensions", NULL, st->spec->ext->ndims, es);
-		sift_v6_explain_lookup_joins(&st->css, es);
+		sift_v6_explain_lookup_joins(&st->css, st->spec->ext, es);
 	}
 	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);

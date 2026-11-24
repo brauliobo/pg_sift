@@ -67,23 +67,12 @@ sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relation index, Exp
 static bool
 dimension_rels(PlanState *ps, Bitmapset **rels)
 {
-	switch (nodeTag(ps->plan))
-	{
-		case T_SubqueryScan:
-			*rels = bms_add_member(*rels, ((Scan *) ps->plan)->scanrelid);
-			return false;
-		case T_SeqScan:
-		case T_IndexScan:
-		case T_IndexOnlyScan:
-		case T_BitmapHeapScan:
-		case T_CustomScan:
-			if (((Scan *) ps->plan)->scanrelid > 0)
-				*rels = bms_add_member(*rels, ((Scan *) ps->plan)->scanrelid);
-			break;
-		default:
-			break;
-	}
-	return planstate_tree_walker(ps, dimension_rels, rels);
+	const Plan *plan = ps->plan;
+	const bool	scan = IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan) || IsA(plan, CustomScan);
+
+	if ((scan || IsA(plan, SubqueryScan)) && ((Scan *) plan)->scanrelid > 0)
+		*rels = bms_add_member(*rels, ((Scan *) plan)->scanrelid);
+	return !IsA(plan, SubqueryScan) && planstate_tree_walker(ps, dimension_rels, rels);
 }
 
 static char *
@@ -92,40 +81,81 @@ dimension_name(const RangeTblEntry *rte)
 	return rte->rtekind == RTE_SUBQUERY ? psprintf("%s (subquery)", rte->eref->aliasname) : get_rel_name(rte->relid);
 }
 
+static const char *
+join_tag(SiftV6JoinMode mode)
+{
+	switch (mode)
+	{
+		case SV6J_LEFT_EQUI:
+			return " (left)";
+		case SV6J_SEMI_EQUI:
+			return " (semi)";
+		case SV6J_ANTI_EQUI:
+			return " (anti)";
+		case SV6J_RIGHT_EQUI:
+			return " (preserved)";
+		case SV6J_FULL_EQUI:
+			return " (full)";
+		default:
+			return "";
+	}
+}
+
 void
-sift_v6_explain_lookup_joins(CustomScanState *css, ExplainState *es)
+sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es)
 {
 	List	   *names = NIL;
 
-	foreach_ptr(PlanState, ps, css->custom_ps)
+	for (int d = 0; d < ext->ndims; d++)
 	{
 		Bitmapset  *rels = NULL;
 		int			rti = -1;
 
-		dimension_rels(ps, &rels);
+		dimension_rels(list_nth(css->custom_ps, d), &rels);
 		while ((rti = bms_next_member(rels, rti)) >= 0)
-			names = lappend(names, dimension_name(rt_fetch(rti, es->rtable)));
+			names = lappend(names, psprintf("%s%s", dimension_name(rt_fetch(rti, es->rtable)), join_tag(ext->dim[d].mode)));
 	}
 	if (names != NIL)
 		ExplainPropertyList("Lookup Joins", names, es);
 }
 
-/* the column of a scan key, by the name of the table: attno is the position in the index, or the attribute of the table */
+/* a column of the scan that the statement names as it is, by the name of the table: derived, jsonb, joined and index expression columns have no name, and print no line rather than a made-up one */
 static const char *
-key_name(Oid relid, bool is_table, int attno)
+col_name(Oid relid, bool is_table, const SiftV6Col *c)
 {
-	Relation	index;
-	AttrNumber	att = attno;
 	Oid			heapoid = relid;
+	AttrNumber	att = c->attno;
 
+	if (c->src != SV6SRC_ATTR || c->attno <= 0 || c->jleaf != 0 || c->derive != 0)
+		return NULL;
 	if (!is_table)
 	{
-		index = index_open(relid, AccessShareLock);
+		Relation	index = index_open(relid, AccessShareLock);
+
 		heapoid = index->rd_index->indrelid;
-		att = index->rd_index->indkey.values[attno - 1];
+		att = index->rd_index->indkey.values[c->attno - 1];
 		index_close(index, AccessShareLock);
 	}
-	return get_attname(heapoid, att, false);
+	return att > 0 ? get_attname(heapoid, att, false) : NULL;
+}
+
+void
+sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es)
+{
+	StringInfoData buf;
+
+	if (spec->nsets > 0 || spec->affine || spec->nkeys == 0)
+		return;
+	initStringInfo(&buf);
+	for (int i = 0; i < spec->nkeys; i++)
+	{
+		const char *name = col_name(spec->relid, spec->is_table, &spec->key[i]);
+
+		if (name == NULL)
+			return;
+		appendStringInfo(&buf, "%s%s", i ? ", " : "", name);
+	}
+	ExplainPropertyText("Group Keys", buf.data, es);
 }
 
 typedef struct TopNKey
@@ -142,11 +172,14 @@ explain_topn(Oid relid, bool is_table, const TopNKey *keys, int nkeys, const cha
 
 	initStringInfo(&buf);
 	for (int i = 0; i < nkeys; i++)
-		if (keys[i].col.src != SV6SRC_ATTR || keys[i].col.jleaf != 0 || keys[i].col.derive != 0)
+	{
+		const char *name = col_name(relid, is_table, &keys[i].col);
+
+		if (name == NULL)
 			return;
-	for (int i = 0; i < nkeys; i++)
-		appendStringInfo(&buf, "%s%s%s%s", i ? ", " : "", key_name(relid, is_table, keys[i].col.attno), keys[i].desc ? " DESC" : "",
+		appendStringInfo(&buf, "%s%s%s%s", i ? ", " : "", name, keys[i].desc ? " DESC" : "",
 						 keys[i].desc == keys[i].nulls_first ? "" : keys[i].nulls_first ? " NULLS FIRST" : " NULLS LAST");
+	}
 	ExplainPropertyText("Top-N", psprintf("%s (limit %s)", buf.data, limit), es);
 }
 

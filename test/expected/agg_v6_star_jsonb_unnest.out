@@ -83,7 +83,7 @@ EXPLAIN (COSTS OFF) SELECT d1.name, d3.cat, count(*) FROM sf JOIN d1 ON sf.k = d
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 2
-   Lookup Joins: d1, d3
+   Lookup Joins: d1, d3 (left)
    Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d1
@@ -115,7 +115,7 @@ EXPLAIN (COSTS OFF) SELECT d3.cat, sf.doc->>'t', sum((sf.doc->>'a')::float8) FRO
  Custom Scan (SiftAggV6)
    Index: sf_col
    Star Dimensions: 1
-   Lookup Joins: d3
+   Lookup Joins: d3 (left)
    Exec: SIMD=scalar group=salted-ht
    I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
    ->  Seq Scan on d3

@@ -501,6 +501,7 @@ sip_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	SipState   *st = (SipState *) node;
 
 	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)));
+	ExplainPropertyList("Lookup Joins", list_make1(get_rel_name((Oid) list_nth_int(linitial(st->priv), 2))), es);
 	if (st->ran)
 	{
 		sift_v6_explain_count(es, "Filter Rows In", (int64) st->stats.rows_in);

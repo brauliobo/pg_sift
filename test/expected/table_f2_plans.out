@@ -25,7 +25,8 @@ SELECT plan('SELECT grp, count(*), sum(qty) FROM pt GROUP BY grp') AS group_by_k
 -------------------------
  Custom Scan (SiftAggV6)
  Table: pt
-(2 rows)
+ Group Keys: grp
+(3 rows)
 
 SELECT plan('SELECT grp, sum(amount) FROM pt WHERE qty >= 5 AND grp IN (1, 2, 3) GROUP BY grp') AS filtered_numeric_sum;
                     filtered_numeric_sum                    
@@ -33,14 +34,16 @@ SELECT plan('SELECT grp, sum(amount) FROM pt WHERE qty >= 5 AND grp IN (1, 2, 3)
  Custom Scan (SiftAggV6)
  Table: pt
  Filters: (qty >= 5) AND (grp = ANY ('{1,2,3}'::integer[]))
-(3 rows)
+ Group Keys: grp
+(4 rows)
 
 SELECT plan('SELECT date_bin(interval ''1 hour'', at, timestamptz ''2030-01-01''), count(*) FROM pt GROUP BY 1') AS date_bin;
         date_bin         
 -------------------------
  Custom Scan (SiftAggV6)
  Table: pt
-(2 rows)
+ Group Keys: at
+(3 rows)
 
 SET sift.agg_force = on;
 SELECT plan('SELECT count(*) FROM pt WHERE id < 100') AS key_range_count;
