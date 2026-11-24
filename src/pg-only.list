@@ -478,6 +478,8 @@ col/f2/f2_view.h
 col/f2/f2_write.c
 col/f2/f2_zone_test.c
 col/f2/f2_zone_verdict.c
+col/f2/heap_probe.c
+col/f2/heap_probe.h
 col/f2/f2test.h
 col/f2/format2_enc_test.c
 col/f2/format2_test.c
