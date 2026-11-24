@@ -313,7 +313,7 @@ typeof_leaf(const SiftV6Rel *rel, const Node *n)
 
 	if (e == NULL || !IsA(e, FuncExpr) || func_of(e) != F_JSONB_TYPEOF || list_length(args_of(e)) != 1)
 		return -1;
-	leaf = field_leaf(rel, linitial(args_of(e)), F_JSONB_OBJECT_FIELD, &att, &key);
+	leaf = field_leaf(rel, linitial(args_of(e)), false, &att, &key);
 	return scalar_leaf(rel, leaf) ? leaf : -1;
 }
 
