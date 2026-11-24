@@ -148,32 +148,77 @@ batch_room(SiftParGroup *g, int t, const SiftParGroupBatch *b, SiftErr *err)
 	return !sp->strs || cmp_intern_reserve(&w->local, b->n * sift_pc64(sp->strs), strbytes) || fail_mem(err, NO_ROOM);
 }
 
-/* The rows of integer keys of a batch to the partitions: the record of a row is its key words and arguments, in the partition of the hash of its key */
+#define WORDS_CHUNK		32
+
+/* cmp_key_hash of a table of nk words, no text */
+static inline uint64
+words_hash(const uint64 *k, uint32 nk, bool cnt_hi)
+{
+	uint64		h;
+
+	if (nk == 1)
+		return sift_aggk6_hash1(k[0]);
+	if (nk == 2)
+		return sift_aggk6_hash1(k[0] ^ sift_aggk6_hash1(cnt_hi ? (uint32) k[1] : k[1]));
+	h = sift_aggk6_hash1(k[nk - 1]);
+	for (int i = nk - 2; i >= 0; i--)
+		h = sift_aggk6_hash1(k[i] ^ h);
+	return h;
+}
+
+/* The rows of integer keys of a batch to the partitions: the record of a row is its key words and arguments, in the partition of the hash of its key (nk and nsum are constants in the callers that matter) */
+static inline __attribute__((always_inline)) bool
+scatter_n(SiftParGroup *g, GroupWorker *w, const SiftParGroupBatch *b, const uint32 nk, const uint32 nsum)
+{
+	const uint32 words = pgk_word_rec_size(&g->sp, false) / 8;
+	const bool	cnt_hi = w->local.cnt_hi;
+
+	for (uint32 base = 0; base < b->n; base += WORDS_CHUNK)
+	{
+		const uint32 m = Min(WORDS_CHUNK, b->n - base);
+		uint64		h[WORDS_CHUNK];
+
+		for (uint32 i = 0; i < m; i++)
+		{
+			uint64		k[SIFT_PAR_GROUP_MAX_KEYS];
+
+			for (uint32 j = 0; j < nk; j++)
+				k[j] = b->key[j][base + i];
+			h[i] = words_hash(k, nk, cnt_hi);
+		}
+		for (uint32 i = 0; i < m; i++)
+		{
+			uint64	   *rec = sift_radix_reserve(&w->raw, sift_radix_part(h[i]), 8 * words);
+			uint32		n = 0;
+
+			if (rec == NULL)
+				return false;
+			for (uint32 j = 0; j < nk; j++)
+				rec[n++] = b->key[j][base + i];
+			for (uint32 q = 0; q < nsum; q++)
+				rec[n++] = b->arg[q][base + i];
+			for (; n < words; n++)
+				rec[n] = 0;
+		}
+	}
+	return true;
+}
+
 static bool
 scatter_words(SiftParGroup *g, GroupWorker *w, const SiftParGroupBatch *b)
 {
-	const SiftParGroupSpec *sp = &g->sp;
-	const uint32 words = pgk_word_rec_size(sp, false) / 8;
+	const uint32 nk = g->sp.nk,
+				nsum = g->sp.nsum;
 
-	for (uint32 i = 0; i < b->n; i++)
-	{
-		uint64		k[SIFT_PAR_GROUP_MAX_KEYS];
-		uint64	   *rec;
-		uint32		n = 0;
-
-		for (int j = 0; j < sp->nk; j++)
-			k[j] = b->key[j][i];
-		rec = sift_radix_reserve(&w->raw, sift_radix_part(cmp_key_hash(&w->local, k)), 8 * words);
-		if (rec == NULL)
-			return false;
-		for (int j = 0; j < sp->nk; j++)
-			rec[n++] = k[j];
-		for (int m = 0; m < sp->nsum; m++)
-			rec[n++] = b->arg[m][i];
-		for (; n < words; n++)
-			rec[n] = 0;
-	}
-	return true;
+	if (nk == 2 && nsum == 1)
+		return scatter_n(g, w, b, 2, 1);
+	if (nk == 2 && nsum == 2)
+		return scatter_n(g, w, b, 2, 2);
+	if (nk == 1 && nsum == 1)
+		return scatter_n(g, w, b, 1, 1);
+	if (nk == 1 && nsum == 0)
+		return scatter_n(g, w, b, 1, 0);
+	return scatter_n(g, w, b, nk, nsum);
 }
 
 static void
@@ -357,22 +402,90 @@ typedef struct Fold
 	bool		partial;
 } Fold;
 
-/* the records of words only of a chunk: the table has room for all of them at once, and each is found and folded where it is */
+#define FOLD_CHUNK		16
+
+/* the slot of the key words w, made when the key is new (cmp_find of a table of nk words and no text) */
+static inline __attribute__((always_inline)) uint64 *
+find_words(SiftCompact *c, uint64 h, const uint64 *w, const uint32 nk)
+{
+	uint64	   *const tab = c->tab;
+	const uint64 mask = c->mask,
+				last = c->last_mask;
+	const uint32 sw = c->sw,
+				cw = c->cw,
+				cshift = c->cshift;
+
+	for (uint64 i = h & mask;; i = (i + 1) & mask)
+	{
+		uint64	   *s = tab + i * sw;
+		uint32		j = 0;
+
+		if ((s[cw] >> cshift) == 0)
+		{
+			for (; j < nk; j++)
+				s[j] = w[j];
+			c->count++;
+			return s;
+		}
+		while (j < nk - 1 && s[j] == w[j])
+			j++;
+		if (j == nk - 1 && ((s[j] ^ w[j]) & last) == 0)
+			return s;
+	}
+}
+
+/* the records of words only of a chunk: the table has room for all of them at once, and each is found and folded where it is; the slots of a few records are asked for ahead */
+static inline __attribute__((always_inline)) bool
+fold_words_n(const Fold *f, const uint8 *b, uint32 len, const uint32 nk, const uint32 nsum, const bool partial)
+{
+	SiftCompact *c = f->tab;
+	const uint32 rb = pgk_word_rec_size(f->sp, partial);
+	const bool	cnt_hi = c->cnt_hi;
+	const uint32 nrec = len / rb;
+	const uint32 sum0 = c->sum0,
+				cw = c->cw,
+				cshift = c->cshift;
+
+	if (!cmp_reserve(c, nrec, UINT64_MAX))
+		return false;
+	for (uint32 base = 0; base < nrec; base += FOLD_CHUNK)
+	{
+		const uint32 m = Min(FOLD_CHUNK, nrec - base);
+		uint64		h[FOLD_CHUNK];
+
+		for (uint32 i = 0; i < m; i++)
+		{
+			h[i] = words_hash((const uint64 *) (b + (base + i) * rb), nk, cnt_hi);
+			__builtin_prefetch(c->tab + (h[i] & c->mask) * c->sw, 1);
+		}
+		for (uint32 i = 0; i < m; i++)
+		{
+			const uint64 *w = (const uint64 *) (b + (base + i) * rb);
+			uint64	   *s = find_words(c, h[i], w, nk);
+
+			s[cw] += (partial ? w[nk] : 1) << cshift;
+			for (uint32 q = 0; q < nsum; q++)
+				s[sum0 + q] += w[nk + partial + q];
+		}
+	}
+	return true;
+}
+
+#define FOLD_CASE(nk_, nsum_) \
+	if (nk == nk_ && nsum == nsum_) \
+		return f->partial ? fold_words_n(f, b, len, nk_, nsum_, true) : fold_words_n(f, b, len, nk_, nsum_, false)
+
 static bool
 fold_words(const Fold *f, const uint8 *b, uint32 len)
 {
-	SiftCompact *c = f->tab;
-	const uint32 rb = pgk_word_rec_size(f->sp, f->partial);
+	const uint32 nk = f->sp->nk,
+				nsum = f->sp->nsum;
 
-	if (!cmp_reserve(c, len / rb, UINT64_MAX))
-		return false;
-	for (uint32 off = 0; off < len; off += rb)
-	{
-		const uint64 *w = (const uint64 *) (b + off);
-
-		cmp_fold(c, cmp_find(c, cmp_key_hash(c, w), w), f->partial ? w[f->sp->nk] : 1, w + f->sp->nk + f->partial);
-	}
-	return true;
+	FOLD_CASE(2, 1);
+	FOLD_CASE(2, 2);
+	FOLD_CASE(1, 1);
+	FOLD_CASE(1, 0);
+	return fold_words_n(f, b, len, nk, nsum, f->partial);
 }
 
 /* the records of a chunk, each as its table takes it */
