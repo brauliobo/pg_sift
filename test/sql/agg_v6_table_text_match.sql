@@ -55,6 +55,8 @@ INSERT INTO tm_q VALUES
 	('having',		'SELECT region, count(*) FROM tm WHERE body @@> ''mid'' GROUP BY region HAVING count(*) > 100'),
 	('topn',		'SELECT tenant, count(*) AS n FROM tm WHERE body @@> ''mid'' AND region < 3 GROUP BY tenant ORDER BY n DESC, tenant LIMIT 5'),
 	('rows_topn',	'SELECT id, amount FROM tm WHERE body @@> ''mid'' AND region < 3 ORDER BY amount, id LIMIT 5'),
+	('rows_topn_text',	'SELECT id, amount FROM tm WHERE body @@> ''mid'' ORDER BY amount DESC, id LIMIT 5'),
+	('rows_topn_or',	'SELECT id, amount FROM tm WHERE body @@> ''mid'' OR body @@> ''rareterm'' ORDER BY amount DESC, id LIMIT 5'),
 	('semi_join',	'SELECT region, count(*) FROM tm WHERE body @@> ''mid'' AND tenant IN (SELECT tenant FROM tm WHERE amount = 7) GROUP BY region'),
 	('unnest',		'SELECT u, count(*) FROM tm, unnest(tm.arr) u WHERE tm.body @@> ''mid'' GROUP BY u');
 
@@ -64,7 +66,7 @@ SELECT name, (text_same(q)).* FROM tm_q ORDER BY name;
 \echo -- after updates, deletes and inside the transaction that changed them
 UPDATE tm SET body = body || ' mid' WHERE id % 53 = 0;
 DELETE FROM tm WHERE id % 41 = 0;
-SELECT name, (text_same(q)).* FROM tm_q WHERE name IN ('count', 'groups', 'text_qual', 'text_key', 'rows_topn') ORDER BY name;
+SELECT name, (text_same(q)).* FROM tm_q WHERE name IN ('count', 'groups', 'text_qual', 'text_key', 'rows_topn', 'rows_topn_text') ORDER BY name;
 BEGIN;
 UPDATE tm SET body = 'mid gone' WHERE id % 61 = 0;
 INSERT INTO tm SELECT 100000 + i, i, i % 7, i, 'tag1', 'mid fresh', ARRAY[i] FROM generate_series(1, 500) i;

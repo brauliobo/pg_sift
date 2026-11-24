@@ -905,7 +905,7 @@ sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals,
 	V6Scan		s = {.spec = spec,.rows = rows,.group = totals,.stats = stats};
 
 	if (index == NULL)
-		sift_f2_v6_scan_table_run(&s, heap, quals, snap, NULL, 0, star, NULL, NULL);
+		sift_f2_v6_scan_table_run(&s, heap, quals, snap, NULL, 0, star, next_chunk, chunk_arg);
 	else
 		scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, star, next_chunk, chunk_arg);
 }
