@@ -9,6 +9,7 @@
 #include "col/f2/pin_win.h"
 #include "col/f2/scan/par_int.h"
 #include "col/granule/cfilt_str_simd.h"
+#include "core/memtrack.h"
 #include "core/popcount.h"
 #include "utils/memutils.h"
 
@@ -60,7 +61,7 @@ struct SiftPinWin
 SiftPinWin *
 sift_pin_win_new(Relation rel, Snapshot snap, const int *leaves, int nleaves, uint32 nslots, SiftPinPartOk part_ok, void *part_arg)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift pin window", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift pin window");
 	SiftPinWin *w = MemoryContextAllocZero(cx, sizeof(SiftPinWin));
 
 	Assert(nslots >= 1 && nslots <= SIFT_PIN_WIN_SLOTS_MAX);

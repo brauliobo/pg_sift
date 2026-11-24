@@ -18,6 +18,7 @@
 #include "col/f2/pin_win.h"
 #include "col/granule/cfilt_str_simd.h"
 #include "core/compat.h"
+#include "core/memtrack.h"
 #include "core/par/pool.h"
 
 #define SIGN_FLIP		(UINT64CONST(1) << 63)
@@ -441,7 +442,7 @@ arenas_fit(const ParShape *sh, uint64 rows, uint32 groups_est, int nthreads, siz
 static void
 run_threads(SiftV6ParScan *p, int nthreads, size_t state)
 {
-	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift agg v6 par", ALLOCSET_DEFAULT_SIZES);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 par");
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const uint32 items = sift_pin_win_items(p->win);
 	SiftParArenas *ar = sift_par_arenas_create(cx, nthreads, SCRATCH_BYTES, state, WORK_BYTES);
