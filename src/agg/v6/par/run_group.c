@@ -250,15 +250,10 @@ group_emit(void *arg, int worker, const SiftParGroupRow *row)
 	sift_v6_group_fold_rec(p->g, key, str, nulls, acc);
 }
 
-static void
-group_overflow(void *arg, const SiftParRange *left, uint32 nleft)
-{
-}
-
 static void *
 group_create(SiftV6ParScan *p, SiftParArenas *ar, uint64 rows, SiftErr *err)
 {
-	const SiftParGroupHooks hooks = {.fill = group_fill,.emit = group_emit,.overflow = group_overflow,.arg = p};
+	const SiftParGroupHooks hooks = {.fill = group_fill,.emit = group_emit,.arg = p};
 
 	return sift_par_group_create(ar, &p->sh.gs, p->spec->groups_est > SIFT_PAR_GROUP_LOW, rows, &hooks, err);
 }

@@ -53,7 +53,7 @@ typedef struct SiftParDistinctHooks
 {
 	/* Thread `worker`: the rows of the items [lo, hi), in memory of scratch that is valid until the next call; false, with err filled, when it cannot (the run is then not an answer) */
 	bool		(*fill) (void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParDistinctBatch *out, SiftErr *err);
-	/* After SIFT_ERR_WORK_MEM: the run is no answer, and the items that are not done are for the serial path */
+	/* NULL or, after SIFT_ERR_WORK_MEM (the run is no answer), the items that are not done */
 	void		(*overflow) (void *arg, const SiftParRange *left, uint32 nleft);
 	void	   *arg;
 } SiftParDistinctHooks;

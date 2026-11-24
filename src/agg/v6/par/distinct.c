@@ -346,7 +346,8 @@ distinct_overflow(void *vd, const SiftParRange *left, uint32 nleft)
 {
 	SiftParDistinct *d = vd;
 
-	d->hooks.overflow(d->hooks.arg, left, nleft);
+	if (d->hooks.overflow != NULL)
+		d->hooks.overflow(d->hooks.arg, left, nleft);
 }
 
 const SiftParOps sift_par_distinct_ops = {.phase1 = distinct_phase1,.seal = distinct_seal,.phase2 = distinct_phase2,.overflow_drain = distinct_overflow};

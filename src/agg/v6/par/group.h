@@ -77,7 +77,7 @@ typedef struct SiftParGroupHooks
 	bool		(*fill) (void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParGroupBatch *out, SiftErr *err);
 	/* A group, or a partial aggregate of one, that thread `worker` held, on the thread of the run once the others are done (the row is the callee's for the call only); the consumer adds what it gets to what it has */
 	void		(*emit) (void *arg, int worker, const SiftParGroupRow *row);
-	/* After the partial aggregates of everything folded: the items that are still to be done */
+	/* NULL or, after the partial aggregates of everything folded, the items that are still to be done */
 	void		(*overflow) (void *arg, const SiftParRange *left, uint32 nleft);
 	void	   *arg;
 } SiftParGroupHooks;

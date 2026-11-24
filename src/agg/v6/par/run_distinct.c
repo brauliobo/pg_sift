@@ -249,11 +249,6 @@ distinct_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, S
 	return true;
 }
 
-static void
-distinct_overflow(void *arg, const SiftParRange *left, uint32 nleft)
-{
-}
-
 /* The zone of the one integer key of every granule: the keys of the run are then in a range, which may be narrow */
 static void
 distinct_setup(SiftV6ParScan *p)
@@ -265,7 +260,7 @@ distinct_setup(SiftV6ParScan *p)
 static void *
 distinct_create(SiftV6ParScan *p, SiftParArenas *ar, uint64 rows, SiftErr *err)
 {
-	const SiftParDistinctHooks hooks = {.fill = distinct_fill,.overflow = distinct_overflow,.arg = p};
+	const SiftParDistinctHooks hooks = {.fill = distinct_fill,.arg = p};
 	SiftParDistinctSpec *ds = &p->sh.ds;
 	int64		lo,
 				hi;

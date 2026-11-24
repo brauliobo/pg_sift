@@ -525,7 +525,8 @@ group_overflow(void *vg, const SiftParRange *left, uint32 nleft)
 			sift_radix_scan(&g->w[v].pa, p, drain_chunk, &d);
 		}
 	}
-	g->hooks.overflow(g->hooks.arg, left, nleft);
+	if (g->hooks.overflow != NULL)
+		g->hooks.overflow(g->hooks.arg, left, nleft);
 }
 
 const SiftParOps sift_par_group_ops = {.phase1 = group_phase1,.seal = group_seal,.phase2 = group_phase2,.finish = group_finish,.overflow_drain = group_overflow};
