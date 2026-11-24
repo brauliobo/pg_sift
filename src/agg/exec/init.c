@@ -10,10 +10,13 @@
 #include "agg/rows.h"
 #include "agg/exec/int.h"
 #include "agg/v6/v6_live.h"
+#include "col/compress.h"
+#include "core/par/pool.h"
 
 void
 sift_agg_init(void)
 {
+	sift_par_pool_on_thread_exit(sift_colz_thread_fini);
 	sift_aggkern_init();
 	sift_aggcol_register();
 	sift_aggcte_init();

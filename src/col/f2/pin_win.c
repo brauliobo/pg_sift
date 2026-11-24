@@ -227,6 +227,8 @@ sift_pin_win_replay(void *vw, uint32 item)
 	s->tids_unneeded = pt->tids_unneeded;
 	PG_TRY();
 	{
+		if (s->part_sink != NULL)
+			s->part_sink(s->sink_arg, s->part, false, &s->tids_unneeded);
 		scan_span(w->rel, s, pt->schema, pt->pin, &pt->pp, job->granule, job->granule + 1, NULL, w->snap);
 	}
 	PG_FINALLY();

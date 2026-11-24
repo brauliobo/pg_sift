@@ -33,6 +33,7 @@
 #include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_rows_topn.h"
+#include "agg/v6/par/run.h"
 #include "col/am.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_sink.h"
@@ -719,6 +720,15 @@ rows_bound_leaf(const V6Scan *s)
 	return 0;
 }
 
+/* Whether the rows of a part reach the threads as the scan reaches its own consumer: the part is all-visible, so that no row of it needs a look at the heap */
+static bool
+par_part_ok(void *arg, const SiftPartDesc *d)
+{
+	const V6Scan *s = arg;
+
+	return s->visible_part != NULL && s->visible_part->part_gen == d->part_gen;
+}
+
 /* One pass over the index (over the rows of the bridge, when it is one) */
 static void
 scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip, const SiftTidBridge *bridge)
@@ -738,7 +748,12 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	if (s->preagg != NULL)
 		sift_f2_scan_set_gran_sink(scan, sift_v6_preagg_try_granule, s->preagg);
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
+	if (s->par != NULL)
+		sift_f2_scan_set_pin_win(scan, sift_v6_par_window(s->par));
 	sift_f2_scan_sink(scan, sift_f2_v6_sink, s, sift_f2_v6_scan_leaves(s), s->ncols);
+	if (s->par != NULL)
+		sift_v6_par_end(s->par);
+	s->par = NULL;
 	index_endscan(scan);
 }
 
@@ -759,7 +774,11 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	if (s->emit == NULL && s->rows == NULL && s->pipe == NULL && s->gate == NULL && next_chunk == NULL && s->group != NULL)
 		s->preagg = sift_v6_preagg_begin(s->spec, s->group, sift_col_rel(index)->first, &s->vet, s->stats);
 	if (next_chunk == NULL)
+	{
+		if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL)
+			s->par = sift_v6_par_begin(s->spec, s->group, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
+	}
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
 	{
 		s->stats->chunks++;
