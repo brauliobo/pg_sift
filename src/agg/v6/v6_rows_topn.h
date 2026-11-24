@@ -26,5 +26,9 @@ extern void sift_v6_rows_finish(SiftV6Rows *r);
 extern void sift_v6_rows_source(SiftV6Rows *r, uint32 source);
 /* the partition and the heap address of the next best row; false after the last */
 extern bool sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid);
+/* the key of the row sift_v6_rows_next gave: a sort column, or a column of a dimension the row carries */
+extern Datum sift_v6_rows_key(const SiftV6Rows *r, int key, bool *isnull);
+/* The aggregates of the whole set a row Top-N carries: a group of no keys, which the scan feeds every row it keeps */
+extern SiftV6Group *sift_v6_rows_totals_new(MemoryContext cx, const SiftV6Spec *spec);
 
 #endif							/* SIFT_AGG_V6_ROWS_TOPN_H */

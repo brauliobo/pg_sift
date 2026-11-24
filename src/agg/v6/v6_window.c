@@ -608,7 +608,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		total += cpu_operator_cost * p->rel->rows * 2.0 * (1 + spec.win.n_ord);
 	if (p->part_mode == WIN_REGROUP)
 		total += cpu_operator_cost * p->rel->rows * 4.0;
-	sift_v6_add_path(p->out, &window_path_methods, open, total, rows, pathkeys, lappend(list_copy(priv), p->quals));
+	sift_v6_add_path(p->out, &window_path_methods, open, total, rows, pathkeys, lappend(list_copy(priv), p->quals), NIL);
 	return true;
 }
 

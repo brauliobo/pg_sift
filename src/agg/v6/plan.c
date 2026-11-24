@@ -367,7 +367,7 @@ scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 	if (p->text != NULL)
 	{
 		double		touch = 1.0,
-					text_cost = sift_v6_text_cost(p->root, p->rel, p->text, p->text_qual, p->text_query, &touch);
+					text_cost = sift_v6_text_cost(p->root, p->rel, p->text, p->text_qual, p->text_queries, &touch);
 
 		/* a term the text index does not hold touches no granule, and the scan still pays for its opening */
 		*total = Max(*total * touch + text_cost, *startup);
@@ -457,9 +457,9 @@ agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 	return sift_v6_agg_kind(unfiltered, &g->kind);
 }
 
-/* a is the aggregate the scan computes, and shape the one the plan's tlist names: the same unless the filter of shape is an expression of the scan's argument (compile_agg) */
-static bool
-compile_agg_native(V6Plan *p, Aggref *a, const Aggref *shape)
+/* An aggregate the native kernels of the scan fold, not entered in the scan tlist (the caller decides what the node gives it as) */
+bool
+sift_v6_compile_agg_native(V6Plan *p, Aggref *a)
 {
 	SiftV6Agg	g = {.restype = a->aggtype};
 	Aggref		unfiltered = *a;
@@ -499,7 +499,6 @@ compile_agg_native(V6Plan *p, Aggref *a, const Aggref *shape)
 	}
 	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = g;
-	add_scan_var(p, (Expr *) shape);
 	return true;
 }
 
@@ -516,7 +515,6 @@ compile_agg_gen(V6Plan *p, Aggref *a)
 	p->spec.genref = lappend(p->spec.genref, copyObject(&unfiltered));
 	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = g;
-	add_scan_var(p, (Expr *) a);
 	return true;
 }
 
@@ -526,10 +524,10 @@ compile_agg(V6Plan *p, Aggref *a)
 	const int	nderive = p->spec.nderive;
 	Aggref	   *on_case = sift_vn_filter_to_case(a);
 
-	if (compile_agg_native(p, a, a))
+	if (sift_v6_compile_agg_native(p, a))
 		return true;
 	p->spec.nderive = nderive;
-	if (on_case != NULL && compile_agg_native(p, on_case, a))
+	if (on_case != NULL && sift_v6_compile_agg_native(p, on_case))
 		return true;
 	p->spec.nderive = nderive;
 	return compile_agg_gen(p, a);
@@ -567,7 +565,6 @@ compile_grouping(V6Plan *p, GroupingFunc *gf)
 	p->spec.func[p->spec.nfuncs] = f;
 	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = (SiftV6Agg) {.kind = SV6_GROUPING,.arg = {.attno = p->spec.nfuncs++},.restype = INT4OID};
-	add_scan_var(p, (Expr *) gf);
 	return true;
 }
 
@@ -578,8 +575,11 @@ compile_aggs(V6Plan *p, Node *e)
 	{
 		if (!IsA(n, Aggref) && !IsA(n, GroupingFunc))
 			continue;
-		if (!scan_tlist_has(p, (Expr *) n) && !(IsA(n, Aggref) ? compile_agg(p, (Aggref *) n) : compile_grouping(p, (GroupingFunc *) n)))
+		if (scan_tlist_has(p, (Expr *) n))
+			continue;
+		if (!(IsA(n, Aggref) ? compile_agg(p, (Aggref *) n) : compile_grouping(p, (GroupingFunc *) n)))
 			return false;
+		add_scan_var(p, (Expr *) n);
 	}
 	return true;
 }

@@ -38,7 +38,7 @@ typedef struct V6Plan
 	bool		score_ok;		/* an aggregate over sift.score(ctid): the scan that brings its rows brings their scores (agg/hybrid_plan.c) */
 	IndexOptInfo *text;			/* the sift index of the text query of the statement, if it has one (v6_text.c) */
 	RestrictInfo *text_qual;
-	Const	   *text_query;
+	List	   *text_queries;
 	const RestrictInfo *sub_qual;	/* the EXISTS over the elements of an array that the scan of the unnest decides itself (v6_unnest_exists.h): no clause of the table is compiled for it */
 } V6Plan;
 
@@ -68,9 +68,9 @@ extern void sift_v6_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel, Rel
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
 /* plan_topn_rows.c: the path of ORDER BY columns LIMIT K of the rows of one table, at the UPPERREL_ORDERED stage */
 extern void sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
-/* the row Top-N of the one index in hand (a partition's), and its path once the scan is priced */
+/* the row Top-N of the one index in hand (a partition's), and its path once the scan is priced; dims are the plans of the dimensions of a join, and what they cost */
 extern bool sift_v6_rows_compile(V6Plan *p, uint32 k);
-extern void sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan);
+extern void sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total);
 /* a partitioned table the plan can read as one scan, and the row Top-N over the partitions left after pruning */
 extern bool sift_v6_partitioned_rel_ok(PlannerInfo *root, RelOptInfo *rel);
 extern void sift_v6_add_rows_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
@@ -87,6 +87,12 @@ extern Oid sift_v6_plan_opfamily(const V6Plan *p, int att);
 extern Expr *sift_v6_index_qual(V6Plan *p, Expr *clause);
 extern bool sift_v6_index_complete(const V6Plan *p);
 extern bool sift_v6_compile_quals(V6Plan *p);
+
+/* plan_rows_out.c: the columns a row Top-N gives, and the dimensions of its join for EXPLAIN */
+extern bool sift_v6_rows_outputs(V6Plan *p);
+extern char *sift_v6_rows_dims_desc(const V6Plan *p);
+/* An aggregate the native kernels of the scan fold, not entered in the scan tlist (the caller decides what the node gives it as) */
+extern bool sift_v6_compile_agg_native(V6Plan *p, Aggref *a);
 
 /* plan_tid.c: a WHERE clause that bounds ctid by a constant TID narrows the TID range of the spec; false: not one */
 extern bool sift_v6_tid_qual(V6Plan *p, const RestrictInfo *ri);
@@ -122,6 +128,7 @@ extern bool sift_v6_keys_agree(const Var *f, const Var *d);
 extern bool sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno);
 extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget);
 extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+extern void sift_v6_star_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
 extern bool sift_v6_unnest_ready(V6Plan *p);
 /* the pieces of it that the planner of an EXISTS over the elements (v6_unnest_exists.h) takes apart: the statement compiles to what the scan of an unnest computes; the quals of the table become those the scan evaluates on its batches and on a row of the heap */
 extern bool sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);

@@ -243,5 +243,5 @@ sift_v6_add_rows_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOp
 	if (!compile_partitions(root, input_rel, output_rel, &stmt, &first, &like))
 		return;
 	sift_v6_scan_price(root, input_rel, like, 0, &open, &scan);
-	sift_v6_rows_add(&first, k, scan);
+	sift_v6_rows_add(&first, k, scan, NIL, 0, 0);
 }

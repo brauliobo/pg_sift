@@ -23,6 +23,7 @@ typedef struct SiftV6Pipe
 {
 	const SiftV6Spec *spec;
 	SiftV6Group *group;
+	SiftV6Rows *rows;			/* a row Top-N: the pairs go to its heap, with the heap address the last fact slot holds (NULL: they go to the groups) */
 	int			nfact;
 	int			nslots;
 	int			ndims;
@@ -47,7 +48,7 @@ typedef struct SiftV6Pipe
 } SiftV6Pipe;
 
 /* The types of the fact slots (SVEC_I64, SVEC_F64 or SVEC_STRVIEW); the dimensions are in place with their parts chosen */
-extern SiftV6Pipe *sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, int nfact, const SiftVecType *ftype);
+extern SiftV6Pipe *sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, SiftV6Rows *rows, int nfact, const SiftVecType *ftype);
 /* The column the vector v of a batch is: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second, then the columns of the COUNT(DISTINCT ..) rows and those of the FILTER clauses; NULL for none */
 extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
 /* The slot of the payload column of a dimension */

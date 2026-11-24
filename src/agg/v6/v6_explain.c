@@ -55,12 +55,24 @@ explain_filters(const SiftV6Spec *spec, Relation heap, Relation index, ExplainSt
 		ExplainPropertyText("Filters", buf.data, es);
 }
 
+/* the text queries that keep the rows: one, or the arms of an OR */
+static char *
+search_desc(const SiftV6Spec *spec)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	foreach_ptr(Node, q, spec->text_queries)
+		appendStringInfo(&buf, "%s%s @@> %s", buf.len > 0 ? " OR " : "", get_rel_name(spec->text_indexoid), deparse_expression(q, NIL, false, false));
+	return buf.data;
+}
+
 void
 sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relation index, ExplainState *es)
 {
 	explain_filters(spec, heap, index, es);
 	if (OidIsValid(spec->text_indexoid))
-		ExplainPropertyText("Search", psprintf("%s @@> %s", get_rel_name(spec->text_indexoid), deparse_expression((Node *) spec->text_query, NIL, false, false)), es);
+		ExplainPropertyText("Search", search_desc(spec), es);
 }
 
 /* the relations a dimension plan reads: a table by its name, a sub-select by its alias (its own scans are its own) */

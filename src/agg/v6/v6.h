@@ -229,6 +229,20 @@ typedef struct SiftV6TopKItem
 
 #define SIFT_V6_MAX_TOPK_ITEMS	8
 
+/* A column a row Top-N gives: the heap row of the winner (the plan's tlist names its attribute), a key its heap of winners carries (a column of a dimension), or an aggregate of the whole set */
+typedef enum SiftV6RowFrom
+{
+	SV6OUT_HEAP,
+	SV6OUT_KEY,					/* at: the key */
+	SV6OUT_TOTAL				/* at: the aggregate */
+} SiftV6RowFrom;
+
+typedef struct SiftV6RowOut
+{
+	SiftV6RowFrom from;
+	int			at;
+} SiftV6RowOut;
+
 /* the end of the keys of a TID range: no block is as large as this */
 #define SIFT_V6_TID_END	(UINT64CONST(1) << 48)
 
@@ -258,8 +272,8 @@ typedef struct SiftV6Spec
 	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/v6/jsonb_qual.c) */
 	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/v6/v6_bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
-	Oid			text_indexoid;	/* a sift index whose text query (a Const, text_query) keeps the rows: its hits go to the scan as bridges (v6_text.c); InvalidOid without one */
-	Const	   *text_query;
+	Oid			text_indexoid;	/* a sift index whose text queries (the Consts of text_queries, the arms of an OR) keep the rows: their hits go to the scan as bridges (v6_text.c); InvalidOid without one */
+	List	   *text_queries;
 	int			par_strategy;	/* SiftV6ParStrategy of the plan (0: serial) */
 	int			par_workers;
 	int			nderive;
@@ -269,7 +283,11 @@ typedef struct SiftV6Spec
 	int64		aff_lo;
 	int64		aff_hi;
 	char	   *topn_desc;		/* EXPLAIN of a row Top-N: its sort keys */
-	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns, topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h) */
+	char	   *agg_desc;		/* its aggregates of the whole set (NULL: none) */
+	char	   *join_desc;		/* its dimensions (NULL: none) */
+	int			nout;			/* a row Top-N: the columns the node gives, in the order of its scan tlist */
+	SiftV6RowOut *out;
+	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns (then the columns of the dimensions the rows carry), topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h); the aggregates are those of the whole set the rows carry */
 	uint32		groups_est;		/* the groups the planner expects (0: unknown): the group table is sized for them at the start */
 	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */
 	int			ntopk;
@@ -421,10 +439,10 @@ typedef struct SiftV6ScanStats
 typedef bool (*SiftV6ChunkFn) (void *arg, const SiftTidBridge **bridge);
 
 /* v6_text.c: the text query of a statement of the aggregate (the planner reads it from the quals, the executor feeds it to the scan as chunks) */
-extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, Const **query);
-extern bool sift_v6_text_usable(IndexOptInfo *text, Const *query);
+extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries);
+extern bool sift_v6_text_usable(IndexOptInfo *text, List *queries);
 /* touch: the fraction of the rows of the store that the scan of the chunks reads (the granules the hits are in) */
-extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, Const *query, double *touch);
+extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch);
 
 typedef struct SiftV6Text SiftV6Text;
 extern SiftV6Text *sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent);

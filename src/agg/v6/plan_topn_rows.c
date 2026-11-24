@@ -50,7 +50,7 @@ rows_keys(V6Plan *p)
 
 	if (list_length(q->sortClause) > SIFT_V6_MAX_TOPK_ITEMS)
 		return false;
-	p->spec.key = palloc(list_length(q->sortClause) * sizeof(SiftV6Col));
+	p->spec.key = palloc(SIFT_V6_MAX_KEYS * sizeof(SiftV6Col));
 	foreach_node(SortGroupClause, sgc, q->sortClause)
 	{
 		Expr	   *e = (Expr *) get_sortgroupclause_expr(sgc, q->targetList);
@@ -87,35 +87,32 @@ void
 sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 {
 	sift_v6_topn_explain(es, spec->topn_desc, psprintf("%u", spec->topk));
-}
-
-/* the columns the statement reads, which the node takes from the heap rows of the winners: plain columns of the table */
-static bool
-rows_outputs(V6Plan *p)
-{
-	p->scan_tlist = sift_v6_scan_tlist(p->out->reltarget->exprs, p->rel->relid, T_Invalid);
-	foreach_node(TargetEntry, te, p->scan_tlist)
-		if (((Var *) te->expr)->varattno <= 0)
-			return false;
-	return p->scan_tlist != NIL;
+	if (spec->agg_desc != NULL)
+		ExplainPropertyText("Pushed Aggregates", spec->agg_desc, es);
+	if (spec->join_desc != NULL)
+		ExplainPropertyText("Lookup Joins", spec->join_desc, es);
 }
 
 bool
 sift_v6_rows_compile(V6Plan *p, uint32 k)
 {
-	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k};
-	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && rows_outputs(p) && sift_v6_compile_quals(p);
+	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k,.ext = p->xseed};
+	p->freg = sift_freg_create(CurrentMemoryContext);
+	p->cap_aggs = p->cap_funcs = 0;
+	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && sift_v6_rows_outputs(p) && sift_v6_compile_quals(p);
 }
 
 void
-sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan)
+sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
 {
 	PlannerInfo *root = p->root;
 
-	p->spec.topn_desc = sift_v6_topn_desc(root, planner_rt_fetch(p->rel->relid, root)->relid);
+	p->spec.topn_desc = sift_v6_topn_desc(root, p->rel->relid);
+	if (dims != NIL)
+		p->spec.join_desc = sift_v6_rows_dims_desc(p);
 	scan += cpu_operator_cost * p->rel->rows * log2(k + 1.0) + sort_exprs_cost(root, p->rel->rows);
-	sift_v6_add_path(p->out, sift_v6_group_path_methods(), scan, scan + cpu_tuple_cost * k, Min((double) k, p->rel->rows), root->sort_pathkeys,
-					 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL));
+	sift_v6_add_path(p->out, sift_v6_group_path_methods(), scan + dims_startup, scan + cpu_tuple_cost * k + dims_total, Min((double) k, p->rel->rows), root->sort_pathkeys,
+					 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims);
 }
 
 static bool
@@ -130,7 +127,7 @@ rows_table_path(V6Plan *p, Oid relid, uint32 k)
 	in = (SiftV6CostIn) {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo),.groups = k,
 	.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
 	sift_v6_scan_cost(&in, &open, &scan);
-	sift_v6_rows_add(p, k, scan);
+	sift_v6_rows_add(p, k, scan, NIL, 0, 0);
 	return true;
 }
 
@@ -151,41 +148,55 @@ rows_index_path(V6Plan *p, uint32 k)
 	if (!ok)
 		return false;
 	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
-	sift_v6_rows_add(p, k, scan);
+	sift_v6_rows_add(p, k, scan, NIL, 0, 0);
 	return true;
 }
 
-/* ORDER BY columns LIMIT K of the rows of one table with every qual pushed to the scan: the rows go to a heap of the best K (v6_rows_topn.h) */
+/* the rows of the best K of the rows of one table, or of a fact table joined to its dimensions, with every qual pushed to the scan: the rows go to a heap of the best K (v6_rows_topn.h) */
 void
 sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	const Query *q = root->parse;
-	const uint32 k = sift_v6_topk_of(q);
+	const uint32 k = sift_v6_rows_k_of(q);
+	RelOptInfo *rel;
 	Oid			relid;
 
-	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL ||
-		q->rowMarks != NIL || bms_membership(root->all_baserels) != BMS_SINGLETON || proj_sort_offered(input_rel))
+	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
 		return;
-	if (sift_v6_partitioned_rel_ok(root, input_rel))
+	if (bms_membership(root->all_baserels) == BMS_MULTIPLE)
 	{
-		sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
-		sift_v6_add_rows_partition_paths(root, input_rel, output_rel, k);
+		if (!q->hasWindowFuncs && input_rel->reloptkind == RELOPT_JOINREL)
+		{
+			sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
+			sift_v6_star_rows_paths(root, input_rel, output_rel, k);
+		}
 		return;
 	}
-	if (!sift_v6_base_rel_ok(root, input_rel))
+	rel = find_base_rel(root, bms_singleton_member(root->all_baserels));
+	if (proj_sort_offered(rel))
+		return;
+	if (sift_v6_partitioned_rel_ok(root, rel))
+	{
+		if (q->hasWindowFuncs)
+			return;
+		sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
+		sift_v6_add_rows_partition_paths(root, rel, output_rel, k);
+		return;
+	}
+	if (!sift_v6_base_rel_ok(root, rel))
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
-	relid = planner_rt_fetch(input_rel->relid, root)->relid;
+	relid = planner_rt_fetch(rel->relid, root)->relid;
 	if (sift_store_ops_for_scan(relid, true) != NULL)
 	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = relid};
+		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = relid};
 
 		rows_table_path(&p, relid, k);
 		return;
 	}
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
 	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
+		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = ix->indexoid,.index = ix};
 
 		if (rows_index_path(&p, k))
 			return;

@@ -851,12 +851,11 @@ sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root))
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL &&
-		(rel->indexlist != NIL || sift_store_ops_for_scan(rte->relid, true) != NULL);
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && (rel->indexlist != NIL || sift_store_ops_for_scan(rte->relid, true) != NULL);
 }
 
 void
-sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private)
+sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private, List *custom_paths)
 {
 	CustomPath *cp = makeNode(CustomPath);
 
@@ -869,6 +868,7 @@ sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, doubl
 	cp->path.pathkeys = pathkeys;
 	cp->methods = methods;
 	cp->custom_private = custom_private;
+	cp->custom_paths = custom_paths;
 	add_path(output_rel, &cp->path);
 }
 

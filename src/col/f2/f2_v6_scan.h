@@ -22,7 +22,7 @@ extern void sift_v6_scan_plan(SiftV6Scan *s, struct SiftF2ParPlan *out);
 extern void sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
 extern void sift_v6_scan_morsel(SiftV6Scan *s, const struct SiftParPartRef *ref, uint32 first, uint32 n);
 extern void sift_v6_scan_end(SiftV6Scan *s);
-extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
+extern void sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
 							  SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);
 extern void sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap,
 							 const uint64 *skip, int nskip, const struct SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg);

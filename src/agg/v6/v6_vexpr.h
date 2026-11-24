@@ -144,8 +144,8 @@ extern bool sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel);
 /* The planner keeps the target of an upper stage in root->upper_targets and sets it on the stage's rel only after the hooks ran: the operators read and add their paths with it */
 extern void sift_v6_stage_target(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *output_rel);
 
-/* A path of the operator: the cost, the order it keeps, the private list the plan callback reads; added to output_rel */
-extern void sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private);
+/* A path of the operator: the cost, the order it keeps, the private list the plan callback reads; added to output_rel. custom_paths are the plans of the relations it reads besides its own scan (the dimensions of a join) */
+extern void sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private, List *custom_paths);
 
 /* The CustomScan of a path: tlist over the Vars of custom_private[1] (the scan tlist), the relation of the index recorded for the plan cache */
 extern Plan *sift_v6_plan_scan(PlannerInfo *root, CustomPath *best, List *tlist, const CustomScanMethods *methods, Oid indexoid);

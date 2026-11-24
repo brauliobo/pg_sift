@@ -434,6 +434,9 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 	ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, s->rows), (int) s->groups_est), (int) s->topk), s->ntopk);
 	for (int i = 0; i < s->ntopk; i++)
 		ints = list_concat(ints, list_make4_int(s->topk_item[i].pos, (int) s->topk_item[i].sortop, (int) s->topk_item[i].collid, s->topk_item[i].nulls_first));
+	ints = lappend_int(ints, s->nout);
+	for (int i = 0; i < s->nout; i++)
+		ints = list_concat(ints, list_make2_int(s->out[i].from, s->out[i].at));
 	return lappend_int(ints, (int) s->lock_k);
 }
 
@@ -481,19 +484,23 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 	at += 4;
 	for (int i = 0; i < s->ntopk; i++, at += 4)
 		s->topk_item[i] = (SiftV6TopKItem) {.pos = list_nth_int(ints, at),.sortop = (Oid) list_nth_int(ints, at + 1),.collid = (Oid) list_nth_int(ints, at + 2),.nulls_first = list_nth_int(ints, at + 3)};
+	s->nout = list_nth_int(ints, at++);
+	s->out = palloc(Max(s->nout, 1) * sizeof(SiftV6RowOut));
+	for (int i = 0; i < s->nout; i++, at += 2)
+		s->out[i] = (SiftV6RowOut) {.from = (SiftV6RowFrom) list_nth_int(ints, at),.at = list_nth_int(ints, at + 1)};
 	s->lock_k = (uint32) list_nth_int(ints, at);
 }
 
 /* ---- ORDER BY .. LIMIT of the groups ---- */
 
-/* LIMIT + OFFSET of constants of a query that has no DISTINCT, window function or set-returning function, at most max_k (0: the query has no such limit, or one the node cannot take) */
+/* LIMIT + OFFSET of constants of a query that has no DISTINCT or set-returning function, at most max_k (0: the query has no such limit, or one the node cannot take) */
 static uint32
 limit_plus_offset(const Query *q, int64 max_k)
 {
 	int64		limit,
 				offset = 0;
 
-	if (q->distinctClause != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->limitOption != LIMIT_OPTION_COUNT || q->limitCount == NULL || !IsA(q->limitCount, Const))
+	if (q->distinctClause != NIL || q->hasTargetSRFs || q->limitOption != LIMIT_OPTION_COUNT || q->limitCount == NULL || !IsA(q->limitCount, Const))
 		return 0;
 	if (((const Const *) q->limitCount)->constisnull)
 		return 0;
@@ -511,13 +518,20 @@ limit_plus_offset(const Query *q, int64 max_k)
 uint32
 sift_v6_topk_of(const Query *q)
 {
+	return q->sortClause == NIL || q->hasWindowFuncs ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
+}
+
+/* the K of the best rows of the query: the same, window functions over the whole set (the node of the rows computes them) allowed */
+uint32
+sift_v6_rows_k_of(const Query *q)
+{
 	return q->sortClause == NIL ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
 }
 
 uint32
 sift_v6_limit_of(const Query *q)
 {
-	if (q->sortClause != NIL || q->groupClause == NIL || q->groupingSets != NIL || q->havingQual != NULL || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
+	if (q->sortClause != NIL || q->hasWindowFuncs || q->groupClause == NIL || q->groupingSets != NIL || q->havingQual != NULL || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
 		return 0;
 	return limit_plus_offset(q, SIFT_LOCK_MAX_K);
 }

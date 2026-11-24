@@ -20,6 +20,7 @@
 
 #include "agg/group/ht.h"
 #include "agg/v6/plan_int.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_ext.h"
 #include "col/am/format_ops.h"
 #include "agg/plan/format_ops.h"
@@ -272,8 +273,43 @@ seed_dims(V6Plan *p, StarDim *dims, int nd)
 	return true;
 }
 
+/* what the join is for: the groups of an aggregate, or the best K rows of the join (topk > 0) */
+typedef struct StarGoal
+{
+	GroupPathExtraData *extra;
+	List	   *group_exprs;
+	uint32		topk;
+} StarGoal;
+
+/* the statement compiled against the fact index and the dimensions seeded in it */
+static bool
+star_compile(V6Plan *p, const StarGoal *goal)
+{
+	if (goal->topk > 0)
+		return sift_v6_rows_compile(p, goal->topk) && !OidIsValid(p->spec.text_indexoid);
+	return sift_v6_compile_on(p, goal->extra, goal->group_exprs) && p->spec.nbins == 0;
+}
+
 static void
-try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, GroupPathExtraData *extra, List *group_exprs)
+star_add(V6Plan *p, const StarGoal *goal, double input_rows, List *children, Cost startup, Cost total)
+{
+	if (goal->topk > 0)
+	{
+		Cost		open,
+					scan,
+					dims = input_rows * cpu_operator_cost * list_length(children);
+
+		sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+		foreach_ptr(Path, child, children)
+			dims += Max(child->parent->tuples, child->rows) * (cpu_tuple_cost + cpu_operator_cost * 2.0);
+		sift_v6_rows_add(p, goal->topk, scan, children, dims, dims);
+	}
+	else
+		sift_v6_add_join_path(p, goal->group_exprs, (List *) goal->extra->havingQual, children, startup, total, input_rows);
+}
+
+static void
+try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, const StarGoal *goal)
 {
 	StarDim		dims[SIFT_STAR_MAX_DIMS] = {0};
 	const int	nd = bms_num_members(base) - 1;
@@ -310,7 +346,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 			continue;
 		irel = index_open(ix->indexoid, AccessShareLock);
 		sift_v6_plan_index(&p, irel);
-		if (p.ops != NULL && seed_dims(&p, dims, nd) && sift_v6_compile_on(&p, extra, group_exprs) && p.spec.nbins == 0)
+		if (p.ops != NULL && seed_dims(&p, dims, nd) && star_compile(&p, goal))
 		{
 			for (int d = 0; d < nd; d++)
 			{
@@ -320,25 +356,42 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 				xs += child->total_cost;
 				xt += child->total_cost + dims[d].rel->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
 			}
-			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, children, xs, xt, input_rel->rows);
+			star_add(&p, goal, input_rel->rows, children, xs, xt);
 		}
 		index_close(irel, NoLock);
 	}
 }
 
-void
-sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+static void
+try_facts(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const StarGoal *goal)
 {
-	List	   *group_exprs = NIL;
 	Relids		base = sift_v6_plan_base_relids(root, input_rel);
 	const int	nrels = bms_num_members(base);
 	int			r = -1;
 
-	if (!sift_v6_plan_query_ok(root, output_rel) || nrels < 2 || nrels > 1 + SIFT_STAR_MAX_DIMS || root->hasLateralRTEs || root->placeholder_list != NIL)
+	if (nrels < 2 || nrels > 1 + SIFT_STAR_MAX_DIMS || root->hasLateralRTEs || root->placeholder_list != NIL)
 		return;
-	group_exprs = sift_v6_group_exprs_of(root);
 	while ((r = bms_next_member(base, r)) >= 0)
-		try_fact(root, input_rel, base, output_rel, root->simple_rel_array[r], (GroupPathExtraData *) extra, group_exprs);
+		try_fact(root, input_rel, base, output_rel, root->simple_rel_array[r], goal);
+}
+
+void
+sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+{
+	StarGoal	goal = {.extra = (GroupPathExtraData *) extra};
+
+	if (!sift_v6_plan_query_ok(root, output_rel))
+		return;
+	goal.group_exprs = sift_v6_group_exprs_of(root);
+	try_facts(root, input_rel, output_rel, &goal);
+}
+
+void
+sift_v6_star_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k)
+{
+	const StarGoal goal = {.topk = k};
+
+	try_facts(root, input_rel, output_rel, &goal);
 }
 
 bool

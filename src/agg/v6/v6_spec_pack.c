@@ -64,10 +64,17 @@ bits_f64(int64 v)
 	return d;
 }
 
+static List *
+desc_list(const char *desc)
+{
+	return desc != NULL ? list_make1(makeString(pstrdup(desc))) : NIL;
+}
+
 List *
 sift_v6_spec_pack(const SiftV6Spec *s)
 {
-	List	   *ints = list_make4_int((int) s->relid, s->nkeys, s->naggs, s->is_table);
+	List	   *ints = list_make4_int((int) s->relid, s->nkeys, s->naggs, s->is_table),
+			   *l;
 
 	for (int i = 0; i < s->nkeys; i++)
 		ints = put_col(ints, &s->key[i]);
@@ -104,7 +111,9 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	ints = list_concat(ints, list_make4_int(s->par_strategy, s->par_workers, (int) s->text_indexoid, s->constant_groups));
 	ints = put_int64(put_int64(lappend_int(ints, s->tid_range), (int64) s->tid_lo), (int64) s->tid_hi);
 	ints = sift_v6_derive_pack(ints, s);
-	return lappend(lappend(lappend(lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual), s->pgexpr), s->genref), s->topn_desc != NULL ? list_make1(makeString(s->topn_desc)) : NIL);
+	l = list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext));
+	l = list_concat(l, list_make5(s->text_queries, s->vqual, s->pgexpr, s->genref, desc_list(s->topn_desc)));
+	return list_concat(l, list_make2(desc_list(s->agg_desc), desc_list(s->join_desc)));
 }
 
 SiftV6Spec *
@@ -173,7 +182,7 @@ sift_v6_spec_unpack(const List *l)
 	s->tid_lo = (uint64) take_int64(ints, &at);
 	s->tid_hi = (uint64) take_int64(ints, &at);
 	sift_v6_derive_unpack(s, ints, at);
-	s->text_query = list_nth(l, 5) ? linitial_node(Const, (List *) list_nth(l, 5)) : NULL;
+	s->text_queries = list_nth(l, 5);
 	s->indexqual = lsecond(l);
 	s->filter = lthird(l);
 	s->nfilters = list_length(s->filter);
@@ -182,6 +191,8 @@ sift_v6_spec_unpack(const List *l)
 	s->pgexpr = list_nth(l, 7);
 	s->genref = list_nth(l, 8);
 	s->topn_desc = list_nth(l, 9) != NIL ? strVal(linitial(list_nth(l, 9))) : NULL;
+	s->agg_desc = list_nth(l, 10) != NIL ? strVal(linitial(list_nth(l, 10))) : NULL;
+	s->join_desc = list_nth(l, 11) != NIL ? strVal(linitial(list_nth(l, 11))) : NULL;
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
 	return s;
 }

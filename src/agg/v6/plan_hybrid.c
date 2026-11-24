@@ -56,7 +56,7 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 bool
 sift_v6_text_qual(V6Plan *p, RestrictInfo *ri)
 {
-	if (p->is_table || p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_query)) == NULL)
+	if (p->is_table || p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_queries)) == NULL)
 		return false;
 	p->text_qual = ri;
 	return true;
@@ -68,6 +68,6 @@ sift_v6_compile_text(V6Plan *p)
 	if (p->text == NULL)
 		return true;
 	p->spec.text_indexoid = p->text->indexoid;
-	p->spec.text_query = p->text_query;
-	return sift_v6_text_usable(p->text, p->text_query);
+	p->spec.text_queries = p->text_queries;
+	return sift_v6_text_usable(p->text, p->text_queries);
 }

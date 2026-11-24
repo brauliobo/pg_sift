@@ -253,7 +253,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
 		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
-	u->pipe =sift_v6_pipe_new(CurrentMemoryContext, spec, g, u->ncols + u->nel + spec->nderive, type);
+	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, u->ncols + u->nel + spec->nderive, type);
 	if (star != NULL)
 		sift_v6_star_attach(star, u->pipe);
 	for (int d = 0; d < u->x->ndims; d++)

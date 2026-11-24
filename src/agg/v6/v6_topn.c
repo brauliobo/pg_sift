@@ -16,6 +16,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
@@ -65,10 +66,24 @@ key_type_ok(const SiftV6InCol *c)
 	}
 }
 
+/* a sort key of the table in hand as it is named in its own namespace; a column of another relation of the statement by its name */
+static char *
+sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
+{
+	const Var  *v = (const Var *) e;
+
+	if (IsA(e, Var) && v->varno != rti)
+		return get_attname(planner_rt_fetch(v->varno, root)->relid, v->varattno, false);
+	e = copyObject(e);
+	ChangeVarNodes(e, rti, 1, 0);
+	return deparse_expression(e, dcx, false, false);
+}
+
 char *
-sift_v6_topn_desc(PlannerInfo *root, Oid relid)
+sift_v6_topn_desc(PlannerInfo *root, Index rti)
 {
 	const Query *q = root->parse;
+	const Oid	relid = planner_rt_fetch(rti, root)->relid;
 	List	   *dcx = deparse_context_for(get_rel_name(relid), relid);
 	StringInfoData buf;
 
@@ -78,7 +93,7 @@ sift_v6_topn_desc(PlannerInfo *root, Oid relid)
 		bool		desc;
 
 		get_equality_op_for_ordering_op(sgc->sortop, &desc);
-		appendStringInfo(&buf, "%s%s%s", buf.len > 0 ? ", " : "", deparse_expression((Node *) get_sortgroupclause_expr(sgc, q->targetList), dcx, false, false),
+		appendStringInfo(&buf, "%s%s%s", buf.len > 0 ? ", " : "", sort_key_text(root, rti, dcx, (Node *) get_sortgroupclause_expr(sgc, q->targetList)),
 						 desc ? " DESC" : "");
 		if (sgc->nulls_first != desc)
 			appendStringInfoString(&buf, sgc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
@@ -291,7 +306,7 @@ topn_add_path(TopNPlan *p)
 		open + (scan - open) * read / Max(p->rel->tuples, 1.0) + cpu_tuple_cost * k + cpu_operator_cost * read * (p->spec.nkeys + list_length(p->quals));
 
 	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
-					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals));
+					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
 }
 
 void
@@ -313,7 +328,7 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 		sift_v6_input_init_info(&p.in, ix);
 		if (compile_keys(&p) && compile_outputs(&p) && compile_quals(&p))
 		{
-			p.spec.desc = sift_v6_topn_desc(root, planner_rt_fetch(input_rel->relid, root)->relid);
+			p.spec.desc = sift_v6_topn_desc(root, input_rel->relid);
 			topn_add_path(&p);
 			return;
 		}

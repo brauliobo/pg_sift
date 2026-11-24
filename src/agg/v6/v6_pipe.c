@@ -8,6 +8,7 @@
 
 #include "agg/v6/v6_gather.h"
 #include "agg/v6/v6_pipe.h"
+#include "agg/v6/v6_rows_topn.h"
 #include "core/popcount.h"
 
 struct SiftV6PipeBatch
@@ -20,7 +21,7 @@ struct SiftV6PipeBatch
 };
 
 SiftV6Pipe *
-sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, int nfact, const SiftVecType *ftype)
+sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, SiftV6Rows *rows, int nfact, const SiftVecType *ftype)
 {
 	SiftV6Pipe *p = MemoryContextAllocZero(cx, sizeof(SiftV6Pipe));
 	const SiftV6Ext *x = spec->ext;
@@ -29,6 +30,7 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, i
 	p->cx = cx;
 	p->spec = spec;
 	p->group = group;
+	p->rows = rows;
 	p->nfact = nfact;
 	p->ndims = x != NULL ? x->ndims : 0;
 	for (int d = 0; d < p->ndims; d++)
@@ -126,7 +128,10 @@ update_groups(SiftV6Pipe *p, SiftV6PipeBatch *b)
 		p->keyvec[i] = &b->vec[p->key_slot[i]];
 	for (int j = 0; j < sift_v6_spec_nvec(spec); j++)
 		p->argvec[j] = p->arg_slot[j] < 0 ? NULL : &b->vec[p->arg_slot[j]];
-	sift_v6_group_update(p->group, b->bs, p->keyvec, p->argvec);
+	if (p->rows != NULL)
+		sift_v6_rows_update(p->rows, b->bs, p->keyvec, (const uint64 *) b->vec[p->nfact - 1].data);
+	else
+		sift_v6_group_update(p->group, b->bs, p->keyvec, p->argvec);
 	p->rows_out += b->bs->n_active;
 }
 

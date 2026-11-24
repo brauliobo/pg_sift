@@ -149,11 +149,17 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
-	SiftVecType *type = palloc(Max(s->ncols, 1) * sizeof(SiftVecType));
+	const int	nfact = s->ncols + (s->rows != NULL);
+	SiftVecType *type = palloc(nfact * sizeof(SiftVecType));
 
 	for (int i = 0; i < s->ncols; i++)
 		type[i] = s->cols[i].vec.type;
-	s->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, s->group, s->ncols, type);
+	if (s->rows != NULL)
+	{
+		type[s->ncols] = SVEC_I64;
+		s->tidvec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(uint64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	}
+	s->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, s->group, s->rows, nfact, type);
 	sift_v6_star_attach(star, s->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -168,9 +174,22 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 		s->pipe->key_slot[i] = slot_of(s, first, &spec->key[i]);
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
 		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : slot_of(s, first, sift_v6_vec_col(spec, v));
-	s->fact = palloc(Max(s->ncols, 1) * sizeof(SiftVec *));
+	s->fact = palloc(nfact * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
 		s->fact[i] = &s->cols[i].vec;
+	if (s->rows != NULL)
+		s->fact[s->ncols] = &s->tidvec;
+}
+
+/* the heap addresses of the n rows of the batch, as the slot of the pipe that the pairs of a join carry to the heap of the best rows */
+static void
+fill_tids(V6Scan *s, const uint64 *tid, int n)
+{
+	memcpy(s->tidvec.data, tid, n * sizeof(uint64));
+	s->tidvec.len = (uint16) n;
+	s->tidvec.all_valid = true;
+	s->tidvec.dense = true;
+	s->tidvec.type = SVEC_I64;
 }
 
 /* whether the vector v of a batch is the argument of an aggregate that folds a NaN */
@@ -483,11 +502,18 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 	if (s->emit != NULL)
 		s->emit(s->emit_arg, &s->bs, s->keyvec, s->argvec);
 	else if (s->pipe != NULL)
+	{
+		if (s->rows != NULL)
+			fill_tids(s, tid + off, n);
 		sift_v6_pipe_run(s->pipe, s->fact, &s->bs);
-	else if (s->rows != NULL)
-		sift_v6_rows_update(s->rows, &s->bs, s->keyvec, tid + off);
+	}
 	else
-		sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
+	{
+		if (s->rows != NULL)
+			sift_v6_rows_update(s->rows, &s->bs, s->keyvec, tid + off);
+		if (s->group != NULL)
+			sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
+	}
 }
 
 static void
@@ -666,7 +692,7 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	sift_f2_scan_set_part_sink(scan, part_offer);
 	sift_f2_scan_set_part_dict_sink(scan, part_dict_offer);
 	sift_f2_scan_set_zone_sink(scan, zone_offer);
-	if (s->rows != NULL && sift_v6_rows_bound(s->rows) != NULL)
+	if (s->rows != NULL && s->group == NULL && sift_v6_rows_bound(s->rows) != NULL)
 		sift_f2_scan_set_bound(scan, rows_bound_leaf(s), sift_v6_rows_bound(s->rows));
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
 	sift_f2_scan_sink(scan, v6_sink, s, scan_leaves(s), s->ncols);
@@ -888,13 +914,13 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 }
 
 void
-sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, const SiftStoreQuals *quals, Snapshot snap,
-				  SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
+sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys,
+				  const SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
-	V6Scan		s = {.spec = spec,.rows = rows,.stats = stats};
+	V6Scan		s = {.spec = spec,.rows = rows,.group = totals,.stats = stats};
 
 	if (index == NULL)
 		scan_table_run(&s, heap, quals, snap, NULL, 0);
 	else
-		scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, NULL, next_chunk, chunk_arg);
+		scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, star, next_chunk, chunk_arg);
 }

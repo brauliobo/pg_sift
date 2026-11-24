@@ -130,8 +130,8 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	sift_tupdesc_finalize(desc);
 	r->spec = spec;
 	r->run = sift_v6_topk_run_new(cx, spec, desc);
-	r->bounded = key0->derive == 0 && bound_type(key0->typid);
-	r->by_code = key0->derive == 0 && text_type(key0->typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
+	r->bounded = key0->derive == 0 && key0->src != SV6SRC_DIM && bound_type(key0->typid);
+	r->by_code = key0->derive == 0 && key0->src != SV6SRC_DIM && text_type(key0->typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
 	if (r->bounded || r->by_code)
 	{
 		Oid			opfamily,
@@ -239,6 +239,22 @@ sift_v6_rows_finish(SiftV6Rows *r)
 	sift_v6_topk_run_finish(r->run);
 }
 
+SiftV6Group *
+sift_v6_rows_totals_new(MemoryContext cx, const SiftV6Spec *spec)
+{
+	SiftV6Spec *totals = MemoryContextAlloc(cx, sizeof(SiftV6Spec));
+	TupleDesc	desc = CreateTemplateTupleDesc(spec->naggs);
+
+	*totals = *spec;
+	totals->nkeys = 0;
+	totals->rows = false;
+	totals->topk = 0;
+	for (int j = 0; j < spec->naggs; j++)
+		TupleDescInitEntry(desc, j + 1, NULL, spec->agg[j].restype, -1, 0);
+	sift_tupdesc_finalize(desc);
+	return sift_v6_group_new(totals, cx, desc);
+}
+
 void
 sift_v6_rows_source(SiftV6Rows *r, uint32 source)
 {
@@ -256,4 +272,11 @@ sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid)
 	*source = (uint32) (addr >> SIFT_V6_ROWS_ADDR_BITS);
 	*tid = addr & ((UINT64CONST(1) << SIFT_V6_ROWS_ADDR_BITS) - 1);
 	return true;
+}
+
+Datum
+sift_v6_rows_key(const SiftV6Rows *r, int key, bool *isnull)
+{
+	*isnull = r->isnull[key];
+	return r->values[key];
 }

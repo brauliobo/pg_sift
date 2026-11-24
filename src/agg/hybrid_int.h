@@ -49,6 +49,8 @@ typedef struct SiftMatchKeys
 } SiftMatchKeys;
 
 extern bool sift_match_keys_next(void *arg, SiftKey *key, float4 *score);
+/* The next match of a page in heap order, taken off the page from *word on (the next page starts at word 0) */
+extern bool sift_match_page_next(SiftPageMatch *pm, int *word, SiftKey *key);
 
 extern PGDLLIMPORT const CustomScanMethods sift_hybrid_plan_methods;
 extern PGDLLIMPORT const CustomScanMethods sift_hybrid_agg_plan_methods;

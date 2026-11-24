@@ -240,7 +240,7 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SipJo
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
 	sift_v6_scan_price(root, rel, ix, j->fact_key->varattno, &open, &scan);
 	sift_v6_add_path(rel, &sip_path_methods, open, scan + cpu_tuple_cost * rows + cpu_operator_cost * (j->dim->tuples + rel->rows), rows, NIL,
-					 list_make3(ints, pushable(rel, ix), clauses_of(j->dim->baserestrictinfo)));
+					 list_make3(ints, pushable(rel, ix), clauses_of(j->dim->baserestrictinfo)), NIL);
 	return true;
 }
 

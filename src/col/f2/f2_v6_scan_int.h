@@ -96,7 +96,8 @@ struct SiftV6Scan
 	V6ColStat  *stat;			/* an ungrouped aggregate of integer columns: the totals of the parts it has read whole */
 	const SiftColDef *defs;		/* the leaves of the index or table, by id */
 	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
-	SiftVec   **fact;			/* the vectors of the columns, for the pipe */
+	SiftVec   **fact;			/* the vectors of the columns, for the pipe, and for a row Top-N the heap addresses of the rows (tidvec) after them */
+	SiftVec		tidvec;
 	const SiftClause *gate;		/* an arm of a pass over the union of the keys of its arms: the rows it takes */
 	const SiftScopeRouter *router;	/* a scan for the facts of one scope key: the granules the summary of the scope does not name for it are not read (f2_scope_route.h) */
 	bool		all_visible;	/* the run of granules being read is of a frozen part with no deletion: its rows need no look at the heap */

@@ -125,31 +125,39 @@ row_cmp(const void *a, const void *b)
 	return x->score > y->score ? -1 : x->score < y->score ? 1 : x->key < y->key ? -1 : x->key > y->key;
 }
 
+/* The next match of the page in heap order, taken off the page from the word on */
+bool
+sift_match_page_next(SiftPageMatch *pm, int *word, SiftKey *key)
+{
+	for (; *word < SIFT_OFFMASK_WORDS; (*word)++)
+	{
+		const uint64 m = pm->offmask[*word];
+		ItemPointerData tid;
+
+		if (m == 0)
+			continue;
+		pm->offmask[*word] &= m - 1;
+		ItemPointerSet(&tid, pm->blk, *word * 64 + __builtin_ctzll(m) + 1);
+		*key = sift_f2_tid(&tid);
+		return true;
+	}
+	return false;
+}
+
 /* The next match of the iteration in heap order, which carries no score */
 bool
 sift_match_keys_next(void *arg, SiftKey *key, float4 *score)
 {
 	SiftMatchKeys *mk = arg;
 
-	for (;;)
+	*score = 0;
+	while (!sift_match_page_next(&mk->pm, &mk->word, key))
 	{
-		for (; mk->word < SIFT_OFFMASK_WORDS; mk->word++)
-		{
-			uint64		m = mk->pm.offmask[mk->word];
-			ItemPointerData tid;
-
-			if (m == 0)
-				continue;
-			mk->pm.offmask[mk->word] &= m - 1;
-			ItemPointerSet(&tid, mk->pm.blk, mk->word * 64 + __builtin_ctzll(m) + 1);
-			*key = sift_f2_tid(&tid);
-			*score = 0;
-			return true;
-		}
 		if (!sift_iter_next(mk->it, &mk->pm))
 			return false;
 		mk->word = 0;
 	}
+	return true;
 }
 
 static bool

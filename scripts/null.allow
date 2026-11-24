@@ -43,7 +43,7 @@ src/bm25/planner_ties.c	ranked_scan	list-first	the list is read after cs->method
 src/agg/v6/scope_v6_run.c	scope_begin	list-first	custom_private is the packed spec that sift_agg_v6_scope_plan_path made, and custom_exprs holds the key and the window bounds exactly when the spec says it has them
 src/agg/v6/v6_star_plan.c	join_clause_keys	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
 src/agg/v6/v6_star_plan.c	try_fact	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
-src/agg/v6/v6_star_plan.c	sift_v6_star_upper_paths	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
+src/agg/v6/v6_star_plan.c	try_facts	planner-array	base holds the base relations of the query (sift_v6_plan_base_relids): every one has an entry
 src/agg/v6/v6_unnest_plan.c	sift_v6_unnest_upper_paths	planner-array	a and b are the two base relations of the query (sift_v6_plan_base_relids): both have an entry
 src/agg/v6/v6_sip.c	sift_agg_v6_sip_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present
 src/agg/v6/v6_stream.c	sift_agg_v6_stream_plan_path	list-first	custom_private of a path of this operator is the list its own path function made, with every entry present

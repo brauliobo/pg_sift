@@ -62,6 +62,8 @@ typedef struct V6State
 	uint32		star_shared;
 	SiftV6TopKRun *topk;
 	SiftV6Rows *rows;
+	Datum	   *totals;			/* a row Top-N with aggregates of the whole set: their values, which every row it gives carries */
+	bool	   *totals_null;
 	bool		ran;
 	bool		explain_only;
 	SiftV6FuseArm arm;			/* in the registry of the statement: arms of one index and one set of keys scan once */
@@ -327,27 +329,70 @@ proj_stream_next(void *arg, Datum *values, bool *isnull)
 	return st->proj_ops->next(&st->proj, values, isnull);
 }
 
+/* the rows of one source: once for each pass of the dimensions of a join (one when they all fit work_mem) */
+static void
+v6_scan_rows(V6State *st, const V6Source *src, SiftV6Text *text, Snapshot snap)
+{
+	SiftStarOpen open;
+	uint32		pass = 0;
+
+	if (st->star == NULL)
+	{
+		src->ops->order->scan_rows(st->spec, st->rows, st->group, NULL, src->heap, src->index, src->keys, src->nkeys, src->quals, snap, &st->stats,
+								   text ? sift_v6_text_chunk : NULL, text);
+		return;
+	}
+	while ((open = sift_v6_star_open(st->star, pass++)) != SSO_DONE)
+	{
+		MemoryContext pass_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 star pass");
+		MemoryContext old = MemoryContextSwitchTo(pass_cx);
+
+		if (open == SSO_SCAN)
+			src->ops->order->scan_rows(st->spec, st->rows, st->group, st->star, src->heap, src->index, src->keys, src->nkeys, src->quals, snap, &st->stats, NULL, NULL);
+		MemoryContextSwitchTo(old);
+		MemoryContextDelete(pass_cx);
+	}
+	st->star_passes = sift_v6_star_passes(st->star);
+	st->star_shared = sift_v6_star_shared(st->star);
+	sift_v6_star_close(st->star);
+}
+
+/* the aggregates of the whole set: the one row of the group the scan folded every row it kept into */
+static void
+v6_totals(V6State *st)
+{
+	const int	n = st->spec->naggs;
+
+	st->totals = MemoryContextAlloc(st->gcx, n * sizeof(Datum));
+	st->totals_null = MemoryContextAlloc(st->gcx, n * sizeof(bool));
+	sift_v6_group_finish(st->group);
+	SIFT_INVARIANT(sift_v6_group_next(st->group, st->totals, st->totals_null), "the aggregates of the whole set of a row Top-N have no row");
+}
+
 static void
 v6_run_rows(V6State *st, EState *estate)
 {
 	SiftV6Text *text = text_begin(st);
 
 	st->rows = sift_v6_rows_new(st->gcx, st->spec);
+	if (st->spec->naggs > 0)
+		st->group = sift_v6_rows_totals_new(st->gcx, st->spec);
 	for (int k = 0; k < st->nsources; k++)
 	{
 		V6Source   *src = &st->sources[k];
 
 		sift_v6_rows_source(st->rows, k);
-		src->ops->order->scan_rows(st->spec, st->rows, src->heap, src->index, src->keys, src->nkeys, src->quals, estate->es_snapshot, &st->stats,
-									text ? sift_v6_text_chunk : NULL, text);
+		v6_scan_rows(st, src, text, estate->es_snapshot);
 		src->fetch = sift_table_index_fetch_begin(src->heap);
 		src->fetch_slot = table_slot_create(src->heap, NULL);
 	}
 	text_end(text);
 	sift_v6_rows_finish(st->rows);
+	if (st->group != NULL)
+		v6_totals(st);
 }
 
-/* the next winner of a row Top-N: its columns from the heap row at its address, in the partition it came from */
+/* the next winner of a row Top-N: its columns from the heap row at its address, in the partition it came from, or from what the heap of winners and the scan kept of it */
 static bool
 v6_next_row(V6State *st, TupleTableSlot *slot)
 {
@@ -367,9 +412,18 @@ v6_next_row(V6State *st, TupleTableSlot *slot)
 	SIFT_INVARIANT(table_index_fetch_tuple(src->fetch, &tid, st->css.ss.ps.state->es_snapshot, src->fetch_slot, &again, &dead), "a row the scan kept is not in the heap");
 	foreach_node(TargetEntry, te, ((CustomScan *) st->css.ss.ps.plan)->custom_scan_tlist)
 	{
-		const AttrNumber attno = spec->nparts > 0 ? spec->part_attno[source * spec->part_ncols + i] : ((Var *) te->expr)->varattno;
+		const SiftV6RowOut *out = &spec->out[i];
+		const AttrNumber attno = out->from != SV6OUT_HEAP ? 0 : spec->nparts > 0 ? spec->part_attno[source * spec->part_ncols + i] : ((Var *) te->expr)->varattno;
 
-		slot->tts_values[i] = slot_getattr(src->fetch_slot, attno, &slot->tts_isnull[i]);
+		if (out->from == SV6OUT_HEAP)
+			slot->tts_values[i] = slot_getattr(src->fetch_slot, attno, &slot->tts_isnull[i]);
+		else if (out->from == SV6OUT_KEY)
+			slot->tts_values[i] = sift_v6_rows_key(st->rows, out->at, &slot->tts_isnull[i]);
+		else
+		{
+			slot->tts_values[i] = st->totals[out->at];
+			slot->tts_isnull[i] = st->totals_null[out->at];
+		}
 		i++;
 	}
 	return true;
