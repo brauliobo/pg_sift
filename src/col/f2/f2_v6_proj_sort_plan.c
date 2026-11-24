@@ -695,7 +695,7 @@ typedef struct ProjSortState
 	SiftV6SortScan *scan;
 	Tuplesortstate *sort;
 	TupleTableSlot *vet_slot;
-	IndexFetchTableData *fetch;	/* a sift_col: the heap's index fetch, which follows a HOT chain from the root the projection holds */
+	IndexFetchTableData *fetch;	/* the relation's index fetch: on a sift_col the heap's, which follows a HOT chain from the root the projection holds; on a sift_table the lazy one, which decodes only the columns the statement reads */
 	TupleTableSlot *sort_slot;
 	Buffer		vmbuf;			/* ios: the page of the relation's visibility map in hand */
 	int64		nfetch;			/* ios: the rows the relation had to give because their page is not all visible */
@@ -718,8 +718,6 @@ fetch_visible(ProjSortState *st, uint64 tid, TupleTableSlot *slot)
 				dead = false;
 
 	sift_f2_tid_set(&ip, tid);
-	if (st->fetch == NULL)
-		return table_tuple_fetch_row_version(st->css.ss.ss_currentRelation, &ip, st->css.ss.ps.state->es_snapshot, slot);
 	return table_index_fetch_tuple(st->fetch, &ip, st->css.ss.ps.state->es_snapshot, slot, &again, &dead);
 }
 
@@ -807,7 +805,7 @@ sort_begin_scan(ProjSortState *st)
 	st->cx = sift_mem_allocset_create(st->css.ss.ps.state->es_query_cxt, "sift proj sort scan");
 	old = MemoryContextSwitchTo(st->cx);
 	st->vet_slot = table_slot_create(st->css.ss.ss_currentRelation, NULL);
-	st->fetch = st->index != NULL ? sift_table_index_fetch_begin(st->css.ss.ss_currentRelation) : NULL;
+	st->fetch = sift_table_index_fetch_begin(st->css.ss.ss_currentRelation);
 	st->host = (SiftV6ProjHost) {.rel = owner_of(st),.store = st->store,.heap = st->index != NULL ? st->css.ss.ss_currentRelation : NULL,
 		.snap = st->css.ss.ps.state->es_snapshot,.keys = st->index != NULL ? s->key : NULL,.nkeys = st->index != NULL ? s->nkeys : 0,.npreds = s->nkeys};
 	if (!s->null_arg && sift_v6_proj_preds_of_keys(st->store, RelationGetDescr(owner_of(st)), s->key, s->nkeys, &preds, st->cx))
