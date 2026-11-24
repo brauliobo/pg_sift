@@ -550,16 +550,16 @@ rows_known(SiftV6Preagg *pa, const SiftF2GranOffer *o)
 
 /* ---- cells to states ---- */
 
-static double
-float_sum(const SiftPreaggMeasure *pm)
+static V6Acc
+float_sum_acc(const SiftPreaggMeasure *pm)
 {
 	if ((pm->flags & SIFT_PM_HAS_NAN) || ((pm->flags & SIFT_PM_HAS_PINF) && (pm->flags & SIFT_PM_HAS_NINF)))
-		return get_float8_nan();
+		return v6g_acc_of_f64_sum(get_float8_nan(), 0, pm->count_nonnull);
 	if (pm->flags & SIFT_PM_HAS_PINF)
-		return get_float8_infinity();
+		return v6g_acc_of_f64_sum(get_float8_infinity(), 0, pm->count_nonnull);
 	if (pm->flags & SIFT_PM_HAS_NINF)
-		return -get_float8_infinity();
-	return pm->u.f.sum_hi + pm->u.f.sum_lo;
+		return v6g_acc_of_f64_sum(-get_float8_infinity(), 0, pm->count_nonnull);
+	return v6g_acc_of_f64_sum(pm->u.f.sum_hi, pm->u.f.sum_lo, pm->count_nonnull);
 }
 
 static void
@@ -573,7 +573,7 @@ meas_acc(const SiftV6Agg *a, const SiftPreaggMeasure *pm, V6Acc *out)
 	if (a->kind == SV6_SUM || a->kind == SV6_AVG)
 	{
 		if (is_float)
-			v6acc_set_f64(out, float_sum(pm));
+			*out = float_sum_acc(pm);
 		else
 			v6acc_set_i128(out, (SiftI128) {(uint64) pm->u.i.sum_lo, pm->u.i.sum_hi});
 	}

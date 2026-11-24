@@ -191,6 +191,22 @@ v6g_sum_f64(V6Acc *acc, double x)
 		v6fsum_add(acc, x);
 }
 
+/* the sum of n numbers a cube of the index kept as hi + lo, as the state v6g_sum_f64 keeps it */
+static inline V6Acc
+v6g_acc_of_f64_sum(double hi, double lo, int64 n)
+{
+	V6Acc		acc = {.n = n};
+
+	if (sift_agg_exact_float)
+		v6acc_set_f64(&acc, hi + lo);
+	else
+	{
+		v6fsum_add(&acc, hi);
+		v6fsum_add(&acc, lo);
+	}
+	return acc;
+}
+
 /* How the states of aggregate a combine: the one operation of v6_acc.h for the merge of the spill of a serial run and the partitions of a parallel one */
 static inline V6AccOp
 v6g_acc_op(const SiftV6Agg *a)
