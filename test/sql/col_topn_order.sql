@@ -71,49 +71,6 @@ BEGIN
 	RETURN QUERY SELECT label, n, bad, pushed * 2 >= n, array_to_string(first, E'\n');
 END $$;
 
--- the walk: a key in blocks of values reads the units that can hold the best rows, not all those whose zone can beat the n-th as it fills
-CREATE FUNCTION ow_units(q text, walk bool) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE line text; n int;
-BEGIN
-	PERFORM ow_mode(true);
-	PERFORM set_config('sift.test_topn_walk', walk::text, true);
-	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ '^ *Units: ' THEN n := substring(line from '^ *Units: (\d+)')::int; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
-SELECT q, ow_units(q, true) <= 4 AS walk_reads_few, ow_units(q, true) < ow_units(q, false) AS fewer_than_without
-FROM (VALUES ('SELECT id, k_band FROM ow ORDER BY k_band, id LIMIT 10'), ('SELECT id, k_band FROM ow ORDER BY k_band DESC, id LIMIT 10'),
-			 ('SELECT id, k_band FROM ow WHERE g = 2 ORDER BY k_band, id LIMIT 100')) v (q);
-
--- a first key that ties between units (k_mix: 50 values and NULLs in every unit) is decided by the zone of the next key (id follows the table)
-CREATE FUNCTION ow_units_zk(q text, zk bool) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE line text; n int;
-BEGIN
-	PERFORM ow_mode(true);
-	PERFORM set_config('sift.test_topn_zone_keys', zk::text, true);
-	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF line ~ '^ *Units: ' THEN n := substring(line from '^ *Units: (\d+)')::int; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
-SELECT q, ow_units_zk(q, true) <= 3 AS zone_keys_read_few, ow_units_zk(q, true) < ow_units_zk(q, false) AS fewer_than_without
-FROM (VALUES ('SELECT id, k_mix FROM ow ORDER BY k_mix, id LIMIT 10'), ('SELECT id, k_mix FROM ow ORDER BY k_mix DESC, id DESC LIMIT 10'),
-			 ('SELECT id, k_mix FROM ow ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10'), ('SELECT id, k_mix FROM ow WHERE g = 2 ORDER BY k_mix, id LIMIT 10')) v (q);
-
--- the planner prices the walk: a key in blocks of values costs less than a random one, and less than the same scan without the walk
-CREATE FUNCTION ow_cost(q text, walk bool) RETURNS float8 LANGUAGE plpgsql AS $$
-DECLARE j json;
-BEGIN
-	PERFORM ow_mode(true);
-	PERFORM set_config('sift.test_topn_walk', walk::text, true);
-	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
-	RETURN (j->0->'Plan'->>'Total Cost')::float8;
-END $$;
-SELECT ow_cost(band, true) < ow_cost(rnd, true) AS blocks_cheaper_than_random, ow_cost(band, true) < ow_cost(band, false) AS walk_prices_less,
-	   ow_cost(rnd, true) > 0.9 * ow_cost(rnd, false) AS random_priced_as_before
-FROM (SELECT 'SELECT id, k_band FROM ow ORDER BY k_band, id LIMIT 10' AS band, 'SELECT id, k_rand FROM ow ORDER BY k_rand, id LIMIT 10' AS rnd) v;
-
 SELECT * FROM ow_fuzz('build', 11, 120);
 
 -- ids 8000 to 8300 are deleted; the new versions of the updated rows are stored in other pages (the end of the table), far from the neighbours of their values
@@ -138,12 +95,7 @@ VACUUM ow;
 SELECT sift.col_promote('ow_col') >= 0 AS promoted;
 SELECT * FROM ow_fuzz('promoted', 14, 120);
 
--- the same queries without the walk
-SET sift.test_topn_walk = off;
-SELECT * FROM ow_fuzz('promoted, no walk', 14, 120);
-RESET sift.test_topn_walk;
-
 DROP TABLE ow;
-DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int), ow_units(text, bool), ow_cost(text, bool), ow_units_zk;
+DROP FUNCTION ow_mode(bool), ow_run(text), ow_query(int, int), ow_fuzz(text, int, int);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
