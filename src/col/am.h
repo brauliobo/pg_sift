@@ -329,6 +329,8 @@ extern int	sift_col_att_leaves(Form_pg_attribute att, SiftColDef *defs, int arr)
 /* The values of one datum for the leaf def and the leaves after it (its lanes): v[0 .. max(def->lanes, 1)); strings are palloc'd or point into the datum */
 extern void sift_col_datum_values(const SiftColDef *def, Datum d, bool name, SiftColValue *v);
 extern void sift_col_datum_values_att(const SiftColDef *def, int16 attlen, bool attbyval, Datum d, bool name, SiftColValue *v);
+/* The datum of the attribute type typid from the values of the leaves of its head (the inverse of the two above); a NULL head of a numeric is its NaN */
+extern Datum sift_col_values_datum(const SiftColDef *def, Oid typid, int16 typlen, bool typbyval, const SiftColValue *v, MemoryContext cx);
 
 /* Built on first use from the index definition (ERROR for an unsupported type or a jsonb attribute without paths) */
 extern SiftColRel *sift_col_rel(Relation index);

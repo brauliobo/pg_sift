@@ -198,6 +198,34 @@ sift_col_def_value_lanes(const SiftColDef *d)
 	return sift_col_def_arrlen_head(d) || sift_col_def_shape(d) || d->lanes < 2 ? 1 : d->lanes;
 }
 
+/* the attribute of nleaves leaves from head d keeps its whole value in the leaves of sift_col_def_value_lanes, so a scan can read it as a PostgreSQL datum (sift_col_values_datum) */
+static inline bool
+sift_col_def_datum_ok(const SiftColDef *d, int nleaves)
+{
+	if (d->lane != 0 || d->kind != SIFT_COLK_SCALAR || (d->flags & (SIFT_COLD_DERIVED | SIFT_COLD_NOIMAGE)) || d->path[0] != '\0' || nleaves < sift_col_def_value_lanes(d))
+		return false;
+	switch (d->type)
+	{
+		case SIFT_COLT_MONEY:
+		case SIFT_COLT_TIME:
+		case SIFT_COLT_ENUM:
+		case SIFT_COLT_NUMERIC:
+		case SIFT_COLT_INTERVAL:
+			return true;
+		case SIFT_COLT_TEXT:
+		case SIFT_COLT_UUID:
+		case SIFT_COLT_BYTEA:
+		case SIFT_COLT_VARLENA:
+		case SIFT_COLT_MACADDR:
+		case SIFT_COLT_MACADDR8:
+		case SIFT_COLT_TIMETZ:
+		case SIFT_COLT_OTHER:
+			return d->store == SIFT_COLS_STR;
+		default:
+			return false;
+	}
+}
+
 /* The JSON type of an overflowing value; the numbers are on disk */
 #define SIFT_COLTAG_UNKNOWN		0
 #define SIFT_COLTAG_STRING		1
