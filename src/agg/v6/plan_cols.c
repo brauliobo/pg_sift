@@ -293,7 +293,9 @@ document_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
 static bool
 resolve_datum_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	return datum_column_of(ctx, e, out) || document_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
+	const V6Plan *p = ctx;
+
+	return (p->xseed == NULL && datum_column_of(ctx, e, out)) || document_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
 }
 
 static int
