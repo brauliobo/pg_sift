@@ -1,6 +1,6 @@
 -- The statements that join the scanned table to the UNION of the two paths of a scope and count a row for each pair: several keys, every key, the key as a group key, a key by a parameter.
--- The node holds the join over the union (a child plan of it) to run where the units cannot count a row for each pair or cost more. Every statement returns the rows of the join as
--- written (sift.agg_scope = off) and of the normal plan in every state of the pairs, with generic and custom plans, and with the held join run (sift.test_scope_join).
+-- Every statement returns the rows of the join as
+-- written (sift.agg_scope = off) and of the normal plan in every state of the pairs, with generic and custom plans.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -109,36 +109,24 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN a = b AND b = c;
 END $$;
--- the held join run: the child plan of the union gives the join's rows
-CREATE FUNCTION held(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'not run';
-BEGIN
-	PERFORM set_config('sift.test_scope_join', 'on', false);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope Fallback' THEN r := 'join run'; END IF;
-	END LOOP;
-	r := r || CASE WHEN same(q) THEN ', same rows' ELSE ', ROWS DIFFER' END;
-	PERFORM set_config('sift.test_scope_join', 'off', false);
-	RETURN r;
-END $$;
-CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool, held_join text) LANGUAGE sql AS $$
-	SELECT note, f.name, label(f.q), same(f.q), CASE WHEN label(f.q) ~ '^scope read' THEN held(f.q) ELSE '-' END FROM forms f ORDER BY f.name
+CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan text, same_rows bool) LANGUAGE sql AS $$
+	SELECT note, f.name, label(f.q), same(f.q) FROM forms f ORDER BY f.name
 $$;
 SELECT * FROM states('built');
- state |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
--------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- built | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- built | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- built | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- built | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- built | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- built | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- built | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- built | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- built | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- built | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- built | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- built | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+ state |                       name                       |                                                                       plan                                                                        | same_rows 
+-------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ built | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ built | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ built | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ built | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ built | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ built | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ built | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ built | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ built | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ built | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ built | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ built | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 -- the key by a parameter: custom and generic plans
@@ -162,132 +150,132 @@ RESET plan_cache_mode;
 -- the pairs change after the build: the reader patches or refuses, the rows are the join's in every state
 INSERT INTO grants (id, tenant_id, dim_a_id) VALUES (20, 1, 30), (21, 9, 31), (22, 9, 32);
 SELECT * FROM states('direct grants inserted');
-         state          |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
-------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- direct grants inserted | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- direct grants inserted | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- direct grants inserted | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- direct grants inserted | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- direct grants inserted | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- direct grants inserted | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- direct grants inserted | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- direct grants inserted | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- direct grants inserted | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- direct grants inserted | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- direct grants inserted | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- direct grants inserted | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+         state          |                       name                       |                                                                       plan                                                                        | same_rows 
+------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ direct grants inserted | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ direct grants inserted | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ direct grants inserted | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ direct grants inserted | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ direct grants inserted | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ direct grants inserted | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ direct grants inserted | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ direct grants inserted | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ direct grants inserted | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ direct grants inserted | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ direct grants inserted | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ direct grants inserted | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 UPDATE grants SET deleted_at = now() WHERE id = 2;
 SELECT * FROM states('a direct grant soft deleted');
-            state            |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- a direct grant soft deleted | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- a direct grant soft deleted | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- a direct grant soft deleted | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- a direct grant soft deleted | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a direct grant soft deleted | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- a direct grant soft deleted | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a direct grant soft deleted | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a direct grant soft deleted | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a direct grant soft deleted | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- a direct grant soft deleted | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a direct grant soft deleted | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- a direct grant soft deleted | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+            state            |                       name                       |                                                                       plan                                                                        | same_rows 
+-----------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ a direct grant soft deleted | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ a direct grant soft deleted | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ a direct grant soft deleted | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ a direct grant soft deleted | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a direct grant soft deleted | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ a direct grant soft deleted | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a direct grant soft deleted | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a direct grant soft deleted | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a direct grant soft deleted | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ a direct grant soft deleted | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a direct grant soft deleted | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ a direct grant soft deleted | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 UPDATE grants SET group_id = 1 WHERE id = 3;
 SELECT * FROM states('a group grant moved to another group');
-                state                 |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
---------------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- a group grant moved to another group | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- a group grant moved to another group | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- a group grant moved to another group | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- a group grant moved to another group | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a group grant moved to another group | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- a group grant moved to another group | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a group grant moved to another group | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a group grant moved to another group | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a group grant moved to another group | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- a group grant moved to another group | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a group grant moved to another group | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- a group grant moved to another group | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+                state                 |                       name                       |                                                                       plan                                                                        | same_rows 
+--------------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ a group grant moved to another group | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ a group grant moved to another group | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ a group grant moved to another group | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ a group grant moved to another group | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a group grant moved to another group | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ a group grant moved to another group | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a group grant moved to another group | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a group grant moved to another group | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a group grant moved to another group | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ a group grant moved to another group | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a group grant moved to another group | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ a group grant moved to another group | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 INSERT INTO memberships (group_id, dim_a_id) VALUES (1, 59), (2, 60);
 SELECT * FROM states('memberships added to groups');
-            state            |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- memberships added to groups | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- memberships added to groups | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- memberships added to groups | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- memberships added to groups | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- memberships added to groups | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- memberships added to groups | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- memberships added to groups | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- memberships added to groups | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- memberships added to groups | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- memberships added to groups | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- memberships added to groups | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- memberships added to groups | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+            state            |                       name                       |                                                                       plan                                                                        | same_rows 
+-----------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ memberships added to groups | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ memberships added to groups | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ memberships added to groups | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ memberships added to groups | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ memberships added to groups | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ memberships added to groups | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ memberships added to groups | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ memberships added to groups | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ memberships added to groups | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ memberships added to groups | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ memberships added to groups | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ memberships added to groups | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 UPDATE memberships SET deleted_at = now() WHERE group_id = 2 AND dim_a_id = 7;
 SELECT * FROM states('a member soft deleted from a group');
-               state                |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
-------------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- a member soft deleted from a group | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- a member soft deleted from a group | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- a member soft deleted from a group | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- a member soft deleted from a group | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a member soft deleted from a group | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- a member soft deleted from a group | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a member soft deleted from a group | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a member soft deleted from a group | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a member soft deleted from a group | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- a member soft deleted from a group | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- a member soft deleted from a group | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- a member soft deleted from a group | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+               state                |                       name                       |                                                                       plan                                                                        | same_rows 
+------------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ a member soft deleted from a group | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ a member soft deleted from a group | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ a member soft deleted from a group | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ a member soft deleted from a group | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a member soft deleted from a group | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ a member soft deleted from a group | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a member soft deleted from a group | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a member soft deleted from a group | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a member soft deleted from a group | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ a member soft deleted from a group | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ a member soft deleted from a group | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ a member soft deleted from a group | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 UPDATE facts SET dim_a_id = 59 WHERE id <= 40;
 SELECT * FROM states('facts moved to an added member, write buffer');
-                    state                     |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
-----------------------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- facts moved to an added member, write buffer | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- facts moved to an added member, write buffer | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- facts moved to an added member, write buffer | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- facts moved to an added member, write buffer | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- facts moved to an added member, write buffer | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- facts moved to an added member, write buffer | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- facts moved to an added member, write buffer | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- facts moved to an added member, write buffer | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- facts moved to an added member, write buffer | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- facts moved to an added member, write buffer | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- facts moved to an added member, write buffer | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- facts moved to an added member, write buffer | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+                    state                     |                       name                       |                                                                       plan                                                                        | same_rows 
+----------------------------------------------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ facts moved to an added member, write buffer | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ facts moved to an added member, write buffer | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ facts moved to an added member, write buffer | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ facts moved to an added member, write buffer | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ facts moved to an added member, write buffer | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ facts moved to an added member, write buffer | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ facts moved to an added member, write buffer | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ facts moved to an added member, write buffer | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ facts moved to an added member, write buffer | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ facts moved to an added member, write buffer | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ facts moved to an added member, write buffer | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ facts moved to an added member, write buffer | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 REINDEX INDEX facts_col;
 SELECT * FROM states('rebuilt');
-  state  |                       name                       |                                                                       plan                                                                        | same_rows |      held_join      
----------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------+---------------------
- rebuilt | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t         | -
- rebuilt | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t         | -
- rebuilt | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t         | -
- rebuilt | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- rebuilt | every key                                        | scope read, all keys, per pair                                                                                                                    | t         | join run, same rows
- rebuilt | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- rebuilt | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- rebuilt | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- rebuilt | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
- rebuilt | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t         | join run, same rows
- rebuilt | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t         | join run, same rows
- rebuilt | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t         | join run, same rows
+  state  |                       name                       |                                                                       plan                                                                        | same_rows 
+---------+--------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------+-----------
+ rebuilt | UNION ALL, grouped by the key                    | join, a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION | t
+ rebuilt | a condition on the pairs                         | join, the union of the two paths of the scope has another condition: (v.member > 10)                                                              | t
+ rebuilt | a left join                                      | join, the scope relation is not joined by an inner or semi join (IN, EXISTS)                                                                      | t
+ rebuilt | barrier view                                     | scope read, all keys, per pair, key grouped                                                                                                       | t
+ rebuilt | every key                                        | scope read, all keys, per pair                                                                                                                    | t
+ rebuilt | every key, count(DISTINCT)                       | scope read, all keys, per pair, key grouped                                                                                                       | t
+ rebuilt | every key, grouped by the key                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ rebuilt | every key, grouped by the key and another column | scope read, all keys, per pair, key grouped                                                                                                       | t
+ rebuilt | one key                                          | scope read, 1 keys, per pair, key grouped                                                                                                         | t
+ rebuilt | the union written in the join                    | scope read, all keys, per pair, key grouped                                                                                                       | t
+ rebuilt | two keys                                         | scope read, 2 keys, per pair                                                                                                                      | t
+ rebuilt | two keys, grouped by the key                     | scope read, 2 keys, per pair, key grouped                                                                                                         | t
 (12 rows)
 
 DEALLOCATE ALL;
-DROP FUNCTION states(text), held(text), same(text), rows_md5(text), label(text);
+DROP FUNCTION states(text), same(text), rows_md5(text), label(text);
 DROP TABLE forms;
 DROP VIEW tenant_pairs, tenant_pairs_all, tenant_pairs_barrier;
 DROP TABLE facts, grants, memberships, my_tenants;

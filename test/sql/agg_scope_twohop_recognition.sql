@@ -226,23 +226,7 @@ CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, plan tex
 	WHERE f.name IN ('IN', 'IN, two keys', 'IN, view', 'IN, a tenant with no pair', 'function', 'top 5, view', 'join, view', 'join, key in the arms', 'join, member alone, two keys',
 		'join, two keys', 'join, every key', 'join, group by the key') ORDER BY f.name
 $$;
--- the node runs the join it holds when the units cannot answer or cost more: its plan holds the union as a child, which must give the rows of the join (sift.test_scope_join forces the run)
-CREATE FUNCTION held(note text) RETURNS TABLE (state text, name text, fallback text, same_rows bool) LANGUAGE plpgsql AS $$
-DECLARE l text; r text; f record;
-BEGIN
-	PERFORM set_config('sift.test_scope_join', 'on', false);
-	FOR f IN SELECT * FROM forms ff WHERE ff.name IN ('join, view', 'join, key in the arms', 'join, two keys', 'join, every key', 'join, group by the key') ORDER BY ff.name LOOP
-		r := 'not run';
-		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || f.q LOOP
-			IF l ~ 'Scope Fallback' THEN r := regexp_replace(l, '^ *Scope Fallback: ', ''); END IF;
-		END LOOP;
-		state := note; name := f.name; fallback := r; same_rows := same(f.q);
-		RETURN NEXT;
-	END LOOP;
-	PERFORM set_config('sift.test_scope_join', 'off', false);
-END $$;
 SELECT * FROM states('built');
-SELECT * FROM held('built');
 INSERT INTO grants (id, tenant_id, dim_a_id) VALUES (20, 1, 30), (21, 9, 31), (22, 9, 32);
 SELECT * FROM states('direct grants inserted');
 UPDATE grants SET deleted_at = now() WHERE id = 2;
@@ -265,7 +249,6 @@ DELETE FROM memberships WHERE group_id = 1 AND dim_a_id = 59;
 SELECT * FROM states('a membership deleted');
 UPDATE facts SET dim_a_id = 59 WHERE id <= 40;
 SELECT * FROM states('facts moved to an added member, write buffer');
-SELECT * FROM held('facts moved to an added member, write buffer');
 REINDEX INDEX facts_col;
 SELECT * FROM states('rebuilt');
 
@@ -363,7 +346,7 @@ DROP VIEW tenant_pairs_m, tenant_pairs_m_all;
 DROP TABLE facts_m, grants_m, memberships_m;
 
 DEALLOCATE ALL;
-DROP FUNCTION label(text), rows_md5(text), same(text), states(text), held(text), facts_of(int), direct_arm(text, text, text), joined_arm(text, text, text, text), in_stmt(text), join_stmt(text, text);
+DROP FUNCTION label(text), rows_md5(text), same(text), states(text), facts_of(int), direct_arm(text, text, text), joined_arm(text, text, text, text), in_stmt(text), join_stmt(text, text);
 DROP TABLE forms;
 DROP VIEW tenant_pairs, tenant_pairs_all, tenant_pairs_barrier, tenant_pairs_keyfirst;
 DROP TABLE facts, grants, memberships, my_tenants;

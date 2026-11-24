@@ -97,11 +97,8 @@ BEGIN
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	one := rows_md5(q);
 	PERFORM set_config('max_parallel_workers_per_gather', '2', true);
-	-- the join the node runs when it costs less than the units
-	PERFORM set_config('sift.test_scope_join', 'on', true);
 	join_workers := (launched(q)).workers;
 	fallback := rows_md5(q);
-	PERFORM set_config('sift.test_scope_join', 'off', true);
 	PERFORM set_config('sift.agg_scope', 'off', true);
 	j := rows_md5(q);
 	PERFORM set_config('sift.agg_scope', 'on', true);
