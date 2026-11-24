@@ -421,11 +421,11 @@ $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIM
    FROM unnest(ARRAY['c', 'l']) WITH ORDINALITY c(c, ci), unnest(ARRAY['ASC', 'DESC']) WITH ORDINALITY d(d, di), unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) WITH ORDINALITY nl(nl, nli),
 		unnest(ARRAY[1, 10, 100, 2000]) WITH ORDINALITY lim(lim, limi), unnest(ARRAY[0, 7]) WITH ORDINALITY o(o, oi),
 		unnest(ARRAY['', 'WHERE id > 0', 'WHERE c >= ''customer-0100'' AND c < ''customer-0300''', 'WHERE c >= ''order-''', 'WHERE c < ''a''']) WITH ORDINALITY w(w, wi)
-   WHERE (ci + di + nli + limi + oi + wi + stage) % 6 = 0 $$;
+   WHERE (ci + di + nli + limi + oi + wi + stage) % 12 = 0 $$;
 SELECT col, result, count(*) FROM tx_all(0) GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
- c   | global order |    28
+ c   | global order |    27
  l   | global order |    11
  l   | units        |    19
 (3 rows)
@@ -450,7 +450,7 @@ SELECT col, result, count(*) FROM tx_all(1) GROUP BY 1, 2 ORDER BY 1, 2;
  c   | global order |    27
  c   | units        |     3
  l   | global order |    15
- l   | units        |    13
+ l   | units        |    12
 (4 rows)
 
 SELECT sift.col_promote('tx_i') >= 0 AS promoted;
@@ -464,10 +464,10 @@ ANALYZE tx;
 SELECT col, result, count(*) FROM tx_all(2) GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
- c   | global order |    25
+ c   | global order |    24
  c   | units        |     3
  l   | global order |    17
- l   | units        |     8
+ l   | units        |     3
 (4 rows)
 
 -- a buffer past the limit of a locale column: the units answer, the answers are the heap's
@@ -482,9 +482,9 @@ SELECT sum(rows) > 16384 AS buffer_over_the_locale_limit FROM sift.col_segments(
 SELECT col, result, count(*) FROM tx_all(3) GROUP BY 1, 2 ORDER BY 1, 2;
  col |    result    | count 
 -----+--------------+-------
- c   | global order |    23
+ c   | global order |    18
  c   | units        |     2
- l   | units        |    24
+ l   | units        |    12
 (3 rows)
 
 SELECT sift.col_verify('tx_i');

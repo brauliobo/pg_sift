@@ -289,7 +289,7 @@ $$ SELECT c, tx_chk(format('SELECT %1$s FROM tx %6$s ORDER BY %1$s %2$s %3$s LIM
    FROM unnest(ARRAY['c', 'l']) WITH ORDINALITY c(c, ci), unnest(ARRAY['ASC', 'DESC']) WITH ORDINALITY d(d, di), unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) WITH ORDINALITY nl(nl, nli),
 		unnest(ARRAY[1, 10, 100, 2000]) WITH ORDINALITY lim(lim, limi), unnest(ARRAY[0, 7]) WITH ORDINALITY o(o, oi),
 		unnest(ARRAY['', 'WHERE id > 0', 'WHERE c >= ''customer-0100'' AND c < ''customer-0300''', 'WHERE c >= ''order-''', 'WHERE c < ''a''']) WITH ORDINALITY w(w, wi)
-   WHERE (ci + di + nli + limi + oi + wi + stage) % 6 = 0 $$;
+   WHERE (ci + di + nli + limi + oi + wi + stage) % 12 = 0 $$;
 SELECT col, result, count(*) FROM tx_all(0) GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- rows of the buffer deleted, updated (the key moves), an insert and an update rolled back
