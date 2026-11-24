@@ -46,7 +46,7 @@ par_src_ints(const ParSrc *s, const ParLoad *ld, uint64 flip, uint64 *out)
 	{
 		PAR_EACH_ROW(ld, r, i)
 		{
-			const SiftStrRef v = par_str_at(cv, r);
+			const SiftStrRef v = par_str_at(ld, cv, r);
 
 			out[i] = (uint64) sift_vx_strlen(s->d, v.p, v.len) ^ flip;
 		}
@@ -73,13 +73,13 @@ par_src_strs(const ParSrc *s, const ParLoad *ld, SiftStrRef *out)
 	if (s->d == NULL)
 	{
 		PAR_EACH_ROW(ld, r, i)
-			out[i] = par_str_at(cv, r);
+			out[i] = par_str_at(ld, cv, r);
 	}
 	else if (s->d->kind == SVD_URL_HOST)
 	{
 		PAR_EACH_ROW(ld, r, i)
 		{
-			const SiftStrRef v = par_str_at(cv, r);
+			const SiftStrRef v = par_str_at(ld, cv, r);
 
 			sift_vx_url_host(v.p, v.len, &out[i].p, &out[i].len);
 		}
@@ -89,6 +89,6 @@ par_src_strs(const ParSrc *s, const ParLoad *ld, SiftStrRef *out)
 		const SiftStrRef other = {s->d->else_bytes, s->d->else_len};
 
 		PAR_EACH_ROW(ld, r, i)
-			out[i] = case_holds(s, ld, r) ? par_str_at(cv, r) : other;
+			out[i] = case_holds(s, ld, r) ? par_str_at(ld, cv, r) : other;
 	}
 }

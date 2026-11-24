@@ -98,6 +98,20 @@ VACUUM (FREEZE, ANALYZE) bq_c;
 SELECT * FROM check_par('table <>', $q$ SELECT g, count(*) FROM bq_t WHERE g <> 0 GROUP BY 1 $q$);
 SELECT * FROM check_par('table column against column', $q$ SELECT g, count(*) FROM bq_t WHERE v > w GROUP BY 1 $q$);
 SELECT * FROM check_par('index column against column', $q$ SELECT g, count(*) FROM bq_c WHERE v > w GROUP BY 1 $q$);
+-- ---- the text of a sift_table is the datum of its cell: the empty string, short and long strings, a dictionary of the granule or none ----
+CREATE TABLE tx_t (id int, u bigint, s text, d text) USING sift_table;
+INSERT INTO tx_t SELECT i, i % 5, CASE WHEN i % 3 = 0 THEN '' WHEN i % 3 = 1 THEN 'abc' || (i % 4) ELSE repeat('x', 20 + i % 50) END, 'd' || (i % 9) FROM generate_series(1, 300000) i;
+VACUUM (FREEZE, ANALYZE) tx_t;
+SELECT * FROM check_par('table text key', $q$ SELECT s, count(*) FROM tx_t GROUP BY 1 $q$);
+SELECT * FROM check_par('table integer and text keys', $q$ SELECT u, s, count(*) FROM tx_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('table distinct count by text', $q$ SELECT d, count(DISTINCT s) FROM tx_t GROUP BY 1 $q$);
+-- ---- a key held as interned values (a numeric, an extract of a timestamp) is folded by the scan, not by the threads ----
+CREATE TABLE gk_c (id int, ts timestamp, n numeric(10, 0), v int);
+INSERT INTO gk_c SELECT i, timestamp '2024-01-01' + i * interval '37 seconds', i % 40, i % 7 FROM generate_series(1, 300000) i;
+CREATE INDEX gk_c_col ON gk_c USING sift_col (id, ts, n, v);
+VACUUM (FREEZE, ANALYZE) gk_c;
+SELECT * FROM check_par('extract key', $q$ SELECT v, extract(minute FROM ts) m, count(*) FROM gk_c GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('numeric key', $q$ SELECT v, n, count(*) FROM gk_c GROUP BY 1, 2 $q$);
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
-DROP TABLE ts_t, st_f, st_d1, st_p, st_d2, un_t, bq_t, bq_c;
+DROP TABLE ts_t, st_f, st_d1, st_p, st_d2, un_t, bq_t, bq_c, tx_t, gk_c;
 DROP EXTENSION pg_sift;

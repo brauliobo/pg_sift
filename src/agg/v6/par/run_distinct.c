@@ -172,7 +172,7 @@ fill_text_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftP
 	if (s == NULL)
 		return false;
 	PAR_EACH_ROW(ld, r, k)
-		s[k] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(cv, r);
+		s[k] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(ld, cv, r);
 	b->vstr = s;
 	return true;
 }
@@ -206,7 +206,7 @@ fill_mm(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistin
 		if (s == NULL)
 			return false;
 		PAR_EACH_ROW(ld, r, k)
-			s[k] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(cv, r);
+			s[k] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(ld, cv, r);
 		b->mm[m] = s;
 	}
 	return true;

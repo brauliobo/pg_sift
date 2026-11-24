@@ -114,7 +114,7 @@ rows_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftP
 			const ColView *cv = &ld.cv[sh->rkey_at[j]];
 
 			if (sh->rs.str[j])
-				str[j][i] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(cv, r);
+				str[j][i] = cv->isnull[r] ? (SiftStrRef) {NULL, SIFT_STR_NULL} : par_str_at(&ld, cv, r);
 			else
 			{
 				key[j][i] = cv->i[r];

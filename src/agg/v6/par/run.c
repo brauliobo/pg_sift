@@ -124,7 +124,7 @@ shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 		return false;
 	for (int k = 0; k < lengthof(kinds); k++)
 	{
-		*sh = (ParShape) {.kind = kinds[k]};
+		*sh = (ParShape) {.kind = kinds[k],.table = spec->is_table};
 		if (kinds[k]->shape(spec, first, sh))
 			return true;
 	}
@@ -177,6 +177,7 @@ par_load(const ParShape *sh, const SiftPinSlot *sl, SiftArena *scratch, SiftErr 
 	int			nrows = 0;
 
 	ld->n = sift_pin_slot_nrows(sl);
+	ld->table = sh->table;
 	ld->active = sift_arena_alloc(scratch, SIFT_PIN_ACTIVE_WORDS * sizeof(uint64), SIFT_ARENA_ALIGN);
 	if (memo == NULL || ld->active == NULL)
 		return par_arena_full(scratch, err);

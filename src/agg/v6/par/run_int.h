@@ -24,6 +24,7 @@ struct ParKind;
 typedef struct ParShape
 {
 	const struct ParKind *kind;
+	bool		table;			/* the leaves are those of a sift_table: a text is the datum of its cell */
 	int			nleaves;
 	int			leaf[PAR_LEAVES_MAX];
 	bool		codes[PAR_LEAVES_MAX];	/* the leaf is a text read as the codes of the dictionary of the granule when it has one */
@@ -121,6 +122,7 @@ typedef struct ParLoad
 {
 	uint32		n;				/* the rows of the granule */
 	uint32		nact;			/* the rows that pass */
+	bool		table;			/* the leaves are those of a sift_table (ParShape) */
 	uint64	   *active;			/* the bitmap of the rows that pass */
 	ColView		cv[PAR_LEAVES_MAX];
 } ParLoad;
@@ -131,11 +133,14 @@ extern bool par_arena_full(SiftArena *a, SiftErr *err);
 extern bool par_serial(SiftErr *err, const char *why);
 
 static inline SiftStrRef
-par_str_at(const ColView *cv, uint32 r)
+par_str_at(const ParLoad *ld, const ColView *cv, uint32 r)
 {
-	if (cv->dcode != NULL)
-		return (SiftStrRef) {(const uint8 *) cv->dict->bytes + cv->dict->off[cv->dcode[r]], cv->dict->off[cv->dcode[r] + 1] - cv->dict->off[cv->dcode[r]]};
-	return (SiftStrRef) {(const uint8 *) cv->s[r], cv->slen[r]};
+	const char *p = cv->dcode != NULL ? cv->dict->bytes + cv->dict->off[cv->dcode[r]] : cv->s[r];
+	const uint32 len = cv->dcode != NULL ? cv->dict->off[cv->dcode[r] + 1] - cv->dict->off[cv->dcode[r]] : cv->slen[r];
+
+	if (ld->table && !cv->isnull[r])
+		return (SiftStrRef) {(const uint8 *) VARDATA_ANY(p), VARSIZE_ANY_EXHDR(p)};
+	return (SiftStrRef) {(const uint8 *) p, len};
 }
 
 /* The rows of the bitmap in order: r is the row of the granule, i its place among the rows that pass */
