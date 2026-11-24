@@ -1,105 +1,166 @@
 /*
- * agg/v6/par/distinct.c - the radix COUNT(DISTINCT) of agg/v6/par/distinct.h. Nothing here calls the server.
+ * agg/v6/par/distinct.c - the radix COUNT(DISTINCT) of agg/v6/par/distinct.h: phase 1, the seal and the answer (phase 2 is distinct_p2.c). Nothing here calls the server.
  */
 #include "postgres.h"
 
-#include "port/pg_bitutils.h"
-
-#include "agg/v6/par/distinct.h"
+#include "agg/v6/par/distinct_int.h"
 #include "agg/v6/v6_distinct_u64.h"
-#include "core/par/radix.h"
 #include "core/popcount.h"
-
-#define DIST_TILE		256
-#define DIST_FIRST_CAP	1024
-#define DIST_PART_MAX	16384
-
-typedef struct DistWorker
-{
-	SiftRadixOut out;
-	uint64		cnt;			/* the distinct values of the one set that phase 2 of this thread counted */
-	uint64	   *gcnt;			/* with groups: the distinct values of each group it counted */
-} DistWorker;
-
-struct SiftParDistinct
-{
-	SiftParDistinctHooks hooks;
-	SiftParArenas *ar;
-	int			nw;
-	uint32		ngroups;
-	DistWorker *w;
-};
 
 static inline uint32
 rec_bytes(const SiftParDistinct *d)
 {
-	return d->ngroups == 0 ? sizeof(uint64) : sizeof(SiftDuPair);
+	return d->grouped ? sizeof(DistRec) : sizeof(uint64);
 }
 
 static bool
-fail_mem(SiftErr *err, uint32 arg0, uint32 arg1, const char *msg)
+worker_init(SiftParDistinct *d, DistWorker *w, SiftArena *state)
 {
-	sift_err_fill(err, SIFT_ERR_WORK_MEM, arg0, arg1, msg);
-	return false;
+	sift_radix_init(&w->raw, state);
+	sift_radix_init(&w->agg, state);
+	if (!sift_keytab_init(&w->keys, state, d->ks, false) || (d->sp.vstr && !sift_keytab_init(&w->vals, state, d->vs, false)))
+		return false;
+	if (!d->grouped)
+	{
+		const SiftKey nokey = {.h = sift_key_hash(&d->ks, NULL, NULL, 0)};
+
+		return sift_keytab_intern(&w->keys, &nokey) == 0;
+	}
+	return true;
 }
 
 SiftParDistinct *
-sift_par_distinct_create(SiftParArenas *ar, uint32 ngroups, const SiftParDistinctHooks *hooks, SiftErr *err)
+sift_par_distinct_create(SiftParArenas *ar, const SiftParDistinctSpec *spec, const SiftParDistinctHooks *hooks, SiftErr *err)
 {
 	SiftArena  *boot = &ar->w[0].state;
-	SiftParDistinct *d;
+	SiftParDistinct *d = sift_arena_alloc0(boot, sizeof(SiftParDistinct), SIFT_ARENA_ALIGN);
 
-	if (ngroups == UINT32_MAX)
-		return sift_err_fill(err, SIFT_ERR_UNSUPPORTED, ngroups, 0, "parallel distinct: too many groups"), NULL;
-	d = sift_arena_alloc0(boot, sizeof(SiftParDistinct), SIFT_ARENA_ALIGN);
 	if (d != NULL)
 		d->w = sift_arena_alloc0(boot, sizeof(DistWorker) * ar->n, SIFT_ARENA_ALIGN);
 	if (d == NULL || d->w == NULL)
-		return fail_mem(err, 0, 0, "parallel distinct: no room for the state"), NULL;
+		return dist_fail(err, "parallel distinct: no room for the state"), NULL;
+	d->sp = *spec;
 	d->hooks = *hooks;
 	d->ar = ar;
 	d->nw = ar->n;
-	d->ngroups = ngroups;
+	d->grouped = spec->kw > 0 || spec->kstr;
+	d->ks = (SiftKeyShape) {.kw = spec->kw,.str = spec->kstr,.npay = 2 + spec->nsum};
+	d->vs = (SiftKeyShape) {.str = true};
 	for (int t = 0; t < d->nw; t++)
-	{
-		sift_radix_init(&d->w[t].out, &ar->w[t].state);
-		if (ngroups > 0)
-			d->w[t].gcnt = sift_arena_alloc0(&ar->w[t].work, (size_t) ngroups * sizeof(uint64), SIFT_ARENA_ALIGN);
-		if (ngroups > 0 && d->w[t].gcnt == NULL)
-			return fail_mem(err, t, ngroups, "parallel distinct: an arena is too small for the counts of the groups"), NULL;
-	}
+		if (!worker_init(d, &d->w[t], &ar->w[t].state))
+			return dist_fail(err, "parallel distinct: an arena is too small for the tables"), NULL;
 	return d;
 }
 
 /* ---- phase 1 ---- */
 
+static uint32
+key_of(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, uint32 i)
+{
+	uint64		words[SIFT_PAR_GROUP_MAX_KEYS];
+	SiftKey		k = {.w = words};
+
+	if (!d->grouped)
+		return 0;
+	for (int j = 0; j < d->sp.kw; j++)
+		words[j] = b->key[j][i];
+	if (d->sp.kstr)
+	{
+		k.p = b->kstr[i].p;
+		k.len = b->kstr[i].len;
+	}
+	k.h = sift_key_hash(&d->ks, words, k.p, k.len);
+	return sift_keytab_intern(&w->keys, &k);
+}
+
+static void
+add_row(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDistinctBatch *b, uint32 i)
+{
+	uint64	   *pay = sift_keytab_pay(&w->keys, sift_keytab_at(&w->keys, kid));
+
+	pay[0]++;
+	for (int m = 0; m < d->sp.nsum; m++)
+		pay[1 + m] += b->sum[m][i];
+}
+
+/* The value of row i into the partition of its key (with no key: of itself); a NULL is no value; false when the arena has no room */
+static bool
+put_value(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDistinctBatch *b, uint32 i)
+{
+	DistRec		rec = {.kid = kid};
+	uint64		h;
+
+	if (d->sp.vstr)
+	{
+		const SiftStrRef s = b->vstr[i];
+		SiftKey		k = {.p = s.p,.len = s.len};
+
+		if (s.len == SIFT_STR_NULL)
+			return true;
+		k.h = h = sift_key_hash(&d->vs, NULL, s.p, s.len);
+		if ((rec.v = sift_keytab_intern(&w->vals, &k)) == SIFT_KEYTAB_NONE)
+			return false;
+	}
+	else
+	{
+		if (b->vnull != NULL && b->vnull[i])
+			return true;
+		rec.v = b->val[i];
+		h = sift_du64_mix(rec.v);
+	}
+	if (!d->grouped)
+		return sift_radix_put(&w->raw, sift_radix_part(h), &rec.v, sizeof(rec.v));
+	return sift_radix_put(&w->raw, sift_radix_part(sift_keytab_at(&w->keys, kid)[0]), &rec, sizeof(rec));
+}
+
+static bool
+rows_in(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b)
+{
+	for (uint32 i = 0; i < b->n; i++)
+	{
+		const uint32 kid = key_of(d, w, b, i);
+
+		if (kid == SIFT_KEYTAB_NONE)
+			return false;
+		add_row(d, w, kid, b, i);
+		if (!put_value(d, w, kid, b, i))
+			return false;
+	}
+	return true;
+}
+
 static bool
 distinct_phase1(void *vd, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *done, SiftErr *err)
 {
 	SiftParDistinct *d = vd;
-	SiftRadixOut *o = &d->w[t].out;
 	SiftParDistinctBatch b = {0};
 
 	*done = 0;
 	if (!d->hooks.fill(d->hooks.arg, t, lo, hi, scratch, &b, err))
 		return false;
-	if (!sift_radix_fits(o, (uint64) b.n * rec_bytes(d)))
-		return fail_mem(err, t, b.n, "parallel distinct: the arena of a thread has no room for a batch");
-	for (uint32 i = 0; i < b.n; i++)
+	if (!sift_radix_fits(&d->w[t].raw, (uint64) b.n * rec_bytes(d)))
+		return dist_fail(err, "parallel distinct: the arena of a thread has no room for a batch");
+	return rows_in(d, &d->w[t], &b) || dist_fail(err, "parallel distinct: the arena of a thread has no room for the keys");
+}
+
+/* ---- the seal: the rows and sums of the keys of a thread, to the partitions of the keys ---- */
+
+static bool
+spill_keys(const SiftParDistinct *d, DistWorker *w)
+{
+	const uint32 words = 2 + d->sp.nsum;
+
+	if (!sift_radix_fits(&w->agg, (uint64) w->keys.count * words * sizeof(uint64)))
+		return false;
+	for (uint32 id = 0; id < w->keys.count; id++)
 	{
-		bool		ok;
+		uint64	   *e = sift_keytab_at(&w->keys, id);
+		uint64	   *rec = sift_radix_reserve(&w->agg, sift_radix_part(e[0]), words * sizeof(uint64));
 
-		if (d->ngroups == 0)
-			ok = sift_radix_put(o, sift_radix_part(sift_du64_mix(b.val[i])), &b.val[i], sizeof(uint64));
-		else
-		{
-			const uint64 h = sift_du64_pair_hash(b.val[i], b.gid[i]);
-			const SiftDuPair rec = {.val = b.val[i],.gid1 = b.gid[i] + 1,.h32 = (uint32) h};
-
-			ok = sift_radix_put(o, sift_radix_part(h), &rec, sizeof(rec));
-		}
-		if (!ok)
-			return fail_mem(err, t, b.n, "parallel distinct: a batch that fits did not fit");
+		if (rec == NULL)
+			return false;
+		rec[0] = id;
+		memcpy(rec + 1, sift_keytab_pay(&w->keys, e), (words - 1) * sizeof(uint64));
 	}
 	return true;
 }
@@ -107,186 +168,72 @@ distinct_phase1(void *vd, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint3
 static bool
 distinct_seal(void *vd, uint32 *nparts, SiftErr *err)
 {
+	SiftParDistinct *d = vd;
+
 	*nparts = SIFT_RADIX_PARTS;
-	return true;
-}
-
-/* ---- phase 2 ---- */
-
-/* the table of a partition, in the arena of the thread: values, or pairs */
-typedef struct DistTab
-{
-	SiftArena  *a;
-	uint64	   *flat;
-	SiftDuPair *pairs;
-	uint64		cap;
-	uint64		count;
-	uint64	   *gcnt;
-	bool		zero;			/* the value 0 (the empty entry of the table) is in the partition */
-} DistTab;
-
-static bool
-tab_grow(DistTab *t)
-{
-	const uint64 ncap = t->cap * 2;
-
-	if (t->flat != NULL)
-	{
-		uint64	   *n = sift_arena_alloc0(t->a, ncap * sizeof(uint64), SIFT_ARENA_ALIGN);
-
-		if (n == NULL)
-			return false;
-		sift_du64_rehash(n, ncap, t->flat, t->cap);
-		t->flat = n;
-	}
-	else
-	{
-		SiftDuPair *n = sift_arena_alloc0(t->a, ncap * sizeof(SiftDuPair), SIFT_ARENA_ALIGN);
-
-		if (n == NULL)
-			return false;
-		sift_du64g_rehash(n, ncap, t->pairs, t->cap);
-		t->pairs = n;
-	}
-	t->cap = ncap;
-	return true;
-}
-
-static bool
-tab_chunk(void *arg, const uint8 *data, uint32 len)
-{
-	DistTab    *t = arg;
-	const uint32 rec = t->flat != NULL ? sizeof(uint64) : sizeof(SiftDuPair);
-
-	for (uint32 off = 0; off < len;)
-	{
-		const uint32 m = Min(DIST_TILE, (len - off) / rec);
-
-		while ((t->count + m) * 2 > t->cap)
-			if (!tab_grow(t))
-				return false;
-		if (t->flat != NULL)
-		{
-			const uint64 *vals = (const uint64 *) (data + off);
-
-			for (uint32 i = 0; i < m && !t->zero; i++)
-				t->zero = vals[i] == 0;
-			t->count += sift_du64_dedup_slice(t->flat, t->cap, vals, m);
-		}
-		else
-		{
-			SiftDuPair	tile[DIST_TILE];
-			uint32		fresh;
-
-			memcpy(tile, data + off, (size_t) m * rec);
-			fresh = sift_du64g_dedup_bucket(t->pairs, t->cap, tile, m);
-			for (uint32 i = 0; i < fresh; i++)
-				t->gcnt[tile[i].gid1 - 1]++;
-			t->count += fresh;
-		}
-		off += m * rec;
-	}
-	return true;
-}
-
-static bool
-dedup_partition(SiftParDistinct *d, DistWorker *w, SiftArena *work, uint32 part)
-{
-	DistTab		t = {.a = work,.gcnt = w->gcnt};
-	uint64		bound = 0;
-
-	for (int v = 0; v < d->nw; v++)
-		bound += sift_radix_nrec(&d->w[v].out, part);
-	t.cap = pg_nextpower2_64(Max(DIST_FIRST_CAP, Min(bound, DIST_PART_MAX) * 2));
-	if (d->ngroups == 0)
-		t.flat = sift_arena_alloc0(work, t.cap * sizeof(uint64), SIFT_ARENA_ALIGN);
-	else
-		t.pairs = sift_arena_alloc0(work, t.cap * sizeof(SiftDuPair), SIFT_ARENA_ALIGN);
-	if (t.flat == NULL && t.pairs == NULL)
-		return false;
-	for (int v = 0; v < d->nw; v++)
-		if (!sift_radix_scan(&d->w[v].out, part, tab_chunk, &t))
-			return false;
-	w->cnt += t.count + (t.zero ? 1 : 0);
+	for (int t = 0; d->grouped && t < d->nw; t++)
+		if (!spill_keys(d, &d->w[t]))
+			return dist_fail(err, "parallel distinct: the arena of a thread has no room for its keys");
 	return true;
 }
 
 static bool
 distinct_phase2(void *vd, int t, uint32 part, SiftArena *work, SiftErr *err)
 {
-	SiftParDistinct *d = vd;
-
-	return dedup_partition(d, &d->w[t], work, part) || fail_mem(err, t, part, "parallel distinct: the arena of a partition is full");
-}
-
-/* ---- the answer ---- */
-
-uint64
-sift_par_distinct_count(const SiftParDistinct *d)
-{
-	uint64		n = 0;
-
-	for (int t = 0; t < d->nw; t++)
-		n += d->w[t].cnt;
-	return n;
-}
-
-void
-sift_par_distinct_groups(const SiftParDistinct *d, uint64 *out)
-{
-	for (uint32 g = 0; g < d->ngroups; g++)
-	{
-		uint64		n = 0;
-
-		for (int v = 0; v < d->nw; v++)
-			n += d->w[v].gcnt[g];
-		out[g] = n;
-	}
-}
-
-typedef struct Drain
-{
-	const SiftParDistinct *d;
-} Drain;
-
-static bool
-drain_chunk(void *arg, const uint8 *data, uint32 len)
-{
-	const SiftParDistinct *d = ((const Drain *) arg)->d;
-
-	for (uint32 off = 0; off < len; off += rec_bytes(d))
-	{
-		if (d->ngroups == 0)
-		{
-			uint64		v;
-
-			memcpy(&v, data + off, sizeof(v));
-			d->hooks.value(d->hooks.arg, 0, v);
-		}
-		else
-		{
-			SiftDuPair	pr;
-
-			memcpy(&pr, data + off, sizeof(pr));
-			d->hooks.value(d->hooks.arg, pr.gid1 - 1, pr.val);
-		}
-	}
-	return true;
+	return sift_dist_phase2(vd, t, part, work) || dist_fail(err, "parallel distinct: the arena of a partition is full");
 }
 
 static void
 distinct_overflow(void *vd, const SiftParRange *left, uint32 nleft)
 {
 	SiftParDistinct *d = vd;
-	Drain		dr = {.d = d};
 
-	for (uint32 p = 0; p < SIFT_RADIX_PARTS; p++)
-		for (int v = 0; v < d->nw; v++)
-			sift_radix_scan(&d->w[v].out, p, drain_chunk, &dr);
 	d->hooks.overflow(d->hooks.arg, left, nleft);
 }
 
 const SiftParOps sift_par_distinct_ops = {.phase1 = distinct_phase1,.seal = distinct_seal,.phase2 = distinct_phase2,.overflow_drain = distinct_overflow};
+
+/* ---- the answer ---- */
+
+static void
+each_set(const SiftParDistinct *d, void (*fn) (void *arg, const SiftParDistinctRow *row), void *arg)
+{
+	SiftParDistinctRow row = {0};
+
+	for (int t = 0; t < d->nw; t++)
+	{
+		const uint64 *pay = sift_keytab_pay(&d->w[t].keys, sift_keytab_at(&d->w[t].keys, 0));
+
+		row.rows += pay[0];
+		for (int m = 0; m < d->sp.nsum; m++)
+			row.sum[m] += pay[1 + m];
+		row.distinct += d->w[t].cnt;
+	}
+	fn(arg, &row);
+}
+
+static void
+each_key(const SiftParDistinct *d, const uint64 *e, void (*fn) (void *arg, const SiftParDistinctRow *row), void *arg)
+{
+	const SiftKey k = sift_keytab_key(e);
+	const uint64 *pay = e + SIFT_KEY_HEAD + d->sp.kw;
+	SiftParDistinctRow row = {.str = k.p,.len = k.len,.rows = pay[0],.distinct = pay[dist_pay_last(d)]};
+
+	memcpy(row.key, k.w, d->sp.kw * sizeof(uint64));
+	memcpy(row.sum, pay + 1, d->sp.nsum * sizeof(uint64));
+	fn(arg, &row);
+}
+
+void
+sift_par_distinct_each(const SiftParDistinct *d, void (*fn) (void *arg, const SiftParDistinctRow *row), void *arg)
+{
+	if (!d->grouped)
+		return each_set(d, fn, arg);
+	for (int t = 0; t < d->nw; t++)
+		for (const DistOut *o = d->w[t].out; o != NULL; o = o->next)
+			for (uint32 i = 0; i < o->n; i++)
+				each_key(d, o->ent + (size_t) i * d->w[t].keys.ew, fn, arg);
+}
 
 /* ---- dictionary codes ---- */
 

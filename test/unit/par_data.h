@@ -6,7 +6,6 @@
 
 #include "postgres.h"
 
-#include "agg/v6/par/distinct.h"
 #include "agg/v6/par/group.h"
 #include "core/hash.h"
 
@@ -16,8 +15,6 @@ typedef struct Data
 	uint64	   *key[SIFT_PAR_GROUP_MAX_KEYS];	/* the words of the key columns that are words */
 	SiftStrRef *str[SIFT_PAR_GROUP_MAX_KEYS];	/* the texts of the ones that are texts */
 	uint64	   *arg[SIFT_PAR_GROUP_MAX_SUM];
-	uint64	   *val;
-	uint32	   *gid;
 	SiftStrRef *pool[SIFT_PAR_GROUP_MAX_KEYS];	/* the distinct texts of each text column */
 	uint32		npool[SIFT_PAR_GROUP_MAX_KEYS];
 } Data;
@@ -143,26 +140,6 @@ gen_str(uint32 n, uint32 ngroups, bool skew, int nsum, bool nulls)
 	return gen_mixed(1, 1, n, ngroups, skew, nsum, nulls);
 }
 
-/* The values of a COUNT(DISTINCT): ndist of them (one is 0 when zero), the group of each below ngroups (0: none) */
-static Data *
-gen_dist(uint32 n, uint32 ndist, uint32 ngroups, bool zero)
-{
-	Data	   *d = calloc(1, sizeof(Data));
-
-	d->n = n;
-	d->val = malloc(sizeof(uint64) * n);
-	d->gid = ngroups > 0 ? malloc(sizeof(uint32) * n) : NULL;
-	for (uint32 i = 0; i < n; i++)
-	{
-		const uint64 v = gen_next() % ndist;
-
-		d->val[i] = v == 0 && !zero ? ndist : v * UINT64CONST(0x9E3779B97F4A7C15);
-		if (ngroups > 0)
-			d->gid[i] = gen_next() % ngroups;
-	}
-	return d;
-}
-
 static void
 data_free(Data *d)
 {
@@ -176,8 +153,6 @@ data_free(Data *d)
 	}
 	for (int m = 0; m < SIFT_PAR_GROUP_MAX_SUM; m++)
 		free(d->arg[m]);
-	free(d->val);
-	free(d->gid);
 	free(d);
 }
 
@@ -202,17 +177,6 @@ src_group_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, 
 			b->key[j] = s->d->key[j] + lo;
 	for (int m = 0; m < s->sp->nsum; m++)
 		b->arg[m] = s->d->arg[m] + lo;
-	return true;
-}
-
-static bool
-src_distinct_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
-{
-	const Src  *s = arg;
-
-	b->n = hi - lo;
-	b->val = s->d->val + lo;
-	b->gid = s->d->gid != NULL ? s->d->gid + lo : NULL;
 	return true;
 }
 

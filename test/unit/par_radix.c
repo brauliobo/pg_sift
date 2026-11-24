@@ -1,5 +1,5 @@
 /*
- * par_radix.c - agg/v6/par/group.c and distinct.c on 1, 2, 3 and 4 threads (the trap shim flags the helpers: no palloc, no ereport), against the rows sorted and merged: every shape of key (words,
+ * par_radix.c - agg/v6/par/group.c on 1, 2, 3 and 4 threads (the trap shim flags the helpers: no palloc, no ereport), against the rows sorted and merged: every shape of key (words,
  * a text, words and texts in any order, several texts), the two regimes, the K best, skew, and arenas too small, where what the run folded and the items it hands back must still make the same answer.
  */
 #include "postgres.h"
@@ -300,185 +300,7 @@ test_group_overflow(void)
 	data_free(mixed);
 }
 
-/* ---- COUNT(DISTINCT) ---- */
-
-typedef struct DCtx
-{
-	Src			src;
-	uint32		ngroups;
-	uint64	   *seen_val;
-	uint32	   *seen_gid;
-	uint32		nseen;
-	uint32		cap;
-	SiftParRange *left;
-	uint32		nleft;
-} DCtx;
-
-static void
-d_value(void *arg, uint32 gid, uint64 value)
-{
-	DCtx	   *c = arg;
-
-	if (c->nseen == c->cap)
-	{
-		c->cap = c->cap ? c->cap * 2 : 1 << 16;
-		c->seen_val = realloc(c->seen_val, sizeof(uint64) * c->cap);
-		c->seen_gid = realloc(c->seen_gid, sizeof(uint32) * c->cap);
-	}
-	c->seen_val[c->nseen] = value;
-	c->seen_gid[c->nseen++] = gid;
-}
-
-static void
-d_overflow(void *arg, const SiftParRange *left, uint32 nleft)
-{
-	DCtx	   *c = arg;
-
-	c->left = memcpy(malloc(sizeof(SiftParRange) * Max(nleft, 1)), left, sizeof(SiftParRange) * nleft);
-	c->nleft = nleft;
-}
-
-typedef struct Pair
-{
-	uint32		gid;
-	uint64		val;
-} Pair;
-
-static int
-pair_cmp(const void *a, const void *b)
-{
-	const Pair *x = a,
-			   *y = b;
-
-	return x->gid != y->gid ? (x->gid < y->gid ? -1 : 1) : x->val != y->val ? (x->val < y->val ? -1 : 1) : 0;
-}
-
-/* The distinct values of each group of the pairs (gid, val), sorted: counts[g]; the number of pairs is n (they are freed here) */
-static void
-count_pairs(Pair *p, uint32 n, uint64 *counts)
-{
-	qsort(p, n, sizeof(Pair), pair_cmp);
-	for (uint32 i = 0; i < n; i++)
-		counts[p[i].gid] += i == 0 || pair_cmp(&p[i - 1], &p[i]) != 0;
-	free(p);
-}
-
-static void
-count_rows(const Data *d, uint64 *counts)
-{
-	Pair	   *p = malloc(sizeof(Pair) * d->n);
-
-	for (uint32 i = 0; i < d->n; i++)
-		p[i] = (Pair) {d->gid != NULL ? d->gid[i] : 0, d->val[i]};
-	count_pairs(p, d->n, counts);
-}
-
-static void
-count_answer(DCtx *c, bool overflowed, SiftParDistinct *dd, uint64 *counts)
-{
-	if (!overflowed)
-	{
-		if (c->ngroups == 0)
-			counts[0] = sift_par_distinct_count(dd);
-		else
-			sift_par_distinct_groups(dd, counts);
-		return;
-	}
-	{
-		uint32		n = c->nseen;
-		Pair	   *p = malloc(sizeof(Pair) * (n + c->src.d->n));
-
-		for (uint32 i = 0; i < n; i++)
-			p[i] = (Pair) {c->seen_gid[i], c->seen_val[i]};
-		for (uint32 k = 0; k < c->nleft; k++)
-			for (uint32 i = c->left[k].lo; i < c->left[k].hi; i++)
-				p[n++] = (Pair) {c->src.d->gid != NULL ? c->src.d->gid[i] : 0, c->src.d->val[i]};
-		count_pairs(p, n, counts);
-	}
-}
-
-static bool
-check_distinct(const Data *d, uint32 ngroups, uint32 workers, Sizes sz)
-{
-	const uint32 ng = Max(ngroups, 1);
-	DCtx		c = {.src = {d, NULL},.ngroups = ngroups};
-	SiftParDistinctHooks hooks = {.fill = src_distinct_fill,.value = d_value,.overflow = d_overflow,.arg = &c};
-	uint64	   *want = calloc(ng, sizeof(uint64)),
-			   *got = calloc(ng, sizeof(uint64));
-	SiftParArenas *ar;
-	SiftParDistinct *dd;
-	SiftErr		err = {0};
-	bool		overflowed;
-
-	pgshim_reset();
-	ar = sift_par_arenas_create(CurrentMemoryContext, workers, SCRATCH, sz.state, sz.work);
-	dd = sift_par_distinct_create(ar, ngroups, &hooks, &err);
-	if (dd == NULL)
-	{
-		free(want);
-		free(got);
-		return false;
-	}
-	overflowed = !sift_par_run(&(SiftParCfg) {.nthreads = workers,.items = d->n}, &sift_par_distinct_ops, dd, ar, NULL);
-	PASS(!sift_par_pool_busy());
-	count_rows(d, want);
-	count_answer(&c, overflowed, dd, got);
-	PASS(memcmp(want, got, sizeof(uint64) * ng) == 0);
-	nparity++;
-	noverflow += overflowed;
-	free(want);
-	free(got);
-	free(c.seen_val);
-	free(c.seen_gid);
-	free(c.left);
-	return overflowed;
-}
-
-static void
-test_distinct(void)
-{
-	static const uint32 ndist[] = {1, 5000, ROWS};
-	static const uint32 groups[] = {0, 1, 50, 3000};
-
-	for (int in = 0; in < 3; in++)
-		for (int ig = 0; ig < 4; ig++)
-			for (int zero = 0; zero <= 1; zero++)
-			{
-				Data	   *d = gen_dist(ROWS, ndist[in], groups[ig], zero);
-
-				for (uint32 w = 1; w <= 4; w++)
-					PASS(!check_distinct(d, groups[ig], w, roomy(w, 2)));
-				data_free(d);
-			}
-}
-
-static void
-test_distinct_overflow(void)
-{
-	for (int grouped = 0; grouped <= 1; grouped++)
-	{
-		Data	   *d = gen_dist(ROWS, ROWS, grouped ? 50 : 0, true);
-
-		for (uint32 w = 1; w <= 4; w += (w == 1 ? 1 : 2))
-		{
-			const Sizes full = roomy(w, 2);
-			uint32		overflows = 0;
-
-			for (int k = 0; k <= 12; k++)
-			{
-				Sizes		sz = full;
-
-				sz.state = Max(full.state >> k, 64 << 10);
-				overflows += check_distinct(d, grouped ? 50 : 0, w, sz);
-				sz = full;
-				sz.work = Max(full.work >> (k + 2), 8 << 10);
-				overflows += check_distinct(d, grouped ? 50 : 0, w, sz);
-			}
-			PASS(overflows > 0);
-		}
-		data_free(d);
-	}
-}
+/* ---- the bitsets of dictionary codes ---- */
 
 typedef struct OrJob
 {
@@ -541,8 +363,6 @@ main(void)
 	test_group_mixed();
 	test_group_topk();
 	test_group_overflow();
-	test_distinct();
-	test_distinct_overflow();
 	test_bits_or();
 	printf("par_radix: ok (%d parity comparisons, %d of them after an overflow; %d checks)\n", nparity, noverflow, nchecks);
 	return 0;

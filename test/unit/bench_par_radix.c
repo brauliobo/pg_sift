@@ -8,6 +8,7 @@
 
 #include "core/par/pool.h"
 #include "par_data.h"
+#include "par_dist.h"
 #include "par_host.h"
 #include "pgshim.h"
 #include "unit.h"
@@ -18,7 +19,7 @@
 typedef struct Work
 {
 	const char *name;
-	char		kind;			/* 'i' ints, 's' text, 'm' ints and a text, 'd' distinct */
+	char		kind;			/* 'i' ints, 's' text, 'm' ints and a text, 'd' distinct per integer key, 'e' distinct per text key */
 	int			kw;
 	int			nsum;
 	uint32		ngroups;
@@ -41,7 +42,9 @@ static const Work works[] = {
 	{"Q8 low groups, count", 'i', 1, 0, 200, false, false, false},
 	{"Q8 skewed", 'i', 2, 1, 1000000, true, true, true},
 	{"Q4 distinct values", 'd', 0, 0, 0, false, false, true},
-	{"Q9 distinct per group", 'd', 0, 0, 6000, false, false, true},
+	{"Q9 distinct per group, 2 sums", 'd', 1, 2, 6000, false, false, true},
+	{"Q10 distinct per text key", 'e', 0, 0, 200, false, false, true},
+	{"Q13 distinct per text key", 'e', 0, 0, 20000, false, false, true},
 };
 
 static double
@@ -81,12 +84,6 @@ b_overflow(void *arg, const SiftParRange *left, uint32 nleft)
 	Assert(false);
 }
 
-static void
-b_value(void *arg, uint32 gid, uint64 value)
-{
-	Assert(false);
-}
-
 typedef struct Outcome
 {
 	double		secs;
@@ -94,12 +91,21 @@ typedef struct Outcome
 	uint64		counts;
 } Outcome;
 
+static void
+b_distinct(void *arg, const SiftParDistinctRow *row)
+{
+	Outcome    *r = arg;
+
+	r->groups++;
+	r->counts += row->distinct;
+}
+
 static Outcome
-run_once(const Work *w, const Data *d, uint32 workers)
+run_once(const Work *w, const void *data, uint32 workers)
 {
 	const SiftParGroupSpec sp = {.nk = w->kind == 's' ? 1 : w->kind == 'm' ? w->kw + 1 : w->kw,.strs = w->kind == 's' ? 1 : w->kind == 'm' ? 1 << w->kw : 0,.nsum = w->nsum,
 		.key1_u32 = w->key1_u32,.topk = w->topk,.order = 0,.desc = w->desc};
-	BCtx		c = {.src = {d, &sp}};
+	BCtx		c = {.src = {data, &sp}};
 	const size_t state = (size_t) ROWS * 80 / workers + (64 << 20);
 	SiftParArenas *ar;
 	SiftErr		err = {0};
@@ -109,25 +115,20 @@ run_once(const Work *w, const Data *d, uint32 workers)
 	pgshim_reset();
 	ar = sift_par_arenas_create(CurrentMemoryContext, workers, 4 << 20, state, 128 << 20);
 	t0 = now_s();
-	if (w->kind == 'd')
+	if (w->kind == 'd' || w->kind == 'e')
 	{
-		SiftParDistinctHooks hooks = {.fill = src_distinct_fill,.value = b_value,.overflow = b_overflow,.arg = &c};
-		SiftParDistinct *dd = sift_par_distinct_create(ar, w->ngroups, &hooks, &err);
-		uint64	   *per = calloc(Max(w->ngroups, 1), sizeof(uint64));
+		const SiftParDistinctSpec dsp = {.kw = w->kw,.kstr = w->kind == 'e',.nsum = w->nsum};
+		DSrc		ds = {.d = data,.sp = &dsp};
+		SiftParDistinctHooks hooks = {.fill = dsrc_fill,.overflow = dsrc_overflow,.arg = &ds};
+		SiftParDistinct *dd = sift_par_distinct_create(ar, &dsp, &hooks, &err);
 
-		CHECK(dd != NULL && sift_par_run(&(SiftParCfg) {workers, d->n}, &sift_par_distinct_ops, dd, ar, NULL));
-		if (w->ngroups == 0)
-			per[0] = sift_par_distinct_count(dd);
-		else
-			sift_par_distinct_groups(dd, per);
+		CHECK(dd != NULL && sift_par_run(&(SiftParCfg) {workers, ((const DData *) data)->n}, &sift_par_distinct_ops, dd, ar, NULL));
+		sift_par_distinct_each(dd, b_distinct, &r);
 		r.secs = now_s() - t0;
-		r.groups = Max(w->ngroups, 1);
-		for (uint32 g = 0; g < r.groups; g++)
-			r.counts += per[g];
-		free(per);
 		return r;
 	}
 	{
+		const Data *d = data;
 		SiftParGroupHooks hooks = {.fill = src_group_fill,.emit = b_emit,.overflow = b_overflow,.arg = &c};
 		SiftParGroup *g = sift_par_group_create(ar, &sp, w->high, d->n, &hooks, &err);
 
@@ -152,9 +153,12 @@ main(void)
 	for (size_t i = 0; i < sizeof(works) / sizeof(works[0]); i++)
 	{
 		const Work *w = &works[i];
-		Data	   *d = w->kind == 's' ? gen_str(ROWS, w->ngroups, w->skew, w->nsum, true) :
-			w->kind == 'm' ? gen_mixed(w->kw + 1, 1 << w->kw, ROWS, w->ngroups, w->skew, w->nsum, false) :
-			w->kind == 'd' ? gen_dist(ROWS, ROWS / 4, w->ngroups, true) : gen_int(w->kw, ROWS, w->ngroups, w->skew, w->nsum, w->key1_u32);
+		const bool	dist = w->kind == 'd' || w->kind == 'e';
+		const SiftParDistinctSpec dsp = {.kw = w->kw,.kstr = w->kind == 'e',.nsum = w->nsum};
+		void	   *d = dist ? (void *) dgen(&dsp, ROWS, w->ngroups, ROWS / 4, false, false) :
+			w->kind == 's' ? (void *) gen_str(ROWS, w->ngroups, w->skew, w->nsum, true) :
+			w->kind == 'm' ? (void *) gen_mixed(w->kw + 1, 1 << w->kw, ROWS, w->ngroups, w->skew, w->nsum, false) :
+			(void *) gen_int(w->kw, ROWS, w->ngroups, w->skew, w->nsum, w->key1_u32);
 		double		best[3];
 		Outcome		first = {0};
 		bool		same = true;
@@ -175,7 +179,10 @@ main(void)
 		printf("%-28s %9.1f %9.1f %9.1f %6.2fx %6.2fx  %s (%lu groups)\n", w->name, best[0] * 1e3, best[1] * 1e3, best[2] * 1e3, best[0] / best[1], best[0] / best[2],
 			   same ? "same" : "DIFFERENT", (unsigned long) first.groups);
 		CHECK(same);
-		data_free(d);
+		if (dist)
+			dfree(d);
+		else
+			data_free(d);
 	}
 	return 0;
 }
