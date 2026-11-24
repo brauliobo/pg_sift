@@ -806,6 +806,8 @@ core/meta_peek.c
 core/meta_peek.h
 core/ops.c
 core/ops.h
+core/par/pool.c
+core/par/pool.h
 core/parbuild.c
 core/parbuild.h
 core/part_lock.c
