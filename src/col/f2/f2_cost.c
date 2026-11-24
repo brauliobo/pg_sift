@@ -379,7 +379,6 @@ ord_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 		add_path(rel, np);
 }
 
-static get_relation_info_hook_type prev_info_hook;
 #if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
 
