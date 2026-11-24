@@ -15,6 +15,8 @@
 
 #define NTHREADS	(getenv("KT_THREADS") ? atoi(getenv("KT_THREADS")) : 8)
 #define MAXPAGES	4
+#define BOUND_TERMS	256
+#define BOUND_SAME	32768
 
 typedef struct Tab
 {
@@ -399,7 +401,7 @@ check_misc(SiftRng *r)
 /*
  * The block UB covers the float32 score: one document, n terms, bounds from
  * avgdl_ref, scores and UB weights at avgdl_now. same: n copies of one term, the
- * rounding of every addition going the same way (a plan has up to 32768 leaves).
+ * rounding of every addition going the same way (BOUND_SAME of them).
  */
 static void
 check_bound(SiftRng *r, int n, bool same)
@@ -489,10 +491,10 @@ worker(void *arg)
 	{
 		check_mask_kernels(&r);
 		check_misc(&r);
-		check_bound(&r, sift_rng_below(&r, 4) ? 1 + sift_rng_below(&r, 8) : 1 + sift_rng_below(&r, SIFT_MAX_LEAVES), false);
-		check_bound(&r, sift_rng_below(&r, 4) ? 1 + sift_rng_below(&r, 8) : 1 + sift_rng_below(&r, SIFT_MAX_LEAVES), false);
+		check_bound(&r, sift_rng_below(&r, 4) ? 1 + sift_rng_below(&r, 8) : 1 + sift_rng_below(&r, BOUND_TERMS), false);
+		check_bound(&r, sift_rng_below(&r, 4) ? 1 + sift_rng_below(&r, 8) : 1 + sift_rng_below(&r, BOUND_TERMS), false);
 		if (i % 64 == 0)
-			check_bound(&r, 1 + sift_rng_below(&r, SIFT_MAX_LEAVES * SIFT_MAX_PHRASE), true);
+			check_bound(&r, 1 + sift_rng_below(&r, BOUND_SAME), true);
 		if (i % 8 == 0)
 			check_tf(&r);
 		if (i % 16 == 0)
