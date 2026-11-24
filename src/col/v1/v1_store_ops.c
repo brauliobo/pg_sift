@@ -343,6 +343,12 @@ typedef struct V1Src
 	int			col_read[SIFT_V6_MAX_COLS];		/* of each column and boolean of the input, the entry of read_vec that holds its leaf */
 	SiftV1Member *col_mem[SIFT_V6_MAX_COLS];	/* of each column of the input that is the float8 of a member of a map of a document, its reader: the heap row gives the rows the leaves cannot hold */
 	AttrNumber	mem_att[SIFT_V6_MAX_COLS];
+	uint8		jkind[SIFT_V6_MAX_COLS];	/* of a column that is the leaf of a key of a document: SIFT_V1_JSON_VALUE, whose rows the leaf cannot hold are read from the heap row if the batch keeps them, or SIFT_V1_JSON_TYPE, its JSON type */
+	const SiftSrcLeaf *jleaf[SIFT_V6_MAX_COLS];
+	AttrNumber	jatt[SIFT_V6_MAX_COLS];	/* the column of the heap row of the document of a JSON column */
+	uint64	   *jexc[SIFT_V6_MAX_COLS];	/* the rows of the batch whose leaf could not hold the value */
+	bool		has_jexc[SIFT_V6_MAX_COLS];
+	uint8	   *jtag[SIFT_V6_MAX_COLS];	/* the JSON type of each row of the unit: the index of json_types */
 	int			ndocs;			/* the columns of the input that are a jsonb document, read from the heap row of each row the batch keeps */
 	int			doc_col[SIFT_V6_MAX_COLS];
 	AttrNumber	doc_att[SIFT_V6_MAX_COLS];
@@ -387,6 +393,28 @@ typedef struct V1Src
 	ItemPointerData tids[SIFT_VEC_LEN];
 } V1Src;
 
+#define SIFT_V1_JSON_VALUE	1
+#define SIFT_V1_JSON_TYPE	2
+
+/* the JSON type of each row of the unit the column i reads: the rows of one type at a time, which the reader answers for the stored rows and the values the leaf cannot hold */
+static void
+read_types(V1Src *s, int i)
+{
+	const int	nw = SIFT_COL_NWORDS(s->unit.nrow);
+	uint64	   *bits = MemoryContextAlloc(s->unit_cx, nw * sizeof(uint64));
+
+	s->jtag[i] = MemoryContextAllocZero(s->unit_cx, Max(s->unit.nrow, 1));
+	for (int t = 0; t < SIFT_V1_NJSON_TYPES; t++)
+	{
+		memcpy(bits, s->bits, nw * sizeof(uint64));
+		if (!s->rd->filter_types(s->src, &s->unit, s->jleaf[i]->id, sift_v1_json_types[t].test, bits))
+			continue;
+		for (int w = 0; w < nw; w++)
+			for (uint64 b = bits[w]; b != 0; b &= b - 1)
+				s->jtag[i][w * 64 + pg_rightmost_one_pos64(b)] = (uint8) t;
+	}
+}
+
 static bool
 types_pass(V1Src *s)
 {
@@ -418,6 +446,9 @@ unit_next(V1Src *s)
 		for (int w = 0; w < nw; w++)
 			if (s->bits[w] != 0)
 			{
+				for (int i = 0; i < s->in.ncols; i++)
+					if (s->jkind[i] == SIFT_V1_JSON_TYPE)
+						read_types(s, i);
 				for (int k = 0; k < s->nread; k++)
 					s->rd->read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
 				for (int i = 0; i < s->in.ncols; i++)
@@ -523,11 +554,18 @@ put_col(V1Src *s, int i, uint32 r, int n)
 	const SiftSrcVec *v = &s->read_vec[s->col_read[i]];
 	const SiftSrcLeaf *l = s->col_leaf[i];
 	const bool	datum = s->in.col[i].type == SVEC_DATUM;
-	const bool	nan = !datum && v->ovf != NULL && sift_src_bit(v->ovf, r);
-	const bool	valid = (v->isnull == NULL || !v->isnull[r]) && !nan;
+	const bool	ovf = v->ovf != NULL && sift_src_bit(v->ovf, r);
+	const bool	exc = ovf && s->jkind[i] == SIFT_V1_JSON_VALUE;
+	const bool	nan = ovf && !exc && !datum;
+	const bool	valid = (v->isnull == NULL || !v->isnull[r]) && !exc && !nan;
 
 	if (nan && !sift_src_nan_leaf(l))
 		unreadable(s, l);
+	if (exc)
+	{
+		s->jexc[i][n >> 6] |= UINT64CONST(1) << (n & 63);
+		s->has_jexc[i] = true;
+	}
 	s->valid[i][n >> 6] |= (uint64) valid << (n & 63);
 	s->nan[i][n >> 6] |= (uint64) nan << (n & 63);
 	s->has_nan[i] |= nan;
@@ -556,6 +594,15 @@ put_col(V1Src *s, int i, uint32 r, int n)
 }
 
 static void
+put_type(V1Src *s, int i, uint32 r, int n)
+{
+	const char *name = sift_v1_json_types[s->jtag[i][r]].name;
+
+	s->valid[i][n >> 6] |= (uint64) (name != NULL) << (n & 63);
+	((SiftStrView *) s->data[i])[n] = name != NULL ? sift_vstr_make(name, strlen(name)) : (SiftStrView) {0};
+}
+
+static void
 put_mask(V1Src *s, int m, uint32 r, int n)
 {
 	const SiftSrcVec *v = &s->read_vec[s->mask_read[m]];
@@ -576,6 +623,9 @@ batch_start(V1Src *s)
 		s->has_nan[i] = false;
 		if (s->col_mem[i] != NULL)
 			sift_v1_member_batch(s->col_mem[i]);
+		if (s->jexc[i] != NULL)
+			memset(s->jexc[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		s->has_jexc[i] = false;
 	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
@@ -602,6 +652,8 @@ batch_fill(V1Src *s)
 			for (int i = 0; i < s->in.ncols; i++)
 				if (s->col_mem[i] != NULL)
 					sift_v1_member_put(s->col_mem[i], s->ords[j], n + j, s->data[i], s->valid[i]);
+				else if (s->jkind[i] == SIFT_V1_JSON_TYPE)
+					put_type(s, i, s->ords[j], n + j);
 				else if (i != s->score_col && s->col_leaf[i] != NULL)
 					put_col(s, i, s->ords[j], n + j);
 			for (int m = 0; m < s->in.nmasks; m++)
@@ -698,6 +750,47 @@ fill_members(V1Src *s, const SiftV6Batch *b)
 		}
 }
 
+/* the value of the key of the document of a heap row the leaf of the key could not hold */
+static void
+put_exception(V1Src *s, int i, uint32 r, Datum doc)
+{
+	const bool	f64 = s->in.col[i].type == SVEC_F64;
+	const char *text = NULL;
+	uint32		tlen = 0;
+	double		f = 0;
+
+	if (!sift_v1_json_member(doc, strVal(linitial(s->col_leaf[i]->path)), f64 ? SV6C_F64 : SV6C_TEXT, s->batch_cx, &text, &tlen, &f))
+		return;
+	if (f64)
+		((double *) s->data[i])[r] = f;
+	else
+		((SiftStrView *) s->data[i])[r] = sift_vstr_make(text, tlen);
+	s->valid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+}
+
+/* the rows the batch keeps whose leaf of a key could not hold its value, read from the heap row of each */
+static void
+fill_exceptions(V1Src *s, const SiftV6Batch *b)
+{
+	MemoryContext old = MemoryContextSwitchTo(s->batch_cx);
+
+	for (int i = 0; i < s->in.ncols; i++)
+		for (uint32 r = 0; s->has_jexc[i] && r < b->n; r++)
+		{
+			Datum		doc;
+			bool		isnull;
+			bool		found;
+
+			if (!sift_src_bit(s->jexc[i], r) || (b->mask != NULL && !sift_src_bit(b->mask, r)))
+				continue;
+			found = v1_fetch(&s->base, b->tag[r], &s->jatt[i], 1, &doc, &isnull);
+			SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its document is read");
+			if (!isnull)
+				put_exception(s, i, r, doc);
+		}
+	MemoryContextSwitchTo(old);
+}
+
 /* the elements of the rows the batch keeps, from the leaves of the unit it is of (a batch of a source that reads elements never spans two) */
 static void
 fill_elems(V1Src *s, const SiftV6Batch *b)
@@ -729,6 +822,7 @@ v1_next(SiftV6Source *base, SiftV6Batch *out)
 		}
 		fill_docs(s, out);
 		fill_members(s, out);
+		fill_exceptions(s, out);
 		if (s->elems != NULL)
 			fill_elems(s, out);
 		return true;
@@ -814,6 +908,16 @@ bind_doc(V1Src *s, int i)
 	alloc_column(s, i, sizeof(Datum));
 }
 
+/* the JSON type of a key of a document is its own column of the input, SIFT_V6_JTYPE_VATT + the leaf of the key */
+static void
+bind_type(V1Src *s, int i)
+{
+	SIFT_INVARIANT(sift_v6_vatt_is_type(s->in.col[i].attno) && s->in.col[i].type == SVEC_STRVIEW, "attribute %d of relation %u is not the JSON type of a key of a document", s->in.col[i].attno, s->in.indexoid);
+	s->jkind[i] = SIFT_V1_JSON_TYPE;
+	s->jleaf[i] = &s->lay->leaf[sift_v6_vatt_leaf(s->in.col[i].attno)];
+	alloc_column(s, i, sizeof(SiftStrView));
+}
+
 static void
 bind_member(V1Src *s, int i)
 {
@@ -845,6 +949,11 @@ bind_column(V1Src *s, int i)
 		bind_doc(s, i);
 		return;
 	}
+	if (sift_v6_vatt_is_json(c->attno))
+	{
+		bind_type(s, i);
+		return;
+	}
 	l = input_leaf(s, c->attno, vec_class[c->type]);
 	width = c->type == SVEC_STRVIEW ? sizeof(SiftStrView) : c->type == SVEC_I32 ? sizeof(int32) : c->type == SVEC_BOOL ? 1 : sizeof(int64);
 	SIFT_INVARIANT(c->type != SVEC_NUM64 || l->scale == c->scale, "numeric attribute %d of relation %u is stored at scale %d, not %d", c->attno, s->in.indexoid, l->scale, c->scale);
@@ -856,6 +965,12 @@ bind_column(V1Src *s, int i)
 	s->col_leaf[i] = l;
 	s->col_read[i] = read_slot(s, l);
 	alloc_column(s, i, width);
+	if (c->attno >= SIFT_V6_JLEAF_VATT)
+	{
+		s->jkind[i] = SIFT_V1_JSON_VALUE;
+		s->jatt[i] = att_heap_column(s->lay, l->attno);
+		s->jexc[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
+	}
 }
 
 static void

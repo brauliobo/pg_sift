@@ -31,6 +31,16 @@ extern const SiftZoneOps sift_v1_zone_ops;
 extern const SiftDictOps sift_v1_dict_ops;
 extern const SiftStoreParOps sift_v1_par_ops;
 
+/* The keys of a document of the unified scan (col/v1_engine/v1_store_ops_json.c): the JSON types the reader tests one at a time, in the order of the index a row's type is, and the value of a key from a document */
+#define SIFT_V1_NJSON_TYPES 7
+typedef struct SiftV1JsonType
+{
+	uint32		test;			/* SIFT_SRC_JT_* */
+	const char *name;			/* what jsonb_typeof gives; NULL for a missing key, whose jsonb_typeof is NULL */
+} SiftV1JsonType;
+extern const SiftV1JsonType sift_v1_json_types[SIFT_V1_NJSON_TYPES];
+extern bool sift_v1_json_member(Datum doc, const char *key, SiftV6Class cls, MemoryContext cx, const char **text, uint32 *tlen, double *f);
+
 /* The optional sub-vtables of the Format 1 store (col/v1_engine/v1_store_ops_ext.c, v1_store_ops_jsonb.c) */
 extern const SiftOrderOps v1_order_ops;
 extern const SiftPreaggOps v1_preagg_ops;

@@ -756,6 +756,7 @@ col/v1_engine/v1_store_card.c
 col/v1_engine/v1_store_ops_ext.c
 col/v1_engine/v1_store_ops_ext_test.c
 col/v1_engine/v1_store_ops_hybrid.c
+col/v1_engine/v1_store_ops_json.c
 col/v1_engine/v1_store_ops_jsonb.c
 col/v1_engine/v1_store_ops_order.c
 col/v1_engine/v1_store_ops_preagg.c

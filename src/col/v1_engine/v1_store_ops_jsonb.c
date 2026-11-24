@@ -1,7 +1,7 @@
 /*
  * col/v1_engine/v1_store_ops_jsonb.c - SiftJsonbOps of Format 1 (core/store_ops.h).
  *
- * key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key. member_leaf: the leaf of
+ * key_leaf, table_key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key. member_leaf: the leaf of
  * the float8 values of the map `doc.a.*` that a member `doc -> 'a' ->> 'k'` is read from (v1_store_ops_member.c), -1 for any other path.
  * path_declared: the paths option of the index declares the path of a document attribute.
  * unnest_run: the aggregate scan of a LATERAL unnest of an array or a map column, of the keys of a map and of the tests of the elements of a row (v1_store_ops_unnest.c).
@@ -23,16 +23,16 @@ typed_leaf(Oid typid)
 }
 
 static int
-jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
+key_leaf(Oid relid, bool is_table, int att, const char *key, int len)
 {
 	SiftV1Rel	r;
 	const SiftSrcLayout *lay;
 	int			found = -1;
 
-	if (get_rel_relkind(indexoid) != RELKIND_INDEX)
+	if (!is_table && get_rel_relkind(relid) != RELKIND_INDEX)
 		return -1;
-	r = sift_v1_rel_open(indexoid, false);
-	lay = sift_v1_idx_reader.layout(r.rel);
+	r = sift_v1_rel_open(relid, is_table);
+	lay = sift_v1_reader_of(is_table)->layout(r.rel);
 	for (int i = 0; i < lay->nleaves && found < 0; i++)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
@@ -57,6 +57,18 @@ jsonb_member_leaf(Oid indexoid, int att, const List *path)
 	leaf = sift_v1_member_value_leaf(sift_v1_idx_reader.layout(r.rel), att, path);
 	sift_v1_rel_close(&r);
 	return leaf;
+}
+
+static int
+jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
+{
+	return key_leaf(indexoid, false, att, key, len);
+}
+
+static int
+jsonb_table_key_leaf(Oid relid, int att, const char *key, int len)
+{
+	return key_leaf(relid, true, att, key, len);
 }
 
 /* the leaf is at the path, or is the object of free keys (`path.*`) whose member the path is */
@@ -86,6 +98,7 @@ jsonb_path_declared(Oid relid, bool is_table, int att, const List *path)
 const SiftJsonbOps v1_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
 	.member_leaf = jsonb_member_leaf,
+	.table_key_leaf = jsonb_table_key_leaf,
 	.path_declared = jsonb_path_declared,
 	.unnest_run = sift_v1_unnest_run
 };

@@ -1,5 +1,5 @@
 /*
- * col/v1/v1_store_ops_json.c - what the unified scan of Format 1 reads of a key of a document besides its leaf: the JSON type of each row, which the reader tests one type at a time, and the value of a
+ * col/v1_engine/v1_store_ops_json.c - what the unified scan of Format 1 reads of a key of a document besides its leaf: the JSON type of each row, which the reader tests one type at a time, and the value of a
  * row whose leaf could not hold it, which is read from the document of its heap row as `->>` reads it (and its float8 cast).
  */
 #include "postgres.h"
