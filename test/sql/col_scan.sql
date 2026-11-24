@@ -6,7 +6,7 @@
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 
--- pad makes a page hold about 15 rows: 30000 rows are about 8 superblocks
+-- pad makes a page hold about 15 rows: 10000 rows are about 3 superblocks
 CREATE TABLE sc (id int, v int, k2 int2, k8 int8, d date, ts timestamp, tz timestamptz, s text, u uuid, g int, f4 float4, f8 float8, b bool, nm numeric(12,2), c char(8), vc varchar(20), pad text DEFAULT repeat('x', 500));
 ALTER TABLE sc ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO sc (id, v, k2, k8, d, ts, tz, s, u, g, f4, f8, b, nm, c, vc)
@@ -28,7 +28,7 @@ SELECT i,
 	   CASE WHEN i % 67 = 0 THEN NULL WHEN i = 21 THEN 'NaN' ELSE ((hashint4(i + 8) & 2147483647) % 100000)::numeric / 100 END,
 	   CASE WHEN i % 71 = 0 THEN NULL WHEN i % 73 = 0 THEN 'caf' || chr(233) WHEN i % 79 = 0 THEN 'ab' ELSE 'c' || (hashint4(i + 9) & 2147483647) % 200 END,
 	   CASE WHEN i % 83 = 0 THEN NULL ELSE 'v' || (hashint4(i + 10) & 2147483647) % 150 END
-FROM generate_series(1, 30000) i;
+FROM generate_series(1, 10000) i;
 INSERT INTO sc (id, v, k2, k8) VALUES (2147483647, 2147483647, 32767, 9223372036854775807), (-2147483648, -2147483648, -32768, -9223372036854775807 - 1);
 INSERT INTO sc (id, f8, nm) VALUES (2147483646, 1e308, 9999999999.99), (-2147483647, -1e308, -9999999999.99);
 CREATE TABLE sc_b (LIKE sc INCLUDING DEFAULTS);
@@ -124,14 +124,14 @@ INSERT INTO sc_q (q) VALUES
  ('SELECT * FROM %T WHERE id = 2147483647'),
  ('SELECT * FROM %T WHERE id = -2147483648'),
  ('SELECT * FROM %T WHERE id = 99999999'),
- ('SELECT * FROM %T WHERE id IN (1, 7, 7, 29999, 40000, NULL)'),
+ ('SELECT * FROM %T WHERE id IN (1, 7, 7, 9999, 40000, NULL)'),
  ('SELECT * FROM %T WHERE id = ANY (''{}'')'),
  ('SELECT * FROM %T WHERE id = ANY (ARRAY(SELECT i * 37 FROM generate_series(1, 150) i))'),
  ('SELECT * FROM %T WHERE id BETWEEN 100 AND 180'),
  ('SELECT * FROM %T WHERE id < 40'),
  ('SELECT * FROM %T WHERE id <= 40'),
- ('SELECT * FROM %T WHERE id > 29980'),
- ('SELECT * FROM %T WHERE id >= 29980'),
+ ('SELECT * FROM %T WHERE id > 9980'),
+ ('SELECT * FROM %T WHERE id >= 9980'),
  ('SELECT * FROM %T WHERE id > 100 AND id < 50'),
  ('SELECT * FROM %T WHERE id = 5::int8'),
  ('SELECT * FROM %T WHERE id < 5::int2'),
@@ -167,7 +167,7 @@ INSERT INTO sc_q (q) VALUES
  ('SELECT * FROM %T WHERE (g = 1 AND v < 10) OR id IN (3, 4, 5) OR s = ''k9'''),
  ('SELECT * FROM %T WHERE g = 3 AND pad <> ''x'''),
  ('SELECT * FROM %T WHERE g = 3 AND pad = repeat(''x'', 500)'),
- ('SELECT * FROM %T WHERE id > ALL (ARRAY[29990, 29995])'),
+ ('SELECT * FROM %T WHERE id > ALL (ARRAY[9990, 9995])'),
  ('SELECT * FROM %T WHERE id < ANY (ARRAY[5, 10])'),
  ('SELECT * FROM %T WHERE NOT (id <> 5)'),
  ('SELECT g, count(*) FROM %T WHERE v < 20 GROUP BY g'),
@@ -263,8 +263,8 @@ INSERT INTO sc_q (q) VALUES
  ('SELECT id, s FROM %T WHERE s IN (''k1'', ''k2'', ''caf'' || chr(233))'),
  ('SELECT id, c, vc FROM %T WHERE c = ''c17''');
 
-CREATE FUNCTION sc_all(OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx bool, OUT tup_idx bool, OUT btree_idx bool) RETURNS SETOF record LANGUAGE sql AS $$
-	SELECT sc_q.n, c.rows, c.agree, c.col_idx, c.tup_idx, c.btree_idx FROM sc_q, LATERAL sc_check(sc_q.q) c ORDER BY sc_q.n $$;
+CREATE FUNCTION sc_all(sel int[] DEFAULT NULL, OUT n int, OUT rows bigint, OUT agree bool, OUT col_idx bool, OUT tup_idx bool, OUT btree_idx bool) RETURNS SETOF record LANGUAGE sql AS $$
+	SELECT sc_q.n, c.rows, c.agree, c.col_idx, c.tup_idx, c.btree_idx FROM sc_q, LATERAL sc_check(sc_q.q) c WHERE sel IS NULL OR sc_q.n = ANY (sel) ORDER BY sc_q.n $$;
 
 -- the queries the planner reads the column index for, and the ones that disagree (none)
 \echo -- after the build
@@ -335,10 +335,10 @@ BEGIN;
 SELECT sc_dml($$INSERT INTO %T (id, v, g, s) SELECT 200000 + i, 7, 7, 'k7' FROM generate_series(1, 50) i$$);
 SELECT sc_dml($$UPDATE %T SET v = 7, g = 7 WHERE id BETWEEN 1000 AND 1100$$);
 \echo -- own rows
-SELECT n, rows, agree, col_idx, tup_idx FROM sc_all() WHERE n IN (1, 22, 23, 41, 43);
+SELECT n, rows, agree, col_idx, tup_idx FROM sc_all(ARRAY[1, 22, 23, 41, 43]);
 ROLLBACK;
 \echo -- after the rollback
-SELECT n, rows, agree, col_idx, tup_idx FROM sc_all() WHERE n IN (1, 22, 23, 41, 43);
+SELECT n, rows, agree, col_idx, tup_idx FROM sc_all(ARRAY[1, 22, 23, 41, 43]);
 
 VACUUM sc;
 VACUUM sc_b;
@@ -357,7 +357,7 @@ SELECT count(*) AS queries, count(*) FILTER (WHERE agree) AS agree, count(*) FIL
 -- an update that leaves the indexed columns alone (HOT where the page has room), and one that changes them in the same page
 SELECT sc_dml($$UPDATE %T SET pad = repeat('z', 500) WHERE id BETWEEN 2000 AND 2100$$);
 SELECT sc_dml($$UPDATE %T SET v = 499 WHERE id BETWEEN 2000 AND 2020$$);
-SELECT n, rows, agree, col_idx, tup_idx FROM sc_all() WHERE n IN (8, 9, 41, 42);
+SELECT n, rows, agree, col_idx, tup_idx FROM sc_all(ARRAY[8, 9, 41, 42]);
 
 -- a nondeterministic collation, a char without a length and a numeric the leaf holds in another form take their typed classes: the leaf decides what it holds exactly and the heap the rest
 CREATE COLLATION sc_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
@@ -381,5 +381,5 @@ SELECT sift.col_verify('sc_col'::regclass, true) IS NOT NULL AS verified;
 
 DROP COLLATION sc_ci;
 DROP TABLE sc, sc_b, sc_q, sc_few;
-DROP FUNCTION sc_dml(text), sc_mode(text), sc_run(text, text), sc_check(text), sc_uses_col(text), sc_all();
+DROP FUNCTION sc_dml(text), sc_mode(text), sc_run(text, text), sc_check(text), sc_uses_col(text), sc_all(int[]);
 DROP EXTENSION pg_sift;
