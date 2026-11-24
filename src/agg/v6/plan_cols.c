@@ -323,7 +323,7 @@ sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	return true;
 }
 
-/* a use of a jsonb document in e that is no chain of -> and ->> over a path the index declares: the index does not hold what it reads (a format that declares no paths holds the keys it shreds) */
+/* a use of a jsonb document in e that is no chain of -> and ->> over a path the index declares: the index does not hold what it reads (a format that declares no paths holds the keys it shreds); a format that cannot read the value of a key its leaf cannot hold leaves every use to its legacy planner */
 static bool
 undeclared_doc_walker(Node *n, const V6Plan *p)
 {
@@ -337,6 +337,8 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 		return expression_tree_walker(n, undeclared_doc_walker, (void *) p);
 	if (p->ops->jsonb == NULL || p->ops->jsonb->path_declared == NULL)
 		return false;
+	if (!p->ops->jsonb->exact_values && !sift_agg_unified_only())
+		return true;
 	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
 }
 
