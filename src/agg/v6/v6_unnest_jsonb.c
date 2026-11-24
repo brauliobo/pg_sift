@@ -46,9 +46,23 @@ col_holds(Oid typid, int32 typmod, const SiftColDef *d)
 			return d->store == SIFT_COLS_INT && d->type == SIFT_COLT_INT8;
 		case FLOAT8OID:
 			return d->store == SIFT_COLS_F8 && d->type == SIFT_COLT_FLOAT8;
+		case BOOLOID:
+			return d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL;
 		default:
 			return false;
 	}
+}
+
+/* the type of the column of the statement that holds the leaf as it is stored: text, an integer or a boolean (InvalidOid for any other leaf) */
+static Oid
+leaf_type(const SiftColDef *d)
+{
+	Oid			typ[] = {TEXTOID, INT2OID, INT4OID, INT8OID, BOOLOID};
+
+	for (int i = 0; i < lengthof(typ); i++)
+		if (col_holds(typ[i], -1, d))
+			return typ[i];
+	return InvalidOid;
 }
 
 bool
@@ -71,6 +85,32 @@ field_key(const Expr *e, const Expr **doc)
 		return NULL;
 	*doc = linitial(op->args);
 	return TextDatumGetCString(k->constvalue);
+}
+
+int
+sift_v6_unnest_rte_col(SiftV6ElemRte *rte, const char *name, Oid type, bool kind)
+{
+	int			at = 0;
+
+	foreach_node(String, n, rte->names)
+	{
+		if (strcmp(strVal(n), name) == 0 && list_nth_oid(rte->types, at) == type && (rte->kinds != NIL && list_nth_int(rte->kinds, at) != 0) == kind)
+			return at;
+		at++;
+	}
+	if (at == SIFT_V6_XELEM_COLS)
+		return -1;
+	rte->names = lappend(rte->names, makeString(pstrdup(name)));
+	rte->types = lappend_oid(rte->types, type);
+	rte->kinds = lappend_int(rte->kinds, kind);
+	return at;
+}
+
+void
+sift_v6_unnest_array_rte(const Expr *array, SiftV6ElemRte *out)
+{
+	*out = (SiftV6ElemRte) {.fn = SV6E_PATH,.array = array,.base = array};
+	out->key = field_key(array, &out->base);
 }
 
 /* the function of the lateral relation, taking the column array of the fact table: unnest of an array, or jsonb_to_recordset of a jsonb one with the columns it declares */
@@ -224,11 +264,13 @@ seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *
 	{
 		const int	leaf = member_leaf(r, att, e->group_leaf, strVal(n));
 		const Oid	t = list_nth_oid(rte->types, c);
+		const bool	kind = rte->kinds != NIL && list_nth_int(rte->kinds, c) != 0;
 
-		if (leaf < 0 || !col_holds(t, -1, &r->schema->cols[leaf]))
+		if (leaf < 0 || (!kind && !col_holds(t, -1, &r->schema->cols[leaf])))
 			return false;
 		e->col_leaf[c] = leaf;
-		e->col_type[c++] = t;
+		e->col_type[c] = t;
+		e->col_kind[c++] = kind;
 		*names = lappend(*names, makeString(pstrdup(strVal(n))));
 	}
 	e->ncols = c;
@@ -325,24 +367,48 @@ array_column(const IndexOptInfo *ix, const Expr *array)
 	return -1;
 }
 
+/* the column of the index (0-based) that holds the array of rte, and the key of its document that is the array (NULL: the column is) */
+static int
+rte_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
+{
+	int			i = rte->key != NULL ? array_column(p->index, rte->base) : -1;
+
+	*key = rte->key;
+	if (i < 0)
+	{
+		i = array_column(p->index, rte->array);
+		*key = NULL;
+	}
+	return i;
+}
+
+Oid
+sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name)
+{
+	const SiftColRel *r = p->colrel;
+	const char *key;
+	const int	i = rte_column(p, rte, &key);
+	int			group,
+				leaf;
+
+	if (i < 0 || !r->json[i + 1] || (group = group_of(r, i + 1, key)) < 0 || (leaf = member_leaf(r, i + 1, group, name)) < 0)
+		return InvalidOid;
+	return leaf_type(&r->schema->cols[leaf]);
+}
+
 bool
 sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left)
 {
 	SiftV6Ext  *x = sift_v6_ext_new();
 	List	   *names = NIL;
-	const char *key = rte->key;
-	int			i = key != NULL ? array_column(p->index, rte->base) : -1;
+	const char *key;
+	const int	i = rte_column(p, rte, &key);
 
-	if (i < 0)
-	{
-		i = array_column(p->index, rte->array);
-		key = NULL;
-	}
 	if (i < 0)
 		return false;
 	x->unnest = true;
 	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
-	if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
+	if (!((rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
 		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) : seed_each(p, &x->elem, i + 1)))
 		return false;
 	x->elem_names = names;
@@ -410,12 +476,20 @@ value_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+/* the column of the element that column v of the relation of the lateral function or of the sub-select of an EXISTS is */
+static int
+elem_slot(const V6Plan *p, const Var *v)
+{
+	return p->elem_map != NULL ? p->elem_map[v->varattno - 1] : v->varattno - 1;
+}
+
 bool
 sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 {
 	const Var  *v = (const Var *) e;
 	const SiftV6Ext *x = p->xseed;
 	SiftV6Class cls;
+	int			slot;
 
 	if (x != NULL && x->elem.fn == SV6E_KEYS)
 		return sift_v6_mapkey_column(p, e, out);
@@ -429,9 +503,10 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	cls = sift_v6_class(v->vartype);
 	if (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_TEXT && v->vartype != FLOAT8OID)
 		return false;
-	if (sift_v6_class(x->elem.col_type[v->varattno - 1]) != cls || (cls == SV6C_I32 && x->elem.col_type[v->varattno - 1] != v->vartype))
+	slot = elem_slot(p, v);
+	if (sift_v6_class(x->elem.col_type[slot]) != cls || (cls == SV6C_I32 && x->elem.col_type[slot] != v->vartype))
 		return false;
-	*out = (SiftV6Col) {.attno = x->elem.attno,.typid = v->vartype,.src = SV6SRC_ELEM,.slot = v->varattno - 1};
+	*out = (SiftV6Col) {.attno = x->elem.attno,.typid = v->vartype,.src = SV6SRC_ELEM,.slot = slot};
 	return true;
 }
 

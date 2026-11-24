@@ -85,7 +85,7 @@ sift_v6_unnest_where(V6Plan *p)
 	SiftBytes	canon;
 
 	foreach_node(RestrictInfo, ri, cheapest_first(p->root, p->rel->baserestrictinfo))
-		if (ri != p->sub_qual)
+		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)
 		return true;

@@ -40,7 +40,9 @@ typedef struct V6Plan
 	IndexOptInfo *text;			/* the sift index of the text query of the statement, if it has one (v6_text.c) */
 	RestrictInfo *text_qual;
 	List	   *text_queries;
-	const RestrictInfo *sub_qual;	/* the EXISTS over the elements of an array that the scan of the unnest decides itself (v6_unnest_exists.h): no clause of the table is compiled for it */
+	const RestrictInfo *sub_qual;	/* the EXISTS over the elements of an array that the scan joins the dimensions of its elements for and decides itself (v6_exists_plan.h): no clause of the table is compiled for it */
+	List	   *tests;			/* the tests of the elements of an array (EXISTS, jsonpath) that the scan decides itself (v6_unnest_exists.h): no clause of the table is compiled for those of a WHERE, a FILTER reads their flags */
+	const int  *elem_map;		/* the element column of the union of the tests' (SiftV6ElemRte) that column i of the relation of the test being built is; NULL: its own */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */
@@ -141,6 +143,10 @@ extern Aggref *sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a);
 /* the pieces of it that the planner of an EXISTS over the elements (v6_unnest_exists.h) takes apart: the statement compiles to what the scan of an unnest computes; the quals of the table become those the scan evaluates on its batches and on a row of the heap */
 extern bool sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);
 extern bool sift_v6_unnest_where(V6Plan *p);
+/* v6_unnest_exists.c: the qual of the flag of the test a conjunct of a FILTER is (the virtual attribute SIFT_V6_XFLAG_VATT + the test against true or false); NULL when it is none of the tests of the plan */
+extern Expr *sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct);
+/* the WHERE clause is a test of the plan, which the scan decides: it is not compiled as a qual of the table */
+extern bool sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri);
 extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);
 extern void sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 

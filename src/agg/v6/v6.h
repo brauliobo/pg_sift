@@ -123,6 +123,8 @@ typedef enum SiftV6Src
 /* The virtual attributes (an INDEX_VAR or scan varattno above every column of an index): the `->>` text or float8 cast of the key whose leaf is SIFT_V6_JLEAF_VATT + leaf, and jsonb_typeof(doc -> 'key') of the key whose leaf is SIFT_V6_JTYPE_VATT + leaf */
 #define SIFT_V6_JLEAF_VATT		(1 << 14)
 #define SIFT_V6_JTYPE_VATT		(3 << 13)
+/* The virtual attribute of the boolean flag of test i of the elements of a row's array (SiftV6Ext.test, v6_ext.h), which a FILTER reads */
+#define SIFT_V6_XFLAG_VATT		(3 << 12)
 
 /* The ints each input of an SiftV6Spec.pgexpr item has after its result type: its attribute, type, scale, source and slot (agg/v6/v6_pg_expr.c) */
 #define SIFT_V6_PGX_INTS		5

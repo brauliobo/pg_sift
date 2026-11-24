@@ -31,10 +31,11 @@
 #include "col/am.h"
 #include "col/f2/f2_sink_ext.h"
 #include "col/f2/f2_v6_map_preagg.h"
+#include "col/f2/f2_v6_unnest_test.h"
 #include "core/errctx.h"
 #include "core/memtrack.h"
 
-#define OUT_SLOTS	(SIFT_F2_PULL_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE + 1)
+#define OUT_SLOTS	(SIFT_F2_PULL_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE + 1 + SIFT_V6_XTESTS)
 #define MONTH_SLOTS	4096
 
 StaticAssertDecl(SIFT_V6_XELEM_COLS <= SIFT_F2_PULL_MAX_CHILD, "an element column is a child leaf of the pull");
@@ -63,6 +64,7 @@ typedef struct UnRun
 {
 	const SiftV6Spec *spec;
 	const SiftV6Ext *x;
+	Relation	index;
 	SiftV6ScanStats *stats;
 	SiftV6Vet	vet;
 	SiftV6Pipe *pipe;
@@ -105,14 +107,19 @@ typedef struct UnRun
 	bool		has_where;
 	SiftVec   **wvecs;
 	int		   *wcol;			/* the column of each vector the WHERE clause reads */
-	SiftClause	ewhere;
-	bool		has_ewhere;
-	int			ecol[SIFT_V6_MAX_FCOLS];	/* the column of the element each vector of the element's clause is */
-	int			nevec;
-	void	   *ebuf[SIFT_V6_MAX_FCOLS];
-	uint64	   *evalid[SIFT_V6_MAX_FCOLS];
-	SiftVec		evin[SIFT_V6_MAX_FCOLS];
-	SiftVec	   *evp[SIFT_V6_MAX_FCOLS];
+	SiftF2ElemEval *eev;		/* the quals of the element of a lateral unnest */
+	SiftF2RowTests *tests;		/* the tests of the elements of a row (SiftV6Ext.test), NULL without any */
+	int			ntests;
+	int			outer_slot[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* the column of the batch each comparison of a test is with */
+	AttrNumber	outer_att[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* and its column of the heap */
+	ExprState  *heap_test[SIFT_V6_XTESTS];	/* a jsonpath test: the call a row the leaves cannot hold is decided by */
+	bool		flag_used[SIFT_V6_XTESTS];	/* a FILTER of the statement reads the flag of the test */
+	uint64	   *flag_valid[SIFT_V6_XTESTS];
+	int64	   *flag_data[SIFT_V6_XTESTS];
+	SiftVec		flagv[SIFT_V6_XTESTS];	/* the flag of each row of the batch */
+	uint64		held[SIFT_VEC_WORDS];	/* the rows of the batch the tests are decided for (those the layout holds) */
+	uint64		yes[SIFT_V6_XTESTS][SIFT_VEC_WORDS];
+	uint64		known[SIFT_V6_XTESTS][SIFT_VEC_WORDS];
 	SiftVec	   *out[OUT_SLOTS];
 	uint64	   *out_valid[OUT_SLOTS];
 	void	   *out_data[OUT_SLOTS];
@@ -196,10 +203,29 @@ key_is_month(const SiftV6Spec *spec, int key)
 	return false;
 }
 
+/* the column is the flag of a test (the virtual attribute a FILTER reads it by) */
+static bool
+is_flag(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
+}
+
+/* the vector of the pipe the flag of test k is: after the derivations */
+static int
+flag_slot(const UnRun *u, int k)
+{
+	return u->ncols + u->nel + u->spec->nderive + k;
+}
+
 /* the vector of the pipe a column of the statement is read from: a column of the table, the column of the element, or what the pairs compute from them */
 static int
 slot_of(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 {
+	if (is_flag(c))
+	{
+		u->flag_used[c->attno - SIFT_V6_XFLAG_VATT] = true;
+		return flag_slot(u, c->attno - SIFT_V6_XFLAG_VATT);
+	}
 	if (c->derive > 0)
 		return u->ncols + u->nel + c->derive - 1;
 	if (c->src == SV6SRC_ELEM)
@@ -221,7 +247,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 		if (spec->key[i].src == SV6SRC_ATTR && spec->key[i].derive == 0)
 			col_index(u, r, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
-		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0)
+		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0 && !is_flag(sift_v6_vec_col(spec, v)))
 			col_index(u, r, sift_v6_vec_col(spec, v), false);
 	for (int d = 0; d < u->x->ndims; d++)
 		for (int k = 0; k < u->x->dim[d].nkeys; k++)
@@ -252,8 +278,16 @@ setup_cols(UnRun *u, const SiftColRel *r)
 		}
 	}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
-		if (spec->fcol[i].src == SV6SRC_ATTR)
+		if (spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]))
 			col_index(u, r, &spec->fcol[i], false);
+	for (int k = 0; k < u->ntests; k++)
+		for (int c = 0; c < u->x->test[k].ncmps; c++)
+		{
+			const SiftV6XCmp *cmp = &u->x->test[k].cmp[c];
+			const SiftV6Col outer = {.attno = cmp->outer,.typid = cmp->outer_type};
+
+			u->outer_slot[k * SIFT_V6_XCMPS + c] = col_index(u, r, &outer, false);
+		}
 }
 
 static SiftF2PullSpec
@@ -264,7 +298,8 @@ pull_spec(const UnRun *u)
 	for (int i = 0; i < u->ncols; i++)
 		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = vec_type(u->cols[i].cls)};
 	for (int c = 0; c < u->nchild; c++)
-		ps.child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? u->x->elem.key_leaf : u->x->elem.val_leaf) : u->x->elem.col_leaf[c],.type = u->ctype[c]};
+		ps.child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? u->x->elem.key_leaf : u->x->elem.val_leaf) : u->x->elem.col_leaf[c],.type = u->ctype[c],
+									   .kind = !u->keyed && u->x->elem.col_kind[c]};
 	return ps;
 }
 
@@ -300,6 +335,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 {
 	const SiftV6Spec *spec = u->spec;
 	SiftVecType type[OUT_SLOTS];
+	const int	nslots = u->ncols + u->nel + spec->nderive + u->ntests + (u->x->elem.semi ? 1 : 0);
 
 	for (int i = 0; i < u->ncols; i++)
 		type[i] = vec_type(u->cols[i].cls);
@@ -307,9 +343,11 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
 		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
+	for (int k = 0; k < u->ntests; k++)
+		type[flag_slot(u, k)] = SVEC_I64;
 	if (u->x->elem.semi)
-		type[u->row_slot = u->ncols + u->nel + spec->nderive] = SVEC_I64;
-	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, u->ncols + u->nel + spec->nderive + (u->row_slot >= 0), type);
+		type[u->row_slot = nslots - 1] = SVEC_I64;
+	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, nslots, type);
 	if (u->row_slot >= 0)
 		sift_v6_pipe_semi(u->pipe, u->row_slot);
 	if (star != NULL)
@@ -351,7 +389,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 			ar->f64[c] = col->typid == FLOAT8OID;
 		}
 	}
-	for (int s = 0; s < u->ncols + u->nel + spec->nderive + (u->row_slot >= 0); s++)
+	for (int s = 0; s < nslots; s++)
 	{
 		u->out_data[s] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sift_gather_width(type[s]) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		u->out_valid[s] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
@@ -580,6 +618,9 @@ emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 	for (int c = 0; c < u->nel; c++)
 		if (u->eused[c])
 			sift_vec_gather(u->out[u->ncols + c], u->out_valid[u->ncols + c], u->out_data[u->ncols + c], &elems[c], u->eidx, m);
+	for (int k = 0; k < u->ntests; k++)
+		if (u->flag_used[k])
+			sift_vec_gather(u->out[flag_slot(u, k)], u->out_valid[flag_slot(u, k)], u->out_data[flag_slot(u, k)], &u->flagv[k], u->pidx, m);
 	run_pairs(u, m);
 }
 
@@ -621,33 +662,6 @@ emit_keyed(UnRun *u, const SiftVec *fact, const SiftVec *vals, uint32 m)
 	run_pairs(u, m);
 }
 
-/* the elements the clause of the element keeps, as a bitmap of n_elems bits, from the columns ev of the elements */
-static void
-eval_elems(UnRun *u, const SiftVec *ev, uint32 n_elems, uint64 *keep_all)
-{
-	for (uint32 at = 0; at < n_elems; at += SIFT_VEC_LEN)
-	{
-		const uint32 cnt = Min(SIFT_VEC_LEN, n_elems - at);
-		const uint32 words = (cnt + 63) / 64;
-		uint64		keep[SIFT_VEC_WORDS];
-
-		for (int v = 0; v < u->nevec; v++)
-		{
-			const SiftVec *e = &ev[u->ecol[v]];
-			const size_t w = sift_gather_width(e->type);
-
-			memcpy(u->ebuf[v], (const char *) e->data + (size_t) at * w, (size_t) cnt * w);
-			memset(u->evalid[v], 0, SIFT_VEC_WORDS * sizeof(uint64));
-			memcpy(u->evalid[v], e->valid + at / 64, words * sizeof(uint64));
-			if (cnt & 63)
-				u->evalid[v][words - 1] &= (UINT64CONST(1) << (cnt & 63)) - 1;
-			u->evin[v] = (SiftVec) {.data = u->ebuf[v],.valid = u->evalid[v],.len = (uint16) cnt,.all_valid = false,.dense = true,.type = e->type};
-		}
-		sift_clause_eval(&u->ewhere, u->evp, cnt, keep);
-		memcpy(keep_all + at / 64, keep, words * sizeof(uint64));
-	}
-}
-
 /* the elements of the array of a row as columns: unnest(array) of a NULL or empty array has none */
 static uint32
 array_elems(UnRun *u, Datum d, SiftVec *ev)
@@ -678,31 +692,12 @@ array_elems(UnRun *u, Datum d, SiftVec *ev)
 	return (uint32) nel;
 }
 
-static bool
-any_kept(const uint64 *keep, uint32 nel)
-{
-	for (uint32 k = 0; k < nel; k++)
-		if (keep == NULL || ((keep[k >> 6] >> (k & 63)) & 1))
-			return true;
-	return false;
-}
-
-/* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none; an EXISTS makes the row one pair when an element is kept */
+/* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none */
 static void
 emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row)
 {
 	uint32		m = 0;
 
-	if (u->x->elem.semi)
-	{
-		if (any_kept(keep, nel))
-		{
-			u->pidx[0] = row;
-			u->eidx[0] = SIFT_GATHER_NONE;
-			emit_pairs(u, fact, ev, 1);
-		}
-		return;
-	}
 	if (nel == 0 && u->x->elem.left)
 	{
 		u->pidx[0] = row;
@@ -725,41 +720,146 @@ emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, u
 		emit_pairs(u, fact, ev, m);
 }
 
-/* a row whose array the index cannot hold: the array of its heap row taken apart as the function does, NULL and empty arrays included, errors included */
-static void
-emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
+/* the row of the heap at tid is read, and the quals of the table as the statement has them hold of it */
+static bool
+heap_row_kept(UnRun *u, uint64 tid)
 {
-	MemoryContext old = MemoryContextSwitchTo(u->bcx);
-	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
-	uint64	   *keep = NULL;
-	uint32		nel = 0;
-	bool		isnull,
-				found;
-	Datum		d;
+	const bool	found = sift_v6_vet_fetch(&u->vet, tid);
 
-	found = sift_v6_vet_fetch(&u->vet, tid);
 	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its array is read");
 	if (u->econtext != NULL)
 	{
 		u->econtext->ecxt_scantuple = u->vet.slot;
 		ResetExprContext(u->econtext);
 	}
-	if (u->hqual != NULL && !ExecQual(u->hqual, u->econtext))
+	return u->hqual == NULL || ExecQual(u->hqual, u->econtext);
+}
+
+/* the array of the row read from the heap taken apart as the function does, NULL and empty arrays included, errors included: its elements in ev, and how many */
+static uint32
+heap_elems(UnRun *u, SiftVec *ev)
+{
+	bool		isnull;
+	const Datum d = u->arr != NULL ? ExecEvalExprSwitchContext(u->arr, u->econtext, &isnull) : slot_getattr(u->vet.slot, u->heap_att, &isnull);
+
+	if (isnull)
+		return 0;
+	return u->rec != NULL ? sift_v6_recfn_call(u->rec, d, u->bcx, ev) : array_elems(u, d, ev);
+}
+
+/* a row whose array the index cannot hold: the array of its heap row taken apart */
+static void
+emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
+{
+	MemoryContext old = MemoryContextSwitchTo(u->bcx);
+	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
+	uint64	   *keep = NULL;
+	uint32		nel;
+
+	if (heap_row_kept(u, tid))
 	{
-		MemoryContextSwitchTo(old);
-		return;
+		nel = heap_elems(u, ev);
+		if (u->eev != NULL && nel > 0)
+		{
+			keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
+			sift_f2_elem_eval(u->eev, ev, 0, nel, keep);
+		}
+		if (u->rec != NULL)
+			sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel);
+		emit_row(u, fact, ev, keep, nel, row);
 	}
-	d = u->arr != NULL ? ExecEvalExprSwitchContext(u->arr, u->econtext, &isnull) : slot_getattr(u->vet.slot, u->heap_att, &isnull);
+	MemoryContextSwitchTo(old);
+}
+
+typedef union HeapCell
+{
+	int64		i;
+	double		f;
+} HeapCell;
+
+/* the value of the column of the heap row that comparison c of test k is with, as a vector of the one value */
+static SiftVec
+heap_outer(UnRun *u, int k, int c, HeapCell *cell, uint64 *valid)
+{
+	const Oid	type = u->x->test[k].cmp[c].outer_type;
+	bool		isnull;
+	const Datum d = slot_getattr(u->vet.slot, u->outer_att[k * SIFT_V6_XCMPS + c], &isnull);
+
+	*valid = !isnull;
 	if (!isnull)
-		nel = u->rec != NULL ? sift_v6_recfn_call(u->rec, d, u->bcx, ev) : array_elems(u, d, ev);
-	if (u->has_ewhere && nel > 0)
 	{
-		keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
-		eval_elems(u, ev, nel, keep);
+		if (type == FLOAT8OID)
+			cell->f = DatumGetFloat8(d);
+		else
+			cell->i = type == INT2OID ? DatumGetInt16(d) : type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
 	}
-	if (u->rec != NULL)
-		sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel);
-	emit_row(u, fact, ev, keep, nel, row);
+	return (SiftVec) {.data = cell,.valid = valid,.len = 1,.all_valid = false,.dense = true,.type = type == FLOAT8OID ? SVEC_F64 : SVEC_I64};
+}
+
+/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements the function gives */
+static void
+heap_flags(UnRun *u, bool *yes, bool *known)
+{
+	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
+	uint32		nel = 0;
+	bool		have = false;
+
+	for (int k = 0; k < u->ntests; k++)
+	{
+		SiftVec		outer[SIFT_V6_XCMPS];
+		HeapCell	cell[SIFT_V6_XCMPS];
+		uint64		valid[SIFT_V6_XCMPS];
+		bool		isnull;
+
+		known[k] = true;
+		yes[k] = false;
+		if (u->heap_test[k] != NULL)
+		{
+			const Datum d = ExecEvalExprSwitchContext(u->heap_test[k], u->econtext, &isnull);
+
+			known[k] = !isnull;
+			yes[k] = !isnull && DatumGetBool(d);
+			continue;
+		}
+		if (!have)
+			nel = heap_elems(u, ev);
+		have = true;
+		for (int c = 0; c < u->x->test[k].ncmps; c++)
+			outer[c] = heap_outer(u, k, c, &cell[c], &valid[c]);
+		yes[k] = nel > 0 && sift_f2_row_test_one(u->tests, k, ev, nel, outer);
+	}
+}
+
+static bool
+need_met(const SiftV6XTest *xt, bool yes, bool known)
+{
+	return xt->need == 0 || (xt->need == 1 ? yes : xt->nullable ? known && !yes : !yes);
+}
+
+/* a row the leaves cannot hold: its tests from the heap row, the pair it gives when the statement keeps it */
+static void
+emit_test_heap_row(UnRun *u, uint64 tid, uint32 row)
+{
+	MemoryContext old = MemoryContextSwitchTo(u->bcx);
+	bool		yes[SIFT_V6_XTESTS],
+				known[SIFT_V6_XTESTS];
+	bool		kept = heap_row_kept(u, tid);
+
+	if (kept)
+		heap_flags(u, yes, known);
+	for (int k = 0; kept && k < u->ntests; k++)
+		kept = need_met(&u->x->test[k], yes[k], known[k]);
+	for (int k = 0; kept && k < u->ntests; k++)
+	{
+		u->flag_data[k][row] = yes[k];
+		u->flag_valid[k][row >> 6] |= (uint64) (!u->x->test[k].nullable || known[k]) << (row & 63);
+	}
+	if (kept)
+	{
+		u->pidx[0] = row;
+		u->eidx[0] = SIFT_GATHER_NONE;
+		emit_pairs(u, u->fv, NULL, 1);
+	}
 	MemoryContextSwitchTo(old);
 }
 
@@ -930,25 +1030,71 @@ restrict_where(UnRun *u, const SiftF2ExtBatch *b)
 		bs->mask[w] &= keep[w] | b->elem->poison[w];
 }
 
-/* the rows of the batch with an element the clause of the element keeps: one pair for each, whose columns are those of the table; the rows the index cannot hold are the caller's, from the heap */
 static void
-emit_semi(UnRun *u, const SiftF2ExtBatch *b, const uint64 *keep, uint64 *fallback)
+elem_vecs(const UnRun *u, const SiftF2ElemStream *es, SiftVec *ev)
+{
+	for (int c = 0; c < u->nchild; c++)
+		ev[c] = (SiftVec) {.type = u->ctype[c],.data = (void *) es->child_data[c],.valid = (uint64 *) es->child_valid[c],.all_valid = false};
+}
+
+/* the tests of the rows of the batch the layout holds, and the rows of those that fail one the statement keeps its rows by leave the batch; the others are the heap's */
+static void
+decide_tests(UnRun *u, const SiftF2ExtBatch *b)
 {
 	const SiftF2ElemStream *es = b->elem;
 	const uint32 words = (b->n + 63) / 64;
-	uint64		held[SIFT_VEC_WORDS],
-				yes[SIFT_VEC_WORDS],
-				known[SIFT_VEC_WORDS];
+	SiftVec		ev[SIFT_V6_XELEM_COLS];
+
+	memset(u->held, 0, sizeof(u->held));
+	if (es->layout.n_parents < (uint32) b->n)
+		return;
+	for (uint32 w = 0; w < words; w++)
+		u->held[w] = u->bs.mask[w] & ~es->poison[w];
+	elem_vecs(u, es, ev);
+	sift_f2_row_tests_eval(u->tests, es, ev, b->col, u->outer_slot, u->held, u->yes, u->known);
+	for (int k = 0; k < u->ntests; k++)
+	{
+		const SiftV6XTest *xt = &u->x->test[k];
+
+		for (uint32 w = 0; w < words; w++)
+		{
+			const uint64 pass = xt->need == 0 ? ~UINT64CONST(0) : xt->need == 1 ? u->yes[k][w] : xt->nullable ? u->known[k][w] & ~u->yes[k][w] : ~u->yes[k][w];
+
+			u->bs.mask[w] &= ~u->held[w] | pass;
+		}
+	}
+}
+
+/* the flag of each row of the batch the statement's FILTERs read, for the rows the layout holds */
+static void
+fill_flags(UnRun *u, uint32 n)
+{
+	const uint32 words = (n + 63) / 64;
+
+	for (int k = 0; k < u->ntests; k++)
+	{
+		if (!u->flag_used[k])
+			continue;
+		for (uint32 r = 0; r < n; r++)
+			u->flag_data[k][r] = (u->yes[k][r >> 6] >> (r & 63)) & 1;
+		for (uint32 w = 0; w < words; w++)
+			u->flag_valid[k][w] = u->held[w] & (u->x->test[k].nullable ? u->known[k][w] : ~UINT64CONST(0));
+		u->flagv[k] = (SiftVec) {.data = u->flag_data[k],.valid = u->flag_valid[k],.len = (uint16) n,.all_valid = false,.dense = true,.type = SVEC_I64};
+	}
+}
+
+/* the rows of the batch the tests keep: one pair each, whose columns are those of the table and the flags; the rows the index cannot hold are the caller's, from the heap */
+static void
+emit_tested(UnRun *u, const SiftF2ExtBatch *b, uint64 *fallback)
+{
+	const uint32 words = (b->n + 63) / 64;
 	uint32		m = 0;
 
+	fill_flags(u, b->n);
 	for (uint32 w = 0; w < words; w++)
 	{
-		fallback[w] = u->bs.mask[w] & es->poison[w];
-		held[w] = u->bs.mask[w] & ~es->poison[w];
-	}
-	sift_unnest_any(&es->layout, keep, held, es->doc_valid, yes, known);
-	for (uint32 w = 0; w < words; w++)
-		for (uint64 bits = yes[w]; bits != 0; bits &= bits - 1)
+		fallback[w] = u->bs.mask[w] & ~u->held[w];
+		for (uint64 bits = u->bs.mask[w] & u->held[w]; bits != 0; bits &= bits - 1)
 		{
 			u->pidx[m] = w * 64 + (uint32) __builtin_ctzll(bits);
 			u->eidx[m++] = SIFT_GATHER_NONE;
@@ -958,6 +1104,7 @@ emit_semi(UnRun *u, const SiftF2ExtBatch *b, const uint64 *keep, uint64 *fallbac
 				m = 0;
 			}
 		}
+	}
 	if (m > 0)
 		emit_pairs(u, u->fv, NULL, m);
 }
@@ -981,15 +1128,18 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		bs->mask[words - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
 	if (u->has_where)
 		restrict_where(u, b);
+	if (u->ntests > 0)
+		decide_tests(u, b);
 	if (sift_v6_vet_mask(&u->vet, b->tid, 0, false, n, bs) == 0)
 		return;
 	u->stats->rows += bs->n_active;
 	MemoryContextReset(u->bcx);
 	compute_columns(u, b, bs);
-	for (int c = 0; c < u->nchild; c++)
-		ev[c] = (SiftVec) {.type = u->ctype[c],.data = (void *) es->child_data[c],.valid = (uint64 *) es->child_valid[c],.all_valid = false};
+	elem_vecs(u, es, ev);
 	if (u->keyed && u->x->elem.group_leaf < 0)
 		run_keyed(u, b, NULL, fallback);
+	else if (u->ntests > 0)
+		emit_tested(u, b, fallback);
 	else if (es->layout.n_parents < (uint32) n)
 		memcpy(fallback, bs->mask, words * sizeof(uint64));
 	else if (u->keyed)
@@ -1000,22 +1150,19 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		SiftUnnestIn in = {.lay = &es->layout,.parent_mask = bs->mask,.poison = es->poison,.doc_valid = es->doc_valid,.left = u->x->elem.left};
 		SiftUnnestCursor cur = {0};
 
-		if (u->has_ewhere)
+		if (u->eev != NULL)
 		{
 			keep = MemoryContextAllocZero(u->bcx, ((es->n_elems + 63) / 64 + 1) * sizeof(uint64));
-			eval_elems(u, ev, es->n_elems, keep);
+			sift_f2_elem_eval(u->eev, ev, 0, es->n_elems, keep);
 			in.elem_mask = keep;
 		}
-		if (u->x->elem.semi)
-			emit_semi(u, b, keep, fallback);
-		else
-			while (!sift_unnest_done(&in, &cur))
-			{
-				const uint32 m = sift_unnest_expand(&in, &cur, u->pidx, u->eidx, SIFT_VEC_LEN, fallback);
+		while (!sift_unnest_done(&in, &cur))
+		{
+			const uint32 m = sift_unnest_expand(&in, &cur, u->pidx, u->eidx, SIFT_VEC_LEN, fallback);
 
-				if (m > 0)
-					emit_pairs(u, u->fv, ev, m);
-			}
+			if (m > 0)
+				emit_pairs(u, u->fv, ev, m);
+		}
 	}
 	for (int w = 0; w < words; w++)
 		for (uint64 bits = fallback[w] & bs->mask[w]; bits != 0; bits &= bits - 1)
@@ -1024,6 +1171,8 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 
 			if (u->keyed)
 				emit_heap_keys(u, u->fv, b->tid[row], row);
+			else if (u->ntests > 0)
+				emit_test_heap_row(u, b->tid[row], row);
 			else
 				emit_heap_row(u, u->fv, b->tid[row], row);
 		}
@@ -1034,6 +1183,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 {
 	const SiftV6Spec *spec = u->spec;
 	bool		bound;
+	int			k = 0;
 
 	if (u->x->where != NIL)
 	{
@@ -1043,7 +1193,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		u->wvecs = palloc(Max(spec->nfcols, 1) * sizeof(SiftVec *));
 		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
 		for (int i = 0; i < spec->nfcols; i++)
-			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR ? col_index(u, r, &spec->fcol[i], false) : -1;
+			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]) ? col_index(u, r, &spec->fcol[i], false) : -1;
 	}
 	if (u->x->pair_where != NIL)
 	{
@@ -1052,16 +1202,19 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		SIFT_INVARIANT(bound, "the quals over the members of the keys of the aggregate scan compiled when it was planned");
 	}
 	if (u->x->elem_where != NIL)
+		u->eev = sift_f2_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
+	if (u->ntests == 0)
+		return;
+	u->tests = sift_f2_row_tests_open(CurrentMemoryContext, u->x);
+	foreach_ptr(List, tq, u->x->test_quals)
 	{
-		u->has_ewhere = true;
-		bound = sift_v6_unnest_elem_clause(CurrentMemoryContext, u->x->elem_where, &u->ewhere, u->ecol, &u->nevec);
-		SIFT_INVARIANT(bound, "the clause of the element of the aggregate scan of an unnest compiled when it was planned");
-		for (int v = 0; v < u->nevec; v++)
-		{
-			u->ebuf[v] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
-			u->evalid[v] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
-			u->evp[v] = &u->evin[v];
-		}
+		for (int c = 0; c < u->x->test[k].ncmps; c++)
+			u->outer_att[k * SIFT_V6_XCMPS + c] = u->index->rd_index->indkey.values[u->x->test[k].cmp[c].outer - 1];
+		if (lsecond(tq) != NIL)
+			u->heap_test[k] = ExecPrepareExpr(linitial(lsecond(tq)), u->estate);
+		u->flag_data[k] = palloc0(SIFT_VEC_LEN * sizeof(int64));
+		u->flag_valid[k] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
+		k++;
 	}
 }
 
@@ -1083,6 +1236,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	u->keyed = u->x->elem.fn == SV6E_KEYS;
 	u->nel = u->x->elem.ncols;
 	u->nchild = u->keyed ? (u->x->elem.group_leaf >= 0 ? 2 : 0) : u->nel;
+	u->ntests = u->x->ntests;
 	for (int c = 0; c < u->nel; c++)
 		u->etype[c] = vec_type(sift_v6_class(u->x->elem.col_type[c]));
 	for (int c = 0; c < u->nchild; c++)
@@ -1091,10 +1245,10 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 		u->heap_att = index->rd_index->indkey.values[u->x->elem.attno - 1];
 	if (u->x->elem.fn == SV6E_UNNEST)
 		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
-	else if (!u->keyed)
+	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
 		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest heap rows");
-	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed)
+	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0)
 	{
 		MemoryContext old = CurrentMemoryContext;
 

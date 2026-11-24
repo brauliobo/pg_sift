@@ -16,6 +16,8 @@
 #include "agg/v6/v6_star.h"
 
 #define SIFT_V6_XELEM_COLS	16		/* the columns of an element: at most SIFT_F2_PULL_MAX_CHILD */
+#define SIFT_V6_XTESTS		16		/* the tests of the elements of an array a statement makes of a row (EXISTS, jsonpath): each is a boolean of the row */
+#define SIFT_V6_XCMPS		4		/* the comparisons of an element with a column of its row one test has */
 
 /* A dimension of a star join: the fact attributes and the columns of the plan of the dimension its keys and payload are */
 typedef struct SiftV6XDim
@@ -36,11 +38,12 @@ typedef struct SiftV6XDim
 	Oid			ptype[SIFT_STAR_MAX_PAY];
 } SiftV6XDim;
 
-/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_each or jsonb_each_text of a jsonb one; SV6E_KEYS has no relation: a map read by constant keys, one row for each row of the table */
+/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_each or jsonb_each_text of a jsonb one; SV6E_KEYS has no relation: a map read by constant keys, one row for each row of the table; SV6E_PATH: no lateral relation, the tests are over the keys of the objects of a jsonb array (jsonpath, @>) */
 typedef enum SiftV6ElemFn
 {
 	SV6E_UNNEST = 0,
 	SV6E_RECORDSET,
+	SV6E_PATH,
 	SV6E_KEYS,
 	SV6E_EACH,
 	SV6E_EACH_TEXT
@@ -73,7 +76,30 @@ typedef struct SiftV6XElem
 	int			col_att[SIFT_V6_XELEM_COLS];	/* SV6E_KEYS: the attribute of the index each column reads */
 	int			key_leaf;		/* SV6E_KEYS: the leaves of the keys and of the values of the map (-1: none); a column is the value of the key elem_names names, of the type col_type, or the leaf col_leaf (>= 0) of a key of a document */
 	int			val_leaf;
+	bool		col_kind[SIFT_V6_XELEM_COLS];	/* the column is the kind of the value the leaf has in the element (SIFT_ELEM_KIND_*, agg/vec.h), not the value */
 } SiftV6XElem;
+
+/* An element compared with a column of its row: the SiftCmpOp (agg/kern6.h) of the element column against the column outer of the index, both integers or both float8 */
+typedef struct SiftV6XCmp
+{
+	int			op;
+	int			elem;
+	int			outer;
+	Oid			outer_type;
+} SiftV6XCmp;
+
+/*
+ * A test of the elements of the array of a row, a boolean of the row: some element passes the quals (test_quals[i]: over the element columns, v6_unnest_jsonb.h) and the comparisons with the columns of the row.
+ * A row whose document the leaves cannot hold is decided from the heap. need: the rows the statement keeps (0 all: a FILTER reads the flag as the virtual attribute SIFT_V6_XFLAG_VATT + the test;
+ * 1 those where it is true; 2 those where it is false). nullable: a jsonpath is NULL for a row with no document, an EXISTS is false.
+ */
+typedef struct SiftV6XTest
+{
+	int			need;
+	bool		nullable;
+	int			ncmps;
+	SiftV6XCmp	cmp[SIFT_V6_XCMPS];
+} SiftV6XTest;
 
 #define SIFT_V6_RESID_COLS	16
 
@@ -89,6 +115,9 @@ typedef struct SiftV6Ext
 	SiftV6XElem elem;
 	List	   *where;			/* unnest: the quals of the fact table over INDEX_VAR attributes, which the scan evaluates on its batches (it has no index keys) */
 	List	   *elem_where;		/* unnest: the quals of the element over the virtual attributes of its columns (v6_unnest_jsonb.h), which the scan evaluates on the elements of a batch */
+	int			ntests;			/* tests of the row's elements: the scan gives each row once, with a flag for each test (the attribute SIFT_V6_XFLAG_VATT + i of a FILTER) */
+	SiftV6XTest test[SIFT_V6_XTESTS];
+	List	   *test_quals;		/* of each test: its quals over the element columns, and with them the expression a row the leaves cannot hold is decided by (a jsonpath; NIL for an EXISTS, decided by the function) */
 	List	   *elem_names;		/* recordset: the name of each column, as String nodes */
 	List	   *elem_array;		/* unnest: the array of a row as an expression of the table's columns when it is not the column of elem.attno itself (doc -> 'key', or an expression of the index), which the rows read from the heap evaluate; NIL otherwise */
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */

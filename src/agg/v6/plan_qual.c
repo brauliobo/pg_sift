@@ -227,7 +227,7 @@ sift_v6_compile_quals(V6Plan *p)
 		Expr	   *q;
 		List	   *jq;
 
-		if (ri == p->sub_qual)
+		if (sift_v6_unnest_test_ri(p, ri))
 			continue;
 		if (p->index != NULL && p->index->indpred != NIL && predicate_implied_by(list_make1(ri->clause), p->index->indpred, false))
 			continue;

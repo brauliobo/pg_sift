@@ -26,8 +26,9 @@ typedef struct SiftV6ElemRte
 	const Expr *base;			/* the column or index expression that holds the array, array itself or the document it is a key of */
 	const char *key;			/* the key of the document base that holds the array; NULL when base is the array */
 	Oid			elem;			/* unnest: the type of the element */
-	List	   *names;			/* jsonb_to_recordset: the String of each declared column */
+	List	   *names;			/* jsonb_to_recordset: the String of each declared column; SV6E_PATH: of each member the tests read */
 	List	   *types;			/* and its type, as Oid cells */
+	List	   *kinds;			/* SV6E_PATH: whether the column is the kind of the member (SIFT_ELEM_KIND_*) and not its value, as int cells */
 } SiftV6ElemRte;
 
 /* elem_rel is the relation of unnest(col) or jsonb_to_recordset(col) of a column of fact; false for any other relation, or a function this scan cannot take apart */
@@ -63,6 +64,12 @@ extern bool sift_v6_mapkey_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 extern bool sift_v6_mapkey_on(const V6Plan *p);
 /* the WHERE clause ri over the members the statement reads, as a qual the scan evaluates on its rows (xseed->pair_where); false when it is not one */
 extern bool sift_v6_mapkey_pair_qual(V6Plan *p, RestrictInfo *ri);
+/* the column of the elements of rte that is the member `name` of type `type` (its kind when kind): its place, added when the tests have none yet; -1 when there is no room */
+extern int	sift_v6_unnest_rte_col(SiftV6ElemRte *rte, const char *name, Oid type, bool kind);
+/* the array of a row is `array` (a column of the table, an expression of it the index holds as a column, or the key of such a document): its place in rte */
+extern void sift_v6_unnest_array_rte(const Expr *array, SiftV6ElemRte *out);
+/* the type of the member `name` of the objects of the array rte names, as the leaf of the index holds it (text, an integer or a boolean); InvalidOid when the index has no such leaf or holds it otherwise */
+extern Oid	sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name);
 
 /* doc ->> 'key' = 'constant' of a shredded text key of a jsonb column of the fact table, as a comparison of the virtual attribute of the key's leaf (agg/v6/jsonb_qual.c); NULL when it is not one */
 extern Expr *sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op);

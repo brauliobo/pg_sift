@@ -32,7 +32,10 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	p->in_filter = true;
 	foreach_ptr(Expr, c, make_ands_implicit(filter))
 	{
-		Expr	   *q = filter_qual(p, c);
+		Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
+
+		if (q == NULL)
+			q = filter_qual(p, c);
 
 		if (q == NULL)
 		{
