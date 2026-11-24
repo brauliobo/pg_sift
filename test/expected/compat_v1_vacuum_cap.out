@@ -1,0 +1,72 @@
+-- A VACUUM of a Format 1 sift_table (the 5.x layout) merges segments past its first step only up to sift.vacuum_rewrite_limit: the dirty segments it does not reach wait for the next
+-- VACUUM, which rewrites more, until none is left. Without the limit one VACUUM of an upgraded table of 50 GB rewrote all of it. 40,000 rows a batch: one segment of about 0.9 MB and one of 0.2 MB.
+CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = on;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+CREATE TABLE cap (id int, pad text) USING sift_table;
+SELECT sift.table_set_option('cap', 'auto_defrag', 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+INSERT INTO cap SELECT i, md5(i::text) || md5((i + 1)::text) FROM generate_series(1, 40000) i;
+SELECT busy FROM sift.table_maintain('cap');
+ busy 
+------
+ f
+(1 row)
+
+INSERT INTO cap SELECT i, md5(i::text) || md5((i + 1)::text) FROM generate_series(40001, 80000) i;
+SELECT busy FROM sift.table_maintain('cap');
+ busy 
+------
+ f
+(1 row)
+
+INSERT INTO cap SELECT i, md5(i::text) || md5((i + 1)::text) FROM generate_series(80001, 120000) i;
+SELECT busy FROM sift.table_maintain('cap');
+ busy 
+------
+ f
+(1 row)
+
+CREATE TEMP TABLE before AS SELECT gen FROM sift.table_segments('cap') WHERE kind = 'columns';
+SELECT count(*) >= 4 AS segments, sum(bytes) > 3 * 1024 * 1024 AS over_three_limits FROM sift.table_segments('cap') WHERE kind = 'columns';
+ segments | over_three_limits 
+----------+-------------------
+ t        | t
+(1 row)
+
+DELETE FROM cap WHERE id % 2 = 0;
+SET sift.vacuum_rewrite_limit = 1;
+VACUUM cap;
+SELECT count(*) FILTER (WHERE gen NOT IN (SELECT gen FROM before)) > 0 AS rewrote_some,
+       count(*) FILTER (WHERE gen IN (SELECT gen FROM before)) > 0 AS left_for_the_next
+  FROM sift.table_segments('cap') WHERE kind = 'columns';
+ rewrote_some | left_for_the_next 
+--------------+-------------------
+ t            | t
+(1 row)
+
+VACUUM cap;
+VACUUM cap;
+VACUUM cap;
+VACUUM cap;
+VACUUM cap;
+VACUUM cap;
+SELECT count(*) FILTER (WHERE gen IN (SELECT gen FROM before)) = 0 AS all_rewritten_in_the_end FROM sift.table_segments('cap') WHERE kind = 'columns';
+ all_rewritten_in_the_end 
+--------------------------
+ t
+(1 row)
+
+SELECT count(*), sum(id) FROM cap;
+ count |    sum     
+-------+------------
+ 60000 | 3600000000
+(1 row)
+
+DROP TABLE cap;
+DROP EXTENSION pg_sift;

@@ -1,0 +1,25 @@
+-- A backend reads the tombstone log of a Format 1 sift_table (the 5.x layout) into memory of work_mem, the rest in sorted runs, whatever sift.backend_cache_kb allows: a whole-table UPDATE or DELETE
+-- of an upgraded table is not held in the memory of every backend that reads it afterwards. 30,000 updated rows: a log of about 1 MB, read at work_mem 64 kB.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SET sift.test_create_format1 = on;
+SET sift.async_maintenance = off;
+SET client_min_messages = warning;
+CREATE TABLE tw (id int, v int) USING sift_table;
+INSERT INTO tw SELECT i, i FROM generate_series(1, 30000) i;
+UPDATE tw SET v = v + 1;
+\c -
+SET work_mem = '64kB';
+SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
+SELECT count(*), sum(v) FROM tw;
+SELECT sum(total_bytes) < 256 * 1024 AS table_cache_within_work_mem FROM pg_backend_memory_contexts WHERE name = 'sift cache table';
+SELECT peak < 64 * 1024 AS sync_batch_within_work_mem FROM sift._test_mem_highwater() WHERE scope = 'tomb_sync_batch';
+DELETE FROM tw WHERE id % 2 = 0;
+\c -
+SET work_mem = '64kB';
+SELECT count(*) AS reset FROM sift._test_mem_highwater(true) \gset
+SELECT count(*), sum(v) FROM tw;
+SELECT sum(total_bytes) < 256 * 1024 AS table_cache_within_work_mem FROM pg_backend_memory_contexts WHERE name = 'sift cache table';
+DROP TABLE tw;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
