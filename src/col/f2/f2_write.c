@@ -47,8 +47,6 @@ sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemP
 	uint8		key[SIFT_BOUND_BYTES];
 	SiftTxnStage *st = sift_stage_get(index, &f->spec);
 
-	if (indexUnchanged)
-		sift_f2_track_note_unchanged(index, heap_tid);
 	sift_f2_row(index, f, rowcxt, heap_tid, values, isnull, cells, elem, key);
 	sift_stage_add(index, st, key, sift_f2_tid(heap_tid), GetCurrentTransactionId(), GetCurrentCommandId(true), cells, (const SiftCell *const *) elem);
 	MemoryContextReset(rowcxt);
@@ -59,6 +57,8 @@ sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemP
 bool
 sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
+	if (indexUnchanged)
+		sift_f2_track_note_unchanged(index, heap_tid);
 	if (checkUnique != UNIQUE_CHECK_NO)
 		return sift_f2_unique_insert(index, heap, values, isnull, heap_tid, checkUnique, indexInfo);
 	sift_f2_stage_row(index, values, isnull, heap_tid);
