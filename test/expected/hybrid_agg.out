@@ -76,9 +76,9 @@ INSERT INTO hy_q VALUES
 	('num_gt',		'SELECT region, count(*), sum(price), min(price), max(price) FROM mm_docs WHERE price > 50.5 AND tenant < 3000 AND body @@> ''mid'' GROUP BY region'),
 	('num_eq',		'SELECT region, count(*) FROM mm_docs WHERE price = 12.5 AND body @@> ''common'' GROUP BY region'),
 	('num_null',	'SELECT count(*) AS n, count(price) AS n_price FROM mm_docs WHERE price IS NULL AND tenant < 3000 AND body @@> ''mid'''),
-	('phrase',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 900 AND body @@> ''"common tok3"'' GROUP BY region'),
+	('phrase',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 1500 AND body @@> ''"common tok3"'' GROUP BY region'),
 	('phrase_point','SELECT region, count(*) FROM mm_docs WHERE tenant = 3 AND body @@> ''"common tok3"'' GROUP BY region'),
-	('negated',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 900 AND body @@> ''common -tok3'' GROUP BY region'),
+	('negated',		'SELECT region, count(*) FROM mm_docs WHERE tenant < 1500 AND body @@> ''common -tok3'' GROUP BY region'),
 	('empty_text',	'SELECT region, count(*) FROM mm_docs WHERE tenant < 1000 AND body @@> ''nosuchword'' GROUP BY region'),
 	('empty_group',	'SELECT count(*), sum(amount) FROM mm_docs WHERE tenant < 1000 AND body @@> ''nosuchword''');
 \echo -- what the planner chooses, and the same groups as the standard plans
