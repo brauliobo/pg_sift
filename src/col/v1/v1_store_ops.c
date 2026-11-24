@@ -540,7 +540,7 @@ open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, con
 	s->snap = estate->es_snapshot;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
 	s->rd = reader_of(in->is_table);
-	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx);
+	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, NULL);
 	s->lay = s->rd->source_layout(s->src);
 	bind_columns(s);
 	s->fslot = table_slot_create(s->rels.heap, NULL);
@@ -551,7 +551,7 @@ open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, con
 	s->vctx = sift_vexpr_ctx_new(cx);
 	if (keep != NULL)
 		s->rd->select(s->src, keep);
-	s->rd->begin(s->src, 0, s->rd->nsb(s->src));
+	s->rd->begin(s->src, 0, s->rd->nsb(s->src), NULL, 0);
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = v1_fetch,.close = v1_close};
 	return &s->base;

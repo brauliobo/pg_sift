@@ -120,7 +120,7 @@ col_sb_heap(void *impl)
 static int
 col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *preds)
 {
-	int			n = sift_aggzone_preds(&src->zones, src->rd.cxt, NULL, prune, nprune, preds);
+	int			n = sift_srczone_preds(&src->rd.zones, src->rd.cxt, NULL, prune, nprune, preds);
 
 	src->spoff = n;
 	for (int i = 0; i < src->nspred; i++)
@@ -142,7 +142,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
 	n = col_preds(src, prune, nprune, preds);
-	sift_col_begin_zones(src->rd.cs, preds, n, src->zones.zone, src->zones.nzone, sb_lo, sb_hi);
+	sift_col_begin_zones(src->rd.cs, preds, n, src->rd.zones.zone, src->rd.zones.nzone, sb_lo, sb_hi);
 }
 
 static bool
@@ -152,7 +152,7 @@ col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint6
 	SiftColPred	preds[COL_PREDS_MAX];
 	int			n = col_preds(src, prune, nprune, preds);
 
-	return sift_col_kept_map(src->rd.cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept, rows, count);
+	return sift_col_kept_map(src->rd.cs, preds, n, src->rd.zones.zone, src->rd.zones.nzone, nspace, kept, rows, count);
 }
 
 /* the tests of prune_str whose rows the point directory of the unit answers exactly */

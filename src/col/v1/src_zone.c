@@ -1,10 +1,10 @@
 /*
- * agg/zoneprune.c - the prune entries of a scan as zone predicates (agg/zoneprune.h).
+ * col/v1/src_zone.c - the prune entries of a scan as zone predicates (col/v1/src_zone.h).
  */
 /* check-memory: allow-allocs every array here follows the keys, predicates, slots or constants of one plan or query, not the rows of the table */
 #include "postgres.h"
 
-#include "agg/zoneprune.h"
+#include "col/v1/src_zone.h"
 
 static int
 leaf_of(const int *col, int leaf)
@@ -61,12 +61,12 @@ zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z, int leaf, const int
  * is converted to column values and copied for each: the tests of the last begin stay while the entries hold the same ranges and values.
  */
 static void
-zone_tests(SiftAggZones *z, MemoryContext cxt, const int *col, const SiftSrcPrune *prune, int nprune)
+zone_tests(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcPrune *prune, int nprune)
 {
 	int			n = 0;
 
 	if (z->zpred == NULL)
-		z->zpred = MemoryContextAllocZero(cxt, SIFT_AGGZONE_MAX * sizeof(SiftColPred));
+		z->zpred = MemoryContextAllocZero(cxt, SIFT_SRCZONE_MAX * sizeof(SiftColPred));
 	for (int k = 0; k < nprune; k++)
 		if (prune[k].nkids == 0)
 		{
@@ -109,7 +109,7 @@ zone_tree(MemoryContext cxt, const int *col, const SiftSrcPrune *z, SiftColPrune
 }
 
 int
-sift_aggzone_preds(SiftAggZones *z, MemoryContext cxt, const int *col, const SiftSrcPrune *prune, int nprune, SiftColPred *out)
+sift_srczone_preds(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcPrune *prune, int nprune, SiftColPred *out)
 {
 	if (z->zfor != prune)
 	{

@@ -6,6 +6,7 @@
 
 #include "col/col.h"
 #include "col/v1/src_sel.h"
+#include "col/v1/src_zone.h"
 #include "col/v1/v1_reader.h"
 #include "table/v1/table_v1.h"
 
@@ -18,6 +19,7 @@ typedef struct TblPart
 	int		   *leaf_of_col;	/* [schema->ncols] the layout leaf a leaf of this schema holds, -1 when the table dropped it */
 	SiftColUnit unit;			/* the head of this source's units, valid when have */
 	bool		have;
+	SiftSrcZoneTests zones;		/* the zone tests of the prune entries of the last begin, on this schema's leaves */
 } TblPart;
 
 typedef struct TblWbatch
@@ -44,6 +46,8 @@ typedef struct SiftV1Tbl
 	int			wbcap;
 	uint32		range_hi;		/* the end of the range of the last begin, and of the window being read (win_hi): a begin reads the write buffer rows one superblock at a time */
 	uint32		win_hi;
+	const SiftSrcPrune *prune;	/* what the begin was asked with, for its next windows */
+	int			nprune;
 	SiftSrcLayout *lay;
 	TblPart    *part;
 	int			nparts;
@@ -56,7 +60,7 @@ typedef struct SiftV1Tbl
 	bool	   *tol;			/* per leaf: its values the table cannot hold are read as NULL */
 	MemoryContext *wcxt;		/* per wide leaf: the dictionary of its last read */
 	uint64		wseq;			/* the id of the next wide dictionary */
-	/* begins the source of part k of the window [sb_lo, sb_hi) (NULL: with no test, sift_col_begin_zones) */
+	/* begins the source of part k of the window [sb_lo, sb_hi) (NULL: with the zone tests of prune) */
 	void		(*begin_part) (struct SiftV1Tbl *t, int k, uint32 sb_lo, uint32 sb_hi);
 } SiftV1Tbl;
 
@@ -74,7 +78,7 @@ extern void sift_v1_tbl_close(void *impl);
 extern const SiftSrcLayout *sift_v1_tbl_source_layout(const void *impl);
 extern uint32 sift_v1_tbl_nsb(void *impl);
 extern void sift_v1_tbl_select(void *impl, const SiftFilter *keep);
-extern void sift_v1_tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi);
+extern void sift_v1_tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
 extern bool sift_v1_tbl_next(void *impl, SiftSrcUnit *unit);
 extern void sift_v1_tbl_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern bool sift_v1_tbl_vet_needed(void *impl, const SiftSrcUnit *unit);

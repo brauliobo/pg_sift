@@ -247,8 +247,6 @@ agg/window.c
 agg/window_test.c
 agg/zoneoff.c
 agg/zoneoff.h
-agg/zoneprune.c
-agg/zoneprune.h
 bm25/am.h
 bm25/amscan.c
 bm25/analyze_index.c
@@ -716,6 +714,8 @@ col/v1/src_sel.c
 col/v1/src_sel.h
 col/v1/src_wide.c
 col/v1/src_wide.h
+col/v1/src_zone.c
+col/v1/src_zone.h
 col/v1/supersede.c
 col/v1/test/
 col/v1/tomblog.c

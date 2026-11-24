@@ -1,7 +1,7 @@
 /*
  * col/v1/v1_reader.h - the unit reader of Format 1: the rows of a sift_col index or a sift_table table, unit by unit, as the vectors of col/v1/src_exec.h.
  *
- * A reader is opened on one relation with the scan's snapshot and read in superblock order: begin, then next gives the units, and for the unit it gave
+ * A reader is opened on one relation with the scan's snapshot and read in superblock order: begin (which skips the units the zones exclude), then next gives the units, and for the unit it gave
  * live (the rows the tombstones leave) and vet (the rows the snapshot sees, when vet_needed) clear the bits of its rows in a bitmap of SIFT_COL_NWORDS(nrow) words, read decodes a leaf, tids names the
  * heap rows. select restricts the units begin starts to a match set. The index reader is col/v1/v1_reader.c, the table's is table/v1/v1_tbl_reader.c; the
  * layout and the statistics of a relation are read without opening a source.
@@ -23,14 +23,18 @@ typedef struct SiftV1ReaderOps
 {
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
-	/* heap: the table the rows belong to; index: the sift_col index over it, NULL for a sift_table table. mcxt holds everything the reader allocates until close */
-	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt);
+	/* heap: the table the rows belong to; index: the sift_col index over it, NULL for a sift_table table. mcxt holds everything the reader allocates until close.
+	 * view: what view_export wrote for another reader of the statement (a parallel worker reads the directory of its leader), NULL: the relation as it is now */
+	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
+	Size		(*view_size) (void *impl);
+	void		(*view_export) (void *impl, void *buf);
 	void		(*close) (void *impl);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
 	/* the units begin starts: those with a row of the filter, which must outlive them (NULL: all rows) */
 	void		(*select) (void *impl, const SiftFilter *keep);
-	void		(*begin) (void *impl, uint32 sb_lo, uint32 sb_hi);
+	/* a unit whose zones lie outside an entry of prune (which must outlive the scan) is not given; a unit that is given still holds rows the entries exclude */
+	void		(*begin) (void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune);
 	bool		(*next) (void *impl, SiftSrcUnit *unit);
 	void		(*live) (void *impl, const SiftSrcUnit *unit, uint64 *bits);
 	bool		(*vet_needed) (void *impl, const SiftSrcUnit *unit);

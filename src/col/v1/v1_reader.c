@@ -9,6 +9,7 @@
 
 #include "col/am.h"
 #include "col/col.h"
+#include "col/v1/src_zone.h"
 #include "col/v1/v1_reader_int.h"
 
 void
@@ -37,12 +38,24 @@ sift_v1_idx_init(SiftV1Idx *r, Relation heap, Relation index, Snapshot snapshot,
 }
 
 static void *
-idx_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+idx_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	SiftV1Idx  *r = MemoryContextAllocZero(mcxt, sizeof(SiftV1Idx));
 
-	sift_v1_idx_init(r, heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, NULL, NULL);
+	sift_v1_idx_init(r, heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view, NULL);
 	return r;
+}
+
+static Size
+idx_view_size(void *impl)
+{
+	return sift_col_view_size(((SiftV1Idx *) impl)->cs);
+}
+
+static void
+idx_view_export(void *impl, void *buf)
+{
+	sift_col_view_export(((SiftV1Idx *) impl)->cs, buf);
 }
 
 void
@@ -70,9 +83,13 @@ sift_v1_idx_select(void *impl, const SiftFilter *keep)
 }
 
 static void
-idx_begin(void *impl, uint32 sb_lo, uint32 sb_hi)
+idx_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
-	sift_col_begin_zones(((SiftV1Idx *) impl)->cs, NULL, 0, NULL, 0, sb_lo, sb_hi);
+	SiftV1Idx  *r = impl;
+	SiftColPred preds[SIFT_SRCZONE_MAX];
+	int			n = sift_srczone_preds(&r->zones, r->cxt, NULL, prune, nprune, preds);
+
+	sift_col_begin_zones(r->cs, preds, n, r->zones.zone, r->zones.nzone, sb_lo, sb_hi);
 }
 
 bool
@@ -329,6 +346,8 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.layout = sift_v1_idx_layout,
 	.stats = sift_v1_idx_stats,
 	.open = idx_open,
+	.view_size = idx_view_size,
+	.view_export = idx_view_export,
 	.close = sift_v1_idx_close,
 	.source_layout = sift_v1_idx_source_layout,
 	.nsb = sift_v1_idx_nsb,

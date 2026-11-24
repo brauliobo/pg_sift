@@ -123,14 +123,14 @@ tbl_begin_part(SiftV1Tbl *rt, int k, uint32 sb_lo, uint32 sb_hi)
 	TblSource  *t = (TblSource *) rt;
 	TblPart    *p = &rt->part[k];
 	TblPartX   *x = &t->px[k];
-	SiftColPred preds[SIFT_AGGZONE_MAX + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
-	int			n = sift_aggzone_preds(&x->zones, rt->cxt, p->col, t->prune, t->nprune, preds);
+	SiftColPred preds[SIFT_SRCZONE_MAX + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS];
+	int			n = sift_srczone_preds(&p->zones, rt->cxt, p->col, rt->prune, rt->nprune, preds);
 
 	for (int i = 0; i < x->nspred; i++)
 		preds[n++] = x->spred[i];
 	for (int i = 0; i < x->flt.n; i++)
 		preds[n++] = x->flt.pred[i];
-	sift_col_begin_zones(p->src, preds, n, x->zones.zone, x->zones.nzone, sb_lo, sb_hi);
+	sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
 }
 
 static void *
@@ -150,11 +150,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 static void
 tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
-	TblSource  *t = impl;
-
-	t->prune = prune;
-	t->nprune = nprune;
-	sift_v1_tbl_begin(&t->rd, sb_lo, sb_hi);
+	sift_v1_tbl_begin(impl, sb_lo, sb_hi, prune, nprune);
 }
 /* A filter is the source's when every segment layout holds its column as an integer leaf: a segment without the column would need the catalog's default tested */
 static uint64

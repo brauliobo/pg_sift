@@ -7,7 +7,7 @@
 #include "nodes/execnodes.h"
 
 #include "agg/pre.h"
-#include "agg/zoneprune.h"
+#include "col/v1/src_zone.h"
 #include "agg/chunkfilter.h"
 #include "col/v1/src_sel.h"
 #include "agg/wide.h"
@@ -61,7 +61,6 @@ typedef struct ColSource
 	int			nspred;
 	int		   *spmap;			/* per spred: the test of prune_str it stands for */
 	int			spoff;			/* the position of the first spred among the predicates of a begin (col_preds) */
-	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin */
 	SiftColWTest *wtest;		/* the conjuncts on wide leaves of set_wide */
 	int			nwtest;
 	SiftColPred *wpred;			/* the predicates that prune the units by the conjuncts of wtest that can: a wide integer test as it is, a containment test as SIFT_COLOP_SHAPE (col_preds) */

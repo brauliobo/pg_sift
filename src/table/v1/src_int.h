@@ -7,7 +7,7 @@
 #include "nodes/bitmapset.h"
 #include "agg/pre.h"
 #include "col/v1/src_sel.h"
-#include "agg/zoneprune.h"
+#include "col/v1/src_zone.h"
 #include "agg/chunkfilter.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/v1_tbl_reader.h"
@@ -29,7 +29,6 @@ typedef struct TblWide
 /* what the aggregate engine keeps of the leaves of one column layout, by the number of the part in the reader */
 typedef struct TblPartX
 {
-	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin, on this schema's leaves */
 	SiftAggFilters flt;			/* the filters set_filters accepted, on this schema's columns */
 	SiftColPred *spred;			/* the text tests of prune_str, on this schema's columns */
 	int			nspred;
@@ -39,8 +38,6 @@ typedef struct TblSource
 {
 	SiftV1Tbl	rd;				/* the unit reader: first, a unit's priv is one of its parts */
 	TblPartX   *px;				/* per part of rd */
-	const SiftSrcPrune *prune;	/* what the begin was asked with, for its next windows */
-	int			nprune;
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
 	int			nwide;

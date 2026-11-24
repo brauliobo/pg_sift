@@ -306,7 +306,12 @@ begin_window(SiftV1Tbl *t, uint32 sb_lo)
 		if (t->begin_part)
 			t->begin_part(t, k, sb_lo, sb_hi);
 		else
-			sift_col_begin_zones(p->src, NULL, 0, NULL, 0, sb_lo, sb_hi);
+		{
+			SiftColPred preds[SIFT_SRCZONE_MAX];
+			int			n = sift_srczone_preds(&p->zones, t->cxt, p->col, t->prune, t->nprune, preds);
+
+			sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
+		}
 		p->have = sift_col_next(p->src, &p->unit);
 	}
 	t->win_hi = sb_hi;
@@ -314,10 +319,12 @@ begin_window(SiftV1Tbl *t, uint32 sb_lo)
 }
 
 void
-sift_v1_tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi)
+sift_v1_tbl_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int nprune)
 {
 	SiftV1Tbl  *t = impl;
 
+	t->prune = prune;
+	t->nprune = nprune;
 	t->range_hi = sb_hi;
 	begin_window(t, sb_lo);
 }
@@ -404,11 +411,11 @@ sift_v1_tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n,
 
 
 static void *
-tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt)
+tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
 {
 	SiftV1Tbl  *t = MemoryContextAllocZero(mcxt, sizeof(SiftV1Tbl));
 
-	sift_v1_tbl_init(t, heap, snapshot, mcxt, NULL);
+	sift_v1_tbl_init(t, heap, snapshot, mcxt, view);
 	return t;
 }
 
@@ -416,6 +423,8 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.layout = sift_v1_tbl_layout,
 	.stats = sift_v1_tbl_stats,
 	.open = tbl_open,
+	.view_size = sift_v1_tbl_view_size,
+	.view_export = sift_v1_tbl_view_export,
 	.close = sift_v1_tbl_close,
 	.source_layout = sift_v1_tbl_source_layout,
 	.nsb = sift_v1_tbl_nsb,

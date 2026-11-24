@@ -7,6 +7,7 @@
 #include "col/col.h"
 #include "col/v1/src_sel.h"
 #include "col/v1/src_wide.h"
+#include "col/v1/src_zone.h"
 #include "col/v1/v1_reader.h"
 
 typedef struct SiftV1Idx
@@ -23,6 +24,7 @@ typedef struct SiftV1Idx
 	Relation	index;
 	Snapshot	snapshot;
 	SiftSrcSel	sel;			/* the match set the units are restricted to */
+	SiftSrcZoneTests zones;		/* the zone tests of the prune entries of the last begin */
 	SiftSrcWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */
 	uint64	   *wgen;
 	uint64		ugen;			/* the unit the reader is at, counted */
