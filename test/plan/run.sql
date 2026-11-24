@@ -31,7 +31,7 @@ DECLARE j jsonb; c float8;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
 	c := (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
-	siftagg := j::text ~ '"Custom Plan Provider"\s*:\s*"SiftAgg';
+	siftagg := j::text ~ '"Custom Plan Provider"\s*:\s*"Sift(Hybrid)?Agg';
 	cost := c - 1e10 * floor(c / 1e10);
 	workers := coalesce((SELECT max(m[1]::int) FROM regexp_matches(j::text, '"Workers Planned": (\d+)', 'g') m), 0);
 END $$;
