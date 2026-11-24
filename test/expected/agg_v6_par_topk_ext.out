@@ -13,6 +13,8 @@ SELECT i, ((i * 7919) % 40009)::int8 AS g, (i * 31 % 1000)::int8 AS v, 's' || (i
        ((i * 17) % 700)::float8 AS f, i % 3 = 0 AS b, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7 % 97)::int END AS k
 FROM generate_series(1::int8, 400000::int8) AS i;
 CREATE INDEX pk_col ON pk USING sift_col (g, v, t, u, f, b, k);
+-- ANALYZE reads the whole table (300 rows a unit of the target), so the plan of a statement does not depend on the rows it happened to draw
+ALTER TABLE pk ALTER COLUMN u SET STATISTICS 1400;
 VACUUM (ANALYZE, FREEZE) pk;
 CREATE FUNCTION plan_of(q text) RETURNS jsonb LANGUAGE plpgsql AS $f$
 DECLARE j jsonb;
