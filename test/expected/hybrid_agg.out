@@ -100,16 +100,16 @@ SELECT name, hy_node(q) AS node, (hy_same(q)).* FROM hy_q ORDER BY name;
  lower_like   | SiftHybridAgg A (adaptive) |    7 |    0
  ne_bool      | SiftHybridAgg A (adaptive) |    1 |    0
  ne_int8      | SiftHybridAgg B (adaptive) |    7 |    0
- ne_text      | none                       |    7 |    0
- negated      | none                       |    7 |    0
+ ne_text      | SiftHybridAgg B (adaptive) |    7 |    0
+ negated      | SiftHybridAgg B (adaptive) |    7 |    0
  num_eq       | SiftHybridAgg A (adaptive) |    7 |    0
  num_gt       | SiftHybridAgg B (adaptive) |    7 |    0
- num_null     | none                       |    1 |    0
- phrase       | none                       |    7 |    0
- phrase_point | none                       |    0 |    0
+ num_null     | SiftHybridAgg A (adaptive) |    1 |    0
+ phrase       | SiftHybridAgg B (adaptive) |    7 |    0
+ phrase_point | SiftHybridAgg A (adaptive) |    0 |    0
  plain_aggs   | none                       |    1 |    0
  residual     | SiftHybridAgg A (adaptive) |    7 |    0
- text_key     | none                       |    7 |    0
+ text_key     | SiftHybridAgg B (adaptive) |    7 |    0
 (24 rows)
 
 \echo -- the existing switches keep their meaning: no aggregate scan without sift.enable_agg, no hybrid node at all without sift.enable_scan
@@ -331,7 +331,7 @@ SELECT name, regexp_replace(hy_shape(regexp_replace(q, 'WHERE ', 'WHERE random()
 SELECT hy_shape('SELECT region, count(*) FROM mm_docs c WHERE c.tenant < 100 AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 4 AND tl.item_id = c.id) GROUP BY region') AS no_text_query;
                  no_text_query                 
 -----------------------------------------------
- hybrid=f joined=t semi_join=f array_subplan=f
+ hybrid=f joined=t semi_join=t array_subplan=f
 (1 row)
 
 \echo -- rows that change: deletes, updates (HOT and not), and the own writes of a transaction
