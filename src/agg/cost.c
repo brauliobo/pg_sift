@@ -26,7 +26,7 @@ void
 sift_agg_estimate_cost(const SiftCostInputs *in, double selectivity, bool is_preagg, bool is_streaming,
 					   double fixed_cost, int n_workers, Cost *startup_out, Cost *total_out)
 {
-	double		work = in->b_dec / BLCKSZ * seq_page_cost * in->f_cold +
+	double		work = in->b_io / BLCKSZ * seq_page_cost * in->f_cold +
 		sift_agg_scan_ops(in, selectivity, is_preagg, is_streaming) * cpu_operator_cost,
 				emit = in->n_groups * cpu_tuple_cost;
 

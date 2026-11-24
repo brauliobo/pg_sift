@@ -346,7 +346,7 @@ sift_test_array_elem_mask(PG_FUNCTION_ARGS)
 Datum
 sift_test_agg_cost(PG_FUNCTION_ARGS)
 {
-	const SiftCostInputs in = {PG_GETARG_FLOAT8(0), PG_GETARG_FLOAT8(1), PG_GETARG_FLOAT8(2), PG_GETARG_FLOAT8(3), SIFT_COST_R_BW_CPU, 0.25};
+	const SiftCostInputs in = {PG_GETARG_FLOAT8(0), PG_GETARG_FLOAT8(1), PG_GETARG_FLOAT8(1), PG_GETARG_FLOAT8(2), PG_GETARG_FLOAT8(3), SIFT_COST_R_BW_CPU, 0.25};
 	TupleDesc	tupdesc;
 	Datum		values[3];
 	bool		nulls[3] = {false, false, false};

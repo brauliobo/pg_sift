@@ -51,6 +51,7 @@ sift_v6_scan_cost(const SiftV6CostIn *in, Cost *startup, Cost *total)
 	const SiftCostInputs costs = {
 		.g_eff = decoded / SIFT_GRANULE_ROWS,
 		.b_dec = decoded * Max(in->ncols_read, 1) * sizeof(int64),
+		.b_io = decoded * Max(in->ncols_read, 1) * sizeof(int64),
 		.n_groups = Max(in->groups, 1.0),
 		.f_join = 1.0,
 		.r_bw_cpu = SIFT_COST_R_BW_CPU,

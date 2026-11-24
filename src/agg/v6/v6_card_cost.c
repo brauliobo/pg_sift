@@ -119,9 +119,9 @@ f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCa
 	return Min(Max((zones < 0 ? 1.0 : zones) * sift_v6_clause_prune(root, rest), 1.0 / granules), 1.0);
 }
 
-/* the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name, or those of the relation when rel is given): those of the view, or a word for a column it has no size of */
+/* the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name, or those of the relation when rel is given), decoded or as stored: those of the view, or unsized for a column it has no size of */
 static double
-cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, int leaf_of(const void *, int), const void *ctx)
+cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, int leaf_of(const void *, int), const void *ctx, bool stored, double unsized)
 {
 	double		bytes = 0;
 	int			a = -1;
@@ -129,9 +129,10 @@ cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, int leaf_of(con
 	while ((a = bms_next_member(cols, a)) >= 0)
 	{
 		const int	leaf = leaf_of(ctx, a + FirstLowInvalidHeapAttributeNumber);
-		const double b = leaf >= 0 && view != NULL && (uint32) leaf < view->ncols ? view->cols[leaf].avg_dec_bytes_row : 0;
+		const SiftColCardStats *c = leaf >= 0 && view != NULL && (uint32) leaf < view->ncols ? &view->cols[leaf] : NULL;
+		const double b = c == NULL ? 0 : stored ? c->avg_comp_bytes_row : c->avg_dec_bytes_row;
 
-		bytes += b > 0 ? b : SIFT_WORD_BYTES;
+		bytes += b > 0 ? b : unsized;
 	}
 	return bytes;
 }
@@ -187,6 +188,9 @@ typedef struct ScanBytes
 	double		surv;
 	double		filter_row;		/* bytes of a row of the columns of the quals, decoded on the rows of the granules the zones leave */
 	double		measure_row;	/* ... and of the others, on the rows that pass the quals */
+	double		io_col_row;		/* the bytes of a column of a row in the parts of the index, for a column the statistics do not size: the columns share the parts alike */
+	double		filter_io_row;	/* the bytes of those columns as they are stored, which a page read costs */
+	double		measure_io_row;
 } ScanBytes;
 
 static void
@@ -195,6 +199,7 @@ scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, ScanBytes
 	b->view = index_view(ix);
 	b->table_rows = b->view != NULL ? (double) Max(b->view->total_live_rows, 1) : Max(rel->tuples, 1.0);
 	b->granules = b->view != NULL ? (double) Max(b->view->total_granules, 1) : Max(1.0, ceil(b->table_rows / SIFT_GRANULE_ROWS));
+	b->io_col_row = b->view != NULL ? Min((double) b->view->total_bytes / (Max(ix->ncolumns, 1) * b->table_rows), SIFT_WORD_BYTES) : SIFT_WORD_BYTES;
 	b->surv = Min(Max(rel->rows, 1.0), b->table_rows);
 	b->f_prune = f_prune(root, rel, ix, b->view, b->granules);
 }
@@ -207,6 +212,7 @@ scan_inputs(const ScanBytes *b)
 	return (SiftCostInputs) {
 		.g_eff = decoded / SIFT_GRANULE_ROWS,
 		.b_dec = decoded * b->filter_row + b->surv * b->measure_row,
+		.b_io = decoded * b->filter_io_row + b->surv * b->measure_io_row,
 		.n_groups = 1.0,
 		.f_join = 1.0,
 		.r_bw_cpu = SIFT_COST_R_BW_CPU,
@@ -229,8 +235,10 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 			   *measure = spec_cols(spec, false);
 
 	scan_bytes(root, rel, ix, &b);
-	b.filter_row = cols_bytes(b.view, filter, index_leaf, ix);
-	b.measure_row = cols_bytes(b.view, measure, index_leaf, ix);
+	b.filter_row = cols_bytes(b.view, filter, index_leaf, ix, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, index_leaf, ix, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, index_leaf, ix, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, index_leaf, ix, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);
@@ -259,8 +267,10 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 		pull_varattnos((Node *) ri->clause, rel->relid, &filter);
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &measure);
 	scan_bytes(root, rel, ix, &b);
-	b.filter_row = cols_bytes(b.view, filter, heap_leaf, ix);
-	b.measure_row = cols_bytes(b.view, measure, heap_leaf, ix);
+	b.filter_row = cols_bytes(b.view, filter, heap_leaf, ix, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, heap_leaf, ix, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, heap_leaf, ix, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, heap_leaf, ix, true, b.io_col_row);
 	in = scan_inputs(&b);
 	*open = open_cost(scan_parts(&b));
 	sift_agg_choose_workers(&in, Min(b.surv / (in.g_eff * SIFT_GRANULE_ROWS), 1.0), false, false, *open, 0, &startup, total);
