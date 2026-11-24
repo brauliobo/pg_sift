@@ -1,6 +1,6 @@
 # Columnar Analytics (`sift_col`)
 
-A `sift_col` index stores a compressed columnar copy of selected columns beside an ordinary PostgreSQL heap table. Keep your primary keys, foreign keys, MVCC semantics, and existing SQL — PostgreSQL's planner runs aggregations, filtered group-bys, top-N, and JSONB analytics through `Custom Scan (SiftAgg)`.
+A `sift_col` index stores a compressed columnar copy of selected columns beside an ordinary PostgreSQL heap table. Keep your primary keys, foreign keys, MVCC semantics, and existing SQL — PostgreSQL's planner runs aggregations, filtered group-bys, top-N, and JSONB analytics through a `Custom Scan` of the `SiftAgg` family: `SiftAggV6` and its operators for Format Major 2 (section 11), `SiftAgg` for the Format Major 1 indexes of 5.x.
 
 ## 1. Designing a `sift_col` Index
 
@@ -62,6 +62,16 @@ CREATE INDEX events_col ON events
 
 Every keyed part of Format Major 2 carries an optional `SEC_KEY_MARKS` section: the first and last key of each 8,192-row granule as an order-preserving, `memcmp`-comparable image of the whole `key_order` tuple (1 to 8 columns, `ASC` or `DESC`, `NULLS FIRST` or `LAST`; `int2/4/8`, `bool`, `float4/8`, `date`, `timestamp`, `timestamptz`, `uuid`, `numeric`, and text under a deterministic collation). A predicate set that binds an equality prefix of the key plus an optional trailing range, `BETWEEN`, or short `IN` list (up to 16 points) is answered by binary search of the marks, in memory, with no buffer read per probe: for `key_order = 'country, created_at'`, `WHERE country = 'DE' AND created_at >= '2026-01-01'` reads only the granules of that range, not every granule of `country = 'DE'`. A mark is a bounded prefix of the key, so pruning on it never skips a granule that could match. About 80 bytes per granule (well under 0.01 B/row). Parts written before 6.0 or without marks are pruned with zone maps as before; there is nothing to configure.
 
+### Ordered Scans and Keyset Pagination
+
+When the `key_order` of a Format Major 2 index is the order of its columns (`key_order = 'k'`, `'a, b DESC'`, with the matching `DESC` and `NULLS FIRST` / `NULLS LAST`), the planner offers the index as an ordered `Index Scan` that returns rows in key order, forward and backward, on one column or several, with no `Sort` above it. The scan merges the parts by their key marks, so rows in the L0 slab, a transaction's own changes, deletes, and updates come out in the same order the heap would give. Merge joins that mark and restore the position of the scan, and cursors that scroll over it, work. A cursor that scrolls over a Format Major 1 index still works.
+
+A keyset page, `WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT 50`, reaches the scan as **one range of the key**, so it reads from the key on instead of from the start of the index. PostgreSQL offers a row comparison to B-trees only, so `pg_sift` offers it itself:
+
+- the row comparison names up to the first 3 key columns, each of type `int2`, `int4`, `int8`, `date`, `timestamp`, or `timestamptz`, compared with the operator of the column's family and with parameters or stable expressions on the right;
+- the operator classes of the typed families carry the two-argument comparison of their B-tree family as `FUNCTION 1`, which the executor needs for a row comparison, on a fresh install and after `ALTER EXTENSION pg_sift UPDATE`; an index made before keeps the class it was made with;
+- `SiftAggV6` expands `(a, b) > (x, y)` into `a > x OR (a = x AND b > y)` so that zone maps, summaries, and kernels test each comparison, and a keyset page of an aggregate reads the granules from the key on.
+
 ### Adaptive `PREWHERE` and Lazy Column Reads
 
 For a filtered scan, `SiftAgg` ranks the conjuncts of the `WHERE` clause by `(cpu + io) / (1 - pass rate)`: seeded from the per-column `SEC_COL_STATS` section (compressed bytes, distinct estimate, dominant encoding) before the first granule, then refined by an exponentially weighted moving average of the observed pass rate. `SiftLazyGranule` then reads and tests only the chunks of the cheapest, most selective filter column first; a conjunct the zone maps already decided is not read at all, payload columns are read only for a granule with a surviving row, and a sparse selection decodes only its own rows. The conjuncts run on the stored form (dictionary codes, runs, frame-of-reference, delta, bit-packed booleans, ALP, FSST) before any decoding, and error-raising conjuncts keep their SQL evaluation order. A scan whose predicates are on key columns alone reads the next granules ahead through the server read stream (`io_uring` on PostgreSQL 18), so a cold scan keeps the device queue full instead of stalling on serial 8 KB reads.
@@ -74,7 +84,7 @@ With `skip_index = 'col:trigram'`, `LIKE '%needle%'` and `ILIKE '%needle%'` firs
 
 Besides the automatic per-granule pre-aggregates, a `sift_col` index or `sift_table` can carry named secondary projections (`SIFT_PROJ_AGG` rollups and `SIFT_PROJ_SORT` orders), created with `sift.create_projection` ([TABLES.md](TABLES.md#8-secondary-projections-siftcreate_projection)).
 
-Format Major 2 stores granule-level summaries (`SEC_PREAGG` / `SEC_PREAGG_ROLLUP`) to answer `count`, `sum`, `avg`, `min`, and `max` without scanning raw rows. Up to 32 dimensions, 32 measures, and 32 rollups are supported.
+Format Major 2 stores granule-level summaries (`SEC_PREAGG` v2 cubes, with `SEC_PREAGG_SUPER`, `SEC_PREAGG_ROLLUP`, and `SEC_PREAGG_EXCEPT` beside them) in every part of level 1 and up, and answers `count`, `sum`, `avg`, `min`, and `max` from them without decoding the rows. A cube cell holds, for one value of an integer dimension, the count, the sum, the sum of squares, the least, and the greatest of an integer measure; a granule whose dimension exceeds the cardinality or size budget is marked skipped and is scanned normally. The number of dimensions, rollups, and measures an explicit definition may name is in [LIMITS.md](LIMITS.md); a definition past it is rejected at `CREATE` or `ALTER INDEX`. `sift.parts()` shows the bytes of the pre-aggregates of each part and `sift.index_size_breakdown()` their share of the index.
 
 ```sql
 -- Default: automatic low-cardinality cube and calendar summaries
@@ -94,7 +104,7 @@ CREATE INDEX orders_custom ON orders
 | `'off'` | Disables pre-aggregates to minimize build time and disk footprint |
 | `'cube(...); rollup(...); calendar(...)'` | Declares explicit cube dimensions, multi-column rollups, and date buckets |
 
-Granules with 1–5% unvacuumed deletes still use pre-aggregates via **additive delta subtraction** against Copy-on-Write deletion vectors, avoiding full granule rescans under OLTP churn.
+A granule with unvacuumed deletes still uses its pre-aggregates through **additive delta subtraction**: when at most 5% of its rows and at most 64 rows (128 when the only rows to take out are those one `col IS NULL` predicate excludes) are dead, those rows are read from the Copy-on-Write deletion vector and subtracted from the cells they fall in, which costs the dead rows and not the granule. A dead row that is the least or the greatest of its cell cannot be subtracted from the extremes, and a granule with more dead rows than the bound is scanned with its deletion vector.
 
 ## 4. Shredding `JSONB` Columns (`paths`)
 
@@ -102,14 +112,14 @@ Declare typed paths inside `JSONB` columns so `SiftAgg` evaluates `payload->>'ch
 
 ```sql
 -- Inspect a sample of documents to generate a paths specification:
-SELECT sift.suggest_paths('orders', 'payload', sample => 2000);
+SELECT sift.suggest_paths('orders', 'payload', sample => 2000);   -- 2,000 documents is the default; up to 100,000
 
 -- Zero-config: with a jsonb column and no paths option, paths = 'auto' is inferred
 -- (persisted as 'auto: ...' for REINDEX and pg_dump):
 CREATE INDEX orders_json_col ON orders USING sift_col (created_at, payload);
 ```
 
-`paths = 'auto'` samples up to 4,096 rows during the build, shreds every key present in at least 10% of them (up to 64 leaves, plus key-presence and the variant exception stream), and reports `sift_col index "orders_json_col": auto-shredded N jsonb paths (override with WITH (paths = '...') or 'off').` On an empty table it is accepted with no leaves and inferred at the first compaction. Pass `WITH (paths = 'off')` to keep a `jsonb` column unshredded, or an explicit spec to choose the leaves yourself.
+`paths = 'auto'` samples 2,000 rows during the build (16 evenly spaced stretches of the heap), leaves out a key found in fewer than 1% of the documents, shreds the rest into typed leaves (up to 256, plus key-presence and the variant exception stream) and reports `sift_col index "orders_json_col": auto-shredded N jsonb paths (override with WITH (paths = '...') or 'off').` On an empty table it is accepted with no leaves and inferred at the first compaction. Pass `WITH (paths = 'off')` to keep a `jsonb` column unshredded, or an explicit spec to choose the leaves yourself.
 
 ### `paths` Grammar
 
@@ -122,7 +132,7 @@ type  := bool | int2 | int4 | int8 | float4 | float8 | text[(N)] | astext[(N)]
 ```
 
 - **Nested arrays and objects:** Use `items[]{sku text, qty int4, price float8}` to shred correlated arrays of objects; `tags[] text` shreds scalar arrays; `metrics.* float4` shreds dynamic object maps.
-- **Limits:** Up to 1,024 shredded leaves, 256 repeated groups, and 32 path steps per index.
+- **Limits:** Up to 1,024 shredded leaves, 256 repeated groups, and 16 path steps per index ([LIMITS.md](LIMITS.md)).
 - **Zero-heap-I/O exceptions:** If a document holds a mismatched type or out-of-range value on a declared path (for example, a string inside an `int4` path), Format Major 2 stores it in an inline variant exception stream (`SEC_VARIANT_EXC`). Queries handle these values without fetching heap pages.
 
 ## 5. Joins, Set Filters, and `connect`
@@ -145,7 +155,7 @@ Parameterized array filters (`WHERE customer_id = ANY($1)`) and `IN (...)` lists
 
 ### Connected Parent-Child Indexes (`connect`)
 
-When a child table frequently joins a parent table that also has a `sift_col` index, declare `connect` (up to 32 connections per index) so the child scan can resolve parent columns directly from the parent's `sift_col` leaves without touching the parent heap:
+When a child table frequently joins a parent table that also has a `sift_col` index, declare `connect` (up to 8 connections per index) so the child scan can resolve parent columns directly from the parent's `sift_col` leaves without touching the parent heap:
 
 ```sql
 CREATE INDEX customers_col ON customers USING sift_col (id, tier, country);
@@ -267,3 +277,29 @@ These are answered exactly as PostgreSQL would (`SET sift.enable_agg = off` to c
 | Grace hash join | An inner, left, semi, or anti equi-join whose build side exceeds `work_mem / 2` is radix-partitioned into 16 to 256 spillable partitions instead of returning to PostgreSQL's join |
 | `ASOF` join | The `LEFT/INNER JOIN LATERAL (... WHERE d.k = f.k AND d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1) x ON true` idiom runs as a sorted merge when the dimension is ordered by `(k, ts)` (or has a matching `SIFT_PROJ_SORT` projection), and by binary search otherwise |
 | `date_bin()` and windows | `date_bin(interval, ts, origin)` compiles into the vector program with the server's errors in the server's order; `SiftWindowExec` adds `FILTER`, exact `NUMERIC` `AVG`, `LAG`/`LEAD` with defaults, and `ROWS BETWEEN N PRECEDING AND M FOLLOWING` frames |
+
+## 11. The `SiftAggV6` Engine
+
+Every Format Major 2 relation, `sift_col` index and `sift_table` alike, is read by one vectorized engine, `SiftAggV6`. The scan accepts rows by the pruning, the filters on the compressed chunks, the deletion vectors, and the pending deletes of the Format Major 2 store; the rows are vetted against the heap in batches when the relation has one, decoded to column vectors, and folded into the groups by SIMD kernels; one tuple leaves for each group. A `sift_table` runs the same engine with no heap to vet against, and the planner prices each path with one cost model. What the engine cannot prove equal to PostgreSQL's own plan it refuses with a stable slug (`sift.explain_why()`, `sift.refusal_slugs()`) and PostgreSQL plans as usual; `SET sift.enable_agg = off` compares the two.
+
+| `EXPLAIN` node | What it runs |
+|---|---|
+| `SiftAggV6` | Filtered aggregates and group-bys of one table, with fused pipelines and star-join lookups of small dimensions |
+| `SiftAggV6TopN` | `ORDER BY ... LIMIT` (up to 8 sort columns): a tournament over the units of the format, then the winners' columns in order |
+| `SiftAggV6Join` | A partitioned (Grace) hash join of inner, left, semi, and anti equality joins whose build side exceeds half of `work_mem`, spilling by partition |
+| `SiftAggV6Asof` | The `LATERAL (... d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1)` idiom as one merge of two sorted inputs |
+| `SiftAggV6Window` and `SiftAggV6Stream` | Window functions and CTE streams over the batches |
+| `SiftAggV6Scope` | Scope aggregates read from the summary ([SCOPES.md](SCOPES.md)) |
+| `SiftProjSortScan`, `SiftHybridScan`, `SiftHybridAgg` | Sort projections ([TABLES.md](TABLES.md#8-secondary-projections-siftcreate_projection)) and combined BM25 plus column plans ([SEARCH.md](SEARCH.md)) |
+
+A Format Major 1 index keeps the older `SiftAgg` node with the same exactness rule. `EXPLAIN (ANALYZE, SIFT)` (PG 18+) prints the counters of whichever node ran ([ARCHITECTURE.md](ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg)). The four `sift.gpu*` settings select the optional Vulkan path of `SiftAggV6` ([GPU.md](GPU.md)).
+
+## 12. Parallel Execution
+
+`sift.parallel_scan` is `on` by default: the planner may run a `SiftAggV6` scan under a `Gather`, with the granules of the parts handed out in morsels. The planner picks the strategy from the estimated number of groups; there is no setting for it:
+
+- **Few groups (two-stage):** every participant aggregates its morsels into a table of its own; after one barrier the first to finish merges the others' groups and emits the result.
+- **Many groups (radix):** a participant aggregates into a small cache-resident table and, when it fills, scatters the groups into hash partitions; after the barrier each participant claims whole partitions, merges them, and emits their groups itself, so no process merges all groups and none are emitted twice.
+- **`count(DISTINCT)` with no keys:** the values are scattered by hash, each partition counts its values exactly, and one participant emits the row.
+
+Partial states that outgrow their share of memory go to spill files, so nothing fails. A two-stage run that finds many groups switches to the radix strategy. Parallel `float8` sums add in any order and may differ in the last digits from the row-order sum of the heap plan; `SET sift.agg_exact_float = on` adds the values in the order of the rows in one process, so a sum repeats to the last bit. `CREATE INDEX` of a `sift_col` index (and so `REINDEX`) builds with parallel workers too, up to `max_parallel_maintenance_workers` and at most 15 besides the leader. `SET sift.parallel_scan = off` restores single-process scan plans.
