@@ -19,7 +19,7 @@
 =dec	^(fuzz|hardened|tools-build)$
 =any	^(regress-batch|release-library-regress(-[12])?|installcheck-(m4_cache_budget|v6_guc_surface|leak_planted|json_build_object|install_preload_hint|ext_recreate|surface_null_args)|tap-032_v6_dump_restore_tablespace|tap-shell-(zero_preload_workers|install_notice|ext_update_session)|coverage|coverage-pct|reference-live|options-live|isa-baseline|format-isolation|isolation(-[0-9]+|-emulated)?|static|fast-gate-(release|assert))$
 # the format compatibility tiers: Format 1 beside the default Format 2.0, and the upgrade from a v5 cluster (scripts/ci/jobs.sh, format_checks)
-=compat	^(installcheck-(compat_v1_|upgrade_path|col_removed_options|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_text_rows|v1_unified_topn_rows|v1_unified_gorder_cursor)|tap-(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)|tap-031_v51_full_compat|tap-shell-(pg_upgrade(_3[123])?|upgrade_compat(_standby)?|upgrade_path|upgrade_check|col_(dv|track_drop|removed_options|partition_adopt)_upgrade)|format-isolation|compat-f1-fast-gate)$
+=compat	^(installcheck-(compat_v1_|upgrade_path|col_removed_options|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_rows_scankey|v1_unified_text_rows|v1_unified_topn_rows|v1_unified_gorder_cursor)|tap-(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)|tap-031_v51_full_compat|tap-shell-(pg_upgrade(_3[123])?|upgrade_compat(_standby)?|upgrade_path|upgrade_check|col_(dv|track_drop|removed_options|partition_adopt)_upgrade)|format-isolation|compat-f1-fast-gate)$
 # the search the other areas call
 =search	^installcheck-(col_search|tbl_bm25|aggstub_)
 # the lanes of scripts/plangate.sh, each at 30000 and 250000 rows
@@ -174,7 +174,7 @@
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	fast:{compat}|{cheap}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}|gh:f1
 ^scripts/(check-format-isolation\.sh|agg-isolation-v1\.allow)$	^format-isolation$
-^(test/sql/(compat_v1_|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_text_rows|v1_unified_topn_rows|v1_unified_gorder_cursor)|test/t/(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)\.pl)	{compat}|gh:f1
+^(test/sql/(compat_v1_|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_rows_scankey|v1_unified_text_rows|v1_unified_topn_rows|v1_unified_gorder_cursor)|test/t/(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)\.pl)	{compat}|gh:f1
 # the Alpine (musl) build has no GNU IFUNC: `.` (the build, src/core/) runs it; these are what only it reads
 ^(scripts/(check-no-ifunc|musl-check)\.sh|packaging/docker/)	gh:musl
 ^scripts/docker-smoke\.sh$	-

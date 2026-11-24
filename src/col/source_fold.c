@@ -80,6 +80,7 @@ struct SiftSrcFold
 	SiftV6Bq   *bq;
 	SiftV6Pipe *pipe;
 	SiftBatchSel bs;
+	const uint64 *tag;			/* the heap addresses of the rows of the batch being folded */
 	bool		count_only;
 };
 
@@ -405,6 +406,7 @@ sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 	SiftBatchSel *bs = &f->bs;
 
 	f->a.stats->batches++;
+	f->tag = b->tag;
 	batch_rows(f, b);
 	if (bs->n_active == 0)
 		return;
@@ -443,6 +445,12 @@ const SiftV6Input *
 sift_srcfold_input(const SiftSrcFold *f)
 {
 	return &f->in;
+}
+
+const uint64 *
+sift_srcfold_tags(const SiftSrcFold *f)
+{
+	return f->tag;
 }
 
 void

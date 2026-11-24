@@ -47,6 +47,8 @@ extern void sift_srcfold_count_chunk(struct SiftV6ScanStats *stats, const struct
 /* The columns the fold reads (the score of a text hit among them, as SIFT_V6_SCORE_ATTNO) and the folding of a batch whose vectors are those, in that order: for a caller that has the rows already */
 extern const SiftV6Input *sift_srcfold_input(const SiftSrcFold *f);
 extern void sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b);
+/* The heap addresses of the rows of the batch the fold is folding: what its emit reads to tell the rows it keeps */
+extern const uint64 *sift_srcfold_tags(const SiftSrcFold *f);
 
 /* The arms of a cohort (agg/v6/v6_fuse.h) read the same relation with the same keys: each arm folds its rows into its groups, those its gate takes; args gives the relation, quals and estate */
 extern void sift_srcfold_arms(struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, const SiftSrcFoldArgs *common, SiftSrcOpen open, void *open_arg);

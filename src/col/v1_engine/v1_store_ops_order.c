@@ -4,9 +4,9 @@
  *
  * A Format 1 source gives the rows of its units as they are stored, so no prefix of attributes is an order of its batches (sorted_by is false and a sorted source is never asked for);
  * the lead key is the attribute its keyed units are cut by. scan_rows keeps the best rows of an ORDER BY .. LIMIT of one relation: from the global order of the first sort column when the
- * index keeps one (v1_gorder_cursor.h), whose first rows the heap confirms, else by reading its batches through the same source, the sort columns first, the quals of the scan as a program over
- * them; when the statement sorts by keys computed from columns, folds the aggregates of the whole set or reads a text match, the batches of the source are folded (col/source_fold.h)
- * into the best rows instead; the winners are the tags (TIDs) of the rows, which the node fetches from the heap in order.
+ * index keeps one (v1_gorder_cursor.h), whose first rows the heap confirms, else by folding the batches of its source (col/source_fold.h) into the best rows, with the quals the source
+ * does not run decided on the decoded batch, the aggregates of the whole set and the chunks of a text match when the statement asks; the winners are the tags (TIDs) of the rows, which
+ * the node fetches from the heap in order.
  */
 /* check-memory: allow-allocs every array here follows the columns of one scan or the rows of one batch, not the rows of the relation */
 #include "postgres.h"
@@ -18,7 +18,6 @@
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/primnodes.h"
-#include "port/pg_bitutils.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -61,95 +60,13 @@ order_lead_att(Oid relid, bool is_table)
 	return att;
 }
 
-/* ---- the quals of the scan as a program over the columns of the source ---- */
-
-static bool
-compile_quals(MemoryContext cx, const SiftV6Spec *spec, const struct SiftStoreQuals *quals, SiftV6Input *in, Relation index, ScanKey keys, int nkeys, SiftV6Vexpr *out)
-{
-	List	   *clauses = spec->is_table ? list_copy(quals->clauses) : sift_srcfold_scankey_quals(index, keys, nkeys);
-	bool		compiled;
-
-	clauses = list_concat(clauses, list_copy(spec->vqual));
-	if (clauses == NIL)
-		return false;
-	compiled = sift_v6_vexpr_quals(cx, clauses, 1, NULL, in, out);
-	SIFT_INVARIANT(compiled, "the quals of the row Top-N scan of relation %u are not compiled", spec->relid);
-	return true;
-}
-
-/* ---- the row Top-N over the batches of the source ---- */
-
-static void
-sort_columns(const SiftV6Spec *spec, const SiftStoreSchema *schema, SiftV6Input *in)
-{
-	for (int i = 0; i < spec->nkeys; i++)
-	{
-		const SiftStoreAtt *a = &schema->atts[spec->key[i].attno - 1];
-
-		in->col[i] = (SiftV6InCol) {.attno = spec->key[i].attno,.typid = a->typid,.type = a->vec_type,.scale = a->scale,.prec = a->prec};
-	}
-	in->ncols = spec->nkeys;
-}
-
-static void
-batch_sel(SiftBatchSel *bs, const SiftV6Batch *b)
-{
-	const int	words = (b->n + 63) / 64;
-
-	memset(bs->mask, 0, sizeof(bs->mask));
-	for (int w = 0; w < words; w++)
-		bs->mask[w] = b->mask != NULL ? b->mask[w] : ~UINT64CONST(0);
-	if (b->n & 63)
-		bs->mask[words - 1] &= (UINT64CONST(1) << (b->n & 63)) - 1;
-	bs->n_raw = b->n;
-	bs->n_active = 0;
-	for (int w = 0; w < words; w++)
-		bs->n_active += pg_popcount64(bs->mask[w]);
-	bs->all_active = bs->n_active == bs->n_raw;
-	bs->has_sel = false;
-}
-
-static void
-batches_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats)
-{
-	const SiftStoreOps *ops = sift_store_ops_for_oid(spec->relid, spec->is_table);
-	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 rows");
-	SiftStoreSchema schema;
-	SiftV6Input in;
-	SiftV6Vexpr compiled;
-	SiftV6Source *src;
-	SiftV6Batch b;
-	SiftBatchSel bs;
-	SiftV1Scan	scan = spec->is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys);
-	SiftVec    *keyvec[SIFT_V6_MAX_KEYS];
-
-	ops->schema(spec->relid, spec->is_table, &schema);
-	if (spec->is_table)
-		sift_v6_input_init_table(&in, heap);
-	else
-		sift_v6_input_init_rel(&in, index);
-	sort_columns(spec, &schema, &in);
-	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, quals, &in, index, keys, nkeys, &compiled) ? &compiled : NULL, &scan);
-	while (src->next(src, &b))
-	{
-		batch_sel(&bs, &b);
-		for (int i = 0; i < spec->nkeys; i++)
-			keyvec[i] = (SiftVec *) &b.col[i];
-		stats->batches++;
-		stats->rows += bs.n_active;
-		sift_v6_rows_update(rows, &bs, keyvec, b.tag);
-	}
-	src->close(src);
-	MemoryContextDelete(cx);
-}
-
 /* ---- the row Top-N with what the batches of the source are folded for: keys computed from columns, the aggregates of the whole set, a text match ---- */
 
 typedef struct RowsFold
 {
 	SiftV6Rows *rows;
 	SiftV6Group *totals;
-	const uint64 *tag;			/* the row ids of the batch being folded */
+	const SiftSrcFold *fold;
 } RowsFold;
 
 static void
@@ -157,35 +74,9 @@ rows_emit(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *co
 {
 	const RowsFold *f = arg;
 
-	sift_v6_rows_update(f->rows, bs, keyvec, f->tag);
+	sift_v6_rows_update(f->rows, bs, keyvec, sift_srcfold_tags(f->fold));
 	if (f->totals != NULL)
 		sift_v6_group_update(f->totals, bs, keyvec, argvec);
-}
-
-/* the fold gives its emit the columns of a batch and not its row ids: the source says them as it gives the batch */
-typedef struct TaggedSource
-{
-	SiftV6Source base;
-	SiftV6Source *inner;
-	RowsFold   *fold;
-} TaggedSource;
-
-static bool
-tagged_next(SiftV6Source *s, SiftV6Batch *out)
-{
-	TaggedSource *t = (TaggedSource *) s;
-	const bool	more = t->inner->next(t->inner, out);
-
-	t->fold->tag = out->tag;
-	return more;
-}
-
-static void
-tagged_close(SiftV6Source *s)
-{
-	TaggedSource *t = (TaggedSource *) s;
-
-	t->inner->close(t->inner);
 }
 
 typedef struct RowsOpen
@@ -193,17 +84,14 @@ typedef struct RowsOpen
 	MemoryContext cx;
 	Snapshot	snap;
 	SiftV1Scan	scan;
-	RowsFold	fold;
-	TaggedSource source;
 } RowsOpen;
 
 static SiftV6Source *
 rows_open(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
 {
-	RowsOpen   *o = arg;
+	const RowsOpen *o = arg;
 
-	o->source = (TaggedSource) {.base = {.next = tagged_next,.close = tagged_close},.inner = sift_v1_source_open(o->cx, o->snap, in, quals, &o->scan),.fold = &o->fold};
-	return &o->source.base;
+	return sift_v1_source_open(o->cx, o->snap, in, quals, &o->scan);
 }
 
 static void
@@ -211,12 +99,14 @@ rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, Relatio
 		  SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 rows");
-	RowsOpen	o = {.cx = cx,.snap = snap,.scan = spec->is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys),.fold = {.rows = rows,.totals = totals}};
-	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &o.fold,.host = spec->is_table ? heap : index,
+	RowsOpen	o = {.cx = cx,.snap = snap,.scan = spec->is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys)};
+	RowsFold	emit = {.rows = rows,.totals = totals};
+	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &emit,.host = spec->is_table ? heap : index,
 		.quals = spec->is_table ? quals->clauses : sift_srcfold_scankey_quals(index, keys, nkeys),.estate = spec->is_table ? quals->estate : NULL};
 	SiftSrcFold *f = sift_srcfold_new(&a, sift_mem_allocset_create(cx, "sift v1 rows fold"));
 	const struct SiftTidBridge *bridge;
 
+	emit.fold = f;
 	if (next_chunk == NULL)
 		sift_srcfold_run(f, rows_open, &o);
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
@@ -578,10 +468,9 @@ order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, s
 				const struct SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	SIFT_INVARIANT(star == NULL, "the row Top-N of a Format 1 relation %u reads no dimensions of a join", spec->relid);
-	if (totals != NULL || next_chunk != NULL || spec->nderive > 0)
-		rows_fold(spec, rows, totals, heap, index, keys, nkeys, quals, snap, stats, next_chunk, chunk_arg);
-	else if (!gorder_rows(spec, rows, heap, index, keys, nkeys, snap, stats))
-		batches_rows(spec, rows, heap, index, keys, nkeys, quals, snap, stats);
+	if (totals == NULL && next_chunk == NULL && spec->nderive == 0 && gorder_rows(spec, rows, heap, index, keys, nkeys, snap, stats))
+		return;
+	rows_fold(spec, rows, totals, heap, index, keys, nkeys, quals, snap, stats, next_chunk, chunk_arg);
 }
 
 const SiftOrderOps v1_order_ops = {
