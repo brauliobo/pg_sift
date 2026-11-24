@@ -17,13 +17,19 @@ rel_is_table(PlannerInfo *root, RelOptInfo *rel)
 	return sift_v6_rel_owned(planner_rt_fetch(rel->relid, root)->relid, true);
 }
 
+static bool
+index_is_source(const IndexOptInfo *ix)
+{
+	return ix->indexprs == NIL && sift_v6_index_owned(ix);
+}
+
 bool
 sift_v6_rel_has_source(PlannerInfo *root, RelOptInfo *rel)
 {
 	if (rel_is_table(root, rel))
 		return true;
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		if (sift_v6_index_owned(ix))
+		if (index_is_source(ix))
 			return true;
 	return false;
 }
@@ -37,6 +43,12 @@ sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
 	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && sift_v6_rel_has_source(root, rel);
+}
+
+bool
+sift_v6_source_usable(const SiftV6RelSource *s)
+{
+	return s->is_table || agg_index_complete(s->ix);
 }
 
 int
@@ -58,7 +70,7 @@ sift_v6_rel_sources(PlannerInfo *root, RelOptInfo *rel, SiftV6RelSource *out, in
 	{
 		if (n == max_out)
 			break;
-		if (!sift_v6_index_owned(ix))
+		if (!index_is_source(ix))
 			continue;
 		out[n] = (SiftV6RelSource) {.reloid = ix->indexoid,.heapoid = heapoid,.scan_relid = rel->relid,.ix = ix};
 		sift_v6_input_init_info(&out[n].input, ix);
@@ -104,6 +116,8 @@ sift_v6_plan_bind(V6Plan *p, const SiftV6RelSource *s, Relation rel)
 	p->index = s->ix;
 	if (s->is_table)
 		return sift_v6_plan_table(p, s->reloid);
+	if (!sift_v6_index_owned(s->ix))
+		return false;
 	sift_v6_plan_index(p, rel);
 	return p->ops != NULL;
 }

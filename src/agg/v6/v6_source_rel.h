@@ -33,6 +33,9 @@ extern bool sift_v6_rel_has_source(PlannerInfo *root, RelOptInfo *rel);
 /* The plan of an operator over the sources of a relation: the relation is a plain table read as a base relation, and has one */
 extern bool sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel);
 
+/* An operator may scan the source: a table holds every row of itself, an index when it has no predicate the query does not imply */
+extern bool sift_v6_source_usable(const SiftV6RelSource *s);
+
 /* The sources of the relation, the table first, then its indexes; out has room for max_out (SIFT_V6_REL_SOURCE_CAP); the number of them */
 extern int	sift_v6_rel_sources(PlannerInfo *root, RelOptInfo *rel, SiftV6RelSource *out, int max_out);
 extern SiftV6RelSource *sift_v6_rel_sources_alloc(PlannerInfo *root, RelOptInfo *rel, int *n);
@@ -41,7 +44,7 @@ extern SiftV6RelSource *sift_v6_rel_sources_alloc(PlannerInfo *root, RelOptInfo 
 extern Relation sift_v6_source_open(Oid reloid, bool is_table, LOCKMODE lockmode, SiftV6Input *in_out);
 extern void sift_v6_source_close(Relation rel, bool is_table, LOCKMODE lockmode);
 
-/* Binds the plan to a source of its relation, opened as rel: its oid, index and the format that owns it; false when no format scans it */
+/* Binds the plan to a source of its relation, opened as rel: its oid, index and the format that owns it; false when no format scans it, or the index is not one of Format 2.0 (the format of a test may own others) */
 extern bool sift_v6_plan_bind(V6Plan *p, const SiftV6RelSource *s, Relation rel);
 
 #endif							/* SIFT_AGG_V6_SOURCE_REL_H */

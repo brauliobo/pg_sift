@@ -127,7 +127,7 @@ sift_v6_sip_wrap(MemoryContext cxt, SiftV6Source *inner, const SiftSipFilter *si
 
 enum
 {
-	PRIV_INTS = 0,				/* indexoid, fact rti, dimension relid, dimension rti, fact key attno, dimension key attno, estimated dimension rows */
+	PRIV_INTS = 0,				/* source oid, fact rti, dimension relid, dimension rti, fact key attno, dimension key attno, estimated dimension rows, the source is a sift_table */
 	PRIV_FACT_QUALS = 1,		/* the conditions of the fact table the scan can test on the stored values */
 	PRIV_DIM_QUALS = 2
 };
@@ -192,16 +192,15 @@ clauses_of(const List *restrictinfos)
 
 /* the conditions of the fact table the scan tests on its columns: those the machine compiles, each alone (PostgreSQL tests all of them again on what the scan gives) */
 static List *
-pushable(RelOptInfo *rel, const IndexOptInfo *ix)
+pushable(RelOptInfo *rel, const SiftV6Input *source)
 {
 	List	   *pushed = NIL;
 
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 	{
-		SiftV6Input in;
+		SiftV6Input in = *source;
 		SiftV6Vexpr probe;
 
-		sift_v6_input_init_info(&in, ix);
 		if (!ri->pseudoconstant && sift_v6_vexpr_quals(CurrentMemoryContext, list_make1(ri->clause), rel->relid, NULL, &in, &probe))
 			pushed = lappend(pushed, ri->clause);
 	}
@@ -225,10 +224,10 @@ reads_system_column(RelOptInfo *rel)
 }
 
 static bool
-sip_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SipJoin *j)
+sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const SipJoin *j)
 {
-	SiftV6Input in;
-	const int	slot = (sift_v6_input_init_info(&in, ix), sift_v6_input_add_var(&in, j->fact_key));
+	SiftV6Input in = src->input;
+	const int	slot = sift_v6_input_add_var(&in, j->fact_key);
 	const double kept = Max(j->dim->rows, 1.0) / Max(j->dim->tuples, 1.0);
 	const double rows = clamp_row_est(rel->rows * kept);
 	Cost		open,
@@ -237,11 +236,18 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SipJo
 
 	if (slot < 0 || (in.col[slot].type != SVEC_I32 && in.col[slot].type != SVEC_I64) || reads_system_column(rel))
 		return false;
-	ints = list_make5_int((int) ix->indexoid, (int) rel->relid, (int) planner_rt_fetch(j->dim->relid, root)->relid, (int) j->dim->relid, j->fact_key->varattno);
+	ints = list_make5_int((int) src->reloid, (int) rel->relid, (int) planner_rt_fetch(j->dim->relid, root)->relid, (int) j->dim->relid, j->fact_key->varattno);
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
-	sift_v6_scan_price(root, rel, ix, j->fact_key->varattno, &open, &scan);
+	ints = lappend_int(ints, src->is_table);
+	if (src->is_table)
+	{
+		open = 0;
+		scan = cpu_tuple_cost * 0.05 * rel->tuples;
+	}
+	else
+		sift_v6_scan_price(root, rel, src->ix, j->fact_key->varattno, &open, &scan);
 	sift_v6_add_path(rel, &sip_path_methods, open, scan + cpu_tuple_cost * rows + cpu_operator_cost * (j->dim->tuples + rel->rows), rows, NIL,
-					 list_make3(ints, pushable(rel, ix), clauses_of(j->dim->baserestrictinfo)), NIL);
+					 list_make3(ints, pushable(rel, &src->input), clauses_of(j->dim->baserestrictinfo)), NIL);
 	return true;
 }
 
@@ -249,11 +255,14 @@ static bool
 sip_join(PlannerInfo *root, RelOptInfo *rel, const Node *fact_key, const Node *dim_key)
 {
 	SipJoin		j;
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (!join_of(root, rel, fact_key, dim_key, &j))
 		return false;
-	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		if (agg_index_complete(ix) && sift_v6_rel_owned(ix->indexoid, false) && sip_path(root, rel, ix, &j))
+	src = sift_v6_rel_sources_alloc(root, rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
+		if (sift_v6_source_usable(&src[i]) && sip_path(root, rel, &src[i], &j))
 			return true;
 	return false;
 }
@@ -398,19 +407,19 @@ sip_run(SipState *st, EState *estate)
 	const List *pushed = list_nth(st->priv, PRIV_FACT_QUALS);
 	SiftV6Input in;
 	SiftV6Vexpr quals;
-	Relation	index = index_open((Oid) list_nth_int(ints, 0), AccessShareLock);
+	const bool	is_table = list_nth_int(ints, 7);
+	Relation	source = sift_v6_source_open((Oid) list_nth_int(ints, 0), is_table, AccessShareLock, &in);
 	const AttrNumber fact_key = (AttrNumber) list_nth_int(ints, 4);
 	Var		   *key;
 	int			slot;
 	bool		compiled;
 
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 sip");
-	sift_v6_input_init_rel(&in, index);
 	sift_v6_input_bind(&in, estate);
 	key = makeVar((Index) list_nth_int(ints, 1), fact_key, TupleDescAttr(RelationGetDescr(st->css.ss.ss_currentRelation), fact_key - 1)->atttypid, -1, InvalidOid, 0);
-	index_close(index, NoLock);
+	sift_v6_source_close(source, is_table, NoLock);
 	compiled = (slot = sift_v6_input_add_var(&in, key)) >= 0 && sift_v6_vexpr_quals(st->cx, pushed, (Index) list_nth_int(ints, 1), estate->es_param_list_info, &in, &quals);
-	SIFT_INVARIANT(compiled, "the filtered scan of index %u is not compiled", (Oid) list_nth_int(ints, 0));
+	SIFT_INVARIANT(compiled, "the filtered scan of relation %u is not compiled", (Oid) list_nth_int(ints, 0));
 	st->sip = sip_build(st, estate, in.col[slot].type);
 	st->ran = true;
 	if (sift_sip_is_empty(st->sip))
@@ -501,7 +510,7 @@ sip_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	SipState   *st = (SipState *) node;
 
-	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), false);
+	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), list_nth_int(linitial(st->priv), 7));
 	ExplainPropertyList("Lookup Joins", list_make1(get_rel_name((Oid) list_nth_int(linitial(st->priv), 2))), es);
 	if (st->ran)
 	{
