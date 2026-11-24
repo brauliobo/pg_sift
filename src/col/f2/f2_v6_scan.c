@@ -521,7 +521,7 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 		}
 		if (s->cols[i].cls == SV6C_DATUM)
 		{
-			sift_f2_v6_fill_datum(&s->cols[i], views, off, n, s->batch_cx, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
+			sift_f2_v6_fill_datum(&s->cols[i], views, off, n, s->batch_cx, s->bs.mask);
 			continue;
 		}
 		sift_f2_v6_fill_col(&s->cols[i], &views[s->cols[i].leaf], off, n, part_gen, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
