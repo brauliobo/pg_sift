@@ -279,11 +279,11 @@ WHERE f.name = 'groups, ANY ($1)' ORDER BY c.note COLLATE "C";
 SET work_mem = '64kB';
 SELECT 'lists over work_mem' AS note, arg_run(f, k.keys) AS run, same_rows(f, 'force_generic_plan', k.keys) AS same_rows
 FROM pforms f, (SELECT quote_literal('{' || string_agg(g::text, ',') || '}') AS keys FROM generate_series(1, 80) g) k WHERE f.name = 'groups, ANY ($1)';
-ERROR:  sift: the lookup table of a joined table holds 178 kB, past the 64 kB of work_mem it may take
-HINT:  Raise work_mem, or set sift.enable_agg to off.
-CONTEXT:  sift index "public.facts_col"
-PL/pgSQL function run_of(text) line 4 at FOR over EXECUTE statement
-PL/pgSQL function arg_run(pforms,text) line 7 at assignment
+        note         |                        run                         | same_rows 
+---------------------+----------------------------------------------------+-----------
+ lists over work_mem | Keys: $1 (80 keys); Fallback: dedupe over work_mem | t
+(1 row)
+
 RESET work_mem;
 -- one cached generic plan run with other arguments each time (the keys are those of the execution, the plan is the same)
 CREATE FUNCTION cached_args(f pforms, args text[]) RETURNS TABLE (extra text, run text, same_rows boolean) LANGUAGE plpgsql AS $$

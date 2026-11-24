@@ -171,21 +171,21 @@ SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE
  1 byte table
 (1 row)
 
-SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 1)') AS set_2000_keys_1kb;
- set_2000_keys_1kb 
--------------------
- 0 byte table
-(1 row)
-
-SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)') AS set_6_keys_1kb;
- set_6_keys_1kb 
-----------------
+SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 1)') AS set_2000_keys_64kb;
+ set_2000_keys_64kb 
+--------------------
  1 byte table
 (1 row)
 
-SELECT run(sql, true) = run(sql, false) AS same_1kb FROM q WHERE n IN (1, 3, 5, 8, 19);
- same_1kb 
-----------
+SELECT tables_of('SELECT count(*) FROM ev WHERE k8 IN (SELECT k FROM keys8 WHERE grp = 2)') AS set_6_keys_64kb;
+ set_6_keys_64kb 
+-----------------
+ 1 byte table
+(1 row)
+
+SELECT run(sql, true) = run(sql, false) AS same_64kb FROM q WHERE n IN (1, 3, 5, 8, 19);
+ same_64kb 
+-----------
  t
  t
  t
