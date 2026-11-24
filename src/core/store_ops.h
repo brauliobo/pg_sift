@@ -100,14 +100,14 @@ typedef struct SiftStoreStats
 /* ---- 10 Independent Optional Capability Sub-Vtables (NULL = unsupported) ---- */
 
 /*
- * 1. Key order: the sort order the parts keep, and the scan that keeps the best rows of it. lead_att: the attribute of the first key column of the index (0: none, or not a column);
+ * 1. Key order: the sort order the parts keep, and the scan that keeps the best rows of it. lead_att: the attribute of the first key column of the index or table (0: none, or not a column);
  * scan_rows: the rows of an ORDER BY .. LIMIT of one table go to rows instead of the groups, and to totals as well when the statement carries the aggregates of the whole set; star: the dimensions
  * a join of the fact table reads (index NULL: heap is a sift_table, which quals say what it decides).
  */
 typedef struct SiftOrderOps
 {
 	bool		(*sorted_by) (Oid relid, bool is_table, const int *atts, int n);
-	int			(*lead_att) (Oid relid);
+	int			(*lead_att) (Oid relid, bool is_table);
 	void		(*scan_rows) (const struct SiftV6Spec *spec, struct SiftV6Rows *rows, struct SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals,
 							  Snapshot snap, struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
 	bool		rows_extras;	/* scan_rows also folds the aggregates of the whole set into totals, reads the dimensions of a join (star) and takes the chunks of a text match */

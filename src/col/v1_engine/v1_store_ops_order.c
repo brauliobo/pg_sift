@@ -43,13 +43,19 @@ order_sorted_by(Oid relid, bool is_table, const int *atts, int n)
 }
 
 static int
-order_lead_att(Oid relid)
+order_lead_att(Oid relid, bool is_table)
 {
-	const SiftV1Rel r = sift_v1_rel_open(relid, false);
-	const SiftV1ReaderOps *rd = sift_v1_reader_of(false);
-	const int	leaf = rd->key_leaf(r.rel);
-	const int	att = leaf < 0 ? 0 : rd->layout(r.rel)->leaf[leaf].attno;
+	SiftV1Rel	r;
+	const SiftV1ReaderOps *rd;
+	int			leaf,
+				att;
 
+	if (is_table)
+		return 0;
+	r = sift_v1_rel_open(relid, false);
+	rd = sift_v1_reader_of(false);
+	leaf = rd->key_leaf(r.rel);
+	att = leaf < 0 ? 0 : rd->layout(r.rel)->leaf[leaf].attno;
 	sift_v1_rel_close(&r);
 	return att;
 }

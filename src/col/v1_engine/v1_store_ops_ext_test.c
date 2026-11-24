@@ -107,7 +107,7 @@ sift_test_v1_ops(PG_FUNCTION_ARGS)
 		elog(ERROR, "return type must be a row type");
 	values[0] = BoolGetDatum(ops->order != NULL && ops->jsonb != NULL && ops->preagg != NULL);
 	values[1] = BoolGetDatum(ops->order->sorted_by(relid, is_table, &att, 1));
-	values[2] = Int32GetDatum(is_table ? -1 : ops->order->lead_att(relid));
+	values[2] = Int32GetDatum(is_table ? -1 : ops->order->lead_att(relid, false));
 	values[3] = Int32GetDatum(ops->jsonb->key_leaf(relid, att, "k", 1));
 	values[4] = BoolGetDatum(ops->jsonb->unnest_run != NULL);
 	values[5] = Int32GetDatum(cube ? leaf_att(relid, is_table, dim) : -1);

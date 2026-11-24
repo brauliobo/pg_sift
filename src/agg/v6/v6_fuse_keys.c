@@ -101,7 +101,7 @@ lead_att_of(Relation index)
 {
 	const SiftStoreOps *ops = sift_store_ops_for_oid(RelationGetRelid(index), false);
 
-	return ops != NULL && ops->order != NULL ? ops->order->lead_att(RelationGetRelid(index)) : 0;
+	return ops != NULL && ops->order != NULL ? ops->order->lead_att(RelationGetRelid(index), false) : 0;
 }
 
 typedef struct QualEnt

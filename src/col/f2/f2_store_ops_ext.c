@@ -15,7 +15,7 @@
 #include "col/f2/f2_v6_unnest_run.h"
 
 static int
-order_lead_att(Oid relid)
+order_lead_att(Oid relid, bool is_table)
 {
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);
 
