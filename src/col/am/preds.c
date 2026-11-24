@@ -46,6 +46,7 @@ key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v)
 			v->v.f = DatumGetFloat8(d);
 			break;
 		case TEXTOID:
+		case VARCHAROID:
 			{
 				struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
 
