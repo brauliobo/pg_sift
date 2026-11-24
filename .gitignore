@@ -16,6 +16,7 @@ tmp_check/
 tmp_check_iso/
 .deps/
 .build-flavor
+.build-dir
 core
 core.[0-9]*
 !/src/core/

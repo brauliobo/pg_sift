@@ -3,7 +3,11 @@ MODULE_big = pg_sift
 SIFT_MK := $(lastword $(MAKEFILE_LIST))
 SRC = src
 include $(SRC)/areas.mk
-OBJS = $(patsubst %.c,%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c))
+# SIFT_BUILD_DIR=DIR keeps the objects, their .d files and the generated headers (DIR/gen) of one build flavor under DIR, so that another flavor (SIFT_TESTING, SANITIZE,
+# SIFT_HARDEN, the PostgreSQL major...) built in the same checkout never rebuilds or overwrites them; unset, everything stays beside the sources. make clean removes DIR/src and DIR/gen alone.
+SIFT_OUT := $(if $(SIFT_BUILD_DIR),$(abspath $(SIFT_BUILD_DIR)))
+SIFT_OBJ := $(if $(SIFT_OUT),$(SIFT_OUT)/)
+OBJS = $(patsubst %.c,$(SIFT_OBJ)%.o,$(wildcard $(SRC)/*/*.c $(SRC)/*/*/*.c $(SRC)/*/*/*/*.c))
 # The update script of the release in progress is built from sql/<version>/NN-<context>.sql (scripts/sql-parts.sh): edit a part, never the generated file.
 SIFT_UPDATE_SQL := $(sort $(shell $(dir $(SIFT_MK))scripts/sql-parts.sh targets))
 DATA = $(sort $(wildcard sql/pg_sift--*.sql) $(SIFT_UPDATE_SQL))
@@ -15,7 +19,7 @@ REGRESS_OPTS = --inputdir=test --outputdir=test
 
 # Portable baseline: SIMD kernels opt in per function with target attributes.
 # -ffp-contract=off keeps scalar and SIMD scores bit-identical.
-# -MMD records header dependencies (src/*/*.d, src/*/*/*.d, src/*/*/*/*.d) so a header edit rebuilds its users.
+# -MMD records header dependencies (a .d beside each object) so a header edit rebuilds its users.
 PG_CPPFLAGS = $(addprefix -I$(srcdir)/,$(SIFT_INCDIRS)) $(SIFT_FMV_CPPFLAGS)
 # an implicit declaration is an error: gcc 13 only warns, and a function taken to return int cuts a pointer to 32 bits (an include dropped from a file whose code is built only with assertions did that)
 PG_CFLAGS = -O2 -g -ffp-contract=off -MMD -Wno-declaration-after-statement -Werror=implicit-function-declaration -pthread $(SIFT_BASE_ISA)
@@ -36,7 +40,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = $(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out
+EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -850,6 +854,16 @@ pg-valgrind:
 	nice scripts/pg-assert.sh --valgrind $(if $(PG_ASSERT_MAJOR),--major $(PG_ASSERT_MAJOR))
 else
 include $(PGXS)
+
+ifneq ($(SIFT_OUT),)
+$(OBJS): $(SIFT_OUT)/%.o: %.c
+	@mkdir -p $(@D)
+	$(COMPILE.c) $(OUTPUT_OPTION) $<
+# pg_sift$(DLSUFFIX) stays beside the sources, where PGXS links and installs it: it is relinked (from the objects of SIFT_BUILD_DIR, nothing is compiled) whenever another build directory linked it last
+.build-dir: FORCE
+	@[ "$$(cat $@ 2>/dev/null)" = '$(SIFT_OUT)' ] || echo '$(SIFT_OUT)' >$@
+$(shlib): .build-dir
+endif
 endif
 
 .PHONY: update-sql
@@ -858,18 +872,23 @@ $(SIFT_UPDATE_SQL): $(wildcard sql/[0-9]*/*.sql) scripts/sql-parts.sh
 update-sql: $(SIFT_UPDATE_SQL)
 all: update-sql
 
--include $(wildcard src/*/*.d src/*/*/*.d src/*/*/*/*.d)
+-include $(wildcard $(OBJS:.o=.d))
 
 # The module version the library reports (scripts/build-id.sh); build_id.h is rewritten only when the id changes, so that handler.o is rebuilt then and no other file.
 SIFT_BUILD_ID ?= $(shell $(srcdir)/scripts/build-id.sh $(or $(srcdir),.))
-$(SRC)/core/build_id.h: FORCE
-	@echo '#define SIFT_BUILD_ID "$(SIFT_BUILD_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
-$(SRC)/core/handler.o: $(SRC)/core/build_id.h
+SIFT_GEN := $(if $(SIFT_OUT),$(SIFT_OUT)/gen,$(SRC))
+$(SIFT_GEN)/core/build_id.h: FORCE
+	@mkdir -p $(@D); echo '#define SIFT_BUILD_ID "$(SIFT_BUILD_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
+$(SIFT_OBJ)$(SRC)/core/handler.o: $(SIFT_GEN)/core/build_id.h
 # The identity of the sources and of the options that change them (scripts/code-id.sh): the shared tables of a server are told apart by it (col/dsmreg.c); rewritten only when it changes, so that only dsmreg.o is rebuilt then.
 SIFT_CODE_ID = $(shell $(srcdir)/scripts/code-id.sh $(or $(srcdir),.) '$(filter -DSIFT_%,$(PG_CPPFLAGS))')
-$(SRC)/core/code_id.h: FORCE
-	@echo '#define SIFT_CODE_ID "$(SIFT_CODE_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
-$(SRC)/col/dsmreg.o: $(SRC)/core/code_id.h
+$(SIFT_GEN)/core/code_id.h: FORCE
+	@mkdir -p $(@D); echo '#define SIFT_CODE_ID "$(SIFT_CODE_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
+$(SIFT_OBJ)$(SRC)/col/dsmreg.o: $(SIFT_GEN)/core/code_id.h
+# the two files that include them look in the build directory first: a header another build left in src/core is never read
+ifneq ($(SIFT_OUT),)
+$(SIFT_OBJ)$(SRC)/core/handler.o $(SIFT_OBJ)$(SRC)/col/dsmreg.o: override CPPFLAGS := -I$(SIFT_GEN) $(CPPFLAGS)
+endif
 .PHONY: FORCE
 FORCE:
 
