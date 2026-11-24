@@ -26,6 +26,7 @@
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_exists_plan.h"
 #include "agg/v6/v6_join_plan.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_join_shape.h"
 #include "agg/v6/v6_lateral_plan.h"
 #include "agg/v6/v6_pg_expr.h"
@@ -598,20 +599,17 @@ lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startu
 }
 
 static void
-try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, const SiftV6JoinShape *sh, IndexOptInfo *ix)
+try_source(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, const SiftV6JoinShape *sh, const SiftV6RelSource *src)
 {
-	V6Plan		p = {.root = root,.rel = sh->fact,.out = output_rel,.relid = ix->indexoid,.index = ix,.sub_qual = sh->sub_qual};
+	V6Plan		p = {.root = root,.rel = sh->fact,.out = output_rel,.sub_qual = sh->sub_qual};
 	ResidCtx	rc = {.p = &p,.ok = true};
-	Relation	irel;
+	Relation	rel = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
 	Cost		xs,
 				xt;
 	List	   *children = NIL;
 
-	if (!sift_v6_index_owned(ix))
-		return;
-	irel = index_open(ix->indexoid, AccessShareLock);
-	sift_v6_plan_index(&p, irel);
-	if (p.ops != NULL && seed_dims(&p, sh, &rc) && sift_v6_compile_on(&p, extra, group_exprs) && (sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(sh, &rc))
+	if (sift_v6_plan_bind(&p, src, rel) && seed_dims(&p, sh, &rc) && sift_v6_compile_on(&p, extra, group_exprs) &&
+		(sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(sh, &rc))
 	{
 		xt = lookup_cost(sh, input_rel, &xs);
 		if (sh->elem != NULL)
@@ -620,7 +618,7 @@ try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Grou
 			children = lappend(children, sh->dim[d].rel->cheapest_total_path);
 		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, children, xs, xt, input_rel->rows);
 	}
-	index_close(irel, NoLock);
+	sift_v6_source_close(rel, src->is_table, NoLock);
 }
 
 static bool
@@ -636,11 +634,14 @@ static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo *elem, GroupPathExtraData *extra, List *group_exprs)
 {
 	SiftV6JoinShape sh = {.fact = fact,.elem = elem};
+	SiftV6RelSource *src;
+	int			nsrc;
 
-	if (!sift_v6_plan_fact_ok(root, fact) || !sift_index_of(fact) || (elem != NULL && !sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte)) || !shape_of(root, base, &sh))
+	if (!sift_v6_plan_fact_ok(root, fact) || !sift_v6_rel_has_source(root, fact) || (elem != NULL && !sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte)) || !shape_of(root, base, &sh))
 		return;
-	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
-		try_index(root, input_rel, output_rel, extra, group_exprs, &sh, ix);
+	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
+	for (int i = 0; i < nsrc; i++)
+		try_source(root, input_rel, output_rel, extra, group_exprs, &sh, &src[i]);
 }
 
 void

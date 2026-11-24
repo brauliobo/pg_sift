@@ -6,6 +6,7 @@
 
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_star_run.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_store_scan.h"
@@ -70,6 +71,8 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	o.gran_arg = s->preagg;
 	if (quals->possible)
 		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
+	if (s->pipe != NULL)
+		sift_v6_pipe_finish(s->pipe);
 	if (s->preagg != NULL)
 		sift_v6_preagg_end(s->preagg);
 	if (s->unnest != NULL)
