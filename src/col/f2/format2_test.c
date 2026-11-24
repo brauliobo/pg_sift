@@ -40,6 +40,7 @@ PG_FUNCTION_INFO_V1(sift_test_pend_del_reads);
 PG_FUNCTION_INFO_V1(sift_test_f2_check);
 PG_FUNCTION_INFO_V1(sift_test_f2_check_keys);
 PG_FUNCTION_INFO_V1(sift_test_f2_leaves);
+PG_FUNCTION_INFO_V1(sift_test_f2_pending_dead);
 PG_FUNCTION_INFO_V1(sift_test_f2_array_layout);
 
 static const SiftCellKind f2_kinds[F2_NCOLS] = {SIFT_CELL_INT, SIFT_CELL_STR, SIFT_CELL_INT, SIFT_CELL_INT};
@@ -829,6 +830,31 @@ sift_test_f2_leaves(PG_FUNCTION_ARGS)
 		}
 	}
 	index_close(rel, NoLock);
+	return (Datum) 0;
+}
+
+/* (partition, address) of every pending delete of the relation (an index or a sift_table) that the active snapshot sees, as sift_f2_pending_dead gives them */
+Datum
+sift_test_f2_pending_dead(PG_FUNCTION_ARGS)
+{
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
+	ReturnSetInfo *rsi = f2t_srf_begin(fcinfo);
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+
+	for (int i = 0; i < mr.n; i++)
+	{
+		int			npend;
+		uint64	   *pend = sift_f2_pending_dead(rel, &mr.entries[i], GetActiveSnapshot(), &npend);
+
+		for (int k = 0; k < npend; k++)
+		{
+			Datum		v[2] = {Int64GetDatum((int64) mr.entries[i].part_id), Int64GetDatum((int64) pend[k])};
+			bool		n[2] = {0};
+
+			f2t_srf_put(rsi, v, n);
+		}
+	}
+	relation_close(rel, NoLock);
 	return (Datum) 0;
 }
 

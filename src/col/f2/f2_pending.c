@@ -35,10 +35,10 @@ sift_f2_pending_dead(Relation rel, const SiftPartitionEntry *e, Snapshot snap, i
 	dead = palloc(Max(nrecs, 1) * sizeof(uint64));
 	sift_xid_cache_init(&xc, snap);
 	for (int i = 0; i < nrecs; i++)
-		if (sift_vis_deleted_cached(&xc, recs[i].xmax, recs[i].cmax))
+		if ((recs[i].tid & SIFT_PD_TID_SUCC) == 0 && sift_vis_deleted_cached(&xc, recs[i].xmax, recs[i].cmax))
 		{
 			SIFT_INVARIANT(m < nrecs, "a pending deletion is offered once");
-			dead[m++] = recs[i].tid;
+			dead[m++] = recs[i].tid & SIFT_PD_TID_MASK;
 		}
 	qsort(dead, m, sizeof(uint64), addr_cmp);
 	*n = m;

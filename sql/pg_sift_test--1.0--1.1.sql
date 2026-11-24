@@ -44,6 +44,8 @@ CREATE FUNCTION sift._test_f2_check_keys(index regclass) RETURNS text AS 'MODULE
 CREATE FUNCTION sift._test_f2_leaves(index regclass)
 	RETURNS TABLE(tid tid, leaf text, elem int4, val text, tag int4, payload text)
 	AS 'MODULE_PATHNAME', 'sift_test_f2_leaves' LANGUAGE C STRICT;
+CREATE FUNCTION sift._test_f2_pending_dead(rel regclass, OUT part_id int8, OUT addr int8)
+	RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_f2_pending_dead' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_array_layout(index regclass) RETURNS text AS 'MODULE_PATHNAME', 'sift_test_f2_array_layout' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f2_preagg_index(index regclass, dim int4, measure int4)
 	RETURNS TABLE(parts int4, granules int4, with_dead int4, corrected int4, rescanned int4, mismatched int4, dead int8)
