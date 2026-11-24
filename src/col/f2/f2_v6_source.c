@@ -76,6 +76,8 @@ typedef struct V6Src
 	SiftVec		vec[SIFT_V6_MAX_COLS];
 	void	   *data[SIFT_V6_MAX_COLS];
 	uint64	   *valid[SIFT_V6_MAX_COLS];
+	uint64	   *nan[SIFT_V6_MAX_COLS];	/* of a numeric column: the rows that hold a NaN, which valid says are NULL */
+	bool		has_nan[SIFT_V6_MAX_COLS];
 	SiftVexprMaskIn masks[SIFT_V6_MAX_MASKS];
 	uint64	   *mbits[SIFT_V6_MAX_MASKS];
 	uint64	   *mvalid[SIFT_V6_MAX_MASKS];
@@ -291,7 +293,12 @@ put_col(V6Src *s, int i, const ColView *cv, int r, int n)
 	const bool	valid = !cv->isnull[r];
 
 	if (!valid && cv->tag != NULL && cv->tag[r] != 0)
-		unreadable(s, s->leaf[i]);
+	{
+		if (s->in.col[i].typid != NUMERICOID || cv->tag[r] != SIFT_COLTAG_UNSURE)
+			unreadable(s, s->leaf[i]);
+		s->nan[i][n >> 6] |= (uint64) 1 << (n & 63);
+		s->has_nan[i] = true;
+	}
 	s->valid[i][n >> 6] |= (uint64) valid << (n & 63);
 	switch (s->in.col[i].type)
 	{
@@ -334,7 +341,11 @@ batch_start(V6Src *s)
 {
 	MemoryContextReset(s->strings);
 	for (int i = 0; i < s->in.ncols; i++)
+	{
 		memset(s->valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		memset(s->nan[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		s->has_nan[i] = false;
+	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
 		memset(s->mbits[m], 0, SIFT_VEC_WORDS * sizeof(uint64));
@@ -357,7 +368,7 @@ batch_fill(V6Src *s)
 		merge_pop(s);
 	}
 	for (int i = 0; i < s->in.ncols; i++)
-		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.len = (uint16) n,.all_valid = false,.dense = true,.type = s->in.col[i].type,.scale = s->in.col[i].scale};
+		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.nan = s->has_nan[i] ? s->nan[i] : NULL,.len = (uint16) n,.all_valid = false,.dense = true,.type = s->in.col[i].type,.scale = s->in.col[i].scale};
 	return n;
 }
 
@@ -441,6 +452,17 @@ leaf_of(const SiftF2Store *st, AttrNumber attno)
 	return st->att_first[attno];
 }
 
+/* the leaves of the numeric columns, whose NaN the vectors carry */
+static bool *
+numeric_leaves(const V6Src *s)
+{
+	bool	   *nan_leaves = palloc0(Max(s->store->ncols, 1) * sizeof(bool));
+
+	for (int i = 0; i < s->in.ncols; i++)
+		nan_leaves[s->leaf[i]] = s->in.col[i].typid == NUMERICOID;
+	return nan_leaves;
+}
+
 /* the leaves the scan decodes: those of the columns and of the booleans of the input, and the key when the rows are merged by it */
 static int *
 scan_leaves(V6Src *s, int *nleaves)
@@ -470,6 +492,7 @@ vectors_new(V6Src *s)
 
 		s->data[i] = palloc_aligned((SIFT_VEC_LEN + SIFT_VEC_PAD) * width, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 		s->valid[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+		s->nan[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
@@ -500,6 +523,7 @@ sift_f2_v6_source_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr 
 	s->mask_leaf = palloc(Max(in->nmasks, 1) * sizeof(int));
 	s->opts = (SiftStoreScanOpts) {.rel = s->rel,.store = s->store,.snap = s->snap};
 	s->opts.leaves = scan_leaves(s, &s->opts.nleaves);
+	s->opts.nan_leaves = numeric_leaves(s);
 	s->vet = in->is_table ? NULL : vet_new(cx, s->heap, s->snap);
 	s->fslot = table_slot_create(s->heap, NULL);
 	s->has_quals = quals != NULL;
