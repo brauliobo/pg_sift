@@ -1,5 +1,5 @@
 /*
- * table/f2/f2_col_delta_dir.h - the directory of a long column delta chain (SIFT_PT_COL_DELTA_DIR = 46).
+ * table/f2/f2_col_delta_dir.h - the directory of a long column delta chain (SIFT_PT_COL_DELTA_DIR = 47).
  *
  * A chain of up to SIFT_CDDIR_FLAT_PAGES pages is the flat chain of f2_col_delta.h. The page that would make it longer makes its directory: pages of SiftColDeltaDirEntry, one for each page
  * of the chain, oldest first, that say what the page holds (the part, the granules, the attributes) without reading it. The anchor then names the newest directory page

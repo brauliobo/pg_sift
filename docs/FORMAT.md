@@ -204,7 +204,8 @@ A partition's `SiftColDeltaAnchor` (32 bytes, `core/f2/col_delta_anchor.h`) name
 
 | Constant | Value | Where |
 |---|---|---|
-| `SIFT_PT_COL_DELTA_DIR` | 46 | `core/page.h` |
+| `SIFT_PT_KEYJRNL` | 46 | `core/page.h` |
+| `SIFT_PT_COL_DELTA_DIR` | 47 | `core/page.h` |
 | `SIFT_COMPAT_COL_DELTA_DIR` | `1 << 7` of `compat_flags` | `core/f2/meta.h`; set by the manifest change that publishes the first anchor with `SIFT_CDLA_INDEXED_DIR`; a build that does not know it refuses to open the relation |
 | `SIFT_CDLA_INDEXED_DIR` | `1 << 4` of `SiftColDeltaAnchor.flags` | `anchor.delta_head_blkno` names the newest `SIFT_PT_COL_DELTA_DIR` page, not a data page; `anchor.npages` still counts data pages |
 | `SIFT_CDDIR_MAGIC` | `0x43444452` ("CDDR") | `table/f2/f2_col_delta_dir.h` |

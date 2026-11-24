@@ -1,4 +1,4 @@
--- Format 2.0 sift_table column deltas past the old 32-page cap: a chain longer than four pages gets a directory (SIFT_PT_COL_DELTA_DIR = 46), an UPDATE is never refused for the length of the
+-- Format 2.0 sift_table column deltas past the old 32-page cap: a chain longer than four pages gets a directory (SIFT_PT_COL_DELTA_DIR = 47), an UPDATE is never refused for the length of the
 -- chain, the rows keep their ctid, a reader sees what its snapshot sees, and a fold gives the pages back. Every check raises on failure and prints one row (name, ok). About 30 s.
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 CREATE EXTENSION IF NOT EXISTS pageinspect;
@@ -17,7 +17,7 @@ BEGIN
 	RETURN name || ': ok';
 END $$;
 
--- the pages of the table of a page type: 42 SIFT_PT_COL_DELTA, 46 SIFT_PT_COL_DELTA_DIR
+-- the pages of the table of a page type: 42 SIFT_PT_COL_DELTA, 47 SIFT_PT_COL_DELTA_DIR
 CREATE FUNCTION pages_of(rel regclass, ptype int) RETURNS int LANGUAGE sql AS $$
 	SELECT count(*)::int FROM generate_series(0, pg_relation_size(rel) / 8192 - 1) n
 	WHERE get_byte(get_raw_page(rel::text, n::int), 8176) + 256 * get_byte(get_raw_page(rel::text, n::int), 8177) = ptype $$;
@@ -37,13 +37,13 @@ SELECT chk('no delta page yet', pages_of('o', 42), 0);
 UPDATE o SET status = 1 WHERE id = 5;
 UPDATE oh SET status = 1 WHERE id = 5;
 SELECT chk('a short chain has pages', pages_of('o', 42) BETWEEN 1 AND 4, true);
-SELECT chk('a short chain has no directory', pages_of('o', 46), 0);
+SELECT chk('a short chain has no directory', pages_of('o', 47), 0);
 
 -- 2. one statement writes far more pages than the old cap of 32: no row leaves its address and the chain has a directory
 UPDATE o SET status = 2 WHERE id <= 30000;
 UPDATE oh SET status = 2 WHERE id <= 30000;
 SELECT chk('a bulk update writes more than 32 pages', pages_of('o', 42) > 32, true);
-SELECT chk('a long chain has a directory', pages_of('o', 46) >= 1, true);
+SELECT chk('a long chain has a directory', pages_of('o', 47) >= 1, true);
 SELECT chk('no row of the bulk update moved', moved()::int, 0);
 SELECT chk('rows agree after the bulk update', same_rows(), true);
 
@@ -51,7 +51,7 @@ SELECT chk('rows agree after the bulk update', same_rows(), true);
 UPDATE o SET status = 3 WHERE id > 20000 AND id <= 50000;
 UPDATE oh SET status = 3 WHERE id > 20000 AND id <= 50000;
 SELECT chk('the chain passes the soft fold size', pages_of('o', 42) >= 256, true);
-SELECT chk('a second directory page', pages_of('o', 46) >= 2, true);
+SELECT chk('a second directory page', pages_of('o', 47) >= 2, true);
 SELECT chk('no row moved again', moved()::int, 0);
 SELECT chk('point reads', (SELECT array_agg(status ORDER BY id) FROM o WHERE id IN (1, 5, 25000, 55000)), ARRAY[2, 2, 3, 0]);
 SELECT chk('group by a patched column', (SELECT array_agg(x ORDER BY status) FROM (SELECT status, count(*), sum(amount) FROM o GROUP BY status) x)::text,

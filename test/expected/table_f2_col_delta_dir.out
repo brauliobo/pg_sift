@@ -1,4 +1,4 @@
--- Format 2.0 sift_table column deltas past the old 32-page cap: a chain longer than four pages gets a directory (SIFT_PT_COL_DELTA_DIR = 46), an UPDATE is never refused for the length of the
+-- Format 2.0 sift_table column deltas past the old 32-page cap: a chain longer than four pages gets a directory (SIFT_PT_COL_DELTA_DIR = 47), an UPDATE is never refused for the length of the
 -- chain, the rows keep their ctid, a reader sees what its snapshot sees, and a fold gives the pages back. Every check raises on failure and prints one row (name, ok). About 30 s.
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -15,7 +15,7 @@ BEGIN
 	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
 	RETURN name || ': ok';
 END $$;
--- the pages of the table of a page type: 42 SIFT_PT_COL_DELTA, 46 SIFT_PT_COL_DELTA_DIR
+-- the pages of the table of a page type: 42 SIFT_PT_COL_DELTA, 47 SIFT_PT_COL_DELTA_DIR
 CREATE FUNCTION pages_of(rel regclass, ptype int) RETURNS int LANGUAGE sql AS $$
 	SELECT count(*)::int FROM generate_series(0, pg_relation_size(rel) / 8192 - 1) n
 	WHERE get_byte(get_raw_page(rel::text, n::int), 8176) + 256 * get_byte(get_raw_page(rel::text, n::int), 8177) = ptype $$;
@@ -43,7 +43,7 @@ SELECT chk('a short chain has pages', pages_of('o', 42) BETWEEN 1 AND 4, true);
  a short chain has pages: ok
 (1 row)
 
-SELECT chk('a short chain has no directory', pages_of('o', 46), 0);
+SELECT chk('a short chain has no directory', pages_of('o', 47), 0);
                 chk                 
 ------------------------------------
  a short chain has no directory: ok
@@ -58,7 +58,7 @@ SELECT chk('a bulk update writes more than 32 pages', pages_of('o', 42) > 32, tr
  a bulk update writes more than 32 pages: ok
 (1 row)
 
-SELECT chk('a long chain has a directory', pages_of('o', 46) >= 1, true);
+SELECT chk('a long chain has a directory', pages_of('o', 47) >= 1, true);
                chk                
 ----------------------------------
  a long chain has a directory: ok
@@ -85,7 +85,7 @@ SELECT chk('the chain passes the soft fold size', pages_of('o', 42) >= 256, true
  the chain passes the soft fold size: ok
 (1 row)
 
-SELECT chk('a second directory page', pages_of('o', 46) >= 2, true);
+SELECT chk('a second directory page', pages_of('o', 47) >= 2, true);
              chk             
 -----------------------------
  a second directory page: ok

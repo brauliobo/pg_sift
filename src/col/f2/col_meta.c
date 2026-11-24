@@ -52,6 +52,8 @@ sift_col_meta_validate(Relation rel, Page page, bool for_write)
 	if ((m->proj_dir_blk == InvalidBlockNumber) != (m->nprojs == 0) || (m->proj_dir_blk != InvalidBlockNumber && m->proj_dir_blk >= m->high_water) ||
 		((m->common.ro_compat_flags & SIFT_ROCOMPAT_PROJECTIONS) != 0) != (m->nprojs != 0))
 		SIFT_CORRUPT(rel, "The projection directory anchor is out of range (%u projections, directory %u, high water %u).", m->nprojs, m->proj_dir_blk, m->high_water);
+	if (m->jrnl_blk != InvalidBlockNumber && m->jrnl_blk >= m->high_water)
+		SIFT_CORRUPT(rel, "The key journal anchor is out of range (block %u, high water %u).", m->jrnl_blk, m->high_water);
 	return m;
 }
 
@@ -140,6 +142,7 @@ build_pages(Page p0, Page p1, Page p2, SiftAmKind am, uint64 compat_flags, uint3
 	m->scope_dir_blk = InvalidBlockNumber;
 	m->proj_dir_blk = InvalidBlockNumber;
 	m->tier_dir_blk = InvalidBlockNumber;
+	m->jrnl_blk = InvalidBlockNumber;
 	sift_partdir_build_root(p1);
 	sift_col_meta_set_inline(p0, (const SiftPartitionEntry *) (SiftPageGetData(p1) + sizeof(SiftPartDirPageData)), 1);
 	sift_fsm_build_root(p2, SIFT_FIRST_SLAB_BLKNO);

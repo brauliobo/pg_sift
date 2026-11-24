@@ -49,6 +49,9 @@ typedef struct SiftColMetaPageData
 	uint32		ntier_parts;	/* the remote parts of the whole chain */
 	uint64		tier_dir_gen;	/* the generation of the chain: the pages carry it */
 
+	BlockNumber jrnl_blk;		/* the header SIFT_PT_KEYJRNL page of the key journal, or InvalidBlockNumber while no child index is connected to the index */
+	uint32		jrnl_pad;
+
 	TimestampTz maint_requested_at;
 	TimestampTz maint_ok_at;
 	TimestampTz maint_failed_at;
@@ -70,7 +73,7 @@ typedef struct SiftColMetaPageData
 	char		maint_errmsg[SIFT_COL_MAINT_ERR_LEN];
 } SiftColMetaPageData;
 
-StaticAssertDecl(sizeof(SiftColMetaPageData) == 424, "SiftColMetaPageData must be 424 bytes with no padding");
+StaticAssertDecl(sizeof(SiftColMetaPageData) == 432, "SiftColMetaPageData must be 432 bytes with no padding");
 StaticAssertDecl(sizeof(SiftColMetaPageData) <= SIFT_PAGE_PAYLOAD, "SiftColMetaPageData must fit block 0");
 
 #define SIFT_COL_META(page)		((SiftColMetaPageData *) SiftPageGetData(page))
