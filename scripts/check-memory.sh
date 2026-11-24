@@ -19,8 +19,14 @@
 #       toplevel: TopMemoryContext, CacheMemoryContext outside core/cachebudget.c: every cache is a child of sift_cache_create_context()
 #       defaultsizes: ALLOCSET_DEFAULT_SIZES, ALLOCSET_DEFAULT_MAXSIZE: a transient context takes sift_mem_allocset_create() or sift_mem_generation_create(), whose blocks are at most 256 kB
 #       legacy: a memory setting or limit that core/memtrack.h and core/cachebudget.h replaced (no row is allowed)
+#       raw_mwm: maintenance_work_mem outside core/memtrack.c: a maintenance, VACUUM or build takes sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, ...), which reads autovacuum_work_mem in an autovacuum worker
+#       rowbuf_unbudgeted: a file that calls sift_rowbuf_new() and never reads mem_bytes, sift_mem_budget_bytes or sift_mem_pressure: its rows are held whole, whatever the table
+#       rowbuf_notrim: a file that bounds its rows by a budget and never calls sift_mem_release_os() once a bounded batch is flushed
+#     A string literal is not code (an errmsg that names maintenance_work_mem is no read of it). A call that holds one granule (at most 8192 rows) says so: `check-memory: allow bounded to one granule`.
+#     --strict: no site of raw_mwm, rowbuf_unbudgeted or rowbuf_notrim in col/f2, table/f2, core/f2 or bm25 may be left, a row of scripts/memory-static.allow or not (the Format 2.0 and
+#     BM25 paths honour the budget of the process); the rows of Format 1 stay a ratchet.
 #
-#   scripts/check-memory.sh [--selftest]
+#   scripts/check-memory.sh [--selftest|--strict]
 set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
@@ -36,6 +42,7 @@ STATIC_RULES = {
     "huge": re.compile(r"\b(MemoryContextAllocHuge|repalloc_huge|SIFT_REGROW_HUGE_IN)\b"),
     "toplevel": re.compile(r"\b(TopMemoryContext|CacheMemoryContext)\b"),
     "defaultsizes": re.compile(r"\bALLOCSET_DEFAULT_(SIZES|MAXSIZE)\b"),
+    "raw_mwm": re.compile(r"\bmaintenance_work_mem\b"),
     "legacy": re.compile(r"\b(sift_agg_lookup_cache_kb|sift_agg_lookup_shared_kb|sift_agg_dimmap_kb|sift_verdict_cache_kb|sift_col_dict_shared_cache_kb|sift_col_leaf_cache_kb|"
                          r"sift_prefix_cache_size|CDICT_CACHE_MAX_KB|SEGCACHE_MAX_KB|BATCH_SET_BYTES|BATCH_AMPLIFY|WBUF_CACHE_ROWS|DEAD_BYTES|LEAF_STATS_CACHE|"
                          r"sift_agg_semi_lut_size|sift_agg_param_set_size|sift_agg_lookup_max_kb|sift_agg_lookup_max_rows|sift_agg_combo_cache|sift_col_auto_merge_pass_mb|"
@@ -43,11 +50,32 @@ STATIC_RULES = {
                          r"SIFT_COLW_(?:BUILD|MERGE)_(?:PCT|BASE)|WINDOW_MIN|PART_MIN_KB|SCOPE_SORT_MIN_KB|GROUP_NOSPILL_BASE|GROUP_NOSPILL_FACTOR|GROUP_PAR_FACTOR|"
                          r"SPILL_RUN_BYTES|SIFT_ARRAY_UNLIMITED|sift_rows_alloc|sift_colw_memory|sift_colw_budget|sift_colw_row_memory|sift_colw_leaves_memory)\b"),
 }
-STATIC_EXEMPT = {"toplevel": {"core/cachebudget.c"}}
+STATIC_EXEMPT = {"toplevel": {"core/cachebudget.c"}, "raw_mwm": {"core/memtrack.c"}}
+ROWBUF = re.compile(r"\bsift_rowbuf_new\s*\(")
+ROWBUF_BUDGET = re.compile(r"\b(mem_bytes|sift_mem_budget_bytes|sift_mem_pressure)\b")
+ROWBUF_OWNER = "col/f2/rowbuf.c"
+STRING = re.compile(r'"(?:\\.|[^"\\])*"')
+BLOCK_COMMENT = re.compile(r"/\*.*?(\*/|$)")
+STRICT_RULES = ("raw_mwm", "rowbuf_unbudgeted", "rowbuf_notrim")
+STRICT_DIRS = ("col/f2/", "table/f2/", "core/f2/", "bm25/")
+STRICT_FIX = {
+    "raw_mwm": "read the budget with sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, ...)",
+    "rowbuf_unbudgeted": "flush the rows at a mem_bytes budget from sift_mem_budget_bytes(), or say what bounds them",
+    "rowbuf_notrim": "call sift_mem_release_os() after every flushed batch",
+}
+MESSAGES = {
+    "raw_mwm": "{n} site(s) of raw maintenance_work_mem (scripts/memory-static.allow allows {have}): use sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, ...) so that autovacuum_work_mem is honored",
+    "rowbuf_unbudgeted": "{n} sift_rowbuf_new() site(s) in a file with no memory budget (scripts/memory-static.allow allows {have}): flush the rows at a mem_bytes budget from sift_mem_budget_bytes(), or say what bounds them",
+    "rowbuf_notrim": "{n} sift_rowbuf_new() site(s) in a file that never calls sift_mem_release_os() (scripts/memory-static.allow allows {have}): return the memory of every flushed batch to the OS",
+}
 held = re.compile(r"\bSiftColRel\s*\*\s*\w+\s*=\s*sift_col_rel\(")
 
 
-def scan(src, allow=None):
+def code_of(line):
+    return STRING.sub('""', line).split("//")[0]
+
+
+def scan(src, allow=None, strict=False):
     bad, files = [], 0
     sites = collections.Counter()
     for root, _, names in os.walk(src):
@@ -60,15 +88,19 @@ def scan(src, allow=None):
                 lines = f.read().split("\n")
             files += 1
             allocs_ok = any("check-memory: allow-allocs" in l for l in lines[:40])
+            budgeted = bool(ROWBUF_BUDGET.search("\n".join(code_of(l) for l in lines)))
+            trims = any("sift_mem_release_os" in code_of(l) for l in lines)
             for i, line in enumerate(lines):
                 if "check-memory: allow" in line or (i and "check-memory: allow" in lines[i - 1]):
                     continue
-                code = line.split("//")[0]
+                code = code_of(line)
                 if code.lstrip().startswith(("/*", "*")):
                     continue
                 for rule, rx in STATIC_RULES.items():
-                    if rx.search(code) and rel not in STATIC_EXEMPT.get(rule, ()):
+                    if rx.search(BLOCK_COMMENT.sub("", code) if rule == "raw_mwm" else code) and rel not in STATIC_EXEMPT.get(rule, ()):
                         sites[(rule, rel)] += 1
+                if ROWBUF.search(code) and name.endswith(".c") and not name.endswith("_test.c") and rel != ROWBUF_OWNER and not (budgeted and trims):
+                    sites[("rowbuf_unbudgeted" if not budgeted else "rowbuf_notrim", rel)] += 1
                 if amcache.search(code) and rel not in AMCACHE_FILES:
                     bad.append(f"{rel}:{i + 1}: rd_amcache outside its accessors ({', '.join(sorted(AMCACHE_FILES))}): the relcache frees it on every reload, ask the accessor where it is used")
                 if held.search(code):
@@ -83,6 +115,9 @@ def scan(src, allow=None):
                     bad.append(f"{rel}:{i + 1}: inclusive loop over a 64-bit counter wraps when the bound is the largest value: count the iterations, or allow with the reason the bound is small")
     if allow is not None:
         bad += ratchet(sites, allow)
+    if strict:
+        bad += [f"{rel}: {n} site(s) of rule `{rule}` in a Format 2.0 or BM25 path, which no row of scripts/memory-static.allow excuses: " + STRICT_FIX[rule]
+                for (rule, rel), n in sorted(sites.items()) if rule in STRICT_RULES and rel.startswith(STRICT_DIRS)]
     return bad, files
 
 
@@ -92,6 +127,8 @@ def ratchet(sites, allow):
         have = allow.get((rule, rel), 0)
         if rule == "legacy" and n:
             bad.append(f"{rel}: {n} site(s) of a memory setting or limit that core/memtrack.h and core/cachebudget.h replaced: use the budget it was folded into, not the old name")
+        elif n > have and rule in MESSAGES:
+            bad.append(f"{rel}: " + MESSAGES[rule].format(n=n, have=have))
         elif n > have:
             bad.append(f"{rel}: {n} site(s) of rule `{rule}` (scripts/memory-static.allow allows {have}): fix the allocation to take the budget of its tracker or cache, do not add a row")
     for (rule, rel), have in sorted(allow.items()):
@@ -107,6 +144,36 @@ def read_allow(path):
             rule, rel, n = line.rstrip("\n").split("\t")
             allow[(rule, rel)] = int(n)
     return allow
+
+
+def selftest_rules():
+    cases = {
+        "core/memtrack.c": "w = maintenance_work_mem;\n",
+        "col/f2/msg.c": 'ereport(ERROR, (errmsg("raise maintenance_work_mem")));\nx = a; // maintenance_work_mem\nint n; /* the processes that share maintenance_work_mem */\n',
+        "col/f2/foo.c": "w = maintenance_work_mem;\n",
+        "col/f2/a.c": "rb = sift_rowbuf_new(cx, n);\n",
+        "col/f2/b.c": "rb = sift_rowbuf_new(cx, n);\nif (rb->mem_bytes >= budget)\n\tflush(rb);\n",
+        "col/f2/c.c": "rb = sift_rowbuf_new(cx, n);\nif (rb->mem_bytes >= budget)\n{\n\tflush(rb);\n\tsift_mem_release_os();\n}\n",
+        "col/f2/d.c": "/* check-memory: allow bounded to one granule */\nrb = sift_rowbuf_new(cx, 8192);\n",
+        "col/f2/rowbuf.c": "sift_rowbuf *sift_rowbuf_new(MemoryContext cx, int n)\n",
+        "col/f2/e_test.c": "rb = sift_rowbuf_new(cx, n);\n",
+        "col/v1/g.c": "w = maintenance_work_mem;\nrb = sift_rowbuf_new(cx, n);\n",
+    }
+    with tempfile.TemporaryDirectory() as d:
+        for name, text in cases.items():
+            os.makedirs(os.path.dirname(os.path.join(d, name)), exist_ok=True)
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        allow = {("raw_mwm", "col/v1/g.c"): 1, ("rowbuf_unbudgeted", "col/v1/g.c"): 1}
+        got = sorted(b.split(":")[0] for b in scan(d, allow)[0])
+        want = ["col/f2/a.c", "col/f2/b.c", "col/f2/foo.c"]
+        if got != want:
+            print(f"check-memory selftest: the budget rules flagged {got}, wanted {want}", file=sys.stderr)
+            sys.exit(1)
+        strict = sorted(b.split(":")[0] for b in scan(d, {**allow, ("raw_mwm", "col/f2/foo.c"): 1, ("rowbuf_unbudgeted", "col/f2/a.c"): 1, ("rowbuf_notrim", "col/f2/b.c"): 1}, True)[0])
+        if strict != want:
+            print(f"check-memory selftest: --strict flagged {strict}, wanted {want} (a row of a Format 2.0 file is no exemption, one of Format 1 is)", file=sys.stderr)
+            sys.exit(1)
 
 
 def selftest():
@@ -148,13 +215,14 @@ def selftest():
     if got != want:
         print(f"check-memory selftest: the memory rules flagged {got}, wanted {want}", file=sys.stderr)
         sys.exit(1)
+    selftest_rules()
     print("check-memory selftest: ok")
 
 
 if sys.argv[2] == "--selftest":
     selftest()
     sys.exit(0)
-bad, files = scan(sys.argv[1], read_allow(os.path.join(sys.argv[1], "..", "scripts", "memory-static.allow")))
+bad, files = scan(sys.argv[1], read_allow(os.path.join(sys.argv[1], "..", "scripts", "memory-static.allow")), sys.argv[2] == "--strict")
 for b in bad:
     print(b)
 if bad:
