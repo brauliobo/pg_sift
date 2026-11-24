@@ -116,7 +116,7 @@ pipe_new(OpenScan *os, SiftV6Group *group)
 
 	for (int i = 0; i < os->in.ncols; i++)
 		type[i] = os->in.col[i].type;
-	pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, group, os->in.ncols, type);
+	pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, group, NULL, os->in.ncols, type);
 	for (int i = 0; i < spec->nkeys; i++)
 		pipe->key_slot[i] = col_slot(os, &spec->key[i]);
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
@@ -166,7 +166,7 @@ sift_v6_open_scan_run(const SiftV6Spec *spec, SiftV6Group *group, const SiftStor
 		SiftV6Input probe = os->in;
 
 		probe.ncols = 0;
-		bq = sift_v6_bq_open(CurrentMemoryContext, spec->vqual, &probe, bq_col, os);
+		bq = sift_v6_bq_open(CurrentMemoryContext, spec->vqual, &probe, bq_col, os, spec->exec);
 	}
 	pipe = pipe_new(os, group);
 	for (int i = 0; i < os->in.ncols; i++)

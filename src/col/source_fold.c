@@ -126,7 +126,7 @@ setup_pipe(SiftSrcFold *f)
 
 	for (int i = 0; i < f->in.ncols; i++)
 		type[i] = f->in.col[i].type;
-	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, f->in.ncols, type);
+	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, NULL, f->in.ncols, type);
 	sift_v6_star_attach(f->a.star, f->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -207,7 +207,7 @@ setup_bq(SiftSrcFold *f)
 		sift_v6_input_init_table(&in, f->a.host);
 	else
 		sift_v6_input_init_rel(&in, f->a.host);
-	f->bq = sift_v6_bq_open(f->cx, clauses, &in, bq_col, f);
+	f->bq = sift_v6_bq_open(f->cx, clauses, &in, bq_col, f, f->a.spec->exec);
 }
 
 static void
