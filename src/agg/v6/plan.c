@@ -13,6 +13,7 @@
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_proc.h"
+#include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"

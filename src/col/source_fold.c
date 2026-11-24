@@ -90,7 +90,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 
 	if (c.derive > 0)
 		c = f->a.spec->derive[c.derive - 1].src;
-	cls = sift_v6_class(c.typid);
+	cls = c.typid == JSONBOID ? SV6C_DATUM : sift_v6_class(c.typid);
 	attno = c.jleaf > 0 ? SIFT_V6_JLEAF_VATT + c.jleaf - 1 : c.attno;
 	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
 	for (int i = 0; i < f->nfold; i++)
@@ -101,7 +101,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 		}
 	f->col[f->nfold] = (FoldCol) {.attno = attno,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
 	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,
-		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64};
+		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64};
 	return &f->col[f->nfold++];
 }
 

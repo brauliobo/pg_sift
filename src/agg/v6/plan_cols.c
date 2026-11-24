@@ -273,11 +273,27 @@ sift_v6_resolve_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out
 	return column_of(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
 }
 
+/* A jsonb document attribute the format hands over whole, as the Datum of its row, to the expressions PostgreSQL evaluates over it */
+static bool
+document_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	const Var  *v = (const Var *) e;
+	int			att;
+
+	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || v->vartype != JSONBOID)
+		return false;
+	att = host_attno(p, v->varattno);
+	if (att == 0 || !host_holds(p, att, SV6C_DATUM))
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = JSONBOID};
+	return true;
+}
+
 /* the columns of an expression PostgreSQL computes: a numeric and a type the native vectors do not hold are datums, so a NaN is the value it is */
 static bool
 resolve_datum_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	return datum_column_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
+	return datum_column_of(ctx, e, out) || document_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
 }
 
 static int
