@@ -343,6 +343,36 @@ asof_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 
 /* ---- the node ---- */
 
+/* the batches of dim in the order of its parts, as the (k, ts) rows the merge reads */
+typedef struct DimFeed
+{
+	SiftV6Source *src;
+	int			kslot;
+	int			tslot;
+	SiftV6Batch b;
+	int64		key[SIFT_VEC_LEN];
+	int64		ts[SIFT_VEC_LEN];
+	uint64		tag[SIFT_VEC_LEN];
+	uint64		kvalid[SIFT_VEC_WORDS];
+	uint64		tvalid[SIFT_VEC_WORDS];
+} DimFeed;
+
+/* One merge of the fact rows with dim: the rows must come in the order of (k, ts) */
+typedef struct Merge
+{
+	DimFeed    *feed;
+	SiftAsofStream *stream;
+} Merge;
+
+/* Where the node is: the fact rows that arrive in order of (k, ts) are merged as they come, the rest (sorted) after them */
+typedef enum AsofPhase
+{
+	ASOF_IDLE,
+	ASOF_IN_ORDER,
+	ASOF_SORTED,
+	ASOF_DONE
+} AsofPhase;
+
 typedef struct V6Asof
 {
 	CustomScanState css;
@@ -369,7 +399,11 @@ typedef struct V6Asof
 				prev_ts;
 	bool		prev_knull,
 				prev_tsnull;
-	SiftV6Store out;
+	MemoryContext cx;			/* one run: the merges and the rows of their streams */
+	MemoryContext row_cx;		/* what one row of the join takes */
+	AsofPhase	phase;
+	Merge		merge;
+	Tuplesortstate *rest;		/* the fact rows that did not arrive in order */
 	SiftAsofStats stats;
 	Datum	   *vals;
 	bool	   *nulls;
@@ -426,19 +460,6 @@ asof_begin(CustomScanState *node, EState *estate, int eflags)
 	st->dnulls = palloc(Max(st->nfetch, 1) * sizeof(bool));
 }
 
-/* the batches of dim in the order of its parts, as the (k, ts) rows the merge reads */
-typedef struct DimFeed
-{
-	SiftV6Source *src;
-	int			kslot;
-	int			tslot;
-	SiftV6Batch b;
-	int64		key[SIFT_VEC_LEN];
-	int64		ts[SIFT_VEC_LEN];
-	uint64		tag[SIFT_VEC_LEN];
-	uint64		kvalid[SIFT_VEC_WORDS];
-	uint64		tvalid[SIFT_VEC_WORDS];
-} DimFeed;
 
 static inline int64
 int_of(const SiftVec *v, uint32 r)
@@ -549,12 +570,6 @@ dim_input(const V6Asof *st, SiftV6Input *in)
 	relation_close(rel, NoLock);
 }
 
-/* One merge of the fact rows with dim: the rows must come in the order of (k, ts) */
-typedef struct Merge
-{
-	DimFeed    *feed;
-	SiftAsofStream *stream;
-} Merge;
 
 static Merge
 merge_open(V6Asof *st, EState *estate)
@@ -562,14 +577,14 @@ merge_open(V6Asof *st, EState *estate)
 	SiftV6Input in;
 	Var		   *kvar = makeVar(1, st->dim_k, st->ktyp, -1, InvalidOid, 0);
 	Var		   *tvar = makeVar(1, st->dim_ts, st->tstyp, -1, InvalidOid, 0);
-	Merge		m = {.feed = MemoryContextAllocZero(st->out.cx, sizeof(DimFeed))};
+	Merge		m = {.feed = MemoryContextAllocZero(st->cx, sizeof(DimFeed))};
 
 	dim_input(st, &in);
 	m.feed->kslot = sift_v6_input_add_var(&in, kvar);
 	m.feed->tslot = sift_v6_input_add_var(&in, tvar);
 	SIFT_INVARIANT(m.feed->kslot >= 0 && m.feed->tslot >= 0, "the asof join of relation %u does not read its keys", st->indexoid);
 	m.feed->src = sift_v6_rel_open(estate, &in, NULL, true);
-	m.stream = sift_asof_open(st->out.cx, st->spec, dim_next, m.feed);
+	m.stream = sift_asof_open(st->cx, st->spec, dim_next, m.feed);
 	return m;
 }
 
@@ -586,11 +601,12 @@ merge_close(V6Asof *st, Merge *m)
 	m->feed->src->close(m->feed->src);
 }
 
-/* The join row of one fact row: the match in dim and the columns it gives */
-static void
+/* The join row of one fact row, in the scan slot: the match in dim and the columns it gives; false when an inner join has none */
+static bool
 merge_row(V6Asof *st, Merge *m, TupleTableSlot *slot)
 {
-	const TupleDesc desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+	TupleTableSlot *out = st->css.ss.ss_ScanTupleSlot;
+	MemoryContext old;
 	bool		fetched = false;
 	SiftAsofHit hit;
 
@@ -599,76 +615,102 @@ merge_row(V6Asof *st, Merge *m, TupleTableSlot *slot)
 						  slot->tts_isnull[st->fact_ts - 1] ? 0 : int_datum(st->tstyp, slot->tts_values[st->fact_ts - 1]), slot->tts_isnull[st->fact_ts - 1]);
 	CHECK_FOR_INTERRUPTS();
 	if (!hit.found && !st->left)
-		return;
+		return false;
+	MemoryContextReset(st->row_cx);
+	old = MemoryContextSwitchTo(st->row_cx);
 	if (hit.found && st->nfetch > 0)
 		fetched = m->feed->src->fetch(m->feed->src, hit.tag, st->fetch, st->nfetch, st->dvals, st->dnulls);
+	MemoryContextSwitchTo(old);
+	ExecClearTuple(out);
 	for (int i = 0; i < st->nout; i++)
 	{
 		if (!st->dim[i])
 		{
-			st->vals[i] = slot->tts_values[st->col[i] - 1];
-			st->nulls[i] = slot->tts_isnull[st->col[i] - 1];
+			out->tts_values[i] = slot->tts_values[st->col[i] - 1];
+			out->tts_isnull[i] = slot->tts_isnull[st->col[i] - 1];
 		}
 		else
 		{
-			st->nulls[i] = !fetched || st->dnulls[st->fetch_at[i]];
-			st->vals[i] = st->nulls[i] ? (Datum) 0 : st->dvals[st->fetch_at[i]];
+			out->tts_isnull[i] = !fetched || st->dnulls[st->fetch_at[i]];
+			out->tts_values[i] = out->tts_isnull[i] ? (Datum) 0 : st->dvals[st->fetch_at[i]];
 		}
 	}
-	sift_v6_store_put(&st->out, desc, st->vals, st->nulls);
+	return ExecStoreVirtualTuple(out) != NULL;
+}
+
+static void
+asof_start(V6Asof *st, EState *estate)
+{
+	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
+	st->row_cx = AllocSetContextCreate(st->cx, "sift agg v6 tuple", ALLOCSET_SMALL_SIZES);
+	st->stats = (SiftAsofStats) {0};
+	st->have_prev = false;
+	st->merge = merge_open(st, estate);
+	st->phase = ASOF_IN_ORDER;
+}
+
+/* the sort of the rows that did not arrive in order is done: they are merged against dim read again */
+static void
+asof_sorted(V6Asof *st, EState *estate)
+{
+	merge_close(st, &st->merge);
+	st->merge = (Merge) {0};
+	if (st->rest == NULL)
+	{
+		st->phase = ASOF_DONE;
+		return;
+	}
+	tuplesort_performsort(st->rest);
+	st->merge = merge_open(st, estate);
+	st->phase = ASOF_SORTED;
 }
 
 /*
- * The fact rows that arrive in the order of (k, ts) are merged as they come, with no sort; the first row that does not ends that run, and it and every row after it are sorted and merged
- * against dim read again (a second merge: the answer of a fact row does not depend on the others, only the order the merge reads them in does).
+ * The fact rows that arrive in the order of (k, ts) are merged as they come, with no sort, and each gives its row to the caller at once; the first row that does not ends that run, and it and
+ * every row after it are sorted and merged against dim read again (a second merge: the answer of a fact row does not depend on the others, only the order the merge reads them in does).
  */
-static void
-asof_run(V6Asof *st, EState *estate)
-{
-	Merge		m;
-	Tuplesortstate *rest = NULL;
-
-	sift_v6_store_start(&st->out, estate);
-	st->stats = (SiftAsofStats) {0};
-	st->have_prev = false;
-	m = merge_open(st, estate);
-	for (;;)
-	{
-		TupleTableSlot *slot = ExecProcNode(st->fps);
-
-		if (TupIsNull(slot))
-			break;
-		CHECK_FOR_INTERRUPTS();
-		slot_getallattrs(slot);
-		if (rest == NULL && fact_in_order(st, slot))
-			merge_row(st, &m, slot);
-		else
-		{
-			rest = rest != NULL ? rest : sort_begin(st);
-			tuplesort_puttupleslot(rest, slot);
-		}
-	}
-	merge_close(st, &m);
-	if (rest != NULL)
-	{
-		tuplesort_performsort(rest);
-		m = merge_open(st, estate);
-		while (tuplesort_gettupleslot(rest, true, false, st->fslot, NULL))
-			merge_row(st, &m, st->fslot);
-		merge_close(st, &m);
-		tuplesort_end(rest);
-	}
-	st->out.ran = true;
-}
-
 static TupleTableSlot *
 asof_next(ScanState *ss)
 {
 	V6Asof	   *st = (V6Asof *) ss;
+	EState	   *estate = ss->ps.state;
 
-	if (!st->out.ran)
-		asof_run(st, ss->ps.state);
-	return sift_v6_store_get(&st->out, ss->ss_ScanTupleSlot);
+	if (st->phase == ASOF_IDLE)
+		asof_start(st, estate);
+	while (st->phase == ASOF_IN_ORDER)
+	{
+		TupleTableSlot *slot = ExecProcNode(st->fps);
+
+		if (TupIsNull(slot))
+		{
+			asof_sorted(st, estate);
+			break;
+		}
+		CHECK_FOR_INTERRUPTS();
+		slot_getallattrs(slot);
+		if (st->rest == NULL && fact_in_order(st, slot))
+		{
+			if (merge_row(st, &st->merge, slot))
+				return ss->ss_ScanTupleSlot;
+			continue;
+		}
+		if (st->rest == NULL)
+			st->rest = sort_begin(st);
+		tuplesort_puttupleslot(st->rest, slot);
+	}
+	while (st->phase == ASOF_SORTED)
+	{
+		if (!tuplesort_gettupleslot(st->rest, true, false, st->fslot, NULL))
+		{
+			merge_close(st, &st->merge);
+			st->merge = (Merge) {0};
+			st->phase = ASOF_DONE;
+			break;
+		}
+		if (merge_row(st, &st->merge, st->fslot))
+			return ss->ss_ScanTupleSlot;
+	}
+	return NULL;
 }
 
 static bool
@@ -684,42 +726,64 @@ asof_exec(CustomScanState *node)
 }
 
 static void
+asof_release(V6Asof *st)
+{
+	if (st->merge.stream != NULL)
+		merge_close(st, &st->merge);
+	if (st->rest != NULL)
+		tuplesort_end(st->rest);
+	if (st->cx != NULL)
+		MemoryContextDelete(st->cx);
+	st->merge = (Merge) {0};
+	st->rest = NULL;
+	st->cx = st->row_cx = NULL;
+	st->phase = ASOF_IDLE;
+}
+
+static void
 asof_end(CustomScanState *node)
 {
 	V6Asof	   *st = (V6Asof *) node;
 
-	sift_v6_store_end(&st->out);
+	asof_release(st);
 	ExecDropSingleTupleTableSlot(st->fslot);
 	ExecEndNode(st->fps);
 }
 
+/* a scan again runs the join again over the fact rows scanned again: the rows are given as they are made and are not kept */
 static void
 asof_rescan(CustomScanState *node)
 {
 	V6Asof	   *st = (V6Asof *) node;
-	const bool	changed = node->ss.ps.chgParam != NULL;
 
-	if (changed)
-	{
+	asof_release(st);
+	if (node->ss.ps.chgParam != NULL)
 		UpdateChangedParamSet(st->fps, node->ss.ps.chgParam);
-		if (st->fps->chgParam == NULL)
-			ExecReScan(st->fps);
-	}
-	sift_v6_store_rescan(&st->out, changed);
+	if (st->fps->chgParam == NULL)
+		ExecReScan(st->fps);
 }
 
 static void
 asof_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	V6Asof	   *st = (V6Asof *) node;
+	SiftAsofStats s = st->stats;
 
 	ExplainPropertyText(st->is_table ? "Table" : "Index", get_rel_name(st->indexoid), es);
 	ExplainPropertyText("Direction", st->spec.dir == SIFT_ASOF_BACKWARD ? (st->spec.strict ? "Backward, strict" : "Backward") : (st->spec.strict ? "Forward, strict" : "Forward"), es);
-	if (st->out.ran)
+	if (st->merge.stream != NULL)
 	{
-		sift_v6_explain_count(es, "Fact Rows", (int64) st->stats.fact_rows);
-		sift_v6_explain_count(es, "Dim Rows Read", (int64) st->stats.dim_rows);
-		sift_v6_explain_count(es, "Matched", (int64) st->stats.matched);
+		const SiftAsofStats *live = sift_asof_stats(st->merge.stream);
+
+		s.fact_rows += live->fact_rows;
+		s.dim_rows += live->dim_rows;
+		s.matched += live->matched;
+	}
+	if (st->phase != ASOF_IDLE || s.fact_rows > 0)
+	{
+		sift_v6_explain_count(es, "Fact Rows", (int64) s.fact_rows);
+		sift_v6_explain_count(es, "Dim Rows Read", (int64) s.dim_rows);
+		sift_v6_explain_count(es, "Matched", (int64) s.matched);
 	}
 }
 
@@ -738,7 +802,7 @@ asof_create_state(CustomScan *cscan)
 	V6Asof	   *st = (V6Asof *) newNode(sizeof(V6Asof), T_CustomScanState);
 
 	st->css.methods = &asof_exec_methods;
-	st->css.slotOps = &TTSOpsMinimalTuple;
+	st->css.slotOps = &TTSOpsVirtual;
 	return (Node *) st;
 }
 
