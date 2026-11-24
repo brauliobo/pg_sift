@@ -396,9 +396,11 @@ BEGIN
 	RETURN n;
 END $$;
 
--- every sets x the rows that are fed in batches of 1, 7 and 2048 x the leaf sets or every set from the rows x with count(DISTINCT) or without x with a WHERE or without
+-- every sets x the rows that are fed in batches of 1, 7 and 2048 x the leaf sets or every set from the rows x with count(DISTINCT) or without x with a WHERE or without (each batch meets both values of each
+-- of the three: the batch of the case is the number of its true flags, modulo 3)
 SELECT count(*) AS cases, count(*) FILTER (WHERE rollup_diff('rd', sets, masks, prehash, batch, dist, act) > 0) AS differ
-FROM rsets, unnest(ARRAY[1, 7, 2048]) AS batch, (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist), (VALUES (false), (true)) AS a(act);
+FROM rsets, unnest(ARRAY[1, 7, 2048]) WITH ORDINALITY AS b(batch, bi), (VALUES (false), (true)) AS p(prehash), (VALUES (false), (true)) AS d(dist), (VALUES (false), (true)) AS a(act)
+WHERE bi - 1 = (prehash::int + dist::int + act::int) % 3;
 -- many groups: the tables grow, count(DISTINCT) of values with many repeats
 SET work_mem = '64MB';
 SELECT sets, rollup_diff('rbig', sets, masks, prehash, 2048, dist, true) AS wrong
