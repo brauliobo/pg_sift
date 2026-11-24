@@ -811,9 +811,9 @@ sift_v6_vexpr_filter(SiftVexprCtx *ctx, const SiftV6Vexpr *quals, const SiftV6Ba
 }
 
 void
-sift_v6_explain_index(ExplainState *es, Oid indexoid)
+sift_v6_explain_index(ExplainState *es, Oid relid, bool is_table)
 {
-	ExplainPropertyText("Index", get_rel_name(indexoid), es);
+	ExplainPropertyText(is_table ? "Table" : "Index", get_rel_name(relid), es);
 }
 
 void

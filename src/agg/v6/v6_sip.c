@@ -500,7 +500,7 @@ sip_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	SipState   *st = (SipState *) node;
 
-	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)));
+	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), false);
 	ExplainPropertyList("Lookup Joins", list_make1(get_rel_name((Oid) list_nth_int(linitial(st->priv), 2))), es);
 	if (st->ran)
 	{

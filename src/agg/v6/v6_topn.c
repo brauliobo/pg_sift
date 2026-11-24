@@ -588,7 +588,7 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	TopNState  *st = (TopNState *) node;
 
-	sift_v6_explain_index(es, st->spec->indexoid);
+	sift_v6_explain_index(es, st->spec->indexoid, false);
 	sift_v6_topn_explain(es, st->spec->desc, sift_v6_topn_limit_text(st->spec->limit, st->spec->offset));
 	sift_v6_gpu_explain(&st->gpu, es);
 	sift_v6_explain_topn_rows(st->spec, es);

@@ -13,6 +13,8 @@
 #include "col/am.h"
 #include "core/store_ops.h"
 
+struct SiftV6RelSource;
+
 typedef struct V6Plan
 {
 	PlannerInfo *root;
@@ -56,8 +58,8 @@ extern bool sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group
 /* Whether a row the source gives may be left out after it, by a batch qual, a FILTER or a join, or a text bridge folds the rows: a plan that read members (p->members) is compiled again without them */
 extern bool sift_v6_members_dropped(const V6Plan *p);
 
-/* The group path of the statement over one index: compiled with the members of a map as columns of the scan, and again without them when the plan drops rows after the source (plan_hybrid.c) */
-extern void sift_v6_index_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, IndexOptInfo *ix, GroupPathExtraData *extra, List *group_exprs);
+/* The group path of the statement over one source: compiled with the members of a map as columns of the scan, and again without them when the plan drops rows after the source (plan_hybrid.c) */
+extern void sift_v6_source_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const struct SiftV6RelSource *s, GroupPathExtraData *extra, List *group_exprs);
 
 /* Compiles the keys, sets and aggregates of the statement, not its quals, against p->index; the caller's scan brings the rows (plan_hybrid.c) */
 extern bool sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);

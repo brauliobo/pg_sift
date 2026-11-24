@@ -57,6 +57,7 @@
 #include "agg/v6/v6_open_scan.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_qual.h"
+#include "agg/v6/v6_source_rel.h"
 #include "col/am.h"
 #include "col/am/preds.h"
 #include "col/col.h"
@@ -642,26 +643,15 @@ sift_v6_group_path_methods(void)
 	return &v6_path_methods;
 }
 
-/* The paths of the one table of input_rel: its table, or each index of it that holds what the statement reads; extra is NULL below the grouping stage (SELECT DISTINCT) */
+/* The paths of the one relation of input_rel: its table, or each index of it that holds what the statement reads; extra is NULL below the grouping stage (SELECT DISTINCT) */
 void
 sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
 {
-	RangeTblEntry *rte = planner_rt_fetch(input_rel->relid, root);
-	List	   *having = extra != NULL ? (List *) extra->havingQual : NIL;
-	Relation	heap = table_open(rte->relid, AccessShareLock);
+	int			nsrc;
+	SiftV6RelSource *src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 
-	if (sift_v6_rel_owned(rte->relid, true))
-	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.batch_ok = true};
-
-		if (sift_v6_plan_table(&p, rte->relid) && sift_v6_compile_on(&p, extra, group_exprs))
-			sift_v6_add_group_path(&p, output_rel, group_exprs, having);
-	}
-	else
-		foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
-			if (sift_v6_index_owned(ix))
-				sift_v6_index_group_path(root, input_rel, output_rel, ix, extra, group_exprs);
-	table_close(heap, NoLock);
+	for (int i = 0; i < nsrc; i++)
+		sift_v6_source_group_path(root, input_rel, output_rel, &src[i], extra, group_exprs);
 }
 
 /* A partitionwise aggregate plans each partition under the root of the parent: the expressions of the statement name the parent, and those of a partition its own columns */

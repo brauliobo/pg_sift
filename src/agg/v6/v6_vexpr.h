@@ -128,8 +128,8 @@ extern TupleTableSlot *sift_v6_store_get(SiftV6Store *s, TupleTableSlot *slot);
 extern void sift_v6_store_rescan(SiftV6Store *s, bool params_changed);
 extern void sift_v6_store_end(SiftV6Store *s);
 
-/* EXPLAIN lines of an operator: the index it reads and a count it kept */
-extern void sift_v6_explain_index(ExplainState *es, Oid indexoid);
+/* EXPLAIN lines of an operator: the index (or, is_table, the sift_table) it reads and a count it kept */
+extern void sift_v6_explain_index(ExplainState *es, Oid relid, bool is_table);
 extern void sift_v6_explain_count(ExplainState *es, const char *label, int64 value);
 
 /* The plan of an operator of the bridge over a table's index: an index owned by the format that holds every column; false when the relation is not a plain table read as a base relation */

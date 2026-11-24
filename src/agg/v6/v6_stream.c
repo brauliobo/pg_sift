@@ -722,7 +722,7 @@ stream_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	StreamState *st = (StreamState *) node;
 
-	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)));
+	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), false);
 	if (st->out.ran)
 		sift_v6_explain_count(es, "Groups", (int64) st->groups);
 }

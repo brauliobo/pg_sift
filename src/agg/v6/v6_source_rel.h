@@ -1,0 +1,44 @@
+/*
+ * agg/v6/v6_source_rel.h - the relations an operator of SiftAggV6 may scan for a base relation of the query: the relation itself when a store format owns it as a sift_table, and each sift_col index
+ * a format owns on it (a sift_table has no sift_col index, so a base relation has one kind of source). The planner asks what the sources are; the executor opens one by its oid and kind.
+ */
+#ifndef SIFT_AGG_V6_SOURCE_REL_H
+#define SIFT_AGG_V6_SOURCE_REL_H
+
+#include "postgres.h"
+
+#include "nodes/pathnodes.h"
+#include "storage/lockdefs.h"
+#include "utils/rel.h"
+
+#include "agg/v6/plan_int.h"
+#include "agg/v6/v6_vexpr.h"
+
+typedef struct SiftV6RelSource
+{
+	Oid			reloid;			/* what the scan reads: the sift_table, or the sift_col index */
+	Oid			heapoid;		/* the table of the base relation */
+	bool		is_table;
+	Index		scan_relid;		/* the range table index of the base relation */
+	SiftV6Input input;			/* its columns, as the batches of the scan give them */
+	IndexOptInfo *ix;			/* the index; NULL for a sift_table */
+} SiftV6RelSource;
+
+/* The room of the sources of a relation: the table and every index of it */
+#define SIFT_V6_REL_SOURCE_CAP(rel)	(1 + list_length((rel)->indexlist))
+
+/* The base relation is a sift_table a store format scans, or has an index of one: an operator has something to scan */
+extern bool sift_v6_rel_has_source(PlannerInfo *root, RelOptInfo *rel);
+
+/* The sources of the relation, the table first, then its indexes; out has room for max_out (SIFT_V6_REL_SOURCE_CAP); the number of them */
+extern int	sift_v6_rel_sources(PlannerInfo *root, RelOptInfo *rel, SiftV6RelSource *out, int max_out);
+extern SiftV6RelSource *sift_v6_rel_sources_alloc(PlannerInfo *root, RelOptInfo *rel, int *n);
+
+/* The relation of a source: the table or the index, with its input made when in_out is given; closed by sift_v6_source_close with the kind it was opened as */
+extern Relation sift_v6_source_open(Oid reloid, bool is_table, LOCKMODE lockmode, SiftV6Input *in_out);
+extern void sift_v6_source_close(Relation rel, bool is_table, LOCKMODE lockmode);
+
+/* Binds the plan to a source of its relation, opened as rel: its oid, index and the format that owns it; false when no format scans it */
+extern bool sift_v6_plan_bind(V6Plan *p, const SiftV6RelSource *s, Relation rel);
+
+#endif							/* SIFT_AGG_V6_SOURCE_REL_H */

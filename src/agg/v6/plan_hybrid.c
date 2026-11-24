@@ -10,6 +10,7 @@
 #include "parser/parsetree.h"
 
 #include "agg/v6/plan_int.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "bm25/planner.h"
 
@@ -53,17 +54,16 @@ sift_v6_members_dropped(const V6Plan *p)
 
 /* the members of a map are read from the leaves of the index; a plan that drops rows after the source reads them from the document, as PostgreSQL does for the rows it reads */
 void
-sift_v6_index_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, IndexOptInfo *ix, GroupPathExtraData *extra, List *group_exprs)
+sift_v6_source_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const SiftV6RelSource *s, GroupPathExtraData *extra, List *group_exprs)
 {
-	Relation	irel = index_open(ix->indexoid, AccessShareLock);
+	Relation	rel = sift_v6_source_open(s->reloid, s->is_table, AccessShareLock, NULL);
 
 	for (bool members = true;; members = false)
 	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true,.members = members};
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.batch_ok = true,.members = members};
 		bool		ok;
 
-		sift_v6_plan_index(&p, irel);
-		if (p.ops == NULL || sift_v6_mapkey_paths(&p, extra, group_exprs))
+		if (!sift_v6_plan_bind(&p, s, rel) || (!s->is_table && sift_v6_mapkey_paths(&p, extra, group_exprs)))
 			break;
 		ok = sift_v6_compile_on(&p, extra, group_exprs);
 		if (members && p.spec.jmembers != NIL && (!ok || sift_v6_members_dropped(&p)))
@@ -72,7 +72,7 @@ sift_v6_index_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *o
 			sift_v6_add_group_path(&p, output_rel, group_exprs, extra != NULL ? (List *) extra->havingQual : NIL);
 		break;
 	}
-	index_close(irel, NoLock);
+	sift_v6_source_close(rel, s->is_table, NoLock);
 }
 
 bool

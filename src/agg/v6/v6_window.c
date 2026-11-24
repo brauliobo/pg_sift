@@ -969,7 +969,7 @@ window_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	WindowState *st = (WindowState *) node;
 
-	sift_v6_explain_index(es, (Oid) list_nth_int(linitial(st->priv), 0));
+	sift_v6_explain_index(es, (Oid) list_nth_int(linitial(st->priv), 0), false);
 	if (st->out.ran)
 	{
 		sift_v6_explain_count(es, "Rows In", (int64) st->stats.rows_in);
