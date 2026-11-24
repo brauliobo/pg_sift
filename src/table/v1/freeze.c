@@ -12,6 +12,7 @@
 #include "col/am.h"
 #include "col/v1/seg.h"
 #include "core/maint.h"
+#include "core/memtrack.h"
 #include "bm25/merge.h"
 #include "table/v1/table_v1.h"
 #include "table/v1/seg_int.h"
@@ -265,18 +266,21 @@ sift_tbl_drop_dead_groups(Relation rel, SiftTblRel *st)
 	SiftSegEntry *gone;
 	int			n = 0;
 	SiftMaintInputs mi;
+	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift_table segment pass");
 
 	sift_tbl_refresh(rel, st);
 	gone = palloc(Max(st->dir->nsegs, 1) * sizeof(SiftSegEntry));
 	for (int i = 0; i < st->dir->nsegs; i++)
 		if (may_be_all_dead(&st->dir->segs[i]))
 		{
-			SiftColSegment *seg = sift_cseg_open(rel, &st->dir->segs[i], CurrentMemoryContext);
+			SiftColSegment *seg = sift_cseg_open(rel, &st->dir->segs[i], segcx);
 
 			if (sift_cseg_live_rows(seg) == 0)
 				gone[n++] = st->dir->segs[i];
 			sift_cseg_close(seg);
+			MemoryContextReset(segcx);
 		}
+	MemoryContextDelete(segcx);
 	if (n == 0)
 		return 0;
 	mi = sift_maint_inputs(rel, gone, n);
@@ -331,6 +335,7 @@ double
 sift_tbl_group_live_rows(Relation rel, SiftTblRel *st)
 {
 	double		n = 0;
+	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift_table segment pass");
 
 	for (int i = 0; i < st->dir->nsegs; i++)
 	{
@@ -342,12 +347,14 @@ sift_tbl_group_live_rows(Relation rel, SiftTblRel *st)
 			n += unfrozen_live_rows(rel, e);
 		else
 		{
-			SiftColSegment *seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+			SiftColSegment *seg = sift_cseg_open(rel, e, segcx);
 
 			n += sift_cseg_live_rows(seg);
 			sift_cseg_close(seg);
+			MemoryContextReset(segcx);
 		}
 	}
+	MemoryContextDelete(segcx);
 	return n;
 }
 
@@ -355,6 +362,7 @@ int64
 sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback cb, void *state, uint32 sb_lo, uint32 sb_hi)
 {
 	IndexBulkDeleteResult stats = {0};
+	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift_table segment pass");
 
 	for (int i = 0; i < st->dir->nsegs; i++)
 	{
@@ -363,10 +371,12 @@ sift_tbl_group_bulkdelete(Relation rel, SiftTblRel *st, IndexBulkDeleteCallback 
 
 		if (e->kind != SIFT_SEG_IMMUTABLE || e->sb_hi < sb_lo || e->sb_lo > sb_hi)
 			continue;
-		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+		seg = sift_cseg_open(rel, e, segcx);
 		sift_cseg_bulkdelete(seg, cb, state, &stats);
 		sift_cseg_close(seg);
+		MemoryContextReset(segcx);
 	}
+	MemoryContextDelete(segcx);
 	return (int64) stats.tuples_removed;
 }
 
@@ -414,6 +424,7 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 	uint64		best_dead = 0,
 				best_docs = 1;
 	int			n = 0;
+	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift_table segment pass");
 
 	for (int i = 0; i < st->dir->nsegs; i++)
 	{
@@ -423,9 +434,10 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 
 		if (e->kind != SIFT_SEG_IMMUTABLE || !(e->flags & SIFT_SEG_DIRTY) || schema_of(rel, st, e)->hash != l->schema->hash)
 			continue;
-		seg = sift_cseg_open(rel, e, CurrentMemoryContext);
+		seg = sift_cseg_open(rel, e, segcx);
 		dead = e->ndocs - sift_cseg_live_rows(seg);
 		sift_cseg_close(seg);
+		MemoryContextReset(segcx);
 		if (dead * 100 > (uint64) e->ndocs * sift_tbl_opt_int(st, SIFT_TBLOPT_DEAD_REWRITE_PCT) && dead * best_docs > best_dead * e->ndocs)
 		{
 			sel[0] = *e;
@@ -434,6 +446,7 @@ merge_most_dead(Relation rel, SiftTblRel *st, SiftSegEntry *sel)
 			n = 1;
 		}
 	}
+	MemoryContextDelete(segcx);
 	return n;
 }
 
