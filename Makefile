@@ -826,6 +826,7 @@ TESTING_REGRESS += v1_unified_jsonb_typeof
 TESTING_REGRESS += v1_unified_preagg_cube
 TESTING_REGRESS += v1_unified_rows_scankey
 TESTING_REGRESS += v1_unified_scan
+TESTING_REGRESS += v1_unified_star_keys
 TESTING_REGRESS += v1_unified_text_rows
 TESTING_REGRESS += v1_unified_topn_rows
 ifdef SIFT_SB_SHIFT
