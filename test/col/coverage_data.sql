@@ -1,8 +1,16 @@
 -- Tables and indexes of the coverage proofs on top of test/col/fixture.sql: the conventional indexes and the column indexes of the fixture
 -- tables (as scripts/coldiff.sh, plus customer_id), one column of every type PostgreSQL has a common use for, a sift_table with them all,
 -- a table in every heap state, and the search objects (keyword index, partitions, autocomplete) of the BM25 rows.
---   psql -f coverage_data.sql           (after fixture.sql)
+--   psql [-v n=3000] -f coverage_data.sql           (after fixture.sql; n scales the tables, the default 3000 is the size of the proofs)
 \set ON_ERROR_STOP on
+\if :{?n}
+\else
+\set n 3000
+\endif
+SELECT greatest(200, :n / 15) AS tail_tt, greatest(300, :n / 10) AS tail_gt, greatest(100, :n / 30) AS tail_tc, greatest(2000, :n * 2 / 3) AS n2,
+	greatest(1000, :n / 3) AS n3, greatest(600, :n / 5) AS n5, greatest(400, :n * 2 / 15) AS n7 \gset
+SELECT greatest(300, :n2 * 3 / 20) AS tail_dml \gset
+SELECT greatest(5000, :n2 + :tail_dml + 1000) AS rb_base \gset
 
 ALTER TABLE orders ADD PRIMARY KEY (id);
 CREATE INDEX orders_store_id_placed_at_index ON orders USING btree (tenant_id, placed_at, deleted_at);
@@ -45,7 +53,7 @@ SELECT i, i % 7, (i % 100)::int2, i, i * 1000000000::bigint, ((i % 50) / 4.0)::f
 	time '00:00' + (i % 24) * interval '1 hour', (i % 30) * interval '1 day',
 	md5((i % 25)::text)::uuid, ((i % 100) / 4.0)::numeric::money, (ARRAY['red', 'green', 'blue'])[1 + i % 3]::cv_color,
 	ARRAY[i % 5, i % 3], jsonb_build_object('k', i % 4, 'tags', jsonb_build_array(i % 3, i % 5))
-FROM generate_series(1, 3000) i;
+FROM generate_series(1, :n) i;
 CREATE INDEX cv_types_col ON cv_types USING sift_col (id, grp, i2, i4, i8, f4, f8, n2, n15, n18, n38, nfree, tx, vc, b, d, ts, tstz, ch, m, iv, ba, tm, u, e, ia);
 
 -- the network, time zone and bit string types, as images of the value
@@ -57,24 +65,24 @@ INSERT INTO cv_net SELECT i, i % 7,
 	(ARRAY['08:00:2b:01:02:03:04:05', 'aabbccddeeff0011'])[1 + i % 2]::macaddr8,
 	(ARRAY['12:00+01', '11:00+00', '24:00:00-15:59', '04:05:06.5-03'])[1 + i % 4]::timetz,
 	(ARRAY[B'00000000', B'00000001', B'11111111'])[1 + i % 3], (ARRAY['', '0', '00', '101'])[1 + i % 4]::varbit
-FROM generate_series(1, 3000) i;
+FROM generate_series(1, :n) i;
 CREATE INDEX cv_net_col ON cv_net USING sift_col (id, grp, ip, cd, mac, mac8, tz, b, vb);
 
 -- the same rows in a sift_table (every type is kept exactly), sealed into column groups
 CREATE TABLE cv_tt USING sift_table AS SELECT * FROM cv_types;
 VACUUM cv_tt;
 -- rows in the write buffer and tombstones next to the sealed groups, and a BM25 index on a sift_table
-INSERT INTO cv_tt SELECT 3000 + i, i % 7, (i % 100)::int2, i, i, i / 4.0, i / 4.0, i / 7.0, i / 3.0, i / 11.0, i, i, 'tx' || (i % 40), 'vc' || (i % 12), 'c' || (i % 9),
+INSERT INTO cv_tt SELECT :n + i, i % 7, (i % 100)::int2, i, i, i / 4.0, i / 4.0, i / 7.0, i / 3.0, i / 11.0, i, i, 'tx' || (i % 40), 'vc' || (i % 12), 'c' || (i % 9),
 	decode(md5(i::text), 'hex'), true, date '2024-06-01', timestamp '2024-06-01', timestamptz '2024-06-01+00', time '12:00', interval '1 day',
-	md5(i::text)::uuid, 1::money, 'red', ARRAY[i], '{}' FROM generate_series(1, 200) i;
+	md5(i::text)::uuid, 1::money, 'red', ARRAY[i], '{}' FROM generate_series(1, :tail_tt) i;
 DELETE FROM cv_tt WHERE id % 50 = 0;
 CREATE INDEX cv_tt_tx_fts ON cv_tt USING sift (tx);
 
 -- a sift_table with a stored generated column (K16), part of it in the write buffer
 CREATE TABLE cv_gt (id int, ts timestamp, v int, mon date GENERATED ALWAYS AS (date_trunc('month', ts)::date) STORED) USING sift_table;
-INSERT INTO cv_gt (id, ts, v) SELECT i, '2024-01-01'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, 3000) i;
+INSERT INTO cv_gt (id, ts, v) SELECT i, '2024-01-01'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, :n) i;
 VACUUM cv_gt;
-INSERT INTO cv_gt (id, ts, v) SELECT 3000 + i, '2025-02-01'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, 300) i;
+INSERT INTO cv_gt (id, ts, v) SELECT :n + i, '2025-02-01'::timestamp + (i || ' hours')::interval, i FROM generate_series(1, :tail_gt) i;
 
 -- a numeric NaN, which the column index stores as NULL with an overflow flag
 CREATE TABLE cv_nan (g int, n numeric(10,2));
@@ -88,18 +96,18 @@ CREATE AGGREGATE cv_sum_all(VARIADIC int[]) (sfunc = cv_add, stype = bigint, ini
 
 -- a table in every heap state: indexed and vacuumed, then rows the visibility map does not cover (inserted, updated, deleted, rolled back)
 CREATE TABLE cv_dml (id int PRIMARY KEY, grp int, v int, f float8, tx text);
-INSERT INTO cv_dml SELECT i, i % 5, i, i / 3.0, 'x' || (i % 8) FROM generate_series(1, 2000) i;
+INSERT INTO cv_dml SELECT i, i % 5, i, i / 3.0, 'x' || (i % 8) FROM generate_series(1, :n2) i;
 CREATE INDEX cv_dml_col ON cv_dml USING sift_col (id, grp, v, f, tx);
 VACUUM (FREEZE, ANALYZE) cv_dml;
-INSERT INTO cv_dml SELECT 2000 + i, i % 5, i, i / 3.0, 'y' || (i % 8) FROM generate_series(1, 300) i;
-UPDATE cv_dml SET v = v + 1000, tx = 'u' WHERE id % 20 = 0 AND id <= 2000;
-DELETE FROM cv_dml WHERE id % 25 = 1 AND id <= 2000;
-BEGIN; INSERT INTO cv_dml SELECT 5000 + i, 9, i, i, 'gone' FROM generate_series(1, 100) i; ROLLBACK;
+INSERT INTO cv_dml SELECT :n2 + i, i % 5, i, i / 3.0, 'y' || (i % 8) FROM generate_series(1, :tail_dml) i;
+UPDATE cv_dml SET v = v + 1000, tx = 'u' WHERE id % 20 = 0 AND id <= :n2;
+DELETE FROM cv_dml WHERE id % 25 = 1 AND id <= :n2;
+BEGIN; INSERT INTO cv_dml SELECT :rb_base + i, 9, i, i, 'gone' FROM generate_series(1, 100) i; ROLLBACK;
 
 -- a table with row-level security
 CREATE ROLE sift_cov_user NOLOGIN;
 CREATE TABLE cv_rls (id int, grp int, v int);
-INSERT INTO cv_rls SELECT i, i % 4, i FROM generate_series(1, 1000) i;
+INSERT INTO cv_rls SELECT i, i % 4, i FROM generate_series(1, :n3) i;
 CREATE INDEX cv_rls_col ON cv_rls USING sift_col (id, grp, v);
 ALTER TABLE cv_rls ENABLE ROW LEVEL SECURITY;
 CREATE POLICY cv_rls_all ON cv_rls USING (true);
@@ -112,27 +120,27 @@ CREATE INDEX orders_placed_at ON orders (placed_at);
 CREATE TABLE cv_logs (id int, region text, msg text) PARTITION BY LIST (region);
 CREATE TABLE cv_logs_eu PARTITION OF cv_logs FOR VALUES IN ('eu');
 CREATE TABLE cv_logs_us PARTITION OF cv_logs FOR VALUES IN ('us');
-INSERT INTO cv_logs SELECT i, CASE WHEN i % 2 = 0 THEN 'eu' ELSE 'us' END, 'disk full on node ' || i % 10 FROM generate_series(1, 1000) i;
+INSERT INTO cv_logs SELECT i, CASE WHEN i % 2 = 0 THEN 'eu' ELSE 'us' END, 'disk full on node ' || i % 10 FROM generate_series(1, :n3) i;
 CREATE INDEX cv_logs_msg ON cv_logs USING sift (msg);
 CREATE TABLE cv_places (id int PRIMARY KEY, name text, admin1 text, country text);
 INSERT INTO cv_places SELECT i, (ARRAY['Greenville', 'Greenwich', 'Hollis', 'Holland', 'Grover', 'Hope'])[1 + i % 6] || ' ' || i,
-	(ARRAY['North', 'South'])[1 + i % 2], (ARRAY['US', 'GB', 'NL'])[1 + i % 3] FROM generate_series(1, 600) i;
+	(ARRAY['North', 'South'])[1 + i % 2], (ARRAY['US', 'GB', 'NL'])[1 + i % 3] FROM generate_series(1, :n5) i;
 CREATE INDEX cv_places_sift ON cv_places USING sift ((name || chr(29) || admin1 || ' ' || country)) WITH (fields = 'name', prefix_index = 3);
 CREATE TABLE cv_stem (id int PRIMARY KEY, body text);
-INSERT INTO cv_stem SELECT i, (ARRAY['runners were running', 'she runs every day', 'a quiet pond', 'cafes near the office'])[1 + i % 4] FROM generate_series(1, 400) i;
+INSERT INTO cv_stem SELECT i, (ARRAY['runners were running', 'she runs every day', 'a quiet pond', 'cafes near the office'])[1 + i % 4] FROM generate_series(1, :n7) i;
 CREATE INDEX cv_stem_body ON cv_stem USING sift (body) WITH (stemmer = 'en');
 -- tables of the doc-claim rows (D, L, S rows): the probes of test/col/coverage.sql and the `pre` lines of the table run on them
 CREATE EXTENSION dblink;
 CREATE EXTENSION pageinspect;
 CREATE EXTENSION pg_walinspect;
 CREATE TABLE cv_snap (id int, grp int, v int);
-INSERT INTO cv_snap SELECT i, i % 5, i FROM generate_series(1, 2000) i;
+INSERT INTO cv_snap SELECT i, i % 5, i FROM generate_series(1, :n2) i;
 CREATE INDEX cv_snap_col ON cv_snap USING sift_col (id, grp, v);
 CREATE TABLE cv_hot (id int PRIMARY KEY, grp int, v int, pad text) WITH (fillfactor = 50);
-INSERT INTO cv_hot SELECT i, i % 5, i, 'p' FROM generate_series(1, 2000) i;
+INSERT INTO cv_hot SELECT i, i % 5, i, 'p' FROM generate_series(1, :n2) i;
 CREATE INDEX cv_hot_col ON cv_hot USING sift_col (id, grp, v);
 CREATE TABLE cv_maint (id int PRIMARY KEY, grp int, v int);
-INSERT INTO cv_maint SELECT i, i % 5, i FROM generate_series(1, 3000) i;
+INSERT INTO cv_maint SELECT i, i % 5, i FROM generate_series(1, :n) i;
 CREATE INDEX cv_maint_col ON cv_maint USING sift_col (id, grp, v);
 -- a jsonb column whose paths hold every JSON type, a JSON null and a missing key (the jsonb_typeof rows of coverage.tsv)
 CREATE TABLE cv_typeof (id int PRIMARY KEY, grp int NOT NULL, doc jsonb);
@@ -140,7 +148,7 @@ INSERT INTO cv_typeof
 SELECT i, i % 7, CASE i % 8 WHEN 0 THEN '{"m": "s", "a": "x"}' WHEN 1 THEN '{"m": true, "a": 12}' WHEN 2 THEN '{"m": {"x": 1}, "a": true}'
 	WHEN 3 THEN '{"m": [1], "a": 1.50}' WHEN 4 THEN '{"m": null, "a": null}' WHEN 5 THEN '{}'
 	ELSE jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) END
-FROM generate_series(1, 3000) i;
+FROM generate_series(1, :n) i;
 CREATE INDEX cv_typeof_col ON cv_typeof USING sift_col (id, grp, doc) WITH (paths = 'doc->m float8, doc->a astext');
 -- sift_tables with declared jsonb paths (JT10, T34, T35). cv_tp holds every JSON type under its paths, cv_tc only the declared ones (a row of
 -- them in the write buffer), cv_tq has the declaration newer than its data
@@ -150,9 +158,9 @@ INSERT INTO cv_tp SELECT id, grp, doc FROM cv_typeof;
 VACUUM FULL cv_tp;
 CREATE TABLE cv_tc (id int, grp int NOT NULL, doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('cv_tc', 'doc', 'doc->m float8, doc->a text');
-INSERT INTO cv_tc SELECT i, i % 7, jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) FROM generate_series(1, 3000) i;
+INSERT INTO cv_tc SELECT i, i % 7, jsonb_build_object('m', i / 4.0, 'a', 'v' || i % 5) FROM generate_series(1, :n) i;
 VACUUM FULL cv_tc;
-INSERT INTO cv_tc SELECT 3000 + i, i % 7, jsonb_build_object('m', i / 8.0, 'a', 'w' || i % 3) FROM generate_series(1, 100) i;
+INSERT INTO cv_tc SELECT :n + i, i % 7, jsonb_build_object('m', i / 8.0, 'a', 'w' || i % 3) FROM generate_series(1, :tail_tc) i;
 CREATE TABLE cv_tq (id int, grp int NOT NULL, doc jsonb) USING sift_table;
 INSERT INTO cv_tq SELECT id, grp, doc FROM cv_tc;
 VACUUM cv_tq;
