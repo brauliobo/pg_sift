@@ -138,7 +138,9 @@ $$ SELECT format('SELECT id FROM bm%sk WHERE body @@> %L ORDER BY sift.score(cti
 SELECT pg_temp.mk_point(2000), pg_temp.mk_point(16000), pg_temp.mk_scope(16000), pg_temp.mk_scope(128000), pg_temp.mk_table(2000), pg_temp.mk_table(16000),
        pg_temp.mk_star(2000), pg_temp.mk_star(16000), pg_temp.mk_docs(2000), pg_temp.mk_docs(16000) \gset
 
-SELECT pg_temp.gate('point lookup', 'SELECT val FROM pt2k WHERE id = 1234', 'SELECT val FROM pt16k WHERE id = 12340', 'Index Scan', 1.8);
+-- the shapes about an index node are measured without the sequential scan: at 2,000 rows the cost of a plan prices it cheaper, and the gate is about the blocks the index reads
+SELECT pg_temp.gate('point lookup', 'SELECT val FROM pt2k WHERE id = 1234', 'SELECT val FROM pt16k WHERE id = 12340', 'Index Scan', 1.8, NULL,
+					'{"enable_seqscan = off"}', '{"enable_seqscan = off"}');
 SELECT pg_temp.gate('scope count, clean', pg_temp.scope_count(16), pg_temp.scope_count(128), 'SiftAggV6Scope', 1.8);
 SELECT pg_temp.dirty_scope(16000), pg_temp.dirty_scope(128000) \gset
 SELECT pg_temp.gate('scope count, dirty', pg_temp.scope_count(16), pg_temp.scope_count(128), 'SiftAggV6Scope', 1.8);
@@ -147,7 +149,8 @@ SELECT pg_temp.gate('bulk delete', 'DELETE FROM tb2k WHERE id % 8 = 0', 'DELETE 
 SELECT pg_temp.gate('column update', 'UPDATE tb2k SET v = v + 1 WHERE id % 8 = 0', 'UPDATE tb16k SET v = v + 1 WHERE id % 8 = 0', 'ModifyTable', 10.5);
 SELECT pg_temp.gate('in list', pg_temp.inlist(2, 2000), pg_temp.inlist(16, 16000), 'SiftAggV6', 10.0, NULL, '{"sift.agg_force = on"}', '{"sift.agg_force = on"}');
 SELECT pg_temp.gate('star range join', 'SELECT d.cat, count(*), sum(f.val) FROM fx2k f JOIN dm2k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat',
-					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'Index Scan', 11.5);
+					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'Index Scan', 11.5, NULL,
+					'{"enable_seqscan = off"}', '{"enable_seqscan = off"}');
 SELECT pg_temp.gate('bm25 terms', pg_temp.terms(2, 16), pg_temp.terms(16, 128), 'SiftScan', 11.5);
 
 DROP TABLE pt2k, pt16k, ev16k, ev128k, ep16k, ep128k, tb2k, tb16k, fx2k, fx16k, dm2k, dm16k, bm2k, bm16k;
