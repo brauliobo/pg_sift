@@ -7,6 +7,7 @@
 /* check-memory: allow-allocs the rows kept are the overlay of one snapshot, which sift_f2s_overlay_open and gone_open bound */
 #include "postgres.h"
 
+#include "col/f2/f2_col_delta_idx.h"
 #include "col/f2/f2_scope.h"
 #include "col/f2/f2_scope_cache.h"
 #include "col/f2/f2_scope_snap.h"
@@ -60,8 +61,18 @@ sift_f2s_unseen_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g, uint16 *
 	(void) sift_f2s_slot_px(p, s);
 	dir = sift_f2s_slot_gdir(p, s);
 	part = sift_f2s_slot_part(p, s);
-	if (s->px != NULL && sift_pdel_idx_may_hit_granule(s->px, &slot_tix(p, s)[g]))
-		tids = sift_part_read_tids(p->rel, part, dir, g);
+	if (s->px != NULL)
+	{
+		const SiftColDeltaGranMap *gm = sift_f2s_slot_gran_map(p, s, g);
+		const bool	moved = sift_cdi_gran_remaps(gm);
+
+		if (moved || sift_pdel_idx_may_hit_granule(s->px, &slot_tix(p, s)[g]))
+		{
+			tids = sift_part_read_tids(p->rel, part, dir, g);
+			if (moved)
+				sift_cdi_remap_tids(gm, tids, dir[g].nrows);
+		}
+	}
 	if (!sift_vis_granule_inserts_settled(&s->d, &dir[g], xmin))
 		vers = sift_part_read_vers(p->rel, part, dir, g);
 	if (tids == NULL && vers == NULL)

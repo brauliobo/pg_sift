@@ -7,6 +7,7 @@
 #include "miscadmin.h"
 
 #include "col/f2/delvec.h"
+#include "col/f2/f2_col_delta_idx.h"
 #include "core/page_io.h"
 #include "table/f2/f2_tbl.h"
 
@@ -179,6 +180,22 @@ sift_f2s_slot_zone(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, int leaf, uint32 g)
 			SIFT_CORRUPT(p->rel, "The zones of part %llu are not those of its granules.", (unsigned long long) s->part_gen);
 	}
 	return s->zones[(uint64) phys * s->ng + g];
+}
+
+const SiftColDeltaGranMap *
+sift_f2s_slot_gran_map(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g)
+{
+	if (!s->cd_read)
+	{
+		MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(p));
+
+		for (int k = 0; k < p->mr.n; k++)
+			if (p->mr.entries[k].part_id == s->part_id)
+				s->cd = sift_cdi_part_map(p->rel, &p->mr.entries[k], sift_f2s_slot_part(p, s), &p->xc);
+		s->cd_read = true;
+		MemoryContextSwitchTo(old);
+	}
+	return s->cd != NULL ? sift_col_delta_gran_map(s->cd, g) : NULL;
 }
 
 const SiftDvGran *

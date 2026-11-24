@@ -49,6 +49,8 @@ typedef struct SiftF2ScopeSlot
 	SiftTidIndexEntry *tix;
 	bool		unseen;			/* a row of it may be one the snapshot does not see: its partition has pending deletes, or its inserters are not settled */
 	bool		px_lazy;		/* its partition has pending deletes that px does not hold yet: the first read of the rows of a granule builds it (sift_f2s_slot_px) */
+	struct SiftColDeltaPartMap *cd;	/* the address changes the snapshot sees in the column delta chain of its partition, NULL: none */
+	bool		cd_read;
 	bool		exc_read;
 	uint32		nexc;
 	const struct SiftVariantExcSummary *exc;	/* the leaves the part keeps exceptions of (SEC_VARIANT_EXC), read once */
@@ -224,6 +226,8 @@ extern uint32 sift_f2s_unseen_rows(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint
 extern bool sift_f2s_overlay_open(SiftF2ScopeParts *p, const SiftManifestRead *mr, const SiftScopeMeta *m, const SiftScopeMeta *cached);
 /* The pending deletes of the partition of the slot that the snapshot sees (built on the first ask), NULL: none */
 extern const SiftPendDelIndex *sift_f2s_slot_px(SiftF2ScopeParts *p, SiftF2ScopeSlot *s);
+/* What the column delta chain says of granule g of the slot for the snapshot, NULL: none (f2_scope_slot.c) */
+extern const struct SiftColDeltaGranMap *sift_f2s_slot_gran_map(SiftF2ScopeParts *p, SiftF2ScopeSlot *s, uint32 g);
 /* The member belongs to the scope key under the pairs of the read */
 extern bool sift_f2s_owns(SiftF2ScopeParts *p, int64 member, int64 key);
 extern uint32 *sift_f2s_key_runs(SiftF2ScopeParts *p, struct SiftF2ScopeRowSet *a, int64 key, uint32 *n);
