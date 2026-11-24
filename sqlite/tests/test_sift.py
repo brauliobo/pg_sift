@@ -116,7 +116,7 @@ class Basics(TmpDb):
         db = connect()
         db.execute('CREATE VIRTUAL TABLE t USING sift(body)')
         db.execute("INSERT INTO t(rowid, body) VALUES (1, 'x')")
-        for q in ('AND', '(', '"unterminated'):
+        for q in ('AND', '(', '"unterminated', 'x AND'):
             with self.assertRaises(sqlite3.Error, msg=q):
                 ids(db, q)
         db.execute("INSERT INTO t(rowid, body) VALUES (2, 'y')")
@@ -124,6 +124,13 @@ class Basics(TmpDb):
         with self.assertRaises(sqlite3.Error):
             db.execute("INSERT INTO t(t) VALUES ('nonsense')")
         self.assertEqual(ids(db, 'x'), [1])
+
+    def test_pure_not(self):
+        db = connect()
+        db.execute('CREATE VIRTUAL TABLE t USING sift(body)')
+        db.executemany('INSERT INTO t(rowid, body) VALUES (?, ?)', [(1, 'x'), (2, 'y'), (3, 'x y'), (4, 'z')])
+        for q, want in (('NOT x', [2, 4]), ('NOT (x OR y)', [4]), ('y OR NOT x', [2, 3, 4])):
+            self.assertEqual(ids(db, q), want, q)
 
     def test_regex_and_wildcard(self):
         db = connect()
