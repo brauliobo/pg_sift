@@ -819,6 +819,24 @@ sift_f2_first_reaching(const SiftPlanSnapshot *plan, const uint8 *lo)
 	return a;
 }
 
+int
+sift_f2_last_overlapping(const SiftPlanSnapshot *plan, int from, const uint8 *hi)
+{
+	int			a = from,
+				b = plan->npartitions;
+
+	while (a < b)
+	{
+		int			mid = a + ((b - a) >> 1);
+
+		if (sift_manifest_overlaps(plan->partitions[mid].key_lo, plan->partitions[mid].key_hi, NULL, hi))
+			a = mid + 1;
+		else
+			b = mid;
+	}
+	return a - 1;
+}
+
 void
 walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap, const uint64 *staged, int nstaged, bool want_px, F2UnitFn fn, void *arg)
 {

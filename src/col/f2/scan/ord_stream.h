@@ -35,6 +35,13 @@ extern void sift_f2_ord_restrpos(IndexScanDesc scan);
 /* The first partition of the plan that reaches the bound lo (NULL: the first) */
 extern int	sift_f2_first_reaching(const struct SiftPlanSnapshot *plan, const uint8 *lo);
 
+/* The last partition from `from` on that reaches the bound hi (NULL: the last), -1 + from when none does */
+extern int	sift_f2_last_overlapping(const struct SiftPlanSnapshot *plan, int from, const uint8 *hi);
+
+/* A leaf of one integer column whose stored values are the values of the column */
+struct SiftColDef;
+extern bool sift_f2_integer_leaf(const struct SiftColDef *d);
+
 /* The planner of sift_col: no index keeps the order of its columns for a plan unless sift_f2_native_order_matches (f2_cost.c) */
 extern void sift_f2_ord_plan_init(void);
 

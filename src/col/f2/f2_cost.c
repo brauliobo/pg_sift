@@ -379,6 +379,46 @@ ord_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 		add_path(rel, np);
 }
 
+bool
+sift_f2_integer_leaf(const SiftColDef *d)
+{
+	switch (d->type)
+	{
+		case SIFT_COLT_BOOL: case SIFT_COLT_INT2: case SIFT_COLT_INT4: case SIFT_COLT_INT8:
+		case SIFT_COLT_DATE: case SIFT_COLT_TIMESTAMP: case SIFT_COLT_TIMESTAMPTZ:
+			return d->path[0] == '\0' && d->lane == 0 && d->kind == SIFT_COLK_SCALAR && !(d->flags & (SIFT_COLD_LOSSY | SIFT_COLD_DERIVED));
+		default:
+			return false;
+	}
+}
+
+bool
+sift_f2_native_order_matches(Relation index)
+{
+	const SiftColRel *r;
+	const SiftF2Rel *f;
+	const int	nk = IndexRelationGetNumberOfKeyAttributes(index);
+
+	if (sift_col_ops(index)->format_major != SIFT_FORMAT2_MAJOR || nk > SIFT_BOUND_COMPS)
+		return false;
+	r = sift_col_rel(index);
+	if (r->stale || r->nscope > 0)
+		return false;
+	f = sift_f2_rel(index);
+	if (f->nkey != nk)
+		return false;
+	for (int k = 0; k < nk; k++)
+	{
+		const SiftColDef *d = &r->schema->cols[f->key_cols[k]];
+		const int16 opt = index->rd_indoption[k];
+
+		if (d->attno != k + 1 || index->rd_index->indkey.values[k] == 0 || f->kinds[f->key_cols[k]] != SIFT_CELL_INT || !sift_f2_integer_leaf(d) ||
+			((f->spec.sort_flags[k] & SIFT_KEY_DESC) != 0) != ((opt & INDOPTION_DESC) != 0) || ((f->spec.sort_flags[k] & SIFT_KEY_NULLS_FIRST) != 0) != ((opt & INDOPTION_NULLS_FIRST) != 0))
+			return false;
+	}
+	return true;
+}
+
 #if PG_VERSION_NUM < 190000
 static get_relation_info_hook_type prev_info_hook;
 

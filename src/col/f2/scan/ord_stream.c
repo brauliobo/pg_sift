@@ -492,24 +492,6 @@ ord_flip(SiftOrdStream *os, bool fwd)
 	os->last = -1;
 }
 
-static int
-last_overlapping(const SiftPlanSnapshot *plan, int from, const uint8 *hi)
-{
-	int			a = from,
-				b = plan->npartitions;
-
-	while (a < b)
-	{
-		int			mid = a + ((b - a) >> 1);
-
-		if (sift_manifest_overlaps(plan->partitions[mid].key_lo, plan->partitions[mid].key_hi, NULL, hi))
-			a = mid + 1;
-		else
-			b = mid;
-	}
-	return a - 1;
-}
-
 static SiftOrdStream *
 ord_begin(IndexScanDesc scan, bool fwd)
 {
@@ -570,7 +552,7 @@ ord_begin(IndexScanDesc scan, bool fwd)
 		compile_preds(s, os->schema);
 	os->plan = sift_plan_cache_get(rel, s->cx);
 	os->plo = sift_f2_first_reaching(os->plan, s->keys.hull.has_lo ? s->keys.hull.lo : NULL);
-	os->phi = last_overlapping(os->plan, os->plo, s->keys.hull.has_hi ? s->keys.hull.hi : NULL);
+	os->phi = sift_f2_last_overlapping(os->plan, os->plo, s->keys.hull.has_hi ? s->keys.hull.hi : NULL);
 	os->part = fwd ? os->plo - 1 : os->phi + 1;
 	MemoryContextSwitchTo(old);
 	return os;
@@ -649,46 +631,4 @@ sift_f2_ord_restrpos(IndexScanDesc scan)
 	os->last = os->mark.last;
 	heap_prime(os);
 	sift_errctx_pop(&ctx);
-}
-
-/* ---- what is ordered natively ---- */
-
-static bool
-integer_leaf(const SiftColDef *d)
-{
-	switch (d->type)
-	{
-		case SIFT_COLT_BOOL: case SIFT_COLT_INT2: case SIFT_COLT_INT4: case SIFT_COLT_INT8:
-		case SIFT_COLT_DATE: case SIFT_COLT_TIMESTAMP: case SIFT_COLT_TIMESTAMPTZ:
-			return d->path[0] == '\0' && d->lane == 0 && d->kind == SIFT_COLK_SCALAR && !(d->flags & (SIFT_COLD_LOSSY | SIFT_COLD_DERIVED));
-		default:
-			return false;
-	}
-}
-
-bool
-sift_f2_native_order_matches(Relation index)
-{
-	const SiftColRel *r;
-	const SiftF2Rel *f;
-	const int	nk = IndexRelationGetNumberOfKeyAttributes(index);
-
-	if (sift_col_ops(index)->format_major != SIFT_FORMAT2_MAJOR || nk > SIFT_BOUND_COMPS)
-		return false;
-	r = sift_col_rel(index);
-	if (r->stale || r->nscope > 0)
-		return false;
-	f = sift_f2_rel(index);
-	if (f->nkey != nk)
-		return false;
-	for (int k = 0; k < nk; k++)
-	{
-		const SiftColDef *d = &r->schema->cols[f->key_cols[k]];
-		const int16 opt = index->rd_indoption[k];
-
-		if (d->attno != k + 1 || index->rd_index->indkey.values[k] == 0 || f->kinds[f->key_cols[k]] != SIFT_CELL_INT || !integer_leaf(d) ||
-			((f->spec.sort_flags[k] & SIFT_KEY_DESC) != 0) != ((opt & INDOPTION_DESC) != 0) || ((f->spec.sort_flags[k] & SIFT_KEY_NULLS_FIRST) != 0) != ((opt & INDOPTION_NULLS_FIRST) != 0))
-			return false;
-	}
-	return true;
 }
