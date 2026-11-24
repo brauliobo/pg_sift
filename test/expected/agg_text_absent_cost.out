@@ -1,0 +1,38 @@
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+-- A SiftAggV6 scan that a text query narrows costs at least what opening the scan costs, whatever the query hits: a term the text
+-- index does not hold used to price the scan at its start-up cost and a total of zero, below the start-up, and the scan then
+-- won the count of a match over SiftCount.
+CREATE EXTENSION pg_sift;
+CREATE TABLE ta (id int PRIMARY KEY, tenant int, memo text) WITH (autovacuum_enabled = off);
+INSERT INTO ta SELECT i, i % 7, (ARRAY['damaged cable', 'fast label', 'gift exchange', 'thanks invoice'])[1 + i % 4] FROM generate_series(1, 2000) i;
+CREATE INDEX ta_col ON ta USING sift_col (id, tenant);
+CREATE INDEX ta_fts ON ta USING sift (memo);
+VACUUM (FREEZE, ANALYZE) ta;
+CREATE FUNCTION ta_root(q text) RETURNS json LANGUAGE plpgsql AS $$
+DECLARE j json;
+BEGIN
+	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
+	RETURN j -> 0 -> 'Plan';
+END $$;
+SELECT term, p ->> 'Custom Plan Provider' AS provider, (p ->> 'Startup Cost')::float8 <= (p ->> 'Total Cost')::float8 AS total_after_startup
+FROM unnest(ARRAY['damaged', 'cable gift', 'absent', 'absent cable']) AS term,
+     LATERAL ta_root(format('SELECT count(*) FROM ta WHERE memo @@> %L', term)) AS p
+ORDER BY term;
+     term     | provider  | total_after_startup 
+--------------+-----------+---------------------
+ absent       | SiftCount | t
+ absent cable | SiftCount | t
+ cable gift   | SiftCount | t
+ damaged      | SiftCount | t
+(4 rows)
+
+SELECT term, count(*) FROM unnest(ARRAY['damaged', 'absent']) AS term, ta WHERE memo @@> term GROUP BY term ORDER BY term;
+  term   | count 
+---------+-------
+ damaged |   500
+(1 row)
+
+DROP FUNCTION ta_root(text);
+DROP TABLE ta;
+DROP EXTENSION pg_sift;

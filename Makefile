@@ -134,6 +134,7 @@ TESTING_REGRESS += agg_semi_lut
 TESTING_REGRESS += agg_semi_lut_int8
 TESTING_REGRESS += agg_spec_pack
 TESTING_REGRESS += agg_spill_contexts
+TESTING_REGRESS += agg_text_absent_cost
 TESTING_REGRESS += agg_topn_offset_bulk
 TESTING_REGRESS += agg_topn_offset_ties_suite_testing
 TESTING_REGRESS += agg_two_level_cell_qual

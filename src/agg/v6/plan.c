@@ -273,7 +273,8 @@ scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 		double		touch = 1.0,
 					text_cost = sift_v6_text_cost(p->root, p->rel, p->text, p->text_qual, p->text_query, &touch);
 
-		*total = *total * touch + text_cost;
+		/* a term the text index does not hold touches no granule, and the scan still pays for its opening */
+		*total = Max(*total * touch + text_cost, *startup);
 	}
 }
 
