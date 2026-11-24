@@ -11,17 +11,18 @@
 #include "core/hash.h"
 #include "col/codec_int.h"
 #include "col/compress.h"
+#include "core/par/sbuf.h"
 
 void
 put32(StringInfo s, uint32 x)
 {
-	appendBinaryStringInfo(s, (const char *) &x, 4);
+	sift_sb_append(s, (const char *) &x, 4);
 }
 
 void
 cc_put64(StringInfo s, int64 x)
 {
-	appendBinaryStringInfo(s, (const char *) &x, 8);
+	sift_sb_append(s, (const char *) &x, 8);
 }
 
 void
@@ -30,7 +31,7 @@ pad8(StringInfo s)
 	static const char zeros[8] = {0};
 
 	if (s->len & 7)
-		appendBinaryStringInfo(s, zeros, 8 - (s->len & 7));
+		sift_sb_append(s, zeros, 8 - (s->len & 7));
 }
 
 /* The 8-byte node header: tag, one parameter byte, two pad bytes, one u32 */
@@ -42,7 +43,7 @@ cc_put_head(StringInfo s, uint8 tag, uint8 aux, uint32 f1)
 	h[0] = (char) tag;
 	h[1] = (char) aux;
 	memcpy(h + 4, &f1, 4);
-	appendBinaryStringInfo(s, h, 8);
+	sift_sb_append(s, h, 8);
 }
 
 static uint32
@@ -96,9 +97,8 @@ void
 check_policy(const SiftCcPolicy *pol)
 {
 	if (pol->mode == SIFT_CCM_LAYER && !sift_colz_available(pol->alg))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("compression %s is not available in this build", pol->alg == SIFT_CC_ALG_LZ4 ? "lz4" : "zstd"),
-						errhint("Install the library and rebuild without SIFT_NO_%s.", pol->alg == SIFT_CC_ALG_LZ4 ? "LZ4" : "ZSTD")));
+		SIFT_FAIL_UNSUPPORTED(pol->alg == SIFT_CC_ALG_LZ4 ? "Install the library and rebuild without SIFT_NO_LZ4." : "Install the library and rebuild without SIFT_NO_ZSTD.",
+							  "compression %s is not available in this build", pol->alg == SIFT_CC_ALG_LZ4 ? "lz4" : "zstd");
 }
 
 static bool
@@ -149,25 +149,25 @@ static void
 emit_words(StringInfo out, uint32 *tmp, uint32 n, uint32 W)
 {
 	uint64		words = sift_cc_words(n, W);
-	uint32	   *packed = palloc0(sizeof(uint32) * (words + 32));
+	uint32	   *packed = sift_alloc0(sizeof(uint32) * (words + 32));
 
 	pack_vertical(tmp, n, W, packed);
-	appendBinaryStringInfo(out, (const char *) packed, (int) (words * 4));
+	sift_sb_append(out, (const char *) packed, (int) (words * 4));
 	pad8(out);
-	pfree(packed);
+	sift_free(packed);
 }
 
 static void
 emit_forbit(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 W)
 {
-	uint32	   *tmp = palloc0(sizeof(uint32) * (CC_CAP32(n) + 32));
+	uint32	   *tmp = sift_alloc0(sizeof(uint32) * (CC_CAP32(n) + 32));
 
 	for (uint32 i = 0; i < n; i++)
 		tmp[i] = (uint32) ((uint64) v[i] - (uint64) base);
 	cc_put_head(out, SIFT_CCN_FORBIT, (uint8) W, 0);
 	cc_put64(out, base);
 	emit_words(out, tmp, n, W);
-	pfree(tmp);
+	sift_free(tmp);
 }
 
 void
@@ -179,7 +179,7 @@ cc_emit_forbyte(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 B)
 	{
 		uint64		x = (uint64) v[i] - (uint64) base;
 
-		appendBinaryStringInfo(out, (const char *) &x, (int) B);
+		sift_sb_append(out, (const char *) &x, (int) B);
 	}
 	pad8(out);
 }
@@ -187,7 +187,7 @@ cc_emit_forbyte(StringInfo out, const int64 *v, uint32 n, int64 base, uint32 B)
 static void
 emit_delta(StringInfo out, const int64 *v, uint32 n, const CcStats *st, uint32 W)
 {
-	uint32	   *tmp = palloc0(sizeof(uint32) * (CC_CAP32(n) + 32));
+	uint32	   *tmp = sift_alloc0(sizeof(uint32) * (CC_CAP32(n) + 32));
 
 	for (uint32 i = 1; i < n; i++)
 		tmp[i] = (uint32) ((uint64) v[i] - (uint64) v[i - 1] - (uint64) st->dmin);
@@ -197,15 +197,15 @@ emit_delta(StringInfo out, const int64 *v, uint32 n, const CcStats *st, uint32 W
 	for (uint32 i = 1024; i < n; i += 1024)
 		cc_put64(out, v[i]);
 	emit_words(out, tmp, n, W);
-	pfree(tmp);
+	sift_free(tmp);
 }
 
 /* out holds the distinct values in the order they came and codes the number of each value in it: sorts out, and turns the codes into the position of each value in the sorted order */
 static void
 rank_distinct(int64 *out, uint32 cnt, int64 *codes, uint32 n)
 {
-	int64 *first = palloc(sizeof(int64) * cnt);
-	uint32 *rank = palloc(sizeof(uint32) * cnt);
+	int64 *first = sift_alloc(sizeof(int64) * cnt);
+	uint32 *rank = sift_alloc(sizeof(uint32) * cnt);
 
 	memcpy(first, out, sizeof(int64) * cnt);
 	sift_sort_i64(out, cnt);
@@ -219,8 +219,8 @@ rank_distinct(int64 *out, uint32 cnt, int64 *codes, uint32 n)
 	}
 	for (uint32 i = 0; i < n; i++)
 		codes[i] = rank[codes[i]];
-	pfree(first);
-	pfree(rank);
+	sift_free(first);
+	sift_free(rank);
 }
 
 /* Distinct values ascending (palloc'd) when there are at most limit of them, else NULL; *d is their number; codes (n entries) gets the position of each value among them */
@@ -236,10 +236,10 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d, int64 *codes)
 
 	while (cap < limit * 2 + 2)
 		cap <<= 1;
-	tab = palloc(sizeof(int64) * cap);
-	used = palloc0(cap);
-	id = palloc(sizeof(uint32) * cap);
-	out = palloc(sizeof(int64) * (limit + 1));
+	tab = sift_alloc(sizeof(int64) * cap);
+	used = sift_alloc0(cap);
+	id = sift_alloc(sizeof(uint32) * cap);
+	out = sift_alloc(sizeof(int64) * (limit + 1));
 	for (uint32 i = 0; i < n; i++)
 	{
 		uint64		h = sift_fib64((uint64) v[i]) >> 32;
@@ -251,10 +251,10 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d, int64 *codes)
 		{
 			if (cnt == limit)
 			{
-				pfree(tab);
-				pfree(used);
-				pfree(id);
-				pfree(out);
+				sift_free(tab);
+				sift_free(used);
+				sift_free(id);
+				sift_free(out);
 				return NULL;
 			}
 			used[k] = 1;
@@ -264,9 +264,9 @@ distinct_sorted(const int64 *v, uint32 n, uint32 limit, uint32 *d, int64 *codes)
 		}
 		codes[i] = id[k];
 	}
-	pfree(tab);
-	pfree(used);
-	pfree(id);
+	sift_free(tab);
+	sift_free(used);
+	sift_free(id);
 	rank_distinct(out, cnt, codes, n);
 	*d = cnt;
 	return out;
@@ -327,20 +327,20 @@ wrap_choose_keep(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZ
 		{
 			/* four 4 KB slices: an estimate that decides whether the whole stream is worth compressing */
 			Size		scap = sift_colz_bound(alg, 16384);
-			char	   *sample = palloc(16384),
-					   *sb = palloc(scap);
+			char	   *sample = sift_alloc(16384),
+					   *sb = sift_alloc(scap);
 			Size		sl;
 
 			for (int q = 0; q < 4; q++)
 				memcpy(sample + q * 4096, raw + ((uint64) (rawlen - 4096) * q) / 3, 4096);
 			sl = sift_colz_compress(alg, level, sample, 16384, sb, scap);
-			pfree(sample);
-			pfree(sb);
+			sift_free(sample);
+			sift_free(sb);
 			if (sl == 0 || (double) sl / 16384 * rawlen + 16 + rho * rawlen * alg_ns(alg) >= best->cost)
 				continue;
 		}
 		cap = sift_colz_bound(alg, rawlen);
-		buf = palloc(cap);
+		buf = sift_alloc(cap);
 		clen = sift_colz_compress(alg, level, raw, rawlen, buf, cap);
 		/* zstd would have to save four fifths of a stream that LZ4 could not even shrink by a seventh to pass the hot rule: not tried */
 		if (alg == SIFT_CC_ALG_LZ4 && pol->mode == SIFT_CCM_AUTO && role == CCR_HOT && (clen == 0 || clen > rawlen - rawlen / 7))
@@ -359,7 +359,7 @@ wrap_choose_keep(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZ
 				lz4->alg = alg;
 			}
 			else
-				pfree(buf);
+				sift_free(buf);
 			continue;
 		}
 		if (best->buf)
@@ -370,7 +370,7 @@ wrap_choose_keep(const CcW *w, const uint8 *raw, uint32 rawlen, CcRole role, CcZ
 				best->buf = NULL;
 			}
 			else
-				pfree(best->buf);
+				sift_free(best->buf);
 		}
 		best->buf = buf;
 		best->len = clen;
@@ -437,12 +437,12 @@ wrap_choose_scan(const CcW *w, const uint8 *raw, uint32 rawlen, CcZTry *z, SiftC
 	}
 	if (scan->lz4)
 	{
-		pfree(z->buf);
+		sift_free(z->buf);
 		*z = lz4;
 		return true;
 	}
 	if (lz4.buf)
-		pfree(lz4.buf);
+		sift_free(lz4.buf);
 	return found;
 }
 
@@ -458,7 +458,7 @@ cc_emit_wrap(StringInfo out, const CcZTry *z, uint32 rawlen)
 	cc_put_head(out, SIFT_CCN_WRAP, (uint8) z->alg, rawlen);
 	put32(out, (uint32) z->len);
 	put32(out, 0);
-	appendBinaryStringInfo(out, z->buf, (int) z->len);
+	sift_sb_append(out, z->buf, (int) z->len);
 	pad8(out);
 }
 
@@ -474,7 +474,7 @@ maybe_wrap(const CcW *w, StringInfo out, int start, CcRole role)
 		out->len = start;
 		out->data[start] = 0;
 		cc_emit_wrap(out, &z, rawlen);
-		pfree(z.buf);
+		sift_free(z.buf);
 	}
 }
 
@@ -555,10 +555,10 @@ alp_build(const CcW *w, StringInfo cand, const int64 *keys, uint32 n, int depth,
 	}
 	if (bestOk * 10 < nsample * 9)
 		return false;
-	dig = palloc(sizeof(int64) * n);
-	pos = palloc(sizeof(int64) * n);
-	ekeys = palloc(sizeof(int64) * n);
-	ok = palloc(n);
+	dig = sift_alloc(sizeof(int64) * n);
+	pos = sift_alloc(sizeof(int64) * n);
+	ekeys = sift_alloc(sizeof(int64) * n);
+	ok = sift_alloc(n);
 	for (uint32 i = 0; i < n; i++)
 	{
 		ok[i] = alp_digit(kind, keys[i], bestE, &dig[i]);
@@ -586,32 +586,32 @@ alp_build(const CcW *w, StringInfo cand, const int64 *keys, uint32 n, int depth,
 		}
 	if (firstok == n || (uint64) dmax - (uint64) dmin > 0xFFFFFFFFu || nexc > n / 4)
 	{
-		pfree(dig);
-		pfree(pos);
-		pfree(ekeys);
-		pfree(ok);
+		sift_free(dig);
+		sift_free(pos);
+		sift_free(ekeys);
+		sift_free(ok);
 		return false;
 	}
-	initStringInfo(&cd);
-	initStringInfo(&cp);
+	sift_sb_init(&cd);
+	sift_sb_init(&cp);
 	enc_node(&wi, &cd, dig, n, depth - 1, role);
 	if (nexc)
 		enc_node(&wi, &cp, pos, nexc, depth - 1, CCR_COLD);
-	initStringInfo(cand);
+	sift_sb_init(cand);
 	cc_put_head(cand, SIFT_CCN_ALP, (uint8) bestE, nexc);
 	put32(cand, (uint32) cd.len);
 	put32(cand, (uint32) cp.len);
 	cc_put64(cand, dmin);
 	cc_put64(cand, dmax);
-	appendBinaryStringInfo(cand, cd.data, cd.len);
-	appendBinaryStringInfo(cand, cp.data, cp.len);
-	appendBinaryStringInfo(cand, (const char *) ekeys, (int) (sizeof(int64) * nexc));
-	pfree(cd.data);
-	pfree(cp.data);
-	pfree(dig);
-	pfree(pos);
-	pfree(ekeys);
-	pfree(ok);
+	sift_sb_append(cand, cd.data, cd.len);
+	sift_sb_append(cand, cp.data, cp.len);
+	sift_sb_append(cand, (const char *) ekeys, (int) (sizeof(int64) * nexc));
+	sift_free(cd.data);
+	sift_free(cp.data);
+	sift_free(dig);
+	sift_free(pos);
+	sift_free(ekeys);
+	sift_free(ok);
 	return true;
 }
 
@@ -631,34 +631,34 @@ offer(CcBest *b, StringInfo cand)
 	if ((Size) cand->len < b->size)
 	{
 		if (b->node.data)
-			pfree(b->node.data);
+			sift_free(b->node.data);
 		b->node = *cand;
 		b->size = cand->len;
 	}
 	else
-		pfree(cand->data);
+		sift_free(cand->data);
 }
 
 /* A cascade node: head, the byte length of its two children, the children (each a node of its own) */
 static void
 put_pair(StringInfo cand, uint8 tag, uint32 count, StringInfo a, StringInfo b)
 {
-	initStringInfo(cand);
+	sift_sb_init(cand);
 	cc_put_head(cand, tag, 0, count);
 	put32(cand, (uint32) a->len);
 	put32(cand, (uint32) b->len);
-	appendBinaryStringInfo(cand, a->data, a->len);
-	appendBinaryStringInfo(cand, b->data, b->len);
-	pfree(a->data);
-	pfree(b->data);
+	sift_sb_append(cand, a->data, a->len);
+	sift_sb_append(cand, b->data, b->len);
+	sift_free(a->data);
+	sift_free(b->data);
 }
 
 static void
 rle_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, uint32 nruns, int depth, CcRole role)
 {
 	CcW			wi = {w->pol, SIFT_CC_INT};
-	int64	   *rv = palloc(sizeof(int64) * nruns),
-			   *rl = palloc(sizeof(int64) * nruns);
+	int64	   *rv = sift_alloc(sizeof(int64) * nruns),
+			   *rl = sift_alloc(sizeof(int64) * nruns);
 	uint32		nr = 0;
 	StringInfoData cv,
 				cl;
@@ -673,13 +673,13 @@ rle_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, uint32 nruns,
 			rl[nr++] = 1;
 		}
 	}
-	initStringInfo(&cv);
-	initStringInfo(&cl);
+	sift_sb_init(&cv);
+	sift_sb_init(&cl);
 	enc_node(&wi, &cv, rv, nr, depth - 1, role);
 	enc_node(&wi, &cl, rl, nr, depth - 1, role);
 	put_pair(cand, SIFT_CCN_RLE, nr, &cv, &cl);
-	pfree(rv);
-	pfree(rl);
+	sift_free(rv);
+	sift_free(rl);
 }
 
 /* false when the values are not few enough for a dictionary to pay */
@@ -689,7 +689,7 @@ dict_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, const CcStat
 	CcW			wi = {w->pol, SIFT_CC_INT};
 	uint32		limit = n / 2 > 65536 ? 65536 : n / 2,
 				d = 0;
-	int64 *codes = limit >= 2 ? palloc(sizeof(int64) * n) : NULL;
+	int64 *codes = limit >= 2 ? sift_alloc(sizeof(int64) * n) : NULL;
 	int64 *dv = limit >= 2 ? distinct_sorted(v, n, limit, &d, codes) : NULL;
 	StringInfoData cd,
 				   cc;
@@ -697,18 +697,18 @@ dict_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, const CcStat
 	if (!dv || sift_cc_bits_of(d - 1) >= sift_cc_bits_of(st->range))
 	{
 		if (dv)
-			pfree(dv);
+			sift_free(dv);
 		if (codes != NULL)
-			pfree(codes);
+			sift_free(codes);
 		return false;
 	}
-	initStringInfo(&cd);
-	initStringInfo(&cc);
+	sift_sb_init(&cd);
+	sift_sb_init(&cc);
 	enc_node(&wi, &cd, dv, d, depth - 1, CCR_COLD);
 	enc_node(&wi, &cc, codes, n, depth - 1, role);
 	put_pair(cand, SIFT_CCN_DICT, d, &cd, &cc);
-	pfree(codes);
-	pfree(dv);
+	sift_free(codes);
+	sift_free(dv);
 	return true;
 }
 
@@ -746,18 +746,18 @@ scale_build(const CcW *w, StringInfo cand, const int64 *v, uint32 n, const CcSta
 
 	if (g < 2 || g > (uint64) INT64_MAX)
 		return false;
-	q = palloc(sizeof(int64) * n);
+	q = sift_alloc(sizeof(int64) * n);
 	for (uint32 i = 0; i < n; i++)
 		q[i] = (int64) (((uint64) v[i] - (uint64) st->min) / g);
-	initStringInfo(&child);
+	sift_sb_init(&child);
 	enc_node(&wi, &child, q, n, depth - 1, role);
-	initStringInfo(cand);
+	sift_sb_init(cand);
 	cc_put_head(cand, SIFT_CCN_SCALE, 0, (uint32) child.len);
 	cc_put64(cand, st->min);
 	cc_put64(cand, (int64) g);
-	appendBinaryStringInfo(cand, child.data, child.len);
-	pfree(child.data);
-	pfree(q);
+	sift_sb_append(cand, child.data, child.len);
+	sift_free(child.data);
+	sift_free(q);
 	return true;
 }
 
@@ -853,8 +853,8 @@ enc_node(const CcW *w, StringInfo out, const int64 *v, uint32 n, int depth, CcRo
 	if (best.node.data)
 	{
 		tag = (uint8) best.node.data[0];
-		appendBinaryStringInfo(out, best.node.data, best.node.len);
-		pfree(best.node.data);
+		sift_sb_append(out, best.node.data, best.node.len);
+		sift_free(best.node.data);
 		return tag;
 	}
 	return emit_leaf(w, out, v, n, &st, tag, W, role);
@@ -877,7 +877,7 @@ sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, con
 
 	check_policy(pol);
 	SIFT_INVARIANT(n <= SIFT_CC_MAXROWS, "too many rows for one column chunk: %u", n);
-	v = palloc(sizeof(int64) * (n + 1));
+	v = sift_alloc(sizeof(int64) * (n + 1));
 	for (uint32 i = 0; i < n; i++)
 	{
 		if (nulls && ((nulls[i / 64] >> (i % 64)) & 1))
@@ -914,7 +914,7 @@ sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, con
 		memcpy(h + 4, &n, 4);
 		memcpy(h + 8, &mn, 8);
 		memcpy(h + 16, &mx, 8);
-		appendBinaryStringInfo(out, h, SIFT_CC_HDRLEN);
+		sift_sb_append(out, h, SIFT_CC_HDRLEN);
 	}
 	body = out->len;
 	inner = enc_node(&w, out, v, n, SIFT_CC_MAXDEPTH - 1, CCR_HOT);
@@ -934,5 +934,5 @@ sift_cc_encode(StringInfo out, SiftCcKind kind, const int64 *keys, uint32 n, con
 		info->inner = (uint8) inner;
 		info->bytes = (uint32) (out->len - hdr);
 	}
-	pfree(v);
+	sift_free(v);
 }

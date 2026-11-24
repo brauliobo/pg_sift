@@ -103,6 +103,7 @@ typedef enum SiftErrCode
 	SIFT_ERR_UNSUPPORTED,		/* 0A000 */
 	SIFT_ERR_RANGE,				/* 22003 */
 	SIFT_ERR_INVALID_PARAM,		/* 22023 */
+	SIFT_ERR_LIMIT,				/* 54000 */
 	SIFT_ERR_ARENA_FULL,		/* arg0: bytes asked, arg1: bytes left; the leader runs the work on the backend path */
 	SIFT_ERR_WORK_MEM,			/* the leader spills */
 	SIFT_ERR_CANCEL				/* the leader checks for interrupts */
@@ -197,6 +198,14 @@ extern void sift_throw(SiftErrCode code, const char *hint, const char *fmt,...) 
 		if (sift_arena_scoped()) \
 			sift_throw(SIFT_ERR_INVALID_PARAM, NULL, __VA_ARGS__); \
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg(__VA_ARGS__))); \
+	} while (0)
+
+/* hint: a string literal, what to do about it */
+#define SIFT_FAIL_LIMIT(hint, ...) \
+	do { \
+		if (sift_arena_scoped()) \
+			sift_throw(SIFT_ERR_LIMIT, hint, __VA_ARGS__); \
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg(__VA_ARGS__), errhint("%s", hint))); \
 	} while (0)
 
 /*

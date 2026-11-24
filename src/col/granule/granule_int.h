@@ -7,6 +7,7 @@
 #include "core/host.h"
 
 #include "col/codec.h"
+#include "core/par/sbuf.h"
 #include "col/granule/granule.h"
 
 static inline int
@@ -19,7 +20,7 @@ static inline void
 pad8(StringInfo s)
 {
 	while (s->len % 8 != 0)
-		appendStringInfoChar(s, '\0');
+		sift_sb_char(s, '\0');
 }
 
 #define SIFT_DICT_GRANULE_MAX	65536

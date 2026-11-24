@@ -301,6 +301,9 @@ extern SiftColIn sift_colin_slice(const SiftColIn *c, int from);
 
 /* Appends the record of a granule to out (which holds a multiple of 8 bytes) and returns its directory entry */
 extern SiftGranuleDesc sift_granule_encode(StringInfo out, const SiftGranuleIn *in);
+/* The record in two steps: chunk c (0: the addresses, c: column c - 1) encoded into body (initialised here; its bytes are not padded), then the record laid from the bodies and references of its in->ncols + 1 chunks */
+extern void sift_granule_chunk_put(StringInfo body, SiftChunkRef *ref, const SiftGranuleIn *in, int c);
+extern SiftGranuleDesc sift_granule_assemble(StringInfo out, const SiftGranuleIn *in, const StringInfoData *bodies, const SiftChunkRef *refs);
 
 /* A granule record read back: the pieces a decode needs */
 typedef struct SiftGranuleView

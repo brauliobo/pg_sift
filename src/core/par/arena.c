@@ -152,6 +152,9 @@ sift_err_rethrow(Relation rel, const SiftErr *err)
 		case SIFT_ERR_INVALID_PARAM:
 			ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("%s", err->msg)));
 			break;
+		case SIFT_ERR_LIMIT:
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("%s", err->msg), errhint("%s", err->hint)));
+			break;
 		default:
 			SIFT_INVARIANT(false, "sift: the worker error %d is not an error of the statement: %s", (int) err->code, err->msg);
 	}

@@ -119,6 +119,7 @@ bm25/query.h
 bm25/query_int.h
 bm25/merge.h
 core/par/arena.h
+core/par/sbuf.h
 core/damage.h
 core/live.h
 bm25/segment.h

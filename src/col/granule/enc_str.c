@@ -11,6 +11,7 @@
 #include "col/compress.h"
 #include "col/fsst.h"
 #include "col/granule/granule_int.h"
+#include "core/par/sbuf.h"
 
 #define SIFT_FSST_MIN_BYTES		4096	/* a column of fewer bytes keeps the codec's list: the table (up to 2.3 kB) would not pay */
 #define SIFT_FSST_AVG_MAX		64		/* strings this long on average are left to LZ4 and zstd, which find the repeats within them */
@@ -77,11 +78,11 @@ dict_sort_cmp(const void *a, const void *b, void *arg)
 static void
 put_dict(StringInfo s, const char *const *p, const uint32 *len, uint32 *code, int *first, int nd, int nn, const SiftChunkOpts *opt)
 {
-	int		   *order = palloc(nd * sizeof(int)),
-			   *rank = palloc(nd * sizeof(int));
+	int		   *order = sift_alloc(nd * sizeof(int)),
+			   *rank = sift_alloc(nd * sizeof(int));
 	DictSort	ctx = {p, len, first};
-	uint32	   *off = palloc((nd + 1) * sizeof(uint32));
-	int64	   *c = palloc(nn * sizeof(int64));
+	uint32	   *off = sift_alloc((nd + 1) * sizeof(uint32));
+	int64	   *c = sift_alloc(nn * sizeof(int64));
 	StringInfoData bytes,
 				blob;
 	SiftCcPolicy pol;
@@ -92,27 +93,27 @@ put_dict(StringInfo s, const char *const *p, const uint32 *len, uint32 *code, in
 	qsort_arg(order, nd, sizeof(int), dict_sort_cmp, &ctx);
 	for (int d = 0; d < nd; d++)
 		rank[order[d]] = d;
-	initStringInfo(&bytes);
+	sift_sb_init(&bytes);
 	off[0] = 0;
 	for (int d = 0; d < nd; d++)
 	{
-		appendBinaryStringInfo(&bytes, p[first[order[d]]], len[first[order[d]]]);
+		sift_sb_append(&bytes, p[first[order[d]]], len[first[order[d]]]);
 		off[d + 1] = bytes.len;
 	}
 	sift_cc_policy_tier(&pol, opt->tier, opt->alg);
-	initStringInfo(&blob);
+	sift_sb_init(&blob);
 	sift_cc_encode_strs(&blob, off, bytes.data, nd, &pol, NULL);
-	appendBinaryStringInfo(s, (char *) hdr, 8);
+	sift_sb_append(s, (char *) hdr, 8);
 	sift_cc_blob_put(s, &blob);
 	for (int i = 0; i < nn; i++)
 		c[i] = rank[code[i]];
 	sift_put_cc_ints(s, c, nn, opt);
-	pfree(order);
-	pfree(rank);
-	pfree(off);
-	pfree(c);
-	pfree(bytes.data);
-	pfree(blob.data);
+	sift_free(order);
+	sift_free(rank);
+	sift_free(off);
+	sift_free(c);
+	sift_free(bytes.data);
+	sift_free(blob.data);
 }
 
 static void
@@ -120,16 +121,16 @@ put_inline(StringInfo s, const char *const *p, const uint32 *len, const bool *is
 {
 	uint32		off = 0;
 
-	appendBinaryStringInfo(s, (char *) &off, 4);
+	sift_sb_append(s, (char *) &off, 4);
 	for (int i = 0; i < n; i++)
 		if (isnull == NULL || !isnull[i])
 		{
 			off += len[i];
-			appendBinaryStringInfo(s, (char *) &off, 4);
+			sift_sb_append(s, (char *) &off, 4);
 		}
 	for (int i = 0; i < n; i++)
 		if (isnull == NULL || !isnull[i])
-			appendBinaryStringInfo(s, p[i], len[i]);
+			sift_sb_append(s, p[i], len[i]);
 	pad8(s);
 }
 
@@ -144,64 +145,64 @@ static void
 put_block_frame(StringInfo frame, int first, int cnt, void *arg)
 {
 	const BlockFrames *bf = arg;
-	uint32	   *off = palloc((cnt + 1) * sizeof(uint32));
+	uint32	   *off = sift_alloc((cnt + 1) * sizeof(uint32));
 	StringInfoData blob;
 
 	for (int i = 0; i <= cnt; i++)
 		off[i] = bf->off[first + i] - bf->off[first];
-	initStringInfo(&blob);
+	sift_sb_init(&blob);
 	sift_cc_encode_strs(&blob, off, bf->bytes + bf->off[first], cnt, bf->pol, NULL);
 	sift_cc_blob_put(frame, &blob);
-	pfree(off);
-	pfree(blob.data);
+	sift_free(off);
+	sift_free(blob.data);
 }
 
 /* The strings as the codec's list: the offsets as a cascade and the bytes wrapped when the cold rule says so, in frames of a part of a sift_table; the modifiers of the encoding it needs */
 static uint16
 put_block(StringInfo s, const char *const *p, const uint32 *len, const bool *isnull, int n, int nn, const SiftChunkOpts *opt)
 {
-	uint32	   *off = palloc((nn + 1) * sizeof(uint32));
+	uint32	   *off = sift_alloc((nn + 1) * sizeof(uint32));
 	StringInfoData bytes,
 				blob;
 	SiftCcPolicy pol;
 	uint16		mods = 0;
 
-	initStringInfo(&bytes);
+	sift_sb_init(&bytes);
 	off[0] = 0;
 	for (int i = 0, k = 0; i < n; i++)
 		if (isnull == NULL || !isnull[i])
 		{
-			appendBinaryStringInfo(&bytes, p[i], len[i]);
+			sift_sb_append(&bytes, p[i], len[i]);
 			off[++k] = bytes.len;
 		}
 	sift_cc_policy_tier(&pol, opt->tier, opt->alg);
 	if (opt->framed)
 	{
 		sift_frames_put(s, nn, put_block_frame, &(BlockFrames) {off, bytes.data, &pol});
-		pfree(off);
-		pfree(bytes.data);
+		sift_free(off);
+		sift_free(bytes.data);
 		return SIFT_ENC_FRAMED;
 	}
-	initStringInfo(&blob);
+	sift_sb_init(&blob);
 	sift_cc_encode_strs(&blob, off, bytes.data, nn, &pol, NULL);
 	if (opt->cdict != NULL)
 	{
 		StringInfoData zblob;
 
-		initStringInfo(&zblob);
+		sift_sb_init(&zblob);
 		if (sift_cc_encode_strs_dict(&zblob, off, bytes.data, nn, &pol, opt->cdict) && zblob.len < blob.len)
 		{
-			pfree(blob.data);
+			sift_free(blob.data);
 			blob = zblob;
 			mods = SIFT_ENC_PART_DICT;
 		}
 		else
-			pfree(zblob.data);
+			sift_free(zblob.data);
 	}
 	sift_cc_blob_put(s, &blob);
-	pfree(off);
-	pfree(bytes.data);
-	pfree(blob.data);
+	sift_free(off);
+	sift_free(bytes.data);
+	sift_free(blob.data);
 	return mods;
 }
 
@@ -212,12 +213,12 @@ put_block(StringInfo s, const char *const *p, const uint32 *len, const bool *isn
 static bool
 put_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunkOpts *opt)
 {
-	const char **p = palloc(nn * sizeof(char *));
-	uint32	   *len = palloc(nn * sizeof(uint32));
+	const char **p = sift_alloc(nn * sizeof(char *));
+	uint32	   *len = sift_alloc(nn * sizeof(uint32));
 	uint64		raw = 0;
-	SiftFsst   *t = palloc(sizeof(SiftFsst));
+	SiftFsst   *t = sift_alloc(sizeof(SiftFsst));
 	uint8	   *enc;
-	int64	   *coded = palloc(nn * sizeof(int64));
+	int64	   *coded = sift_alloc(nn * sizeof(int64));
 	uint32		total = 0,
 				hdr[2];
 	bool		pays;
@@ -231,7 +232,7 @@ put_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunkOpts 
 	pays = raw >= SIFT_FSST_MIN_BYTES && raw < (uint64) SIFT_FSST_AVG_MAX * nn && sift_fsst_train(t, p, len, nn) <= SIFT_FSST_MAX_PERMILLE;
 	if (pays)
 	{
-		enc = palloc(2 * (Size) raw + 1);
+		enc = sift_alloc(2 * (Size) raw + 1);
 		for (int k = 0; k < nn; k++)
 		{
 			coded[k] = sift_fsst_encode(t, p[k], len[k], enc + total);
@@ -240,17 +241,17 @@ put_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunkOpts 
 		sift_fsst_put_table(s, t);
 		hdr[0] = (uint32) raw;
 		hdr[1] = total;
-		appendBinaryStringInfo(s, (char *) hdr, 8);
+		sift_sb_append(s, (char *) hdr, 8);
 		sift_put_cc_ints(s, coded, nn, opt);
-		appendBinaryStringInfo(s, (char *) enc, total);
-		appendStringInfoChar(s, '\0');
+		sift_sb_append(s, (char *) enc, total);
+		sift_sb_char(s, '\0');
 		pad8(s);
-		pfree(enc);
+		sift_free(enc);
 	}
-	pfree(p);
-	pfree(len);
-	pfree(t);
-	pfree(coded);
+	sift_free(p);
+	sift_free(len);
+	sift_free(t);
+	sift_free(coded);
 	return pays;
 }
 
@@ -271,13 +272,13 @@ put_cold_strs(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 	bool		use_fsst;
 	uint16		mods;
 
-	initStringInfo(&block);
-	initStringInfo(&fsst);
+	sift_sb_init(&block);
+	sift_sb_init(&fsst);
 	mods = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
 	use_fsst = opt->alg >= 0 && put_fsst(&fsst, col, n, nn, opt) && fsst_beats_block(fsst.len, block.len, opt->tier);
-	appendBinaryStringInfo(s, use_fsst ? fsst.data : block.data, use_fsst ? fsst.len : block.len);
-	pfree(block.data);
-	pfree(fsst.data);
+	sift_sb_append(s, use_fsst ? fsst.data : block.data, use_fsst ? fsst.len : block.len);
+	sift_free(block.data);
+	sift_free(fsst.data);
 	return use_fsst ? SIFT_CENC_STR_FSST : SIFT_CENC_STR_BLOCK | mods;
 }
 
@@ -292,13 +293,13 @@ put_part_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 	uint32		total = 0,
 				hdr[2];
 	uint8	   *enc;
-	int64	   *coded = palloc(nn * sizeof(int64));
+	int64	   *coded = sift_alloc(nn * sizeof(int64));
 	bool		pays;
 
 	for (int i = 0; i < n; i++)
 		if (col->isnull == NULL || !col->isnull[i])
 			raw += col->slen[i];
-	enc = palloc(2 * (Size) raw + 1);
+	enc = sift_alloc(2 * (Size) raw + 1);
 	for (int i = 0, k = 0; i < n; i++)
 		if (col->isnull == NULL || !col->isnull[i])
 		{
@@ -310,25 +311,25 @@ put_part_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 	{
 		hdr[0] = (uint32) raw;
 		hdr[1] = total;
-		appendBinaryStringInfo(s, (char *) hdr, 8);
+		sift_sb_append(s, (char *) hdr, 8);
 		sift_put_cc_ints(s, coded, nn, opt);
-		appendBinaryStringInfo(s, (char *) enc, total);
-		appendStringInfoChar(s, '\0');
+		sift_sb_append(s, (char *) enc, total);
+		sift_sb_char(s, '\0');
 		pad8(s);
 	}
-	pfree(enc);
-	pfree(coded);
+	sift_free(enc);
+	sift_free(coded);
 	return pays;
 }
 
 static void
 put_view(StringInfo s, const char *const *p, const uint32 *len, const bool *isnull, int n, int nn)
 {
-	SiftStrView *views = sift_palloc0_aligned(SiftStrView, nn);
+	SiftStrView *views = memset(sift_alloc_aligned(sizeof(SiftStrView) * nn, _Alignof(SiftStrView)), 0, sizeof(SiftStrView) * nn);
 	StringInfoData heap;
 	int			k = 0;
 
-	initStringInfo(&heap);
+	sift_sb_init(&heap);
 	for (int i = 0; i < n; i++)
 	{
 		SiftStrView *w;
@@ -346,14 +347,14 @@ put_view(StringInfo s, const char *const *p, const uint32 *len, const bool *isnu
 		else
 		{
 			w->u.offset = heap.len;
-			appendBinaryStringInfo(&heap, p[i], len[i]);
+			sift_sb_append(&heap, p[i], len[i]);
 		}
 	}
-	appendBinaryStringInfo(s, (char *) views, nn * sizeof(SiftStrView));
-	appendBinaryStringInfo(s, heap.data, heap.len);
+	sift_sb_append(s, (char *) views, nn * sizeof(SiftStrView));
+	sift_sb_append(s, heap.data, heap.len);
 	pad8(s);
-	pfree(views);
-	pfree(heap.data);
+	sift_free(views);
+	sift_free(heap.data);
 }
 
 static int
@@ -370,7 +371,7 @@ fixed16_enc(int hint)
 static void
 put_halves(StringInfo s, const char *const *p, const bool *isnull, int n, int nn, const SiftChunkOpts *opt)
 {
-	int64	   *lane = palloc(nn * sizeof(int64));
+	int64	   *lane = sift_alloc(nn * sizeof(int64));
 
 	for (int h = 0; h < 2; h++)
 	{
@@ -379,7 +380,7 @@ put_halves(StringInfo s, const char *const *p, const bool *isnull, int n, int nn
 				memcpy(&lane[k++], p[i] + 8 * h, 8);
 		sift_put_cc_ints(s, lane, nn, opt);
 	}
-	pfree(lane);
+	sift_free(lane);
 }
 
 /* STOR[STOR-CODEC-05]: ids that share their top 32 bits (UUIDv7, UUIDv1, ULID) split into FIXED16 halves (-4..6 B/id); random UUIDv4 stay raw 16 B/id */
@@ -432,33 +433,33 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 	}
 	if (opt->dict != NULL && !fixed)
 	{
-		int64	   *c = palloc(nn * sizeof(int64));
+		int64	   *c = sift_alloc(nn * sizeof(int64));
 
 		for (int i = 0, k = 0; i < n; i++)
 			if (col->isnull == NULL || !col->isnull[i])
 				c[k++] = col->dcode != NULL ? col->dcode[i] : sift_dict_code(opt->dict, col->s[i], col->slen[i]);
 		sift_put_cc_ints(s, c, nn, opt);
 		ref->enc |= SIFT_CENC_DICT_CODE | SIFT_ENC_PART_DICT;
-		pfree(c);
+		sift_free(c);
 		return;
 	}
 	if (nn >= 8)
 	{
-		code = palloc(nn * sizeof(uint32));
+		code = sift_alloc(nn * sizeof(uint32));
 		if (cold)
 		{
 			maxnd = fixed ? Min(nn / 4, SIFT_DICT_MAX) : Min(nn * 35 / 100, SIFT_DICT_MAX);
 			while (cap < nn * 2)
 				cap *= 2;
-			first = palloc((maxnd + 1) * sizeof(int));
-			slot = palloc(cap * sizeof(int));
+			first = sift_alloc((maxnd + 1) * sizeof(int));
+			slot = sift_alloc(cap * sizeof(int));
 			nd = maxnd > 0 ? dict_codes(col->s, col->slen, col->isnull, n, code, first, slot, cap, maxnd) : -1;
-			pfree(slot);
+			sift_free(slot);
 		}
 		else
 		{
 			maxnd = Min(nn / 2, SIFT_DICT_HOT_MAX);
-			first = palloc((maxnd + 1) * sizeof(int));
+			first = sift_alloc((maxnd + 1) * sizeof(int));
 			nd = fixed || maxnd == 0 ? -1 : dict_codes(col->s, col->slen, col->isnull, n, code, first, slot_hot, 2 * SIFT_DICT_HOT_MAX, maxnd);
 		}
 		if (nd > 0)
@@ -471,24 +472,24 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 
 			if (cold && (uint64) nd * DICT_TRIAL_DIV > (uint64) nn)
 			{
-				initStringInfo(&dict);
-				initStringInfo(&block);
+				sift_sb_init(&dict);
+				sift_sb_init(&block);
 				put_dict(&dict, col->s, col->slen, code, first, nd, nn, opt);
 				mods = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
 				block_wins = (uint64) block.len * 100 < (uint64) dict.len * 95;
-				appendBinaryStringInfo(s, block_wins ? block.data : dict.data, block_wins ? block.len : dict.len);
-				pfree(dict.data);
-				pfree(block.data);
+				sift_sb_append(s, block_wins ? block.data : dict.data, block_wins ? block.len : dict.len);
+				sift_free(dict.data);
+				sift_free(block.data);
 			}
 			else
 				put_dict(s, col->s, col->slen, code, first, nd, nn, opt);
 			ref->enc |= block_wins ? SIFT_CENC_STR_BLOCK | mods : SIFT_CENC_DICT_CODE;
-			pfree(code);
-			pfree(first);
+			sift_free(code);
+			sift_free(first);
 			return;
 		}
-		pfree(code);
-		pfree(first);
+		sift_free(code);
+		sift_free(first);
 	}
 	if (opt->fsst != NULL && !fixed && nn > 0 && opt->tier == SIFT_TIER_COLD_L2)
 	{
@@ -496,27 +497,27 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 					block;
 		uint16		mods;
 
-		initStringInfo(&part);
-		initStringInfo(&block);
+		sift_sb_init(&part);
+		sift_sb_init(&block);
 		if (put_part_fsst(&part, col, n, nn, opt))
 		{
 			mods = put_block(&block, col->s, col->slen, col->isnull, n, nn, opt);
 			if (fsst_beats_block(part.len, block.len, opt->tier))
 			{
-				appendBinaryStringInfo(s, part.data, part.len);
+				sift_sb_append(s, part.data, part.len);
 				ref->enc |= SIFT_CENC_STR_FSST | SIFT_ENC_PART_DICT;
 			}
 			else
 			{
-				appendBinaryStringInfo(s, block.data, block.len);
+				sift_sb_append(s, block.data, block.len);
 				ref->enc |= SIFT_CENC_STR_BLOCK | mods;
 			}
-			pfree(part.data);
-			pfree(block.data);
+			sift_free(part.data);
+			sift_free(block.data);
 			return;
 		}
-		pfree(part.data);
-		pfree(block.data);
+		sift_free(part.data);
+		sift_free(block.data);
 	}
 	else if (opt->fsst != NULL && !fixed && nn > 0 && put_part_fsst(s, col, n, nn, opt))
 	{
@@ -534,7 +535,7 @@ sift_chunk_put_str(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 		{
 			for (int i = 0; i < n; i++)
 				if (col->isnull == NULL || !col->isnull[i])
-					appendBinaryStringInfo(s, col->s[i], 16);
+					sift_sb_append(s, col->s[i], 16);
 			ref->enc |= fixed16_enc(col->hint);
 		}
 	}
@@ -594,43 +595,43 @@ sift_dict_enc_build(const SiftColIn *col, int n)
 		return NULL;
 	while (cap < Min(nn, 2 * SIFT_DICT_PART_MAX) * 2)
 		cap *= 2;
-	code = palloc(nn * sizeof(uint32));
-	first = palloc((maxnd + 1) * sizeof(int));
-	slot = palloc(cap * sizeof(int));
+	code = sift_alloc(nn * sizeof(uint32));
+	first = sift_alloc((maxnd + 1) * sizeof(int));
+	slot = sift_alloc(cap * sizeof(int));
 	nd = dict_codes(col->s, col->slen, col->isnull, n, code, first, slot, cap, maxnd);
-	pfree(slot);
+	sift_free(slot);
 	if (nd <= 0)
 	{
-		pfree(code);
-		pfree(first);
+		sift_free(code);
+		sift_free(first);
 		return NULL;
 	}
-	order = palloc(nd * sizeof(int));
+	order = sift_alloc(nd * sizeof(int));
 	memcpy(order, first, nd * sizeof(int));
 	ctx = (DictSort) {col->s, col->slen};
 	qsort_arg(order, nd, sizeof(int), enc_str_cmp, &ctx);
-	d = palloc0(sizeof(SiftDictEnc));
+	d = sift_alloc0(sizeof(SiftDictEnc));
 	d->n = nd;
-	d->p = palloc(nd * sizeof(char *));
-	d->len = palloc(nd * sizeof(uint32));
+	d->p = sift_alloc(nd * sizeof(char *));
+	d->len = sift_alloc(nd * sizeof(uint32));
 	for (int i = 0; i < nd; i++)
 	{
 		d->p[i] = col->s[order[i]];
 		d->len[i] = col->slen[order[i]];
 	}
 	/* the code of every row in the sorted dictionary, from the codes the rows got as they came: one search for each distinct string, none for a row */
-	rank = palloc(nd * sizeof(uint32));
+	rank = sift_alloc(nd * sizeof(uint32));
 	for (int id = 0; id < nd; id++)
 		rank[id] = sift_dict_code(d, col->s[first[id]], col->slen[first[id]]);
 	/* check-memory: allow the rows of one part build, as the codes and the strings of the rows are */
-	d->row_codes = palloc(Max(n, 1) * sizeof(uint32));
+	d->row_codes = sift_alloc(Max(n, 1) * sizeof(uint32));
 	d->nrows = n;
 	for (int i = 0, k = 0; i < n; i++)
 		d->row_codes[i] = (col->isnull != NULL && col->isnull[i]) ? 0 : rank[code[k++]];
-	pfree(rank);
-	pfree(order);
-	pfree(code);
-	pfree(first);
+	sift_free(rank);
+	sift_free(order);
+	sift_free(code);
+	sift_free(first);
 	return d;
 }
 

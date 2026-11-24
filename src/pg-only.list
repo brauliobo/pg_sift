@@ -502,6 +502,7 @@ col/f2/preagg_test.c
 col/f2/rowbuf.c
 col/f2/rowbuf.h
 col/f2/rowbuf_cluster.c
+col/f2/rowbuf_sort.c
 col/f2/scan/bridge.c
 col/f2/scan/chunk_filter.c
 col/f2/scan/fetch.c
@@ -540,6 +541,7 @@ col/granule/granule.h
 col/granule/granule_codes.c
 col/granule/granule_dec.c
 col/granule/granule_enc.c
+col/granule/granule_put.c
 col/granule/granule_filter.c
 col/granule/granule_filter.h
 col/granule/granule_int.h

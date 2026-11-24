@@ -9,6 +9,7 @@
 #include "core/host.h"
 
 #include "col/codec_int.h"
+#include "core/par/sbuf.h"
 
 #define CC_COLD_MIN_ROWS	256
 #define CC_COLD_GAIN_PCT	8
@@ -74,11 +75,11 @@ dbyte_residues(const CcNode *nd, uint32 from, uint32 len, uint32 *tmp)
 void
 cc_delta_byte_decode(const CcNode *nd, int64 *dst)
 {
-	uint32	   *tmp = palloc(sizeof(uint32) * CC_CAP32(nd->n));
+	uint32	   *tmp = sift_alloc(sizeof(uint32) * CC_CAP32(nd->n));
 
 	dbyte_residues(nd, 0, nd->n, tmp);
 	sift_cck->prefix64(tmp, nd->n, dst, nd->base, nd->mind);
-	pfree(tmp);
+	sift_free(tmp);
 }
 
 /* The values of rows [b * 1024, b * 1024 + upto) from the checkpoint of their block */
@@ -155,9 +156,9 @@ width_of(uint64 range)
 static void
 dbyte_node(StringInfo cand, const int64 *v, uint32 n, int64 dmin, uint32 B)
 {
-	uint8	   *res = palloc0((size_t) n * B + 8);
+	uint8	   *res = sift_alloc0((size_t) n * B + 8);
 
-	initStringInfo(cand);
+	sift_sb_init(cand);
 	cc_put_head(cand, SIFT_CCN_DELTA_BYTE, (uint8) B, 0);
 	cc_put64(cand, v[0]);
 	cc_put64(cand, dmin);
@@ -169,15 +170,15 @@ dbyte_node(StringInfo cand, const int64 *v, uint32 n, int64 dmin, uint32 B)
 
 		memcpy(res + (size_t) i * B, &x, B);
 	}
-	appendBinaryStringInfo(cand, (const char *) res, (int) ((size_t) n * B));
+	sift_sb_append(cand, (const char *) res, (int) ((size_t) n * B));
 	pad8(cand);
-	pfree(res);
+	sift_free(res);
 }
 
 static void
 bss_node(StringInfo cand, const int64 *v, uint32 n, int64 base, uint32 B)
 {
-	uint8	   *planes = palloc((size_t) n * B + 8);
+	uint8	   *planes = sift_alloc((size_t) n * B + 8);
 
 	for (uint32 i = 0; i < n; i++)
 	{
@@ -186,12 +187,12 @@ bss_node(StringInfo cand, const int64 *v, uint32 n, int64 base, uint32 B)
 		for (uint32 b = 0; b < B; b++)
 			planes[(size_t) b * n + i] = (uint8) (x >> (8 * b));
 	}
-	initStringInfo(cand);
+	sift_sb_init(cand);
 	cc_put_head(cand, SIFT_CCN_BSS, (uint8) B, 0);
 	cc_put64(cand, base);
-	appendBinaryStringInfo(cand, (const char *) planes, (int) ((size_t) n * B));
+	sift_sb_append(cand, (const char *) planes, (int) ((size_t) n * B));
 	pad8(cand);
-	pfree(planes);
+	sift_free(planes);
 }
 
 typedef struct ColdPick
@@ -220,13 +221,13 @@ pick_offer(ColdPick *pk, StringInfo cand, int tag, int gain_pct, bool need_wrapp
 	if (!take)
 	{
 		if (z.buf)
-			pfree(z.buf);
-		pfree(cand->data);
+			sift_free(z.buf);
+		sift_free(cand->data);
 		return;
 	}
-	pfree(pk->node.data);
+	sift_free(pk->node.data);
 	if (pk->z.buf)
-		pfree(pk->z.buf);
+		sift_free(pk->z.buf);
 	pk->node = *cand;
 	pk->z = z;
 	pk->size = sz;
@@ -266,8 +267,8 @@ cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, 
 	/* STOR[STOR-CODEC-06]: the deepest cold level (no fast decode) takes a byte-wise delta or byte planes for a 3% gain, the others for 8% (granule_int/num) */
 	int			gain = w->pol->fast_decode ? CC_COLD_GAIN_PCT : CC_COLD_GAIN_L2_PCT;
 
-	initStringInfo(&pk.node);
-	appendBinaryStringInfo(&pk.node, out->data + start, out->len - start);
+	sift_sb_init(&pk.node);
+	sift_sb_append(&pk.node, out->data + start, out->len - start);
 	pk.tag = tag;
 	pk.size = pk.node.len;
 	{
@@ -281,7 +282,7 @@ cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, 
 	}
 	if (tag == SIFT_CCN_FORBIT && (W <= 16 || (more && range <= 0xFFFFFFFFu)))
 	{
-		initStringInfo(&cand);
+		sift_sb_init(&cand);
 		cc_emit_forbyte(&cand, v, n, min, B);
 		pick_offer(&pk, &cand, SIFT_CCN_FORBYTE, W <= 16 ? 0 : gain, false);
 	}
@@ -307,10 +308,10 @@ cc_cold_leaf(const CcW *w, StringInfo out, int start, const int64 *v, uint32 n, 
 	if (pk.z.buf)
 	{
 		cc_emit_wrap(out, &pk.z, pk.node.len);
-		pfree(pk.z.buf);
+		sift_free(pk.z.buf);
 	}
 	else
-		appendBinaryStringInfo(out, pk.node.data, pk.node.len);
-	pfree(pk.node.data);
+		sift_sb_append(out, pk.node.data, pk.node.len);
+	sift_free(pk.node.data);
 	return pk.tag;
 }

@@ -5,6 +5,7 @@
 #include "col/codec_int.h"
 #include "col/compress.h"
 #include "core/popcount.h"
+#include "core/par/sbuf.h"
 
 #define CC_STRS_MAGIC	0xC6
 #define CC_BITS_MAGIC	0xC7
@@ -26,7 +27,7 @@ static bool
 put_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const SiftCcPolicy *pol, SiftCcScan *scan, const void *cdict)
 {
 	CcW			w = {pol, SIFT_CC_INT};
-	int64	   *lens = palloc(sizeof(int64) * (n + 1));
+	int64	   *lens = sift_alloc(sizeof(int64) * (n + 1));
 	StringInfoData ln;
 	uint32		total = n ? off[n] - off[0] : 0;
 	CcZTry		z;
@@ -36,23 +37,23 @@ put_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const S
 	check_policy(pol);
 	for (uint32 i = 0; i < n; i++)
 		lens[i] = off[i + 1] - off[i];
-	initStringInfo(&ln);
+	sift_sb_init(&ln);
 	enc_node(&w, &ln, lens, n, SIFT_CC_MAXDEPTH - 1, CCR_COLD);
 	put32(out, (CC_STRS_MAGIC | (SIFT_CC_VERSION << 8)));
 	put32(out, n);
 	put32(out, (uint32) ln.len);
 	put32(out, total);
-	appendBinaryStringInfo(out, ln.data, ln.len);
+	sift_sb_append(out, ln.data, ln.len);
 	if (cdict != NULL)
 	{
 		Size		cap = sift_colz_bound(SIFT_CC_ALG_ZSTD, total),
-					zlen = total > 0 ? sift_colz_compress_zdict(cdict, src, total, z.buf = palloc(cap), cap) : 0;
+					zlen = total > 0 ? sift_colz_compress_zdict(cdict, src, total, z.buf = sift_alloc(cap), cap) : 0;
 
 		wrapped = zlen > 0 && zlen < (uint64) total * 95 / 100;
 		z.alg = SIFT_CC_ALG_ZSTD_DICT;
 		z.len = zlen;
 		if (!wrapped && total > 0)
-			pfree(z.buf);
+			sift_free(z.buf);
 	}
 	else
 		wrapped = scan ? wrap_choose_scan(&w, src, total, &z, scan) : wrap_choose(&w, src, total, CCR_COLD, &z);
@@ -60,18 +61,18 @@ put_strs(StringInfo out, const uint32 *off, const char *bytes, uint32 n, const S
 	{
 		put32(out, (uint32) z.alg);
 		put32(out, (uint32) z.len);
-		appendBinaryStringInfo(out, z.buf, (int) z.len);
-		pfree(z.buf);
+		sift_sb_append(out, z.buf, (int) z.len);
+		sift_free(z.buf);
 	}
 	else
 	{
 		put32(out, 0);
 		put32(out, total);
-		appendBinaryStringInfo(out, (const char *) src, (int) total);
+		sift_sb_append(out, (const char *) src, (int) total);
 	}
 	pad8(out);
-	pfree(lens);
-	pfree(ln.data);
+	sift_free(lens);
+	sift_free(ln.data);
 	return wrapped && z.alg == SIFT_CC_ALG_ZSTD_DICT;
 }
 
@@ -128,7 +129,7 @@ sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32
 		CC_CORRUPT("string list length does not match");
 	if (form == 0 && clen != total)
 		CC_CORRUPT("raw string bytes length does not match");
-	lens = palloc(sizeof(uint32) * CC_CAP32(n));
+	lens = sift_alloc(sizeof(uint32) * CC_CAP32(n));
 	nd_u32(nd, 0, lens);
 	o = MemoryContextAlloc(mcxt, sizeof(uint32) * ((size_t) Max(n, min_n) + 1));
 	b = MemoryContextAlloc(mcxt, Max((size_t) total + 1, min_bytes));
@@ -161,7 +162,7 @@ sift_cc_decode_strs_dict(MemoryContext mcxt, const uint8 *blob, Size len, uint32
 	b[total] = 0;
 	*off = o;
 	*bytes = b;
-	pfree(lens);
+	sift_free(lens);
 	MemoryContextDelete(cx);
 }
 
@@ -193,11 +194,11 @@ sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const Sif
 	{
 		bool		want = set * 2 <= nbits;
 
-		pos = palloc(sizeof(int64) * (want ? set : nbits - set));
+		pos = sift_alloc(sizeof(int64) * (want ? set : nbits - set));
 		for (uint32 i = 0; i < nbits; i++)
 			if ((((words[i / 64] >> (i % 64)) & 1) != 0) == want)
 				pos[npos++] = i;
-		initStringInfo(&node);
+		sift_sb_init(&node);
 		enc_node(&w, &node, pos, npos, SIFT_CC_MAXDEPTH - 1, CCR_COLD);
 		if (8 + node.len < rawsz)
 			form = want ? CCB_SET : CCB_CLEAR;
@@ -205,29 +206,29 @@ sift_cc_encode_bits(StringInfo out, const uint64 *words, uint32 nbits, const Sif
 	h[0] = (char) CC_BITS_MAGIC;
 	h[1] = (char) form;
 	memcpy(h + 4, &nbits, 4);
-	appendBinaryStringInfo(out, h, 8);
+	sift_sb_append(out, h, 8);
 	if (form == CCB_RAW)
 	{
 		uint32		nb = (nbits + 7) / 8;
-		char	   *raw = palloc0(rawsz + 8);
+		char	   *raw = sift_alloc0(rawsz + 8);
 
 		for (uint32 i = 0; i < nb; i++)
 			raw[i] = (char) (words[i / 8] >> (8 * (i % 8)));
 		if (nbits % 8)
 			raw[nb - 1] &= (char) ((1 << (nbits % 8)) - 1);
-		appendBinaryStringInfo(out, raw, (int) rawsz);
-		pfree(raw);
+		sift_sb_append(out, raw, (int) rawsz);
+		sift_free(raw);
 	}
 	else if (form == CCB_SET || form == CCB_CLEAR)
 	{
 		put32(out, npos);
 		put32(out, (uint32) node.len);
-		appendBinaryStringInfo(out, node.data, node.len);
+		sift_sb_append(out, node.data, node.len);
 	}
 	if (pos)
-		pfree(pos);
+		sift_free(pos);
 	if (node.data)
-		pfree(node.data);
+		sift_free(node.data);
 }
 
 void
@@ -275,7 +276,7 @@ sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words)
 				nd = parse_node(cx, SIFT_CC_INT, blob + 16, nl, npos, 0, &u);
 				if (u != nl)
 					CC_CORRUPT("bit vector node does not match");
-				pos = palloc(sizeof(int64) * ((size_t) npos + SIFT_COL_PAD / 8));
+				pos = sift_alloc(sizeof(int64) * ((size_t) npos + SIFT_COL_PAD / 8));
 				nd_i64(nd, pos);
 				if (form == CCB_CLEAR)
 					sift_cc_set_ones(words, nbits);
@@ -288,7 +289,7 @@ sift_cc_decode_bits(const uint8 *blob, Size len, uint32 nbits, uint64 *words)
 					else
 						words[pos[i] / 64] &= ~(UINT64CONST(1) << (pos[i] % 64));
 				}
-				pfree(pos);
+				sift_free(pos);
 				MemoryContextDelete(cx);
 				break;
 			}

@@ -1,6 +1,6 @@
 /*
- * col/granule.c - encode and decode the granules of a part of format major 2, and write a part from rows (col/granule.h). The encoders of the chunks are in col/granule_enc.c,
- * their decoders in col/granule_dec.c and the vector decoder in col/granule_vec.c; the parts built and read from granules are in col/granule/.
+ * col/granule.c - decode the granules of a part of format major 2 and the helpers of a part written from rows (col/granule.h). The record of a granule is written by col/granule/granule_put.c,
+ * the encoders of its chunks are in col/granule_enc.c, their decoders in col/granule_dec.c and the vector decoder in col/granule_vec.c; the parts built and read from granules are in col/granule/.
  */
 #include "core/host.h"
 
@@ -11,80 +11,6 @@
 #include "col/f2/preagg_delta.h"
 #include "core/cmp.h"
 #include "core/page_io.h"
-
-SiftGranuleDesc
-sift_granule_encode(StringInfo out, const SiftGranuleIn *in)
-{
-	int			nchunks = in->ncols + 1;
-	uint32		hdrlen = offsetof(SiftGranuleHeader, chunks) + nchunks * sizeof(SiftChunkRef);
-	uint64		start = out->len;
-	SiftGranuleHeader *h;
-	SiftGranuleDesc d = {0};
-	bool		nulls = false;
-	SiftChunkOpts opt = {.tier = in->tier,.alg = in->compress_alg,.framed = in->framed};
-
-	if (in->nrows < 1 || in->nrows > SIFT_GRANULE_ROWS)
-		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("sift: a granule holds 1 to %d rows, not %d", SIFT_GRANULE_ROWS, in->nrows)));
-	Assert(start % 8 == 0);
-	appendStringInfoSpaces(out, hdrlen);
-	memset(out->data + start, 0, hdrlen);
-	for (int c = 0; c < nchunks; c++)
-	{
-		SiftChunkRef ref = {0};
-		StringInfoData body;
-
-		initStringInfo(&body);
-		if (c == SIFT_COL_TID_IDX)
-			sift_chunk_put_tids(&body, in->tid, in->nrows, &ref, &opt);
-		else
-		{
-			const SiftColIn *col = &in->cols[c - 1];
-			int			n = in->nrows;
-
-			if (col->group1 > 0)
-			{
-				const SiftColIn *g = &in->cols[col->group1 - 1];
-
-				if (col->group1 - 1 > SIFT_CHUNK_GROUP_MAX)
-					ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: column %d holds the lengths of arrays whose elements are kept, past the %d columns a granule can name", col->group1 - 1, SIFT_CHUNK_GROUP_MAX),
-							errhint("Keep fewer arrays of objects in the paths of the index.")));
-				n = g->eoff[in->nrows] - g->eoff[0];
-			}
-			opt.dict = in->dicts != NULL ? in->dicts[c - 1] : NULL;
-			opt.fsst = in->part_fsst != NULL ? in->part_fsst[c - 1] : NULL;
-			opt.cdict = in->part_cdict != NULL ? in->part_cdict[c - 1] : NULL;
-				sift_chunk_put(&body, col, n, &ref, &opt);
-			if (col->group1 > 0)
-				ref.flags |= SIFT_CHUNK_ELEMS | ((col->group1 - 1) << SIFT_CHUNK_GROUP_SHIFT);
-		}
-		nulls |= ref.nnonnull != (uint32) in->nrows;
-		ref.off = out->len - start;
-		ref.len = body.len;
-		appendBinaryStringInfo(out, body.data, body.len);
-		pad8(out);
-		pfree(body.data);
-		memcpy(out->data + start + offsetof(SiftGranuleHeader, chunks) + c * sizeof(SiftChunkRef), &ref, sizeof(ref));
-	}
-	h = (SiftGranuleHeader *) (out->data + start);
-	h->magic = SIFT_GRANULE_MAGIC;
-	h->nrows = in->nrows;
-	h->nchunks = nchunks;
-	d.data_off = start;
-	d.data_len = out->len - start;
-	d.nrows = in->nrows;
-	d.flags = (in->all_frozen ? SIFT_GDESC_ALL_FROZEN : 0) | (nulls ? SIFT_GDESC_HAS_NULLS : 0);
-	d.crc32c = sift_crc32c(h, hdrlen);
-	d.min_xid = in->min_xid;
-	d.max_xid = in->max_xid;
-	d.tid_min = d.tid_max = in->tid[0];
-	for (int i = 1; i < in->nrows; i++)
-	{
-		d.tid_min = Min(d.tid_min, in->tid[i]);
-		d.tid_max = Max(d.tid_max, in->tid[i]);
-	}
-	d.row_base = in->row_base;
-	return d;
-}
 
 SiftGranuleView
 sift_granule_open(Relation rel, const char *rec, uint32 len, const SiftGranuleDesc *desc)

@@ -8,6 +8,7 @@
 #include "core/host.h"
 
 #include "col/fsst.h"
+#include "core/par/sbuf.h"
 
 #define GENERATIONS		5
 #define LITERAL			256		/* the id of the byte b that no symbol covers is LITERAL + b */
@@ -192,7 +193,7 @@ take_sample(const char *const *p, const uint32 *len, uint32 n)
 {
 	uint64		total = 0;
 	uint32		stride;
-	Sample		s = {palloc(sizeof(char *) * (n + 1)), palloc(sizeof(uint32) * (n + 1)), 0, 0};
+	Sample		s = {sift_alloc(sizeof(char *) * (n + 1)), sift_alloc(sizeof(uint32) * (n + 1)), 0, 0};
 
 	for (uint32 i = 0; i < n; i++)
 		total += len[i];
@@ -263,8 +264,8 @@ add_cand(Cand *c, uint32 n, const uint8 *bytes, uint32 len, uint64 gain)
 static void
 next_table(SiftFsst *t, const Sample *sm)
 {
-	uint32	   *single = palloc0(IDS * sizeof(uint32)),
-			   *pairs = palloc((sm->bytes + 1) * sizeof(uint32));
+	uint32	   *single = sift_alloc0(IDS * sizeof(uint32)),
+			   *pairs = sift_alloc((sm->bytes + 1) * sizeof(uint32));
 	uint32		npairs = 0,
 				nc = 0,
 				m = 0;
@@ -273,7 +274,7 @@ next_table(SiftFsst *t, const Sample *sm)
 
 	(void) code_sample(t, sm, single, pairs, &npairs);
 	qsort(pairs, npairs, sizeof(uint32), pair_cmp);
-	c = palloc((IDS + npairs + 1) * sizeof(Cand));
+	c = sift_alloc((IDS + npairs + 1) * sizeof(Cand));
 	for (uint32 id = 0; id < IDS; id++)
 		if (single[id] > 0)
 		{
@@ -310,9 +311,9 @@ next_table(SiftFsst *t, const Sample *sm)
 		set_symbol(t, i, b, c[i].len);
 	}
 	index_table(t);
-	pfree(single);
-	pfree(pairs);
-	pfree(c);
+	sift_free(single);
+	sift_free(pairs);
+	sift_free(c);
 }
 
 uint32
@@ -326,8 +327,8 @@ sift_fsst_train(SiftFsst *t, const char *const *p, const uint32 *len, uint32 n)
 	for (int g = 0; g < GENERATIONS && sm.bytes > 0; g++)
 		next_table(t, &sm);
 	coded = sm.bytes > 0 ? code_sample(t, &sm, NULL, NULL, NULL) : 0;
-	pfree(sm.p);
-	pfree(sm.len);
+	sift_free(sm.p);
+	sift_free(sm.len);
 	return sm.bytes > 0 ? (uint32) (coded * 1000 / sm.bytes) : 1000;
 }
 
@@ -337,13 +338,13 @@ sift_fsst_put_table(StringInfo s, const SiftFsst *t)
 	uint32		hdr = t->nsym;
 	uint32		start = s->len;
 
-	appendBinaryStringInfo(s, (char *) &hdr, 4);
+	sift_sb_append(s, (char *) &hdr, 4);
 	for (uint32 c = 0; c < t->nsym; c++)
-		appendStringInfoChar(s, (char) t->len[c]);
+		sift_sb_char(s, (char) t->len[c]);
 	for (uint32 c = 0; c < t->nsym; c++)
-		appendBinaryStringInfo(s, (const char *) t->sym[c], t->len[c]);
+		sift_sb_append(s, (const char *) t->sym[c], t->len[c]);
 	while ((s->len - start) % 8 != 0)
-		appendStringInfoChar(s, '\0');
+		sift_sb_char(s, '\0');
 }
 
 uint32

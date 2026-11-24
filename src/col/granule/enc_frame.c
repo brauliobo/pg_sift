@@ -8,6 +8,7 @@
 #include "col/compress.h"
 #include "col/granule/granule.h"
 #include "col/granule/granule_int.h"
+#include "core/par/sbuf.h"
 #include "core/damage.h"
 
 #define FRAME_HDR_BYTES		8
@@ -16,23 +17,23 @@ void
 sift_frames_put(StringInfo s, int nn, SiftFramePut put, void *arg)
 {
 	SiftChunkFrameHdr hdr = {(uint32) ((nn + SIFT_FRAME_ROWS - 1) / SIFT_FRAME_ROWS), SIFT_FRAME_ROWS};
-	uint32	   *off = palloc0((hdr.nframes + 1) * sizeof(uint32));
+	uint32	   *off = sift_alloc0((hdr.nframes + 1) * sizeof(uint32));
 	StringInfoData frames;
 	uint32		table = MAXALIGN((hdr.nframes + 1) * sizeof(uint32));
 
-	initStringInfo(&frames);
+	sift_sb_init(&frames);
 	for (uint32 f = 0; f < hdr.nframes; f++)
 	{
 		put(&frames, (int) (f * SIFT_FRAME_ROWS), Min(SIFT_FRAME_ROWS, nn - (int) (f * SIFT_FRAME_ROWS)), arg);
 		pad8(&frames);
 		off[f + 1] = frames.len;
 	}
-	appendBinaryStringInfo(s, (char *) &hdr, sizeof(hdr));
-	appendBinaryStringInfo(s, (char *) off, (hdr.nframes + 1) * sizeof(uint32));
-	appendStringInfoSpaces(s, table - (hdr.nframes + 1) * sizeof(uint32));
-	appendBinaryStringInfo(s, frames.data, frames.len);
-	pfree(off);
-	pfree(frames.data);
+	sift_sb_append(s, (char *) &hdr, sizeof(hdr));
+	sift_sb_append(s, (char *) off, (hdr.nframes + 1) * sizeof(uint32));
+	sift_sb_spaces(s, table - (hdr.nframes + 1) * sizeof(uint32));
+	sift_sb_append(s, frames.data, frames.len);
+	sift_free(off);
+	sift_free(frames.data);
 }
 
 bool
@@ -155,11 +156,11 @@ sift_frames_block_strs(const SiftChunk *c, uint32 **offs, char **bytes)
 void
 sift_frame_f8_put(StringInfo s, const double *vals, int cnt, int alg)
 {
-	uint8	   *planes = palloc((Size) cnt * 8);
+	uint8	   *planes = sift_alloc((Size) cnt * 8);
 	uint32		hdr[3] = {0, (uint32) cnt * 8, (uint32) cnt * 8};
 	Size		cap = alg > 0 ? sift_colz_bound(alg, (Size) cnt * 8) : 0,
 				clen = 0;
-	char	   *buf = cap > 0 ? palloc(cap) : NULL;
+	char	   *buf = cap > 0 ? sift_alloc(cap) : NULL;
 
 	for (int i = 0; i < cnt; i++)
 		for (int b = 0; b < 8; b++)
@@ -170,17 +171,17 @@ sift_frame_f8_put(StringInfo s, const double *vals, int cnt, int alg)
 	{
 		hdr[0] = alg;
 		hdr[2] = (uint32) clen;
-		appendBinaryStringInfo(s, (char *) hdr, sizeof(hdr));
-		appendBinaryStringInfo(s, buf, clen);
+		sift_sb_append(s, (char *) hdr, sizeof(hdr));
+		sift_sb_append(s, buf, clen);
 	}
 	else
 	{
-		appendBinaryStringInfo(s, (char *) hdr, sizeof(hdr));
-		appendBinaryStringInfo(s, (char *) planes, (Size) cnt * 8);
+		sift_sb_append(s, (char *) hdr, sizeof(hdr));
+		sift_sb_append(s, (char *) planes, (Size) cnt * 8);
 	}
-	pfree(planes);
+	sift_free(planes);
 	if (buf != NULL)
-		pfree(buf);
+		sift_free(buf);
 }
 
 void

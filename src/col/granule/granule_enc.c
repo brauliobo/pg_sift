@@ -14,6 +14,7 @@
 #include "col/compress.h"
 #include "col/fsst.h"
 #include "col/granule/granule_int.h"
+#include "core/par/sbuf.h"
 
 #define SIFT_WRAP_MIN		512
 #define SIFT_WRAP_HOT_MIN	2048
@@ -45,8 +46,8 @@ sift_cc_blob_put(StringInfo s, const StringInfoData *blob)
 	uint32		hdr[2] = {blob->len, 0};
 	uint32		start = s->len;
 
-	appendBinaryStringInfo(s, (char *) hdr, 8);
-	appendBinaryStringInfo(s, blob->data, blob->len);
+	sift_sb_append(s, (char *) hdr, 8);
+	sift_sb_append(s, blob->data, blob->len);
 	pad8(s);
 	return s->len - start;
 }
@@ -61,10 +62,10 @@ sift_put_cc_ints(StringInfo s, const int64 *vals, int n, const SiftChunkOpts *op
 	int			tag;
 
 	sift_cc_policy_tier(&pol, opt->tier, opt->alg);
-	initStringInfo(&blob);
+	sift_sb_init(&blob);
 	sift_cc_encode(&blob, SIFT_CC_INT, vals, n, NULL, &pol, &info);
 	sift_cc_blob_put(s, &blob);
-	pfree(blob.data);
+	sift_free(blob.data);
 	tag = info.tag == SIFT_CCN_WRAP ? info.inner : info.tag;
 	return tag == SIFT_CCN_CONST ? SIFT_CENC_INT_CONST : tag == SIFT_CCN_DELTA ? SIFT_CENC_INT_DELTA : tag == SIFT_CCN_RLE ? SIFT_CENC_RLE : SIFT_CENC_INT_FOR;
 }
@@ -73,13 +74,13 @@ sift_put_cc_ints(StringInfo s, const int64 *vals, int n, const SiftChunkOpts *op
 static void
 put_row_list(StringInfo s, const bool *isnull, int n, bool want_null, uint16 cnt)
 {
-	appendBinaryStringInfo(s, (char *) &cnt, 2);
+	sift_sb_append(s, (char *) &cnt, 2);
 	for (int i = 0; i < n; i++)
 		if (isnull[i] == want_null)
 		{
 			uint16		idx = i;
 
-			appendBinaryStringInfo(s, (char *) &idx, 2);
+			sift_sb_append(s, (char *) &idx, 2);
 		}
 	pad8(s);
 }
@@ -110,14 +111,14 @@ put_validity(StringInfo s, const bool *isnull, int n, SiftChunkRef *ref)
 	}
 	else
 	{
-		uint8	   *bm = palloc0((n + 7) / 8);
+		uint8	   *bm = sift_alloc0((n + 7) / 8);
 
 		for (int i = 0; i < n; i++)
 			if (!isnull[i])
 				bm[i >> 3] |= 1 << (i & 7);
-		appendBinaryStringInfo(s, (char *) bm, (n + 7) / 8);
+		sift_sb_append(s, (char *) bm, (n + 7) / 8);
 		pad8(s);
-		pfree(bm);
+		sift_free(bm);
 	}
 	return nn;
 }
@@ -126,12 +127,12 @@ put_validity(StringInfo s, const bool *isnull, int n, SiftChunkRef *ref)
 static void
 put_packed_kinds(StringInfo s, const uint8 *tag, int n, const SiftChunkOpts *opt)
 {
-	int64	   *kinds = palloc(n * sizeof(int64));
+	int64	   *kinds = sift_alloc(n * sizeof(int64));
 
 	for (int i = 0; i < n; i++)
 		kinds[i] = tag[i];
 	sift_put_cc_ints(s, kinds, n, opt);
-	pfree(kinds);
+	sift_free(kinds);
 }
 
 /* The rows with a tag: one entry each in row order (behind the mask of the rows when there are many), then the payloads of the entries that keep the value itself (the entry gives where its payload starts); rows that keep only their kind are held as the kinds of all rows when that is smaller */
@@ -143,7 +144,7 @@ put_exceptions(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref, con
 	StringInfoData pay;
 	const uint8 *tag = col->tag;
 
-	initStringInfo(&pay);
+	sift_sb_init(&pay);
 	for (int i = 0; i < n; i++)
 		if (tag[i] != 0)
 		{
@@ -156,7 +157,7 @@ put_exceptions(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref, con
 			uint32		len = col->xplen != NULL ? col->xplen[i] : 0;
 
 			if (len > 0)
-				appendBinaryStringInfo(&pay, col->xpay[i], len);
+				sift_sb_append(&pay, col->xpay[i], len);
 		}
 	h.payload_bytes = pay.len;
 	/* STOR[STOR-CODEC-07]: the 1024 B exception mask is written only for granules of 2048 rows or more (the reader rebuilds it from the entries) */
@@ -166,22 +167,22 @@ put_exceptions(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref, con
 	{
 		StringInfoData kinds;
 
-		initStringInfo(&kinds);
+		sift_sb_init(&kinds);
 		put_packed_kinds(&kinds, tag, n, opt);
 		if (kinds.len < SIFT_EXC_BLOCK_LEN(&h))
 		{
 			h.flags = SIFT_EXC_KINDS_PACKED;
 			h.payload_bytes = kinds.len;
-			appendBinaryStringInfo(s, (char *) &h, sizeof(h));
-			appendBinaryStringInfo(s, kinds.data, kinds.len);
+			sift_sb_append(s, (char *) &h, sizeof(h));
+			sift_sb_append(s, kinds.data, kinds.len);
 			pad8(s);
-			pfree(kinds.data);
-			pfree(pay.data);
+			sift_free(kinds.data);
+			sift_free(pay.data);
 			return;
 		}
-		pfree(kinds.data);
+		sift_free(kinds.data);
 	}
-	appendBinaryStringInfo(s, (char *) &h, sizeof(h));
+	sift_sb_append(s, (char *) &h, sizeof(h));
 	if (h.flags & SIFT_EXC_MASKED)
 	{
 		uint64		mask[SIFT_EXC_MASK_WORDS] = {0};
@@ -189,7 +190,7 @@ put_exceptions(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref, con
 		for (int i = 0; i < n; i++)
 			if (tag[i] != 0)
 				mask[i >> 6] |= UINT64CONST(1) << (i & 63);
-		appendBinaryStringInfo(s, (char *) mask, sizeof(mask));
+		sift_sb_append(s, (char *) mask, sizeof(mask));
 	}
 	for (int i = 0, off = 0; i < n; i++)
 		if (tag[i] != 0)
@@ -197,14 +198,14 @@ put_exceptions(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref, con
 			uint32		len = col->xplen != NULL ? col->xplen[i] : 0;
 
 			e = (SiftVariantExcEntry) {.row_idx = i,.kind = sift_exc_kind(tag[i]),.reserved = tag[i],.payload_off = off};
-			appendBinaryStringInfo(s, (char *) &e, sizeof(e));
+			sift_sb_append(s, (char *) &e, sizeof(e));
 			off += len;
 		}
 	e = (SiftVariantExcEntry) {.payload_off = pay.len};
-	appendBinaryStringInfo(s, (char *) &e, sizeof(e));
-	appendBinaryStringInfo(s, pay.data, pay.len);
+	sift_sb_append(s, (char *) &e, sizeof(e));
+	sift_sb_append(s, pay.data, pay.len);
 	pad8(s);
-	pfree(pay.data);
+	sift_free(pay.data);
 }
 
 static bool
@@ -221,20 +222,20 @@ has_tags(const SiftColIn *col, int n)
 static void
 put_bits(StringInfo s, const int64 *vals, int nn)
 {
-	uint8	   *bits = palloc0((nn + 7) / 8 + 1);
+	uint8	   *bits = sift_alloc0((nn + 7) / 8 + 1);
 
 	for (int i = 0; i < nn; i++)
 		if (vals[i] != 0)
 			bits[i >> 3] |= 1 << (i & 7);
-	appendBinaryStringInfo(s, (char *) bits, (nn + 7) / 8);
+	sift_sb_append(s, (char *) bits, (nn + 7) / 8);
 	pad8(s);
-	pfree(bits);
+	sift_free(bits);
 }
 
 void
 sift_chunk_put_int(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkRef *ref, const SiftChunkOpts *opt)
 {
-	int64	   *vals = palloc(nn * sizeof(int64));
+	int64	   *vals = sift_alloc(nn * sizeof(int64));
 	int			k = 0;
 	int64		min,
 				max;
@@ -255,7 +256,7 @@ sift_chunk_put_int(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 	{
 		int64		scale = col->scale;
 
-		appendBinaryStringInfo(s, (char *) &scale, 8);
+		sift_sb_append(s, (char *) &scale, 8);
 		sift_put_cc_ints(s, vals, nn, opt);
 		ref->enc |= SIFT_CENC_NUM64;
 	}
@@ -267,7 +268,7 @@ sift_chunk_put_int(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 	else if (col->hint == SIFT_CHINT_LIST)
 	{
 		uint32		hdr[2] = {n, 0};
-		uint32	   *boff = palloc0(((n + 63) / 64 + 1) * sizeof(uint32));
+		uint32	   *boff = sift_alloc0(((n + 63) / 64 + 1) * sizeof(uint32));
 		uint32		total = 0;
 		int			vi = 0;
 
@@ -280,22 +281,22 @@ sift_chunk_put_int(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkR
 		}
 		boff[(n + 63) / 64] = total;
 		hdr[1] = total;
-		appendBinaryStringInfo(s, (char *) hdr, 8);
-		appendBinaryStringInfo(s, (char *) boff, ((n + 63) / 64 + 1) * sizeof(uint32));
+		sift_sb_append(s, (char *) hdr, 8);
+		sift_sb_append(s, (char *) boff, ((n + 63) / 64 + 1) * sizeof(uint32));
 		pad8(s);
 		sift_put_cc_ints(s, vals, nn, opt);
 		ref->enc |= SIFT_CENC_LIST_LEN;
-		pfree(boff);
+		sift_free(boff);
 	}
 	else if (min == max)
 	{
 		/* STOR[STOR-CODEC-02]: a constant column, bool included, is 8 B of INT_CONST, not a 1024 B bitmap (-1016 B/granule) */
-		appendBinaryStringInfo(s, (char *) &min, 8);
+		sift_sb_append(s, (char *) &min, 8);
 		ref->enc |= SIFT_CENC_INT_CONST;
 	}
 	else
 		ref->enc |= sift_put_cc_ints(s, vals, nn, opt);
-	pfree(vals);
+	sift_free(vals);
 }
 
 static const double f8_p10[16] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15};
@@ -601,9 +602,9 @@ rd_body_len(int nn, int rb, uint32 n_exc)
 static bool
 put_alp_rd(StringInfo s, const double *vals, int nn, int tz, uint64 raw_cap)
 {
-	uint32	   *hist = palloc0(((Size) 1 << 16) * sizeof(uint32));
-	uint16	   *pv = palloc(Min((Size) nn, (Size) 1 << 16) * sizeof(uint16));
-	uint32	   *pn = palloc(Min((Size) nn, (Size) 1 << 16) * sizeof(uint32));
+	uint32	   *hist = sift_alloc0(((Size) 1 << 16) * sizeof(uint32));
+	uint16	   *pv = sift_alloc(Min((Size) nn, (Size) 1 << 16) * sizeof(uint16));
+	uint32	   *pn = sift_alloc(Min((Size) nn, (Size) 1 << 16) * sizeof(uint32));
 	uint32		ndist = 0,
 				n_exc = 0;
 	uint64		best_len = UINT64_MAX;
@@ -650,17 +651,17 @@ put_alp_rd(StringInfo s, const double *vals, int nn, int tz, uint64 raw_cap)
 	ok = best_lb != 0 && best_len < raw_cap;
 	if (ok)
 	{
-		uint16	   *exc_pos = palloc((nn / 16 + 1) * sizeof(uint16)),
-				   *exc_left = palloc((nn / 16 + 1) * sizeof(uint16));
+		uint16	   *exc_pos = sift_alloc((nn / 16 + 1) * sizeof(uint16)),
+				   *exc_left = sift_alloc((nn / 16 + 1) * sizeof(uint16));
 		Size		clen = MAXALIGN(((uint64) nn * 3 + 7) / 8),
 					rlen;
-		uint8	   *codes = palloc0(clen),
+		uint8	   *codes = sift_alloc0(clen),
 				   *rights;
 
 		lb = best_lb;
 		rb = 64 - lb - tz;
 		rlen = MAXALIGN(((uint64) nn * rb + 7) / 8);
-		rights = palloc0(rlen);
+		rights = sift_alloc0(rlen);
 		memcpy(dict, best.left, best.n * sizeof(uint16));
 		for (int i = 0; i < nn; i++)
 		{
@@ -686,24 +687,24 @@ put_alp_rd(StringInfo s, const double *vals, int nn, int tz, uint64 raw_cap)
 		hdr[2] = (uint8) tz;
 		hdr[3] = n_exc > 0 ? SIFT_ALPRD_HAS_EXC : 0;
 		memcpy(hdr + 4, &n_exc, 4);
-		appendBinaryStringInfo(s, (char *) hdr, 8);
-		appendBinaryStringInfo(s, (char *) dict, sizeof(dict));
-		appendBinaryStringInfo(s, (char *) codes, clen);
-		appendBinaryStringInfo(s, (char *) rights, rlen);
+		sift_sb_append(s, (char *) hdr, 8);
+		sift_sb_append(s, (char *) dict, sizeof(dict));
+		sift_sb_append(s, (char *) codes, clen);
+		sift_sb_append(s, (char *) rights, rlen);
 		if (n_exc > 0)
 		{
-			appendBinaryStringInfo(s, (char *) exc_pos, n_exc * 2);
-			appendBinaryStringInfo(s, (char *) exc_left, n_exc * 2);
+			sift_sb_append(s, (char *) exc_pos, n_exc * 2);
+			sift_sb_append(s, (char *) exc_left, n_exc * 2);
 			pad8(s);
 		}
-		pfree(exc_pos);
-		pfree(exc_left);
-		pfree(codes);
-		pfree(rights);
+		sift_free(exc_pos);
+		sift_free(exc_left);
+		sift_free(codes);
+		sift_free(rights);
 	}
-	pfree(hist);
-	pfree(pv);
-	pfree(pn);
+	sift_free(hist);
+	sift_free(pv);
+	sift_free(pn);
 	return ok;
 }
 
@@ -711,7 +712,7 @@ put_alp_rd(StringInfo s, const double *vals, int nn, int tz, uint64 raw_cap)
 static bool
 put_alp(StringInfo s, const double *vals, int nn, const SiftChunkOpts *opt, uint64 raw_cap)
 {
-	int64	   *keys = palloc(nn * sizeof(int64));
+	int64	   *keys = sift_alloc(nn * sizeof(int64));
 	SiftCcPolicy pol;
 	StringInfoData blob;
 	bool		ok;
@@ -719,26 +720,26 @@ put_alp(StringInfo s, const double *vals, int nn, const SiftChunkOpts *opt, uint
 	for (int i = 0; i < nn; i++)
 		keys[i] = sift_col_f8_key(vals[i]);
 	sift_cc_policy_tier(&pol, opt->tier, opt->alg);
-	initStringInfo(&blob);
+	sift_sb_init(&blob);
 	sift_cc_encode(&blob, SIFT_CC_F8, keys, nn, NULL, &pol, NULL);
 	ok = 8 + (uint64) blob.len < raw_cap;
 	if (ok)
 		sift_cc_blob_put(s, &blob);
-	pfree(keys);
-	pfree(blob.data);
+	sift_free(keys);
+	sift_free(blob.data);
 	return ok;
 }
 
 static void
 put_f8_bss(StringInfo s, const double *vals, int nn)
 {
-	uint8	   *planes = palloc((Size) nn * 8);
+	uint8	   *planes = sift_alloc((Size) nn * 8);
 
 	for (int i = 0; i < nn; i++)
 		for (int b = 0; b < 8; b++)
 			planes[b * nn + i] = ((const uint8 *) &vals[i])[b];
-	appendBinaryStringInfo(s, (char *) planes, nn * 8);
-	pfree(planes);
+	sift_sb_append(s, (char *) planes, nn * 8);
+	sift_free(planes);
 }
 
 typedef struct BssFrames
@@ -784,7 +785,7 @@ put_f8_pick(StringInfo s, F8Pick pick, const double *vals, int nn, const F8Plan 
 		case F8_PICK_RAW:
 			break;
 	}
-	appendBinaryStringInfo(s, (char *) vals, (uint64) nn * 8);
+	sift_sb_append(s, (char *) vals, (uint64) nn * 8);
 	ref->enc |= SIFT_CENC_FLOAT_RAW;
 	return true;
 }
@@ -792,7 +793,7 @@ put_f8_pick(StringInfo s, F8Pick pick, const double *vals, int nn, const F8Plan 
 static void
 put_f8(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkRef *ref, const SiftChunkOpts *opt)
 {
-	double	   *vals = palloc(nn * sizeof(double));
+	double	   *vals = sift_alloc(nn * sizeof(double));
 	int			k = 0;
 	F8Plan		plan = {.primary = F8_PICK_RAW,.fallback = F8_PICK_RAW};
 
@@ -806,7 +807,7 @@ put_f8(StringInfo s, const SiftColIn *col, int n, int nn, SiftChunkRef *ref, con
 		f8_select_plan(&plan, vals, nn, opt);
 	if (!put_f8_pick(s, plan.primary, vals, nn, &plan, ref, opt))
 		put_f8_pick(s, plan.fallback, vals, nn, &plan, ref, opt);
-	pfree(vals);
+	sift_free(vals);
 }
 
 /* The chunk wrapped: algorithm and raw length in the first 8 bytes, then the compressed bytes; only when it is at least an eighth smaller (deep, the cold level: two twenty-fifths) */
@@ -820,13 +821,13 @@ wrap_chunk(StringInfo body, int alg, SiftChunkRef *ref, bool probe, bool deep)
 	if (alg <= 0 || body->len < (probe ? SIFT_WRAP_HOT_MIN : SIFT_WRAP_MIN) || !sift_colz_available(alg))
 		return;
 	cap = sift_colz_bound(alg, body->len);
-	buf = palloc(cap);
+	buf = sift_alloc(cap);
 	if (probe)
 	{
 		clen = sift_colz_compress(alg, 0, body->data, 512, buf, cap);
 		if (clen == 0 || clen > 512 - 512 / 4)
 		{
-			pfree(buf);
+			sift_free(buf);
 			return;
 		}
 	}
@@ -835,12 +836,12 @@ wrap_chunk(StringInfo body, int alg, SiftChunkRef *ref, bool probe, bool deep)
 	{
 		uint32		hdr[2] = {alg, body->len};
 
-		resetStringInfo(body);
-		appendBinaryStringInfo(body, (char *) hdr, 8);
-		appendBinaryStringInfo(body, buf, clen);
+		sift_sb_reset(body);
+		sift_sb_append(body, (char *) hdr, 8);
+		sift_sb_append(body, buf, clen);
 		ref->flags |= SIFT_CHUNK_COMPRESSED;
 	}
-	pfree(buf);
+	sift_free(buf);
 }
 
 bool
@@ -890,16 +891,16 @@ put_key_present(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref)
 			h = (SiftKeyPresentHdr) {.mode = SIFT_KP_NEG_ARRAY16,.count = n - npresent,.npresent = npresent};
 		else
 			h = (SiftKeyPresentHdr) {.mode = SIFT_KP_BITMAP,.count = n,.npresent = npresent};
-		appendBinaryStringInfo(s, (char *) &h, sizeof(h));
+		sift_sb_append(s, (char *) &h, sizeof(h));
 		if (h.mode == SIFT_KP_BITMAP)
 		{
-			uint8	   *bm = palloc0(bitmap_bytes);
+			uint8	   *bm = sift_alloc0(bitmap_bytes);
 
 			for (int i = 0; i < n; i++)
 				if (key_row_present(col, i))
 					bm[i >> 3] |= 1 << (i & 7);
-			appendBinaryStringInfo(s, (char *) bm, bitmap_bytes);
-			pfree(bm);
+			sift_sb_append(s, (char *) bm, bitmap_bytes);
+			sift_free(bm);
 		}
 		else
 			for (int i = 0; i < n; i++)
@@ -907,7 +908,7 @@ put_key_present(StringInfo s, const SiftColIn *col, int n, SiftChunkRef *ref)
 				{
 					uint16		idx = i;
 
-					appendBinaryStringInfo(s, (char *) &idx, 2);
+					sift_sb_append(s, (char *) &idx, 2);
 				}
 		pad8(s);
 	}
@@ -946,9 +947,9 @@ sift_chunk_put(StringInfo body, const SiftColIn *col, int n, SiftChunkRef *ref, 
 	bool		tags = has_tags(col, n);
 	int			nn;
 
-	initStringInfo(&val);
-	initStringInfo(&keys);
-	initStringInfo(&data);
+	sift_sb_init(&val);
+	sift_sb_init(&keys);
+	sift_sb_init(&data);
 	nn = put_validity(&val, col->isnull, n, ref);
 	if (col->key_leaf || col->hint == SIFT_CHINT_KEY_PRESENT)
 		put_key_present(&keys, col, n, ref);
@@ -962,18 +963,18 @@ sift_chunk_put(StringInfo body, const SiftColIn *col, int n, SiftChunkRef *ref, 
 		put_f8(&data, col, n, nn, ref, opt);
 	else if (col->promo == NULL || !sift_chunk_put_promo(&data, col, n, nn, ref, opt))
 		sift_chunk_put_str(&data, col, n, nn, ref, opt);
-	initStringInfo(&out);
-	appendBinaryStringInfo(&out, val.data, val.len);
+	sift_sb_init(&out);
+	sift_sb_append(&out, val.data, val.len);
 	if (tags)
 		put_exceptions(&out, col, n, ref, opt);
-	appendBinaryStringInfo(&out, keys.data, keys.len);
-	appendBinaryStringInfo(&out, data.data, data.len);
+	sift_sb_append(&out, keys.data, keys.len);
+	sift_sb_append(&out, data.data, data.len);
 	/* STOR[STOR-CODEC-05]: a cold uuid chunk that is still raw is random ids, which no wrapper shrinks (no zstd pass over 128 KB) */
 	if (wrappable(ref->enc) && !(col->hint == SIFT_CHINT_UUID && SIFT_TIER_IS_COLD(opt->tier)))
 		wrap_chunk(&out, wrap_alg(opt), ref, !SIFT_TIER_IS_COLD(opt->tier), opt->tier == SIFT_TIER_COLD_L2);
-	appendBinaryStringInfo(body, out.data, out.len);
-	pfree(val.data);
-	pfree(keys.data);
-	pfree(data.data);
-	pfree(out.data);
+	sift_sb_append(body, out.data, out.len);
+	sift_free(val.data);
+	sift_free(keys.data);
+	sift_free(data.data);
+	sift_free(out.data);
 }

@@ -14,6 +14,7 @@
 #include "core/damage.h"
 #include "core/popcount.h"
 #include "core/varint.h"
+#include "core/par/sbuf.h"
 
 #define SIFT_TID_MINI			128
 #define SIFT_TID_PATCH_BYTES	6
@@ -31,7 +32,7 @@ offset_guess(const uint32 *blk, const int64 *offs, int i)
 static void
 pack_frame(StringInfo s, const uint32 *v, int cnt, int width)
 {
-	uint8	   *out = palloc0(16 * (Size) width + 8);
+	uint8	   *out = sift_alloc0(16 * (Size) width + 8);
 	uint64		acc = 0;
 	int			nbits = 0,
 				k = 0;
@@ -42,8 +43,8 @@ pack_frame(StringInfo s, const uint32 *v, int cnt, int width)
 		for (nbits += width; nbits >= 8; nbits -= 8, acc >>= 8)
 			out[k++] = (uint8) acc;
 	}
-	appendBinaryStringInfo(s, (char *) out, 16 * width);
-	pfree(out);
+	sift_sb_append(s, (char *) out, 16 * width);
+	sift_free(out);
 }
 
 static void
@@ -70,13 +71,13 @@ unpack_frame(const uint8 *in, int width, uint32 *v)
 static void
 put_seq_delta(StringInfo s, const uint32 *blk, int n, const SiftChunkOpts *opt)
 {
-	int64	   *v = palloc(n * sizeof(int64));
+	int64	   *v = sift_alloc(n * sizeof(int64));
 
 	v[0] = blk[0];
 	for (int i = 1; i < n; i++)
 		v[i] = (int64) sift_zigzag((int64) blk[i] - (int64) blk[i - 1]);
 	sift_put_cc_ints(s, v, n, opt);
-	pfree(v);
+	sift_free(v);
 }
 
 static int
@@ -92,9 +93,9 @@ cmp_u32(const void *a, const void *b)
 static bool
 put_blk_dict(StringInfo s, const uint32 *blk, int n, const SiftChunkOpts *opt, uint16 *ndistinct)
 {
-	uint32	   *sorted = palloc(n * sizeof(uint32));
-	int64	   *dict = palloc(SIFT_TID_DICT_MAX * sizeof(int64));
-	int64	   *idx = palloc(n * sizeof(int64));
+	uint32	   *sorted = sift_alloc(n * sizeof(uint32));
+	int64	   *dict = sift_alloc(SIFT_TID_DICT_MAX * sizeof(int64));
+	int64	   *idx = sift_alloc(n * sizeof(int64));
 	int			nd = 0;
 
 	memcpy(sorted, blk, n * sizeof(uint32));
@@ -104,9 +105,9 @@ put_blk_dict(StringInfo s, const uint32 *blk, int n, const SiftChunkOpts *opt, u
 		{
 			if (nd == SIFT_TID_DICT_MAX)
 			{
-				pfree(sorted);
-				pfree(dict);
-				pfree(idx);
+				sift_free(sorted);
+				sift_free(dict);
+				sift_free(idx);
 				return false;
 			}
 			dict[nd++] = sorted[i];
@@ -130,9 +131,9 @@ put_blk_dict(StringInfo s, const uint32 *blk, int n, const SiftChunkOpts *opt, u
 	sift_put_cc_ints(s, dict, nd, opt);
 	sift_put_cc_ints(s, idx, n, opt);
 	*ndistinct = nd;
-	pfree(sorted);
-	pfree(dict);
-	pfree(idx);
+	sift_free(sorted);
+	sift_free(dict);
+	sift_free(idx);
 	return true;
 }
 
@@ -168,13 +169,13 @@ static void
 put_pfor_mini(StringInfo s, const uint32 *blk, int n, uint32 *npatches)
 {
 	int			nmb = (n + SIFT_TID_MINI - 1) / SIFT_TID_MINI;
-	uint32	   *bases = palloc0(nmb * sizeof(uint32));
-	uint8	   *widths = palloc0(MAXALIGN(nmb));
+	uint32	   *bases = sift_alloc0(nmb * sizeof(uint32));
+	uint8	   *widths = sift_alloc0(MAXALIGN(nmb));
 	StringInfoData data,
 				patches;
 
-	initStringInfo(&data);
-	initStringInfo(&patches);
+	sift_sb_init(&data);
+	sift_sb_init(&patches);
 	*npatches = 0;
 	for (int m = 0; m < nmb; m++)
 	{
@@ -195,23 +196,23 @@ put_pfor_mini(StringInfo s, const uint32 *blk, int n, uint32 *npatches)
 			{
 				uint16		row = from + i;
 
-				appendBinaryStringInfo(&patches, (char *) &row, 2);
-				appendBinaryStringInfo(&patches, (char *) &blk[from + i], 4);
+				sift_sb_append(&patches, (char *) &row, 2);
+				sift_sb_append(&patches, (char *) &blk[from + i], 4);
 				v[i] = 0;
 				(*npatches)++;
 			}
 		pack_frame(&data, v, cnt, widths[m]);
 	}
-	appendBinaryStringInfo(s, (char *) bases, nmb * sizeof(uint32));
-	appendBinaryStringInfo(s, (char *) widths, nmb);
+	sift_sb_append(s, (char *) bases, nmb * sizeof(uint32));
+	sift_sb_append(s, (char *) widths, nmb);
 	pad8(s);
-	appendBinaryStringInfo(s, data.data, data.len);
-	appendBinaryStringInfo(s, patches.data, patches.len);
+	sift_sb_append(s, data.data, data.len);
+	sift_sb_append(s, patches.data, patches.len);
 	pad8(s);
-	pfree(bases);
-	pfree(widths);
-	pfree(data.data);
-	pfree(patches.data);
+	sift_free(bases);
+	sift_free(widths);
+	sift_free(data.data);
+	sift_free(patches.data);
 }
 
 /* The frames as one zstd stream in place of the frames, when that saves a twelfth: true and *s holds it */
@@ -225,20 +226,20 @@ zstd_frames(StringInfo s)
 
 	if (s->len < SIFT_TID_ZSTD_MIN || !sift_colz_available(SIFT_CC_ALG_ZSTD))
 		return false;
-	buf = palloc(cap);
+	buf = sift_alloc(cap);
 	clen = sift_colz_compress(SIFT_CC_ALG_ZSTD, 0, s->data, s->len, buf, cap);
 	if (clen == 0 || (uint64) (8 + MAXALIGN(clen)) * 12 > (uint64) s->len * 11)
 	{
-		pfree(buf);
+		sift_free(buf);
 		return false;
 	}
 	hdr[0] = (uint32) s->len;
 	hdr[1] = (uint32) clen;
-	resetStringInfo(s);
-	appendBinaryStringInfo(s, (char *) hdr, 8);
-	appendBinaryStringInfo(s, buf, (int) clen);
+	sift_sb_reset(s);
+	sift_sb_append(s, (char *) hdr, 8);
+	sift_sb_append(s, buf, (int) clen);
 	pad8(s);
-	pfree(buf);
+	sift_free(buf);
 	return true;
 }
 
@@ -246,7 +247,7 @@ zstd_frames(StringInfo s)
 static void
 put_linear(StringInfo s, const uint32 *blk, const int64 *offs, int n, const SiftChunkOpts *opt, uint16 *max_off)
 {
-	int64	   *slot = palloc(n * sizeof(int64));
+	int64	   *slot = sift_alloc(n * sizeof(int64));
 	int64		mx = 0;
 
 	for (int i = 0; i < n; i++)
@@ -255,7 +256,7 @@ put_linear(StringInfo s, const uint32 *blk, const int64 *offs, int n, const Sift
 		slot[i] = (int64) blk[i] * (mx + 1) + offs[i];
 	sift_put_cc_ints(s, slot, n, opt);
 	*max_off = (uint16) mx;
-	pfree(slot);
+	sift_free(slot);
 }
 
 static void
@@ -265,10 +266,10 @@ put_bits_blob(StringInfo s, const uint64 *words, uint32 nbits, const SiftChunkOp
 	StringInfoData blob;
 
 	sift_cc_policy_tier(&pol, opt->tier, opt->alg);
-	initStringInfo(&blob);
+	sift_sb_init(&blob);
 	sift_cc_encode_bits(&blob, words, nbits, &pol);
 	sift_cc_blob_put(s, &blob);
-	pfree(blob.data);
+	sift_free(blob.data);
 }
 
 /* false when the blocks are not dense enough for a bit per block to cost less than two bytes for each distinct one */
@@ -291,10 +292,10 @@ put_blk_bitmap(StringInfo s, const uint32 *blk, int n, const SiftChunkOpts *opt,
 	span = (uint64) hi - lo + 1;
 	if (span > 16 * (uint64) n + 64)
 		return false;
-	words = palloc0((Size) 8 * ((span + 63) / 64 + 1));
+	words = sift_alloc0((Size) 8 * ((span + 63) / 64 + 1));
 	for (int i = 0; i < n; i++)
 		words[(blk[i] - lo) / 64] |= UINT64CONST(1) << ((blk[i] - lo) % 64);
-	before = palloc(sizeof(uint32) * ((span + 63) / 64 + 1));
+	before = sift_alloc(sizeof(uint32) * ((span + 63) / 64 + 1));
 	for (uint64 w = 0; w < (span + 63) / 64; w++)
 	{
 		before[w] = nd;
@@ -302,29 +303,29 @@ put_blk_bitmap(StringInfo s, const uint32 *blk, int n, const SiftChunkOpts *opt,
 	}
 	if (span / 8 >= (uint64) nd * 2 || nd > UINT16_MAX)
 	{
-		pfree(words);
-		pfree(before);
+		sift_free(words);
+		sift_free(before);
 		return false;
 	}
-	rank = palloc(n * sizeof(int64));
+	rank = sift_alloc(n * sizeof(int64));
 	for (int i = 0; i < n; i++)
 	{
 		uint32		b = blk[i] - lo;
 
 		rank[i] = before[b / 64] + sift_pc64(words[b / 64] & ((UINT64CONST(1) << (b % 64)) - 1));
 	}
-	appendBinaryStringInfo(s, (char *) &lo, 4);
+	sift_sb_append(s, (char *) &lo, 4);
 	{
 		uint32		nbits = (uint32) span;
 
-		appendBinaryStringInfo(s, (char *) &nbits, 4);
+		sift_sb_append(s, (char *) &nbits, 4);
 	}
 	put_bits_blob(s, words, (uint32) span, opt);
 	sift_put_cc_ints(s, rank, n, opt);
 	*ndistinct = (uint16) nd;
-	pfree(words);
-	pfree(before);
-	pfree(rank);
+	sift_free(words);
+	sift_free(before);
+	sift_free(rank);
 	return true;
 }
 
@@ -333,24 +334,24 @@ put_offsets(StringInfo s, const uint32 *blk, const int64 *offs, int n, const Sif
 {
 	StringInfoData raw,
 				guessed;
-	int64	   *miss = palloc(n * sizeof(int64));
+	int64	   *miss = sift_alloc(n * sizeof(int64));
 
 	for (int i = 0; i < n; i++)
 		miss[i] = (int64) sift_zigzag(offs[i] - offset_guess(blk, offs, i));
-	initStringInfo(&raw);
-	initStringInfo(&guessed);
+	sift_sb_init(&raw);
+	sift_sb_init(&guessed);
 	sift_put_cc_ints(&raw, offs, n, opt);
 	sift_put_cc_ints(&guessed, miss, n, opt);
 	if (guessed.len < raw.len)
 	{
-		appendBinaryStringInfo(s, guessed.data, guessed.len);
+		sift_sb_append(s, guessed.data, guessed.len);
 		*flags |= SIFT_TID_OFFS_GUESSED;
 	}
 	else
-		appendBinaryStringInfo(s, raw.data, raw.len);
-	pfree(raw.data);
-	pfree(guessed.data);
-	pfree(miss);
+		sift_sb_append(s, raw.data, raw.len);
+	sift_free(raw.data);
+	sift_free(guessed.data);
+	sift_free(miss);
 }
 
 typedef struct TidMode
@@ -376,8 +377,8 @@ adjacent_blocks(const uint32 *blk, int n)
 void
 sift_chunk_put_tids(StringInfo s, const uint64 *tid, int n, SiftChunkRef *ref, const SiftChunkOpts *opt)
 {
-	int64	   *offs = palloc(n * sizeof(int64));
-	uint32	   *blk = palloc(n * sizeof(uint32));
+	int64	   *offs = sift_alloc(n * sizeof(int64));
+	uint32	   *blk = sift_alloc(n * sizeof(uint32));
 	TidMode		m[TID_NMODES] = {0};
 	StringInfoData tail;
 	uint8		oflags = 0;
@@ -388,16 +389,15 @@ sift_chunk_put_tids(StringInfo s, const uint64 *tid, int n, SiftChunkRef *ref, c
 	for (int i = 0; i < n; i++)
 	{
 		if (tid[i] >> 48 != 0)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: the heap address " UINT64_FORMAT " is past 48 bits", tid[i]),
-							errhint("An address of a heap block has at most 32 bits and an offset 16.")));
+			SIFT_FAIL_LIMIT("An address of a heap block has at most 32 bits and an offset 16.", "sift: the heap address " UINT64_FORMAT " is past 48 bits", tid[i]);
 		offs[i] = (int64) (tid[i] & 0xFFFF);
 		blk[i] = (uint32) (tid[i] >> 16);
 	}
-	initStringInfo(&tail);
+	sift_sb_init(&tail);
 	put_offsets(&tail, blk, offs, n, opt, &oflags);
 	for (int k = 0; k < TID_NMODES; k++)
 	{
-		initStringInfo(&m[k].body);
+		sift_sb_init(&m[k].body);
 		m[k].hdr.mode = k + 1;
 		m[k].hdr.flags = oflags;
 		m[k].ok = true;
@@ -439,19 +439,19 @@ sift_chunk_put_tids(StringInfo s, const uint64 *tid, int n, SiftChunkRef *ref, c
 		}
 	}
 	m[3].hdr.flags &= (uint8) ~SIFT_TID_OFFS_GUESSED;
-	appendBinaryStringInfo(s, (char *) &m[pick].hdr, sizeof(SiftTidBlockHeader));
-	appendBinaryStringInfo(s, m[pick].body.data, m[pick].body.len);
+	sift_sb_append(s, (char *) &m[pick].hdr, sizeof(SiftTidBlockHeader));
+	sift_sb_append(s, m[pick].body.data, m[pick].body.len);
 	if (m[pick].offsets)
-		appendBinaryStringInfo(s, tail.data, tail.len);
+		sift_sb_append(s, tail.data, tail.len);
 	pad8(s);
 	ref->enc = SIFT_CENC_TID_BLOCK;
 	ref->flags = SIFT_CHUNK_ALL_VALID;
 	ref->nnonnull = n;
 	for (int k = 0; k < TID_NMODES; k++)
-		pfree(m[k].body.data);
-	pfree(tail.data);
-	pfree(offs);
-	pfree(blk);
+		sift_free(m[k].body.data);
+	sift_free(tail.data);
+	sift_free(offs);
+	sift_free(blk);
 }
 
 static const char *
@@ -570,13 +570,13 @@ get_pfor_mini(const SiftChunk *c, const char *p, int n, uint32 npatches, uint32 
 	memcpy(hdr, p, 8);
 	if (hdr[0] > (uint64) n * 9 + 4096 || hdr[1] > c->body + c->body_len - (p + 8))
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the compressed frames of a _tid chunk do not fit it"));
-	buf = palloc(hdr[0] + 8);
+	buf = sift_alloc(hdr[0] + 8);
 	if (!sift_colz_available(SIFT_CC_ALG_ZSTD) || !sift_colz_decompress(SIFT_CC_ALG_ZSTD, p + 8, hdr[1], buf, hdr[0]))
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the compressed frames of a _tid chunk are damaged"));
 	raw.body = buf;
 	raw.body_len = hdr[0];
 	(void) get_pfor_frames(&raw, buf, n, npatches, blk);
-	pfree(buf);
+	sift_free(buf);
 	return p + 8 + MAXALIGN((uint64) hdr[1]);
 }
 
@@ -598,9 +598,9 @@ get_blk_bitmap(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint3
 	memcpy(&len, p + 8, 4);
 	if (nbits == 0 || nbits > SIFT_TID_BITMAP_BITS || (uint64) lo + nbits > (uint64) UINT32_MAX + 1 || len > (uint64) (end - (p + 16)))
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the bitmap of the heap blocks of a _tid chunk is out of range"));
-	words = palloc0((Size) 8 * ((nbits + 63) / 64 + SIFT_COL_PAD / 8 + 1));
+	words = sift_alloc0((Size) 8 * ((nbits + 63) / 64 + SIFT_COL_PAD / 8 + 1));
 	sift_cc_decode_bits((const uint8 *) p + 16, len, nbits, words);
-	dict = palloc(sizeof(uint32) * (ndistinct + 1));
+	dict = sift_alloc(sizeof(uint32) * (ndistinct + 1));
 	for (uint32 b = 0; b < nbits; b++)
 		if ((words[b / 64] >> (b % 64)) & 1)
 		{
@@ -617,8 +617,8 @@ get_blk_bitmap(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint3
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk ranks a heap block past its bitmap"));
 		blk[i] = dict[scratch[i]];
 	}
-	pfree(words);
-	pfree(dict);
+	sift_free(words);
+	sift_free(dict);
 	return p;
 }
 
@@ -644,8 +644,8 @@ sift_chunk_tids(const SiftChunk *c, int n, uint64 *out)
 {
 	SiftTidBlockHeader h;
 	const char *p = c->body;
-	int64	   *scratch = palloc((n + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
-	uint32	   *blk = palloc(n * sizeof(uint32));
+	int64	   *scratch = sift_alloc((n + SIFT_COL_PAD / 8 + 8) * sizeof(int64));
+	uint32	   *blk = sift_alloc(n * sizeof(uint32));
 
 	if (c->enc != SIFT_CENC_TID_BLOCK)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift: chunk encoding %u is not supported for _tid", c->enc),
@@ -672,8 +672,8 @@ sift_chunk_tids(const SiftChunk *c, int n, uint64 *out)
 			break;
 		case SIFT_TID_MODE_LINEAR:
 			get_linear(c, n, h.param0, scratch, out);
-			pfree(scratch);
-			pfree(blk);
+			sift_free(scratch);
+			sift_free(blk);
 			return;
 		default:
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk has mode %u", h.mode));
@@ -691,6 +691,6 @@ sift_chunk_tids(const SiftChunk *c, int n, uint64 *out)
 		}
 		out[i] = ((uint64) blk[i] << 16) | (uint64) (off & 0xFFFF);
 	}
-	pfree(scratch);
-	pfree(blk);
+	sift_free(scratch);
+	sift_free(blk);
 }
