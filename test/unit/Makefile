@@ -35,9 +35,9 @@ LIB_par_derive  = agg/v6/par/derive.c agg/v6/v6_expr_str.c
 LIB_par_tseries = $(LIB_par_core) agg/v6/par/tseries.c agg/v6/par/group.c agg/v6/par/group_key.c agg/v6/v6_group_cmp.c agg/v6/v6_distinct_u64.c agg/kern6_hash.c agg/v6/v6_datebin_win.c agg/v6/v6_tseries_fast.c agg/v6/v6_winx_var.c
 FX_par_tseries  = $(B)/par_host.o
 LIB_par_star    = $(LIB_par_core) agg/v6/par/star.c agg/v6/par/wordsink.c agg/v6/par/group.c agg/v6/par/group_key.c agg/v6/v6_group_cmp.c agg/v6/v6_distinct_u64.c agg/kern6_hash.c agg/v6/v6_pipe.c agg/v6/v6_star_exec.c agg/v6/v6_gather.c
-FX_par_star     = $(B)/par_host.o
+FX_par_star     = $(B)/par_host.o $(B)/par_pipe_stubs.o
 LIB_par_unnest  = $(LIB_par_core) agg/v6/par/unnest.c agg/v6/par/wordsink.c agg/v6/par/group.c agg/v6/par/group_key.c agg/v6/v6_group_cmp.c agg/v6/v6_distinct_u64.c agg/kern6_hash.c agg/v6/v6_pipe.c agg/v6/v6_star_exec.c agg/v6/v6_gather.c agg/v6/v6_unnest.c agg/v6/v6_unnest_pairs.c
-FX_par_unnest   = $(B)/par_host.o
+FX_par_unnest   = $(B)/par_host.o $(B)/par_pipe_stubs.o
 LIB_bench_par_radix = $(LIB_par_radix)
 FX_bench_par_radix  = $(B)/par_host.o
 

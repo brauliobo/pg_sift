@@ -230,7 +230,7 @@ make_stmt(Shape shape, bool text_elem, bool left)
 	sp->agg[0] = (SiftV6Agg) {.kind = SV6_COUNT_STAR};
 	sp->agg[1] = (SiftV6Agg) {.kind = SV6_SUM,.arg = qty};
 	CHECK(sift_par_unnest_shape(sp, &st->sh));
-	st->pipe = sift_v6_pipe_new(CurrentMemoryContext, sp, NULL, 4, st->type);
+	st->pipe = sift_v6_pipe_new(CurrentMemoryContext, sp, NULL, NULL, 4, st->type);
 	st->pipe->key_slot[0] = shape == KEY_GRP_ELEM ? 0 : shape == KEY_ELEM ? 3 : 2;
 	st->pipe->key_slot[1] = 3;
 	for (int v = 0; v < sift_v6_spec_nvec(sp); v++)

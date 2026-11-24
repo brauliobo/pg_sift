@@ -167,7 +167,7 @@ make_stmt(Dim *d, SiftV6JoinMode mode, bool text_key, bool with_count)
 	if (with_count)
 		sp->agg[2] = (SiftV6Agg) {.kind = SV6_COUNT,.arg = fact_col[2]};
 	CHECK(sift_par_star_shape(sp, &st->sh));
-	st->pipe = sift_v6_pipe_new(CurrentMemoryContext, sp, NULL, 3, ftype);
+	st->pipe = sift_v6_pipe_new(CurrentMemoryContext, sp, NULL, NULL, 3, ftype);
 	st->pipe->dim[0] = &d->table;
 	st->pipe->nparts[0] = 1;
 	st->pipe->fslot[0][0] = 0;
