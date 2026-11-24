@@ -14,7 +14,7 @@ if [[ $MODE == --selftest ]]; then
 	# plan_of MODE PG|arm [DEEP [SHARD]]: sets PLAN_OUT to that plan; each distinct plan is made once (a run of --plan costs a second of CPU and the checks below ask for the same ones many times)
 	ST=$(mktemp -d); trap 'rm -rf "$ST"' EXIT   # everything the selftest makes is under it
 	declare -A PLANS INSTALLS
-	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -vE '^\s*#|echo' >/dev/null && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
+	installs() { [[ -n ${INSTALLS[$1]+x} ]] || { grep -E 'pgtest\.sh"? install' "$1" | grep -vE '^\s*#|echo|log "' >/dev/null && INSTALLS[$1]=0 || INSTALLS[$1]=1; }; return "${INSTALLS[$1]}"; }
 	before=" $(descendants $$ | tr '\n' ' ')"
 	plan_of() {
 		local k="$1 $2 ${3:-} ${4:-}" out i n
