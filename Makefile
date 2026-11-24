@@ -658,6 +658,7 @@ TESTING_REGRESS += table_f2_native_strings_legacy
 TESTING_REGRESS += table_f2_parity
 TESTING_REGRESS += table_f2_plans
 TESTING_REGRESS += table_f2_row_pack
+TESTING_REGRESS += table_f2_tid_range
 TESTING_REGRESS += table_f2_unified_parity
 TESTING_REGRESS += tbl_bigtx
 TESTING_REGRESS += tbl_bitmap_lazy

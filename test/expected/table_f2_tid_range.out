@@ -1,0 +1,105 @@
+-- sift_table: a TID range scan takes the bounds PostgreSQL derives from the qual, which may have offset 0 (ctid < '(1,1)' is (1,0), no lower bound is (0,0)), and
+-- reads the rows the same qual selects without a TID range scan, in both formats. No pageinspect. About 2 s. Run on a build where new tables take Format 2.0 (sift.test_create_format1 off).
+CREATE EXTENSION IF NOT EXISTS pg_sift CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET enable_seqscan = off;
+CREATE TABLE quals (id int PRIMARY KEY, qual text NOT NULL);
+INSERT INTO quals VALUES
+	(1, $$ctid >= '(0,1)' AND ctid < '(1,1)'$$),
+	(2, $$ctid < '(1,1)'$$),
+	(3, $$ctid <= '(1,0)'$$),
+	(4, $$ctid > '(0,0)'$$),
+	(5, $$ctid >= '(0,0)'$$),
+	(6, $$ctid < '(0,1)'$$),
+	(7, $$ctid >= '(0,0)' AND ctid <= '(0,0)'$$),
+	(8, $$ctid > '(1,0)' AND ctid <= '(2,0)'$$),
+	(9, $$ctid >= '(1,1)'$$);
+CREATE FUNCTION rows_of(rel regclass, qual text, tidscan bool) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE n bigint;
+BEGIN
+	PERFORM set_config('enable_tidscan', tidscan::text, true);
+	PERFORM set_config('enable_seqscan', (NOT tidscan)::text, true);
+	EXECUTE format('SELECT count(*) FROM %s WHERE %s', rel, qual) INTO n;
+	RETURN n;
+END $$;
+CREATE FUNCTION scan_plan(rel regclass, qual text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE line text;
+BEGIN
+	PERFORM set_config('enable_tidscan', 'true', true);
+	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT count(*) FROM %s WHERE %s', rel, qual) LOOP
+		IF line LIKE '%Tid Range Scan%' THEN RETURN 'Tid Range Scan'; END IF;
+	END LOOP;
+	RETURN 'other';
+END $$;
+CREATE TABLE t (id int PRIMARY KEY, g int, s text) USING sift_table;
+INSERT INTO t SELECT i, i % 10, 'row ' || i FROM generate_series(1, 20000) i;
+DELETE FROM t WHERE g = 7;
+UPDATE t SET s = s || '!' WHERE g = 3;
+VACUUM t;
+SELECT id, scan_plan('t', qual) AS plan, rows_of('t', qual, true) = rows_of('t', qual, false) AS same_rows FROM quals ORDER BY id;
+ id |      plan      | same_rows 
+----+----------------+-----------
+  1 | Tid Range Scan | t
+  2 | Tid Range Scan | t
+  3 | Tid Range Scan | t
+  4 | Tid Range Scan | t
+  5 | Tid Range Scan | t
+  6 | Tid Range Scan | t
+  7 | Tid Range Scan | t
+  8 | Tid Range Scan | t
+  9 | Tid Range Scan | t
+(9 rows)
+
+SELECT rows_of('t', $$ctid >= '(0,0)'$$, true) = (SELECT count(*) FROM t) AS whole_table;
+ whole_table 
+-------------
+ t
+(1 row)
+
+SELECT rows_of('t', $$ctid < '(0,1)'$$, true) AS below_first;
+ below_first 
+-------------
+           0
+(1 row)
+
+SELECT count(*) > 0 AS probe_in_range FROM t WHERE ctid >= '(0,1)' AND ctid < '(1,1)' AND id = 5;
+ probe_in_range 
+----------------
+ t
+(1 row)
+
+SET sift.test_create_format1 = on;
+CREATE TABLE t1 (id int PRIMARY KEY, g int, s text) USING sift_table;
+INSERT INTO t1 SELECT i, i % 10, 'row ' || i FROM generate_series(1, 20000) i;
+DELETE FROM t1 WHERE g = 7;
+SELECT id, rows_of('t1', qual, true) = rows_of('t1', qual, false) AS same_rows FROM quals ORDER BY id;
+ id | same_rows 
+----+-----------
+  1 | t
+  2 | t
+  3 | t
+  4 | t
+  5 | t
+  6 | t
+  7 | t
+  8 | t
+  9 | t
+(9 rows)
+
+SELECT rows_of('t1', $$ctid >= '(0,0)'$$, true) = (SELECT count(*) FROM t1) AS whole_table;
+ whole_table 
+-------------
+ t
+(1 row)
+
+SELECT rows_of('t1', $$ctid < '(0,1)'$$, true) AS below_first;
+ below_first 
+-------------
+           0
+(1 row)
+
+DROP TABLE t, t1, quals;
+DROP FUNCTION rows_of(regclass, text, bool), scan_plan(regclass, text);
+DROP EXTENSION pg_sift CASCADE;
