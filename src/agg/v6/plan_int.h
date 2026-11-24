@@ -80,6 +80,10 @@ extern bool sift_v6_compile_quals(V6Plan *p);
 extern bool sift_v6_plan_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
 /* the same for a column the scan reads as any value: the kernels' columns, the text of a table and the datums (an aggregate of PostgreSQL's own functions reads them) */
 extern bool sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out);
+/* a key or argument PostgreSQL's executor computes from columns of the scan, as a column of the scan */
+extern bool sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);
+/* plan_filter.c: the FILTER clause of an aggregate, as the id (1 on) of a clause of the scan; false when the scan cannot decide it */
+extern bool sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause);
 /* The statement is one the node may answer, whatever its relations; and the relation is a plain table the node may read (no inheritance, sampling or security quals) */
 extern bool sift_v6_plan_query_ok(PlannerInfo *root, RelOptInfo *output_rel);
 extern bool sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel);
