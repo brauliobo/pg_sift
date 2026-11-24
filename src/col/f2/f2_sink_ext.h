@@ -114,6 +114,8 @@ typedef struct SiftF2Pull SiftF2Pull;
 extern SiftF2Pull *sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec);
 /* The next slice, valid until the next call; NULL after the last */
 extern const SiftF2ExtBatch *sift_f2_pull_next(SiftF2Pull *p);
+/* The payload (a jsonb datum, len bytes) of row `row` of the slice just given, of column i of the spec when it is a leaf of a key of a document and the row holds a value of a JSON type the leaf cannot store (it is NULL in the column); NULL for any other row. Valid until the next slice */
+extern const char *sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len);
 extern const SiftF2PullStats *sift_f2_pull_stats(const SiftF2Pull *p);
 extern void sift_f2_pull_end(SiftF2Pull *p);
 

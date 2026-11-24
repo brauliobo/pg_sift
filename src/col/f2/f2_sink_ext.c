@@ -82,6 +82,8 @@ struct SiftF2Pull
 	uint64	   *mbits[SIFT_F2_PULL_MAX_MASKS];
 	SiftF2ElemStream es;
 	SiftF2ExtBatch out;
+	uint16		slice_off;		/* the first row of the slice in the granule or the slab */
+	uint8	   *xtag[SIFT_F2_PULL_MAX_COLS];	/* the JSON type each row of the granule holds of a leaf of a key of a document, read when a payload is asked of the column */
 };
 
 static Size
@@ -498,6 +500,7 @@ begin_granule(SiftF2Pull *p)
 
 	close_cursors(p);
 	MemoryContextReset(p->gcx);
+	memset(p->xtag, 0, sizeof(p->xtag));
 	old = MemoryContextSwitchTo(p->gcx);
 	p->is_slab = false;
 	sift_lazy_granule_open(p->index, p->part, p->g, &p->lg);
@@ -736,6 +739,39 @@ fill_elems(SiftF2Pull *p, uint16 off, uint16 cnt)
 	es->doc_valid = p->doc_valid + off / 64;
 }
 
+static bool
+holds_payload(uint8 tag)
+{
+	return tag >= SIFT_COLTAG_STRING && tag <= SIFT_COLTAG_ARRAY;
+}
+
+const char *
+sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len)
+{
+	const int	c = p->spec.col[i].leaf;
+	const uint32 at = (uint32) p->slice_off + row;
+	const SiftVec *v = &p->vec[i];
+
+	if (v->valid == NULL || ((v->valid[row >> 6] >> (row & 63)) & 1))
+		return NULL;
+	if (p->is_slab)
+	{
+		if (p->rb->tag == NULL || p->rb->tag[c] == NULL || p->rb->xpay[c] == NULL || !holds_payload(p->rb->tag[c][at]))
+			return NULL;
+		*len = p->rb->xplen[c][at];
+		return p->rb->xpay[c][at];
+	}
+	if (p->xtag[i] == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(p->gcx);
+
+		p->xtag[i] = palloc(p->n);
+		sift_granule_tags(&p->gv, c, p->xtag[i]);
+		MemoryContextSwitchTo(old);
+	}
+	return holds_payload(p->xtag[i][at]) ? sift_granule_exc_payload(&p->gv, c, (int) at, len) : NULL;
+}
+
 const SiftF2ExtBatch *
 sift_f2_pull_next(SiftF2Pull *p)
 {
@@ -751,6 +787,7 @@ sift_f2_pull_next(SiftF2Pull *p)
 	off = (uint16) p->off;
 	cnt = (uint16) Min(SIFT_VEC_LEN, p->n - p->off);
 	p->off += cnt;
+	p->slice_off = off;
 	fill_slice(p, off, cnt);
 	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64};
 	if (p->spec.group_leaf >= 0)
