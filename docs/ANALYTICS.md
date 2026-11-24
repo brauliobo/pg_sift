@@ -155,6 +155,8 @@ CREATE INDEX orders_col ON orders
   WITH (connect = 'customer_id -> customers(id)');
 ```
 
+A connection is made in the format of the indexes it joins: in a `6.0` database the parent and the child are both Format Major 2, and `connect` composes with `UNIQUE` and `INCLUDE`. The parent index keeps a key journal (a connection gives it the key it joins by when its `track_changes` has not chosen one); `sift.col_connection_state` shows its lineage and records, and `sift.check` verifies it. A Format 2.0 aggregate reads the parent rows under the snapshot of each statement, so a write of the parent is seen at once; it does not share a dimension map between statements. `ALTER INDEX .. SET (connect = ..)` and `RESET (connect)` change the connection of an index that holds data. A parent and a child of Format Major 1 (built before 6.0) stay together in Format Major 1, and a connection never joins two formats: `REINDEX` the parent, then the child, to move both.
+
 Inspect active connections and staleness via `SELECT * FROM sift.col_connections;`. Between `sift_table`s, real foreign keys are connected automatically from `pg_constraint`; declare `connect` through `sift.table_set_option` only for a soft foreign key that has no constraint.
 
 ## 6. Bitmap and Index-Only Scans (`sift.col_*_ops`)

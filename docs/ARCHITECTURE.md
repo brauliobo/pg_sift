@@ -19,6 +19,7 @@ Block 0: SiftColMetaPageData (424 B, CRC32C)
   │                          └── SIFT_SEG_SCOPE_META (L0 slices, L1 nodes, L2 roots, 768 B Top-K, MonthMap)
   ├── proj_dir_blk     ──▶ Chained COW Projection Directory (SIFT_PT_PROJDIR = 44, 63 refs/page)
   ├── tier_dir_blk     ──▶ Chained COW Tier Directory (SIFT_PT_TIERDIR = 45, 84 refs/page)
+  ├── jrnl_blk         ──▶ Key Journal of a connected parent (SIFT_PT_KEYJRNL = 46: a header and 16 record pages, 508 records/page, appended in place)
   └── Block 1: SiftFsmMetaPageData ──▶ 2-Zone Slab Allocator (low-block metadata slab + data extents)
 ```
 
@@ -43,7 +44,7 @@ Block 0: SiftColMetaPageData (424 B, CRC32C)
 - **Tier 2 — Cold L1/L2 (Analytics-Optimized):** Vertical SIMD bitpacking, Frame-of-Reference (`FOR`), `DELTA`, `RLE`, scaled integers, `ALP` floats, `FSST` string compression, and `LZ4`/`ZSTD` frame compression.
 - **Chunked Streamed Dictionaries (`SEC_DICTS`):** Supports dictionary entries up to 1,024 bytes and flushes self-contained, CRC32C-verified dictionary chunks under `SiftMemTracker` pressure instead of failing at 64 MiB.
 - **Shared Value Store (`sift_values`):** Normalizes repeated strings across partitions and connected/scoped relations using compact 30-bit codes (`2^30` codes/epoch), automatically triggering background epoch compaction at 75% utilization when `sift.async_maintenance = on`.
-- **Connected Parent-Child Protocol (`connect`):** Stores connection metadata dynamically in `SEC_CONN_META` (up to 32 connections per index) with parent insert/delete watermarks so child scans resolve parent leaves directly and detect staleness cleanly.
+- **Connected Parent-Child Protocol (`connect`):** A parent index keeps a key journal (Format 2.0: `SIFT_PT_KEYJRNL` pages named by the metapage, WAL-logged like every page; Format 1: the tombstone log). Each `UPDATE` or `DELETE` of the parent table appends the key of the version it ended through the `track_changes` row trigger, each insert counts its rows; a record carries the transaction id, so an aborted writer leaves nothing a reader counts. In Format 1 a dimension map is stamped with the lineage of the journal and the `xmin` it was read under, and a later statement shares it when the journal vouches for its snapshot (lineage, trim, completeness of the triggers) and no key changed or row came in since; the Format 2.0 journal answers the same questions (`col/am/conn_route.h`), but the Format 2.0 aggregate (`SiftAggV6`) reads the dimension from its plan under the snapshot of each statement and keeps no map. A full record page is emptied and its trim says up to which transaction its records went; VACUUM and `sift.maintain()` drop the records of aborted and aged transactions. A Format 1 child keeps the per-row found flag of each connection (up to 32); a Format 2.0 child keeps none and joins through the parent lookup the journal vouches for.
 
 ## 3. 2,048-Row SIMD Vectorized Execution (`SiftAgg`)
 
