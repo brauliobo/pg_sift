@@ -1,5 +1,5 @@
 /*
- * core/arena.h - what lets one decode routine run on a pool thread that may not touch PostgreSQL: a bump arena in place of palloc, and errors
+ * core/par/arena.h - what lets one decode routine run on a pool thread that may not touch PostgreSQL: a bump arena in place of palloc, and errors
  * as data in place of ereport.
  *
  * A routine allocates with sift_alloc and raises with SIFT_FAIL_*. Called on a backend, they are palloc/pfree and ereport(ERROR) as they
@@ -222,6 +222,10 @@ extern bool sift_errlatch_post(SiftErrLatch *latch, const SiftErr *err);
 extern bool sift_errlatch_peek(const SiftErrLatch *latch);
 /* True, and the first error in *err, when one was posted and is complete */
 extern bool sift_errlatch_get(const SiftErrLatch *latch, SiftErr *err);
+
+extern void sift_err_fill(SiftErr *err, SiftErrCode code, uint32 arg0, uint32 arg1, const char *msg);
+/* err is filled and posted; false, so that the failing call returns it */
+extern bool sift_errlatch_fail(SiftErrLatch *latch, SiftErr *err, SiftErrCode code, const char *msg);
 
 /* On the backend: raises the error of a worker as the decoder raises it there (rel: the index, NULL for the one of the context scope, core/errctx.h) */
 extern void sift_err_rethrow(Relation rel, const SiftErr *err) __attribute__((noreturn));

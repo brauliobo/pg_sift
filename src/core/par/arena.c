@@ -1,7 +1,7 @@
 /*
- * core/arena.c - the arena, the scope and the error latch of core/arena.h. No allocation of its own: the slab is the caller's.
+ * core/par/arena.c - the arena, the scope and the error latch of core/par/arena.h. No allocation of its own: the slab is the caller's.
  */
-#include "core/arena.h"
+#include "core/par/arena.h"
 
 _Thread_local SiftScope *sift_scope;
 
@@ -115,6 +115,24 @@ sift_errlatch_get(const SiftErrLatch *latch, SiftErr *err)
 		return false;
 	*err = latch->first;
 	return true;
+}
+
+void
+sift_err_fill(SiftErr *err, SiftErrCode code, uint32 arg0, uint32 arg1, const char *msg)
+{
+	memset(err, 0, sizeof(*err));
+	err->code = code;
+	err->arg0 = arg0;
+	err->arg1 = arg1;
+	snprintf(err->msg, sizeof(err->msg), "%s", msg);
+}
+
+bool
+sift_errlatch_fail(SiftErrLatch *latch, SiftErr *err, SiftErrCode code, const char *msg)
+{
+	sift_err_fill(err, code, 0, 0, msg);
+	sift_errlatch_post(latch, err);
+	return false;
 }
 
 void
