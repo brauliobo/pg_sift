@@ -293,9 +293,7 @@ document_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
 static bool
 resolve_datum_column(void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	const V6Plan *p = ctx;
-
-	return (p->xseed == NULL && datum_column_of(ctx, e, out)) || document_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
+	return datum_column_of(ctx, e, out) || document_of(ctx, e, out) || sift_v6_plan_read_column(ctx, e, numeric_ok, out) || sift_v6_unnest_column(ctx, e, out);
 }
 
 static int
@@ -345,7 +343,7 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 bool
 sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
-	const SiftV6Resolver rs = {resolve_datum_column, p, false, p->elem_rel != NULL ? p->elem_rel->relid : 0};
+	const SiftV6Resolver rs = {p->elem_rel != NULL ? sift_v6_resolve_column : resolve_datum_column, p, false, p->elem_rel != NULL ? p->elem_rel->relid : 0};
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	SiftV6Derive d = {0};
 	Oid			restype;
