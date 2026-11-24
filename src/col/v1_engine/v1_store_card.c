@@ -1,5 +1,5 @@
 /*
- * col/v1_engine/v1_store_card.c - SiftCardStatsView of a Format 1 index (agg/plan/card_est.h), folded from the statistics of its leaves (SiftSrcStats) when the planner asks: the rows, the
+ * col/v1_engine/v1_store_card.c - SiftCardStatsView of a Format 1 index (agg/v6/v6_card_est.h), folded from the statistics of its leaves (SiftSrcStats) when the planner asks: the rows, the
  * NULLs, the range and the distinct values of each leaf, and the zones of the sample of units the planner already keeps. A segment records its stored bytes as a whole, not by leaf: the bytes
  * of a row of a leaf are the share of the index's bytes per row that the width of its values (its range, its dictionary, a float's 8 bytes) gives it.
  */

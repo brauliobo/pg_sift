@@ -1,5 +1,5 @@
 /*
- * agg/v6/v6_card.h - the cardinality of a scan of an index of format major 2 from the statistics its parts folded (agg/plan/card_est.h), for the planner: the WHERE clauses of the
+ * agg/v6/v6_card.h - the cardinality of a scan of an index of format major 2 from the statistics its parts folded (agg/v6/v6_card_est.h), for the planner: the WHERE clauses of the
  * relation become the predicates of the estimator (integer, date and timestamp columns compared with constants or with an array of constants, IS [NOT] NULL), the others keep
  * PostgreSQL's own selectivity. The estimate replaces PostgreSQL's only when it is trusted (SIFT_V6_CARD_TRUST), and never for a relation that row security or a security barrier applies
  * to: its counts are those of every tenant, and the rows of a plan are visible in EXPLAIN. A parameter of a generic plan is no predicate: its value is not known, so it proves nothing.
@@ -12,7 +12,7 @@
 #include "nodes/pathnodes.h"
 
 #include "agg/cost.h"
-#include "agg/plan/card_est.h"
+#include "agg/v6/v6_card_est.h"
 #include "agg/v6/v6.h"
 
 #define SIFT_V6_CARD_TRUST	0.5

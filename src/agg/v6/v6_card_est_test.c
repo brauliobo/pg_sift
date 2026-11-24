@@ -1,5 +1,5 @@
 /*
- * agg/plan/card_est_test.c - test-only SQL function of the cardinality estimator (agg/plan/card_est.h), compiled only with SIFT_TESTING and registered by the
+ * agg/v6/v6_card_est_test.c - test-only SQL function of the cardinality estimator (agg/v6/v6_card_est.h), compiled only with SIFT_TESTING and registered by the
  * pg_sift_test extension. sift._test_card_est folds the statistics of the arrays the way a writer folds those of a part (the range, the NULLs, the common values,
  * the fences of 16 equal-depth buckets, the distinct values, the documents that hold a key, the zones of up to 64 sampled granules, the roots of a scope that is
  * the first column), then estimates the predicates written as text; the SQL test holds the estimate to the rows that the same predicates select in the table.
@@ -17,7 +17,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 
-#include "agg/plan/card_est.h"
+#include "agg/v6/v6_card_est.h"
 
 PG_FUNCTION_INFO_V1(sift_test_card_est);
 

@@ -1,11 +1,11 @@
 /*
- * agg/plan/card_est.c - the estimator of agg/plan/card_est.h.
+ * agg/v6/v6_card_est.c - the estimator of agg/v6/v6_card_est.h.
  */
 #include "postgres.h"
 
 #include <math.h>
 
-#include "agg/plan/card_est.h"
+#include "agg/v6/v6_card_est.h"
 
 #define ST_SORT sort_i64
 #define ST_ELEMENT_TYPE int64

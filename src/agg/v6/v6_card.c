@@ -1,5 +1,5 @@
 /*
- * agg/v6/v6_card.c - the clauses of a relation as the predicates of agg/plan/card_est.h, and the rows and groups the statistics of the index give for them.
+ * agg/v6/v6_card.c - the clauses of a relation as the predicates of agg/v6/v6_card_est.h, and the rows and groups the statistics of the index give for them.
  */
 #include "postgres.h"
 

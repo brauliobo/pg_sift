@@ -12,7 +12,7 @@
 #include "nodes/pg_list.h"
 
 #include "agg/batch_source.h"
-#include "agg/plan/card_est.h"
+#include "agg/v6/v6_card_est.h"
 #include "agg/vexpr_str.h"
 #include "col/v1/v1_reader.h"
 #include "core/filter.h"

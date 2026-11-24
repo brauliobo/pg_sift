@@ -1,5 +1,5 @@
 /*
- * agg/plan/card_est.h - the cardinality of a scan from what the index already knows: no page of the index is read and nothing is sampled at plan time. The
+ * agg/v6/v6_card_est.h - the cardinality of a scan from what the index already knows: no page of the index is read and nothing is sampled at plan time. The
  * statistics of a leaf (a column or a path of a jsonb) are folded when a part is written: the rows, the NULLs, the documents that hold a key, the range of the
  * values, the most common ones, the fences of 16 equal-depth buckets, the number of distinct values; and a deterministic sample of up to 64 granules keeps the zone
  * of every leaf, so that the predicates of a query are tried against the same granules together.
@@ -15,8 +15,8 @@
  * default stands in), so that it replaces PostgreSQL's own only when it knows better. Nothing here reads shared memory: the structures are a view of the summary
  * the manifest keeps, a call takes a few microseconds, and it allocates only for an IN list of more than 256 values (sorted once, a copy).
  */
-#ifndef SIFT_AGG_PLAN_CARD_EST_H
-#define SIFT_AGG_PLAN_CARD_EST_H
+#ifndef SIFT_AGG_V6_CARD_EST_H
+#define SIFT_AGG_V6_CARD_EST_H
 
 #include "postgres.h"
 
@@ -191,4 +191,4 @@ extern double sift_card_ndv_multi(const double *d, int nkeys, double r_out, doub
 /* The rows of the scope keys: exact when a root holds each (at most SIFT_CARD_SCOPE_PROBES keys), else the mean root times the keys */
 extern double sift_card_scope_rows(const SiftCardStatsView *s, const uint64 *keys, uint32 nkeys, bool *exact);
 
-#endif							/* SIFT_AGG_PLAN_CARD_EST_H */
+#endif							/* SIFT_AGG_V6_CARD_EST_H */

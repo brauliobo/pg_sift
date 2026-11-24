@@ -10,7 +10,7 @@
 
 #include "postgres.h"
 
-#include "agg/plan/card_est.h"
+#include "agg/v6/v6_card_est.h"
 #include "agg/v6/v6_topn.h"
 #include "agg/v6/v6_vexpr.h"
 #include "col/f2/f2_v6_read.h"

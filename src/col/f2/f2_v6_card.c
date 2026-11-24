@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_v6_card.c - SiftCardStatsView of an index of format major 2 (agg/plan/card_est.h), folded from what its parts already hold: the partition directory of the plan snapshot, the
+ * col/f2/f2_v6_card.c - SiftCardStatsView of an index of format major 2 (agg/v6/v6_card_est.h), folded from what its parts already hold: the partition directory of the plan snapshot, the
  * column statistics (SEC_COL_STATS) and the zones (SEC_ZONES) of the largest SIFT_V6_CARD_PARTS parts. The view is built once for a manifest version and kept with the snapshot, so a plan
  * after the first reads nothing; a part that was not read leaves the facts that need every part (the range of a leaf, the documents that hold a key) unclaimed.
  */

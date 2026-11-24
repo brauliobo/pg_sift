@@ -110,7 +110,7 @@ CREATE FUNCTION sift._test_topn_stats(OUT partitions_pruned int8, OUT parts_prun
 	AS 'MODULE_PATHNAME', 'sift_test_topn_stats' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_f64_order(x float8) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_f64_order' LANGUAGE C STRICT;
--- The cardinality estimator (src/agg/plan/card_est_test.c): the estimate of predicates over the statistics folded from arrays.
+-- The cardinality estimator (src/agg/v6/v6_card_est_test.c): the estimate of predicates over the statistics folded from arrays.
 CREATE FUNCTION sift._test_card_est(c0 int8[], c1 int8[], c2 int8[], doc bool[], present bool[], preds text, granule_rows int4 DEFAULT 1024,
 									granules_per_partition int4 DEFAULT 16, sample int4 DEFAULT 64)
 	RETURNS TABLE(est_rows float8, selectivity float8, g_eff float8, g_total float8, confidence float8, exact_zero bool, used_scope bool, ndv_c1 float8)

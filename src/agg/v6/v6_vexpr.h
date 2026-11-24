@@ -22,7 +22,7 @@
 #include "utils/array.h"
 
 #include "agg/batch_source.h"
-#include "agg/plan/card_est.h"
+#include "agg/v6/v6_card_est.h"
 #include "agg/vexpr.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_inset.h"
@@ -36,7 +36,7 @@ extern bool sift_v6_rel_ordered(Oid relid, bool is_table);
 extern bool sift_v6_input_holds(const SiftV6Input *in, int att, SiftV6Class cls);
 /* the parts of the index are sorted by the attributes atts[0 .. n-1], each ascending, NULLs last */
 extern bool sift_v6_rel_sorted_by(Oid relid, bool is_table, const int *atts, int n);
-/* the statistics the index folded when its parts were written (agg/plan/card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based), -1 when it has none */
+/* the statistics the index folded when its parts were written (agg/v6/v6_card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based), -1 when it has none */
 extern const SiftCardStatsView *sift_v6_rel_card_view(Oid indexoid);
 extern int	sift_v6_rel_card_leaf(Oid indexoid, int col);
 extern double sift_v6_rel_point_cover(Oid indexoid, int col);

@@ -66,7 +66,7 @@ facts.c: facts_evict_one # a cache eviction: nothing to evict is not a refusal o
 
 # The v6 planner and executor (src/agg/v6) and the plan helpers added in 6.0
 bridge_test.c: core_batch core_fetch fmt_sorted_by src_next # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
-card_est.c: mcv_find vals_ordered # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
+v6_card_est.c: mcv_find vals_ordered # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 exec.c: v6_next_row v6_serve_projection # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 format_ops.c: rel_has_v1_source v1_may_plan v2_has_source # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 group.c: sift_v6_group_next batch_has_inf # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
