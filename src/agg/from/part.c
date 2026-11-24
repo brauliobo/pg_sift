@@ -16,14 +16,15 @@
 #include "agg/part.h"
 #include "agg/plan/safety.h"
 #include "agg/from/int.h"
+#include "table/dispatch.h"
 
-/* a partition a column index or the table itself can be read through: a heap table without row security, or a sift_table */
+/* a partition a column index or the table itself can be read through: a heap table without row security, or a sift_table of Format 1 (one of Format 2.0 is SiftAggV6's: this engine's table source reads the other format) */
 static bool
 part_readable(AggCtx *c, RelOptInfo *leaf)
 {
 	RangeTblEntry *rte = planner_rt_fetch(leaf->relid, c->root);
 
-	return rte->relkind == RELKIND_RELATION && (get_rel_relam(rte->relid) == HEAP_TABLE_AM_OID || sift_colsrc_can_part(get_rel_relam(rte->relid), false)) &&
+	return rte->relkind == RELKIND_RELATION && (get_rel_relam(rte->relid) == HEAP_TABLE_AM_OID || (sift_colsrc_can_part(get_rel_relam(rte->relid), false) && !sift_tbl_is_f2_oid(rte->relid))) &&
 		!agg_rte_has_rls(c->root, rte);
 }
 
