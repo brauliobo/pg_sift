@@ -493,16 +493,13 @@ spool_begin(SiftPostingWriter *w)
 	TermSpool  *sp = MemoryContextAllocZero(w->mcxt, sizeof(TermSpool));
 
 	sp->payload = BufFileCreateTemp(false);
-	sp->l1 = BufFileCreateTemp(false);
-	sp->nib = BufFileCreateTemp(false);
-	sp->esc = BufFileCreateTemp(false);
-	sp->ckpt = BufFileCreateTemp(false);
-	sp->pos = BufFileCreateTemp(false);
 	w->sp = sp;
 	for (w->open_start = w->n - 1; w->open_start > 0 && SIFT_GID(w->keys[w->open_start - 1]) == SIFT_GID(w->keys[w->n - 1]);)
 		w->open_start--;
 	if (w->haspos)
 	{
+		sp->ckpt = BufFileCreateTemp(false);
+		sp->pos = BufFileCreateTemp(false);
 		BufFileWrite(sp->ckpt, w->ckpt, (Size) ((w->n + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY) * sizeof(uint32));
 		BufFileWrite(sp->pos, w->pos, w->poslen);
 		pfree(w->pos);
@@ -511,7 +508,29 @@ spool_begin(SiftPostingWriter *w)
 	}
 }
 
-/* The tf of the next postings of the term to the three parts of its tf stream (sift_kern_tf_encode, a piece at a time) */
+static bool
+tf_above_one(const uint8 *tf, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+		if (tf[i] > 1)
+			return true;
+	return false;
+}
+
+/* The files of the tf stream, once a tf above 1 is staged: what they hold of the postings before it is zero bits of the L1 part and nothing of the others (sift_kern_tf_encode) */
+static void
+tf_files_open(TermSpool *sp, uint64 staged)
+{
+	uint8		zero[TF_PIECE / 8] = {0};
+
+	sp->l1 = BufFileCreateTemp(false);
+	sp->nib = BufFileCreateTemp(false);
+	sp->esc = BufFileCreateTemp(false);
+	for (uint64 bytes = staged / 8; bytes > 0; bytes -= Min(bytes, sizeof(zero)))
+		BufFileWrite(sp->l1, zero, Min(bytes, sizeof(zero)));
+}
+
+/* The tf of the next postings of the term to the three parts of its tf stream (sift_kern_tf_encode, a piece at a time), which a term whose tf are all 1 never has */
 static void
 spool_tf(TermSpool *sp, const uint8 *tf, uint32 n)
 {
@@ -523,6 +542,13 @@ spool_tf(TermSpool *sp, const uint8 *tf, uint32 n)
 	{
 		uint32		k = Min(n - i, TF_PIECE);
 		SiftTfPos	at = {sp->nstaged % 8, sp->tfnib % 2, 0};
+
+		if (sp->l1 == NULL)
+		{
+			if (!tf_above_one(tf + i, k))
+				continue;
+			tf_files_open(sp, sp->nstaged + i);
+		}
 
 		memset(l1, 0, sizeof(l1));
 		memset(nib, 0, sizeof(nib));
@@ -591,14 +617,16 @@ spool_stage(SiftPostingWriter *w, uint32 upto)
 	w->open_start = 0;
 }
 
-/* The records of the spooled term as blocks: its files hold those, w->poslen their bytes */
+/* The records of the spooled term as blocks: its files hold those, w->poslen their bytes; the checkpoints are read and written a block at a time */
 static void
 spool_blocks(SiftPostingWriter *w)
 {
 	TermSpool  *sp = w->sp;
 	uint32		nck = (sp->nstaged + SIFT_POS_EVERY - 1) / SIFT_POS_EVERY,
-			   *ck = palloc(nck * sizeof(uint32));
-	BufFile    *blocks = BufFileCreateTemp(false);
+				from,
+				next = 0;
+	BufFile    *blocks = BufFileCreateTemp(false),
+			   *ckpt = BufFileCreateTemp(false);
 	uint8	   *raw = NULL;
 	Size		rawcap = 0,
 				rawlen = w->poslen;
@@ -606,32 +634,42 @@ spool_blocks(SiftPostingWriter *w)
 
 	initStringInfo(&out);
 	BufFileSeek(sp->ckpt, 0, 0, SEEK_SET);
-	BufFileReadExact(sp->ckpt, ck, nck * sizeof(uint32));
+	BufFileReadExact(sp->ckpt, &from, sizeof(from));
 	w->poslen = 0;
 	for (uint32 b = 0; b < nck; b++)
 	{
-		Size		from = ck[b],
-					to = b + 1 < nck ? ck[b + 1] : rawlen;
+		uint32		at = w->poslen;
+		Size		to;
 
+		if (b + 1 < nck)
+			BufFileReadExact(sp->ckpt, &next, sizeof(next));
+		to = b + 1 < nck ? next : rawlen;
 		if (to - from > rawcap)
 			SIFT_REGROW_IN(w->mcxt, raw, rawcap = to - from);
 		BufFileSeek(sp->pos, 0, from, SEEK_SET);
 		BufFileReadExact(sp->pos, raw, to - from);
 		resetStringInfo(&out);
 		sift_posblk_put(raw, to - from, Min(SIFT_POS_EVERY, sp->nstaged - (uint64) b * SIFT_POS_EVERY), &out);
-		ck[b] = w->poslen;
+		BufFileWrite(ckpt, &at, sizeof(at));
 		BufFileWrite(blocks, out.data, out.len);
 		w->poslen += out.len;
+		from = next;
 	}
 	BufFileClose(sp->pos);
 	BufFileClose(sp->ckpt);
 	sp->pos = blocks;
-	sp->ckpt = BufFileCreateTemp(false);
-	BufFileWrite(sp->ckpt, ck, nck * sizeof(uint32));
-	pfree(ck);
+	sp->ckpt = ckpt;
 	pfree(out.data);
 	if (raw)
 		pfree(raw);
+}
+
+/* A file of the staging that the term may not have needed */
+static void
+spool_close(BufFile *file)
+{
+	if (file)
+		BufFileClose(file);
 }
 
 /* The last groups of the term, and its blob out of the pieces, byte for byte what postw_encode makes of the term in memory */
@@ -702,11 +740,11 @@ spool_end(SiftPostingWriter *w, SiftTermInfo *info)
 		sift_sw_write_file(w->sw, sp->pos, w->poslen);
 	}
 	BufFileClose(sp->payload);
-	BufFileClose(sp->l1);
-	BufFileClose(sp->nib);
-	BufFileClose(sp->esc);
-	BufFileClose(sp->ckpt);
-	BufFileClose(sp->pos);
+	spool_close(sp->l1);
+	spool_close(sp->nib);
+	spool_close(sp->esc);
+	spool_close(sp->ckpt);
+	spool_close(sp->pos);
 	pfree(sp->key);
 	pfree(sp->poff);
 	pfree(sp->base);
