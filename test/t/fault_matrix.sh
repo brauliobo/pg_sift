@@ -92,8 +92,19 @@ sizes_ok() { # AFTER BASELINE: growth under a half of a clean run, and 256 kB
 }
 holder_pid() { sql cm "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted LIMIT 1"; }
 held_pid() { sql cm "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND NOT granted LIMIT 1"; }
-release_gate() { sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted" >/dev/null; }
+release_gate() {
+	sql cm "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND $GATE_COND AND granted" >/dev/null
+	exec 9>&-
+}
 is_held() { [[ -n $(held_pid) ]]; }
+# the holder takes the lock and then idles on a pipe: a query that waits holds a snapshot, which CREATE INDEX CONCURRENTLY waits for before the updates of its last phases
+hold_gate() {
+	rm -f "$D/gate.fifo"
+	mkfifo "$D/gate.fifo"
+	psql -X -At -q -v ON_ERROR_STOP=1 -h "$D/sock" -p "$(port cm)" -U postgres -d postgres <"$D/gate.fifo" >/dev/null 2>&1 &
+	exec 9>"$D/gate.fifo"
+	echo "SELECT $GATE_LOCK;" >&9
+}
 
 # the number of directory updates of an operation in a clean state, and the size it leaves
 measure() { # NAME
@@ -112,7 +123,7 @@ phase_point() { # NAME PHASE: the sift.test_crash_dir of a phase
 }
 
 run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an immediate stop)
-	local name=$1 phase=$2 fault=$3 pre=() bpid hold op
+	local name=$1 phase=$2 fault=$3 pre=() bpid op
 	if [[ $phase == gate:* ]]; then
 		gate_spec "${phase#gate:}"
 		pre=("${GATE_SET[@]}")
@@ -125,12 +136,12 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 		grep -q 'sift test: error' "$D/fault.out" || { diag "no injected error: $(head -3 "$D/fault.out")"; return 1; }
 		return 0
 	fi
-	sql cm "SELECT $GATE_LOCK, pg_sleep(600)" >/dev/null 2>&1 &
-	hold=$!
-	wait_for "test -n \"\$(holder_pid)\"" 30 || { diag "the gate was not taken"; return 1; }
+	hold_gate
+	wait_for "test -n \"\$(holder_pid)\"" 30 || { diag "the gate was not taken"; release_gate; wait 2>/dev/null; return 1; }
 	op_stmts "$name"; sql cm "${pre[@]}" "${OPS[@]}" >"$D/fault.out" 2>&1 &
 	op=$!
-	if ! wait_for is_held 60; then
+	wait_for "is_held || ! kill -0 $op 2>/dev/null" 60
+	if ! is_held; then
 		diag "the operation did not reach the gate: $(head -3 "$D/fault.out")"
 		release_gate
 		wait 2>/dev/null
@@ -150,6 +161,7 @@ run_fault() { # NAME PHASE FAULT: leaves the server running (restarted after an 
 	fi
 	wait "$op" 2>/dev/null && { diag "the operation completed despite the $fault"; return 1; }
 	if [[ $fault == immediate ]]; then
+		exec 9>&-
 		node_start cm || { diag "restart: $(tail -20 "$D/postgres.log")"; return 1; }
 	else
 		release_gate
@@ -167,7 +179,7 @@ after_fault() { # NAME
 	local name=$1 ix size n out
 	wait_for settled 30 || { echo "a session is left"; return 1; }
 	# first: a session that loads the library in a transaction removes the orphans of the log, as the sessions of the checks below do
-	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" "$ORPHAN_SECONDS" || { echo "orphan triggers of the log of changes are left"; return 1; }
+	wait_for "test \"\$(sql cm \"$ORPHANS\")\" == 0" "${ORPHAN_WAIT:-$ORPHAN_SECONDS}" || { echo "orphan triggers of the log of changes are left"; return 1; }
 	[[ $(sql cm "$LOCKS") == 0 ]] || { echo "locks left: $(sql cm "SELECT l.pid, a.backend_type, l.locktype, l.mode, l.classid, l.objid, l.objsubid, l.relation::regclass, l.granted FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) WHERE l.pid IS DISTINCT FROM pg_backend_pid() AND l.locktype <> 'virtualxid'" | tr '\n' ';')"; return 1; }
 	[[ $(sql cm "$SLOTS") == 0 ]] || { echo "a progress or quarantine slot is left"; return 1; }
 	for _ in 1 2 3; do # an index another one depends on goes after it
@@ -194,11 +206,12 @@ after_fault() { # NAME
 # passes only when the invariants fail with the message. TAMPER_LATE runs after the operation run again; SKIP_MAINTAIN leaves out the maintenance of the last invariant.
 tamper() { # NAME: sets TAMPER_LATE / SKIP_MAINTAIN, runs the tamper that goes before the invariants
 	local g
-	TAMPER_LATE= SKIP_MAINTAIN=
+	TAMPER_LATE= SKIP_MAINTAIN= ORPHAN_WAIT=
 	case $1 in
 		leak_lock) sql cm "BEGIN; LOCK TABLE docs IN ROW EXCLUSIVE MODE; PREPARE TRANSACTION 'mutant'" ;;
 		leak_slot) sql cm "SET sift.test_mutant = 1" "VACUUM docs" ;;
-		orphan_trigger) sql cm "CREATE TABLE orph (id int, g int)" "INSERT INTO orph SELECT i, i FROM generate_series(1, 100) i" \
+		orphan_trigger) ORPHAN_WAIT=1   # the hook of the mutant stops the removal: nothing is left to wait for
+			sql cm "CREATE TABLE orph (id int, g int)" "INSERT INTO orph SELECT i, i FROM generate_series(1, 100) i" \
 			"SET sift.test_mutant = 2" "CREATE INDEX orph_tr ON orph USING sift_col (id, g) WITH (track_changes = 'ctid')" "DROP INDEX orph_tr" ;;
 		undroppable) sql cm "CREATE FUNCTION no_drop() RETURNS event_trigger LANGUAGE plpgsql AS \$f\$ BEGIN RAISE EXCEPTION 'mutant: no drop'; END \$f\$" \
 			"CREATE EVENT TRIGGER mutant ON ddl_command_start WHEN TAG IN ('DROP INDEX') EXECUTE FUNCTION no_drop()" ;;
@@ -245,7 +258,7 @@ for row in "${ROWS[@]}"; do
 	(( ++total ))
 	fresh "${SETUP[$name]}" || bail "$id: setup $(sql cm "SELECT 1" 2>&1 | head -2)"
 	[[ $DAMAGED == *" $name "* ]] || healthy || bail "$id: the starting state is not healthy"
-	HELD_INTERRUPTS= TAMPER_LATE= SKIP_MAINTAIN=
+	HELD_INTERRUPTS= TAMPER_LATE= SKIP_MAINTAIN= ORPHAN_WAIT=
 	if ! run_fault "$name" "$phase" "$fault"; then
 		if [[ -n $HELD_INTERRUPTS ]]; then
 			skip 1 "$id: the process holds interrupts where it waits: a $fault does not act there"
