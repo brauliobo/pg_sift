@@ -25,6 +25,7 @@
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_col_delta_idx.h"
+#include "col/f2/f2_journal.h"
 #include "col/track_hear.h"
 #include "col/f2/l0_stage.h"
 #include "core/quarantine.h"
@@ -38,6 +39,8 @@ static struct
 	uint64		inval;			/* SharedInvalidMessageCounter when it was made: the relcache entries it points into are as they were */
 	uint64		epoch;			/* sift_stage_epoch() when the stage was taken */
 	bool		live;
+	bool		journal;		/* the index keeps a key journal: every version a statement ends is told to it, by the column of the table that is its key */
+	AttrNumber	journal_att;
 	bool		hooked;
 	SiftTxnStage *stage;
 	const SiftColRel *r;
@@ -131,6 +134,8 @@ ctx_make(TriggerData *td)
 			ctx.f = sift_f2_rel(index);
 			ctx.r = sift_col_rel(index);
 			ctx.stage = sift_stage_get(index, &ctx.f->spec);
+			ctx.journal = sift_f2_journal_on(index);
+			ctx.journal_att = ctx.journal ? sift_f2_journal_key(index) : InvalidAttrNumber;
 			if (ctx.cells_cap < ctx.f->ncols)
 			{
 				if (ctx.cells != NULL)
@@ -299,9 +304,11 @@ sift_f2_track_trigger(PG_FUNCTION_ARGS)
 	if (sift_test_no_track)
 		return PointerGetDatum(NULL);
 #endif
-	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && HeapTupleHeaderIsHeapOnly(td->tg_newtuple->t_data))
-		return PointerGetDatum(NULL);
 	if (!ctx_ready(td))
+		return PointerGetDatum(NULL);
+	if (ctx.journal)
+		sift_f2_journal_ended(ctx.index, ctx.journal_att, td->tg_relation, old);
+	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event) && HeapTupleHeaderIsHeapOnly(td->tg_newtuple->t_data))
 		return PointerGetDatum(NULL);
 	tid = old->t_self;
 	if (HeapTupleHeaderIsHeapOnly(old->t_data)

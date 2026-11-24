@@ -15,6 +15,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "col/f2/f2_journal.h"
 #include "col/f2/compact.h"
 #include "col/f2/delvec_delta.h"
 #include "col/f2/f2.h"
@@ -256,6 +257,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 	sift_f2_trace_begin(&tr, rel, SIFT_JOB_VACUUM, info->message_level == INFO);
 	sift_errctx_push(&ctx, RelationGetRelid(rel));
 	sift_stage_flush(rel);
+	sift_f2_journal_trim(rel);
 	sift_f2_trace_phase(&tr, "settle");
 	mr = force_sync_full ? sift_f2_settled_manifest(rel, &f->spec) : settle_due(rel, &f->spec, horizon);
 	(void) sift_fsm_reclaim(rel);

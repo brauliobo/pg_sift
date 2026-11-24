@@ -4,9 +4,17 @@
 #include "postgres.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/f2_journal.h"
 #include "col/f2/l0_stage.h"
 #include "col/f2/scan/ord_stream.h"
 #include "core/f2/f2_progress.h"
+
+static void
+f2_flush_held(void)
+{
+	sift_stage_flush_all();
+	sift_f2_journal_flush();
+}
 
 const SiftColFormatOps sift_col_v2_ops = {
 	.format_major = SIFT_FORMAT2_MAJOR,
@@ -26,10 +34,11 @@ const SiftColFormatOps sift_col_v2_ops = {
 	.amcanreturn = sift_f2_amcanreturn,
 	.ammarkpos = sift_f2_ord_markpos,
 	.amrestrpos = sift_f2_ord_restrpos,
-	.flush_held = sift_stage_flush_all,
+	.flush_held = f2_flush_held,
 	.track_trigger = sift_f2_track_trigger,
 	.track_reconcile = sift_f2_track_reconcile,
 	.tracks_addresses = true,
 	.sql = sift_col_v2_sql,
 	.check = sift_f2_check,
+	.journal = &sift_f2_journal_ops,
 };

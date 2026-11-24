@@ -340,6 +340,8 @@ col/f2/f2_col_diff.c
 col/f2/f2_col_diff.h
 col/f2/f2_col_host.c
 col/f2/f2_col_host.h
+col/f2/f2_connect.c
+col/f2/f2_connect.h
 col/f2/f2_cost.c
 col/f2/f2_defaults.c
 col/f2/f2_defaults.h
@@ -355,6 +357,8 @@ col/f2/f2_gbuf.h
 col/f2/f2_gbuf_int.h
 col/f2/f2_granules.c
 col/f2/f2_inspect.c
+col/f2/f2_journal.c
+col/f2/f2_journal.h
 col/f2/f2_kll.c
 col/f2/f2_kll.h
 col/f2/f2_kll_sql.c

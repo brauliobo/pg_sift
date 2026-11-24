@@ -13,6 +13,7 @@
 
 #include "col/f2/f2.h"
 #include "col/f2/f2_col_delta_idx.h"
+#include "col/f2/f2_journal.h"
 #include "col/f2/f2_unique.h"
 #include "col/f2/f2_vac_vm.h"
 #include "col/f2/f2_vacuum_run.h"
@@ -57,6 +58,7 @@ sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemP
 bool
 sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
+	sift_f2_journal_added(index);
 	if (indexUnchanged)
 		sift_f2_track_note_unchanged(index, heap_tid);
 	if (checkUnique != UNIQUE_CHECK_NO)

@@ -18,6 +18,7 @@
 
 #include "col/am.h"
 #include "col/api/format.h"
+#include "col/f2/f2_journal.h"
 #include "col/f2/compact.h"
 #include "col/f2/f2.h"
 #include "col/f2/f2_choices.h"
@@ -430,12 +431,19 @@ sift_f2_check_relation(SiftCheck *ck, Relation rel)
 		(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_keys, rel);
 }
 
+static void
+check_journal(void *arg)
+{
+	sift_f2_journal_check(arg);
+}
+
 void
 sift_f2_check(SiftCheck *ck, Oid indexoid, bool heapallindexed)
 {
 	Relation	index = open_f2(indexoid);
 
 	sift_f2_check_relation(ck, index);
+	(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_journal, index);
 	if (heapallindexed)
 		(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_heap, index);
 	index_close(index, AccessShareLock);
