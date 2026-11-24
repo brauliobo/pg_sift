@@ -4,9 +4,13 @@
 -- requires: build col
 SET client_min_messages = warning;
 CREATE EXTENSION IF NOT EXISTS pg_sift;
-SET sift.test_create_format1 = off;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_force = on;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
 
 CREATE TYPE dd_color AS ENUM ('red', 'green', 'blue');
 CREATE TABLE dd (id int, g int, m money, tm time, tz timetz, iv interval, u uuid, ba bytea, e dd_color, ia int[], rg int4range, ip inet, cd cidr, mac macaddr, bt bit(8), vb varbit, ch char(5), nm name,
