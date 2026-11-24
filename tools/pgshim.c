@@ -395,6 +395,12 @@ sift_index_options(Relation index)
 	pgshim_unreached("sift_index_options");
 }
 
+void
+sift_index_fields(Relation index, const SiftOptions *opts, char *names)
+{
+	pgshim_unreached("sift_index_fields");
+}
+
 const char *
 sift_options_stemmer(const SiftOptions *opts)
 {
