@@ -196,10 +196,9 @@ seed(V6Plan *p, int att)
 bool
 sift_v6_mapkey_paths(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	int			att;
 
-	if (!sift_v6_values_exact(&rel) || !reads_member(p, extra, group_exprs, &att))
+	if (p->ops->jsonb == NULL || !p->ops->jsonb->exact_values || !reads_member(p, extra, group_exprs, &att))
 		return false;
 	seed(p, att);
 	p->batch_ok = false;
