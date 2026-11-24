@@ -1,7 +1,7 @@
 /*
  * core/store_ops.h - format-agnostic storage seam for the unified SiftAgg engine (Spec 86).
  *
- * Evolves the 6-pointer SiftV6Format into a multi-format registry with 6 mandatory core pointers and 10 independent optional capability sub-vtables (NULL = unsupported, skipped in one
+ * Replaces the 6-pointer SiftV6Format with a multi-format registry with 6 mandatory core pointers and 10 independent optional capability sub-vtables (NULL = unsupported, skipped in one
  * branch). The engine (agg/) reaches a format only through these tables and the plain structs of core/scan_types.h: no col/f2, col/v1, table/f2 or table/v1 header is included here or in agg/.
  * Format state that crosses the seam is opaque (a struct named here and defined by the format, or a void pointer).
  */
@@ -291,8 +291,13 @@ typedef struct SiftStoreOps
 extern void sift_store_ops_register(const SiftStoreOps *ops);
 extern void sift_store_ops_unregister(const SiftStoreOps *ops);
 extern const SiftStoreOps *sift_store_ops_for_oid(Oid relid, bool is_table);
-/* The owner of the relation when it serves the scans of the aggregate engine (the zone sub-vtable); NULL for no owner or an owner that reads through open() alone */
-extern const SiftStoreOps *sift_store_ops_for_scan(Oid relid, bool is_table);
+/* The format scans a store for the hybrid aggregate (BM25 hits joined with the store's rows) and folds its rows into groups: both entries of the 7-pointer shape are there */
+static inline bool
+sift_store_ops_serves_hybrid(const SiftStoreOps *ops)
+{
+	return ops != NULL && ops->hybrid != NULL && ops->hybrid->scan != NULL && ops->hybrid->fold_begin != NULL;
+}
+
 extern bool sift_store_ops_any(void);
 extern int	sift_store_ops_count(void);
 extern const SiftStoreOps *sift_store_ops_at(int i);

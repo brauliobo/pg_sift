@@ -18,6 +18,7 @@
 #include "agg/v6/v6_fuse.h"
 #include "agg/v6/v6_fuse_keys.h"
 #include "agg/v6/v6_gpu.h"
+#include "agg/v6/v6_open_scan.h"
 #include "agg/v6/v6_par_node.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_qual.h"
@@ -85,7 +86,7 @@ scan_signature(const SiftV6Spec *spec)
 static void
 begin_index(V6State *st, CustomScanState *node, V6Source *src, Oid indexoid)
 {
-	src->ops = sift_store_ops_for_scan(indexoid, false);
+	src->ops = sift_store_ops_for_oid(indexoid, false);
 	src->index = index_open(indexoid, AccessShareLock);
 	src->heap = table_open(src->index->rd_index->indrelid, AccessShareLock);
 	sift_v6_qual_scankeys(&node->ss.ps, src->index, st->spec->indexqual, &src->keys, &src->nkeys, &src->rtkeys, &src->nrt);
@@ -110,7 +111,7 @@ begin_star(V6State *st, CustomScanState *node, EState *estate, int eflags)
 static bool
 v6_fusable(const V6State *st)
 {
-	return st->spec->nparts == 0 && !st->spec->is_table && st->spec->vqual == NIL && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid)
+	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && st->spec->vqual == NIL && st->spec->ext == NULL && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid)
 		&& !st->spec->rows && st->spec->topk == 0;
 }
 
@@ -154,9 +155,10 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	{
 		V6Source   *src = &st->sources[0];
 
-		src->ops = sift_store_ops_for_scan(st->spec->relid, true);
+		src->ops = sift_store_ops_for_oid(st->spec->relid, true);
 		src->heap = table_open(st->spec->relid, AccessShareLock);
-		src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
+		if (src->ops->zone != NULL)
+			src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
 		return;
 	}
 	for (int k = 0; k < st->nsources; k++)
@@ -257,7 +259,9 @@ v6_scan(V6State *st, Snapshot snap)
 	{
 		V6Source   *src = &st->sources[k];
 
-		if (src->index != NULL)
+		if (src->ops->zone == NULL)
+			sift_v6_open_scan_run(st->spec, st->group, src->ops, st->css.ss.ps.state, src->heap, src->index, &st->stats);
+		else if (src->index != NULL)
 			scan_with_text(st, src, snap, NULL);
 		else
 			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats);
@@ -439,7 +443,7 @@ v6_run(V6State *st, EState *estate)
 	for (int k = 0; k < st->nsources; k++)
 		if (st->sources[k].nrt > 0)
 			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->sources[k].rtkeys, st->sources[k].nrt);
-	if (st->spec->is_table)
+	if (st->spec->is_table && st->sources[0].ops->zone != NULL)
 		st->sources[0].ops->zone->bind_quals(st->sources[0].heap, st->sources[0].quals, st->css.ss.ps.ps_ExprContext);
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
 	st->ran = true;

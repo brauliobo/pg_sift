@@ -28,7 +28,7 @@ struct SiftV6Bq
 static bool
 compile(MemoryContext cx, const List *quals, SiftV6Input *in, SiftV6Vexpr *vx)
 {
-	return sift_v6_format_bound() && sift_v6_vexpr_quals(cx, quals, SIFT_V6_BQ_RELID, NULL, in, vx) && in->nmasks == 0 && vx->zone == NULL;
+	return sift_store_ops_any() && sift_v6_vexpr_quals(cx, quals, SIFT_V6_BQ_RELID, NULL, in, vx) && in->nmasks == 0 && vx->zone == NULL;
 }
 
 /* the machine runs the clause: it has no stable function either (what it reads of the session or the snapshot is not known to a program made with the path), nor a sub-plan or executor parameter (the node's) */

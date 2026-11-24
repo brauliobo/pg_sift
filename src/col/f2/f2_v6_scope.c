@@ -725,7 +725,7 @@ compile_output(ScopePlan *p, const PathTarget *target)
 		const Var  *v = (const Var *) e;
 		const int	col = IsA(e, Var) ? index_col_of(p, v) : -1;
 
-		if (col < 1 || p->v6.nkeys == SIFT_V6_MAX_KEYS || !sift_v6_leaf_holds(sift_col_rel(p->irel), col, sift_v6_class(v->vartype)))
+		if (col < 1 || p->v6.nkeys == SIFT_V6_MAX_KEYS || !sift_store_ops_for_oid(RelationGetRelid(p->irel), false)->leaf_holds(RelationGetRelid(p->irel), false, col, sift_v6_class(v->vartype)))
 			return false;
 		p->v6.key[p->v6.nkeys++] = (SiftV6Col) {.attno = col,.typid = v->vartype};
 		p->v6_tlist = lappend(p->v6_tlist, makeTargetEntry(copyObject(e), list_length(p->v6_tlist) + 1, NULL, false));

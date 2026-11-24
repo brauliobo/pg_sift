@@ -53,6 +53,7 @@
 #include "agg/v6/v6_lateral_plan.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_open_scan.h"
 #include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_qual.h"
 #include "col/am.h"
@@ -64,7 +65,7 @@
 SiftV6Rel
 sift_v6_plan_rel(const V6Plan *p)
 {
-	return (SiftV6Rel) {.relid = p->rel->relid,.reloid = p->relid,.index = p->index,.colrel = p->colrel,.table = p->is_table ? &p->tsch : NULL,.ops = p->ops};
+	return (SiftV6Rel) {.relid = p->rel->relid,.reloid = p->relid,.index = p->index,.colrel = p->colrel,.table = p->is_table ? &p->sch : NULL,.ops = p->ops};
 }
 
 static const CustomPathMethods v6_path_methods = {"SiftAggV6", sift_agg_v6_plan_path, NULL};
@@ -524,7 +525,7 @@ sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 bool
 sift_v6_index_owned(const IndexOptInfo *ix)
 {
-	return !ix->hypothetical && sift_store_ops_for_scan(ix->indexoid, false) != NULL;
+	return !ix->hypothetical && sift_v6_rel_owned(ix->indexoid, false);
 }
 
 bool
@@ -581,6 +582,20 @@ sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p) && !sift_v6_json_type_clash(&p->spec) && sift_v6_json_cast_order_ok(p);
 }
 
+/* the format of the relation serves what the spec asks of it: with a zone-pruned scan, the capabilities the spec reads; without one, the batches of open() */
+static bool
+format_serves(const V6Plan *p)
+{
+	const SiftStoreOps *ops = p->ops;
+	const SiftV6Spec *s = &p->spec;
+
+	if (ops == NULL)
+		return false;
+	if (ops->zone == NULL)
+		return sift_v6_open_scan_ok(s);
+	return (!s->rows || (ops->order != NULL && ops->order->scan_rows != NULL)) && (s->ext == NULL || !s->ext->unnest || ops->jsonb != NULL) && (s->par_strategy == 0 || ops->par != NULL);
+}
+
 void
 sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows)
 {
@@ -589,7 +604,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	bool		locked;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
 
-	if (!sift_v6_gen_fits(&p->spec, groups))
+	if (!format_serves(p) || !sift_v6_gen_fits(&p->spec, groups))
 		return;
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = p->out;
@@ -634,7 +649,7 @@ sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	List	   *having = extra != NULL ? (List *) extra->havingQual : NIL;
 	Relation	heap = table_open(rte->relid, AccessShareLock);
 
-	if (sift_store_ops_for_scan(rte->relid, true) != NULL)
+	if (sift_v6_rel_owned(rte->relid, true))
 	{
 		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.batch_ok = true};
 

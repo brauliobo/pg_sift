@@ -220,6 +220,8 @@ agg/v6/
 agg/v6/plan_kind.c
 agg/v6/store_ops_test.c
 agg/v6/v6_batch_source.c
+agg/v6/v6_open_scan.c
+agg/v6/v6_store.c
 agg/v6/v6_join_lookup.c
 agg/v6/v6_join_lookup.h
 agg/v6/v6_join_plan.c

@@ -190,7 +190,7 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 static bool
 qual_batch(V6Plan *p, RestrictInfo *ri)
 {
-	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->tsch.natts : 0};
+	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->sch.natts : 0};
 	Expr	   *clause;
 
 	if (!p->batch_ok || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || agg_node_has_extern_param((Node *) ri->clause))
@@ -237,7 +237,7 @@ sift_v6_compile_quals(V6Plan *p)
 			continue;
 		if (sift_v6_mapkey_pair_qual(p, ri))
 			continue;
-		q = ri->pseudoconstant ? NULL : sift_v6_index_qual(p, ri->clause);
+		q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
 		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
 		if (q == NULL && jq == NIL && qual_batch(p, ri))
 			continue;

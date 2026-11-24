@@ -26,11 +26,9 @@
 static const SiftCardStatsView *
 index_view(const IndexOptInfo *ix)
 {
-	const SiftV6Format *f = sift_v6_format();
-
-	if (ix == NULL || f->card_view == NULL || ix->hypothetical || !f->owns_rel(ix->indexoid, false))
+	if (ix == NULL || ix->hypothetical)
 		return NULL;
-	return f->card_view(ix->indexoid);
+	return sift_v6_rel_card_view(ix->indexoid);
 }
 
 void

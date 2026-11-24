@@ -221,7 +221,7 @@ col_index(RelOptInfo *rel)
 {
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
 		if ((ix->indpred == NIL || ix->predOK) && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns &&
-			sift_store_ops_for_scan(ix->indexoid, false) != NULL)
+			sift_store_ops_serves_hybrid(sift_store_ops_for_oid(ix->indexoid, false)))
 			return ix;
 	return NULL;
 }
@@ -234,10 +234,10 @@ pick_store(HybridPlan *h, RangeTblEntry *rte)
 
 	if (sift_tbl_is_table(heap))
 	{
-		const SiftStoreOps *ops = sift_store_ops_for_scan(rte->relid, true);
+		const SiftStoreOps *ops = sift_store_ops_for_oid(rte->relid, true);
 
 		h->store.relid = rte->relid;
-		h->store.is_table = ops != NULL && ops->schema(rte->relid, true, &h->store.tsch);
+		h->store.is_table = sift_store_ops_serves_hybrid(ops) && ops->zone != NULL && ops->schema(rte->relid, true, &h->store.tsch);
 	}
 	else
 		h->store.index = col_index(h->rel);

@@ -33,27 +33,6 @@
 #include "core/memtrack.h"
 #include "core/store_ops.h"
 
-static const SiftV6Format *bound_format;
-
-void
-sift_v6_format_bind(const SiftV6Format *fmt)
-{
-	bound_format = fmt;
-}
-
-const SiftV6Format *
-sift_v6_format(void)
-{
-	Assert(bound_format != NULL);
-	return bound_format;
-}
-
-bool
-sift_v6_format_bound(void)
-{
-	return bound_format != NULL;
-}
-
 bool
 sift_v6_vec_type(Oid typid, int32 typmod, SiftV6InCol *out)
 {
@@ -136,7 +115,7 @@ input_add(SiftV6Input *in, const Var *v, SiftV6InCol col)
 	for (int k = 0; k < in->ncols; k++)
 		if (in->col[k].attno == col.attno)
 			return k;
-	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_format()->leaf_holds(in->indexoid, col.attno, sift_v6_class(v->vartype)))
+	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_input_holds(in, col.attno, sift_v6_class(v->vartype)))
 		return -1;
 	in->col[in->ncols] = col;
 	return in->ncols++;
@@ -271,7 +250,7 @@ mask_node(Comp *c, AttrNumber attno, const char *key)
 	SiftVexprNode *n;
 	int			m;
 
-	if (i < 0 || !sift_v6_format()->leaf_holds(in->indexoid, i + 1, key == NULL ? SV6C_BOOL : SV6C_NONE))
+	if (i < 0 || !sift_v6_input_holds(in, i + 1, key == NULL ? SV6C_BOOL : SV6C_NONE))
 		return NULL;
 	for (m = 0; m < in->nmasks; m++)
 		if (in->mask[m].attno == i + 1 && (in->mask[m].key == NULL) == (key == NULL) && (key == NULL || strcmp(in->mask[m].key, key) == 0))
@@ -851,7 +830,7 @@ sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
 	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root))
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && (rel->indexlist != NIL || sift_store_ops_for_scan(rte->relid, true) != NULL);
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && (rel->indexlist != NIL || sift_v6_rel_owned(rte->relid, true));
 }
 
 void

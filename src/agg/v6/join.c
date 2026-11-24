@@ -41,7 +41,7 @@ sift_v6_rels_have_index(PlannerInfo *root, Relids relids)
 {
 	int			i = -1;
 
-	if (!sift_v6_format_bound())
+	if (!sift_store_ops_any())
 		return false;
 	while ((i = bms_next_member(relids, i)) >= 0)
 	{
@@ -50,10 +50,10 @@ sift_v6_rels_have_index(PlannerInfo *root, Relids relids)
 
 		if (r == NULL || r->reloptkind != RELOPT_BASEREL)
 			continue;
-		if (rte->rtekind == RTE_RELATION && sift_v6_format()->owns_rel(rte->relid, true))
+		if (rte->rtekind == RTE_RELATION && sift_v6_rel_owned(rte->relid, true))
 			return true;
 		foreach_ptr(IndexOptInfo, ix, r->indexlist)
-			if (!ix->hypothetical && sift_v6_format()->owns_rel(ix->indexoid, false))
+			if (!ix->hypothetical && sift_v6_rel_owned(ix->indexoid, false))
 				return true;
 	}
 	return false;

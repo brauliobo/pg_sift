@@ -59,7 +59,7 @@ add_column(SiftV6Input *in, const Var *v)
 	for (int k = 0; k < in->ncols; k++)
 		if (in->col[k].attno == col.attno)
 			return k;
-	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_format_bound() || !sift_v6_format()->leaf_holds(in->indexoid, col.attno, cls))
+	if (in->ncols == SIFT_V6_MAX_COLS || !sift_store_ops_any() || !sift_v6_input_holds(in, col.attno, cls))
 		return -1;
 	in->col[in->ncols] = col;
 	return in->ncols++;

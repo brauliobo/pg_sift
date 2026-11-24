@@ -22,8 +22,8 @@ typedef struct V6Plan
 	IndexOptInfo *index;		/* a sift_col: its index; NULL for a sift_table */
 	const SiftColRel *colrel;
 	const SiftStoreOps *ops;	/* the format of the relation; for an index NULL when it holds nothing (a stale index) */
-	bool		is_table;		/* a sift_table: tsch is the schema of its store, whose attributes are those of the table */
-	SiftStoreSchema tsch;
+	bool		is_table;		/* a sift_table: sch is the schema of its store, as it is of an index, whose attributes are those of the table */
+	SiftStoreSchema sch;
 	SiftV6Spec	spec;
 	int			cap_aggs;		/* the room of spec.agg and spec.func */
 	int			cap_funcs;

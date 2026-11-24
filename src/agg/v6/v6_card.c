@@ -42,7 +42,7 @@ leaf_value(Oid typid, Datum d, int64 *out)
 int
 sift_v6_card_leaf(const IndexOptInfo *ix, int col)
 {
-	return sift_v6_format()->card_leaf(ix->indexoid, col);
+	return sift_v6_rel_card_leaf(ix->indexoid, col);
 }
 
 static int

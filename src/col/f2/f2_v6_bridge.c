@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_v6_bridge.c - the SiftV6Format of the index of format major 2 (agg/v6/v6_vexpr.h): which indexes and leaves it holds, how its parts are sorted, and the source of batches it opens.
+ * col/f2/f2_v6_bridge.c - what the index of format major 2 gives the operators of SiftAggV6 (agg/v6/v6_vexpr.h): which indexes and leaves it holds, how its parts are sorted, and the source of batches it opens.
  *
  * A source reads the partitions in key order. Of a partition it reads the rows its slab holds and the granules of each of its parts the quals' bounds leave (the zones of the leaf tell; a part
  * is passed over whole by the time bounds of its descriptor), one granule at a time. Unsorted, the runs of a partition are read one after the other, in slices of SIFT_VEC_LEN rows; sorted, a partition of

@@ -287,7 +287,7 @@ leading_key_ordered(const SiftV6TopNSpec *spec)
 {
 	const int	att = spec->key[0].attno;
 
-	return sift_v6_format()->sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
+	return sift_v6_rel_sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
 }
 
 static void
@@ -321,7 +321,7 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 	{
 		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.spec = shape};
 
-		if (!agg_index_complete(ix) || !sift_v6_format()->owns_rel(ix->indexoid, false))
+		if (!agg_index_complete(ix) || !sift_v6_rel_ordered(ix->indexoid, false))
 			continue;
 		p.spec.indexoid = ix->indexoid;
 		p.spec.rti = input_rel->relid;
@@ -461,7 +461,7 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 	const SiftV6TopNSpec *spec = st->spec;
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	TupleTableSlot *slot = st->css.ss.ss_ScanTupleSlot;
-	SiftV6Source *src = sift_v6_format()->open(estate, in, quals, false);
+	SiftV6Source *src = sift_v6_rel_open(estate, in, quals, false);
 	List	   *tlist = lsecond(((CustomScan *) st->css.ss.ps.plan)->custom_private);
 	AttrNumber	keycols[SIFT_TOURN_MAX_KEYS];
 	bool		nullsfirst[SIFT_TOURN_MAX_KEYS];

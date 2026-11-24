@@ -19,7 +19,7 @@
 void
 sift_agg_v6_live_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
-	if (!sift_v6_format_bound())
+	if (!sift_store_ops_any())
 		return;
 	sift_agg_v6_topn_upper_paths(root, stage, input_rel, output_rel, extra);
 	sift_agg_v6_window_upper_paths(root, stage, input_rel, output_rel, extra);
@@ -59,5 +59,5 @@ sift_agg_v6_live_scan(const Plan *plan, Oid *indexoid)
 bool
 sift_agg_v6_live_owns_index(Oid indexoid)
 {
-	return sift_v6_format_bound() && sift_v6_format()->owns_rel(indexoid, false);
+	return sift_store_ops_any() && sift_v6_rel_owned(indexoid, false);
 }

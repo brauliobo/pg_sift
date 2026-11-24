@@ -35,6 +35,7 @@
 #include "bm25/planner.h"
 #include "bm25/planner_int.h"
 #include "col/am.h"
+#include "core/store_ops.h"
 #include "core/sift.h"
 #include "core/store_ops.h"
 
@@ -122,7 +123,7 @@ col_key_indexed(Oid relid, AttrNumber attno)
 	{
 		Relation	ix = index_open(ixid, AccessShareLock);
 
-		if (sift_store_ops_for_scan(ixid, false) != NULL)
+		if (sift_store_ops_for_oid(ixid, false) != NULL)
 			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(ix); i++)
 				found |= ix->rd_index->indkey.values[i] == attno;
 		index_close(ix, AccessShareLock);

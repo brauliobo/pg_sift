@@ -210,21 +210,17 @@ index_pos(const IndexOptInfo *ix, AttrNumber attno)
 static bool
 table_holds_join_column(PlannerInfo *root, const PushJoin *j)
 {
-	Relation	heap = table_open(planner_rt_fetch(j->fact->relid, root)->relid, AccessShareLock);
-	const SiftStoreOps *ops = sift_store_ops_for_scan(RelationGetRelid(heap), true);
-	SiftStoreSchema sch;
-	const bool	ok = ops != NULL && ops->schema(RelationGetRelid(heap), true, &sch) && sift_v6_table_leaf_holds(&sch, j->fact_attno, SV6C_I64);
+	const Oid	relid = planner_rt_fetch(j->fact->relid, root)->relid;
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
 
-	table_close(heap, NoLock);
-	return ok;
+	return ops != NULL && ops->zone != NULL && ops->leaf_holds(relid, true, j->fact_attno, SV6C_I64);
 }
 
 /* The scan of the index ix of the fact (ix NULL: of the sift_table) that the statement's quals and aggregates compile to, and the join column as a column of the index the scan reads as integers */
 static bool
 compile_fact(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra, IndexOptInfo *ix, int *int_col, SiftV6Spec *spec, List **scan_tlist)
 {
-	Relation	irel;
-	bool		ok;
+	const SiftStoreOps *ops;
 
 	if (ix == NULL)
 	{
@@ -234,10 +230,9 @@ compile_fact(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra,
 	if (!sift_v6_index_owned(ix))
 		return false;
 	*int_col = index_pos(ix, j->fact_attno);
-	irel = index_open(ix->indexoid, AccessShareLock);
-	ok = *int_col >= 0 && !sift_col_rel(irel)->stale && sift_v6_leaf_holds(sift_col_rel(irel), *int_col + 1, SV6C_I64);
-	index_close(irel, NoLock);
-	return ok && sift_v6_compile_fact(root, j->fact, out, ix, extra, spec, scan_tlist);
+	ops = sift_store_ops_for_oid(ix->indexoid, false);
+	return *int_col >= 0 && ops->zone != NULL && ops->leaf_holds(ix->indexoid, false, *int_col + 1, SV6C_I64) &&
+		sift_v6_compile_fact(root, j->fact, out, ix, extra, spec, scan_tlist);
 }
 
 static ScalarArrayOpExpr *
@@ -266,7 +261,7 @@ scope_route(PlannerInfo *root, const PushJoin *j, IndexOptInfo *ix)
 	int			ord;
 	Expr	   *key;
 
-	const SiftStoreOps *ops = ix != NULL ? sift_store_ops_for_scan(ix->indexoid, false) : NULL;
+	const SiftStoreOps *ops = ix != NULL ? sift_store_ops_for_oid(ix->indexoid, false) : NULL;
 
 	if (ops == NULL || ops->scope == NULL || !ops->scope->one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
 		return NIL;
@@ -397,7 +392,7 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 		st->scope_key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
 		st->scope_type = exprType(linitial(cs->custom_exprs));
 	}
-	st->ops = sift_store_ops_for_scan(st->spec->relid, st->spec->is_table);
+	st->ops = sift_store_ops_for_oid(st->spec->relid, st->spec->is_table);
 	st->index = st->spec->is_table ? NULL : index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->spec->is_table ? st->spec->relid : st->index->rd_index->indrelid, AccessShareLock);
 	foreach_ptr(Plan, child, cs->custom_plans)

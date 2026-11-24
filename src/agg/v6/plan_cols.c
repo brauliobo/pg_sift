@@ -65,7 +65,7 @@ static int
 host_attno(const V6Plan *p, AttrNumber attno)
 {
 	if (p->is_table)
-		return attno > 0 && attno <= p->tsch.natts ? attno : 0;
+		return attno > 0 && attno <= p->sch.natts ? attno : 0;
 	for (int i = 0; attno > 0 && i < p->index->ncolumns; i++)
 		if (p->index->indexkeys[i] == attno)
 			return i + 1;
@@ -75,66 +75,46 @@ host_attno(const V6Plan *p, AttrNumber attno)
 static const SiftColSchema *
 host_schema(const V6Plan *p)
 {
-	return p->is_table ? p->tsch.leaves : p->colrel->schema;
+	return p->is_table ? p->sch.leaves : p->colrel->schema;
 }
 
 static int
 host_first(const V6Plan *p, int att)
 {
-	return p->is_table ? p->tsch.att_first[att] : p->colrel->first[att];
+	return p->is_table ? p->sch.att_first[att] : p->colrel->first[att];
 }
 
 static int
 host_nleaves(const V6Plan *p, int att)
 {
-	return p->is_table ? p->tsch.att_nleaves[att] : p->colrel->nleaves[att];
+	return p->is_table ? p->sch.att_nleaves[att] : p->colrel->nleaves[att];
+}
+
+/* the relation holds attribute att in one leaf the scan decodes as the class says */
+static bool
+host_holds(const V6Plan *p, int att, SiftV6Class cls)
+{
+	return att > 0 && p->ops->leaf_holds(p->relid, p->is_table, att, cls);
+}
+
+/* the digits after the point of the scaled integer a numeric attribute is stored as */
+static int
+host_scale(const V6Plan *p, int att)
+{
+	return p->sch.leaves != NULL ? p->sch.leaves->cols[p->sch.att_first[att]].scale : p->sch.atts[att - 1].scale;
 }
 
 Oid
 sift_v6_plan_opfamily(const V6Plan *p, int att)
 {
-	return p->is_table ? p->tsch.att_opfamily[att] : p->index->opfamily[att - 1];
-}
-
-static bool
-leaf_class_ok(const SiftColDef *d, int nleaves, SiftV6Class cls)
-{
-	if (nleaves != 1)
-		return false;
-	if (d->lane != 0 || d->kind != SIFT_COLK_SCALAR || (d->flags & (SIFT_COLD_LOSSY | SIFT_COLD_DERIVED)) || d->path[0] != '\0')
-		return false;
-	switch (cls)
-	{
-		case SV6C_I32:
-		case SV6C_I64:
-		case SV6C_BOOL:
-			return d->store == SIFT_COLS_INT;
-		case SV6C_F64:
-			return d->store == SIFT_COLS_F4 || d->store == SIFT_COLS_F8;
-		case SV6C_TEXT:
-			return d->store == SIFT_COLS_STR;
-		default:
-			return false;
-	}
-}
-
-bool
-sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls)
-{
-	return leaf_class_ok(&r->schema->cols[r->first[att]], r->nleaves[att], cls);
-}
-
-bool
-sift_v6_table_leaf_holds(const SiftStoreSchema *table, int att, SiftV6Class cls)
-{
-	return att > 0 && att <= table->natts && leaf_class_ok(&table->leaves->cols[table->att_first[att]], table->att_nleaves[att], cls);
+	return p->is_table ? p->sch.att_opfamily[att] : p->index->opfamily[att - 1];
 }
 
 bool
 sift_v6_plan_table(V6Plan *p, Oid relid)
 {
-	p->ops = sift_store_ops_for_scan(relid, true);
-	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->tsch);
+	p->ops = sift_store_ops_for_oid(relid, true);
+	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->sch);
 	return p->is_table;
 }
 
@@ -142,7 +122,9 @@ void
 sift_v6_plan_index(V6Plan *p, Relation irel)
 {
 	p->colrel = sift_col_rel(irel);
-	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_scan(RelationGetRelid(irel), false);
+	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
+	if (p->ops != NULL && !p->ops->schema(RelationGetRelid(irel), false, &p->sch))
+		p->ops = NULL;
 }
 
 static bool
@@ -160,9 +142,9 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 		return sift_v6_json_type_col(&rel, v, out);
 	}
 	att = host_attno(p, v->varattno);
-	if (att == 0 || !leaf_class_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att), sift_v6_class(v->vartype)))
+	if (att == 0 || !host_holds(p, att, sift_v6_class(v->vartype)))
 		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = v->vartype == NUMERICOID ? host_schema(p)->cols[host_first(p, att)].scale : 0};
+	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = v->vartype == NUMERICOID ? host_scale(p, att) : 0};
 	return true;
 }
 
@@ -242,7 +224,7 @@ index_expr_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
 			continue;
 		if (equal(e, list_nth(p->index->indexprs, k++)))
 		{
-			if (!leaf_class_ok(&host_schema(p)->cols[host_first(p, i + 1)], host_nleaves(p, i + 1), sift_v6_class(typid)))
+			if (!host_holds(p, i + 1, sift_v6_class(typid)))
 				return false;
 			*out = (SiftV6Col) {.attno = i + 1,.typid = typid};
 			return true;

@@ -252,7 +252,7 @@ sip_join(PlannerInfo *root, RelOptInfo *rel, const Node *fact_key, const Node *d
 	if (!join_of(root, rel, fact_key, dim_key, &j))
 		return false;
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		if (agg_index_complete(ix) && sift_v6_format()->owns_rel(ix->indexoid, false) && sip_path(root, rel, ix, &j))
+		if (agg_index_complete(ix) && sift_v6_rel_owned(ix->indexoid, false) && sip_path(root, rel, ix, &j))
 			return true;
 	return false;
 }
@@ -414,7 +414,7 @@ sip_run(SipState *st, EState *estate)
 	st->ran = true;
 	if (sift_sip_is_empty(st->sip))
 		return;
-	st->src = sift_v6_sip_wrap(st->cx, sift_v6_format()->open(estate, &in, pushed == NIL ? NULL : &quals, false), st->sip, slot, &st->stats);
+	st->src = sift_v6_sip_wrap(st->cx, sift_v6_rel_open(estate, &in, pushed == NIL ? NULL : &quals, false), st->sip, slot, &st->stats);
 }
 
 static TupleTableSlot *

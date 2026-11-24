@@ -528,9 +528,9 @@ stream_try(StreamPlan *p)
 		return false;
 	for (int i = 0; i < spec.nkeys; i++)
 		atts[i] = in.col[spec.key_slot[i]].attno;
-	if (!sift_v6_format()->sorted_by(p->index->indexoid, atts, spec.nkeys))
+	if (!sift_v6_rel_sorted_by(p->index->indexoid, atts, spec.nkeys))
 		return false;
-	view = sift_v6_format()->card_view != NULL ? sift_v6_format()->card_view(p->index->indexoid) : NULL;
+	view = sift_v6_rel_card_view(p->index->indexoid);
 	groups = sift_v6_card_groups(p->root, p->rel, p->index, view, p->keys, p->rel->rows);
 	if (groups < 0)
 		groups = estimate_num_groups(p->root, p->keys, p->rel->rows, NULL, NULL);
@@ -553,7 +553,7 @@ sift_agg_v6_stream_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOp
 	{
 		StreamPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.extra = extra};
 
-		if (agg_index_complete(ix) && sift_v6_format()->owns_rel(ix->indexoid, false) && stream_try(&p))
+		if (agg_index_complete(ix) && sift_v6_rel_ordered(ix->indexoid, false) && stream_try(&p))
 			return;
 	}
 }
@@ -664,7 +664,7 @@ stream_run(StreamState *st, EState *estate)
 	compiled = sift_v6_stream_spec(st->priv, &in, &st->spec) && sift_v6_stream_filters(st->out.cx, &st->spec, estate->es_param_list_info, &in, filters) &&
 		sift_v6_vexpr_quals(st->out.cx, where, st->spec.rti, estate->es_param_list_info, &in, &quals);
 	SIFT_INVARIANT(compiled, "the stream of groups of index %u is not compiled", st->spec.indexoid);
-	st->src = sift_v6_format()->open(estate, &in, where == NIL ? NULL : &quals, true);
+	st->src = sift_v6_rel_open(estate, &in, where == NIL ? NULL : &quals, true);
 	st->groups = 0;
 	sift_v6_stream_run(st->src, &st->spec, filters, stream_emit, st);
 	st->out.ran = true;

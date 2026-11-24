@@ -143,7 +143,7 @@ rows_index_path(V6Plan *p, uint32 k)
 		return false;
 	irel = index_open(p->index->indexoid, AccessShareLock);
 	sift_v6_plan_index(p, irel);
-	ok = sift_v6_rows_compile(p, k);
+	ok = p->ops != NULL && p->ops->order != NULL && p->ops->order->scan_rows != NULL && sift_v6_rows_compile(p, k);
 	index_close(irel, NoLock);
 	if (!ok)
 		return false;
@@ -187,7 +187,7 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
 	relid = planner_rt_fetch(rel->relid, root)->relid;
-	if (sift_store_ops_for_scan(relid, true) != NULL)
+	if (sift_v6_rel_owned(relid, true))
 	{
 		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = relid};
 

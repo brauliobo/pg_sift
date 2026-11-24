@@ -449,13 +449,13 @@ fmt_owns_rel(Oid relid, bool is_table)
 }
 
 static bool
-fmt_leaf_holds(Oid indexoid, int att, SiftV6Class cls)
+fmt_leaf_holds(Oid indexoid, bool is_table, int att, int cls)
 {
 	return cls != SV6C_NONE && sift_v6_class(get_atttype(indexoid, att)) == cls;
 }
 
 static bool
-fmt_sorted_by(Oid indexoid, const int *atts, int n)
+fmt_sorted_by(Oid indexoid, bool is_table, const int *atts, int n)
 {
 	for (int i = 0; i < n; i++)
 		if (atts[i] != i + 1)
@@ -479,13 +479,30 @@ fmt_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool s
 	return &ts->base;
 }
 
-static const SiftV6Format test_format = {
+/* the test format keeps no leaf map, so the aggregate scan plans nothing over it: the operators read it through its source, its order and its card leaves */
+static bool
+fmt_schema(Oid relid, bool is_table, SiftStoreSchema *out)
+{
+	return false;
+}
+
+static bool
+fmt_stats(Oid relid, bool is_table, SiftStoreStats *out)
+{
+	*out = (SiftStoreStats) {.card_leaf = fmt_card_leaf};
+	return true;
+}
+
+static const SiftOrderOps test_order = {.sorted_by = fmt_sorted_by};
+
+static const SiftStoreOps test_ops = {
+	.name = "test",
 	.owns_rel = fmt_owns_rel,
+	.schema = fmt_schema,
+	.stats = fmt_stats,
+	.open = fmt_open,
 	.leaf_holds = fmt_leaf_holds,
-	.sorted_by = fmt_sorted_by,
-	.card_view = NULL,
-	.card_leaf = fmt_card_leaf,
-	.open = fmt_open
+	.order = &test_order
 };
 
 /* ---- the Top-N source: chunks of the table as the units of the tournament ---- */
@@ -692,7 +709,7 @@ register_once(void)
 
 	if (done)
 		return;
-	sift_v6_format_bind(&test_format);
+	sift_store_ops_register(&test_ops);
 	sift_v6_topn_bind(topn_open);
 	card_view_init();
 	done = true;
@@ -729,11 +746,11 @@ run_lines(const char *sql, int bridges)
 	set_rel_pathlist_hook_type rl = set_rel_pathlist_hook;
 	MemoryContext cx = CurrentMemoryContext;
 
-	const SiftV6Format *live_format = sift_v6_format_bound() ? sift_v6_format() : NULL;
 	const SiftV6TopNOpen live_topn = sift_v6_topn_bound();
 
 	enabled = bridges;
-	sift_v6_format_bind(bridges != 0 ? &test_format : NULL);
+	if (bridges == 0)
+		sift_store_ops_unregister(&test_ops);
 	sift_v6_topn_bind(bridges != 0 ? topn_open : NULL);
 	prev_upper_hook = up;
 	prev_rel_hook = rl;
@@ -763,7 +780,7 @@ run_lines(const char *sql, int bridges)
 	{
 		create_upper_paths_hook = up;
 		set_rel_pathlist_hook = rl;
-		sift_v6_format_bind(live_format);
+		sift_store_ops_register(&test_ops);
 		sift_v6_topn_bind(live_topn);
 		enabled = was;
 	}

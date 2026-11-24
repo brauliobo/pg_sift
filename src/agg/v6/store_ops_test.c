@@ -78,30 +78,13 @@ ops_of(Oid relid, bool is_table)
 	return ops;
 }
 
-/* ---- the quals: a shim format over the registry, bound while the program is compiled ---- */
-
-static bool shim_is_table;
-
-static bool
-shim_owns(Oid relid, bool is_table)
-{
-	return sift_store_ops_for_oid(relid, is_table) != NULL;
-}
-
-static bool
-shim_holds(Oid relid, int att, SiftV6Class cls)
-{
-	return sift_store_ops_for_oid(relid, shim_is_table)->leaf_holds(relid, shim_is_table, att, cls);
-}
-
-static const SiftV6Format shim_format = {.owns_rel = shim_owns,.leaf_holds = shim_holds};
+/* ---- the quals ---- */
 
 /* column > value, over an integer attribute of the input */
 static SiftV6Vexpr *
 quals_gt(StoreScan *sc, int att, int64 value)
 {
 	const SiftStoreAtt *a = &sc->schema.atts[att - 1];
-	const SiftV6Format *live = sift_v6_format_bound() ? sift_v6_format() : NULL;
 	Datum		d = a->typid == INT2OID ? Int16GetDatum((int16) value) : a->typid == INT4OID ? Int32GetDatum((int32) value) : Int64GetDatum(value);
 	Var		   *var = makeVar(1, sc->is_table ? att : sc->in.keys[att - 1], a->typid, -1, InvalidOid, 0);
 	Const	   *c = makeConst(a->typid, -1, InvalidOid, a->typid == INT2OID ? 2 : a->typid == INT4OID ? 4 : 8, d, false, true);
@@ -110,10 +93,7 @@ quals_gt(StoreScan *sc, int att, int64 value)
 	bool		ok;
 
 	set_opfuncid(op);
-	shim_is_table = sc->is_table;
-	sift_v6_format_bind(&shim_format);
 	ok = sift_v6_vexpr_quals(CurrentMemoryContext, list_make1(op), 1, NULL, &sc->in, out);
-	sift_v6_format_bind(live);
 	if (!ok)
 		ereport(ERROR, (errmsg("the engine does not compile the qual on attribute %d", att)));
 	return out;

@@ -429,7 +429,7 @@ compile_conj(GpuQuery *g, const List *quals, SiftVexprProg *prog, bool scan, boo
 static bool
 gpu_format(SiftGpuQuery *q, bool is_table)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_scan(RelationGetRelid(q->rel), is_table);
+	const SiftStoreOps *ops = sift_store_ops_for_oid(RelationGetRelid(q->rel), is_table);
 
 	SiftStoreStats stats;
 

@@ -2,8 +2,8 @@
  * agg/v6/v6_vexpr.h - what the operators of SiftAggV6 (v6_topn.h, v6_window.h, v6_stream.h, v6_sip.h, v6_card.h) share: the format they run over, the columns of the index a query reads,
  * the batches a scan hands them, and the compiler of the expressions of the query (agg/vexpr.h) from the Expr trees PostgreSQL planned.
  *
- * The format (SiftV6Format) is what the index of format major 2 tells the planner and gives the executor: whether it owns an index, holds a leaf in a column, is sorted by columns, and
- * the source of batches it opens over a snapshot; it is bound once at load (sift_v6_format_bind) and the operators know nothing else of the files.
+ * The format of a relation is the SiftStoreOps the registry finds for it (core/store_ops.h): whether it owns an index, holds a leaf in a column, is sorted by columns, and the source of batches
+ * it opens over a snapshot are asked of it, and the operators know nothing else of the files.
  *
  * An expression is compiled twice: when the path is made, to know that the machine runs it (parameters stand for typed NULLs), and when the node starts or is scanned again, with the
  * parameters of that execution (a generic plan keeps its Param nodes; no value is ever kept from the plan) and the zone of the session at that time (a plan outlives a SET TIME ZONE).
@@ -27,26 +27,19 @@
 #include "agg/v6/v6_inset.h"
 #include "agg/zoneoff.h"
 
-typedef struct SiftV6Format
-{
-	/* the relation is a sift_table (is_table) or an index of the format; the oid of the other calls is one it owns */
-	bool		(*owns_rel) (Oid relid, bool is_table);
-	/* the relation holds attribute att, of the class, in one leaf the scan decodes as it is stored (SV6C_NONE: a jsonb document read for the presence of a key) */
-	bool		(*leaf_holds) (Oid relid, int att, SiftV6Class cls);
-	/* the parts of the relation are sorted by the attributes atts[0 .. n-1], each ascending, NULLs last */
-	bool		(*sorted_by) (Oid relid, const int *atts, int n);
-	/* the statistics the index folded when its parts were written (agg/plan/card_est.h), NULL when it has none */
-	const SiftCardStatsView *(*card_view) (Oid relid);
-	/* the leaf of the statistics view that holds column col (0-based) of the index, -1 when it has none */
-	int			(*card_leaf) (Oid relid, int col);
-	/* the batches of the input over the snapshot of the estate: only the rows that pass quals (NULL: all), in the order of the index columns (ascending, NULLs last) when sorted is set */
-	SiftV6Source *(*open) (EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted);
-} SiftV6Format;
-
-extern void sift_v6_format_bind(const SiftV6Format *fmt);
-extern const SiftV6Format *sift_v6_format(void);
-/* The operators that read through the format (the joins among them) are offered only while one is bound */
-extern bool sift_v6_format_bound(void);
+/* The format that owns a relation is the one the registry finds (core/store_ops.h); these ask it and give NULL, false or -1 where it keeps no such capability */
+extern bool sift_v6_rel_owned(Oid relid, bool is_table);
+/* the owner of the relation keeps its parts in an order (core/store_ops.h SiftOrderOps): the operators that read the order of the parts, and the Top-N tournament, are planned over it */
+extern bool sift_v6_rel_ordered(Oid relid, bool is_table);
+/* the relation of the input holds attribute att, of the class, in one leaf the scan decodes as it is stored (SV6C_NONE: a jsonb document read for the presence of a key) */
+extern bool sift_v6_input_holds(const SiftV6Input *in, int att, SiftV6Class cls);
+/* the parts of the index are sorted by the attributes atts[0 .. n-1], each ascending, NULLs last */
+extern bool sift_v6_rel_sorted_by(Oid indexoid, const int *atts, int n);
+/* the statistics the index folded when its parts were written (agg/plan/card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based), -1 when it has none */
+extern const SiftCardStatsView *sift_v6_rel_card_view(Oid indexoid);
+extern int	sift_v6_rel_card_leaf(Oid indexoid, int col);
+/* the batches of the input over the snapshot of the estate: only the rows that pass quals (NULL: all), in the order of the index columns (ascending, NULLs last) when sorted is set */
+extern SiftV6Source *sift_v6_rel_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted);
 
 #define SIFT_V6_MAX_BOUNDS	8
 

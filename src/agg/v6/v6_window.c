@@ -600,7 +600,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 	for (int i = 0; p->part_mode == WIN_EXACT && i < spec.win.n_ord; i++)
 		atts[n++] = in.col[spec.ord_slot[i]].attno;
 	if (p->part_mode == WIN_REGROUP ? !sift_win_regroup_fits(&in, vars_of_tlist(p->scan_tlist), p->rel->rows, estimate_num_groups(p->root, p->part, p->rel->rows, NULL, NULL), (uint64) work_mem * 1024) :
-		!sift_v6_format()->sorted_by(p->index->indexoid, atts, n))
+		!sift_v6_rel_sorted_by(p->index->indexoid, atts, n))
 		return false;
 	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &total);
 	total += cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
@@ -684,7 +684,7 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	wc = linitial(q->windowClause);
 	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
 	{
-		if (!agg_index_complete(ix) || !sift_v6_format()->owns_rel(ix->indexoid, false) || wc->orderClause == NIL)
+		if (!agg_index_complete(ix) || !sift_v6_rel_ordered(ix->indexoid, false) || wc->orderClause == NIL)
 			continue;
 		for (WinPartMode mode = WIN_EXACT; mode <= WIN_REGROUP; mode++)
 			if (window_try(root, input_rel, output_rel, ix, wc, mode))
@@ -706,7 +706,7 @@ distinct_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 		List	   *rest = list_copy_tail(q->sortClause, nd);
 		List	   *keys = list_copy_head(q->sortClause, nd);
 
-		if (!agg_index_complete(ix) || !sift_v6_format()->owns_rel(ix->indexoid, false) || !vars_of(&p, keys, false, &p.part))
+		if (!agg_index_complete(ix) || !sift_v6_rel_ordered(ix->indexoid, false) || !vars_of(&p, keys, false, &p.part))
 			continue;
 		if (rest != NIL && !vars_of(&p, rest, false, &p.ord))
 		{
@@ -905,7 +905,7 @@ window_run(WindowState *st, EState *estate)
 		return;
 	}
 	st->carry = st->spec->winx != NULL ? NULL : sift_win_carry_open(st->out.cx, &in, st->attvar, st->nattrs, (uint64) work_mem * 1024 / 4);
-	st->src = sift_v6_format()->open(estate, &in, st->quals == NIL ? NULL : &quals, !st->spec->regroup);
+	st->src = sift_v6_rel_open(estate, &in, st->quals == NIL ? NULL : &quals, !st->spec->regroup);
 	if (st->spec->regroup)
 		st->src = sift_win_regroup_over(st->out.cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
 	if (st->spec->partsort)

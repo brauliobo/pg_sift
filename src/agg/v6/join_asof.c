@@ -182,7 +182,7 @@ sorted_input(SiftV6Input *in, const Idiom *id)
 		return false;
 	atts[0] = in->col[ks].attno;
 	atts[1] = in->col[ts].attno;
-	return sift_v6_format()->sorted_by(in->indexoid, atts, 2);
+	return sift_v6_rel_sorted_by(in->indexoid, atts, 2);
 }
 
 static bool
@@ -191,7 +191,7 @@ sorted_table(const RangeTblEntry *rte, const Idiom *id)
 	SiftV6Input in;
 	Relation	tbl;
 
-	if (!sift_v6_format()->owns_rel(rte->relid, true))
+	if (!sift_v6_rel_ordered(rte->relid, true))
 		return false;
 	tbl = table_open(rte->relid, AccessShareLock);
 	sift_v6_input_init_table(&in, tbl);
@@ -204,7 +204,7 @@ sorted_index(const IndexOptInfo *ix, const Idiom *id)
 {
 	SiftV6Input in;
 
-	if (ix->hypothetical || ix->indpred != NIL || !sift_v6_format()->owns_rel(ix->indexoid, false))
+	if (ix->hypothetical || ix->indpred != NIL || !sift_v6_rel_ordered(ix->indexoid, false))
 		return false;
 	sift_v6_input_init_info(&in, ix);
 	return sorted_input(&in, id);
@@ -568,7 +568,7 @@ merge_open(V6Asof *st, EState *estate)
 	m.feed->kslot = sift_v6_input_add_var(&in, kvar);
 	m.feed->tslot = sift_v6_input_add_var(&in, tvar);
 	SIFT_INVARIANT(m.feed->kslot >= 0 && m.feed->tslot >= 0, "the asof join of relation %u does not read its keys", st->indexoid);
-	m.feed->src = sift_v6_format()->open(estate, &in, NULL, true);
+	m.feed->src = sift_v6_rel_open(estate, &in, NULL, true);
 	m.stream = sift_asof_open(st->out.cx, st->spec, dim_next, m.feed);
 	return m;
 }
