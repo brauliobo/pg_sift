@@ -75,6 +75,8 @@ extern void sift_v6_input_init_info(SiftV6Input *in, const IndexOptInfo *ix);
 extern void sift_v6_input_init_rel(SiftV6Input *in, Relation index);
 /* Starts an input over a sift_table, whose columns are its attributes */
 extern void sift_v6_input_init_table(SiftV6Input *in, Relation tbl);
+/* The attribute of the relation that column col (1-based) of the input holds */
+extern int sift_v6_input_attno(const SiftV6Input *in, int col);
 /* the program reads the PARAM_EXEC values of estate when it is compiled: a correlated scan compiles again when it is rescanned */
 extern void sift_v6_input_bind(SiftV6Input *in, EState *estate);
 /* Adds the column of the index that holds the table column of v (its slot, -1 when no column of the index does, the type does not decode, or the format does not hold it) */

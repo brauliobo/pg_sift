@@ -282,7 +282,7 @@ tlist_pos(const List *tlist, const SiftV6Input *in, int col)
 
 	foreach_node(TargetEntry, te, (List *) tlist)
 	{
-		if (((Var *) te->expr)->varattno == in->keys[col - 1])
+		if (((Var *) te->expr)->varattno == sift_v6_input_attno(in, col))
 			return i;
 		i++;
 	}

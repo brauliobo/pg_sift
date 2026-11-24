@@ -102,6 +102,12 @@ input_col(const SiftV6Input *in, AttrNumber attno)
 	return -1;
 }
 
+int
+sift_v6_input_attno(const SiftV6Input *in, int col)
+{
+	return in->is_table ? col : in->keys[col - 1];
+}
+
 static int
 input_add(SiftV6Input *in, const Var *v, SiftV6InCol col)
 {
