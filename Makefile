@@ -178,6 +178,7 @@ TESTING_REGRESS += agg_v6_star_text
 TESTING_REGRESS += agg_v6_text_collation
 TESTING_REGRESS += agg_v6_text_phrase
 TESTING_REGRESS += agg_v6_topn_card_vexpr
+TESTING_REGRESS += agg_v6_topn_search_rows
 TESTING_REGRESS += agg_v6_topn_window_limits
 TESTING_REGRESS += agg_v6_tpch_exprs
 TESTING_REGRESS += agg_v6_zone_calendar
