@@ -7,7 +7,10 @@
 #include "postgres.h"
 
 #include "access/tableam.h"
+#include "access/stratnum.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_class_d.h"
+#include "commands/defrem.h"
 #include "catalog/pg_type_d.h"
 #include "executor/executor.h"
 #include "nodes/nodeFuncs.h"
@@ -18,6 +21,7 @@
 
 #include "agg/batch_source.h"
 #include "col/am.h"
+#include "col/source_fold.h"
 #include "col/v1/v1_reader.h"
 #include "col/v1/v1_store_ops.h"
 #include "core/compat.h"
@@ -139,6 +143,63 @@ describe_att(const SiftSrcLayout *lay, int att)
 	return a;
 }
 
+static Oid
+att_opfamily(Oid typid)
+{
+	const Oid	opc = OidIsValid(typid) ? GetDefaultOpClass(typid, BTREE_AM_OID) : InvalidOid;
+
+	return OidIsValid(opc) ? get_opclass_family(opc) : InvalidOid;
+}
+
+static uint8
+leaf_store(const SiftSrcLeaf *l)
+{
+	if (l->wide)
+		return SIFT_COLS_STR;
+	return l->vtype == SCV_F64 ? SIFT_COLS_F8 : l->vtype == SCV_CODE ? SIFT_COLS_STR : SIFT_COLS_INT;
+}
+
+static SiftColDef
+leaf_def(const SiftSrcLeaf *l)
+{
+	return (SiftColDef) {.id = l->id,.parent = l->parent,.kind = l->kind == SCL_SCALAR ? SIFT_COLK_SCALAR : SIFT_COLK_GROUP,.store = leaf_store(l),
+		.flags = l->lossy || l->astext ? SIFT_COLD_LOSSY : 0,.attno = l->attno,.path = l->path != NIL || l->arrhead ? "path" : "",.scale = l->scale};
+}
+
+/* The leaves of the layout as the leaf map the planner reads the columns by: an attribute is held by the leaves that name it, and a scan decodes it when it is the one plain leaf (leaf_class_ok) */
+static void
+leaf_map(const SiftSrcLayout *lay, SiftStoreSchema *out)
+{
+	SiftColSchema *sc = palloc0(sizeof(SiftColSchema));
+	int		   *first = palloc((out->natts + 1) * sizeof(int));
+	int		   *count = palloc0((out->natts + 1) * sizeof(int));
+	Oid		   *family = palloc0((out->natts + 1) * sizeof(Oid));
+	SiftCellKind *kinds = palloc(Max(lay->nleaves, 1) * sizeof(SiftCellKind));
+
+	sc->ncols = lay->nleaves;
+	sc->cols = palloc0(Max(lay->nleaves, 1) * sizeof(SiftColDef));
+	memset(first, -1, (out->natts + 1) * sizeof(int));
+	for (int i = 0; i < lay->nleaves; i++)
+	{
+		const SiftSrcLeaf *l = &lay->leaf[i];
+
+		sc->cols[i] = leaf_def(l);
+		kinds[i] = l->vtype == SCV_F64 ? SIFT_CELL_F8 : l->vtype == SCV_CODE ? SIFT_CELL_STR : SIFT_CELL_INT;
+		if (l->attno < 1 || l->attno > out->natts)
+			continue;
+		first[l->attno] = first[l->attno] < 0 ? i : first[l->attno];
+		count[l->attno]++;
+	}
+	for (int a = 1; a <= out->natts; a++)
+		family[a] = att_opfamily(out->atts[a - 1].typid);
+	out->leaves = sc;
+	out->att_first = first;
+	out->att_nleaves = count;
+	out->att_opfamily = family;
+	out->leaf_kinds = kinds;
+	out->leaf_hints = palloc0(Max(lay->nleaves, 1));
+}
+
 static bool
 v1_schema(Oid relid, bool is_table, SiftStoreSchema *out)
 {
@@ -151,6 +212,7 @@ v1_schema(Oid relid, bool is_table, SiftStoreSchema *out)
 		out->atts[a - 1] = describe_att(lay, a);
 		out->has_jsonb |= out->atts[a - 1].is_jsonb;
 	}
+	leaf_map(lay, out);
 	sift_v1_rel_close(&r);
 	return true;
 }
@@ -526,10 +588,32 @@ bind_columns(V1Src *s)
 	}
 }
 
-static SiftV6Source *
-open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftFilter *keep)
+/* A unit whose zone of an integer column lies wholly outside the bounds the program puts on it is not read; the program still tests every row of the units that are */
+static void
+prune_begin(V1Src *s, const SiftV1Range *range)
 {
-	MemoryContext cx = sift_mem_allocset_create(estate->es_query_cxt, "sift v1 source");
+	const uint32 nsb = s->rd->nsb(s->src);
+	SiftSrcBound bound[SIFT_SRC_MAX_BOUNDS];
+	SiftSrcPrune *prune = palloc0(SIFT_SRC_MAX_BOUNDS * sizeof(SiftSrcPrune));
+	const int	nb = s->quals != NULL ? sift_srcfold_bounds(s->quals, bound) : 0;
+	int			np = 0;
+
+	for (int i = 0; i < nb; i++)
+	{
+		const SiftSrcLeaf *l = s->col_leaf[bound[i].slot];
+
+		if (l == NULL || l->wide || (l->vtype != SCV_I32 && l->vtype != SCV_I64))
+			continue;
+		prune[np++] = (SiftSrcPrune) {.leaf = l->id,.lo = bound[i].has_lo ? bound[i].lo : PG_INT64_MIN,.hi = bound[i].has_hi ? bound[i].hi : PG_INT64_MAX};
+	}
+	s->rd->begin(s->src, range ? range->sb_lo : 0, range ? Min(range->sb_hi, nsb) : nsb, prune, np);
+}
+
+SiftV6Source *
+sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftV1Range *range,
+					const SiftFilter *keep)
+{
+	MemoryContext cx = sift_mem_allocset_create(parent, "sift v1 source");
 	V1Src	   *s = MemoryContextAllocZero(cx, sizeof(V1Src));
 	MemoryContext old = MemoryContextSwitchTo(cx);
 
@@ -537,10 +621,10 @@ open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, con
 	s->unit_cx = sift_mem_allocset_create(cx, "sift v1 source unit");
 	s->batch_cx = sift_mem_allocset_create(cx, "sift v1 source batch");
 	s->in = *in;
-	s->snap = estate->es_snapshot;
+	s->snap = snap;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
 	s->rd = reader_of(in->is_table);
-	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, NULL);
+	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);
 	s->lay = s->rd->source_layout(s->src);
 	bind_columns(s);
 	s->fslot = table_slot_create(s->rels.heap, NULL);
@@ -551,7 +635,7 @@ open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, con
 	s->vctx = sift_vexpr_ctx_new(cx);
 	if (keep != NULL)
 		s->rd->select(s->src, keep);
-	s->rd->begin(s->src, 0, s->rd->nsb(s->src), NULL, 0);
+	prune_begin(s, range);
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = v1_fetch,.close = v1_close};
 	return &s->base;
@@ -561,7 +645,7 @@ static SiftV6Source *
 v1_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted)
 {
 	SIFT_INVARIANT(!sorted, "Format 1 sorts nothing: a sorted source of relation %u was asked for", in->indexoid);
-	return open_source(estate, in, quals, NULL);
+	return sift_v1_source_open(estate->es_query_cxt, estate->es_snapshot, in, quals, NULL, NULL);
 }
 
 static const SiftStoreOps v1_store_ops = {
@@ -570,7 +654,10 @@ static const SiftStoreOps v1_store_ops = {
 	.schema = v1_schema,
 	.stats = v1_stats,
 	.open = v1_open,
-	.leaf_holds = v1_leaf_holds
+	.leaf_holds = v1_leaf_holds,
+	.zone = &sift_v1_zone_ops,
+	.dict = &sift_v1_dict_ops,
+	.par = &sift_v1_par_ops
 };
 
 void
