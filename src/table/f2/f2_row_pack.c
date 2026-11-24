@@ -5,6 +5,7 @@
 
 #include "col/codec.h"
 #include "col/compress.h"
+#include "core/catname.h"
 #include "core/damage.h"
 #include "core/memtrack.h"
 #include "table/f2/f2_row_pack.h"
@@ -511,7 +512,7 @@ section_bytes(const SiftPart *part, uint16 tag)
 Datum
 sift_test_f2_row_pack_parts(PG_FUNCTION_ARGS)
 {
-	Relation	rel = relation_open(PG_GETARG_OID(0), AccessShareLock);
+	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift row pack parts");
 	const SiftPlanSnapshot *v = sift_plan_cache_get(rel, cx);
 	StringInfoData out;
