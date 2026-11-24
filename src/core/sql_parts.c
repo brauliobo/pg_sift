@@ -14,6 +14,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/col_meta.h"
+#include "col/f2/delvec_delta.h"
 #include "col/f2/part_format.h"
 #include "col/v1/seg.h"
 #include "col/v1/wbuf.h"
@@ -116,7 +117,7 @@ parts_f2(PartRow *row, Relation rel)
 			row_set(row, PC_PART_GEN, Int64GetDatum((int64) pd[p].part_gen));
 			row_set(row, PC_LEVEL, Int16GetDatum((int16) pd[p].level));
 			row_set(row, PC_ROWS, Int64GetDatum((int64) pd[p].nrows));
-			row_set(row, PC_DEAD_ROWS, Int64GetDatum((int64) pd[p].ndead));
+			row_set(row, PC_DEAD_ROWS, Int64GetDatum((int64) sift_dv_part_ndead(rel, &pd[p])));
 			row_set(row, PC_BYTES, Int64GetDatum((int64) pd[p].nbytes));
 			row_set(row, PC_GRANULES, Int32GetDatum((int32) part->hdr.ngranules));
 			row_set(row, PC_EXTENTS, Int32GetDatum((int32) part->hdr.total_extents));

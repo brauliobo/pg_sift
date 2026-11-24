@@ -327,6 +327,7 @@ TESTING_REGRESS += col_overlay_cap
 TESTING_REGRESS += col_overlay_merge
 TESTING_REGRESS += col_overlay_unordered
 TESTING_REGRESS += col_partition_adopt
+TESTING_REGRESS += col_parts_dead_delta
 TESTING_REGRESS += col_paths_auto
 TESTING_REGRESS += col_paths_nested
 TESTING_REGRESS += col_peers_dead_scan

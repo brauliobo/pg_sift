@@ -111,6 +111,9 @@ extern uint32 sift_dv_stream_len(Relation rel, BlockNumber dv_blk);
 /* The words of the page of the vector that a delta changes (its length, the dead rows, the greatest deleter, the LSN of the page): what a cache of what the vector means compares */
 extern SiftChainStamp sift_dv_stamp(Relation rel, BlockNumber dv_blk);
 
+/* The dead rows of a part: its vector's count, which the marks of a delta tail are in and the descriptor does not hold until the vector is rewritten */
+extern uint64 sift_dv_part_ndead(Relation rel, const SiftPartDesc *d);
+
 /* Folds the delta tails of the parts of the partition into whole vectors (one manifest commit) before a compaction counts the dead rows: how many were folded */
 extern int	sift_dv_consolidate(Relation rel, uint64 part_id, const uint8 *key_lo);
 

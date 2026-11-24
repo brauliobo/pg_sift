@@ -886,6 +886,12 @@ sift_dv_stamp(Relation rel, BlockNumber dv_blk)
 	return c;
 }
 
+uint64
+sift_dv_part_ndead(Relation rel, const SiftPartDesc *d)
+{
+	return d->dv_blk != InvalidBlockNumber && d->dv_nblocks == 1 ? sift_dv_stamp(rel, d->dv_blk).count : d->ndead;
+}
+
 #define SIFT_DV_CONSOLIDATE_TAIL_BYTES	1024
 
 static bool
