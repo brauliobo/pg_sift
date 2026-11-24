@@ -11,6 +11,7 @@
 #include "agg/v6/par/derive.h"
 #include "agg/v6/par/distinct.h"
 #include "agg/v6/par/group.h"
+#include "agg/v6/par/qual.h"
 #include "agg/v6/par/rows.h"
 #include "agg/v6/par/run.h"
 #include "core/par/pin.h"
@@ -39,6 +40,8 @@ typedef struct ParShape
 	bool		ktext[SIFT_PAR_GROUP_MAX_KEYS];	/* the key is a text, else an integer */
 	int			nchk;
 	int			chk[PAR_LEAVES_MAX];	/* the leaves in which a NULL is not for a thread: the keys, and the columns of the sums and counts (distinct) */
+	int			nq;
+	ParQual		q[PAR_QUALS_MAX];	/* the quals no scan key says, which a thread runs on the leaves it decoded */
 	SiftParRowsSpec rs;			/* rows */
 	int			rkey_at[SIFT_PAR_ROWS_MAX_KEYS];
 } ParShape;
@@ -129,6 +132,10 @@ typedef struct ParLoad
 
 /* false, with err filled, when the granule is not for this thread (SIFT_ERR_ARENA_FULL, SIFT_ERR_SERIAL) or cannot be decoded; ld->nact is 0 when no row passes (no leaf is decoded) */
 extern bool par_load(const ParShape *sh, const SiftPinSlot *sl, SiftArena *scratch, SiftErr *err, ParLoad *ld);
+
+/* qual.c: whether the quals of the spec that no scan key says are ones a thread runs (added to sh, with their leaves), and the rows of ld they leave */
+extern bool par_quals_of(const SiftV6Spec *sp, const int *first, ParShape *sh);
+extern bool par_quals_apply(const ParShape *sh, ParLoad *ld, SiftArena *scratch, SiftErr *err);
 extern bool par_arena_full(SiftArena *a, SiftErr *err);
 extern bool par_serial(SiftErr *err, const char *why);
 

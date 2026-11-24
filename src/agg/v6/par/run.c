@@ -120,12 +120,12 @@ par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col
 static bool
 shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 {
-	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid) || sift_v6_spec_pg_reads(spec))
+	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid) || spec->pgexpr != NIL)
 		return false;
 	for (int k = 0; k < lengthof(kinds); k++)
 	{
 		*sh = (ParShape) {.kind = kinds[k],.table = spec->is_table};
-		if (kinds[k]->shape(spec, first, sh))
+		if (kinds[k]->shape(spec, first, sh) && par_quals_of(spec, first, sh))
 			return true;
 	}
 	return false;
@@ -196,7 +196,7 @@ par_load(const ParShape *sh, const SiftPinSlot *sl, SiftArena *scratch, SiftErr 
 	for (int i = 0; i < sh->nleaves; i++)
 		if (!sift_pin_slot_view_a(sl, scratch, err, memo, sh->leaf[i], sh->codes[i], rows, nrows, &ld->cv[i]))
 			return false;
-	return true;
+	return par_quals_apply(sh, ld, scratch, err);
 }
 
 static bool
