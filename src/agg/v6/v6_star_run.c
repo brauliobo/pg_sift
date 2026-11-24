@@ -140,9 +140,11 @@ put_cell(SiftStarCls cls, Oid typid, Datum v, bool isnull, int64 *i, const char 
 }
 
 static void
-shape_of(const SiftV6XDim *xd, uint64 budget, SiftStarShape *sh)
+shape_of(const SiftV6Ext *x, int d, uint64 budget, SiftStarShape *sh)
 {
-	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget,.lo_inc = true};
+	const SiftV6XDim *xd = &x->dim[d];
+
+	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget,.lo_inc = true,.on = x->on[d] != NIL};
 	for (int k = 0; k < xd->nkeys; k++)
 		sh->kcls[k] = xd->mode == SV6J_RANGE_SMALL ? SSC_INT : cls_of_type(xd->ktype[k]);
 	for (int c = 0; c < xd->npay; c++)
@@ -220,7 +222,7 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 	TupleTableSlot *slot;
 	bool		fits = true;
 
-	shape_of(&r->x->dim[d], r->budget, &sh);
+	shape_of(r->x, d, r->budget, &sh);
 	if (r->read[d])
 	{
 		MemoryContext old = MemoryContextSwitchTo(r->qcx);
@@ -298,7 +300,7 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 
 		if (!keep && r->nparts[d] == 1)
 		{
-			shape_of(&r->x->dim[d], r->budget, &sh);
+			shape_of(r->x, d, r->budget, &sh);
 			share = sift_v6_shared_dim_open(r->ps[d], &r->x->dim[d], &sh, &hit);
 		}
 		if (hit != NULL)

@@ -87,11 +87,12 @@ INSERT INTO stmts VALUES
 (24, 'SELECT p.label, count(*) FROM o JOIN p ON o.placed >= lower(p.r) AND o.placed < upper(p.r) GROUP BY p.label'),
 (25, 'SELECT count(*) FROM o WHERE EXISTS (SELECT 1 FROM p WHERE o.placed <@ p.r)'),
 (26, 'SELECT i.category, count(*) FROM o JOIN p ON o.placed <@ p.r CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) GROUP BY i.category'),
--- shapes of the same family that the node leaves to PostgreSQL's plan: sub-plans, lookups per row, expression keys, the elements of an array
+-- an expression key is matched by the pairs of the rows of the dimension
+(30, 'SELECT w.c, count(*) FROM o JOIN w ON w.c = lower(''X'' || (o.tenant % 4)) GROUP BY w.c'),
+-- shapes of the same family that the node leaves to PostgreSQL's plan: sub-plans, lookups per row, the elements of an array
 (27, 'SELECT count(*) FROM o WHERE (tenant, total) NOT IN (SELECT a, b FROM w WHERE a IS NOT NULL)'),
 (28, 'SELECT count(*) FROM o WHERE tenant = ANY (ARRAY(SELECT a FROM w WHERE c = ''x1''))'),
 (29, 'SELECT w2.c, count(*) FROM o LEFT JOIN LATERAL (SELECT c FROM w WHERE w.id = o.tenant LIMIT 1) w2 ON true GROUP BY w2.c'),
-(30, 'SELECT w.c, count(*) FROM o JOIN w ON w.c = lower(''X'' || (o.tenant % 4)) GROUP BY w.c'),
 (31, 'SELECT i.category, i.qty, count(*) FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE i.qty > 5 OR i.category = ''c1'' GROUP BY i.category, i.qty'),
 (32, 'SELECT count(*) FROM o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, qty int) JOIN w ON w.b = i.qty WHERE i.category = ''c2'')');
 

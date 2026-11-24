@@ -116,17 +116,23 @@ make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 }
 
 /* the part a relation has in the join: the fact table, the element, the index of its dimension, or none */
+static int
+role_of_rel(const SiftV6JoinShape *sh, Index relid)
+{
+	if (relid == sh->fact->relid)
+		return ROLE_FACT;
+	if (sh->elem != NULL && relid == sh->elem->relid)
+		return ROLE_ELEM;
+	for (int i = 0; i < sh->nd; i++)
+		if (bms_is_member(relid, sh->dim[i].rels))
+			return i;
+	return ROLE_NONE;
+}
+
 int
 sift_v6_join_role(const SiftV6JoinShape *sh, const Var *v)
 {
-	if (v->varno == sh->fact->relid)
-		return ROLE_FACT;
-	if (sh->elem != NULL && v->varno == sh->elem->relid)
-		return ROLE_ELEM;
-	for (int i = 0; i < sh->nd; i++)
-		if (bms_is_member(v->varno, sh->dim[i].rels))
-			return i;
-	return ROLE_NONE;
+	return role_of_rel(sh, v->varno);
 }
 
 /* the part of the latest relation the columns of e are of; ROLE_NONE when it reads a column the join does not know, or none */
@@ -211,6 +217,22 @@ within_one_dim(const SiftV6JoinShape *sh, Relids rels)
 	return false;
 }
 
+/* a class with an expression of the columns of a dimension (lower(d.t) = f.g) is not a key: its equalities run on the pairs, which is what an inner join of the relations says */
+static bool
+computed_class_ok(const SiftV6JoinShape *sh, Relids rels)
+{
+	int			r = -1;
+
+	while ((r = bms_next_member(rels, r)) >= 0)
+	{
+		const int	role = role_of_rel(sh, r);
+
+		if (role == ROLE_NONE || (role >= 0 && sh->dim[role].mode != SV6J_INNER_EQUI))
+			return false;
+	}
+	return true;
+}
+
 /* a class of equal columns and expressions that the planner made of the inner and semi joins: the members that are dimensions are joined to the member before them, the column or expression of the fact table, of the element or of the first dimension */
 static bool
 equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
@@ -247,7 +269,12 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		if (bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
 			continue;
 		if (computed_dim || probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)))
-			return false;
+		{
+			if (!computed_class_ok(sh, rels))
+				return false;
+			sh->resid = list_concat_unique_ptr(sh->resid, ec->ec_sources);
+			continue;
+		}
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
 			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
@@ -315,6 +342,32 @@ place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
 	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_key(&sh->dim[d], probe, key);
 }
 
+/* the dimension an ON clause belongs to: the last of the dimensions it names, which is the outer join it is the clause of; -1 when no dimension of an outer join */
+static int
+on_dim(const SiftV6JoinShape *sh, Relids rels)
+{
+	int			last = -1;
+
+	for (int i = 0; i < sh->nd; i++)
+		if (bms_overlap(sh->dim[i].rels, rels))
+			last = i;
+	if (last < 0 || (sh->dim[last].mode != SV6J_LEFT_EQUI && !sift_star_preserves_dim(sh->dim[last].mode)))
+		return -1;
+	return last;
+}
+
+/* a condition of the ON clause of a LEFT, RIGHT or FULL join that no key says: it decides which pairs match, so it runs on them before the join keeps or completes the rows */
+static bool
+place_on(SiftV6JoinShape *sh, RestrictInfo *ri)
+{
+	const int	d = on_dim(sh, ri->required_relids);
+
+	if (d < 0)
+		return false;
+	sh->dim[d].on = lappend(sh->dim[d].on, ri);
+	return true;
+}
+
 /* where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place for it */
 static bool
 place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
@@ -331,7 +384,7 @@ place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 		(place_key(sh, ri, linitial(op->args), lsecond(op->args)) || place_key(sh, ri, lsecond(op->args), linitial(op->args))))
 		return true;
 	if (!ri->is_pushed_down)
-		return false;
+		return place_on(sh, ri);
 	sh->resid = lappend(sh->resid, ri);
 	return true;
 }
@@ -373,7 +426,7 @@ needs_lookup(const SiftV6JoinShape *sh)
 	{
 		const SiftV6JoinDim *d = &sh->dim[i];
 
-		if (d->lateral)
+		if (d->lateral || d->nkeys == 0 || d->on != NIL)
 			return true;
 		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || d->rel->rtekind != RTE_RELATION))
 			return true;
@@ -392,7 +445,21 @@ preserved_ok(const SiftV6JoinShape *sh)
 {
 	for (int i = 0; i < sh->nd; i++)
 		if (sift_star_preserves_dim(sh->dim[i].mode))
-			return sh->nd == 1 && sh->elem == NULL && sh->resid == NIL;
+			return sh->nd == 1 && sh->elem == NULL;
+	return true;
+}
+
+/* a dimension no key joins, or one with a condition on its pairs, is read by the node's own pairs of (row, dimension row): not with the rows of an unnest, and a dimension of a semi or anti join is matched by its keys */
+static bool
+pairs_ok(const SiftV6JoinShape *sh)
+{
+	for (int i = 0; i < sh->nd; i++)
+	{
+		const SiftV6JoinDim *d = &sh->dim[i];
+
+		if ((d->nkeys == 0 || d->on != NIL) && (sh->elem != NULL || d->mode == SV6J_SEMI_EQUI || d->mode == SV6J_ANTI_EQUI || d->mode == SV6J_RANGE_SMALL))
+			return false;
+	}
 	return true;
 }
 
@@ -402,10 +469,7 @@ shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 	if (!make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
 		!sift_v6_exists_main_unique(root, sh))
 		return false;
-	for (int i = 0; i < sh->nd; i++)
-		if (sh->dim[i].nkeys == 0)
-			return false;
-	return needs_lookup(sh) && preserved_ok(sh);
+	return pairs_ok(sh) && needs_lookup(sh) && preserved_ok(sh);
 }
 
 static bool
@@ -570,16 +634,27 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 }
 
 static bool
-seed_resid(const SiftV6JoinShape *sh, ResidCtx *rc)
+seed_conditions(ResidCtx *rc, const List *quals, List **out)
 {
-	foreach_node(RestrictInfo, ri, sh->resid)
+	foreach_node(RestrictInfo, ri, quals)
 	{
 		if (contain_volatile_functions((Node *) ri->clause))
 			return false;
-		rc->x->resid = lappend(rc->x->resid, resid_var((Node *) ri->clause, rc));
+		*out = lappend(*out, resid_var((Node *) ri->clause, rc));
 		if (!rc->ok)
 			return false;
 	}
+	return true;
+}
+
+static bool
+seed_resid(const SiftV6JoinShape *sh, ResidCtx *rc)
+{
+	if (!seed_conditions(rc, sh->resid, &rc->x->resid))
+		return false;
+	for (int d = 0; d < sh->nd; d++)
+		if (!seed_conditions(rc, sh->dim[d].on, &rc->x->on[d]))
+			return false;
 	return true;
 }
 
@@ -595,6 +670,10 @@ lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startu
 
 		*startup += read;
 		total += read + sh->dim[d].path->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
+		if (sh->dim[d].nkeys == 0)
+			total += sh->fact->rows * sh->dim[d].path->rows * cpu_operator_cost * 2.0;
+		if (sh->dim[d].on != NIL || sh->resid != NIL)
+			total += (sh->dim[d].nkeys == 0 ? sh->fact->rows * sh->dim[d].path->rows : input_rel->rows) * cpu_operator_cost * 4.0;
 	}
 	return total;
 }

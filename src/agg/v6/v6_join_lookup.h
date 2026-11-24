@@ -39,10 +39,15 @@ extern void sift_v6_shared_dim_abort(SiftV6SharedDim *h);
 
 typedef struct SiftV6Resid SiftV6Resid;
 
-/* The evaluator of x->resid, in cx; NULL when the join has no such condition */
+/* The conditions a batch is tested with: those of the whole join (SIFT_V6_RESID_JOIN, x->resid) and those of the ON clause of dimension d (x->on[d]) */
+#define SIFT_V6_RESID_JOIN	(-1)
+
+/* The evaluators of x->resid and x->on, in cx; NULL when the join has no such condition */
 extern SiftV6Resid *sift_v6_resid_new(MemoryContext cx, const SiftV6Ext *x);
 extern void sift_v6_resid_free(SiftV6Resid *r);
-/* cols[i] is the vector of x->rcol[i]; clears the rows of bs the conditions do not keep (NULL is not true) */
-extern void sift_v6_resid_filter(SiftV6Resid *r, const SiftVec *const *cols, SiftBatchSel *bs);
+/* whether there are conditions of that kind */
+extern bool sift_v6_resid_has(const SiftV6Resid *r, int dim);
+/* cols[i] is the vector of x->rcol[i], read only for the columns the conditions name; clears the rows of bs the conditions do not keep (NULL is not true) */
+extern void sift_v6_resid_filter(SiftV6Resid *r, int dim, const SiftVec *const *cols, SiftBatchSel *bs);
 
 #endif							/* SIFT_AGG_V6_JOIN_LOOKUP_H */

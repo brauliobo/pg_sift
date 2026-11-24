@@ -51,9 +51,16 @@ is_range(const SiftStarShape *sh)
 }
 
 static inline bool
-is_left(const SiftStarShape *sh)
+keeps_fact(const SiftStarShape *sh)
 {
 	return sift_star_keeps_fact(sh->mode) || (is_range(sh) && sh->left);
+}
+
+/* an unmatched fact row is one pair with no dimension row: not when a condition of the pairs decides, which also needs the matched rows' pairs */
+static inline bool
+is_left(const SiftStarShape *sh)
+{
+	return !sh->on && keeps_fact(sh);
 }
 
 void
@@ -158,7 +165,7 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 			d->hull_max = Max(d->hull_max, row->hi);
 		}
 	}
-	else if (sh->kcls[0] == SSC_INT && !row->key_null[0])
+	else if (sh->nkeys > 0 && sh->kcls[0] == SSC_INT && !row->key_null[0])
 	{
 		d->hull_min = Min(d->hull_min, row->key_i[0]);
 		d->hull_max = Max(d->hull_max, row->key_i[0]);
@@ -306,7 +313,7 @@ sift_star_dim_finish(SiftStarDim *d)
 	d->unique_keys = d->ndistinct == inserted;
 	if (sift_star_preserves_dim(d->shape.mode))
 		d->matched = palloc0(((size_t) d->nrows + 63) / 64 * sizeof(uint64));
-	if (d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
+	if (d->shape.nkeys > 0 && d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
 	{
 		d->exact = palloc(Max(d->nrows, 1) * sizeof(int64));
 		for (uint32 i = 0; i < d->nrows; i++)
@@ -720,7 +727,7 @@ sift_star_push(const SiftStarDim *d)
 	SiftStarPush push = {.kind = SSP_NONE};
 	bool		any;
 
-	if (is_left(sh) || sh->mode == SV6J_ANTI_EQUI)
+	if (keeps_fact(sh) || sh->mode == SV6J_ANTI_EQUI || sh->nkeys == 0)
 		return push;
 	if (is_range(sh))
 	{

@@ -267,39 +267,108 @@ key_expr_vec(SiftV6Pipe *p, SiftV6KeyExpr *ke, SiftV6PipeBatch *b)
 	return &ke->out.vec;
 }
 
-/* a dimension with a key more than once: the pairs of (row, dimension row), a batch of them at a time, go on to the next dimension */
+/* the batch of the m pairs (idx[i], dim_row[i]) of dimension d: the columns of the fact side and the earlier dimensions follow their row of b, the payload of d is that of its row (0: NULL) */
+static SiftV6PipeBatch *
+pairs_batch(SiftV6Pipe *p, int d, const SiftV6PipeBatch *b, const uint32 *idx, const uint32 *dim_row, uint32 m)
+{
+	SiftV6PipeBatch *nb = level_of(p, d + 1);
+	const int	nown = p->pay_slot[d];
+
+	for (int s = 0; s < nown; s++)
+		if (b->vec[s].data != NULL)
+			sift_vec_gather(&nb->vec[s], nb->valid + (size_t) s * SIFT_VEC_WORDS, nb->data[s], &b->vec[s], idx, m);
+	gather_payload(p, d, nb, dim_row, m);
+	memset(nb->own.mask, 0, sizeof(nb->own.mask));
+	for (uint32 i = 0; i < m; i++)
+		nb->own.mask[i >> 6] |= UINT64CONST(1) << (i & 63);
+	nb->own.n_raw = nb->own.n_active = (uint16) m;
+	nb->own.all_active = true;
+	nb->own.has_sel = false;
+	return nb;
+}
+
+/* a dimension with a key more than once: the pairs of (row, dimension row), a batch of them at a time, go on to the next dimension and then to the groups */
 static void
 expand(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
 {
 	SiftStarCursor cur = {0};
 	uint32	   *idx = palloc(SIFT_VEC_LEN * sizeof(uint32));
-	const int	nown = p->pay_slot[d];
 
 	while (!sift_star_cursor_done(&cur, pr->n))
 	{
 		const uint32 m = sift_star_expand(p->dim[d], pr, NULL, &cur, p->fact_idx, p->dim_row, SIFT_VEC_LEN);
-		SiftV6PipeBatch *nb;
 
 		if (m == 0)
 			break;
 		if (p->dim[d]->matched != NULL)
 			sift_v6_lookup_mark(p->dim[d], p->dim_row, m);
-		nb = level_of(p, d + 1);
 		for (uint32 i = 0; i < m; i++)
 			idx[i] = p->fact_idx[i];
-		for (int s = 0; s < nown; s++)
-			if (b->vec[s].data != NULL)
-				sift_vec_gather(&nb->vec[s], nb->valid + (size_t) s * SIFT_VEC_WORDS, nb->data[s], &b->vec[s], idx, m);
-		gather_payload(p, d, nb, p->dim_row, m);
-		memset(nb->own.mask, 0, sizeof(nb->own.mask));
-		for (uint32 i = 0; i < m; i++)
-			nb->own.mask[i >> 6] |= UINT64CONST(1) << (i & 63);
-		nb->own.n_raw = nb->own.n_active = (uint16) m;
-		nb->own.all_active = true;
-		nb->own.has_sel = false;
-		stage(p, d + 1, nb);
+		stage(p, d + 1, pairs_batch(p, d, b, idx, p->dim_row, m));
 	}
 	pfree(idx);
+}
+
+/* the dimension rows of the pairs a condition kept, which a RIGHT or FULL join counts as matched; the others are not */
+static void
+mark_kept(SiftV6Pipe *p, int d, const SiftV6PipeBatch *nb, const uint32 *dim_row, uint32 m)
+{
+	for (uint32 i = 0; i < m; i++)
+		p->match[i] = (nb->own.mask[i >> 6] >> (i & 63)) & 1 ? dim_row[i] : 0;
+	sift_v6_lookup_mark(p->dim[d], p->match, m);
+}
+
+/* the rows of b no pair of a condition kept, for a LEFT or FULL join: each is one pair with no dimension row */
+static void
+keep_unmatched(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr, const uint8 *hit)
+{
+	uint32	   *idx = palloc(SIFT_VEC_LEN * sizeof(uint32));
+	uint32	   *none = palloc0(SIFT_VEC_LEN * sizeof(uint32));
+	uint32		m = 0;
+
+	for (uint32 r = 0; r < pr->n; r++)
+		if (((pr->active[r >> 6] >> (r & 63)) & 1) && !hit[r])
+			idx[m++] = r;
+	if (m > 0)
+		stage(p, d + 1, pairs_batch(p, d, b, idx, none, m));
+	pfree(idx);
+	pfree(none);
+}
+
+/* a dimension with a condition on its pairs (the ON clause of an outer join that no key says): the pairs the condition keeps are the matches; a fact row of a LEFT or FULL join with none stays, with no dimension row */
+static void
+expand_on(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
+{
+	const SiftV6JoinMode mode = p->dim[d]->shape.mode;
+	SiftStarCursor cur = {0};
+	uint32	   *idx = palloc(SIFT_VEC_LEN * sizeof(uint32));
+	uint8	   *hit = palloc0(pr->n);
+
+	while (!sift_star_cursor_done(&cur, pr->n))
+	{
+		const uint32 m = sift_star_expand(p->dim[d], pr, NULL, &cur, p->fact_idx, p->dim_row, SIFT_VEC_LEN);
+		const SiftVec *rv[SIFT_V6_RESID_COLS];
+		SiftV6PipeBatch *nb;
+
+		if (m == 0)
+			break;
+		for (uint32 i = 0; i < m; i++)
+			idx[i] = p->fact_idx[i];
+		nb = pairs_batch(p, d, b, idx, p->dim_row, m);
+		for (int i = 0; i < p->spec->ext->nrcol; i++)
+			rv[i] = &nb->vec[p->rslot[i]];
+		sift_v6_resid_filter(p->resid, d, rv, &nb->own);
+		count_active(&nb->own);
+		for (uint32 i = 0; i < m; i++)
+			hit[idx[i]] |= (nb->own.mask[i >> 6] >> (i & 63)) & 1;
+		if (p->dim[d]->matched != NULL)
+			mark_kept(p, d, nb, p->dim_row, m);
+		stage(p, d + 1, nb);
+	}
+	if (sift_star_keeps_fact(mode))
+		keep_unmatched(p, d, b, pr, hit);
+	pfree(idx);
+	pfree(hit);
 }
 
 static void
@@ -313,13 +382,13 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 		return;
 	if (d == p->ndims)
 	{
-		if (p->resid != NULL)
+		if (sift_v6_resid_has(p->resid, SIFT_V6_RESID_JOIN))
 		{
 			const SiftVec *rv[SIFT_V6_RESID_COLS];
 
 			for (int i = 0; i < p->spec->ext->nrcol; i++)
 				rv[i] = &b->vec[p->rslot[i]];
-			sift_v6_resid_filter(p->resid, rv, bs);
+			sift_v6_resid_filter(p->resid, SIFT_V6_RESID_JOIN, rv, bs);
 			count_active(bs);
 			if (bs->n_active == 0)
 				return;
@@ -342,6 +411,11 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 		restrict_part(p, d, b, &pr);
 		if (bs->n_active == 0)
 			return;
+	}
+	if (sift_v6_resid_has(p->resid, d))
+	{
+		expand_on(p, d, b, &pr);
+		return;
 	}
 	if (!dim->unique_keys && dim->shape.mode != SV6J_SEMI_EQUI && dim->shape.mode != SV6J_ANTI_EQUI)
 	{

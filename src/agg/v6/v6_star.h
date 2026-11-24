@@ -80,6 +80,7 @@ typedef struct SiftStarShape
 	int			npay;
 	SiftStarCls pcls[SIFT_STAR_MAX_PAY];
 	bool		left;			/* SV6J_RANGE_SMALL: a left join (a fact row of no period is kept); the equi joins say it by their mode */
+	bool		on;				/* a condition of the join runs on the pairs (v6_join_lookup.h): sift_star_expand gives the pairs of the keys, whether or not a fact row has one, and the caller keeps the fact rows no pair passes */
 	bool		lo_inc;			/* SV6J_RANGE_SMALL: the bounds are in the period (BETWEEN) or not (< or >) */
 	bool		hi_inc;
 	uint64		budget;			/* the bytes the table may take: the work_mem a join may use; adding past it fails */

@@ -40,9 +40,29 @@ struct SiftV6Resid
 	const SiftV6Col *col;
 	EState	   *estate;
 	ExprContext *econtext;
-	ExprState  *qual;
+	ExprState  *qual[1 + SIFT_STAR_MAX_DIMS];	/* [0] the conditions of the join, [1 + d] those of the ON clause of dimension d; NULL for none */
+	Bitmapset  *used[1 + SIFT_STAR_MAX_DIMS];	/* the columns each reads (0-based) */
 	TupleTableSlot *slot;
 };
+
+static Bitmapset *
+columns_of(List *quals)
+{
+	Bitmapset  *vars = NULL,
+			   *cols = NULL;
+	int			a = -1;
+
+	pull_varattnos((Node *) quals, 1, &vars);
+	while ((a = bms_next_member(vars, a)) >= 0)
+		cols = bms_add_member(cols, a + FirstLowInvalidHeapAttributeNumber - 1);
+	return cols;
+}
+
+bool
+sift_v6_resid_has(const SiftV6Resid *r, int dim)
+{
+	return r != NULL && r->qual[1 + dim] != NULL;
+}
 
 SiftV6Resid *
 sift_v6_resid_new(MemoryContext cx, const SiftV6Ext *x)
@@ -50,8 +70,11 @@ sift_v6_resid_new(MemoryContext cx, const SiftV6Ext *x)
 	SiftV6Resid *r;
 	MemoryContext old;
 	TupleDesc	desc;
+	bool		any = x != NULL && x->resid != NIL;
 
-	if (x == NULL || x->resid == NIL)
+	for (int d = 0; x != NULL && d < x->ndims; d++)
+		any |= x->on[d] != NIL;
+	if (!any)
 		return NULL;
 	r = MemoryContextAllocZero(cx, sizeof(SiftV6Resid));
 	r->ncols = x->nrcol;
@@ -59,7 +82,17 @@ sift_v6_resid_new(MemoryContext cx, const SiftV6Ext *x)
 	old = MemoryContextSwitchTo(cx);
 	r->estate = CreateExecutorState();
 	MemoryContextSwitchTo(r->estate->es_query_cxt);
-	r->qual = ExecPrepareQual(x->resid, r->estate);
+	if (x->resid != NIL)
+	{
+		r->qual[0] = ExecPrepareQual(x->resid, r->estate);
+		r->used[0] = columns_of(x->resid);
+	}
+	for (int d = 0; d < x->ndims; d++)
+		if (x->on[d] != NIL)
+		{
+			r->qual[1 + d] = ExecPrepareQual(x->on[d], r->estate);
+			r->used[1 + d] = columns_of(x->on[d]);
+		}
 	r->econtext = CreateExprContext(r->estate);
 	desc = CreateTemplateTupleDesc(Max(r->ncols, 1));
 	for (int i = 0; i < r->ncols; i++)
@@ -117,25 +150,30 @@ cell_datum(const SiftVec *v, Oid typid, uint32 row)
 }
 
 void
-sift_v6_resid_filter(SiftV6Resid *r, const SiftVec *const *cols, SiftBatchSel *bs)
+sift_v6_resid_filter(SiftV6Resid *r, int dim, const SiftVec *const *cols, SiftBatchSel *bs)
 {
+	ExprState  *qual = r->qual[1 + dim];
+	const Bitmapset *used = r->used[1 + dim];
+
 	for (uint32 w = 0; w < (uint32) ((bs->n_raw + 63) / 64); w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
 		{
 			const uint32 row = w * 64 + (uint32) __builtin_ctzll(bits);
 			MemoryContext old;
 			bool		keep;
+			int			i = -1;
 
 			ResetExprContext(r->econtext);
 			old = MemoryContextSwitchTo(r->econtext->ecxt_per_tuple_memory);
 			ExecClearTuple(r->slot);
-			for (int i = 0; i < r->ncols; i++)
+			memset(r->slot->tts_isnull, true, r->ncols * sizeof(bool));
+			while ((i = bms_next_member(used, i)) >= 0)
 			{
 				r->slot->tts_isnull[i] = !cell_valid(cols[i], row);
 				r->slot->tts_values[i] = r->slot->tts_isnull[i] ? (Datum) 0 : cell_datum(cols[i], r->col[i].typid, row);
 			}
 			ExecStoreVirtualTuple(r->slot);
-			keep = ExecQual(r->qual, r->econtext);
+			keep = ExecQual(qual, r->econtext);
 			MemoryContextSwitchTo(old);
 			if (!keep)
 				bs->mask[w] &= ~(UINT64CONST(1) << (row & 63));
