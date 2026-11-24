@@ -319,7 +319,7 @@ osa_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 		{
 			uint32		g = ex->gid[b + k];
 
-			if (ok && !sift_colsrc_bit(ok, b + k))
+			if (ok && !sift_src_bit(ok, b + k))
 				continue;
 			if (own->i[g] == 0)
 				own->i[g] = ++o->nsid;

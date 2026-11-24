@@ -255,7 +255,7 @@ sift_aggpre_unit_dset(const SiftColUnit *unit, int cal, int col, int64 cell, Sif
 }
 
 bool
-sift_aggpre_run_info(const SiftAggSel *sel, const SiftSrcUnit *unit, const SiftColUnit *cu, int col, uint32 *nvals, uint32 *nnull, uint64 *id)
+sift_aggpre_run_info(const SiftSrcSel *sel, const SiftSrcUnit *unit, const SiftColUnit *cu, int col, uint32 *nvals, uint32 *nnull, uint64 *id)
 {
 	return !sel->compact && !sel->keep && unit->nrow == cu->nrows && sift_col_run_info(cu, col, nvals, nnull, id);
 }

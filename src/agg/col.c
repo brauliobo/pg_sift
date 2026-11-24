@@ -14,7 +14,7 @@
 #include "utils/rel.h"
 
 #include "agg/pre.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "agg/wide.h"
 #include "core/store.h"
 #include "core/visibility.h"
@@ -130,7 +130,7 @@ child_name(const char *path, bool is_map, bool is_key, char *name)
 
 /* The leaf of column def i of a shredded attribute: its place in the group tree, its path below the attribute, its kind and vector type, its SQL type in desc */
 void
-sift_colsrc_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l)
+sift_src_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l)
 {
 	const SiftColDef *def = &cols[i];
 	const char *att = NameStr(TupleDescAttr(desc, def->attno - 1)->attname);
@@ -184,7 +184,7 @@ col_layout(Relation index)
 	lay->leaf = palloc0(sizeof(SiftSrcLeaf) * meta->ncols);
 	for (int i = 0; i < meta->ncols; i++)
 	{
-		sift_colsrc_def_leaf(meta->cols, i, tupdesc, &lay->leaf[i]);
+		sift_src_def_leaf(meta->cols, i, tupdesc, &lay->leaf[i]);
 		elog(DEBUG1, "sift_aggcol: leaf %d path \"%s\" attno %d parent %d kind %d", i, meta->cols[i].path, meta->cols[i].attno, meta->cols[i].parent,
 			 lay->leaf[i].kind);
 	}
@@ -198,7 +198,7 @@ col_layout(Relation index)
  * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
  */
 void
-sift_colsrc_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st)
+sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st)
 {
 	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
 	{
@@ -286,7 +286,7 @@ col_stats(Relation index, SiftSrcStats *st)
 		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;
 		wjnull[i] = (meta->stats.wbuf_jnull & SIFT_COL_OVF_BIT(i)) != 0;
 	}
-	sift_colsrc_leaf_stats(meta->cols, meta->ncols, memo.leaves, wovf, wjnull, st);
+	sift_src_leaf_stats(meta->cols, meta->ncols, memo.leaves, wovf, wjnull, st);
 	st->zones = col_zones(memo.zones, meta, meta->stats.nunits);
 	st->miss_pending = true;
 }
@@ -323,10 +323,10 @@ col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext m
 	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->raw = palloc0(sizeof(bool) * src->lay->nleaves);
 	src->numsum = palloc0(sizeof(bool) * src->lay->nleaves);
-	src->wide = palloc0(sizeof(SiftAggWide) * src->lay->nleaves);
+	src->wide = palloc0(sizeof(SiftSrcWide) * src->lay->nleaves);
 	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
 	src->ugen = 1;
-	sift_aggsel_init(&src->sel, mcxt, RelationGetRelid(heap));
+	sift_srcsel_init(&src->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
@@ -464,7 +464,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 			return false;
 		src->ugen++;
 		nrow = src->unit.nrows;
-	} while (src->sel.keep && !sift_aggsel_unit(&src->sel, &src->unit, &nrow));
+	} while (src->sel.keep && !sift_srcsel_unit(&src->sel, &src->unit, &nrow));
 	unit->sb = src->unit.sb;
 	unit->nrow = nrow;
 	unit->nsu = src->unit.nsu;
@@ -481,7 +481,7 @@ col_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
 
 	if (src->sel.compact || (src->rck && src->rck->active))
 		return false;
-	sift_aggsel_narrow(&src->sel, src->cs, &src->unit, bits, &nrow);
+	sift_srcsel_narrow(&src->sel, src->cs, &src->unit, bits, &nrow);
 	unit->nrow = nrow;
 	return true;
 }

@@ -94,7 +94,7 @@ upd_minmax_num(const AggUpd *u)
 	{
 		uint32		g = ex->gid[j];
 
-		if ((ok && !sift_colsrc_bit(ok, j)))
+		if ((ok && !sift_src_bit(ok, j)))
 			continue;
 		if (acc->n[g] == 0 || (ismin ? nx[j] < acc->w[g] : nx[j] > acc->w[g]))
 			acc->w[g] = nx[j];
@@ -182,7 +182,7 @@ upd_minmax(const AggUpd *u)
 	{
 		uint32		g = ex->gid[j];
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		if (lf->vtype == SCV_F64)
 		{
@@ -217,7 +217,7 @@ upd_count_rows(const AggUpd *u)
 		uint32		g = ex->gid[j];
 		uint64		row = ex->row_base + ex->ridx[j];
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		if (acc->last[g] != row)
 		{
@@ -247,7 +247,7 @@ upd_sum_num(const AggUpd *u)
 	nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
 	ny = nx + (VEC + PADW);
 	for (int j = 0; j < nsel; j++)
-		if ((!ok || sift_colsrc_bit(ok, j)) && (!u->a->distinct || num_first(ex, u->ai, ex->gid[j], nx[j])))
+		if ((!ok || sift_src_bit(ok, j)) && (!u->a->distinct || num_first(ex, u->ai, ex->gid[j], nx[j])))
 		{
 			if (nx[j] == SIFT_NX_NAN)
 				acc->nf[ex->gid[j]] = 1;
@@ -281,7 +281,7 @@ upd_count_distinct(const AggUpd *u)
 		const sift_i128 *nx = eval_nx(ex, &u->a->num, nsel, ex->tidx, ex->ridx, NULL, ok);
 
 		for (int j = 0; j < nsel; j++)
-			if (!ok || sift_colsrc_bit(ok, j))
+			if (!ok || sift_src_bit(ok, j))
 				ex->cu32[j] = idmap_id(&ex->amap[u->ai], nx[j]);
 		dist_update(ex, u->ai, ok, nsel, ex->cu32);
 		return;

@@ -1,5 +1,5 @@
 /*
- * agg/wide.c - the dictionary of a wide leaf (agg/wide.h). An entry is the datum as PostgreSQL holds it, display scale included
+ * col/v1/src_wide.c - the dictionary of a wide leaf (col/v1/src_wide.h). An entry is the datum as PostgreSQL holds it, display scale included
  * (1.00 stays 1.00): the varlena of the numeric, the 16 bytes of the Interval, each padded to 8 bytes so that an entry is the datum itself.
  * Two values that are equal but spelled differently (1.0 and 1.00, 1 month and 30 days) are two entries; the executor decides what
  * equal values mean with the type's own equality.
@@ -10,9 +10,7 @@
 #include "fmgr.h"
 #include "utils/memutils.h"
 
-#include "agg/agg_int.h"
-#include "agg/combo_int.h"
-#include "agg/wide.h"
+#include "col/v1/src_wide.h"
 #include "col/am.h"
 #include "core/wide_datum.h"
 #include "core/hash.h"
@@ -26,8 +24,8 @@ key_hash(const uint64 *k)
 	return (uint32) (sift_fold64(h, h >> 31) >> 32);
 }
 
-static void
-rows_room(SiftAggWide *w, uint32 n)
+void
+sift_srcwide_rows_room(SiftSrcWide *w, uint32 n)
 {
 	if (w->cap >= n)
 		return;
@@ -42,7 +40,7 @@ rows_room(SiftAggWide *w, uint32 n)
 }
 
 static void
-wide_reset(SiftAggWide *w, uint32 n)
+wide_reset(SiftSrcWide *w, uint32 n)
 {
 	uint32		nslot = 64;
 
@@ -71,7 +69,7 @@ wide_reset(SiftAggWide *w, uint32 n)
 
 /* the entry (1..) of the value whose words are k, 0 when it has none yet; *at is where it goes */
 static uint32
-find(const SiftAggWide *w, const uint64 *k, uint32 *at)
+find(const SiftSrcWide *w, const uint64 *k, uint32 *at)
 {
 	uint32		mask = w->nslot - 1,
 				h = key_hash(k) & mask,
@@ -86,7 +84,7 @@ find(const SiftAggWide *w, const uint64 *k, uint32 *at)
 
 /* a new entry of the value whose words are k, at the slot find gave */
 static uint32
-add(SiftAggWide *w, const uint64 *k, uint32 at, const char *bytes, uint32 len)
+add(SiftSrcWide *w, const uint64 *k, uint32 at, const char *bytes, uint32 len)
 {
 	if (w->nd == w->dcap)
 	{
@@ -222,8 +220,8 @@ text_numeric(const char *txt, uint8 *out)
 }
 
 /* the numeric of row i of an image or a 128-bit lane leaf (a NaN when nan) in b */
-static uint32
-numeric_entry(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 i, bool nan, uint8 *b)
+uint32
+sift_srcwide_numeric_entry(SiftSrcWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 i, bool nan, uint8 *b)
 {
 	char		txt[SIFT_COL_W128_TEXT];
 	uint32		len;
@@ -256,7 +254,7 @@ numeric_entry(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, ui
 }
 
 void
-sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n)
+sift_srcwide_build(SiftSrcWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n)
 {
 	bool		interval = def->type == SIFT_COLT_INTERVAL,
 				image = def->store == SIFT_COLS_STR && def->type == SIFT_COLT_NUMERIC,
@@ -266,7 +264,7 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 		w->cxt = CurrentMemoryContext;
 	if (image && w->txt == NULL)
 		w->txt = MemoryContextAlloc(w->cxt, SIFT_NIMG_TEXT_MAX);
-	rows_room(w, n);
+	sift_srcwide_rows_room(w, n);
 	wide_reset(w, n);
 	w->n = n;
 	w->has_null = false;
@@ -333,7 +331,7 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 				len = sizeof(Interval);
 			}
 			else
-				len = numeric_entry(w, def, lanes, i, nan, b);
+				len = sift_srcwide_numeric_entry(w, def, lanes, i, nan, b);
 			e = add(w, k, at, (const char *) b, len);
 		}
 		w->codes[i] = e - 1;
@@ -341,136 +339,7 @@ sift_aggwide_build(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lane
 }
 
 Datum
-sift_aggwide_datum(Oid typid, const char *bytes, uint32 len)
+sift_srcwide_datum(Oid typid, const char *bytes, uint32 len)
 {
 	return PointerGetDatum(bytes);
-}
-
-/* the record of an image and a display scale, kept for the rows that read the same stored entry */
-typedef struct NumMemo
-{
-	uint64		tag;			/* ((code + 1) << 6) | dscale, 0: empty */
-	DNum		rec;
-} NumMemo;
-
-#define NUM_MEMO_MAX	65536
-
-void
-sift_aggwide_nums(SiftAggWide *w, const SiftColDef *def, const SiftColVec *lanes, uint32 n)
-{
-	if (w->cxt == NULL)
-		w->cxt = CurrentMemoryContext;
-	if (def->store == SIFT_COLS_STR && w->txt == NULL)
-		w->txt = MemoryContextAlloc(w->cxt, SIFT_NIMG_TEXT_MAX);
-	if (w->acx == NULL)
-		w->acx = AllocSetContextCreate(w->cxt, "sift numeric sums", ALLOCSET_SMALL_SIZES);
-	MemoryContextReset(w->acx);
-	rows_room(w, n);
-	if (w->recs == NULL || w->rcap < n)
-	{
-		if (w->recs)
-			pfree(w->recs);
-		w->rcap = Max(n, 1024);
-		w->recs = MemoryContextAlloc(w->cxt, w->rcap * sizeof(DNum));
-	}
-	if (w->memo)
-		pfree(w->memo);
-	w->memo = NULL;
-	for (w->nmemo = 256; w->nmemo < n && w->nmemo < NUM_MEMO_MAX; w->nmemo *= 2)
-		;
-	w->def = def;
-	memcpy(w->lanes, lanes, sift_col_def_value_lanes(def) * sizeof(SiftColVec));
-	w->n = n;
-	w->nd = n;
-	w->has_null = false;
-	for (uint32 i = 0; i < n; i++)
-	{
-		bool		isnull = lanes[0].nulls && (lanes[0].nulls[i >> 6] >> (i & 63) & 1),
-					nan = isnull && lanes[0].ovf && (lanes[0].ovf[i >> 6] >> (i & 63) & 1);
-
-		w->codes[i] = i;
-		w->isnull[i] = isnull && !nan;
-		w->has_null |= w->isnull[i];
-		w->recs[i].scale = WNUM_UNSET;
-	}
-}
-
-/* the rows that are not an integer and a scale of 38 digits: the numeric, decoded as the dictionary's entries are, and kept as a numeric when it is not (apart for its large frame) */
-static pg_noinline void
-rec_numeric(SiftAggWide *w, uint32 i, bool nan)
-{
-	uint8		b[SIFT_NIMG_TEXT_MAX + 64] __attribute__((aligned(8)));
-	DNum	   *r = &w->recs[i];
-	uint32		len = numeric_entry(w, w->def, w->lanes, i, nan, b);
-
-	numeric_decode(PointerGetDatum(b), r);
-	if (!r->ok)
-	{
-		void	   *copy = MemoryContextAlloc(w->acx, len);
-
-		memcpy(copy, b, len);
-		r->m = (sift_i128) (uintptr_t) copy;
-	}
-}
-
-/* the record of a row of sift_aggwide_nums, from its lanes */
-void
-sift_aggwide_rec(const void *arg, uint32 i)
-{
-	SiftAggWide *w = (SiftAggWide *) arg;
-	const SiftColDef *def = w->def;
-	const SiftColVec *lanes = w->lanes;
-	DNum	   *r = &w->recs[i];
-	bool		nan = lanes[0].nulls && (lanes[0].nulls[i >> 6] >> (i & 63) & 1) && lanes[0].ovf && (lanes[0].ovf[i >> 6] >> (i & 63) & 1);
-
-	r->ok = false;
-	if (nan)
-		;
-	else if (def->store == SIFT_COLS_STR)
-	{
-		uint32		code = lanes[0].codes[i],
-					nd = 0;
-		int64		dscale = lanes[1].i[i];
-		int32		exp10 = 0;
-		bool		neg = false;
-		sift_wu128	dg = 0;
-		NumMemo    *mo;
-		uint64		tag = ((uint64) code + 1) << 6 | (uint64) (dscale & 63);
-		int			kind;
-
-		if (w->memo == NULL)
-			w->memo = MemoryContextAllocZero(w->cxt, (size_t) w->nmemo * sizeof(NumMemo));
-		mo = &w->memo[code & (w->nmemo - 1)];
-		if (mo->tag == tag)
-		{
-			*r = mo->rec;
-			return;
-		}
-		kind = sift_col_numimg_int((const uint8 *) SIFT_COL_DICT_STR(lanes[0].dict, code), SIFT_COL_DICT_LEN(lanes[0].dict, code), &neg, &exp10, &dg, &nd);
-		if (kind == 1 && dscale >= 0 && dscale <= 38)
-		{
-			*r = (DNum) {.m = 0, .scale = (int16) dscale, .ok = true};
-			*mo = (NumMemo) {tag, *r};
-			return;
-		}
-		if (kind == 2 && dscale >= 0 && dscale <= 38)
-		{
-			int			shift = (int) (exp10 - (int32) nd + dscale);
-
-			if (shift >= 0 && (int) nd + shift <= 38)
-			{
-				sift_i128	m = (sift_i128) dg * pow10_tab()[shift];
-
-				*r = (DNum) {.m = neg ? -m : m, .scale = (int16) dscale, .ok = true};
-				*mo = (NumMemo) {tag, *r};
-				return;
-			}
-		}
-	}
-	else if (def->scale <= 38)
-	{
-		*r = (DNum) {.m = sift_col_wide_join(lanes[0].i[i], lanes[1].i[i]), .scale = (int16) def->scale, .ok = true};
-		return;
-	}
-	rec_numeric(w, i, nan);
 }

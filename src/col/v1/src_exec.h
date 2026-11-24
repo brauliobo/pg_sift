@@ -1,13 +1,15 @@
 /*
- * agg/colsrc/exec.h - the column source: the records of the executor side
+ * col/v1/src_exec.h - the unit source of Format 1: the records of the executor side
  * The dictionary, the vector, the unit, the prune and filter tests, the pre-aggregates and
- * the counters a unit read gives; the second of the four parts of agg/colsrc.h.
+ * the counters a unit read gives; the second of the parts of the unit source.
  */
-#ifndef SIFT_AGG_COLSRC_EXEC_H
-#define SIFT_AGG_COLSRC_EXEC_H
+#ifndef SIFT_COL_V1_SRC_EXEC_H
+#define SIFT_COL_V1_SRC_EXEC_H
 
-#include "agg/colsrc/meta.h"
+#include "catalog/pg_type_d.h"
+
 #include "col/col.h"
+#include "col/v1/src_meta.h"
 
 /* ---- executor side ---- */
 
@@ -349,4 +351,42 @@ typedef struct SiftSrcHead
 	uint64		addr;			/* block << 16 | offset */
 } SiftSrcHead;
 
-#endif							/* SIFT_AGG_COLSRC_EXEC_H */
+#define SIFT_SRC_PAD			64	/* the values after the last of a vector that a read leaves zero (SIFT_AGG_PAD of the kernels) */
+
+/* The bytes of one value of each vector type, by SiftSrcVecType */
+extern const size_t sift_src_vtype_size[];
+
+/* Bit i of a row (or element) bitmap */
+static inline bool
+sift_src_bit(const uint64 *bits, size_t i)
+{
+	return (bits[i >> 6] >> (i & 63)) & 1;
+}
+
+/* the only value a numeric(p <= 18, s) leaf cannot hold is NaN: the executor evaluates those rows as the numeric NaN they are */
+static inline bool
+sift_src_nan_leaf(const SiftSrcLeaf *l)
+{
+	return l->typid == NUMERICOID && l->kind == SCL_SCALAR;
+}
+
+/*
+ * A NaN of a numeric leaf is a value to the executor, the greatest of the leaf: PG_INT64_MAX (no scaled number reaches it), not NULL, and
+ * its bit in vec->ovf for the code that evaluates it as PostgreSQL does. The engine stores it as NULL with the flag; a source calls this
+ * after it filled data and isnull.
+ */
+extern void sift_src_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec);
+
+/* The JSON types of a value (jsonb_typeof), as the bits of the types a filter keeps; the bit t - 1 is the chunk tag t (SIFT_COLTAG_*) */
+#define SIFT_SRC_JT_STRING		0x01
+#define SIFT_SRC_JT_NUMBER		0x02
+#define SIFT_SRC_JT_BOOLEAN		0x04
+#define SIFT_SRC_JT_OBJECT		0x08
+#define SIFT_SRC_JT_ARRAY		0x10
+#define SIFT_SRC_JT_NONE		0x20	/* the path has no value: jsonb_typeof is NULL */
+#define SIFT_SRC_JT_NULL		0x40	/* a JSON null: jsonb_typeof is 'null' */
+#define SIFT_SRC_JT_ALL			0x7F
+#define SIFT_SRC_TYPE_NONE		0xFF	/* SiftSrcProvider.read_types: the path has no value */
+#define SIFT_SRC_JT_READ		0x80	/* not a type: the query reads the leaf's values besides, so a row of the types whose value the leaf cannot hold is an error */
+
+#endif							/* SIFT_COL_V1_SRC_EXEC_H */

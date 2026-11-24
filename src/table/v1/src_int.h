@@ -6,7 +6,7 @@
 
 #include "nodes/bitmapset.h"
 #include "agg/pre.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "agg/zoneprune.h"
 #include "agg/chunkfilter.h"
 #include "table/v1/table_v1.h"
@@ -73,7 +73,7 @@ typedef struct TblSource
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
 	SiftSrcLeafBuf *buf;			/* per leaf */
-	SiftAggSel	sel;			/* the match set the units are restricted to */
+	SiftSrcSel	sel;			/* the match set the units are restricted to */
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
 	int			nwide;

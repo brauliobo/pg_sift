@@ -273,7 +273,7 @@ gen_stat_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint6
 		float8		x[2] = {0, 0};
 		bool		good = true;
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		for (int k = 0; k < nk; k++)
 			if (!stat_value(st, in, k, j, &x[k]))

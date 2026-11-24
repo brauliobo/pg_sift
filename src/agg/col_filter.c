@@ -7,7 +7,7 @@
 
 #include "utils/memutils.h"
 
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "col/col.h"
 
 #include "agg/col_int.h"
@@ -57,10 +57,10 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	{
 		SiftColGroupPred gp = {.group = src->lay->leaf[t->leaf].parent,.npreds = 1,.preds = &pred};
 
-		sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_elem_op, &gp);
+		sift_srcsel_stored(&src->sel, src->cs, &src->unit, rows, filter_elem_op, &gp);
 	}
 	else
-		sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
+		sift_srcsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
 	return true;
 }
 
@@ -107,7 +107,7 @@ col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 {
 	ColSource  *src = impl;
 
-	sift_aggsel_stored(&src->sel, src->cs, &src->unit, rows, wide_op, &src->wtest[i]);
+	sift_srcsel_stored(&src->sel, src->cs, &src->unit, rows, wide_op, &src->wtest[i]);
 	return rows_left(unit, rows);
 }
 
@@ -136,7 +136,7 @@ col_set_filters(void *impl, const SiftSrcFilter *f, int nf)
 static bool
 rows_left(const SiftSrcUnit *unit, const uint64 *bits)
 {
-	return sift_aggsel_rows_left(bits, unit->nrow);
+	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
 bool
@@ -146,7 +146,7 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 
 	SiftAggFiltRun run = {&src->flt, src->lay, src->tol};
 
-	sift_aggsel_stored(&src->sel, src->cs, &src->unit, bits, sift_aggfilt_op, &run);
+	sift_srcsel_stored(&src->sel, src->cs, &src->unit, bits, sift_aggfilt_op, &run);
 	return rows_left(unit, bits);
 }
 
@@ -176,7 +176,7 @@ col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 	ColSource  *src = impl;
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 
-	sift_aggsel_filter_types(&src->sel, src->cs, &src->unit, leaf, l->typid, l->astext, types, bits);
+	sift_srcsel_filter_types(&src->sel, src->cs, &src->unit, leaf, l->typid, l->astext, types, bits);
 	return rows_left(unit, bits);
 }
 
@@ -187,7 +187,7 @@ col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 	ColSource  *src = impl;
 	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
 
-	sift_aggsel_read_types(&src->sel, &src->unit, leaf, l->typid, l->astext, unit->nrow, tags);
+	sift_srcsel_read_types(&src->sel, &src->unit, leaf, l->typid, l->astext, unit->nrow, tags);
 }
 
 /* the JSON nulls among the slots of the leaf, in the numbering of the unit the executor sees (the elements of the kept rows in a compacted one) */
@@ -200,7 +200,7 @@ col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 
 	sift_col_jnull_bits(&src->unit, leaf, compact ? src->sel.idx : NULL, src->sel.sel.count, bits, &known);
 	if (!known)
-		sift_aggsel_types_unknown_error();
+		sift_srcsel_types_unknown_error();
 }
 
 void

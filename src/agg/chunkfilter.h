@@ -50,7 +50,7 @@ typedef struct SiftAggFiltRun
 } SiftAggFiltRun;
 
 /*
- * A SiftAggSelOp (agg/sel.h) that narrows the rows of sel in the unit by the filters of arg (a SiftAggFiltRun), the most selective first; the two bounds of
+ * A SiftSrcSelOp (agg/sel.h) that narrows the rows of sel in the unit by the filters of arg (a SiftAggFiltRun), the most selective first; the two bounds of
  * a range on one column are one filter, which a sorted run answers. A numeric column keeps the rows whose value overflowed (the NaNs), which only the
  * comparisons that a number greater than all others passes keep.
  */

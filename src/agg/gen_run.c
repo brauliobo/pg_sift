@@ -296,7 +296,7 @@ gen_first_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint
 		Datum		d;
 		bool		isnull;
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		gen_chunk_room(ex, st, gid);
 		gen_arg(ex, st, in, j, st->fkey[0], &d, &isnull);
@@ -472,7 +472,7 @@ gen_top_chunk(AggExec *ex, GenSt *st, AggAcc *acc, const GenIn *in, const uint64
 		Datum		d;
 		bool		isnull;
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 			continue;
 		gen_chunk_room(ex, st, gid);
 		if (st->cwin[gid] == stamp)
@@ -581,7 +581,7 @@ gen_update(AggExec *ex, int ai, const uint64 *ok, int nsel)
 	{
 		uint32		gid = ex->gid[j];
 
-		if (ok && !sift_colsrc_bit(ok, j))
+		if (ok && !sift_src_bit(ok, j))
 		{
 			ex->fwin[j] = 0;
 			continue;

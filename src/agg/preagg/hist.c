@@ -123,7 +123,7 @@ preagg_hist(AggExec *ex)
 		return false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(h.ngroups, 1) * sizeof(uint32));
 	for (uint32 k = 0; k < h.ngroups; k++)
-		if (keep == NULL || sift_colsrc_bit(keep, k))
+		if (keep == NULL || sift_src_bit(keep, k))
 			kept[nkept++] = k;
 	/* count(DISTINCT leaf) by cell: a key group that holds the id sets of the leaf by month; any other unit is scanned. The sets are of whole months: a month some of whose days a test dropped is scanned */
 	if (ex->pa.dset)
@@ -139,7 +139,7 @@ preagg_hist(AggExec *ex)
 			if (k == h.ngroups - h.has_null || mc[k] != mc[run])
 			{
 				for (uint32 i = run; i < k; i++)
-					if ((keep == NULL || sift_colsrc_bit(keep, i)) != (keep == NULL || sift_colsrc_bit(keep, run)))
+					if ((keep == NULL || sift_src_bit(keep, i)) != (keep == NULL || sift_src_bit(keep, run)))
 						return false;
 				run = k;
 			}
@@ -201,7 +201,7 @@ preagg_hist(AggExec *ex)
 					v[ai].max = h.max[m][kept[j]];
 				}
 			}
-			if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], kept[j]))
+			if (fkeep[ai] && !sift_src_bit(fkeep[ai], kept[j]))
 				v[ai] = (PaVal) {0};				/* the rows of the group fail the FILTER: they add nothing to this aggregate */
 		}
 		preagg_fold(ex, gid[j], h.count[kept[j]], v);

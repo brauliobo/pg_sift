@@ -11,7 +11,7 @@
 #include "nodes/execnodes.h"
 #include "utils/memutils.h"
 
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "col/col.h"
 #include "col/am.h"
 #include "col/v1/enc.h"
@@ -305,7 +305,7 @@ col_overflow_raise(void *impl, const SiftSrcUnit *unit, const uint64 *rows)
 	if (k == NULL || !k->active)
 		return;
 	for (uint32 r = 0; r < unit->nrow; r++)
-		if (sift_colsrc_bit(rows, r) && k->err[r])
+		if (sift_src_bit(rows, r) && k->err[r])
 			ThrowErrorData(k->err[r]);
 }
 

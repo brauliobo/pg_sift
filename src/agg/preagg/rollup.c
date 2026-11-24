@@ -184,7 +184,7 @@ rollup_vals(AggExec *ex, const SiftSrcRollup *r, uint32 t, const int *slot, uint
 		int			m = slot[ai];
 
 		v[ai] = (PaVal) {.rows = r->count[t], .nn = r->count[t]};
-		if (fkeep[ai] && !sift_colsrc_bit(fkeep[ai], t))
+		if (fkeep[ai] && !sift_src_bit(fkeep[ai], t))
 		{
 			v[ai].rows = v[ai].nn = 0;				/* the elements of the tuple fail the FILTER: they add nothing to this aggregate */
 			continue;
@@ -305,7 +305,7 @@ preagg_rollup(AggExec *ex)
 		ex->uvec_ok[ex->pa.rdim[d]] = false;
 	kept = MemoryContextAlloc(ex->ucxt, Max(r.ntuples, 1) * sizeof(uint32));
 	for (uint32 t = 0; t < r.ntuples; t++)
-		if (keep == NULL || sift_colsrc_bit(keep, t))
+		if (keep == NULL || sift_src_bit(keep, t))
 			kept[nkept++] = t;
 	ids = MemoryContextAllocZero(ex->ucxt, Max((Size) nkept * s->nkeys, 1) * sizeof(uint32));
 	gid = MemoryContextAllocZero(ex->ucxt, Max(nkept, 1) * sizeof(uint32));

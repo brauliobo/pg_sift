@@ -1,13 +1,13 @@
 /*
- * agg/sel.c - the rows of a column unit that a match set keeps (agg/sel.h).
+ * col/v1/src_sel.c - the rows of a column unit that a match set keeps (col/v1/src_sel.h).
  */
 /* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "postgres.h"
 
 #include "catalog/pg_type.h"
+#include "port/pg_bitutils.h"
 
-#include "agg/kern.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "core/popcount.h"
 #include "col/v1/wbuf.h"
 
@@ -15,7 +15,7 @@
 #define SEL_SPARSE	8
 
 void
-sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt, Oid heapoid)
+sift_srcsel_init(SiftSrcSel *a, MemoryContext mcxt, Oid heapoid)
 {
 	memset(a, 0, sizeof(*a));
 	a->mcxt = mcxt;
@@ -24,7 +24,7 @@ sift_aggsel_init(SiftAggSel *a, MemoryContext mcxt, Oid heapoid)
 
 /* idx: the stored ordinal of each kept row of a compacted unit */
 static void
-compact_idx(SiftAggSel *a)
+compact_idx(SiftSrcSel *a)
 {
 	if (a->idxcap < a->sel.count + SIFT_COL_IDXPAD)
 	{
@@ -37,7 +37,7 @@ compact_idx(SiftAggSel *a)
 }
 
 bool
-sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow)
+sift_srcsel_unit(SiftSrcSel *a, const SiftColUnit *cu, uint32 *nrow)
 {
 	sift_col_sel_all(cu, &a->sel);
 	a->nrow = a->sel.n;
@@ -54,7 +54,7 @@ sift_aggsel_unit(SiftAggSel *a, const SiftColUnit *cu, uint32 *nrow)
 }
 
 void
-sift_aggsel_narrow(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, const uint64 *bits, uint32 *nrow)
+sift_srcsel_narrow(SiftSrcSel *a, SiftColSource *src, const SiftColUnit *cu, const uint64 *bits, uint32 *nrow)
 {
 	SiftColSel	kept;
 
@@ -70,7 +70,7 @@ sift_aggsel_narrow(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, con
 }
 
 void
-sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, SiftColVec *vec)
+sift_srcsel_read(SiftSrcSel *a, const SiftColUnit *cu, int col, SiftColVec *vec)
 {
 	if (a->compact)
 		sift_col_read_idx(cu, col, a->idx, a->sel.count, vec);
@@ -79,7 +79,7 @@ sift_aggsel_read(SiftAggSel *a, const SiftColUnit *cu, int col, SiftColVec *vec)
 }
 
 void
-sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits)
+sift_srcsel_live(SiftSrcSel *a, const SiftColUnit *cu, uint64 *bits)
 {
 	SiftColSel	all;
 
@@ -102,7 +102,7 @@ sift_aggsel_live(SiftAggSel *a, const SiftColUnit *cu, uint64 *bits)
 
 /* Runs op on the unit as stored: a compacted unit's rows are expanded to their stored ordinals, op restricts them, and the survivors are compressed back into bits */
 void
-sift_aggsel_stored(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits, SiftAggSelOp op, void *arg)
+sift_srcsel_stored(SiftSrcSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits, SiftSrcSelOp op, void *arg)
 {
 	SiftColSel	vs;
 	const uint32 *idx = a->idx;
@@ -134,16 +134,16 @@ vet_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 }
 
 bool
-sift_aggsel_vet_needed(const SiftColUnit *cu)
+sift_srcsel_vet_needed(const SiftColUnit *cu)
 {
 	return !sift_col_unit_allvisible(cu);
 }
 
 void
-sift_aggsel_vet(SiftAggSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits)
+sift_srcsel_vet(SiftSrcSel *a, SiftColSource *src, const SiftColUnit *cu, uint64 *bits)
 {
-	if (sift_aggsel_vet_needed(cu))
-		sift_aggsel_stored(a, src, cu, bits, vet_op, NULL);
+	if (sift_srcsel_vet_needed(cu))
+		sift_srcsel_stored(a, src, cu, bits, vet_op, NULL);
 }
 
 /* The dictionary of a read that stayed in the segment, loaded whole */
@@ -157,19 +157,36 @@ dict_full(const void *gctx, SiftSrcDict *self)
 }
 
 SiftSrcDict
-sift_aggsel_src_dict(const SiftColDict *d)
+sift_srcsel_src_dict(const SiftColDict *d)
 {
 	if (d->off == NULL)
 		return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, .get = d->get, .full = dict_full, .gctx = d->gctx};
 	return (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes, d->order, d->octx};
 }
 
+const size_t sift_src_vtype_size[] = {sizeof(int32), sizeof(int64), sizeof(double), sizeof(uint32)};
+
+void
+sift_src_nan_values(const SiftSrcLeaf *l, void *data, uint8 *isnull, const SiftSrcVec *vec)
+{
+	if (!vec->ovf || !sift_src_nan_leaf(l))
+		return;
+	for (size_t w = 0; w * 64 < vec->n; w++)
+		for (uint64 b = vec->ovf[w]; b; b &= b - 1)
+		{
+			size_t		i = w * 64 + pg_rightmost_one_pos64(b);
+
+			((int64 *) data)[i] = PG_INT64_MAX;
+			isnull[i] = 0;
+		}
+}
+
 static const SiftColLane vtype_lane[] = {SIFT_COLL_I32, SIFT_COLL_I64, SIFT_COLL_F64, SIFT_COLL_CODE};
 
 void
-sift_aggsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n)
+sift_srcsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n)
 {
-	size_t		need = n + SIFT_AGG_PAD;
+	size_t		need = n + SIFT_SRC_PAD;
 
 	if (b->cap >= need)
 		return;
@@ -186,14 +203,14 @@ sift_aggsel_leaf_buf(MemoryContext cxt, SiftSrcLeafBuf *b, size_t n)
 }
 
 void
-sift_aggsel_fill(SiftAggSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
+sift_srcsel_fill(SiftSrcSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
 {
 	size_t		n = v->n;
 
 	vec->ovf = NULL;
 	vec->eoff = NULL;
 	if (v->ovf && !buf->ovf)
-		sift_aggsel_overflow_error(a->heapoid);
+		sift_srcsel_overflow_error(a->heapoid);
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -208,10 +225,10 @@ sift_aggsel_fill(SiftAggSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec
 			break;
 		case SCV_CODE:
 			memcpy(buf->data, v->codes, n * sizeof(uint32));
-			*dict = sift_aggsel_src_dict(v->dict);
+			*dict = sift_srcsel_src_dict(v->dict);
 			break;
 	}
-	memset((char *) buf->data + n * sift_src_vtype_size[l->vtype], 0, SIFT_AGG_PAD * sift_src_vtype_size[l->vtype]);
+	memset((char *) buf->data + n * sift_src_vtype_size[l->vtype], 0, SIFT_SRC_PAD * sift_src_vtype_size[l->vtype]);
 	vec->data = buf->data;
 	vec->dict = l->vtype == SCV_CODE ? dict : NULL;
 	vec->n = n;
@@ -224,14 +241,14 @@ sift_aggsel_fill(SiftAggSel *a, const SiftSrcLeaf *l, bool tol, const SiftColVec
 	if (v->nulls)
 	{
 		for (size_t i = 0; i < n; i++)
-			buf->isnull[i] = sift_colsrc_bit(v->nulls, i);
+			buf->isnull[i] = sift_src_bit(v->nulls, i);
 		vec->isnull = buf->isnull;
 	}
-	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
+	sift_src_nan_values(l, buf->data, buf->isnull, vec);
 }
 
 uint32 *
-sift_aggsel_ords(const SiftAggSel *a, const uint32 *rows, int n)
+sift_srcsel_ords(const SiftSrcSel *a, const uint32 *rows, int n)
 {
 	uint32	   *ords = palloc((Max(n, 1) + SIFT_COL_IDXPAD) * sizeof(uint32));
 
@@ -242,7 +259,7 @@ sift_aggsel_ords(const SiftAggSel *a, const uint32 *rows, int n)
 }
 
 void
-sift_aggsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel *sel)
+sift_srcsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel *sel)
 {
 	sift_col_sel_alloc(src, nrow, sel);
 	memcpy(sel->bits, bits, sel->nwords * sizeof(uint64));
@@ -250,7 +267,7 @@ sift_aggsel_bits(SiftColSource *src, uint32 nrow, const uint64 *bits, SiftColSel
 }
 
 void
-sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
+sift_srcsel_read_lane(SiftSrcSel *a, const SiftColUnit *cu, int col, const SiftSrcLeaf *l, bool tol, const SiftSrcBuf *buf, SiftSrcDict *dict, SiftSrcVec *vec)
 {
 	SiftColLaneInfo info;
 
@@ -266,27 +283,27 @@ sift_aggsel_read_lane(SiftAggSel *a, const SiftColUnit *cu, int col, const SiftS
 		vec->ovf = buf->ovf;
 	}
 	else if (info.ovf)
-		sift_aggsel_overflow_error(a->heapoid);
-	memset((char *) buf->data + info.n * sift_src_vtype_size[l->vtype], 0, SIFT_AGG_PAD * sift_src_vtype_size[l->vtype]);
+		sift_srcsel_overflow_error(a->heapoid);
+	memset((char *) buf->data + info.n * sift_src_vtype_size[l->vtype], 0, SIFT_SRC_PAD * sift_src_vtype_size[l->vtype]);
 	vec->data = buf->data;
 	vec->n = info.n;
 	vec->isnull = info.nulls ? buf->isnull : NULL;
 	vec->dict = NULL;
 	vec->eoff = a->compact ? NULL : sift_col_group_offsets(cu, col);
-	sift_colsrc_nan_values(l, buf->data, buf->isnull, vec);
+	sift_src_nan_values(l, buf->data, buf->isnull, vec);
 	if (l->vtype == SCV_CODE)
 	{
-		*dict = sift_aggsel_src_dict(&info.dict);
+		*dict = sift_srcsel_src_dict(&info.dict);
 		vec->dict = dict;
 	}
 }
 
 void
-sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *b, SiftSrcDict *dict, SiftSrcVec *vec)
+sift_srcsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const uint32 *idx, size_t nrow, const SiftSrcBuf *b, SiftSrcDict *dict, SiftSrcVec *vec)
 {
 	size_t		m = v->n;
 
-	memset(b->data, 0, (nrow + SIFT_AGG_PAD) * sift_src_vtype_size[l->vtype]);
+	memset(b->data, 0, (nrow + SIFT_SRC_PAD) * sift_src_vtype_size[l->vtype]);
 	switch (l->vtype)
 	{
 		case SCV_I32:
@@ -304,7 +321,7 @@ sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const u
 		case SCV_CODE:
 			for (size_t k = 0; k < m; k++)
 				((uint32 *) b->data)[idx[k]] = v->codes[k];
-			*dict = sift_aggsel_src_dict(v->dict);
+			*dict = sift_srcsel_src_dict(v->dict);
 			break;
 	}
 	vec->data = b->data;
@@ -317,7 +334,7 @@ sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const u
 	{
 		memset(b->ovf, 0, SIFT_COL_NWORDS(nrow) * sizeof(uint64));
 		for (size_t k = 0; k < m; k++)
-			if (sift_colsrc_bit(v->ovf, k))
+			if (sift_src_bit(v->ovf, k))
 				b->ovf[idx[k] >> 6] |= UINT64CONST(1) << (idx[k] & 63);
 		vec->ovf = b->ovf;
 	}
@@ -325,14 +342,14 @@ sift_aggsel_scatter(const SiftSrcLeaf *l, bool tol, const SiftColVec *v, const u
 	{
 		memset(b->isnull, 0, nrow);
 		for (size_t k = 0; k < m; k++)
-			b->isnull[idx[k]] = sift_colsrc_bit(v->nulls, k);
+			b->isnull[idx[k]] = sift_src_bit(v->nulls, k);
 		vec->isnull = b->isnull;
 	}
-	sift_colsrc_nan_values(l, b->data, b->isnull, vec);
+	sift_src_nan_values(l, b->data, b->isnull, vec);
 }
 
 void
-sift_aggsel_overflow_error(Oid heapoid)
+sift_srcsel_overflow_error(Oid heapoid)
 {
 	sift_cwbuf_invalidate_plans(heapoid);
 	ereport(ERROR,
@@ -353,7 +370,7 @@ stored_tag(Oid typid)
 }
 
 void
-sift_aggsel_types_unknown_error(void)
+sift_srcsel_types_unknown_error(void)
 {
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -384,7 +401,7 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 
 	left = sift_col_filter_types(cu, t->col, t->mask, stored_tag(t->typid), t->astext, vs, &known);
 	if (!known)
-		sift_aggsel_types_unknown_error();
+		sift_srcsel_types_unknown_error();
 	ovf = palloc(SIFT_COL_NWORDS(cu->nrows) * sizeof(uint64));
 	if (!left || !t->read || !sift_col_ovf_bits(cu, t->col, ovf))
 		return;
@@ -392,15 +409,15 @@ types_op(const SiftColUnit *cu, SiftColSel *vs, void *arg)
 	for (uint32 w = 0; w < bad.nwords; w++)
 		bad.bits[w] = vs->bits[w] & ovf[w];
 	if (sift_col_sel_count(&bad) > 0 && sift_col_vet(cu, &bad))
-		sift_aggsel_overflow_error(t->heapoid);
+		sift_srcsel_overflow_error(t->heapoid);
 }
 
 void
-sift_aggsel_filter_types(SiftAggSel *a, SiftColSource *cs, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 types, uint64 *bits)
+sift_srcsel_filter_types(SiftSrcSel *a, SiftColSource *cs, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 types, uint64 *bits)
 {
 	TypesTest	t = {cs, a->heapoid, col, typid, astext, (types & SIFT_SRC_JT_ALL) << 1, (types & SIFT_SRC_JT_READ) != 0};
 
-	sift_aggsel_stored(a, cs, cu, bits, types_op, &t);
+	sift_srcsel_stored(a, cs, cu, bits, types_op, &t);
 }
 
 /* a chunk tag as read_types gives it: the index of the name jsonb_typeof gives, or none */
@@ -411,19 +428,19 @@ src_type(uint8 tag)
 }
 
 void
-sift_aggsel_read_types(SiftAggSel *a, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 nrow, uint8 *tags)
+sift_srcsel_read_types(SiftSrcSel *a, const SiftColUnit *cu, int col, Oid typid, bool astext, uint32 nrow, uint8 *tags)
 {
 	bool		compact = a->compact;
 	uint8	   *all = compact ? palloc(a->nrow) : tags;
 
 	if (!sift_col_row_types(cu, col, stored_tag(typid), astext, all))
-		sift_aggsel_types_unknown_error();
+		sift_srcsel_types_unknown_error();
 	for (uint32 i = 0; i < nrow; i++)
 		tags[i] = src_type(all[compact ? a->idx[i] : i]);
 }
 
 bool
-sift_aggsel_rows_left(const uint64 *bits, uint32 nrow)
+sift_srcsel_rows_left(const uint64 *bits, uint32 nrow)
 {
 	uint64		left = 0;
 

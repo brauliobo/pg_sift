@@ -10,7 +10,7 @@
 
 #include "agg/kern.h"
 #include "agg/pre.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "agg/agg.h"
 #include "col/col.h"
 #include "col/am.h"
@@ -58,7 +58,7 @@ read_absent(TblSource *t, int leaf, size_t n, SiftSrcVec *vec)
 		return;
 	}
 	b = &t->buf[leaf];
-	sift_aggsel_leaf_buf(t->cxt, b, n);
+	sift_srcsel_leaf_buf(t->cxt, b, n);
 	memset(b->data, 0, (n + SIFT_AGG_PAD) * sift_src_vtype_size[l->vtype]);
 	*vec = (SiftSrcVec) {.data = b->data,.n = n};
 	if (isnull)
@@ -116,8 +116,8 @@ read_vec(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, SiftSrcV
 	{
 		SiftSrcLeafBuf *b = &t->buf[leaf];
 
-		sift_aggsel_leaf_buf(t->cxt, b, v->n);
-		sift_aggsel_fill(&t->sel, &t->lay->leaf[leaf], t->tol[leaf], v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+		sift_srcsel_leaf_buf(t->cxt, b, v->n);
+		sift_srcsel_fill(&t->sel, &t->lay->leaf[leaf], t->tol[leaf], v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 	}
 }
 
@@ -138,12 +138,12 @@ tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 		/* decoded into the leaf's buffer in its own vector type, with no vector of keys to convert and copy */
 		SiftSrcLeafBuf *b = &t->buf[leaf];
 
-		sift_aggsel_leaf_buf(t->cxt, b, sift_col_lane_n(&p->unit, p->col[leaf]));
+		sift_srcsel_leaf_buf(t->cxt, b, sift_col_lane_n(&p->unit, p->col[leaf]));
 
-		sift_aggsel_read_lane(&t->sel, &p->unit, p->col[leaf], &t->lay->leaf[leaf], t->tol[leaf], &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+		sift_srcsel_read_lane(&t->sel, &p->unit, p->col[leaf], &t->lay->leaf[leaf], t->tol[leaf], &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 		return;
 	}
-	sift_aggsel_read(&t->sel, &p->unit, p->col[leaf], &v);
+	sift_srcsel_read(&t->sel, &p->unit, p->col[leaf], &v);
 	read_vec(t, leaf, p, &v, vec);
 }
 
@@ -181,8 +181,8 @@ tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 	TblPart    *p = unit->priv;
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
 
-	sift_aggsel_filter_types(&t->sel, p->src, &p->unit, p->col[leaf], l->typid, l->astext, types, bits);
-	return sift_aggsel_rows_left(bits, unit->nrow);
+	sift_srcsel_filter_types(&t->sel, p->src, &p->unit, p->col[leaf], l->typid, l->astext, types, bits);
+	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
 void
@@ -192,7 +192,7 @@ tbl_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 	TblPart    *p = unit->priv;
 	const SiftSrcLeaf *l = &t->lay->leaf[leaf];
 
-	sift_aggsel_read_types(&t->sel, &p->unit, p->col[leaf], l->typid, l->astext, unit->nrow, tags);
+	sift_srcsel_read_types(&t->sel, &p->unit, p->col[leaf], l->typid, l->astext, unit->nrow, tags);
 }
 
 void
@@ -205,7 +205,7 @@ tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 
 	sift_col_jnull_bits(&p->unit, p->col[leaf], compact ? t->sel.idx : NULL, t->sel.sel.count, bits, &known);
 	if (!known)
-		sift_aggsel_types_unknown_error();
+		sift_srcsel_types_unknown_error();
 }
 
 /* ---- ordered top-N (docs/COL-SEARCH.md): the rows of a unit in the numbering of the executor are the idx-th rows of the unit as stored when a match set compacted it ---- */
@@ -213,7 +213,7 @@ tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 void
 tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
 {
-	uint32	   *ords = sift_aggsel_ords(&((TblSource *) impl)->sel, rows, n);
+	uint32	   *ords = sift_srcsel_ords(&((TblSource *) impl)->sel, rows, n);
 
 	sift_col_row_tids(&((TblPart *) unit->priv)->unit, ords, n, tids);
 	pfree(ords);
@@ -278,7 +278,7 @@ tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows,
 		read_absent(t, leaf, n, vec);
 		return;
 	}
-	ords = sift_aggsel_ords(&t->sel, rows, n);
+	ords = sift_srcsel_ords(&t->sel, rows, n);
 	sift_col_read_idx(&p->unit, p->col[leaf], ords, n, &v);
 	read_vec(t, leaf, p, &v, vec);
 	pfree(ords);
@@ -300,12 +300,12 @@ tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, 
 		tbl_read(impl, unit, leaf, vec);
 		return;
 	}
-	sift_aggsel_bits(p->src, unit->nrow, bits, &sel);
+	sift_srcsel_bits(p->src, unit->nrow, bits, &sel);
 	idx = palloc((sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
 	sift_col_sel_idx(&sel, idx);
 	sift_col_read(&p->unit, p->col[leaf], &sel, &v);
-	sift_aggsel_leaf_buf(t->cxt, b, unit->nrow);
-	sift_aggsel_scatter(&t->lay->leaf[leaf], t->tol[leaf], &v, idx, unit->nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
+	sift_srcsel_leaf_buf(t->cxt, b, unit->nrow);
+	sift_srcsel_scatter(&t->lay->leaf[leaf], t->tol[leaf], &v, idx, unit->nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &t->dict[leaf], vec);
 	pfree(idx);
 }
 
@@ -319,7 +319,7 @@ tbl_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
 
 	if (t->sel.compact)
 		return false;
-	sift_aggsel_narrow(&t->sel, p->src, &p->unit, bits, &nrow);
+	sift_srcsel_narrow(&t->sel, p->src, &p->unit, bits, &nrow);
 	unit->nrow = nrow;
 	return true;
 }
@@ -329,7 +329,7 @@ tbl_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	TblPart    *p = unit->priv;
 
-	sift_aggsel_live(&((TblSource *) impl)->sel, &p->unit, bits);
+	sift_srcsel_live(&((TblSource *) impl)->sel, &p->unit, bits);
 }
 
 void
@@ -337,7 +337,7 @@ tbl_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	TblPart    *p = unit->priv;
 
-	sift_aggsel_vet(&((TblSource *) impl)->sel, p->src, &p->unit, bits);
+	sift_srcsel_vet(&((TblSource *) impl)->sel, p->src, &p->unit, bits);
 }
 
 bool
@@ -345,7 +345,7 @@ tbl_vet_needed(void *impl, const SiftSrcUnit *unit)
 {
 	TblPart    *p = unit->priv;
 
-	return sift_aggsel_vet_needed(&p->unit);
+	return sift_srcsel_vet_needed(&p->unit);
 }
 
 void

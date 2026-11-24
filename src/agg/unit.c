@@ -11,7 +11,7 @@
 #include "utils/rel.h"
 
 #include "agg/kern.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "core/simd_kern.h"
 #include "agg/chunkfilter.h"
 #include "agg/topn.h"
@@ -142,7 +142,7 @@ leaf_overflow_rows(AggExec *ex, int leaf, uint64 **rows)
 		*rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
 	par = l->parent >= 0 ? group_parent(ex, l->parent) : NULL;
 	for (int64 e = 0; e < v->n; e++)
-		if (sift_colsrc_bit(v->ovf, e))
+		if (sift_src_bit(v->ovf, e))
 		{
 			uint32		r = par ? par[e] : e;
 
@@ -167,7 +167,7 @@ member_overflow_rows(AggExec *ex, int j, uint64 **rows)
 	if (!*rows)
 		*rows = MemoryContextAllocZero(ex->ucxt, ((ex->unit.nrow + 63) / 64 + PADW) * sizeof(uint64));
 	for (int64 e = 0; e < v->n; e++)
-		if (sift_colsrc_bit(v->ovf, e) && sift_colsrc_bit(eq, e))
+		if (sift_src_bit(v->ovf, e) && sift_src_bit(eq, e))
 			(*rows)[par[e] >> 6] |= UINT64CONST(1) << (par[e] & 63);
 }
 
@@ -267,7 +267,7 @@ check_overflow(AggExec *ex, const uint64 *live, bool rechecked)
 		return;
 	if (rechecked)
 		sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
-	sift_aggsel_overflow_error(RelationGetRelid(ex->heap));
+	sift_srcsel_overflow_error(RelationGetRelid(ex->heap));
 }
 
 /*
@@ -291,7 +291,7 @@ check_overflow_after_late(AggExec *ex, const uint64 *live)
 	if (sift_colk->bits_count(rows, nrw) == 0)
 		return;
 	sift_colsrc_overflow_raise(ex->src, &ex->unit, rows);
-	sift_aggsel_overflow_error(RelationGetRelid(ex->heap));
+	sift_srcsel_overflow_error(RelationGetRelid(ex->heap));
 }
 
 /* check_overflow for the rows that keep an element of the unit, at the point the aggregates read them (SRK_CAST) */

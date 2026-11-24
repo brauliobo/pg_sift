@@ -1,10 +1,10 @@
 /*
- * agg/colsrc/meta.h - the column source: the layout and the statistics of its leaves
+ * col/v1/src_meta.h - the unit source of Format 1: the layout and the statistics of its leaves
  * The leaf, layout, zone, statistics and stamp records the planner reads, with no executor
- * call; the first of the four parts of agg/colsrc.h.
+ * call; the first of the parts of the unit source (the others: col/v1/src_exec.h, agg/colsrc.h).
  */
-#ifndef SIFT_AGG_COLSRC_META_H
-#define SIFT_AGG_COLSRC_META_H
+#ifndef SIFT_COL_V1_SRC_META_H
+#define SIFT_COL_V1_SRC_META_H
 
 #include "core/filter.h"
 
@@ -160,4 +160,4 @@ typedef struct SiftSrcWalkStamp
 	uint32		scope;
 } SiftSrcWalkStamp;
 
-#endif							/* SIFT_AGG_COLSRC_META_H */
+#endif							/* SIFT_COL_V1_SRC_META_H */

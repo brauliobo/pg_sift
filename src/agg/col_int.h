@@ -9,7 +9,7 @@
 #include "agg/pre.h"
 #include "agg/zoneprune.h"
 #include "agg/chunkfilter.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "agg/wide.h"
 #include "col/col.h"
 #include "col/shred_pg.h"
@@ -64,7 +64,7 @@ typedef struct ColSource
 	Relation	heap;
 	Relation	index;
 	Snapshot	snapshot;
-	SiftAggSel	sel;			/* the match set the units are restricted to */
+	SiftSrcSel	sel;			/* the match set the units are restricted to */
 	SiftAggFilters flt;			/* the filters set_filters accepted, in rcx (reset by the next set_filters) */
 	MemoryContext rcx;
 	SiftColPred *spred;			/* the text tests of prune_str, as column predicates */
@@ -76,7 +76,7 @@ typedef struct ColSource
 	int			nwtest;
 	SiftColPred *wpred;			/* the predicates that prune the units by the conjuncts of wtest that can: a wide integer test as it is, a containment test as SIFT_COLOP_SHAPE (col_preds) */
 	int			nwpred;
-	SiftAggWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */
+	SiftSrcWide *wide;			/* per leaf: the dictionary of a wide leaf in the unit (wgen: the unit it was made for) */
 	uint64	   *wgen;
 	uint64		ugen;			/* the unit the source is at, counted */
 	uint64		wseq;			/* dictionaries made, for their ids */

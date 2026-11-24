@@ -6,7 +6,7 @@
 #ifndef SIFT_AGG_COLSRC_PROVIDER_H
 #define SIFT_AGG_COLSRC_PROVIDER_H
 
-#include "agg/colsrc/exec.h"
+#include "col/v1/src_exec.h"
 #include "core/range.h"
 
 struct SiftScopeRead;

@@ -11,7 +11,7 @@
 #include "utils/typcache.h"
 
 #include "agg/kern.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "col/col.h"
 #include "core/limits.h"
 #include "table/v1/table_v1.h"
@@ -97,7 +97,7 @@ wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t 
 	WideBuild	w = {.col = NameStr(TupleDescAttr(RelationGetDescr(t->rel), l->attno - 1)->attname)};
 	bool		has_null = false;
 
-	sift_aggsel_leaf_buf(t->cxt, b, n);
+	sift_srcsel_leaf_buf(t->cxt, b, n);
 	if (t->wcxt[leaf] == NULL)
 		t->wcxt[leaf] = AllocSetContextCreate(t->cxt, "sift table wide leaf", ALLOCSET_DEFAULT_SIZES);
 	MemoryContextReset(t->wcxt[leaf]);
@@ -112,7 +112,7 @@ wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t 
 	w.slot = palloc0(w.nslot * sizeof(uint32));
 	for (size_t i = 0; i < n; i++)
 	{
-		bool		isnull = v ? v->nulls && sift_colsrc_bit(v->nulls, i) : dnull;
+		bool		isnull = v ? v->nulls && sift_src_bit(v->nulls, i) : dnull;
 		uint32		len;
 		const char *img;
 
@@ -269,7 +269,7 @@ tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 		pass = wide_pass(w, isnull, d);
 	}
 	else
-		sift_aggsel_read(&t->sel, &p->unit, p->col[w->leaf], &v);
+		sift_srcsel_read(&t->sel, &p->unit, p->col[w->leaf], &v);
 	for (size_t k = 0; k < nrw; k++)
 		for (uint64 m = rows[k]; m; m &= m - 1)
 		{
@@ -278,7 +278,7 @@ tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 
 			if (!absent)
 			{
-				isnull = v.nulls && sift_colsrc_bit(v.nulls, r);
+				isnull = v.nulls && sift_src_bit(v.nulls, r);
 				ok = wide_pass(w, isnull, isnull ? (Datum) 0 : sift_tbl_leaf_datum(t->rel, &p->schema->cols[p->col[w->leaf]], &v, r));
 			}
 			if (ok)

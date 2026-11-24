@@ -14,7 +14,7 @@ wide_vid(ComboSt *cs, int p, const SiftSrcLeaf *lf, const SiftSrcVec *v, uint32 
 {
 	int64		bits;
 
-	if (v->ovf && sift_colsrc_bit(v->ovf, i))
+	if (v->ovf && sift_src_bit(v->ovf, i))
 		return id64_nan(&cs->id64[p]);
 	if (v->isnull && v->isnull[i])
 		return 0;
@@ -72,7 +72,7 @@ resolve_dense(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const 
 		uint32		e = cs->cent[c];
 		uint64		x = (uint64) (uint32) k + 1;
 
-		if (alive && !sift_colsrc_bit(alive, i))
+		if (alive && !sift_src_bit(alive, i))
 			eid[i] = COMBO_NONE;
 		else if (v->isnull && v->isnull[idx[i]])
 		{
@@ -109,7 +109,7 @@ resolve_one(AggExec *ex, int ci, int n, const uint32 *idx, uint32 *eid, const ui
 	{
 		uint32		d;
 
-		if (alive && !sift_colsrc_bit(alive, i))
+		if (alive && !sift_src_bit(alive, i))
 		{
 			eid[i] = COMBO_NONE;
 			continue;
@@ -143,7 +143,7 @@ combo_ents(AggExec *ex, int ci, int n, uint32 *eid, const uint64 *alive, bool re
 		uint64		v[SIFT_AGG_MAX_CLEAVES];
 		bool		same = reuse && last >= 0;
 
-		if (alive && !sift_colsrc_bit(alive, i))
+		if (alive && !sift_src_bit(alive, i))
 		{
 			eid[i] = COMBO_NONE;
 			continue;
@@ -209,7 +209,7 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 		{
 			Assert(tuples != NULL);
 			for (int i = 0; i < n; i++)
-				vid[i] = alive && !sift_colsrc_bit(alive, i) ? 0 : combo_prior_vid(ex, ci, p, tuples->cout[cb->refcombo[p]][i]);
+				vid[i] = alive && !sift_src_bit(alive, i) ? 0 : combo_prior_vid(ex, ci, p, tuples->cout[cb->refcombo[p]][i]);
 		}
 		else
 		{
@@ -225,7 +225,7 @@ combo_resolve_gen(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, co
 				/* the table of a column with many values does not fit the cache: ask for the line a few values ahead */
 				if (i + WIDE_AHEAD < n && leaf_wide(lf))
 					intids_prefetch(&cs->id64[p].ix, ((const int64 *) v->data)[idx[i + WIDE_AHEAD]]);
-				if (alive && !sift_colsrc_bit(alive, i))
+				if (alive && !sift_src_bit(alive, i))
 					vid[i] = 0;
 				else if (leaf_wide(lf))
 					vid[i] = wide_vid(cs, p, lf, v, idx[i]);
@@ -298,7 +298,7 @@ combo_resolve_in(AggExec *ex, int ci, int qlevel, int n, const uint32 *tidx, con
 	}
 	row = tuples->cout[cs->prow - 1];
 	for (int i = 0; i < n && fill; i++)
-		if (alive && !sift_colsrc_bit(alive, i))
+		if (alive && !sift_src_bit(alive, i))
 			eid[i] = COMBO_NONE;
 		else if (row[i] < cs->nbyrow && cs->byrow[row[i]])
 			eid[i] = cs->byrow[row[i]] - 1;

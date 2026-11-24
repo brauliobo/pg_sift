@@ -29,7 +29,7 @@
 #include "core/catname.h"
 #include "core/meta_peek.h"
 #include "agg/pre.h"
-#include "agg/sel.h"
+#include "col/v1/src_sel.h"
 #include "agg/wide.h"
 #include "col/col.h"
 #include "col/am.h"
@@ -92,7 +92,7 @@ leaf_tested(const SiftColDef *def, Oid typid)
 static bool
 leaf_dict(const SiftColDef *def, Oid typid)
 {
-	return sift_aggwide_type(typid) && def->store != SIFT_COLS_INT;
+	return sift_srcwide_type(typid) && def->store != SIFT_COLS_INT;
 }
 
 /* The expression of a stored generated column, as the planner sees it in a query: a query that writes it reads the column (always the value the row holds) */
@@ -149,7 +149,7 @@ tbl_layout(Relation rel)
 
 		if (leaf_is_path(def))
 		{
-			sift_colsrc_def_leaf(cur->cols, i, desc, &lay->leaf[i]);
+			sift_src_def_leaf(cur->cols, i, desc, &lay->leaf[i]);
 			continue;
 		}
 		lay->leaf[i] = (SiftSrcLeaf) {.id = i,.attno = def->attno,.parent = -1,.kind = SCL_SCALAR,.vtype = wide ? SCV_CODE : leaf_vtype(def, desc),
@@ -190,7 +190,7 @@ tbl_stats(Relation rel, SiftSrcStats *st)
 	st->allvisible_frac = 1.0;
 	st->exact_frac = exact_share(rel, tr, st->nunits);
 	sift_tbl_path_stats(rel, tr, ls, wovf, wjnull);
-	sift_colsrc_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, wjnull, st);
+	sift_src_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, wjnull, st);
 	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
 	for (int i = 0; i < SIFT_COLSRC_MAX_LEAVES && i < cur->ncols - 1; i++)
 	{
@@ -357,7 +357,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 	t->cxt = mcxt;
 	t->snapshot = RegisterSnapshot(snapshot);
 	t->last = -1;
-	sift_aggsel_init(&t->sel, mcxt, RelationGetRelid(heap));
+	sift_srcsel_init(&t->sel, mcxt, RelationGetRelid(heap));
 	sift_aggpre_init(&t->pre, mcxt);
 	pgstat_count_heap_scan(heap);
 	sift_tbl_auto_defrag_tick(heap, st);
@@ -531,10 +531,10 @@ tbl_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	{
 		SiftColGroupPred gp = {.group = p->col[parent],.npreds = 1,.preds = &pred};
 
-		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_elem_op, &gp);
+		sift_srcsel_stored(&tb->sel, p->src, &p->unit, rows, filter_elem_op, &gp);
 	}
 	else
-		sift_aggsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
+		sift_srcsel_stored(&tb->sel, p->src, &p->unit, rows, filter_str_op, &pred);
 	return true;
 }
 
@@ -599,7 +599,7 @@ tbl_next(void *impl, SiftSrcUnit *unit)
 			return false;
 		t->last = best - t->part;
 		nrow = best->unit.nrows;
-		if (t->sel.keep && !sift_aggsel_unit(&t->sel, &best->unit, &nrow))
+		if (t->sel.keep && !sift_srcsel_unit(&t->sel, &best->unit, &nrow))
 			continue;
 		unit->sb = best->unit.sb;
 		unit->nrow = nrow;
@@ -640,8 +640,8 @@ tbl_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 	TblPart    *p = unit->priv;
 	SiftAggFiltRun run = {&p->flt, t->lay, t->tol};
 
-	sift_aggsel_stored(&t->sel, p->src, &p->unit, bits, sift_aggfilt_op, &run);
-	return sift_aggsel_rows_left(bits, unit->nrow);
+	sift_srcsel_stored(&t->sel, p->src, &p->unit, bits, sift_aggfilt_op, &run);
+	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
 static void

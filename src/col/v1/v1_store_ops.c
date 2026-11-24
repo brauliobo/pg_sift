@@ -329,10 +329,10 @@ put_col(V1Src *s, int i, uint32 r, int n)
 {
 	const SiftSrcVec *v = &s->read_vec[s->col_read[i]];
 	const SiftSrcLeaf *l = s->col_leaf[i];
-	const bool	nan = v->ovf != NULL && sift_colsrc_bit(v->ovf, r);
+	const bool	nan = v->ovf != NULL && sift_src_bit(v->ovf, r);
 	const bool	valid = (v->isnull == NULL || !v->isnull[r]) && !nan;
 
-	if (nan && !sift_colsrc_nan_leaf(l))
+	if (nan && !sift_src_nan_leaf(l))
 		unreadable(s, l);
 	s->valid[i][n >> 6] |= (uint64) valid << (n & 63);
 	s->nan[i][n >> 6] |= (uint64) nan << (n & 63);

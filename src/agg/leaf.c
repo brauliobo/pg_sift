@@ -288,8 +288,8 @@ text_datum(Oid typid, int32 typmod, const char *bytes, uint32 len)
 
 	if (typid == TEXTOID || typid == VARCHAROID)
 		return PointerGetDatum(cstring_to_text_with_len(bytes, len));
-	if (sift_aggwide_type(typid))
-		return sift_aggwide_datum(typid, bytes, len);
+	if (sift_srcwide_type(typid))
+		return sift_srcwide_datum(typid, bytes, len);
 	getTypeInputInfo(typid, &infn, &ioparam);
 	fmgr_info(infn, &f);
 	return InputFunctionCall(&f, pnstrdup(bytes, len), ioparam, typmod);
@@ -809,7 +809,7 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 					}
 					if (v->ovf)
 						for (int j = 0; j < nsel; j++)
-							NFLAG(sp)[j] = sift_colsrc_bit(v->ovf, idx[j]);
+							NFLAG(sp)[j] = sift_src_bit(v->ovf, idx[j]);
 					else if (has_nan)
 						memset(NFLAG(sp), 0, nsel);
 					sp++;
@@ -856,11 +856,11 @@ eval_nx(AggExec *ex, const SiftAggNum *p, int nsel, const uint32 *iq, const uint
 				break;
 			case SNX_INTCAST:
 				for (int j = 0; has_nan && j < nsel; j++)
-					if (NFLAG(sp - 1)[j] && (!alive || sift_colsrc_bit(alive, j)))
+					if (NFLAG(sp - 1)[j] && (!alive || sift_src_bit(alive, j)))
 						nan_cast_error(x->a);
 				/* b: the result of int8 arithmetic, which PostgreSQL's int8pl, int8mi and int8mul raise for when it leaves int8 */
 				for (int j = 0; x->b && j < nsel; j++)
-					if ((NSTK(sp - 1)[j] < PG_INT64_MIN || NSTK(sp - 1)[j] > PG_INT64_MAX) && (!alive || sift_colsrc_bit(alive, j)))
+					if ((NSTK(sp - 1)[j] < PG_INT64_MIN || NSTK(sp - 1)[j] > PG_INT64_MAX) && (!alive || sift_src_bit(alive, j)))
 						ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg("bigint out of range")));
 				break;
 			default:
