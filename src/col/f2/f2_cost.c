@@ -181,11 +181,12 @@ lead_correlation(PlannerInfo *root, const IndexOptInfo *index)
 	const RangeTblEntry *rte = planner_rt_fetch(index->rel->relid, root);
 	HeapTuple	stats = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(rte->relid), Int16GetDatum(index->indexkeys[0]), BoolGetDatum(rte->inh));
 	AttStatsSlot slot;
+	const Oid	less = get_opfamily_member(index->sortopfamily[0], index->opcintype[0], index->opcintype[0], BTLessStrategyNumber);
 	double		corr = 0.0;
 
 	if (!HeapTupleIsValid(stats))
 		return corr;
-	if (get_attstatsslot(&slot, stats, STATISTIC_KIND_CORRELATION, index->sortopfamily[0], ATTSTATSSLOT_NUMBERS))
+	if (get_attstatsslot(&slot, stats, STATISTIC_KIND_CORRELATION, less, ATTSTATSSLOT_NUMBERS))
 	{
 		corr = slot.nnumbers == 1 ? slot.numbers[0] : 0.0;
 		free_attstatsslot(&slot);
