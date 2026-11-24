@@ -28,19 +28,13 @@ const SiftOrderOps sift_f2_order_ops = {
 };
 
 static bool
-preagg_cube_leaves(Oid relid, bool is_table, int *dim_leaf, int *measure_leaf)
+preagg_keeps_cubes(Oid relid, bool is_table)
 {
-	const SiftF2Store *st = sift_f2_store_from_oid(relid);
-
-	if (!st->spec.preagg)
-		return false;
-	*dim_leaf = st->spec.preagg_dim;
-	*measure_leaf = st->spec.preagg_measure;
-	return true;
+	return sift_f2_store_from_oid(relid)->spec.preagg;
 }
 
 const SiftPreaggOps sift_f2_preagg_ops = {
-	.cube_leaves = preagg_cube_leaves
+	.keeps_cubes = preagg_keeps_cubes
 };
 
 static bool

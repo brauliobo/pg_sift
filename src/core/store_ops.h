@@ -108,10 +108,10 @@ typedef struct SiftOrderOps
 							  Snapshot snap, struct SiftV6ScanStats *stats, bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);
 } SiftOrderOps;
 
-/* 2. Pre-aggregates: the integer dimension and measure leaves the parts keep SEC_PREAGG cubes of (false: the relation keeps none) */
+/* 2. Pre-aggregates: whether the parts of the relation keep cubes (preagg is not off) */
 typedef struct SiftPreaggOps
 {
-	bool		(*cube_leaves) (Oid relid, bool is_table, int *dim_leaf, int *measure_leaf);
+	bool		(*keeps_cubes) (Oid relid, bool is_table);
 } SiftPreaggOps;
 
 /*

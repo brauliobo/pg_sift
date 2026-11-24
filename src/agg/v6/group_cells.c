@@ -23,7 +23,10 @@ sift_v6_group_merge_cells(SiftV6Group *g, SiftVec *const *keyvec, const V6Acc *a
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
 
 	if (set->nk > 0)
+	{
+		v6g_table_only(g, set);
 		v6g_grouped_slots(g, set, identity_sel(g, n), keyvec);
+	}
 	for (uint16 c = 0; c < n; c++)
 		for (int j = 0; j < naggs; j++)
 			v6g_merge_acc(g, &g->spec->agg[j], set->nk == 0 ? &set->plain[j] : (V6Acc *) (sift_ht_ext(&set->ht, g->slots[c]) + g->off[j]), &acc[c * naggs + j]);
@@ -41,7 +44,10 @@ sift_v6_group_merge_dist(SiftV6Group *g, int agg, SiftVec *const *keyvec, SiftVe
 
 	argvec[agg] = arg;
 	if (set->nk > 0)
+	{
+		v6g_table_only(g, set);
 		v6g_grouped_slots(g, set, identity_sel(g, n), keyvec);
+	}
 	for (uint16 r = 0; r < n; r++)
 		all[r >> 6] |= UINT64CONST(1) << (r & 63);
 	if (set->nk == 0)

@@ -124,7 +124,7 @@ static bool
 spec_ok(const SiftV6Spec *spec)
 {
 	if (spec->nsets != 0 || spec->nbins != 0 || spec->nderive != 0 || spec->nfilters != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_query != NULL || spec->jsonqual != NIL ||
-		spec->rows || spec->affine || spec->naggs < 1)
+		spec->vqual != NIL || spec->pgexpr != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 	{

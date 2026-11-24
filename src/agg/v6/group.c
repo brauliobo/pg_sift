@@ -653,6 +653,17 @@ acc_of_in(const SiftV6Agg *a, const SiftV6AccIn *in)
 	return v6fsum_of_double(sum, in->n);
 }
 
+/* From here the groups of the set are in its group table alone: what the compact table holds moves there and the compact table and the lock of the first groups are off */
+void
+v6g_table_only(SiftV6Group *g, V6Set *set)
+{
+	set->ht.lock_at = 0;
+	v6g_compact_flush(g, set);
+	set->cmp_off = true;
+	if (set->ht.count == 0)
+		presize_set(g, set);
+}
+
 void
 sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls, const SiftV6AccIn *acc)
 {
@@ -667,11 +678,7 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 	{
 		SiftAggSlot64 *slot;
 
-		set->ht.lock_at = 0;
-		v6g_compact_flush(g, set);
-		set->cmp_off = true;
-		if (set->ht.count == 0)
-			presize_set(g, set);
+		v6g_table_only(g, set);
 		sift_ht_reserve(&set->ht, 1);
 		if (set->packed)
 		{
