@@ -368,9 +368,9 @@ VACUUM (ANALYZE) {self.tables};"""
         if kind == 'in_txn':   # left open: the battery reads inside it, then it ends (check_in_txn)
             return kind, f"BEGIN; {self.pair_move(pct)}; {self.pair_ins(pct)}; DELETE FROM events WHERE {self.window(pct)}", 'in_txn'
         if kind == 'promote':
-            return kind, "SELECT sift.col_promote('events_col')", 'maint'
+            return kind, "SELECT sift.promote('events_col')", 'maint'
         if kind == 'merge':
-            return kind, "SELECT sift.col_merge('events_col', true)", 'maint'
+            return kind, "SELECT sift.merge('events_col', true)", 'maint'
         if kind == 'vacuum':
             return kind, 'VACUUM events', 'vacuum'
         if kind == 'vacuum_pairs':

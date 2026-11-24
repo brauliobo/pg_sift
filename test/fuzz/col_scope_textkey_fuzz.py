@@ -218,9 +218,9 @@ CREATE VIEW pair_set AS SELECT {mc}, tenant_id FROM tenant_scope UNION SELECT m.
         if kind == 'txn_read':
             return kind, f"BEGIN; {self.pair_move(pct)}; {self.pair_ins(pct, True)}; DELETE FROM events WHERE {self.window(pct)}"
         if kind == 'promote':
-            return kind, "SELECT sift.col_promote('events_col')"
+            return kind, "SELECT sift.promote('events_col')"
         if kind == 'merge':
-            return kind, "SELECT sift.col_merge('events_col', true)"
+            return kind, "SELECT sift.merge('events_col', true)"
         if kind == 'vacuum':
             return kind, 'VACUUM events'
         if kind == 'vacuum_pairs':
