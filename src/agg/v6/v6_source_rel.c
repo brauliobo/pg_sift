@@ -23,7 +23,7 @@ rel_is_table(PlannerInfo *root, RelOptInfo *rel)
 static bool
 index_is_source(const IndexOptInfo *ix)
 {
-	return ix->indexprs == NIL && sift_v6_index_owned(ix);
+	return sift_v6_index_owned(ix);
 }
 
 bool
