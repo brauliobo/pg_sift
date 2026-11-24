@@ -144,7 +144,7 @@ collect_pinned(const RelOptInfo *dim, Pinned *pin)
 		if (pin->n == PUSH_PINNED_MAX || !IsA(op, OpExpr) || list_length(op->args) != 2)
 			continue;
 		v = linitial(op->args);
-		if (IsA(v, Var) && (Index) v->varno == dim->relid && IsA(lsecond(op->args), Const) && !((Const *) lsecond(op->args))->constisnull)
+		if (IsA(v, Var) && (Index) v->varno == dim->relid && v->varattno > 0 && IsA(lsecond(op->args), Const) && !((Const *) lsecond(op->args))->constisnull)
 		{
 			pin->attno[pin->n] = v->varattno;
 			pin->opno[pin->n++] = op->opno;
