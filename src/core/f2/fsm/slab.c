@@ -20,6 +20,32 @@ sift_fsm_slab_init(SiftFsmSlab *s, BlockNumber start, uint32 nblocks)
 		s->free[b / 64] |= UINT64CONST(1) << (b % 64);
 }
 
+void
+sift_fsm_slab_add(Page root, BlockNumber start, uint32 nblocks)
+{
+	sift_fsm_slab_init(&SLABS(root)->slab[SLABS(root)->nslabs++], start, nblocks);
+	FSMM(root)->meta_free_count += nblocks;
+}
+
+const SiftFsmSlab *
+sift_fsm_slab_ending_at(const SiftFsmSlabTable *t, BlockNumber end)
+{
+	for (uint32 i = 1; i < t->nslabs; i++)
+		if (t->slab[i].start + t->slab[i].nblocks == end)
+			return &t->slab[i];
+	return NULL;
+}
+
+uint32
+sift_fsm_slab_used(const SiftFsmSlab *s)
+{
+	uint32		free = 0;
+
+	for (int w = 0; w < SIFT_FSM_META_SLAB / 64; w++)
+		free += pg_popcount64(s->free[w]);
+	return s->nblocks - free;
+}
+
 SiftFsmSlab *
 sift_fsm_slab_of(SiftFsmSlabTable *t, BlockNumber blk)
 {
@@ -213,8 +239,7 @@ sift_fsm_claim_slab(FsmCtx *c)
 		start = sift_fsm_high_water(c);
 		sift_fsm_set_high_water(c, &x, start + nblocks);
 	}
-	sift_fsm_slab_init(&SLABS(root)->slab[SLABS(root)->nslabs++], start, nblocks);
-	FSMM(root)->meta_free_count += nblocks;
+	sift_fsm_slab_add(root, start, nblocks);
 	sift_fsm_root_seal(root);
 	sift_xlog_finish(&x);
 	UnlockReleaseBuffer(rootbuf);

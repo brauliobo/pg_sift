@@ -57,6 +57,9 @@ extern uint64 sift_fsm_reclaim_locked(FsmCtx *c, BlockNumber *new_hw);
 /* fsm/slab.c: the bitmaps of the metadata slabs and the slabs themselves */
 extern SiftFsmSlab *sift_fsm_slab_of(SiftFsmSlabTable *t, BlockNumber blk);
 extern void sift_fsm_slab_init(SiftFsmSlab *s, BlockNumber start, uint32 nblocks);
+extern void sift_fsm_slab_add(Page root, BlockNumber start, uint32 nblocks);
+extern const SiftFsmSlab *sift_fsm_slab_ending_at(const SiftFsmSlabTable *t, BlockNumber end);
+extern uint32 sift_fsm_slab_used(const SiftFsmSlab *s);
 extern BlockNumber sift_fsm_slab_take(Page root);
 extern void sift_fsm_slab_put(Relation rel, Page root, BlockNumber blk);
 extern void sift_fsm_claim_slab(FsmCtx *c);

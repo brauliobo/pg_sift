@@ -92,6 +92,56 @@ same_extents(ExtVec *listed, const ExtVec *written)
 	return true;
 }
 
+/* The run of free blocks that ends at the high-water mark and is cut off the file, or -1 */
+static int
+tail_run(const ExtVec *data, BlockNumber hw)
+{
+	for (int i = 0; i < data->n; i++)
+		if ((uint64) data->v[i].start + data->v[i].nblocks == hw && data->v[i].nblocks >= SIFT_TAIL_SHRINK_MIN_BLOCKS)
+			return i;
+	return -1;
+}
+
+static uint32
+pages_within(const SiftFsmSlab *s, const ExtVec *pages)
+{
+	uint32		n = 0;
+
+	for (int i = 0; i < pages->n; i++)
+		n += pages->v[i].start >= s->start && pages->v[i].start < s->start + s->nblocks;
+	return n;
+}
+
+/*
+ * The slab that ends the file once the cut is made, when only pages of the lists are in use in it: it was claimed at the end of the file while the blocks below were in the quarantine, and with
+ * the reserve the others must keep free it stays, pinning the high-water mark above the free space under it. Its place is the lowest free run below it that holds it, taken out of data and
+ * returned in home; the lists with a page in the old slab are written again, so that the next pass finds the old slab idle and cuts it off with the free run behind it.
+ */
+static const SiftFsmSlab *
+plan_slab_move(Page root, BlockNumber end, ExtVec *data, const ExtVec *queue_pages, const ExtVec listed_pages[], SiftFsmExtent *home)
+{
+	const SiftFsmSlabTable *t = SLABS(root);
+	const SiftFsmSlab *old = sift_fsm_slab_ending_at(t, end);
+	uint32		held;
+
+	if (old == NULL || t->nslabs >= SIFT_FSM_MAX_SLABS)
+		return NULL;
+	held = pages_within(old, queue_pages);
+	for (int k = 0; k < SIFT_FSM_NCLASSES; k++)
+		held += pages_within(old, &listed_pages[k]);
+	if (held == 0 || held != sift_fsm_slab_used(old))
+		return NULL;
+	for (int i = 0; i < data->n && data->v[i].start < old->start; i++)
+		if (data->v[i].nblocks >= old->nblocks)
+		{
+			*home = (SiftFsmExtent) {.start = data->v[i].start,.nblocks = old->nblocks};
+			data->v[i].start += old->nblocks;
+			data->v[i].nblocks -= old->nblocks;
+			return old;
+		}
+	return NULL;
+}
+
 /*
  * Rebuilds the lists: the matured extents of the queue join the free ones, adjacent runs are coalesced and cut into classes again, the rest of the queue is kept. The new pages
  * come from blocks the bitmaps hold free now and are written before the one record that switches the lists over (the old pages go back to the bitmaps in it), so a crash at any
@@ -104,11 +154,15 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 	Relation	rel = c->rel;
 	bool		claimed = false;
 	bool		meta_only = false;
+	bool		slab_moved = false;
 	uint64		freed_before = 0;
 
 	for (;;)
 	{
 		BlockNumber hw = new_hw != NULL ? sift_fsm_high_water(c) : 0;
+		SiftFsmExtent home = {0};
+		const SiftFsmSlab *vacated = NULL;
+		int			tail;
 		ExtVec		ready = {0}, queue = {0}, pages = {0}, data = {0}, pending = {0}, metafree = {0}, idle = {0};
 		ExtVec		byclass[SIFT_FSM_NCLASSES] = {{0}},
 					listed[SIFT_FSM_NCLASSES] = {{0}},
@@ -175,18 +229,17 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 			}
 			coalesce(rel, &data);
 		}
+		tail = new_hw != NULL ? tail_run(&data, hw) : -1;
+		if (tail >= 0)
+			cut = data.v[tail].start;
+		if (new_hw != NULL && !meta_only && !claimed && !slab_moved)
+			vacated = plan_slab_move(root, tail >= 0 ? cut : hw, &data, &pages, listed_pages, &home);
 		for (int i = 0; i < data.n; i++)
-		{
-			BlockNumber start = data.v[i].start;
-
-			if (new_hw != NULL && (uint64) start + data.v[i].nblocks == hw && data.v[i].nblocks >= SIFT_TAIL_SHRINK_MIN_BLOCKS)
-				cut = start;
-			else
-				cut_into_classes(byclass, start, data.v[i].nblocks);
-		}
+			if (i != tail)
+				cut_into_classes(byclass, data.v[i].start, data.v[i].nblocks);
 		for (int k = 0; k < SIFT_FSM_NCLASSES && !meta_only; k++)
 		{
-			keep[k] = same_extents(&listed[k], &byclass[k]);
+			keep[k] = same_extents(&listed[k], &byclass[k]) && (vacated == NULL || pages_within(vacated, &listed_pages[k]) == 0);
 			if (!keep[k])
 			{
 				newpages += pages_for(byclass[k].n);
@@ -223,6 +276,8 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 			(void) sift_wal_snapshot_conflict(rel, InvalidBlockNumber, max_matured);
 			memcpy(scratch.data, root, BLCKSZ);
 			sift_fsm_slabs_drop(scratch.data, &idle);
+			if (home.nblocks > 0)
+				sift_fsm_slab_add(scratch.data, home.start, home.nblocks);
 			for (int i = 0; i < newpages; i++)
 				taken[i] = sift_fsm_slab_take(scratch.data);
 			UnlockReleaseBuffer(rootbuf);
@@ -275,6 +330,8 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 			wbuf = sift_fsm_lock_root(rel);
 			wroot = sift_xlog_register(&x, wbuf, 0);
 			sift_fsm_slabs_drop(wroot, &idle);
+			if (home.nblocks > 0)
+				sift_fsm_slab_add(wroot, home.start, home.nblocks);
 			for (int i = 0; i < newpages; i++)
 				if (sift_fsm_slab_take(wroot) != taken[i])
 					SIFT_CORRUPT(rel, "The allocator changed under its own lock.");
@@ -308,6 +365,12 @@ reclaim_pass(FsmCtx *c, BlockNumber *new_hw)
 		}
 		for (int i = 0; i < metafree.n; i++)
 			freed += metafree.v[i].nblocks;
+		if (home.nblocks > 0)
+		{
+			slab_moved = true;
+			freed_before = freed;
+			continue;
+		}
 		if (meta_only)
 		{
 			freed_before = freed;
