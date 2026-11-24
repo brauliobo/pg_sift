@@ -131,7 +131,12 @@ setup_pipe(SiftSrcFold *f)
 	sift_v6_star_attach(f->a.star, f->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
-			f->pipe->fslot[d][k] = slot_of(f, &(SiftV6Col) {.attno = x->dim[d].fatt[k],.typid = x->dim[d].ftype[k]});
+			if (sift_v6_xdim_key_is_col(&x->dim[d], k))
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
+
+				f->pipe->fslot[d][k] = slot_of(f, &key);
+			}
 	for (int i = 0; i < x->nrcol; i++)
 		f->pipe->rslot[i] = slot_of(f, &x->rcol[i]);
 	for (int i = 0; i < spec->nkeys; i++)
@@ -288,7 +293,8 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 				f->argvec[v] = vec_for(f, *sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
 		for (int d = 0; spec->ext != NULL && d < spec->ext->ndims; d++)
 			for (int k = 0; k < spec->ext->dim[d].nkeys; k++)
-				col_for(f, (SiftV6Col) {.attno = spec->ext->dim[d].fatt[k],.typid = spec->ext->dim[d].ftype[k]}, false);
+				if (sift_v6_xdim_key_is_col(&spec->ext->dim[d], k) && spec->ext->dim[d].fsrc[k] == SV6SRC_ATTR)
+					col_for(f, sift_v6_xdim_key_col(&spec->ext->dim[d], k), false);
 		for (int i = 0; spec->ext != NULL && i < spec->ext->nrcol; i++)
 			if (spec->ext->rcol[i].src == SV6SRC_ATTR)
 				col_for(f, spec->ext->rcol[i], false);
