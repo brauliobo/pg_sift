@@ -54,17 +54,10 @@ pin_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftPa
 {
 	SiftV6PinRun *r = arg;
 
-	if (sift_par_group_spilled(r->grp))
-		return sift_err_fill(err, SIFT_ERR_SERIAL, 0, 0, "the groups are many: the scan folds them"), false;
 	if (!r->d.fill(r->d.arg, worker, sift_pin_win_slot(r->win, lo), scratch, out, err))
 		return false;
 	r->w[worker].rows += out->n;
 	return true;
-}
-
-static void
-pin_overflow(void *arg, const SiftParRange *left, uint32 nleft)
-{
 }
 
 /* ---- the driver ---- */
@@ -102,11 +95,7 @@ op_phase1(void *vr, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *don
 static bool
 op_seal(void *vr, uint32 *nparts, SiftErr *err)
 {
-	SiftParGroup *g = ((SiftV6PinRun *) vr)->grp;
-
-	if (sift_par_group_spilled(g))
-		return *nparts = 0, true;
-	return sift_par_group_ops.seal(g, nparts, err);
+	return sift_par_group_ops.seal(((SiftV6PinRun *) vr)->grp, nparts, err);
 }
 
 static bool
@@ -124,10 +113,7 @@ op_finish(void *vr)
 static void
 op_overflow(void *vr, const SiftParRange *left, uint32 nleft)
 {
-	SiftParGroup *g = ((SiftV6PinRun *) vr)->grp;
-
-	if (!sift_par_group_spilled(g))
-		sift_par_group_ops.overflow_drain(g, left, nleft);
+	sift_par_group_ops.overflow_drain(((SiftV6PinRun *) vr)->grp, left, nleft);
 }
 
 static const SiftParOps pin_ops = {.feed_slot = op_feed,.release_slot = op_release,.fallback_item = op_fallback,.phase1 = op_phase1,.seal = op_seal,.phase2 = op_phase2,
@@ -184,9 +170,9 @@ arenas_fit(const SiftV6PinRun *r, int nthreads, size_t *state, size_t *sink)
 
 	if (per_thread < fixed + STATE_MIN + SINK_MIN_BYTES)
 		return false;
-	share = (per_thread - fixed) / 2;
-	*state = Max((uint64) STATE_MIN, Min(4 * rec * rows / nthreads, share));
-	*sink = Max((uint64) SINK_MIN_BYTES, Min(2 * out_rec * rows / nthreads, share));
+	share = per_thread - fixed;
+	*state = Max((uint64) STATE_MIN, Min(4 * rec * rows / nthreads, share * 2 / 3));
+	*sink = Max((uint64) SINK_MIN_BYTES, Min(2 * out_rec * rows / nthreads, share / 3));
 	return true;
 }
 
@@ -197,7 +183,7 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	const uint32 items = sift_pin_win_items(r->win);
 	SiftParArenas *ar = sift_par_arenas_create(cx, nthreads, r->d.scratch_bytes, state, WORK_BYTES);
-	const SiftParGroupHooks hooks = {.fill = pin_fill,.emit = pin_emit,.overflow = pin_overflow,.arg = r};
+	const SiftParGroupHooks hooks = {.fill = pin_fill,.emit = pin_emit,.arg = r};
 	SiftErr		err = {0};
 	bool		done;
 	bool		kept;
@@ -216,7 +202,7 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	}
 	done = sift_par_run(&(SiftParCfg) {.mode = SIFT_PAR_RING,.nthreads = nthreads,.ring_slots = 2 * nthreads}, &pin_ops, r, ar, r->index);
 	MemoryContextSwitchTo(old);
-	kept = !sift_v6_gsink_full(r->sink) && !sift_par_group_spilled(r->grp);
+	kept = !sift_v6_gsink_full(r->sink);
 	if (kept)
 	{
 		sift_v6_gsink_drain(r->sink, r->d.fold, r->d.arg);
@@ -228,7 +214,7 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	}
 	else
 		replay_from(r, 0);
-	elog(DEBUG1, "sift agg v6 %s: %u granules on %d threads, %s (%u left to the scan)", r->d.name, items, nthreads, kept ? "folded by the threads" : "many groups: replayed by the scan",
+	elog(DEBUG1, "sift agg v6 %s: %u granules on %d threads, %s (%u left to the scan)", r->d.name, items, nthreads, kept ? "folded by the threads" : "the groups outgrew the stream: replayed by the scan",
 		 kept ? r->npending + (done ? 0 : items - r->fed) : items);
 	MemoryContextDelete(cx);
 }

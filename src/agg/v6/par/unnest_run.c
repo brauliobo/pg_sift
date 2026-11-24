@@ -207,8 +207,6 @@ un_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftPar
 {
 	UnPar	   *r = arg;
 
-	if (sift_par_group_spilled(r->grp))
-		return sift_err_fill(err, SIFT_ERR_SERIAL, 0, 0, "the groups are many: the scan folds them"), false;
 	return sift_par_unnest_batch(r->un, worker, r->slot[lo % r->nslots], err, out);
 }
 
@@ -218,16 +216,11 @@ un_emit(void *arg, int worker, const SiftParGroupRow *row)
 	sift_v6_gsink_emit(((UnPar *) arg)->sink, worker, row);
 }
 
-static void
-un_overflow(void *arg, const SiftParRange *left, uint32 nleft)
-{
-}
-
-/* The leader folds the rest itself: the groups are many, or the threads leave it most of the slots (a NULL in a counted column of every batch) */
+/* The leader folds the rest itself when the threads leave it most of the slots (a NULL in a counted column of every batch) */
 static bool
 leader_folds(const UnPar *r)
 {
-	return sift_par_group_spilled(r->grp) || (r->nleft >= 8 && r->nleft * 2 > r->nbatch);
+	return r->nleft >= 8 && r->nleft * 2 > r->nbatch;
 }
 
 static bool
@@ -280,11 +273,7 @@ op_phase1(void *vr, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *don
 static bool
 op_seal(void *vr, uint32 *nparts, SiftErr *err)
 {
-	SiftParGroup *g = ((UnPar *) vr)->grp;
-
-	if (sift_par_group_spilled(g))
-		return *nparts = 0, true;
-	return sift_par_group_ops.seal(g, nparts, err);
+	return sift_par_group_ops.seal(((UnPar *) vr)->grp, nparts, err);
 }
 
 static bool
@@ -372,7 +361,7 @@ sift_v6_unnest_par(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const
 	r->un = sift_par_unnest_new(r->cx, &r->sh, src->pipe, src->left, nthreads);
 	r->sink = sift_v6_gsink_new(r->cx, &r->sh.gs, nthreads, SINK_BYTES);
 	ar = sift_par_arenas_create(r->cx, nthreads, SCRATCH_BYTES, STATE_BYTES, WORK_BYTES);
-	hooks = (SiftParGroupHooks) {.fill = un_fill,.emit = un_emit,.overflow = un_overflow,.arg = r};
+	hooks = (SiftParGroupHooks) {.fill = un_fill,.emit = un_emit,.arg = r};
 	r->grp = sift_par_group_create(ar, &r->sh.gs, false, UINT64_MAX, &hooks, &err);
 	MemoryContextSwitchTo(old);
 	if (r->grp == NULL)
@@ -381,12 +370,12 @@ sift_v6_unnest_par(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const
 		return false;
 	}
 	done = sift_par_run(&(SiftParCfg) {.mode = SIFT_PAR_RING,.nthreads = nthreads,.ring_slots = r->nslots}, &un_ops, r, ar, index);
-	kept = done && !sift_par_group_spilled(r->grp) && !sift_v6_gsink_full(r->sink);
+	kept = done && !sift_v6_gsink_full(r->sink);
 	if (kept)
 		sift_v6_gsink_drain(r->sink, un_fold, r);
 	else
 		redo_serial(r);
-	elog(DEBUG1, "sift agg v6 unnest: %u batches on %d threads, %s", r->nbatch, nthreads, kept ? "folded by the threads" : "many groups: folded by the scan");
+	elog(DEBUG1, "sift agg v6 unnest: %u batches on %d threads, %s", r->nbatch, nthreads, kept ? "folded by the threads" : "the groups outgrew the stream: folded by the scan");
 	MemoryContextDelete(r->cx);
 	return true;
 }

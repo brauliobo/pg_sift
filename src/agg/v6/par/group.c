@@ -316,12 +316,6 @@ tab_open(SiftParGroup *g, SiftCompact *tab, SiftArena *work, uint64 groups)
 	return cmp_init(tab, pg_nextpower2_64(Max(TAB_FIRST, Min(groups, TAB_PART_MAX) * 2)));
 }
 
-bool
-sift_par_group_spilled(const SiftParGroup *g)
-{
-	return atomic_load_explicit(&g->radix, memory_order_relaxed);
-}
-
 static bool
 group_seal(void *vg, uint32 *nparts, SiftErr *err)
 {
