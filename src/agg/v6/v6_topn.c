@@ -175,7 +175,7 @@ shape_ok(PlannerInfo *root, SiftV6TopNSpec *spec)
 		q->hasTargetSRFs || q->distinctClause != NIL || q->setOperations != NULL || q->rowMarks != NIL || q->sortClause == NIL ||
 		list_length(q->sortClause) > SIFT_TOURN_MAX_KEYS || q->limitCount == NULL || !count_ok(q->limitCount) || !count_ok(q->limitOffset))
 		return false;
-	if (IsA(l, Const) && !l->constisnull && (DatumGetInt64(l->constvalue) <= 0 || plan_rows(q->limitCount, q->limitOffset) > SIFT_TOURN_MAX_K))
+	if (IsA(l, Const) && (l->constisnull || DatumGetInt64(l->constvalue) <= 0 || plan_rows(q->limitCount, q->limitOffset) > SIFT_TOURN_MAX_K))
 		return false;
 	if (q->limitOffset != NULL && IsA(o, Const) && !o->constisnull && DatumGetInt64(o->constvalue) < 0)
 		return false;
