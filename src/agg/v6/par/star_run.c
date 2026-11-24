@@ -43,7 +43,7 @@ star_fill(void *arg, int worker, const SiftPinSlot *sl, SiftArena *scratch, Sift
 		return true;
 	for (int i = 0; i < r->nfact; i++)
 		col[i] = (SiftParCol) {.v = cv[i].i,.isnull = cv[i].isnull};
-	return sift_par_star_batch(r->st, worker, col, active, sl->nrows, err, out);
+	return sift_par_star_batch(r->st, worker, col, active, sift_pin_slot_nrows(sl), err, out);
 }
 
 static void

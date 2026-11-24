@@ -134,7 +134,7 @@ ts_fill(void *arg, int worker, const SiftPinSlot *sl, SiftArena *scratch, SiftPa
 		return true;
 	for (int i = 0; i < t->nleaves; i++)
 		col[i] = (SiftParCol) {.v = cv[i].i,.isnull = cv[i].isnull};
-	return sift_tseries_batch(&t->sh, col, active, nact, sl->nrows, scratch, err, out);
+	return sift_tseries_batch(&t->sh, col, active, nact, sift_pin_slot_nrows(sl), scratch, err, out);
 }
 
 /* ---- the leader ---- */

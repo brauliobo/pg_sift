@@ -1,6 +1,6 @@
 /*
  * agg/v6/par/run.h - SiftAggV6 on the compute threads of the backend (core/par/pool.h): the grouped aggregation ORDER BY count or sum LIMIT K of integer or text keys, which the scan hands over
- * granule by granule (col/f2/pin_win.h) and the threads filter, decode and fold (agg/v6/par/group.h), each keeping its K best groups.
+ * granule by granule (core/par/pin.h) and the threads filter, decode and fold (agg/v6/par/group.h), each keeping its K best groups.
  *
  * The K best of the threads are the answer only when every row of the statement went through them: the scan folds on the backend thread what it could not hand over, and a thread says
  * SIFT_ERR_SERIAL for a granule whose rows it does not fold (a NULL in a column the statement reads). When any row was left to the serial path, the groups of the threads are dropped and every
@@ -12,7 +12,7 @@
 #include "postgres.h"
 
 #include "agg/v6/v6.h"
-#include "col/f2/pin_win.h"
+#include "core/par/pin.h"
 
 typedef struct SiftV6ParScan SiftV6ParScan;
 

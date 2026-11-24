@@ -13,7 +13,7 @@
 #include "agg/v6/par/group.h"
 #include "agg/v6/par/rows.h"
 #include "agg/v6/par/run.h"
-#include "col/f2/pin_win.h"
+#include "core/par/pin.h"
 
 #define PAR_SIGN_FLIP	(UINT64CONST(1) << 63)
 #define PAR_LEAVES_MAX	(SIFT_PAR_GROUP_MAX_KEYS * (1 + SIFT_V6_MAX_CASE) + SIFT_PAR_GROUP_MAX_SUM + SIFT_V6_MAX_KEYS)

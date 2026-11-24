@@ -10,7 +10,6 @@
 #include "miscadmin.h"
 
 #include "agg/v6/par/run_int.h"
-#include "col/granule/cfilt_str_simd.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
 
@@ -171,19 +170,19 @@ par_serial(SiftErr *err, const char *why)
 bool
 par_load(const ParShape *sh, const SiftPinSlot *sl, SiftArena *scratch, SiftErr *err, ParLoad *ld)
 {
-	SiftStrMemo *memo = sift_arena_alloc0(scratch, sizeof(SiftStrMemo), SIFT_ARENA_ALIGN);
+	struct SiftStrMemo *memo = sift_pin_memo_new(scratch);
 	uint16	   *rows = NULL;
 	int			nrows = 0;
 
-	ld->n = sl->nrows;
-	ld->active = sift_arena_alloc(scratch, (SIFT_CFILT_WORDS + 2) * sizeof(uint64), SIFT_ARENA_ALIGN);
+	ld->n = sift_pin_slot_nrows(sl);
+	ld->active = sift_arena_alloc(scratch, SIFT_PIN_ACTIVE_WORDS * sizeof(uint64), SIFT_ARENA_ALIGN);
 	if (memo == NULL || ld->active == NULL)
 		return par_arena_full(scratch, err);
 	if (!sift_pin_slot_filter_a(sl, scratch, err, memo, ld->active, &ld->nact))
 		return false;
 	if (ld->nact == 0)
 		return true;
-	if (ld->nact * 4 < ld->n && ld->nact <= SIFT_POINT_ROWS_MAX)
+	if (ld->nact * 4 < ld->n && ld->nact <= SIFT_PIN_POINT_ROWS_MAX)
 	{
 		if ((rows = sift_arena_alloc(scratch, ld->nact * sizeof(uint16), 8)) == NULL)
 			return par_arena_full(scratch, err);

@@ -1,12 +1,12 @@
 /*
- * agg/v6/par/unnest_run.h - the aggregate scan of a LATERAL unnest (agg/v6/v6_unnest_run.h) on the compute threads of the backend (core/par/pool.h).
+ * col/f2/f2_v6_unnest_par.h - the aggregate scan of a LATERAL unnest (agg/v6/v6_unnest_run.h) on the compute threads of the backend (core/par/pool.h).
  *
  * The leader reads the batches of the index and says which rows of each take part (the serial run's source below), and feeds them to a ring of slots that the threads expand and fold into
  * agg/v6/par/group.h (agg/v6/par/unnest.h). A slot a thread cannot fold exactly is folded by the leader, the same way the serial run does. When the groups are more than the threads fold (the table of a
  * thread outgrows SIFT_PAR_GROUP_LOW, a stream or an arena fills), what the threads folded is dropped and the serial run reads the batches again that they had: the answer is the serial run's.
  */
-#ifndef SIFT_AGG_V6_PAR_UNNEST_RUN_H
-#define SIFT_AGG_V6_PAR_UNNEST_RUN_H
+#ifndef SIFT_COL_F2_V6_UNNEST_PAR_H
+#define SIFT_COL_F2_V6_UNNEST_PAR_H
 
 #include "postgres.h"
 
@@ -30,4 +30,4 @@ typedef struct SiftV6UnnestSrc
 /* false: the statement is not one the threads take (nothing was read). true: every row is in the groups of g */
 extern bool sift_v6_unnest_par(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const SiftV6UnnestSrc *src);
 
-#endif							/* SIFT_AGG_V6_PAR_UNNEST_RUN_H */
+#endif							/* SIFT_COL_F2_V6_UNNEST_PAR_H */

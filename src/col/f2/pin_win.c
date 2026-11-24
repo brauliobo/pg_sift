@@ -134,6 +134,28 @@ sift_pin_win_slot(const SiftPinWin *w, uint32 item)
 	return &w->slot[item % w->nslots];
 }
 
+uint32
+sift_pin_slot_nrows(const SiftPinSlot *sl)
+{
+	return sl->nrows;
+}
+
+uint32
+sift_pin_slot_job(const SiftPinSlot *sl)
+{
+	return sl->job;
+}
+
+StaticAssertDecl(SIFT_PIN_GRANULE_ROWS == SIFT_GRANULE_ROWS, "the window and the granule agree on the rows of a granule");
+StaticAssertDecl(SIFT_PIN_ACTIVE_WORDS == SIFT_CFILT_WORDS + 2, "the bitmap of a filter has the words the window says");
+StaticAssertDecl(SIFT_PIN_POINT_ROWS_MAX == SIFT_POINT_ROWS_MAX, "the window and the granule agree on the rows read by their places");
+
+SiftStrMemo *
+sift_pin_memo_new(SiftArena *a)
+{
+	return sift_arena_alloc0(a, sizeof(SiftStrMemo), SIFT_ARENA_ALIGN);
+}
+
 void
 sift_pin_win_serial_head(SiftPinWin *w, uint32 n)
 {
@@ -442,7 +464,7 @@ sift_pin_slot_filter_a(const SiftPinSlot *sl, SiftArena *a, SiftErr *err, SiftSt
 				words = (n + 63) / 64;
 	uint32		count = 0;
 
-	memset(active, 0, (SIFT_CFILT_WORDS + 2) * sizeof(uint64));
+	memset(active, 0, SIFT_PIN_ACTIVE_WORDS * sizeof(uint64));
 	memset(active, 0xFF, n / 64 * sizeof(uint64));
 	if (n & 63)
 		active[n / 64] = (UINT64CONST(1) << (n & 63)) - 1;
@@ -450,7 +472,7 @@ sift_pin_slot_filter_a(const SiftPinSlot *sl, SiftArena *a, SiftErr *err, SiftSt
 		active[w] &= ~sl->dead[w];
 	for (int k = 0; k < pt->npreds; k++)
 	{
-		uint64		mask[SIFT_CFILT_WORDS + 2];
+		uint64		mask[SIFT_PIN_ACTIVE_WORDS];
 		SiftCfiltResult res;
 
 		if ((sl->decided >> k) & 1)

@@ -1,5 +1,5 @@
 /*
- * agg/v6/par/pinrun.h - a grouped aggregation of SiftAggV6 whose every group the compute threads of the backend (core/par/pool.h) deliver, run over the granules the scan hands over (col/f2/pin_win.h):
+ * agg/v6/par/pinrun.h - a grouped aggregation of SiftAggV6 whose every group the compute threads of the backend (core/par/pool.h) deliver, run over the granules the scan hands over (core/par/pin.h):
  * the one driver that the time-bucket (par/tseries.h), star-join (par/star.h) and unnest (par/unnest.h) operators plug into.
  *
  * An operator says what a thread does with a granule (fill: pure C, a batch of key and argument words for agg/v6/par/group.h) and what the leader does with each group the threads
@@ -17,7 +17,7 @@
 #include "agg/v6/par/wordsink.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_pipe.h"
-#include "col/f2/pin_win.h"
+#include "core/par/pin.h"
 
 typedef struct SiftV6PinRun SiftV6PinRun;
 
@@ -51,7 +51,7 @@ extern SiftPinWin *sift_v6_pinrun_window(SiftV6PinRun *r);
 extern void sift_v6_pinrun_end(SiftV6PinRun *r);
 
 /*
- * What every fill starts with (pure C): the rows of the granule that its deletion vector and predicates leave, as a bitmap of SIFT_CFILT_WORDS + 2 words in *active, and the leaves leaf[i] decoded for
+ * What every fill starts with (pure C): the rows of the granule that its deletion vector and predicates leave, as a bitmap of SIFT_PIN_ACTIVE_WORDS words in *active, and the leaves leaf[i] decoded for
  * them into cv[i] (the codes of a dictionary for the leaf i with codes[i]; codes NULL: none). *nact == 0: no row is left and nothing is decoded.
  */
 extern bool sift_v6_pin_slot_cols(const SiftPinSlot *sl, SiftArena *a, SiftErr *err, const int *leaf, int nleaves, const bool *codes, ColView *cv, uint64 **active, uint32 *nact);

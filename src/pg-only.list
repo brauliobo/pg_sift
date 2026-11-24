@@ -91,7 +91,6 @@ agg/hybrid_semi.h
 agg/hybrid_semi_plan.c
 agg/hybrid_state.h
 agg/hybrid_store.c
-agg/kern6_hash.c
 agg/init.c
 agg/init_filter.c
 agg/init_int.h
@@ -479,6 +478,8 @@ col/f2/f2_v6_source.c
 col/f2/f2_v6_topn.c
 col/f2/f2_v6_unnest_emit.c
 col/f2/f2_v6_unnest_int.h
+col/f2/f2_v6_unnest_par.c
+col/f2/f2_v6_unnest_par.h
 col/f2/f2_vac_vm.c
 col/f2/f2_vac_vm.h
 col/f2/f2_vacuum_run.c
@@ -968,3 +969,4 @@ col/f2/f2_v6_scan.h
 col/f2/f2_v6_scan_fill.c
 col/f2/f2_v6_unnest_test.c
 col/f2/f2_v6_unnest_test.h
+col/f2/f2_v6_scan_table.c

@@ -108,7 +108,7 @@ rows_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftP
 	}
 	PAR_EACH_ROW(&ld, r, i)
 	{
-		tid[i] = ((uint64) sl->job << ROW_BITS) | r;
+		tid[i] = ((uint64) sift_pin_slot_job(sl) << ROW_BITS) | r;
 		for (int j = 0; j < nk; j++)
 		{
 			const ColView *cv = &ld.cv[sh->rkey_at[j]];

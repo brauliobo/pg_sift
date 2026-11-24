@@ -14,7 +14,6 @@
 #include "agg/v6/par/pinrun.h"
 #include "agg/v6/par/star_run.h"
 #include "agg/v6/par/tseries_run.h"
-#include "col/granule/cfilt_str_simd.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
 
@@ -252,18 +251,18 @@ sift_v6_pinrun_end(SiftV6PinRun *r)
 bool
 sift_v6_pin_slot_cols(const SiftPinSlot *sl, SiftArena *a, SiftErr *err, const int *leaf, int nleaves, const bool *codes, ColView *cv, uint64 **active, uint32 *nact)
 {
-	SiftStrMemo *memo = sift_arena_alloc0(a, sizeof(SiftStrMemo), SIFT_ARENA_ALIGN);
+	struct SiftStrMemo *memo = sift_pin_memo_new(a);
 	uint16	   *rows = NULL;
-	const int	n = sl->nrows;
+	const int	n = sift_pin_slot_nrows(sl);
 
-	*active = sift_arena_alloc(a, (SIFT_CFILT_WORDS + 2) * sizeof(uint64), SIFT_ARENA_ALIGN);
+	*active = sift_arena_alloc(a, SIFT_PIN_ACTIVE_WORDS * sizeof(uint64), SIFT_ARENA_ALIGN);
 	if (memo == NULL || *active == NULL)
 		return sift_err_fill(err, SIFT_ERR_ARENA_FULL, 0, a->cap - a->used, "the arena of the thread has no room for a granule"), false;
 	if (!sift_pin_slot_filter_a(sl, a, err, memo, *active, nact))
 		return false;
 	if (*nact == 0)
 		return true;
-	if (*nact * 4 < (uint32) n && *nact <= SIFT_POINT_ROWS_MAX)
+	if (*nact * 4 < (uint32) n && *nact <= SIFT_PIN_POINT_ROWS_MAX)
 	{
 		uint32		i = 0;
 
