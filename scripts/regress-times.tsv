@@ -207,7 +207,7 @@ agg_lookup_rows_read	2.50
 agg_lookup_scan_memory	0.71
 agg_lookup_set_ratio	2.38
 agg_lookup_shared	0.68
-agg_lookup_tests	8.54
+agg_lookup_tests	3.54
 agg_lookup_wide_classes	1.29
 agg_mapped_direct_values	0.69
 agg_mem_spill	1.42
@@ -401,7 +401,7 @@ agg_unnest_ranges	1.56
 agg_unstorable_values	1.81
 agg_unused_lateral	0.69
 agg_utc_zone_name	1.83
-agg_v6_adaptive_star	21.41
+agg_v6_adaptive_star	6.80
 agg_v6_bridges	0.54
 agg_v6_clickhouse_sql	0.79
 agg_v6_jsonb_exists	0.94
@@ -415,10 +415,10 @@ agg_v6_par_distinct_dict	30.2
 agg_v6_par_distinct_dict_robust	34.75
 agg_v6_parity_workload	0.80
 agg_v6_scope_topk	7.17
-agg_v6_sip_window_expr	24.08
+agg_v6_sip_window_expr	10.32
 agg_v6_star_jsonb_unnest	0.56
 agg_v6_text_collation	0.18
-agg_v6_topn_card_vexpr	5.94
+agg_v6_topn_card_vexpr	1.91
 agg_v6_zone_calendar	14.41
 agg_v6_core_suite	0.00
 agg_vec_bounds	0.95
@@ -609,7 +609,7 @@ col_gorder_group_compact	7.12
 col_gorder_group_count	2.14
 col_gorder_group_points	1.01
 col_gorder_group_pos	12.35
-col_gorder_group_suite	29.48
+col_gorder_group_suite	12.13
 col_gorder_group_walk	4.86
 col_gorder_in_walk	4.92
 col_gorder_keyed	1.95
@@ -620,7 +620,7 @@ col_gorder_point	1.20
 col_gorder_seek	1.13
 col_gorder_spill	0.59
 col_gorder_text	5.08
-col_gorder_text_suite	34.22
+col_gorder_text_suite	13.56
 col_gorder_textperm	2.99
 col_gorder_tiebreak	8.49
 col_gorder_ties	0.86
@@ -661,14 +661,14 @@ col_key_cut_overlap	2.68
 col_key_cut_overlay_half	1.05
 col_key_cut_overlay_mass	3.14
 col_key_cut_overlay_pieces	2.29
-col_key_cut_overlays_suite	28.41
+col_key_cut_overlays_suite	6.83
 col_key_cut_paced	6.64
 col_key_cut_partition	1.45
 col_key_cut_point	1.84
 col_key_cut_ranges	5.36
 col_key_cut_ranges_small	0.68
 col_key_cut_search	0.47
-col_key_cut_segment_cap	24.94
+col_key_cut_segment_cap	2.69
 col_key_cut_split	1.37
 col_key_cut_switch_spill	2.00
 col_key_cut_switched	5.26
@@ -730,7 +730,7 @@ col_paths_auto	0.23
 col_peers_dead_scan	11.27
 col_plain_window	0.23
 col_plan_dir_reads	0.17
-col_point_auto	8.19
+col_point_auto	2.09
 col_point_chunks	1.02
 col_point_dense	0.39
 col_point_dir	5.91
@@ -769,8 +769,8 @@ col_rewrite_cut	1.30
 col_rewrite_roll	6.67
 col_rollup_auto	0.71
 col_same_layout_notice	0.21
-col_scan	28.78
-col_scan_key_range	33.73
+col_scan	2.53
+col_scan_key_range	9.15
 col_scan_rescan_keep	1.31
 col_scan_unit_order	0.27
 col_scope_alter_scope	0.31
