@@ -94,6 +94,9 @@ extern bool sift_par_group_spec_holds(const SiftParGroupSpec *spec);
  */
 extern SiftParGroup *sift_par_group_create(SiftParArenas *ar, const SiftParGroupSpec *spec, bool high_card, uint64 rows_bound, const SiftParGroupHooks *hooks, SiftErr *err);
 
+/* Whether a thread's table outgrew the groups of the first regime (SIFT_PAR_GROUP_LOW): the groups are many, and the rows of every thread go to the partitions from here on */
+extern bool sift_par_group_spilled(const SiftParGroup *g);
+
 /* The operator: sift_par_run(cfg, &sift_par_group_ops, g, ar, rel) */
 extern const SiftParOps sift_par_group_ops;
 

@@ -117,6 +117,7 @@ struct SiftV6Scan
 	int			nstore;			/* a fold: the columns that are a column of the index; the others (the score) are the caller's */
 	SiftV6FoldCol *pub;
 	struct SiftV6ParScan *par;	/* the granules of the scan that the compute threads of the backend fold (agg/v6/par/run.h) */
+	struct SiftV6PinRun *pin;	/* the same for the statements of par/pinrun.h */
 };
 
 typedef struct SiftV6Scan V6Scan;

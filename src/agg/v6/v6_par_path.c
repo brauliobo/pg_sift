@@ -22,6 +22,7 @@
 #include "agg/plan/safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/group_int.h"
+#include "agg/v6/par/pinrun.h"
 #include "agg/v6/par/run.h"
 #include "agg/v6/v6_par_pg.h"
 #include "agg/v6/v6_plan_rewrite.h"
@@ -288,7 +289,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	if (!equal(sift_v6_collapse_offset_sums((Node *) output_rel->reltarget->exprs), output_rel->reltarget->exprs))
 		return;
 	set_topk(root, &spec, scan_tlist, having);
-	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && sift_v6_par_wanted(&spec))
+	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && (sift_v6_par_wanted(&spec) || sift_v6_pin_wanted(&spec)))
 		return;
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;

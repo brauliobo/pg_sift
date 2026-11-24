@@ -33,6 +33,7 @@
 #include "agg/v6/v6_expr_num.h"
 #include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_rows_topn.h"
+#include "agg/v6/par/pinrun.h"
 #include "agg/v6/par/run.h"
 #include "col/am.h"
 #include "col/f2/f2.h"
@@ -750,10 +751,15 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	sift_f2_scan_set_dict_leaves(scan, dict_leaves(s));
 	if (s->par != NULL)
 		sift_f2_scan_set_pin_win(scan, sift_v6_par_window(s->par));
+	if (s->pin != NULL)
+		sift_f2_scan_set_pin_win(scan, sift_v6_pinrun_window(s->pin));
 	sift_f2_scan_sink(scan, sift_f2_v6_sink, s, sift_f2_v6_scan_leaves(s), s->ncols);
 	if (s->par != NULL)
 		sift_v6_par_end(s->par);
+	if (s->pin != NULL)
+		sift_v6_pinrun_end(s->pin);
 	s->par = NULL;
+	s->pin = NULL;
 	index_endscan(scan);
 }
 
@@ -777,6 +783,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	{
 		if (s->pipe == NULL && s->emit == NULL && s->gate == NULL && (s->group != NULL) != (s->rows != NULL))
 			s->par = sift_v6_par_begin(s->spec, s->group, s->rows, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
+		if (s->par == NULL && s->rows == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL)
+			s->pin = sift_v6_pin_begin(s->spec, s->group, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s, s->pipe);
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	}
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
