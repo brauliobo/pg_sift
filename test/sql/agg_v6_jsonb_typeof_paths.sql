@@ -1,0 +1,156 @@
+-- jsonb_typeof(doc -> 'key') of a shredded key as a column of the scan of SiftAggV6 (src/agg/v6/jsonb_qual.c): the type each row's chunk keeps of the key (a value of the leaf's own type, the tag of
+-- a value the leaf could not hold, a JSON null) is a text the scan hands to a group key, an aggregate argument, a FILTER and any qual that no scan key says (<>, NOT IN, IS NULL, OR, CASE), and a
+-- statement that reads both the type and the value of one key apart from the scan keys keeps the normal plan. Documents that are no object (a number, a string, an array, a JSON null, SQL NULL),
+-- a missing key, a JSON null and a string among the numbers are in the data. Every statement runs over the index and over a heap twin (the truth): the first word says they agree, the second whether
+-- the plan is the node's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+	IF current_setting('sift.agg_force', true) IS NOT NULL THEN
+		PERFORM set_config('sift.agg_force', 'on', false);
+	END IF;
+END $$;
+
+CREATE TABLE jh (id int, grp int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO jh
+SELECT i, i % 7,
+	CASE i % 16
+		WHEN 0 THEN jsonb_build_object('m', 's' || i, 'a', 'x', 's', 'w')
+		WHEN 1 THEN '{"m": true, "a": 12, "s": 3}'
+		WHEN 2 THEN '{"m": {"x": 1}, "a": true, "s": [1]}'
+		WHEN 3 THEN '{"m": [1], "a": 1.50, "s": null}'
+		WHEN 4 THEN '{"m": null, "a": null, "b": null}'
+		WHEN 5 THEN '{}'
+		WHEN 6 THEN NULL
+		WHEN 7 THEN '5'
+		WHEN 8 THEN '"str"'
+		WHEN 9 THEN '[1, 2]'
+		WHEN 10 THEN 'null'
+		WHEN 11 THEN '["m", "a"]'
+		WHEN 12 THEN '"m"'
+		ELSE jsonb_build_object('m', i / 4.0, 'a', CASE WHEN i % 5 = 0 THEN to_jsonb(i) ELSE to_jsonb('v' || i % 5) END, 's', 'v' || i % 7, 'b', i % 3 = 0)
+	END
+FROM generate_series(1, 3000) i;
+CREATE TABLE jc (LIKE jh) WITH (autovacuum_enabled = false);
+INSERT INTO jc SELECT * FROM jh;
+CREATE INDEX jc_col ON jc USING sift_col (id, grp, doc) WITH (paths = 'doc->m float8, doc->s text, doc->b bool, doc->a astext');
+VACUUM (FREEZE, ANALYZE) jh;
+VACUUM (FREEZE, ANALYZE) jc;
+
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; line text; node boolean := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'jc') LOOP node := node OR line LIKE '%SiftAgg%'; END LOOP;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'jc')) INTO a;
+	EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', 'jh')) INTO b;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || q;
+END $$;
+
+-- the type as a group key, of a typed leaf and of an astext leaf, alone and with another key
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1',
+	'SELECT jsonb_typeof(doc->''a'') AS ty, count(*) FROM @T GROUP BY 1',
+	'SELECT jsonb_typeof(doc->''s'') AS ty, count(*), sum(id) FROM @T GROUP BY 1',
+	'SELECT jsonb_typeof(doc->''b'') AS ty, count(*) FROM @T GROUP BY 1',
+	'SELECT grp, jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1, 2',
+	'SELECT jsonb_typeof(doc->''m'') AS t1, jsonb_typeof(doc->''a'') AS t2, count(*) FROM @T GROUP BY 1, 2',
+	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1 HAVING count(*) > 100',
+	'SELECT count(DISTINCT jsonb_typeof(doc->''m'')), min(jsonb_typeof(doc->''a'')), max(jsonb_typeof(doc->''a'')) FROM @T'
+]) q;
+
+-- the complement of a type, NOT IN, IS [NOT] NULL: a missing key and a document that is no object have no type, and no comparison keeps them
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') <> ''number''',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') NOT IN (''number'', ''null'')',
+	'SELECT count(*) FROM @T WHERE NOT (jsonb_typeof(doc->''m'') = ''string'')',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') IS NULL',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') IS NOT NULL',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''a'') IS NULL',
+	'SELECT grp, count(*) FROM @T WHERE jsonb_typeof(doc->''a'') <> ''string'' GROUP BY 1',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''s'') IS NULL AND jsonb_typeof(doc->''b'') IS NOT NULL'
+]) q;
+
+-- a branch of OR, beside the predicates of other columns and of other keys
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') = ''null'' OR grp = 2',
+	'SELECT count(*), sum(id) FROM @T WHERE jsonb_typeof(doc->''m'') = ''object'' OR jsonb_typeof(doc->''a'') = ''boolean'' OR id < 50',
+	'SELECT grp, count(*) FROM @T WHERE jsonb_typeof(doc->''m'') <> ''number'' OR jsonb_typeof(doc->''s'') IS NULL GROUP BY 1',
+	'SELECT count(*) FROM @T WHERE (jsonb_typeof(doc->''m'') = ''array'' AND grp < 3) OR jsonb_typeof(doc->''b'') = ''boolean''',
+	'SELECT count(*) FROM @T WHERE NOT (jsonb_typeof(doc->''m'') = ''null'' OR grp = 2)',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') = ''number'' AND grp = 3'
+]) q;
+
+-- an aggregate FILTER and a CASE, as an argument and as a key
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*) FILTER (WHERE jsonb_typeof(doc->''m'') = ''number'') AS nums, count(*) FILTER (WHERE jsonb_typeof(doc->''m'') IS NULL) AS missing FROM @T',
+	'SELECT grp, count(*) FILTER (WHERE jsonb_typeof(doc->''m'') = ''null'') AS nulls, sum(id) FILTER (WHERE jsonb_typeof(doc->''a'') <> ''string'') AS s FROM @T GROUP BY 1',
+	'SELECT CASE jsonb_typeof(doc->''s'') WHEN ''string'' THEN ''text'' WHEN ''number'' THEN ''num'' WHEN ''null'' THEN ''nil'' ELSE ''other'' END AS kind, count(*) FROM @T GROUP BY 1',
+	'SELECT sum(CASE WHEN jsonb_typeof(doc->''m'') = ''number'' THEN 1 ELSE 0 END), sum(CASE WHEN jsonb_typeof(doc->''m'') IS NULL THEN id END) FROM @T',
+	'SELECT grp, count(*) FROM @T GROUP BY grp, CASE WHEN jsonb_typeof(doc->''a'') IN (''number'', ''boolean'') THEN 1 ELSE 0 END',
+	'SELECT upper(jsonb_typeof(doc->''m'')) AS u, count(*) FROM @T GROUP BY 1',
+	'SELECT length(jsonb_typeof(doc->''a'')) AS n, count(*) FROM @T GROUP BY 1'
+]) q;
+
+-- the plain scan keys of a type test and the existence of a key still go with the others
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT count(*), sum((doc->>''m'')::float8) FROM @T WHERE jsonb_typeof(doc->''m'') = ''number''',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') IN (''number'', ''null'') AND doc ? ''s''',
+	'SELECT jsonb_typeof(doc->''a'') AS ty, count(*) FROM @T WHERE doc ? ''m'' GROUP BY 1',
+	'SELECT jsonb_typeof(doc->''a'') AS ty, count(*) FROM @T WHERE jsonb_typeof(doc->''m'') = ''number'' GROUP BY 1'
+]) q;
+
+-- the type and the value of one key in one statement: PostgreSQL does not read the value of a row its guard leaves out, and the leaf cannot hold the strings among its numbers
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT sum((doc->>''m'')::float8) FILTER (WHERE jsonb_typeof(doc->''m'') = ''number'') FROM @T',
+	'SELECT sum((doc->>''m'')::float8) FROM @T WHERE jsonb_typeof(doc->''m'') = ''null'' OR jsonb_typeof(doc->''m'') = ''number''',
+	'SELECT sum(CASE WHEN jsonb_typeof(doc->''m'') = ''number'' THEN (doc->>''m'')::float8 END) FROM @T',
+	'SELECT jsonb_typeof(doc->''m'') AS ty, count(doc->>''m'') FROM @T GROUP BY 1'
+]) q;
+
+-- other documents
+SELECT jsonb_typeof(doc->'m') AS ty, count(*) FROM jc GROUP BY 1 ORDER BY 1 NULLS FIRST;
+SELECT jsonb_typeof(doc->'a') AS ty, count(*) FROM jc GROUP BY 1 ORDER BY 1 NULLS FIRST;
+
+-- workers, a prepared statement and a changed table
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') <> ''number'' OR grp = 2',
+	'SELECT count(*) FILTER (WHERE jsonb_typeof(doc->''a'') = ''number'') FROM @T'
+]) q;
+RESET max_parallel_workers_per_gather;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+SET max_parallel_workers_per_gather = 0;
+PREPARE tp(text) AS SELECT count(*) FROM jc WHERE jsonb_typeof(doc->'m') = $1 OR grp = 9;
+EXECUTE tp('null');
+EXECUTE tp('array');
+DEALLOCATE tp;
+INSERT INTO jh SELECT 3000 + i, i % 7, CASE i % 3 WHEN 0 THEN '{"m": "late"}'::jsonb WHEN 1 THEN '{"m": 1.5}' ELSE '{"x": 1}' END FROM generate_series(1, 150) i;
+INSERT INTO jc SELECT * FROM jh WHERE id > 3000;
+DELETE FROM jh WHERE id % 11 = 0;
+DELETE FROM jc WHERE id % 11 = 0;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') IS NULL OR grp = 1'
+]) q;
+VACUUM jc;
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1',
+	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') <> ''string'' OR grp = 1'
+]) q;
+
+DROP FUNCTION same(text);
+DROP TABLE jc, jh;
+DROP EXTENSION pg_sift;
