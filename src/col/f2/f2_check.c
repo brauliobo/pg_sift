@@ -235,7 +235,7 @@ index_tids(Relation heap, Relation index, Snapshot snap, TidList *l)
 	index_endscan(scan);
 }
 
-/* Every row the heap shows to a snapshot is a live row of the index and the index holds no other: the two sorted lists of their addresses are the same */
+/* Every row the heap shows to a snapshot is a live row of the index: the index may hold more, the versions that UPDATE, DELETE and aborted INSERTs left until its next VACUUM */
 void
 sift_f2_check_heap(Relation index)
 {
@@ -250,20 +250,12 @@ sift_f2_check_heap(Relation index)
 	index_tids(heap, index, snap, &have);
 	sorted(&want);
 	sorted(&have);
-	for (uint64 i = 0, j = 0; i < want.n || j < have.n;)
+	for (uint64 i = 0, j = 0; i < want.n; i++, j++)
 	{
-		uint64		w = i < want.n ? want.tid[i] : PG_UINT64_MAX,
-					h = j < have.n ? have.tid[j] : PG_UINT64_MAX;
-
-		if (w == h)
-		{
-			i++;
+		while (j < have.n && have.tid[j] < want.tid[i])
 			j++;
-		}
-		else if (w < h)
-			SIFT_CORRUPT(index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", (unsigned) (w >> 16), (unsigned) (w & 0xFFFF));
-		else
-			SIFT_CORRUPT(index, "The index holds a row at (%u,%u) that the heap does not show to the snapshot.", (unsigned) (h >> 16), (unsigned) (h & 0xFFFF));
+		if (j == have.n || have.tid[j] != want.tid[i])
+			SIFT_CORRUPT(index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", (unsigned) (want.tid[i] >> 16), (unsigned) (want.tid[i] & 0xFFFF));
 	}
 	sift_mem_end(&mem);
 	UnregisterSnapshot(snap);

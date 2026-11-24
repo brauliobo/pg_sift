@@ -30,6 +30,7 @@
 #include "core/catname.h"
 #include "core/check.h"
 #include "core/cpu.h"
+#include "core/errctx.h"
 #include "core/f2/f2_progress.h"
 #include "core/f2/fsm.h"
 #include "core/f2/meta.h"
@@ -390,12 +391,15 @@ static Datum
 f2_verify(FunctionCallInfo fcinfo)
 {
 	Relation	index = open_f2(PG_GETARG_OID(0));
+	SiftErrCtx	ctx;
 
+	sift_errctx_push_diagnostic(&ctx, RelationGetRelid(index));
 	sift_check_maintain(index);
 	(void) sift_fsm_check(index);
 	ereport(NOTICE, (errmsg("sift_col index \"%s\": %s", RelationGetRelationName(index), sift_f2_check_keys(index))));
 	if (PG_GETARG_BOOL(1))
 		sift_f2_check_heap(index);
+	sift_errctx_pop(&ctx);
 	index_close(index, AccessShareLock);
 	PG_RETURN_VOID();
 }
@@ -441,11 +445,14 @@ void
 sift_f2_check(SiftCheck *ck, Oid indexoid, bool heapallindexed)
 {
 	Relation	index = open_f2(indexoid);
+	SiftErrCtx	ctx;
 
+	sift_errctx_push_diagnostic(&ctx, indexoid);
 	sift_f2_check_relation(ck, index);
 	(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_journal, index);
 	if (heapallindexed)
 		(void) sift_check_step(ck, SIFT_CHECK_WHOLE, check_heap, index);
+	sift_errctx_pop(&ctx);
 	index_close(index, AccessShareLock);
 }
 

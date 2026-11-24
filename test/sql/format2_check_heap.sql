@@ -27,6 +27,24 @@ COMMIT;
 TRUNCATE hc;
 SELECT count(*) AS problems FROM sift.check('hc_idx', heapallindexed => true);
 
-DROP TABLE hc;
+-- an index that follows no changes holds the rows of the versions an UPDATE or DELETE left until its VACUUM: the heap not showing them is no problem
+CREATE TABLE hc_off (id int PRIMARY KEY, n int) WITH (autovacuum_enabled = false);
+INSERT INTO hc_off SELECT i, i FROM generate_series(1, 3000) i;
+CREATE INDEX hc_off_idx ON hc_off USING sift_col (id, n) WITH (track_changes = off);
+UPDATE hc_off SET n = n + 1 WHERE id % 3 = 0;
+DELETE FROM hc_off WHERE id % 7 = 0;
+SELECT count(*) AS problems FROM sift.check('hc_off_idx', heapallindexed => true);
+SELECT count(*) FROM hc_off;
+SELECT count(*) AS problems FROM sift.check('hc_off_idx', heapallindexed => true);
+
+-- a row the heap shows and the index lacks is a row of sift.check each time it is asked: the report takes no index out of service
+UPDATE pg_index SET indisready = false WHERE indexrelid = 'hc_off_idx'::regclass;
+INSERT INTO hc_off VALUES (5000, 1);
+UPDATE pg_index SET indisready = true WHERE indexrelid = 'hc_off_idx'::regclass;
+SELECT problem, regexp_replace(detail, '\([0-9]+,[0-9]+\)', '(b,o)') AS detail FROM sift.check('hc_off_idx', heapallindexed => true);
+SELECT problem, regexp_replace(detail, '\([0-9]+,[0-9]+\)', '(b,o)') AS detail FROM sift.check('hc_off_idx', heapallindexed => true);
+SELECT count(*) AS in_service FROM hc_off WHERE id = 5000;
+
+DROP TABLE hc, hc_off;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
