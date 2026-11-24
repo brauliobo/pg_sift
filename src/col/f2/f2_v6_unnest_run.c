@@ -325,7 +325,7 @@ compute_columns(UnRun *u, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 		const SiftVec *src = &b->col[i];
 
 		u->fv[i] = *src;
-		if (u->cols[i].json)
+		if (u->cols[i].json && u->cols[i].read)
 			json_column(u, i, b, bs);
 		if (!u->cols[i].month)
 			continue;
