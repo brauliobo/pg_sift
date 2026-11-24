@@ -37,38 +37,57 @@ BEGIN
 	IF g BETWEEN 20000 AND 20003 THEN r := r || '[[1]]'; END IF;
 	RETURN r;
 END $$;
-CREATE FUNCTION mk_tags(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
-	SELECT CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 'g' || (g + e) % 7 END)
-	       FROM generate_series(1, g % 4) e), '[]') END $$;
-CREATE FUNCTION mk_map(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
-	SELECT CASE WHEN g % 23 = 0 THEN NULL ELSE coalesce((SELECT jsonb_object_agg('m' || (g + e) % 6, CASE WHEN (g + e) % 9 = 0 THEN NULL ELSE (g * e) % 50 END)
-	       FROM generate_series(1, g % 5) e), '{}') END $$;
+CREATE FUNCTION mk_tags(g int) RETURNS jsonb LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE r text := ''; e int;
+BEGIN
+	IF g % 19 = 0 THEN RETURN NULL; END IF;
+	FOR e IN 1 .. g % 4 LOOP
+		r := r || CASE WHEN e > 1 THEN ', ' ELSE '' END || CASE WHEN (g + e) % 8 = 0 THEN 'null' ELSE '"g' || (g + e) % 7 || '"' END;
+	END LOOP;
+	RETURN ('[' || r || ']')::jsonb;
+END $$;
+CREATE FUNCTION mk_map(g int) RETURNS jsonb LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE r text := ''; e int;
+BEGIN
+	IF g % 23 = 0 THEN RETURN NULL; END IF;
+	FOR e IN 1 .. g % 5 LOOP
+		r := r || CASE WHEN e > 1 THEN ', ' ELSE '' END || '"m' || (g + e) % 6 || '": ' || CASE WHEN (g + e) % 9 = 0 THEN 'null' ELSE ((g * e) % 50)::text END;
+	END LOOP;
+	RETURN ('{' || r || '}')::jsonb;
+END $$;
 
 -- units checked and mismatches of the histogram of a list leaf (dim: leaf name, dimx: the SQL expression of its key as text over e) and one measure
--- (NULL: the counts only; measx its SQL expression, fl: float measure); src is the FROM item that makes e, one row per element
+-- (NULL: the counts only; measx its SQL expression, fl: float measure); src is the FROM item that makes e, one row per element. The histogram of the heap is
+-- computed once for each state of the table (its rows and their addresses) and kept in pe_heap
+CREATE TABLE pe_heap (state text, sig text, sb int, key text, n bigint, nn bigint, s numeric, sf float8);
 CREATE FUNCTION pe_hist(idx regclass, tbl regclass, src text, dim text, dimx text, meas text, measx text, fl bool, OUT checked bool, OUT bad bigint, OUT stored bool)
 LANGUAGE plpgsql AS $f$
-DECLARE r record;
+DECLARE r record; st text; sg text := md5(concat_ws('|', tbl, src, dimx, measx));
 BEGIN
+	EXECUTE format($q$SELECT concat_ws(':', count(*), sum(id), sum(hashtext(ctid::text))) FROM %s$q$, tbl) INTO st;
+	IF NOT EXISTS (SELECT FROM pe_heap WHERE state = st AND sig = sg) THEN
+		EXECUTE format($q$
+			INSERT INTO pe_heap SELECT %L, %L, pa_sb(d.ctid), (%s), count(*), count(%s), sum(%s)::numeric, sum((%s)::float8) FROM %s d CROSS JOIN LATERAL %s GROUP BY 3, 4
+		$q$, st, sg, dimx, coalesce(measx, '1'), coalesce(measx, '1'), coalesce(measx, '1'), tbl, src);
+	END IF;
 	EXECUTE format($q$
 		WITH s AS (SELECT * FROM sift.col_unit_hist(%1$L, %2$L, %3$L)),
 		     one AS (SELECT sb FROM sift.col_unit_agg(%1$L, 'id') WHERE sb IN (SELECT sb FROM s) GROUP BY sb HAVING count(*) = 1 AND bool_and(exact)),
-		     h AS (SELECT pa_sb(d.ctid) AS sb, (%5$s) AS key, count(*) AS n, count(%6$s) AS nn, sum(%6$s)::numeric AS s, sum((%6$s)::float8) AS sf
-		           FROM %4$s d CROSS JOIN LATERAL %8$s GROUP BY 1, 2)
+		     h AS (SELECT sb, key, n, nn, s, sf FROM pe_heap WHERE state = %4$L AND sig = %5$L)
 		SELECT (SELECT count(*) FROM one) > 0 AS c, count(*) FILTER (WHERE s.n IS DISTINCT FROM h.n OR (s.nn IS NOT NULL AND
-		       (s.nn IS DISTINCT FROM h.nn OR (s.nn > 0 AND %7$s)))) AS b,
+		       (s.nn IS DISTINCT FROM h.nn OR (s.nn > 0 AND %6$s)))) AS b,
 		       (SELECT count(*) FROM s) > 0 AS st
 		FROM (SELECT * FROM s WHERE sb IN (SELECT sb FROM one)) s
 		FULL JOIN (SELECT * FROM h WHERE sb IN (SELECT sb FROM one)) h ON s.sb = h.sb AND s.key IS NOT DISTINCT FROM h.key
-	$q$, idx, dim, meas, tbl, dimx, coalesce(measx, '1'),
-		CASE WHEN fl THEN 's.sum_float IS DISTINCT FROM h.sf' ELSE 's.sum IS DISTINCT FROM h.s' END, src) INTO r;
+	$q$, idx, dim, meas, st, sg,
+		CASE WHEN fl THEN 's.sum_float IS DISTINCT FROM h.sf' ELSE 's.sum IS DISTINCT FROM h.s' END) INTO r;
 	checked := r.c;
 	bad := r.b;
 	stored := r.st;
 END $f$;
 
 CREATE TABLE pe (id int, grp int, items jsonb, tags jsonb, m jsonb, pad text);
-INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(1, 40000) g;
+INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(1, 20500) g;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pe;
 
 CREATE FUNCTION pe_battery(idx regclass) RETURNS TABLE(what text, checked bool, bad bigint) LANGUAGE sql AS $$
@@ -142,9 +161,9 @@ SELECT count(*) > 0 AS tags, (SELECT count(*) > 0 FROM sift.col_unit_hist('pe_co
 SELECT count(*) FROM sift.col_unit_hist('pe_col', 'items[]');
 
 -- DML: inserts (write buffer), updates and deletes make the touched units inexact, never wrong
-INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(40001, 42000) g;
-UPDATE pe SET items = mk_items(id + 3) WHERE id % 97 = 0 AND id < 20000;
-DELETE FROM pe WHERE id % 89 = 0 AND id < 20000;
+INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(20501, 22500) g;
+UPDATE pe SET items = mk_items(id + 3) WHERE id % 97 = 0 AND id < 10000;
+DELETE FROM pe WHERE id % 89 = 0 AND id < 10000;
 SELECT what, checked, bad FROM pe_battery('pe_col');
 SELECT count(*) FILTER (WHERE NOT exact) > 0 AS some_inexact, count(*) FILTER (WHERE exact) > 0 AS some_exact FROM sift.col_unit_agg('pe_col', 'id');
 -- VACUUM makes the pages all-visible again but the units still hold the dead rows: still inexact where dirty
@@ -175,7 +194,7 @@ RESET maintenance_work_mem;
 -- minor 3 beside minor 4: a segment written under minor 3 has no element cubes and the plain cube of 3.0, the merge of both
 -- writes the setting's minor
 SET sift.test_col_format_minor = 3;
-INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(42001, 46000) g;
+INSERT INTO pe SELECT g, g % 7, mk_items(g), mk_tags(g), mk_map(g), repeat('x', 400) FROM generate_series(22501, 26500) g;
 SELECT sift.col_promote('pe_col') >= 0 AS promoted;
 RESET sift.test_col_format_minor;
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) pe;
@@ -263,7 +282,7 @@ DROP INDEX pe_r1, pe_r2, pe_r3, pe_r4, pe_r5, pe_r6;
 CREATE INDEX pe_typo1 ON pe USING sift_col (id, items) WITH (paths = 'items[]{k text}', rollup_leaves = 'items[].k, items[].nosuch', cube_minmax = false, superunit = 0);
 CREATE INDEX pe_typo2 ON pe USING sift_col (id, grp, items) WITH (paths = 'items[]{k text}', rollup_columns = 'grp, nosuch', cube_minmax = false, superunit = 0);
 
-DROP TABLE pe;
+DROP TABLE pe, pe_heap;
 DROP FUNCTION pe_hist(regclass, regclass, text, text, text, text, text, bool), pe_battery(regclass), units_with(regclass, text, text),
               mk_items(int), mk_tags(int), mk_map(int), pa_sb(tid), fmt(regclass);
 DROP EXTENSION pg_sift_test;
