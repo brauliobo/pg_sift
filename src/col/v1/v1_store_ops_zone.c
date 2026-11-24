@@ -20,14 +20,17 @@ typedef struct V1Open
 	MemoryContext cx;
 	Snapshot	snap;
 	const SiftV1Scan *scan;
+	const SiftV1UnitSink *cube;
 } V1Open;
 
 static SiftV6Source *
 open_source(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
 {
 	const V1Open *o = arg;
+	SiftV1Scan	scan = o->scan != NULL ? *o->scan : (SiftV1Scan) {0};
 
-	return sift_v1_source_open(o->cx, o->snap, in, quals, o->scan);
+	scan.cube = o->cube;
+	return sift_v1_source_open(o->cx, o->snap, in, quals, &scan);
 }
 
 static struct SiftStoreQuals *
@@ -58,7 +61,8 @@ static void
 fold_run(const SiftSrcFoldArgs *a, Snapshot snap, const SiftV1Scan *scan)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 zone scan");
-	V1Open		o = {.cx = cx,.snap = snap,.scan = scan};
+	SiftV1UnitSink *cube = sift_v1_cube_begin(a, scan, cx);
+	V1Open		o = {.cx = cx,.snap = snap,.scan = scan,.cube = cube};
 	SiftSrcFold *f = sift_srcfold_new(a, sift_mem_allocset_create(cx, "sift v1 zone fold"));
 
 	sift_srcfold_run(f, open_source, &o);

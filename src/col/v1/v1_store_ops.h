@@ -63,6 +63,13 @@ typedef struct SiftV1TypeTest
 
 #define SIFT_V1_MAX_TYPE_TESTS	8
 
+/* A consumer that answers a unit from what the unit stores: offer is true when it did, its rows are then not read; rd and src are the reader and its state, at the unit */
+typedef struct SiftV1UnitSink
+{
+	bool		(*offer) (void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit);
+	void	   *arg;
+} SiftV1UnitSink;
+
 /* What narrows a source besides the quals: the superblocks it reads, the units that hold a row of keep, the rows a text bridge holds (the score column of the input, SIFT_V6_SCORE_ATTNO, is theirs), the JSON types of leaves */
 typedef struct SiftV1Scan
 {
@@ -71,7 +78,12 @@ typedef struct SiftV1Scan
 	const struct SiftTidBridge *bridge;
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
+	const SiftV1UnitSink *cube;	/* answers the units whose pre-aggregates stand for their rows (NULL: every unit is read) */
 } SiftV1Scan;
+
+/* The cube reader of an aggregate scan (col/v1_engine/v1_store_ops_preagg.c): NULL when the statement is not one the stored cubes answer or the scan reads fewer rows than a unit's; it lives in cx */
+struct SiftSrcFoldArgs;
+extern SiftV1UnitSink *sift_v1_cube_begin(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx);
 
 /* The JSON type tests of the scan keys of an index scan (the other keys are the quals sift_srcfold_scankey_quals gives) */
 extern SiftV1Scan sift_v1_key_scan(Relation index, ScanKey keys, int nkeys);

@@ -288,6 +288,7 @@ typedef struct V1Src
 	int			pos;
 	SiftV6Vexpr *quals;
 	const SiftTidBridge *bridge;
+	const SiftV1UnitSink *cube;
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
 	int			score_col;		/* the column of the input that holds the scores of the bridge, -1 for none */
@@ -331,6 +332,8 @@ unit_next(V1Src *s)
 		MemoryContextReset(s->unit_cx);
 		if (!s->rd->next(s->src, &s->unit))
 			return false;
+		if (s->cube != NULL && s->cube->offer(s->cube->arg, s->rd, s->src, &s->unit))
+			continue;
 		nw = (s->unit.nrow + 63) / 64;
 		s->bits = MemoryContextAllocZero(s->unit_cx, SIFT_COL_NWORDS(s->unit.nrow) * sizeof(uint64));
 		s->rd->live(s->src, &s->unit, s->bits);
@@ -724,6 +727,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->in = *in;
 	s->snap = snap;
 	s->bridge = scan->bridge;
+	s->cube = scan->cube;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
 	s->rd = sift_v1_reader_of(in->is_table);
 	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);
