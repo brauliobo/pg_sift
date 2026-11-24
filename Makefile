@@ -792,6 +792,7 @@ TESTING_REGRESS += col_topn_parallel
 TESTING_REGRESS += tbl_lists_runs
 TESTING_REGRESS += tbl_preagg_minmax
 TESTING_REGRESS += tbl_topn
+TESTING_REGRESS += v1_store_ops
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)

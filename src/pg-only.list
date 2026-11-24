@@ -12,6 +12,7 @@ agg/agg_fwd_int.h
 agg/agg_int.h
 agg/approx.c
 agg/array.c
+agg/batch_source.h
 agg/blob/
 agg/blob_int.h
 agg/chunkfilter.c
@@ -217,8 +218,11 @@ agg/update/
 agg/update_int.h
 agg/v6/
 agg/v6/plan_kind.c
+agg/v6/store_ops_test.c
+agg/v6/v6_batch_source.c
 agg/v6_test.c
 agg/variant_eval.c
+agg/vclass.h
 agg/verdict.c
 agg/vexpr.c
 agg/vexpr_cal.c
@@ -703,6 +707,8 @@ col/v1/track_made.c
 col/v1/track_rows.c
 col/v1/unit_test.c
 col/v1/v1_ops.c
+col/v1/v1_store_ops.c
+col/v1/v1_store_ops.h
 col/v1/verify.c
 col/v1/wbuf.h
 col/v1/wbuf/
@@ -899,3 +905,5 @@ core/writer.c
 core/xid_cache.c
 core/xid_cache.h
 table/
+table/v1/v1_tbl_ops.c
+table/v1/v1_tbl_ops.h

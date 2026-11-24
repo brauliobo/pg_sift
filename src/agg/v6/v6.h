@@ -16,6 +16,7 @@
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
+#include "agg/vclass.h"
 #include "agg/vec.h"
 #include "core/tidbridge.h"
 #include "col/am.h"
@@ -54,18 +55,6 @@ sift_v6_kind_reads_column(SiftV6Kind kind)
 {
 	return kind != SV6_COUNT_STAR && kind != SV6_GROUPING;
 }
-
-/* The physical class of a column the scan reads: how it decodes (SiftVecType) and what the group makes of it */
-typedef enum SiftV6Class
-{
-	SV6C_NONE = 0,
-	SV6C_I32,					/* int2, int4, date */
-	SV6C_I64,					/* int8, timestamp, timestamptz */
-	SV6C_F64,					/* float4, float8 */
-	SV6C_BOOL,
-	SV6C_TEXT,					/* text, varchar */
-	SV6C_DATUM					/* arbitrary PostgreSQL type decoded into SVEC_DATUM */
-} SiftV6Class;
 
 static inline SiftV6Class
 sift_v6_class(Oid typid)

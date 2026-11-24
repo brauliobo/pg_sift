@@ -158,7 +158,8 @@ typedef struct SiftScopeOps
 /*
  * 5. BM25 hybrid: the scan of the store a text scan joins (SiftHybridScan names what it reads; the sink takes the rows as a SiftHybridBatch, agg/hybrid.h), the survey of the granules
  * its quals leave, whether the predicates a sift_table compiled (zone.compile_quals) leave a scan to do, and the fold of the rows of a scan into the groups of an aggregate (SiftV6Fold,
- * agg/v6/v6.h): begin, the columns it reads, the batch with the scores of its hits, end.
+ * agg/v6/v6.h): begin, the columns it reads, the batch with the scores of its hits, end. A format that reads through a SiftV6Source instead (Format 1) offers can_hybrid,
+ * open_hybrid with the match set and batch_scores, and leaves the entries above NULL.
  */
 typedef struct SiftHybridScan
 {
@@ -189,6 +190,11 @@ typedef struct SiftHybridOps
 	const struct SiftV6FoldCol *(*fold_cols) (const struct SiftV6Scan *f, int *n);
 	void		(*fold_batch_scored) (struct SiftV6Scan *f, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, const float4 *score, int n);
 	void		(*fold_end) (struct SiftV6Scan *f);
+	bool		(*can_hybrid) (Oid relid, bool is_table);
+	struct SiftV6Source *(*open_hybrid) (EState *estate, const struct SiftV6Input *in,
+										 const struct SiftV6Vexpr *quals, const void *match_set,
+										 bool with_scores);
+	bool		(*batch_scores) (struct SiftV6Source *src, const float4 **scores, uint16 *n);
 } SiftHybridOps;
 
 /*

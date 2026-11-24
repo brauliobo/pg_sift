@@ -51,6 +51,7 @@
 #include "bm25/bitmap.h"
 #include "col/am.h"
 #include "col/f2/scan/ord_stream.h"
+#include "col/v1/v1_store_ops.h"
 #include "col/v1/kern.h"
 #include "col/codec.h"
 #include "core/cpu.h"
@@ -343,6 +344,7 @@ _PG_init(void)
 	sift_f2_ord_plan_init();
 	sift_agg_init();
 	sift_f2_v6_format_init();
+	sift_v1_store_ops_init();
 	sift_gpu_v6_init_gucs();
 	sift_explain_init();
 	sift_tbl_init();
