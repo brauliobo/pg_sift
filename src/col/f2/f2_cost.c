@@ -241,7 +241,7 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	for (int i = 0; i < plan->npartitions; i++)
 		nparts += plan->partlists[i].nparts;
 	in.parts_surv = Max(1.0, ceil(nparts * f_time));
-	in.f_prune = sift_f_prune(rows * f_time, rows, f_mark, in.total_granules);
+	in.f_prune = sift_f_prune(rows * in.parts_surv / Max(nparts, 1), rows, f_mark, in.total_granules);
 	in.n_filt = filter_columns(root, path, &lead);
 	in.n_rest = returned_columns(path);
 	in.filt_share = Min(1.0, Max(in.n_filt, in.n_rest > 0 ? 0 : 1) / (double) Max(index->ncolumns, 1));

@@ -231,9 +231,10 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	ScanBytes	b;
 	SiftV6AggPrice price;
 	Bitmapset  *filter = spec_cols(spec, true),
-			   *measure = spec_cols(spec, false);
+			   *measure = bms_difference(spec_cols(spec, false), filter);
 
 	scan_bytes(root, rel, ix, &b);
+	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
 	b.filter_row = cols_bytes(b.view, filter, index_leaf, ix, false, SIFT_WORD_BYTES);
 	b.measure_row = cols_bytes(b.view, measure, index_leaf, ix, false, SIFT_WORD_BYTES);
 	b.filter_io_row = cols_bytes(b.view, filter, index_leaf, ix, true, b.io_col_row);
