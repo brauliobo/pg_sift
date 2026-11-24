@@ -10,6 +10,7 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/group_int.h"
 #include "col/f2/f2_v6_scan.h"
+#include "col/f2/f2_v6_unnest_run.h"
 #include "agg/v6/v6_bqual.h"
 #include "col/f2/f2_v6_colstat.h"
 #include "agg/v6/v6_datebin_win_pg.h"
@@ -98,6 +99,8 @@ struct SiftV6Scan
 	V6ColStat  *stat;			/* an ungrouped aggregate of integer columns: the totals of the parts it has read whole */
 	const SiftColDef *defs;		/* the leaves of the index or table, by id */
 	SiftV6Pipe *pipe;			/* the dimensions of a star join (v6_pipe.h) */
+	SiftV6UnnestRows *unnest;	/* a table whose array column is unnested: the pairs of each row (f2_v6_unnest_run.h) */
+	const int  *first;			/* the first leaf of each attribute of the host */
 	SiftVec   **fact;			/* the vectors of the columns, for the pipe, and for a row Top-N the heap addresses of the rows (tidvec) after them */
 	SiftVec		tidvec;
 	const SiftClause *gate;		/* an arm of a pass over the union of the keys of its arms: the rows it takes */

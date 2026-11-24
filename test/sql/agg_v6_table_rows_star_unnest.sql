@@ -62,12 +62,22 @@ SELECT parity('SELECT d.label, e.region, count(*), avg(f.k) FROM @T f JOIN @D d 
 SELECT parity('SELECT d.label, count(*), count(f.amount) FROM @T f LEFT JOIN @D d ON d.k = f.k AND d.k < 20 GROUP BY d.label') AS star_left_join;
 SELECT parity('SELECT count(*), sum(f.k) FROM @T f JOIN @D d ON d.k = f.k') AS star_without_keys;
 
+-- the elements of an array column
+SELECT plan_has('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e', 'Unnest: lateral columnar') AS unnest_served_by_agg_v6;
+SELECT plan_has('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e', 'Table: rt') AS unnest_reads_the_table;
+SELECT parity('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e') AS unnest_text_elements;
+SELECT parity('SELECT e, count(*), sum(grp), max(k) FROM @T, unnest(ids) e GROUP BY e') AS unnest_int_elements_with_nulls;
+SELECT parity('SELECT tag, e, count(*) FROM @T, unnest(tags) e WHERE grp < 5 AND k > 3 GROUP BY tag, e') AS unnest_with_fact_key_and_quals;
+SELECT parity('SELECT e, count(*), count(f.amount), sum(f.amount) FROM @T f LEFT JOIN LATERAL unnest(f.ids) e ON true GROUP BY e') AS unnest_left_join_lateral;
+SELECT parity('SELECT count(*), count(e), sum(e) FROM @T, unnest(ids) e') AS unnest_without_keys;
+
 UPDATE rt SET tag = 'tag9', grp = 3 WHERE id % 9 = 0;
 UPDATE rh SET tag = 'tag9', grp = 3 WHERE id % 9 = 0;
 DELETE FROM rt WHERE id % 13 = 0;
 DELETE FROM rh WHERE id % 13 = 0;
 SELECT parity('SELECT id, tag FROM @T WHERE grp = 3 ORDER BY tag DESC, id LIMIT 30') AS rows_after_updates_and_deletes;
 SELECT parity('SELECT d.label, count(*), sum(f.grp) FROM @T f JOIN @D d ON d.k = f.k GROUP BY d.label') AS star_after_updates_and_deletes;
+SELECT parity('SELECT e, count(*), sum(grp) FROM @T, unnest(tags) e GROUP BY e') AS unnest_after_updates_and_deletes;
 
 DROP TABLE rt, rh, rd, rdh, re, reh;
 DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text);

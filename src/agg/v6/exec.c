@@ -214,6 +214,16 @@ scan_with_text(V6State *st, const V6Source *src, Snapshot snap, SiftV6StarRun *s
 	text_end(text);
 }
 
+/* The unnest of an array column: the elements the index keeps, or those of the heap rows of the table the scan reads */
+static void
+v6_scan_unnest(V6State *st, const V6Source *src, Snapshot snap)
+{
+	if (src->index == NULL)
+		src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star);
+	else
+		src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
+}
+
 /* The scan of the fact table of a join or an unnest: once for each pass of the dimensions of a star join (one when they all fit work_mem) */
 static void
 v6_scan_ext(V6State *st, Snapshot snap)
@@ -224,7 +234,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 
 	if (st->spec->ext->unnest && st->star == NULL)
 	{
-		src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, NULL);
+		v6_scan_unnest(st, src, snap);
 		return;
 	}
 	while ((open = sift_v6_star_open(st->star, pass++)) != SSO_DONE)
@@ -233,7 +243,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
 
 		if (open == SSO_SCAN && st->spec->ext->unnest)
-			src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
+			v6_scan_unnest(st, src, snap);
 		else if (open == SSO_SCAN && src->index == NULL)
 			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star);
 		else if (open == SSO_SCAN)

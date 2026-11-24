@@ -135,6 +135,9 @@ typedef struct UnRun
 	uint32	   *pidx;
 	uint32	   *eidx;
 	MemoryContext bcx;			/* the arrays read from the heap for a batch */
+	int			(*attr_slot) (void *arg, const SiftV6Col *c);	/* a table: the vector of the scan that holds a column of the rows, which the pairs gather from */
+	void	   *attr_arg;
+	SiftVecType ftype[SIFT_F2_PULL_MAX_COLS];	/* a table: the type of each vector of the rows of its batch */
 } UnRun;
 
 /* the vector of the pipe the flag of test k is: after the derivations */

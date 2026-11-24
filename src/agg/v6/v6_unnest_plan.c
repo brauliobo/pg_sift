@@ -20,6 +20,8 @@
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_pipe.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 
 /* the join is inner or a left one of the unnest with no condition; any other special join is not ours */
@@ -78,12 +80,29 @@ cheapest_first(PlannerInfo *root, List *infos)
 	return ordered;
 }
 
+/* a sift_table's rows reach the pairs as the vectors of its scan, which hold the native classes: no datum, no binning and nothing computed on the pairs */
+static bool
+table_rows_ok(const SiftV6Spec *s)
+{
+	if (s->nbins > 0 || s->nderive > 0)
+		return false;
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].src == SV6SRC_ATTR && sift_v6_col_class(&s->key[i]) == SV6C_DATUM)
+			return false;
+	for (int v = 0; v < sift_v6_spec_nvec(s); v++)
+		if (sift_v6_vec_col(s, v) != NULL && sift_v6_vec_col(s, v)->src == SV6SRC_ATTR && sift_v6_col_class(sift_v6_vec_col(s, v)) == SV6C_DATUM)
+			return false;
+	return true;
+}
+
 bool
 sift_v6_unnest_where(V6Plan *p)
 {
 	SiftClause *clause;
 	SiftBytes	canon;
 
+	if (p->is_table)
+		return true;
 	foreach_node(RestrictInfo, ri, cheapest_first(p->root, p->rel->baserestrictinfo))
 		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
@@ -109,7 +128,7 @@ sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 bool
 sift_v6_unnest_ready(V6Plan *p)
 {
-	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
+	return (!p->is_table || table_rows_ok(&p->spec)) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
 /* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */
@@ -159,22 +178,21 @@ static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo *elem_rel, GroupPathExtraData *extra, List *group_exprs)
 {
 	SiftV6ElemRte rte;
+	SiftV6RelSource *src;
+	int			nsrc;
 	bool		left;
 
 	if (!sift_v6_plan_fact_ok(root, fact) || !sift_v6_unnest_rte(root, fact, elem_rel, &rte) || !join_kind(root, elem_rel->relid, &left))
 		return;
-	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
+	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		V6Plan		p = {.root = root,.rel = fact,.out = output_rel,.relid = ix->indexoid,.index = ix};
-		Relation	irel;
+		V6Plan		p = {.root = root,.rel = fact,.out = output_rel};
+		Relation	rel = sift_v6_source_open(src[i].reloid, src[i].is_table, AccessShareLock, NULL);
 
-		if (!sift_v6_index_owned(ix))
-			continue;
-		irel = index_open(ix->indexoid, AccessShareLock);
-		sift_v6_plan_index(&p, irel);
-		if (p.ops != NULL && sift_v6_unnest_seed(&p, elem_rel, &rte, left) && sift_v6_compile_on(&p, extra, group_exprs) && sift_v6_unnest_ready(&p))
+		if (sift_v6_plan_bind(&p, &src[i], rel) && sift_v6_unnest_seed(&p, elem_rel, &rte, left) && sift_v6_compile_on(&p, extra, group_exprs) && sift_v6_unnest_ready(&p))
 			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, sift_v6_unnest_pairs_cost(&p, input_rel), input_rel->rows);
-		index_close(irel, NoLock);
+		sift_v6_source_close(rel, src[i].is_table, NoLock);
 	}
 }
 

@@ -95,7 +95,7 @@ slot_of(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 	}
 	if (c->src == SV6SRC_DIM)
 		return sift_v6_pipe_dim_slot(u->pipe, c->dim, c->slot);
-	return col_index(u, r, c, month);
+	return u->attr_slot != NULL ? u->attr_slot(u->attr_arg, c) : col_index(u, r, c, month);
 }
 
 static void
@@ -198,7 +198,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 	const int	nslots = u->ncols + u->nel + spec->nderive + u->ntests + (u->x->elem.semi ? 1 : 0);
 
 	for (int i = 0; i < u->ncols; i++)
-		type[i] = vec_type(u->cols[i].cls);
+		type[i] = u->attr_slot != NULL ? u->ftype[i] : vec_type(u->cols[i].cls);
 	for (int c = 0; c < u->nel; c++)
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
@@ -546,16 +546,9 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 	}
 }
 
-void
-sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+static void
+unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *stats, AttrNumber heap_att)
 {
-	UnRun		run = {0};
-	UnRun	   *u = &run;
-	SiftF2PullSpec ps;
-	SiftF2Pull *pull;
-	SiftV6MapPreagg *map;
-	const SiftF2ExtBatch *b;
-
 	u->spec = spec;
 	u->row_slot = -1;
 	u->x = spec->ext;
@@ -570,7 +563,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	for (int c = 0; c < u->nchild; c++)
 		u->ctype[c] = u->keyed ? (c == 0 ? SVEC_STRVIEW : SVEC_F64) : u->etype[c];
 	if (!u->keyed)
-		u->heap_att = index->rd_index->indkey.values[u->x->elem.attno - 1];
+		u->heap_att = heap_att;
 	if (u->x->elem.fn == SV6E_UNNEST)
 		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
 	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
@@ -602,11 +595,11 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	u->eidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
 	u->month_key = palloc0(MONTH_SLOTS * sizeof(int32));
 	u->month_val = palloc0(MONTH_SLOTS * sizeof(int32));
-	setup_cols(u, sift_col_rel(index));
-	setup_clauses(u, sift_col_rel(index));
-	for (int c = 0; c < u->nel; c++)
-		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, sift_col_rel(index), u->x->elem.col_leaf[c]) : -1;
-	setup_pipe(u, sift_col_rel(index), g, star);
+}
+
+static void
+unrun_buffers(UnRun *u)
+{
 	for (int i = 0; i < u->ncols; i++)
 	{
 		if (u->cols[i].month)
@@ -620,6 +613,35 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 			u->jvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		}
 	}
+}
+
+static void
+unrun_end(UnRun *u)
+{
+	sift_v6_pipe_finish(u->pipe);
+	sift_v6_vet_end(&u->vet);
+	if (u->estate != NULL)
+		FreeExecutorState(u->estate);
+	MemoryContextDelete(u->bcx);
+}
+
+void
+sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+{
+	UnRun		run = {0};
+	UnRun	   *u = &run;
+	SiftF2PullSpec ps;
+	SiftF2Pull *pull;
+	SiftV6MapPreagg *map;
+	const SiftF2ExtBatch *b;
+
+	unrun_init(u, spec, index, stats, spec->ext->elem.fn == SV6E_KEYS ? 0 : index->rd_index->indkey.values[spec->ext->elem.attno - 1]);
+	setup_cols(u, sift_col_rel(index));
+	setup_clauses(u, sift_col_rel(index));
+	for (int c = 0; c < u->nel; c++)
+		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, sift_col_rel(index), u->x->elem.col_leaf[c]) : -1;
+	setup_pipe(u, sift_col_rel(index), g, star);
+	unrun_buffers(u);
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
 	ps = pull_spec(u);
 	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
@@ -632,9 +654,46 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	sift_f2_pull_end(pull);
 	if (map != NULL)
 		sift_v6_map_preagg_end(map);
-	sift_v6_pipe_finish(u->pipe);
-	sift_v6_vet_end(&u->vet);
-	if (u->estate != NULL)
-		FreeExecutorState(u->estate);
-	MemoryContextDelete(u->bcx);
+	unrun_end(u);
+}
+
+SiftV6UnnestRows *
+sift_v6_unnest_rows_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Snapshot snap, SiftV6ScanStats *stats, int nfact, const SiftVecType *fact_type,
+						  int (*attr_slot) (void *arg, const SiftV6Col *c), void *attr_arg)
+{
+	UnRun	   *u = palloc0(sizeof(UnRun));
+
+	if (nfact > SIFT_F2_PULL_MAX_COLS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
+						errhint("Aggregate fewer columns of the table that is unnested.")));
+	unrun_init(u, spec, NULL, stats, spec->ext->elem.attno);
+	u->ncols = nfact;
+	memcpy(u->ftype, fact_type, nfact * sizeof(SiftVecType));
+	u->attr_slot = attr_slot;
+	u->attr_arg = attr_arg;
+	setup_clauses(u, NULL);
+	setup_pipe(u, NULL, g, NULL);
+	sift_v6_vet_begin(&u->vet, heap, snap, stats);
+	return u;
+}
+
+void
+sift_v6_unnest_rows_run(SiftV6UnnestRows *u, SiftVec *const *fact, const SiftBatchSel *bs, const uint64 *tid)
+{
+	for (int i = 0; i < u->ncols; i++)
+		u->fv[i] = *fact[i];
+	MemoryContextReset(u->bcx);
+	for (int w = 0; w < (bs->n_raw + 63) / 64; w++)
+		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint32 row = w * 64 + __builtin_ctzll(bits);
+
+			sift_f2_unnest_emit_heap_row(u, u->fv, tid[row], row);
+		}
+}
+
+void
+sift_v6_unnest_rows_end(SiftV6UnnestRows *u)
+{
+	unrun_end(u);
 }

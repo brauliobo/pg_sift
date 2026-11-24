@@ -113,6 +113,13 @@ vec_takes_nan(const SiftV6Spec *spec, int v)
 	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
 }
 
+/* a column of the relation the scan reads: not one a dimension of a star join gives, nor the element of an unnested array */
+static bool
+reads_fact(const SiftV6Col *c)
+{
+	return c->src != SV6SRC_DIM && c->src != SV6SRC_ELEM;
+}
+
 /* the slot of a column of the pipe: a payload column of a dimension, or the column of the fact side that col_for finds */
 static int
 slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan)
@@ -284,14 +291,15 @@ scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *s
 	const int	nvec = sift_v6_spec_nvec(spec);
 
 	s->defs = defs;
+	s->first = first;
 	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * SIFT_COL_MAX_LANES * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
-		if (spec->key[i].src != SV6SRC_DIM)
+		if (reads_fact(&spec->key[i]))
 			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL && !spec->rows, spec->rows)->vec;
 	for (int v = 0; v < nvec; v++)
-		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src != SV6SRC_DIM)
+		if (sift_v6_vec_col(spec, v) != NULL && reads_fact(sift_v6_vec_col(spec, v)))
 			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;
 	for (int d = 0; x != NULL && d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -518,6 +526,8 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 	s->stats->rows += s->bs.n_active;
 	if (s->emit != NULL)
 		s->emit(s->emit_arg, &s->bs, s->keyvec, s->argvec);
+	else if (s->unnest != NULL)
+		sift_v6_unnest_rows_run(s->unnest, s->fact, &s->bs, tid + off);
 	else if (s->pipe != NULL)
 	{
 		if (s->rows != NULL)
@@ -886,6 +896,28 @@ sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation
 	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, router, stats, NULL, next_chunk, chunk_arg);
 }
 
+static int
+unnest_slot(void *arg, const SiftV6Col *c)
+{
+	V6Scan	   *s = arg;
+
+	return slot_of(s, s->first, c);
+}
+
+/* a table whose array column is unnested: the pairs of each row go through a pipe whose fact slots are the columns the scan reads and whose element slot follows them */
+static void
+unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
+{
+	SiftVecType *type = palloc(Max(s->ncols, 1) * sizeof(SiftVecType));
+
+	for (int i = 0; i < s->ncols; i++)
+		type[i] = s->cols[i].vec.type;
+	s->unnest = sift_v6_unnest_rows_begin(s->spec, s->group, rel, snap, s->stats, s->ncols, type, unnest_slot, s);
+	s->fact = palloc(Max(s->ncols, 1) * sizeof(SiftVec *));
+	for (int i = 0; i < s->ncols; i++)
+		s->fact[i] = &s->cols[i].vec;
+}
+
 static void
 scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star)
 {
@@ -894,6 +926,8 @@ scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot sn
 
 	s->host = rel;
 	scan_setup(s, store->schema->cols, store->att_first, star);
+	if (s->spec->ext != NULL && s->spec->ext->unnest)
+		unnest_begin(s, rel, snap);
 	o.leaves = scan_leaves(s);
 	o.nleaves = s->ncols;
 	o.nan_leaves = scan_nan_leaves(s, store->ncols);
@@ -904,6 +938,8 @@ scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot sn
 		sift_f2_store_scan_sink(&o, v6_sink, s);
 	if (s->preagg != NULL)
 		sift_v6_preagg_end(s->preagg);
+	if (s->unnest != NULL)
+		sift_v6_unnest_rows_end(s->unnest);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 }

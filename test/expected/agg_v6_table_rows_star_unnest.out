@@ -124,6 +124,49 @@ SELECT parity('SELECT count(*), sum(f.k) FROM @T f JOIN @D d ON d.k = f.k') AS s
  t
 (1 row)
 
+-- the elements of an array column
+SELECT plan_has('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e', 'Unnest: lateral columnar') AS unnest_served_by_agg_v6;
+ unnest_served_by_agg_v6 
+-------------------------
+ t
+(1 row)
+
+SELECT plan_has('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e', 'Table: rt') AS unnest_reads_the_table;
+ unnest_reads_the_table 
+------------------------
+ t
+(1 row)
+
+SELECT parity('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e') AS unnest_text_elements;
+ unnest_text_elements 
+----------------------
+ t
+(1 row)
+
+SELECT parity('SELECT e, count(*), sum(grp), max(k) FROM @T, unnest(ids) e GROUP BY e') AS unnest_int_elements_with_nulls;
+ unnest_int_elements_with_nulls 
+--------------------------------
+ t
+(1 row)
+
+SELECT parity('SELECT tag, e, count(*) FROM @T, unnest(tags) e WHERE grp < 5 AND k > 3 GROUP BY tag, e') AS unnest_with_fact_key_and_quals;
+ unnest_with_fact_key_and_quals 
+--------------------------------
+ t
+(1 row)
+
+SELECT parity('SELECT e, count(*), count(f.amount), sum(f.amount) FROM @T f LEFT JOIN LATERAL unnest(f.ids) e ON true GROUP BY e') AS unnest_left_join_lateral;
+ unnest_left_join_lateral 
+--------------------------
+ t
+(1 row)
+
+SELECT parity('SELECT count(*), count(e), sum(e) FROM @T, unnest(ids) e') AS unnest_without_keys;
+ unnest_without_keys 
+---------------------
+ t
+(1 row)
+
 UPDATE rt SET tag = 'tag9', grp = 3 WHERE id % 9 = 0;
 UPDATE rh SET tag = 'tag9', grp = 3 WHERE id % 9 = 0;
 DELETE FROM rt WHERE id % 13 = 0;
@@ -137,6 +180,12 @@ SELECT parity('SELECT id, tag FROM @T WHERE grp = 3 ORDER BY tag DESC, id LIMIT 
 SELECT parity('SELECT d.label, count(*), sum(f.grp) FROM @T f JOIN @D d ON d.k = f.k GROUP BY d.label') AS star_after_updates_and_deletes;
  star_after_updates_and_deletes 
 --------------------------------
+ t
+(1 row)
+
+SELECT parity('SELECT e, count(*), sum(grp) FROM @T, unnest(tags) e GROUP BY e') AS unnest_after_updates_and_deletes;
+ unnest_after_updates_and_deletes 
+----------------------------------
  t
 (1 row)
 
