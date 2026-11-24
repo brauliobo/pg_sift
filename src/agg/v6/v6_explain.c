@@ -42,6 +42,17 @@ as_written(Node *n, Relation index)
 	return expression_tree_mutator(n, as_written, index);
 }
 
+/* a qual over jsonb_typeof(doc -> 'key') reads a virtual attribute of the scan the statement has no name for */
+static bool
+reads_json_type(Node *n, void *context)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Var))
+		return ((Var *) n)->varattno >= SIFT_V6_JTYPE_VATT;
+	return expression_tree_walker(n, reads_json_type, context);
+}
+
 static void
 explain_filters(const SiftV6Spec *spec, Relation heap, Relation index, ExplainState *es)
 {
@@ -50,7 +61,8 @@ explain_filters(const SiftV6Spec *spec, Relation heap, Relation index, ExplainSt
 
 	initStringInfo(&buf);
 	foreach_ptr(Node, q, list_concat_copy(spec->indexqual, spec->vqual))
-		appendStringInfo(&buf, "%s%s", buf.len ? " AND " : "", deparse_expression(as_written(q, index), dpcontext, false, false));
+		if (!reads_json_type(q, NULL))
+			appendStringInfo(&buf, "%s%s", buf.len ? " AND " : "", deparse_expression(as_written(q, index), dpcontext, false, false));
 	if (buf.len)
 		ExplainPropertyText("Filters", buf.data, es);
 }
