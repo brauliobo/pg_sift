@@ -1,12 +1,13 @@
-"""`clickbench.py report`: docs/results/clickbench.tsv -> the ClickBench block of docs/BENCHMARKS.md and docs/charts/clickbench.svg. No number is typed by hand."""
+"""`clickbench.py report`: docs/results/clickbench.tsv -> the ClickBench block of docs/BENCHMARKS.md and docs/charts/clickbench{,-dark}.svg (the chart of charts/clickbench.py). No number is typed by hand."""
 import math
 import os
 
 import resultfile
+from charts import clickbench as chart
+from charts.data import load_clickbench
 from mdtable import ms, tables
 
 LABEL = {'pg': 'PG 18', 'sift_table': '`sift_table`', 'sift_col': '`sift_col`', 'ch': 'ClickHouse', 'ch_proj': 'ClickHouse + PROJECTION', 'duckdb': 'DuckDB'}
-COLOR = {'pg': '#000000', 'sift_table': '#0072B2', 'sift_col': '#56B4E9', 'ch': '#D55E00', 'ch_proj': '#E69F00', 'duckdb': '#009E73'}
 GROUPS = [('warm_ms', 'Warm, wall ms (client clock)'), ('warm_server_ms', 'Warm, server ms (engine figure)'),
           ('cold_ms', 'Cold, wall ms'), ('cold_server_ms', 'Cold, server ms')]
 
@@ -42,27 +43,17 @@ def block(meta, rows):
     return out
 
 
-def svg(meta, rows, arms, metric='warm_ms'):
-    geo = {a: g for a, g in summary(rows, arms, metric).items() if g}
-    top, bar, w = 56, 34, 880
-    scale = (w - 300) / max(geo.values())
-    h = top + bar * len(geo) + 30
-    parts = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d" font-family="sans-serif" font-size="14">' % (w, h, w, h),
-             '<rect width="100%%" height="100%%" fill="#ffffff"/><text x="20" y="28" font-size="18" font-weight="bold">ClickBench Q0-Q42, %s hits rows: geometric mean of the '
-             'warm wall time (ms, lower is better)</text>' % meta['tier']]
-    for i, (a, g) in enumerate(sorted(geo.items(), key=lambda kv: kv[1])):
-        y = top + i * bar
-        parts.append('<text x="20" y="%d">%s</text><rect x="230" y="%d" width="%.1f" height="22" fill="%s"/><text x="%.1f" y="%d">%s ms</text>' % (
-            y + 16, LABEL[a].replace('`', ''), y, g * scale, COLOR[a], 236 + g * scale, y + 16, ms(g)))
-    return '\n'.join(parts + ['</svg>', ''])
+def svg(inp, mode):
+    return chart.render({'clickbench': load_clickbench(inp)}, mode)
 
 
 def main(a):
     meta, rows = resultfile.read(a.inp)
-    arms = [x for x in LABEL if any(r['arm'] == x for r in rows)]
     if a.md:
         resultfile.replace_block(a.md, 'clickbench-%s' % meta['tier'].lower().replace(' ', ''), block(meta, rows))
     if a.svg:
         os.makedirs(os.path.dirname(os.path.abspath(a.svg)), exist_ok=True)
-        open(a.svg, 'w').write(svg(meta, rows, arms))
+        stem, ext = os.path.splitext(a.svg)
+        for mode, path in (('light', a.svg), ('dark', f'{stem}-dark{ext}')):
+            open(path, 'w', newline='\n').write(svg(a.inp, mode))
     print('\n'.join(block(meta, rows)[:3]))
