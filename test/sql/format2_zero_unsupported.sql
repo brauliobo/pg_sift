@@ -1,0 +1,74 @@
+-- A sift_table of Format 2.0 keeps answering after ALTER TABLE .. ALTER COLUMN .. TYPE changed a scaled numeric column to one that holds numeric values (no rewrite: numeric(10, 2) to numeric, to
+-- numeric(24, 2)), as a table of Format 1 and the heap do: the rows read back, a compaction (VACUUM (FREEZE)) rewrites the old parts under the new column, NaN rows and NULLs survive, and rows
+-- written after the ALTER mix with the old ones. Every check raises on failure and prints one row (name, ok); a heap twin is the oracle.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE FUNCTION chk(name text, got anyelement, want anyelement) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	IF got IS DISTINCT FROM want THEN RAISE EXCEPTION 'FAILED %: got %, want %', name, got, want; END IF;
+	RETURN name || ': ok';
+END $$;
+
+CREATE FUNCTION same(name text, a regclass, b regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE x text; y text;
+BEGIN
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t.id)) FROM %s t', a) INTO x;
+	EXECUTE format('SELECT md5(string_agg(t::text, ''|'' ORDER BY t.id)) FROM %s t', b) INTO y;
+	IF x IS DISTINCT FROM y THEN RAISE EXCEPTION 'FAILED %: % differs from %', name, a, b; END IF;
+	RETURN name || ': ok';
+END $$;
+
+CREATE FUNCTION on_both(tpl text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format(tpl, 'tb');
+	EXECUTE format(tpl, 'th');
+END $$;
+
+CREATE FUNCTION aggs_same(name text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE x text; y text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY g)) FROM (SELECT g, count(a) ca, sum(a) sa, min(a) na, max(a) xa, sum(b) sb, max(c) xc, count(DISTINCT a) da FROM tb GROUP BY g) r' INTO x;
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY g)) FROM (SELECT g, count(a) ca, sum(a) sa, min(a) na, max(a) xa, sum(b) sb, max(c) xc, count(DISTINCT a) da FROM th GROUP BY g) r' INTO y;
+	IF x IS DISTINCT FROM y THEN RAISE EXCEPTION 'FAILED %: the aggregates of tb differ from those of th', name; END IF;
+	RETURN name || ': ok';
+END $$;
+
+CREATE TABLE th (id int, g int, a numeric(10,2), b numeric(10,0), c numeric(12,3), d numeric(10,2));
+INSERT INTO th SELECT i, i % 5, CASE WHEN i % 997 = 0 THEN 'NaN'::numeric WHEN i % 61 = 0 THEN NULL ELSE (i % 5000) / 8.0 END, i % 777, (i % 900) / 16.0, i / 4.0 FROM generate_series(1, 30000) i;
+CREATE TABLE tb (LIKE th) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO tb SELECT * FROM th;
+SELECT chk('parts written', sift.table_maintain('tb') IS NOT NULL, true);
+SELECT same('before the ALTER', 'tb', 'th');
+
+SELECT on_both('ALTER TABLE %I ALTER COLUMN a TYPE numeric');
+SELECT on_both('ALTER TABLE %I ALTER COLUMN b TYPE numeric');
+SELECT on_both('ALTER TABLE %I ALTER COLUMN c TYPE numeric(24, 3)');
+SELECT same('rows read after the ALTER', 'tb', 'th');
+SELECT aggs_same('aggregates after the ALTER');
+
+VACUUM (FREEZE) tb;
+SELECT same('rows after the compaction', 'tb', 'th');
+SELECT aggs_same('aggregates after the compaction');
+SELECT chk('the compaction left every row', sift.table_verify('tb'), (SELECT count(*) FROM th));
+SELECT chk('NaN rows kept', (SELECT count(*) FROM tb WHERE a = 'NaN'), (SELECT count(*) FROM th WHERE a = 'NaN'));
+SELECT chk('NULL rows kept', (SELECT count(*) FROM tb WHERE a IS NULL), (SELECT count(*) FROM th WHERE a IS NULL));
+SELECT chk('display scale kept', (SELECT a::text FROM tb WHERE id = 3), (SELECT a::text FROM th WHERE id = 3));
+
+INSERT INTO th SELECT 30000 + i, i % 5, (i % 4000 + 1) / 7.0::numeric, i % 100, i / 3.0, i / 5.0 FROM generate_series(1, 5000) i;
+INSERT INTO tb SELECT * FROM th WHERE id > 30000;
+SELECT chk('new parts beside the old', sift.table_maintain('tb') IS NOT NULL, true);
+SELECT on_both('DELETE FROM %I WHERE id %% 11 = 0');
+SELECT on_both('UPDATE %I SET a = a + 1.0001 WHERE id %% 13 = 0');
+SELECT same('rows with the new ones', 'tb', 'th');
+VACUUM (FREEZE) tb;
+SELECT same('rows after the second compaction', 'tb', 'th');
+SELECT aggs_same('aggregates after the second compaction');
+SELECT chk('rows verified', sift.table_verify('tb'), (SELECT count(*) FROM th));
+
+DROP TABLE tb, th;
+DROP FUNCTION chk(text, anyelement, anyelement), same(text, regclass, regclass), on_both(text), aggs_same(text);
+DROP EXTENSION pg_sift;
