@@ -616,8 +616,8 @@ SELECT n, parity, probed, pruned FROM (VALUES
 	(13, 'SELECT id FROM sk WHERE note LIKE ''%ord%''')
 ) v(n, q), LATERAL run(v.q) ORDER BY n;
 
--- The end of the file: three batches, the first two deleted; VACUUM compacts what is left, and the part that is then the last in the file is rewritten into the free space below it, after
--- which the cut takes the free run it leaves
+-- The end of the file: three batches, the first two deleted; VACUUM compacts what is left, and the part that is then the last in the file is rewritten into the free space below it, and the
+-- free run it leaves is cut off the file by the VACUUM itself, so that nothing is left for a later cut
 CREATE TABLE tl (id int, p1 bytea, p2 bytea);
 CREATE INDEX tl_i ON tl USING sift_col (id, p1, p2) WITH (key_order = 'id');
 INSERT INTO tl SELECT i, decode(md5(i::text) || md5(i::text || 'x'), 'hex'), decode(md5(i::text || 'y') || md5(i::text || 'z'), 'hex') FROM generate_series(1, 60000) i;
@@ -631,8 +631,8 @@ SELECT pg_current_xact_id() AS xid_after_first \gset
 VACUUM tl;
 SELECT pg_current_xact_id() AS xid_after_second \gset
 SELECT pg_relation_size('tl_i') / 8192 AS pinned \gset
-SELECT :pinned > :full AS tail_pinned;
-SELECT blocks_truncated > 0 AS cut, NOT lock_skipped AS unlocked, file_blocks < :pinned * 0.85 AS shrunk, file_blocks <= :full + 16 AS back_to_live_size,
+SELECT :pinned <= :full + 16 AS tail_cut_by_vacuum;
+SELECT blocks_truncated = 0 AS nothing_left, NOT lock_skipped AS unlocked, file_blocks <= :full + 16 AS back_to_live_size,
 	   file_blocks = high_water AS file_ends_at_high_water FROM sift._test_f2_tail_shrink('tl_i');
 SELECT sift._test_f2_check('tl_i') ~ '^parts=1 ' AS consistent;
 SELECT f2_same('SELECT id FROM tl WHERE id > 100') AS live_rows, f2_same('SELECT id FROM tl WHERE id BETWEEN 120001 AND 120100') AS first_live, f2_same('SELECT id FROM tl WHERE id <= 120000') AS none_dead;
