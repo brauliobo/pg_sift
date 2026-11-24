@@ -1,0 +1,1 @@
+agg_v6_datum_decode_types	src/col/f2/f2_v6_datum.c:sift_f2_v6_fill_datum src/col/types.c:sift_col_values_datum src/agg/group/ht_generic.c:sift_genkey_supported
