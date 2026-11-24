@@ -20,6 +20,7 @@ typedef struct SiftV6Resolver
 	bool		(*column) (void *ctx, const Expr *e, bool numeric_ok, SiftV6Col *out);
 	void	   *ctx;
 	bool		arith_ok;		/* the scan computes SVD_ARITH (the batches of an unnest do) */
+	Index		elem_relid;		/* the relation of the elements of an unnest, whose columns an expression may read beside the table's (0: none) */
 } SiftV6Resolver;
 
 /*

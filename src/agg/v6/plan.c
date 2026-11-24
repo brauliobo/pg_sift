@@ -313,13 +313,13 @@ derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 bool
 sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
-	const SiftV6Resolver rs = {resolve_datum_column, p, false};
+	const SiftV6Resolver rs = {resolve_datum_column, p, false, p->elem_rel != NULL ? p->elem_rel->relid : 0};
 	SiftV6Derive d = {0};
 	Oid			restype;
 	int			at;
 
-	if (p->xseed != NULL || !sift_v6_pgexpr_derive_of(&rs, p->rel->relid, e, &d, &restype, &p->spec.pgexpr) ||
-		!(sift_v6_type_native(restype) || (key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
+	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_pgexpr_derive_of(&rs, p->rel->relid, e, &d, &restype, &p->spec.pgexpr) ||
+		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};
 	return true;

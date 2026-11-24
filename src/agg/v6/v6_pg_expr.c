@@ -64,6 +64,7 @@ sift_v6_pgexpr_plan_ok(const Expr *e)
 typedef struct VarsCtx
 {
 	Index		relid;
+	Index		elem_relid;
 	List	   *vars;
 	bool		overflow;
 } VarsCtx;
@@ -77,10 +78,10 @@ vars_walker(Node *n, VarsCtx *c)
 	{
 		Var		   *v = (Var *) n;
 
-		if (v->varno != c->relid)
+		if (v->varno != c->relid && (c->elem_relid == 0 || v->varno != c->elem_relid))
 			return false;
 		foreach_ptr(Var, seen, c->vars)
-			if (seen->varattno == v->varattno)
+			if (seen->varno == v->varno && seen->varattno == v->varattno)
 				return false;
 		if (list_length(c->vars) == SIFT_V6_MAX_COLS)
 			c->overflow = true;
@@ -92,9 +93,9 @@ vars_walker(Node *n, VarsCtx *c)
 }
 
 bool
-sift_v6_pgexpr_vars(const Expr *e, Index relid, List **vars)
+sift_v6_pgexpr_vars(const Expr *e, Index relid, Index elem_relid, List **vars)
 {
-	VarsCtx		c = {.relid = relid};
+	VarsCtx		c = {.relid = relid,.elem_relid = elem_relid};
 
 	vars_walker((Node *) e, &c);
 	*vars = c.vars;
@@ -104,6 +105,7 @@ sift_v6_pgexpr_vars(const Expr *e, Index relid, List **vars)
 typedef struct RenumberCtx
 {
 	Index		relid;
+	Index		elem_relid;
 	const List *vars;
 } RenumberCtx;
 
@@ -112,12 +114,12 @@ renumber_mutator(Node *n, RenumberCtx *c)
 {
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Var) && ((const Var *) n)->varno == c->relid)
+	if (IsA(n, Var) && (((const Var *) n)->varno == c->relid || (c->elem_relid != 0 && ((const Var *) n)->varno == c->elem_relid)))
 	{
 		Var		   *v = copyObject((Var *) n);
 
 		for (int k = 0; k < list_length(c->vars); k++)
-			if (((const Var *) list_nth(c->vars, k))->varattno == v->varattno)
+			if (((const Var *) list_nth(c->vars, k))->varno == v->varno && ((const Var *) list_nth(c->vars, k))->varattno == v->varattno)
 			{
 				v->varno = SIFT_V6_PGX_RELID;
 				v->varnosyn = SIFT_V6_PGX_RELID;
@@ -131,9 +133,9 @@ renumber_mutator(Node *n, RenumberCtx *c)
 }
 
 Expr *
-sift_v6_pgexpr_renumber(const Expr *e, Index relid, const List *vars)
+sift_v6_pgexpr_renumber(const Expr *e, Index relid, Index elem_relid, const List *vars)
 {
-	RenumberCtx c = {relid, vars};
+	RenumberCtx c = {relid, elem_relid, vars};
 
 	return (Expr *) renumber_mutator((Node *) e, &c);
 }
@@ -147,7 +149,7 @@ sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6D
 	SiftV6Col	col;
 	int			at = 0;
 
-	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(e) || !sift_v6_pgexpr_vars(e, relid, &vars) || vars == NIL)
+	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(e) || !sift_v6_pgexpr_vars(e, relid, rs->elem_relid, &vars) || vars == NIL)
 		return false;
 	*restype = getBaseType(exprType((Node *) e));
 	ints = list_make1_int((int) *restype);
@@ -157,9 +159,9 @@ sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6D
 			return false;
 		if (v == linitial(vars))
 			d->src = col;
-		ints = list_concat(ints, list_make3_int(sift_v6_col_input_attno(&col), (int) col.typid, col.scale));
+		ints = list_concat(ints, list_make5_int(sift_v6_col_input_attno(&col), (int) col.typid, col.scale, (int) col.src, col.slot));
 	}
-	item = list_make2(sift_v6_pgexpr_renumber(e, relid, vars), ints);
+	item = list_make2(sift_v6_pgexpr_renumber(e, relid, rs->elem_relid, vars), ints);
 	foreach_ptr(List, seen, *items)
 	{
 		if (equal(seen, item))
@@ -181,9 +183,10 @@ sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *ou
 
 	out->expr = linitial(item);
 	out->restype = (Oid) linitial_int(ints);
-	out->nin = (list_length(ints) - 1) / 3;
+	out->nin = (list_length(ints) - 1) / 5;
 	for (int i = 0; i < out->nin; i++)
-		out->col[i] = (SiftV6Col) {.attno = list_nth_int(ints, 1 + 3 * i),.typid = (Oid) list_nth_int(ints, 2 + 3 * i),.scale = list_nth_int(ints, 3 + 3 * i)};
+		out->col[i] = (SiftV6Col) {.attno = list_nth_int(ints, 1 + 5 * i),.typid = (Oid) list_nth_int(ints, 2 + 5 * i),.scale = list_nth_int(ints, 3 + 5 * i),
+		.src = (SiftV6Src) list_nth_int(ints, 4 + 5 * i),.slot = list_nth_int(ints, 5 + 5 * i)};
 }
 
 bool

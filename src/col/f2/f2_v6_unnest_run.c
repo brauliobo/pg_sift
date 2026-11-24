@@ -14,7 +14,10 @@
 #include "utils/memutils.h"
 
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_gather.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_star_run.h"
@@ -60,6 +63,9 @@ typedef struct UnRun
 	int			ncols;
 	UnCol		cols[SIFT_F2_PULL_MAX_COLS];
 	UnArith		arith[SIFT_V6_MAX_DERIVE];
+	SiftV6PgExpr *pg[SIFT_V6_MAX_DERIVE];	/* an SVD_PG_EXPR derivation: its evaluator, the vector of the pairs each of its inputs is, and its result */
+	int			pgslot[SIFT_V6_MAX_DERIVE][SIFT_V6_MAX_COLS];
+	SiftVxOut	pgout[SIFT_V6_MAX_DERIVE];
 	int			nel;			/* the columns of the element */
 	SiftVecType etype[SIFT_V6_XELEM_COLS];
 	bool		eused[SIFT_V6_XELEM_COLS];	/* the statement reads the column; the others are read for the values their leaf cannot hold */
@@ -158,7 +164,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 	const SiftV6Spec *spec = u->spec;
 
 	for (int i = 0; i < spec->nkeys; i++)
-		if (spec->key[i].src == SV6SRC_ATTR)
+		if (spec->key[i].src == SV6SRC_ATTR && spec->key[i].derive == 0)
 			col_index(u, r, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
 		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0)
@@ -182,6 +188,15 @@ setup_cols(UnRun *u, const SiftColRel *r)
 			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
 				col_index(u, r, c == 0 ? &d->src : &d->cond[c - 1], false);
 	}
+		if (d->kind == SVD_PG_EXPR)
+		{
+			SiftV6PgItem it;
+
+			sift_v6_pgexpr_item(spec, d, &it);
+			for (int c = 0; c < it.nin; c++)
+				if (it.col[c].src == SV6SRC_ATTR)
+					col_index(u, r, &it.col[c], false);
+		}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
 		col_index(u, r, &spec->fcol[i], false);
 }
@@ -199,6 +214,33 @@ pull_spec(const UnRun *u)
 }
 
 static void
+static SiftVecType
+pg_vec_type(const SiftV6Spec *spec, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	sift_v6_pgexpr_item(spec, d, &it);
+	return sift_v6_result_vec_type(it.restype);
+}
+
+/* the evaluator of the derivation k, over the vectors of the pairs of its inputs */
+static void
+bind_pg(UnRun *u, const SiftColRel *r, int k)
+{
+	SiftV6PgItem it;
+	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
+
+	sift_v6_pgexpr_item(u->spec, &u->spec->derive[k], &it);
+	for (int c = 0; c < it.nin; c++)
+	{
+		u->pgslot[k][c] = slot_of(u, r, &it.col[c], false);
+		pin[c] = (SiftV6PgIn) {.typid = it.col[c].typid,.scale = it.col[c].scale};
+	}
+	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, it.expr, it.nin, pin);
+	u->pg[k]->restype = it.restype;
+	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
+}
+
 setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = u->spec;
@@ -209,8 +251,8 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 	for (int c = 0; c < u->nel; c++)
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
-		type[u->ncols + u->nel + k] = SVEC_F64;
-	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, u->ncols + u->nel + spec->nderive, type);
+		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
+	u->pipe =sift_v6_pipe_new(CurrentMemoryContext, spec, g, u->ncols + u->nel + spec->nderive, type);
 	if (star != NULL)
 		sift_v6_star_attach(star, u->pipe);
 	for (int d = 0; d < u->x->ndims; d++)
@@ -236,6 +278,11 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 		UnArith    *ar = &u->arith[k];
 
 		ar->nin = d->ncond + 1;
+		if (d->kind == SVD_PG_EXPR)
+		{
+			bind_pg(u, r, k);
+			continue;
+		}
 		for (int c = 0; c < ar->nin; c++)
 		{
 			const SiftV6Col *col = c == 0 ? &d->src : &d->cond[c - 1];
@@ -357,6 +404,19 @@ arith_pairs(UnRun *u, int k, uint32 m)
 }
 
 /* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */
+/* the PostgreSQL expression of derivation k on the pairs of obs: its inputs are the vectors of the pairs, its result the vector of the slot of the derivation */
+static void
+pg_pairs(UnRun *u, int k)
+{
+	const SiftVec *in[SIFT_V6_MAX_COLS];
+	const int	nin = u->pg[k]->nin;
+
+	for (int c = 0; c < nin; c++)
+		in[c] = u->out[u->pgslot[k][c]];
+	sift_v6_pgexpr_derive(u->pg[k], in, &u->obs, &u->pgout[k]);
+	u->out[u->ncols + u->nel + k] = &u->pgout[k].vec;
+}
+
 static void
 emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 {
@@ -367,8 +427,6 @@ emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 	for (int c = 0; c < u->nel; c++)
 		if (u->eused[c])
 			sift_vec_gather(u->out[u->ncols + c], u->out_valid[u->ncols + c], u->out_data[u->ncols + c], &elems[c], u->eidx, m);
-	for (int k = 0; k < u->spec->nderive; k++)
-		arith_pairs(u, k, m);
 	memset(bs->mask, 0, sizeof(bs->mask));
 	for (uint32 i = 0; i < m; i++)
 		bs->mask[i >> 6] |= UINT64CONST(1) << (i & 63);
@@ -376,6 +434,11 @@ emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 	bs->all_active = true;
 	bs->has_sel = false;
 	sift_v6_pipe_run(u->pipe, u->out, bs);
+	for (int k = 0; k < u->spec->nderive; k++)
+		if (u->spec->derive[k].kind == SVD_PG_EXPR)
+			pg_pairs(u, k);
+		else
+			arith_pairs(u, k, m);
 }
 
 /* the elements the clause of the element keeps, as a bitmap of n_elems bits, from the columns ev of the elements */

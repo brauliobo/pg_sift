@@ -80,9 +80,9 @@ extern bool sift_v6_spec_pg_reads(const SiftV6Spec *s);
 /* The columns the derivations of the spec read, the room the scan's column array needs for them */
 extern int	sift_v6_spec_pg_inputs(const SiftV6Spec *s);
 
-/* The Vars of e of the range table entry relid, each once in the order met: their attnos and types; false when there are more than SIFT_V6_MAX_COLS */
-extern bool sift_v6_pgexpr_vars(const Expr *e, Index relid, List **vars);
-/* A copy of e whose Vars of relid are the Vars of SIFT_V6_PGX_RELID numbered by their place in vars (as sift_v6_pgexpr_vars found them) */
-extern Expr *sift_v6_pgexpr_renumber(const Expr *e, Index relid, const List *vars);
+/* The Vars of e of the range table entries relid and elem_relid (0: none), each once in the order met: their attnos and types; false when there are more than SIFT_V6_MAX_COLS */
+extern bool sift_v6_pgexpr_vars(const Expr *e, Index relid, Index elem_relid, List **vars);
+/* A copy of e whose Vars of relid and elem_relid are the Vars of SIFT_V6_PGX_RELID numbered by their place in vars (as sift_v6_pgexpr_vars found them) */
+extern Expr *sift_v6_pgexpr_renumber(const Expr *e, Index relid, Index elem_relid, const List *vars);
 
 #endif							/* SIFT_AGG_V6_PG_EXPR_H */

@@ -49,7 +49,8 @@ reads_json(const SiftV6Spec *s)
 	return false;
 }
 
-/* what the batches of the scan compute is the month of a date column (the one binning of a key the scan of an unnest does) and float8 arithmetic of arguments (agg/v6/v6_plan_rewrite.h), and no other */
+/* what the batches of the scan compute is the month of a date column (the one binning of a key the scan of an unnest does), float8 arithmetic of arguments (agg/v6/v6_plan_rewrite.h) and the PostgreSQL
+ * expressions of keys and arguments over the columns of the pairs (v6_pg_expr.h), and no other */
 static bool
 computes_only_months(const SiftV6Spec *s)
 {
@@ -57,10 +58,10 @@ computes_only_months(const SiftV6Spec *s)
 		if (s->bin[b].stride_us != SIFT_DATEBIN_MONTH || s->key[s->bin[b].key].typid != DATEOID)
 			return false;
 	for (int k = 0; k < s->nderive; k++)
-		if (s->derive[k].kind != SVD_ARITH)
+		if (s->derive[k].kind != SVD_ARITH && s->derive[k].kind != SVD_PG_EXPR)
 			return false;
 	for (int i = 0; i < s->nkeys; i++)
-		if (s->key[i].derive != 0)
+		if (s->key[i].derive != 0 && s->derive[s->key[i].derive - 1].kind != SVD_PG_EXPR)
 			return false;
 	return true;
 }

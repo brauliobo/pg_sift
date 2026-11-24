@@ -80,7 +80,7 @@ sift_v6_pgqual_plan_ok(const SiftV6Input *in, const Expr *clause)
 	SiftV6Input scratch = *in;
 	List	   *vars;
 
-	return exprType((const Node *) clause) == BOOLOID && sift_v6_pgexpr_plan_ok(clause) && sift_v6_pgexpr_vars(clause, SIFT_V6_BQ_RELID, &vars) && columns_ok(&scratch, vars);
+	return exprType((const Node *) clause) == BOOLOID && sift_v6_pgexpr_plan_ok(clause) && sift_v6_pgexpr_vars(clause, SIFT_V6_BQ_RELID, 0, &vars) && columns_ok(&scratch, vars);
 }
 
 SiftV6PgQual *
@@ -92,7 +92,7 @@ sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in)
 	List	   *vars;
 	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
 
-	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_BQ_RELID, &vars), "the batch quals of the aggregate scan of relation %u read at most %d columns", in->indexoid, SIFT_V6_MAX_COLS);
+	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_BQ_RELID, 0, &vars), "the batch quals of the aggregate scan of relation %u read at most %d columns", in->indexoid, SIFT_V6_MAX_COLS);
 	q->nin = list_length(vars);
 	for (int i = 0; i < q->nin; i++)
 	{
@@ -102,7 +102,7 @@ sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in)
 		q->slot[i] = slot;
 		pin[i] = (SiftV6PgIn) {.typid = in->col[slot].typid,.scale = in->col[slot].scale};
 	}
-	q->x = sift_v6_pgexpr_open(cx, sift_v6_pgexpr_renumber(e, SIFT_V6_BQ_RELID, vars), q->nin, pin);
+	q->x = sift_v6_pgexpr_open(cx, sift_v6_pgexpr_renumber(e, SIFT_V6_BQ_RELID, 0, vars), q->nin, pin);
 	MemoryContextSwitchTo(old);
 	return q;
 }
