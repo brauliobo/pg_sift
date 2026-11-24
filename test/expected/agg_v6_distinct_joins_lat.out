@@ -123,7 +123,7 @@ SELECT s.id, r.* FROM stmts s, LATERAL same(s.q) r ORDER BY s.id;
  28 | normal    |           1 |       0
  29 | normal    |           4 |       0
  30 | normal    |           4 |       0
- 31 | normal    |          11 |       0
+ 31 | SiftAggV6 |          11 |       0
  32 | normal    |           1 |       0
 (32 rows)
 
