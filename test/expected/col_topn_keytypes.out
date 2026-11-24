@@ -122,7 +122,12 @@ EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY id % 7 + (random() * 0)::int, id 
          ->  Index Only Scan using kt_pkey on kt
 (4 rows)
 
-EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5;
+CREATE FUNCTION kt_plan(q text) RETURNS TABLE ("QUERY PLAN" text) LANGUAGE plpgsql AS $$
+BEGIN
+	RETURN QUERY EXECUTE 'EXPLAIN (COSTS OFF) ' || q;
+END $$;
+SELECT regexp_replace("QUERY PLAN", 'InitPlan (expr_)?1', 'InitPlan 1') AS "QUERY PLAN"
+FROM kt_plan('SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5');
                                      QUERY PLAN                                     
 ------------------------------------------------------------------------------------
  Limit
@@ -134,7 +139,7 @@ EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT 1) THEN 1 
 (6 rows)
 
 DROP TABLE kt;
-DROP FUNCTION kt_check(text, int);
+DROP FUNCTION kt_plan(text), kt_check(text, int);
 DROP FUNCTION kt_mode(bool, int);
 DROP COLLATION kt_nd;
 DROP EXTENSION pg_sift_helpers;
