@@ -128,6 +128,7 @@ sift_test_v1_topn(PG_FUNCTION_ARGS)
 	const Oid	typid = TupleDescAttr(RelationGetDescr(heap), heap_att - 1)->atttypid;
 	SiftV6Spec *spec = palloc0(sizeof(SiftV6Spec));
 	SiftV6ScanStats stats = {0};
+	ScanKeyData key = {0};
 	SiftV6Rows *rows;
 	IndexFetchTableData *fetch;
 	TupleTableSlot *slot;
@@ -140,10 +141,13 @@ sift_test_v1_topn(PG_FUNCTION_ARGS)
 	*spec = (SiftV6Spec) {.relid = relid,.is_table = is_table,.nkeys = 1,.key = palloc0(sizeof(SiftV6Col)),.rows = true,.topk = k,.ntopk = 1};
 	spec->key[0] = (SiftV6Col) {.attno = att,.typid = typid};
 	spec->topk_item[0] = (SiftV6TopKItem) {.pos = 0,.sortop = order_op(typid, desc),.collid = typid == TEXTOID ? DEFAULT_COLLATION_OID : InvalidOid,.nulls_first = nulls_first};
-	if (!PG_ARGISNULL(6))
+	if (!PG_ARGISNULL(6) && is_table)
 		spec->indexqual = index_qual_gt(att, typid, PG_GETARG_INT64(6));
+	else if (!PG_ARGISNULL(6))
+		ScanKeyEntryInitialize(&key, 0, att, BTGreaterStrategyNumber, typid, InvalidOid, get_opcode(OpernameGetOprid(list_make1(makeString(">")), typid, typid)),
+							   typid == INT4OID ? Int32GetDatum((int32) PG_GETARG_INT64(6)) : Int64GetDatum(PG_GETARG_INT64(6)));
 	rows = sift_v6_rows_new(CurrentMemoryContext, spec);
-	ops->order->scan_rows(spec, rows, heap, is_table ? NULL : rel, NULL, 0, GetActiveSnapshot(), &stats);
+	ops->order->scan_rows(spec, rows, heap, is_table ? NULL : rel, &key, !PG_ARGISNULL(6) && !is_table ? 1 : 0, GetActiveSnapshot(), &stats);
 	sift_v6_rows_finish(rows);
 	getTypeOutputInfo(typid, &outfn, &varlena);
 	fetch = sift_table_index_fetch_begin(heap);
