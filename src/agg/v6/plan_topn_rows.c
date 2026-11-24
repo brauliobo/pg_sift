@@ -21,6 +21,7 @@
 #include "agg/v6/v6_cost.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_rows_topn.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_topn.h"
 #include "agg/v6/v6_vexpr.h"
 #include "core/store_ops.h"

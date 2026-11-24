@@ -132,8 +132,6 @@ extern void sift_v6_store_end(SiftV6Store *s);
 extern void sift_v6_explain_index(ExplainState *es, Oid relid, bool is_table);
 extern void sift_v6_explain_count(ExplainState *es, const char *label, int64 value);
 
-/* The plan of an operator of the bridge over a table's index: an index owned by the format that holds every column; false when the relation is not a plain table read as a base relation */
-extern bool sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel);
 
 /* The planner keeps the target of an upper stage in root->upper_targets and sets it on the stage's rel only after the hooks ran: the operators read and add their paths with it */
 extern void sift_v6_stage_target(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *output_rel);

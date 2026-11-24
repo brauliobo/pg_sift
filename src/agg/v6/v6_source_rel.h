@@ -30,6 +30,9 @@ typedef struct SiftV6RelSource
 /* The base relation is a sift_table a store format scans, or has an index of one: an operator has something to scan */
 extern bool sift_v6_rel_has_source(PlannerInfo *root, RelOptInfo *rel);
 
+/* The plan of an operator over the sources of a relation: the relation is a plain table read as a base relation, and has one */
+extern bool sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel);
+
 /* The sources of the relation, the table first, then its indexes; out has room for max_out (SIFT_V6_REL_SOURCE_CAP); the number of them */
 extern int	sift_v6_rel_sources(PlannerInfo *root, RelOptInfo *rel, SiftV6RelSource *out, int max_out);
 extern SiftV6RelSource *sift_v6_rel_sources_alloc(PlannerInfo *root, RelOptInfo *rel, int *n);

@@ -17,7 +17,6 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/tlist.h"
-#include "parser/parsetree.h"
 #include "port/pg_bitutils.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -25,7 +24,6 @@
 #include "utils/memutils.h"
 #include "utils/numeric.h"
 
-#include "agg/plan/safety.h"
 #include "executor/nodeSubplan.h"
 
 #include "agg/v6/v6_vexpr.h"
@@ -820,17 +818,6 @@ void
 sift_v6_explain_count(ExplainState *es, const char *label, int64 value)
 {
 	ExplainPropertyInteger(label, NULL, value, es);
-}
-
-bool
-sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
-{
-	RangeTblEntry *rte;
-
-	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root))
-		return false;
-	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && (rel->indexlist != NIL || sift_v6_rel_owned(rte->relid, true));
 }
 
 void

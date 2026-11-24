@@ -25,6 +25,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_explain.h"

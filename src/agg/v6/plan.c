@@ -492,10 +492,11 @@ sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel)
 {
 	const RangeTblEntry *rte;
 
-	if (rel->reloptkind != RELOPT_BASEREL || rel->indexlist == NIL || rel->lateral_relids != NULL || root->parse->hasRowSecurity)
+	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || root->parse->hasRowSecurity)
 		return false;
 	rte = planner_rt_fetch(rel->relid, root);
-	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL;
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && rte->securityQuals == NIL &&
+		sift_v6_rel_has_source(root, rel);
 }
 
 Relids

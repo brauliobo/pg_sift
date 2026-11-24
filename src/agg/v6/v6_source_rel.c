@@ -7,6 +7,7 @@
 #include "access/table.h"
 #include "parser/parsetree.h"
 
+#include "agg/plan/safety.h"
 #include "agg/v6/v6_source_rel.h"
 #include "core/store_ops.h"
 
@@ -25,6 +26,17 @@ sift_v6_rel_has_source(PlannerInfo *root, RelOptInfo *rel)
 		if (sift_v6_index_owned(ix))
 			return true;
 	return false;
+}
+
+bool
+sift_v6_base_rel_ok(PlannerInfo *root, RelOptInfo *rel)
+{
+	RangeTblEntry *rte;
+
+	if (rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || agg_query_has_rls(root))
+		return false;
+	rte = planner_rt_fetch(rel->relid, root);
+	return rte->rtekind == RTE_RELATION && rte->relkind == RELKIND_RELATION && !rte->inh && rte->tablesample == NULL && sift_v6_rel_has_source(root, rel);
 }
 
 int
