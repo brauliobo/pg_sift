@@ -239,7 +239,7 @@ static void
 participate(Shared *s, int slot)
 {
 	Participant *p = &s->part[slot];
-	const SiftParOps *par = sift_store_ops_for_oid(s->q.relid, false)->par;
+	const SiftStoreParOps *par = sift_store_ops_for_oid(s->q.relid, false)->par;
 	Relation	index = index_open(s->q.relid, AccessShareLock);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftV6ScanStats stats = {0};
@@ -277,7 +277,7 @@ sift_test_store_par(PG_FUNCTION_ARGS)
 	const ParQuery q = {.relid = PG_GETARG_OID(0),.is_table = false,.key_att = PG_GETARG_INT32(1),.sum_att = PG_ARGISNULL(2) ? 0 : PG_GETARG_INT32(2),
 		.qual_att = PG_ARGISNULL(3) ? 0 : PG_GETARG_INT32(3),.qual_gt = PG_ARGISNULL(4) ? 0 : PG_GETARG_INT64(4)};
 	const int	workers = PG_GETARG_INT32(5);
-	const SiftParOps *par = sift_store_ops_for_oid(q.relid, false)->par;
+	const SiftStoreParOps *par = sift_store_ops_for_oid(q.relid, false)->par;
 	Relation	index = index_open(q.relid, AccessShareLock);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
 	SiftV6ScanStats stats = {0};

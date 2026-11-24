@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_store_ops_zone.c - SiftZoneOps and SiftParOps of format major 2: the aggregate scan of the parts of a relation (f2_v6_scan.c) over the granules its zones, dictionaries and skipping
+ * col/f2/f2_store_ops_zone.c - SiftZoneOps and SiftStoreParOps of format major 2: the aggregate scan of the parts of a relation (f2_v6_scan.c) over the granules its zones, dictionaries and skipping
  * indexes leave, the predicates of the statement's quals a sift_table decides on its leaves (f2_store_scan.h), and the units of a parallel scan.
  */
 #include "postgres.h"
@@ -43,7 +43,7 @@ const SiftZoneOps sift_f2_zone_ops = {
 	.scan_arms = sift_v6_scan_run_arms
 };
 
-const SiftParOps sift_f2_par_ops = {
+const SiftStoreParOps sift_f2_par_ops = {
 	.begin = sift_v6_scan_begin,
 	.plan = sift_v6_scan_plan,
 	.morsel_begin = sift_v6_scan_morsel_begin,

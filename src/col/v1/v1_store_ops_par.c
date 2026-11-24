@@ -1,5 +1,5 @@
 /*
- * col/v1/v1_store_ops_par.c - SiftParOps of Format 1: the superblocks of a sift_col index are the granules of a parallel scan. The leader lists them once as one unit (plan) and gives the directory
+ * col/v1/v1_store_ops_par.c - SiftStoreParOps of Format 1: the superblocks of a sift_col index are the granules of a parallel scan. The leader lists them once as one unit (plan) and gives the directory
  * view its own source read in the words after the units (SiftF2ParPlan.staged_dead, which the engine carries to every participant without looking at it), so that every participant numbers the
  * superblocks as the leader does however the index is maintained meanwhile; a participant reads the runs of superblocks the morsels give it through the source of col/v1/v1_store_ops.c, which
  * vets each row against the tombstones and its snapshot and reads the write buffers as units, and hands the batches to the emit of the engine.
@@ -108,7 +108,7 @@ par_end(struct SiftV6Scan *scan)
 	MemoryContextDelete(((V1ParScan *) scan)->cx);
 }
 
-const SiftParOps sift_v1_par_ops = {
+const SiftStoreParOps sift_v1_par_ops = {
 	.begin = par_begin,
 	.plan = par_plan,
 	.morsel_begin = par_morsel_begin,

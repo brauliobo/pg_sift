@@ -29,7 +29,7 @@ extern void sift_v1_store_ops_init(void);
 /* The zone-pruned aggregate scan, the dictionary answer and the parallel scan of Format 1 (v1_store_ops_zone.c, v1_store_ops_par.c) */
 extern const SiftZoneOps sift_v1_zone_ops;
 extern const SiftDictOps sift_v1_dict_ops;
-extern const SiftParOps sift_v1_par_ops;
+extern const SiftStoreParOps sift_v1_par_ops;
 
 /* The optional sub-vtables of the Format 1 store (col/v1_engine/v1_store_ops_ext.c, v1_store_ops_jsonb.c) */
 extern const SiftOrderOps v1_order_ops;

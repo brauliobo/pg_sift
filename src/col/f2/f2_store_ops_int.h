@@ -19,7 +19,7 @@ extern const SiftHybridOps sift_f2_hybrid_ops;
 extern const SiftGpuOps sift_f2_gpu_ops;
 extern const SiftZoneOps sift_f2_zone_ops;
 extern const SiftDictOps sift_f2_dict_ops;
-extern const SiftParOps sift_f2_par_ops;
+extern const SiftStoreParOps sift_f2_par_ops;
 extern const SiftJsonbOps sift_f2_jsonb_ops;
 
 /* The core of the table: the parts of a relation are written sorted by the columns of its key_order, the leaf of an attribute that a scan decodes as it is stored */

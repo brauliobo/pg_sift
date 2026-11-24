@@ -252,7 +252,7 @@ typedef struct SiftDictOps
  * 9. Parallel scan: the leader lists the units of the scan once (plan, in memory a DSM chunk holds), the participants read runs of the granules of a unit. begin makes a scan that is
  * not run apart; morsel_begin and morsel are a participant's.
  */
-typedef struct SiftParOps
+typedef struct SiftStoreParOps
 {
 	struct SiftV6Scan *(*begin) (const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
 								 struct SiftV6ScanStats *stats, void (*emit) (void *arg, const struct SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg);
@@ -260,7 +260,7 @@ typedef struct SiftParOps
 	void		(*morsel_begin) (struct SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
 	void		(*morsel) (struct SiftV6Scan *s, struct SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n);
 	void		(*end) (struct SiftV6Scan *s);
-} SiftParOps;
+} SiftStoreParOps;
 
 /* 10. Shredded JSONB: the leaf that keeps whether a top-level key is present on a row of a document, and the scan of the elements of an array column (UNNEST) */
 typedef struct SiftJsonbOps
@@ -295,7 +295,7 @@ typedef struct SiftStoreOps
 	const SiftGpuOps *gpu;
 	const SiftZoneOps *zone;
 	const SiftDictOps *dict;
-	const SiftParOps *par;
+	const SiftStoreParOps *par;
 	const SiftJsonbOps *jsonb;
 } SiftStoreOps;
 
