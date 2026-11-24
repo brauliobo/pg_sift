@@ -23,7 +23,7 @@
 typedef struct SiftV6ElemRte
 {
 	SiftV6ElemFn fn;
-	const Var  *array;
+	const Expr *array;			/* a column of the fact table, or an expression of it that the index holds as a column */
 	Oid			elem;			/* unnest: the type of the element */
 	List	   *names;			/* jsonb_to_recordset: the String of each declared column */
 	List	   *types;			/* and its type, as Oid cells */
@@ -35,6 +35,10 @@ extern bool sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *
 extern bool sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *elem_rel, SiftV6ElemRte *out);
 /* e is date_trunc('month', c)::date of a date column c of the fact table in a statement that unnests: k is c */
 extern bool sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k);
+/* rte is the function scan of the sub-select of the EXISTS sp, which takes an array of the fact table (an expression of the parameters sp passes); false for any other. out->array is that array in the terms of the fact table */
+extern bool sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6ElemRte *out);
+/* e reads the fact table alone: one of its columns or an expression of them */
+extern bool sift_v6_unnest_array_ok(PlannerInfo *root, const RelOptInfo *fact, const Expr *e);
 /* The Ext of the unnest, p->xseed: the leaves of the column of the index the function takes apart, false when the index does not keep all of them as columns */
 extern bool sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left);
 /* The WHERE clauses of the lateral relation as the elem_where of p->xseed; false when the scan cannot decide one */

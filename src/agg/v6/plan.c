@@ -45,6 +45,7 @@
 #include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_pct.h"
 #include "agg/v6/v6_plan_rewrite.h"
+#include "agg/v6/v6_unnest_exists.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 #include "agg/v6/v6_join_plan.h"
 #include "agg/v6/v6_plan_shape.h"
@@ -900,6 +901,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 		sift_agg_v6_partition_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 		return;
 	}
+	sift_v6_unnest_exists_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 	rte = planner_rt_fetch(input_rel->relid, root);
 	heap = table_open(rte->relid, AccessShareLock);
 	if (sift_store_ops_for_scan(rte->relid, true) != NULL)

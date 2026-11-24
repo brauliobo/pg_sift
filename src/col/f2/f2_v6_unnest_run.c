@@ -435,12 +435,31 @@ array_elems(UnRun *u, Datum d, SiftVec *ev)
 	return (uint32) nel;
 }
 
-/* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none */
+static bool
+any_kept(const uint64 *keep, uint32 nel)
+{
+	for (uint32 k = 0; k < nel; k++)
+		if (keep == NULL || ((keep[k >> 6] >> (k & 63)) & 1))
+			return true;
+	return false;
+}
+
+/* the pairs of one row whose elements are in ev: those the bitmap keeps (NULL: all), and for a left join a NULL element when it has none; an EXISTS makes the row one pair when an element is kept */
 static void
 emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row)
 {
 	uint32		m = 0;
 
+	if (u->x->elem.semi)
+	{
+		if (any_kept(keep, nel))
+		{
+			u->pidx[0] = row;
+			u->eidx[0] = SIFT_GATHER_NONE;
+			emit_pairs(u, fact, ev, 1);
+		}
+		return;
+	}
 	if (nel == 0 && u->x->elem.left)
 	{
 		u->pidx[0] = row;
@@ -512,6 +531,38 @@ restrict_where(UnRun *u, const SiftF2ExtBatch *b)
 		bs->mask[w] &= keep[w] | b->elem->poison[w];
 }
 
+/* the rows of the batch with an element the clause of the element keeps: one pair for each, whose columns are those of the table; the rows the index cannot hold are the caller's, from the heap */
+static void
+emit_semi(UnRun *u, const SiftF2ExtBatch *b, const uint64 *keep, uint64 *fallback)
+{
+	const SiftF2ElemStream *es = b->elem;
+	const uint32 words = (b->n + 63) / 64;
+	uint64		held[SIFT_VEC_WORDS],
+				yes[SIFT_VEC_WORDS],
+				known[SIFT_VEC_WORDS];
+	uint32		m = 0;
+
+	for (uint32 w = 0; w < words; w++)
+	{
+		fallback[w] = u->bs.mask[w] & es->poison[w];
+		held[w] = u->bs.mask[w] & ~es->poison[w];
+	}
+	sift_unnest_any(&es->layout, keep, held, es->doc_valid, yes, known);
+	for (uint32 w = 0; w < words; w++)
+		for (uint64 bits = yes[w]; bits != 0; bits &= bits - 1)
+		{
+			u->pidx[m] = w * 64 + (uint32) __builtin_ctzll(bits);
+			u->eidx[m++] = SIFT_GATHER_NONE;
+			if (m == SIFT_VEC_LEN)
+			{
+				emit_pairs(u, u->fv, NULL, m);
+				m = 0;
+			}
+		}
+	if (m > 0)
+		emit_pairs(u, u->fv, NULL, m);
+}
+
 static void
 run_batch(UnRun *u, const SiftF2ExtBatch *b)
 {
@@ -550,13 +601,16 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 			eval_elems(u, ev, es->n_elems, keep);
 			in.elem_mask = keep;
 		}
-		while (!sift_unnest_done(&in, &cur))
-		{
-			const uint32 m = sift_unnest_expand(&in, &cur, u->pidx, u->eidx, SIFT_VEC_LEN, fallback);
+		if (u->x->elem.semi)
+			emit_semi(u, b, keep, fallback);
+		else
+			while (!sift_unnest_done(&in, &cur))
+			{
+				const uint32 m = sift_unnest_expand(&in, &cur, u->pidx, u->eidx, SIFT_VEC_LEN, fallback);
 
-			if (m > 0)
-				emit_pairs(u, u->fv, ev, m);
-		}
+				if (m > 0)
+					emit_pairs(u, u->fv, ev, m);
+			}
 	}
 	for (int w = 0; w < words; w++)
 		for (uint64 bits = fallback[w] & bs->mask[w]; bits != 0; bits &= bits - 1)

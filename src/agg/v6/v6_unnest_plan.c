@@ -65,14 +65,15 @@ computes_only_months(const SiftV6Spec *s)
 	return true;
 }
 
-static bool
-where_clause(V6Plan *p)
+bool
+sift_v6_unnest_where(V6Plan *p)
 {
 	SiftClause *clause;
 	SiftBytes	canon;
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
-		p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
+		if (ri != p->sub_qual)
+			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)
 		return true;
 	clause = palloc(sizeof(SiftClause));
@@ -84,11 +85,18 @@ where_clause(V6Plan *p)
 	return true;
 }
 
+/* the statement compiled on the index to what the scan of an unnest computes */
+bool
+sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
+{
+	return sift_v6_compile_on(p, extra, group_exprs) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec);
+}
+
 /* what the unnest scan needs of the compiled statement besides its columns: the quals of the element and of the table run on the batches */
 bool
 sift_v6_unnest_ready(V6Plan *p)
 {
-	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec) && sift_v6_unnest_elem_quals(p) && where_clause(p);
+	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec) && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
 /* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */

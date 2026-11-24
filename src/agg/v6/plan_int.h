@@ -39,6 +39,7 @@ typedef struct V6Plan
 	IndexOptInfo *text;			/* the sift index of the text query of the statement, if it has one (v6_text.c) */
 	RestrictInfo *text_qual;
 	Const	   *text_query;
+	const RestrictInfo *sub_qual;	/* the EXISTS over the elements of an array that the scan of the unnest decides itself (v6_unnest_exists.h): no clause of the table is compiled for it */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */
@@ -106,6 +107,9 @@ extern bool sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno);
 extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget);
 extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern bool sift_v6_unnest_ready(V6Plan *p);
+/* the pieces of it that the planner of an EXISTS over the elements (v6_unnest_exists.h) takes apart: the statement compiles to what the scan of an unnest computes; the quals of the table become those the scan evaluates on its batches and on a row of the heap */
+extern bool sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);
+extern bool sift_v6_unnest_where(V6Plan *p);
 extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);
 extern void sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 

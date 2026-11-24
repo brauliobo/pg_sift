@@ -54,33 +54,22 @@ sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6E
 	return rel->joininfo == NIL && sift_v6_unnest_rte_joined(root, fact, rel, out);
 }
 
-bool
-sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6ElemRte *out)
+/* the function of the lateral relation, taking the column array of the fact table: unnest of an array, or jsonb_to_recordset of a jsonb one with the columns it declares */
+static bool
+rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out)
 {
-	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
-	const RangeTblFunction *rtf;
-	const FuncExpr *fe;
-	const Var  *v;
+	const FuncExpr *fe = (const FuncExpr *) rtf->funcexpr;
+	const Oid	vartype = exprType((const Node *) v);
 
-	if (rel->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 ||
-		!bms_equal(rel->lateral_relids, bms_make_singleton(fact->relid)))
-		return false;
-	rtf = linitial(rte->functions);
-	fe = (const FuncExpr *) rtf->funcexpr;
-	if (!IsA(rtf->funcexpr, FuncExpr) || list_length(fe->args) != 1 || !IsA(linitial(fe->args), Var))
-		return false;
-	v = linitial(fe->args);
-	if (v->varno != fact->relid || v->varlevelsup != 0)
-		return false;
 	*out = (SiftV6ElemRte) {.array = v};
 	if (fe->funcid == F_UNNEST_ANYARRAY)
 	{
 		out->fn = SV6E_UNNEST;
-		out->elem = get_element_type(v->vartype);
+		out->elem = get_element_type(vartype);
 		return rtf->funccolcount == 1 && fe->funcresulttype == out->elem &&
 			(out->elem == TEXTOID || out->elem == VARCHAROID || out->elem == INT2OID || out->elem == INT4OID || out->elem == INT8OID);
 	}
-	if (fe->funcid != F_JSONB_TO_RECORDSET || v->vartype != JSONBOID || rtf->funccolcount < 1 || rtf->funccolcount > SIFT_V6_XELEM_COLS)
+	if (fe->funcid != F_JSONB_TO_RECORDSET || vartype != JSONBOID || rtf->funccolcount < 1 || rtf->funccolcount > SIFT_V6_XELEM_COLS)
 		return false;
 	out->fn = SV6E_RECORDSET;
 	out->names = rtf->funccolnames;
@@ -93,6 +82,72 @@ sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, 
 		out->types = lappend_oid(out->types, t);
 	}
 	return true;
+}
+
+bool
+sift_v6_unnest_array_ok(PlannerInfo *root, const RelOptInfo *fact, const Expr *e)
+{
+	if (IsA(e, Var))
+		return ((const Var *) e)->varno == fact->relid && ((const Var *) e)->varlevelsup == 0;
+	return bms_equal(pull_varnos(root, (Node *) e), bms_make_singleton(fact->relid));
+}
+
+bool
+sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6ElemRte *out)
+{
+	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+	const RangeTblFunction *rtf;
+	const FuncExpr *fe;
+
+	if (rel->reloptkind != RELOPT_BASEREL || rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 ||
+		!bms_equal(rel->lateral_relids, bms_make_singleton(fact->relid)))
+		return false;
+	rtf = linitial(rte->functions);
+	fe = (const FuncExpr *) rtf->funcexpr;
+	if (!IsA(rtf->funcexpr, FuncExpr) || list_length(fe->args) != 1 || !sift_v6_unnest_array_ok(root, fact, linitial(fe->args)))
+		return false;
+	return rte_function(rtf, linitial(fe->args), out);
+}
+
+typedef struct OuterTerms
+{
+	const SubPlan *sp;
+	bool		ok;
+} OuterTerms;
+
+/* the expression of the sub-select with the parameters its sub-plan passes as the outer expressions they stand for */
+static Node *
+outer_terms(Node *n, OuterTerms *c)
+{
+	if (n != NULL && IsA(n, Param))
+	{
+		const Param *pr = (const Param *) n;
+		int			k = 0;
+
+		foreach_int(id, c->sp->parParam)
+		{
+			if (pr->paramkind == PARAM_EXEC && pr->paramid == id)
+				return copyObject(list_nth(c->sp->args, k));
+			k++;
+		}
+		c->ok = false;
+		return n;
+	}
+	return n == NULL ? NULL : expression_tree_mutator(n, outer_terms, c);
+}
+
+bool
+sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6ElemRte *out)
+{
+	const RangeTblFunction *rtf = rte->functions != NIL ? linitial(rte->functions) : NULL;
+	OuterTerms	c = {.sp = sp,.ok = true};
+	Node	   *array;
+
+	if (rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 || !IsA(rtf->funcexpr, FuncExpr) ||
+		list_length(((const FuncExpr *) rtf->funcexpr)->args) != 1)
+		return false;
+	array = outer_terms(linitial(((const FuncExpr *) rtf->funcexpr)->args), &c);
+	return c.ok && rte_function(rtf, (const Expr *) array, out);
 }
 
 /* the lengths leaf of the attribute and its element leaves are the ones of a list of objects (no key leaf, which a map has) */
@@ -171,25 +226,39 @@ seed_unnest_array(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, int att)
 	return e->col_leaf[0] >= 0;
 }
 
+/* the column of the index (0-based) that is the array: the column of the table, or the expression the index was made over (-1: none) */
+static int
+array_column(const IndexOptInfo *ix, const Expr *array)
+{
+	int			k = 0;
+
+	for (int i = 0; i < ix->ncolumns; i++)
+	{
+		if (ix->indexkeys[i] != 0 ? IsA(array, Var) && ix->indexkeys[i] == ((const Var *) array)->varattno :
+			!IsA(array, Var) && equal(array, list_nth(ix->indexprs, k)))
+			return i;
+		k += ix->indexkeys[i] == 0;
+	}
+	return -1;
+}
+
 bool
 sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left)
 {
 	SiftV6Ext  *x = sift_v6_ext_new();
 	List	   *names = NIL;
+	const int	i = array_column(p->index, rte->array);
 
-	for (int i = 0; i < p->index->ncolumns; i++)
-		if (p->index->indexkeys[i] == rte->array->varattno)
-		{
-			x->unnest = true;
-			x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : rte->array->vartype,.left = left};
-			if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, i + 1, &names) : seed_unnest_array(p, &x->elem, rte, i + 1)))
-				return false;
-			x->elem_names = names;
-			p->xseed = x;
-			p->elem_rel = elem_rel;
-			return true;
-		}
-	return false;
+	if (i < 0)
+		return false;
+	x->unnest = true;
+	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
+	if (!(rte->fn == SV6E_RECORDSET ? seed_recordset(p, &x->elem, rte, i + 1, &names) : seed_unnest_array(p, &x->elem, rte, i + 1)))
+		return false;
+	x->elem_names = names;
+	p->xseed = x;
+	p->elem_rel = elem_rel;
+	return true;
 }
 
 bool

@@ -66,3 +66,5 @@ src/agg/v6/plan.c	sift_agg_v6_plan_path	list-first	custom_private of the path is
 src/agg/v6/scope_v6.c	pairs_table	list-first	pairs_query is set only by pairs_subquery, which accepts a query of single_table_query: exactly one range table entry
 src/agg/v6/v6_proj_sort_plan.c	sort_plan_path	list-first	custom_private is sort_pack(): list_make5 whose first list is the ints, with the table flag and the index OID first
 src/agg/v6/v6_vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second
+src/agg/v6/v6_unnest_exists.c	exists_subplan	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
+src/agg/v6/v6_unnest_jsonb.c	array_column	list-first	an index column whose indexkeys entry is 0 is an expression: the index has one indexprs entry for each of them, in order
