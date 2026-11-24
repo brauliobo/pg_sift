@@ -144,7 +144,7 @@ collect_pinned(const RelOptInfo *dim, Pinned *pin)
 		{
 			pin->attno[pin->n] = v->varattno;
 			pin->opno[pin->n++] = op->opno;
-			pin->atts = bms_add_member(pin->atts, v->varattno);
+			pin->atts = bms_add_member(pin->atts, v->varattno - FirstLowInvalidHeapAttributeNumber);
 		}
 	}
 }
@@ -152,7 +152,7 @@ collect_pinned(const RelOptInfo *dim, Pinned *pin)
 static bool
 pinned_to_const(const Pinned *pin, AttrNumber attno, Oid opfamily)
 {
-	if (!bms_is_member(attno, pin->atts))
+	if (!bms_is_member(attno - FirstLowInvalidHeapAttributeNumber, pin->atts))
 		return false;
 	for (int i = 0; i < pin->n; i++)
 		if (pin->attno[i] == attno && get_op_opfamily_strategy(pin->opno[i], opfamily) == BTEqualStrategyNumber)
