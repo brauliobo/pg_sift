@@ -278,7 +278,7 @@ find_staged(UniqueKey *k, const Row *row, Relation heap, const SiftUniqHits *hit
 {
 	SnapshotData dirty;
 	TupleTableSlot *slot = table_slot_create(heap, NULL);
-	IndexFetchTableData *fetch = table_index_fetch_begin(heap);
+	IndexFetchTableData *fetch = sift_table_index_fetch_begin(heap);
 
 	InitDirtySnapshot(dirty);
 	for (int i = 0; i < hits->n && c->found == FOUND_NONE; i++)
