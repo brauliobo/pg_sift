@@ -8,6 +8,8 @@
  */
 #include "postgres.h"
 
+#include "access/sysattr.h"
+#include "nodes/bitmapset.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
@@ -125,6 +127,26 @@ point_type(Oid typid, Oid collid)
 	}
 }
 
+/* the columns an index-only scan returns that no clause of the scan reads: the scan decodes them for the rows that pass the filters */
+static int
+returned_columns(const IndexPath *path)
+{
+	const IndexOptInfo *index = path->indexinfo;
+	Bitmapset  *used = NULL;
+	int			n = 0;
+
+	if (path->path.pathtype != T_IndexOnlyScan)
+		return 0;
+	pull_varattnos((Node *) index->rel->reltarget->exprs, index->rel->relid, &used);
+	foreach_node(RestrictInfo, ri, index->rel->baserestrictinfo)
+		pull_varattnos((Node *) ri->clause, index->rel->relid, &used);
+	for (int c = 0; c < index->ncolumns; c++)
+		if (index->indexkeys[c] != 0 && clauses_on(path, c) == NIL &&
+			bms_is_member(index->indexkeys[c] - FirstLowInvalidHeapAttributeNumber, used))
+			n++;
+	return n;
+}
+
 /* The values an equality or a short list asks of a column a point directory answers from three pages each (at most the pages of the index); 0 for any other qual */
 static int
 point_values(PlannerInfo *root, const IndexClause *ic, const IndexOptInfo *index)
@@ -221,7 +243,9 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 	in.parts_surv = Max(1.0, ceil(nparts * f_time));
 	in.f_prune = sift_f_prune(rows * f_time, rows, f_mark, in.total_granules);
 	in.n_filt = filter_columns(root, path, &lead);
-	in.filt_share = Min(1.0, Max(in.n_filt, 1) / (double) Max(index->ncolumns, 1));
+	in.n_rest = returned_columns(path);
+	in.filt_share = Min(1.0, Max(in.n_filt, in.n_rest > 0 ? 0 : 1) / (double) Max(index->ncolumns, 1));
+	in.rest_share = Min(1.0, in.n_rest / (double) Max(index->ncolumns, 1));
 	in.sel_lead = Max(lead, sel);
 	in.rescan = loop_count > 1.0;
 	c = sift_scan_cost(&in);
