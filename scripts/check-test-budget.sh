@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The fast-test budget of test/README.md ("Test budget"): a new test is small at birth, and the tests that are not yet are listed with the number of sites, which only goes down.
 #   unit   a test/unit/*.c with a ROWS constant above 4000 or a fuzz/rounds constant above 500, and no __SANITIZE_THREAD__ / __SANITIZE_ADDRESS__ guard in the file to scale it down
-#   sql    a generate_series of test/sql/*.sql with an upper bound above 50000 that has no comment (on its line or the line before) saying why the test needs that many rows
+#   sql    a generate_series of test/sql/*.sql of more than 50000 rows (upper bound minus a literal start) that has no comment (on its line or the line before) saying why the test needs that many rows
 #   slow   the number of names in SLOW_REGRESS (scripts/ci/weights.sh), the regress tests that are jobs of their own
 # scripts/test-budget.allow holds the sites that exist today: KIND TAB NAME TAB COUNT TAB REASON. A count that grew, a site that is not listed and a row that no longer matches (the
 # site was fixed: delete the row or lower the count) all fail, so the list can only shrink. Fix a site by scaling it down (a smaller table with sift.test_* knobs, a sanitizer branch, a
@@ -42,8 +42,8 @@ sites() {
 			line = tolower($0); rest = line; big = 0
 			while (match(rest, /generate_series\([^,()]*,[ \t]*[0-9][0-9_]*(e[0-9]+)?/)) {
 				arg = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
-				sub(/^.*,[ \t]*/, "", arg); gsub(/_/, "", arg)
-				if (arg + 0 > limit) big++
+				lo = arg; sub(/^generate_series\(/, "", lo); sub(/[ \t]*,.*$/, "", lo); sub(/^.*,[ \t]*/, "", arg); gsub(/_/, "", arg)
+				if (arg + 0 - (lo ~ /^[0-9]+$/ ? lo : 1) + 1 > limit) big++
 			}
 			if (big && line !~ /--[ \t]*[^ \t-]/ && prev !~ /^[ \t]*--[ \t]*[^ \t-]/) n += big
 			prev = line
@@ -94,7 +94,7 @@ if [[ ${1:-} == --selftest ]]; then
 	rm "$d"/test/unit/{rows,fuzz,shift}.c
 	printf 'select 1 from generate_series(1, 50000);\nselect 1 from generate_series(1, 49999);\n-- why: the buffer spills at 60000\nselect 1 from generate_series(1, 60000);\nselect 1 from generate_series(1, 70000); -- the sort spills\n' >"$d/test/sql/ok.sql"
 	printf 'select 1 from generate_series(1, 60000);\nselect 1 from generate_series(1, 1e6);\nselect 1 from generate_series(1, 2000000);\n' >"$d/test/sql/big.sql"
-	printf 'select 1 from generate_series(1, :rows);\nselect 1 from generate_series(1, 10) g, generate_series(1, 10) h;\n' >"$d/test/sql/vars.sql"
+	printf 'select 1 from generate_series(1, :rows);\nselect 1 from generate_series(1, 10) g, generate_series(1, 10) h;\nselect 1 from generate_series(300001, 300300);\n' >"$d/test/sql/vars.sql"
 	expect 'test/sql/big.sql: 3 site'
 	got=$(verify "$d" "$d/allow"); ! grep -qE 'sql/(ok|vars).sql' <<<"$got" || { echo "selftest: a small, commented or variable series is refused: $got"; exit 1; }
 	printf 'slow\t-\t5\tx\nsql\tbig.sql\t3\tx\n' >"$d/allow"; expect none
