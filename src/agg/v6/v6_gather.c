@@ -37,3 +37,15 @@ sift_vec_gather(SiftVec *out, uint64 *out_valid, void *out_data, const SiftVec *
 	}
 	*out = (SiftVec) {.data = out_data,.valid = out_valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = src->type,.scale = src->scale,.typid = src->typid,.typlen = src->typlen,.typbyval = src->typbyval};
 }
+
+void
+sift_vec_gather_nan(SiftVec *out, uint64 *out_nan, const SiftVec *src, const uint32 *idx, uint32 n)
+{
+	out->nan = NULL;
+	if (src->nan == NULL)
+		return;
+	memset(out_nan, 0, SIFT_VEC_WORDS * sizeof(uint64));
+	for (uint32 i = 0; i < n; i++)
+		out_nan[i >> 6] |= (uint64) (idx[i] != SIFT_GATHER_NONE && ((src->nan[idx[i] >> 6] >> (idx[i] & 63)) & 1)) << (i & 63);
+	out->nan = out_nan;
+}

@@ -30,6 +30,7 @@ struct SiftV6PipeBatch
 {
 	SiftVec    *vec;			/* [nslots] */
 	uint64	   *valid;			/* [nslots * SIFT_VEC_WORDS] */
+	uint64	   *nan;			/* [nslots * SIFT_VEC_WORDS] the NaN rows of the numeric slots that have any */
 	char	  **data;			/* [nslots] the values of the slots this batch owns */
 	SiftBatchSel own;
 	SiftBatchSel *bs;
@@ -145,6 +146,7 @@ level_of(SiftV6Pipe *p, int l)
 	b = p->lvl[l] = MemoryContextAllocAligned(p->cx, sizeof(SiftV6PipeBatch), alignof(SiftV6PipeBatch), MCXT_ALLOC_ZERO);
 	b->vec = MemoryContextAllocZero(p->cx, p->nslots * sizeof(SiftVec));
 	b->valid = MemoryContextAllocZero(p->cx, (size_t) p->nslots * SIFT_VEC_WORDS * sizeof(uint64));
+	b->nan = MemoryContextAllocZero(p->cx, (size_t) p->nslots * SIFT_VEC_WORDS * sizeof(uint64));
 	b->data = MemoryContextAllocZero(p->cx, p->nslots * sizeof(char *));
 	for (int s = l == 0 ? p->nfact : 0; s < p->nslots; s++)
 		b->data[s] = vec_buffer(p->cx, p->type[s]);
@@ -296,7 +298,10 @@ pairs_batch(SiftV6Pipe *p, int d, const SiftV6PipeBatch *b, const uint32 *idx, c
 
 	for (int s = 0; s < nown; s++)
 		if (b->vec[s].data != NULL)
+		{
 			sift_vec_gather(&nb->vec[s], nb->valid + (size_t) s * SIFT_VEC_WORDS, nb->data[s], &b->vec[s], idx, m);
+			sift_vec_gather_nan(&nb->vec[s], nb->nan + (size_t) s * SIFT_VEC_WORDS, &b->vec[s], idx, m);
+		}
 	gather_payload(p, d, nb, dim_row, m);
 	memset(nb->own.mask, 0, sizeof(nb->own.mask));
 	for (uint32 i = 0; i < m; i++)

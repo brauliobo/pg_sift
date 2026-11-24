@@ -20,5 +20,7 @@ extern size_t sift_gather_width(SiftVecType t);
  * of src. src->valid is read when src->all_valid is false.
  */
 extern void sift_vec_gather(SiftVec *out, uint64 *out_valid, void *out_data, const SiftVec *src, const uint32 *idx, uint32 n);
+/* The NaN rows of src (a numeric) for the rows gather took: out->nan is out_nan (SIFT_VEC_WORDS words) when src has any, else NULL */
+extern void sift_vec_gather_nan(SiftVec *out, uint64 *out_nan, const SiftVec *src, const uint32 *idx, uint32 n);
 
 #endif							/* SIFT_AGG_V6_GATHER_H */
