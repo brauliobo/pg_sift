@@ -169,7 +169,7 @@ static bool
 reads_member(V6Plan *p, GroupPathExtraData *extra, List *group_exprs, int *att)
 {
 	Probe		pr = {p, 0};
-	bool		found = probe((Node *) p->out->reltarget->exprs, &pr) || probe((Node *) group_exprs, &pr) || probe(extra != NULL ? extra->havingQual : NULL, &pr);
+	bool		found = probe((Node *) p->out->reltarget->exprs, &pr) || probe((Node *) group_exprs, &pr) || probe((Node *) sift_v6_having_of(extra), &pr);
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 		found = found || probe((Node *) ri->clause, &pr);
@@ -204,6 +204,6 @@ sift_v6_mapkey_paths(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	seed(p, att);
 	p->batch_ok = false;
 	if (sift_v6_compile_on(p, extra, group_exprs) && p->xseed->elem.ncols > 0 && sift_v6_unnest_ready(p))
-		sift_v6_add_join_path(p, group_exprs, (List *) extra->havingQual, NIL, 0, p->rel->rows * cpu_operator_cost * (1 + p->xseed->elem.ncols), p->rel->rows);
+		sift_v6_add_join_path(p, group_exprs, sift_v6_having_of(extra), NIL, 0, p->rel->rows * cpu_operator_cost * (1 + p->xseed->elem.ncols), p->rel->rows);
 	return true;
 }
