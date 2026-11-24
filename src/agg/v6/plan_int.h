@@ -60,6 +60,8 @@ extern List *sift_v6_group_exprs_of(PlannerInfo *root);
 
 /* The path of the plan for the output relation; a spec with parts reads each of their indexes into the same groups */
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
+/* plan_topn_rows.c: the path of ORDER BY columns LIMIT K of the rows of one table, at the UPPERREL_ORDERED stage */
+extern void sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 
 /* The plan of a sift_table or of an open index: the format that owns it (ops NULL when none does) and, for a table, the schema of its store; false: no format owns the table */
 extern bool sift_v6_plan_table(V6Plan *p, Oid relid);
