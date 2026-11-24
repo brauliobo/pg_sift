@@ -26,6 +26,7 @@
 #   scripts/pgtest.sh run CMD... CMD against a cluster of its own (SIFT_TEST_FORMAT, port SIFT_PORT + 1: the lane of scripts/ci.sh keeps SIFT_PORT), then the leak gate of stop
 #   scripts/pgtest.sh stop       stop the cluster
 #   scripts/pgtest.sh destroy    stop and remove $SIFT_TMP
+#   scripts/pgtest.sh clean-build  remove the build directories of this checkout (all flavors; SIFT_BUILD_DIR: that one); `destroy` keeps them, so that a restart rebuilds nothing
 #   scripts/pgtest.sh sanitizer-report  print ASan/UBSan findings (exit 1 if any)
 #   scripts/pgtest.sh initdb-template DIR   the data directory SIFT_INITDB_TEMPLATE points at (1 MB WAL segments)
 #   scripts/pgtest.sh new-data DIR [wal]    a fresh data directory (the template copied, else initdb); wal: the default 16 MB WAL
@@ -44,7 +45,10 @@
 # SIFT_PREBUILT_ROOT: a root a build job staged (scripts/ci-build.sh, flavor in its .flavor): install compiles nothing, and before 18 copies it into the server's directories.
 # SIFT_STAGE=1 stages the install under SIFT_ROOT on any major (the build job). SIFT_MAKE_JOBS: the compiler processes of install (default: the cores).
 # SANITIZE=1 install builds with ASan+UBSan; SIFT_HARDEN=pkg|init|1 builds with the hardening flags of scripts/harden.mk
-# (docs/SAFETY.md; SIFT_POINTER_OVERFLOW=1 adds the pointer-wrap trap); install runs make clean whenever SANITIZE, SIFT_TESTING or SIFT_HARDEN changes. start then preloads the sanitizer runtimes
+# (docs/SAFETY.md; SIFT_POINTER_OVERFLOW=1 adds the pointer-wrap trap). install builds every flavor (SANITIZE, SIFT_TESTING, SIFT_HARDEN, the PostgreSQL it builds for...) in a directory of its own,
+# $SIFT_BUILD_ROOT/<checkout>/<flavor> (SIFT_BUILD_DIR: this one directory; SIFT_BUILD_ROOT default /tmp/sift-build): going back to a flavor compiles nothing. It is on when SIFT_BUILD_DIR, SIFT_BUILD_ROOT or
+# SIFT_TMP is set or /tmp is a tmpfs; otherwise the objects stay beside the sources and install runs make clean whenever the flavor changes. A compiler cache in RAM
+# (scripts/ccache-env.sh) is set up when CCACHE_DIR is not. start then preloads the sanitizer runtimes
 # into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
 # $SIFT_TMP/sanitizer/ (sanitizer-report). SIFT_INITDB_TEMPLATE, a data directory made by `initdb-template`, is copied
 # instead of running initdb for every cluster (scripts/ci.sh makes one per run, test/t/lib.bash uses it too).
@@ -67,6 +71,7 @@ SANDIR=$TMP/sanitizer
 SHAREDIR=$ROOT$(pg_config --sharedir)
 PKGLIBDIR=$ROOT$(pg_config --pkglibdir)
 . "$(dirname "$0")/leakcheck.sh"
+. "$(dirname "$0")/ccache-env.sh"
 PG_MAJOR=$(pg_config --version | sed -n 's/^PostgreSQL \([0-9][0-9]*\).*/\1/p')
 # the cluster is this one and no other: a default of the caller (a service, a database) must not send a client to the system PostgreSQL
 unset PGDATABASE PGSERVICE PGSERVICEFILE
@@ -91,15 +96,36 @@ stage_prebuilt() {
 	(( PG_MAJOR >= 18 )) || tar -C "$ROOT" --exclude=./.flavor --exclude=./.checks -cf - . | ${SIFT_SUDO:-} tar -C / --no-overwrite-dir -xf -
 }
 
+checkout_key() { echo "$(basename "$REPO")-$(printf %s "$REPO" | cksum | awk '{ printf "%08x", $1 }')"; }
+
+# flavor_key: the flavor and the PostgreSQL it builds for (a cassert server and a plain one of the same major compile the headers differently)
+flavor_key() { echo "$(tr ' +(),' '_____' <<<"${FLAVOR% }")-$(pg_config --bindir --configure --cppflags | cksum | awk '{ printf "%08x", $1 }')"; }
+
+# build_dir: the SIFT_BUILD_DIR of this flavor, empty for objects beside the sources (the staging build of scripts/ci-build.sh keeps them in its own throwaway tree)
+build_dir() {
+	[[ -z ${SIFT_BUILD_DIR:-} ]] || { echo "$SIFT_BUILD_DIR"; return; }
+	[[ -z ${SIFT_STAGE:-} ]] || return 0
+	[[ -n ${SIFT_BUILD_ROOT:-}${SIFT_TMP:-} || $(df -P /tmp 2>/dev/null | awk 'NR == 2 { print $1 }') == tmpfs ]] || return 0
+	echo "${SIFT_BUILD_ROOT:-/tmp/sift-build}/$(checkout_key)/$(flavor_key)"
+}
+
+clean_build() { rm -rf "${SIFT_BUILD_DIR:-${SIFT_BUILD_ROOT:-/tmp/sift-build}/$(checkout_key)}"; }
+
 install() {
 	[[ -z ${SIFT_PREBUILT_ROOT:-} ]] || { stage_prebuilt; return; }
 	echo "pgtest: install: $([[ -n $SIFT_TESTING ]] && echo 'test library' || echo 'release library') (flavor ${FLAVOR% })" >&2   # SIFT_TESTING set and empty is the release library: an inherited empty value builds it
-	[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
+	local out; out=$(build_dir)
+	if [[ -z $out ]]; then
+		[[ $(cat "$REPO/.build-flavor" 2>/dev/null) == "$FLAVOR" ]] || make -C "$REPO" USE_PGXS=1 clean >/dev/null
+	elif [[ -z ${SIFT_BUILD_DIR:-} ]]; then
+		mkdir -p "$(dirname "$out")" && printf %s "$REPO" >"$(dirname "$out")/.repo"
+	fi
+	ccache_ram_env "$REPO"
 	# on the make command line: sudo resets the environment, which would install another flavor
-	local flavor=(USE_PGXS=1 SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1} ${VULKAN:+VULKAN=1})
+	local flavor=(USE_PGXS=1 SIFT_BUILD_DIR="$out" SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1} ${VULKAN:+VULKAN=1})
 	nice make -C "$REPO" -j"${SIFT_MAKE_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}" "${flavor[@]}"
 	"$REPO/scripts/check-undefined.sh" "$REPO/pg_sift$DLSUFFIX"
-	echo "$FLAVOR" >"$REPO/.build-flavor"
+	[[ -n $out ]] || echo "$FLAVOR" >"$REPO/.build-flavor"
 	if (( PG_MAJOR >= 18 )) || [[ -n ${SIFT_STAGE:-} ]]; then
 		make -C "$REPO" "${flavor[@]}" DESTDIR="$ROOT" install >/dev/null
 	else
@@ -441,6 +467,7 @@ case ${1:-} in
 	ready) ready ;;
 	clean) clean ;;
 	destroy) stop || true; rm -rf "$TMP" ;;
+	clean-build) clean_build ;;
 	sanitizer-report) leak_scan "$SANDIR" ;;
 	*) sed -n "2,32p" "$0"; exit 1 ;;
 esac

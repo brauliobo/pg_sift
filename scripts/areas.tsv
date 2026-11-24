@@ -35,7 +35,7 @@
 # the whole build and every harness: a change here can break anything
 ^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
-^(scripts/(ci/|(ci|ci-build|pgtest|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/(ci|nightly)\.yml))	.|{perf}
+^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib|SiftTest)|\.github/(workflows/(ci|nightly)\.yml))	.|{perf}
 ^test/fixtures/	^tap-shell-compat_2x|{ci}
 ^(test/unit/|scripts/unit-scaling\.sh)	-
 ^test/bench_on/	^(fuzz|hardened|tools-build)$|{ci}

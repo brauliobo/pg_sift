@@ -71,6 +71,7 @@ script:wait-profile.sh	600	1000	-
 script:focus-gen.sh	1800	3000	gcov run of the regression tests to cut scripts/focus/NAME.tsv; -
 script:make-compat-fixture.sh	900	1500	-
 script:budget.sh	-	-	a helper of the entry points above, no run of its own
+script:ccache-env.sh	-	-	a helper of pgtest.sh and wt-tmpfs.sh, no run of its own
 script:ci_stats.sh	-	-	a helper of the entry points above, no run of its own
 script:corpus-local.sh	-	-	a helper of the entry points above, no run of its own
 script:cpu_time.py	-	-	a helper of the entry points above, no run of its own
