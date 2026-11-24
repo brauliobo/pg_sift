@@ -28,10 +28,11 @@ regress_pack() {
 			}' |
 		while IFS=$'\t' read -r load names; do echo "$load $(tr ' ' '\n' <<<"$names" | sort | tr '\n' ' ')"; done | sort -t' ' -k1,1nr
 }
-# regress_lane_secs TEST...: the measured seconds of the tests shared by the lanes, the batch size that gives each lane one batch (a run with assertions: one shard, no straggler)
+# regress_lane_secs TEST...: the batch size that gives each lane three batches of the measured seconds of the tests (a run with assertions: the tests that cost 3 to 95 times their seconds there
+# land in batches by chance, and a lane that finishes early takes the next batch, where one batch for each lane left the lane with the slow ones to the end of the time limit)
 regress_lane_secs() {
 	local t
-	for t in "$@"; do echo "${REGRESS_SECS[$t]:-$REGRESS_TEST_SECS}"; done | awk -v lanes="$LANES" '{ total += $1 } END { printf "%d", (total + lanes - 1) / lanes + 1 }'
+	for t in "$@"; do echo "${REGRESS_SECS[$t]:-$REGRESS_TEST_SECS}"; done | awk -v lanes="$LANES" '{ total += $1 } END { printf "%d", total / (3 * lanes) + 1 }'
 }
 REGRESS_BATCH_OVERHEAD=2   # the seconds a batch spends outside its tests: the database, the leak and leftover checks (scripts/pgtest.sh regress)
 declare -A W_BATCH=()   # the lane seconds of each regression batch, from the measured seconds of its tests (set by installcheck_batches of scripts/ci/jobs.sh; batch_weights for the plan of every test)

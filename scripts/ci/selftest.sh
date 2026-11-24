@@ -196,7 +196,7 @@ if [[ $MODE == --selftest ]]; then
 			[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
 		else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi
 		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
-		(( n == 2 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 2 it names"; bad=1; }
+		(( n == 8 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 8 it names"; bad=1; }
 	fi
 	if st_on shards-full; then
 		# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard
@@ -306,7 +306,7 @@ if [[ $MODE == --selftest ]]; then
 			[[ -n $got && $got == "$want" ]] || { echo "FAIL: the release-library-regress job of the deep plan and the Makefile (REGRESS without TESTING_REGRESS) disagree on the tests of the release build: $(diff <(echo "$got") <(echo "$want") | grep '^[<>]' | head -4 | tr '\n' ' ')"; bad=1; }
 		else echo "plan: the tests of the release build are not compared with the Makefile (no pg_config of PostgreSQL 17 or newer)" >&2; fi
 		n=0; for f in "$REPO"/test/sql/*.sql; do f=${f##*/}; [[ installcheck-${f%.sql} =~ $ASSERT_SKIP ]] && n=$((n + 1)); done
-		(( n == 2 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 2 it names"; bad=1; }
+		(( n == 8 )) || { echo "FAIL: ASSERT_SKIP selects $n regression tests, want the 8 it names"; bad=1; }
 	fi
 	if st_on shards-full; then
 		# the shards of the full tier: every job once, and the load by the weights within 15% of the least loaded shard

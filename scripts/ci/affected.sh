@@ -60,9 +60,10 @@ focus_tokens() {
 # (a foreach_node cast of the wrong node type) exist only in a server with assertions. The batches are cut to one for each lane (installcheck_batches), so the shard has no straggler.
 ASSERT_MARK='RestoreSnapshot|PushActiveSnapshot|GetActiveSnapshot|ParallelWorkerMain|InitializeParallelDSM|shm_toc_|CreateQueryDesc|ExecutorStart_hook|foreach_node|castNode|create_upper_paths_hook|sift_agg_v6_upper_paths'
 ASSERT_JOBS='^installcheck-(agg_(par_|subplan|two_level|lookup_shared|.*parallel|cte_|plan_|nested_ctes|statement_cte|.*_cost$|.*_scope$|.*lateral|.*subplan|.*placeholder)|aggstub_parallel|col_.*parallel|col_topn_rescan_keep|parallel_|agg_(cte_verdict|flat_rewrites|join_flip_probe|window_topn|two_level_rows)_consolidated|agg_v6_|hybrid_|table_f2_plans|part_agg_parity|format2_(parallel_conc|partitioned_agg_v6|agg_live|scope_live)|proj_analytics_parity|scope_overlay_parity)'
-# the tests the assertions build leaves to the other builds: they load 130,000 documents into a sift_col index and compare cost ratios, 557 to 729 s each there (run 40193282663),
-# 18 to 26 s everywhere else, and the planner paths they reach (agg_cte_inline_upper, _nested, agg_cte_hoist...) stay in the family
-ASSERT_SKIP='^installcheck-agg_cte_inline_(band|rows)$'
+# the tests the assertions build leaves to the other builds: the server releases each catalog entry at its last unpin (CATCACHE_FORCE_RELEASE), which makes every planning and every
+# jsonb_build_object call 40 to 100 times slower, and they plan hundreds of generated statements or load 100,000 documents. Two of them took 557 to 729 s (run 40193282663) and the
+# six others 122 to 249 s there, 3 to 26 s everywhere else; the planner paths they reach stay in the family through the tests beside them (agg_cte_inline_upper, agg_cte_hoist...)
+ASSERT_SKIP='^installcheck-(agg_cte_inline_(band|rows)|agg_cte_scope_lineage|agg_natural_cost|agg_join_flip_probe_consolidated|agg_(flat_rewrites|two_level_rows)_consolidated_2|agg_flat_rewrites_consolidated)$'
 # What a push runs on the compatibility entries (PostgreSQL 17, PostgreSQL 19, AArch64), the one shard each: what depends on the major or the architecture, the regression tests
 # (the SQL surface, the planner and executor hooks, the NEON kernels), the isolation specs, the crash, standby and upgrade tests, the corpus and the plan bands. The differential tests, the fuzzers,
 # the soaks and the slopes run on the PostgreSQL 18 x86 entry
