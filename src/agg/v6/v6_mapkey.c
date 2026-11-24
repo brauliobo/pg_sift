@@ -110,10 +110,18 @@ bool
 sift_v6_mapkey_pair_qual(V6Plan *p, RestrictInfo *ri)
 {
 	Expr	   *q = sift_v6_mapkey_on(p) && !ri->pseudoconstant ? sift_v6_unnest_elem_qual(p, (Node *) ri->clause) : NULL;
+	List	   *quals;
+	SiftClause	clause;
+	int			col[SIFT_V6_MAX_FCOLS],
+				nvec;
 
-	if (q != NULL)
-		p->xseed->pair_where = lappend(p->xseed->pair_where, q);
-	return q != NULL;
+	if (q == NULL)
+		return false;
+	quals = lappend(list_copy(p->xseed->pair_where), q);
+	if (!sift_v6_unnest_elem_clause(CurrentMemoryContext, quals, &clause, col, &nvec))
+		return false;
+	p->xseed->pair_where = quals;
+	return true;
 }
 
 char *

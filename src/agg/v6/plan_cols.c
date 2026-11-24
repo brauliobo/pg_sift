@@ -323,7 +323,7 @@ sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	return true;
 }
 
-/* a use of a jsonb document in e that is no chain of -> and ->> over a path the index declares: the index does not hold what it reads */
+/* a use of a jsonb document in e that is no chain of -> and ->> over a path the index declares: the index does not hold what it reads (a format that declares no paths holds the keys it shreds) */
 static bool
 undeclared_doc_walker(Node *n, const V6Plan *p)
 {
@@ -335,8 +335,9 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 	doc = sift_v6_doc_chain((const Expr *) n, &path);
 	if (doc == NULL || doc->varno != p->rel->relid || doc->varlevelsup != 0)
 		return expression_tree_walker(n, undeclared_doc_walker, (void *) p);
-	return path == NIL || p->ops->jsonb == NULL || p->ops->jsonb->path_declared == NULL ||
-		!p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
+	if (p->ops->jsonb == NULL || p->ops->jsonb->path_declared == NULL)
+		return false;
+	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
 }
 
 /* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector, a key may be of any type that can be grouped */
