@@ -27,6 +27,7 @@ typedef struct GroupWorker
 	bool		radix;			/* its rows go to the partitions */
 	SiftRadixOut raw;			/* the rows */
 	SiftRadixOut pa;			/* partial aggregates: the groups a table gave up */
+	SiftRadixOut fin;			/* no K: the groups it delivered, as partial aggregates, for the leader to hand to the consumer */
 	SiftParTopK tk;
 } GroupWorker;
 
@@ -285,10 +286,7 @@ deliver_row(const Walk *wk, const SiftParGroupRow *r)
 	SiftParGroup *g = wk->g;
 
 	if (g->sp.topk == 0)
-	{
-		g->hooks.emit(g->hooks.arg, wk->t, r);
-		return true;
-	}
+		return pgk_put(wk->from, &g->sp, &g->w[wk->t].fin, true, r);
 	return sift_par_topk_offer(&g->w[wk->t].tk, &(SiftTopEnt) {.row = *r});
 }
 
@@ -296,6 +294,22 @@ static bool
 merge_row(const Walk *wk, const SiftParGroupRow *r)
 {
 	return pgk_add(wk->to, &wk->g->sp, r, NULL);
+}
+
+/* The groups of a table to the consumer: offered to the K best or, with no K, all of them to the thread's stream for the leader, or none when the stream has no room (nothing is written) */
+static bool
+deliver_table(const Walk *wk)
+{
+	uint64		bytes = 0;
+	const Walk	sz = {.g = wk->g,.t = wk->t,.from = wk->from,.bytes = &bytes};
+
+	if (wk->g->sp.topk == 0)
+	{
+		table_each(&sz, size_row);
+		if (!sift_radix_fits(&wk->g->w[wk->t].fin, bytes))
+			return false;
+	}
+	return table_each(wk, deliver_row);
 }
 
 /* the table of a partition or a merge, in the work arena of thread t, for about `groups` groups */
@@ -336,7 +350,7 @@ group_seal(void *vg, uint32 *nparts, SiftErr *err)
 		ok = table_each(&wk, merge_row);
 	}
 	wk.from = &m;
-	ok = ok && table_each(&wk, deliver_row);
+	ok = ok && deliver_table(&wk);
 	sift_arena_rewind(work, mark);
 	return ok || fail_mem(err, "parallel aggregation: the arena of the merge is full");
 }
@@ -417,13 +431,15 @@ group_phase2(void *vg, int t, uint32 part, SiftArena *work, SiftErr *err)
 	SiftCompact tab;
 	Walk		wk = {.g = g,.t = t,.from = &tab};
 
-	if (!fold_partition(g, part, &tab, work) || !table_each(&wk, deliver_row))
+	if (!fold_partition(g, part, &tab, work) || !deliver_table(&wk))
 		return fail_mem(err, "parallel aggregation: the arena of a partition is full");
 	atomic_store_explicit(&g->done[part], true, memory_order_release);
 	return true;
 }
 
 /* ---- the answer ---- */
+
+static void flush_fin(const SiftParGroup *g);
 
 static void
 group_finish(void *vg)
@@ -435,7 +451,10 @@ group_finish(void *vg)
 	bool		merged;
 
 	if (g->sp.topk == 0)
+	{
+		flush_fin(g);
 		return;
+	}
 	for (int t = 0; t < g->nw; t++)
 		heap[t] = &g->w[t].tk;
 	sift_arena_reset(&g->merge);
@@ -477,11 +496,26 @@ drain_chunk(void *arg, const uint8 *b, uint32 len)
 	return true;
 }
 
+/* The groups that the threads delivered, which no K held back, to the consumer */
+static void
+flush_fin(const SiftParGroup *g)
+{
+	for (int t = 0; t < g->nw; t++)
+	{
+		Drain		d = {.g = g,.worker = t,.partial = true};
+
+		for (uint32 p = 0; p < SIFT_RADIX_PARTS; p++)
+			sift_radix_scan(&g->w[t].fin, p, drain_chunk, &d);
+	}
+}
+
 static void
 group_overflow(void *vg, const SiftParRange *left, uint32 nleft)
 {
 	SiftParGroup *g = vg;
 
+	if (g->sp.topk == 0)
+		flush_fin(g);
 	for (int v = 0; v < g->nw; v++)
 	{
 		const Walk	wk = {.g = g,.t = v,.from = &g->w[v].local};
@@ -523,6 +557,7 @@ worker_open(SiftParGroup *g, int t, bool high_card, SiftErr *err)
 	w->radix = high_card;
 	sift_radix_init(&w->raw, state);
 	sift_radix_init(&w->pa, state);
+	sift_radix_init(&w->fin, state);
 	if (g->sp.topk > 0 && !sift_par_topk_init(&w->tk, work, g->sp.topk, sizeof(SiftTopEnt), g->sp.strs ? (work->cap - work->used) / 8 : 0, ent_better, ent_store, &g->sp))
 		return fail_mem(err, "parallel aggregation: an arena is too small for its K best");
 	if (!high_card && !cmp_init(&w->local, TAB_FIRST))

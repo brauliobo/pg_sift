@@ -6,7 +6,7 @@
  * Few groups (the planner expects up to SIFT_PAR_GROUP_LOW): each thread folds its rows into a table of its own, and the seal merges the W tables on the leader. Many groups: phase 1, each thread
  * scatters its rows (the key words and the arguments, and the bytes of the text keys) by the top bits of the hash of the key into the partitions of core/par/radix.h. Phase 2, every thread takes whole
  * partitions from the shared cursor, folds the W streams of a partition into a table that fits the L2 cache (no other thread holds a key of it: no lock) and offers its groups to the K best that
- * the thread keeps, or to the consumer, which gets each group once. A thread whose table of a few groups outgrows them goes on in the second regime, its groups handed to the partitions as partial
+ * the thread keeps, or (no K) to a stream of its own that the leader hands to the consumer, which gets each group once. A thread whose table of a few groups outgrows them goes on in the second regime, its groups handed to the partitions as partial
  * aggregates. The table is the compact group table of the backend (agg/v6/v6_group_cmp.h): the same slots, the same hashes, in the arena of a thread; its layout of a key is agg/v6/par/group_key.h.
  *
  * The key is nk columns, each a word of the caller (a NULL is a word of its own: the table never sees one) or a text (the length SIFT_STR_NULL is the NULL one), in the order of the statement: a
@@ -23,7 +23,7 @@
 
 #include "core/par/morsel.h"
 
-#define SIFT_PAR_GROUP_MAX_KEYS	4
+#define SIFT_PAR_GROUP_MAX_KEYS	5
 #define SIFT_PAR_GROUP_MAX_SUM	6
 #define SIFT_PAR_GROUP_LOW		4096
 #define SIFT_PAR_GROUP_TOPK_MAX	1024
@@ -75,7 +75,7 @@ typedef struct SiftParGroupHooks
 {
 	/* Thread `worker`: the rows of the items [lo, hi), in memory of scratch that is valid until the next call; false, with err filled, when it cannot (the items are none of them folded) */
 	bool		(*fill) (void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParGroupBatch *out, SiftErr *err);
-	/* A group, or a partial aggregate of one, from thread `worker` (the row is the callee's for the call only); the consumer adds what it gets to what it has */
+	/* A group, or a partial aggregate of one, that thread `worker` held, on the thread of the run once the others are done (the row is the callee's for the call only); the consumer adds what it gets to what it has */
 	void		(*emit) (void *arg, int worker, const SiftParGroupRow *row);
 	/* After the partial aggregates of everything folded: the items that are still to be done */
 	void		(*overflow) (void *arg, const SiftParRange *left, uint32 nleft);

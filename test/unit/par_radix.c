@@ -58,6 +58,7 @@ g_emit(void *arg, int worker, const SiftParGroupRow *row)
 {
 	GCtx	   *c = arg;
 
+	CHECK(!sift_test_in_worker);
 	vec_push(&c->out[worker], c->src.sp, row);
 }
 
@@ -161,7 +162,7 @@ static void
 test_group_ints(void)
 {
 	for (int kw = 1; kw <= SIFT_PAR_GROUP_MAX_KEYS; kw++)
-		for (int nsum = 0; nsum <= 3; nsum += 3)
+		for (int nsum = 0; nsum <= 3 && kw + nsum < 8; nsum += 3)
 			for (uint32 ngroups = FEW; ngroups != 0; ngroups = ngroups == FEW ? MANY : 0)
 				for (int high = 0; high <= 1; high++)
 					for (int u32 = 0; u32 <= (kw == 2); u32++)
@@ -195,7 +196,7 @@ test_group_strs(void)
 static void
 test_group_mixed(void)
 {
-	static const int shapes[][2] = {{2, 2}, {2, 1}, {3, 2}, {3, 5}, {2, 3}, {4, 10}};
+	static const int shapes[][2] = {{2, 2}, {2, 1}, {3, 2}, {3, 5}, {2, 3}, {4, 10}, {5, 24}};
 
 	for (size_t sh = 0; sh < sizeof(shapes) / sizeof(shapes[0]); sh++)
 		for (int nsum = 0; nsum <= 2; nsum += 2)
