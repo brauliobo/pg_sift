@@ -25,6 +25,7 @@
 #include "col/f2/f2_store_scan.h"
 #include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_v6_format.h"
+#include "col/f2/f2_v6_scan_int.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
 
@@ -80,6 +81,7 @@ typedef struct V6Src
 	uint64	   *mvalid[SIFT_V6_MAX_MASKS];
 	uint64		mask[SIFT_VEC_WORDS];
 	uint64		tag[SIFT_VEC_LEN];
+	MemoryContext strings;		/* the bytes of the long strings of the batch: the store's own go with the cursor that moves on */
 } V6Src;
 
 /* ---- the heap rows of an index ---- */
@@ -268,6 +270,21 @@ unreadable(const V6Src *s, int leaf)
 					errhint("Run the statement with sift.enable_agg = off.")));
 }
 
+static SiftStrView
+text_cell(V6Src *s, const ColView *cv, int r)
+{
+	SiftStrView v = sift_f2_v6_text_view(cv, r, s->in.is_table);
+
+	if (v.len > 12)
+	{
+		char	   *own = MemoryContextAlloc(s->strings, v.len);
+
+		memcpy(own, v.u.ptr, v.len);
+		v.u.ptr = own;
+	}
+	return v;
+}
+
 static void
 put_col(V6Src *s, int i, const ColView *cv, int r, int n)
 {
@@ -283,6 +300,9 @@ put_col(V6Src *s, int i, const ColView *cv, int r, int n)
 			break;
 		case SVEC_F64:
 			((double *) s->data[i])[n] = valid ? cv->f[r] : 0;
+			break;
+		case SVEC_STRVIEW:
+			((SiftStrView *) s->data[i])[n] = valid ? text_cell(s, cv, r) : (SiftStrView) {0};
 			break;
 		default:
 			((int64 *) s->data[i])[n] = valid ? cv->i[r] : 0;
@@ -312,6 +332,7 @@ put_row(V6Src *s, const SiftF2Batch *b, int r, int n)
 static void
 batch_start(V6Src *s)
 {
+	MemoryContextReset(s->strings);
 	for (int i = 0; i < s->in.ncols; i++)
 		memset(s->valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
 	for (int m = 0; m < s->in.nmasks; m++)
@@ -445,7 +466,7 @@ vectors_new(V6Src *s)
 {
 	for (int i = 0; i < s->in.ncols; i++)
 	{
-		const size_t width = s->in.col[i].type == SVEC_I32 ? sizeof(int32) : sizeof(int64);
+		const size_t width = s->in.col[i].type == SVEC_I32 ? sizeof(int32) : s->in.col[i].type == SVEC_STRVIEW ? sizeof(SiftStrView) : sizeof(int64);
 
 		s->data[i] = palloc_aligned((SIFT_VEC_LEN + SIFT_VEC_PAD) * width, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 		s->valid[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
@@ -467,6 +488,7 @@ sift_f2_v6_source_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr 
 
 	s->cx = cx;
 	s->run_cx = sift_mem_allocset_create(cx, "sift v6 source run");
+	s->strings = sift_mem_allocset_create(cx, "sift v6 source strings");
 	s->in = *in;
 	s->sorted = sorted;
 	s->snap = estate->es_snapshot;

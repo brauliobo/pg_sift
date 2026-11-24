@@ -23,6 +23,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_source_quals.h"
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_window.h"
@@ -428,7 +429,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 {
 	SiftV6Input in = p->src->input;
 	SiftV6WindowSpec spec;
-	SiftV6Vexpr probe;
+	SiftV6SplitQuals probe;
 	SiftV6Vexpr filters[SIFT_WINX_MAX_FUNCS];
 	int			atts[2 * SIFT_WIN_MAX_KEYS];
 	int			n = 0;
@@ -443,7 +444,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		p->quals = lappend(p->quals, ri->clause);
 	}
 	priv = private_of(p);
-	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || !sift_v6_vexpr_quals(CurrentMemoryContext, p->quals, p->rel->relid, NULL, &in, &probe) ||
+	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || !sift_v6_split_quals(CurrentMemoryContext, p->quals, p->rel->relid, NULL, &in, &probe) ||
 		(spec.winx != NULL && !sift_v6_winx_filters(CurrentMemoryContext, p->funcs, p->rel->relid, NULL, &in, filters)))
 		return false;
 	for (int i = 0; i < spec.win.n_part; i++)
@@ -744,7 +745,8 @@ static void
 window_run(WindowState *st, EState *estate)
 {
 	SiftV6Input in;
-	SiftV6Vexpr quals;
+	SiftV6Input open_in;
+	SiftV6SplitQuals quals;
 	bool		compiled;
 	const bool	is_table = list_nth_int(linitial(st->priv), 6);
 	Relation	source = sift_v6_source_open((Oid) list_nth_int(linitial(st->priv), 0), is_table, AccessShareLock, &in);
@@ -753,7 +755,7 @@ window_run(WindowState *st, EState *estate)
 	sift_v6_input_bind(&in, estate);
 	sift_v6_source_close(source, is_table, NoLock);
 	st->filters = palloc0(SIFT_WINX_MAX_FUNCS * sizeof(SiftV6Vexpr));
-	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_vexpr_quals(st->out.cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
+	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_split_quals(st->out.cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
 		(st->spec->winx == NULL || sift_v6_winx_filters(st->out.cx, list_nth(st->priv, PRIV_FUNCS), st->spec->rti, estate->es_param_list_info, &in, st->filters));
 	SIFT_INVARIANT(compiled, "the window scan of relation %u is not compiled", st->spec->indexoid);
 	if (st->spec->empty)
@@ -762,7 +764,9 @@ window_run(WindowState *st, EState *estate)
 		return;
 	}
 	st->carry = st->spec->winx != NULL ? NULL : sift_win_carry_open(st->out.cx, &in, st->attvar, st->nattrs, (uint64) work_mem * 1024 / 4);
-	st->src = sift_v6_rel_open(estate, &in, st->quals == NIL ? NULL : &quals, !st->spec->regroup);
+	open_in = in;
+	sift_v6_split_quals_columns(&open_in, &quals);
+	st->src = sift_v6_source_over_quals(st->out.cx, sift_v6_rel_open(estate, &open_in, quals.has_machine ? &quals.machine : NULL, !st->spec->regroup), &open_in, &quals);
 	if (st->spec->regroup)
 		st->src = sift_win_regroup_over(st->out.cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
 	if (st->spec->partsort)

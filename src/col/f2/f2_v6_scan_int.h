@@ -132,6 +132,8 @@ extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQu
 								  SiftV6ChunkFn next_chunk, void *chunk_arg);
 
 /* f2_v6_scan_fill.c: the vectors of the columns of a batch from the decoded views of its leaves */
+/* The view of the text of row of the column: the bytes stay where the view of the store holds them */
+extern SiftStrView sift_f2_v6_text_view(const ColView *cv, int row, bool table);
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
 extern void sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs);
 /* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */

@@ -46,19 +46,24 @@ any_null(const bool *isnull, int n)
 }
 
 /* a sift_table keeps the datum of the attribute in its cell: the bytes of a text are the ones after its header */
+SiftStrView
+sift_f2_v6_text_view(const ColView *cv, int row, bool table)
+{
+	const uint32 code = cv->dcode != NULL ? cv->dcode[row] : 0;
+
+	if (cv->isnull[row])
+		return strview_of(NULL, 0);
+	if (cv->dcode != NULL)
+		return strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
+	if (table)
+		return strview_of(VARDATA_ANY(cv->s[row]), VARSIZE_ANY_EXHDR(cv->s[row]));
+	return strview_of(cv->s[row], cv->slen[row]);
+}
+
 static void
 text_view_at(SiftStrView *out, const ColView *cv, int off, int i, bool table)
 {
-	const uint32 code = cv->dcode != NULL ? cv->dcode[off + i] : 0;
-
-	if (cv->isnull[off + i])
-		out[i] = strview_of(NULL, 0);
-	else if (cv->dcode != NULL)
-		out[i] = strview_of(cv->dict->bytes + cv->dict->off[code], cv->dict->off[code + 1] - cv->dict->off[code]);
-	else if (table)
-		out[i] = strview_of(VARDATA_ANY(cv->s[off + i]), VARSIZE_ANY_EXHDR(cv->s[off + i]));
-	else
-		out[i] = strview_of(cv->s[off + i], cv->slen[off + i]);
+	out[i] = sift_f2_v6_text_view(cv, off + i, table);
 }
 
 /* The views of the strings of the rows of mask (all n rows when it is NULL): a batch that keeps few rows makes the views of those */
