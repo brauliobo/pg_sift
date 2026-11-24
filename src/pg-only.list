@@ -521,6 +521,8 @@ col/f2/scan/stream.c
 col/f2/scan/stream.h
 col/f2/scan/survey.c
 col/f2/scan/verdict.c
+col/f2/scan/ord_cursor.c
+col/f2/scan/ord_int.h
 col/f2/scan/ord_stream.c
 col/f2/scan/ord_stream.h
 col/f2/scan/rescan_cache.c

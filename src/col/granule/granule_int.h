@@ -126,6 +126,8 @@ StaticAssertDecl(sizeof(SiftTidBlockHeader) == 8, "SiftTidBlockHeader must be 8 
 
 /* The _tid chunk (SIFT_CENC_TID_BLOCK) of a granule of n rows */
 extern void sift_chunk_tids(const SiftChunk *c, int n, uint64 *out);
+/* The same for the first w of the n rows: out[w..n) is not written */
+extern void sift_chunk_tids_head(const SiftChunk *c, int n, int w, uint64 *out);
 
 /* Encoding of one column (granule_enc.c) */
 typedef struct SiftChunkOpts

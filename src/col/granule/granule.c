@@ -40,13 +40,19 @@ sift_granule_open_part(Relation rel, const SiftPart *part, const char *rec, uint
 }
 
 void
-sift_granule_tids(const SiftGranuleView *v, uint64 *out)
+sift_granule_tids_head(const SiftGranuleView *v, int w, uint64 *out)
 {
 	SiftChunk	c;
 
 	sift_chunk_open(v, SIFT_COL_TID_IDX, &c);
-	sift_chunk_tids(&c, v->hdr->nrows, out);
+	sift_chunk_tids_head(&c, v->hdr->nrows, w, out);
 	sift_chunk_close(&c);
+}
+
+void
+sift_granule_tids(const SiftGranuleView *v, uint64 *out)
+{
+	sift_granule_tids_head(v, v->hdr->nrows, out);
 }
 
 static void

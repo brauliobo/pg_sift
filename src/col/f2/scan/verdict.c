@@ -112,3 +112,63 @@ sift_f2_scan_few_rows(const uint64 *active, int n)
 		rows += sift_pc64(active[w]);
 	return rows <= SIFT_F2_HEAP_DECIDE_ROWS;
 }
+
+static int
+nth_row(const uint64 *active, int nwords, uint32 k)
+{
+	for (int w = 0; w < nwords; w++)
+	{
+		uint64		bits = active[w];
+		uint32		c = sift_pc64(bits);
+
+		if (k <= c)
+		{
+			while (--k > 0)
+				bits &= bits - 1;
+			return w * 64 + __builtin_ctzll(bits);
+		}
+		k -= c;
+	}
+	return -1;
+}
+
+/* Keeps the rows of active that the row window of the scan reads (the first or last keep of those of its range); the rows kept */
+uint32
+sift_f2_scan_window(F2Scan *s, uint64 *active, int n)
+{
+	SiftF2RowWin *w = &s->rowwin;
+	const int	nwords = (n + 63) / 64;
+	uint32		total = 0;
+	int			cut;
+
+	w->end = w->fwd ? w->hi : w->lo;
+	for (int i = 0; i < nwords; i++)
+	{
+		const int	lo = w->lo - i * 64,
+					hi = w->hi - i * 64;
+
+		active[i] &= (lo <= 0 ? ~UINT64CONST(0) : lo >= 64 ? 0 : ~UINT64CONST(0) << lo) & (hi >= 64 ? ~UINT64CONST(0) : hi <= 0 ? 0 : (UINT64CONST(1) << hi) - 1);
+		total += sift_pc64(active[i]);
+	}
+	if (w->keep == 0 || total <= w->keep)
+		return total;
+	cut = nth_row(active, nwords, w->fwd ? w->keep : total - w->keep + 1);
+	for (int i = 0; i < nwords; i++)
+	{
+		const int	at = cut - i * 64;
+
+		active[i] &= w->fwd ? (at >= 63 ? ~UINT64CONST(0) : at < 0 ? 0 : (UINT64CONST(1) << (at + 1)) - 1) : (at <= 0 ? ~UINT64CONST(0) : at >= 64 ? 0 : ~UINT64CONST(0) << at);
+	}
+	w->end = w->fwd ? cut + 1 : cut;
+	return w->keep;
+}
+
+/* One past the last row of active */
+int
+sift_f2_scan_rows_to(const uint64 *active, int n)
+{
+	for (int w = (n + 63) / 64 - 1; w >= 0; w--)
+		if (active[w] != 0)
+			return w * 64 + 64 - __builtin_clzll(active[w]);
+	return 0;
+}

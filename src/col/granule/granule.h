@@ -324,6 +324,8 @@ extern SiftGranuleView sift_granule_open(Relation rel, const char *rec, uint32 l
 extern SiftGranuleView sift_granule_open_part(Relation rel, const SiftPart *part, const char *rec, uint32 len, const SiftGranuleDesc *desc);
 
 extern void sift_granule_tids(const SiftGranuleView *v, uint64 *out);
+/* The addresses of the first w rows only */
+extern void sift_granule_tids_head(const SiftGranuleView *v, int w, uint64 *out);
 extern void sift_granule_ints(const SiftGranuleView *v, int col, int64 *out, bool *isnull);
 /* The values of the ascending rows only, out[j] and isnull[j] for rows[j]: the chunk is decoded at those values and not through the rows between them */
 extern void sift_granule_point_ints(const SiftGranuleView *v, int col, const uint16 *rows, uint16 nrows, int64 *out, bool *isnull);

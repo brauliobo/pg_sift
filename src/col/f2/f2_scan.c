@@ -526,6 +526,12 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			MemoryContextReset(gcx);
 			continue;
 		}
+		if (s->rowwin.hi != 0 && sift_f2_scan_window(s, active, n) == 0)
+		{
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(gcx);
+			continue;
+		}
 		few = s->heap_decide && s->bridge != NULL && sift_f2_scan_few_rows(active, n);
 		if (bitmap_answers(s, decided, pend_hit, few))
 		{
@@ -563,7 +569,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 				views[s->preds[k].col].keyp = decode_keyp(&v, s->preds[k].col, n);
 		tids = s->tids_unneeded && !pend_hit ? NULL : palloc(n * sizeof(uint64));
 		if (tids != NULL)
-			sift_granule_tids(&v, tids);
+			sift_granule_tids_head(&v, s->rowwin.fwd && s->cd == NULL ? sift_f2_scan_rows_to(active, n) : n, tids);
 		pend_hit |= sift_cdi_scan_patch(s, schema, g, views, tids, n, gcx) && px != NULL;
 		if (dg != NULL)
 			any_dead = sift_dv_mask64(dg, snap, dead) > 0;

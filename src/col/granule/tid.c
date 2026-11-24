@@ -454,8 +454,9 @@ sift_chunk_put_tids(StringInfo s, const uint64 *tid, int n, SiftChunkRef *ref, c
 	sift_free(blk);
 }
 
+/* The stream of nvals integers at p, its first w decoded; the stream after it */
 static const char *
-get_ints(const SiftChunk *c, const char *p, uint32 nvals, int64 *out)
+get_ints_head(const SiftChunk *c, const char *p, uint32 nvals, uint32 w, int64 *out)
 {
 	uint32		whole;
 	SiftCc	   *cc;
@@ -463,7 +464,10 @@ get_ints(const SiftChunk *c, const char *p, uint32 nvals, int64 *out)
 	if (p > c->body + c->body_len)
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk ends before its streams"));
 	cc = sift_cc_blob_open(p, c->body_len - (p - c->body), nvals, &whole);
-	sift_cc_decode(cc, out);
+	if (w < nvals)
+		sift_cc_decode_head(cc, w, out);
+	else
+		sift_cc_decode(cc, out);
 	sift_cc_close(cc);
 	return p + whole;
 }
@@ -476,12 +480,12 @@ check_block(int64 v)
 }
 
 static const char *
-get_seq_delta(const SiftChunk *c, const char *p, int n, uint32 *blk, int64 *scratch)
+get_seq_delta(const SiftChunk *c, const char *p, int n, int w, uint32 *blk, int64 *scratch)
 {
-	p = get_ints(c, p, n, scratch);
+	p = get_ints_head(c, p, n, w, scratch);
 	check_block(scratch[0]);
 	blk[0] = (uint32) scratch[0];
-	for (int i = 1; i < n; i++)
+	for (int i = 1; i < w; i++)
 	{
 		int64		b = (int64) blk[i - 1] + sift_unzigzag((uint64) scratch[i]);
 
@@ -492,15 +496,15 @@ get_seq_delta(const SiftChunk *c, const char *p, int n, uint32 *blk, int64 *scra
 }
 
 static const char *
-get_blk_dict(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint32 *blk, int64 *scratch)
+get_blk_dict(const SiftChunk *c, const char *p, int n, int w, uint32 ndistinct, uint32 *blk, int64 *scratch)
 {
 	int64		dict[SIFT_TID_DICT_MAX + SIFT_COL_PAD / 8 + 8];
 
 	if (ndistinct == 0 || ndistinct > SIFT_TID_DICT_MAX)
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk names %u distinct heap blocks", ndistinct));
-	p = get_ints(c, p, ndistinct, dict);
-	p = get_ints(c, p, n, scratch);
-	for (int i = 0; i < n; i++)
+	p = get_ints_head(c, p, ndistinct, ndistinct, dict);
+	p = get_ints_head(c, p, n, w, scratch);
+	for (int i = 0; i < w; i++)
 	{
 		if ((uint64) scratch[i] >= ndistinct)
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk indexes a heap block past its dictionary"));
@@ -511,7 +515,7 @@ get_blk_dict(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint32 
 }
 
 static const char *
-get_pfor_frames(const SiftChunk *c, const char *p, int n, uint32 npatches, uint32 *blk)
+get_pfor_frames(const SiftChunk *c, const char *p, int n, int w, uint32 npatches, uint32 *blk)
 {
 	int			nmb = (n + SIFT_TID_MINI - 1) / SIFT_TID_MINI;
 	const char *end = c->body + c->body_len;
@@ -536,9 +540,12 @@ get_pfor_frames(const SiftChunk *c, const char *p, int n, uint32 npatches, uint3
 		int			from = m * SIFT_TID_MINI,
 					cnt = Min(SIFT_TID_MINI, n - from);
 
-		unpack_frame((const uint8 *) p, widths[m], v);
-		for (int i = 0; i < cnt; i++)
-			blk[from + i] = bases[m] + v[i];
+		if (from < w)
+		{
+			unpack_frame((const uint8 *) p, widths[m], v);
+			for (int i = 0; i < cnt; i++)
+				blk[from + i] = bases[m] + v[i];
+		}
 		p += 16 * widths[m];
 	}
 	for (uint32 k = 0; k < npatches; k++)
@@ -557,14 +564,14 @@ get_pfor_frames(const SiftChunk *c, const char *p, int n, uint32 npatches, uint3
 
 /* The frames, in the stream of zstd that SIFT_TID_PFOR_ZSTD says they are in, or as they are */
 static const char *
-get_pfor_mini(const SiftChunk *c, const char *p, int n, uint32 npatches, uint32 *blk, uint8 flags)
+get_pfor_mini(const SiftChunk *c, const char *p, int n, int w, uint32 npatches, uint32 *blk, uint8 flags)
 {
 	SiftChunk	raw = *c;
 	uint32		hdr[2];
 	char	   *buf;
 
 	if (!(flags & SIFT_TID_PFOR_ZSTD))
-		return get_pfor_frames(c, p, n, npatches, blk);
+		return get_pfor_frames(c, p, n, w, npatches, blk);
 	if (p + 8 > c->body + c->body_len)
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk ends before its frames"));
 	memcpy(hdr, p, 8);
@@ -575,13 +582,13 @@ get_pfor_mini(const SiftChunk *c, const char *p, int n, uint32 npatches, uint32 
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the compressed frames of a _tid chunk are damaged"));
 	raw.body = buf;
 	raw.body_len = hdr[0];
-	(void) get_pfor_frames(&raw, buf, n, npatches, blk);
+	(void) get_pfor_frames(&raw, buf, n, w, npatches, blk);
 	sift_free(buf);
 	return p + 8 + MAXALIGN((uint64) hdr[1]);
 }
 
 static const char *
-get_blk_bitmap(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint32 *blk, int64 *scratch)
+get_blk_bitmap(const SiftChunk *c, const char *p, int n, int w, uint32 ndistinct, uint32 *blk, int64 *scratch)
 {
 	const char *end = c->body + c->body_len;
 	uint32		lo,
@@ -610,8 +617,8 @@ get_blk_bitmap(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint3
 		}
 	if (nd != ndistinct)
 		SIFT_DAMAGE_DATA(NULL, errmsg("sift: the bitmap of a _tid chunk has fewer blocks than the %u it names", ndistinct));
-	p = get_ints(c, p + 16 + MAXALIGN((uint64) len), n, scratch);
-	for (int i = 0; i < n; i++)
+	p = get_ints_head(c, p + 16 + MAXALIGN((uint64) len), n, w, scratch);
+	for (int i = 0; i < w; i++)
 	{
 		if ((uint64) scratch[i] >= nd)
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk ranks a heap block past its bitmap"));
@@ -624,12 +631,12 @@ get_blk_bitmap(const SiftChunk *c, const char *p, int n, uint32 ndistinct, uint3
 
 /* Every row of a LINEAR chunk: the slot is block * (largest offset + 1) + offset */
 static void
-get_linear(const SiftChunk *c, int n, uint32 max_off, int64 *scratch, uint64 *out)
+get_linear(const SiftChunk *c, int n, int w, uint32 max_off, int64 *scratch, uint64 *out)
 {
 	uint64		stride = (uint64) max_off + 1;
 
-	(void) get_ints(c, c->body + sizeof(SiftTidBlockHeader), n, scratch);
-	for (int i = 0; i < n; i++)
+	(void) get_ints_head(c, c->body + sizeof(SiftTidBlockHeader), n, w, scratch);
+	for (int i = 0; i < w; i++)
 	{
 		uint64		slot = (uint64) scratch[i];
 
@@ -641,6 +648,12 @@ get_linear(const SiftChunk *c, int n, uint32 max_off, int64 *scratch, uint64 *ou
 
 void
 sift_chunk_tids(const SiftChunk *c, int n, uint64 *out)
+{
+	sift_chunk_tids_head(c, n, n, out);
+}
+
+void
+sift_chunk_tids_head(const SiftChunk *c, int n, int w, uint64 *out)
 {
 	SiftTidBlockHeader h;
 	const char *p = c->body;
@@ -657,29 +670,29 @@ sift_chunk_tids(const SiftChunk *c, int n, uint64 *out)
 	switch (h.mode)
 	{
 		case SIFT_TID_MODE_SEQ_DELTA:
-			p = get_seq_delta(c, p, n, blk, scratch);
+			p = get_seq_delta(c, p, n, w, blk, scratch);
 			break;
 		case SIFT_TID_MODE_BLK_DICT:
-			p = get_blk_dict(c, p, n, h.param0, blk, scratch);
+			p = get_blk_dict(c, p, n, w, h.param0, blk, scratch);
 			break;
 		case SIFT_TID_MODE_PFOR_MINI:
 			if (h.param0 != SIFT_TID_MINI)
 				SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk has frames of %u rows", h.param0));
-			p = get_pfor_mini(c, p, n, h.n_patches, blk, h.flags);
+			p = get_pfor_mini(c, p, n, w, h.n_patches, blk, h.flags);
 			break;
 		case SIFT_TID_MODE_BLK_BITMAP:
-			p = get_blk_bitmap(c, p, n, h.param0, blk, scratch);
+			p = get_blk_bitmap(c, p, n, w, h.param0, blk, scratch);
 			break;
 		case SIFT_TID_MODE_LINEAR:
-			get_linear(c, n, h.param0, scratch, out);
+			get_linear(c, n, w, h.param0, scratch, out);
 			sift_free(scratch);
 			sift_free(blk);
 			return;
 		default:
 			SIFT_DAMAGE_DATA(NULL, errmsg("sift: a _tid chunk has mode %u", h.mode));
 	}
-	get_ints(c, p, n, scratch);
-	for (int i = 0; i < n; i++)
+	get_ints_head(c, p, n, w, scratch);
+	for (int i = 0; i < w; i++)
 	{
 		int64		off = scratch[i];
 

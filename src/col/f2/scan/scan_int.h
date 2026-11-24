@@ -48,6 +48,16 @@ typedef struct F2TbmSink
 
 typedef struct SiftF2Stream SiftF2Stream;
 
+/* The rows of a granule a scan reads: those of [lo, hi) that pass its predicates, the first keep of them (fwd) or the last (else); hi == 0: all of them; keep == 0: no more than the range. end says where the rows taken stop: [lo, end) (fwd), [end, hi) */
+typedef struct SiftF2RowWin
+{
+	uint16		lo;
+	uint16		hi;
+	uint16		keep;
+	bool		fwd;
+	uint16		end;
+} SiftF2RowWin;
+
 typedef struct F2Scan
 {
 	SiftColScanHeader hdr;		/* first: the access method routes the scan by it */
@@ -112,6 +122,7 @@ typedef struct F2Scan
 	struct MorselCx *morsel;	/* a participant of a parallel scan: what it keeps between the runs of granules it takes (f2_par.c) */
 	SiftRowBound rowcmp[SIFT_ROW_BOUNDS_MAX];	/* the row comparisons of the keys: an ordered scan gives only the rows they accept */
 	int			nrowcmp;
+	SiftF2RowWin rowwin;		/* an ordered scan reads a granule in windows of rows */
 	struct SiftOrdStream *ord;	/* the ordered scan of the index, once its first row was asked (scan/ord_stream.c) */
 	bool		ord_off;		/* the index is not ordered natively: its rows come as the addresses give them */
 	uint32		rescans;		/* the keys the scan was given: one given others again reads decoded granules */
@@ -144,6 +155,8 @@ typedef enum Verdict
 /* col/f2/scan/verdict.c */
 extern Verdict sift_f2_heap_verdict(const F2Scan *s, const bool *decided);
 extern bool sift_f2_scan_few_rows(const uint64 *active, int n);
+extern uint32 sift_f2_scan_window(F2Scan *s, uint64 *active, int n);
+extern int	sift_f2_scan_rows_to(const uint64 *active, int n);
 extern Verdict sift_f2_row_verdict(const SiftColSchema *schema, const F2Scan *s, const ColView *views, const bool *decided, int r);
 extern void sift_f2_sink_verdict(const F2Scan *s, Verdict v, uint64 *live, uint64 *maybe, int r);
 
