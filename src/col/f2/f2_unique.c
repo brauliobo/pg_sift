@@ -272,21 +272,30 @@ judge(Conflict *c, const SnapshotData *dirty, const ItemPointerData *at, bool in
 	c->found = TransactionIdIsValid(c->xwait) ? FOUND_RUNNING : FOUND_LIVE;
 }
 
-/* The rows of the key that transactions hold in their stages: the heap tuples of the entries of the registry */
+/* The rows of the key that transactions hold in their stages: the chains of the heap tuples of the entries of the registry (an entry names the root of a HOT chain, and the row of the key is its visible member) */
 static void
 find_staged(UniqueKey *k, const Row *row, Relation heap, const SiftUniqHits *hits, const Datum *values, const bool *isnull, ItemPointer self, Conflict *c)
 {
 	SnapshotData dirty;
 	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	IndexFetchTableData *fetch = table_index_fetch_begin(heap);
 
 	InitDirtySnapshot(dirty);
 	for (int i = 0; i < hits->n && c->found == FOUND_NONE; i++)
 	{
 		ItemPointerData at = hits->hit[i].tid;
+		bool		again = false,
+					all_dead;
 
-		if (!ItemPointerEquals(self, &at) && table_tuple_fetch_row_version(heap, &at, &dirty, slot) && (!hits->hit[i].external || row_has_key(k, row, slot, values, isnull)))
-			judge(c, &dirty, &at, true);
+		while (c->found == FOUND_NONE && table_index_fetch_tuple(fetch, &at, &dirty, slot, &again, &all_dead))
+		{
+			if (!ItemPointerEquals(self, &at) && (!hits->hit[i].external || row_has_key(k, row, slot, values, isnull)))
+				judge(c, &dirty, &at, true);
+			if (!again)
+				break;
+		}
 	}
+	table_index_fetch_end(fetch);
 	ExecDropSingleTupleTableSlot(slot);
 }
 
