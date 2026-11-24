@@ -363,8 +363,8 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 		setup_pipe(s, first, star);
 }
 
-static void
-derive_columns(V6Scan *s)
+void
+sift_f2_v6_derive_columns(V6Scan *s)
 {
 	for (int k = 0; k < s->nderived; k++)
 	{
@@ -382,8 +382,8 @@ derive_columns(V6Scan *s)
 }
 
 /* The keys that are date_bin() of a column, for the rows of the batch: the error of PostgreSQL for a row that overflows, raised only for a row the scan keeps */
-static void
-bin_keys(V6Scan *s)
+void
+sift_f2_v6_bin_keys(V6Scan *s)
 {
 	for (int i = 0; i < s->nbins; i++)
 	{
@@ -402,8 +402,8 @@ bin_keys(V6Scan *s)
 	}
 }
 
-static uint16
-vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int off, int n)
+uint16
+sift_f2_v6_vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int off, int n)
 {
 	SiftBatchSel *bs = &s->bs;
 	const int	words = (n + 63) / 64;
@@ -417,8 +417,8 @@ vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int of
 	return sift_v6_vet_mask(&s->vet, tid, off, visible, n, bs);
 }
 
-static bool
-batch_visible(const V6Scan *s, const SiftF2Batch *b)
+bool
+sift_f2_v6_batch_visible(const V6Scan *s, const SiftF2Batch *b)
 {
 	return s->vet.heap == NULL || s->all_visible || (b->part != NULL && b->part == s->visible_part);
 }
@@ -537,8 +537,8 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 		if (s->bs.n_active == 0)
 			return;
 	}
-	derive_columns(s);
-	bin_keys(s);
+	sift_f2_v6_derive_columns(s);
+	sift_f2_v6_bin_keys(s);
 	s->stats->rows += s->bs.n_active;
 	if (s->emit != NULL)
 		s->emit(s->emit_arg, &s->bs, s->keyvec, s->argvec);
@@ -563,7 +563,7 @@ void
 sift_f2_v6_sink(void *arg, const SiftF2Batch *b)
 {
 	V6Scan	   *s = arg;
-	const bool	visible = batch_visible(s, b);
+	const bool	visible = sift_f2_v6_batch_visible(s, b);
 
 	if (s->stat != NULL && visible)
 		sift_v6_colstat_note(s->stat, b);
@@ -572,7 +572,7 @@ sift_f2_v6_sink(void *arg, const SiftF2Batch *b)
 		const int	n = Min(SIFT_VEC_LEN, b->n - off);
 
 		s->stats->batches++;
-		if (vet_slice(s, b->live, b->tid, visible, off, n) == 0)
+		if (sift_f2_v6_vet_slice(s, b->live, b->tid, visible, off, n) == 0)
 			continue;
 		fold_slice(s, b->views, NULL, b->tid, b->part != NULL ? b->part->part_gen : 0, off, n);
 	}
@@ -596,82 +596,6 @@ sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves)
 	for (int i = 0; i < s->ncols; i++)
 		nan_ok[s->cols[i].leaf] = s->cols[i].nan_ok;
 	return nan_ok;
-}
-
-/* ---- the arms of a cohort ---- */
-
-typedef struct V6Arms
-{
-	V6Scan	   *s;				/* [narms], the leader first */
-	SiftV6FuseCohort *cohort;
-	const SiftF2Batch *b;		/* the slice being given: its rows and the offset of the slice in the granule */
-	int			off;
-	int			n;
-	uint16		n_live;			/* the rows of the slice that are visible and live */
-	uint64		live[SIFT_VEC_WORDS];
-} V6Arms;
-
-/* the rows of the pass the arm takes: all of them when the arms have the keys of the leader, else those its gate allows */
-static uint16
-arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
-{
-	V6Arms	   *a = ctx;
-	V6Scan	   *s = &a->s[arm];
-	uint64		allowed[SIFT_VEC_WORDS];
-	uint16		n = 0;
-
-	if (s->gate == NULL)
-	{
-		memcpy(out, live, SIFT_VEC_WORDS * sizeof(uint64));
-		return a->n_live;
-	}
-	for (int i = 0; i < s->ncols; i++)
-		sift_f2_v6_fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0, NULL);
-	sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
-	for (int w = 0; w < SIFT_VEC_WORDS; w++)
-		n += pg_popcount64(out[w] = live[w] & allowed[w]);
-	return n;
-}
-
-static void
-arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
-{
-	V6Arms	   *a = ctx;
-	V6Scan	   *s = &a->s[arm];
-
-	if (s->gate == NULL)
-		for (int i = 0; i < s->ncols; i++)
-			sift_f2_v6_fill_col(&s->cols[i], &a->b->views[s->cols[i].leaf], a->off, a->n, a->b->part != NULL ? a->b->part->part_gen : 0, NULL);
-	memcpy(s->bs.mask, mask, SIFT_VEC_WORDS * sizeof(uint64));
-	s->bs.n_raw = a->n;
-	s->bs.n_active = n_active;
-	s->bs.all_active = n_active == a->n;
-	s->bs.has_sel = false;
-	derive_columns(s);
-	bin_keys(s);
-	sift_v6_group_update(s->group, &s->bs, s->keyvec, s->argvec);
-	s->stats->rows += s->bs.n_active;
-}
-
-static void
-arms_sink(void *arg, const SiftF2Batch *b)
-{
-	static const SiftV6FuseOps ops = {.arm_mask = arms_mask,.consume = arms_consume};
-	V6Arms	   *a = arg;
-	V6Scan	   *lead = &a->s[0];
-
-	for (int off = 0; off < b->n; off += SIFT_VEC_LEN)
-	{
-		const int	n = Min(SIFT_VEC_LEN, b->n - off);
-
-		lead->stats->batches++;
-		a->b = b;
-		a->off = off;
-		a->n = n;
-		a->n_live = vet_slice(lead, b->live, b->tid, batch_visible(lead, b), off, n);
-		memcpy(a->live, lead->bs.mask, sizeof(a->live));
-		sift_v6_fuse_dispatch(a->cohort, &ops, a, a->live, a->n_live);
-	}
 }
 
 static bool *
@@ -863,7 +787,7 @@ sift_v6_fold_batch_scored(SiftV6Fold *s, const uint64 *tid, const uint64 *live, 
 		const int	n = Min(SIFT_VEC_LEN, total - off);
 
 		s->stats->batches++;
-		vet_slice(s, live, tid, false, off, n);
+		sift_f2_v6_vet_slice(s, live, tid, false, off, n);
 		if (maybe != NULL)
 			vet_maybe(s, maybe, tid, off, n);
 		if (s->bs.n_active > 0)
@@ -972,37 +896,6 @@ sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation
 				 const SiftScopeRouter *router, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	sift_v6_scan_run_ext(spec, g, heap, index, keys, nkeys, snap, skip, nskip, router, stats, NULL, next_chunk, chunk_arg);
-}
-
-void
-sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap)
-{
-	V6Arms		a = {.cohort = cohort};
-	IndexScanDesc scan;
-	int		   *leaves;
-	int			nleaves = 0;
-
-	a.s = sift_palloc0_aligned(V6Scan, cohort->narms);
-	for (int i = 0; i < cohort->narms; i++)
-	{
-		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate};
-		sift_f2_v6_scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
-		nleaves += a.s[i].ncols;
-	}
-	leaves = palloc(Max(nleaves, 1) * sizeof(int));
-	nleaves = 0;
-	for (int i = 0; i < cohort->narms; i++)
-		for (int c = 0; c < a.s[i].ncols; c++)
-			leaves[nleaves++] = a.s[i].cols[c].leaf;
-	sift_v6_vet_begin(&a.s[0].vet, heap, snap, a.s[0].stats);
-	scan = sift_index_beginscan(heap, index, snap, nkeys);
-	index_rescan(scan, keys, nkeys, NULL, 0);
-	sift_f2_scan_sink(scan, arms_sink, &a, leaves, nleaves);
-	index_endscan(scan);
-	sift_v6_vet_end(&a.s[0].vet);
-	for (int i = 0; i < cohort->narms; i++)
-		if (a.s[i].batch_cx != NULL)
-			MemoryContextDelete(a.s[i].batch_cx);
 }
 
 void

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The filtered aggregate of a sift_table on the compute threads of the backend (col/f2/pin_win.h): a granule whose rows are all there for the snapshot goes to the threads with the predicates
 # of the statement; a granule a pending delete of another transaction can touch, a snapshot that is serializable or a state the stored chunks cannot judge goes through the scan as it always
 # did. Every answer is compared with the heap executor on the same table (sift.enable_agg = off), and with a heap twin loaded with the same rows, under the states another session leaves:

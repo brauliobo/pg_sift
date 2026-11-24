@@ -128,6 +128,11 @@ extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
 extern bool *sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves);
 extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);
 extern int	sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan);
+extern void sift_f2_v6_derive_columns(V6Scan *s);
+extern void sift_f2_v6_bin_keys(V6Scan *s);
+/* The rows of the slice of n rows from off that are live and visible, in s->bs */
+extern uint16 sift_f2_v6_vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int off, int n);
+extern bool sift_f2_v6_batch_visible(const V6Scan *s, const SiftF2Batch *b);
 /* f2_v6_scan_table.c */
 extern void sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap);
 extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, struct SiftV6StarRun *star,
