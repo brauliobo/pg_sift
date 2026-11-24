@@ -160,6 +160,11 @@ typedef struct SiftArrayLayout
 	const uint32 *offsets;		/* [n_parents + 1]: the prefix sums of lengths */
 } SiftArrayLayout;
 
+/* The kind of a member of an element of an array of objects, as the vector (SVEC_I64) of the members of a leaf gives it: it holds a value of the leaf's type, it is a JSON null, or it is missing; a member of another JSON type is no kind, the rows that have one are the consumer's to read from the heap */
+#define SIFT_ELEM_KIND_ABSENT	0
+#define SIFT_ELEM_KIND_VALUE	1
+#define SIFT_ELEM_KIND_JNULL	7
+
 /* out (SIFT_COL_NWORDS-free: ceil(n_elems / 64) words) = the elements whose parent is in parent_mask; returns the number of elements set */
 extern uint32 sift_array_elem_mask(uint64 *out, const SiftArrayLayout *lay, const uint64 *parent_mask);
 

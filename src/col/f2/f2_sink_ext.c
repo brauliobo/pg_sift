@@ -388,6 +388,29 @@ decode_child_vec(SiftF2Pull *p, int c, SiftVecType type)
 	}
 }
 
+/* the value column of the leaf of the kind column c, decoded before it: what is not a value is a JSON null where the chunk keeps that kind, else missing */
+static void
+decode_child_kinds(SiftF2Pull *p, int c)
+{
+	const uint32 n = p->n_elems;
+	const int	leaf = p->spec.child[c].leaf;
+	int64	   *kind = palloc_aligned(Max((Size) n * sizeof(int64), 1) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	uint8	   *tag = palloc(Max(n, 1));
+	const uint64 *value = NULL;
+
+	for (int v = 0; v < c; v++)
+		if (p->spec.child[v].leaf == leaf && !p->spec.child[v].kind)
+			value = p->child_valid[v];
+	SIFT_INVARIANT(value != NULL, "the column of the values of an element leaf precedes its kinds");
+	sift_granule_tags(&p->gv, leaf, tag);
+	for (uint32 e = 0; e < n; e++)
+		kind[e] = ((value[e >> 6] >> (e & 63)) & 1) ? SIFT_ELEM_KIND_VALUE : tag[e] == SIFT_COLTAG_JNULL ? SIFT_ELEM_KIND_JNULL : SIFT_ELEM_KIND_ABSENT;
+	p->child_data[c] = kind;
+	p->child_valid[c] = palloc_aligned(((n + 63) / 64 + 1) * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	memset(p->child_valid[c], 0xff, ((n + 63) / 64) * sizeof(uint64));
+	p->child_type[c] = SVEC_I64;
+}
+
 static void
 decode_children(SiftF2Pull *p)
 {
@@ -402,6 +425,8 @@ decode_children(SiftF2Pull *p)
 			p->child_data[c] = palloc0(SIFT_VEC_PAD);
 			p->child_valid[c] = palloc0(sizeof(uint64));
 		}
+		else if (p->spec.child[c].kind)
+			decode_child_kinds(p, c);
 		else if (dict && decode_child_codes(p, c))
 			p->stats.child_dict_granules++;
 		else

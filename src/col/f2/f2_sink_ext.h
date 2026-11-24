@@ -34,6 +34,7 @@ typedef struct SiftF2PullCol
 	int			leaf;
 	SiftVecType type;
 	int16		scale;
+	bool		kind;			/* an element leaf: not its values but, as SVEC_I64 for each element, whether it holds a value (1), the member is a JSON null (7) or it is missing (0); the leaf is also a column of the spec that is not a kind */
 } SiftF2PullCol;
 
 /* A boolean the consumer wants: the leaf of a key of a jsonb document, whose chunks keep on which rows the key is there */
