@@ -214,42 +214,51 @@ compile_preds(F2Scan *s, const SiftColSchema *schema)
 	s->compiled = true;
 }
 
-/* False when a predicate that no string of the dictionary of the part passes, on a leaf that no row of the part holds an exception of, rules out every row of the part */
-static bool
-part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const SiftVariantExcSummary *exc, int nexc, PartPreds *pp)
+bool
+sift_f2_part_cfilt(const SiftPartDicts *ds, const SiftColSchema *schema, const SiftVariantExcSummary *exc, int nexc, const SiftColPred *preds, int npreds, const bool *cf_ok,
+				   SiftCfiltPred *cf)
 {
-	const SiftPartDicts *ds = sift_part_dicts(rel, part);
 	bool		meets = true;
 	bool	   *col_has_exc = palloc0(schema->ncols);
 
 	for (int i = 0; i < nexc; i++)
 		col_has_exc[exc[i].col] = true;
+	for (int k = 0; k < npreds; k++)
+	{
+		const SiftColPred *p = &preds[k];
+		const SiftPartDict *dict = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_STR);
+
+		if (dict != NULL && (SIFT_COLOP_IS_EXT(p->op) || (cf_ok[k] && cf[k].str)))
+		{
+			SiftDictPredCache *dc = sift_dict_pred_prepare(p, dict->n, dict->off, dict->bytes);
+			cf[k].part = dc;
+			meets &= dc->n_matches + dc->n_maybe > 0 || col_has_exc[p->col];
+		}
+		else if (cf_ok[k] && cf[k].str && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_PREFIX))
+		{
+			const SiftPartDict *fd = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_FSST);
+
+			if (fd != NULL)
+				cf[k].fsst_part = sift_fsst_pred_prepare(fd->fsst, p);
+		}
+	}
+	return meets;
+}
+
+/* False when a predicate that no string of the dictionary of the part passes, on a leaf that no row of the part holds an exception of, rules out every row of the part */
+static bool
+part_preds(Relation rel, const F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const SiftVariantExcSummary *exc, int nexc, PartPreds *pp)
+{
+	const SiftPartDicts *ds = sift_part_dicts(rel, part);
+
 	pp->skip = sift_skip_open(rel, part);
 	pp->sq = palloc0(Max(s->npreds, 1) * sizeof(SiftSkipQuery *));
 	pp->cf = palloc(Max(s->npreds, 1) * sizeof(SiftCfiltPred));
 	if (s->npreds > 0)
 		memcpy(pp->cf, s->cf, s->npreds * sizeof(SiftCfiltPred));
 	for (int k = 0; k < s->npreds; k++)
-	{
-		const SiftColPred *p = &s->preds[k];
-		const SiftPartDict *dict = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_STR);
-
-		pp->sq[k] = sift_skip_query(pp->skip, &schema->cols[p->col], p, dict);
-		if (dict != NULL && (SIFT_COLOP_IS_EXT(p->op) || (s->cf_ok[k] && pp->cf[k].str)))
-		{
-			SiftDictPredCache *dc = sift_dict_pred_prepare(p, dict->n, dict->off, dict->bytes);
-			pp->cf[k].part = dc;
-			meets &= dc->n_matches + dc->n_maybe > 0 || col_has_exc[p->col];
-		}
-		else if (s->cf_ok[k] && pp->cf[k].str && (p->op == SIFT_COLOP_EQ || p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_PREFIX))
-		{
-			const SiftPartDict *fd = sift_part_dict_find(ds, p->col, SIFT_DICT_KIND_FSST);
-
-			if (fd != NULL)
-				pp->cf[k].fsst_part = sift_fsst_pred_prepare(fd->fsst, p);
-		}
-	}
-	return meets;
+		pp->sq[k] = sift_skip_query(pp->skip, &schema->cols[s->preds[k].col], &s->preds[k], sift_part_dict_find(ds, s->preds[k].col, SIFT_DICT_KIND_STR));
+	return sift_f2_part_cfilt(ds, schema, exc, nexc, s->preds, s->npreds, s->cf_ok, pp->cf);
 }
 
 /* What the skipping indexes say of the predicates the zones left, for granule g: false when a predicate rules the granule out */

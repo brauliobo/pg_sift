@@ -172,6 +172,10 @@ extern int	sift_f2_scan_bridge_probe(Relation rel, F2Scan *s, uint32 g, SiftLazy
 extern uint64 *sift_f2_scan_slab_bridge(F2Scan *s, const uint64 *tids, int n);
 extern int	sift_f2_scan_append_ext(F2Scan *s, int kept);
 
+/* The predicates that run on a chunk as it is stored, for the dictionaries of one part: cf (the compiled predicates of the scan, copied) gets the caches of the part; false when a predicate rules out every row of the part */
+extern bool sift_f2_part_cfilt(const SiftPartDicts *ds, const SiftColSchema *schema, const SiftVariantExcSummary *exc, int nexc, const SiftColPred *preds, int npreds, const bool *cf_ok,
+							   SiftCfiltPred *cf);
+
 extern void sift_f2_scan_prepare(IndexScanDesc scan, F2Scan *s);
 extern bool sift_f2_part_dicts_answer(Relation rel, F2Scan *s, const SiftPartitionEntry *e, SiftF2PartPin *pin, const SiftPendDelIndex *px);
 extern bool sift_f2_zones_answer(Relation rel, F2Scan *s, SiftF2PartPin *pin, const SiftPartitionEntry *e, const SiftPartDesc *d, const SiftPendDelIndex *px);

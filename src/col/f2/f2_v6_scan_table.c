@@ -81,7 +81,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	s->preagg = quals->possible && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
 	o.gran_sink = s->preagg != NULL ? sift_v6_preagg_try_granule : NULL;
 	o.gran_arg = s->preagg;
-	if (quals->possible && quals->npreds == 0 && next_chunk == NULL && s->pipe == NULL && s->unnest == NULL && s->rows == NULL && s->group != NULL)
+	if (quals->possible && next_chunk == NULL && s->pipe == NULL && s->unnest == NULL && s->rows == NULL && s->group != NULL)
 		s->par = sift_v6_par_begin(s->spec, s->group, NULL, s->stats, store->att_first, rel, snap, NULL, NULL);
 	if (s->par != NULL)
 	{

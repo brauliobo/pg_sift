@@ -569,7 +569,7 @@ part_handed_over(SiftStorePart *p, uint32 g)
 
 	if (s->o->pinwin == NULL || s->replaying)
 		return false;
-	eligible = (p->px == NULL || !sift_pdel_idx_may_hit_granule(p->px, &p->pin->tidx[g])) && s->o->npreds == 0 && s->o->bridge == NULL && !v->serializable && v->snap->snapshot_type == SNAPSHOT_MVCC &&
+	eligible = (p->px == NULL || !sift_pdel_idx_may_hit_granule(p->px, &p->pin->tidx[g])) && s->o->bridge == NULL && !v->serializable && v->snap->snapshot_type == SNAPSHOT_MVCC &&
 		(p->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 &&
 		((p->pin->gdir[g].flags & SIFT_GDESC_ALL_FROZEN) != 0 || (FullTransactionIdIsValid(v->snap_xmin) && sift_vis_part_inserts_settled(&p->pin->desc, v->snap_xmin)));
 	return sift_pin_win_take_table(s->o->pinwin, s->o->rel, s->store->schema, p->e, p->pin, g, eligible, part_replay, (void *) s);
@@ -785,6 +785,8 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	{
 		sift_tbl_f2_vis_begin(&s->tvis, o->rel, o->snap);
 		s->delta = sift_col_delta_scan_begin(o->rel, &s->tvis, cx);
+		if (o->pinwin != NULL)
+			sift_pin_win_table_preds(o->pinwin, o->store->schema, o->preds, o->npreds);
 	}
 	else
 	{

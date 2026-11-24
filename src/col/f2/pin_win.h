@@ -58,9 +58,15 @@ extern bool sift_pin_win_take(SiftPinWin *w, Relation rel, struct F2Scan *s, con
 							  const SiftPendDelIndex *px, Snapshot snap);
 
 /*
+ * The predicates of the scan of a sift_table: every row the threads take of a granule passes them, as the stored chunks say. The window takes no granule when one of them cannot run on the chunks
+ * as they are stored (it needs a decoded value, a function, or the heap), so that the scan reads those as it always did. Called once, before the scan offers a granule
+ */
+extern void sift_pin_win_table_preds(SiftPinWin *w, const SiftColSchema *schema, const SiftColPred *preds, int npreds);
+
+/*
  * Called by the scan of a sift_table for every granule it would read, with whether the granule is for the threads (eligible: every row of it is there for the snapshot as the stored values show
- * it, no predicate, pending delete, column delta or column map touches it): true when the window took it. host is the partition entry of the part, which replay gives back to the scan, with
- * the pin of the window, to read the granule as it would have
+ * it, no bridge, pending delete or column delta touches it): true when the window took it, which it does not for a column map, or a value of a leaf of a predicate that the chunks cannot judge.
+ * host is the partition entry of the part, which replay gives back to the scan, with the pin of the window, to read the granule as it would have
  */
 typedef void (*SiftPinReplay) (void *arg, const void *host, SiftF2PartPin *pin, uint32 granule);
 extern bool sift_pin_win_take_table(SiftPinWin *w, Relation rel, const SiftColSchema *schema, const void *host, SiftF2PartPin *pin, uint32 g, bool eligible, SiftPinReplay replay,

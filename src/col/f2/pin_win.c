@@ -16,6 +16,7 @@
 #define PIN_WIN_PARTS_MAX	64		/* the parts a window holds the pins of: a scan of more reads the rest on the serial path */
 #define PIN_WIN_ITEMS_MAX	(1u << 24)
 #define PIN_WIN_RECORD_MAX	(32u << 20)
+#define PIN_WIN_PREDS_MAX	32		/* the predicates of a granule: the bits of SiftPinSlot.decided */
 
 typedef struct SiftPinPart
 {
@@ -48,6 +49,11 @@ struct SiftPinWin
 	F2Scan	   *scan;			/* the scan of an index that listed the granules */
 	SiftPinReplay replay;		/* the scan of a table that did */
 	void	   *replay_arg;
+	const SiftColPred *tpreds;	/* the predicates of the scan of a table, which every row of a granule must pass */
+	int			ntpreds;
+	SiftCfiltPred *tcf;			/* tpreds compiled to run on the stored chunks */
+	bool	   *tcf_ok;
+	bool		tpreds_ok;		/* every one of them runs on the stored chunks */
 	bool	   *want;			/* per leaf of the schema: the chunk is read for the granule */
 	int			nleaves;
 	int			ncols;
@@ -232,7 +238,7 @@ sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *s
 		return false;
 	}
 	w->refused++;
-	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > 32 || sift_cdi_scan_granule_patched(s, g) ||
+	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > PIN_WIN_PREDS_MAX || sift_cdi_scan_granule_patched(s, g) ||
 		!w->part_ok(w->part_arg, &pin->desc))
 		return false;
 	for (int k = 0; k < s->npreds; k++)
@@ -245,6 +251,40 @@ sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *s
 		return false;
 	w->scan = s;
 	w->refused--;
+	return true;
+}
+
+void
+sift_pin_win_table_preds(SiftPinWin *w, const SiftColSchema *schema, const SiftColPred *preds, int npreds)
+{
+	w->tpreds = preds;
+	w->ntpreds = npreds;
+	w->tcf = MemoryContextAlloc(w->cx, Max(npreds, 1) * sizeof(SiftCfiltPred));
+	w->tcf_ok = MemoryContextAllocZero(w->cx, Max(npreds, 1));
+	w->tpreds_ok = npreds <= PIN_WIN_PREDS_MAX;
+	for (int k = 0; w->tpreds_ok && k < npreds; k++)
+		w->tpreds_ok = w->tcf_ok[k] = sift_cfilt_compile(&w->tcf[k], &schema->cols[preds[k].col], &preds[k]);
+}
+
+/* The predicates of the table scan for the part of granule g, with the dictionaries of the part tested once: false when a chunk the predicates read holds a value of g they cannot judge */
+static bool
+table_part_preds(SiftPinWin *w, Relation rel, const SiftColSchema *schema, const void *host, const SiftF2PartPin *pin, uint32 g, PartPreds *pp)
+{
+	const SiftPinPart *last = w->nparts > 0 ? &w->parts[w->nparts - 1] : NULL;
+
+	for (int k = 0; k < w->ntpreds; k++)
+		if (sift_f2_exc_has(pp->exc, pp->nexc, g, w->tpreds[k].col))
+			return false;
+	if (last != NULL && last->host == host && last->pin->part_gen == pin->part_gen)
+		pp->cf = last->pp.cf;
+	else if (w->ntpreds > 0)
+	{
+		MemoryContext old = MemoryContextSwitchTo(w->cx);
+
+		pp->cf = memcpy(palloc(w->ntpreds * sizeof(SiftCfiltPred)), w->tcf, w->ntpreds * sizeof(SiftCfiltPred));
+		sift_f2_part_cfilt(sift_part_dicts(rel, pin->part), schema, pp->exc, pp->nexc, w->tpreds, w->ntpreds, w->tcf_ok, pp->cf);
+		MemoryContextSwitchTo(old);
+	}
 	return true;
 }
 
@@ -261,11 +301,11 @@ sift_pin_win_take_table(SiftPinWin *w, Relation rel, const SiftColSchema *schema
 		return false;
 	}
 	w->refused++;
-	if (!eligible || pin->col_map != NULL)
+	if (!eligible || !w->tpreds_ok || pin->col_map != NULL)
 		return false;
 	pp.exc = sift_f2_pin_exc(rel, pin, &nexc);
 	pp.nexc = nexc;
-	if (!list_granule(w, rel, schema, pin, &pp, NULL, 0, false, host, g, 0))
+	if (!table_part_preds(w, rel, schema, host, pin, g, &pp) || !list_granule(w, rel, schema, pin, &pp, w->tpreds, w->ntpreds, false, host, g, 0))
 		return false;
 	w->replay = replay;
 	w->replay_arg = replay_arg;
@@ -293,7 +333,7 @@ sift_pin_win_feed(SiftPinWin *w, uint32 item, uint32 jobno)
 	SiftPinSlot *sl;
 	const SiftGranuleDesc *gd;
 	const SiftDvGran *dg;
-	bool		want[SIFT_PIN_MAX_LEAVES];
+	bool		want[SIFT_PIN_MAX_LEAVES] = {false};
 
 	if (jobno >= w->njobs)
 		return false;
