@@ -166,6 +166,12 @@ pack_run(int n)
 	return nb < 0 ? 0 : t0;
 }
 
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define PACK_REF_N	8000
+#else
+#define PACK_REF_N	32000
+#endif
+
 static void
 test_pack_ffd(void)
 {
@@ -197,12 +203,12 @@ test_pack_ffd(void)
 	}
 	report("pack first-fit-decreasing", pack_run, 4000, 20.0);
 	{
-		PackCand   *c = make_cands(32000);
-		PackBin    *bins = calloc(32001, sizeof(PackBin));
+		PackCand   *c = make_cands(PACK_REF_N);
+		PackBin    *bins = calloc(PACK_REF_N + 1, sizeof(PackBin));
 		double		t0 = now_s();
 
-		(void) ref_first_fit(c, 32000, bins);
-		printf("%-28s N=32000  linear first fit (the code replaced) %8.3f ms\n", "pack reference", (now_s() - t0) * 1e3);
+		(void) ref_first_fit(c, PACK_REF_N, bins);
+		printf("%-28s N=%d  linear first fit (the code replaced) %8.3f ms\n", "pack reference", PACK_REF_N, (now_s() - t0) * 1e3);
 		free(c);
 		free(bins);
 	}
