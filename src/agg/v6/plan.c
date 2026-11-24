@@ -175,8 +175,9 @@ agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 
 /* An aggregate the native kernels of the scan fold, not entered in the scan tlist (the caller decides what the node gives it as) */
 bool
-sift_v6_compile_agg_native(V6Plan *p, Aggref *a)
+sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 {
+	const Aggref *a = sift_v6_unnest_filter_as_case(p, agg);
 	SiftV6Agg	g = {.restype = a->aggtype};
 	Aggref		unfiltered = *a;
 	SiftV6Class cls;

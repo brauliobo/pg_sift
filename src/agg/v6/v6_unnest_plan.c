@@ -8,6 +8,7 @@
  */
 #include "postgres.h"
 
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
@@ -96,6 +97,34 @@ bool
 sift_v6_unnest_ready(V6Plan *p)
 {
 	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec) && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
+}
+
+/* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument */
+Aggref *
+sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
+{
+	TargetEntry *te;
+	CaseWhen   *when;
+	CaseExpr   *c;
+	Aggref	   *plain;
+
+	if (p->elem_rel == NULL || a->aggfilter == NULL || list_length(a->args) != 1 || a->aggdistinct != NIL || a->aggorder != NIL)
+		return a;
+	te = linitial_node(TargetEntry, a->args);
+	if (IsA(te->expr, Var) || exprType((Node *) te->expr) != FLOAT8OID ||
+		!bms_equal(pull_varnos(p->root, (Node *) list_make2(a->aggfilter, te->expr)), bms_make_singleton(p->elem_rel->relid)))
+		return a;
+	when = makeNode(CaseWhen);
+	when->expr = a->aggfilter;
+	when->result = te->expr;
+	c = makeNode(CaseExpr);
+	c->casetype = FLOAT8OID;
+	c->args = list_make1(when);
+	c->defresult = (Expr *) makeNullConst(FLOAT8OID, -1, InvalidOid);
+	plain = copyObject(a);
+	plain->aggfilter = NULL;
+	linitial_node(TargetEntry, plain->args)->expr = (Expr *) c;
+	return plain;
 }
 
 /* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */
