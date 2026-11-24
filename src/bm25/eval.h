@@ -150,6 +150,7 @@ extern bool sift_plan_eval_doc(SiftPlan *plan, text *doc, float4 *score);
 /* Phrase recheck of a heap-order candidate's text; needed when the plan has a phrase */
 extern bool sift_plan_recheck(SiftPlan *plan, text *doc);
 extern bool sift_plan_recheck_needed(const SiftPlan *plan);
+extern bool sift_plan_recheck_possible(const SiftPlan *plan);
 
 /*
  * Unordered matches in heap order, one page per call: offmask holds matched

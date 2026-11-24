@@ -375,3 +375,10 @@ sift_plan_recheck_needed(const SiftPlan *plan)
 {
 	return plan->heap;
 }
+
+/* The write buffer keeps no positions and a segment may lack them: a plan with a phrase needs the text of its hits at any execution, whatever it needs when it is bound */
+bool
+sift_plan_recheck_possible(const SiftPlan *plan)
+{
+	return plan->nphr > 0 || plan->recheck;
+}

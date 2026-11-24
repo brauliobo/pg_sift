@@ -1,8 +1,8 @@
 /*
  * agg/v6/v6_text.c - a text query (body @@> 'const') among the quals of an aggregate of a table with a sift_col index of format major 2. The scan of the index reads the rows of
  * the hits only: the hits of the query on its sift index are read in heap order, without scores, into chunks of a bridge (agg/hybrid.c, the byte budget of work_mem / 2), and each
- * chunk is a pass of the scan, which skips the granules the chunk misses and every row not in it. The groups of every pass are one. A query that needs the indexed text of its hits
- * (a phrase the stored positions do not decide) is not served: the planner leaves it to the text index's own scan.
+ * chunk is a pass of the scan, which skips the granules the chunk misses and every row not in it. The groups of every pass are one. A query with a phrase is not served: the rows of the
+ * write buffer have no positions, so the text of its hits may be needed at any execution, and the planner leaves it to the text index's own scan.
  */
 #include "postgres.h"
 
@@ -68,7 +68,7 @@ sift_v6_text_usable(IndexOptInfo *text, Const *query)
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	Relation	index = index_open(text->indexoid, AccessShareLock);
 	SiftIndexState *ist = sift_state_open(index, cx);
-	bool		usable = !sift_plan_recheck_needed(bind_query(ist, query, SIFT_BIND_CAPPED));
+	bool		usable = !sift_plan_recheck_possible(bind_query(ist, query, SIFT_BIND_CAPPED));
 
 	sift_state_close(ist);
 	index_close(index, AccessShareLock);
