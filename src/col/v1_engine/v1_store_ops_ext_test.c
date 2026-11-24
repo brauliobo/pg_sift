@@ -58,6 +58,27 @@ ops_of(Oid relid, bool is_table)
 	return ops;
 }
 
+/* the first dimension of the stored cube that has a measure, and its first measure */
+static bool
+cube_leaves(Oid relid, bool is_table, int *dim_leaf, int *measure_leaf)
+{
+	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
+	SiftSrcPreagg pa;
+	bool		found = false;
+
+	memset(&pa, 0, sizeof(pa));
+	sift_v1_reader_of(is_table)->preagg(r.rel, &pa);
+	for (int d = 0; pa.aggs && !found && d < pa.ndims; d++)
+		if (!pa.dim[d].ktab && pa.dim[d].nmeas > 0)
+		{
+			*dim_leaf = pa.dim[d].leaf;
+			*measure_leaf = pa.dim[d].meas[0];
+			found = true;
+		}
+	sift_v1_rel_close(&r);
+	return found;
+}
+
 static int
 leaf_att(Oid relid, bool is_table, int leaf)
 {
@@ -80,7 +101,7 @@ sift_test_v1_ops(PG_FUNCTION_ARGS)
 	bool		nulls[7] = {false};
 	int			dim = -1,
 				meas = -1;
-	const bool	cube = ops->preagg->cube_leaves(relid, is_table, &dim, &meas);
+	const bool	cube = ops->preagg->keeps_cubes(relid, is_table) && cube_leaves(relid, is_table, &dim, &meas);
 
 	if (get_call_result_type(fcinfo, NULL, &desc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");

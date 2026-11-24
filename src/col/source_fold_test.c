@@ -253,7 +253,7 @@ participate(Shared *s, int slot)
 	par->morsel_begin(scan, staged_of(s), s->nstaged);
 	while ((run = pg_atomic_fetch_add_u32(&s->next_run, 1)) * PAR_RUN < s->ngranules)
 	{
-		par->morsel(scan, &ref, run * PAR_RUN, Min(PAR_RUN, s->ngranules - run * PAR_RUN));
+		par->morsel(scan, NULL, &ref, run * PAR_RUN, Min(PAR_RUN, s->ngranules - run * PAR_RUN));
 		p->runs++;
 	}
 	par->end(scan);

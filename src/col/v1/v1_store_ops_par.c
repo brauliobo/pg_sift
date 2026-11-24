@@ -94,7 +94,7 @@ open_morsel(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
 }
 
 static void
-par_morsel(struct SiftV6Scan *scan, const SiftParPartRef *ref, uint32 first, uint32 n)
+par_morsel(struct SiftV6Scan *scan, struct SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n)
 {
 	V1ParScan  *s = (V1ParScan *) scan;
 	V1Morsel	m = {.s = s,.range = {.view = s->view,.sb_lo = ref->g_base + first,.sb_hi = ref->g_base + first + n}};
