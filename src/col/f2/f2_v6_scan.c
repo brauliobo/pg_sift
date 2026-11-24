@@ -127,10 +127,12 @@ reads_fact(const SiftV6Col *c)
 	return c->src != SV6SRC_DIM && c->src != SV6SRC_ELEM;
 }
 
-/* the slot of a column of the pipe: a payload column of a dimension, or the column of the fact side that col_for finds */
+/* the slot of a column of the pipe: what the scan derived from columns, a payload column of a dimension, or the column of the fact side that col_for finds */
 int
 sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan)
 {
+	if (c->derive > 0)
+		return s->ncols + c->derive - 1;
 	return c->src == SV6SRC_DIM ? sift_v6_pipe_dim_slot(s->pipe, c->dim, c->slot) : (int) (col_for(s, first, *c, false, takes_nan) - s->cols);
 }
 
@@ -172,14 +174,16 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 {
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
-	const int	nfact = s->ncols + (s->rows != NULL);
+	const int	nfact = s->ncols + s->nderived + (s->rows != NULL);
 	SiftVecType *type = palloc(nfact * sizeof(SiftVecType));
 
 	for (int i = 0; i < s->ncols; i++)
 		type[i] = s->cols[i].vec.type;
+	for (int k = 0; k < s->nderived; k++)
+		type[s->ncols + k] = sift_v6_pgexpr_vec_type(spec, s->derived[k].d);
 	if (s->rows != NULL)
 	{
-		type[s->ncols] = SVEC_I64;
+		type[s->ncols + s->nderived] = SVEC_I64;
 		s->tidvec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(uint64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
 	s->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, s->group, s->rows, nfact, type);
@@ -201,8 +205,10 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 	s->fact = palloc(nfact * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
 		s->fact[i] = &s->cols[i].vec;
+	for (int k = 0; k < s->nderived; k++)
+		s->fact[s->ncols + k] = &s->derived[k].out.vec;
 	if (s->rows != NULL)
-		s->fact[s->ncols] = &s->tidvec;
+		s->fact[s->ncols + s->nderived] = &s->tidvec;
 }
 
 /* the heap addresses of the n rows of the batch, as the slot of the pipe that the pairs of a join carry to the heap of the best rows */

@@ -15,6 +15,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/appendinfo.h"
+#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
@@ -338,7 +339,27 @@ add_derive(V6Plan *p, const SiftV6Derive *d)
 	return ++p->spec.nderive;
 }
 
-/* e is a key or argument the scan computes (v6_plan_rewrite.h): col is its column, typed as e */
+/* the derivations the pipe of a join carries are those of PostgreSQL's evaluator (v6_pg_expr.h) over columns of the fact table: the pipe has a vector for each, which the rows of a RIGHT or FULL join's
+ * dimension that no fact row matched have NULL, as an expression that is NULL on NULL inputs has them */
+static bool
+join_derive_ok(const V6Plan *p, const Expr *e)
+{
+	const SiftV6Ext *x = p->xseed;
+	bool		preserved = false;
+
+	if (x == NULL || x->unnest)
+		return true;
+	for (int d = 0; d < x->ndims; d++)
+		preserved |= sift_star_preserves_dim(x->dim[d].mode);
+	if (preserved && contain_nonstrict_functions((Node *) e))
+		return false;
+	foreach_ptr(Var, v, pull_var_clause((Node *) e, PVC_RECURSE_PLACEHOLDERS))
+		if (v->varno != p->rel->relid)
+			return false;
+	return true;
+}
+
+/* e is a key or argument the scan computes (v6_plan_rewrite.h): col is its column, typed as e; none of these are carried by the pipe of a join */
 bool
 sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
@@ -347,7 +368,7 @@ sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	Oid			restype;
 	int			at;
 
-	if (!sift_v6_derive_of(&rs, e, key, &d, &restype) || (at = add_derive(p, &d)) == 0)
+	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_derive_of(&rs, e, key, &d, &restype) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.scale = d.kind == SVD_NUM_EXPR ? (int) d.aux : 0,.derive = at};
 	return true;
@@ -385,7 +406,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
 	e = sift_v6_json_vars(&rel, e, true);
-	if ((p->xseed != NULL && !p->xseed->unnest) || !sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
+	if (!join_derive_ok(p, e) || !sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
 		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_key_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};

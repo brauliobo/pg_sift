@@ -79,8 +79,9 @@ typedef struct SiftV6PgItem
 
 /* The derivation d reads no column of the scan: nothing to decode for it */
 extern bool sift_v6_pgexpr_sourceless(const SiftV6Spec *s, const SiftV6Derive *d);
-/* The item of the derivation d (SVD_PG_EXPR) of a spec, or the at-th of its items */
+/* The item of the derivation d (SVD_PG_EXPR) of a spec, or the at-th of its items, and the type of the vector its result is in */
 extern void sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out);
+extern SiftVecType sift_v6_pgexpr_vec_type(const SiftV6Spec *s, const SiftV6Derive *d);
 extern void sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out);
 /* The workers of a parallel scan can run the statement: its PostgreSQL expressions are parallel safe, and its groups are bytes the leader merges (a generic key's codes are the state of one backend, a constant group is a row of the one that read some) */
 extern bool sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s);

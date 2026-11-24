@@ -231,6 +231,15 @@ sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out)
 	}
 }
 
+SiftVecType
+sift_v6_pgexpr_vec_type(const SiftV6Spec *s, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	sift_v6_pgexpr_item(s, d, &it);
+	return sift_v6_result_vec_type(it.restype);
+}
+
 void
 sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out)
 {

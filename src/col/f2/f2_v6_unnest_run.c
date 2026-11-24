@@ -163,15 +163,6 @@ pull_spec(const UnRun *u)
 	return ps;
 }
 
-static SiftVecType
-pg_vec_type(const SiftV6Spec *spec, const SiftV6Derive *d)
-{
-	SiftV6PgItem it;
-
-	sift_v6_pgexpr_item(spec, d, &it);
-	return sift_v6_result_vec_type(it.restype);
-}
-
 /* the evaluator of the derivation k, over the vectors of the pairs of its inputs */
 static void
 bind_pg(UnRun *u, const SiftColRel *r, int k)
@@ -202,7 +193,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 	for (int c = 0; c < u->nel; c++)
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
-		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
+		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? sift_v6_pgexpr_vec_type(spec, &spec->derive[k]) : SVEC_F64;
 	for (int k = 0; k < u->ntests; k++)
 		type[flag_slot(u, k)] = SVEC_I64;
 	if (u->x->elem.semi)
