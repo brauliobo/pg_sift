@@ -270,7 +270,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT doc->>'t', count(*) FILTER (WHERE v > 20), sum(v) FILTER (WHERE x > 5) FROM sf GROUP BY 1
  same normal SELECT d1.name, sum(sf.v) FILTER (WHERE d1.w > 1), count(*) FILTER (WHERE sf.g = 2) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
  same node SELECT u.e, count(*) FILTER (WHERE sf.v > 20), sum(sf.v) FILTER (WHERE u.e = 'a') FROM sf, unnest(sf.tags) u(e) GROUP BY 1
- same normal SELECT d1.name, count(*) FILTER (WHERE sf.doc->>'t' = 'x') FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
+ same node SELECT d1.name, count(*) FILTER (WHERE sf.doc->>'t' = 'x') FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
 (5 rows)
 
 -- Q-M01. Rows the index has not merged yet, updated and deleted rows, then VACUUM: the answers follow the table

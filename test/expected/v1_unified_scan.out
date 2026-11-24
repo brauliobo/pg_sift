@@ -94,9 +94,9 @@ SELECT * FROM check_q($$SELECT grp, count(*) FROM u WHERE body @@> 'cable' AND p
 (1 row)
 
 SELECT * FROM check_q($$SELECT a.grp, count(*) FROM u a JOIN u b ON b.id = a.price + 1 WHERE a.body @@> 'cable' GROUP BY 1$$);
- node | text_index | same 
-------+------------+------
- none | f          | t
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
 (1 row)
 
 SELECT * FROM check_q($$SELECT d.g, x.id FROM (SELECT g FROM generate_series(0, 6) g) d, LATERAL (SELECT id FROM u WHERE u.grp = d.g ORDER BY price DESC, id LIMIT 1) x$$);
