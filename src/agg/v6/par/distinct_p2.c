@@ -38,7 +38,7 @@ tab_open(P2 *p, uint32 part)
 
 	for (int v = 0; v < p->d->nw; v++)
 		bound += sift_radix_nrec(&p->d->w[v].raw, part);
-	p->cap = pg_nextpower2_64(Max(DIST_FIRST_CAP, Min(bound, DIST_PART_MAX) * 2));
+	p->cap = pg_nextpower2_64(Max(DIST_FIRST_CAP, Min(bound, p->d->grouped ? 4 * DIST_PART_MAX : DIST_PART_MAX) * 2));
 	if (p->d->grouped)
 		return (p->pairs = sift_arena_alloc0(p->work, p->cap * sizeof(SiftDuPair), SIFT_ARENA_ALIGN)) != NULL;
 	return (p->flat = sift_arena_alloc0(p->work, p->cap * sizeof(uint64), SIFT_ARENA_ALIGN)) != NULL;
