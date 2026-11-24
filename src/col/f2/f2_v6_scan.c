@@ -77,6 +77,13 @@ lane_cols(V6Scan *s, int head)
 	}
 }
 
+/* a derived column of an expression with no column in it: the scan has nothing to decode for it */
+static bool
+sourceless(const V6Scan *s, const SiftV6Col *c)
+{
+	return c->derive > 0 && sift_v6_pgexpr_sourceless(s->spec, &s->spec->derive[c->derive - 1]);
+}
+
 static V6Col *
 col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 {
@@ -224,7 +231,8 @@ setup_derived(V6Scan *s, const int *first)
 		for (int j = 0; j < k && dv->prefix == NULL; j++)
 			if (sift_vn_prefix_of(&spec->derive[j], dv->d))
 				dv->prefix = &s->derived[j];
-		dv->src = &col_for(s, first, dv->d->src, false, dv->d->kind == SVD_PG_EXPR)->vec;
+		if (!sift_v6_pgexpr_sourceless(spec, dv->d))
+			dv->src = &col_for(s, first, dv->d->src, false, dv->d->kind == SVD_PG_EXPR)->vec;
 		for (int i = 0; i < dv->d->ncond; i++)
 			dv->cond[i] = &col_for(s, first, dv->d->cond[i], false, false)->vec;
 		sift_vx_out_init(&dv->out, CurrentMemoryContext);
@@ -299,7 +307,7 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 		if (reads_fact(&spec->key[i]))
 			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL && !spec->rows, spec->rows)->vec;
 	for (int v = 0; v < nvec; v++)
-		if (sift_v6_vec_col(spec, v) != NULL && reads_fact(sift_v6_vec_col(spec, v)))
+		if (sift_v6_vec_col(spec, v) != NULL && reads_fact(sift_v6_vec_col(spec, v)) && !sourceless(s, sift_v6_vec_col(spec, v)))
 			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;
 	for (int d = 0; x != NULL && d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)

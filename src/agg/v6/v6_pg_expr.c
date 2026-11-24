@@ -179,7 +179,7 @@ sift_v6_pgexpr_renumber(const Expr *e, Index relid, Index elem_relid, const List
 }
 
 bool
-sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items)
+sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, bool needs_column, SiftV6Derive *d, Oid *restype, List **items)
 {
 	List	   *vars;
 	List	   *ints;
@@ -187,7 +187,7 @@ sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index reli
 	SiftV6Col	col;
 	int			at = 0;
 
-	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(root, e) || !sift_v6_pgexpr_vars(e, relid, rs->elem_relid, &vars) || vars == NIL)
+	if (IsA(e, Var) || !sift_v6_pgexpr_plan_ok(root, e) || !sift_v6_pgexpr_vars(e, relid, rs->elem_relid, &vars) || (vars == NIL && needs_column))
 		return false;
 	*restype = getBaseType(exprType((Node *) e));
 	ints = list_make1_int((int) *restype);
@@ -235,6 +235,17 @@ void
 sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out)
 {
 	sift_v6_pgexpr_item_at(s, (int) d->aux, out);
+}
+
+bool
+sift_v6_pgexpr_sourceless(const SiftV6Spec *s, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	if (d->kind != SVD_PG_EXPR)
+		return false;
+	sift_v6_pgexpr_item(s, d, &it);
+	return it.nin == 0;
 }
 
 bool

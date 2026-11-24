@@ -166,6 +166,15 @@ compile_distinct_row(V6Plan *p, const RowExpr *row, SiftV6Agg *g)
 	return true;
 }
 
+/* count(x) of a constant that is not NULL counts every row, whatever its type is (count('x') is of an unknown type, which no vector holds) */
+static bool
+count_of_constant(const Aggref *a)
+{
+	const Expr *arg = ((const TargetEntry *) linitial(a->args))->expr;
+
+	return IsA(arg, Const) && !((const Const *) arg)->constisnull;
+}
+
 /* the kind of an aggregate of the statement: percentile_cont only where the groups are those of an unnest, which keeps the values of a group in one arena (v6_pct.h) */
 static bool
 agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
@@ -175,7 +184,11 @@ agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 		g->kind = SV6_PCT_CONT;
 		return true;
 	}
-	return sift_v6_agg_kind(unfiltered, &g->kind);
+	if (!sift_v6_agg_kind(unfiltered, &g->kind))
+		return false;
+	if (g->kind == SV6_COUNT && count_of_constant(unfiltered))
+		g->kind = SV6_COUNT_STAR;
+	return true;
 }
 
 /* An aggregate the native kernels of the scan fold, not entered in the scan tlist (the caller decides what the node gives it as) */

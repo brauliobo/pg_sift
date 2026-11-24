@@ -63,11 +63,11 @@ extern void sift_v6_pgexpr_derive(SiftV6PgExpr *x, const SiftVec *const *in, con
 extern SiftV6PgExpr *sift_v6_pgexpr_bind(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d, SiftV6BqCol col, void *arg, const SiftVec **in);
 
 /*
- * The derivation of a key or an argument the scan evaluates with these: e is an expression (not a column or a constant) of at most SIFT_V6_MAX_COLS columns of the range table entry relid, each one a
+ * The derivation of a key or an argument the scan evaluates with these: e is an expression (not a column) of at most SIFT_V6_MAX_COLS columns of the range table entry relid, each one a
  * column rs resolves, and PostgreSQL can run it as it is (sift_v6_pgexpr_plan_ok of root). d is SVD_PG_EXPR with the first column as its source and the place of its item in *items as aux, *restype the base type of
  * the result. An item is the renumbered expression and the ints (result type, then attno, type and scale of each column).
  */
-extern bool sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items);
+extern bool sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, bool needs_column, SiftV6Derive *d, Oid *restype, List **items);
 
 typedef struct SiftV6PgItem
 {
@@ -77,6 +77,8 @@ typedef struct SiftV6PgItem
 	SiftV6Col	col[SIFT_V6_MAX_COLS];
 } SiftV6PgItem;
 
+/* The derivation d reads no column of the scan: nothing to decode for it */
+extern bool sift_v6_pgexpr_sourceless(const SiftV6Spec *s, const SiftV6Derive *d);
 /* The item of the derivation d (SVD_PG_EXPR) of a spec, or the at-th of its items */
 extern void sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out);
 extern void sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out);

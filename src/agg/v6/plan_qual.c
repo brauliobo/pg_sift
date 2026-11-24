@@ -193,7 +193,7 @@ qual_batch(V6Plan *p, RestrictInfo *ri)
 	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->sch.natts : 0};
 	Expr	   *clause;
 
-	if (!p->batch_ok || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || agg_node_has_extern_param((Node *) ri->clause) || sift_v6_text_clause(p->rel, ri))
+	if (!p->batch_ok || contain_volatile_functions((Node *) ri->clause) || agg_node_has_extern_param((Node *) ri->clause) || sift_v6_text_clause(p->rel, ri))
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
