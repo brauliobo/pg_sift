@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "catalog/pg_type.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -12,8 +13,10 @@
 #include "col/f2/f2_store_schema.h"
 #include "table/f2/f2_gcache.h"
 #include "table/f2/f2_row_pack.h"
+#include "table/f2/f2_row_state.h"
 #include "table/f2/f2_slot.h"
 #include "table/f2/f2_tbl.h"
+#include "core/host.h"
 
 /* The part map a slot reads the patches of its rows from, kept across the rows of a partition: given back when the slot goes or its memory does (the holder lives in the slot's own context, which is what ends on an error) */
 typedef struct PartMapHolder
@@ -300,6 +303,34 @@ sift_f2_slot_getattr_single(TupleTableSlot *slot, int attnum, bool *isnull)
 	return slot->tts_values[attnum - 1];
 }
 
+/* xmin and cmin are the stored versions of the insertion of the row (FrozenTransactionId and command 0 once frozen), xmax and cmax those of its last delete, update or lock (0 when none) */
+static Datum
+f2_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
+{
+	SiftF2Slot *ss = (SiftF2Slot *) slot;
+	SiftRowState rs;
+
+	if (attnum != MinTransactionIdAttributeNumber && attnum != MinCommandIdAttributeNumber && attnum != MaxTransactionIdAttributeNumber && attnum != MaxCommandIdAttributeNumber)
+		return TTSOpsVirtual.getsysattr(slot, attnum, isnull);
+	*isnull = false;
+	if (!ItemPointerIsValid(&slot->tts_tid))
+		return (Datum) 0;
+	rs = sift_row_state_read(ss->rel, sift_tbl_tid_pack(&slot->tts_tid));
+	SIFT_INVARIANT(rs.found, "the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid), ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid),
+				   RelationGetRelationName(ss->rel));
+	switch (attnum)
+	{
+		case MinTransactionIdAttributeNumber:
+			return TransactionIdGetDatum(TransactionIdIsValid(rs.xmin) ? rs.xmin : FrozenTransactionId);
+		case MinCommandIdAttributeNumber:
+			return CommandIdGetDatum(rs.cmin);
+		case MaxTransactionIdAttributeNumber:
+			return TransactionIdGetDatum(rs.xmax);
+		default:
+			return CommandIdGetDatum(rs.cmax);
+	}
+}
+
 /* Decodes what is left: the callbacks below read tts_values of every attribute */
 static void
 realize(TupleTableSlot *slot)
@@ -357,6 +388,7 @@ sift_f2_slot_ops(void)
 		f2_slot_ops.release = slot_release;
 		f2_slot_ops.clear = slot_clear;
 		f2_slot_ops.getsomeattrs = f2_slot_getsomeattrs;
+		f2_slot_ops.getsysattr = f2_slot_getsysattr;
 		f2_slot_ops.materialize = slot_materialize;
 		f2_slot_ops.copy_heap_tuple = slot_copy_heap_tuple;
 		f2_slot_ops.copy_minimal_tuple = slot_copy_minimal_tuple;
