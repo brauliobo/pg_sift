@@ -29,13 +29,16 @@ rows() { grep -v DEBUG; }
 took() { local n; n=$(sed -n 's/.*sift agg v6: \([0-9]*\) granules on [0-9]* threads, folded by the threads/\1/p' | tail -1); echo "${n:-0}"; }
 heap() { sql pf "${SET[@]}" "SET sift.enable_agg = off" "$1"; }
 ref() { sql pf "${SET[@]}" "${1//FROM pf/FROM ph}"; }
-held() { # STATEMENT...: another transaction runs them and stays open until release
-	rm -f "$D/held" "$D/release"
-	{ echo "BEGIN;"; printf '%s;\n' "$@"; echo "\\! touch '$D/held'"; echo "\\! while [ ! -e '$D/release' ]; do sleep 0.05; done"; echo "ROLLBACK;"; } | sql pf >/dev/null &
+GATE=7902
+held() { # STATEMENT...: another transaction runs them and stays open, blocked on the advisory lock a gate session holds, until release
+	coproc HOLD { sql pf >/dev/null; }
+	echo "SELECT pg_advisory_lock($GATE);" >&"${HOLD[1]}"
+	wait_for "[[ \$(sql pf \"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted\") == 1 ]]" 60 || bail "the gate did not lock"
+	{ echo "BEGIN;"; printf '%s;\n' "$@"; echo "SELECT pg_advisory_lock($GATE);"; echo "ROLLBACK;"; } | sql pf >/dev/null &
 	HOLDER=$!
-	wait_for "[[ -e $D/held ]]" 60 || bail "the holding transaction did not start"
+	wait_for "[[ \$(sql pf \"SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted\") == 1 ]]" 60 || bail "the holding transaction did not start"
 }
-release() { touch "$D/release"; wait "$HOLDER"; }
+release() { printf '%s\n' "SELECT pg_advisory_unlock($GATE);" "\\q" >&"${HOLD[1]}"; wait "$HOLDER"; }
 
 ALL=$(thr "$QALL" | took)
 check "the settled table has granules for the threads" test "${ALL:-0}" -ge 16
