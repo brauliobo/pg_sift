@@ -145,6 +145,8 @@ put_value(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDist
 	DistRec		rec = {.kid = kid};
 	uint64		h;
 
+	if (d->sp.novalue)
+		return no_value(d, w, kid);
 	if (d->sp.vstr)
 	{
 		const SiftStrRef s = b->vstr[i];

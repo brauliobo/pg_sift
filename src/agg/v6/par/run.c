@@ -41,7 +41,7 @@ par_plain_col(const SiftV6Col *c)
 	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->scale == 0 && c->attno > 0;
 }
 
-void
+static void
 par_check_leaf(ParShape *sh, int at)
 {
 	for (int i = 0; i < sh->nchk; i++)
@@ -53,23 +53,17 @@ par_check_leaf(ParShape *sh, int at)
 bool
 par_count_sum_of(const SiftV6Agg *a, const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
-	int			at;
-
 	if (a->fclause != 0 || a->nxcols != 0)
 		return false;
 	if (a->kind == SV6_COUNT_STAR)
 		return true;
 	if (a->kind == SV6_COUNT && par_plain_col(&a->arg))
-		at = par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
+		par_check_leaf(sh, par_add_leaf(sh, par_leaf_of(first, &a->arg), false));
 	else if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && (a->arg.typid == INT2OID || a->arg.typid == INT4OID) && sh->nsum < SIFT_PAR_GROUP_MAX_SUM &&
 			 par_src_of(sh, sp, first, &a->arg, &sh->sum_src[sh->nsum]))
-	{
-		at = sh->sum_src[sh->nsum].at;
-		sh->sum_at[sh->nsum++] = at;
-	}
+		sh->nsum++;
 	else
 		return false;
-	par_check_leaf(sh, at);
 	return true;
 }
 
@@ -89,16 +83,20 @@ par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col
 	if (d == NULL)
 	{
 		s->at = par_plain_col(c) ? par_add_leaf(sh, par_leaf_of(first, c), text) : -1;
+		if (s->at >= 0)
+			par_check_leaf(sh, s->at);
 		return s->at >= 0;
 	}
 	if (c->src != SV6SRC_ATTR || c->jleaf != 0 || c->scale != 0 || text != text_result(d->kind) || !par_plain_col(&d->src))
 		return false;
 	s->at = par_add_leaf(sh, par_leaf_of(first, &d->src), true);
+	par_check_leaf(sh, s->at);
 	for (int i = 0; i < d->ncond; i++)
 	{
 		if (!par_plain_col(&d->cond[i]))
 			return false;
 		s->cond[i] = par_add_leaf(sh, par_leaf_of(first, &d->cond[i]), false);
+		par_check_leaf(sh, s->cond[i]);
 	}
 	return true;
 }

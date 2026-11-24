@@ -27,6 +27,7 @@ typedef struct SiftParDistinctSpec
 	bool		kstr;			/* and a text key */
 	uint8		nsum;			/* the sums of 64-bit arguments, of the rows of the group */
 	bool		vstr;			/* the counted value is a text (else a 64-bit word) */
+	bool		novalue;		/* nothing is counted: only the rows, sums and text extremes of the groups (a key is needed) */
 	uint8		nmm;			/* the minimums and maximums of a text column of the rows of a group */
 	uint8		mm_max;			/* bit m: the aggregate m is a maximum */
 	uint32		direct_n;		/* a key of one word, in direct_n values from direct_lo: 0 for none */

@@ -1,6 +1,7 @@
 /*
- * agg/v6/par/run_distinct.c - COUNT(DISTINCT x) of SiftAggV6 on the compute threads (agg/v6/par/run.h): x is an integer or a text column, the statement has no key or keys (integer columns and one
- * text), and COUNT(*), COUNT(column), SUM and AVG of int2 and int4 columns and MIN and MAX of text columns next to the one distinct count (agg/v6/par/distinct.h). A NULL in a key or in a column of a
+ * agg/v6/par/run_distinct.c - COUNT(DISTINCT x) of SiftAggV6 on the compute threads (agg/v6/par/run.h): x is an integer or a text column, the statement has no key or keys (integer columns, one
+ * text, or what agg/v6/par/derive.h computes from columns), and COUNT(*), COUNT(column), SUM and AVG of int2 and int4 columns or lengths and MIN and MAX of text columns next to the one distinct count
+ * (agg/v6/par/distinct.h). With no distinct count, the groups of a key with the text minimums and maximums (the group kind has none) are this kind's too. A NULL in a key or in a column of a
  * sum is not for a thread (the scan does it); a NULL value is not counted, and its row is a row of its group; a NULL text is not a minimum or maximum. The plan takes a text MIN or MAX only of a
  * column in the C collation (agg/v6/plan.c), the order of the bytes that the threads compare by.
  */
@@ -35,15 +36,13 @@ keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 		return false;
 	for (int i = 0; i < sp->nkeys; i++)
 	{
-		const SiftV6Col *c = &sp->key[i];
+		const SiftV6Class cls = sift_v6_class(sp->key[i].typid);
 
-		sh->ktext[i] = text_col(c);
-		if (!int_col(c) && !(sh->ktext[i] && !sh->ds.kstr))
+		sh->ktext[i] = cls == SV6C_TEXT;
+		if (!(cls == SV6C_I32 || cls == SV6C_I64 || (sh->ktext[i] && !sh->ds.kstr)) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
 			return false;
 		sh->ds.kstr |= sh->ktext[i];
 		sh->ds.kw += !sh->ktext[i];
-		sh->key_at[i] = par_add_leaf(sh, par_leaf_of(first, c), sh->ktext[i]);
-		par_check_leaf(sh, sh->key_at[i]);
 	}
 	return true;
 }
@@ -95,13 +94,14 @@ aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 			return false;
 	}
 	sh->ds.nsum = sh->nsum;
-	return ndistinct == 1;
+	sh->ds.novalue = ndistinct == 0;
+	return ndistinct == 1 || (ndistinct == 0 && sh->nk > 0 && sh->ds.nmm > 0);
 }
 
 static bool
 distinct_shape(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
-	if (sp->rows || sp->nsets != 0 || sp->nbins != 0 || sp->nderive != 0 || sp->nfcols != 0 || sp->nfilters != 0 || sp->lock_k != 0 || sp->affine)
+	if (sp->rows || sp->nsets != 0 || sp->nbins != 0 || sp->nfcols != 0 || sp->nfilters != 0 || sp->lock_k != 0 || sp->affine)
 		return false;
 	return keys_of(sp, first, sh) && aggs_of(sp, first, sh);
 }
@@ -125,60 +125,57 @@ distinct_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads,
 /* ---- a thread ---- */
 
 static void *
-batch_array(SiftArena *scratch, uint32 n, size_t size)
+batch_array(SiftArena *scratch, uint32 n, size_t size, SiftErr *err)
 {
-	return sift_arena_alloc(scratch, n * size, 8);
+	void	   *a = sift_arena_alloc(scratch, n * size, 8);
+
+	return a != NULL ? a : (par_arena_full(scratch, err), NULL);
 }
 
 static bool
-fill_keys(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+fill_keys(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
 {
 	int			word = 0;
 
 	for (int i = 0; i < sh->nk; i++)
 	{
-		const ColView *cv = &ld->cv[sh->key_at[i]];
-		uint64	   *w = sh->ktext[i] ? NULL : batch_array(scratch, ld->nact, sizeof(uint64));
-		SiftStrRef *s = sh->ktext[i] ? batch_array(scratch, ld->nact, sizeof(SiftStrRef)) : NULL;
+		void	   *out = batch_array(scratch, ld->nact, sh->ktext[i] ? sizeof(SiftStrRef) : sizeof(uint64), err);
 
-		if (w == NULL && s == NULL)
+		if (out == NULL)
 			return false;
-		PAR_EACH_ROW(ld, r, k)
+		if (sh->ktext[i])
 		{
-			if (s != NULL)
-				s[k] = par_str_at(cv, r);
-			else
-				w[k] = (uint64) cv->i[r];
+			par_src_strs(&sh->key_src[i], ld, out);
+			b->kstr = out;
 		}
-		if (s != NULL)
-			b->kstr = s;
+		else if (par_src_ints(&sh->key_src[i], ld, 0, out))
+			b->key[word++] = out;
 		else
-			b->key[word++] = w;
+			return par_serial(err, "a timestamp with no field to extract");
 	}
 	return true;
 }
 
 static bool
-fill_sums(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+fill_sums(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
 {
 	for (int m = 0; m < sh->ds.nsum; m++)
 	{
-		const int64 *v = ld->cv[sh->sum_at[m]].i;
-		uint64	   *s = batch_array(scratch, ld->nact, sizeof(uint64));
+		uint64	   *s = batch_array(scratch, ld->nact, sizeof(uint64), err);
 
 		if (s == NULL)
 			return false;
-		PAR_EACH_ROW(ld, r, k)
-			s[k] = (uint64) v[r];
+		if (!par_src_ints(&sh->sum_src[m], ld, 0, s))
+			return par_serial(err, "a timestamp with no field to extract");
 		b->sum[m] = s;
 	}
 	return true;
 }
 
 static bool
-fill_text_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+fill_text_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
 {
-	SiftStrRef *s = batch_array(scratch, ld->nact, sizeof(SiftStrRef));
+	SiftStrRef *s = batch_array(scratch, ld->nact, sizeof(SiftStrRef), err);
 
 	if (s == NULL)
 		return false;
@@ -189,10 +186,10 @@ fill_text_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftP
 }
 
 static bool
-fill_word_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+fill_word_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
 {
-	uint64	   *v = batch_array(scratch, ld->nact, sizeof(uint64));
-	uint8	   *null = batch_array(scratch, ld->nact, sizeof(uint8));
+	uint64	   *v = batch_array(scratch, ld->nact, sizeof(uint64), err);
+	uint8	   *null = batch_array(scratch, ld->nact, sizeof(uint8), err);
 
 	if (v == NULL || null == NULL)
 		return false;
@@ -207,12 +204,12 @@ fill_word_values(const ColView *cv, const ParLoad *ld, SiftArena *scratch, SiftP
 }
 
 static bool
-fill_mm(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+fill_mm(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
 {
 	for (int m = 0; m < sh->ds.nmm; m++)
 	{
 		const ColView *cv = &ld->cv[sh->mm_at[m]];
-		SiftStrRef *s = batch_array(scratch, ld->nact, sizeof(SiftStrRef));
+		SiftStrRef *s = batch_array(scratch, ld->nact, sizeof(SiftStrRef), err);
 
 		if (s == NULL)
 			return false;
@@ -224,11 +221,13 @@ fill_mm(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistin
 }
 
 static bool
-fill_values(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b)
+fill_values(const ParShape *sh, const ParLoad *ld, SiftArena *scratch, SiftParDistinctBatch *b, SiftErr *err)
 {
 	const ColView *cv = &ld->cv[sh->val_at];
 
-	return sh->ds.vstr ? fill_text_values(cv, ld, scratch, b) : fill_word_values(cv, ld, scratch, b);
+	if (sh->ds.novalue)
+		return true;
+	return sh->ds.vstr ? fill_text_values(cv, ld, scratch, b, err) : fill_word_values(cv, ld, scratch, b, err);
 }
 
 static bool
@@ -245,8 +244,8 @@ distinct_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, S
 	for (int c = 0; c < sh->nchk; c++)
 		if (par_has_null(&ld, &ld.cv[sh->chk[c]]))
 			return par_serial(err, "a NULL in a column of the aggregate");
-	if (!fill_keys(sh, &ld, scratch, out) || !fill_sums(sh, &ld, scratch, out) || !fill_mm(sh, &ld, scratch, out) || !fill_values(sh, &ld, scratch, out))
-		return par_arena_full(scratch, err);
+	if (!fill_keys(sh, &ld, scratch, out, err) || !fill_sums(sh, &ld, scratch, out, err) || !fill_mm(sh, &ld, scratch, out, err) || !fill_values(sh, &ld, scratch, out, err))
+		return false;
 	p->w[worker].rows += ld.nact;
 	out->n = ld.nact;
 	return true;
@@ -261,8 +260,8 @@ distinct_overflow(void *arg, const SiftParRange *left, uint32 nleft)
 static void
 distinct_setup(SiftV6ParScan *p)
 {
-	if (p->sh.ds.kw == 1 && !p->sh.ds.kstr)
-		sift_pin_win_track_zone(p->win, p->sh.leaf[p->sh.key_at[0]]);
+	if (p->sh.ds.kw == 1 && !p->sh.ds.kstr && p->sh.key_src[0].d == NULL)
+		sift_pin_win_track_zone(p->win, p->sh.leaf[p->sh.key_src[0].at]);
 }
 
 static void *
@@ -273,7 +272,7 @@ distinct_create(SiftV6ParScan *p, SiftParArenas *ar, uint64 rows, SiftErr *err)
 	int64		lo,
 				hi;
 
-	if (ds->kw == 1 && !ds->kstr && sift_pin_win_zone_range(p->win, &lo, &hi) && (uint64) hi - (uint64) lo < DIRECT_MAX)
+	if (ds->kw == 1 && !ds->kstr && p->sh.key_src[0].d == NULL && sift_pin_win_zone_range(p->win, &lo, &hi) && (uint64) hi - (uint64) lo < DIRECT_MAX)
 	{
 		ds->direct_lo = lo;
 		ds->direct_n = (uint32) ((uint64) hi - (uint64) lo + 1);

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Keys and arguments that the scan computes from columns (length of a text, the host of an URL, extract of a timestamp, CASE over integer columns, a key plus a constant) on the compute threads
-# of the backend (agg/v6/par/derive.h). Every answer is compared with the heap executor on the same table (sift.enable_agg = off): texts of every shape (empty, multi-byte, long, no slash, a host
+# of the backend (agg/v6/par/derive.h). The text minimum and maximum of the groups of such a key are the distinct operator's (agg/v6/par/distinct.h). Every answer is compared with the heap executor on the same table (sift.enable_agg = off): texts of every shape (empty, multi-byte, long, no slash, a host
 # of "www." alone), timestamps before the epoch, groups that no K held back, a HAVING that the K best must not ignore, and the rows that the threads leave to the scan (a NULL in a column the
 # statement reads, an infinite timestamp, a first key that overflows its elided keys), which raise or answer exactly as the heap does.
 . "$(dirname "$0")/lib.bash"
 
-plan 13
+plan 15
 node_init pd 64 "autovacuum = off"
 node_start pd || bail "start failed"
 SET=("SET max_parallel_workers_per_gather = 3" "SET work_mem = '256MB'" "SET sift.gpu = off")
@@ -49,6 +49,8 @@ check "a key and the keys that are it plus a constant" same "SELECT x, x - 1, x 
 out=$(thr "SELECT x, x - 1, count(*) AS n FROM pe GROUP BY x, x - 1 ORDER BY n DESC, x LIMIT 15")
 check "a first key that overflows an elided one raises the error of the heap" test "$(rows <<<"$out" | grep -c 'integer out of range')" == 1 -a "$(heap "SELECT x, x - 1, count(*) AS n FROM pe GROUP BY x, x - 1 ORDER BY n DESC, x LIMIT 15" | grep -c 'integer out of range')" == 1
 check "a HAVING on another aggregate than the one ranked keeps the best groups that pass it" test "$(thr "SELECT k, count(*) AS n, sum(c) AS s FROM pd GROUP BY k HAVING sum(c) < 2000 ORDER BY n DESC, k LIMIT 3" | rows)" == "$(heap "SELECT k, count(*) AS n, sum(c) AS s FROM pd GROUP BY k HAVING sum(c) < 2000 ORDER BY n DESC, k LIMIT 3")"
+check "the host as a key with the text minimum of its rows, an average length and a HAVING" same "SELECT $HOST AS h, avg(length(u)) AS l, count(*) AS n, min(u) FROM pd WHERE u <> '' GROUP BY h HAVING count(*) > 50 ORDER BY l DESC, h LIMIT 25"
+check "the minute of a timestamp as a key with the text minimum and maximum of its rows" same "SELECT extract(minute FROM ts) AS m, min(u), max(r), sum(length(r)), count(*) FROM pd GROUP BY m ORDER BY m"
 check "NULL texts are left to the scan, which answers as the heap does" replayed "SELECT $HOST AS h, avg(length(u)), count(*) FROM pm GROUP BY h ORDER BY h"
 check "an infinite timestamp is left to the scan, which answers as the heap does" replayed "SELECT extract(minute FROM ts) AS m, count(*) FROM pm GROUP BY m ORDER BY m"
 finish

@@ -28,10 +28,8 @@ typedef struct ParShape
 	int			leaf[PAR_LEAVES_MAX];
 	bool		codes[PAR_LEAVES_MAX];	/* the leaf is a text read as the codes of the dictionary of the granule when it has one */
 	int			nk;
-	int			key_at[SIFT_PAR_GROUP_MAX_KEYS];	/* the place of each key's leaf among leaf[] */
 	ParSrc		key_src[SIFT_PAR_GROUP_MAX_KEYS];
 	int			nsum;
-	int			sum_at[SIFT_PAR_GROUP_MAX_SUM];
 	ParSrc		sum_src[SIFT_PAR_GROUP_MAX_SUM];
 	SiftParGroupSpec gs;
 	SiftParDistinctSpec ds;		/* distinct: the keys (words, then the text), the sums and the counted value */
@@ -109,13 +107,10 @@ par_leaf_of(const int *first, const SiftV6Col *c)
 /* A column that reads as itself: no derivation, no JSON key, no scale */
 extern bool par_plain_col(const SiftV6Col *c);
 
-/* The leaf at (of sh) is one in which a NULL is not for a thread */
-extern void par_check_leaf(ParShape *sh, int at);
-
 /* The aggregate that counts or sums: COUNT(*), COUNT(column), SUM and AVG of an int2 or int4 column or of length() of a text column (the sums of sh, and the leaves it reads, which cannot hold a NULL for a thread); false for any other */
 extern bool par_count_sum_of(const SiftV6Agg *a, const SiftV6Spec *sp, const int *first, ParShape *sh);
 
-/* Whether the column c is a key or an argument the threads read (a plain column, or one the spec computes by a derive of a plain column and plain conditions), with its leaves added to the shape */
+/* Whether the column c is a key or an argument the threads read (a plain column, or one the spec computes by a derive of a plain column and plain conditions), with its leaves added to the shape, and to the ones in which a NULL is not for a thread */
 extern bool par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col *c, ParSrc *s);
 
 /* The rows of a granule that a thread folds, and their leaves decoded */

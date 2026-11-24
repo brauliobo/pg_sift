@@ -229,7 +229,7 @@ dreference(const DData *d, const SiftParDistinctSpec *sp)
 			cur->sum[m] += row.sum[m];
 		for (int m = 0; m < sp->nmm; m++)
 			dref_mm(cur, m, (sp->mm_max >> m) & 1, d->mm[m][idx[k]]);
-		if (!dvalue_null(d, sp, idx[k]) && (fresh_key || k == 0 || !dvalue_same(d, sp, idx[k - 1], idx[k])))
+		if (!sp->novalue && !dvalue_null(d, sp, idx[k]) && (fresh_key || k == 0 || !dvalue_same(d, sp, idx[k - 1], idx[k])))
 			cur->distinct++;
 	}
 	free(idx);
@@ -351,7 +351,8 @@ test_edges(void)
 {
 	static const SiftParDistinctSpec shapes[] = {{0, false, 1, false}, {0, false, 1, true}, {1, true, 2, false}, {1, true, 2, true}, {2, false, 0, true}, {0, true, 0, false},
 												 {.kw = 1,.nsum = 1,.nmm = 1,.direct_n = 40,.direct_lo = 7}, {.kw = 1,.kstr = true,.nsum = 1,.vstr = true,.nmm = 2,.mm_max = 1},
-												 {.nmm = 2,.mm_max = 2}};
+												 {.nmm = 2,.mm_max = 2}, {.kw = 1,.kstr = true,.nsum = 2,.nmm = 1,.novalue = true}, {.kw = 2,.nmm = 2,.mm_max = 1,.novalue = true},
+												 {.kw = 1,.nsum = 1,.nmm = 1,.direct_n = 40,.direct_lo = 7,.novalue = true}, {.kstr = true,.nmm = 1,.mm_max = 1,.novalue = true}};
 	static const uint32 sizes[] = {0, 1, 3, 17, ROWS};
 
 	for (int is = 0; is < lengthof(shapes); is++)
