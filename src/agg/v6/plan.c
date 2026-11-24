@@ -712,7 +712,8 @@ sift_v6_plan_query_ok(PlannerInfo *root, RelOptInfo *output_rel)
 {
 	const Query *parse = root->parse;
 
-	return sift_enable_agg && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs && (parse->hasAggs || parse->groupClause != NIL) && output_rel->reltarget != NULL;
+	return sift_enable_agg && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
+		(parse->hasAggs || parse->groupClause != NIL || parse->distinctClause != NIL) && output_rel->reltarget != NULL;
 }
 
 bool
@@ -791,7 +792,7 @@ bool
 sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
 	Node	   *exprs,
-			   *having;
+			   *having = extra != NULL ? extra->havingQual : NULL;
 
 	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
@@ -800,7 +801,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	p->scan_vars = NULL;
 	p->text = NULL;
 	exprs = sift_vn_rewrite_aggs((Node *) p->out->reltarget->exprs);
-	having = sift_vn_rewrite_aggs(extra->havingQual);
+	having = sift_vn_rewrite_aggs(having);
 	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, exprs) && (having == NULL || compile_aggs(p, having)) &&
 		reads_only_scan_tlist(p, exprs) && (having == NULL || reads_only_scan_tlist(p, having));
 }
@@ -856,6 +857,38 @@ sift_v6_group_path_methods(void)
 	return &v6_path_methods;
 }
 
+/* The paths of the one table of input_rel: its table, or each index of it that holds what the statement reads; extra is NULL below the grouping stage (SELECT DISTINCT) */
+void
+sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
+{
+	RangeTblEntry *rte = planner_rt_fetch(input_rel->relid, root);
+	List	   *having = extra != NULL ? (List *) extra->havingQual : NIL;
+	Relation	heap = table_open(rte->relid, AccessShareLock);
+
+	if (sift_store_ops_for_scan(rte->relid, true) != NULL)
+	{
+		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.batch_ok = true};
+
+		if (sift_v6_plan_table(&p, rte->relid) && sift_v6_compile_on(&p, extra, group_exprs))
+			sift_v6_add_group_path(&p, output_rel, group_exprs, having);
+	}
+	else
+		foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+		{
+			V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true};
+			Relation	irel;
+
+			if (!sift_v6_index_owned(ix))
+				continue;
+			irel = index_open(ix->indexoid, AccessShareLock);
+			sift_v6_plan_index(&p, irel);
+			if (p.ops != NULL && sift_v6_compile_on(&p, extra, group_exprs))
+				sift_v6_add_group_path(&p, output_rel, group_exprs, having);
+			index_close(irel, NoLock);
+		}
+	table_close(heap, NoLock);
+}
+
 /* A partitionwise aggregate plans each partition under the root of the parent: the expressions of the statement name the parent, and those of a partition its own columns */
 static Node *
 in_terms_of(PlannerInfo *root, RelOptInfo *rel, Node *e)
@@ -869,9 +902,12 @@ void
 sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	List	   *group_exprs = NIL;
-	RangeTblEntry *rte;
-	Relation	heap;
 
+	if (stage == UPPERREL_DISTINCT)
+	{
+		sift_v6_distinct_paths(root, input_rel, output_rel);
+		return;
+	}
 	if (stage == UPPERREL_ORDERED)
 	{
 		for (int i = 0; i < sift_store_ops_count(); i++)
@@ -907,30 +943,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 		return;
 	}
 	sift_v6_unnest_exists_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
-	rte = planner_rt_fetch(input_rel->relid, root);
-	heap = table_open(rte->relid, AccessShareLock);
-	if (sift_store_ops_for_scan(rte->relid, true) != NULL)
-	{
-		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.batch_ok = true};
-
-		if (sift_v6_plan_table(&p, rte->relid) && sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
-			sift_v6_add_group_path(&p, output_rel, group_exprs, (List *) ((GroupPathExtraData *) extra)->havingQual);
-	}
-	else
-		foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
-		{
-			V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true};
-			Relation	irel;
-
-			if (!sift_v6_index_owned(ix))
-				continue;
-			irel = index_open(ix->indexoid, AccessShareLock);
-			sift_v6_plan_index(&p, irel);
-			if (p.ops != NULL && sift_v6_compile_on(&p, (GroupPathExtraData *) extra, group_exprs))
-				sift_v6_add_group_path(&p, output_rel, group_exprs, (List *) ((GroupPathExtraData *) extra)->havingQual);
-			index_close(irel, NoLock);
-		}
-	table_close(heap, NoLock);
+	sift_v6_scan_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 }
 
 List *

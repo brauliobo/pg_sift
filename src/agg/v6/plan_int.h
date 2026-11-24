@@ -59,6 +59,11 @@ extern bool sift_v6_compile_text(V6Plan *p);
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 extern List *sift_v6_group_exprs_of(PlannerInfo *root);
 
+/* The paths of the one table of the input: the table or each index that holds what the statement reads; extra is NULL below the grouping stage */
+extern void sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
+/* plan_distinct.c: SELECT DISTINCT of the columns of one table, at the UPPERREL_DISTINCT stage */
+extern void sift_v6_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+
 /* The path of the plan for the output relation; a spec with parts reads each of their indexes into the same groups */
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
 /* plan_topn_rows.c: the path of ORDER BY columns LIMIT K of the rows of one table, at the UPPERREL_ORDERED stage */
