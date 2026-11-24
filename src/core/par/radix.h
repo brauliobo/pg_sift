@@ -52,8 +52,21 @@ sift_radix_fits(const SiftRadixOut *o, uint64 bytes)
 	return o->arena->cap - o->arena->used >= bytes + SIFT_RADIX_PARTS * (SIFT_RADIX_BLOCK_MAX + sizeof(SiftRadixBlock) + SIFT_ARENA_ALIGN);
 }
 
+/* The record that does not fit the line of p (the line goes to its stream first): the slow part of sift_radix_reserve */
+extern void *sift_radix_reserve_flush(SiftRadixOut *o, uint32 p, uint32 len);
+
 /* Room for a record of len bytes in partition p, to be written before the next call on o; NULL when the arena has none (nothing is reserved) */
-extern void *sift_radix_reserve(SiftRadixOut *o, uint32 p, uint32 len);
+static inline void *
+sift_radix_reserve(SiftRadixOut *o, uint32 p, uint32 len)
+{
+	const uint32 fill = o->fill[p];
+
+	if (len > SIFT_RADIX_LINE - fill)
+		return sift_radix_reserve_flush(o, p, len);
+	o->fill[p] = fill + len;
+	o->st[p].nrec++;
+	return o->line[p] + fill;
+}
 
 /* A copy of rec; false when the arena has no room */
 static inline bool

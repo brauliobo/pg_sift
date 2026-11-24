@@ -40,31 +40,28 @@ stream_reserve(SiftRadixOut *o, uint32 p, uint32 len)
 }
 
 void *
-sift_radix_reserve(SiftRadixOut *o, uint32 p, uint32 len)
+sift_radix_reserve_flush(SiftRadixOut *o, uint32 p, uint32 len)
 {
-	uint32		fill = o->fill[p];
+	const uint32 fill = o->fill[p];
 	void	   *dst;
 
-	if (len > SIFT_RADIX_LINE - fill)
+	if (fill > 0)
 	{
-		if (fill > 0)
-		{
-			dst = stream_reserve(o, p, fill);
-			if (dst == NULL)
-				return NULL;
-			memcpy(dst, o->line[p], fill);
-			o->fill[p] = fill = 0;
-		}
-		if (len > SIFT_RADIX_LINE)
-		{
-			dst = stream_reserve(o, p, len);
-			o->st[p].nrec += dst != NULL;
-			return dst;
-		}
+		dst = stream_reserve(o, p, fill);
+		if (dst == NULL)
+			return NULL;
+		memcpy(dst, o->line[p], fill);
+		o->fill[p] = 0;
 	}
-	o->fill[p] = fill + len;
+	if (len > SIFT_RADIX_LINE)
+	{
+		dst = stream_reserve(o, p, len);
+		o->st[p].nrec += dst != NULL;
+		return dst;
+	}
+	o->fill[p] = len;
 	o->st[p].nrec++;
-	return o->line[p] + fill;
+	return o->line[p];
 }
 
 bool
