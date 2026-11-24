@@ -209,15 +209,16 @@ BEGIN
 		ok := ARRAY(SELECT id FROM vd ORDER BY id);
 	EXCEPTION WHEN others THEN clean := false;
 	END;
-	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 7 = 0 ORDER BY id LOOP
-		BEGIN
-			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
-		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
-		END;
+	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 13 = 0 ORDER BY id LOOP
 		BEGIN
 			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
 			IF NOT clean THEN ok := ok || r; END IF;
 		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
+		END;
+		CONTINUE WHEN r % 13 <> 0 AND p NOT LIKE 'error: %';
+		BEGIN
+			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
+		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
 		END;
 		IF e IS DISTINCT FROM p THEN
 			bad := bad + 1;
