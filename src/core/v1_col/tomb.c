@@ -267,11 +267,18 @@ tomb_spill(SiftTombLog *t)
 	tomb_spill_hot(t);
 }
 
-/* Entries that a backend may keep in memory (sift.backend_cache_kb, SIFT_TOMB_ENTRY_BYTES each) */
+/* The bytes of entries a backend may keep in memory: what sift.backend_cache_kb allows, and half of work_mem (the arrays are merged into copies of their size) */
+static uint64
+tomb_mem_bytes(void)
+{
+	return Min((uint64) sift_backend_cache_kb * 1024, (uint64) work_mem * 1024 / 2);
+}
+
+/* The entries a backend may keep in memory (SIFT_TOMB_ENTRY_BYTES each) */
 static uint64
 tomb_mem_entries(void)
 {
-	return (uint64) sift_backend_cache_kb * 1024 / SIFT_TOMB_ENTRY_BYTES;
+	return tomb_mem_bytes() / SIFT_TOMB_ENTRY_BYTES;
 }
 
 /* Adds freshly synced entries: sorted into the small recent array, which joins the main one when it grows; past the memory the log may keep they go to a run */
@@ -420,7 +427,7 @@ tomb_sync(Relation rel, SiftTombLog *t, const SiftDirSnapshot *dir)
 	bcx = AllocSetContextCreate(CurrentMemoryContext, "sift tomb sync batch", ALLOCSET_SMALL_SIZES);
 	SiftMemTracker mt_tomb_sync_batch;
 
-	sift_mem_init_sub(&mt_tomb_sync_batch, "tomb_sync_batch", bcx, false, (Size) sift_backend_cache_kb * 1024 + 16 * 1024);
+	sift_mem_init_sub(&mt_tomb_sync_batch, "tomb_sync_batch", bcx, false, tomb_mem_bytes() + 16 * 1024);
 	capbatch = Max(64, Min(n - t->synced, chunk) + SIFT_TOMB_CAP);
 	MemoryContextSwitchTo(bcx);
 	batch = palloc(capbatch * sizeof(SiftTomb));
