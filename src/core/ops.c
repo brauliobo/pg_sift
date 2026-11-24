@@ -211,7 +211,7 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 			Relation	index = relation_open(objectId, NoLock);
 
 			if (sift_col_is_index(index))
-				sift_col_alter_check(index);
+				sift_col_alter_check(index, PointerGetDatum(before));
 			else
 				check_analyzer_options(index);
 			relation_close(index, NoLock);

@@ -84,7 +84,7 @@ sift_col_track_ctid(Relation index)
  * the next build reads the documents; the segments an index of that kind holds all have the paths of an earlier build, so it is refused as any other change of the leaf list.
  */
 void
-sift_col_alter_check(Relation index)
+sift_col_alter_check(Relation index, Datum before)
 {
 	if (!sift_col_is_index(index))
 		return;
@@ -98,6 +98,8 @@ sift_col_alter_check(Relation index)
 		pfree(snap);
 		return;
 	}
+	if (sift_col_ops(index)->format_major == SIFT_FORMAT2_MAJOR)
+		sift_col_warn_f2_deprecated_relopts(index, before);
 	(void) sift_col_rel(index);
 	sift_col_row_key_check(index);
 	sift_scope_journal_alter(index);

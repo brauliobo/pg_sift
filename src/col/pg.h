@@ -245,6 +245,7 @@ extern const char *sift_col_options_key_order(Relation index);	/* "" when none *
 extern const char *sift_col_options_hll_columns(Relation index);	/* "" when none */
 extern const char *sift_col_options_sketches(Relation index);	/* "" when none */
 extern const char *sift_col_options_skip_index(Relation index);	/* "" when none */
+extern void sift_col_warn_f2_deprecated_relopts(Relation index, Datum before);
 extern const char *sift_col_options_return_columns(Relation index);	/* "" when none */
 
 extern PGDLLEXPORT Datum sift_col_handler(PG_FUNCTION_ARGS);

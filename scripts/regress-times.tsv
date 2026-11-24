@@ -1034,6 +1034,7 @@ format2_tiering_ttl	0.53
 format2_ux_progress	126.51
 format_v1_v2_compat	0.87
 format2_meta_marks_suite	0.00
+format2_reloptions_deprecated	0.30
 format2_storage_codec_suite	0.00
 fuzzy_seek	1.69
 gpu_agg	1.07

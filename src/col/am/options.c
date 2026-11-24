@@ -5,7 +5,10 @@
  */
 #include "postgres.h"
 #include "access/reloptions.h"
+#include "catalog/pg_class.h"
+#include "commands/defrem.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/varlena.h"
 #include "col/dictshm.h"
 #include "col/dsmreg.h"
@@ -563,7 +566,7 @@ sift_col_init(void)
 #endif
 	col_relopt_kind = add_reloption_kind();
 	add_int_reloption(col_relopt_kind, "write_buffer_limit",
-					  "Write buffer size in kB before it is sealed for promotion",
+					  "Format 1 only (deprecated in 6.0; automatic in Format 2.0): Write buffer size in kB before it is sealed for promotion",
 					  SIFT_DEFAULT_WRITE_BUFFER_LIMIT, 64, 1048576, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "dead_rewrite_pct",
 					  "Percent of dead rows above which maintenance rewrites a lone segment to drop them (0 when the scans of its dirty units cost more than the rewrite, 100 never)",
@@ -581,39 +584,39 @@ sift_col_init(void)
 						 "pre-aggregates of every unit: default, off, or cube(dim: measure, ...; dim2: ...)",
 						 "", sift_col_validate_preagg, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "rollup_on_demand",
-					   "A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
+					   "Format 1 only (deprecated in 6.0; replaced by preagg in Format 2.0): A scan that reads units for lack of their rollups asks the background worker to rebuild them (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cluster_advice",
-					   "sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
+					   "Format 1 only (deprecated in 6.0; automatic in Format 2.0): sift.cluster_advice() may recommend a physical order or a key_cut for the table of this index, and CREATE INDEX may suggest key_cut (default on; maintenance only, not part of the format)",
 					   true, ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "array_lengths",
-					   "The array columns of the index keep their cardinality and array_length(x, 1) as two integer columns of their own, so that cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read without the arrays (about 1 byte a row for each array column): on for every array column, off for none, auto (default) is on for the index that CREATE INDEX or REINDEX builds and off for an index built before the option; a change is refused while the index holds segments",
+					   "Format 1 only (deprecated in 6.0; automatic in Format 2.0): The array columns of the index keep their cardinality and array_length(x, 1) as two integer columns of their own, so that cardinality(x), array_length(x, 1) and x IS [NOT] NULL are read without the arrays (about 1 byte a row for each array column): on for every array column, off for none, auto (default) is on for the index that CREATE INDEX or REINDEX builds and off for an index built before the option; a change is refused while the index holds segments",
 					   array_lengths_names, SIFT_COL_ARRLEN_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_enum_reloption(col_relopt_kind, "dict_lookup",
-					   "A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_tid_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
+					   "Format 1 only (deprecated in 6.0; automatic in Format 2.0): A dictionary of 1,024 strings or more of the segments written from now on is stored in blocks that are read in place, without loading it whole, where that adds at most 3% to the segment (ids, hashes, uuids and long strings; short strings that repeat words stay in the compact form); the option adds the order of the strings, so that an equality, an IN list or a prefix test reads it in place too: auto (default) for the columns of point_tid_columns, key_columns and return_columns, on for every column, off for none (the segments are column format minor 14; the order is 4 bytes a string)",
 					   dict_lookup_names, SIFT_COL_DICT_AUTO,
 					   "Valid values are \"auto\", \"on\" and \"off\".", ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "cube_minmax",
-					   "The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default on)",
+					   "Format 1 only (deprecated in 6.0; replaced by preagg in Format 2.0): The cube of every unit written from now on also holds the minimum and maximum of each integer measure per group; the segments are column format minor 7 (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_bool_reloption(col_relopt_kind, "key_table",
-					   "The segments written from now on keep, for each key_columns leaf, a table of its distinct keys with the rows, sums, minima and maxima of each, where that adds at most 3% to the segment, so that count, sum, min and max WHERE key = x read one record of a segment, not its units; the segments are column format minor 22, which 3.4 and older libraries cannot read (default on)",
+					   "Format 1 only (deprecated in 6.0; automatic in Format 2.0): The segments written from now on keep, for each key_columns leaf, a table of its distinct keys with the rows, sums, minima and maxima of each, where that adds at most 3% to the segment, so that count, sum, min and max WHERE key = x read one record of a segment, not its units; the segments are column format minor 22, which 3.4 and older libraries cannot read (default on)",
 					   true, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup_dims",
 						 "Deprecated alias of rollup_columns, which wins when both are set",
 						 "", sift_col_validate_rollup_dims, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup_columns",
-						 "the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...', 'auto' (default) or 'off'; the segments are column format minor 8",
+						 "Format 1 only (deprecated in 6.0; replaced by preagg in Format 2.0): the scalar columns that the rollup of the rows of every unit written from now on groups by: 'col, col' or 'col, col: measure, ...', 'auto' (default) or 'off'; the segments are column format minor 8",
 						 "", sift_col_validate_rollup_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "calendar_columns",
-						 "the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col', 'all' or 'off' (default all, unless the index has JSON paths; the cube holds at most 16 dimensions with the default dims, a list that does not fit is refused and 'all' keeps the columns that fit; the segments are column format minor 8)",
+						 "Format 1 only (deprecated in 6.0; replaced by preagg in Format 2.0): the date, timestamp and timestamptz columns whose calendar cells (days, else months, else years) every unit written from now on keeps, so that a GROUP BY of date_trunc, extract or a cast of them, and a range, are answered from the cells; 'col, col', 'all' or 'off' (default all, unless the index has JSON paths; the cube holds at most 16 dimensions with the default dims, a list that does not fit is refused and 'all' keeps the columns that fit; the segments are column format minor 8)",
 						 "", sift_col_validate_calendar_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_columns",
-						 "the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4, int8 and date foreign key columns and the columns named *_id that are not unique, or unique when the index is key cut or the heap is not in their order, and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, 15 for a key list or bitmap, 23 for a list of runs (default auto)",
+						 "Format 1 only (deprecated in 6.0; replaced by skip_index in Format 2.0): the columns whose keys every unit written from now on keeps, as a key list or a bitmap where that takes a few percent of the unit (a count(DISTINCT column) over whole units reads no row, an equality or IN test skips the units that lack the key) and, for a column named here, as a bloom filter where it does not; 'col, col', 'off' or 'auto' (the int2, int4, int8 and date foreign key columns and the columns named *_id that are not unique, or unique when the index is key cut or the heap is not in their order, and that the cube does not hold; chosen by CREATE INDEX and REINDEX when the option is not set); the segments are column format minor 10, 15 for a key list or bitmap, 23 for a list of runs (default auto)",
 						 NULL, sift_col_validate_key_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_cut",
-						 "the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
+						 "Format 1 only (deprecated in 6.0; replaced by key_order in Format 2.0): the integer, date, timestamp, numeric and float columns, most significant first, whose range cuts the units that promotion, merge and REINDEX write (a key-cut unit lists its TIDs; the segments are column format minor 17); 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX sample the heap and cut by the first key-shaped column whose equality reads many units and that no ordered leaf competes with; a unit is a superblock otherwise; default auto)",
 						 NULL, NULL, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "key_cut_rows",
 					  "Deprecated and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working",
@@ -622,19 +625,19 @@ sift_col_init(void)
 						 "Deprecated and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working (the order arrays of order_array_columns answer what its sorted runs did)",
 						 "", NULL, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_columns",
-						 "the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
+						 "Format 1 only (deprecated in 6.0; replaced by key_order in Format 2.0): the integer, date and timestamp columns whose segments written from now on also keep every row's key and heap address sorted, so that a range of the column of up to 16,384 rows and ORDER BY column LIMIT n above 32 read the entries between the bounds, whatever the number of units; 4 to 7 bytes a row for each column; the segments are column format minor 21; 'col, col', 'off' or 'auto' (CREATE INDEX and REINDEX choose up to two columns of 100,000 rows or more whose values are scattered over the heap, that is the default)",
 						 NULL, sift_col_validate_order_array_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "key_order",
 						 "the integer, date, timestamp, numeric and float column, or 'group, key', whose order the rows are kept in: for one column it stands for key_cut and order_array_columns on it, for 'group, key' for order_array_columns on the key and order_array_group on the group (key_cut is left to the build), each while the option itself is not set; for a table that is stored in the order of the key (default none)",
 						 "", sift_col_validate_key_order, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_layout",
-						 "how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
+						 "Format 1 only (deprecated in 6.0; replaced by key_order in Format 2.0): how the order arrays of order_array_columns are laid out: 'whole' keeps the key of every row, 'compact' keeps the heap address of every row and its key rounded to a bucket (the exact key is read from the table row where a scan needs it); 'auto' (default) keeps each chunk of 512 entries compact where that is at least a fifth smaller and whole elsewhere; a list gives a layout to columns: 'compact: ts, created; whole: id'. It never adds an array: order_array_columns says which columns have one",
 						 "", sift_col_validate_order_layout, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "order_array_group",
-						 "a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
+						 "Format 1 only (deprecated in 6.0; replaced by key_order in Format 2.0): a column (integer, date or timestamp) that the arrays of order_array_columns are grouped by: they keep the rows sorted by this column and then the key, so that WHERE group = x ORDER BY column LIMIT n reads n entries of the group x whatever the number of units; a row with no value of it is not in them, and ORDER BY column LIMIT n without the condition reads the units; 3 to 7 bytes a row for each column (default none)",
 						 "", sift_col_validate_order_array_group, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "hll_columns",
-						 "the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
+						 "Format 1 only (deprecated in 6.0; replaced by sketches in Format 2.0): the int2, int4, int8, date, timestamp, timestamptz, text, varchar and uuid columns whose distinct values every unit written from now on keeps as a HyperLogLog sketch (sift.approx_count_distinct reads one sketch a unit, not the rows; count(DISTINCT) stays exact); the segments are column format minor 18 (default none)",
 						 "", sift_col_validate_hll_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "sketches",
 						 "the sketches every part of a format major 2 index written from now on keeps of its columns: 'kll(latency, size(k=400)); hll(user_id)' (default none). kll keeps a quantile sketch of an int2, int4, int8, float4, float8, numeric, date, timestamp or timestamptz column (k from 64 to 1024, default 200; sift.approx_percentile and sift.approx_quantiles read one sketch a part, not the rows, when 1% or less of the rows are dead, pending or in no sketch); hll is the list of hll_columns",
@@ -646,10 +649,10 @@ sift_col_init(void)
 						 "Deprecated and ignored; accepted so that an index that stores it, a dump and ALTER INDEX .. RESET keep working (point_tid_columns lists the heap addresses of the rows of a column)",
 						 "", NULL, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "count_columns",
-						 "the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
+						 "Format 1 only (deprecated in 6.0; automatic in Format 2.0): the text columns whose dictionary of 1,024 strings or more every segment written from now on stores with the rows of each string in byte order (the columns whose dictionary is read in place do so unless this is off, the ones named here also get that order), so that count(*) of a prefix (LIKE 'abc%'), a range or an equality of the column over segments with no dead row reads two positions of the dictionary and no row; 0.1 to 1 byte for each distinct string, the segments are column format minor 24, which only 3.5 and later read (default empty: automatic; off: none)",
 						 "", sift_col_validate_count_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "point_tid_columns",
-						 "the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 33 or more (37 from 3.7), which only 3.7 and later read, and the lists take 1 to 5 bytes per row (default none)",
+						 "Format 1 only (deprecated in 6.0; automatic in Format 2.0): the plain integer, text and uuid columns whose point directory lists the heap addresses of the rows, not their numbers in the segment (an equality or a short IN list of the access method then returns the rows' addresses from the directory without reading a unit, and the heap checks them; a unit with a dead row is read instead); the segments are column format minor 33 or more (37 from 3.7), which only 3.7 and later read, and the lists take 1 to 5 bytes per row (default none)",
 						 "", sift_col_validate_point_tid_columns, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "track_changes",
 						 "the column that identifies a row (off, auto = the primary key when the index holds it, else off with a NOTICE, or a column with a unique index of its own, NOT NULL): the index records the entries of the row versions that stopped being live (an UPDATE, a key change, a DELETE) in a tombstone log, so that a read of rows changed and not yet vacuumed can leave the heap out. It installs two internal statement triggers on the table (AFTER UPDATE and AFTER DELETE), dropped with the index, and writes a baseline of the dead versions in a pass over the heap (column format minor 43, which only 4.0 and later read); it adds the column to point_tid_columns",
@@ -664,16 +667,16 @@ sift_col_init(void)
 						 "the named projections (sift.projection_create) this index holds or serves: 'name, name'. sift.projection_index writes it; sift.projection_status says whether the index still holds the columns, the filter and the rollups of each. Only a record: it changes nothing in the segments, ALTER INDEX .. SET (projection = ..) takes effect at once and a definition that is replaced is compared with the index again (default none)",
 						 "", sift_col_validate_projection, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "return_columns",
-						 "the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
+						 "Format 1 only (deprecated in 6.0; automatic in Format 2.0): the text, varchar and uuid columns an index-only scan returns from the index (their strings are read from the dictionary of the segment; default none: a query that needs one reads the heap)",
 						 "", sift_col_validate_return_columns, ShareUpdateExclusiveLock);
 	add_int_reloption(col_relopt_kind, "superunit",
-					  "Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
+					  "Format 1 only (deprecated in 6.0; replaced by preagg in Format 2.0): Units per superunit summary: the sums and the cube of every group of this many consecutive units of a segment are stored once more, merged, and answer a query that no predicate cuts through from one read; the segments written from now on are column format minor 12 (0: none, else 2 to 256; default 16)",
 					  SIFT_SUPER_DEFAULT_FAN, 0, SIFT_SUPER_MAX_FAN, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup",
 						 "Deprecated alias of rollup_leaves, which wins when both are set",
 						 "", sift_col_validate_rollup, ShareUpdateExclusiveLock);
 	add_string_reloption(col_relopt_kind, "rollup_leaves",
-						 "the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', 'auto' (default) or off",
+						 "Format 1 only (deprecated in 6.0; replaced by preagg in Format 2.0): the leaves of array elements and map values that the rollup of every unit groups by: 'leaf, leaf, ...', 'auto' (default) or off",
 						 "", sift_col_validate_rollup_leaves, ShareUpdateExclusiveLock);
 }
 
@@ -779,6 +782,48 @@ row_key_unquote(SiftColOptions *o)
 
 	strcpy(text, name);
 	pfree(name);
+}
+
+/* The 5.x options that only Format 1 reads: a Format 2.0 index accepts and ignores them (the description of each says what replaces it) */
+static const char *const format1_only_relopts[] = {
+	"key_cut", "order_array_columns", "order_array_group", "order_layout", "calendar_columns", "cube_minmax", "rollup_columns", "rollup_leaves",
+	"rollup_on_demand", "superunit", "hll_columns", "key_columns", "key_table", "count_columns", "dict_lookup", "array_lengths", "point_tid_columns",
+	"return_columns", "cluster_advice", "write_buffer_limit",
+};
+
+/* whether the statement wrote this option: it is not among the options the index had before, or has another value there */
+static bool
+relopt_written(const DefElem *def, List *before)
+{
+	foreach_ptr(DefElem, old, before)
+		if (strcmp(old->defname, def->defname) == 0)
+			return strcmp(defGetString(old), defGetString((DefElem *) def)) != 0;
+	return true;
+}
+
+static bool
+is_format1_relopt(const char *name)
+{
+	for (int i = 0; i < lengthof(format1_only_relopts); i++)
+		if (strcmp(format1_only_relopts[i], name) == 0)
+			return true;
+	return false;
+}
+
+/* Said where a Format 2.0 index is built or altered, for each Format 1 option the statement wrote (before: the options the index had, 0 for a build) */
+void
+sift_col_warn_f2_deprecated_relopts(Relation index, Datum before)
+{
+	HeapTuple	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(RelationGetRelid(index)));
+	bool		isnull;
+	Datum		stored = SysCacheGetAttr(RELOID, tuple, Anum_pg_class_reloptions, &isnull);
+	List	   *had = untransformRelOptions(before);
+
+	if (!isnull)
+		foreach_ptr(DefElem, def, untransformRelOptions(stored))
+			if (is_format1_relopt(def->defname) && relopt_written(def, had))
+				sift_relopt_removed_notice(def->defname);
+	ReleaseSysCache(tuple);
 }
 
 bytea *

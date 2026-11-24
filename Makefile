@@ -558,6 +558,7 @@ TESTING_REGRESS += format2_point_v2
 TESTING_REGRESS += format2_projections
 TESTING_REGRESS += format2_prune
 TESTING_REGRESS += format2_quarantine
+TESTING_REGRESS += format2_reloptions_deprecated
 TESTING_REGRESS += format2_scope_live
 TESTING_REGRESS += format2_size
 TESTING_REGRESS += format2_status_heapref_slab

@@ -259,6 +259,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
 	if (info->ii_Unique)
 		info->ii_ParallelWorkers = 0;	/* the rows of one key may be in the shares of two participants */
+	sift_col_warn_f2_deprecated_relopts(index, (Datum) 0);
 	sift_stage_discard(RelationGetRelid(index));
 	sift_f2_connect_resolve(heap, index);
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);

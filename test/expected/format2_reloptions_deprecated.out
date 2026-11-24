@@ -1,0 +1,155 @@
+-- The twenty options that only Format 1 reads stay registered, so that dumps, upgraded indexes and ALTER INDEX .. RESET keep working: a Format 2.0 index accepts them with a
+-- NOTICE and ignores them, a Format 1 index takes them without a word. sift_table says the same of its hidden options of Format 1.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+\set VERBOSITY terse
+CREATE TABLE rd (id int PRIMARY KEY, k int, g int, v int, t text);
+INSERT INTO rd SELECT i, i % 50, i % 7, i, 'w' || i % 9 FROM generate_series(1, 2000) i;
+-- Format 2.0: every Format 1 option written says so, once, on CREATE INDEX and on ALTER INDEX
+SET sift.test_create_format1 = off;
+CREATE INDEX rd2 ON rd USING sift_col (id, k, g, v, t) WITH (key_cut = k, superunit = 8, write_buffer_limit = 512, hll_columns = k, key_columns = g, cluster_advice = off);
+NOTICE:  reloption "key_cut" is deprecated and ignored
+NOTICE:  reloption "superunit" is deprecated and ignored
+NOTICE:  reloption "write_buffer_limit" is deprecated and ignored
+NOTICE:  reloption "hll_columns" is deprecated and ignored
+NOTICE:  reloption "key_columns" is deprecated and ignored
+NOTICE:  reloption "cluster_advice" is deprecated and ignored
+SELECT major FROM sift.index_format('rd2');
+ major 
+-------
+     2
+(1 row)
+
+SELECT reloptions FROM pg_class WHERE relname = 'rd2';
+                                          reloptions                                           
+-----------------------------------------------------------------------------------------------
+ {key_cut=k,superunit=8,write_buffer_limit=512,hll_columns=k,key_columns=g,cluster_advice=off}
+(1 row)
+
+ALTER INDEX rd2 SET (cube_minmax = off);
+NOTICE:  reloption "cube_minmax" is deprecated and ignored
+ALTER INDEX rd2 SET (order_array_columns = 'k', rollup_columns = 'g, k', calendar_columns = off);
+NOTICE:  reloption "order_array_columns" is deprecated and ignored
+NOTICE:  reloption "rollup_columns" is deprecated and ignored
+NOTICE:  reloption "calendar_columns" is deprecated and ignored
+ALTER INDEX rd2 SET (array_lengths = off, dict_lookup = off, key_table = off, count_columns = off, point_tid_columns = 'k', return_columns = 't', rollup_on_demand = off);
+NOTICE:  reloption "array_lengths" is deprecated and ignored
+NOTICE:  reloption "dict_lookup" is deprecated and ignored
+NOTICE:  reloption "key_table" is deprecated and ignored
+NOTICE:  reloption "count_columns" is deprecated and ignored
+NOTICE:  reloption "point_tid_columns" is deprecated and ignored
+NOTICE:  reloption "return_columns" is deprecated and ignored
+NOTICE:  reloption "rollup_on_demand" is deprecated and ignored
+ALTER INDEX rd2 SET (order_layout = whole, order_array_group = g, rollup_leaves = off);
+NOTICE:  reloption "order_layout" is deprecated and ignored
+NOTICE:  reloption "order_array_group" is deprecated and ignored
+NOTICE:  reloption "rollup_leaves" is deprecated and ignored
+-- the options of Format 2.0 say nothing
+ALTER INDEX rd2 SET (compression = 'lz4', key_order = 'k', dead_rewrite_pct = 20);
+ALTER INDEX rd2 RESET (compression, key_order, dead_rewrite_pct);
+-- RESET drops them without a word
+ALTER INDEX rd2 RESET (key_cut, superunit, write_buffer_limit, hll_columns, key_columns, cluster_advice, cube_minmax, order_array_columns, rollup_columns);
+ALTER INDEX rd2 RESET (calendar_columns, array_lengths, dict_lookup, key_table, count_columns, point_tid_columns, return_columns, rollup_on_demand);
+ALTER INDEX rd2 RESET (order_layout, order_array_group, rollup_leaves);
+SELECT reloptions FROM pg_class WHERE relname = 'rd2';
+ reloptions 
+------------
+ 
+(1 row)
+
+SELECT sift.col_verify('rd2', true);
+NOTICE:  sift_col index "rd2": parts=1 granules=1 rows=2000 exact
+ col_verify 
+------------
+ 
+(1 row)
+
+DROP INDEX rd2;
+-- Format 1: the same options, no notice
+SET sift.test_create_format1 = on;
+CREATE INDEX rd1 ON rd USING sift_col (id, k, g, v, t) WITH (key_cut = k, superunit = 8, write_buffer_limit = 512, hll_columns = k, key_columns = g, cluster_advice = off);
+NOTICE:  sift_col index "rd1": 2 automatic choices (rollup_columns, track_changes)
+SELECT major FROM sift.index_format('rd1');
+ major 
+-------
+     1
+(1 row)
+
+ALTER INDEX rd1 SET (cube_minmax = off);
+ALTER INDEX rd1 SET (order_array_columns = 'k', rollup_columns = 'g, k', calendar_columns = off);
+ALTER INDEX rd1 SET (array_lengths = off, dict_lookup = off, key_table = off, count_columns = off, rollup_on_demand = off);
+ALTER INDEX rd1 SET (order_layout = whole, order_array_group = g, rollup_leaves = off);
+ALTER INDEX rd1 RESET (key_cut, superunit, write_buffer_limit, hll_columns, key_columns, cluster_advice, cube_minmax, order_array_columns, rollup_columns);
+ALTER INDEX rd1 RESET (calendar_columns, array_lengths, dict_lookup, key_table, count_columns, rollup_on_demand, order_layout, order_array_group, rollup_leaves);
+SELECT reloptions FROM pg_class WHERE relname = 'rd1';
+                   reloptions                    
+-------------------------------------------------
+ {track_changes=id,"point_tid_columns=auto: id"}
+(1 row)
+
+DROP INDEX rd1;
+-- sift_table of Format 2.0: ten options, thirteen of Format 1 accepted and ignored with a NOTICE, RESET without one
+SET sift.test_create_format1 = off;
+CREATE TABLE rt (id int, v text) USING sift_table;
+SELECT sift.table_set_option('rt', 'compression', 'zstd:3');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('rt', 'auto_defrag', 'off');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('rt', 'dead_rewrite_pct', '20');
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('rt', 'write_buffer_limit', '2048');
+NOTICE:  option "write_buffer_limit" of sift_table "rt" is an option of Format 1 that Format 2.0 ignores
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('rt', 'wide_rows', 'off');
+NOTICE:  option "wide_rows" of sift_table "rt" is an option of Format 1 that Format 2.0 ignores
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('rt', 'auto_defrag_budget', '64');
+NOTICE:  option "auto_defrag_budget" of sift_table "rt" is an option of Format 1 that Format 2.0 ignores
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT name, value, source FROM sift.table_options('rt') WHERE source = 'table' ORDER BY name;
+       name       | value  | source 
+------------------+--------+--------
+ auto_defrag      | off    | table
+ compression      | zstd:3 | table
+ dead_rewrite_pct | 20     | table
+(3 rows)
+
+SELECT sift.table_reset_option('rt');
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
+SELECT count(*) AS options_left FROM sift.table_options('rt') WHERE source = 'table';
+ options_left 
+--------------
+            0
+(1 row)
+
+DROP TABLE rt, rd;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
