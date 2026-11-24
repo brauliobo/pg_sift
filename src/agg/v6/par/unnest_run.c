@@ -324,7 +324,7 @@ redo_serial(UnPar *r)
 
 /*
  * The threads the leader makes for within work_mem (fewer than asked, or 0 when it does not hold two): each has its scratch, a sink of words, the slots of the ring, and what is left of its share
- * goes two thirds to its state (the tables and the partitions of its groups) and one third to its stream of groups
+ * goes five sixths to its state (the tables and the partitions of its groups) and one sixth to its stream of groups
  */
 static int
 threads_fit(UnPar *r, int nthreads)
@@ -339,8 +339,8 @@ threads_fit(UnPar *r, int nthreads)
 	if (nthreads < 2)
 		return 0;
 	share = budget / nthreads - fixed;
-	r->state_bytes = share * 2 / 3;
-	r->sink_bytes = share / 3;
+	r->state_bytes = share * 5 / 6;
+	r->sink_bytes = share / 6;
 	return nthreads;
 }
 

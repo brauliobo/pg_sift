@@ -7,7 +7,7 @@
 #include "agg/v6/par/tseries.h"
 #include "agg/v6/par/tseries_run.h"
 
-#define SCRATCH_BYTES	(8u << 20)
+#define SCRATCH_BYTES	(2u << 20)
 
 typedef struct TsRun
 {

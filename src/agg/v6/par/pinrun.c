@@ -18,7 +18,7 @@
 #include "core/memtrack.h"
 #include "core/par/pool.h"
 
-#define WORK_BYTES		(16u << 20)
+#define WORK_BYTES		(4u << 20)
 #define STATE_MIN		(8u << 20)
 #define SINK_MIN_BYTES	(1u << 20)
 
@@ -171,8 +171,8 @@ arenas_fit(const SiftV6PinRun *r, int nthreads, size_t *state, size_t *sink)
 	if (per_thread < fixed + STATE_MIN + SINK_MIN_BYTES)
 		return false;
 	share = per_thread - fixed;
-	*state = Max((uint64) STATE_MIN, Min(4 * rec * rows / nthreads, share * 2 / 3));
-	*sink = Max((uint64) SINK_MIN_BYTES, Min(2 * out_rec * rows / nthreads, share / 3));
+	*state = Max((uint64) STATE_MIN, Min(4 * rec * rows / nthreads, share * 5 / 6));
+	*sink = Max((uint64) SINK_MIN_BYTES, Min(2 * out_rec * rows / nthreads, share / 6));
 	return true;
 }
 
