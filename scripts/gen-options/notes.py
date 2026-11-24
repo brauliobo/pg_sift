@@ -46,7 +46,8 @@ def read_tsv(text, cols, name, errors):
     return rows
 
 
-NOTE_COLS = ['key', 'applies', 'values', 'purpose', 'link', 'since']
+NOTE_COLS = ['key', 'applies', 'values', 'purpose', 'link', 'since', 'replacement']
+F1_ONLY = re.compile(r'Format 1 only \(deprecated in 6\.0; (?:replaced by (\w+)|(automatic)) in Format 2\.0\)')
 
 
 def anchors(path, cache={}):
@@ -82,6 +83,12 @@ def check(opts, notes, errors, released, srcs=None):
             errors.append('%s: purpose is %d characters (max 140)' % (where, len(r['purpose'])))
         if r['since'] and not re.fullmatch(r'\d+\.\d+', r['since']):
             errors.append('%s: since must be MAJOR.MINOR (e.g. 6.0)' % where)
+        o = next(o for o in docs if o['key'] == k)
+        if (o['status'] == 'deprecated') != bool(r['replacement']):
+            errors.append('%s: replacement must be set for a deprecated option of src/ and for no other' % where)
+        m = F1_ONLY.match(o['short'])
+        if m and r['replacement'] != (m.group(1) or 'automatic in Format 2.0'):
+            errors.append('%s: replacement is %s but src/ says %s' % (where, r['replacement'] or 'empty', m.group(1) or 'automatic in Format 2.0'))
         if r['link']:
             f, _, anchor = r['link'].partition('#')
             if not os.path.exists(os.path.join(ROOT, 'docs', f)) or (anchor and anchor not in anchors(f)):

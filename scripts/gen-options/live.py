@@ -35,6 +35,8 @@ def render(opts, notes, released):
 def live(opts):
     errors = []
     db = 'sift_options_%d' % os.getpid()
+    hidden = sorted(o['name'] for o in opts if o['kind'] == 'tbl' and o['status'] == 'deprecated')
+    pg_array = lambda names: "'{%s}'" % ','.join(names)
     psql = lambda d, q: subprocess.run(['psql', '-X', '-q', '--csv', '-v', 'ON_ERROR_STOP=1', '-d', d], input=q, capture_output=True, text=True)
     r = psql('postgres', 'CREATE DATABASE ' + db)
     if r.returncode:
@@ -44,24 +46,34 @@ def live(opts):
         r = psql(db, """CREATE EXTENSION pg_sift; CREATE EXTENSION pg_sift_test; SELECT sift.version() \\g /dev/null
             SELECT 'guc', name, vartype, boot_val, coalesce(min_val, ''), coalesce(max_val, ''), context, coalesce(unit, ''), short_desc, coalesce(extra_desc, ''), coalesce(array_to_string(enumvals, ','), '')
               FROM pg_settings WHERE name LIKE 'sift.%';
-            SELECT 'rel', am, name, type, dflt, '', '', '', '', '', '' FROM sift._test_reloptions()""")
+            SELECT 'rel', am, name, type, dflt, '', '', '', '', '', '' FROM sift._test_reloptions();
+            SET sift.test_create_format1 = off; CREATE TABLE sift_options_probe (id int) USING sift_table;
+            SELECT 'tbl', name, '', '', '', '', '', '', '', '', '' FROM sift.table_options('sift_options_probe');
+            SELECT 'hidden', n, sift.table_get_option('sift_options_probe', n), '', '', '', '', '', '', '', '' FROM unnest(HIDDEN::text[]) n""".replace('HIDDEN', pg_array(hidden)))
         if r.returncode:
             return ['live: ' + r.stderr.strip() + ' (a SIFT_TESTING build is needed: scripts/pgtest.sh install)']
-        out = [x for x in csv.reader(r.stdout.splitlines(True)) if len(x) == 11 and x[0] in ('guc', 'rel')]
+        out = [x for x in csv.reader(r.stdout.splitlines(True)) if len(x) == 11 and x[0] in ('guc', 'rel', 'tbl', 'hidden')]
         have = {}
         for x in out:
             if x[0] == 'guc':
                 have[x[1]] = x
-            else:
+            elif x[0] == 'rel':
                 have['%s(%s)' % (x[1], x[2])] = x
+            else:
+                have['sift_table(%s)' % x[1]] = x
         mine = {o['key']: o for o in opts}
         ctx = {'user': 'session', 'superuser': 'superuser', 'sighup': 'reload', 'postmaster': 'restart'}
         for k, x in sorted(have.items()):
             o = mine.get(k)
+            if o is None and k.startswith('sift.test_'):
+                continue
             if o is None:
                 errors.append('live: %s is in the library but not in src/ as scripts/gen-options.sh reads it (a call it does not parse)' % k)
                 continue
-            if o['kind'] == 'guc':
+            if o['kind'] == 'tbl':
+                if (x[0] == 'hidden') != (o['status'] == 'deprecated'):
+                    errors.append('live: %s is %s in the library but %s in src/' % (k, 'hidden' if x[0] == 'hidden' else 'listed', o['status']))
+            elif o['kind'] == 'guc':
                 _, _, vt, boot, lo, hi, cx, unit, short, extra, enums = x
                 same = {'bool': lambda: (boot == 'on') == o['default'], 'integer': lambda: int(boot) == o['default'] and int(lo) == o['lo'] and int(hi) == o['hi'],
                         'real': lambda: float(boot) == o['default'] and float(lo) == o['lo'] and float(hi) == o['hi'], 'string': lambda: boot == o['default'],

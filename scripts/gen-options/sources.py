@@ -1,4 +1,6 @@
-# Options read from C sources: DefineCustom*Variable(), add_*_reloption(), and opt_desc[] (src/table/v1/options.c).
+# Options read from C sources: DefineCustom*Variable(), add_*_reloption(), and the sift_table option name arrays (src/table/f2/f2_options.c).
+# An option is deprecated when its source says so: a sift_col description that starts with 'Format 1 only (deprecated' or 'Deprecated', a
+# sift_table option of sift_tbl_f2_hidden_option_names[], or a name of DIAGNOSTIC (the BM25 options that exist for diagnostics, not for tuning).
 import csv
 import functools
 import glob
@@ -17,6 +19,10 @@ ROOT = os.getcwd()
 CONST = {'INT_MAX': 2147483647, 'INT_MIN': -2147483648, 'MAX_KILOBYTES': 2147483647, 'true': 1, 'false': 0}
 KIND_AM = {'sift_relopt_kind': 'sift', 'col_relopt_kind': 'sift_col', 'stub_relopt_kind': None}
 APPLIES = ['all', 'BM25', 'sift_col', 'sift_table']
+DIAGNOSTIC = {'sift(build_segments)'}
+DEPRECATED_PREFIX = ('Format 1 only (deprecated', 'Deprecated')
+TBL_KINDS = {'OPT_TEXT': 'string', 'OPT_BOOL': 'bool', 'OPT_PCT': 'int', 'OPT_SIZE': 'int'}
+TBL_SRC = 'table/f2/f2_options.c'
 CTX = {'PGC_USERSET': 'session', 'PGC_SUSET': 'superuser', 'PGC_SIGHUP': 'reload', 'PGC_POSTMASTER': 'restart'}
 ARGS = {'Bool': ['name', 'short', 'long', 'var', 'default', 'ctx', 'flags'],
         'Int': ['name', 'short', 'long', 'var', 'default', 'lo', 'hi', 'ctx', 'flags'],
@@ -85,7 +91,7 @@ def collect(srcs):
                     a = dict(zip(RELARGS[t], a))
                 o = dict(kind=what, type=t.lower(), where=where, testing=line in tl or string(a['name']).startswith('sift.test_'),
                          name=string(a['name']), short=norm(string(a['short'])), long=norm(string(a.get('long', 'NULL'))),
-                         unit='', ctx=CTX.get(a.get('ctx', ''), ''), lo=None, hi=None, am=None, members=None)
+                         unit='', ctx=CTX.get(a.get('ctx', ''), ''), lo=None, hi=None, am=None, members=None, status='active')
                 if what == 'rel':
                     if a['kind'] not in KIND_AM:
                         errors.append('%s: add_%s_reloption(%s, ...): unknown reloption kind' % (where, t, a['kind']))
@@ -118,23 +124,26 @@ def collect(srcs):
             except (ValueError, KeyError, TypeError, SyntaxError, NameError) as ex:
                 errors.append('%s: %s' % (where, ex))
 
-    # Parse opt_desc[] from src/table/v1/options.c for sift_table per-table options
     guc_by_name = {o['name']: o for o in opts if o['kind'] == 'guc'}
-    tbl_text = texts.get('table/v1/options.c', '')
-    m_tbl = re.search(r'opt_desc\[[^\]]*\]\s*=\s*\{(.*?)\n\};', tbl_text, re.S)
-    if m_tbl:
-        for m in re.finditer(r'\{"(\w+)"\s*,\s*OPT_(BOOL|INT|STRING)\s*,\s*&(\w+)\s*,\s*([^}]+)\}', m_tbl.group(1)):
-            name, kind_s, var, unit_s = m.group(1), m.group(2).lower(), m.group(3), m.group(4).strip()
+    tbl_text = texts.get(TBL_SRC, '')
+
+    def c_array(var):
+        m = re.search(r'\b%s\[\]\s*=\s*\{(.*?)\};' % var, tbl_text, re.S)
+        if not m:
+            errors.append('src/%s: %s[] not found' % (TBL_SRC, var))
+        return re.findall(r'"(\w+)"|(OPT_\w+)', m.group(1)) if m else []
+
+    for names, kinds, status in (('sift_tbl_f2_option_names', 'documented_kinds', 'active'), ('sift_tbl_f2_hidden_option_names', 'hidden_kinds', 'deprecated')):
+        names, kinds = [n for n, _ in c_array(names)], [k for _, k in c_array(kinds)]
+        if len(names) != len(kinds):
+            errors.append('src/%s: %d option names but %d kinds' % (TBL_SRC, len(names), len(kinds)))
+        for name, kind in zip(names, kinds):
+            kind_s = TBL_KINDS[kind]
             backing = guc_by_name.get('sift.table_' + name) or (guc_by_name.get('sift.async_maintenance') if name == 'auto_defrag' else None)
-            um = re.search(r'GUC_UNIT_(\w+)', unit_s)
-            unit = {'KB': 'kB', 'MB': 'MB', 'MS': 'ms'}.get(um.group(1), '') if um else (backing['unit'] if backing else '')
             dflt = backing['default'] if backing else ('' if kind_s == 'string' else (True if kind_s == 'bool' else 0))
-            lo = backing['lo'] if backing else None
-            hi = backing['hi'] if backing else None
-            opts.append(dict(kind='tbl', am='sift_table', key='sift_table(%s)' % name, name=name, type=kind_s,
-                             default=dflt, lo=lo, hi=hi, unit=unit, ctx='table',
-                             short=backing['short'] if backing else '', long='', members=None,
-                             testing=False, where='table/v1/options.c'))
+            opts.append(dict(kind='tbl', am='sift_table', key='sift_table(%s)' % name, name=name, type=kind_s, default=dflt,
+                             lo=backing['lo'] if backing else None, hi=backing['hi'] if backing else None, unit=backing['unit'] if backing else '',
+                             ctx='table', short=backing['short'] if backing else '', long='', members=None, testing=False, where=TBL_SRC, status=status))
 
     for p, text in texts.items():
         for m in re.finditer(r'relopt_parse_elt\s+\w*tab\[\]\s*=\s*\{(.*?)\};', text, re.S):
@@ -145,6 +154,12 @@ def collect(srcs):
             parsed = set(re.findall(r'\{\s*"(\w+)"\s*,\s*RELOPT_TYPE', m.group(1)))
             for n in sorted(parsed ^ {o['name'] for o in opts if o['kind'] == 'rel' and o['am'] == am}) if am else ():
                 errors.append('src/%s: reloption %s of %s is %s' % (p, n, am, 'parsed but not registered' if n in parsed else 'registered but not parsed'))
+
+    for o in opts:
+        if o['kind'] == 'rel' and (o['short'].startswith(DEPRECATED_PREFIX) or o['key'] in DIAGNOSTIC):
+            o['status'] = 'deprecated'
+    for key in sorted(DIAGNOSTIC - {o['key'] for o in opts}):
+        errors.append('scripts/gen-options/sources.py: DIAGNOSTIC names %s, which src/ does not register' % key)
 
     seen = set()
     for o in opts:

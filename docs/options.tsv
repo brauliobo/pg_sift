@@ -1,99 +1,105 @@
-# One row per release option (97 total in pg_sift 6.0: 27 GUCs, 37 sift_col, 16 sift, 17 sift_table).
-# key<TAB>applies<TAB>values<TAB>purpose<TAB>link<TAB>since
-sift.agg_exact_float	sift_col, sift_table	`on`, `off`	Force bit-identical row-order float8 summation instead of parallel IEEE-754 sums	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	6.0
-sift.async_maintenance	all	`on`, `off`	Run the background maintenance scheduler: L0 flush, compaction, scope refresh, and sift_table defrag	OPERATIONS.md#5-emergency-switches	1.0
-sift.backend_cache_kb	all	`0..max` kB	Hard per-backend LRU cache cap (-1 unlimited removed in 6.0)	OPERATIONS.md#1-the-3-budget-o1-memory-model	3.3
-sift.count_refusals	sift_col, sift_table	`on`, `off`	Record aggregate refusal counts in sift.stats()	ARCHITECTURE.md#refusal-slugs	3.6
-sift.dead_rewrite_pct	sift_col, sift_table	`1..100`	Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct)	OPERATIONS.md#2-disk-compression-and-wal-sizing	6.0
-sift.enable_agg	sift_col, sift_table	`on`, `off`	Allow planner to select Custom Scan (SiftAgg) and Top-N pushdown	ANALYTICS.md#1-designing-a-sift_col-index	3.0
-sift.enable_col_scan	sift_col	`on`, `off`	Allow planner to use sift_col bitmap and index-only scans	ANALYTICS.md#6-bitmap-and-index-only-scans-siftcol__ops	3.3
-sift.enable_scan	BM25	`on`, `off`	Allow planner to use sift BM25 ranked and count(*) index scans	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0
-sift.explain_refusals	sift_col, sift_table	`on`, `off`	Emit NOTICE explaining why a candidate query kept PostgreSQL's native plan	ARCHITECTURE.md#refusal-slugs	3.6
-sift.filter_pushdown	BM25	`off`, `on`, `force`	Push bitmap filters from other indexes into BM25 ranked scans	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.2
-sift.gpu	sift_col	`off`, `auto`, `on`	Run the integer aggregates of a SiftAgg scan on a Vulkan device (opt-in; `make VULKAN=1`)	GPU.md#settings	3.1
-sift.gpu_cache_mb	sift_col	`16..max` MB	Device memory per backend for column chunks kept on the Vulkan device between queries	GPU.md#settings	3.1
-sift.gpu_device	sift_col	index or name part	Vulkan device used by sift.gpu: its index or part of its name (empty: the best one)	GPU.md#settings	3.1
-sift.gpu_min_rows	sift_col	`0..max`	Index rows above which sift.gpu = auto sends a grouped aggregate to the device	GPU.md#settings	3.1
-sift.log_min_duration	all	`-1..max` ms	Log background maintenance passes taking at least this long (-1 disables)	OPERATIONS.md#5-emergency-switches	1.1
-sift.maintenance_cost_delay	all	`0..100` ms	Sleep delay per maintenance I/O batch to limit background CPU/disk impact	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1
-sift.maintenance_naptime	all	`200..60000` ms	Base interval and backoff floor for background maintenance workers	OPERATIONS.md#5-emergency-switches	1.0
-sift.maintenance_wal_rate	all	`0..1048576` kB/s	Max WAL rate for background compaction and sift_table defrag	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1
-sift.max_expansions	BM25	`1..1000000`	Max terms expanded by a wildcard, prefix, regex, or fuzzy BM25 leaf before merging	SEARCH.md#2-siftql-query-syntax	1.0
-sift.max_maint_workers	all	`0..8`	Cap on the dynamic pool of background maintenance workers	OPERATIONS.md#5-emergency-switches	6.0
-sift.on_corruption	all	`quarantine`, `error`	Quarantine damaged indexes and fall back to heap, or raise errors immediately	OPERATIONS.md#6-quarantine-and-corruption-recovery	5.0
-sift.parallel_scan	all	`on`, `off`	Allow parallel scan, aggregation, build, and compaction plans (bounded by max_parallel_workers_per_gather)	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	1.1
-sift.rls_scores	BM25	`on`, `off`	Permit BM25 ranked scans under row-level security	SEARCH.md#8-row-level-security-siftrls_scores	3.6
-sift.shared_cache_kb	all	`0..max` kB	Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats	OPERATIONS.md#1-the-3-budget-o1-memory-model	6.0
-sift.simd	all	`auto`, `scalar`, `avx2`, `avx512`, `neon`	Override runtime SIMD kernel selection for testing or diagnostics	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	3.0
-sift.standby_conflicts	all	`on`, `off`	Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys	OPERATIONS.md#7-crash-safety-locks-and-replication	1.1
-sift.vacuum_rewrite_limit	all	`0..1048576` MB	Max bytes VACUUM rewrites per pass on a single index (0 = unlimited)	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1
-sift_col(compression)	sift_col	`auto`, `lz4`, `zstd`, `none`, `col=codec`	Compression codec override for L1/L2 parts	ARCHITECTURE.md#2-two-tier-adaptive-compression-and-shared-value-store	3.0
-sift_col(connect)	sift_col	`'fk -> [schema.]parent(key)'`	Connect up to 32 parent sift_col indexes for heap-free parent joins	ANALYTICS.md#5-joins-set-filters-and-connect	4.3
-sift_col(dead_rewrite_pct)	sift_col	`0..100`	Dead-row percentage triggering compaction (0 inherits sift.dead_rewrite_pct, 100 = never)	OPERATIONS.md#2-disk-compression-and-wal-sizing	3.0
-sift_col(key_order)	sift_col	`'c1 [DESC], ...'` (1..8), `auto`, `off`	Physical sort and partition key inside Format Major 2 parts	ANALYTICS.md#2-physical-sort-and-partitioning-key_order	5.0
-sift_col(paths)	sift_col	`auto` or path spec	JSONB shredding paths	ANALYTICS.md#4-shredding-jsonb-columns-paths	3.4
-sift_col(preagg)	sift_col	`auto`, `off`, `cube(...); rollup(...); calendar(...)`	Granule pre-aggregate cube, rollup, and calendar definitions	ANALYTICS.md#3-pre-aggregates-preagg	3.0
-sift_col(projection)	sift_col	tag string	Named projection registry tag	REFERENCE.md#column-index-and-scopes	5.0
-sift_col(scope)	sift_col	`'name: fk -> rel(member, key) [cluster] [topk(...)] [null_filter(...)]'`	Entity-Once multi-tenant/hierarchy scope declarations with automatic primary-parent clustering	SCOPES.md#1-declaring-a-scope	5.0
-sift_col(skip_index)	sift_col	`'column: bloom'`, `'column: trigram'`, comma separated	High-cardinality skipping index per column: Bloom for equality and IN, trigram for LIKE and ILIKE	ANALYTICS.md#1-designing-a-sift_col-index	6.0
-sift_col(sketches)	sift_col	`'hll(col, ...); kll(col, ...)'`	Opt-in approximate sketches for sift.approx_count_distinct() and quantiles	ANALYTICS.md#8-approximate-distinct-counts-siftapprox_count_distinct	6.0
-sift_col(track_changes)	sift_col	`auto`, `off`	Heap-address (ctid) change tracking for COW deletion vectors; works on any table, no primary key needed	ANALYTICS.md#9-change-tracking-track_changes	3.4
-sift_col(vacuum_truncate)	sift_col	`true`, `false`	Truncate reclaimed trailing blocks during VACUUM	OPERATIONS.md#34-space-free-extents-and-vblocks_left-siftspace	1.2
-sift(accent_folding)	BM25	`true`, `false`	Fold diacritics (defaults off with pg_ts_config)	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(analyzer)	BM25	`text`, `keyword`	Word tokenizer or whole-string keyword analyzer	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(b)	BM25	`0.0..1.0`	Okapi BM25 document length normalization factor	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(case_folding)	BM25	`true`, `false`	Lowercase tokens during indexing and querying	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(dead_rewrite_pct)	BM25	`1..100`	Dead-document percentage triggering segment rewrite during VACUUM	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.1
-sift(fields)	BM25	comma-separated field names	Named sections for sift.sections() and sift.field_query()	SEARCH.md#6-weighted-fields-siftsections-and-siftfield_query	1.1
-sift(k1)	BM25	`0.0..1000.0`	Okapi BM25 term-frequency saturation factor	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(merge_fanin)	BM25	`2..64`	Number of BM25 segments merged per compaction pass	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1
-sift(positions)	BM25	`true`, `false`	Store word positions in postings (false shrinks index; phrases recheck heap)	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(prefix_index)	BM25	`0..15`	Pre-index token prefixes of length 1..N for fast autocomplete	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.1
-sift(stemmer)	BM25	`'en'` or `pg_ts_config` name	Snowball English or any PostgreSQL text search configuration	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0
-sift(vacuum_segments)	BM25	`1..128`	Target BM25 segment count after VACUUM	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1
-sift(vacuum_truncate)	BM25	`true`, `false`	Truncate reclaimed trailing blocks during VACUUM	OPERATIONS.md#34-space-free-extents-and-vblocks_left-siftspace	1.2
-sift(write_buffer_limit)	BM25	`64..1048576` kB	Write-buffer flush threshold before sealing an immutable segment	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0
-sift_table(auto_defrag)	sift_table	`true`, `false`	Background compaction toggle (inherits sift.async_maintenance)	TABLES.md#3-per-table-options-10-options	4.2
-sift_table(compression)	sift_table	`auto`, `lz4`, `zstd`, `none`, `col=codec`	Per-table or per-column compression codec override	TABLES.md#3-per-table-options-10-options	4.2
-sift_table(dead_rewrite_pct)	sift_table	`0..100`	Dead-row percentage triggering partition compaction (0 inherits sift.dead_rewrite_pct)	TABLES.md#3-per-table-options-10-options	4.2
-sift_table(key_order)	sift_table	`'c1 [DESC], ...'` (1..8)	Online physical sort and partition key	TABLES.md#4-online-key_order-and-partition-management	4.3
-sift_col(write_buffer_limit)	sift_col		Write-buffer size before it is sealed for promotion; the base of the merge tiers	ANALYTICS.md#1-designing-a-sift_col-index	3.3
-sift_col(rollup_on_demand)	sift_col		A scan that reads units for lack of their rollups asks the worker to rebuild them	ANALYTICS.md#1-designing-a-sift_col-index	4.0
-sift_col(cluster_advice)	sift_col		Let sift.cluster_advice() recommend a physical order or key_cut, and CREATE INDEX suggest key_cut	ANALYTICS.md#1-designing-a-sift_col-index	3.4
-sift_col(array_lengths)	sift_col	`auto`, `on`, `off`	Keep the element counts of array columns so cardinality() and array_length() are answered from the index	ANALYTICS.md#1-designing-a-sift_col-index	3.4
-sift_col(dict_lookup)	sift_col	`auto`, `on`, `off`	Test equality, IN and prefix on a dictionary of 1,024 strings or more in place, without parsing it whole	ANALYTICS.md#1-designing-a-sift_col-index	3.5
-sift_col(cube_minmax)	sift_col	`on`, `off`	Keep min and max per group in the cube so grouped min/max reads no row	ANALYTICS.md#1-designing-a-sift_col-index	4.0
-sift_col(key_table)	sift_col	`on`, `off`	Answer count, sum, min and max for a key = x, IN, range or GROUP BY of the key from per-key lists	ANALYTICS.md#1-designing-a-sift_col-index	4.2
-sift_col(rollup_dims)	sift_col		Older spelling of rollup_columns, still accepted	ANALYTICS.md#1-designing-a-sift_col-index	4.1
-sift_col(rollup_columns)	sift_col	`col, col`, `col, col: measure, ...`, `auto`, `off`	Pick the low-cardinality column pairs whose GROUP BY and filter are read from a per-unit rollup	ANALYTICS.md#1-designing-a-sift_col-index	4.1
-sift_col(calendar_columns)	sift_col	`col, col`, `all`, `auto`, `off`	Keep calendar cells of date and timestamp columns so date_trunc, extract and date ranges read cells	ANALYTICS.md#1-designing-a-sift_col-index	4.2
-sift_col(key_columns)	sift_col	`auto`, `off`, `col, col`	Keep per-unit key lists, bitmaps or bloom filters for count(DISTINCT) and equality or IN skipping	ANALYTICS.md#1-designing-a-sift_col-index	4.2
-sift_col(key_cut)	sift_col	`auto`, `off`, `col, col`	Cut units by the range of up to 4 key columns so a lookup or range of the key reads only its units	ANALYTICS.md#1-designing-a-sift_col-index	3.4
-sift_col(key_cut_rows)	sift_col		Deprecated and ignored; accepted so that dumps and ALTER INDEX .. RESET keep working	ANALYTICS.md#1-designing-a-sift_col-index	3.4
-sift_col(order_columns)	sift_col		Deprecated and ignored; order_array_columns answers what its sorted runs did	ANALYTICS.md#1-designing-a-sift_col-index	3.4
-sift_col(order_array_columns)	sift_col	`auto`, `off`, `col, col`	Keep a sorted array of every row key so a range or ORDER BY col LIMIT n reads only the entries needed	ANALYTICS.md#1-designing-a-sift_col-index	4.2
-sift_col(order_layout)	sift_col	`auto`, `whole`, `compact`, `compact: col; whole: col`	Lay out the order arrays whole (exact key) or compact (heap address and bucketed key)	ANALYTICS.md#1-designing-a-sift_col-index	4.2
-sift_col(order_array_group)	sift_col	a column name	Group the order arrays by a column so WHERE group = x ORDER BY col LIMIT n reads n entries	ANALYTICS.md#1-designing-a-sift_col-index	4.2
-sift_col(hll_columns)	sift_col	`col, col`	Keep a HyperLogLog sketch per unit for sift.approx_count_distinct; count(DISTINCT) stays exact	ANALYTICS.md#1-designing-a-sift_col-index	3.5
-sift_col(point_columns)	sift_col		Deprecated and ignored; point_tid_columns lists the heap addresses of the rows of a column	ANALYTICS.md#1-designing-a-sift_col-index	3.7
-sift_col(count_columns)	sift_col	`col, col`, `off`	Order the rows of each dictionary string so count(*) of a prefix, range or equality reads no row	ANALYTICS.md#1-designing-a-sift_col-index	3.5
-sift_col(point_tid_columns)	sift_col	`col, col`	List heap addresses in the point directory so an equality or short IN list reads no unit	ANALYTICS.md#1-designing-a-sift_col-index	3.7
-sift_col(return_columns)	sift_col	`col, col`	Return text, varchar and uuid columns from the segment dictionary in an index-only scan	ANALYTICS.md#1-designing-a-sift_col-index	3.3
-sift_col(superunit)	sift_col	`0`, `2..256`	Store merged sums and cubes per group of units so a scan no predicate cuts through reads one summary	ANALYTICS.md#1-designing-a-sift_col-index	3.3
-sift_col(rollup)	sift_col		Deprecated alias of rollup_leaves, which wins when both are set	ANALYTICS.md#1-designing-a-sift_col-index	4.1
-sift_col(rollup_leaves)	sift_col	`leaf, leaf`, `auto`, `off`	Name the leaves of array elements and map values that the rollup of every unit groups by	ANALYTICS.md#1-designing-a-sift_col-index	4.1
-sift(mutable_limit)	BM25		Deprecated alias of write_buffer_limit, accepted forever	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0
-sift(build_segments)	BM25		Segments written by CREATE INDEX (0: one per build participant); a diagnostic that turns the parallel build off	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0
-sift_table(write_buffer_limit)	sift_table		Row-format write buffer size before it is closed and promoted into columns	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(wide_rows)	sift_table	`on`, `off`	Write a row that does not fit a write buffer (up to 1 GB) instead of refusing it	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(inline_promote)	sift_table	`on`, `off`	Promote closed write buffers into columns in the writer while rows are inserted	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(async_promote)	sift_table	`on`, `off`	Ask a worker to promote a closed buffer so the pass stays out of the statement	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(backpressure)	sift_table	`0..99`	A writer that needs a new buffer first waits for maintenance and merges once the directory passes this percent	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(hot_update)	sift_table	`on`, `off`	An UPDATE that keeps the indexed columns adds no index entries; old entries lead to the new version	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(bulk_groups)	sift_table	`on`, `off`	COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write straight into column groups	TABLES.md#3-per-table-options-10-options	3.3
-sift_table(dict_lookup)	sift_table	`on`, `off`	Test strings against a dictionary of 1,024 strings or more in place, without loading it whole	TABLES.md#3-per-table-options-10-options	3.5
-sift_table(key_table)	sift_table	`on`, `off`	Answer count, sum, min and max for a key = x, IN, range or GROUP BY of the key from per-key lists	TABLES.md#3-per-table-options-10-options	4.2
-sift_table(auto_defrag_free_pct)	sift_table	`1..100`	Free-space percent of a table that makes background defrag start	TABLES.md#3-per-table-options-10-options	5.0
-sift_table(auto_defrag_budget)	sift_table	`0..1048576` MB	Megabytes a background defrag pass may rewrite	TABLES.md#3-per-table-options-10-options	5.0
-sift_table(auto_defrag_coalesce)	sift_table	`on`, `off`	Let background defrag merge neighbouring small parts into one	TABLES.md#3-per-table-options-10-options	5.0
-sift_table(auto_defrag_indexes)	sift_table	`on`, `off`	Let background defrag rebuild the secondary indexes of the table	TABLES.md#3-per-table-options-10-options	5.0
+# One row per option: 103 in pg_sift 6.0 (63 documented knobs: 27 GUCs, 12 sift_col, 14 sift, 10 sift_table; 40 deprecated or Format 1 compatibility options).
+# key<TAB>applies<TAB>values<TAB>purpose<TAB>link<TAB>since<TAB>replacement (deprecated options only)
+sift.agg_exact_float	sift_col, sift_table	`on`, `off`	Force bit-identical row-order float8 summation instead of parallel IEEE-754 sums	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	6.0	
+sift.async_maintenance	all	`on`, `off`	Run the background maintenance scheduler: L0 flush, compaction, scope refresh, and sift_table defrag	OPERATIONS.md#5-emergency-switches	1.0	
+sift.backend_cache_kb	all	`0..max` kB	Hard per-backend LRU cache cap (-1 unlimited removed in 6.0)	OPERATIONS.md#1-the-3-budget-o1-memory-model	3.3	
+sift.count_refusals	sift_col, sift_table	`on`, `off`	Record aggregate refusal counts in sift.stats()	ARCHITECTURE.md#refusal-slugs	3.6	
+sift.dead_rewrite_pct	sift_col, sift_table	`1..100`	Default dead-row percentage triggering compaction of sift_col and sift_table (per relation: dead_rewrite_pct)	OPERATIONS.md#2-disk-compression-and-wal-sizing	6.0	
+sift.enable_agg	sift_col, sift_table	`on`, `off`	Allow planner to select Custom Scan (SiftAgg) and Top-N pushdown	ANALYTICS.md#1-designing-a-sift_col-index	3.0	
+sift.enable_col_scan	sift_col	`on`, `off`	Allow planner to use sift_col bitmap and index-only scans	ANALYTICS.md#6-bitmap-and-index-only-scans-siftcol__ops	3.3	
+sift.enable_scan	BM25	`on`, `off`	Allow planner to use sift BM25 ranked and count(*) index scans	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0	
+sift.explain_refusals	sift_col, sift_table	`on`, `off`	Emit NOTICE explaining why a candidate query kept PostgreSQL's native plan	ARCHITECTURE.md#refusal-slugs	3.6	
+sift.filter_pushdown	BM25	`off`, `on`, `force`	Push bitmap filters from other indexes into BM25 ranked scans	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.2	
+sift.gpu	sift_col	`off`, `auto`, `on`	Run the integer aggregates of a SiftAgg scan on a Vulkan device (opt-in; `make VULKAN=1`)	GPU.md#settings	3.1	
+sift.gpu_cache_mb	sift_col	`16..max` MB	Device memory per backend for column chunks kept on the Vulkan device between queries	GPU.md#settings	3.1	
+sift.gpu_device	sift_col	index or name part	Vulkan device used by sift.gpu: its index or part of its name (empty: the best one)	GPU.md#settings	3.1	
+sift.gpu_min_rows	sift_col	`0..max`	Index rows above which sift.gpu = auto sends a grouped aggregate to the device	GPU.md#settings	3.1	
+sift.log_min_duration	all	`-1..max` ms	Log background maintenance passes taking at least this long (-1 disables)	OPERATIONS.md#5-emergency-switches	1.1	
+sift.maintenance_cost_delay	all	`0..100` ms	Sleep delay per maintenance I/O batch to limit background CPU/disk impact	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
+sift.maintenance_naptime	all	`200..60000` ms	Base interval and backoff floor for background maintenance workers	OPERATIONS.md#5-emergency-switches	1.0	
+sift.maintenance_wal_rate	all	`0..1048576` kB/s	Max WAL rate for background compaction and sift_table defrag	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
+sift.max_expansions	BM25	`1..1000000`	Max terms expanded by a wildcard, prefix, regex, or fuzzy BM25 leaf before merging	SEARCH.md#2-siftql-query-syntax	1.0	
+sift.max_maint_workers	all	`0..8`	Cap on the dynamic pool of background maintenance workers	OPERATIONS.md#5-emergency-switches	6.0	
+sift.on_corruption	all	`quarantine`, `error`	Quarantine damaged indexes and fall back to heap, or raise errors immediately	OPERATIONS.md#6-quarantine-and-corruption-recovery	5.0	
+sift.parallel_scan	all	`on`, `off`	Allow parallel scan, aggregation, build, and compaction plans (bounded by max_parallel_workers_per_gather)	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	1.1	
+sift.rls_scores	BM25	`on`, `off`	Permit BM25 ranked scans under row-level security	SEARCH.md#8-row-level-security-siftrls_scores	3.6	
+sift.shared_cache_kb	all	`0..max` kB	Unified server-wide DSM cap across lookup tables, dim maps, dicts, and leaf stats	OPERATIONS.md#1-the-3-budget-o1-memory-model	6.0	
+sift.simd	all	`auto`, `scalar`, `avx2`, `avx512`, `neon`	Override runtime SIMD kernel selection for testing or diagnostics	ARCHITECTURE.md#3-2048-row-simd-vectorized-execution-siftagg	3.0	
+sift.standby_conflicts	all	`on`, `off`	Delay extent reuse on primary to reduce retryable 40001 conflicts on standbys	OPERATIONS.md#7-crash-safety-locks-and-replication	1.1	
+sift.vacuum_rewrite_limit	all	`0..1048576` MB	Max bytes VACUUM rewrites per pass on a single index (0 = unlimited)	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
+sift_col(compression)	sift_col	`auto`, `lz4`, `zstd`, `none`, `col=codec`	Compression codec override for L1/L2 parts	ARCHITECTURE.md#2-two-tier-adaptive-compression-and-shared-value-store	3.0	
+sift_col(connect)	sift_col	`'fk -> [schema.]parent(key)'`	Connect up to 32 parent sift_col indexes for heap-free parent joins	ANALYTICS.md#5-joins-set-filters-and-connect	4.3	
+sift_col(dead_rewrite_pct)	sift_col	`0..100`	Dead-row percentage triggering compaction (0 inherits sift.dead_rewrite_pct, 100 = never)	OPERATIONS.md#2-disk-compression-and-wal-sizing	3.0	
+sift_col(key_order)	sift_col	`'c1 [DESC], ...'` (1..8), `auto`, `off`	Physical sort and partition key inside Format Major 2 parts	ANALYTICS.md#2-physical-sort-and-partitioning-key_order	5.0	
+sift_col(paths)	sift_col	`auto` or path spec	JSONB shredding paths	ANALYTICS.md#4-shredding-jsonb-columns-paths	3.4	
+sift_col(preagg)	sift_col	`auto`, `off`, `cube(...); rollup(...); calendar(...)`	Granule pre-aggregate cube, rollup, and calendar definitions	ANALYTICS.md#3-pre-aggregates-preagg	3.0	
+sift_col(projection)	sift_col	tag string	Named projection registry tag	REFERENCE.md#column-index-and-scopes	5.0	
+sift_col(scope)	sift_col	`'name: fk -> rel(member, key) [cluster] [topk(...)] [null_filter(...)]'`	Entity-Once multi-tenant/hierarchy scope declarations with automatic primary-parent clustering	SCOPES.md#1-declaring-a-scope	5.0	
+sift_col(skip_index)	sift_col	`'column: bloom'`, `'column: trigram'`, comma separated	High-cardinality skipping index per column: Bloom for equality and IN, trigram for LIKE and ILIKE	ANALYTICS.md#1-designing-a-sift_col-index	6.0	
+sift_col(sketches)	sift_col	`'hll(col, ...); kll(col, ...)'`	Opt-in approximate sketches for sift.approx_count_distinct() and quantiles	ANALYTICS.md#8-approximate-distinct-counts-siftapprox_count_distinct	6.0	
+sift_col(track_changes)	sift_col	`auto`, `off`	Heap-address (ctid) change tracking for COW deletion vectors; works on any table, no primary key needed	ANALYTICS.md#9-change-tracking-track_changes	3.4	
+sift_col(vacuum_truncate)	sift_col	`true`, `false`	Truncate reclaimed trailing blocks during VACUUM	OPERATIONS.md#34-space-free-extents-and-vblocks_left-siftspace	1.2	
+sift(accent_folding)	BM25	`true`, `false`	Fold diacritics (defaults off with pg_ts_config)	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(analyzer)	BM25	`text`, `keyword`	Word tokenizer or whole-string keyword analyzer	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(b)	BM25	`0.0..1.0`	Okapi BM25 document length normalization factor	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(case_folding)	BM25	`true`, `false`	Lowercase tokens during indexing and querying	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(dead_rewrite_pct)	BM25	`1..100`	Dead-document percentage triggering segment rewrite during VACUUM	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.1	
+sift(fields)	BM25	comma-separated field names	Named sections for sift.sections() and sift.field_query()	SEARCH.md#6-weighted-fields-siftsections-and-siftfield_query	1.1	
+sift(k1)	BM25	`0.0..1000.0`	Okapi BM25 term-frequency saturation factor	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(merge_fanin)	BM25	`2..64`	Number of BM25 segments merged per compaction pass	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
+sift(positions)	BM25	`true`, `false`	Store word positions in postings (false shrinks index; phrases recheck heap)	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(prefix_index)	BM25	`0..15`	Pre-index token prefixes of length 1..N for fast autocomplete	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.1	
+sift(stemmer)	BM25	`'en'` or `pg_ts_config` name	Snowball English or any PostgreSQL text search configuration	SEARCH.md#5-analyzers-stemmers-and-prefixes	1.0	
+sift(vacuum_segments)	BM25	`1..128`	Target BM25 segment count after VACUUM	OPERATIONS.md#2-disk-compression-and-wal-sizing	1.1	
+sift(vacuum_truncate)	BM25	`true`, `false`	Truncate reclaimed trailing blocks during VACUUM	OPERATIONS.md#34-space-free-extents-and-vblocks_left-siftspace	1.2	
+sift(write_buffer_limit)	BM25	`64..1048576` kB	Write-buffer flush threshold before sealing an immutable segment	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0	
+sift_table(auto_defrag)	sift_table	`true`, `false`	Background compaction toggle (inherits sift.async_maintenance)	TABLES.md#3-per-table-options-10-options	4.2	
+sift_table(compression)	sift_table	`auto`, `lz4`, `zstd`, `none`, `col=codec`	Per-table or per-column compression codec override	TABLES.md#3-per-table-options-10-options	4.2	
+sift_table(dead_rewrite_pct)	sift_table	`0..100`	Dead-row percentage triggering partition compaction (0 inherits sift.dead_rewrite_pct)	TABLES.md#3-per-table-options-10-options	4.2	
+sift_table(key_order)	sift_table	`'c1 [DESC], ...'` (1..8)	Online physical sort and partition key	TABLES.md#4-online-key_order-and-partition-management	4.3	
+sift_table(paths)	sift_table	`auto` or path spec	JSONB shredding paths	TABLES.md#3-per-table-options-10-options	6.0	
+sift_table(scope)	sift_table	`'name: fk -> rel(member, key) [cluster] [topk(...)] [null_filter(...)]'`	Entity-Once multi-tenant/hierarchy scope declarations with automatic primary-parent clustering	TABLES.md#3-per-table-options-10-options	6.0	
+sift_table(connect)	sift_table	`'fk -> [schema.]parent(key)'`	Connect up to 32 parent sift_col indexes for heap-free parent joins	TABLES.md#3-per-table-options-10-options	6.0	
+sift_table(preagg)	sift_table	`auto`, `off`, `cube(...); rollup(...); calendar(...)`	Granule pre-aggregate cube, rollup, and calendar definitions	TABLES.md#3-per-table-options-10-options	6.0	
+sift_table(sketches)	sift_table	`'hll(col, ...); kll(col, ...)'`	Opt-in approximate sketches for sift.approx_count_distinct() and quantiles	TABLES.md#3-per-table-options-10-options	6.0	
+sift_table(skip_index)	sift_table	`'column: bloom'`, `'column: trigram'`, comma separated	High-cardinality skipping index per column: Bloom for equality and IN, trigram for LIKE and ILIKE	TABLES.md#3-per-table-options-10-options	6.0	
+sift_col(write_buffer_limit)	sift_col		Write-buffer size before it is sealed for promotion; the base of the merge tiers	ANALYTICS.md#1-designing-a-sift_col-index	3.3	automatic in Format 2.0
+sift_col(rollup_on_demand)	sift_col		A scan that reads units for lack of their rollups asks the worker to rebuild them	ANALYTICS.md#1-designing-a-sift_col-index	4.0	preagg
+sift_col(cluster_advice)	sift_col		Let sift.cluster_advice() recommend a physical order or key_cut, and CREATE INDEX suggest key_cut	ANALYTICS.md#1-designing-a-sift_col-index	3.4	automatic in Format 2.0
+sift_col(array_lengths)	sift_col	`auto`, `on`, `off`	Keep the element counts of array columns so cardinality() and array_length() are answered from the index	ANALYTICS.md#1-designing-a-sift_col-index	3.4	automatic in Format 2.0
+sift_col(dict_lookup)	sift_col	`auto`, `on`, `off`	Test equality, IN and prefix on a dictionary of 1,024 strings or more in place, without parsing it whole	ANALYTICS.md#1-designing-a-sift_col-index	3.5	automatic in Format 2.0
+sift_col(cube_minmax)	sift_col	`on`, `off`	Keep min and max per group in the cube so grouped min/max reads no row	ANALYTICS.md#1-designing-a-sift_col-index	4.0	preagg
+sift_col(key_table)	sift_col	`on`, `off`	Answer count, sum, min and max for a key = x, IN, range or GROUP BY of the key from per-key lists	ANALYTICS.md#1-designing-a-sift_col-index	4.2	automatic in Format 2.0
+sift_col(rollup_dims)	sift_col		Older spelling of rollup_columns, still accepted	ANALYTICS.md#1-designing-a-sift_col-index	4.1	preagg
+sift_col(rollup_columns)	sift_col	`col, col`, `col, col: measure, ...`, `auto`, `off`	Pick the low-cardinality column pairs whose GROUP BY and filter are read from a per-unit rollup	ANALYTICS.md#1-designing-a-sift_col-index	4.1	preagg
+sift_col(calendar_columns)	sift_col	`col, col`, `all`, `auto`, `off`	Keep calendar cells of date and timestamp columns so date_trunc, extract and date ranges read cells	ANALYTICS.md#1-designing-a-sift_col-index	4.2	preagg
+sift_col(key_columns)	sift_col	`auto`, `off`, `col, col`	Keep per-unit key lists, bitmaps or bloom filters for count(DISTINCT) and equality or IN skipping	ANALYTICS.md#1-designing-a-sift_col-index	4.2	skip_index
+sift_col(key_cut)	sift_col	`auto`, `off`, `col, col`	Cut units by the range of up to 4 key columns so a lookup or range of the key reads only its units	ANALYTICS.md#1-designing-a-sift_col-index	3.4	key_order
+sift_col(key_cut_rows)	sift_col		Deprecated and ignored; accepted so that dumps and ALTER INDEX .. RESET keep working	ANALYTICS.md#1-designing-a-sift_col-index	3.4	none (ignored)
+sift_col(order_columns)	sift_col		Deprecated and ignored; order_array_columns answers what its sorted runs did	ANALYTICS.md#1-designing-a-sift_col-index	3.4	key_order
+sift_col(order_array_columns)	sift_col	`auto`, `off`, `col, col`	Keep a sorted array of every row key so a range or ORDER BY col LIMIT n reads only the entries needed	ANALYTICS.md#1-designing-a-sift_col-index	4.2	key_order
+sift_col(order_layout)	sift_col	`auto`, `whole`, `compact`, `compact: col; whole: col`	Lay out the order arrays whole (exact key) or compact (heap address and bucketed key)	ANALYTICS.md#1-designing-a-sift_col-index	4.2	key_order
+sift_col(order_array_group)	sift_col	a column name	Group the order arrays by a column so WHERE group = x ORDER BY col LIMIT n reads n entries	ANALYTICS.md#1-designing-a-sift_col-index	4.2	key_order
+sift_col(hll_columns)	sift_col	`col, col`	Keep a HyperLogLog sketch per unit for sift.approx_count_distinct; count(DISTINCT) stays exact	ANALYTICS.md#1-designing-a-sift_col-index	3.5	sketches
+sift_col(point_columns)	sift_col		Deprecated and ignored; point_tid_columns lists the heap addresses of the rows of a column	ANALYTICS.md#1-designing-a-sift_col-index	3.7	automatic in Format 2.0
+sift_col(count_columns)	sift_col	`col, col`, `off`	Order the rows of each dictionary string so count(*) of a prefix, range or equality reads no row	ANALYTICS.md#1-designing-a-sift_col-index	3.5	automatic in Format 2.0
+sift_col(point_tid_columns)	sift_col	`col, col`	List heap addresses in the point directory so an equality or short IN list reads no unit	ANALYTICS.md#1-designing-a-sift_col-index	3.7	automatic in Format 2.0
+sift_col(return_columns)	sift_col	`col, col`	Return text, varchar and uuid columns from the segment dictionary in an index-only scan	ANALYTICS.md#1-designing-a-sift_col-index	3.3	automatic in Format 2.0
+sift_col(superunit)	sift_col	`0`, `2..256`	Store merged sums and cubes per group of units so a scan no predicate cuts through reads one summary	ANALYTICS.md#1-designing-a-sift_col-index	3.3	preagg
+sift_col(rollup)	sift_col		Deprecated alias of rollup_leaves, which wins when both are set	ANALYTICS.md#1-designing-a-sift_col-index	4.1	preagg
+sift_col(rollup_leaves)	sift_col	`leaf, leaf`, `auto`, `off`	Name the leaves of array elements and map values that the rollup of every unit groups by	ANALYTICS.md#1-designing-a-sift_col-index	4.1	preagg
+sift(mutable_limit)	BM25		Deprecated alias of write_buffer_limit, accepted forever	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0	write_buffer_limit
+sift(build_segments)	BM25		Segments written by CREATE INDEX (0: one per build participant); a diagnostic that turns the parallel build off	SEARCH.md#1-creating-a-sift-index-and-include-filters	1.0	none (diagnostic)
+sift_table(write_buffer_limit)	sift_table		Row-format write buffer size before it is closed and promoted into columns	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(wide_rows)	sift_table	`on`, `off`	Write a row that does not fit a write buffer (up to 1 GB) instead of refusing it	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(inline_promote)	sift_table	`on`, `off`	Promote closed write buffers into columns in the writer while rows are inserted	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(async_promote)	sift_table	`on`, `off`	Ask a worker to promote a closed buffer so the pass stays out of the statement	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(backpressure)	sift_table	`0..99`	A writer that needs a new buffer first waits for maintenance and merges once the directory passes this percent	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(hot_update)	sift_table	`on`, `off`	An UPDATE that keeps the indexed columns adds no index entries; old entries lead to the new version	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(bulk_groups)	sift_table	`on`, `off`	COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write straight into column groups	TABLES.md#3-per-table-options-10-options	3.3	automatic in Format 2.0
+sift_table(dict_lookup)	sift_table	`on`, `off`	Test strings against a dictionary of 1,024 strings or more in place, without loading it whole	TABLES.md#3-per-table-options-10-options	3.5	automatic in Format 2.0
+sift_table(key_table)	sift_table	`on`, `off`	Answer count, sum, min and max for a key = x, IN, range or GROUP BY of the key from per-key lists	TABLES.md#3-per-table-options-10-options	4.2	automatic in Format 2.0
+sift_table(auto_defrag_free_pct)	sift_table	`1..100`	Free-space percent of a table that makes background defrag start	TABLES.md#3-per-table-options-10-options	5.0	auto_defrag
+sift_table(auto_defrag_budget)	sift_table	`0..1048576` MB	Megabytes a background defrag pass may rewrite	TABLES.md#3-per-table-options-10-options	5.0	auto_defrag
+sift_table(auto_defrag_coalesce)	sift_table	`on`, `off`	Let background defrag merge neighbouring small parts into one	TABLES.md#3-per-table-options-10-options	5.0	auto_defrag
+sift_table(auto_defrag_indexes)	sift_table	`on`, `off`	Let background defrag rebuild the secondary indexes of the table	TABLES.md#3-per-table-options-10-options	5.0	auto_defrag

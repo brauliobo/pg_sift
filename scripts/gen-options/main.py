@@ -25,14 +25,15 @@ else:
     elif mode == '--live':
         errors += live(opts)
         if not errors:
-            print('options: live ok, the library agrees with src/ on every setting and reloption')
+            print('options: live ok, the library agrees with src/ on every setting, reloption, and sift_table option')
     elif not errors:
-        settings, reloptions, table_options = render(opts, notes, released)
+        settings, reloptions, table_options, deprecated = render(opts, notes, released)
         files = {
             'docs/OPTIONS.md': [
                 ('sift-settings', settings),
                 ('sift-reloptions', reloptions),
                 ('sift-table-options', table_options),
+                ('sift-deprecated-options', deprecated),
             ]
         }
         for path, blocks in files.items():
@@ -46,10 +47,14 @@ else:
                     f.write(new)
         if not errors:
             n = [o for o in opts if not o['testing']]
-            print('options: ok, %d settings, %d reloptions, %d table options listed' % (
-                sum(o['kind'] == 'guc' for o in n),
-                sum(o['kind'] == 'rel' for o in n),
-                sum(o['kind'] == 'tbl' for o in n),
+            live_n = [o for o in n if o['status'] == 'active']
+            print('options: ok, %d active knobs (%d settings, %d sift_col, %d sift, %d sift_table), %d deprecated or compatibility options listed' % (
+                len(live_n),
+                sum(o['kind'] == 'guc' for o in live_n),
+                sum(o['am'] == 'sift_col' for o in live_n if o['kind'] == 'rel'),
+                sum(o['am'] == 'sift' for o in live_n),
+                sum(o['kind'] == 'tbl' for o in live_n),
+                len(n) - len(live_n),
             ))
 if errors:
     for e in errors:
