@@ -345,7 +345,7 @@ rcase() { # FILE BASE OURS THEIRS: the exit code of resolve_conflicts on the mer
 	( cd "$RC" && . "$LAND" && resolve_conflicts main "$(rg merge-base HEAD theirs)" HEAD >/dev/null 2>&1; echo $? )
 }
 [[ $(rcase scripts/moved-sources.tsv '# h\nz\ny\n' '# h\nz\ny\na1\n' '# h\nz\ny\nb1\n') == 0 && $(tr '\n' ' ' <"$RC/scripts/moved-sources.tsv") == "# h z y a1 b1 " ]] || fail "resolve_conflicts: rows added at the end of an unsorted list are not both kept in order: $(tr '\n' ' ' <"$RC/scripts/moved-sources.tsv")"
-[[ $(rcase scripts/static.baseline '# h\na\nc\n' '# h\na\nc\ne\n' '# h\na\nc\nd\n') == 0 && $(tr '\n' ' ' <"$RC/scripts/static.baseline") == "# h a c d e " ]] || fail "resolve_conflicts: the rows of a sorted list are not sorted again: $(tr '\n' ' ' <"$RC/scripts/static.baseline")"
+[[ $(rcase scripts/focus-pins.tsv '# h\na\nc\n' '# h\na\nc\ne\n' '# h\na\nc\nd\n') == 0 && $(tr '\n' ' ' <"$RC/scripts/focus-pins.tsv") == "# h a c d e " ]] || fail "resolve_conflicts: the rows of a sorted list are not sorted again: $(tr '\n' ' ' <"$RC/scripts/focus-pins.tsv")"
 [[ $(rcase tools/x/Makefile 'A\n' 'A\nTESTING_REGRESS += a\n' 'A\nTESTING_REGRESS += b\n') == 0 ]] || fail "resolve_conflicts: a Makefile in a folder is not merged by its added lines"
 [[ $(rcase scripts/moved-sources.tsv '# h\nz\n' '# h\nz2\n' '# h\nz3\n') == 2 ]] || fail "resolve_conflicts: two changes of one row are not the owner's"
 [[ $(rcase src/x.c 'a\n' 'b\n' 'c\n') == 2 ]] || fail "resolve_conflicts: a conflict in a source file is not the owner's"
