@@ -391,7 +391,7 @@ par_local_merge(void *local, const uint8 *rec)
 		const uint8 *key = rec + sizeof(*h);
 		const uint32 len = (uint32) h->key.i64[1];
 
-		v6g_dist_add_raw(g, set, (uint32) h->key.i64[0], key, len, set->nk == 0 ? h->hash64 : sift_aggk6_hash_bytes(key, len));
+		v6g_dist_add(g, set, (uint32) h->key.i64[0], key, len);
 	}
 	else if (h->flags & V6REC_PLAIN)
 	{

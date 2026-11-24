@@ -541,9 +541,9 @@ v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, u
 }
 
 void
-v6g_dist_add_raw(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len, uint64 hash)
+v6g_dist_add(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len)
 {
-	sift_distinct_add_prehashed(dist_of(g, set), slot, key, len, hash);
+	sift_distinct_add(dist_of(g, set), slot, key, len);
 }
 
 void

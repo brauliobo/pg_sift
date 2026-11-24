@@ -245,8 +245,8 @@ extern void v6g_dist_plain(SiftV6Group *g, V6Set *set, int j, uint16 n_raw, cons
 extern void v6g_dist_group_rows(SiftV6Group *g, V6Set *set, int j, SiftVec *const *argvec, uint16 n);
 /* The pairs the grouped flat sets hold by group number go to the generic set, before the group table is emptied and its numbers mean other groups */
 extern void v6g_dist_gflat_flush(SiftV6Group *g, V6Set *set);
-/* A key of COUNT(DISTINCT) aggregate slot that a participant of a parallel run sent here, with the hash it carries: the bytes v6g_dist_group_row or v6g_dist_plain built */
-extern void v6g_dist_add_raw(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len, uint64 hash);
+/* A key of COUNT(DISTINCT) aggregate slot that a participant of a parallel run sent here: the bytes v6g_dist_group_row or v6g_dist_plain built */
+extern void v6g_dist_add(SiftV6Group *g, V6Set *set, uint32 slot, const void *key, uint32 len);
 /* The distinct sets of the state are emptied for the records of another partition */
 extern void v6g_dist_recycle(SiftV6Group *g);
 /* The number of distinct values of aggregate slot k in the set of no keys, final (the partitions that went to files are read back); the set is kept to be recycled */

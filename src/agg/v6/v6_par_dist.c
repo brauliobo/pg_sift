@@ -217,7 +217,6 @@ add_generic(SiftV6ParDist *d, uint32 slot, const uint8 *prefix, uint32 plen, uin
 {
 	SiftV6Group *g = d->g;
 	V6Set	   *set = &g->set[0];
-	uint64		hash;
 
 	sift_bytes_reset(&d->key);
 	if (set->nk > 0)
@@ -226,8 +225,7 @@ add_generic(SiftV6ParDist *d, uint32 slot, const uint8 *prefix, uint32 plen, uin
 		sift_bytes_put(&d->key, prefix, plen);
 	}
 	sift_dkey_i64(&d->key, (int64) value);
-	hash = sift_aggk6_hash_bytes(d->key.buf, d->key.len);
-	v6g_dist_add_raw(g, set, slot, d->key.buf, d->key.len, set->nk == 0 ? sift_aggk6_hash1(hash) : hash);
+	v6g_dist_add(g, set, slot, d->key.buf, d->key.len);
 }
 
 static void
