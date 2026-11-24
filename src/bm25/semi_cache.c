@@ -14,7 +14,6 @@
 
 #include "bm25/semi_cache.h"
 #include "core/cachebudget.h"
-#include "core/memtrack.h"
 
 #define SEMI_ENTRIES	16
 
@@ -31,7 +30,7 @@ typedef struct SemiEnt
 } SemiEnt;
 
 static SemiEnt ents[SEMI_ENTRIES];
-static MemoryContext cache_cx;
+static bool registered;
 
 static bool
 settled_xmax(Snapshot snap, uint64 *xmax)
@@ -131,16 +130,17 @@ sift_semi_cache_put(Oid dim, AttrNumber attno, const char *quals, Snapshot snaps
 {
 	uint64		xmax;
 	Size		need;
-	SemiEnt    *e;
+	SemiEnt    *e,
+				fresh;
 	MemoryContext cx;
 
 	if (!settled_xmax(snapshot, &xmax))
 		return;
 	need = strlen(quals) + 1 + (Size) Max(nset, 0) * sizeof(int64);
-	if (cache_cx == NULL)
+	if (!registered)
 	{
-		cache_cx = sift_cache_create_context("sift cache semi sets");
 		sift_cache_register(&semi_kind);
+		registered = true;
 	}
 	if (!sift_cache_room(need + 1024) || ent_find(dim, attno, quals, xmax) != NULL)
 		return;
@@ -149,13 +149,15 @@ sift_semi_cache_put(Oid dim, AttrNumber attno, const char *quals, Snapshot snaps
 		semi_evict_one();
 		e = ent_free();
 	}
-	cx = sift_mem_allocset_create(cache_cx, "sift semi set");
-	*e = (SemiEnt) {.cx = cx,.dim = dim,.attno = attno,.xmax = xmax,.nset = nset,.used = sift_cache_tick()};
-	e->quals = MemoryContextStrdup(cx, quals);
+	cx = sift_cache_create_context_in(CurrentMemoryContext, "sift cache semi set");
+	fresh = (SemiEnt) {.cx = cx,.dim = dim,.attno = attno,.xmax = xmax,.nset = nset,.used = sift_cache_tick()};
+	fresh.quals = MemoryContextStrdup(cx, quals);
 	if (nset > 0)
 	{
-		e->set = MemoryContextAlloc(cx, (Size) nset * sizeof(int64));
-		memcpy(e->set, set, (Size) nset * sizeof(int64));
+		fresh.set = MemoryContextAlloc(cx, (Size) nset * sizeof(int64));
+		memcpy(fresh.set, set, (Size) nset * sizeof(int64));
 	}
+	sift_cache_adopt(cx);
+	*e = fresh;
 	sift_cache_commit();
 }
