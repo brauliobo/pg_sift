@@ -200,6 +200,106 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+/* jsonb_typeof(doc -> 'key') of a shredded scalar key: the leaf of the key (-1: the expression is no such call) */
+static int
+typeof_leaf(const SiftV6Rel *rel, const Node *n)
+{
+	const Expr *e = strip((const Expr *) n);
+	const char *key;
+	int			att,
+				leaf;
+
+	if (e == NULL || !IsA(e, FuncExpr) || func_of(e) != F_JSONB_TYPEOF || list_length(args_of(e)) != 1)
+		return -1;
+	leaf = field_leaf(rel, linitial(args_of(e)), F_JSONB_OBJECT_FIELD, &att, &key);
+	return scalar_leaf(rel, leaf) ? leaf : -1;
+}
+
+static Node *
+type_vars_mutator(Node *n, const SiftV6Rel *rel)
+{
+	int			leaf;
+
+	if (n == NULL)
+		return NULL;
+	if ((leaf = typeof_leaf(rel, n)) >= 0)
+		return (Node *) makeVar(rel->relid, SIFT_V6_JTYPE_VATT + leaf, TEXTOID, -1, exprCollation(n), 0);
+	return expression_tree_mutator(n, type_vars_mutator, unconstify(SiftV6Rel *, rel));
+}
+
+Expr *
+sift_v6_json_type_vars(const SiftV6Rel *rel, const Expr *e)
+{
+	return (Expr *) type_vars_mutator((Node *) e, rel);
+}
+
+bool
+sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
+{
+	const int	leaf = v->varattno - SIFT_V6_JTYPE_VATT;
+	const bool	held = rel->colrel != NULL && leaf >= 0 && leaf < rel->colrel->schema->ncols;
+
+	if (held)
+		*out = (SiftV6Col) {.attno = rel->colrel->schema->cols[leaf].attno,.typid = TEXTOID,.jleaf = leaf + 1,.jtype = true};
+	return held;
+}
+
+typedef struct JsonLeaves
+{
+	Bitmapset  *value;			/* the leaves the statement reads the values of (`->>`, its float8 cast) */
+	Bitmapset  *type;			/* the leaves it reads the JSON type of, anywhere but in a scan key */
+} JsonLeaves;
+
+static void
+note_col(JsonLeaves *j, const SiftV6Col *c)
+{
+	if (c->jleaf > 0)
+	{
+		Bitmapset **set = c->jtype ? &j->type : &j->value;
+
+		*set = bms_add_member(*set, c->jleaf - 1);
+	}
+}
+
+static bool
+note_vars(Node *n, JsonLeaves *j)
+{
+	if (n != NULL && IsA(n, Var) && ((const Var *) n)->varattno >= SIFT_V6_JTYPE_VATT)
+		j->type = bms_add_member(j->type, ((const Var *) n)->varattno - SIFT_V6_JTYPE_VATT);
+	return n != NULL && expression_tree_walker(n, note_vars, j);
+}
+
+/*
+ * PostgreSQL does not read the value of a row a test of its type leaves out (`FILTER (WHERE jsonb_typeof(d -> 'k') = 'number')` over `(d ->> 'k')::float8`), and the leaf cannot hold the strings among its
+ * numbers: a statement that reads both the type and the value of one key in the batches would raise for a row the heap skips. Only the scan keys of the type test (SiftV6Spec.jsonqual) drop those rows first.
+ */
+bool
+sift_v6_json_type_clash(const SiftV6Spec *s)
+{
+	JsonLeaves	j = {0};
+
+	for (int i = 0; i < s->nkeys; i++)
+		note_col(&j, &s->key[i]);
+	for (int a = 0; a < s->naggs; a++)
+	{
+		note_col(&j, &s->agg[a].arg);
+		note_col(&j, &s->agg[a].arg2);
+		for (int c = 0; c < s->agg[a].nxcols; c++)
+			note_col(&j, &s->agg[a].xcol[c]);
+	}
+	for (int f = 0; f < s->nfcols; f++)
+		note_col(&j, &s->fcol[f]);
+	for (int d = 0; d < s->nderive; d++)
+		note_col(&j, &s->derive[d].src);
+	foreach_ptr(List, item, s->pgexpr)
+		for (int i = 1; i < list_length(lsecond(item)); i += 3)
+			if (list_nth_int(lsecond(item), i) >= SIFT_V6_JTYPE_VATT)
+				j.type = bms_add_member(j.type, list_nth_int(lsecond(item), i) - SIFT_V6_JTYPE_VATT);
+	foreach_ptr(Node, clause, s->vqual)
+		note_vars(clause, &j);
+	return bms_overlap(j.value, j.type);
+}
+
 /*
  * The text of a number, a boolean or a document is what `->>` gives for such a value, which the leaf of a text key does not hold (it holds the strings, and a value of another type is an exception
  * the leaf reads as NULL): a comparison with a constant that no such value can be the text of is decided by the leaf alone.

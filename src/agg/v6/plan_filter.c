@@ -21,7 +21,7 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	p->in_filter = true;
 	foreach_ptr(Expr, c, make_ands_implicit(filter))
 	{
-		Expr	   *q = sift_v6_index_qual(p, c);
+		Expr	   *q = sift_v6_index_qual(p, sift_v6_plan_type_vars(p, c));
 
 		if (q == NULL)
 		{

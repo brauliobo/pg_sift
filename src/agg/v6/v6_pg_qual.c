@@ -29,6 +29,19 @@ input_pos(const SiftV6Input *in, AttrNumber attno)
 	return -1;
 }
 
+/* jsonb_typeof(doc -> 'key'): the column is the virtual attribute of the key's leaf, a text */
+static int
+add_jtype_column(SiftV6Input *in, const Var *v)
+{
+	for (int k = 0; k < in->ncols; k++)
+		if (in->col[k].attno == v->varattno)
+			return k;
+	if (in->ncols == SIFT_V6_MAX_COLS || in->is_table)
+		return -1;
+	in->col[in->ncols] = (SiftV6InCol) {.attno = v->varattno,.typid = TEXTOID,.type = SVEC_STRVIEW};
+	return in->ncols++;
+}
+
 /* The slot of the input column that holds v, added when it is not one yet; -1 for a column the format does not hold in leaves the scan decodes. A numeric and a type the native vectors do not hold are read as datums: a NaN is a value of them */
 static int
 add_column(SiftV6Input *in, const Var *v)
@@ -38,6 +51,8 @@ add_column(SiftV6Input *in, const Var *v)
 	const SiftV6Class cls = datum ? SV6C_DATUM : sift_v6_class(v->vartype);
 	SiftV6InCol col = {.typid = v->vartype,.type = datum ? SVEC_DATUM : sift_v6_result_vec_type(v->vartype),.scale = datum ? SIFT_V6_SCALE_DATUM : 0};
 
+	if (v->varattno >= SIFT_V6_JTYPE_VATT)
+		return add_jtype_column(in, v);
 	if (pos < 0 || v->vartype == JSONBOID)
 		return -1;
 	col.attno = pos + 1;

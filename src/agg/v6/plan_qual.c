@@ -5,6 +5,7 @@
 /* check-memory: allow-allocs every list here follows the quals of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "catalog/pg_opfamily_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -36,7 +37,14 @@ is_operand(const Node *n)
 static Expr *
 index_var(const Var *v, int col)
 {
-	return (Expr *) makeVar(INDEX_VAR, col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+	return (Expr *) makeVar(INDEX_VAR, v->varattno >= SIFT_V6_JTYPE_VATT ? v->varattno : col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+}
+
+/* the operator family the comparisons of the column are of: a jsonb_typeof is a text */
+static Oid
+col_opfamily(const V6Plan *p, const SiftV6Col *col)
+{
+	return col->jtype ? TEXT_BTREE_FAM_OID : sift_v6_plan_opfamily(p, col->attno);
 }
 
 /* A numeric column of an index decides a comparison with a constant of its scale range on the scaled integers; a NaN row is decided by the scan (col/f2/scan/verdict.c) */
@@ -52,7 +60,7 @@ static int
 compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const Node *operand)
 {
 	const bool	text = sift_v6_class(col->typid) == SV6C_TEXT;
-	const Oid	family = sift_v6_plan_opfamily(p, col->attno);
+	const Oid	family = col_opfamily(p, col);
 	const bool	index = !p->is_table;
 	int			strat = get_op_opfamily_strategy(q->opno, family);
 
@@ -119,7 +127,7 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 
 	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
 		!sift_v6_plan_column(p, linitial(sa->args), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
-		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), sift_v6_plan_opfamily(p, col.attno)) != BTEqualStrategyNumber ||
+		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && !sift_text_bytes_equal(sa->inputcollid)))
 		return NULL;
 	linitial(q->args) = index_var(linitial(sa->args), col.attno - 1);
@@ -192,7 +200,8 @@ qual_batch(V6Plan *p, RestrictInfo *ri)
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
-	clause = copyObject(ri->clause);
+	clause = sift_v6_plan_type_vars(p, ri->clause);
+	clause = clause == ri->clause ? copyObject(clause) : clause;
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
 	if (!sift_v6_bq_plan_ok(&in, clause))
 		return false;

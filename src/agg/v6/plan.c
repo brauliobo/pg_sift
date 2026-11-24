@@ -159,6 +159,12 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 
 	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || (v->vartype == NUMERICOID && !numeric_ok))
 		return false;
+	if (v->varattno >= SIFT_V6_JTYPE_VATT)
+	{
+		const SiftV6Rel rel = sift_v6_plan_rel(p);
+
+		return !p->is_table && sift_v6_json_type_col(&rel, v, out);
+	}
 	att = host_attno(p, v->varattno);
 	if (att == 0 || !leaf_class_ok(&host_schema(p)->cols[host_first(p, att)], host_nleaves(p, att), sift_v6_class(v->vartype)))
 		return false;
@@ -216,6 +222,14 @@ bool
 sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
 	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out);
+}
+
+Expr *
+sift_v6_plan_type_vars(const V6Plan *p, const Expr *e)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+
+	return p->is_table || p->xseed != NULL ? (Expr *) e : sift_v6_json_type_vars(&rel, e);
 }
 
 /* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
@@ -435,7 +449,7 @@ compile_agg_native(V6Plan *p, Aggref *a)
 	{
 		const bool	two = g.kind == SV6_ARG_MAX || g.kind == SV6_ARG_MIN;
 
-		Expr	   *arg = list_length(a->args) > 0 ? ((TargetEntry *) linitial(a->args))->expr : NULL;
+		Expr	   *arg = list_length(a->args) > 0 ? sift_v6_plan_type_vars(p, ((TargetEntry *) linitial(a->args))->expr) : NULL;
 		const bool	score = !two && g.kind != SV6_COUNT_DISTINCT && sift_v6_score_col(p, arg, &g.arg);
 
 		if (list_length(a->args) != (two ? 2 : 1) ||
@@ -648,8 +662,9 @@ affine_key(V6Plan *p, Expr *e)
 
 /* a key: a column, a binned or derived column, or what the executor computes from columns; the table groups the types it has no bytes of by their values (v6_datum.h) */
 static bool
-compile_key(V6Plan *p, Expr *e, SiftV6Col *k)
+compile_key(V6Plan *p, Expr *source, SiftV6Col *k)
 {
+	Expr	   *e = sift_v6_plan_type_vars(p, source);
 	const Oid	typid = getBaseType(exprType((Node *) e));
 
 	if (read_of(p, e, false, k) || compile_bin(p, e, k) || derived_col(p, e, true, k) || sift_v6_pg_derived_col(p, e, true, k) ||
@@ -787,7 +802,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 bool
 sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p);
+	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p) && !sift_v6_json_type_clash(&p->spec);
 }
 
 void

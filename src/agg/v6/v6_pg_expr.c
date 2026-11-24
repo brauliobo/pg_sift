@@ -157,7 +157,7 @@ sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6D
 			return false;
 		if (v == linitial(vars))
 			d->src = col;
-		ints = list_concat(ints, list_make3_int(col.attno, (int) col.typid, col.scale));
+		ints = list_concat(ints, list_make3_int(sift_v6_col_input_attno(&col), (int) col.typid, col.scale));
 	}
 	item = list_make2(sift_v6_pgexpr_renumber(e, relid, vars), ints);
 	foreach_ptr(List, seen, *items)

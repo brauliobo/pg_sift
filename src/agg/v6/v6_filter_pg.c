@@ -38,6 +38,8 @@ fcol_index(Build *b, const Var *v)
 	if (!b->add || *b->nfcols == SIFT_V6_MAX_FCOLS)
 		return -1;
 	b->fcol[*b->nfcols] = (SiftV6Col) {.attno = v->varattno,.typid = v->vartype};
+	if (v->varattno >= SIFT_V6_JTYPE_VATT)
+		b->fcol[*b->nfcols].jleaf = v->varattno - SIFT_V6_JTYPE_VATT + 1,b->fcol[*b->nfcols].jtype = true;
 	return (*b->nfcols)++;
 }
 
