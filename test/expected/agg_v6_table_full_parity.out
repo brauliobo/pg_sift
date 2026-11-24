@@ -158,10 +158,10 @@ INSERT INTO ops VALUES
 	(18, 'qual = (edge rows)', $q$SELECT count(*), count(@C) FROM @T WHERE id > 150000 AND id < 150013 AND @C = @W$q$, 'n', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'k', NULL),
 	(20, 'parallel group key', $q$SELECT @C, count(*), sum(v) FROM @T GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
 	(21, 'parallel count distinct', $q$SELECT g, count(DISTINCT @C) FROM @T GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
-	(30, 'top-n', $q$SELECT id, @C FROM @T ORDER BY @C, id LIMIT 7$q$, 'o', 'Custom Scan (SiftAggV6TopN)', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
-	(31, 'top-n desc offset', $q$SELECT id, @C FROM @T ORDER BY @C DESC NULLS LAST, id DESC LIMIT 9 OFFSET 3$q$, 'o', 'Custom Scan (SiftAggV6TopN)', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
+	(30, 'top-n', $q$SELECT id, @C FROM @T ORDER BY @C, id LIMIT 7$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
+	(31, 'top-n desc offset', $q$SELECT id, @C FROM @T ORDER BY @C DESC NULLS LAST, id DESC LIMIT 9 OFFSET 3$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
 	(32, 'rows (payload)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY k, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'v', NULL),
-	(33, 'rows (key)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY @C, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{uuid,numeric,char(n),bytea,name}', '{}', 'v', NULL),
+	(33, 'rows (key)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY @C, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'v', NULL),
 	(40, 'stream', $q$SELECT @C, count(*), sum(v) FROM @T GROUP BY @C ORDER BY @C$q$, 'ov', 'Custom Scan (SiftAggV6Stream)', 'ft', false, '{uuid,numeric,char(n),bytea,name}', '{}', 's', NULL),
 	(41, 'window key', $q$SELECT id, @C, rank() OVER (PARTITION BY @C ORDER BY at) FROM @T$q$, 'u', 'Custom Scan (SiftAggV6Window)', 'ft', false, '{uuid,numeric,char(n),bytea,name}', '{}', 's', NULL),
 	(42, 'window payload', $q$SELECT id, @C, rank() OVER (PARTITION BY s ORDER BY at) FROM @T$q$, 'u', 'Custom Scan (SiftAggV6Window)', 'ft', false, '{}', '{}', 's', NULL),
@@ -240,7 +240,7 @@ FROM matrix GROUP BY ord, op ORDER BY ord;
  top-n                               |     12 |       0 | t       | t
  top-n desc offset                   |     12 |       0 | t       | t
  rows (payload)                      |     12 |       0 | t       | t
- rows (key)                          |      2 |      10 | t       | t
+ rows (key)                          |     12 |       0 | t       | t
  stream                              |      2 |      10 | t       | t
  window key                          |      2 |      10 | t       | t
  window payload                      |     12 |       0 | t       | t
@@ -287,7 +287,7 @@ FROM matrix GROUP BY ord, op ORDER BY ord;
  top-n                               | v6      | v6      | v6      | v6      | v6      | v6
  top-n desc offset                   | v6      | v6      | v6      | v6      | v6      | v6
  rows (payload)                      | v6      | v6      | v6      | v6      | v6      | v6
- rows (key)                          | v6      | refused | refused | refused | refused | refused
+ rows (key)                          | v6      | v6      | v6      | v6      | v6      | v6
  stream                              | v6      | refused | refused | refused | refused | refused
  window key                          | v6      | refused | refused | refused | refused | refused
  window payload                      | v6      | v6      | v6      | v6      | v6      | v6
@@ -431,7 +431,7 @@ SELECT edge('SELECT count(*) FROM (SELECT u FROM @T WHERE id IN (150001, 150007)
  t
 (1 row)
 
-SELECT plan_of('SELECT id, n FROM @T ORDER BY n, id LIMIT 7') LIKE '%Custom Scan (SiftAggV6TopN)%Table: ft%' AS name_top_n_is_the_top_n_node;
+SELECT plan_of('SELECT id, n FROM @T ORDER BY n, id LIMIT 7') LIKE '%Table: ft%Top-N: n, id%' AS name_top_n_is_the_top_n_node;
  name_top_n_is_the_top_n_node 
 ------------------------------
  t

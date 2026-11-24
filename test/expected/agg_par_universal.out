@@ -147,7 +147,7 @@ SELECT * FROM check_par('a dimension key twice, left', $q$ SELECT d.tag, count(*
 SELECT * FROM check_par('snowflake', $q$ SELECT p.attr, count(*), sum(f.qty) FROM st_f f JOIN st_d1 d ON d.id = f.d1 JOIN st_p p ON p.id = d.p GROUP BY 1 $q$);
    label   | same | node | nonempty 
 -----------+------+------+----------
- snowflake | t    | f    | t
+ snowflake | t    | t    | t
 (1 row)
 
 SELECT * FROM check_par('snowflake, left', $q$ SELECT p.gp, count(*) FROM st_f f LEFT JOIN st_d1 d ON d.id = f.d1 LEFT JOIN st_p p ON p.id = d.p GROUP BY 1 $q$);
