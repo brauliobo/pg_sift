@@ -461,21 +461,21 @@ relocate_page(Page page, const SiftRelocMap *map)
 	}
 }
 
-/* Merge steps while they find something, up to merge_cap bytes (a worker's budget; a VACUUM has none), a cost delay after each; the steps made */
+/* Merge steps while they find something: the first always, then while the bytes they rewrote are under cap (sift.vacuum_rewrite_limit, a worker's budget), a cost delay after each; the steps made */
 int
-merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest)
+merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest, uint64 cap)
 {
 	uint64		bytes = 0,
 				done;
 	int			steps = 0;
 
-	while (bytes < merge_cap && !sift_maint_busy(pass_max_active) && (done = sift_tbl_merge(rel, st, oldest)) > 0)
+	while ((steps == 0 || bytes < cap) && !sift_maint_busy(pass_max_active) && (done = sift_tbl_merge(rel, st, oldest)) > 0)
 	{
 		bytes += done;
 		steps++;
 		pass_delay();
 	}
-	merge_capped = bytes >= merge_cap;
+	merge_capped = bytes >= cap;
 	return steps;
 }
 
@@ -492,7 +492,7 @@ vacuum_space(Relation rel, SiftTblRel *st, VacState *v, bool truncate, int eleve
 	sift_tbl_close_wbuf(rel, st, VACUUM_CLOSE_PAGES);
 	(void) sift_tbl_promote(rel, st, v->oldest, true);
 	(void) sift_tbl_freeze_groups(rel, st, v->oldest);
-	(void) merge_steps(rel, st, v->oldest);
+	(void) merge_steps(rel, st, v->oldest, Min(merge_cap, (uint64) sift_vacuum_rewrite_limit << 20));
 	sift_tbl_net_refresh(rel, st);
 	if (tomb_changes(st, v))
 	{

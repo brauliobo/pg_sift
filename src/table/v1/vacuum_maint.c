@@ -41,7 +41,7 @@ sift_tbl_maintain(Relation rel, bool background, bool clear, SiftTblMaintain *r)
 			r->dead_rows = clear_removable(rel, st, &v);
 		(void) sift_tbl_drop_dead_groups(rel, st);
 		(void) sift_tbl_freeze_groups(rel, st, oldest);
-		r->merged = merge_steps(rel, st, oldest);
+		r->merged = merge_steps(rel, st, oldest, merge_cap);
 		(void) sift_recycle(rel);
 		(void) sift_maint_orphan_sweep(rel);
 		sift_maint_cut_nowait(true);

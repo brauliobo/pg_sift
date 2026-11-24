@@ -103,7 +103,7 @@ extern bool merge_capped;
 extern ItemPointer tid_push(TidList *d);
 extern bool tid_has(ItemPointer itemptr, void *state);
 extern void relocate_page(Page page, const SiftRelocMap *map);
-extern int merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest);
+extern int merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest, uint64 cap);
 extern bool tbl_truncates(Relation rel);
 extern int64 clear_removable(Relation rel, SiftTblRel *st, VacState *v);
 
