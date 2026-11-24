@@ -300,7 +300,7 @@ join_clauses(PlannerInfo *root, Relids base, JoinShape *sh)
 	return true;
 }
 
-/* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys of a semi join into the scan (v6_join_push.h) the one of a table */
+/* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys of a semi join into the scan (v6_join_push.h) the one of a table, not of a sub-select */
 static bool
 needs_lookup(const JoinShape *sh)
 {
@@ -310,7 +310,7 @@ needs_lookup(const JoinShape *sh)
 	{
 		const JoinDim *d = &sh->dim[i];
 
-		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON))
+		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || d->rel->rtekind != RTE_RELATION))
 			return true;
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
 			return true;
