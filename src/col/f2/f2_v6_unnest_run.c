@@ -31,7 +31,7 @@
 #include "core/errctx.h"
 #include "core/memtrack.h"
 
-#define OUT_SLOTS	(SIFT_F2_PULL_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE)
+#define OUT_SLOTS	(SIFT_F2_PULL_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE + 1)
 #define MONTH_SLOTS	4096
 
 StaticAssertDecl(SIFT_V6_XELEM_COLS <= SIFT_F2_PULL_MAX_CHILD, "an element column is a child leaf of the pull");
@@ -67,6 +67,7 @@ typedef struct UnRun
 	int			pgslot[SIFT_V6_MAX_DERIVE][SIFT_V6_MAX_COLS];
 	SiftVxOut	pgout[SIFT_V6_MAX_DERIVE];
 	int			nel;			/* the columns of the element */
+	int			row_slot;		/* the slot of the number of the row of each pair, for an EXISTS over the elements (-1: none) */
 	SiftVecType etype[SIFT_V6_XELEM_COLS];
 	bool		eused[SIFT_V6_XELEM_COLS];	/* the statement reads the column; the others are read for the values their leaf cannot hold */
 	AttrNumber	heap_att;		/* the array column of the table */
@@ -254,7 +255,11 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
 		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
-	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, u->ncols + u->nel + spec->nderive, type);
+	if (u->x->elem.semi)
+		type[u->row_slot = u->ncols + u->nel + spec->nderive] = SVEC_I64;
+	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, u->ncols + u->nel + spec->nderive + (u->row_slot >= 0), type);
+	if (u->row_slot >= 0)
+		sift_v6_pipe_semi(u->pipe, u->row_slot);
 	if (star != NULL)
 		sift_v6_star_attach(star, u->pipe);
 	for (int d = 0; d < u->x->ndims; d++)
@@ -294,7 +299,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 			ar->f64[c] = col->typid == FLOAT8OID;
 		}
 	}
-	for (int s = 0; s < u->ncols + u->nel + spec->nderive; s++)
+	for (int s = 0; s < u->ncols + u->nel + spec->nderive + (u->row_slot >= 0); s++)
 	{
 		u->out_data[s] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sift_gather_width(type[s]) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		u->out_valid[s] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
@@ -419,6 +424,18 @@ pg_pairs(UnRun *u, int k)
 	u->out[u->ncols + u->nel + k] = &u->pgout[k].vec;
 }
 
+/* the number of the row of each pair, the one slot that tells an EXISTS which pairs are of one row */
+static void
+row_numbers(UnRun *u, uint32 m)
+{
+	int64	   *rows = u->out_data[u->row_slot];
+
+	for (uint32 i = 0; i < m; i++)
+		rows[i] = u->pidx[i];
+	memset(u->out_valid[u->row_slot], 0xff, SIFT_VEC_WORDS * sizeof(uint64));
+	u->outv[u->row_slot] = (SiftVec) {.data = rows,.valid = u->out_valid[u->row_slot],.len = (uint16) m,.all_valid = true,.dense = true,.type = SVEC_I64};
+}
+
 /* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */
 static void
 emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
@@ -441,6 +458,8 @@ emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 			pg_pairs(u, k);
 		else
 			arith_pairs(u, k, m);
+	if (u->row_slot >= 0)
+		row_numbers(u, m);
 	sift_v6_pipe_run(u->pipe, u->out, bs);
 }
 
@@ -640,6 +659,8 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 	SiftVec		ev[SIFT_V6_XELEM_COLS];
 
 	u->stats->batches++;
+	if (u->row_slot >= 0)
+		sift_v6_pipe_semi_reset(u->pipe);
 	memset(bs->mask, 0, sizeof(bs->mask));
 	memcpy(bs->mask, b->live, words * sizeof(uint64));
 	if (n & 63)
@@ -727,6 +748,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	const SiftF2ExtBatch *b;
 
 	u->spec = spec;
+	u->row_slot = -1;
 	u->x = spec->ext;
 	u->stats = stats;
 	u->nel = u->x->elem.ncols;

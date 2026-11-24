@@ -45,6 +45,8 @@ typedef struct SiftV6Pipe
 	uint32	   *match;
 	uint16	   *fact_idx;
 	uint32	   *dim_row;
+	int			semi_slot;		/* the slot of the number of the fact row of each pair: only the first pair of a row that goes through every dimension and condition goes on to the groups (-1: all do) */
+	uint64	   *semi_seen;		/* the rows of the batch whose pair has gone on */
 	SiftV6PipeBatch *lvl[SIFT_STAR_MAX_DIMS + 1];
 	MemoryContext cx;
 	uint64		rows_out;
@@ -56,6 +58,9 @@ extern SiftV6Pipe *sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, Si
 extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
 /* The slot of the payload column of a dimension */
 extern int	sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay);
+/* An EXISTS over the elements: slot is the number of the fact row of each pair, and each batch of rows starts with sift_v6_pipe_semi_reset */
+extern void sift_v6_pipe_semi(SiftV6Pipe *p, int slot);
+extern void sift_v6_pipe_semi_reset(SiftV6Pipe *p);
 /* One batch of the fact side: fact[i] is slot i; bs gives its rows. The vectors must live until the call returns */
 extern void sift_v6_pipe_run(SiftV6Pipe *p, SiftVec *const *fact, SiftBatchSel *bs);
 /* The fact side has ended: the rows of the dimensions of a RIGHT or FULL join that no row matched go through the dimensions after them, with a NULL fact side */

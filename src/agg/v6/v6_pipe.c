@@ -99,6 +99,7 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			if (x->dim[d].kx[k] > 0)
 				p->kexpr[d][k] = key_expr_new(p, list_nth(x->kexpr, x->dim[d].kx[k] - 1));
+	p->semi_slot = -1;
 	p->match = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
 	p->fact_idx = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint16));
 	p->dim_row = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
@@ -177,6 +178,40 @@ update_groups(SiftV6Pipe *p, SiftV6PipeBatch *b)
 	else
 		sift_v6_group_update(p->group, b->bs, p->keyvec, p->argvec);
 	p->rows_out += b->bs->n_active;
+}
+
+void
+sift_v6_pipe_semi(SiftV6Pipe *p, int slot)
+{
+	p->semi_slot = slot;
+	p->semi_seen = MemoryContextAllocZero(p->cx, SIFT_VEC_WORDS * sizeof(uint64));
+}
+
+void
+sift_v6_pipe_semi_reset(SiftV6Pipe *p)
+{
+	memset(p->semi_seen, 0, SIFT_VEC_WORDS * sizeof(uint64));
+}
+
+/* of the pairs of a fact row, only the first that went through everything goes on: the row counts once */
+static void
+semi_once(SiftV6Pipe *p, SiftV6PipeBatch *b)
+{
+	SiftBatchSel *bs = b->bs;
+	const int64 *row = (const int64 *) b->vec[p->semi_slot].data;
+
+	for (uint32 w = 0; w < (uint32) ((bs->n_raw + 63) / 64); w++)
+		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint32 r = w * 64 + (uint32) __builtin_ctzll(bits);
+			uint64	   *seen = &p->semi_seen[row[r] >> 6];
+			const uint64 bit = UINT64CONST(1) << (row[r] & 63);
+
+			if (*seen & bit)
+				bs->mask[w] &= ~(UINT64CONST(1) << (r & 63));
+			*seen |= bit;
+		}
+	count_active(bs);
 }
 
 /* the payload columns of dimension d for the rows b holds, from the rows of the dimension dim_row names (0: none, a NULL) */
@@ -286,6 +321,12 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 				rv[i] = &b->vec[p->rslot[i]];
 			sift_v6_resid_filter(p->resid, rv, bs);
 			count_active(bs);
+			if (bs->n_active == 0)
+				return;
+		}
+		if (p->semi_seen != NULL)
+		{
+			semi_once(p, b);
 			if (bs->n_active == 0)
 				return;
 		}
