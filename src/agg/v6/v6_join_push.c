@@ -496,7 +496,7 @@ push_scan(PushState *st, EState *estate, ArrayType *ids)
 	{
 		const struct SiftStoreQuals *sq = st->ops->zone->compile_quals(st->heap, quals, estate->es_query_cxt);
 
-		st->ops->zone->scan_table(st->spec, st->group, st->heap, sq, estate->es_snapshot, NULL, 0, &st->stats);
+		st->ops->zone->scan_table(st->spec, st->group, st->heap, sq, estate->es_snapshot, NULL, 0, &st->stats, NULL);
 	}
 	else
 	{

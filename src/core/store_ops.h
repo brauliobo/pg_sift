@@ -234,7 +234,7 @@ typedef struct SiftZoneOps
 	void		(*bind_quals) (Relation heap, struct SiftStoreQuals *q, ExprContext *econtext);
 	bool		(*quals_keys) (const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys);
 	void		(*scan_table) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation rel, const struct SiftStoreQuals *quals, Snapshot snap, const uint64 *skip,
-							   int nskip, struct SiftV6ScanStats *stats);
+							   int nskip, struct SiftV6ScanStats *stats, struct SiftV6StarRun *star);
 	void		(*scan_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip,
 							 int nskip, const struct SiftScopeRouter *router, struct SiftV6ScanStats *stats, struct SiftV6StarRun *star,
 							 bool (*next_chunk) (void *arg, const struct SiftTidBridge **bridge), void *chunk_arg);

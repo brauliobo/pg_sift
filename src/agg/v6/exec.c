@@ -94,6 +94,17 @@ begin_index(V6State *st, CustomScanState *node, V6Source *src, Oid indexoid)
 }
 
 static void
+begin_table(V6State *st, EState *estate)
+{
+	V6Source   *src = &st->sources[0];
+
+	src->ops = sift_store_ops_for_oid(st->spec->relid, true);
+	src->heap = table_open(st->spec->relid, AccessShareLock);
+	if (src->ops->zone != NULL)
+		src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
+}
+
+static void
 begin_star(V6State *st, CustomScanState *node, EState *estate, int eflags)
 {
 	PlanState  *children[SIFT_STAR_MAX_DIMS];
@@ -152,17 +163,10 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	st->nsources = Max(st->spec->nparts, 1);
 	st->sources = palloc0(sizeof(V6Source) * st->nsources);
 	if (st->spec->is_table)
-	{
-		V6Source   *src = &st->sources[0];
-
-		src->ops = sift_store_ops_for_oid(st->spec->relid, true);
-		src->heap = table_open(st->spec->relid, AccessShareLock);
-		if (src->ops->zone != NULL)
-			src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
-		return;
-	}
-	for (int k = 0; k < st->nsources; k++)
-		begin_index(st, node, &st->sources[k], st->spec->nparts > 0 ? st->spec->part_index[k] : st->spec->relid);
+		begin_table(st, estate);
+	else
+		for (int k = 0; k < st->nsources; k++)
+			begin_index(st, node, &st->sources[k], st->spec->nparts > 0 ? st->spec->part_index[k] : st->spec->relid);
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 		begin_star(st, node, estate, eflags);
 	begin_arm(st, node, estate, eflags);
@@ -230,6 +234,8 @@ v6_scan_ext(V6State *st, Snapshot snap)
 
 		if (open == SSO_SCAN && st->spec->ext->unnest)
 			src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
+		else if (open == SSO_SCAN && src->index == NULL)
+			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star);
 		else if (open == SSO_SCAN)
 			scan_with_text(st, src, snap, st->star);
 		MemoryContextSwitchTo(old);
@@ -264,7 +270,7 @@ v6_scan(V6State *st, Snapshot snap)
 		else if (src->index != NULL)
 			scan_with_text(st, src, snap, NULL);
 		else
-			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats);
+			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats, NULL);
 	}
 	sift_v6_group_finish(st->group);
 }

@@ -8,6 +8,8 @@ CREATE TABLE rt (id int PRIMARY KEY, grp int, k int, tag text, amount numeric(12
 CREATE TABLE rh (LIKE rt INCLUDING ALL) WITH (autovacuum_enabled = false);
 CREATE TABLE rd (k int PRIMARY KEY, label text) USING sift_table;
 CREATE TABLE rdh (LIKE rd INCLUDING ALL);
+CREATE TABLE re (grp int PRIMARY KEY, region text) USING sift_table;
+CREATE TABLE reh (LIKE re INCLUDING ALL);
 
 INSERT INTO rt
 SELECT g, g % 17, g % 40, 'tag' || g % 5, CASE WHEN g % 211 = 0 THEN NULL ELSE (g % 1000) / 8.0 END,
@@ -18,8 +20,10 @@ FROM generate_series(1, 30000) g;
 INSERT INTO rd SELECT g, 'l' || g % 8 FROM generate_series(0, 39) g;
 INSERT INTO rh SELECT * FROM rt;
 INSERT INTO rdh SELECT * FROM rd;
+INSERT INTO re SELECT g, 'r' || g % 3 FROM generate_series(0, 15) g;
+INSERT INTO reh SELECT * FROM re;
 SELECT sift.table_maintain('rt') IS NOT NULL AS maintained;
-ANALYZE rt; ANALYZE rh; ANALYZE rd; ANALYZE rdh;
+ANALYZE rt; ANALYZE rh; ANALYZE rd; ANALYZE rdh; ANALYZE re; ANALYZE reh;
 
 CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE x text; y text;
@@ -30,12 +34,12 @@ BEGIN
 END $$;
 
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
-$$ SELECT same_rows(replace(replace(q, '@T', 'rt'), '@D', 'rd'), replace(replace(q, '@T', 'rh'), '@D', 'rdh')) $$;
+$$ SELECT same_rows(replace(replace(replace(q, '@T', 'rt'), '@D', 'rd'), '@E', 're'), replace(replace(replace(q, '@T', 'rh'), '@D', 'rdh'), '@E', 'reh')) $$;
 
 CREATE FUNCTION plan_has(q text, node text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE line text;
 BEGIN
-	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(replace(q, '@T', 'rt'), '@D', 'rd') LOOP
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(replace(replace(q, '@T', 'rt'), '@D', 'rd'), '@E', 're') LOOP
 		IF line LIKE '%' || node || '%' THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
@@ -49,12 +53,22 @@ SELECT parity('SELECT id, note FROM @T WHERE grp = 3 ORDER BY tag DESC, id LIMIT
 SELECT parity('SELECT id, tag FROM @T WHERE grp IN (1, 4) AND amount IS NOT NULL ORDER BY tag, id DESC LIMIT 50') AS rows_two_keys_and_quals;
 SELECT parity('SELECT id, note FROM @T WHERE grp > 100 ORDER BY tag, id LIMIT 5') AS rows_no_match;
 
+-- the join of the table to small dimensions
+SELECT plan_has('SELECT d.label, count(*) FROM @T f JOIN @D d ON d.k = f.k GROUP BY d.label', 'Star Dimensions: 1') AS star_served_by_agg_v6;
+SELECT plan_has('SELECT d.label, count(*) FROM @T f JOIN @D d ON d.k = f.k GROUP BY d.label', 'Table: rt') AS star_reads_the_table;
+SELECT parity('SELECT d.label, count(*), sum(f.grp), min(f.k), max(f.k) FROM @T f JOIN @D d ON d.k = f.k GROUP BY d.label') AS star_one_dimension;
+SELECT parity('SELECT d.label, f.tag, count(*), sum(f.amount) FROM @T f JOIN @D d ON d.k = f.k WHERE f.grp < 9 GROUP BY d.label, f.tag') AS star_with_quals_and_fact_key;
+SELECT parity('SELECT d.label, e.region, count(*), avg(f.k) FROM @T f JOIN @D d ON d.k = f.k JOIN @E e ON e.grp = f.grp GROUP BY d.label, e.region') AS star_two_dimensions;
+SELECT parity('SELECT d.label, count(*), count(f.amount) FROM @T f LEFT JOIN @D d ON d.k = f.k AND d.k < 20 GROUP BY d.label') AS star_left_join;
+SELECT parity('SELECT count(*), sum(f.k) FROM @T f JOIN @D d ON d.k = f.k') AS star_without_keys;
+
 UPDATE rt SET tag = 'tag9', grp = 3 WHERE id % 9 = 0;
 UPDATE rh SET tag = 'tag9', grp = 3 WHERE id % 9 = 0;
 DELETE FROM rt WHERE id % 13 = 0;
 DELETE FROM rh WHERE id % 13 = 0;
 SELECT parity('SELECT id, tag FROM @T WHERE grp = 3 ORDER BY tag DESC, id LIMIT 30') AS rows_after_updates_and_deletes;
+SELECT parity('SELECT d.label, count(*), sum(f.grp) FROM @T f JOIN @D d ON d.k = f.k GROUP BY d.label') AS star_after_updates_and_deletes;
 
-DROP TABLE rt, rh, rd, rdh;
+DROP TABLE rt, rh, rd, rdh, re, reh;
 DROP FUNCTION parity(text), same_rows(text, text), plan_has(text, text);
 DROP EXTENSION pg_sift;

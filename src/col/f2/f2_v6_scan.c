@@ -887,13 +887,13 @@ sift_v6_scan_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation
 }
 
 static void
-scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip)
+scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, SiftV6StarRun *star)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
 
 	s->host = rel;
-	scan_setup(s, store->schema->cols, store->att_first, NULL);
+	scan_setup(s, store->schema->cols, store->att_first, star);
 	o.leaves = scan_leaves(s);
 	o.nleaves = s->ncols;
 	o.nan_leaves = scan_nan_leaves(s, store->ncols);
@@ -910,11 +910,11 @@ scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot sn
 
 void
 sift_v6_scan_table(const SiftV6Spec *spec, SiftV6Group *g, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip,
-				   SiftV6ScanStats *stats)
+				   SiftV6ScanStats *stats, SiftV6StarRun *star)
 {
 	V6Scan		s = {.spec = spec,.group = g,.stats = stats};
 
-	scan_table_run(&s, rel, quals, snap, skip, nskip);
+	scan_table_run(&s, rel, quals, snap, skip, nskip, star);
 }
 
 void
@@ -955,7 +955,7 @@ sift_v6_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals,
 	V6Scan		s = {.spec = spec,.rows = rows,.group = totals,.stats = stats};
 
 	if (index == NULL)
-		scan_table_run(&s, heap, quals, snap, NULL, 0);
+		scan_table_run(&s, heap, quals, snap, NULL, 0, star);
 	else
 		scan_run(&s, heap, index, keys, nkeys, snap, NULL, 0, star, next_chunk, chunk_arg);
 }

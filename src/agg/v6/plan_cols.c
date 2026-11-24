@@ -198,7 +198,7 @@ bool
 sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
 	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out) ||
-		(!p->is_table && (sift_v6_star_column(p, e, out) || (exprType((Node *) e) != NUMERICOID && sift_v6_unnest_column(p, e, out))));
+		sift_v6_star_column(p, e, out) || (exprType((Node *) e) != NUMERICOID && sift_v6_unnest_column(p, e, out));
 }
 
 Expr *

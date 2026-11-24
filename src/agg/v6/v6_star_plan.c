@@ -23,6 +23,7 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_source_rel.h"
 
 typedef struct StarDim
 {
@@ -319,7 +320,9 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	StarDim		dims[SIFT_STAR_MAX_DIMS] = {0};
 	const int	nd = bms_num_members(base) - 1;
 	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / nd, 4096);
-	int			n = 0,
+	SiftV6RelSource *src;
+	int			nsrc,
+				n = 0,
 				r = -1;
 
 	if (!sift_v6_plan_fact_ok(root, fact))
@@ -339,19 +342,16 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	for (int d = 0; d < nd; d++)
 		if (dims[d].nkeys == 0)
 			return;
-	foreach_ptr(IndexOptInfo, ix, fact->indexlist)
+	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		V6Plan		p = {.root = root,.rel = fact,.out = output_rel,.relid = ix->indexoid,.index = ix};
-		Relation	irel;
+		V6Plan		p = {.root = root,.rel = fact,.out = output_rel};
+		Relation	rel = sift_v6_source_open(src[i].reloid, src[i].is_table, AccessShareLock, NULL);
 		List	   *children = NIL;
 		Cost		xs = 0,
 					xt = 0;
 
-		if (!sift_v6_index_owned(ix))
-			continue;
-		irel = index_open(ix->indexoid, AccessShareLock);
-		sift_v6_plan_index(&p, irel);
-		if (p.ops != NULL && seed_dims(&p, dims, nd) && star_compile(&p, goal))
+		if (sift_v6_plan_bind(&p, &src[i], rel) && seed_dims(&p, dims, nd) && star_compile(&p, goal))
 		{
 			for (int d = 0; d < nd; d++)
 			{
@@ -363,7 +363,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 			}
 			star_add(&p, goal, input_rel->rows, children, xs, xt);
 		}
-		index_close(irel, NoLock);
+		sift_v6_source_close(rel, src[i].is_table, NoLock);
 	}
 }
 
