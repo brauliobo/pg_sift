@@ -59,6 +59,9 @@ UPDATE up SET v = v + 1 WHERE k = 4242;
 DELETE FROM up WHERE k = 17 AND id % 2 = 0;
 INSERT INTO up VALUES (50000, 17, 5), (50001, 3, 7);
 SELECT * FROM check_q($$SELECT count(*), sum(v) FROM up WHERE k IN (17, 4242, 3, 8999, 123456)$$);
+-- a key that is NULL when the scan starts matches no row, not the rows of 0
+SELECT * FROM check_q($$SELECT count(*) FROM up WHERE k = (SELECT NULL::int)$$);
+SELECT * FROM check_q($$SELECT count(*) FROM up WHERE k = (SELECT 0)$$);
 
 DROP TABLE u, up;
 DROP FUNCTION check_q;

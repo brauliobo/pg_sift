@@ -130,6 +130,19 @@ SELECT * FROM check_q($$SELECT count(*), sum(v) FROM up WHERE k IN (17, 4242, 3,
  SiftAggV6 | f          | t
 (1 row)
 
+-- a key that is NULL when the scan starts matches no row, not the rows of 0
+SELECT * FROM check_q($$SELECT count(*) FROM up WHERE k = (SELECT NULL::int)$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
+SELECT * FROM check_q($$SELECT count(*) FROM up WHERE k = (SELECT 0)$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
 DROP TABLE u, up;
 DROP FUNCTION check_q;
 DROP EXTENSION pg_sift_test;
