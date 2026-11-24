@@ -20,6 +20,7 @@
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_vexpr.h"
+#include "col/source_fold.h"
 #include "col/v1/v1_reader.h"
 #include "col/v1/v1_store_ops.h"
 #include "core/memtrack.h"
@@ -69,13 +70,14 @@ heap_clause(Node *n, SiftV6Input *in)
 }
 
 static bool
-compile_quals(MemoryContext cx, const SiftV6Spec *spec, SiftV6Input *in, SiftV6Vexpr *out)
+compile_quals(MemoryContext cx, const SiftV6Spec *spec, SiftV6Input *in, Relation index, ScanKey keys, int nkeys, SiftV6Vexpr *out)
 {
-	List	   *clauses = NIL;
+	List	   *clauses = spec->is_table ? NIL : sift_srcfold_scankey_quals(index, keys, nkeys);
 	bool		compiled;
 
-	foreach_ptr(Node, q, spec->indexqual)
-		clauses = lappend(clauses, heap_clause(q, in));
+	if (spec->is_table)
+		foreach_ptr(Node, q, spec->indexqual)
+			clauses = lappend(clauses, heap_clause(q, in));
 	clauses = list_concat(clauses, list_copy(spec->vqual));
 	if (clauses == NIL)
 		return false;
@@ -127,6 +129,7 @@ order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relatio
 	SiftV6Source *src;
 	SiftV6Batch b;
 	SiftBatchSel bs;
+	SiftV1Scan	scan = spec->is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys);
 	SiftVec    *keyvec[SIFT_V6_MAX_KEYS];
 
 	ops->schema(spec->relid, spec->is_table, &schema);
@@ -135,7 +138,7 @@ order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relatio
 	else
 		sift_v6_input_init_rel(&in, index);
 	sort_columns(spec, &schema, &in);
-	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, &in, &quals) ? &quals : NULL, NULL);
+	src = sift_v1_source_open(cx, snap, &in, compile_quals(cx, spec, &in, index, keys, nkeys, &quals) ? &quals : NULL, &scan);
 	while (src->next(src, &b))
 	{
 		batch_sel(&bs, &b);

@@ -74,8 +74,8 @@ zone_scan_table(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation r
 }
 
 /* the JSON type tests of an index scan: jsonb_typeof(doc -> 'k') in the tag set of the key, and `doc ? 'k'` as every type but a missing path */
-static SiftV1Scan
-key_scan(Relation index, ScanKey keys, int nkeys)
+SiftV1Scan
+sift_v1_key_scan(Relation index, ScanKey keys, int nkeys)
 {
 	SiftV1Scan	scan = {0};
 
@@ -106,7 +106,7 @@ zone_scan_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation hea
 			  void *chunk_arg)
 {
 	SiftSrcFoldArgs a = {.spec = spec,.group = g,.stats = stats,.star = star,.host = index,.quals = sift_srcfold_scankey_quals(index, keys, nkeys)};
-	SiftV1Scan	scan = key_scan(index, keys, nkeys);
+	SiftV1Scan	scan = sift_v1_key_scan(index, keys, nkeys);
 	const struct SiftTidBridge *bridge = NULL;
 
 	SIFT_INVARIANT(nskip == 0 && router == NULL, "Format 1 has no device parts or scope summaries to scan index %u by", RelationGetRelid(index));
@@ -124,7 +124,7 @@ static void
 zone_scan_arms(struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 zone arms");
-	SiftV1Scan	scan = key_scan(index, keys, nkeys);
+	SiftV1Scan	scan = sift_v1_key_scan(index, keys, nkeys);
 	V1Open		o = {.cx = cx,.snap = snap,.scan = &scan};
 
 	sift_srcfold_arms(cohort, arms, &(SiftSrcFoldArgs) {.host = index,.quals = sift_srcfold_scankey_quals(index, keys, nkeys)}, open_source, &o);

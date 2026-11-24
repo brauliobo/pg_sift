@@ -73,6 +73,9 @@ typedef struct SiftV1Scan
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
 } SiftV1Scan;
 
+/* The JSON type tests of the scan keys of an index scan (the other keys are the quals sift_srcfold_scankey_quals gives) */
+extern SiftV1Scan sift_v1_key_scan(Relation index, ScanKey keys, int nkeys);
+
 /* The batches of the columns of in over the snapshot, only the rows that pass quals (NULL: all) and scan (NULL: no more); the source and what it holds open live in parent */
 extern SiftV6Source *sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftV1Scan *scan);
 

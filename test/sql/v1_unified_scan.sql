@@ -47,6 +47,7 @@ SELECT * FROM check_q($$SELECT count(*) FROM u WHERE body @@> 'cable'$$);
 SELECT * FROM check_q($$SELECT count(*) FROM u WHERE jsonb_typeof(doc->'m') = 'null'$$);
 SELECT * FROM check_q($$SELECT grp, count(*) FROM u WHERE body @@> 'cable' AND price > 10 GROUP BY grp$$);
 SELECT * FROM check_q($$SELECT a.grp, count(*) FROM u a JOIN u b ON b.id = a.price + 1 WHERE a.body @@> 'cable' GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT d.g, x.id FROM (SELECT g FROM generate_series(0, 6) g) d, LATERAL (SELECT id FROM u WHERE u.grp = d.g ORDER BY price DESC, id LIMIT 1) x$$);
 
 CREATE TABLE up (id int, k int, v int);
 INSERT INTO up SELECT i, (i * 7919) % 9000, i % 100 FROM generate_series(1, 30000) i;

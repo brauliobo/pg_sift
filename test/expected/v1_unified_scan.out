@@ -99,6 +99,12 @@ SELECT * FROM check_q($$SELECT a.grp, count(*) FROM u a JOIN u b ON b.id = a.pri
  none | f          | t
 (1 row)
 
+SELECT * FROM check_q($$SELECT d.g, x.id FROM (SELECT g FROM generate_series(0, 6) g) d, LATERAL (SELECT id FROM u WHERE u.grp = d.g ORDER BY price DESC, id LIMIT 1) x$$);
+   node    | text_index | same 
+-----------+------------+------
+ SiftAggV6 | f          | t
+(1 row)
+
 CREATE TABLE up (id int, k int, v int);
 INSERT INTO up SELECT i, (i * 7919) % 9000, i % 100 FROM generate_series(1, 30000) i;
 CREATE INDEX up_col ON up USING sift_col (id, k, v) WITH (point_tid_columns = 'k');
