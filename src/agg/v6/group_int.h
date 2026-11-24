@@ -137,6 +137,7 @@ struct SiftV6Group
 	uint32		code_epoch_cur;
 	SiftTextArena tx;			/* the winners of MIN and MAX of text (group_ext.h) */
 	struct V6Gen *gen;			/* the generic and ordered-set aggregates (v6_gen.h); their groups never spill */
+	struct V6Bulk *bulk;		/* the groups of a record stream that no two share a key, kept as they came until they are read (group_rec.c) */
 };
 
 /* the Datums of the keys of a slot of a set of keys (only: just key number only, -1: all), and of an aggregate of its state */
@@ -304,6 +305,13 @@ extern void v6g_dist_dict_part(SiftV6Group *g, int attno, const SiftDictSrc *src
 /* The sets resolve their partitions: the counts of the groups reach their accumulators */
 extern void v6g_dist_finish(SiftV6Group *g);
 extern void v6g_dist_free(SiftV6Group *g);
+
+/* group_rec.c: the bulk records of sift_v6_group_bulk_begin. settle: when the group table holds groups too (or K best are asked), the records go to the table; else they are the groups */
+extern void v6g_bulk_settle(SiftV6Group *g);
+extern bool v6g_bulk_next(SiftV6Group *g, Datum *values, bool *isnull);
+extern uint64 v6g_bulk_bytes(const SiftV6Group *g);
+extern void v6g_bulk_free(SiftV6Group *g);
+extern void v6g_append_key_str(SiftV6Group *g, const char *p, uint32 len);
 
 extern void v6g_presize_set(SiftV6Group *g, V6Set *set);
 extern void v6g_table_only(SiftV6Group *g, V6Set *set);

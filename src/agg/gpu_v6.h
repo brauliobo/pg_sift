@@ -54,6 +54,14 @@ typedef struct SiftV6StrIn
  */
 extern void sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls, const SiftV6AccIn *acc);
 
+/*
+ * The records that follow, up to `records` of them, are groups no two of which have a key alike (the groups of a parallel run): they are kept as they come and read as they are, not folded into the
+ * table, unless the table has groups of its own when the groups are asked for. False (nothing changes: the records are folded one by one) for a statement whose groups the table must hold. The records
+ * all come before the end call.
+ */
+extern bool sift_v6_group_bulk_begin(SiftV6Group *g, uint64 records);
+extern void sift_v6_group_bulk_end(SiftV6Group *g);
+
 /* column [NOT] IN (set of integers without NULL) */
 typedef struct SiftGpuIn
 {

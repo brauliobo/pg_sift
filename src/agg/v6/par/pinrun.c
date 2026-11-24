@@ -204,7 +204,11 @@ run_threads(SiftV6PinRun *r, int nthreads, size_t state, size_t sink)
 	kept = !sift_v6_gsink_full(r->sink);
 	if (kept)
 	{
+		const bool	bulk = done && r->d.bulk != NULL && sift_v6_group_bulk_begin(r->d.bulk, sift_v6_gsink_records(r->sink));
+
 		sift_v6_gsink_drain(r->sink, r->d.fold, r->d.arg);
+		if (bulk)
+			sift_v6_group_bulk_end(r->d.bulk);
 		for (int t = 0; t < nthreads; t++)
 			r->stats->rows += r->w[t].rows;
 		replay_items(r, r->pending, r->npending);

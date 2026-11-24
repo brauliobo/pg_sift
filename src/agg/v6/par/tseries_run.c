@@ -164,6 +164,6 @@ sift_v6_tseries_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6ScanStats *s
 		return NULL;
 	}
 	t->g = g;
-	d = (SiftV6PinDesc) {.name = "tseries",.gs = t->sh.gs,.leaf = t->leaf,.nleaves = t->nleaves,.scratch_bytes = SCRATCH_BYTES,.fill = ts_fill,.fold = ts_fold,.arg = t};
+	d = (SiftV6PinDesc) {.name = "tseries",.gs = t->sh.gs,.leaf = t->leaf,.nleaves = t->nleaves,.scratch_bytes = SCRATCH_BYTES,.fill = ts_fill,.fold = ts_fold,.arg = t,.bulk = g};
 	return sift_v6_pinrun_new(&d, spec, stats, index, snap, part_ok, part_arg);
 }

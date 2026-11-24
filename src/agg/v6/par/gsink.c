@@ -52,6 +52,16 @@ sift_v6_gsink_emit(SiftV6GSink *k, int worker, const SiftParGroupRow *row)
 		atomic_store_explicit(&k->full, true, memory_order_relaxed);
 }
 
+uint64
+sift_v6_gsink_records(const SiftV6GSink *k)
+{
+	uint64		n = 0;
+
+	for (int t = 0; t < k->nthreads; t++)
+		n += sift_radix_nrec(&k->s[t]->out, 0);
+	return n;
+}
+
 bool
 sift_v6_gsink_full(const SiftV6GSink *k)
 {

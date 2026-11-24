@@ -20,6 +20,7 @@ extern SiftV6GSink *sift_v6_gsink_new(MemoryContext cx, const SiftParGroupSpec *
 extern uint64 sift_v6_gsink_record_bytes(const SiftParGroupSpec *gs);
 /* Thread `worker`: the group goes to its stream (the hook emit of the groups) */
 extern void sift_v6_gsink_emit(SiftV6GSink *s, int worker, const SiftParGroupRow *row);
+extern uint64 sift_v6_gsink_records(const SiftV6GSink *k);
 extern bool sift_v6_gsink_full(const SiftV6GSink *s);
 /* The leader: every group of every stream to fold */
 extern void sift_v6_gsink_drain(SiftV6GSink *s, SiftV6GSinkFold fold, void *arg);

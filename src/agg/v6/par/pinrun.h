@@ -42,6 +42,7 @@ typedef struct SiftV6PinDesc
 	/* The leader: a group, or a partial aggregate of one, to add to the groups of the statement */
 	void		(*fold) (void *arg, const SiftParGroupRow *row);
 	void	   *arg;
+	SiftV6Group *bulk;			/* the groups of the statement when fold adds each group to them once and no two groups have a key alike: they are kept as they come (sift_v6_group_bulk_begin); NULL: folded */
 } SiftV6PinDesc;
 
 /* The window of the statement's index with the run of d over it (d is copied): the scan offers its granules to sift_v6_pinrun_window */
