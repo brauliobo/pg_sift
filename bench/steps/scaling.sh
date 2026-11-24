@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Usage: bench/bench scaling [--docs] [--ref TAG | --build DIR --root DIR] [--rows N] [--reps N] [--partitions N,N] [--workers N,N] [--out FILE] [--keep]   (steps/scaling.sh)
-# Aggregates by number of partitions (1 to 4096, a hash of the id) and parallel workers (0 to 3) on the orders of the store benchmark, pg_sift against the normal plan of
+# Aggregates by number of partitions (1, 16, 256 and 4096 by default, a hash of the id) and parallel workers (0 to 3) on the orders of the store benchmark, pg_sift against the normal plan of
 # the same server (steps/scaling.py). Everything runs on a scratch cluster of its own under $SCRATCH_ROOT in a systemd scope (SCRATCH_MEM 12G, SCRATCH_CPU 400% so that 3
 # workers and the leader have a CPU each); the timed groups of cells take PERF_LOCK (default /tmp/sift-perf.lock), and the host load is recorded with every cell.
 #   --ref TAG      a release of sift built once under $EXTRAS_SRC (steps/builds.sh), instead of --build and --root
@@ -16,7 +16,7 @@ export SCRATCH_CPU=${SCRATCH_CPU:-400%}
 . "$HERE/builds.sh"
 
 ORIG=("$@")
-REF='' DOCS='' ROWS=1000000 REPS=7 PARTS=1,4,16,64,256,1024,4096 WORKERS=0,1,2,3 OUT='' KEEP=${KEEP:-}
+REF='' DOCS='' ROWS=1000000 REPS=7 PARTS=1,16,256,4096 WORKERS=0,1,2,3 OUT='' KEEP=${KEEP:-}
 while (( $# )); do
 	case $1 in
 		--docs) DOCS=1 ;;
