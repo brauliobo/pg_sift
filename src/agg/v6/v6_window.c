@@ -444,7 +444,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		p->quals = lappend(p->quals, ri->clause);
 	}
 	priv = private_of(p);
-	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || !sift_v6_split_quals(CurrentMemoryContext, p->quals, p->rel->relid, NULL, &in, &probe) ||
+	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || !sift_v6_split_quals(CurrentMemoryContext, p->root, p->quals, p->rel->relid, NULL, &in, &probe) ||
 		(spec.winx != NULL && !sift_v6_winx_filters(CurrentMemoryContext, p->funcs, p->rel->relid, NULL, &in, filters)))
 		return false;
 	for (int i = 0; i < spec.win.n_part; i++)
@@ -755,7 +755,7 @@ window_run(WindowState *st, EState *estate)
 	sift_v6_input_bind(&in, estate);
 	sift_v6_source_close(source, is_table, NoLock);
 	st->filters = palloc0(SIFT_WINX_MAX_FUNCS * sizeof(SiftV6Vexpr));
-	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_split_quals(st->out.cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
+	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_split_quals(st->out.cx, NULL, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
 		(st->spec->winx == NULL || sift_v6_winx_filters(st->out.cx, list_nth(st->priv, PRIV_FUNCS), st->spec->rti, estate->es_param_list_info, &in, st->filters));
 	SIFT_INVARIANT(compiled, "the window scan of relation %u is not compiled", st->spec->indexoid);
 	if (st->spec->empty)

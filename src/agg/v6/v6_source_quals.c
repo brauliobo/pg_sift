@@ -33,7 +33,7 @@ text_clause(const Node *clause, Index relid)
 }
 
 bool
-sift_v6_split_quals(MemoryContext cx, const List *quals, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6SplitQuals *out)
+sift_v6_split_quals(MemoryContext cx, PlannerInfo *root, const List *quals, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6SplitQuals *out)
 {
 	List	   *machine = NIL;
 
@@ -50,7 +50,7 @@ sift_v6_split_quals(MemoryContext cx, const List *quals, Index relid, ParamListI
 			Node	   *batch = copyObject(clause);
 
 			ChangeVarNodes(batch, relid, SIFT_V6_BQ_RELID, 0);
-			if (!sift_v6_bq_plan_ok(in, (Expr *) batch))
+			if (root != NULL && !sift_v6_bq_plan_ok(root, in, (Expr *) batch))
 				return false;
 			out->text = lappend(out->text, batch);
 		}
@@ -161,7 +161,7 @@ sift_v6_source_over_quals(MemoryContext cx, SiftV6Source *inner, const SiftV6Inp
 	q->inner = inner;
 	q->in = *in;
 	q->sel = MemoryContextAllocAligned(cx, sizeof(SiftBatchSel), 64, MCXT_ALLOC_ZERO);
-	q->bq = sift_v6_bq_open(cx, sq->text, &q->in, held_col, q);
+	q->bq = sift_v6_bq_open(cx, sq->text, &q->in, held_col, q, NULL);
 	q->src = (SiftV6Source) {.next = qual_next,.skip = inner->skip != NULL ? qual_skip : NULL,.fetch = qual_fetch,.close = qual_close};
 	return &q->src;
 }

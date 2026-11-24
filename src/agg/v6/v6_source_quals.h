@@ -15,8 +15,8 @@ typedef struct SiftV6SplitQuals
 	List	   *text;			/* the clauses over text columns, as Vars of varno SIFT_V6_BQ_RELID */
 } SiftV6SplitQuals;
 
-/* Compile the machine's clauses against in (which gains the columns they read) and keep the text ones; false for a clause that is neither */
-extern bool sift_v6_split_quals(MemoryContext cx, const List *quals, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6SplitQuals *out);
+/* Compile the machine's clauses against in (which gains the columns they read) and keep the text ones; false for a clause that is neither (root: the planner's, to check a text clause the batch quals run; NULL when the node replays what the planner checked) */
+extern bool sift_v6_split_quals(MemoryContext cx, PlannerInfo *root, const List *quals, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6SplitQuals *out);
 
 /* The text columns the clauses read join the input, so that the source decodes them for the batches */
 extern void sift_v6_split_quals_columns(SiftV6Input *in, const SiftV6SplitQuals *sq);
