@@ -15,6 +15,7 @@
 #include "agg/vexpr_str.h"
 #include "core/memtrack.h"
 #include "core/par/pool.h"
+#include "core/popcount.h"
 
 #define SCRATCH_BYTES	(64u << 10)
 #define STATE_BYTES		(4u << 20)
@@ -41,6 +42,8 @@ typedef struct UnPar
 	uint32		nleft;			/* the slots a thread left to the leader */
 	uint8	   *folded;			/* bit of a batch: the threads folded it */
 	uint32		folded_cap;
+	size_t		state_bytes;	/* the state arena and the stream of groups of each thread */
+	size_t		sink_bytes;
 } UnPar;
 
 /* ---- the slots ---- */
@@ -320,16 +323,25 @@ redo_serial(UnPar *r)
 }
 
 /*
- * What the leader makes for nthreads threads, or 0 when work_mem does not hold it: a state arena, a stream, a sink of words and the slots of the ring for each
+ * The threads the leader makes for within work_mem (fewer than asked, or 0 when it does not hold two): each has its scratch, a sink of words, the slots of the ring, and what is left of its share
+ * goes two thirds to its state (the tables and the partitions of its groups) and one third to its stream of groups
  */
 static int
-threads_fit(const SiftParWordShape *sh, int nthreads)
+threads_fit(UnPar *r, int nthreads)
 {
-	const uint64 words = (uint64) SIFT_UN_PAIRS_MAX * 8 * (sh->gs.nk + sh->nsum) + (sh->gs.strs ? (uint64) SIFT_UN_PAIRS_MAX * 28 : 0);
-	const uint64 per_thread = SCRATCH_BYTES + STATE_BYTES + WORK_BYTES + SINK_BYTES + words + 2 * sizeof(SiftUnSlot);
+	const SiftParWordShape *sh = &r->sh;
+	const uint64 words = (uint64) SIFT_UN_PAIRS_MAX * 8 * (sh->gs.nk + sh->nsum) + (uint64) sift_pc64(sh->gs.strs) * SIFT_UN_PAIRS_MAX * 28;
+	const uint64 fixed = SCRATCH_BYTES + WORK_BYTES + words + 2 * sizeof(SiftUnSlot);
 	const uint64 budget = (uint64) work_mem * 1024 * 3 / 4;
+	uint64		share;
 
-	return (int) Min((uint64) nthreads, budget / per_thread);
+	nthreads = (int) Min((uint64) nthreads, budget / (fixed + STATE_BYTES + SINK_BYTES));
+	if (nthreads < 2)
+		return 0;
+	share = budget / nthreads - fixed;
+	r->state_bytes = share * 2 / 3;
+	r->sink_bytes = share / 3;
+	return nthreads;
 }
 
 bool
@@ -347,7 +359,7 @@ sift_v6_unnest_par(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const
 
 	if (nthreads < 2 || src->pipe->nfact - 1 > SIFT_UN_COLS_MAX || !sift_par_unnest_shape(spec, &r->sh))
 		return false;
-	if ((nthreads = threads_fit(&r->sh, nthreads)) < 2)
+	if ((nthreads = threads_fit(r, nthreads)) < 2)
 		return false;
 	r->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest run");
 	old = MemoryContextSwitchTo(r->cx);
@@ -359,8 +371,8 @@ sift_v6_unnest_par(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const
 	for (uint32 s = 0; s < r->nslots; s++)
 		r->slot[s] = slot_new(r);
 	r->un = sift_par_unnest_new(r->cx, &r->sh, src->pipe, src->left, nthreads);
-	r->sink = sift_v6_gsink_new(r->cx, &r->sh.gs, nthreads, SINK_BYTES);
-	ar = sift_par_arenas_create(r->cx, nthreads, SCRATCH_BYTES, STATE_BYTES, WORK_BYTES);
+	r->sink = sift_v6_gsink_new(r->cx, &r->sh.gs, nthreads, r->sink_bytes);
+	ar = sift_par_arenas_create(r->cx, nthreads, SCRATCH_BYTES, r->state_bytes, WORK_BYTES);
 	hooks = (SiftParGroupHooks) {.fill = un_fill,.emit = un_emit,.arg = r};
 	r->grp = sift_par_group_create(ar, &r->sh.gs, false, UINT64_MAX, &hooks, &err);
 	MemoryContextSwitchTo(old);

@@ -1,0 +1,69 @@
+-- The aggregate scan of an index of format major 2 on the compute threads of the backend (core/par/pool.h), for the shapes that kept the leader busy: GROUP BY date_bin with more groups than one
+-- thread table holds (the groups go to the partitions of the threads, not to the scan), and LATERAL unnest with two keys (text among them), COUNT(col) and SUM(col) of columns with NULLs, and
+-- COUNT(element) of arrays with NULL elements (the NULLs are counted by the threads). Every query is run with the node on 4 threads and with the aggregate scan off, and the sorted rows are compared;
+-- the first word says they agree, the second that the plan is the node's, the third that the answer is not empty.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 3;
+SET jit = off;
+SET work_mem = '256MB';
+SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
+\ir test/agg_helpers.sql
+
+CREATE FUNCTION node_of(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION check_par(name text, q text) RETURNS TABLE (label text, same bool, node bool, nonempty bool) LANGUAGE plpgsql AS $$
+DECLARE a text := runq(q, true); b text := runq(q, false);
+BEGIN
+	RETURN QUERY SELECT name, a = b, node_of(q), b <> '[]' AND b NOT LIKE 'ERR%';
+END $$;
+
+-- ---- a time series with many groups ----
+CREATE TABLE hc_t (id int, ts timestamptz, dev int, site int, v int, w smallint) WITH (autovacuum_enabled = false);
+INSERT INTO hc_t SELECT i,
+	CASE WHEN i % 997 = 0 THEN NULL WHEN i % 4999 = 0 THEN 'infinity' ELSE timestamptz '2024-01-01 00:00:00+00' + (i * 37 % 6000000) * interval '1 second' END,
+	CASE WHEN i % 1009 = 0 THEN NULL ELSE (i::bigint * 7919 % 20000)::int END, i % 5, CASE WHEN i % 20011 = 0 THEN NULL ELSE i % 1000 END, (i % 100)::smallint
+FROM generate_series(1, 400000) i;
+CREATE INDEX hc_t_col ON hc_t USING sift_col (id, ts, dev, site, v, w) WITH (rollup_columns = 'off');
+VACUUM (FREEZE, ANALYZE) hc_t;
+SELECT * FROM check_par('15 minutes by dev', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('1 hour by dev, NULL sum', $q$ SELECT date_bin('1 hour', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('1 minute alone', $q$ SELECT date_bin('1 minute', ts, timestamptz '2020-01-01') b, count(*), sum(w) FROM hc_t GROUP BY 1 $q$);
+SELECT * FROM check_par('by dev and site', $q$ SELECT date_bin('1 day', ts, timestamptz '2020-01-01') b, dev, site, count(*) FROM hc_t GROUP BY 1, 2, 3 $q$);
+SELECT * FROM check_par('with a predicate', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*) FROM hc_t WHERE site < 3 AND v > 10 GROUP BY 1, 2 $q$);
+SET work_mem = '4MB';
+SELECT * FROM check_par('15 minutes by dev, little work_mem', $q$ SELECT date_bin('15 minutes', ts, timestamptz '2020-01-01') b, dev, count(*), sum(w) FROM hc_t GROUP BY 1, 2 $q$);
+SET work_mem = '256MB';
+
+-- ---- arrays: two keys, NULL columns, NULL elements ----
+CREATE TABLE un2_t (id int, grp int, qty int, label text, tags text[], nums int[]) WITH (autovacuum_enabled = false);
+INSERT INTO un2_t SELECT i, i % 50, CASE WHEN i % 7 = 0 OR i % 50 = 3 THEN NULL ELSE i % 9 END, CASE WHEN i % 11 = 0 THEN NULL ELSE 'label-' || i % 13 END,
+	CASE WHEN i % 17 = 0 THEN NULL WHEN i % 19 = 0 THEN '{}'::text[]
+		ELSE ARRAY[CASE WHEN i % 23 = 0 THEN NULL ELSE 'tag' || i % 20 END, 'a-much-longer-tag-value-' || i % 37, 'x' || i % 5] END,
+	CASE WHEN i % 13 = 0 THEN NULL WHEN i % 29 = 0 THEN '{}'::int[] ELSE ARRAY[i % 10, CASE WHEN i % 31 = 0 THEN NULL ELSE i % 100 END, i % 3] END
+FROM generate_series(1, 120000) i;
+CREATE INDEX un2_t_col ON un2_t USING sift_col (id, grp, qty, label, tags, nums) WITH (paths = 'tags[] text, nums[] int4', rollup_columns = 'off');
+VACUUM (FREEZE, ANALYZE) un2_t;
+SELECT * FROM check_par('text key of the row and text element', $q$ SELECT f.label, t, count(*) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('text key of the row and text element, left, sum', $q$ SELECT f.label, t, count(*), sum(f.qty) FROM un2_t f LEFT JOIN LATERAL unnest(f.tags) AS u(t) ON true GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('text key of the row and integer element', $q$ SELECT f.label, n, count(*), sum(f.qty) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('integer key of the row and text element', $q$ SELECT f.grp, t, count(*), sum(f.qty) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('two integer keys', $q$ SELECT f.grp, n, count(*) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1, 2 $q$);
+SELECT * FROM check_par('count of a column with NULLs', $q$ SELECT n, count(*), count(f.qty), count(f.label) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1 $q$);
+SELECT * FROM check_par('sum of a column with NULLs', $q$ SELECT n, count(*), sum(f.qty), avg(f.qty) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1 $q$);
+SELECT * FROM check_par('sum of a column with NULLs, one group has only NULLs', $q$ SELECT f.grp, count(*), sum(f.qty) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1 $q$);
+SELECT * FROM check_par('count of the element, NULL elements', $q$ SELECT f.grp, count(*), count(n), sum(f.qty) FROM un2_t f CROSS JOIN LATERAL unnest(f.nums) AS u(n) GROUP BY 1 $q$);
+SELECT * FROM check_par('count of the element, left', $q$ SELECT n, count(*), count(n), count(f.qty) FROM un2_t f LEFT JOIN LATERAL unnest(f.nums) AS u(n) ON true GROUP BY 1 $q$);
+SELECT * FROM check_par('count of the text element, NULL elements', $q$ SELECT f.grp, count(*), count(t) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1 $q$);
+SELECT * FROM check_par('a group for every row and element', $q$ SELECT f.id, t, count(*) FROM un2_t f CROSS JOIN LATERAL unnest(f.tags) AS u(t) GROUP BY 1, 2 $q$);
+DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
+DROP TABLE hc_t, un2_t;
+DROP EXTENSION pg_sift;

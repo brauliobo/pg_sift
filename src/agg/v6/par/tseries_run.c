@@ -148,7 +148,7 @@ ts_fold(void *arg, const SiftParGroupRow *row)
 
 	for (int i = 0; i < t->sh.nk; i++)
 		nulls |= (uint64) !sift_tseries_key_value(row->key[i], &key[i]) << i;
-	sift_v6_pin_fold_row(t->g, t->spec, row, key, NULL, nulls);
+	sift_v6_pin_fold_row(t->g, t->spec, row, key, NULL, nulls, NULL);
 }
 
 SiftV6PinRun *

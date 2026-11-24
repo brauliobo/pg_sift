@@ -196,6 +196,7 @@ typedef struct Rec
 	uint32		len;
 	uint64		count;
 	uint64		sum;
+	uint64		nn;
 } Rec;
 
 typedef struct Vec
@@ -245,6 +246,7 @@ merged(Vec *in, int n)
 		{
 			m.r[m.n - 1].count += all.r[i].count;
 			m.r[m.n - 1].sum += all.r[i].sum;
+			m.r[m.n - 1].nn += all.r[i].nn;
 		}
 		else
 			vec_add(&m, &all.r[i]);
@@ -257,12 +259,11 @@ merged(Vec *in, int n)
 #define SIGN	(UINT64CONST(1) << 63)
 
 static Vec
-reference(const Fact *f, const Dim *d, const Stmt *st, SiftV6JoinMode mode, bool *serial)
+reference(const Fact *f, const Dim *d, const Stmt *st, SiftV6JoinMode mode)
 {
 	Vec			v = {0},
 				out;
 
-	*serial = false;
 	for (uint32 i = 0; i < ROWS; i++)
 	{
 		int			match[8];
@@ -275,15 +276,10 @@ reference(const Fact *f, const Dim *d, const Stmt *st, SiftV6JoinMode mode, bool
 				match[nmatch++] = j;
 		if (nmatch == 0 && mode != SV6J_LEFT_EQUI)
 			continue;
-		if (f->isnull[2][i])
-		{
-			*serial = true;
-			continue;
-		}
 		for (int q = 0; q < Max(nmatch, 1); q++)
 		{
 			const int	j = q < nmatch ? match[q] : -1;
-			Rec			r = {.count = 1,.sum = (uint64) f->k[2][i]};
+			Rec			r = {.count = 1,.sum = f->isnull[2][i] ? 0 : (uint64) f->k[2][i],.nn = !f->isnull[2][i]};
 
 			if (st->text_key)
 			{
@@ -311,7 +307,7 @@ typedef struct Ctx
 	SiftParStar *st;
 	const Fact *f;
 	Vec			out[SIFT_PAR_MAX_THREADS];
-	const SiftParGroupSpec *gs;
+	const SiftParWordShape *sh;
 } Ctx;
 
 static bool
@@ -335,9 +331,9 @@ static void
 emit(void *arg, int worker, const SiftParGroupRow *row)
 {
 	Ctx		   *c = arg;
-	Rec			r = {.count = row->count,.sum = row->sum[0]};
+	Rec			r = {.count = row->count,.sum = row->sum[c->sh->v_slot[1]],.nn = row->sum[c->sh->n_slot[1]]};
 
-	if (c->gs->strs)
+	if (c->sh->gs.strs)
 	{
 		r.len = row->str[0].len;
 		if (r.len != SIFT_STR_NULL)
@@ -374,7 +370,7 @@ fallback(void *arg, uint32 item)
 static Vec
 run(const Fact *f, const Stmt *st, const Dim *d, uint32 workers)
 {
-	Ctx			c = {.f = f,.gs = &st->sh.gs};
+	Ctx			c = {.f = f,.sh = &st->sh};
 	SiftParGroupHooks hooks = {.fill = fill,.emit = emit,.overflow = overflow,.arg = &c};
 	SiftParArenas *ar;
 	SiftParGroup *g;
@@ -403,21 +399,20 @@ same(const Vec *a, const Vec *b)
 	if (a->n != b->n)
 		return false;
 	for (uint32 i = 0; i < a->n; i++)
-		if (cmp_rec(&a->r[i], &b->r[i]) != 0 || a->r[i].count != b->r[i].count || a->r[i].sum != b->r[i].sum)
+		if (cmp_rec(&a->r[i], &b->r[i]) != 0 || a->r[i].count != b->r[i].count || a->r[i].sum != b->r[i].sum || a->r[i].nn != b->r[i].nn)
 			return false;
 	return true;
 }
 
 static void
-check_parity(SiftV6JoinMode mode, int copies, bool text_key, bool with_count, const char *what)
+check_parity(SiftV6JoinMode mode, int copies, bool text_key, bool with_count, bool null_measure, const char *what)
 {
-	Fact	   *f = make_fact(false);
+	Fact	   *f = make_fact(null_measure);
 	Dim		   *d = make_dim(copies, mode);
 	Stmt	   *st = make_stmt(d, mode, text_key, with_count);
-	bool		serial;
-	Vec			want = reference(f, d, st, mode, &serial);
+	Vec			want = reference(f, d, st, mode);
 
-	PASS(!serial && want.n > 0);
+	PASS(want.n > 0);
 	for (uint32 w = 1; w <= 4; w++)
 	{
 		Vec			got = run(f, st, d, w);
@@ -466,15 +461,17 @@ int
 main(void)
 {
 	pgshim_keep();
-	check_parity(SV6J_INNER_EQUI, 1, false, false, "inner, int keys");
-	check_parity(SV6J_INNER_EQUI, 1, false, true, "inner, int keys, count(col)");
-	check_parity(SV6J_LEFT_EQUI, 1, false, true, "left, int keys");
-	check_parity(SV6J_INNER_EQUI, 1, true, true, "inner, text key");
-	check_parity(SV6J_LEFT_EQUI, 1, true, false, "left, text key");
-	check_parity(SV6J_INNER_EQUI, 2, false, true, "inner, a key twice in the dimension");
-	check_parity(SV6J_LEFT_EQUI, 3, true, true, "left, a key three times, text key");
+	check_parity(SV6J_INNER_EQUI, 1, false, false, false, "inner, int keys");
+	check_parity(SV6J_INNER_EQUI, 1, false, true, false, "inner, int keys, count(col)");
+	check_parity(SV6J_LEFT_EQUI, 1, false, true, false, "left, int keys");
+	check_parity(SV6J_INNER_EQUI, 1, true, true, false, "inner, text key");
+	check_parity(SV6J_LEFT_EQUI, 1, true, false, false, "left, text key");
+	check_parity(SV6J_INNER_EQUI, 2, false, true, false, "inner, a key twice in the dimension");
+	check_parity(SV6J_LEFT_EQUI, 3, true, true, false, "left, a key three times, text key");
+	check_parity(SV6J_INNER_EQUI, 1, false, true, true, "inner, NULL measures counted and summed");
+	check_parity(SV6J_LEFT_EQUI, 1, true, true, true, "left, text key, NULL measures counted and summed");
 	check_scan(false, 1, 0);
-	check_scan(true, 1, SIFT_ERR_SERIAL);
+	check_scan(true, 1, 0);
 	check_scan(false, 4, SIFT_ERR_ARENA_FULL);
 	printf("par_star: ok (%d checks)\n", nchecks);
 	return 0;

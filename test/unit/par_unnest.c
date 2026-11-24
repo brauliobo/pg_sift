@@ -185,7 +185,8 @@ typedef enum Shape
 {
 	KEY_GRP_ELEM,				/* grp and the element; count(*), sum(qty) */
 	KEY_ELEM,					/* the element; count(*), sum(qty) */
-	KEY_LABEL					/* the text of the row; count(*), sum(qty) */
+	KEY_LABEL,					/* the text of the row; count(*), sum(qty) */
+	KEY_LABEL_ELEM				/* the text of the row and the element; count(*), sum(qty) */
 } Shape;
 
 typedef struct Stmt
@@ -222,7 +223,7 @@ make_stmt(Shape shape, bool text_elem, bool left)
 	st->ext.elem = (SiftV6XElem) {.attno = 4,.type = etype,.left = left};
 	sp->key = calloc(2, sizeof(SiftV6Col));
 	sp->agg = calloc(2, sizeof(SiftV6Agg));
-	sp->nkeys = shape == KEY_GRP_ELEM ? 2 : 1;
+	sp->nkeys = shape == KEY_GRP_ELEM || shape == KEY_LABEL_ELEM ? 2 : 1;
 	sp->key[0] = shape == KEY_GRP_ELEM ? grp : shape == KEY_ELEM ? elem : label;
 	sp->key[1] = elem;
 	sp->naggs = 2;
@@ -250,10 +251,11 @@ free_stmt(Stmt *st)
 typedef struct Rec
 {
 	uint64		key[2];
-	uint8		str[40];
-	uint32		len;
+	uint8		str[2][40];
+	uint32		len[2];
 	uint64		count;
 	uint64		sum;
+	uint64		nn;
 } Rec;
 
 typedef struct Vec
@@ -280,9 +282,14 @@ cmp_rec(const void *a, const void *b)
 	for (int j = 0; j < 2; j++)
 		if (x->key[j] != y->key[j])
 			return x->key[j] < y->key[j] ? -1 : 1;
-	if (x->len != y->len)
-		return x->len < y->len ? -1 : 1;
-	return x->len == SIFT_STR_NULL ? 0 : memcmp(x->str, y->str, x->len);
+	for (int j = 0; j < 2; j++)
+	{
+		if (x->len[j] != y->len[j])
+			return x->len[j] < y->len[j] ? -1 : 1;
+		if (x->len[j] != SIFT_STR_NULL && memcmp(x->str[j], y->str[j], x->len[j]) != 0)
+			return memcmp(x->str[j], y->str[j], x->len[j]);
+	}
+	return 0;
 }
 
 static Vec
@@ -301,6 +308,7 @@ merged(Vec *in, int n)
 		{
 			m.r[m.n - 1].count += all.r[i].count;
 			m.r[m.n - 1].sum += all.r[i].sum;
+			m.r[m.n - 1].nn += all.r[i].nn;
 		}
 		else
 			vec_add(&m, &all.r[i]);
@@ -313,11 +321,11 @@ merged(Vec *in, int n)
 #define SIGN	(UINT64CONST(1) << 63)
 
 static void
-set_text(Rec *r, const char *s, bool null)
+set_text(Rec *r, int j, const char *s, bool null)
 {
-	r->len = null ? SIFT_STR_NULL : (uint32) strlen(s);
+	r->len[j] = null ? SIFT_STR_NULL : (uint32) strlen(s);
 	if (!null)
-		memcpy(r->str, s, r->len);
+		memcpy(r->str[j], s, r->len[j]);
 }
 
 /* The groups of the pairs, from the rows: every row of the mask, each of its elements, a NULL element for the row of a left join with none */
@@ -338,7 +346,7 @@ reference(const Data *d, const Stmt *st)
 			const uint32 e = d->first[p] + k;
 			const bool	none = k >= n,
 						enull = none || d->enull[e];
-			Rec			r = {.count = 1,.sum = (uint64) d->qty[p]};
+			Rec			r = {.count = 1,.sum = d->qty_null[p] ? 0 : (uint64) d->qty[p],.nn = !d->qty_null[p]};
 
 			if (st->shape == KEY_GRP_ELEM)
 			{
@@ -346,11 +354,19 @@ reference(const Data *d, const Stmt *st)
 				r.key[1] = enull ? NULLW : (uint64) d->ival[e] ^ SIGN;
 			}
 			else if (st->shape == KEY_ELEM && st->text_elem)
-				set_text(&r, enull ? "" : d->sval[e], enull);
+				set_text(&r, 0, enull ? "" : d->sval[e], enull);
 			else if (st->shape == KEY_ELEM)
 				r.key[0] = enull ? NULLW : (uint64) d->ival[e] ^ SIGN;
+			else if (st->shape == KEY_LABEL_ELEM)
+			{
+				set_text(&r, 0, d->label[p], d->label_null[p]);
+				if (st->text_elem)
+					set_text(&r, 1, enull ? "" : d->sval[e], enull);
+				else
+					r.key[1] = enull ? NULLW : (uint64) d->ival[e] ^ SIGN;
+			}
 			else
-				set_text(&r, d->label[p], d->label_null[p]);
+				set_text(&r, 0, d->label[p], d->label_null[p]);
 			vec_add(&v, &r);
 		}
 	}
@@ -365,7 +381,7 @@ same(const Vec *a, const Vec *b)
 	if (a->n != b->n)
 		return false;
 	for (uint32 i = 0; i < a->n; i++)
-		if (cmp_rec(&a->r[i], &b->r[i]) != 0 || a->r[i].count != b->r[i].count || a->r[i].sum != b->r[i].sum)
+		if (cmp_rec(&a->r[i], &b->r[i]) != 0 || a->r[i].count != b->r[i].count || a->r[i].sum != b->r[i].sum || a->r[i].nn != b->r[i].nn)
 			return false;
 	return true;
 }
@@ -377,7 +393,7 @@ typedef struct Ctx
 	SiftParUnnest *un;
 	SiftUnSlot *slot[NSLOT];
 	Vec			out[SIFT_PAR_MAX_THREADS];
-	const SiftParGroupSpec *gs;
+	const SiftParWordShape *sh;
 } Ctx;
 
 static bool
@@ -392,16 +408,17 @@ static void
 emit(void *arg, int worker, const SiftParGroupRow *row)
 {
 	Ctx		   *c = arg;
-	Rec			r = {.count = row->count,.sum = row->sum[0]};
+	Rec			r = {.count = row->count,.sum = row->sum[c->sh->v_slot[1]],.nn = row->sum[c->sh->n_slot[1]]};
 
-	if (c->gs->strs)
-	{
-		r.len = row->str[0].len;
-		if (r.len != SIFT_STR_NULL)
-			memcpy(r.str, row->str[0].p, r.len);
-	}
-	else
-		memcpy(r.key, row->key, sizeof(uint64) * 2);
+	for (int j = 0; j < c->sh->gs.nk; j++)
+		if (sift_par_group_is_str(&c->sh->gs, j))
+		{
+			r.len[j] = row->str[j].len;
+			if (r.len[j] != SIFT_STR_NULL)
+				memcpy(r.str[j], row->str[j].p, r.len[j]);
+		}
+		else
+			r.key[j] = row->key[j];
 	vec_add(&c->out[worker], &r);
 }
 
@@ -438,7 +455,7 @@ run(Ctx *c, const Stmt *st, uint32 workers)
 	SiftParOps	ops = sift_par_group_ops;
 	Vec			v;
 
-	c->gs = &st->sh.gs;
+	c->sh = &st->sh;
 	c->un = sift_par_unnest_new(CurrentMemoryContext, &st->sh, st->pipe, st->left, workers);
 	ar = sift_par_arenas_create(CurrentMemoryContext, workers, SCRATCH, 8 << 20, 8 << 20);
 	g = sift_par_group_create(ar, &st->sh.gs, false, UINT64_MAX, &hooks, &err);
@@ -476,16 +493,16 @@ replay(Ctx *c, const Stmt *st)
 		sift_par_words_out(words, &b);
 		for (uint32 i = 0; i < b.n; i++)
 		{
-			Rec			r = {.count = 1,.sum = st->sh.nsum > 0 ? b.arg[0][i] : 0};
+			Rec			r = {.count = 1,.sum = b.arg[st->sh.v_slot[1]][i],.nn = b.arg[st->sh.n_slot[1]][i]};
 
-			if (st->sh.gs.strs)
-			{
-				r.len = b.str[0][i].len;
-				if (r.len != SIFT_STR_NULL)
-					memcpy(r.str, b.str[0][i].p, r.len);
-			}
-			else
-				for (int j = 0; j < st->sh.nk; j++)
+			for (int j = 0; j < st->sh.gs.nk; j++)
+				if (sift_par_group_is_str(&st->sh.gs, j))
+				{
+					r.len[j] = b.str[j][i].len;
+					if (r.len[j] != SIFT_STR_NULL)
+						memcpy(r.str[j], b.str[j][i].p, r.len[j]);
+				}
+				else
 					r.key[j] = b.key[j][i];
 			vec_add(&all, &r);
 		}
@@ -510,9 +527,9 @@ free_slots(Ctx *c)
 }
 
 static void
-check_parity(Shape shape, bool text_elem, bool left, const char *what)
+check_parity(Shape shape, bool text_elem, bool left, bool null_qty, const char *what)
 {
-	Data	   *d = make_data(text_elem, false);
+	Data	   *d = make_data(text_elem, null_qty);
 	Stmt	   *st = make_stmt(shape, text_elem, left);
 	Ctx			c = {0};
 	Vec			want = reference(d, st),
@@ -587,15 +604,20 @@ int
 main(void)
 {
 	pgshim_keep();
-	check_parity(KEY_GRP_ELEM, false, false, "inner, int element, grp key");
-	check_parity(KEY_GRP_ELEM, false, true, "left, int element, grp key");
-	check_parity(KEY_ELEM, true, false, "inner, text element");
-	check_parity(KEY_ELEM, true, true, "left, text element");
-	check_parity(KEY_ELEM, false, true, "left, int element");
-	check_parity(KEY_LABEL, true, false, "inner, text key of the row");
-	check_parity(KEY_LABEL, false, true, "left, text key of the row");
+	check_parity(KEY_GRP_ELEM, false, false, false, "inner, int element, grp key");
+	check_parity(KEY_GRP_ELEM, false, true, false, "left, int element, grp key");
+	check_parity(KEY_ELEM, true, false, false, "inner, text element");
+	check_parity(KEY_ELEM, true, true, false, "left, text element");
+	check_parity(KEY_ELEM, false, true, false, "left, int element");
+	check_parity(KEY_LABEL, true, false, false, "inner, text key of the row");
+	check_parity(KEY_LABEL, false, true, false, "left, text key of the row");
+	check_parity(KEY_LABEL_ELEM, false, false, false, "inner, text key of the row and int element");
+	check_parity(KEY_LABEL_ELEM, true, true, false, "left, text key of the row and text element");
+	check_parity(KEY_GRP_ELEM, false, true, true, "left, NULL quantities, grp key");
+	check_parity(KEY_ELEM, true, false, true, "inner, NULL quantities, text element");
+	check_parity(KEY_LABEL_ELEM, true, true, true, "left, NULL quantities, text key and text element");
 	check_scan(false, 0, 0);
-	check_scan(true, 0, SIFT_ERR_SERIAL);
+	check_scan(true, 0, 0);
 	check_scan(false, 100, SIFT_ERR_ARENA_FULL);
 	printf("par_unnest: ok (%d checks)\n", nchecks);
 	return 0;

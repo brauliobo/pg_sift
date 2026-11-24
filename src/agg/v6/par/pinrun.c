@@ -281,18 +281,21 @@ sift_v6_pin_slot_cols(const SiftPinSlot *sl, SiftArena *a, SiftErr *err, const i
 }
 
 void
-sift_v6_pin_fold_row(SiftV6Group *g, const SiftV6Spec *spec, const SiftParGroupRow *row, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls)
+sift_v6_pin_fold_row(SiftV6Group *g, const SiftV6Spec *spec, const SiftParGroupRow *row, const int64 *key, const SiftV6StrIn *str, uint64 key_nulls, const SiftParWordShape *sh)
 {
-	SiftV6AccIn acc[SIFT_V6_MAX_KEYS + 16];
+	SiftV6AccIn acc[SIFT_PAR_WORD_AGGS];
 	int			m = 0;
 
 	Assert(spec->naggs <= lengthof(acc));
 	for (int j = 0; j < spec->naggs; j++)
 	{
-		acc[j] = (SiftV6AccIn) {.n = (int64) row->count};
-		if (spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG)
+		const int	n_at = sh != NULL ? sh->n_slot[j] : -1,
+					v_at = sh != NULL ? sh->v_slot[j] : spec->agg[j].kind == SV6_SUM || spec->agg[j].kind == SV6_AVG ? m++ : -1;
+
+		acc[j] = (SiftV6AccIn) {.n = (int64) (n_at >= 0 ? row->sum[n_at] : row->count)};
+		if (v_at >= 0)
 		{
-			acc[j].v0 = row->sum[m++];
+			acc[j].v0 = row->sum[v_at];
 			acc[j].v1 = (int64) acc[j].v0 < 0 ? -1 : 0;
 		}
 	}
@@ -306,20 +309,18 @@ sift_v6_pin_fold_words(SiftV6Group *g, const SiftV6Spec *spec, const SiftParWord
 	SiftV6StrIn str[SIFT_V6_MAX_KEYS] = {{0}};
 	uint64		nulls = 0;
 
-	if (sh->gs.strs)
+	for (int i = 0; i < sh->nk; i++)
 	{
-		str[0] = (SiftV6StrIn) {(const char *) row->str[0].p, row->str[0].len};
-		nulls = row->str[0].len == SIFT_STR_NULL;
-	}
-	else
-		for (int i = 0; i < sh->nk; i++)
-		{
-			const bool	null = row->key[i] == UINT64_MAX;
+		const bool	text = sift_par_group_is_str(&sh->gs, i);
+		const bool	null = text ? row->str[i].len == SIFT_STR_NULL : row->key[i] == UINT64_MAX;
 
-			nulls |= (uint64) null << i;
+		nulls |= (uint64) null << i;
+		if (text)
+			str[i] = (SiftV6StrIn) {(const char *) row->str[i].p, row->str[i].len};
+		else
 			key[i] = null ? 0 : (int64) (row->key[i] ^ (UINT64CONST(1) << 63));
-		}
-	sift_v6_pin_fold_row(g, spec, row, key, str, nulls);
+	}
+	sift_v6_pin_fold_row(g, spec, row, key, str, nulls, sh);
 }
 
 bool
