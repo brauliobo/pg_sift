@@ -8,7 +8,7 @@
 
 | Criterion | `sift_table` (`USING sift_table`) | `sift_col` (`USING sift_col` on heap) |
 |---|---|---|
-| Storage footprint | Single compressed columnar copy (≤ 33 B/row target, wide + JSONB) | Heap table + compressed columnar index |
+| Storage footprint | Single compressed columnar copy | Heap table + compressed columnar index |
 | Primary-key updates / HOT | Full MVCC, no HOT updates | Heap HOT updates on non-indexed columns |
 | `SiftAgg` analytics | Full parity (8,192-row granules, pre-aggs, scopes, joins, Top-N, windows) | Full parity (same Format Major 2 engine) |
 | Change tracking | Native MVCC; no `track_changes` trigger and no option | `track_changes = 'auto'` row trigger on the heap ([ANALYTICS.md](ANALYTICS.md#9-change-tracking-track_changes)) |
@@ -16,7 +16,7 @@
 | Rebuild on corruption | Restore from backup / replica | `REINDEX INDEX CONCURRENTLY` from heap |
 | Best fit | Append-heavy events, telemetry, logs, analytical tables | Live OLTP tables with heavy single-row updates |
 
-A `sift_col` index cannot be created on a `sift_table`: the table already stores Format Major 2 columns and runs `SiftAgg` natively. Configure its sort order, scopes, and the other options with `sift.table_set_option(...)` (section 3). B-tree, `UNIQUE`, `EXCLUDE`, GIN, GiST, and `sift` (BM25) indexes attach to a `sift_table` normally. A `sift_table` has no visibility map, so PostgreSQL never plans an `Index Only Scan` over it; reads of columns without row materialization run through `SiftAgg` and `SiftScanExec` instead.
+A `sift_col` index cannot be created on a `sift_table`: the table already stores Format Major 2 columns and runs `SiftAgg` natively. Configure its sort order, scopes, and the other options with `sift.table_set_option(...)` (section 3). B-tree, `UNIQUE`, `EXCLUDE`, GIN, GiST, and `sift` (BM25) indexes attach to a `sift_table` normally. A `sift_table` keeps a visibility map fork (`VISIBILITYMAP_FORKNUM`) that PostgreSQL's `Index Only Scan` reads (section 6); aggregates over its columns run through `SiftAgg` without row materialization.
 
 ### What Works on a `sift_table`
 
@@ -27,7 +27,7 @@ Everything below runs on a `sift_table` exactly as on a `sift_col` index, with t
 | Storage | Typed `jsonb` shredding, part-shared string dictionaries (FSST, ZSTD), automatic float codecs, four-tier compression, secondary clustering inside equal sort keys, up to 1,024 columns |
 | Skipping | Time-bound pruning on up to two `date` / `timestamp` columns, zone maps, automatic dictionary, bitset, exact-set, and Bloom skip indexes |
 | Analytics | Direct-on-compressed filtering, pre-aggregates, `GROUPING SETS` / `ROLLUP` / `CUBE`, approximate sketches, windows, `DISTINCT ON`, Top-N, star and snowflake joins with runtime join filters, parallel scans |
-| Scopes | Entity-Once `scope`, primary-parent clustering, multi-column Top-K rings ([SCOPES.md](SCOPES.md)) |
+| Scopes | Entity-Once `scope` over integer pairs, primary-parent clustering, Top-K rings ([SCOPES.md](SCOPES.md)) |
 | Search | `SiftHybridScan`: a `sift` BM25 index and a `sift_table` answer one query together, in either direction, with no heap fetch |
 | Projections | `SIFT_PROJ_SORT` and `SIFT_PROJ_AGG` secondary projections in the same relation, chosen by `SiftAgg` (section 8) |
 | Tiering and TTL | Cold parts in `file://`, `s3://`, or `r2://` object storage and `O(1)` part-drop TTL (section 9) |
@@ -58,7 +58,7 @@ A `sift_table` needs no option calls to start; most tables never set one. Every 
 | Option | Automatic behavior |
 |---|---|
 | `key_order` | From the primary key (up to 8 columns), or from the leading foreign key or low-cardinality grouping key plus the first time column once rows arrive; rows with equal keys are also clustered for compression |
-| `paths` | `auto` for `jsonb` columns: the first flush or compaction shreds the keys present in at least 10% of a 4,096-row sample, with typed leaves |
+| `paths` | `auto` for `jsonb` columns: the keys the documents share are shredded into typed leaves; `sift.suggest_paths` shows what a column would get |
 | `compression` | Four tiers (`L0` slab, `L0`, warm `L1`, cold `L2`) with the codec chosen per column |
 | `preagg`, `skip_index` | Per-granule pre-aggregates and the zero-bloat skip indexes, capped at about 1% of the table |
 | `connect` | Foreign keys between `sift_table`s are discovered from `pg_constraint` |
@@ -96,7 +96,7 @@ Because PostgreSQL table access methods do not yet support `WITH (...)` reloptio
 SELECT sift.table_set_option('events_col', 'compression', 'zstd');
 SELECT sift.table_get_option('events_col', 'compression');
 SELECT sift.table_reset_option('events_col', 'compression');
-SELECT * FROM sift.table_option_names();    -- the 10 names below
+SELECT * FROM sift.table_options('events_col');   -- every option: value in force, source, built-in default
 ```
 
 Ten options are documented: 5 core storage options, and 5 analytical options that share their names, grammar, and parser with the `sift_col` reloptions of the same name, so there is nothing new to learn. 5.1 had 17; the rest are automatic in 6.0. Projections, tiering, and TTL add **no options**: they are `sift.*` functions (sections 8 and 9).
@@ -115,18 +115,18 @@ Ten options are documented: 5 core storage options, and 5 analytical options tha
 
 | Option | Default | Values | Purpose |
 |---|---|---|---|
-| `scope` | `''` | `'name: fk -> rel(member, key) [cluster] [topk(...)] [null_filter(...)]'` | Entity-Once tenant and hierarchy scopes ([SCOPES.md](SCOPES.md)) |
+| `scope` | `''` | `'name: fk -> rel(member, key) [\| rel2(via, key) via rel3(via, member)]'` | Entity-Once tenant and hierarchy scopes ([SCOPES.md](SCOPES.md)) |
 | `connect` | `''` (auto) | `'fk -> [schema.]parent(key)'` | Parent-child connection for a soft foreign key; real foreign keys are discovered automatically |
 | `preagg` | `''` (auto) | `auto`, `off`, `cube(...); rollup(...); calendar(...)` | Granule pre-aggregates ([ANALYTICS.md](ANALYTICS.md#3-pre-aggregates-preagg)) |
 | `sketches` | `''` | `'hll(col, ...); kll(col, ...)'` | Opt-in approximate sketches: `hll` for `sift.approx_count_distinct()`, `kll` for `sift.approx_percentile()` and `sift.approx_quantiles()` ([ANALYTICS.md](ANALYTICS.md#8-approximate-distinct-counts-siftapprox_count_distinct)) |
 | `skip_index` | `''` | `'col:bloom, col:trigram'` | Opt-in high-cardinality skip indexes; the others are automatic |
 
 ```sql
-SELECT sift.table_set_option('events_col', 'scope', 'tenant: member_id -> tenant_members(member_id, tenant_id) cluster');
+SELECT sift.table_set_option('events_col', 'scope', 'tenant: member_id -> tenant_members(member_id, tenant_id)');
 SELECT sift.table_set_option('events_col', 'sketches', 'hll(user_id)');
 ```
 
-`track_changes`, `projection`, and `vacuum_truncate` are `sift_col` reloptions with no `sift_table` counterpart: the table tracks its own changes natively, and `VACUUM` truncates reclaimed tail blocks by default. The 13 retired 5.1 options (`write_buffer_limit`, `wide_rows`, `inline_promote`, `async_promote`, `backpressure`, `hot_update`, `bulk_groups`, `dict_lookup`, `key_table`, and the four `auto_defrag_*` tuning options) are hidden and deprecated: `pg_dump` / `pg_restore` and `sift.table_reset_option` accept them silently, `sift.table_set_option` accepts them with a deprecation `NOTICE` so 5.1 scripts keep running, a Format Major 1 table keeps applying its stored values, and a Format Major 2 table ignores them. Any other unknown name raises an error that lists the 10 documented options.
+`sift.table_set_paths(tbl, col, spec)` is the deprecated spelling of the `paths` option for one `jsonb` column; it still works. `track_changes`, `projection`, and `vacuum_truncate` are `sift_col` reloptions with no `sift_table` counterpart: the table tracks its own changes natively, and `VACUUM` truncates reclaimed tail blocks by default. The 13 retired 5.1 options (`write_buffer_limit`, `wide_rows`, `inline_promote`, `async_promote`, `backpressure`, `hot_update`, `bulk_groups`, `dict_lookup`, `key_table`, and the four `auto_defrag_*` tuning options) are hidden and deprecated: `pg_dump` / `pg_restore` and `sift.table_reset_option` accept them silently, `sift.table_set_option` accepts them with a deprecation `NOTICE` so 5.1 scripts keep running, a Format Major 1 table keeps applying its stored values, and a Format Major 2 table ignores them. Any other unknown name raises an error that lists the 10 documented options.
 
 Changing an option on a populated table is online: existing parts adopt it as compaction rewrites them, and setting `key_order` prints a `NOTICE` saying so. `SELECT * FROM sift.maintain('events_col');` rewrites them now.
 
@@ -136,7 +136,7 @@ Setting `key_order` on a `sift_table` is completely online — no `VACUUM FULL` 
 
 1. Incoming `INSERT`, `UPDATE`, `COPY`, and `CREATE TABLE AS` rows are routed through the cached 2-level `PartitionDirectory` and written as sorted L0 micro-parts (batches ≥ 64 rows/partition) or appended to partition-local `SIFT_PT_L0_SLAB` pages (small OLTP batches).
 2. Existing unkeyed parts remain 100% readable while background workers incrementally repartition and sort them into keyed L1 parts.
-3. Partitions split automatically above ~4.2M rows (512 granules) or 256 MB and adjacent partitions merge when small (under 48 MB), keeping key-equality scans to ≤ 1.2 granules even under steady churn. This native range partitioning replaces the 5.x `key_cut` option.
+3. Partitions split automatically as they grow and adjacent partitions merge while they hold less than 48 MB together, so key-equality scans keep reading few granules under steady churn. This native range partitioning replaces the 5.x `key_cut` option.
 
 ## 5. Zero-Refusal `COPY` and Bulk Loading
 
@@ -156,18 +156,22 @@ A bulk call (`COPY`, `INSERT ... SELECT`, `CREATE TABLE AS`) of at least 64 rows
 ## 6. MVCC, Row Locks, Secondary Indexes, and `VACUUM`
 
 - **O(1) MVCC visibility:** Each part stores `[min_xid, max_xid]`. Once `max_xid` precedes `OldestXmin`, the part is marked all-frozen with zero per-row visibility checks (`SEC_VERS` is reclaimed on compaction).
-- **Single-column `UPDATE`:** An `UPDATE` of one or a few non-indexed, non-key columns of a wide row keeps the row's address, touches no secondary index, and appends a compact per-column delta (`SIFT_PT_COL_DELTA`) to the partition instead of rewriting the row. Compaction and `VACUUM` fold committed deltas into the base columns. It is automatic: there is no option.
+- **Visibility map and `Index Only Scan`:** `VACUUM` marks a virtual block all-visible (and all-frozen) in the visibility map fork when every part that covers it is settled and no deletion vector, slab row, or column delta names it; `DELETE` and `UPDATE` clear the bits before the change is staged. The map is indexed by virtual block, not by a page of the main fork, and is logged through the custom resource manager `pg_sift_table_vm`, so it exists only while `pg_sift` is in `shared_preload_libraries` (a standby replays those records only if it preloads the library as well). Without the preload nothing sets a bit and an index-only scan fetches from the table. A table with a TTL, a temporary table, and an unlogged table's init fork have no map. `pg_class.relallvisible` and the planner's `allvisfrac` come from it. Byte layout: [FORMAT.md](FORMAT.md#sift_table-visibility-map).
+- **Single-column `UPDATE`:** An `UPDATE` of up to 16 non-indexed, non-key columns of a row keeps the row's address, touches no secondary index (a summarizing index such as BRIN is told of the new values), and appends a compact per-column delta (`SIFT_PT_COL_DELTA`) to the partition instead of rewriting the row. A chain longer than 4 pages gets a directory (`SIFT_PT_COL_DELTA_DIR`, up to 250 entries a page) so a reader that wants one part, a few granules, or a few columns skips the pages that cannot hold them; a chain of 256 pages asks the maintenance worker for a fold, and `UPDATE` is refused only at 60,000 pages. Compaction and `VACUUM` fold committed deltas into the base columns. It is automatic: there is no option ([FORMAT.md](FORMAT.md#column-delta-chain-and-its-directory-spec-83-ws-83-3)).
+- **Point fetch (`SEC_ROW_PACK`):** A part whose columns are wide enough also keeps its rows in 64-row LZ4 micro-blocks (`SEC_ROW_PACK`; the pack is kept when its first blocks take at most 40% of the bytes of the granules), so fetching one row by address decodes one block instead of the granules of every column. Analytical scans never read it. A column delta of the part is laid over the fetched row ([FORMAT.md](FORMAT.md#sec_row_pack)).
+- **Native strings:** A table made by 6.0 stores `text`, `varchar`, `char(n)`, `bytea`, and `name` as bare bytes (no varlena header) and `uuid` as 16 bytes, exactly as a `sift_col` index does, so both read and compare the same column images. The table records it in its metapage (`SIFT_COMPAT_NATIVE_STRINGS`); there is no option.
 - **Row locks:** `SELECT ... FOR UPDATE`, `FOR NO KEY UPDATE`, `FOR SHARE`, and `FOR KEY SHARE`, with `NOWAIT` and `SKIP LOCKED`, are supported via an in-memory lock table that writes no WAL and never modifies immutable columnar pages. A `READ COMMITTED` statement that meets a row another session just updated follows the update chain (`EvalPlanQual`), including across a crash or a lock-table overflow.
 - **Isolation:** Every PostgreSQL snapshot type is honored. `SERIALIZABLE` takes a relation predicate lock on full scans and a per-virtual-block lock on point fetches, and checks conflicts once per distinct transaction rather than per row.
 - **Secondary indexes:** Standard B-tree, `UNIQUE`, `EXCLUDE`, GIN, GiST, `sift` (BM25), and `sift_col` indexes attach to a `sift_table` via dense 48-bit logical TIDs (`(vblock, offset)`) that stay stable across compaction and `VACUUM`, so a B-tree answers point and range lookups by TID, and `CREATE INDEX CONCURRENTLY` sorts in bounded memory. Each part records the TID range it holds, so a TID lookup skips the parts that cannot hold it and binary-searches the rest: point lookups cost `O(log parts)`, not a scan of every part.
 - **`sift` (BM25) on a `sift_table`:** Visibility of a text hit is decided from the part's own transaction summary, with no heap fetch and no HOT chain. When a query combines a `sift` match with filters, facets, or aggregates on the table, `SiftHybridScan` runs both indexes together: the column filter prunes the BM25 candidates, or the BM25 hits prune the table's granules, and the rows project straight from the granules.
 - **`ALTER TABLE`:** `ADD COLUMN` (including a constant default), `DROP COLUMN`, and `RENAME COLUMN` are `O(1)` metadata changes that rewrite no part and touch no file. A part written before an `ADD COLUMN` reads the new column as its `DEFAULT` (or `NULL`) through the optional `SEC_SCHEMA_DEFAULTS` section and the catalog; new parts record the defaults in force when they were written. A dropped column is skipped on read and reclaimed as compaction rewrites each part. `ALTER COLUMN TYPE` handles binary-coercible and widening changes in place.
 - **Virtual block reuse & `VACUUM`:** `VACUUM` reclaims dead extents through `SiftFsm`, compacts high-dead-ratio partitions, removes dead rows from the secondary indexes first (as heap `VACUUM` does), recycles freed virtual block ranges, and advances `relfrozenxid` and `relminmxid`. Monitor remaining capacity via `sift.space('events_col').vblocks_left` (a `WARNING` fires below 10%). `VACUUM (VERBOSE)` prints one `INFO` line ([MESSAGES.md](MESSAGES.md)).
+- **Maintenance on demand:** `SELECT * FROM sift.maintain('events_col');` runs one maintenance step now, in the session (promote closed buffers, merge parts, clear dead rows, return the free end of the file) and returns `busy = true` with nothing done when another session holds the lock; background maintenance and `VACUUM` do the same by themselves. `sift.table_maintain(tbl)` is its deprecated alias.
 - **`VACUUM FULL` / `CLUSTER`:** Streams live rows into the same parallel Format Major 2 build as `sift.upgrade_table`, writing frozen, sorted L1 parts on a new relfilenode with no temporary files.
 
 ## 7. Replication
 
-- **Physical replication:** All Format Major 2 pages use PostgreSQL generic WAL (`GenericXLog` / `log_newpage_range`), so streaming standbys and PITR work automatically with no `shared_preload_libraries`.
+- **Physical replication:** All Format Major 2 pages use PostgreSQL generic WAL (`GenericXLog` / `log_newpage_range`), so streaming standbys and PITR work with no `shared_preload_libraries`. The one exception is the visibility map of a `sift_table` (section 6): it is logged by a custom resource manager that is registered only while the library is preloaded, so preload `pg_sift` on every node of a replicated set that preloads it on the primary. A table whose map has set bits refuses `DELETE` and `UPDATE` on a server that does not preload the library.
 - **Logical replication:** Publishing a `sift_table` (`CREATE PUBLICATION ... FOR TABLE events_col`) requires `shared_preload_libraries = 'pg_sift'` on the publisher (and its physical standbys) so PostgreSQL's logical decoder can decode `sift_table` custom WAL records. Subscribers need no preload.
 
 ## 8. Secondary Projections (`sift.create_projection`)
@@ -212,3 +216,19 @@ SELECT sift.clear_tier_policy('events_col');
 - **TTL:** `sift.set_ttl(rel, col, retention)` names a time column of the table. A part whose newest value of `col` is older than `retention`, and whose rows are settled (all-visible, frozen, older than the horizon), leaves the manifest in one `O(1)` commit with its blocks, deletion vectors, and packed pages, without reading a row (`ttl_only_drop_parts`). A part with one row inside the retention stays whole. A standby conflict is raised before the commit releases the extents, and a dropped remote object is deleted only after `max(1 h, max_standby_streaming_delay)`. Indexes on other access methods keep stale entries until `REINDEX`.
 - **Imperative retention:** `sift.drop_parts_before(rel, cutoff [, col])` drops the sealed parts whose newest value of `col` (a `NOT NULL` date or timestamp time column; default the TTL column, else the first time column) is strictly older than `cutoff`, in one commit per partition and without reading or deleting a row. It returns `parts_dropped, rows_dropped, bytes_reclaimed, parts_partial, parts_unsettled`: a part that spans the cutoff stays whole (`parts_partial`), and a part that is wholly older but not settled yet, or whose partition has a column delta on `col`, waits for the next call (`parts_unsettled`). Needs `MAINTAIN`.
 - **Rules:** a policy is keyed by the qualified table name (a rename detaches it), its location cannot change while parts are remote, and `DROP TABLE` leaves the objects and the policy row. `sift.tier_status()` returns `relation, part_id, part_gen, location, byte_len, tiered_at, expires_at`; every function needs `MAINTAIN` (`tier_status`: `SELECT`) and takes `SHARE UPDATE EXCLUSIVE`, so it waits for a running `VACUUM`.
+
+## 10. Inspecting a `sift_table`
+
+The same functions inspect a `sift_table` and a Format Major 2 `sift_col` index (`sift.index_choices()` and `sift.col_sections()` answer for both and neither raises `0A000` or quarantines the relation):
+
+```sql
+SELECT * FROM sift.status('events_col');                -- format, state, rows, dead rows, footprint, parts by level, scopes, maintenance
+SELECT * FROM sift.space('events_col');                 -- blocks, free extents, parts, dead rows, vblocks_left
+SELECT * FROM sift.parts('events_col');                 -- one row per part: level, rows, bytes, granules, deletion vector, pre-aggregate bytes
+SELECT * FROM sift.col_granules('events_col') LIMIT 20; -- one row per granule: rows, dead rows, bytes, frozen, pre-aggregates, time stride
+SELECT * FROM sift.col_sections('events_col');          -- section, column and bytes, summed over the parts
+SELECT * FROM sift.index_size_breakdown('events_col');  -- where the bytes are, by category; adds up to pg_relation_size
+SELECT choice, kind, value, why, off FROM sift.index_choices('events_col');
+```
+
+`sift.index_choices()` reads the file and reports what the table chose: the layout, the tier of each level, which sections the parts carry (`zone_maps`, `skip_index`, `value_sets`, `preaggregates`, `sketches`, `runs_and_keys`, `point_directory`, `address_index`, `row_pack`, `time_strides`, `key_marks`, `column_stats`, `dictionaries`) with their bytes, and the encodings of each column; the `off` column holds the command that turns a choice off where one exists. `sift.col_sections()` is the same section list by column.
