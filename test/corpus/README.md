@@ -1,6 +1,6 @@
 # Corpus gate
 
-A standing differential and plan regression for the aggregate and column paths: `cases.sql` holds the statements (the shapes of the pushdown families, one `-- @case slug | family | note` marker each) that run on the lab of `lab.sql` (20000 events and the tables around them, deterministic: `setseed(0.42)`).
+A standing differential and plan regression for the aggregate and column paths: the files of `cases/` hold the statements (the shapes of the pushdown families, one `-- @case slug | family | note` marker each) that run on the lab of `lab.sql` (20000 events and the tables around them, deterministic: `setseed(0.42)`).
 
 Every statement runs twice, each time in a **new backend** (`\connect`, so no cache, relcache entry or memory context of an earlier statement is warm):
 
@@ -41,4 +41,4 @@ On an installed cluster it takes **about 2 s** (lab load 1 s, statements 1 s, Po
 
 ## Add a statement
 
-Append a `-- @case` block to `cases.sql` (the header of the file lists the markers: `@pre` setup of the session, `@txn` a transaction rolled back after, `@K@`/`@K2@` the entity keys), run `scripts/corpus.sh --update`, and commit `cases.sql` with the new line of `plans.tsv`.
+Append a `-- @case` block to a file of `cases/` (the header of `cases/01_core.sql` lists the markers: `@pre` setup of the session, `@txn` a transaction rolled back after, `@K@`/`@K2@` the entity keys), run `scripts/corpus.sh --update`, and commit the file with the new line of `plans.tsv`.

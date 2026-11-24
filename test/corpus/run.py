@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """run.py [--only GLOB[|GLOB...]] [--update] [--no-plans] [--plans FILE] [--keys N] [--out DIR]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
 
-Every statement of test/corpus/cases.sql runs in a NEW backend (psql \\connect) twice, with sift off (the native planner) and on, and the sorted rows must be equal. In the
+Every statement of test/corpus/cases/*.sql runs in a NEW backend (psql \\connect) twice, with sift off (the native planner) and on, and the sorted rows must be equal. In the
 backend of the "on" run the plan is then explained: the Custom Scan (Sift...) nodes it holds and the verdict of sift.explain_why per arm (used, or the slug of the refusal). That
 is the plan slug of the statement; test/corpus/plans.tsv pins it, so a statement that stops being engaged (or starts) fails until the file is updated in the same change
 (--update rewrites it: read the diff). Libpq environment as for psql (PGHOST, PGPORT, PGUSER, PGDATABASE). Exit 1 on a difference, an error or a plan that is not the pinned one.
 """
-import fnmatch, hashlib, os, re, subprocess, sys, tempfile, threading
+import fnmatch, glob, hashlib, os, re, subprocess, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = "set statement_timeout='90s'; set extra_float_digits=-5; set max_parallel_workers_per_gather=0; set jit=off; set work_mem='256MB';"
@@ -14,9 +14,10 @@ OFF = ("set sift.enable_agg=off; set sift.enable_col_scan=off; set sift.enable_s
 ON = "set sift.enable_agg=on;" + os.environ.get("CORPUS_ON_SET", "")
 
 
-def parse(path):
+def parse():
     cases = []
-    for blk in re.split(r"(?m)^-- @case ", open(path).read())[1:]:
+    text = "".join(open(p).read() for p in sorted(glob.glob(os.path.join(HERE, "cases", "*.sql"))))
+    for blk in re.split(r"(?m)^-- @case ", text)[1:]:
         head, _, rest = blk.partition("\n")
         slug, fam, *note = [x.strip() for x in head.split("|")]
         pre, txn, body = [], False, []
@@ -98,7 +99,7 @@ def main(a):
     only = a[a.index("--only") + 1] if "--only" in a else "*"
     update, noplans = "--update" in a, "--no-plans" in a
     globs = re.split(r"[|,]", only)
-    cases = [c for c in parse(os.path.join(HERE, "cases.sql")) if any(fnmatch.fnmatch(c["slug"], g) for g in globs)]
+    cases = [c for c in parse() if any(fnmatch.fnmatch(c["slug"], g) for g in globs)]
     out = a[a.index("--out") + 1] if "--out" in a else tempfile.mkdtemp(prefix="corpus.", dir=os.environ.get("TMPDIR", "/tmp"))
     os.makedirs(out, exist_ok=True)
     errs = {}
@@ -133,7 +134,7 @@ def main(a):
     if update and only == "*":
         with open(pf, "w") as f:
             f.write("# slug\tSift nodes of the plan\tsift.explain_why per arm (t: used, f:SLUG: refused); pinned by test/corpus/run.py, rewritten by scripts/corpus.sh --update; a node ~ leaves a cost-borderline case unpinned (rows are still compared), --update keeps it\n")
-            for c in parse(os.path.join(HERE, "cases.sql")):
+            for c in parse():
                 if c["slug"] in plans:
                     f.write("%s\t%s\t%s\n" % (c["slug"], *(("~", "cost-borderline across majors") if pinned.get(c["slug"], ("",))[0] == "~" else plans[c["slug"]])))
             for k, (n, w) in pinned.items():
