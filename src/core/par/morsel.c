@@ -544,13 +544,13 @@ sift_par_run(const SiftParCfg *cfg, const SiftParOps *ops, void *ctx, SiftParAre
 		}
 		if (r.mode == SIFT_PAR_RING && !(r.completed && overflowed(&r, &err)))
 			ring_close(&r, false);
+		if (r.mode == SIFT_PAR_RING)
+		{
+			pthread_cond_destroy(&r.ring.cv);
+			pthread_mutex_destroy(&r.ring.mu);
+		}
 	}
 	PG_END_TRY();
-	if (r.mode == SIFT_PAR_RING)
-	{
-		pthread_cond_destroy(&r.ring.cv);
-		pthread_mutex_destroy(&r.ring.mu);
-	}
 	if (sift_errlatch_get(&r.lt, &err))
 	{
 		SiftParRange left[SIFT_PAR_MAX_THREADS + SIFT_MORSEL_LANES];
