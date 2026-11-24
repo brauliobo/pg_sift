@@ -1,6 +1,6 @@
 -- Object storage tiering and TTL of a sift_table: the policy functions, their checks and their privileges, the move of a part to a directory store and its read back, sift.check of the object (sound,
 -- damaged, gone), that the policies follow a rename and go with a drop, the TTL drop of a part that is in the store, a B-tree that still holds the entries of the dropped rows, and that tiering changes
--- no query result. The text column keeps every part larger than a page: a part that small holds its stream in its header and is never moved.
+-- no query result. The text column keeps every part larger than a page: a part that small holds its stream in its header and is never moved. The two parts are frozen by VACUUM (FREEZE), as a new cluster does not age a row to the freeze limit.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 SET sift.test_create_format1 = off;
@@ -13,9 +13,9 @@ CREATE TABLE ev (id int8, ts timestamp NOT NULL, tenant int, v int, pad text) US
 CREATE TABLE evn (ts timestamp) USING sift_table;
 CREATE TABLE plain (ts timestamp NOT NULL);
 INSERT INTO ev SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 7, i % 100, md5(i::text) FROM generate_series(1, 5000) i;
-VACUUM ev;
+VACUUM (FREEZE) ev;
 INSERT INTO ev SELECT 5000 + i, localtimestamp - i * interval '1 minute', i % 7, i % 100, md5((5000 + i)::text) FROM generate_series(1, 5000) i;
-VACUUM ev;
+VACUUM (FREEZE) ev;
 SELECT count(*) AS parts, min(level) AS min_level, max(level) AS max_level FROM sift.parts('ev');
  parts | min_level | max_level 
 -------+-----------+-----------
