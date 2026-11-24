@@ -42,6 +42,7 @@ typedef struct UnCol
 	int			leaf;
 	SiftV6Class cls;
 	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: each distinct date is asked of it once */
+	bool		json;			/* the leaf of a key of a jsonb document: a row that holds a value of another JSON type than the leaf's has it as the payload of an exception */
 } UnCol;
 
 /* an arithmetic of the statement (SVD_ARITH): the vector of the pairs each of its columns is, and whether the column is a float8 */
@@ -96,9 +97,12 @@ typedef struct UnRun
 	uint64	   *out_valid[OUT_SLOTS];
 	void	   *out_data[OUT_SLOTS];
 	SiftVec		outv[OUT_SLOTS];
-	SiftVec		fv[SIFT_F2_PULL_MAX_COLS];	/* the columns of the rows of a batch, those that are months computed */
+	SiftVec		fv[SIFT_F2_PULL_MAX_COLS];	/* the columns of the rows of a batch, those that are months computed or keys of a document with the values of their exceptions */
 	int64	   *mdata[SIFT_F2_PULL_MAX_COLS];
 	uint64	   *mvalid[SIFT_F2_PULL_MAX_COLS];
+	void	   *jdata[SIFT_F2_PULL_MAX_COLS];
+	uint64	   *jvalid[SIFT_F2_PULL_MAX_COLS];
+	SiftF2Pull *pull;
 	int32	   *month_key;
 	int32	   *month_val;
 	uint32	   *pidx;
@@ -112,12 +116,15 @@ vec_type(SiftV6Class cls)
 	return cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
 }
 
-/* the leaf a column of the scan is: the one of a key of a jsonb document a qual names, the one jleaf names, or the first one of the attribute */
+/* the leaf a column of the scan is: the one of a key of a jsonb document a qual or an expression names, the one jleaf names, or the first one of the attribute */
 static int
 leaf_of(const SiftColRel *r, const SiftV6Col *c)
 {
-	if (c->attno >= SIFT_V6_JLEAF_VATT)
-		return c->attno - SIFT_V6_JLEAF_VATT;
+	int			jleaf;
+	bool		jtype;
+
+	if (sift_v6_input_attno_json(c->attno, &jleaf, &jtype))
+		return jleaf - 1;
 	return c->jleaf > 0 ? c->jleaf - 1 : r->first[c->attno];
 }
 
@@ -132,7 +139,7 @@ col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
-	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.month = month};
+	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || c->attno >= SIFT_V6_JLEAF_VATT};
 	return u->ncols++;
 }
 
@@ -331,6 +338,42 @@ month_of(UnRun *u, int32 day)
 	return DatumGetDateADT(DirectFunctionCall1(timestamptz_date, DirectFunctionCall2(timestamptz_trunc, CStringGetTextDatum("month"), DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day)))));
 }
 
+/* a leaf of a key of a document, with the value of the rows it could not hold read from the payload of their exception, for the rows the statement keeps */
+static void
+json_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
+{
+	const SiftVec *src = &b->col[i];
+	const size_t width = sift_gather_width(src->type);
+	const int	words = (b->n + 63) / 64;
+
+	memcpy(u->jdata[i], src->data, b->n * width);
+	if (src->all_valid)
+		memset(u->jvalid[i], 0xff, words * sizeof(uint64));
+	else
+		memcpy(u->jvalid[i], src->valid, words * sizeof(uint64));
+	for (int w = 0; w < words; w++)
+		for (uint64 bits = bs->mask[w] & ~u->jvalid[i][w]; bits != 0; bits &= bits - 1)
+		{
+			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
+			const char *text = NULL;
+			uint32		tlen = 0,
+						len;
+			double		f = 0;
+			const char *payload = sift_f2_pull_payload(u->pull, i, r, &len);
+
+			if (payload == NULL || !sift_v6_json_exception(u->cols[i].cls, payload, len, u->bcx, &text, &tlen, &f))
+				continue;
+			if (u->cols[i].cls == SV6C_F64)
+				((double *) u->jdata[i])[r] = f;
+			else
+				((SiftStrView *) u->jdata[i])[r] = sift_vstr_make(text, tlen);
+			u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+		}
+	u->fv[i].data = u->jdata[i];
+	u->fv[i].valid = u->jvalid[i];
+	u->fv[i].all_valid = false;
+}
+
 /* the columns of the rows of the batch the statement computes from them, for the rows it keeps */
 static void
 compute_columns(UnRun *u, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
@@ -340,6 +383,8 @@ compute_columns(UnRun *u, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 		const SiftVec *src = &b->col[i];
 
 		u->fv[i] = *src;
+		if (u->cols[i].json)
+			json_column(u, i, b, bs);
 		if (!u->cols[i].month)
 			continue;
 		memset(u->mvalid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
@@ -783,17 +828,25 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	setup_clauses(u, sift_col_rel(index));
 	setup_pipe(u, sift_col_rel(index), g, star);
 	for (int i = 0; i < u->ncols; i++)
+	{
 		if (u->cols[i].month)
 		{
 			u->mdata[i] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 			u->mvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		}
+		if (u->cols[i].json)
+		{
+			u->jdata[i] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+			u->jvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
+		}
+	}
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
 	ps = pull_spec(u);
 	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
 	ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	ps.gran_arg = map;
 	pull = sift_f2_pull_begin(index, snap, &ps);
+	u->pull = pull;
 	while ((b = sift_f2_pull_next(pull)) != NULL)
 		run_batch(u, b);
 	sift_f2_pull_end(pull);

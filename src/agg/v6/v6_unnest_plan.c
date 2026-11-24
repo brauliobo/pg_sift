@@ -35,19 +35,6 @@ join_kind(PlannerInfo *root, Index elem_rti, bool *left)
 	return true;
 }
 
-/* a key of a jsonb document is read from the batches of the scan: the stream of the elements does not carry the payloads of its rows that the leaf cannot hold */
-static bool
-reads_json(const SiftV6Spec *s)
-{
-	for (int i = 0; i < s->nkeys; i++)
-		if (s->key[i].jleaf > 0)
-			return true;
-	for (int j = 0; j < s->naggs; j++)
-		if (s->agg[j].arg.jleaf > 0 || s->agg[j].arg2.jleaf > 0)
-			return true;
-	return false;
-}
-
 /* what the batches of the scan compute is the month of a date column (the one binning of a key the scan of an unnest does), float8 arithmetic of arguments (agg/v6/v6_plan_rewrite.h) and the PostgreSQL
  * expressions of keys and arguments over the columns of the pairs (v6_pg_expr.h), and no other */
 static bool
@@ -89,14 +76,14 @@ sift_v6_unnest_where(V6Plan *p)
 bool
 sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return sift_v6_compile_on(p, extra, group_exprs) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec);
+	return sift_v6_compile_on(p, extra, group_exprs) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL;
 }
 
 /* what the unnest scan needs of the compiled statement besides its columns: the quals of the element and of the table run on the batches */
 bool
 sift_v6_unnest_ready(V6Plan *p)
 {
-	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && !reads_json(&p->spec) && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
+	return computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
 /* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument */

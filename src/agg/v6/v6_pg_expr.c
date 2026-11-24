@@ -217,10 +217,14 @@ sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out)
 
 	out->expr = linitial(item);
 	out->restype = (Oid) linitial_int(ints);
-	out->nin = (list_length(ints) - 1) / 5;
+	out->nin = (list_length(ints) - 1) / SIFT_V6_PGX_INTS;
 	for (int i = 0; i < out->nin; i++)
-		out->col[i] = (SiftV6Col) {.attno = list_nth_int(ints, 1 + 5 * i),.typid = (Oid) list_nth_int(ints, 2 + 5 * i),.scale = list_nth_int(ints, 3 + 5 * i),
-		.src = (SiftV6Src) list_nth_int(ints, 4 + 5 * i),.slot = list_nth_int(ints, 5 + 5 * i)};
+	{
+		const int	at = 1 + SIFT_V6_PGX_INTS * i;
+
+		out->col[i] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.scale = list_nth_int(ints, at + 2),
+		.src = (SiftV6Src) list_nth_int(ints, at + 3),.slot = list_nth_int(ints, at + 4)};
+	}
 }
 
 void

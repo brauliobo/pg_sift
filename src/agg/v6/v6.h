@@ -120,8 +120,12 @@ typedef enum SiftV6Src
 /* SiftV6Col.attno of sift.score(ctid), the score of the row's hit: no column of the index, a float4 the rows of a fold come with (sift_v6_fold_batch_scored) */
 #define SIFT_V6_SCORE_ATTNO		(-1)
 
-/* The virtual attribute (an INDEX_VAR or scan varattno above every column of an index) of jsonb_typeof(doc -> 'key') of the key whose leaf is VATT + leaf */
+/* The virtual attributes (an INDEX_VAR or scan varattno above every column of an index): the `->>` text or float8 cast of the key whose leaf is SIFT_V6_JLEAF_VATT + leaf, and jsonb_typeof(doc -> 'key') of the key whose leaf is SIFT_V6_JTYPE_VATT + leaf */
+#define SIFT_V6_JLEAF_VATT		(1 << 14)
 #define SIFT_V6_JTYPE_VATT		(3 << 13)
+
+/* The ints each input of an SiftV6Spec.pgexpr item has after its result type: its attribute, type, scale, source and slot (agg/v6/v6_pg_expr.c) */
+#define SIFT_V6_PGX_INTS		5
 
 typedef struct SiftV6Col
 {
@@ -368,12 +372,25 @@ extern Expr *sift_v6_json_type_vars(const SiftV6Rel *rel, const Expr *e);
 extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
 extern bool sift_v6_json_type_clash(const SiftV6Spec *s);
-/* The attribute a column is an input of an expression or a qual by: its own, or the virtual one of its jsonb_typeof */
+/* The attribute a column is an input of an expression or a qual by: its own, or the virtual one of the value or of the jsonb_typeof of its key */
 static inline int
 sift_v6_col_input_attno(const SiftV6Col *c)
 {
-	return c->jtype ? SIFT_V6_JTYPE_VATT + c->jleaf - 1 : c->attno;
+	return c->jleaf == 0 ? c->attno : (c->jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + c->jleaf - 1;
 }
+/* The column of the virtual attribute attno: the leaf and what of it is read (the type of the key, or its value) */
+static inline bool
+sift_v6_input_attno_json(int attno, int *jleaf, bool *jtype)
+{
+	if (attno < SIFT_V6_JLEAF_VATT)
+		return false;
+	*jtype = attno >= SIFT_V6_JTYPE_VATT;
+	*jleaf = attno - (*jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + 1;
+	return true;
+}
+/* e with every `doc ->> 'key'` and `(doc ->> 'key')::float8` of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JLEAF_VATT + leaf (varno rel->relid, a copy); the column such a Var is */
+extern Expr *sift_v6_json_value_vars(const SiftV6Rel *rel, const Expr *e);
+extern bool sift_v6_json_value_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* keys and nkeys with the scan keys of spec->jsonqual appended */
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */

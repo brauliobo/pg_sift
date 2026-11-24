@@ -200,6 +200,35 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+static Node *
+value_vars_mutator(Node *n, const SiftV6Rel *rel)
+{
+	SiftV6Col	col;
+
+	if (n == NULL)
+		return NULL;
+	if (sift_v6_json_read(rel, (const Expr *) n, &col))
+		return (Node *) makeVar(rel->relid, SIFT_V6_JLEAF_VATT + col.jleaf - 1, col.typid, -1, exprCollation(n), 0);
+	return expression_tree_mutator(n, value_vars_mutator, unconstify(SiftV6Rel *, rel));
+}
+
+Expr *
+sift_v6_json_value_vars(const SiftV6Rel *rel, const Expr *e)
+{
+	return (Expr *) value_vars_mutator((Node *) e, rel);
+}
+
+bool
+sift_v6_json_value_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
+{
+	const int	leaf = v->varattno - SIFT_V6_JLEAF_VATT;
+	const bool	held = rel->colrel != NULL && leaf >= 0 && leaf < rel->colrel->schema->ncols && scalar_leaf(rel, leaf);
+
+	if (held)
+		*out = (SiftV6Col) {.attno = rel->colrel->schema->cols[leaf].attno,.typid = v->vartype,.jleaf = leaf + 1};
+	return held;
+}
+
 /* jsonb_typeof(doc -> 'key') of a shredded scalar key: the leaf of the key (-1: the expression is no such call) */
 static int
 typeof_leaf(const SiftV6Rel *rel, const Node *n)
@@ -292,9 +321,14 @@ sift_v6_json_type_clash(const SiftV6Spec *s)
 	for (int d = 0; d < s->nderive; d++)
 		note_col(&j, &s->derive[d].src);
 	foreach_ptr(List, item, s->pgexpr)
-		for (int i = 1; i < list_length(lsecond(item)); i += 3)
-			if (list_nth_int(lsecond(item), i) >= SIFT_V6_JTYPE_VATT)
-				j.type = bms_add_member(j.type, list_nth_int(lsecond(item), i) - SIFT_V6_JTYPE_VATT);
+		for (int i = 1; i < list_length(lsecond(item)); i += SIFT_V6_PGX_INTS)
+		{
+			int			leaf;
+			bool		jtype;
+
+			if (sift_v6_input_attno_json(list_nth_int(lsecond(item), i), &leaf, &jtype))
+				note_col(&j, &(SiftV6Col) {.jleaf = leaf,.jtype = jtype});
+		}
 	foreach_ptr(Node, clause, s->vqual)
 		note_vars(clause, &j);
 	return bms_overlap(j.value, j.type);
