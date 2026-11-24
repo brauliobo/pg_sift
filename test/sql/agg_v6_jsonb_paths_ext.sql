@@ -123,7 +123,7 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.id, o.grp, sum(CASE WHEN p.score > 1 THEN p.score + 1 END), count(CASE WHEN p.score > 1 THEN p.score + 1 END), sum(CASE WHEN p.val = ''a'' THEN p.score END) FROM @T o, jsonb_to_recordset(pe_norm(o.doc) -> ''parts'') AS p(val text, score float8) GROUP BY o.id, o.grp'
 ]) q;
 
--- traps: the plans and results of PostgreSQL's own (NOT EXISTS, an EXISTS under OR or beside another, an AND among the arms of an OR)
+-- traps: the plans and results of PostgreSQL's own (an EXISTS under OR, an AND among the arms of an OR)
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT count(*) FROM @T o WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''gift'')',
 	'SELECT count(*) FROM @T o WHERE o.grp = 1 OR EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = ''gift'')',
