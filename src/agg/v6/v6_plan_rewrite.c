@@ -416,10 +416,10 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		const SiftV6Derive *d = &s->derive[i];
 
 		ints = list_concat(ints, list_make5_int(d->kind, d->src.attno, (int) d->src.typid, d->ncond, d->else_len));
-		ints = list_concat(ints, list_make3_int((int) d->src.src, d->src.slot, d->src.scale));
+		ints = list_concat(ints, list_make5_int((int) d->src.src, d->src.slot, d->src.scale, d->src.jleaf, (int) d->src.jtype));
 		ints = put64(lappend_int(ints, d->utf8), d->aux);
 		for (int c = 0; c < d->ncond; c++)
-			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make2_int((int) d->cond[c].src, d->cond[c].slot)), d->cval[c]);
+			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make4_int((int) d->cond[c].src, d->cond[c].slot, d->cond[c].jleaf, (int) d->cond[c].jtype)), d->cval[c]);
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			ints = lappend_int(ints, d->else_bytes[b]);
 	}
@@ -447,16 +447,17 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 
 		d->kind = list_nth_int(ints, at);
 		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6),
-			.scale = list_nth_int(ints, at + 7)};
+			.scale = list_nth_int(ints, at + 7),.jleaf = list_nth_int(ints, at + 8),.jtype = list_nth_int(ints, at + 9) != 0};
 		d->ncond = list_nth_int(ints, at + 3);
 		d->else_len = list_nth_int(ints, at + 4);
-		d->utf8 = list_nth_int(ints, at + 8);
-		d->aux = get64(ints, at + 9);
-		at += 11;
-		for (int c = 0; c < d->ncond; c++, at += 6)
+		d->utf8 = list_nth_int(ints, at + 10);
+		d->aux = get64(ints, at + 11);
+		at += 13;
+		for (int c = 0; c < d->ncond; c++, at += 8)
 		{
-			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3)};
-			d->cval[c] = get64(ints, at + 4);
+			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3),
+			.jleaf = list_nth_int(ints, at + 4),.jtype = list_nth_int(ints, at + 5) != 0};
+			d->cval[c] = get64(ints, at + 6);
 		}
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			d->else_bytes[b] = (uint8) list_nth_int(ints, at++);

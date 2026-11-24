@@ -186,6 +186,34 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 	v->all_valid = false;
 }
 
+void
+sift_f2_v6_fill_type(V6Col *c, const ColView *cv, int off, int n)
+{
+	static const char *const names[] = {NULL, "string", "number", "boolean", "object", "array", NULL, "null"};
+	SiftVec    *v = &c->vec;
+	SiftStrView *out = v->data;
+	bool		all = true;
+
+	memset(c->valid, 0, (n + 63) / 64 * sizeof(uint64));
+	for (int i = 0; i < n; i++)
+	{
+		const uint8 tag = cv->tag != NULL ? cv->tag[off + i] : 0;
+		const uint8 type = cv->isnull[off + i] ? tag : tag == SIFT_COLTAG_NUMBER || tag == SIFT_COLTAG_BOOLEAN ? tag : c->jbase;
+		const char *name = type < lengthof(names) ? names[type] : NULL;
+
+		out[i] = strview_of(name, name != NULL ? strlen(name) : 0);
+		c->valid[i >> 6] |= (uint64) (name != NULL) << (i & 63);
+		all &= name != NULL;
+	}
+	v->type = SVEC_STRVIEW;
+	v->valid = all ? NULL : c->valid;
+	v->nan = NULL;
+	v->all_valid = all;
+	v->len = n;
+	v->dense = true;
+	v->sel = NULL;
+}
+
 /* The score of each row's hit, as the double PostgreSQL makes of a real for avg() and the like */
 void
 sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n)

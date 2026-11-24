@@ -97,12 +97,16 @@ typedef enum SiftV6Src
 /* SiftV6Col.attno of sift.score(ctid), the score of the row's hit: no column of the index, a float4 the rows of a fold come with (sift_v6_fold_batch_scored) */
 #define SIFT_V6_SCORE_ATTNO		(-1)
 
+/* The virtual attribute (an INDEX_VAR or scan varattno above every column of an index) of jsonb_typeof(doc -> 'key') of the key whose leaf is VATT + leaf */
+#define SIFT_V6_JTYPE_VATT		(3 << 13)
+
 typedef struct SiftV6Col
 {
 	int			attno;			/* of the index, 1-based; of the table, when the spec is_table */
 	Oid			typid;
 	int			scale;			/* numeric: the digits after the point of the scaled integer the leaf holds; 0 for any other type */
 	int			jleaf;			/* 1 + the leaf of a key of the jsonb attribute whose `->>` text (typid text) or float8 cast the column is; 0: the first leaf of attno */
+	bool		jtype;			/* with jleaf: the column is jsonb_typeof(doc -> 'key') (typid text), the type each row's chunk keeps of the key, not the value of it */
 	SiftV6Src	src;
 	int			dim;			/* SV6SRC_DIM: the dimension */
 	int			slot;			/* SV6SRC_DIM: the payload column of the dimension */
@@ -298,6 +302,17 @@ typedef struct SiftV6Rel
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
 extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out);
+/* e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy); the column such a Var is */
+extern Expr *sift_v6_json_type_vars(const SiftV6Rel *rel, const Expr *e);
+extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
+/* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
+extern bool sift_v6_json_type_clash(const SiftV6Spec *s);
+/* The attribute a column is an input of an expression or a qual by: its own, or the virtual one of its jsonb_typeof */
+static inline int
+sift_v6_col_input_attno(const SiftV6Col *c)
+{
+	return c->jtype ? SIFT_V6_JTYPE_VATT + c->jleaf - 1 : c->attno;
+}
 /* keys and nkeys with the scan keys of spec->jsonqual appended */
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */

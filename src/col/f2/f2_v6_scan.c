@@ -40,14 +40,23 @@
 #include "core/memtrack.h"
 #include "col/f2/f2_v6_scan_int.h"
 
+/* The JSON type a row holds when the leaf holds its value: a boolean leaf a boolean, a text leaf a string, any other a number */
+static uint8
+type_of_leaf_value(const V6Scan *s, int leaf)
+{
+	const SiftColDef *d = &sift_col_rel(s->host)->schema->cols[leaf];
+
+	return d->type == SIFT_COLT_BOOL ? SIFT_COLTAG_BOOLEAN : d->type == SIFT_COLT_TEXT ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
+}
+
 /* the vector of a column of a leaf: 16 bytes an element for a text or a JSON key, 8 for the others (a datum too) */
 static void
 col_init(V6Scan *s, int leaf, const SiftV6Col *c, bool key, bool takes_nan)
 {
 	V6Col	   *n = &s->cols[s->ncols];
 
-	*n = (V6Col) {.leaf = leaf,.attno = c->attno,.scale = c->scale,.json = c->jleaf > 0,.typid = c->typid,.cls = sift_v6_col_class(c),
-		.nan_ok = takes_nan,.key_only = key,.is_table = s->spec->is_table};
+	*n = (V6Col) {.leaf = leaf,.attno = c->attno,.scale = c->scale,.json = c->jleaf > 0,.jtype = c->jtype,.jbase = c->jtype ? type_of_leaf_value(s, leaf) : 0,
+		.typid = c->typid,.cls = sift_v6_col_class(c),.nan_ok = takes_nan,.key_only = key,.is_table = s->spec->is_table};
 	/* MEM[MEM-AGG-05]: SiftV6Scan batch column buffer (SIFT_VEC_LEN * elem + SIFT_VEC_PAD: 8B an element, 16KB a column; 16B, 32KB, only for a text or JSON column; was 32KB for every column) */
 	n->vec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * (n->cls == SV6C_TEXT || c->jleaf > 0 ? sizeof(SiftStrView) : sizeof(int64)) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	s->ncols++;
@@ -77,7 +86,7 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
 
 	for (int i = 0; i < s->ncols; i++)
-		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].cls == sift_v6_col_class(&c))
+		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].jtype == c.jtype && s->cols[i].cls == sift_v6_col_class(&c))
 		{
 			s->cols[i].key_only &= key;
 			s->cols[i].nan_ok &= takes_nan || s->cols[i].cls == SV6C_DATUM;
@@ -210,7 +219,9 @@ bq_col(void *arg, const SiftV6InCol *c)
 {
 	const BqCols *b = arg;
 
-	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale}, false, false)->vec;
+	const bool	jtype = c->attno >= SIFT_V6_JTYPE_VATT;
+
+	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale,.jleaf = jtype ? c->attno - SIFT_V6_JTYPE_VATT + 1 : 0,.jtype = jtype}, false, false)->vec;
 }
 
 /* the quals no scan key says: their input is the relation's, their columns are decoded with the others */
@@ -441,6 +452,11 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 		if (s->cols[i].attno == SIFT_V6_SCORE_ATTNO)
 		{
 			sift_f2_v6_fill_score(&s->cols[i], score, off, n);
+			continue;
+		}
+		if (s->cols[i].jtype)
+		{
+			sift_f2_v6_fill_type(&s->cols[i], &views[s->cols[i].leaf], off, n);
 			continue;
 		}
 		if (s->cols[i].cls == SV6C_DATUM)

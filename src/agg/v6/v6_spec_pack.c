@@ -17,16 +17,17 @@ static List *
 put_col(List *l, const SiftV6Col *c)
 {
 	l = lappend_int(lappend_int(lappend_int(l, c->attno), (int) c->typid), c->scale);
-	return lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(l, c->jleaf), (int) c->src), c->dim), c->slot), (int) c->collid);
+	return lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(l, c->jleaf), (int) c->jtype), (int) c->src), c->dim), c->slot), (int) c->collid);
 }
 
 static SiftV6Col
 take_col(const List *l, int *at)
 {
 	SiftV6Col	c = {.attno = list_nth_int(l, *at),.typid = (Oid) list_nth_int(l, *at + 1),.scale = list_nth_int(l, *at + 2),.jleaf = list_nth_int(l, *at + 3),
-	.src = (SiftV6Src) list_nth_int(l, *at + 4),.dim = list_nth_int(l, *at + 5),.slot = list_nth_int(l, *at + 6),.collid = (Oid) list_nth_int(l, *at + 7)};
+	.jtype = list_nth_int(l, *at + 4) != 0,.src = (SiftV6Src) list_nth_int(l, *at + 5),.dim = list_nth_int(l, *at + 6),.slot = list_nth_int(l, *at + 7),
+	.collid = (Oid) list_nth_int(l, *at + 8)};
 
-	*at += 8;
+	*at += 9;
 	return c;
 }
 

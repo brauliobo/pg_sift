@@ -26,6 +26,8 @@ typedef struct V6Col
 	int			attno;
 	int			scale;
 	bool		json;
+	bool		jtype;			/* json: the column is the JSON type of the key (SiftV6Col.jtype), not its value */
+	uint8		jbase;			/* jtype: the SIFT_COLTAG_* of a row that holds a value of the leaf (a number, a string, a boolean) */
 	Oid			typid;
 	SiftV6Class cls;
 	bool		nan_ok;			/* a numeric whose every use is the argument of an aggregate that folds a NaN (sift_v6_agg_takes_nan) */
@@ -114,6 +116,8 @@ extern void sift_f2_v6_refuse_nan(const V6Col *c, const SiftBatchSel *bs);
 /* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */
 extern void sift_f2_v6_fill_datum(V6Col *c, const ColView *views, int off, int n, MemoryContext cx, const uint64 *mask);
 extern void sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n);
+/* jsonb_typeof of the key of a leaf: the name of the type each row's chunk keeps (a value of the leaf's own type, an exception's tag, a JSON null), NULL for a row with no value for the key */
+extern void sift_f2_v6_fill_type(V6Col *c, const ColView *cv, int off, int n);
 extern void sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n);
 
 #endif							/* SIFT_COL_F2_V6_SCAN_INT_H */
