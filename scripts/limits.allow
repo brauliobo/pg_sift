@@ -238,3 +238,10 @@ SORT_LOOKUP_MAX_ROWS	rows (10,000) a statement with no ORDER BY and no LIMIT may
 STAT_SLOTS	slots (1024) of the backend cache of the column totals of the parts, direct-mapped by part and column (agg/v6/v6_colstat.c): the entry a new one replaces is read from the part again; the rows are the same
 SUM_ROW_LIMIT	2^95, the magnitude the scaled integer of a row of an exact numeric product may reach (agg/v6/v6_expr_num.c): the limit of the row num_expr_bits, a row above it is an ERROR 22003
 UNIQUE_LOCK_SLOTS	the page locks of the keys of a bm25 unique index (bm25/unique.c): the key is taken modulo it, so two keys may share a lock and wait for each other; no count is refused
+ENC_SLOTS	the size of the table of the encodings of a column (col/f2/f2_choices.c): the enumeration of the encodings plus one; no count is refused
+TIER_SLOTS	the size of the table of the tiers of a part (col/f2/f2_choices.c): the enumeration of the tiers plus one; no count is refused
+SIFT_CDDIR_MAX_ENTRIES	the entries of one page of the directory of a column delta chain (table/f2/f2_col_delta_dir.h): a StaticAssert holds it to the page; a chain with more pages has the next directory page, no count is refused
+SIFT_COL_DELTA_MAX_COLS_INDEX	changed leaves (8) of one record of the column delta chain of a sift_col index (table/f2/f2_col_delta.h): an UPDATE that changes more takes the tombstone and a new entry; a speed threshold, the rows are the same
+SIFT_MAX_BM25_FIELDS	the capacity (16) of the field length arrays of a segment (bm25/segment_int.h), at least the fields an index may have (SIFT_MAX_FIELDS, 14, a limit of the registry): a layout bound, no count is refused
+SIFT_UNIQ_SHM_SLOTS	the entries of the shared registry of the staged keys of unique sift_col indexes (col/f2/f2_uniq_shm.h): a stripe with no entry free sends the stage of the transaction to the partition and the entries go; no count is refused
+SLAB_SLOTS	the hashes of the rows of a slab a probe of a unique key keeps (col/f2/f2_uniq_slab.c): a slab with more distinct hashes than half of it is not filtered and is probed as it is; the rows are the same
