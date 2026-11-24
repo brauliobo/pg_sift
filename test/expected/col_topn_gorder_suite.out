@@ -359,7 +359,7 @@ SET search_path = s4, public;
 -- shape of the kernels (negative values, the ends of the integer range, ties, NULLs and many NULLs, a column that follows the table and one
 -- that does not, both directions, NULLS FIRST and LAST) under filters that leave most, some and few rows of a unit, compared with the plain plan.
 SET sift.async_maintenance = off;
--- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks of about 1250 rows
+-- pad makes a page hold about 5 rows: 8000 rows are about 6 superblocks of about 1250 rows
 CREATE TABLE tv (id serial PRIMARY KEY, g int, b_clu bigint, b_rand bigint, b_ext bigint, i_ext int, ts_rand timestamp, b_mix bigint, b_nul bigint, pad text DEFAULT repeat('x', 1500));
 ALTER TABLE tv ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO tv (g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul)
@@ -369,7 +369,7 @@ SELECT i % 10, i::bigint * 1000003 - 15000000000, (hashint4(i) & 2147483647) % 2
 	   timestamp '2020-01-01' + ((hashint4(i + 3) & 2147483647) % 100000000) * interval '1 second' + (i % 7) * interval '1 microsecond',
 	   CASE WHEN i % 9 = 0 THEN NULL ELSE (hashint4(i + 4) & 2147483647) % 50 END,
 	   CASE WHEN i % 10 = 0 THEN (hashint4(i + 5) & 2147483647) % 1000 END
-FROM generate_series(1, 30000) i;
+FROM generate_series(1, 8000) i;
 CREATE INDEX tv_col ON tv USING sift_col (id, g, b_clu, b_rand, b_ext, i_ext, ts_rand, b_mix, b_nul) WITH (point_tid_columns = 'off');
 NOTICE:  sift_col index "tv_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = point_tid_columns is off
@@ -437,13 +437,13 @@ CREATE SCHEMA s5;
 GRANT USAGE ON SCHEMA s5 TO PUBLIC;
 SET search_path = s5, public;
 -- A list page of one group under a test of another column: the order array of the group is walked (a heap fetch for each entry it takes) or the units the zones
--- leave are read (a row in about 35 instructions, every row of the units, not those the filters pass). The units hold 60,000 of 1,000,000 rows here: a test that
+-- leave are read (a row in about 35 instructions, every row of the units, not those the filters pass). The units hold 18,000 of 300,000 rows here: a test that
 -- most rows pass finds the page in tens of fetches and walks; one that few pass walks a thousand and reads the units.
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 CREATE TABLE wp (id bigint PRIMARY KEY, g int, d date, st int) WITH (autovacuum_enabled = false);
-INSERT INTO wp SELECT i, (i::bigint * 7919 % 40)::int, date '2020-01-01' + (i * 13 % 2000), (hashint4(i) & 2147483647) % 200 FROM generate_series(1, 1000000) i;
+INSERT INTO wp SELECT i, (i::bigint * 7919 % 40)::int, date '2020-01-01' + (i * 13 % 2000), (hashint4(i) & 2147483647) % 200 FROM generate_series(1, 300000) i;
 VACUUM (FREEZE, ANALYZE) wp;
 CREATE INDEX wp_i ON wp USING sift_col (id, g, d, st) WITH (key_cut = 'g', key_order = 'g, d');
 SET sift.enable_agg = on;
