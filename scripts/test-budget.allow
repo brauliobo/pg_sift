@@ -282,6 +282,7 @@ sql	col_topn_deep.sql	1	predates the budget of test/README.md
 sql	col_topn_gorder_filter_safe.sql	1	predates the budget of test/README.md
 sql	col_topn_gorder_suite.sql	1	predates the budget of test/README.md
 sql	col_topn_unit_ends.sql	1	predates the budget of test/README.md
+sql	col_unique_shm.sql	2	predates the budget of test/README.md
 sql	col_unit_head.sql	3	predates the budget of test/README.md
 sql	col_update_uncovered_full_page.sql	1	predates the budget of test/README.md
 sql	col_vacuum_dead_span.sql	1	predates the budget of test/README.md
@@ -299,6 +300,7 @@ sql	format2_marks_prewhere.sql	3	predates the budget of test/README.md
 sql	format2_meta_marks_suite.sql	1	predates the budget of test/README.md
 sql	format2_parallel_conc.sql	1	predates the budget of test/README.md
 sql	format2_partitioned_agg_v6.sql	1	predates the budget of test/README.md
+sql	format2_point_v2.sql	2	predates the budget of test/README.md
 sql	format2_projections.sql	1	predates the budget of test/README.md
 sql	format2_prune.sql	1	predates the budget of test/README.md
 sql	format2_size.sql	1	predates the budget of test/README.md
@@ -326,6 +328,9 @@ sql	query_dos.sql	1	predates the budget of test/README.md
 sql	rank_page_live.sql	1	predates the budget of test/README.md
 sql	rank_scan.sql	1	predates the budget of test/README.md
 sql	scope_in5_parity.sql	1	predates the budget of test/README.md
+sql	table_f2_col_delta_dir.sql	1	predates the budget of test/README.md
+sql	table_f2_delete_chunks.sql	1	predates the budget of test/README.md
+sql	table_f2_fast_fetch.sql	2	predates the budget of test/README.md
 sql	table_f2_fetch.sql	1	predates the budget of test/README.md
 sql	tbl_analyze_thin.sql	1	predates the budget of test/README.md
 sql	tbl_bitmap_lazy.sql	1	predates the budget of test/README.md
