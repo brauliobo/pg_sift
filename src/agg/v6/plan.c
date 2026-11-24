@@ -382,7 +382,6 @@ spec_room(V6Plan *p, bool func)
 		SIFT_REGROW(p->spec.agg, (Size) *cap * sizeof(SiftV6Agg));
 }
 
-/* FILTER (WHERE ..): a conjunction of the quals of a scan, over the columns of the index; the same clause of two aggregates is one clause (at most 64 of them: a bit of the mask of a row each) */
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
 static List *
 native_filter_quals(V6Plan *p, Expr *filter)
@@ -427,6 +426,7 @@ derived_filter_quals(V6Plan *p, Expr *filter)
 	return list_make1(bt);
 }
 
+/* FILTER (WHERE ..): a conjunction of the quals of a scan, over the columns of the index; the same clause of two aggregates is one clause (at most 64 of them: a bit of the mask of a row each) */
 static bool
 compile_filter(V6Plan *p, Expr *filter, int *fclause)
 {

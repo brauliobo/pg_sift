@@ -33,7 +33,7 @@ static int
 fcol_index(Build *b, const Var *v)
 {
 	for (int i = 0; i < *b->nfcols; i++)
-		if (b->fcol[i].attno == v->varattno)
+		if (b->fcol[i].derive == 0 && b->fcol[i].attno == v->varattno)
 			return i;
 	if (!b->add || *b->nfcols == SIFT_V6_MAX_FCOLS)
 		return -1;
