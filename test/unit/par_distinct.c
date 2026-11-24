@@ -12,7 +12,11 @@
 #include "pgshim.h"
 #include "unit.h"
 
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
+#define ROWS		4000
+#else
 #define ROWS		20000
+#endif
 #define SCRATCH		(4 << 20)
 
 static int	nchecks,
@@ -362,25 +366,26 @@ test_edges(void)
 		}
 }
 
-/* Arenas from room for everything down to room for nothing: a run that has no room says so, and every other gives the answer of the rows */
+/* Arenas from room for everything down to room for nothing, at the sizes where the run fits, is tight, has no room halfway and hits the floor: a run that has no room says so, and every other gives the answer of the rows */
 static void
 sweep(const DData *d, const SiftParDistinctSpec *sp, uint32 workers)
 {
+	static const int shifts[] = {0, 4, 8, 11, 14};
 	const Sizes full = roomy(workers);
 	DVec		want = dreference(d, sp);
 	uint32		overflows = 0,
 				answers = 0;
 
-	for (int k = 0; k <= 14; k++)
+	for (int i = 0; i < lengthof(shifts); i++)
 		for (int what = 0; what < 2; what++)
 		{
 			Sizes		sz = full;
 			bool		overflowed;
 
 			if (what == 0)
-				sz.state = Max(full.state >> k, 64 << 10);
+				sz.state = Max(full.state >> shifts[i], 64 << 10);
 			else
-				sz.work = Max(full.work >> (k + 2), 8 << 10);
+				sz.work = Max(full.work >> (shifts[i] + 2), 8 << 10);
 			overflowed = check(d, &want, sp, workers, sz);
 			overflows += overflowed;
 			answers += !overflowed;

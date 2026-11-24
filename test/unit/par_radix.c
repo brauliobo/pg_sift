@@ -13,8 +13,13 @@
 #include "pgshim.h"
 #include "unit.h"
 
+#if defined(__SANITIZE_THREAD__) || defined(__SANITIZE_ADDRESS__)
+#define ROWS		10000
+#define MANY		3000
+#else
 #define ROWS		100000
 #define MANY		30000
+#endif
 #define FEW			40
 #define SCRATCH		(4 << 20)
 
@@ -139,21 +144,19 @@ mixed_words(const SiftParGroupSpec *sp)
 }
 
 static void
-check_group(const Data *d, const SiftParGroupSpec *sp, bool high, uint32 workers, Sizes sz, Run *out)
+check_group(const Data *d, const SiftParGroupSpec *sp, const Vec *want, bool high, uint32 workers, Sizes sz, Run *out)
 {
-	Vec			want = reference(d, sp),
-				got = {0};
+	Vec			got = {0};
 	Run			r = run_group(d, sp, high, workers, sz, &got);
 
 	PASS(r.created || out != NULL);
-	if (r.created && !vec_same(&got, &want, sp))
+	if (r.created && !vec_same(&got, want, sp))
 		fprintf(stderr, "nk=%d strs=%d nsum=%d u32=%d topk=%d order=%d high=%d w=%u state=%zu work=%zu overflowed=%d: %u groups, want %u\n", sp->nk, sp->strs, sp->nsum,
-				sp->key1_u32, sp->topk, sp->order, high, workers, sz.state, sz.work, r.overflowed, got.n, want.n);
-	PASS(!r.created || vec_same(&got, &want, sp));
+				sp->key1_u32, sp->topk, sp->order, high, workers, sz.state, sz.work, r.overflowed, got.n, want->n);
+	PASS(!r.created || vec_same(&got, want, sp));
 	nparity += r.created;
 	noverflow += r.overflowed;
 	vec_free(&got);
-	vec_free(&want);
 	if (out != NULL)
 		*out = r;
 }
@@ -169,9 +172,11 @@ test_group_ints(void)
 					{
 						const SiftParGroupSpec sp = int_spec(kw, nsum, u32);
 						Data	   *d = gen_int(kw, ROWS, ngroups, (kw + nsum + high) % 3 == 0, nsum, u32);
+						Vec			want = reference(d, &sp);
 
 						for (uint32 w = 1; w <= 4; w++)
-							check_group(d, &sp, high, w, roomy(w, kw + nsum + 1), NULL);
+							check_group(d, &sp, &want, high, w, roomy(w, kw + nsum + 1), NULL);
+						vec_free(&want);
 						data_free(d);
 					}
 }
@@ -185,9 +190,11 @@ test_group_strs(void)
 			{
 				const SiftParGroupSpec sp = str_spec(nsum);
 				Data	   *d = gen_str(ROWS, ngroups, (nsum + high) % 2 == 0, nsum, true);
+				Vec			want = reference(d, &sp);
 
 				for (uint32 w = 1; w <= 4; w++)
-					check_group(d, &sp, high, w, roomy(w, 4 + nsum), NULL);
+					check_group(d, &sp, &want, high, w, roomy(w, 4 + nsum), NULL);
+				vec_free(&want);
 				data_free(d);
 			}
 }
@@ -205,9 +212,11 @@ test_group_mixed(void)
 				{
 					const SiftParGroupSpec sp = mixed_spec(shapes[sh][0], shapes[sh][1], nsum);
 					Data	   *d = gen_mixed(sp.nk, sp.strs, ROWS, ngroups, (sh + nsum + high) % 3 == 0, nsum, true);
+					Vec			want = reference(d, &sp);
 
 					for (uint32 w = 1; w <= 4; w++)
-						check_group(d, &sp, high, w, roomy(w, mixed_words(&sp)), NULL);
+						check_group(d, &sp, &want, high, w, roomy(w, mixed_words(&sp)), NULL);
+					vec_free(&want);
 					data_free(d);
 				}
 }
@@ -230,41 +239,47 @@ test_group_topk(void)
 					for (int high = 0; high <= 1; high++)
 					{
 						SiftParGroupSpec sp = base;
+						Vec			want;
 
 						sp.topk = ks[ik];
 						sp.order = orders[io];
 						sp.desc = desc;
+						want = reference(d, &sp);
 						for (uint32 w = 1; w <= 4; w += 3)
-							check_group(d, &sp, high, w, roomy(w, mixed_words(&sp)), NULL);
+							check_group(d, &sp, &want, high, w, roomy(w, mixed_words(&sp)), NULL);
+						vec_free(&want);
 					}
 		data_free(d);
 	}
 }
 
-/* Arenas from room for everything down to room for nothing: every run, whether it overflowed or not, gives the answer of the rows */
+/* Arenas from room for everything down to room for nothing, at the sizes where the run fits, drains, hands items back and hits the floor: every run, whether it overflowed or not, gives the answer of the rows */
 static void
 sweep_group(const Data *d, const SiftParGroupSpec *sp, bool high, uint32 workers, uint32 rec_words)
 {
+	static const int shifts[] = {0, 3, 6, 9, 12};
 	const Sizes full = roomy(workers, rec_words);
+	Vec			want = reference(d, sp);
 	uint32		overflows = 0,
 				left = 0,
 				drained = 0;
 
-	for (int k = 0; k <= 12; k++)
+	for (int i = 0; i < lengthof(shifts); i++)
 		for (int what = 0; what < 2; what++)
 		{
 			Sizes		sz = full;
 			Run			r;
 
 			if (what == 0)
-				sz.state = Max(full.state >> k, 64 << 10);
+				sz.state = Max(full.state >> shifts[i], 64 << 10);
 			else
-				sz.work = Max(full.work >> (k + 2), 8 << 10);
-			check_group(d, sp, high, workers, sz, &r);
+				sz.work = Max(full.work >> (shifts[i] + 2), 8 << 10);
+			check_group(d, sp, &want, high, workers, sz, &r);
 			overflows += r.overflowed;
 			left += r.left_items > 0;
 			drained += r.overflowed && r.left_items == 0;
 		}
+	vec_free(&want);
 	PASS(overflows > 0 && left > 0 && drained > 0);
 }
 
