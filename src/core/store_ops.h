@@ -266,7 +266,7 @@ typedef struct SiftJsonbOps
 {
 	int			(*key_leaf) (Oid indexoid, int att, const char *key, int len);
 	int			(*table_key_leaf) (Oid relid, int att, const char *key, int len);	/* the same for a sift_table: the leaf of the declared path of the key (NULL: a table has none) */
-	bool		exact_values;	/* a value of a key that its leaf cannot hold is read from the exception of its row, as the heap gives it */
+	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes */
 	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;

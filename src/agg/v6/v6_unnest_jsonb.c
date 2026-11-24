@@ -363,16 +363,16 @@ seed_unnest_array(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, int att)
 	return e->col_leaf[0] >= 0;
 }
 
-/* the column of the index (0-based) that is the array: the column of the table, or the expression the index was made over (-1: none) */
+/* the column of the index (0-based) that is the array: the column of the table, or the expression the index was made over when the format evaluates it (-1: none) */
 static int
-array_column(const IndexOptInfo *ix, const Expr *array)
+array_column(const IndexOptInfo *ix, const Expr *array, bool exprs)
 {
 	int			k = 0;
 
 	for (int i = 0; i < ix->ncolumns; i++)
 	{
 		if (ix->indexkeys[i] != 0 ? IsA(array, Var) && ix->indexkeys[i] == ((const Var *) array)->varattno :
-			!IsA(array, Var) && equal(array, list_nth(ix->indexprs, k)))
+			exprs && !IsA(array, Var) && equal(array, list_nth(ix->indexprs, k)))
 			return i;
 		k += ix->indexkeys[i] == 0;
 	}
@@ -383,12 +383,13 @@ array_column(const IndexOptInfo *ix, const Expr *array)
 static int
 rte_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
 {
-	int			i = rte->key != NULL ? array_column(p->index, rte->base) : -1;
+	const bool	exprs = p->ops->jsonb != NULL && p->ops->jsonb->exact_values;
+	int			i = rte->key != NULL ? array_column(p->index, rte->base, exprs) : -1;
 
 	*key = rte->key;
 	if (i < 0)
 	{
-		i = array_column(p->index, rte->array);
+		i = array_column(p->index, rte->array, exprs);
 		*key = NULL;
 	}
 	return i;
