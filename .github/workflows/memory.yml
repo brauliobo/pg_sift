@@ -1,15 +1,10 @@
 name: memory
 
 # The memory analysis lanes, on demand and never blocking: valgrind memcheck with leak checking over the curated list, massif on the slope
-# cases (the allocation sites that grow with the rows), and the report that ranks them with the memory census that the full tier of ci.yml uploads
-# (artifacts pg_sift-memcensus-*). The memory slope tests of the quick tier remain the gates; these say which code path to fix.
+# cases (the allocation sites that grow with the rows), and the report that ranks the paths that accumulate memory. The memory slope tests of the quick tier remain the gates; these say which code path to fix.
 on:
   workflow_dispatch:
     inputs:
-      census_run:
-        description: 'Run id of a ci.yml run whose pg_sift-memcensus-* artifacts the report ranks (empty: valgrind and massif only)'
-        required: false
-        default: ''
       baseline_run:
         description: 'Run id of an earlier memory.yml run whose report.json the report is compared with (empty: none)'
         required: false
@@ -114,9 +109,6 @@ jobs:
         with:
           pattern: pg_sift-memory-*
           path: ${{ runner.temp }}/in
-      - name: The census of a full run
-        if: ${{ inputs.census_run != '' }}
-        run: gh run download "${{ inputs.census_run }}" --repo "$GITHUB_REPOSITORY" --pattern 'pg_sift-memcensus-*' --dir "$RUNNER_TEMP/in"
       - name: The report of the baseline run
         if: ${{ inputs.baseline_run != '' }}
         run: gh run download "${{ inputs.baseline_run }}" --repo "$GITHUB_REPOSITORY" --name pg_sift-memory-report --dir "$RUNNER_TEMP/base"

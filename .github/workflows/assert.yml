@@ -3,6 +3,8 @@ name: assert
 # The memory-debugging lanes (docs/SAFETY.md): sift on a PostgreSQL built from source with assertions, memory-context checking, clobbered
 # freed memory and randomized new memory (scripts/assert.sh), and the same server under valgrind memcheck (scripts/valgrind.sh). Weekly
 # and on demand, never blocking a pull request: a failure is a finding to read, not a gate.
+# The lean sanitizer lane (asan-build, asan-ubsan) runs what only the ASan+UBSan build sees, about ten minutes: the leak set (scripts/leaks-asan.sh), the fuzz harnesses (scripts/fuzz.sh --budget 1) and one seed
+# of the differential fuzzers (diff_fuzz.py, txn_fuzz.py), on PostgreSQL 18 with Format 2.0 and with Format 1.0 from one build.
 # The every-test leak check (scripts/leakcheck.sh, run by every driver) catches what the server logs and the shared tables show; the weekly memcheck leak gate (--leaks of
 # scripts/valgrind.sh) is the deep check for what no hook can see (a palloc chunk of a long-lived context nothing points to, a malloc that is never freed).
 on:
@@ -28,7 +30,7 @@ concurrency:
 
 jobs:
   assert:
-    name: Assertions and memory checking (PostgreSQL ${{ matrix.pg }})
+    name: Assertions and memory checking (PostgreSQL ${{ matrix.pg }}, Format ${{ matrix.format }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     continue-on-error: true
@@ -36,6 +38,18 @@ jobs:
       fail-fast: false
       matrix:
         pg: [17, 18, 19]
+        format: [2]
+        include:
+          - pg: 18
+            format: 1
+    env:
+      SIFT_FORMAT: ${{ matrix.format }}
+      PG_LDFLAGS: -fuse-ld=lld
+      CCACHE_NOHASHDIR: 1
+      CCACHE_COMPRESS: 1
+      CCACHE_COMPRESSLEVEL: 1
+      CCACHE_SLOPPINESS: time_macros,include_file_mtime
+      CCACHE_MAXSIZE: 1G
     steps:
       - name: Scratch directory
         run: echo "SIFT_CI_TMP=$RUNNER_TEMP/sift-ci" >> "$GITHUB_ENV"
@@ -47,7 +61,8 @@ jobs:
       - name: Install build dependencies
         timeout-minutes: 10
         run: |
-          scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev libicu-dev
+          scripts/apt-install.sh --update bison flex libipc-run-perl liblz4-dev libzstd-dev libicu-dev ccache lld
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
 
       # the build is about five minutes: cached on the recipe (scripts/pg-assert.sh holds the version and flags)
       - name: Cache the PostgreSQL build
@@ -61,6 +76,15 @@ jobs:
           prefix=$(PG_ASSERT_MAJOR=${{ matrix.pg }} scripts/pg-assert.sh)
           echo "$prefix/bin" >> "$GITHUB_PATH"
 
+      # the compiler cache of pg_sift against this server (the objects are the same on both formats)
+      - name: Cache the compiler
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-assert-pg${{ matrix.pg }}-${{ hashFiles('src/**', 'Makefile', 'scripts/pg-assert.sh') }}
+          restore-keys: |
+            ccache-assert-pg${{ matrix.pg }}-
+
       - name: Regression and TAP subset
         run: |
           pg_config --version
@@ -70,7 +94,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: pg_sift-assert-logs-pg${{ matrix.pg }}
+          name: pg_sift-assert-logs-pg${{ matrix.pg }}-f${{ matrix.format }}
           path: |
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/**/assert/cluster/**/*.log
@@ -131,4 +155,154 @@ jobs:
             ${{ runner.temp }}/sift-ci/logs
             ${{ runner.temp }}/sift-ci/**/valgrind/vg/*.log
             ${{ runner.temp }}/sift-ci/**/valgrind/cluster/postgres.log
+          if-no-files-found: ignore
+
+  # the ASan+UBSan flavor of the library (scripts/ci-build.sh), built once for the two formats of the job below
+  asan-build:
+    name: ASan+UBSan build (PostgreSQL 18)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/apt-limits
+
+      - id: week
+        run: |
+          echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "APT_ARCHIVES=$HOME/apt-debs" >> "$GITHUB_ENV"
+
+      - name: Cache the apt packages
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-debs
+          key: apt-pg18-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: |
+            apt-pg18-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: PGDG repository
+        timeout-minutes: 5
+        run: scripts/pgdg-repo.sh
+
+      - name: Install PostgreSQL 18
+        timeout-minutes: 10
+        run: |
+          scripts/apt-install.sh postgresql-18 postgresql-server-dev-18 liblz4-dev libzstd-dev libicu-dev ccache zstd lld
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+
+      - name: Cache the compiler
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-asan-pg18-${{ runner.arch }}-${{ hashFiles('src/**', 'Makefile') }}
+          restore-keys: |
+            ccache-asan-pg18-${{ runner.arch }}-
+
+      - name: Build the ASan+UBSan flavor
+        env:
+          SIFT_SRC_DIR: ${{ runner.temp }}/sift-src
+        run: scripts/ci-build.sh "$RUNNER_TEMP/bin" asan
+
+      - name: Compiler cache statistics
+        if: ${{ !cancelled() }}
+        run: ccache -s
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: sift-bin-asan
+          path: ${{ runner.temp }}/bin/sift-bin.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  asan-ubsan:
+    name: ASan+UBSan fuzzers and leak set (PostgreSQL 18, Format ${{ matrix.format }})
+    needs: asan-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [2, 1]
+    env:
+      SIFT_FORMAT: ${{ matrix.format }}
+      SIFT_CI_PG_MAJOR: 18
+      SANITIZE: 1
+      SIFT_CI_JOBS: ^(asan-leaks|fuzz|difftest-fuzz|difftest-txn)$
+      SIFT_CI_NO_HARNESS: 1
+      SIFT_CI_STATS: 1
+      CI_JOB_TIMEOUT: 1500
+      CI_MAX_MB: 8192
+      PG_LDFLAGS: -fuse-ld=lld
+      CCACHE_NOHASHDIR: 1
+      CCACHE_COMPRESS: 1
+      CCACHE_COMPRESSLEVEL: 1
+      CCACHE_SLOPPINESS: time_macros,include_file_mtime
+      CCACHE_MAXSIZE: 1G
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Scratch directory
+        run: echo "SIFT_CI_TMP=$RUNNER_TEMP/sift-ci" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/apt-limits
+
+      - id: week
+        run: |
+          echo "week=$(date +%G-%V)" >> "$GITHUB_OUTPUT"
+          echo "APT_ARCHIVES=$HOME/apt-debs" >> "$GITHUB_ENV"
+
+      - name: Cache the apt packages
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-debs
+          key: apt-pg18-${{ runner.os }}-${{ runner.arch }}-${{ steps.week.outputs.week }}
+          restore-keys: |
+            apt-pg18-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: PGDG repository
+        timeout-minutes: 5
+        run: scripts/pgdg-repo.sh
+
+      - name: Install PostgreSQL 18
+        timeout-minutes: 10
+        run: |
+          scripts/apt-install.sh postgresql-18 postgresql-server-dev-18 libipc-run-perl zstd liblz4-dev libzstd-dev libicu-dev ccache lld
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
+          echo /usr/lib/ccache >> "$GITHUB_PATH"
+
+      - name: Cache the compiler
+        uses: actions/cache/restore@v5
+        with:
+          path: ~/.cache/ccache
+          key: ccache-asan-pg18-${{ runner.arch }}-${{ hashFiles('src/**', 'Makefile') }}
+          restore-keys: |
+            ccache-asan-pg18-${{ runner.arch }}-
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: sift-bin-asan
+          path: ${{ runner.temp }}/bin-archive
+
+      - name: Unpack the ASan+UBSan flavor
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          zstd -dc "$RUNNER_TEMP/bin-archive/sift-bin.tar.zst" | tar -C "$RUNNER_TEMP/bin" -xf -
+          echo "SIFT_PREBUILT_ROOT=$RUNNER_TEMP/bin/root-asan" >> "$GITHUB_ENV"
+
+      # the leak set and the fuzz harnesses, and one seed of the two differential fuzzers (the plan shortens them when SANITIZE is set: scripts/ci/plan.sh)
+      - name: Leak set, fuzz harnesses and differential fuzzers on the sanitizer build
+        run: scripts/ci.sh quick
+
+      - name: Keep the logs of a failed run
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pg_sift-asan-logs-f${{ matrix.format }}
+          path: |
+            ${{ runner.temp }}/sift-ci/logs
+            ${{ runner.temp }}/sift-ci/lane*/**/postgres.log
+            ${{ runner.temp }}/sift-ci/lane*/**/sanitizer
+            ${{ runner.temp }}/sift-ci/**/leaks-asan/cluster/**/*.log
           if-no-files-found: ignore
