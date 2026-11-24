@@ -435,6 +435,7 @@ TESTING_REGRESS += col_set_pres_budget
 TESTING_REGRESS += col_set_summary
 TESTING_REGRESS += col_skip_index_option
 TESTING_REGRESS += col_slice_aligned
+TESTING_REGRESS += col_stage_expr_fn
 TESTING_REGRESS += col_stmt_cid
 TESTING_REGRESS += col_stmt_cid_bm25
 TESTING_REGRESS += col_suggest_paths

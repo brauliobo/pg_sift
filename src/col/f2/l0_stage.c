@@ -8,6 +8,7 @@
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
+#include "utils/snapmgr.h"
 
 #include "col/f2/compact.h"
 #include "col/f2/f2_batch.h"
@@ -235,6 +236,7 @@ stage_xact(XactEvent event, void *arg)
 	{
 		ListCell   *lc;
 
+		PushActiveSnapshot(GetTransactionSnapshot());
 		foreach(lc, stages)
 		{
 			SiftTxnStage *st = lfirst(lc);
@@ -249,6 +251,7 @@ stage_xact(XactEvent event, void *arg)
 			}
 			relation_close(rel, NoLock);
 		}
+		PopActiveSnapshot();
 	}
 	else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_COMMIT || event == XACT_EVENT_PARALLEL_ABORT)
 	{
