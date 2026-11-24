@@ -191,7 +191,10 @@ setup_bins(SiftSrcFold *f)
 static const SiftVec *
 bq_col(void *arg, const SiftV6InCol *c)
 {
-	return vec_for(arg, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale}, false);
+	const SiftV6Col col = sift_v6_vatt_is_json(c->attno) ? sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale) :
+		(SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale};
+
+	return vec_for(arg, col, false);
 }
 
 static void
