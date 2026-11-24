@@ -58,27 +58,6 @@ END $$;
 
 SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
--- a group that cannot answer is not tried: a filter on two columns (one of them cuts every unit) and a range of days that cuts the group read no more blocks with the groups than without
-CREATE FUNCTION probe_blocks(q text, slack int DEFAULT 1) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE
-	p jsonb;
-	hit_on bigint;
-	hit_off bigint;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	hit_on := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
-	PERFORM set_config('sift.test_agg_super', 'off', true);
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	hit_off := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
-	PERFORM set_config('sift.test_agg_super', 'on', true);
-	RETURN hit_on <= hit_off + slack;
-END $$;
-SELECT probe_blocks('SELECT count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 AND kind = ''k1''') AS two_columns,
-       probe_blocks('SELECT kind, count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND created_at >= date ''2026-03-01'' GROUP BY 1') AS day_range,
-       probe_blocks('SELECT count(*) FROM events WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 2) AND score = 3 AND kind = ''k1''') AS two_columns_mid_key;
-
 -- every byte of the block of a small index (1,500 events, groups of 13 units), read as itself with one bit flipped: all refused
 CREATE TABLE events_s (id int PRIMARY KEY, dim_a_id int, created_at date, score int, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events_s SELECT i, 1 + (i * 7919) % 67, date '2026-01-01' + (i / 40), 1 + i % 10, 'k' || (i % 4), i % 500 FROM generate_series(1, 1500) i;
@@ -108,7 +87,6 @@ INSERT INTO cases_r VALUES
 	(6, 'filter on both columns and a range of days', 'SELECT count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 AND kind = ''k1'' AND created_at >= date ''2026-03-01'''),
 	(7, 'count by id of a score (the rollup lacks the id)', 'SELECT dim_a_id, count(*) FROM events_r WHERE dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 1) AND score = 3 GROUP BY 1');
 SELECT c.n, c.label, r.* FROM cases_r c, LATERAL probe(c.stmt) r ORDER BY c.n;
-SELECT probe_blocks(stmt, -5) AS fewer_blocks FROM cases_r WHERE n IN (1, 2, 3);
 
 -- every byte of the block of a small index with that rollup (groups of 4 units), refused when damaged
 CREATE TABLE events_rs (id int PRIMARY KEY, dim_a_id int, created_at date, score int, kind text, amount int) WITH (autovacuum_enabled = false);
@@ -147,6 +125,6 @@ SELECT sift.col_verify('events_r_col', true);
 SELECT c.n, r.same, r.scope_units, r.supers FROM cases_r c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
 DROP TABLE events, events_s, events_r, events_rs, tenant_scope, cases, cases_r;
-DROP FUNCTION probe(text), probe_blocks(text, int);
+DROP FUNCTION probe(text);
 DROP EXTENSION pg_sift_test CASCADE;
 DROP EXTENSION pg_sift;

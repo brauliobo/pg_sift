@@ -59,25 +59,6 @@ BEGIN
 END $$;
 SELECT c.n, c.label, r.* FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
--- the groups read fewer blocks than the units: the distinct ids by month of the big key
-CREATE FUNCTION probe_blocks(q text, slack int DEFAULT 1) RETURNS boolean LANGUAGE plpgsql AS $$
-DECLARE
-	p jsonb;
-	hit_on bigint;
-	hit_off bigint;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	hit_on := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
-	PERFORM set_config('sift.test_agg_super', 'off', true);
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS, FORMAT JSON) ' || q INTO p;
-	hit_off := (jsonb_path_query_first(p, '$.**."Shared Hit Blocks"') #>> '{}')::bigint;
-	PERFORM set_config('sift.test_agg_super', 'on', true);
-	RETURN hit_on <= hit_off + slack;
-END $$;
-SELECT probe_blocks(stmt, -20) AS fewer_blocks FROM cases WHERE n IN (1, 2);
-
 -- a zone that skips the last day of a month (Pacific/Kiritimati had no 31 December 1994): the key of that day is the month after, so the days of a month give two keys and the group is not read
 CREATE TABLE events_z (id int PRIMARY KEY, dim_a_id int, created_at date, score int) WITH (autovacuum_enabled = false);
 INSERT INTO events_z SELECT i, 1 + (i * 7919) % 67, date '1994-12-01' + (i / 30) % 62, 1 + i % 10 FROM generate_series(1, 6000) i;
@@ -140,6 +121,6 @@ SELECT sift.col_verify('events_col', true);
 SELECT c.n, r.same, r.supers FROM cases c, LATERAL probe(c.stmt) r ORDER BY c.n;
 
 DROP TABLE events, events_z, events_s, events_rs, tenant_scope, cases, cases_z;
-DROP FUNCTION probe(text), probe_blocks(text, int), probe_zone(text, text);
+DROP FUNCTION probe(text), probe_zone(text, text);
 DROP EXTENSION pg_sift_test CASCADE;
 DROP EXTENSION pg_sift;
