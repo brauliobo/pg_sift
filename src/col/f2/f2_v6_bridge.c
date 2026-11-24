@@ -133,6 +133,8 @@ struct F2Src
 	SiftVec		vec[SIFT_V6_MAX_COLS];
 	void	   *data[SIFT_V6_MAX_COLS];
 	uint64	   *valid[SIFT_V6_MAX_COLS];
+	uint64	   *nan[SIFT_V6_MAX_COLS];	/* of a numeric column: the rows that hold a NaN, which valid says are NULL */
+	bool		has_nan[SIFT_V6_MAX_COLS];
 	SiftVexprMaskIn masks[SIFT_V6_MAX_MASKS];
 	uint64	   *mbits[SIFT_V6_MAX_MASKS];
 	uint64	   *mvalid[SIFT_V6_MAX_MASKS];
@@ -395,6 +397,11 @@ fill_rows(F2Src *s, const F2V6Gran *g, int r0, int n, int k0, bool own_strs)
 			const bool	ok = !v->isnull[r];
 
 			set_bit(s->valid[i], k, ok);
+			if (!ok && ic->typid == NUMERICOID && v->tag != NULL && v->tag[r] == SIFT_COLTAG_UNSURE)
+			{
+				set_bit(s->nan[i], k, true);
+				s->has_nan[i] = true;
+			}
 			switch (ic->type)
 			{
 				case SVEC_I32:
@@ -441,7 +448,11 @@ batch_reset(F2Src *s)
 {
 	MemoryContextReset(s->batch_cx);
 	for (int i = 0; i < s->in.ncols; i++)
+	{
 		memset(s->valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		memset(s->nan[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		s->has_nan[i] = false;
+	}
 	for (int m = 0; m < s->in.nmasks; m++)
 	{
 		memset(s->mbits[m], 0, SIFT_VEC_WORDS * sizeof(uint64));
@@ -477,7 +488,7 @@ batch_finish(F2Src *s, int n, SiftV6Batch *out)
 	{
 		const SiftV6InCol *ic = &s->in.col[i];
 
-		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.len = (uint16) n,.all_valid = false,.dense = true,.type = ic->type,.scale = ic->scale};
+		s->vec[i] = (SiftVec) {.data = s->data[i],.valid = s->valid[i],.nan = s->has_nan[i] ? s->nan[i] : NULL,.len = (uint16) n,.all_valid = false,.dense = true,.type = ic->type,.scale = ic->scale};
 	}
 	for (int m = 0; m < s->in.nmasks; m++)
 		s->masks[m] = (SiftVexprMaskIn) {.bits = s->mbits[m],.valid = s->mvalid[m]};
@@ -714,6 +725,7 @@ sift_f2_v6_eval_new(MemoryContext cx, F2V6Ctx *c, const SiftV6Input *in, const S
 	{
 		s->data[i] = palloc_aligned((SIFT_VEC_LEN + SIFT_VEC_PAD) * elem_size(in->col[i].type), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 		s->valid[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+		s->nan[i] = palloc_aligned(SIFT_VEC_WORDS * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 	}
 	for (int m = 0; m < in->nmasks; m++)
 	{
