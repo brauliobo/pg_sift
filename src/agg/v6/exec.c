@@ -14,6 +14,7 @@
 
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_ext.h"
+#include "agg/v6/v6_explain.h"
 #include "agg/v6/v6_fuse.h"
 #include "agg/v6/v6_fuse_keys.h"
 #include "agg/v6/v6_gpu.h"
@@ -550,14 +551,13 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->spec->is_table ? st->sources[0].heap : st->sources[0].index), es);
 	if (st->spec->nparts > 0)
 		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);
-	if (OidIsValid(st->spec->text_indexoid))
+	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
+	if (st->spec->topk > 0)
+		sift_v6_explain_topn_groups(st->spec, es);
+	if (OidIsValid(st->spec->text_indexoid) && es->analyze)
 	{
-		ExplainPropertyText("Text Index", get_rel_name(st->spec->text_indexoid), es);
-		if (es->analyze)
-		{
-			ExplainPropertyInteger("Bridge Chunks", NULL, st->stats.chunks, es);
-			ExplainPropertyInteger("Bridge TIDs", NULL, st->stats.bridge_tids, es);
-		}
+		ExplainPropertyInteger("Bridge Chunks", NULL, st->stats.chunks, es);
+		ExplainPropertyInteger("Bridge TIDs", NULL, st->stats.bridge_tids, es);
 	}
 	if (st->arm.cohort != NULL)
 	{
@@ -583,7 +583,10 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_v6_group_spill_stats(st->group, &ex.spill_count, &ex.spill_bytes);
 	}
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
+	{
 		ExplainPropertyInteger("Star Dimensions", NULL, st->spec->ext->ndims, es);
+		sift_v6_explain_lookup_joins(&st->css, es);
+	}
 	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
 	if (st->star_passes > 1)

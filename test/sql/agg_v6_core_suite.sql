@@ -180,7 +180,7 @@ CREATE FUNCTION ti_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'SiftAggV6|Text Index' THEN r := r || btrim(l) || '; '; END IF;
+		IF l ~ 'SiftAggV6|Search' THEN r := r || btrim(l) || '; '; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

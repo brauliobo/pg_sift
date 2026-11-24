@@ -352,7 +352,7 @@ CREATE FUNCTION ti_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		IF l ~ 'SiftAggV6|Text Index' THEN r := r || btrim(l) || '; '; END IF;
+		IF l ~ 'SiftAggV6|Search' THEN r := r || btrim(l) || '; '; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -376,11 +376,11 @@ BEGIN
 END $$;
 -- the plan reads the text index through the bridge
 SELECT name, ti_plan(q) FROM ti_q WHERE name IN ('group', 'filter', 'count') ORDER BY name;
-  name  |                   ti_plan                    
---------+----------------------------------------------
- count  | Custom Scan (SiftAggV6); Text Index: ti_bm; 
- filter | Custom Scan (SiftAggV6); Text Index: ti_bm; 
- group  | Custom Scan (SiftAggV6); Text Index: ti_bm; 
+  name  |                            ti_plan                            
+--------+---------------------------------------------------------------
+ count  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid tok3'::text; 
+ filter | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text;      
+ group  | Custom Scan (SiftAggV6); Search: ti_bm @@> 'mid'::text;      
 (3 rows)
 
 SELECT name, (ti_check(q)).* FROM ti_q ORDER BY name;

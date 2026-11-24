@@ -23,6 +23,7 @@
 #include "agg/plan/safety.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_gpu.h"
+#include "agg/v6/v6_explain.h"
 #include "agg/v6/v6_topn.h"
 #include "core/memtrack.h"
 
@@ -540,6 +541,7 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 
 	sift_v6_explain_index(es, st->spec->indexoid);
 	sift_v6_gpu_explain(&st->gpu, es);
+	sift_v6_explain_topn_rows(st->spec, es);
 	if (st->tourn != NULL)
 		sift_v6_explain_count(es, "Top-N Rows", (int64) st->spec->rows);
 	if (st->tourn != NULL)
