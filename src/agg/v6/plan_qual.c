@@ -23,7 +23,7 @@ static bool
 operand_usable(const V6Plan *p, const Node *n)
 {
 	if (IsA(n, Param))
-		return !p->in_filter && p->store == NULL && (((const Param *) n)->paramkind == PARAM_EXTERN || ((const Param *) n)->paramkind == PARAM_EXEC);
+		return !p->in_filter && (((const Param *) n)->paramkind == PARAM_EXTERN || ((const Param *) n)->paramkind == PARAM_EXEC);
 	return IsA(n, Const) && !((const Const *) n)->constisnull;
 }
 
