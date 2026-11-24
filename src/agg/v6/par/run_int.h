@@ -8,6 +8,7 @@
 #include "postgres.h"
 
 #include "agg/gpu_v6.h"
+#include "agg/v6/par/derive.h"
 #include "agg/v6/par/distinct.h"
 #include "agg/v6/par/group.h"
 #include "agg/v6/par/rows.h"
@@ -15,7 +16,7 @@
 #include "col/f2/pin_win.h"
 
 #define PAR_SIGN_FLIP	(UINT64CONST(1) << 63)
-#define PAR_LEAVES_MAX	(2 * SIFT_PAR_GROUP_MAX_KEYS + SIFT_PAR_GROUP_MAX_SUM + SIFT_V6_MAX_KEYS)
+#define PAR_LEAVES_MAX	(SIFT_PAR_GROUP_MAX_KEYS * (1 + SIFT_V6_MAX_CASE) + SIFT_PAR_GROUP_MAX_SUM + SIFT_V6_MAX_KEYS)
 
 struct ParKind;
 
@@ -28,8 +29,10 @@ typedef struct ParShape
 	bool		codes[PAR_LEAVES_MAX];	/* the leaf is a text read as the codes of the dictionary of the granule when it has one */
 	int			nk;
 	int			key_at[SIFT_PAR_GROUP_MAX_KEYS];	/* the place of each key's leaf among leaf[] */
+	ParSrc		key_src[SIFT_PAR_GROUP_MAX_KEYS];
 	int			nsum;
 	int			sum_at[SIFT_PAR_GROUP_MAX_SUM];
+	ParSrc		sum_src[SIFT_PAR_GROUP_MAX_SUM];
 	SiftParGroupSpec gs;
 	SiftParDistinctSpec ds;		/* distinct: the keys (words, then the text), the sums and the counted value */
 	int			val_at;			/* distinct: the leaf of the counted value */
@@ -109,8 +112,11 @@ extern bool par_plain_col(const SiftV6Col *c);
 /* The leaf at (of sh) is one in which a NULL is not for a thread */
 extern void par_check_leaf(ParShape *sh, int at);
 
-/* The aggregate that counts or sums: COUNT(*), COUNT(column), SUM and AVG of an int2 or int4 column (the sums of sh, and the leaves it reads, which cannot hold a NULL for a thread); false for any other */
-extern bool par_count_sum_of(const SiftV6Agg *a, const int *first, ParShape *sh);
+/* The aggregate that counts or sums: COUNT(*), COUNT(column), SUM and AVG of an int2 or int4 column or of length() of a text column (the sums of sh, and the leaves it reads, which cannot hold a NULL for a thread); false for any other */
+extern bool par_count_sum_of(const SiftV6Agg *a, const SiftV6Spec *sp, const int *first, ParShape *sh);
+
+/* Whether the column c is a key or an argument the threads read (a plain column, or one the spec computes by a derive of a plain column and plain conditions), with its leaves added to the shape */
+extern bool par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col *c, ParSrc *s);
 
 /* The rows of a granule that a thread folds, and their leaves decoded */
 typedef struct ParLoad
@@ -125,7 +131,14 @@ typedef struct ParLoad
 extern bool par_load(const ParShape *sh, const SiftPinSlot *sl, SiftArena *scratch, SiftErr *err, ParLoad *ld);
 extern bool par_arena_full(SiftArena *a, SiftErr *err);
 extern bool par_serial(SiftErr *err, const char *why);
-extern SiftStrRef par_str_at(const ColView *cv, uint32 r);
+
+static inline SiftStrRef
+par_str_at(const ColView *cv, uint32 r)
+{
+	if (cv->dcode != NULL)
+		return (SiftStrRef) {(const uint8 *) cv->dict->bytes + cv->dict->off[cv->dcode[r]], cv->dict->off[cv->dcode[r] + 1] - cv->dict->off[cv->dcode[r]]};
+	return (SiftStrRef) {(const uint8 *) cv->s[r], cv->slen[r]};
+}
 
 /* The rows of the bitmap in order: r is the row of the granule, i its place among the rows that pass */
 #define PAR_EACH_ROW(ld, r, i) \

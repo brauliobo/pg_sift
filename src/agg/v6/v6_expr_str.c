@@ -69,6 +69,8 @@ sift_vx_url_host(const uint8 *p, uint32 len, const uint8 **host, uint32 *hlen)
 	uint32		rn,
 				q;
 
+	*host = p;
+	*hlen = len;
 	if (len >= 7 && memcmp(p, "http://", 7) == 0)
 		off = 7;
 	else if (len >= 8 && memcmp(p, "https://", 8) == 0)
@@ -109,18 +111,6 @@ sift_vx_strview(const uint8 *p, uint32 len)
 	return v;
 }
 
-bool
-sift_vx_extract_one(int64 ts, int64 unit_us, int64 mod, int64 *out)
-{
-	int64		q;
-
-	if (ts == PG_INT64_MIN || ts == PG_INT64_MAX)
-		return false;
-	q = ts / unit_us - (ts % unit_us < 0);
-	*out = ((q % mod) + mod) % mod;
-	return true;
-}
-
 void
 sift_vx_out_init(SiftVxOut *o, MemoryContext cx)
 {
@@ -153,7 +143,7 @@ set_valid(SiftVxOut *o, uint16 r, bool valid)
 
 /* extract of the unit and period of the call: the divisions are by constants, which the compiler turns into multiplications when it inlines this for the common units */
 static inline __attribute__((always_inline)) bool
-extract_rows(const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o, int64 unit_us, int64 mod)
+extract_rows(const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o, int64 unit_us)
 {
 	int64	   *oi = o->data;
 	bool		all_ok = true;
@@ -161,7 +151,7 @@ extract_rows(const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o, int64 uni
 	FOR_ACTIVE(bs, r)
 	{
 		int64		x = 0;
-		const bool	ok = valid_at(src, r) && sift_vx_extract_one(int_of(src, r), unit_us, mod, &x);
+		const bool	ok = valid_at(src, r) && sift_vx_extract_one(int_of(src, r), unit_us, &x);
 
 		oi[r] = x;
 		set_valid(o, r, ok);
@@ -175,10 +165,10 @@ static bool
 extract_batch(const SiftV6Derive *d, const SiftVec *src, const SiftBatchSel *bs, SiftVxOut *o)
 {
 	if (d->aux == 60000000)
-		return extract_rows(src, bs, o, 60000000, 60);
+		return extract_rows(src, bs, o, 60000000);
 	if (d->aux == INT64CONST(3600000000))
-		return extract_rows(src, bs, o, INT64CONST(3600000000), 24);
-	return extract_rows(src, bs, o, d->aux, 24);
+		return extract_rows(src, bs, o, INT64CONST(3600000000));
+	return extract_rows(src, bs, o, d->aux);
 }
 
 void
@@ -197,7 +187,7 @@ sift_vx_derive(const SiftV6Derive *d, const SiftVec *src, SiftVec *const *cond, 
 			{
 				const bool	ok = valid_at(src, r);
 
-				oi[r] = ok ? (d->utf8 ? sift_vx_utf8_len(sift_strview_bytes(&sv[r]), sv[r].len) : sv[r].len) : 0;
+				oi[r] = ok ? sift_vx_strlen(d, sift_strview_bytes(&sv[r]), sv[r].len) : 0;
 				set_valid(o, r, ok);
 			}
 			o->vec = (SiftVec) {.data = o->data,.valid = o->valid,.len = bs->n_raw,.all_valid = src->all_valid,.dense = true,.type = SVEC_I64};
@@ -246,7 +236,7 @@ sift_vx_affine_check(const SiftV6Spec *spec, const SiftVec *key, const SiftBatch
 		{
 			const int64 x = int_of(key, r);
 
-			if (x < spec->aff_lo || x > spec->aff_hi)
+			if (!sift_vx_affine_holds(spec, x))
 				ereport(ERROR, (errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE), errmsg(spec->aff_type == INT8OID ? "bigint out of range" : "integer out of range")));
 		}
 	}

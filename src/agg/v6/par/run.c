@@ -51,7 +51,7 @@ par_check_leaf(ParShape *sh, int at)
 }
 
 bool
-par_count_sum_of(const SiftV6Agg *a, const int *first, ParShape *sh)
+par_count_sum_of(const SiftV6Agg *a, const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
 	int			at;
 
@@ -59,15 +59,47 @@ par_count_sum_of(const SiftV6Agg *a, const int *first, ParShape *sh)
 		return false;
 	if (a->kind == SV6_COUNT_STAR)
 		return true;
-	if (!par_plain_col(&a->arg))
-		return false;
-	if (a->kind == SV6_COUNT)
+	if (a->kind == SV6_COUNT && par_plain_col(&a->arg))
 		at = par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
-	else if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && (a->arg.typid == INT2OID || a->arg.typid == INT4OID) && sh->nsum < SIFT_PAR_GROUP_MAX_SUM)
-		at = sh->sum_at[sh->nsum++] = par_add_leaf(sh, par_leaf_of(first, &a->arg), false);
+	else if ((a->kind == SV6_SUM || a->kind == SV6_AVG) && (a->arg.typid == INT2OID || a->arg.typid == INT4OID) && sh->nsum < SIFT_PAR_GROUP_MAX_SUM &&
+			 par_src_of(sh, sp, first, &a->arg, &sh->sum_src[sh->nsum]))
+	{
+		at = sh->sum_src[sh->nsum].at;
+		sh->sum_at[sh->nsum++] = at;
+	}
 	else
 		return false;
 	par_check_leaf(sh, at);
+	return true;
+}
+
+static bool
+text_result(SiftV6DeriveKind kind)
+{
+	return kind == SVD_URL_HOST || kind == SVD_CASE_STR;
+}
+
+bool
+par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col *c, ParSrc *s)
+{
+	const bool	text = sift_v6_class(c->typid) == SV6C_TEXT;
+	const SiftV6Derive *d = c->derive > 0 ? &sp->derive[c->derive - 1] : NULL;
+
+	*s = (ParSrc) {.d = d};
+	if (d == NULL)
+	{
+		s->at = par_plain_col(c) ? par_add_leaf(sh, par_leaf_of(first, c), text) : -1;
+		return s->at >= 0;
+	}
+	if (c->src != SV6SRC_ATTR || c->jleaf != 0 || c->scale != 0 || text != text_result(d->kind) || !par_plain_col(&d->src))
+		return false;
+	s->at = par_add_leaf(sh, par_leaf_of(first, &d->src), true);
+	for (int i = 0; i < d->ncond; i++)
+	{
+		if (!par_plain_col(&d->cond[i]))
+			return false;
+		s->cond[i] = par_add_leaf(sh, par_leaf_of(first, &d->cond[i]), false);
+	}
 	return true;
 }
 
@@ -125,14 +157,6 @@ par_serial(SiftErr *err, const char *why)
 {
 	sift_err_fill(err, SIFT_ERR_SERIAL, 0, 0, why);
 	return false;
-}
-
-SiftStrRef
-par_str_at(const ColView *cv, uint32 r)
-{
-	if (cv->dcode != NULL)
-		return (SiftStrRef) {(const uint8 *) cv->dict->bytes + cv->dict->off[cv->dcode[r]], cv->dict->off[cv->dcode[r] + 1] - cv->dict->off[cv->dcode[r]]};
-	return (SiftStrRef) {(const uint8 *) cv->s[r], cv->slen[r]};
 }
 
 bool

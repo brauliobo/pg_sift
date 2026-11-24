@@ -91,7 +91,7 @@ aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 			if (!min_max_of(a, first, sh))
 				return false;
 		}
-		else if (!par_count_sum_of(a, first, sh))
+		else if (!par_count_sum_of(a, sp, first, sh))
 			return false;
 	}
 	sh->ds.nsum = sh->nsum;

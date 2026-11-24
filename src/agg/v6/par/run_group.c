@@ -9,9 +9,12 @@
 #include "utils/lsyscache.h"
 
 #include "agg/v6/par/run_int.h"
+#include "agg/v6/v6_expr_str.h"
 #include "core/compat.h"
 
 #define STATE_MIN		(8u << 20)
+/* The groups a statement with no K may have for the threads to give them all to the leader, which folds each one in turn (more are merged by the workers of the plan, in parallel) */
+#define ALL_GROUPS_MAX	(1u << 20)
 
 /* ---- the shape of the statement ---- */
 
@@ -24,14 +27,11 @@ keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 		return false;
 	for (int i = 0; i < sp->nkeys; i++)
 	{
-		const SiftV6Col *c = &sp->key[i];
-		const SiftV6Class cls = sift_v6_class(c->typid);
-		const bool	text = cls == SV6C_TEXT;
+		const SiftV6Class cls = sift_v6_class(sp->key[i].typid);
 
-		if (!par_plain_col(c) || !(cls == SV6C_I32 || cls == SV6C_I64 || text))
+		if (!(cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_TEXT) || !par_src_of(sh, sp, first, &sp->key[i], &sh->key_src[i]))
 			return false;
-		sh->gs.strs |= text << i;
-		sh->key_at[i] = par_add_leaf(sh, par_leaf_of(first, c), text);
+		sh->gs.strs |= (cls == SV6C_TEXT) << i;
 	}
 	return true;
 }
@@ -41,7 +41,7 @@ static bool
 aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
 	for (int j = 0; j < sp->naggs; j++)
-		if (!par_count_sum_of(&sp->agg[j], first, sh))
+		if (!par_count_sum_of(&sp->agg[j], sp, first, sh))
 			return false;
 	return true;
 }
@@ -84,13 +84,13 @@ key_item(const SiftV6TopKItem *it, int key, const ParShape *sh)
 	return it->pos == key && cmptype == COMPARE_LT && !it->nulls_first && (!sift_par_group_is_str(&sh->gs, key) || sift_collate_is_c(it->collid));
 }
 
-/* The K best groups: by the metric of the first item of ORDER BY (none: by the keys alone) and then by the keys, ascending, after it */
+/* The K best groups, by the metric of the first item of ORDER BY (none: by the keys alone) and then by the keys, ascending, after it */
 static bool
-order_of(const SiftV6Spec *sp, ParShape *sh)
+rank_of(const SiftV6Spec *sp, ParShape *sh)
 {
 	const int	metric = sp->ntopk > 0 && sp->topk_item[0].pos >= sp->nkeys;
 
-	if (sp->topk < 1 || sp->having || sp->topk > SIFT_PAR_GROUP_TOPK_MAX || sp->ntopk < 1 || sp->ntopk > metric + sp->nkeys)
+	if (sp->topk > SIFT_PAR_GROUP_TOPK_MAX || sp->ntopk < 1 || sp->ntopk > metric + sp->nkeys)
 		return false;
 	sh->gs.topk = sp->topk;
 	sh->gs.order = SIFT_PAR_GROUP_BY_KEY;
@@ -102,10 +102,20 @@ order_of(const SiftV6Spec *sp, ParShape *sh)
 	return true;
 }
 
+/* The K best of the threads when the statement keeps the best groups of all and the order is one they rank; else every group, when the planner expects few: the node ranks them, and runs its HAVING */
+static bool
+order_of(const SiftV6Spec *sp, ParShape *sh)
+{
+	if (sp->topk > 0 && !sp->having && rank_of(sp, sh))
+		return true;
+	sh->gs.topk = sh->gs.order = sh->gs.desc = 0;
+	return sp->groups_est > 0 && sp->groups_est <= ALL_GROUPS_MAX;
+}
+
 static bool
 group_shape(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
-	if (sp->rows || sp->nsets != 0 || sp->nbins != 0 || sp->nderive != 0 || sp->nfcols != 0 || sp->nfilters != 0 || sp->lock_k != 0 || sp->affine || sp->naggs < 1)
+	if (sp->rows || sp->nsets != 0 || sp->nbins != 0 || sp->nfcols != 0 || sp->nfilters != 0 || sp->lock_k != 0 || sp->naggs < 1)
 		return false;
 	if (!keys_of(sp, first, sh) || !aggs_of(sp, first, sh) || !order_of(sp, sh))
 		return false;
@@ -123,7 +133,8 @@ group_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads, Pa
 	sz->scratch = 8u << 20;
 	sz->work = 8u << 20;
 	sz->state_min = STATE_MIN;
-	sz->state_want = STATE_MIN + 4 * rec * (groups_est > SIFT_PAR_GROUP_LOW ? rows / nthreads : Min(rows / nthreads, (uint64) groups_est));
+	sz->state_want = STATE_MIN + 4 * rec * (groups_est > SIFT_PAR_GROUP_LOW ? rows / nthreads : Min(rows / nthreads, (uint64) groups_est)) +
+		(sh->gs.topk == 0 ? 2 * rec * Min(groups_est, ALL_GROUPS_MAX) / nthreads : 0);
 }
 
 /* ---- a thread ---- */
@@ -136,7 +147,43 @@ scratch_array(SiftArena *scratch, uint32 n, size_t size, SiftErr *err)
 	return a != NULL ? a : (par_arena_full(scratch, err), NULL);
 }
 
-/* The key words (the integers with their sign bit flipped) and the texts of the rows that pass, and their sums, into the batch */
+/* The words of key j (the integers with their sign bit flipped) or its texts, for the rows that pass */
+static bool
+fill_key(const ParShape *sh, int j, const ParLoad *ld, SiftArena *scratch, SiftParGroupBatch *out, SiftErr *err)
+{
+	if (sift_par_group_is_str(&sh->gs, j))
+	{
+		SiftStrRef *str = scratch_array(scratch, ld->nact, sizeof(SiftStrRef), err);
+
+		if (str == NULL)
+			return false;
+		par_src_strs(&sh->key_src[j], ld, str);
+		out->str[j] = str;
+	}
+	else
+	{
+		uint64	   *key = scratch_array(scratch, ld->nact, sizeof(uint64), err);
+
+		if (key == NULL)
+			return false;
+		if (!par_src_ints(&sh->key_src[j], ld, PAR_SIGN_FLIP, key))
+			return par_serial(err, "a key with no value");
+		out->key[j] = key;
+	}
+	return true;
+}
+
+/* The first key is in the range where none of the keys that were elided (the first key plus a constant) overflows: else the scan raises the error of PostgreSQL */
+static bool
+affine_holds(const SiftV6Spec *sp, const uint64 *key, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+		if (!sift_vx_affine_holds(sp, (int64) (key[i] ^ PAR_SIGN_FLIP)))
+			return false;
+	return true;
+}
+
+/* The keys and the sums of the rows that pass, into the batch */
 static bool
 group_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParGroupBatch *out, SiftErr *err)
 {
@@ -152,39 +199,18 @@ group_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, Sift
 		if (par_has_null(&ld, &ld.cv[c]))
 			return par_serial(err, "a NULL in a column of the aggregate");
 	for (int j = 0; j < sh->nk; j++)
-	{
-		const ColView *cv = &ld.cv[sh->key_at[j]];
-
-		if (sift_par_group_is_str(&sh->gs, j))
-		{
-			SiftStrRef *str = scratch_array(scratch, ld.nact, sizeof(SiftStrRef), err);
-
-			if (str == NULL)
-				return false;
-			PAR_EACH_ROW(&ld, r, i)
-				str[i] = par_str_at(cv, r);
-			out->str[j] = str;
-		}
-		else
-		{
-			uint64	   *key = scratch_array(scratch, ld.nact, sizeof(uint64), err);
-
-			if (key == NULL)
-				return false;
-			PAR_EACH_ROW(&ld, r, i)
-				key[i] = (uint64) cv->i[r] ^ PAR_SIGN_FLIP;
-			out->key[j] = key;
-		}
-	}
+		if (!fill_key(sh, j, &ld, scratch, out, err))
+			return false;
+	if (p->spec->affine && !affine_holds(p->spec, out->key[0], ld.nact))
+		return par_serial(err, "a first key out of the range of the keys elided");
 	for (int m = 0; m < sh->nsum; m++)
 	{
-		const int64 *v = ld.cv[sh->sum_at[m]].i;
 		uint64	   *sum = scratch_array(scratch, ld.nact, sizeof(uint64), err);
 
 		if (sum == NULL)
 			return false;
-		PAR_EACH_ROW(&ld, r, i)
-			sum[i] = (uint64) v[r];
+		if (!par_src_ints(&sh->sum_src[m], &ld, 0, sum))
+			return par_serial(err, "an argument with no value");
 		out->arg[m] = sum;
 	}
 	p->w[worker].rows += ld.nact;
