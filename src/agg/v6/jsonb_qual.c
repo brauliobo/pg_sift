@@ -15,6 +15,7 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 
+#include "agg/agg.h"
 #include "agg/group/ht.h"
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_unnest_jsonb.h"
@@ -279,6 +280,13 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	return NIL;
 }
 
+/* the format reads the values of the keys of a document as the heap does, or the statement runs on the unified scan alone, where a value no leaf holds is refused */
+bool
+sift_v6_values_exact(const SiftV6Rel *rel)
+{
+	return rel->ops != NULL && rel->ops->jsonb != NULL && (rel->ops->jsonb->exact_values || sift_agg_unified_only());
+}
+
 bool
 sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 {
@@ -296,7 +304,7 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 		store = SIFT_COLS_F8;
 	}
 	leaf = field_leaf(rel, text, true, &att, &key);
-	if (!scalar_leaf(rel, leaf) || leaves_of(rel)->cols[leaf].store != store)
+	if (!scalar_leaf(rel, leaf) || leaves_of(rel)->cols[leaf].store != store || !sift_v6_values_exact(rel))
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1};
 	return true;

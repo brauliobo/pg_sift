@@ -392,6 +392,7 @@ typedef struct SiftV6Rel
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
 extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out);
+extern bool sift_v6_values_exact(const SiftV6Rel *rel);
 /*
  * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every
  * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is
