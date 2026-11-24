@@ -330,7 +330,7 @@ def render_point(p):
 
 
 def gen_pointagg(r, ctx):
-    """The same lists as gen_point, aggregated by Custom Scan (SiftAgg), which asks the directory too (and narrows each unit to the rows it lists): as a list, as the keys of a semi lookup
+    """The same lists as gen_point, aggregated by Custom Scan (SiftAgg...), which asks the directory too (and narrows each unit to the rows it lists): as a list, as the keys of a semi lookup
     join to a few rows of the table, and with another conjunct; the reference is the normal plan, across the DML of the run."""
     p = gen_point(r, ctx)
     n = ctx['rows'] // 2

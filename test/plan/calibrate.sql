@@ -1,5 +1,5 @@
 -- The estimate calibration of the plan-choice gate (scripts/plangate.sh --calibrate; docs/AGG.md "Plan-estimate calibration"). Needs run.sql (header()).
--- Every shape of calibrate.tsv is planned once for each way the planner can go (EXPLAIN only): the scan (Custom Scan (SiftAgg), the others off), a sequential
+-- Every shape of calibrate.tsv is planned once for each way the planner can go (EXPLAIN only): the scan (Custom Scan (SiftAgg...), the others off), a sequential
 -- scan, a b-tree index scan, a bitmap scan, PostgreSQL's own choice without sift and the planner's own choice with it. Plans with the same shape (the EXPLAIN text
 -- without the costs) are one plan. The script measures the instructions of each distinct plan and compares the ranking the estimates give with the one they have.
 \set ON_ERROR_STOP on
@@ -40,7 +40,7 @@ BEGIN
 			FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || s.body LOOP t := t || l || E'\n'; END LOOP;
 			-- a node a setting disabled costs 1e10 more before PostgreSQL 18 (taken off, as plangate.cost does) and PostgreSQL 18 says Disabled: true, which is not another plan
 			t := regexp_replace(t, E'\\n *Disabled: true', '', 'g');
-			INSERT INTO plangate.cal_plans VALUES (s.name, v, c - 1e10 * floor(c / 1e10), md5(t), j::text LIKE '%"SiftAgg"%');
+			INSERT INTO plangate.cal_plans VALUES (s.name, v, c - 1e10 * floor(c / 1e10), md5(t), j::text LIKE '%"SiftAgg%');
 		END LOOP;
 	END LOOP;
 	PERFORM plangate.cal_set('chosen');
@@ -90,7 +90,7 @@ CREATE VIEW plangate.cal_verdicts AS
 -- the pairs of plans of a shape the estimates rank the wrong way round: the dearer by estimate takes fewer instructions, by more than 20% and 1,000,000. The plan the
 -- planner chooses is not in a pair: it is the ranking (the planner prices the plan without the scan higher than sift off does, so the cost of the plan sift off
 -- makes is not what the choice meets), and the check on it is `wrong`.
--- sift: one of the two is a Custom Scan (SiftAgg), whose estimate is ours; the others are PostgreSQL's own (and the tuned lane's seq_page_cost prices pages, which instructions do not count)
+-- sift: one of the two is a Custom Scan (SiftAgg...), whose estimate is ours; the others are PostgreSQL's own (and the tuned lane's seq_page_cost prices pages, which instructions do not count)
 CREATE VIEW plangate.cal_pairs AS
 	SELECT a.class, a.name, a.variants AS estimated_cheaper, b.variants AS estimated_dearer, a.cost AS cost_a, b.cost AS cost_b, a.m_instr AS m_a, b.m_instr AS m_b, a.sift OR b.sift AS sift
 	FROM plangate.cal_verdicts a JOIN plangate.cal_verdicts b ON a.name = b.name AND NOT a.chosen AND NOT b.chosen AND a.cost < b.cost AND a.m_instr > 1.2 * b.m_instr AND a.m_instr > b.m_instr + 1;

@@ -1,6 +1,6 @@
 -- Runner of the plan-choice gate (scripts/plangate.sh). Needs test/col/run.sql (header(), materialize(), compare(), median()).
 -- Each shape of shapes.sql runs three ways in one session: native (sift.enable_agg off: the plan PostgreSQL has without sift), chosen (the
--- planner's own choice) and scan (the sequential, index and bitmap scans off, so that Custom Scan (SiftAgg) runs when the query is one it can).
+-- planner's own choice) and scan (the sequential, index and bitmap scans off, so that Custom Scan (SiftAgg...) runs when the query is one it can).
 -- It checks, and records in plangate.results:
 --   * the results: equal across the paths by the contract of coldiff.compare (text for every type, floats within 1e-12 + 1e-9 * max);
 --   * the plan chosen against the plan of the row of the shape in test/plan/bands.tsv (lane, shape, PLAN, LO, HI): scan, normal or either;

@@ -35,7 +35,7 @@ BEGIN
 	RETURN format('FZ|%s|ref|%s|%s', qid, CASE WHEN err IS NULL THEN 'ok' WHEN err ~ '^(42|0A)' THEN 'GENERR' ELSE 'ERR ' || left(err, 5) END, n);
 END $$;
 
--- FZ|qid|variant name|status|used|detail: status ok or DIFF; used: the plan of the variant has Custom Scan (SiftAgg), or an index scan of ev_part (only sift_col indexes: the point family)
+-- FZ|qid|variant name|status|used|detail: status ok or DIFF; used: the plan of the variant has Custom Scan (SiftAgg...), or an index scan of ev_part (only sift_col indexes: the point family)
 CREATE FUNCTION fz.var(qid text, q text, keycols int[], vname text, spec text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE err_ref text := current_setting('fz.err', true); err_got text; msg text;
 BEGIN

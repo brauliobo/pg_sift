@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The plan-choice gate of the aggregate pushdown (docs/AGG.md, "Plan-choice gate"): the shapes of test/plan/shapes.sql run on the tables of
-# test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg) forced) by
+# test/plan/gen.sql, each three ways (native: sift.enable_agg off; chosen: the planner's own choice; scan: Custom Scan (SiftAgg...) forced) by
 # test/plan/run.sql, which compares the results, the plan chosen against the expectation of the shape and the cost ratio against its band.
 #
 #   scripts/plangate.sh [--format f2|f1|release] [--rows N] [--seed N] [--runs N] [--shapes REGEX] [--slice AREAS] [--lane stock|stock-4t|tuned|gpu] [--table] [--warn-time] [--update] [--keep]

@@ -2,7 +2,7 @@
 # Differential test of the aggregate pushdown (docs/AGG.md, "Differential suite"): every query of a corpus runs in one session with
 # sift.enable_agg off (the reference: the plan PostgreSQL has without sift) and in variants (parallel workers 0 and 2, sift.simd scalar
 # and auto), the results are compared in the database (test/col/run.sql), and the plans are read to report which queries used
-# Custom Scan (SiftAgg).
+# Custom Scan (SiftAgg...).
 #
 #   scripts/coldiff.sh [--suite fixtures|analytics|all] [--corpus REGEX] [--rows N] [--bench] [--strict-shape] [--keep] [--format f2|f1|release]
 #   scripts/coldiff.sh [--slice K/N] [--list]   one of N disjoint slices of the corpus (the Kth of every N queries in name order); --list prints the queries the options select and stops

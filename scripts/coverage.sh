@@ -164,7 +164,7 @@ Generated from [coverage.tsv](coverage.tsv) by `scripts/coverage.sh --gen`; `scr
 `EXPLAIN` on a test cluster and fails when a row claims what the plan does not do (the job `coverage` of `scripts/ci.sh`). Edit the `.tsv`,
 never this file.
 
-- **Yes**: the query runs on a sift index or table (`Custom Scan (SiftAgg)` for aggregates on a `sift_col` index or a `sift_table`,
+- **Yes**: the query runs on a sift index or table (`Custom Scan (SiftAgg...)` for aggregates on a `sift_col` index or a `sift_table`,
   `Custom Scan (SiftScan)` / `SiftCount` for the BM25 `sift` index) when the planner can prove the result equals the normal plan's and the cost
   says it pays. A table of a few thousand rows is cheaper on the normal plan: the check raises `seq_page_cost` so that the shape, not the size,
   decides. The proof of a row is its fixture (`test/col/fixtures/<name>.sql`, run by `scripts/coldiff.sh` against `sift.enable_agg = off`
@@ -180,7 +180,7 @@ never this file.
 - Every row has a sample query. A `true` query is a self-check (same result as the normal plan inside a transaction, with a second
   session writing, at several worker counts, a catalog or a setting); a few run on a second cluster (a hot standby, a logical publisher).
 
-To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
+To see what a query does: `EXPLAIN (COSTS OFF) <query>`; a `Custom Scan (SiftAgg...)` with `Pushed Aggregates`, `Group Keys` and `Lookup Joins`
 lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, anything else is the normal plan.
 
 EOF

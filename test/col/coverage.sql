@@ -68,7 +68,7 @@ BEGIN
 	RETURN r;
 END $$;
 
--- the plan of q has a Custom Scan (SiftAgg) and q returns what it returns with sift.enable_agg off
+-- the plan of q has a Custom Scan (SiftAgg...) and q returns what it returns with sift.enable_agg off
 CREATE FUNCTION coverage.same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text; p text;
 BEGIN
