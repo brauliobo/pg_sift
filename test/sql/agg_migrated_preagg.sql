@@ -51,17 +51,16 @@ EXCEPTION WHEN OTHERS THEN
 END $$;
 CREATE FUNCTION pa_rows(q text) RETURNS text LANGUAGE sql SET sift.enable_agg = on AS $$ SELECT pa_exec(q) $$;
 CREATE FUNCTION pa_plain(q text) RETURNS text LANGUAGE sql SET sift.enable_agg = off SET max_parallel_workers_per_gather = 0 AS $$ SELECT pa_exec(q) $$;
--- one row per query of pa_q (those marked w only, for a pass that starts workers for every query) in the schema of the segment:
--- whether the aggregate scan and the plain plan agree
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000, w_only bool DEFAULT false) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
+-- one row per query of pa_q in the schema of the segment: whether the aggregate scan and the plain plan agree
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (n int, shape text, same bool) LANGUAGE plpgsql AS $$
 BEGIN
 	RETURN QUERY SELECT z.n, z.shape, pa_rows(z.q) IS NOT DISTINCT FROM pa_plain(z.q)
-	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi AND (p.w OR NOT w_only)) z ORDER BY z.n;
+	FROM (SELECT p.n, p.shape, format(p.q, tbl) AS q FROM pa_q p WHERE p.n BETWEEN lo AND hi) z ORDER BY z.n;
 END $$;
 -- the same, summed up for a table whose answers need not be listed
-CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000, w_only bool DEFAULT false) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION pa_sum(tbl text, lo int DEFAULT 1, hi int DEFAULT 1000) RETURNS TABLE (queries bigint, differ bigint) LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi, w_only) c;
+	RETURN QUERY SELECT count(*), count(*) FILTER (WHERE NOT c.same) FROM pa_check(tbl, lo, hi) c;
 END $$;
 
 -- >>> preagg
@@ -80,7 +79,7 @@ SET cpu_tuple_cost = 0.5;
 SET max_parallel_maintenance_workers = 0;
 -- a unit is a superblock of 256 pages: a pad that fills a page with one row makes a unit of 256 rows, so 832 rows are 3 units and a tail of 64 rows
 CREATE TABLE ap (id int, grp text, cat int, d date, amt numeric(10,2), qty int, big bigint, huge numeric(18, 0), f float8, ts timestamp, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
+CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
 	(1, 'key text',          'SELECT grp, count(*) FROM %s GROUP BY grp'),
 	(2, 'key int',           'SELECT cat, count(*), sum(amt) FROM %s GROUP BY cat'),
@@ -108,8 +107,6 @@ INSERT INTO pa_q VALUES
 	(24, 'nan: other sum',   'SELECT grp, sum(qty) FROM %s GROUP BY grp'),
 	(25, 'nan: whole',       'SELECT count(*), sum(qty), min(qty), count(amt) FROM %s'),
 	(26, 'nan: whole sum',   'SELECT sum(amt) FROM %s');
--- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
-UPDATE pa_q SET w = true WHERE n IN (1, 2, 3, 6, 7, 9, 12, 17, 19, 20);
 INSERT INTO ap
 SELECT g, CASE WHEN g % 17 = 0 THEN NULL ELSE 'g' || lpad((g % 30)::text, 2, '0') END, CASE WHEN g % 23 = 0 THEN NULL ELSE g % 10 END,
        date '2024-01-01' + g / 4, CASE WHEN g % 31 = 0 THEN NULL ELSE ((g::bigint * 37) % 100000)::numeric / 100 END, g % 7,
@@ -173,7 +170,7 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ac', w_only => true);
+SELECT * FROM pa_sum('ac');
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
@@ -237,7 +234,7 @@ SET cpu_tuple_cost = 0.5;
 -- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE ec (id int, kind int, big bigint, grp text, val int, small int, amt numeric(12, 2), pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
+CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
 	(1, 'eq, count',          'SELECT count(*) FROM %s WHERE kind = 3'),
 	(2, 'eq, sums',           'SELECT count(*), sum(val), avg(val), count(val), sum(amt), avg(amt), count(amt) FROM %s WHERE kind = 3'),
@@ -304,8 +301,6 @@ INSERT INTO pa_q VALUES
 	(131, 'min, max: scan',    'SELECT min(val) FILTER (WHERE kind = 3), max(val) FILTER (WHERE kind = 3) FROM %s'),
 	(132, 'distinct: scan',    'SELECT count(DISTINCT val) FILTER (WHERE kind = 3) FROM %s'),
 	(133, 'where on another dim: scan', 'SELECT count(*) FILTER (WHERE kind = 3) FROM %s WHERE big = 0');
--- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
-UPDATE pa_q SET w = true WHERE n IN (2, 3, 4, 6, 11, 14, 16, 19, 25, 28, 29, 31, 103, 104, 106, 112, 115, 117, 120, 123, 128, 132);
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
 -- the same, summed up for a table whose answers need not be listed
 -- kind: 0 to 6 (a ninth of the rows NULL, -2 for one row) in every unit, so no zone lies inside a comparison with it; big: a few int8 values with the
@@ -380,7 +375,7 @@ SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec', w_only => true);
+SELECT * FROM pa_sum('ec');
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
@@ -413,7 +408,7 @@ SET cpu_tuple_cost = 0.5;
 -- units answered from the pre-aggregates follow the layout: every build is serial except the one of step 6
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE ec (id int, kind int, grp text, val bigint, small bigint, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
+CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
 	(1, 'whole',               'SELECT sum(val), avg(val), count(val), count(*) FROM %s'),
 	(2, 'whole, small values', 'SELECT sum(small), avg(small) FROM %s'),
@@ -434,8 +429,6 @@ INSERT INTO pa_q VALUES
 	(17, 'DISTINCT, expr: scan', 'SELECT sum(DISTINCT val), avg(DISTINCT val), sum(val + 1), avg(val * 2) FROM %s'),
 	(18, 'having, limit',      'SELECT kind, sum(val) FROM %s GROUP BY kind HAVING sum(val) > 0 ORDER BY 2 DESC, 1 LIMIT 3'),
 	(19, 'int4 beside int8',   'SELECT kind, sum(kind), avg(kind), sum(val) FROM %s GROUP BY kind');
--- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
-UPDATE pa_q SET w = true WHERE n IN (1, 3, 4, 5, 6, 9, 16, 17);
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
 -- the same, summed up for a table whose answers need not be listed
 -- kind 0: near 2^62 (two rows pass 2^63), kind 1: near -2^62, kind 2: the extremes of int8 with both signs, kind 3: only NULLs,
@@ -514,7 +507,7 @@ SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec', w_only => true);
+SELECT * FROM pa_sum('ec');
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
@@ -545,7 +538,7 @@ SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 CREATE TABLE ec (id int, kind int, grp text, flag int, amt numeric(12, 2), score float8, n2 int2, n4 int4, n8 bigint, cnt int4, extra int4, pad text STORAGE PLAIN) WITH (autovacuum_enabled = off);
-CREATE TABLE pa_q (n int, shape text, q text, w bool DEFAULT false);
+CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
 	(1, 'sum int2',           'SELECT kind, sum(n2) FROM %s GROUP BY kind'),
 	(2, 'sum, avg int4',      'SELECT kind, sum(n4), avg(n4), count(n4) FROM %s GROUP BY kind'),
@@ -565,8 +558,6 @@ INSERT INTO pa_q VALUES
 	(16, 'a measure past the eighth: scan', 'SELECT kind, sum(extra) FROM %s GROUP BY kind'),
 	(17, 'min, max: scan',    'SELECT kind, min(n4), max(n8) FROM %s GROUP BY kind'),
 	(18, 'expression: scan',  'SELECT kind, sum(n4 + n2) FROM %s GROUP BY kind');
--- w: the queries of the pass through the workers of the scan, one or more of each shape of aggregate state (every query of a pass starts workers)
-UPDATE pa_q SET w = true WHERE n IN (2, 4, 6, 8, 9, 10, 13, 16, 18);
 -- one row per query: whether the three ways agree, and how much the first answered from metadata
 -- the same, summed up for a table whose answers need not be listed
 -- kind: 0 to 6 (a ninth of the rows NULL) in every unit; flag: 0 or 1; n2, n4, n8, cnt: NULLs among the values, n8 up to the int8 extremes
@@ -644,7 +635,7 @@ SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT * FROM pa_sum('ec', w_only => true);
+SELECT * FROM pa_sum('ec');
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
@@ -662,7 +653,7 @@ DROP SCHEMA m5 CASCADE;
 -- <<< measures
 
 DROP PROCEDURE pa_settle();
-DROP FUNCTION pa_check(text, int, int, bool), pa_sum(text, int, int, bool), pa_rows(text), pa_plain(text), pa_exec(text);
+DROP FUNCTION pa_check(text, int, int), pa_sum(text, int, int), pa_rows(text), pa_plain(text), pa_exec(text);
 DROP FUNCTION mig_same(text), mig_run(text, bool);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
