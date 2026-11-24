@@ -258,7 +258,7 @@ typedef struct ScanBytes
 	const SiftCardStatsView *view;
 	double		table_rows;
 	double		granules;
-	double		pages;			/* of the index */
+	double		pages;			/* of the index, or of the table a sift_table scan reads */
 	double		f_prune;
 	double		surv;
 	double		filter_row;		/* bytes of a row of the columns of the quals, decoded on the rows of the granules the zones leave */
@@ -275,7 +275,7 @@ scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, ScanBytes
 	b->table_rows = b->view != NULL ? (double) Max(b->view->total_live_rows, 1) : Max(rel->tuples, 1.0);
 	b->granules = b->view != NULL ? (double) Max(b->view->total_granules, 1) : Max(1.0, ceil(b->table_rows / SIFT_GRANULE_ROWS));
 	b->io_col_row = b->view != NULL ? Min((double) b->view->total_bytes / (Max(ix->ncolumns, 1) * b->table_rows), SIFT_WORD_BYTES) : SIFT_WORD_BYTES;
-	b->pages = Max((double) ix->pages, 1.0);
+	b->pages = Max((double) (ix != NULL ? ix->pages : rel->pages), 1.0);
 	b->surv = Min(Max(rel->rows, 1.0), b->table_rows);
 	b->f_prune = f_prune(root, rel, ix, b->view, b->granules);
 }
