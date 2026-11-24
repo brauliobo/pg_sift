@@ -751,19 +751,33 @@ compile_topk(ScopePlan *p, const PathTarget *target)
 	return ok;
 }
 
+/* The cheapest sorted plan of the statement that is no plan of ours, out of the list of the ordered relation: add_path frees a path it rejects or drops from the list, and a path out of the list is no one's to free */
+static Path *
+take_sorted_join(RelOptInfo *out)
+{
+	Path	   *best = NULL;
+
+	foreach_ptr(Path, p, out->pathlist)
+		if (!IsA(p, CustomPath) && (best == NULL || p->total_cost < best->total_cost))
+			best = p;
+	if (best != NULL)
+		out->pathlist = list_delete_ptr(out->pathlist, best);
+	return best;
+}
+
 /*
  * The newest rows of a scope key (ORDER BY ring leaf DESC LIMIT n over the facts joined to the pairs of the key) are the ring of the key in the summary (col/scope_v6/topk.c); the join, sorted, is the
- * child of the node, for a snapshot the summary does not count exactly. The child is made from the cheapest path of the join, which is no path of the ordered relation: add_path frees a path it rejects there.
+ * child of the node, for a snapshot the summary does not count exactly. The child is a sorted path of the ordered relation, which create_ordered_paths filled from the paths of the join: the input
+ * relation lists paths that add_path freed there.
  */
 void
 sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out)
 {
 	PathTarget *target = root->upper_targets[UPPERREL_ORDERED];
-	const Path *join = input_rel->cheapest_total_path;
 	int			a,
 				b;
 
-	if (!topk_shape_ok(root, input_rel) || target == NULL || join == NULL || !equal(join->pathtarget->exprs, target->exprs))
+	if (!topk_shape_ok(root, input_rel) || target == NULL)
 		return;
 	a = bms_next_member(input_rel->relids, -1);
 	b = bms_next_member(input_rel->relids, a);
@@ -776,9 +790,10 @@ sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInf
 		foreach_ptr(IndexOptInfo, ix, p.fact->indexlist)
 		{
 			CustomPath *cp;
+			Path	   *join;
 
 			p.index = ix;
-			if (!index_usable(ix) || !compile_topk(&p, target))
+			if (!index_usable(ix) || !compile_topk(&p, target) || (join = take_sorted_join(out)) == NULL)
 				continue;
 			cp = makeNode(CustomPath);
 			cp->path.pathtype = T_CustomScan;
@@ -789,9 +804,11 @@ sift_agg_v6_scope_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInf
 			cp->path.total_cost = 2 * random_page_cost + cpu_tuple_cost * root->limit_tuples;
 			cp->path.pathkeys = root->sort_pathkeys;
 			cp->methods = &scope_path_methods;
-			cp->custom_paths = list_make1(create_sort_path(root, out, input_rel->cheapest_total_path, root->sort_pathkeys, root->limit_tuples));
+			cp->custom_paths = list_make1(join);
 			cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p.spec), p.v6_tlist, NIL, scope_exprs(&p), sift_v6_spec_pack(&p.v6));
 			add_path(out, &cp->path);
+			if (!list_member_ptr(out->pathlist, cp))
+				add_path(out, join);
 			return;
 		}
 	}
