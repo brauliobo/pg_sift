@@ -31,6 +31,7 @@ INSERT INTO mv_q VALUES
  ('left_join_orphans_min_max_sum', 'SELECT c.g, min(p.i4), max(p.f8), sum(p.i4), sum(p.nn), count(p.i4), count(*) FROM mv_child c LEFT JOIN mv_parent p ON p.id = c.parent_id GROUP BY c.g'),
  ('left_join_filtered_children', 'SELECT c.g, min(p.d), sum(p.i2), max(p.i8), avg(p.i4) FROM mv_child c LEFT JOIN mv_parent p ON p.id = c.parent_id WHERE c.at >= timestamp ''2024-06-01'' AND c.id % 3 = 0 GROUP BY c.g'),
  ('group_by_parent_column_min_max', 'SELECT p.grp, min(p.i4), max(p.f8), sum(p.i2), count(*) FROM mv_child c JOIN mv_parent p ON p.id = c.parent_id GROUP BY p.grp'),
+ ('string_agg_ordered_by_another_type', 'SELECT c.g, string_agg(p.i4::text, '','' ORDER BY p.nn) FROM mv_child c JOIN mv_parent p ON p.id = c.parent_id WHERE c.id % 50 = 0 GROUP BY c.g'),
  ('no_child_kept_min_max_sum', 'SELECT min(p.i4), max(p.f8), sum(p.i2), avg(p.f8) FROM mv_child c JOIN mv_parent p ON p.id = c.parent_id WHERE c.g > 100');
 
 CREATE FUNCTION mv_answer(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$

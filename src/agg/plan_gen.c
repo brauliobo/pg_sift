@@ -194,6 +194,16 @@ same_joined_arg(AggCtx *c, List *args, const SiftAggGen *g, const TargetEntry *t
 	return -1;
 }
 
+/* the mapped arguments of a call share the aggregate's one table of values, which holds the byte images of one type */
+static bool
+mapped_type_differs(const SiftAggGen *g, Oid typid)
+{
+	for (int k = 0; k < g->nargs; k++)
+		if (g->arg[k].mapped && g->arg[k].typid != typid)
+			return true;
+	return false;
+}
+
 static const SiftSrcLeaf *
 plan_leaf_of(void *c, int id)
 {
@@ -425,7 +435,8 @@ compile_gen(AggCtx *c, Aggref *a, SiftAggAgg *out, int ai)
 			g->arg[g->nargs] = g->arg[same];
 			k = 0;
 		}
-		else if (!compile_gen_arg(c, (Node *) te->expr, &g->arg[g->nargs], &k, &mapped, ai))
+		else if (!compile_gen_arg(c, (Node *) te->expr, &g->arg[g->nargs], &k, &mapped, ai) ||
+				 (g->arg[g->nargs].mapped && mapped_type_differs(g, g->arg[g->nargs].typid)))
 			return false;
 		cost += k;
 		if (!te->resjunk)
