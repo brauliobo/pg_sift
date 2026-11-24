@@ -68,13 +68,17 @@ yao_share(double sel)
 	return sel >= 1.0 ? 1.0 : -expm1(SIFT_GRANULE_ROWS * log1p(-sel));
 }
 
-/* |correlation| of the column of a Var with the order of the rows of the table, from its statistics; 0 without them */
+/* |correlation| of the column of a Var with the order of the rows of the table, from its statistics; 0 without them. The first key column of a sorted store is the order itself, whatever
+ * the sample of the statistics says of the heap order */
 static double
-var_correlation(PlannerInfo *root, Node *var)
+var_correlation(PlannerInfo *root, Node *var, AttrNumber lead_att)
 {
 	VariableStatData vd;
 	AttStatsSlot slot;
 	double		corr = 0;
+
+	if (lead_att > 0 && IsA(var, Var) && ((Var *) var)->varattno == lead_att)
+		return 1.0;
 
 	examine_variable(root, var, 0, &vd);
 	if (HeapTupleIsValid(vd.statsTuple) && get_attstatsslot(&slot, vd.statsTuple, STATISTIC_KIND_CORRELATION, InvalidOid, ATTSTATSSLOT_NUMBERS))
@@ -115,11 +119,11 @@ point_cover(const IndexOptInfo *ix, const RestrictInfo *ri, const List *vars)
 /* the share of the granules a clause leaves: a column that follows the order of the rows keeps the share of the rows, from |correlation| 0.7 up to Yao's at 0.7 and below (v6_card_cost.h); a point
  * directory of the column lists the rows of its units alone */
 static double
-clause_share(PlannerInfo *root, RestrictInfo *ri, const IndexOptInfo *ix, double *cover_out)
+clause_share(PlannerInfo *root, RestrictInfo *ri, const IndexOptInfo *ix, AttrNumber lead_att, double *cover_out)
 {
 	const double sel = clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
 	List	   *vars = pull_var_clause((Node *) ri->clause, 0);
-	const double corr = list_length(vars) == 1 ? var_correlation(root, linitial(vars)) : 0;
+	const double corr = list_length(vars) == 1 ? var_correlation(root, linitial(vars), lead_att) : 0;
 	const double alpha = Min(Max((corr - SIFT_CORR_CLUSTERED) / (1.0 - SIFT_CORR_CLUSTERED), 0.0), 1.0);
 	const double share = alpha * sel + (1.0 - alpha) * yao_share(sel);
 	const double cover = point_cover(ix, ri, vars);
@@ -130,22 +134,22 @@ clause_share(PlannerInfo *root, RestrictInfo *ri, const IndexOptInfo *ix, double
 
 /* the share of the granules the clauses leave, and in *cover how much of it a point directory reads by rows: the scan reads no whole granule then */
 static double
-clauses_prune(PlannerInfo *root, const List *clauses, const IndexOptInfo *ix, double *cover)
+clauses_prune(PlannerInfo *root, const List *clauses, const IndexOptInfo *ix, AttrNumber lead_att, double *cover)
 {
 	double		share = 1.0;
 
 	*cover = 0.0;
 	foreach_node(RestrictInfo, ri, (List *) clauses)
-		share *= clause_share(root, ri, ix, cover);
+		share *= clause_share(root, ri, ix, lead_att, cover);
 	return share;
 }
 
 double
-sift_v6_clause_prune(PlannerInfo *root, const List *clauses)
+sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att)
 {
 	double		cover;
 
-	return clauses_prune(root, clauses, NULL, &cover);
+	return clauses_prune(root, clauses, NULL, lead_att, &cover);
 }
 
 /* the share of the granules of the index the quals leave: what the zones of its sampled granules say of the quals the estimator describes, Yao's for the others */
@@ -155,7 +159,7 @@ f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCa
 	List	   *rest;
 	double		zones = sift_v6_card_prune(root, rel, ix, view, &rest);
 	double		cover;
-	double		share = (zones < 0 ? 1.0 : zones) * clauses_prune(root, rest, ix, &cover);
+	double		share = (zones < 0 ? 1.0 : zones) * clauses_prune(root, rest, ix, 0, &cover);
 
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 		if (!list_member_ptr(rest, ri))

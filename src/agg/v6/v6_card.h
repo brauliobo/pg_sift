@@ -66,6 +66,6 @@ extern void sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOp
 extern Cost sift_v6_dim_cost(const RelOptInfo *rel);
 
 /* The share of the granules the clauses leave of a relation that has no statistics of its own: a column that follows the order of the rows keeps the share of the rows, any other (Yao) nearly all */
-extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses);
+extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att);
 
 #endif							/* SIFT_AGG_V6_CARD_H */
