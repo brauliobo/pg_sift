@@ -14,6 +14,7 @@
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 . "$(dirname "$0")/lib_upgrade.bash"
+ROWS=20000
 
 NEWCFG=$(command -v pg_config)
 OLDBIN=${SIFT_PG_OLD_BIN:-}
@@ -58,7 +59,8 @@ PATH=$NEWB:$PATH
 initdb_node old 30 "$OLDB"
 initdb_node new 31 "$NEWB"
 NODES+=(new)
-node_conf new "$("$REPO/scripts/pgtest.sh" conf)"
+node_conf new "$("$REPO/scripts/pgtest.sh" conf)
+sift.maintenance_naptime = 200"
 LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not start"; }
 
 
@@ -70,10 +72,10 @@ CREATE TABLE ta (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL
 CREATE TABLE tb (LIKE ta INCLUDING ALL) WITH (autovacuum_enabled = false, fillfactor = 100);
 CREATE TABLE tc (LIKE ta INCLUDING ALL) WITH (autovacuum_enabled = false, fillfactor = 100);
 CREATE TABLE td (LIKE ta INCLUDING ALL) WITH (autovacuum_enabled = false, fillfactor = 100);
-INSERT INTO ta SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i;
-INSERT INTO tb SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i;
-INSERT INTO tc SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i;
-INSERT INTO td SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i;
+INSERT INTO ta SELECT 'c' || i, i % 10, i FROM generate_series(1, $ROWS) i;
+INSERT INTO tb SELECT 'c' || i, i % 10, i FROM generate_series(1, $ROWS) i;
+INSERT INTO tc SELECT 'c' || i, i % 10, i FROM generate_series(1, $ROWS) i;
+INSERT INTO td SELECT 'c' || i, i % 10, i FROM generate_series(1, $ROWS) i;
 CREATE INDEX ta_c ON ta USING sift_col (code, tenant, amount);
 CREATE INDEX tb_c ON tb USING sift_col (code, tenant, amount);
 CREATE INDEX tc_c ON tc USING sift_col (code, tenant, amount) WITH (write_buffer_limit = 64);
@@ -88,9 +90,9 @@ qs old postgres <<<"$SETUP" >/dev/null || bail "the old cluster cannot be set up
 "$OLDB/pg_ctl" -D "$(dir old)/data" -m fast -w stop >/dev/null 2>&1
 LD_PRELOAD=${SIFT_PRELOAD:-} "$OLDB/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 120 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not restart"; }
 # a new session each: the UPDATE is its first statement (the attach of the shared tables inside it); a function that runs SQL inside the UPDATE; a table written many times
-q old postgres "BEGIN" "UPDATE ta SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" "UPDATE ta SET amount = amount + 5 WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i)" "COMMIT" >/dev/null
-q old postgres "BEGIN" "UPDATE tb SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" "UPDATE tb SET amount = amount + 5 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 5) i)" "COMMIT" >/dev/null
-q old postgres "BEGIN" "UPDATE tc SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, 20000, 7) i)" "COMMIT" >/dev/null
+q old postgres "BEGIN" "UPDATE ta SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series(7, $ROWS, 7) i)" "UPDATE ta SET amount = amount + 5 WHERE code IN (SELECT 'c' || i FROM generate_series(5, $ROWS, 5) i)" "COMMIT" >/dev/null
+q old postgres "BEGIN" "UPDATE tb SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, $ROWS, 7) i)" "UPDATE tb SET amount = amount + 5 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(5, $ROWS, 5) i)" "COMMIT" >/dev/null
+q old postgres "BEGIN" "UPDATE tc SET amount = amount + 1 + one() WHERE code IN (SELECT 'c' || i FROM generate_series(7, $ROWS, 7) i)" "COMMIT" >/dev/null
 q old postgres "INSERT INTO td SELECT 'n' || i, i % 10, i FROM generate_series(1, 3000) i" >/dev/null
 # QS TABLE: the grouped answer
 QS() { echo "SELECT string_agg(tenant || ':' || n || ':' || s, ' ' ORDER BY tenant) FROM (SELECT tenant, count(*) n, sum(amount) s FROM $1 GROUP BY tenant) q"; }
@@ -131,13 +133,13 @@ check "... the triggers are the same two, enabled for all sessions" test "$(tg t
 
 # the other flows, on a table of the upgraded cluster
 q new postgres "CREATE TABLE t (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad text NOT NULL DEFAULT repeat('x', 80)) WITH (autovacuum_enabled = false, fillfactor = 100)" \
-	"INSERT INTO t SELECT 'c' || i, i % 10, i FROM generate_series(1, 20000) i" "CREATE INDEX t_c ON t USING sift_col (code, tenant, amount)" "VACUUM (FREEZE, ANALYZE) t" >/dev/null || bail "the table t cannot be made"
-churn() { q new postgres "UPDATE t SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series($1, 20000, 7) i)" "DELETE FROM t WHERE code IN (SELECT 'c' || i FROM generate_series($2, 20000, 11) i)" >/dev/null; }
+	"INSERT INTO t SELECT 'c' || i, i % 10, i FROM generate_series(1, $ROWS) i" "CREATE INDEX t_c ON t USING sift_col (code, tenant, amount)" "VACUUM (FREEZE, ANALYZE) t" >/dev/null || bail "the table t cannot be made"
+churn() { q new postgres "UPDATE t SET amount = amount + 1 WHERE code IN (SELECT 'c' || i FROM generate_series($1, $ROWS, 7) i)" "DELETE FROM t WHERE code IN (SELECT 'c' || i FROM generate_series($2, $ROWS, 11) i)" >/dev/null; }
 # triggers disabled: the writes are heard by no one; the user's decision stays, and the reads check the heap
 q new postgres "ALTER TABLE t DISABLE TRIGGER ALL" >/dev/null
 churn 7 5
 q new postgres "SET sift.enable_agg = on" "$(QS t)" >/dev/null
-sleep 4
+sleep 1
 is() { [[ $(tg "$1") == "$2" && $(state "$3") == "$4" ]] && differential "$1"; }
 check "triggers disabled by the user, writes meanwhile: the triggers stay disabled, the log is not re-baselined, the reads answer as the heap" is t D,D t_c "3 false"
 # enabled again (for the origin only): the worker enables them for all and re-baselines
@@ -162,8 +164,8 @@ q new postgres "SET sift.enable_agg = on" "$(QS t)" >/dev/null
 check "a read asks the worker: the triggers are enabled for all, the log is re-baselined, the answers are the heap's" wait_for 'is t A,A t_c "3 true"' 600
 # a table that was a partition (its triggers were made on its parent too, and went with the DETACH: the log was complete all along)
 q new postgres "CREATE TABLE pp (code text, tenant int NOT NULL, amount int NOT NULL, pad text) PARTITION BY RANGE (tenant)" "CREATE TABLE pp1 (code text PRIMARY KEY, tenant int NOT NULL, amount int NOT NULL, pad text)" \
-	"INSERT INTO pp1 SELECT 'c' || i, 1, i, repeat('x', 80) FROM generate_series(1, 20000) i" "CREATE INDEX pp1_c ON pp1 USING sift_col (code, tenant, amount)" "VACUUM (FREEZE, ANALYZE) pp1" \
-	"ALTER TABLE pp ATTACH PARTITION pp1 FOR VALUES FROM (0) TO (5)" "DELETE FROM pp WHERE code IN (SELECT 'c' || i FROM generate_series(5, 20000, 9) i)" "ALTER TABLE pp DETACH PARTITION pp1" >/dev/null
+	"INSERT INTO pp1 SELECT 'c' || i, 1, i, repeat('x', 80) FROM generate_series(1, $ROWS) i" "CREATE INDEX pp1_c ON pp1 USING sift_col (code, tenant, amount)" "VACUUM (FREEZE, ANALYZE) pp1" \
+	"ALTER TABLE pp ATTACH PARTITION pp1 FOR VALUES FROM (0) TO (5)" "DELETE FROM pp WHERE code IN (SELECT 'c' || i FROM generate_series(5, $ROWS, 9) i)" "ALTER TABLE pp DETACH PARTITION pp1" >/dev/null
 check "a table that was a partition has a complete log (flags 3), heap-free, and the reads answer as the heap" is pp1 A,A pp1_c "3 true"
 q new postgres "VACUUM pp1" >/dev/null
 check "the next VACUUM leaves it complete, and the answers are the heap's" is pp1 A,A pp1_c "3 true"

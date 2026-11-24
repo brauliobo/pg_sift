@@ -72,20 +72,28 @@ check "after REINDEX the read is the oracle's again" sound p
 
 # two sessions that change one row: the second waits for the first and works on the version it wrote
 for i in 1 2 3 4; do
-	(psql -X -At -q -h "$D/sock" -p "$(port p)" -U postgres -d postgres -c "BEGIN" -c "UPDATE events SET counter_a = counter_a + 100 WHERE id BETWEEN $((i * 100)) AND $((i * 100 + 20))" -c "SELECT pg_sleep(1.5)" -c "COMMIT" >/dev/null 2>&1 &)
-	sleep 0.4
+	rm -f "$D/held" "$D/go"
+	{ echo "BEGIN;"; echo "UPDATE events SET counter_a = counter_a + 100 WHERE id BETWEEN $((i * 100)) AND $((i * 100 + 20));"; echo "\\! touch '$D/held'"
+	  echo "\\! while [ ! -e '$D/go' ]; do sleep 0.02; done"; echo "COMMIT;"; } | psql -X -At -q -h "$D/sock" -p "$(port p)" -U postgres -d postgres >/dev/null 2>&1 &
+	holder=$!
+	wait_for "[[ -e '$D/held' ]]" 30
 	if (( i % 2 )); then
-		sql p "UPDATE events SET counter_a = counter_a + 1, label = 'q' WHERE id BETWEEN $((i * 100)) AND $((i * 100 + 20))" >/dev/null
+		sql p "UPDATE events SET counter_a = counter_a + 1, label = 'q' WHERE id BETWEEN $((i * 100)) AND $((i * 100 + 20))" >/dev/null &
 	else
-		sql p "DELETE FROM events WHERE id BETWEEN $((i * 100)) AND $((i * 100 + 20))" >/dev/null
+		sql p "DELETE FROM events WHERE id BETWEEN $((i * 100)) AND $((i * 100 + 20))" >/dev/null &
 	fi
+	waiter=$!
+	wait_for "[[ \$(sql p \"SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'\") -ge 1 ]]" 30
+	touch "$D/go"
+	wait "$holder" "$waiter"
 done
 check "a session that waited for another's update and then updated or deleted that version: the read is the oracle's" sound p
 
 # a crash with a transaction in flight, the WAL replayed
 (psql -X -At -q -h "$D/sock" -p "$(port p)" -U postgres -d postgres -c "BEGIN" -c "UPDATE events SET counter_a = counter_a + 7 WHERE id % 5 = 0" -c "DELETE FROM events WHERE id % 13 = 0" -c "SELECT pg_sleep(60)" >/dev/null 2>&1 &)
 wait_for "running p '%pg_sleep(60)%'" 30
-sql p "UPDATE events SET counter_a = counter_a + 3 WHERE id % 9 = 0" "DELETE FROM events WHERE id % 17 = 0" "UPDATE events SET label = 'z' WHERE id % 19 = 0" >/dev/null
+free="id % 5 <> 0 AND id % 13 <> 0"
+sql p "UPDATE events SET counter_a = counter_a + 3 WHERE id % 9 = 0 AND $free" "DELETE FROM events WHERE id % 17 = 0 AND $free" "UPDATE events SET label = 'z' WHERE id % 19 = 0 AND $free" >/dev/null
 before=$(ans p oracle)
 crash p
 node_start p || bail "restart after the crash failed"
