@@ -112,14 +112,8 @@ sift_int_key(Oid typid, Datum d)
 	}
 }
 
-#ifdef SIFT_TESTING
-extern int64 sift_prepass_nodes;	/* the nodes the passes visited; sift._test_prepass_nodes */
-#define SIFT_SKIP_CONST_LIST(n, ret) \
-	do { sift_prepass_nodes++; if (sift_const_list(n)) return ret; } while (0)
-#else
 #define SIFT_SKIP_CONST_LIST(n, ret) \
 	do { if (sift_const_list(n)) return ret; } while (0)
-#endif
 
 /*
  * agg/cost/join.c: does probing the keys of a dependent lookup in a btree of the table cost less than reading its pages (the loader's rule and the price's), and the rows a key has

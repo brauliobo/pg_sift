@@ -20,7 +20,6 @@
  * in store_ops_test.c.
  */
 #include "store_test_int.h"
-#include "agg/agg_int.h"
 #include "core/damage.h"
 #include "executor/instrument.h"
 #include "core/catname.h"
@@ -645,13 +644,13 @@ Datum
 sift_test_segment_reads(PG_FUNCTION_ARGS)
 {
 	TupleDesc	tupdesc;
-	Datum		values[3] = {Int64GetDatum(sift_test_sr_demand), Int64GetDatum(sift_test_sr_ahead), Int64GetDatum(sift_test_warm_calls)};
-	bool		nulls[3] = {0};
+	Datum		values[2] = {Int64GetDatum(sift_test_sr_demand), Int64GetDatum(sift_test_sr_ahead)};
+	bool		nulls[2] = {0};
 
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
 	if (PG_GETARG_BOOL(0))
-		sift_test_sr_demand = sift_test_sr_ahead = sift_test_warm_calls = 0;
+		sift_test_sr_demand = sift_test_sr_ahead = 0;
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }
 

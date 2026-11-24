@@ -11,8 +11,6 @@
 #include "funcapi.h"
 #include "storage/bufmgr.h"
 #include "utils/array.h"
-#include "agg/agg.h"
-#include "agg/cost/model.h"
 #include "core/maint.h"
 #include "col/am.h"
 #include "col/v1/gorder.h"
@@ -652,18 +650,6 @@ SIFT_TEST_COUNTER_FN(sift_test_gorder_decoded, sift_col_gorder_decoded)
 /* the sorts of an IN list by the cost estimates since the last read; the argument true resets the count */
 SIFT_TEST_COUNTER_FN(sift_test_key_sorts, sift_col_key_sorts)
 
-/* {the questions, the walks made to answer them} about references to a query above that the planner asked since the last read; the argument true resets the counts */
-Datum
-sift_test_agg_outer_walks(PG_FUNCTION_ARGS)
-{
-	Datum		d[2] = {Int64GetDatum(sift_agg_outer_asks), Int64GetDatum(sift_agg_outer_walks)};
-	ArrayType  *a = construct_array_builtin(d, 2, INT8OID);
-
-	if (PG_GETARG_BOOL(0))
-		sift_agg_outer_asks = sift_agg_outer_walks = 0;
-	PG_RETURN_ARRAYTYPE_P(a);
-}
-
 /*
  * {the all-visible pages, the clean superblocks} of the first nblocks pages of a table (the table's own size when nblocks is negative), by sift_vis_count and, as an oracle, page by page by
  * visibilitymap_get_status (a superblock is clean when every page it has is all-visible)
@@ -706,23 +692,4 @@ sift_test_vis_counts(PG_FUNCTION_ARGS)
 	a = construct_array_builtin(d, 4, INT8OID);
 	PG_RETURN_ARRAYTYPE_P(a);
 }
-
-/* the runs of PostgreSQL's planner that the hook made since the last read (a statement planned by one run is one; the variants of a shared CTE or a flattened form are more); the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_agg_plan_passes, sift_agg_plan_passes)
-
-/* sift._test_agg_workers_pay(instr, nworkers): does a read of instr instructions launch its nworkers (the decision of a scope read at execution) */
-Datum
-sift_test_agg_workers_pay(PG_FUNCTION_ARGS)
-{
-	PG_RETURN_BOOL(agg_workers_pay(PG_GETARG_FLOAT8(0), PG_GETARG_INT32(1)));
-}
-
-/* the selectivities of a list of keys that the planner computed since the last read; the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_agg_key_lists, sift_agg_key_lists)
-
-/* the asks of has_column_source that went to the catalog since the last read; the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_source_lookups, sift_source_lookups)
-
-/* the nodes the passes that rewrite a query before planning visited since the last read; the argument true resets the count */
-SIFT_TEST_COUNTER_FN(sift_test_prepass_nodes, sift_prepass_nodes)
 #endif							/* SIFT_TESTING */

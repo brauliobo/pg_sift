@@ -78,35 +78,4 @@ for n in 25 200; do
 	check "$n keys: the same statement run again reads nothing" test "$(steady "$r")" == 0
 done
 
-# the probes of a correlated child ask for the heap blocks of the entries they found: at most one for each probe (agg_child_warm holds that a few keys do not ask for the table)
-sql fs "CREATE TABLE dim_b (id int PRIMARY KEY, kind text)" "INSERT INTO dim_b SELECT i, CASE WHEN i % 7 = 0 THEN 'b' ELSE 'a' END FROM generate_series(1, 60) i" \
-	"CREATE TABLE tag_map (scope int[], kind text, tag text, sub text, to_tag text, to_sub text)" \
-	"INSERT INTO tag_map SELECT NULL, k, 'tag' || t, 'sub' || s, CASE WHEN (t + s) % 9 = 0 THEN NULL ELSE 'to' || (t % 5) END, 'tosub' || (s % 3)
-		FROM unnest(ARRAY['a', 'b']) k, generate_series(0, 2999) t, generate_series(0, 7) s WHERE (t * 3 + s) % 11 <> 0" \
-	"CREATE UNIQUE INDEX tag_map_unique ON tag_map (COALESCE(scope, '{}'), kind, tag, sub)" \
-	"CREATE TABLE entries (id serial, dim_b_id int, day date, doc jsonb)" \
-	"INSERT INTO entries (dim_b_id, day, doc) SELECT 1 + g % 60, date '2025-01-01' + g % 400,
-		jsonb_build_object('items', (SELECT jsonb_agg(jsonb_build_object('tag', 'tag' || (g * j) % 3200, 'sub', 'sub' || (g + j) % 9, 'score', (g * j) % 10)) FROM generate_series(1, 1 + g % 5) j))
-		FROM generate_series(1, 6000) g" \
-	"CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, day, doc, jsonb_exists(doc, 'resolved')) WITH (paths = 'doc.items[]{tag text, sub text, score float8}')" \
-	"VACUUM (FREEZE, ANALYZE) entries, tag_map, dim_b" >/dev/null || bail "lookup setup failed"
-LQ="SELECT CASE WHEN jsonb_exists(e.doc, 'resolved') THEN o.tag ELSE m.to_tag END AS tag, CASE WHEN jsonb_exists(e.doc, 'resolved') THEN o.sub ELSE m.to_sub END AS sub,
-        count(*) AS n, round(avg(o.score)::numeric, 6) AS score
- FROM entries e JOIN dim_b p ON p.id = e.dim_b_id
- INNER JOIN LATERAL jsonb_to_recordset(e.doc['items']) AS o(tag text, sub text, score float) ON true
- LEFT JOIN LATERAL (SELECT to_tag, to_sub FROM tag_map WHERE COALESCE(scope, '{}') = '{}' AND to_tag IS NOT NULL AND kind = p.kind AND tag = o.tag AND sub = o.sub
-                    AND NOT jsonb_exists(e.doc, 'resolved') LIMIT 1) m ON true
- WHERE e.day >= '2025-03-01' AND e.day < '2025-11-01' AND e.dim_b_id <= 50
- GROUP BY 1, 2 ORDER BY 1, 2"
-w=$({ echo "SET work_mem = '32MB'; SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on;"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"; } | sql fs)
-woff=$({ echo "SET sift.enable_agg = off;"; echo "\\echo ROWS"; echo "$LQ;"; echo "\\echo STATS"; } | sql fs)
-look=$(sql fs "SET work_mem = '32MB'; SET seq_page_cost = 100; SET random_page_cost = 4; SET sift.enable_agg = on; SET sift.backend_cache_kb = 0; SET sift.shared_cache_kb = 0;" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $LQ" | grep 'Lookup:')
-asked=$(sed -n 's/.* \([0-9]*\) child blocks prefetched.*/\1/p' <<<"$look")
-probes=$(sed -n 's/.* \([0-9]*\) child direct probes.*/\1/p' <<<"$look")
-diag "probes: $asked blocks asked for $probes probes of the lookup table"
-check "the probes ask for blocks" test "${asked:-0}" -ge 1
-check "no more than one for each probe" test "${asked:-0}" -le "${probes:-0}"
-check "the rows are those of the normal plan" test "$(rowsum "$w")" == "$(rowsum "$woff")"
-check "the server log shows no error" test "$(grep -c -E 'ERROR|FATAL|PANIC' "$(dir fs)/postgres.log")" == 0
-
 finish

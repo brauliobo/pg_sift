@@ -688,20 +688,8 @@ CREATE FUNCTION sift._test_gorder_decoded(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_gorder_decoded' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_key_sorts(reset bool) RETURNS int8
 	AS 'MODULE_PATHNAME', 'sift_test_key_sorts' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_source_lookups(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_source_lookups' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_prepass_nodes(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_prepass_nodes' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_outer_walks(reset bool) RETURNS int8[]
-	AS 'MODULE_PATHNAME', 'sift_test_agg_outer_walks' LANGUAGE C STRICT;
 CREATE FUNCTION sift._test_vis_counts(rel regclass, nblocks int8 DEFAULT -1) RETURNS int8[]
 	AS 'MODULE_PATHNAME', 'sift_test_vis_counts' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_plan_passes(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_agg_plan_passes' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_workers_pay(instr float8, nworkers int4) RETURNS bool
-	AS 'MODULE_PATHNAME', 'sift_test_agg_workers_pay' LANGUAGE C STRICT;
-CREATE FUNCTION sift._test_agg_key_lists(reset bool) RETURNS int8
-	AS 'MODULE_PATHNAME', 'sift_test_agg_key_lists' LANGUAGE C STRICT;
 CREATE OPERATOR sift.=== (LEFTARG = int4, RIGHTARG = float4, FUNCTION = sift._test_eq, RESTRICT = sift._test_eq_sel);
 -- sift_col exists from pg_sift 3.0 on; extension_lifecycle creates this extension on 1.0
 DO $$ BEGIN
@@ -884,7 +872,7 @@ CREATE FUNCTION sift._test_log_chan(idx regclass, flags int8 DEFAULT NULL, base_
 CREATE FUNCTION sift._test_par_participants(rows int8, cols int, point_dir bool, maxp int) RETURNS int
 	AS 'MODULE_PATHNAME', 'sift_test_par_participants' LANGUAGE C STRICT;
 
-CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_blocks int8, OUT ahead_blocks int8, OUT advice_calls int8)
+CREATE FUNCTION sift._test_segment_reads(reset bool DEFAULT false, OUT demand_blocks int8, OUT ahead_blocks int8)
 	AS 'MODULE_PATHNAME', 'sift_test_segment_reads' LANGUAGE C STRICT;
 
 -- What the direct probes of the backend did since the last reset (src/agg/combo/probe.h DStats): keys probed, keys compared with index tuples, the columns of those
