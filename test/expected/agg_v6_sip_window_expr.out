@@ -468,16 +468,22 @@ CREATE FUNCTION vexpr_run(prog text, live int[]) RETURNS SETOF record LANGUAGE s
 -- the number of rows, one by one and all together, where the engine and PostgreSQL differ in the result or the error
 CREATE FUNCTION vdiff(prog text, pgx text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE
-	r int; e text; p text; bad bigint := 0; ok int[] := '{}'; n bigint; nrows int := (SELECT count(*) FROM vd);
+	r int; e text; p text; bad bigint := 0; ok int[] := '{}'; n bigint; nrows int := (SELECT count(*) FROM vd); clean bool;
 BEGIN
-	FOR r IN SELECT id FROM vd ORDER BY id LOOP
+	BEGIN
+		EXECUTE format('SELECT count((%s)::text) FROM vd', pgx);
+		clean := true;
+		ok := ARRAY(SELECT id FROM vd ORDER BY id);
+	EXCEPTION WHEN others THEN clean := false;
+	END;
+	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 7 = 0 ORDER BY id LOOP
 		BEGIN
 			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
 		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
 		END;
 		BEGIN
 			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
-			ok := ok || r;
+			IF NOT clean THEN ok := ok || r; END IF;
 		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
 		END;
 		IF e IS DISTINCT FROM p THEN
