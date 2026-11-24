@@ -301,6 +301,8 @@ read_rows(Relation rel, SiftF2StoreOpts *o, MemoryContext cx)
 		char	   *value = TextDatumGetCString(heap_getattr(tup, 3, RelationGetDescr(cfg), &isnull));
 
 		store_value(o, cx, name, value);
+		if (strcmp(name, "key_order") == 0)
+			o->key_order_xid = HeapTupleHeaderGetXmin(tup->t_data);
 	}
 	systable_endscan(scan);
 	list_free(indexes);
@@ -313,6 +315,7 @@ sift_tbl_f2_load_options(Relation rel, SiftF2Store *store, MemoryContext cx)
 	SiftF2StoreOpts *o = &store->opts;
 
 	o->key_order = o->paths = o->compression = o->scope = o->connect = o->preagg = o->sketches = o->skip_index = MemoryContextStrdup(cx, "");
+	o->key_order_xid = InvalidTransactionId;
 	o->auto_maint = true;
 	o->vacuum_truncate = true;
 	o->track_changes = true;

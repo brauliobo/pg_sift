@@ -136,6 +136,19 @@ SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount D
 SELECT plan_has('SELECT f.id, f.grp FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''l5''', 'Custom Scan (SiftAggV6Sip)') AS sip_served_after_updates_and_deletes;
 SELECT parity('SELECT f.id, f.grp, d.label FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''l5''') AS sip_after_updates_and_deletes;
 
+-- rows written before the table was given its key_order are not in that order, so no group is streamed over them
+CREATE TABLE ou (id int, grp int, v int) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE ouh (LIKE ou);
+INSERT INTO ou SELECT g, g % 9, g FROM generate_series(1, 6000) g;
+INSERT INTO ouh SELECT * FROM ou;
+SELECT sift.table_set_option('ou', 'key_order', 'grp, id');
+SELECT same_ordered('SELECT grp, count(*), sum(v) FROM ou GROUP BY grp ORDER BY grp', 'SELECT grp, count(*), sum(v) FROM ouh GROUP BY grp ORDER BY grp') AS group_after_key_order_set;
+SELECT NOT plan_has('SELECT grp, count(*) FROM ou GROUP BY grp ORDER BY grp', 'SiftAggV6Stream') AS no_stream_over_older_parts;
+INSERT INTO ou SELECT g, g % 9, g FROM generate_series(6001, 7000) g;
+INSERT INTO ouh SELECT * FROM ou WHERE id > 6000;
+SELECT same_ordered('SELECT grp, count(*), sum(v) FROM ou GROUP BY grp ORDER BY grp', 'SELECT grp, count(*), sum(v) FROM ouh GROUP BY grp ORDER BY grp') AS group_with_newer_parts;
+DROP TABLE ou, ouh;
+
 DROP TABLE ot, oh, od, odh, os, osh;
 DROP FUNCTION parity(text), parity_ordered(text), same_rows(text, text), same_ordered(text, text), on_table(text, boolean), plan_has(text, text);
 DROP EXTENSION pg_sift;

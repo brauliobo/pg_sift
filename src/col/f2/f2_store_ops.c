@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/transam.h"
 #include "access/relation.h"
 #include "catalog/pg_class_d.h"
 #include "utils/lsyscache.h"
@@ -83,13 +84,33 @@ sift_f2_ops_leaf_holds(Oid relid, bool is_table, int att, int cls)
 	}
 }
 
+/* every part of a sift_table was written by a transaction that did not come before the one that gave the table its key_order: a part older than the option keeps the order it was written in (a frozen part has no
+ * transaction to tell it by) */
+static bool
+parts_follow_key_order(Oid relid, TransactionId since)
+{
+	Relation	rel = relation_open(relid, AccessShareLock);
+	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
+	bool		ok = true;
+
+	for (int i = 0; ok && i < plan->npartitions; i++)
+		for (int j = 0; ok && j < plan->partlists[i].nparts; j++)
+		{
+			const TransactionId xid = XidFromFullTransactionId(plan->partlists[i].parts[j].min_xid);
+
+			ok = !TransactionIdIsNormal(xid) || !TransactionIdPrecedes(xid, since);
+		}
+	relation_close(rel, AccessShareLock);
+	return ok;
+}
+
 /* the parts are written sorted by the columns of key_order, so a prefix of them, ascending with the NULLs last, is an order of the rows the merge of the parts keeps */
 bool
 sift_f2_ops_sorted_by(Oid relid, bool is_table, const int *atts, int n)
 {
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);
 
-	if (n > st->nkey)
+	if (n > st->nkey || (is_table && TransactionIdIsValid(st->opts.key_order_xid) && !parts_follow_key_order(relid, st->opts.key_order_xid)))
 		return false;
 	for (int i = 0; i < n; i++)
 		if (scalar_leaf(st, atts[i]) == NULL || st->att_first[atts[i]] != st->key_cols[i] || st->spec.sort_flags[i] != 0)
