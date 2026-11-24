@@ -7,21 +7,18 @@
 
 #include "port/pg_bitutils.h"
 
-#include "agg/v6/par/group.h"
-#include "agg/v6/v6_group_cmp.h"
-#include "core/par/radix.h"
+#include "agg/v6/par/group_key.h"
 #include "core/par/topk.h"
 
 #define NO_ROOM "parallel aggregation: the arena of a thread has no room for a batch"
 #define TAB_FIRST			256
 #define TAB_PART_MAX		16384
-#define ROWS_HALF_SLOT_MAX	(UINT64CONST(1) << 31)
 
 typedef struct SiftTopEnt
 {
 	SiftParGroupRow row;
-	uint8	   *buf;			/* the bytes of its text key, scap of them */
-	uint32		scap;
+	uint8	   *buf[SIFT_PAR_GROUP_MAX_KEYS];	/* the bytes of its texts, scap of them */
+	uint32		scap[SIFT_PAR_GROUP_MAX_KEYS];
 } SiftTopEnt;
 
 typedef struct GroupWorker
@@ -46,12 +43,6 @@ struct SiftParGroup
 	GroupWorker *w;
 };
 
-static inline uint32
-pad8(uint32 len)
-{
-	return len == SIFT_STR_NULL ? 0 : (len + 7) & ~7u;
-}
-
 static bool
 fail_mem(SiftErr *err, const char *msg)
 {
@@ -64,192 +55,6 @@ fail_bug(SiftErr *err, const char *msg)
 {
 	sift_err_fill(err, SIFT_ERR_INVALID_PARAM, 0, 0, msg);
 	return false;
-}
-
-/* ---- the groups of a table ---- */
-
-static void
-slot_row(const SiftCompact *c, const SiftParGroupSpec *sp, const uint64 *s, SiftParGroupRow *r)
-{
-	*r = (SiftParGroupRow) {0};
-	if (!sp->str)
-	{
-		memcpy(r->key, s, sp->kw * sizeof(uint64));
-		if (c->cnt_hi)
-			r->key[1] = (uint32) s[1];
-	}
-	else if (s == c->null_group)
-		r->len = SIFT_STR_NULL;
-	else if (c->strm)
-	{
-		const char *p;
-
-		sstr_slot_str(c, s, &p, &r->len);
-		r->str = (const uint8 *) p;
-	}
-	else
-	{
-		const IStr *is = &c->in.str[s[0]];
-
-		r->str = (const uint8 *) c->in.arena + is->off;
-		r->len = is->len;
-	}
-	r->count = cmp_count(c, s);
-	for (int m = 0; m < sp->nsum; m++)
-		r->sum[m] = s[c->sum0 + m];
-}
-
-static uint64
-row_hash(const SiftCompact *c, const SiftParGroupSpec *sp, const uint64 *k, const uint8 *p, uint32 len)
-{
-	if (!sp->str)
-		return cmp_key_hash(c, k);
-	return len == SIFT_STR_NULL ? 0 : cmp_str_hash((const char *) p, len);
-}
-
-/* The group into the table, added to what it has: a row (count 1) or a partial aggregate. false when the arena has no room */
-static bool
-add_group(SiftCompact *c, const SiftParGroupSpec *sp, const uint64 *k, const uint8 *p, uint32 len, uint32 h32, uint64 count, const uint64 *sum)
-{
-	uint64	   *s;
-
-	if (sp->str && len == SIFT_STR_NULL)
-		s = c->null_group;
-	else
-	{
-		uint64		id;
-
-		if (!cmp_reserve(c, 1, UINT64_MAX))
-			return false;
-		if (!sp->str)
-			s = cmp_find(c, cmp_key_hash(c, k), k);
-		else if (c->strm)
-		{
-			s = sstr_upsert(c, h32, (const char *) p, len);
-			if (s == NULL)
-				return false;
-		}
-		else
-		{
-			id = cmp_intern(c, (const char *) p, len);
-			if (id == CMP_NO_ID)
-				return false;
-			s = cmp_find(c, sift_aggk6_hash1(id), &id);
-		}
-	}
-	cmp_fold(c, s, count, sum);
-	return true;
-}
-
-/* ---- the records: a row is the key words and the arguments (in 1, 2, 4 or 8 words); a text key's row is a word of its h32 and length, the bytes to 8, the arguments. A partial aggregate has the key as a row ---- */
-/* ---- has it, then the count and the sums: the arguments of a row are its sums, and its count 1 ---- */
-
-typedef struct Rec
-{
-	const uint64 *k;
-	const uint8 *p;
-	uint32		len;
-	uint32		h32;
-	uint64		count;
-	const uint64 *sum;
-} Rec;
-
-static uint32
-raw_words(const SiftParGroupSpec *sp)
-{
-	const uint32 n = sp->kw + sp->nsum;
-
-	return n <= 1 ? 1 : cmp_slot_words(n);
-}
-
-/* The bytes of a record: a row (count 1) or a partial aggregate */
-static uint32
-rec_size(const SiftParGroupSpec *sp, bool partial, uint32 len)
-{
-	if (!sp->str)
-		return 8 * (partial ? sp->kw + 1 + sp->nsum : raw_words(sp));
-	return 8 + pad8(len) + 8 * (partial + sp->nsum);
-}
-
-static bool
-put_rec(SiftRadixOut *o, uint32 part, const SiftParGroupSpec *sp, bool partial, const Rec *r)
-{
-	if (!sp->str)
-	{
-		const uint32 words = partial ? sp->kw + 1 + sp->nsum : raw_words(sp);
-		uint64	   *w = sift_radix_reserve(o, part, 8 * words);
-		uint32		i = 0;
-
-		if (w == NULL)
-			return false;
-		for (; i < sp->kw; i++)
-			w[i] = r->k[i];
-		if (partial)
-			w[i++] = r->count;
-		for (uint32 m = 0; m < sp->nsum; m++)
-			w[i++] = r->sum[m];
-		for (; i < words; i++)
-			w[i] = 0;
-	}
-	else
-	{
-		const uint32 body = pad8(r->len);
-		uint8	   *b = sift_radix_reserve(o, part, rec_size(sp, partial, r->len));
-		const uint64 hdr = ((uint64) r->len << 32) | r->h32;
-		uint64	   *t;
-
-		if (b == NULL)
-			return false;
-		memcpy(b, &hdr, 8);
-		if (body > 0)
-		{
-			memcpy(b + 8, r->p, r->len);
-			memset(b + 8 + r->len, 0, body - r->len);
-		}
-		t = (uint64 *) (b + 8 + body);
-		if (partial)
-			*t++ = r->count;
-		memcpy(t, r->sum, sp->nsum * sizeof(uint64));
-	}
-	return true;
-}
-
-/* The record at b, and the bytes it takes */
-static uint32
-parse_rec(const SiftParGroupSpec *sp, bool partial, const uint8 *b, Rec *r)
-{
-	if (!sp->str)
-	{
-		const uint64 *w = (const uint64 *) b;
-
-		r->k = w;
-		r->count = partial ? w[sp->kw] : 1;
-		r->sum = w + sp->kw + partial;
-	}
-	else
-	{
-		uint64		hdr;
-		const uint64 *t;
-
-		memcpy(&hdr, b, 8);
-		r->len = (uint32) (hdr >> 32);
-		r->h32 = (uint32) hdr;
-		r->p = b + 8;
-		t = (const uint64 *) (b + 8 + pad8(r->len));
-		r->count = partial ? t[0] : 1;
-		r->sum = t + partial;
-	}
-	return rec_size(sp, partial, r->len);
-}
-
-/* The record of a row or a group into the partition of its key */
-static bool
-put_group(const SiftCompact *c, const SiftParGroupSpec *sp, SiftRadixOut *o, bool partial, const uint64 *k, const uint8 *p, uint32 len, uint64 count, const uint64 *sum)
-{
-	const uint64 h = row_hash(c, sp, k, p, len);
-	const Rec	r = {.k = k,.p = p,.len = len,.h32 = cmp_h32(h),.count = count,.sum = sum};
-
-	return put_rec(o, sift_radix_part(h), sp, partial, &r);
 }
 
 /* ---- the groups of a table, one by one, to the work of a thread ---- */
@@ -277,13 +82,13 @@ table_each(const Walk *wk, WalkFn fn)
 
 		if (cmp_count(c, s) == 0)
 			continue;
-		slot_row(c, &wk->g->sp, s, &r);
+		pgk_slot_row(c, &wk->g->sp, s, &r);
 		if (!fn(wk, &r))
 			return false;
 	}
-	if (wk->g->sp.str && cmp_count(c, c->null_group) != 0)
+	if (c->strm && cmp_count(c, c->null_group) != 0)
 	{
-		slot_row(c, &wk->g->sp, c->null_group, &r);
+		pgk_slot_row(c, &wk->g->sp, c->null_group, &r);
 		return fn(wk, &r);
 	}
 	return true;
@@ -294,13 +99,13 @@ table_each(const Walk *wk, WalkFn fn)
 static bool
 spill_row(const Walk *wk, const SiftParGroupRow *r)
 {
-	return put_group(wk->from, &wk->g->sp, &wk->g->w[wk->t].pa, true, r->key, r->str, r->len, r->count, r->sum);
+	return pgk_put(wk->from, &wk->g->sp, &wk->g->w[wk->t].pa, true, r);
 }
 
 static bool
 size_row(const Walk *wk, const SiftParGroupRow *r)
 {
-	*wk->bytes += rec_size(&wk->g->sp, true, r->len);
+	*wk->bytes += pgk_rec_size(&wk->g->sp, true, r);
 	return true;
 }
 
@@ -331,25 +136,18 @@ batch_room(SiftParGroup *g, int t, const SiftParGroupBatch *b, SiftErr *err)
 {
 	GroupWorker *w = &g->w[t];
 	const SiftParGroupSpec *sp = &g->sp;
-	uint64		bytes = 0;
-	Size		strbytes = 0;
+	Size		strbytes;
+	const uint64 bytes = pgk_batch_bytes(sp, b, &strbytes);
 
 	if (!w->radix && w->local.count > SIFT_PAR_GROUP_LOW && !spill_local(g, t, err))
 		return false;
-	if (!sp->str)
-		bytes = (uint64) b->n * rec_size(sp, false, 0);
-	for (uint32 i = 0; sp->str && i < b->n; i++)
-	{
-		bytes += rec_size(sp, false, b->str[i].len);
-		strbytes += b->str[i].len == SIFT_STR_NULL ? 0 : b->str[i].len;
-	}
 	if (w->radix)
 		return sift_radix_fits(&w->raw, bytes) || fail_mem(err, NO_ROOM);
 	if (!cmp_reserve(&w->local, b->n, UINT64_MAX))
 		return fail_mem(err, NO_ROOM);
-	if (!sp->str)
-		return true;
-	return (w->local.strm ? sstr_put(&w->local, NULL, strbytes) : cmp_intern_reserve(&w->local, b->n, strbytes)) || fail_mem(err, NO_ROOM);
+	if (w->local.strm)
+		return sstr_put(&w->local, NULL, strbytes) || fail_mem(err, NO_ROOM);
+	return !sp->strs || cmp_intern_reserve(&w->local, b->n * __builtin_popcount(sp->strs), strbytes) || fail_mem(err, NO_ROOM);
 }
 
 /* The rows of integer keys of a batch to the partitions: the record of a row is its key words and arguments, in the partition of the hash of its key */
@@ -357,20 +155,20 @@ static bool
 scatter_words(SiftParGroup *g, GroupWorker *w, const SiftParGroupBatch *b)
 {
 	const SiftParGroupSpec *sp = &g->sp;
-	const uint32 words = raw_words(sp);
+	const uint32 words = pgk_word_rec_size(sp, false) / 8;
 
 	for (uint32 i = 0; i < b->n; i++)
 	{
-		uint64		k[SIFT_PAR_GROUP_MAX_KW];
+		uint64		k[SIFT_PAR_GROUP_MAX_KEYS];
 		uint64	   *rec;
 		uint32		n = 0;
 
-		for (int j = 0; j < sp->kw; j++)
+		for (int j = 0; j < sp->nk; j++)
 			k[j] = b->key[j][i];
 		rec = sift_radix_reserve(&w->raw, sift_radix_part(cmp_key_hash(&w->local, k)), 8 * words);
 		if (rec == NULL)
 			return false;
-		for (int j = 0; j < sp->kw; j++)
+		for (int j = 0; j < sp->nk; j++)
 			rec[n++] = k[j];
 		for (int m = 0; m < sp->nsum; m++)
 			rec[n++] = b->arg[m][i];
@@ -380,28 +178,31 @@ scatter_words(SiftParGroup *g, GroupWorker *w, const SiftParGroupBatch *b)
 	return true;
 }
 
+static void
+load_row(const SiftParGroupSpec *sp, const SiftParGroupBatch *b, uint32 i, SiftParGroupRow *r)
+{
+	for (int j = 0; j < sp->nk; j++)
+		if (sift_par_group_is_str(sp, j))
+			r->str[j] = b->str[j][i];
+		else
+			r->key[j] = b->key[j][i];
+	for (int m = 0; m < sp->nsum; m++)
+		r->sum[m] = b->arg[m][i];
+}
+
 static bool
 fold_batch(SiftParGroup *g, int t, const SiftParGroupBatch *b)
 {
 	GroupWorker *w = &g->w[t];
 	const SiftParGroupSpec *sp = &g->sp;
+	SiftParGroupRow r = {.count = 1};
 
-	if (w->radix && !sp->str)
+	if (w->radix && !sp->strs)
 		return scatter_words(g, w, b);
-
 	for (uint32 i = 0; i < b->n; i++)
 	{
-		uint64		k[SIFT_PAR_GROUP_MAX_KW];
-		uint64		a[SIFT_PAR_GROUP_MAX_SUM];
-		const uint8 *p = sp->str ? b->str[i].p : NULL;
-		const uint32 len = sp->str ? b->str[i].len : 0;
-
-		for (int j = 0; j < sp->kw; j++)
-			k[j] = b->key[j][i];
-		for (int m = 0; m < sp->nsum; m++)
-			a[m] = b->arg[m][i];
-		if (w->radix ? !put_group(&w->local, sp, &w->raw, false, k, p, len, 1, a)
-			: !add_group(&w->local, sp, k, p, len, cmp_h32(row_hash(&w->local, sp, k, p, len)), 1, a))
+		load_row(sp, b, i, &r);
+		if (w->radix ? !pgk_put(&w->local, sp, &w->raw, false, &r) : !pgk_add(&w->local, sp, &r, NULL))
 			return false;
 	}
 	return true;
@@ -426,25 +227,7 @@ group_phase1(void *vg, int t, uint32 lo, uint32 hi, SiftArena *scratch, uint32 *
 static inline int64
 metric_of(const SiftParGroupSpec *sp, const SiftParGroupRow *r)
 {
-	return (int64) (sp->order == 0 ? r->count : r->sum[sp->order - 1]);
-}
-
-static int
-key_cmp(const SiftParGroupSpec *sp, const SiftParGroupRow *a, const SiftParGroupRow *b)
-{
-	int			c;
-
-	if (!sp->str)
-	{
-		for (int i = 0; i < sp->kw; i++)
-			if (a->key[i] != b->key[i])
-				return a->key[i] < b->key[i] ? -1 : 1;
-		return 0;
-	}
-	if (a->len == SIFT_STR_NULL || b->len == SIFT_STR_NULL)
-		return a->len == b->len ? 0 : a->len == SIFT_STR_NULL ? -1 : 1;
-	c = memcmp(a->str, b->str, Min(a->len, b->len));
-	return c != 0 ? c : a->len == b->len ? 0 : a->len < b->len ? -1 : 1;
+	return sp->order == SIFT_PAR_GROUP_BY_KEY ? 0 : (int64) (sp->order == 0 ? r->count : r->sum[sp->order - 1]);
 }
 
 /* whether a ranks before b: the metric, then the key (a total order, so the K best do not depend on the threads) */
@@ -459,31 +242,40 @@ ent_better(const void *a, const void *b, const void *ctx)
 
 	if (mx != my)
 		return sp->desc ? mx > my : mx < my;
-	return key_cmp(sp, x, y) < 0;
+	return pgk_cmp(sp, x, y) < 0;
 }
 
-/* the group into entry dst, whose bytes of a text key are copied here, once the group is among the K best */
+/* the group into entry dst, whose bytes of its texts are copied here, once the group is among the K best */
 static bool
 ent_store(void *dst, const void *cand, SiftArena *str, const void *ctx)
 {
+	const SiftParGroupSpec *sp = ctx;
 	const SiftParGroupRow *r = &((const SiftTopEnt *) cand)->row;
 	SiftTopEnt *e = dst;
-	const bool	copy = r->str != NULL && r->len != SIFT_STR_NULL;
 
-	if (copy && (e->buf == NULL || r->len > e->scap))
+	for (int j = 0; j < sp->nk; j++)
 	{
-		const uint32 cap = Max(64, pg_nextpower2_32(r->len));
-		uint8	   *buf = sift_arena_alloc(str, cap, 8);
+		const uint32 len = r->str[j].len;
 
-		if (buf == NULL)
-			return false;
-		e->buf = buf;
-		e->scap = cap;
+		if (sift_par_group_is_str(sp, j) && len != SIFT_STR_NULL && (e->buf[j] == NULL || len > e->scap[j]))
+		{
+			const uint32 cap = Max(64, pg_nextpower2_32(len));
+			uint8	   *buf = sift_arena_alloc(str, cap, 8);
+
+			if (buf == NULL)
+				return false;
+			e->buf[j] = buf;
+			e->scap[j] = cap;
+		}
 	}
 	e->row = *r;
-	if (copy && r->len > 0)
-		memcpy(e->buf, r->str, r->len);
-	e->row.str = copy ? e->buf : NULL;
+	for (int j = 0; j < sp->nk; j++)
+		if (sift_par_group_is_str(sp, j) && r->str[j].len != SIFT_STR_NULL)
+		{
+			if (r->str[j].len > 0)
+				memcpy(e->buf[j], r->str[j].p, r->str[j].len);
+			e->row.str[j].p = e->buf[j];
+		}
 	return true;
 }
 
@@ -503,9 +295,7 @@ deliver_row(const Walk *wk, const SiftParGroupRow *r)
 static bool
 merge_row(const Walk *wk, const SiftParGroupRow *r)
 {
-	const SiftParGroupSpec *sp = &wk->g->sp;
-
-	return add_group(wk->to, sp, r->key, r->str, r->len, cmp_h32(row_hash(wk->to, sp, r->key, r->str, r->len)), r->count, r->sum);
+	return pgk_add(wk->to, &wk->g->sp, r, NULL);
 }
 
 /* the table of a partition or a merge, in the work arena of thread t, for about `groups` groups */
@@ -560,21 +350,20 @@ typedef struct Fold
 	bool		partial;
 } Fold;
 
-/* the records of integer keys of a chunk: the table has room for all of them at once, and each is found and folded where it is */
+/* the records of words only of a chunk: the table has room for all of them at once, and each is found and folded where it is */
 static bool
 fold_words(const Fold *f, const uint8 *b, uint32 len)
 {
 	SiftCompact *c = f->tab;
-	const uint32 rb = rec_size(f->sp, f->partial, 0);
+	const uint32 rb = pgk_word_rec_size(f->sp, f->partial);
 
 	if (!cmp_reserve(c, len / rb, UINT64_MAX))
 		return false;
 	for (uint32 off = 0; off < len; off += rb)
 	{
-		Rec			r;
+		const uint64 *w = (const uint64 *) (b + off);
 
-		parse_rec(f->sp, f->partial, b + off, &r);
-		cmp_fold(c, cmp_find(c, cmp_key_hash(c, r.k), r.k), r.count, r.sum);
+		cmp_fold(c, cmp_find(c, cmp_key_hash(c, w), w), f->partial ? w[f->sp->nk] : 1, w + f->sp->nk + f->partial);
 	}
 	return true;
 }
@@ -585,14 +374,15 @@ fold_chunk(void *arg, const uint8 *b, uint32 len)
 {
 	const Fold *f = arg;
 
-	if (!f->sp->str)
+	if (!f->sp->strs)
 		return fold_words(f, b, len);
 	for (uint32 off = 0; off < len;)
 	{
-		Rec			r;
+		SiftParGroupRow r;
+		uint32		h32[SIFT_PAR_GROUP_MAX_KEYS];
 
-		off += parse_rec(f->sp, f->partial, b + off, &r);
-		if (!add_group(f->tab, f->sp, r.k, r.p, r.len, r.h32, r.count, r.sum))
+		off += pgk_parse(f->sp, f->partial, b + off, &r, h32);
+		if (!pgk_add(f->tab, f->sp, &r, h32))
 			return false;
 	}
 	return true;
@@ -675,20 +465,13 @@ static bool
 drain_chunk(void *arg, const uint8 *b, uint32 len)
 {
 	const Drain *d = arg;
-	const SiftParGroupSpec *sp = &d->g->sp;
 
 	for (uint32 off = 0; off < len;)
 	{
-		Rec			r;
 		SiftParGroupRow row = {0};
+		uint32		h32[SIFT_PAR_GROUP_MAX_KEYS];
 
-		off += parse_rec(sp, d->partial, b + off, &r);
-		if (!sp->str)
-			memcpy(row.key, r.k, sp->kw * sizeof(uint64));
-		row.str = r.p;
-		row.len = r.len;
-		row.count = r.count;
-		memcpy(row.sum, r.sum, sp->nsum * sizeof(uint64));
+		off += pgk_parse(&d->g->sp, d->partial, b + off, &row, h32);
 		d->g->hooks.emit(d->g->hooks.arg, d->worker, &row);
 	}
 	return true;
@@ -727,13 +510,6 @@ const SiftParOps sift_par_group_ops = {.phase1 = group_phase1,.seal = group_seal
 /* ---- the state ---- */
 
 static bool
-spec_holds(const SiftParGroupSpec *sp)
-{
-	return (sp->str ? sp->kw == 0 : sp->kw >= 1 && sp->kw <= SIFT_PAR_GROUP_MAX_KW) && sp->nsum <= SIFT_PAR_GROUP_MAX_SUM && sp->topk <= SIFT_PAR_GROUP_TOPK_MAX &&
-		sp->order <= sp->nsum;
-}
-
-static bool
 worker_open(SiftParGroup *g, int t, bool high_card, SiftErr *err)
 {
 	GroupWorker *w = &g->w[t];
@@ -747,7 +523,7 @@ worker_open(SiftParGroup *g, int t, bool high_card, SiftErr *err)
 	w->radix = high_card;
 	sift_radix_init(&w->raw, state);
 	sift_radix_init(&w->pa, state);
-	if (g->sp.topk > 0 && !sift_par_topk_init(&w->tk, work, g->sp.topk, sizeof(SiftTopEnt), g->sp.str ? (work->cap - work->used) / 8 : 0, ent_better, ent_store, &g->sp))
+	if (g->sp.topk > 0 && !sift_par_topk_init(&w->tk, work, g->sp.topk, sizeof(SiftTopEnt), g->sp.strs ? (work->cap - work->used) / 8 : 0, ent_better, ent_store, &g->sp))
 		return fail_mem(err, "parallel aggregation: an arena is too small for its K best");
 	if (!high_card && !cmp_init(&w->local, TAB_FIRST))
 		return fail_mem(err, "parallel aggregation: an arena is too small for its first table");
@@ -760,8 +536,8 @@ sift_par_group_create(SiftParArenas *ar, const SiftParGroupSpec *spec, bool high
 	SiftArena  *boot = &ar->w[0].state;
 	SiftParGroup *g;
 
-	if (!spec_holds(spec))
-		return sift_err_fill(err, SIFT_ERR_INVALID_PARAM, spec->kw, spec->nsum, "parallel aggregation: the words of the key, the sums or K"), NULL;
+	if (!sift_par_group_spec_holds(spec))
+		return sift_err_fill(err, SIFT_ERR_INVALID_PARAM, spec->nk, spec->nsum, "parallel aggregation: the keys, the sums, K or a slot of more than 8 words"), NULL;
 	g = sift_arena_alloc0(boot, sizeof(SiftParGroup), SIFT_ARENA_ALIGN);
 	if (g != NULL)
 		g->w = sift_arena_alloc0(boot, sizeof(GroupWorker) * ar->n, SIFT_ARENA_ALIGN);
@@ -771,9 +547,8 @@ sift_par_group_create(SiftParArenas *ar, const SiftParGroupSpec *spec, bool high
 	g->hooks = *hooks;
 	g->ar = ar;
 	g->nw = ar->n;
-	g->proto = (SiftCompact) {.kw = spec->str ? 1 : spec->kw,.strk = spec->str ? 0 : -1,.nsum = spec->nsum};
-	if (!cmp_layout(&g->proto, spec->key1_u32 && rows_bound < ROWS_HALF_SLOT_MAX))
-		return sift_err_fill(err, SIFT_ERR_UNSUPPORTED, spec->kw, spec->nsum, "parallel aggregation: a slot of more than 8 words"), NULL;
+	if (!pgk_layout(&g->proto, spec, rows_bound))
+		return sift_err_fill(err, SIFT_ERR_UNSUPPORTED, spec->nk, spec->nsum, "parallel aggregation: a slot of more than 8 words"), NULL;
 	atomic_init(&g->radix, high_card);
 	for (int p = 0; p < SIFT_RADIX_PARTS; p++)
 		atomic_init(&g->done[p], false);

@@ -110,10 +110,9 @@ cmp_intern_reserve(SiftCompact *c, uint32 n, Size bytes)
 }
 
 uint32
-cmp_intern(SiftCompact *c, const char *p, uint32 len)
+cmp_intern_h(SiftCompact *c, uint64 h, const char *p, uint32 len)
 {
 	Intern	   *in = &c->in;
-	const uint64 h = sift_aggk6_hash_bytes(p, len);
 	uint32		i;
 
 	if ((in->n + 1) * 2 > in->cap && !intern_grow(c))

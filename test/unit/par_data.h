@@ -13,13 +13,13 @@
 typedef struct Data
 {
 	uint32		n;
-	uint64	   *key[SIFT_PAR_GROUP_MAX_KW];
+	uint64	   *key[SIFT_PAR_GROUP_MAX_KEYS];	/* the words of the key columns that are words */
+	SiftStrRef *str[SIFT_PAR_GROUP_MAX_KEYS];	/* the texts of the ones that are texts */
 	uint64	   *arg[SIFT_PAR_GROUP_MAX_SUM];
-	SiftStrRef *str;
 	uint64	   *val;
 	uint32	   *gid;
-	SiftStrRef *pool;			/* the text of each group */
-	uint32		npool;
+	SiftStrRef *pool[SIFT_PAR_GROUP_MAX_KEYS];	/* the distinct texts of each text column */
+	uint32		npool[SIFT_PAR_GROUP_MAX_KEYS];
 } Data;
 
 static uint64 gen_state;
@@ -76,35 +76,71 @@ gen_int(int kw, uint32 n, uint32 ngroups, bool skew, int nsum, bool key1_u32)
 	return d;
 }
 
-/* Text keys: the group g is its digits and then g % 17 'x' (the group 0 is the empty string, one in 251 is long); one group in 11 is NULL */
-static Data *
-gen_str(uint32 n, uint32 ngroups, bool skew, int nsum, bool nulls)
+/* n texts: the text u is its digits and then u % 17 'x' (the text 0 is the empty string, one in 251 is long) */
+static SiftStrRef *
+gen_pool(uint32 n)
 {
-	Data	   *d = calloc(1, sizeof(Data));
+	SiftStrRef *pool = calloc(n, sizeof(SiftStrRef));
 
-	d->n = n;
-	d->pool = calloc(ngroups, sizeof(SiftStrRef));
-	d->npool = ngroups;
-	for (uint32 g = 0; g < ngroups; g++)
+	for (uint32 u = 0; u < n; u++)
 	{
 		char		buf[400];
-		int			len = g == 0 ? 0 : snprintf(buf, sizeof(buf), "%u", g);
-		const int	pad = g % 17 + (g % 251 == 250 ? 250 : 0);
+		int			len = u == 0 ? 0 : snprintf(buf, sizeof(buf), "%u", u);
+		const int	pad = u % 17 + (u % 251 == 250 ? 250 : 0);
 
 		memset(buf + len, 'x', pad);
-		len += g == 0 ? 0 : pad;
-		d->pool[g].p = memcpy(malloc(len + 1), buf, len);
-		d->pool[g].len = len;
+		len += u == 0 ? 0 : pad;
+		pool[u].p = memcpy(malloc(len + 1), buf, len);
+		pool[u].len = len;
 	}
-	d->str = malloc(sizeof(SiftStrRef) * n);
+	return pool;
+}
+
+/*
+ * Rows of the groups 0 .. ngroups-1 (a skewed column: nine rows of ten in group 0) by nk key columns, the ones of the bits of strs texts and the others words. The last column tells the groups apart; each
+ * of the others takes a few values (13, 20, 27 ..), so that many groups share a word or a text and differ in another column. With nulls, one text in 11 is NULL.
+ */
+static Data *
+gen_mixed(int nk, int strs, uint32 n, uint32 ngroups, bool skew, int nsum, bool nulls)
+{
+	Data	   *d = calloc(1, sizeof(Data));
+	uint32		values[SIFT_PAR_GROUP_MAX_KEYS];
+
+	d->n = n;
+	for (int j = 0; j < nk; j++)
+	{
+		values[j] = j == nk - 1 ? ngroups : Min(ngroups, 13 + 7 * j);
+		if ((strs >> j) & 1)
+		{
+			d->pool[j] = gen_pool(values[j]);
+			d->npool[j] = values[j];
+			d->str[j] = malloc(sizeof(SiftStrRef) * n);
+		}
+		else
+			d->key[j] = malloc(sizeof(uint64) * n);
+	}
 	for (uint32 i = 0; i < n; i++)
 	{
 		const uint32 g = pick_group(ngroups, skew);
 
-		d->str[i] = nulls && g % 11 == 3 ? (SiftStrRef) {NULL, SIFT_STR_NULL} : d->pool[g];
+		for (int j = 0; j < nk; j++)
+		{
+			const uint32 u = g % values[j];
+
+			if (!((strs >> j) & 1))
+				d->key[j][i] = sift_fmix64((uint64) u * 7 + j);
+			else
+				d->str[j][i] = nulls && u % 11 == 3 ? (SiftStrRef) {NULL, SIFT_STR_NULL} : d->pool[j][u];
+		}
 	}
 	gen_args(d, nsum);
 	return d;
+}
+
+static Data *
+gen_str(uint32 n, uint32 ngroups, bool skew, int nsum, bool nulls)
+{
+	return gen_mixed(1, 1, n, ngroups, skew, nsum, nulls);
 }
 
 /* The values of a COUNT(DISTINCT): ndist of them (one is 0 when zero), the group of each below ngroups (0: none) */
@@ -130,14 +166,16 @@ gen_dist(uint32 n, uint32 ndist, uint32 ngroups, bool zero)
 static void
 data_free(Data *d)
 {
-	for (int j = 0; j < SIFT_PAR_GROUP_MAX_KW; j++)
+	for (int j = 0; j < SIFT_PAR_GROUP_MAX_KEYS; j++)
+	{
+		for (uint32 u = 0; u < d->npool[j]; u++)
+			free((void *) d->pool[j][u].p);
 		free(d->key[j]);
+		free(d->pool[j]);
+		free(d->str[j]);
+	}
 	for (int m = 0; m < SIFT_PAR_GROUP_MAX_SUM; m++)
 		free(d->arg[m]);
-	for (uint32 g = 0; g < d->npool; g++)
-		free((void *) d->pool[g].p);
-	free(d->pool);
-	free(d->str);
 	free(d->val);
 	free(d->gid);
 	free(d);
@@ -157,11 +195,13 @@ src_group_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, 
 	const Src  *s = arg;
 
 	b->n = hi - lo;
-	for (int j = 0; j < s->sp->kw; j++)
-		b->key[j] = s->d->key[j] + lo;
+	for (int j = 0; j < s->sp->nk; j++)
+		if (sift_par_group_is_str(s->sp, j))
+			b->str[j] = s->d->str[j] + lo;
+		else
+			b->key[j] = s->d->key[j] + lo;
 	for (int m = 0; m < s->sp->nsum; m++)
 		b->arg[m] = s->d->arg[m] + lo;
-	b->str = s->sp->str ? s->d->str + lo : NULL;
 	return true;
 }
 

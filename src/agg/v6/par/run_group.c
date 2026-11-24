@@ -1,7 +1,7 @@
 /*
- * agg/v6/par/run_group.c - the grouped aggregation ORDER BY count or sum LIMIT K of SiftAggV6 on the compute threads (agg/v6/par/run.h): the keys and sums a thread decodes of a granule are given to
- * agg/v6/par/group.h as arrays of 64-bit words. The key words of an integer are the value with its sign bit flipped, so that the unsigned order of the words is the signed order of the values (the K
- * best are ranked by the count or a sum, then by the keys in ascending order, as the statement says).
+ * agg/v6/par/run_group.c - the grouped aggregation ORDER BY count or sum LIMIT K of SiftAggV6 on the compute threads (agg/v6/par/run.h), by integer and text keys in the order of the statement: the
+ * keys and sums a thread decodes of a granule are given to agg/v6/par/group.h as arrays of 64-bit words and of texts. The key word of an integer is the value with its sign bit flipped, so that the
+ * unsigned order of the words is the signed order of the values (the K best are ranked by the count or a sum, then by the keys in ascending order, as the statement says).
  */
 #include "postgres.h"
 
@@ -19,17 +19,19 @@ static bool
 keys_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
 	sh->nk = sp->nkeys;
-	if (sp->nkeys < 1 || sp->nkeys > SIFT_PAR_GROUP_MAX_KW)
+	sh->gs.nk = sp->nkeys;
+	if (sp->nkeys < 1 || sp->nkeys > SIFT_PAR_GROUP_MAX_KEYS)
 		return false;
 	for (int i = 0; i < sp->nkeys; i++)
 	{
 		const SiftV6Col *c = &sp->key[i];
 		const SiftV6Class cls = sift_v6_class(c->typid);
+		const bool	text = cls == SV6C_TEXT;
 
-		if (!par_plain_col(c) || !(cls == SV6C_I32 || cls == SV6C_I64 || (cls == SV6C_TEXT && sp->nkeys == 1)))
+		if (!par_plain_col(c) || !(cls == SV6C_I32 || cls == SV6C_I64 || text))
 			return false;
-		sh->str = cls == SV6C_TEXT;
-		sh->key_at[i] = par_add_leaf(sh, par_leaf_of(first, c), sh->str);
+		sh->gs.strs |= text << i;
+		sh->key_at[i] = par_add_leaf(sh, par_leaf_of(first, c), text);
 	}
 	return true;
 }
@@ -60,18 +62,17 @@ aggs_of(const SiftV6Spec *sp, const int *first, ParShape *sh)
 	return true;
 }
 
-/* The metric of the first item of ORDER BY and the keys, ascending, after it: the order of the K best of the threads */
+/* The metric of the item, as the K best rank by it */
 static bool
-order_of(const SiftV6Spec *sp, ParShape *sh)
+metric_of(const SiftV6Spec *sp, const SiftV6TopKItem *m, ParShape *sh)
 {
-	const SiftV6TopKItem *m = &sp->topk_item[0];
 	const SiftV6Agg *a;
 	Oid			opfamily,
 				opcintype;
 	CompareType cmptype;
 	int			sum = 0;
 
-	if (sp->topk < 1 || sp->topk > SIFT_PAR_GROUP_TOPK_MAX || sp->ntopk < 1 || sp->ntopk > 1 + sp->nkeys || m->pos < sp->nkeys || m->pos >= sp->nkeys + sp->naggs)
+	if (m->pos >= sp->nkeys + sp->naggs)
 		return false;
 	a = &sp->agg[m->pos - sp->nkeys];
 	for (int j = 0; j < m->pos - sp->nkeys; j++)
@@ -84,15 +85,36 @@ order_of(const SiftV6Spec *sp, ParShape *sh)
 		return false;
 	get_ordering_op_properties(m->sortop, &opfamily, &opcintype, &cmptype);
 	sh->gs.desc = cmptype == COMPARE_GT;
-	for (int i = 1; i < sp->ntopk; i++)
-	{
-		const SiftV6TopKItem *it = &sp->topk_item[i];
+	return true;
+}
 
-		get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype);
-		if (it->pos != i - 1 || cmptype != COMPARE_LT || it->nulls_first || (sh->str && !sift_collate_is_c(it->collid)))
-			return false;
-	}
+/* The item is key `key` in ascending order (a text in the collation C, which is the order of its bytes) */
+static bool
+key_item(const SiftV6TopKItem *it, int key, const ParShape *sh)
+{
+	Oid			opfamily,
+				opcintype;
+	CompareType cmptype;
+
+	get_ordering_op_properties(it->sortop, &opfamily, &opcintype, &cmptype);
+	return it->pos == key && cmptype == COMPARE_LT && !it->nulls_first && (!sift_par_group_is_str(&sh->gs, key) || sift_collate_is_c(it->collid));
+}
+
+/* The K best groups: by the metric of the first item of ORDER BY (none: by the keys alone) and then by the keys, ascending, after it */
+static bool
+order_of(const SiftV6Spec *sp, ParShape *sh)
+{
+	const int	metric = sp->ntopk > 0 && sp->topk_item[0].pos >= sp->nkeys;
+
+	if (sp->topk < 1 || sp->topk > SIFT_PAR_GROUP_TOPK_MAX || sp->ntopk < 1 || sp->ntopk > metric + sp->nkeys)
+		return false;
 	sh->gs.topk = sp->topk;
+	sh->gs.order = SIFT_PAR_GROUP_BY_KEY;
+	if (metric && !metric_of(sp, &sp->topk_item[0], sh))
+		return false;
+	for (int i = metric; i < sp->ntopk; i++)
+		if (!key_item(&sp->topk_item[i], i - metric, sh))
+			return false;
 	return true;
 }
 
@@ -103,17 +125,16 @@ group_shape(const SiftV6Spec *sp, const int *first, ParShape *sh)
 		return false;
 	if (!keys_of(sp, first, sh) || !aggs_of(sp, first, sh) || !order_of(sp, sh))
 		return false;
-	sh->gs.kw = sh->str ? 0 : sh->nk;
-	sh->gs.str = sh->str;
 	sh->gs.nsum = sh->nsum;
-	return true;
+	return sift_par_group_spec_holds(&sh->gs);
 }
 
 static void
 group_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads, ParSizes *sz)
 {
 	const uint32 words = sh->nk + sh->nsum;
-	const uint64 rec = sh->str ? 64 : 8 * (words <= 1 ? 1 : pg_nextpower2_32(words));
+	const uint32 texts = __builtin_popcount(sh->gs.strs);
+	const uint64 rec = texts > 0 ? 8 * words + 56 * texts : 8 * (words <= 1 ? 1 : pg_nextpower2_32(words));
 
 	sz->scratch = 8u << 20;
 	sz->work = 8u << 20;
@@ -123,61 +144,67 @@ group_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads, Pa
 
 /* ---- a thread ---- */
 
-typedef struct GroupOp
+static void *
+scratch_array(SiftArena *scratch, uint32 n, size_t size, SiftErr *err)
 {
-	SiftV6ParScan *p;
-	SiftParGroup *grp;
-} GroupOp;
+	void	   *a = sift_arena_alloc(scratch, n * size, 8);
 
+	return a != NULL ? a : (par_arena_full(scratch, err), NULL);
+}
+
+/* The key words (the integers with their sign bit flipped) and the texts of the rows that pass, and their sums, into the batch */
 static bool
 group_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftParGroupBatch *out, SiftErr *err)
 {
 	SiftV6ParScan *p = arg;
 	const ParShape *sh = &p->sh;
 	ParLoad		ld;
-	uint64	   *key[SIFT_PAR_GROUP_MAX_KW] = {0},
-			   *sum[SIFT_PAR_GROUP_MAX_SUM] = {0};
-	SiftStrRef *str = NULL;
 
 	if (!par_load(sh, sift_pin_win_slot(p->win, lo), scratch, err, &ld))
 		return false;
 	if (ld.nact == 0)
 		return true;
-	for (int j = 0; !sh->str && j < sh->nk; j++)
-		if ((key[j] = sift_arena_alloc(scratch, ld.nact * sizeof(uint64), 8)) == NULL)
-			return par_arena_full(scratch, err);
-	for (int m = 0; m < sh->nsum; m++)
-		if ((sum[m] = sift_arena_alloc(scratch, ld.nact * sizeof(uint64), 8)) == NULL)
-			return par_arena_full(scratch, err);
-	if (sh->str && (str = sift_arena_alloc(scratch, ld.nact * sizeof(SiftStrRef), 8)) == NULL)
-		return par_arena_full(scratch, err);
 	for (int c = 0; c < sh->nleaves; c++)
 		if (par_has_null(&ld, &ld.cv[c]))
 			return par_serial(err, "a NULL in a column of the aggregate");
-	for (int j = 0; !sh->str && j < sh->nk; j++)
+	for (int j = 0; j < sh->nk; j++)
 	{
-		const int64 *v = ld.cv[sh->key_at[j]].i;
+		const ColView *cv = &ld.cv[sh->key_at[j]];
 
-		PAR_EACH_ROW(&ld, r, i)
-			key[j][i] = (uint64) v[r] ^ PAR_SIGN_FLIP;
+		if (sift_par_group_is_str(&sh->gs, j))
+		{
+			SiftStrRef *str = scratch_array(scratch, ld.nact, sizeof(SiftStrRef), err);
+
+			if (str == NULL)
+				return false;
+			PAR_EACH_ROW(&ld, r, i)
+				str[i] = par_str_at(cv, r);
+			out->str[j] = str;
+		}
+		else
+		{
+			uint64	   *key = scratch_array(scratch, ld.nact, sizeof(uint64), err);
+
+			if (key == NULL)
+				return false;
+			PAR_EACH_ROW(&ld, r, i)
+				key[i] = (uint64) cv->i[r] ^ PAR_SIGN_FLIP;
+			out->key[j] = key;
+		}
 	}
 	for (int m = 0; m < sh->nsum; m++)
 	{
 		const int64 *v = ld.cv[sh->sum_at[m]].i;
+		uint64	   *sum = scratch_array(scratch, ld.nact, sizeof(uint64), err);
 
+		if (sum == NULL)
+			return false;
 		PAR_EACH_ROW(&ld, r, i)
-			sum[m][i] = (uint64) v[r];
+			sum[i] = (uint64) v[r];
+		out->arg[m] = sum;
 	}
-	if (sh->str)
-		PAR_EACH_ROW(&ld, r, i)
-			str[i] = par_str_at(&ld.cv[sh->key_at[0]], r);
 	p->w[worker].rows += ld.nact;
 	out->n = ld.nact;
-	for (int j = 0; j < sh->nk && !sh->str; j++)
-		out->key[j] = key[j];
-	for (int m = 0; m < sh->nsum; m++)
-		out->arg[m] = sum[m];
-	out->str = str;
 	return true;
 }
 
@@ -192,15 +219,19 @@ group_emit(void *arg, int worker, const SiftParGroupRow *row)
 	int64		key[SIFT_V6_MAX_KEYS] = {0};
 	SiftV6StrIn str[SIFT_V6_MAX_KEYS] = {{0}};
 	SiftV6AccIn acc[SIFT_V6_MAX_KEYS + 16];
+	uint64		nulls = 0;
 	int			m = 0;
 
 	if (p->finishing && p->npending > 0)
 		return;
 	Assert(sp->naggs <= lengthof(acc));
-	if (p->sh.str)
-		str[0] = (SiftV6StrIn) {(const char *) row->str, row->len};
-	else
-		for (int i = 0; i < p->sh.nk; i++)
+	for (int i = 0; i < p->sh.nk; i++)
+		if (sift_par_group_is_str(&p->sh.gs, i))
+		{
+			str[i] = (SiftV6StrIn) {(const char *) row->str[i].p, row->str[i].len};
+			nulls |= (uint64) (row->str[i].len == SIFT_STR_NULL) << i;
+		}
+		else
 			key[i] = (int64) (row->key[i] ^ PAR_SIGN_FLIP);
 	for (int j = 0; j < sp->naggs; j++)
 	{
@@ -211,7 +242,7 @@ group_emit(void *arg, int worker, const SiftParGroupRow *row)
 			acc[j].v1 = (int64) acc[j].v0 < 0 ? -1 : 0;
 		}
 	}
-	sift_v6_group_fold_rec(p->g, key, str, p->sh.str && row->len == SIFT_STR_NULL ? 1 : 0, acc);
+	sift_v6_group_fold_rec(p->g, key, str, nulls, acc);
 }
 
 static void

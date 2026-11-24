@@ -18,7 +18,7 @@
 typedef struct Work
 {
 	const char *name;
-	char		kind;			/* 'i' ints, 's' text, 'd' distinct */
+	char		kind;			/* 'i' ints, 's' text, 'm' ints and a text, 'd' distinct */
 	int			kw;
 	int			nsum;
 	uint32		ngroups;
@@ -36,6 +36,8 @@ static const Work works[] = {
 	{"Q33 text, count", 's', 0, 0, 500000, false, false, true},
 	{"Q34 text, 2 sums", 's', 0, 2, 500000, false, false, true},
 	{"Q12 text, top 10", 's', 0, 0, 500000, false, false, true, 10, true},
+	{"Q16 int + text, count, top 10", 'm', 1, 0, 500000, false, false, true, 10, true},
+	{"Q14 2 ints + text, count", 'm', 2, 0, 500000, false, false, true},
 	{"Q8 low groups, count", 'i', 1, 0, 200, false, false, false},
 	{"Q8 skewed", 'i', 2, 1, 1000000, true, true, true},
 	{"Q4 distinct values", 'd', 0, 0, 0, false, false, true},
@@ -95,7 +97,8 @@ typedef struct Outcome
 static Outcome
 run_once(const Work *w, const Data *d, uint32 workers)
 {
-	const SiftParGroupSpec sp = {.kw = w->kw,.str = w->kind == 's',.nsum = w->nsum,.key1_u32 = w->key1_u32,.topk = w->topk,.order = 0,.desc = w->desc};
+	const SiftParGroupSpec sp = {.nk = w->kind == 's' ? 1 : w->kind == 'm' ? w->kw + 1 : w->kw,.strs = w->kind == 's' ? 1 : w->kind == 'm' ? 1 << w->kw : 0,.nsum = w->nsum,
+		.key1_u32 = w->key1_u32,.topk = w->topk,.order = 0,.desc = w->desc};
 	BCtx		c = {.src = {d, &sp}};
 	const size_t state = (size_t) ROWS * 80 / workers + (64 << 20);
 	SiftParArenas *ar;
@@ -150,6 +153,7 @@ main(void)
 	{
 		const Work *w = &works[i];
 		Data	   *d = w->kind == 's' ? gen_str(ROWS, w->ngroups, w->skew, w->nsum, true) :
+			w->kind == 'm' ? gen_mixed(w->kw + 1, 1 << w->kw, ROWS, w->ngroups, w->skew, w->nsum, false) :
 			w->kind == 'd' ? gen_dist(ROWS, ROWS / 4, w->ngroups, true) : gen_int(w->kw, ROWS, w->ngroups, w->skew, w->nsum, w->key1_u32);
 		double		best[3];
 		Outcome		first = {0};

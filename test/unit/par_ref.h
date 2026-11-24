@@ -8,9 +8,9 @@
 
 typedef struct Rec
 {
-	uint64		key[SIFT_PAR_GROUP_MAX_KW];
-	uint8	   *str;
-	uint32		len;
+	uint64		key[SIFT_PAR_GROUP_MAX_KEYS];
+	uint8	   *str[SIFT_PAR_GROUP_MAX_KEYS];
+	uint32		len[SIFT_PAR_GROUP_MAX_KEYS];
 	uint64		count;
 	uint64		sum[SIFT_PAR_GROUP_MAX_SUM];
 } Rec;
@@ -27,10 +27,17 @@ typedef struct Vec
 static const SiftParGroupSpec *cur_spec;
 
 static void
+rec_free(Rec *r)
+{
+	for (int j = 0; j < SIFT_PAR_GROUP_MAX_KEYS; j++)
+		free(r->str[j]);
+}
+
+static void
 vec_free(Vec *v)
 {
 	for (uint32 i = 0; i < v->n; i++)
-		free(v->r[i].str);
+		rec_free(&v->r[i]);
 	free(v->r);
 	*v = (Vec) {0};
 }
@@ -44,10 +51,15 @@ vec_push(Vec *v, const SiftParGroupSpec *sp, const SiftParGroupRow *row)
 		v->r = realloc(v->r, sizeof(Rec) * (v->cap = v->cap ? v->cap * 2 : 1024));
 	r = &v->r[v->n++];
 	memset(r, 0, sizeof(*r));
-	memcpy(r->key, row->key, sizeof(uint64) * sp->kw);
-	r->len = sp->str ? row->len : 0;
-	if (sp->str && row->len != SIFT_STR_NULL)
-		r->str = memcpy(malloc(row->len + 1), row->str, row->len);
+	for (int j = 0; j < sp->nk; j++)
+		if (!sift_par_group_is_str(sp, j))
+			r->key[j] = row->key[j];
+		else
+		{
+			r->len[j] = row->str[j].len;
+			if (row->str[j].len != SIFT_STR_NULL)
+				r->str[j] = memcpy(malloc(row->str[j].len + 1), row->str[j].p, row->str[j].len);
+		}
 	r->count = row->count;
 	memcpy(r->sum, row->sum, sizeof(uint64) * sp->nsum);
 }
@@ -72,35 +84,33 @@ vec_push_row(Vec *v, const SiftParGroupSpec *sp, const Data *d, uint32 i)
 {
 	SiftParGroupRow row = {.count = 1};
 
-	for (int j = 0; j < sp->kw; j++)
-		row.key[j] = d->key[j][i];
+	for (int j = 0; j < sp->nk; j++)
+		if (sift_par_group_is_str(sp, j))
+			row.str[j] = d->str[j][i];
+		else
+			row.key[j] = d->key[j][i];
 	for (int m = 0; m < sp->nsum; m++)
 		row.sum[m] = d->arg[m][i];
-	if (sp->str)
-	{
-		row.str = d->str[i].p;
-		row.len = d->str[i].len;
-	}
 	vec_push(v, sp, &row);
 }
 
 static int
 rec_key_cmp(const Rec *a, const Rec *b)
 {
-	if (!cur_spec->str)
+	for (int j = 0; j < cur_spec->nk; j++)
 	{
-		for (int j = 0; j < cur_spec->kw; j++)
-			if (a->key[j] != b->key[j])
-				return a->key[j] < b->key[j] ? -1 : 1;
-		return 0;
-	}
-	if (a->len == SIFT_STR_NULL || b->len == SIFT_STR_NULL)
-		return a->len == b->len ? 0 : a->len == SIFT_STR_NULL ? -1 : 1;
-	{
-		const int	c = memcmp(a->str, b->str, Min(a->len, b->len));
+		int			c;
 
-		return c != 0 ? c : a->len == b->len ? 0 : a->len < b->len ? -1 : 1;
+		if (!sift_par_group_is_str(cur_spec, j))
+			c = a->key[j] == b->key[j] ? 0 : a->key[j] < b->key[j] ? -1 : 1;
+		else if (a->len[j] == SIFT_STR_NULL || b->len[j] == SIFT_STR_NULL)
+			c = a->len[j] == b->len[j] ? 0 : a->len[j] == SIFT_STR_NULL ? -1 : 1;
+		else if ((c = memcmp(a->str[j], b->str[j], Min(a->len[j], b->len[j]))) == 0)
+			c = a->len[j] == b->len[j] ? 0 : a->len[j] < b->len[j] ? -1 : 1;
+		if (c != 0)
+			return c;
 	}
+	return 0;
 }
 
 static int
@@ -112,6 +122,8 @@ cmp_key_q(const void *a, const void *b)
 static int64
 rec_metric(const Rec *r)
 {
+	if (cur_spec->order == SIFT_PAR_GROUP_BY_KEY)
+		return 0;
 	return (int64) (cur_spec->order == 0 ? r->count : r->sum[cur_spec->order - 1]);
 }
 
@@ -141,7 +153,7 @@ vec_normalize(Vec *v, const SiftParGroupSpec *sp)
 			v->r[o - 1].count += v->r[i].count;
 			for (int m = 0; m < sp->nsum; m++)
 				v->r[o - 1].sum[m] += v->r[i].sum[m];
-			free(v->r[i].str);
+			rec_free(&v->r[i]);
 		}
 		else
 			v->r[o++] = v->r[i];
@@ -158,7 +170,7 @@ vec_best(Vec *v, const SiftParGroupSpec *sp)
 		return;
 	qsort(v->r, v->n, sizeof(Rec), cmp_rank_q);
 	for (uint32 i = sp->topk; i < v->n; i++)
-		free(v->r[i].str);
+		rec_free(&v->r[i]);
 	v->n = sp->topk;
 	qsort(v->r, v->n, sizeof(Rec), cmp_key_q);
 }

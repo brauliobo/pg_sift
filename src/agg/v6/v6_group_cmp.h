@@ -179,8 +179,14 @@ cmp_find(SiftCompact *c, uint64 h, const uint64 *key)
 
 /* ---- the numbers of the strings (a text key among other keys, or with sums) ---- */
 
-/* The number of the string, which is new when it has none yet; CMP_NO_ID when the arena has no room (the numbers are as they were) */
-extern uint32 cmp_intern(SiftCompact *c, const char *p, uint32 len);
+/* The number of the string whose hash is h (the same function of the bytes for every call on a table), which is new when it has none yet; CMP_NO_ID when the arena has no room (the numbers are as they were) */
+extern uint32 cmp_intern_h(SiftCompact *c, uint64 h, const char *p, uint32 len);
+
+static inline uint32
+cmp_intern(SiftCompact *c, const char *p, uint32 len)
+{
+	return cmp_intern_h(c, sift_aggk6_hash_bytes(p, len), p, len);
+}
 
 /* Room for n more strings of bytes bytes in all: their numbers, and the places they take, so that cmp_intern of that many cannot fail */
 extern bool cmp_intern_reserve(SiftCompact *c, uint32 n, Size bytes);

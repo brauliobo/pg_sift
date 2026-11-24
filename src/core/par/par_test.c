@@ -65,7 +65,7 @@ test_overflow(void *arg, const SiftParRange *left, uint32 nleft)
 static void
 run_once(ParTest *t, int workers, bool high_card, uint64 *groups, uint64 *rows)
 {
-	const SiftParGroupSpec sp = {.kw = 1,.nsum = 1};
+	const SiftParGroupSpec sp = {.nk = 1,.nsum = 1};
 	const SiftParGroupHooks hooks = {.fill = test_fill,.emit = test_emit,.overflow = test_overflow,.arg = t};
 	MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "par test run", ALLOCSET_SMALL_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cx);

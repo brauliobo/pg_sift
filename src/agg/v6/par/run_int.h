@@ -15,7 +15,7 @@
 #include "col/f2/pin_win.h"
 
 #define PAR_SIGN_FLIP	(UINT64CONST(1) << 63)
-#define PAR_LEAVES_MAX	(2 * SIFT_PAR_GROUP_MAX_KW + SIFT_PAR_GROUP_MAX_SUM + SIFT_V6_MAX_KEYS)
+#define PAR_LEAVES_MAX	(2 * SIFT_PAR_GROUP_MAX_KEYS + SIFT_PAR_GROUP_MAX_SUM + SIFT_V6_MAX_KEYS)
 
 struct ParKind;
 
@@ -27,8 +27,7 @@ typedef struct ParShape
 	int			leaf[PAR_LEAVES_MAX];
 	bool		codes[PAR_LEAVES_MAX];	/* the leaf is a text read as the codes of the dictionary of the granule when it has one */
 	int			nk;
-	bool		str;
-	int			key_at[SIFT_PAR_GROUP_MAX_KW];	/* the place of each key's leaf among leaf[] */
+	int			key_at[SIFT_PAR_GROUP_MAX_KEYS];	/* the place of each key's leaf among leaf[] */
 	int			nsum;
 	int			sum_at[SIFT_PAR_GROUP_MAX_SUM];
 	SiftParGroupSpec gs;
