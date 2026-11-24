@@ -173,7 +173,7 @@ sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es)
 	initStringInfo(&buf);
 	for (int i = 0; i < spec->nkeys; i++)
 	{
-		const char *name = col_name(spec->relid, spec->is_table, &spec->key[i]);
+		const char *name = col_name(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), &spec->key[i]);
 
 		if (name == NULL)
 			return;
@@ -226,7 +226,7 @@ sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es)
 		get_ordering_op_properties(spec->topk_item[i].sortop, &opfamily, &opcintype, &cmptype);
 		keys[i] = (TopNKey) {.col = spec->key[spec->topk_item[i].pos],.desc = cmptype == SIFT_CMP_GT,.nulls_first = spec->topk_item[i].nulls_first};
 	}
-	explain_topn(spec->relid, spec->is_table, keys, spec->ntopk, psprintf("%u", spec->topk), es);
+	explain_topn(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), keys, spec->ntopk, psprintf("%u", spec->topk), es);
 }
 
 /* the LIMIT of the Top-N scan: an int8 Const (NULL: all) or an external parameter */
