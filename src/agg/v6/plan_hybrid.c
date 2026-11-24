@@ -110,7 +110,7 @@ sift_v6_compile_text(V6Plan *p)
 {
 	if (p->text == NULL)
 		return true;
-	if (p->xseed != NULL)
+	if (p->xseed != NULL && p->xseed->unnest)
 		return false;
 	p->spec.text_indexoid = p->text->indexoid;
 	p->spec.text_queries = p->text_queries;
