@@ -15,6 +15,8 @@
 #include "access/tableam.h"
 #include "catalog/pg_class_d.h"
 #include "catalog/pg_type_d.h"
+#include "executor/executor.h"
+#include "optimizer/optimizer.h"
 #include "utils/array.h"
 #include "utils/date.h"
 #include "utils/float.h"
@@ -79,6 +81,13 @@ typedef struct UnRun
 	bool		typbyval;
 	char		typalign;
 	SiftV6RecFn *rec;
+	EState	   *estate;
+	ExprState  *arr;			/* the array of a row of the heap when it is an expression of its columns (SiftV6Ext.elem_array), else NULL: the column heap_att */
+	ExprContext *econtext;
+	TupleTableSlot *heap_slot;
+	List	   *arr_att;		/* the columns of the heap row the expression reads */
+	Datum	   *arr_val;
+	bool	   *arr_null;
 	SiftClause	where;
 	bool		has_where;
 	SiftVec   **wvecs;
@@ -527,6 +536,55 @@ emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, u
 		emit_pairs(u, fact, ev, m);
 }
 
+static void
+setup_array(UnRun *u)
+{
+	const Expr *e = linitial(u->x->elem_array);
+	MemoryContext old;
+
+	u->estate = CreateExecutorState();
+	old = MemoryContextSwitchTo(u->estate->es_query_cxt);
+	u->arr = ExecPrepareExpr((Expr *) e, u->estate);
+	u->econtext = CreateExprContext(u->estate);
+	MemoryContextSwitchTo(old);
+	foreach_ptr(Var, v, pull_var_clause((Node *) e, 0))
+		u->arr_att = list_append_unique_int(u->arr_att, v->varattno);
+	u->arr_val = palloc(list_length(u->arr_att) * sizeof(Datum));
+	u->arr_null = palloc(list_length(u->arr_att) * sizeof(bool));
+}
+
+/* the array of the heap row of a tuple of the batch: its column, or the expression of the columns of the row */
+static Datum
+heap_array(UnRun *u, uint64 tag, bool *isnull)
+{
+	AttrNumber	atts[MaxHeapAttributeNumber];
+	TupleTableSlot *slot = u->heap_slot;
+	Datum		d;
+	bool		found;
+
+	if (u->arr == NULL)
+	{
+		found = u->src->fetch(u->src, tag, &u->heap_att, 1, &d, isnull);
+		SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its array is read");
+		return d;
+	}
+	for (int i = 0; i < list_length(u->arr_att); i++)
+		atts[i] = (AttrNumber) list_nth_int(u->arr_att, i);
+	found = u->src->fetch(u->src, tag, atts, list_length(u->arr_att), u->arr_val, u->arr_null);
+	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its array is read");
+	ExecClearTuple(slot);
+	memset(slot->tts_isnull, true, slot->tts_tupleDescriptor->natts * sizeof(bool));
+	for (int i = 0; i < list_length(u->arr_att); i++)
+	{
+		slot->tts_values[atts[i] - 1] = u->arr_val[i];
+		slot->tts_isnull[atts[i] - 1] = u->arr_null[i];
+	}
+	ExecStoreVirtualTuple(slot);
+	u->econtext->ecxt_scantuple = slot;
+	ResetExprContext(u->econtext);
+	return ExecEvalExprSwitchContext(u->arr, u->econtext, isnull);
+}
+
 /* a row of the batch: the array of its heap row taken apart as the function does, NULL and empty arrays included, errors included */
 static void
 emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
@@ -535,13 +593,11 @@ emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	uint64	   *keep = NULL;
 	uint32		nel = 0;
-	bool		isnull,
-				found;
+	bool		isnull;
 	Datum		d;
 
 	MemoryContextReset(u->bcx);
-	found = u->src->fetch(u->src, b->tag[row], &u->heap_att, 1, &d, &isnull);
-	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its array is read");
+	d = heap_array(u, b->tag[row], &isnull);
 	if (!isnull)
 		nel = u->rec != NULL ? sift_v6_recfn_call(u->rec, d, u->bcx, ev) : array_elems(u, d, ev);
 	if (u->has_ewhere && nel > 0)
@@ -697,6 +753,11 @@ v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation in
 	else
 		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 unnest heap rows");
+	if (u->x->elem_array != NIL)
+	{
+		setup_array(u);
+		u->heap_slot = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsVirtual);
+	}
 	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
 	u->eidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
 	u->month_key = palloc0(MONTH_SLOTS * sizeof(int32));
@@ -714,6 +775,11 @@ v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation in
 	while (u->src->next(u->src, &b))
 		run_batch(u, &b);
 	u->src->close(u->src);
+	if (u->estate != NULL)
+	{
+		ExecDropSingleTupleTableSlot(u->heap_slot);
+		FreeExecutorState(u->estate);
+	}
 	MemoryContextDelete(u->bcx);
 }
 
