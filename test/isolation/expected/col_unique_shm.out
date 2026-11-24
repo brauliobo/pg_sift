@@ -1,0 +1,175 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s1i s2i s1c s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_s VALUES (100, 's1');
+step s2i: INSERT INTO iso_s VALUES (100, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2i: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_s_idx"
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+100|s1
+(1 row)
+
+
+starting permutation: s1b s1i s2i s1r s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_s VALUES (100, 's1');
+step s2i: INSERT INTO iso_s VALUES (100, 's2'); <waiting ...>
+step s1r: ROLLBACK;
+step s2i: <... completed>
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+100|s2
+(1 row)
+
+
+starting permutation: s1b s1i s2nothing s1c s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_s VALUES (100, 's1');
+step s2nothing: INSERT INTO iso_s VALUES (100, 's2') ON CONFLICT (id) DO NOTHING; <waiting ...>
+step s1c: COMMIT;
+step s2nothing: <... completed>
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+100|s1
+(1 row)
+
+
+starting permutation: s1b s1i s2upsert s1c s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_s VALUES (100, 's1');
+step s2upsert: INSERT INTO iso_s VALUES (100, 's2') ON CONFLICT (id) DO UPDATE SET v = 'upserted'; <waiting ...>
+step s1c: COMMIT;
+step s2upsert: <... completed>
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v       
+---+--------
+100|upserted
+(1 row)
+
+
+starting permutation: s1b s1i s2upsert s1r s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_s VALUES (100, 's1');
+step s2upsert: INSERT INTO iso_s VALUES (100, 's2') ON CONFLICT (id) DO UPDATE SET v = 'upserted'; <waiting ...>
+step s1r: ROLLBACK;
+step s2upsert: <... completed>
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+100|s2
+(1 row)
+
+
+starting permutation: s1b s1sp s2i3 s1c s3q
+step s1b: BEGIN;
+step s1sp: SAVEPOINT a; INSERT INTO iso_s VALUES (300, 's1'); ROLLBACK TO a;
+step s2i3: INSERT INTO iso_s VALUES (300, 's2');
+step s1c: COMMIT;
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+300|s2
+(1 row)
+
+
+starting permutation: s1b s1rel s2i4 s1c s3q
+step s1b: BEGIN;
+step s1rel: SAVEPOINT a; INSERT INTO iso_s VALUES (400, 's1'); RELEASE a;
+step s2i4: INSERT INTO iso_s VALUES (400, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2i4: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_s_idx"
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+400|s1
+(1 row)
+
+
+starting permutation: s1b s1rel s2i4 s1r s3q
+step s1b: BEGIN;
+step s1rel: SAVEPOINT a; INSERT INTO iso_s VALUES (400, 's1'); RELEASE a;
+step s2i4: INSERT INTO iso_s VALUES (400, 's2'); <waiting ...>
+step s1r: ROLLBACK;
+step s2i4: <... completed>
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v 
+---+--
+400|s2
+(1 row)
+
+
+starting permutation: s1b s1i s1again s2i s1c s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_s VALUES (100, 's1');
+step s1again: DELETE FROM iso_s WHERE id = 100; INSERT INTO iso_s VALUES (100, 's1 again');
+step s2i: INSERT INTO iso_s VALUES (100, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2i: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_s_idx"
+step s3q: SELECT id, v FROM iso_s WHERE id IN (100, 300, 400, 1000000, 1140000) ORDER BY id, v;
+ id|v       
+---+--------
+100|s1 again
+(1 row)
+
+
+starting permutation: s1b s1big s2first s1c s3n
+step s1b: BEGIN;
+step s1big: INSERT INTO iso_s SELECT g, 'big' FROM generate_series(1000000, 1140000) g;
+step s2first: INSERT INTO iso_s VALUES (1000000, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2first: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_s_idx"
+step s3n: SELECT count(*) AS rows, count(DISTINCT id) AS ids FROM iso_s;
+  rows|   ids
+------+------
+140011|140011
+(1 row)
+
+
+starting permutation: s1b s1big s2first s1r s3n
+step s1b: BEGIN;
+step s1big: INSERT INTO iso_s SELECT g, 'big' FROM generate_series(1000000, 1140000) g;
+step s2first: INSERT INTO iso_s VALUES (1000000, 's2'); <waiting ...>
+step s1r: ROLLBACK;
+step s2first: <... completed>
+step s3n: SELECT count(*) AS rows, count(DISTINCT id) AS ids FROM iso_s;
+rows|ids
+----+---
+  11| 11
+(1 row)
+
+
+starting permutation: s1b s1big s2last s1c s3n
+step s1b: BEGIN;
+step s1big: INSERT INTO iso_s SELECT g, 'big' FROM generate_series(1000000, 1140000) g;
+step s2last: INSERT INTO iso_s VALUES (1140000, 's2'); <waiting ...>
+step s1c: COMMIT;
+step s2last: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_s_idx"
+step s3n: SELECT count(*) AS rows, count(DISTINCT id) AS ids FROM iso_s;
+  rows|   ids
+------+------
+140011|140011
+(1 row)
+
+
+starting permutation: s1b s1big s2last s1r s3n
+step s1b: BEGIN;
+step s1big: INSERT INTO iso_s SELECT g, 'big' FROM generate_series(1000000, 1140000) g;
+step s2last: INSERT INTO iso_s VALUES (1140000, 's2'); <waiting ...>
+step s1r: ROLLBACK;
+step s2last: <... completed>
+step s3n: SELECT count(*) AS rows, count(DISTINCT id) AS ids FROM iso_s;
+rows|ids
+----+---
+  11| 11
+(1 row)
+
