@@ -143,6 +143,11 @@ CREATE TABLE w_sys_x AS SELECT pg_current_xact_id()::xid AS x;
 COMMIT;
 SELECT bool_and(xmin = (SELECT x FROM w_sys_x)) AND bool_and(cmin::text = '0') AND count(*) FILTER (WHERE xmax::text <> '0') = 0 AS l09_system_columns FROM w_sys;
 
+-- a text query over the partitions: the text index of the partitioned table holds no hits, so the statement is the heap's answer, never an error
+CREATE INDEX wp_fts ON wp USING sift (memo);
+SELECT parity('SELECT id, placed FROM wp WHERE memo @@> ''cable'' ORDER BY placed DESC, id LIMIT 10') AS w12_partitioned_text_top_n;
+SELECT parity('SELECT status, count(*) FROM wp WHERE memo @@> ''wire'' GROUP BY status ORDER BY status') AS w12_partitioned_text_groups;
+
 DROP TABLE wh, wc, wt, wph, wp, w_tenants, w_1600, w_sys, w_sys_x;
 DROP FUNCTION rows_of(text, boolean), parity(text), plan_ok(text);
 DROP COLLATION w_nd;

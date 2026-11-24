@@ -7,11 +7,13 @@
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "miscadmin.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
@@ -44,6 +46,7 @@ struct SiftV6Text
 
 static const SiftHybridStore v6_text_store = {.host = SIFT_HYB_HOST_TABLE};
 
+/* the index of a partitioned table is no storage: only a partition's own index has hits to read */
 static IndexOptInfo *
 arm_index(RelOptInfo *rel, Node *clause, Const **query)
 {
@@ -51,7 +54,7 @@ arm_index(RelOptInfo *rel, Node *clause, Const **query)
 	{
 		Expr	   *q;
 
-		if (ix->relam == sift_catalog()->am && !ix->hypothetical && sift_match_clause(clause, ix, &q) && IsA(q, Const) && !((Const *) q)->constisnull &&
+		if (ix->relam == sift_catalog()->am && !ix->hypothetical && get_rel_relkind(ix->indexoid) == RELKIND_INDEX && sift_match_clause(clause, ix, &q) && IsA(q, Const) && !((Const *) q)->constisnull &&
 			((Const *) q)->consttype == TEXTOID)
 		{
 			*query = (Const *) q;
