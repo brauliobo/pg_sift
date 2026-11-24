@@ -11,6 +11,7 @@
 #include "core/host.h"
 
 #include "col/f2/delvec.h"
+#include "col/f2/f2_sink.h"
 #include "col/f2/preagg_v2.h"
 
 #define SIFT_PREAGG_DEAD_MAX	64
@@ -41,6 +42,12 @@ sift_preagg_delta_ok(int nrows, int ndead)
  * when it is at most cap, else cap + 1 (out is not complete then).
  */
 extern uint16 sift_excl_union_u16(const uint16 *a, uint16 na, const uint16 *b, uint16 nb, uint16 *out, uint16 cap);
+
+/*
+ * The rows of the granule the snapshot does not see (o->gd is the entry of granule o->g in the directory of the part): those the deletion vector shows deleted to the snapshot and those the pending deletes
+ * (o->px) name, ascending, in dead (SIFT_PREAGG_DEAD_MAX of them). Their number, or -1 when there are more than sift_preagg_delta_ok allows.
+ */
+extern int	sift_preagg_dead_rows(const SiftF2GranOffer *o, uint16 *dead);
 
 /* What a query reads of the measures of a cube, a bit for each measure: the measures it reads, those whose minimum or maximum it reads, and those whose float sum it reads */
 typedef struct SiftPreaggReads

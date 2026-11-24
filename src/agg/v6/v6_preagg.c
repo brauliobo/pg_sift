@@ -30,6 +30,7 @@ typedef struct AggBind
 {
 	AggSrc		src;
 	int			idx;
+	int			leaf;			/* the column of the part the aggregate reads, -1 for count(*) */
 } AggBind;
 
 typedef struct KeyBatch
@@ -84,6 +85,13 @@ def_plain(const SiftColDef *d)
 	return d->parent < 0 && d->lane == 0 && !sift_col_def_is_wide(d) && !(d->flags & SIFT_COLD_LOSSY) && (d->path == NULL || d->path[0] == '\0');
 }
 
+/* The column of the part that holds a leaf of the scan, -1: none */
+static int
+part_leaf(const SiftF2GranOffer *o, int leaf)
+{
+	return o->phys == NULL ? leaf : o->phys[leaf];
+}
+
 static bool
 agg_shape_ok(const SiftV6Agg *a)
 {
@@ -114,7 +122,7 @@ static bool
 spec_ok(const SiftV6Spec *spec)
 {
 	if (spec->nsets != 0 || spec->nbins != 0 || spec->nderive != 0 || spec->nfilters != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_query != NULL || spec->jsonqual != NIL ||
-		spec->rows || spec->is_table || spec->affine || spec->naggs < 1)
+		spec->rows || spec->affine || spec->naggs < 1)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 	{
@@ -136,7 +144,7 @@ sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, S
 	SiftV6Preagg *pa;
 	bool		dist = false;
 
-	if (!spec_ok(spec) || vet->heap == NULL)
+	if (!spec_ok(spec))
 		return NULL;
 	pa = palloc0(sizeof(SiftV6Preagg));
 	pa->spec = spec;
@@ -239,35 +247,37 @@ pred_on_dim(const SiftColDef *d, const SiftColPred *p, SiftPreaggDimKind kind)
 
 /* Where the aggregate is in the cube: false when it is not */
 static bool
-bind_agg(const SiftV6Preagg *pa, const SiftPreaggCubeDesc *cd, const SiftColSchema *schema, int j, AggBind *out)
+bind_agg(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCubeDesc *cd, int j, AggBind *out)
 {
+	const SiftColSchema *schema = o->schema;
 	const SiftV6Agg *a = &pa->spec->agg[j];
-	const int	leaf = pa->agg_leaf[j];
+	const int	today = pa->agg_leaf[j],
+				leaf = today < 0 ? today : part_leaf(o, today);
 	const SiftV6Class cls = sift_v6_class(a->arg.typid);
 	const bool	is_float = cls == SV6C_F64,
 				numeric = a->arg.typid == NUMERICOID;
 	int			m;
 
 	if (a->kind == SV6_COUNT_STAR)
-		*out = (AggBind) {ASRC_ROWS, 0};
-	else if (!def_plain(&schema->cols[leaf]))
+		*out = (AggBind) {ASRC_ROWS, 0, -1};
+	else if (leaf < 0 || !def_plain(&schema->cols[today]))
 		return false;
 	else if (a->kind == SV6_COUNT_DISTINCT)
 	{
 		const int	k = find_dist(cd, leaf);
 
-		if (k < 0 || (cls == SV6C_TEXT) != (schema->cols[leaf].store == SIFT_COLS_STR))
+		if (k < 0 || (cls == SV6C_TEXT) != (schema->cols[today].store == SIFT_COLS_STR))
 			return false;
-		*out = (AggBind) {ASRC_DIST, k};
+		*out = (AggBind) {ASRC_DIST, k, leaf};
 	}
 	else if ((m = find_meas(cd, leaf, is_float, numeric)) >= 0)
 	{
-		if (numeric && cd->meas_kind[m] == SIFT_PMEAS_NUM64 && schema->cols[leaf].scale != a->arg.scale)
+		if (numeric && cd->meas_kind[m] == SIFT_PMEAS_NUM64 && schema->cols[today].scale != a->arg.scale)
 			return false;
-		*out = (AggBind) {ASRC_MEAS, m};
+		*out = (AggBind) {ASRC_MEAS, m, leaf};
 	}
 	else if (a->kind == SV6_COUNT && (m = find_dim(cd, leaf, cls == SV6C_TEXT ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64)) >= 0)
-		*out = (AggBind) {ASRC_DIM, m};
+		*out = (AggBind) {ASRC_DIM, m, leaf};
 	else
 		return false;
 	return true;
@@ -285,7 +295,7 @@ bind_cube(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCube
 		const SiftPreaggDimKind kind = pa->key_text[i] ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64;
 		const SiftColDef *d = &schema->cols[pa->key_leaf[i]];
 
-		pb->key_dim[i] = find_dim(cd, pa->key_leaf[i], kind);
+		pb->key_dim[i] = find_dim(cd, part_leaf(o, pa->key_leaf[i]), kind);
 		if (pb->key_dim[i] < 0 || !def_plain(d) || (pa->key_text[i] ? d->type != SIFT_COLT_TEXT : d->store != SIFT_COLS_INT))
 			return -1;
 	}
@@ -295,7 +305,7 @@ bind_cube(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCube
 	{
 		const SiftV6Agg *a = &pa->spec->agg[j];
 
-		if (!bind_agg(pa, cd, schema, j, &pb->agg[j]))
+		if (!bind_agg(pa, o, cd, j, &pb->agg[j]))
 			return -1;
 		pb->has_dist |= pb->agg[j].src == ASRC_DIST;
 		if (pb->agg[j].src == ASRC_MEAS)
@@ -312,7 +322,7 @@ bind_cube(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCube
 	{
 		const SiftColPred *p = &o->preds[k];
 		const SiftColDef *d = &schema->cols[p->col];
-		int			dim = find_dim(cd, p->col, d->store == SIFT_COLS_STR ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64);
+		int			dim = find_dim(cd, part_leaf(o, p->col), d->store == SIFT_COLS_STR ? SIFT_PDIM_DICT32 : SIFT_PDIM_INT64);
 
 		pb->pred_dim[k] = dim;
 		pb->pred_ok[k] = dim >= 0 && pred_on_dim(d, p, cd->dim_kind[dim]);
@@ -508,33 +518,21 @@ cell_passes(const PartBind *pb, const SiftPreaggCubeDesc *cd, const SiftF2GranOf
 
 /* ---- the rows of the granule ---- */
 
-/* Whether the heap pages of the rows of the granule are all all-visible (so that no row needs a look at the heap) */
+/* Whether every row of the granule is known to the snapshot without a look at the row: the heap pages of a sift_col index are all-visible, the inserters of a sift_table are settled */
 static bool
-granule_visible(SiftV6Preagg *pa, const SiftGranuleDesc *gd)
+rows_known(SiftV6Preagg *pa, const SiftF2GranOffer *o)
 {
-	const BlockNumber lo = (BlockNumber) (gd->tid_min >> 16),
-				hi = (BlockNumber) (gd->tid_max >> 16);
+	const BlockNumber lo = (BlockNumber) (o->gd->tid_min >> 16),
+				hi = (BlockNumber) (o->gd->tid_max >> 16);
 
-	if (gd->tid_max == 0 || hi < lo || (uint64) hi - lo + 1 > PA_VM_SPAN_MAX)
+	if (o->vis != SIFT_GVIS_HEAP)
+		return o->vis == SIFT_GVIS_SETTLED;
+	if (o->gd->tid_max == 0 || hi < lo || (uint64) hi - lo + 1 > PA_VM_SPAN_MAX)
 		return false;
 	for (BlockNumber b = lo; b <= hi; b++)
 		if (!VM_ALL_VISIBLE(pa->vet->heap, b, &pa->vet->vmbuf))
 			return false;
 	return true;
-}
-
-/* The dead rows of the granule for the snapshot, ascending, in dead: their number, or -1 when the granule has more than it can be corrected for or one the snapshot does not see */
-static int
-dead_rows(const SiftF2GranOffer *o, uint16 *dead)
-{
-	uint16		n;
-
-	if (o->dead == NULL || o->dead->ndead == 0)
-		return 0;
-	if (!sift_preagg_delta_ok(o->gd->nrows, o->dead->ndead))
-		return -1;
-	n = sift_dv_visible_rows(o->dead, o->snap, dead, SIFT_PREAGG_DEAD_MAX);
-	return n == o->dead->ndead ? n : -1;
 }
 
 /* ---- cells to states ---- */
@@ -715,7 +713,7 @@ static void
 merge_dist(SiftV6Preagg *pa, const PartBind *pb, const SiftPreaggCubeDesc *cd, const SiftPreaggGran *gran, const int *cells, int ncells, int j, const DistSet *sets)
 {
 	const bool	text = sift_v6_class(pa->spec->agg[j].arg.typid) == SV6C_TEXT;
-	const SiftPartDict *pd = text ? sift_part_dict_find(pb->dicts, pa->agg_leaf[j], SIFT_DICT_KIND_STR) : NULL;
+	const SiftPartDict *pd = text ? sift_part_dict_find(pb->dicts, pb->agg[j].leaf, SIFT_DICT_KIND_STR) : NULL;
 
 	pa->dvec = (SiftVec) {.data = pa->ddata,.dense = true,.type = text ? SVEC_STRVIEW : SVEC_I64};
 	kb_reset(pa, pb);
@@ -811,11 +809,11 @@ sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *o)
 	int			ndead;
 	bool		done = false;
 
-	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || o->pend_hit || o->patched)
+	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || o->patched)
 		return false;
 	if ((!pb->bound || pb->gen != o->desc->part_gen) && !bind_part(pa, o))
 		return false;
-	if (!pb->usable || !preds_answerable(pb, o) || !granule_visible(pa, o->gd) || (ndead = dead_rows(o, dead)) < 0)
+	if (!pb->usable || !preds_answerable(pb, o) || !rows_known(pa, o) || (ndead = sift_preagg_dead_rows(o, dead)) < 0)
 		return false;
 	if (ndead > 0 && (pb->has_dist || pb->reads.float_sum != 0))
 		return false;

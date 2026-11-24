@@ -500,7 +500,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 				offer_exc[k] = has_exceptions(exc, nexc, g, s->preds[k].col);
 			}
 			if (s->gran_sink(s->gran_arg, &(SiftF2GranOffer) {.rel = rel,.part = part,.desc = s->part,.schema = schema,.g = g,.gd = &dir[g],.dead = dg,.snap = snap,.preds = s->preds,.npreds = s->npreds,
-							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g)}))
+							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g),.px = px,.vis = SIFT_GVIS_HEAP}))
 				continue;
 		}
 		old = MemoryContextSwitchTo(gcx);

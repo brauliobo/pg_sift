@@ -6,6 +6,7 @@
 #include "core/host.h"
 
 #include "col/f2/part_format.h"
+#include "col/f2/pend_del.h"
 #include "col/f2/preagg_delta.h"
 
 uint16
@@ -33,6 +34,42 @@ sift_excl_union_u16(const uint16 *a, uint16 na, const uint16 *b, uint16 nb, uint
 		out[n++] = next;
 	}
 	return n;
+}
+
+/* The rows of the granule a pending delete names: their number, or SIFT_PREAGG_DEAD_MAX + 1 when they are more */
+static uint16
+pending_rows(const SiftF2GranOffer *o, uint16 *rows)
+{
+	uint64	   *tids;
+	uint16		n = 0;
+
+	if (o->px == NULL || !o->pend_hit)
+		return 0;
+	tids = sift_part_read_tids(o->rel, o->part, o->gd - o->g, o->g);
+	for (uint16 r = 0; r < o->gd->nrows && n <= SIFT_PREAGG_DEAD_MAX; r++)
+		if (sift_pdel_idx_has(o->px, tids[r]))
+		{
+			if (n < SIFT_PREAGG_DEAD_MAX)
+				rows[n] = r;
+			n++;
+		}
+	pfree(tids);
+	return n;
+}
+
+int
+sift_preagg_dead_rows(const SiftF2GranOffer *o, uint16 *dead)
+{
+	uint16		dv[SIFT_PREAGG_DEAD_MAX],
+				pend[SIFT_PREAGG_DEAD_MAX],
+				ndv = o->dead != NULL ? sift_dv_visible_rows(o->dead, o->snap, dv, SIFT_PREAGG_DEAD_MAX) : 0,
+				npend = ndv > SIFT_PREAGG_DEAD_MAX ? 0 : pending_rows(o, pend),
+				n;
+
+	if (ndv > SIFT_PREAGG_DEAD_MAX || npend > SIFT_PREAGG_DEAD_MAX)
+		return -1;
+	n = sift_excl_union_u16(dv, ndv, pend, npend, dead, SIFT_PREAGG_DEAD_MAX);
+	return n <= SIFT_PREAGG_DEAD_MAX && sift_preagg_delta_ok(o->gd->nrows, n) ? n : -1;
 }
 
 typedef struct RowVals

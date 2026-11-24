@@ -57,6 +57,13 @@ extern void sift_f2_scan_set_part_dict_sink(IndexScanDesc scan, SiftF2PartDictSi
  * them the zones or the indexes found true of every row (decided[k]) and the zone of the leaf of each (NULL: none), whether a value the zone holds is one the leaf could not keep (exceptions[k]), its deletion
  * vector for the snapshot and whether a pending delete may be in it. A consumer that answers the granule from what it stores returns true and the granule is not read.
  */
+typedef enum SiftF2GranVis
+{
+	SIFT_GVIS_HEAP,				/* a sift_col index: the heap says what each row is, so the consumer knows them when the heap pages of the granule are all-visible */
+	SIFT_GVIS_SETTLED,			/* a sift_table: the inserters of every row are settled for the snapshot, and the deletes it sees are those of the deletion vector and the pending deletes */
+	SIFT_GVIS_PER_ROW			/* a sift_table: the rows are asked one by one (an inserter that is not settled, a snapshot that is not MVCC, a serializable transaction) */
+} SiftF2GranVis;
+
 typedef struct SiftF2GranOffer
 {
 	Relation	rel;
@@ -73,7 +80,10 @@ typedef struct SiftF2GranOffer
 	const SiftZone *const *zones;
 	const bool *exceptions;
 	bool		pend_hit;		/* a pending delete may be in the granule */
-	bool		patched;		/* the part has column deltas */
+	bool		patched;		/* a column delta changes cells of the granule */
+	const struct SiftPendDelIndex *px;	/* the addresses the pending deletes and the deletes of the transaction take from the snapshot; NULL: none */
+	SiftF2GranVis vis;
+	const int16 *phys;			/* the column of the part that holds each leaf the scan names, -1: none that holds its cells as they are; NULL: the part has the leaves of the scan */
 } SiftF2GranOffer;
 
 typedef bool (*SiftF2GranSink) (void *arg, const SiftF2GranOffer *offer);

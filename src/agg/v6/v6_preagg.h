@@ -19,7 +19,7 @@
 
 typedef struct SiftV6Preagg SiftV6Preagg;
 
-/* The state for one scan of the index into g (first: the leaf of each attribute of the index); NULL when the statement is not one the cubes can answer */
+/* The state for one scan of the index or table into g (first: the leaf of each attribute; vet: the heap of an index, NULL for a table); NULL when the statement is not one the cubes can answer */
 extern SiftV6Preagg *sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, SiftV6Vet *vet, SiftV6ScanStats *stats);
 /* A SiftF2GranSink: true when the granule was answered and is not to be read */
 extern bool sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *offer);
