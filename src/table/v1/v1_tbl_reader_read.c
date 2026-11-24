@@ -304,4 +304,3 @@ sift_v1_tbl_wide_read(SiftV1Tbl *t, int leaf, const TblPart *p, const SiftColVec
 	t->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++t->wseq), w.nd, w.off, w.bytes};
 	*vec = (SiftSrcVec) {.data = b->data,.isnull = has_null ? b->isnull : NULL,.dict = &t->dict[leaf],.n = n};
 }
-
