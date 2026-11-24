@@ -10,6 +10,7 @@
 
 #include "access/htup_details.h"
 #include "access/tsmapi.h"
+#include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
@@ -113,19 +114,42 @@ typedef struct ParImage
 	Oid			relid;
 	uint64		nunits;
 	ScanUnit   *units;
+	MemoryContext cx;			/* the image and everything its listing took: deleted when the scan is set up */
 } ParImage;
 
 static List *par_images = NIL;
+static bool par_hooked;
+
+static void
+par_xact_end(XactEvent event pg_attribute_unused(), void *arg pg_attribute_unused())
+{
+	par_images = NIL;
+}
+
+static void
+par_subxact_end(SubXactEvent event, SubTransactionId mySubid pg_attribute_unused(), SubTransactionId parentSubid pg_attribute_unused(), void *arg pg_attribute_unused())
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		par_images = NIL;
+}
 
 Size
 sift_tbl_f2_parallelscan_estimate(Relation rel)
 {
-	/* MEM[MEM-TBL-12]: TopTransactionContext parallel scan unit image (pfree after init) */
-	ParImage   *im = MemoryContextAlloc(TopTransactionContext, sizeof(ParImage));
-	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
+	MemoryContext cx = sift_mem_allocset_create(TopTransactionContext, "sift table parallel scan units");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	ParImage   *im = palloc(sizeof(ParImage));
 
 	im->relid = RelationGetRelid(rel);
+	im->cx = cx;
 	im->units = list_units(rel, sift_f2_store_open(rel), &im->nunits);
+	MemoryContextSwitchTo(TopTransactionContext);
+	if (!par_hooked)
+	{
+		RegisterXactCallback(par_xact_end, NULL);
+		RegisterSubXactCallback(par_subxact_end, NULL);
+		par_hooked = true;
+	}
 	par_images = lappend(par_images, im);
 	MemoryContextSwitchTo(old);
 	return offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit);
@@ -137,6 +161,7 @@ sift_tbl_f2_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	SiftTblF2Parallel *par = (SiftTblF2Parallel *) pscan;
 	ParImage   *im = NULL;
 	ListCell   *lc;
+	Size		len;
 
 	foreach(lc, par_images)
 		if (((ParImage *) lfirst(lc))->relid == RelationGetRelid(rel))
@@ -155,7 +180,9 @@ sift_tbl_f2_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	par->nunits = im->nunits;
 	memcpy(par->units, im->units, im->nunits * sizeof(ScanUnit));
 	sift_unit_queue_init(&par->queue, im->nunits);
-	return offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit);
+	len = offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit);
+	MemoryContextDelete(im->cx);
+	return len;
 }
 
 void
