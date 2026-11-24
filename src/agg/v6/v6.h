@@ -121,6 +121,13 @@ typedef struct SiftV6Agg
 	double		frac;			/* SV6_PCT_CONT: the fraction */
 } SiftV6Agg;
 
+/* a generic PostgreSQL aggregate or an ordered-set one (v6_gen.h): it reads up to nine columns, one per argument that is not a constant, and folds a NaN as PostgreSQL's own function does */
+static inline bool
+v6g_is_gen(const SiftV6Agg *a)
+{
+	return a->kind == SV6_GEN_PG || a->kind == SV6_OSA;
+}
+
 /* A numeric NaN is not NULL: these aggregates fold it. It counts, and makes a sum or an average NaN, a maximum NaN and a minimum NaN when no other row has a value, and is one more distinct value */
 static inline bool
 sift_v6_agg_takes_nan(const SiftV6Agg *a)
@@ -225,6 +232,7 @@ typedef struct SiftV6Spec
 	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
 	List	   *pgexpr;			/* the PostgreSQL expressions of the SVD_PG_EXPR derivations: their items (v6_pg_expr.h) */
 	bool		constant_groups;	/* GROUP BY of expressions that read no column: no group when no row is read (the single set of no keys has a row only once a row was folded) */
+	List	   *genref;			/* the Aggref of each SV6_GEN_PG and SV6_OSA aggregate, in the order of agg (v6_gen.h) */
 	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
 } SiftV6Spec;
 
@@ -301,6 +309,8 @@ extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptI
 extern bool sift_v6_leaf_holds(const SiftColRel *r, int att, SiftV6Class cls);
 /* The same for column att of a sift_table (1-based), by the schema of its store */
 extern bool sift_v6_table_leaf_holds(const SiftStoreSchema *table, int att, SiftV6Class cls);
+/* is vector v of a batch (the argvec of sift_v6_group_update) one the generic or ordered-set aggregates of the spec read (v6_gen.c) */
+extern bool sift_v6_vec_of_gen(const SiftV6Spec *spec, int v);
 extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
 extern bool sift_v6_kind_takes(SiftV6Kind kind, Oid typid);
 /* The aggregate of the facts of a join as a scan of the index (the tuple of its scan tlist): false when a key, an aggregate or a qual of the facts is not one the scan decides (scope_v6.c adds the members of a scope key) */
