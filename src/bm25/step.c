@@ -402,7 +402,7 @@ doctext_open(Relation index)
 	d->fetch = sift_table_index_fetch_begin(d->heap);
 	d->an = sift_analyzer_create(&cfg, CurrentMemoryContext);
 	sift_analyzer_set_positions(d->an, true);
-	d->nblocks = RelationGetNumberOfBlocks(d->heap);
+	d->nblocks = sift_vis_nblocks(d->heap);
 	if (index->rd_index->indnkeyatts == 1 && sift_tbl_is_table(d->heap) && ((SiftTblFetchHeader *) d->fetch)->ops->fetch_order != NULL)
 	{
 		d->wcx = sift_mem_allocset_create(CurrentMemoryContext, "sift doctext window");

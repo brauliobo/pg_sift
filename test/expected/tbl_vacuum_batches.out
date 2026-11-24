@@ -198,7 +198,7 @@ RESET sift.test_vacuum_batch_bytes;
 SELECT what, a.val, a.val = b.val AS b_same, a.val = c.val AS c_same FROM state('a') a JOIN state('b') b USING (what) JOIN state('c') c USING (what) ORDER BY what;
     what     |                             val                              | b_same | c_same 
 -------------+--------------------------------------------------------------+--------+--------
- bm25 docs   | immutable 30000 12000,buffer 0 0                             | t      | t
+ bm25 docs   | immutable 25000 0,buffer 0 0                                 | t      | t
  grp entries | 25000                                                        | t      | t
  id entries  | 25000                                                        | t      | t
  rows        | 25000 484001000 96c6cb88848f1c874350da681c4c0af3             | t      | t
@@ -208,7 +208,7 @@ SELECT what, a.val, a.val = b.val AS b_same, a.val = c.val AS c_same FROM state(
 SELECT what, e.val, d.val = e.val AS d_same FROM state('d') d JOIN state('e') e USING (what) ORDER BY what;
     what     |                      val                       | d_same 
 -------------+------------------------------------------------+--------
- bm25 docs   | immutable 1000 0,buffer 0 0                    | t
+ bm25 docs   | immutable 2000 0,buffer 0 0                    | t
  grp entries | 2000                                           | t
  id entries  | 2000                                           | t
  rows        | 2000 85001000 d881dc0427128dc051a45e209c50122b | t
