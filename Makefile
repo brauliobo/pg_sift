@@ -100,6 +100,7 @@ TESTING_REGRESS += agg_mem_spill
 TESTING_REGRESS += agg_outer_walks_once
 TESTING_REGRESS += agg_par_blob_chunks
 TESTING_REGRESS += agg_par_join_split
+TESTING_REGRESS += agg_par_jsonb_unnest
 TESTING_REGRESS += agg_par_partitions
 TESTING_REGRESS += agg_par_pay
 TESTING_REGRESS += agg_par_split

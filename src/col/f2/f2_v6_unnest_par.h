@@ -21,8 +21,12 @@ typedef struct SiftV6UnnestSrc
 	void		(*fold) (void *arg, const SiftF2ExtBatch *b, const uint64 *mask);
 	/* The scan of the index starts over; next gives the batches again, and not their rows of the heap */
 	void		(*redo) (void *arg);
+	/* The elements of the batch that pass the quals of the element, bit i for the element offsets[0] + i of its layout; NULL: all of them. Valid until the next call of next */
+	const uint64 *(*elem_keep) (void *arg, const SiftF2ExtBatch *b);
 	SiftUnPairs *pairs;			/* the pairs into the pipe of the statement */
-	const SiftV6Pipe *pipe;		/* the pipe of the statement: its fact slots are the columns of the batch, then the element */
+	const SiftV6Pipe *pipe;		/* the pipe of the statement: its fact slots are the columns of the batch, then the nel columns of the element */
+	int			nel;
+	uint32		eused;			/* the columns of the element the statement reads, one bit each */
 	bool		left;
 	void	   *arg;
 } SiftV6UnnestSrc;

@@ -1,0 +1,154 @@
+-- LATERAL jsonb_to_recordset over the shredded leaves of a jsonb array of objects (format major 2) on the compute threads of the backend (core/par/pool.h): the leader copies the lengths and the columns of the
+-- elements of a batch into a slot, the threads expand them into pairs and fold them. The rows the leaves cannot hold (a value of another JSON type than its column's), the elements the quals of the element
+-- reject, rows deleted or updated after the build, and more groups than work_mem holds are the leader's, and the answer is the same. Every query is run with the node on 4 threads and with the aggregate scan off,
+-- and the sorted rows are compared; the first word says they agree, the second that the plan is the node's, the third that the answer is not empty.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 3;
+SET jit = off;
+SET work_mem = '256MB';
+SET sift.test_create_format1 = off;
+SET sift.agg_force = on;
+\ir test/agg_helpers.sql
+\set ECHO none
+\set ECHO none
+    label    | same | node | nonempty 
+-------------+------+------+----------
+ text column | t    | t    | t
+(1 row)
+
+          label           | same | node | nonempty 
+--------------------------+------+------+----------
+ text and integer columns | t    | t    | t
+(1 row)
+
+            label            | same | node | nonempty 
+-----------------------------+------+------+----------
+ integer column, int row key | t    | t    | t
+(1 row)
+
+            label             | same | node | nonempty 
+------------------------------+------+------+----------
+ text row key and text column | t    | t    | t
+(1 row)
+
+            label             | same | node | nonempty 
+------------------------------+------+------+----------
+ count and sum of the columns | t    | t    | t
+(1 row)
+
+                 label                 | same | node | nonempty 
+---------------------------------------+------+------+----------
+ sum of a column of the row with NULLs | t    | t    | t
+(1 row)
+
+        label         | same | node | nonempty 
+----------------------+------+------+----------
+ a column left unread | t    | t    | t
+(1 row)
+
+      label      | same | node | nonempty 
+-----------------+------+------+----------
+ a float8 column | t    | t    | t
+(1 row)
+
+         label          | same | node | nonempty 
+------------------------+------+------+----------
+ left join, text column | t    | t    | t
+(1 row)
+
+         label          | same | node | nonempty 
+------------------------+------+------+----------
+ left join, two columns | t    | t    | t
+(1 row)
+
+            label             | same | node | nonempty 
+------------------------------+------+------+----------
+ a qual of the integer column | t    | t    | t
+(1 row)
+
+           label           | same | node | nonempty 
+---------------------------+------+------+----------
+ a qual of the text column | t    | t    | t
+(1 row)
+
+                   label                   | same | node | nonempty 
+-------------------------------------------+------+------+----------
+ quals of both columns, a NULL test and IN | t    | t    | t
+(1 row)
+
+       label       | same | node | nonempty 
+-------------------+------+------+----------
+ a qual of the row | t    | t    | t
+(1 row)
+
+               label                | same | node | nonempty 
+------------------------------------+------+------+----------
+ the array is a key of the document | t    | t    | t
+(1 row)
+
+                     label                     | same | node | nonempty 
+-----------------------------------------------+------+------+----------
+ the array is a key of the document, left join | t    | t    | t
+(1 row)
+
+               label               | same | node | nonempty 
+-----------------------------------+------+------+----------
+ a group for every row and element | t    | t    | t
+(1 row)
+
+        label        | same | node | nonempty 
+---------------------+------+------+----------
+ a join with a table | t    | t    | t
+(1 row)
+
+                               label                               | same | node | nonempty 
+-------------------------------------------------------------------+------+------+----------
+ a group for every row and element, the groups outgrow the threads | t    | t    | t
+(1 row)
+
+             label             | same | node | nonempty 
+-------------------------------+------+------+----------
+ work_mem holds no two threads | t    | t    | t
+(1 row)
+
+               label                | same | node | nonempty 
+------------------------------------+------+------+----------
+ after deletes, updates and inserts | t    | t    | t
+(1 row)
+
+                     label                     | same | node | nonempty 
+-----------------------------------------------+------+------+----------
+ after deletes, updates and inserts, left join | t    | t    | t
+(1 row)
+
+    label     | same | node | nonempty 
+--------------+------+------+----------
+ after vacuum | t    | t    | t
+(1 row)
+
+  label   | same | node | nonempty 
+----------+------+------+----------
+ text key | t    | t    | t
+(1 row)
+
+            label             | same | node | nonempty 
+------------------------------+------+------+----------
+ smallint key, sum of integer | t    | t    | t
+(1 row)
+
+   label    | same | node | nonempty 
+------------+------+------+----------
+ bigint key | t    | t    | t
+(1 row)
+
+   label    | same | node | nonempty 
+------------+------+------+----------
+ float8 key | t    | t    | t
+(1 row)
+
+                label                 | same | node | nonempty 
+--------------------------------------+------+------+----------
+ quals of the bigint and the smallint | t    | t    | t
+(1 row)
+

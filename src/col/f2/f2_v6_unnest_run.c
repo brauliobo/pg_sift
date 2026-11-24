@@ -497,11 +497,13 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		}
 }
 
-/* a statement of plain columns of the table and one element column, the pairs of which the compute threads can fold as the serial run does */
+/* a statement of plain columns of the table and of the element, the pairs of which the compute threads can fold as the serial run does */
 static bool
 par_plain(const UnRun *u)
 {
-	if (u->x->elem.fn != SV6E_UNNEST || u->keyed || u->ntests > 0 || u->nel != 1 || u->row_slot >= 0 || u->spec->nderive > 0 || u->eev != NULL || u->x->ndims > 0 || u->attr_slot != NULL)
+	const SiftV6ElemFn fn = u->x->elem.fn;
+
+	if ((fn != SV6E_UNNEST && fn != SV6E_RECORDSET) || u->ntests > 0 || u->row_slot >= 0 || u->spec->nderive > 0 || u->x->ndims > 0 || u->attr_slot != NULL)
 		return false;
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].month || u->cols[i].json)
@@ -569,24 +571,63 @@ par_next_batch(void *arg, const SiftF2ExtBatch **bp, uint64 *mask)
 	return false;
 }
 
+/* The quals of the element on the elements of the batch, bit e of the elements of its layout (es->n_elems of them) */
+static const uint64 *
+batch_keep(UnRun *u, const SiftF2ExtBatch *b, const SiftVec *ev)
+{
+	const SiftF2ElemStream *es = b->elem;
+	uint64	   *keep;
+
+	if (u->eev == NULL)
+		return NULL;
+	keep = MemoryContextAllocZero(u->bcx, ((es->n_elems + 63) / 64 + 1) * sizeof(uint64));
+	sift_f2_elem_eval(u->eev, ev, es->layout.offsets[0], es->layout.offsets[b->n], keep);
+	return keep;
+}
+
+/* The same for the elements of the slot of the batch: bit i for the element offsets[0] + i, none set past the last */
+static const uint64 *
+par_elem_keep(void *arg, const SiftF2ExtBatch *b)
+{
+	UnRun	   *u = arg;
+	const SiftF2ElemStream *es = b->elem;
+	const uint32 first = es->layout.offsets[0],
+				nelems = es->layout.offsets[b->n] - first,
+				shift = first & 63;
+	const uint64 *keep;
+	uint64	   *out;
+	SiftVec		ev[SIFT_V6_XELEM_COLS];
+
+	elem_vecs(u, es, ev);
+	if ((keep = batch_keep(u, b, ev)) == NULL)
+		return NULL;
+	out = MemoryContextAllocZero(u->bcx, ((nelems + 63) / 64 + 1) * sizeof(uint64));
+	for (uint32 w = 0; w < (nelems + 63) / 64; w++)
+		out[w] = keep[first / 64 + w] >> shift | (shift == 0 ? 0 : keep[first / 64 + w + 1] << (64 - shift));
+	if (nelems & 63)
+		out[nelems / 64] &= (UINT64CONST(1) << (nelems & 63)) - 1;
+	return out;
+}
+
 /* The pairs of the rows of mask, read from the columns of the index */
 static void
 par_fold_pairs(void *arg, const SiftF2ExtBatch *b, const uint64 *mask)
 {
 	UnRun	   *u = arg;
 	const SiftF2ElemStream *es = b->elem;
-	const SiftUnnestIn in = {.lay = &es->layout,.parent_mask = mask,.doc_valid = es->doc_valid,.left = u->x->elem.left};
+	SiftUnnestIn in = {.lay = &es->layout,.parent_mask = mask,.doc_valid = es->doc_valid,.left = u->x->elem.left};
 	SiftUnnestCursor cur = {0};
 	SiftVec		ev[SIFT_V6_XELEM_COLS];
 	uint64		none[SIFT_VEC_WORDS];
 
 	elem_vecs(u, es, ev);
+	in.elem_mask = batch_keep(u, b, ev);
 	while (!sift_unnest_done(&in, &cur))
 	{
 		const uint32 m = sift_unnest_expand(&in, &cur, sift_un_pairs_pidx(u->pairs), sift_un_pairs_eidx(u->pairs), SIFT_VEC_LEN, none);
 
 		if (m > 0)
-			sift_un_pairs_emit(u->pairs, b->col, &ev[0], m);
+			sift_un_pairs_emit(u->pairs, b->col, ev, m);
 	}
 }
 
@@ -605,16 +646,16 @@ par_redo(void *arg)
 static bool
 unnest_par(UnRun *u, SiftV6Group *g)
 {
-	SiftVecType type[SIFT_F2_PULL_MAX_COLS + 1];
 	SiftV6UnnestSrc src;
+	uint32		eused = 0;
 
 	if (!par_plain(u))
 		return false;
-	for (int i = 0; i < u->ncols; i++)
-		type[i] = vec_type(u->cols[i].cls);
-	type[u->ncols] = u->etype[0];
-	u->pairs = sift_un_pairs_new(CurrentMemoryContext, u->pipe, u->ncols, type);
-	src = (SiftV6UnnestSrc) {.next = par_next_batch,.fold = par_fold_pairs,.redo = par_redo,.pairs = u->pairs,.pipe = u->pipe,.left = u->x->elem.left,.arg = u};
+	for (int c = 0; c < u->nel; c++)
+		eused |= (uint32) u->eused[c] << c;
+	u->pairs = sift_un_pairs_new(CurrentMemoryContext, u->pipe, u->ncols, u->nel, eused);
+	src = (SiftV6UnnestSrc) {.next = par_next_batch,.fold = par_fold_pairs,.redo = par_redo,.elem_keep = par_elem_keep,.pairs = u->pairs,.pipe = u->pipe,.nel = u->nel,.eused = eused,
+		.left = u->x->elem.left,.arg = u};
 	return sift_v6_unnest_par(u->spec, g, u->index, &src);
 }
 

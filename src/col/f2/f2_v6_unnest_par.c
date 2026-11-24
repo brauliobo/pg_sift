@@ -34,7 +34,8 @@ typedef struct UnPar
 	SiftParGroup *grp;
 	MemoryContext cx;
 	int			ncols;
-	SiftVecType type[SIFT_UN_COLS_MAX + 1];
+	int			nel;
+	SiftVecType type[SIFT_UN_COLS_MAX + SIFT_UN_ELEMS_MAX];
 	uint32		nslots;
 	SiftUnSlot **slot;
 	uint32	   *seq;			/* the batch of each slot */
@@ -54,6 +55,7 @@ slot_new(UnPar *r)
 	SiftUnSlot *sl = MemoryContextAllocAligned(r->cx, sizeof(SiftUnSlot), alignof(SiftUnSlot), MCXT_ALLOC_ZERO);
 
 	sl->ncols = r->ncols;
+	sl->nel = r->nel;
 	for (int i = 0; i < r->ncols; i++)
 	{
 		sl->data[i] = MemoryContextAllocAligned(r->cx, SIFT_VEC_LEN * sift_gather_width(r->type[i]) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
@@ -63,20 +65,33 @@ slot_new(UnPar *r)
 }
 
 static void
+free_elems(SiftUnSlot *sl)
+{
+	for (int c = 0; c < sl->nel; c++)
+		if (sl->edata[c] != NULL)
+		{
+			pfree(sl->edata[c]);
+			pfree(sl->evalid[c]);
+			sl->edata[c] = NULL;
+		}
+	if (sl->ebits != NULL)
+		pfree(sl->ebits);
+}
+
+static void
 grow_elems(UnPar *r, SiftUnSlot *sl, uint32 need)
 {
-	const size_t w = sift_gather_width(r->type[r->ncols]);
-
-	if (need <= sl->ecap && sl->edata != NULL)
+	if (need <= sl->ecap && sl->ebits != NULL)
 		return;
-	if (sl->edata != NULL)
-	{
-		pfree(sl->edata);
-		pfree(sl->evalid);
-	}
+	free_elems(sl);
 	sl->ecap = Max(need, 4 * SIFT_VEC_LEN);
-	sl->edata = MemoryContextAllocAligned(r->cx, (size_t) sl->ecap * w + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_HUGE);
-	sl->evalid = MemoryContextAllocZero(r->cx, ((sl->ecap + 63) / 64 + 1) * sizeof(uint64));
+	sl->ebits = MemoryContextAllocZero(r->cx, ((sl->ecap + 63) / 64 + 1) * sizeof(uint64));
+	for (int c = 0; c < r->nel; c++)
+		if ((r->src->eused >> c) & 1)
+		{
+			sl->edata[c] = MemoryContextAllocAligned(r->cx, (size_t) sl->ecap * sift_gather_width(r->type[r->ncols + c]) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_HUGE);
+			sl->evalid[c] = MemoryContextAllocZero(r->cx, ((sl->ecap + 63) / 64 + 1) * sizeof(uint64));
+		}
 }
 
 static bool
@@ -131,16 +146,15 @@ copy_valid(uint64 *dst, const SiftVec *src, uint32 from, uint32 n)
 		dst[i >> 6] |= (uint64) (src->all_valid || bit_at(src->valid, from + i)) << (i & 63);
 }
 
-/* The batch b with the rows of mask, made the slot's own: nothing of it points into the memory of the scan */
+/* The batch b with the rows of mask and the elements of keep (NULL: all), made the slot's own: nothing of it points into the memory of the scan */
 static void
-slot_fill(UnPar *r, SiftUnSlot *sl, const SiftF2ExtBatch *b, const uint64 *mask)
+slot_fill(UnPar *r, SiftUnSlot *sl, const SiftF2ExtBatch *b, const uint64 *mask, const uint64 *keep)
 {
 	const SiftF2ElemStream *es = b->elem;
 	const uint32 n = b->n,
 				words = (n + 63) / 64,
 				first = es->layout.offsets[0],
 				nelems = es->layout.offsets[n] - first;
-	const size_t ew = sift_gather_width(r->type[r->ncols]);
 	size_t		bytes = 0;
 	char	   *at;
 
@@ -162,10 +176,20 @@ slot_fill(UnPar *r, SiftUnSlot *sl, const SiftF2ExtBatch *b, const uint64 *mask)
 		sl->col[i] = (SiftVec) {.data = sl->data[i],.valid = sl->valid[i],.len = (uint16) n,.dense = true,.type = r->type[i]};
 		bytes += long_bytes(&sl->col[i], n);
 	}
-	memcpy(sl->edata, (const char *) es->child_data[0] + first * ew, nelems * ew);
-	copy_valid(sl->evalid, &(SiftVec) {.valid = (uint64 *) es->child_valid[0]}, first, nelems);
-	sl->elem = (SiftVec) {.data = sl->edata,.valid = sl->evalid,.len = 0,.dense = true,.type = r->type[r->ncols]};
-	bytes += long_bytes(&sl->elem, nelems);
+	for (int c = 0; c < r->nel; c++)
+	{
+		const SiftVecType type = r->type[r->ncols + c];
+		const size_t ew = sift_gather_width(type);
+
+		sl->elem[c] = (SiftVec) {.type = type};
+		if (!((r->src->eused >> c) & 1))
+			continue;
+		memcpy(sl->edata[c], (const char *) es->child_data[c] + first * ew, nelems * ew);
+		copy_valid(sl->evalid[c], &(SiftVec) {.valid = (uint64 *) es->child_valid[c]}, first, nelems);
+		sl->elem[c] = (SiftVec) {.data = sl->edata[c],.valid = sl->evalid[c],.len = 0,.dense = true,.type = type};
+		bytes += long_bytes(&sl->elem[c], nelems);
+	}
+	sl->emask = keep == NULL ? NULL : memcpy(sl->ebits, keep, (nelems + 63) / 64 * sizeof(uint64));
 	if (bytes > sl->strcap)
 	{
 		if (sl->str != NULL)
@@ -176,7 +200,9 @@ slot_fill(UnPar *r, SiftUnSlot *sl, const SiftF2ExtBatch *b, const uint64 *mask)
 	at = sl->str;
 	for (int i = 0; i < r->ncols; i++)
 		at = own_strings(&sl->col[i], n, at);
-	own_strings(&sl->elem, nelems, at);
+	for (int c = 0; c < r->nel; c++)
+		if ((r->src->eused >> c) & 1)
+			at = own_strings(&sl->elem[c], nelems, at);
 }
 
 /* ---- the batches the threads folded ---- */
@@ -243,7 +269,7 @@ op_feed(void *vr, uint32 item)
 			src->fold(src->arg, b, mask);
 			continue;
 		}
-		slot_fill(r, r->slot[item % r->nslots], b, mask);
+		slot_fill(r, r->slot[item % r->nslots], b, mask, src->elem_keep(src->arg, b));
 		r->seq[item % r->nslots] = seq;
 		mark_folded(r, seq, true);
 		return true;
@@ -357,20 +383,21 @@ sift_v6_unnest_par(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const
 	bool		done,
 				kept;
 
-	if (nthreads < 2 || src->pipe->nfact - 1 > SIFT_UN_COLS_MAX || !sift_par_unnest_shape(spec, &r->sh))
+	if (nthreads < 2 || src->pipe->nfact - src->nel > SIFT_UN_COLS_MAX || !sift_par_unnest_shape(spec, &r->sh))
 		return false;
 	if ((nthreads = threads_fit(r, nthreads)) < 2)
 		return false;
 	r->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest run");
 	old = MemoryContextSwitchTo(r->cx);
-	r->ncols = src->pipe->nfact - 1;
+	r->nel = src->nel;
+	r->ncols = src->pipe->nfact - src->nel;
 	memcpy(r->type, src->pipe->type, src->pipe->nfact * sizeof(SiftVecType));
 	r->nslots = 2 * nthreads;
 	r->slot = palloc(r->nslots * sizeof(SiftUnSlot *));
 	r->seq = palloc0(r->nslots * sizeof(uint32));
 	for (uint32 s = 0; s < r->nslots; s++)
 		r->slot[s] = slot_new(r);
-	r->un = sift_par_unnest_new(r->cx, &r->sh, src->pipe, src->left, nthreads);
+	r->un = sift_par_unnest_new(r->cx, &r->sh, src->pipe, src->left, nthreads, r->ncols, r->nel, src->eused);
 	r->sink = sift_v6_gsink_new(r->cx, &r->sh.gs, nthreads, r->sink_bytes);
 	ar = sift_par_arenas_create(r->cx, nthreads, SCRATCH_BYTES, r->state_bytes, WORK_BYTES);
 	hooks = (SiftParGroupHooks) {.fill = un_fill,.emit = un_emit,.arg = r};
