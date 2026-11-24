@@ -651,6 +651,7 @@ col/skip/skip_index.h
 col/skip/skip_int.h
 col/source_fold.c
 col/source_fold.h
+col/source_fold_test.c
 col/suggest.c
 col/track_hear.c
 col/track_hear.h
