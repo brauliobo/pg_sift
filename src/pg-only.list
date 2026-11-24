@@ -476,6 +476,8 @@ col/f2/f2_v6_read.h
 col/f2/f2_v6_datum.c
 col/f2/f2_v6_source.c
 col/f2/f2_v6_topn.c
+col/f2/f2_v6_unnest_emit.c
+col/f2/f2_v6_unnest_int.h
 col/f2/f2_vac_vm.c
 col/f2/f2_vac_vm.h
 col/f2/f2_vacuum_run.c
@@ -733,6 +735,7 @@ col/v1/v1_reader.c
 col/v1/v1_reader.h
 col/v1/v1_reader_int.h
 col/v1/v1_reader_preagg.c
+col/v1/v1_store_ops_elem.c
 col/v1/v1_reader_meta.c
 col/v1/v1_reader_unit.c
 col/v1/v1_store_ops.c
@@ -745,6 +748,7 @@ col/v1_engine/v1_store_ops_ext.c
 col/v1_engine/v1_store_ops_ext_test.c
 col/v1_engine/v1_store_ops_hybrid.c
 col/v1_engine/v1_store_ops_jsonb.c
+col/v1_engine/v1_store_ops_order.c
 col/v1_engine/v1_store_ops_preagg.c
 col/v1/verify.c
 col/v1/wbuf.h

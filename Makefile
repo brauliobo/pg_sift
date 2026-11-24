@@ -591,6 +591,7 @@ TESTING_REGRESS += format2_tiering_ttl
 TESTING_REGRESS += format2_topn_tied_first_key
 TESTING_REGRESS += format2_ux_progress
 TESTING_REGRESS += format2_zero_unsupported
+TESTING_REGRESS += format2_zero_unsupported_nan
 TESTING_REGRESS += format_v1_v2_compat
 TESTING_REGRESS += fuzzy_seek
 TESTING_REGRESS += gpu_agg_v6_churn
@@ -696,6 +697,8 @@ TESTING_REGRESS += tbl_vacuum_page_rows
 TESTING_REGRESS += tbl_wide_dict_limit
 TESTING_REGRESS += tbl_wide_rows
 TESTING_REGRESS += tbl_writepath
+TESTING_REGRESS += v1_unified_gorder_cursor
+TESTING_REGRESS += v1_unified_jsonb_leaf
 TESTING_REGRESS += v6_partitions_attach_detach
 TESTING_REGRESS += verify_%
 # these assert the segments of a parallel build of an index with a key cut, which the release library builds in one process (build_pays in src/col/v1/build_par.c)

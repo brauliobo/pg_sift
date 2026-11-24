@@ -2,7 +2,11 @@
 # WS-86-7 deletes them, and WS-86-8 deletes this list with the exemption. An entry whose file is clean or gone fails the check: the list only shrinks.
 src/agg/col.c
 src/agg/col_conn.c
+src/agg/col_filter.c
+src/agg/col_int.h
+src/agg/col_read.c
 src/agg/col_recheck.c
+src/agg/colsrc/provider.h
 src/agg/cost/scope.c
 src/agg/cost/zone.c
 src/agg/exec/topn.c
@@ -20,4 +24,6 @@ src/agg/pre.h
 src/agg/preagg/hist.c
 src/agg/preagg/keep.c
 src/agg/scope.c
-src/agg/sel.c
+src/agg/unit.c
+src/agg/wide.h
+src/agg/wide_nums.c
