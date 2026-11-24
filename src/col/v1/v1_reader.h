@@ -79,6 +79,8 @@ extern SiftColSource *sift_v1_idx_colsource(void *impl);
 
 extern SiftSrcLayout *sift_v1_idx_layout(Relation index);
 extern void sift_v1_idx_stats(Relation index, SiftSrcStats *st);
+/* The statistics of the scope units of the index, the fields a read of them prices by its units; false: it has no scope units */
+extern bool sift_v1_idx_scope_stats(Relation index, SiftSrcStats *st);
 /* A copy of the sample of the unit zones the planner may read; only the integer scalar leaves that are not wide. nunits: the units of the family */
 extern const SiftSrcZones *sift_v1_idx_zones(const SiftColZones *zs, const SiftColIndexMeta *meta, double nunits);
 

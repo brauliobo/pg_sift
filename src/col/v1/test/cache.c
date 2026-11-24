@@ -9,8 +9,8 @@
 #include "funcapi.h"
 #include "col/am.h"
 #include "col/dictshm.h"
-#include "agg/colsrc.h"
-#include "agg/col_int.h"
+#include "col/v1/v1_reader.h"
+#include "table/v1/v1_tbl_reader.h"
 #include "col/v1/pagg.h"
 #include "core/sql.h"
 #endif							/* SIFT_TESTING */
@@ -95,7 +95,7 @@ sift_test_scope_exact(PG_FUNCTION_ARGS)
 {
 	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
 	SiftSrcStats *st = palloc(sizeof(SiftSrcStats));
-	bool		ok = sift_col_scope_stats(index, st);
+	bool		ok = sift_v1_idx_scope_stats(index, st);
 
 	index_close(index, AccessShareLock);
 	if (!ok)
@@ -137,17 +137,21 @@ sift_test_col_counters(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, v, nulls));
 }
 
-/* One row per leaf of an index or sift_table: the planner statistics its column source reports (agg/colsrc.h SiftSrcStats), 0 where unknown */
+/* One row per leaf of an index or sift_table: the planner statistics its column source reports (col/v1/src_exec.h SiftSrcStats), 0 where unknown */
 Datum
 sift_test_col_leaf_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Relation	rel = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
-	int			nleaves = sift_colsrc_layout(rel)->nleaves;
+	bool		index = rel->rd_rel->relkind == RELKIND_INDEX;
+	int			nleaves = (index ? sift_v1_idx_layout(rel) : sift_v1_tbl_layout(rel))->nleaves;
 	SiftSrcStats st;
 
 	InitMaterializedSRF(fcinfo, 0);
-	sift_colsrc_stats(rel, &st);
+	if (index)
+		sift_v1_idx_stats(rel, &st);
+	else
+		sift_v1_tbl_stats(rel, &st);
 	for (int i = 0; i < nleaves; i++)
 	{
 		Datum		v[6] = {Int32GetDatum(i), Float8GetDatum(st.ndistinct[i]), Float8GetDatum(st.min[i]), Float8GetDatum(st.max[i]),
