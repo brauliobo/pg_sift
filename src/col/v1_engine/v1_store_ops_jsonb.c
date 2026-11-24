@@ -187,6 +187,13 @@ key_is_month(const SiftV6Spec *spec, int key)
 	return false;
 }
 
+/* the column is the flag of a test of the elements of a row (the virtual attribute a FILTER reads it by) */
+static bool
+is_flag(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
+}
+
 /* the column of the batches a column of the statement is read from */
 static int
 col_index(UnRun *u, const SiftV6Col *c, bool month)
@@ -253,7 +260,8 @@ setup_cols(UnRun *u)
 				col_index(u, c == 0 ? &d->src : &d->cond[c - 1], false);
 	}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
-		col_index(u, &spec->fcol[i], false);
+		if (spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]))
+			col_index(u, &spec->fcol[i], false);
 }
 
 static void
@@ -541,6 +549,8 @@ emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 		keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
 		eval_elems(u, ev, nel, keep);
 	}
+	if (u->rec != NULL)
+		sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel);
 	emit_row(u, u->fv, ev, keep, nel, row);
 	MemoryContextSwitchTo(old);
 }
@@ -552,7 +562,7 @@ restrict_where(UnRun *u, const SiftV6Batch *b)
 	uint64		keep[SIFT_VEC_WORDS];
 
 	for (int i = 0; i < u->spec->nfcols; i++)
-		u->wvecs[i] = (SiftVec *) &b->col[u->wcol[i]];
+		u->wvecs[i] = u->wcol[i] < 0 ? NULL : (SiftVec *) &b->col[u->wcol[i]];
 	sift_clause_eval(&u->where, u->wvecs, b->n, keep);
 	for (int w = 0; w < (b->n + 63) / 64; w++)
 		bs->mask[w] &= keep[w];
@@ -630,7 +640,7 @@ setup_clauses(UnRun *u)
 		u->wvecs = palloc(Max(spec->nfcols, 1) * sizeof(SiftVec *));
 		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
 		for (int i = 0; i < spec->nfcols; i++)
-			u->wcol[i] = col_index(u, &spec->fcol[i], false);
+			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]) ? col_index(u, &spec->fcol[i], false) : -1;
 	}
 	if (u->x->elem_where != NIL)
 	{
