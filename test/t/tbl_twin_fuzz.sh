@@ -3,13 +3,13 @@
 # VACUUM, sift.maintain, VACUUM FULL, REINDEX and ALTER TABLE (ADD / DROP COLUMN, DROP and ADD PRIMARY KEY) run between the writes, and after every round the rows of the two must be
 # the same through every plan, in a long snapshot and in a fresh one, and sift.check must find nothing. On Format 1 the VACUUMs queue behind a held maintenance lock while the writers
 # close write buffers and the holder promotes. A seed that fails on the code before the fix is a probability, see the header of the script.
-# One script for every job: SIFT_SEEDS (default 1-3; quick tier 2-3 of 8 s), SIFT_FUZZ_SECS (80; quick 8), SIFT_TEST_FORMAT (f2, f1 or release: the format of the library under test,
+# One script for every job: SIFT_SEEDS (default 1-3; quick tier 2 of 8 s), SIFT_FUZZ_SECS (80; quick 8), SIFT_TEST_FORMAT (f2, f1 or release: the format of the library under test,
 # default f2) and SIFT_FUZZ_DDL (1 or 0: DDL on or off, default on except on f1) select the run; the full tier runs the 24 seeds as eight jobs of 3 (SIFT_SEEDS=1-3, 4-6, ... 22-24).
 # A seed takes about 125 s on a quiet machine and 200 s on a hosted runner (the 80 s of rounds, then the drain and the checks), so 24 seeds ran past the 1800 s of a hosted job.
 . "$(dirname "$0")/lib.bash"
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 
-SEEDS=$(knob SIFT_SEEDS 1-3 2-3)
+SEEDS=$(knob SIFT_SEEDS 1-3 2)
 SECS=$(knob SIFT_FUZZ_SECS 80 8)
 HOLD=$(knob SIFT_FUZZ_HOLD 0.5 1)
 FORMAT=${SIFT_TEST_FORMAT:-f2}
