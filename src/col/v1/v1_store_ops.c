@@ -296,6 +296,16 @@ v1_card_leaf(Oid relid, int col)
 	return leaf;
 }
 
+static int
+v1_card_leaf(Oid relid, int col)
+{
+	const SiftV1Rel r = sift_v1_rel_open(relid, false);
+	const int	leaf = sift_v1_card_leaf(sift_v1_reader_of(false)->layout(r.rel), col);
+
+	sift_v1_rel_close(&r);
+	return leaf;
+}
+
 static bool
 v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 {
