@@ -10,8 +10,8 @@
 #include "bm25/runs.h"
 
 /*
- * Merges the segments in[0..n) by the process and max_parallel_maintenance_workers workers (merge_ranges.c) into neu: 1 written, 0 no live
- * doc, -1 not done, which one process then merges.
+ * Merges the segments in[0..n) (at most MAX_MERGE_FANIN) by the process and max_parallel_maintenance_workers workers (merge_ranges.c), or by the
+ * process alone when no worker can start, into neu: 1 written, 0 no live doc.
  */
 extern int	sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu);
 

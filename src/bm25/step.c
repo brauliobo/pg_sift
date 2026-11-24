@@ -15,6 +15,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "port/pg_bswap.h"
+#include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
@@ -547,6 +548,34 @@ pick_smallest(const SiftDirSnapshot *snap, int want, int fanin, MergeSel *sel)
 	return k < 2 ? 0 : k;
 }
 
+/*
+ * What one merge may read: at most merge_max_bytes(), and half of temp_file_limit (the live docs, the dictionary and the staged terms it writes are a third of its input at most).
+ * A VACUUM also stops at sift.vacuum_rewrite_limit for one merge (it goes on to another until the limit is written), but takes the two smallest segments whatever they are,
+ * as it would never merge them otherwise.
+ */
+static uint64
+merge_hard_cap(void)
+{
+	uint64		cap = merge_max_bytes();
+
+	if (temp_file_limit >= 0)
+		cap = Min(cap, Max((uint64) temp_file_limit * 1024 / 2, (uint64) 4 << 20));
+	return cap;
+}
+
+static uint64
+merge_soft_cap(SiftMergeGoal goal)
+{
+	return goal == SIFT_GOAL_VACUUM && sift_vacuum_rewrite_limit > 0 ? (uint64) sift_vacuum_rewrite_limit << 20 : PG_UINT64_MAX;
+}
+
+/* The segments one merge reads at once: a cursor of SIFT_SEG_CURSOR_MIN each within half the maintenance memory */
+static int
+merge_fanin_cap(void)
+{
+	return Min(MAX_MERGE_FANIN, Max(2, sift_bm25_maint_bytes(1) / (2 * SIFT_SEG_CURSOR_MIN)));
+}
+
 /* The policy's choice (smallest first) cut to the smallest segments whose bytes fit one merge; a merge of fewer than two is none */
 static int
 pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftMergeGoal goal, MergeSel *sel)
@@ -554,8 +583,11 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftMergeGoa
 	int			excess = snap->nsegs - sift_index_options(index)->vacuum_segments;
 	bool		counted = goal != SIFT_GOAL_ANY && !force;
 	int			n = pick_policy(index, snap, force, counted && excess <= 0, sel);
-	uint64		total = 0;
-	int			k = 0;
+	uint64		total = 0,
+				hard = merge_hard_cap(),
+				soft = merge_soft_cap(goal);
+	int			k = 0,
+				fanin = merge_fanin_cap();
 
 	if (counted)
 	{
@@ -566,7 +598,7 @@ pick_merge(Relation index, const SiftDirSnapshot *snap, bool force, SiftMergeGoa
 			n = pick_smallest(snap, excess + 1, sift_index_options(index)->merge_fanin, sel);
 	}
 
-	while (k < n && total + sel->seg[k].bytes <= merge_max_bytes())
+	while (k < n && k < fanin && total + sel->seg[k].bytes <= hard && (k < 2 || total + sel->seg[k].bytes <= soft))
 		total += sel->seg[k++].bytes;
 	return k < Min(n, 2) ? 0 : k;
 }
@@ -612,6 +644,31 @@ heal_runs(DocText *dt, SiftInvBuf *inv, SiftSegment *seg, RunList *runs)
 		runlist_push(runs, sift_inv_spill(h.inv));
 }
 
+/* The merge that re-analyzes the segments that lack positions: the others are dumped to runs beside the docs of the heap, as the inverted buffer's */
+static bool
+merge_healing(Relation index, SiftWriteTarget *wt, const MergeSel *in, DocText *dt, MemoryContext cx, const SiftScoreRef *ref, SiftSegEntry *neu)
+{
+	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
+	SiftInvBuf *inv = inv_create_for(index, sift_bm25_maint_bytes(1) / 2, cx, true);
+	bool		written;
+
+	for (int i = 0; i < in->n; i++)
+	{
+		SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
+		SiftRun    *run;
+
+		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))
+			heal_runs(dt, inv, seg, &runs);
+		else if ((run = sift_run_from_segment(seg, ref, cx)) != NULL)
+			runlist_push(&runs, run);
+		sift_seg_close(seg);
+	}
+	sift_doctext_close(dt);
+	if ((written = runs.n > 0))
+		sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), ref, neu);
+	return written;
+}
+
 static void
 merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 {
@@ -622,11 +679,9 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_mem_init_sub(&mt_bm25_merge, "bm25_merge", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	SiftScoreRef ref = score_ref(index);
-	RunList		runs = {.run = palloc(in->n * sizeof(SiftRun *)),.max = in->n};
 	SiftMaintInputs mi = sift_maint_inputs(index, in->seg, in->n);
-	int			written = -1;
+	bool		written;
 	DocText    *dt = NULL;
-	SiftInvBuf *inv = NULL;
 	SiftSegEntry neu;
 	TimestampTz start = GetCurrentTimestamp();
 
@@ -641,27 +696,9 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 			dt = sift_doctext_open(index);
 	/* the segments that get their positions from the heap are merged by this process */
 	if (dt == NULL)
-		written = sift_merge_ranges(index, wt, in->seg, in->n, &ref, &neu);
-	if (written < 0)
-	{
-		if (dt != NULL)
-			inv = inv_create_for(index, sift_bm25_maint_bytes(1) / 2, cx, true);
-		for (int i = 0; i < in->n; i++)
-		{
-			SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
-			SiftRun    *run;
-
-			if (dt != NULL && !(in->seg[i].flags & SIFT_SEG_POSITIONS))
-				heal_runs(dt, inv, seg, &runs);
-			else if ((run = sift_run_from_segment(seg, &ref, cx)) != NULL)
-				runlist_push(&runs, run);
-			sift_seg_close(seg);
-			sift_mem_assert_within(&mt_bm25_merge);
-		}
-		sift_doctext_close(dt);
-		if ((written = runs.n > 0) != 0)
-			sift_runs_write(runs.run, runs.n, wt, sift_store_new_gen(index), &ref, &neu);
-	}
+		written = sift_merge_ranges(index, wt, in->seg, in->n, &ref, &neu) > 0;
+	else
+		written = merge_healing(index, wt, in, dt, cx, &ref, &neu);
 	sift_mem_assert_within(&mt_bm25_merge);
 	sift_wt_finish(wt);
 	sift_maint_replace(index, wt, mi.gens, in->n, written ? &neu : NULL, mi.release, mi.nrelease,

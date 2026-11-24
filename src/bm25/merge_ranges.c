@@ -1,6 +1,5 @@
 /*
- * bm25/merge_ranges.c - the merge of segments, written by several processes. The merge dumps every input segment to a run and merges the
- * runs in one process (step.c); here the segments are read where they are: the leader merges their docs, and the terms, cut into ranges
+ * bm25/merge_ranges.c - the merge of segments, written by several processes. The segments are read where they are: the leader merges their docs, and the terms, cut into ranges
  * from the samples of the dictionaries, are written by the leader and max_parallel_maintenance_workers workers, each range from the
  * postings of the input segments (build_ranges.c). The merged segment is the one a single process writes, byte for byte.
  */
@@ -67,6 +66,32 @@ close_live(SiftSegment **segs, int nlive)
 		sift_seg_close(segs[i]);
 }
 
+/* One process merges the segments, each read where it is as in the merge by ranges: the docs, then the terms, with no run of any segment written first */
+static int
+merge_alone(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu)
+{
+	SiftSegment *segs[MAX_MERGE_FANIN];
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment merge");
+	MemoryContext old;
+	BufferAccessStrategy bas;
+	uint64		ndocs = 0,
+				sum_dl = 0;
+	int			nlive;
+
+#ifdef SIFT_TESTING
+	mem_watch(cxt);
+#endif
+	old = MemoryContextSwitchTo(cxt);
+	bas = GetAccessStrategy(BAS_BULKREAD);
+	MemoryContextSwitchTo(old);
+	nlive = open_live(index, in, n, cxt, bas, segs, &ndocs, &sum_dl);
+	if (nlive > 0)
+		sift_segs_write(segs, nlive, sift_bm25_maint_bytes(1), wt, sift_store_new_gen(index), ref, neu);
+	close_live(segs, nlive);
+	MemoryContextDelete(cxt);
+	return nlive > 0;
+}
+
 int
 sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, const SiftScoreRef *ref, SiftSegEntry *neu)
 {
@@ -85,9 +110,10 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 				nworkers = Min(max_parallel_maintenance_workers, MAX_RANGES - 1);
 	uint64		gen;
 
+	SIFT_INVARIANT(n <= MAX_MERGE_FANIN, "sift: a merge of %d segments, at most %d are merged at once", n, MAX_MERGE_FANIN);
 	/* the context of the workers needs a transaction id from before its parallel mode, which a parallel VACUUM's leader cannot take: one process merges */
-	if (nworkers < 1 || n > MAX_MERGE_FANIN || sift_xid_unassignable())
-		return -1;
+	if (nworkers < 1 || sift_xid_unassignable())
+		return merge_alone(index, wt, in, n, ref, neu);
 	cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment merge");
 #ifdef SIFT_TESTING
 	mem_watch(cxt);
@@ -107,7 +133,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	{
 		close_live(segs, nlive);
 		MemoryContextDelete(cxt);
-		return -1;
+		return merge_alone(index, wt, in, n, ref, neu);
 	}
 	nworkers = Min(nworkers, ncuts);
 	/* the reads so far hold buffer locks (a reader keeps its page locked), and no worker starts while a process holds any */
@@ -120,7 +146,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	{
 		PopActiveSnapshot();
 		MemoryContextDelete(cxt);
-		return -1;
+		return merge_alone(index, wt, in, n, ref, neu);
 	}
 	shared = ldr->shared;
 	MemSet(shared, 0, sizeof(SiftBuildShared));
@@ -140,7 +166,7 @@ sift_merge_ranges(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, i
 	{
 		PopActiveSnapshot();
 		MemoryContextDelete(cxt);
-		return -1;
+		return merge_alone(index, wt, in, n, ref, neu);
 	}
 	gen = sift_store_new_gen(index);
 	sift_ranges_publish(shared, ncuts);

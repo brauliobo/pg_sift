@@ -28,7 +28,7 @@ open_seg_readers(SiftSegment **segs, int nsegs, Size budget, bool terms, const S
 	for (int i = 0; i < nsegs; i++)
 	{
 		rd[i].idx = i;
-		rd[i].sc = sift_seg_cursor(segs[i], terms ? Max(budget / 2 / nsegs, 1024 * 1024) : 0, lo ? lo->term : NULL, lo ? lo->len : 0);
+		rd[i].sc = sift_seg_cursor(segs[i], terms ? Max(budget / 2 / nsegs, SIFT_SEG_CURSOR_MIN) : 0, lo ? lo->term : NULL, lo ? lo->len : 0);
 		rd[i].nf = sift_seg_cursor_nfields(rd[i].sc);
 		rd[i].haspos = (segs[i]->entry.flags & SIFT_SEG_POSITIONS) != 0;
 		*positions &= rd[i].haspos;
@@ -140,6 +140,18 @@ sift_segs_write_range(SiftSegment **segs, int nsegs, Size budget, const SiftTerm
 	runs_merge_terms(rd, nsegs, positions, &mo, hi);
 	close_seg_readers(rd, nsegs);
 	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cxt);
+}
+
+void
+sift_segs_write(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, SiftSegEntry *entry)
+{
+	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment write");
+	SiftSegmentWriter *sw = sift_segs_write_docs(segs, nsegs, budget, wt, gen, ref, cxt);
+
+	sift_segw_spool(sw, sift_seg_postings(budget) / 2);
+	sift_segs_write_range(segs, nsegs, budget, NULL, NULL, sw);
+	sift_segw_finish(sw, entry);
 	MemoryContextDelete(cxt);
 }
 

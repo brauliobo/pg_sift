@@ -118,6 +118,9 @@ typedef struct RunHome
 /* The most runs one merge reads: its buffers must fit the budget, the leader reads this many of each worker */
 #define MAX_MERGE_FANIN	256
 
+/* The least a cursor over a segment reads ahead, and so what a merge of segments takes of the budget for each of them (twice that is the budget of the fewest it merges) */
+#define SIFT_SEG_CURSOR_MIN	(64 * 1024)
+
 /*
  * The segment of a group of runs written by several processes, each a range of the terms (the build of a parallel CREATE INDEX): the
  * runs hold samples of their terms, which cut the terms of the group into ranges of about the same bytes. The process of the segment
@@ -153,6 +156,8 @@ extern int	sift_segs_cuts(SiftSegment **segs, int nsegs, uint64 min_bytes, int t
 extern SiftSegmentWriter *sift_segs_write_docs(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref,
 											   MemoryContext mcxt);
 extern void sift_segs_write_range(SiftSegment **segs, int nsegs, Size budget, const SiftTermCut *lo, const SiftTermCut *hi, SiftSegmentWriter *rw);
+/* The whole segment by this process: the docs, then every term, of cursors over the segments (no run is written) */
+extern void sift_segs_write(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, SiftSegEntry *entry);
 
 /* Closes the runs of a segment that was written in ranges */
 extern void sift_runs_close(SiftRun **runs, int nruns);

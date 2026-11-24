@@ -82,6 +82,7 @@ static const SiftMaintOps bm25_ops = {
 	.worker = SIFT_WK_BM25_MAINT,
 	.step_lock = RowExclusiveLock,
 	.vacuum_to_fixed_point = true,
+	.vacuum_budget = true,
 	.is_index = is_sift,
 	.seal = sift_wbuf_seal,
 	.vacuum_seal = sift_wbuf_seal_vacuum,
