@@ -414,6 +414,9 @@ extern void sift_proj_cursor_window(SiftProjCursor *c, int64 lo, int64 hi);
 /* Before the first row: the columns of the spec the caller reads (one flag each, which must outlive the cursor); the cells of the others are NULL */
 extern void sift_proj_cursor_columns(SiftProjCursor *c, const bool *want);
 
+/* Before the first row: the cursor decodes a granule a window of rows at a time, the rows of a window at their own values, so that a merge that stops early reads a few rows of each part */
+extern void sift_proj_cursor_progressive(SiftProjCursor *c);
+
 /* Granules the cursor left out and granules it has read */
 extern void sift_proj_cursor_stats(const SiftProjCursor *c, uint32 *skipped, uint32 *read);
 

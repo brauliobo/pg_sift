@@ -232,6 +232,7 @@ open_stream(SiftV6SortScan *s, int i, const PartDead *dead, const SiftProjPred *
 		.vet = s->vet,.vet_arg = s->vet_arg,.vet_all = s->vet_all,.dead = dead};
 	s->nseeked += sift_v6_proj_seek_plan(s->pps, spec, preds, h->npreds, &seek) && sift_proj_cursor_seek(p->cur, &seek.ks, &seek.plan);
 	sift_proj_cursor_columns(p->cur, s->want);
+	sift_proj_cursor_progressive(p->cur);
 	if (first_key_bounds(s->pps, spec, preds, h->npreds, &lo, &hi))
 		sift_proj_cursor_window(p->cur, lo, hi);
 	sift_proj_merge_add(s->merge, (SiftProjStream) {part_next, p});
