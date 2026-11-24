@@ -21,6 +21,7 @@
 #include "col/f2/l0_stage.h"
 #include "col/f2/scan/ord_stream.h"
 #include "col/f2/scan/par_int.h"
+#include "core/memtrack.h"
 #include "core/errctx.h"
 
 typedef struct OrdRow
@@ -345,7 +346,7 @@ cur_init(SiftOrdStream *os, OrdCursor *c, const SiftPartitionEntry *e, const Sif
 	c->e = e;
 	c->d = d;
 	c->px = px;
-	c->datacx = AllocSetContextCreate(os->pcx, "sift f2 ordered row", ALLOCSET_DEFAULT_SIZES);
+	c->datacx = sift_mem_allocset_create(os->pcx, "sift f2 ordered row");
 	c->ngran = 1;
 }
 
@@ -529,7 +530,7 @@ ord_begin(IndexScanDesc scan, bool fwd)
 	os->fwd = fwd;
 	os->last = -1;
 	os->nkey = os->f->nkey;
-	os->pcx = AllocSetContextCreate(s->cx, "sift f2 ordered partition", ALLOCSET_DEFAULT_SIZES);
+	os->pcx = sift_mem_allocset_create(s->cx, "sift f2 ordered partition");
 	for (int k = 0; k < os->nkey; k++)
 	{
 		os->key_leaf[k] = os->f->key_cols[k];

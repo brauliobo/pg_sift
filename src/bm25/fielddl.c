@@ -4,6 +4,7 @@
  */
 #include "core/host.h"
 
+#include "core/memtrack.h"
 #include "bm25/analyze.h"
 #include "bm25/bitmap.h"
 #include "bm25/kernels.h"
@@ -144,12 +145,14 @@ uint16 *
 sift_seg_legacy_field_dl(SiftSegment *seg, int nf, MemoryContext mcxt)
 {
 	LegacyFields lf = {.seg = seg,.nf = nf};
+	SiftMemTracker mem;
 	char		lo = SIFT_FIELD_BASE,
 				hi = SIFT_FIELD_BASE + nf;
 
-	lf.dl = MemoryContextAllocHuge(mcxt, (Size) seg->hdr->ndocs * nf * sizeof(uint16));
+	sift_mem_init(&mem, "bm25 field lengths of a segment of an older format", mcxt, false, SIFT_BUDGET_MAINT_MEM, 1, 1);
+	lf.dl = sift_mem_alloc(&mem, mcxt, (Size) seg->hdr->ndocs * nf * sizeof(uint16));
 	memset(lf.dl, 0, (Size) seg->hdr->ndocs * nf * sizeof(uint16));
-	lf.cx = AllocSetContextCreate(CurrentMemoryContext, "sift legacy field lengths", ALLOCSET_DEFAULT_SIZES);
+	lf.cx = sift_mem_allocset_create(CurrentMemoryContext, "sift legacy field lengths");
 	lf.tids = palloc(SIFT_GRP_MAXTIDS * sizeof(sift_tid));
 	lf.tf = palloc(SIFT_GRP_MAXTIDS + SIFT_KERN_PAD);
 	sift_dict_scan(seg->dict, &lo, 1, &hi, 1, legacy_term, &lf);
