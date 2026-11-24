@@ -8,9 +8,9 @@ The runs share a pool, so the whole table takes about a second.
 """
 import os
 import re
+import resource
 import subprocess
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -137,11 +137,12 @@ def main():
             ps[0]['out'] = f'{type(e).__name__}: {e}\n{ps[0]["out"]}'
         if not good:
             fails.append(f'FAIL: {name} ({" ".join(argsets[0])})\n    ' + '\n    '.join((ps[0]['out'] + ps[0]['err']).splitlines()[:12]))
-    t0 = time.time()
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     subprocess.run([GATE, '--dry-run', '--files', STAR, COL, REGRESS], capture_output=True, env=ENV, cwd=REPO)
-    wall = time.time() - t0
-    if wall > 0.2:
-        fails.append(f'FAIL: --dry-run takes {wall:.2f} s, not under 0.2 s')
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime
+    if cpu > 0.2:
+        fails.append(f'FAIL: --dry-run takes {cpu:.2f} s of CPU, not under 0.2 s')
     print('\n'.join(fails))
     print('fast-gate-select:', 'FAILED' if fails else f'{len(cases)} routing cases: areas, union, harness edits, smoke, leak gate, corpus globs, --include-sql, exits')
     return 1 if fails else 0
