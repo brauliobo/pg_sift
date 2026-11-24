@@ -9,18 +9,18 @@
 #include "core/par/pool.h"
 #include "core/par/radix.h"
 
-typedef struct Stream
+typedef struct GSinkStream
 {
 	SiftArena  *arena;
 	SiftRadixOut out;
-} Stream;
+} GSinkStream;
 
 struct SiftV6GSink
 {
 	SiftParGroupSpec gs;
 	int			nthreads;
 	atomic_bool full;
-	Stream	   *s[SIFT_PAR_MAX_THREADS];
+	GSinkStream	   *s[SIFT_PAR_MAX_THREADS];
 };
 
 static uint32
@@ -51,7 +51,7 @@ sift_v6_gsink_new(MemoryContext cx, const SiftParGroupSpec *gs, int nthreads, si
 	atomic_init(&k->full, false);
 	for (int t = 0; t < nthreads; t++)
 	{
-		k->s[t] = MemoryContextAllocAligned(cx, sizeof(Stream), SIFT_ARENA_ALIGN, 0);
+		k->s[t] = MemoryContextAllocAligned(cx, sizeof(GSinkStream), SIFT_ARENA_ALIGN, 0);
 		k->s[t]->arena = sift_arena_create(cx, bytes);
 		sift_radix_init(&k->s[t]->out, k->s[t]->arena);
 	}

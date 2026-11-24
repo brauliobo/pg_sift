@@ -1,6 +1,7 @@
 /*
  * agg/v6/par/unnest_run.c - the driver of agg/v6/par/unnest_run.h.
  */
+/* check-memory: allow-allocs the slots follow the threads of the pool and the columns of one statement, never the rows of the table */
 #include "postgres.h"
 
 #include <stdalign.h>
