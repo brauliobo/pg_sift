@@ -3,7 +3,8 @@
 # partition is a chain of references to heap tuples (small writes) or of batches (a write the chain of references refuses), and the writers turn it over from one to the other: a flush
 # decides which it holds, and must read that chain while it holds the lock of the partition, not one it looked at before (it once read a chain of references as one of batches: "the slab
 # of partition 1 is damaged", the index quarantined). The flusher is held before it starts (sift.test_phase_gate, SIFT_F2_GATE_SLAB_FLUSH = 15) for 30 ms at a time, while the writers go on.
-# No statement fails, no index is quarantined or damaged, the index verifies, and the column scan answers what the heap does.
+# No statement fails, no index is quarantined or damaged, the index verifies, and the column scan answers what the heap does. The release library has no test function and no gate: it runs the 16
+# writers alone, whose UPDATEs and DELETEs flush the slabs themselves.
 . "$(dirname "$0")/lib.bash"
 
 plan 7
@@ -12,7 +13,8 @@ GATE=7300
 node_init sc 24 "autovacuum = off
 sift.log_min_duration = 0"
 node_start sc || bail "start failed"
-sql sc "CREATE EXTENSION pg_sift_test CASCADE" "CREATE TABLE facts (id bigint, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
+TESTING=$(sql sc "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_phase_gate'")
+sql sc "CREATE EXTENSION $([[ $TESTING == 1 ]] && echo pg_sift_test || echo pg_sift) CASCADE" "CREATE TABLE facts (id bigint, key int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = false)" \
 	"CREATE SEQUENCE facts_seq START 30001" \
 	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 40) FROM generate_series(1, 30000) g" \
 	"CREATE INDEX facts_idx ON facts USING sift_col (id, key, kind, amount)" "VACUUM facts" >/dev/null || bail "setup failed"
@@ -37,19 +39,18 @@ flusher() {
 	done
 }
 
-rm -f "$D/stop" "$D/flush.n"
-: >"$D/flusher.err"
-gatekeeper & gp=$!
-flusher & fp=$!
+rm -f "$D/stop"
+: >"$D/flusher.err" >"$D/flush.n"
+if [[ $TESTING == 1 ]]; then gatekeeper & gp=$!; flusher & fp=$!; fi
 pgbench_bg sc 16 "$SECS" -D n=60000 -f "$D/ins.sql"@6 -f "$D/upd.sql"@3 -f "$D/del.sql"@1
 wait "$PGBENCH_PID"; bench=$?
 touch "$D/stop"
-wait "$gp" "$fp"
+wait ${gp:-} ${fp:-}
 diag "$(grep -E 'transactions actually processed|tps' "$D/pgbench.log" | tr '\n' ' ') flush sessions: $(wc -l <"$D/flush.n" | tr -d ' ')"
 diag "first damage in the log: $(grep -a -m2 -A1 -E 'is damaged|is corrupted' "$D/postgres.log" | cut -c1-240)"$'\n'"flusher: $(head -n 3 "$D/flusher.err" | cut -c1-240)"
 check "pgbench ran its 16 clients to the end" test "$bench" -eq 0
 check "no statement of the 16 clients failed" test "$(grep -ac -E '^(pgbench: error|ERROR)|failed transactions: [1-9]' "$D/pgbench.log")" -eq 0
-check "the flusher ran and met no damage" test ! -s "$D/flusher.err" -a "$(wc -l <"$D/flush.n")" -ge 5
+check "the flusher ran and met no damage" test ! -s "$D/flusher.err" -a "$(wc -l <"$D/flush.n")" -ge "$((TESTING * 5))"
 check "no slab is damaged and no index quarantined (log of the server)" test "$(grep -ac -E 'is damaged|is corrupted|quarantine' "$D/postgres.log")" -eq 0
 sql sc "VACUUM facts" >/dev/null
 check "afterwards the index verifies" test -z "$(sql sc "SELECT sift.col_verify('facts_idx', true)" 2>&1)"
