@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 16 clients write a sift_col index over a heap table (60% INSERT, 30% UPDATE, 10% DELETE) while a session flushes its slab (sift._test_f2_slab_flush) again and again. The slab of a
-# partition is a chain of references to heap tuples (small writes) or of batches (a write the chain of references refuses): a flush that finds a chain of batches reads it after it has
-# looked at the chain once, and the writers turn the chain over meanwhile. The flusher is held (sift.test_phase_gate, SIFT_F2_GATE_SLAB_FLUSH = 15) between its looks, for as long as the
-# writers need to flush the chain and start one of references; it must then read what is there, not what it saw before. No statement fails, no index is quarantined or damaged,
-# the index verifies, and the column scan answers what the heap does.
+# partition is a chain of references to heap tuples (small writes) or of batches (a write the chain of references refuses), and the writers turn it over from one to the other: a flush
+# decides which it holds, and must read that chain while it holds the lock of the partition, not one it looked at before (it once read a chain of references as one of batches: "the slab
+# of partition 1 is damaged", the index quarantined). The flusher is held before it starts (sift.test_phase_gate, SIFT_F2_GATE_SLAB_FLUSH = 15) for 30 ms at a time, while the writers go on.
+# No statement fails, no index is quarantined or damaged, the index verifies, and the column scan answers what the heap does.
 . "$(dirname "$0")/lib.bash"
 
 plan 7

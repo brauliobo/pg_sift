@@ -752,31 +752,41 @@ sift_l0_slab_publish(Relation rel, uint64 part_id, const uint8 *key_lo, const Si
 	pfree(cols);
 }
 
+/* The chain of batches at head, written out as a part; the caller holds the lock of the partition */
+static void
+flush_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber head)
+{
+	SiftRowBuf *rb = sift_rowbuf_new(spec);
+	BlockNumber *pages;
+	int			npages;
+
+	read_batches(rel, part_id, head, rb, spec, &pages, &npages);
+	sift_l0_slab_publish(rel, part_id, key_lo, spec, rb, pages, npages);
+	sift_rowbuf_free(rb);
+}
+
 bool
 sift_l0_slab_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec)
 {
 	SiftManifestRead mr;
-	SiftRowBuf *rb;
-	BlockNumber *pages;
-	int			npages;
+	BlockNumber head;
 
 	SIFT_INVARIANT(!RecoveryInProgress(), "sift: a micro-slab is flushed on a primary, a standby reads it in memory (col/f2/f2_slab_view.h)");
-	if (sift_l0_href_flush(rel, part_id, key_lo, spec))
-		return true;
 	SIFT_F2_GATE(SIFT_F2_GATE_SLAB_FLUSH);
 	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	if (mr.entries[0].l0_slab_blk == InvalidBlockNumber)
+	head = mr.entries[0].l0_slab_blk;
+	if (head == InvalidBlockNumber)
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
 	}
-	rb = sift_rowbuf_new(spec);
-	read_batches(rel, part_id, mr.entries[0].l0_slab_blk, rb, spec, &pages, &npages);
-	sift_l0_slab_publish(rel, part_id, key_lo, spec, rb, pages, npages);
+	if (sift_l0_slab_is_href(rel, part_id, head))
+		sift_l0_href_flush_chain(rel, part_id, key_lo, spec, head);
+	else
+		flush_batches(rel, part_id, key_lo, spec, head);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	sift_rowbuf_free(rb);
 	return true;
 }

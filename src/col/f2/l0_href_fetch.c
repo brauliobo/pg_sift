@@ -378,35 +378,19 @@ sift_l0_href_read(Relation rel, uint64 part_id, BlockNumber tail, SiftRowBuf *rb
 	pfree(refs);
 }
 
-bool
-sift_l0_href_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec)
+void
+sift_l0_href_flush_chain(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber tail)
 {
-	SiftManifestRead mr;
-	SiftRowBuf *rb;
+	SiftRowBuf *rb = sift_rowbuf_new(spec);
 	BlockNumber *pages;
 	uint32		n,
 				npages;
-	SiftL0HeapRef *refs;
-	BlockNumber tail;
+	SiftL0HeapRef *refs = read_chain(rel, part_id, tail, &n, &pages, &npages);
 
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, key_lo, NULL);
-	if (mr.n == 0 || mr.entries[0].part_id != part_id)
-		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	tail = mr.entries[0].l0_slab_blk;
-	if (tail == InvalidBlockNumber || !sift_l0_slab_is_href(rel, part_id, tail))
-	{
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		return false;
-	}
-	rb = sift_rowbuf_new(spec);
-	refs = read_chain(rel, part_id, tail, &n, &pages, &npages);
 	sift_href_rows(rel, NULL, NULL, refs, n, rb);
 	sift_l0_slab_publish(rel, part_id, key_lo, spec, rb, pages, (int) npages);
-	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	sift_rowbuf_free(rb);
 	pfree(refs);
-	return true;
 }
 
 #endif							/* !SIFT_HREF_STANDALONE */

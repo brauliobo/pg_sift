@@ -90,10 +90,8 @@ extern uint32 sift_l0_href_chain_rows(Relation rel, uint64 part_id, BlockNumber 
 /* Is the page the head of a slab of references */
 extern bool sift_l0_slab_is_href(Relation rel, uint64 part_id, BlockNumber blk);
 
-/*
- * Turns the chain of references of the partition into a part of its rows and commits it, the chain released, under the lock of the partition. False when the partition has no slab of references.
- */
-extern bool sift_l0_href_flush(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec);
+/* Turns the chain of references at tail into a part of its rows and commits it, the chain released; the caller holds the lock of the partition and has found the chain at tail in its entry */
+extern void sift_l0_href_flush_chain(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartSpec *spec, BlockNumber tail);
 
 /* The references of the chain, oldest first, to offer to the VACUUM callback without a heap read (palloc'd) */
 extern SiftL0HeapRef *sift_l0_href_refs(Relation rel, uint64 part_id, BlockNumber tail, uint32 *n);
