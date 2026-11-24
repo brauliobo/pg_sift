@@ -7,6 +7,12 @@ CREATE EXTENSION IF NOT EXISTS pg_sift;
 DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET cpu_tuple_cost = 100;
+SET random_page_cost = 10000;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
 
 CREATE TABLE qt (id int PRIMARY KEY, g int, u uuid, b bytea, c char(6), n name, nm numeric, m30 numeric(30,5), m12 numeric(12,2)) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE qh (LIKE qt INCLUDING ALL);
