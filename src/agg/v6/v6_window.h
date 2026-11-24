@@ -57,7 +57,12 @@ extern void sift_v6_window_partsort(SiftV6WindowSpec *spec, const SiftV6Input *i
 /* The result f of the engine as the Datum of its PostgreSQL type: a sum or a count that leaves int8 raises what PostgreSQL raises */
 extern Datum sift_v6_window_datum(const SiftV6WindowSpec *spec, int f, const SiftWinVal *v);
 
-/* The engine over the source (which gives the rows that pass the WHERE clauses, sorted by the keys): every row it emits goes to emit */
-extern void sift_v6_window_run(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, struct SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg, SiftWinStats *stats);
+typedef struct SiftV6WindowRun SiftV6WindowRun;
+
+/* The engine over the source (which gives the rows that pass the WHERE clauses, sorted by the keys), in the memory context cxt: the rows come out by step, one batch of the input at a time, each to emit; false once the input is out */
+extern SiftV6WindowRun *sift_v6_window_open(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, struct SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg);
+extern bool sift_v6_window_step(SiftV6WindowRun *r);
+extern const SiftWinStats *sift_v6_window_stats(const SiftV6WindowRun *r);
+extern void sift_v6_window_close(SiftV6WindowRun *r);
 
 #endif							/* SIFT_AGG_V6_WINDOW_H */

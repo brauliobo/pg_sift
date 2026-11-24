@@ -9,6 +9,7 @@
 
 #include <stdalign.h>
 
+#include "miscadmin.h"
 #include "storage/buffile.h"
 #include "utils/float.h"
 #include "utils/fmgrprotos.h"
@@ -139,12 +140,8 @@ sift_window_create(MemoryContext cxt, const SiftWindowSpec *spec, uint64 max_byt
 	Assert(spec->n_part <= SIFT_WIN_MAX_KEYS && spec->n_ord <= SIFT_WIN_MAX_KEYS && spec->n_funcs <= SIFT_WIN_MAX_FUNCS);
 	w->spec = *spec;
 	w->fixed_bytes = fixed_bytes(spec);
-	if (w->fixed_bytes + 64 * sizeof(SiftWinRow) > max_bytes)
-		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the window needs more than %lu bytes", (unsigned long) max_bytes),
-						errhint("Raise work_mem, or use a smaller offset.")));
 	w->done = spec->limit == 0;
 	w->cxt = cxt;
-	w->max_bytes = max_bytes;
 	w->next = next;
 	w->skip = skip;
 	w->src = src;
@@ -179,6 +176,9 @@ sift_window_create(MemoryContext cxt, const SiftWindowSpec *spec, uint64 max_byt
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a top-K of each partition cannot go with a LEAD or a RANGE frame"),
 						errhint("Use ROWS frames and no LEAD, or take the rows after the window.")));
 	w->cap = 64;
+	while (w->cap < w->max_lead + 2)
+		w->cap *= 2;
+	w->max_bytes = Max(max_bytes, w->fixed_bytes + (uint64) w->cap * sizeof(SiftWinRow));
 	w->ring = alloc_i128(cxt, (Size) w->cap * sizeof(SiftWinRow));
 	return w;
 }
@@ -421,6 +421,7 @@ replay_spill(SiftWindowExec *w, const SiftWinVal *v, const bool *ok)
 	BufFileSeek(w->spill, 0, 0, SEEK_SET);
 	for (; w->n_spilled && !w->done; w->n_spilled--)
 	{
+		CHECK_FOR_INTERRUPTS();
 		BufFileReadExact(w->spill, &r, sizeof(r));
 		for (int f = 0; f < w->spec.n_funcs; f++)
 			if (is_range_func(&w->spec.funcs[f]))
@@ -817,17 +818,29 @@ consume_batch(SiftWindowExec *w, const SiftWinBatch *b)
 	}
 }
 
-void
-sift_window_run(SiftWindowExec *w)
+bool
+sift_window_step(SiftWindowExec *w)
 {
 	SiftWinBatch b;
 
 	memset(&b, 0, sizeof(b));
-	while (!w->done && w->next(w->src, &b))
+	if (!w->done && w->next(w->src, &b))
+	{
 		consume_batch(w, &b);
+		return true;
+	}
 	if (!w->done)
 		close_partition(w);
+	w->done = true;
 	w->has_cur = false;
+	return false;
+}
+
+void
+sift_window_run(SiftWindowExec *w)
+{
+	while (sift_window_step(w))
+		;
 }
 
 uint32

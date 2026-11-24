@@ -27,6 +27,7 @@
 #include "agg/v6/v6_source_quals.h"
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_fifo.h"
 #include "agg/v6/v6_window.h"
 #include "agg/v6/v6_win_carry.h"
 #include "agg/v6/v6_win_func.h"
@@ -271,16 +272,39 @@ feed_skip(void *p, const int64 *part_key, uint8 part_nulls)
 	fd->src->skip(fd->src, part_key, part_nulls);
 }
 
-void
-sift_v6_window_run(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg, SiftWinStats *stats)
+struct SiftV6WindowRun
 {
-	Feed		fd = {.src = src,.spec = spec,.carry = carry};
-	SiftWindowExec *w = sift_window_create(cxt, &spec->win, (uint64) work_mem * 1024 / 4, feed_next, src->skip != NULL ? feed_skip : NULL, &fd, emit, emit_arg);
+	Feed		fd;
+	SiftWindowExec *w;
+};
 
-	sift_window_run(w);
-	if (stats != NULL)
-		*stats = *sift_window_stats(w);
-	sift_window_free(w);
+SiftV6WindowRun *
+sift_v6_window_open(MemoryContext cxt, const SiftV6WindowSpec *spec, SiftV6Source *src, SiftWinCarry *carry, SiftWinEmit emit, void *emit_arg)
+{
+	SiftV6WindowRun *r = MemoryContextAllocZero(cxt, sizeof(SiftV6WindowRun));
+
+	r->fd = (Feed) {.src = src,.spec = spec,.carry = carry};
+	r->w = sift_window_create(cxt, &spec->win, (uint64) work_mem * 1024 / 4, feed_next, src->skip != NULL ? feed_skip : NULL, &r->fd, emit, emit_arg);
+	return r;
+}
+
+bool
+sift_v6_window_step(SiftV6WindowRun *r)
+{
+	return sift_window_step(r->w);
+}
+
+const SiftWinStats *
+sift_v6_window_stats(const SiftV6WindowRun *r)
+{
+	return sift_window_stats(r->w);
+}
+
+void
+sift_v6_window_close(SiftV6WindowRun *r)
+{
+	sift_window_free(r->w);
+	pfree(r);
 }
 
 /* ---- the planner ---- */
@@ -609,8 +633,10 @@ typedef struct WindowState
 	List	   *priv;
 	List	   *quals;
 	SiftV6WindowSpec *spec;		/* of its own allocation: a 128-bit member needs more alignment than a node has */
+	MemoryContext cx;			/* one run of the engine */
 	SiftV6Source *src;
-	SiftV6Store out;
+	SiftV6WindowRun *run;		/* the engine; NULL while SiftWinx, which computes the window whole, runs it */
+	SiftV6Fifo	fifo;
 	SiftV6Vexpr *filters;		/* SiftWinx: the program of each FILTER clause */
 	AttrNumber *attnos;			/* the columns fetched for a row: the Vars of the scan tlist */
 	const Var **attvar;
@@ -623,6 +649,8 @@ typedef struct WindowState
 	bool	   *nulls;
 	SiftWinStats stats;
 	int			threads;		/* the compute threads that ran the window (0: the node did) */
+	bool		started;
+	bool		done;
 } WindowState;
 
 static void
@@ -643,6 +671,7 @@ window_begin(CustomScanState *node, EState *estate, int eflags)
 	st->entry = palloc(list_length(tlist) * sizeof(int));
 	st->vals = palloc(list_length(tlist) * sizeof(Datum));
 	st->nulls = palloc(list_length(tlist) * sizeof(bool));
+	sift_v6_fifo_open(&st->fifo, estate->es_query_cxt);
 	foreach_node(TargetEntry, te, tlist)
 	{
 		int			f = 0;
@@ -673,7 +702,7 @@ static void
 window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 {
 	const List *tlist = lsecond(((CustomScan *) st->css.ss.ps.plan)->custom_private);
-	MemoryContext old = MemoryContextSwitchTo(st->out.row_cx);
+	MemoryContext old = MemoryContextSwitchTo(st->fifo.row_cx);
 	Datum	   *fetched = st->fetched;
 	bool	   *fnull = st->fnull;
 	const bool	have = st->nattrs == 0 || (st->carry != NULL && sift_win_carry_take(st->carry, tag, fetched, fnull)) ||
@@ -698,7 +727,7 @@ window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 		}
 	}
 	MemoryContextSwitchTo(old);
-	sift_v6_store_put(&st->out, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
+	sift_v6_fifo_put(&st->fifo, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
 }
 
 static void
@@ -740,17 +769,24 @@ winx_emit(void *arg, uint64 tag, const SiftWinxVal *v)
 static void
 window_release(WindowState *st)
 {
+	if (st->run != NULL)
+		sift_v6_window_close(st->run);
 	if (st->src != NULL)
 		st->src->close(st->src);
-	st->src = NULL;
 	if (st->carry != NULL)
 		sift_win_carry_free(st->carry);
+	if (st->cx != NULL)
+		MemoryContextDelete(st->cx);
+	st->run = NULL;
+	st->src = NULL;
 	st->carry = NULL;
-	sift_v6_store_end(&st->out);
+	st->cx = NULL;
+	st->started = st->done = false;
+	st->threads = 0;
 }
 
 static void
-window_run(WindowState *st, EState *estate)
+window_start(WindowState *st, EState *estate)
 {
 	SiftV6Input in;
 	SiftV6Input open_in;
@@ -759,45 +795,46 @@ window_run(WindowState *st, EState *estate)
 	const bool	is_table = list_nth_int(linitial(st->priv), 6);
 	Relation	source = sift_v6_source_open((Oid) list_nth_int(linitial(st->priv), 0), is_table, AccessShareLock, &in);
 
-	sift_v6_store_start(&st->out, estate);
+	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
+	st->started = true;
 	sift_v6_input_bind(&in, estate);
 	sift_v6_source_close(source, is_table, NoLock);
-	st->filters = palloc0(SIFT_WINX_MAX_FUNCS * sizeof(SiftV6Vexpr));
-	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_split_quals(st->out.cx, NULL, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
-		(st->spec->winx == NULL || sift_v6_winx_filters(st->out.cx, list_nth(st->priv, PRIV_FUNCS), st->spec->rti, estate->es_param_list_info, &in, st->filters));
+	st->filters = MemoryContextAllocZero(st->cx, SIFT_WINX_MAX_FUNCS * sizeof(SiftV6Vexpr));
+	compiled = sift_v6_window_spec(st->priv, &in, estate->es_param_list_info, st->spec) && sift_v6_split_quals(st->cx, NULL, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals) &&
+		(st->spec->winx == NULL || sift_v6_winx_filters(st->cx, list_nth(st->priv, PRIV_FUNCS), st->spec->rti, estate->es_param_list_info, &in, st->filters));
 	SIFT_INVARIANT(compiled, "the window scan of relation %u is not compiled", st->spec->indexoid);
 	if (st->spec->empty)
 	{
-		st->out.ran = true;
+		st->done = true;
 		return;
 	}
-	st->carry = st->spec->winx != NULL ? NULL : sift_win_carry_open(st->out.cx, &in, st->attvar, st->nattrs, (uint64) work_mem * 1024 / 4);
+	st->carry = st->spec->winx != NULL ? NULL : sift_win_carry_open(st->cx, &in, st->attvar, st->nattrs, (uint64) work_mem * 1024 / 4);
 	open_in = in;
 	sift_v6_split_quals_columns(&open_in, &quals);
-	st->src = sift_v6_source_over_quals(st->out.cx, sift_v6_rel_open(estate, &open_in, quals.has_machine ? &quals.machine : NULL, !st->spec->regroup), &open_in, &quals);
+	st->src = sift_v6_source_over_quals(st->cx, sift_v6_rel_open(estate, &open_in, quals.has_machine ? &quals.machine : NULL, !st->spec->regroup), &open_in, &quals);
 	if (st->spec->regroup)
-		st->src = sift_win_regroup_over(st->out.cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
+		st->src = sift_win_regroup_over(st->cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
 	if (sift_v6_par_win_wanted(st->spec, &in))
 	{
-		st->threads = sift_v6_par_win_run(st->out.cx, st->spec, &in, st->src, st->carry, window_emit_vals, st, &st->stats);
-		st->out.ran = true;
+		st->threads = sift_v6_par_win_run(st->cx, st->spec, &in, st->src, st->carry, window_emit_vals, st, &st->stats);
+		st->done = true;
 		return;
 	}
 	if (st->spec->partsort)
 	{
 		sift_v6_window_partsort(st->spec, &in);
-		st->src = sift_win_partsort_open(st->out.cx, st->src, &st->spec->ps);
+		st->src = sift_win_partsort_open(st->cx, st->src, &st->spec->ps);
 	}
 	if (st->spec->winx != NULL)
 	{
 		SiftWinxStats wx;
 
-		sift_v6_winx_run(st->out.cx, st->spec->winx, st->spec->part_slot, st->spec->ord_slot, st->src, st->filters, winx_emit, st, &wx);
+		sift_v6_winx_run(st->cx, st->spec->winx, st->spec->part_slot, st->spec->ord_slot, st->src, st->filters, winx_emit, st, &wx);
 		st->stats = (SiftWinStats) {.rows_in = wx.rows,.rows_out = wx.rows,.max_pending = wx.max_pending};
+		st->done = true;
 	}
 	else
-		sift_v6_window_run(st->out.cx, st->spec, st->src, st->carry, window_emit, st, &st->stats);
-	st->out.ran = true;
+		st->run = sift_v6_window_open(st->cx, st->spec, st->src, st->carry, window_emit, st);
 }
 
 static TupleTableSlot *
@@ -805,9 +842,16 @@ window_next(ScanState *ss)
 {
 	WindowState *st = (WindowState *) ss;
 
-	if (!st->out.ran)
-		window_run(st, ss->ps.state);
-	return sift_v6_store_get(&st->out, ss->ss_ScanTupleSlot);
+	if (!st->started)
+		window_start(st, ss->ps.state);
+	for (;;)
+	{
+		TupleTableSlot *slot = sift_v6_fifo_get(&st->fifo, ss->ss_ScanTupleSlot);
+
+		if (slot != NULL || st->done)
+			return slot;
+		st->done = !sift_v6_window_step(st->run);
+	}
 }
 
 static bool
@@ -825,31 +869,34 @@ window_exec(CustomScanState *node)
 static void
 window_end(CustomScanState *node)
 {
-	window_release((WindowState *) node);
+	WindowState *st = (WindowState *) node;
+
+	window_release(st);
+	sift_v6_fifo_close(&st->fifo);
 }
 
-/* the same parameters give the same rows: a scan again reads the store from its start; other parameters make the engine run again */
+/* a scan again reads the input again: no row of the run is kept to be given twice */
 static void
 window_rescan(CustomScanState *node)
 {
 	WindowState *st = (WindowState *) node;
 
-	if (node->ss.ps.chgParam != NULL && st->src != NULL)
-		window_release(st);
-	sift_v6_store_rescan(&st->out, node->ss.ps.chgParam != NULL);
+	window_release(st);
+	sift_v6_fifo_clear(&st->fifo);
 }
 
 static void
 window_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	WindowState *st = (WindowState *) node;
+	const SiftWinStats *s = st->run != NULL ? sift_v6_window_stats(st->run) : &st->stats;
 
 	sift_v6_explain_index(es, (Oid) list_nth_int(linitial(st->priv), 0), list_nth_int(linitial(st->priv), 6));
-	if (st->out.ran)
+	if (st->started)
 	{
-		sift_v6_explain_count(es, "Rows In", (int64) st->stats.rows_in);
-		sift_v6_explain_count(es, "Rows Out", (int64) st->stats.rows_out);
-		sift_v6_explain_count(es, "Partitions Skipped", (int64) st->stats.skips);
+		sift_v6_explain_count(es, "Rows In", (int64) s->rows_in);
+		sift_v6_explain_count(es, "Rows Out", (int64) s->rows_out);
+		sift_v6_explain_count(es, "Partitions Skipped", (int64) s->skips);
 		if (st->threads > 0)
 			sift_v6_explain_count(es, "Threads", st->threads);
 	}
