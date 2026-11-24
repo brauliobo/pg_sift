@@ -107,7 +107,7 @@ extern SiftCompactGroup *sift_compact_plan(const SiftPartDesc *parts, int nparts
 
 /*
  * What a host folds into the parts a compaction rewrites besides their rows: a table, the column deltas of the partition (table/f2/f2_col_delta.h). The host installs it once; with none,
- * or when open returns NULL (nothing to fold in the partition), a compaction is what it was.
+ * a compaction is what it was. A record may reach the partition while the outputs are written, so open serves every compaction and commit reads the host's records again under the lock.
  */
 typedef struct SiftCompactFold
 {

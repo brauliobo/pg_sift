@@ -26,6 +26,7 @@ typedef struct Fold
 	SiftColDeltaHorizon hz;
 	uint64	   *gens;			/* of the parts rewritten, ascending */
 	int			ngens;
+	bool		had_chain;
 	SiftColDeltaChain chain;
 	SiftColDeltaCompactPlan plan;
 	uint32		nrecords;
@@ -90,14 +91,8 @@ note_folds(Fold *f)
 static void *
 fold_open(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens, FullTransactionId horizon)
 {
-	Fold	   *f;
-	uint64	   *live;
+	Fold	   *f = palloc0(sizeof(Fold));
 
-	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
-		return NULL;
-	f = palloc0(sizeof(Fold));
-	if (!sift_col_delta_load_chain(rel, entry, 0, &f->chain))
-		return NULL;
 	f->rel = rel;
 	f->store = sift_f2_store_open(rel);
 	sift_xid_horizon_init(&f->hc, horizon);
@@ -105,9 +100,12 @@ fold_open(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	f->gens = memcpy(palloc(sizeof(uint64) * Max(ngens, 1)), gens, sizeof(uint64) * ngens);
 	f->ngens = ngens;
 	qsort(f->gens, ngens, sizeof(uint64), gen_cmp);
-	live = sift_col_delta_sorted_gens(parts, nparts);
-	sift_col_delta_compact_plan(&f->chain, f->gens, f->ngens, live, nparts, &f->hz, UINT32_MAX, &f->plan);
-	f->nrecords = (uint32) f->plan.nrecords;
+	f->had_chain = (entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 && sift_col_delta_load_chain(rel, entry, 0, &f->chain);
+	if (f->had_chain)
+	{
+		sift_col_delta_compact_plan(&f->chain, f->gens, f->ngens, sift_col_delta_sorted_gens(parts, nparts), nparts, &f->hz, UINT32_MAX, &f->plan);
+		f->nrecords = (uint32) f->plan.nrecords;
+	}
 	note_folds(f);
 	return f;
 }
@@ -305,7 +303,10 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	SiftColDeltaRemap remap;
 	bool		has_chain = sift_col_delta_load_chain(f->rel, entry, 0, &chain);
 
-	SIFT_INVARIANT(has_chain, "the chain of a partition went while its compaction held the lock");
+	SIFT_INVARIANT(has_chain || !f->had_chain, "the chain of a partition went while its compaction held the lock");
+	if (!has_chain)
+		return;
+	sift_xid_horizon_init(&f->hc, f->hc.horizon);
 	sift_col_delta_compact_plan(&chain, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords, &plan);
 	want = wanted_tids(&plan, &nwant);
 	pl = place_rows(f->rel, entry->part_id, out, nout, want, nwant);
