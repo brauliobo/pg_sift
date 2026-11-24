@@ -96,9 +96,13 @@ key_of(const SiftParDistinct *d, DistWorker *w, const SiftParDistinctBatch *b, c
 
 	if (!d->grouped)
 		return 0;
-	k = row_key(d, b, i, words);
 	if (d->direct)
-		return sift_keytab_intern(&w->keys, &k);
+	{
+		if (i + KEY_AHEAD < b->n)
+			sift_keytab_prefetch_direct(&w->keys, b->key[0][i + KEY_AHEAD]);
+		return sift_keytab_direct_id(&w->keys, b->key[0][i]);
+	}
+	k = row_key(d, b, i, words);
 	k.h = hs[i];
 	if (i + KEY_AHEAD < b->n)
 		sift_keytab_prefetch_slot(&w->keys, hs[i + KEY_AHEAD]);
@@ -112,7 +116,7 @@ add_row(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDistin
 {
 	uint64	   *pay = sift_keytab_pay(&w->keys, sift_keytab_at(&w->keys, kid));
 
-	pay[0]++;
+	pay[0] += !d->direct;
 	for (int m = 0; m < d->sp.nsum; m++)
 		pay[1 + m] += b->sum[m][i];
 	for (int m = 0; m < d->sp.nmm; m++)
@@ -122,6 +126,15 @@ add_row(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDistin
 		if (s.len != SIFT_STR_NULL && !dist_mm_offer(pay + dist_pay_mm(d, m), (d->sp.mm_max >> m) & 1, s.p, s.len, w->keys.a))
 			return false;
 	}
+	return true;
+}
+
+/* A row with no value is no record: in a direct table the rows of a key are the records that phase 2 counts (in the entry of its thread) and these */
+static bool
+no_value(const SiftParDistinct *d, DistWorker *w, uint32 kid)
+{
+	if (d->direct)
+		sift_keytab_pay(&w->keys, sift_keytab_at(&w->keys, kid))[0]++;
 	return true;
 }
 
@@ -138,7 +151,7 @@ put_value(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDist
 		SiftTabKey		k = {.p = s.p,.len = s.len};
 
 		if (s.len == SIFT_STR_NULL)
-			return true;
+			return no_value(d, w, kid);
 		k.h = h = sift_key_hash(&d->vs, NULL, s.p, s.len);
 		if ((rec.v = sift_keytab_intern(&w->vals, &k)) == SIFT_KEYTAB_NONE)
 			return false;
@@ -146,12 +159,19 @@ put_value(const SiftParDistinct *d, DistWorker *w, uint32 kid, const SiftParDist
 	else
 	{
 		if (b->vnull != NULL && b->vnull[i])
-			return true;
+			return no_value(d, w, kid);
 		rec.v = b->val[i];
 		h = sift_du64_mix(rec.v);
 	}
 	if (!d->grouped)
 		return sift_radix_put(&w->raw, sift_radix_part(h), &rec.v, sizeof(rec.v));
+	if (d->direct)
+	{
+		const uint64 ph = sift_du64_pair_hash(d->sp.vstr ? h : rec.v, kid);
+
+		rec.h32 = (uint32) ph;
+		return sift_radix_put(&w->raw, sift_radix_part(ph), &rec, sizeof(rec));
+	}
 	return sift_radix_put(&w->raw, sift_radix_part(sift_keytab_at(&w->keys, kid)[0]), &rec, sizeof(rec));
 }
 

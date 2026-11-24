@@ -161,12 +161,14 @@ tile_fill(P2 *p, const DistRec *rec, uint32 m, SiftDuPair *tile)
 		const uint32 g = p->d->direct ? rec[i].kid : (uint32) sift_keytab_pay(&p->src->keys, sift_keytab_at(&p->src->keys, rec[i].kid))[dist_pay_last(p->d)];
 		uint64		v = rec[i].v;
 
-		if (i + TILE_AHEAD < m)
+		if (!p->d->direct && i + TILE_AHEAD < m)
 			__builtin_prefetch(sift_keytab_at(&p->src->keys, rec[i + TILE_AHEAD].kid));
 
 		if (p->d->sp.vstr && (v = sift_keytab_intern_of(&p->v2, sift_keytab_at(&p->src->vals, (uint32) v))) == SIFT_KEYTAB_NONE)
 			return false;
-		tile[i] = (SiftDuPair) {.val = v,.gid1 = g + 1,.h32 = (uint32) sift_du64_pair_hash(v, g)};
+		tile[i] = (SiftDuPair) {.val = v,.gid1 = g + 1,.h32 = p->d->direct && !p->d->sp.vstr ? rec[i].h32 : (uint32) sift_du64_pair_hash(v, g)};
+		if (p->d->direct)
+			sift_keytab_pay(&p->d->w[p->t].keys, sift_keytab_at(&p->d->w[p->t].keys, g))[0]++;
 	}
 	return true;
 }

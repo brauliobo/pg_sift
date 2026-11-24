@@ -50,7 +50,7 @@ typedef struct DistRec
 {
 	uint64		v;
 	uint32		kid;
-	uint32		pad;
+	uint32		h32;			/* a direct table: the hash of the pair of the key and the value */
 } DistRec;
 
 /* The words of the payload of a key: its rows, its sums, the text minimums and maximums (3 words each), and a last word (below) */

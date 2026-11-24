@@ -7,7 +7,8 @@
  * are copied into the arena, unless the table borrows them: the keys of another table of the same run (sift_keytab_intern_of), which stay where they are until the run is done.
  *
  * A table of one integer word whose keys lie in a range of direct_n values from direct_lo is direct (sift_keytab_init_direct): the number of a key is its distance from the least, the entry of every
- * value of the range is there from the start (its hash made), and no slot is probed. So the number of a key is the same in the table of every thread; a value outside the range has none.
+ * value of the range is there from the start, and no slot is probed. The entry of a key is its npay words alone (the key is its number plus direct_lo): the entries are close, and the whole
+ * table stays in the cache. So the number of a key is the same in the table of every thread; a value outside the range has none.
  */
 #ifndef SIFT_AGG_V6_PAR_KEYTAB_H
 #define SIFT_AGG_V6_PAR_KEYTAB_H
@@ -41,6 +42,7 @@ typedef struct SiftKeyTab
 	SiftKeyShape sh;
 	bool		borrow;
 	uint32		ew;
+	uint32		payoff;			/* the words of an entry before those of the caller */
 	uint32		count;
 	uint32		ecap;
 	uint32		scap;
@@ -62,14 +64,19 @@ extern bool sift_keytab_init_direct(SiftKeyTab *t, SiftArena *a, SiftKeyShape sh
 /* The number of the key (k->h is its hash), a new one when it is new; SIFT_KEYTAB_NONE when the arena has no room (a direct table: the key is out of its range): the table is then as it was */
 extern uint32 sift_keytab_intern_hashed(SiftKeyTab *t, const SiftTabKey *k);
 
+/* The number of a key (its word) of a direct table; SIFT_KEYTAB_NONE when it is out of the range */
+static inline uint32
+sift_keytab_direct_id(const SiftKeyTab *t, uint64 word)
+{
+	const uint64 at = word - t->direct_lo;
+
+	return at < t->direct_n ? (uint32) at : SIFT_KEYTAB_NONE;
+}
+
 static inline uint32
 sift_keytab_intern(SiftKeyTab *t, const SiftTabKey *k)
 {
-	const uint64 at = t->direct_n != 0 ? k->w[0] - t->direct_lo : 0;
-
-	if (t->direct_n == 0)
-		return sift_keytab_intern_hashed(t, k);
-	return at < t->direct_n ? (uint32) at : SIFT_KEYTAB_NONE;
+	return t->direct_n != 0 ? sift_keytab_direct_id(t, k->w[0]) : sift_keytab_intern_hashed(t, k);
 }
 
 static inline uint64 *
@@ -81,7 +88,7 @@ sift_keytab_at(const SiftKeyTab *t, uint32 id)
 static inline uint64 *
 sift_keytab_pay(const SiftKeyTab *t, uint64 *e)
 {
-	return e + SIFT_KEY_HEAD + t->sh.kw;
+	return e + t->payoff;
 }
 
 /* Brings in the slot of a hash, and (once that has arrived) the entry its slot holds: the keys of a batch are looked up a few at a time ahead */
@@ -98,6 +105,16 @@ sift_keytab_prefetch_ent(const SiftKeyTab *t, uint64 h)
 
 	if (s != 0)
 		__builtin_prefetch(sift_keytab_at(t, (uint32) s - 1));
+}
+
+/* The entry of a key of a direct table (a key out of its range has none) */
+static inline void
+sift_keytab_prefetch_direct(const SiftKeyTab *t, uint64 word)
+{
+	const uint64 at = word - t->direct_lo;
+
+	if (at < t->direct_n)
+		__builtin_prefetch(sift_keytab_at(t, (uint32) at), 1);
 }
 
 static inline SiftTabKey

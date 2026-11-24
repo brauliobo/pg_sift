@@ -86,25 +86,17 @@ ents_alloc(SiftKeyTab *t, uint32 ecap)
 bool
 sift_keytab_init(SiftKeyTab *t, SiftArena *a, SiftKeyShape sh, bool borrow)
 {
-	*t = (SiftKeyTab) {.a = a,.sh = sh,.borrow = borrow,.ew = SIFT_KEY_HEAD + sh.kw + sh.npay};
+	*t = (SiftKeyTab) {.a = a,.sh = sh,.borrow = borrow,.ew = SIFT_KEY_HEAD + sh.kw + sh.npay,.payoff = SIFT_KEY_HEAD + sh.kw};
 	return ents_alloc(t, KEYTAB_FIRST) && slots_alloc(t, 2 * KEYTAB_FIRST);
 }
 
 bool
 sift_keytab_init_direct(SiftKeyTab *t, SiftArena *a, SiftKeyShape sh, int64 lo, uint32 n)
 {
-	*t = (SiftKeyTab) {.a = a,.sh = sh,.ew = SIFT_KEY_HEAD + sh.kw + sh.npay,.direct_n = n,.direct_lo = (uint64) lo};
+	*t = (SiftKeyTab) {.a = a,.sh = sh,.ew = sh.npay,.direct_n = n,.direct_lo = (uint64) lo};
 	if (!ents_alloc(t, n))
 		return false;
 	memset(t->ent, 0, (size_t) n * t->ew * sizeof(uint64));
-	for (uint32 id = 0; id < n; id++)
-	{
-		uint64	   *e = sift_keytab_at(t, id);
-		const uint64 word = t->direct_lo + id;
-
-		e[0] = sift_key_hash(&sh, &word, NULL, 0);
-		e[SIFT_KEY_HEAD] = word;
-	}
 	t->count = n;
 	return true;
 }

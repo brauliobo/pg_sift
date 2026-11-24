@@ -114,7 +114,7 @@ distinct_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads,
 	const uint64 keys = grouped ? Min(per, groups_est > 0 ? groups_est : per / 8) : 0;
 	const uint64 texts = sh->ds.vstr ? per / 8 : 0;
 	const bool	direct = sh->ds.kw == 1 && !sh->ds.kstr;
-	const uint64 direct_bytes = direct ? (uint64) DIRECT_MAX * (SIFT_KEY_HEAD + 1 + 2 + sh->ds.nsum + 3 * sh->ds.nmm) * sizeof(uint64) : 0;
+	const uint64 direct_bytes = direct ? (uint64) DIRECT_MAX * (2 + sh->ds.nsum + 3 * sh->ds.nmm) * sizeof(uint64) : 0;
 
 	sz->scratch = 8u << 20;
 	sz->work = (8u << 20) + rows / 16;
