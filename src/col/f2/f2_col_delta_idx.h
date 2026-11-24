@@ -156,6 +156,13 @@ extern void sift_cdi_patch_granule(const SiftColDeltaGranMap *gm, int ncols, Col
 /* Only the addresses: tids[row] is the address the chain gave the row (what a TID bridge and a pending delete name it by) */
 extern void sift_cdi_remap_tids(const SiftColDeltaGranMap *gm, uint64 *tids, int n);
 
+/* Whether the chain gave an address to a row of the granule (NULL: no patch of it): the addresses the part holds are not those a pending delete names its rows by */
+static inline bool
+sift_cdi_gran_remaps(const SiftColDeltaGranMap *gm)
+{
+	return gm != NULL && (gm->attnum_bloom & sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)) != 0;
+}
+
 /*
  * The exceptions of a part with, for every granule the map patches in a leaf of a predicate (pred_leaf[leaf]), the exception that tells a scan that the stored column cannot decide for
  * that leaf of that granule: its zones, its dictionary, its chunk filters and its skipping indexes are left out for it. exc[nexc] is returned as it is when nothing of it is patched.

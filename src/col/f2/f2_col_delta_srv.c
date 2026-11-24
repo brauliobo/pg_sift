@@ -154,12 +154,6 @@ scan_granule_map(const F2Scan *s, uint32 g)
 	return s->cd != NULL && s->cd->map != NULL ? sift_col_delta_gran_map(s->cd->map, g) : NULL;
 }
 
-static bool
-remaps(const SiftColDeltaGranMap *gm)
-{
-	return gm != NULL && (gm->attnum_bloom & sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)) != 0;
-}
-
 bool
 sift_cdi_scan_patch(F2Scan *s, const SiftColSchema *schema, uint32 g, ColView *views, uint64 *tids, int n, MemoryContext cx)
 {
@@ -168,7 +162,7 @@ sift_cdi_scan_patch(F2Scan *s, const SiftColSchema *schema, uint32 g, ColView *v
 	if (gm == NULL)
 		return false;
 	sift_cdi_patch_granule(gm, schema->ncols, views, tids, n, cx);
-	return remaps(gm);
+	return sift_cdi_gran_remaps(gm);
 }
 
 void
@@ -183,7 +177,7 @@ sift_cdi_scan_remap_tids(const F2Scan *s, uint32 g, uint64 *tids, int n)
 bool
 sift_cdi_scan_remaps(const F2Scan *s, uint32 g)
 {
-	return remaps(scan_granule_map(s, g));
+	return sift_cdi_gran_remaps(scan_granule_map(s, g));
 }
 
 /* ---- the UPDATE ---- */

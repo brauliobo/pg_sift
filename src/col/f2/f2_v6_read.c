@@ -196,7 +196,7 @@ f2v6_granule(F2V6Ctx *c, const F2V6Part *p, uint32 g, const int *leaves, int nle
 	SiftGranuleView v;
 	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, g) : NULL;
 	const SiftColDeltaGranMap *gm = p->cd != NULL ? sift_col_delta_gran_map(p->cd, g) : NULL;
-	const bool	remapped = gm != NULL && (gm->attnum_bloom & sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)) != 0;
+	const bool	remapped = sift_cdi_gran_remaps(gm);
 	uint64		dead[SIFT_DV_MASK_WORDS];
 	bool		any_dead = false;
 	int		   *chunks = palloc((nleaves + 1) * sizeof(int));
