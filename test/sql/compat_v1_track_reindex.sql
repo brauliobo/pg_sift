@@ -40,6 +40,9 @@ SELECT same('SELECT id, v FROM tc WHERE g = 3 AND v > 40') AS tc_same, same('SEL
 VACUUM tc, tk;
 SELECT same('SELECT id, v FROM tc WHERE g = 3 AND v > 40') AS tc_same, same('SELECT id, v FROM tk WHERE g = 3 AND v > 40') AS tk_same;
 
+SELECT relation::text, format, state, health FROM sift.indexes WHERE relation IN ('tc_idx'::regclass, 'tk_idx'::regclass) ORDER BY 1;
+SELECT count(*) AS errors FROM sift.health() WHERE severity = 'error';
+SELECT relation::text, failures FROM sift.workers WHERE relation IN ('tc_idx'::regclass, 'tk_idx'::regclass) ORDER BY 1;
 DROP TABLE tc, tk;
 DROP FUNCTION same(text);
 DROP EXTENSION pg_sift;

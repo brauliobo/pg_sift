@@ -67,6 +67,26 @@ SELECT same('SELECT id, v FROM tc WHERE g = 3 AND v > 40') AS tc_same, same('SEL
  same    | same
 (1 row)
 
+SELECT relation::text, format, state, health FROM sift.indexes WHERE relation IN ('tc_idx'::regclass, 'tk_idx'::regclass) ORDER BY 1;
+ relation | format | state | health 
+----------+--------+-------+--------
+ tc_idx   | 2.0    | ready | ok
+ tk_idx   | 2.0    | ready | ok
+(2 rows)
+
+SELECT count(*) AS errors FROM sift.health() WHERE severity = 'error';
+ errors 
+--------
+      0
+(1 row)
+
+SELECT relation::text, failures FROM sift.workers WHERE relation IN ('tc_idx'::regclass, 'tk_idx'::regclass) ORDER BY 1;
+ relation | failures 
+----------+----------
+ tc_idx   |        0
+ tk_idx   |        0
+(2 rows)
+
 DROP TABLE tc, tk;
 DROP FUNCTION same(text);
 DROP EXTENSION pg_sift;

@@ -61,6 +61,7 @@ extern void sift_f2_key_of(const SiftColRel *r, const SiftF2Rel *f, SiftCell *ce
 extern Datum sift_f2_track_trigger(PG_FUNCTION_ARGS);
 extern void sift_f2_track_reconcile(Relation index);
 extern void sift_f2_track_install(Relation heap, Relation index, bool concurrent);
+extern Datum sift_f2_worker_history(FunctionCallInfo fcinfo);
 
 /* The address of a heap tuple as the part stores it, and back */
 static inline uint64

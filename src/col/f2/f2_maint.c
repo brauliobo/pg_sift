@@ -596,8 +596,8 @@ f2_refresh(FunctionCallInfo fcinfo)
 }
 
 /* The last background step that ended well and the failures noted since the build, from the metapage */
-static Datum
-f2_worker_history(FunctionCallInfo fcinfo)
+Datum
+sift_f2_worker_history(FunctionCallInfo fcinfo)
 {
 	Relation	index = open_f2_relation(PG_GETARG_OID(0));
 	SiftColMetaPageData meta = sift_col_meta_read(index);
@@ -649,7 +649,7 @@ sift_col_v2_sql(SiftColSqlFn fn, FunctionCallInfo fcinfo)
 		case SIFT_SQL_WORKER_STATE:
 			return f2_worker_state(fcinfo);
 		case SIFT_SQL_WORKER_HISTORY:
-			return f2_worker_history(fcinfo);
+			return sift_f2_worker_history(fcinfo);
 		case SIFT_SQL_REFRESH:
 			return f2_refresh(fcinfo);
 	}

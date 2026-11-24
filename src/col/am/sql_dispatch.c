@@ -10,6 +10,7 @@
 
 #include "col/am/format_ops.h"
 #include "col/am.h"
+#include "col/f2/f2.h"
 #include "col/f2/f2_choices.h"
 #include "col/pg.h"
 #include "core/check.h"
@@ -118,7 +119,12 @@ sift_worker_state(PG_FUNCTION_ARGS)
 {
 	return sift_f2_relation(PG_GETARG_OID(0)) ? sift_col_v2_ops.sql(SIFT_SQL_WORKER_STATE, fcinfo) : dispatch(SIFT_SQL_WORKER_STATE, fcinfo);
 }
-SIFT_SQL_ENTRY(sift_worker_history, SIFT_SQL_WORKER_HISTORY)
+
+Datum
+sift_worker_history(PG_FUNCTION_ARGS)
+{
+	return sift_f2_relation(PG_GETARG_OID(0)) ? sift_f2_worker_history(fcinfo) : sift_worker_history_dir(fcinfo);
+}
 
 /* not STRICT: a NULL index gives NULL, as it did before the format chose the answer */
 Datum
