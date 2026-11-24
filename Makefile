@@ -150,6 +150,7 @@ TESTING_REGRESS += agg_v6_parity_workload
 TESTING_REGRESS += agg_v6_push_semi_keys
 TESTING_REGRESS += agg_v6_rows_text_ties
 TESTING_REGRESS += agg_v6_rows_topn_ties
+TESTING_REGRESS += agg_v6_rows_dict_text
 TESTING_REGRESS += agg_v6_scope_topk
 TESTING_REGRESS += agg_v6_sip_window_expr
 TESTING_REGRESS += agg_v6_star_jsonb_unnest
