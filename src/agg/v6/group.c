@@ -30,6 +30,28 @@
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
 
+static bool
+batch_has_inf(const SiftVec *v, const uint64 *mk, uint16 n)
+{
+	uint32		r;
+
+	V6_FOR_EACH_ROW(mk, n, r)
+		if (isinf(((const double *) v->data)[r]))
+			return true;
+	return false;
+}
+
+/* The kernel adds the rows in lanes: an infinite sum of finite parts is the overflow float8pl raises, unless a row of the batch is an infinity itself */
+static double
+sum_f64_batch(const SiftVec *v, const uint64 *mk, uint16 n, double acc)
+{
+	const double sum = sift_aggk6->sum_f64_fast(v->data, mk, n, acc);
+
+	if (isinf(sum) && !isinf(acc) && !batch_has_inf(v, mk, n))
+		float_overflow_error();
+	return sum;
+}
+
 /* sift.arg_max, sift.arg_min: n the rows with a cmp, v0 the order key of the best cmp, v1 its val, aux 1 when that val is NULL (v6_argext.h) */
 static void
 fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const SiftVec *v2, uint16 r)
@@ -65,7 +87,7 @@ fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, const
 		case SV6_SUM:
 		case SV6_AVG:
 			if (v->type == SVEC_F64)
-				v6acc_set_f64(acc, v6acc_f64(acc) + ((const double *) v->data)[r]);
+				v6acc_set_f64(acc, float8_pl(v6acc_f64(acc), ((const double *) v->data)[r]));
 			else
 			{
 				SiftI128	s = v6acc_i128(acc);
@@ -176,10 +198,10 @@ plain_batch(SiftV6Group *g, V6Set *set, const SiftBatchSel *bs, SiftVec *const *
 					uint32		r;
 
 					V6_FOR_EACH_ROW(mk, bs->n_raw, r)
-						v6acc_set_f64(acc, v6acc_f64(acc) + ((const double *) v->data)[r]);
+						v6acc_set_f64(acc, float8_pl(v6acc_f64(acc), ((const double *) v->data)[r]));
 				}
 				else if (v->type == SVEC_F64)
-					v6acc_set_f64(acc, sift_aggk6->sum_f64_fast(v->data, mk, bs->n_raw, v6acc_f64(acc)));
+					v6acc_set_f64(acc, sum_f64_batch(v, mk, bs->n_raw, v6acc_f64(acc)));
 				else if (v->type == SVEC_NUM128)
 					v6acc_set_i128(acc, sift_aggk6->sum_i128(v->data, mk, bs->n_raw, v6acc_i128(acc)));
 				else if (v->type == SVEC_I32)

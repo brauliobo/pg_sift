@@ -12,6 +12,8 @@
 
 #include "core/host.h"
 
+#include "utils/float.h"
+
 #include "agg/group/state.h"
 #include "agg/v6/v6_argext.h"
 
@@ -92,7 +94,7 @@ sift_v6_acc_combine(V6AccOp op, V6Acc *d, const V6Acc *s)
 			d->aux |= s->aux;
 			break;
 		case V6A_SUM_F64:
-			v6acc_set_f64(d, v6acc_f64(d) + v6acc_f64(s));
+			v6acc_set_f64(d, float8_pl(v6acc_f64(d), v6acc_f64(s)));
 			d->n += s->n;
 			d->aux += s->aux;
 			break;
