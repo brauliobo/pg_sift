@@ -363,8 +363,8 @@ f2_leaves(FunctionCallInfo fcinfo)
 				char	   *rec = sift_part_read_granule(index, part, g, &gd);
 				SiftGranuleView v = sift_granule_open_part(index, part, rec, gd.data_len, &gd);
 
-				for (int c = 0; c < Min((int) v.hdr->nchunks, schema->ncols); c++)
-					census_chunk(&lc[c], &v.hdr->chunks[c]);
+				for (int c = 0; c < Min((int) v.hdr->nchunks - 1, schema->ncols); c++)
+					census_chunk(&lc[c], &v.hdr->chunks[c + 1]);
 				MemoryContextSwitchTo(old);
 				MemoryContextReset(granule_cx);
 			}
