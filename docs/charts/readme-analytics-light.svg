@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">pg_sift is fastest on 4 of 6 aggregates; ClickHouse leads 2 selective scans</title>
+<desc id="d">pg_sift sift_col 3.94 ms geomean, 1,438 MiB; pg_sift sift_table 5.95 ms geomean, 457 MiB; ClickHouse 15.9 ms geomean, 421 MiB; Elasticsearch 9.5 33.2 ms geomean, 1,457 MiB; DuckDB 45.5 ms geomean, 297 MiB; PG 18 400 ms geomean, 1,549 MiB</desc>
+<text x="24" y="30" font-size="14" font-weight="700" text-anchor="start" fill="#1f2328">pg_sift is fastest on 4 of 6 aggregates; ClickHouse leads 2 selective scans</text>
+<text x="24" y="50" font-size="12" text-anchor="start" fill="#57606a">10M orders · 3 CPUs, 8 GiB · warm geomean against disk · amber: a rival beats pg_sift on one axis</text>
+<line x1="84" y1="203.3" x2="836" y2="203.3" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="207.3" font-size="12" text-anchor="end" fill="#57606a">5</text>
+<line x1="84" y1="184.6" x2="836" y2="184.6" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="188.6" font-size="12" text-anchor="end" fill="#57606a">10</text>
+<line x1="84" y1="141.1" x2="836" y2="141.1" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="145.1" font-size="12" text-anchor="end" fill="#57606a">50</text>
+<line x1="84" y1="122.4" x2="836" y2="122.4" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="126.4" font-size="12" text-anchor="end" fill="#57606a">100</text>
+<line x1="84" y1="78.9" x2="836" y2="78.9" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="82.9" font-size="12" text-anchor="end" fill="#57606a">500</text>
+<line x1="149.9" y1="74" x2="149.9" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="149.9" y="240" font-size="12" text-anchor="middle" fill="#57606a">300</text>
+<line x1="334.7" y1="74" x2="334.7" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="334.7" y="240" font-size="12" text-anchor="middle" fill="#57606a">500</text>
+<line x1="585.3" y1="74" x2="585.3" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="585.3" y="240" font-size="12" text-anchor="middle" fill="#57606a">1,000</text>
+<line x1="836" y1="74" x2="836" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="836" y="240" font-size="12" text-anchor="middle" fill="#57606a">2,000</text>
+<text x="24" y="66" font-size="12" text-anchor="start" fill="#57606a">↑ geomean of the warm medians 02–07 (ms, log)</text>
+<text x="836" y="66" font-size="12" text-anchor="end" fill="#57606a">total on-disk size (MiB, log) →</text>
+<text x="92" y="214" font-size="12" text-anchor="start" fill="#57606a">↙ better</text>
+<polyline points="146.7,143.6 272.8,172 301.8,198.6 716.6,209.7" fill="none" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5 4" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="743.6" cy="85" r="6.5" fill="#64748b"/>
+<text x="734.6" y="89" font-size="12" text-anchor="end" fill="#57606a">PG 18 · 400 ms</text>
+<circle cx="146.7" cy="143.6" r="6.5" fill="#D97706"/>
+<text x="155.7" y="134.6" font-size="12" text-anchor="start" fill="#57606a">DuckDB · 45.5 ms</text>
+<circle cx="721.4" cy="152.1" r="6.5" fill="#64748b"/>
+<text x="712.4" y="143.1" font-size="12" text-anchor="end" fill="#57606a">Elasticsearch 9.5 · 33.2 ms</text>
+<circle cx="272.8" cy="172" r="6.5" fill="#D97706"/>
+<text x="281.8" y="163" font-size="12" text-anchor="start" fill="#57606a">ClickHouse · 15.9 ms</text>
+<circle cx="301.8" cy="198.6" r="6.5" fill="#059669"/>
+<text x="310.8" y="189.6" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">pg_sift sift_table · 5.95 ms</text>
+<circle cx="716.6" cy="209.7" r="6.5" fill="#2563EB"/>
+<text x="707.6" y="199.7" font-size="12" font-weight="700" text-anchor="end" fill="#1f2328">pg_sift sift_col · 3.94 ms</text>
+<text x="24" y="268" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Per query on 1M orders, warm / cold ms · amber: a rival is faster than pg_sift sift_col</text>
+<text x="243" y="290" font-size="12" text-anchor="middle" fill="#57606a">02 Count</text>
+<text x="349" y="290" font-size="12" text-anchor="middle" fill="#57606a">03 Revenue</text>
+<text x="455" y="290" font-size="12" text-anchor="middle" fill="#57606a">04 Top 10</text>
+<text x="561" y="290" font-size="12" text-anchor="middle" fill="#57606a">05 Avg ship</text>
+<text x="667" y="290" font-size="12" text-anchor="middle" fill="#57606a">06 Distinct</text>
+<text x="773" y="290" font-size="12" text-anchor="middle" fill="#57606a">07 Recent</text>
+<line x1="24" y1="297" x2="836" y2="297" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="24" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">pg_sift sift_col</text>
+<text x="243" y="312" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="238" y="312" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">0.56</text>
+<text x="248" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#2563EB">9.89</text>
+<text x="349" y="312" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="344" y="312" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">0.65</text>
+<text x="354" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#2563EB">2.90</text>
+<text x="455" y="312" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="450" y="312" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">0.67</text>
+<text x="460" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#2563EB">3.03</text>
+<text x="561" y="312" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="556" y="312" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">1.92</text>
+<text x="566" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#2563EB">16.9</text>
+<text x="667" y="312" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="662" y="312" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">6.16</text>
+<text x="672" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#2563EB">10.9</text>
+<text x="773" y="312" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="768" y="312" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">2.05</text>
+<text x="778" y="312" font-size="12" font-weight="700" text-anchor="start" fill="#2563EB">7.79</text>
+<line x1="24" y1="317" x2="836" y2="317" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="24" y="332" font-size="12" text-anchor="start" fill="#57606a">ClickHouse</text>
+<text x="243" y="332" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="238" y="332" font-size="12" text-anchor="end" fill="#1f2328">4.95</text>
+<text x="248" y="332" font-size="12" text-anchor="start" fill="#1f2328">10.7</text>
+<text x="349" y="332" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="344" y="332" font-size="12" text-anchor="end" fill="#1f2328">6.91</text>
+<text x="354" y="332" font-size="12" text-anchor="start" fill="#1f2328">7.18</text>
+<text x="455" y="332" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="450" y="332" font-size="12" text-anchor="end" fill="#1f2328">6.12</text>
+<text x="460" y="332" font-size="12" text-anchor="start" fill="#1f2328">16.6</text>
+<text x="561" y="332" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="556" y="332" font-size="12" text-anchor="end" fill="#1f2328">7.01</text>
+<text x="566" y="332" font-size="12" font-weight="700" text-anchor="start" fill="#D97706">6.57</text>
+<text x="667" y="332" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="662" y="332" font-size="12" text-anchor="end" fill="#1f2328">14.0</text>
+<text x="672" y="332" font-size="12" text-anchor="start" fill="#1f2328">10.9</text>
+<text x="773" y="332" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="768" y="332" font-size="12" text-anchor="end" fill="#1f2328">3.66</text>
+<text x="778" y="332" font-size="12" font-weight="700" text-anchor="start" fill="#D97706">3.77</text>
+<line x1="24" y1="337" x2="836" y2="337" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="24" y="352" font-size="12" text-anchor="start" fill="#57606a">Elasticsearch 9.5</text>
+<text x="243" y="352" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="238" y="352" font-size="12" text-anchor="end" fill="#1f2328">6.00</text>
+<text x="248" y="352" font-size="12" text-anchor="start" fill="#1f2328">125</text>
+<text x="349" y="352" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="344" y="352" font-size="12" text-anchor="end" fill="#1f2328">13.7</text>
+<text x="354" y="352" font-size="12" text-anchor="start" fill="#1f2328">215</text>
+<text x="455" y="352" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="450" y="352" font-size="12" text-anchor="end" fill="#1f2328">11.5</text>
+<text x="460" y="352" font-size="12" text-anchor="start" fill="#1f2328">215</text>
+<text x="561" y="352" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="556" y="352" font-size="12" text-anchor="end" fill="#1f2328">5.68</text>
+<text x="566" y="352" font-size="12" text-anchor="start" fill="#1f2328">182</text>
+<text x="667" y="352" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="662" y="352" font-size="12" text-anchor="end" fill="#1f2328">45.9</text>
+<text x="672" y="352" font-size="12" text-anchor="start" fill="#1f2328">441</text>
+<text x="773" y="352" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="768" y="352" font-size="12" text-anchor="end" fill="#1f2328">3.38</text>
+<text x="778" y="352" font-size="12" text-anchor="start" fill="#1f2328">89.5</text>
+<line x1="24" y1="357" x2="836" y2="357" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="24" y="372" font-size="12" text-anchor="start" fill="#57606a">PG 18</text>
+<text x="243" y="372" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="238" y="372" font-size="12" text-anchor="end" fill="#1f2328">22.0</text>
+<text x="248" y="372" font-size="12" text-anchor="start" fill="#1f2328">34.7</text>
+<text x="349" y="372" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="344" y="372" font-size="12" text-anchor="end" fill="#1f2328">192</text>
+<text x="354" y="372" font-size="12" text-anchor="start" fill="#1f2328">198</text>
+<text x="455" y="372" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="450" y="372" font-size="12" text-anchor="end" fill="#1f2328">43.4</text>
+<text x="460" y="372" font-size="12" text-anchor="start" fill="#1f2328">59.5</text>
+<text x="561" y="372" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="556" y="372" font-size="12" text-anchor="end" fill="#1f2328">10.6</text>
+<text x="566" y="372" font-size="12" text-anchor="start" fill="#1f2328">25.8</text>
+<text x="667" y="372" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="662" y="372" font-size="12" text-anchor="end" fill="#1f2328">293</text>
+<text x="672" y="372" font-size="12" text-anchor="start" fill="#1f2328">224</text>
+<text x="773" y="372" font-size="12" text-anchor="middle" fill="#57606a">/</text>
+<text x="768" y="372" font-size="12" text-anchor="end" fill="#1f2328">12.0</text>
+<text x="778" y="372" font-size="12" text-anchor="start" fill="#1f2328">28.3</text>
+<text x="24" y="390" font-size="12" text-anchor="start" fill="#57606a">not measured yet: CH + PROJECTION, DuckDB</text>
+<text x="24" y="408" font-size="12" text-anchor="start" fill="#57606a">Data: store-scaling.json, store.json, duckdb-10000000.tsv · Ryzen 7 9700X · 2026-10-27</text>
+</svg>

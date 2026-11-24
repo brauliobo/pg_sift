@@ -1,0 +1,304 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">pg_sift sift_table is 3.4× smaller than PG 18; scoped build memory: 5.1 grew 471 B/row, 6.0 gate: ≤ 0.5 B/row</title>
+<desc id="d">DuckDB 297 MiB; ClickHouse 421 MiB; sift_table 457 MiB; Citus columnar 463 MiB; sift_col + heap 1,438 MiB; Elasticsearch 1,457 MiB; PG 18 1,549 MiB</desc>
+<text x="24" y="30" font-size="14" font-weight="700" text-anchor="start" fill="#1f2328">pg_sift sift_table is 3.4× smaller than PG 18; scoped build memory: 5.1 grew 471 B/row, 6.0 gate: ≤ 0.5 B/row</text>
+<text x="24" y="50" font-size="12" text-anchor="start" fill="#57606a">every block is 50 MiB (orders) or 3 MiB (BM25 index) · amber: a rival is smaller than pg_sift</text>
+<text x="24" y="72" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">10M orders, total on-disk size</text>
+<text x="142" y="92" font-size="12" text-anchor="end" fill="#57606a">DuckDB</text>
+<rect x="150" y="85" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="158.5" y="85" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="167" y="85" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="175.5" y="85" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="184" y="85" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="192.5" y="85" width="6.6" height="7" rx="1" fill="#D97706"/>
+<text x="206.5" y="92" font-size="12" text-anchor="start" fill="#57606a">297 MiB</text>
+<text x="142" y="105" font-size="12" text-anchor="end" fill="#57606a">ClickHouse</text>
+<rect x="150" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="158.5" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="167" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="175.5" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="184" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="192.5" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="201" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="209.5" y="98" width="7" height="7" rx="1" fill="#D97706"/>
+<rect x="218" y="98" width="3" height="7" rx="1" fill="#D97706"/>
+<text x="227.6" y="105" font-size="12" text-anchor="start" fill="#57606a">421 MiB</text>
+<text x="142" y="118" font-size="12" text-anchor="end" fill="#1f2328">sift_table</text>
+<rect x="150" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="158.5" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="167" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="175.5" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="184" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="192.5" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="201" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="209.5" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="218" y="111" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="226.5" y="111" width="0.9" height="7" rx="1" fill="#059669"/>
+<text x="233.6" y="118" font-size="12" text-anchor="start" fill="#1f2328">457 MiB</text>
+<text x="142" y="131" font-size="12" text-anchor="end" fill="#57606a">Citus columnar</text>
+<rect x="150" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="124" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="124" width="1.9" height="7" rx="1" fill="#94a3b8"/>
+<text x="234.8" y="131" font-size="12" text-anchor="start" fill="#57606a">463 MiB</text>
+<text x="142" y="144" font-size="12" text-anchor="end" fill="#1f2328">sift_col + heap</text>
+<rect x="150" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="158.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="167" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="175.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="184" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="192.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="201" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="209.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="218" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="226.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="235" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="243.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="252" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="260.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="269" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="277.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="286" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="294.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="303" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="311.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="320" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="328.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="337" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="345.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="354" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="362.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="371" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="379.5" y="137" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="388" y="137" width="5.2" height="7" rx="1" fill="#2563EB"/>
+<text x="400.4" y="144" font-size="12" text-anchor="start" fill="#1f2328">1,438 MiB</text>
+<text x="142" y="157" font-size="12" text-anchor="end" fill="#57606a">Elasticsearch</text>
+<rect x="150" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="235" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="243.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="252" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="260.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="269" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="277.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="286" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="294.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="303" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="311.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="320" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="328.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="337" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="345.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="354" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="362.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="371" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="379.5" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="388" y="150" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="396.5" y="150" width="1" height="7" rx="1" fill="#94a3b8"/>
+<text x="403.7" y="157" font-size="12" text-anchor="start" fill="#57606a">1,457 MiB</text>
+<text x="142" y="170" font-size="12" text-anchor="end" fill="#57606a">PG 18</text>
+<rect x="150" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="235" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="243.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="252" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="260.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="269" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="277.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="286" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="294.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="303" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="311.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="320" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="328.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="337" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="345.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="354" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="362.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="371" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="379.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="388" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="396.5" y="163" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="405" y="163" width="6.9" height="7" rx="1" fill="#94a3b8"/>
+<text x="419.3" y="170" font-size="12" text-anchor="start" fill="#57606a">1,549 MiB</text>
+<text x="24" y="191" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">50K Wikipedia, BM25 index</text>
+<text x="142" y="211" font-size="12" text-anchor="end" fill="#1f2328">sift positions=off</text>
+<rect x="150" y="204" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="158.5" y="204" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="167" y="204" width="7" height="7" rx="1" fill="#059669"/>
+<rect x="175.5" y="204" width="7" height="7" rx="1" fill="#059669"/>
+<text x="190" y="211" font-size="12" text-anchor="start" fill="#1f2328">12.0 MiB</text>
+<text x="142" y="224" font-size="12" text-anchor="end" fill="#1f2328">sift default</text>
+<rect x="150" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="158.5" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="167" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="175.5" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="184" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="192.5" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="201" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="209.5" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="218" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="226.5" y="217" width="7" height="7" rx="1" fill="#2563EB"/>
+<rect x="235" y="217" width="0.5" height="7" rx="1" fill="#2563EB"/>
+<text x="241.6" y="224" font-size="12" text-anchor="start" fill="#1f2328">30.2 MiB</text>
+<text x="142" y="237" font-size="12" text-anchor="end" fill="#57606a">pg_textsearch</text>
+<rect x="150" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="235" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="243.5" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="252" y="230" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="260.5" y="230" width="2.6" height="7" rx="1" fill="#94a3b8"/>
+<text x="269.6" y="237" font-size="12" text-anchor="start" fill="#57606a">40.1 MiB</text>
+<text x="142" y="250" font-size="12" text-anchor="end" fill="#57606a">ParadeDB</text>
+<rect x="150" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="235" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="243.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="252" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="260.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="269" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="277.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="286" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="294.5" y="243" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="303" y="243" width="1.2" height="7" rx="1" fill="#94a3b8"/>
+<text x="310.4" y="250" font-size="12" text-anchor="start" fill="#57606a">54.5 MiB</text>
+<text x="142" y="263" font-size="12" text-anchor="end" fill="#57606a">Elasticsearch</text>
+<rect x="150" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="235" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="243.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="252" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="260.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="269" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="277.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="286" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="294.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="303" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="311.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="320" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="328.5" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="337" y="256" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="345.5" y="256" width="3.5" height="7" rx="1" fill="#94a3b8"/>
+<text x="355.8" y="263" font-size="12" text-anchor="start" fill="#57606a">70.5 MiB</text>
+<text x="142" y="276" font-size="12" text-anchor="end" fill="#57606a">PG rum</text>
+<rect x="150" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="158.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="167" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="175.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="184" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="192.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="201" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="209.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="218" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="226.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="235" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="243.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="252" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="260.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="269" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="277.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="286" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="294.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="303" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="311.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="320" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="328.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="337" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="345.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="354" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="362.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="371" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="379.5" y="269" width="7" height="7" rx="1" fill="#94a3b8"/>
+<rect x="388" y="269" width="4" height="7" rx="1" fill="#94a3b8"/>
+<text x="398.8" y="276" font-size="12" text-anchor="start" fill="#57606a">85.7 MiB</text>
+<text x="560" y="70" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Peak RSS of the scoped build, MB by rows</text>
+<line x1="588" y1="262" x2="690" y2="262" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="580" y="266" font-size="12" text-anchor="end" fill="#57606a">0</text>
+<line x1="588" y1="216.1" x2="690" y2="216.1" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="580" y="220.1" font-size="12" text-anchor="end" fill="#57606a">25</text>
+<line x1="588" y1="170.2" x2="690" y2="170.2" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="580" y="174.2" font-size="12" text-anchor="end" fill="#57606a">50</text>
+<line x1="588" y1="124.3" x2="690" y2="124.3" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="580" y="128.3" font-size="12" text-anchor="end" fill="#57606a">75</text>
+<text x="588" y="280" font-size="12" text-anchor="middle" fill="#57606a">10k</text>
+<text x="639" y="280" font-size="12" text-anchor="middle" fill="#57606a">40k</text>
+<text x="690" y="280" font-size="12" text-anchor="middle" fill="#57606a">160k</text>
+<polyline points="588,236.3 639,206.8 690,111.1" fill="none" stroke="#64748b" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="700" y="115.1" font-size="12" text-anchor="start" fill="#57606a">5.1: 471 B/row</text>
+<line x1="588" y1="236.3" x2="690" y2="236.3" fill="none" stroke="#2563EB" stroke-width="2.5" stroke-dasharray="6 4"/>
+<text x="700" y="232.3" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">6.0 gate</text>
+<text x="700" y="248.3" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">≤ 0.5 B/row</text>
+<text x="700" y="264.3" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="24" y="298" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">OLTP churn and WAL, bytes a row (amber: PG 18 beats pg_sift 5.1)</text>
+<text x="330" y="316" font-size="12" text-anchor="end" fill="#57606a">PG 18 heap</text>
+<text x="450" y="316" font-size="12" text-anchor="end" fill="#57606a">pg_sift 5.1</text>
+<text x="580" y="316" font-size="12" text-anchor="end" fill="#57606a">6.0 gate</text>
+<text x="836" y="316" font-size="12" text-anchor="end" fill="#57606a">6.0 measured</text>
+<text x="24" y="334" font-size="12" text-anchor="start" fill="#57606a">1-row INSERT WAL</text>
+<text x="330" y="334" font-size="12" font-weight="700" text-anchor="end" fill="#D97706">~460</text>
+<text x="450" y="334" font-size="12" text-anchor="end" fill="#1f2328">495.7</text>
+<text x="580" y="334" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">≤ 220</text>
+<text x="836" y="334" font-size="12" text-anchor="end" fill="#57606a">not yet</text>
+<text x="24" y="350" font-size="12" text-anchor="start" fill="#57606a">2% DELETE WAL</text>
+<text x="330" y="350" font-size="12" font-weight="700" text-anchor="end" fill="#D97706">~60</text>
+<text x="450" y="350" font-size="12" text-anchor="end" fill="#1f2328">98.7</text>
+<text x="580" y="350" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">≤ 45</text>
+<text x="836" y="350" font-size="12" text-anchor="end" fill="#57606a">not yet</text>
+<text x="24" y="366" font-size="12" text-anchor="start" fill="#57606a">bulk build WAL</text>
+<text x="330" y="366" font-size="12" text-anchor="end" fill="#1f2328">—</text>
+<text x="450" y="366" font-size="12" text-anchor="end" fill="#1f2328">111.8</text>
+<text x="580" y="366" font-size="12" font-weight="700" text-anchor="end" fill="#2563EB">≤ 45</text>
+<text x="836" y="366" font-size="12" text-anchor="end" fill="#57606a">not yet</text>
+<text x="24" y="382" font-size="12" text-anchor="start" fill="#57606a">10% UPDATE and 5% DELETE churn</text>
+<text x="330" y="382" font-size="12" text-anchor="end" fill="#1f2328">—</text>
+<text x="450" y="382" font-size="12" text-anchor="end" fill="#1f2328">—</text>
+<text x="580" y="382" font-size="12" text-anchor="end" fill="#57606a">—</text>
+<text x="836" y="382" font-size="12" text-anchor="end" fill="#57606a">not yet</text>
+<text x="24" y="408" font-size="12" text-anchor="start" fill="#57606a">Data: store-scaling.json, articles.tsv, v6-core.tsv · 5.1 from bench/baselines/v510.tsv</text>
+</svg>

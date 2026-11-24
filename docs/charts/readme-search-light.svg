@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">pg_sift: 0.89× Elasticsearch's throughput in a 2.3× smaller index</title>
+<desc id="d">pg_sift 14,500 QPS, 30.2 MiB; Elasticsearch 9.5 16,268 QPS, 70.5 MiB; ParadeDB 1,789 QPS, 54.5 MiB; pg_textsearch 303 QPS, 40.1 MiB; PG rum 203 QPS, 85.7 MiB</desc>
+<text x="24" y="30" font-size="14" font-weight="700" text-anchor="start" fill="#1f2328">pg_sift: 0.89× Elasticsearch's throughput in a 2.3× smaller index</text>
+<text x="24" y="50" font-size="12" text-anchor="start" fill="#57606a">50,000 Simple English Wikipedia articles · exact BM25, md5-equal rank order · amber: a rival beats pg_sift on one axis</text>
+<line x1="84" y1="74" x2="836" y2="74" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="78" font-size="12" text-anchor="end" fill="#57606a">0</text>
+<line x1="84" y1="111" x2="836" y2="111" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="115" font-size="12" text-anchor="end" fill="#57606a">25</text>
+<line x1="84" y1="148" x2="836" y2="148" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="152" font-size="12" text-anchor="end" fill="#57606a">50</text>
+<line x1="84" y1="185" x2="836" y2="185" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="189" font-size="12" text-anchor="end" fill="#57606a">75</text>
+<line x1="84" y1="222" x2="836" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="76" y="226" font-size="12" text-anchor="end" fill="#57606a">100</text>
+<line x1="124.8" y1="74" x2="124.8" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="124.8" y="240" font-size="12" text-anchor="middle" fill="#57606a">200</text>
+<line x1="353.3" y1="74" x2="353.3" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="353.3" y="240" font-size="12" text-anchor="middle" fill="#57606a">1,000</text>
+<line x1="581.7" y1="74" x2="581.7" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="581.7" y="240" font-size="12" text-anchor="middle" fill="#57606a">5,000</text>
+<line x1="778.5" y1="74" x2="778.5" y2="222" fill="none" stroke="#d8dee4" stroke-width="1"/>
+<text x="778.5" y="240" font-size="12" text-anchor="middle" fill="#57606a">20,000</text>
+<text x="24" y="66" font-size="12" text-anchor="start" fill="#57606a">↓ index size (MiB, smaller is better)</text>
+<text x="836" y="66" font-size="12" text-anchor="end" fill="#57606a">geomean warm QPS of 7 query classes, 8 clients (log) →</text>
+<text x="836" y="88" font-size="12" text-anchor="end" fill="#57606a">better ↗</text>
+<circle cx="732.8" cy="118.7" r="6.5" fill="#2563EB"/>
+<text x="722.8" y="109.7" font-size="12" font-weight="700" text-anchor="end" fill="#1f2328">pg_sift · 30.2 MiB</text>
+<circle cx="749.1" cy="178.3" r="6.5" fill="#D97706"/>
+<text x="739.1" y="182.3" font-size="12" text-anchor="end" fill="#57606a">Elasticsearch 9.5 · 70.5 MiB</text>
+<circle cx="435.8" cy="154.7" r="6.5" fill="#64748b"/>
+<text x="445.8" y="158.7" font-size="12" text-anchor="start" fill="#57606a">ParadeDB · 54.5 MiB</text>
+<circle cx="183.6" cy="133.3" r="6.5" fill="#64748b"/>
+<text x="193.6" y="137.3" font-size="12" text-anchor="start" fill="#57606a">pg_textsearch · 40.1 MiB</text>
+<circle cx="127.2" cy="200.8" r="6.5" fill="#64748b"/>
+<text x="137.2" y="204.8" font-size="12" text-anchor="start" fill="#57606a">PG rum · 85.7 MiB</text>
+<text x="24" y="268" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">10M orders, hybrid search, warm ms</text>
+<text x="250" y="288" font-size="12" text-anchor="middle" fill="#57606a">pg_sift</text>
+<text x="322" y="288" font-size="12" text-anchor="middle" fill="#57606a">ES 9.5</text>
+<text x="394" y="288" font-size="12" text-anchor="middle" fill="#57606a">PG GIN</text>
+<text x="24" y="308" font-size="12" text-anchor="start" fill="#57606a">Search count(*)</text>
+<text x="250" y="308" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">2.35</text>
+<text x="322" y="308" font-size="12" text-anchor="middle" fill="#1f2328">11.6</text>
+<text x="394" y="308" font-size="12" text-anchor="middle" fill="#1f2328">78.5</text>
+<text x="24" y="324" font-size="12" text-anchor="start" fill="#57606a">+ filter, GROUP BY</text>
+<text x="250" y="324" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">13.7</text>
+<text x="322" y="324" font-size="12" font-weight="700" text-anchor="middle" fill="#D97706">8.27</text>
+<text x="394" y="324" font-size="12" text-anchor="middle" fill="#1f2328">80.4</text>
+<text x="24" y="340" font-size="12" text-anchor="start" fill="#57606a">+ ORDER BY ts LIMIT 10</text>
+<text x="250" y="340" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">13.1</text>
+<text x="322" y="340" font-size="12" text-anchor="middle" fill="#1f2328">13.6</text>
+<text x="394" y="340" font-size="12" text-anchor="middle" fill="#1f2328">142</text>
+<text x="24" y="356" font-size="12" text-anchor="start" fill="#57606a">5M orders: not measured yet</text>
+<text x="450" y="268" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">50K Wikipedia, cold p50 ms</text>
+<text x="620" y="288" font-size="12" text-anchor="middle" fill="#57606a">pg_sift</text>
+<text x="700" y="288" font-size="12" text-anchor="middle" fill="#57606a">ES 9.5</text>
+<text x="784" y="288" font-size="12" text-anchor="middle" fill="#57606a">ParadeDB</text>
+<text x="450" y="308" font-size="12" text-anchor="start" fill="#57606a">Exact count(*)</text>
+<text x="620" y="308" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">1.03</text>
+<text x="700" y="308" font-size="12" text-anchor="middle" fill="#1f2328">3.11</text>
+<text x="784" y="308" font-size="12" text-anchor="middle" fill="#1f2328">16.1</text>
+<text x="450" y="324" font-size="12" text-anchor="start" fill="#57606a">Phrase "a b"</text>
+<text x="620" y="324" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">1.31</text>
+<text x="700" y="324" font-size="12" text-anchor="middle" fill="#1f2328">3.29</text>
+<text x="784" y="324" font-size="12" text-anchor="middle" fill="#1f2328">14.8</text>
+<text x="450" y="340" font-size="12" text-anchor="start" fill="#57606a">Boolean a AND b</text>
+<text x="620" y="340" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">1.76</text>
+<text x="700" y="340" font-size="12" text-anchor="middle" fill="#1f2328">4.24</text>
+<text x="784" y="340" font-size="12" text-anchor="middle" fill="#1f2328">17.1</text>
+<text x="450" y="356" font-size="12" text-anchor="start" fill="#57606a">Filtered top-k</text>
+<text x="620" y="356" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">1.67</text>
+<text x="700" y="356" font-size="12" text-anchor="middle" fill="#1f2328">3.88</text>
+<text x="784" y="356" font-size="12" text-anchor="middle" fill="#1f2328">15.9</text>
+<text x="450" y="372" font-size="12" text-anchor="start" fill="#57606a">Boolean a OR b</text>
+<text x="620" y="372" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">5.50</text>
+<text x="700" y="372" font-size="12" font-weight="700" text-anchor="middle" fill="#D97706">4.77</text>
+<text x="784" y="372" font-size="12" text-anchor="middle" fill="#1f2328">14.5</text>
+<text x="450" y="388" font-size="12" text-anchor="start" fill="#57606a">Joined top-k</text>
+<text x="620" y="388" font-size="12" font-weight="700" text-anchor="middle" fill="#2563EB">1.75</text>
+<text x="700" y="388" font-size="12" text-anchor="middle" fill="#1f2328">3.67</text>
+<text x="784" y="388" font-size="12" text-anchor="middle" fill="#1f2328">13.1</text>
+<text x="24" y="408" font-size="12" text-anchor="start" fill="#57606a">Data: articles.tsv (slim, slim-cold), store-scaling.json · Ryzen 7 9700X · 2026-10-27 · pg_sift positions=off: 12.0 MiB</text>
+</svg>

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 88" width="860" height="88" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">pg_sift benchmark headline numbers</title>
+<desc id="d">1,480× faster than PG 18 on 10M-order aggregates; 3.4× smaller than PG 18: 10M orders, sift_table; 72 / 72 scoped cells faster than tuned stock PG (v5.0); 29.1k exact BM25 count(*) QPS, 1.04× Elasticsearch 9.5; every answer md5-equal to stock PostgreSQL 18</desc>
+<text x="24" y="38" font-size="28" font-weight="700" text-anchor="start" fill="#3B82F6">1,480×</text>
+<text x="24" y="58" font-size="12" text-anchor="start" fill="#e6edf3">faster than PG 18 on</text>
+<text x="24" y="74" font-size="12" text-anchor="start" fill="#8b949e">10M-order aggregates</text>
+<line x1="227" y1="14" x2="227" y2="74" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="243" y="38" font-size="28" font-weight="700" text-anchor="start" fill="#10B981">3.4×</text>
+<text x="243" y="58" font-size="12" text-anchor="start" fill="#e6edf3">smaller than PG 18:</text>
+<text x="243" y="74" font-size="12" text-anchor="start" fill="#8b949e">10M orders, sift_table</text>
+<line x1="430" y1="14" x2="430" y2="74" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="446" y="38" font-size="28" font-weight="700" text-anchor="start" fill="#3B82F6">72 / 72</text>
+<text x="446" y="58" font-size="12" text-anchor="start" fill="#e6edf3">scoped cells faster than</text>
+<text x="446" y="74" font-size="12" text-anchor="start" fill="#8b949e">tuned stock PG (v5.0)</text>
+<line x1="633" y1="14" x2="633" y2="74" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="649" y="38" font-size="28" font-weight="700" text-anchor="start" fill="#3B82F6">29.1k</text>
+<text x="649" y="58" font-size="12" text-anchor="start" fill="#e6edf3">exact BM25 count(*) QPS,</text>
+<text x="649" y="74" font-size="12" text-anchor="start" fill="#8b949e">1.04× Elasticsearch 9.5</text>
+</svg>

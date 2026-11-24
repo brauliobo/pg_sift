@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 420" width="860" height="420" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">sift_scope wins 72 of 72 cells against stock PostgreSQL; pg_ivm still wins 30</title>
+<desc id="d">sift_scope 2.18 ms; PG stock 542 ms; semijoin 285 ms; denorm_flat 329 ms; pg_ivm 43.3 ms</desc>
+<text x="24" y="30" font-size="14" font-weight="700" text-anchor="start" fill="#e6edf3">sift_scope wins 72 of 72 cells against stock PostgreSQL; pg_ivm still wins 30</text>
+<text x="24" y="50" font-size="12" text-anchor="start" fill="#8b949e">2,400,007 events · 9 query classes × 8 tenants = 72 cells · amber: a rival wins some cells · hollow: not measured yet</text>
+<line x1="84" y1="74" x2="84" y2="222" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="84" y="240" font-size="12" text-anchor="middle" fill="#8b949e">1</text>
+<line x1="256" y1="74" x2="256" y2="222" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="256" y="240" font-size="12" text-anchor="middle" fill="#8b949e">10</text>
+<line x1="428" y1="74" x2="428" y2="222" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="428" y="240" font-size="12" text-anchor="middle" fill="#8b949e">100</text>
+<line x1="600" y1="74" x2="600" y2="222" fill="none" stroke="#30363d" stroke-width="1"/>
+<text x="600" y="240" font-size="12" text-anchor="middle" fill="#8b949e">1,000</text>
+<text x="76" y="104" font-size="12" text-anchor="end" fill="#8b949e">no copy</text>
+<text x="76" y="158" font-size="12" text-anchor="end" fill="#8b949e">row copy</text>
+<text x="76" y="208" font-size="12" text-anchor="end" fill="#8b949e">matview</text>
+<line x1="84" y1="128" x2="836" y2="128" fill="none" stroke="#30363d" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="84" y1="180" x2="836" y2="180" fill="none" stroke="#30363d" stroke-width="1" stroke-dasharray="3 4"/>
+<line x1="616" y1="74" x2="616" y2="222" fill="none" stroke="#6e7681" stroke-width="1"/>
+<text x="24" y="66" font-size="12" text-anchor="start" fill="#8b949e">↓ what a write also maintains</text>
+<text x="836" y="66" font-size="12" text-anchor="end" fill="#8b949e">tenant 1 sum_by_month read, warm ms (log) →</text>
+<text x="626" y="90" font-size="12" text-anchor="start" fill="#8b949e">ClickHouse: not measured yet</text>
+<circle cx="142.2" cy="100" r="6.5" fill="#3B82F6"/>
+<text x="152.2" y="104" font-size="12" font-weight="700" text-anchor="start" fill="#e6edf3">sift_scope · 2.18 ms</text>
+<circle cx="554.2" cy="100" r="6.5" fill="#94a3b8"/>
+<text x="554.2" y="88" font-size="12" text-anchor="middle" fill="#8b949e">PG stock · 542 ms</text>
+<circle cx="506.2" cy="100" r="6.5" fill="#F59E0B"/>
+<text x="506.2" y="122" font-size="12" text-anchor="middle" fill="#8b949e">semijoin · 285 ms</text>
+<circle cx="517" cy="154" r="6.5" fill="#F59E0B"/>
+<text x="517" y="142" font-size="12" text-anchor="middle" fill="#8b949e">denorm_flat · 329 ms</text>
+<circle cx="365.5" cy="204" r="6.5" fill="#F59E0B"/>
+<text x="375.5" y="208" font-size="12" text-anchor="start" fill="#8b949e">pg_ivm · 43.3 ms</text>
+<circle cx="634" cy="106" r="5.5" fill="none" stroke="#64748b" stroke-width="1.5"/>
+<text x="646" y="110" font-size="12" text-anchor="start" fill="#8b949e">ClickHouse JOIN</text>
+<circle cx="634" cy="122" r="5.5" fill="none" stroke="#64748b" stroke-width="1.5"/>
+<text x="646" y="126" font-size="12" text-anchor="start" fill="#8b949e">CH + PROJECTION</text>
+<circle cx="634" cy="204" r="5.5" fill="none" stroke="#64748b" stroke-width="1.5"/>
+<text x="646" y="208" font-size="12" text-anchor="start" fill="#8b949e">ClickHouse matview</text>
+<text x="24" y="268" font-size="12" font-weight="700" text-anchor="start" fill="#e6edf3">72 cells per rival: sift_scope wins / ties / loses (warm)</text>
+<text x="24" y="292" font-size="12" text-anchor="start" fill="#8b949e">PG stock</text>
+<rect x="132" y="282" width="190" height="11" fill="#3B82F6"/>
+<rect x="322" y="282" width="0" height="11" fill="#64748b"/>
+<rect x="322" y="282" width="0" height="11" fill="#F59E0B"/>
+<text x="336" y="292" font-size="12" text-anchor="start" fill="#e6edf3">72 / 0 / 0</text>
+<text x="24" y="309" font-size="12" text-anchor="start" fill="#8b949e">semijoin</text>
+<rect x="132" y="299" width="166.2" height="11" fill="#3B82F6"/>
+<rect x="298.2" y="299" width="5.3" height="11" fill="#64748b"/>
+<rect x="303.5" y="299" width="18.5" height="11" fill="#F59E0B"/>
+<text x="336" y="309" font-size="12" text-anchor="start" fill="#e6edf3">63 / 2 / 7</text>
+<text x="24" y="326" font-size="12" text-anchor="start" fill="#8b949e">denorm_flat</text>
+<rect x="132" y="316" width="134.6" height="11" fill="#3B82F6"/>
+<rect x="266.6" y="316" width="5.3" height="11" fill="#64748b"/>
+<rect x="271.9" y="316" width="50.1" height="11" fill="#F59E0B"/>
+<text x="336" y="326" font-size="12" font-weight="700" text-anchor="start" fill="#F59E0B">51 / 2 / 19</text>
+<text x="24" y="343" font-size="12" text-anchor="start" fill="#8b949e">denorm_part</text>
+<rect x="132" y="333" width="142.5" height="11" fill="#3B82F6"/>
+<rect x="274.5" y="333" width="10.6" height="11" fill="#64748b"/>
+<rect x="285.1" y="333" width="36.9" height="11" fill="#F59E0B"/>
+<text x="336" y="343" font-size="12" text-anchor="start" fill="#e6edf3">54 / 4 / 14</text>
+<text x="24" y="360" font-size="12" text-anchor="start" fill="#8b949e">rollup</text>
+<rect x="132" y="350" width="142.5" height="11" fill="#3B82F6"/>
+<rect x="274.5" y="350" width="13.2" height="11" fill="#64748b"/>
+<rect x="287.7" y="350" width="13.2" height="11" fill="#F59E0B"/>
+<text x="336" y="360" font-size="12" text-anchor="start" fill="#e6edf3">54 / 5 / 5</text>
+<text x="24" y="377" font-size="12" text-anchor="start" fill="#8b949e">pg_ivm</text>
+<rect x="132" y="367" width="84.4" height="11" fill="#3B82F6"/>
+<rect x="216.4" y="367" width="5.3" height="11" fill="#64748b"/>
+<rect x="221.7" y="367" width="79.2" height="11" fill="#F59E0B"/>
+<text x="336" y="377" font-size="12" font-weight="700" text-anchor="start" fill="#F59E0B">32 / 2 / 30</text>
+<text x="470" y="268" font-size="12" font-weight="700" text-anchor="start" fill="#e6edf3">Entity-Once build cost: 5.1 against the 6.0 gate</text>
+<text x="726" y="288" font-size="12" text-anchor="end" fill="#8b949e">v5.1</text>
+<text x="836" y="288" font-size="12" text-anchor="end" fill="#8b949e">6.0 gate</text>
+<text x="470" y="308" font-size="12" text-anchor="start" fill="#8b949e">plain scoped CREATE INDEX</text>
+<text x="726" y="308" font-size="12" text-anchor="end" fill="#e6edf3">1.79× entity</text>
+<text x="836" y="308" font-size="12" font-weight="700" text-anchor="end" fill="#3B82F6">≤ 1.15×</text>
+<text x="470" y="325" font-size="12" text-anchor="start" fill="#8b949e">scoped CIC pass 2</text>
+<text x="726" y="325" font-size="12" text-anchor="end" fill="#e6edf3">107% of pass 1</text>
+<text x="836" y="325" font-size="12" font-weight="700" text-anchor="end" fill="#3B82F6">≤ 15%</text>
+<text x="470" y="342" font-size="12" text-anchor="start" fill="#8b949e">scope build temp I/O</text>
+<text x="726" y="342" font-size="12" text-anchor="end" fill="#e6edf3">249 B/row</text>
+<text x="836" y="342" font-size="12" font-weight="700" text-anchor="end" fill="#3B82F6">0 B</text>
+<text x="470" y="359" font-size="12" text-anchor="start" fill="#8b949e">scope disk vs entity</text>
+<text x="726" y="359" font-size="12" text-anchor="end" fill="#e6edf3">+98.3%</text>
+<text x="836" y="359" font-size="12" font-weight="700" text-anchor="end" fill="#3B82F6">≤ 5%</text>
+<text x="470" y="380" font-size="12" text-anchor="start" fill="#8b949e">6.0 measured: not measured yet</text>
+<text x="24" y="408" font-size="12" text-anchor="start" fill="#8b949e">Data: scope-stock.tsv (v5.0), v6-core.tsv, v510.tsv · every answer md5_equal to stock PostgreSQL</text>
+</svg>

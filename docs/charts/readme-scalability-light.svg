@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 400" width="860" height="400" role="img" aria-labelledby="t d" font-family='-apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif'>
+<title id="t">Scalability and parallelism: not measured yet</title>
+<desc id="d">Warm speedup at the most workers: scaling is not measured yet</desc>
+<text x="24" y="30" font-size="14" font-weight="700" text-anchor="start" fill="#1f2328">Scalability and parallelism: not measured yet</text>
+<text x="24" y="50" font-size="12" text-anchor="start" fill="#57606a">each panel is its own scale: pg_sift against its own 1-worker, sync and 1-client runs · dashed: ideal linear · gray: not measured yet</text>
+<text x="24" y="82" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Rows 100k → 5M</text>
+<text x="24" y="196" font-size="12" text-anchor="start" fill="#57606a">100k</text>
+<text x="144" y="196" font-size="12" text-anchor="end" fill="#57606a">5M</text>
+<line x1="24" y1="180" x2="144" y2="110" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="24" y1="180" x2="144" y2="180" fill="none" stroke="#8c959f" stroke-width="1"/>
+<text x="156" y="149" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="304" y="82" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Workers 1 → 8: warm speedup</text>
+<text x="304" y="196" font-size="12" text-anchor="start" fill="#57606a">1</text>
+<text x="424" y="196" font-size="12" text-anchor="end" fill="#57606a">8 workers</text>
+<line x1="304" y1="180" x2="424" y2="110" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="304" y1="180" x2="424" y2="180" fill="none" stroke="#8c959f" stroke-width="1"/>
+<text x="436" y="149" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="584" y="82" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Cold I/O: io_uring · worker · sync</text>
+<text x="584" y="196" font-size="12" text-anchor="start" fill="#57606a">0</text>
+<text x="704" y="196" font-size="12" text-anchor="end" fill="#57606a">MB/s</text>
+<line x1="584" y1="180" x2="704" y2="110" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="584" y1="180" x2="704" y2="180" fill="none" stroke="#8c959f" stroke-width="1"/>
+<text x="716" y="149" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="24" y="252" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Partitions 1 → 4,096</text>
+<text x="24" y="346" font-size="12" text-anchor="start" fill="#57606a">1</text>
+<text x="144" y="346" font-size="12" text-anchor="end" fill="#57606a">4,096</text>
+<line x1="24" y1="330" x2="144" y2="280" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="24" y1="330" x2="144" y2="330" fill="none" stroke="#8c959f" stroke-width="1"/>
+<text x="156" y="309" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="304" y="252" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Writers 1 → 16: ops/s</text>
+<text x="304" y="346" font-size="12" text-anchor="start" fill="#57606a">1</text>
+<text x="424" y="346" font-size="12" text-anchor="end" fill="#57606a">16 clients</text>
+<line x1="304" y1="330" x2="424" y2="280" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="304" y1="330" x2="424" y2="330" fill="none" stroke="#8c959f" stroke-width="1"/>
+<text x="436" y="309" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="584" y="252" font-size="12" font-weight="700" text-anchor="start" fill="#1f2328">Opt-in Vulkan GPU vs CPU</text>
+<text x="584" y="346" font-size="12" text-anchor="start" fill="#57606a">CPU</text>
+<text x="704" y="346" font-size="12" text-anchor="end" fill="#57606a">GPU</text>
+<line x1="584" y1="330" x2="704" y2="280" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="4 4"/>
+<line x1="584" y1="330" x2="704" y2="330" fill="none" stroke="#8c959f" stroke-width="1"/>
+<text x="716" y="309" font-size="12" text-anchor="start" fill="#57606a">not measured yet</text>
+<text x="24" y="388" font-size="12" text-anchor="start" fill="#57606a">Data: `bench/bench scaling-io --docs` writes docs/results/v6-scaling.tsv</text>
+</svg>
