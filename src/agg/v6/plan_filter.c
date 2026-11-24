@@ -11,6 +11,7 @@
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_qual.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
 static List *
@@ -21,8 +22,10 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	p->in_filter = true;
 	foreach_ptr(Expr, c, make_ands_implicit(filter))
 	{
-		Expr	   *q = sift_v6_index_qual(p, sift_v6_plan_type_vars(p, c));
+		Expr	   *q = sift_v6_unnest_elem_qual(p, (Node *) c);
 
+		if (q == NULL)
+			q = sift_v6_index_qual(p, sift_v6_plan_type_vars(p, c));
 		if (q == NULL)
 		{
 			quals = NIL;

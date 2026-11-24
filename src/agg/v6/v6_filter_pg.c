@@ -12,6 +12,7 @@
 #include "utils/lsyscache.h"
 
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_unnest_jsonb.h"
 
 typedef struct Build
 {
@@ -39,7 +40,7 @@ fcol_index(Build *b, const Var *v)
 			return i;
 	if (!b->add || *b->nfcols == SIFT_V6_MAX_FCOLS)
 		return -1;
-	b->fcol[*b->nfcols] = (SiftV6Col) {.attno = v->varattno,.typid = v->vartype};
+	b->fcol[*b->nfcols] = sift_v6_elem_vatt_col(v->varattno, v->vartype);
 	if (v->varattno >= SIFT_V6_JTYPE_VATT)
 		b->fcol[*b->nfcols].jleaf = v->varattno - SIFT_V6_JTYPE_VATT + 1,b->fcol[*b->nfcols].jtype = true;
 	return (*b->nfcols)++;

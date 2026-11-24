@@ -199,7 +199,8 @@ setup_cols(UnRun *u, const SiftColRel *r)
 		}
 	}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
-		col_index(u, r, &spec->fcol[i], false);
+		if (spec->fcol[i].src == SV6SRC_ATTR)
+			col_index(u, r, &spec->fcol[i], false);
 }
 
 static SiftF2PullSpec
@@ -589,7 +590,7 @@ restrict_where(UnRun *u, const SiftF2ExtBatch *b)
 	uint64		keep[SIFT_VEC_WORDS];
 
 	for (int i = 0; i < u->spec->nfcols; i++)
-		u->wvecs[i] = (SiftVec *) &b->col[u->wcol[i]];
+		u->wvecs[i] = u->wcol[i] < 0 ? NULL : (SiftVec *) &b->col[u->wcol[i]];
 	sift_clause_eval(&u->where, u->wvecs, b->n, keep);
 	for (int w = 0; w < (b->n + 63) / 64; w++)
 		bs->mask[w] &= keep[w] | b->elem->poison[w];
@@ -699,7 +700,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		u->wvecs = palloc(Max(spec->nfcols, 1) * sizeof(SiftVec *));
 		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
 		for (int i = 0; i < spec->nfcols; i++)
-			u->wcol[i] = col_index(u, r, &spec->fcol[i], false);
+			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR ? col_index(u, r, &spec->fcol[i], false) : -1;
 	}
 	if (u->x->elem_where != NIL)
 	{

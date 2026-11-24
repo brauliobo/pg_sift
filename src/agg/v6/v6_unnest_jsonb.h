@@ -45,6 +45,10 @@ extern bool sift_v6_unnest_array_ok(PlannerInfo *root, const RelOptInfo *fact, c
 extern bool sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left);
 /* The WHERE clauses of the lateral relation as the elem_where of p->xseed; false when the scan cannot decide one */
 extern bool sift_v6_unnest_elem_quals(V6Plan *p);
+/* A comparison, an IN list or a null test of a column of the element with constants, over the virtual attribute of the column; NULL when the clause is not one */
+extern Expr *sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause);
+/* The column of the statement a virtual attribute of the element is: the vector the pairs of the unnest bring of it */
+extern SiftV6Col sift_v6_elem_vatt_col(int attno, Oid typid);
 
 /* doc ->> 'key' = 'constant' of a shredded text key of a jsonb column of the fact table, as a comparison of the virtual attribute of the key's leaf (agg/v6/jsonb_qual.c); NULL when it is not one */
 extern Expr *sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op);

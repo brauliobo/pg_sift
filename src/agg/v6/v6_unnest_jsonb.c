@@ -348,9 +348,17 @@ elem_column(const V6Plan *p, const Node *n)
 	return n != NULL && IsA(n, Var) && sift_v6_unnest_column((V6Plan *) p, (const Expr *) n, &col) ? v : NULL;
 }
 
+SiftV6Col
+sift_v6_elem_vatt_col(int attno, Oid typid)
+{
+	const bool	elem = attno >= SIFT_V6_ELEM_VATT && attno < SIFT_V6_ELEM_VATT + SIFT_V6_XELEM_COLS;
+
+	return (SiftV6Col) {.attno = attno,.typid = typid,.src = elem ? SV6SRC_ELEM : SV6SRC_ATTR,.slot = elem ? attno - SIFT_V6_ELEM_VATT : 0};
+}
+
 /* a comparison of a column of the element with a constant, an IN list of constants, or a null test, over the virtual attribute of the column; or an AND, OR or NOT of such tests */
-static Expr *
-elem_qual(const V6Plan *p, Node *clause)
+Expr *
+sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
 {
 	if (IsA(clause, BoolExpr))
 	{
@@ -359,7 +367,7 @@ elem_qual(const V6Plan *p, Node *clause)
 
 		foreach_ptr(Node, a, q->args)
 		{
-			Expr	   *t = elem_qual(p, a);
+			Expr	   *t = sift_v6_unnest_elem_qual(p, a);
 
 			if (t == NULL)
 				return NULL;
@@ -417,7 +425,7 @@ sift_v6_unnest_elem_quals(V6Plan *p)
 
 	foreach_node(RestrictInfo, ri, p->elem_rel->baserestrictinfo)
 	{
-		Expr	   *q = ri->pseudoconstant ? NULL : elem_qual(p, (Node *) ri->clause);
+		Expr	   *q = ri->pseudoconstant ? NULL : sift_v6_unnest_elem_qual(p, (Node *) ri->clause);
 
 		if (q == NULL)
 			return false;
