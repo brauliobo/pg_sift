@@ -15,6 +15,7 @@
 #include "utils/snapmgr.h"
 
 #include "table/v1/load/load_int.h"
+#include "core/memtrack.h"
 
 bool		sift_tbl_bulk_groups = true;
 bool		sift_tbl_load_from_copy = false;
@@ -55,7 +56,7 @@ load_groups(Relation rel)
 {
 	if (!IsUnderPostmaster || IsInParallelMode() || !ActiveSnapshotSet() || RelationUsesLocalBuffers(rel))
 		return 1;
-	return Max(1, Min(Min(1 + max_parallel_maintenance_workers, LOAD_MAX_GROUPS), maintenance_work_mem / (LOAD_SBS * sift_tbl_opt_int(sift_tbl_rel(rel), SIFT_TBLOPT_WRITE_BUFFER_LIMIT))));
+	return Max(1, Min(Min(1 + max_parallel_maintenance_workers, LOAD_MAX_GROUPS), (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024) / (LOAD_SBS * sift_tbl_opt_int(sift_tbl_rel(rel), SIFT_TBLOPT_WRITE_BUFFER_LIMIT))));
 }
 
 /* Does the load of this table hand its groups to workers that stay for the command? */

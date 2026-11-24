@@ -434,7 +434,7 @@ maint_merge_segments(Relation index, const SiftColSchema *schema, const SiftCcPo
 			if (part == NULL)
 				out_begin(&o);	/* a slice may hold no row: its writer is begun by its first unit */
 			sift_colk_merge(o.w, in, seg, n, freeze, freeze_arg, schema, cut, ncut,
-							by_tid && !key_cut ? unit : sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, o.cx, out_next, &o,
+							by_tid && !key_cut ? unit : sift_colk_unit_rows(sift_colk_aim_rows(index)), (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024), o.cx, out_next, &o,
 							part ? part->i : 0, part ? part->nslices : 1,
 							/* the units of the slices are numbered one after the other, by the rows that come before: the directory counts the units a segment spans */
 							part && part->win ? part->win->unit_base : part && key_cut ? live_rows * part->i / part->nslices / sift_colk_unit_rows(sift_colk_aim_rows(index)) : 0, stream,

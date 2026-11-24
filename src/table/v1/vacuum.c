@@ -3,8 +3,8 @@
  * (docs/COL-TAM.md). The passes of the maintenance worker are in vacuum_maint.c, VACUUM FULL / CLUSTER in vacuum_copy.c.
  */
 #include "vacuum_int.h"
-#include "postmaster/autovacuum.h"
 #include "utils/timestamp.h"
+#include "core/memtrack.h"
 
 /* A worker's limits, from sift.table_auto_defrag_max_active and sift.table_auto_defrag_wal_rate (a VACUUM of a session has none): clients running a statement above which the merges of a pass stop, and the WAL bytes per second it may average since the worker started */
 int	pass_max_active = 0;
@@ -213,17 +213,15 @@ in_wbuf(const SiftTblRel *st, uint64 vblock)
 int			sift_test_vacuum_batch_bytes = 0;
 #endif
 
-/* maintenance_work_mem as lazy VACUUM takes it (autovacuum_work_mem in an autovacuum worker): a batch of dead rows holds half, the lists double as they grow */
+/* The memory of maintenance as lazy VACUUM takes it: a batch of dead rows holds half, the lists double as they grow */
 static uint64
 batch_budget(void)
 {
-	int			kb = AmAutoVacuumWorkerProcess() && autovacuum_work_mem != -1 ? autovacuum_work_mem : maintenance_work_mem;
-
 #ifdef SIFT_TESTING
 	if (sift_test_vacuum_batch_bytes > 0)
 		return sift_test_vacuum_batch_bytes;
 #endif
-	return (uint64) kb * 1024 / 2;
+	return sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 2;
 }
 
 static void

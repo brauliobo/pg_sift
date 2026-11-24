@@ -9,6 +9,7 @@
 #include "port/pg_bitutils.h"
 #include "utils/snapmgr.h"
 #include "core/limits.h"
+#include "core/memtrack.h"
 #include "core/ops.h"
 #include "core/worker.h"
 #include "storage/lmgr.h"
@@ -41,7 +42,7 @@ maint_pass_limit(void)
 	if (sift_test_col_pass_kb > 0)
 		return (uint64) sift_test_col_pass_kb * 1024;
 #endif
-	return (uint64) maintenance_work_mem * 1024 * 16;
+	return (uint64) sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) * 16;
 }
 
 int

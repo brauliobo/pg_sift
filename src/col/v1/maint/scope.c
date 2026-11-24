@@ -254,7 +254,7 @@ refill_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 	meta->flags &= ~SIFT_META_FAILURES_MASK;
 }
 
-#define scope_sort_kb()		(maintenance_work_mem / 2)
+#define scope_sort_kb()		((int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 2 / 1024))
 
 /*
  * The sorts of a refill go by key ranges when their rows would not fit their memory (col/v1/order_sort.c): the keys the ranges are cut at, and the size of the rows, are those of a sample, the rows
@@ -530,7 +530,7 @@ maint_scope_refill(Relation index, bool report)
 		o.ncut = sift_scope_cut(r, s, o.cut);
 		sift_colsort_done(sorter[s]);
 		sift_colb_peak_note();
-		sift_colk_merge(NULL, NULL, NULL, 0, NULL, NULL, r->schema, o.cut, o.ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), maintenance_work_mem, mcx, scope_out_next, &o, 0, 1, 0, NULL, NULL, sorter[s], NULL);
+		sift_colk_merge(NULL, NULL, NULL, 0, NULL, NULL, r->schema, o.cut, o.ncut, sift_colk_unit_rows(sift_colk_aim_rows(index)), (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024), mcx, scope_out_next, &o, 0, 1, 0, NULL, NULL, sorter[s], NULL);
 		if (o.w != NULL)
 			scope_out_finish(&o);
 		out = repalloc(out, (nout + o.n) * sizeof(SiftSegEntry));

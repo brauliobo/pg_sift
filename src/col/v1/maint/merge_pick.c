@@ -271,7 +271,7 @@ static struct
 static SettledCut
 settled_cut_now(void)
 {
-	SettledCut	cut = {.part_kb = maint_part_kb,.work_mem_kb = maintenance_work_mem};
+	SettledCut	cut = {.part_kb = maint_part_kb,.work_mem_kb = (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024)};
 
 #ifdef SIFT_TESTING
 	cut.segment_kb = sift_test_col_segment_kb;

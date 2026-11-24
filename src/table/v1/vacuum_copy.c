@@ -9,6 +9,7 @@
 #include "executor/executor.h"
 #include "utils/tuplesort.h"
 #include "utils/typcache.h"
+#include "core/memtrack.h"
 
 typedef struct CopyState
 {
@@ -115,7 +116,7 @@ copy_scan(Relation OldTable, TupleSink put, void *arg, CopyState *c)
 static void
 copy_sorted(Relation OldTable, Relation OldIndex, SiftTblBulk *bulk, CopyState *c)
 {
-	Tuplesortstate *sort = tuplesort_begin_cluster(RelationGetDescr(OldTable), OldIndex, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	Tuplesortstate *sort = tuplesort_begin_cluster(RelationGetDescr(OldTable), OldIndex, (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024), NULL, TUPLESORT_NONE);
 	HeapTuple	tup;
 
 	copy_scan(OldTable, put_cluster, sort, c);
@@ -146,7 +147,7 @@ copy_key_sorted(Relation OldTable, SiftTblBulk *bulk, CopyState *c, int nkeys, c
 		ops[i] = lookup_type_cache(a->atttypid, TYPECACHE_LT_OPR)->lt_opr;
 		colls[i] = a->attcollation;
 	}
-	k.sort = tuplesort_begin_heap(desc, nkeys, (AttrNumber *) att, ops, colls, nulls_first, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	k.sort = tuplesort_begin_heap(desc, nkeys, (AttrNumber *) att, ops, colls, nulls_first, (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024), NULL, TUPLESORT_NONE);
 	k.slot = MakeSingleTupleTableSlot(desc, &TTSOpsHeapTuple);
 	copy_scan(OldTable, put_key, &k, c);
 	ExecDropSingleTupleTableSlot(k.slot);
@@ -290,7 +291,7 @@ validate_merge(ValidateCtx *v, Snapshot snapshot, IndexAddrs *idx)
 	TupleDescInitEntry(desc, 1, "root", INT8OID, -1, 0);
 	TupleDescInitEntry(desc, 2, "own", INT8OID, -1, 0);
 	sift_tupdesc_finalize(desc);
-	mine = tuplesort_begin_heap(desc, 1, &sortcol, &sortop, &coll, &nulls_first, maintenance_work_mem, NULL, TUPLESORT_NONE);
+	mine = tuplesort_begin_heap(desc, 1, &sortcol, &sortop, &coll, &nulls_first, (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / 1024), NULL, TUPLESORT_NONE);
 	put = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	rows = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 	scan = sift_table_beginscan(v->table_rel, snapshot, 0, NULL);
@@ -343,7 +344,7 @@ sift_tbl_index_validate_scan(Relation table_rel, Relation index_rel, IndexInfo *
 {
 	EState	   *estate = CreateExecutorState();
 	ValidateCtx v = {table_rel, index_rel, indexInfo, estate, GetPerTupleExprContext(estate), table_slot_create(table_rel, NULL), state};
-	uint64		cap = Max((uint64) maintenance_work_mem * 1024 / sizeof(ItemPointerData), 1024);
+	uint64		cap = Max((uint64) sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / sizeof(ItemPointerData), 1024);
 	TidList		have = {.max = cap};
 	SiftTblRel *st = sift_tbl_rel(table_rel);
 	IndexAddrs	idx = {&have, 0, state};

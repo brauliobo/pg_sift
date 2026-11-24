@@ -16,6 +16,7 @@
 #include "utils/wait_event.h"
 
 #include "table/v1/load/load_int.h"
+#include "core/memtrack.h"
 #include "core/waits.h"
 
 /*
@@ -277,7 +278,7 @@ load_ring_start(Load *ld, Relation rel, SiftTblRel *st)
 {
 	int			nworkers = Min(max_parallel_maintenance_workers, LOAD_MAX_GROUPS - 1);
 	Size		cap = (Size) LOAD_RING_UNITS * ld->unit_kb * 1024 / 4 * 5;
-	int			nslots = Max(2, Min(Min(nworkers + 1, RING_SLOTS_MAX), (int) (((Size) maintenance_work_mem * 1024) / cap)));
+	int			nslots = Max(2, Min(Min(nworkers + 1, RING_SLOTS_MAX), (int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1) / cap)));
 	Size		head = MAXALIGN(offsetof(LoadRing, slots) + nslots * sizeof(LoadSlot));
 	SiftParLeader *ldr;
 	LoadRingLeader *rl;
