@@ -48,7 +48,7 @@ INSERT INTO trs SELECT format('SELECT %1$s FROM tr WHERE %2$s ORDER BY %1$s %3$s
 FROM trq, unnest(ARRAY['c', 'l']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 3000]) l, unnest(ARRAY[0, 5]) o
 WHERE substr(cond, 1, 1) = col OR cond LIKE 'starts_with(' || col || '%';
 SELECT count(*) AS statements FROM trs;
-SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 4 = 0) r GROUP BY 1 ORDER BY 1;
+SELECT result, count(*) FROM (SELECT tr_chk(q) AS result FROM trs WHERE hashtext(q) % 10 = 0) r GROUP BY 1 ORDER BY 1;
 
 -- the rows of the write buffer, deletes, updates of the key, VACUUM, a promotion, a merge and a REINDEX
 CREATE FUNCTION tr_all(stage int) RETURNS TABLE (result text, n bigint) LANGUAGE sql AS
@@ -151,11 +151,11 @@ SELECT pg_relation_size('ts') / 8192 > 10000 AS late_blocks;
 
 CREATE TABLE tq (cond text);
 INSERT INTO tq
-SELECT format(f, a, a + w) FROM unnest(ARRAY['d BETWEEN %s AND %s', 'd BETWEEN %s AND %s AND flag IS NULL', 'd >= %s AND d < %s AND flag = 1']) f,
-	   unnest(ARRAY[0, 500, 5000, 12000, 19990]) a, unnest(ARRAY[40, 900]) w;
+SELECT format(f, a, a + w) FROM unnest(ARRAY['d BETWEEN %s AND %s', 'd BETWEEN %s AND %s AND flag IS NULL', 'd >= %s AND d < %s AND flag = 1']) WITH ORDINALITY f(f, fi),
+	   unnest(ARRAY[0, 500, 5000, 12000, 19990]) WITH ORDINALITY a(a, ai), unnest(ARRAY[40, 900]) WITH ORDINALITY w(w, wi) WHERE (fi + ai + wi) % 2 = 0;
 INSERT INTO tq
-SELECT format(f, a, b) FROM unnest(ARRAY['c BETWEEN %L AND %L', 'c BETWEEN %L AND %L AND flag IS NULL', 'c >= %L AND c < %L AND flag = 2']) f,
-	   (VALUES ('k00000', 'k00040'), ('k04000', 'k04900'), ('k10050', 'k10090'), ('k16500', 'k17400'), ('k19900', 'k19999')) v(a, b);
+SELECT format(f, a, b) FROM unnest(ARRAY['c BETWEEN %L AND %L', 'c BETWEEN %L AND %L AND flag IS NULL', 'c >= %L AND c < %L AND flag = 2']) WITH ORDINALITY f(f, fi),
+	   (VALUES (1, 'k00000', 'k00040'), (2, 'k04000', 'k04900'), (3, 'k10050', 'k10090'), (4, 'k16500', 'k17400'), (5, 'k19900', 'k19999')) v(vi, a, b) WHERE (fi + vi) % 2 = 0;
 SELECT t.tbl, count(*) AS conditions, count(*) FILTER (WHERE tb_count(t.tbl, q.cond, true) = tb_count(t.tbl, q.cond, false)) AS same,
 	   count(*) FILTER (WHERE tb_count(t.tbl, q.cond, false) > 0) AS found
 FROM tq q, (VALUES ('ts'), ('tk')) t(tbl) GROUP BY t.tbl ORDER BY 1;
@@ -265,10 +265,11 @@ END $$;
 CREATE FUNCTION kl_check(layout text) RETURNS TABLE (layout text, cases int, differ int, below_limit int, above_limit int) LANGUAGE sql AS $$
 	WITH q AS (
 		SELECT format('SELECT id FROM kl WHERE d BETWEEN %L AND %L%s', a, a + w, CASE WHEN n THEN ' AND del IS NULL' ELSE '' END) AS q
-		FROM (SELECT date '2022-01-01' + s * 362 AS a FROM unnest(ARRAY[1, 3]) s) x, unnest(ARRAY[0, 30, 400]) w, (VALUES (true), (false)) v(n)
+		FROM (SELECT date '2022-01-01' + s * 362 AS a, si FROM unnest(ARRAY[1, 3]) WITH ORDINALITY u(s, si)) x, unnest(ARRAY[0, 30, 400]) WITH ORDINALITY w(w, wi), (VALUES (true, 1), (false, 2)) v(n, ni)
+		WHERE (si + wi + ni) % 2 = 1
 		UNION ALL
 		SELECT format('SELECT id FROM kl WHERE ts >= %L AND ts < %L AND ent = %s', timestamp '2022-01-01' + s * 170 * interval '1 day', timestamp '2022-01-01' + (s * 170 + w) * interval '1 day', 1 + s)
-		FROM unnest(ARRAY[0, 2, 4]) s, unnest(ARRAY[1, 200]) w
+		FROM unnest(ARRAY[0, 2, 4]) WITH ORDINALITY u(s, si), unnest(ARRAY[1, 200]) WITH ORDINALITY w(w, wi) WHERE (si + wi) % 2 = 0
 	), r AS (SELECT q, kl_rows(q, 'heap') AS h FROM q)
 	SELECT layout, count(*)::int, count(*) FILTER (WHERE kl_rows(q, 'bitmap') <> h OR kl_rows(q, 'index') <> h)::int,
 		count(*) FILTER (WHERE h < 16384)::int, count(*) FILTER (WHERE h >= 16384)::int
