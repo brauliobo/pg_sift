@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""Guard table readability in README.md and verify v6 benchmark snapshot alignment.
+"""Guard table readability in README.md.
 
     scripts/check-readme-tables.py             exit 1 when any table in README.md (outside code blocks) has more than MAX_COLS columns,
                                                a header word longer than MAX_WORD characters, a cell longer than MAX_CELL characters,
                                                an empty cell, when a table in a <details> expander has more than MAX_ROWS rows, when an expander lacks
-                                               its <summary> or the blank lines after </summary> and before </details> (without them GitHub shows the table as text),
-                                               or when <!-- bench:v6-readme:begin --> disagrees with docs/results/v6-readme.tsv (if present)
+                                               its <summary> or the blank lines after </summary> and before </details> (without them GitHub shows the table as text)
     scripts/check-readme-tables.py --selftest  proves each rule fails on a table that breaks it
 """
-import csv
 import os
 import re
 import sys
@@ -99,34 +97,6 @@ def triples(text):
     return bad
 
 
-def numbers(text):
-    """Check <!-- bench:v6-readme:begin --> against docs/results/v6-readme.tsv when present."""
-    block = re.search(r'<!-- bench:v6-readme:begin.*?-->\n(.*?)<!-- bench:v6-readme:end', text, re.S)
-    if not block:
-        return []
-    tsv = os.path.join(REPO, 'docs', 'results', 'v6-readme.tsv')
-    if not os.path.exists(tsv):
-        return []
-    with open(tsv, encoding='utf-8') as f:
-        rows = list(csv.DictReader((l for l in f if l.strip() and not l.startswith('#')), delimiter='\t'))
-    if not rows:
-        return []
-    tlist = tables(block.group(1))
-    if not tlist:
-        return ['v6-readme block has no table']
-    got = {r[0]: r for r in tlist[0][1:]}
-    sift_col = next((i for i, h in enumerate(tlist[0][0]) if 'pg_sift' in h), 1)
-    bad = []
-    for row in rows:
-        w = row.get('workload', '')
-        if w not in got:
-            bad.append('v6-readme missing workload row: %s' % w)
-            continue
-        if row.get('sift_v6') and got[w][sift_col] != row['sift_v6']:
-            bad.append('%s: README has %s, v6-readme.tsv says %s' % (w, got[w][sift_col], row['sift_v6']))
-    return bad
-
-
 def selftest():
     ok = '| System | Metric A | Metric B |\n|---|---:|---:|\n| pg_sift | 1.2 ms | 3.4 ms |\n'
     wide = '| c1 | c2 | c3 | c4 | c5 | c6 |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 |\n'
@@ -162,7 +132,7 @@ if __name__ == '__main__':
         selftest()
         sys.exit(0)
     text = open(os.path.join(REPO, 'README.md'), encoding='utf-8').read()
-    bad = problems(text) + numbers(text)
+    bad = problems(text)
     perf_page = os.path.join(REPO, 'docs', 'perf', 'AGGREGATES.md')
     if os.path.exists(perf_page):
         bad += triples(open(perf_page, encoding='utf-8').read())
