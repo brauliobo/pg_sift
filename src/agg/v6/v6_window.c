@@ -23,6 +23,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/safety.h"
+#include "agg/v6/par/winrun.h"
 #include "agg/v6/v6_source_quals.h"
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
@@ -621,6 +622,7 @@ typedef struct WindowState
 	Datum	   *vals;
 	bool	   *nulls;
 	SiftWinStats stats;
+	int			threads;		/* the compute threads that ran the window (0: the node did) */
 } WindowState;
 
 static void
@@ -700,7 +702,7 @@ window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 }
 
 static void
-window_emit(void *arg, const SiftWinRow *row)
+window_emit_vals(void *arg, uint64 tag, const SiftWinVal *val, uint16 nulls)
 {
 	WindowState *st = arg;
 	Datum		res[SIFT_WIN_MAX_FUNCS];
@@ -708,10 +710,16 @@ window_emit(void *arg, const SiftWinRow *row)
 
 	for (int f = 0; f < st->spec->win.n_funcs; f++)
 	{
-		res_null[f] = (row->res_nulls >> f) & 1;
-		res[f] = res_null[f] ? (Datum) 0 : sift_v6_window_datum(st->spec, f, &row->res[f]);
+		res_null[f] = (nulls >> f) & 1;
+		res[f] = res_null[f] ? (Datum) 0 : sift_v6_window_datum(st->spec, f, &val[f]);
 	}
-	window_put(st, row->tag, res, res_null);
+	window_put(st, tag, res, res_null);
+}
+
+static void
+window_emit(void *arg, const SiftWinRow *row)
+{
+	window_emit_vals(arg, row->tag, row->res, row->res_nulls);
 }
 
 static void
@@ -769,6 +777,12 @@ window_run(WindowState *st, EState *estate)
 	st->src = sift_v6_source_over_quals(st->out.cx, sift_v6_rel_open(estate, &open_in, quals.has_machine ? &quals.machine : NULL, !st->spec->regroup), &open_in, &quals);
 	if (st->spec->regroup)
 		st->src = sift_win_regroup_over(st->out.cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
+	if (sift_v6_par_win_wanted(st->spec, &in))
+	{
+		st->threads = sift_v6_par_win_run(st->out.cx, st->spec, &in, st->src, st->carry, window_emit_vals, st, &st->stats);
+		st->out.ran = true;
+		return;
+	}
 	if (st->spec->partsort)
 	{
 		sift_v6_window_partsort(st->spec, &in);
@@ -836,6 +850,8 @@ window_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_v6_explain_count(es, "Rows In", (int64) st->stats.rows_in);
 		sift_v6_explain_count(es, "Rows Out", (int64) st->stats.rows_out);
 		sift_v6_explain_count(es, "Partitions Skipped", (int64) st->stats.skips);
+		if (st->threads > 0)
+			sift_v6_explain_count(es, "Threads", st->threads);
 	}
 }
 
