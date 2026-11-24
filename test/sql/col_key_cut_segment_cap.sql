@@ -7,15 +7,24 @@ SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 
--- 3.2 million rows of 5,000 keys; the budget of a run (64 kB) is 20,000 rows or less: 160 runs
+-- 320,000 rows of 5,000 keys; the budget of a run (64 kB) is 30,000 rows or less: 11 runs
 CREATE TABLE cap (id bigint, tenant_id int, d date) WITH (autovacuum_enabled = false, parallel_workers = 3);
-INSERT INTO cap SELECT g, (g::bigint * 7919 % 5000)::int, date '2020-01-01' + (g % 2000) FROM generate_series(1, 3200000) g;
+INSERT INTO cap SELECT g, (g::bigint * 7919 % 5000)::int, date '2020-01-01' + (g % 2000) FROM generate_series(1, 320000) g;
 VACUUM (FREEZE, ANALYZE) cap;
 SET sift.test_col_segment_kb = 64;
 
 -- the entries of the arrays wait on temp files, so a segment holds the rows its writer's bytes allow: none holds an eighth of the table
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) < sum(rows) / 8 AS none_holds_an_eighth
+SELECT count(*) > 1 AS in_partitions, sum(rows) = 320000 AS all_rows, max(rows) < sum(rows) / 8 AS none_holds_an_eighth
+FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
+SELECT sift.col_verify('cap_i', true);
+DROP INDEX cap_i;
+
+-- more runs than a build may open at once (8 of the 11) are merged as the scan goes: a segment is the merge of at most 8 runs, so none holds a quarter of the table
+SET sift.test_col_build_runs = 8;
+CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
+RESET sift.test_col_build_runs;
+SELECT count(*) > 1 AS in_partitions, sum(rows) = 320000 AS all_rows, max(rows) < sum(rows) / 4 AS none_holds_a_quarter
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
 DROP INDEX cap_i;
@@ -24,9 +33,9 @@ DROP INDEX cap_i;
 SET max_parallel_maintenance_workers = 3;
 SET min_parallel_table_scan_size = 0;
 SET maintenance_work_mem = 65536;
-SET sift.test_col_partition_kb = 2048;
+SET sift.test_col_partition_kb = 256;
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) <= 1.25 * sum(rows) / count(*) AS slices_even
+SELECT count(*) > 1 AS in_partitions, sum(rows) = 320000 AS all_rows, max(rows) <= 1.25 * sum(rows) / count(*) AS slices_even
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
 -- the merges after the build end when one writes the segments it read: 68 segments of the participants and a few merges, not a generation for every pass up to the limit
@@ -36,10 +45,10 @@ SELECT max(gen) < 100 AS merges_end FROM sift.col_segments('cap_i');
 DROP TABLE cap;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE cap (id bigint, tenant_id int, d date) WITH (autovacuum_enabled = false);
-INSERT INTO cap SELECT g, CASE WHEN g % 3 = 0 THEN 1 ELSE (g::bigint * 7919 % 5000)::int END, date '2020-01-01' + (g % 2000) FROM generate_series(1, 3200000) g;
+INSERT INTO cap SELECT g, CASE WHEN g % 3 = 0 THEN 1 ELSE (g::bigint * 7919 % 5000)::int END, date '2020-01-01' + (g % 2000) FROM generate_series(1, 320000) g;
 VACUUM (FREEZE, ANALYZE) cap;
 CREATE INDEX cap_i ON cap USING sift_col (id, tenant_id, d) WITH (key_cut = 'tenant_id');
-SELECT count(*) > 1 AS in_partitions, sum(rows) = 3200000 AS all_rows, max(rows) < sum(rows) / 8 AS none_holds_an_eighth
+SELECT count(*) > 1 AS in_partitions, sum(rows) = 320000 AS all_rows, max(rows) < sum(rows) / 8 AS none_holds_an_eighth
 FROM sift.col_segments('cap_i') WHERE kind = 'immutable';
 SELECT sift.col_verify('cap_i', true);
 SET sift.enable_agg = on;
