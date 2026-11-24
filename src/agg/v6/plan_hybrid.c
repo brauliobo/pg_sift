@@ -33,7 +33,7 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 	if (table != NULL)
 	{
 		p.relid = planner_rt_fetch(rel->relid, root)->relid;
-		p.ops = sift_store_ops_for_oid(p.relid, true);
+		p.ops = sift_store_ops_for_scan(p.relid, true);
 		p.is_table = true;
 		p.tsch = *table;
 	}

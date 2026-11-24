@@ -139,7 +139,7 @@ sift_v6_table_leaf_holds(const SiftStoreSchema *table, int att, SiftV6Class cls)
 bool
 sift_v6_plan_table(V6Plan *p, Oid relid)
 {
-	p->ops = sift_store_ops_for_oid(relid, true);
+	p->ops = sift_store_ops_for_scan(relid, true);
 	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->tsch);
 	return p->is_table;
 }
@@ -148,7 +148,7 @@ void
 sift_v6_plan_index(V6Plan *p, Relation irel)
 {
 	p->colrel = sift_col_rel(irel);
-	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
+	p->ops = p->colrel->stale ? NULL : sift_store_ops_for_scan(RelationGetRelid(irel), false);
 }
 
 static bool
@@ -861,7 +861,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	}
 	rte = planner_rt_fetch(input_rel->relid, root);
 	heap = table_open(rte->relid, AccessShareLock);
-	if (sift_store_ops_for_oid(rte->relid, true) != NULL)
+	if (sift_store_ops_for_scan(rte->relid, true) != NULL)
 	{
 		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.relid = rte->relid,.batch_ok = true};
 

@@ -235,7 +235,7 @@ pick_store(HybridPlan *h, RangeTblEntry *rte)
 
 	if (sift_tbl_is_table(heap))
 	{
-		const SiftStoreOps *ops = sift_store_ops_for_oid(rte->relid, true);
+		const SiftStoreOps *ops = sift_store_ops_for_scan(rte->relid, true);
 
 		h->store.relid = rte->relid;
 		h->store.is_table = ops != NULL && ops->schema(rte->relid, true, &h->store.tsch);

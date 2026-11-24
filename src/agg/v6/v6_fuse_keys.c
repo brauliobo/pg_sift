@@ -99,7 +99,7 @@ values_of(const Node *q, SiftF2KeySet *ks)
 static int
 lead_att_of(Relation index)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_oid(RelationGetRelid(index), false);
+	const SiftStoreOps *ops = sift_store_ops_for_scan(RelationGetRelid(index), false);
 
 	return ops != NULL && ops->order != NULL ? ops->order->lead_att(RelationGetRelid(index)) : 0;
 }

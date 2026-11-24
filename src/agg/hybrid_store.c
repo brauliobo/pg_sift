@@ -450,7 +450,7 @@ sift_hybrid_open(HybridState *st, CustomScan *cs, EState *estate, Relation heap)
 	st->scan_tlist = cs->custom_scan_tlist;
 	st->text_index = index_open(st->text_oid, AccessShareLock);
 	st->is_table = st->host == SIFT_HYB_HOST_TABLE;
-	st->ops = sift_store_ops_for_oid(st->is_table ? RelationGetRelid(heap) : st->store_oid, st->is_table);
+	st->ops = sift_store_ops_for_scan(st->is_table ? RelationGetRelid(heap) : st->store_oid, st->is_table);
 	if (st->is_table)
 		st->ops->schema(RelationGetRelid(heap), true, &st->tsch);
 	else

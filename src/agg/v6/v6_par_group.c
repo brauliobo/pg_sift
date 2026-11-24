@@ -211,7 +211,7 @@ open_scan(ParEnv *e)
 	const SiftV6ParDsmHdr *h = e->hdr;
 	MemoryContext old = MemoryContextSwitchTo(e->cx);
 
-	e->par = sift_store_ops_for_oid(RelationGetRelid(e->index), false)->par;
+	e->par = sift_store_ops_for_scan(RelationGetRelid(e->index), false)->par;
 	e->scan = e->par->begin(e->spec, e->heap, e->index, e->keys, e->nkeys, e->snap, &e->stats, batch_to_local, e);
 	e->par->morsel_begin(e->scan, (const uint64 *) ((const char *) h + h->staged_dead_off), h->n_staged_dead);
 	MemoryContextSwitchTo(old);

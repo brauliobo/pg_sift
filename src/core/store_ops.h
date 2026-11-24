@@ -289,6 +289,8 @@ typedef struct SiftStoreOps
 extern void sift_store_ops_register(const SiftStoreOps *ops);
 extern void sift_store_ops_unregister(const SiftStoreOps *ops);
 extern const SiftStoreOps *sift_store_ops_for_oid(Oid relid, bool is_table);
+/* The owner of the relation when it serves the scans of the aggregate engine (the zone sub-vtable); NULL for no owner or an owner that reads through open() alone */
+extern const SiftStoreOps *sift_store_ops_for_scan(Oid relid, bool is_table);
 extern bool sift_store_ops_any(void);
 extern int	sift_store_ops_count(void);
 extern const SiftStoreOps *sift_store_ops_at(int i);

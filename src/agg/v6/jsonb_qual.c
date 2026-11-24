@@ -242,7 +242,7 @@ sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
 void
 sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys)
 {
-	const SiftJsonbOps *ops = sift_store_ops_for_oid(RelationGetRelid(index), false)->jsonb;
+	const SiftJsonbOps *ops = sift_store_ops_for_scan(RelationGetRelid(index), false)->jsonb;
 	ScanKey		all;
 
 	if (spec->jsonqual == NIL)

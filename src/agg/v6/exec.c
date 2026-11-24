@@ -82,7 +82,7 @@ scan_signature(const SiftV6Spec *spec)
 static void
 begin_index(V6State *st, CustomScanState *node, V6Source *src, Oid indexoid)
 {
-	src->ops = sift_store_ops_for_oid(indexoid, false);
+	src->ops = sift_store_ops_for_scan(indexoid, false);
 	src->index = index_open(indexoid, AccessShareLock);
 	src->heap = table_open(src->index->rd_index->indrelid, AccessShareLock);
 	sift_v6_qual_scankeys(&node->ss.ps, src->index, st->spec->indexqual, &src->keys, &src->nkeys, &src->rtkeys, &src->nrt);
@@ -150,7 +150,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	{
 		V6Source   *src = &st->sources[0];
 
-		src->ops = sift_store_ops_for_oid(st->spec->relid, true);
+		src->ops = sift_store_ops_for_scan(st->spec->relid, true);
 		src->heap = table_open(st->spec->relid, AccessShareLock);
 		src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
 		return;

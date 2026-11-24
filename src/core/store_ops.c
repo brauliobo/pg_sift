@@ -49,6 +49,14 @@ sift_store_ops_for_oid(Oid relid, bool is_table)
 	return NULL;
 }
 
+const SiftStoreOps *
+sift_store_ops_for_scan(Oid relid, bool is_table)
+{
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, is_table);
+
+	return ops != NULL && ops->zone != NULL ? ops : NULL;
+}
+
 bool
 sift_store_ops_any(void)
 {

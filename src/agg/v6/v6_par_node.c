@@ -106,7 +106,7 @@ sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 {
 	SiftV6ScanStats stats = {0};
 	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
-	const SiftParOps *par = sift_store_ops_for_oid(RelationGetRelid(pn->index), false)->par;
+	const SiftParOps *par = sift_store_ops_for_scan(RelationGetRelid(pn->index), false)->par;
 	SiftV6Scan *scan = par->begin(pn->spec, pn->heap, pn->index, pn->keys, pn->nkeys, pn->snap, &stats, NULL, NULL);
 	const SiftV6Spec *spec = pn->spec;
 
