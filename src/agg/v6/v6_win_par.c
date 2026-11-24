@@ -26,7 +26,7 @@ typedef struct Regroup
 	uint32		n;
 	uint32		cap;
 	char	   *data[SIFT_V6_MAX_COLS];
-	uint8	   *valid[SIFT_V6_MAX_COLS];
+	uint8	   *valid[SIFT_V6_MAX_COLS];	/* of each row: SIFT_CELL_STATE_* */
 	uint64	   *tag;
 	uint32	   *gid;			/* of each row: its partition */
 	uint32		ngroups;
@@ -39,6 +39,7 @@ typedef struct Regroup
 	uint32		pos;
 	char	   *obuf[SIFT_V6_MAX_COLS];
 	uint64		ovalid[SIFT_V6_MAX_COLS][SIFT_VEC_WORDS];
+	uint64		onan[SIFT_V6_MAX_COLS][SIFT_VEC_WORDS];
 	SiftVec		ovec[SIFT_V6_MAX_COLS];
 	uint64	   *otag;
 } Regroup;
@@ -206,7 +207,7 @@ append_row(Regroup *g, const SiftV6Batch *b, uint32 r)
 		const SiftVec *v = &b->col[c];
 
 		copy_elem(g->data[c], g->n, v->data, r, g->esz[c]);
-		g->valid[c][g->n] = sift_vec_valid_at(v, r);
+		g->valid[c][g->n] = sift_vec_state_at(v, r);
 	}
 	for (int k = 0; k < g->spec.n_part; k++)
 	{
@@ -280,19 +281,23 @@ rg_next(SiftV6Source *s, SiftV6Batch *out)
 	for (int c = 0; c < g->spec.ncols; c++)
 	{
 		uint64	   *words = g->ovalid[c];
-		bool		all_valid = true;
+		bool		all_valid = true,
+					has_nan = false;
 
 		memset(words, 0, sizeof(g->ovalid[c]));
+		memset(g->onan[c], 0, sizeof(g->onan[c]));
 		for (uint32 i = 0; i < m; i++)
 		{
 			const uint32 row = g->order[g->pos + i];
-			const bool	valid = g->valid[c][row];
+			const uint8	state = g->valid[c][row];
 
 			copy_elem(g->obuf[c], i, g->data[c], row, g->esz[c]);
-			words[i >> 6] |= (uint64) valid << (i & 63);
-			all_valid &= valid;
+			sift_vec_state_put(words, g->onan[c], i, state);
+			all_valid &= state == SIFT_CELL_STATE_VALUE;
+			has_nan |= state == SIFT_CELL_STATE_NAN;
 		}
-		g->ovec[c] = (SiftVec) {.data = g->obuf[c],.valid = all_valid ? NULL : words,.len = (uint16) m,.all_valid = all_valid,.dense = true,.type = g->spec.type[c],.scale = g->spec.scale[c]};
+		g->ovec[c] = (SiftVec) {.data = g->obuf[c],.valid = all_valid ? NULL : words,.nan = has_nan ? g->onan[c] : NULL,.len = (uint16) m,.all_valid = all_valid,.dense = true,
+								.type = g->spec.type[c],.scale = g->spec.scale[c]};
 	}
 	for (uint32 i = 0; i < m; i++)
 		g->otag[i] = g->tag[g->order[g->pos + i]];

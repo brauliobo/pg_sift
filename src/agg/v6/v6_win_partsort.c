@@ -6,6 +6,7 @@
 
 #include <math.h>
 
+#include "agg/v6/v6_batch.h"
 #include "agg/v6/v6_win_partsort.h"
 
 #define PS_CHUNK	65536
@@ -15,7 +16,7 @@ typedef struct PsCol
 	SiftVecType type;
 	size_t		esz;
 	char	   *data;
-	uint8	   *valid;
+	uint8	   *valid;			/* of each row: SIFT_CELL_STATE_* */
 } PsCol;
 
 typedef struct PsChunk
@@ -48,6 +49,7 @@ typedef struct PartSort
 	SiftVec		ovec[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS];
 	char	   *obuf[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS];
 	uint64		ovalid[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS][SIFT_VEC_WORDS];
+	uint64		onan[SIFT_V6_MAX_COLS + 1 + SIFT_WIN_MAX_KEYS][SIFT_VEC_WORDS];
 	uint64		otag[SIFT_VEC_LEN];
 } PartSort;
 
@@ -101,12 +103,6 @@ f8_cmp(double a, double b)
 	return a < b ? -1 : a > b;
 }
 
-static inline bool
-cell_valid(const PsCol *c, uint32 i)
-{
-	return c->valid[i] != 0;
-}
-
 /* the order of the cells i and j of a column: the values only, both valid */
 static int
 cell_cmp(const PsCol *c, uint32 i, uint32 j)
@@ -148,13 +144,13 @@ static int
 key_cmp(const PartSort *ps, const SiftWinPsKey *k, uint32 i, uint32 j)
 {
 	const PsCol *c = &ps->col[k->slot];
-	const bool	in = !cell_valid(c, i),
-				jn = !cell_valid(c, j);
+	const uint8	si = c->valid[i],
+				sj = c->valid[j];
 	int			r;
 
-	if (in || jn)
-		return in == jn ? 0 : (in == k->nulls_first ? -1 : 1);
-	r = cell_cmp(c, i, j);
+	if (si == SIFT_CELL_STATE_NULL || sj == SIFT_CELL_STATE_NULL)
+		return si == sj ? 0 : ((si == SIFT_CELL_STATE_NULL) == k->nulls_first ? -1 : 1);
+	r = si != sj ? (si == SIFT_CELL_STATE_NAN ? 1 : -1) : si == SIFT_CELL_STATE_NAN ? 0 : cell_cmp(c, i, j);
 	return k->desc ? -r : r;
 }
 
@@ -228,12 +224,6 @@ release_chunks(PartSort *ps)
 }
 
 static inline bool
-batch_valid(const SiftVec *v, uint32 r)
-{
-	return v->all_valid || ((v->valid[r >> 6] >> (r & 63)) & 1);
-}
-
-static inline bool
 batch_active(const SiftV6Batch *b, uint32 r)
 {
 	return b->mask == NULL || ((b->mask[r >> 6] >> (r & 63)) & 1);
@@ -247,12 +237,11 @@ same_partition(const PartSort *ps, uint32 r)
 	{
 		const SiftVec *v = &ps->ib.col[ps->spec.part_slot[k]];
 		const PsCol *c = &ps->col[ps->spec.part_slot[k]];
-		const bool	vn = !batch_valid(v, r),
-					hn = !cell_valid(c, 0);
+		const uint8	state = sift_vec_state_at(v, r);
 
-		if (vn != hn)
+		if (state != c->valid[0])
 			return false;
-		if (vn)
+		if (state != SIFT_CELL_STATE_VALUE)
 			continue;
 		switch (v->type)
 		{
@@ -291,11 +280,11 @@ add_row(PartSort *ps, uint32 r)
 	{
 		const SiftVec *v = &ps->ib.col[c];
 		PsCol	   *pc = &ps->col[c];
-		const bool	valid = batch_valid(v, r);
+		const uint8	state = sift_vec_state_at(v, r);
 
-		pc->valid[i] = valid;
+		pc->valid[i] = state;
 		memset(pc->data + i * pc->esz, 0, pc->esz);
-		if (!valid)
+		if (state != SIFT_CELL_STATE_VALUE)
 			continue;
 		memcpy(pc->data + i * pc->esz, (const char *) v->data + (size_t) r * pc->esz, pc->esz);
 		if (pc->type == SVEC_STRVIEW)
@@ -409,10 +398,9 @@ peers_of(PartSort *ps)
 				const PsCol *c = &ps->col[key->slot];
 				const uint32 a = ps->perm[i - 1],
 							b = ps->perm[i];
-				const bool	an = !cell_valid(c, a),
-							bn = !cell_valid(c, b);
+				const uint8	sa = c->valid[a];
 
-				if (an != bn || (!an && cell_cmp(c, a, b) != 0))
+				if (sa != c->valid[b] || (sa == SIFT_CELL_STATE_VALUE && cell_cmp(c, a, b) != 0))
 					no++;
 			}
 			ps->peer[k][i] = no;
@@ -426,16 +414,19 @@ gather_column(PartSort *ps, int c, uint32 from, uint16 m)
 	const PsCol *pc = &ps->col[c];
 	char	   *out = ps->obuf[c];
 	uint64	   *valid = ps->ovalid[c];
+	bool		has_nan = false;
 
 	memset(valid, 0, sizeof(ps->ovalid[c]));
+	memset(ps->onan[c], 0, sizeof(ps->onan[c]));
 	for (uint16 i = 0; i < m; i++)
 	{
 		const uint32 row = ps->perm[from + i];
 
 		memcpy(out + (size_t) i * pc->esz, pc->data + (size_t) row * pc->esz, pc->esz);
-		valid[i >> 6] |= (uint64) (pc->valid[row] != 0) << (i & 63);
+		sift_vec_state_put(valid, ps->onan[c], i, pc->valid[row]);
+		has_nan |= pc->valid[row] == SIFT_CELL_STATE_NAN;
 	}
-	ps->ovec[c] = (SiftVec) {.data = out,.valid = valid,.len = m,.all_valid = false,.dense = true,.type = pc->type,.scale = ps->spec.scale[c]};
+	ps->ovec[c] = (SiftVec) {.data = out,.valid = valid,.nan = has_nan ? ps->onan[c] : NULL,.len = m,.all_valid = false,.dense = true,.type = pc->type,.scale = ps->spec.scale[c]};
 }
 
 static void
