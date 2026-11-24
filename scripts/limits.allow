@@ -248,3 +248,4 @@ RC_MAX_LEAVES	the integer leaves the rescan cache holds for one scan (col/f2/sca
 SIFT_KJ_SLOTS	the record pages a block of the connect journal names (col/f2/f2_journal.h): a layout bound of the page, no count is refused
 SIFT_PAR_MAX_THREADS	the threads of the pool of a statement, the backend included (core/par/pool.h): the use is capped at max_parallel_workers_per_gather + 1; the rows are the same
 SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/f2_lock_ovf.h): a full stripe takes another chunk; no count is refused
+SIFT_VM_DIRTY_MAX_INTERVALS	the runs of dirty heap blocks a set of a visibility map pass keeps (col/f2/f2_vac_vm.h): past it the set skips nothing; no count is refused

@@ -17,13 +17,29 @@ sift_vm_dirty_all(SiftVmDirtySet *ds)
 	*ds = (SiftVmDirtySet) {.nheap_blocks = 0,.all_dirty = true};
 }
 
+/* The set that was built is let go of for the one that skips nothing */
+static void
+give_up(SiftVmDirtySet *ds)
+{
+	if (ds->intervals != NULL)
+		pfree(ds->intervals);
+	sift_vm_dirty_all(ds);
+}
+
 static void
 add_run(SiftVmDirtySet *ds, BlockNumber lo, BlockNumber hi)
 {
+	if (ds->all_dirty)
+		return;
 	if (ds->nintervals > 0 && ds->intervals[ds->nintervals - 1].hi + 1 == lo)
 		ds->intervals[ds->nintervals - 1].hi = hi;
 	else
 	{
+		if (ds->nintervals == SIFT_VM_DIRTY_MAX_INTERVALS)
+		{
+			give_up(ds);
+			return;
+		}
 		if (ds->nintervals == ds->cap)
 		{
 			ds->cap = ds->cap > 0 ? ds->cap * 2 : 64;
@@ -56,7 +72,8 @@ sift_vm_dirty_scan_words(SiftVmDirtySet *ds, BlockNumber base, const uint64 *wor
 void
 sift_vm_dirty_finish(SiftVmDirtySet *ds)
 {
-	ds->all_dirty = ds->dirty_blocks * 2 > ds->nheap_blocks;
+	if (ds->dirty_blocks * 2 > ds->nheap_blocks)
+		give_up(ds);
 }
 
 void
@@ -168,6 +185,8 @@ sift_vm_dirty_build(SiftVmDirtySet *ds, Relation heap, bool validating)
 			UnlockReleaseBuffer(buf);
 		}
 		sift_vm_dirty_scan_words(ds, base, words, nwords);
+		if (ds->all_dirty)
+			return;
 	}
 	sift_vm_dirty_finish(ds);
 }

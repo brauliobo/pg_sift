@@ -32,6 +32,7 @@ typedef struct SiftVmDirtySet
 #define SIFT_VM_BLOCKS_PER_WORD		32
 #define SIFT_VM_ALL_VISIBLE_BITS	UINT64CONST(0x5555555555555555)
 #define SIFT_VM_DIRTY_MAX_BLOOM_BLOCKS	64	/* a range with more dirty blocks than this is not tested against the bloom of a granule */
+#define SIFT_VM_DIRTY_MAX_INTERVALS		65536	/* a set of more runs than this (512 KB) is the set that skips nothing: no memory follows the size of the heap */
 
 /* The bloom bit of a heap block, as SEC_TID_INDEX keeps it (sift_tid_block_bit of an address in the block) */
 static inline uint64
@@ -49,7 +50,7 @@ extern void sift_vm_dirty_all(SiftVmDirtySet *ds);
 /* The words of the map for the blocks [base, base + 32 * nwords): the blocks whose all-visible bit is clear are added; base is a multiple of 32 */
 extern void sift_vm_dirty_scan_words(SiftVmDirtySet *ds, BlockNumber base, const uint64 *words, int nwords);
 
-/* The set is complete: more than half of the blocks dirty turns the interval search off */
+/* The set is complete: more than half of the blocks dirty turns the interval search off, and its runs are freed */
 extern void sift_vm_dirty_finish(SiftVmDirtySet *ds);
 
 extern void sift_vm_dirty_free(SiftVmDirtySet *ds);

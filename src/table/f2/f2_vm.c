@@ -19,6 +19,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/col_meta.h"
+#include "col/f2/f2_gbuf.h"
 #include "col/f2/l0_slab.h"
 #include "col/f2/pend_del.h"
 #include "col/f2/rowbuf.h"
@@ -85,21 +86,26 @@ typedef struct VmPlan
 	Spans		unfrozen;		/* the vblocks that are visible but not frozen */
 	uint64		floor;
 	uint64		limit;			/* the vblocks reserved so far */
+	Size		bytes;			/* what the spans and the descriptors they point to take */
+	Size		budget;			/* what they may take: past it the plan is not whole, and no bit is set on it */
+	bool		incomplete;
 } VmPlan;
 
 static void
-span_add(Spans *s, uint64 lo, uint64 hi, TransactionId xid, uint32 part_id, const SiftPartDesc *part)
+span_add(VmPlan *plan, Spans *s, uint64 lo, uint64 hi, TransactionId xid, uint32 part_id, const SiftPartDesc *part)
 {
 	if (s->n == s->cap)
 	{
-		const Size	bytes = sizeof(Span) * (Size) (s->cap ? s->cap * 2 : 64),
-					budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
+		const int	cap = s->cap ? s->cap * 2 : 64;
 
-		if (bytes > budget)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the visibility map pass needs %zu bytes for the spans of the parts, more than its memory budget of %zu bytes", bytes, budget),
-							errhint("Raise maintenance_work_mem.")));
-		s->cap = bytes / sizeof(Span);
-		s->v = s->v == NULL ? palloc(bytes) : repalloc(s->v, bytes);
+		plan->bytes += sizeof(Span) * (Size) (cap - s->cap);
+		if (plan->bytes > plan->budget)
+		{
+			plan->incomplete = true;
+			return;
+		}
+		s->cap = cap;
+		s->v = s->v == NULL ? palloc(sizeof(Span) * (Size) cap) : repalloc(s->v, sizeof(Span) * (Size) cap);
 	}
 	s->v[s->n++] = (Span) {lo, hi, xid, part_id, part};
 }
@@ -111,7 +117,7 @@ xid_of(FullTransactionId fx)
 }
 
 static void
-span_of_tids(Spans *s, const uint64 *tids, int n, size_t stride)
+span_of_tids(VmPlan *plan, const uint64 *tids, int n, size_t stride)
 {
 	uint64		lo = UINT64_MAX,
 				hi = 0;
@@ -124,30 +130,41 @@ span_of_tids(Spans *s, const uint64 *tids, int n, size_t stride)
 		hi = Max(hi, t >> 16);
 	}
 	if (n > 0)
-		span_add(s, lo, hi, InvalidTransactionId, 0, NULL);
+		span_add(plan, &plan->unfit, lo, hi, InvalidTransactionId, 0, NULL);
 }
 
-/* The vblocks of the rows a slab or the pending deletes of the partition name: they are not in a part yet, or still stand for a row of one */
+/* The vblocks of the rows a slab or the pending deletes of the partition name: they are not in a part yet, or still stand for a row of one. What they were read into goes when the span is made */
 static void
-unfit_unsettled(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Spans *unfit)
+unfit_unsettled(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, VmPlan *plan)
 {
+	MemoryContext keep = CurrentMemoryContext;
+	MemoryContext cx = sift_mem_allocset_create(keep, "sift vm unsettled");
 	BlockNumber *pages;
 	int			npages;
 
 	if (e->l0_slab_blk != InvalidBlockNumber)
 	{
-		SiftRowBuf *rb = sift_rowbuf_new(&store->spec);
+		SiftRowBuf *rb;
 
+		MemoryContextSwitchTo(cx);
+		rb = sift_rowbuf_new(&store->spec);
 		sift_l0_slab_read(rel, e->part_id, e->l0_slab_blk, rb, &store->spec, SnapshotAny, &pages, &npages);
-		span_of_tids(unfit, rb->tid, rb->n, sizeof(uint64));
+		MemoryContextSwitchTo(keep);
+		span_of_tids(plan, rb->tid, rb->n, sizeof(uint64));
+		sift_rowbuf_free(rb);
+		MemoryContextReset(cx);
 	}
 	if (e->pend_del_blk != InvalidBlockNumber)
 	{
 		int			n;
-		SiftPendDelRec *recs = sift_pend_del_read(rel, e->part_id, e->pend_del_blk, &n, &pages, &npages);
+		SiftPendDelRec *recs;
 
-		span_of_tids(unfit, &recs->tid, n, sizeof(SiftPendDelRec));
+		MemoryContextSwitchTo(cx);
+		recs = sift_pend_del_read(rel, e->part_id, e->pend_del_blk, &n, &pages, &npages);
+		MemoryContextSwitchTo(keep);
+		span_of_tids(plan, &recs->tid, n, sizeof(SiftPendDelRec));
 	}
+	MemoryContextDelete(cx);
 }
 
 static bool
@@ -167,7 +184,8 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 	SiftColDeltaAnchor chain = sift_manifest_read_col_delta(rel, e);
 	bool		deltas_settled = (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (FullTransactionIdIsValid(chain.max_xid) && FullTransactionIdPrecedes(chain.max_xid, oldest));
 
-	unfit_unsettled(rel, store, e, &plan->unfit);
+	plan->bytes += sizeof(SiftPartDesc) * (Size) np;
+	unfit_unsettled(rel, store, e, plan);
 	for (int i = 0; i < np; i++)
 	{
 		const SiftPartDesc *d = &parts[i];
@@ -179,12 +197,12 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 			(!FullTransactionIdIsValid(d->max_xid) || FullTransactionIdPrecedes(d->max_xid, freeze));
 
 		if (!part_clean(d, deltas_settled, oldest))
-			span_add(&plan->unfit, lo, hi, InvalidTransactionId, 0, NULL);
+			span_add(plan, &plan->unfit, lo, hi, InvalidTransactionId, 0, NULL);
 		else
 		{
-			span_add(&plan->clean, lo, hi, TransactionIdFollows(dv_xid, xid) ? dv_xid : xid, (uint32) e->part_id, d);
+			span_add(plan, &plan->clean, lo, hi, TransactionIdFollows(dv_xid, xid) ? dv_xid : xid, (uint32) e->part_id, d);
 			if (!frozen)
-				span_add(&plan->unfrozen, lo, hi, InvalidTransactionId, 0, NULL);
+				span_add(plan, &plan->unfrozen, lo, hi, InvalidTransactionId, 0, NULL);
 		}
 	}
 }
@@ -223,47 +241,72 @@ spans_mark(const Spans *s, uint64 *words, uint64 base, TransactionId *horizon)
 	}
 }
 
-/* The rows the clean parts that overlap the page of the map have in each of its vblocks */
-static void
-count_rows(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, uint16 *counts)
+/* The pages of the map whose vblocks are counted together: the rows the clean parts have in each of them, from one reading of the addresses of each part for all of them */
+typedef struct CountWindow
 {
-	memset(counts, 0, sizeof(uint16) * SIFT_VM_BLOCKS_PER_PAGE);
-	for (int i = 0; i < plan->clean.n; i++)
+	uint64		base;			/* the first vblock */
+	uint64		nvblocks;
+	uint16	   *counts;
+	bool		counted;
+} CountWindow;
+
+static void
+window_open(CountWindow *win, uint64 base)
+{
+	win->base = base;
+	win->counted = false;
+}
+
+/* The addresses of the granules of one part that lie in the window, and nothing else of them: no column is read */
+static void
+count_part(Relation rel, SiftF2Store *store, const Span *s, CountWindow *win, uint64 *tids)
+{
+	SiftF2PartPin *pin = sift_f2_pin_open(rel, store, s->part, s->part_id);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift vm granule");
+
+	PG_TRY();
 	{
-		const Span *s = &plan->clean.v[i];
-		SiftF2PartPin *pin;
-
-		if (s->hi < base || s->lo >= base + SIFT_VM_BLOCKS_PER_PAGE)
-			continue;
-		pin = sift_f2_pin_open(rel, store, s->part, s->part_id);
-		PG_TRY();
+		for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
 		{
-			for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
-			{
-				SiftF2GranuleBuf *gb = sift_f2_gbuf_load(rel, store, pin, g);
-				const uint64 *tids = sift_f2_gbuf_tids(gb);
+			const SiftGranuleDesc *gd = &pin->gdir[g];
+			MemoryContext old;
 
-				for (uint16 r = 0; r < gb->nrows; r++)
-					if ((tids[r] >> 16) >= base && (tids[r] >> 16) < base + SIFT_VM_BLOCKS_PER_PAGE)
-						counts[(tids[r] >> 16) - base]++;
-				sift_f2_gbuf_unref(gb);
-			}
+			if ((gd->tid_max >> 16) < win->base || (gd->tid_min >> 16) >= win->base + win->nvblocks)
+				continue;
+			old = MemoryContextSwitchTo(cx);
+			sift_f2_pin_granule_tids(rel, pin, g, tids);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(cx);
+			for (uint16 r = 0; r < gd->nrows; r++)
+				if ((tids[r] >> 16) >= win->base && (tids[r] >> 16) < win->base + win->nvblocks)
+					win->counts[(tids[r] >> 16) - win->base]++;
 		}
-		PG_FINALLY();
-		{
-			sift_f2_pin_release(pin);
-		}
-		PG_END_TRY();
 	}
+	PG_FINALLY();
+	{
+		sift_f2_pin_release(pin);
+	}
+	PG_END_TRY();
+	MemoryContextDelete(cx);
+}
+
+static void
+count_window(Relation rel, SiftF2Store *store, const VmPlan *plan, CountWindow *win)
+{
+	uint64	   *tids = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
+
+	memset(win->counts, 0, sizeof(uint16) * win->nvblocks);
+	for (int i = 0; i < plan->clean.n; i++)
+		if (plan->clean.v[i].hi >= win->base && plan->clean.v[i].lo < win->base + win->nvblocks)
+			count_part(rel, store, &plan->clean.v[i], win, tids);
+	pfree(tids);
+	win->counted = true;
 }
 
 /* The vblocks the plan lets be all visible but are not yet and are not full are taken out of visible (a hole in the addresses of a vblock may be an index entry of a row that is not there) */
 static void
-drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, uint64 *visible, const uint64 *set)
+drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, uint64 *visible, const uint64 *set, CountWindow *win)
 {
-	uint16	   *counts = palloc(sizeof(uint16) * SIFT_VM_BLOCKS_PER_PAGE);
-	bool		counted = false;
-
 	for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE; w++)
 	{
 		uint64		fresh = visible[w] & ~set[w];
@@ -272,19 +315,17 @@ drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, 
 		{
 			int			v = w * SIFT_VM_BLOCKS_PER_WORD + pg_rightmost_one_pos64(fresh) / BITS_PER_HEAPBLOCK;
 
-			if (!counted)
-				count_rows(rel, store, plan, base, counts);
-			counted = true;
-			if (counts[v] != SIFT_TBL_ROWS_PER_VBLOCK)
+			if (!win->counted)
+				count_window(rel, store, plan, win);
+			if (win->counts[base - win->base + v] != SIFT_TBL_ROWS_PER_VBLOCK)
 				visible[w] &= ~(UINT64CONST(1) << (v % SIFT_VM_BLOCKS_PER_WORD * BITS_PER_HEAPBLOCK));
 		}
 	}
-	pfree(counts);
 }
 
 /* The page of the map that covers base set to what the plan allows; the vblocks of the page that hold rows */
 static uint64
-set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base)
+set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, CountWindow *win)
 {
 	uint64		clean[SIFT_VM_WORDS_PER_PAGE] = {0},
 				unfit[SIFT_VM_WORDS_PER_PAGE] = {0},
@@ -318,7 +359,7 @@ set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base)
 		ReleaseBuffer(vmbuf);
 		vmbuf = InvalidBuffer;
 	}
-	drop_partial(rel, store, plan, base, clean, set);
+	drop_partial(rel, store, plan, base, clean, set, win);
 	for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE; w++)
 	{
 		uint64		frozen = clean[w] & ~unfrozen[w];
@@ -387,19 +428,37 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 	plan.limit = meta.next_vblock;
 	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, meta.next_vblock, &plan.floor) && plan.floor > 0)
 	{
+		const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
+		CountWindow win = {.nvblocks = Max(budget / 4 / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, 1) * SIFT_VM_BLOCKS_PER_PAGE};
+
 		cx = sift_mem_allocset_create(CurrentMemoryContext, "sift vm plan");
 		old = MemoryContextSwitchTo(cx);
+		plan.budget = budget - budget / 4;
+		win.counts = palloc(sizeof(uint16) * win.nvblocks);
 		mr = sift_manifest_read_range(rel, NULL, NULL);
-		for (int i = 0; i < mr.n; i++)
+		for (int i = 0; i < mr.n && !plan.incomplete; i++)
 			plan_partition(rel, store, &mr.entries[i], oldest, freeze, &plan);
-		if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TABLE_VM) == 0)
-			store_counts(rel, false, 0, 0, 0);
-		for (uint64 base = 0; base < plan.limit; base += SIFT_VM_BLOCKS_PER_PAGE)
-			total += set_page(rel, store, &plan, base);
+		if (plan.incomplete)
+			ereport(WARNING, (errmsg("the visibility map of \"%s\" is left as it was: the parts take more memory than this VACUUM has", RelationGetRelationName(rel)),
+							  errhint("Raise maintenance_work_mem.")));
+		else
+		{
+			if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TABLE_VM) == 0)
+				store_counts(rel, false, 0, 0, 0);
+			for (uint64 base = 0; base < plan.limit; base += SIFT_VM_BLOCKS_PER_PAGE)
+			{
+				if (base % win.nvblocks == 0)
+					window_open(&win, base);
+				total += set_page(rel, store, &plan, base, &win);
+			}
+		}
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(cx);
-		visibilitymap_count(rel, &all_visible, &all_frozen);
-		store_counts(rel, true, all_visible, all_frozen, total);
+		if (!plan.incomplete)
+		{
+			visibilitymap_count(rel, &all_visible, &all_frozen);
+			store_counts(rel, true, all_visible, all_frozen, total);
+		}
 	}
 	UnlockRelation(rel, ShareLock);
 }
