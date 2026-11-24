@@ -63,9 +63,9 @@ BEGIN
 	RETURN plan;
 END $$;
 
--- node: topn (SiftAggV6TopN reading the table, never an index) or NULL (no assertion)
+-- node: topn (SiftAggV6TopN or the Top-N of the rows scan reading the table, never an index) or NULL (no assertion)
 CREATE FUNCTION node_ok(plan text, node text) RETURNS boolean LANGUAGE sql AS $$
-	SELECT node IS NULL OR (plan LIKE '%Custom Scan (SiftAggV6TopN)%' AND plan LIKE '%Table: qt%' AND plan NOT LIKE '%Index:%') $$;
+	SELECT node IS NULL OR (plan ~ 'Custom Scan \(SiftAggV6(TopN)?\)' AND plan LIKE '%Table: qt%' AND plan NOT LIKE '%Index:%') $$;
 
 CREATE FUNCTION text_of(q text, ordered boolean) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE t text;
@@ -185,9 +185,9 @@ ANALYZE qx;
 ANALYZE qxh;
 SELECT text_of('SELECT id, cx FROM qx ORDER BY cx DESC, id LIMIT 40', true) = text_of('SELECT id, cx FROM qxh ORDER BY cx DESC, id LIMIT 40', true) AS bpchar_parity;
 SELECT text_of('SELECT id, cx FROM qx ORDER BY cx NULLS FIRST, id LIMIT 40 OFFSET 3', true) = text_of('SELECT id, cx FROM qxh ORDER BY cx NULLS FIRST, id LIMIT 40 OFFSET 3', true) AS bpchar_nulls_first_parity;
-SELECT plan_of('SELECT id, cx FROM qx ORDER BY cx, id LIMIT 8') LIKE '%SiftAggV6TopN%Table: qx%' AS bpchar_is_topn;
+SELECT plan_of('SELECT id, cx FROM qx ORDER BY cx, id LIMIT 8') ~ 'SiftAggV6(TopN)?\).*Table: qx' AS bpchar_is_topn;
 SELECT text_of('SELECT id, c4 FROM qx ORDER BY c4, id LIMIT 40', true) = text_of('SELECT id, c4 FROM qxh ORDER BY c4, id LIMIT 40', true) AS char4_parity;
-SELECT plan_of('SELECT id, c4 FROM qx ORDER BY c4, id LIMIT 8') LIKE '%SiftAggV6TopN%Table: qx%' AS char4_is_topn;
+SELECT plan_of('SELECT id, c4 FROM qx ORDER BY c4, id LIMIT 8') ~ 'SiftAggV6(TopN)?\).*Table: qx' AS char4_is_topn;
 
 DROP TABLE qt, qh, qx, qxh;
 DROP VIEW qbulk, qedge;

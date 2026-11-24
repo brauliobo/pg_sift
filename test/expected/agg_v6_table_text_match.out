@@ -24,7 +24,7 @@ DECLARE l text; n text := 'none';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP
 		IF l ~ 'Custom Scan \(SiftAggV6' THEN n := 'SiftAggV6'; END IF;
-		IF n = 'SiftAggV6' AND l ~ 'Text Index: tm_text' THEN n := 'SiftAggV6 text'; END IF;
+		IF n = 'SiftAggV6' AND l ~ 'Search: tm_text' THEN n := 'SiftAggV6 text'; END IF;
 	END LOOP;
 	RETURN n;
 END $$;
