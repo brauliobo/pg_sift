@@ -47,6 +47,7 @@
 #include "col/am.h"
 #include "col/scope.h"
 #include "col/keystore/keystore.h"
+#include "core/meta_peek.h"
 #include "core/restrict.h"
 #include "core/store.h"
 #include "core/catname.h"
@@ -202,7 +203,7 @@ adopt_by_name(Relation heap, const char *col)
 	return cand;
 }
 
-/* The metapage of a store that has none: a new store, or one a restored dump made (the relation without its pages) */
+/* The metapage of a store that has none: a new store, or one a restored dump made (the relation without its pages). The store has the layout of core/store.h whatever format new indexes have */
 static void
 init_store(Oid store)
 {
@@ -210,10 +211,20 @@ init_store(Oid store)
 
 	if (RelationGetNumberOfBlocks(rel) == 0)
 	{
-		SiftWriteTarget *wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
+		SiftWriteTarget *wt;
 
-		sift_store_init_meta_ex(wt, 0, 0, 0, SIFT_KEYSTORE_META_FLAG);
-		sift_wt_finish(wt);
+		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
+		PG_TRY();
+		{
+			wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
+			sift_store_init_meta_ex(wt, 0, 0, 0, SIFT_KEYSTORE_META_FLAG);
+			sift_wt_finish(wt);
+		}
+		PG_FINALLY();
+		{
+			sift_tbl_pop_new_format();
+		}
+		PG_END_TRY();
 	}
 	table_close(rel, NoLock);
 }
@@ -244,7 +255,16 @@ create_store(Relation heap, const char *col)
 
 	TupleDescInitEntry(td, 1, col, TEXTOID, -1, 0);
 	sift_tupdesc_finalize(td);
-	store = sift_create_matview(name, RelationGetNamespace(heap), heap->rd_rel->relowner, keystore_am(), td, heap->rd_rel->relpersistence);
+	sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
+	PG_TRY();
+	{
+		store = sift_create_matview(name, RelationGetNamespace(heap), heap->rd_rel->relowner, keystore_am(), td, heap->rd_rel->relpersistence);
+	}
+	PG_FINALLY();
+	{
+		sift_tbl_pop_new_format();
+	}
+	PG_END_TRY();
 	CommandCounterIncrement();
 	make_unpopulated_view(store, col);
 	depend_on(RelationRelationId, store, RelationGetRelid(heap), DEPENDENCY_AUTO);
