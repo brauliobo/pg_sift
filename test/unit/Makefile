@@ -16,7 +16,7 @@ FLOCK    = $(if $(shell command -v flock),flock /tmp/sift-perf.lock)
 OUT     ?= /tmp/sift-unit
 MODE    ?= plain
 
-TESTS   = test_arena par_core par_ring par_rows par_radix par_distinct par_derive par_tseries par_star par_unnest
+TESTS   = test_arena par_core par_ring par_rows par_radix par_distinct par_derive par_tseries par_star par_unnest par_win
 BENCHES = bench_arena bench_par_radix
 LIB_test_arena  = core/par/arena.c col/compress.c
 LIB_bench_arena = core/par/arena.c
@@ -38,6 +38,7 @@ LIB_par_star    = $(LIB_par_core) agg/v6/par/star.c agg/v6/par/wordsink.c agg/v6
 FX_par_star     = $(B)/par_host.o $(B)/par_pipe_stubs.o
 LIB_par_unnest  = $(LIB_par_core) agg/v6/par/unnest.c agg/v6/par/wordsink.c agg/v6/par/group.c agg/v6/par/group_key.c agg/v6/v6_group_cmp.c agg/v6/v6_distinct_u64.c agg/kern6_hash.c agg/v6/v6_pipe.c agg/v6/v6_star_exec.c agg/v6/v6_gather.c agg/v6/v6_unnest.c agg/v6/v6_unnest_pairs.c
 FX_par_unnest   = $(B)/par_host.o $(B)/par_pipe_stubs.o
+LIB_par_win     = core/par/arena.c agg/v6/par/winpart.c agg/v6/v6_datebin_win.c agg/v6/v6_tseries_fast.c agg/v6/v6_winx_var.c
 LIB_bench_par_radix = $(LIB_par_radix)
 FX_bench_par_radix  = $(B)/par_host.o
 
