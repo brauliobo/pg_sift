@@ -1,6 +1,7 @@
 -- The window rewrites of src/agg/latest.c and src/agg/window.c, one segment each, in a schema of its own: row_number() = 1 as DISTINCT ON, row_number() <= N as an array cut,
 -- and the tie order under lag() and lead(). Every query runs as the rewrite and as the normal plan (sift.enable_agg off). Replaces four tests of one fixture each.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 
 -- >>> agg_latest_per_group
 CREATE SCHEMA s1;
@@ -103,6 +104,7 @@ DROP FUNCTION first_of_tie(text);
 DROP TABLE events, groups;
 DROP FUNCTION window_why(text), check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
 RESET ALL;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 DROP SCHEMA s1 CASCADE;
 RESET client_min_messages;
@@ -227,6 +229,7 @@ DROP FUNCTION first_n_of_tie(text, int);
 DROP TABLE events, plain_events;
 DROP FUNCTION window_why(text), check_query(text,text), outcome(text,boolean), runs_in_scan(text), runq(text,boolean), pushed(text);
 RESET ALL;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 DROP SCHEMA s2 CASCADE;
 RESET client_min_messages;
@@ -351,6 +354,7 @@ SELECT count(*), min(rn), max(rn) FROM (SELECT id, grp, row_number() OVER (PARTI
 DROP FUNCTION shape_check(text);
 DROP TABLE shapes, wt, wtab, dim, sparse;
 RESET ALL;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 DROP SCHEMA s3 CASCADE;
 RESET client_min_messages;
@@ -409,6 +413,7 @@ DROP FUNCTION rows_of(text, bool), has_node(text, text);
 DROP VIEW periods;
 DROP TABLE events;
 RESET ALL;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 DROP SCHEMA s4 CASCADE;
 RESET client_min_messages;

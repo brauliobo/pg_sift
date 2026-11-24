@@ -2,6 +2,7 @@
 -- constant of the statement, as a parameter ($1) is: the scan asks it when it starts, in a condition and in an aggregate's argument. One that may give a second row (it raises) keeps the normal plan,
 -- which asks it only when a row reaches it. The rows (or the error) must be those of the normal plan, with no worker and with three.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE kinds (id int PRIMARY KEY, name text NOT NULL, grp int NOT NULL);

@@ -2,6 +2,7 @@
 -- not read (a btree on the leading columns) or not kept (the filter runs while loading), sift.agg_lookup_pushdown (docs/SET-FILTERS.md). Every statement is
 -- run with the pushdown, without it, and with sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET work_mem = '64MB';
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;

@@ -3,6 +3,7 @@
 -- a day in two periods is in two rows, a month nothing fell in is a row of NULLs, and a cache that starts again (a small hash memory spills the groups) does not
 -- keep the entries of the rows it forgot.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET work_mem = '256MB';
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;

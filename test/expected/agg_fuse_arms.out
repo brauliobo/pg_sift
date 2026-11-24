@@ -2,6 +2,7 @@
 -- of their own, with leaves only some of them read, and arms whose rows the index cannot store (read again from the heap once, not per arm).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

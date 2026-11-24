@@ -5,6 +5,7 @@
 -- three different rows. The index jo, built with sift.test_col_no_present, has the layout of a release before the leaf: the same answers from the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;

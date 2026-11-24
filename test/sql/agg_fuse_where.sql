@@ -3,6 +3,7 @@
 -- lookup keep their own scans (a filter of the chunk per set costs more than the shared decode saves).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

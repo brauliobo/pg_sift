@@ -2,6 +2,7 @@
 -- gives leaves a few of them, the scan opens only those, and a scan of all of them reads one after the other without keeping their pages pinned.
 -- Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE pm (id int, g int, d date NOT NULL, v int) PARTITION BY RANGE (d);

@@ -4,6 +4,7 @@
 -- order: rounded, as the sum is not the normal plan's to the last digit), a partition of a partition and an expression as the partition key keep the
 -- single table, and the answers do not change.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

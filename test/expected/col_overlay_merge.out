@@ -2,6 +2,7 @@
 -- each of them. The rule that weighs the units a merge of the small overlays would spare the requests the index has had (idx_scan, which the aggregate scan counts too)
 -- against the rows the merge rewrites says when it is due, and the merge takes the overlays alone: the partition stays.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_col_partition_kb = 400;

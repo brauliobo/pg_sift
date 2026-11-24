@@ -4,6 +4,7 @@
 -- additions); `pushed` says whether the plan is a Custom Scan (SiftAgg).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 -- the element cubes of the pre-aggregates answer the grouped element queries without a scan; the chunks are the point here

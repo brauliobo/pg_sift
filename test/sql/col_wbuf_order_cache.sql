@@ -5,6 +5,7 @@
 -- VACUUM (the set is dropped), a cursor that holds the order while the buffer grows and other orders push it out of the cache, an extension that fails, and a promotion. The last section is a LATERAL top-N
 -- for 200 groups over a buffer of thousands of rows: the rows are put in groups once, so a full read of the buffer is made three times, not for every group.
 CREATE EXTENSION pg_sift_test CASCADE;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

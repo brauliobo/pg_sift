@@ -6,6 +6,7 @@
 -- an aggregate in the condition, a volatile function, grouping sets, no GROUP BY) keeps its HAVING and gives the same rows; a HAVING of several conditions moves the ones of the rows only.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE hv_kinds (id int PRIMARY KEY, enabled bool, grp int);

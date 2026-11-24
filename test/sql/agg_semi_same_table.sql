@@ -5,6 +5,7 @@
 -- and agg_semi_same_table_1.out is the output of 18.7); one EXISTS, an anti join and a semi join of two tables are pushed down as before. Every query runs with and without the scan:
 -- the rows must be the same.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;

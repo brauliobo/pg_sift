@@ -5,6 +5,7 @@
 -- is, and after the VACUUM that flags the old ones.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

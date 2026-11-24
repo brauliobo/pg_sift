@@ -2,6 +2,7 @@
 -- the rows are those of the normal plan for integer, date, timestamp and float8 columns, NULL values, children whose parent is gone or has no key, groups with no tuple, ties, and a NaN and
 -- an infinity among the floats.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 
 SET client_min_messages = warning;
 SET sift.agg_preagg = off;

@@ -2,6 +2,7 @@
 -- layout (docs/AGG.md, "Partitioned tables"). Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 

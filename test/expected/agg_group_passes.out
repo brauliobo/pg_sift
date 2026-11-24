@@ -2,6 +2,7 @@
 -- normal plan's, for every kind of key, with NULL keys and values, a group much larger than the others, shares with no row, and a pass that outgrows hash
 -- memory itself (work_mem 64kB, hash_mem_multiplier 1) and spills.
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '120s';

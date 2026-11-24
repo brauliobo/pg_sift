@@ -1,6 +1,7 @@
 -- x = ANY (ARRAY(SELECT ..)): the keys of an uncorrelated ARRAY sub-select are known when the scan starts, and then they are the constants of an IN list: the point directory of the column
 -- hands the scan the rows of the keys, whatever the heap, where a test of every row of every unit answered the same. The answers are the table's (a copy without an index is the oracle).
 CREATE EXTENSION pg_sift;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 
 SELECT bad, paged > 0 AS paged, hashed > 0 AS hashed, up > 0 AS up, down > 0 AS down FROM sift._test_intids(7, 400);
 
