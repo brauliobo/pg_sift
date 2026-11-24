@@ -911,3 +911,5 @@ core/xid_cache.h
 table/
 table/v1/v1_tbl_ops.c
 table/v1/v1_tbl_ops.h
+col/f2/f2_v6_scan.h
+col/f2/f2_v6_scan_fill.c
