@@ -53,7 +53,7 @@ CREATE TABLE pp_q (n int, q text, k int);
 INSERT INTO pp_q VALUES (1, 'fox quick', 1), (2, 'fox quick', 10), (3, 'fox quick', 200), (4, 'fox brown', 25), (5, 'fox', 50), (6, 'quick OR brown', 40), (7, 'fox AND NOT quick', 15),
 	(8, 'w5', 30), (9, 'fox w7 OR quick w7', 20), (10, 'nomatchword', 10), (11, 'fox quick', 20000);
 SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
-SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores, cardinality(pp_scores(q, k, true)) AS rows FROM pp_q ORDER BY n;
+SELECT n, pp_scores(q, k, true) IS NOT DISTINCT FROM pp_scores(q, k, false) AS same_scores, cardinality(pp_scores(q, k, true)) AS rows FROM pp_q ORDER BY n;
 SELECT value >= 2 * 10 AS searches_started_above_a_floor FROM sift._test_read_stats() WHERE key = 'floor_searches';
 
 \echo -- the rows are the rows of the scores: each returned row scores what the serial plan says
@@ -78,11 +78,11 @@ INSERT INTO pp SELECT 40 + i, 0, 'fox fox fox fox fox fox fox fox quick' FROM ge
 INSERT INTO pp SELECT 10040 + i, 0, 'fox quick fox quick' FROM generate_series(1, 6) i;
 DELETE FROM pp WHERE id % 13 = 0;
 UPDATE pp SET body = body || ' brown' WHERE id % 29 = 0;
-SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores FROM pp_q ORDER BY n;
+SELECT n, pp_scores(q, k, true) IS NOT DISTINCT FROM pp_scores(q, k, false) AS same_scores FROM pp_q ORDER BY n;
 BEGIN;
 DELETE FROM pp WHERE id BETWEEN 1 AND 20000 AND id % 2 = 0;
 INSERT INTO pp SELECT 20000 + i, 1, 'fox fox quick brown' FROM generate_series(1, 9) i;
-SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores FROM pp_q WHERE n IN (2, 3, 5, 11) ORDER BY n;
+SELECT n, pp_scores(q, k, true) IS NOT DISTINCT FROM pp_scores(q, k, false) AS same_scores FROM pp_q WHERE n IN (2, 3, 5, 11) ORDER BY n;
 ROLLBACK;
 
 \echo -- no floor: ties by key under an incremental sort, no limit, one partition, and the setting off

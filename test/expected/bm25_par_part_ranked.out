@@ -62,7 +62,7 @@ SELECT count(*) > 0 AS reset FROM sift._test_read_stats(true);
  t
 (1 row)
 
-SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores, cardinality(pp_scores(q, k, true)) AS rows FROM pp_q ORDER BY n;
+SELECT n, pp_scores(q, k, true) IS NOT DISTINCT FROM pp_scores(q, k, false) AS same_scores, cardinality(pp_scores(q, k, true)) AS rows FROM pp_q ORDER BY n;
  n  | same_scores | rows 
 ----+-------------+------
   1 | t           |    1
@@ -74,7 +74,7 @@ SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores, cardina
   7 | t           |   15
   8 | t           |   30
   9 | t           |   20
- 10 |             |     
+ 10 | t           |     
  11 | t           | 2727
 (11 rows)
 
@@ -127,7 +127,7 @@ INSERT INTO pp SELECT 40 + i, 0, 'fox fox fox fox fox fox fox fox quick' FROM ge
 INSERT INTO pp SELECT 10040 + i, 0, 'fox quick fox quick' FROM generate_series(1, 6) i;
 DELETE FROM pp WHERE id % 13 = 0;
 UPDATE pp SET body = body || ' brown' WHERE id % 29 = 0;
-SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores FROM pp_q ORDER BY n;
+SELECT n, pp_scores(q, k, true) IS NOT DISTINCT FROM pp_scores(q, k, false) AS same_scores FROM pp_q ORDER BY n;
  n  | same_scores 
 ----+-------------
   1 | t
@@ -139,14 +139,14 @@ SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores FROM pp_
   7 | t
   8 | t
   9 | t
- 10 | 
+ 10 | t
  11 | t
 (11 rows)
 
 BEGIN;
 DELETE FROM pp WHERE id BETWEEN 1 AND 20000 AND id % 2 = 0;
 INSERT INTO pp SELECT 20000 + i, 1, 'fox fox quick brown' FROM generate_series(1, 9) i;
-SELECT n, pp_scores(q, k, true) = pp_scores(q, k, false) AS same_scores FROM pp_q WHERE n IN (2, 3, 5, 11) ORDER BY n;
+SELECT n, pp_scores(q, k, true) IS NOT DISTINCT FROM pp_scores(q, k, false) AS same_scores FROM pp_q WHERE n IN (2, 3, 5, 11) ORDER BY n;
  n  | same_scores 
 ----+-------------
   2 | t
