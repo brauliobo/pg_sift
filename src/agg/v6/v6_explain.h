@@ -19,9 +19,7 @@ extern void sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es)
 /* Lookup Joins: the relations the plans of the dimensions of a star join read */
 extern void sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es);
 
-/* Top-N: the sort keys and the limit of the groups (the spec of the aggregate scan, when it gives the best groups in order) or of the rows (the Top-N scan, once the tournament has a limit) */
+/* Top-N: the sort keys and the limit of the groups (the spec of the aggregate scan, when it gives the best groups in order) */
 extern void sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es);
-struct SiftV6TopNSpec;
-extern void sift_v6_explain_topn_rows(const struct SiftV6TopNSpec *spec, ExplainState *es);
 
 #endif							/* SIFT_AGG_V6_EXPLAIN_H */

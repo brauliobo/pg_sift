@@ -228,24 +228,3 @@ sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es)
 	}
 	explain_topn(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), keys, spec->ntopk, psprintf("%u", spec->topk), es);
 }
-
-/* the LIMIT of the Top-N scan: an int8 Const (NULL: all) or an external parameter */
-static char *
-limit_text(const Node *limit)
-{
-	const Const *c = (const Const *) limit;
-
-	if (!IsA(limit, Const))
-		return deparse_expression((Node *) limit, NIL, false, false);
-	return c->constisnull ? "ALL" : psprintf(INT64_FORMAT, DatumGetInt64(c->constvalue));
-}
-
-void
-sift_v6_explain_topn_rows(const SiftV6TopNSpec *spec, ExplainState *es)
-{
-	TopNKey		keys[SIFT_TOURN_MAX_KEYS];
-
-	for (int i = 0; i < spec->nkeys; i++)
-		keys[i] = (TopNKey) {.col = spec->key[i],.desc = spec->order[i].desc,.nulls_first = spec->order[i].nulls_first};
-	explain_topn(spec->indexoid, false, keys, spec->nkeys, limit_text(spec->limit), es);
-}
