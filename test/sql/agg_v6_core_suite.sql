@@ -165,6 +165,7 @@ SET search_path = s6, public;
 -- and the groups equal those of the standard plan (sift.enable_agg = off), also after deletes, updates and a transaction's own changes
 SET client_min_messages = warning;
 SET sift.test_create_format1 = off;
+SET sift.enable_scan = off;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ti (id int PRIMARY KEY, tenant int NOT NULL, region int NOT NULL, amount int NOT NULL, body text NOT NULL);
