@@ -39,10 +39,12 @@ is_sift(Relation index)
 static void
 bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
-	SiftSegment *seg = sift_seg_open(index, e, CurrentMemoryContext);
+	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift bulkdelete segment");
+	SiftSegment *seg = sift_seg_open(index, e, segcx);
 
 	sift_seg_bulkdelete(seg, cb, cb_state, stats);
 	sift_seg_close(seg);
+	MemoryContextDelete(segcx);
 }
 
 static void
