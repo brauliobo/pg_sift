@@ -288,5 +288,14 @@ FROM pg_amop ao JOIN pg_opfamily f ON f.oid = ao.amopfamily JOIN pg_am a ON a.oi
 WHERE ao.amopstrategy = 3 AND f.opfname <> 'col_ops' AND f.opfname <> 'col_jsonb_ops' AND f.opfname <> 'col_array_ops'
 GROUP BY f.opfname ORDER BY f.opfname;
 
-DROP TABLE ops_t, oc_t, dup_t, key_n, key_t, key_ab, big_t, pc_t, old_t, f1_t, tbl_t;
+-- ON CONFLICT of many rows, some of keys that exist: each key is looked up in the registry and in the partitions that can hold it
+CREATE TABLE oc_many (id int, v int DEFAULT 1);
+CREATE UNIQUE INDEX oc_many_i ON oc_many USING sift_col (id);
+INSERT INTO oc_many SELECT g FROM generate_series(1, 200) g;
+INSERT INTO oc_many SELECT g FROM generate_series(101, 400) g ON CONFLICT (id) DO NOTHING;
+INSERT INTO oc_many SELECT g FROM generate_series(1, 300) g ON CONFLICT (id) DO UPDATE SET v = oc_many.v + 1;
+SELECT count(*) AS rows, count(DISTINCT id) AS keys, sum(v) AS total FROM oc_many;
+SELECT v, count(*) FROM oc_many GROUP BY v ORDER BY v;
+
+DROP TABLE ops_t, oc_t, dup_t, key_n, key_t, key_ab, big_t, pc_t, old_t, f1_t, tbl_t, oc_many;
 DROP EXTENSION pg_sift;

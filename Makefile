@@ -467,6 +467,7 @@ TESTING_REGRESS += col_track_own_statement_reads
 TESTING_REGRESS += col_track_rebaseline
 TESTING_REGRESS += col_track_update_skip
 TESTING_REGRESS += col_track_updates_supersede
+TESTING_REGRESS += col_unique_stage
 TESTING_REGRESS += col_unit_floor
 TESTING_REGRESS += col_unit_of_block
 TESTING_REGRESS += col_vacuum_parallel_keys

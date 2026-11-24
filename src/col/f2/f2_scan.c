@@ -22,6 +22,7 @@
 #include "col/f2/f2_part_pin_scan.h"
 #include "col/f2/f2_point_dir.h"
 #include "col/f2/f2_scope_route.h"
+#include "col/f2/f2_unique.h"
 #include "col/f2/f2_view.h"
 #include "col/granule/cfilt_str_simd.h"
 #include "col/skip/skip_index.h"
@@ -872,6 +873,22 @@ collect_unit(F2Scan *s, Relation rel, const F2Unit *u, void *arg)
 		scan_part(rel, s, c->f, c->schema, u->e, u->d, u->px, c->snap);
 }
 
+/* What the scan reads of the rows the stage of this transaction holds: the check of one key of a unique index finds them in the registry, any other scan reads them from the partitions, to which they are flushed */
+static void
+stage_for_scan(IndexScanDesc scan, F2Scan *s, const SiftColSchema *schema)
+{
+	SiftUniqLookup lookup;
+
+	if (sift_f2_unique_lookup(scan, s->cx, &lookup))
+	{
+		s->pinned_plan = lookup.plan;
+		for (int i = 0; i < lookup.hits.n; i++)
+			emit(s, schema, sift_f2_tid(&lookup.hits.hit[i].tid), V_MAYBE, NULL, 0);
+	}
+	else if (sift_stage_has_pending(scan->indexRelation))
+		sift_stage_flush(scan->indexRelation);
+}
+
 void
 sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s)
 {
@@ -883,8 +900,8 @@ sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s)
 	s->collected = true;
 	if (!s->possible)
 		return;
-	if (s->pinned_plan == NULL && !RecoveryInProgress() && sift_stage_has_pending(rel))
-		sift_stage_flush(rel);
+	if (s->pinned_plan == NULL && !RecoveryInProgress())
+		stage_for_scan(scan, s, c.schema);
 	staged = sift_stage_dead(rel, c.snap, &nstaged);
 	if (!s->compiled)
 		compile_preds(s, c.schema);

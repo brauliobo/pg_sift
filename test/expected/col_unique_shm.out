@@ -472,5 +472,24 @@ GROUP BY f.opfname ORDER BY f.opfname;
  col_uuid_ops        |     1 |        1 | t
 (10 rows)
 
-DROP TABLE ops_t, oc_t, dup_t, key_n, key_t, key_ab, big_t, pc_t, old_t, f1_t, tbl_t;
+-- ON CONFLICT of many rows, some of keys that exist: each key is looked up in the registry and in the partitions that can hold it
+CREATE TABLE oc_many (id int, v int DEFAULT 1);
+CREATE UNIQUE INDEX oc_many_i ON oc_many USING sift_col (id);
+INSERT INTO oc_many SELECT g FROM generate_series(1, 200) g;
+INSERT INTO oc_many SELECT g FROM generate_series(101, 400) g ON CONFLICT (id) DO NOTHING;
+INSERT INTO oc_many SELECT g FROM generate_series(1, 300) g ON CONFLICT (id) DO UPDATE SET v = oc_many.v + 1;
+SELECT count(*) AS rows, count(DISTINCT id) AS keys, sum(v) AS total FROM oc_many;
+ rows | keys | total 
+------+------+-------
+  400 |  400 |   700
+(1 row)
+
+SELECT v, count(*) FROM oc_many GROUP BY v ORDER BY v;
+ v | count 
+---+-------
+ 1 |   100
+ 2 |   300
+(2 rows)
+
+DROP TABLE ops_t, oc_t, dup_t, key_n, key_t, key_ab, big_t, pc_t, old_t, f1_t, tbl_t, oc_many;
 DROP EXTENSION pg_sift;
