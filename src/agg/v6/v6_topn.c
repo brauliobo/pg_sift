@@ -35,9 +35,9 @@
 
 /* the key types whose int64 is in the order of the type: integers and dates and timestamps as they are, float8 by sift_f64_order_i64, a numeric of at most 18 digits as its scaled integer */
 static bool
-key_type_ok(const SiftV6InCol *c)
+int_order_type(Oid typid)
 {
-	switch (c->typid)
+	switch (typid)
 	{
 		case INT2OID:
 		case INT4OID:
@@ -47,8 +47,6 @@ key_type_ok(const SiftV6InCol *c)
 		case TIMESTAMPTZOID:
 		case FLOAT8OID:
 			return true;
-		case NUMERICOID:
-			return c->type == SVEC_NUM64;
 		default:
 			return false;
 	}
@@ -106,6 +104,29 @@ void
 sift_v6_topn_explain(ExplainState *es, const char *desc, const char *limit)
 {
 	ExplainPropertyText("Top-N", psprintf("%s (limit %s)", desc, limit), es);
+}
+
+/* the key types a sift_table orders as the rows of its table: the sort of its winners is the query's own, whose comparator and collation order the stored value exactly */
+static bool
+table_key_type_ok(Oid typid)
+{
+	switch (typid)
+	{
+		case UUIDOID:
+		case BYTEAOID:
+		case BPCHAROID:
+		case NAMEOID:
+		case NUMERICOID:
+			return true;
+		default:
+			return int_order_type(typid);
+	}
+}
+
+static bool
+index_key_type_ok(const SiftV6InCol *c)
+{
+	return c->typid == NUMERICOID ? c->type == SVEC_NUM64 : int_order_type(c->typid);
 }
 
 /* A count the query gives as an int8 constant or an external parameter (NULL: not given) */
@@ -200,6 +221,23 @@ typedef struct TopNPlan
 	List	   *quals;
 } TopNPlan;
 
+/* the key of a Var: of a table the column to fetch, of an index the column of the input the tournament reads */
+static bool
+key_col(TopNPlan *p, const Var *v, SiftV6Col *key)
+{
+	int			slot;
+
+	if (p->spec.is_table)
+	{
+		*key = (SiftV6Col) {.attno = v->varattno,.typid = v->vartype};
+		return table_key_type_ok(v->vartype);
+	}
+	if ((slot = sift_v6_input_add_var(&p->in, v)) < 0 || !index_key_type_ok(&p->in.col[slot]))
+		return false;
+	*key = (SiftV6Col) {.attno = p->in.col[slot].attno,.typid = p->in.col[slot].typid,.scale = p->in.col[slot].scale};
+	return true;
+}
+
 static bool
 compile_keys(TopNPlan *p)
 {
@@ -210,12 +248,10 @@ compile_keys(TopNPlan *p)
 		const Node *e = (Node *) get_sortgroupclause_expr(sgc, q->targetList);
 		SiftV6TopNSpec *s = &p->spec;
 		bool		reverse;
-		int			slot;
 
-		if (!IsA(e, Var) || ((Var *) e)->varno != p->rel->relid || (slot = sift_v6_input_add_var(&p->in, (Var *) e)) < 0 || !key_type_ok(&p->in.col[slot]) ||
-			!OidIsValid(get_equality_op_for_ordering_op(sgc->sortop, &reverse)))
+		if (!IsA(e, Var) || ((Var *) e)->varno != p->rel->relid || !OidIsValid(get_equality_op_for_ordering_op(sgc->sortop, &reverse)) ||
+			!key_col(p, (Var *) e, &s->key[s->nkeys]))
 			return false;
-		s->key[s->nkeys] = (SiftV6Col) {.attno = p->in.col[slot].attno,.typid = p->in.col[slot].typid,.scale = p->in.col[slot].scale};
 		s->order[s->nkeys] = (SiftTournKey) {.desc = reverse,.nulls_first = sgc->nulls_first};
 		s->sortop[s->nkeys] = sgc->sortop;
 		s->collation[s->nkeys] = exprCollation(e);

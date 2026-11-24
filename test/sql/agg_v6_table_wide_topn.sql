@@ -1,0 +1,195 @@
+-- ORDER BY .. LIMIT over the uuid, bytea, char(n), name and numeric columns of a sift_table (a numeric that has no scaled integer leaf: no precision, or over 18 digits) is a SiftAggV6TopN scan:
+-- the rows that pass the quals go to a sort bounded by the limit, ordered by the comparator and the collation of the query, so every key is ordered exactly as PostgreSQL orders it. Every check
+-- runs the statement on the table and on a heap twin holding the same rows and compares the rows as text in their order (a unique id ends each ORDER BY, so the order is one; WITH TIES
+-- compares the rows as a set), and asserts the node that read the table.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE TABLE qt (id int PRIMARY KEY, g int, u uuid, b bytea, c char(6), n name, nm numeric, m30 numeric(30,5), m12 numeric(12,2)) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE qh (LIKE qt INCLUDING ALL);
+
+CREATE VIEW qbulk AS SELECT g AS id, g % 5 AS g,
+	CASE WHEN g % 31 = 0 THEN NULL ELSE ('00000000-0000-4000-8000-' || lpad(to_hex(g % 60), 12, '0'))::uuid END AS u,
+	CASE WHEN g % 29 = 0 THEN NULL ELSE decode(lpad(to_hex(g % 40), 2, '0') || CASE WHEN g % 3 = 0 THEN '00' WHEN g % 3 = 1 THEN '20' ELSE '' END, 'hex') END AS b,
+	CASE WHEN g % 19 = 0 THEN NULL ELSE ('c' || (g % 7)) || repeat(' ', g % 3) END AS c,
+	CASE WHEN g % 23 = 0 THEN NULL ELSE ('name' || (g % 9))::name END AS n,
+	CASE WHEN g % 17 = 0 THEN NULL ELSE ((g % 11)::numeric / 4) * (CASE WHEN g % 2 = 0 THEN 1.0 ELSE 1.00 END) END AS nm,
+	CASE WHEN g % 17 = 0 THEN NULL ELSE ((g % 13)::numeric / 8) END AS m30,
+	CASE WHEN g % 43 = 0 THEN NULL ELSE ((g % 300)::numeric / 7) END AS m12
+FROM generate_series(1, 6000) g;
+
+CREATE VIEW qedge AS
+SELECT 100000 + i AS id, 9 AS g, u, b, c, n, nm, m30, 1.5::numeric(12,2) AS m12
+FROM (VALUES
+	(1, '00000000-0000-0000-0000-000000000000'::uuid, '\x'::bytea, ''::char(6), ''::name, '1.0'::numeric, 1.5::numeric(30,5)),
+	(2, 'ffffffff-ffff-ffff-ffff-ffffffffffff', '\x00', '      ', 'a', '1.00', 1.50),
+	(3, '00000000-0000-0000-0000-000000000001', '\x20', 'a', 'a ', '1.000', 1.500),
+	(4, '00000000-0000-0000-0000-000000000100', '\x2000', 'a ', ' a', '0', 0),
+	(5, '00000000-0000-0000-0100-000000000000', '\x0020', 'a    ', 'a  ', '0.0', 0.00001),
+	(6, '01000000-0000-0000-0000-000000000000', '\x00000000', 'a b', 'nameé', '-0', 123456789012345678901234.5),
+	(7, '00000000-0000-0000-0000-0000000000ff', '\x0000000000000000000000000000', ' a', repeat('x', 63), '-0.00', 123456789012345678901234.50),
+	(8, NULL, NULL, NULL, NULL, 'NaN', NULL),
+	(9, '00000000-0000-0000-0000-000000000000', '\xff', 'é', 'N', 'NaN', 'NaN'),
+	(10, 'ffffffff-ffff-ffff-ffff-fffffffffffe', '\xffff', 'é  ', 'n ', 'Infinity', NULL),
+	(11, 'ffffffff-ffff-ffff-ffff-fffffffffffe', '\xfffe', 'abcdef', 'n', '-Infinity', NULL),
+	(12, '00000000-0000-0000-0000-000000000002', '\x20202020202020202020202020202020', 'abcde', 'n' || chr(9), '1234567890123456789012345678901234567890.123456789012345678901234567890', -1.5),
+	(13, '00000000-0000-0000-0000-000000000003', '\x01', 'a' || chr(1), 'n1', '1234567890123456789012345678901234567890.12345678901234567890123456789', -1.50),
+	(14, '00000000-0000-0000-0000-000000000004', '\x0102030405060708090a0b0c0d0e0f10', 'a' || chr(9), 'n10', '0.0000000000000000000000000001', 99999999999999999999999.99999),
+	(15, '00000000-0000-0000-0000-000000000005', '\x0102030405060708090a0b0c0d0e0f11', 'a b ', 'n1 ', '1E+30', -99999999999999999999999.99999),
+	(16, '00000000-0000-0000-0000-000000000005', '\x0102030405060708090a0b0c0d0e0f11', 'a b', 'n1', '1000000000000000000000000000000', 0.00000),
+	(17, '00000000-0000-0000-0000-000000000006', '\x0102030405060708090a0b0c0d0e0f12', 'c1', 'name1', '100', 100),
+	(18, '00000000-0000-0000-0000-000000000006', '\x0102030405060708090a0b0c0d0e0f12', 'c1 ', 'name1', '100.0', 100.0),
+	(19, NULL, NULL, NULL, NULL, '1.5', NULL),
+	(20, NULL, NULL, NULL, NULL, '1.50', NULL)
+) AS v(i, u, b, c, n, nm, m30)
+UNION ALL
+SELECT 100100, 9, NULL, NULL, NULL, NULL, repeat('9', 5000)::numeric, NULL, NULL
+UNION ALL
+SELECT 100101, 9, NULL, NULL, NULL, NULL, (repeat('9', 5000) || '.0')::numeric, NULL, NULL;
+
+INSERT INTO qt SELECT * FROM qbulk UNION ALL SELECT * FROM qedge;
+INSERT INTO qh SELECT * FROM qbulk UNION ALL SELECT * FROM qedge;
+SELECT sift.table_maintain('qt') IS NOT NULL AS maintained;
+ANALYZE qt;
+ANALYZE qh;
+
+CREATE FUNCTION plan_of(sql text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; plan text := '';
+BEGIN
+	FOR r IN EXECUTE 'EXPLAIN (COSTS off) ' || sql LOOP plan := plan || r || E'\n'; END LOOP;
+	RETURN plan;
+END $$;
+
+-- node: topn (SiftAggV6TopN reading the table, never an index) or NULL (no assertion)
+CREATE FUNCTION node_ok(plan text, node text) RETURNS boolean LANGUAGE sql AS $$
+	SELECT node IS NULL OR (plan LIKE '%Custom Scan (SiftAggV6TopN)%' AND plan LIKE '%Table: qt%' AND plan NOT LIKE '%Index:%') $$;
+
+CREATE FUNCTION text_of(q text, ordered boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE t text;
+BEGIN
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' %s), '''') FROM (%s) x', CASE WHEN ordered THEN '' ELSE 'ORDER BY x::text' END, q) INTO t;
+	RETURN t;
+END $$;
+
+CREATE FUNCTION same(name text, q text, node text, ordered boolean DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := plan_of(replace(q, '@T@', 'qt'));
+BEGIN
+	IF text_of(replace(q, '@T@', 'qt'), ordered) IS DISTINCT FROM text_of(replace(q, '@T@', 'qh'), ordered) THEN
+		RAISE EXCEPTION 'FAILED %: the rows of the table are not those of the heap twin', name;
+	END IF;
+	IF NOT node_ok(plan, node) THEN RAISE EXCEPTION 'FAILED %: expected the % node: %', name, node, plan; END IF;
+	RETURN name || ': ok';
+END $$;
+
+-- the prepared statements <stmt>_t (on the table) and <stmt>_h (on the twin), run with the arguments
+CREATE FUNCTION same_exec(name text, stmt text, args text, node text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE t text; h text; plan text := plan_of(format('EXECUTE %s_t(%s)', stmt, args));
+BEGIN
+	EXECUTE format('CREATE TEMP TABLE got AS EXECUTE %s_t(%s)', stmt, args);
+	EXECUTE format('CREATE TEMP TABLE want AS EXECUTE %s_h(%s)', stmt, args);
+	t := text_of('SELECT * FROM got', true);
+	h := text_of('SELECT * FROM want', true);
+	DROP TABLE got, want;
+	IF t IS DISTINCT FROM h THEN RAISE EXCEPTION 'FAILED %: the rows of the table are not those of the heap twin', name; END IF;
+	IF NOT node_ok(plan, node) THEN RAISE EXCEPTION 'FAILED %: expected the % node: %', name, node, plan; END IF;
+	RETURN name || ': ok';
+END $$;
+
+\echo == one key per type, both directions, every null placement
+SELECT same('n asc', 'SELECT id, n FROM @T@ ORDER BY n, id LIMIT 7', 'topn');
+SELECT same('n desc', 'SELECT id, n FROM @T@ ORDER BY n DESC, id DESC LIMIT 11 OFFSET 5', 'topn');
+SELECT same('n nulls first', 'SELECT id, n FROM @T@ ORDER BY n NULLS FIRST, id LIMIT 9', 'topn');
+SELECT same('n desc nulls last', 'SELECT id, n FROM @T@ ORDER BY n DESC NULLS LAST, id LIMIT 9', 'topn');
+SELECT same('u asc', 'SELECT id, u FROM @T@ ORDER BY u, id LIMIT 13', 'topn');
+SELECT same('u desc', 'SELECT id, u FROM @T@ ORDER BY u DESC, id LIMIT 13 OFFSET 2', 'topn');
+SELECT same('u nulls first', 'SELECT id, u FROM @T@ ORDER BY u NULLS FIRST, id LIMIT 6', 'topn');
+SELECT same('b asc', 'SELECT id, b FROM @T@ ORDER BY b, id LIMIT 15', 'topn');
+SELECT same('b desc nulls last', 'SELECT id, b FROM @T@ ORDER BY b DESC NULLS LAST, id LIMIT 15', 'topn');
+SELECT same('b nulls first', 'SELECT id, b FROM @T@ ORDER BY b NULLS FIRST, id LIMIT 8 OFFSET 20', 'topn');
+SELECT same('c asc', 'SELECT id, c FROM @T@ ORDER BY c, id LIMIT 12', 'topn');
+SELECT same('c desc', 'SELECT id, c FROM @T@ ORDER BY c DESC, id LIMIT 12', 'topn');
+SELECT same('c nulls first', 'SELECT id, c FROM @T@ ORDER BY c NULLS FIRST, id DESC LIMIT 12', 'topn');
+SELECT same('nm asc', 'SELECT id, nm FROM @T@ ORDER BY nm, id LIMIT 14', 'topn');
+SELECT same('nm desc', 'SELECT id, nm FROM @T@ ORDER BY nm DESC, id LIMIT 14', 'topn');
+SELECT same('nm nulls first', 'SELECT id, nm FROM @T@ ORDER BY nm NULLS FIRST, id LIMIT 14', 'topn');
+SELECT same('m30 asc', 'SELECT id, m30 FROM @T@ ORDER BY m30, id LIMIT 14', 'topn');
+SELECT same('m30 desc nulls last', 'SELECT id, m30 FROM @T@ ORDER BY m30 DESC NULLS LAST, id LIMIT 14', 'topn');
+SELECT same('limit past the table', 'SELECT id, n FROM @T@ ORDER BY n, id LIMIT 100000', NULL);
+
+\echo == several keys and the columns the statement reads
+SELECT same('n, c desc', 'SELECT id, n, c FROM @T@ ORDER BY n, c DESC, id LIMIT 20', 'topn');
+SELECT same('u, b, id desc', 'SELECT id, u, b FROM @T@ ORDER BY u DESC, b NULLS FIRST, id DESC LIMIT 20 OFFSET 3', 'topn');
+SELECT same('g, nm', 'SELECT id, g, nm, m30 FROM @T@ ORDER BY g DESC, nm, id LIMIT 25', 'topn');
+SELECT same('whole row', 'SELECT * FROM @T@ ORDER BY m30 DESC, n, id LIMIT 30', 'topn');
+SELECT same('key not selected', 'SELECT id FROM @T@ ORDER BY n, id LIMIT 7', NULL);
+
+\echo == quals the scan tests
+SELECT same('n where g', 'SELECT id, n FROM @T@ WHERE g = 2 ORDER BY n, id LIMIT 10', 'topn');
+SELECT same('u where range', 'SELECT id, u, g FROM @T@ WHERE g > 1 AND id < 3000 ORDER BY u DESC, id LIMIT 10', 'topn');
+SELECT same('c where text', 'SELECT id, c FROM @T@ WHERE n = ''name3'' ORDER BY c, id LIMIT 10', NULL);
+SELECT same('b where uuid', 'SELECT id, b FROM @T@ WHERE u = ''00000000-0000-4000-8000-00000000000a'' ORDER BY b, id LIMIT 10', NULL);
+SELECT same('nm where null', 'SELECT id, nm FROM @T@ WHERE nm IS NOT NULL AND b IS NOT NULL ORDER BY nm DESC, id LIMIT 10', NULL);
+SELECT same('no row passes', 'SELECT id, n FROM @T@ WHERE g > 100 ORDER BY n, id LIMIT 10', NULL);
+
+
+\echo == a parameter limit, WITH TIES
+SET plan_cache_mode = force_generic_plan;
+PREPARE n_t (int, bigint) AS SELECT id, n FROM qt WHERE g = $1 ORDER BY n DESC, id LIMIT $2;
+PREPARE n_h (int, bigint) AS SELECT id, n FROM qh WHERE g = $1 ORDER BY n DESC, id LIMIT $2;
+PREPARE u_t (int, bigint, bigint) AS SELECT id, u, b FROM qt WHERE g >= $1 ORDER BY u NULLS FIRST, b, id LIMIT $2 OFFSET $3;
+PREPARE u_h (int, bigint, bigint) AS SELECT id, u, b FROM qh WHERE g >= $1 ORDER BY u NULLS FIRST, b, id LIMIT $2 OFFSET $3;
+PREPARE nm_t (bigint) AS SELECT id, nm, m30 FROM qt ORDER BY nm DESC, m30, id LIMIT $1;
+PREPARE nm_h (bigint) AS SELECT id, nm, m30 FROM qh ORDER BY nm DESC, m30, id LIMIT $1;
+SELECT same_exec('name, parameter limit', 'n', '2, 7', 'topn');
+SELECT same_exec('name, parameter limit again', 'n', '4, 31', 'topn');
+SELECT same_exec('uuid and bytea, parameter limit and offset', 'u', '1, 17, 5', 'topn');
+SELECT same_exec('numerics, parameter limit', 'nm', '23', 'topn');
+SELECT same_exec('limit of nothing', 'n', '2, 0', 'topn');
+RESET plan_cache_mode;
+SELECT same('name with ties', 'SELECT id, n FROM @T@ ORDER BY n FETCH FIRST 5 ROWS WITH TIES', 'topn', false);
+SELECT same('uuid with ties', 'SELECT id, u FROM @T@ ORDER BY u DESC FETCH FIRST 3 ROWS WITH TIES', 'topn', false);
+SELECT same('bytea with ties and a qual', 'SELECT id, b, g FROM @T@ WHERE g <> 3 ORDER BY b NULLS FIRST FETCH FIRST 4 ROWS WITH TIES', 'topn', false);
+SELECT same('char with ties', 'SELECT id, c FROM @T@ ORDER BY c DESC NULLS LAST FETCH FIRST 6 ROWS WITH TIES', 'topn', false);
+SELECT same('numeric with ties', 'SELECT id, nm FROM @T@ ORDER BY nm FETCH FIRST 6 ROWS WITH TIES', 'topn', false);
+SELECT same('numeric(12,2) and name', 'SELECT id, m12, n FROM @T@ ORDER BY m12 DESC, n, id LIMIT 17', 'topn');
+SELECT same('name and a text expression', 'SELECT id, n, c FROM @T@ ORDER BY n, c || ''x'', id LIMIT 7', NULL);
+
+\echo == after updates, deletes and new rows, then maintained
+UPDATE qt SET n = 'moved' || (id % 4), c = 'u' || (id % 3), u = NULL, nm = nm + 0.5, b = '\x01ff' WHERE id % 97 = 0;
+UPDATE qh SET n = 'moved' || (id % 4), c = 'u' || (id % 3), u = NULL, nm = nm + 0.5, b = '\x01ff' WHERE id % 97 = 0;
+DELETE FROM qt WHERE id % 101 = 0 OR id > 100000 AND id % 2 = 0;
+DELETE FROM qh WHERE id % 101 = 0 OR id > 100000 AND id % 2 = 0;
+INSERT INTO qt SELECT g + 7000, g % 5, ('00000000-0000-4000-8000-' || lpad(to_hex(g), 12, '0'))::uuid, NULL, 'zz', 'zname', 0.25 * g, NULL, NULL FROM generate_series(1, 40) g;
+INSERT INTO qh SELECT * FROM qt WHERE id BETWEEN 7001 AND 7040;
+SELECT same('n after dml', 'SELECT id, n FROM @T@ ORDER BY n DESC, id LIMIT 25', 'topn');
+SELECT same('c after dml', 'SELECT id, c FROM @T@ ORDER BY c NULLS FIRST, id LIMIT 25 OFFSET 4', 'topn');
+SELECT same('u after dml', 'SELECT id, u FROM @T@ ORDER BY u NULLS FIRST, id LIMIT 25', 'topn');
+SELECT same('b after dml', 'SELECT id, b FROM @T@ ORDER BY b DESC NULLS LAST, id LIMIT 25', 'topn');
+SELECT same('nm after dml', 'SELECT id, nm FROM @T@ ORDER BY nm DESC, id LIMIT 25', 'topn');
+SELECT same('with ties after dml', 'SELECT id, n FROM @T@ ORDER BY n FETCH FIRST 3 ROWS WITH TIES', 'topn', false);
+SELECT sift.table_maintain('qt') IS NOT NULL AS maintained_again;
+SELECT same('n maintained', 'SELECT id, n FROM @T@ ORDER BY n DESC, id LIMIT 25', 'topn');
+SELECT same('u, c maintained', 'SELECT id, u, c FROM @T@ WHERE g = 1 ORDER BY u DESC NULLS LAST, c, id LIMIT 25', 'topn');
+SELECT same('nm maintained', 'SELECT id, nm, m30 FROM @T@ ORDER BY nm, m30 DESC, id LIMIT 25', 'topn');
+
+\echo == a char with no length keeps its blanks in a lossy leaf: the sort is of the heap rows
+CREATE TABLE qx (id int PRIMARY KEY, cx bpchar, c4 char(4)) USING sift_table WITH (autovacuum_enabled = false);
+CREATE TABLE qxh (LIKE qx INCLUDING ALL);
+INSERT INTO qx SELECT g, CASE WHEN g % 7 = 0 THEN NULL ELSE chr(97 + g % 5) || repeat(' ', g % 3) END, CASE WHEN g % 5 = 0 THEN NULL ELSE 'b' || (g % 4) END FROM generate_series(1, 20000) g;
+INSERT INTO qxh SELECT * FROM qx;
+SELECT sift.table_maintain('qx') IS NOT NULL AS maintained_unbounded;
+ANALYZE qx;
+ANALYZE qxh;
+SELECT text_of('SELECT id, cx FROM qx ORDER BY cx DESC, id LIMIT 40', true) = text_of('SELECT id, cx FROM qxh ORDER BY cx DESC, id LIMIT 40', true) AS bpchar_parity;
+SELECT text_of('SELECT id, cx FROM qx ORDER BY cx NULLS FIRST, id LIMIT 40 OFFSET 3', true) = text_of('SELECT id, cx FROM qxh ORDER BY cx NULLS FIRST, id LIMIT 40 OFFSET 3', true) AS bpchar_nulls_first_parity;
+SELECT plan_of('SELECT id, cx FROM qx ORDER BY cx, id LIMIT 8') LIKE '%SiftAggV6TopN%Table: qx%' AS bpchar_is_topn;
+SELECT text_of('SELECT id, c4 FROM qx ORDER BY c4, id LIMIT 40', true) = text_of('SELECT id, c4 FROM qxh ORDER BY c4, id LIMIT 40', true) AS char4_parity;
+SELECT plan_of('SELECT id, c4 FROM qx ORDER BY c4, id LIMIT 8') LIKE '%SiftAggV6TopN%Table: qx%' AS char4_is_topn;
+
+DROP TABLE qt, qh, qx, qxh;
+DROP VIEW qbulk, qedge;
+DROP FUNCTION plan_of(text), node_ok(text, text), text_of(text, boolean), same(text, text, text, boolean), same_exec(text, text, text, text);
+DROP EXTENSION pg_sift;
