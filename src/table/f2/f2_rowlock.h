@@ -3,7 +3,7 @@
  *
  * An entry names one row (relation file and address). It holds the shared lockers, the updater with the successor address while EvalPlanQual may still ask for it, the latest column
  * delta of the row, and a speculative insertion token. The entry of a committed update stays until the updater is older than every snapshot (GlobalVis), so that a waiter woken
- * by the commit finds the successor. A transaction that locks more rows than a stripe or SIFT_ROWLOCK_ESCALATE_AT allow holds the partition or the relation instead (f2_lock_esc.h).
+ * by the commit finds the successor. A transaction that locks more than SIFT_ROWLOCK_ESCALATE_AT rows holds the partition or the relation instead (f2_lock_esc.h).
  */
 #ifndef SIFT_TBL_F2_ROWLOCK_H
 #define SIFT_TBL_F2_ROWLOCK_H
@@ -20,7 +20,7 @@
 
 #define SIFT_ROWLOCK_PARTITIONS		128
 #define SIFT_ROWLOCK_INLINE_MAX		8
-#define SIFT_ROWLOCK_BUCKETS		64	/* entries a stripe holds before it evicts a committed update, and then asks for the partition */
+#define SIFT_ROWLOCK_BUCKETS		64	/* entries a stripe holds in the table; the ones past them are chunks of the area (f2_lock_ovf.h) */
 
 #define SIFT_ROWLOCK_UPDATE_CHAIN	(UINT16_C(1) << 0)	/* updated_tid is valid */
 #define SIFT_ROWLOCK_SPECULATIVE	(UINT16_C(1) << 1)	/* an ON CONFLICT insert of the row is in flight */
@@ -75,7 +75,7 @@ typedef struct SiftRowLockStripe
 	SiftRowLockEntry entries[SIFT_ROWLOCK_BUCKETS];
 } SiftRowLockStripe;
 
-/* The outcome of a lock request: granted, or why not (the transaction to wait for, the successor of an updated row); stripe_full: no slot, the caller escalates */
+/* The outcome of a lock request: granted, or why not (the transaction to wait for, the successor of an updated row); stripe_full: the area has no memory for an entry, the caller escalates */
 typedef struct SiftRowLockResult
 {
 	TM_Result	result;

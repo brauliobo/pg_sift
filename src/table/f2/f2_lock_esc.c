@@ -23,7 +23,7 @@
 
 /* ---- the table in shared memory ---- */
 
-/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (1100768 B packed; 128x64x128 B ABI entries) */
+/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (1101312 B packed; 128x64x128 B ABI entries, and the heads of the chunks of the stripes that fill) */
 #define TABLE_BYTES		(sizeof(SiftRowLockShmLayout) + PG_CACHE_LINE_SIZE)
 
 SIFT_BACKEND_LOCAL SiftRowLockShmLayout *shm = NULL;
@@ -38,8 +38,7 @@ shm_init(SIFT_DSM_INIT_ARGS)
 	int			escs = sift_tranche_new(SIFT_ESC_TRANCHE);
 
 	memset(s, 0, sizeof(*s));
-	for (int i = 0; i < SIFT_ROWLOCK_PARTITIONS; i++)
-		LWLockInitialize(&s->stripe_locks[i].lock, rows);
+	sift_rowlock_table_init(&s->rows, rows);
 	for (int i = 0; i < SIFT_ESC_STRIPES; i++)
 		LWLockInitialize(&s->esc_locks[i].lock, escs);
 }
@@ -60,7 +59,7 @@ sift_lock_shm_attach(void)
 		else
 		{
 			shm = (SiftRowLockShmLayout *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
-			sift_tranche_register(shm->stripe_locks[0].lock.tranche, SIFT_ROWLOCK_TRANCHE);
+			sift_tranche_register(shm->rows.area_lock.tranche, SIFT_ROWLOCK_TRANCHE);
 			sift_tranche_register(shm->esc_locks[0].lock.tranche, SIFT_ESC_TRANCHE);
 		}
 	}
@@ -805,6 +804,7 @@ sift_esc_xact_end(XactEvent event)
 
 			dir_apply(DIR_REMOVE, &a);
 		}
+	sift_rowlock_area_detach();
 	if (txn_cx != NULL)
 		MemoryContextDelete(txn_cx);
 	txn_cx = NULL;

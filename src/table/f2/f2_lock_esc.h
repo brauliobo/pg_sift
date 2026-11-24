@@ -1,7 +1,7 @@
 /*
  * table/f2/f2_lock_esc.h - tiers 2 and 3 of the row locks of a sift_table: the partition and the relation held for a transaction, its subtransactions and its prepare.
  *
- * Tier 1 (f2_rowlock.h) is a row entry in shared memory. A transaction that locks SIFT_ROWLOCK_ESCALATE_AT rows of a partition, or finds a stripe full, holds the partition (tier 2A) and, after
+ * Tier 1 (f2_rowlock.h) is a row entry in shared memory. A transaction that locks SIFT_ROWLOCK_ESCALATE_AT rows of a partition, or finds no memory for an entry (f2_lock_ovf.h), holds the partition (tier 2A) and, after
  * SIFT_ROWLOCK_PART_TO_REL_AT partitions of a relation, the relation (tier 2B): a page lock of the relation at a virtual block (core/part_lock.h), so that the deadlock detector sees every wait.
  * Every row locker holds the page locks of its relation and partition in an intention mode, once, before it takes an entry: the intention modes (1..3) are compatible with each other, so the rows
  * are arbitrated by the entries; a coarse holder conflicts with exactly the row lockers whose mode conflicts with its own (sift_esc_modes_conflict). A plain read takes no lock of either tier.
@@ -17,6 +17,7 @@
 #include "storage/lmgr.h"
 
 #include "core/part_lock.h"
+#include "table/f2/f2_lock_ovf.h"
 #include "table/f2/f2_rowlock.h"
 
 #define SIFT_LOCK_REL_KEY_BLKNO		0xFFFFD000U		/* the key block of the whole relation (the row block is SIFT_LOCK_REL_BULK_BLKNO) */
@@ -62,14 +63,12 @@ typedef struct SiftEscStripe
 	SiftPartEscEntry entries[SIFT_ESC_BUCKETS];
 } SiftEscStripe;
 
-/* The one named segment of the table: both tiers and their locks, 1.05 MiB; the entries in use of a stripe are counted beside the stripes (a count inside would pad a stripe by a cache line) */
+/* The one named segment of the table: both tiers and their locks, 1.05 MiB; the entries in use of a directory stripe are counted beside the stripes (a count inside would pad a stripe by a cache line) */
 typedef struct SiftRowLockShmLayout
 {
-	SiftRowLockStripe stripes[SIFT_ROWLOCK_PARTITIONS];
-	LWLockPadded stripe_locks[SIFT_ROWLOCK_PARTITIONS];
+	SiftRowLockTable rows;
 	SiftEscStripe esc_stripes[SIFT_ESC_STRIPES];
 	LWLockPadded esc_locks[SIFT_ESC_STRIPES];
-	uint16		stripe_n[SIFT_ROWLOCK_PARTITIONS];
 	uint16		esc_n[SIFT_ESC_STRIPES];
 } SiftRowLockShmLayout;
 

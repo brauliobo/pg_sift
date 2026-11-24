@@ -1,13 +1,13 @@
 /*
  * table/f2/f2_lock.c - tier 1 of the row locks of a sift_table, and EvalPlanQual.
  *
- * Locks live in shared memory, 128 stripes of 64 entries of 128 bytes, and write no WAL: SELECT FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE and FOR UPDATE keep the conflict
+ * Locks live in shared memory, 128 stripes of 64 entries of 128 bytes and the chunks of the stripes that fill (f2_lock_ovf.h), and write no WAL: SELECT FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE and FOR UPDATE keep the conflict
  * matrix of the heap. A row changed by a transaction that has not ended is known by its entry (the change itself is staged in that backend until its commit), so a waiter learns whom
  * to wait for. After the commit of an update the entry stays until the updater is older than every snapshot (SIFT_ROWLOCK_COMMITTED_UPD): the waiter that wakes finds the new
- * version's address and EvalPlanQual runs on it. Should the entry be evicted, the same address is kept on disk, as the second slot of the pair of the pending delete of the update
+ * version's address and EvalPlanQual runs on it. Should the entry be reused, the same address is kept on disk, as the second slot of the pair of the pending delete of the update
  * (SIFT_PD_TID_UPDATED, then SIFT_PD_TID_SUCC), until the fold of that delete makes it unneeded.
  *
- * A transaction takes an entry only while it holds few rows of a partition and its stripe has room: past SIFT_ROWLOCK_ESCALATE_AT rows, or at a full stripe, it holds the partition or the
+ * A transaction takes an entry only while it holds few rows of a partition: past SIFT_ROWLOCK_ESCALATE_AT rows, or where the area has no memory for an entry, it holds the partition or the
  * relation (f2_lock_esc.h) and gives its entries back. Whoever waits on that learns the outcome of a row from the row on disk, as after any commit.
  *
  * An update that is a column delta keeps the address: the writer is a holder of the row's lock until its end, and the chain of the partition (table/f2/f2_col_delta.h) tells whoever locks
@@ -34,29 +34,25 @@
 
 #define MOVED_PARTITIONS_TID	((UINT64CONST(0xFFFFFFFF) << 16) | 0xFFFD)
 
-SIFT_BACKEND_LOCAL SiftRowLockStripe *stripes = NULL;
-SIFT_BACKEND_LOCAL LWLockPadded *stripe_locks = NULL;
-SIFT_BACKEND_LOCAL uint16 *stripe_n = NULL;
+SIFT_BACKEND_LOCAL SiftRowLockTable *rows = NULL;
 
 static bool
 tier1_attached(void)
 {
 	SiftRowLockShmLayout *layout;
 
-	if (stripes != NULL)
+	if (rows != NULL)
 		return true;
 	if ((layout = sift_lock_shm_attach()) == NULL)
 		return false;
-	stripes = layout->stripes;
-	stripe_locks = layout->stripe_locks;
-	stripe_n = layout->stripe_n;
+	rows = &layout->rows;
 	return true;
 }
 
-static uint16 *
-nentries(const SiftRowLockStripe *s)
+static LWLock *
+stripe_lock(int si)
 {
-	return &stripe_n[s - stripes];
+	return &rows->stripe_locks[si].lock;
 }
 
 /* ---- the entries ---- */
@@ -83,21 +79,6 @@ static int
 stripe_of(const SiftRowLockKey *k)
 {
 	return hash_bytes((const unsigned char *) k, sizeof(*k)) % SIFT_ROWLOCK_PARTITIONS;
-}
-
-static SiftRowLockEntry *
-find_entry(SiftRowLockStripe *s, const SiftRowLockKey *k)
-{
-	for (int i = 0; i < *nentries(s); i++)
-		if (memcmp(&s->entries[i].key, k, sizeof(*k)) == 0)
-			return &s->entries[i];
-	return NULL;
-}
-
-static void
-remove_entry(SiftRowLockStripe *s, SiftRowLockEntry *e)
-{
-	*e = s->entries[--*nentries(s)];
 }
 
 static inline LockTupleMode
@@ -280,40 +261,65 @@ idle(const SiftRowLockEntry *e)
 	return e->flags == 0 && e->nholders == 0 && !overflow_live(e);
 }
 
-/* A free slot of the stripe: a shell, or an update that no snapshot can still wait on, or else the oldest committed update (its successor is on disk); NULL when every slot is a lock in flight */
+static bool
+in_relation(SiftRowLockEntry *e, void *arg)
+{
+	return RelFileLocatorEquals(e->key.locator, *(const RelFileLocator *) arg);
+}
+
+/* The oldest transaction that a snapshot may still wait on, computed now: the committed update of an earlier one is known to every snapshot */
+static FullTransactionId
+oldest_needed(void)
+{
+	return FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), GetOldestNonRemovableTransactionId(NULL));
+}
+
+static bool
+reclaimable(SiftRowLockEntry *e, void *arg)
+{
+	reap_prepared(e);
+	return ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && FullTransactionIdPrecedes(e->updater_fxid, *(FullTransactionId *) arg)) || idle(e);
+}
+
+static bool
+track_oldest_committed(SiftRowLockEntry *e, void *arg)
+{
+	SiftRowLockEntry **oldest = arg;
+
+	if ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && e->nholders == 0 &&
+		(*oldest == NULL || FullTransactionIdPrecedes(e->updater_fxid, (*oldest)->updater_fxid)))
+		*oldest = e;
+	return false;
+}
+
+/*
+ * A slot for an entry of the stripe, NULL when the area has no memory for one. A stripe without room frees the shells and the updates that no snapshot can still wait on, then reuses the slot of
+ * the oldest committed update (its successor is on disk), and only then asks for a chunk: what is not a lock in flight does not make the stripe grow.
+ */
 static SiftRowLockEntry *
-make_room(Relation rel, SiftRowLockStripe *s)
+slot_for_write(int si)
 {
 	SiftRowLockEntry *oldest = NULL;
-	uint16	   *n = nentries(s);
+	FullTransactionId horizon;
 
-	for (int i = 0; i < *n; i++)
+	if (!sift_rowlock_has_room(rows, si))
 	{
-		reap_prepared(&s->entries[i]);
-		if (removable(rel, &s->entries[i]) || idle(&s->entries[i]))
-		{
-			remove_entry(s, &s->entries[i]);
-			return &s->entries[(*n)++];
-		}
+		horizon = oldest_needed();
+		sift_rowlock_sweep(rows, si, reclaimable, &horizon);
 	}
-	for (int i = 0; i < *n; i++)
-		if ((s->entries[i].flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && s->entries[i].nholders == 0 &&
-			(oldest == NULL || FullTransactionIdPrecedes(s->entries[i].updater_fxid, oldest->updater_fxid)))
-			oldest = &s->entries[i];
-	if (oldest == NULL)
-		return NULL;
-	remove_entry(s, oldest);
-	return &s->entries[(*n)++];
+	if (!sift_rowlock_has_room(rows, si))
+		sift_rowlock_sweep(rows, si, track_oldest_committed, &oldest);
+	return sift_rowlock_has_room(rows, si) || oldest == NULL ? sift_rowlock_add(rows, si) : oldest;
 }
 
 static SiftRowLockEntry *
-entry_for_write(Relation rel, SiftRowLockStripe *s, const SiftRowLockKey *k)
+entry_for_write(int si, const SiftRowLockKey *k)
 {
-	SiftRowLockEntry *e = find_entry(s, k);
+	SiftRowLockEntry *e = sift_rowlock_find(rows, si, k);
 
 	if (e != NULL)
 		return e;
-	e = *nentries(s) < SIFT_ROWLOCK_BUCKETS ? &s->entries[(*nentries(s))++] : make_room(rel, s);
+	e = slot_for_write(si);
 	if (e != NULL)
 	{
 		memset(e, 0, sizeof(*e));
@@ -324,17 +330,36 @@ entry_for_write(Relation rel, SiftRowLockStripe *s, const SiftRowLockKey *k)
 
 /* ---- what this transaction touched, to settle at its end (f2_lock_touched.c) ---- */
 
+SIFT_BACKEND_LOCAL uint64 overflowed[SIFT_ROWLOCK_PARTITIONS / 64] = {0};
+
+/* The stripes that had a chunk while the transaction gave its rows back: what no snapshot can wait on any more goes now, and the chunks it empties go with it */
+static void
+reclaim_overflowed(void)
+{
+	FullTransactionId horizon = InvalidFullTransactionId;
+
+	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
+		if ((overflowed[si / 64] >> (si % 64) & 1) != 0)
+		{
+			horizon = FullTransactionIdIsValid(horizon) ? horizon : oldest_needed();
+			LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+			sift_rowlock_sweep(rows, si, reclaimable, &horizon);
+			LWLockRelease(stripe_lock(si));
+		}
+	memset(overflowed, 0, sizeof(overflowed));
+}
+
 /* Gives the row back: our holders go, our update is the commit's (kept for EvalPlanQual) or the abort's (forgotten); false for an entry that stays because a speculative insert is in flight */
 static bool
 settle(const SiftTouched *t, bool commit, bool keep_speculative)
 {
 	int			si = stripe_of(&t->key);
-	SiftRowLockStripe *s = &stripes[si];
 	SiftRowLockEntry *e;
 	bool		settled;
 
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(s, &t->key);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	overflowed[si / 64] |= (uint64) (rows->overflow[si] != InvalidDsaPointer) << (si % 64);
+	e = sift_rowlock_find(rows, si, &t->key);
 	settled = e == NULL || !keep_speculative || (e->flags & SIFT_ROWLOCK_SPECULATIVE) == 0;
 	if (e != NULL && settled)
 	{
@@ -352,9 +377,9 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 				clear_updater(e);
 		}
 		if (e->flags == 0 && e->nholders == 0 && !MultiXactIdIsValid(e->overflow_mxid))
-			remove_entry(s, e);
+			sift_rowlock_remove(rows, si, e);
 	}
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 	return settled;
 }
 
@@ -364,11 +389,11 @@ mark_prepare_held(const SiftTouched *t)
 	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
 
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[si], &t->key);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &t->key);
 	if (e != NULL)
 		e->flags |= SIFT_ROWLOCK_PREPARE_HELD;
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 }
 
 static void
@@ -377,12 +402,12 @@ retag_holder(const SiftTouched *t, SubTransactionId parent)
 	int			si = stripe_of(&t->key);
 	SiftRowLockEntry *e;
 
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[si], &t->key);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &t->key);
 	for (int i = 0; e != NULL && i < e->nholders; i++)
 		if (e->holders[i].xid == t->xid)
 			e->holders[i].subxid = parent;
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 }
 
 /* The tier 2 lock holds the rows of the (sub)transaction now: its entries go, but those of the speculative inserts in flight */
@@ -422,6 +447,8 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		return;
 	for (uint32 i = 0; i < sift_touched_count() && event != XACT_EVENT_PREPARE; i++)
 		settle(sift_touched_at(i), commit, false);
+	if (event != XACT_EVENT_PREPARE)
+		reclaim_overflowed();
 	sift_touched_reset();
 	sift_esc_xact_end(event);
 }
@@ -497,19 +524,19 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	SiftRowLockEntry *e;
 
 	SIFT_INVARIANT(tier1_attached(), "the row lock table of sift_table is mapped in every backend that locks a row");
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL)
 		reap_prepared(e);
 	if (e != NULL && removable(rel, e))
 	{
-		remove_entry(&stripes[si], e);
+		sift_rowlock_remove(rows, si, e);
 		e = NULL;
 	}
 	if (e != NULL)
 		judge_entry(e, mode, &r);
 	if (r.result == TM_Ok && e == NULL)
-		e = entry_for_write(rel, &stripes[si], &k);
+		e = entry_for_write(si, &k);
 	r.stripe_full = r.result == TM_Ok && e == NULL;
 	if (r.result == TM_Ok && e != NULL)
 	{
@@ -518,7 +545,7 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 		add_holder(e, mode);
 		sift_esc_note_tier1_acquire(&rel->rd_locator, part_id, mode, added);
 	}
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 	return r;
 }
 
@@ -531,11 +558,11 @@ held_entry(const SiftRowLockKey *k, int *si)
 	if (!tier1_attached())
 		return NULL;
 	*si = stripe_of(k);
-	LWLockAcquire(&stripe_locks[*si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[*si], k);
+	LWLockAcquire(stripe_lock(*si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, *si, k);
 	if (e != NULL && holds_entry(e))
 		return e;
-	LWLockRelease(&stripe_locks[*si].lock);
+	LWLockRelease(stripe_lock(*si));
 	return NULL;
 }
 
@@ -553,7 +580,7 @@ sift_tbl_rowlock_mark_updated(Relation rel, uint64 old_tid, uint64 new_tid, Comm
 	e->updated_tid = moved_partition ? MOVED_PARTITIONS_TID : new_tid;
 	e->updater_fxid = GetCurrentFullTransactionId();
 	e->updater_cid = cid;
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 }
 
 void
@@ -569,7 +596,7 @@ sift_tbl_rowlock_mark_col_delta(Relation rel, uint64 tid, CommandId cid)
 	e->delta_ver++;
 	e->updater_fxid = GetCurrentFullTransactionId();
 	e->updater_cid = cid;
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 }
 
 void
@@ -581,14 +608,14 @@ sift_tbl_rowlock_set_speculative(Relation rel, uint64 tid, uint32 token, bool on
 
 	if (!tier1_attached())
 		return;
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = on ? entry_for_write(rel, &stripes[si], &k) : find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = on ? entry_for_write(si, &k) : sift_rowlock_find(rows, si, &k);
 	if (e != NULL && on)
 	{
 		sift_spec_stage(e, GetTopFullTransactionId(), token);
 		(void) sift_touched_add(&k, SIFT_ESC_PART_ALL);
 	}
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 }
 
 bool
@@ -601,8 +628,8 @@ sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded)
 
 	if (!tier1_attached())
 		return false;
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL && succeeded)
 		need_flush = sift_spec_succeeded(e);
 	else if (e != NULL)
@@ -610,11 +637,11 @@ sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded)
 		sift_spec_aborted(e);
 		if (idle(e))
 		{
-			remove_entry(&stripes[si], e);
+			sift_rowlock_remove(rows, si, e);
 			sift_touched_forget(&k);
 		}
 	}
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 	return need_flush;
 }
 
@@ -627,11 +654,11 @@ sift_tbl_rowlock_staged_flushed(Relation rel, uint64 tid)
 
 	if (!tier1_attached())
 		return;
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL)
 		sift_spec_flushed(e);
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 }
 
 SiftSpecProbe
@@ -644,11 +671,11 @@ sift_tbl_rowlock_probe_staged(Relation rel, uint64 tid, TransactionId *xmin, uin
 
 	if (!tier1_attached())
 		return r;
-	LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-	e = find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL)
 		r = sift_spec_probe(e, (e->flags & SIFT_ROWLOCK_STAGED_INSERT) != 0 && TransactionIdIsInProgress(XidFromFullTransactionId(e->updater_fxid)), xmin, token);
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 	return r;
 }
 
@@ -662,11 +689,11 @@ sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid)
 
 	if (!tier1_attached())
 		return 0;
-	LWLockAcquire(&stripe_locks[si].lock, LW_SHARED);
-	e = find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_SHARED);
+	e = sift_rowlock_find(rows, si, &k);
 	if (e != NULL && (e->flags & SIFT_ROWLOCK_SPECULATIVE) != 0)
 		token = e->spec_token;
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 	return token;
 }
 
@@ -680,12 +707,12 @@ sift_tbl_rowlock_successor(Relation rel, uint64 old_tid, uint64 *succ)
 
 	if (!tier1_attached())
 		return false;
-	LWLockAcquire(&stripe_locks[si].lock, LW_SHARED);
-	e = find_entry(&stripes[si], &k);
+	LWLockAcquire(stripe_lock(si), LW_SHARED);
+	e = sift_rowlock_find(rows, si, &k);
 	found = e != NULL && (e->flags & SIFT_ROWLOCK_UPDATE_CHAIN) != 0;
 	if (found)
 		*succ = e->updated_tid;
-	LWLockRelease(&stripe_locks[si].lock);
+	LWLockRelease(stripe_lock(si));
 	return found;
 }
 
@@ -703,13 +730,9 @@ sift_tbl_rowlock_drop_rel(const RelFileLocator *loc)
 		return;
 	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
 	{
-		LWLockAcquire(&stripe_locks[si].lock, LW_EXCLUSIVE);
-		for (int i = 0; i < stripe_n[si];)
-			if (RelFileLocatorEquals(stripes[si].entries[i].key.locator, *loc))
-				remove_entry(&stripes[si], &stripes[si].entries[i]);
-			else
-				i++;
-		LWLockRelease(&stripe_locks[si].lock);
+		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_sweep(rows, si, in_relation, (void *) loc);
+		LWLockRelease(stripe_lock(si));
 	}
 }
 
