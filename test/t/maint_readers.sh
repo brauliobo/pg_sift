@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Searches while inserters, deleters and VACUUM run side by side: every search of rows that never change returns exactly them. A smoke
 # of the whole, a few seconds long, that runs on the release build too (no test functions); the release of extents that a reader of
 # the old directory still reads (store_update, P4) is pinned without timing by maint_p4.

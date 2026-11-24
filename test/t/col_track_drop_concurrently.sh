@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # DROP INDEX CONCURRENTLY of a sift_col index that tracks its changes, beside writers (an update, a delete and an insert-on-conflict in each transaction), and when it fails.
 # The index depends on its two triggers and the transaction that deletes it removes them (src/col/v1/track.c), so the drop needs no ACCESS EXCLUSIVE lock before its last step and
 # finds no transaction id. The writers beside it must not fail or deadlock (they skip an index the drop has marked dead, whose lock it holds), the copy of a swap must keep the

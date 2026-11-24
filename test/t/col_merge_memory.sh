@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # A forced merge stays within maintenance_work_mem: the process that merges 4,000,000 rows (a build and twenty promotions) at 64 MB takes under 64 MB of anonymous memory in all, and the segments it writes
 # are the partitions that memory allows, all of one size (the last one no short one). The inputs' batches and the output's used to be held until the end of the merge (97 MB
 # for 5,000,000 rows at 64 MB), and the partitions to be cut at a share of the bytes a unit overshoots, with a short last one.

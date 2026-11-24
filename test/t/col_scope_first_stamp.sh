@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The first scope index of a relation makes the journal of its relation of pairs before it reads anything and stamps its segments with it, so the first build is filled: its reads are
 # the units, not the entity rows of the members ("unfilled"). The writers of the relation of pairs wait for the statement (the journal is made under a lock that holds them out), and a pair
