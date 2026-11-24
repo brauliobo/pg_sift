@@ -20,6 +20,7 @@ sql cm "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension fai
 node_clone cm sb 2 "sift.async_maintenance = off" || bail "standby failed"
 node_start sb || bail "standby start failed"
 
+TIER=$(knob SIFT_FAULT_TIER full quick)
 FAMILIES=(bm25_promote bm25_merge col_promote col_merge scope_build scope_refill vacuum tbl_seal scope_cic reindex_col reindex_scope_c tbl_copy alter_refresh)
 GATE_FAMILIES=(tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite tbl_copy:load f2_vacuum:f2manifest f2_compact:f2compact f2_tier:f2tier f2_scope_build:f2scope
 	f2_col_delta:f2coldelta)
@@ -39,19 +40,25 @@ on_standby() { # the checks of a healthy node on the standby: indexes verify, st
 catch_up() { catchup cm sb; }
 restart_primary() { node_stop cm; pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1; node_start cm; }
 
+# the quick tier runs one diagonal of the (update, fault) square of a family: error in the middle and kill at the end, or kill in the middle and error at the end, by turns, so that
+# every update and every fault is run in each family and all four combinations in the matrix as a whole, and one of the two faults of each gate (cancel and an immediate stop by turns); the full tier runs them all
+fi=0
 for name in "${FAMILIES[@]}"; do
 	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
+	(( ++fi ))
 	fresh "${SETUP[$name]}" || bail "$name: setup"
 	REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
 	k=$(op_stmts "$name"; sql cm "${OPS[@]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$name: the operation failed in a clean state"
 	(( k > 0 )) || continue
 	for n in $(( (k + 1) / 2 )) "-$k"; do
 		for kind in 1 0; do
+			[[ $TIER == full ]] || (( (n > 0) == ((fi + (kind == 1)) % 2) )) || continue
 			fresh "${SETUP[$name]}" || bail "$name: setup"
 			REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
+			op_stmts "$name"
 			sql cm "SET sift.test_crash_dir = $n" "SET sift.test_crash_kind = $kind" "${OPS[@]}" >/dev/null 2>&1
 			if [[ $kind == 0 ]]; then
-				for _ in $(seq 100); do kill -0 "$(head -1 "$D/data/postmaster.pid" 2>/dev/null)" 2>/dev/null || break; sleep 0.1; done
+				wait_for "! kill -0 \"\$(head -1 \"$D/data/postmaster.pid\" 2>/dev/null)\" 2>/dev/null" 10
 				node_start cm || { not_ok "$name, update $n, kind $kind: the primary did not restart"; diag "$(tail -20 "$D/postgres.log")"; continue; }
 			fi
 			for _ in 1 2 3; do # an INVALID index (a build that was stopped) is dropped as an operator does, the one another depends on after it
@@ -69,10 +76,13 @@ for name in "${FAMILIES[@]}"; do
 done
 
 # the operations with no directory update of their own, stopped at their gates (a cancel, an immediate shutdown of the primary)
+gi=0
 for row in "${GATE_FAMILIES[@]}"; do
 	name=${row%:*} gname=${row#*:}
 	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
+	(( ++gi ))
 	for fault in cancel immediate; do
+		[[ $TIER == full || $fault == $([[ $((gi % 2)) == 1 ]] && echo cancel || echo immediate) ]] || continue
 		fresh "${SETUP[$name]}" || bail "$name: setup"
 		REF=$(sql cm "${PLAIN[@]}" "$QA" "$QB" 2>&1)
 		gate_spec "$gname"
