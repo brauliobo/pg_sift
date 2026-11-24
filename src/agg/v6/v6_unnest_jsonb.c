@@ -20,6 +20,7 @@
 #include "utils/lsyscache.h"
 #include "utils/tuplestore.h"
 
+#include "agg/agg.h"
 #include "agg/group/ht.h"
 #include "agg/v6/v6_gather.h"
 #include "agg/v6/v6_unnest_jsonb.h"
@@ -383,7 +384,7 @@ array_column(const IndexOptInfo *ix, const Expr *array, bool exprs)
 static int
 rte_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
 {
-	const bool	exprs = p->ops->jsonb != NULL && p->ops->jsonb->exact_values;
+	const bool	exprs = p->ops->jsonb != NULL && (p->ops->jsonb->exact_values || sift_agg_unified_only());
 	int			i = rte->key != NULL ? array_column(p->index, rte->base, exprs) : -1;
 
 	*key = rte->key;
