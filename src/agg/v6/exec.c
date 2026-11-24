@@ -627,9 +627,12 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (st->spec->rows)
 		sift_v6_rows_explain(es, st->spec);
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
-	sift_v6_explain_group_keys(st->spec, es);
-	if (st->spec->topk > 0)
-		sift_v6_explain_topn_groups(st->spec, es);
+	if (!st->spec->rows)
+	{
+		sift_v6_explain_group_keys(st->spec, es);
+		if (st->spec->topk > 0)
+			sift_v6_explain_topn_groups(st->spec, es);
+	}
 	if (OidIsValid(st->spec->text_indexoid) && es->analyze)
 	{
 		ExplainPropertyInteger("Bridge Chunks", NULL, st->stats.chunks, es);

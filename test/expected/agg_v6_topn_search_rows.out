@@ -30,7 +30,7 @@ DECLARE line text; agg boolean := false; fts boolean := false;
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'tc') LOOP
 		agg := agg OR line LIKE '%SiftAggV6%';
-		fts := fts OR line LIKE '%Text Index: tc_fts%';
+		fts := fts OR line LIKE '%Search: tc_fts%';
 	END LOOP;
 	RETURN agg AND fts;
 END $$;
