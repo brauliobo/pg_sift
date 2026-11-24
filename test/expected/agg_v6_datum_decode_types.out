@@ -21,6 +21,7 @@ SELECT i, i % 5, ((i % 37) / 4.0)::numeric::money, time '00:00' + (i % 24) * int
        'tx' || (i % 11) || repeat('z', i % 14), i % 100, i * 1000000000::bigint, (i % 50) / 4.0, DATE '2024-01-01' + i % 60, TIMESTAMP '2024-01-01' + i * interval '1 hour'
 FROM generate_series(1, 1200) i;
 UPDATE dd SET n38 = 'NaN' WHERE id % 97 = 0;
+UPDATE dd SET ts = CASE WHEN id % 211 = 0 THEN 'infinity'::timestamp ELSE '-infinity'::timestamp END WHERE id % 211 = 0 OR id % 223 = 0;
 UPDATE dd SET m = NULL, tm = NULL, iv = NULL, u = NULL, ba = NULL, e = NULL, ia = NULL, ip = NULL, ch = NULL, nm = NULL, t = NULL WHERE id % 53 = 0;
 CREATE TABLE di (LIKE dd) WITH (autovacuum_enabled = false);
 INSERT INTO di SELECT * FROM dd;
@@ -79,7 +80,11 @@ INSERT INTO cases (q) VALUES
  ('SELECT t, count(*), max(t), min(t) FROM %s GROUP BY t'),
  ('SELECT g, d, count(*), max(t), count(DISTINCT t), sum(i4), sum(i8), max(f8), min(ts) FROM %s GROUP BY g, d'),
  ('SELECT g, count(*), sum(i4), sum(i8), sum(f8), min(d), max(ts), max(t), min(n18), sum(n18) FROM %s GROUP BY g'),
- ('SELECT g, count(*) FILTER (WHERE (t > ''tx5'') IS NOT TRUE), sum(i4) FILTER (WHERE t > ''tx5''), sum(i4) FILTER (WHERE (n38 > 2) IS NOT TRUE) FROM %s GROUP BY g');
+ ('SELECT g, count(*) FILTER (WHERE (t > ''tx5'') IS NOT TRUE), sum(i4) FILTER (WHERE t > ''tx5''), sum(i4) FILTER (WHERE (n38 > 2) IS NOT TRUE) FROM %s GROUP BY g'),
+ ('SELECT g, sum(n38 * 2), max(n38 * 2), count(*) FROM %s GROUP BY g'),
+ ('SELECT n38 * 2, count(*) FROM %s GROUP BY 1'),
+ ('SELECT g, count(*), max(ts), min(ts) FROM %s WHERE ts < ''infinity'' GROUP BY g'),
+ ('SELECT ts, count(*) FROM %s WHERE ts <> ''-infinity'' GROUP BY ts');
 SELECT n, answer('dd', q) = answer('di', q) AS index_same, answer('dd', q) = answer('dt', q) AS table_same, ran('di', q) AS index_v6, ran('dt', q) AS table_v6 FROM cases ORDER BY n;
  n  | index_same | table_same | index_v6 | table_v6 
 ----+------------+------------+----------+----------
@@ -113,7 +118,11 @@ SELECT n, answer('dd', q) = answer('di', q) AS index_same, answer('dd', q) = ans
  28 | t          | t          | t        | t
  29 | t          | t          | t        | t
  30 | t          | t          | t        | t
-(30 rows)
+ 31 | t          | t          | t        | t
+ 32 | t          | t          | t        | t
+ 33 | t          | t          | t        | t
+ 34 | t          | t          | t        | t
+(34 rows)
 
 DROP TABLE dd, di, dt, cases CASCADE;
 DROP FUNCTION answer(text, text), ran(text, text);
