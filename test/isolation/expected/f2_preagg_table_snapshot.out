@@ -1,0 +1,96 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1check
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+
+starting permutation: s1begin s2begin s2delete s2update s1check s2commit s1check s1end s1check
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
+count
+-----
+40000
+(1 row)
+
+step s2begin: BEGIN;
+step s2delete: DELETE FROM iso_pt WHERE id % 5000 = 7;
+step s2update: UPDATE iso_pt SET v = v + 1000000 WHERE id % 7000 = 3;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+step s2commit: COMMIT;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+step s1end: COMMIT;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+39992|t   |scan  
+(1 row)
+
+
+starting permutation: s1begin s2begin s2delete s2update s1check s2abort s1check s1end s1check
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
+count
+-----
+40000
+(1 row)
+
+step s2begin: BEGIN;
+step s2delete: DELETE FROM iso_pt WHERE id % 5000 = 7;
+step s2update: UPDATE iso_pt SET v = v + 1000000 WHERE id % 7000 = 3;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+step s2abort: ROLLBACK;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+step s1end: COMMIT;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+
+starting permutation: s1begin s2delete s2update s2vacuum s1check s1end s2vacuum s1check
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt;
+count
+-----
+40000
+(1 row)
+
+step s2delete: DELETE FROM iso_pt WHERE id % 5000 = 7;
+step s2update: UPDATE iso_pt SET v = v + 1000000 WHERE id % 7000 = 3;
+step s2vacuum: VACUUM (FREEZE) iso_pt;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+40000|t   |cubes 
+(1 row)
+
+step s1end: COMMIT;
+step s2vacuum: VACUUM (FREEZE) iso_pt;
+step s1check: SELECT * FROM iso_pt_check();
+    n|same|source
+-----+----+------
+39992|t   |cubes 
+(1 row)
+
