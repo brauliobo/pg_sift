@@ -26,11 +26,15 @@ typedef struct TailItem
 	uint16		proj_id;		/* TAIL_PROJ_PART, TAIL_PROJ_DIR */
 } TailItem;
 
+/* The holders found: the spans and the items are kept in cx; what one holder is read with (its opened part, its extents) lives in scan until the next holder, so that the parts of the relation are not open together */
 typedef struct Tail
 {
+	MemoryContext cx;
+	MemoryContext scan;
 	SiftTailSpan *span;
 	TailItem   *item;
 	int			n;
+	int			cap;
 } Tail;
 
 static void
@@ -46,15 +50,21 @@ tail_add(Relation rel, Tail *t, SiftTailKind kind, TailItem it, const SiftExtent
 			s.blocks += ext[i].nblocks;
 	}
 	s.blocks = Max(s.blocks, reserve);
-	t->span = t->n == 0 ? palloc(sizeof(SiftTailSpan)) : repalloc(t->span, (t->n + 1) * sizeof(SiftTailSpan));
-	t->item = t->n == 0 ? palloc(sizeof(TailItem)) : repalloc(t->item, (t->n + 1) * sizeof(TailItem));
+	if (t->n == t->cap)
+	{
+		t->cap = Max(64, t->cap * 2);
+		t->span = t->n == 0 ? MemoryContextAlloc(t->cx, t->cap * sizeof(SiftTailSpan)) : repalloc(t->span, t->cap * sizeof(SiftTailSpan));
+		t->item = t->n == 0 ? MemoryContextAlloc(t->cx, t->cap * sizeof(TailItem)) : repalloc(t->item, t->cap * sizeof(TailItem));
+	}
 	t->span[t->n] = s;
 	t->item[t->n++] = it;
+	MemoryContextReset(t->scan);
 }
 
 static void
 add_part(Relation rel, Tail *t, const SiftPartitionEntry *e, const SiftPartDesc *d)
 {
+	MemoryContext old = MemoryContextSwitchTo(t->scan);
 	bool		remote = (d->ext_flags & SIFT_PART_EXT_REMOTE) != 0;
 	int			n = 0;
 	SiftExtent *ext = remote ? palloc(sizeof(SiftExtent)) : sift_part_blocks(sift_part_open_desc(rel, d, (uint32) e->part_id), &n);
@@ -64,6 +74,7 @@ add_part(Relation rel, Tail *t, const SiftPartitionEntry *e, const SiftPartDesc 
 		ext = repalloc(ext, (n + 1) * sizeof(SiftExtent));
 		ext[n++] = (SiftExtent) {d->dv_blk, d->dv_nblocks};
 	}
+	MemoryContextSwitchTo(old);
 	tail_add(rel, t, TAIL_PART, (TailItem) {.entry = e,.gen = d->part_gen}, ext, n, 0);
 }
 
@@ -97,8 +108,10 @@ add_projections(Relation rel, Tail *t, const SiftColMetaPageData *meta)
 		for (int k = 0; k < parts.nparts; k++)
 		{
 			int			n;
+			MemoryContext old = MemoryContextSwitchTo(t->scan);
 			SiftExtent *ext = sift_proj_part_extents(rel, &parts.parts[k], &n);
 
+			MemoryContextSwitchTo(old);
 			tail_add(rel, t, TAIL_PROJ_PART, (TailItem) {.proj_id = refs[i].proj_id,.gen = parts.parts[k].part_gen}, ext, n, 0);
 		}
 		add_dir(rel, t, refs[i].proj_id, blk, nb, nref_blocks);
@@ -109,7 +122,7 @@ static Tail
 collect(Relation rel, const SiftColMetaPageData *meta)
 {
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
-	Tail		t = {0};
+	Tail		t = {.cx = CurrentMemoryContext,.scan = sift_mem_allocset_create(CurrentMemoryContext, "sift tail holder")};
 	int			nscope = sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX ? sift_col_rel(rel)->nscope : 0;
 
 	for (int i = 0; i < mr.n; i++)
@@ -119,6 +132,7 @@ collect(Relation rel, const SiftColMetaPageData *meta)
 
 		for (int p = 0; p < np; p++)
 			add_part(rel, &t, &mr.entries[i], &parts[p]);
+		pfree(parts);
 	}
 	for (int s = 0; s < nscope; s++)
 	{
@@ -130,6 +144,7 @@ collect(Relation rel, const SiftColMetaPageData *meta)
 	}
 	if (meta->nprojs > 0)
 		add_projections(rel, &t, meta);
+	MemoryContextDelete(t.scan);
 	return t;
 }
 
@@ -209,5 +224,6 @@ sift_f2_tail_relocate(Relation rel, const SiftF2Store *store, FullTransactionId 
 		MemoryContextReset(pass);
 	}
 	MemoryContextSwitchTo(old);
+	sift_mem_release_os(MemoryContextMemAllocated(pass, true));
 	MemoryContextDelete(pass);
 }
