@@ -90,7 +90,7 @@ order_of(const SiftV6Spec *sp, ParShape *sh)
 {
 	const int	metric = sp->ntopk > 0 && sp->topk_item[0].pos >= sp->nkeys;
 
-	if (sp->topk < 1 || sp->topk > SIFT_PAR_GROUP_TOPK_MAX || sp->ntopk < 1 || sp->ntopk > metric + sp->nkeys)
+	if (sp->topk < 1 || sp->having || sp->topk > SIFT_PAR_GROUP_TOPK_MAX || sp->ntopk < 1 || sp->ntopk > metric + sp->nkeys)
 		return false;
 	sh->gs.topk = sp->topk;
 	sh->gs.order = SIFT_PAR_GROUP_BY_KEY;

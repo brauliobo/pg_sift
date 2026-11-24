@@ -437,7 +437,7 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 	ints = lappend_int(ints, s->nout);
 	for (int i = 0; i < s->nout; i++)
 		ints = list_concat(ints, list_make2_int(s->out[i].from, s->out[i].at));
-	return lappend_int(ints, (int) s->lock_k);
+	return lappend_int(lappend_int(ints, (int) s->lock_k), s->having);
 }
 
 void
@@ -489,6 +489,7 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 	for (int i = 0; i < s->nout; i++, at += 2)
 		s->out[i] = (SiftV6RowOut) {.from = (SiftV6RowFrom) list_nth_int(ints, at),.at = list_nth_int(ints, at + 1)};
 	s->lock_k = (uint32) list_nth_int(ints, at);
+	s->having = list_nth_int(ints, at + 1);
 }
 
 /* ---- ORDER BY .. LIMIT of the groups ---- */
@@ -582,6 +583,7 @@ sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		if (s->nsets > 0 || s->topk > 0 || s->ext != NULL || s->nparts > 0 || s->par_strategy != 0 || cp->custom_paths != NIL || path->parallel_aware)
 			continue;
 		s->topk = k;
+		s->having = lthird(cp->custom_private) != NIL;
 		if (!sift_v6_topk_items(root->parse, lsecond(cp->custom_private), s))
 			continue;
 		top = makeNode(CustomPath);
