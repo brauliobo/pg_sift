@@ -705,6 +705,7 @@ TESTING_REGRESS += tbl_vacuum_page_rows
 TESTING_REGRESS += tbl_wide_dict_limit
 TESTING_REGRESS += tbl_wide_rows
 TESTING_REGRESS += tbl_writepath
+TESTING_REGRESS += v1_unified_datum_fold
 TESTING_REGRESS += v1_unified_gorder_cursor
 TESTING_REGRESS += v1_unified_jsonb_leaf
 TESTING_REGRESS += v1_unified_jsonb_member
