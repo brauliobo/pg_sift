@@ -207,7 +207,7 @@ scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, ScanBytes
 static SiftCostInputs
 scan_inputs(const ScanBytes *b)
 {
-	const double decoded = Min(b->table_rows, Max(b->f_prune * b->granules * SIFT_GRANULE_ROWS, b->surv));
+	const double decoded = Min(b->table_rows, Max(b->f_prune * b->table_rows, b->surv));
 
 	return (SiftCostInputs) {
 		.g_eff = decoded / SIFT_GRANULE_ROWS,
