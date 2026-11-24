@@ -11,7 +11,9 @@ node_init vw 24 "autovacuum = off
 sift.async_maintenance = off
 sift.log_min_duration = 0"
 node_start vw || bail "start failed"
-sql vw "CREATE EXTENSION pg_sift" "SET sift.test_create_format1 = off" "CREATE TABLE facts (id bigint PRIMARY KEY, key int, kind text, amount int, pad text) USING sift_table" \
+TESTING=$(sql vw "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_create_format1'")
+F2=$([[ $TESTING == 1 ]] && echo "SET sift.test_create_format1 = off" || echo "SELECT 1")
+sql vw "CREATE EXTENSION pg_sift" "$F2" "CREATE TABLE facts (id bigint PRIMARY KEY, key int, kind text, amount int, pad text) USING sift_table" \
 	"CREATE SEQUENCE facts_seq START 30001" \
 	"INSERT INTO facts SELECT g, g % 1000, 'cat_' || (g % 8), g % 997, repeat('x', 40) FROM generate_series(1, 30000) g" "VACUUM facts" >/dev/null || bail "setup failed"
 D=$(dir vw)
