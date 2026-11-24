@@ -370,7 +370,7 @@ decide_tests(UnRun *u, const SiftF2ExtBatch *b)
 	for (uint32 w = 0; w < words; w++)
 		u->held[w] = u->bs.mask[w] & ~es->poison[w];
 	elem_vecs(u, es, ev);
-	sift_f2_row_tests_eval(u->tests, es, ev, b->col, u->outer_slot, u->held, u->yes, u->known);
+	sift_v6_row_tests_eval(u->tests, &es->layout, es->doc_valid, ev, b->col, u->outer_slot, u->held, u->yes, u->known);
 	for (int k = 0; k < u->ntests; k++)
 	{
 		const SiftV6XTest *xt = &u->x->test[k];
@@ -472,7 +472,7 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		if (u->eev != NULL)
 		{
 			keep = MemoryContextAllocZero(u->bcx, ((es->n_elems + 63) / 64 + 1) * sizeof(uint64));
-			sift_f2_elem_eval(u->eev, ev, 0, es->n_elems, keep);
+			sift_v6_elem_eval(u->eev, ev, 0, es->n_elems, keep);
 			in.elem_mask = keep;
 		}
 		while (!sift_unnest_done(&in, &cur))
@@ -640,10 +640,10 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		SIFT_INVARIANT(bound, "the quals over the members of the keys of the aggregate scan compiled when it was planned");
 	}
 	if (u->x->elem_where != NIL)
-		u->eev = sift_f2_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
+		u->eev = sift_v6_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
 	if (u->ntests == 0)
 		return;
-	u->tests = sift_f2_row_tests_open(CurrentMemoryContext, u->x);
+	u->tests = sift_v6_row_tests_open(CurrentMemoryContext, u->x);
 	foreach_ptr(List, tq, u->x->test_quals)
 	{
 		for (int c = 0; c < u->x->test[k].ncmps; c++)

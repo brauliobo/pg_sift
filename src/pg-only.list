@@ -969,6 +969,4 @@ table/v1/v1_tbl_reader_read.c
 col/f2/f2_v6_scan.h
 col/f2/f2_v6_scan_arms.c
 col/f2/f2_v6_scan_fill.c
-col/f2/f2_v6_unnest_test.c
-col/f2/f2_v6_unnest_test.h
 col/f2/f2_v6_scan_table.c

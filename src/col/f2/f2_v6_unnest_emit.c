@@ -285,7 +285,7 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 		if (u->eev != NULL && nel > 0)
 		{
 			keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
-			sift_f2_elem_eval(u->eev, ev, 0, nel, keep);
+			sift_v6_elem_eval(u->eev, ev, 0, nel, keep);
 		}
 		if (u->rec != NULL)
 			sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel);
@@ -349,7 +349,7 @@ heap_flags(UnRun *u, bool *yes, bool *known)
 		have = true;
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 			outer[c] = heap_outer(u, k, c, &cell[c], &valid[c]);
-		yes[k] = nel > 0 && sift_f2_row_test_one(u->tests, k, ev, nel, outer);
+		yes[k] = nel > 0 && sift_v6_row_test_one(u->tests, k, ev, nel, outer);
 	}
 }
 

@@ -34,7 +34,7 @@
 #include "col/am.h"
 #include "col/f2/f2_sink_ext.h"
 #include "col/f2/f2_v6_map_preagg.h"
-#include "col/f2/f2_v6_unnest_test.h"
+#include "agg/v6/v6_unnest_test.h"
 #include "core/errctx.h"
 
 
@@ -109,8 +109,8 @@ typedef struct UnRun
 	bool		has_where;
 	SiftVec   **wvecs;
 	int		   *wcol;			/* the column of each vector the WHERE clause reads */
-	SiftF2ElemEval *eev;		/* the quals of the element of a lateral unnest */
-	SiftF2RowTests *tests;		/* the tests of the elements of a row (SiftV6Ext.test), NULL without any */
+	SiftV6ElemEval *eev;		/* the quals of the element of a lateral unnest */
+	SiftV6RowTests *tests;		/* the tests of the elements of a row (SiftV6Ext.test), NULL without any */
 	int			ntests;
 	int			outer_slot[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* the column of the batch each comparison of a test is with */
 	AttrNumber	outer_att[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* and its column of the heap */

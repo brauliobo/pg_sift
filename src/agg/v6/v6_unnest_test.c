@@ -1,5 +1,5 @@
 /*
- * col/f2/f2_v6_unnest_test.c - the quals of an element and the tests of the elements of a row on the element columns of a granule (col/f2/f2_v6_unnest_test.h).
+ * agg/v6/v6_unnest_test.c - the quals of an element and the tests of the elements of a row on the element columns of a granule (agg/v6/v6_unnest_test.h).
  */
 /* check-memory: allow-allocs every array here follows the columns of one statement, and the elements of one granule */
 #include "postgres.h"
@@ -9,9 +9,9 @@
 #include "agg/v6/v6_gather.h"
 #include "agg/v6/v6_unnest.h"
 #include "agg/v6/v6_unnest_jsonb.h"
-#include "col/f2/f2_v6_unnest_test.h"
+#include "agg/v6/v6_unnest_test.h"
 
-struct SiftF2ElemEval
+struct SiftV6ElemEval
 {
 	SiftClause	clause;
 	int			ecol[SIFT_V6_MAX_FCOLS];	/* the column of the element each vector of the clause is */
@@ -22,10 +22,10 @@ struct SiftF2ElemEval
 	SiftVec    *inp[SIFT_V6_MAX_FCOLS];
 };
 
-SiftF2ElemEval *
-sift_f2_elem_eval_open(MemoryContext cx, const List *quals)
+SiftV6ElemEval *
+sift_v6_elem_eval_open(MemoryContext cx, const List *quals)
 {
-	SiftF2ElemEval *ee = MemoryContextAllocZero(cx, sizeof(SiftF2ElemEval));
+	SiftV6ElemEval *ee = MemoryContextAllocZero(cx, sizeof(SiftV6ElemEval));
 	bool		bound = sift_v6_unnest_elem_clause(cx, quals, &ee->clause, ee->ecol, &ee->nvec);
 
 	SIFT_INVARIANT(bound, "the clause of the element of the aggregate scan of an unnest compiled when it was planned");
@@ -39,7 +39,7 @@ sift_f2_elem_eval_open(MemoryContext cx, const List *quals)
 }
 
 void
-sift_f2_elem_eval(SiftF2ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, uint64 *keep)
+sift_v6_elem_eval(SiftV6ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, uint64 *keep)
 {
 	for (uint32 at = lo - lo % 64; at < hi; at += SIFT_VEC_LEN)
 	{
@@ -64,11 +64,11 @@ sift_f2_elem_eval(SiftF2ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, u
 	}
 }
 
-struct SiftF2RowTests
+struct SiftV6RowTests
 {
 	MemoryContext cx;
 	const SiftV6Ext *x;
-	SiftF2ElemEval *ee[SIFT_V6_XTESTS];
+	SiftV6ElemEval *ee[SIFT_V6_XTESTS];
 	uint64	   *keep;
 	uint32	   *par;			/* the row of the batch each element of the granule belongs to */
 	uint32		cap;			/* the elements keep and par have room for */
@@ -77,10 +77,10 @@ struct SiftF2RowTests
 	uint64		gvalid[SIFT_VEC_WORDS];
 };
 
-SiftF2RowTests *
-sift_f2_row_tests_open(MemoryContext cx, const SiftV6Ext *x)
+SiftV6RowTests *
+sift_v6_row_tests_open(MemoryContext cx, const SiftV6Ext *x)
 {
-	SiftF2RowTests *t = MemoryContextAllocZero(cx, sizeof(SiftF2RowTests));
+	SiftV6RowTests *t = MemoryContextAllocZero(cx, sizeof(SiftV6RowTests));
 	int			k = 0;
 
 	t->cx = cx;
@@ -89,14 +89,14 @@ sift_f2_row_tests_open(MemoryContext cx, const SiftV6Ext *x)
 	foreach_ptr(List, tq, x->test_quals)
 	{
 		if (linitial(tq) != NIL)
-			t->ee[k] = sift_f2_elem_eval_open(cx, linitial(tq));
+			t->ee[k] = sift_v6_elem_eval_open(cx, linitial(tq));
 		k++;
 	}
 	return t;
 }
 
 static void
-reserve(SiftF2RowTests *t, uint32 n)
+reserve(SiftV6RowTests *t, uint32 n)
 {
 	if (n <= t->cap)
 		return;
@@ -107,17 +107,17 @@ reserve(SiftF2RowTests *t, uint32 n)
 
 /* the elements [lo, hi) that pass the quals of test k (all of them for a test with none) */
 static void
-keep_quals(SiftF2RowTests *t, int k, const SiftVec *ev, uint32 lo, uint32 hi)
+keep_quals(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 lo, uint32 hi)
 {
 	if (t->ee[k] != NULL)
-		sift_f2_elem_eval(t->ee[k], ev, lo, hi, t->keep);
+		sift_v6_elem_eval(t->ee[k], ev, lo, hi, t->keep);
 	else
 		memset(t->keep + lo / 64, 0xff, ((hi + 63) / 64 - lo / 64) * sizeof(uint64));
 }
 
 /* keep &= the elements of [lo, hi) whose value compares as cmp says with outer, the value of its row (idx: the row of each element; NULL: the one value) */
 static void
-keep_cmp(SiftF2RowTests *t, const SiftV6XCmp *cmp, const SiftVec *e, const SiftVec *outer, const uint32 *idx, uint32 lo, uint32 hi)
+keep_cmp(SiftV6RowTests *t, const SiftV6XCmp *cmp, const SiftVec *e, const SiftVec *outer, const uint32 *idx, uint32 lo, uint32 hi)
 {
 	for (uint32 at = lo - lo % 64; at < hi; at += SIFT_VEC_LEN)
 	{
@@ -137,7 +137,7 @@ keep_cmp(SiftF2RowTests *t, const SiftV6XCmp *cmp, const SiftVec *e, const SiftV
 }
 
 static void
-parents_of(SiftF2RowTests *t, const SiftArrayLayout *lay)
+parents_of(SiftV6RowTests *t, const SiftArrayLayout *lay)
 {
 	for (uint32 e = lay->offsets[0] - lay->offsets[0] % 64; e < lay->offsets[0]; e++)
 		t->par[e] = 0;
@@ -147,15 +147,14 @@ parents_of(SiftF2RowTests *t, const SiftArrayLayout *lay)
 }
 
 void
-sift_f2_row_tests_eval(SiftF2RowTests *t, const SiftF2ElemStream *es, const SiftVec *ev, const SiftVec *col, const int *outer, const uint64 *rows, uint64 yes[][SIFT_VEC_WORDS],
-					   uint64 known[][SIFT_VEC_WORDS])
+sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftArrayLayout *lay, const uint64 *doc_valid, const SiftVec *ev, const SiftVec *col, const int *outer, const uint64 *rows,
+					   uint64 yes[][SIFT_VEC_WORDS], uint64 known[][SIFT_VEC_WORDS])
 {
-	const SiftArrayLayout *lay = &es->layout;
 	const uint32 lo = lay->offsets[0],
 				hi = lay->offsets[lay->n_parents];
 	bool		have_par = false;
 
-	reserve(t, es->n_elems);
+	reserve(t, lay->n_elems);
 	for (int k = 0; k < t->x->ntests; k++)
 	{
 		const SiftV6XTest *xt = &t->x->test[k];
@@ -168,12 +167,12 @@ sift_f2_row_tests_eval(SiftF2RowTests *t, const SiftF2ElemStream *es, const Sift
 			have_par = true;
 			keep_cmp(t, &xt->cmp[c], &ev[xt->cmp[c].elem], &col[outer[k * SIFT_V6_XCMPS + c]], t->par, lo, hi);
 		}
-		sift_unnest_any(lay, t->keep, rows, es->doc_valid, yes[k], known[k]);
+		sift_unnest_any(lay, t->keep, rows, doc_valid, yes[k], known[k]);
 	}
 }
 
 bool
-sift_f2_row_test_one(SiftF2RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer)
+sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer)
 {
 	const SiftV6XTest *xt = &t->x->test[k];
 
