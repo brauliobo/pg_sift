@@ -41,11 +41,17 @@ typedef struct SiftV6PgExpr
 	bool		isnull[SIFT_VEC_LEN];
 } SiftV6PgExpr;
 
-/* The expression can run over the native vectors: no volatile function, no set-returning function, no parameter, subplan, aggregate or window, and only the Vars of the inputs */
-extern bool sift_v6_pgexpr_plan_ok(const Expr *e);
+/*
+ * The expression can run over the native vectors: no volatile function, no set-returning function, no aggregate or window, and only the Vars of the inputs. A sub-plan or an executor parameter it holds
+ * is one the scan may start when a row first needs it (lut_subplan_ok, initplan_ok of agg/plan/safety.h), and only when root is given: the scan of a node that prepares them (sift_v6_exec_begin)
+ */
+extern bool sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e);
 
-/* The expression over the inputs in[0 .. nin - 1], in cx (the state lives as long as cx) */
-extern SiftV6PgExpr *sift_v6_pgexpr_open(MemoryContext cx, Expr *e, int nin, const SiftV6PgIn *in);
+/* The expression starts a sub-plan or reads an executor parameter: only the node that runs the scan can evaluate it */
+extern bool sift_v6_pgexpr_exec(const Node *e);
+
+/* The expression over the inputs in[0 .. nin - 1], in cx (the state lives as long as cx). With a node (ps), it is that node's own: its sub-plans are the node's, and cx has to live as long as the node */
+extern SiftV6PgExpr *sift_v6_pgexpr_open(MemoryContext cx, PlanState *ps, Expr *e, int nin, const SiftV6PgIn *in);
 
 /* vals[r] and isnull[r] of every active row of bs; in[i] is the vector of input i. The Datums are valid until the next call */
 extern void sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSel *bs);
@@ -58,10 +64,10 @@ extern SiftV6PgExpr *sift_v6_pgexpr_bind(MemoryContext cx, const SiftV6Spec *s, 
 
 /*
  * The derivation of a key or an argument the scan evaluates with these: e is an expression (not a column or a constant) of at most SIFT_V6_MAX_COLS columns of the range table entry relid, each one a
- * column rs resolves, and PostgreSQL can run it as it is (sift_v6_pgexpr_plan_ok). d is SVD_PG_EXPR with the first column as its source and the place of its item in *items as aux, *restype the base type of
+ * column rs resolves, and PostgreSQL can run it as it is (sift_v6_pgexpr_plan_ok of root). d is SVD_PG_EXPR with the first column as its source and the place of its item in *items as aux, *restype the base type of
  * the result. An item is the renumbered expression and the ints (result type, then attno, type and scale of each column).
  */
-extern bool sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items);
+extern bool sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items);
 
 typedef struct SiftV6PgItem
 {
@@ -71,8 +77,9 @@ typedef struct SiftV6PgItem
 	SiftV6Col	col[SIFT_V6_MAX_COLS];
 } SiftV6PgItem;
 
-/* The item of the derivation d (SVD_PG_EXPR) of a spec */
+/* The item of the derivation d (SVD_PG_EXPR) of a spec, or the at-th of its items */
 extern void sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out);
+extern void sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out);
 /* The workers of a parallel scan can run the statement: its PostgreSQL expressions are parallel safe, and its groups are bytes the leader merges (a generic key's codes are the state of one backend, a constant group is a row of the one that read some) */
 extern bool sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s);
 /* The spec has derivations or batch quals PostgreSQL evaluates: the text columns they read are given as strings, never as the codes of a dictionary */

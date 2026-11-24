@@ -6,12 +6,15 @@
 
 #include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/date.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
 #include "agg/v6/v6_filter_pg.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 
 typedef struct Build
@@ -379,4 +382,40 @@ sift_v6_clause_bind(MemoryContext cx, const List *quals, const SiftV6Spec *spec,
 
 	memcpy(fcol, spec->fcol, sizeof(SiftV6Col) * nfcols);
 	return build(&b, quals, out);
+}
+
+/*
+ * An aggregate whose FILTER (WHERE f) the executor evaluates (it reads an InitPlan or starts a sub-plan, which the constants of a native clause cannot say): the same aggregate of
+ * CASE WHEN f THEN arg END, which takes the rows f passes and skips the others as the NULLs of an aggregate are skipped; count(*) counts the 1 of the rows that pass
+ */
+Aggref *
+sift_v6_filter_fold(Aggref *a)
+{
+	Aggref	   *b = copyObject(a);
+	CaseExpr   *ce = makeNode(CaseExpr);
+	CaseWhen   *cw = makeNode(CaseWhen);
+	Expr	   *arg;
+
+	if (a->aggorder != NIL || a->aggdistinct != NIL || list_length(a->args) > 1 || !sift_v6_pgexpr_exec((Node *) a->aggfilter))
+		return NULL;
+	arg = a->aggstar ? (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(1), false, true) : linitial_node(TargetEntry, a->args)->expr;
+	cw->expr = a->aggfilter;
+	cw->result = arg;
+	cw->location = -1;
+	ce->casetype = exprType((Node *) arg);
+	ce->casecollid = exprCollation((Node *) arg);
+	ce->args = list_make1(cw);
+	ce->defresult = (Expr *) makeNullConst(ce->casetype, exprTypmod((Node *) arg), ce->casecollid);
+	ce->location = -1;
+	b->aggfilter = NULL;
+	if (a->aggstar)
+	{
+		b->aggstar = false;
+		b->aggfnoid = F_COUNT_ANY;
+		b->aggargtypes = list_make1_oid(INT4OID);
+		b->args = list_make1(makeTargetEntry((Expr *) ce, 1, NULL, false));
+	}
+	else
+		linitial_node(TargetEntry, b->args)->expr = (Expr *) ce;
+	return b;
 }

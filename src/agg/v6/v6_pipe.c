@@ -6,13 +6,25 @@
 
 #include <stdalign.h>
 
+#include "catalog/pg_type_d.h"
+#include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
 
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gather.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "core/popcount.h"
+
+/* A key the probing side computes: the expression over the columns rcol[col[0 ..]], whose vector comes out of PostgreSQL's evaluator before the dimension is probed */
+struct SiftV6KeyExpr
+{
+	SiftV6PgExpr *x;
+	int			nin;
+	int			col[SIFT_V6_MAX_COLS];
+	SiftVxOut	out;
+};
 
 struct SiftV6PipeBatch
 {
@@ -22,6 +34,30 @@ struct SiftV6PipeBatch
 	SiftBatchSel own;
 	SiftBatchSel *bs;
 };
+
+/* the virtual attribute of a Var of the expression is the 1-based place of its column in x->rcol: the inputs of the evaluator are those the expression reads */
+static SiftV6KeyExpr *
+key_expr_new(SiftV6Pipe *p, Expr *e)
+{
+	SiftV6KeyExpr *ke = MemoryContextAllocZero(p->cx, sizeof(SiftV6KeyExpr));
+	const SiftV6Ext *x = p->spec->ext;
+	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
+	List	   *vars;
+
+	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_PGX_RELID, &vars), "a key of the join is an expression of at most %d columns", SIFT_V6_MAX_COLS);
+	ke->nin = list_length(vars);
+	for (int j = 0; j < ke->nin; j++)
+	{
+		const SiftV6Col *c = &x->rcol[((const Var *) list_nth(vars, j))->varattno - 1];
+
+		ke->col[j] = (int) (c - x->rcol);
+		pin[j] = (SiftV6PgIn) {.typid = c->typid,.scale = c->scale};
+	}
+	ke->x = sift_v6_pgexpr_open(p->cx, NULL, sift_v6_pgexpr_renumber(e, SIFT_V6_PGX_RELID, vars), ke->nin, pin);
+	ke->x->restype = getBaseType(exprType((Node *) e));
+	sift_vx_out_init(&ke->out, p->cx);
+	return ke;
+}
 
 SiftV6Pipe *
 sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, SiftV6Rows *rows, int nfact, const SiftVecType *ftype)
@@ -59,6 +95,10 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 	p->keyvec = MemoryContextAlloc(cx, Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	p->argvec = MemoryContextAlloc(cx, Max(sift_v6_spec_nvec(spec), 1) * sizeof(SiftVec *));
 	p->resid = sift_v6_resid_new(cx, x);
+	for (int d = 0; d < p->ndims; d++)
+		for (int k = 0; k < x->dim[d].nkeys; k++)
+			if (x->dim[d].kx[k] > 0)
+				p->kexpr[d][k] = key_expr_new(p, list_nth(x->kexpr, x->dim[d].kx[k] - 1));
 	p->match = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
 	p->fact_idx = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint16));
 	p->dim_row = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
@@ -180,6 +220,18 @@ restrict_part(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
 
 static void stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b);
 
+/* the vector of the key for the rows of the batch, from the columns the batch holds before the dimension */
+static const SiftVec *
+key_expr_vec(SiftV6Pipe *p, SiftV6KeyExpr *ke, SiftV6PipeBatch *b)
+{
+	const SiftVec *in[SIFT_V6_MAX_COLS];
+
+	for (int j = 0; j < ke->nin; j++)
+		in[j] = &b->vec[p->rslot[ke->col[j]]];
+	sift_v6_pgexpr_derive(ke->x, in, b->bs, &ke->out);
+	return &ke->out.vec;
+}
+
 /* a dimension with a key more than once: the pairs of (row, dimension row), a batch of them at a time, go on to the next dimension */
 static void
 expand(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
@@ -243,7 +295,7 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 	dim = p->dim[d];
 	pr = (SiftStarProbe) {.n = bs->n_raw,.active = bs->mask};
 	for (int k = 0; k < dim->shape.nkeys; k++)
-		pr.key[k] = &b->vec[p->fslot[d][k]];
+		pr.key[k] = p->kexpr[d][k] != NULL ? key_expr_vec(p, p->kexpr[d][k], b) : &b->vec[p->fslot[d][k]];
 	if (p->nparts[d] > 1)
 	{
 		restrict_part(p, d, b, &pr);

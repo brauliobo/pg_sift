@@ -19,6 +19,8 @@
 
 typedef struct SiftV6PipeBatch SiftV6PipeBatch;
 
+typedef struct SiftV6KeyExpr SiftV6KeyExpr;
+
 typedef struct SiftV6Pipe
 {
 	const SiftV6Spec *spec;
@@ -31,6 +33,7 @@ typedef struct SiftV6Pipe
 	uint32		nparts[SIFT_STAR_MAX_DIMS];	/* a dimension too big for the memory of a join is read in this many parts of its keys, one after the other */
 	uint32		part[SIFT_STAR_MAX_DIMS];	/* the part of the key the current pass joins */
 	int			fslot[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the slots of the fact keys of each dimension */
+	SiftV6KeyExpr *kexpr[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the keys that are expressions (NULL: the slot of fslot) */
 	int			pay_slot[SIFT_STAR_MAX_DIMS];	/* the first payload slot of each dimension */
 	SiftVecType *type;			/* [nslots] */
 	SiftV6Resid *resid;			/* the conditions of the join no key says, run on the pairs that went through every dimension (NULL: none) */

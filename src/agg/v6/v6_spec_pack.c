@@ -219,7 +219,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 		for (int k = 0; k < xd->nkeys; k++)
 		{
 			ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, xd->fatt[k]), (int) xd->ftype[k]), (int) xd->ktype[k]), xd->kcol[k]);
-			ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, (int) xd->fsrc[k]), xd->fdim[k]), xd->fslot[k]), (int) xd->kvarno[k]);
+			ints = lappend_int(lappend_int(lappend_int(lappend_int(lappend_int(ints, (int) xd->fsrc[k]), xd->fdim[k]), xd->fslot[k]), (int) xd->kvarno[k]), xd->kx[k]);
 		}
 		ints = lappend_int(ints, xd->npay);
 		for (int c = 0; c < xd->npay; c++)
@@ -233,7 +233,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	ints = list_concat(ints, list_make3_int(x->elem.left, x->elem.semi, x->elem.ncols));
 	for (int c = 0; c < x->elem.ncols; c++)
 		ints = lappend_int(lappend_int(ints, x->elem.col_leaf[c]), (int) x->elem.col_type[c]);
-	return lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array);
+	return lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr);
 }
 
 SiftV6Ext *
@@ -254,7 +254,7 @@ sift_v6_ext_unpack(const List *l)
 
 		xd->mode = (SiftV6JoinMode) list_nth_int(ints, at++);
 		xd->nkeys = list_nth_int(ints, at++);
-		for (int k = 0; k < xd->nkeys; k++, at += 8)
+		for (int k = 0; k < xd->nkeys; k++, at += 9)
 		{
 			xd->fatt[k] = list_nth_int(ints, at);
 			xd->ftype[k] = (Oid) list_nth_int(ints, at + 1);
@@ -264,6 +264,7 @@ sift_v6_ext_unpack(const List *l)
 			xd->fdim[k] = list_nth_int(ints, at + 5);
 			xd->fslot[k] = list_nth_int(ints, at + 6);
 			xd->kvarno[k] = (Index) list_nth_int(ints, at + 7);
+			xd->kx[k] = list_nth_int(ints, at + 8);
 		}
 		xd->npay = list_nth_int(ints, at++);
 		for (int c = 0; c < xd->npay; c++, at += 2)
@@ -291,6 +292,7 @@ sift_v6_ext_unpack(const List *l)
 	x->heap_where = list_nth(l, 4);
 	x->resid = list_nth(l, 5);
 	x->elem_array = list_nth(l, 6);
+	x->kexpr = list_nth(l, 7);
 	return x;
 }
 

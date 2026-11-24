@@ -15,10 +15,13 @@
 typedef struct SiftV6PgQual SiftV6PgQual;
 
 /* The clause is a Boolean PostgreSQL expression whose columns the input decodes (each one a column of a class the scan reads) */
-extern bool sift_v6_pgqual_plan_ok(const SiftV6Input *in, const Expr *clause);
+extern bool sift_v6_pgqual_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause);
 
-/* The conjunction of the quals; the columns they read are added to in, and src[slot] (filled by the caller for the columns of in once this returns) is what filter reads */
-extern SiftV6PgQual *sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in);
+/* The conjunction of the clauses of quals that need the executor (sift_v6_pgexpr_exec), made under ps in cx, which lives as long as the node; NULL when no clause does */
+extern SiftV6PgExpr *sift_v6_pgqual_prepare(MemoryContext cx, PlanState *ps, const List *quals);
+
+/* The conjunction of the quals, evaluated by prepared when it is not NULL (the one sift_v6_pgqual_prepare made of them); the columns they read are added to in, and src[slot] (filled by the caller for the columns of in once this returns) is what filter reads */
+extern SiftV6PgQual *sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in, SiftV6PgExpr *prepared);
 
 /* The rows of bs that the quals pass (an active row only): its mask, n_active and all_active are set; src[slot] is the vector of input column slot */
 extern void sift_v6_pgqual_filter(SiftV6PgQual *q, SiftBatchSel *bs, const SiftVec *const *src);

@@ -164,11 +164,12 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 	sift_v6_star_attach(star, s->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
-		{
-			const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
+			if (sift_v6_xdim_key_is_col(&x->dim[d], k))
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
 
-			s->pipe->fslot[d][k] = slot_of(s, first, &key);
-		}
+				s->pipe->fslot[d][k] = slot_of(s, first, &key);
+			}
 	for (int i = 0; i < x->nrcol; i++)
 		s->pipe->rslot[i] = slot_of(s, first, &x->rcol[i]);
 	for (int i = 0; i < spec->nkeys; i++)
@@ -269,7 +270,7 @@ setup_bq(V6Scan *s, const int *first)
 		sift_v6_input_init_table(&in, s->host);
 	else
 		sift_v6_input_init_rel(&in, s->host);
-	s->bq = sift_v6_bq_open(CurrentMemoryContext, s->spec->vqual, &in, bq_col, &cols);
+	s->bq = sift_v6_bq_open(CurrentMemoryContext, s->spec->vqual, &in, bq_col, &cols, s->spec->exec);
 }
 
 static void
@@ -291,7 +292,7 @@ scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *s
 			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;
 	for (int d = 0; x != NULL && d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
-			if (x->dim[d].fsrc[k] == SV6SRC_ATTR)
+			if (sift_v6_xdim_key_is_col(&x->dim[d], k) && x->dim[d].fsrc[k] == SV6SRC_ATTR)
 				col_for(s, first, sift_v6_xdim_key_col(&x->dim[d], k), false, false);
 	for (int i = 0; x != NULL && i < x->nrcol; i++)
 		if (x->rcol[i].src == SV6SRC_ATTR)

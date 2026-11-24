@@ -184,8 +184,14 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 	Oid			coll;
 
 	unfiltered.aggfilter = NULL;
-	if (!agg_kind_of(p, &unfiltered, &g) || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
+	if (!agg_kind_of(p, &unfiltered, &g))
 		return false;
+	if (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause))
+	{
+		Aggref	   *folded = sift_v6_filter_fold((Aggref *) a);
+
+		return folded != NULL && sift_v6_compile_agg_native(p, folded);
+	}
 	if (g.kind == SV6_COUNT_DISTINCT && list_length(a->args) == 1 && IsA(((TargetEntry *) linitial(a->args))->expr, RowExpr))
 	{
 		if (!compile_distinct_row(p, (const RowExpr *) ((TargetEntry *) linitial(a->args))->expr, &g))
@@ -762,10 +768,11 @@ sift_v6_compile_fact(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, Index
 	return ok;
 }
 
+/* The executor parameters of the expressions; not those inside a sub-plan: it sets its own, and an eligible one reads none of the statement's (agg/plan/safety.h) */
 static bool
 collect_params(Node *n, List **out)
 {
-	if (n == NULL)
+	if (n == NULL || IsA(n, SubPlan))
 		return false;
 	if (IsA(n, Param))
 	{
@@ -785,6 +792,9 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	cs->scan.scanrelid = 0;
 	cs->flags = best->flags;
 	collect_params((Node *) spec->indexqual, &cs->custom_exprs);
+	collect_params((Node *) spec->vqual, &cs->custom_exprs);
+	foreach_ptr(List, item, spec->pgexpr)
+		collect_params(linitial(item), &cs->custom_exprs);
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->custom_private = linitial(best->custom_private);
 	cs->custom_plans = custom_plans;

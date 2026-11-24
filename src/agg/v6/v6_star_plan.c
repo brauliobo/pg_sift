@@ -55,13 +55,19 @@ text_type(Oid t)
 
 /* the join of the keys is one of the bytes' equality of one class: the same type, or two integer types, or two texts of a collation whose equality is the bytes' */
 bool
+sift_v6_key_types_agree(Oid ftype, Oid fcoll, Oid dtype, Oid dcoll)
+{
+	if (text_type(ftype) && text_type(dtype))
+		return sift_text_bytes_equal(fcoll) && sift_text_bytes_equal(dcoll);
+	if (ftype == DATEOID || ftype == TIMESTAMPOID || ftype == TIMESTAMPTZOID)
+		return ftype == dtype;
+	return int_type(ftype) && int_type(dtype);
+}
+
+bool
 sift_v6_keys_agree(const Var *f, const Var *d)
 {
-	if (text_type(f->vartype) && text_type(d->vartype))
-		return sift_text_bytes_equal(f->varcollid) && sift_text_bytes_equal(d->varcollid);
-	if (f->vartype == DATEOID || f->vartype == TIMESTAMPOID || f->vartype == TIMESTAMPTZOID)
-		return f->vartype == d->vartype;
-	return int_type(f->vartype) && int_type(d->vartype);
+	return sift_v6_key_types_agree(f->vartype, f->varcollid, d->vartype, d->varcollid);
 }
 
 static int

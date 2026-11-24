@@ -25,6 +25,7 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_join_plan.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_unnest_jsonb.h"
 
 #define ROLE_FACT	(-2)
@@ -37,7 +38,7 @@ typedef struct JoinDim
 	RelOptInfo *rel;			/* its plan: the relation, or the join PostgreSQL made of the relations */
 	SiftV6JoinMode mode;
 	int			nkeys;
-	const Var  *probe[SIFT_STAR_MAX_KEYS];
+	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the column of the relations before the dimension, or the expression of them, that its key is probed with */
 	const Var  *key[SIFT_STAR_MAX_KEYS];
 } JoinDim;
 
@@ -169,13 +170,45 @@ role_of(const JoinShape *sh, const Var *v)
 	return ROLE_NONE;
 }
 
+/* the part of the latest relation the columns of e are of; ROLE_NONE when it reads a column the join does not know, or none */
+static int
+expr_role(const JoinShape *sh, const Node *e)
+{
+	List	   *vars;
+	int			role = ROLE_FACT;
+
+	if (contain_agg_clause((Node *) e) || contain_window_function((Node *) e))
+		return ROLE_NONE;
+	vars = pull_var_clause((Node *) e, 0);
+	if (vars == NIL)
+		return ROLE_NONE;
+	foreach_node(Var, v, vars)
+	{
+		const int	r = v->varlevelsup == 0 ? role_of(sh, v) : ROLE_NONE;
+
+		if (r == ROLE_NONE)
+			return ROLE_NONE;
+		role = Max(role, r);
+	}
+	return role;
+}
+
+/* the same probe: a column by its attribute, an expression by its tree */
 static bool
-add_key(JoinDim *d, const Var *probe, const Var *key)
+same_probe(const Node *a, const Node *b)
+{
+	if (IsA(a, Var) && IsA(b, Var))
+		return ((const Var *) a)->varno == ((const Var *) b)->varno && ((const Var *) a)->varattno == ((const Var *) b)->varattno;
+	return equal(a, b);
+}
+
+static bool
+add_key(JoinDim *d, const Node *probe, const Var *key)
 {
 	for (int k = 0; k < d->nkeys; k++)
-		if (d->probe[k]->varno == probe->varno && d->probe[k]->varattno == probe->varattno && d->key[k]->varno == key->varno && d->key[k]->varattno == key->varattno)
+		if (same_probe(d->probe[k], probe) && d->key[k]->varno == key->varno && d->key[k]->varattno == key->varattno)
 			return true;
-	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_keys_agree(probe, key))
+	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_key_types_agree(exprType(probe), exprCollation(probe), key->vartype, key->varcollid))
 		return false;
 	d->probe[d->nkeys] = probe;
 	d->key[d->nkeys++] = key;
@@ -192,15 +225,16 @@ within_one_dim(const JoinShape *sh, Relids rels)
 	return false;
 }
 
-/* a class of equal columns that the planner made of the inner and semi joins: the members that are dimensions are joined to the member before them, the column of the fact table, of the element or of the first dimension */
+/* a class of equal columns and expressions that the planner made of the inner and semi joins: the members that are dimensions are joined to the member before them, the column or expression of the fact table, of the element or of the first dimension */
 static bool
 equivalence_keys(PlannerInfo *root, Relids base, JoinShape *sh)
 {
 	foreach_node(EquivalenceClass, ec, root->eq_classes)
 	{
-		const Var  *probe = NULL;
+		const Node *probe = NULL;
+		int			probe_role = ROLE_NONE;
 		Relids		rels = NULL;
-		bool		computed = false;
+		bool		computed_dim = false;
 		int			ncolumns = 0;
 
 		if (ec->ec_has_const || ec->ec_has_volatile || ec->ec_broken)
@@ -209,27 +243,31 @@ equivalence_keys(PlannerInfo *root, Relids base, JoinShape *sh)
 		{
 			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
 			Relids		vr = bms_intersect(pull_varnos(root, (Node *) em->em_expr), base);
+			const int	role = bms_is_empty(vr) ? ROLE_NONE : expr_role(sh, (Node *) em->em_expr);
 
 			if (em->em_is_child)
 				continue;
 			rels = bms_add_members(rels, vr);
-			computed |= v == NULL && !bms_is_empty(vr);
-			if (v == NULL || role_of(sh, v) == ROLE_NONE)
+			computed_dim |= v == NULL && role >= 0;
+			if (role == ROLE_NONE)
 				continue;
-			ncolumns += role_of(sh, v) < 0;
-			if (probe == NULL || role_of(sh, v) < role_of(sh, probe))
-				probe = v;
+			ncolumns += role < 0;
+			if (probe == NULL || role < probe_role)
+			{
+				probe = v != NULL ? (const Node *) v : (const Node *) em->em_expr;
+				probe_role = role;
+			}
 		}
 		if (bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
 			continue;
-		if (computed || probe == NULL || ncolumns > 1)
+		if (computed_dim || probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)))
 			return false;
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
 			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
 			const int	d = v != NULL && !em->em_is_child ? role_of(sh, v) : ROLE_NONE;
 
-			if (d < 0 || d == role_of(sh, probe))
+			if (d < 0 || d == probe_role)
 				continue;
 			if ((sh->dim[d].mode != SV6J_INNER_EQUI && sh->dim[d].mode != SV6J_SEMI_EQUI) || !add_key(&sh->dim[d], probe, v))
 				return false;
@@ -271,10 +309,24 @@ place_period(JoinShape *sh, const RestrictInfo *ri)
 	if (d->mode != SV6J_INNER_EQUI || d->nkeys != 0)
 		return false;
 	d->mode = SV6J_RANGE_SMALL;
-	d->probe[0] = col;
+	d->probe[0] = (const Node *) col;
 	d->key[0] = range;
 	d->nkeys = 1;
 	return true;
+}
+
+/* the equality of a column of a dimension (other) and a column or an expression of the relations before it (arg), as a key of the dimension */
+static bool
+place_key(JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
+{
+	const Var  *key = sift_v6_plain_var(other);
+	const Var  *column = sift_v6_plain_var(arg);
+	const Node *probe = column != NULL ? (const Node *) column : arg;
+	int			d;
+
+	if (key == NULL || (d = role_of(sh, key)) < 0 || expr_role(sh, probe) == ROLE_NONE || expr_role(sh, probe) >= d)
+		return false;
+	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && add_key(&sh->dim[d], probe, key);
 }
 
 /* where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place for it */
@@ -282,8 +334,6 @@ static bool
 place_clause(JoinShape *sh, RestrictInfo *ri)
 {
 	const OpExpr *op = (const OpExpr *) ri->clause;
-	const Var  *a = NULL,
-			   *b = NULL;
 
 	if (ri->has_clone || ri->is_clone)
 		return false;
@@ -291,20 +341,9 @@ place_clause(JoinShape *sh, RestrictInfo *ri)
 		return true;
 	if (place_period(sh, ri))
 		return true;
-	if (IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))))
-	{
-		a = sift_v6_plain_var(linitial(op->args));
-		b = sift_v6_plain_var(lsecond(op->args));
-	}
-	if (a != NULL && b != NULL && role_of(sh, a) != role_of(sh, b))
-	{
-		const Var  *probe = role_of(sh, a) < role_of(sh, b) ? a : b;
-		const Var  *key = probe == a ? b : a;
-		const int	d = role_of(sh, key);
-
-		if (d >= 0 && role_of(sh, probe) != ROLE_NONE && clause_level_ok(ri, sh->dim[d].mode) && add_key(&sh->dim[d], probe, key))
-			return true;
-	}
+	if (IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))) &&
+		(place_key(sh, ri, linitial(op->args), lsecond(op->args)) || place_key(sh, ri, lsecond(op->args), linitial(op->args))))
+		return true;
 	if (!ri->is_pushed_down)
 		return false;
 	sh->resid = lappend(sh->resid, ri);
@@ -350,7 +389,7 @@ needs_lookup(const JoinShape *sh)
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
 			return true;
 		for (int k = 0; k < d->nkeys; k++)
-			if (role_of(sh, d->probe[k]) != ROLE_FACT)
+			if (!IsA(d->probe[k], Var) || role_of(sh, (const Var *) d->probe[k]) != ROLE_FACT)
 				return true;
 	}
 	return false;
@@ -409,48 +448,6 @@ probe_col(V6Plan *p, const JoinShape *sh, const Var *v, int dim, SiftV6Col *out)
 	return ok && key_class(out->typid);
 }
 
-static bool
-seed_dims(V6Plan *p, const JoinShape *sh, const SiftV6ElemRte *rte)
-{
-	SiftV6Ext  *x;
-
-	if (sh->elem != NULL)
-	{
-		if (!sift_v6_unnest_seed(p, sh->elem, rte, sh->elem_left))
-			return false;
-		x = p->xseed;
-	}
-	else
-		p->xseed = x = sift_v6_ext_new();
-	p->spec.ext = x;
-	for (int d = 0; d < sh->nd; d++)
-	{
-		const JoinDim *jd = &sh->dim[d];
-		SiftV6XDim *xd = &x->dim[d];
-
-		xd->mode = jd->mode;
-		xd->nkeys = jd->nkeys;
-		for (int k = 0; k < jd->nkeys; k++)
-		{
-			SiftV6Col	col;
-
-			if (!probe_col(p, sh, jd->probe[k], d, &col) || !(jd->mode == SV6J_RANGE_SMALL ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : key_class(jd->key[k]->vartype)) || !rel_outputs(jd->rel, jd->key[k]))
-				return false;
-			xd->fatt[k] = col.attno;
-			xd->ftype[k] = col.typid;
-			xd->fsrc[k] = col.src;
-			xd->fdim[k] = col.dim;
-			xd->fslot[k] = col.slot;
-			xd->ktype[k] = jd->key[k]->vartype;
-			xd->kcol[k] = jd->key[k]->varattno;
-			xd->kvarno[k] = bms_membership(jd->rels) == BMS_SINGLETON ? 0 : jd->key[k]->varno;
-		}
-		p->dim_rels = lappend(p->dim_rels, jd->rel);
-		x->ndims = d + 1;
-	}
-	return true;
-}
-
 typedef struct ResidCtx
 {
 	V6Plan	   *p;
@@ -505,17 +502,89 @@ resid_var(Node *n, ResidCtx *c)
 	return (Node *) nv;
 }
 
+/* a key probed by an expression: the expression over the virtual attributes of the columns of the pairs, each one a column the join can give before the dimension is probed */
 static bool
-seed_resid(V6Plan *p, const JoinShape *sh)
+seed_key_expr(ResidCtx *rc, const JoinShape *sh, int dim, const Node *probe, SiftV6XDim *xd, int k)
 {
-	ResidCtx	c = {.p = p,.x = p->xseed,.ok = true};
+	Node	   *e = resid_var(copyObject((Node *) probe), rc);
 
+	if (!rc->ok)
+		return false;
+	foreach_node(Var, v, pull_var_clause(e, 0))
+	{
+		const SiftV6Col *col = &rc->x->rcol[v->varattno - 1];
+
+		if (sift_v6_class(col->typid) == SV6C_NONE || (col->src == SV6SRC_DIM && !(col->dim < dim && (sh->dim[col->dim].mode == SV6J_INNER_EQUI || sh->dim[col->dim].mode == SV6J_LEFT_EQUI))))
+			return false;
+	}
+	rc->x->kexpr = lappend(rc->x->kexpr, e);
+	xd->kx[k] = list_length(rc->x->kexpr);
+	xd->ftype[k] = exprType(probe);
+	return true;
+}
+
+static bool
+seed_dims(V6Plan *p, const JoinShape *sh, const SiftV6ElemRte *rte, ResidCtx *rc)
+{
+	SiftV6Ext  *x;
+
+	if (sh->elem != NULL)
+	{
+		if (!sift_v6_unnest_seed(p, sh->elem, rte, sh->elem_left))
+			return false;
+		x = p->xseed;
+	}
+	else
+		p->xseed = x = sift_v6_ext_new();
+	p->spec.ext = x;
+	rc->x = x;
+	for (int d = 0; d < sh->nd; d++)
+	{
+		const JoinDim *jd = &sh->dim[d];
+		SiftV6XDim *xd = &x->dim[d];
+
+		xd->mode = jd->mode;
+		xd->nkeys = jd->nkeys;
+		for (int k = 0; k < jd->nkeys; k++)
+		{
+			SiftV6Col	col;
+
+			if (!(jd->mode == SV6J_RANGE_SMALL ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : key_class(jd->key[k]->vartype)) || !rel_outputs(jd->rel, jd->key[k]))
+				return false;
+			if (!IsA(jd->probe[k], Var))
+			{
+				if (!seed_key_expr(rc, sh, d, jd->probe[k], xd, k))
+					return false;
+			}
+			else if (probe_col(p, sh, (const Var *) jd->probe[k], d, &col))
+			{
+				xd->fatt[k] = col.attno;
+				xd->ftype[k] = col.typid;
+				xd->fsrc[k] = col.src;
+				xd->fdim[k] = col.dim;
+				xd->fslot[k] = col.slot;
+			}
+			else
+				return false;
+			xd->ktype[k] = jd->key[k]->vartype;
+			xd->kcol[k] = jd->key[k]->varattno;
+			xd->kvarno[k] = bms_membership(jd->rels) == BMS_SINGLETON ? 0 : jd->key[k]->varno;
+		}
+		p->dim_rels = lappend(p->dim_rels, jd->rel);
+		x->ndims = d + 1;
+	}
+	return true;
+}
+
+static bool
+seed_resid(const JoinShape *sh, ResidCtx *rc)
+{
 	foreach_node(RestrictInfo, ri, sh->resid)
 	{
 		if (contain_volatile_functions((Node *) ri->clause))
 			return false;
-		c.x->resid = lappend(c.x->resid, resid_var((Node *) ri->clause, &c));
-		if (!c.ok)
+		rc->x->resid = lappend(rc->x->resid, resid_var((Node *) ri->clause, rc));
+		if (!rc->ok)
 			return false;
 	}
 	return true;
@@ -541,6 +610,7 @@ static void
 try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, const JoinShape *sh, const SiftV6ElemRte *rte, IndexOptInfo *ix)
 {
 	V6Plan		p = {.root = root,.rel = sh->fact,.out = output_rel,.relid = ix->indexoid,.index = ix};
+	ResidCtx	rc = {.p = &p,.ok = true};
 	Relation	irel;
 	Cost		xs,
 				xt;
@@ -550,7 +620,7 @@ try_index(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, Grou
 		return;
 	irel = index_open(ix->indexoid, AccessShareLock);
 	sift_v6_plan_index(&p, irel);
-	if (p.ops != NULL && seed_dims(&p, sh, rte) && sift_v6_compile_on(&p, extra, group_exprs) && (sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(&p, sh))
+	if (p.ops != NULL && seed_dims(&p, sh, rte, &rc) && sift_v6_compile_on(&p, extra, group_exprs) && (sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(sh, &rc))
 	{
 		xt = lookup_cost(sh, input_rel, &xs);
 		if (sh->elem != NULL)

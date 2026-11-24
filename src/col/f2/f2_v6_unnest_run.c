@@ -172,7 +172,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 			col_index(u, r, sift_v6_vec_col(spec, v), false);
 	for (int d = 0; d < u->x->ndims; d++)
 		for (int k = 0; k < u->x->dim[d].nkeys; k++)
-			if (u->x->dim[d].fsrc[k] == SV6SRC_ATTR)
+			if (sift_v6_xdim_key_is_col(&u->x->dim[d], k) && u->x->dim[d].fsrc[k] == SV6SRC_ATTR)
 			{
 				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
 
@@ -259,11 +259,12 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 		sift_v6_star_attach(star, u->pipe);
 	for (int d = 0; d < u->x->ndims; d++)
 		for (int k = 0; k < u->x->dim[d].nkeys; k++)
-		{
-			const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+			if (sift_v6_xdim_key_is_col(&u->x->dim[d], k))
+			{
+				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
 
-			u->pipe->fslot[d][k] = slot_of(u, r, &key, false);
-		}
+				u->pipe->fslot[d][k] = slot_of(u, r, &key, false);
+			}
 	for (int i = 0; i < u->x->nrcol; i++)
 		u->pipe->rslot[i] = slot_of(u, r, &u->x->rcol[i], false);
 	for (int i = 0; i < spec->nkeys; i++)

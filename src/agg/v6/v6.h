@@ -299,6 +299,7 @@ typedef struct SiftV6Spec
 	uint64		tid_lo;
 	uint64		tid_hi;
 	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
+	struct SiftV6Exec *exec;	/* what the node that runs the scan prepared of the expressions above that need the executor (v6_pg_exec.h); set when the node begins, never packed */
 } SiftV6Spec;
 
 /*
@@ -379,6 +380,9 @@ extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKe
 extern bool sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f);
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_plan_methods;
+
+/* Prepares the expressions of spec that need the executor (v6_pg_exec.h) under the node ps, which begins; spec.exec stays NULL when there are none */
+extern void sift_v6_exec_begin(SiftV6Spec *spec, struct PlanState *ps);
 
 extern void sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);

@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include "nodes/pg_list.h"
+#include "nodes/primnodes.h"
 
 #include "agg/v6/v6.h"
 #include "agg/v6/v6_bytes.h"
@@ -18,6 +19,8 @@
 extern bool sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon);
 /* the same for the clause of the elements of an unnest, whose conjuncts may be ORs of such tests (their rows are the union of the rows of the arms) */
 extern bool sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out);
+/* The aggregate with the FILTER of a, that the executor evaluates, as CASE WHEN filter THEN arg END of the same aggregate: NULL for an aggregate it does not fold (DISTINCT, ORDER BY, several arguments, a filter of native clauses) */
+extern Aggref *sift_v6_filter_fold(Aggref *a);
 extern bool sift_v6_clause_bind(MemoryContext cx, const List *quals, const SiftV6Spec *spec, SiftClause *out);
 
 #endif							/* SIFT_AGG_V6_FILTER_PG_H */

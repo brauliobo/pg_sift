@@ -26,6 +26,7 @@ typedef struct SiftV6XDim
 	SiftV6Src	fsrc[SIFT_STAR_MAX_KEYS];	/* where the probing side has the key: a column of the index, the element of the unnest (fslot: its column) or a payload column of an earlier dimension (fdim, fslot) */
 	int			fdim[SIFT_STAR_MAX_KEYS];
 	int			fslot[SIFT_STAR_MAX_KEYS];
+	int			kx[SIFT_STAR_MAX_KEYS];		/* a key the probing side computes: 1 + its place in SiftV6Ext.kexpr, the other fields of it naming no column (0: the column they name) */
 	Oid			ktype[SIFT_STAR_MAX_KEYS];	/* the type of the key column of the dimension */
 	AttrNumber	kcol[SIFT_STAR_MAX_KEYS];	/* the column of the dimension: its attribute while planned, then its position in the tuples of its plan */
 	Index		kvarno[SIFT_STAR_MAX_KEYS];	/* the relation of the column when the dimension is a join of several (0: the attribute is the one of the only relation) */
@@ -64,6 +65,7 @@ typedef struct SiftV6Ext
 {
 	int			ndims;
 	SiftV6XDim	dim[SIFT_STAR_MAX_DIMS];
+	List	   *kexpr;			/* the probing sides of the keys that are expressions (lower(i.category), o.k + i.n - 3), over the virtual attributes 1.. of rcol like resid: PostgreSQL's evaluator gives their vectors before the dimension is probed */
 	List	   *resid;			/* the conditions of the join that no key says (an inequality, a WHERE over the columns of a left join), over the virtual attributes 1.. of rcol (v6_join_lookup.h); a pair that fails one leaves the join */
 	int			nrcol;
 	SiftV6Col	rcol[SIFT_V6_RESID_COLS];
@@ -79,7 +81,14 @@ typedef struct SiftV6Ext
 extern SiftV6Ext *sift_v6_ext_new(void);
 /* The column the probing side has key k of dimension d in: what the scan or the unnest maps to a slot of its pipe */
 extern SiftV6Col sift_v6_xdim_key_col(const SiftV6XDim *xd, int k);
-/* The Ext of a spec as a list: [ints, where, elem_where, elem_names, heap_where, resid]; NIL for none */
+
+/* the key is a column of the fact side (otherwise an expression the pipe evaluates) */
+static inline bool
+sift_v6_xdim_key_is_col(const SiftV6XDim *xd, int k)
+{
+	return xd->kx[k] == 0;
+}
+/* The Ext of a spec as a list: [ints, where, elem_where, elem_names, heap_where, resid, kexpr]; NIL for none */
 extern List *sift_v6_ext_pack(const SiftV6Ext *x);
 extern SiftV6Ext *sift_v6_ext_unpack(const List *l);
 /* The positions of the key and payload columns of every dimension in the output of its plan (custom_plans of the node), from the attributes the planner chose */

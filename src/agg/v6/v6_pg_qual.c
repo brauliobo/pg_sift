@@ -75,24 +75,73 @@ columns_ok(SiftV6Input *in, const List *vars)
 }
 
 bool
-sift_v6_pgqual_plan_ok(const SiftV6Input *in, const Expr *clause)
+sift_v6_pgqual_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause)
 {
 	SiftV6Input scratch = *in;
 	List	   *vars;
 
-	return exprType((const Node *) clause) == BOOLOID && sift_v6_pgexpr_plan_ok(clause) && sift_v6_pgexpr_vars(clause, SIFT_V6_BQ_RELID, 0, &vars) && columns_ok(&scratch, vars);
+	return exprType((const Node *) clause) == BOOLOID && sift_v6_pgexpr_plan_ok(root, clause) && sift_v6_pgexpr_vars(clause, SIFT_V6_BQ_RELID, 0, &vars) && columns_ok(&scratch, vars);
+}
+
+/* the type of the column the executor gets of Var v: what add_column makes of it */
+static SiftV6PgIn
+pg_in(const Var *v)
+{
+	SiftV6InCol col = {.typid = v->vartype};
+
+	if (v->vartype == NUMERICOID)
+		sift_v6_vec_type(v->vartype, v->vartypmod, &col);
+	return (SiftV6PgIn) {.typid = v->vartype,.scale = col.scale};
+}
+
+static Expr *
+conjunction(const List *quals, List **vars)
+{
+	Expr	   *e = make_ands_explicit(list_copy(quals));
+
+	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_BQ_RELID, 0, vars), "the batch quals of the aggregate scan read at most %d columns", SIFT_V6_MAX_COLS);
+	return e;
+}
+
+static SiftV6PgExpr *
+open_expr(MemoryContext cx, PlanState *ps, Expr *e, const List *vars)
+{
+	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
+
+	for (int i = 0; i < list_length(vars); i++)
+		pin[i] = pg_in(list_nth(vars, i));
+	return sift_v6_pgexpr_open(cx, ps, sift_v6_pgexpr_renumber(e, SIFT_V6_BQ_RELID, 0, vars), list_length(vars), pin);
+}
+
+SiftV6PgExpr *
+sift_v6_pgqual_prepare(MemoryContext cx, PlanState *ps, const List *quals)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	List	   *xq = NIL,
+			   *vars;
+	SiftV6PgExpr *x = NULL;
+
+	foreach_ptr(Expr, clause, quals)
+		if (sift_v6_pgexpr_exec((const Node *) clause))
+			xq = lappend(xq, clause);
+	if (xq != NIL)
+	{
+		Expr	   *e = conjunction(xq, &vars);
+
+		x = open_expr(cx, ps, e, vars);
+	}
+	MemoryContextSwitchTo(old);
+	return x;
 }
 
 SiftV6PgQual *
-sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in)
+sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in, SiftV6PgExpr *prepared)
 {
 	SiftV6PgQual *q = MemoryContextAllocZero(cx, sizeof(SiftV6PgQual));
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Expr	   *e = make_ands_explicit(list_copy(quals));
 	List	   *vars;
-	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
+	Expr	   *e = conjunction(quals, &vars);
 
-	SIFT_INVARIANT(sift_v6_pgexpr_vars(e, SIFT_V6_BQ_RELID, 0, &vars), "the batch quals of the aggregate scan of relation %u read at most %d columns", in->indexoid, SIFT_V6_MAX_COLS);
 	q->nin = list_length(vars);
 	for (int i = 0; i < q->nin; i++)
 	{
@@ -100,9 +149,8 @@ sift_v6_pgqual_open(MemoryContext cx, const List *quals, SiftV6Input *in)
 
 		SIFT_INVARIANT(slot >= 0, "the scan decodes the columns of its batch quals of relation %u", in->indexoid);
 		q->slot[i] = slot;
-		pin[i] = (SiftV6PgIn) {.typid = in->col[slot].typid,.scale = in->col[slot].scale};
 	}
-	q->x = sift_v6_pgexpr_open(cx, sift_v6_pgexpr_renumber(e, SIFT_V6_BQ_RELID, 0, vars), q->nin, pin);
+	q->x = prepared != NULL ? prepared : open_expr(cx, NULL, e, vars);
 	MemoryContextSwitchTo(old);
 	return q;
 }

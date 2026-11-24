@@ -7,6 +7,7 @@
 #include "nodes/extensible.h"
 
 #include "agg/cost/model.h"
+#include "agg/plan/safety.h"
 #include "agg/refuse.h"
 #include "agg/search.h"
 #include "agg/spec.h"
@@ -412,8 +413,6 @@ extern bool reads_outer(AggCtx *c, RangeTblEntry *e, RelOptInfo *rel, int skip);
 extern bool cte_owner_correlated(PlannerInfo *owner);
 extern bool walk_memo_get(const void *a, const void *b, int skip, double *r);
 extern void walk_memo_put(const void *a, const void *b, int skip, double r);
-extern bool lut_subplan_ok(AggCtx *c, SubPlan *sp);
-extern bool initplan_ok(AggCtx *c, Param *prm);
 extern Param *initplan_param(AggCtx *c, Param *n);
 extern Node *scalar_initplans(AggCtx *c, Node *n);
 extern bool single_leaf(AggCtx *c, Node *e, int *leaf, Oid *ptype, int32 *ptypmod, Oid *pcoll);

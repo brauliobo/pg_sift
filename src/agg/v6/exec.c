@@ -147,6 +147,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	V6State    *st = (V6State *) node;
 
 	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private);
+	sift_v6_exec_begin(st->spec, &node->ss.ps);
 	st->nsources = Max(st->spec->nparts, 1);
 	st->sources = palloc0(sizeof(V6Source) * st->nsources);
 	if (st->spec->is_table)

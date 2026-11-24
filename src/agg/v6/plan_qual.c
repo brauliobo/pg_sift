@@ -12,6 +12,7 @@
 #include "rewrite/rewriteManip.h"
 
 #include "agg/group/ht.h"
+#include "agg/plan/safety.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_ext.h"
 #include "agg/v6/v6_bqual.h"
@@ -183,12 +184,6 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 	}
 }
 
-static bool
-has_param(Node *n, void *context)
-{
-	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, has_param, context));
-}
-
 /* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/v6/v6_bqual.h) */
 static bool
 qual_batch(V6Plan *p, RestrictInfo *ri)
@@ -196,14 +191,14 @@ qual_batch(V6Plan *p, RestrictInfo *ri)
 	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->tsch.natts : 0};
 	Expr	   *clause;
 
-	if (!p->batch_ok || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || has_param((Node *) ri->clause, NULL))
+	if (!p->batch_ok || ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || agg_node_has_extern_param((Node *) ri->clause))
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
 	clause = sift_v6_plan_type_vars(p, ri->clause);
 	clause = clause == ri->clause ? copyObject(clause) : clause;
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
-	if (!sift_v6_bq_plan_ok(&in, clause))
+	if (!sift_v6_bq_plan_ok(p->root, &in, clause))
 		return false;
 	p->spec.vqual = lappend(p->spec.vqual, clause);
 	return true;

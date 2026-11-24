@@ -11,13 +11,33 @@
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 
+#include "agg/plan/safety.h"
 #include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_pg_exec.h"
 #include "agg/v6/v6_pg_expr.h"
 
 typedef struct PlanOkCtx
 {
+	PlannerInfo *root;
+	List	   *subparams;		/* the parameters the sub-plans met so far set for their own test */
 	bool		ok;
 } PlanOkCtx;
+
+static bool
+exec_walker(Node *n, void *context)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan) || IsA(n, AlternativeSubPlan) || (IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXEC))
+		return true;
+	return expression_tree_walker(n, exec_walker, context);
+}
+
+bool
+sift_v6_pgexpr_exec(const Node *e)
+{
+	return exec_walker((Node *) e, NULL);
+}
 
 static bool
 plan_ok_walker(Node *n, PlanOkCtx *c)
@@ -27,7 +47,21 @@ plan_ok_walker(Node *n, PlanOkCtx *c)
 	switch (nodeTag(n))
 	{
 		case T_Param:
+			if (((const Param *) n)->paramkind != PARAM_EXEC ||
+				(!list_member_int(c->subparams, ((const Param *) n)->paramid) && (c->root == NULL || !initplan_ok(c->root, (Param *) n))))
+			{
+				c->ok = false;
+				return true;
+			}
+			return false;
 		case T_SubPlan:
+			if (c->root == NULL || !lut_subplan_ok(c->root, (SubPlan *) n))
+			{
+				c->ok = false;
+				return true;
+			}
+			c->subparams = list_concat(c->subparams, ((const SubPlan *) n)->paramIds);
+			return expression_tree_walker(n, plan_ok_walker, c);
 		case T_AlternativeSubPlan:
 		case T_SubLink:
 		case T_Aggref:
@@ -51,9 +85,9 @@ plan_ok_walker(Node *n, PlanOkCtx *c)
 }
 
 bool
-sift_v6_pgexpr_plan_ok(const Expr *e)
+sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e)
 {
-	PlanOkCtx	c = {.ok = true};
+	PlanOkCtx	c = {.root = root,.ok = true};
 
 	if (contain_volatile_functions((Node *) e) || expression_returns_set((Node *) e))
 		return false;
@@ -141,7 +175,7 @@ sift_v6_pgexpr_renumber(const Expr *e, Index relid, Index elem_relid, const List
 }
 
 bool
-sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items)
+sift_v6_pgexpr_derive_of(PlannerInfo *root, const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6Derive *d, Oid *restype, List **items)
 {
 	List	   *vars;
 	List	   *ints;
@@ -149,7 +183,7 @@ sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6D
 	SiftV6Col	col;
 	int			at = 0;
 
-	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(e) || !sift_v6_pgexpr_vars(e, relid, rs->elem_relid, &vars) || vars == NIL)
+	if (IsA(e, Var) || IsA(e, Const) || !sift_v6_pgexpr_plan_ok(root, e) || !sift_v6_pgexpr_vars(e, relid, rs->elem_relid, &vars) || vars == NIL)
 		return false;
 	*restype = getBaseType(exprType((Node *) e));
 	ints = list_make1_int((int) *restype);
@@ -176,9 +210,9 @@ sift_v6_pgexpr_derive_of(const SiftV6Resolver *rs, Index relid, Expr *e, SiftV6D
 }
 
 void
-sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out)
+sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out)
 {
-	const List *item = list_nth(s->pgexpr, (int) d->aux);
+	const List *item = list_nth(s->pgexpr, at);
 	const List *ints = lsecond(item);
 
 	out->expr = linitial(item);
@@ -187,6 +221,12 @@ sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *ou
 	for (int i = 0; i < out->nin; i++)
 		out->col[i] = (SiftV6Col) {.attno = list_nth_int(ints, 1 + 5 * i),.typid = (Oid) list_nth_int(ints, 2 + 5 * i),.scale = list_nth_int(ints, 3 + 5 * i),
 		.src = (SiftV6Src) list_nth_int(ints, 4 + 5 * i),.slot = list_nth_int(ints, 5 + 5 * i)};
+}
+
+void
+sift_v6_pgexpr_item(const SiftV6Spec *s, const SiftV6Derive *d, SiftV6PgItem *out)
+{
+	sift_v6_pgexpr_item_at(s, (int) d->aux, out);
 }
 
 bool
@@ -198,10 +238,10 @@ sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s)
 		if (sift_v6_key_generic(s->key[i].typid))
 			return false;
 	foreach_ptr(List, item, s->pgexpr)
-		if (!is_parallel_safe(root, linitial(item)))
+		if (sift_v6_pgexpr_exec(linitial(item)) || !is_parallel_safe(root, linitial(item)))
 			return false;
 	foreach_ptr(Node, clause, s->vqual)
-		if (!is_parallel_safe(root, clause))
+		if (sift_v6_pgexpr_exec(clause) || !is_parallel_safe(root, clause))
 			return false;
 	return true;
 }
@@ -229,7 +269,7 @@ sift_v6_spec_pg_inputs(const SiftV6Spec *s)
 }
 
 SiftV6PgExpr *
-sift_v6_pgexpr_open(MemoryContext cx, Expr *e, int nin, const SiftV6PgIn *in)
+sift_v6_pgexpr_open(MemoryContext cx, PlanState *ps, Expr *e, int nin, const SiftV6PgIn *in)
 {
 	SiftV6PgExpr *x = MemoryContextAllocZero(cx, sizeof(SiftV6PgExpr));
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -245,9 +285,9 @@ sift_v6_pgexpr_open(MemoryContext cx, Expr *e, int nin, const SiftV6PgIn *in)
 		TupleDescInitEntry(desc, 1, NULL, INT4OID, -1, 0);
 	sift_tupdesc_finalize(desc);
 	x->slot = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
-	x->econtext = CreateStandaloneExprContext();
+	x->econtext = ps != NULL ? CreateExprContext(ps->state) : CreateStandaloneExprContext();
 	x->econtext->ecxt_scantuple = x->slot;
-	x->state = ExecInitExpr(e, NULL);
+	x->state = ExecInitExpr(e, ps);
 	MemoryContextSwitchTo(old);
 	return x;
 }
@@ -324,7 +364,9 @@ sift_v6_pgexpr_bind(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d
 		in[i] = col(arg, &c);
 		pin[i] = (SiftV6PgIn) {.typid = it.col[i].typid,.scale = it.col[i].scale};
 	}
-	x = sift_v6_pgexpr_open(cx, it.expr, it.nin, pin);
+	if (s->exec != NULL && s->exec->item[d->aux] != NULL)
+		return s->exec->item[d->aux];
+	x = sift_v6_pgexpr_open(cx, NULL, it.expr, it.nin, pin);
 	x->restype = it.restype;
 	return x;
 }
