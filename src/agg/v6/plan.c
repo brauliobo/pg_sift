@@ -740,7 +740,7 @@ sift_v6_plan_query_ok(PlannerInfo *root, RelOptInfo *output_rel)
 {
 	const Query *parse = root->parse;
 
-	return sift_enable_agg && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
+	return sift_enable_agg && !parse->hasDistinctOn && !parse->hasTargetSRFs &&
 		(parse->hasAggs || parse->groupClause != NIL || parse->distinctClause != NIL) && output_rel->reltarget != NULL;
 }
 
