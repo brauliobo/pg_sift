@@ -246,7 +246,7 @@ participate(Shared *s, int slot)
 	ScanKeyData key;
 	const int	nkeys = index_keys(&s->q, &key);
 	SiftV6Spec *spec = make_spec(&s->q);
-	SiftV6Scan *scan = par->begin(spec, heap, index, &key, nkeys, GetActiveSnapshot(), &stats, count_rows, p);
+	SiftV6Scan *scan = par->begin(spec, heap, index, &key, nkeys, NULL, GetActiveSnapshot(), &stats, count_rows, p);
 	SiftParPartRef ref = {.g_base = 0,.ngranules = s->ngranules};
 	uint32		run;
 
@@ -283,7 +283,7 @@ sift_test_store_par(PG_FUNCTION_ARGS)
 	SiftV6ScanStats stats = {0};
 	ScanKeyData key;
 	const int	nkeys = index_keys(&q, &key);
-	SiftV6Scan *scan = par->begin(make_spec(&q), heap, index, &key, nkeys, GetActiveSnapshot(), &stats, NULL, NULL);
+	SiftV6Scan *scan = par->begin(make_spec(&q), heap, index, &key, nkeys, NULL, GetActiveSnapshot(), &stats, NULL, NULL);
 	SiftF2ParPlan plan;
 	ParallelContext *pcxt;
 	Shared	   *s;

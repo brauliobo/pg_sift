@@ -33,13 +33,13 @@ typedef struct V1ParScan
 } V1ParScan;
 
 static struct SiftV6Scan *
-par_begin(const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, struct SiftV6ScanStats *stats,
+par_begin(const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap, struct SiftV6ScanStats *stats,
 		  void (*emit) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 parallel scan");
 	V1ParScan  *s = MemoryContextAllocZero(cx, sizeof(V1ParScan));
 
-	SIFT_INVARIANT(index != NULL, "a parallel scan of Format 1 reads a sift_col index");
+	SIFT_INVARIANT(index != NULL && quals == NULL, "a parallel scan of Format 1 reads a sift_col index");
 	*s = (V1ParScan) {.spec = spec,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.snap = snap,.stats = stats,.emit = emit,.emit_arg = emit_arg,.cx = cx};
 	return (struct SiftV6Scan *) s;
 }
