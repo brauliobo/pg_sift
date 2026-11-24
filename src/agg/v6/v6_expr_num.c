@@ -400,6 +400,32 @@ filtered(const Aggref *a, const CaseAgg *ca, bool count_star)
 	return f;
 }
 
+Aggref *
+sift_vn_filter_to_case(const Aggref *a)
+{
+	Aggref	   *c;
+	CaseWhen   *w;
+	CaseExpr   *ce;
+	Expr	   *val;
+
+	if (a->aggfilter == NULL || a->aggdistinct != NIL || a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL || a->aggvariadic || a->aggstar || list_length(a->args) != 1 ||
+		!(func_is(a->aggfnoid, "sum") || func_is(a->aggfnoid, "count")))
+		return NULL;
+	c = copyObject((Aggref *) a);
+	val = linitial_node(TargetEntry, c->args)->expr;
+	w = makeNode(CaseWhen);
+	w->expr = c->aggfilter;
+	w->result = val;
+	ce = makeNode(CaseExpr);
+	ce->casetype = exprType((Node *) val);
+	ce->casecollid = exprCollation((Node *) val);
+	ce->args = list_make1(w);
+	ce->defresult = (Expr *) makeNullConst(ce->casetype, exprTypmod((Node *) val), ce->casecollid);
+	linitial_node(TargetEntry, c->args)->expr = (Expr *) ce;
+	c->aggfilter = NULL;
+	return c;
+}
+
 /* CASE WHEN count(*) = 0 THEN NULL ELSE inner END: the sum of a group that has rows and no row for the filter is 0, that of no rows is NULL */
 static Node *
 unless_empty(const Aggref *a, Expr *inner)

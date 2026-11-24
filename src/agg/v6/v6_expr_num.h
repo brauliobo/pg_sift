@@ -40,6 +40,9 @@ extern void sift_vn_derive(const SiftV6Derive *d, SiftVec *const *cond, const Si
  */
 extern Node *sift_vn_case_to_filter(Node *expr);
 
+/* sum(x) FILTER (WHERE c) or count(x) FILTER (WHERE c) as sum(CASE WHEN c THEN x END): the aggregate of the argument that a scan computes as an expression when it decides no filter; NULL for any other aggregate */
+extern Aggref *sift_vn_filter_to_case(const Aggref *a);
+
 /* The expression of the statement as the planner and the plan of SiftAggV6 read it: CASE as FILTER, then the sums of an offset collapsed */
 extern Node *sift_vn_rewrite_aggs(Node *expr);
 

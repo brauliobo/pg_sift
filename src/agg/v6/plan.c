@@ -430,8 +430,9 @@ agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 	return sift_v6_agg_kind(unfiltered, &g->kind);
 }
 
+/* a is the aggregate the scan computes, and shape the one the plan's tlist names: the same unless the filter of shape is an expression of the scan's argument (compile_agg) */
 static bool
-compile_agg_native(V6Plan *p, Aggref *a)
+compile_agg_native(V6Plan *p, Aggref *a, const Aggref *shape)
 {
 	SiftV6Agg	g = {.restype = a->aggtype};
 	Aggref		unfiltered = *a;
@@ -470,7 +471,7 @@ compile_agg_native(V6Plan *p, Aggref *a)
 	}
 	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = g;
-	add_scan_var(p, (Expr *) a);
+	add_scan_var(p, (Expr *) shape);
 	return true;
 }
 
@@ -495,8 +496,12 @@ static bool
 compile_agg(V6Plan *p, Aggref *a)
 {
 	const int	nderive = p->spec.nderive;
+	Aggref	   *on_case = sift_vn_filter_to_case(a);
 
-	if (compile_agg_native(p, a))
+	if (compile_agg_native(p, a, a))
+		return true;
+	p->spec.nderive = nderive;
+	if (on_case != NULL && compile_agg_native(p, on_case, a))
 		return true;
 	p->spec.nderive = nderive;
 	return compile_agg_gen(p, a);
