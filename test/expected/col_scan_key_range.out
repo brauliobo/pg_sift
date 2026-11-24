@@ -16,9 +16,9 @@ DECLARE t text := 'k' || depth;
 BEGIN
 	EXECUTE format('CREATE TABLE %I (id int PRIMARY KEY, a int NOT NULL, b int NOT NULL, c int NOT NULL, d int NOT NULL, v int, w int) WITH (autovacuum_enabled = false)', t);
 	EXECUTE format($i$INSERT INTO %I SELECT g, 1 + g %% 3, 1 + (g::bigint * 7919 %% 5)::int, (g::bigint * 2654435761 %% 4294967296 / 65536)::int %% 4000, g %% 7, g %% 100,
-		(g::bigint * 40503 %% 1000003)::int FROM generate_series(1, 150000) g$i$, t);
-	EXECUTE format('INSERT INTO %I SELECT 150000 + g, 4, 1, g, 0, 0, g FROM generate_series(1, 2000) g', t);
-	EXECUTE format('INSERT INTO %I SELECT 170000 + g, 5, 1, 1, g %% 7, g %% 100, g FROM generate_series(1, 60000) g', t);
+		(g::bigint * 40503 %% 1000003)::int FROM generate_series(1, 80000) g$i$, t);
+	EXECUTE format('INSERT INTO %I SELECT 80000 + g, 4, 1, g, 0, 0, g FROM generate_series(1, 2000) g', t);
+	EXECUTE format('INSERT INTO %I SELECT 100000 + g, 5, 1, 1, g %% 7, g %% 100, g FROM generate_series(1, 32000) g', t);
 	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, a, b, c, d, v, w) WITH (key_cut = %L, dead_rewrite_pct = 100)', t || '_ix', t,
 		(SELECT string_agg(l, ', ') FROM unnest((ARRAY['a', 'b', 'c', 'd'])[1:depth]) l));
 	EXECUTE format('DELETE FROM %I WHERE id %% 50 = 7', t);
@@ -27,7 +27,7 @@ CREATE FUNCTION settle(depth int) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE t text := 'k' || depth;
 BEGIN
 	PERFORM sift.col_maintain(t || '_ix');
-	EXECUTE format('INSERT INTO %I SELECT 300000 + g, 1 + g %% 3, 2, g %% 4000, g %% 7, 1, g FROM generate_series(1, 3000) g', t);
+	EXECUTE format('INSERT INTO %I SELECT 200000 + g, 1 + g %% 3, 2, g %% 4000, g %% 7, 1, g FROM generate_series(1, 3000) g', t);
 END $$;
 SELECT make(d) FROM generate_series(1, 4) d;
  make 
@@ -253,7 +253,7 @@ SELECT depth, n, same_as_full, same_as_heap, via_index FROM joined ORDER BY dept
 -- float and numeric keys: a NaN (which sorts after every number, and is stored as a NULL) and the two zeros answer as the heap does
 CREATE TABLE kf (id int PRIMARY KEY, f float8 NOT NULL, n numeric(12, 2) NOT NULL, w int) WITH (autovacuum_enabled = false);
 INSERT INTO kf SELECT g, CASE WHEN g % 97 = 0 THEN 'NaN'::float8 WHEN g % 3 = 0 THEN '-0'::float8 WHEN g % 3 = 1 THEN 0::float8 ELSE (g % 50 + 1)::float8 END,
-	CASE WHEN g % 83 = 0 THEN 'NaN'::numeric ELSE (g % 40)::numeric END, g FROM generate_series(1, 200000) g;
+	CASE WHEN g % 83 = 0 THEN 'NaN'::numeric ELSE (g % 40)::numeric END, g FROM generate_series(1, 100000) g;
 CREATE INDEX kf_f ON kf USING sift_col (id, f, w) WITH (key_cut = 'f');
 CREATE TABLE kn (id int PRIMARY KEY, f float8 NOT NULL, n numeric(12, 2) NOT NULL, w int) WITH (autovacuum_enabled = false);
 INSERT INTO kn SELECT * FROM kf;
