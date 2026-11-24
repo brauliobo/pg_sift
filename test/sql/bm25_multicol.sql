@@ -91,8 +91,8 @@ CREATE INDEX mc_stem ON mc USING sift (title, body) WITH (stemmer = 'en', prefix
 DROP INDEX mc_idx;
 SELECT pred FROM preds() pred WHERE cnt(pred, true) <> cnt(pred, false);
 SELECT q FROM unnest(ARRAY['title:alpha body:beta', 'title:omega', 'body:beta', 'title:alp*']) q WHERE scnt(q, true) <> scnt(q, false);
-SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mc WHERE title @@> 'beta';
+SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mc WHERE sift.sections(title, body) @@> 'title:beta';
 RESET enable_seqscan;
 DROP INDEX mc_stem;

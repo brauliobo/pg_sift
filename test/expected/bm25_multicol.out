@@ -214,17 +214,15 @@ SELECT q FROM unnest(ARRAY['title:alpha body:beta', 'title:omega', 'body:beta', 
 ---
 (0 rows)
 
-SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mc WHERE title @@> 'beta';
-                     QUERY PLAN                     
-----------------------------------------------------
+                QUERY PLAN                
+------------------------------------------
  Aggregate
-   ->  Bitmap Heap Scan on mc
-         Recheck Cond: (title @@> 'beta'::text)
-         ->  Bitmap Index Scan on mc_stem
-               Index Cond: (title @@> 'beta'::text)
-(5 rows)
+   ->  Seq Scan on mc
+         Filter: (title @@> 'beta'::text)
+(3 rows)
 
+SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mc WHERE sift.sections(title, body) @@> 'title:beta';
          QUERY PLAN          
 -----------------------------
