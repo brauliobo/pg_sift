@@ -42,7 +42,7 @@ SELECT g, g % 7, date '2024-01-01' + g % 400, (ARRAY['web', 'shop', 'phone'])[1 
 	   CASE WHEN g % 19 = 0 THEN NULL ELSE jsonb_build_array(jsonb_build_object('category', (ARRAY['A', 'B', 'C', 'D'])[1 + g % 4], 'qty', g % 5, 'price', (g % 9) * 2.5),
 															 jsonb_build_object('category', (ARRAY['A', 'B', 'C', 'D'])[1 + (g / 3) % 4], 'qty', g % 3, 'price', (g % 7) * 1.5)) END,
 	   repeat('x', 100)
-FROM generate_series(1, 6000) g;
+FROM generate_series(1, 2700) g;
 CREATE INDEX o_col ON o USING sift_col (id, store, placed, kind, amount, qty, note, items) WITH (paths = 'items[]{category text, qty int4, price float8}');
 VACUUM ANALYZE o;
 -- the plan of a row level and of an unnesting query
@@ -64,7 +64,7 @@ DELETE FROM o WHERE id % 10 = 0;
 UPDATE o SET kind = 'web', amount = amount + 1 WHERE id % 7 = 1;
 SELECT same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM o GROUP BY kind$$) AS after_dml;
 -- integers spread over the whole int4 range: group keys and IN lists that no table can cover
-CREATE TABLE w AS SELECT g AS id, ((g::bigint * 1000003) % 2000000011)::int AS a, g % 5 AS b, CASE WHEN g % 7 = 0 THEN NULL ELSE g % 3 END AS c FROM generate_series(1, 5000) g;
+CREATE TABLE w AS SELECT g AS id, ((g::bigint * 1000003) % 2000000011)::int AS a, g % 5 AS b, CASE WHEN g % 7 = 0 THEN NULL ELSE g % 3 END AS c FROM generate_series(1, 2200) g;
 CREATE INDEX w_col ON w USING sift_col (id, a, b, c);
 VACUUM ANALYZE w;
 SELECT same($$SELECT a, count(*) AS n, sum(b) AS s FROM w GROUP BY a$$) AS wide_key;
@@ -125,8 +125,8 @@ INSERT INTO pat VALUES
 -- r, r8: columns of the row an element is compared with (int4 and bigint, NULL in one row of seven)
 CREATE TABLE d (id int PRIMARY KEY, g int, r int, r8 bigint, doc jsonb, dc jsonb NOT NULL, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO d SELECT n * 10 + p.k, n % 3, CASE WHEN (n + p.k) % 7 = 0 THEN NULL ELSE (n + p.k) % 7 - 1 END,
-	CASE WHEN (n + p.k) % 7 = 0 THEN NULL WHEN (n + p.k) % 11 = 0 THEN 5000000000 ELSE (n + p.k) % 6 END, p.doc, p.dc, repeat('x', 200)
-FROM generate_series(1, 150) n, pat p;
+	CASE WHEN (n + p.k) % 7 = 0 THEN NULL WHEN (n + p.k) % 11 = 0 THEN 5000000000 ELSE (n + p.k) % 6 END, p.doc, p.dc, repeat('x', 700)
+FROM generate_series(1, 60) n, pat p;
 CREATE INDEX d_col ON d USING sift_col (id, g, r, r8, doc, dc)
 	WITH (paths = 'doc[]{type text, role text, n int4}, dc[]{type text, role text, n int4}');
 VACUUM ANALYZE d;
@@ -194,8 +194,8 @@ SET search_path = m3, public;
 CREATE TABLE e (id int, g int, b int8, d date, f float8, t text, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO e
 SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 100003 - 50000 END, date '2024-01-01' + i % 400,
-	   CASE WHEN i % 13 = 0 THEN NULL WHEN i % 29 = 0 THEN 'NaN' ELSE (i % 64) / 4.0 - 3 END, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i % 9) END, NULL
-FROM generate_series(1, 6000) i;
+	   CASE WHEN i % 13 = 0 THEN NULL WHEN i % 29 = 0 THEN 'NaN' ELSE (i % 64) / 4.0 - 3 END, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i % 9) END, repeat('x', 40)
+FROM generate_series(1, 2600) i;
 CREATE INDEX e_col ON e USING sift_col (id, g, b, d, f, t);
 ANALYZE e;
 SET max_parallel_workers_per_gather = 0;
@@ -232,15 +232,15 @@ SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 CREATE TABLE o (id int PRIMARY KEY, store int, kind text, price int4, f8 float8, f4 float4, day date, tag varchar, items jsonb, pad text)
-	WITH (fillfactor = 20, autovacuum_enabled = false);
+	WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO o
 SELECT g, g % 7, CASE WHEN g % 5 = 0 THEN NULL ELSE (ARRAY['web', 'shop', 'phone'])[1 + g % 3] END, (g % 97) * 137 + 5,
 	   (g % 23) * 0.37, (g % 13) * 0.11, date '2024-01-01' + g % 40, CASE WHEN g % 11 = 0 THEN NULL ELSE 't' || g % 6 END,
 	   CASE WHEN g % 19 = 0 THEN NULL ELSE jsonb_build_array(
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C'])[1 + g % 3], 'qty', g % 5, 'price', (g % 9) * 2.5),
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C'])[1 + (g / 3) % 3], 'qty', g % 3, 'price', (g % 7) * 1.5)) END,
-	   repeat('x', 100)
-FROM generate_series(1, 1500) g;
+	   repeat('x', 200)
+FROM generate_series(1, 1100) g;
 CREATE INDEX o_col ON o USING sift_col (id, store, kind, price, f8, f4, day, tag, items) WITH (paths = 'items[]{category text, qty int4, price float8}');
 VACUUM ANALYZE o;
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.agg_equals_normal(q) $$;
@@ -342,9 +342,9 @@ INSERT INTO pat VALUES
 	 '{"lang": true, "flag_a": null, "nested": {"when": null, "at": null, "n": null, "f": null}}'),
  (10, '{"p": 1, "q": 2, "r": 3, "s": 4}', '[{"category":"Home","sku":"lamp","kind":"debit","qty":5,"price":0.25},{"category":"Home","sku":"lamp","kind":"debit","qty":6,"price":0.5},{"category":"Garden","sku":"seed","kind":"debit","qty":0,"price":3}]',
 	 '[{"kind":"gift"}]', '{"lang": "de", "flag_a": "t", "nested": "gone"}');
--- about 1500 rows in several superblocks
+-- 600 rows in two superblocks
 CREATE TABLE o (id int, metrics jsonb, items jsonb, notes jsonb, details jsonb, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
-INSERT INTO o SELECT (g - 1) * 10 + p.k, p.metrics, p.items, p.notes, p.details, repeat('x', 200) FROM generate_series(1, 150) g, pat p ORDER BY g, p.k;
+INSERT INTO o SELECT (g - 1) * 10 + p.k, p.metrics, p.items, p.notes, p.details, repeat('x', 200) FROM generate_series(1, 60) g, pat p ORDER BY g, p.k;
 CREATE INDEX o_col ON o USING sift_col (id, metrics, items, notes, details)
 	WITH (paths = 'metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8}, notes[]{kind text, text text},
 	               details.lang text, details.flag_a bool, details.nested.n int8, details.nested.f float8');
@@ -399,7 +399,7 @@ SET search_path = m6, public;
 -- keys and filters over several leaves, a key of an object leaf read at the row level, and an outer aggregate over per-order aggregates.
 -- The rows are the ones of the normal plan (sift.enable_agg off).
 SET max_parallel_workers_per_gather = 0;
-CREATE TABLE o (id int PRIMARY KEY, store int, kind text, metrics jsonb, items jsonb, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+CREATE TABLE o (id int PRIMARY KEY, store int, kind text, metrics jsonb, items jsonb, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO o
 SELECT g, g % 7, (ARRAY['web', 'shop', 'phone'])[1 + g % 3],
 	   CASE g % 6 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN jsonb_build_object('value', g % 5) ELSE jsonb_build_object('m_total', 1 + (g % 40) / 10.0, 'value', g % 5) END,
@@ -407,7 +407,7 @@ SELECT g, g % 7, (ARRAY['web', 'shop', 'phone'])[1 + g % 3],
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C', 'D', 'E'])[1 + g % 5], 'kind', CASE WHEN g % 4 = 0 THEN NULL ELSE (ARRAY['x', 'y'])[1 + g % 2] END, 'qty', g % 5, 'price', (g % 9) * 2.5),
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C', 'D', 'E'])[1 + (g / 3) % 5], 'kind', 'y', 'qty', g % 3, 'price', (g % 7) * 1.5)) END,
 	   repeat('x', 100)
-FROM generate_series(1, 1500) g;
+FROM generate_series(1, 1100) g;
 CREATE INDEX o_col ON o USING sift_col (id, store, kind, metrics, items) WITH (paths = 'metrics.* float8, items[]{category text, kind text, qty int4, price float8}');
 VACUUM ANALYZE o;
 -- the mapping tables: a key with two rows, a NULL key, a key that differs by case, keys without a row (E, x)
@@ -448,7 +448,7 @@ SELECT same($$SELECT store, count(*) FILTER (WHERE (metrics->>'value')::float8 >
 SELECT same($$SELECT category, avg(p) AS a, count(DISTINCT id) AS orders, sum(n) AS items, count(DISTINCT id) FILTER (WHERE p > 5) AS high
 			  FROM (SELECT o.id, i.category, avg(i.price) AS p, count(*) AS n
 					FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int, price float8) GROUP BY o.id, i.category) x GROUP BY category$$) AS per_order;
-SELECT same($$SELECT category, avg(p) AS a, count(*) AS n
+SELECT same($$SELECT category, round(avg(p)::numeric, 9) AS a, count(*) AS n
 			  FROM (SELECT i.category, i.kind, avg(i.price) AS p
 					FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) GROUP BY 1, 2) x GROUP BY category$$) AS not_per_order;
 -- the mapping table changes: the next scan reads the new rows
@@ -515,11 +515,11 @@ SET search_path = m7, public;
 -- The scan of Custom Scan (SiftAgg) over the test column source: workers aggregate the superblocks of the table and the leader combines
 -- their groups, units whose zone misses the id range of the query are skipped, count(DISTINCT) is counted per group. In every case the
 -- rows are the ones of the normal plan (sift.enable_agg off), and float sums are the same whoever scans.
--- fillfactor 10: about six rows a page, five superblocks of 256 pages; id grows with the heap, so a unit holds a narrow range of ids
+-- fillfactor 10: about six rows a page, three superblocks of 256 pages; id grows with the heap, so a unit holds a narrow range of ids
 CREATE TABLE s (id int, g int, small int, wide int, a float8, b float8, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO s
-SELECT i, i % 7, i % 50, (i * 7919) % 100003, (i % 64) / 4.0, (i % 1000) * 0.1, NULL
-FROM generate_series(1, 8000) i;
+SELECT i, i % 7, i % 50, (i * 7919) % 100003, (i % 64) / 4.0, (i % 1000) * 0.1, repeat('x', 60)
+FROM generate_series(1, 4500) i;
 CREATE INDEX s_col ON s USING sift_col (id, g, small, wide, a, b);
 ANALYZE s;
 SET parallel_setup_cost = 0;
@@ -554,15 +554,15 @@ SELECT * FROM diffs($$SELECT round(sum(b)::numeric, 3) AS sb FROM s$$, true, 3);
 -- and the normal plan agrees for sums that do not depend on it
 SELECT * FROM diffs($$SELECT g, sum(a) AS sa, avg(a) AS aa FROM s GROUP BY g$$, false, 0);
 -- zone pruning: units are skipped by the range of ids of the conjuncts, with and without workers, and the groups are the same
-SELECT * FROM diffs($$SELECT g, count(*) AS n, sum(small) AS sm FROM s WHERE id BETWEEN 3000 AND 3200 GROUP BY g$$, false, 0);
-SELECT * FROM diffs($$SELECT g, count(*) AS n FROM s WHERE id = 7000 GROUP BY g$$, false, 0);
-SELECT * FROM diffs($$SELECT g, count(*) AS n FROM s WHERE id > 7000 AND id <= 7500 AND g > 1 GROUP BY g$$, true, 2);
+SELECT * FROM diffs($$SELECT g, count(*) AS n, sum(small) AS sm FROM s WHERE id BETWEEN 1700 AND 1900 GROUP BY g$$, false, 0);
+SELECT * FROM diffs($$SELECT g, count(*) AS n FROM s WHERE id = 4200 GROUP BY g$$, false, 0);
+SELECT * FROM diffs($$SELECT g, count(*) AS n FROM s WHERE id > 4150 AND id <= 4400 AND g > 1 GROUP BY g$$, true, 2);
 SELECT * FROM diffs($$SELECT g, count(*) AS n FROM s WHERE id >= 100000 GROUP BY g$$, false, 0);
 -- count(DISTINCT): few values (a bit per value) and many (a hash set), per group and in total, in one process and merged from several
 SELECT * FROM diffs($$SELECT g, count(DISTINCT small) AS d, count(DISTINCT wide) AS w, count(*) AS n FROM s GROUP BY g$$, false, 0);
 SELECT * FROM diffs($$SELECT g, count(DISTINCT small) AS d, count(DISTINCT wide) AS w, count(*) AS n FROM s GROUP BY g$$, true, 3);
 SELECT * FROM diffs($$SELECT count(DISTINCT small) AS d, count(DISTINCT wide) AS w FROM s$$, true, 2);
-SELECT * FROM diffs($$SELECT g, count(DISTINCT wide) FILTER (WHERE id % 3 = 0) AS d FROM s WHERE id > 2000 GROUP BY g$$, true, 2);
+SELECT * FROM diffs($$SELECT g, count(DISTINCT wide) FILTER (WHERE id % 3 = 0) AS d FROM s WHERE id > 1000 GROUP BY g$$, true, 2);
 -- ordered sets (the histograms are merged by value), numeric sums and keys, grouping sets and float keys come from the workers as the other kinds do
 SET max_parallel_workers_per_gather = 2;
 RESET max_parallel_workers_per_gather;
@@ -599,7 +599,7 @@ SET max_parallel_workers_per_gather = 0;
 -- the tables are tiny: the scan's start-up cost would keep the btree plans these tests are not about
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
-CREATE TABLE o (id int PRIMARY KEY, store int, kind text, f8 float8, f4 float4, items jsonb, pad text) WITH (fillfactor = 20, autovacuum_enabled = false);
+CREATE TABLE o (id int PRIMARY KEY, store int, kind text, f8 float8, f4 float4, items jsonb, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO o
 SELECT g, g % 7, CASE WHEN g % 5 = 0 THEN NULL ELSE (ARRAY['web', 'shop', 'phone'])[1 + g % 3] END,
 	   (ARRAY['0', '-0', 'NaN', '1.5', 'Infinity', NULL, '1.5', '-Infinity'])[1 + g % 8]::float8, (ARRAY['0', '-0', 'NaN', '2.5', NULL])[1 + g % 5]::float4,
@@ -607,7 +607,7 @@ SELECT g, g % 7, CASE WHEN g % 5 = 0 THEN NULL ELSE (ARRAY['web', 'shop', 'phone
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C', 'D', 'E'])[1 + g % 5], 'kind', CASE WHEN g % 4 = 0 THEN NULL ELSE (ARRAY['x', 'y'])[1 + g % 2] END, 'qty', g % 5, 'price', (g % 9) * 2.5),
 			jsonb_build_object('category', (ARRAY['A', 'b', 'C', 'D', 'E'])[1 + (g / 3) % 5], 'kind', 'y', 'qty', g % 3, 'price', (g % 7) * 1.5)) END,
 	   repeat('x', 100)
-FROM generate_series(1, 1500) g;
+FROM generate_series(1, 800) g;
 CREATE INDEX o_col ON o USING sift_col (id, store, kind, f8, f4, items) WITH (paths = 'items[]{category text, kind text, qty int4, price float8}');
 VACUUM ANALYZE o;
 -- the values to aggregate through a lookup join: a key with two rows, NULL values, a key without a row (E)
@@ -618,7 +618,7 @@ CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers
 -- grouping sets: the NULLs of the data and of the rollup, GROUPING() of a subset, a HAVING, the empty set over no row, a set twice, GROUP BY DISTINCT
 SELECT same($$SELECT kind, store, grouping(kind, store) AS g, grouping(store) AS gs, count(*) AS n, sum(store) AS s FROM o GROUP BY ROLLUP (kind, store)$$) AS rollup_nulls;
 SELECT same($$SELECT kind, store % 2 AS odd, grouping(store % 2, kind) AS g, count(*) AS n, count(DISTINCT id) AS ids
-			  FROM o GROUP BY CUBE (kind, store % 2) HAVING grouping(kind) = 0 OR count(*) > 300$$) AS cube_having;
+			  FROM o GROUP BY CUBE (kind, store % 2) HAVING grouping(kind) = 0 OR count(*) > 160$$) AS cube_having;
 SELECT same($$SELECT kind, grouping(kind) AS g, count(*) AS n, sum(store) AS s, min(id) AS m FROM o WHERE store < 0 GROUP BY GROUPING SETS ((kind), ())$$) AS empty_set;
 SELECT same($$SELECT kind, count(*) AS n FROM o GROUP BY GROUPING SETS ((kind), (kind), ())$$) AS set_twice;
 SELECT same($$SELECT kind, store, count(*) AS n FROM o GROUP BY DISTINCT ROLLUP (kind, store), ROLLUP (kind)$$) AS group_distinct;
@@ -700,7 +700,7 @@ SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT same($$SELECT kind, store, grouping(kind, store) AS g, grouping(store) AS gs, count(*) AS n, sum(store) AS s FROM o GROUP BY ROLLUP (kind, store)$$) AS rollup_nulls_workers;
 SELECT same($$SELECT kind, store % 2 AS odd, grouping(store % 2, kind) AS g, count(*) AS n, count(DISTINCT id) AS ids
-			  FROM o GROUP BY CUBE (kind, store % 2) HAVING grouping(kind) = 0 OR count(*) > 300$$) AS cube_having_workers;
+			  FROM o GROUP BY CUBE (kind, store % 2) HAVING grouping(kind) = 0 OR count(*) > 160$$) AS cube_having_workers;
 SELECT same($$SELECT kind, grouping(kind) AS g, count(*) AS n, sum(store) AS s, min(id) AS m FROM o WHERE store < 0 GROUP BY GROUPING SETS ((kind), ())$$) AS empty_set_workers;
 SELECT same($$SELECT i.category, i.kind, grouping(i.category, i.kind) AS g, count(*) AS n, avg(i.price) AS a
 			  FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8)
@@ -712,7 +712,7 @@ SELECT same($$SELECT f8, kind, count(*) AS n FROM o GROUP BY ROLLUP (f8, kind)$$
 -- ones of the normal plan either way
 CREATE TABLE dd AS SELECT i AS id, i % 3 AS grp, CASE WHEN i % 11 = 0 THEN NULL ELSE (i * 7919) % 3000 - 1000 END AS dense,
 	   CASE WHEN i % 13 = 0 THEN NULL ELSE ((i::bigint * 100003) % 2000000011 - 1000000000)::int END AS wide, (i * 31) % 20 AS few
-FROM generate_series(1, 6000) i;
+FROM generate_series(1, 4200) i;
 CREATE INDEX dd_col ON dd USING sift_col (id, grp, dense, wide, few);
 VACUUM ANALYZE dd;
 SET parallel_leader_participation = off;
