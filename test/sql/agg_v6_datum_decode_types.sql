@@ -80,7 +80,8 @@ INSERT INTO cases (q) VALUES
  ('SELECT g, string_agg(DISTINCT nm::text, '','' ORDER BY nm::text), array_agg(DISTINCT e ORDER BY e) FROM %s GROUP BY g'),
  ('SELECT t, count(*), max(t), min(t) FROM %s GROUP BY t'),
  ('SELECT g, d, count(*), max(t), count(DISTINCT t), sum(i4), sum(i8), max(f8), min(ts) FROM %s GROUP BY g, d'),
- ('SELECT g, count(*), sum(i4), sum(i8), sum(f8), min(d), max(ts), max(t), min(n18), sum(n18) FROM %s GROUP BY g');
+ ('SELECT g, count(*), sum(i4), sum(i8), sum(f8), min(d), max(ts), max(t), min(n18), sum(n18) FROM %s GROUP BY g'),
+ ('SELECT g, count(*) FILTER (WHERE (t > ''tx5'') IS NOT TRUE), sum(i4) FILTER (WHERE t > ''tx5''), sum(i4) FILTER (WHERE (n38 > 2) IS NOT TRUE) FROM %s GROUP BY g');
 SELECT n, answer('dd', q) = answer('di', q) AS index_same, answer('dd', q) = answer('dt', q) AS table_same, ran('di', q) AS index_v6, ran('dt', q) AS table_v6 FROM cases ORDER BY n;
 
 DROP TABLE dd, di, dt, cases CASCADE;
