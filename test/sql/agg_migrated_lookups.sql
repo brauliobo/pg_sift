@@ -483,8 +483,7 @@ SELECT name, kind, workers, keyed = whole AND keyed = normal AS same_answers, ke
 FROM (SELECT k.name, kind, w.workers, answers(k.keys, kind, 'keyed', w.workers) AS keyed, answers(k.keys, kind, 'whole', w.workers) AS whole,
              answers(k.keys, kind, 'normal', w.workers) AS normal
       FROM (VALUES ('few', :'few'), ('some', :'some'), ('twice', '10,10,11,11,12'), ('absent', '10,5000,11'), ('null', '10,NULL,11'), ('one', '7'), ('many', :'many')) k(name, keys),
-           (VALUES ('inner'), ('inner_all'), ('semi'), ('anti'), ('left')) q(kind), (VALUES (0), (1)) w(workers)
-      WHERE w.workers = 0 OR k.name = 'some' OFFSET 0) a
+           (VALUES ('inner'), ('inner_all'), ('semi'), ('anti'), ('left')) q(kind), (VALUES (0), (1)) w(workers) OFFSET 0) a
 ORDER BY 1, 2, 3;
 RESET ALL;
 SET client_min_messages = warning;
