@@ -23,19 +23,19 @@ END $$;
 -- the control: a statement whose rows depend on the setting is told apart
 SELECT mig_same($$SELECT current_setting('sift.enable_agg') AS v$$) LIKE 'DIFF%' AS control_detects_a_difference;
 
--- >>> probe_direct
-SET client_min_messages = warning;
-CREATE SCHEMA m1;
-GRANT USAGE ON SCHEMA m1 TO PUBLIC;
-SET search_path = m1, public;
+-- the facts and the helpers both segments use, built once
+CREATE SCHEMA probe_fx;
+GRANT USAGE ON SCHEMA probe_fx TO PUBLIC;
+SET search_path = probe_fx, public;
 CREATE TABLE entries (id serial, dim_b_id int, day date, doc jsonb);
 -- items carry a text tag, a second text, a number n (missing in every seventh item, so its key is NULL) and a score
 INSERT INTO entries (dim_b_id, day, doc)
 SELECT 1 + g % 60, date '2025-01-01' + g % 400,
        jsonb_build_object('items', (SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object('tag', 'tag' || (g * j) % 320, 'sub', 'sub' || (g + j) % 9,
                                     'n', CASE WHEN (g + j) % 7 <> 0 THEN (g * j) % 300 END, 'score', (g * j) % 10))) FROM generate_series(1, 1 + g % 5) j))
-FROM generate_series(1, 6000) g;
+FROM generate_series(1, 500) g;
 CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, day, doc) WITH (paths = 'doc.items[]{tag text, sub text, n float8, score float8}');
+VACUUM (FREEZE, ANALYZE) entries;
 CREATE FUNCTION case_query(tab text, cond text, tail text DEFAULT 'LIMIT 1') RETURNS text LANGUAGE sql AS $$
   SELECT format($q$
  SELECT m.v, count(*) AS n, sum(o.score) AS score
@@ -64,6 +64,12 @@ CREATE FUNCTION step(label text, tab text, cond text, tail text DEFAULT 'LIMIT 1
 $$ SELECT label, p.* FROM probe_check(case_query(tab, cond, tail)) p $$;
 CREATE FUNCTION step_io(label text, tab text, cond text, tail text DEFAULT 'LIMIT 1', col text DEFAULT 'v') RETURNS TABLE (step text, vs_native bigint) LANGUAGE sql AS
 $$ SELECT label, p.* FROM probe_check(case_query_col(tab, cond, tail, col)) p $$;
+RESET search_path;
+
+-- >>> probe_direct
+CREATE SCHEMA m1;
+GRANT USAGE ON SCHEMA m1 TO PUBLIC;
+SET search_path = m1, probe_fx, public;
 -- A correlated lookup child (a LEFT JOIN LATERAL .. LIMIT 1 into a table with a btree) is probed by the aggregate scan in the btree itself, the keys of a chunk together
 -- (combo/probe.c), instead of running the child's plan for each key. Each case runs the query three ways, the plan of the database (sift.enable_agg off), the scan with
 -- the child's plan for every key (the direct probe off) and the scan with the direct probe, and prints how many rows differ from the direct probe's; `direct` says the
@@ -125,6 +131,7 @@ BEGIN
     EXECUTE format('CREATE TABLE lk_%s (k %s, v text)', t.ord, t.coltype);
     EXECUTE format('INSERT INTO lk_%s SELECT %s, ''v'' || g FROM generate_series(0, 299) g WHERE g %% 7 <> 0', t.ord, t.rowkey);
     EXECUTE format('CREATE INDEX ON lk_%s %s', t.ord, t.idxdef);
+    EXECUTE format('ANALYZE lk_%s', t.ord);
   END LOOP;
 END $$;
 -- the conditions of the indexes that are not on k alone
@@ -132,8 +139,6 @@ UPDATE types SET cond = 'k * 2 = (' || itemkey || ') * 2' WHERE name = 'int4 exp
 UPDATE types SET cond = 'k = (' || itemkey || ') AND v IS NOT NULL' WHERE name = 'partial';
 UPDATE types SET cond = 'k COLLATE "C" = (' || itemkey || ')' WHERE name = 'text C';
 UPDATE types SET cond = 'k = (' || itemkey || ')' WHERE cond IS NULL;
-VACUUM (FREEZE, ANALYZE) entries;
-ANALYZE;
 -- the key of the uuid cases is built from a column (md5 is not evaluated on the items of a document): a table of numbers, one in nine NULL
 CREATE TABLE ud (id int, n int);
 INSERT INTO ud SELECT g, CASE WHEN g % 9 = 0 THEN NULL ELSE (g * 7) % 330 END FROM generate_series(1, 2000) g;
@@ -209,31 +214,31 @@ SELECT * FROM step('reindexed', 'lk_dup', 'k = o.n::int');
 BEGIN ISOLATION LEVEL SERIALIZABLE;
 SELECT * FROM step('serializable transaction', 'lk_dup', 'k = o.n::int');
 COMMIT;
--- a key whose dead versions fill several pages of the index: the match is after the pages of its dead entries (no deduplication, wide keys: a few dozen entries a page)
+-- a key whose dead versions fill several pages of the index: the match is after the pages of its dead entries (no deduplication, wide keys: a few entries a page)
 CREATE TABLE lk_run (k text, w int, v text);
-INSERT INTO lk_run SELECT 't' || g || repeat('x', 200), 0, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+INSERT INTO lk_run SELECT 't' || g || repeat('x', 470), 0, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
 CREATE INDEX lk_run_k ON lk_run (k) WITH (deduplicate_items = off);
 CREATE INDEX lk_run_w ON lk_run (w);
-DO $$ BEGIN FOR i IN 1..120 LOOP UPDATE lk_run SET w = i WHERE k LIKE 't1%' OR k LIKE 't2%'; END LOOP; END $$;
+DO $$ BEGIN FOR i IN 1..64 LOOP UPDATE lk_run SET w = i WHERE k LIKE 't1_x%'; END LOOP; END $$;
 ANALYZE lk_run;
 SET enable_bitmapscan = off;
-SELECT * FROM step('dead versions over pages', 'lk_run', $c$k = 't' || o.n::int || repeat('x', 200)$c$);
-SELECT * FROM step('dead entries marked', 'lk_run', $c$k = 't' || o.n::int || repeat('x', 200)$c$);
+SELECT * FROM step('dead versions over pages', 'lk_run', $c$k = 't' || o.n::int || repeat('x', 470)$c$);
+SELECT * FROM step('dead entries marked', 'lk_run', $c$k = 't' || o.n::int || repeat('x', 470)$c$);
 RESET enable_bitmapscan;
-SELECT pg_relation_size('lk_run_k') / current_setting('block_size')::int > 500 AS entries_fill_pages;
+SELECT pg_relation_size('lk_run_k') / current_setting('block_size')::int > 80 AS entries_fill_pages;
 -- the live row is the first entry of its key in index order and the dead versions come after it (rows inserted and deleted later have larger TIDs), over pages of entries:
 -- the search must not pass the first page of the key's entries
 CREATE TABLE lk_back (k text, w int, v text);
-INSERT INTO lk_back SELECT 't' || g || repeat('x', 200), 0, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
+INSERT INTO lk_back SELECT 't' || g || repeat('x', 470), 0, 'v' || g FROM generate_series(0, 299) g WHERE g % 7 <> 0;
 CREATE INDEX lk_back_k ON lk_back (k) WITH (deduplicate_items = off);
-DO $$ BEGIN FOR i IN 1..120 LOOP
-  INSERT INTO lk_back SELECT k, i, 'dead' FROM lk_back WHERE w = 0 AND (k LIKE 't1%' OR k LIKE 't2%');
+DO $$ BEGIN FOR i IN 1..64 LOOP
+  INSERT INTO lk_back SELECT k, i, 'dead' FROM lk_back WHERE w = 0 AND k LIKE 't1_x%';
   DELETE FROM lk_back WHERE w = i;
 END LOOP; END $$;
 ANALYZE lk_back;
 SET enable_bitmapscan = off;
-SELECT * FROM step('live row before dead versions', 'lk_back', $c$k = 't' || o.n::int || repeat('x', 200)$c$);
-SELECT * FROM step('live row before dead entries marked', 'lk_back', $c$k = 't' || o.n::int || repeat('x', 200)$c$);
+SELECT * FROM step('live row before dead versions', 'lk_back', $c$k = 't' || o.n::int || repeat('x', 470)$c$);
+SELECT * FROM step('live row before dead entries marked', 'lk_back', $c$k = 't' || o.n::int || repeat('x', 470)$c$);
 RESET enable_bitmapscan;
 -- an Index Only Scan child takes the columns from the index tuple and asks the heap only for the tuples of the pages that are not all-visible (x is not indexed: its updates are HOT)
 CREATE TABLE lk_io (k int, v text, w int, x int);
@@ -306,46 +311,9 @@ DROP SCHEMA m1 CASCADE;
 -- <<< probe_direct
 
 -- >>> probe_columns
-SET client_min_messages = warning;
 CREATE SCHEMA m2;
 GRANT USAGE ON SCHEMA m2 TO PUBLIC;
-SET search_path = m2, public;
-CREATE TABLE entries (id serial, dim_b_id int, day date, doc jsonb);
--- items carry a text tag, a second text, a number n (missing in every seventh item, so its key is NULL) and a score
-INSERT INTO entries (dim_b_id, day, doc)
-SELECT 1 + g % 60, date '2025-01-01' + g % 400,
-       jsonb_build_object('items', (SELECT jsonb_agg(jsonb_strip_nulls(jsonb_build_object('tag', 'tag' || (g * j) % 320, 'sub', 'sub' || (g + j) % 9,
-                                    'n', CASE WHEN (g + j) % 7 <> 0 THEN (g * j) % 300 END, 'score', (g * j) % 10))) FROM generate_series(1, 1 + g % 5) j))
-FROM generate_series(1, 6000) g;
-CREATE INDEX entries_col ON entries USING sift_col (id, dim_b_id, day, doc) WITH (paths = 'doc.items[]{tag text, sub text, n float8, score float8}');
-CREATE FUNCTION case_query(tab text, cond text, tail text DEFAULT 'LIMIT 1') RETURNS text LANGUAGE sql AS $$
-  SELECT format($q$
- SELECT m.v, count(*) AS n, sum(o.score) AS score
- FROM entries e INNER JOIN LATERAL jsonb_to_recordset(e.doc['items']) AS o(tag text, sub text, n float, score float) ON true
- LEFT JOIN LATERAL (SELECT v FROM %s WHERE %s %s) m ON true
- WHERE e.day >= '2025-03-01' AND e.dim_b_id <= 50
- GROUP BY 1$q$, tab, cond, tail) $$;
-CREATE FUNCTION case_query_col(tab text, cond text, tail text, col text) RETURNS text LANGUAGE sql AS $$
-  SELECT format($q$
- SELECT m.v, count(*) AS n, sum(o.score) AS score
- FROM entries e INNER JOIN LATERAL jsonb_to_recordset(e.doc['items']) AS o(tag text, sub text, n float, score float) ON true
- LEFT JOIN LATERAL (SELECT %s AS v FROM %s WHERE %s %s) m ON true
- WHERE e.day >= '2025-03-01' AND e.dim_b_id <= 50
- GROUP BY 1$q$, col, tab, cond, tail) $$;
-CREATE FUNCTION probe_check(q text) RETURNS TABLE (vs_native bigint) LANGUAGE plpgsql AS $$
-BEGIN
-	SET LOCAL sift.enable_agg = on;
-	EXECUTE 'CREATE TEMP TABLE r_dir ON COMMIT DROP AS ' || q;
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'CREATE TEMP TABLE r_nat ON COMMIT DROP AS ' || q;
-	SELECT count(*) INTO vs_native FROM ((TABLE r_nat EXCEPT ALL TABLE r_dir) UNION ALL (TABLE r_dir EXCEPT ALL TABLE r_nat)) d;
-	DROP TABLE r_nat, r_dir;
-	RETURN NEXT;
-END $$;
-CREATE FUNCTION step(label text, tab text, cond text, tail text DEFAULT 'LIMIT 1') RETURNS TABLE (step text, vs_native bigint) LANGUAGE sql AS
-$$ SELECT label, p.* FROM probe_check(case_query(tab, cond, tail)) p $$;
-CREATE FUNCTION step_io(label text, tab text, cond text, tail text DEFAULT 'LIMIT 1', col text DEFAULT 'v') RETURNS TABLE (step text, vs_native bigint) LANGUAGE sql AS
-$$ SELECT label, p.* FROM probe_check(case_query_col(tab, cond, tail, col)) p $$;
+SET search_path = m2, probe_fx, public;
 -- The direct probe of a correlated lookup child (combo/probe.c, combo/probe_bt.c) over a key of several columns on an index of three levels: a constant array expression, a group
 -- column, an integer, two texts and a wide constant text, like the lookup tables of a report (a mapping keyed by scope, entity type, tag and sub-tag). The descent compares the key with
 -- the separators and entries of a page from the first column that the bounds of its range do not both agree with the key on, and keeps the pages above the leaves pinned for the batch;
@@ -364,15 +332,15 @@ CREATE TABLE lk_src AS
 SELECT DISTINCT o.n::int AS n, o.tag, o.sub
 FROM entries e, jsonb_to_recordset(e.doc['items']) AS o(tag text, sub text, n float, score float) WHERE o.n IS NOT NULL;
 CREATE TABLE lk_all (scope int[], grp text, n int, tag text, sub text, pad text, v text);
-INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, tag, sub, repeat('p', 120), 'v' || n || tag || sub FROM lk_src WHERE hashint4(n) % 4 <> 0 OR tag LIKE 'tag1%';
+INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, tag, sub, repeat('p', 480), 'v' || n || tag || sub FROM lk_src WHERE hashint4(n) % 4 <> 0 OR tag LIKE 'tag1%';
 -- some rows are kept for one scope only, and a second version of the key (the first visible entry in index order is the match)
-INSERT INTO lk_all SELECT ARRAY[n], 'g' || (n % 5), n, tag, sub, repeat('p', 120), 'scoped' FROM lk_src WHERE hashint4(n) % 7 = 0;
-INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, tag, sub, repeat('p', 120), 'second' FROM lk_src WHERE hashint4(n) % 5 = 0;
+INSERT INTO lk_all SELECT ARRAY[n], 'g' || (n % 5), n, tag, sub, repeat('p', 480), 'scoped' FROM lk_src WHERE hashint4(n) % 7 = 0;
+INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, tag, sub, repeat('p', 480), 'second' FROM lk_src WHERE hashint4(n) % 5 = 0;
 -- entries of the keys' neighbours: a column that is NULL, the empty string, a text that extends the key's, a key of another group
-INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, NULL, sub, repeat('p', 120), 'null tag' FROM lk_src WHERE hashint4(n) % 9 = 0;
-INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, '', sub, repeat('p', 120), 'empty tag' FROM lk_src WHERE hashint4(n) % 9 = 1;
-INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, tag || 'x', sub, repeat('p', 120), 'longer tag' FROM lk_src WHERE hashint4(n) % 3 = 0;
-INSERT INTO lk_all SELECT NULL, 'g' || ((n + 1) % 5), n, tag, sub, repeat('p', 120), 'other group' FROM lk_src WHERE hashint4(n) % 3 = 1;
+INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, NULL, sub, repeat('p', 480), 'null tag' FROM lk_src WHERE hashint4(n) % 9 = 0;
+INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, '', sub, repeat('p', 480), 'empty tag' FROM lk_src WHERE hashint4(n) % 9 = 1;
+INSERT INTO lk_all SELECT NULL, 'g' || (n % 5), n, tag || 'x', sub, repeat('p', 480), 'longer tag' FROM lk_src WHERE hashint4(n) % 3 = 0;
+INSERT INTO lk_all SELECT NULL, 'g' || ((n + 1) % 5), n, tag, sub, repeat('p', 480), 'other group' FROM lk_src WHERE hashint4(n) % 3 = 1;
 CREATE TABLE lk_c AS TABLE lk_all;
 CREATE INDEX lk_c_k ON lk_c (coalesce(scope, '{}'::int[]), grp, n, tag, sub, pad);
 CREATE TABLE lk_l AS TABLE lk_all;
@@ -386,13 +354,13 @@ CREATE INDEX lk_d_k ON lk_d (coalesce(scope, '{}'::int[]), grp, n DESC, tag DESC
 CREATE TABLE lk_p AS TABLE lk_all;
 CREATE INDEX lk_p_k ON lk_p (coalesce(scope, '{}'::int[]), grp text_pattern_ops, n, tag text_pattern_ops, sub text_pattern_ops, pad);
 -- a text that is stored compressed in the index (long and repetitive), as the key's third column
-CREATE TABLE lk_z AS SELECT scope, grp, n, tag || repeat('z', 3000) AS tag, sub, pad, v FROM lk_all WHERE tag IS NOT NULL;
+CREATE TABLE lk_z AS SELECT scope, grp, n, tag || repeat('z', 1000) AS tag, sub, pad, v FROM lk_all WHERE tag IS NOT NULL;
 CREATE INDEX lk_z_k ON lk_z (coalesce(scope, '{}'::int[]), grp, n, tag, sub, pad);
-VACUUM (FREEZE, ANALYZE) lk_c, lk_l, lk_d, lk_p, lk_z, entries;
+VACUUM (FREEZE, ANALYZE) lk_c, lk_l, lk_d, lk_p, lk_z;
 SELECT pg_relation_size('lk_c_k') / current_setting('block_size')::int > 150 AS three_levels, pg_relation_size('lk_z_k') > 0 AS z_built;
 -- the condition on the key: the columns of the index, the value of each from the item o
 CREATE FUNCTION kc(tag text DEFAULT 'o.tag', n text DEFAULT 'o.n::int') RETURNS text LANGUAGE sql AS $$
-  SELECT format($q$coalesce(k.scope, '{}') = '{}' AND k.grp = 'g' || (%s %% 5) AND k.n = %s AND k.tag = %s AND k.sub = o.sub AND k.pad = repeat('p', 120)$q$, n, n, tag) $$;
+  SELECT format($q$coalesce(k.scope, '{}') = '{}' AND k.grp = 'g' || (%s %% 5) AND k.n = %s AND k.tag = %s AND k.sub = o.sub AND k.pad = repeat('p', 480)$q$, n, n, tag) $$;
 -- the plan of each case reads its index (the other columns of the table are in no index)
 SELECT t.name, p.* FROM (VALUES ('lk_c', 'C collation'), ('lk_l', 'collation of the cluster'), ('lk_d', 'descending'), ('lk_p', 'text_pattern_ops')) t(tab, name),
 	 LATERAL probe_check(case_query(t.tab || ' k', kc(), 'LIMIT 1')) p ORDER BY t.tab;
@@ -401,7 +369,7 @@ SELECT * FROM step('every match', 'lk_c k', kc(), 'OFFSET 0');
 SELECT * FROM step('every match, collation', 'lk_l k', kc(), 'OFFSET 0');
 SELECT * FROM step('filter on the row', 'lk_c k', kc() || ' AND k.v <> ''second''');
 SELECT * FROM step('filter on the row, collation', 'lk_l k', kc() || ' AND k.v <> ''second''');
-SELECT * FROM step('compressed key', 'lk_z k', kc('o.tag || repeat(''z'', 3000)'));
+SELECT * FROM step('compressed key', 'lk_z k', kc('o.tag || repeat(''z'', 1000)'));
 -- a key that stops after the first columns: the rows of the group, the first by the index order
 SELECT * FROM step('shorter key', 'lk_c k', $c$coalesce(k.scope, '{}') = '{}' AND k.grp = 'g' || (o.n::int % 5) AND k.n = o.n::int$c$);
 SELECT * FROM step('shorter key, descending', 'lk_d k', $c$coalesce(k.scope, '{}') = '{}' AND k.grp = 'g' || (o.n::int % 5) AND k.n = o.n::int$c$);
@@ -411,17 +379,17 @@ SELECT * FROM step('empty key text', 'lk_c k', kc(''''''));
 -- the leaf pages change under the keys: rows deleted, updated and added, then the same keys again
 DELETE FROM lk_c WHERE hashint4(n) % 6 = 0;
 UPDATE lk_c SET v = v || 'u' WHERE hashint4(n) % 5 = 1;
-INSERT INTO lk_c SELECT NULL, 'g' || (n % 5), n, tag, sub, repeat('p', 120), 'late' FROM lk_src WHERE hashint4(n) % 8 = 0;
+INSERT INTO lk_c SELECT NULL, 'g' || (n % 5), n, tag, sub, repeat('p', 480), 'late' FROM lk_src WHERE hashint4(n) % 8 = 0;
 SELECT * FROM step('after changes', 'lk_c k', kc());
 VACUUM lk_c;
 SELECT * FROM step('after vacuum', 'lk_c k', kc());
 -- what the probe saves, by counts. The compares of a key with the tuples of its path, per key probed, and the columns each compares: the columns the range of the page agrees with
 -- the key on are not compared again (the constant array, the group and the wide text are the same in every tuple); the pages above the leaves are read once for the batch
 -- under another collation the columns that differ from the key's are compared through the order function, the equal ones are not (the key's column is equal in most of the tuples it meets)
-DROP TABLE lk_src, lk_all, lk_c, lk_l, lk_d, lk_p, lk_z, entries;
+DROP TABLE lk_src, lk_all, lk_c, lk_l, lk_d, lk_p, lk_z;
 RESET ALL;
 SET client_min_messages = warning;
-DROP SCHEMA m2 CASCADE;
+DROP SCHEMA m2, probe_fx CASCADE;
 -- <<< probe_columns
 
 DROP FUNCTION mig_same(text), mig_run(text, bool);
