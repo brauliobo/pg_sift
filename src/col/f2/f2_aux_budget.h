@@ -12,10 +12,8 @@
 
 #define SIFT_AUX_CAP_PERMILLE		10		/* of the data of the part, all four sections together */
 #define SIFT_AUX_COMP_CAP_PERMILLE	15		/* ... and of the data that compresses (what is not a uuid or a raw blob) */
-#define SIFT_AUX_MARKS_PERMYRIAD	15		/* of the data of the part, what the marks may take, and as much the statistics */
-#define SIFT_AUX_STATS_PERMYRIAD	15
+#define SIFT_AUX_STATS_PERMYRIAD	15		/* of the data of the part, what the statistics may take */
 #define SIFT_AUX_SKIP_COMP_PERMILLE	5		/* of the data that compresses, what the skip index may take */
-#define SIFT_AUX_MARKS_LOOKUP_NG	1		/* above this many granules the marks are what a lookup of the key reads, not an aid: they are kept at what they take (charged, not capped) */
 #define SIFT_AUX_STATS_MIN_ROWS		4096
 #define SIFT_AUX_SKIP_MIN_ROWS		16384
 #define SIFT_AUX_KLL_MIN_ROWS		32768
@@ -41,7 +39,7 @@ typedef struct SiftAuxBudget
  */
 extern void sift_aux_begin(SiftAuxBudget *b, uint64 d_total, uint64 d_comp, uint64 fixed_inline, uint32 nrows, uint32 ng, uint32 level);
 
-/* Whether the part gets the marks of its key (nbytes, charged when it does): it has more than one granule to tell apart and either many (SIFT_AUX_MARKS_LOOKUP_NG) or they fit */
+/* Whether the part gets the marks of its key (nbytes, charged without a cap when it does): the ordered scan seeks by them, so any part of more than one granule keeps them */
 extern bool sift_aux_marks(SiftAuxBudget *b, uint64 nbytes);
 /* Whether the part gets statistics of its columns (nbytes, charged when it does) */
 extern bool sift_aux_col_stats(SiftAuxBudget *b, uint64 nbytes);

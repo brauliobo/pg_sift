@@ -31,14 +31,10 @@ sift_aux_charge(SiftAuxBudget *b, uint64 bytes)
 bool
 sift_aux_marks(SiftAuxBudget *b, uint64 nbytes)
 {
-	if (b->ng <= 1)
+	if (b->ng < 2)
 		return false;
-	if (b->ng > SIFT_AUX_MARKS_LOOKUP_NG)
-	{
-		b->rem -= Min(b->rem, nbytes);
-		return true;
-	}
-	return nbytes <= Min(b->rem, b->d_total * SIFT_AUX_MARKS_PERMYRIAD / 10000) && sift_aux_charge(b, nbytes);
+	b->rem -= Min(b->rem, nbytes);
+	return true;
 }
 
 bool
