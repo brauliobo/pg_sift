@@ -199,9 +199,9 @@ SELECT same(q) FROM unnest(ARRAY[
 
 -- the quals over jsonb stay with the table
 SELECT same('SELECT g, count(*) FROM sf WHERE doc->>''t'' = ''x'' GROUP BY g');
-                                  same                                   
--------------------------------------------------------------------------
- same normal SELECT g, count(*) FROM sf WHERE doc->>'t' = 'x' GROUP BY g
+                                 same                                  
+-----------------------------------------------------------------------
+ same node SELECT g, count(*) FROM sf WHERE doc->>'t' = 'x' GROUP BY g
 (1 row)
 
 -- a value the leaf cannot hold is read from the table, and a text that is not a float8 is the error of the table
@@ -266,7 +266,7 @@ SELECT same(q) FROM unnest(ARRAY[
 ]) q;
                                                                    same                                                                    
 -------------------------------------------------------------------------------------------------------------------------------------------
- same node SELECT g, sum((doc->>'a')::float8) FILTER (WHERE v > 20), count(doc->>'t') FILTER (WHERE g > 2) FROM sf GROUP BY g
+ same normal SELECT g, sum((doc->>'a')::float8) FILTER (WHERE v > 20), count(doc->>'t') FILTER (WHERE g > 2) FROM sf GROUP BY g
  same node SELECT doc->>'t', count(*) FILTER (WHERE v > 20), sum(v) FILTER (WHERE x > 5) FROM sf GROUP BY 1
  same normal SELECT d1.name, sum(sf.v) FILTER (WHERE d1.w > 1), count(*) FILTER (WHERE sf.g = 2) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
  same node SELECT u.e, count(*) FILTER (WHERE sf.v > 20), sum(sf.v) FILTER (WHERE u.e = 'a') FROM sf, unnest(sf.tags) u(e) GROUP BY 1
