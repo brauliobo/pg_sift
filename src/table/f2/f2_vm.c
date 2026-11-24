@@ -23,6 +23,7 @@
 #include "col/f2/pend_del.h"
 #include "col/f2/rowbuf.h"
 #include "core/f2/f2_vm_xlog.h"
+#include "core/memtrack.h"
 #include "core/shm_manifest.h"
 #include "table/f2/f2_tbl.h"
 #include "table/f2/f2_vm.h"
@@ -190,7 +191,7 @@ words_mark(uint64 *words, uint64 base, uint64 lo, uint64 hi)
 		return;
 	lo = Max(lo, base) - base;
 	hi = Min(hi, last) - base;
-	for (uint64 w = lo / SIFT_VM_BLOCKS_PER_WORD; w <= hi / SIFT_VM_BLOCKS_PER_WORD; w++)
+	for (uint64 w = lo / SIFT_VM_BLOCKS_PER_WORD; w < hi / SIFT_VM_BLOCKS_PER_WORD + 1; w++)
 	{
 		uint64		m = EVEN_BITS;
 
@@ -377,7 +378,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 	plan.limit = meta.next_vblock;
 	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, meta.next_vblock, &plan.floor) && plan.floor > 0)
 	{
-		cx = AllocSetContextCreate(CurrentMemoryContext, "sift vm plan", ALLOCSET_DEFAULT_SIZES);
+		cx = sift_mem_allocset_create(CurrentMemoryContext, "sift vm plan");
 		old = MemoryContextSwitchTo(cx);
 		mr = sift_manifest_read_range(rel, NULL, NULL);
 		for (int i = 0; i < mr.n; i++)

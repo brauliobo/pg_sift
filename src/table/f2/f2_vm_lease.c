@@ -12,6 +12,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
+#include "core/cachebudget.h"
 #include "core/f2/f2_vm_xlog.h"
 #include "core/shm_manifest.h"
 #include "table/f2/f2_vm.h"
@@ -85,7 +86,7 @@ sift_tbl_vm_lease_open(Relation rel)
 		return;
 	if (leases == NULL)
 	{
-		leases = MemoryContextAlloc(TopMemoryContext, sizeof(VmLease) * (capleases = 16));
+		leases = MemoryContextAlloc(sift_cache_create_context("sift cache vm leases"), sizeof(VmLease) * (capleases = 16));
 		before_shmem_exit(leases_release_all, 0);
 	}
 	leases_prune();

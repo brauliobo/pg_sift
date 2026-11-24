@@ -15,6 +15,7 @@
 #include "utils/rel.h"
 
 #include "core/f2/f2_vm_xlog.h"
+#include "core/host.h"
 
 static bool rmgr_registered;
 
@@ -91,6 +92,7 @@ sift_vm_apply_set(Relation rel, Buffer vmbuf, uint8 flags, TransactionId horizon
 	uint64		bits[SIFT_VM_WORDS_PER_PAGE];
 	int			n = 0;
 
+	SIFT_INVARIANT(nwords <= lengthof(idx), "a page of the map has no more words than its changes name");
 	LockBuffer(vmbuf, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(vmbuf);
 	if (PageIsNew(page))

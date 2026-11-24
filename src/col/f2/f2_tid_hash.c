@@ -123,3 +123,5 @@ sift_tid_hash_find(Relation rel, const SiftPart *part, uint64 nrows, uint64 tid,
 #endif
 	return n;
 }
+ *
+ * check-memory: allow-allocs every array here follows the rows of one part, which are bounded by the build buffer, not the rows of the table
