@@ -7,6 +7,7 @@
 
 #include <math.h>
 
+#include "agg/v6/v6_card_est.h"
 #include "col/v1/v1_store_ops.h"
 
 #define SAMPLE_UNITS	SIFT_CARD_SAMPLE_GRANULES

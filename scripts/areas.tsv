@@ -176,9 +176,9 @@
 ^test/proj_helpers\.sql$	^installcheck-proj_|{ci}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	fast:{compat}|{cheap}
 ^src/(col/(v1|f2|granule|skip|scope_v6)|table/(v1|f2)|core/(f2|v1_col)|agg/(v1|v6))/	{compat}|{any}|gh:f1
-^scripts/(check-format-isolation\.sh|agg-isolation-v1\.allow)$	^format-isolation$
 ^(test/sql/(compat_v1_|format_v1_v2_compat|format2_index_format_compat|v1_store_ops|v1_store_ops_ext|v1_store_ops_par_zone|v1_unified_datum_fold|v1_unified_scan|v1_unified_preagg_cube|v1_unified_gorder_cursor|v1_unified_jsonb_typeof|v1_unified_rows_scankey|v1_unified_text_rows|v1_unified_star_keys|v1_unified_topn_rows)|test/mem-slope-v1\.tsv|test/t/(024_format2_wal|025_format2_minimal_wal|031_v51_full_compat|032_v6_dump_restore_tablespace)\.pl|test/t/v1_slope\.sh)	{compat}|gh:f1
 # the Alpine (musl) build has no GNU IFUNC: `.` (the build, src/core/) runs it; these are what only it reads
 ^(scripts/(check-no-ifunc|musl-check)\.sh|packaging/docker/)	gh:musl
 ^scripts/docker-smoke\.sh$	-
 ^scripts/(test-regress-batch|selftest-pgtest-bisect)\.sh$	^regress-batch$
+^scripts/check-format-isolation\.sh$	^format-isolation$

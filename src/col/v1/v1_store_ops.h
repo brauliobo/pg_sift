@@ -12,7 +12,6 @@
 #include "nodes/pg_list.h"
 
 #include "agg/batch_source.h"
-#include "agg/v6/v6_card_est.h"
 #include "agg/vexpr_str.h"
 #include "col/v1/v1_reader.h"
 #include "core/filter.h"
@@ -56,7 +55,8 @@ struct SiftStoreQuals
 };
 
 /* The statistics of the leaves of an index as the planner reads them (col/v1_engine/v1_store_card.c), and the first leaf of its column col (0-based) */
-extern const SiftCardStatsView *sift_v1_card_view(const SiftSrcLayout *lay, const SiftSrcStats *st);
+struct SiftCardStatsView;
+extern const struct SiftCardStatsView *sift_v1_card_view(const SiftSrcLayout *lay, const SiftSrcStats *st);
 extern int	sift_v1_card_leaf(const SiftSrcLayout *lay, int col);
 
 /* The leaf that holds attribute att alone (NULL: it has several, or is a document, a declared path or a list), and the type of the attribute */
