@@ -103,7 +103,6 @@ DENSE_MAX_GROUPS	the most items (columns, keys, filters, masks, operations) one 
 DIS_MAX_LEVEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 DIST_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 F2_AUTO_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
-F2_MAX_RUNS	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 GJ_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 MAX_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
 SC_LOW_SPEED_LIMIT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows

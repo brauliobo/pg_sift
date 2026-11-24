@@ -100,8 +100,6 @@ typedef struct F2Run
 	SiftZone  **zones;			/* per bound, the zones of its leaf over the granules; NULL: the part keeps none */
 } F2Run;
 
-#define F2_MAX_RUNS 64
-
 struct F2Src
 {
 	SiftV6Source base;
@@ -125,9 +123,9 @@ struct F2Src
 	SiftV6SkipStats skips;
 	int			pi;				/* the next partition */
 	MemoryContext part_cx;		/* the runs of the current partition */
-	F2Run		runs[F2_MAX_RUNS];
+	F2Run	   *runs;			/* the slab and every part of the partition, in part_cx */
 	int			nruns;
-	int			heap[F2_MAX_RUNS];	/* the runs that have a row, the one whose row comes first at the top (merged sources) */
+	int		   *heap;			/* the runs that have a row, the one whose row comes first at the top (merged sources) */
 	int			nheap;
 	bool		heap_ready;
 	int			cur_run;		/* the run an unsorted source reads */
@@ -338,10 +336,12 @@ partition_open(F2Src *s)
 		s->nruns = 0;
 		s->heap_ready = false;
 		old = MemoryContextSwitchTo(s->part_cx);
+		s->runs = palloc((list->nparts + 1) * sizeof(F2Run));
+		s->heap = palloc((list->nparts + 1) * sizeof(int));
 		px = f2v6_pending(s->c, e);
 		if (e->l0_slab_blk != InvalidBlockNumber)
 			run_add(s, e, NULL, px);
-		for (int j = 0; j < list->nparts && s->nruns < F2_MAX_RUNS; j++)
+		for (int j = 0; j < list->nparts; j++)
 			if (f2v6_part_meets_time(s->c, e, &list->parts[j], &s->win) && sift_f2_v6_eval_part_meets_keys(s, &list->parts[j]))
 				run_add(s, e, f2v6_part_open(s->c, e, &list->parts[j], px), px);
 			else

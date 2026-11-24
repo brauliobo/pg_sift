@@ -14,7 +14,6 @@ array-append	src/bm25/tail.c	present[npresent++] = i;	present is nsegs + 1 long 
 array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {1, 0, t->leaves};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
 array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {2 * w.node, w.from, mid};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
 array-append	src/col/f2/f2_locate.c	stack[sp++] = (TreeWalk) {2 * w.node + 1, mid, w.to};	the stack of 64 holds the two children of each of at most 32 levels of a tree of fewer than 2^32 leaves
-array-append	src/col/f2/f2_v6_bridge.c	s->heap[s->nheap++] = i;	heap is F2_MAX_RUNS long, the same as runs, and i indexes the runs
 array-append	src/col/v1/scan/gorder.c	vals[m++] = pinval[k];	vals is SIFT_GORD_PIN_MAX long, the cap of the pins npin that the caller offered
 array-append	src/col/v1/scan/gorder.c	vals[u++] = vals[k];	u never passes k, the index of the value being compacted in place
 array-append	src/core/f2/fsm/slab.c	empty[n++] = &t->slab[i];	empty is SIFT_FSM_MAX_SLABS long, the cap of the slabs of a table
