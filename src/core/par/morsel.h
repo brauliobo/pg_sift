@@ -131,8 +131,12 @@ typedef struct SiftParOps
 	 * feed returns until release.
 	 */
 	bool		(*feed_slot) (void *ctx, uint32 item);
-	/* RING, the leader: item is done on every thread, or was replayed: its slot is free */
+	/* RING, the leader: item is done on every thread, or was replayed: its slot is free, in the order of the items */
 	void		(*release_slot) (void *ctx, uint32 item);
+	/* RING, the leader (NULL: always): false holds feed_slot back until a release changes the answer; it is true while no item is made and not released */
+	bool		(*may_feed) (void *ctx);
+	/* RING: release_slot delivers the item (the server is called): a run that fails does not release the items it leaves, which are not done */
+	bool		release_emits;
 	/*
 	 * RING, the leader: phase 1 of the item said SIFT_ERR_ARENA_FULL or SIFT_ERR_SERIAL, so that nothing of it is folded: it is the backend path's, and its slot is still the item's. Runs
 	 * before release_slot, in the order of the items.

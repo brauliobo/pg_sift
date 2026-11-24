@@ -337,7 +337,7 @@ ring_leader(SiftParRun *r)
 	while (!halted(r))
 	{
 		ring_reclaim(r);
-		if (!g->eof && g->published - g->released < g->slots)
+		if (!g->eof && g->published - g->released < g->slots && (r->ops->may_feed == NULL || r->ops->may_feed(r->ctx)))
 		{
 			bool		made;
 
@@ -406,6 +406,8 @@ ring_close(SiftParRun *r, bool replay)
 {
 	SiftRing   *g = &r->ring;
 
+	if (r->ops->release_emits && (!r->completed || sift_errlatch_peek(&r->lt)))
+		return;
 	for (; g->released < g->published; g->released++)
 		ring_settle_item(r, g->released, replay && g->state[g->released % g->slots] != RING_DONE);
 }

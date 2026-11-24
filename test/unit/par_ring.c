@@ -38,6 +38,8 @@ typedef struct RingCtx
 	uint64		sum;			/* what the threads folded and the leader replayed */
 	atomic_ullong tsum;
 	uint32		last_released;
+	uint32		nreleased;
+	uint32		max_inflight;	/* the most items made and not passed on, seen as one is made */
 } RingCtx;
 
 static uint64
@@ -62,6 +64,7 @@ ring_feed(void *vc, uint32 item)
 	CHECK(item == c->fed && c->slot_owner[s] == -1);
 	if (item == c->nitems)
 		return false;
+	c->max_inflight = Max(c->max_inflight, item - c->nreleased + 1);
 	c->slot_owner[s] = item;
 	c->slot_val[s] = value(item);
 	c->fed = item + 1;
@@ -80,6 +83,7 @@ ring_release(void *vc, uint32 item)
 	CHECK(c->slot_owner[s] == item && (item == 0 ? c->last_released == 0 : c->last_released + 1 == item));
 	c->slot_owner[s] = -1;
 	c->last_released = item;
+	c->nreleased++;
 	atomic_fetch_add(&c->released[item], 1);
 }
 
@@ -134,8 +138,24 @@ ring_drain(void *vc, const SiftParRange *left, uint32 nleft)
 static const SiftParOps ring_ops = {.feed_slot = ring_feed,.release_slot = ring_release,.fallback_item = ring_replay,.phase1 = ring_phase1,.finish = ring_finish,
 	.overflow_drain = ring_drain};
 
+/* the items in flight are held to THROTTLE, and the run that fails does not pass on the items it leaves */
+#define THROTTLE	3
+
+static bool
+ring_may_feed(void *vc)
+{
+	const RingCtx *c = vc;
+
+	on_leader(c);
+	return c->fed == c->nreleased || c->fed - c->nreleased < THROTTLE;
+}
+
+static const SiftParOps throttle_ops = {.feed_slot = ring_feed,.release_slot = ring_release,.fallback_item = ring_replay,.phase1 = ring_phase1,.finish = ring_finish,
+	.overflow_drain = ring_drain,.may_feed = ring_may_feed,.release_emits = true};
+
 typedef struct RunArgs
 {
+	const SiftParOps *ops;
 	RingCtx    *c;
 	SiftParCfg	cfg;
 	SiftParArenas *ar;
@@ -147,7 +167,7 @@ run_it(void *arg)
 {
 	RunArgs    *a = arg;
 
-	a->ok = sift_par_run(&a->cfg, &ring_ops, a->c, a->ar, NULL);
+	a->ok = sift_par_run(&a->cfg, a->ops != NULL ? a->ops : &ring_ops, a->c, a->ar, NULL);
 }
 
 static RunArgs
@@ -271,6 +291,33 @@ test_ring_overflow(void)
 	}
 }
 
+static void
+test_ring_throttle(void)
+{
+	static RingCtx c;
+
+	for (uint32 w = 2; w <= 4; w++)
+		for (uint32 slots = 0; slots <= 8; slots += 4)
+		{
+			RunArgs		a = setup(&c, w, slots);
+
+			a.ops = &throttle_ops;
+			run_it(&a);
+			CHECK(a.ok && c.finished && c.fed == ITEMS && c.nreleased == ITEMS && c.max_inflight <= THROTTLE && !sift_par_pool_busy());
+			check_all(&c, ITEMS);
+		}
+	for (uint32 w = 2; w <= 4; w++)
+	{
+		RunArgs		a = setup(&c, w, 0);
+
+		a.ops = &throttle_ops;
+		c.fail_at = ITEMS / 3;
+		c.fail_code = SIFT_ERR_CORRUPT;
+		CHECK(!pgshim_try(run_it, &a) && pgshim_sqlstate != 0 && !c.finished && !sift_par_pool_busy());
+		CHECK(c.nreleased <= c.fail_at && c.fed > c.nreleased);
+	}
+}
+
 #ifndef __SANITIZE_THREAD__
 /* a cancel of the leader in the middle of a run: the pool is stopped and waited for, every slot that was made is passed on */
 static void
@@ -309,6 +356,7 @@ main(void)
 	test_ring_empty();
 	test_ring_failure();
 	test_ring_overflow();
+	test_ring_throttle();
 #ifndef __SANITIZE_THREAD__
 	test_ring_cancel();
 #endif
