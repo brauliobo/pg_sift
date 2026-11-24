@@ -732,11 +732,15 @@ col/v1/v1_ops.c
 col/v1/v1_reader.c
 col/v1/v1_reader.h
 col/v1/v1_reader_int.h
+col/v1/v1_reader_preagg.c
 col/v1/v1_reader_meta.c
 col/v1/v1_store_ops.c
 col/v1/v1_store_ops.h
 col/v1/v1_store_ops_par.c
 col/v1/v1_store_ops_zone.c
+col/v1_engine/v1_store_ops_ext.c
+col/v1_engine/v1_store_ops_ext_test.c
+col/v1_engine/v1_store_ops_jsonb.c
 col/v1/verify.c
 col/v1/wbuf.h
 col/v1/wbuf/

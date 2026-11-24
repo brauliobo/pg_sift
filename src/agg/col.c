@@ -437,15 +437,6 @@ col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 
 /* ---- pre-aggregates (src/col/v1/pagg.c, docs/COL-PREAGG.md) ---- */
 
-static void
-col_preagg(Relation index, SiftSrcPreagg *pa)
-{
-	SiftCPaggSpec spec;
-
-	sift_col_pagg_spec(index, &spec);
-	sift_aggpre_spec(&spec, pa);
-}
-
 static bool
 col_unit_exact(void *impl, const SiftSrcUnit *unit)
 {
@@ -528,7 +519,7 @@ static const SiftSrcProvider col_provider = {
 	.stamp = col_stamp,
 	.open = col_open,
 	.key_range = col_key_range,
-	.key_leaf = col_key_leaf,
+	.key_leaf = sift_v1_idx_key_leaf,
 	.open_part = col_open_part,
 	.open_scope = sift_col_open_scope,
 	.scope_delta = sift_col_open_scope_delta,
@@ -612,7 +603,7 @@ static const SiftSrcProvider col_provider = {
 	.filter_str = col_filter_str,
 	.set_wide = col_set_wide,
 	.filter_wide = col_filter_wide,
-	.preagg = col_preagg,
+	.preagg = sift_v1_idx_preagg,
 	.unit_exact = col_unit_exact,
 	.unit_dead = col_unit_dead,
 	.unit_except = col_unit_except,

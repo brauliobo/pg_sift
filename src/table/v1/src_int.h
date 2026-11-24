@@ -57,7 +57,6 @@ extern void tbl_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone 
 extern uint32 tbl_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
 extern bool tbl_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits);
 extern void tbl_counters(const void *impl, SiftSrcCounters *c);
-extern void tbl_preagg(Relation rel, SiftSrcPreagg *pa);
 extern bool tbl_unit_exact(void *impl, const SiftSrcUnit *unit);
 extern int	tbl_unit_dead(void *impl, const SiftSrcUnit *unit, int mode);
 extern bool tbl_whole(void *impl, int leaf, const int *meas, int nmeas);

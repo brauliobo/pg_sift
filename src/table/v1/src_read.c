@@ -166,18 +166,6 @@ tbl_counters(const void *impl, SiftSrcCounters *c)
 
 /* ---- pre-aggregates: the sidecar every stored unit carries (docs/COL-PREAGG.md), answered while its superblock is plain and the unit clean ---- */
 
-void
-tbl_preagg(Relation rel, SiftSrcPreagg *pa)
-{
-	SiftCPaggSpec spec;
-	const SiftColSchema *schema = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
-
-	/* the segments are written with the spec of their layout, whose columns are the leaves of the table's */
-	sift_tbl_pagg_spec(rel, schema, &spec);
-	sift_ktab_spec(schema, &spec);
-	sift_aggpre_spec(&spec, pa);
-}
-
 bool
 tbl_unit_exact(void *impl, const SiftSrcUnit *unit)
 {

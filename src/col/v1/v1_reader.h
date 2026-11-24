@@ -16,6 +16,7 @@
 #include "utils/snapshot.h"
 
 #include "col/pg.h"
+#include "col/v1/preagg.h"
 #include "col/v1/src_exec.h"
 #include "core/filter.h"
 
@@ -23,6 +24,10 @@ typedef struct SiftV1ReaderOps
 {
 	SiftSrcLayout *(*layout) (Relation rel);
 	void		(*stats) (Relation rel, SiftSrcStats *st);
+	/* the pre-aggregates its segments are written with (SiftSrcPreagg.aggs is always set: every unit has the sums of its integer leaves) */
+	void		(*preagg) (Relation rel, SiftSrcPreagg *pa);
+	/* the leaf the units of an index are cut by, -1: none (a sift_table's units are not) */
+	int			(*key_leaf) (Relation rel);
 	/* heap: the table the rows belong to; index: the sift_col index over it, NULL for a sift_table table. mcxt holds everything the reader allocates until close.
 	 * view: what view_export wrote for another reader of the statement (a parallel worker reads the directory of its leader), NULL: the relation as it is now */
 	void	   *(*open) (Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view);
@@ -50,6 +55,11 @@ extern const SiftV1ReaderOps sift_v1_tbl_reader;
 extern void sift_src_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);
 /* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries; wovf[i], wjnull[i]: a write buffer holds an overflow value, a JSON null, of leaf i */
 extern void sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st);
+
+/* The histograms a spec writes, as the planner sees them */
+extern void sift_src_preagg_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa);
+extern void sift_v1_idx_preagg(Relation index, SiftSrcPreagg *pa);
+extern int	sift_v1_idx_key_leaf(Relation index);
 
 extern SiftSrcLayout *sift_v1_idx_layout(Relation index);
 extern void sift_v1_idx_stats(Relation index, SiftSrcStats *st);

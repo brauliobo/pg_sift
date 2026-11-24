@@ -1,7 +1,7 @@
 /*
  * col/v1/v1_store_ops.c - Format 1 behind the storage seam of the unified engine (core/store_ops.h): its sift_col indexes and sift_table tables are read, never written, as the batches of
  * SiftAggV6 (agg/batch_source.h) through the unit reader (col/v1/v1_reader.h) that decodes their units. The rows of a unit that the tombstones and the snapshot leave go to batches of
- * SIFT_VEC_LEN rows, which may span units; the quals of the operator run over each batch. Format 1 is sorted by nothing and has no accelerators to hand over.
+ * SIFT_VEC_LEN rows, which may span units; the quals of the operator run over each batch. The optional sub-vtables it hands over are in col/v1_engine/v1_store_ops_ext.c and v1_store_ops_jsonb.c.
  */
 /* check-memory: allow-allocs every array here follows the columns of one scan or the rows of one batch, not the rows of the relation */
 #include "postgres.h"
@@ -95,8 +95,8 @@ static const SiftV6Class vec_class[] = {[SVEC_BOOL] = SV6C_BOOL,[SVEC_I32] = SV6
 
 /* ---- what the format tells the planner ---- */
 
-static const SiftV1ReaderOps *
-reader_of(bool is_table)
+const SiftV1ReaderOps *
+sift_v1_reader_of(bool is_table)
 {
 	return is_table ? &sift_v1_tbl_reader : &sift_v1_idx_reader;
 }
@@ -204,7 +204,7 @@ static bool
 v1_schema(Oid relid, bool is_table, SiftStoreSchema *out)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
-	const SiftSrcLayout *lay = reader_of(is_table)->layout(r.rel);
+	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
 
 	*out = (SiftStoreSchema) {.natts = lay->natts,.is_table = is_table,.atts = palloc0(lay->natts * sizeof(SiftStoreAtt))};
 	for (int a = 1; a <= lay->natts; a++)
@@ -223,7 +223,7 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	SiftSrcStats st;
 
-	reader_of(is_table)->stats(r.rel, &st);
+	sift_v1_reader_of(is_table)->stats(r.rel, &st);
 	*out = (SiftStoreStats) {.live_rows = r.heap->rd_rel->reltuples >= 0 ? r.heap->rd_rel->reltuples : st.nrows,
 		.stored_bytes = is_table ? table_relation_size(r.heap, MAIN_FORKNUM) : (uint64) st.bytes,.allvis_frac = Min(Max(st.allvisible_frac, 0.0), 1.0)};
 	sift_v1_rel_close(&r);
@@ -234,7 +234,7 @@ static bool
 v1_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
-	const SiftSrcLayout *lay = reader_of(is_table)->layout(r.rel);
+	const SiftSrcLayout *lay = sift_v1_reader_of(is_table)->layout(r.rel);
 	const SiftSrcLeaf *l = att_leaf(lay, att);
 	const bool	holds = l != NULL && leaf_serves(l, att_typid(lay, att), (SiftV6Class) cls);
 
@@ -623,7 +623,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->in = *in;
 	s->snap = snap;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
-	s->rd = reader_of(in->is_table);
+	s->rd = sift_v1_reader_of(in->is_table);
 	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);
 	s->lay = s->rd->source_layout(s->src);
 	bind_columns(s);
@@ -657,7 +657,10 @@ static const SiftStoreOps v1_store_ops = {
 	.leaf_holds = v1_leaf_holds,
 	.zone = &sift_v1_zone_ops,
 	.dict = &sift_v1_dict_ops,
-	.par = &sift_v1_par_ops
+	.par = &sift_v1_par_ops,
+	.order = &v1_order_ops,
+	.preagg = &v1_preagg_ops,
+	.jsonb = &v1_jsonb_ops
 };
 
 void

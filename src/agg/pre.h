@@ -9,9 +9,6 @@
 #include "col/v1/preagg.h"
 #include "col/v1/src_sel.h"
 
-/* The histograms a spec writes, as the planner sees them (SiftSrcPreagg.aggs is always set: every unit has the sums of its integer leaves) */
-extern void sift_aggpre_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa);
-
 /* The histogram of the last sift_aggpre_unit_hist and the dictionary of its keys; the rollup of the last sift_aggpre_unit_rollup and the dictionaries of its dims */
 typedef struct SiftAggPre
 {

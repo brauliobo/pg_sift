@@ -422,6 +422,7 @@ tbl_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, c
 const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.layout = sift_v1_tbl_layout,
 	.stats = sift_v1_tbl_stats,
+	.preagg = sift_v1_tbl_preagg,
 	.open = tbl_open,
 	.view_size = sift_v1_tbl_view_size,
 	.view_export = sift_v1_tbl_view_export,

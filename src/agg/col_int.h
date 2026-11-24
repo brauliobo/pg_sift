@@ -113,7 +113,6 @@ typedef struct ColZones
 } ColZones;
 
 extern bool col_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out);
-extern int	col_key_leaf(Relation index);
 extern Size col_view_size(void *impl);
 extern void col_view_export(void *impl, void *buf);
 extern void *col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys);

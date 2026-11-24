@@ -71,6 +71,7 @@ extern void sift_v1_tbl_view_export(void *impl, void *buf);
 
 extern SiftSrcLayout *sift_v1_tbl_layout(Relation rel);
 extern void sift_v1_tbl_stats(Relation rel, SiftSrcStats *st);
+extern void sift_v1_tbl_preagg(Relation rel, SiftSrcPreagg *pa);
 /* A leaf of a declared path of a jsonb column, not one of the table's own columns */
 extern bool sift_v1_tbl_leaf_is_path(const SiftColDef *def);
 

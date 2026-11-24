@@ -16,6 +16,8 @@
 #include "utils/syscache.h"
 
 #include "col/col.h"
+#include "col/v1/ktab.h"
+#include "col/v1/pagg.h"
 #include "col/v1/src_wide.h"
 #include "col/v1/v1_reader.h"
 #include "table/v1/table_v1.h"
@@ -163,4 +165,18 @@ sift_v1_tbl_stats(Relation rel, SiftSrcStats *st)
 			st->ndistinct[i] *= -st->nrows;
 		ReleaseSysCache(tp);
 	}
+}
+
+/* ---- pre-aggregates: the sidecar every stored unit carries (docs/COL-PREAGG.md) ---- */
+
+void
+sift_v1_tbl_preagg(Relation rel, SiftSrcPreagg *pa)
+{
+	SiftCPaggSpec spec;
+	const SiftColSchema *schema = sift_tbl_layout_schema(rel, sift_tbl_rel(rel));
+
+	/* the segments are written with the spec of their layout, whose columns are the leaves of the table's */
+	sift_tbl_pagg_spec(rel, schema, &spec);
+	sift_ktab_spec(schema, &spec);
+	sift_src_preagg_spec(&spec, pa);
 }

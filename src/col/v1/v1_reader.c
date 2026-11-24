@@ -345,6 +345,8 @@ sift_v1_idx_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint3
 const SiftV1ReaderOps sift_v1_idx_reader = {
 	.layout = sift_v1_idx_layout,
 	.stats = sift_v1_idx_stats,
+	.preagg = sift_v1_idx_preagg,
+	.key_leaf = sift_v1_idx_key_leaf,
 	.open = idx_open,
 	.view_size = idx_view_size,
 	.view_export = idx_view_export,
