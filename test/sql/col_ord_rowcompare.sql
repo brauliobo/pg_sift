@@ -1,0 +1,91 @@
+-- (a, b) > ($1, $2) ORDER BY a, b LIMIT n reads a sift_col index of format major 2 as one range of its key: every ordered operator family carries the btree comparison function the executor wants
+-- for a row comparison (FUNCTION 1), so a fresh install and an update from 5.1 both give the planner the keyset page without an operator family written by hand. Every probe gives the rows of the heap.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET timezone = 'UTC';
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+
+-- the families that order (they hold < and >) have the comparison of every pair of types their operators name
+SELECT f.opfname, count(*) AS ordered_operators,
+	count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM pg_amproc p JOIN pg_proc c ON c.oid = p.amproc WHERE p.amprocfamily = f.oid AND p.amprocnum = 1
+		AND p.amproclefttype = o.amoplefttype AND p.amprocrighttype = o.amoprighttype AND c.pronargs = 2)) AS without_comparison
+FROM pg_amop o JOIN pg_opfamily f ON f.oid = o.amopfamily JOIN pg_am a ON a.oid = f.opfmethod AND a.amname = 'sift_col'
+WHERE f.opfnamespace = 'sift'::regnamespace AND f.opfname <> 'col_ops' AND o.amopstrategy IN (1, 5) GROUP BY f.opfname ORDER BY 1;
+
+CREATE TABLE rc_types (t text, val text, ordered bool);
+INSERT INTO rc_types VALUES
+	('int2', '(%s)::int2', true), ('int4', '(%s)::int4', true), ('int8', '(%s)::int8', true), ('date', '(date ''2020-01-01'' + %s)', true),
+	('timestamp', '(timestamp ''2020-01-01'' + make_interval(days => %s))', true), ('timestamptz', '(timestamptz ''2020-01-01 00:00+00'' + make_interval(days => %s))', true),
+	('text', 'lpad(%s::text, 3, ''0'')', false), ('numeric', '(%s * 1.5)::numeric', false), ('float8', '(%s * 0.5)::float8', false),
+	('uuid', '(''00000000-0000-0000-0000-'' || lpad(%s::text, 12, ''0''))::uuid', false);
+
+-- one table per type, an index on (a, b) with the class the type has by default (and the key order of the columns the scan can give in order)
+DO $$
+DECLARE r record;
+BEGIN
+	FOR r IN SELECT * FROM rc_types LOOP
+		EXECUTE format('CREATE TABLE rc_%s (a %s, b %s, id int)', r.t, r.t, r.t);
+		EXECUTE format('INSERT INTO rc_%s SELECT CASE WHEN i %% 13 = 0 THEN NULL ELSE %s END, CASE WHEN i %% 17 = 0 THEN NULL ELSE %s END, i FROM generate_series(1, 600) i',
+			r.t, format(r.val, '(i % 20)'), format(r.val, '((i * 7) % 11)'));
+		EXECUTE format('CREATE INDEX rc_%s_ab ON rc_%s USING sift_col (a, b) %s', r.t, r.t, CASE WHEN r.ordered THEN 'WITH (key_order = ''a, b'')' ELSE '' END);
+		EXECUTE format('ANALYZE rc_%s', r.t);
+	END LOOP;
+END $$;
+
+-- the page after (pa, pb), through the index (a sequential scan and a Sort are off) and through the heap (the index is off): the same rows in the same order
+CREATE FUNCTION rc_page(t text, val text, pa int, pb int, via_index bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE x text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('enable_seqscan', (NOT via_index)::text, true);
+	PERFORM set_config('enable_sort', (NOT via_index)::text, true);
+	PERFORM set_config('enable_indexscan', via_index::text, true);
+	PERFORM set_config('enable_indexonlyscan', via_index::text, true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+	EXECUTE format('SELECT coalesce(md5(string_agg(w::text, ''|'')), '''') FROM (SELECT a, b FROM rc_%s WHERE (a, b) > (%s, %s) ORDER BY a, b LIMIT 10) w',
+		t, format(val, pa), format(val, pb)) INTO x;
+	RETURN x;
+END $$;
+
+CREATE FUNCTION rc_native(t text, val text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; seen bool := false; sorted bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'off', true);
+	PERFORM set_config('enable_seqscan', 'false', true);
+	PERFORM set_config('enable_sort', 'true', true);
+	PERFORM set_config('enable_indexscan', 'true', true);
+	PERFORM set_config('enable_indexonlyscan', 'true', true);
+	PERFORM set_config('enable_bitmapscan', 'false', true);
+	FOR l IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT a, b FROM rc_%s WHERE (a, b) > (%s, %s) ORDER BY a, b LIMIT 10', t, format(val, 4), format(val, 5)) LOOP
+		seen := seen OR l LIKE '%Index Cond: (ROW(a, b) > ROW(%';
+		sorted := sorted OR l LIKE '%Sort%';
+	END LOOP;
+	RETURN seen AND NOT sorted;
+END $$;
+
+-- types whose index gives the order: the planner takes the row comparison as a range of the key, with no Sort, and every probe agrees with the heap
+SELECT t, rc_native(t, val) AS keyset_range, count(*) AS probes, bool_and(rc_page(t, val, pa, pb, true) = rc_page(t, val, pa, pb, false)) AS agree
+FROM rc_types, unnest(ARRAY[0, 4, 9, 14, 19, 20]) pa, unnest(ARRAY[0, 5, 10, 11]) pb WHERE ordered GROUP BY t, val, rc_types.ordered ORDER BY t;
+
+-- the other types: the page is the heap's whatever plan the index gives
+SELECT t, count(*) AS probes, bool_and(rc_page(t, val, pa, pb, true) = rc_page(t, val, pa, pb, false)) AS agree
+FROM rc_types, unnest(ARRAY[0, 4, 9, 14, 19, 20]) pa, unnest(ARRAY[0, 5, 10, 11]) pb WHERE NOT ordered GROUP BY t ORDER BY t;
+
+-- the parameters of a prepared page are the same range
+CREATE FUNCTION rc_explain(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP RETURN NEXT l; END LOOP;
+END $$;
+PREPARE rc_kp(int, int) AS SELECT a, b FROM rc_int4 WHERE (a, b) > ($1, $2) ORDER BY a, b LIMIT 10;
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET sift.enable_agg = off;
+SELECT count(*) FILTER (WHERE l LIKE '%Index Cond: (ROW(a, b) > ROW($1, $2))%') AS range_in_the_plan, count(*) FILTER (WHERE l LIKE '%Sort%') AS sorts
+FROM rc_explain('EXECUTE rc_kp(4, 5)') l;
+EXECUTE rc_kp(18, 3);
+
+DEALLOCATE rc_kp;
+DROP FUNCTION rc_page(text, text, int, int, bool), rc_native(text, text), rc_explain(text);
+DROP TABLE rc_types, rc_int2, rc_int4, rc_int8, rc_date, rc_timestamp, rc_timestamptz, rc_text, rc_numeric, rc_float8, rc_uuid;
+DROP EXTENSION pg_sift;
