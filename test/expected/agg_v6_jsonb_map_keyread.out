@@ -1,0 +1,1422 @@
+-- The members of a map `col.* float8` of a sift_col index of format major 2 that a statement reads by a constant key (col -> 'k', col['k'], their casts to float8 and to an integer, (col ->> 'k')::float8),
+-- and a subscript of a key the index keeps as a leaf: the aggregate scan of SiftAggV6 gives one row for each row of the table, the member as its value or NULL.
+-- Every query is run with the node and without it (sift.enable_agg) and the two answers are compared, errors included; the first word says they agree, the second that the plan is the one the query
+-- expects (node: SiftAggV6; node18: SiftAggV6 where PostgreSQL gives NULL for the cast of a JSON null, the normal plan before). The plan comes from the cost of the pages, not from a setting that forces it.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+CREATE TABLE mk (id int PRIMARY KEY, g int, attributes jsonb, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mk SELECT i, i % 7,
+	CASE i % 9 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN '{"channel": "web", "device": "x"}' WHEN 3 THEN '{"channel": "app"}' ELSE jsonb_build_object('channel', CASE i % 4 WHEN 0 THEN 'web' WHEN 1 THEN 'pos' ELSE 'app' END) END,
+	CASE i % 10
+		WHEN 0 THEN NULL
+		WHEN 1 THEN '{}'
+		WHEN 2 THEN jsonb_build_object('m_total', i * 0.5, 'quality', i % 6)
+		WHEN 3 THEN jsonb_build_object('m_total', -i * 0.25, 'quality', i % 5 + 0.5)
+		WHEN 4 THEN jsonb_build_object('quality', i % 7)
+		WHEN 5 THEN jsonb_build_object('m_total', i, 'quality', 4.5)
+		WHEN 6 THEN jsonb_build_object('m_total', 2.5, 'quality', -0.5)
+		WHEN 7 THEN jsonb_build_object('m_total', -2.5, 'quality', 3.5)
+		WHEN 8 THEN jsonb_build_object('other', 1)
+		ELSE jsonb_build_object('m_total', i * 1.0, 'quality', 4, 'big', 30000000000)
+	END
+FROM generate_series(1, 3000) i;
+CREATE INDEX mk_col ON mk USING sift_col (id, g, attributes, metrics) WITH (paths = 'attributes->channel text, metrics.* float8');
+ANALYZE mk;
+-- rows the index has not seen yet are read from the table
+INSERT INTO mk SELECT 3000 + i, i % 7, jsonb_build_object('channel', CASE i % 3 WHEN 0 THEN 'web' ELSE 'app' END), CASE i % 4 WHEN 0 THEN NULL ELSE jsonb_build_object('m_total', i + 0.5, 'quality', i % 6) END
+FROM generate_series(1, 200) i;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE plan text := ''; l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	RETURN plan;
+END $$;
+CREATE FUNCTION answer(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
+	RETURN r;
+EXCEPTION WHEN OTHERS THEN
+	RETURN 'error ' || SQLSTATE || ' ' || SQLERRM;
+END $$;
+CREATE FUNCTION same(q text, want text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; plan text; node boolean; expect_node boolean := want = 'node' OR (want = 'node18' AND current_setting('server_version_num')::int >= 180000);
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	plan := plan_of(q);
+	a := answer(q);
+	SET LOCAL sift.enable_agg = off;
+	b := answer(q);
+	node := plan LIKE '%SiftAggV6%';
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN node = expect_node THEN want ELSE 'UNEXPECTED ' || plan END) || ' ' ||
+		(CASE WHEN a LIKE 'error %' THEN a ELSE 'ok' END) || ' ' || q;
+END $$;
+-- Q-01. The plans: the members the statement names, with their types
+EXPLAIN (COSTS OFF) SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::float8) FROM mk GROUP BY 1;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: mk_col
+   Map Keys: metrics['m_total'] double precision
+   Exec: SIMD=avx2 group=salted-ht
+   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT (metrics -> 'm_total')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: mk_col
+   Map Keys: metrics['m_total'] integer, metrics['quality'] integer
+   Exec: SIMD=avx2 group=salted-ht
+   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
+(5 rows)
+
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk WHERE (metrics -> 'quality')::bigint >= 4 AND g < 3;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: mk_col
+   Map Keys: metrics['quality'] bigint
+   Exec: SIMD=avx2 group=salted-ht
+   I/O & Mem: aio_batches=0 (0 blks) peak_mem=0KB/0KB
+(5 rows)
+
+-- Q-02. The values: the subscript of a key that is a leaf as its text, the member as a float8, and as an integer
+SELECT attributes['channel'] #>> '{}' AS channel, count(*) AS n, round(avg((metrics['m_total'])::float8)::numeric, 3) AS m_total FROM mk GROUP BY 1 ORDER BY 1 NULLS FIRST;
+ channel |  n   | m_total 
+---------+------+---------
+         |  667 | 565.034
+ app     | 1300 | 503.363
+ pos     |  416 | 655.648
+ web     |  817 | 434.890
+(4 rows)
+
+SELECT (metrics -> 'quality')::int AS q, count(*) AS n FROM mk GROUP BY 1 ORDER BY 1 NULLS FIRST;
+ q  |  n   
+----+------
+    |  950
+ -1 |  300
+  0 |  160
+  1 |   76
+  2 |  160
+  3 |   76
+  4 | 1059
+  5 |  376
+  6 |   43
+(9 rows)
+
+SELECT (metrics -> 'm_total')::int AS score, count(*) AS n FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1 ORDER BY 1 NULLS FIRST;
+ score |  n  
+-------+-----
+       | 129
+  -748 |   1
+  -746 |   1
+  -743 |   1
+  -741 |   1
+  -738 |   1
+  -736 |   1
+  -733 |   1
+  -731 |   1
+  -728 |   1
+  -726 |   1
+  -723 |   1
+  -721 |   1
+  -718 |   1
+  -716 |   1
+  -713 |   1
+  -711 |   1
+  -708 |   1
+  -706 |   1
+  -703 |   1
+  -701 |   1
+  -698 |   1
+  -696 |   1
+  -693 |   1
+  -691 |   1
+  -688 |   1
+  -686 |   1
+  -683 |   1
+  -681 |   1
+  -678 |   1
+  -676 |   1
+  -673 |   1
+  -671 |   1
+  -668 |   1
+  -666 |   1
+  -663 |   1
+  -661 |   1
+  -658 |   1
+  -656 |   1
+  -653 |   1
+  -651 |   1
+  -648 |   1
+  -646 |   1
+  -643 |   1
+  -641 |   1
+  -638 |   1
+  -636 |   1
+  -633 |   1
+  -631 |   1
+  -628 |   1
+  -626 |   1
+  -623 |   1
+  -621 |   1
+  -618 |   1
+  -616 |   1
+  -613 |   1
+  -611 |   1
+  -608 |   1
+  -606 |   1
+  -603 |   1
+  -601 |   1
+  -598 |   1
+  -596 |   1
+  -593 |   1
+  -591 |   1
+  -588 |   1
+  -586 |   1
+  -583 |   1
+  -581 |   1
+  -578 |   1
+  -576 |   1
+  -573 |   1
+  -571 |   1
+  -568 |   1
+  -566 |   1
+  -563 |   1
+  -561 |   1
+  -558 |   1
+  -556 |   1
+  -553 |   1
+  -551 |   1
+  -548 |   1
+  -546 |   1
+  -543 |   1
+  -541 |   1
+  -538 |   1
+  -536 |   1
+  -533 |   1
+  -531 |   1
+  -528 |   1
+  -526 |   1
+  -523 |   1
+  -521 |   1
+  -518 |   1
+  -516 |   1
+  -513 |   1
+  -511 |   1
+  -508 |   1
+  -506 |   1
+  -503 |   1
+  -501 |   1
+  -498 |   1
+  -496 |   1
+  -493 |   1
+  -491 |   1
+  -488 |   1
+  -486 |   1
+  -483 |   1
+  -481 |   1
+  -478 |   1
+  -476 |   1
+  -473 |   1
+  -471 |   1
+  -468 |   1
+  -466 |   1
+  -463 |   1
+  -461 |   1
+  -458 |   1
+  -456 |   1
+  -453 |   1
+  -451 |   1
+  -448 |   1
+  -446 |   1
+  -443 |   1
+  -441 |   1
+  -438 |   1
+  -436 |   1
+  -433 |   1
+  -431 |   1
+  -428 |   1
+  -426 |   1
+  -423 |   1
+  -421 |   1
+  -418 |   1
+  -416 |   1
+  -413 |   1
+  -411 |   1
+  -408 |   1
+  -406 |   1
+  -403 |   1
+  -401 |   1
+  -398 |   1
+  -396 |   1
+  -393 |   1
+  -391 |   1
+  -388 |   1
+  -386 |   1
+  -383 |   1
+  -381 |   1
+  -378 |   1
+  -376 |   1
+  -373 |   1
+  -371 |   1
+  -368 |   1
+  -366 |   1
+  -363 |   1
+  -361 |   1
+  -358 |   1
+  -356 |   1
+  -353 |   1
+  -351 |   1
+  -348 |   1
+  -346 |   1
+  -343 |   1
+  -341 |   1
+  -338 |   1
+  -336 |   1
+  -333 |   1
+  -331 |   1
+  -328 |   1
+  -326 |   1
+  -323 |   1
+  -321 |   1
+  -318 |   1
+  -316 |   1
+  -313 |   1
+  -311 |   1
+  -308 |   1
+  -306 |   1
+  -303 |   1
+  -301 |   1
+  -298 |   1
+  -296 |   1
+  -293 |   1
+  -291 |   1
+  -288 |   1
+  -286 |   1
+  -283 |   1
+  -281 |   1
+  -278 |   1
+  -276 |   1
+  -273 |   1
+  -271 |   1
+  -268 |   1
+  -266 |   1
+  -263 |   1
+  -261 |   1
+  -258 |   1
+  -256 |   1
+  -253 |   1
+  -251 |   1
+  -248 |   1
+  -246 |   1
+  -243 |   1
+  -241 |   1
+  -238 |   1
+  -236 |   1
+  -233 |   1
+  -231 |   1
+  -228 |   1
+  -226 |   1
+  -223 |   1
+  -221 |   1
+  -218 |   1
+  -216 |   1
+  -213 |   1
+  -211 |   1
+  -208 |   1
+  -206 |   1
+  -203 |   1
+  -201 |   1
+  -198 |   1
+  -196 |   1
+  -193 |   1
+  -191 |   1
+  -188 |   1
+  -186 |   1
+  -183 |   1
+  -181 |   1
+  -178 |   1
+  -176 |   1
+  -173 |   1
+  -171 |   1
+  -168 |   1
+  -166 |   1
+  -163 |   1
+  -161 |   1
+  -158 |   1
+  -156 |   1
+  -153 |   1
+  -151 |   1
+  -148 |   1
+  -146 |   1
+  -143 |   1
+  -141 |   1
+  -138 |   1
+  -136 |   1
+  -133 |   1
+  -131 |   1
+  -128 |   1
+  -126 |   1
+  -123 |   1
+  -121 |   1
+  -118 |   1
+  -116 |   1
+  -113 |   1
+  -111 |   1
+  -108 |   1
+  -106 |   1
+  -103 |   1
+  -101 |   1
+   -98 |   1
+   -96 |   1
+   -93 |   1
+   -91 |   1
+   -88 |   1
+   -86 |   1
+   -83 |   1
+   -81 |   1
+   -78 |   1
+   -76 |   1
+   -73 |   1
+   -71 |   1
+   -68 |   1
+   -66 |   1
+   -63 |   1
+   -61 |   1
+   -58 |   1
+   -56 |   1
+   -53 |   1
+   -51 |   1
+   -48 |   1
+   -46 |   1
+   -43 |   1
+   -41 |   1
+   -38 |   1
+   -36 |   1
+   -33 |   1
+   -31 |   1
+   -28 |   1
+   -26 |   1
+   -23 |   1
+   -21 |   1
+   -18 |   1
+   -16 |   1
+   -13 |   1
+   -11 |   1
+    -8 |   1
+    -6 |   1
+    -3 | 301
+    -1 |   1
+     5 |   1
+     6 |   1
+     9 |   1
+    11 |   2
+    12 |   1
+    15 |   1
+    18 |   1
+    19 |   1
+    23 |   1
+    24 |   1
+    25 |   1
+    26 |   1
+    29 |   1
+    30 |   1
+    35 |   2
+    36 |   1
+    39 |   1
+    41 |   1
+    42 |   1
+    45 |   1
+    47 |   1
+    48 |   1
+    49 |   1
+    54 |   1
+    55 |   1
+    56 |   1
+    59 |   2
+    60 |   1
+    65 |   1
+    66 |   1
+    69 |   1
+    71 |   2
+    72 |   1
+    75 |   1
+    78 |   1
+    79 |   1
+    83 |   1
+    84 |   1
+    85 |   1
+    86 |   1
+    89 |   1
+    90 |   1
+    95 |   2
+    96 |   1
+    99 |   1
+   101 |   1
+   102 |   1
+   105 |   1
+   107 |   1
+   108 |   1
+   109 |   1
+   114 |   1
+   115 |   1
+   116 |   1
+   119 |   2
+   120 |   1
+   125 |   1
+   126 |   1
+   129 |   1
+   131 |   2
+   132 |   1
+   135 |   1
+   138 |   1
+   139 |   1
+   143 |   1
+   144 |   1
+   145 |   1
+   146 |   1
+   149 |   1
+   150 |   1
+   155 |   2
+   156 |   1
+   159 |   1
+   161 |   1
+   162 |   1
+   165 |   1
+   167 |   1
+   168 |   1
+   169 |   1
+   174 |   1
+   175 |   1
+   176 |   1
+   179 |   2
+   180 |   1
+   185 |   1
+   186 |   1
+   189 |   1
+   191 |   2
+   192 |   1
+   195 |   1
+   198 |   1
+   199 |   1
+   205 |   1
+   206 |   1
+   209 |   1
+   215 |   1
+   219 |   1
+   221 |   1
+   225 |   1
+   229 |   1
+   235 |   1
+   236 |   1
+   239 |   1
+   245 |   1
+   249 |   1
+   251 |   1
+   255 |   1
+   259 |   1
+   265 |   1
+   266 |   1
+   269 |   1
+   275 |   1
+   279 |   1
+   281 |   1
+   285 |   1
+   289 |   1
+   295 |   1
+   296 |   1
+   299 |   1
+   305 |   1
+   309 |   1
+   311 |   1
+   315 |   1
+   319 |   1
+   325 |   1
+   326 |   1
+   329 |   1
+   335 |   1
+   339 |   1
+   341 |   1
+   345 |   1
+   349 |   1
+   355 |   1
+   356 |   1
+   359 |   1
+   365 |   1
+   369 |   1
+   371 |   1
+   375 |   1
+   379 |   1
+   385 |   1
+   386 |   1
+   389 |   1
+   395 |   1
+   399 |   1
+   401 |   1
+   405 |   1
+   409 |   1
+   415 |   1
+   416 |   1
+   419 |   1
+   425 |   1
+   429 |   1
+   431 |   1
+   435 |   1
+   439 |   1
+   445 |   1
+   446 |   1
+   449 |   1
+   455 |   1
+   459 |   1
+   461 |   1
+   465 |   1
+   469 |   1
+   475 |   1
+   476 |   1
+   479 |   1
+   485 |   1
+   489 |   1
+   491 |   1
+   495 |   1
+   499 |   1
+   505 |   1
+   506 |   1
+   509 |   1
+   515 |   1
+   519 |   1
+   521 |   1
+   525 |   1
+   529 |   1
+   535 |   1
+   536 |   1
+   539 |   1
+   545 |   1
+   549 |   1
+   551 |   1
+   555 |   1
+   559 |   1
+   565 |   1
+   566 |   1
+   569 |   1
+   575 |   1
+   579 |   1
+   581 |   1
+   585 |   1
+   589 |   1
+   595 |   1
+   596 |   1
+   599 |   1
+   605 |   1
+   609 |   1
+   611 |   1
+   615 |   1
+   619 |   1
+   625 |   1
+   626 |   1
+   629 |   1
+   635 |   1
+   639 |   1
+   641 |   1
+   645 |   1
+   649 |   1
+   655 |   1
+   656 |   1
+   659 |   1
+   665 |   1
+   669 |   1
+   671 |   1
+   675 |   1
+   679 |   1
+   685 |   1
+   686 |   1
+   689 |   1
+   695 |   1
+   699 |   1
+   701 |   1
+   705 |   1
+   709 |   1
+   715 |   1
+   716 |   1
+   719 |   1
+   725 |   1
+   729 |   1
+   731 |   1
+   735 |   1
+   739 |   1
+   745 |   1
+   746 |   1
+   749 |   1
+   755 |   1
+   759 |   1
+   761 |   1
+   765 |   1
+   769 |   1
+   775 |   1
+   776 |   1
+   779 |   1
+   785 |   1
+   789 |   1
+   791 |   1
+   795 |   1
+   799 |   1
+   805 |   1
+   806 |   1
+   809 |   1
+   815 |   1
+   819 |   1
+   821 |   1
+   825 |   1
+   829 |   1
+   835 |   1
+   836 |   1
+   839 |   1
+   845 |   1
+   849 |   1
+   851 |   1
+   855 |   1
+   859 |   1
+   865 |   1
+   866 |   1
+   869 |   1
+   875 |   1
+   879 |   1
+   881 |   1
+   885 |   1
+   889 |   1
+   895 |   1
+   896 |   1
+   899 |   1
+   905 |   1
+   909 |   1
+   911 |   1
+   915 |   1
+   919 |   1
+   925 |   1
+   926 |   1
+   929 |   1
+   935 |   1
+   939 |   1
+   941 |   1
+   945 |   1
+   949 |   1
+   955 |   1
+   956 |   1
+   959 |   1
+   965 |   1
+   969 |   1
+   971 |   1
+   975 |   1
+   979 |   1
+   985 |   1
+   986 |   1
+   989 |   1
+   995 |   1
+   999 |   1
+  1001 |   1
+  1005 |   1
+  1009 |   1
+  1015 |   1
+  1016 |   1
+  1019 |   1
+  1025 |   1
+  1029 |   1
+  1031 |   1
+  1035 |   1
+  1039 |   1
+  1045 |   1
+  1046 |   1
+  1049 |   1
+  1055 |   1
+  1059 |   1
+  1061 |   1
+  1065 |   1
+  1069 |   1
+  1075 |   1
+  1076 |   1
+  1079 |   1
+  1085 |   1
+  1089 |   1
+  1091 |   1
+  1095 |   1
+  1099 |   1
+  1105 |   1
+  1106 |   1
+  1109 |   1
+  1115 |   1
+  1119 |   1
+  1121 |   1
+  1125 |   1
+  1129 |   1
+  1135 |   1
+  1136 |   1
+  1139 |   1
+  1145 |   1
+  1149 |   1
+  1151 |   1
+  1155 |   1
+  1159 |   1
+  1165 |   1
+  1166 |   1
+  1169 |   1
+  1175 |   1
+  1179 |   1
+  1181 |   1
+  1185 |   1
+  1189 |   1
+  1195 |   1
+  1196 |   1
+  1199 |   1
+  1205 |   1
+  1209 |   1
+  1211 |   1
+  1215 |   1
+  1219 |   1
+  1225 |   1
+  1226 |   1
+  1229 |   1
+  1235 |   1
+  1239 |   1
+  1241 |   1
+  1245 |   1
+  1249 |   1
+  1255 |   1
+  1256 |   1
+  1259 |   1
+  1265 |   1
+  1269 |   1
+  1271 |   1
+  1275 |   1
+  1279 |   1
+  1285 |   1
+  1286 |   1
+  1289 |   1
+  1295 |   1
+  1299 |   1
+  1301 |   1
+  1305 |   1
+  1309 |   1
+  1315 |   1
+  1316 |   1
+  1319 |   1
+  1325 |   1
+  1329 |   1
+  1331 |   1
+  1335 |   1
+  1339 |   1
+  1345 |   1
+  1346 |   1
+  1349 |   1
+  1355 |   1
+  1359 |   1
+  1361 |   1
+  1365 |   1
+  1369 |   1
+  1375 |   1
+  1376 |   1
+  1379 |   1
+  1385 |   1
+  1389 |   1
+  1391 |   1
+  1395 |   1
+  1399 |   1
+  1405 |   1
+  1406 |   1
+  1409 |   1
+  1415 |   1
+  1419 |   1
+  1421 |   1
+  1425 |   1
+  1429 |   1
+  1435 |   1
+  1436 |   1
+  1439 |   1
+  1445 |   1
+  1449 |   1
+  1451 |   1
+  1455 |   1
+  1459 |   1
+  1465 |   1
+  1466 |   1
+  1469 |   1
+  1475 |   1
+  1479 |   1
+  1481 |   1
+  1485 |   1
+  1489 |   1
+  1495 |   1
+  1496 |   1
+  1499 |   1
+  1505 |   1
+  1509 |   1
+  1515 |   1
+  1519 |   1
+  1525 |   1
+  1529 |   1
+  1535 |   1
+  1539 |   1
+  1545 |   1
+  1549 |   1
+  1555 |   1
+  1559 |   1
+  1565 |   1
+  1569 |   1
+  1575 |   1
+  1579 |   1
+  1585 |   1
+  1589 |   1
+  1595 |   1
+  1599 |   1
+  1605 |   1
+  1609 |   1
+  1615 |   1
+  1619 |   1
+  1625 |   1
+  1629 |   1
+  1635 |   1
+  1639 |   1
+  1645 |   1
+  1649 |   1
+  1655 |   1
+  1659 |   1
+  1665 |   1
+  1669 |   1
+  1675 |   1
+  1679 |   1
+  1685 |   1
+  1689 |   1
+  1695 |   1
+  1699 |   1
+  1705 |   1
+  1709 |   1
+  1715 |   1
+  1719 |   1
+  1725 |   1
+  1729 |   1
+  1735 |   1
+  1739 |   1
+  1745 |   1
+  1749 |   1
+  1755 |   1
+  1759 |   1
+  1765 |   1
+  1769 |   1
+  1775 |   1
+  1779 |   1
+  1785 |   1
+  1789 |   1
+  1795 |   1
+  1799 |   1
+  1805 |   1
+  1809 |   1
+  1815 |   1
+  1819 |   1
+  1825 |   1
+  1829 |   1
+  1835 |   1
+  1839 |   1
+  1845 |   1
+  1849 |   1
+  1855 |   1
+  1859 |   1
+  1865 |   1
+  1869 |   1
+  1875 |   1
+  1879 |   1
+  1885 |   1
+  1889 |   1
+  1895 |   1
+  1899 |   1
+  1905 |   1
+  1909 |   1
+  1915 |   1
+  1919 |   1
+  1925 |   1
+  1929 |   1
+  1935 |   1
+  1939 |   1
+  1945 |   1
+  1949 |   1
+  1955 |   1
+  1959 |   1
+  1965 |   1
+  1969 |   1
+  1975 |   1
+  1979 |   1
+  1985 |   1
+  1989 |   1
+  1995 |   1
+  1999 |   1
+  2005 |   1
+  2009 |   1
+  2015 |   1
+  2019 |   1
+  2025 |   1
+  2029 |   1
+  2035 |   1
+  2039 |   1
+  2045 |   1
+  2049 |   1
+  2055 |   1
+  2059 |   1
+  2065 |   1
+  2069 |   1
+  2075 |   1
+  2079 |   1
+  2085 |   1
+  2089 |   1
+  2095 |   1
+  2099 |   1
+  2105 |   1
+  2109 |   1
+  2115 |   1
+  2119 |   1
+  2125 |   1
+  2129 |   1
+  2135 |   1
+  2139 |   1
+  2145 |   1
+  2149 |   1
+  2155 |   1
+  2159 |   1
+  2165 |   1
+  2169 |   1
+  2175 |   1
+  2179 |   1
+  2185 |   1
+  2189 |   1
+  2195 |   1
+  2199 |   1
+  2205 |   1
+  2209 |   1
+  2215 |   1
+  2219 |   1
+  2225 |   1
+  2229 |   1
+  2235 |   1
+  2239 |   1
+  2245 |   1
+  2249 |   1
+  2255 |   1
+  2259 |   1
+  2265 |   1
+  2269 |   1
+  2275 |   1
+  2279 |   1
+  2285 |   1
+  2289 |   1
+  2295 |   1
+  2299 |   1
+  2305 |   1
+  2309 |   1
+  2315 |   1
+  2319 |   1
+  2325 |   1
+  2329 |   1
+  2335 |   1
+  2339 |   1
+  2345 |   1
+  2349 |   1
+  2355 |   1
+  2359 |   1
+  2365 |   1
+  2369 |   1
+  2375 |   1
+  2379 |   1
+  2385 |   1
+  2389 |   1
+  2395 |   1
+  2399 |   1
+  2405 |   1
+  2409 |   1
+  2415 |   1
+  2419 |   1
+  2425 |   1
+  2429 |   1
+  2435 |   1
+  2439 |   1
+  2445 |   1
+  2449 |   1
+  2455 |   1
+  2459 |   1
+  2465 |   1
+  2469 |   1
+  2475 |   1
+  2479 |   1
+  2485 |   1
+  2489 |   1
+  2495 |   1
+  2499 |   1
+  2505 |   1
+  2509 |   1
+  2515 |   1
+  2519 |   1
+  2525 |   1
+  2529 |   1
+  2535 |   1
+  2539 |   1
+  2545 |   1
+  2549 |   1
+  2555 |   1
+  2559 |   1
+  2565 |   1
+  2569 |   1
+  2575 |   1
+  2579 |   1
+  2585 |   1
+  2589 |   1
+  2595 |   1
+  2599 |   1
+  2605 |   1
+  2609 |   1
+  2615 |   1
+  2619 |   1
+  2625 |   1
+  2629 |   1
+  2635 |   1
+  2639 |   1
+  2645 |   1
+  2649 |   1
+  2655 |   1
+  2659 |   1
+  2665 |   1
+  2669 |   1
+  2675 |   1
+  2679 |   1
+  2685 |   1
+  2689 |   1
+  2695 |   1
+  2699 |   1
+  2705 |   1
+  2709 |   1
+  2715 |   1
+  2719 |   1
+  2725 |   1
+  2729 |   1
+  2735 |   1
+  2739 |   1
+  2745 |   1
+  2749 |   1
+  2755 |   1
+  2759 |   1
+  2765 |   1
+  2769 |   1
+  2775 |   1
+  2779 |   1
+  2785 |   1
+  2789 |   1
+  2795 |   1
+  2799 |   1
+  2805 |   1
+  2809 |   1
+  2815 |   1
+  2819 |   1
+  2825 |   1
+  2829 |   1
+  2835 |   1
+  2839 |   1
+  2845 |   1
+  2849 |   1
+  2855 |   1
+  2859 |   1
+  2865 |   1
+  2869 |   1
+  2875 |   1
+  2879 |   1
+  2885 |   1
+  2889 |   1
+  2895 |   1
+  2899 |   1
+  2905 |   1
+  2909 |   1
+  2915 |   1
+  2919 |   1
+  2925 |   1
+  2929 |   1
+  2935 |   1
+  2939 |   1
+  2945 |   1
+  2949 |   1
+  2955 |   1
+  2959 |   1
+  2965 |   1
+  2969 |   1
+  2975 |   1
+  2979 |   1
+  2985 |   1
+  2989 |   1
+  2995 |   1
+  2999 |   1
+(1040 rows)
+
+-- Q-03. The subscript of a document and its forms: #>> '{}' and ->> are one text, a path of one key is the key, and the float8 of the text of a member
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes[''channel''] #>> ''{}'', count(*) FROM mk GROUP BY 1', 'node'),
+	('SELECT attributes ->> ''channel'', attributes[''channel''] #>> ''{}'', count(*) FROM mk GROUP BY 1, 2', 'node'),
+	('SELECT attributes #>> ''{channel}'', count(*) FROM mk GROUP BY 1', 'node'),
+	('SELECT attributes[''channel''] #>> ''{}'', avg((metrics[''m_total''])::float8) FROM mk GROUP BY 1', 'node'),
+	('SELECT attributes ->> ''channel'', avg((metrics ->> ''m_total'')::float8) FROM mk GROUP BY 1', 'node'),
+	('SELECT attributes ->> ''channel'', avg((metrics #>> ''{m_total}'')::float8) FROM mk GROUP BY 1', 'node'),
+	('SELECT avg((metrics -> ''m_total'')::float8), avg((metrics #> ''{m_total}'')::float8), avg(jsonb_extract_path(metrics, ''m_total'')::float8) FROM mk', 'node18'),
+	('SELECT g, sum((metrics[''m_total''])::float8), min((metrics[''m_total''])::float8), max((metrics[''m_total''])::float8), count((metrics[''m_total''])::float8), count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT count(*), count((metrics[''nokey''])::float8), sum((metrics[''nokey''])::float8) FROM mk', 'node18'),
+	('SELECT attributes[''channel''] #>> ''{}'', count(*) FILTER (WHERE (metrics[''m_total''])::float8 >= 2) FROM mk GROUP BY 1', 'node18'),
+	('SELECT g, count(*) FROM mk WHERE (metrics[''m_total''])::float8 >= 2 AND g < 5 GROUP BY 1', 'node18'),
+	('SELECT g, count(*) FROM mk WHERE (metrics[''m_total''])::float8 BETWEEN -1 AND 100 OR (metrics[''quality''])::float8 = 4 GROUP BY 1', 'normal'),
+	('SELECT g, count(*) FROM mk WHERE (metrics[''m_total''])::float8 IS NULL GROUP BY 1', 'node18'),
+	('SELECT g, sum((metrics[''m_total''])::float8) FROM mk GROUP BY 1 HAVING sum((metrics[''m_total''])::float8) > 100', 'node18')
+) t(q, w);
+                                                                                                same                                                                                                
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes['channel'] #>> '{}', count(*) FROM mk GROUP BY 1
+ same node ok SELECT attributes ->> 'channel', attributes['channel'] #>> '{}', count(*) FROM mk GROUP BY 1, 2
+ same node ok SELECT attributes #>> '{channel}', count(*) FROM mk GROUP BY 1
+ same node ok SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::float8) FROM mk GROUP BY 1
+ same node ok SELECT attributes ->> 'channel', avg((metrics ->> 'm_total')::float8) FROM mk GROUP BY 1
+ same node ok SELECT attributes ->> 'channel', avg((metrics #>> '{m_total}')::float8) FROM mk GROUP BY 1
+ same node18 ok SELECT avg((metrics -> 'm_total')::float8), avg((metrics #> '{m_total}')::float8), avg(jsonb_extract_path(metrics, 'm_total')::float8) FROM mk
+ same node18 ok SELECT g, sum((metrics['m_total'])::float8), min((metrics['m_total'])::float8), max((metrics['m_total'])::float8), count((metrics['m_total'])::float8), count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT count(*), count((metrics['nokey'])::float8), sum((metrics['nokey'])::float8) FROM mk
+ same node18 ok SELECT attributes['channel'] #>> '{}', count(*) FILTER (WHERE (metrics['m_total'])::float8 >= 2) FROM mk GROUP BY 1
+ same node18 ok SELECT g, count(*) FROM mk WHERE (metrics['m_total'])::float8 >= 2 AND g < 5 GROUP BY 1
+ same normal ok SELECT g, count(*) FROM mk WHERE (metrics['m_total'])::float8 BETWEEN -1 AND 100 OR (metrics['quality'])::float8 = 4 GROUP BY 1
+ same node18 ok SELECT g, count(*) FROM mk WHERE (metrics['m_total'])::float8 IS NULL GROUP BY 1
+ same node18 ok SELECT g, sum((metrics['m_total'])::float8) FROM mk GROUP BY 1 HAVING sum((metrics['m_total'])::float8) > 100
+(14 rows)
+
+-- Q-04. What the scan does not take keeps the normal plan and the same answers: a chained subscript, an integer subscript, the jsonb value as it is, its text, a key of the leaf kind
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes[''channel''][''x''] #>> ''{}'', count(*) FROM mk GROUP BY 1', 'normal'),
+	('SELECT (metrics[0])::float8, count(*) FROM mk GROUP BY 1', 'normal'),
+	('SELECT metrics[''m_total''], count(*) FROM mk WHERE g = 1 GROUP BY 1', 'normal'),
+	('SELECT metrics ->> ''m_total'', count(*) FROM mk WHERE g = 1 GROUP BY 1', 'normal'),
+	('SELECT g, count(*) FROM mk WHERE metrics[''m_total''] = ''2.5'' GROUP BY 1', 'normal'),
+	('SELECT (metrics -> ''m_total'')::numeric, count(*) FROM mk WHERE g = 1 GROUP BY 1', 'normal'),
+	('SELECT (metrics -> ''m_total'')::float4, count(*) FROM mk WHERE g = 1 GROUP BY 1', 'normal'),
+	('SELECT (metrics ->> ''m_total'')::int, count(*) FROM mk WHERE g = 1 GROUP BY 1', 'normal')
+) t(q, w);
+                                                                        same                                                                        
+----------------------------------------------------------------------------------------------------------------------------------------------------
+ same normal ok SELECT attributes['channel']['x'] #>> '{}', count(*) FROM mk GROUP BY 1
+ same normal ok SELECT (metrics[0])::float8, count(*) FROM mk GROUP BY 1
+ same normal ok SELECT metrics['m_total'], count(*) FROM mk WHERE g = 1 GROUP BY 1
+ same normal ok SELECT metrics ->> 'm_total', count(*) FROM mk WHERE g = 1 GROUP BY 1
+ same normal ok SELECT g, count(*) FROM mk WHERE metrics['m_total'] = '2.5' GROUP BY 1
+ same normal ok SELECT (metrics -> 'm_total')::numeric, count(*) FROM mk WHERE g = 1 GROUP BY 1
+ same normal ok SELECT (metrics -> 'm_total')::float4, count(*) FROM mk WHERE g = 1 GROUP BY 1
+ same normal error 22P02 invalid input syntax for type integer: "11.0" SELECT (metrics ->> 'm_total')::int, count(*) FROM mk WHERE g = 1 GROUP BY 1
+(8 rows)
+
+-- Q-05. The integer cast of a member: a group key, a filter, an aggregate and its argument, as a smallint, an integer and a bigint; numeric rounds half away from zero
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''m_total'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::int, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::smallint, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT g, sum((metrics -> ''quality'')::int), min((metrics -> ''m_total'')::bigint), max((metrics -> ''m_total'')::int), avg((metrics -> ''quality'')::int) FROM mk GROUP BY 1', 'node18'),
+	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::int >= 4), count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5), count(*) FILTER (WHERE g = 3) FROM mk', 'node18'),
+	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5 OR g = 3) FROM mk', 'normal'),
+	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::smallint IN (1, 2, 5) GROUP BY 1', 'node18'),
+	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::int IS NULL GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::int, (metrics -> ''m_total'')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2', 'node18'),
+	('SELECT CAST(jsonb_extract_path(metrics, ''quality'') AS integer), count(*) FROM mk WHERE CAST(jsonb_extract_path(metrics, ''m_total'') AS bigint) >= 3 GROUP BY 1', 'node18'),
+	('SELECT (metrics[''quality''])::int, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::int AS q, count(*) FROM mk WHERE g < 3 GROUP BY 1 HAVING count(*) > 10', 'node18'),
+	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 AND g < 3', 'node18'),
+	('SELECT (metrics -> ''quality'')::int, (metrics ->> ''quality'')::float8, count(*) FROM mk GROUP BY 1, 2', 'node18')
+) t(q, w);
+                                                                                         same                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node18 ok SELECT (metrics -> 'm_total')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::int, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::bigint, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::smallint, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT g, sum((metrics -> 'quality')::int), min((metrics -> 'm_total')::bigint), max((metrics -> 'm_total')::int), avg((metrics -> 'quality')::int) FROM mk GROUP BY 1
+ same node18 ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::int >= 4), count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5), count(*) FILTER (WHERE g = 3) FROM mk
+ same normal ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5 OR g = 3) FROM mk
+ same node18 ok SELECT g, count(*) FROM mk WHERE (metrics -> 'quality')::smallint IN (1, 2, 5) GROUP BY 1
+ same node18 ok SELECT g, count(*) FROM mk WHERE (metrics -> 'quality')::int IS NULL GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::int, (metrics -> 'm_total')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2
+ same node18 ok SELECT CAST(jsonb_extract_path(metrics, 'quality') AS integer), count(*) FROM mk WHERE CAST(jsonb_extract_path(metrics, 'm_total') AS bigint) >= 3 GROUP BY 1
+ same node18 ok SELECT (metrics['quality'])::int, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::int AS q, count(*) FROM mk WHERE g < 3 GROUP BY 1 HAVING count(*) > 10
+ same node18 ok SELECT count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 AND g < 3
+ same node18 ok SELECT (metrics -> 'quality')::int, (metrics ->> 'quality')::float8, count(*) FROM mk GROUP BY 1, 2
+(15 rows)
+
+-- Q-06. A member the integer cannot hold raises where the row reaches the cast, as the cast of the table does: the rows that do not reach it do not raise
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''big'')::int, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''big'')::bigint, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''big'')::smallint, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''m_total'')::smallint, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT sum((metrics -> ''big'')::bigint), max((metrics -> ''big'')::bigint) FROM mk', 'node18'),
+	('SELECT count(*) FROM mk WHERE (metrics -> ''big'')::int > 1 AND g = 99', 'node18'),
+	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE g = 99 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE id < 9 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::int, count(*) FILTER (WHERE (metrics -> ''big'')::int > 0) FROM mk WHERE (metrics -> ''quality'')::int >= 5 GROUP BY 1', 'node18'),
+	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 AND (metrics -> ''big'')::int > 0', 'node18'),
+	('SELECT count(*) FROM mk WHERE (metrics -> ''big'')::int > 0 AND (metrics -> ''quality'')::int >= 5', 'node18')
+) t(q, w);
+                                                                               same                                                                               
+------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node18 error 22003 integer out of range SELECT (metrics -> 'big')::int, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT (metrics -> 'big')::bigint, count(*) FROM mk GROUP BY 1
+ same node18 error 22003 smallint out of range SELECT (metrics -> 'big')::smallint, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT (metrics -> 'm_total')::smallint, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT sum((metrics -> 'big')::bigint), max((metrics -> 'big')::bigint) FROM mk
+ same node18 ok SELECT count(*) FROM mk WHERE (metrics -> 'big')::int > 1 AND g = 99
+ same node18 ok SELECT (metrics -> 'big')::int, count(*) FROM mk WHERE g = 99 GROUP BY 1
+ same node18 ok SELECT (metrics -> 'big')::int, count(*) FROM mk WHERE id < 9 GROUP BY 1
+ same node18 ok SELECT (metrics -> 'big')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 5 GROUP BY 1
+ same node18 error 22003 integer out of range SELECT (metrics -> 'big')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::int, count(*) FILTER (WHERE (metrics -> 'big')::int > 0) FROM mk WHERE (metrics -> 'quality')::int >= 5 GROUP BY 1
+ same node18 ok SELECT count(*) FROM mk WHERE (metrics -> 'quality')::int >= 5 AND (metrics -> 'big')::int > 0
+ same node18 error 22003 integer out of range SELECT count(*) FROM mk WHERE (metrics -> 'big')::int > 0 AND (metrics -> 'quality')::int >= 5
+(13 rows)
+
+-- Q-07. A JSON null member is NULL for the casts of PostgreSQL 18 (the text and its float8 are NULL on every version), and a member that is no number is read from the table as it reads it
+CREATE TABLE mn (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mn SELECT i, CASE WHEN i % 7 = 0 THEN NULL WHEN i % 5 = 0 THEN jsonb_build_object('a', i, 'tip', NULL) ELSE jsonb_build_object('a', i, 'tip', i % 3) END FROM generate_series(1, 600) i;
+CREATE INDEX mn_col ON mn USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE mn;
+SELECT same(q, w) FROM (VALUES
+	('SELECT count((metrics ->> ''tip'')::float8), avg((metrics ->> ''tip'')::float8) FROM mn', 'node'),
+	('SELECT (metrics -> ''tip'')::int, count(*) FROM mn GROUP BY 1', 'node18'),
+	('SELECT count((metrics -> ''tip'')::float8), sum((metrics -> ''tip'')::bigint) FROM mn', 'node18'),
+	('SELECT count(*) FROM mn WHERE (metrics -> ''tip'')::int IS NULL', 'node18')
+) t(q, w);
+                                               same                                               
+--------------------------------------------------------------------------------------------------
+ same node ok SELECT count((metrics ->> 'tip')::float8), avg((metrics ->> 'tip')::float8) FROM mn
+ same node18 ok SELECT (metrics -> 'tip')::int, count(*) FROM mn GROUP BY 1
+ same node18 ok SELECT count((metrics -> 'tip')::float8), sum((metrics -> 'tip')::bigint) FROM mn
+ same node18 ok SELECT count(*) FROM mn WHERE (metrics -> 'tip')::int IS NULL
+(4 rows)
+
+CREATE TABLE md (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO md SELECT i, CASE i % 6 WHEN 0 THEN '{"a": "5", "b": 1}' WHEN 1 THEN '{"a": 2.5, "b": "7.5"}' WHEN 2 THEN '{"a": 1}' WHEN 3 THEN NULL WHEN 4 THEN '{"a": true, "b": {"c": 1}}' ELSE jsonb_build_object('a', i, 'b', i % 4) END FROM generate_series(1, 600) i;
+CREATE INDEX md_col ON md USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE md;
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''a'')::int, count(*) FROM md GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''a'')::float8, count(*) FROM md GROUP BY 1', 'node18'),
+	('SELECT (metrics ->> ''a'')::float8, count(*) FROM md GROUP BY 1', 'node'),
+	('SELECT (metrics ->> ''b'')::float8, count(*) FROM md WHERE id IN (1, 5, 7, 11) GROUP BY 1', 'node'),
+	('SELECT (metrics -> ''a'')::int, count(*) FROM md WHERE id IN (2, 3, 5, 8, 9, 11) GROUP BY 1', 'node18'),
+	('SELECT sum((metrics -> ''b'')::bigint) FROM md WHERE id IN (5, 11, 17)', 'node18'),
+	('SELECT sum((metrics -> ''b'')::bigint) FROM md WHERE id IN (1, 7)', 'node18'),
+	('SELECT count(*) FROM md WHERE (metrics -> ''a'')::int >= 2 AND id IN (2, 8, 14)', 'node18')
+) t(q, w);
+                                                                    same                                                                    
+--------------------------------------------------------------------------------------------------------------------------------------------
+ same node18 error 22023 cannot cast jsonb boolean to type integer SELECT (metrics -> 'a')::int, count(*) FROM md GROUP BY 1
+ same node18 error 22023 cannot cast jsonb boolean to type double precision SELECT (metrics -> 'a')::float8, count(*) FROM md GROUP BY 1
+ same node error 22P02 invalid input syntax for type double precision: "true" SELECT (metrics ->> 'a')::float8, count(*) FROM md GROUP BY 1
+ same node ok SELECT (metrics ->> 'b')::float8, count(*) FROM md WHERE id IN (1, 5, 7, 11) GROUP BY 1
+ same node18 ok SELECT (metrics -> 'a')::int, count(*) FROM md WHERE id IN (2, 3, 5, 8, 9, 11) GROUP BY 1
+ same node18 ok SELECT sum((metrics -> 'b')::bigint) FROM md WHERE id IN (5, 11, 17)
+ same node18 error 22023 cannot cast jsonb string to type bigint SELECT sum((metrics -> 'b')::bigint) FROM md WHERE id IN (1, 7)
+ same node18 ok SELECT count(*) FROM md WHERE (metrics -> 'a')::int >= 2 AND id IN (2, 8, 14)
+(8 rows)
+
+-- Q-08. A key of a document the leaf cannot hold (a number, a boolean, an object, an array, a JSON null) beside a member read by key: the rows are read from the table, and the text of the key is as `->>` gives it
+CREATE TABLE mx (id int PRIMARY KEY, attributes jsonb, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mx SELECT i,
+	CASE i % 8 WHEN 0 THEN NULL WHEN 1 THEN '{"channel": 5}'::jsonb WHEN 2 THEN '{"channel": true}' WHEN 3 THEN '{"channel": {"a": 1}}' WHEN 4 THEN '{"channel": [1]}' WHEN 5 THEN '{"channel": null}' WHEN 6 THEN '{}' ELSE '{"channel": "web"}' END,
+	jsonb_build_object('m_total', i % 5 + 0.5, 'quality', i % 7)
+FROM generate_series(1, 400) i;
+CREATE INDEX mx_col ON mx USING sift_col (id, attributes, metrics) WITH (paths = 'attributes->channel text, metrics.* float8');
+ANALYZE mx;
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes[''channel''] #>> ''{}'', count(*), sum((metrics[''m_total''])::float8) FROM mx GROUP BY 1', 'node18'),
+	('SELECT attributes ->> ''channel'', (metrics -> ''quality'')::int, count(*) FROM mx GROUP BY 1, 2', 'node18'),
+	('SELECT attributes ->> ''channel'', avg((metrics ->> ''m_total'')::float8) FROM mx WHERE id < 200 GROUP BY 1', 'node')
+) t(q, w);
+                                                         same                                                         
+----------------------------------------------------------------------------------------------------------------------
+ same node18 ok SELECT attributes['channel'] #>> '{}', count(*), sum((metrics['m_total'])::float8) FROM mx GROUP BY 1
+ same node18 ok SELECT attributes ->> 'channel', (metrics -> 'quality')::int, count(*) FROM mx GROUP BY 1, 2
+ same node ok SELECT attributes ->> 'channel', avg((metrics ->> 'm_total')::float8) FROM mx WHERE id < 200 GROUP BY 1
+(3 rows)
+
+-- Q-09. Rows that change: an update, a delete, and a map that is no object
+UPDATE mk SET metrics = jsonb_build_object('m_total', 100, 'quality', 5) WHERE id % 50 = 3;
+DELETE FROM mk WHERE id % 60 = 4;
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''quality'')::int, count(*), sum((metrics[''m_total''])::float8) FROM mk GROUP BY 1', 'node18'),
+	('SELECT attributes[''channel''] #>> ''{}'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mk GROUP BY 1', 'node')
+) t(q, w);
+                                                         same                                                          
+-----------------------------------------------------------------------------------------------------------------------
+ same node18 ok SELECT (metrics -> 'quality')::int, count(*), sum((metrics['m_total'])::float8) FROM mk GROUP BY 1
+ same node ok SELECT attributes['channel'] #>> '{}', count(*), avg((metrics ->> 'm_total')::float8) FROM mk GROUP BY 1
+(2 rows)
+
+INSERT INTO mk VALUES (9001, 1, '{}', '[1, 2]'), (9002, 2, '{}', '"s"'), (9003, 3, '{}', 'null'), (9004, 4, '{}', '3');
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''quality'')::int, count(*) FROM mk GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::int, count(*) FROM mk WHERE id < 9000 GROUP BY 1', 'node18'),
+	('SELECT sum((metrics[''m_total''])::float8) FROM mk WHERE id IN (9001, 9002, 9003, 9004)', 'node18'),
+	('SELECT sum((metrics ->> ''m_total'')::float8) FROM mk WHERE id IN (9003, 9004)', 'node'),
+	('SELECT sum((metrics #>> ''{0}'')::float8) FROM mk WHERE id IN (9001, 9004)', 'normal'),
+	('SELECT sum((metrics #>> ''{m_total}'')::float8) FROM mk WHERE id IN (9001, 9003, 9004)', 'node')
+) t(q, w);
+                                                 same                                                 
+------------------------------------------------------------------------------------------------------
+ same node18 ok SELECT (metrics -> 'quality')::int, count(*) FROM mk GROUP BY 1
+ same node18 ok SELECT (metrics -> 'quality')::int, count(*) FROM mk WHERE id < 9000 GROUP BY 1
+ same node18 ok SELECT sum((metrics['m_total'])::float8) FROM mk WHERE id IN (9001, 9002, 9003, 9004)
+ same node ok SELECT sum((metrics ->> 'm_total')::float8) FROM mk WHERE id IN (9003, 9004)
+ same normal ok SELECT sum((metrics #>> '{0}')::float8) FROM mk WHERE id IN (9001, 9004)
+ same node ok SELECT sum((metrics #>> '{m_total}')::float8) FROM mk WHERE id IN (9001, 9003, 9004)
+(6 rows)
+
+-- Q-10. A key the index keeps as a leaf of float8 (no map): the same casts, with the rows whose value is another JSON type, or out of range, read from the table
+CREATE TABLE ms (id int PRIMARY KEY, g int, k int, attributes jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ms SELECT i, i % 5, i % 12,
+	CASE i % 12 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN '{"score": null}' WHEN 3 THEN '{"score": "4"}' WHEN 4 THEN '{"score": 2.5, "channel": "a"}' WHEN 5 THEN '{"score": -2.5, "channel": "b"}'
+		WHEN 6 THEN '{"score": true}' WHEN 7 THEN '{"score": 3, "channel": "a"}' WHEN 8 THEN '{"score": 1e400}' ELSE jsonb_build_object('score', i % 9 + 0.25, 'channel', 'c') END
+FROM generate_series(1, 1200) i;
+CREATE INDEX ms_col ON ms USING sift_col (id, g, k, attributes) WITH (paths = 'attributes->score float8, attributes->channel text');
+ANALYZE ms;
+INSERT INTO ms SELECT 1200 + i, i % 5, 100, jsonb_build_object('score', i % 7 - 3.5, 'channel', 'd') FROM generate_series(1, 100) i;
+SELECT same(q, w) FROM (VALUES
+	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
+	('SELECT (attributes -> ''score'')::int, count(*) FROM ms GROUP BY 1', 'node18'),
+	('SELECT (attributes -> ''score'')::float8, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
+	('SELECT g, sum((attributes[''score''])::bigint), avg((attributes -> ''score'')::int) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
+	('SELECT attributes ->> ''channel'', count(*) FILTER (WHERE (attributes -> ''score'')::int >= 3) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
+	('SELECT count(*) FROM ms WHERE (attributes -> ''score'')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)', 'node18'),
+	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k IN (3, 4) GROUP BY 1', 'node18'),
+	('SELECT (attributes -> ''score'')::smallint, count(*) FROM ms WHERE k = 8 GROUP BY 1', 'node18'),
+	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k = 6 GROUP BY 1', 'node18')
+) t(q, w);
+                                                                                      same                                                                                       
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node18 ok SELECT (attributes -> 'score')::int, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
+ same node18 error 22023 cannot cast jsonb string to type integer SELECT (attributes -> 'score')::int, count(*) FROM ms GROUP BY 1
+ same node18 ok SELECT (attributes -> 'score')::float8, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
+ same node18 ok SELECT g, sum((attributes['score'])::bigint), avg((attributes -> 'score')::int) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
+ same node18 ok SELECT attributes ->> 'channel', count(*) FILTER (WHERE (attributes -> 'score')::int >= 3) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
+ same node18 error 22023 cannot cast jsonb string to type integer SELECT count(*) FROM ms WHERE (attributes -> 'score')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)
+ same node18 error 22023 cannot cast jsonb string to type integer SELECT (attributes -> 'score')::int, count(*) FROM ms WHERE k IN (3, 4) GROUP BY 1
+ same node18 error 22003 smallint out of range SELECT (attributes -> 'score')::smallint, count(*) FROM ms WHERE k = 8 GROUP BY 1
+ same node18 error 22023 cannot cast jsonb boolean to type integer SELECT (attributes -> 'score')::int, count(*) FROM ms WHERE k = 6 GROUP BY 1
+(9 rows)
+
+DROP FUNCTION same(text, text), answer(text), plan_of(text);
+DROP TABLE mk, mn, md, mx, ms;
+DROP EXTENSION pg_sift;

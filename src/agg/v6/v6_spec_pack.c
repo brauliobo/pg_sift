@@ -233,7 +233,11 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	ints = list_concat(ints, list_make4_int(x->elem.left, x->elem.semi, (int) x->elem.vread, x->elem.ncols));
 	for (int c = 0; c < x->elem.ncols; c++)
 		ints = lappend_int(lappend_int(ints, x->elem.col_leaf[c]), (int) x->elem.col_type[c]);
-	return lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr);
+	ints = list_concat(ints, list_make2_int(x->elem.key_leaf, x->elem.val_leaf));
+	for (int c = 0; c < x->elem.ncols; c++)
+		ints = lappend_int(ints, x->elem.col_att[c]);
+	return list_concat(lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr),
+					   list_make2(x->pair_where, x->col_expr));
 }
 
 SiftV6Ext *
@@ -287,6 +291,11 @@ sift_v6_ext_unpack(const List *l)
 		x->elem.col_leaf[c] = list_nth_int(ints, at);
 		x->elem.col_type[c] = (Oid) list_nth_int(ints, at + 1);
 	}
+	x->elem.key_leaf = list_nth_int(ints, at);
+	x->elem.val_leaf = list_nth_int(ints, at + 1);
+	at += 2;
+	for (int c = 0; c < x->elem.ncols; c++)
+		x->elem.col_att[c] = list_nth_int(ints, at++);
 	x->where = lsecond(l);
 	x->elem_where = lthird(l);
 	x->elem_names = lfourth(l);
@@ -294,6 +303,8 @@ sift_v6_ext_unpack(const List *l)
 	x->resid = list_nth(l, 5);
 	x->elem_array = list_nth(l, 6);
 	x->kexpr = list_nth(l, 7);
+	x->pair_where = list_nth(l, 8);
+	x->col_expr = list_nth(l, 9);
 	return x;
 }
 

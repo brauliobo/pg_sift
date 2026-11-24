@@ -10,6 +10,7 @@
 
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "utils/fmgroids.h"
@@ -52,13 +53,38 @@ computes_only_months(const SiftV6Spec *s)
 	return true;
 }
 
+/* the quals of the table as the executor of the statement runs them: the cheaper first (a row that fails one is not given to a cast that raises for it), the order of the statement among equals */
+static List *
+cheapest_first(PlannerInfo *root, List *infos)
+{
+	List	   *ordered = NIL;
+
+	foreach_node(RestrictInfo, ri, infos)
+	{
+		QualCost	c;
+		int			at = 0;
+
+		cost_qual_eval_node(&c, (Node *) ri->clause, root);
+		for (; at < list_length(ordered); at++)
+		{
+			QualCost	o;
+
+			cost_qual_eval_node(&o, (Node *) ((RestrictInfo *) list_nth(ordered, at))->clause, root);
+			if (c.per_tuple < o.per_tuple)
+				break;
+		}
+		ordered = list_insert_nth(ordered, at, ri);
+	}
+	return ordered;
+}
+
 bool
 sift_v6_unnest_where(V6Plan *p)
 {
 	SiftClause *clause;
 	SiftBytes	canon;
 
-	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
+	foreach_node(RestrictInfo, ri, cheapest_first(p->root, p->rel->baserestrictinfo))
 		if (ri != p->sub_qual)
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)

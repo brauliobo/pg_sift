@@ -667,7 +667,9 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Star Dimensions", NULL, st->spec->ext->ndims, es);
 		sift_v6_explain_lookup_joins(&st->css, st->spec->ext, es);
 	}
-	if (st->spec->ext != NULL && st->spec->ext->unnest)
+	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.fn == SV6E_KEYS)
+		ExplainPropertyText("Map Keys", sift_v6_mapkey_text(st->spec->ext, RelationGetDescr(st->sources[0].index)), es);
+	else if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
 	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.vread != SV6V_NONE)
 		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(st->sources[0].index), st->spec->ext->elem.attno - 1)->attname)), es);

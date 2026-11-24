@@ -247,35 +247,41 @@ leaf_oid(const SiftColDef *d)
 	return InvalidOid;
 }
 
-/* the map `col.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
-static bool
-seed_each(V6Plan *p, SiftV6XElem *e, int att)
+bool
+sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value)
 {
-	const SiftColRel *r = p->colrel;
-	int			key = -1,
-				value = -1;
-
-	if (!r->json[att] || (e->group_leaf = group_of(r, att)) < 0 || strstr(r->schema->cols[e->group_leaf].path, ".*") == NULL)
+	*key = *value = -1;
+	if (!r->json[att] || (*group = group_of(r, att)) < 0 || strstr(r->schema->cols[*group].path, ".*") == NULL)
 		return false;
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 
-		if (d->parent != e->group_leaf)
+		if (d->parent != *group)
 			continue;
 		if (d->path != NULL && strstr(d->path, "#key") != NULL)
-			key = i;
-		else if (value < 0)
-			value = i;
+			*key = i;
+		else if (*value < 0)
+			*value = i;
 		else
 			return false;
 	}
-	if (key < 0 || value < 0 || !col_holds(TEXTOID, -1, &r->schema->cols[key]) || leaf_oid(&r->schema->cols[value]) == InvalidOid)
+	return *key >= 0 && *value >= 0 && col_holds(TEXTOID, -1, &r->schema->cols[*key]) && leaf_oid(&r->schema->cols[*value]) != InvalidOid;
+}
+
+/* the map `col.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
+static bool
+seed_each(V6Plan *p, SiftV6XElem *e, int att)
+{
+	int			key,
+				value;
+
+	if (!sift_v6_map_leaves(p->colrel, att, &e->group_leaf, &key, &value))
 		return false;
 	e->col_leaf[0] = key;
 	e->col_type[0] = TEXTOID;
 	e->col_leaf[1] = value;
-	e->col_type[1] = leaf_oid(&r->schema->cols[value]);
+	e->col_type[1] = leaf_oid(&p->colrel->schema->cols[value]);
 	e->ncols = 2;
 	return true;
 }
@@ -411,6 +417,8 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	const SiftV6Ext *x = p->xseed;
 	SiftV6Class cls;
 
+	if (x != NULL && x->elem.fn == SV6E_KEYS)
+		return sift_v6_mapkey_column(p, e, out);
 	if (p->elem_rel == NULL || x == NULL)
 		return false;
 	if (x->elem.fn >= SV6E_EACH && !IsA(e, Var))
@@ -552,6 +560,8 @@ sift_v6_unnest_elem_quals(V6Plan *p)
 				nvec;
 	List	   *quals = NIL;
 
+	if (p->elem_rel == NULL)
+		return true;
 	foreach_node(RestrictInfo, ri, p->elem_rel->baserestrictinfo)
 	{
 		Expr	   *q = ri->pseudoconstant ? NULL : elem_qual(p, (Node *) ri->clause, false);

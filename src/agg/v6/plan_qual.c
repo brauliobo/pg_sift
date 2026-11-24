@@ -233,6 +233,8 @@ sift_v6_compile_quals(V6Plan *p)
 			continue;
 		if (!ri->pseudoconstant && (sift_v6_tid_qual(p, ri) || sift_v6_text_qual(p, ri)))
 			continue;
+		if (sift_v6_mapkey_pair_qual(p, ri))
+			continue;
 		q = ri->pseudoconstant ? NULL : sift_v6_index_qual(p, ri->clause);
 		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
 		if (q == NULL && jq == NIL && qual_batch(p, ri))

@@ -651,7 +651,7 @@ sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 				continue;
 			irel = index_open(ix->indexoid, AccessShareLock);
 			sift_v6_plan_index(&p, irel);
-			if (p.ops != NULL && sift_v6_compile_on(&p, extra, group_exprs))
+			if (p.ops != NULL && !sift_v6_mapkey_paths(&p, extra, group_exprs) && sift_v6_compile_on(&p, extra, group_exprs))
 				sift_v6_add_group_path(&p, output_rel, group_exprs, having);
 			index_close(irel, NoLock);
 		}

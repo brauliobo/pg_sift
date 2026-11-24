@@ -8,6 +8,7 @@
 
 #include "postgres.h"
 
+#include "access/tupdesc.h"
 #include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
 
@@ -35,11 +36,12 @@ typedef struct SiftV6XDim
 	Oid			ptype[SIFT_STAR_MAX_PAY];
 } SiftV6XDim;
 
-/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_each or jsonb_each_text of a jsonb one */
+/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_each or jsonb_each_text of a jsonb one; SV6E_KEYS has no relation: a map read by constant keys, one row for each row of the table */
 typedef enum SiftV6ElemFn
 {
 	SV6E_UNNEST = 0,
 	SV6E_RECORDSET,
+	SV6E_KEYS,
 	SV6E_EACH,
 	SV6E_EACH_TEXT
 } SiftV6ElemFn;
@@ -68,6 +70,9 @@ typedef struct SiftV6XElem
 	int			ncols;
 	int			col_leaf[SIFT_V6_XELEM_COLS];
 	Oid			col_type[SIFT_V6_XELEM_COLS];
+	int			col_att[SIFT_V6_XELEM_COLS];	/* SV6E_KEYS: the attribute of the index each column reads */
+	int			key_leaf;		/* SV6E_KEYS: the leaves of the keys and of the values of the map (-1: none); a column is the value of the key elem_names names, of the type col_type, or the leaf col_leaf (>= 0) of a key of a document */
+	int			val_leaf;
 } SiftV6XElem;
 
 #define SIFT_V6_RESID_COLS	16
@@ -87,9 +92,13 @@ typedef struct SiftV6Ext
 	List	   *elem_names;		/* recordset: the name of each column, as String nodes */
 	List	   *elem_array;		/* unnest: the array of a row as an expression of the table's columns when it is not the column of elem.attno itself (doc -> 'key', or an expression of the index), which the rows read from the heap evaluate; NIL otherwise */
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */
+	List	   *pair_where;		/* SV6E_KEYS: the quals over the values of the keys (the virtual attributes of v6_unnest_jsonb.h), which the scan evaluates on the rows it gives to the groups */
+	List	   *col_expr;		/* SV6E_KEYS: the expression of the statement each column is, which a row read from the heap is given the value of */
 } SiftV6Ext;
 
 extern SiftV6Ext *sift_v6_ext_new(void);
+/* SV6E_KEYS, EXPLAIN: the members of documents the columns of the scan read, as `attname['key'] type, ..` (index_desc: the attributes of the index) */
+extern char *sift_v6_mapkey_text(const SiftV6Ext *x, TupleDesc index_desc);
 /* The column the probing side has key k of dimension d in: what the scan or the unnest maps to a slot of its pipe */
 extern SiftV6Col sift_v6_xdim_key_col(const SiftV6XDim *xd, int k);
 

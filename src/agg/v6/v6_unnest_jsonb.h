@@ -51,6 +51,19 @@ extern Expr *sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause);
 /* The column of the statement a virtual attribute of the element is: the vector the pairs of the unnest bring of it */
 extern SiftV6Col sift_v6_elem_vatt_col(int attno, Oid typid);
 
+/* The leaves of the map `col.* type` of attribute att: its lengths, the keys of its members and their values; false when att holds no such map, or the index keeps the members in no leaf a column can read */
+extern bool sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value);
+
+/*
+ * agg/v6/v6_mapkey.c, SV6E_KEYS: the members of a map the statement reads by a constant key, with no lateral relation. paths: the Ext of p->xseed is made when the statement reads one, and the path added when
+ * the statement compiles against it (true: the statement was one of them, whether a path was added or not). column: e is such a read, as the column of the scan that gives its member. on: p->xseed is one.
+ */
+extern bool sift_v6_mapkey_paths(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);
+extern bool sift_v6_mapkey_column(V6Plan *p, const Expr *e, SiftV6Col *out);
+extern bool sift_v6_mapkey_on(const V6Plan *p);
+/* the WHERE clause ri over the members the statement reads, as a qual the scan evaluates on its rows (xseed->pair_where); false when it is not one */
+extern bool sift_v6_mapkey_pair_qual(V6Plan *p, RestrictInfo *ri);
+
 /* doc ->> 'key' = 'constant' of a shredded text key of a jsonb column of the fact table, as a comparison of the virtual attribute of the key's leaf (agg/v6/jsonb_qual.c); NULL when it is not one */
 extern Expr *sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op);
 
