@@ -83,3 +83,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT 'index, heap dimension, 4 workers' AS plan, * FROM report('ln_i', 'ln_d');
 SELECT 'index, table dimension, 4 workers' AS plan, * FROM report('ln_i', 'ln_dt');
 SELECT 'table, table dimension, 4 workers' AS plan, n, same FROM report('ln_t', 'ln_dt');
+
+DROP TABLE ln_h, ln_i, ln_t, ln_d, ln_dt, cases;
+DROP FUNCTION report(text, text), answer(text, text, text), engine(text);
+DROP EXTENSION pg_sift;

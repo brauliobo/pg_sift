@@ -189,3 +189,6 @@ SELECT 'table, table dimension, 4 workers' AS plan, n, same FROM report('ln_t', 
  table, table dimension, 4 workers | 13 | t
 (13 rows)
 
+DROP TABLE ln_h, ln_i, ln_t, ln_d, ln_dt, cases;
+DROP FUNCTION report(text, text), answer(text, text, text), engine(text);
+DROP EXTENSION pg_sift;
