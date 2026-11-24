@@ -165,8 +165,8 @@ pend_index(SiftXidCache *xc, const SiftPendDelRec *pend, int npend)
 	int			n = 0;
 
 	for (int i = 0; i < npend; i++)
-		if (sift_vis_deleted_cached(xc, pend[i].xmax, pend[i].cmax))
-			seen[n++] = pend[i].tid;
+		if ((pend[i].tid & SIFT_PD_TID_SUCC) == 0 && sift_vis_deleted_cached(xc, pend[i].xmax, pend[i].cmax))
+			seen[n++] = pend[i].tid & SIFT_PD_TID_MASK;
 	return n > 0 ? sift_pdel_idx_build(seen, n) : NULL;
 }
 
