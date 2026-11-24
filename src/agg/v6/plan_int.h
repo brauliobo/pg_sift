@@ -145,8 +145,6 @@ extern bool sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel);
 extern Relids sift_v6_plan_base_relids(PlannerInfo *root, RelOptInfo *rel);
 /* The path of a join: child_paths are the plans of the dimensions, whose cost and that of the join come on top of the scan's */
 extern void sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows);
-/* sift.agg_force: the price of a path of the node against the normal plan's (agg/plan_join.c) */
-extern void agg_force_price(Path *p);
 
 /* The columns the planners of joins and unnests answer for plan.c: false when the expression is not one of theirs */
 extern bool sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out);

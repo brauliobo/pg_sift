@@ -12,6 +12,18 @@ bool		sift_agg_exact_float = false;
 bool		sift_agg_force = false;
 double		sift_agg_scale_horizon = 100.0;
 
+#define FORCE_SCALE	1e-6
+
+void
+sift_v6_force_price(Path *p)
+{
+	if (sift_agg_force)
+	{
+		p->startup_cost *= FORCE_SCALE;
+		p->total_cost *= FORCE_SCALE;
+	}
+}
+
 void
 sift_v6_define_gucs(void)
 {

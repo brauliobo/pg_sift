@@ -640,7 +640,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
 	locked = p->spec.lock_k > 0;
 	p->spec.lock_k = 0;
-	agg_force_price(&cp->path);
+	sift_v6_force_price(&cp->path);
 	serial_total = cp->path.total_cost;
 	add_path(p->out, &cp->path);
 	if (child_paths == NIL && p->spec.ext == NULL && !locked && sift_v6_spec_parallel_ok(p->root, &p->spec) && sift_v6_gen_parallel_ok(&p->spec))
