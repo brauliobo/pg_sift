@@ -569,6 +569,7 @@ agg_rescan(CustomScanState *node)
 	HybridAggState *st = (HybridAggState *) node;
 	HybridState *h = &st->h;
 
+	sift_hybrid_finish(h);
 	free_groups(st);
 	MemoryContextReset(h->cxt);
 	h->granules_seen = h->granules_skipped = h->parts_skipped = 0;
