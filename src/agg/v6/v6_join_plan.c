@@ -618,55 +618,62 @@ plan_dims(PlannerInfo *root, SiftV6JoinShape *sh)
 	}
 }
 
-static void
-try_source(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, const SiftV6JoinShape *sh, const SiftV6RelSource *src)
+/* the statement, the shape of its join and what the planner of the node needs to make a path of a plan that compiled */
+typedef struct JoinStmt
 {
-	V6Plan		p = {.root = root,.rel = sh->fact,.out = output_rel,.sub_qual = sh->sub_qual};
-	ResidCtx	rc = {.p = &p,.ok = true};
-	Relation	rel = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
+	RelOptInfo *input_rel;
+	GroupPathExtraData *extra;
+	List	   *group_exprs;
+	const SiftV6JoinShape *sh;
+} JoinStmt;
+
+static bool
+join_compile(V6Plan *p, const void *arg)
+{
+	const JoinStmt *js = arg;
+	ResidCtx	rc = {.p = p,.ok = true};
+
+	p->sub_qual = js->sh->sub_qual;
+	return seed_dims(p, js->sh, &rc) && sift_v6_compile_on(p, js->extra, js->group_exprs) &&
+		(js->sh->elem != NULL ? sift_v6_unnest_ready(p) : p->spec.nbins == 0) && seed_resid(js->sh, &rc);
+}
+
+static void
+join_add(V6Plan *p, const void *arg)
+{
+	const JoinStmt *js = arg;
 	Cost		xs,
-				xt;
+				xt = lookup_cost(js->sh, js->input_rel, &xs);
 	List	   *children = NIL;
 
-	if (sift_v6_plan_bind(&p, src, rel) && seed_dims(&p, sh, &rc) && sift_v6_compile_on(&p, extra, group_exprs) &&
-		(sh->elem != NULL ? sift_v6_unnest_ready(&p) : p.spec.nbins == 0) && seed_resid(sh, &rc))
-	{
-		xt = lookup_cost(sh, input_rel, &xs);
-		if (sh->elem != NULL)
-			xt += sift_v6_unnest_pairs_cost(&p, input_rel);
-		for (int d = 0; d < sh->nd; d++)
-			children = lappend(children, sh->dim[d].path);
-		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, children, xs, xt, input_rel->rows);
-	}
-	sift_v6_source_close(rel, src->is_table, NoLock);
+	if (js->sh->elem != NULL)
+		xt += sift_v6_unnest_pairs_cost(p, js->input_rel);
+	for (int d = 0; d < js->sh->nd; d++)
+		children = lappend(children, js->sh->dim[d].path);
+	sift_v6_add_join_path(p, js->group_exprs, sift_v6_having_of(js->extra), children, xs, xt, js->input_rel->rows);
 }
 
 static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo *elem, GroupPathExtraData *extra, List *group_exprs)
 {
 	SiftV6JoinShape sh = {.fact = fact,.elem = elem};
-	SiftV6RelSource *src;
-	int			nsrc;
+	const JoinStmt js = {input_rel, extra, group_exprs, &sh};
 
-	if (!sift_v6_plan_fact_ok(root, fact) || !sift_v6_rel_has_source(root, fact) || (elem != NULL && !sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte)) || !shape_of(root, base, &sh))
+	if (!(elem != NULL ? sift_v6_plan_fact_ok(root, fact) && sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte) : sift_v6_join_fact_ok(root, fact)) || !shape_of(root, base, &sh))
 		return;
 	plan_dims(root, &sh);
-	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
-	for (int i = 0; i < nsrc; i++)
-		try_source(root, input_rel, output_rel, extra, group_exprs, &sh, &src[i]);
+	sift_v6_fact_paths(root, fact, output_rel, join_compile, join_add, &js);
 }
 
 void
-sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
 {
-	List	   *group_exprs = NIL;
 	Relids		base = sift_v6_plan_base_relids(root, input_rel);
 	const int	nrels = bms_num_members(base);
 	int			f = -1;
 
 	if (!sift_v6_plan_query_ok(root, output_rel) || nrels < 2 || nrels > 2 + SIFT_STAR_MAX_DIMS || root->placeholder_list != NIL)
 		return;
-	group_exprs = sift_v6_group_exprs_of(root);
 	while ((f = bms_next_member(base, f)) >= 0)
 	{
 		RelOptInfo *fact = root->simple_rel_array[f];
@@ -674,9 +681,9 @@ sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *o
 
 		if (fact == NULL)
 			continue;
-		try_fact(root, input_rel, base, output_rel, fact, NULL, (GroupPathExtraData *) extra, group_exprs);
+		try_fact(root, input_rel, base, output_rel, fact, NULL, extra, group_exprs);
 		while (root->hasLateralRTEs && (e = bms_next_member(base, e)) >= 0)
 			if (e != f && root->simple_rel_array[e] != NULL)
-				try_fact(root, input_rel, base, output_rel, fact, root->simple_rel_array[e], (GroupPathExtraData *) extra, group_exprs);
+				try_fact(root, input_rel, base, output_rel, fact, root->simple_rel_array[e], extra, group_exprs);
 	}
 }

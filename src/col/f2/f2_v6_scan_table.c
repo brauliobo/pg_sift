@@ -81,7 +81,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
 	}
 	if (s->pipe != NULL)
-		sift_v6_pipe_finish(s->pipe);
+		sift_v6_star_scan_end(star, s->pipe);
 	if (s->preagg != NULL)
 		sift_v6_preagg_end(s->preagg);
 	if (s->unnest != NULL)

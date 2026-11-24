@@ -149,7 +149,7 @@ extern bool sift_v6_keys_agree(const Var *f, const Var *d);
 extern bool sift_v6_key_types_agree(Oid ftype, Oid fcoll, Oid dtype, Oid dcoll);
 extern bool sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno);
 extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget);
-extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
 extern void sift_v6_star_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
 extern bool sift_v6_unnest_ready(V6Plan *p);
 extern Aggref *sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a);
@@ -162,6 +162,27 @@ extern Expr *sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct);
 extern bool sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri);
 extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);
 extern void sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+
+/* The HAVING of the statement, NIL below the grouping stage (SELECT DISTINCT) */
+static inline List *
+sift_v6_having_of(const GroupPathExtraData *extra)
+{
+	return extra != NULL ? (List *) extra->havingQual : NIL;
+}
+
+/* What a planner does with a plan bound to one source of a fact: seeds the join of the statement in it and compiles the statement; for a partitioned fact it does so for a source of every partition */
+typedef bool (*SiftV6CompileFn) (V6Plan *p, const void *stmt);
+/* Adds the path of a plan that compiled: for a partitioned fact the one plan of all its partitions */
+typedef void (*SiftV6AddFn) (V6Plan *p, const void *stmt);
+
+/* The fact of a join the plan reads: a plain table that has a source, or a partitioned table */
+extern bool sift_v6_join_fact_ok(PlannerInfo *root, RelOptInfo *fact);
+/* The paths of the fact of a join: for each source of a plain table, the one plan over the partitions of a partitioned table */
+extern void sift_v6_fact_paths(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, SiftV6CompileFn compile, SiftV6AddFn add, const void *stmt);
+/* The plan of the statement over the partitions of parent that pruning left, and the source of the first partition it was compiled against; rows: the best rows of the statement */
+struct SiftV6RelSource;
+extern bool sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, bool rows, V6Plan *first,
+									   struct SiftV6RelSource *like);
 
 /* The paths for a partitioned table: one SiftAggV6 over the live partitions, whose indexes all lay the statement out alike */
 extern void sift_agg_v6_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);

@@ -212,30 +212,37 @@ v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 		src->ops->jsonb->unnest_run(st->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
 }
 
-/* The scan of the fact table of a join or an unnest: once for each pass of the dimensions of a star join (one when they all fit work_mem) */
+/* One scan of a fact table of a join or an unnest: a source of the node, the partitions of a partitioned fact being one each */
+static void
+v6_scan_fact(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
+{
+	if (st->spec->ext->unnest)
+		v6_scan_unnest(st, src, snap);
+	else if (src->index == NULL)
+		src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
+	else
+		scan_with_text(st, src, snap, st->star);
+}
+
+/* The scans of the fact table of a join or an unnest: once for each pass of the dimensions of a star join (one when they all fit work_mem), each pass reading every source */
 static void
 v6_scan_ext(V6State *st, Snapshot snap)
 {
-	const SiftV6ScanSrc *src = &st->sources[0];
 	SiftStarOpen open;
 	uint32		pass = 0;
 
 	if (st->spec->ext->unnest && st->star == NULL)
 	{
-		v6_scan_unnest(st, src, snap);
+		v6_scan_unnest(st, &st->sources[0], snap);
 		return;
 	}
-	while ((open = sift_v6_star_open(st->star, pass++)) != SSO_DONE)
+	while ((open = sift_v6_star_open(st->star, pass++, st->nsources)) != SSO_DONE)
 	{
 		MemoryContext pass_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 star pass");
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
 
-		if (open == SSO_SCAN && st->spec->ext->unnest)
-			v6_scan_unnest(st, src, snap);
-		else if (open == SSO_SCAN && src->index == NULL)
-			src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
-		else if (open == SSO_SCAN)
-			scan_with_text(st, src, snap, st->star);
+		for (int k = 0; open == SSO_SCAN && k < st->nsources; k++)
+			v6_scan_fact(st, &st->sources[k], snap);
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
@@ -352,7 +359,7 @@ v6_scan_rows(V6State *st, const SiftV6ScanSrc *src, SiftV6Text *text, Snapshot s
 								   text ? sift_v6_text_chunk : NULL, text);
 		return;
 	}
-	while ((open = sift_v6_star_open(st->star, pass++)) != SSO_DONE)
+	while ((open = sift_v6_star_open(st->star, pass++, 1)) != SSO_DONE)
 	{
 		MemoryContext pass_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 star pass");
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);

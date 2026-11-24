@@ -14,6 +14,6 @@
 
 #include "nodes/pathnodes.h"
 
-extern void sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+extern void sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
 
 #endif							/* SIFT_AGG_V6_JOIN_PLAN_H */

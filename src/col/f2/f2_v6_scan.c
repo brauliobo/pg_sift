@@ -767,7 +767,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, bridge);
 	}
 	if (s->pipe != NULL)
-		sift_v6_pipe_finish(s->pipe);
+		sift_v6_star_scan_end(star, s->pipe);
 	if (s->stat != NULL)
 		sift_v6_colstat_end(s->stat);
 	sift_v6_vis_free(&s->vis);

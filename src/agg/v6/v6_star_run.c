@@ -34,6 +34,7 @@ struct SiftV6StarRun
 	uint32		nparts[SIFT_STAR_MAX_DIMS];
 	uint32		part[SIFT_STAR_MAX_DIMS];
 	uint32		passes;
+	uint32		scans_left;		/* the scans of the fact table the pass still has to read */
 	uint64		budget;
 	uint64		bytes;
 	MemoryContext qcx;			/* the query: the plans of the dimensions allocate their scans in it */
@@ -342,12 +343,13 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 }
 
 SiftStarOpen
-sift_v6_star_open(SiftV6StarRun *r, uint32 pass)
+sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 {
 	uint32		stride = 1;
 
 	if (pass >= r->passes)
 		return SSO_DONE;
+	r->scans_left = scans;
 	for (int d = 0; d < r->x->ndims; d++)
 	{
 		r->part[d] = (pass / stride) % r->nparts[d];
@@ -361,6 +363,13 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass)
 		if ((r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_RIGHT_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI) && r->dim[d].nrows == 0)
 			return SSO_EMPTY;
 	return SSO_SCAN;
+}
+
+void
+sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p)
+{
+	if (--r->scans_left == 0)
+		sift_v6_pipe_finish(p);
 }
 
 void

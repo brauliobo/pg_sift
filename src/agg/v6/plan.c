@@ -704,9 +704,10 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 		return;
 	if (input_rel->reloptkind == RELOPT_JOINREL)
 	{
-		sift_v6_star_upper_paths(root, input_rel, output_rel, extra);
+		group_exprs = sift_v6_group_exprs_of(root);
+		sift_v6_star_upper_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 		sift_v6_unnest_upper_paths(root, input_rel, output_rel, extra);
-		sift_v6_join_upper_paths(root, input_rel, output_rel, extra);
+		sift_v6_join_upper_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 		for (int i = 0; i < sift_store_ops_count(); i++)
 			if (sift_store_ops_at(i)->scope != NULL)
 				sift_store_ops_at(i)->scope->upper_paths(root, input_rel, output_rel, extra);

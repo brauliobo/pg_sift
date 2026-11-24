@@ -313,7 +313,43 @@ star_add(V6Plan *p, const StarGoal *goal, double input_rows, List *children, Cos
 		sift_v6_rows_add(p, goal->topk, scan, children, dims, dims);
 	}
 	else
-		sift_v6_add_join_path(p, goal->group_exprs, (List *) goal->extra->havingQual, children, startup, total, input_rows);
+		sift_v6_add_join_path(p, goal->group_exprs, sift_v6_having_of(goal->extra), children, startup, total, input_rows);
+}
+
+/* the statement, its dimensions and what the join of them to the fact makes of its input */
+typedef struct StarStmt
+{
+	StarDim    *dims;
+	int			nd;
+	const StarGoal *goal;
+	double		input_rows;
+} StarStmt;
+
+static bool
+star_compile_fn(V6Plan *p, const void *arg)
+{
+	const StarStmt *s = arg;
+
+	return seed_dims(p, s->dims, s->nd) && star_compile(p, s->goal);
+}
+
+static void
+star_add_fn(V6Plan *p, const void *arg)
+{
+	const StarStmt *s = arg;
+	List	   *children = NIL;
+	Cost		xs = 0,
+				xt = 0;
+
+	for (int d = 0; d < s->nd; d++)
+	{
+		Path	   *child = s->dims[d].path;
+
+		children = lappend(children, child);
+		xs += sift_v6_dim_cost(child);
+		xt += sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0 + s->input_rows * cpu_operator_cost;
+	}
+	star_add(p, s->goal, s->input_rows, children, xs, xt);
 }
 
 /* the plan each dimension is read with: its cheapest, or the one that probes it by the constant keys of the fact table's filter */
@@ -336,12 +372,11 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	StarDim		dims[SIFT_STAR_MAX_DIMS] = {0};
 	const int	nd = bms_num_members(base) - 1;
 	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / nd, 4096);
-	SiftV6RelSource *src;
-	int			nsrc,
-				n = 0,
+	const StarStmt stmt = {dims, nd, goal, input_rel->rows};
+	int			n = 0,
 				r = -1;
 
-	if (!sift_v6_plan_fact_ok(root, fact))
+	if (!(goal->topk > 0 ? sift_v6_plan_fact_ok(root, fact) : sift_v6_join_fact_ok(root, fact)))
 		return;
 	while ((r = bms_next_member(base, r)) >= 0)
 	{
@@ -359,29 +394,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 		if (dims[d].nkeys == 0)
 			return;
 	plan_dims(root, fact, dims, nd);
-	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
-	for (int i = 0; i < nsrc; i++)
-	{
-		V6Plan		p = {.root = root,.rel = fact,.out = output_rel};
-		Relation	rel = sift_v6_source_open(src[i].reloid, src[i].is_table, AccessShareLock, NULL);
-		List	   *children = NIL;
-		Cost		xs = 0,
-					xt = 0;
-
-		if (sift_v6_plan_bind(&p, &src[i], rel) && seed_dims(&p, dims, nd) && star_compile(&p, goal))
-		{
-			for (int d = 0; d < nd; d++)
-			{
-				Path	   *child = dims[d].path;
-
-				children = lappend(children, child);
-				xs += sift_v6_dim_cost(child);
-				xt += sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
-			}
-			star_add(&p, goal, input_rel->rows, children, xs, xt);
-		}
-		sift_v6_source_close(rel, src[i].is_table, NoLock);
-	}
+	sift_v6_fact_paths(root, fact, output_rel, star_compile_fn, star_add_fn, &stmt);
 }
 
 static void
@@ -398,14 +411,12 @@ try_facts(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, cons
 }
 
 void
-sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
 {
-	StarGoal	goal = {.extra = (GroupPathExtraData *) extra};
+	const StarGoal goal = {.extra = extra,.group_exprs = group_exprs};
 
-	if (!sift_v6_plan_query_ok(root, output_rel))
-		return;
-	goal.group_exprs = sift_v6_group_exprs_of(root);
-	try_facts(root, input_rel, output_rel, &goal);
+	if (sift_v6_plan_query_ok(root, output_rel))
+		try_facts(root, input_rel, output_rel, &goal);
 }
 
 void

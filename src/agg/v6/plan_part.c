@@ -2,7 +2,8 @@
  * agg/v6/plan_part.c - SiftAggV6 over a partitioned table: the partitions the planner left after pruning are each a sift_table of Format 2.0 or have a sift_col index of format major 2, and
  * the aggregate reads them one after the other into one set of groups, where an Append over one aggregate for each partition would hash every group once for each. The statement is compiled
  * against a source of the first live partition, with the columns of an index named by the attributes of the parent, and again against a source of every other: the path is made when each
- * has one that compiles to the very same plan, so that the plan names a column of the source and not of a partition.
+ * has one that compiles to the very same plan, so that the plan names a column of the source and not of a partition. What the statement is compiled as is the caller's (SiftV6CompileFn):
+ * the groups of an aggregate, the best rows, or either of those over the join of a partitioned fact to its dimensions.
  * check-memory: allow-allocs every array here follows the live partitions of one statement
  */
 #include "postgres.h"
@@ -159,8 +160,10 @@ typedef struct PartStmt
 } PartStmt;
 
 static bool
-part_compile(V6Plan *p, const PartStmt *stmt)
+part_compile(V6Plan *p, const void *arg)
 {
+	const PartStmt *stmt = arg;
+
 	return stmt->topk > 0 ? sift_v6_rows_compile(p, stmt->topk) : sift_v6_compile_on(p, stmt->extra, stmt->group_exprs);
 }
 
@@ -184,7 +187,9 @@ typedef struct PartPlan
 	PlannerInfo *root;
 	RelOptInfo *parent;
 	RelOptInfo *out;
-	const PartStmt *stmt;
+	SiftV6CompileFn compile;
+	const void *stmt;
+	bool		rows;			/* the best rows: the node fetches the columns of the heap rows, whose attributes each partition numbers as it was made */
 	List	   *leaves;
 } PartPlan;
 
@@ -195,7 +200,7 @@ compile_source(const PartPlan *pp, const SiftV6RelSource *s, V6Plan *p)
 	bool		ok;
 
 	*p = (V6Plan) {.root = pp->root,.rel = pp->parent,.out = pp->out};
-	ok = sift_v6_plan_bind(p, s, rel) && part_compile(p, pp->stmt);
+	ok = sift_v6_plan_bind(p, s, rel) && pp->compile(p, pp->stmt);
 	sift_v6_source_close(rel, s->is_table, NoLock);
 	return ok;
 }
@@ -247,16 +252,15 @@ compile_alike(const PartPlan *pp, const LeafSources *leaves, int nleaves, const 
 	first->spec.nparts = nleaves;
 	first->spec.part_index = rels;
 	first->spec.part_is_table = is_table;
-	if (pp->stmt->topk > 0)
+	if (pp->rows)
 		leaf_attnos(pp->root, first, pp->parent->relid, pp->leaves);
 	return true;
 }
 
-/* The plan of the statement over the partitions, and the source of the first partition it was compiled against */
-static bool
-compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, const PartStmt *stmt, V6Plan *first, SiftV6RelSource *like)
+bool
+sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, bool rows, V6Plan *first, SiftV6RelSource *like)
 {
-	PartPlan	pp = {root, parent, out, stmt, live_leaves(root, parent)};
+	PartPlan	pp = {root, parent, out, compile, stmt, rows, live_leaves(root, parent)};
 	LeafSources *ls;
 	int			n = 0;
 
@@ -281,8 +285,8 @@ sift_agg_v6_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 	SiftV6RelSource like;
 	V6Plan		first;
 
-	if (compile_partitions(root, input_rel, output_rel, &stmt, &first, &like))
-		sift_v6_add_group_path(&first, output_rel, group_exprs, (List *) extra->havingQual);
+	if (sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, false, &first, &like))
+		sift_v6_add_group_path(&first, output_rel, group_exprs, sift_v6_having_of(extra));
 }
 
 bool
@@ -294,6 +298,39 @@ sift_v6_partitioned_rel_ok(PlannerInfo *root, RelOptInfo *rel)
 		rel->lateral_relids == NULL && !agg_query_has_rls(root);
 }
 
+bool
+sift_v6_join_fact_ok(PlannerInfo *root, RelOptInfo *fact)
+{
+	return sift_v6_plan_fact_ok(root, fact) || sift_v6_partitioned_rel_ok(root, fact);
+}
+
+void
+sift_v6_fact_paths(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, SiftV6CompileFn compile, SiftV6AddFn add, const void *stmt)
+{
+	SiftV6RelSource *src;
+	int			nsrc;
+
+	if (sift_v6_partitioned_rel_ok(root, fact))
+	{
+		SiftV6RelSource like;
+		V6Plan		first;
+
+		if (sift_v6_compile_partitions(root, fact, out, compile, stmt, false, &first, &like))
+			add(&first, stmt);
+		return;
+	}
+	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
+	for (int i = 0; i < nsrc; i++)
+	{
+		V6Plan		p = {.root = root,.rel = fact,.out = out};
+		Relation	rel = sift_v6_source_open(src[i].reloid, src[i].is_table, AccessShareLock, NULL);
+
+		if (sift_v6_plan_bind(&p, &src[i], rel) && compile(&p, stmt))
+			add(&p, stmt);
+		sift_v6_source_close(rel, src[i].is_table, NoLock);
+	}
+}
+
 void
 sift_v6_add_rows_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k)
 {
@@ -303,7 +340,7 @@ sift_v6_add_rows_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOp
 	Cost		open,
 				scan;
 
-	if (!compile_partitions(root, input_rel, output_rel, &stmt, &first, &like))
+	if (!sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, true, &first, &like))
 		return;
 	sift_v6_source_scan_price(root, input_rel, &like, 0, &open, &scan);
 	sift_v6_rows_add(&first, k, scan, NIL, 0, 0);
