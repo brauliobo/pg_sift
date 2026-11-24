@@ -33,6 +33,10 @@ typedef struct PinJob
 	uint32		granule;
 	uint16		nrows;
 	uint32		decided;
+	bool		zone_ok;
+	int64		zmin;
+	int64		zmax;
+	uint32		znull;
 } PinJob;
 
 struct SiftPinWin
@@ -54,6 +58,13 @@ struct SiftPinWin
 	uint32		cap;
 	uint64		rows;
 	uint32		refused;
+	uint32		head;			/* the granules the scan reads itself before it hands any over */
+	int			zone_leaf;		/* the leaf whose zone the jobs keep (-1: none) */
+	bool		zones_ok;		/* every job has the zone of it */
+	int64		zmin;
+	int64		zmax;
+	uint32		tid_job;		/* the granule whose addresses tids holds (UINT32_MAX: none) */
+	uint64	   *tids;
 	uint32		nslots;
 	SiftPinSlot slot[SIFT_PIN_WIN_SLOTS_MAX];
 };
@@ -72,6 +83,11 @@ sift_pin_win_new(Relation rel, Snapshot snap, const int *leaves, int nleaves, ui
 	w->part_ok = part_ok;
 	w->part_arg = part_arg;
 	w->ncols = 0;
+	w->zone_leaf = -1;
+	w->tid_job = UINT32_MAX;
+	w->zones_ok = true;
+	w->zmin = INT64_MAX;
+	w->zmax = INT64_MIN;
 	w->cap = 64;
 	w->jobs = MemoryContextAlloc(cx, sizeof(PinJob) * w->cap);
 	w->parts = MemoryContextAllocZero(cx, sizeof(SiftPinPart) * PIN_WIN_PARTS_MAX);
@@ -110,6 +126,54 @@ sift_pin_win_slot(const SiftPinWin *w, uint32 item)
 	return &w->slot[item % w->nslots];
 }
 
+void
+sift_pin_win_serial_head(SiftPinWin *w, uint32 n)
+{
+	w->head = n;
+}
+
+void
+sift_pin_win_track_zone(SiftPinWin *w, int leaf)
+{
+	Assert(w->njobs == 0);
+	w->zone_leaf = leaf;
+}
+
+static void
+note_zone(SiftPinWin *w, PinJob *job, const SiftZone *zones, uint32 g)
+{
+	job->zone_ok = zones != NULL && !(zones[g].flags & SIFT_ZONE_NONE);
+	if (!job->zone_ok)
+	{
+		w->zones_ok = false;
+		return;
+	}
+	job->zmin = zones[g].min;
+	job->zmax = zones[g].max;
+	job->znull = zones[g].nnull;
+	w->zmin = Min(w->zmin, job->zmin);
+	w->zmax = Max(w->zmax, job->zmax);
+}
+
+bool
+sift_pin_win_job_zone(const SiftPinWin *w, uint32 job, int64 *min, int64 *max, bool *has_null)
+{
+	const PinJob *j = &w->jobs[job];
+
+	*min = j->zmin;
+	*max = j->zmax;
+	*has_null = j->znull > 0;
+	return j->zone_ok;
+}
+
+bool
+sift_pin_win_zone_range(const SiftPinWin *w, int64 *min, int64 *max)
+{
+	*min = w->zmin;
+	*max = w->zmax;
+	return w->zones_ok && w->njobs > 0;
+}
+
 /* The part of the scan the pin and the predicate set belong to, the first time a granule of it is handed over */
 static uint32
 part_of(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp)
@@ -135,6 +199,11 @@ sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *s
 	const SiftGranuleDesc *gd = &pin->gdir[g];
 	PinJob		job = {.granule = g,.nrows = gd->nrows};
 
+	if (w->head > 0)
+	{
+		w->head--;
+		return false;
+	}
 	w->refused++;
 	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > 32 || gd->data_len > PIN_WIN_RECORD_MAX ||
 		w->njobs >= PIN_WIN_ITEMS_MAX || sift_cdi_scan_granule_patched(s, g) || !w->part_ok(w->part_arg, &pin->desc))
@@ -151,6 +220,8 @@ sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *s
 	if (w->nparts == PIN_WIN_PARTS_MAX && (w->parts[w->nparts - 1].pp.cf != pp->cf || w->parts[w->nparts - 1].pin->part_gen != pin->part_gen))
 		return false;
 	job.part = part_of(w, rel, s, schema, pin, pp);
+	if (w->zone_leaf >= 0)
+		note_zone(w, &job, sift_f2_pin_zones(rel, pin, w->zone_leaf), g);
 	if (w->njobs == w->cap)
 		w->jobs = repalloc(w->jobs, sizeof(PinJob) * (w->cap *= 2));
 	w->jobs[w->njobs++] = job;
@@ -174,9 +245,8 @@ slab_for(SiftPinWin *w, SiftPinSlot *sl, Size need)
 }
 
 bool
-sift_pin_win_feed(void *vw, uint32 item)
+sift_pin_win_feed(SiftPinWin *w, uint32 item, uint32 jobno)
 {
-	SiftPinWin *w = vw;
 	const PinJob *job;
 	const SiftPinPart *pt;
 	SiftPinSlot *sl;
@@ -184,9 +254,9 @@ sift_pin_win_feed(void *vw, uint32 item)
 	const SiftDvGran *dg;
 	bool		want[SIFT_PIN_MAX_LEAVES];
 
-	if (item >= w->njobs)
+	if (jobno >= w->njobs)
 		return false;
-	job = &w->jobs[item];
+	job = &w->jobs[jobno];
 	pt = &w->parts[job->part];
 	sl = &w->slot[item % w->nslots];
 	gd = &pt->pin->gdir[job->granule];
@@ -201,6 +271,7 @@ sift_pin_win_feed(void *vw, uint32 item)
 	sl->view = sift_granule_open_part(w->rel, pt->pin->part, sl->slab, gd->data_len, gd);
 	sl->part = pt;
 	sl->granule = job->granule;
+	sl->job = jobno;
 	sl->nrows = gd->nrows;
 	sl->decided = job->decided;
 	sl->any_dead = dg != NULL && sift_dv_mask64(dg, w->snap, sl->dead) > 0;
@@ -208,15 +279,38 @@ sift_pin_win_feed(void *vw, uint32 item)
 }
 
 void
-sift_pin_win_release(void *vw, uint32 item)
+sift_pin_win_release(SiftPinWin *w, uint32 item)
 {
 }
 
-void
-sift_pin_win_replay(void *vw, uint32 item)
+uint64
+sift_pin_win_tid(SiftPinWin *w, uint32 jobno, uint32 row)
 {
-	SiftPinWin *w = vw;
-	const PinJob *job = &w->jobs[item];
+	if (w->tid_job != jobno)
+	{
+		const PinJob *job = &w->jobs[jobno];
+		const SiftPinPart *pt = &w->parts[job->part];
+		const SiftGranuleDesc *gd = &pt->pin->gdir[job->granule];
+		bool	   *none = palloc0(Max(pt->pin->part->hdr.ncols, 1));
+		char	   *rec = palloc(gd->data_len);
+		SiftGranuleView v;
+
+		sift_part_read_granule_into(w->rel, pt->pin->part, job->granule, none, gd, rec);
+		v = sift_granule_open_part(w->rel, pt->pin->part, rec, gd->data_len, gd);
+		if (w->tids == NULL)
+			w->tids = MemoryContextAlloc(w->cx, sizeof(uint64) * SIFT_GRANULE_ROWS);
+		sift_granule_tids(&v, w->tids);
+		w->tid_job = jobno;
+		pfree(rec);
+		pfree(none);
+	}
+	return w->tids[row];
+}
+
+void
+sift_pin_win_replay(SiftPinWin *w, uint32 jobno)
+{
+	const PinJob *job = &w->jobs[jobno];
 	const SiftPinPart *pt = &w->parts[job->part];
 	F2Scan	   *s = w->scan;
 	const SiftPartDesc *part = s->part;

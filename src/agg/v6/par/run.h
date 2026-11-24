@@ -19,8 +19,12 @@ typedef struct SiftV6ParScan SiftV6ParScan;
 /* Whether the threads of the backend run the statement (its shape, and the backend has threads): the planner then leaves the statement to the serial node, which starts them */
 extern bool sift_v6_par_wanted(const SiftV6Spec *spec);
 
-/* The scan of the index (first: the leaf of each attribute) hands its granules over: NULL when the statement is not of the shape the threads run, or the backend has no threads for it */
-extern SiftV6ParScan *sift_v6_par_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6ScanStats *stats, const int *first, Relation index, Snapshot snap, SiftPinPartOk part_ok, void *part_arg);
+/*
+ * The scan of the index (first: the leaf of each attribute) hands its granules over: NULL when the statement is not of the shape the threads run, the backend has no threads for it, or the memory
+ * the threads need is more than work_mem allows. The answer goes to g, or to rows for the Top-N of rows (exactly one of them).
+ */
+extern SiftV6ParScan *sift_v6_par_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6Rows *rows, SiftV6ScanStats *stats, const int *first, Relation index, Snapshot snap, SiftPinPartOk part_ok,
+										void *part_arg);
 extern SiftPinWin *sift_v6_par_window(SiftV6ParScan *p);
 
 /* The scan has read every part: the threads fold the granules handed over (or the scan does), and the groups are in g. Before the scan ends */

@@ -67,6 +67,21 @@ text_datum(const uint8 *p, uint32 len, char *sbuf)
 }
 
 static Datum
+int_key_datum(Oid typid, int64 x)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return Int16GetDatum((int16) x);
+		case INT4OID:
+		case DATEOID:
+			return Int32GetDatum((int32) x);
+		default:
+			return Int64GetDatum(x);
+	}
+}
+
+static Datum
 key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
 {
 	if (v->type == SVEC_DICT32 || ((c->typid == TEXTOID || c->typid == VARCHAROID) && v->type == SVEC_STRVIEW))
@@ -263,6 +278,47 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 		if (r->bound.active)
 			r->bound.value = bound_value(spec->key[spec->topk_item[0].pos].typid, worst);
 	}
+}
+
+typedef struct PutCand
+{
+	const SiftV6Rows *r;
+	const Datum *values;
+	const bool *isnull;
+} PutCand;
+
+static Datum
+put_value(void *ctx, int item, bool *isnull)
+{
+	const PutCand *c = ctx;
+	const int	pos = c->r->spec->topk_item[item].pos;
+
+	*isnull = c->isnull[pos];
+	return c->values[pos];
+}
+
+void
+sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *const *str, const uint32 *slen, const bool *isnull, uint64 tid)
+{
+	const SiftV6Spec *spec = r->spec;
+	MemoryContext old = MemoryContextSwitchTo(r->tmp);
+
+	for (int i = 0; i < spec->nkeys; i++)
+	{
+		r->isnull[i] = isnull[i];
+		if (isnull[i])
+			r->values[i] = (Datum) 0;
+		else if (text_type(spec->key[i].typid))
+			r->values[i] = text_datum((const uint8 *) str[i], slen[i], r->sbuf[i]);
+		else
+			r->values[i] = int_key_datum(spec->key[i].typid, ival[i]);
+	}
+	r->values[spec->nkeys] = Int64GetDatum((int64) tid);
+	r->isnull[spec->nkeys] = false;
+	if (sift_v6_topk_run_wants(r->run, put_value, &(PutCand) {r, r->values, r->isnull}))
+		sift_v6_topk_run_put(r->run, r->values, r->isnull);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(r->tmp);
 }
 
 void

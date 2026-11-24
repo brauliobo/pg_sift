@@ -36,6 +36,7 @@ typedef struct SiftPinSlot
 	SiftGranuleView view;		/* over slab: the chunks the leader read, and the dictionaries of the part */
 	const struct SiftPinPart *part;
 	uint32		granule;
+	uint32		job;			/* the place of the granule in the list of the window */
 	uint16		nrows;
 	uint32		decided;		/* bit k: predicate k is decided on the granule, no row of it needs the test */
 	bool		any_dead;
@@ -62,10 +63,25 @@ extern uint64 sift_pin_win_rows(const SiftPinWin *w);
 /* The granules the scan offered and the window did not take: their rows went through the scan */
 extern uint32 sift_pin_win_refused(const SiftPinWin *w);
 
-/* The leader: the slot of item (the granule `item` of the list) is filled / free again / the granule is run through the scan. w is the window */
-extern bool sift_pin_win_feed(void *w, uint32 item);
-extern void sift_pin_win_release(void *w, uint32 item);
-extern void sift_pin_win_replay(void *w, uint32 item);
+/* The scan reads the first n granules it offers itself, whatever the consumer says: what they hold is what a bound of the consumer is made of (the consumer's own sink sees their rows) */
+extern void sift_pin_win_serial_head(SiftPinWin *w, uint32 n);
+
+/*
+ * Tracks the zone (least, greatest, nulls) of an integer leaf of every granule it takes: the consumer's bound on what a granule can hold. A granule whose leaf has no zone is a granule with none
+ */
+extern void sift_pin_win_track_zone(SiftPinWin *w, int leaf);
+/* The zone of granule job; false when it has none */
+extern bool sift_pin_win_job_zone(const SiftPinWin *w, uint32 job, int64 *min, int64 *max, bool *has_null);
+/* The least and the greatest of the leaf over all the granules; false when a granule has no zone */
+extern bool sift_pin_win_zone_range(const SiftPinWin *w, int64 *min, int64 *max);
+
+/* The leader: the slot of item is filled from the granule job of the list / free again / the granule job is run through the scan. w is the window */
+extern bool sift_pin_win_feed(SiftPinWin *w, uint32 item, uint32 job);
+extern void sift_pin_win_release(SiftPinWin *w, uint32 item);
+extern void sift_pin_win_replay(SiftPinWin *w, uint32 job);
+
+/* The heap address of row `row` of granule job (the leader reads the chunk of the addresses of the granule) */
+extern uint64 sift_pin_win_tid(SiftPinWin *w, uint32 job, uint32 row);
 
 /* The slot of an item that was fed and not released: read only */
 extern const SiftPinSlot *sift_pin_win_slot(const SiftPinWin *w, uint32 item);

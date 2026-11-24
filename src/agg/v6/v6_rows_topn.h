@@ -21,6 +21,8 @@ extern SiftV6Rows *sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec);
 extern void sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyvec, const uint64 *tid);
 /* One row by the Datums of its sort columns (spec.key order) and its heap address: kept if it is among the best */
 extern void sift_v6_rows_put(SiftV6Rows *r, const Datum *values, const bool *isnull, uint64 tid);
+/* A row the compute threads of the backend (agg/v6/par/run.h) found among the best: its sort columns (isnull; ival for an integer, str for a text) and its heap address */
+extern void sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *const *str, const uint32 *slen, const bool *isnull, uint64 tid);
 /* What a row must beat to stay, as the scan takes it (col/f2/f2_sink.h): kept up to date by sift_v6_rows_update; NULL when the first sort column is not an integer the zones of a granule bound */
 extern const SiftF2Bound *sift_v6_rows_bound(const SiftV6Rows *r);
 extern void sift_v6_rows_finish(SiftV6Rows *r);

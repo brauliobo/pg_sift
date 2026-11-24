@@ -775,8 +775,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		s->preagg = sift_v6_preagg_begin(s->spec, s->group, sift_col_rel(index)->first, &s->vet, s->stats);
 	if (next_chunk == NULL)
 	{
-		if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL)
-			s->par = sift_v6_par_begin(s->spec, s->group, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
+		if (s->pipe == NULL && s->emit == NULL && s->gate == NULL && (s->group != NULL) != (s->rows != NULL))
+			s->par = sift_v6_par_begin(s->spec, s->group, s->rows, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	}
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
