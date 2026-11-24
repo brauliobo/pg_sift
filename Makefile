@@ -63,6 +63,7 @@ TESTING_REGRESS += agg_child_input_bound
 TESTING_REGRESS += agg_child_warm
 TESTING_REGRESS += agg_combo_cap
 TESTING_REGRESS += agg_correlated_fanout
+TESTING_REGRESS += agg_cte_flat_f2
 TESTING_REGRESS += agg_cte_two_level_fuse
 TESTING_REGRESS += agg_cte_verdict_consolidated
 TESTING_REGRESS += agg_dict_blocks_lazy
