@@ -44,253 +44,6 @@ col_owns_table(Oid tablerelam)
 	return false;
 }
 
-/* a head of two or three lanes (a numeric of more than 18 digits or of any other shape, an interval) or a uuid, bytea or other varlena image:
- * read through a dictionary of its datums */
-static bool
-leaf_wide(const SiftColDef *def)
-{
-	return def->lane == 0 && (def->lanes > 0 || sift_col_def_is_image(def));
-}
-
-static SiftSrcVecType
-leaf_vtype(const SiftColDef *def)
-{
-	if (leaf_wide(def))
-		return SCV_CODE;
-	switch (def->store)
-	{
-		case SIFT_COLS_INT:
-			return (def->type == SIFT_COLT_INT8 || def->type == SIFT_COLT_TIMESTAMP || def->type == SIFT_COLT_TIMESTAMPTZ || def->type == SIFT_COLT_NUMERIC ||
-					def->type == SIFT_COLT_MONEY || def->type == SIFT_COLT_TIME) ? SCV_I64 : SCV_I32;
-		case SIFT_COLS_F4:
-		case SIFT_COLS_F8:
-			return SCV_F64;
-		case SIFT_COLS_STR:
-			return SCV_CODE;
-		default:
-			SIFT_INVARIANT(false, "sift: leaf of storage %d has no column vector type", def->store);
-	}
-	return SCV_I32;
-}
-
-/* A leaf the aggregate scan does not read: a lane of a wide value and the heads that are not one machine word; with no SQL type no expression matches it. money is one int64, read as such. */
-static bool
-leaf_hidden(const SiftColDef *def)
-{
-	return (def->lane > 0 && !sift_col_def_arrlen_lane(def)) || (def->flags & SIFT_COLD_FOUND);
-}
-
-/* "a.b" below the index attribute `att` of a leaf path "att.a.b" / "att->a->b" / "att.a[]" / "att.*": the keys, as String nodes */
-static List *
-path_below(const char *path, const char *att)
-{
-	List	   *keys = NIL;
-	size_t		alen = strlen(att);
-	const char *p = path + alen;
-	StringInfoData key;
-
-	if (*path == '\0')
-		return NIL;
-	SIFT_INVARIANT(strncmp(path, att, alen) == 0, "sift: leaf path \"%s\" does not start with its attribute \"%s\"", path, att);
-	initStringInfo(&key);
-	while (*p)
-	{
-		if (*p == '.' || (p[0] == '-' && p[1] == '>') || *p == '[' || *p == '#')
-		{
-			if (key.len)
-				keys = lappend(keys, makeString(pstrdup(key.data)));
-			resetStringInfo(&key);
-			if (*p == '[' || *p == '#')
-				break;
-			p += (*p == '.') ? 1 : 2;
-		}
-		else if (*p == '*')
-			break;
-		else
-			appendStringInfoChar(&key, *p++);
-	}
-	if (key.len)
-		keys = lappend(keys, makeString(pstrdup(key.data)));
-	return keys;
-}
-
-/* the field name of a child of a group: after "[]." (list) or the member / value of a map; "#present" for the leaf of the document itself */
-static void
-child_name(const char *path, bool is_map, bool is_key, char *name)
-{
-	const char *f = is_map ? NULL : strstr(path, "[].");
-
-	if (is_map)
-		strlcpy(name, is_key ? "key" : "value", NAMEDATALEN);
-	else if (f)
-		strlcpy(name, f + 3, NAMEDATALEN);
-	else
-		strlcpy(name, strstr(path, "#present") ? "#present" : "", NAMEDATALEN);	/* the leaf of a jsonb document, true or NULL */
-}
-
-/* The leaf of column def i of a shredded attribute: its place in the group tree, its path below the attribute, its kind and vector type, its SQL type in desc */
-void
-sift_src_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l)
-{
-	const SiftColDef *def = &cols[i];
-	const char *att = NameStr(TupleDescAttr(desc, def->attno - 1)->attname);
-	bool		is_map = def->parent >= 0 && strstr(cols[def->parent].path, ".*") != NULL;
-
-	l->id = def->id;
-	l->attno = def->attno;
-	l->parent = def->parent;
-	l->typid = leaf_hidden(def) ? InvalidOid : sift_col_def_typid(desc, def);
-	l->arrhead = sift_col_def_arrlen_head(def);
-	l->noimage = l->arrhead && (def->flags & SIFT_COLD_NOIMAGE);
-	l->arrlen = sift_col_def_arrlen_lane(def) ? def->lane : 0;
-	l->wide = leaf_wide(def);
-	l->shape = sift_col_def_shape(def);
-	l->wtypid = sift_col_def_lane_tested(def) ? sift_col_def_typid(desc, def) : InvalidOid;
-	l->scale = def->scale;
-	l->lossy = (def->flags & SIFT_COLD_LOSSY) != 0;
-	l->astext = (def->flags & SIFT_COLD_ASTEXT) != 0;
-	if (def->kind == SIFT_COLK_GROUP)
-	{
-		l->kind = strstr(def->path, ".*") ? SCL_OBJECT : SCL_ARRAY;
-		l->vtype = SCV_I32;
-		l->path = path_below(def->path, att);
-	}
-	else
-	{
-		l->kind = SCL_SCALAR;
-		l->vtype = def->store == SIFT_COLS_VAR || (def->lane > 0 && i >= def->lane && sift_col_def_shape(&cols[i - def->lane])) ? SCV_I64 : leaf_vtype(def);	/* the lanes of a range or network are 64-bit positions whatever the head's type */
-		l->lossy |= def->store == SIFT_COLS_VAR;
-		if (def->parent < 0 && !(def->flags & SIFT_COLD_DERIVED))
-			l->path = path_below(def->path, att);
-		else if (def->flags & SIFT_COLD_SCOPE)
-			l->path = list_make1(makeString(pstrdup(def->path)));	/* "<key_name>#scope": no jsonb key of the member's column is read by it */
-		child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
-	}
-}
-
-static SiftSrcLayout *
-col_layout(Relation index)
-{
-	SiftColIndexMeta m = *sift_col_index_defs(index);	/* a copy: the cached state it points into is freed when reading an index expression reloads the entry */
-	const SiftColIndexMeta *meta = &m;
-	TupleDesc	tupdesc = RelationGetDescr(index);
-	SiftSrcLayout *lay = palloc0(sizeof(SiftSrcLayout));
-
-	lay->heapoid = meta->heapoid;
-	lay->natts = meta->natts;
-	for (int a = 1; a <= meta->natts; a++)
-		lay->attexprs = lappend(lay->attexprs, sift_col_att_expr(index, a));
-	lay->nleaves = meta->ncols;
-	lay->leaf = palloc0(sizeof(SiftSrcLeaf) * meta->ncols);
-	for (int i = 0; i < meta->ncols; i++)
-	{
-		sift_src_def_leaf(meta->cols, i, tupdesc, &lay->leaf[i]);
-		elog(DEBUG1, "sift_aggcol: leaf %d path \"%s\" attno %d parent %d kind %d", i, meta->cols[i].path, meta->cols[i].attno, meta->cols[i].parent,
-			 lay->leaf[i].kind);
-	}
-	return lay;
-}
-
-/*
- * The per-leaf numbers of SiftSrcStats from the zones and dictionaries, counted over the non-NULL values
- * of the leaf (elements for a child). ndistinct: a text leaf with no inline unit is its largest segment dictionary, exact for one segment
- * and a lower bound for several that hold different values; an integer leaf is bounded by its range (max - min + 1); any leaf by its
- * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
- */
-void
-sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st)
-{
-	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
-	{
-		const SiftColDef *def = &cols[i];
-		double		nonnull = ls[i].nvals - ls[i].nnull;
-
-		st->ovf[i] = (ls[i].has_ovf || wovf[i]) && def->type != SIFT_COLT_NUMERIC;
-		st->ovf_units[i] = st->ovf[i] ? Max(ls[i].novf, 1.0) / Max(ls[i].nunits, 1.0) : 0;
-		st->ovf_frac[i] = ls[i].ovf_vals > 0 ? ls[i].ovf_slots / ls[i].ovf_vals : -1;
-		st->nokinds[i] = ls[i].nokinds;
-		st->rootless[i] = ls[i].nvals > 0 ? ls[i].rootless * ls[i].nnull / ls[i].nvals : ls[i].rootless;
-		st->jnull[i] = ls[i].has_jnull || ls[i].nokinds || wjnull[i];
-		if (def->kind == SIFT_COLK_GROUP)
-		{
-			st->elems_per_row[i] = ls[i].has_sum && ls[i].nvals > 0 ? ls[i].sum / ls[i].nvals : 0;
-			continue;
-		}
-		if (ls[i].point_units > 0 && ls[i].nunits > 0)
-			st->point_cover[i] = Min(ls[i].point_units / ls[i].nunits, 1.0);
-		if (ls[i].set_units > 0)
-		{
-			st->set_cover[i] = ls[i].set_units / ls[i].set_sampled;
-			st->set_keys[i] = ls[i].set_keys / ls[i].set_units;
-		}
-		st->head_cover[i] = ls[i].nunits > 0 ? Min(ls[i].head_units / ls[i].nunits, 1.0) : 0;
-		st->gord_free[i] = ls[i].gord_rows + ls[i].gord_ends_rows > 0 ? ls[i].gord_free_rows : 0;
-		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows + ls[i].gord_ends_rows + st->gord_free[i]) / ls[i].nvals, 1.0) : 0;
-		st->gord_coll[i] = ls[i].gord_coll;
-		st->gord_group[i] = ls[i].nvals > 0 && ls[i].gord_grp_rows > 0 && ls[i].gord_grp_rows + ls[i].gord_free_rows >= 0.9 * ls[i].nvals ? ls[i].gord_gcol : -1;
-		st->ndistinct[i] = nonnull;
-		if (def->store == SIFT_COLS_STR && !ls[i].inl)
-			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);
-		else if (def->store == SIFT_COLS_INT && ls[i].has_range && nonnull > 0 && !leaf_wide(def))
-		{
-			st->ndistinct[i] = Min(nonnull, (double) ls[i].max - (double) ls[i].min + 1);
-			st->min[i] = (double) ls[i].min;
-			st->max[i] = (double) ls[i].max;
-			st->zone_span[i] = Min(ls[i].span / Max(ls[i].nzone, 1.0) / ((double) ls[i].max - (double) ls[i].min + 1.0), 1.0);
-		}
-	}	/* an element that overflowed has its row read again: the share of rows is the elements' times those of a row */
-	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
-		if (cols[i].parent >= 0 && st->ovf_frac[i] > 0)
-			st->ovf_frac[i] = Min(1.0, st->ovf_frac[i] * Max(st->elems_per_row[cols[i].parent], 1.0));
-	col_stats_bygroup(st, ls, ncols);
-}
-
-/* A copy of the sample of the unit zones the planner may read (the memo of the backend can be replaced while the plan is made); only the integer scalar leaves that are not wide. nunits: the units of the family */
-const SiftSrcZones *
-col_zones(const SiftColZones *zs, const SiftColIndexMeta *meta, double nunits)
-{
-	SiftSrcZones *z;
-
-	if (zs->n == 0 || nunits <= 0)
-		return NULL;
-	z = palloc0(sizeof(SiftSrcZones));
-	z->n = zs->n;
-	z->covered = Min((double) zs->units / nunits, 1.0);
-	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
-		if (zs->lo[i] != NULL && !leaf_wide(&meta->cols[i]))
-		{
-			z->lo[i] = memcpy(palloc(zs->n * sizeof(int64)), zs->lo[i], zs->n * sizeof(int64));
-			z->hi[i] = memcpy(palloc(zs->n * sizeof(int64)), zs->hi[i], zs->n * sizeof(int64));
-		}
-	return z;
-}
-
-static void
-col_stats(Relation index, SiftSrcStats *st)
-{
-	SiftColLeafMemo memo;
-	SiftColIndexMeta *meta = sift_col_index_meta(index, &memo);
-	bool		wovf[SIFT_COLSRC_MAX_LEAVES],
-				wjnull[SIFT_COLSRC_MAX_LEAVES];
-
-	memset(st, 0, sizeof(*st));
-	st->nrows = meta->stats.nrows;
-	st->nunits = meta->stats.nunits;
-	st->bytes = meta->stats.bytes;
-	st->keyed_frac = meta->stats.keyed_frac;
-	st->allvisible_frac = meta->stats.allvisible_frac;
-	/* a unit answers from its pre-aggregates when every page it has rows on is all-visible: the superblocks that are, a keyed unit (it spans the heap) only when all are */
-	st->exact_frac = (1.0 - st->keyed_frac) * meta->stats.clean_frac + (meta->stats.clean_frac >= 1.0 ? st->keyed_frac : 0.0);
-	for (int i = 0; i < meta->ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)
-	{
-		wovf[i] = (meta->stats.wbuf_ovf & SIFT_COL_OVF_BIT(i)) != 0;
-		wjnull[i] = (meta->stats.wbuf_jnull & SIFT_COL_OVF_BIT(i)) != 0;
-	}
-	sift_src_leaf_stats(meta->cols, meta->ncols, memo.leaves, wovf, wjnull, st);
-	st->zones = col_zones(memo.zones, meta, meta->stats.nunits);
-	st->miss_pending = true;
-}
-
 static void
 col_stamp(Relation index, SiftSrcStamp *st)
 {
@@ -307,26 +60,12 @@ col_stamp(Relation index, SiftSrcStamp *st)
 void *
 col_open_flags(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, uint32 flags, const void *view, const SiftKeyRange *keys)
 {
+	ColSource  *src = MemoryContextAllocZero(mcxt, sizeof(ColSource));
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
-	ColSource  *src = palloc0(sizeof(ColSource));
 
-	src->cxt = mcxt;
-	src->heap = heap;
-	src->index = index;
-	src->snapshot = snapshot;
-	src->cs = sift_col_open(heap, index, snapshot, mcxt, flags, view, keys);
-	pgstat_count_index_scan(index);	/* idx_scan counts the aggregate scans too */
-	sift_col_scan_note(index, src->cs);
-	src->lay = col_layout(index);
-	src->dict = palloc0(sizeof(SiftSrcDict) * src->lay->nleaves);
-	src->buf = palloc0(sizeof(SiftSrcLeafBuf) * src->lay->nleaves);
-	src->tol = palloc0(sizeof(bool) * src->lay->nleaves);
-	src->raw = palloc0(sizeof(bool) * src->lay->nleaves);
-	src->numsum = palloc0(sizeof(bool) * src->lay->nleaves);
-	src->wide = palloc0(sizeof(SiftSrcWide) * src->lay->nleaves);
-	src->wgen = palloc0(sizeof(uint64) * src->lay->nleaves);
-	src->ugen = 1;
-	sift_srcsel_init(&src->sel, mcxt, RelationGetRelid(heap));
+	sift_v1_idx_init(&src->rd, heap, index, snapshot, mcxt, flags, view, keys);
+	src->rd.wide_dict = col_wide_dict;
+	src->numsum = palloc0(sizeof(bool) * src->rd.lay->nleaves);
 	sift_aggpre_init(&src->pre, mcxt);
 	MemoryContextSwitchTo(old);
 	return src;
@@ -345,7 +84,7 @@ col_open_part(Relation heap, Relation index, Snapshot snapshot, MemoryContext mc
 	ColSource  *src = col_open_flags(heap, index, snapshot, mcxt, SIFT_COLO_NOCHECKS | SIFT_COLO_SNAP_HELD | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view, NULL);
 
 	/* the open left the header page of each segment pinned, and a scan of thousands of partitions opens them all before it reads one */
-	sift_col_unpin(src->cs);
+	sift_col_unpin(src->rd.cs);
 	return src;
 }
 
@@ -356,7 +95,7 @@ col_close(void *impl)
 
 	if (src->rck)
 		recheck_close(src->rck);
-	sift_col_close(src->cs);
+	sift_v1_idx_close(&src->rd);
 }
 
 static void
@@ -366,25 +105,13 @@ col_unpin(void *impl)
 
 	if (src->rck)
 		recheck_unpin(src->rck);
-	sift_col_unpin(src->cs);
-}
-
-static const SiftSrcLayout *
-col_source_layout(const void *impl)
-{
-	return ((const ColSource *) impl)->lay;
+	sift_col_unpin(src->rd.cs);
 }
 
 static bool
 col_sb_heap(void *impl)
 {
-	return sift_col_sb_heap(((ColSource *) impl)->cs);
-}
-
-static uint32
-col_nsb(void *impl)
-{
-	return sift_col_heap_sbs(((ColSource *) impl)->cs);
+	return sift_col_sb_heap(((ColSource *) impl)->rd.cs);
 }
 
 #define COL_PREDS_MAX	(2 * SIFT_COLSRC_MAX_LEAVES + COL_MAX_STR_PRUNE + SIFT_COLSRC_MAX_FILTERS + COL_MAX_WIDE)
@@ -393,7 +120,7 @@ col_nsb(void *impl)
 static int
 col_preds(ColSource *src, const SiftSrcPrune *prune, int nprune, SiftColPred *preds)
 {
-	int			n = sift_aggzone_preds(&src->zones, src->cxt, NULL, prune, nprune, preds);
+	int			n = sift_aggzone_preds(&src->zones, src->rd.cxt, NULL, prune, nprune, preds);
 
 	src->spoff = n;
 	for (int i = 0; i < src->nspred; i++)
@@ -415,7 +142,7 @@ col_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 	if (src->rck)
 		src->rck->taken = src->rck->active = false, src->rck->npend = 0;
 	n = col_preds(src, prune, nprune, preds);
-	sift_col_begin_zones(src->cs, preds, n, src->zones.zone, src->zones.nzone, sb_lo, sb_hi);
+	sift_col_begin_zones(src->rd.cs, preds, n, src->zones.zone, src->zones.nzone, sb_lo, sb_hi);
 }
 
 static bool
@@ -425,7 +152,7 @@ col_kept(void *impl, const SiftSrcPrune *prune, int nprune, uint32 nspace, uint6
 	SiftColPred	preds[COL_PREDS_MAX];
 	int			n = col_preds(src, prune, nprune, preds);
 
-	return sift_col_kept_map(src->cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept, rows, count);
+	return sift_col_kept_map(src->rd.cs, preds, n, src->zones.zone, src->zones.nzone, nspace, kept, rows, count);
 }
 
 /* the tests of prune_str whose rows the point directory of the unit answers exactly */
@@ -433,7 +160,7 @@ static uint64
 col_point_exact(void *impl, const SiftSrcUnit *unit)
 {
 	ColSource  *src = impl;
-	uint64		bits = sift_col_point_exact(&src->unit),
+	uint64		bits = sift_col_point_exact(&src->rd.unit),
 				mask = 0;
 
 	for (int i = 0; bits != 0 && i < src->nspred; i++)
@@ -446,9 +173,8 @@ static bool
 col_next(void *impl, SiftSrcUnit *unit)
 {
 	ColSource  *src = impl;
-	uint32		nrow;
 
-	src->sel.compact = false;
+	src->rd.sel.compact = false;
 	if (src->rck)
 	{
 		bool		again = src->rck->taken && recheck_pending(src);
@@ -458,18 +184,7 @@ col_next(void *impl, SiftSrcUnit *unit)
 		if (again && recheck_next(src, unit))
 			return true;
 	}
-	do
-	{
-		if (!sift_col_next(src->cs, &src->unit))
-			return false;
-		src->ugen++;
-		nrow = src->unit.nrows;
-	} while (src->sel.keep && !sift_srcsel_unit(&src->sel, &src->unit, &nrow));
-	unit->sb = src->unit.sb;
-	unit->nrow = nrow;
-	unit->nsu = src->unit.nsu;
-	unit->priv = src;
-	return true;
+	return sift_v1_idx_next(&src->rd, unit);
 }
 
 /* The rows of bits are few: the unit goes on as them alone. Not the unit of rows read again from the heap, which has no stored numbering to go back to. */
@@ -479,9 +194,9 @@ col_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits)
 	ColSource  *src = impl;
 	uint32		nrow;
 
-	if (src->sel.compact || (src->rck && src->rck->active))
+	if (src->rd.sel.compact || (src->rck && src->rck->active))
 		return false;
-	sift_srcsel_narrow(&src->sel, src->cs, &src->unit, bits, &nrow);
+	sift_srcsel_narrow(&src->rd.sel, src->rd.cs, &src->rd.unit, bits, &nrow);
 	unit->nrow = nrow;
 	return true;
 }
@@ -492,8 +207,8 @@ col_whole(void *impl, int leaf, const int *meas, int nmeas)
 	ColSource  *src = impl;
 
 	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
-	if (src->sel.keep == NULL)
-		sift_col_super_whole(src->cs, leaf, meas, nmeas);
+	if (src->rd.sel.keep == NULL)
+		sift_col_super_whole(src->rd.cs, leaf, meas, nmeas);
 	return false;
 }
 
@@ -503,8 +218,8 @@ col_count_range(void *impl, int leaf, SiftColOp op, const char *s, uint32 len)
 	ColSource  *src = impl;
 
 	/* a selection of heap addresses (a semi-join's) is the rows of units, not of a segment */
-	if (src->sel.keep == NULL && (op == SIFT_COLOP_EQ || (op >= SIFT_COLOP_LT && op <= SIFT_COLOP_GE) || op == SIFT_COLOP_PREFIX))
-		sift_col_count_range(src->cs, leaf, op, s, len);
+	if (src->rd.sel.keep == NULL && (op == SIFT_COLOP_EQ || (op >= SIFT_COLOP_LT && op <= SIFT_COLOP_GE) || op == SIFT_COLOP_PREFIX))
+		sift_col_count_range(src->rd.cs, leaf, op, s, len);
 }
 
 static void
@@ -512,8 +227,8 @@ col_count_cmp(void *impl, int leaf)
 {
 	ColSource  *src = impl;
 
-	if (src->sel.keep == NULL)
-		sift_col_count_cmp(src->cs, leaf);
+	if (src->rd.sel.keep == NULL)
+		sift_col_count_cmp(src->rd.cs, leaf);
 }
 
 static void
@@ -521,8 +236,8 @@ col_count_strs(void *impl, int leaf, uint32 collid, const char *lo, uint32 lolen
 {
 	ColSource  *src = impl;
 
-	if (src->sel.keep == NULL)
-		sift_col_count_strs(src->cs, leaf, collid, lo, lolen, lo_excl, hi, hilen, hi_excl);
+	if (src->rd.sel.keep == NULL)
+		sift_col_count_strs(src->rd.cs, leaf, collid, lo, lolen, lo_excl, hi, hilen, hi_excl);
 }
 
 static void
@@ -530,8 +245,8 @@ col_count_elem_src(void *impl)
 {
 	ColSource  *src = impl;
 
-	if (src->sel.keep == NULL)
-		sift_col_count_elem(src->cs);
+	if (src->rd.sel.keep == NULL)
+		sift_col_count_elem(src->rd.cs);
 }
 
 static bool
@@ -539,7 +254,7 @@ col_unit_count(void *impl, const SiftSrcUnit *unit, int64 *rows)
 {
 	uint64		n;
 
-	if (!sift_col_unit_counted(&((ColSource *) impl)->unit, &n))
+	if (!sift_col_unit_counted(&((ColSource *) impl)->rd.unit, &n))
 		return false;
 	*rows = (int64) n;
 	return true;
@@ -548,7 +263,7 @@ col_unit_count(void *impl, const SiftSrcUnit *unit, int64 *rows)
 static uint32
 col_super_span(void *impl)
 {
-	return sift_col_super_span(((ColSource *) impl)->cs);
+	return sift_col_super_span(((ColSource *) impl)->rd.cs);
 }
 
 static void
@@ -556,32 +271,7 @@ col_split(void *impl, const SiftSrcUnit *unit)
 {
 	ColSource  *src = impl;
 
-	sift_col_unit_split(src->cs, &src->unit);
-}
-
-static void
-col_select(void *impl, const SiftFilter *keep)
-{
-	((ColSource *) impl)->sel.keep = keep;
-}
-
-/* rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
-static void
-col_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids)
-{
-	ColSource  *src = impl;
-
-	if (src->sel.compact)
-	{
-		uint32	   *ords = palloc(Max(n, 1) * sizeof(uint32));
-
-		for (int i = 0; i < n; i++)
-			ords[i] = src->sel.idx[rows[i]];
-		sift_col_row_tids(&src->unit, ords, n, tids);
-		pfree(ords);
-	}
-	else
-		sift_col_row_tids(&src->unit, rows, n, tids);
+	sift_col_unit_split(src->rd.cs, &src->rd.unit);
 }
 
 static void
@@ -589,7 +279,7 @@ col_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z)
 {
 	SiftColZone cz;
 
-	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
+	sift_col_zone(&((ColSource *) impl)->rd.unit, leaf, &cz);
 	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
 }
 
@@ -597,7 +287,7 @@ static uint32
 col_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 {
 	SiftColZone cz;
-	uint32		n = sift_col_zone_range(((ColSource *) impl)->cs, leaf, lo, hi, &cz);
+	uint32		n = sift_col_zone_range(((ColSource *) impl)->rd.cs, leaf, lo, hi, &cz);
 
 	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
 	return n;
@@ -607,7 +297,7 @@ static uint32
 col_zone_range_segs(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z)
 {
 	SiftColZone cz;
-	uint32		n = sift_col_zone_range_segs(((ColSource *) impl)->cs, leaf, lo, hi, &cz);
+	uint32		n = sift_col_zone_range_segs(((ColSource *) impl)->rd.cs, leaf, lo, hi, &cz);
 
 	*z = (SiftSrcZone) {.min = cz.min, .max = cz.max, .nvals = cz.nvals, .nnull = cz.nnull, .inexact = cz.has_ovf};
 	return n;
@@ -618,7 +308,7 @@ col_walk_stamp(void *impl, SiftSrcWalkStamp *st, uint32 *mem, int cap, int *nmem
 {
 	SiftColWalkStamp cs;
 
-	if (!sift_col_walk_stamp(((ColSource *) impl)->cs, &cs, mem, cap, nmem))
+	if (!sift_col_walk_stamp(((ColSource *) impl)->rd.cs, &cs, mem, cap, nmem))
 		return false;
 	*st = (SiftSrcWalkStamp) {.index = cs.index,.file = cs.file,.version = cs.version,.scope = cs.scope};
 	return true;
@@ -630,7 +320,7 @@ col_run_info(void *impl, const SiftSrcUnit *unit, int leaf, bool walk, uint32 *n
 {
 	ColSource  *src = impl;
 
-	return !(src->rck && src->rck->active) && !col_wide(src, leaf) && sift_aggpre_run_info(&src->sel, unit, &src->unit, leaf, nvals, nnull, id);
+	return !(src->rck && src->rck->active) && !sift_v1_idx_wide(&src->rd, leaf) && sift_aggpre_run_info(&src->rd.sel, unit, &src->rd.unit, leaf, nvals, nnull, id);
 }
 
 static int
@@ -638,7 +328,7 @@ col_key_order(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	ColSource  *src = impl;
 
-	return src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || unit->nrow != src->unit.nrows ? 0 : sift_col_key_order(&src->unit, leaf);
+	return src->rd.sel.compact || src->rd.sel.keep || (src->rck && src->rck->active) || sift_v1_idx_wide(&src->rd, leaf) || unit->nrow != src->rd.unit.nrows ? 0 : sift_col_key_order(&src->rd.unit, leaf);
 }
 
 static bool
@@ -647,7 +337,7 @@ col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, Sift
 	ColSource  *src = impl;
 	SiftCHeadEnt e[2 * SIFT_CRUN_HEAD_MAX];
 
-	if (src->sel.compact || src->sel.keep || (src->rck && src->rck->active) || col_wide(src, leaf) || !sift_col_sb_heads(src->cs, sb, leaf, e, nlo, nhi))
+	if (src->rd.sel.compact || src->rd.sel.keep || (src->rck && src->rck->active) || sift_v1_idx_wide(&src->rd, leaf) || !sift_col_sb_heads(src->rd.cs, sb, leaf, e, nlo, nhi))
 		return false;
 	memcpy(lo, e, *nlo * sizeof(SiftSrcHead));
 	memcpy(hi, e + *nlo, *nhi * sizeof(SiftSrcHead));
@@ -657,7 +347,7 @@ col_sb_heads(void *impl, uint32 sb, int leaf, SiftSrcHead *lo, uint32 *nlo, Sift
 static int
 col_run_heads(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcHead *lo, uint32 *nlo, SiftSrcHead *hi, uint32 *nhi)
 {
-	return sift_aggpre_run_heads(&((ColSource *) impl)->unit, leaf, lo, nlo, hi, nhi);
+	return sift_aggpre_run_heads(&((ColSource *) impl)->rd.unit, leaf, lo, nlo, hi, nhi);
 }
 
 static int
@@ -665,73 +355,73 @@ col_gorder_open(void *impl, int leaf, int rows, int npin, const int *pinleaf, co
 {
 	ColSource  *src = impl;
 
-	return sift_col_gorder_open(src->cs, leaf, rows, npin, pinleaf, pinval, grouped, collid, want);
+	return sift_col_gorder_open(src->rd.cs, leaf, rows, npin, pinleaf, pinval, grouped, collid, want);
 }
 
 static bool
 col_gorder_cuts(void *impl, int i, int leaf, struct SiftCGOrdCuts *cuts)
 {
-	return sift_col_gorder_cuts(((ColSource *) impl)->cs, i, leaf, cuts);
+	return sift_col_gorder_cuts(((ColSource *) impl)->rd.cs, i, leaf, cuts);
 }
 
 static uint32
 col_gorder_strrank(void *impl, int i, int leaf, const char *s, uint32 len, bool after)
 {
-	return sift_col_gorder_strrank(((ColSource *) impl)->cs, i, leaf, s, len, after);
+	return sift_col_gorder_strrank(((ColSource *) impl)->rd.cs, i, leaf, s, len, after);
 }
 
 static const char *
 col_gorder_str(void *impl, int i, int leaf, int64 key, uint32 *len)
 {
-	return sift_col_gorder_str(((ColSource *) impl)->cs, i, leaf, key, len);
+	return sift_col_gorder_str(((ColSource *) impl)->rd.cs, i, leaf, key, len);
 }
 
 static bool
 col_gorder_info(void *impl, int i, int leaf, uint32 *entries, uint32 *values)
 {
-	return sift_col_gorder_info(((ColSource *) impl)->cs, i, leaf, entries, values);
+	return sift_col_gorder_info(((ColSource *) impl)->rd.cs, i, leaf, entries, values);
 }
 
 static void
 col_gorder_range(void *impl, int i, int leaf, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
-	sift_col_gorder_range(((ColSource *) impl)->cs, i, leaf, vs, ve, ns, ne);
+	sift_col_gorder_range(((ColSource *) impl)->rd.cs, i, leaf, vs, ve, ns, ne);
 }
 
 static uint32
 col_gorder_seek(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 key, bool after, struct SiftCGOrdBuf *keep)
 {
-	return sift_col_gorder_seek(((ColSource *) impl)->cs, i, leaf, vs, ve, key, after, keep);
+	return sift_col_gorder_seek(((ColSource *) impl)->rd.cs, i, leaf, vs, ve, key, after, keep);
 }
 
 static bool
 col_gorder_before(void *impl, int i, int leaf, uint32 vs, uint32 ve, int64 v, bool desc, uint32 *clo, uint32 *chi, struct SiftCGOrdBuf *memo)
 {
-	return sift_col_gorder_before(((ColSource *) impl)->cs, i, leaf, vs, ve, v, desc, clo, chi, memo);
+	return sift_col_gorder_before(((ColSource *) impl)->rd.cs, i, leaf, vs, ve, v, desc, clo, chi, memo);
 }
 
 static int
 col_gorder_exact(void *impl, int i, SiftKey tid)
 {
-	return sift_col_gorder_exact(((ColSource *) impl)->cs, i, tid);
+	return sift_col_gorder_exact(((ColSource *) impl)->rd.cs, i, tid);
 }
 
 static void
 col_gorder_values(void *impl, int leaf, const int *seg, const SiftKey *tid, uint32 n, int64 *val, uint8 *st)
 {
-	sift_col_gorder_values(((ColSource *) impl)->cs, leaf, seg, tid, n, val, st);
+	sift_col_gorder_values(((ColSource *) impl)->rd.cs, leaf, seg, tid, n, val, st);
 }
 
 static void
 col_gorder_head(void *impl, int i, int leaf, uint32 p, uint32 w, struct SiftCGOrdBuf *buf)
 {
-	sift_col_gorder_head(((ColSource *) impl)->cs, i, leaf, p, w, buf);
+	sift_col_gorder_head(((ColSource *) impl)->rd.cs, i, leaf, p, w, buf);
 }
 
 static void
 col_run_read(void *impl, const SiftSrcUnit *unit, int leaf, uint32 pos, uint32 cnt, uint32 *rows)
 {
-	sift_col_run_read(&((ColSource *) impl)->unit, leaf, pos, cnt, rows);
+	sift_col_run_read(&((ColSource *) impl)->rd.unit, leaf, pos, cnt, rows);
 }
 
 bool
@@ -739,9 +429,9 @@ col_overflow(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	SiftColZone cz;
 
-	if (col_wide(impl, leaf) || ((ColSource *) impl)->unit.nsu > 0)
+	if (sift_v1_idx_wide(impl, leaf) || ((ColSource *) impl)->rd.unit.nsu > 0)
 		return false;				/* a NaN is a dictionary entry; a superunit holds no overflow value */
-	sift_col_zone(&((ColSource *) impl)->unit, leaf, &cz);
+	sift_col_zone(&((ColSource *) impl)->rd.unit, leaf, &cz);
 	return cz.has_ovf;
 }
 
@@ -762,21 +452,21 @@ col_unit_exact(void *impl, const SiftSrcUnit *unit)
 	SiftColSegment *seg;
 
 	/* a whole segment answers from its key table only (sift_col_unit_hist): every other question of it is refused */
-	return sift_col_unit_whole(&((ColSource *) impl)->unit, &seg) || sift_col_unit_preagg_ok(&((ColSource *) impl)->unit);
+	return sift_col_unit_whole(&((ColSource *) impl)->rd.unit, &seg) || sift_col_unit_preagg_ok(&((ColSource *) impl)->rd.unit);
 }
 
 static int
 col_unit_dead(void *impl, const SiftSrcUnit *unit, int mode)
 {
 	if (mode == SSD_NET)
-		return sift_col_unit_net(&((ColSource *) impl)->unit);
-	return sift_col_unit_dead(&((ColSource *) impl)->unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
+		return sift_col_unit_net(&((ColSource *) impl)->rd.unit);
+	return sift_col_unit_dead(&((ColSource *) impl)->rd.unit, mode == SSD_OFF ? -1 : sift_agg_dead_delta, mode == SSD_BOUNDS);
 }
 
 static bool
 col_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
 {
-	return sift_col_unit_except(&((ColSource *) impl)->unit, leaf);
+	return sift_col_unit_except(&((ColSource *) impl)->rd.unit, leaf);
 }
 
 static bool
@@ -784,7 +474,7 @@ col_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 {
 	ColSource  *src = impl;
 
-	return sift_aggpre_unit_agg(&src->unit, leaf, sift_col_def(src->cs, leaf), agg);
+	return sift_aggpre_unit_agg(&src->rd.unit, leaf, sift_col_def(src->rd.cs, leaf), agg);
 }
 
 static bool
@@ -792,25 +482,25 @@ col_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 {
 	ColSource  *src = impl;
 
-	return sift_aggpre_unit_hist(&src->pre, &src->unit, dim, sift_col_def(src->cs, dim % SIFT_SRC_CAL), NULL, NULL, need, h);
+	return sift_aggpre_unit_hist(&src->pre, &src->rd.unit, dim, sift_col_def(src->rd.cs, dim % SIFT_SRC_CAL), NULL, NULL, need, h);
 }
 
 static bool
 col_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
 {
-	return sift_aggpre_unit_presence(&((ColSource *) impl)->unit, leaf, p);
+	return sift_aggpre_unit_presence(&((ColSource *) impl)->rd.unit, leaf, p);
 }
 
 static bool
 col_unit_hll(void *impl, const SiftSrcUnit *unit, int leaf, const uint8 **blob)
 {
-	return sift_col_unit_hll(&((ColSource *) impl)->unit, leaf, blob);
+	return sift_col_unit_hll(&((ColSource *) impl)->rd.unit, leaf, blob);
 }
 
 static uint32
 col_unit_rollup_tuples(void *impl, const SiftSrcUnit *unit, int list)
 {
-	return sift_col_unit_rollup_tuples(&((ColSource *) impl)->unit, list);
+	return sift_col_unit_rollup_tuples(&((ColSource *) impl)->rd.unit, list);
 }
 
 static bool
@@ -818,21 +508,21 @@ col_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRoll
 {
 	ColSource  *src = impl;
 
-	return sift_aggpre_unit_rollup(&src->pre, &src->unit, sift_col_schema(src->cs), list, need, NULL, NULL, h);
+	return sift_aggpre_unit_rollup(&src->pre, &src->rd.unit, sift_col_schema(src->rd.cs), list, need, NULL, NULL, h);
 }
 
 static bool
 col_unit_rollup_miss(void *impl, const SiftSrcUnit *unit)
 {
-	return sift_col_unit_rollup_miss(&((ColSource *) impl)->unit);
+	return sift_col_unit_rollup_miss(&((ColSource *) impl)->rd.unit);
 }
 
 static const SiftSrcProvider col_provider = {
 	.owns_index = col_owns_index,
 	.reads_index = col_reads_index,
 	.owns_table = col_owns_table,
-	.layout = col_layout,
-	.stats = col_stats,
+	.layout = sift_v1_idx_layout,
+	.stats = sift_v1_idx_stats,
 	.scope_stats = sift_col_scope_stats,
 	.miss = sift_col_miss,
 	.stamp = col_stamp,
@@ -849,8 +539,8 @@ static const SiftSrcProvider col_provider = {
 	.conn_proof = sift_col_conn_proof,
 	.close = col_close,
 	.unpin = col_unpin,
-	.source_layout = col_source_layout,
-	.nsb = col_nsb,
+	.source_layout = sift_v1_idx_source_layout,
+	.nsb = sift_v1_idx_nsb,
 	.rescan = col_rescan,
 	.begin = col_begin,
 	.kept = col_kept,
@@ -867,15 +557,15 @@ static const SiftSrcProvider col_provider = {
 	.super_align = col_super_align,
 	.super_tests = col_super_tests,
 	.super_span = col_super_span,
-	.read = col_read,
+	.read = sift_v1_idx_read,
 	.live = col_live,
-	.vet = col_vet,
-	.vet_needed = col_vet_needed,
+	.vet = sift_v1_idx_vet,
+	.vet_needed = sift_v1_idx_vet_needed,
 	.counters = col_counters,
-	.leaf_n = col_leaf_n,
-	.read_into = col_read_into,
-	.select = col_select,
-	.tids = col_tids,
+	.leaf_n = sift_v1_idx_leaf_n,
+	.read_into = sift_v1_idx_read_into,
+	.select = sift_v1_idx_select,
+	.tids = sift_v1_idx_tids,
 	.sb_heap = col_sb_heap,
 	.zone = col_zone,
 	.zone_range = col_zone_range,
@@ -904,10 +594,10 @@ static const SiftSrcProvider col_provider = {
 	.gorder_groups = col_gorder_groups,
 	.gorder_group_at = col_gorder_group_at,
 	.gorder_seek = col_gorder_seek,
-	.read_rows = col_read_rows,
+	.read_rows = sift_v1_idx_read_rows,
 	.set_filters = col_set_filters,
 	.filter = col_filter,
-	.read_sel = col_read_sel,
+	.read_sel = sift_v1_idx_read_sel,
 	.narrow = col_narrow,
 	.filter_types = col_filter_types,
 	.tolerate_ovf = col_tolerate_ovf,

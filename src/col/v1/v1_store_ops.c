@@ -1,6 +1,6 @@
 /*
  * col/v1/v1_store_ops.c - Format 1 behind the storage seam of the unified engine (core/store_ops.h): its sift_col indexes and sift_table tables are read, never written, as the batches of
- * SiftAggV6 (agg/batch_source.h) through the column source (agg/colsrc.h) that decodes their units. The rows of a unit that the tombstones and the snapshot leave go to batches of
+ * SiftAggV6 (agg/batch_source.h) through the unit reader (col/v1/v1_reader.h) that decodes their units. The rows of a unit that the tombstones and the snapshot leave go to batches of
  * SIFT_VEC_LEN rows, which may span units; the quals of the operator run over each batch. Format 1 is sorted by nothing and has no accelerators to hand over.
  */
 /* check-memory: allow-allocs every array here follows the columns of one scan or the rows of one batch, not the rows of the relation */
@@ -17,8 +17,8 @@
 #include "utils/rel.h"
 
 #include "agg/batch_source.h"
-#include "agg/colsrc.h"
 #include "col/am.h"
+#include "col/v1/v1_reader.h"
 #include "col/v1/v1_store_ops.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
@@ -91,6 +91,12 @@ static const SiftV6Class vec_class[] = {[SVEC_BOOL] = SV6C_BOOL,[SVEC_I32] = SV6
 
 /* ---- what the format tells the planner ---- */
 
+static const SiftV1ReaderOps *
+reader_of(bool is_table)
+{
+	return is_table ? &sift_v1_tbl_reader : &sift_v1_idx_reader;
+}
+
 static bool
 v1_owns_rel(Oid relid, bool is_table)
 {
@@ -137,7 +143,7 @@ static bool
 v1_schema(Oid relid, bool is_table, SiftStoreSchema *out)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
-	const SiftSrcLayout *lay = sift_colsrc_layout(r.rel);
+	const SiftSrcLayout *lay = reader_of(is_table)->layout(r.rel);
 
 	*out = (SiftStoreSchema) {.natts = lay->natts,.is_table = is_table,.atts = palloc0(lay->natts * sizeof(SiftStoreAtt))};
 	for (int a = 1; a <= lay->natts; a++)
@@ -155,7 +161,7 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
 	SiftSrcStats st;
 
-	sift_colsrc_stats_lazy(r.rel, &st);
+	reader_of(is_table)->stats(r.rel, &st);
 	*out = (SiftStoreStats) {.live_rows = r.heap->rd_rel->reltuples >= 0 ? r.heap->rd_rel->reltuples : st.nrows,
 		.stored_bytes = is_table ? table_relation_size(r.heap, MAIN_FORKNUM) : (uint64) st.bytes,.allvis_frac = Min(Max(st.allvisible_frac, 0.0), 1.0)};
 	sift_v1_rel_close(&r);
@@ -166,7 +172,7 @@ static bool
 v1_leaf_holds(Oid relid, bool is_table, int att, int cls)
 {
 	const SiftV1Rel r = sift_v1_rel_open(relid, is_table);
-	const SiftSrcLayout *lay = sift_colsrc_layout(r.rel);
+	const SiftSrcLayout *lay = reader_of(is_table)->layout(r.rel);
 	const SiftSrcLeaf *l = att_leaf(lay, att);
 	const bool	holds = l != NULL && leaf_serves(l, att_typid(lay, att), (SiftV6Class) cls);
 
@@ -184,7 +190,8 @@ typedef struct V1Src
 	MemoryContext batch_cx;		/* the bytes of the long strings and the datums of one batch, reset when the next one starts */
 	SiftV1Rel	rels;
 	Snapshot	snap;
-	SiftSrcSource *src;
+	const SiftV1ReaderOps *rd;
+	void	   *src;
 	SiftV6Input in;
 	const SiftSrcLayout *lay;
 	const SiftSrcLeaf *col_leaf[SIFT_V6_MAX_COLS];
@@ -229,18 +236,18 @@ unit_next(V1Src *s)
 		int			nw;
 
 		MemoryContextReset(s->unit_cx);
-		if (!sift_colsrc_next(s->src, &s->unit))
+		if (!s->rd->next(s->src, &s->unit))
 			return false;
 		nw = (s->unit.nrow + 63) / 64;
 		s->bits = MemoryContextAllocZero(s->unit_cx, (nw + UNIT_BITS_PAD) * sizeof(uint64));
-		sift_colsrc_live(s->src, &s->unit, s->bits);
-		if (sift_colsrc_vet_needed(s->src, &s->unit))
-			sift_colsrc_vet(s->src, &s->unit, s->bits);
+		s->rd->live(s->src, &s->unit, s->bits);
+		if (s->rd->vet_needed(s->src, &s->unit))
+			s->rd->vet(s->src, &s->unit, s->bits);
 		for (int w = 0; w < nw; w++)
 			if (s->bits[w] != 0)
 			{
 				for (int k = 0; k < s->nread; k++)
-					sift_colsrc_read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
+					s->rd->read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
 				s->pos = 0;
 				return true;
 			}
@@ -400,7 +407,7 @@ batch_fill(V1Src *s)
 		const int	cap = SIFT_VEC_LEN - n;
 		const int	k = unit_take(s, cap);
 
-		sift_colsrc_tids(s->src, &s->unit, s->ords, k, s->tids);
+		s->rd->tids(s->src, &s->unit, s->ords, k, s->tids);
 		for (int j = 0; j < k; j++)
 		{
 			for (int i = 0; i < s->in.ncols; i++)
@@ -461,7 +468,7 @@ v1_close(SiftV6Source *base)
 {
 	V1Src	   *s = (V1Src *) base;
 
-	sift_colsrc_close(s->src);
+	s->rd->close(s->src);
 	if (s->index_fetch != NULL)
 		table_index_fetch_end(s->index_fetch);
 	ExecDropSingleTupleTableSlot(s->fslot);
@@ -535,8 +542,9 @@ open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, con
 	s->in = *in;
 	s->snap = estate->es_snapshot;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
-	s->src = sift_colsrc_open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, NULL, NULL);
-	s->lay = sift_colsrc_source_layout(s->src);
+	s->rd = reader_of(in->is_table);
+	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx);
+	s->lay = s->rd->source_layout(s->src);
 	bind_columns(s);
 	s->fslot = table_slot_create(s->rels.heap, NULL);
 	if (!in->is_table)
@@ -545,8 +553,8 @@ open_source(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, con
 		s->quals = sift_v6_vexpr_dup(cx, quals);
 	s->vctx = sift_vexpr_ctx_new(cx);
 	if (keep != NULL)
-		sift_colsrc_select(s->src, keep);
-	sift_colsrc_begin(s->src, 0, sift_colsrc_nsb(s->src), NULL, 0);
+		s->rd->select(s->src, keep);
+	s->rd->begin(s->src, 0, s->rd->nsb(s->src));
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = v1_fetch,.close = v1_close};
 	return &s->base;
@@ -562,7 +570,7 @@ v1_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool so
 static bool
 hybrid_can(Oid relid, bool is_table)
 {
-	return sift_colsrc_can_select(get_rel_relam(relid), !is_table);
+	return v1_owns_rel(relid, is_table);
 }
 
 /* the scores of the hits are the search's: they join the rows by their tag (the TID of the row) */

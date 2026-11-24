@@ -175,8 +175,6 @@ agg/scope_union.c
 agg/scope_unread.c
 agg/search.c
 agg/search.h
-agg/sel.c
-agg/sel.h
 agg/setfold.c
 agg/sip.c
 agg/sip.h
@@ -243,8 +241,8 @@ agg/vk_spv.h
 agg/vnum.c
 agg/vnum.h
 agg/vnum_test.c
-agg/wide.c
 agg/wide.h
+agg/wide_nums.c
 agg/window.c
 agg/window_test.c
 agg/zoneoff.c
@@ -712,6 +710,12 @@ col/v1/seg/dead.c
 col/v1/seg/dict_ref.c
 col/v1/seg/live.c
 col/v1/seg/probe.c
+col/v1/src_exec.h
+col/v1/src_meta.h
+col/v1/src_sel.c
+col/v1/src_sel.h
+col/v1/src_wide.c
+col/v1/src_wide.h
 col/v1/supersede.c
 col/v1/test/
 col/v1/tomblog.c
@@ -722,6 +726,10 @@ col/v1/track_made.c
 col/v1/track_rows.c
 col/v1/unit_test.c
 col/v1/v1_ops.c
+col/v1/v1_reader.c
+col/v1/v1_reader.h
+col/v1/v1_reader_int.h
+col/v1/v1_reader_meta.c
 col/v1/v1_store_ops.c
 col/v1/v1_store_ops.h
 col/v1/verify.c
@@ -922,6 +930,10 @@ core/xid_cache.h
 table/
 table/v1/v1_tbl_ops.c
 table/v1/v1_tbl_ops.h
+table/v1/v1_tbl_reader.c
+table/v1/v1_tbl_reader.h
+table/v1/v1_tbl_reader_meta.c
+table/v1/v1_tbl_reader_read.c
 col/f2/f2_v6_scan.h
 col/f2/f2_v6_scan_fill.c
 col/f2/f2_v6_unnest_test.c

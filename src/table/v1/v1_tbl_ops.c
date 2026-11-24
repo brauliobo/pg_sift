@@ -1,5 +1,5 @@
 /*
- * table/v1/v1_tbl_ops.c - the sift_table half of the Format 1 store: a table is read through the same column source as an index (agg/colsrc.h), so what differs is only which
+ * table/v1/v1_tbl_ops.c - the sift_table half of the Format 1 store: a table is read through the same unit reader as an index (col/v1/v1_reader.h), so what differs is only which
  * relations are the format's and which relation the rows belong to.
  */
 #include "postgres.h"

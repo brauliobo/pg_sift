@@ -20,13 +20,13 @@ sift_col_open_scope(Relation heap, Relation index, Snapshot snapshot, MemoryCont
 void
 col_super(void *impl, bool on)
 {
-	sift_col_super(((ColSource *) impl)->cs, on);
+	sift_col_super(((ColSource *) impl)->rd.cs, on);
 }
 
 uint32
 col_super_align(void *impl, uint32 sb)
 {
-	return sift_col_super_align(((ColSource *) impl)->cs, sb);
+	return sift_col_super_align(((ColSource *) impl)->rd.cs, sb);
 }
 
 void
@@ -38,14 +38,14 @@ col_super_tests(void *impl, const SiftSrcPrune *z, int nz, int dim, int hdim, ui
 	for (int k = 0; k < nz; k++)
 		if (z[k].nkids == 0 && !z[k].nulltest)
 			t[nt++] = (SiftColSuperTest) {z[k].leaf, z[k].lo, z[k].hi, z[k].nvals, z[k].vals};
-	sift_col_super_tests(((ColSource *) impl)->cs, t, nt, dim, hdim, need);
+	sift_col_super_tests(((ColSource *) impl)->rd.cs, t, nt, dim, hdim, need);
 	pfree(t);
 }
 
 void
 sift_col_open_scope_delta(void *impl, const SiftScopeRead *rd)
 {
-	sift_col_scope_delta(((ColSource *) impl)->cs, rd);
+	sift_col_scope_delta(((ColSource *) impl)->rd.cs, rd);
 }
 
 /*
@@ -69,7 +69,7 @@ sift_col_scope_stats(Relation index, SiftSrcStats *st)
 	 * that arrive out of time order makes it an estimate, and the read proves each unit); without a time cut a unit may hold any page and answers only from a clean heap */
 	st->exact_frac = sift_scope_time_leaf(meta->cols, meta->ncols) >= 0 || meta->stats.clean_frac >= 1.0 ? meta->stats.clean_frac : 0.0;
 	sift_src_leaf_stats(meta->cols, meta->ncols, memo.scope_leaves, wovf, wjnull, st);
-	st->zones = col_zones(memo.scope_zones, meta, memo.scope_zones->units);
+	st->zones = sift_v1_idx_zones(memo.scope_zones, meta, memo.scope_zones->units);
 	st->miss_pending = true;
 	return true;
 }
@@ -77,7 +77,7 @@ sift_col_scope_stats(Relation index, SiftSrcStats *st)
 bool
 col_unit_dset(void *impl, const SiftSrcUnit *unit, int cal, int leaf, int64 cell, SiftSrcPresence *p)
 {
-	return sift_aggpre_unit_dset(&((ColSource *) impl)->unit, cal, leaf, cell, p);
+	return sift_aggpre_unit_dset(&((ColSource *) impl)->rd.unit, cal, leaf, cell, p);
 }
 
 #endif							/* __has_include("col/col.h") */

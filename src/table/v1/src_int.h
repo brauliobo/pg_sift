@@ -10,6 +10,7 @@
 #include "agg/zoneprune.h"
 #include "agg/chunkfilter.h"
 #include "table/v1/table_v1.h"
+#include "table/v1/v1_tbl_reader.h"
 
 /* A conjunct on a wide leaf: decided with the type's own comparison on the exact values */
 typedef struct TblWide
@@ -25,85 +26,39 @@ typedef struct TblWide
 	bool		hasnull;
 } TblWide;
 
-/* The source of one column layout */
-typedef struct TblPart
+/* what the aggregate engine keeps of the leaves of one column layout, by the number of the part in the reader */
+typedef struct TblPartX
 {
-	SiftColSource *src;
-	const SiftColSchema *schema;
-	int		   *col;			/* [nleaves] the leaf of this schema that holds layout leaf i, -1 when it has none (a column added later) */
-	int		   *leaf_of_col;	/* [schema->ncols] the layout leaf a leaf of this schema holds, -1 when the table dropped it */
-	SiftColUnit unit;			/* the head of this source's units, valid when have */
-	bool		have;
 	SiftAggZones zones;			/* the zone tests of the prune entries of the last begin, on this schema's leaves */
 	SiftAggFilters flt;			/* the filters set_filters accepted, on this schema's columns */
 	SiftColPred *spred;			/* the text tests of prune_str, on this schema's columns */
 	int			nspred;
-} TblPart;
-
-typedef struct TblWbatch
-{
-	uint32		sb;
-	MemoryContext cxt;
-} TblWbatch;
+} TblPartX;
 
 typedef struct TblSource
 {
-	Relation	rel;
-	SiftTblRel *st;
-	Snapshot	snapshot;
-	MemoryContext cxt;
-	SiftDirSnapshot *dir;
-	SiftTblVers *vers;			/* the groups of dir with unfrozen rows */
-	SiftTblSeg *wbuf;			/* private copies of the write buffers */
-	int			nwbuf;
-	SiftTblScanState ss;		/* what the page filter reads of the table: the copies above */
-	uint32		wbuf_lo;		/* the superblocks that hold write buffer rows: [wbuf_lo, wbuf_hi] */
-	uint32		wbuf_hi;
-	struct TblWbatch *wb;		/* the superblocks of the last begin whose write buffer rows are in the source: each batch has a context of its own */
-	int			nwb;
-	int			wbcap;
-	uint32		range_hi;		/* the end of the range of the last begin, and of the window being read (win_hi): a begin reads the write buffer rows one superblock at a time */
-	uint32		win_hi;
+	SiftV1Tbl	rd;				/* the unit reader: first, a unit's priv is one of its parts */
+	TblPartX   *px;				/* per part of rd */
 	const SiftSrcPrune *prune;	/* what the begin was asked with, for its next windows */
 	int			nprune;
-	SiftSrcLayout *lay;
-	TblPart    *part;
-	int			nparts;
-	int			last;			/* the part of the unit returned last, -1 at the start */
-	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
-	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
-	SiftSrcLeafBuf *buf;			/* per leaf */
-	SiftSrcSel	sel;			/* the match set the units are restricted to */
 	SiftAggPre	pre;			/* the histogram of the last unit_hist */
 	TblWide    *wide;			/* the conjuncts on wide leaves of set_wide */
 	int			nwide;
-	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary (set_raw) */
-	bool	   *tol;			/* per leaf: its values the table cannot hold are read as NULL (tolerate_ovf) */
-	MemoryContext *wcxt;		/* per wide leaf: the dictionary of its last read */
-	uint64		wseq;			/* the id of the next wide dictionary */
 } TblSource;
 
-extern void wide_read(TblSource *t, int leaf, const TblPart *p, const SiftColVec *v, size_t n, Datum dflt, bool dnull, SiftSrcVec *vec);
 extern int	tbl_set_wide(void *impl, const SiftSrcWideTest *t, int nt);
 extern bool tbl_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows);
 
 
-extern void tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
 extern bool tbl_overflow(void *impl, const SiftSrcUnit *unit, int leaf);
 extern void tbl_set_raw(void *impl, int leaf);
 extern void tbl_tolerate_ovf(void *impl, int leaf);
 extern bool tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits);
 extern void tbl_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags);
 extern void tbl_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits);
-extern void tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 extern void tbl_zone(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcZone *z);
 extern uint32 tbl_zone_range(void *impl, uint32 lo, uint32 hi, int leaf, SiftSrcZone *z);
-extern void tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
-extern void tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 extern bool tbl_narrow(void *impl, SiftSrcUnit *unit, const uint64 *bits);
-extern void tbl_live(void *impl, const SiftSrcUnit *unit, uint64 *bits);
-extern void tbl_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
-extern bool tbl_vet_needed(void *impl, const SiftSrcUnit *unit);
 extern void tbl_counters(const void *impl, SiftSrcCounters *c);
 extern void tbl_preagg(Relation rel, SiftSrcPreagg *pa);
 extern bool tbl_unit_exact(void *impl, const SiftSrcUnit *unit);

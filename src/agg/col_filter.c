@@ -18,10 +18,10 @@ col_prune_str(void *impl, const SiftSrcStrTest *t, int nt)
 {
 	ColSource  *src = impl;
 
-	src->spred = MemoryContextAlloc(src->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
-	src->spmap = MemoryContextAlloc(src->cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(int));
+	src->spred = MemoryContextAlloc(src->rd.cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(SiftColPred));
+	src->spmap = MemoryContextAlloc(src->rd.cxt, Min(nt, COL_MAX_STR_PRUNE) * sizeof(int));
 	for (int i = 0; i < nt && src->nspred < COL_MAX_STR_PRUNE; i++)
-		if (!src->lay->leaf[t[i].leaf].lossy)
+		if (!src->rd.lay->leaf[t[i].leaf].lossy)
 		{
 			src->spmap[src->nspred] = i;
 			src->spred[src->nspred++] = (SiftColPred) {t[i].leaf, t[i].op, t[i].nvals, t[i].vals};
@@ -50,17 +50,17 @@ col_filter_str(void *impl, const SiftSrcUnit *unit, const SiftSrcStrTest *t, uin
 	ColSource  *src = impl;
 	SiftColPred pred;
 
-	if (src->lay->leaf[t->leaf].lossy)
+	if (src->rd.lay->leaf[t->leaf].lossy)
 		return false;
 	pred = (SiftColPred) {t->leaf, t->op, t->nvals, t->vals};
-	if (src->lay->leaf[t->leaf].parent >= 0)
+	if (src->rd.lay->leaf[t->leaf].parent >= 0)
 	{
-		SiftColGroupPred gp = {.group = src->lay->leaf[t->leaf].parent,.npreds = 1,.preds = &pred};
+		SiftColGroupPred gp = {.group = src->rd.lay->leaf[t->leaf].parent,.npreds = 1,.preds = &pred};
 
-		sift_srcsel_stored(&src->sel, src->cs, &src->unit, rows, filter_elem_op, &gp);
+		sift_srcsel_stored(&src->rd.sel, src->rd.cs, &src->rd.unit, rows, filter_elem_op, &gp);
 	}
 	else
-		sift_srcsel_stored(&src->sel, src->cs, &src->unit, rows, filter_str_op, &pred);
+		sift_srcsel_stored(&src->rd.sel, src->rd.cs, &src->rd.unit, rows, filter_str_op, &pred);
 	return true;
 }
 
@@ -74,16 +74,16 @@ col_set_wide(void *impl, const SiftSrcWideTest *t, int nt)
 	ColSource  *src = impl;
 
 	SIFT_INVARIANT(nt <= COL_MAX_WIDE, "sift: %d conjuncts on wide leaves, at most %d", nt, COL_MAX_WIDE);
-	src->wtest = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColWTest));
-	src->wpred = MemoryContextAlloc(src->cxt, Max(nt, 1) * sizeof(SiftColPred));
+	src->wtest = MemoryContextAlloc(src->rd.cxt, Max(nt, 1) * sizeof(SiftColWTest));
+	src->wpred = MemoryContextAlloc(src->rd.cxt, Max(nt, 1) * sizeof(SiftColPred));
 	src->nwpred = 0;
 	for (int i = 0; i < nt; i++)
 	{
 		const SiftColPred *alt[2];
 		int			npred[2];
-		SiftColValue *v = MemoryContextAllocZero(src->cxt, sizeof(SiftColValue));
+		SiftColValue *v = MemoryContextAllocZero(src->rd.cxt, sizeof(SiftColValue));
 
-		sift_colw_test(sift_col_def(src->cs, t[i].leaf), src->lay->leaf[t[i].leaf].typid, t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->cxt, &src->wtest[i]);
+		sift_colw_test(sift_col_def(src->rd.cs, t[i].leaf), src->rd.lay->leaf[t[i].leaf].typid, t[i].op, t[i].nvals, t[i].vals, t[i].isnull, src->rd.cxt, &src->wtest[i]);
 		v->v.s = (const char *) &src->wtest[i];
 		if (t[i].rows)
 			continue;
@@ -107,7 +107,7 @@ col_filter_wide(void *impl, const SiftSrcUnit *unit, int i, uint64 *rows)
 {
 	ColSource  *src = impl;
 
-	sift_srcsel_stored(&src->sel, src->cs, &src->unit, rows, wide_op, &src->wtest[i]);
+	sift_srcsel_stored(&src->rd.sel, src->rd.cs, &src->rd.unit, rows, wide_op, &src->wtest[i]);
 	return rows_left(unit, rows);
 }
 
@@ -121,11 +121,11 @@ col_set_filters(void *impl, const SiftSrcFilter *f, int nf)
 
 	src->flt = (SiftAggFilters) {0};
 	if (src->rcx == NULL)
-		src->rcx = AllocSetContextCreate(src->cxt, "sift source filters", ALLOCSET_SMALL_SIZES);
+		src->rcx = AllocSetContextCreate(src->rd.cxt, "sift source filters", ALLOCSET_SMALL_SIZES);
 	else
 		MemoryContextReset(src->rcx);
 	for (int i = 0; i < nf; i++)
-		if (sift_aggfilt_int(sift_col_def(src->cs, f[i].leaf)))
+		if (sift_aggfilt_int(sift_col_def(src->rd.cs, f[i].leaf)))
 		{
 			sift_aggfilt_add(&src->flt, src->rcx, f[i].leaf, &f[i]);
 			ok |= UINT64CONST(1) << i;
@@ -144,9 +144,9 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	ColSource  *src = impl;
 
-	SiftAggFiltRun run = {&src->flt, src->lay, src->tol};
+	SiftAggFiltRun run = {&src->flt, src->rd.lay, src->rd.tol};
 
-	sift_srcsel_stored(&src->sel, src->cs, &src->unit, bits, sift_aggfilt_op, &run);
+	sift_srcsel_stored(&src->rd.sel, src->rd.cs, &src->rd.unit, bits, sift_aggfilt_op, &run);
 	return rows_left(unit, bits);
 }
 
@@ -155,13 +155,13 @@ col_filter(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 void
 col_tolerate_ovf(void *impl, int leaf)
 {
-	((ColSource *) impl)->tol[leaf] = true;
+	((ColSource *) impl)->rd.tol[leaf] = true;
 }
 
 void
 col_set_raw(void *impl, int leaf)
 {
-	((ColSource *) impl)->raw[leaf] = true;
+	((ColSource *) impl)->rd.raw[leaf] = true;
 }
 
 void
@@ -174,9 +174,9 @@ bool
 col_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits)
 {
 	ColSource  *src = impl;
-	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	const SiftSrcLeaf *l = &src->rd.lay->leaf[leaf];
 
-	sift_srcsel_filter_types(&src->sel, src->cs, &src->unit, leaf, l->typid, l->astext, types, bits);
+	sift_srcsel_filter_types(&src->rd.sel, src->rd.cs, &src->rd.unit, leaf, l->typid, l->astext, types, bits);
 	return rows_left(unit, bits);
 }
 
@@ -185,9 +185,9 @@ void
 col_read_types(void *impl, const SiftSrcUnit *unit, int leaf, uint8 *tags)
 {
 	ColSource  *src = impl;
-	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	const SiftSrcLeaf *l = &src->rd.lay->leaf[leaf];
 
-	sift_srcsel_read_types(&src->sel, &src->unit, leaf, l->typid, l->astext, unit->nrow, tags);
+	sift_srcsel_read_types(&src->rd.sel, &src->rd.unit, leaf, l->typid, l->astext, unit->nrow, tags);
 }
 
 /* the JSON nulls among the slots of the leaf, in the numbering of the unit the executor sees (the elements of the kept rows in a compacted one) */
@@ -195,10 +195,10 @@ void
 col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 {
 	ColSource  *src = impl;
-	bool		compact = src->sel.compact,
+	bool		compact = src->rd.sel.compact,
 				known;
 
-	sift_col_jnull_bits(&src->unit, leaf, compact ? src->sel.idx : NULL, src->sel.sel.count, bits, &known);
+	sift_col_jnull_bits(&src->rd.unit, leaf, compact ? src->rd.sel.idx : NULL, src->rd.sel.sel.count, bits, &known);
 	if (!known)
 		sift_srcsel_types_unknown_error();
 }
@@ -206,10 +206,10 @@ col_read_jnull(void *impl, const SiftSrcUnit *unit, int leaf, uint64 *bits)
 void
 col_counters(const void *impl, SiftSrcCounters *c)
 {
-	const SiftColCounters *cc = sift_col_counters(((const ColSource *) impl)->cs);
+	const SiftColCounters *cc = sift_col_counters(((const ColSource *) impl)->rd.cs);
 
 	c->units = cc->units;
-	c->units_search_pruned = ((const ColSource *) impl)->sel.units_skipped;
+	c->units_search_pruned = ((const ColSource *) impl)->rd.sel.units_skipped;
 	c->units_pruned = cc->units_pruned + c->units_search_pruned;
 	c->units_set_pruned = cc->units_set;
 	c->rows = cc->rows_scanned;
@@ -237,12 +237,12 @@ col_rescan(void *impl)
 {
 	ColSource  *src = impl;
 
-	if (src->rck || src->nspred || src->nwtest || src->sel.keep)
+	if (src->rck || src->nspred || src->nwtest || src->rd.sel.keep)
 		return false;
-	for (int i = 0; i < src->lay->nleaves; i++)
-		if (src->tol[i] || src->raw[i] || src->numsum[i])
+	for (int i = 0; i < src->rd.lay->nleaves; i++)
+		if (src->rd.tol[i] || src->rd.raw[i] || src->numsum[i])
 			return false;
-	if (!sift_col_rescan(src->cs))
+	if (!sift_col_rescan(src->rd.cs))
 		return false;
 	src->flt = (SiftAggFilters) {0};
 	return true;

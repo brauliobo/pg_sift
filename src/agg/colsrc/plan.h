@@ -64,12 +64,6 @@ extern const char *sift_colsrc_conn_proof(SiftSrcSource *src, int leaf, uint64 *
 /* Superblocks of the heap now: the morsels of a parallel scan are ranges of [0, nsb) */
 extern uint32 sift_colsrc_nsb(SiftSrcSource *src);
 
-/* The leaf of leaf def i of a shredded jsonb attribute (a sift_col index, or the declared paths of a sift_table); desc names the attribute and gives its type */
-struct SiftColDef;
-extern void sift_src_def_leaf(const struct SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);
-/* The numbers of SiftSrcStats of the leaves of cols from the zones and dictionaries; wovf[i], wjnull[i]: a write buffer holds an overflow value, a JSON null, of leaf i */
-struct SiftColLeafStats;
-extern void sift_src_leaf_stats(const struct SiftColDef *cols, int ncols, const struct SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st);
 
 /* Optional text tests of the provider (see SiftSrcProvider.prune_str / filter_str); no-ops that say "not done" without them */
 static inline void

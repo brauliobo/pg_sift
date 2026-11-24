@@ -4,7 +4,7 @@
 # A file whose message does name the index (SIFT_CORRUPT, SIFT_SEG_CORRUPT) is not listed.
 src/agg/topn/next.c	src/agg/exec/run.c src/agg/par/worker.c
 src/agg/topn/run.c	src/agg/exec/run.c src/agg/par/worker.c
-src/agg/wide.c	src/agg/exec/run.c src/agg/par/worker.c
+src/col/v1/src_wide.c	src/agg/exec/run.c src/agg/par/worker.c
 src/bm25/dict_int.h	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
 src/bm25/pos.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c
 src/bm25/posting.c	src/bm25/amscan.c src/bm25/cscan_exec.c src/bm25/estimate.c src/core/maint.c

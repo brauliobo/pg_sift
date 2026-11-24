@@ -38,11 +38,11 @@ col_key_range(Relation index, const SiftSrcPrune *z, int nz, SiftKeyRange *out)
 Size
 col_view_size(void *impl)
 {
-	return sift_col_view_size(((ColSource *) impl)->cs);
+	return sift_col_view_size(((ColSource *) impl)->rd.cs);
 }
 
 void
 col_view_export(void *impl, void *buf)
 {
-	sift_col_view_export(((ColSource *) impl)->cs, buf);
+	sift_col_view_export(((ColSource *) impl)->rd.cs, buf);
 }

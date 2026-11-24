@@ -12,205 +12,21 @@
 
 #include "agg/col_int.h"
 
-/* of the unit as stored: a compacted unit of a match set yields fewer */
-int64
-col_leaf_n(void *impl, const SiftSrcUnit *unit, int leaf)
-{
-	return sift_col_lane_n(&((ColSource *) impl)->unit, leaf);
-}
-
-/* the dictionary of the wide leaf's rows (n of them) that a read returns: the entries of its distinct values, or one record for each row when the executor only sums the leaf */
-static void
-wide_dict(ColSource *src, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n)
-{
-	const SiftColDef *def = sift_col_def(src->cs, leaf);
-
-	w->cxt = src->cxt;
-	if (src->numsum[leaf] && def->type == SIFT_COLT_NUMERIC)
-	{
-		sift_aggwide_nums(w, def, v, n);
-		src->dict[leaf] = (SiftSrcDict) {.id = (const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), .n = w->nd, .bytes = (const char *) w->recs, .gctx = w, .numrec = true, .rec = sift_aggwide_rec};
-		return;
-	}
-	sift_srcwide_build(w, def, v, n);
-	src->dict[leaf] = (SiftSrcDict) {(const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++src->wseq), w->nd, w->off, w->bytes};
-}
-
-/*
- * A wide leaf of the unit as a dictionary (agg/wide.h), made from its lanes by the first read of the leaf in the unit (the rows the executor
- * sees: those of a unit restricted to a match set are the kept ones) and shared by the reads after it, so that the executor's maps of the
- * dictionary are made once. A dictionary has an id of its own: the executor keeps what it derives by the id.
- */
-static const SiftSrcWide *
-wide_unit(ColSource *src, int leaf)
-{
-	SiftSrcWide *w = &src->wide[leaf];
-
-	if (src->wgen[leaf] != src->ugen)
-	{
-		const SiftColDef *def = sift_col_def(src->cs, leaf);
-		SiftColVec	v[SIFT_COL_MAX_LANES];
-
-		for (int k = 0; k < sift_col_def_value_lanes(def); k++)
-			sift_srcsel_read(&src->sel, &src->unit, leaf + k, &v[k]);
-		wide_dict(src, leaf, w, v, v[0].n);
-		src->wgen[leaf] = src->ugen;
-	}
-	return w;
-}
-
-/* the codes of the rows `rows` (n of them; NULL: all the unit's) of a wide leaf, in the caller's storage */
-static void
-wide_fill(ColSource *src, int leaf, const uint32 *rows, int n, const SiftSrcBuf *buf, SiftSrcVec *vec)
-{
-	const SiftSrcWide *w = wide_unit(src, leaf);
-	uint32	   *codes = buf->data;
-	int			m = rows ? n : (int) w->n;
-
-	for (int i = 0; i < m; i++)
-	{
-		uint32		r = rows ? rows[i] : (uint32) i;
-
-		codes[i] = w->codes[r];
-		buf->isnull[i] = w->isnull[r];
-	}
-	memset(codes + m, 0, SIFT_AGG_PAD * sizeof(uint32));
-	*vec = (SiftSrcVec) {.data = codes, .isnull = w->has_null ? buf->isnull : NULL, .dict = &src->dict[leaf], .n = m};
-}
-
-/* A compacted unit of a match set (agg/sel.h): the kept rows only, which the engine reads by their positions, not by lane */
-static void
-col_read_selected(ColSource *src, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
-{
-	SiftColVec	v;
-
-	sift_col_unit_lazy_dict(&src->unit, true);
-	sift_srcsel_read(&src->sel, &src->unit, leaf, &v);
-	sift_col_unit_lazy_dict(&src->unit, false);
-	sift_srcsel_fill(&src->sel, &src->lay->leaf[leaf], src->tol[leaf], &v, buf, &src->dict[leaf], vec);
-}
-
-/* the leaf decoded by the engine into the caller's storage, in the lane of the leaf's vector type */
+/* a numeric leaf that is only summed is one record for each row: the dictionary of its entries is not made */
 void
-col_read_into(void *impl, const SiftSrcUnit *unit, int leaf, const SiftSrcBuf *buf, SiftSrcVec *vec)
+col_wide_dict(SiftV1Idx *r, int leaf, SiftSrcWide *w, const SiftColVec *v, uint32 n)
 {
-	ColSource  *src = impl;
-	const SiftSrcLeaf *l = &src->lay->leaf[leaf];
+	ColSource  *src = (ColSource *) r;
+	const SiftColDef *def = sift_col_def(r->cs, leaf);
 
-	if (col_wide(src, leaf))
+	if (!src->numsum[leaf] || def->type != SIFT_COLT_NUMERIC)
 	{
-		wide_fill(src, leaf, NULL, 0, buf, vec);
+		sift_v1_idx_wide_dict(r, leaf, w, v, n);
 		return;
 	}
-	if (src->sel.compact)
-	{
-		col_read_selected(src, leaf, buf, vec);
-		return;
-	}
-	sift_srcsel_read_lane(&src->sel, &src->unit, leaf, l, src->tol[leaf], buf, &src->dict[leaf], vec);
-}
-
-/* read_into over the source's own buffers of the leaf: valid until the next read of the leaf or the next unit */
-void
-col_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
-{
-	ColSource  *src = impl;
-	SiftSrcLeafBuf *b = &src->buf[leaf];
-
-	sift_srcsel_leaf_buf(src->cxt, b, sift_col_lane_n(&src->unit, leaf));
-
-	col_read_into(impl, unit, leaf, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
-}
-
-/* The values of a read of the rows idx[0..m) of a unit of nrow rows, at their rows in the leaf's buffer; the other rows are zero */
-static void
-col_scatter(ColSource *src, int leaf, const SiftColVec *v, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
-{
-	SiftSrcLeafBuf *b = &src->buf[leaf];
-
-	sift_srcsel_leaf_buf(src->cxt, b, nrow);
-	sift_srcsel_scatter(&src->lay->leaf[leaf], src->tol[leaf], v, idx, nrow, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &src->dict[leaf], vec);
-}
-
-/*
- * The dictionary of a wide leaf for the rows of sel only, with their codes at their rows in the leaf's buffer (the other rows are zero): a
- * scan that keeps a few rows of a unit converts the values of those, not one per distinct value of the unit. It is not the dictionary of the
- * unit, so a whole read of the leaf in the same unit makes that one again.
- */
-static void
-wide_scatter(ColSource *src, int leaf, const SiftColSel *sel, const uint32 *idx, size_t nrow, SiftSrcVec *vec)
-{
-	SiftSrcWide *w = &src->wide[leaf];
-	const SiftColDef *def = sift_col_def(src->cs, leaf);
-	SiftColVec	v[SIFT_COL_MAX_LANES];
-	SiftSrcLeafBuf *b = &src->buf[leaf];
-	uint32	   *codes;
-
-	sift_srcsel_leaf_buf(src->cxt, b, nrow);
-	codes = b->data;
-	for (int k = 0; k < sift_col_def_value_lanes(def); k++)
-		sift_col_read(&src->unit, leaf + k, sel, &v[k]);
-	wide_dict(src, leaf, w, v, sel->count);
-	src->wgen[leaf] = 0;
-	memset(codes, 0, (nrow + SIFT_AGG_PAD) * sizeof(uint32));
-	if (w->has_null)
-		memset(b->isnull, 0, nrow);
-	for (uint32 k = 0; k < sel->count; k++)
-	{
-		codes[idx[k]] = w->codes[k];
-		if (w->has_null)
-			b->isnull[idx[k]] = w->isnull[k];
-	}
-	*vec = (SiftSrcVec) {.data = codes, .isnull = w->has_null ? b->isnull : NULL, .dict = &src->dict[leaf], .n = nrow};
-}
-
-void
-col_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec)
-{
-	ColSource  *src = impl;
-	SiftColSel	sel;
-	SiftColVec	v;
-	uint32	   *idx;
-
-	if (src->sel.compact)	/* the rows of a compacted unit are not the engine's: the whole leaf */
-	{
-		col_read(impl, unit, leaf, vec);
-		return;
-	}
-	sift_srcsel_bits(src->cs, unit->nrow, bits, &sel);
-	idx = MemoryContextAlloc(src->cxt, (sel.count + SIFT_COL_IDXPAD) * sizeof(uint32));
-	sift_col_sel_idx(&sel, idx);
-	if (col_wide(src, leaf))
-		wide_scatter(src, leaf, &sel, idx, unit->nrow, vec);
-	else
-	{
-		sift_col_unit_lazy_dict(&src->unit, true);
-		sift_col_read(&src->unit, leaf, &sel, &v);
-		sift_col_unit_lazy_dict(&src->unit, false);
-		col_scatter(src, leaf, &v, idx, unit->nrow, vec);
-	}
-	pfree(idx);
-}
-
-/* the rows ascend in the numbering the executor sees; those of a compacted unit are the idx-th rows of the unit as stored */
-void
-col_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
-{
-	ColSource  *src = impl;
-	uint32	   *ords;
-	SiftColVec	v;
-	SiftSrcLeafBuf *b = &src->buf[leaf];
-
-	sift_srcsel_leaf_buf(src->cxt, b, n);
-	if (col_wide(src, leaf))
-	{
-		wide_fill(src, leaf, rows, n, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, vec);
-		return;
-	}
-	ords = sift_srcsel_ords(&src->sel, rows, n);
-	sift_col_read_idx(&src->unit, leaf, ords, n, &v);
-	sift_srcsel_fill(&src->sel, &src->lay->leaf[leaf], src->tol[leaf], &v, &(SiftSrcBuf) {b->data, b->isnull, b->ovf}, &src->dict[leaf], vec);
-	pfree(ords);
+	w->cxt = r->cxt;
+	sift_aggwide_nums(w, def, v, n);
+	r->dict[leaf] = (SiftSrcDict) {.id = (const void *) (uintptr_t) (UINT64CONST(0x7000000000000000) + ++r->wseq),.n = w->nd,.bytes = (const char *) w->recs,.gctx = w,.numrec = true,.rec = sift_aggwide_rec};
 }
 
 void
@@ -218,43 +34,27 @@ col_live(void *impl, const SiftSrcUnit *unit, uint64 *bits)
 {
 	ColSource  *src = impl;
 
-	sift_srcsel_live(&src->sel, &src->unit, bits);
+	sift_v1_idx_live(&src->rd, unit, bits);
 	if (src->rck && !src->rck->active)
 		recheck_collect(src, unit->nrow, bits);
-}
-
-void
-col_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits)
-{
-	ColSource  *src = impl;
-
-	sift_srcsel_vet(&src->sel, src->cs, &src->unit, bits);
-}
-
-bool
-col_vet_needed(void *impl, const SiftSrcUnit *unit)
-{
-	ColSource  *src = impl;
-
-	return sift_srcsel_vet_needed(&src->unit);
 }
 
 bool
 col_gorder_compact(void *impl, int i, int leaf)
 {
-	return sift_col_gorder_compact(((ColSource *) impl)->cs, i, leaf);
+	return sift_col_gorder_compact(((ColSource *) impl)->rd.cs, i, leaf);
 }
 
 bool
 col_gorder_clean(void *impl, int i)
 {
-	return sift_col_gorder_clean(((ColSource *) impl)->cs, i);
+	return sift_col_gorder_clean(((ColSource *) impl)->rd.cs, i);
 }
 
 void *
 col_gorder_groups_open(void *impl, int gleaf, int kleaf, const int64 *only, bool desc, MemoryContext cxt)
 {
-	return sift_col_gorder_groups_open(((ColSource *) impl)->cs, gleaf, kleaf, only, desc, cxt);
+	return sift_col_gorder_groups_open(((ColSource *) impl)->rd.cs, gleaf, kleaf, only, desc, cxt);
 }
 
 bool
@@ -266,30 +66,13 @@ col_gorder_groups_next(void *cursor, int64 *group)
 bool
 col_gorder_groups(void *impl, int i, int leaf, uint32 *ngroups)
 {
-	return sift_col_gorder_groups(((ColSource *) impl)->cs, i, leaf, ngroups);
+	return sift_col_gorder_groups(((ColSource *) impl)->rd.cs, i, leaf, ngroups);
 }
 
 void
 col_gorder_group_at(void *impl, int i, int leaf, uint32 gi, int64 *group, uint32 *vs, uint32 *ve, uint32 *ns, uint32 *ne)
 {
-	sift_col_gorder_group_at(((ColSource *) impl)->cs, i, leaf, gi, group, vs, ve, ns, ne);
-}
-
-/* A leaf with a value in every row that is the group of the second order of a leaf holding every row: ORDER BY it reads those orders group after group (gord_bygroup) */
-void
-col_stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols)
-{
-	for (int j = 0; j < ncols && j < SIFT_COLSRC_MAX_LEAVES; j++)
-	{
-		int			gi = ls[j].gord_gcol;
-
-		if (ls[j].gord_grp_rows > 0 && gi >= 0 && gi < ncols && gi < SIFT_COLSRC_MAX_LEAVES && ls[gi].nnull == 0 && ls[j].gord_grp_rows + ls[j].gord_free_rows >= 0.999 * ls[gi].nvals)
-		{
-			st->gord_bygroup[gi] = true;
-			/* the segments without the second order are read in memory (sift_col_gorder_open): the planner prices their rows as the walk of the group leaf's own array would */
-			st->gord_free[gi] = Max(st->gord_free[gi], ls[j].gord_free_rows);
-		}
-	}
+	sift_col_gorder_group_at(((ColSource *) impl)->rd.cs, i, leaf, gi, group, vs, ve, ns, ne);
 }
 
 #endif							/* __has_include("col/col.h") */
