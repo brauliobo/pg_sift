@@ -1,0 +1,246 @@
+-- SUM(DISTINCT) and AVG(DISTINCT) in the parallel SiftAggV6 (the owner of a group adds each distinct value of it once, as it counts them for COUNT(DISTINCT)), and the float8 sum and average,
+-- which give the same bits for any order of the rows and any number of workers (the bins of v6_fsum.h): every answer of a parallel run is the heap's own, or, for a float, the same at 0, 1, 2 and 4 workers.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers = 8;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+-- the library of the testing build creates the indexes of format major 1 by default; these are of format major 2, which the release library creates
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+CREATE TABLE pe AS
+SELECT i, i % 100 AS g,
+       CASE WHEN i % 13 = 0 OR i % 100 = 99 THEN NULL ELSE (i * 7919) % 211 - 100 END AS a,
+       (i * 31) % 5003 - 2500 AS b,
+       CASE WHEN i % 17 = 0 OR i % 100 = 99 THEN NULL ELSE ((i * 37) % 997 - 300) / 4.0 END::numeric(10, 2) AS n,
+       CASE WHEN i % 19 = 0 OR i % 100 = 99 THEN NULL ELSE ((i * 37) % 1999 - 700) / 8.0::float8 END AS f,
+       CASE i WHEN 100 THEN 'NaN' WHEN 201 THEN 'Infinity' WHEN 301 THEN '-Infinity' WHEN 202 THEN 'Infinity' ELSE (i % 4001) / 7.0 + i * 1e-9 END::float8 AS x
+FROM generate_series(1, 40000) AS i;
+CREATE INDEX pe_col ON pe USING sift_col (g, a, b, n, f, x, i);
+CREATE TABLE ps AS SELECT * FROM pe ORDER BY md5(i::text);
+CREATE INDEX ps_col ON ps USING sift_col (g, a, b, n, f, x, i);
+VACUUM (ANALYZE, FREEZE) pe;
+VACUUM (ANALYZE, FREEZE) ps;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP r := r || l || E'\n'; END LOOP;
+	RETURN r;
+END $f$;
+CREATE FUNCTION answer_of(q text) RETURNS text LANGUAGE plpgsql AS $f$
+DECLARE a text;
+BEGIN
+	EXECUTE 'SELECT coalesce(string_agg(t::text, E''\n'' ORDER BY t::text), '''') FROM (' || q || ') AS t' INTO a;
+	RETURN a;
+END $f$;
+-- q runs under the SiftAggV6 node (in a Gather when parallel is asked), and answers what the heap answers (the rows of both in the order of their text)
+CREATE FUNCTION held(q text, OUT v6 boolean, OUT parallel boolean, OUT same boolean) LANGUAGE plpgsql AS $f$
+DECLARE par text; ref text; p text := plan_of(q);
+BEGIN
+	v6 := p LIKE '%SiftAggV6%';
+	parallel := p LIKE '%Gather%' AND p LIKE '%Parallel Custom Scan (SiftAggV6)%';
+	par := answer_of(q);
+	SET LOCAL sift.enable_agg = off;
+	SET LOCAL max_parallel_workers_per_gather = 0;
+	ref := answer_of(q);
+	same := par IS NOT DISTINCT FROM ref;
+END $f$;
+-- q gives the same rows, bit for bit, at 0, 1, 2 and 4 workers, and runs in a Gather at 2
+CREATE FUNCTION workers_agree(q text) RETURNS boolean LANGUAGE plpgsql AS $f$
+DECLARE w int; r text[] := '{}'; p text; s text;
+BEGIN
+	FOREACH s IN ARRAY ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan'] LOOP
+		PERFORM set_config(s, 'off', true);
+	END LOOP;
+	FOREACH w IN ARRAY ARRAY[0, 1, 2, 4] LOOP
+		PERFORM set_config('max_parallel_workers_per_gather', w::text, true);
+		r := r || answer_of(q);
+		IF w = 2 THEN p := plan_of(q); END IF;
+	END LOOP;
+	RETURN r[1] = r[2] AND r[2] = r[3] AND r[3] = r[4] AND p LIKE '%Workers Planned: 2%' AND p LIKE '%Parallel Custom Scan (SiftAggV6)%';
+END $f$;
+-- ---- SUM(DISTINCT) and AVG(DISTINCT): every width, NULLs (group 99 has only NULLs), a FILTER, HAVING ----
+SELECT * FROM held('SELECT g, sum(DISTINCT a), avg(DISTINCT a), count(DISTINCT a) FROM pe GROUP BY g ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT * FROM held('SELECT g, sum(DISTINCT b), avg(DISTINCT b) FROM pe GROUP BY g ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT * FROM held('SELECT g, sum(DISTINCT n), avg(DISTINCT n), count(DISTINCT n) FROM pe GROUP BY g ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT * FROM held('SELECT g, sum(DISTINCT f), avg(DISTINCT f) FROM pe GROUP BY g ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT * FROM held('SELECT g % 7 AS k, sum(DISTINCT a) FILTER (WHERE b > 0), avg(DISTINCT n) FILTER (WHERE a < 0), sum(DISTINCT b) FROM pe GROUP BY g % 7 ORDER BY k');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT * FROM held('SELECT g, sum(DISTINCT n), count(*) FROM pe GROUP BY g HAVING avg(DISTINCT n) > 10 ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT g, sum(DISTINCT a), avg(DISTINCT n), sum(DISTINCT f) FROM pe WHERE g >= 98 GROUP BY g ORDER BY g;
+ g  | sum  |         avg         |    sum    
+----+------+---------------------+-----------
+ 98 | 1127 | 51.0364721485411141 | 14074.875
+ 99 |      |                     |          
+(2 rows)
+
+-- a query of no keys, grouping sets: the same answers (these run in the leader)
+SELECT * FROM held('SELECT sum(DISTINCT a), avg(DISTINCT b), sum(DISTINCT n), avg(DISTINCT f) FROM pe');
+ v6 | parallel | same 
+----+----------+------
+ t  | f        | t
+(1 row)
+
+SELECT * FROM held('SELECT g % 3 AS k, sum(DISTINCT b), avg(DISTINCT n) FROM pe GROUP BY ROLLUP (g % 3) ORDER BY k NULLS LAST');
+ v6 | parallel | same 
+----+----------+------
+ t  | f        | t
+(1 row)
+
+-- more distinct values than a work_mem of 64kB holds: the exact set spills and the sums are the heap's
+SET work_mem = '64kB';
+SELECT * FROM held('SELECT i % 1000 AS k, sum(DISTINCT i), avg(DISTINCT a), sum(DISTINCT f) FROM pe GROUP BY i % 1000');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SELECT * FROM held('SELECT g % 2 AS k, sum(DISTINCT i), avg(DISTINCT i), sum(DISTINCT f) FILTER (WHERE f < 1e9) FROM pe GROUP BY g % 2');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+RESET work_mem;
+-- the float8 values of a sum of distinct values: -0 is 0, NaN is NaN, an infinity stays one
+CREATE TABLE sp (g int, v float8);
+INSERT INTO sp VALUES (1, 0), (1, '-0'), (1, 2.5), (1, 2.5), (2, 'NaN'), (2, 'NaN'), (2, 1), (3, 'Infinity'), (3, 'Infinity'), (3, 1), (4, 'Infinity'), (4, '-Infinity'), (5, NULL);
+INSERT INTO sp SELECT 6 + i % 50, i / 8.0 FROM generate_series(1, 40000) AS i;
+CREATE INDEX sp_col ON sp USING sift_col (g, v);
+VACUUM (ANALYZE, FREEZE) sp;
+SELECT * FROM held('SELECT g, sum(DISTINCT v), avg(DISTINCT v) FROM sp WHERE g < 6 GROUP BY g ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | f        | t
+(1 row)
+
+SELECT g, sum(DISTINCT v), avg(DISTINCT v) FROM sp WHERE g < 6 GROUP BY g ORDER BY g;
+ g |   sum    |   avg    
+---+----------+----------
+ 1 |      2.5 |     1.25
+ 2 |      NaN |      NaN
+ 3 | Infinity | Infinity
+ 4 |      NaN |      NaN
+ 5 |          |         
+(5 rows)
+
+-- ---- the float8 sum and average: the same bits at 0, 1, 2 and 4 workers, and for the rows in any order ----
+SELECT workers_agree('SELECT g, sum(x), avg(x), count(*) FROM pe GROUP BY g ORDER BY g') AS sum_avg_by_group;
+ sum_avg_by_group 
+------------------
+ t
+(1 row)
+
+SELECT workers_agree('SELECT g, sum(DISTINCT x), avg(DISTINCT x), sum(DISTINCT a) FROM pe GROUP BY g ORDER BY g') AS distinct_by_group;
+ distinct_by_group 
+-------------------
+ t
+(1 row)
+
+SELECT workers_agree('SELECT g % 4 AS k, sum(x), sum(f), avg(f) FROM pe WHERE g > 3 GROUP BY k ORDER BY k') AS sum_of_few_groups;
+ sum_of_few_groups 
+-------------------
+ t
+(1 row)
+
+SELECT answer_of('SELECT g, sum(x), avg(x) FROM pe GROUP BY g ORDER BY g') = answer_of('SELECT g, sum(x), avg(x) FROM ps GROUP BY g ORDER BY g') AS rows_in_any_order;
+ rows_in_any_order 
+-------------------
+ t
+(1 row)
+
+SELECT answer_of('SELECT sum(x), avg(x), sum(f) FROM pe') = answer_of('SELECT sum(x), avg(x), sum(f) FROM ps') AS ungrouped_in_any_order;
+ ungrouped_in_any_order 
+------------------------
+ t
+(1 row)
+
+-- the dyadic floats add exactly, so the heap's sum is the sum; the others are within a few ulps of it
+SELECT * FROM held('SELECT g, sum(f), avg(f) FROM pe GROUP BY g ORDER BY g');
+ v6 | parallel | same 
+----+----------+------
+ t  | t        | t
+(1 row)
+
+SET sift.enable_agg = off;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE heap_sums AS SELECT g, sum(x) AS s, sum(abs(x)) AS sa FROM pe WHERE x > '-Infinity' AND x < 'Infinity' GROUP BY g;
+RESET sift.enable_agg;
+SET max_parallel_workers_per_gather = 2;
+SELECT count(*) AS groups, bool_and(abs(v6.s - h.s) <= h.sa * 1e-12) AS within_rounding
+FROM (SELECT g, sum(x) AS s FROM pe WHERE x > '-Infinity' AND x < 'Infinity' GROUP BY g) v6 JOIN heap_sums h USING (g);
+ groups | within_rounding 
+--------+-----------------
+    100 | t
+(1 row)
+
+-- NaN and infinities of a sum: NaN beats everything, an infinity of each sign is NaN, one infinity stays
+SELECT g, sum(x), avg(x) FROM pe WHERE g IN (0, 1, 2) GROUP BY g ORDER BY g;
+ g |   sum    |   avg    
+---+----------+----------
+ 0 |      NaN |      NaN
+ 1 |      NaN |      NaN
+ 2 | Infinity | Infinity
+(3 rows)
+
+SELECT g, sum(v), avg(v) FROM sp WHERE g < 6 GROUP BY g ORDER BY g;
+ g |   sum    |   avg    
+---+----------+----------
+ 1 |        5 |     1.25
+ 2 |      NaN |      NaN
+ 3 | Infinity | Infinity
+ 4 |      NaN |      NaN
+ 5 |          |         
+(5 rows)
+
+-- a sum of finite numbers that is not a double raises what float8's sum raises
+CREATE TABLE big (g int, v float8);
+INSERT INTO big SELECT 1, 1e308 FROM generate_series(1, 40000);
+CREATE INDEX big_col ON big USING sift_col (g, v);
+DO $$ BEGIN
+	PERFORM g, sum(v) FROM big GROUP BY g;
+EXCEPTION WHEN numeric_value_out_of_range THEN RAISE WARNING 'sum: %', SQLERRM;
+END $$;
+WARNING:  sum: value out of range: overflow
+DO $$ BEGIN
+	PERFORM sum(v) FROM big;
+EXCEPTION WHEN numeric_value_out_of_range THEN RAISE WARNING 'sum: %', SQLERRM;
+END $$;
+WARNING:  sum: value out of range: overflow
+DROP TABLE big, sp, heap_sums, pe, ps;
+DROP FUNCTION plan_of(text), answer_of(text), held(text), workers_agree(text);
+DROP EXTENSION pg_sift;
