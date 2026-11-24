@@ -369,9 +369,36 @@ test_u64_set(void)
 	report("u64 set of generations", u64_set_run, 20000, 20.0);
 }
 
+/* the set of the dirty blocks of a heap holds at most SIFT_VM_DIRTY_MAX_INTERVALS runs: past them it is the set that skips nothing and its runs are freed, whatever the size of the heap */
+static void
+test_vm_dirty_bound(void)
+{
+	SiftVmDirtySet ds;
+	uint64		words[16];
+	const int	nwords = 16 * ((SIFT_VM_DIRTY_MAX_INTERVALS / 16) * 2 + 1);
+
+	for (int w = 0; w < 16; w++)
+		words[w] = UINT64CONST(0x4444444444444444);
+	sift_vm_dirty_init(&ds, (BlockNumber) nwords * SIFT_VM_BLOCKS_PER_WORD);
+	for (int w = 0; w < nwords; w += 16)
+		sift_vm_dirty_scan_words(&ds, (BlockNumber) w * SIFT_VM_BLOCKS_PER_WORD, words, 16);
+	sift_vm_dirty_finish(&ds);
+	CHECK(ds.all_dirty && ds.intervals == NULL && ds.nintervals == 0, "dirty set past its bound skips nothing and holds no runs");
+	CHECK(sift_vm_dirty_overlaps(&ds, 1, 1), "dirty set that gave up says every block may be dirty");
+	sift_vm_dirty_free(&ds);
+
+	sift_vm_dirty_init(&ds, 1000 * SIFT_VM_BLOCKS_PER_WORD);
+	for (int w = 0; w < 1000; w += 16)
+		sift_vm_dirty_scan_words(&ds, (BlockNumber) w * SIFT_VM_BLOCKS_PER_WORD, words, Min(16, 1000 - w));
+	sift_vm_dirty_finish(&ds);
+	CHECK(!ds.all_dirty && ds.nintervals == 16 * 1000 && sift_vm_dirty_overlaps(&ds, 0, 0) && !sift_vm_dirty_overlaps(&ds, 1, 1), "dirty set under its bound keeps its runs");
+	sift_vm_dirty_free(&ds);
+}
+
 int
 main(void)
 {
+	test_vm_dirty_bound();
 	test_pred_set();
 	test_pack_ffd();
 	test_cd_remap();

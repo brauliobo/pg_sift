@@ -1,0 +1,236 @@
+-- VACUUM of a sift_table settles a partition in chunks of the maintenance budget: a part that holds more than the budget is compacted alone, the parts the budget holds together are compacted together, sift.vacuum_rewrite_limit stops a pass of VACUUM FREEZE with the oldest transaction frozen first and relfrozenxid moves with every pass. CREATE INDEX CONCURRENTLY validates the rows of a sift_table in windows of addresses with no temp file, and the images of a parallel scan are freed once the scan is set up.
+-- requires: build col
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE FUNCTION load(tbl regclass, first_id int, n int) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE format($q$INSERT INTO %s SELECT g, g %% 8, md5(g::text) || md5((g * 7)::text) || repeat('seg=' || lpad((g %% 16)::text, 2, '0') || '|pad=0123456789abcdef|', 8)
+		FROM generate_series(%s, %s) g$q$, tbl, first_id, first_id + n - 1);
+END $$;
+CREATE FUNCTION digest(tbl regclass) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN EXECUTE format('SELECT count(*) || %L || sum(id) FROM %s', '/', tbl) INTO r; RETURN r; END $$;
+CREATE FUNCTION unfrozen(tbl regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FILTER (WHERE unfrozen) FROM sift.parts(tbl) $$;
+CREATE FUNCTION dead(tbl regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce(sum(dead_rows), 0) FROM sift.parts(tbl) $$;
+CREATE FUNCTION problems(tbl regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT count(*) FROM sift.check(tbl) $$;
+CREATE FUNCTION frozen_xid(tbl regclass) RETURNS bigint LANGUAGE sql AS $$ SELECT relfrozenxid::text::bigint FROM pg_class WHERE oid = tbl $$;
+-- four loads of 20000 rows, a statement each, written as parts of the budget of the load (a quarter of 4 MB: about 700 rows each)
+CREATE TABLE chunked (id bigint, k_lo int, payload text) USING sift_table WITH (autovacuum_enabled = false);
+SET maintenance_work_mem = '4MB';
+SELECT load('chunked', 1, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('chunked', 20001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('chunked', 40001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('chunked', 60001, 20000);
+ load 
+------
+ 
+(1 row)
+
+DELETE FROM chunked WHERE k_lo < 2;
+SELECT digest('chunked') AS rows_before \gset
+SELECT count(*) AS parts_before FROM sift.parts('chunked') \gset
+-- the budget of a compaction is half of maintenance_work_mem: 1 MB holds no part of these, each is compacted alone, so the parts are as many after the VACUUM as before, and every dead row is gone
+SET maintenance_work_mem = '2MB';
+VACUUM chunked;
+SELECT digest('chunked') = :'rows_before' AS rows_kept, dead('chunked') AS dead_rows, count(*) >= :parts_before AS parts_not_joined_into_one, problems('chunked') AS problems
+	FROM sift.parts('chunked');
+ rows_kept | dead_rows | parts_not_joined_into_one | problems 
+-----------+-----------+---------------------------+----------
+ t         |         0 | t                         |        0
+(1 row)
+
+-- the budget of a VACUUM decides how many parts are compacted together: the same table at a large one has them joined
+CREATE TABLE joined (id bigint, k_lo int, payload text) USING sift_table WITH (autovacuum_enabled = false);
+SET maintenance_work_mem = '4MB';
+SELECT load('joined', 1, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('joined', 20001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('joined', 40001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('joined', 60001, 20000);
+ load 
+------
+ 
+(1 row)
+
+DELETE FROM joined WHERE k_lo < 2;
+SET maintenance_work_mem = '1GB';
+VACUUM joined;
+SELECT digest('joined') = :'rows_before' AS rows_kept, count(*) = 1 AS parts_joined, problems('joined') AS problems FROM sift.parts('joined');
+ rows_kept | parts_joined | problems 
+-----------+--------------+----------
+ t         | t            |        0
+(1 row)
+
+-- sift.vacuum_rewrite_limit stops a pass of VACUUM FREEZE after the parts of the oldest transaction, and relfrozenxid follows
+CREATE TABLE aged (id bigint, k_lo int, payload text) USING sift_table WITH (autovacuum_enabled = false);
+SET maintenance_work_mem = '64MB';
+SELECT load('aged', 1, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('aged', 20001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('aged', 40001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT load('aged', 60001, 20000);
+ load 
+------
+ 
+(1 row)
+
+SELECT digest('aged') AS aged_rows, frozen_xid('aged') AS xid0, unfrozen('aged') AS unfrozen0, (SELECT sum(bytes) FROM sift.parts('aged')) AS bytes0 \gset
+SET maintenance_work_mem = '2MB';
+SET sift.vacuum_rewrite_limit = 1;
+VACUUM FREEZE aged;
+SELECT unfrozen('aged') > 0 AS stopped_at_the_limit, unfrozen('aged') < :unfrozen0 AS made_progress, frozen_xid('aged') > :xid0 AS relfrozenxid_moved FROM (SELECT 1) s;
+ stopped_at_the_limit | made_progress | relfrozenxid_moved 
+----------------------+---------------+--------------------
+ t                    | t             | t
+(1 row)
+
+SELECT frozen_xid('aged') AS xid1 \gset
+VACUUM FREEZE aged;
+SELECT frozen_xid('aged') >= :xid1 AS relfrozenxid_never_back FROM (SELECT 1) s;
+ relfrozenxid_never_back 
+-------------------------
+ t
+(1 row)
+
+VACUUM FREEZE aged;
+VACUUM FREEZE aged;
+VACUUM FREEZE aged;
+VACUUM FREEZE aged;
+VACUUM FREEZE aged;
+SELECT unfrozen('aged') AS unfrozen_after_passes, digest('aged') = :'aged_rows' AS rows_kept, frozen_xid('aged') >= :xid1 AS relfrozenxid_never_back, problems('aged') AS problems FROM (SELECT 1) s;
+ unfrozen_after_passes | rows_kept | relfrozenxid_never_back | problems 
+-----------------------+-----------+-------------------------+----------
+                     0 | t         | t                       |        0
+(1 row)
+
+RESET sift.vacuum_rewrite_limit;
+-- the validation of CREATE INDEX CONCURRENTLY merges the rows of the scan with the addresses of the index by windows of addresses: a 1 MB budget and a temp_file_limit of 1 MB hold it where a sort of every address of 131072 rows (3 MB; the size proves the sort would not fit) does not
+CREATE TABLE concurrent (id bigint, k_lo int, payload text) USING sift_table WITH (autovacuum_enabled = false);
+SET maintenance_work_mem = '64MB';
+SELECT load('concurrent', 1, 131072);
+ load 
+------
+ 
+(1 row)
+
+SET maintenance_work_mem = '1MB';
+SET temp_file_limit = '1MB';
+CREATE INDEX CONCURRENTLY concurrent_partial ON concurrent USING btree (k_lo) WHERE id > 131000;
+RESET temp_file_limit;
+SET maintenance_work_mem = '64MB';
+CREATE INDEX CONCURRENTLY concurrent_full ON concurrent USING btree (id);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS through_partial FROM concurrent WHERE id > 131000 AND k_lo >= 0;
+ through_partial 
+-----------------
+              72
+(1 row)
+
+SELECT count(*) AS through_full, sum(id) AS sum_through_full FROM concurrent WHERE id >= 0;
+ through_full | sum_through_full 
+--------------+------------------
+       131072 |       8590000128
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT indisvalid AS partial_valid FROM pg_index WHERE indexrelid = 'concurrent_partial'::regclass;
+ partial_valid 
+---------------
+ t
+(1 row)
+
+SELECT indisvalid AS full_valid FROM pg_index WHERE indexrelid = 'concurrent_full'::regclass;
+ full_valid 
+------------
+ t
+(1 row)
+
+-- twenty parallel scans in one transaction leave nothing in its memory (the unit images of the scans are freed when they are set up)
+SET sift.enable_agg = off;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET debug_parallel_query = on;
+BEGIN;
+CREATE TEMP TABLE before_scans AS SELECT sum(used_bytes) AS bytes FROM pg_backend_memory_contexts WHERE name = 'TopTransactionContext';
+\o /dev/null
+SELECT 'SELECT count(*), sum(length(payload)) FROM concurrent' FROM generate_series(1, 20) \gexec
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+SELECT count(*), sum(length(payload)) FROM concurrent
+\o
+SELECT sum(used_bytes) - (SELECT bytes FROM before_scans) < 2048 AS memory_of_the_transaction_held FROM pg_backend_memory_contexts WHERE name = 'TopTransactionContext';
+ memory_of_the_transaction_held 
+--------------------------------
+ t
+(1 row)
+
+COMMIT;
+DROP TABLE before_scans, chunked, joined, aged, concurrent;
+DROP FUNCTION load(regclass, int, int), digest(regclass), unfrozen(regclass), dead(regclass), problems(regclass), frozen_xid(regclass);
+DROP EXTENSION pg_sift CASCADE;
