@@ -138,7 +138,7 @@ pred_zones(Relation rel, const F2Scan *s, SiftF2PartPin *pin, uint32 g0)
 	return z;
 }
 
-/* Whether no row of a granule with this zone sorts strictly before the bound of the sink: a NULL cannot, unless NULLs sort first */
+/* Whether no row of a granule with this zone sorts before the bound of the sink (nor ties with it, when a later sort column can tell them apart): a NULL cannot, unless NULLs sort first */
 static bool
 bound_excludes(const SiftF2Bound *b, const SiftZone *z)
 {
