@@ -1,5 +1,5 @@
 -- sift.drop_parts_before: the sealed parts whose newest row is older than the cutoff leave the table at once; a part that spans the cutoff stays whole; the arguments are checked. Every check prints t.
--- One part for each day: a day is inserted and sealed by its own call of sift.table_maintain, each in a transaction of its own. Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table and sql/17-drop-parts.sql.
+-- One part for each day: a day is inserted and sealed by its own VACUUM (FREEZE), each in a transaction of its own (a young cluster freezes nothing else). Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table and sql/17-drop-parts.sql.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 -- a testing build creates Format 1 relations unless told otherwise; a release build has no such setting
@@ -9,48 +9,48 @@ CREATE TABLE dp (id int, at timestamptz NOT NULL, payload text) USING sift_table
 SELECT stmt FROM generate_series(0, 19) d,
 	LATERAL unnest(ARRAY[
 		format('INSERT INTO dp SELECT %s * 200 + g, timestamptz ''2030-01-01'' + %s * interval ''1 day'' + g * interval ''1 minute'', repeat(''x'', 40) FROM generate_series(0, 199) g', d, d),
-		'SELECT sift.table_maintain(''dp'')']) WITH ORDINALITY AS u(stmt, ord) ORDER BY d, ord
+		'VACUUM (FREEZE) dp']) WITH ORDINALITY AS u(stmt, ord) ORDER BY d, ord
 \gexec
 INSERT INTO dp SELECT 0 * 200 + g, timestamptz '2030-01-01' + 0 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 1 * 200 + g, timestamptz '2030-01-01' + 1 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 2 * 200 + g, timestamptz '2030-01-01' + 2 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 3 * 200 + g, timestamptz '2030-01-01' + 3 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 4 * 200 + g, timestamptz '2030-01-01' + 4 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 5 * 200 + g, timestamptz '2030-01-01' + 5 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 6 * 200 + g, timestamptz '2030-01-01' + 6 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 7 * 200 + g, timestamptz '2030-01-01' + 7 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 8 * 200 + g, timestamptz '2030-01-01' + 8 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 9 * 200 + g, timestamptz '2030-01-01' + 9 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 10 * 200 + g, timestamptz '2030-01-01' + 10 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 11 * 200 + g, timestamptz '2030-01-01' + 11 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 12 * 200 + g, timestamptz '2030-01-01' + 12 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 13 * 200 + g, timestamptz '2030-01-01' + 13 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 14 * 200 + g, timestamptz '2030-01-01' + 14 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 15 * 200 + g, timestamptz '2030-01-01' + 15 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 16 * 200 + g, timestamptz '2030-01-01' + 16 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 17 * 200 + g, timestamptz '2030-01-01' + 17 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 18 * 200 + g, timestamptz '2030-01-01' + 18 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 INSERT INTO dp SELECT 19 * 200 + g, timestamptz '2030-01-01' + 19 * interval '1 day' + g * interval '1 minute', repeat('x', 40) FROM generate_series(0, 199) g
-SELECT sift.table_maintain('dp')
+VACUUM (FREEZE) dp
 \o
 SELECT count(*) = 4000 AS all_rows_present FROM dp;
  all_rows_present 

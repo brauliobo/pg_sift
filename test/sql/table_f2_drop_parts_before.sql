@@ -1,5 +1,5 @@
 -- sift.drop_parts_before: the sealed parts whose newest row is older than the cutoff leave the table at once; a part that spans the cutoff stays whole; the arguments are checked. Every check prints t.
--- One part for each day: a day is inserted and sealed by its own call of sift.table_maintain, each in a transaction of its own. Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table and sql/17-drop-parts.sql.
+-- One part for each day: a day is inserted and sealed by its own VACUUM (FREEZE), each in a transaction of its own (a young cluster freezes nothing else). Run: psql -X -v ON_ERROR_STOP=1 -f this file, on a build with sift_table and sql/17-drop-parts.sql.
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 -- a testing build creates Format 1 relations unless told otherwise; a release build has no such setting
@@ -10,7 +10,7 @@ CREATE TABLE dp (id int, at timestamptz NOT NULL, payload text) USING sift_table
 SELECT stmt FROM generate_series(0, 19) d,
 	LATERAL unnest(ARRAY[
 		format('INSERT INTO dp SELECT %s * 200 + g, timestamptz ''2030-01-01'' + %s * interval ''1 day'' + g * interval ''1 minute'', repeat(''x'', 40) FROM generate_series(0, 199) g', d, d),
-		'SELECT sift.table_maintain(''dp'')']) WITH ORDINALITY AS u(stmt, ord) ORDER BY d, ord
+		'VACUUM (FREEZE) dp']) WITH ORDINALITY AS u(stmt, ord) ORDER BY d, ord
 \gexec
 \o
 SELECT count(*) = 4000 AS all_rows_present FROM dp;
