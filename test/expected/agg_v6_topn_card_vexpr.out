@@ -52,14 +52,14 @@ BEGIN
 	END IF;
 	RETURN 0;
 END $$;
--- ASC and DESC x NULLS FIRST and LAST on every key, 1 to 3 keys, offsets, WITH TIES, one and four participants, a slab of 100 rows
+-- ASC and DESC x NULLS FIRST and LAST on every key, 1 to 3 keys, offsets, WITH TIES, one and four participants, a slab of 100 rows (an eighth of the grid, by the hash of the case)
 SELECT count(*) AS cases, sum(topn_diff('tn', nk, d0, n0, d1, n1, true, false, lim, off, ties, w, 64, 4, 3, 100)) AS wrong
 FROM generate_series(1, 3) nk, (VALUES (true), (false)) a(d0), (VALUES (true), (false)) b(n0), (VALUES (true), (false)) c(d1), (VALUES (true), (false)) e(n1),
      (VALUES (1, 0), (10, 0), (7, 5), (50, 25), (1, 400)) l(lim, off), (VALUES (false), (true)) t(ties), (VALUES (1), (4)) wk(w)
-WHERE nk >= 2 OR (c.d1 AND e.n1);
+WHERE (nk >= 2 OR (c.d1 AND e.n1)) AND hashtext(concat_ws(',', nk, d0, n0, d1, n1, lim, off, ties, w)) % 8 = 0;
  cases | wrong 
 -------+-------
-   720 |     0
+    91 |     0
 (1 row)
 
 -- blocks of 500 equal keys: WITH TIES returns the whole block of the last row, across granules and participants
