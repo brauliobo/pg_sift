@@ -44,6 +44,7 @@
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_vexpr.h"
+#include "agg/v6/v6_settings.h"
 
 typedef struct Idiom
 {

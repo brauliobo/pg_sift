@@ -33,6 +33,7 @@
 #include "agg/v6/v6_join.h"
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_vexpr.h"
+#include "agg/v6/v6_settings.h"
 
 #define JOIN_MAX_KEYS	8
 

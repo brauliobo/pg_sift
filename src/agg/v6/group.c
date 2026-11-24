@@ -26,6 +26,7 @@
 #include "agg/v6/v6_argext.h"
 #include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gen.h"
+#include "agg/v6/v6_settings.h"
 #include "agg/v6/v6_group_compact.h"
 #include "agg/v6/v6_group_rows.h"
 #include "agg/v6/v6_pct.h"

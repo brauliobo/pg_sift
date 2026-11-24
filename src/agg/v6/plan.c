@@ -48,6 +48,7 @@
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_gen.h"
 #include "agg/v6/v6_pct.h"
+#include "agg/v6/v6_settings.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_unnest_exists.h"
 #include "agg/v6/v6_unnest_jsonb.h"

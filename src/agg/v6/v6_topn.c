@@ -32,6 +32,7 @@
 #include "agg/v6/v6_gpu.h"
 #include "agg/v6/v6_explain.h"
 #include "agg/v6/v6_topn.h"
+#include "agg/v6/v6_settings.h"
 #include "core/memtrack.h"
 
 

@@ -32,6 +32,7 @@
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_dim_keys.h"
 #include "agg/v6/v6_join.h"
+#include "agg/v6/v6_settings.h"
 #include "agg/v6/v6_join_push.h"
 #include "agg/v6/v6_source_rel.h"
 #include "col/am.h"

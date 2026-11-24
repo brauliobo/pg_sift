@@ -27,6 +27,7 @@
 #include "bm25/planner.h"
 #include "core/sql.h"
 #include "agg/cte/int.h"
+#include "agg/v6/v6_settings.h"
 #include "col/am.h"
 
 /*

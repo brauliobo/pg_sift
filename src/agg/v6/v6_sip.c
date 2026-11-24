@@ -27,6 +27,7 @@
 #include "agg/v6/v6_source_rel.h"
 #include "agg/v6/v6_card.h"
 #include "agg/v6/v6_sip.h"
+#include "agg/v6/v6_settings.h"
 #include "core/memtrack.h"
 #include "core/compat.h"
 

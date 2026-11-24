@@ -39,6 +39,7 @@
 #include "agg/plan_int.h"
 #include "agg/refuse.h"
 #include "agg/stats.h"
+#include "agg/v6/v6_settings.h"
 #include "core/limits.h"
 #include "core/cachebudget.h"
 

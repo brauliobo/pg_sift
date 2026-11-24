@@ -13,6 +13,7 @@
 
 #include "agg/agg.h"
 #include "agg/cost/int.h"
+#include "agg/v6/v6_settings.h"
 
 /* The keys of an IN list on the first column of a unique b-tree: the elements of its array; 0 for any other test (an equality is priced right: 8 against the scan's 150) */
 static double

@@ -13,6 +13,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan_int.h"
+#include "agg/v6/v6_settings.h"
 #include "col/am.h"
 #include "col/scope.h"
 

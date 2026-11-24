@@ -32,6 +32,7 @@
 #include "agg/v6/v6_plan_shape.h"
 #include "agg/v6/v6_fifo.h"
 #include "agg/v6/v6_stream.h"
+#include "agg/v6/v6_settings.h"
 
 enum
 {

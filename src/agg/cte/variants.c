@@ -14,6 +14,7 @@
 
 #include "agg/agg.h"
 #include "agg/cte/int.h"
+#include "agg/v6/v6_settings.h"
 #include "core/memtrack.h"
 
 /*

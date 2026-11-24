@@ -8,6 +8,7 @@
 #include "agg/gpu_dict_agg.h"
 #include "agg/gpu_emit.h"
 #include "agg/vk/layout.h"
+#include "agg/v6/v6_settings.h"
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
 

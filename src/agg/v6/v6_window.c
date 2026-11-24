@@ -21,7 +21,6 @@
 #include "utils/selfuncs.h"
 #include "utils/tuplestore.h"
 
-#include "agg/agg.h"
 #include "agg/plan/safety.h"
 #include "agg/v6/par/winrun.h"
 #include "agg/v6/v6_source_quals.h"
@@ -34,6 +33,7 @@
 #include "agg/v6/v6_win_par.h"
 #include "agg/v6/v6_win_partsort.h"
 #include "agg/v6/v6_winx_glue.h"
+#include "agg/v6/v6_settings.h"
 
 enum
 {

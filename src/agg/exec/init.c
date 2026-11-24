@@ -27,21 +27,6 @@ sift_agg_init(void)
 #endif
 	sift_agg_rows_init();
 	sift_agg_refuse_init();
-	DefineCustomBoolVariable("sift.enable_agg",
-							 "Enables aggregate pushdown into sift_col column indexes (Custom Scan (SiftAgg)).",
-							 NULL, &sift_enable_agg, true,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
-	DefineCustomBoolVariable("sift.agg_exact_float",
-							 "Adds float8 values in the order of the rows, in one process, instead of the order of the vector kernels, so that a sum repeats to the last bit.",
-							 NULL, &sift_agg_exact_float, false,
-							 PGC_USERSET, 0, NULL, NULL, NULL);
-#ifdef SIFT_TESTING
-	DefineCustomBoolVariable("sift.agg_force",
-							 "A diagnostic: takes the aggregate scan wherever one is possible, whatever the plans cost (an arm that is refused for its shape stays refused).",
-							 "The scan is priced at a millionth of its cost (the paths with workers and without keep their order) and the inline plan of a shared CTE is kept when it has a scan, to time the plan the cost model refused.",
-							 &sift_agg_force, false,
-							 PGC_USERSET, GUC_NOT_IN_SAMPLE, NULL, NULL, NULL);
-#endif
 #ifdef SIFT_TESTING
 	DefineCustomBoolVariable("sift.agg_left_lateral",
 							 "Pushes down LEFT JOIN LATERAL over a jsonb_to_recordset or jsonb_array_elements list of the scanned row: a row none of whose elements passes is one tuple with NULL element columns.",

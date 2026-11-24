@@ -26,6 +26,7 @@
 #include "agg/rows.h"
 #include "agg/spec.h"
 #include "agg/stats.h"
+#include "agg/v6/v6_settings.h"
 
 bool		sift_agg_plan_reruns;
 

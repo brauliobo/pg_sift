@@ -21,6 +21,7 @@
 #include "agg/agg_int.h"
 #include "agg/rows.h"
 #include "agg/plan/int.h"
+#include "agg/v6/v6_settings.h"
 
 
 /* Does the grouping have a key that is not a constant? */

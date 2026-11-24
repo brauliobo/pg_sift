@@ -16,6 +16,7 @@
 
 #include "agg/agg.h"
 #include "agg/cost/int.h"
+#include "agg/v6/v6_settings.h"
 
 static PlannerInfo *cte_inner_body(PlannerInfo *body, int *resno);
 static double list_keys_worth(PlannerInfo *root, PlannerInfo *body, Var *key);

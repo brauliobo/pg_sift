@@ -23,6 +23,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan_int.h"
+#include "agg/v6/v6_settings.h"
 
 /* the constants of column `resno` of the VALUES list a CTE or a VALUES entry reads, NIL when it is anything else (a filter, a join, an expression that is not a constant) */
 static List *

@@ -180,7 +180,6 @@ sift_aggkind_float_sum(const SiftAggAgg *a)
 extern bool sift_aggspec_workers_only(const SiftAggSpec *s);
 
 /* sift.agg_exact_float: the Format 2.0 scan adds float8 in the order of the rows (one process) instead of the order of the vector kernels */
-extern PGDLLIMPORT bool sift_agg_exact_float;
 
 /* a scan with a float sum, in the specs whose scan can be split in lanes */
 static inline bool

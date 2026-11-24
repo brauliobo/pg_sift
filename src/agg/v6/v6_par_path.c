@@ -27,6 +27,7 @@
 #include "agg/v6/v6_par_pg.h"
 #include "agg/v6/v6_test_gucs.h"
 #include "agg/v6/v6_plan_rewrite.h"
+#include "agg/v6/v6_settings.h"
 #include "core/sift.h"
 
 #define GRANULE_ROWS	8192.0

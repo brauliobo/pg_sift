@@ -22,10 +22,6 @@
 #include "agg/exec/int.h"
 #include "core/memtrack.h"
 
-bool		sift_enable_agg = true;
-bool		sift_agg_exact_float = false;
-bool		sift_agg_force = false;
-double		sift_agg_scale_horizon = 100.0;
 bool		sift_agg_preagg = true;
 int			sift_agg_dead_delta = 15;
 bool		sift_agg_super = true;

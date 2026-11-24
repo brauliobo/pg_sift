@@ -12,8 +12,6 @@
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 
-extern PGDLLIMPORT bool sift_enable_agg;
-extern PGDLLIMPORT bool sift_agg_force;
 /* set just before the error of a node that holds its groups and cannot spill them: the statement is run again as PostgreSQL plans it (cte/hook.c) */
 extern bool sift_agg_overflow;
 /* while a statement is planned: it can be run again as PostgreSQL plans it (the planner kept its query, agg/cte/rerun.c) */
@@ -142,7 +140,6 @@ extern double sift_agg_key_rows(unsigned int relid, int att, const int *tatt, in
 extern double sift_agg_rows_per_key(unsigned int relid, int att, double tuples);
 extern double sift_agg_table_rows(Oid relid);
 extern PGDLLIMPORT double sift_plan_scale;
-extern PGDLLIMPORT double sift_agg_scale_horizon;
 extern PGDLLIMPORT bool sift_agg_two_level_on;
 extern PGDLLIMPORT bool sift_agg_preagg;
 extern PGDLLIMPORT int sift_agg_dead_delta;

@@ -25,6 +25,7 @@
 #include "agg/topn.h"
 #include "agg/order/int.h"
 #include "agg/cost/int.h"
+#include "agg/v6/v6_settings.h"
 
 static double topn_first_ties(AggCtx *c, PlannerInfo *root, double wanted);
 
