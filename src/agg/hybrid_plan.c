@@ -221,7 +221,7 @@ col_index(RelOptInfo *rel)
 {
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
 		if ((ix->indpred == NIL || ix->predOK) && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns &&
-			sift_store_ops_for_oid(ix->indexoid, false) != NULL)
+			sift_store_ops_for_scan(ix->indexoid, false) != NULL)
 			return ix;
 	return NULL;
 }

@@ -122,7 +122,7 @@ col_key_indexed(Oid relid, AttrNumber attno)
 	{
 		Relation	ix = index_open(ixid, AccessShareLock);
 
-		if (sift_store_ops_for_oid(ixid, false) != NULL)
+		if (sift_store_ops_for_scan(ixid, false) != NULL)
 			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(ix); i++)
 				found |= ix->rd_index->indkey.values[i] == attno;
 		index_close(ix, AccessShareLock);
