@@ -114,3 +114,4 @@ spinlock-loop	src/col/v1/wbuf/arena.c	5	a fixed number of slots of a shared tabl
 spinlock-loop	src/core/progress.c	2	a fixed number of slots of a shared table
 spinlock-loop	src/core/quarantine.c	2	a fixed number of slots of a shared table
 spinlock-loop	src/core/quarantine_sql.c	2	a fixed number of slots of a shared table
+mem-alloc-hot	src/col/f2/scan/rescan_cache.c	1	once for each granule the cache fills (a miss that decodes the granule), not for each row

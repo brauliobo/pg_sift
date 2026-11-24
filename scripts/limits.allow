@@ -244,3 +244,8 @@ SIFT_COL_DELTA_MAX_COLS_INDEX	changed leaves (8) of one record of the column del
 SIFT_MAX_BM25_FIELDS	the capacity (16) of the field length arrays of a segment (bm25/segment_int.h), at least the fields an index may have (SIFT_MAX_FIELDS, 14, a limit of the registry): a layout bound, no count is refused
 SIFT_UNIQ_SHM_SLOTS	the entries of the shared registry of the staged keys of unique sift_col indexes (col/f2/f2_uniq_shm.h): a stripe with no entry free sends the stage of the transaction to the partition and the entries go; no count is refused
 SLAB_SLOTS	the hashes of the rows of a slab a probe of a unique key keeps (col/f2/f2_uniq_slab.c): a slab with more distinct hashes than half of it is not filtered and is probed as it is; the rows are the same
+RC_SLOTS	the granules a pin of the rescan cache keeps (col/f2/scan/rescan_cache.c): a full pin evicts the oldest; the rows are the same
+RC_MAX_LEAVES	the integer leaves the rescan cache holds for one scan (col/f2/scan/rescan_cache.c): a table with more columns is not served from the cache and scans as before; the rows are the same
+SIFT_KJ_SLOTS	the record pages a block of the connect journal names (col/f2/f2_journal.h): a layout bound of the page, no count is refused
+SIFT_PAR_MAX_THREADS	the threads of the pool of a statement, the backend included (core/par/pool.h): the use is capped at max_parallel_workers_per_gather + 1; the rows are the same
+SIFT_ROWLOCK_CHUNK_ENTRIES	the row lock entries of one chunk of dynamic shared memory (table/f2/f2_lock_ovf.h): a full stripe takes another chunk; no count is refused
