@@ -285,7 +285,7 @@ owned_add(const SiftUniqKey *k, uint32 slot)
 	if (owned == NULL)
 		owned = MemoryContextAlloc(TopTransactionContext, sizeof(Owned) * (capowned = 256));
 	else if (nowned == capowned)
-		owned = repalloc(owned, sizeof(Owned) * (capowned *= 2));
+		owned = repalloc(owned, sizeof(Owned) * (capowned = Min(capowned * 2, SIFT_UNIQ_SHM_SLOTS)));
 	owned[nowned++] = (Owned) {.slot = slot,.subid = GetCurrentSubTransactionId(),.locator = k->locator};
 }
 

@@ -91,7 +91,16 @@ static void
 span_add(Spans *s, uint64 lo, uint64 hi, TransactionId xid, uint32 part_id, const SiftPartDesc *part)
 {
 	if (s->n == s->cap)
-		s->v = s->v == NULL ? palloc(sizeof(Span) * (s->cap = 64)) : repalloc(s->v, sizeof(Span) * (s->cap *= 2));
+	{
+		const Size	bytes = sizeof(Span) * (Size) (s->cap ? s->cap * 2 : 64),
+					budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
+
+		if (bytes > budget)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the visibility map pass needs %zu bytes for the spans of the parts, more than its memory budget of %zu bytes", bytes, budget),
+							errhint("Raise maintenance_work_mem.")));
+		s->cap = bytes / sizeof(Span);
+		s->v = s->v == NULL ? palloc(bytes) : repalloc(s->v, bytes);
+	}
 	s->v[s->n++] = (Span) {lo, hi, xid, part_id, part};
 }
 

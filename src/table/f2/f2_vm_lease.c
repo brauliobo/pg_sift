@@ -94,7 +94,7 @@ sift_tbl_vm_lease_open(Relation rel)
 		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("could not reserve a vblock lease for sift_table \"%s\"", RelationGetRelationName(rel)),
 						errdetail("The shared registry has no free lease (%d at most) or could not be mapped.", SIFT_SHM_TID_LEASES)));
 	if (nleases == capleases)
-		leases = repalloc(leases, sizeof(VmLease) * (capleases *= 2));
+		leases = repalloc(leases, sizeof(VmLease) * (capleases = Min(capleases * 2, SIFT_SHM_TID_LEASES)));
 	leases[nleases++] = (VmLease) {.locator = rel->rd_locator,.relid = RelationGetRelid(rel),.slot = slot};
 }
 
