@@ -16,6 +16,7 @@
 #include "catalog/pg_trigger.h"
 #include "commands/trigger.h"
 #include "common/hashfn.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "storage/lmgr.h"
@@ -263,6 +264,18 @@ slot_events(Relation index, int slot)
 	return sift_col_ops(index)->tracks_addresses ? HEAR_BOTH : HEAR_EVENT(slot);
 }
 
+/* PostgreSQL gives an internal trigger the name "<name>_<oid of the trigger>" in a NAMEDATALEN buffer: a name that leaves no room for the 10 digits of that oid loses the oid that tells two triggers apart */
+#define HEAR_NAME_MAX	(NAMEDATALEN - 1 - (1 + 10))
+
+static char *
+trigger_name(int events, Relation index)
+{
+	const char *prefix = events == HEAR_BOTH ? "sift_track_" : (events & HEAR_EVENT(1)) ? "sift_track_update_" : "sift_track_delete_";
+	const char *name = RelationGetRelationName(index);
+
+	return psprintf("%s%.*s", prefix, pg_mbcliplen(name, strlen(name), HEAR_NAME_MAX - (int) strlen(prefix)), name);
+}
+
 static void
 create_trigger(Oid relid, Relation index, int events)
 {
@@ -276,7 +289,7 @@ create_trigger(Oid relid, Relation index, int events)
 	tt->name = "old_rows";
 	tt->isNew = false;
 	tt->isTable = true;
-	stmt->trigname = psprintf(events == HEAR_BOTH ? "sift_track_%s" : (events & HEAR_EVENT(1)) ? "sift_track_update_%s" : "sift_track_delete_%s", RelationGetRelationName(index));
+	stmt->trigname = trigger_name(events, index);
 	stmt->relation = makeRangeVar(get_namespace_name(get_rel_namespace(relid)), get_rel_name(relid), -1);
 	stmt->funcname = list_make2(makeString("sift"), makeString(HEAR_FUNCTION));
 	stmt->args = list_make1(makeString(psprintf("%u", RelationGetRelid(index))));
