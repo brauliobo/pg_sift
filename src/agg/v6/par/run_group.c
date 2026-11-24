@@ -11,6 +11,7 @@
 #include "agg/v6/par/run_int.h"
 #include "agg/v6/v6_expr_str.h"
 #include "core/compat.h"
+#include "core/popcount.h"
 
 #define STATE_MIN		(8u << 20)
 /* The groups a statement with no K may have for the threads to give them all to the leader, which folds each one in turn (more are merged by the workers of the plan, in parallel) */
@@ -127,7 +128,7 @@ static void
 group_sizes(const ParShape *sh, uint32 groups_est, uint64 rows, int nthreads, ParSizes *sz)
 {
 	const uint32 words = sh->nk + sh->nsum;
-	const uint32 texts = __builtin_popcount(sh->gs.strs);
+	const uint32 texts = sift_pc64(sh->gs.strs);
 	const uint64 rec = texts > 0 ? 8 * words + 56 * texts : 8 * (words <= 1 ? 1 : pg_nextpower2_32(words));
 
 	sz->scratch = 8u << 20;

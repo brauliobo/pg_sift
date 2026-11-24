@@ -9,6 +9,7 @@
 
 #include "agg/v6/par/group_key.h"
 #include "core/par/topk.h"
+#include "core/popcount.h"
 
 #define NO_ROOM "parallel aggregation: the arena of a thread has no room for a batch"
 #define TAB_FIRST			256
@@ -148,7 +149,7 @@ batch_room(SiftParGroup *g, int t, const SiftParGroupBatch *b, SiftErr *err)
 		return fail_mem(err, NO_ROOM);
 	if (w->local.strm)
 		return sstr_put(&w->local, NULL, strbytes) || fail_mem(err, NO_ROOM);
-	return !sp->strs || cmp_intern_reserve(&w->local, b->n * __builtin_popcount(sp->strs), strbytes) || fail_mem(err, NO_ROOM);
+	return !sp->strs || cmp_intern_reserve(&w->local, b->n * sift_pc64(sp->strs), strbytes) || fail_mem(err, NO_ROOM);
 }
 
 /* The rows of integer keys of a batch to the partitions: the record of a row is its key words and arguments, in the partition of the hash of its key */
