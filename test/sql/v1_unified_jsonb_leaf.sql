@@ -1,0 +1,129 @@
+-- Format 1 on the unified aggregate scan (sift.test_unified_agg) over a jsonb document and over the arrays an index keeps shredded: the keys of a document that is no leaf of the index are read from the heap
+-- row of each row the scan keeps, and the elements of an array column come from the shredded leaves of the index, except for the rows whose array the leaves cannot hold, which are read from the heap.
+-- Every statement is run with the node and without it (sift.enable_agg) and the answers, or the errors, are compared.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET sift.test_create_format1 = on;
+SET sift.test_unified_agg = on;
+SET sift.agg_force = on;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+
+CREATE TABLE j (id int PRIMARY KEY, grp int, ts date, doc jsonb);
+INSERT INTO j
+SELECT i, i % 5, date '2024-01-01' + i % 60,
+	CASE
+		WHEN i % 19 = 0 THEN NULL
+		WHEN i % 17 = 0 THEN '[1, 2]'
+		WHEN i % 13 = 0 THEN '{"metrics": {"m_a": "2.5", "m_b": 4}}'
+		WHEN i % 11 = 0 THEN '{"metrics": {"m_a": null, "m_b": null}}'
+		WHEN i % 7 = 0 THEN '{"other": 1}'
+		WHEN i % 5 = 0 THEN '{"metrics": 3}'
+		ELSE jsonb_build_object('metrics', jsonb_build_object('m_a', (i % 40) / 4.0, 'm_b', i % 9))
+	END
+FROM generate_series(1, 3000) i;
+CREATE INDEX j_col ON j USING sift_col (id, grp, ts, doc) WITH (paths = 'doc.metrics.* float8');
+VACUUM (FREEZE, ANALYZE) j;
+
+-- the node the plan of q has, how it unnests an array, and whether its rows are those of the heap (sift.enable_agg = off)
+CREATE FUNCTION check_q(q text) RETURNS TABLE (node text, unnest text, same bool) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; a text; b text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (%s) x', q) INTO a;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE format('SELECT coalesce(string_agg(x::text, E''\n'' ORDER BY x::text), '''') FROM (%s) x', q) INTO b;
+	SET LOCAL sift.enable_agg = on;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	unnest := coalesce((regexp_match(p, 'Unnest: ([a-z ]+)'))[1], '-');
+	same := a = b;
+	RETURN NEXT;
+END $$;
+
+-- the error of q, with the node and without it: the same, or none
+CREATE FUNCTION check_err(q text) RETURNS TABLE (node text, same bool, err text) LANGUAGE plpgsql AS $$
+DECLARE l text; p text := ''; a text := 'none'; b text := 'none';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP p := p || l || E'\n'; END LOOP;
+	BEGIN EXECUTE q; EXCEPTION WHEN OTHERS THEN a := SQLERRM; END;
+	SET LOCAL sift.enable_agg = off;
+	BEGIN EXECUTE q; EXCEPTION WHEN OTHERS THEN b := SQLERRM; END;
+	SET LOCAL sift.enable_agg = on;
+	node := coalesce((regexp_match(p, 'Custom Scan \((Sift\w+)\)'))[1], 'none');
+	same := a = b;
+	err := left(b, 60);
+	RETURN NEXT;
+END $$;
+
+SELECT * FROM check_q($$SELECT grp, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3), count(*) FROM j WHERE ts >= date '2024-01-10' GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT grp, sum((doc -> 'metrics' ->> 'm_a')::float8), avg((doc -> 'metrics' ->> 'm_b')::float8) FROM j GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT count((doc -> 'metrics' ->> 'm_a')::float8), count(*) FROM j$$);
+SELECT * FROM check_q($$SELECT grp, max((doc -> 'metrics' ->> 'm_b')::float8), min((doc -> 'metrics' ->> 'm_b')::float8) FROM j WHERE grp > 1 GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT 'a' AS arm, avg((doc -> 'metrics' ->> 'm_a')::float8), count(*) FROM j UNION ALL SELECT 'b', avg((doc -> 'metrics' ->> 'm_b')::float8), count(*) FROM j$$);
+SELECT * FROM check_q($$SELECT (doc -> 'metrics' ->> 'm_b')::int AS m, count(*) FROM j GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT doc -> 'metrics' ->> 'm_a' AS m, count(*) FROM j GROUP BY 1$$);
+
+-- rows the write buffer holds, new versions of rows and deleted ones
+INSERT INTO j SELECT 3000 + i, i % 5, date '2024-02-01', jsonb_build_object('metrics', jsonb_build_object('m_a', i * 0.5)) FROM generate_series(1, 100) i;
+UPDATE j SET doc = '{"metrics": {"m_a": 9.5}}' WHERE id % 50 = 0;
+UPDATE j SET doc = NULL WHERE id % 71 = 0;
+DELETE FROM j WHERE id % 97 = 0;
+SELECT * FROM check_q($$SELECT grp, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3), count(*) FROM j GROUP BY 1$$);
+SELECT * FROM check_q($$SELECT grp, sum((doc -> 'metrics' ->> 'm_a')::float8), count(*) FROM j WHERE ts >= date '2024-01-10' GROUP BY 1$$);
+
+-- a value the cast to float8 refuses is the error of the heap, a NULL document and a key that is missing are NULL
+UPDATE j SET doc = '{"metrics": {"m_a": "abc"}}' WHERE id = 7;
+SELECT * FROM check_err($$SELECT sum((doc -> 'metrics' ->> 'm_a')::float8) FROM j$$);
+UPDATE j SET doc = '{"metrics": {"m_a": 1e400}}' WHERE id = 7;
+SELECT * FROM check_err($$SELECT sum((doc -> 'metrics' ->> 'm_a')::float8) FROM j$$);
+UPDATE j SET doc = '{"metrics": {"m_a": 1}}' WHERE id = 7;
+SELECT * FROM check_err($$SELECT sum((doc -> 'metrics' ->> 'm_a')::float8) FROM j$$);
+
+-- the arrays: NULL, empty, NULL elements, several dimensions, long strings, an array that is no array, an element that is no object, a value its column cannot hold
+CREATE TABLE e (id int PRIMARY KEY, g int, tags text[], nums int4[], items jsonb);
+INSERT INTO e VALUES
+	(1, 1, '{a,b,c}', '{1,2,3}', '[{"k": "a", "v": 1.5}, {"k": "b", "v": 2}]'),
+	(2, 2, '{}', '{}', '[]'),
+	(3, 3, NULL, NULL, NULL),
+	(4, 4, '{a,NULL}', '{NULL,5}', '[{"k": "a", "v": null}, {"k": null, "v": 1}]'),
+	(5, 5, '{{a,b},{c,d}}', '{{1,2},{3,4}}', '[{"k": "a"}, {"v": 3}]'),
+	(6, 6, ARRAY[repeat('x', 40), repeat('y', 300)], '{2147483647,-2147483648}', jsonb_build_array(jsonb_build_object('k', repeat('z', 300), 'v', 1e300))),
+	(7, 7, '{"with space","quo\"te",""}', '{0}', '[{"k": "", "v": 0}, {"k": "b", "v": -0.5}]');
+INSERT INTO e SELECT 100 + i, 100 + i, ARRAY['t' || i % 3, 't' || i % 4], ARRAY[i, i % 5], jsonb_build_array(jsonb_build_object('k', 'k' || i % 3, 'v', i * 0.5)) FROM generate_series(1, 1000) i;
+CREATE INDEX e_col ON e USING sift_col (id, g, tags, nums, items) WITH (paths = 'tags[] text, nums[] int4, items[]{k text, v float8}');
+VACUUM (FREEZE, ANALYZE) e;
+
+SELECT * FROM check_q($$SELECT u.t, count(*) FROM e CROSS JOIN LATERAL unnest(e.tags) AS u(t) GROUP BY u.t$$);
+SELECT * FROM check_q($$SELECT u.n, count(*), sum(u.n) FROM e LEFT JOIN LATERAL unnest(e.nums) AS u(n) ON true GROUP BY u.n$$);
+SELECT * FROM check_q($$SELECT u.n, count(*) FROM e CROSS JOIN LATERAL unnest(e.nums) AS u(n) WHERE e.id > 100 AND u.n > 2 GROUP BY u.n$$);
+SELECT * FROM check_q($$SELECT r.k, count(*), sum(r.v) FROM e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) GROUP BY r.k$$);
+SELECT * FROM check_q($$SELECT count(*), count(r.k) FROM e LEFT JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) ON true WHERE e.id < 8$$);
+SELECT * FROM check_q($$SELECT r.k, sum(r.v) FROM e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) WHERE e.id > 100 AND r.v > 100 GROUP BY r.k$$);
+
+-- each row of the first kinds alone, then the rows that are in no way an array of objects, one at a time: PostgreSQL's own error, or its answer
+SELECT count(*) AS rows, count(*) FILTER (WHERE c.node = 'SiftAggV6') AS node, count(*) FILTER (WHERE NOT c.same) AS differ
+FROM e, LATERAL check_q(format($$SELECT u.t, count(*) FROM e CROSS JOIN LATERAL unnest(e.tags) AS u(t) WHERE e.g = %s GROUP BY u.t$$, e.id)) c WHERE e.id < 8;
+SELECT count(*) AS rows, count(*) FILTER (WHERE c.node = 'SiftAggV6') AS node, count(*) FILTER (WHERE NOT c.same) AS differ
+FROM e, LATERAL check_q(format($$SELECT r.k, count(*), sum(r.v) FROM e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) WHERE e.g = %s GROUP BY r.k$$, e.id)) c WHERE e.id < 8;
+INSERT INTO e VALUES (5000, 5000, '{x}', '{1}', 'null'), (5001, 5001, '{x}', '{1}', '"str"'), (5002, 5002, '{x}', '{1}', '{"k": "a"}'), (5003, 5003, '{x}', '{1}', '[{"k": "a"}, 5]'),
+	(5004, 5004, '{x}', '{1}', '[{"k": "a"}, null]'), (5005, 5005, '{x}', '{1}', '[[1], [2]]'), (5006, 5006, '{x}', '{1}', '[{"k": 5, "v": 1}]'), (5007, 5007, '{x}', '{1}', '[{"k": "a", "v": "abc"}]'),
+	(5008, 5008, '{x}', '{1}', '[{"k": {"x": 1}, "v": 1}]'), (5009, 5009, '{x}', '{1}', '[{"k": "a", "v": 1e400}]'), (5010, 5010, '{x}', '{1}', '[{}]'), (5011, 5011, '{x}', '{1}', '7');
+SELECT e.id, c.node, c.same, c.err FROM e, LATERAL check_err(format($$SELECT r.k, count(*), sum(r.v) FROM e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) WHERE e.g = %s GROUP BY r.k$$, e.id)) c
+WHERE e.id >= 5000 ORDER BY e.id;
+
+-- rows the write buffer holds, new versions and deleted rows, and the rows of the kinds above that are left in the table
+INSERT INTO e SELECT 2000 + i, 2000 + i, ARRAY['w' || i % 3, NULL], ARRAY[i], jsonb_build_array(jsonb_build_object('k', 'w' || i % 3, 'v', i * 0.25)) FROM generate_series(1, 100) i;
+UPDATE e SET tags = '{u1,u2}', nums = '{9}', items = '[{"k": "u", "v": 7}]' WHERE id % 50 = 0 AND id < 1200;
+DELETE FROM e WHERE id % 61 = 0;
+SELECT * FROM check_q($$SELECT u.t, count(*) FROM e CROSS JOIN LATERAL unnest(e.tags) AS u(t) GROUP BY u.t$$);
+SELECT * FROM check_q($$SELECT u.n, count(*), sum(u.n) FROM e LEFT JOIN LATERAL unnest(e.nums) AS u(n) ON true GROUP BY u.n$$);
+SELECT * FROM check_q($$SELECT r.k, count(*), sum(r.v) FROM e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) WHERE e.id < 5000 GROUP BY r.k$$);
+DELETE FROM e WHERE id >= 5000;
+SELECT * FROM check_q($$SELECT r.k, count(*), sum(r.v) FROM e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS r(k text, v float8) GROUP BY r.k$$);
+
+DROP TABLE j, e;
+DROP FUNCTION check_q, check_err;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
