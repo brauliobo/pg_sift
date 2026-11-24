@@ -92,6 +92,38 @@ cand_value(void *ctx, int item, bool *isnull)
 	return key_datum(&c->r->spec->key[pos], c->keyvec[pos], c->row, isnull, c->sbuf);
 }
 
+typedef struct DatumCand
+{
+	const SiftV6Rows *r;
+	const Datum *values;
+	const bool *isnull;
+} DatumCand;
+
+static Datum
+datum_value(void *ctx, int item, bool *isnull)
+{
+	const DatumCand *c = ctx;
+	const int	pos = c->r->spec->topk_item[item].pos;
+
+	*isnull = c->isnull[pos];
+	return c->values[pos];
+}
+
+void
+sift_v6_rows_put(SiftV6Rows *r, const Datum *values, const bool *isnull, uint64 tid)
+{
+	const DatumCand c = {.r = r,.values = values,.isnull = isnull};
+	const int	nkeys = r->spec->nkeys;
+
+	if (!sift_v6_topk_run_wants(r->run, datum_value, (void *) &c))
+		return;
+	memcpy(r->values, values, nkeys * sizeof(Datum));
+	memcpy(r->isnull, isnull, nkeys * sizeof(bool));
+	r->values[nkeys] = Int64GetDatum((int64) tid);
+	r->isnull[nkeys] = false;
+	sift_v6_topk_run_put(r->run, r->values, r->isnull);
+}
+
 static bool
 text_type(Oid typid)
 {
