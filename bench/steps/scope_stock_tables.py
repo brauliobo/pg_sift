@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The tables of the scope index against tuned stock PostgreSQL, from the one results file of steps/scope_stock_arms.py.
 
-    python3 -I bench/steps/scope_stock_tables.py render [--results FILE] [--root DIR]   rewrite the generated blocks of docs/BENCHMARKS.md
+    python3 -I bench/steps/scope_stock_tables.py render [--results FILE] [--root DIR]   rewrite the generated blocks of docs/benchmarks/scopes.md
     python3 -I bench/steps/scope_stock_tables.py report [FILE]                          print every table (the full set, all arms and tenants)
 
 No figure of those pages is typed: a block is a function of the results file, and scripts/gen-docs.py --check fails when a block differs from it. The file is
@@ -13,6 +13,7 @@ import argparse
 import math
 import os
 import sys
+from collections import namedtuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -22,11 +23,14 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 RESULTS = os.path.join(REPO, 'docs', 'results', 'scope-stock.tsv')
 BASE = 'sift_scope'
 TIE_MS, TIE_PCT = 0.1, 0.10
+PAGE = 'docs/benchmarks/scopes.md'
 BLOCKS = {  # block name: (page, renderer)
-    'scope-stock-tally': ('docs/BENCHMARKS.md', lambda R: tally(R) + ['', tally_note(R)]),
-    'scope-stock-geomean': ('docs/BENCHMARKS.md', lambda R: geomean_table(R)),
-    'scope-stock-costs': ('docs/BENCHMARKS.md', lambda R: write_table(R, R.arms)),
+    'scope-stock-tally': (PAGE, lambda R: tally(R) + ['', tally_note(R)]),
+    'scope-stock-geomean': (PAGE, lambda R: geomean_table(R)),
+    'scope-stock-costs': (PAGE, lambda R: write_table(R, R.arms)),
 }
+ROLLUP, DISTINCT = 'sum_by_month', 'distinct_members_by_month'
+README_ARMS = ('stock_default', 'semijoin', 'denorm_flat', 'ivm', 'ch_join', 'ch_proj')
 
 
 class Results:
@@ -158,6 +162,60 @@ def write_table(R, arms):
     return (['What each arm costs, as milliseconds · M instructions · WAL written of one statement (a pair edit: the mean of 10 member keys of about 400 events, and the largest member apart). '
              '`-`: the arm has no such step.', ''] +
             table(['arm', 'build · size added'] + [h for _, h in WRITES], body, ['---'] + ['---:'] * (len(WRITES) + 1)))
+
+
+# ---- the summary rows of the README and of the committed baseline ------------------------------------------------------------------------
+
+Row = namedtuple('Row', 'arm cells warm cold rollup distinct where')   # warm and cold: (scope faster, tie, rival faster); rollup and distinct: tenant 1 milliseconds of the rival
+BASELINE_ROWS = (  # the committed 5.0 suite (2,400,007 events, 72 cells, PG 18.7): where the rival is faster is what the 5.0 page names
+    Row('stock_default', 72, (72, 0, 0), (71, 0, 1), 542, 757, ()),
+    Row('semijoin', 72, (63, 2, 7), (62, 1, 9), 285, 636, ()),
+    Row('denorm_flat', 72, (51, 2, 19), (48, 1, 23), 329, 652, ('latest_20_rows',)),
+    Row('denorm_part', 72, (54, 4, 14), (54, 0, 18), None, None, ()),
+    Row('rollup', 72, (54, 5, 5), (52, 3, 9), None, None, ()),
+    Row('ivm', 72, (32, 2, 30), (34, 3, 27), 43.3, 58.4, ('count_by_score', 'filtered_count')),
+)
+BASELINE_SCOPE = (2.18, 1.52)   # tenant 1 of the scope index: sum_by_month, distinct_members_by_month
+
+
+def summary_rows(R, arms=None):
+    out = []
+    for arm in (a for a in (arms or R.arms) if a != BASE and a in R.arms):
+        n, w, t, l, where = tally_row(R, arm, 'warm_ms')
+        _, cw, ct, cl, _ = tally_row(R, arm, 'cold_ms')
+        out.append(Row(arm, n, (w, t, l), (cw, ct, cl), R.get(1, ROLLUP, arm, 'warm_ms'), R.get(1, DISTINCT, arm, 'warm_ms'),
+                       tuple(sorted(where, key=lambda c: -where[c]))))
+    return out
+
+
+def rivals(root):
+    """(rows, the scope index's own tenant 1 rollup and distinct milliseconds, a label of the suite) of the results file when there is one, else of the committed 5.0 baseline"""
+    path = os.path.join(root, 'docs', 'results', 'scope-stock.tsv')
+    if not os.path.exists(path):
+        return list(BASELINE_ROWS), BASELINE_SCOPE, 'v5.0'
+    R = Results(path)
+    return summary_rows(R), (R.get(1, ROLLUP, BASE, 'warm_ms'), R.get(1, DISTINCT, BASE, 'warm_ms')), 'v' + R.meta['pg_sift']
+
+
+def wld(cell, best=True):
+    text = ' / '.join(str(x) for x in cell)
+    return '**%s**' % text if best else text
+
+
+def versus(rival, mine):
+    return '—' if rival is None else '%s ms vs **%s ms**' % (fnum(rival), fnum(mine))
+
+
+def baseline_table():
+    scope_rollup, scope_distinct = BASELINE_SCOPE
+    body = [['`%s`' % r.arm, wld(r.warm), wld(r.cold), versus(r.rollup, scope_rollup), versus(r.distinct, scope_distinct)] for r in BASELINE_ROWS]
+    return table(['Rival', 'Warm: win / tie / loss', 'Cold: win / tie / loss', 'Tenant 1 `sum_by_month`', 'Tenant 1 distinct'], body, ['---', '---:', '---:', '---:', '---:']) \
+        + ['', 'win / tie / loss: `%s` faster / within %.1f ms or %d%% / slower. %s' % (BASE, TIE_MS, TIE_PCT * 100, where_note(BASELINE_ROWS))]
+
+
+def where_note(rows):
+    named = ['`%s`: %s' % (r.arm, ', '.join('`%s`' % c for c in r.where[:2])) for r in rows if r.where]
+    return 'Where a rival is faster (warm): %s.' % '; '.join(named) if named else 'No rival is faster in any warm cell.'
 
 
 # ---- pages ------------------------------------------------------------------------------------------------------------------------------

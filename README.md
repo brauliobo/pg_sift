@@ -116,16 +116,29 @@ Opt-in and off by default: build with `make VULKAN=1`, then `SET sift.gpu = auto
 
 ## Benchmarks
 
-Every benchmark verifies **exact answer equality** (`md5_equal`) against stock PostgreSQL 18 before recording timings. Numbers below are committed baseline measurements on AMD Ryzen 7 9700X (PG 18.6, `pg_sift` 3.5 baseline) and AMD Ryzen 9 5900XT (PG 18.7, `pg_sift` 5.0 scope suite); the date of each run is in the header of its file under `docs/results/`. `bench/bench v6-release --docs` regenerates charts and tables via `scripts/gen-docs.py`.
+Every figure checks exact answer equality (`md5_equal`) against stock PostgreSQL 18 before it counts. Dated baselines on AMD Ryzen 7 9700X (PG 18.6) and AMD Ryzen 9 5900XT (PG 18.7); amber marks a rival that wins. Methodology, fairness rules and 1-command repro: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-### Analytical Aggregations vs ClickHouse, DuckDB & PostgreSQL
+<!-- bench:readme-hero:begin -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-hero-dark.svg">
+  <img alt="pg_sift at a glance: Revenue / month 1,481× faster than PostgreSQL 18 on 10M rows; BM25 search up to 16× ParadeDB QPS; sift_table 3.4× smaller than PostgreSQL 18; 72 of 72 scoped cells faster than stock PostgreSQL." src="docs/charts/readme-hero-light.svg" width="860">
+</picture>
+<!-- bench:readme-hero:end -->
 
-10,000,000 orders, 3 CPUs & 8 GiB RAM per server, warm medians (`sift_col` vs ClickHouse 26.9, `pg_duckdb` 1.1.1 / DuckDB 1.4.3 Parquet, and PostgreSQL 18.6):
+<!-- bench:readme-analytics:begin -->
+<details open>
+<summary><b>Analytical aggregations</b> — <code>sift_col</code> wins 4 of 6 queries at 10M rows, up to 26× over ClickHouse</summary>
 
-![Analytical Aggregations: pg_sift vs ClickHouse, DuckDB, and PostgreSQL 18](docs/charts/analytics-engines.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-analytics-dark.svg">
+  <img alt="Speed against disk size at 10M rows: sift_col wins 4 of 6 queries; rivals win only where marked amber." src="docs/charts/readme-analytics-light.svg" width="860">
+</picture>
 
-<!-- bench:v6-readme:begin -->
-| Workload (10M orders, 3 CPUs) | `pg_sift` | ClickHouse | DuckDB | PG 18 |
+`sift_col` wins 4 of 6 queries: 2.1–26× faster than ClickHouse and 47–1,481× faster than PG 18 (3 CPUs, 8 GiB, warm medians). ClickHouse leads Avg shipped order (7.68 ms vs 10.0 ms) and Big recent orders (4.39 ms vs 10.6 ms).
+
+ClickHouse runs a plain `MergeTree`; `sift_col` keeps pre-aggregates. Cold runs, DuckDB, `ClickHouse + PROJECTION` and Elasticsearch: full tables.
+
+| Workload (10M orders) | `pg_sift` | ClickHouse | DuckDB | PG 18 |
 |---|---:|---:|---:|---:|
 | Count by country (`GROUP BY`) | **0.85 ms** | 9.32 ms | 8.97 ms | 188.9 ms |
 | Revenue per month (`sum`) | **0.93 ms** | 23.8 ms | 99.2 ms | 1,377 ms |
@@ -133,47 +146,122 @@ Every benchmark verifies **exact answer equality** (`md5_equal`) against stock P
 | Avg shipped order (3 filters) | 10.0 ms | **7.68 ms** | 48.9 ms | 124.2 ms |
 | Distinct customers/mo (`DISTINCT`) | **49.3 ms** | 104.5 ms | 193.7 ms | 2,334 ms |
 | Big recent orders (range count) | 10.6 ms | **4.39 ms** | 39.7 ms | 146.4 ms |
-<!-- bench:v6-readme:end -->
 
-*Pre-aggregated rollups and `GROUP BY` run 10–25× faster than ClickHouse and 220–1,480× faster than stock PostgreSQL 18; ClickHouse leads on selective multi-filter averages and 30-day range counts at 10M rows (`sift_table` matches `sift_col` within ~1–4 ms). Full cold-cache, `pg_duckdb` heap, and 6.0 SIMD targets are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#2-analytical-aggregations-vs-clickhouse-duckdb-and-postgresql-18).*
+[Full tables and methodology](docs/benchmarks/analytics.md)
 
-*Methodology: `sift_col` indexes a precomputed month expression and keeps pre-aggregates, while the ClickHouse arm is a plain `MergeTree` without a `PROJECTION` or materialized month column; DuckDB reads a Parquet file written in `id` order through `pg_duckdb`; ClickHouse is timed client-side over HTTP (about 1 ms included); the point lookup is PostgreSQL's B-tree primary key; cold runs empty server caches but keep the OS page cache. Details in [Fairness and setup notes](docs/BENCHMARKS.md#fairness-and-setup-notes-read-before-quoting-the-table). The 43 ClickBench queries and a `ClickHouse + PROJECTION` arm run through `bench/bench clickbench` ([docs/BENCHMARKS.md](docs/BENCHMARKS.md#25-clickbench-q0-q42)).*
+</details>
+<!-- bench:readme-analytics:end -->
 
-### Exact BM25 Search vs Elasticsearch, ParadeDB & PostgreSQL
+<!-- bench:readme-clickbench:begin -->
+<details>
+<summary><b>ClickBench <code>Q0–Q42</code></b> — 43 queries, <code>md5_equal</code> against PG 18</summary>
 
-50,000 Simple English Wikipedia articles (8 clients, warm QPS: `sift` vs Elasticsearch 9.5.5, ParadeDB `pg_search` 0.26.1, and PG `rum` 1.3.15) plus 10M orders title search vs stock PG 18 GIN (`to_tsvector`):
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-clickbench-dark.svg">
+  <img alt="Per-query win map of the 43 ClickBench queries: the fastest arm of each tile; amber where a rival beats pg_sift." src="docs/charts/readme-clickbench-light.svg" width="860">
+</picture>
 
-![Exact BM25 Full-Text Search: pg_sift vs Elasticsearch, ParadeDB, and PG rum](docs/charts/search-bm25.svg)
+*Not measured for 6.0 yet: `bench/bench clickbench run` writes `docs/results/clickbench.tsv` and populates this section.*
 
-<!-- bench:v6-search:begin -->
-| Search Workload | `pg_sift` | Elasticsearch | ParadeDB | PG FTS |
+[Full tables and methodology](docs/benchmarks/clickbench.md)
+
+</details>
+<!-- bench:readme-clickbench:end -->
+
+<!-- bench:readme-search:begin -->
+<details>
+<summary><b>Exact BM25 search</b> — 4.1–16× ParadeDB QPS, 3 of 6 workloads at or above Elasticsearch</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-search-dark.svg">
+  <img alt="Throughput against index size on 50K Wikipedia articles: pg_sift is 4.1–16× ParadeDB; Elasticsearch leads in amber." src="docs/charts/readme-search-light.svg" width="860">
+</picture>
+
+`pg_sift` is 4.1–16× ParadeDB and ties or beats Elasticsearch on 3 of 6 workloads; Elasticsearch leads Filtered top-k (13,854 vs 12,604), Boolean `a OR b` (11,021 vs 8,201), Joined top-k\* (14,037 vs 6,689). \*Elasticsearch filters a denormalized field instead of joining.
+
+10M orders title search `count(*)`: 2.35 ms vs Elasticsearch 11.6 ms and PG GIN 78.5 ms. Cold p50: `pg_sift` 1.0–5.5 ms, Elasticsearch 3.1–4.8 ms, ParadeDB 13.1–17.1 ms.
+
+| Workload (50K, QPS) | `pg_sift` | Elasticsearch | ParadeDB | PG `rum` |
 |---|---:|---:|---:|---:|
-| Exact `count(*)` (50K Wiki, QPS) | **29,127** | 28,105 | 2,399 | 229 *(rum)* |
-| Phrase `"a b"` (50K Wiki, QPS) | **21,794** | 19,423 | 2,332 | 184 *(rum)* |
-| Boolean `a AND b` (50K Wiki, QPS) | **21,690** | 17,476 | 2,414 | 4,909 *(rum)* |
-| Filtered top-k (50K Wiki, QPS) | 12,604 | **13,854** | 2,241 | 113 *(rum)* |
-| Boolean `a OR b` (50K Wiki, QPS) | 8,201 | **11,021** | 2,000 | 50 *(rum)* |
-| Title search count (10M orders) | **2.35 ms** | 11.6 ms | n/a | 78.5 ms *(GIN)* |
-| Search + newest 10 (10M orders) | **13.1 ms** | 13.6 ms | n/a | 141.7 ms *(GIN)* |
-<!-- bench:v6-search:end -->
+| Exact `count(*)` | **29,127** | 28,105 | 2,399 | 229 |
+| Phrase `"a b"` | **21,794** | 19,423 | 2,332 | 184 |
+| Boolean `a AND b` | **21,690** | 17,476 | 2,414 | 4,909 |
+| Filtered top-k | 12,604 | **13,854** | 2,241 | 113 |
+| Boolean `a OR b` | 8,201 | **11,021** | 2,000 | 50 |
+| Joined top-k\* | 6,689 | **14,037** | 431 | 110 |
 
-*`pg_sift` delivers 4–12× ParadeDB QPS and matches or beats Elasticsearch on `AND`, `phrase`, and exact `count(*)` inside PostgreSQL's transaction boundary, while Elasticsearch leads on `OR`, `filter`, and denormalized `join`. Cold-cache p50 (`1.0–5.5 ms` vs `3.1–4.8 ms` ES and `13–17 ms` ParadeDB) and autocomplete latencies live in [docs/BENCHMARKS.md](docs/BENCHMARKS.md#3-exact-bm25-full-text-search-vs-elasticsearch-paradedb-and-postgresql).*
+[Full tables and methodology](docs/benchmarks/search.md)
 
-### Storage Footprint & Multi-Tenant Scope Snapshot
+</details>
+<!-- bench:readme-search:end -->
 
-![On-Disk Storage Footprint: 10M Orders & 50K Wikipedia BM25 Index](docs/charts/storage-footprint.svg)
+<!-- bench:readme-scopes:begin -->
+<details>
+<summary><b>Multi-tenant scoped analytics</b> — 72 of 72 cells faster than stock PostgreSQL, 249× on a tenant rollup</summary>
 
-<!-- bench:v6-storage:begin -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-scopes-dark.svg">
+  <img alt="Read latency against write cost of the scope index and its rivals: 72 of 72 cells faster than stock PostgreSQL (v5.0)." src="docs/charts/readme-scopes-light.svg" width="860">
+</picture>
+
+Tenant 1 `sum_by_month` on 2.4M events: `sift_scope` 2.18 ms vs 542 ms on stock PG (249×); 72 of 72 warm cells faster than stock PG (`v5.0`). Cells read win / tie / loss: `sift_scope` faster / within 0.1 ms or 10% / slower. Where a rival is faster (warm): `denorm_flat`: `latest_20_rows`; `ivm`: `count_by_score`, `filtered_count`.
+
+ClickHouse arms (`ch_join`, `ch_proj`): not measured yet.
+
+| Rival | Warm: win / tie / loss | Cold: win / tie / loss | Tenant 1 rollup |
+|---|---:|---:|---:|
+| `stock_default` | **72 / 0 / 0** | **71 / 0 / 1** | 542 ms vs **2.18 ms** |
+| `semijoin` | **63 / 2 / 7** | **62 / 1 / 9** | 285 ms vs **2.18 ms** |
+| `denorm_flat` | **51 / 2 / 19** | **48 / 1 / 23** | 329 ms vs **2.18 ms** |
+| `ivm` | **32 / 2 / 30** | **34 / 3 / 27** | 43.3 ms vs **2.18 ms** |
+
+[Full tables and methodology](docs/benchmarks/scopes.md)
+
+</details>
+<!-- bench:readme-scopes:end -->
+
+<!-- bench:readme-scalability:begin -->
+<details>
+<summary><b>Scalability and parallelism</b> — 1 to 8 workers, cold I/O by <code>io_method</code>, partitions, concurrent writers</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-scalability-dark.svg">
+  <img alt="Small multiples of row scale, parallel workers and cold I/O: speedup of pg_sift from 1 to 8 workers." src="docs/charts/readme-scalability-light.svg" width="860">
+</picture>
+
+*Not measured for 6.0 yet: `bench/bench scaling-io --docs` writes `docs/results/v6-scaling.tsv` and populates this section.*
+
+[Full tables and methodology](docs/benchmarks/scalability.md)
+
+</details>
+<!-- bench:readme-scalability:end -->
+
+<!-- bench:readme-storage:begin -->
+<details>
+<summary><b>Storage, churn and bounded memory</b> — <code>sift_table</code> 3.4× smaller than PG 18, RSS slope gated at 0.5 B/row</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-storage-dark.svg">
+  <img alt="On-disk size at 10M orders and peak memory by rows: sift_table 3.4× smaller than PG 18, memory flat to 10M rows." src="docs/charts/readme-storage-light.svg" width="860">
+</picture>
+
+`sift_table` is 3.4× smaller than PG 18 and within 35 MiB of ClickHouse at 10M orders, with the PK and BM25 inside. Memory is gated flat to 10M+ rows (`≤ 0.5 B/row` slope; caches capped at 16 / 64 MB).
+
+Rows marked `gate` are 6.0 targets until the 6.0 run replaces them. OLTP churn (`10%` `UPDATE`, `5%` `DELETE`, reads during churn): not measured yet.
+
 | Dimension | `pg_sift` | Reference | Comparison | Notes |
 |---|---:|---:|---:|---|
 | 10M orders (`sift_table`) | **457 MiB** | 1,549 MiB (PG 18) | **3.4× smaller** | vs 421 MiB ClickHouse, 1,457 MiB ES |
-| 10M orders (`sift_col`) | **1,438 MiB** | 1,549 MiB (PG 18) | **−7% vs PG** | Shares 1,023 MiB PG heap + PK |
+| 10M orders (`sift_col`) | **1,438 MiB** | 1,549 MiB (PG 18) | **−7% vs PG** | Shares the PG heap and PK |
 | 50K Wiki BM25 index | **30.2 MiB** | 54.5 MiB (ParadeDB) | **1.8× smaller** | 12.0 MiB `positions=off`; 70.5 MiB ES |
-| Scoped rollup (2.4M rows) | **2.18 ms** | 542 ms (PG 18) | **249× faster** | 72/72 warm wins vs stock PG (`v5.0`) |
-| Bounded memory (v6.0) | **16 / 64 MB** | O(1) flat RSS | **≤ 0.5 B/row** | `backend_cache_kb` / `shared_cache_kb` |
-<!-- bench:v6-storage:end -->
+| Scoped build RSS slope | `gate` ≤ 0.5 B/row | 470.8 B/row (v5.1) | 6.0 run pending | Scoped `CIC`, `maintenance_work_mem = 4MB` |
+| 1-row `INSERT` WAL | `gate` ≤ 220 B/row | 495.7 B/row (v5.1) | 6.0 run pending | 160,000 rows |
+| 2% `DELETE` WAL | `gate` ≤ 45 B/row | 98.7 B/row (v5.1) | 6.0 run pending | 160,000 rows |
 
-Full methodology, cold-cache tables, memory flatness gates (`≤ 0.5 B/row` slope to 10M+ rows), wide+JSONB compression & WAL metrics, and 1-command Docker reproduction (`bench/bench kit`) live in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+[Full tables and methodology](docs/benchmarks/storage-memory.md)
+
+</details>
+<!-- bench:readme-storage:end -->
 
 ## How It Works
 

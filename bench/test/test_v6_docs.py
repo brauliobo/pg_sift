@@ -44,15 +44,30 @@ class ReadmeRows(unittest.TestCase):
             os.makedirs(os.path.join(root, 'docs', 'results'))
             results(os.path.join(root, 'docs', 'results'))
             readme = os.path.join(root, 'README.md')
-            for name in ('v6-search', 'v6-storage', 'v6-readme'):
-                resultfile.replace_block(readme, name, ['x'])
-            v6_readme.render(os.path.join(root, 'docs', 'results', 'v6-readme.tsv'), root)
+            for slug in v6_readme.SECTIONS:
+                resultfile.replace_block(readme, 'readme-' + slug, ['x'])
+            v6_readme.render(root)
             return open(readme).read()
+
+    def test_every_section_is_a_block_with_its_picture_and_a_closed_details(self):
+        text = self.render(lambda d: None)
+        for slug in v6_readme.SECTIONS:
+            self.assertIn('<!-- bench:readme-%s:begin -->' % slug, text)
+            self.assertIn('srcset="docs/charts/readme-%s-dark.svg"' % slug, text)
+            self.assertIn('src="docs/charts/readme-%s-light.svg"' % slug, text)
+        self.assertEqual(text.count('<details open>'), 1)
+        self.assertEqual(text.count('<details>'), 5)
+        self.assertEqual(text.count('</details>'), 6)
+        self.assertEqual(text.count('</summary>\n\n'), 6)
+        self.assertEqual(text.count('\n\n</details>'), 6)
 
     def test_without_results_the_rows_are_the_committed_baseline(self):
         text = self.render(lambda d: None)
-        for cell in ('| Title search count (10M orders) | **2.35 ms** | 11.6 ms | n/a | 78.5 ms *(GIN)* |', '| Search + newest 10 (10M orders) | **13.1 ms** | 13.6 ms | n/a | 141.7 ms *(GIN)* |',
-                     '| Scoped rollup (2.4M rows) | **2.18 ms** | 542 ms (PG 18) | **249× faster** | 72/72 warm wins vs stock PG (`v5.0`) |'):
+        for cell in ('| Revenue per month (`sum`) | **0.93 ms** | 23.8 ms | 99.2 ms | 1,377 ms |', '| Joined top-k\\* | 6,689 | **14,037** | 431 | 110 |',
+                     '10M orders title search `count(*)`: 2.35 ms vs Elasticsearch 11.6 ms and PG GIN 78.5 ms.',
+                     '| `ivm` | **32 / 2 / 30** | **34 / 3 / 27** | 43.3 ms vs **2.18 ms** |', '| 10M orders (`sift_table`) | **457 MiB** | 1,549 MiB (PG 18) | **3.4× smaller** |',
+                     '| Scoped build RSS slope | `gate` ≤ 0.5 B/row | 470.8 B/row (v5.1) | 6.0 run pending |',
+                     'ClickHouse arms (`ch_join`, `ch_proj`): not measured yet.', '*Not measured for 6.0 yet: `bench/bench clickbench run`'):
             self.assertIn(cell, text)
 
     def test_the_rows_follow_the_results_files(self):
@@ -60,9 +75,18 @@ class ReadmeRows(unittest.TestCase):
             store_json(os.path.join(d, 'store-scaling.json'), [latency(e, c, v) for c, vals in (('search-count', (1.5, 9.0, 60.0)), ('search-newest', (7.0, 5.0, 100.0))) for e, v in zip(('sift', 'es', 'pg'), vals)])
             write_scope_stock(os.path.join(d, 'scope-stock.tsv'), 1.0, 300.0)
         text = self.render(results)
-        self.assertIn('| Title search count (10M orders) | **1.50 ms** | 9.00 ms | n/a | 60.0 ms *(GIN)* |', text)
-        self.assertIn('| Search + newest 10 (10M orders) | 7.00 ms | **5.00 ms** | n/a | 100.0 ms *(GIN)* |', text)
-        self.assertIn('| Scoped rollup (2.4M rows) | **1.00 ms** | 300 ms (PG 18) | **300× faster** | 1/1 warm wins vs stock PG (`v6.0`) |', text)
+        self.assertIn('10M orders title search `count(*)`: 1.50 ms vs Elasticsearch 9.00 ms and PG GIN 60.0 ms.', text)
+        self.assertIn('Tenant 1 `sum_by_month` on 2.4M events: `sift_scope` 1.00 ms vs 300 ms on stock PG (300×); 1 of 1 warm cells faster than stock PG (`v6.0`).', text)
+        self.assertIn('| `stock_default` | **1 / 0 / 0** | **1 / 0 / 0** | 300 ms vs **1.00 ms** |', text)
+
+    def test_the_clickbench_table_is_the_geomean_of_each_arm(self):
+        def results(d):
+            rows = [dict(case=c, arm=a, metric=m, value=v) for c in ('Q0', 'Q1') for a, w in (('pg', 10), ('sift_table', 1)) for m, v in (('warm_ms', w), ('md5_equal', 1))]
+            resultfile.write(os.path.join(d, 'clickbench.tsv'), 'clickbench', dict(tier='5M', source='synthetic', date='2026-12-01'), rows)
+        text = self.render(results)
+        self.assertIn('| `sift_table` | 1.00 ms | — | 2 of 2 | 2 / 2 |', text)
+        self.assertIn('| PG 18 | 10.0 ms | — | 0 of 2 | 2 / 2 |', text)
+        self.assertIn('`sift_table` has the lowest warm geomean over 2 queries', text)
 
     def test_the_storage_notes_follow_the_size_rows(self):
         with tempfile.TemporaryDirectory() as d:
@@ -76,31 +100,46 @@ class ReadmeRows(unittest.TestCase):
 
 class BenchmarksBlocks(unittest.TestCase):
     def page(self, root, *names):
+        """every page of docs/benchmarks/ with the blocks of `names` it holds (render reads all of them); returns the text of them all"""
         os.makedirs(os.path.join(root, 'docs', 'results'), exist_ok=True)
-        page = os.path.join(root, 'docs', 'BENCHMARKS.md')
-        for name in names:
-            resultfile.replace_block(page, name, ['committed'])
-        return page
+        os.makedirs(os.path.join(root, 'docs', 'benchmarks'), exist_ok=True)
+        for slug, blocks in v6_benchmarks.PAGES.items():
+            open(os.path.join(root, 'docs', 'benchmarks', slug + '.md'), 'w').close()
+            for name in (n for n in names if n in blocks):
+                resultfile.replace_block(os.path.join(root, 'docs', 'benchmarks', slug + '.md'), name, ['committed'])
+
+    def text(self, root):
+        return ''.join(open(os.path.join(root, 'docs', 'benchmarks', slug + '.md')).read() for slug in v6_benchmarks.PAGES)
 
     def test_a_cross_engine_block_without_its_results_keeps_the_committed_text(self):
         with tempfile.TemporaryDirectory() as root:
-            page = self.page(root, *v6_benchmarks.BLOCKS)
+            self.page(root, *v6_benchmarks.BLOCKS)
             for name in ('v6-orders-10m', 'v6-search-warm', 'v6-size-orders'):
                 self.assertIsNone(v6_benchmarks.BLOCKS[name](root))
             v6_benchmarks.render(root)
-            text = open(page).read()
+            text = self.text(root)
         self.assertIn('<!-- bench:v6-orders-10m:begin -->\ncommitted\n<!-- bench:v6-orders-10m:end -->', text)
+        self.assertIn('| `ivm` | **32 / 2 / 30** | **34 / 3 / 27** | 43.3 ms vs **2.18 ms** | 58.4 ms vs **1.52 ms** |', text)
+
+    def test_an_arm_that_ran_is_a_column_of_the_orders_tables(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.page(root, 'v6-orders-10m')
+            store_json(os.path.join(root, 'docs', 'results', 'store-scaling.json'),
+                       [latency(e, s, 1.0) for s in readme_charts.QUERY_SLUG.values() for e in ('sift', 'sift_table', 'ch', 'ch_proj', 'es', 'pg')])
+            v6_benchmarks.render(root)
+            head = self.text(root).split('\n')[1]
+        self.assertEqual(head, '| Query (10M orders) | `sift_col` | `sift_table` | ClickHouse | ClickHouse + PROJECTION | Elasticsearch | PG 18 |')
 
     def test_the_6_0_columns_are_tbd_until_v6_core_exists_then_the_numbers(self):
         with tempfile.TemporaryDirectory() as root:
-            page = self.page(root, 'v6-scope-build', 'v6-memory', 'v6-scaling')
+            self.page(root, 'v6-scope-build', 'v6-memory', 'v6-scaling')
             v6_benchmarks.render(root)
-            before = open(page).read()
+            before = self.text(root)
             core = open(readme_charts.MEMORY_BASELINE).read().replace('\t1.79\tx\t', '\t1.10\tx\t')
             with open(os.path.join(root, 'docs', 'results', 'v6-core.tsv'), 'w') as f:
                 f.write(core)
             v6_benchmarks.render(root)
-            after = open(page).read()
+            after = self.text(root)
         self.assertIn('| Plain scoped `CREATE INDEX` wall time | 1.79× entity | ≤ 1.15× entity | *TBD* |', before)
         self.assertIn('| Plain scoped `CREATE INDEX` wall time | 1.79× entity | ≤ 1.15× entity | 1.10× entity |', after)
         self.assertNotIn('*TBD*', after)
@@ -111,18 +150,20 @@ class BenchmarksBlocks(unittest.TestCase):
         rows = [dict.fromkeys(columns, '') | dict(suite='A', probe='A1_scan_filter', workers=w, speedup=sp, gate_pass='-', io_method='-', read_stream='-') for w, sp in ((1, '1.00'), (4, '3.60'))]
         rows += [dict.fromkeys(columns, '') | dict(suite='B', probe='B1_cold_wide_scan', workers=4, io_method=m, read_stream='on', throughput=t, gate_pass='pass') for m, t in (('sync', '900'), ('io_uring', '2400'))]
         with tempfile.TemporaryDirectory() as root:
-            page = self.page(root, 'v6-scaling')
+            self.page(root, 'v6-scaling')
             with open(os.path.join(root, 'docs', 'results', 'v6-scaling.tsv'), 'w') as f:
                 f.write('# cpu=test\n' + '\t'.join(columns) + '\n' + ''.join('\t'.join(str(r[c]) for c in columns) + '\n' for r in rows))
             v6_benchmarks.render(root)
-            text = open(page).read()
+            text = self.text(root)
         self.assertIn('| A1_scan_filter | 1.00× | 3.60× |', text)
         self.assertIn('| B1_cold_wide_scan | 2,400 MB/s (4w) | 900 MB/s (4w) |', text)
 
-    def test_every_block_of_the_page_has_a_renderer(self):
-        with open(os.path.join(ROOT, 'docs', 'BENCHMARKS.md')) as f:
-            text = f.read()
-        self.assertEqual(set(re.findall(r'<!-- bench:(v6-[\w-]+):begin', text)), set(v6_benchmarks.BLOCKS))
+    def test_every_block_of_the_pages_has_a_renderer_and_sits_on_its_page(self):
+        for slug, names in v6_benchmarks.PAGES.items():
+            with open(os.path.join(ROOT, 'docs', 'benchmarks', slug + '.md')) as f:
+                found = set(re.findall(r'<!-- bench:(v6-[\w-]+):begin', f.read()))
+            self.assertEqual(found, set(names), slug)
+        self.assertEqual({n for names in v6_benchmarks.PAGES.values() for n in names}, set(v6_benchmarks.BLOCKS))
 
 
 class ReadStreamSwitch(unittest.TestCase):

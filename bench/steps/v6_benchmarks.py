@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the generated tables of docs/BENCHMARKS.md from docs/results/ (the `<!-- bench:v6-*:begin/end -->` blocks).
+"""Render the generated tables of docs/benchmarks/*.md from docs/results/ (the `<!-- bench:v6-*:begin/end -->` blocks; PAGES says which page holds which).
 
     python3 -I bench/steps/v6_benchmarks.py [--root DIR]
 
@@ -10,6 +10,7 @@ Two kinds of blocks, both functions of the results files only (no figure of a bl
   store-scaling.json, store.json, articles.tsv, duckdb-10000000.tsv (`bench/bench store|all|duckdb --docs`): the cross-engine tables. A block whose results are not
   in docs/results/ keeps the committed measurement it holds.
     v6-orders-10m, v6-orders-1m, v6-search-warm, v6-search-cold, v6-search-10m, v6-size-orders, v6-size-bm25
+  v6-scope-baseline is the committed 5.0 scope suite of scope_stock_tables.py (always rendered).
 """
 import argparse
 import json
@@ -20,12 +21,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import readme_charts  # noqa: E402
 import resultfile  # noqa: E402
+import scope_stock_tables  # noqa: E402
 from readme_charts import QUERY_SLUG, read_tsv  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 BASELINE = readme_charts.MEMORY_BASELINE
 TBD = '*TBD*'
 DASH = '—'
+TARGET = {'cic_rss_anon_b_per_row': '≤ 0.5 B/row', 'oltp_ins1_wal_b_per_row': '≤ 220 B/row', 'delete_2pct_wal_b_per_row': '≤ 45 B/row'}   # the 6.0 gates the README states too
 
 
 def ms(v):
@@ -75,20 +78,26 @@ def duckdb_warm(root):
     return {r['case']: float(r['value']) for r in rows if r['arm'] == 'duckdb_parquet' and r['metric'] == 'warm_ms'}
 
 
+ORDERS_ENGINES = (('sift', '`sift_col`'), ('sift_table', '`sift_table`'), ('ch', 'ClickHouse'), ('ch_proj', 'ClickHouse + PROJECTION'), ('es', 'Elasticsearch'),
+                  ('duckdb', 'DuckDB Parquet'), ('pg', 'PG 18'))
+
+
+def shown(engines, qids, get):
+    """the (engine, header) of ORDERS_ENGINES in `engines` that have a value in some of the queries: an arm that was not run has no column"""
+    return [(e, h) for e, h in ORDERS_ENGINES if e in engines and any(get(e, QUERY_SLUG[q]) is not None for q in qids)]
+
+
 def render_orders_10m(root):
     got = store_rows(results_path(root, 'store-scaling.json'), '10M-c3')
     if not got:
         return None
     S, dk = Store(got), duckdb_warm(root)
-    head = ['Query (10M orders)', '`sift_col`', '`sift_table`', 'ClickHouse', 'DuckDB Parquet', 'PG 18']
     names = {'01': 'Point lookup (`WHERE id = 42`)', '02': 'Count by country (`GROUP BY`)', '03': 'Revenue / month (`sum GROUP BY`)', '04': 'Top 10 categories (`LIMIT 10`)',
              '05': 'Avg shipped order (3 filters)', '06': 'Distinct customers / month', '07': 'Big recent orders (range + `>100`)'}
-    body = []
-    for qid, label in names.items():
-        slug = QUERY_SLUG[qid]
-        vals = [S.get('sift', slug, 'warm'), S.get('sift_table', slug, 'warm'), S.get('ch', slug, 'warm'), dk.get(slug), S.get('pg', slug, 'warm')]
-        body.append([f'`{qid}` {label}'] + bold_best([(v, ms(v)) for v in vals], min))
-    return resultfile.table(head, body, ['---'] + ['---:'] * 5)
+    get = lambda e, slug: dk.get(slug) if e == 'duckdb' else S.get(e, slug, 'warm')
+    cols = shown({e for e, _ in ORDERS_ENGINES}, names, get)
+    body = [[f'`{qid}` {label}'] + bold_best([(get(e, QUERY_SLUG[qid]), ms(get(e, QUERY_SLUG[qid]))) for e, _ in cols], min) for qid, label in names.items()]
+    return resultfile.table(['Query (10M orders)'] + [h for _, h in cols], body, ['---'] + ['---:'] * len(cols))
 
 
 def render_orders_1m(root):
@@ -96,16 +105,15 @@ def render_orders_1m(root):
     if not got:
         return None
     S = Store(got)
-    head = ['Query (1M orders, warm / cold)', '`sift_col`', '`sift_table`', 'ClickHouse', 'Elasticsearch', 'PG 18']
-    engines = ('sift', 'sift_table', 'ch', 'es', 'pg')
+    qids = ('02', '03', '04', '05', '06', '07')
+    cols = shown({'sift', 'sift_table', 'ch', 'ch_proj', 'es', 'pg'}, qids, lambda e, slug: S.get(e, slug, 'warm'))
     body = []
-    for qid in ('02', '03', '04', '05', '06', '07'):
-        slug = QUERY_SLUG[qid]
-        pairs = [(S.get(e, slug, 'warm'), S.get(e, slug, 'cold')) for e in engines]
+    for qid in qids:
+        pairs = [(S.get(e, QUERY_SLUG[qid], 'warm'), S.get(e, QUERY_SLUG[qid], 'cold')) for e, _ in cols]
         warm = bold_best([(w, ms(w)) for w, _ in pairs], min)
         cold = bold_best([(c, ms(c)) for _, c in pairs], min)
         body.append([f'`{qid}` {readme_charts_label(qid)}'] + [f'{w} / {c}' for w, c in zip(warm, cold)])
-    return resultfile.table(head, body, ['---'] + ['---:'] * 5)
+    return resultfile.table(['Query (1M orders, warm / cold)'] + [h for _, h in cols], body, ['---'] + ['---:'] * len(cols))
 
 
 def readme_charts_label(qid):
@@ -226,6 +234,10 @@ def cell(v, fmt):
     return TBD if v is None else fmt % v
 
 
+def slope(c, metric):
+    return next((float(r['value']) for (s, m, _), r in c.v.items() if s == 'S_slopes' and m == metric), None)
+
+
 def pass2_pct(c, n):
     a, b = c.get('A_build_cic', 'pass1_ms', n), c.get('A_build_cic', 'pass2_ms', n)
     return None if not a or b is None else b / a * 100
@@ -261,8 +273,8 @@ def render_wide_json(root):
         ('Heap + TOAST', 'G_size', 'heap_b_per_row', '%.1f B/row', '—', '—', '—'),
         ('Page / extent utilization', 'G_size', 'page_utilization_pct', '%.0f%%', '92–96%', '~99%', '≥ 95%'),
         ('Bulk build WAL (`wal_level=replica`)', 'G_wal', 'cic_wal_b_per_row', '%.1f B/row', '—', '—', '≤ 45 B/row'),
-        ('1-row OLTP `INSERT` WAL', 'G_wal', 'oltp_ins1_wal_b_per_row', '%.1f B/row', '~460 B/row', 'n/a', '≤ 220 B/row'),
-        ('2% `DELETE` WAL (incl. DV fold)', 'G_wal', 'delete_2pct_wal_b_per_row', '%.1f B/row', '~60 B/row', '~40 B/row', '≤ 45 B/row'),
+        ('1-row OLTP `INSERT` WAL', 'G_wal', 'oltp_ins1_wal_b_per_row', '%.1f B/row', '~460 B/row', 'n/a', TARGET['oltp_ins1_wal_b_per_row']),
+        ('2% `DELETE` WAL (incl. DV fold)', 'G_wal', 'delete_2pct_wal_b_per_row', '%.1f B/row', '~60 B/row', '~40 B/row', TARGET['delete_2pct_wal_b_per_row']),
         ('Steady-state compaction WA', 'G_compaction', 'write_amplification', '%.2f×', '—', '3.0–5.0×', '≤ 2.35×'),
     ]
     body = []
@@ -276,7 +288,6 @@ def render_wide_json(root):
 def render_memory(root):
     base, now, _ = cores(root)
     first, last = '%dk' % (min(base.scales) // 1000), '%dk' % (max(base.scales) // 1000)
-    slope = lambda c, metric: next((float(r['value']) for (s, m, sc), r in c.v.items() if s == 'S_slopes' and m == metric), None)
     rows = [
         ('Scoped `CIC` `RssAnon` slope', '`maintenance_work_mem = 4MB`', 'cic_rss_anon_b_per_row'),
         ('Scoped `CIC` temp-file slope', '`maintenance_work_mem = 4MB`', 'cic_temp_b_per_row'),
@@ -284,7 +295,8 @@ def render_memory(root):
         ('Scoped `CIC` WAL slope', '—', 'cic_wal_b_per_row'),
         ('`VACUUM` `RssAnon` slope', '`maintenance_work_mem = 4MB`', 'vac1_rss_anon_b_per_row'),
     ]
-    body = [[name, budget, '≤ 0.5 B/row' if 'RssAnon' in name or 'temp' in name else '—', cell(slope(base, m), '%.1f B/row'), cell(slope(now, m), '%.1f B/row')] for name, budget, m in rows]
+    body = [[name, budget, TARGET['cic_rss_anon_b_per_row'] if 'RssAnon' in name or 'temp' in name else '—', cell(slope(base, m), '%.1f B/row'), cell(slope(now, m), '%.1f B/row')]
+            for name, budget, m in rows]
     idle = lambda c: c.get('E_idle_backend', 'rss_anon_delta_mb', 34)
     body.append(['Idle pooled backends (34 indexes)', '`backend_cache_kb` cap', '≤ cap + 8 MB', cell(idle(base), '+%.1f MB'), cell(idle(now), '+%.1f MB')])
     return [f'Slopes are an OLS fit over the {first}–{last} ladder (`docs/results/v6-core.tsv`; 5.1 from `bench/baselines/v510.tsv`):', ''] \
@@ -331,19 +343,27 @@ def render_scaling(root):
     return out
 
 
-BLOCKS = {
-    'v6-orders-10m': render_orders_10m, 'v6-orders-1m': render_orders_1m, 'v6-gates': render_gates, 'v6-search-warm': render_search_warm, 'v6-search-cold': render_search_cold,
-    'v6-search-10m': render_search_10m, 'v6-scope-build': render_scope_build, 'v6-size-orders': render_size_orders, 'v6-size-bm25': render_size_bm25,
-    'v6-wide-json': render_wide_json, 'v6-memory': render_memory, 'v6-scaling': render_scaling,
+def render_scope_baseline(root):
+    return scope_stock_tables.baseline_table()
+
+
+BLOCKS = {   # block name: renderer
+    'v6-orders-10m': render_orders_10m, 'v6-orders-1m': render_orders_1m, 'v6-search-warm': render_search_warm, 'v6-search-cold': render_search_cold,
+    'v6-search-10m': render_search_10m, 'v6-scope-baseline': render_scope_baseline, 'v6-scope-build': render_scope_build, 'v6-gates': render_gates,
+    'v6-scaling': render_scaling, 'v6-size-orders': render_size_orders, 'v6-size-bm25': render_size_bm25, 'v6-wide-json': render_wide_json, 'v6-memory': render_memory,
+}
+PAGES = {   # page of docs/benchmarks/ -> its blocks
+    'analytics': ('v6-orders-10m', 'v6-orders-1m'), 'search': ('v6-search-warm', 'v6-search-cold', 'v6-search-10m'), 'scopes': ('v6-scope-baseline', 'v6-scope-build'),
+    'scalability': ('v6-gates', 'v6-scaling'), 'storage-memory': ('v6-size-orders', 'v6-size-bm25', 'v6-wide-json', 'v6-memory'),
 }
 
 
 def render(root):
-    page = os.path.join(root, 'docs', 'BENCHMARKS.md')
-    text = open(page, encoding='utf-8').read()
-    for name, renderer in BLOCKS.items():
-        if '<!-- bench:%s:begin' % name in text:
-            lines = renderer(root)
+    for slug, names in PAGES.items():
+        page = os.path.join(root, 'docs', 'benchmarks', slug + '.md')
+        text = open(page, encoding='utf-8').read()
+        for name in names:
+            lines = BLOCKS[name](root) if '<!-- bench:%s:begin' % name in text else None
             if lines is not None:
                 resultfile.replace_block(page, name, lines)
 

@@ -198,7 +198,7 @@ class Merge(unittest.TestCase):
 
 
 class Render(unittest.TestCase):
-    PAGES = {'docs/BENCHMARKS.md': 'scope-stock-tally scope-stock-geomean scope-stock-costs'}
+    PAGES = {'docs/benchmarks/scopes.md': 'scope-stock-tally scope-stock-geomean scope-stock-costs'}
 
     def tree(self, root):
         for page, names in self.PAGES.items():
@@ -215,7 +215,7 @@ class Render(unittest.TestCase):
             first = {p: open(os.path.join(root, p)).read() for p in self.PAGES}
             tables.render(results, root)
             self.assertEqual(first, {p: open(os.path.join(root, p)).read() for p in self.PAGES})
-        page = first['docs/BENCHMARKS.md']
+        page = first['docs/benchmarks/scopes.md']
         self.assertIn('`ivm` | 2 | 0 / 1 / 1', page)
         self.assertTrue(page.endswith('after\n'))
 
