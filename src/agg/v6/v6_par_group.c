@@ -29,13 +29,10 @@ typedef struct ParEnv
 	TupleDesc	desc;
 	MemoryContext tuple_cx;		/* what a finished group is made in: the per-tuple memory of the node */
 	SiftV6ParDsmHdr *hdr;
-	Relation	heap;
-	Relation	index;
-	ScanKey		keys;
-	int			nkeys;
+	const SiftV6ScanSrc *sources;
+	uint32		nsources;
 	Snapshot	snap;
-	SiftV6Scan *scan;
-	const SiftParOps *par;
+	SiftV6Scan **scan;			/* of each source, begun by the first morsel of it */
 	SiftV6ScanStats stats;
 	SiftV6ScanStats seen;
 	V6AccOp    *op;
@@ -205,16 +202,18 @@ batch_to_local(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVe
 	sift_v6_group_update(((ParEnv *) arg)->cur->g, bs, keyvec, argvec);
 }
 
-static void
-open_scan(ParEnv *e)
+static SiftV6Scan *
+open_scan(ParEnv *e, uint32 child)
 {
-	const SiftV6ParDsmHdr *h = e->hdr;
+	const SiftV6ScanSrc *src = &e->sources[child];
+	uint32		nstaged;
+	const uint64 *staged = sift_v6_par_staged_dead(e->hdr, child, &nstaged);
 	MemoryContext old = MemoryContextSwitchTo(e->cx);
 
-	e->par = sift_store_ops_for_oid(RelationGetRelid(e->index), false)->par;
-	e->scan = e->par->begin(e->spec, e->heap, e->index, e->keys, e->nkeys, e->snap, &e->stats, batch_to_local, e);
-	e->par->morsel_begin(e->scan, (const uint64 *) ((const char *) h + h->staged_dead_off), h->n_staged_dead);
+	e->scan[child] = src->ops->par->begin(e->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, batch_to_local, e);
+	src->ops->par->morsel_begin(e->scan[child], staged, nstaged);
 	MemoryContextSwitchTo(old);
+	return e->scan[child];
 }
 
 static void *
@@ -253,10 +252,9 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 {
 	ParLocal   *l = local;
 	ParEnv	   *e = l->env;
-	const SiftParPartRef *refs = (const SiftParPartRef *) ((const char *) e->hdr + e->hdr->parts_off);
+	const SiftParPartRef *ref = (const SiftParPartRef *) ((const char *) e->hdr + e->hdr->parts_off) + m->part;
+	SiftV6Scan *scan = e->scan[ref->child_idx] != NULL ? e->scan[ref->child_idx] : open_scan(e, ref->child_idx);
 
-	if (e->scan == NULL)
-		open_scan(e);
 	if (!l->scanning)
 	{
 		MemoryContext old = MemoryContextSwitchTo(l->cx);
@@ -272,7 +270,7 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 		MemoryContextSwitchTo(old);
 	}
 	e->cur = l;
-	e->par->morsel(e->scan, l->g, &refs[m->part], m->first, m->n);
+	e->sources[ref->child_idx].ops->par->morsel(scan, l->g, ref, m->first, m->n);
 	st->rows_scanned += e->stats.rows - e->seen.rows;
 	st->grans_scanned += e->stats.batches - e->seen.batches;
 	st->grans_preagg += e->stats.grans_preagg - e->seen.grans_preagg;
@@ -487,7 +485,7 @@ par_local_set_dist(void *local, uint32 slot, uint64 total)
 }
 
 void
-sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap)
+sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, const SiftV6ScanSrc *sources, Snapshot snap)
 {
 	ParEnv	   *e = MemoryContextAllocZero(cx, sizeof(ParEnv));
 
@@ -498,11 +496,10 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	e->desc = desc;
 	e->tuple_cx = tuple_cx;
 	e->hdr = hdr;
-	e->heap = heap;
-	e->index = index;
-	e->keys = keys;
-	e->nkeys = nkeys;
+	e->sources = sources;
+	e->nsources = hdr->n_children;
 	e->snap = snap;
+	e->scan = MemoryContextAllocZero(cx, e->nsources * sizeof(SiftV6Scan *));
 	e->lean = sift_v6_par_dist_lean(spec);
 	e->op = MemoryContextAlloc(cx, Max(spec->naggs, 1) * sizeof(V6AccOp));
 	for (int j = 0; j < spec->naggs; j++)
@@ -517,7 +514,10 @@ sift_v6_par_engine_end(SiftV6ParEngine *eng)
 {
 	ParEnv	   *e = eng->env;
 
-	if (e->scan != NULL)
-		e->par->end(e->scan);
-	e->scan = NULL;
+	for (uint32 k = 0; k < e->nsources; k++)
+	{
+		if (e->scan[k] != NULL)
+			e->sources[k].ops->par->end(e->scan[k]);
+		e->scan[k] = NULL;
+	}
 }

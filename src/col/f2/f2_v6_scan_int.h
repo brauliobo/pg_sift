@@ -21,6 +21,7 @@
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_vet.h"
 #include "col/f2/f2_scope_route.h"
+#include "col/f2/f2_store_scan.h"
 
 typedef struct V6Col
 {
@@ -107,6 +108,8 @@ struct SiftV6Scan
 	const SiftScopeRouter *router;	/* a scan for the facts of one scope key: the granules the summary of the scope does not name for it are not read (f2_scope_route.h) */
 	bool		all_visible;	/* the run of granules being read is of a frozen part with no deletion: its rows need no look at the heap */
 	IndexScanDesc scan;			/* a scan that is begun apart from its run (sift_v6_scan_begin) */
+	SiftStoreScan *store_scan;	/* the same for a sift_table, which has no index to scan */
+	bool		unsatisfiable;	/* a sift_table whose quals no row satisfies */
 	int		   *leaves;
 	SiftV6Recheck recheck;		/* a fold: whether the heap keeps a row the stored values could not decide */
 	void	   *recheck_arg;

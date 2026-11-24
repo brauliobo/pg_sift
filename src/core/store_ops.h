@@ -253,8 +253,8 @@ typedef struct SiftDictOps
  */
 typedef struct SiftParOps
 {
-	struct SiftV6Scan *(*begin) (const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, struct SiftV6ScanStats *stats,
-								 void (*emit) (void *arg, const struct SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg);
+	struct SiftV6Scan *(*begin) (const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
+								 struct SiftV6ScanStats *stats, void (*emit) (void *arg, const struct SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg);
 	void		(*plan) (struct SiftV6Scan *s, SiftF2ParPlan *out);
 	void		(*morsel_begin) (struct SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
 	void		(*morsel) (struct SiftV6Scan *s, struct SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n);

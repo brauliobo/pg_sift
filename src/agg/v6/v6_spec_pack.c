@@ -105,7 +105,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 		ints = put_int64(put_int64(lappend_int(ints, s->bin[i].key), s->bin[i].stride_us), s->bin[i].origin);
 	ints = lappend_int(ints, s->nparts);
 	for (int k = 0; k < s->nparts; k++)
-		ints = lappend_int(ints, (int) s->part_index[k]);
+		ints = lappend_int(lappend_int(ints, (int) s->part_index[k]), s->part_is_table[k]);
 	ints = lappend_int(ints, s->part_ncols);
 	for (int i = 0; i < s->nparts * s->part_ncols; i++)
 		ints = lappend_int(ints, s->part_attno[i]);
@@ -170,8 +170,12 @@ sift_v6_spec_unpack(const List *l)
 	}
 	s->nparts = list_nth_int(ints, at++);
 	s->part_index = palloc(Max(s->nparts, 1) * sizeof(Oid));
+	s->part_is_table = palloc(Max(s->nparts, 1) * sizeof(bool));
 	for (int k = 0; k < s->nparts; k++)
+	{
 		s->part_index[k] = (Oid) list_nth_int(ints, at++);
+		s->part_is_table[k] = list_nth_int(ints, at++);
+	}
 	s->part_ncols = list_nth_int(ints, at++);
 	s->part_attno = palloc(Max(s->nparts * s->part_ncols, 1) * sizeof(AttrNumber));
 	for (int i = 0; i < s->nparts * s->part_ncols; i++)

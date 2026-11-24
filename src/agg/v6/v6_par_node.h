@@ -12,6 +12,7 @@
 #include "utils/snapshot.h"
 
 #include "agg/v6/v6.h"
+#include "agg/v6/v6_scan_src.h"
 
 typedef struct SiftV6ParNode SiftV6ParNode;
 
@@ -31,7 +32,7 @@ typedef struct SiftV6ParSummary
 	uint64		heap_vet_rows;
 } SiftV6ParSummary;
 
-extern SiftV6ParNode *sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, MemoryContext mcx,
+extern SiftV6ParNode *sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, Snapshot snap, MemoryContext mcx,
 											 MemoryContext tuple_cx);
 /* false: there is no shared block (a Gather with no workers makes none) and the node runs as a serial one */
 extern bool sift_v6_par_node_attached(const SiftV6ParNode *pn);

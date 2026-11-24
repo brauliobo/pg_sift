@@ -59,7 +59,8 @@ struct SiftStoreScan
 	SiftF2TimeWin tw;
 	SiftTblVis	tvis;			/* a sift_table */
 	SiftColDeltaScan *delta;	/* a sift_table */
-	const SiftPendDelIndex *staged_px;	/* a sift_col: the deletes of the transaction not yet in a pending delete, as a set */
+	const SiftPendDelIndex *staged_px;	/* the deletes of the transaction not yet in a pending delete, as a set: a sift_col scan reads them from the stage, a parallel table scan is given them */
+	struct MorselPart *morsel;	/* a parallel table scan: the part the last run of granules was of */
 	bool	   *want;
 	SiftPredSet *psets;			/* the constants of each IN predicate, hashed when the list is long */
 	int		   *check_cols;		/* the wanted leaves that are not NaN leaves: the ones whose unsure cells a table scan refuses */
@@ -305,7 +306,7 @@ load_views(SiftStorePart *p)
 static bool
 table_row(SiftStorePart *p, uint16 r)
 {
-	return sift_tbl_f2_vis_row(&p->s->tvis, p->gb, r, p->px);
+	return sift_tbl_f2_vis_row(&p->s->tvis, p->gb, r, p->px) && !sift_pdel_idx_has(p->s->staged_px, p->tids[r]);
 }
 
 static void
@@ -651,6 +652,14 @@ run_add_partition(SiftStoreScan *s, int i)
 		}
 }
 
+static const SiftPlanSnapshot *
+scan_view(SiftStoreScan *s)
+{
+	if (s->view == NULL)
+		s->view = s->o->plan != NULL ? s->o->plan : sift_f2_view(s->o->rel, s->store, s->cx);
+	return s->view;
+}
+
 static void
 run_reset(SiftStoreScan *s)
 {
@@ -675,7 +684,7 @@ sift_f2_store_scan_next_run(SiftStoreScan *s, bool ordered)
 	MemoryContext old = MemoryContextSwitchTo(s->cx);
 
 	run_reset(s);
-	while (s->run == NIL && s->possible && s->next < s->view->npartitions)
+	while (s->run == NIL && s->possible && s->next < scan_view(s)->npartitions)
 	{
 		int			first = s->next++;
 
@@ -721,7 +730,6 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	s->possible = s->possible && s->plan.state != SIFT_KEY_PLAN_EMPTY;
 	if (!s->possible)
 		return s;
-	s->view = o->plan != NULL ? o->plan : sift_f2_view(o->rel, o->store, cx);
 	if (table)
 	{
 		sift_tbl_f2_vis_begin(&s->tvis, o->rel, o->snap);
@@ -737,10 +745,14 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	return s;
 }
 
+static void morsel_end(SiftStoreScan *s);
+
 void
 sift_f2_store_scan_close(SiftStoreScan *s)
 {
 	run_reset(s);
+	if (s->morsel != NULL)
+		morsel_end(s);
 	MemoryContextDelete(s->cx);
 }
 
@@ -773,4 +785,132 @@ sift_f2_store_scan_sink(const SiftStoreScanOpts *o, SiftF2Sink sink, void *sink_
 		sift_f2_scan_sink_maybe(o->scan, sink, sink_arg, o->leaves, o->nleaves);
 	else
 		sift_f2_scan_sink(o->scan, sink, sink_arg, o->leaves, o->nleaves);
+}
+
+/* ---- a parallel scan of a sift_table: the units the leader lists, the runs of granules a participant reads ---- */
+
+/* What a participant keeps between its runs: the part it has open, and the pending deletes of its partition */
+typedef struct MorselPart
+{
+	SiftStorePart *part;
+	SiftPartitionEntry e;
+	SiftPartDesc d;
+	SiftPendDelIndex *px;
+	bool		have_px;
+} MorselPart;
+
+typedef struct UnitList
+{
+	SiftF2ParPlan *out;
+	uint32		cap;
+} UnitList;
+
+static void
+add_part_units(SiftStoreScan *s, UnitList *u, const SiftPartitionEntry *e, const SiftPartDesc *d)
+{
+	SiftParPartRef ref = {.desc = *d,.part_id = e->part_id,.l0_slab_blk = InvalidBlockNumber,.pend_del_blk = e->pend_del_blk,.entry_flags = e->flags,.manifest_gen = e->manifest_gen,
+	.manifest_blk = e->manifest_blk};
+	uint32		spans[SIFT_F2_MAX_RANGES][2];
+	int			nspans = sift_f2_granule_spans(s->o->rel, sift_part_open_desc(s->o->rel, d, (uint32) e->part_id), &s->f, &s->ks, &s->plan, spans);
+
+	if (u->out->nrefs + nspans > u->cap)
+		u->out->refs = repalloc(u->out->refs, (u->cap = Max(2 * u->cap, u->out->nrefs + nspans)) * sizeof(SiftParPartRef));
+	for (int i = 0; i < nspans; i++)
+	{
+		ref.g_base = spans[i][0];
+		ref.ngranules = spans[i][1] - spans[i][0];
+		u->out->refs[u->out->nrefs++] = ref;
+	}
+}
+
+void
+sift_f2_store_par_plan(SiftStoreScan *s, SiftF2ParPlan *out)
+{
+	UnitList	u = {.out = out,.cap = 16};
+	int			nstaged;
+
+	*out = (SiftF2ParPlan) {.refs = palloc(u.cap * sizeof(SiftParPartRef))};
+	for (int i = 0; s->possible && i < scan_view(s)->npartitions; i++)
+	{
+		const SiftPartitionEntry *e = &s->view->partitions[i];
+		bool		dirty[SIFT_MANIFEST_TIME_COLS] = {false};
+
+		partition_dirty(s, e, dirty);
+		if (!partition_in_window(s, e, dirty))
+			continue;
+		for (int j = 0; j < s->view->partlists[i].nparts; j++)
+			if (part_wanted(s, &s->view->partlists[i].parts[j], dirty))
+				add_part_units(s, &u, e, &s->view->partlists[i].parts[j]);
+	}
+	out->staged_dead = sift_stage_dead(s->o->rel, s->o->snap, &nstaged);
+	out->nstaged = (uint32) nstaged;
+}
+
+void
+sift_f2_store_scan_morsel_begin(SiftStoreScan *s, const uint64 *staged_dead, uint32 nstaged)
+{
+	s->staged_px = sift_f2_staged_index(staged_dead, (int) nstaged);
+	s->morsel = MemoryContextAllocZero(s->cx, sizeof(MorselPart));
+}
+
+static SiftPartitionEntry
+entry_of(const SiftParPartRef *ref)
+{
+	return (SiftPartitionEntry) {.part_id = ref->part_id,.l0_slab_blk = ref->l0_slab_blk,.pend_del_blk = ref->pend_del_blk,.flags = ref->entry_flags,.manifest_gen = ref->manifest_gen,
+	.manifest_blk = ref->manifest_blk};
+}
+
+/* The part of the unit, opened once for the runs of it that follow each other; the pending deletes of a partition are read once for the parts of it */
+static SiftStorePart *
+morsel_part(SiftStoreScan *s, const SiftParPartRef *ref)
+{
+	MorselPart *m = s->morsel;
+
+	if (m->part != NULL && m->part->pin != NULL && m->d.part_gen == ref->desc.part_gen && m->e.part_id == ref->part_id)
+		return m->part;
+	if (m->part != NULL)
+		part_release_pin(m->part);
+	if (!m->have_px || m->e.part_id != ref->part_id)
+	{
+		sift_pdel_idx_release(m->px, s->staged_px);
+		m->e = entry_of(ref);
+		m->px = table_pending(s, &m->e);
+		m->have_px = true;
+	}
+	m->d = ref->desc;
+	if (m->part == NULL)
+		m->part = part_new(s, &m->e, &m->d, m->px);
+	m->part->px = m->px;
+	m->part->pin = sift_f2_pin_open(s->o->rel, s->store, &m->d, (uint32) m->e.part_id);
+	return m->part;
+}
+
+void
+sift_f2_store_scan_morsel(SiftStoreScan *s, const SiftParPartRef *ref, uint32 first, uint32 n, SiftF2Sink sink, void *arg)
+{
+	MemoryContext old = MemoryContextSwitchTo(s->cx);
+	SiftStorePart *p = morsel_part(s, ref);
+	SiftF2Batch b;
+
+	for (uint32 g = ref->g_base + first; g < ref->g_base + first + n; g++)
+	{
+		p->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->pin, g);
+		if (s->delta != NULL)
+			sift_col_delta_scan_attach(s->delta, p->e, p->gb);
+		if (granule_batch(p, &b))
+			sink(arg, &b);
+		part_release_granule(p);
+	}
+	MemoryContextSwitchTo(old);
+}
+
+static void
+morsel_end(SiftStoreScan *s)
+{
+	MorselPart *m = s->morsel;
+
+	if (m->part != NULL)
+		part_close(m->part);
+	sift_pdel_idx_release(m->px, s->staged_px);
+	*m = (MorselPart) {0};
 }

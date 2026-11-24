@@ -61,7 +61,7 @@ typedef struct SiftParPartRef
 	uint32		g_base;			/* the first granule of the unit, in its part */
 	uint32		ngranules;
 	uint16		flags;
-	uint16		pad;
+	uint16		child_idx;		/* a scan of the partitions of a table: the partition the unit is of, in the order the scan lists them */
 	uint32		entry_flags;	/* SIFT_PARTENTRY_* of its partition: a participant reads the column delta chain the partition has, as the serial scan does */
 	uint64		manifest_gen;	/* where the chain's anchor is read: the partition's list (core/f2/manifest.h) */
 	BlockNumber manifest_blk;

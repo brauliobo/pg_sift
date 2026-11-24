@@ -831,9 +831,25 @@ sift_v6_fold_end(SiftV6Fold *s)
 		MemoryContextDelete(s->batch_cx);
 }
 
+static void
+begin_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap)
+{
+	SiftF2Store *store = sift_f2_store_open(rel);
+	SiftStoreScanOpts *o = palloc(sizeof(SiftStoreScanOpts));
+
+	s->host = rel;
+	scan_setup(s, store->schema->cols, store->att_first, NULL);
+	s->leaves = scan_leaves(s);
+	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
+		.nan_leaves = scan_nan_leaves(s, store->ncols)};
+	s->store_scan = sift_f2_store_scan_open(o);
+	s->unsatisfiable = !quals->possible;
+}
+
 /* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit */
 SiftV6Scan *
-sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, SiftV6BatchFn emit, void *emit_arg)
+sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats,
+				   SiftV6BatchFn emit, void *emit_arg)
 {
 	V6Scan	   *s = sift_palloc0_aligned(V6Scan, 1);
 
@@ -841,6 +857,11 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->stats = stats;
 	s->emit = emit;
 	s->emit_arg = emit_arg;
+	if (index == NULL)
+	{
+		begin_table_morsels(s, heap, quals, snap);
+		return s;
+	}
 	s->host = index;
 	scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
 	s->leaves = scan_leaves(s);
@@ -857,18 +878,31 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 void
 sift_v6_scan_plan(SiftV6Scan *s, SiftF2ParPlan *out)
 {
-	sift_f2_par_plan_build(s->scan, out);
+	if (s->scan != NULL)
+		sift_f2_par_plan_build(s->scan, out);
+	else if (s->unsatisfiable)
+		*out = (SiftF2ParPlan) {.refs = palloc(sizeof(SiftParPartRef))};
+	else
+		sift_f2_store_par_plan(s->store_scan, out);
 }
 
 void
 sift_v6_scan_morsel_begin(SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged)
 {
-	sift_f2_scan_morsel_begin(s->scan, v6_sink, s, s->leaves, s->ncols, staged_dead, nstaged);
+	if (s->scan != NULL)
+		sift_f2_scan_morsel_begin(s->scan, v6_sink, s, s->leaves, s->ncols, staged_dead, nstaged);
+	else
+		sift_f2_store_scan_morsel_begin(s->store_scan, staged_dead, nstaged);
 }
 
 void
 sift_v6_scan_morsel(SiftV6Scan *s, SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n)
 {
+	if (s->scan == NULL)
+	{
+		sift_f2_store_scan_morsel(s->store_scan, ref, first, n, v6_sink, s);
+		return;
+	}
 	if (s->preagg != NULL)
 		sift_v6_preagg_set_group(s->preagg, into);
 	s->all_visible = (ref->flags & SIFT_PAR_PART_ALL_VISIBLE) != 0;
@@ -879,10 +913,15 @@ sift_v6_scan_morsel(SiftV6Scan *s, SiftV6Group *into, const SiftParPartRef *ref,
 void
 sift_v6_scan_end(SiftV6Scan *s)
 {
-	if (s->preagg != NULL)
-		sift_v6_preagg_end(s->preagg);
-	index_endscan(s->scan);
-	sift_v6_vet_end(&s->vet);
+	if (s->scan == NULL)
+		sift_f2_store_scan_close(s->store_scan);
+	else
+	{
+		if (s->preagg != NULL)
+			sift_v6_preagg_end(s->preagg);
+		index_endscan(s->scan);
+		sift_v6_vet_end(&s->vet);
+	}
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 	pfree(s->leaves);

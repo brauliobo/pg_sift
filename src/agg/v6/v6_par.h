@@ -199,7 +199,7 @@ typedef struct SiftV6ParDsmHdr
 	uint32		rescan_gen;
 	dsm_handle	seg_handle;			/* the workers find their segment by it: InitializeWorkerCustomScan has the table of contents, not the segment */
 	uint32		plain_slot_bytes;	/* of the record each participant leaves for the final state (the distinct strategy) */
-	uint32		pad;
+	uint32		n_children;			/* the relations the parts are of (the partitions of a table, else one) */
 
 	/* byte offsets from this header, each on a cache line */
 	Size		parts_off;
@@ -226,6 +226,7 @@ typedef struct SiftV6ParShape
 	int			nworkers;
 	uint32		n_parts;
 	Size		part_ref_bytes;		/* sizeof(SiftParPartRef) */
+	uint32		n_children;
 	uint32		n_staged_dead;
 	uint32		n_aggs;
 	uint32		n_dist;
@@ -247,6 +248,22 @@ static inline SiftParCoord *
 sift_v6_par_coord(SiftV6ParDsmHdr *h)
 {
 	return (SiftParCoord *) ((char *) h + h->coord_off);
+}
+
+/* The deletes the leader's transaction made in relation child that are not written yet: the block holds n_children + 1 offsets (in addresses) of the lists, then the lists */
+static inline uint64 *
+sift_v6_par_staged_starts(const SiftV6ParDsmHdr *h)
+{
+	return (uint64 *) ((char *) h + h->staged_dead_off);
+}
+
+static inline const uint64 *
+sift_v6_par_staged_dead(const SiftV6ParDsmHdr *h, uint32 child, uint32 *n)
+{
+	const uint64 *start = sift_v6_par_staged_starts(h);
+
+	*n = (uint32) (start[child + 1] - start[child]);
+	return start + h->n_children + 1 + start[child];
 }
 
 static inline SiftMorselQueue *

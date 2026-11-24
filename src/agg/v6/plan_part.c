@@ -191,6 +191,7 @@ compile_alike(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, const Part
 	first->spec.part_index = indexes;
 	if (stmt->topk > 0)
 		leaf_attnos(root, first, parent->relid, leaves);
+	first->spec.part_is_table = palloc0(n * sizeof(bool));
 	return true;
 }
 

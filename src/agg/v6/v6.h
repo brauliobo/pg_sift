@@ -282,6 +282,7 @@ typedef struct SiftV6Spec
 	Oid		   *part_index;
 	int			part_ncols;		/* a row Top-N of partitions: the columns the node fetches, and the attribute of each in every partition (part_attno[partition * part_ncols + column]) */
 	AttrNumber *part_attno;
+	bool	   *part_is_table;	/* of each partition: its sift_table is read, not an index of it (the other fields of a partition are those of part_index) */
 	int			nkeys;
 	SiftV6Col  *key;
 	int			naggs;
@@ -330,6 +331,19 @@ typedef struct SiftV6Spec
 	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
 	struct SiftV6Exec *exec;	/* what the node that runs the scan prepared of the expressions above that need the executor (v6_pg_exec.h); set when the node begins, never packed */
 } SiftV6Spec;
+
+/* What the scan of partition k reads (k = 0 when the table is not partitioned) */
+static inline Oid
+sift_v6_spec_part_oid(const SiftV6Spec *s, int k)
+{
+	return s->nparts > 0 ? s->part_index[k] : s->relid;
+}
+
+static inline bool
+sift_v6_spec_part_is_table(const SiftV6Spec *s, int k)
+{
+	return s->nparts > 0 ? s->part_is_table[k] : s->is_table;
+}
 
 /*
  * The vectors of a batch: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second argument (sift.arg_max, sift.arg_min), and then the columns after the first of each

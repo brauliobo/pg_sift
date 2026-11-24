@@ -22,6 +22,7 @@
 #include "agg/v6/v6_par_node.h"
 #include "agg/v6/v6_star_run.h"
 #include "agg/v6/v6_qual.h"
+#include "agg/v6/v6_scan_src.h"
 #include "agg/v6/v6_rows_topn.h"
 #include "agg/v6/v6_topk_run.h"
 #include "access/tableam.h"
@@ -32,26 +33,12 @@
 #include "core/errctx.h"
 #include "core/memtrack.h"
 
-typedef struct V6Source
-{
-	Relation	heap;
-	Relation	index;			/* a sift_col index; NULL for a sift_table, which heap is */
-	ScanKey		keys;
-	int			nkeys;
-	IndexRuntimeKeyInfo *rtkeys;
-	int			nrt;
-	const SiftStoreOps *ops;	/* the format of the index, or of the sift_table */
-	struct SiftStoreQuals *quals;	/* a sift_table: the keys and the predicates of its scan, made by its format */
-	IndexFetchTableData *fetch;	/* a row Top-N: the winners of the source are fetched from its heap */
-	TupleTableSlot *fetch_slot;
-} V6Source;
-
 typedef struct V6State
 {
 	CustomScanState css;
 	SiftV6Spec *spec;
 	int			nsources;
-	V6Source   *sources;		/* the index of the plan, or the index of each live partition of a partitioned table */
+	SiftV6ScanSrc *sources;		/* the index of the plan, or the index of each live partition of a partitioned table */
 	MemoryContext gcx;
 	SiftV6Group *group;
 	SiftV6ScanStats stats;
@@ -84,7 +71,7 @@ scan_signature(const SiftV6Spec *spec)
 }
 
 static void
-begin_index(V6State *st, CustomScanState *node, V6Source *src, Oid indexoid)
+begin_index(V6State *st, CustomScanState *node, SiftV6ScanSrc *src, Oid indexoid)
 {
 	src->ops = sift_store_ops_for_oid(indexoid, false);
 	src->index = index_open(indexoid, AccessShareLock);
@@ -94,12 +81,10 @@ begin_index(V6State *st, CustomScanState *node, V6Source *src, Oid indexoid)
 }
 
 static void
-begin_table(V6State *st, EState *estate)
+begin_table(V6State *st, EState *estate, SiftV6ScanSrc *src, Oid tableoid)
 {
-	V6Source   *src = &st->sources[0];
-
-	src->ops = sift_store_ops_for_oid(st->spec->relid, true);
-	src->heap = table_open(st->spec->relid, AccessShareLock);
+	src->ops = sift_store_ops_for_oid(tableoid, true);
+	src->heap = table_open(tableoid, AccessShareLock);
 	if (src->ops->zone != NULL)
 		src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
 }
@@ -129,7 +114,7 @@ v6_fusable(const V6State *st)
 static void
 begin_arm(V6State *st, CustomScanState *node, EState *estate, int eflags)
 {
-	const V6Source *src = &st->sources[0];
+	const SiftV6ScanSrc *src = &st->sources[0];
 
 	if (!v6_fusable(st))
 		return;
@@ -144,12 +129,15 @@ begin_arm(V6State *st, CustomScanState *node, EState *estate, int eflags)
 static void
 begin_par(V6State *st, CustomScanState *node, EState *estate)
 {
-	V6Source   *src = &st->sources[0];
-
-	if (src->nrt > 0)
-		ExecIndexEvalRuntimeKeys(node->ss.ps.ps_ExprContext, src->rtkeys, src->nrt);
-	src->nrt = 0;
-	st->par = sift_v6_par_node_begin(st->spec, node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, src->heap, src->index, src->keys, src->nkeys, estate->es_snapshot, estate->es_query_cxt,
+	for (int k = 0; k < st->nsources; k++)
+	{
+		if (st->sources[k].nrt > 0)
+			ExecIndexEvalRuntimeKeys(node->ss.ps.ps_ExprContext, st->sources[k].rtkeys, st->sources[k].nrt);
+		st->sources[k].nrt = 0;
+		if (st->sources[k].index == NULL)
+			st->sources[k].ops->zone->bind_quals(st->sources[k].heap, st->sources[k].quals, node->ss.ps.ps_ExprContext);
+	}
+	st->par = sift_v6_par_node_begin(st->spec, node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->sources, st->nsources, estate->es_snapshot, estate->es_query_cxt,
 									 node->ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
 }
 
@@ -161,12 +149,12 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private);
 	sift_v6_exec_begin(st->spec, &node->ss.ps);
 	st->nsources = Max(st->spec->nparts, 1);
-	st->sources = palloc0(sizeof(V6Source) * st->nsources);
-	if (st->spec->is_table)
-		begin_table(st, estate);
-	else
-		for (int k = 0; k < st->nsources; k++)
-			begin_index(st, node, &st->sources[k], st->spec->nparts > 0 ? st->spec->part_index[k] : st->spec->relid);
+	st->sources = palloc0(sizeof(SiftV6ScanSrc) * st->nsources);
+	for (int k = 0; k < st->nsources; k++)
+		if (sift_v6_spec_part_is_table(st->spec, k))
+			begin_table(st, estate, &st->sources[k], sift_v6_spec_part_oid(st->spec, k));
+		else
+			begin_index(st, node, &st->sources[k], sift_v6_spec_part_oid(st->spec, k));
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 		begin_star(st, node, estate, eflags);
 	begin_arm(st, node, estate, eflags);
@@ -177,7 +165,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 static bool
 v6_serve_projection(V6State *st, Snapshot snap)
 {
-	V6Source   *src = &st->sources[0];
+	SiftV6ScanSrc *src = &st->sources[0];
 
 	if (st->spec->nparts > 0 || st->spec->ext != NULL || OidIsValid(st->spec->text_indexoid))
 		return false;
@@ -216,7 +204,7 @@ scan_with_text(V6State *st, const V6Source *src, Snapshot snap, SiftV6StarRun *s
 
 /* The unnest of an array column: the elements the index keeps, or those of the heap rows of the table the scan reads */
 static void
-v6_scan_unnest(V6State *st, const V6Source *src, Snapshot snap)
+v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 {
 	if (src->index == NULL)
 		src->ops->zone->scan_table(st->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star);
@@ -228,7 +216,7 @@ v6_scan_unnest(V6State *st, const V6Source *src, Snapshot snap)
 static void
 v6_scan_ext(V6State *st, Snapshot snap)
 {
-	const V6Source *src = &st->sources[0];
+	const SiftV6ScanSrc *src = &st->sources[0];
 	SiftStarOpen open;
 	uint32		pass = 0;
 
@@ -273,7 +261,7 @@ v6_scan(V6State *st, Snapshot snap)
 	}
 	for (int k = 0; k < st->nsources; k++)
 	{
-		V6Source   *src = &st->sources[k];
+		SiftV6ScanSrc *src = &st->sources[k];
 
 		if (src->ops->zone == NULL)
 			sift_v6_open_scan_run(st->spec, st->group, src->ops, st->css.ss.ps.state, src->heap, src->index, &st->stats);
@@ -300,7 +288,7 @@ arm_groups(V6State *st, EState *estate)
 static ScanKey
 pass_keys(V6State *st, const SiftV6FuseCohort *c, List *quals, int *nkeys)
 {
-	const V6Source *src = &st->sources[0];
+	const SiftV6ScanSrc *src = &st->sources[0];
 	IndexRuntimeKeyInfo *rtkeys = NULL;
 	ScanKey		keys;
 	int			nrt = 0;
@@ -317,7 +305,7 @@ pass_keys(V6State *st, const SiftV6FuseCohort *c, List *quals, int *nkeys)
 static void
 v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 {
-	const V6Source *src = &st->sources[0];
+	const SiftV6ScanSrc *src = &st->sources[0];
 	SiftV6ScanArm *arms = palloc(c->narms * sizeof(SiftV6ScanArm));
 	List	   *common = NIL;
 	List	   *quals = c->same_keys ? NIL : sift_v6_fuse_union_quals(c, src->index, &common);
@@ -352,7 +340,7 @@ proj_stream_next(void *arg, Datum *values, bool *isnull)
 
 /* the rows of one source: once for each pass of the dimensions of a join (one when they all fit work_mem) */
 static void
-v6_scan_rows(V6State *st, const V6Source *src, SiftV6Text *text, Snapshot snap)
+v6_scan_rows(V6State *st, const SiftV6ScanSrc *src, SiftV6Text *text, Snapshot snap)
 {
 	SiftStarOpen open;
 	uint32		pass = 0;
@@ -400,7 +388,7 @@ v6_run_rows(V6State *st, EState *estate)
 		st->group = sift_v6_rows_totals_new(st->gcx, st->spec);
 	for (int k = 0; k < st->nsources; k++)
 	{
-		V6Source   *src = &st->sources[k];
+		SiftV6ScanSrc   *src = &st->sources[k];
 
 		sift_v6_rows_source(st->rows, k);
 		v6_scan_rows(st, src, text, estate->es_snapshot);
@@ -424,7 +412,7 @@ v6_next_row(V6State *st, TupleTableSlot *slot)
 	uint32		source;
 	uint64		addr;
 	int			i = 0;
-	const V6Source *src;
+	const SiftV6ScanSrc *src;
 
 	if (!sift_v6_rows_next(st->rows, &source, &addr))
 		return false;
@@ -457,10 +445,12 @@ v6_run(V6State *st, EState *estate)
 	SiftV6FuseCohort *c;
 
 	for (int k = 0; k < st->nsources; k++)
+	{
 		if (st->sources[k].nrt > 0)
 			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->sources[k].rtkeys, st->sources[k].nrt);
-	if (st->spec->is_table && st->sources[0].ops->zone != NULL)
-		st->sources[0].ops->zone->bind_quals(st->sources[0].heap, st->sources[0].quals, st->css.ss.ps.ps_ExprContext);
+		if (st->sources[k].index == NULL && st->sources[k].ops->zone != NULL)
+			st->sources[k].ops->zone->bind_quals(st->sources[k].heap, st->sources[k].quals, st->css.ss.ps.ps_ExprContext);
+	}
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
 	st->ran = true;
 	if (st->spec->rows)
@@ -543,7 +533,7 @@ v6_fetch_end(V6State *st)
 {
 	for (int k = 0; k < st->nsources; k++)
 	{
-		V6Source   *src = &st->sources[k];
+		SiftV6ScanSrc   *src = &st->sources[k];
 
 		if (src->fetch == NULL)
 			continue;
@@ -642,7 +632,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	uint32		dim_hits,
 				dim_built;
 
-	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->spec->is_table ? st->sources[0].heap : st->sources[0].index), es);
+	ExplainPropertyText(st->sources[0].index == NULL ? "Table" : "Index", RelationGetRelationName(st->sources[0].index == NULL ? st->sources[0].heap : st->sources[0].index), es);
 	if (st->spec->nparts > 0)
 		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);

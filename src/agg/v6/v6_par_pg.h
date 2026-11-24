@@ -19,17 +19,16 @@ struct SiftV6ParNode
 {
 	const SiftV6Spec *spec;
 	TupleDesc	desc;
-	Relation	heap;
-	Relation	index;
-	ScanKey		keys;
-	int			nkeys;
+	const SiftV6ScanSrc *sources;	/* the relations of the scan: one, or a partition each */
+	int			nsources;
 	Snapshot	snap;
 	MemoryContext mcx;			/* of the query */
 	MemoryContext tuple_cx;		/* of the tuple the node returns */
 
 	SiftV6ParDsmHdr *hdr;		/* NULL: the node runs in one process with no shared memory, as a serial node */
 	SiftV6ParShape shape;
-	SiftF2ParPlan plan;
+	SiftF2ParPlan plan;			/* the units of every source, each tagged with its source (child_idx); staged_dead is the deletes of every source one after the other */
+	uint64	   *staged_start;	/* [nsources + 1]: where the deletes of each source start in staged_dead */
 	SiftV6ParEngine eng;
 	SiftV6ParRun *run;
 	SiftV6ParTopK *topk;		/* ORDER BY .. LIMIT of the groups: the participant gives its best K only */
@@ -43,8 +42,8 @@ struct SiftV6ParNode
 	bool		have_total;
 };
 
-extern void sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, Relation heap, Relation index,
-									ScanKey keys, int nkeys, Snapshot snap);
+extern void sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, const SiftV6ScanSrc *sources,
+									Snapshot snap);
 extern void sift_v6_par_engine_end(SiftV6ParEngine *eng);
 
 /* Adds the Gather of a parallel node next to the serial path of add_group_path, when sift_v6_par_choose_strategy picks a parallel strategy; the spec of the path carries it */
