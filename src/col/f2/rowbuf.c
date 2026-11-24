@@ -7,6 +7,7 @@
 #include "core/memtrack.h"
 #include "core/host.h"
 
+#include "col/f2/f2_store_schema.h"
 #include "col/f2/rowbuf.h"
 #include "core/range.h"
 
@@ -422,6 +423,32 @@ fill_missing(const SiftRowBuf *rb, int c, const SiftCell *mc, int n, bool *nv, u
 	}
 }
 
+/* The numerics of chunk pc of n rows written as scaled integers, for a column that now keeps numeric values: a NaN keeps its datum in the payload of its exception */
+static void
+widen_num64(const SiftGranuleView *v, int pc, int scale, int n, bool *nv, uint8 *tv, SiftStrCell *sv)
+{
+	int64	   *iv = palloc(Max(n, 1) * sizeof(int64));
+
+	sift_granule_ints(v, pc, iv, nv);
+	for (int r = 0; r < n; r++)
+	{
+		uint32		len = 0;
+		const char *p = tv[r] != 0 ? sift_granule_exc_payload(v, pc, r, &len) : NULL;
+
+		if (p == NULL && !nv[r])
+		{
+			Datum		d = sift_f2_num64_datum(iv[r], (uint8) scale);
+
+			p = DatumGetPointer(d);
+			len = VARSIZE_ANY(p);
+		}
+		sv[r] = (SiftStrCell) {.p = p,.len = len,.isnull = p == NULL};
+		nv[r] = p == NULL;
+		tv[r] = 0;
+	}
+	pfree(iv);
+}
+
 /* MEM[MEM-COL-07]: rowbuf add_granule_mapped reusable granule scratch ctx (reset per granule) */
 static void
 add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap, int r0, int r1, const bool *want)
@@ -458,7 +485,12 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 			continue;
 		}
 		sift_granule_tags(v, pc, tv[c]);
-		if (rb->kinds[c] == SIFT_CELL_INT)
+		if (remap != NULL && remap->num64_scale != NULL && remap->num64_scale[c] >= 0)
+		{
+			sv[c] = palloc(Max(len, 1) * sizeof(SiftStrCell));
+			widen_num64(v, pc, remap->num64_scale[c], len, nv[c], tv[c], sv[c]);
+		}
+		else if (rb->kinds[c] == SIFT_CELL_INT)
 		{
 			iv[c] = palloc(Max(len, 1) * sizeof(int64));
 			if (code_map != NULL && code_map[c].to != NULL)

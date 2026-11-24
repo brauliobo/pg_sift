@@ -130,16 +130,19 @@ sift_tbl_f2_build_col_remap(const SiftF2Store *store, Relation rel, const SiftPa
 {
 	SiftF2ColMap *m = sift_tbl_f2_build_col_map(store, rel, part, cx);
 	SiftColRemap *r;
+	int16	   *num64 = NULL;
 
 	if (m == NULL)
 		return NULL;
 	sift_tbl_f2_defaults_verify(rel, store, part);
 	for (int c = 0; c < m->cur_ncols; c++)
-		if (m->mode[c] == SIFT_CMAP_WIDEN_N64)
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a part of sift_table \"%s\" holds column %d at another scale than the table has now", RelationGetRelationName(rel), store->leaf_attno[c]),
-							errhint("Rewrite the table with VACUUM FULL.")));
+		if (m->phys_col[c] >= 0 && m->phys_kind[c] == SIFT_CELL_INT && store->kinds[c] == SIFT_CELL_STR)
+		{
+			num64 = num64 != NULL ? num64 : memset(MemoryContextAlloc(cx, sizeof(int16) * m->cur_ncols), -1, sizeof(int16) * m->cur_ncols);
+			num64[c] = m->old_scale[c];
+		}
 	r = MemoryContextAlloc(cx, sizeof(SiftColRemap));
-	*r = (SiftColRemap) {.ncols = m->cur_ncols,.phys = m->phys_col,.missing = m->missing_cell};
+	*r = (SiftColRemap) {.ncols = m->cur_ncols,.phys = m->phys_col,.missing = m->missing_cell,.num64_scale = num64};
 	return r;
 }
 

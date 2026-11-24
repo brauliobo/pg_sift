@@ -19,6 +19,7 @@
 #include "col/f2/f2_gbuf.h"
 #include "col/f2/f2_marks.h"
 #include "col/f2/f2_pred.h"
+#include "col/f2/f2_store_schema.h"
 #include "col/f2/f2_store_scan.h"
 #include "col/f2/key_plan.h"
 #include "col/f2/l0_stage.h"
@@ -137,13 +138,6 @@ row_verdict(const SiftStorePart *p, int r)
 
 /* ---- the columns of a granule ---- */
 
-static void
-unsupported_form(const SiftF2Store *store, int leaf)
-{
-	ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a part of the table holds column \"%s\" in a form the aggregate does not read", store->schema->cols[leaf].name),
-					errhint("VACUUM (FREEZE) the table to rewrite its old parts, or run the statement with sift.enable_agg = off.")));
-}
-
 static ColView
 constant_view(SiftStorePart *p, int leaf, const SiftF2ColMap *map)
 {
@@ -235,6 +229,45 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 	return v;
 }
 
+/* A numeric column that ALTER TABLE .. TYPE left unconstrained or wide keeps the parts written as scaled integers: their values are read as the numerics they hold, a NaN from its exception */
+static ColView
+widened_view(SiftStorePart *p, int leaf, int phys, uint8 scale)
+{
+	SiftF2GranuleBuf *gb = p->gb;
+	int			n = gb->nrows;
+	const char **ss = MemoryContextAlloc(p->gcx, sizeof(char *) * n);	/* check-memory: allow the rows of one granule (SIFT_GRANULE_ROWS at most) */
+	uint32	   *lens = MemoryContextAlloc(p->gcx, sizeof(uint32) * n);
+	bool	   *nulls = MemoryContextAlloc(p->gcx, n);
+	MemoryContext old;
+	ColView		v;
+
+	if (!gb->col_decoded[phys])
+		sift_f2_gbuf_decode(gb, phys, SIFT_CELL_INT, true);
+	v = decoded_view(p, leaf, phys, SIFT_CELL_INT);
+	old = MemoryContextSwitchTo(p->gcx);
+	for (int r = 0; r < n; r++)
+	{
+		const bool	exc = v.tag != NULL && v.tag[r] != 0;
+
+		nulls[r] = v.isnull[r] && !exc;
+		ss[r] = NULL;
+		lens[r] = 0;
+		if (exc)
+		{
+			const char *payload = sift_granule_exc_payload(&gb->view, phys, r, &lens[r]);
+
+			ss[r] = DatumGetPointer(sift_f2_num64_exception_datum(payload, lens[r], p->gcx));
+		}
+		else if (!nulls[r])
+		{
+			ss[r] = DatumGetPointer(sift_f2_num64_datum(v.i[r], scale));
+			lens[r] = VARSIZE_ANY(ss[r]);
+		}
+	}
+	MemoryContextSwitchTo(old);
+	return (ColView) {.kind = SIFT_CELL_STR,.isnull = nulls,.s = ss,.slen = lens};
+}
+
 static void
 load_views(SiftStorePart *p)
 {
@@ -249,8 +282,8 @@ load_views(SiftStorePart *p)
 			continue;
 		if (phys < 0)
 			p->views[leaf] = constant_view(p, leaf, map);
-		else if (map != NULL && (map->mode[leaf] == SIFT_CMAP_WIDEN_N64 || map->phys_kind[leaf] != (uint8) s->store->kinds[leaf]))
-			unsupported_form(s->store, leaf);
+		else if (map != NULL && map->phys_kind[leaf] == SIFT_CELL_INT && s->store->kinds[leaf] == SIFT_CELL_STR)
+			p->views[leaf] = widened_view(p, leaf, phys, map->old_scale[leaf]);
 		else
 			p->views[leaf] = decoded_view(p, leaf, phys, s->store->kinds[leaf]);
 	}

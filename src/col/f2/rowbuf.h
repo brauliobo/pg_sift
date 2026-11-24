@@ -141,13 +141,16 @@ extern void sift_rowbuf_add_granule(SiftRowBuf *rb, const SiftGranuleView *v, co
 
 /*
  * A part written under another tuple descriptor than the table has now (ALTER TABLE ADD or DROP COLUMN): current column c is chunk phys[c] of the part, or, with phys[c] < 0, a column the
- * part was written before: every row gets the cell missing[c] (all null, or the fast default). The chunks of dropped columns are named by no column and are not read.
+ * part was written before: every row gets the cell missing[c] (all null, or the fast default). The chunks of dropped columns are named by no column and are not read. A numeric column that
+ * ALTER TABLE .. TYPE made unconstrained or wider than a scaled integer keeps the parts written before it: with num64_scale[c] >= 0 chunk phys[c] holds scaled integers of that scale (NaN as
+ * exceptions) and the current column keeps numeric values; num64_scale is NULL when no column is so.
  */
 typedef struct SiftColRemap
 {
 	int			ncols;
 	const int16 *phys;
 	const SiftCell *missing;
+	const int16 *num64_scale;
 } SiftColRemap;
 
 /* The same through a remap (NULL: the part has the columns of the spec); code_map is indexed by the current column */
