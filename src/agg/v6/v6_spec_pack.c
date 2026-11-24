@@ -99,6 +99,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	for (int k = 0; k < s->nparts; k++)
 		ints = lappend_int(ints, (int) s->part_index[k]);
 	ints = list_concat(ints, list_make4_int(s->par_strategy, s->par_workers, (int) s->text_indexoid, s->constant_groups));
+	ints = put_int64(put_int64(lappend_int(ints, s->tid_range), (int64) s->tid_lo), (int64) s->tid_hi);
 	ints = sift_v6_derive_pack(ints, s);
 	return lappend(lappend(lappend(lappend(list_make5(ints, s->indexqual, s->filter, s->jsonqual, sift_v6_ext_pack(s->ext)), s->text_query ? list_make1(s->text_query) : NIL), s->vqual), s->pgexpr), s->genref);
 }
@@ -161,6 +162,9 @@ sift_v6_spec_unpack(const List *l)
 	s->par_workers = list_nth_int(ints, at++);
 	s->text_indexoid = (Oid) list_nth_int(ints, at++);
 	s->constant_groups = list_nth_int(ints, at++);
+	s->tid_range = list_nth_int(ints, at++);
+	s->tid_lo = (uint64) take_int64(ints, &at);
+	s->tid_hi = (uint64) take_int64(ints, &at);
 	sift_v6_derive_unpack(s, ints, at);
 	s->text_query = list_nth(l, 5) ? linitial_node(Const, (List *) list_nth(l, 5)) : NULL;
 	s->indexqual = lsecond(l);

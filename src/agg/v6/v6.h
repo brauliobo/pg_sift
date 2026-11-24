@@ -205,6 +205,9 @@ typedef struct SiftV6TopKItem
 
 #define SIFT_V6_MAX_TOPK_ITEMS	8
 
+/* the end of the keys of a TID range: no block is as large as this */
+#define SIFT_V6_TID_END	(UINT64CONST(1) << 48)
+
 typedef struct SiftV6Spec
 {
 	Oid			relid;			/* what the scan reads: the sift_col index, or the sift_table when is_table */
@@ -247,6 +250,9 @@ typedef struct SiftV6Spec
 	List	   *pgexpr;			/* the PostgreSQL expressions of the SVD_PG_EXPR derivations: their items (v6_pg_expr.h) */
 	bool		constant_groups;	/* GROUP BY of expressions that read no column: no group when no row is read (the single set of no keys has a row only once a row was folded) */
 	List	   *genref;			/* the Aggref of each SV6_GEN_PG and SV6_OSA aggregate, in the order of agg (v6_gen.h) */
+	bool		tid_range;		/* the WHERE bounds ctid: the rows whose heap row's ctid is in [tid_lo, tid_hi), as block << 16 | offset (v6_vet.h) */
+	uint64		tid_lo;
+	uint64		tid_hi;
 	uint32		lock_k;			/* LIMIT + OFFSET of a query with no ORDER BY, HAVING or DISTINCT: any K groups with their exact aggregates answer it, so the group table takes no group after the K-th (0: all groups) */
 } SiftV6Spec;
 

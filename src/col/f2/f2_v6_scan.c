@@ -352,6 +352,8 @@ vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int of
 	memcpy(bs->mask, live + off / 64, words * sizeof(uint64));
 	if (n & 63)
 		bs->mask[words - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
+	if (s->spec->tid_range && sift_v6_tid_mask(&s->vet, s->spec->tid_lo, s->spec->tid_hi, tid, off, n, bs) == 0)
+		return 0;
 	return sift_v6_vet_mask(&s->vet, tid, off, visible, n, bs);
 }
 
@@ -388,7 +390,7 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 	V6Scan	   *s = arg;
 
 	s->visible_part = sift_v6_vis_part_all_visible(&s->vis, s->vet.heap, d) ? d : NULL;
-	if (s->visible_part == NULL)
+	if (s->visible_part == NULL || s->spec->tid_range)
 		return false;
 	if (countable && s->count_only)
 	{
@@ -412,7 +414,7 @@ zone_offer(void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone)
 	V6Scan	   *s = arg;
 	SiftBatchSel *bs = &s->bs;
 
-	if (!s->minmax_only || s->visible_part != d)
+	if (!s->minmax_only || s->visible_part != d || s->spec->tid_range)
 		return false;
 	for (int i = 0; i < s->ncols; i++)
 	{
@@ -620,7 +622,7 @@ part_dict_offer(void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts)
 	V6Scan	   *s = arg;
 	SiftDictSrc src[SIFT_V6_MAX_KEYS + 16];
 
-	if (s->visible_part == NULL || s->visible_part->part_gen != d->part_gen || s->group == NULL || s->emit != NULL || s->pipe != NULL || s->rows != NULL || s->gate != NULL ||
+	if (s->visible_part == NULL || s->spec->tid_range || s->visible_part->part_gen != d->part_gen || s->group == NULL || s->emit != NULL || s->pipe != NULL || s->rows != NULL || s->gate != NULL ||
 		s->nbins > 0 || s->nderived > 0 || s->ncols > lengthof(src) || !v6g_dist_dict_only(s->group))
 		return false;
 	for (int i = 0; i < s->ncols; i++)
@@ -683,7 +685,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
-	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0)
+	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0 && !s->spec->tid_range)
 		s->stat = sift_v6_colstat_begin(s->spec, s->group, index, sift_col_rel(index)->first, CurrentMemoryContext);
 	if (next_chunk == NULL)
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);

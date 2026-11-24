@@ -236,7 +236,7 @@ sift_v6_compile_quals(V6Plan *p)
 			continue;
 		if (p->index != NULL && p->index->indpred != NIL && predicate_implied_by(list_make1(ri->clause), p->index->indpred, false))
 			continue;
-		if (!ri->pseudoconstant && sift_v6_text_qual(p, ri))
+		if (!ri->pseudoconstant && (sift_v6_tid_qual(p, ri) || sift_v6_text_qual(p, ri)))
 			continue;
 		q = ri->pseudoconstant ? NULL : sift_v6_index_qual(p, ri->clause);
 		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
@@ -249,5 +249,5 @@ sift_v6_compile_quals(V6Plan *p)
 		else
 			p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
 	}
-	return sift_v6_compile_text(p);
+	return sift_v6_compile_text(p) && !(p->spec.tid_range && p->text != NULL);
 }
