@@ -122,7 +122,7 @@ run_once(const Work *w, const void *data, uint32 workers)
 		SiftParDistinctHooks hooks = {.fill = dsrc_fill,.overflow = dsrc_overflow,.arg = &ds};
 		SiftParDistinct *dd = sift_par_distinct_create(ar, &dsp, &hooks, &err);
 
-		CHECK(dd != NULL && sift_par_run(&(SiftParCfg) {workers, ((const DData *) data)->n}, &sift_par_distinct_ops, dd, ar, NULL));
+		CHECK(dd != NULL && sift_par_run(&(SiftParCfg) {.nthreads = workers,.items = ((const DData *) data)->n}, &sift_par_distinct_ops, dd, ar, NULL));
 		sift_par_distinct_each(dd, b_distinct, &r);
 		r.secs = now_s() - t0;
 		return r;
@@ -132,7 +132,7 @@ run_once(const Work *w, const void *data, uint32 workers)
 		SiftParGroupHooks hooks = {.fill = src_group_fill,.emit = b_emit,.overflow = b_overflow,.arg = &c};
 		SiftParGroup *g = sift_par_group_create(ar, &sp, w->high, d->n, &hooks, &err);
 
-		CHECK(g != NULL && sift_par_run(&(SiftParCfg) {workers, d->n}, &sift_par_group_ops, g, ar, NULL));
+		CHECK(g != NULL && sift_par_run(&(SiftParCfg) {.nthreads = workers,.items = d->n}, &sift_par_group_ops, g, ar, NULL));
 		r.secs = now_s() - t0;
 		for (int t = 0; t < SIFT_PAR_MAX_THREADS; t++)
 		{
