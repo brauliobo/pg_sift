@@ -823,6 +823,7 @@ TESTING_REGRESS += v1_store_ops_ext
 TESTING_REGRESS += v1_store_ops_par_zone
 TESTING_REGRESS += v1_unified_preagg_cube
 TESTING_REGRESS += v1_unified_scan
+TESTING_REGRESS += v1_unified_text_rows
 TESTING_REGRESS += v1_unified_topn_rows
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
