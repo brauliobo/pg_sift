@@ -174,7 +174,7 @@
 	  "no statistics block: the plan reads the zone arrays of the segment", "-", 1) \
 	X(int_digits, "SIFT_COL_MAX_SCALE", "col/api/leaf.h", SIFT_COL_MAX_SCALE, "digits", \
 	  "precision of a numeric the integer leaf class holds exactly", "the wide leaf class holds it", "-", 0) \
-	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "col/v1/wide.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
+	X(wide_digits, "SIFT_COL_MAX_WIDE_SCALE", "core/wide_datum.h", SIFT_COL_MAX_WIDE_SCALE, "digits", \
 	  "precision of a numeric in a wide leaf", "ERROR 54000 at build or merge", "-", 0) \
 	X(cube_dims, "SIFT_PAGG_MAX_DIMS", "col/v1/preagg.h", SIFT_PAGG_MAX_DIMS, "dimensions", \
 	  "dimensions of the cube of an index", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \

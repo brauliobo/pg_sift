@@ -108,7 +108,6 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | bytes of the header page of a segment that keep a copy of the small structures a plan and a first read of the segment open (the schema and the unit directory, the point directories, the order headers, the headers of the pre-aggregates), so that they cost no pages of their own | `6,144 (6 KiB) bytes` | no copy: each of them is read from its own page of the segment | — | `col/v1/seg_write/seg_write_int.h` `SEG_MIRROR_BYTES` |
 | the share of its segment a leaf statistics block may take: a segment whose block would take more than 1/n of its bytes (3% at 33; units of a few rows and many leaves) keeps none | `33 1/n of a segment` | no statistics block: the plan reads the zone arrays of the segment | — | `col/v1/seg_write/seg_write.c` `LST_SHARE_DIV` |
 | precision of a numeric the integer leaf class holds exactly | `18 digits` | the wide leaf class holds it | — | `col/api/leaf.h` `SIFT_COL_MAX_SCALE` |
-| precision of a numeric in a wide leaf | `38 digits` | ERROR 54000 at build or merge | — | `col/v1/wide.h` `SIFT_COL_MAX_WIDE_SCALE` |
 | dimensions of the cube of an index | `16 dimensions` | option rejected at CREATE or ALTER INDEX | `cube option` | `col/v1/preagg.h` `SIFT_PAGG_MAX_DIMS` |
 | dimensions of one rollup | `6 dimensions` | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/v1/preagg.h` `SIFT_PAGG_MAX_RDIMS` |
 | rollups of one index | `8 rollups` | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/v1/preagg.h` `SIFT_PAGG_MAX_ROLLUPS` |
@@ -150,6 +149,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 
 | Limit | Default | At the limit | Tuned by | Source |
 |---|---|---|---|---|
+| precision of a numeric in a wide leaf | `38 digits` | ERROR 54000 at build or merge | — | `core/wide_datum.h` `SIFT_COL_MAX_WIDE_SCALE` |
 | directory entries a writer of a sift or sift_col index keeps it within (a sift_table has sift.table_max_segments for a test); a directory of more is a chain of pages, which holds 32,768 | `128 segments` | writers merge the smallest closed segments from 16 entries below it; a forced seal leaves the write buffer open (NOTICE) | — | `core/page.h` `SIFT_DIR_POLICY_MAX` |
 | a BM25 token | `255 bytes` | the token is its first 236 bytes and a hash of all of it | — | `core/sift.h` `SIFT_MAX_TERM_BYTES` |
 | term frequency in one document | `255 occurrences` | saturated | — | `core/sift.h` `SIFT_MAX_TF` |

@@ -10,7 +10,7 @@ import re, sys, os, collections
 
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAMILIES = {
-    'col': dict(header='src/col/v1/kern.h', struct='SiftColKernels', test='src/col/v1/kern_test.c',
+    'col': dict(header='src/core/simd_kern.h', struct='SiftColKernels', test='src/col/v1/kern_test.c',
                 tables={'avx2': ('src/col/v1/kern_avx2.c', 'sift_col_kernels_avx2'), 'avx512': ('src/col/v1/kern_avx512.c', 'sift_col_kernels_avx512'),
                         'neon': ('src/col/v1/kern.c', 'sift_col_kernels_neon')}),
     'agg': dict(header='src/agg/kern.h', struct='SiftAggKernels', test='src/agg/kern_cases.h',
