@@ -2,7 +2,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The delete of the version an UPDATE of a sift_table replaced is two records of the pending deletes of its partition: the address of the old version with a flag that says it was an UPDATE, and the
 # address of the new one with the flag of a successor. The set of addresses a snapshot sees deleted (the one a reader of the partition matches rows with) holds the address of each replaced version
-# and nothing else: no flag in an address, no address of a successor.
+# and nothing else: no flag in an address, no address of a successor. The updated column is indexed: an UPDATE of a column no index holds is a column delta that keeps the address and replaces nothing.
 . "$(dirname "$0")/lib.bash"
 
 plan 4
@@ -12,7 +12,7 @@ sift.maintenance_naptime = 60000
 sift.test_create_format1 = off"
 node_start pd || bail "start failed"
 sql pd "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" \
-	"CREATE TABLE st (id int PRIMARY KEY, v int) USING sift_table WITH (autovacuum_enabled = false)" \
+	"CREATE TABLE st (id int PRIMARY KEY, v int) USING sift_table WITH (autovacuum_enabled = false)" "CREATE INDEX st_v ON st (v)" \
 	"INSERT INTO st SELECT g, g FROM generate_series(1, 5000) g" "CHECKPOINT" >/dev/null || bail "setup failed"
 sql pd "UPDATE st SET v = -v WHERE id <= 40" >/dev/null || bail "update failed"
 
