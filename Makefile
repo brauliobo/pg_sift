@@ -574,6 +574,7 @@ TESTING_REGRESS += format2_on63c_parity
 TESTING_REGRESS += format2_parallel_conc
 TESTING_REGRESS += format2_partitioned_agg_v6
 TESTING_REGRESS += format2_point_v2
+TESTING_REGRESS += format2_partitioned_only
 TESTING_REGRESS += format2_projections
 TESTING_REGRESS += format2_prune
 TESTING_REGRESS += format2_quarantine
