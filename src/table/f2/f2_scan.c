@@ -167,6 +167,8 @@ sift_tbl_f2_parallelscan_reinitialize(Relation rel pg_attribute_unused(), Parall
 
 typedef struct SiftTblF2Page SiftTblF2Page;
 
+static void page_drop(SiftTblF2Page *pg);
+
 /* MEM[MEM-TBL-04]: struct SiftTblF2Scan (1816 B packed; per-scan ctx + rowcx) */
 typedef struct SiftTblF2Scan
 {
@@ -322,12 +324,20 @@ drop_granule(SiftTblF2Scan *s)
 	s->loaded = false;
 }
 
+static void
+scan_release(SiftTblF2Scan *s)
+{
+	drop_granule(s);
+	if (s->page != NULL)
+		page_drop(s->page);
+}
+
 void
 sift_tbl_f2_scan_end(TableScanDesc scan)
 {
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 
-	drop_granule(s);
+	scan_release(s);
 #if PG_VERSION_NUM >= 180000
 	if ((scan->rs_flags & SO_TYPE_BITMAPSCAN) != 0 && !tbm_exhausted(&scan->st.rs_tbmiterator))
 		tbm_end_iterate(&scan->st.rs_tbmiterator);
@@ -344,7 +354,7 @@ sift_tbl_f2_scan_rescan(TableScanDesc scan, struct ScanKeyData *key pg_attribute
 {
 	SiftTblF2Scan *s = (SiftTblF2Scan *) scan;
 
-	drop_granule(s);
+	scan_release(s);
 	s->started = false;
 	s->span_lo = 0;
 	s->span_hi = s->total;
