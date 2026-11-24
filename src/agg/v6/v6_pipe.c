@@ -6,6 +6,9 @@
 
 #include <stdalign.h>
 
+#include "utils/lsyscache.h"
+
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_gather.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_rows_topn.h"
@@ -46,9 +49,10 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 	for (int d = 0; d < p->ndims; d++)
 		for (int c = 0; c < x->dim[d].npay; c++)
 		{
-			const SiftV6Class cls = sift_v6_class(x->dim[d].ptype[c]);
+			const Oid	typid = x->dim[d].ptype[c];
+			const SiftV6Class cls = sift_v6_class(typid);
 
-			p->type[p->pay_slot[d] + c] = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
+			p->type[p->pay_slot[d] + c] = !sift_v6_type_native(typid) ? SVEC_DATUM : cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
 		}
 	p->key_slot = MemoryContextAlloc(cx, Max(spec->nkeys, 1) * sizeof(int));
 	p->arg_slot = MemoryContextAlloc(cx, Max(sift_v6_spec_nvec(spec), 1) * sizeof(int));
@@ -146,11 +150,20 @@ gather_payload(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const uint32 *dim_row, 
 		const int	s = p->pay_slot[d] + c;
 		uint64	   *valid = b->valid + (size_t) s * SIFT_VEC_WORDS;
 
+		SiftVec		vec = {.data = b->data[s],.valid = valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = p->type[s]};
+
 		if (p->type[s] == SVEC_STRVIEW)
 			sift_star_gather_str(dim, c, dim_row, (uint16) n, (SiftStrView *) b->data[s], valid);
+		else if (p->type[s] == SVEC_DATUM && dim->shape.pcls[c] == SSC_STR)
+			sift_star_gather_datum(dim, c, dim_row, (uint16) n, (uint64 *) b->data[s], valid);
 		else
 			sift_star_gather_bits(dim, c, dim_row, (uint16) n, (uint64 *) b->data[s], valid);
-		b->vec[s] = (SiftVec) {.data = b->data[s],.valid = valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = p->type[s]};
+		if (p->type[s] == SVEC_DATUM)
+		{
+			vec.typid = p->spec->ext->dim[d].ptype[c];
+			get_typlenbyval(vec.typid, &vec.typlen, &vec.typbyval);
+		}
+		b->vec[s] = vec;
 	}
 }
 

@@ -21,6 +21,7 @@
 #include "agg/group/ht.h"
 #include "agg/v6/plan_int.h"
 #include "agg/v6/v6_card.h"
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_ext.h"
 
 typedef struct StarDim
@@ -401,7 +402,7 @@ sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 				c;
 	SiftV6XDim *xd;
 
-	if (x == NULL || x->ndims == 0 || v == NULL || v->vartype == NUMERICOID || sift_v6_class(v->vartype) == SV6C_NONE)
+	if (x == NULL || x->ndims == 0 || v == NULL || get_typlen(v->vartype) == -2)
 		return false;
 	for (int i = 0; i < x->ndims; i++)
 		if (((RelOptInfo *) list_nth(p->dim_rels, i))->relid == v->varno)
@@ -421,6 +422,6 @@ sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 		xd->ptype[c] = v->vartype;
 		xd->npay++;
 	}
-	*out = (SiftV6Col) {.typid = v->vartype,.src = SV6SRC_DIM,.dim = d,.slot = c};
+	*out = (SiftV6Col) {.typid = v->vartype,.scale = sift_v6_type_native(v->vartype) ? 0 : SIFT_V6_SCALE_DATUM,.src = SV6SRC_DIM,.dim = d,.slot = c};
 	return true;
 }

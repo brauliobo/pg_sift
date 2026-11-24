@@ -5,10 +5,12 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rangetypes.h"
 #include "utils/typcache.h"
 
+#include "agg/v6/v6_datum.h"
 #include "agg/v6/v6_dim_cache.h"
 #include "agg/v6/v6_join_lookup.h"
 #include "agg/v6/v6_star_run.h"
@@ -61,6 +63,8 @@ sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext
 static SiftStarCls
 cls_of_type(Oid typid)
 {
+	if (!sift_v6_type_native(typid))
+		return get_typbyval(typid) ? SSC_INT : SSC_STR;
 	switch (sift_v6_class(typid))
 	{
 		case SV6C_F64:
@@ -89,13 +93,35 @@ int_of(Oid typid, Datum v)
 	}
 }
 
+/* the bytes of a datum of a type no native vector holds and that is passed by reference: the whole value, in the memory of the row */
+static void
+datum_bytes(Oid typid, Datum v, const char **p, uint32 *len)
+{
+	const int16 typlen = get_typlen(typid);
+
+	if (typlen == -1)
+	{
+		struct varlena *t = pg_detoast_datum((struct varlena *) DatumGetPointer(v));
+
+		*p = (const char *) t;
+		*len = VARSIZE(t);
+	}
+	else
+	{
+		*p = DatumGetPointer(v);
+		*len = (uint32) typlen;
+	}
+}
+
 static void
 put_cell(SiftStarCls cls, Oid typid, Datum v, bool isnull, int64 *i, const char **p, uint32 *len, bool *null)
 {
 	*null = isnull;
 	if (isnull)
 		return;
-	if (cls == SSC_STR)
+	if (cls == SSC_STR && !sift_v6_type_native(typid))
+		datum_bytes(typid, v, p, len);
+	else if (cls == SSC_STR)
 	{
 		struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(v));
 

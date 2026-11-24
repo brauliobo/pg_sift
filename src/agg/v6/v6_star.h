@@ -153,6 +153,8 @@ extern uint16 sift_star_apply(const SiftStarDim *d, const uint32 *match, const u
 /* column pay of the dimension for each of n rows: dim_row[i] (1-based, 0: none, which is NULL); bits for an int or a float8, views for a string; valid_out is the rows that are not NULL */
 extern void sift_star_gather_bits(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out);
 extern void sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, SiftStrView *out, uint64 *valid_out);
+/* the same for a payload column that holds the bytes of datums (a type no native vector holds, passed by reference): out[i] is the address of the value, aligned, valid while the dimension lives */
+extern void sift_star_gather_datum(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out);
 
 /* The pairs of a join that can match a row more than once, resumed where the last call ended */
 typedef struct SiftStarCursor

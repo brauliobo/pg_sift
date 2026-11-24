@@ -35,5 +35,5 @@ sift_vec_gather(SiftVec *out, uint64 *out_valid, void *out_data, const SiftVec *
 			memset(dst + i * w, 0, w);
 		out_valid[i >> 6] |= (uint64) ok << (i & 63);
 	}
-	*out = (SiftVec) {.data = out_data,.valid = out_valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = src->type,.scale = src->scale};
+	*out = (SiftVec) {.data = out_data,.valid = out_valid,.len = (uint16) n,.all_valid = false,.dense = true,.type = src->type,.scale = src->scale,.typid = src->typid,.typlen = src->typlen,.typbyval = src->typbyval};
 }

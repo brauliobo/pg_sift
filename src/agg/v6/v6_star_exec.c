@@ -100,15 +100,15 @@ grow(SiftStarDim *d)
 static uint64
 arena_put(SiftStarDim *d, const char *p, uint32 len)
 {
-	const uint64 off = d->arena_used;
+	const uint64 off = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used);
 
-	if (d->arena_used + len > d->arena_cap)
+	if (off + len > d->arena_cap)
 	{
-		d->arena_cap = Max(d->arena_cap * 2, Max(d->arena_used + len, 1024));
+		d->arena_cap = Max(d->arena_cap * 2, Max(off + len, 1024));
 		d->arena = d->arena == NULL ? palloc(d->arena_cap) : repalloc(d->arena, d->arena_cap);
 	}
 	memcpy(d->arena + off, p, len);
-	d->arena_used += len;
+	d->arena_used = off + len;
 	return off;
 }
 
@@ -542,6 +542,22 @@ sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint1
 		const bool	ok = row != 0 && !d->null[c][row - 1];
 
 		out[i] = ok ? sift_vstr_make(d->arena + d->col[c][row - 1], d->len[c][row - 1]) : (SiftStrView) {0};
+		valid_out[i >> 6] |= (uint64) ok << (i & 63);
+	}
+}
+
+void
+sift_star_gather_datum(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out)
+{
+	const int	c = d->shape.nkeys + pay;
+
+	memset(valid_out, 0, SIFT_VEC_WORDS * sizeof(uint64));
+	for (uint16 i = 0; i < n; i++)
+	{
+		const uint32 row = dim_row[i];
+		const bool	ok = row != 0 && !d->null[c][row - 1];
+
+		out[i] = ok ? (uint64) (uintptr_t) (d->arena + d->col[c][row - 1]) : 0;
 		valid_out[i >> 6] |= (uint64) ok << (i & 63);
 	}
 }
