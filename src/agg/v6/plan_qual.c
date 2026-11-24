@@ -67,7 +67,7 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 	const bool	index = !p->is_table;
 	int			strat = get_op_opfamily_strategy(q->opno, family);
 
-	if (strat == 0 && index && !p->in_filter)
+	if (strat == 0 && (index || !text) && !p->in_filter)
 		strat = sift_v6_qual_private_strategy(q->opno, family);
 	if (text && (p->is_table || !sift_text_bytes_equal(q->inputcollid)))
 		return 0;

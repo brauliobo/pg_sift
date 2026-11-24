@@ -12,6 +12,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
+#include "agg/v6/v6_qual.h"
 #include "col/am/preds.h"
 #include "col/am.h"
 #include "col/pg.h"
@@ -37,7 +38,13 @@ key_of_operator(const SiftF2Store *store, Oid opno, Oid collid, int flags, const
 
 	if (IsA(operand, Const))
 		k.sk_argument = ((const Const *) operand)->constvalue;
-	get_op_opfamily_properties(opno, store->opfamily[v->varattno], false, &strategy, &lefttype, &righttype);
+	if (get_op_opfamily_strategy(opno, store->opfamily[v->varattno]) == 0)
+	{
+		strategy = sift_v6_qual_private_strategy(opno, store->opfamily[v->varattno]);
+		righttype = exprType(operand);
+	}
+	else
+		get_op_opfamily_properties(opno, store->opfamily[v->varattno], false, &strategy, &lefttype, &righttype);
 	k.sk_strategy = (StrategyNumber) strategy;
 	k.sk_subtype = righttype;
 	return k;
