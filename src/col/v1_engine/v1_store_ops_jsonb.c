@@ -25,8 +25,11 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "agg/v6/v6_datum.h"
+#include "agg/v6/v6_expr_str.h"
 #include "agg/v6/v6_filter_pg.h"
 #include "agg/v6/v6_gather.h"
+#include "agg/v6/v6_pg_expr.h"
 #include "agg/v6/v6_pipe.h"
 #include "agg/v6/v6_plan_rewrite.h"
 #include "agg/v6/v6_star_run.h"
@@ -46,8 +49,9 @@ StaticAssertDecl(SIFT_V1_MAX_ELEM_COLS == SIFT_V6_XELEM_COLS, "the element colum
 
 typedef struct UnCol
 {
-	int			attno;
+	int			attno;			/* of the source: the attribute of the index, or SIFT_V6_JLEAF_VATT + the leaf of a key of a document */
 	Oid			typid;
+	int			scale;
 	SiftV6Class cls;
 	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: each distinct date is asked of it once */
 } UnCol;
@@ -71,6 +75,9 @@ typedef struct UnRun
 	int			ncols;
 	UnCol		cols[SIFT_V6_MAX_COLS];
 	UnArith		arith[SIFT_V6_MAX_DERIVE];
+	SiftV6PgExpr *pg[SIFT_V6_MAX_DERIVE];	/* an SVD_PG_EXPR derivation: its evaluator, the vector of the pairs each of its inputs is, and its result */
+	int			pgslot[SIFT_V6_MAX_DERIVE][SIFT_V6_MAX_COLS];
+	SiftVxOut	pgout[SIFT_V6_MAX_DERIVE];
 	int			nel;
 	SiftVecType etype[SIFT_V6_XELEM_COLS];
 	bool		eused[SIFT_V6_XELEM_COLS];
@@ -187,6 +194,13 @@ vec_type(SiftV6Class cls)
 	return cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
 }
 
+/* the vector a column of the table is read as: a numeric as the scaled integers its leaf holds */
+static SiftVecType
+col_vec_type(const UnCol *c)
+{
+	return c->typid == NUMERICOID ? SVEC_NUM64 : vec_type(c->cls);
+}
+
 static bool
 key_is_month(const SiftV6Spec *spec, int key)
 {
@@ -205,20 +219,30 @@ is_flag(const SiftV6Col *c)
 
 /* the column of the batches a column of the statement is read from */
 static int
-col_index(UnRun *u, const SiftV6Col *c, bool month)
+col_index(UnRun *u, const SiftV6Col *col, bool month)
 {
-	const SiftV6Class cls = sift_v6_class(c->typid);
+	const SiftV6Col *c = col;
+	SiftV6Col	json;
+	SiftV6Class cls;
+	int			attno;
 
-	if (c->attno >= SIFT_V6_JLEAF_VATT || c->jleaf > 0 || c->typid == NUMERICOID || cls == SV6C_DATUM || cls == SV6C_NONE)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the aggregate scan of an unnest over Format 1 reads no column of type %u or key of a document", c->typid),
-						errhint("Group by and aggregate integer, date, timestamp, float8 or text columns of the table that is unnested.")));
+	if (sift_v6_vatt_is_json(c->attno))
+	{
+		json = sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale);
+		c = &json;
+	}
+	cls = sift_v6_class(c->typid);
+	attno = c->jleaf > 0 ? SIFT_V6_JLEAF_VATT + c->jleaf - 1 : c->attno;
+	if (c->jtype || (c->attno >= SIFT_V6_JLEAF_VATT && c->jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE || (c->typid == NUMERICOID && c->scale == SIFT_V6_SCALE_DATUM))
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the aggregate scan of an unnest over Format 1 reads no column of type %u", c->typid),
+						errhint("Group by and aggregate integer, numeric, date, timestamp, float8 or text columns of the table that is unnested.")));
 	for (int i = 0; i < u->ncols; i++)
-		if (u->cols[i].attno == c->attno && u->cols[i].month == month)
+		if (u->cols[i].attno == attno && u->cols[i].month == month)
 			return i;
 	if (u->ncols == SIFT_V6_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_V6_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
-	u->cols[u->ncols] = (UnCol) {.attno = c->attno,.typid = c->typid,.cls = cls,.month = month};
+	u->cols[u->ncols] = (UnCol) {.attno = attno,.typid = c->typid,.scale = c->scale,.cls = cls,.month = month};
 	return u->ncols++;
 }
 
@@ -244,7 +268,7 @@ setup_cols(UnRun *u)
 	const SiftV6Spec *spec = u->spec;
 
 	for (int i = 0; i < spec->nkeys; i++)
-		if (spec->key[i].src == SV6SRC_ATTR)
+		if (spec->key[i].src == SV6SRC_ATTR && spec->key[i].derive == 0)
 			col_index(u, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
 		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0)
@@ -267,10 +291,46 @@ setup_cols(UnRun *u)
 		for (int c = 0; c <= d->ncond; c++)
 			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
 				col_index(u, c == 0 ? &d->src : &d->cond[c - 1], false);
+		if (d->kind == SVD_PG_EXPR)
+		{
+			SiftV6PgItem it;
+
+			sift_v6_pgexpr_item(spec, d, &it);
+			for (int c = 0; c < it.nin; c++)
+				if (it.col[c].src == SV6SRC_ATTR)
+					col_index(u, &it.col[c], false);
+		}
 	}
 	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
 		if (spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]))
 			col_index(u, &spec->fcol[i], false);
+}
+
+static SiftVecType
+pg_vec_type(const SiftV6Spec *spec, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	sift_v6_pgexpr_item(spec, d, &it);
+	return sift_v6_result_vec_type(it.restype);
+}
+
+/* the evaluator of the derivation k, over the vectors of the pairs of its inputs */
+static void
+bind_pg(UnRun *u, int k)
+{
+	SiftV6PgItem it;
+	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
+
+	sift_v6_pgexpr_item(u->spec, &u->spec->derive[k], &it);
+	for (int c = 0; c < it.nin; c++)
+	{
+		u->pgslot[k][c] = slot_of(u, &it.col[c], false);
+		pin[c] = (SiftV6PgIn) {.typid = it.col[c].typid,.scale = it.col[c].scale};
+	}
+	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, NULL, it.expr, it.nin, pin);
+	u->pg[k]->restype = it.restype;
+	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
 }
 
 static void
@@ -280,11 +340,11 @@ setup_pipe(UnRun *u, SiftV6Group *g, const SiftV6StarRun *star)
 	SiftVecType type[OUT_SLOTS];
 
 	for (int i = 0; i < u->ncols; i++)
-		type[i] = vec_type(u->cols[i].cls);
+		type[i] = col_vec_type(&u->cols[i]);
 	for (int c = 0; c < u->nel; c++)
 		type[u->ncols + c] = u->etype[c];
 	for (int k = 0; k < spec->nderive; k++)
-		type[u->ncols + u->nel + k] = SVEC_F64;
+		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? pg_vec_type(spec, &spec->derive[k]) : SVEC_F64;
 	u->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, g, NULL, u->ncols + u->nel + spec->nderive, type);
 	if (star != NULL)
 		sift_v6_star_attach(star, u->pipe);
@@ -310,6 +370,11 @@ setup_pipe(UnRun *u, SiftV6Group *g, const SiftV6StarRun *star)
 		const SiftV6Derive *d = &spec->derive[k];
 		UnArith    *ar = &u->arith[k];
 
+		if (d->kind == SVD_PG_EXPR)
+		{
+			bind_pg(u, k);
+			continue;
+		}
 		ar->nin = d->ncond + 1;
 		for (int c = 0; c < ar->nin; c++)
 		{
@@ -429,6 +494,19 @@ arith_pairs(UnRun *u, int k, uint32 m)
 	u->outv[slot] = (SiftVec) {.data = out,.valid = valid,.len = (uint16) m,.all_valid = false,.dense = true,.type = SVEC_F64};
 }
 
+/* the PostgreSQL expression of derivation k on the pairs of obs: its inputs are the vectors of the pairs, its result the vector of the slot of the derivation */
+static void
+pg_pairs(UnRun *u, int k)
+{
+	const SiftVec *in[SIFT_V6_MAX_COLS];
+	const int	nin = u->pg[k]->nin;
+
+	for (int c = 0; c < nin; c++)
+		in[c] = u->out[u->pgslot[k][c]];
+	sift_v6_pgexpr_derive(u->pg[k], in, &u->obs, &u->pgout[k]);
+	u->out[u->ncols + u->nel + k] = &u->pgout[k].vec;
+}
+
 /* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */
 static void
 emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
@@ -440,14 +518,17 @@ emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m)
 	for (int c = 0; c < u->nel; c++)
 		if (u->eused[c])
 			sift_vec_gather(u->out[u->ncols + c], u->out_valid[u->ncols + c], u->out_data[u->ncols + c], &elems[c], u->eidx, m);
-	for (int k = 0; k < u->spec->nderive; k++)
-		arith_pairs(u, k, m);
 	memset(bs->mask, 0, sizeof(bs->mask));
 	for (uint32 i = 0; i < m; i++)
 		bs->mask[i >> 6] |= UINT64CONST(1) << (i & 63);
 	bs->n_raw = bs->n_active = (uint16) m;
 	bs->all_active = true;
 	bs->has_sel = false;
+	for (int k = 0; k < u->spec->nderive; k++)
+		if (u->spec->derive[k].kind == SVD_PG_EXPR)
+			pg_pairs(u, k);
+		else
+			arith_pairs(u, k, m);
 	sift_v6_pipe_run(u->pipe, u->out, bs);
 }
 
@@ -725,7 +806,7 @@ open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 	else
 		sift_v6_input_init_rel(&in, index);
 	for (int i = 0; i < u->ncols; i++)
-		in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.type = vec_type(u->cols[i].cls)};
+		in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.scale = u->cols[i].scale,.type = col_vec_type(&u->cols[i])};
 	in.ncols = u->ncols;
 	memcpy(type, u->etype, sizeof(type));
 	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->nel, u->x->elem.col_leaf, type, &u->espec);
