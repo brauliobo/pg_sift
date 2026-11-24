@@ -82,4 +82,5 @@ SELECT count(DISTINCT warm_bytes) = 4 AS warm_sizes_differ, count(DISTINCT cold_
 	(SELECT cold_bytes FROM zc WHERE policy = 'none') > (SELECT cold_bytes FROM zc WHERE policy = 'zstd:1') AS none_larger_than_zstd_cold FROM zc;
 
 DO $$ DECLARE r record; BEGIN FOR r IN SELECT relname FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind = 'r' LOOP EXECUTE format('DROP TABLE %I', r.relname); END LOOP; END $$;
+DROP FUNCTION bulk_parts(regclass), gen_csv(int, text, int), load(regclass, int, text, int), part_bytes(regclass), problems(regclass), retiered(regclass), rows_md5(regclass);
 DROP EXTENSION pg_sift;
