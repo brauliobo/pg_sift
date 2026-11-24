@@ -153,6 +153,7 @@ TESTING_REGRESS += agg_v6_rows_topn_ties
 TESTING_REGRESS += agg_v6_scope_topk
 TESTING_REGRESS += agg_v6_sip_window_expr
 TESTING_REGRESS += agg_v6_star_jsonb_unnest
+TESTING_REGRESS += agg_v6_star_text
 TESTING_REGRESS += agg_v6_text_collation
 TESTING_REGRESS += agg_v6_text_phrase
 TESTING_REGRESS += agg_v6_topn_card_vexpr

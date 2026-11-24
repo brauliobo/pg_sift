@@ -174,6 +174,30 @@ v6_serve_projection(V6State *st, Snapshot snap)
 	return src->quals.possible && sift_v6_proj_serve_table(st->spec, src->heap, src->quals.keys, src->quals.nkeys, snap, st->gcx, &st->proj);
 }
 
+/* The hits of the text query of the plan, NULL without one: opened for one scan of the index and closed with it (each pass of a star join reads them again) */
+static SiftV6Text *
+text_begin(const V6State *st)
+{
+	return OidIsValid(st->spec->text_indexoid) ? sift_v6_text_open(st->spec, CurrentMemoryContext) : NULL;
+}
+
+static void
+text_end(SiftV6Text *text)
+{
+	if (text != NULL)
+		sift_v6_text_close(text);
+}
+
+static void
+scan_with_text(V6State *st, const V6Source *src, Snapshot snap, SiftV6StarRun *star)
+{
+	SiftV6Text *text = text_begin(st);
+
+	sift_v6_scan_run_ext(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, st->gpu.skip, st->gpu.nskip, NULL, &st->stats, star,
+						 text ? sift_v6_text_chunk : NULL, text);
+	text_end(text);
+}
+
 /* The scan of the fact table of a join or an unnest: once for each pass of the dimensions of a star join (one when they all fit work_mem) */
 static void
 v6_scan_ext(V6State *st, Snapshot snap)
@@ -193,7 +217,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
 
 		if (open == SSO_SCAN)
-			sift_v6_scan_run_ext(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, NULL, 0, NULL, &st->stats, st->star, NULL, NULL);
+			scan_with_text(st, src, snap, st->star);
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
@@ -205,9 +229,8 @@ static void
 v6_scan(V6State *st, Snapshot snap)
 {
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-	SiftV6Text *text = OidIsValid(st->spec->text_indexoid) ? sift_v6_text_open(st->spec, CurrentMemoryContext) : NULL;
 
-	if (st->spec->nparts == 0 && st->spec->ext == NULL && text == NULL)
+	if (st->spec->nparts == 0 && st->spec->ext == NULL && !OidIsValid(st->spec->text_indexoid))
 		st->group = sift_v6_gpu_agg(st->spec, st->sources[0].heap, st->sources[0].index, snap, st->css.ss.ps.plan->plan_rows, st->css.ss.ps.qual != NULL, st->gcx, desc, &st->gpu);
 	if (st->group == NULL)
 		st->group = sift_v6_group_new(st->spec, st->gcx, desc);
@@ -222,14 +245,11 @@ v6_scan(V6State *st, Snapshot snap)
 		V6Source   *src = &st->sources[k];
 
 		if (src->index != NULL)
-			sift_v6_scan_run(st->spec, st->group, src->heap, src->index, src->keys, src->nkeys, snap, st->gpu.skip, st->gpu.nskip, NULL, &st->stats,
-							 text ? sift_v6_text_chunk : NULL, text);
+			scan_with_text(st, src, snap, NULL);
 		else
 			sift_v6_scan_table(st->spec, st->group, src->heap, &src->quals, snap, st->gpu.skip, st->gpu.nskip, &st->stats);
 	}
 	sift_v6_group_finish(st->group);
-	if (text != NULL)
-		sift_v6_text_close(text);
 }
 
 /* The groups of an arm, to be filled by the pass that serves it */

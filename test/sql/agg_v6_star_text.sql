@@ -1,0 +1,79 @@
+-- SiftAggV6 with a text query (memo @@> 'plug') and a star join of the fact table with dimensions, in one pass and in several (a dimension that does not fit work_mem): the hits of the
+-- query are the rows the scan reads, each pass reads them again, and the text index is closed with its scan (a WARNING "resource was not closed" is a leak of it). Every query is run
+-- with the node and without it (sift.enable_agg) and the two answers are compared; the first word says they agree, the second that the plan is the node's.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = off;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+CREATE TABLE st_dim (id int PRIMARY KEY, tier text NOT NULL);
+INSERT INTO st_dim SELECT p, CASE p % 3 WHEN 0 THEN 'tier_a' WHEN 1 THEN 'tier_b' ELSE 'tier_c' END FROM generate_series(1, 60) p;
+CREATE TABLE st_fact (id int PRIMARY KEY, parent_id int NOT NULL, deleted_at timestamptz, memo text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO st_fact SELECT i, 1 + (i::bigint * 7919) % 60, CASE WHEN i % 37 = 0 THEN now() END,
+	(ARRAY['cable', 'wire', 'plug', 'adapter', 'switch', 'panel', 'socket', 'fuse'])[1 + i % 8] || ' ' || (ARRAY['relay', 'cord', 'clamp', 'bolt', 'valve'])[1 + (i * 7) % 5]
+FROM generate_series(1, 30000) i;
+CREATE INDEX st_fact_col ON st_fact USING sift_col (id, parent_id, deleted_at);
+CREATE INDEX st_fact_memo ON st_fact USING sift (memo);
+CREATE TABLE st_big (id int, tier text, w int) WITH (autovacuum_enabled = false);
+INSERT INTO st_big SELECT i, 'b' || i % 10, i % 100 FROM generate_series(1, 50) i;
+VACUUM (FREEZE, ANALYZE) st_dim, st_fact, st_big;
+INSERT INTO st_big SELECT i, 'b' || i % 10, i % 100 FROM generate_series(51, 8000) i;
+
+CREATE FUNCTION answer(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; plan text := ''; l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_force = on;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	a := answer(q);
+	SET LOCAL sift.enable_agg = off;
+	b := answer(q);
+	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN plan LIKE '%SiftAggV6%' AND plan LIKE '%Text Index%' THEN 'node' ELSE 'normal' END) || ' ' || q;
+END $$;
+
+CREATE FUNCTION passes(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Star Passes' THEN RETURN regexp_replace(l, '\D', '', 'g')::int; END IF;
+	END LOOP;
+	RETURN 0;
+END $$;
+
+-- one pass: the rows that name the query, with the groups of the dimension
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT d.tier, count(*) AS n FROM st_fact e JOIN st_dim d ON d.id = e.parent_id WHERE e.memo @@> ''plug'' AND e.deleted_at IS NULL GROUP BY 1',
+	'SELECT d.tier, count(*) AS n FROM st_fact e JOIN st_dim d ON d.id = e.parent_id WHERE e.memo @@> ''plug OR relay'' GROUP BY 1',
+	'SELECT d.tier, count(*) AS n FROM st_fact e LEFT JOIN st_dim d ON d.id = e.parent_id AND d.tier = ''tier_a'' WHERE e.memo @@> ''cable'' GROUP BY 1',
+	'SELECT d.tier, count(*) AS n FROM st_fact e JOIN st_dim d ON d.id = e.parent_id WHERE e.memo @@> ''absent'' GROUP BY 1'
+]) q;
+SELECT d.tier, count(*) AS n FROM st_fact e JOIN st_dim d ON d.id = e.parent_id WHERE e.memo @@> 'plug' AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
+
+-- several passes: the dimension is read in parts of its keys, and the hits are read for each
+SET work_mem = '64kB';
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT b.tier, count(*) FROM st_fact e LEFT JOIN st_big b ON e.parent_id = b.id AND b.w * 1 = b.w AND b.w > 50 WHERE e.memo @@> ''plug'' GROUP BY 1',
+	'SELECT b.tier, count(*) FROM st_fact e LEFT JOIN st_big b ON e.parent_id = b.id AND b.w * 1 = b.w AND b.w > 50 WHERE e.memo @@> ''plug OR fuse'' GROUP BY 1'
+]) q;
+SELECT passes('SELECT b.tier, count(*) FROM st_fact e LEFT JOIN st_big b ON e.parent_id = b.id AND b.w * 1 = b.w AND b.w > 50 WHERE e.memo @@> ''plug'' GROUP BY 1') > 1 AS read_in_parts;
+RESET work_mem;
+
+DELETE FROM st_fact WHERE id % 13 = 0;
+SELECT same('SELECT d.tier, count(*) AS n FROM st_fact e JOIN st_dim d ON d.id = e.parent_id WHERE e.memo @@> ''plug'' GROUP BY 1');
+VACUUM st_fact;
+SELECT same('SELECT d.tier, count(*) AS n FROM st_fact e JOIN st_dim d ON d.id = e.parent_id WHERE e.memo @@> ''plug'' GROUP BY 1');
+
+DROP TABLE st_fact, st_dim, st_big;
+DROP FUNCTION same(text);
+DROP FUNCTION answer(text);
+DROP FUNCTION passes(text);
+DROP EXTENSION pg_sift;
