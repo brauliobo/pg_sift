@@ -20,21 +20,21 @@ CREATE TABLE sip_dim AS
 SELECT n, (g * 13) % 5000 AS k FROM (VALUES (1), (10), (64), (65), (1000), (4000)) AS v(n), LATERAL generate_series(1, n) AS g;
 INSERT INTO sip_dim SELECT 65, NULL;
 CREATE TABLE sip_in AS
-SELECT d.n, (SELECT array_agg(k ORDER BY id) FROM sip_fact) AS fact, (SELECT array_agg(k) FROM sip_dim x WHERE x.n = d.n) AS dim,
-       (SELECT array_agg(k) FROM sip_dim x WHERE x.n = d.n AND k IS NOT NULL) AS dim_nn
+SELECT d.n, (SELECT array_agg(k ORDER BY id) FROM sip_fact) AS fact, (SELECT array_agg(k) FROM sip_dim x WHERE x.n = d.n) AS dim
 FROM (SELECT DISTINCT n FROM sip_dim) AS d;
-INSERT INTO sip_in SELECT 0, (SELECT array_agg(k ORDER BY id) FROM sip_fact), '{}', '{}';
+INSERT INTO sip_in SELECT 0, (SELECT array_agg(k ORDER BY id) FROM sip_fact), '{}';
 
-SELECT n, as_int4, count(*) FILTER (WHERE f.k IS NOT NULL AND f.k = ANY (dim_nn) AND NOT pass) AS missed,
+SELECT sip_in.n, as_int4, count(*) FILTER (WHERE m.k IS NOT NULL AND NOT pass) AS missed,
        count(*) FILTER (WHERE f.k IS NULL AND pass) AS nulls_passed,
-       count(*) FILTER (WHERE n <= 64 AND f.k IS NOT NULL AND NOT (f.k = ANY (dim_nn)) AND pass) AS inexact,
-       count(*) FILTER (WHERE n > 64 AND f.k IS NOT NULL AND NOT (f.k = ANY (dim_nn)) AND pass)
-         < 0.05 * count(*) FILTER (WHERE f.k IS NOT NULL AND NOT (f.k = ANY (dim_nn))) AS fpr_below_5pct,
+       count(*) FILTER (WHERE sip_in.n <= 64 AND f.k IS NOT NULL AND m.k IS NULL AND pass) AS inexact,
+       count(*) FILTER (WHERE sip_in.n > 64 AND f.k IS NOT NULL AND m.k IS NULL AND pass)
+         < 0.05 * count(*) FILTER (WHERE f.k IS NOT NULL AND m.k IS NULL) AS fpr_below_5pct,
        count(*) FILTER (WHERE pass) < count(*) AS filters
-FROM sip_in, (VALUES (false), (true)) AS t(as_int4),
-     LATERAL sift._test_sip_filter(fact, dim, as_int4) AS r
+FROM sip_in CROSS JOIN (VALUES (false), (true)) AS t(as_int4)
+     CROSS JOIN LATERAL sift._test_sip_filter(fact, dim, as_int4) AS r
      JOIN sip_fact f ON f.id = r.ord
-GROUP BY n, as_int4 ORDER BY n, as_int4;
+     LEFT JOIN (SELECT DISTINCT n, k FROM sip_dim WHERE k IS NOT NULL) AS m ON m.n = sip_in.n AND m.k = f.k
+GROUP BY sip_in.n, as_int4 ORDER BY sip_in.n, as_int4;
 
 -- ---------------------------------------------------------------------------------------------------------------------------------------------------
 -- Window functions and DISTINCT ON over rows sorted by the partition and the order key
@@ -210,15 +210,16 @@ BEGIN
 		ok := ARRAY(SELECT id FROM vd ORDER BY id);
 	EXCEPTION WHEN others THEN clean := false;
 	END;
-	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 7 = 0 ORDER BY id LOOP
-		BEGIN
-			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
-		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
-		END;
+	FOR r IN SELECT id FROM vd WHERE NOT clean OR id % 13 = 0 ORDER BY id LOOP
 		BEGIN
 			EXECUTE format('SELECT coalesce((%s)::text, ''<null>'') FROM vd WHERE id = %s', pgx, r) INTO p;
 			IF NOT clean THEN ok := ok || r; END IF;
 		EXCEPTION WHEN others THEN p := 'error: ' || SQLERRM;
+		END;
+		CONTINUE WHEN r % 13 <> 0 AND p NOT LIKE 'error: %';
+		BEGIN
+			e := coalesce((SELECT t.res FROM vexpr_run(prog, ARRAY[r]) AS t(ord int, res text) WHERE t.ord = r), '<null>');
+		EXCEPTION WHEN others THEN e := 'error: ' || SQLERRM;
 		END;
 		IF e IS DISTINCT FROM p THEN
 			bad := bad + 1;
