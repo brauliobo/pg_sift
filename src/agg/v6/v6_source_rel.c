@@ -5,9 +5,12 @@
 
 #include "access/genam.h"
 #include "access/table.h"
+#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 
 #include "agg/plan/safety.h"
+#include "agg/v6/v6_card.h"
 #include "agg/v6/v6_source_rel.h"
 #include "core/store_ops.h"
 
@@ -49,6 +52,18 @@ bool
 sift_v6_source_usable(const SiftV6RelSource *s)
 {
 	return s->is_table || agg_index_complete(s->ix);
+}
+
+void
+sift_v6_source_scan_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total)
+{
+	if (!s->is_table)
+		sift_v6_scan_price(root, rel, s->ix, key, open, total);
+	else
+	{
+		*open = 0;
+		*total = cpu_tuple_cost * 0.05 * rel->tuples;
+	}
 }
 
 int

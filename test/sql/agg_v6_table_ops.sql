@@ -8,6 +8,9 @@ CREATE TABLE ot (id int PRIMARY KEY, grp int, k int, tag text, at timestamptz, a
 CREATE TABLE oh (LIKE ot INCLUDING ALL) WITH (autovacuum_enabled = false);
 CREATE TABLE od (k int PRIMARY KEY, label text) USING sift_table;
 CREATE TABLE odh (LIKE od INCLUDING ALL);
+CREATE TABLE os (id int, k int, grp int, at timestamp, amount numeric(12,2)) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_option('os', 'key_order', 'k, at');
+CREATE TABLE osh (LIKE os);
 
 INSERT INTO ot
 SELECT g, g % 17, g % 400, 'tag' || g % 5, timestamptz '2030-01-01' + g * interval '1 min',
@@ -16,8 +19,14 @@ FROM generate_series(1, 60000) g;
 INSERT INTO od SELECT g, 'l' || g % 100 FROM generate_series(0, 399) g;
 INSERT INTO oh SELECT * FROM ot;
 INSERT INTO odh SELECT * FROM od;
+INSERT INTO os SELECT g, g / 3, g % 17, timestamp '2030-01-01' + (g % 5000) * interval '37 minutes', CASE WHEN g % 211 = 0 THEN NULL ELSE (g % 1000) / 8.0 END
+FROM generate_series(1, 40000) g;
+INSERT INTO osh SELECT * FROM os;
 SELECT sift.table_maintain('ot') IS NOT NULL AS maintained;
-ANALYZE ot; ANALYZE oh; ANALYZE od; ANALYZE odh;
+SELECT sift.table_maintain('os') IS NOT NULL AS maintained_sorted;
+INSERT INTO os SELECT g, (g * 7) % 14000, g % 17, timestamp '2030-01-01' + (g % 5000) * interval '37 minutes', (g % 1000) / 8.0 FROM generate_series(40001, 42000) g;
+INSERT INTO osh SELECT * FROM os WHERE id > 40000;
+ANALYZE ot; ANALYZE oh; ANALYZE od; ANALYZE odh; ANALYZE os; ANALYZE osh;
 
 CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE x text; y text;
@@ -36,7 +45,8 @@ BEGIN
 END $$;
 
 CREATE FUNCTION on_table(q text, twin boolean) RETURNS text LANGUAGE sql AS
-$$ SELECT CASE WHEN twin THEN replace(replace(q, '@T', 'oh'), '@D', 'odh') ELSE replace(replace(q, '@T', 'ot'), '@D', 'od') END $$;
+$$ SELECT CASE WHEN twin THEN replace(replace(replace(q, '@T', 'oh'), '@D', 'odh'), '@S', 'osh')
+		ELSE replace(replace(replace(q, '@T', 'ot'), '@D', 'od'), '@S', 'os') END $$;
 
 CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
 $$ SELECT same_rows(on_table(q, false), on_table(q, true)) $$;
@@ -83,14 +93,31 @@ DROP TABLE topn_got, topn_want;
 DEALLOCATE topn_t;
 DEALLOCATE topn_h;
 
+-- the groups of a table sorted by its key, streamed in the order of the key: its parts, and the rows written after them
+SELECT plan_has('SELECT k, count(*), sum(amount) FROM @S GROUP BY k ORDER BY k', 'Custom Scan (SiftAggV6Stream)') AS stream_served_by_agg_v6;
+SELECT plan_has('SELECT k, count(*), sum(amount) FROM @S GROUP BY k ORDER BY k', 'Table: os') AS stream_reads_the_table;
+SELECT NOT plan_has('SELECT k, count(*), sum(amount) FROM @S GROUP BY k ORDER BY k', 'Index:') AS stream_reads_no_index;
+SELECT plan_has('SELECT id, count(*) FROM @T GROUP BY id ORDER BY id', 'Custom Scan (SiftAggV6Stream)') AS stream_by_primary_key;
+SELECT parity_ordered('SELECT k, count(*), sum(amount), min(grp), max(grp), avg(amount) FROM @S GROUP BY k ORDER BY k') AS stream_one_key;
+SELECT parity_ordered('SELECT k, at, count(*), min(grp) FROM @S WHERE grp < 8 GROUP BY k, at ORDER BY k, at') AS stream_two_keys_and_quals;
+SELECT parity_ordered('SELECT k, date_trunc(''day'', at) AS d, count(*), sum(amount) FROM @S GROUP BY 1, 2 ORDER BY 1, 2') AS stream_truncated_timestamp;
+SELECT parity_ordered('SELECT k, count(*), count(amount) FILTER (WHERE grp = 3) FROM @S GROUP BY k HAVING count(*) > 1 ORDER BY k') AS stream_filter_and_having;
+SELECT parity_ordered('SELECT id, count(*), sum(grp) FROM @T WHERE k < 20 GROUP BY id ORDER BY id') AS stream_primary_key;
+
 UPDATE ot SET k = (k + 1) % 400, grp = 3 WHERE id % 9 = 0;
 UPDATE oh SET k = (k + 1) % 400, grp = 3 WHERE id % 9 = 0;
 DELETE FROM ot WHERE id % 13 = 0;
 DELETE FROM oh WHERE id % 13 = 0;
+UPDATE os SET grp = 3, amount = amount + 1 WHERE id % 9 = 0;
+UPDATE osh SET grp = 3, amount = amount + 1 WHERE id % 9 = 0;
+DELETE FROM os WHERE id % 13 = 0;
+DELETE FROM osh WHERE id % 13 = 0;
+SELECT plan_has('SELECT k, count(*), sum(amount), min(grp) FROM @S GROUP BY k ORDER BY k', 'Custom Scan (SiftAggV6Stream)') AS stream_served_after_updates_and_deletes;
+SELECT parity_ordered('SELECT k, count(*), sum(amount), min(grp) FROM @S GROUP BY k ORDER BY k') AS stream_after_updates_and_deletes;
 SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 30') AS topn_after_updates_and_deletes;
 SELECT plan_has('SELECT f.id, f.grp FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''l5''', 'Custom Scan (SiftAggV6Sip)') AS sip_served_after_updates_and_deletes;
 SELECT parity('SELECT f.id, f.grp, d.label FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''l5''') AS sip_after_updates_and_deletes;
 
-DROP TABLE ot, oh, od, odh;
+DROP TABLE ot, oh, od, odh, os, osh;
 DROP FUNCTION parity(text), parity_ordered(text), same_rows(text, text), same_ordered(text, text), on_table(text, boolean), plan_has(text, text);
 DROP EXTENSION pg_sift;

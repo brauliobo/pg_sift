@@ -275,7 +275,7 @@ leading_key_ordered(const SiftV6TopNSpec *spec)
 {
 	const int	att = spec->key[0].attno;
 
-	return !spec->is_table && sift_v6_rel_sorted_by(spec->indexoid, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
+	return !spec->is_table && sift_v6_rel_sorted_by(spec->indexoid, false, &att, 1) && spec->order[0].desc == spec->order[0].nulls_first;
 }
 
 static double

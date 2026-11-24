@@ -601,7 +601,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 	for (int i = 0; p->part_mode == WIN_EXACT && i < spec.win.n_ord; i++)
 		atts[n++] = in.col[spec.ord_slot[i]].attno;
 	if (p->part_mode == WIN_REGROUP ? !sift_win_regroup_fits(&in, vars_of_tlist(p->scan_tlist), p->rel->rows, estimate_num_groups(p->root, p->part, p->rel->rows, NULL, NULL), (uint64) work_mem * 1024) :
-		!sift_v6_rel_sorted_by(p->index->indexoid, atts, n))
+		!sift_v6_rel_sorted_by(p->index->indexoid, false, atts, n))
 		return false;
 	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &total);
 	total += cpu_tuple_cost * p->rel->rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));

@@ -34,7 +34,7 @@ extern bool sift_v6_rel_ordered(Oid relid, bool is_table);
 /* the relation of the input holds attribute att, of the class, in one leaf the scan decodes as it is stored (SV6C_NONE: a jsonb document read for the presence of a key) */
 extern bool sift_v6_input_holds(const SiftV6Input *in, int att, SiftV6Class cls);
 /* the parts of the index are sorted by the attributes atts[0 .. n-1], each ascending, NULLs last */
-extern bool sift_v6_rel_sorted_by(Oid indexoid, const int *atts, int n);
+extern bool sift_v6_rel_sorted_by(Oid relid, bool is_table, const int *atts, int n);
 /* the statistics the index folded when its parts were written (agg/plan/card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based), -1 when it has none */
 extern const SiftCardStatsView *sift_v6_rel_card_view(Oid indexoid);
 extern int	sift_v6_rel_card_leaf(Oid indexoid, int col);

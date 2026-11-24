@@ -182,7 +182,7 @@ sorted_input(SiftV6Input *in, const Idiom *id)
 		return false;
 	atts[0] = in->col[ks].attno;
 	atts[1] = in->col[ts].attno;
-	return sift_v6_rel_sorted_by(in->indexoid, atts, 2);
+	return sift_v6_rel_sorted_by(in->indexoid, in->is_table, atts, 2);
 }
 
 static bool

@@ -34,7 +34,7 @@
 
 enum
 {
-	PRIV_INTS = 0,				/* indexoid, rti */
+	PRIV_INTS = 0,				/* the oid of the source, rti, the source is a sift_table */
 	PRIV_TLIST = 1,				/* the scan tlist: sift_v6_plan_scan reads it from here */
 	PRIV_KEYS = 2,
 	PRIV_AGGS = 3,
@@ -431,7 +431,7 @@ typedef struct StreamPlan
 	PlannerInfo *root;
 	RelOptInfo *rel;
 	RelOptInfo *out;
-	const IndexOptInfo *index;
+	const SiftV6RelSource *src;
 	GroupPathExtraData *extra;
 	List	   *keys;
 	List	   *aggs;
@@ -508,7 +508,7 @@ static const CustomPathMethods stream_path_methods = {"SiftAggV6Stream", sift_ag
 static bool
 stream_try(StreamPlan *p)
 {
-	SiftV6Input in;
+	SiftV6Input in = p->src->input;
 	SiftV6StreamSpec spec;
 	SiftV6Vexpr probe,
 				filters[SIFT_V6_STREAM_MAX_FILTERS];
@@ -517,25 +517,25 @@ stream_try(StreamPlan *p)
 	double		groups;
 	Cost		open,
 				scan;
-	const SiftCardStatsView *view;
+	const SiftCardStatsView *view = NULL;
 
 	if (!collect(p))
 		return false;
-	priv = list_make5(list_make2_int((int) p->index->indexoid, (int) p->rel->relid), p->scan_tlist, p->keys, p->aggs, (List *) p->extra->havingQual);
+	priv = list_make5(list_make3_int((int) p->src->reloid, (int) p->rel->relid, p->src->is_table), p->scan_tlist, p->keys, p->aggs, (List *) p->extra->havingQual);
 	priv = lappend(priv, p->quals);
-	sift_v6_input_init_info(&in, p->index);
 	if (!sift_v6_stream_spec(priv, &in, &spec) || !sift_v6_stream_filters(CurrentMemoryContext, &spec, NULL, &in, filters) ||
 		!sift_v6_vexpr_quals(CurrentMemoryContext, p->quals, p->rel->relid, NULL, &in, &probe))
 		return false;
 	for (int i = 0; i < spec.nkeys; i++)
 		atts[i] = in.col[spec.key_slot[i]].attno;
-	if (!sift_v6_rel_sorted_by(p->index->indexoid, atts, spec.nkeys))
+	if (!sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, spec.nkeys))
 		return false;
-	view = sift_v6_rel_card_view(p->index->indexoid);
-	groups = sift_v6_card_groups(p->root, p->rel, p->index, view, p->keys, p->rel->rows);
+	if (!p->src->is_table)
+		view = sift_v6_rel_card_view(p->src->reloid);
+	groups = sift_v6_card_groups(p->root, p->rel, p->src->ix, view, p->keys, p->rel->rows);
 	if (groups < 0)
 		groups = estimate_num_groups(p->root, p->keys, p->rel->rows, NULL, NULL);
-	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
+	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &scan);
 	scan += cpu_tuple_cost * groups + cpu_operator_cost * p->rel->rows * (1 + list_length(p->quals));
 	sift_v6_add_path(p->out, &stream_path_methods, open + (scan - open) / Max(groups, 1.0), scan, groups, p->root->group_pathkeys, priv, NIL);
 	return true;
@@ -545,16 +545,19 @@ void
 sift_agg_v6_stream_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	const Query *q = root->parse;
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (stage != UPPERREL_GROUP_AGG || !sift_enable_agg || q->hasTargetSRFs || q->groupingSets != NIL ||
 		root->processed_groupClause == NIL || !q->hasAggs || !sift_v6_base_rel_ok(root, input_rel))
 		return;
 	sift_v6_stage_target(root, stage, output_rel);
-	foreach_ptr(IndexOptInfo, ix, input_rel->indexlist)
+	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
 	{
-		StreamPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.index = ix,.extra = extra};
+		StreamPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i],.extra = extra};
 
-		if (agg_index_complete(ix) && sift_v6_rel_ordered(ix->indexoid, false) && stream_try(&p))
+		if (sift_v6_source_usable(&src[i]) && sift_v6_rel_ordered(src[i].reloid, src[i].is_table) && stream_try(&p))
 			return;
 	}
 }
@@ -656,15 +659,15 @@ stream_run(StreamState *st, EState *estate)
 				filters[SIFT_V6_STREAM_MAX_FILTERS];
 	bool		compiled;
 	List	   *where = list_nth(st->priv, PRIV_QUALS);
-	Relation	index = index_open((Oid) linitial_int(linitial(st->priv)), AccessShareLock);
+	const bool	is_table = list_nth_int(linitial(st->priv), 2);
+	Relation	source = sift_v6_source_open((Oid) linitial_int(linitial(st->priv)), is_table, AccessShareLock, &in);
 
 	sift_v6_store_start(&st->out, estate);
-	sift_v6_input_init_rel(&in, index);
 	sift_v6_input_bind(&in, estate);
-	index_close(index, NoLock);
+	sift_v6_source_close(source, is_table, NoLock);
 	compiled = sift_v6_stream_spec(st->priv, &in, &st->spec) && sift_v6_stream_filters(st->out.cx, &st->spec, estate->es_param_list_info, &in, filters) &&
 		sift_v6_vexpr_quals(st->out.cx, where, st->spec.rti, estate->es_param_list_info, &in, &quals);
-	SIFT_INVARIANT(compiled, "the stream of groups of index %u is not compiled", st->spec.indexoid);
+	SIFT_INVARIANT(compiled, "the stream of groups of relation %u is not compiled", st->spec.indexoid);
 	st->src = sift_v6_rel_open(estate, &in, where == NIL ? NULL : &quals, true);
 	st->groups = 0;
 	sift_v6_stream_run(st->src, &st->spec, filters, stream_emit, st);
@@ -723,7 +726,7 @@ stream_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	StreamState *st = (StreamState *) node;
 
-	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), false);
+	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), list_nth_int(linitial(st->priv), 2));
 	if (st->out.ran)
 		sift_v6_explain_count(es, "Groups", (int64) st->groups);
 }

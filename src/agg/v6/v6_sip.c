@@ -239,13 +239,7 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const S
 	ints = list_make5_int((int) src->reloid, (int) rel->relid, (int) planner_rt_fetch(j->dim->relid, root)->relid, (int) j->dim->relid, j->fact_key->varattno);
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
 	ints = lappend_int(ints, src->is_table);
-	if (src->is_table)
-	{
-		open = 0;
-		scan = cpu_tuple_cost * 0.05 * rel->tuples;
-	}
-	else
-		sift_v6_scan_price(root, rel, src->ix, j->fact_key->varattno, &open, &scan);
+	sift_v6_source_scan_price(root, rel, src, j->fact_key->varattno, &open, &scan);
 	sift_v6_add_path(rel, &sip_path_methods, open, scan + cpu_tuple_cost * rows + cpu_operator_cost * (j->dim->tuples + rel->rows), rows, NIL,
 					 list_make3(ints, pushable(rel, &src->input), clauses_of(j->dim->baserestrictinfo)), NIL);
 	return true;

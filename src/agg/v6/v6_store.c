@@ -29,11 +29,11 @@ sift_v6_input_holds(const SiftV6Input *in, int att, SiftV6Class cls)
 }
 
 bool
-sift_v6_rel_sorted_by(Oid indexoid, const int *atts, int n)
+sift_v6_rel_sorted_by(Oid relid, bool is_table, const int *atts, int n)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_oid(indexoid, false);
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, is_table);
 
-	return ops != NULL && ops->order != NULL && ops->order->sorted_by(indexoid, false, atts, n);
+	return ops != NULL && ops->order != NULL && ops->order->sorted_by(relid, is_table, atts, n);
 }
 
 const SiftCardStatsView *
