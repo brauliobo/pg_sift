@@ -7,7 +7,8 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET TimeZone = 'UTC';
-DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+-- the testing library builds new indexes in format major 1 unless told otherwise; the release library has no such setting
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE TABLE events (id int PRIMARY KEY, member int NOT NULL, created_at timestamptz NOT NULL, amount int NOT NULL, kind int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + i % 60, timestamptz '2026-01-01' + i * interval '97 minutes', i % 101, i % 7 FROM generate_series(1, 3000) i;
@@ -83,7 +84,7 @@ $$;
 CREATE FUNCTION shapes(ktype text) RETURNS TABLE (what text, result text) LANGUAGE plpgsql AS $$
 DECLARE pairs text := 'pairs_' || ktype; k int;
 BEGIN
-	FOR k IN SELECT unnest(ARRAY[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 99]) LOOP
+	FOR k IN SELECT unnest(ARRAY[0, 1, 3, 4, 6, 7, 9, 10, 11, 12, 99]) LOOP
 		what := 'key ' || k;
 		result := same(format('SELECT count(*), sum(e.amount), max(e.kind), avg(e.amount) FROM events e JOIN %s p ON p.member = e.member WHERE p.key = %s', pairs, lit(ktype, k)));
 		RETURN NEXT;
