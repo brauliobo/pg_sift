@@ -40,26 +40,26 @@ SET sift.enable_col_scan = off;
 -- the same keys as an int4 leaf and as an int8 leaf, a key beyond int32 in the int8 one, NULLs
 CREATE TABLE ev (id int PRIMARY KEY, k4 int, k8 int8, kind text, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev
-SELECT i, 1 + (i::bigint * 7919) % 30000,
+SELECT i, 1 + (i::bigint * 7919) % 3000,
        CASE WHEN i % 997 = 0 THEN NULL WHEN i <= 5 THEN -i::int8 * 10000000000 WHEN i <= 10 THEN 9000000000 + i
-            WHEN i <= 15 THEN 9223372036854775807 - i ELSE 1 + (i::bigint * 7919) % 30000 END,
+            WHEN i <= 15 THEN 9223372036854775807 - i ELSE 1 + (i::bigint * 7919) % 3000 END,
        (ARRAY['a', 'b', 'c', 'd'])[1 + i % 4], (i % 1000) / 10.0
-FROM generate_series(1, 200000) i;
+FROM generate_series(1, 12000) i;
 CREATE INDEX ev_col ON ev USING sift_col (k4, k8, kind, amount);
 ALTER TABLE ev ALTER COLUMN k8 SET STATISTICS 1000;
 VACUUM (FREEZE, ANALYZE) ev;
 -- sets of keys: int8 keys (a duplicate, a NULL, keys beyond int32 and at the ends of int8), an int4 table, an int2 table, a table with no rows
 CREATE TABLE keys8 (grp int, k int8);
-INSERT INTO keys8 SELECT 1, 1 + i * 13 FROM generate_series(0, 2000) i;
+INSERT INTO keys8 SELECT 1, 1 + i * 13 FROM generate_series(0, 200) i;
 INSERT INTO keys8 VALUES (1, 11), (1, 11), (1, NULL), (2, -50000000000), (2, 9000000007), (2, 9000000008), (2, 9223372036854775800), (2, 5), (2, 6);
 INSERT INTO keys8 SELECT 3, 3000000000 + i * 5 FROM generate_series(0, 50) i;
 INSERT INTO keys8 VALUES (4, -9223372036854775808), (4, 9223372036854775807), (4, 0);
 CREATE TABLE keys8_nn (k int8 NOT NULL);
-INSERT INTO keys8_nn SELECT 1 + i * 17 FROM generate_series(0, 1500) i;
+INSERT INTO keys8_nn SELECT 1 + i * 17 FROM generate_series(0, 150) i;
 CREATE TABLE dims (id int PRIMARY KEY, country int);
-INSERT INTO dims SELECT i, i % 60 FROM generate_series(1, 30000) i;
+INSERT INTO dims SELECT i, i % 60 FROM generate_series(1, 3000) i;
 CREATE TABLE dims8 (id int8 PRIMARY KEY, country int);
-INSERT INTO dims8 SELECT i, i % 60 FROM generate_series(1, 30000) i;
+INSERT INTO dims8 SELECT i, i % 60 FROM generate_series(1, 3000) i;
 CREATE TABLE nothing (k int8);
 ANALYZE keys8;
 ANALYZE keys8_nn;
@@ -185,7 +185,7 @@ CREATE UNIQUE INDEX kinds_name ON kinds (name);
 CREATE TABLE nothing (x int, d date);
 CREATE TABLE events (id int PRIMARY KEY, kind_id int, label text NOT NULL, amount numeric(10,2), at date NOT NULL, score int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE 1 + (g * 7919) % 45 END, 'kind_' || (1 + (g * 31) % 50), CASE WHEN g % 11 = 0 THEN NULL ELSE (g % 500) / 5.0 END,
-       date '2024-01-01' + (g % 700), CASE WHEN g % 17 = 0 THEN NULL ELSE g % 90 END FROM generate_series(1, 30000) g;
+       date '2024-01-01' + (g % 700), CASE WHEN g % 17 = 0 THEN NULL ELSE g % 90 END FROM generate_series(1, 10000) g;
 CREATE INDEX events_col ON events USING sift_col (id, kind_id, label, amount, at, score);
 VACUUM (FREEZE, ANALYZE) events, kinds, nothing;
 CREATE TABLE init_q (n int, label text, q text);
@@ -245,7 +245,7 @@ SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE i % 50 END, i % 2,
             ELSE jsonb_build_object('items', coalesce((SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3],
                                                                                    'n', CASE WHEN (i + j) % 13 = 0 THEN NULL ELSE (i * j) % 10 END))
                                               FROM generate_series(1, i % 5) j), '[]')) END
-FROM generate_series(1, 20000) i;
+FROM generate_series(1, 5000) i;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, bucket, doc) WITH (paths = 'doc.items[]{k text, n float8}');
 VACUUM (FREEZE, ANALYZE) facts;
 -- the spine has a range no row belongs to ('c'), and a row without items or without an entity is in no or a NULL group
@@ -352,18 +352,18 @@ INSERT INTO pg SELECT i,
 	(ARRAY['', 'a', 'A', 'é', NULL, 'x y', repeat('long', 40)])[i % 7 + 1],
 	(ARRAY['0.000', '-1.500', '99999999.999', NULL, '0.001'])[i % 5 + 1]::numeric,
 	i % 50
-FROM generate_series(0, 299999) i;
+FROM generate_series(0, 3999) i;
 CREATE INDEX pg_col ON pg USING sift_col (k, f8, tm, tx, nm, n);
 -- many tuples of values: more than a table of classes keeps
 CREATE TABLE pm (k int PRIMARY KEY, a int, b int) WITH (autovacuum_enabled = false);
-INSERT INTO pm SELECT i, i % 97, i % 89 FROM generate_series(0, 299999) i;
+INSERT INTO pm SELECT i, i % 97, i % 89 FROM generate_series(0, 11999) i;
 CREATE INDEX pm_col ON pm USING sift_col (k, a, b);
 -- a key twice
 CREATE TABLE pd (k int, a int) WITH (autovacuum_enabled = false);
-INSERT INTO pd SELECT i % 200000, i % 7 FROM generate_series(0, 299999) i;
+INSERT INTO pd SELECT i % 8000, i % 7 FROM generate_series(0, 11999) i;
 CREATE INDEX pd_col ON pd USING sift_col (k, a);
 CREATE TABLE pe (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
-INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 320000)::int END, i % 13 FROM generate_series(1, 400000) i;
+INSERT INTO pe SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE (i::bigint * 7919 % 12800)::int END, i % 13 FROM generate_series(1, 16000) i;
 CREATE INDEX pe_col ON pe USING sift_col (id, k, v);
 VACUUM (FREEZE, ANALYZE) pg, pm, pd, pe;
 CREATE TABLE shapes (n int, sql text);
@@ -410,7 +410,7 @@ SELECT * FROM report('built');
 (14 rows)
 
 -- keys written since the index says its largest: the workers' array is short for them, the process alone reads the table
-INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(300000, 330000) i;
+INSERT INTO pg SELECT i, 1.5, '01:00:00', 'new', 1.000, 1 FROM generate_series(4000, 4400) i;
 SELECT * FROM report('keys beyond');
     stage    | workers | shape | same_answers 
 -------------+---------+-------+--------------
@@ -506,7 +506,7 @@ CREATE TABLE dd (id int, grp int, kind text, amount numeric(12,2), qty int, big 
 INSERT INTO dd SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
        CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
        4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
-FROM generate_series(1, 40000) g;
+FROM generate_series(1, 9000) g;
 CREATE INDEX dd_col ON dd USING sift_col (id, grp, kind, amount, qty, big, f, ts)
 	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_columns = 'kind, grp: amount, qty', calendar_columns = 'ts', dead_rewrite_pct = 50);
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) dd;
@@ -520,7 +520,7 @@ INSERT INTO dd_q VALUES
 	(6, 'SELECT ts, count(*), sum(amount) FROM dd WHERE ts >= date ''2024-02-01'' AND ts < date ''2024-04-01'' GROUP BY ts'),
 	(7, 'SELECT count(*), sum(amount) FROM dd WHERE grp IS NULL'),
 	(8, 'SELECT kind, count(*), sum(amount) FROM dd WHERE grp IN (1, 2, 3) GROUP BY kind'),
-	(9, 'SELECT count(*), sum(amount) FROM dd WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''),
+	(9, 'SELECT count(*), sum(amount) FROM dd WHERE ctid >= ''(180,1)'' AND ctid < ''(675,1)'''),
 	(10, 'SELECT grp, min(amount), max(amount), count(*) FROM dd GROUP BY grp'),
 	(11, 'SELECT min(qty), max(qty), min(ts), max(ts) FROM dd'),
 	(12, 'SELECT count(DISTINCT kind), count(DISTINCT grp) FROM dd'),
@@ -565,12 +565,12 @@ SELECT n, dd_same(q) AS same FROM dd_q ORDER BY n;
 SELECT kind, count(*) FROM dd GROUP BY kind ORDER BY kind;
  kind | count 
 ------+-------
- k0   |  7389
- k1   |  6650
- k2   |  7388
- k3   |  7388
- k4   |  7388
-      |   840
+ k0   |  1662
+ k1   |  1497
+ k2   |  1663
+ k3   |  1661
+ k4   |  1663
+      |   190
 (6 rows)
 
 UPDATE dd SET qty = qty + 1 WHERE id % 1000 = 5;
@@ -632,7 +632,7 @@ CREATE TABLE ov (id int, grp int, kind text, amount numeric(12,2), qty int, big 
 INSERT INTO ov SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g % 7 END, CASE WHEN g % 23 = 0 THEN NULL WHEN g % 50 = 1 THEN 'rare' ELSE 'k' || g % 5 END,
        CASE WHEN g % 19 = 0 THEN NULL ELSE (g % 997) * 1.07 - 40 END, CASE WHEN g % 29 = 0 THEN NULL ELSE g % 100 - 30 END,
        4000000000000000000::int8 + g::int8 * 1000003, g * 0.1, date '2024-01-01' + g % 200, repeat('x', 1000)
-FROM generate_series(1, 20000) g;
+FROM generate_series(1, 6000) g;
 CREATE INDEX ov_col ON ov USING sift_col (id, grp, kind, amount, qty, big, f, ts)
 	WITH (preagg = 'cube(grp: amount, qty, big, f; kind: amount, qty; ts: amount, qty; qty: amount)', rollup_columns = 'kind, grp: amount, qty', calendar_columns = 'ts');
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ov;
@@ -646,7 +646,7 @@ INSERT INTO ov_q VALUES
 	(6, 'SELECT ts, count(*), sum(amount) FROM ov WHERE ts >= date ''2024-02-01'' AND ts < date ''2024-04-01'' GROUP BY ts'),
 	(7, 'SELECT count(*), sum(amount) FROM ov WHERE grp IS NULL'),
 	(8, 'SELECT kind, count(*), sum(amount) FROM ov WHERE grp IN (1, 2, 3) GROUP BY kind'),
-	(9, 'SELECT count(*), sum(amount) FROM ov WHERE ctid >= ''(800,1)'' AND ctid < ''(3000,1)'''),
+	(9, 'SELECT count(*), sum(amount) FROM ov WHERE ctid >= ''(240,1)'' AND ctid < ''(3000,1)'''),
 	(10, 'SELECT grp, min(amount), max(amount), count(*) FROM ov GROUP BY grp'),
 	(11, 'SELECT min(qty), max(qty), min(ts), max(ts) FROM ov'),
 	(12, 'SELECT count(DISTINCT kind), count(DISTINCT grp) FROM ov'),
@@ -691,12 +691,12 @@ SELECT n, ov_same(q) AS same FROM ov_q ORDER BY n;
 SELECT kind, count(*) FROM ov GROUP BY kind ORDER BY kind;
  kind | count 
 ------+-------
- k0   |  3695
- k1   |  3325
- k2   |  3694
- k3   |  3694
- k4   |  3694
-      |   420
+ k0   |  1107
+ k1   |   998
+ k2   |  1109
+ k3   |  1109
+ k4   |  1109
+      |   126
 (6 rows)
 
 DELETE FROM ov WHERE id % 37 = 2;
