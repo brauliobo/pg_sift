@@ -65,13 +65,27 @@ SELECT sift._test_shm_manifest_hammer(900004, 20000, true) AS writer_torn, sift.
 SELECT sift._test_shm_manifest_invalidate(900004, false);
 
 DROP FUNCTION held();
-DROP TABLE before_list, base;
+DROP TABLE before_list;
+SELECT pool AS base_pool FROM base \gset
+DROP TABLE base;
 
--- the last backend of the area frees what it holds (the snapshots, their bytes in the ledger): a new session starts clean
+-- a session is over for the next one when its backend left the list of backends: its exit callbacks are done by then
+CREATE FUNCTION gone(pid int) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN 1..100 LOOP
+		IF NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pg_stat_activity.pid = gone.pid) THEN RETURN true; END IF;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+	RETURN false;
+END $$;
+
+-- the last backend of the area frees what it holds (the snapshots, their bytes in the ledger): a new session starts clean (the pool as it was when the test began: the write buffers of other tests hold their own pages in it)
 SELECT sift._test_shm_manifest_publish(900005, 1, 4096, true) AS published, sift._test_shm_manifest_publish(900006, 1, 4096, true) AS published;
+SELECT pg_backend_pid() AS old_pid \gset
 \c -
+SELECT gone(:old_pid) AS previous_session_gone;
 SELECT sift._test_shm_manifest_stat('snaps_live') AS snapshots, sift._test_shm_manifest_stat('snap_bytes') AS bytes_left, sift._test_shm_manifest_stat('area_users') AS area_users,
-  sift._test_shm_pool_used(0) AS pool_left;
+  sift._test_shm_pool_used(0) - :base_pool AS pool_left;
 SELECT sift._test_shm_manifest_read(900005, -1, 0) IS NULL AS no_snapshot;
 SELECT sift._test_shm_manifest_invalidate(900005, false), sift._test_shm_manifest_invalidate(900006, false);
 
@@ -79,7 +93,9 @@ SELECT sift._test_shm_manifest_invalidate(900005, false), sift._test_shm_manifes
 SELECT sift._test_shm_manifest_stat('epochs_active') AS before_pin;
 SELECT sift._test_shm_manifest_announce_epoch();
 SELECT sift._test_shm_manifest_stat('epochs_active') AS inside_pin;
+SELECT pg_backend_pid() AS old_pid \gset
 \c -
+SELECT gone(:old_pid) AS previous_session_gone;
 SELECT sift._test_shm_manifest_stat('epochs_active') AS after_exit;
 
 -- the stripe of a partition is the same every time and one of 256; the page lock of a partition is at the top of the block numbers
@@ -131,6 +147,7 @@ SELECT plan_buffers('SELECT count(*) FROM live WHERE id BETWEEN 100 AND 200') <=
 SELECT sift._test_f2_plan_cache_shm(true) AS "loaded_from_shm,published", (sift._test_f2_plan_cache(true))[5] AS part_lists_read_from_pages;
 DROP FUNCTION plan_buffers(text);
 DROP TABLE live;
+DROP FUNCTION gone(int);
 
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

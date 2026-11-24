@@ -224,17 +224,35 @@ SELECT sift._test_shm_manifest_invalidate(900004, false);
 (1 row)
 
 DROP FUNCTION held();
-DROP TABLE before_list, base;
--- the last backend of the area frees what it holds (the snapshots, their bytes in the ledger): a new session starts clean
+DROP TABLE before_list;
+SELECT pool AS base_pool FROM base \gset
+DROP TABLE base;
+-- a session is over for the next one when its backend left the list of backends: its exit callbacks are done by then
+CREATE FUNCTION gone(pid int) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN 1..100 LOOP
+		IF NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pg_stat_activity.pid = gone.pid) THEN RETURN true; END IF;
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+	RETURN false;
+END $$;
+-- the last backend of the area frees what it holds (the snapshots, their bytes in the ledger): a new session starts clean (the pool as it was when the test began: the write buffers of other tests hold their own pages in it)
 SELECT sift._test_shm_manifest_publish(900005, 1, 4096, true) AS published, sift._test_shm_manifest_publish(900006, 1, 4096, true) AS published;
  published | published 
 -----------+-----------
  t         | t
 (1 row)
 
+SELECT pg_backend_pid() AS old_pid \gset
 \c -
+SELECT gone(:old_pid) AS previous_session_gone;
+ previous_session_gone 
+-----------------------
+ t
+(1 row)
+
 SELECT sift._test_shm_manifest_stat('snaps_live') AS snapshots, sift._test_shm_manifest_stat('snap_bytes') AS bytes_left, sift._test_shm_manifest_stat('area_users') AS area_users,
-  sift._test_shm_pool_used(0) AS pool_left;
+  sift._test_shm_pool_used(0) - :base_pool AS pool_left;
  snapshots | bytes_left | area_users | pool_left 
 -----------+------------+------------+-----------
          0 |          0 |          0 |         0
@@ -271,7 +289,14 @@ SELECT sift._test_shm_manifest_stat('epochs_active') AS inside_pin;
           1
 (1 row)
 
+SELECT pg_backend_pid() AS old_pid \gset
 \c -
+SELECT gone(:old_pid) AS previous_session_gone;
+ previous_session_gone 
+-----------------------
+ t
+(1 row)
+
 SELECT sift._test_shm_manifest_stat('epochs_active') AS after_exit;
  after_exit 
 ------------
@@ -449,5 +474,6 @@ SELECT sift._test_f2_plan_cache_shm(true) AS "loaded_from_shm,published", (sift.
 
 DROP FUNCTION plan_buffers(text);
 DROP TABLE live;
+DROP FUNCTION gone(int);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
