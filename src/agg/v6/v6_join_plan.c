@@ -58,6 +58,7 @@ special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 	Relids		fact = bms_make_singleton(sh->fact->relid);
 	Relids		l = sj->min_lefthand,
 				r = sj->min_righthand;
+	Relids		before = bms_add_members(bms_copy(rest), fact);	/* the relations of the statement: a FULL join of a dimension is the last join, of all the others */
 
 	switch (sj->jointype)
 	{
@@ -66,8 +67,13 @@ special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 				return sift_v6_join_add_dim(sh, r, SV6J_LEFT_EQUI);
 			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
 		case JOIN_FULL:
-			if (bms_equal(l, fact))
-				return single_in(r, rest) && sift_v6_join_add_dim(sh, r, SV6J_FULL_EQUI);
+			if (single_in(r, rest) && bms_equal(bms_intersect(sj->syn_lefthand, before), bms_del_members(bms_copy(before), r)))
+			{
+				if (!sift_v6_join_add_dim(sh, r, SV6J_FULL_EQUI))
+					return false;
+				sh->dim[sh->nd - 1].closing = true;
+				return true;
+			}
 			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_FULL_EQUI);
 		case JOIN_SEMI:
 		case JOIN_ANTI:
@@ -342,6 +348,16 @@ place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
 	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_key(&sh->dim[d], probe, key);
 }
 
+/* a semi or anti join matches a row once, by its first dimension row: a condition on the pairs would decide on that one only */
+static bool
+matches_once(const SiftV6JoinShape *sh, Relids rels)
+{
+	for (int i = 0; i < sh->nd; i++)
+		if ((sh->dim[i].mode == SV6J_SEMI_EQUI || sh->dim[i].mode == SV6J_ANTI_EQUI) && bms_overlap(sh->dim[i].rels, rels))
+			return true;
+	return false;
+}
+
 /* the dimension an ON clause belongs to: the last of the dimensions it names, which is the outer join it is the clause of; -1 when no dimension of an outer join */
 static int
 on_dim(const SiftV6JoinShape *sh, Relids rels)
@@ -385,6 +401,8 @@ place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 		return true;
 	if (!ri->is_pushed_down)
 		return place_on(sh, ri);
+	if (matches_once(sh, ri->required_relids))
+		return false;
 	sh->resid = lappend(sh->resid, ri);
 	return true;
 }
@@ -439,13 +457,23 @@ needs_lookup(const SiftV6JoinShape *sh)
 	return false;
 }
 
+/* the preserved dimension i is the last, and no other is preserved: the rows of it that nothing matched come out with a NULL side for the relations before it, and no later join may drop them */
+static bool
+last_preserved(const SiftV6JoinShape *sh, int i)
+{
+	for (int j = 0; j < sh->nd; j++)
+		if (j != i && sift_star_preserves_dim(sh->dim[j].mode))
+			return false;
+	return i == sh->nd - 1;
+}
+
 /* a RIGHT or FULL join keeps the rows of its dimension that no row matched, and nothing else of the statement may change what matches */
 static bool
 preserved_ok(const SiftV6JoinShape *sh)
 {
 	for (int i = 0; i < sh->nd; i++)
 		if (sift_star_preserves_dim(sh->dim[i].mode))
-			return sh->nd == 1 && sh->elem == NULL;
+			return sh->elem == NULL && (sh->nd == 1 || (sh->dim[i].closing && last_preserved(sh, i)));
 	return true;
 }
 

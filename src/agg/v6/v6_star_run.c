@@ -348,6 +348,7 @@ SiftStarOpen
 sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 {
 	uint32		stride = 1;
+	bool		preserves = false;
 
 	if (pass >= r->passes)
 		return SSO_DONE;
@@ -362,7 +363,9 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 	if (pass == 0)
 		r->passes = stride;
 	for (int d = 0; d < r->x->ndims; d++)
-		if ((r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_RIGHT_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI) && r->dim[d].nrows == 0)
+		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
+	for (int d = 0; d < r->x->ndims; d++)
+		if (r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI))))
 			return SSO_EMPTY;
 	return SSO_SCAN;
 }
