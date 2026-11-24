@@ -10,10 +10,12 @@ Called by steps/store.sh, which starts the containers (one per server, equal CPU
     store.py merge OUT... -o docs/results/store.json
 
 Engines: pg (heap + btree + GIN), sift (heap + sift_col + sift), sift_table (column-format table + sift), es (Elasticsearch, request
-cache off), es_cached (the same with the shard request cache on), ch (ClickHouse), citus (Citus on one node, the table in the
+cache off), es_cached (the same with the shard request cache on), ch (ClickHouse), ch_proj (the same rows with the PROJECTIONs of bench/sql/store/ch.sql, section `proj`: ClickHouse's own
+pre-aggregates against the pg_sift ones; loaded after ch), citus (Citus on one node, the table in the
 `columnar` access method: no UPDATE, DELETE or GIN, so it is not in the update tables). A latency is the wall time of one request from this
 process to the server on 127.0.0.1 and back, one client, the response read to its end (psql / HTTP keep-alive connection). The first run of
 a query on an engine is not timed: its result is compared with the result of PostgreSQL (the reference) and the run stops on a difference.
+The row ladder of a release is 100,000, 1,000,000 and 5,000,000 orders at 3 threads (`bench/bench v6-release`; --release-tier adds 10,000,000): a result set is `<size>-c3`.
 """
 import argparse, inspect, json, os, statistics, subprocess, sys
 
