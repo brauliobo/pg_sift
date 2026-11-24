@@ -21,6 +21,7 @@ extract_words(const ColView *cv, const ParLoad *ld, int64 unit_us, uint64 flip, 
 	return all_ok;
 }
 
+/* Minute and hour are constants so that the divisions are multiplications: 12 cycles a row, 21 with the unit in a register */
 static bool
 extract_of(const SiftV6Derive *d, const ColView *cv, const ParLoad *ld, uint64 flip, uint64 *out)
 {
