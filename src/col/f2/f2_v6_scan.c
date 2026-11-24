@@ -45,7 +45,7 @@
 static uint8
 type_of_leaf_value(const V6Scan *s, int leaf)
 {
-	const SiftColSchema *leaves = s->spec->is_table ? sift_f2_store_open(s->host)->schema : sift_col_rel(s->host)->schema;
+	const SiftColSchema *leaves = s->is_table ? sift_f2_store_open(s->host)->schema : sift_col_rel(s->host)->schema;
 	const SiftColDef *d = &leaves->cols[leaf];
 
 	return d->type == SIFT_COLT_BOOL ? SIFT_COLTAG_BOOLEAN : d->type == SIFT_COLT_TEXT ? SIFT_COLTAG_STRING : SIFT_COLTAG_NUMBER;
