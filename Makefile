@@ -151,6 +151,7 @@ TESTING_REGRESS += agg_v6_cost_unlocks
 TESTING_REGRESS += agg_v6_datum_decode_types
 TESTING_REGRESS += agg_v6_datum_expr
 TESTING_REGRESS += agg_v6_dim_unnest_aggs
+TESTING_REGRESS += agg_v6_f1_left_cross_dims
 TESTING_REGRESS += agg_v6_float8_overflow
 TESTING_REGRESS += agg_v6_generic
 TESTING_REGRESS += agg_v6_hybrid_source_nan
