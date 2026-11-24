@@ -1,0 +1,101 @@
+-- The paths a sift_table of format major 2 declares with sift.table_set_paths are leaves of its store, beside the exact bytes of the document, and SiftAggV6 reads them as it reads those of a sift_col index:
+-- the text of a key, its float8 cast, jsonb_typeof of a key, a group key and a conjunct, over a document of every JSON type. Every statement runs over the table and over a heap twin (the truth):
+-- the first word says that the answers agree, the second whether the plan is the node's. A part written before the declaration lacks the leaves, and the table keeps the normal plan until a
+-- rewrite (VACUUM FULL) has taken those parts out; neither a compaction nor a freeze makes a part that lacks them look as if it had them.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+
+CREATE FUNCTION same(q text, t text, h text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a text; b text; line text; node boolean := false;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', t) LOOP node := node OR line LIKE '%SiftAgg%'; END LOOP;
+	BEGIN
+		EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', t)) INTO a;
+	EXCEPTION WHEN OTHERS THEN a := 'error: ' || SQLERRM;
+	END;
+	BEGIN
+		EXECUTE format('SELECT coalesce(md5(string_agg(r::text, ''|'' ORDER BY r::text)), '''') FROM (%s) r', replace(q, '@T', h)) INTO b;
+	EXCEPTION WHEN OTHERS THEN b := 'error: ' || SQLERRM;
+	END;
+	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || replace(q, '@T', 'T');
+END $$;
+
+CREATE FUNCTION doc_of(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 10
+		WHEN 0 THEN jsonb_build_object('m', i / 2.0, 'a', 'x' || i % 3)
+		WHEN 1 THEN jsonb_build_object('m', 'str', 'a', 'y')
+		WHEN 2 THEN jsonb_build_object('m', true, 'a', i)
+		WHEN 3 THEN jsonb_build_object('m', '{"z": 1}'::jsonb)
+		WHEN 4 THEN jsonb_build_object('m', '[1, 2]'::jsonb, 'a', NULL::text)
+		WHEN 5 THEN jsonb_build_object('a', 'n')
+		WHEN 6 THEN jsonb_build_object('m', NULL::text, 'a', 'z' || i % 2)
+		WHEN 7 THEN '[1]'::jsonb
+		WHEN 8 THEN jsonb_build_object('m', i * 1.5, 'a', 'x' || i % 3)
+		ELSE jsonb_build_object('m', i, 'a', 'w') END $$;
+
+-- declared before the data: every JSON type under the paths, in the write buffer and then in the parts
+CREATE TABLE tp (id int, grp int NOT NULL, doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('tp', 'doc', 'doc->m float8, doc->a astext');
+INSERT INTO tp SELECT i, i % 5, doc_of(i) FROM generate_series(1, 3000) i;
+CREATE TABLE hp AS SELECT * FROM tp;
+CREATE TEMP TABLE queries (q text);
+INSERT INTO queries VALUES
+	('SELECT doc->>''a'' AS a, count(*), sum((doc->>''m'')::float8) FROM @T WHERE jsonb_typeof(doc->''m'') IN (''number'', ''null'') GROUP BY 1'),
+	('SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') = ''number'''),
+	('SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1'),
+	('SELECT grp, count(*) FROM @T WHERE jsonb_typeof(doc->''m'') = ''string'' AND jsonb_typeof(doc->''a'') = ''string'' GROUP BY grp'),
+	('SELECT jsonb_typeof(doc->''a'') AS ty, jsonb_typeof(doc->''m'') AS tm, count(*) FROM @T GROUP BY 1, 2'),
+	('SELECT doc->>''a'' AS a, count(*) FROM @T GROUP BY 1'),
+	('SELECT grp, count(*) FROM @T WHERE doc->>''a'' = ''x1'' GROUP BY grp'),
+	('SELECT doc->>''m'' AS m, count(*) FROM @T WHERE grp = 0 GROUP BY 1');
+SELECT same(q, 'tp', 'hp') FROM queries ORDER BY q;
+
+-- the same after the write buffer is written out, a delete, an update and the rows written next to the parts
+VACUUM FULL tp;
+DELETE FROM tp WHERE id % 13 = 0;
+DELETE FROM hp WHERE id % 13 = 0;
+UPDATE tp SET doc = doc_of(id + 1) WHERE id % 17 = 0;
+UPDATE hp SET doc = doc_of(id + 1) WHERE id % 17 = 0;
+INSERT INTO tp SELECT 3000 + i, i % 5, doc_of(i + 3) FROM generate_series(1, 400) i;
+INSERT INTO hp SELECT 3000 + i, i % 5, doc_of(i + 3) FROM generate_series(1, 400) i;
+SELECT same(q, 'tp', 'hp') FROM queries ORDER BY q;
+VACUUM (FREEZE, ANALYZE) tp;
+SELECT same(q, 'tp', 'hp') FROM queries ORDER BY q;
+
+-- declared after the data: the parts written before it have no leaves, so the plan stays the normal one through a freeze, a compaction and new rows, until VACUUM FULL
+CREATE TABLE tq (id int, grp int NOT NULL, doc jsonb) USING sift_table;
+INSERT INTO tq SELECT i, i % 5, doc_of(i) FROM generate_series(1, 3000) i;
+VACUUM tq;
+SELECT sift.table_set_paths('tq', 'doc', 'doc->m float8, doc->a astext');
+CREATE TABLE hq AS SELECT * FROM tq;
+SELECT same(q, 'tq', 'hq') FROM queries ORDER BY q;
+VACUUM (FREEZE, ANALYZE) tq;
+SELECT same(q, 'tq', 'hq') FROM queries ORDER BY q;
+INSERT INTO tq SELECT 3000 + i, i % 5, doc_of(i + 3) FROM generate_series(1, 400) i;
+INSERT INTO hq SELECT 3000 + i, i % 5, doc_of(i + 3) FROM generate_series(1, 400) i;
+VACUUM (FREEZE) tq;
+SELECT same(q, 'tq', 'hq') FROM queries ORDER BY q;
+VACUUM FULL tq;
+SELECT same(q, 'tq', 'hq') FROM queries ORDER BY q;
+
+-- a new declaration, a renamed column and the end of the declaration: the leaves follow the declaration
+SELECT sift.table_set_paths('tq', 'doc', 'doc->m float8');
+SELECT same(q, 'tq', 'hq') FROM queries ORDER BY q;
+VACUUM FULL tq;
+SELECT same(q, 'tq', 'hq') FROM queries ORDER BY q;
+ALTER TABLE tq RENAME COLUMN doc TO body;
+ALTER TABLE hq RENAME COLUMN doc TO body;
+SELECT attname, spec FROM sift.table_paths WHERE relid = 'tq'::regclass;
+SELECT same(replace(q, 'doc', 'body'), 'tq', 'hq') FROM queries WHERE q NOT LIKE '%''a''%' ORDER BY q;
+
+DROP FUNCTION same(text, text, text), doc_of(int);
+DROP TABLE tp, hp, tq, hq;
+DROP EXTENSION pg_sift;
