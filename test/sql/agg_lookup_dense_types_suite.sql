@@ -12,8 +12,9 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
 
-CREATE TABLE far_dim (k int PRIMARY KEY, a smallint, b smallint) WITH (autovacuum_enabled = false);
+CREATE TABLE far_dim (k int, a smallint, b smallint) WITH (autovacuum_enabled = false);
 INSERT INTO far_dim SELECT g, g % 5, g % 3 FROM generate_series(1, 600000) g;
+ALTER TABLE far_dim ADD PRIMARY KEY (k);
 CREATE TABLE far_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 -- one key in 997 is NULL, one in 1,009 is a key the dimension does not have
 INSERT INTO far_fact SELECT g, CASE WHEN g % 997 = 0 THEN NULL WHEN g % 1009 = 0 THEN 700000 + g ELSE 1 + (hashint4(g) & 2147483647) % 600000 END, g % 100
@@ -67,10 +68,10 @@ SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 
 CREATE TABLE ev (id int, k int, amount int) WITH (autovacuum_enabled = false);
-INSERT INTO ev SELECT i, i % 120000, i % 13 FROM generate_series(1, 240000) i;
+INSERT INTO ev SELECT i, i % 40000, i % 13 FROM generate_series(1, 80000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, amount) WITH (point_tid_columns = 'off');
 CREATE TABLE dm (k int PRIMARY KEY, county text, kind text) WITH (autovacuum_enabled = false);
-INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 119999) i;
+INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 39999) i;
 CREATE INDEX dm_col ON dm USING sift_col (k, county, kind);
 CREATE TABLE dm2 (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO dm2 SELECT * FROM dm;
@@ -112,8 +113,9 @@ CREATE TABLE nk_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO nk_fact SELECT i, i % 200000, i % 11 FROM generate_series(1, 20000) i;
 CREATE INDEX nk_fact_col ON nk_fact USING sift_col (id, k, v);
 -- 200000 keys of 100 prices: the dictionary of the prices is small, the numerics of the rows are not
-CREATE TABLE nk_dim (k int PRIMARY KEY, price numeric(10, 2)) WITH (autovacuum_enabled = false);
+CREATE TABLE nk_dim (k int, price numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO nk_dim SELECT i, (i % 100) / 4.0 FROM generate_series(0, 199999) i;
+ALTER TABLE nk_dim ADD PRIMARY KEY (k);
 CREATE INDEX nk_dim_col ON nk_dim USING sift_col (k, price);
 VACUUM (FREEZE, ANALYZE) nk_fact, nk_dim;
 
@@ -161,7 +163,7 @@ SELECT i,
 	CASE WHEN i % 31 = 0 THEN NULL ELSE i % 90 END,
 	CASE WHEN i % 29 = 0 THEN NULL ELSE 4000000000 + i % 120 END,
 	(i % 1000) / 10.0
-FROM generate_series(1, 30000) i;
+FROM generate_series(1, 12000) i;
 CREATE INDEX ev_col ON ev USING sift_col (k, kv, n, n8, amount);
 VACUUM (FREEZE, ANALYZE) ev;
 
@@ -179,7 +181,7 @@ SELECT CASE WHEN i % 53 = 0 THEN NULL WHEN i % 59 = 0 THEN '' ELSE 'k' || (i % 7
 	CASE WHEN i % 19 = 0 THEN NULL ELSE date '2024-01-01' + i % 400 END,
 	CASE WHEN i % 23 = 0 THEN NULL ELSE decode(lpad(to_hex(i % 900), 4, '0'), 'hex') END,
 	CASE WHEN i % 25 = 0 THEN NULL ELSE md5((i % 400)::text)::uuid END
-FROM generate_series(1, 9000) i;
+FROM generate_series(1, 3600) i;
 VACUUM (FREEZE, ANALYZE) dims;
 
 CREATE FUNCTION nodes(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;

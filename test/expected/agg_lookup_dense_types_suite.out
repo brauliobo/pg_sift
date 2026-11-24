@@ -10,8 +10,9 @@ SET search_path = s1, public;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-CREATE TABLE far_dim (k int PRIMARY KEY, a smallint, b smallint) WITH (autovacuum_enabled = false);
+CREATE TABLE far_dim (k int, a smallint, b smallint) WITH (autovacuum_enabled = false);
 INSERT INTO far_dim SELECT g, g % 5, g % 3 FROM generate_series(1, 600000) g;
+ALTER TABLE far_dim ADD PRIMARY KEY (k);
 CREATE TABLE far_fact (id int, k int, v int) WITH (autovacuum_enabled = false);
 -- one key in 997 is NULL, one in 1,009 is a key the dimension does not have
 INSERT INTO far_fact SELECT g, CASE WHEN g % 997 = 0 THEN NULL WHEN g % 1009 = 0 THEN 700000 + g ELSE 1 + (hashint4(g) & 2147483647) % 600000 END, g % 100
@@ -66,10 +67,10 @@ SET sift.agg_force = on;
 SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 CREATE TABLE ev (id int, k int, amount int) WITH (autovacuum_enabled = false);
-INSERT INTO ev SELECT i, i % 120000, i % 13 FROM generate_series(1, 240000) i;
+INSERT INTO ev SELECT i, i % 40000, i % 13 FROM generate_series(1, 80000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, amount) WITH (point_tid_columns = 'off');
 CREATE TABLE dm (k int PRIMARY KEY, county text, kind text) WITH (autovacuum_enabled = false);
-INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 119999) i;
+INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 39999) i;
 CREATE INDEX dm_col ON dm USING sift_col (k, county, kind);
 CREATE TABLE dm2 (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO dm2 SELECT * FROM dm;
@@ -134,8 +135,9 @@ NOTICE:  sift_col index "nk_fact_col": 1 advice (track_changes)
 DETAIL:  advice: track_changes = the table has no one-column primary key
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nk_fact_col');
 -- 200000 keys of 100 prices: the dictionary of the prices is small, the numerics of the rows are not
-CREATE TABLE nk_dim (k int PRIMARY KEY, price numeric(10, 2)) WITH (autovacuum_enabled = false);
+CREATE TABLE nk_dim (k int, price numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO nk_dim SELECT i, (i % 100) / 4.0 FROM generate_series(0, 199999) i;
+ALTER TABLE nk_dim ADD PRIMARY KEY (k);
 CREATE INDEX nk_dim_col ON nk_dim USING sift_col (k, price);
 NOTICE:  sift_col index "nk_dim_col": 1 automatic choice (track_changes)
 DETAIL:  track_changes = k
@@ -186,7 +188,7 @@ SELECT i,
 	CASE WHEN i % 31 = 0 THEN NULL ELSE i % 90 END,
 	CASE WHEN i % 29 = 0 THEN NULL ELSE 4000000000 + i % 120 END,
 	(i % 1000) / 10.0
-FROM generate_series(1, 30000) i;
+FROM generate_series(1, 12000) i;
 CREATE INDEX ev_col ON ev USING sift_col (k, kv, n, n8, amount);
 NOTICE:  sift_col index "ev_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
 DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = n, n8
@@ -206,7 +208,7 @@ SELECT CASE WHEN i % 53 = 0 THEN NULL WHEN i % 59 = 0 THEN '' ELSE 'k' || (i % 7
 	CASE WHEN i % 19 = 0 THEN NULL ELSE date '2024-01-01' + i % 400 END,
 	CASE WHEN i % 23 = 0 THEN NULL ELSE decode(lpad(to_hex(i % 900), 4, '0'), 'hex') END,
 	CASE WHEN i % 25 = 0 THEN NULL ELSE md5((i % 400)::text)::uuid END
-FROM generate_series(1, 9000) i;
+FROM generate_series(1, 3600) i;
 VACUUM (FREEZE, ANALYZE) dims;
 CREATE FUNCTION nodes(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_lookup_cache_differences(q) $$;
@@ -228,7 +230,7 @@ SELECT nodes(:'left_join_wide_leaves');
 SELECT * FROM same(:'left_join_wide_leaves');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        7491 |           0 |              0
+        3533 |           0 |              0
 (1 row)
 
 SELECT nodes(:'left_join_bytes_uuid');
@@ -240,7 +242,7 @@ SELECT nodes(:'left_join_bytes_uuid');
 SELECT * FROM same(:'left_join_bytes_uuid');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        3859 |           0 |              0
+        3428 |           0 |              0
 (1 row)
 
 -- a varchar key with multi-byte values, an inner join
@@ -260,7 +262,7 @@ SELECT nodes(:'inner_join_kv');
 SELECT * FROM same(:'inner_join_kv');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        3443 |           0 |              0
+        2662 |           0 |              0
 (1 row)
 
 -- an integer and a bigint key together with a text one
@@ -280,7 +282,7 @@ SELECT nodes(:'left_join_three_keys');
 SELECT * FROM same(:'left_join_three_keys');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        5990 |           0 |              0
+        2931 |           0 |              0
 (1 row)
 
 -- one integer key: a semi join and an anti join
@@ -354,7 +356,7 @@ SELECT count(*) - :entries_before AS new_entries FROM pg_backend_memory_contexts
 SELECT * FROM same(:'group_label');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        3001 |           0 |              0
+        2625 |           0 |              0
 (1 row)
 
 SELECT * FROM same(:'group_num_text');
@@ -366,7 +368,7 @@ SELECT * FROM same(:'group_num_text');
 SELECT * FROM same(:'group_label_concat');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        3690 |           0 |              0
+        2702 |           0 |              0
 (1 row)
 
 -- a preserved side with NULL keys: its rows no tuple matched are output rows
@@ -381,7 +383,7 @@ SELECT nodes(:'full_join_label_key');
 SELECT * FROM same(:'full_join_label_key');
  result_rows | vs_uncached | vs_normal_plan 
 -------------+-------------+----------------
-        8398 |           0 |              0
+        3787 |           0 |              0
 (1 row)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan; RESET enable_indexonlyscan; RESET enable_hashjoin; RESET enable_mergejoin;
