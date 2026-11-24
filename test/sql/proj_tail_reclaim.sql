@@ -3,6 +3,7 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
+SET maintenance_work_mem = '256MB';
 \set VERBOSITY terse
 \i test/proj_helpers.sql
 

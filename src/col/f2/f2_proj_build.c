@@ -2,8 +2,9 @@
  * col/f2/f2_proj_build.c - the projections of a relation of format major 2 bound to its parts: the columns a spec may name, the shape of the parts of a projection, the rows of a base
  * part, and the refresh that writes the projection parts of the base parts that have none and commits them with their links.
  *
- * A refresh of a partition holds the partition's part lock from the read of its parts to the commit, so that the base parts it links cannot be dropped in between (every commit that
- * drops parts takes the same lock); the commit that adds the projection parts is an edit of the partition with no part change, only a delta of the projection directory.
+ * A refresh of a partition builds its projection parts without the partition's part lock, which would stop every writer of the partition for as long as the build: it takes the lock for the
+ * commit, finds then which base parts are still there with the deletion vector they were built over (every commit that drops parts or changes a deletion vector takes the same lock) and links
+ * those only, the others are released; the commit that adds the projection parts is an edit of the partition with no part change, only a delta of the projection directory.
  */
 #include "core/host.h"
 
@@ -14,12 +15,14 @@
 
 #include "col/f2/compact.h"
 #include "col/f2/delvec.h"
+#include "col/f2/delvec_delta.h"
 #include "col/f2/f2_part_idx.h"
 #include "col/f2/f2_proj.h"
 #include "col/f2/f2_store.h"
 #include "col/f2/part_format.h"
 #include "core/crash_point.h"
 #include "core/f2/fsm.h"
+#include "core/memtrack.h"
 #include "core/part_lock.h"
 
 void
@@ -79,10 +82,14 @@ typedef struct BuildRows
 	const SiftProjSpec *spec;
 	const SiftProjPartSpec *pps;
 	SiftProjCube *cube;
+	MemoryContext cube_cx;		/* what the cube holds: it is made and fed in it, so that its size is the size of the context */
 	SiftRowBuf *out;
 	SiftCell   *cells;
 	int			ncols;
+	uint64		budget;
+	uint32		added;
 	bool		where_exc;		/* a row holds a value its WHERE could not judge on the cells: the part is read from its base part */
+	bool		over;			/* what the part holds in memory passed the budget of the refresh */
 } BuildRows;
 
 static void
@@ -95,10 +102,8 @@ add_out_row(BuildRows *b, uint64 tid, const SiftCell *cells)
 }
 
 static void
-build_row(void *arg, const SiftRowBuf *rows, int r)
+build_row(BuildRows *b, const SiftRowBuf *rows, int r)
 {
-	BuildRows  *b = arg;
-
 	for (int c = 0; c < b->ncols; c++)
 		b->cells[c] = sift_rowbuf_cell(rows, c, r);
 	if (b->spec->nwhere > 0)
@@ -108,7 +113,13 @@ build_row(void *arg, const SiftRowBuf *rows, int r)
 			return;
 	}
 	if (b->cube != NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(b->cube_cx);
+
 		(void) sift_proj_cube_add(b->cube, b->cells, 1);
+		MemoryContextSwitchTo(old);
+		b->over = (++b->added & 255) == 0 && MemoryContextMemAllocated(b->cube_cx, true) > b->budget;
+	}
 	else
 	{
 		SiftCell   *kept = palloc(b->pps->nlay * sizeof(SiftCell));
@@ -117,52 +128,73 @@ build_row(void *arg, const SiftRowBuf *rows, int r)
 			kept[i] = b->cells[b->pps->lay[i].leaf];
 		add_out_row(b, rows->tid[r], kept);
 		pfree(kept);
+		b->over = b->out->mem_bytes > b->budget;
 	}
 }
 
-/* The projection part of one base part, written and its link made; false when the base part has no row left to project */
+/*
+ * The projection part of one base part, written and its link made, in the memory context the caller resets after it. false when the base part has no row left to project, or when what the
+ * projection holds before it is written passes the budget: no projection part is made then, the base part keeps none and a read takes its rows from the base part, until a compaction cuts it
+ * to a size the budget holds. The projection of a base part is one part, so that it is not cut.
+ */
 static bool
 write_part(Relation rel, const SiftF2Store *store, const SiftManifestProjRef *ref, const SiftProjSpec *spec, const SiftProjColumns *cols, const SiftProjPartSpec *pps,
-		   const SiftPartDesc *base, uint32 base_part_id, SiftPartDesc *out, SiftProjLink *link)
+		   const SiftPartDesc *base, uint32 base_part_id, uint64 budget, SiftPartDesc *out, SiftProjLink *link)
 {
-	BuildRows	b = {spec, pps, NULL, sift_rowbuf_new(&pps->spec), palloc(Max(store->ncols, 1) * sizeof(SiftCell)), store->ncols, false};
+	BuildRows	b = {.spec = spec,.pps = pps,.cube_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift projection cube"),.out = sift_rowbuf_new(&pps->spec),
+		.cells = palloc(Max(store->ncols, 1) * sizeof(SiftCell)),.ncols = store->ncols,.budget = budget};
 	SiftColIn  *in = palloc(pps->nlay * sizeof(SiftColIn));
+	SiftProjCursor *cur = sift_proj_cursor_open(rel, base, base_part_id, &store->spec, false);
+	const SiftRowBuf *rows;
+	int			r;
 	uint64		gen;
-	SiftRows	rows;
+	SiftRows	rowset;
 	SiftCompressTier tier;
 
 	if (spec->kind == SIFT_PROJ_AGG)
+	{
+		MemoryContext old = MemoryContextSwitchTo(b.cube_cx);
+
 		b.cube = sift_proj_cube_new(spec, cols);
-	sift_proj_scan_part(rel, base, base_part_id, &store->spec, false, build_row, &b);
+		MemoryContextSwitchTo(old);
+	}
+	while (!b.over && sift_proj_cursor_next(cur, &rows, &r))
+		build_row(&b, rows, r);
+	sift_proj_cursor_close(cur);
+	if (b.over)
+		return false;
 	if (b.cube != NULL)
 	{
+		MemoryContext old = MemoryContextSwitchTo(b.cube_cx);
 		const SiftCell *cells;
 		int			ncols;
 		int			n = sift_proj_cube_rows(b.cube, &cells, &ncols);
 
-		for (int g = 0; g < n; g++)
+		MemoryContextSwitchTo(old);
+		for (int g = 0; g < n && b.out->mem_bytes <= budget; g++)
 			add_out_row(&b, (uint64) g + 1, cells + (size_t) g * ncols);
-		sift_proj_cube_free(b.cube);
+		if (b.out->mem_bytes > budget)
+			return false;
 	}
 	if (b.out->n == 0)
-	{
-		sift_rowbuf_free(b.out);
 		return false;
-	}
 	gen = sift_manifest_new_gen(rel, 1);
 	sift_rowbuf_sort(b.out, &pps->spec);
 	/* STOR[STOR-COL-03]: the projection part inherits the base part level and tier (cold base: cold codecs) */
 	tier = base->level >= SIFT_MAX_PART_LEVEL ? SIFT_TIER_COLD_L2 : SIFT_TIER_WARM_L1;
 	(void) sift_rowbuf_cluster(b.out, &pps->spec, tier);
-	rows = sift_rowbuf_rows(b.out, in, &pps->spec);
-	*out = sift_part_write_rows(rel, SIFT_PROJ_PART_ID, gen, Max(base->level, 1), tier, &rows);
+	rowset = sift_rowbuf_rows(b.out, in, &pps->spec);
+	*out = sift_part_write_rows(rel, SIFT_PROJ_PART_ID, gen, Max(base->level, 1), tier, &rowset);
 	*link = sift_proj_link_make(ref, spec, base, gen, b.where_exc);
-	sift_rowbuf_free(b.out);
 	return true;
 }
 
+/* The projection parts a refresh built for one projection, and the parts of the projection they replace (candidates: a replaced part goes only when the part that replaces it is committed) */
 typedef struct Built
 {
+	uint64	   *cand_proj;
+	uint64	   *cand_src;
+	int			ncand;
 	uint64	   *drop_proj;
 	uint64	   *drop_src;
 	int			ndrop;
@@ -172,15 +204,15 @@ typedef struct Built
 	uint16		proj_id;
 } Built;
 
-static int
+static void
 refresh_projection(Relation rel, const SiftF2Store *store, const SiftProjColumns *cols, const SiftManifestProjRef *ref, const SiftProjSpec *spec, const SiftPartDesc *base, int nbase,
-				   uint64 base_part_id, Built *out)
+				   uint64 base_part_id, uint64 budget, Built *out)
 {
 	SiftProjParts cur = sift_manifest_read_proj_parts(rel, ref);
 	SiftProjRefreshPlan plan = sift_proj_refresh_plan(ref, base, nbase, &cur);
 	SiftProjPartSpec *pps = palloc(sizeof(SiftProjPartSpec));
+	MemoryContext part_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift projection part");
 	SiftPartGenIndex by_gen;
-	SiftU64Set	built_src;
 
 	sift_proj_part_spec(store, spec, cols, pps);
 	out->parts = palloc(Max(plan.nbuild, 1) * sizeof(SiftPartDesc));
@@ -188,24 +220,103 @@ refresh_projection(Relation rel, const SiftF2Store *store, const SiftProjColumns
 	out->proj_id = ref->proj_id;
 	sift_part_gen_idx_init(&by_gen, base, nbase);
 	for (int i = 0; i < plan.nbuild; i++)
-		if (write_part(rel, store, ref, spec, cols, pps, sift_part_gen_idx_find(&by_gen, plan.build_gens[i]), (uint32) base_part_id, &out->parts[out->n], &out->links[out->n]))
-			out->n++;
+	{
+		MemoryContext old = MemoryContextSwitchTo(part_cx);
+		bool		made = write_part(rel, store, ref, spec, cols, pps, sift_part_gen_idx_find(&by_gen, plan.build_gens[i]), (uint32) base_part_id, budget, &out->parts[out->n], &out->links[out->n]);
+
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(part_cx);
+		out->n += made;
+	}
+	MemoryContextDelete(part_cx);
 	sift_part_gen_idx_free(&by_gen);
-	out->ndrop = 0;
-	out->drop_proj = palloc(Max(plan.ndrop, 1) * sizeof(uint64));
-	out->drop_src = palloc(Max(plan.ndrop, 1) * sizeof(uint64));
-	sift_u64_set_init(&built_src, out->n);
-	for (int k = 0; k < out->n; k++)
-		sift_u64_set_add(&built_src, out->links[k].src_gen);
-	for (int i = 0; i < plan.ndrop; i++)
-		if (sift_u64_set_has(&built_src, plan.drop_src_gens[i]))
+	out->ncand = plan.ndrop;
+	out->cand_proj = memcpy(palloc(Max(plan.ndrop, 1) * sizeof(uint64)), plan.drop_proj_gens, plan.ndrop * sizeof(uint64));
+	out->cand_src = memcpy(palloc(Max(plan.ndrop, 1) * sizeof(uint64)), plan.drop_src_gens, plan.ndrop * sizeof(uint64));
+	sift_proj_refresh_plan_free(&plan);
+}
+
+/* What the refresh of a partition read of its base parts before it built from them: a projection part is linked only to a base part that is still there with the deletion vector it was built over */
+typedef struct BaseSnap
+{
+	const SiftPartDesc *parts;
+	int			nparts;
+	uint32	   *dv_len;			/* the length of the stream of each part's deletion vector (a delta is appended to it without a new generation) */
+} BaseSnap;
+
+static BaseSnap
+base_snap(Relation rel, const SiftPartDesc *parts, int nparts)
+{
+	BaseSnap	s = {.parts = parts,.nparts = nparts,.dv_len = palloc0(Max(nparts, 1) * sizeof(uint32))};
+
+	for (int i = 0; i < nparts; i++)
+		s.dv_len[i] = parts[i].dv_blk == InvalidBlockNumber ? 0 : sift_dv_stream_len(rel, parts[i].dv_blk);
+	return s;
+}
+
+static bool
+base_unchanged(const BaseSnap *was, const BaseSnap *now, uint64 src_gen)
+{
+	const SiftPartDesc *w = NULL,
+			   *n = NULL;
+	int			wi = 0,
+				ni = 0;
+
+	for (int i = 0; i < was->nparts && w == NULL; i++)
+		if (was->parts[i].part_gen == src_gen)
 		{
-			out->drop_proj[out->ndrop] = plan.drop_proj_gens[i];
-			out->drop_src[out->ndrop++] = plan.drop_src_gens[i];
+			w = &was->parts[i];
+			wi = i;
+		}
+	for (int i = 0; i < now->nparts && n == NULL; i++)
+		if (now->parts[i].part_gen == src_gen)
+		{
+			n = &now->parts[i];
+			ni = i;
+		}
+	return w != NULL && n != NULL && w->dv_gen == n->dv_gen && w->dv_blk == n->dv_blk && was->dv_len[wi] == now->dv_len[ni];
+}
+
+static void
+release_part(Relation rel, const SiftPartDesc *d)
+{
+	int			nb;
+	SiftExtent *extents = sift_proj_part_extents(rel, d, &nb);
+
+	sift_fsm_release(rel, extents, nb, InvalidFullTransactionId);
+}
+
+/* The parts built from a base part that changed since are released, the others stay; the parts of the projection they replace go with them */
+static void
+keep_unchanged(Relation rel, Built *b, const BaseSnap *was, const BaseSnap *now)
+{
+	SiftU64Set	built_src;
+	int			kept = 0;
+
+	for (int k = 0; k < b->n; k++)
+	{
+		if (base_unchanged(was, now, b->links[k].src_gen))
+		{
+			b->parts[kept] = b->parts[k];
+			b->links[kept++] = b->links[k];
+		}
+		else
+			release_part(rel, &b->parts[k]);
+	}
+	b->n = kept;
+	b->ndrop = 0;
+	b->drop_proj = palloc(Max(b->ncand, 1) * sizeof(uint64));
+	b->drop_src = palloc(Max(b->ncand, 1) * sizeof(uint64));
+	sift_u64_set_init(&built_src, b->n);
+	for (int k = 0; k < b->n; k++)
+		sift_u64_set_add(&built_src, b->links[k].src_gen);
+	for (int i = 0; i < b->ncand; i++)
+		if (sift_u64_set_has(&built_src, b->cand_src[i]))
+		{
+			b->drop_proj[b->ndrop] = b->cand_proj[i];
+			b->drop_src[b->ndrop++] = b->cand_src[i];
 		}
 	sift_u64_set_free(&built_src);
-	sift_proj_refresh_plan_free(&plan);
-	return out->n;
 }
 
 static const SiftProjDef *
@@ -217,42 +328,53 @@ def_of(const SiftProjDef *defs, int ndefs, const SiftManifestProjRef *ref)
 	return NULL;
 }
 
+/* The partition is projected as it is found: no row of it is held up for the build, and the part lock is taken for the commit only, which first finds what changed since */
 static int
 refresh_partition(Relation rel, const SiftF2Store *store, const SiftProjColumns *cols, const SiftProjDef *defs, int ndefs, const SiftPartitionEntry *entry)
 {
-	int			built = 0;
-	SiftManifestRead mr;
-	SiftColMetaPageData meta;
+	uint64		budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
+	SiftManifestRead mr = sift_manifest_read_range(rel, entry->key_lo, entry->key_hi);
+	SiftColMetaPageData meta = sift_col_meta_read(rel);
 	SiftManifestProjRef *refs;
 	int			nrefs,
 				nbase,
-				nd = 0;
-	SiftPartDesc *base;
+				nnow,
+				nd = 0,
+				built = 0;
+	SiftPartDesc *base,
+			   *now;
+	BaseSnap	was,
+				after;
 	SiftProjDelta *deltas;
 	Built	   *bs;
 
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(entry->part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, entry->key_lo, entry->key_hi);
-	meta = sift_col_meta_read(rel);
 	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
 	if (mr.n != 1 || mr.entries[0].part_id != entry->part_id || nrefs == 0 || (mr.entries[0].flags & SIFT_PARTENTRY_HAS_COL_DELTA))
-	{
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(entry->part_id), ExclusiveLock);
 		return 0;
-	}
 	base = sift_manifest_read_parts(rel, &mr.entries[0], &nbase);
-	deltas = palloc(nrefs * sizeof(SiftProjDelta));
+	was = base_snap(rel, base, nbase);
 	bs = palloc0(nrefs * sizeof(Built));
 	for (int i = 0; i < nrefs; i++)
 	{
 		const SiftProjDef *def = refs[i].state == SIFT_PROJ_STALE ? NULL : def_of(defs, ndefs, &refs[i]);
 
-		if (def == NULL || refresh_projection(rel, store, cols, &refs[i], &def->spec, base, nbase, entry->part_id, &bs[nd]) == 0)
+		if (def != NULL)
+			refresh_projection(rel, store, cols, &refs[i], &def->spec, base, nbase, entry->part_id, budget, &bs[i]);
+	}
+	LockPage(rel, SIFT_PART_LOCK_BLKNO(entry->part_id), ExclusiveLock);
+	mr = sift_manifest_read_range(rel, entry->key_lo, entry->key_hi);
+	now = mr.n == 1 && mr.entries[0].part_id == entry->part_id && !(mr.entries[0].flags & SIFT_PARTENTRY_HAS_COL_DELTA) ? sift_manifest_read_parts(rel, &mr.entries[0], &nnow) : NULL;
+	after = base_snap(rel, now, now != NULL ? nnow : 0);
+	deltas = palloc(nrefs * sizeof(SiftProjDelta));
+	for (int i = 0; i < nrefs; i++)
+	{
+		if (bs[i].parts != NULL)
+			keep_unchanged(rel, &bs[i], &was, &after);
+		if (bs[i].n == 0)
 			continue;
-		deltas[nd] = (SiftProjDelta) {.proj_id = refs[i].proj_id, .drop_proj_gens = bs[nd].drop_proj, .ndrop_parts = bs[nd].ndrop, .add_parts = bs[nd].parts, .nadd_parts = bs[nd].n,
-									  .drop_src_gens = bs[nd].drop_src, .ndrop_links = bs[nd].ndrop, .add_links = bs[nd].links, .nadd_links = bs[nd].n};
-		built += bs[nd].n;
-		nd++;
+		deltas[nd++] = (SiftProjDelta) {.proj_id = refs[i].proj_id, .drop_proj_gens = bs[i].drop_proj, .ndrop_parts = bs[i].ndrop, .add_parts = bs[i].parts, .nadd_parts = bs[i].n,
+									  .drop_src_gens = bs[i].drop_src, .ndrop_links = bs[i].ndrop, .add_links = bs[i].links, .nadd_links = bs[i].n};
+		built += bs[i].n;
 	}
 	if (nd > 0)
 	{
@@ -276,15 +398,27 @@ sift_proj_refresh(Relation rel, const SiftF2Store *store)
 	SiftProjColumns cols;
 	SiftProjDef *defs;
 	SiftManifestRead mr;
+	MemoryContext partition_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift projection partition");
 
 	if (meta.nprojs == 0)
+	{
+		MemoryContextDelete(partition_cx);
 		return 0;
+	}
 	(void) sift_manifest_read_projs(rel, &meta, &nrefs);
 	cols = sift_proj_columns_of_store(rel, store);
 	defs = sift_proj_defs_load(rel, &cols, &ndefs);
 	mr = sift_manifest_read_range(rel, NULL, NULL);
 	for (int i = 0; i < mr.n; i++)
+	{
+		MemoryContext old = MemoryContextSwitchTo(partition_cx);
+
 		built += refresh_partition(rel, store, &cols, defs, ndefs, &mr.entries[i]);
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(partition_cx);
+	}
+	MemoryContextDelete(partition_cx);
+	sift_mem_release_os(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	return built;
 }
 
