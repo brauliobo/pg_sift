@@ -84,6 +84,9 @@ extern void sift_href_rows(Relation index, Snapshot snap, const SiftPendDelIndex
 extern void sift_l0_href_read(Relation rel, uint64 part_id, BlockNumber tail, SiftRowBuf *rb, const SiftPartSpec *spec, Snapshot snap, const SiftPendDelIndex *px,
 							  BlockNumber **pages, int *npages);
 
+/* The rows of the chain at tail, from the header of its open tail page: no page of the chain is walked */
+extern uint32 sift_l0_href_chain_rows(Relation rel, uint64 part_id, BlockNumber tail);
+
 /* Is the page the head of a slab of references */
 extern bool sift_l0_slab_is_href(Relation rel, uint64 part_id, BlockNumber blk);
 

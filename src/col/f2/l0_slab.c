@@ -416,6 +416,8 @@ sift_l0_slab_rows(Relation rel, uint64 part_id, BlockNumber head)
 	int			pages;
 	uint32		rows;
 
+	if (sift_l0_slab_is_href(rel, part_id, head))
+		return sift_l0_href_chain_rows(rel, part_id, head);
 	(void) chain_totals(rel, (uint32) part_id, head, &tail, &pages, &rows);
 	return rows;
 }

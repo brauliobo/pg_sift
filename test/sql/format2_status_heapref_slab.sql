@@ -1,0 +1,20 @@
+-- sift.status counts the rows of the open slab of heap references of a sift_col index (dirty_rows) and leaves the index in service: the page of a reference slab keeps no checksum until it is sealed.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+
+CREATE TABLE hs (id int PRIMARY KEY, n int);
+INSERT INTO hs SELECT i, i FROM generate_series(1, 6000) i;
+CREATE INDEX hs_idx ON hs USING sift_col (id, n);
+
+SELECT NOT quarantined AS in_service, dirty_rows FROM sift.status('hs_idx');
+INSERT INTO hs VALUES (20000, 1);
+SELECT NOT quarantined AS in_service, dirty_rows FROM sift.status('hs_idx');
+INSERT INTO hs SELECT i, i FROM generate_series(20001, 20040) i;
+SELECT NOT quarantined AS in_service, dirty_rows FROM sift.status('hs_idx');
+SELECT count(*) AS problems FROM sift.check('hs_idx', heapallindexed => true);
+
+DROP TABLE hs;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

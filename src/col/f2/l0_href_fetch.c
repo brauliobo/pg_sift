@@ -353,6 +353,17 @@ sift_l0_slab_is_href(Relation rel, uint64 part_id, BlockNumber blk)
 	return href;
 }
 
+uint32
+sift_l0_href_chain_rows(Relation rel, uint64 part_id, BlockNumber tail)
+{
+	Buffer		buf = sift_blk_read(rel, tail, BUFFER_LOCK_SHARE);
+	uint32		rows = ((const SiftL0SlabPageData *) SiftPageGetData(BufferGetPage(buf)))->chain_rows;
+
+	sift_page_expect(rel, BufferGetPage(buf), tail, SIFT_PT_L0_SLAB, 0, (uint32) part_id);
+	UnlockReleaseBuffer(buf);
+	return rows;
+}
+
 void
 sift_l0_href_read(Relation rel, uint64 part_id, BlockNumber tail, SiftRowBuf *rb, const SiftPartSpec *spec, Snapshot snap, const SiftPendDelIndex *px,
 				  BlockNumber **pages, int *npages)

@@ -547,6 +547,7 @@ TESTING_REGRESS += format2_quarantine
 TESTING_REGRESS += format2_quarantine_am
 TESTING_REGRESS += format2_scope_live
 TESTING_REGRESS += format2_size
+TESTING_REGRESS += format2_status_heapref_slab
 TESTING_REGRESS += format2_stor_mem_col
 TESTING_REGRESS += format2_storage_codec_suite
 TESTING_REGRESS += format2_tiering_col
