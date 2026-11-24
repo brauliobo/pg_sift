@@ -145,6 +145,7 @@ TESTING_REGRESS += agg_v6_adaptive_star
 TESTING_REGRESS += agg_v6_bridges
 TESTING_REGRESS += agg_v6_clickhouse_sql
 TESTING_REGRESS += agg_v6_connect_dim_cache_f1
+TESTING_REGRESS += agg_v6_const_group_empty
 TESTING_REGRESS += agg_v6_core_suite
 TESTING_REGRESS += agg_v6_cost_unlocks
 TESTING_REGRESS += agg_v6_datum_decode_types

@@ -1,0 +1,51 @@
+-- GROUP BY a key that is a constant for the statement (a literal, a stable function of settings) groups the rows into one group: an empty input has no group, so no row, where a
+-- global aggregate has one. PostgreSQL drops such a key from the grouping it plans, and SiftAggV6 must not take what is left for a global aggregate: over a sift_col index and over a
+-- sift_table (no statistics: the plan the scan wins by its page costs) the statement answers the rows of the heap, with and without rows, with a real key beside the constant, and a global aggregate still gives its one row of zeros.
+-- requires: build col
+SET client_min_messages = warning;
+CREATE EXTENSION IF NOT EXISTS pg_sift;
+SET sift.test_create_format1 = off;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE ch (id int PRIMARY KEY, grp int NOT NULL, total numeric(12,2) NOT NULL) WITH (autovacuum_enabled = false);
+CREATE TABLE cc (LIKE ch INCLUDING ALL) WITH (autovacuum_enabled = false);
+CREATE TABLE ct (LIKE ch INCLUDING ALL) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO ch SELECT g, g % 5, g % 100 FROM generate_series(1, 2000) g;
+INSERT INTO cc SELECT * FROM ch;
+INSERT INTO ct SELECT * FROM ch;
+CREATE INDEX cc_sift ON cc USING sift_col (id, grp, total);
+SELECT sift.table_maintain('ct') IS NOT NULL AS maintained;
+
+CREATE FUNCTION same_rows(a text, b text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE x text; y text;
+BEGIN
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', a) INTO x;
+	EXECUTE format('SELECT coalesce(string_agg(r::text, E''\n'' ORDER BY r::text), '''') FROM (%s) r', b) INTO y;
+	RETURN x = y;
+END $$;
+
+-- the same rows from the index, from the table and from the heap (the heap twin has no sift index, so it is the truth)
+CREATE FUNCTION parity(q text) RETURNS boolean LANGUAGE sql AS
+$$ SELECT same_rows(replace(q, '@T', 'cc'), replace(q, '@T', 'ch')) AND same_rows(replace(q, '@T', 'ct'), replace(q, '@T', 'ch')) $$;
+
+CREATE FUNCTION plan_ok(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text; n int := 0;
+BEGIN
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'cc') LOOP n := n + (line LIKE '%SiftAggV6%')::int; END LOOP;
+	FOR line IN EXECUTE 'EXPLAIN (COSTS off) ' || replace(q, '@T', 'ct') LOOP n := n + (line LIKE '%SiftAggV6%')::int; END LOOP;
+	RETURN n = 2;
+END $$;
+
+SELECT count(*) AS heap_rows FROM (SELECT (current_setting('server_version_num')::int > 0) AS k, count(*) AS n FROM ch WHERE total < 0 GROUP BY 1) s;
+SELECT parity('SELECT (current_setting(''server_version_num'')::int > 0) AS k, count(*) AS n FROM @T WHERE total < 0 GROUP BY 1') AS stable_key_empty;
+SELECT parity('SELECT (current_setting(''server_version_num'')::int > 0) AS k, count(*) AS n, sum(total) AS s FROM @T WHERE total >= 0 GROUP BY 1') AS stable_key_rows;
+SELECT parity('SELECT 1 AS k, count(*) AS n FROM @T WHERE total < 0 GROUP BY 1') AS literal_key_empty;
+SELECT parity('SELECT 1 AS k, count(*) AS n FROM @T GROUP BY 1') AS literal_key_rows;
+SELECT parity('SELECT (current_setting(''server_version_num'')::int > 0) AS k, grp, count(*) AS n FROM @T WHERE total < 0 GROUP BY 1, 2') AS stable_and_real_key_empty;
+SELECT parity('SELECT (current_setting(''server_version_num'')::int > 0) AS k, grp, count(*) AS n FROM @T GROUP BY 1, 2') AS stable_and_real_key_rows;
+SELECT parity('SELECT count(*) AS n FROM @T WHERE total < 0') AS global_empty;
+SELECT parity('SELECT count(*) AS n FROM @T WHERE total < 0 GROUP BY ()') AS global_empty_group_by_empty_set;
+SELECT plan_ok('SELECT grp, count(*) AS n FROM @T GROUP BY grp') AS real_key_plan;
+DROP TABLE ch, cc, ct;
+DROP FUNCTION plan_ok(text), parity(text), same_rows(text, text);
+DROP EXTENSION pg_sift;
