@@ -136,7 +136,7 @@ reads_owned_table(PlannerInfo *root)
 		const RelOptInfo *rel = root->simple_rel_array[i];
 		V6Plan		p = {0};
 
-		if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || planner_rt_fetch(i, root)->rtekind != RTE_RELATION)
+		if (rel == NULL || (rel->reloptkind != RELOPT_BASEREL && rel->reloptkind != RELOPT_OTHER_MEMBER_REL) || planner_rt_fetch(i, root)->rtekind != RTE_RELATION)
 			continue;
 		foreach_ptr(IndexOptInfo, ix, rel->indexlist)
 			if (sift_v6_index_owned(ix))
