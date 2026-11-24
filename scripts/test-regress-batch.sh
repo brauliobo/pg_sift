@@ -54,7 +54,7 @@ expect diff 't07'
 grep -q 't07' "$SIFT_TMP/regress/t01/regression.diffs" || { echo "FAIL: the first pass of the failed batch lost its regression.diffs to the cuts"; fail=1; }
 cuts=$("$pg" psql -d postgres -qAt -c "SELECT count(*) FROM pg_database WHERE datname LIKE 'contrib_regression_t01_%'")
 [[ $cuts == 0 ]] || { echo "FAIL: the cuts of the failed batch left $cuts databases in the cluster"; fail=1; }
-[[ ! -e $SIFT_TMP/regress/cut/t11-10 && -e $SIFT_TMP/regress/cut/t01-10.report ]] || { echo "FAIL: a cut keeps the output of a batch that passed or drops that of one that failed: $(ls "$SIFT_TMP/regress/cut")"; fail=1; }
+[[ -e $SIFT_TMP/regress/cut/t07-1.report && ! -e $SIFT_TMP/regress/cut/t01-10.report ]] || { echo "FAIL: a diff runs only the test that differs alone, not the halves of the batch: $(ls "$SIFT_TMP/regress/cut" | tr "\n" " ")"; fail=1; }
 printf 'CREATE TABLE tbl_t07 (a int);\nINSERT INTO tbl_t07 VALUES (1);\nSELECT a FROM tbl_t07;\nDROP TABLE tbl_t07;\n' >"$SIFT_REGRESS_DIR/sql/t07.sql"
 printf 'CREATE TABLE tbl_t07 (a int);\nINSERT INTO tbl_t07 VALUES (1);\nSELECT a FROM tbl_t07;\n a \n---\n 1\n(1 row)\n\nDROP TABLE tbl_t07;\n' >"$SIFT_REGRESS_DIR/expected/t07.out"
 

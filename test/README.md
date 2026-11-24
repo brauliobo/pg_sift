@@ -2,6 +2,8 @@
 
 Layout (run with `scripts/pgtest.sh regress [test...]`, which starts a throwaway cluster; `make installcheck` against a running server):
 
+With test names, one pg_regress run covers all of them. A crashed backend stops the run and names the test; a run that only differs runs the tests that differ alone; only a leak or a leftover cuts the batch in halves. `SIFT_REGRESS_NO_BISECT=1` never runs a test again (a fast local loop or an agent script): the findings of the batch and exit 1.
+
 | path | what |
 |---|---|
 | `sql/`, `expected/` | pg_regress tests (one `.sql` per test, its output in `expected/`, a second `_1.out` for a version-dependent output) |

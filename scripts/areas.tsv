@@ -178,4 +178,4 @@
 # the Alpine (musl) build has no GNU IFUNC: `.` (the build, src/core/) runs it; these are what only it reads
 ^(scripts/(check-no-ifunc|musl-check)\.sh|packaging/docker/)	gh:musl
 ^scripts/docker-smoke\.sh$	-
-^scripts/test-regress-batch\.sh$	^regress-batch$
+^scripts/(test-regress-batch|selftest-pgtest-bisect)\.sh$	^regress-batch$

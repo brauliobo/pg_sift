@@ -40,6 +40,7 @@ script:test-ci-build-fail.sh	120	50	a run with a stub build and a sleeping lint:
 script:ci-build.sh	900	1500	one private tree copy and build for each flavor, side by side; hosted build job 4-10 min; --selftest and --check start no server
 script:musl-check.sh	900	1500	build on postgres:18-alpine, the IFUNC check and packaging/smoke.sql on one cluster; hosted musl job 5-10 min; the build is in the container's own filesystem
 script:test-regress-batch.sh	120	100	one cluster, a batch of 20 one-table fixtures and three failing batches; seconds
+script:selftest-pgtest-bisect.sh	60	10	stub pg_regress and server tools, no cluster: 12 runs of a batch of 4 tests in 1-2 s
 script:pgtest.sh	1800	3072	regress of the whole suite serially: 2,459 s release / 5,556 s cassert: run it sharded (scripts/ci.sh, SIFT_CI_JOBS=installcheck); one test or TAP is bounded by its own row
 script:soak.sh	900	1500	600 s of pgbench + setup (default --duration 600); 191-220 s in the quick tier (15 s soak hosted)
 script:colsoak.sh	600	1000	300 s default duration; 124 s in the full tier

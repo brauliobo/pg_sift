@@ -12,8 +12,10 @@
 #   scripts/pgtest.sh conf       print the postgresql.conf lines that make sift loadable
 #   scripts/pgtest.sh regress [t...]  make installcheck against the cluster; with test names, ONE pg_regress run for all of them in one fresh database
 #                                (contrib_regression_<first>, the output in $SIFT_TMP/regress/<first>), then one leak check of the server log and one look at what the run left in the
-#                                database (scripts/leftovers.sql, exceptions in scripts/leftovers.allow). A run with a diff, a leak or a leftover is cut in halves, each in a fresh
-#                                database, until the failing tests are named, at most SIFT_BISECT_REDS (4) of them (SIFT_REGRESS_DIR: another directory of sql/ and expected/, for scripts/test-regress-batch.sh)
+#                                database (scripts/leftovers.sql, exceptions in scripts/leftovers.allow). A run that only differs names the tests that differ and runs each alone; a run
+#                                with a leak or a leftover is cut in halves, each in a fresh database, until the failing tests are named, at most SIFT_BISECT_REDS (4) of them. A crashed
+#                                backend (TRAP, PANIC, a signal) stops at once and names the test that crashed it; SIFT_REGRESS_NO_BISECT=1 never runs a test again: the findings of the batch, exit 1
+#                                (SIFT_REGRESS_DIR: another directory of sql/ and expected/, for scripts/test-regress-batch.sh)
 #                                Run the tests that compare heap-free reads (col_heapfree_*, col_track_*, col_tomb_*, col_stmt_cid*) on a quiet cluster: a session
 #                                of another test holds back the xmin horizon, and what a read may take from the log without the heap (free_reads_heap) changes by design
 #   scripts/pgtest.sh fresh [t...]    regress with a NEW backend for every statement outside a transaction (scripts/fresh-psql.py, test/fresh/README.md)
@@ -238,19 +240,63 @@ clean() {
 
 # regress [TEST...]: without names, make installcheck (the Makefile's database and test list). With names, ONE pg_regress run for all of them in one
 # fresh database (contrib_regression_<first>, the output in $TMP/regress/<first>), then ONE look at the server log (leak_after) and ONE at what the
-# run left in the database (scripts/leftovers.sql; scripts/leftovers.allow gives the objects a test may leave, and why). A run that finds a diff, a leak or a
-# leftover is cut in halves, each in a fresh database, until the single tests that fail are named: the green path pays the checks once for the batch,
-# and the failure path says which test is guilty, whatever an earlier test of the batch left behind. The first pass stays whole in $TMP/regress/<first> (its
+# run left in the database (scripts/leftovers.sql; scripts/leftovers.allow gives the objects a test may leave, and why). A run that finds a leak or a
+# leftover is cut in halves, each in a fresh database, until the single tests that fail are named; a run that only differs runs the tests that differ alone (name_failures):
+# the green path pays the checks once for the batch, and the failure path says which test is guilty, whatever an earlier test of the batch left behind. The first pass stays whole in $TMP/regress/<first> (its
 # regression.diffs and report): a cut keeps its output in $TMP/regress/cut/ and drops its database at once, so that a batch of failures does not fill the scratch
 # directory of the lane (the watchdog of scripts/ci/scratch.sh stops every server of the run when it passes its cap).
 regress() {
 	if (( ! $# )); then make -C "$REPO" USE_PGXS=1 installcheck PGUSER=postgres; return; fi
 	batch_run "$@" && return 0
 	if (( $# == 1 )); then batch_report "$1" "$1"; return 1; fi
-	echo "pgtest: regress: the batch of $# tests starting at $1 failed; cutting it in halves to name the tests" >&2
-	BISECT_NAMED=0
-	bisect_batch "$(<"$TMP/regress/$1.report")" "$@" || true
+	name_failures "$@"
 	return 1
+}
+
+# What a backend that died leaves in the findings of leak_after: the server log of the batch (TRAP, PANIC, a signal) or a sanitizer that halted it
+CRASH_RE='TRAP:|PANIC:|terminated by (signal|exception)|ERROR: AddressSanitizer|runtime error:'
+
+# failed_tests KEY: the tests pg_regress marked "not ok" in the output of the batch KEY, in the order they ran (pg_regress removes regression.out when every test passed)
+failed_tests() { [[ ! -f $TMP/regress/$1/regression.out ]] || sed -n 's/^not ok  *[0-9][0-9]*  *- *\([^ ]*\).*/\1/p' "$TMP/regress/$1/regression.out"; }
+
+# name_failures TEST...: the batch of TEST... failed; says which tests are to blame, running the fewest more batches that can tell:
+#  - a crashed backend: the first test that failed in the progress of pg_regress is the one that crashed it, and the tests after it fail for the recovery; nothing is run again
+#  - SIFT_REGRESS_NO_BISECT set: nothing is run again, the findings are all there is
+#  - only diffs (no leak, no leftover): the tests that differ run alone; one that fails alone is guilty. If all of them pass alone, an earlier test of the batch bleeds into them, and the cuts find it
+#  - a leak or a leftover: the batch is cut in halves, because no test is named yet
+name_failures() {
+	local key=$1 report=$TMP/regress/$1.report failed first after rc=0
+	failed=$(failed_tests "$key" | paste -sd' ' -) first=${failed%% *}
+	after=${failed#"$first"}
+	BISECT_NAMED=0
+	if grep -qE "^leak in .*($CRASH_RE)" "$report"; then
+		echo "pgtest: regress: a backend crashed in the batch of $# tests starting at $1; not cutting it. Crashed in: ${first:-no test failed in the progress, see the findings}; failed after it:${after:- none}" >&2
+		grep -E "^leak in .*($CRASH_RE)" "$report" | head -n 5 >&2
+		return
+	fi
+	if [[ -n ${SIFT_REGRESS_NO_BISECT:-} ]]; then
+		echo "pgtest: regress: SIFT_REGRESS_NO_BISECT: not cutting the batch of $# tests starting at $1; failed in the batch: ${failed:-none named, see the findings}; what the batch found:" >&2
+		cat "$report"
+		return
+	fi
+	if [[ -n $failed ]] && ! grep -q '^not ok - ' "$report"; then
+		rerun_alone $failed && return || rc=$?
+		(( rc == 1 )) || return
+		echo "pgtest: regress: $failed fail in the batch and pass alone; cutting the batch in halves to find the test they depend on" >&2
+	else
+		echo "pgtest: regress: the batch of $# tests starting at $1 failed; cutting it in halves to name the tests" >&2
+	fi
+	bisect_batch "$(<"$report")" "$@" || true
+}
+
+# rerun_alone TEST...: each TEST in a fresh database of its own. 0 when one of them fails alone (it is named), 1 when all pass alone, 2 when the server is gone
+rerun_alone() {
+	local t rc
+	for t; do
+		cut_batch "$t" && rc=0 || rc=$?
+		(( rc != 2 )) || return 2
+	done
+	(( BISECT_NAMED > 0 )) || return 1
 }
 
 # batch_key TEST...: the name of the output of a batch in $TMP/regress: <first> for the whole batch, cut/<first>-<count> for a half or less of it (REGRESS_CUT is set)
