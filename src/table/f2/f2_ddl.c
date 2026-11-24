@@ -156,6 +156,7 @@ sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 	sift_tbl_f2_apply_key_order(rel, store);
 	store->spec = (SiftPartSpec) {
 		.ncols = n,.kinds = store->kinds,.nsort = store->nkey,.sort_cols = store->key_cols,.hints = store->hints,.scales = store->scales,
+		.preagg = pg_strcasecmp(store->opts.preagg, "off") != 0,.preagg_dim = -1,.preagg_measure = -1,
 	};
 	define_time_columns(rel, store);
 	store->spec.col_ids = sift_tbl_f2_column_identities(rel, store, &store->spec.ncol_ids);

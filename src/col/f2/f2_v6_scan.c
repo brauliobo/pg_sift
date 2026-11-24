@@ -874,8 +874,13 @@ scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot sn
 	o.leaves = scan_leaves(s);
 	o.nleaves = s->ncols;
 	o.nan_leaves = scan_nan_leaves(s, store->ncols);
+	s->preagg = quals->possible && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
+	o.gran_sink = s->preagg != NULL ? sift_v6_preagg_try_granule : NULL;
+	o.gran_arg = s->preagg;
 	if (quals->possible)
 		sift_f2_store_scan_sink(&o, v6_sink, s);
+	if (s->preagg != NULL)
+		sift_v6_preagg_end(s->preagg);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 }

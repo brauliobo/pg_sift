@@ -23,6 +23,7 @@
 #include "col/f2/f2_store_scan.h"
 #include "col/f2/key_plan.h"
 #include "col/f2/l0_stage.h"
+#include "col/f2/part_vis.h"
 #include "col/f2/pend_del.h"
 #include "core/memtrack.h"
 #include "core/tidbridge.h"
@@ -63,6 +64,9 @@ struct SiftStoreScan
 	int			ncheck;
 	bool		wide;
 	bool		possible;
+	bool	   *offer_decided;	/* a sift_table with a granule sink: what no zone or skipping index of the table decides, per predicate (never a predicate) */
+	const SiftZone **offer_zones;
+	bool	   *offer_exceptions;
 	const SiftPlanSnapshot *view;
 	int			next;			/* the next partition of the view */
 	List	   *run;			/* the SiftStorePart of the partitions of the run last given */
@@ -82,6 +86,7 @@ struct SiftStorePart
 	int			nspans;
 	int			span;
 	uint32		g;				/* the next granule of the span */
+	const int16 *phys;			/* a sift_table with a granule sink: the column of the part that holds each leaf as it is (SiftF2GranOffer.phys) */
 	SiftF2GranuleBuf *gb;
 	const uint64 *tids;
 	int		   *active;			/* the check_cols of the scan that carry tags in the granule loaded */
@@ -414,6 +419,20 @@ part_wanted(const SiftStoreScan *s, const SiftPartDesc *d, const bool dirty[SIFT
 	return true;
 }
 
+/* The column of the part that holds each leaf of the store as it is; NULL when the part has the columns of the store */
+static const int16 *
+part_phys(const SiftStoreScan *s, const SiftF2ColMap *map)
+{
+	int16	   *phys;
+
+	if (map == NULL)
+		return NULL;
+	phys = MemoryContextAlloc(s->cx, sizeof(int16) * s->store->ncols);	/* check-memory: allow the columns of the table, once for each part the scan reads */
+	for (int leaf = 0; leaf < s->store->ncols; leaf++)
+		phys[leaf] = map->mode[leaf] == SIFT_CMAP_DIRECT ? map->phys_col[leaf] : -1;
+	return phys;
+}
+
 static void
 part_open_pin(SiftStorePart *p)
 {
@@ -422,7 +441,33 @@ part_open_pin(SiftStorePart *p)
 	p->pin = sift_f2_pin_open(s->o->rel, s->store, p->d, (uint32) p->e->part_id);
 	p->nspans = sift_f2_granule_spans(s->o->rel, p->pin->part, &s->f, &s->ks, &s->plan, p->spans);
 	p->g = p->nspans > 0 ? p->spans[0][0] : 0;
+	p->phys = s->o->gran_sink != NULL && s->vis == &table_vis ? part_phys(s, p->pin->col_map) : NULL;
 	p->started = true;
+}
+
+/* How the table knows the rows of the granule: the inserters of all of them are settled for an MVCC snapshot of a transaction that is not serializable, or they are asked one by one */
+static SiftF2GranVis
+granule_vis(const SiftStorePart *p, uint32 g)
+{
+	const SiftStoreScan *s = p->s;
+
+	if (s->tvis.serializable || s->o->snap->snapshot_type != SNAPSHOT_MVCC)
+		return SIFT_GVIS_PER_ROW;
+	return sift_vis_granule_inserts_settled(p->d, &p->pin->gdir[g], sift_vis_snap_xmin(s->o->snap)) ? SIFT_GVIS_SETTLED : SIFT_GVIS_PER_ROW;
+}
+
+/* The granule of a table offered to the sink of the scan before a byte of it is read: true when the sink answered it */
+static bool
+granule_answered(const SiftStorePart *p, uint32 g)
+{
+	const SiftStoreScan *s = p->s;
+	const SiftF2PartPin *pin = p->pin;
+	const SiftStoreScanOpts *o = s->o;
+
+	return o->gran_sink != NULL && s->vis == &table_vis && o->bridge == NULL && o->gran_sink(o->gran_arg, &(SiftF2GranOffer) {.rel = o->rel,.part = pin->part,.desc = p->d,.schema = s->store->schema,.g = g,.gd = &pin->gdir[g],
+						 .dead = pin->dv != NULL ? sift_dv_granule(pin->dv, g) : NULL,.snap = o->snap,.preds = o->preds,.npreds = o->npreds,.decided = s->offer_decided,
+						 .zones = s->offer_zones,.exceptions = s->offer_exceptions,.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &pin->tidx[g]),
+						 .patched = sift_col_delta_scan_granule(s->delta, p->e, pin, g) != NULL,.px = p->px,.vis = granule_vis(p, g),.phys = p->phys});
 }
 
 static void
@@ -482,7 +527,7 @@ part_load_granule(SiftStorePart *p)
 	if (!p->started)
 		part_open_pin(p);
 	while (p->pin != NULL && part_next_granule_id(p, &g))
-		if (bridge_wants(p, g))
+		if (bridge_wants(p, g) && !granule_answered(p, g))
 		{
 			p->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->pin, g);
 			if (s->delta != NULL)
@@ -641,6 +686,9 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	for (int leaf = 0; leaf < o->store->ncols && table; leaf++)
 		if (s->want[leaf] && !(o->nan_leaves != NULL && o->nan_leaves[leaf]))
 			s->check_cols[s->ncheck++] = leaf;
+	s->offer_decided = MemoryContextAllocZero(cx, Max(o->npreds, 1));
+	s->offer_zones = MemoryContextAllocZero(cx, sizeof(SiftZone *) * Max(o->npreds, 1));
+	s->offer_exceptions = MemoryContextAllocZero(cx, Max(o->npreds, 1));
 	s->possible = sift_f2_key_set(&s->f, o->preds, o->npreds, &s->ks) && sift_f2_time_window(&s->f, o->preds, o->npreds, &s->tw);
 	sift_f2_key_plan(&s->f, o->store->schema->cols, o->preds, o->npreds, &s->plan);
 	s->possible = s->possible && s->plan.state != SIFT_KEY_PLAN_EMPTY;
