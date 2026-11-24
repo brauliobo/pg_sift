@@ -493,6 +493,7 @@ TESTING_REGRESS += col_track_drop_concurrently
 TESTING_REGRESS += col_track_key_quoted
 TESTING_REGRESS += col_track_own_statement_reads
 TESTING_REGRESS += col_track_rebaseline
+TESTING_REGRESS += col_track_trigger_names
 TESTING_REGRESS += col_track_update_skip
 TESTING_REGRESS += col_track_updates_supersede
 TESTING_REGRESS += col_unique_stage
