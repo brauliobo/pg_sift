@@ -98,6 +98,9 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	ints = lappend_int(ints, s->nparts);
 	for (int k = 0; k < s->nparts; k++)
 		ints = lappend_int(ints, (int) s->part_index[k]);
+	ints = lappend_int(ints, s->part_ncols);
+	for (int i = 0; i < s->nparts * s->part_ncols; i++)
+		ints = lappend_int(ints, s->part_attno[i]);
 	ints = list_concat(ints, list_make4_int(s->par_strategy, s->par_workers, (int) s->text_indexoid, s->constant_groups));
 	ints = put_int64(put_int64(lappend_int(ints, s->tid_range), (int64) s->tid_lo), (int64) s->tid_hi);
 	ints = sift_v6_derive_pack(ints, s);
@@ -158,6 +161,10 @@ sift_v6_spec_unpack(const List *l)
 	s->part_index = palloc(Max(s->nparts, 1) * sizeof(Oid));
 	for (int k = 0; k < s->nparts; k++)
 		s->part_index[k] = (Oid) list_nth_int(ints, at++);
+	s->part_ncols = list_nth_int(ints, at++);
+	s->part_attno = palloc(Max(s->nparts * s->part_ncols, 1) * sizeof(AttrNumber));
+	for (int i = 0; i < s->nparts * s->part_ncols; i++)
+		s->part_attno[i] = (AttrNumber) list_nth_int(ints, at++);
 	s->par_strategy = list_nth_int(ints, at++);
 	s->par_workers = list_nth_int(ints, at++);
 	s->text_indexoid = (Oid) list_nth_int(ints, at++);

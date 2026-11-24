@@ -41,6 +41,8 @@ typedef struct V6Source
 	int			nrt;
 	const SiftStoreOps *ops;	/* the format of the index, or of the sift_table */
 	struct SiftStoreQuals *quals;	/* a sift_table: the keys and the predicates of its scan, made by its format */
+	IndexFetchTableData *fetch;	/* a row Top-N: the winners of the source are fetched from its heap */
+	TupleTableSlot *fetch_slot;
 } V6Source;
 
 typedef struct V6State
@@ -60,8 +62,6 @@ typedef struct V6State
 	uint32		star_shared;
 	SiftV6TopKRun *topk;
 	SiftV6Rows *rows;
-	IndexFetchTableData *fetch;
-	TupleTableSlot *fetch_slot;
 	bool		ran;
 	bool		explain_only;
 	SiftV6FuseArm arm;			/* in the registry of the statement: arms of one index and one set of keys scan once */
@@ -330,35 +330,46 @@ proj_stream_next(void *arg, Datum *values, bool *isnull)
 static void
 v6_run_rows(V6State *st, EState *estate)
 {
-	const V6Source *src = &st->sources[0];
 	SiftV6Text *text = text_begin(st);
 
 	st->rows = sift_v6_rows_new(st->gcx, st->spec);
-	src->ops->order->scan_rows(st->spec, st->rows, src->heap, src->index, src->keys, src->nkeys, src->quals, estate->es_snapshot, &st->stats,
-								text ? sift_v6_text_chunk : NULL, text);
+	for (int k = 0; k < st->nsources; k++)
+	{
+		V6Source   *src = &st->sources[k];
+
+		sift_v6_rows_source(st->rows, k);
+		src->ops->order->scan_rows(st->spec, st->rows, src->heap, src->index, src->keys, src->nkeys, src->quals, estate->es_snapshot, &st->stats,
+									text ? sift_v6_text_chunk : NULL, text);
+		src->fetch = sift_table_index_fetch_begin(src->heap);
+		src->fetch_slot = table_slot_create(src->heap, NULL);
+	}
 	text_end(text);
 	sift_v6_rows_finish(st->rows);
-	st->fetch = sift_table_index_fetch_begin(src->heap);
-	st->fetch_slot = table_slot_create(src->heap, NULL);
 }
 
-/* the next winner of a row Top-N: its columns from the heap row at its address */
+/* the next winner of a row Top-N: its columns from the heap row at its address, in the partition it came from */
 static bool
 v6_next_row(V6State *st, TupleTableSlot *slot)
 {
+	const SiftV6Spec *spec = st->spec;
 	ItemPointerData tid;
 	bool		again = false,
 				dead = false;
+	uint32		source;
 	uint64		addr;
 	int			i = 0;
+	const V6Source *src;
 
-	if (!sift_v6_rows_next(st->rows, &addr))
+	if (!sift_v6_rows_next(st->rows, &source, &addr))
 		return false;
+	src = &st->sources[source];
 	sift_f2_tid_set(&tid, addr);
-	SIFT_INVARIANT(table_index_fetch_tuple(st->fetch, &tid, st->css.ss.ps.state->es_snapshot, st->fetch_slot, &again, &dead), "a row the scan kept is not in the heap");
+	SIFT_INVARIANT(table_index_fetch_tuple(src->fetch, &tid, st->css.ss.ps.state->es_snapshot, src->fetch_slot, &again, &dead), "a row the scan kept is not in the heap");
 	foreach_node(TargetEntry, te, ((CustomScan *) st->css.ss.ps.plan)->custom_scan_tlist)
 	{
-		slot->tts_values[i] = slot_getattr(st->fetch_slot, ((Var *) te->expr)->varattno, &slot->tts_isnull[i]);
+		const AttrNumber attno = spec->nparts > 0 ? spec->part_attno[source * spec->part_ncols + i] : ((Var *) te->expr)->varattno;
+
+		slot->tts_values[i] = slot_getattr(src->fetch_slot, attno, &slot->tts_isnull[i]);
 		i++;
 	}
 	return true;
@@ -455,12 +466,17 @@ v6_exec(CustomScanState *node)
 static void
 v6_fetch_end(V6State *st)
 {
-	if (st->fetch == NULL)
-		return;
-	table_index_fetch_end(st->fetch);
-	ExecDropSingleTupleTableSlot(st->fetch_slot);
-	st->fetch = NULL;
-	st->fetch_slot = NULL;
+	for (int k = 0; k < st->nsources; k++)
+	{
+		V6Source   *src = &st->sources[k];
+
+		if (src->fetch == NULL)
+			continue;
+		table_index_fetch_end(src->fetch);
+		ExecDropSingleTupleTableSlot(src->fetch_slot);
+		src->fetch = NULL;
+		src->fetch_slot = NULL;
+	}
 }
 
 static void

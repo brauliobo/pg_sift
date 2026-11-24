@@ -30,6 +30,7 @@ struct SiftV6Rows
 	bool		bounded;		/* the first sort column is an integer: the heap's worst row bounds what a granule must hold */
 	bool		by_code;		/* the first sort column is a text in byte order: a dictionary lists its strings in that order, so the codes bound the rows as the strings do */
 	bool		desc;
+	uint64		source;			/* the partition being scanned, in the bits of its rows' addresses above SIFT_V6_ROWS_ADDR_BITS */
 };
 
 typedef struct RowCand
@@ -213,7 +214,7 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 				continue;
 			for (int i = 0; i < spec->nkeys; i++)
 				r->values[i] = key_datum(&spec->key[i], keyvec[i], c.row, &r->isnull[i], r->sbuf[i]);
-			r->values[spec->nkeys] = Int64GetDatum((int64) tid[c.row]);
+			r->values[spec->nkeys] = Int64GetDatum((int64) (tid[c.row] | r->source));
 			r->isnull[spec->nkeys] = false;
 			sift_v6_topk_run_put(r->run, r->values, r->isnull);
 			if (coded)
@@ -238,11 +239,21 @@ sift_v6_rows_finish(SiftV6Rows *r)
 	sift_v6_topk_run_finish(r->run);
 }
 
-bool
-sift_v6_rows_next(SiftV6Rows *r, uint64 *tid)
+void
+sift_v6_rows_source(SiftV6Rows *r, uint32 source)
 {
+	r->source = (uint64) source << SIFT_V6_ROWS_ADDR_BITS;
+}
+
+bool
+sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid)
+{
+	uint64		addr;
+
 	if (!sift_v6_topk_run_next(r->run, r->values, r->isnull))
 		return false;
-	*tid = (uint64) DatumGetInt64(r->values[r->spec->nkeys]);
+	addr = (uint64) DatumGetInt64(r->values[r->spec->nkeys]);
+	*source = (uint32) (addr >> SIFT_V6_ROWS_ADDR_BITS);
+	*tid = addr & ((UINT64CONST(1) << SIFT_V6_ROWS_ADDR_BITS) - 1);
 	return true;
 }

@@ -238,6 +238,8 @@ typedef struct SiftV6Spec
 	bool		is_table;
 	int			nparts;			/* a partitioned table: the index of each live partition, read into the one set of groups (indexoid is the first); 0 for one index */
 	Oid		   *part_index;
+	int			part_ncols;		/* a row Top-N of partitions: the columns the node fetches, and the attribute of each in every partition (part_attno[partition * part_ncols + column]) */
+	AttrNumber *part_attno;
 	int			nkeys;
 	SiftV6Col  *key;
 	int			naggs;

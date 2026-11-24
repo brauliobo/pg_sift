@@ -100,15 +100,15 @@ rows_outputs(V6Plan *p)
 	return p->scan_tlist != NIL;
 }
 
-static bool
-rows_compile(V6Plan *p, uint32 k)
+bool
+sift_v6_rows_compile(V6Plan *p, uint32 k)
 {
 	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k};
 	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && rows_outputs(p) && sift_v6_compile_quals(p);
 }
 
-static void
-rows_add(V6Plan *p, uint32 k, Cost scan)
+void
+sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan)
 {
 	PlannerInfo *root = p->root;
 
@@ -125,12 +125,12 @@ rows_table_path(V6Plan *p, Oid relid, uint32 k)
 				scan;
 	SiftV6CostIn in;
 
-	if (!sift_v6_plan_table(p, relid) || !rows_compile(p, k))
+	if (!sift_v6_plan_table(p, relid) || !sift_v6_rows_compile(p, k))
 		return false;
 	in = (SiftV6CostIn) {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo),.groups = k,
 	.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
 	sift_v6_scan_cost(&in, &open, &scan);
-	rows_add(p, k, scan);
+	sift_v6_rows_add(p, k, scan);
 	return true;
 }
 
@@ -146,12 +146,12 @@ rows_index_path(V6Plan *p, uint32 k)
 		return false;
 	irel = index_open(p->index->indexoid, AccessShareLock);
 	sift_v6_plan_index(p, irel);
-	ok = rows_compile(p, k);
+	ok = sift_v6_rows_compile(p, k);
 	index_close(irel, NoLock);
 	if (!ok)
 		return false;
 	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
-	rows_add(p, k, scan);
+	sift_v6_rows_add(p, k, scan);
 	return true;
 }
 
@@ -164,8 +164,15 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 	Oid			relid;
 
 	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasWindowFuncs || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL ||
-		q->rowMarks != NIL || !sift_v6_base_rel_ok(root, input_rel) || bms_membership(root->all_baserels) != BMS_SINGLETON ||
-		proj_sort_offered(input_rel))
+		q->rowMarks != NIL || bms_membership(root->all_baserels) != BMS_SINGLETON || proj_sort_offered(input_rel))
+		return;
+	if (sift_v6_partitioned_rel_ok(root, input_rel))
+	{
+		sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
+		sift_v6_add_rows_partition_paths(root, input_rel, output_rel, k);
+		return;
+	}
+	if (!sift_v6_base_rel_ok(root, input_rel))
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
 	relid = planner_rt_fetch(input_rel->relid, root)->relid;

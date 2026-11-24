@@ -68,6 +68,12 @@ extern void sift_v6_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel, Rel
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
 /* plan_topn_rows.c: the path of ORDER BY columns LIMIT K of the rows of one table, at the UPPERREL_ORDERED stage */
 extern void sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+/* the row Top-N of the one index in hand (a partition's), and its path once the scan is priced */
+extern bool sift_v6_rows_compile(V6Plan *p, uint32 k);
+extern void sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan);
+/* a partitioned table the plan can read as one scan, and the row Top-N over the partitions left after pruning */
+extern bool sift_v6_partitioned_rel_ok(PlannerInfo *root, RelOptInfo *rel);
+extern void sift_v6_add_rows_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
 
 /* The plan of a sift_table or of an open index: the format that owns it (ops NULL when none does) and, for a table, the schema of its store; false: no format owns the table */
 extern bool sift_v6_plan_table(V6Plan *p, Oid relid);

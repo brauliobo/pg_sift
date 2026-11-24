@@ -11,6 +11,8 @@
 #include "agg/v6/v6.h"
 
 
+#define SIFT_V6_ROWS_ADDR_BITS	48
+
 /* EXPLAIN of a row Top-N: its sort keys and the rows its heap holds */
 extern void sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec);
 /* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item */
@@ -20,7 +22,9 @@ extern void sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *
 /* What a row must beat to stay, as the scan takes it (col/f2/f2_sink.h): kept up to date by sift_v6_rows_update; NULL when the first sort column is not an integer the zones of a granule bound */
 extern const SiftF2Bound *sift_v6_rows_bound(const SiftV6Rows *r);
 extern void sift_v6_rows_finish(SiftV6Rows *r);
-/* the heap address of the next best row; false after the last */
-extern bool sift_v6_rows_next(SiftV6Rows *r, uint64 *tid);
+/* the rows offered from now on are those of partition source: their addresses are told from those of the others */
+extern void sift_v6_rows_source(SiftV6Rows *r, uint32 source);
+/* the partition and the heap address of the next best row; false after the last */
+extern bool sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid);
 
 #endif							/* SIFT_AGG_V6_ROWS_TOPN_H */
