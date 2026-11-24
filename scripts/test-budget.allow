@@ -177,6 +177,7 @@ sql	col_cube_priority.sql	1	predates the budget of test/README.md
 sql	col_cut_aligned.sql	1	predates the budget of test/README.md
 sql	col_dead_rewrite.sql	2	predates the budget of test/README.md
 sql	col_decide_scale.sql	1	predates the budget of test/README.md
+sql	col_delvec_delta_chunks.sql	1	predates the budget of test/README.md
 sql	col_dict_count.sql	2	predates the budget of test/README.md
 sql	col_dir_lineage.sql	1	predates the budget of test/README.md
 sql	col_dir_nested.sql	4	predates the budget of test/README.md
@@ -245,6 +246,7 @@ sql	col_order_layout.sql	1	predates the budget of test/README.md
 sql	col_overlay_gorder_walk.sql	1	predates the budget of test/README.md
 sql	col_overlay_lean.sql	1	predates the budget of test/README.md
 sql	col_partition_adopt.sql	2	predates the budget of test/README.md
+sql	col_parts_dead_delta.sql	1	predates the budget of test/README.md
 sql	col_peers_dead_scan.sql	1	predates the budget of test/README.md
 sql	col_plain_window.sql	1	predates the budget of test/README.md
 sql	col_point_auto.sql	3	predates the budget of test/README.md
