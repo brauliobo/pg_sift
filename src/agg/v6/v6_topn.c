@@ -536,21 +536,31 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 	count_value(estate->es_param_list_info, spec->offset, &offset);
 	if (!spec->with_ties && count_value(estate->es_param_list_info, spec->limit, &limit) && !pg_add_s64_overflow(limit, offset, &bound))
 		tuplesort_set_bound(st->sort, bound);
-	while (src->next(src, &b))
-		for (int w = 0; w < (b.n + 63) / 64; w++)
-			for (uint64 bits = b.mask != NULL ? b.mask[w] : ~UINT64CONST(0); bits != 0; bits &= bits - 1)
-			{
-				const int	r = w * 64 + __builtin_ctzll(bits);
+	PG_TRY();
+	{
+		while (src->next(src, &b))
+		{
+			CHECK_FOR_INTERRUPTS();
+			for (int w = 0; w < (b.n + 63) / 64; w++)
+				for (uint64 bits = b.mask != NULL ? b.mask[w] : ~UINT64CONST(0); bits != 0; bits &= bits - 1)
+				{
+					const int	r = w * 64 + __builtin_ctzll(bits);
 
-				if (r >= b.n)
-					break;
-				ExecClearTuple(slot);
-				if (!src->fetch(src, b.tag[r], st->attnos, st->nattrs, slot->tts_values, slot->tts_isnull))
-					continue;
-				ExecStoreVirtualTuple(slot);
-				tuplesort_puttupleslot(st->sort, slot);
-			}
-	src->close(src);
+					if (r >= b.n)
+						break;
+					ExecClearTuple(slot);
+					if (!src->fetch(src, b.tag[r], st->attnos, st->nattrs, slot->tts_values, slot->tts_isnull))
+						continue;
+					ExecStoreVirtualTuple(slot);
+					tuplesort_puttupleslot(st->sort, slot);
+				}
+		}
+	}
+	PG_FINALLY();
+	{
+		src->close(src);
+	}
+	PG_END_TRY();
 	tuplesort_performsort(st->sort);
 	st->sorted = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
 }
